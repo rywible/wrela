@@ -1,0 +1,136 @@
+// A trained policy, evaluated: a dense network (layers of weighted sums, an ELU between them, none
+// after the last) whose weights are embedded bytes read in place, its inputs first put in their
+// training units (less a mean, times a scale, clipped). Training happens outside the engine, with
+// whatever tools fit; this reads what they export.
+//
+// The bytes (little-endian): the magic "WNN1"; the number of layers L (u32); the widths, L + 1 of
+// them (u32: the inputs', then each layer's); the inputs' means, then their scales (f32 each); the
+// clip on the scaled inputs (f32); then each layer's weights, one output unit's row after another
+// (f32, its inputs' count each), then its biases (f32, one a unit).
+
+/// The most units a layer may have.
+pub const WIDEST: u32 = 1024
+
+const MAGIC: u32 = 0x314E4E57
+
+/// A network's bytes.
+pub struct Policy: Copy {
+    pub bytes: Bytes,
+}
+
+impl Policy {
+    /// The network in `bytes`, checked: its magic, its sizes, and that the bytes hold exactly it.
+    pub fn of(bytes: Bytes) -> Policy {
+        let p = Policy { bytes }
+        assert(bytes.u32_le(0) == MAGIC, "a policy's bytes start with WNN1")
+        let layers = p.layers()
+        assert(layers >= 1 && layers <= 8, "a policy has 1 to 8 layers")
+        var size = 4 * (2 + layers + 1) + 4 * (2 * p.width(0) + 1)
+        for l in 0..layers {
+            assert(
+                p.width(l + 1) <= WIDEST && p.width(l) <= WIDEST,
+                "a layer is at most WIDEST wide",
+            )
+            size += 4 * (p.width(l) * p.width(l + 1) + p.width(l + 1))
+        }
+        assert(size == bytes.len(), "a policy's bytes hold exactly its network")
+        p
+    }
+
+    /// How many layers of weights it has.
+    pub fn layers(self) -> u32 {
+        self.bytes.u32_le(4)
+    }
+
+    /// The width of layer `l`'s output (0: the inputs).
+    pub fn width(self, l: u32) -> u32 {
+        self.bytes.u32_le(8 + 4 * l)
+    }
+
+    /// How many inputs it takes.
+    pub fn inputs(self) -> u32 {
+        self.width(0)
+    }
+
+    /// How many outputs it gives.
+    pub fn outputs(self) -> u32 {
+        self.width(self.layers())
+    }
+
+    fn f(self, at: u32) -> f32 {
+        self.bytes.f32_le(at)
+    }
+
+    /// The outputs for `x` (its length the inputs'), written to `out` (its length the outputs').
+    @deterministic
+    pub fn eval(self, x: [f32], out: mut [f32]) {
+        let n = self.inputs()
+        assert(
+            x.len() == n && out.len() == self.outputs(),
+            "a policy's inputs and outputs are its widths",
+        )
+        let layers = self.layers()
+        let means = 8 + 4 * (layers + 1)
+        let scales = means + 4 * n
+        let clip = self.f(scales + 4 * n)
+        var a = [0.0; 1024]
+        var b = [0.0; 1024]
+        for i in 0..n {
+            a[i] = clamp((x[i] - self.f(means + 4 * i)) * self.f(scales + 4 * i), -clip, clip)
+        }
+        var at = scales + 4 * n + 4
+        for l in 0..layers {
+            let (wide, next) = (self.width(l), self.width(l + 1))
+            let biases = at + 4 * wide * next
+            for j in 0..next {
+                var sum = self.f(biases + 4 * j)
+                let row = at + 4 * wide * j
+                for i in 0..wide {
+                    sum += self.f(row + 4 * i) * a[i]
+                }
+                // ELU between layers (exp(s) - 1 below zero), none after the last.
+                b[j] = if l + 1 < layers && sum < 0.0 { exp(sum) - 1.0 } else { sum }
+            }
+            for j in 0..next {
+                a[j] = b[j]
+            }
+            at = biases + 4 * next
+        }
+        for k in 0..self.outputs() {
+            out[k] = a[k]
+        }
+    }
+}
+
+// ---- tests ---------------------------------------------------------------------------------------
+
+/// A tiny network exported by the motion lab (`export.py fixture`: 7 inputs, ELU layers of 6 and 5,
+/// 3 outputs, random weights and normalisation) gives the outputs JAX gave for the same inputs; the
+/// last input has one far out, past the clip.
+@test
+fn a_policy_gives_what_it_was_trained_to() {
+    let p = Policy::of(embed("fixtures/policy_tiny.wnn"))
+    assert(p.inputs() == 7 && p.outputs() == 3 && p.layers() == 3, "the tiny network's shape")
+    let xs = [
+        [-3.16545165, -1.17240293, 1.44583617, -0.71566082, 2.87327611, -0.599406387, 0.0727786952],
+        [4.63746255, 1.63531657, -1.51568621, -0.548516924, 1.6215754, 5.8052641, -0.808860982],
+        [-0.730676037, 3.0069408, -2.65937983, -0.875160697, 2.6476169, 1.74105005, 0.27455011],
+        [2.01031306, -8.48448692, 40.0, -2.87893428, -5.00585953, 0.829337279, 2.10163466],
+    ]
+    let ys = [
+        [-23.1043453, 3.24480987, 10.741643],
+        [9.63805771, 68.3625488, 30.272089],
+        [18.5803471, 36.6049728, 6.09038353],
+        [-38.3488731, 23.333416, 12.3596497],
+    ]
+    var worst = 0.0
+    for k in 0..4 {
+        var out = [0.0; 3]
+        p.eval(xs[k], mut out)
+        for j in 0..3 {
+            worst = max(worst, abs(out[j] - ys[k][j]) / max(1.0, abs(ys[k][j])))
+        }
+    }
+    std::io::print(f"the tiny network's worst relative error from JAX: {worst}")
+    assert(worst < 1.0e-5, f"the tiny network is {worst} from JAX")
+}

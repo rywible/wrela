@@ -1,0 +1,844 @@
+// Motion matching (Clavet, "Motion Matching and The Road to Next-Gen Animation", GDC 2016): a
+// stick turned into a reference motion from a library of captured frames, for a character's
+// physics to follow (`engine::articulated`, driven by a trained policy, `engine::policy`). The
+// same matcher the motion lab trains with (its `mm.py`), here in f64.
+//
+// - The intent: a point and a facing on the ground follow the stick by critically damped springs
+//   (Holden, "Spring-It-On", 2021): the stick's direction and size give a velocity, and the facing
+//   turns to where it moves (free) or holds a given yaw (strafing).
+// - The search, every `search` frames, at once when the intent changes sharply, and before a clip
+//   runs out: the frame whose features (where the root will be and face 1/3, 2/3 and 1 s ahead,
+//   the feet's places and velocities, the pelvis's velocity, in its root's frame; normalised and
+//   weighted when the library was built) best match the query (the point's predicted path, and
+//   the frame playing's own feet and pelvis), if better than going on and not near the frame
+//   playing.
+// - Transitions by inertialization (Bollo, "Inertialization: High-Performance Animation
+//   Transitions in Gears of War", GDC 2018): the old pose and velocity less the new become an
+//   offset that decays, so the motion stays smooth through a jump.
+// - The root moves by the clip's own root motion, pulled toward the point (no more than a share
+//   of the clip's motion each frame) so they don't drift apart; the point is kept near the root.
+// - Feet held: a foot the library says has landed is held where it landed, along the floor and
+//   in its yaw, by two-bone IK on its leg, until the library says it lifts or it's pulled too far.
+//
+// The library and the matcher's settings come together from the motion lab's export, so the two
+// can't disagree.
+
+use articulated::{MAX_QPOS, Model}
+use golden::{Fixture, apart}
+use sim::SimState
+use std::hash::StateHash
+use std::serialize::Serialize
+use quatd::{PI64, atan2_64, cos64, exp64, qconj, qexp, qlog, qmul, sin64, wrap, yaw_quat}
+
+/// The most ball joints and hinges a matched body may have.
+pub const MAX_BALLS: u32 = 24
+pub const MAX_HINGES: u32 = 16
+
+/// The library: each frame's qpos, root (a point and a yaw on the ground), normalised features,
+/// whether it may be searched for, which feet it has planted, and its clip's first and last+1
+/// frame, read in place from its bytes (`q`, `root`, `yaw`, `norm`, `valid`, `contact`, `begin`,
+/// `end`); and the matcher's settings.
+pub struct Library: Clone {
+    pub n: u32,
+    pub nq: u32,
+    pub nfeat: u32,
+    pub ahead: [f64; 3],
+    pub search: u32,
+    pub sharp_speed: f64,
+    pub sharp_turn: f64,
+    pub velocity_halflife: f64,
+    pub facing_halflife: f64,
+    pub blend_halflife: f64,
+    pub sync_halflife: f64,
+    pub clamp: f64,
+    pub sync_share: f64,
+    pub release: f64,
+    pub lock_halflife: f64,
+    pub fastest: f64,
+    pub better: f64,
+    pub surround: u32,
+    pub dt: f64,
+    bytes: Bytes,
+    /// Where each array starts (in f32s from the arrays' start).
+    at_qpos: u32,
+    at_root: u32,
+    at_yaw: u32,
+    at_norm: u32,
+    at_valid: u32,
+    at_contact: u32,
+    at_begin: u32,
+    at_end: u32,
+    /// Each frame's features' squared length; the features' means and scales.
+    pub norm2: Vec<f64>,
+    pub mean: Vec<f64>,
+    pub scale: Vec<f64>,
+    /// The body's ball joints' and hinges' qpos addresses (the free root's left out), and each
+    /// leg's chain (left, right).
+    pub balls: Vec<u32>,
+    pub hinges: Vec<u32>,
+    pub legs: [Leg; 2],
+}
+
+/// A leg for foot locking: the thigh's place on its parent, the shin's on the thigh and the
+/// ankle's on the shin (their rest offsets), the bones' lengths, the knee's axis and range and its
+/// rest bend (a shin isn't quite in line with its thigh), and the qpos addresses of the hip, knee
+/// and ankle.
+pub struct Leg: Copy {
+    pub hip: vec3d,
+    pub a1: vec3d,
+    pub a2: vec3d,
+    pub l1: f64,
+    pub l2: f64,
+    pub axis: vec3d,
+    pub rest: f64,
+    pub lo: f64,
+    pub hi: f64,
+    pub thigh: u32,
+    pub knee: u32,
+    pub foot: u32,
+}
+
+/// Where a library's f32 arrays start: after "WMM1", the version and the 27 f64s of its head.
+const ARRAYS: u32 = 8 + 8 * 27
+const BALL: u32 = 1
+const HINGE: u32 = 3
+
+impl Library {
+    /// The library in `bytes` ("WMM1", the u32 version 1, then f64s: n, nq, nfeat, the three
+    /// look-aheads, the settings, the legs' thigh, shin and foot body ids, left then right; then
+    /// f32s: qpos, roots, yaws, normalised features, means, scales, searchable, contacts, clip
+    /// begins and ends), for the body `m`.
+    pub fn of(bytes: Bytes, m: Model) -> Library {
+        assert(
+            bytes.u32_le(0) == 0x314D4D57 && bytes.u32_le(4) == 1,
+            "a library's bytes start WMM1, version 1",
+        )
+        let head = |k: u32| -> f64 { bytes.f64_le(8 + 8 * k) }
+        let n = u32(head(0))
+        let nq = u32(head(1))
+        let nfeat = u32(head(2))
+        assert(nq == m.nq, "the library was made for this body")
+        let at_qpos = 0
+        let at_root = at_qpos + n * nq
+        let at_yaw = at_root + 2 * n
+        let at_norm = at_yaw + n
+        let at_mean = at_norm + n * nfeat
+        let at_scale = at_mean + nfeat
+        let at_valid = at_scale + nfeat
+        let at_contact = at_valid + n
+        let at_begin = at_contact + 2 * n
+        let at_end = at_begin + n
+        assert(ARRAYS + 4 * (at_end + n) == bytes.len(), "a library's bytes hold exactly it")
+        var lib = Library {
+            n,
+            nq,
+            nfeat,
+            ahead: [head(3), head(4), head(5)],
+            search: u32(head(6)),
+            sharp_speed: head(7),
+            sharp_turn: head(8),
+            velocity_halflife: head(9),
+            facing_halflife: head(10),
+            blend_halflife: head(11),
+            sync_halflife: head(12),
+            clamp: head(13),
+            sync_share: head(14),
+            release: head(15),
+            lock_halflife: head(16),
+            fastest: head(17),
+            better: head(18),
+            surround: u32(head(19)),
+            dt: head(20),
+            bytes,
+            at_qpos,
+            at_root,
+            at_yaw,
+            at_norm,
+            at_valid,
+            at_contact,
+            at_begin,
+            at_end,
+            norm2: Vec::new(),
+            mean: Vec::new(),
+            scale: Vec::new(),
+            balls: Vec::new(),
+            hinges: Vec::new(),
+            legs: [
+                leg(m, u32(head(21)), u32(head(22)), u32(head(23))),
+                leg(m, u32(head(24)), u32(head(25)), u32(head(26))),
+            ],
+        }
+        for i in 0..nfeat {
+            lib.mean.push(lib.f(at_mean + i))
+            lib.scale.push(lib.f(at_scale + i))
+        }
+        for f in 0..n {
+            var sum = 0.0
+            for i in 0..nfeat {
+                let x = lib.norm(f, i)
+                sum += x * x
+            }
+            lib.norm2.push(sum)
+        }
+        for j in 0..m.njnt {
+            if m.jnt_type[j] == BALL {
+                lib.balls.push(m.jnt_qpos[j])
+            } else if m.jnt_type[j] == HINGE {
+                lib.hinges.push(m.jnt_qpos[j])
+            }
+        }
+        assert(
+            lib.balls.len() <= MAX_BALLS && lib.hinges.len() <= MAX_HINGES,
+            "the body fits the matcher",
+        )
+        lib
+    }
+
+    fn f(self, k: u32) -> f64 {
+        f64(self.bytes.f32_le(ARRAYS + 4 * k))
+    }
+
+    /// Frame `f`'s qpos `i`.
+    pub fn q(self, f: u32, i: u32) -> f64 {
+        self.f(self.at_qpos + f * self.nq + i)
+    }
+
+    /// Frame `f`'s root: its point on the ground, and its yaw.
+    pub fn root(self, f: u32) -> vec2d {
+        vec2d(self.f(self.at_root + 2 * f), self.f(self.at_root + 2 * f + 1))
+    }
+
+    pub fn yaw(self, f: u32) -> f64 {
+        self.f(self.at_yaw + f)
+    }
+
+    /// Frame `f`'s normalised feature `i`.
+    pub fn norm(self, f: u32, i: u32) -> f64 {
+        self.f(self.at_norm + f * self.nfeat + i)
+    }
+
+    /// Whether frame `f` may be searched for (enough of its clip follows it).
+    pub fn valid(self, f: u32) -> bool {
+        self.f(self.at_valid + f) != 0.0
+    }
+
+    /// Which of frame `f`'s feet are planted (left, right).
+    pub fn contact(self, f: u32) -> [bool; 2] {
+        [self.f(self.at_contact + 2 * f) != 0.0, self.f(self.at_contact + 2 * f + 1) != 0.0]
+    }
+
+    /// The first frame of frame `f`'s clip, and its last + 1.
+    pub fn begin(self, f: u32) -> u32 {
+        u32(self.f(self.at_begin + f))
+    }
+
+    pub fn end(self, f: u32) -> u32 {
+        u32(self.f(self.at_end + f))
+    }
+}
+
+fn leg(m: Model, thigh: u32, shin: u32, foot: u32) -> Leg {
+    let knee = m.body_jnt[shin]
+    let (a1, a2) = (m.body_pos[shin], m.body_pos[foot])
+    let (l1, l2) = (sqrt(dot(a1, a1)), sqrt(dot(a2, a2)))
+    let h = m.jnt_axis[knee]
+    let (u1, u2) = (a1 / l1, a2 / l2)
+    Leg {
+        hip: m.body_pos[thigh],
+        a1,
+        a2,
+        l1,
+        l2,
+        axis: h,
+        rest: atan2_64(dot(cross(u1, u2), h), dot(u1, u2)),
+        lo: m.jnt_range[knee].x,
+        hi: m.jnt_range[knee].y,
+        thigh: m.jnt_qpos[m.body_jnt[thigh]],
+        knee: m.jnt_qpos[knee],
+        foot: m.jnt_qpos[m.body_jnt[foot]],
+    }
+}
+
+/// The matcher: the frame playing, its root, the intent's point (its place, velocity,
+/// acceleration, facing and turning rate), frames since the last search, the last goal (velocity
+/// and facing), the transition's offsets and their velocities (the pelvis's place in the root's
+/// frame and its turn, each ball joint's turn, each hinge's angle), and each foot's hold.
+pub struct Matcher: Copy + Eq + StateHash + Serialize + SimState {
+    pub f: u32,
+    pub root: vec2d,
+    pub root_yaw: f64,
+    pub obj: vec2d,
+    pub vel: vec2d,
+    pub acc: vec2d,
+    pub face: f64,
+    pub spin: f64,
+    pub since: u32,
+    pub goal: vec3d,
+    pub off_at: vec3d,
+    pub off_at_v: vec3d,
+    pub off_turn: vec3d,
+    pub off_turn_v: vec3d,
+    pub off_ball: [vec3d; MAX_BALLS],
+    pub off_ball_v: [vec3d; MAX_BALLS],
+    pub off_hinge: [f64; MAX_HINGES],
+    pub off_hinge_v: [f64; MAX_HINGES],
+    pub lock: [vec2d; 2],
+    pub lock_yaw: [f64; 2],
+    pub planted: [bool; 2],
+    pub contact: [bool; 2],
+}
+
+/// What a stick asks: a direction and a size on the ground (at most 1; +x right, +y away, in the
+/// world), whether to strafe, and the yaw to hold when strafing.
+pub struct Stick: Copy + Eq + StateHash + Serialize + SimState {
+    pub dir: vec2d,
+    pub strafe: bool,
+    pub strafe_yaw: f64,
+}
+
+// ---- the pose a frame shows ------------------------------------------------------------------------
+
+/// `v` (on the floor) turned by `yaw` about the vertical.
+pub fn rot2(yaw: f64, v: vec2d) -> vec2d {
+    let (c, s) = (cos64(yaw), sin64(yaw))
+    vec2d(c * v.x - s * v.y, s * v.x + c * v.y)
+}
+
+/// `v` turned by `q`, as the lab turns it: v + s t + u × t, t = 2 u × v. (The library's turns are
+/// f32s, a hair from unit, and this differs from `quatd::qrot` there.)
+fn qrot(q: vec4d, v: vec3d) -> vec3d {
+    let u = vec3d(q.y, q.z, q.w)
+    let t = cross(u, v) * 2.0
+    v + t * q.x + cross(u, t)
+}
+
+/// The way `q` faces along the floor (its -y axis turned by `qrot`).
+fn yaw_of(q: vec4d) -> f64 {
+    let f = qrot(q, vec3d(0.0, -1.0, 0.0))
+    atan2_64(f.x, -f.y)
+}
+
+fn quat_at(q: [f64; MAX_QPOS], a: u32) -> vec4d {
+    vec4d(q[a], q[a + 1], q[a + 2], q[a + 3])
+}
+
+fn set_quat(q: mut [f64; MAX_QPOS], a: u32, v: vec4d) {
+    q[a] = v.x
+    q[a + 1] = v.y
+    q[a + 2] = v.z
+    q[a + 3] = v.w
+}
+
+/// The pose frame `f` shows, relative to its root: the pelvis's place (x, y in the root's frame, z
+/// its height), its turn relative to the root's yaw, and the library's qpos.
+fn pose(lib: Library, f: u32) -> (vec3d, vec4d) {
+    let yaw = lib.yaw(f)
+    let xy = rot2(-yaw, vec2d(lib.q(f, 0), lib.q(f, 1)) - lib.root(f))
+    let turn = qmul(yaw_quat(-yaw), vec4d(lib.q(f, 3), lib.q(f, 4), lib.q(f, 5), lib.q(f, 6)))
+    (vec3d(xy.x, xy.y, lib.q(f, 2)), turn)
+}
+
+/// The reference qpos the clip and its offsets show now, before the feet are held.
+pub fn free(lib: Library, s: Matcher) -> [f64; MAX_QPOS] {
+    var q = [0.0; MAX_QPOS]
+    for i in 0..lib.nq {
+        q[i] = lib.q(s.f, i)
+    }
+    let (at0, turn0) = pose(lib, s.f)
+    let at = at0 + s.off_at
+    let turn = qmul(qexp(s.off_turn), turn0)
+    for b in 0..lib.balls.len() {
+        let a = lib.balls[b]
+        set_quat(mut q, a, qmul(qexp(s.off_ball[b]), quat_at(q, a)))
+    }
+    for h in 0..lib.hinges.len() {
+        q[lib.hinges[h]] += s.off_hinge[h]
+    }
+    let xy = s.root + rot2(s.root_yaw, vec2d(at.x, at.y))
+    let pelvis = qmul(yaw_quat(s.root_yaw), turn)
+    let n = sqrt(dot(pelvis, pelvis))
+    q[0] = xy.x
+    q[1] = xy.y
+    q[2] = at.z
+    set_quat(mut q, 3, pelvis / n)
+    q
+}
+
+/// The reference qpos now: the free pose with each foot held where its lock says.
+pub fn frame(lib: Library, s: Matcher) -> [f64; MAX_QPOS] {
+    var q = free(lib, s)
+    for k in 0..2 {
+        let (_, _, ankle, _, _) = leg_fk(q, lib.legs[k])
+        q = leg_ik(q, lib.legs[k], vec3d(s.lock[k].x, s.lock[k].y, ankle.z), s.lock_yaw[k])
+    }
+    q
+}
+
+// ---- the legs ------------------------------------------------------------------------------------------
+
+/// A leg's hip, knee and ankle in the world, and its thigh's and shin's world turns.
+pub fn leg_fk(q: [f64; MAX_QPOS], l: Leg) -> (vec3d, vec3d, vec3d, vec4d, vec4d) {
+    let p = quat_at(q, 3)
+    let pelvis = p / sqrt(dot(p, p))
+    let hip = vec3d(q[0], q[1], q[2]) + qrot(pelvis, l.hip)
+    let thigh = qmul(pelvis, quat_at(q, l.thigh))
+    let knee = hip + qrot(thigh, l.a1)
+    let shin = qmul(thigh, qexp(l.axis * q[l.knee]))
+    (hip, knee, knee + qrot(shin, l.a2), thigh, shin)
+}
+
+fn foot_yaw(q: [f64; MAX_QPOS], l: Leg) -> f64 {
+    let (_, _, _, _, shin) = leg_fk(q, l)
+    yaw_of(qmul(shin, quat_at(q, l.foot)))
+}
+
+/// The leg's ankle moved to `target` by two-bone IK (the knee bent so hip to ankle is the right
+/// length, within its range; the leg turned about the hip the least it can be so the ankle points
+/// at the target), the foot keeping its turn in the world but turned about the vertical to `yaw`.
+pub fn leg_ik(q0: [f64; MAX_QPOS], l: Leg, target: vec3d, yaw: f64) -> [f64; MAX_QPOS] {
+    var q = q0
+    let (hip, _, _, thigh, shin) = leg_fk(q, l)
+    let to = target - hip
+    let d = clamp(sqrt(dot(to, to)), abs(l.l1 - l.l2) + 1.0e-4, (l.l1 + l.l2) * 0.9999)
+    let inner = acos64(clamp((l.l1 * l.l1 + l.l2 * l.l2 - d * d) / (2.0 * l.l1 * l.l2), -1.0, 1.0))
+    let bend = clamp(PI64 - inner - l.rest, l.lo, l.hi)
+    let reach = qrot(thigh, l.a1 + qrot(qexp(l.axis * bend), l.a2))
+    let thigh2 = qmul(between(reach, to), thigh)
+    let shin2 = qmul(thigh2, qexp(l.axis * bend))
+    let p = quat_at(q, 3)
+    let pelvis = p / sqrt(dot(p, p))
+    var foot_world = qmul(shin, quat_at(q, l.foot))
+    foot_world = qmul(yaw_quat(wrap(yaw - yaw_of(foot_world))), foot_world)
+    set_quat(mut q, l.thigh, canonical(qmul(qconj(pelvis), thigh2)))
+    q[l.knee] = bend
+    set_quat(mut q, l.foot, canonical(qmul(qconj(shin2), foot_world)))
+    q
+}
+
+fn canonical(x: vec4d) -> vec4d {
+    x / sqrt(dot(x, x)) * (if x.x < 0.0 { -1.0 } else { 1.0 })
+}
+
+/// The arccosine, as `atan2(sqrt(1 − c²), c)`.
+fn acos64(c: f64) -> f64 {
+    atan2_64(sqrt(max(0.0, 1.0 - c * c)), c)
+}
+
+/// The shortest turn taking direction `u` to direction `v` (half a turn across them if opposite).
+fn between(u0: vec3d, v0: vec3d) -> vec4d {
+    let u = u0 / max(sqrt(dot(u0, u0)), 1.0e-9)
+    let v = v0 / max(sqrt(dot(v0, v0)), 1.0e-9)
+    let c = cross(u, v)
+    var q = vec4d(1.0 + dot(u, v), c.x, c.y, c.z)
+    if sqrt(dot(q, q)) < 1.0e-6 {
+        let other = if abs(u.x) < 0.9 { vec3d(1.0, 0.0, 0.0) } else { vec3d(0.0, 1.0, 0.0) }
+        let axis = cross(u, other)
+        let an = axis / max(sqrt(dot(axis, axis)), 1.0e-9)
+        q = vec4d(0.0, an.x, an.y, an.z)
+    }
+    q / max(sqrt(dot(q, q)), 1.0e-9)
+}
+
+// ---- springs -----------------------------------------------------------------------------------------
+
+const LN2: f64 = 0.6931471805599453
+
+/// A critically damped spring toward 0 (damping `y`): offset `x` and its velocity `v`, `dt` on.
+fn decay(x: f64, v: f64, y: f64, dt: f64) -> (f64, f64) {
+    let j1 = v + x * y
+    let e = exp64(-y * dt)
+    (e * (x + j1 * dt), e * (v - j1 * y * dt))
+}
+
+fn decay3(x: vec3d, v: vec3d, y: f64, dt: f64) -> (vec3d, vec3d) {
+    let (a, av) = decay(x.x, v.x, y, dt)
+    let (b, bv) = decay(x.y, v.y, y, dt)
+    let (c, cv) = decay(x.z, v.z, y, dt)
+    (vec3d(a, b, c), vec3d(av, bv, cv))
+}
+
+/// A place whose velocity goes to `goal` by a critically damped spring (Holden's): its place,
+/// velocity and acceleration after `dt`.
+fn spring_pos(
+    x: vec2d,
+    v: vec2d,
+    a: vec2d,
+    goal: vec2d,
+    halflife: f64,
+    dt: f64,
+) -> (vec2d, vec2d, vec2d) {
+    let y = 2.0 * LN2 / halflife
+    let j0 = v - goal
+    let j1 = a + j0 * y
+    let e = exp64(-y * dt)
+    let x2 = ((-j1) / (y * y) + (-j0 - j1 * dt) / y) * e + j1 / (y * y) + j0 / y + goal * dt + x
+    (x2, (j0 + j1 * dt) * e + goal, (a - j1 * y * dt) * e)
+}
+
+/// An angle going to `goal` by a critically damped spring, the short way round.
+fn spring_angle(x: f64, v: f64, goal: f64, halflife: f64, dt: f64) -> (f64, f64) {
+    let y = 2.0 * LN2 / halflife
+    let off = wrap(x - goal)
+    let j1 = v + off * y
+    let e = exp64(-y * dt)
+    (wrap(goal + e * (off + j1 * dt)), e * (v - j1 * y * dt))
+}
+
+// ---- the matcher's step --------------------------------------------------------------------------------
+
+/// The matcher playing frame `f`, its root at `at` facing `yaw`; the intent's point there, still;
+/// each foot held where it is if the frame has it planted.
+pub fn start(lib: Library, f: u32, at: vec2d, yaw: f64) -> Matcher {
+    var s = Matcher {
+        f,
+        root: at,
+        root_yaw: yaw,
+        obj: at,
+        vel: vec2d(0.0, 0.0),
+        acc: vec2d(0.0, 0.0),
+        face: yaw,
+        spin: 0.0,
+        since: 0,
+        goal: vec3d(0.0, 0.0, yaw),
+        off_at: vec3d(0.0, 0.0, 0.0),
+        off_at_v: vec3d(0.0, 0.0, 0.0),
+        off_turn: vec3d(0.0, 0.0, 0.0),
+        off_turn_v: vec3d(0.0, 0.0, 0.0),
+        off_ball: [vec3d(0.0, 0.0, 0.0); MAX_BALLS],
+        off_ball_v: [vec3d(0.0, 0.0, 0.0); MAX_BALLS],
+        off_hinge: [0.0; MAX_HINGES],
+        off_hinge_v: [0.0; MAX_HINGES],
+        lock: [vec2d(0.0, 0.0); 2],
+        lock_yaw: [0.0; 2],
+        planted: lib.contact(f),
+        contact: lib.contact(f),
+    }
+    let q = free(lib, s)
+    for k in 0..2 {
+        let (_, _, ankle, _, _) = leg_fk(q, lib.legs[k])
+        s.lock[k] = vec2d(ankle.x, ankle.y)
+        s.lock_yaw[k] = foot_yaw(q, lib.legs[k])
+    }
+    s
+}
+
+/// What the stick asks: the velocity, and the facing (`face`, the facing now, when free and the
+/// stick is near still).
+fn goal_of(lib: Library, stick: Stick, face: f64) -> (vec2d, f64) {
+    let size = sqrt(dot(stick.dir, stick.dir))
+    let mag = min(size, 1.0)
+    let vel = stick.dir / max(size, 1.0e-6) * (mag * lib.fastest)
+    let free_face = if mag > 0.1 { atan2_64(stick.dir.x, -stick.dir.y) } else { face }
+    (vel, if stick.strafe { stick.strafe_yaw } else { free_face })
+}
+
+/// One frame on: the intent's point follows the stick; the matcher searches if it's time (and
+/// `search` allows); the clip plays a frame, its root moving by the clip's root motion; the
+/// offsets decay; the root is pulled toward the point; the feet's holds are updated.
+pub fn step(lib: Library, s0: Matcher, stick: Stick, search: bool) -> Matcher {
+    var s = s0
+    let dt = lib.dt
+    let (vel_goal, face_goal) = goal_of(lib, stick, s.face)
+    let (obj, vel, acc) = spring_pos(s.obj, s.vel, s.acc, vel_goal, lib.velocity_halflife, dt)
+    let (face, spin) = spring_angle(s.face, s.spin, face_goal, lib.facing_halflife, dt)
+    let goal = vec3d(vel_goal.x, vel_goal.y, face_goal)
+    let dv = vec2d(goal.x - s.goal.x, goal.y - s.goal.y)
+    let sharp = sqrt(dot(dv, dv)) > lib.sharp_speed || abs(wrap(goal.z - s.goal.z)) > lib.sharp_turn
+    s.obj = obj
+    s.vel = vel
+    s.acc = acc
+    s.face = face
+    s.spin = spin
+    s.goal = goal
+    let f = s.f
+    let cont = min(f + 1, lib.end(f) - 1)
+    let near_end = f + 1 + lib.search >= lib.end(f) - 1
+    let since = s.since + 1
+    let due = since >= lib.search || sharp || near_end
+    var best = cont
+    var better = false
+    // (The search's answer is used only when one is due.)
+    if search && due {
+        let (b, ok) = search_best(lib, s, vel_goal, face_goal)
+        best = b
+        better = ok
+    }
+    // A clip about to run out jumps whatever the cost.
+    let jump = due && (better || near_end) && best != f + 1
+    let nxt = if jump { best } else { cont }
+    // The root moves by the clip's root motion this frame: the old clip's at a jump too (the new
+    // frame is offset to look like the old clip's next); none if it doesn't move on.
+    var frm = if jump { f } else { max(nxt, lib.begin(nxt) + 1) - 1 }
+    let to = if jump { cont } else { nxt }
+    if to == f {
+        frm = to
+    }
+    let step_xy = rot2(-lib.yaw(frm), lib.root(to) - lib.root(frm))
+    let step_yaw = wrap(lib.yaw(to) - lib.yaw(frm))
+    var root = s.root + rot2(s.root_yaw, step_xy)
+    var root_yaw = s.root_yaw + step_yaw
+    s = inertialize(lib, s, f, nxt, jump)
+    s.f = nxt
+    s.since = if due { 0 } else { since }
+    // The root pulled toward the point (no more than a share of the clip's own motion this frame),
+    // the point kept near the root.
+    let k = 1.0 - exp64(-dt * LN2 / lib.sync_halflife)
+    var pull = (s.obj - root) * k
+    let most = lib.sync_share * sqrt(dot(step_xy, step_xy)) + 1.0e-4
+    pull = pull * min(1.0, most / max(sqrt(dot(pull, pull)), 1.0e-9))
+    let turn = wrap(s.face - root_yaw) * k
+    let turn_most = lib.sync_share * abs(step_yaw) +
+        lib.sync_share * sqrt(dot(step_xy, step_xy)) +
+        1.0e-4
+    root = root + pull
+    root_yaw = root_yaw + clamp(turn, -turn_most, turn_most)
+    let gap = s.obj - root
+    let dist = sqrt(dot(gap, gap))
+    if dist > lib.clamp {
+        s.obj = root + gap / max(dist, 1.0e-9) * lib.clamp
+    }
+    s.root = root
+    s.root_yaw = wrap(root_yaw)
+    hold(lib, s, nxt)
+}
+
+/// The feet's holds: a foot is held from when the library says it lands until it says it lifts,
+/// or the foot's free place goes `release` from its hold (then not again until it next lands); a
+/// foot not held follows its free place.
+fn hold(lib: Library, s0: Matcher, f: u32) -> Matcher {
+    var s = s0
+    let q = free(lib, s)
+    let k = 1.0 - exp64(-lib.dt * LN2 / lib.lock_halflife)
+    for i in 0..2 {
+        let (_, _, ankle, _, _) = leg_fk(q, lib.legs[i])
+        let d = vec2d(ankle.x, ankle.y) - s.lock[i]
+        let contact = lib.contact(f)[i]
+        let landing = contact && !s.contact[i]
+        let planted = (s.planted[i] && contact && sqrt(dot(d, d)) <= lib.release) || landing
+        if !planted {
+            s.lock[i] = s.lock[i] + d * k
+            s.lock_yaw[i] = s.lock_yaw[i] + wrap(foot_yaw(q, lib.legs[i]) - s.lock_yaw[i]) * k
+        }
+        s.lock_yaw[i] = wrap(s.lock_yaw[i])
+        s.planted[i] = planted
+        s.contact[i] = contact
+    }
+    s
+}
+
+/// The matcher's root and point moved to `at` and `yaw` (a body pushed off its path takes its
+/// reference with it), its pose, offsets and holds kept.
+pub fn rebase(s0: Matcher, at: vec2d, yaw: f64) -> Matcher {
+    var s = s0
+    s.obj = s.obj + (at - s.root)
+    s.face = s.face + wrap(yaw - s.root_yaw)
+    s.root = at
+    s.root_yaw = yaw
+    s
+}
+
+/// The next `n` reference frames if the stick holds and the matcher doesn't search: what the body
+/// can see coming. Pushed to `out`.
+pub fn peek(lib: Library, s0: Matcher, stick: Stick, n: u32, out: mut Vec<[f64; MAX_QPOS]>) {
+    var s = s0
+    for _ in 0..n {
+        s = step(lib, s, stick, search: false)
+        out.push(frame(lib, s))
+    }
+}
+
+// ---- the search ------------------------------------------------------------------------------------------
+
+/// The best frame for the query (the point's predicted path and facings in the root's frame, and
+/// the frame playing's own feet and pelvis), and whether it beats going on.
+fn search_best(lib: Library, s: Matcher, vel_goal: vec2d, face_goal: f64) -> (u32, bool) {
+    let nf = lib.nfeat
+    var q: Vec<f64> = Vec::new()
+    for k in 0..3 {
+        let (p, _, _) = spring_pos(
+            s.obj,
+            s.vel,
+            s.acc,
+            vel_goal,
+            lib.velocity_halflife,
+            lib.ahead[k] * lib.dt,
+        )
+        let r = rot2(-s.root_yaw, p - s.root)
+        q.push(r.x)
+        q.push(r.y)
+    }
+    for k in 0..3 {
+        let (a, _) = spring_angle(
+            s.face,
+            s.spin,
+            face_goal,
+            lib.facing_halflife,
+            lib.ahead[k] * lib.dt,
+        )
+        let r = rot2(-s.root_yaw, vec2d(sin64(a), -cos64(a)))
+        q.push(r.x)
+        q.push(r.y)
+    }
+    for i in 12..nf {
+        q.push(lib.norm(s.f, i) * lib.scale[i] + lib.mean[i])
+    }
+    var qq = 0.0
+    for i in 0..nf {
+        q[i] = (q[i] - lib.mean[i]) / lib.scale[i]
+        qq += q[i] * q[i]
+    }
+    var best = 0
+    var cost_best = 1.0e300
+    for f in 0..lib.n {
+        if !lib.valid(f) || (f + lib.surround >= s.f && f <= s.f + lib.surround) {
+            continue
+        }
+        var d = 0.0
+        for i in 0..nf {
+            d += lib.norm(f, i) * q[i]
+        }
+        let cost = lib.norm2[f] - 2.0 * d + qq
+        if cost < cost_best {
+            cost_best = cost
+            best = f
+        }
+    }
+    let cont = min(s.f + 1, lib.end(s.f) - 1)
+    var cont_cost = 1.0e300
+    if lib.valid(cont) {
+        cont_cost = 0.0
+        for i in 0..nf {
+            let x = lib.norm(cont, i) - q[i]
+            cont_cost += x * x
+        }
+    }
+    (best, cost_best < cont_cost - lib.better)
+}
+
+// ---- inertialization -------------------------------------------------------------------------------------
+
+fn quat_of(lib: Library, f: u32, a: u32) -> vec4d {
+    vec4d(lib.q(f, a), lib.q(f, a + 1), lib.q(f, a + 2), lib.q(f, a + 3))
+}
+
+fn spin(a: vec4d, b: vec4d, dt: f64) -> vec3d {
+    qlog(qmul(b, qconj(a))) / dt
+}
+
+/// The offsets a frame on. At a jump, the offset is what the old clip would have shown next (its
+/// offsets decayed to then) less the new frame, and its velocity the old clip's (with its
+/// offsets') less the new one's, so the pose and its velocity both stay continuous: a turn's
+/// velocities are carried through the offsets' turns, and the old and new root velocities'
+/// difference joins the pelvis's. Otherwise each offset decays a frame.
+fn inertialize(lib: Library, s0: Matcher, f: u32, nxt: u32, jump: bool) -> Matcher {
+    var s = s0
+    let dt = lib.dt
+    let y = 2.0 * LN2 / lib.blend_halflife
+    let (at_d, at_v) = decay3(s.off_at, s.off_at_v, y, dt)
+    let (turn_d, turn_v) = decay3(s.off_turn, s.off_turn_v, y, dt)
+    s.off_at = at_d
+    s.off_at_v = at_v
+    s.off_turn = turn_d
+    s.off_turn_v = turn_v
+    for b in 0..lib.balls.len() {
+        let (x, v) = decay3(s.off_ball[b], s.off_ball_v[b], y, dt)
+        s.off_ball[b] = x
+        s.off_ball_v[b] = v
+    }
+    for h in 0..lib.hinges.len() {
+        let (x, v) = decay(s.off_hinge[h], s.off_hinge_v[h], y, dt)
+        s.off_hinge[h] = x
+        s.off_hinge_v[h] = v
+    }
+    if !jump {
+        return s
+    }
+    let cont = min(f + 1, lib.end(f) - 1)
+    let after = min(nxt + 1, lib.end(nxt) - 1)
+    let (at0, turn0) = pose(lib, f)
+    let (atc, turnc) = pose(lib, cont)
+    let (at1, turn1) = pose(lib, nxt)
+    let (at2, turn2) = pose(lib, after)
+    let rv_old = rot2(-lib.yaw(f), lib.root(cont) - lib.root(f)) / dt
+    let rv_new = rot2(-lib.yaw(nxt), lib.root(after) - lib.root(nxt)) / dt
+    let roots = vec3d(rv_old.x - rv_new.x, rv_old.y - rv_new.y, 0.0)
+    s.off_at_v = (atc - at0) / dt + at_v + roots - (at2 - at1) / dt
+    s.off_at = atc + at_d - at1
+    let new_turn = qlog(qmul(qmul(qexp(turn_d), turnc), qconj(turn1)))
+    s.off_turn = new_turn
+    s.off_turn_v = turn_v +
+        qrot(qexp(turn_d), spin(turn0, turnc, dt)) -
+        qrot(qexp(new_turn), spin(turn1, turn2, dt))
+    for b in 0..lib.balls.len() {
+        let a = lib.balls[b]
+        let (j0, jc) = (quat_of(lib, f, a), quat_of(lib, cont, a))
+        let (j1, j2) = (quat_of(lib, nxt, a), quat_of(lib, after, a))
+        let d = s.off_ball[b]
+        let nb = qlog(qmul(qmul(qexp(d), jc), qconj(j1)))
+        s.off_ball_v[b] = s.off_ball_v[b] +
+            qrot(qexp(d), spin(j0, jc, dt)) -
+            qrot(qexp(nb), spin(j1, j2, dt))
+        s.off_ball[b] = nb
+    }
+    for h in 0..lib.hinges.len() {
+        let a = lib.hinges[h]
+        s.off_hinge_v[h] = (lib.q(cont, a) - lib.q(f, a)) / dt +
+            s.off_hinge_v[h] -
+            (lib.q(after, a) - lib.q(nxt, a)) / dt
+        s.off_hinge[h] = lib.q(cont, a) + s.off_hinge[h] - lib.q(nxt, a)
+    }
+    s
+}
+
+// ---- tests -----------------------------------------------------------------------------------------------
+
+/// The matcher agrees with the lab's (`mm.Matcher`, in f64 on the same library) frame by frame
+/// through starts, stops, turns, a reverse, strafing, taps, a circle, a rebase and steps without a
+/// search: the frame it plays, its root, point and facing, the feet's holds and the reference
+/// pose; and in the frames it peeks.
+@test
+fn the_matcher_agrees_with_the_lab() {
+    let m = Model::of(embed("fixtures/humanoid.wab"))
+    let lib = Library::of(embed("fixtures/matching_small.wmm"), m)
+    var fx = Fixture::of(embed("fixtures/matching_steps.wfx"))
+    let f0 = u32(fx.f())
+    let at = vec2d(fx.f(), fx.f())
+    var s = start(lib, f0, at, fx.f())
+    let frames = u32(fx.f())
+    var worst = 0.0
+    var jumps = 0
+    for t in 0..frames {
+        let dir = vec2d(fx.f(), fx.f())
+        let stick = Stick { dir, strafe: fx.f() != 0.0, strafe_yaw: fx.f() }
+        let search = fx.f() != 0.0
+        let rebased = fx.f() != 0.0
+        let to = vec3d(fx.f(), fx.f(), fx.f())
+        if rebased {
+            s = rebase(s, vec2d(to.x, to.y), to.z)
+        }
+        let prev = s.f
+        s = step(lib, s, stick, search)
+        if s.f != prev + 1 {
+            jumps += 1
+        }
+        let f = u32(fx.f())
+        assert(s.f == f, f"frame {t}: the matcher plays {s.f}, the lab {f}")
+        let got = [s.root.x, s.root.y, s.root_yaw, s.obj.x, s.obj.y, s.face]
+        let want = fx.many(6)
+        worst = max(worst, apart(got, want))
+        for k in 0..2 {
+            assert(s.planted[k] == (fx.f() != 0.0), f"frame {t}: foot {k}'s hold disagrees")
+        }
+        let q = frame(lib, s)
+        worst = max(worst, apart(q, fx.many(lib.nq)))
+    }
+    let stick = Stick { dir: vec2d(fx.f(), fx.f()), strafe: fx.f() != 0.0, strafe_yaw: fx.f() }
+    var peeked: Vec<[f64; MAX_QPOS]> = Vec::new()
+    peek(lib, s, stick, 3, mut peeked)
+    for k in 0..3 {
+        worst = max(worst, apart(peeked[k], fx.many(lib.nq)))
+    }
+    std::io::print(f"the matcher: {jumps} jumps in {frames} frames, worst {worst} from the lab")
+    assert(jumps > 10, "the scenario jumps")
+    assert(worst < 1.0e-12, f"the matcher is {worst} from the lab")
+}

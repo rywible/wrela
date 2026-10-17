@@ -1,0 +1,314 @@
+// The simulated body, and the stick that moves it: the body (`data/humanoid.wab`), the motion
+// library (`data/mm.wmm`), how the lab drove the body (`data/play.wpl`) and the policy it trained
+// (`data/policy.wnn`), all exported by the motion lab; and the sim's tick, which steps the
+// physics half a control step at a time.
+//
+// The body is the lab's: z up, facing -y at a yaw of 0, +x its left. The rig's world is y up and
+// faces +z, so a point (x, y, z) of the body's is (x, z, -y) in the rig's (`rig_of`).
+
+use engine::articulated::{Model, Poses, Push, State, kinematics}
+use engine::matching::{Library, Stick}
+use engine::player::{Controls, PAD_TURN, TURN_RATE, control, dead_zone, wish}
+use engine::policy::Policy
+use engine::quatd::qrot
+use engine::run::{Asks, TickInput}
+use engine::sim::{SimState, Tick}
+use engine::tracking::{Settings, Tracked, Tracker}
+use humanoid::rig::{HIPS, JOINTS, Placed, REST}
+use std::hash::StateHash
+use std::input::{Event, Key, PadButton}
+use std::serialize::Serialize
+
+pub const MODEL: Model = Model::of(embed("data/humanoid.wab"))
+pub const SETTINGS: Settings = Settings::of(embed("data/play.wpl"))
+/// The tracker: on the scene's terrain when the policy knows terrain, else on flat ground.
+pub const TRACKER: Tracker = Tracker::on(
+    MODEL.clone(),
+    Library::of(embed("data/mm.wmm"), MODEL),
+    SETTINGS.clone(),
+    if SETTINGS.terrain { scene::terrain() } else { Vec::new() },
+)
+pub const POLICY: Policy = Policy::of(embed("data/policy.wnn"))
+
+/// A frame the body starts on: the idle clip, standing on both feet.
+pub const START: u32 = 13795
+
+/// A shove (P, the pad's B): its force on the ribcage (N) and how long it lasts (ticks).
+pub const SHOVE: f64 = 260.0
+pub const SHOVE_TICKS: u32 = 12
+const RIBCAGE: u32 = 3
+
+/// The stick's size for a walk and a run (the library's fastest is a full stick).
+pub const WALKING: f64 = 0.55
+pub const RUNNING: f64 = 1.0
+
+/// The sim: the body, the player's controls, whether strafing is held on the keys and on the pad,
+/// which half of a control step comes next, the falls and the times it went astray so far, the
+/// ticks, where it last stood well, and a shove going on.
+pub struct Sim: Copy + Eq + StateHash + Serialize + SimState {
+    pub body: Tracked,
+    pub controls: Controls,
+    pub strafe_key: bool = false,
+    pub strafe_pad: bool = false,
+    pub half: u32 = 0,
+    pub falls: u32 = 0,
+    pub strays: u32 = 0,
+    pub ticks: u32 = 0,
+    /// Where the body last stood well and which way it faced: where it starts again if its
+    /// physics ever fails.
+    pub home: vec2d = vec2d(0.0, 0.0),
+    pub home_yaw: f64 = 0.0,
+    /// A shove going on, and the ticks it has left.
+    pub push: Push = Push { body: 0, force: vec3d(0.0, 0.0, 0.0), torque: vec3d(0.0, 0.0, 0.0) },
+    pub push_left: u32 = 0,
+}
+
+impl Asks for Sim {
+    type Ask = u32
+    type Answer = u32
+
+    @deterministic
+    fn asks(self, tick: Tick) -> Vec<(u32, Tick)> {
+        Vec::new()
+    }
+
+    @deterministic
+    fn work(ask: u32) -> u32 {
+        ask
+    }
+}
+
+/// The body standing at the origin, facing +z of the rig's world (the body's -y), with controls
+/// looking the same way.
+pub fn spawn(controls: Controls) -> Sim {
+    let still = Stick { dir: vec2d(0.0, 0.0), strafe: false, strafe_yaw: 0.0 }
+    Sim { body: TRACKER.start(START, vec2d(0.0, 0.0), 0.0, still), controls }
+}
+
+/// What the controls ask of the body: the way to go on the floor (the camera's way: the controls'
+/// direction on the rig's plane, (x, z), is the body's (x, -z)) at a walk or a run, or as far as
+/// the pad's stick is pushed; and, when strafing, to face where the camera looks.
+pub fn stick_of(c: Controls, strafe: bool) -> Stick {
+    let (way, run) = wish(c)
+    let pad = length(dead_zone(c.move_pad)) > 0.0 &&
+        !(c.forward || c.back || c.left || c.right || c.walk_on)
+    let size = if pad { 1.0 } else if run { RUNNING } else { WALKING }
+    let dir = vec2d(f64(way.x), -f64(way.y)) * size
+    Stick { dir, strafe, strafe_yaw: f64(c.yaw) }
+}
+
+/// A tick: the records turn the controls (and strafing on and off), the arrows and the pad's right
+/// stick turn the look, and the body steps on.
+@deterministic
+pub fn tick(s: mut Sim, input: TickInput<Sim>) {
+    for e in input.records {
+        control(mut s.controls, e)
+        match e {
+            Event::KeyDown { key, repeat, .. } => {
+                if key == Key::L {
+                    s.strafe_key = true
+                }
+                if key == Key::P && !repeat {
+                    shove(mut s)
+                }
+            },
+            Event::KeyUp { key, .. } => {
+                if key == Key::L {
+                    s.strafe_key = false
+                }
+            },
+            Event::PadButton { pad, button, pressed, .. } => {
+                if pad == 0 && button == PadButton::LeftShoulder {
+                    s.strafe_pad = pressed
+                }
+                if pad == 0 && button == PadButton::East && pressed {
+                    shove(mut s)
+                }
+            },
+            _ => {},
+        }
+    }
+    var turn = 0.0
+    if s.controls.turn_left {
+        turn += TURN_RATE
+    }
+    if s.controls.turn_right {
+        turn -= TURN_RATE
+    }
+    turn -= dead_zone(s.controls.look_pad).x * PAD_TURN
+    s.controls.yaw += turn * input.dt
+    step(mut s, stick_of(s.controls, s.strafe_key || s.strafe_pad))
+}
+
+/// The body half a control step on: on the first half, the policy acts and the physics runs half
+/// the substeps; on the second, the rest, then the matcher steps on with `stick`. A body that
+/// falls starts again where it is; one still standing that has gone astray from its reference
+/// takes the reference with it.
+@deterministic
+pub fn step(s: mut Sim, stick: Stick) {
+    let n = TRACKER.set.substeps
+    var pushes: Vec<Push> = Vec::new()
+    if s.push_left > 0 {
+        pushes.push(s.push)
+        s.push_left -= 1
+    }
+    if s.half == 0 {
+        TRACKER.act(POLICY, mut s.body)
+        TRACKER.physics(mut s.body, n / 2, pushes)
+        s.half = 1
+        if !TRACKER.sane(s.body) {
+            restart(mut s, s.home, s.home_yaw, stick)
+        }
+    } else {
+        TRACKER.physics(mut s.body, n - n / 2, pushes)
+        s.half = 0
+        if !TRACKER.sane(s.body) {
+            restart(mut s, s.home, s.home_yaw, stick)
+        } else {
+            TRACKER.control(mut s.body, stick)
+            if TRACKER.down(s.body) {
+                let (at, yaw) = TRACKER.root(s.body)
+                restart(mut s, at, yaw, stick)
+            } else {
+                if TRACKER.astray(s.body) {
+                    s.strays += 1
+                    TRACKER.catch_up(mut s.body)
+                }
+                let (at, yaw) = TRACKER.root(s.body)
+                s.home = at
+                s.home_yaw = yaw
+            }
+        }
+    }
+    s.ticks += 1
+}
+
+/// A fall: the body standing again at `at`, facing `yaw`, on the next control step's first half.
+fn restart(s: mut Sim, at: vec2d, yaw: f64, stick: Stick) {
+    s.falls += 1
+    s.body = TRACKER.start(START, at, yaw, stick)
+    s.half = 0
+    s.push_left = 0
+}
+
+/// A shove from behind the camera, along the floor where it looks.
+fn shove(s: mut Sim) {
+    let force = vec2d(f64(sin(s.controls.yaw)), -f64(cos(s.controls.yaw))) * SHOVE
+    s.push = Push {
+        body: RIBCAGE,
+        force: vec3d(force.x, force.y, 0.0),
+        torque: vec3d(0.0, 0.0, 0.0),
+    }
+    s.push_left = SHOVE_TICKS
+}
+
+// ---- the body as the rig ---------------------------------------------------------------------------
+
+/// Which of the body's parts carries each of the rig's joints: the body has one part for each two
+/// of the rig's spine joints, and one for its neck and head.
+const CARRIER: [u32; 23] = [
+    1, 2, 2, 3, 3, 4, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+]
+
+/// The body's point `p` in the rig's world.
+fn rig_of(p: vec3d) -> vec3 {
+    vec3(f32(p.x), f32(p.z), f32(-p.y))
+}
+
+/// The rig's point `p` in the body's world.
+fn body_of(p: vec3) -> vec3d {
+    vec3d(f64(p.x), f64(-p.z), f64(p.y))
+}
+
+/// Where each rig joint is on its carrier, in the carrier's frame: from the body at rest, where
+/// every part's turn is none (so a part's frame is the world's), its hips on the rig's.
+fn anchors() -> [vec3d; 23] {
+    var rest = State::rest(MODEL).qpos
+    let k = kinematics(MODEL, mut rest)
+    var out = [vec3d(0.0, 0.0, 0.0); 23]
+    for j in 0..JOINTS {
+        let b = CARRIER[j]
+        let turn = k.xquat[b]
+        assert(abs(turn.x - 1.0) < 1.0e-12, "the body's parts are unturned at rest")
+        out[j] = k.xpos[1] + body_of(REST[j] - REST[HIPS]) - k.xpos[b]
+    }
+    out
+}
+
+const ANCHORS: [vec3d; 23] = anchors()
+
+/// The rig placed as the body is (`k`, its parts' poses): each joint where its carrier holds it
+/// and turned as its carrier is, in the rig's world.
+pub fn placed(k: Poses) -> Placed {
+    var at = [vec3(0.0); 23]
+    var rot = [Quat::identity(); 23]
+    for j in 0..JOINTS {
+        let b = CARRIER[j]
+        let q = k.xquat[b]
+        at[j] = rig_of(k.xpos[b] + qrot(q, ANCHORS[j]))
+        // A turn's axis in the rig's world: its vector part, (x, y, z) to (x, z, -y).
+        rot[j] = Quat { v: vec4(f32(q.y), f32(q.w), f32(-q.z), f32(q.x)) }
+    }
+    Placed { at, rot }
+}
+
+/// The body's pose now as the rig.
+pub fn pose(t: Tracked) -> Placed {
+    var q = t.body.qpos
+    placed(kinematics(MODEL, mut q))
+}
+
+// ---- tests ---------------------------------------------------------------------------------------
+
+/// A stick held toward `way` (the body's floor: x, y) at `size`, for `ticks` ticks.
+fn hold(s: mut Sim, way: vec2d, size: f64, ticks: u32) {
+    let stick = Stick { dir: way * size, strafe: false, strafe_yaw: 0.0 }
+    for _ in 0..ticks {
+        step(mut s, stick)
+    }
+}
+
+/// The body stands, walks away from its start, turns to its right, runs, and stops, without
+/// falling, and goes where the stick asks.
+@test
+@fuel(2 ** 40)
+fn the_body_walks_turns_runs_and_stops() {
+    var s = spawn(
+        Controls {
+            forward: false,
+            back: false,
+            left: false,
+            right: false,
+            turn_left: false,
+            turn_right: false,
+            run_held: false,
+            walk_on: false,
+            run_on: false,
+            yaw: 0.0,
+            pitch: 0.0,
+            dragging: false,
+            pointer: vec2(0.0),
+            typing: false,
+            digits: 0,
+            travel: 0,
+            glide: 0,
+        },
+    )
+    hold(mut s, vec2d(0.0, -1.0), 0.0, 60)
+    hold(mut s, vec2d(0.0, -1.0), WALKING, 240)
+    let (walked, _) = TRACKER.root(s.body)
+    hold(mut s, vec2d(-1.0, 0.0), WALKING, 180)
+    hold(mut s, vec2d(-1.0, 0.0), RUNNING, 180)
+    let (ran, yaw) = TRACKER.root(s.body)
+    hold(mut s, vec2d(0.0, -1.0), 0.0, 120)
+    let (stopped, _) = TRACKER.root(s.body)
+    std::io::print(
+        f"falls {s.falls}, astray {s.strays}; walked to {walked.x} {walked.y}; ran to {ran.x} {ran.y} facing {yaw}; stopped at {stopped.x} {stopped.y}",
+    )
+    assert(
+        s.falls == 0 && s.strays == 0,
+        f"the body fell {s.falls} times and went astray {s.strays}",
+    )
+    assert(walked.y < -3.0, "the body walked the way it was asked")
+    assert(ran.x < walked.x - 4.0, "the body ran to its right")
+}

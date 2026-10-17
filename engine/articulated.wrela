@@ -1,0 +1,1793 @@
+// Articulated bodies: a tree of rigid bodies joined by free, ball and hinge joints, driven by joint
+// motors, touching a floor through spheres and capsules, stepped exactly as MuJoCo MJX 3.16 steps
+// such a model (Todorov, Erez and Tassa, "MuJoCo: A physics engine for model-based control",
+// 2012; the method from MuJoCo's documentation, Computation chapter, and MJX's source: nothing
+// copied). So a controller trained in MJX runs here on the same physics.
+//
+// A step, in MuJoCo's order: the kinematics (each body's pose from the joints' positions); the
+// mass matrix by composite rigid bodies, and the bias forces (gravity, Coriolis) by recursive
+// Newton-Euler, in MuJoCo's com-based spatial vectors; passive forces (joint damping); the motors'
+// torques; the contacts (each sphere, and each capsule's two ends, against the floor plane) and
+// joint limits as soft constraints (an impedance from `solimp`, a reference acceleration from
+// `solref`, a regulariser from the compiled inverse weights, pyramidal friction cones); the
+// constraint forces by MJX's Newton solver (its iterations, its line search, its warm start);
+// then semi-implicit Euler, the joints' damping integrated implicitly.
+//
+// Everything is f64 (wrela's strict IEEE floats), so the steps agree with MJX run in f64 to
+// rounding; the model's sizes are read from its bytes (`Model::of`), exported from the compiled
+// MuJoCo model by the motion lab.
+
+use std::hash::StateHash
+use std::serialize::Serialize
+use sim::SimState
+use golden::{Fixture, apart}
+use collide::{Box, capsule_box, sphere_box}
+use quatd::{PI64, atan2_64, axis_angle, normalized3, normalized4, qconj, qmat, qmul, qrot}
+
+/// The most a model may have of each (the state's arrays are this long).
+pub const MAX_QPOS: u32 = 80
+pub const MAX_DOFS: u32 = 64
+
+// ---- the model -----------------------------------------------------------------------------------
+
+/// A spatial motion or force, as MuJoCo's com-based vectors are: (angular, linear), in world axes,
+/// about the tree's centre of mass.
+pub struct Motion: Copy {
+    pub w: vec3d,
+    pub v: vec3d,
+}
+
+impl Motion {
+    fn zero() -> Motion {
+        Motion { w: vec3d(0.0), v: vec3d(0.0) }
+    }
+
+    fn plus(self, o: Motion) -> Motion {
+        Motion { w: self.w + o.w, v: self.v + o.v }
+    }
+
+    fn times(self, s: f64) -> Motion {
+        Motion { w: self.w * s, v: self.v * s }
+    }
+
+    fn dot(self, o: Motion) -> f64 {
+        dot(self.w, o.w) + dot(self.v, o.v)
+    }
+
+    /// MuJoCo's motion cross product: (u_ω × v_ω, u_v × v_ω + u_ω × v_v).
+    fn cross(self, o: Motion) -> Motion {
+        Motion { w: cross(self.w, o.w), v: cross(self.v, o.w) + cross(self.w, o.v) }
+    }
+
+    /// MuJoCo's motion-force cross product: (v_ω × f_τ + v_v × f_f, v_ω × f_f).
+    fn cross_force(self, f: Motion) -> Motion {
+        Motion { w: cross(self.w, f.w) + cross(self.v, f.v), v: cross(self.w, f.v) }
+    }
+}
+
+/// A body's inertia about the com-based point: its rotational inertia (the diagonal xx, yy, zz and
+/// the off-diagonal xy, xz, yz), its mass times the offset to its centre of mass, and its mass.
+pub struct Inertia: Copy {
+    pub diag: vec3d,
+    pub off: vec3d,
+    pub mo: vec3d,
+    pub m: f64,
+}
+
+impl Inertia {
+    fn zero() -> Inertia {
+        Inertia { diag: vec3d(0.0), off: vec3d(0.0), mo: vec3d(0.0), m: 0.0 }
+    }
+
+    fn plus(self, o: Inertia) -> Inertia {
+        Inertia {
+            diag: self.diag + o.diag,
+            off: self.off + o.off,
+            mo: self.mo + o.mo,
+            m: self.m + o.m,
+        }
+    }
+
+    /// The force of this inertia moving with `x`: (I x_ω + p × x_v, m x_v − p × x_ω).
+    fn mul(self, x: Motion) -> Motion {
+        let (d, o, w) = (self.diag, self.off, x.w)
+        let iw = vec3d(
+            d.x * w.x + o.x * w.y + o.y * w.z,
+            o.x * w.x + d.y * w.y + o.z * w.z,
+            o.y * w.x + o.z * w.y + d.z * w.z,
+        )
+        Motion { w: iw + cross(self.mo, x.v), v: x.v * self.m - cross(self.mo, x.w) }
+    }
+}
+
+/// `solimp`: the impedance's least and most, the width over which it goes between them, the
+/// middle of that, and the power of its curve.
+pub struct Imp: Copy {
+    pub dmin: f64,
+    pub dmax: f64,
+    pub width: f64,
+    pub mid: f64,
+    pub power: f64,
+}
+
+/// A contact the model always checks, its geoms in MJX's order (the lesser type first): a plane
+/// and a body's sphere, or one end of a body's capsule (`end` +1 or -1); a body's sphere and a
+/// box; or a body's capsule and a box, the first or the second of MJX's two contacts (`end` 0 or
+/// 1).
+pub struct Pair: Copy {
+    pub g1: u32,
+    pub g2: u32,
+    pub kind: u32,
+    pub end: f64,
+}
+
+/// The kinds of pairs.
+const PLANE_SPHERE: u32 = 0
+const PLANE_CAPSULE: u32 = 1
+const SPHERE_BOX: u32 = 2
+const CAPSULE_BOX: u32 = 3
+
+const FREE: u32 = 0
+const BALL: u32 = 1
+const HINGE: u32 = 3
+const PLANE: u32 = 0
+const SPHERE: u32 = 2
+const CAPSULE: u32 = 3
+const BOX: u32 = 6
+
+/// A compiled model (MuJoCo's names), read from the bytes the motion lab exports (`export.py`'s
+/// `body_bytes`): "WAB1", the version, then f64s.
+pub struct Model: Clone {
+    pub nq: u32,
+    pub nv: u32,
+    pub nu: u32,
+    pub nbody: u32,
+    pub njnt: u32,
+    pub ngeom: u32,
+    pub nsite: u32,
+    pub timestep: f64,
+    pub gravity: vec3d,
+    pub tolerance: f64,
+    pub ls_tolerance: f64,
+    pub impratio: f64,
+    pub meaninertia: f64,
+    pub iterations: u32,
+    pub ls_iterations: u32,
+    pub body_parent: Vec<u32>,
+    pub body_root: Vec<u32>,
+    pub body_pos: Vec<vec3d>,
+    pub body_quat: Vec<vec4d>,
+    pub body_ipos: Vec<vec3d>,
+    pub body_iquat: Vec<vec4d>,
+    pub body_mass: Vec<f64>,
+    pub body_inertia: Vec<vec3d>,
+    pub body_invweight: Vec<f64>,
+    pub jnt_type: Vec<u32>,
+    pub jnt_qpos: Vec<u32>,
+    pub jnt_dof: Vec<u32>,
+    pub jnt_body: Vec<u32>,
+    pub jnt_limited: Vec<bool>,
+    pub jnt_pos: Vec<vec3d>,
+    pub jnt_axis: Vec<vec3d>,
+    pub jnt_range: Vec<vec2d>,
+    pub jnt_margin: Vec<f64>,
+    pub jnt_solref: Vec<vec2d>,
+    pub jnt_solimp: Vec<Imp>,
+    pub dof_body: Vec<u32>,
+    pub dof_parent: Vec<i32>,
+    pub dof_armature: Vec<f64>,
+    pub dof_damping: Vec<f64>,
+    pub dof_invweight: Vec<f64>,
+    pub geom_body: Vec<u32>,
+    pub geom_type: Vec<u32>,
+    pub geom_contype: Vec<u32>,
+    pub geom_conaffinity: Vec<u32>,
+    pub geom_size: Vec<vec3d>,
+    pub geom_pos: Vec<vec3d>,
+    pub geom_quat: Vec<vec4d>,
+    pub geom_friction: Vec<vec3d>,
+    pub geom_solref: Vec<vec2d>,
+    pub geom_solimp: Vec<Imp>,
+    pub geom_solmix: Vec<f64>,
+    pub geom_margin: Vec<f64>,
+    pub site_body: Vec<u32>,
+    pub site_pos: Vec<vec3d>,
+    pub site_quat: Vec<vec4d>,
+    pub act_joint: Vec<u32>,
+    pub act_limited: Vec<bool>,
+    pub act_dof: Vec<u32>,
+    pub act_range: Vec<vec2d>,
+    pub act_gain: Vec<f64>,
+    pub qpos0: Vec<f64>,
+    /// Derived: each body's joints (the first, and how many); each body's last dof (its own, or its
+    /// nearest ancestor's; -1 for none); the contacts checked every step, in MJX's order.
+    pub body_jnt: Vec<u32>,
+    pub body_njnt: Vec<u32>,
+    pub body_last_dof: Vec<i32>,
+    pub pairs: Vec<Pair>,
+}
+
+/// A cursor over the model's f64s.
+struct Reader {
+    bytes: Bytes,
+    at: u32,
+}
+
+impl Reader {
+    fn f(mut self) -> f64 {
+        let x = self.bytes.f64_le(8 + 8 * self.at)
+        self.at += 1
+        x
+    }
+
+    fn u(mut self) -> u32 {
+        u32(self.f())
+    }
+
+    fn v3(mut self) -> vec3d {
+        let (x, y, z) = (self.f(), self.f(), self.f())
+        vec3d(x, y, z)
+    }
+
+    fn v4(mut self) -> vec4d {
+        let (a, b, c, d) = (self.f(), self.f(), self.f(), self.f())
+        vec4d(a, b, c, d)
+    }
+
+    fn v2(mut self) -> vec2d {
+        let (x, y) = (self.f(), self.f())
+        vec2d(x, y)
+    }
+
+    fn imp(mut self) -> Imp {
+        let (dmin, dmax, width, mid, power) = (self.f(), self.f(), self.f(), self.f(), self.f())
+        Imp { dmin, dmax, width, mid, power }
+    }
+}
+
+impl Model {
+    /// The model in `bytes`, checked: its magic and version, and that it holds what this engine
+    /// steps (free, ball and hinge joints; motors on joints; spheres and capsules touching planes;
+    /// pyramidal contacts of condim 3; impedance powers that are whole numbers).
+    pub fn of(bytes: Bytes) -> Model {
+        assert(
+            bytes.u32_le(0) == 0x31424157 && bytes.u32_le(4) == 1,
+            "an articulated model's bytes start WAB1, version 1",
+        )
+        var r = Reader { bytes, at: 0 }
+        let (nq, nv, nu, nbody, njnt, ngeom, nsite) = (
+            r.u(),
+            r.u(),
+            r.u(),
+            r.u(),
+            r.u(),
+            r.u(),
+            r.u(),
+        )
+        assert(nq <= MAX_QPOS && nv <= MAX_DOFS, "a model fits MAX_QPOS and MAX_DOFS")
+        let timestep = r.f()
+        let gravity = r.v3()
+        let (tolerance, ls_tolerance, impratio, meaninertia) = (r.f(), r.f(), r.f(), r.f())
+        let (iterations, ls_iterations) = (r.u(), r.u())
+        var m = Model {
+            nq,
+            nv,
+            nu,
+            nbody,
+            njnt,
+            ngeom,
+            nsite,
+            timestep,
+            gravity,
+            tolerance,
+            ls_tolerance,
+            impratio,
+            meaninertia,
+            iterations,
+            ls_iterations,
+            body_parent: Vec::new(),
+            body_root: Vec::new(),
+            body_pos: Vec::new(),
+            body_quat: Vec::new(),
+            body_ipos: Vec::new(),
+            body_iquat: Vec::new(),
+            body_mass: Vec::new(),
+            body_inertia: Vec::new(),
+            body_invweight: Vec::new(),
+            jnt_type: Vec::new(),
+            jnt_qpos: Vec::new(),
+            jnt_dof: Vec::new(),
+            jnt_body: Vec::new(),
+            jnt_limited: Vec::new(),
+            jnt_pos: Vec::new(),
+            jnt_axis: Vec::new(),
+            jnt_range: Vec::new(),
+            jnt_margin: Vec::new(),
+            jnt_solref: Vec::new(),
+            jnt_solimp: Vec::new(),
+            dof_body: Vec::new(),
+            dof_parent: Vec::new(),
+            dof_armature: Vec::new(),
+            dof_damping: Vec::new(),
+            dof_invweight: Vec::new(),
+            geom_body: Vec::new(),
+            geom_type: Vec::new(),
+            geom_contype: Vec::new(),
+            geom_conaffinity: Vec::new(),
+            geom_size: Vec::new(),
+            geom_pos: Vec::new(),
+            geom_quat: Vec::new(),
+            geom_friction: Vec::new(),
+            geom_solref: Vec::new(),
+            geom_solimp: Vec::new(),
+            geom_solmix: Vec::new(),
+            geom_margin: Vec::new(),
+            site_body: Vec::new(),
+            site_pos: Vec::new(),
+            site_quat: Vec::new(),
+            act_joint: Vec::new(),
+            act_limited: Vec::new(),
+            act_dof: Vec::new(),
+            act_range: Vec::new(),
+            act_gain: Vec::new(),
+            qpos0: Vec::new(),
+            body_jnt: Vec::new(),
+            body_njnt: Vec::new(),
+            body_last_dof: Vec::new(),
+            pairs: Vec::new(),
+        }
+        for _ in 0..nbody {
+            m.body_parent.push(r.u())
+            m.body_root.push(r.u())
+            m.body_pos.push(r.v3())
+            m.body_quat.push(r.v4())
+            m.body_ipos.push(r.v3())
+            m.body_iquat.push(r.v4())
+            m.body_mass.push(r.f())
+            m.body_inertia.push(r.v3())
+            m.body_invweight.push(r.f())
+        }
+        for _ in 0..njnt {
+            let (kind, qp, dof, body, limited) = (r.u(), r.u(), r.u(), r.u(), r.u())
+            assert(kind == FREE || kind == BALL || kind == HINGE, "joints are free, ball or hinge")
+            m.jnt_type.push(kind)
+            m.jnt_qpos.push(qp)
+            m.jnt_dof.push(dof)
+            m.jnt_body.push(body)
+            m.jnt_limited.push(limited != 0)
+            m.jnt_pos.push(r.v3())
+            m.jnt_axis.push(r.v3())
+            m.jnt_range.push(r.v2())
+            m.jnt_margin.push(r.f())
+            m.jnt_solref.push(r.v2())
+            let imp = r.imp()
+            assert(imp.power == round(imp.power), "an impedance's power is a whole number")
+            m.jnt_solimp.push(imp)
+        }
+        for _ in 0..nv {
+            m.dof_body.push(r.u())
+            m.dof_parent.push(i32(r.f()))
+            m.dof_armature.push(r.f())
+            m.dof_damping.push(r.f())
+            m.dof_invweight.push(r.f())
+        }
+        for _ in 0..ngeom {
+            let (body, kind, contype, conaffinity, condim) = (r.u(), r.u(), r.u(), r.u(), r.u())
+            m.geom_body.push(body)
+            m.geom_type.push(kind)
+            m.geom_contype.push(contype)
+            m.geom_conaffinity.push(conaffinity)
+            m.geom_size.push(r.v3())
+            m.geom_pos.push(r.v3())
+            m.geom_quat.push(r.v4())
+            m.geom_friction.push(r.v3())
+            m.geom_solref.push(r.v2())
+            let imp = r.imp()
+            assert(imp.power == round(imp.power), "an impedance's power is a whole number")
+            m.geom_solimp.push(imp)
+            m.geom_solmix.push(r.f())
+            m.geom_margin.push(r.f())
+            assert(contype | conaffinity == 0 || condim == 3, "touching geoms have condim 3")
+        }
+        for _ in 0..nsite {
+            m.site_body.push(r.u())
+            m.site_pos.push(r.v3())
+            m.site_quat.push(r.v4())
+        }
+        for _ in 0..nu {
+            let (joint, limited) = (r.u(), r.u())
+            var gear = [0.0; 6]
+            for k in 0..6 {
+                gear[k] = r.f()
+            }
+            // A motor's gear picks one of its joint's dofs, with a moment of 1.
+            var dof = m.jnt_dof[joint]
+            var picked = 0
+            for k in 0..3 {
+                if gear[k] != 0.0 {
+                    assert(gear[k] == 1.0, "a motor's gear is 1 on one dof")
+                    dof = m.jnt_dof[joint] + k
+                    picked += 1
+                }
+            }
+            assert(picked == 1, "a motor drives one dof")
+            m.act_joint.push(joint)
+            m.act_limited.push(limited != 0)
+            m.act_dof.push(dof)
+            m.act_range.push(r.v2())
+            m.act_gain.push(r.f())
+        }
+        for _ in 0..nq {
+            m.qpos0.push(r.f())
+        }
+        assert(8 + 8 * r.at == bytes.len(), "an articulated model's bytes hold exactly it")
+        // Each body's joints, and its last dof (or its nearest ancestor's).
+        for b in 0..nbody {
+            var first = njnt
+            var count = 0
+            for j in 0..njnt {
+                if m.jnt_body[j] == b {
+                    if first == njnt {
+                        first = j
+                    }
+                    count += 1
+                }
+            }
+            m.body_jnt.push(first)
+            m.body_njnt.push(count)
+            var last = if b == 0 { -1 } else { m.body_last_dof[m.body_parent[b]] }
+            for i in 0..nv {
+                if m.dof_body[i] == b {
+                    last = i32(i)
+                }
+            }
+            m.body_last_dof.push(last)
+        }
+        m.pairs = pairs(m)
+        for p in m.pairs {
+            let mix = mix_of(m.geom_solmix[p.g1], m.geom_solmix[p.g2])
+            let power = mix * m.geom_solimp[p.g1].power + (1.0 - mix) * m.geom_solimp[p.g2].power
+            assert(power == round(power), "a contact's mixed impedance power is a whole number")
+        }
+        m
+    }
+
+    fn dofs(self, j: u32) -> u32 {
+        let t = self.jnt_type[j]
+        if t == FREE { 6 } else if t == BALL { 3 } else { 1 }
+    }
+}
+
+/// The contacts MJX checks for this model, in its order: the body pairs (b1 ≤ b2) that may touch
+/// (not a body with itself, not a parent and child unless one is the world), each geom pair whose
+/// types allow (contype and conaffinity), grouped by the pair's geom types in the order the groups
+/// first appear; a capsule gives its `+` end, then its `−` end.
+fn pairs(m: Model) -> Vec<Pair> {
+    var groups: Vec<u32> = Vec::new()
+    var listed: Vec<(u32, Pair)> = Vec::new()
+    for b1 in 0..m.nbody {
+        for b2 in b1..m.nbody {
+            if b1 == b2 ||
+                (b1 != 0 && b2 != 0 && (m.body_parent[b2] == b1 || m.body_parent[b1] == b2)) {
+                continue
+            }
+            if b1 != 0 && m.body_parent[b2] == b1 {
+                continue
+            }
+            for g1 in 0..m.ngeom {
+                if m.geom_body[g1] != b1 {
+                    continue
+                }
+                for g2 in 0..m.ngeom {
+                    if m.geom_body[g2] != b2 {
+                        continue
+                    }
+                    let touch = (m.geom_contype[g1] & m.geom_conaffinity[g2]) |
+                        (m.geom_contype[g2] & m.geom_conaffinity[g1])
+                    if touch == 0 {
+                        continue
+                    }
+                    // MJX's order: the lesser type first.
+                    let (a, b) = if m.geom_type[g1] <= m.geom_type[g2] { (g1, g2) } else {
+                        (g2, g1)
+                    }
+                    let (ta, tb) = (m.geom_type[a], m.geom_type[b])
+                    let kind = if ta == PLANE && tb == SPHERE { PLANE_SPHERE } else if ta ==
+                        PLANE &&
+                        tb == CAPSULE { PLANE_CAPSULE } else if ta == SPHERE && tb == BOX {
+                        SPHERE_BOX
+                    } else if ta == CAPSULE && tb == BOX { CAPSULE_BOX } else { 4 }
+                    assert(kind < 4, "contacts are spheres or capsules against planes or boxes")
+                    assert(b1 == 0, "a body touches only the world's planes and boxes")
+                    var group = groups.len()
+                    for k in 0..groups.len() {
+                        if groups[k] == kind {
+                            group = k
+                        }
+                    }
+                    if group == groups.len() {
+                        groups.push(kind)
+                    }
+                    if kind == PLANE_CAPSULE {
+                        listed.push((group, Pair { g1: a, g2: b, kind, end: 1.0 }))
+                        listed.push((group, Pair { g1: a, g2: b, kind, end: -1.0 }))
+                    } else if kind == CAPSULE_BOX {
+                        listed.push((group, Pair { g1: a, g2: b, kind, end: 0.0 }))
+                        listed.push((group, Pair { g1: a, g2: b, kind, end: 1.0 }))
+                    } else {
+                        listed.push((group, Pair { g1: a, g2: b, kind, end: 0.0 }))
+                    }
+                }
+            }
+        }
+    }
+    var out: Vec<Pair> = Vec::new()
+    for g in 0..groups.len() {
+        for k in 0..listed.len() {
+            if listed[k].0 == g {
+                out.push(listed[k].1)
+            }
+        }
+    }
+    out
+}
+
+// ---- the state and a step --------------------------------------------------------------------------
+
+/// What carries from step to step: the joints' positions and velocities, and the solver's last
+/// acceleration (its warm start; zero at a fresh start, as MJX's `make_data`).
+pub struct State: Copy + Eq + StateHash + Serialize + SimState {
+    pub qpos: [f64; MAX_QPOS],
+    pub qvel: [f64; MAX_DOFS],
+    pub warm: [f64; MAX_DOFS],
+}
+
+impl State {
+    /// The model at rest (`qpos0`), still, its warm start zero.
+    pub fn rest(m: Model) -> State {
+        var s = State { qpos: [0.0; MAX_QPOS], qvel: [0.0; MAX_DOFS], warm: [0.0; MAX_DOFS] }
+        for i in 0..m.nq {
+            s.qpos[i] = m.qpos0[i]
+        }
+        s
+    }
+}
+
+/// The bodies' poses (MuJoCo's names): each body's frame and its centre of mass's, each joint's
+/// anchor and axis, each geom's and site's frame (a frame's turn as its matrix's three columns).
+pub struct Poses: Clone {
+    pub xpos: Vec<vec3d>,
+    pub xquat: Vec<vec4d>,
+    pub xmat: Vec<[vec3d; 3]>,
+    pub xipos: Vec<vec3d>,
+    pub ximat: Vec<[vec3d; 3]>,
+    pub xanchor: Vec<vec3d>,
+    pub xaxis: Vec<vec3d>,
+    pub geom_xpos: Vec<vec3d>,
+    pub geom_xmat: Vec<[vec3d; 3]>,
+    pub site_xpos: Vec<vec3d>,
+    pub site_xmat: Vec<[vec3d; 3]>,
+}
+
+/// The bodies' poses from the joints' positions (MJX's `kinematics`); each quaternion in `qpos`
+/// is normalized where it's read, and written back so.
+pub fn kinematics(m: Model, qpos: mut [f64; MAX_QPOS]) -> Poses {
+    var k = Poses {
+        xpos: Vec::new(),
+        xquat: Vec::new(),
+        xmat: Vec::new(),
+        xipos: Vec::new(),
+        ximat: Vec::new(),
+        xanchor: Vec::new(),
+        xaxis: Vec::new(),
+        geom_xpos: Vec::new(),
+        geom_xmat: Vec::new(),
+        site_xpos: Vec::new(),
+        site_xmat: Vec::new(),
+    }
+    for _ in 0..m.njnt {
+        k.xanchor.push(vec3d(0.0))
+        k.xaxis.push(vec3d(0.0))
+    }
+    k.xpos.push(m.body_pos[0])
+    k.xquat.push(m.body_quat[0])
+    for b in 1..m.nbody {
+        let p = m.body_parent[b]
+        var pos = k.xpos[p] + qrot(k.xquat[p], m.body_pos[b])
+        var quat = qmul(k.xquat[p], m.body_quat[b])
+        for jj in 0..m.body_njnt[b] {
+            let j = m.body_jnt[b] + jj
+            let a = m.jnt_qpos[j]
+            let t = m.jnt_type[j]
+            if t == FREE {
+                pos = vec3d(qpos[a], qpos[a + 1], qpos[a + 2])
+                quat = normalized4(vec4d(qpos[a + 3], qpos[a + 4], qpos[a + 5], qpos[a + 6]))
+                qpos[a + 3] = quat.x
+                qpos[a + 4] = quat.y
+                qpos[a + 5] = quat.z
+                qpos[a + 6] = quat.w
+                k.xanchor[j] = pos
+                k.xaxis[j] = vec3d(0.0, 0.0, 1.0)
+            } else if t == BALL {
+                let anchor = qrot(quat, m.jnt_pos[j]) + pos
+                k.xanchor[j] = anchor
+                k.xaxis[j] = qrot(quat, m.jnt_axis[j])
+                let local = normalized4(vec4d(qpos[a], qpos[a + 1], qpos[a + 2], qpos[a + 3]))
+                qpos[a] = local.x
+                qpos[a + 1] = local.y
+                qpos[a + 2] = local.z
+                qpos[a + 3] = local.w
+                quat = qmul(quat, local)
+                pos = anchor - qrot(quat, m.jnt_pos[j])
+            } else {
+                let anchor = qrot(quat, m.jnt_pos[j]) + pos
+                k.xanchor[j] = anchor
+                k.xaxis[j] = qrot(quat, m.jnt_axis[j])
+                quat = qmul(quat, axis_angle(m.jnt_axis[j], qpos[a] - m.qpos0[a]))
+                pos = anchor - qrot(quat, m.jnt_pos[j])
+            }
+        }
+        k.xpos.push(pos)
+        k.xquat.push(quat)
+    }
+    for b in 0..m.nbody {
+        k.xmat.push(qmat(k.xquat[b]))
+        k.xipos.push(k.xpos[b] + qrot(k.xquat[b], m.body_ipos[b]))
+        k.ximat.push(qmat(qmul(k.xquat[b], m.body_iquat[b])))
+    }
+    for g in 0..m.ngeom {
+        let b = m.geom_body[g]
+        k.geom_xpos.push(k.xpos[b] + qrot(k.xquat[b], m.geom_pos[g]))
+        k.geom_xmat.push(qmat(qmul(k.xquat[b], m.geom_quat[g])))
+    }
+    for s in 0..m.nsite {
+        let b = m.site_body[s]
+        k.site_xpos.push(k.xpos[b] + qrot(k.xquat[b], m.site_pos[s]))
+        k.site_xmat.push(qmat(qmul(k.xquat[b], m.site_quat[s])))
+    }
+    k
+}
+
+/// Each body's inertia about the com-based point, each dof's motion axis (`cdof`), and that point
+/// (the root tree's centre of mass), from the poses (MJX's `com_pos`).
+pub struct Com: Clone {
+    pub subtree: Vec<vec3d>,
+    pub cinert: Vec<Inertia>,
+    pub cdof: Vec<Motion>,
+}
+
+pub fn com_pos(m: Model, k: Poses) -> Com {
+    var sum: Vec<vec3d> = Vec::new()
+    var mass: Vec<f64> = Vec::new()
+    for b in 0..m.nbody {
+        sum.push(k.xipos[b] * m.body_mass[b])
+        mass.push(m.body_mass[b])
+    }
+    for n in 0..m.nbody - 1 {
+        let b = m.nbody - 1 - n
+        let p = m.body_parent[b]
+        sum[p] = sum[p] + sum[b]
+        mass[p] = mass[p] + mass[b]
+    }
+    var c = Com { subtree: Vec::new(), cinert: Vec::new(), cdof: Vec::new() }
+    for b in 0..m.nbody {
+        c.subtree.push(if mass[b] < 1.0e-15 { k.xipos[b] } else { sum[b] / max(mass[b], 1.0e-15) })
+    }
+    for b in 0..m.nbody {
+        let o = k.xipos[b] - c.subtree[m.body_root[b]]
+        let r = k.ximat[b]
+        let i = m.body_inertia[b]
+        let mb = m.body_mass[b]
+        // R diag(i) Rᵀ + m (|o|² E − o oᵀ): row a, column b of R is r[b][a].
+        var e = [0.0; 9]
+        for a in 0..3 {
+            for bb in 0..3 {
+                e[3 * a + bb] = r[0][a] * i.x * r[0][bb] +
+                    r[1][a] * i.y * r[1][bb] +
+                    r[2][a] * i.z * r[2][bb] +
+                    mb * ((if a == bb { dot(o, o) } else { 0.0 }) - o[a] * o[bb])
+            }
+        }
+        c.cinert.push(
+            Inertia {
+                diag: vec3d(e[0], e[4], e[8]),
+                off: vec3d(e[1], e[2], e[5]),
+                mo: o * mb,
+                m: mb,
+            },
+        )
+    }
+    for j in 0..m.njnt {
+        let b = m.jnt_body[j]
+        let off = c.subtree[m.body_root[b]] - k.xanchor[j]
+        let x = k.xmat[b]
+        let t = m.jnt_type[j]
+        if t == FREE {
+            for a in 0..3 {
+                var e = vec3d(0.0)
+                e[a] = 1.0
+                c.cdof.push(Motion { w: vec3d(0.0), v: e })
+            }
+            for a in 0..3 {
+                c.cdof.push(Motion { w: x[a], v: cross(x[a], off) })
+            }
+        } else if t == BALL {
+            for a in 0..3 {
+                c.cdof.push(Motion { w: x[a], v: cross(x[a], off) })
+            }
+        } else {
+            let a = k.xaxis[j]
+            c.cdof.push(Motion { w: a, v: cross(a, off) })
+        }
+    }
+    c
+}
+
+/// The mass matrix (`nv` × `nv`, row by row) by composite rigid bodies, the armature on its
+/// diagonal (MJX's `crb`).
+pub fn mass_matrix(m: Model, c: Com) -> Vec<f64> {
+    var crb: Vec<Inertia> = Vec::new()
+    for b in 0..m.nbody {
+        crb.push(c.cinert[b])
+    }
+    for n in 0..m.nbody - 1 {
+        let b = m.nbody - 1 - n
+        let p = m.body_parent[b]
+        crb[p] = crb[p].plus(crb[b])
+    }
+    crb[0] = Inertia::zero()
+    let nv = m.nv
+    var out: Vec<f64> = Vec::from_fn(nv * nv, |_| 0.0)
+    for i in 0..nv {
+        let a = crb[m.dof_body[i]].mul(c.cdof[i])
+        var j = i32(i)
+        while j >= 0 {
+            let v = a.dot(c.cdof[u32(j)])
+            out[i * nv + u32(j)] = v
+            out[u32(j) * nv + i] = v
+            j = m.dof_parent[u32(j)]
+        }
+        out[i * nv + i] += m.dof_armature[i]
+    }
+    out
+}
+
+/// Each body's spatial velocity and each dof's axis's rate of change (MJX's `com_vel`).
+pub fn com_vel(m: Model, c: Com, qvel: [f64; MAX_DOFS]) -> (Vec<Motion>, Vec<Motion>) {
+    var cvel: Vec<Motion> = Vec::new()
+    var dot: Vec<Motion> = Vec::from_fn(m.nv, |_| Motion::zero())
+    cvel.push(Motion::zero())
+    for b in 1..m.nbody {
+        var cv = cvel[m.body_parent[b]]
+        for jj in 0..m.body_njnt[b] {
+            let j = m.body_jnt[b] + jj
+            let d = m.jnt_dof[j]
+            if m.jnt_type[j] == FREE {
+                for a in 0..3 {
+                    cv = cv.plus(c.cdof[d + a].times(qvel[d + a]))
+                }
+                for a in 3..6 {
+                    dot[d + a] = cv.cross(c.cdof[d + a])
+                }
+                for a in 3..6 {
+                    cv = cv.plus(c.cdof[d + a].times(qvel[d + a]))
+                }
+            } else {
+                let n = m.dofs(j)
+                for a in 0..n {
+                    dot[d + a] = cv.cross(c.cdof[d + a])
+                }
+                for a in 0..n {
+                    cv = cv.plus(c.cdof[d + a].times(qvel[d + a]))
+                }
+            }
+        }
+        cvel.push(cv)
+    }
+    (cvel, dot)
+}
+
+/// The bias forces: gravity's and the motion's (Coriolis, centrifugal), by recursive Newton-Euler
+/// (MJX's `rne`).
+pub fn bias(
+    m: Model,
+    c: Com,
+    cvel: Vec<Motion>,
+    cdof_dot: Vec<Motion>,
+    qvel: [f64; MAX_DOFS],
+) -> Vec<f64> {
+    var cacc: Vec<Motion> = Vec::new()
+    cacc.push(Motion { w: vec3d(0.0), v: -m.gravity })
+    for b in 1..m.nbody {
+        var a = cacc[m.body_parent[b]]
+        for i in 0..m.nv {
+            if m.dof_body[i] == b {
+                a = a.plus(cdof_dot[i].times(qvel[i]))
+            }
+        }
+        cacc.push(a)
+    }
+    var f: Vec<Motion> = Vec::new()
+    for b in 0..m.nbody {
+        let i = c.cinert[b]
+        f.push(i.mul(cacc[b]).plus(cvel[b].cross_force(i.mul(cvel[b]))))
+    }
+    for n in 0..m.nbody - 1 {
+        let b = m.nbody - 1 - n
+        let p = m.body_parent[b]
+        f[p] = f[p].plus(f[b])
+    }
+    var out: Vec<f64> = Vec::new()
+    for i in 0..m.nv {
+        out.push(c.cdof[i].dot(f[m.dof_body[i]]))
+    }
+    out
+}
+
+// ---- dense linear algebra -----------------------------------------------------------------------------
+
+/// The Cholesky factor `L` (lower, row by row) of the `n` × `n` symmetric positive definite `a`.
+fn cholesky(a: Vec<f64>, n: u32) -> Vec<f64> {
+    var l: Vec<f64> = Vec::from_fn(n * n, |_| 0.0)
+    for i in 0..n {
+        for j in 0..i + 1 {
+            var s = a[i * n + j]
+            for k in 0..j {
+                s -= l[i * n + k] * l[j * n + k]
+            }
+            if i == j {
+                l[i * n + i] = sqrt(max(s, 1.0e-300))
+            } else {
+                l[i * n + j] = s / l[j * n + j]
+            }
+        }
+    }
+    l
+}
+
+/// `a⁻¹ b`, from `a`'s Cholesky factor.
+fn cho_solve(l: Vec<f64>, n: u32, b: Vec<f64>) -> Vec<f64> {
+    var y: Vec<f64> = Vec::from_fn(n, |_| 0.0)
+    for i in 0..n {
+        var s = b[i]
+        for k in 0..i {
+            s -= l[i * n + k] * y[k]
+        }
+        y[i] = s / l[i * n + i]
+    }
+    var x: Vec<f64> = Vec::from_fn(n, |_| 0.0)
+    for t in 0..n {
+        let i = n - 1 - t
+        var s = y[i]
+        for k in i + 1..n {
+            s -= l[k * n + i] * x[k]
+        }
+        x[i] = s / l[i * n + i]
+    }
+    x
+}
+
+fn matvec(a: Vec<f64>, n: u32, x: Vec<f64>) -> Vec<f64> {
+    var out: Vec<f64> = Vec::new()
+    for i in 0..n {
+        var s = 0.0
+        for k in 0..n {
+            s += a[i * n + k] * x[k]
+        }
+        out.push(s)
+    }
+    out
+}
+
+// ---- contacts and constraints -----------------------------------------------------------------------
+
+/// A contact: how far apart (negative: into each other), where, its frame (the normal out of the
+/// plane, then two tangents), the body it moves, its friction (sliding along each tangent), solref
+/// and solimp, and the margin it includes.
+pub struct Contact: Copy {
+    pub dist: f64,
+    pub pos: vec3d,
+    pub frame: [vec3d; 3],
+    pub body: u32,
+    /// +1 when the moving body is MJX's second geom's, -1 its first's (the contact's Jacobian is
+    /// the second's less the first's).
+    pub sign: f64,
+    pub friction: vec2d,
+    pub solref: vec2d,
+    pub solimp: Imp,
+    pub margin: f64,
+}
+
+/// Every contact the model checks, this step (MJX's collision for spheres and capsules on planes
+/// and boxes).
+pub fn contacts(m: Model, k: Poses) -> Vec<Contact> {
+    var out: Vec<Contact> = Vec::new()
+    for c in 0..m.pairs.len() {
+        let p = m.pairs[c]
+        let (g1, g2) = (p.g1, p.g2)
+        var frame = [vec3d(0.0); 3]
+        var dist = 0.0
+        var pos = vec3d(0.0)
+        var body = m.geom_body[g2]
+        var sign = 1.0
+        if p.kind == PLANE_SPHERE || p.kind == PLANE_CAPSULE {
+            let n = k.geom_xmat[g1][2]
+            let at = k.geom_xpos[g1]
+            let r = m.geom_size[g2].x
+            var centre = k.geom_xpos[g2]
+            if p.kind == PLANE_SPHERE {
+                frame = make_frame(n)
+            } else {
+                let u = k.geom_xmat[g2][2]
+                centre = centre + u * (p.end * m.geom_size[g2].y)
+                let (proj, size) = normalized3(u - n * dot(n, u))
+                let b = if size < 0.5 {
+                    if -0.5 < n.y && n.y < 0.5 { vec3d(0.0, 1.0, 0.0) } else {
+                        vec3d(0.0, 0.0, 1.0)
+                    }
+                } else {
+                    proj
+                }
+                frame = [n, b, cross(n, b)]
+            }
+            dist = dot(centre - at, n) - r
+            pos = centre - n * (r + 0.5 * dist)
+        } else {
+            // A body's sphere or capsule (the first geom) against a box (the second).
+            let x = k.geom_xmat[g2]
+            let bx = Box { at: k.geom_xpos[g2], mat: [x[0], x[1], x[2]], size: m.geom_size[g2] }
+            let t = if p.kind == SPHERE_BOX {
+                sphere_box(k.geom_xpos[g1], m.geom_size[g1].x, bx)
+            } else {
+                capsule_box(
+                    k.geom_xpos[g1],
+                    k.geom_xmat[g1][2],
+                    m.geom_size[g1].x,
+                    m.geom_size[g1].y,
+                    bx,
+                )[u32(p.end)]
+            }
+            frame = make_frame(t.normal)
+            dist = t.dist
+            pos = t.pos
+            body = m.geom_body[g1]
+            sign = -1.0
+        }
+        // The two geoms' parameters mixed (equal solmix: half each).
+        let mix = mix_of(m.geom_solmix[g1], m.geom_solmix[g2])
+        let (s1, s2) = (m.geom_solimp[g1], m.geom_solimp[g2])
+        let solimp = Imp {
+            dmin: mix * s1.dmin + (1.0 - mix) * s2.dmin,
+            dmax: mix * s1.dmax + (1.0 - mix) * s2.dmax,
+            width: mix * s1.width + (1.0 - mix) * s2.width,
+            mid: mix * s1.mid + (1.0 - mix) * s2.mid,
+            power: mix * s1.power + (1.0 - mix) * s2.power,
+        }
+        let f = vec3d(max(m.geom_friction[g1].x, m.geom_friction[g2].x), 0.0, 0.0)
+        out.push(
+            Contact {
+                dist,
+                pos,
+                frame,
+                body,
+                sign,
+                friction: vec2d(f.x, f.x),
+                solref: mixed_solref(m.geom_solref[g1], m.geom_solref[g2], mix),
+                solimp,
+                margin: m.geom_margin[g1] + m.geom_margin[g2],
+            },
+        )
+    }
+    out
+}
+
+/// Two geoms' solrefs mixed as MuJoCo mixes them: by `mix` when both are standard (a positive time
+/// constant), else each component's least (direct stiffness and damping are negative).
+fn mixed_solref(a: vec2d, b: vec2d, mix: f64) -> vec2d {
+    if a.x > 0.0 && b.x > 0.0 { a * mix + b * (1.0 - mix) } else {
+        vec2d(min(a.x, b.x), min(a.y, b.y))
+    }
+}
+
+/// The share of the first of two geoms in their contact's parameters (their solmix).
+fn mix_of(m1: f64, m2: f64) -> f64 {
+    if m1 < 1.0e-15 && m2 < 1.0e-15 { 0.5 } else if m1 < 1.0e-15 { 0.0 } else if m2 < 1.0e-15 {
+        1.0
+    } else {
+        m1 / (m1 + m2)
+    }
+}
+
+/// MJX's `make_frame`: rows the normal and two tangents.
+fn make_frame(n0: vec3d) -> [vec3d; 3] {
+    let (a, _) = normalized3(n0)
+    var b = if -0.5 < a.y && a.y < 0.5 { vec3d(0.0, 1.0, 0.0) } else { vec3d(0.0, 0.0, 1.0) }
+    b = b - a * dot(a, b)
+    let (bn, _) = normalized3(b)
+    let any = a.x != 0.0 || a.y != 0.0 || a.z != 0.0
+    let bb = if any { bn } else { vec3d(0.0) }
+    [a, bb, cross(a, bb)]
+}
+
+/// The active constraint rows (the joint limits and contacts that are violated; an inactive row
+/// adds nothing to the solver's sums): each row's Jacobian (`nv` each), its D and its reference
+/// acceleration.
+pub struct Rows: Clone {
+    pub n: u32,
+    pub j: Vec<f64>,
+    pub d: Vec<f64>,
+    pub aref: Vec<f64>,
+}
+
+impl Rows {
+    fn push(
+        mut self,
+        m: Model,
+        row: Vec<f64>,
+        pos: f64,
+        invweight: f64,
+        solref: vec2d,
+        solimp: Imp,
+        qvel: [f64; MAX_DOFS],
+    ) {
+        // Reference acceleration and regulariser (MJX's `_kbi` and `make_constraint`'s last part).
+        let h = m.timestep
+        let t = max(solref.x, 2.0 * h)
+        let damp = solref.y
+        let dmin = clamp(solimp.dmin, 1.0e-4, 0.9999)
+        let dmax = clamp(solimp.dmax, 1.0e-4, 0.9999)
+        let width = max(1.0e-15, solimp.width)
+        let mid = clamp(solimp.mid, 1.0e-4, 0.9999)
+        let power = max(1.0, solimp.power)
+        let k = if solref.x <= 0.0 { -solref.x / (dmax * dmax) } else {
+            1.0 / (dmax * dmax * t * t * damp * damp)
+        }
+        let b = if solref.y <= 0.0 { -solref.y / dmax } else { 2.0 / (dmax * t) }
+        let x = abs(pos) / width
+        let y = if x < mid { whole_power(x, power) / whole_power(mid, power - 1.0) } else {
+            1.0 - whole_power(1.0 - x, power) / whole_power(1.0 - mid, power - 1.0)
+        }
+        var imp = clamp(dmin + y * (dmax - dmin), dmin, dmax)
+        if x > 1.0 {
+            imp = dmax
+        }
+        let r = max(invweight * (1.0 - imp) / imp, 1.0e-15)
+        var jv = 0.0
+        for i in 0..m.nv {
+            jv += row[i] * qvel[i]
+            self.j.push(row[i])
+        }
+        self.d.push(1.0 / r)
+        self.aref.push(-b * jv - k * imp * pos)
+        self.n += 1
+    }
+}
+
+/// `x` to a whole-number power.
+fn whole_power(x: f64, p: f64) -> f64 {
+    var out = 1.0
+    for _ in 0..u32(p) {
+        out *= x
+    }
+    out
+}
+
+/// The violated limits' and contacts' rows (MJX's `make_constraint`, its inactive rows left out).
+pub fn rows(
+    m: Model,
+    k: Poses,
+    c: Com,
+    qpos: [f64; MAX_QPOS],
+    qvel: [f64; MAX_DOFS],
+    touching: Vec<Contact>,
+) -> Rows {
+    var out = Rows { n: 0, j: Vec::new(), d: Vec::new(), aref: Vec::new() }
+    let nv = m.nv
+    // One row reused for every limit (each written, pushed, then cleared).
+    var row: Vec<f64> = Vec::from_fn(nv, |_| 0.0)
+    // Ball joints' cone limits, then hinges' ranges (MJX's order).
+    for pass in 0..2 {
+        for j in 0..m.njnt {
+            if !m.jnt_limited[j] {
+                continue
+            }
+            let t = m.jnt_type[j]
+            let a = m.jnt_qpos[j]
+            let d = m.jnt_dof[j]
+            if pass == 0 && t == BALL {
+                let q = vec4d(qpos[a], qpos[a + 1], qpos[a + 2], qpos[a + 3])
+                let (axis, s) = normalized3(vec3d(q.y, q.z, q.w))
+                var theta = 2.0 * atan2_64(s, q.x)
+                if theta > PI64 {
+                    theta -= 2.0 * PI64
+                }
+                let (dir, angle) = normalized3(axis * theta)
+                let pos = max(m.jnt_range[j].x, m.jnt_range[j].y) - angle - m.jnt_margin[j]
+                if pos < 0.0 {
+                    row[d] = -dir.x
+                    row[d + 1] = -dir.y
+                    row[d + 2] = -dir.z
+                    out.push(
+                        m,
+                        row,
+                        pos,
+                        m.dof_invweight[d],
+                        m.jnt_solref[j],
+                        m.jnt_solimp[j],
+                        qvel,
+                    )
+                    row[d] = 0.0
+                    row[d + 1] = 0.0
+                    row[d + 2] = 0.0
+                }
+            } else if pass == 1 && t == HINGE {
+                let q = qpos[a]
+                let (lo, hi) = (q - m.jnt_range[j].x, m.jnt_range[j].y - q)
+                let pos = min(lo, hi) - m.jnt_margin[j]
+                if pos < 0.0 {
+                    row[d] = if lo < hi { 1.0 } else { -1.0 }
+                    out.push(
+                        m,
+                        row,
+                        pos,
+                        m.dof_invweight[d],
+                        m.jnt_solref[j],
+                        m.jnt_solimp[j],
+                        qvel,
+                    )
+                    row[d] = 0.0
+                }
+            }
+        }
+    }
+    // Contacts: four pyramid edges each.
+    for n in 0..touching.len() {
+        let con = touching[n]
+        let pos = con.dist - con.margin
+        if pos >= 0.0 {
+            continue
+        }
+        // The contact point's Jacobian along each frame row, for the body's dofs and its
+        // ancestors' (the plane's world body has none).
+        var diff: Vec<f64> = Vec::from_fn(3 * nv, |_| 0.0)
+        let centre = c.subtree[m.body_root[con.body]]
+        var i = m.body_last_dof[con.body]
+        while i >= 0 {
+            let cd = c.cdof[u32(i)]
+            let jac = (cd.v + cross(cd.w, con.pos - centre)) * con.sign
+            for r in 0..3 {
+                diff[r * nv + u32(i)] = dot(con.frame[r], jac)
+            }
+            i = m.dof_parent[u32(i)]
+        }
+        let (mu0, mu1) = (con.friction.x, con.friction.y)
+        var w = m.body_invweight[0] + m.body_invweight[con.body]
+        w = w + mu0 * mu0 * w
+        w = w * 2.0 * mu0 * mu0 / m.impratio
+        for e in 0..4 {
+            var row: Vec<f64> = Vec::from_fn(nv, |_| 0.0)
+            let (r, mu) = if e < 2 { (1, mu0) } else { (2, mu1) }
+            let sign = if e % 2 == 0 { 1.0 } else { -1.0 }
+            for q in 0..nv {
+                row[q] = diff[q] + sign * mu * diff[r * nv + q]
+            }
+            out.push(m, row, pos, w, con.solref, con.solimp, qvel)
+        }
+    }
+    out
+}
+
+// ---- the solver -----------------------------------------------------------------------------------
+
+/// The solver's view of an acceleration: M a, J a − aref (one per row), the constraint forces, the
+/// cost's two parts, and its gradient's Newton step.
+struct Point {
+    a: Vec<f64>,
+    ma: Vec<f64>,
+    jaref: Vec<f64>,
+    force: Vec<f64>,
+    qfrc: Vec<f64>,
+    gauss: f64,
+    cost: f64,
+    grad: Vec<f64>,
+    search: Vec<f64>,
+}
+
+/// MJX's `norm` of a vector of any length: 0 when every component is within 1e-8 of 0.
+fn norm_n(x: Vec<f64>) -> f64 {
+    var small = true
+    var s = 0.0
+    for i in 0..x.len() {
+        small = small && abs(x[i]) <= 1.0e-8
+        s += x[i] * x[i]
+    }
+    if small { 0.0 } else { sqrt(s) }
+}
+
+/// The constraint forces and the cost at `p.a` (its `ma` and `jaref` already set).
+fn update(
+    m: Model,
+    mm: Vec<f64>,
+    rows: Rows,
+    smooth: Vec<f64>,
+    qacc_smooth: Vec<f64>,
+    p: mut Point,
+) {
+    let nv = m.nv
+    var cost = 0.0
+    p.force = Vec::new()
+    p.qfrc = Vec::from_fn(nv, |_| 0.0)
+    for r in 0..rows.n {
+        let x = p.jaref[r]
+        let f = if x < 0.0 { -rows.d[r] * x } else { 0.0 }
+        p.force.push(f)
+        if x < 0.0 {
+            cost += 0.5 * rows.d[r] * x * x
+        }
+        if f != 0.0 {
+            for i in 0..nv {
+                p.qfrc[i] += rows.j[r * nv + i] * f
+            }
+        }
+    }
+    var gauss = 0.0
+    for i in 0..nv {
+        gauss += 0.5 * (p.ma[i] - smooth[i]) * (p.a[i] - qacc_smooth[i])
+    }
+    p.gauss = gauss
+    p.cost = cost + gauss
+}
+
+/// The gradient and the Newton direction at `p` (the Hessian M + Jᵀ D J over the active rows,
+/// factorized afresh).
+fn gradient(m: Model, mm: Vec<f64>, rows: Rows, smooth: Vec<f64>, p: mut Point) {
+    let nv = m.nv
+    var g: Vec<f64> = Vec::new()
+    for i in 0..nv {
+        g.push(p.ma[i] - smooth[i] - p.qfrc[i])
+    }
+    var h: Vec<f64> = Vec::new()
+    for i in 0..nv * nv {
+        h.push(mm[i])
+    }
+    for r in 0..rows.n {
+        if p.jaref[r] < 0.0 {
+            let d = rows.d[r]
+            for i in 0..nv {
+                let ji = rows.j[r * nv + i]
+                if ji != 0.0 {
+                    for k in 0..nv {
+                        h[i * nv + k] += ji * d * rows.j[r * nv + k]
+                    }
+                }
+            }
+        }
+    }
+    for i in 0..nv {
+        for k in 0..i {
+            let s = 0.5 * (h[i * nv + k] + h[k * nv + i])
+            h[i * nv + k] = s
+            h[k * nv + i] = s
+        }
+    }
+    let mgrad = cho_solve(cholesky(h, nv), nv, g)
+    var s: Vec<f64> = Vec::new()
+    for i in 0..nv {
+        s.push(-mgrad[i])
+    }
+    p.grad = take g
+    p.search = take s
+}
+
+/// A point on the line search: its step, cost, and the cost's first and second derivatives.
+struct Probe: Copy {
+    alpha: f64,
+    cost: f64,
+    d0: f64,
+    d1: f64,
+}
+
+/// MJX's line search along `p.search`: moves `p` (its `a`, `ma`, `jaref`) to the best point found,
+/// if it's better.
+fn line_search(m: Model, mm: Vec<f64>, rows: Rows, smooth: Vec<f64>, p: mut Point) {
+    let nv = m.nv
+    let scale = m.meaninertia * max(1.0, f64(nv))
+    let smag = norm_n(p.search) * scale
+    let gtol = m.tolerance * m.ls_tolerance * smag
+    let mv = matvec(mm, nv, p.search)
+    var jv: Vec<f64> = Vec::new()
+    for r in 0..rows.n {
+        var s = 0.0
+        for i in 0..nv {
+            s += rows.j[r * nv + i] * p.search[i]
+        }
+        jv.push(s)
+    }
+    var sma = 0.0
+    var sq = 0.0
+    var smv = 0.0
+    for i in 0..nv {
+        sma += p.search[i] * p.ma[i]
+        sq += p.search[i] * smooth[i]
+        smv += p.search[i] * mv[i]
+    }
+    let qg = vec3d(p.gauss, sma - sq, 0.5 * smv)
+    let point = |alpha: f64| -> Probe {
+        var q = qg
+        for r in 0..rows.n {
+            let x = p.jaref[r] + alpha * jv[r]
+            if x < 0.0 {
+                let d = rows.d[r]
+                q = q +
+                    vec3d(
+                        0.5 * d * p.jaref[r] * p.jaref[r],
+                        d * jv[r] * p.jaref[r],
+                        0.5 * d * jv[r] * jv[r],
+                    )
+            }
+        }
+        Probe {
+            alpha,
+            cost: alpha * alpha * q.z + alpha * q.y + q.x,
+            d0: 2.0 * alpha * q.z + q.y,
+            d1: 2.0 * q.z + if q.z == 0.0 { 1.0e-15 } else { 0.0 },
+        }
+    }
+    let p0 = point(0.0)
+    let r0 = max(p0.cost - qg.x, 0.0)
+    let r2 = max(0.5 * p0.d1 - qg.z, 0.0)
+    let dmag = 2.0 * sqrt(r0 * r2) + abs(qg.y)
+    let gacc = max(gtol, 8.0 * 2.220446049250313e-16 * dmag)
+    let n0 = point(p0.alpha - p0.d0 / p0.d1)
+    let ends = if n0.d0 < p0.d0 { (n0, p0) } else { (p0, n0) }
+    var lo = ends.0
+    var hi = ends.1
+    var swap = true
+    var it = 0
+    let inb = |x: f64, y: f64| -> bool { (x < y && y < 0.0) || (x > y && y > 0.0) }
+    while it < m.ls_iterations {
+        let done = !swap ||
+            (abs(lo.d0) < gacc && lo.cost < p0.cost) ||
+            (abs(hi.d0) < gacc && hi.cost < p0.cost)
+        if done {
+            break
+        }
+        let lo_n = point(lo.alpha - lo.d0 / lo.d1)
+        let hi_n = point(hi.alpha - hi.d0 / hi.d1)
+        let mid = point(0.5 * (lo.alpha + hi.alpha))
+        let s1 = inb(lo.d0, lo_n.d0)
+        if s1 {
+            lo = lo_n
+        }
+        let s2 = inb(lo.d0, mid.d0)
+        if s2 {
+            lo = mid
+        }
+        let s3 = inb(lo.d0, hi_n.d0)
+        if s3 {
+            lo = hi_n
+        }
+        let s4 = inb(hi.d0, hi_n.d0) || (hi.d0 < 0.0 && hi_n.d0 > 0.0)
+        if s4 {
+            hi = hi_n
+        }
+        let s5 = inb(hi.d0, mid.d0)
+        if s5 {
+            hi = mid
+        }
+        let s6 = inb(hi.d0, lo_n.d0)
+        if s6 {
+            hi = lo_n
+        }
+        swap = s1 || s2 || s3 || s4 || s5 || s6
+        // A converged candidate (in the order lo_n, hi_n, mid; the cheapest, the first on a tie)
+        // ends the search.
+        let candidates = [lo_n, hi_n, mid]
+        var best = 3
+        for c in 0..3 {
+            let x = candidates[c]
+            if abs(x.d0) < gacc &&
+                x.cost < p0.cost &&
+                (best == 3 || x.cost < candidates[best].cost) {
+                best = c
+            }
+        }
+        if best < 3 {
+            lo = candidates[best]
+            hi = candidates[best]
+            swap = false
+        }
+        it += 1
+    }
+    let improved = lo.cost < p0.cost || hi.cost < p0.cost
+    let alpha = if lo.cost < hi.cost { lo.alpha } else { hi.alpha }
+    if improved {
+        for i in 0..nv {
+            p.a[i] += alpha * p.search[i]
+            p.ma[i] += alpha * mv[i]
+        }
+        for r in 0..rows.n {
+            p.jaref[r] += alpha * jv[r]
+        }
+    }
+}
+
+/// The acceleration the constraints allow (MJX's Newton solver, from its warm start or the
+/// unconstrained acceleration, whichever costs less), and the constraint forces on the dofs.
+pub fn solve(
+    m: Model,
+    mm: Vec<f64>,
+    rows: Rows,
+    smooth: Vec<f64>,
+    qacc_smooth: Vec<f64>,
+    warm: [f64; MAX_DOFS],
+) -> (Vec<f64>, Vec<f64>) {
+    let nv = m.nv
+    let start = |a: Vec<f64>| -> Point {
+        let ma = matvec(mm, nv, a)
+        var jaref: Vec<f64> = Vec::new()
+        for r in 0..rows.n {
+            var s = 0.0
+            for i in 0..nv {
+                s += rows.j[r * nv + i] * a[i]
+            }
+            jaref.push(s - rows.aref[r])
+        }
+        var p = Point {
+            a: a.clone(),
+            ma,
+            jaref,
+            force: Vec::new(),
+            qfrc: Vec::new(),
+            gauss: 0.0,
+            cost: 0.0,
+            grad: Vec::new(),
+            search: Vec::new(),
+        }
+        update(m, mm, rows, smooth, qacc_smooth, mut p)
+        take p
+    }
+    var w: Vec<f64> = Vec::new()
+    var q: Vec<f64> = Vec::new()
+    for i in 0..nv {
+        w.push(warm[i])
+        q.push(qacc_smooth[i])
+    }
+    let pw = start(w)
+    let ps = start(q)
+    var p = if pw.cost < ps.cost { take pw } else { take ps }
+    gradient(m, mm, rows, smooth, mut p)
+    let scale = m.meaninertia * max(1.0, f64(nv))
+    var prev = 1.0e300
+    var first = true
+    var niter = 0
+    while niter < m.iterations {
+        let improvement = if first { 1.0e300 } else { (prev - p.cost) / scale }
+        if improvement < m.tolerance || norm_n(p.grad) / scale < m.tolerance {
+            break
+        }
+        line_search(m, mm, rows, smooth, mut p)
+        prev = p.cost
+        first = false
+        update(m, mm, rows, smooth, qacc_smooth, mut p)
+        gradient(m, mm, rows, smooth, mut p)
+        niter += 1
+    }
+    (take p.a, take p.qfrc)
+}
+
+// ---- a step ---------------------------------------------------------------------------------------
+
+/// What a step computed on its way (for tests and for whoever reads the bodies' poses and the
+/// contacts): the poses and com-based quantities before integrating, the mass matrix, the bias
+/// forces, the smooth acceleration, the contacts, the active rows, and the solver's acceleration.
+pub struct Stages: Clone {
+    pub poses: Poses,
+    pub com: Com,
+    pub mass: Vec<f64>,
+    pub bias: Vec<f64>,
+    pub qacc_smooth: Vec<f64>,
+    pub contacts: Vec<Contact>,
+    pub rows: Rows,
+    pub qacc: Vec<f64>,
+    pub qfrc_constraint: Vec<f64>,
+}
+
+/// One step of `m.timestep` with motor commands `ctrl` (one per actuator, clamped to its range):
+/// the state moves on; what the step computed is returned (MJX's `step`, Euler with implicit
+/// damping).
+/// A force and a torque on a body, at its centre of mass, in the world's axes (MuJoCo's
+/// `xfrc_applied`): a shove, a blow.
+pub struct Push: Copy + Eq + StateHash + Serialize + SimState {
+    pub body: u32,
+    pub force: vec3d,
+    pub torque: vec3d,
+}
+
+/// The joint forces of `pushes` (MJX's `xfrc_accumulate`): each push through the Jacobian of its
+/// body's centre of mass, added to `qfrc`.
+fn pushed(m: Model, k: Poses, c: Com, pushes: [Push], qfrc: mut Vec<f64>) {
+    for p in pushes {
+        var chain: Vec<bool> = Vec::from_fn(m.nbody, |_| false)
+        var b = p.body
+        while b != 0 {
+            chain[b] = true
+            b = m.body_parent[b]
+        }
+        let offset = k.xipos[p.body] - c.subtree[m.body_root[p.body]]
+        for i in 0..m.nv {
+            if chain[m.dof_body[i]] {
+                let d = c.cdof[i]
+                qfrc[i] += dot(d.v + cross(d.w, offset), p.force) + dot(d.w, p.torque)
+            }
+        }
+    }
+}
+
+pub fn step(m: Model, s: mut State, ctrl: [f64], pushes: [Push]) -> Stages {
+    let nv = m.nv
+    let poses = kinematics(m, mut s.qpos)
+    let com = com_pos(m, poses)
+    let mm = mass_matrix(m, com)
+    let touching = contacts(m, poses)
+    let rows = rows(m, poses, com, s.qpos, s.qvel, touching)
+    let (cvel, cdof_dot) = com_vel(m, com, s.qvel)
+    let b = bias(m, com, cvel, cdof_dot, s.qvel)
+    var smooth: Vec<f64> = Vec::new()
+    for i in 0..nv {
+        smooth.push(-m.dof_damping[i] * s.qvel[i] - b[i])
+    }
+    for u in 0..m.nu {
+        let c = if m.act_limited[u] { clamp(ctrl[u], m.act_range[u].x, m.act_range[u].y) } else {
+            ctrl[u]
+        }
+        smooth[m.act_dof[u]] += m.act_gain[u] * c
+    }
+    pushed(m, poses, com, pushes, mut smooth)
+    let qacc_smooth = cho_solve(cholesky(mm, nv), nv, smooth)
+    let (qacc, qfrc) = solve(m, mm, rows, smooth, qacc_smooth, s.warm)
+    // Euler, the damping implicit: (M + h D) qacc_e = smooth + constraint forces.
+    let h = m.timestep
+    var mh: Vec<f64> = Vec::new()
+    for i in 0..nv * nv {
+        mh.push(mm[i])
+    }
+    var rhs: Vec<f64> = Vec::new()
+    for i in 0..nv {
+        mh[i * nv + i] += h * m.dof_damping[i]
+        rhs.push(smooth[i] + qfrc[i])
+    }
+    let qacc_e = cho_solve(cholesky(mh, nv), nv, rhs)
+    for i in 0..nv {
+        s.qvel[i] += h * qacc_e[i]
+        s.warm[i] = qacc[i]
+    }
+    for j in 0..m.njnt {
+        let a = m.jnt_qpos[j]
+        let d = m.jnt_dof[j]
+        let t = m.jnt_type[j]
+        if t == FREE {
+            for k in 0..3 {
+                s.qpos[a + k] += h * s.qvel[d + k]
+            }
+            let q = integrate_quat(
+                vec4d(s.qpos[a + 3], s.qpos[a + 4], s.qpos[a + 5], s.qpos[a + 6]),
+                vec3d(s.qvel[d + 3], s.qvel[d + 4], s.qvel[d + 5]),
+                h,
+            )
+            s.qpos[a + 3] = q.x
+            s.qpos[a + 4] = q.y
+            s.qpos[a + 5] = q.z
+            s.qpos[a + 6] = q.w
+        } else if t == BALL {
+            let q = integrate_quat(
+                vec4d(s.qpos[a], s.qpos[a + 1], s.qpos[a + 2], s.qpos[a + 3]),
+                vec3d(s.qvel[d], s.qvel[d + 1], s.qvel[d + 2]),
+                h,
+            )
+            s.qpos[a] = q.x
+            s.qpos[a + 1] = q.y
+            s.qpos[a + 2] = q.z
+            s.qpos[a + 3] = q.w
+        } else {
+            s.qpos[a] += h * s.qvel[d]
+        }
+    }
+    Stages {
+        poses,
+        com,
+        mass: mm,
+        bias: b,
+        qacc_smooth,
+        contacts: touching,
+        rows,
+        qacc,
+        qfrc_constraint: qfrc,
+    }
+}
+
+/// `q` turned by angular velocity `w` (in its own frame) for `h` seconds, then normalized.
+fn integrate_quat(q: vec4d, w: vec3d, h: f64) -> vec4d {
+    let (u, size) = normalized3(w)
+    normalized4(qmul(q, axis_angle(u, h * size)))
+}
+
+// ---- the joint PD ----------------------------------------------------------------------------------
+
+/// Each motor's torque toward `target` (a qpos) going `target_vel` (a qvel), as the motion lab's
+/// `sim.Body.torques`: a ball joint's error is the turn from where it is to its target (a rotation
+/// vector, in its own frame), a hinge's the angle; times the joint's stiffness `kp[j]`, plus the
+/// damping's pull toward the target's velocity (`kd` times the stiffness, carried into the joint's
+/// frame), clamped to the motor's range. The damping itself is the model's implicit joint damping.
+pub fn pd(
+    m: Model,
+    qpos: [f64; MAX_QPOS],
+    target: [f64; MAX_QPOS],
+    target_vel: [f64; MAX_DOFS],
+    kp: [f64],
+    kd: f64,
+    ctrl: mut [f64],
+) {
+    for u in 0..m.nu {
+        let j = m.act_joint[u]
+        let a = m.jnt_qpos[j]
+        let d = m.jnt_dof[j]
+        let k = m.act_dof[u] - d
+        var tau = 0.0
+        if m.jnt_type[j] == BALL {
+            let q = vec4d(qpos[a], qpos[a + 1], qpos[a + 2], qpos[a + 3])
+            let want = vec4d(target[a], target[a + 1], target[a + 2], target[a + 3])
+            let r = qmul(qconj(q), want)
+            let e = lab_log(r)
+            let v = lab_rot(r, vec3d(target_vel[d], target_vel[d + 1], target_vel[d + 2]))
+            tau = kp[j] * e[k] + kd * kp[j] * v[k]
+        } else {
+            tau = kp[j] * (target[a] - qpos[a]) + kd * kp[j] * target_vel[d]
+        }
+        let most = m.act_range[u].y
+        ctrl[u] = clamp(tau, -most, most)
+    }
+}
+
+/// The lab's `qlog`: a turn's rotation vector, the short way (its own guard, not MJX's `norm`).
+fn lab_log(q0: vec4d) -> vec3d {
+    let q = if q0.x < 0.0 { -q0 } else { q0 }
+    let v = vec3d(q.y, q.z, q.w)
+    let s = sqrt(dot(v, v))
+    let angle = 2.0 * atan2_64(s, q.x)
+    if s > 1.0e-8 { v * (angle / max(s, 1.0e-8)) } else { v * 2.0 }
+}
+
+/// The lab's `qrot`: v + w t + u × t, t = 2 u × v.
+fn lab_rot(q: vec4d, v: vec3d) -> vec3d {
+    let u = vec3d(q.y, q.z, q.w)
+    let t = cross(u, v) * 2.0
+    v + t * q.x + cross(u, t)
+}
+
+/// A control step of the lab's (`sim.Body.physics`): `substeps` steps, each with the PD's torques
+/// toward `target` and `target_vel` from where the body is and `pushes` on, then the poses
+/// refreshed (the step's last `Stages` are of before its last integration, as MJX's).
+pub fn control_step(
+    m: Model,
+    s: mut State,
+    target: [f64; MAX_QPOS],
+    target_vel: [f64; MAX_DOFS],
+    kp: [f64],
+    kd: f64,
+    substeps: u32,
+    pushes: [Push],
+) -> Poses {
+    var ctrl: Vec<f64> = Vec::from_fn(m.nu, |_| 0.0)
+    for _ in 0..substeps {
+        pd(m, s.qpos, target, target_vel, kp, kd, mut ctrl)
+        let _ = step(m, mut s, ctrl, pushes)
+    }
+    kinematics(m, mut s.qpos)
+}
+
+// ---- tests ---------------------------------------------------------------------------------------
+
+/// Six steps of the lab's humanoid from random states (joints past their limits, the body in the
+/// floor, warm starts and none) agree with the float64 oracle (`mjx_ref`, which agrees with MJX in
+/// float64) at every stage: the bodies' places, the mass matrix, the bias forces, the smooth
+/// acceleration, the contacts, the active rows' D and reference accelerations, the solver's
+/// acceleration, and the state after.
+@test
+fn a_step_agrees_with_mjx_stage_by_stage() {
+    let m = Model::of(embed("fixtures/humanoid.wab"))
+    var fx = Fixture::of(embed("fixtures/humanoid_steps.wfx"))
+    let cases = u32(fx.f())
+    var worst = 0.0
+    var rows_seen = 0
+    for case in 0..cases {
+        var s = State::rest(m)
+        for i in 0..m.nq {
+            s.qpos[i] = fx.f()
+        }
+        for i in 0..m.nv {
+            s.qvel[i] = fx.f()
+        }
+        for i in 0..m.nv {
+            s.warm[i] = fx.f()
+        }
+        let ctrl = fx.many(m.nu)
+        let st = step(m, mut s, ctrl, [])
+        var xpos: Vec<f64> = Vec::new()
+        for b in 0..m.nbody {
+            xpos.push(st.poses.xpos[b].x)
+            xpos.push(st.poses.xpos[b].y)
+            xpos.push(st.poses.xpos[b].z)
+        }
+        let checks = [
+            apart(xpos, fx.many(3 * m.nbody)),
+            apart(st.mass, fx.many(m.nv * m.nv)),
+            apart(st.bias, fx.many(m.nv)),
+            apart(st.qacc_smooth, fx.many(m.nv)),
+        ]
+        var dist: Vec<f64> = Vec::new()
+        for c in 0..st.contacts.len() {
+            dist.push(st.contacts[c].dist)
+        }
+        let contacts = apart(dist, fx.many(st.contacts.len()))
+        let n = u32(fx.f())
+        assert(n == st.rows.n, f"step {case}: {st.rows.n} active rows, the oracle has {n}")
+        rows_seen += n
+        let d = apart(st.rows.d, fx.many(n))
+        let aref = apart(st.rows.aref, fx.many(n))
+        let qacc = apart(st.qacc, fx.many(m.nv))
+        let qpos = apart(s.qpos, fx.many(m.nq))
+        let qvel = apart(s.qvel, fx.many(m.nv))
+        let warm = apart(s.warm, fx.many(m.nv))
+        let here = max(
+            max(max(checks[0], checks[1]), max(checks[2], checks[3])),
+            max(max(contacts, d), max(max(aref, qacc), max(qpos, max(qvel, warm)))),
+        )
+        std::io::print(
+            f"step {case}: {n} rows; places {checks[0]}, mass {checks[1]}, bias {checks[2]}, smooth {checks[3]}, contacts {contacts}, D {d}, aref {aref}, qacc {qacc}, after {max(qpos, max(qvel, warm))}",
+        )
+        worst = max(worst, here)
+    }
+    assert(rows_seen > 100, "the fixtures exercise limits and contacts")
+    assert(worst < 1.0e-9, f"a step is {worst} from MJX's")
+}
+
+/// Three control steps of the lab's PD (8 substeps each, toward a walk's next frames, from standing
+/// on its frame) agree with the oracle's `sim.Body.physics`.
+@test
+fn a_control_step_agrees_with_the_lab() {
+    let m = Model::of(embed("fixtures/humanoid.wab"))
+    var fx = Fixture::of(embed("fixtures/humanoid_control.wfx"))
+    let cases = u32(fx.f())
+    let kp = fx.many(m.njnt)
+    let kd = fx.f()
+    var worst = 0.0
+    for case in 0..cases {
+        var s = State::rest(m)
+        for i in 0..m.nq {
+            s.qpos[i] = fx.f()
+        }
+        for i in 0..m.nv {
+            s.qvel[i] = fx.f()
+        }
+        for i in 0..m.nv {
+            s.warm[i] = fx.f()
+        }
+        var target = [0.0; MAX_QPOS]
+        var target_vel = [0.0; MAX_DOFS]
+        for i in 0..m.nq {
+            target[i] = fx.f()
+        }
+        for i in 0..m.nv {
+            target_vel[i] = fx.f()
+        }
+        let _ = control_step(m, mut s, target, target_vel, kp, kd, 8, [])
+        let here = max(
+            apart(s.qpos, fx.many(m.nq)),
+            max(apart(s.qvel, fx.many(m.nv)), apart(s.warm, fx.many(m.nv))),
+        )
+        std::io::print(f"control step {case}: {here} from the lab's")
+        worst = max(worst, here)
+    }
+    assert(worst < 1.0e-9, f"a control step is {worst} from the lab's")
+}

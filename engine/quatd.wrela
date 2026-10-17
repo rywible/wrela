@@ -1,0 +1,418 @@
+// Rotations and the transcendental functions in f64: quaternions as `vec4d` (w, x, y, z), MuJoCo's
+// order and conventions (`engine::articulated` steps MuJoCo's physics with them), and sine,
+// cosine, arctangent and the exponential as fdlibm computes them (Sun Microsystems' freely
+// distributed math library, 1993: argument reduction, then minimax polynomials), within an ulp or
+// two. wrela's built-in transcendentals are f32's.
+//
+// fdlibm's algorithms and coefficients are used under its notice: "Copyright (C) 1993 by Sun
+// Microsystems, Inc. All rights reserved. Developed at SunSoft, a Sun Microsystems, Inc. business.
+// Permission to use, copy, modify, and distribute this software is freely granted, provided that
+// this notice is preserved."
+
+/// Quaternions as `vec4d`: (w, x, y, z), MuJoCo's order.
+pub fn qmul(u: vec4d, v: vec4d) -> vec4d {
+    vec4d(
+        u.x * v.x - u.y * v.y - u.z * v.z - u.w * v.w,
+        u.x * v.y + u.y * v.x + u.z * v.w - u.w * v.z,
+        u.x * v.z - u.y * v.w + u.z * v.x + u.w * v.y,
+        u.x * v.w + u.y * v.z - u.z * v.y + u.w * v.x,
+    )
+}
+
+pub fn qconj(q: vec4d) -> vec4d {
+    vec4d(q.x, -q.y, -q.z, -q.w)
+}
+
+/// `v` turned by `q` (which needn't be unit, as MJX's `rotate`): 2(u·v)u + (s² − u·u)v + 2s(u × v).
+pub fn qrot(q: vec4d, v: vec3d) -> vec3d {
+    let s = q.x
+    let u = vec3d(q.y, q.z, q.w)
+    u * (2.0 * dot(u, v)) + v * (s * s - dot(u, u)) + cross(u, v) * (2.0 * s)
+}
+
+/// The rotation matrix of `q` (MJX's `quat_to_mat`), as its three columns.
+pub fn qmat(q: vec4d) -> [vec3d; 3] {
+    let (a, b, c, d) = (q.x, q.y, q.z, q.w)
+    [
+        vec3d(a * a + b * b - c * c - d * d, 2.0 * (b * c + a * d), 2.0 * (b * d - a * c)),
+        vec3d(2.0 * (b * c - a * d), a * a - b * b + c * c - d * d, 2.0 * (c * d + a * b)),
+        vec3d(2.0 * (b * d + a * c), 2.0 * (c * d - a * b), a * a - b * b - c * c + d * d),
+    ]
+}
+
+/// MJX's `norm`: 0 when every component is within 1e-8 of 0, else the length.
+pub fn norm3(x: vec3d) -> f64 {
+    if abs(x.x) <= 1.0e-8 && abs(x.y) <= 1.0e-8 && abs(x.z) <= 1.0e-8 { 0.0 } else {
+        sqrt(dot(x, x))
+    }
+}
+
+pub fn norm4(x: vec4d) -> f64 {
+    if abs(x.x) <= 1.0e-8 && abs(x.y) <= 1.0e-8 && abs(x.z) <= 1.0e-8 && abs(x.w) <= 1.0e-8 {
+        0.0
+    } else {
+        sqrt(dot(x, x))
+    }
+}
+
+/// MJX's `normalize_with_norm`: `x` over its `norm` (over 1e-6 when that's 0), and the norm.
+pub fn normalized3(x: vec3d) -> (vec3d, f64) {
+    let n = norm3(x)
+    (x / (n + if n == 0.0 { 1.0e-6 } else { 0.0 }), n)
+}
+
+pub fn normalized4(x: vec4d) -> vec4d {
+    let n = norm4(x)
+    x / (n + if n == 0.0 { 1.0e-6 } else { 0.0 })
+}
+
+/// (cos θ/2, a sin θ/2).
+pub fn axis_angle(a: vec3d, theta: f64) -> vec4d {
+    let s = sin64(0.5 * theta)
+    vec4d(cos64(0.5 * theta), a.x * s, a.y * s, a.z * s)
+}
+
+// Sine, cosine and arctangent in f64, as fdlibm computes them (argument reduction by π/2 in two
+// parts, then minimax polynomials; Sun Microsystems' freely distributed math library, 1993):
+// within an ulp or two, which is all the physics' few angles need.
+const PIO2_1: f64 = 1.57079632673412561417e+00
+const PIO2_1T: f64 = 6.07710050650619224932e-11
+const INVPIO2: f64 = 6.36619772367581382433e-01
+const KS: [f64; 6] = [
+    -1.66666666666666324348e-01,
+    8.33333333332248946124e-03,
+    -1.98412698298579493134e-04,
+    2.75573137070700676789e-06,
+    -2.50507602534068634195e-08,
+    1.58969099521155010221e-10,
+]
+const KC: [f64; 6] = [
+    4.16666666666666019037e-02,
+    -1.38888888888741095749e-03,
+    2.48015872894767294178e-05,
+    -2.75573143513906633035e-07,
+    2.08757232129817482790e-09,
+    -1.13596475577881948265e-11,
+]
+
+fn ksin(x: f64) -> f64 {
+    let z = x * x
+    let r = KS[1] + z * (KS[2] + z * (KS[3] + z * (KS[4] + z * KS[5])))
+    x + x * z * (KS[0] + z * r)
+}
+
+fn kcos(x: f64) -> f64 {
+    let z = x * x
+    let r = z * (KC[0] + z * (KC[1] + z * (KC[2] + z * (KC[3] + z * (KC[4] + z * KC[5])))))
+    let hz = 0.5 * z
+    let w = 1.0 - hz
+    w + (((1.0 - w) - hz) + z * r)
+}
+
+/// `x` less the nearest multiple of π/2, and which multiple (mod 4): to an ulp or two for |x| up
+/// to about 1e5, coarser past it. A NaN stays one; past 1e15 (infinity too) there's no angle left
+/// to find, and it's 0 (so a blown-up state reads as numbers, never traps).
+fn reduce(x: f64) -> (f64, i32) {
+    if x != x {
+        return (x, 0)
+    }
+    if !(abs(x) < 1.0e15) {
+        return (0.0, 0)
+    }
+    let n = round(x * INVPIO2)
+    let r = (x - n * PIO2_1) - n * PIO2_1T
+    (r, i32(n - 4.0 * floor(n * 0.25)))
+}
+
+pub fn sin64(x: f64) -> f64 {
+    if abs(x) < 0.7853981633974483 {
+        return ksin(x)
+    }
+    let (r, k) = reduce(x)
+    if k == 0 { ksin(r) } else if k == 1 { kcos(r) } else if k == 2 { -ksin(r) } else { -kcos(r) }
+}
+
+pub fn cos64(x: f64) -> f64 {
+    if abs(x) < 0.7853981633974483 {
+        return kcos(x)
+    }
+    let (r, k) = reduce(x)
+    if k == 0 { kcos(r) } else if k == 1 { -ksin(r) } else if k == 2 { -kcos(r) } else { ksin(r) }
+}
+
+const ATAN_HI: [f64; 4] = [
+    4.63647609000806093515e-01,
+    7.85398163397448278999e-01,
+    9.82793723247329054082e-01,
+    1.57079632679489655800e+00,
+]
+const ATAN_LO: [f64; 4] = [
+    2.26987774529616870924e-17,
+    3.06161699786838301793e-17,
+    1.39033110312309984516e-17,
+    6.12323399573676603587e-17,
+]
+const AT: [f64; 11] = [
+    3.33333333333329318027e-01,
+    -1.99999999998764832476e-01,
+    1.42857142725034663711e-01,
+    -1.11111104054623557880e-01,
+    9.09088713343650656196e-02,
+    -7.69187620504482999495e-02,
+    6.66107313738753120669e-02,
+    -5.83357013379057348645e-02,
+    4.97687799461593236017e-02,
+    -3.65315727442169155270e-02,
+    1.62858201153657823623e-02,
+]
+pub const PI64: f64 = 3.14159265358979311600e+00
+
+pub fn atan64(v: f64) -> f64 {
+    var x = abs(v)
+    var id = -1
+    if x >= 0.4375 {
+        if x < 1.1875 {
+            if x < 0.6875 {
+                id = 0
+                x = (2.0 * x - 1.0) / (2.0 + x)
+            } else {
+                id = 1
+                x = (x - 1.0) / (x + 1.0)
+            }
+        } else if x < 2.4375 {
+            id = 2
+            x = (x - 1.5) / (1.0 + 1.5 * x)
+        } else {
+            id = 3
+            x = -1.0 / x
+        }
+    }
+    let z = x * x
+    let w = z * z
+    let s1 = z * (AT[0] + w * (AT[2] + w * (AT[4] + w * (AT[6] + w * (AT[8] + w * AT[10])))))
+    let s2 = w * (AT[1] + w * (AT[3] + w * (AT[5] + w * (AT[7] + w * AT[9]))))
+    let r = if id < 0 { x - x * (s1 + s2) } else {
+        ATAN_HI[id] - ((x * (s1 + s2) - ATAN_LO[id]) - x)
+    }
+    if v < 0.0 { -r } else { r }
+}
+
+/// Positive infinity.
+const INF64: f64 = bitcast_f64(u64(0x7FF00000) << 32)
+
+/// Whether `x`'s sign bit is set (-0 among them).
+fn negative(x: f64) -> bool {
+    (bitcast_u64(x) >> 63) == 1
+}
+
+/// `a` with `y`'s sign.
+fn signed(a: f64, y: f64) -> f64 {
+    if negative(y) { -a } else { a }
+}
+
+/// The angle of (x, y), as C's `atan2`: zeros' signs, infinities and NaNs included.
+pub fn atan2_64(y: f64, x: f64) -> f64 {
+    if x != x || y != y {
+        return x + y
+    }
+    let inf = INF64
+    if y == 0.0 {
+        return if x > 0.0 || (x == 0.0 && !negative(x)) { y } else { signed(PI64, y) }
+    }
+    if x == 0.0 {
+        return signed(0.5 * PI64, y)
+    }
+    if abs(x) == inf {
+        if abs(y) == inf {
+            return signed(if x > 0.0 { 0.25 * PI64 } else { 0.75 * PI64 }, y)
+        }
+        return signed(if x > 0.0 { 0.0 } else { PI64 }, y)
+    }
+    if abs(y) == inf {
+        return signed(0.5 * PI64, y)
+    }
+    let a = atan64(y / x)
+    if x > 0.0 { a } else if negative(y) { a - PI64 } else { a + PI64 }
+}
+
+const LN2_HI: f64 = 6.93147180369123816490e-01
+const LN2_LO: f64 = 1.90821492927058770002e-10
+const INVLN2: f64 = 1.44269504088896338700e+00
+const EP: [f64; 5] = [
+    1.66666666666666019037e-01,
+    -2.77777777770155933842e-03,
+    6.61375632143793436117e-05,
+    -1.65339022054652515390e-06,
+    4.13813679705723846039e-08,
+]
+
+/// 2 to the whole number `e`, for e from -1022 to 1023.
+fn pow2(e: f64) -> f64 {
+    bitcast_f64(u64(i64(e) + 1023) << 52)
+}
+
+/// e to the `x`: infinity past about 709.78, 0 below about -745.13, subnormal between that and
+/// about -708.4; a NaN stays one.
+pub fn exp64(x: f64) -> f64 {
+    if x != x {
+        return x
+    }
+    if x == 0.0 {
+        return 1.0
+    }
+    if x > 709.782712893384 {
+        return INF64
+    }
+    if x < -745.1332191019411 {
+        return 0.0
+    }
+    let k = round(x * INVLN2)
+    let hi = x - k * LN2_HI
+    let lo = k * LN2_LO
+    let r = hi - lo
+    let z = r * r
+    let c = r - z * (EP[0] + z * (EP[1] + z * (EP[2] + z * (EP[3] + z * EP[4]))))
+    let y = 1.0 - ((lo - (r * c) / (2.0 - c)) - hi)
+    // (2^k in two parts where it isn't a normal f64 itself.)
+    if k > 1023.0 {
+        return y * 2.0 * pow2(k - 1.0)
+    }
+    if k < -1021.0 {
+        return y * pow2(k + 1000.0) * pow2(-1000.0)
+    }
+    y * pow2(k)
+}
+
+/// A turn's rotation vector (axis times angle), the short way: the lab's `qlog` (its own 1e-8
+/// guard).
+pub fn qlog(q0: vec4d) -> vec3d {
+    let q = if q0.x < 0.0 { -q0 } else { q0 }
+    let v = vec3d(q.y, q.z, q.w)
+    let s = sqrt(dot(v, v))
+    let angle = 2.0 * atan2_64(s, q.x)
+    if s > 1.0e-8 { v * (angle / max(s, 1.0e-8)) } else { v * 2.0 }
+}
+
+/// The turn of rotation vector `v`: the lab's `qexp`.
+pub fn qexp(v: vec3d) -> vec4d {
+    let a = sqrt(dot(v, v))
+    let s = if a > 1.0e-8 { sin64(0.5 * a) / max(a, 1.0e-8) } else { 0.5 }
+    vec4d(cos64(0.5 * a), v.x * s, v.y * s, v.z * s)
+}
+
+/// The turn about z by `yaw`.
+pub fn yaw_quat(yaw: f64) -> vec4d {
+    vec4d(cos64(0.5 * yaw), 0.0, 0.0, sin64(0.5 * yaw))
+}
+
+/// The way `q` faces along the floor (its -y axis turned), as the lab's `yaw_of` measures it.
+pub fn yaw_of(q: vec4d) -> f64 {
+    let f = qrot(q, vec3d(0.0, -1.0, 0.0))
+    atan2_64(f.x, -f.y)
+}
+
+/// `a` wrapped into [-π, π).
+pub fn wrap(a: f64) -> f64 {
+    let t = (a + PI64) % (2.0 * PI64)
+    (if t < 0.0 { t + 2.0 * PI64 } else { t }) - PI64
+}
+
+// ---- tests ---------------------------------------------------------------------------------------
+
+/// The f64 sine, cosine and arctangent agree with correctly rounded values to a few ulps.
+@test
+fn the_f64_trigonometry_is_accurate() {
+    // (x, sin x, cos x) and (y, x, atan2(y, x)) from Python's math (correctly rounded libm).
+    let trig = [
+        [0.1, 0.09983341664682815, 0.9950041652780258],
+        [0.7853981633974483, 0.7071067811865475, 0.7071067811865476],
+        [1.0, 0.8414709848078965, 0.5403023058681398],
+        [2.5, 0.5984721441039564, -0.8011436155469337],
+        [-3.0, -0.1411200080598672, -0.9899924966004454],
+        [6.0, -0.27941549819892586, 0.960170286650366],
+        [-20.0, -0.9129452507276277, 0.408082061813392],
+        [1.0e-9, 1.0e-9, 1.0],
+    ]
+    var worst = 0.0
+    for k in 0..8 {
+        worst = max(
+            worst,
+            max(abs(sin64(trig[k][0]) - trig[k][1]), abs(cos64(trig[k][0]) - trig[k][2])),
+        )
+    }
+    let atans = [
+        [1.0, 1.0, 0.7853981633974483],
+        [0.3, -2.0, 2.992702705980296],
+        [-0.3, -2.0, -2.992702705980296],
+        [5.0, 0.01, 1.5687963294615568],
+        [-0.2, 0.9, -0.21866894587394198],
+        [0.6, 1.0, 0.5404195002705842],
+        [2.0, 1.0, 1.1071487177940904],
+        [0.0, -1.0, 3.141592653589793],
+    ]
+    for k in 0..8 {
+        worst = max(worst, abs(atan2_64(atans[k][0], atans[k][1]) - atans[k][2]))
+    }
+    std::io::print(f"the f64 trigonometry's worst error: {worst}")
+    assert(worst < 1.0e-15, f"the f64 trigonometry is {worst} off")
+}
+
+/// The f64 exponential agrees with correctly rounded values to an ulp or two.
+@test
+fn the_f64_exponential_is_accurate() {
+    let cases = [
+        [-5.0, 0.006737946999085467],
+        [-0.7, 0.4965853037914095],
+        [-0.001, 0.999000499833375],
+        [0.0, 1.0],
+        [0.4, 1.4918246976412703],
+        [1.0, 2.718281828459045],
+        [3.2, 24.532530197109352],
+        [10.0, 22026.465794806718],
+    ]
+    var worst = 0.0
+    for k in 0..8 {
+        worst = max(worst, abs(exp64(cases[k][0]) - cases[k][1]) / cases[k][1])
+    }
+    std::io::print(f"the f64 exponential's worst relative error: {worst}")
+    assert(worst < 4.0e-16, f"the f64 exponential is {worst} off")
+}
+
+/// The f64 functions' edges: atan2's signed zeros and infinities as C's; exp's overflow, underflow
+/// and subnormals; sine and cosine of huge, infinite and NaN arguments return without trapping.
+@test
+fn the_f64_functions_keep_their_edges() {
+    let inf = INF64
+    let cases = [
+        [0.0, -0.0, PI64],
+        [-0.0, -1.0, -PI64],
+        [-0.0, 1.0, -0.0],
+        [1.0, 0.0, 0.5 * PI64],
+        [-1.0, -0.0, -0.5 * PI64],
+        [inf, inf, 0.25 * PI64],
+        [inf, -inf, 0.75 * PI64],
+        [-inf, -inf, -0.75 * PI64],
+        [1.0, -inf, PI64],
+        [-1.0, inf, -0.0],
+        [inf, 3.0, 0.5 * PI64],
+    ]
+    for k in 0..11 {
+        let c = cases[k]
+        let a = atan2_64(c[0], c[1])
+        assert(
+            a == c[2] && negative(a) == negative(c[2]),
+            f"atan2({c[0]}, {c[1]}) is {a}, not {c[2]}",
+        )
+    }
+    assert(exp64(710.0) == inf && exp64(-746.0) == 0.0, "exp past its range is infinity or 0")
+    let big = exp64(709.5)
+    assert(abs(big / 1.3549863193146328e+308 - 1.0) < 1.0e-15, f"exp(709.5) is {big}")
+    let tiny = exp64(-740.0)
+    assert(abs(tiny / 4.2e-322 - 1.0) < 0.02, f"exp(-740) is {tiny}")
+    let small = exp64(-709.0)
+    assert(abs(small / 1.216780750623423e-308 - 1.0) < 1.0e-12, f"exp(-709) is {small}")
+    assert(
+        abs(sin64(4.0e9)) <= 1.0 && cos64(inf) == 1.0 && sin64(-1.0e300) == 0.0,
+        "huge angles return",
+    )
+}

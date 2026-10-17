@@ -1,0 +1,39 @@
+// The ground the body plays on: a ramp up to a platform and stairs down from it, ahead of where it
+// starts, beside open level ground. Boxes in the body's world (z up), as the physics and the
+// ground layer take them (`engine::ground::segment`), and drawn as boxes in the rig's world.
+
+use engine::collide::Box
+use engine::ground::segment
+
+/// The terrain: a 2.4 m ramp up to 0.36 m (about 8.5°), a 2 m platform, two stairs of 0.12 m down
+/// (0.3 m deep each); 3 m wide, from 3 m ahead of the start, its way along the body's -y.
+pub fn terrain() -> Vec<Box> {
+    let at = vec2d(0.0, 0.0)
+    let start = 3.0
+    let ramp = 2.4
+    let top = 0.36
+    let platform = 2.0
+    let run = 0.3
+    let up = start + ramp
+    let off = up + platform
+    var out: Vec<Box> = Vec::new()
+    out.push(segment(at, 0.0, start, up, 0.0, top))
+    out.push(segment(at, 0.0, up, off, top, top))
+    out.push(segment(at, 0.0, off, off + run, 2.0 * top / 3.0, 2.0 * top / 3.0))
+    out.push(segment(at, 0.0, off + run, off + 2.0 * run, top / 3.0, top / 3.0))
+    out
+}
+
+pub const TERRAIN: Vec<Box> = terrain()
+
+/// A box's frame for drawing in the rig's world (y up: a body point (x, y, z) is (x, z, -y)): its
+/// columns its axes times its half sizes, then its centre (a unit cube's corners map onto it).
+pub fn drawn(b: Box) -> mat4 {
+    let rig = |v: vec3d| -> vec3 { vec3(f32(v.x), f32(v.z), f32(-v.y)) }
+    mat4(
+        vec4(rig(b.mat[0]) * f32(b.size.x), 0.0),
+        vec4(rig(b.mat[1]) * f32(b.size.y), 0.0),
+        vec4(rig(b.mat[2]) * f32(b.size.z), 0.0),
+        vec4(rig(b.at), 1.0),
+    )
+}

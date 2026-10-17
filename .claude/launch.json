@@ -42,6 +42,17 @@
         "8422"
       ],
       "port": 8422
+    },
+    {
+      "name": "physical",
+      "runtimeExecutable": "./target/release/wrela",
+      "runtimeArgs": [
+        "run",
+        "examples/physical",
+        "--port",
+        "8423"
+      ],
+      "port": 8423
     }
   ]
 }

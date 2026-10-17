@@ -1,0 +1,313 @@
+// Physical motion, played: the mannequin as a simulated body (`body`) that the stick moves, on a
+// ground chequered a metre a square. The camera follows it from behind, where the look turns.
+//
+//     W A S D, the left stick      move, the camera's way (Shift or R to run)
+//     L held, L1 held              strafe: face where the camera looks
+//     drag, the arrows, Q E        turn the look; Z X tip it
+//     the right stick              turn the look
+//     P, the pad's B               shove it from behind the camera
+
+use body::{Sim, pose, spawn, tick}
+use engine::creature::MAX_BONES
+use engine::look::{CreatureLook, Mesh as Tolerance}
+use engine::player::{Controls, NONE}
+use engine::present::Snapshots
+use engine::realize::{Mesh, realize_once}
+use engine::render::{Lights, View, depth_only, shade, skin, skin_shadow, view}
+use engine::run::run
+use humanoid::mannequin::{PLAYER_TINT, mannequin}
+use humanoid::rig::{CHEST3, HIPS, JOINTS, Placed, bones}
+use std::gpu::{
+    ClipPosition, ComparisonSampler, Cull, DepthBias, DepthTexture, GpuBuffer, VertexIndex,
+    begin_depth_pass, begin_screen_pass_with_depth, buffer, comparison_sampler, depth_texture, draw,
+    write,
+}
+use std::io::print
+
+/// What the frames draw: the body's pose, the look's yaw and pitch, and the falls and the times
+/// it went astray so far.
+pub struct Shown: Copy + Plain {
+    pub pose: Placed,
+    pub yaw: f32,
+    pub pitch: f32,
+    pub falls: u32,
+    pub strays: u32,
+}
+
+@deterministic
+fn present(s: Sim) -> Shown {
+    Shown {
+        pose: pose(s.body),
+        yaw: s.controls.yaw,
+        pitch: s.controls.pitch,
+        falls: s.falls,
+        strays: s.strays,
+    }
+}
+
+/// The controls at the start: nothing held, looking along +z, a little down.
+fn still() -> Controls {
+    Controls {
+        forward: false,
+        back: false,
+        left: false,
+        right: false,
+        turn_left: false,
+        turn_right: false,
+        run_held: false,
+        walk_on: false,
+        run_on: false,
+        yaw: 0.0,
+        pitch: -0.18,
+        dragging: false,
+        pointer: vec2(0.0),
+        typing: false,
+        digits: 0,
+        travel: NONE,
+        glide: 0,
+    }
+}
+
+pub struct Scene {
+    snaps: Snapshots<Shown>,
+    body: Mesh,
+    palettes: GpuBuffer<mat4>,
+    /// The camera's eye and where it looks, eased; whether it has a frame yet; the frame's time
+    /// when last drawn (s); the falls and strays when last drawn.
+    eye: vec3,
+    at: vec3,
+    placed: bool,
+    stepped: f32,
+    falls: u32,
+    strays: u32,
+    depth: DepthTexture,
+    shadow: DepthTexture,
+    shadow_sampler: ComparisonSampler,
+    width: u32,
+    height: u32,
+}
+
+const LIGHTS = Lights {
+    sun_colour: vec3(1.6, 1.5, 1.35),
+    sky: vec3(0.55, 0.65, 0.8),
+    ground: vec3(0.3, 0.27, 0.22),
+    ambient: 0.55,
+    exposure: 0.9,
+    f0: 0.04,
+    normal_offset: 3.0e-2,
+    compare_bias: 0.002,
+}
+
+const SUN = vec3(0.45, 0.8, 0.35)
+/// The world's own frame: poses are drawn in it.
+const WORLD = mat4(
+    vec4(1.0, 0.0, 0.0, 0.0),
+    vec4(0.0, 1.0, 0.0, 0.0),
+    vec4(0.0, 0.0, 1.0, 0.0),
+    vec4(0.0, 0.0, 0.0, 1.0),
+)
+const FOVY: f32 = 0.9
+/// How far behind the body the camera is, and how high over its chest.
+const BACK: f32 = 2.9
+const OVER: f32 = 0.35
+
+pub fn init() -> Scene {
+    let latest = run(spawn(still()), hz: 60, step: tick, present: present)
+    print(
+        "physical motion: W A S D or the stick to move (Shift or R to run); hold L or L1 to strafe; drag or the right stick to look",
+    )
+    Scene {
+        snaps: Snapshots::new(take latest, hz: 60),
+        body: realize_once(mannequin(), CreatureLook { surface: Tolerance { tolerance: 3mm } }),
+        palettes: buffer(MAX_BONES),
+        eye: vec3(0.0),
+        at: vec3(0.0),
+        placed: false,
+        stepped: 0.0,
+        falls: 0,
+        strays: 0,
+        depth: depth_texture(width: 1, height: 1),
+        shadow: depth_texture(width: 2048, height: 2048),
+        shadow_sampler: comparison_sampler(),
+        width: 0,
+        height: 0,
+    }
+}
+
+/// What every block drawn here passes on: its world point and normal.
+pub struct Surfel: Copy {
+    pub clip: ClipPosition,
+    pub world: vec3,
+    pub normal: vec3,
+}
+
+/// A unit cube's corner (each side from -1 to 1), six faces of two triangles, moved by `model`.
+@vertex
+fn block(v: VertexIndex, model: mat4, view: View) -> Surfel {
+    let face = v.index / 6
+    let corner = v.index % 6
+    let normals = [
+        vec3(1.0, 0.0, 0.0),
+        vec3(-1.0, 0.0, 0.0),
+        vec3(0.0, 1.0, 0.0),
+        vec3(0.0, -1.0, 0.0),
+        vec3(0.0, 0.0, 1.0),
+        vec3(0.0, 0.0, -1.0),
+    ]
+    let us = [
+        vec3(0.0, 1.0, 0.0),
+        vec3(0.0, 0.0, 1.0),
+        vec3(0.0, 0.0, 1.0),
+        vec3(1.0, 0.0, 0.0),
+        vec3(1.0, 0.0, 0.0),
+        vec3(0.0, 1.0, 0.0),
+    ]
+    let cu = [-1.0, 1.0, -1.0, -1.0, 1.0, 1.0]
+    let cv = [-1.0, -1.0, 1.0, 1.0, -1.0, 1.0]
+    let n = normals[face]
+    let u = us[face]
+    let w = cross(n, u)
+    let p = n + u * cu[corner] + w * cv[corner]
+    let world = (model * vec4(p, 1.0)).xyz
+    let (x, y, z) = (model[0].xyz, model[1].xyz, model[2].xyz)
+    Surfel {
+        clip: ClipPosition { position: view.view_proj * vec4(world, 1.0) },
+        world,
+        normal: x * (n.x / dot(x, x)) + y * (n.y / dot(y, y)) + z * (n.z / dot(z, z)),
+    }
+}
+
+/// The ground's pixel: `albedo` chequered a metre a square, lit by the sun (in its shadow map)
+/// and the sky.
+@fragment
+fn ground_lit(
+    s: Surfel,
+    albedo: vec3,
+    view: View,
+    lights: Lights,
+    shadow: DepthTexture,
+    shadow_sampler: ComparisonSampler,
+) -> vec4 {
+    let n = normalize(s.normal)
+    let c = floor(s.world.x) + floor(s.world.z)
+    let check = if c - 2.0 * floor(c * 0.5) > 0.5 { 0.85 } else { 1.0 }
+    let lit = lights.shadow(view, s.world, n, shadow, shadow_sampler)
+    vec4(lights.light(albedo * check, 0.85, n, s.world, view, lit), 1.0)
+}
+
+/// The ground: a slab 120 m across, its top at 0.
+const GROUND_SLAB = mat4(
+    vec4(60.0, 0.0, 0.0, 0.0),
+    vec4(0.0, 1.0, 0.0, 0.0),
+    vec4(0.0, 0.0, 60.0, 0.0),
+    vec4(0.0, -1.0, 0.0, 1.0),
+)
+const GROUND = vec3(0.32, 0.36, 0.28)
+/// The terrain's boxes' colour.
+const STONE = vec3(0.45, 0.42, 0.38)
+
+/// `a` where `t` is 0, `b` where it's 1: each joint's place mixed and its turn the short way.
+fn between(a: Placed, b: Placed, t: f32) -> Placed {
+    var out = a
+    for j in 0..JOINTS {
+        out.at[j] = mix(a.at[j], b.at[j], vec3(t))
+        out.rot[j] = a.rot[j].nlerp(b.rot[j], t)
+    }
+    out
+}
+
+pub fn frame(s: mut Scene, time: f32, width: u32, height: u32) {
+    s.snaps.update()
+    let snap = s.snaps.at(s.snaps.sim_time(time))
+    let (a, b, k) = (snap.a, snap.b, snap.alpha)
+    let dt = clamp(time - s.stepped, 0.0, 0.1)
+    s.stepped = time
+    if b.falls != s.falls || b.strays != s.strays {
+        print(f"falls: {b.falls}; astray: {b.strays}")
+        s.falls = b.falls
+        s.strays = b.strays
+    }
+    let p = between(a.pose, b.pose, k)
+    write(mut s.palettes, 0, bones(p, WORLD))
+    // The camera: behind the body along the look, over its chest, looking a little ahead of it.
+    let yaw = b.yaw
+    let pitch = b.pitch
+    let way = vec3(sin(yaw) * cos(pitch), sin(pitch), cos(yaw) * cos(pitch))
+    let chest = p.at[CHEST3]
+    let hips = p.at[HIPS]
+    let target = vec3(hips.x, chest.y + 0.1, hips.z)
+    let eye_wants = target - way * BACK + vec3(0.0, OVER, 0.0)
+    let at_wants = target + vec3(way.x, 0.0, way.z) * 0.6
+    if !s.placed {
+        s.eye = eye_wants
+        s.at = at_wants
+        s.placed = true
+    }
+    let ease = 1.0 - exp(-dt / 0.08)
+    s.eye += (eye_wants - s.eye) * ease
+    s.at += (at_wants - s.at) * ease
+    if width != s.width || height != s.height {
+        s.depth = depth_texture(width, height)
+        s.width = width
+        s.height = height
+    }
+    let v = view(s.eye, s.at, fovy: FOVY, aspect: f32(width) / f32(height), sun: SUN, extent: 6.0)
+    let shadow_pass = begin_depth_pass(mut s.shadow, clear_depth: 1.0)
+    draw(
+        shadow_pass,
+        skin_shadow.bind(
+            verts: s.body.verts.items(),
+            palettes: s.palettes.items(),
+            first: 0,
+            view: v,
+        ),
+        depth_only,
+        indices: s.body.quads.items(),
+        indirect: s.body.draw.items(),
+        depth_bias: DepthBias { constant: 4, slope: 2.0, clamp: 0.0 },
+    )
+    shadow_pass.end()
+    let pass = begin_screen_pass_with_depth(mut s.depth, clear: vec4(0.55, 0.65, 0.75, 1.0))
+    draw(
+        pass,
+        block.bind(model: GROUND_SLAB, view: v),
+        ground_lit.bind(
+            albedo: GROUND,
+            view: v,
+            lights: LIGHTS,
+            shadow: s.shadow,
+            shadow_sampler: s.shadow_sampler,
+        ),
+        vertices: 36,
+    )
+    for b in body::TRACKER.boxes {
+        draw(
+            pass,
+            block.bind(model: scene::drawn(b), view: v),
+            ground_lit.bind(
+                albedo: STONE,
+                view: v,
+                lights: LIGHTS,
+                shadow: s.shadow,
+                shadow_sampler: s.shadow_sampler,
+            ),
+            vertices: 36,
+        )
+    }
+    draw(
+        pass,
+        skin.bind(verts: s.body.verts.items(), palettes: s.palettes.items(), first: 0, view: v),
+        shade.bind(
+            field: mannequin().field(),
+            look: PLAYER_TINT,
+            view: v,
+            lights: LIGHTS,
+            shadow: s.shadow,
+            shadow_sampler: s.shadow_sampler,
+        ),
+        indices: s.body.quads.items(),
+        indirect: s.body.draw.items(),
+        cull: Cull::Back,
+    )
+    pass.present()
+}

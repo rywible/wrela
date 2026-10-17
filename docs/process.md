@@ -533,7 +533,7 @@ the browser also receives the corresponding parity fixes.
 | W3C, Gamepad API, its "standard" mapping | A W3C specification; no code taken | The browser host reads pads by it (`runtime/browser/src/listen.ts`), and wrela's pad buttons and axes take its order and names (south, east, west, north, the shoulders and triggers, the sticks, the d-pad). |
 | Closest points of two segments (as in Christer Ericson, *Real-Time Collision Detection*, 2005, §5.1.9) | A standard method; no code taken | The climber's fight (`examples/climber/fight.wrela`): the sword's edge, swept between ticks, is tested against capsules on the wolf's body, and the wolf's bite against a capsule up the climber. |
 | Position-based dynamics (Matthias Müller, Bruno Heidelberger, Marcus Hennix, John Ratcliff, "Position Based Dynamics", 2007); long-range attachments (Tae-Yong Kim, Nuttapong Chentanez, Matthias Müller-Fischer, "Long Range Attachments: A Method to Simulate Inextensible Clothing in Computer Games", 2012) | Published methods; no code taken | The climber's cape (`examples/climber/cape.wrela`): a grid of points held by links whose lengths are kept, each point tethered to the collar so the cloth can't stretch however fast the body moves. |
-| The 100STYLE Dataset (Ian Mason, Sebastian Starke and Taku Komura, "Real-Time Style Modelling of Human Locomotion via Feature-Wise Transformations and Local Motion Phases", I3D 2022) | [Zenodo](https://zenodo.org/records/8127870), CC BY 4.0; credit: "The 100STYLE Dataset - Ian Mason" | The humanoid (`examples/humanoid`): the dataset was downloaded outside the repo and read by `tools/bvh.py`. Its skeleton's proportions are `rig`'s, and its Neutral idle, walk, run, sidestep and walk backward, each cut to one averaged loop of 32 samples, are `clips.wrela`. It is an adaptation, so the files say so, and a game that ships it credits the dataset. |
+| The 100STYLE Dataset (Ian Mason, Sebastian Starke and Taku Komura, "Real-Time Style Modelling of Human Locomotion via Feature-Wise Transformations and Local Motion Phases", I3D 2022) | [Zenodo](https://zenodo.org/records/8127870), CC BY 4.0; credit: "The 100STYLE Dataset - Ian Mason" | The humanoid (`examples/humanoid`): the dataset was downloaded outside the repo and read by `tools/bvh.py`. Its skeleton's proportions are `rig`'s, and its Neutral idle, walk, run, sidestep and walk backward, each cut to one averaged loop of 32 samples, are `clips.wrela`. It is an adaptation, so the files say so, and a game that ships it credits the dataset. The physical body (`examples/physical`): its Neutral clips whole, retargeted to the motion lab's body, are the motion-matching library (`data/mm.wmm`) and what its policy (`data/policy.wnn`) was trained to follow; both are adaptations. |
 | Catmull-Rom splines (Edwin Catmull and Raphael Rom, 1974); two-bone inverse kinematics by the law of cosines | Standard methods; no code taken | The humanoid's motion layer (`examples/humanoid/motion.wrela`): poses sampled smoothly round a cycle, and legs reaching held feet; its arms reaching the sword (`reach.wrela`). |
 | Extended position-based dynamics for rigid bodies: Matthias Müller, Miles Macklin, Nuttapong Chentanez, Stefan Jeschke and Tae-Yong Kim, "Detailed Rigid Body Simulation with Extended Position Based Dynamics", *Computer Graphics Forum* 39(8) (2020) | A published method; no code taken | `engine::rigid`: bodies stepped in substeps, joints, drives and contacts moving them back into place. Its turn drive solves the three axes together through both bodies' inertia (the paper's scalar step turns a long thin body about the wrong axis); its drives take a most torque, so a heavy sword lags its muscles and swings on; thin fast capsules are kept from passing through each other within a substep. |
 | Minimum jerk: Tamar Flash and Neville Hogan, "The coordination of arm movements: an experimentally confirmed mathematical model", *Journal of Neuroscience* 5(7) (1985) | A published model; no code taken | `examples/humanoid/blade.wrela`: a cut's stroke and its wind-up ease as a person's reach does (10u³ − 15u⁴ + 6u⁵). |
@@ -2514,6 +2514,45 @@ The masked samurai's form, a dodge and the feel's tuning are for Ryan to judge n
 code was used and nothing was made with a generative model; judged from native-host captures and
 Chrome on the M4 Air. `compiler/std` gained `Plain` on `Quat` (it's a `vec4`), and the engine sim
 state for it.
+
+## Physical motion: a body that learns to follow a stick, 2026-10-17
+
+Ryan asked for movement in wrela better than Elden Ring's, and decided how to get it: train with
+the best tools outside wrela and take the trained model into it. Claude Code (Claude Opus 5.5)
+did the work end to end. OpenAI Codex (GPT-6.1-Sol and GPT-6-Astra, high reasoning, read-only)
+reviewed each plan and the code adversarially; Claude decided, fixed and verified.
+
+The motion lab is outside the repo (Python): MuJoCo 3.16 and MJX (Apache 2.0) on JAX, a PPO of
+its own, and the training runs on rented GPUs (RunPod, an RTX 4090 at $0.89 an hour). In it:
+
+- A humanoid body (20 rigid parts, 51 degrees of freedom, 45 PD motors) with the proportions of
+  100STYLE's skeleton; its feet touch the ground through spheres and a toe capsule.
+- Motion capture: 100STYLE (CC BY 4.0, see the table) retargeted to the body by a two-bone fit per
+  limb.
+- Motion matching that turns a stick into a reference motion; a policy trained to keep the
+  simulated body on that reference through its motors' targets, with the reference a frame ahead.
+
+In the repo:
+
+- `engine::articulated`: MuJoCo's physics for such a body, as MJX computes it, in f64. A golden test
+  checks every stage of a step against the lab's f64 oracle (MJX's method in NumPy) to rounding.
+- `engine::quatd`: f64 sine, cosine, arctangent and the exponential (fdlibm's algorithms and
+  coefficients, its notice kept in the file).
+- `engine::policy`: the trained network, read in place from exported bytes.
+- `engine::matching` and `engine::tracking`: the lab's matcher and control loop, golden-tested
+  against the lab to rounding.
+- `examples/physical`: the body played with a keyboard or a pad at 60 Hz ticks.
+
+| Source | Rights | Use |
+|---|---|---|
+| MuJoCo and MJX (Todorov, Erez and Tassa, "MuJoCo: A physics engine for model-based control", IROS 2012; Google DeepMind's MJX) | Apache 2.0 | The lab's simulator. `engine::articulated` re-implements MJX's method (its documentation's Computation chapter and its source), with no code copied. |
+| fdlibm (Sun Microsystems, 1993) | Its notice: free to use, copy, modify and distribute with the notice kept | `engine::quatd`'s argument reduction, polynomial coefficients and their order. |
+| Motion matching (Simon Clavet, "Motion Matching and The Road to Next-Gen Animation", GDC 2016) | A published method | The lab's `mm.py` and `engine::matching`. |
+| Critically damped springs (Daniel Holden, "Spring-It-On: The Game Developer's Spring-Roll-Call", 2021) | A published method | The stick's trajectory and the transitions' offsets. |
+| Inertialization (David Bollo, "Inertialization: High-Performance Animation Transitions in Gears of War", GDC 2018) | A published method | Transitions between matched frames. |
+| DeepMimic (Peng, Abbeel, Levine and van de Panne, SIGGRAPH 2018) | A published method | The tracking rewards. |
+| DReCon (Bergamin, Clavet, Holden and Forbes, SIGGRAPH Asia 2019) | A published method | A policy that tracks a motion-matched reference. |
+| PPO (Schulman et al., 2017); the adaptive learning rate of rsl_rl (Rudin et al., "Learning to Walk in Minutes", 2022) | Published methods; rsl_rl is BSD-3, read, not copied | The lab's trainer. |
 
 ## Keeping this record
 

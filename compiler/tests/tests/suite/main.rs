@@ -48,6 +48,7 @@ mod noise;
 mod numerics;
 mod optimize;
 mod parallel;
+mod physical;
 mod piano;
 mod reload;
 mod render;

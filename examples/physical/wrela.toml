@@ -1,0 +1,10 @@
+# Physical motion: the humanoid's mannequin (examples/humanoid) as a simulated body that a stick
+# moves. Motion matching turns the stick into a reference from motion capture (100STYLE, CC BY
+# 4.0), and a policy trained in the motion lab keeps the body on it by its joints' torques, so
+# its weight, momentum and footing are the physics'.
+[package]
+name = "physical"
+
+[dependencies]
+engine = { path = "../../engine" }
+humanoid = { path = "../humanoid" }

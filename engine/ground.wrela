@@ -1,0 +1,243 @@
+// The ground: terrain as boxes (steps, platforms, ramps: a ramp is a tilted box), the height a
+// foot stands on anywhere, and the matcher's reference (`engine::matching`) brought onto the
+// terrain as a game places its feet. The motion lab's `terrain.py`, here in f64.
+//
+// The ground layer sits above the matcher, so on flat ground the reference is the matcher's. Each
+// foot has a height over the floor and the pelvis one, each a critically damped spring:
+// - a planted foot stands on the terrain under its hold;
+// - a swinging foot goes to the terrain under its next landing (the library's next contact, its
+//   clip playing on), and over the highest terrain on its way in the next `CLEAR` frames (plus
+//   `CLEARANCE` when that's higher than where it is: a riser ahead);
+// - the pelvis goes to the feet's mean.
+// A frame on the terrain is the matcher's with its pelvis raised by the pelvis's height and each
+// ankle by its foot's, the legs reaching by two-bone IK.
+
+use collide::Box
+use matching::{Library, Matcher, frame, leg_fk, leg_ik, rot2}
+use articulated::MAX_QPOS
+use quatd::{atan2_64, cos64, exp64, qmat, qmul, sin64, wrap}
+use sim::SimState
+use std::hash::StateHash
+use std::serialize::Serialize
+
+pub const FOOT_HALFLIFE: f64 = 0.05
+pub const PELVIS_HALFLIFE: f64 = 0.1
+pub const LOOK: u32 = 24
+pub const CLEAR: u32 = 5
+pub const CLEARANCE: f64 = 0.04
+
+/// The height a foot stands on at `xy`: the highest top of a box over it (a box's top is its face
+/// whose normal points most nearly up), the floor's 0 elsewhere.
+pub fn height(boxes: [Box], xy: vec2d) -> f64 {
+    var best = 0.0
+    for b in boxes {
+        // The face most nearly up.
+        var a = 0
+        for k in 1..3 {
+            if abs(b.mat[k].z) > abs(b.mat[a].z) {
+                a = k
+            }
+        }
+        let n = b.mat[a] * (if b.mat[a].z < 0.0 { -1.0 } else { 1.0 })
+        let size = [b.size.x, b.size.y, b.size.z]
+        let centre = b.at + n * size[a]
+        let z = centre.z - (n.x * (xy.x - centre.x) + n.y * (xy.y - centre.y)) / max(n.z, 1.0e-6)
+        let p = vec3d(xy.x, xy.y, z) - b.at
+        let inside = abs(dot(b.mat[0], p)) <= b.size.x + 1.0e-9 &&
+            abs(dot(b.mat[1], p)) <= b.size.y + 1.0e-9 &&
+            abs(dot(b.mat[2], p)) <= b.size.z + 1.0e-9
+        if inside && n.z > 0.2 {
+            best = max(best, z)
+        }
+    }
+    best
+}
+
+/// How wide a segment's box is, and how deep under its top.
+pub const SEGMENT_WIDTH: f64 = 3.0
+pub const SEGMENT_DEPTH: f64 = 1.0
+
+/// The box of a segment of the way from `at` facing `yaw` (0 faces -y): from `d0` to `d1` metres
+/// along it, its top rising from `h0` to `h1` (a step or a platform when they're equal, a ramp
+/// when not), `SEGMENT_WIDTH` wide and `SEGMENT_DEPTH` deep (the lab's `terrain.segment_box`).
+pub fn segment(at: vec2d, yaw: f64, d0: f64, d1: f64, h0: f64, h1: f64) -> Box {
+    let fwd = vec3d(sin64(yaw), -cos64(yaw), 0.0)
+    let (run, climb) = (d1 - d0, h1 - h0)
+    let length = sqrt(run * run + climb * climb)
+    let s = atan2_64(climb, run)
+    let top = vec3d(at.x, at.y, 0.0) + fwd * (0.5 * (d0 + d1)) + vec3d(0.0, 0.0, 0.5 * (h0 + h1))
+    let centre = top + fwd * (sin64(s) * SEGMENT_DEPTH) - vec3d(0.0, 0.0, cos64(s) * SEGMENT_DEPTH)
+    let turn = vec4d(cos64(0.5 * yaw), 0.0, 0.0, sin64(0.5 * yaw))
+    let tilt = vec4d(cos64(-0.5 * s), sin64(-0.5 * s), 0.0, 0.0)
+    Box {
+        at: centre,
+        mat: qmat(qmul(turn, tilt)),
+        size: vec3d(0.5 * SEGMENT_WIDTH, 0.5 * length, SEGMENT_DEPTH),
+    }
+}
+
+/// The ground layer: each foot's height over the floor and its velocity, the pelvis's and its.
+pub struct Ground: Copy + Eq + StateHash + Serialize + SimState {
+    pub foot: [f64; 2],
+    pub foot_v: [f64; 2],
+    pub pelvis: f64,
+    pub pelvis_v: f64,
+}
+
+/// The ground layer standing on `boxes` where the matcher's feet are held.
+pub fn stand(boxes: [Box], s: Matcher) -> Ground {
+    let under = [height(boxes, s.lock[0]), height(boxes, s.lock[1])]
+    Ground { foot: under, foot_v: [0.0; 2], pelvis: 0.5 * (under[0] + under[1]), pelvis_v: 0.0 }
+}
+
+/// A critically damped spring toward `goal`: its place and velocity `dt` on.
+fn spring_to(x: f64, v: f64, goal: f64, halflife: f64, dt: f64) -> (f64, f64) {
+    let y = 2.0 * 0.6931471805599453 / halflife
+    let j0 = x - goal
+    let j1 = v + j0 * y
+    let e = exp64(-y * dt)
+    (e * (j0 + j1 * dt) + goal, e * (v - j1 * y * dt))
+}
+
+/// Foot `i`'s place on the floor at the library's frame `k` frames after the matcher's (its clip
+/// playing on from the matcher's root, clamped at the clip's end), and that frame.
+fn foot_at(lib: Library, s: Matcher, k: u32, i: u32) -> (vec2d, u32) {
+    let f = s.f
+    let j = min(f + k, lib.end(f) - 1)
+    let rel = rot2(-lib.yaw(f), lib.root(j) - lib.root(f))
+    let root = s.root + rot2(s.root_yaw, rel)
+    let yaw = s.root_yaw + wrap(lib.yaw(j) - lib.yaw(f))
+    let at = 12 + 3 * i
+    let local = vec2d(
+        lib.norm(j, at) * lib.scale[at] + lib.mean[at],
+        lib.norm(j, at + 1) * lib.scale[at + 1] + lib.mean[at + 1],
+    )
+    (root + rot2(yaw, local), j)
+}
+
+/// The ground layer a frame (`dt`) on, for the matcher's state `s` (after its step).
+pub fn step(lib: Library, s: Matcher, g: Ground, boxes: [Box], dt: f64) -> Ground {
+    var out = g
+    for i in 0..2 {
+        var hs = [0.0; LOOK]
+        var landing = LOOK - 1
+        var found = false
+        var was = false
+        for k in 0..LOOK {
+            let (xy, j) = foot_at(lib, s, k, i)
+            hs[k] = height(boxes, xy)
+            let planted = lib.contact(j)[i]
+            if k > 0 && !found && planted && !was {
+                landing = k
+                found = true
+            }
+            was = planted
+        }
+        var ahead = hs[0]
+        for k in 1..CLEAR {
+            ahead = max(ahead, hs[k])
+        }
+        let lift = if ahead > hs[0] + 0.01 { CLEARANCE } else { 0.0 }
+        let goal = max(hs[landing], ahead + lift)
+        let (z, v) = spring_to(g.foot[i], g.foot_v[i], goal, FOOT_HALFLIFE, dt)
+        if s.planted[i] {
+            out.foot[i] = height(boxes, s.lock[i])
+            out.foot_v[i] = 0.0
+        } else {
+            out.foot[i] = z
+            out.foot_v[i] = v
+        }
+    }
+    let (p, pv) = spring_to(
+        g.pelvis,
+        g.pelvis_v,
+        0.5 * (out.foot[0] + out.foot[1]),
+        PELVIS_HALFLIFE,
+        dt,
+    )
+    out.pelvis = p
+    out.pelvis_v = pv
+    out
+}
+
+/// The matcher's frame for its state `s`, on the terrain (`g`): its pelvis raised by the pelvis's
+/// height, each ankle by its foot's, the legs reaching.
+pub fn on_ground(lib: Library, s: Matcher, g: Ground) -> [f64; MAX_QPOS] {
+    var q = frame(lib, s)
+    q[2] += g.pelvis
+    for k in 0..2 {
+        let (_, _, ankle, _, _) = leg_fk(q, lib.legs[k])
+        q = leg_ik(
+            q,
+            lib.legs[k],
+            vec3d(ankle.x, ankle.y, ankle.z - g.pelvis + g.foot[k]),
+            s.lock_yaw[k],
+        )
+    }
+    q
+}
+
+// ---- tests -----------------------------------------------------------------------------------------
+
+use articulated::Model
+use golden::{Fixture, apart}
+use matching::{Stick, start, step as match_step}
+
+/// The ground layer agrees with the lab's (`terrain.py`, in f64 on the same library) bringing a
+/// matcher walking forward up four stairs: the feet's and the pelvis's heights and velocities, and
+/// the reference on the terrain, each frame.
+@test
+fn the_ground_layer_agrees_with_the_lab() {
+    let m = Model::of(embed("fixtures/humanoid.wab"))
+    let lib = Library::of(embed("fixtures/matching_small.wmm"), m)
+    var fx = Fixture::of(embed("fixtures/ground_steps.wfx"))
+    let count = u32(fx.f())
+    var boxes: Vec<Box> = Vec::new()
+    for _ in 0..count {
+        let size = vec3d(fx.f(), fx.f(), fx.f())
+        let at = vec3d(fx.f(), fx.f(), fx.f())
+        let mat = qmat(vec4d(fx.f(), fx.f(), fx.f(), fx.f()))
+        boxes.push(Box { at, mat, size })
+    }
+    // The lab's stairs (four steps of 0.14 m, 0.3 m apart, from 0.9 m on) are `segment`'s.
+    var built = 0.0
+    for k in 0..count {
+        let d0 = 0.9 + 0.3 * f64(k)
+        let d1 = if k + 1 < count { d0 + 0.3 } else { 0.9 + 4.0 }
+        let h = 0.14 * f64(k + 1)
+        let b = segment(vec2d(0.0, 0.0), 0.0, d0, d1, h, h)
+        let want = boxes[k]
+        built = max(built, max(length(b.at - want.at), length(b.size - want.size)))
+        for c in 0..3 {
+            built = max(built, length(b.mat[c] - want.mat[c]))
+        }
+    }
+    assert(built < 1.0e-12, f"segment's boxes are {built} from the lab's")
+    let f0 = u32(fx.f())
+    let at = vec2d(fx.f(), fx.f())
+    var s = start(lib, f0, at, fx.f())
+    let stick = Stick { dir: vec2d(fx.f(), fx.f()), strafe: false, strafe_yaw: 0.0 }
+    let frames = u32(fx.f())
+    var g = stand(boxes, s)
+    var worst = 0.0
+    for t in 0..frames {
+        s = match_step(lib, s, stick, search: true)
+        g = step(lib, s, g, boxes, lib.dt)
+        let q = on_ground(lib, s, g)
+        let f = u32(fx.f())
+        assert(s.f == f, f"frame {t}: the matcher plays {s.f}, the lab {f}")
+        worst = max(
+            worst,
+            apart(
+                [g.foot[0], g.foot[1], g.foot_v[0], g.foot_v[1], g.pelvis, g.pelvis_v],
+                fx.many(6),
+            ),
+        )
+        worst = max(worst, apart(q, fx.many(lib.nq)))
+    }
+    std::io::print(
+        f"the ground layer: {frames} frames up the stairs to {g.pelvis} m, worst {worst} from the lab",
+    )
+    assert(g.pelvis > 0.5, "the reference climbed the stairs")
+    assert(worst < 1.0e-12, f"the ground layer is {worst} from the lab")
+}

@@ -46,6 +46,12 @@ impl SimState for vec3 {}
 
 impl SimState for vec4 {}
 
+impl SimState for vec2d {}
+
+impl SimState for vec3d {}
+
+impl SimState for vec4d {}
+
 impl SimState for Quat {}
 
 impl<T: SimState> SimState for Vec<T> {}
