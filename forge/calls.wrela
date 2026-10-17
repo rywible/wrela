@@ -1,0 +1,96 @@
+// HTTP calls to a forge service, one at a time, each on a connection of its own: what forge's
+// command (client.wrela) and a worker on another machine (remote.wrela) send. A call's answer goes
+// back to its sender with the purpose it was sent for.
+
+use http::Answer
+use platform::net::{close, send}
+use platform::service as host
+use service::{For, Phase, Service, wait}
+use std::io::IoError
+
+pub struct Calls: Clone {
+    pub server: String,
+    conn: u32,
+    purpose: u32,
+    request: Vec<u8>,
+    buf: Vec<u8>,
+    pub busy: bool,
+}
+
+pub fn calls(server: str) -> Calls {
+    Calls {
+        server: server.to_string(),
+        conn: 0,
+        purpose: 0,
+        request: Vec::new(),
+        buf: Vec::new(),
+        busy: false,
+    }
+}
+
+/// Sends `method path` with `body` to the service, for `purpose`: its answer comes to `got`.
+pub fn call(s: mut Service, method: str, path: str, kind: str, body: [u8], purpose: u32) {
+    s.calls.busy = true
+    s.calls.conn = 0
+    s.calls.purpose = purpose
+    s.calls.buf = Vec::new()
+    s.calls.request = http::request(method, s.calls.server.as_str(), path, kind, body)
+    wait(mut s, host::connect(s.calls.server.as_str()), For::Client(purpose))
+}
+
+/// The connection's number, or why there's none.
+pub fn connected(s: mut Service, r: take Result<Vec<u8>, IoError>) {
+    match take r {
+        Ok(b) => s.calls.conn = host::conn_of(take b).unwrap_or(0),
+        Err(e) => {
+            s.calls.busy = false
+            let why = f"can't reach the service at {s.calls.server}: {e.message()}"
+            got(mut s, 0, bytes::of_str(why.as_str()))
+        },
+    }
+}
+
+pub fn connection(s: mut Service, conn: u32, open: bool) {
+    if conn != s.calls.conn {
+        return
+    }
+    if open {
+        send(conn, s.calls.request)
+    } else if s.calls.busy {
+        s.calls.busy = false
+        got(mut s, 0, bytes::of_str("the service closed the connection before it answered"))
+    }
+}
+
+pub fn bytes(s: mut Service, conn: u32, b: [u8]) {
+    if conn != s.calls.conn {
+        return
+    }
+    bytes::push_run(mut s.calls.buf, b)
+    match http::read_response(mut s.calls.buf) {
+        Answer::Wait => {},
+        Answer::Got { status, body } => {
+            // The connection is done with: its close isn't the next call's.
+            s.calls.busy = false
+            s.calls.conn = 0
+            close(conn)
+            got(mut s, status, take body)
+        },
+        Answer::Bad(why) => {
+            s.calls.busy = false
+            s.calls.conn = 0
+            close(conn)
+            got(mut s, 0, bytes::of_str(f"a malformed answer: {why}".as_str()))
+        },
+    }
+}
+
+/// An answer, to whatever sent its call: status 0 when no answer came.
+fn got(s: mut Service, status: u32, body: take Vec<u8>) {
+    let purpose = s.calls.purpose
+    if s.phase == Phase::Work {
+        remote::got(mut s, purpose, status, take body)
+    } else {
+        client::got(mut s, status, take body)
+    }
+}

@@ -40,6 +40,8 @@ pub enum Phase: Copy + Eq {
     Ready,
     /// Running as a client: one call to a forge service.
     Client,
+    /// Running as a worker of a forge service on another machine (remote.wrela).
+    Work,
     Stopped,
 }
 
@@ -67,8 +69,10 @@ pub enum For: Clone {
     Ran(u64),
     /// A step of an import (import.wrela).
     Import(u32),
-    /// A client's connection (client.wrela).
+    /// A call's connection to a service (calls.wrela).
     Client(u32),
+    /// A request of a worker on another machine (remote.wrela).
+    Remote(u32),
 }
 
 pub struct Wait {
@@ -150,7 +154,10 @@ pub struct Service {
     pub log_size: u64,
     pub worker: jobs::Worker,
     pub import: import::Import,
-    pub client: client::Client,
+    pub calls: calls::Calls,
+    pub remote: remote::Remote,
+    /// Whether the service runs checks itself.
+    pub works: bool,
     /// Whether main moved since the open changes were last carried onto it.
     carry_due: bool,
 }
@@ -179,7 +186,9 @@ pub fn new() -> Service {
         log_size: 0,
         worker: jobs::worker("local"),
         import: import::idle(),
-        client: client::idle(),
+        calls: calls::calls(""),
+        remote: remote::idle(),
+        works: true,
         carry_due: false,
     }
 }
@@ -229,16 +238,16 @@ pub fn step(s: mut Service, time: f32) {
         match e {
             Input::Message { conn, .. } => {
                 if let Some(b) = payload(e) {
-                    if s.phase == Phase::Client {
-                        client::bytes(mut s, conn, b)
+                    if s.phase == Phase::Client || s.phase == Phase::Work {
+                        calls::bytes(mut s, conn, b)
                     } else {
                         bytes_in(mut s, conn, b)
                     }
                 }
             },
             Input::Connection { conn, open, .. } => {
-                if s.phase == Phase::Client {
-                    client::connection(mut s, conn, open)
+                if s.phase == Phase::Client || s.phase == Phase::Work {
+                    calls::connection(mut s, conn, open)
                 } else if open {
                     let _ = s.conns.insert(
                         conn,
@@ -261,8 +270,13 @@ pub fn step(s: mut Service, time: f32) {
         if s.carry_due {
             carry_all(mut s)
         }
-        jobs::pump(mut s)
+        if s.works {
+            jobs::pump(mut s)
+        }
         import::pump(mut s)
+    }
+    if s.phase == Phase::Work {
+        remote::pump(mut s)
     }
     pump(mut s)
 }
@@ -379,7 +393,8 @@ fn answered(s: mut Service, what: take For, r: take Result<Vec<u8>, IoError>) {
         For::ManifestSaved => jobs::manifest_saved(mut s, take r),
         For::Ran(job) => jobs::ran(mut s, job, take r),
         For::Import(step) => import::answered(mut s, step, take r),
-        For::Client(step) => client::answered(mut s, step, take r),
+        For::Client(_) => calls::connected(mut s, take r),
+        For::Remote(what) => remote::answered(mut s, what, take r),
     }
 }
 
@@ -401,10 +416,21 @@ fn begin(s: mut Service) {
         return
     }
     let mode = if s.args.is_empty() { String::from("help") } else { s.args[0].clone() }
+    if mode.as_str() == "work" {
+        s.phase = Phase::Work
+        return remote::start(mut s)
+    }
     if mode.as_str() != "serve" {
         s.phase = Phase::Client
         return client::start(mut s)
     }
+    var works = true
+    for a in s.args {
+        if a.as_str() == "--no-worker" {
+            works = false
+        }
+    }
+    s.works = works
     if let Some(l) = flag(s.args, "--listen") {
         s.listen = take l
     }

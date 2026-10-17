@@ -359,16 +359,137 @@ fn finish(s: mut Service, job: u64, status: i32, timed_out: bool, ms: u64, outpu
     s.worker.job = 0
 }
 
-/// A remote worker's call: workers on other machines come with the fleet.
+fn json_reply(s: mut Service, conn: u32, status: u32, json: str) {
+    service::reply(mut s, conn, status, "application/json", bytes::of_str(json))
+}
+
+/// A worker's call from another machine: `next` gives it the oldest queued check, with the files
+/// of its tree; `done` keeps what the check said.
 pub fn remote(s: mut Service, conn: u32, req: take http::Request) {
-    let _ = req
-    service::reply(
-        mut s,
-        conn,
-        501,
-        "text/plain",
-        bytes::of_str("remote workers aren't served yet: this forge runs its checks itself\n"),
-    )
+    let Ok(doc) = std::json::Json::read(req.body) else {
+        return json_reply(mut s, conn, 400, "{\"error\":\"the body isn't JSON\"}")
+    }
+    let worker = doc.field(doc.root, "worker").to_string()
+    if worker.is_empty() {
+        return json_reply(mut s, conn, 400, "{\"error\":\"give the worker's name\"}")
+    }
+    if req.path.as_str() == "/api/work/next" {
+        let Some(job) = next_job(s) else {
+            return service::reply(mut s, conn, 204, "application/json", [])
+        }
+        let files = match tree_files(s.core, job.tree) {
+            Ok(f) => take f,
+            Err(need) => {
+                for id in need {
+                    let _ = load(mut s, id)
+                }
+                return json_reply(
+                    mut s,
+                    conn,
+                    503,
+                    "{\"error\":\"the tree is loading: ask again\"}",
+                )
+            },
+        }
+        var j = out::Json::new()
+        j.obj()
+        j.knum("job", job.id)
+        j.kstr("check", job.check.as_str())
+        j.kstr("tree", job.tree.hex().as_str())
+        j.key("files")
+        j.arr()
+        let keys = files.keys()
+        let values = files.values()
+        for i in 0..keys.len() {
+            j.arr()
+            j.str(keys[i].as_str())
+            j.str(values[i].id.hex().as_str())
+            j.num(if values[i].exec { 1 } else { 0 })
+            j.num(values[i].size)
+            j.end_arr()
+        }
+        j.end_arr()
+        j.end_obj()
+        let ev = Event::Started { job: job.id, worker: worker.clone(), time: service::now(s) }
+        let reply = service::Reply {
+            conn,
+            status: 200,
+            kind: "application/json",
+            body: bytes::of_str(j.text.as_str()),
+        }
+        return commit(
+            mut s,
+            Durable { objects: Vec::new(), events: Vec::from([take ev]) },
+            Some(take reply),
+        )
+    }
+    if req.path.as_str() == "/api/work/done" {
+        let job = doc.whole64(doc.get(doc.root, "job").unwrap_or(doc.root)).unwrap_or(0)
+        if !s.core.state.jobs.contains(job) {
+            return json_reply(mut s, conn, 404, "{\"error\":\"no such job\"}")
+        }
+        let j = s.core.state.jobs.at(job).clone()
+        if j.run != Run::Running || j.worker.as_str() != worker.as_str() {
+            return json_reply(
+                mut s,
+                conn,
+                409,
+                "{\"error\":\"that job isn't this worker's to finish\"}",
+            )
+        }
+        let Some(log) = Id::parse(doc.field(doc.root, "log")) else {
+            return json_reply(mut s, conn, 400, "{\"error\":\"give the output's blob id\"}")
+        }
+        if !s.core.stored.contains(log) {
+            return json_reply(
+                mut s,
+                conn,
+                422,
+                "{\"error\":\"send the output first (POST /api/object)\"}",
+            )
+        }
+        let status = match doc.get(doc.root, "status") {
+            Some(v) => {
+                let t = doc.text(v)
+                if t.starts_with("-") { -1 } else { i32(doc.whole(v).unwrap_or(1)) }
+            },
+            None => -1,
+        }
+        let timed_out = match doc.get(doc.root, "timed_out") {
+            Some(v) => doc.is_true(v),
+            None => false,
+        }
+        let ms = doc.whole64(doc.get(doc.root, "ms").unwrap_or(doc.root)).unwrap_or(0)
+        let x = object::evidence(
+            object::Evidence {
+                check: j.check.clone(),
+                tree: j.tree,
+                machine: worker.clone(),
+                status,
+                timed_out,
+                ms,
+                log,
+                time: service::now(s),
+            },
+        )
+        let passed = status == 0 && !timed_out
+        print(
+            f"forge: j{job} ({j.check}) {if passed { "passed" } else { "failed" }} on {worker} in {ms / 1000} s",
+        )
+        let ev = Event::Finished { job, evidence: x.id, passed, time: service::now(s) }
+        let reply = service::Reply {
+            conn,
+            status: 200,
+            kind: "application/json",
+            body: bytes::of_str("{\"kept\":true}"),
+        }
+        return commit(
+            mut s,
+            Durable { objects: Vec::from([take x]), events: Vec::from([take ev]) },
+            Some(take reply),
+        )
+    }
+    json_reply(mut s, conn, 404, "{\"error\":\"no such call\"}")
 }
 
 @test

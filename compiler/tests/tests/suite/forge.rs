@@ -76,14 +76,22 @@ fn free_port() -> u16 {
 
 /// The service, on a thread of its own: its exit status when it ends.
 fn start(build: &Path, data: &Path, work: &Path, port: u16) -> std::thread::JoinHandle<i32> {
+    let listen = format!("127.0.0.1:{port}");
+    run_forge(build, data, work, &["serve", "--listen", &listen, "--machine", "test"])
+}
+
+/// forge with `args`, on a thread of its own, with its two roots: its exit status.
+fn run_forge(
+    build: &Path,
+    data: &Path,
+    work: &Path,
+    args: &[&str],
+) -> std::thread::JoinHandle<i32> {
     let mut roots = wrela_service::files::Roots::default();
     roots.add("data", data).expect("the data root");
     roots.add("work", work).expect("the work root");
     let build = ServerBuild::load(build).expect("forge's server build");
-    let args = ["serve", "--listen", &format!("127.0.0.1:{port}"), "--machine", "test"]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    let args = args.iter().map(|s| s.to_string()).collect();
     std::thread::spawn(move || {
         wrela_service::run(wrela_service::Config {
             build,
@@ -266,4 +274,51 @@ fn forge_imports_serves_checks_lands_and_starts_again_from_its_log() {
     assert_eq!(read2["text"], "one\n2\nthree\n");
     assert_eq!(http(port2, "POST", "/api/stop", "").0, 200);
     assert_eq!(again.join().expect("the service's thread"), 0);
+}
+
+#[test]
+fn a_worker_on_another_machine_runs_a_check_and_the_service_keeps_its_evidence() {
+    let scratch = Scratch::new("remote");
+    let dirs: Vec<PathBuf> = ["repo", "build", "data", "work", "wdata", "wwork"]
+        .iter()
+        .map(|d| scratch.0.join(d))
+        .collect();
+    for d in &dirs {
+        std::fs::create_dir_all(d).expect("a directory");
+    }
+    let (repo, build, data, work, wdata, wwork) =
+        (&dirs[0], &dirs[1], &dirs[2], &dirs[3], &dirs[4], &dirs[5]);
+    repository(repo);
+    wrela_tests::must_build(&repo_root().join("forge"), build);
+    let port = free_port();
+    let listen = format!("127.0.0.1:{port}");
+    // The service runs no checks itself: its worker is elsewhere.
+    let service = run_forge(build, data, work, &["serve", "--listen", &listen, "--no-worker"]);
+    ready(port);
+    http(port, "POST", "/api/import", &serde_json::json!({"git": repo, "ref": "main"}).to_string());
+    wait_until("the import", || call(port, "log", serde_json::json!({}))["main"] == 2);
+    let change = call(port, "open", serde_json::json!({"intent": "A remote check"}))["change"]
+        .as_str()
+        .expect("a change")
+        .to_string();
+    call(port, "write", serde_json::json!({"change": change, "path": "c.txt", "content": "sea\n"}));
+    let job = call(port, "check", serde_json::json!({"change": change, "check": "wgsl"}))["job"]
+        .as_str()
+        .expect("a job")
+        .to_string();
+    let worker = run_forge(
+        build,
+        wdata,
+        wwork,
+        &["work", "--server", &listen, "--machine", "far", "--jobs", "1"],
+    );
+    wait_until("the remote check", || job_state(port, &job)["state"] == "passed");
+    let done = job_state(port, &job);
+    assert_eq!(done["worker"], "far");
+    assert!(done["output_tail"].as_str().expect("its output").contains("checked wgsl"), "{done}");
+    assert_eq!(std::fs::read_to_string(wwork.join("c.txt")).expect("the remote checkout"), "sea\n");
+    assert!(!work.join("c.txt").exists(), "the service's own checkout ran nothing");
+    assert_eq!(worker.join().expect("the worker's thread"), 0, "it stops after its one job");
+    assert_eq!(http(port, "POST", "/api/stop", "").0, 200);
+    assert_eq!(service.join().expect("the service's thread"), 0);
 }

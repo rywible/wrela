@@ -1,0 +1,346 @@
+// A worker on another machine (spec/forge.md): `forge work --server ADDR --machine NAME [--jobs N]`
+// (N checks, then it stops), with a
+// `data` root for what its checkout holds and a `work` root for the checkout. It asks the service
+// for the next check (`POST /api/work/next`), fetches the files its checkout lacks
+// (`GET /api/object/<id>`, each checked against its id), runs `tools/check.sh` in the checkout,
+// sends the output (`POST /api/object`), and says how it ended (`POST /api/work/done`). The
+// service keeps the evidence. A worker with nothing to do asks again every two seconds.
+
+use blake3::Id
+use jobs::{WORK, manifest, manifest_of, manifest_path}
+use object::{File, Files}
+use out::Json
+use platform::service as host
+use service::{For, Service, wait}
+use std::io::{IoError, print}
+use std::json::{Json as Doc}
+
+const IDLE: u32 = 0
+const ASKING: u32 = 1
+const FETCHING: u32 = 2
+const RUNNING: u32 = 3
+const SENDING: u32 = 4
+const TELLING: u32 = 5
+
+/// What a worker's host requests answer.
+pub const MANIFEST: u32 = 1
+pub const WROTE: u32 = 2
+pub const RAN: u32 = 3
+pub const WOKEN: u32 = 4
+pub const DONE_WITH: u32 = 5
+
+pub struct Remote: Clone {
+    name: String,
+    /// The checks to run before it stops; 0 for no end.
+    jobs_left: u64,
+    held: Files,
+    known: bool,
+    stage: u32,
+    /// Whether a call or a host request the worker waits on is out.
+    waiting: bool,
+    job: u64,
+    check: String,
+    target: Files,
+    fetch: Vec<(String, File)>,
+    at: u32,
+    status: i32,
+    timed_out: bool,
+    ms: u64,
+    output: Vec<u8>,
+}
+
+pub fn idle() -> Remote {
+    Remote {
+        name: String::new(),
+        jobs_left: 0,
+        held: SortedMap::new(),
+        known: false,
+        stage: IDLE,
+        waiting: false,
+        job: 0,
+        check: String::new(),
+        target: SortedMap::new(),
+        fetch: Vec::new(),
+        at: 0,
+        status: 0,
+        timed_out: false,
+        ms: 0,
+        output: Vec::new(),
+    }
+}
+
+pub fn start(s: mut Service) {
+    s.calls = calls::calls(client::server_of(s.args).as_str())
+    var name = String::from("worker")
+    for i in 0..s.args.len() {
+        if s.args[i].as_str() == "--machine" && i + 1 < s.args.len() {
+            name = s.args[i + 1].clone()
+        }
+    }
+    s.remote.name = take name
+    for i in 0..s.args.len() {
+        if s.args[i].as_str() == "--jobs" && i + 1 < s.args.len() {
+            s.remote.jobs_left = bytes::parse_u64(s.args[i + 1].as_str()).unwrap_or(0)
+        }
+    }
+    s.remote.waiting = true
+    wait(mut s, host::read(manifest_path(s.remote.name.as_str()).as_str()), For::Remote(MANIFEST))
+    print(f"forge: working for {s.calls.server} as {s.remote.name}")
+}
+
+/// A host request of the worker's answered.
+pub fn answered(s: mut Service, what: u32, r: take Result<Vec<u8>, IoError>) {
+    if what == MANIFEST {
+        if let Ok(b) = take r {
+            if let Some(files) = manifest_of(take b) {
+                s.remote.held = take files
+            }
+        }
+        s.remote.known = true
+        s.remote.waiting = false
+    } else if what == WROTE {
+        if let Err(e) = r {
+            s.remote.status = -1
+            s.remote.output = bytes::of_str(
+                f"the worker couldn't write its checkout: {e.message()}\n".as_str(),
+            )
+        }
+        s.remote.at += 1
+        s.remote.waiting = false
+    } else if what == RAN {
+        match take r {
+            Ok(b) => match host::ran_of(take b) {
+                Some(x) => {
+                    var out: Vec<u8> = Vec::new()
+                    bytes::push_run(mut out, x.stdout)
+                    if !x.stderr.is_empty() {
+                        bytes::push_str(mut out, "\n---- stderr ----\n")
+                        bytes::push_run(mut out, x.stderr)
+                    }
+                    s.remote.status = x.status
+                    s.remote.timed_out = x.timed_out
+                    s.remote.ms = x.ms
+                    s.remote.output = take out
+                },
+                None => {
+                    s.remote.status = -1
+                    s.remote.output = bytes::of_str("the worker couldn't read the check's answer\n")
+                },
+            },
+            Err(e) => {
+                s.remote.status = -1
+                s.remote.output = bytes::of_str(f"the check didn't run: {e.message()}\n".as_str())
+            },
+        }
+        s.remote.stage = SENDING
+        s.remote.waiting = false
+    } else if what == WOKEN {
+        s.remote.waiting = false
+    }
+}
+
+/// Asks again in `ms` milliseconds.
+fn later(s: mut Service, ms: u32) {
+    s.remote.stage = IDLE
+    s.remote.waiting = true
+    wait(mut s, host::after(ms), For::Remote(WOKEN))
+}
+
+/// Takes the worker's next step, if it waits on nothing.
+pub fn pump(s: mut Service) {
+    if s.remote.waiting || s.calls.busy || !s.remote.known {
+        return
+    }
+    let stage = s.remote.stage
+    if stage == IDLE {
+        var j = Json::new()
+        j.obj()
+        j.kstr("worker", s.remote.name.as_str())
+        j.end_obj()
+        s.remote.stage = ASKING
+        s.remote.waiting = true
+        calls::call(
+            mut s,
+            "POST",
+            "/api/work/next",
+            "application/json",
+            bytes::of_str(j.text.as_str()),
+            ASKING,
+        )
+    } else if stage == FETCHING {
+        if s.remote.status != 0 {
+            return finish_checkout(mut s)
+        }
+        if s.remote.at < s.remote.fetch.len() {
+            let id = s.remote.fetch[s.remote.at].1.id
+            s.remote.waiting = true
+            calls::call(
+                mut s,
+                "GET",
+                f"/api/object/{id.hex()}".as_str(),
+                "application/octet-stream",
+                [],
+                FETCHING,
+            )
+        } else {
+            finish_checkout(mut s)
+        }
+    } else if stage == SENDING {
+        s.remote.waiting = true
+        let out = s.remote.output.clone()
+        calls::call(mut s, "POST", "/api/object", "application/octet-stream", out, SENDING)
+    }
+}
+
+/// The checkout holds the job's files: what it no longer holds goes, and the check runs.
+fn finish_checkout(s: mut Service) {
+    var gone: Vec<String> = Vec::new()
+    for p in s.remote.held.keys() {
+        if !s.remote.target.contains(p.clone()) {
+            gone.push(p.clone())
+        }
+    }
+    for p in gone {
+        wait(mut s, host::remove(f"{WORK}/{p}".as_str(), all: false), For::Remote(DONE_WITH))
+    }
+    s.remote.held = s.remote.target.clone()
+    wait(
+        mut s,
+        host::write(manifest_path(s.remote.name.as_str()).as_str(), manifest(s.remote.held)),
+        For::Remote(DONE_WITH),
+    )
+    s.remote.stage = RUNNING
+    s.remote.waiting = true
+    if s.remote.status != 0 {
+        // The checkout failed: that is what the check says.
+        s.remote.stage = SENDING
+        s.remote.waiting = false
+        return
+    }
+    var argv: Vec<String> = Vec::from([String::from("tools/check.sh")])
+    if s.remote.check.as_str() != "suite" {
+        argv.push(s.remote.check.clone())
+    }
+    let r = host::Run {
+        tag: s.remote.job,
+        argv,
+        cwd: WORK.to_string(),
+        env: Vec::from([(String::from("FORGE_JOB"), f"j{s.remote.job}")]),
+        limit_ms: 10800000,
+        cap: 16777216,
+        stdin: Vec::new(),
+    }
+    wait(mut s, host::run(r), For::Remote(RAN))
+    print(f"forge: running j{s.remote.job} ({s.remote.check})")
+}
+
+/// A call's answer.
+pub fn got(s: mut Service, purpose: u32, status: u32, body: take Vec<u8>) {
+    s.remote.waiting = false
+    if status == 0 {
+        print(f"forge: {bytes::text_of(body)}; trying again in 5 s")
+        return later(mut s, 5000)
+    }
+    if purpose == ASKING {
+        if status != 200 {
+            return later(mut s, 2000)
+        }
+        let Ok(doc) = Doc::read(body) else { return later(mut s, 2000) }
+        let Some(job) = doc.get(doc.root, "job") else { return later(mut s, 2000) }
+        s.remote.job = doc.whole64(job).unwrap_or(0)
+        s.remote.check = doc.field(doc.root, "check").to_string()
+        var target: Files = SortedMap::new()
+        if let Some(files) = doc.get(doc.root, "files") {
+            for i in 0..doc.count(files) {
+                let f = doc.at(files, i)
+                let Some(id) = Id::parse(doc.text(doc.at(f, 1))) else { continue }
+                let file = File {
+                    id,
+                    exec: doc.whole(doc.at(f, 2)) == Some(1),
+                    size: doc.whole64(doc.at(f, 3)).unwrap_or(0),
+                }
+                let _ = target.insert(doc.text(doc.at(f, 0)).to_string(), file)
+            }
+        }
+        var fetch: Vec<(String, File)> = Vec::new()
+        let keys = target.keys()
+        let values = target.values()
+        for i in 0..keys.len() {
+            if s.remote.held.get(keys[i].clone()) != Some(values[i]) {
+                fetch.push((keys[i].clone(), values[i]))
+            }
+        }
+        print(f"forge: j{s.remote.job} ({s.remote.check}): {fetch.len()} files to fetch")
+        s.remote.target = take target
+        s.remote.fetch = take fetch
+        s.remote.at = 0
+        s.remote.status = 0
+        s.remote.output = Vec::new()
+        s.remote.stage = FETCHING
+    } else if purpose == FETCHING {
+        let (path, f) = s.remote.fetch[s.remote.at].clone()
+        if status != 200 || object::blob_id(body) != f.id {
+            s.remote.status = -1
+            s.remote.output = bytes::of_str(f"the service sent {path} wrong\n".as_str())
+            return
+        }
+        let p = path.as_str()
+        var slash = p.len()
+        for k in 0..p.len() {
+            if p.byte(k) == 47 {
+                slash = k
+            }
+        }
+        if slash < p.len() {
+            wait(
+                mut s,
+                host::mkdir(f"{WORK}/{p.slice(from: 0, to: slash)}".as_str()),
+                For::Remote(DONE_WITH),
+            )
+        }
+        s.remote.waiting = true
+        wait(
+            mut s,
+            host::write_unflushed(f"{WORK}/{p}".as_str(), body, exec: f.exec),
+            For::Remote(WROTE),
+        )
+    } else if purpose == SENDING {
+        if status != 200 {
+            return later(mut s, 5000)
+        }
+        let log = bytes::text_of(body)
+        var j = Json::new()
+        j.obj()
+        j.knum("job", s.remote.job)
+        j.kstr("worker", s.remote.name.as_str())
+        j.key("status")
+        j.int(i64(s.remote.status))
+        j.kbool("timed_out", s.remote.timed_out)
+        j.knum("ms", s.remote.ms)
+        j.kstr("log", log.as_str().trim())
+        j.end_obj()
+        s.remote.stage = TELLING
+        s.remote.waiting = true
+        calls::call(
+            mut s,
+            "POST",
+            "/api/work/done",
+            "application/json",
+            bytes::of_str(j.text.as_str()),
+            TELLING,
+        )
+    } else if purpose == TELLING {
+        print(
+            f"forge: j{s.remote.job} {if s.remote.status == 0 && !s.remote.timed_out { "passed" } else { "failed" }}",
+        )
+        s.remote.stage = IDLE
+        s.remote.output = Vec::new()
+        if s.remote.jobs_left > 0 {
+            s.remote.jobs_left -= 1
+            if s.remote.jobs_left == 0 {
+                host::exit(0)
+                s.phase = service::Phase::Stopped
+            }
+        }
+    }
+}

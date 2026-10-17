@@ -3,6 +3,7 @@
 // list of children. An object's children are its keys and values in turn, in order. A malformed
 // document is an error, never a panic. `std::fmt`'s `json_text` and `json_number` write JSON.
 
+/// What a value is.
 pub enum Kind: Copy + Eq {
     Null,
     False,
@@ -13,7 +14,9 @@ pub enum Kind: Copy + Eq {
     Object,
 }
 
+/// One value of a document.
 pub struct Value: Clone {
+    /// What it is.
     pub kind: Kind,
     /// A string's text, or a number as it was written.
     text: String,
@@ -22,9 +25,11 @@ pub struct Value: Clone {
     count: u32,
 }
 
+/// A document: its values, each named by its number, and the root's.
 pub struct Json: Clone {
     values: Vec<Value>,
     children: Vec<u32>,
+    /// The document's value: the number of its root.
     pub root: u32,
 }
 
@@ -44,6 +49,7 @@ impl Json {
         Ok(take json)
     }
 
+    /// What value `v` is.
     pub fn kind(self, v: u32) -> Kind {
         self.values[v].kind
     }

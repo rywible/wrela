@@ -8,24 +8,11 @@
 // A value that is all digits is a number, `true` and `false` are booleans, and anything else is
 // text. The service is at 127.0.0.1:7171 unless `--server` says otherwise.
 
-use http::Answer
 use out::Json
-use platform::net::send
 use platform::service as host
-use service::{For, Service, wait}
-use std::io::{IoError, print}
+use service::Service
 
-pub struct Client: Clone {
-    conn: u32,
-    request: Vec<u8>,
-    buf: Vec<u8>,
-}
-
-pub fn idle() -> Client {
-    Client { conn: 0, request: Vec::new(), buf: Vec::new() }
-}
-
-const USAGE: Text = "usage:\n  forge serve [--listen ADDR] [--machine NAME] [--landers IP,...]\n  forge <tool> [key=value...] [--server ADDR]   (tools: open changes read list search write edit remove move status diff snap check job submit close log land)\n  forge call <tool> '<json arguments>' [--server ADDR]\n  forge import <git-dir> [ref] [--server ADDR]\n"
+const USAGE: Text = "usage:\n  forge serve [--listen ADDR] [--machine NAME] [--landers IP,...] [--no-worker]\n  forge work --server ADDR --machine NAME [--jobs N]\n  forge <tool> [key=value...] [--server ADDR]   (tools: open changes read list search write edit remove move status diff snap check job submit close log land)\n  forge call <tool> '<json arguments>' [--server ADDR]\n  forge import <git-dir> [ref] [--server ADDR]\n"
 
 fn done(s: mut Service, code: u32, text: str) {
     if code == 0 {
@@ -101,6 +88,16 @@ fn request(args: [String]) -> Result<(Text, String), String> {
     Ok(("/api/call", take j.text))
 }
 
+/// The service's address: `--server`, or forge's usual one.
+pub fn server_of(args: [String]) -> String {
+    for i in 0..args.len() {
+        if args[i].as_str() == "--server" && i + 1 < args.len() {
+            return args[i + 1].clone()
+        }
+    }
+    String::from("127.0.0.1:7171")
+}
+
 pub fn start(s: mut Service) {
     if s.args.is_empty() || s.args[0].as_str() == "help" || s.args[0].as_str() == "--help" {
         return done(mut s, 0, USAGE)
@@ -109,50 +106,18 @@ pub fn start(s: mut Service) {
         Ok(x) => take x,
         Err(why) => return done(mut s, 2, f"forge: {why}\n{USAGE}".as_str()),
     }
-    var server = String::from("127.0.0.1:7171")
-    for i in 0..s.args.len() {
-        if s.args[i].as_str() == "--server" && i + 1 < s.args.len() {
-            server = s.args[i + 1].clone()
-        }
-    }
-    s.client.request = http::request(
-        "POST",
-        server.as_str(),
-        path,
-        "application/json",
-        bytes::of_str(body.as_str()),
-    )
-    wait(mut s, host::connect(server.as_str()), For::Client(1))
+    s.calls = calls::calls(server_of(s.args).as_str())
+    calls::call(mut s, "POST", path, "application/json", bytes::of_str(body.as_str()), 1)
 }
 
-pub fn answered(s: mut Service, step: u32, r: take Result<Vec<u8>, IoError>) {
-    let _ = step
-    match take r {
-        Ok(b) => s.client.conn = host::conn_of(take b).unwrap_or(0),
-        Err(e) => done(mut s, 1, f"forge: can't reach the service: {e.message()}\n".as_str()),
+/// The call's answer: printed, and the command's status.
+pub fn got(s: mut Service, status: u32, body: take Vec<u8>) {
+    var text = bytes::text_of(body)
+    text.push_str("\n")
+    if status == 0 {
+        return done(mut s, 1, f"forge: {text}".as_str())
     }
-}
-
-pub fn connection(s: mut Service, conn: u32, open: bool) {
-    if open {
-        send(conn, s.client.request)
-    } else if s.phase != service::Phase::Stopped {
-        done(mut s, 1, "forge: the service closed the connection before it answered\n")
-    }
-}
-
-pub fn bytes(s: mut Service, conn: u32, b: [u8]) {
-    let _ = conn
-    bytes::push_run(mut s.client.buf, b)
-    match http::read_response(mut s.client.buf) {
-        Answer::Wait => {},
-        Answer::Got { status, body } => {
-            var text = bytes::text_of(body)
-            text.push_str("\n")
-            done(mut s, if status < 400 { 0 } else { 1 }, text.as_str())
-        },
-        Answer::Bad(why) => done(mut s, 1, f"forge: a malformed answer: {why}\n".as_str()),
-    }
+    done(mut s, if status < 400 { 0 } else { 1 }, text.as_str())
 }
 
 @test
