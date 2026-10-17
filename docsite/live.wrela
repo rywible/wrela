@@ -1123,6 +1123,12 @@ pub fn shown(v: Vertex, image: Texture<Rgba8>, linear: Sampler, look: Shown) -> 
     Over { color: vec4(c.xyz, saturate(0.5 - out) * look.alpha) }
 }
 
+/// A colour over all it covers: what the docs open from.
+@fragment
+pub fn solid(v: Vertex, color: vec4) -> Over {
+    Over { color }
+}
+
 /// How lit `p` is from `light`, by how near the field comes to the ray toward it: 0 to 1.
 fn shadow(scene: Scene, p: vec3, light: vec3, radius: f32) -> f32 {
     var lit = 1.0

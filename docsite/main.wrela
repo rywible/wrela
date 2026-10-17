@@ -24,7 +24,8 @@ use field::{Look, field, quad}
 use index::{Hit, Index, lower}
 use layout::{BUTTON, CARD_LINK, Laid, MAIN, Role, lay_out}
 use live::{
-    DISTANCE, Read, SURFACE, Shown, View, read, shown, slice_point, slice_view, view, with_number,
+    DISTANCE, Read, SURFACE, Shown, View, read, shown, slice_point, slice_view, solid, view,
+    with_number,
 }
 use markdown::{Block, Kind, Run, parse, plain}
 use platform::host
@@ -78,8 +79,11 @@ const HELD_BY_MOUSE: u32 = 0
 const FINGER_UNSURE: u32 = 1
 const FINGER_TURNS: u32 = 2
 const FINGER_SCROLLS: u32 = 3
-/// How far a finger moves before its way counts, in CSS pixels.
+/// How far a finger moves before its way counts, and before it drags the page, in CSS pixels; and
+/// how long a drag takes to make up that way (its time constant, in seconds).
 const FINGER_SLOP: f32 = 10.0
+const PAGE_SLOP: f32 = 8.0
+const CATCH_UP: f32 = 0.06
 /// How long a finger rests on words before it selects them, in seconds.
 const HOLD: f32 = 0.45
 /// How far past the page's top a finger pulls it to load it again, in CSS pixels.
@@ -196,6 +200,10 @@ pub struct Docs {
     /// carries on and slows (its speed in pixels a second, and whether it's the list's).
     swipe: Option<(f32, bool)>,
     trail: Vec<(f32, f32)>,
+    /// A finger's drag: how far it was from where it pressed, and what's left of the way it moved
+    /// before it counted as a drag, which the page makes up over a moment rather than at once.
+    drag_dy: f32,
+    slop_left: f32,
     fling: Option<(f32, bool)>,
     /// How far a finger pulls past the page's top (above 0), or stretches it past its end (below
     /// 0), in pixels: let go, it springs back. A pull doesn't move the page; a stretch does.
@@ -228,6 +236,9 @@ pub struct Docs {
     result_glow: Glow,
     /// When the page being read was shown: it comes in over a moment.
     shown_at: f32,
+    /// When the first frame was, and when the first page was shown (below 0: not yet).
+    started: f32,
+    opened_at: f32,
     /// The page drawn into images, a tile each, which the screen shows where the page is: a page
     /// that scrolls draws only its tiles, and a tile is drawn again only when the page's layout
     /// changes (`laid_version`). Their list, apart from the frame's.
@@ -460,6 +471,8 @@ pub fn init() -> Docs {
         press_at: 0.0,
         swipe: None,
         trail: Vec::new(),
+        drag_dy: 0.0,
+        slop_left: 0.0,
         fling: None,
         pull: 0.0,
         reloading: false,
@@ -480,6 +493,8 @@ pub fn init() -> Docs {
         nav_glow: Glow::none(),
         result_glow: Glow::none(),
         shown_at: -10.0,
+        started: -1.0,
+        opened_at: -1.0,
         tiles: Vec::new(),
         tile_list: DrawList::new(),
         laid_version: 0,
@@ -499,6 +514,7 @@ pub fn frame(s: mut Docs, time: f32, width: u32, height: u32) {
     s.screen = vec2(f32(width), f32(height))
     let dt = clamp(time - s.time, 0.0, 0.1)
     s.time = time
+    if s.started < 0.0 { s.started = time }
     // A new size, as when the page is zoomed or moved to another display, may come with a new
     // pixel ratio: ask again.
     if s.screen != s.asked && s.environment.is_none() {
@@ -511,12 +527,15 @@ pub fn frame(s: mut Docs, time: f32, width: u32, height: u32) {
         s.dirty = true
         handle(mut s, e, frame)
     }
+    // Trouble opens the docs as a page does: to say so.
+    if s.opened_at < 0.0 && !s.trouble.is_empty() { s.opened_at = s.time }
     keep_laid_out(mut s, frame)
     keep_lives(mut s, frame, dt)
     held_long(mut s, frame)
     glide_on(mut s, frame, dt)
     fling_on(mut s, frame, dt)
     spring_on(mut s, dt)
+    catch_up(mut s, frame, dt)
     keep_nav(mut s, frame)
     keep_glows(mut s, frame, dt)
     let changed = s.dirty || moving(s, frame)
@@ -530,6 +549,17 @@ pub fn frame(s: mut Docs, time: f32, width: u32, height: u32) {
 /// How long a page takes to come in, and search's box or the list of pages to open, in seconds.
 const APPEAR: f32 = 0.22
 const OPEN: f32 = 0.16
+/// How long the docs show only the page's colour while their first page comes, at most, and how
+/// long they take to come in from it, as a whole, in seconds.
+const WAIT: f32 = 0.6
+const OPENING: f32 = 0.4
+
+/// When the docs open: as their first page is shown, or something's wrong, or `WAIT` after they
+/// start while the page is still on its way, which they then say.
+fn opens_at(s: Docs) -> f32 {
+    let late = s.started + WAIT
+    if s.opened_at >= 0.0 { min(s.opened_at, late) } else { late }
+}
 
 /// How much of a moment that began at `since` has passed by `now`, eased: 1 at once when there's
 /// to be no motion.
@@ -547,6 +577,7 @@ fn moving(s: Docs, f: Frame) -> bool {
         s.page_load.is_some() ||
         s.reloading ||
         s.time - s.shown_at < APPEAR + 0.05 ||
+        s.time - opens_at(s) < OPENING + 0.05 ||
         s.time - s.search_at < OPEN + 0.05 ||
         s.time - s.nav_at < OPEN + 0.05
     (lively && !s.reduced) ||
@@ -558,6 +589,7 @@ fn moving(s: Docs, f: Frame) -> bool {
         s.result_glow.moving() ||
         markers_moving(s) ||
         s.time - s.copied_at < SAID + 0.25 ||
+        s.slop_left != 0.0 ||
         figures_drawing(s, f) ||
         s.renderer.waiting()
 }
@@ -832,6 +864,7 @@ fn show(s: mut Docs, path: str, blocks: take Vec<Block>, markdown: take String) 
     s.markdown = take markdown
     s.missed.clear()
     if appears(s.reloading, s.shown.as_str(), path) { s.shown_at = s.time }
+    if s.opened_at < 0.0 { s.opened_at = s.time }
     s.shown = path.to_string()
     s.nav_follow = true
     open_shown_group(mut s)
@@ -1178,6 +1211,7 @@ fn handle(s: mut Docs, e: Event, f: Frame) {
         Event::PointerDown { at, button, .. } => {
             // A press stops a fling, as a finger stops a page that's still moving.
             s.fling = None
+            s.slop_left = 0.0
             if button != Button::Primary {
                 s.pointer = at
                 return
@@ -1741,6 +1775,7 @@ fn drag(s: mut Docs, at: vec2, f: Frame) {
                 s.knob_held = None
                 s.press = Some((from, true, String::new()))
                 s.swipe = Some((s.scroll, false))
+                s.slop_left = at.y - from.y
                 drag(mut s, at, f)
                 return
             }
@@ -1761,6 +1796,7 @@ fn drag(s: mut Docs, at: vec2, f: Frame) {
         if held == FINGER_UNSURE {
             if length(d) < FINGER_SLOP { return }
             held = if abs(d.x) > abs(d.y) { FINGER_TURNS } else { FINGER_SCROLLS }
+            if held == FINGER_SCROLLS { s.slop_left = at.y - from.y }
             s.orbit = Some((i, from, turn, tilt, held))
         }
         // A slice doesn't turn: the pointer is its probe.
@@ -1771,7 +1807,7 @@ fn drag(s: mut Docs, at: vec2, f: Frame) {
         }
         if held == FINGER_SCROLLS {
             if let Some((start, _)) = s.swipe {
-                finger_scroll(mut s, f, start - (at.y - from.y))
+                finger_drag(mut s, f, start, nav: false, dy: at.y - from.y)
                 follow_finger(mut s, at.y)
             }
         }
@@ -1786,14 +1822,14 @@ fn drag(s: mut Docs, at: vec2, f: Frame) {
     let Some((from, moved, held)) = s.press else { return }
     let link = held.clone()
     // A finger wavers as it taps: it takes a longer move than a mouse's to be a drag.
-    let slop = if s.swipe.is_some() { 10.0 } else { 4.0 }
+    let slop = if s.swipe.is_some() { PAGE_SLOP } else { 4.0 }
     let far = length(at - from) > slop * s.u
     if !moved && !far { return }
+    // The drag begins where it is: the page doesn't jump the way the finger came.
+    if !moved && s.swipe.is_some() { s.slop_left = at.y - from.y }
     s.press = Some((from, true, link.clone()))
     if let Some((start, nav)) = s.swipe {
-        if nav {
-            s.nav_scroll = max(start - (at.y - from.y), 0.0)
-        } else { finger_scroll(mut s, f, start - (at.y - from.y)) }
+        finger_drag(mut s, f, start, nav, at.y - from.y)
         follow_finger(mut s, at.y)
         return
     }
@@ -1805,6 +1841,27 @@ fn drag(s: mut Docs, at: vec2, f: Frame) {
     }
     let Some((start, _)) = s.selected else { return }
     if let Some(k) = place(s, at, f) { s.selected = Some((start, k)) }
+}
+
+/// A finger drags the page, or the list of pages (`nav`), from `start`, `dy` from where it pressed:
+/// the page follows it, but for what's left of the way it came before the drag began.
+fn finger_drag(s: mut Docs, f: Frame, start: f32, nav: bool, dy: f32) {
+    s.drag_dy = dy
+    let y = start - dy + s.slop_left
+    if nav { s.nav_scroll = max(y, 0.0) } else { finger_scroll(mut s, f, y) }
+}
+
+/// A drag makes up the way its finger came before it began, over a moment: the page comes under
+/// the finger without a jump. A finger let go, or the system asking for less motion, ends it.
+fn catch_up(s: mut Docs, f: Frame, dt: f32) {
+    if s.slop_left == 0.0 { return }
+    let Some((start, nav)) = s.swipe else {
+        s.slop_left = 0.0
+        return
+    }
+    let left = if s.reduced { 0.0 } else { s.slop_left * exp(-dt / CATCH_UP) }
+    s.slop_left = if abs(left) < 0.1 { 0.0 } else { left }
+    finger_drag(mut s, f, start, nav, s.drag_dy)
 }
 
 /// A finger scrolls the page to `y`: within its ends, and past them it stretches, less the
@@ -2872,10 +2929,15 @@ fn shift(s: Docs) -> f32 {
     s.scroll - min(s.pull, 0.0)
 }
 
-/// Where the page's top is on the screen now, on a whole pixel: its tiles are drawn there as they
-/// were drawn into their images, pixel for pixel.
+/// Where the page's top is on the screen now, on a whole pixel, and a little lower while it comes
+/// in: its tiles are drawn there as they were drawn into their images, pixel for pixel.
 fn page_y(s: Docs, f: Frame) -> f32 {
-    floor(f.top - shift(s) + 0.5)
+    floor(f.top - shift(s) + 0.5) + rise(s)
+}
+
+/// How far below its place a page just shown is, as it comes in: a few pixels, rising to none.
+fn rise(s: Docs) -> f32 {
+    floor((1.0 - eased(s.shown_at, s.time, APPEAR, s.reduced)) * 8.0 * s.u + 0.5)
 }
 
 /// A pixel's hairline: at least a device pixel.
@@ -2919,13 +2981,19 @@ fn header_buttons(s: Docs, f: Frame) -> Vec<(Rect, String)> {
 fn draw_all(s: mut Docs, f: Frame) {
     let u = s.u
     let screen = s.screen
+    // Before the docs open, only the page's colour.
+    let opens = opens_at(s)
+    if s.time < opens {
+        let blank = begin_screen_pass(clear: hex(s.p.page))
+        blank.present()
+        return
+    }
     s.list.clear(screen)
     // The page.
     s.list.push_clip(Rect::new(0.0, f.header, screen.x, screen.y - f.header))
     // A page just shown comes in: it rises a few pixels and its ink deepens.
     let appear = eased(s.shown_at, s.time, APPEAR, s.reduced)
-    let rise = floor((1.0 - appear) * 8.0 * u + 0.5)
-    let origin = vec2(f.x, page_y(s, f) + rise)
+    let origin = vec2(f.x, page_y(s, f))
     // A card or a button under a mouse lights up: a card's edge, a button's ground.
     if !s.finger && !s.searching && s.pointer.y > f.header {
         for spot in s.laid.spots {
@@ -3051,6 +3119,16 @@ fn draw_all(s: mut Docs, f: Frame) {
             ink: mix(hex(s.p.strong), hex(VOID), dim),
         },
     )
+    // The docs opening: all of it comes in together, from the page's colour.
+    let opening = eased(opens, s.time, OPENING, s.reduced)
+    if opening < 1.0 {
+        draw(
+            pass,
+            quad.bind(screen: screen, rect: vec4(0.0, 0.0, screen.x, screen.y)),
+            solid.bind(color: hex(s.p.page, 1.0 - opening)),
+            vertices: 6,
+        )
+    }
     pass.present()
 }
 
@@ -4193,6 +4271,8 @@ fn keep_lives(s: mut Docs, f: Frame, dt: f32) {
 /// Each figure on the screen: its field, drawn under the page's text and clipped under the
 /// header, its corners round.
 fn draw_figures(s: Docs, pass: std::gpu::ScreenPass, f: Frame) {
+    // A page just shown comes in, its figures with its text.
+    let appear = eased(s.shown_at, s.time, APPEAR, s.reduced)
     for i in 0..s.laid.figures.len() {
         let r = figure_rect(s, f, i)
         if r.bottom() < f.header || r.y > s.screen.y { continue }
@@ -4201,7 +4281,7 @@ fn draw_figures(s: Docs, pass: std::gpu::ScreenPass, f: Frame) {
             if s.images[k].block != block { continue }
             let top = max(r.y, f.header)
             let visible = vec4(r.x, top, r.w, min(r.bottom(), s.screen.y) - top)
-            let look = Shown { rect: vec4(r.x, r.y, r.w, r.h), round: CARD * s.u, alpha: 1.0 }
+            let look = Shown { rect: vec4(r.x, r.y, r.w, r.h), round: CARD * s.u, alpha: appear }
             let corners = quad.bind(screen: s.screen, rect: visible)
             if !s.images[k].rough_done() { continue }
             if s.images[k].sharp_done() {
@@ -5262,6 +5342,22 @@ fn a_swipe_carries_on_at_its_fingers_last_speed() {
     // Rested a fifth of a second: no fling.
     assert(swipe_speed(trail, now: 1.0 + 7.0 / 60.0 + 0.2) == 0.0)
     assert(swipe_speed(Vec::from([(1.0, 2.0)]), now: 2.0) == 0.0)
+}
+
+/// A finger's drag doesn't jump the way it came before it counted as a drag: the page starts from
+/// where it was, and makes that way up over a moment, until it's under the finger.
+@test(frames: 5, input: "scripts/drag.json")
+fn a_drag_begins_without_a_jump(docs: Docs) {
+    // The finger crossed the slop 20 pixels up; two frames on, most of that is still to make up.
+    assert(
+        docs.drag_dy == -40.0 && docs.slop_left < -5.0 && docs.slop_left > -20.0,
+        f"{docs.slop_left}",
+    )
+}
+
+@test(frames: 40, input: "scripts/drag.json")
+fn a_drag_comes_under_its_finger(docs: Docs) {
+    assert(docs.drag_dy == -40.0 && docs.slop_left == 0.0, f"{docs.slop_left}")
 }
 
 /// A page loaded again in place, by a pull, stays as it was; another page appears.

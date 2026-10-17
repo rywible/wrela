@@ -2491,6 +2491,19 @@ moves of one frame in three a frame late, each frame's step was within 1% of the
 0 or 2 frames' worth before, for about 15 ms more lag behind the finger. A hardware check on the
 Pixel 9 is still to come.
 
+On the Pixel 9 that was much better, but a little behind native scrolling; the page shook when
+search closed; and it opened in pieces. Claude (Opus 5.5) modelled a phone's touch (samples every 4
+or 8 ms, read 2 to 6 ms late, frames at 120 Hz) and found the resampler waited a sample's gap more
+than it needed: without it, a held finger's page trails it by about 9.5 ms against about 17 before,
+its steps still within 1% of the finger's, with no overshoot as the finger stops or turns; moves as
+they come trail by 6 to 9 ms with steps up to 50% uneven. A drag no longer jumps the 10 pixels its
+finger moved before it counted as a drag: it begins where it is and makes them up over a tenth of a
+second. A phone's keyboard now opens over the page (`interactive-widget=resizes-visual`), so the
+canvas isn't resized and stretched as the keyboard slides, the likely cause of the shake, which
+headless Chrome can't show. The docs now open as a whole: their page's colour from the first
+moment, in the page and in a phone's browser bar, then everything fades in together once the first
+page is ready.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new
