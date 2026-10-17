@@ -31,7 +31,7 @@ export function linkUrl(text: string): string {
   if ((url.protocol !== "https:" && url.protocol !== "http:") || url.username || url.password) throw new Error("a link is an http or https URL");
   return url.href;
 }
-const CURSORS = new Set(["default", "pointer", "text", "grab", "grabbing", "crosshair", "move", "nwse-resize", "nesw-resize"]);
+const CURSORS = new Set(["default", "pointer", "text", "grab", "grabbing", "crosshair", "move", "ew-resize", "nwse-resize", "nesw-resize"]);
 /** What `environment`'s capabilities word says this host has (runtime/browser): its bits. */
 export const PASTE_EVENTS = 1;
 export const TEXT_INPUT = 2;
@@ -362,6 +362,11 @@ export class BrowserPlatform {
     if (service === "clipboard/offer") {
       if (!this.#input) throw new Error("this host has no clipboard yet");
       const r = new Reader(body); this.#input.offer(r.str(), r.str()); return new Uint8Array();
+    }
+    if (service === "clipboard/write") {
+      // Text on the system clipboard now, as a person's press asked (a copy button): the browser
+      // refuses it without that press, and the program hears why.
+      await navigator.clipboard.writeText(DECODER.decode(body)); return new Uint8Array();
     }
     if (service === "clipboard/pasted") {
       const pasted = this.#input?.pasted(new Reader(body).u32());

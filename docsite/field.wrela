@@ -3,7 +3,8 @@
 // fading as they spread from it and drifting slowly outward. Wrela's content is fields; so is the
 // mark, and the lines show it. The letters take the mark's exact field; the lines take the
 // distance to each stroke's centre line, the strokes joined smoothly, so they round as they
-// spread, as a map's contours do.
+// spread, as a map's contours do. The pointer is a field too: a disc joined smoothly to the
+// mark's, so the lines flow round it.
 use brand::facet::{CAP, MarkRun, mark_distance}
 use std::gpu::{ClipPosition, Over, VertexIndex}
 
@@ -45,6 +46,8 @@ pub struct Look: Copy + GpuData {
     pub ground: vec4,
     pub line: vec4,
     pub ink: vec4,
+    /// The pointer's disc: its centre and radius in pixels, and how much it joins (0 to 1).
+    pub pointer: vec4,
     /// Where the band's foot fades into `below`, the page's colour, and over how many pixels
     /// (0: a hard edge).
     pub foot: f32,
@@ -62,6 +65,13 @@ pub fn field(v: Vertex, runs: [MarkRun], look: Look) -> Over {
         let r = runs[i]
         exact = min(exact, mark_distance(p, r))
         round = smooth_min(round, stroke_distance(p, r), 0.12)
+    }
+    if look.pointer.w > 0.001 {
+        let q = vec2(look.pointer.x - look.centre.x, look.centre.y - look.pointer.y) / look.ems +
+            vec2(0.0, CAP * 0.5)
+        let r = look.pointer.z / look.ems
+        let joined = smooth_min(round, length(p - q) - r, r * 1.5 + 0.05)
+        round = mix(round, joined, look.pointer.w)
     }
     let ink = saturate(0.5 - exact * look.ems)
     let px = max(round, 0.0) * look.ems

@@ -1,0 +1,1264 @@
+// Live fields: a code block that builds a field is read, and the field it builds is drawn under
+// it, lit, over the lines along which its distance is the same, as the mark's are. A reader drags
+// a number in the code and the field follows; drags the field and it turns. What's drawn is the
+// field std builds: a scene of std::field's own primitives and combinators, evaluated on the GPU
+// by their own `distance`, and lit by the gradient the compiler derives from that code.
+//
+// The reader knows a field's words, not all of Wrela: `let`s, functions that return a `Surface`
+// and calls to them, numbers and arithmetic on them, `vec3`, `time`, std::field's primitives
+// (`sphere`, `round_cone`, `cuboid`, `ellipsoid`, `oval`) and its combinators (`union`,
+// `smooth_union`, `intersect`, `smooth_intersect`, `smooth_subtract`, `translate`, `scale`). A
+// block it can't read is shown as code alone.
+use field::Vertex
+use std::derive::{Box3, interval}
+use std::field::{Bound, Surface, cuboid, ellipsoid, oval, round_cone, smax, smin, sphere}
+use std::gpu::Over
+
+/// The most nodes a scene holds.
+pub const NODES: u32 = 24
+
+// A node's kinds: primitives, then combinators.
+const SPHERE: u32 = 0
+const ROUND_CONE: u32 = 1
+const CUBOID: u32 = 2
+const ELLIPSOID: u32 = 3
+const OVAL: u32 = 4
+const UNION: u32 = 10
+const SMOOTH_UNION: u32 = 11
+const INTERSECT: u32 = 12
+const SMOOTH_INTERSECT: u32 = 13
+const SMOOTH_SUBTRACT: u32 = 14
+
+/// A node of a scene: a primitive, its numbers in `p` and `q`, seen through a shift `at` and a
+/// size `size` (its point is `(p - at) / size`, its distance times `|size|`); or a combinator
+/// of the nodes `a` and `b` before it, over a width `k`.
+pub struct Node: Copy + GpuData {
+    kind: u32,
+    a: u32,
+    b: u32,
+    k: f32,
+    at: vec3,
+    size: f32,
+    p: vec4,
+    q: vec4,
+}
+
+/// A field as data: its nodes in order, each after those it combines; the last is the field.
+pub struct Scene: Copy + GpuData {
+    nodes: [Node; 24],
+    len: u32,
+}
+
+impl Scene {
+    pub fn empty() -> Scene {
+        Scene {
+            nodes: [Node {
+                kind: SPHERE,
+                a: 0,
+                b: 0,
+                k: 0.0,
+                at: vec3(),
+                size: 1.0,
+                p: vec4(0.0),
+                q: vec4(0.0),
+            }; 24],
+            len: 0,
+        }
+    }
+
+    pub fn len(self) -> u32 {
+        self.len
+    }
+}
+
+/// The distance of `scene`'s field at `p`: each node in order, a primitive by std::field's own
+/// `distance`, a combinator as std::field's combines its parts.
+pub fn evaluate(scene: Scene, p: vec3) -> f32 {
+    var r = [0.0; 24]
+    for i in 0..scene.len {
+        let n = scene.nodes[i]
+        let q = (p - n.at) / n.size
+        let out = abs(n.size)
+        r[i] = match n.kind {
+            SPHERE => sphere(radius: n.p.x).distance(q) * out,
+            ROUND_CONE => round_cone(n.p.xyz, n.q.xyz, r_top: n.p.w, r_bottom: n.q.w).distance(q) *
+                out,
+            CUBOID => cuboid(half: n.p.xyz).distance(q) * out,
+            ELLIPSOID => ellipsoid(radii: n.p.xyz).distance(q) * out,
+            OVAL => oval(radii: n.p.xyz).distance(q) * out,
+            UNION => min(r[n.a], r[n.b]),
+            SMOOTH_UNION => smin(r[n.a], r[n.b], n.k),
+            INTERSECT => max(r[n.a], r[n.b]),
+            SMOOTH_INTERSECT => smax(r[n.a], r[n.b], n.k),
+            _ => smax(r[n.a], -r[n.b], n.k),
+        }
+    }
+    if scene.len == 0 { 1.0 } else { r[scene.len - 1] }
+}
+
+impl Surface for Scene {
+    fn distance(self, p: vec3) -> f32 {
+        evaluate(self, p)
+    }
+}
+
+// ---- reading a block ---------------------------------------------------------------------------
+
+/// What a block of code builds: its scene; where its numbers that the field reads are, by their
+/// bytes in the code, which a drag changes; whether it reads `time`, so it moves; and a sphere
+/// that holds it, and the height of its lowest point, to frame it and stand it on.
+pub struct Read: Clone {
+    pub scene: Scene,
+    pub knobs: Vec<(u32, u32)>,
+    pub moves: bool,
+    pub centre: vec3,
+    pub radius: f32,
+    pub floor: f32,
+}
+
+/// The field `code` builds at `time`: a function that returns a `Surface`, as the last call to
+/// it calls it; else the last `let` that is one. None where the code builds none, or builds it
+/// with words this reader doesn't know.
+pub fn read(code: str, time: f32) -> Option<Read> {
+    var r = Reader::new(code, time)
+    let Some(root) = r.result() else { return None }
+    if r.failed || r.nodes.is_empty() { return None }
+    let scene = r.scene_of(root)
+    if scene.len == 0 { return None }
+    var knobs = r.used.clone()
+    knobs.sort_by(|a, b| a.0 < b.0)
+    let (centre, radius, floor) = framing(scene)
+    Some(Read { scene, knobs, moves: r.moves, centre, radius, floor })
+}
+
+/// A sphere that holds `scene`'s field, from std::field's bounds of its primitives, and the
+/// height of their lowest point.
+fn framing(scene: Scene) -> (vec3, f32, f32) {
+    var lo = vec3(1.0e9)
+    var hi = vec3(-1.0e9)
+    for i in 0..scene.len {
+        let n = scene.nodes[i]
+        let b = match n.kind {
+            SPHERE => sphere(radius: n.p.x).bound(),
+            ROUND_CONE => round_cone(n.p.xyz, n.q.xyz, r_top: n.p.w, r_bottom: n.q.w).bound(),
+            CUBOID => cuboid(half: n.p.xyz).bound(),
+            ELLIPSOID => ellipsoid(radii: n.p.xyz).bound(),
+            OVAL => oval(radii: n.p.xyz).bound(),
+            _ => continue,
+        }
+        let c = n.at + b.centre * n.size
+        let r = b.radius * abs(n.size)
+        if r > 1.0e6 { continue }
+        lo = min(lo, c - vec3(r))
+        hi = max(hi, c + vec3(r))
+    }
+    if lo.x > hi.x { return (vec3(), 1.0, -1.0) }
+    let centre = (lo + hi) * 0.5
+    (centre, max(length(hi - lo) * 0.5, 0.05), lo.y)
+}
+
+/// A token: an identifier, a number, a string, or one character of punctuation.
+struct Token: Clone {
+    kind: u32,
+    start: u32,
+    end: u32,
+}
+
+const IDENT: u32 = 0
+const NUMBER: u32 = 1
+const TEXT: u32 = 2
+const PUNCT: u32 = 3
+
+/// A value while reading: a number, a vector, a shape (its node), a string, or a function (its
+/// index).
+enum Value: Clone {
+    Num(f32),
+    Vec(vec3),
+    Shape(u32),
+    Words,
+    Fun(u32),
+}
+
+/// A function of the block that returns a `Surface`: its name, its parameters and where each
+/// one's default value is (`NONE` for none), and its body's tokens, between its braces.
+struct Fun: Clone {
+    name: String,
+    params: Vec<String>,
+    defaults: Vec<u32>,
+    body: u32,
+    end: u32,
+}
+
+const NONE: u32 = 0xFFFFFFFF
+
+struct Reader {
+    src: String,
+    tokens: Vec<Token>,
+    at: u32,
+    nodes: Vec<Node>,
+    /// The names bound where reading is: each with the tokens of the expression it names (a
+    /// `let`'s, read when it's used), or a value (a parameter's).
+    names: Vec<(String, u32, Option<Value>)>,
+    funs: Vec<Fun>,
+    used: Vec<(u32, u32)>,
+    moves: bool,
+    time: f32,
+    failed: bool,
+    depth: u32,
+}
+
+impl Reader {
+    fn new(code: str, time: f32) -> Reader {
+        var r = Reader {
+            src: code.to_string(),
+            tokens: tokens(code),
+            at: 0,
+            nodes: Vec::new(),
+            names: Vec::new(),
+            funs: Vec::new(),
+            used: Vec::new(),
+            moves: false,
+            time,
+            failed: false,
+            depth: 0,
+        }
+        r.find_funs()
+        r
+    }
+
+    fn text(self, t: u32) -> borrow str {
+        if t >= self.tokens.len() { return self.src.as_str().slice(from: 0, to: 0) }
+        self.src.as_str().slice(from: self.tokens[t].start, to: self.tokens[t].end)
+    }
+
+    fn is(self, t: u32, s: str) -> bool {
+        t < self.tokens.len() && self.text(t) == s
+    }
+
+    /// The token after the bracket that closes the one at `t`.
+    fn past_brackets(self, t: u32) -> u32 {
+        let open = self.text(t).to_string()
+        let close = if open.as_str() == "(" { ")" } else if open.as_str() == "{" {
+            "}"
+        } else if open
+            .as_str() == "<" {
+            ">"
+        } else { "]" }
+        var depth = 0
+        var i = t
+        while i < self.tokens.len() {
+            if self.is(i, open.as_str()) { depth += 1 }
+            if self.is(i, close) {
+                depth -= 1
+                if depth == 0 { return i + 1 }
+            }
+            i += 1
+        }
+        self.tokens.len()
+    }
+
+    /// The block's functions that return a `Surface`, and where its top-level `let`s are.
+    fn find_funs(mut self) {
+        var i = 0
+        while i < self.tokens.len() {
+            if self.is(i, "fn") && i + 1 < self.tokens.len() {
+                let name = self.text(i + 1).to_string()
+                var j = i + 2
+                if self.is(j, "<") { j = self.past_brackets(j) }
+                if !self.is(j, "(") {
+                    i += 1
+                    continue
+                }
+                let close = self.past_brackets(j)
+                // Each parameter's name is the identifier before a `:` at the list's own depth.
+                var params: Vec<String> = Vec::new()
+                var defaults: Vec<u32> = Vec::new()
+                var depth = 0
+                for k in j + 1..close - 1 {
+                    let t = self.text(k)
+                    if t == "(" || t == "<" || t == "[" { depth += 1 }
+                    if t == ")" || t == ">" || t == "]" { depth -= 1 }
+                    if depth == 0 && self.is(k + 1, ":") && self.tokens[k].kind == IDENT {
+                        params.push(t.to_string())
+                        defaults.push(NONE)
+                    }
+                    // `= value` after a parameter's type: its default.
+                    if depth == 0 && t == "=" && !defaults.is_empty() {
+                        defaults[defaults.len() - 1] = k + 1
+                    }
+                }
+                var b = close
+                var surface = false
+                if self.is(b, "-") && self.is(b + 1, ">") {
+                    surface = self.is(b + 2, "Surface")
+                    b += 3
+                }
+                while b < self.tokens.len() && !self.is(b, "{") { b += 1 }
+                let end = self.past_brackets(b)
+                if surface {
+                    self.funs.push(Fun { name, params, defaults, body: b + 1, end: end - 1 })
+                }
+                i = end
+                continue
+            }
+            if self.is(i, "let") && i + 2 < self.tokens.len() && self.is(i + 2, "=") {
+                self.names.push((self.text(i + 1).to_string(), i + 3, None))
+            }
+            i += 1
+        }
+    }
+
+    /// The block's field: the last call to one of its functions that returns a `Surface`, made at
+    /// the top level; else the last top-level `let` that is a shape.
+    fn result(mut self) -> Option<u32> {
+        var call: Option<u32> = None
+        var i = 0
+        while i < self.tokens.len() {
+            // Calls inside a function's own body are that function's business.
+            var inside = false
+            for f in self.funs {
+                if i >= f.body && i < f.end { inside = true }
+            }
+            if !inside &&
+                self.tokens[i].kind == IDENT &&
+                self.is(i + 1, "(") &&
+                !(i > 0 && self.is(i - 1, "fn")) {
+                for f in self.funs {
+                    if f.name.as_str() == self.text(i) { call = Some(i) }
+                }
+            }
+            i += 1
+        }
+        if let Some(t) = call {
+            // The call alone: what's done with its field after (`.distance(p)`) isn't the field.
+            self.at = t
+            return match self.primary() {
+                Some(Value::Shape(n)) => Some(n),
+                _ => None,
+            }
+        }
+        var last: Option<u32> = None
+        for k in 0..self.names.len() {
+            let start = self.names[k].1
+            self.at = start
+            let before = self.used.len()
+            let nodes = self.nodes.len()
+            match self.expression() {
+                Some(Value::Shape(n)) => last = Some(n),
+                _ => {
+                    // Not a shape: its numbers aren't the field's.
+                    self.used.truncate(before)
+                    self.nodes.truncate(nodes)
+                },
+            }
+            self.failed = false
+        }
+        // Reading every `let` noted the numbers of those the last one doesn't use: read it again
+        // alone.
+        let Some(_) = last else { return None }
+        self.used.clear()
+        self.nodes.clear()
+        var k = self.names.len()
+        while k > 0 {
+            k -= 1
+            self.at = self.names[k].1
+            let before = self.used.len()
+            match self.expression() {
+                Some(Value::Shape(n)) => return Some(n),
+                _ => {
+                    self.used.truncate(before)
+                    self.failed = false
+                },
+            }
+        }
+        None
+    }
+
+    fn fail(mut self) -> Option<Value> {
+        self.failed = true
+        None
+    }
+
+    // expression := term (('+' | '-') term)*
+    fn expression(mut self) -> Option<Value> {
+        self.depth += 1
+        if self.depth > 64 {
+            self.depth -= 1
+            return self.fail()
+        }
+        var v = self.term()
+        while self.is(self.at, "+") || self.is(self.at, "-") {
+            // `->` ends an expression.
+            if self.is(self.at + 1, ">") { break }
+            let minus = self.is(self.at, "-")
+            self.at += 1
+            let w = self.term()
+            v = arithmetic(v, w, if minus { 1 } else { 0 })
+        }
+        self.depth -= 1
+        if v.is_none() { self.failed = true }
+        v
+    }
+
+    // term := unary (('*' | '/') unary)*
+    fn term(mut self) -> Option<Value> {
+        var v = self.unary()
+        while (self.is(self.at, "*") || self.is(self.at, "/")) && !self.is(self.at + 1, "*") {
+            let divide = self.is(self.at, "/")
+            self.at += 1
+            let w = self.unary()
+            v = arithmetic(v, w, if divide { 3 } else { 2 })
+        }
+        v
+    }
+
+    fn unary(mut self) -> Option<Value> {
+        if self.is(self.at, "-") {
+            self.at += 1
+            let v = self.unary()
+            return arithmetic(Some(Value::Num(0.0)), v, 1)
+        }
+        self.postfix()
+    }
+
+    // postfix := primary ('.' method '(' arguments ')')*
+    fn postfix(mut self) -> Option<Value> {
+        var v = self.primary()
+        while self.is(self.at, ".") && self.at + 1 < self.tokens.len() {
+            let name = self.text(self.at + 1).to_string()
+            self.at += 2
+            let args = self.arguments()
+            v = self.method(v, name.as_str(), args)
+            if v.is_none() { return self.fail() }
+        }
+        v
+    }
+
+    fn primary(mut self) -> Option<Value> {
+        if self.at >= self.tokens.len() { return self.fail() }
+        let t = self.tokens[self.at].clone()
+        if t.kind == NUMBER {
+            self.at += 1
+            let Some(n) = number(self.src.as_str().slice(from: t.start, to: t.end)) else {
+                return self.fail()
+            }
+            var seen = false
+            for u in self.used {
+                if u.0 == t.start { seen = true }
+            }
+            if !seen { self.used.push((t.start, t.end)) }
+            return Some(Value::Num(n))
+        }
+        if t.kind == TEXT {
+            self.at += 1
+            return Some(Value::Words)
+        }
+        if self.is(self.at, "(") {
+            self.at += 1
+            let v = self.expression()
+            if !self.is(self.at, ")") { return self.fail() }
+            self.at += 1
+            return v
+        }
+        if t.kind != IDENT { return self.fail() }
+        let name = self.text(self.at).to_string()
+        self.at += 1
+        if self.is(self.at, "(") {
+            let args = self.arguments()
+            return self.call(name.as_str(), args)
+        }
+        if name.as_str() == "time" {
+            self.moves = true
+            return Some(Value::Num(self.time))
+        }
+        self.name(name.as_str())
+    }
+
+    /// The value a name has where reading is: the latest binding of it.
+    fn name(mut self, name: str) -> Option<Value> {
+        var k = self.names.len()
+        while k > 0 {
+            k -= 1
+            if self.names[k].0.as_str() != name { continue }
+            if let Some(v) = self.names[k].2.clone() { return Some(v) }
+            let back = self.at
+            self.at = self.names[k].1
+            let v = self.expression()
+            self.at = back
+            return v
+        }
+        self.fail()
+    }
+
+    /// The arguments of a call, at `(`: each its name, if it's named, and its value.
+    fn arguments(mut self) -> Vec<(String, Option<Value>)> {
+        var out: Vec<(String, Option<Value>)> = Vec::new()
+        if !self.is(self.at, "(") {
+            self.failed = true
+            return out
+        }
+        self.at += 1
+        while self.at < self.tokens.len() && !self.is(self.at, ")") {
+            var named = String::new()
+            if self.tokens[self.at].kind == IDENT &&
+                self.is(self.at + 1, ":") &&
+                !self.is(self.at + 2, ":") {
+                named = self.text(self.at).to_string()
+                self.at += 2
+            }
+            let v = self.expression()
+            out.push((take named, take v))
+            if self.is(self.at, ",") { self.at += 1 } else if !self.is(self.at, ")") {
+                self.failed = true
+                return out
+            }
+        }
+        self.at += 1
+        out
+    }
+
+    fn call(mut self, name: str, args: [(String, Option<Value>)]) -> Option<Value> {
+        // A function of the block's: its body, with its parameters bound.
+        for i in 0..self.funs.len() {
+            if self.funs[i].name.as_str() != name { continue }
+            let f = self.funs[i].clone()
+            let back = self.at
+            // Each parameter: the argument in its place, else the one named for it, else its
+            // default.
+            var values: Vec<Value> = Vec::new()
+            var positional = 0
+            for a in args {
+                if a.0.is_empty() { positional += 1 }
+            }
+            for a in args {
+                var known = a.0.is_empty()
+                for name in f.params {
+                    if name == a.0 { known = true }
+                }
+                if !known { return self.fail() }
+            }
+            for k in 0..f.params.len() {
+                var v: Option<Value> = None
+                if k < positional {
+                    v = args[k].1.clone()
+                } else {
+                    for a in args {
+                        if a.0 == f.params[k] { v = a.1.clone() }
+                    }
+                    if v.is_none() && f.defaults[k] != NONE {
+                        self.at = f.defaults[k]
+                        v = self.expression()
+                        self.at = back
+                    }
+                }
+                let Some(value) = v else { return self.fail() }
+                values.push(value.clone())
+            }
+            let bound = self.names.len()
+            for k in 0..values.len() {
+                self.names.push((f.params[k].clone(), 0, Some(values[k].clone())))
+            }
+            // Its `let`s, then the expression that ends it.
+            var t = f.body
+            var last: Option<Value> = None
+            while t < f.end {
+                if self.is(t, "let") && self.is(t + 2, "=") {
+                    self.names.push((self.text(t + 1).to_string(), t + 3, None))
+                    self.at = t + 3
+                    let _ = self.skip_expression()
+                    t = self.at
+                } else {
+                    self.at = t
+                    last = self.expression()
+                    t = self.at
+                    if t == f.end { break }
+                    if last.is_none() { break }
+                }
+            }
+            self.names.truncate(bound)
+            self.at = back
+            return last
+        }
+        let num = |k: u32| -> Option<f32> {
+            match args[k].1 {
+                Some(Value::Num(n)) => Some(n),
+                _ => None,
+            }
+        }
+        let vec = |k: u32| -> Option<vec3> {
+            match args[k].1 {
+                Some(Value::Vec(v)) => Some(v),
+                Some(Value::Num(n)) => Some(vec3(n)),
+                _ => None,
+            }
+        }
+        if name == "vec3" {
+            var v = vec3()
+            if args.len() == 1 && args[0].0.is_empty() {
+                let Some(n) = num(0) else { return self.fail() }
+                return Some(Value::Vec(vec3(n)))
+            }
+            for k in 0..args.len() {
+                let Some(n) = num(k) else { return self.fail() }
+                let which = if !args[k].0.is_empty() { args[k].0.clone() } else if k == 0 {
+                    String::from("x")
+                } else if k == 1 { String::from("y") } else { String::from("z") }
+                let w = which.as_str()
+                if w == "x" { v.x = n } else if w == "y" { v.y = n } else if w == "z" {
+                    v.z = n
+                } else { return self.fail() }
+            }
+            return Some(Value::Vec(v))
+        }
+        if name == "sin" || name == "cos" || name == "abs" || name == "sqrt" {
+            if args.len() != 1 { return self.fail() }
+            let Some(x) = num(0) else { return self.fail() }
+            let y = if name == "sin" { sin(x) } else if name == "cos" { cos(x) } else if name ==
+                "abs" {
+                abs(x)
+            } else { sqrt(x) }
+            return Some(Value::Num(y))
+        }
+        if name == "min" || name == "max" {
+            if args.len() != 2 { return self.fail() }
+            let (Some(a), Some(b)) = (num(0), num(1)) else { return self.fail() }
+            return Some(Value::Num(if name == "min" { min(a, b) } else { max(a, b) }))
+        }
+        if name == "sphere" && args.len() == 1 {
+            let Some(r) = num(0) else { return self.fail() }
+            return Some(self.primitive(SPHERE, vec4(r, 0.0, 0.0, 0.0), vec4(0.0)))
+        }
+        if name == "round_cone" && args.len() == 4 {
+            let (Some(a), Some(b), Some(r1), Some(r2)) = (vec(0), vec(1), num(2), num(3)) else {
+                return self.fail()
+            }
+            return Some(self.primitive(ROUND_CONE, vec4(a, r1), vec4(b, r2)))
+        }
+        if (name == "cuboid" || name == "ellipsoid" || name == "oval") && args.len() == 1 {
+            let Some(v) = vec(0) else { return self.fail() }
+            let kind = if name == "cuboid" { CUBOID } else if name == "ellipsoid" {
+                ELLIPSOID
+            } else {
+                OVAL
+            }
+            return Some(self.primitive(kind, vec4(v, 0.0), vec4(0.0)))
+        }
+        self.fail()
+    }
+
+    /// Moves past an expression without reading its numbers: a `let` is read when it's used.
+    fn skip_expression(mut self) -> bool {
+        let used = self.used.len()
+        let nodes = self.nodes.len()
+        let moves = self.moves
+        let ok = self.expression().is_some()
+        self.used.truncate(used)
+        self.nodes.truncate(nodes)
+        self.moves = moves
+        self.failed = false
+        ok
+    }
+
+    fn primitive(mut self, kind: u32, p: vec4, q: vec4) -> Value {
+        self.nodes.push(Node { kind, a: 0, b: 0, k: 0.0, at: vec3(), size: 1.0, p, q })
+        Value::Shape(self.nodes.len() - 1)
+    }
+
+    fn method(
+        mut self,
+        v: Option<Value>,
+        name: str,
+        args: [(String, Option<Value>)],
+    ) -> Option<Value> {
+        let Some(Value::Shape(a)) = v else { return None }
+        if name == "named" { return Some(Value::Shape(a)) }
+        if name == "translate" || name == "scale" {
+            if args.len() != 1 { return None }
+            let by = match args[0].1 {
+                Some(Value::Vec(by)) => by,
+                Some(Value::Num(n)) => vec3(n),
+                _ => return None,
+            }
+            if name == "scale" && by.x == 0.0 { return None }
+            let n = if name == "translate" { self.moved(a, by, 1.0) } else {
+                self.moved(a, vec3(), by.x)
+            }
+            return Some(Value::Shape(n))
+        }
+        let kind = if name == "union" { UNION } else if name == "smooth_union" {
+            SMOOTH_UNION
+        } else if name == "intersect" { INTERSECT } else if name == "smooth_intersect" {
+            SMOOTH_INTERSECT
+        } else if name == "smooth_subtract" { SMOOTH_SUBTRACT } else { return None }
+        let smooth = kind == SMOOTH_UNION || kind == SMOOTH_INTERSECT || kind == SMOOTH_SUBTRACT
+        if args.len() != (if smooth { 2 } else { 1 }) { return None }
+        let Some(Value::Shape(b)) = args[0].1 else { return None }
+        let k = if smooth {
+            match args[1].1 {
+                Some(Value::Num(k)) => k,
+                _ => return None,
+            }
+        } else { 0.0 }
+        self.nodes.push(Node { kind, a, b, k, at: vec3(), size: 1.0, p: vec4(0.0), q: vec4(0.0) })
+        Some(Value::Shape(self.nodes.len() - 1))
+    }
+
+    /// A copy of the shape at node `n`, shifted by `by` and then sized by `size`, as std::field's
+    /// `translate` and `scale` warp it: each primitive's own shift and size take the change, and
+    /// each blend's width scales with it.
+    fn moved(mut self, n: u32, by: vec3, size: f32) -> u32 {
+        var node = self.nodes[n]
+        if node.kind >= UNION {
+            node.a = self.moved(node.a, by, size)
+            node.b = self.moved(node.b, by, size)
+            node.k *= abs(size)
+        } else {
+            // Outside in: a shift then a size makes `(p / size - at) / s`, a size at
+            // `at * size`.
+            node.at = node.at * size + by
+            node.size *= size
+        }
+        self.nodes.push(node)
+        self.nodes.len() - 1
+    }
+
+    /// The scene of the shape at node `root`: it and the nodes it combines, each after its parts.
+    fn scene_of(self, root: u32) -> Scene {
+        var scene = Scene::empty()
+        let _ = self.place(mut scene, root)
+        scene
+    }
+
+    fn place(self, scene: mut Scene, n: u32) -> u32 {
+        var node = self.nodes[n]
+        if node.kind >= UNION {
+            node.a = self.place(mut scene, node.a)
+            node.b = self.place(mut scene, node.b)
+        }
+        if scene.len >= NODES {
+            scene.len = 0
+            return 0
+        }
+        scene.nodes[scene.len] = node
+        scene.len += 1
+        scene.len - 1
+    }
+}
+
+/// `a op b` for numbers and vectors: op 0 adds, 1 subtracts, 2 multiplies, 3 divides.
+fn arithmetic(a: Option<Value>, b: Option<Value>, op: u32) -> Option<Value> {
+    let (Some(x), Some(y)) = (a.clone(), b.clone()) else { return None }
+    match (take x, take y) {
+        (Value::Num(p), Value::Num(q)) => Some(Value::Num(apply(vec3(p), vec3(q), op).x)),
+        (Value::Vec(p), Value::Vec(q)) => Some(Value::Vec(apply(p, q, op))),
+        (Value::Vec(p), Value::Num(q)) => Some(Value::Vec(apply(p, vec3(q), op))),
+        (Value::Num(p), Value::Vec(q)) => Some(Value::Vec(apply(vec3(p), q, op))),
+        _ => None,
+    }
+}
+
+fn apply(a: vec3, b: vec3, op: u32) -> vec3 {
+    if op == 0 { a + b } else if op == 1 { a - b } else if op == 2 { a * b } else { a / b }
+}
+
+/// A decimal number's value: digits, then `.` and digits, with `_` between them; None for any
+/// other number (an exponent, a unit, a hexadecimal).
+pub fn number(t: str) -> Option<f32> {
+    var whole = 0.0
+    var scale = 0.0
+    var any = false
+    for i in 0..t.len() {
+        let b = t.byte(i)
+        if b == 95 { continue }
+        if b == 46 {
+            if scale > 0.0 { return None }
+            scale = 1.0
+            continue
+        }
+        if b < 48 || b > 57 { return None }
+        any = true
+        whole = whole * 10.0 + f32(b - 48)
+        if scale > 0.0 { scale *= 10.0 }
+    }
+    if !any { return None }
+    Some(if scale > 0.0 { whole / scale } else { whole })
+}
+
+/// `t`'s tokens: identifiers, numbers (with `.` between digits), strings, and each other
+/// character on its own; comments and spaces are none.
+fn tokens(t: str) -> Vec<Token> {
+    var out: Vec<Token> = Vec::new()
+    var i = 0
+    while i < t.len() {
+        let b = t.byte(i)
+        if b == 32 || b == 9 || b == 10 || b == 13 {
+            i += 1
+            continue
+        }
+        if b == 47 && i + 1 < t.len() && t.byte(i + 1) == 47 {
+            while i < t.len() && t.byte(i) != 10 { i += 1 }
+            continue
+        }
+        let start = i
+        if b == 34 {
+            i += 1
+            while i < t.len() && t.byte(i) != 34 {
+                if t.byte(i) == 92 { i += 1 }
+                i += 1
+            }
+            i = min(i + 1, t.len())
+            out.push(Token { kind: TEXT, start, end: i })
+            continue
+        }
+        if is_digit(b) {
+            while i < t.len() &&
+                (is_word(t.byte(i)) ||
+                    (t.byte(i) == 46 && i + 1 < t.len() && is_digit(t.byte(i + 1)))) {
+                i += 1
+            }
+            out.push(Token { kind: NUMBER, start, end: i })
+            continue
+        }
+        if is_word(b) {
+            while i < t.len() && is_word(t.byte(i)) { i += 1 }
+            out.push(Token { kind: IDENT, start, end: i })
+            continue
+        }
+        // A character of any width.
+        i += 1
+        while i < t.len() && t.byte(i) >= 128 && t.byte(i) < 192 { i += 1 }
+        out.push(Token { kind: PUNCT, start, end: i })
+    }
+    out
+}
+
+fn is_digit(b: u8) -> bool {
+    b >= 48 && b <= 57
+}
+
+pub fn is_word(b: u8) -> bool {
+    is_digit(b) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || b == 95
+}
+
+/// `code` with the number at bytes `start` to `end` set to `value`, written with at least as many
+/// decimals as it had and at least two: where the new number ends.
+pub fn with_number(code: str, start: u32, end: u32, value: f32) -> (String, u32) {
+    let old = code.slice(from: start, to: end)
+    var decimals = 0
+    if let Some(dot) = old.find(".") { decimals = old.len() - dot - 1 }
+    let shown = written(value, max(decimals, 2))
+    var out = code.slice(from: 0, to: start).to_string()
+    out.push_str(shown.as_str())
+    let e = out.len()
+    out.push_str(code.slice(from: end, to: code.len()))
+    (take out, e)
+}
+
+/// `v` with `decimals` decimals (two to four).
+pub fn written(v: f32, decimals: u32) -> String {
+    if decimals <= 2 { f"{v:.2}" } else if decimals == 3 { f"{v:.3}" } else { f"{v:.4}" }
+}
+
+// ---- drawing -----------------------------------------------------------------------------------
+
+/// What a figure shows: the field lit (`SURFACE`), or on a slice through its centre, its
+/// distance (`DISTANCE`), its derived gradient (`GRADIENT`) or its derived bounds over boxes
+/// (`BOUNDS`).
+pub const SURFACE: u32 = 0
+pub const DISTANCE: u32 = 1
+pub const GRADIENT: u32 = 2
+pub const BOUNDS: u32 = 3
+
+/// How deep the bounds' boxes divide.
+const DEPTH: u32 = 7
+
+/// The point of the slice at pixel `pixel` of a figure at `rect`: the slice through the field's
+/// centre, facing the camera's start, the field's size a little under the figure's height.
+pub fn slice_point(rect: vec4, centre: vec3, radius: f32, pixel: vec2) -> vec3 {
+    let per = radius * 2.4 / rect.w
+    let c = rect.xy + rect.zw * 0.5
+    centre + vec3((pixel.x - c.x) * per, (c.y - pixel.y) * per, 0.0)
+}
+
+/// How a live field is drawn: where it is on the screen; the field's centre, size and floor; the
+/// camera's turn and tilt about its centre; and the scheme's colours (sRGB): the ground, its
+/// lines, the field's own, and its rim.
+pub struct View: Copy + GpuData {
+    pub rect: vec4,
+    pub centre: vec3,
+    pub turn: f32,
+    pub ground: vec4,
+    pub line: vec4,
+    pub body: vec4,
+    pub rim: vec4,
+    /// The pointer's point on the slice (w: 1 where the pointer is on it).
+    pub probe: vec4,
+    pub tilt: f32,
+    pub radius: f32,
+    pub floor: f32,
+    /// Pixels to the CSS pixel, whether the scheme is light (1) or dark (0), and what the figure
+    /// shows.
+    pub u: f32,
+    pub light: f32,
+    pub mode: u32,
+}
+
+/// The field, lit, standing on a floor that shows its distance as lines a fixed step apart: the
+/// lines round as they spread from it, as the mark's do. Its normals are its derived gradient.
+@fragment
+pub fn view(v: Vertex, scene: Scene, look: View) -> Over {
+    let size = look.rect.zw
+    if look.mode != SURFACE { return slice(v, scene, look) }
+    let uv = (v.pixel - look.rect.xy - size * 0.5) / size.y
+    // The camera: on a sphere about the field's centre, looking at it.
+    let reach = look.radius * 3.2
+    let eye = look.centre +
+        vec3(sin(look.turn) * cos(look.tilt), sin(look.tilt), cos(look.turn) * cos(look.tilt)) *
+            reach
+    let forward = normalize(look.centre - eye)
+    let right = normalize(cross(forward, vec3(y: 1.0)))
+    let up = cross(right, forward)
+    let dir = normalize(forward * 1.9 + right * uv.x - up * uv.y)
+    let light = normalize(vec3(-0.55, 0.85, 0.45))
+    let ground = linear(look.ground.xyz)
+    // Where the ray meets the sphere that holds the field: no farther marching than that.
+    let oc = eye - look.centre
+    let bq = dot(oc, dir)
+    let cq = dot(oc, oc) - look.radius * look.radius * 1.1
+    let h = bq * bq - cq
+    var hit = -1.0
+    var closest = 1.0e9
+    var closest_t = 0.0
+    if h > 0.0 {
+        let s = sqrt(h)
+        var t = max(-bq - s, 0.0)
+        let far = -bq + s
+        for _ in 0..96 {
+            let p = eye + dir * t
+            let d = evaluate(scene, p)
+            if d / t < closest {
+                closest = d / t
+                closest_t = t
+            }
+            if d < 0.0004 * t {
+                hit = t
+                break
+            }
+            t += d * 0.9
+            if t > far { break }
+        }
+    }
+    // The floor, and the lines on it.
+    var color = ground
+    let tf = if dir.y < -0.0001 { (look.floor - eye.y) / dir.y } else { -1.0 }
+    if tf > 0.0 {
+        let p = eye + dir * tf
+        let d = max(evaluate(scene, p), 0.0)
+        let step = look.radius * 0.11
+        let phase = d / step
+        let f = phase - floor(phase)
+        // A pixel's width on the floor, across the ray and, longer, along it where the floor is
+        // seen at a slant: a line is about a pixel wide, and lines closer than a few pixels fade,
+        // as they'd shimmer.
+        let pixel = tf / (size.y * 1.9)
+        let along = pixel / max(-dir.y, 0.02)
+        let off = min(f, 1.0 - f) * step
+        let on = saturate(1.0 - off / max(pixel * 1.6, along * 0.8))
+        let fade = exp(-d / (look.radius * 1.4)) *
+            saturate(d / step * 2.0) *
+            saturate(step / along * 0.35 - 0.4)
+        // Under the field, its shadow and the occlusion of the floor near it.
+        let shade = 0.55 + 0.45 * shadow(scene, p + vec3(y: 0.001), light, look.radius)
+        let near = 1.0 - 0.5 * exp(-d / (look.radius * 0.18))
+        let spread = length(p.xz - look.centre.xz) / (look.radius * 2.6)
+        let away = saturate(1.0 - spread * spread)
+        let lines = mix(ground, linear(look.line.xyz), on * fade * look.line.w)
+        color = mix(ground, lines * shade * near, away)
+    }
+    if hit > 0.0 {
+        let p = eye + dir * hit
+        let n = normalize(scene.gradient(p))
+        let body = linear(look.body.xyz)
+        let diffuse = max(dot(n, light), 0.0)
+        let fill = 0.5 + 0.5 * n.y
+        let sh = shadow(scene, p + n * 0.002, light, look.radius)
+        let ao = occlusion(scene, p, n, look.radius)
+        let half = normalize(light - dir)
+        let shine = pow(max(dot(n, half), 0.0), 48.0) * sh
+        let rim = pow(1.0 - max(dot(n, -dir), 0.0), 3.0)
+        color = body * (diffuse * sh * 0.85 + fill * 0.35 * ao) +
+            vec3(shine * 0.35) +
+            linear(look.rim.xyz) * rim * 0.55 * ao
+    } else if closest < 0.004 && closest_t > 0.0 {
+        // The silhouette's edge, softened over about a pixel.
+        let pixel = 1.6 / (size.y * 1.9)
+        let edge = saturate(closest / pixel)
+        let p = eye + dir * closest_t
+        let n = normalize(scene.gradient(p))
+        let body = linear(look.body.xyz) * (0.35 + 0.5 * max(dot(n, light), 0.0))
+        color = mix(body, color, edge)
+    }
+    // A soft fall-off at the figure's edges, into its ground, and its corners round, as code's
+    // ground's are.
+    let corner = abs(uv) * vec2(size.y / size.x, 1.0) * 2.0
+    let vignette = 1.0 - 0.18 * dot(corner, corner)
+    let round = 6.0 * look.u
+    let edge = abs(v.pixel - look.rect.xy - size * 0.5) - size * 0.5 + vec2(round)
+    let out = length(max(edge, vec2(0.0))) + min(max(edge.x, edge.y), 0.0) - round
+    Over { color: vec4(srgb(color * vignette), saturate(0.5 - out)) }
+}
+
+/// A slice through the field: its distance as lines a fixed step apart, the surface a brighter
+/// line and its inside tinted; then its derived gradient as arrows, or its derived bounds as
+/// boxes that divide only where the surface may cross them; or, at the pointer, the circle as
+/// wide as the distance there, which touches the surface.
+fn slice(v: Vertex, scene: Scene, look: View) -> Over {
+    let size = look.rect.zw
+    let p = slice_point(vec4(look.rect.xy, size), look.centre, look.radius, v.pixel)
+    // World units to the pixel.
+    let per = look.radius * 2.4 / size.y
+    let ground = linear(look.ground.xyz)
+    let line = linear(look.line.xyz)
+    let rim = linear(look.rim.xyz)
+    let body = linear(look.body.xyz)
+    let d = evaluate(scene, p)
+    var color = if d < 0.0 { mix(ground, body, 0.16) } else { ground }
+    let step = look.radius * 0.08
+    let f = d / step - floor(d / step)
+    let off = min(f, 1.0 - f) * step
+    let quiet = if look.mode == DISTANCE { 1.0 } else { 0.45 }
+    let lines = saturate(1.0 - off / (per * 1.1)) * exp(-abs(d) / (look.radius * 1.2)) * quiet
+    color = mix(color, line, lines * look.line.w)
+    if look.mode == BOUNDS {
+        // From a square over the figure down: a box whose bounds hold no zero is wholly in or
+        // out, and stops; one whose bounds may is cut in four, to `DEPTH`.
+        let side = max(size.x, size.y) * per
+        var lo = vec2(look.centre.x - side * 0.5, look.centre.y - side * 0.5)
+        var s = side
+        for depth in 0..DEPTH + 1 {
+            let b = Box3 {
+                lo: vec3(lo.x, lo.y, look.centre.z),
+                hi: vec3(lo.x + s, lo.y + s, look.centre.z),
+            }
+            let r = interval(|q: vec3| evaluate(scene, q), b)
+            // The box's edge, a pixel wide.
+            let local = (p.xy - lo) / per
+            let edge = min(min(local.x, local.y), min(s / per - local.x, s / per - local.y))
+            let outline = saturate(1.0 - edge)
+            if r.lo > 0.0 || r.hi < 0.0 || depth == DEPTH {
+                let fill = if r.hi < 0.0 { mix(ground, body, 0.3) } else if r.lo > 0.0 {
+                    ground
+                } else { mix(ground, rim, 0.55) }
+                color = mix(fill, line, outline * 0.45 + lines * 0.35)
+                break
+            }
+            s *= 0.5
+            if p.x >= lo.x + s { lo.x += s }
+            if p.y >= lo.y + s { lo.y += s }
+        }
+    }
+    if look.mode == GRADIENT {
+        // An arrow in each cell, from the derived gradient at the cell's centre: as long as the
+        // gradient is, a cell's width at 1, fading away from the surface.
+        let cell = 26.0 * look.u
+        let at = (floor((v.pixel - look.rect.xy) / cell) + 0.5) * cell + look.rect.xy
+        let c = slice_point(vec4(look.rect.xy, size), look.centre, look.radius, at)
+        let g = scene.gradient(c)
+        let dir = vec2(g.x, -g.y)
+        let n = length(dir)
+        if n > 0.0001 {
+            let u = dir / n
+            let half = cell * 0.36 * min(n, 1.5)
+            let a = at - u * half
+            let b = at + u * half
+            let side = vec2(-u.y, u.x)
+            let head = cell * 0.16
+            let w = min(
+                segment(v.pixel, a, b),
+                min(
+                    segment(v.pixel, b, b - u * head + side * head * 0.7),
+                    segment(v.pixel, b, b - u * head - side * head * 0.7),
+                ),
+            )
+            let near = exp(-abs(evaluate(scene, c)) / (look.radius * 0.9))
+            color = mix(color, rim, saturate(1.2 * look.u - w) * (0.25 + 0.7 * near))
+        }
+    }
+    // The surface: a line twice a pixel wide.
+    color = mix(color, rim, saturate(1.6 - abs(d) / per) * 0.9)
+    if look.probe.w > 0.0 && look.mode == DISTANCE {
+        let q = look.probe.xyz
+        let dq = evaluate(scene, q)
+        let ring = saturate(1.3 - abs(length(p - q) - abs(dq)) / per)
+        let dot = saturate(3.5 - length(p - q) / per)
+        color = mix(color, vec3(1.0), max(ring * 0.8, dot))
+    }
+    let round = 6.0 * look.u
+    let e = abs(v.pixel - look.rect.xy - size * 0.5) - size * 0.5 + vec2(round)
+    let out = length(max(e, vec2(0.0))) + min(max(e.x, e.y), 0.0) - round
+    Over { color: vec4(srgb(color), saturate(0.5 - out)) }
+}
+
+/// The bounds the compiler derives for `scene` over the smallest box of the bounds' view that
+/// holds `q`, a point on the slice of a figure `aspect` times as wide as it is high: as the
+/// view's boxes divide.
+pub fn box_bounds(scene: Scene, centre: vec3, radius: f32, aspect: f32, q: vec3) -> (f32, f32) {
+    let side = radius * 2.4 * max(aspect, 1.0)
+    var lo = vec2(centre.x - side * 0.5, centre.y - side * 0.5)
+    var s = side
+    var last = (0.0, 0.0)
+    for depth in 0..DEPTH + 1 {
+        let b = Box3 { lo: vec3(lo.x, lo.y, centre.z), hi: vec3(lo.x + s, lo.y + s, centre.z) }
+        let r = interval(|p: vec3| evaluate(scene, p), b)
+        last = (r.lo, r.hi)
+        if r.lo > 0.0 || r.hi < 0.0 || depth == DEPTH { break }
+        s *= 0.5
+        if q.x >= lo.x + s { lo.x += s }
+        if q.y >= lo.y + s { lo.y += s }
+    }
+    last
+}
+
+/// The distance from `p` to the segment from `a` to `b`.
+fn segment(p: vec2, a: vec2, b: vec2) -> f32 {
+    let ab = b - a
+    let t = clamp(dot(p - a, ab) / max(dot(ab, ab), 0.000001), 0.0, 1.0)
+    length(p - a - ab * t)
+}
+
+/// How lit `p` is from `light`, by how near the field comes to the ray toward it: 0 to 1.
+fn shadow(scene: Scene, p: vec3, light: vec3, radius: f32) -> f32 {
+    var lit = 1.0
+    var t = radius * 0.02
+    for _ in 0..24 {
+        let d = evaluate(scene, p + light * t)
+        lit = min(lit, 10.0 * d / t)
+        if lit < 0.01 { break }
+        t += clamp(d, radius * 0.01, radius * 0.2)
+        if t > radius * 3.0 { break }
+    }
+    saturate(lit)
+}
+
+/// How open `p` is along the normal `n`: 1 where nothing is near, less in a crease.
+fn occlusion(scene: Scene, p: vec3, n: vec3, radius: f32) -> f32 {
+    var closed = 0.0
+    var weight = 1.0
+    for i in 1..5 {
+        let h = radius * 0.06 * f32(i)
+        closed += (h - evaluate(scene, p + n * h)) * weight
+        weight *= 0.6
+    }
+    saturate(1.0 - closed / radius * 3.0)
+}
+
+fn linear(c: vec3) -> vec3 {
+    pow(max(c, vec3(0.0)), vec3(2.2))
+}
+
+fn srgb(c: vec3) -> vec3 {
+    pow(max(c, vec3(0.0)), vec3(1.0 / 2.2))
+}
+
+@test
+fn a_blob_reads_as_std_builds_it() {
+    let code = "let cone = round_cone(vec3(), vec3(y: 1.0), r_top: 0.3, r_bottom: 0.1)\nlet blob = sphere(radius: 0.5).smooth_union(cone, k: 0.1)\n"
+    let Some(r) = read(code, 0.0) else {
+        assert(false, "it reads")
+        return
+    }
+    let field = sphere(radius: 0.5)
+        .smooth_union(round_cone(vec3(), vec3(y: 1.0), r_top: 0.3, r_bottom: 0.1), k: 0.1)
+    for p in [vec3(0.3, 0.2, 0.1), vec3(0.0, 1.2, 0.0), vec3(-0.8, 0.5, 0.4), vec3()] {
+        let d = evaluate(r.scene, p)
+        assert(abs(d - field.distance(p)) < 0.00001, f"{d} at {p.x}, {p.y}")
+    }
+    // Its numbers, in order: 1.0, 0.3, 0.1, 0.5, 0.1.
+    assert(r.knobs.len() == 5 && !r.moves, f"{r.knobs.len()} knobs")
+    assert(code.slice(from: r.knobs[0].0, to: r.knobs[0].1) == "1.0")
+    assert(code.slice(from: r.knobs[4].0, to: r.knobs[4].1) == "0.1")
+    assert(r.radius > 0.5 && r.floor < -0.4)
+}
+
+@test
+fn a_function_reads_as_its_last_call_calls_it() {
+    let code = "use std::field::{Surface, sphere}\n/// A field.\nfn blob(r: f32) -> Surface {\n    sphere(radius: r).smooth_union(round_cone(vec3(), vec3(y: 1.0), r_top: 0.3, r_bottom: 0.1), k: 0.1)\n}\n\n@fragment\nfn normals<F: Surface>(pixel: FragCoord, field: F) -> vec4 {\n    vec4(1.0)\n}\n\npub fn frame(time: f32, width: u32, height: u32) {\n    let grid = Grid { origin: vec3(-1.0), cell: 0.125, n: 16 }\n    dispatch(sample.bind(blob(0.5), grid, mut out), groups: 64)\n    draw(screen, cover, normals.bind(blob(0.5 + 0.1 * sin(time))), vertices: 3)\n}\n"
+    let Some(r) = read(code, 1.0) else {
+        assert(false, "it reads")
+        return
+    }
+    let field = sphere(radius: 0.5 + 0.1 * sin(1.0))
+        .smooth_union(round_cone(vec3(), vec3(y: 1.0), r_top: 0.3, r_bottom: 0.1), k: 0.1)
+    let p = vec3(0.4, 0.3, 0.0)
+    assert(abs(evaluate(r.scene, p) - field.distance(p)) < 0.00001)
+    assert(r.moves, "it reads time")
+    // The draw call's 0.5 and 0.1 move it, and the body's numbers; the grid's numbers don't.
+    var texts: Vec<String> = Vec::new()
+    for (a, b) in r.knobs { texts.push(code.slice(from: a, to: b).to_string()) }
+    assert(texts.len() == 6, f"{texts.len()} knobs")
+    for t in texts { assert(t.as_str() != "0.125" && t.as_str() != "16", t.as_str()) }
+}
+
+@test
+fn a_call_reads_with_its_named_and_default_arguments_and_alone() {
+    let code = "fn leg_segment(len: f32, r_top: f32, r_bottom: f32 = 0.06) -> Surface {\n    round_cone(vec3(), vec3(y: -len), r_top, r_bottom)\n}\n\nlet leg = leg_segment(0.45, r_top: 0.09)   // positional first, then named\n"
+    let Some(r) = read(code, 0.0) else {
+        assert(false, "it reads")
+        return
+    }
+    let want = round_cone(vec3(), vec3(y: -0.45), r_top: 0.09, r_bottom: 0.06)
+    let p = vec3(0.1, -0.2, 0.05)
+    assert(abs(evaluate(r.scene, p) - want.distance(p)) < 0.00001)
+    var texts: Vec<String> = Vec::new()
+    for (a, b) in r.knobs { texts.push(code.slice(from: a, to: b).to_string()) }
+    assert(texts.len() == 3 && texts[0].as_str() == "0.06", texts[0].as_str())
+    // A call whose field is then asked its distance is read as the call.
+    let asked = "fn blob() -> Surface {\n    sphere(0.5)\n}\n\nassert(blob().distance(vec3(0.0, 0.5, 0.0)) < 0.0)\n"
+    assert(read(asked, 0.0).is_some(), "the call alone")
+}
+
+@test
+fn moves_and_sizes_warp_as_std_does_and_others_dont_read() {
+    let code = "let a = cuboid(half: vec3(0.3, 0.2, 0.4)).scale(2.0).translate(vec3(x: 0.5))\nlet b = oval(radii: vec3(0.2, 0.5, 0.3)).translate(vec3(z: -0.2)).scale(1.5)\nlet both = a.smooth_subtract(b, k: 0.05).union(sphere(radius: 0.1))\n"
+    let Some(r) = read(code, 0.0) else {
+        assert(false, "it reads")
+        return
+    }
+    let a = cuboid(half: vec3(0.3, 0.2, 0.4)).scale(2.0).translate(vec3(x: 0.5))
+    let b = oval(radii: vec3(0.2, 0.5, 0.3)).translate(vec3(z: -0.2)).scale(1.5)
+    let field = a.smooth_subtract(b, k: 0.05).union(sphere(radius: 0.1))
+    for p in [vec3(0.6, 0.1, 0.2), vec3(0.0, 0.0, -0.3), vec3(1.4, -0.2, 0.5)] {
+        assert(abs(evaluate(r.scene, p) - field.distance(p)) < 0.0001, f"at {p.x}")
+    }
+    // A blend of scaled parts blends over a scaled width, as `scale` of a blend does.
+    let c = read(
+        "let c = sphere(radius: 0.5).smooth_union(sphere(radius: 0.3).translate(vec3(x: 0.6)), k: 0.2).scale(2.0)\n",
+        0.0,
+    )
+    let Some(c) = c else { return }
+    let want = sphere(radius: 0.5)
+        .smooth_union(sphere(radius: 0.3).translate(vec3(x: 0.6)), k: 0.2)
+        .scale(2.0)
+    let p = vec3(0.6, 0.3, 0.0)
+    assert(abs(evaluate(c.scene, p) - want.distance(p)) < 0.0001)
+    for other in [
+        "let x = 1.0\n",
+        "fn f() -> u32 { 3 }\n",
+        "let s = sphere(radius: 15cm)\n",
+        "let s = mystery(radius: 0.5)\n",
+        "let s = sphere(radius: 0.5).rotate(q)\n",
+    ] {
+        assert(read(other, 0.0).is_none(), other)
+    }
+}
+
+@test
+fn a_number_is_written_back_with_its_decimals() {
+    let (code, end) = with_number("k: 0.1)", start: 3, end: 6, value: 0.137)
+    assert(code.as_str() == "k: 0.14)" && end == 7, code.as_str())
+    let (more, _) = with_number("r: 0.125", start: 3, end: 8, value: 0.2)
+    assert(more.as_str() == "r: 0.200", more.as_str())
+    assert(
+        number("1_000.5") == Some(1000.5) && number("15cm").is_none() && number("1.2.3").is_none(),
+    )
+}

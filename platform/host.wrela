@@ -194,6 +194,12 @@ pub fn offer(text: str, html: str) -> Pending<u8> {
     request("clipboard/offer", body)
 }
 
+/// Puts `text` on the system clipboard now (`clipboard/write`), as a person's press asked, such as
+/// on a copy button; it answers once the text is there. A browser refuses it without such a press.
+pub fn copy(text: str) -> Pending<u8> {
+    request("clipboard/write", utf8(text))
+}
+
 /// What paste `serial` (`Event::Paste`) carried (`clipboard/pasted`); `read_pasted` reads the
 /// answer.
 pub fn pasted(serial: u32) -> Pending<u8> {
