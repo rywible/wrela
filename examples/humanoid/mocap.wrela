@@ -1,0 +1,53 @@
+// Side B's motion: motion capture's loops (`clips`, cut from 100STYLE by `tools/bvh.py`) as poses,
+// for the same procedural layer (`motion`) as side A's keys.
+
+use clips::{IDLE, Loop, RUN, SAMPLES, WALK}
+use rig::{JOINTS, Pose, t_pose}
+
+/// A loop's samples as poses, evenly spaced over its cycle.
+pub fn poses(l: Loop) -> Vec<Pose> {
+    var out: Vec<Pose> = Vec::new()
+    for i in 0..SAMPLES {
+        var p = t_pose()
+        p.hips = l.hips[i]
+        for j in 0..JOINTS {
+            p.rot[j] = Quat { v: l.turns[i * JOINTS + j] }
+        }
+        out.push(p)
+    }
+    out
+}
+
+pub fn idle() -> Vec<Pose> {
+    poses(IDLE)
+}
+
+pub fn walk() -> Vec<Pose> {
+    poses(WALK)
+}
+
+pub fn run() -> Vec<Pose> {
+    poses(RUN)
+}
+
+/// Side B: the loops' cycles, periods and stances (`motion::source`).
+pub fn source() -> motion::Source {
+    motion::source(
+        idle(),
+        walk(),
+        run(),
+        periods: vec3(IDLE.period, WALK.period, RUN.period),
+        stances: vec4(WALK.stance, RUN.stance, WALK.heel, RUN.heel),
+    )
+}
+
+/// The strides the layer measures from the loops' poses match those the capture measured from
+/// the hips' travel (within a sixth): its feet keep the capture's pace.
+@test
+fn the_poses_stride_is_the_captures() {
+    let s = source()
+    std::io::print(f"walk: {s.walk_stride} m from the poses, {WALK.stride} m captured")
+    std::io::print(f"run: {s.run_stride} m from the poses, {RUN.stride} m captured")
+    assert(abs(s.walk_stride / WALK.stride - 1.0) < 0.17, "the walk's stride isn't the capture's")
+    assert(abs(s.run_stride / RUN.stride - 1.0) < 0.17, "the run's stride isn't the capture's")
+}

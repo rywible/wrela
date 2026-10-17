@@ -31,6 +31,17 @@
         "8421"
       ],
       "port": 8421
+    },
+    {
+      "name": "humanoid",
+      "runtimeExecutable": "./target/release/wrela",
+      "runtimeArgs": [
+        "run",
+        "examples/humanoid",
+        "--port",
+        "8422"
+      ],
+      "port": 8422
     }
   ]
 }

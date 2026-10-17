@@ -1,0 +1,419 @@
+// The procedural layer both sides share: whatever cycles a side gives (`Source`: A's keyed poses,
+// B's motion capture), the same code plays them for the controller's body and puts them on the
+// ground, so the bake-off compares the cycles alone.
+//
+// - Gait: standing, walking and running blended by the body's speed; the walk and the run at one
+//   phase (0 the left foot's contact), which goes on as the body covers its stride, the stride
+//   drawn out with the speed past what the cycle was made for (`reach`), so the feet keep pace.
+// - Lean: into the body's acceleration and its turns.
+// - Feet: a foot coming down is held where its heel came down until the heel lifts, then where
+//   its toes are while it rolls over them, as a person's is; let go, it eases back to its swing;
+//   standing, both stay planted until the body moves off them; a held foot the leg can't reach
+//   is let go. The legs reach them by two-bone IK, over the ground's height under each, and the
+//   hips sink as far as a leg needs to reach, a fifth of a metre at most.
+
+use engine::render::{bend, turn}
+use rig::{
+    HIPS, JOINTS, L_ANKLE, L_HIP, L_KNEE, L_TOE, OFFSETS, Placed, Pose, R_ANKLE, R_HIP, R_KNEE,
+    R_TOE, place,
+}
+
+/// A side's motion: its idle's, walk's and run's poses (each evenly spaced over its cycle), the
+/// idle's, the walk's and the run's period (s), the share of the walk's and the run's cycle a foot
+/// is down and the share its heel is, and (`source`) the walk's and the run's stride (m).
+pub struct Source {
+    pub idle: Vec<Pose>,
+    pub walk: Vec<Pose>,
+    pub run: Vec<Pose>,
+    pub idle_period: f32,
+    pub walk_period: f32,
+    pub run_period: f32,
+    pub walk_stance: f32,
+    pub run_stance: f32,
+    pub walk_heel: f32,
+    pub run_heel: f32,
+    pub walk_stride: f32,
+    pub run_stride: f32,
+}
+
+/// A side's motion from its cycles, its periods (idle, walk, run) and the shares of the walk's and
+/// the run's cycle a foot and its heel are down (walk, run, the walk's heel, the run's), its
+/// strides measured from its poses (`stride`).
+pub fn source(
+    idle: take Vec<Pose>,
+    walk: take Vec<Pose>,
+    run: take Vec<Pose>,
+    periods: vec3,
+    stances: vec4,
+) -> Source {
+    let walk_stride = stride(walk, stances.z)
+    let run_stride = stride(run, stances.w)
+    Source {
+        idle,
+        walk,
+        run,
+        idle_period: periods.x,
+        walk_period: periods.y,
+        run_period: periods.z,
+        walk_stance: stances.x,
+        run_stance: stances.y,
+        walk_heel: stances.z,
+        run_heel: stances.w,
+        walk_stride,
+        run_stride,
+    }
+}
+
+/// How far a cycle of `poses` carries the body (m), a heel down `heel` of it: as far as the left
+/// ankle goes back under the body from its contact until its heel lifts, over that share. A
+/// planted heel then keeps pace with the poses, whatever they were made from.
+pub fn stride(poses: [Pose], heel: f32) -> f32 {
+    let down = place(sample(poses, 0.0)).at[L_ANKLE]
+    let up = place(sample(poses, heel)).at[L_ANKLE]
+    (down.z - up.z) / heel
+}
+
+/// Catmull and Rom's spline through four values, `t` of the way from the second to the third.
+fn catmull(a: vec4, b: vec4, c: vec4, d: vec4, t: f32) -> vec4 {
+    let t2 = t * t
+    0.5 *
+        (2.0 * b +
+            (c - a) * t +
+            (2.0 * a - 5.0 * b + 4.0 * c - d) * t2 +
+            (3.0 * b - a - 3.0 * c + d) * t2 * t)
+}
+
+/// `q` on the same side as `to` (a quaternion and its negation are one turn).
+fn near(q: vec4, to: vec4) -> vec4 {
+    if dot(q, to) < 0.0 { -q } else { q }
+}
+
+/// A cycle of poses (evenly spaced, the last's next the first) at phase `u` (0 to 1), smoothly
+/// through them.
+pub fn sample(poses: [Pose], u: f32) -> Pose {
+    let n = poses.len()
+    let x = (u - floor(u)) * f32(n)
+    let i = u32(floor(x)) % n
+    let t = x - floor(x)
+    let (a, b, c, d) = (poses[(i + n - 1) % n], poses[i], poses[(i + 1) % n], poses[(i + 2) % n])
+    var out = b
+    out.hips = catmull(
+        vec4(a.hips, 0.0),
+        vec4(b.hips, 0.0),
+        vec4(c.hips, 0.0),
+        vec4(d.hips, 0.0),
+        t,
+    ).xyz
+    for j in 0..JOINTS {
+        let qb = b.rot[j].v
+        let qc = near(c.rot[j].v, qb)
+        let q = catmull(near(a.rot[j].v, qb), qb, qc, near(d.rot[j].v, qc), t)
+        out.rot[j] = Quat { v: normalize(q) }
+    }
+    out
+}
+
+/// Between which speeds the walk becomes the run (m/s).
+pub const GAIT: vec2 = vec2(1.6, 2.6)
+
+/// How a foot is held: by its heel (the ankle held), by its toes (the toes held, the heel lifting),
+/// or not (swinging).
+pub const HEEL: u32 = 0
+pub const TOE: u32 = 1
+pub const SWING: u32 = 2
+
+/// A foot: how it's held (`HEEL`, `TOE`, `SWING`), where (the world: the ankle's place, or the
+/// toes'), and how far it is from where its swing would put it, as it eases back after it lifts.
+pub struct Foot: Copy {
+    pub hold: u32 = SWING,
+    pub at: vec3 = vec3(0.0),
+    pub slip: vec3 = vec3(0.0),
+}
+
+/// The layer's state, stepped each frame: the cycle's phase and the idle's; how far the body is
+/// moving (0 standing, 1 on its way) and running (0 walking, 1 running), eased; the share of the
+/// cycle a foot and its heel are down, between the walk's and the run's; its lean (forward, and to its left,
+/// rad); its feet, left and right; and whether it has a frame yet.
+pub struct Mover: Copy {
+    pub phase: f32 = 0.0,
+    pub stance: f32 = 0.6,
+    pub heel: f32 = 0.4,
+    pub idle: f32 = 0.0,
+    pub moving: f32 = 0.0,
+    pub gait: f32 = 0.0,
+    pub lean: vec2 = vec2(0.0),
+    pub feet: [Foot; 2] = [Foot {}; 2],
+    pub started: bool = false,
+}
+
+/// How far a planted foot may be from where the pose would have it before it steps (m), how fast
+/// a lifted foot's slip eases out (its time constant, s), how far past a leg's length from its hip
+/// a held foot is let go (a share of it), and the most the hips sink to reach a foot (m).
+const STEP_OFF: f32 = 0.3
+const SLIP: f32 = 0.08
+const OVERREACH: f32 = 1.08
+const SINK_MOST: f32 = 0.2
+
+impl Mover {
+    /// The pose a frame on (`dt` s) for a body going `speed` (m/s) the way it faces, its speed
+    /// changing `accel` (m/s²) and its heading `turning` (rad/s, toward its left positive): the
+    /// side's cycles blended by the speed at the phase it's at, leaning; and how far each stride
+    /// is drawn out (`reach`, 1 as the cycle was made).
+    pub fn pose(mut self, s: Source, speed: f32, accel: f32, turning: f32, dt: f32) -> (Pose, f32) {
+        let goes = smoothstep(0.05, 0.5, speed)
+        self.moving += clamp(goes - self.moving, -dt * 4.0, dt * 6.0)
+        let runs = smoothstep(GAIT.x, GAIT.y, speed)
+        self.gait += (runs - self.gait) * (1.0 - exp(-dt * 8.0))
+        self.stance = mix(s.walk_stance, s.run_stance, self.gait)
+        self.heel = mix(s.walk_heel, s.run_heel, self.gait)
+        let stride = mix(s.walk_stride, s.run_stride, self.gait)
+        let natural = mix(s.walk_stride / s.walk_period, s.run_stride / s.run_period, self.gait)
+        let reach = clamp(sqrt(max(speed, 0.05) / natural), 0.7, 1.5)
+        self.phase = fract(self.phase + speed / (stride * reach) * dt)
+        self.idle = fract(self.idle + dt / s.idle_period)
+        let going = sample(s.walk, self.phase).blend(sample(s.run, self.phase), self.gait)
+        var p = sample(s.idle, self.idle).blend(going, self.moving)
+        // Leaning into the speed, its change and the turn (a turn to the left leans left).
+        let want = vec2(
+            clamp(0.012 * speed + 0.018 * accel, -0.15, 0.22),
+            clamp(0.04 * turning * speed, -0.3, 0.3),
+        )
+        self.lean += (want - self.lean) * (1.0 - exp(-dt * 10.0))
+        let tilt = Quat::axis_angle(vec3(1.0, 0.0, 0.0), self.lean.x)
+            .mul(Quat::axis_angle(vec3(0.0, 0.0, 1.0), -self.lean.y))
+        p.rot[HIPS] = tilt.mul(p.rot[HIPS])
+        (p, mix(1.0, reach, self.moving))
+    }
+
+    /// `p` placed on the ground for a body standing at `body` (its frame in the world: on the
+    /// ground under it, facing the way it faces), the ground's height under a point of the world
+    /// `height`, each stride drawn out by `reach`, `dt` s on: each foot over the ground under it,
+    /// held by its heel, then its toes, in its stance, the hips sunk as far as a leg needs, the legs
+    /// bent to their feet.
+    pub fn ground(
+        mut self,
+        p: Pose,
+        reach: f32,
+        body: mat4,
+        height: fn(vec2) -> f32,
+        dt: f32,
+    ) -> Placed {
+        let back = rigid_inverse(body)
+        let base = body[3].y
+        var pose = p
+        var placed = place(pose)
+        let legs = [[L_HIP, L_KNEE, L_ANKLE, L_TOE], [R_HIP, R_KNEE, R_ANKLE, R_TOE]]
+        let moving = self.moving > 0.5
+        var target = [vec3(0.0); 2]
+        for i in 0..2 {
+            let leg = legs[i]
+            // Where the pose would have the ankle and the toes: its stride drawn out, over the
+            // ground under the ankle.
+            var a = placed.at[leg[2]]
+            var t = placed.at[leg[3]]
+            let out = a.z * (reach - 1.0)
+            a.z += out
+            t.z += out
+            let lift = vec3(0.0, height((body * vec4(a, 1.0)).xz) - base, 0.0)
+            let w = (body * vec4(a, 1.0)).xyz + lift
+            let foot = (body * vec4(t, 1.0)).xyz + lift - w
+            let hip = (body * vec4(placed.at[leg[0]], 1.0)).xyz
+            let length_of = length(OFFSETS[leg[1]]) + length(OFFSETS[leg[2]])
+            let own = fract(self.phase - 0.5 * f32(i))
+            let hold = if !moving { HEEL } else if own < self.heel { HEEL } else if own <
+                self.stance {
+                TOE
+            } else {
+                SWING
+            }
+            var f = self.feet[i]
+            if !self.started {
+                f.hold = hold
+                f.at = if hold == TOE { w + foot } else { w }
+            } else if hold != f.hold {
+                if hold == HEEL {
+                    f.at = w
+                } else if hold == TOE {
+                    // The toes held where they are as the heel lifts.
+                    f.at = if f.hold == HEEL { f.at + foot } else { w + foot }
+                } else {
+                    let held = if f.hold == HEEL { f.at } else { f.at - foot }
+                    f.slip = held - w
+                }
+                f.hold = hold
+            } else if !moving && length((f.at - w).xz) > STEP_OFF {
+                // Standing, the body has moved off it: it steps to where it would be.
+                f.slip = f.at - w
+                f.at = w
+            }
+            // Held where the leg can't reach (the poses' foot can't keep the body's pace): let go.
+            if moving && f.hold != SWING {
+                let held = if f.hold == HEEL { f.at } else { f.at - foot }
+                if length(held - hip) > OVERREACH * length_of {
+                    f.slip = held - w
+                    f.hold = SWING
+                }
+            }
+            f.slip = f.slip * exp(-dt / SLIP)
+            let to = if !moving { w + f.slip } else if f.hold == HEEL { f.at } else if f.hold ==
+                TOE {
+                f.at - foot
+            } else {
+                w + f.slip
+            }
+            if !moving {
+                f.at = f.at + (w - f.at) * (1.0 - exp(-dt / SLIP))
+            }
+            self.feet[i] = f
+            target[i] = (back * vec4(to, 1.0)).xyz
+        }
+        self.started = true
+        // The hips sink as far as the farther foot needs (twice: sinking moves the hips).
+        for _ in 0..2 {
+            var sink = 0.0
+            for i in 0..2 {
+                let leg = legs[i]
+                let h = placed.at[leg[0]]
+                let reach_of = 0.995 * (length(OFFSETS[leg[1]]) + length(OFFSETS[leg[2]]))
+                // As high over the foot as the leg reaches, the foot where it is across.
+                let across = length((target[i] - h).xz)
+                let high = sqrt(max(reach_of * reach_of - across * across, 0.0))
+                sink = max(sink, (h.y - target[i].y) - high)
+            }
+            pose.hips.y -= min(sink, SINK_MOST - (p.hips.y - pose.hips.y))
+            placed = place(pose)
+        }
+        // Each leg bent to its foot; the foot keeps its turn.
+        for i in 0..2 {
+            let leg = legs[i]
+            let (h, k, a) = (placed.at[leg[0]], placed.at[leg[1]], placed.at[leg[2]])
+            let (knee, ankle) = bend(h, k, a, target[i])
+            let thigh = turn(normalize(k - h), normalize(knee - h))
+            let shin_was = thigh.rotate(normalize(a - k))
+            let shin = turn(shin_was, normalize(ankle - knee))
+            placed.rot[leg[0]] = thigh.mul(placed.rot[leg[0]])
+            placed.rot[leg[1]] = shin.mul(thigh).mul(placed.rot[leg[1]])
+            placed.at[leg[1]] = knee
+            placed.at[leg[2]] = ankle
+            placed.at[leg[3]] = ankle + placed.rot[leg[2]].rotate(OFFSETS[leg[3]])
+        }
+        placed
+    }
+}
+
+// ---- tests ---------------------------------------------------------------------------------------
+
+/// The inverse of a frame that only turns and moves.
+fn rigid_inverse(m: mat4) -> mat4 {
+    let (x, y, z, t) = (m[0].xyz, m[1].xyz, m[2].xyz, m[3].xyz)
+    mat4(
+        vec4(x.x, y.x, z.x, 0.0),
+        vec4(x.y, y.y, z.y, 0.0),
+        vec4(x.z, y.z, z.z, 0.0),
+        vec4(-dot(x, t), -dot(y, t), -dot(z, t), 1.0),
+    )
+}
+
+/// Level ground, for the tests.
+fn level(p: vec2) -> f32 {
+    0.0
+}
+
+/// Walking and running at a steady pace, a planted foot doesn't slide: its heel stays where it
+/// came down until it lifts, and then its toes where they were, within a centimetre, on both
+/// sides, with either side's cycles (once it goes: standing, a foot eases to the pose).
+@test
+fn a_planted_foot_holds_its_place_through_its_stance() {
+    for (side, speed) in [(0, 1.4), (1, 1.4), (0, 3.0), (1, 3.0)] {
+        let s = if side == 0 { a_source() } else { b_source() }
+        var m = Mover {}
+        let dt = 1.0 / 60.0
+        var at = vec3(0.0)
+        var worst = 0.0
+        var steps = 0
+        var was = [SWING; 2]
+        var held = [vec3(0.0); 2]
+        for k in 0..600 {
+            at.z += speed * dt
+            let (p, reach) = m.pose(s, speed, accel: 0.0, turning: 0.0, dt: dt)
+            let body = rig::body_frame(at, 0.0)
+            let placed = m.ground(p, reach, body, level, dt)
+            // From when it's walking (standing, a foot eases to the pose on purpose).
+            if k < 60 {
+                continue
+            }
+            for i in 0..2 {
+                let hold = m.feet[i].hold
+                let joint = if hold == TOE { [L_TOE, R_TOE][i] } else { [L_ANKLE, R_ANKLE][i] }
+                let w = (body * vec4(placed.at[joint], 1.0)).xyz
+                if hold != SWING && hold == was[i] {
+                    worst = max(worst, length(w - held[i]))
+                } else if hold != SWING {
+                    held[i] = w
+                    if hold == HEEL {
+                        steps += 1
+                    }
+                }
+                was[i] = hold
+            }
+        }
+        std::io::print(f"side {side} at {speed} m/s: {steps} steps, a held foot moved {worst} m")
+        assert(steps > 10, f"only {steps} steps")
+        assert(worst < 0.01, f"a planted foot slid {worst} m")
+    }
+}
+
+/// On a slope the feet stand on the ground under each: neither ankle sinks under it, and the
+/// lower foot reaches it (the hips sink as far as they must).
+@test
+fn on_a_slope_each_foot_finds_the_ground_under_it() {
+    let slope = |p: vec2| p.x * 0.3
+    for side in [0, 1] {
+        let s = if side == 0 { a_source() } else { b_source() }
+        var m = Mover {}
+        let dt = 1.0 / 60.0
+        var lowest = 1.0
+        for _ in 0..120 {
+            let (p, reach) = m.pose(s, 0.0, accel: 0.0, turning: 0.0, dt: dt)
+            let body = rig::body_frame(vec3(0.0), 0.0)
+            let placed = m.ground(p, reach, body, slope, dt)
+            for ankle in [L_ANKLE, R_ANKLE] {
+                let w = placed.at[ankle]
+                lowest = min(lowest, w.y - slope(w.xz))
+            }
+        }
+        std::io::print(f"side {side}: on a slope the ankles stand at least {lowest} m over it")
+        assert(lowest > 0.05 && lowest < 0.16, f"an ankle stands {lowest} m over the slope")
+    }
+}
+
+/// Sprinting onto a ramp, neither side folds: the hips never sink more than `SINK_MOST` under the
+/// pose's, however a held foot is left behind (it's let go first).
+@test
+fn a_sprint_up_a_ramp_never_folds_the_body() {
+    let ramp = |p: vec2| max(0.0, (p.y - 10.0) * 0.25)
+    for side in [0, 1] {
+        let s = if side == 0 { a_source() } else { b_source() }
+        var m = Mover {}
+        let dt = 1.0 / 60.0
+        var at = vec3(0.0, 0.0, 4.0)
+        var deepest = 0.0
+        for _ in 0..150 {
+            at.z += 5.0 * dt
+            at.y = ramp(at.xz)
+            let (p, reach) = m.pose(s, 5.0, accel: 0.0, turning: 0.0, dt: dt)
+            let placed = m.ground(p, reach, rig::body_frame(at, 0.0), ramp, dt)
+            deepest = max(deepest, p.hips.y - placed.at[HIPS].y)
+        }
+        std::io::print(f"side {side}: sprinting up the ramp the hips sank {deepest} m at most")
+        assert(deepest <= SINK_MOST + 1.0e-4, f"the hips sank {deepest} m")
+    }
+}
+
+fn a_source() -> Source {
+    keyed::source()
+}
+
+fn b_source() -> Source {
+    mocap::source()
+}

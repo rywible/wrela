@@ -226,6 +226,7 @@ test("the environment says which input services the host has, and they reach the
       pasted: (n: number) => (n === 3 ? { text: "hi", html: "" } : null),
       offer: (text: string, html: string) => calls.push(["offer", text, html]),
       claimFind: (on: boolean) => calls.push(["find", on]),
+      lockPointer: (on: boolean) => calls.push(["lock", on]),
     };
     const overlay = {
       tree: (b: Uint8Array) => calls.push(["tree", b.length]),
@@ -254,13 +255,14 @@ test("the environment says which input services the host has, and they reach the
     await expect(platform.request("clipboard/pasted", wordBytes(4))).rejects.toThrow("isn't kept");
     await platform.request("a11y/announce", new TextEncoder().encode("3 items selected"));
     await platform.request("keys/find", new Uint8Array([1]));
+    await platform.request("pointer/lock", new Uint8Array([1]));
     await platform.request("semantics/tree", new Uint8Array(3));
     await platform.request("semantics/geometry", new Uint8Array(4));
     expect(await platform.request("field/state", wordBytes(9))).toEqual(new Uint8Array([9]));
     await platform.request("form/submit", wordBytes(2));
     expect(calls).toEqual([
       ["text", true, { x: 1, y: 2, w: 3, h: 4 }], ["offer", "a", "<b>a</b>"], ["say", "3 items selected"], ["find", true],
-      ["tree", 3], ["geometry", 4], ["submit", 2],
+      ["lock", true], ["tree", 3], ["geometry", 4], ["submit", 2],
     ]);
   } finally {
     platform.dispose();

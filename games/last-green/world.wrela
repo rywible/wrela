@@ -1,14 +1,15 @@
-// The floor's simulation (#54 §5): the climber walking and running over the floor, in the
-// sim's tick (`engine::run`) at 60 Hz, colliding with what the bake left (`history::OBSTACLES`)
-// and stopped by deep water and steep ground (`engine::footing`'s one rule). Its input records
-// are the walk's replay. A travel (the play harness's) moves the player beside a site. The fawn
-// grazes in the glade and notices the player (behaviour.wrela).
+// The floor's simulation (#54 §5): the climber walking and running over the floor and using its
+// moves anywhere (`climber::fight::step`), in the sim's tick (`engine::run`) at 60 Hz, colliding
+// with what the bake left (`history::OBSTACLES`) and stopped by deep water and steep ground
+// (`engine::footing`'s one rule). Its input records are the walk's replay. A travel (the play
+// harness's) moves the player beside a site. The fawn grazes in the glade and notices the player
+// (behaviour.wrela); the wolf at the ring's glade fights it (encounter.wrela).
 
 use engine::footing::{BODY, Obstacle, Obstacles, Thing, stands}
 use engine::place::{Place, Water}
-use engine::player::{Motion, NONE, Player, control, spawn, step_with, turn_to}
+use engine::player::{Motion, NONE, Player, spawn, turn_to}
 use behaviour::{Fawn, STEPPED_WITHIN, presence, spawn_fawn, step_fawn}
-use encounter::{Encounter, encounter, holds, step_encounter}
+use encounter::{Encounter, encounter, settle, watch}
 use engine::run::{Asks, TickInput}
 use engine::senses::{Occluders, clear_over}
 use engine::sim::{SimState, Tick}
@@ -23,8 +24,9 @@ use std::string::String
 /// The floor's water, as the sim reads it.
 pub const WATER: Water = water()
 
-/// A brisk floating walk, Shift to sprint, and enough lift to cross low fallen trunks.
-pub const TRAVEL = Motion { walk: 3.0, run: 7.5, clearance: 1.2, turn: 10.0, response: 7.0 }
+/// The climber's motion (`climber::fight::MOTION`), with enough lift to cross low fallen trunks;
+/// left alone, the look swings round behind a player going away from it.
+pub const TRAVEL = Motion { clearance: 1.2, follow: 0.9, ..climber::fight::MOTION }
 
 fn water() -> Water {
     map::map().water
@@ -162,12 +164,12 @@ pub fn spawn_world() -> World {
     }
 }
 
-/// One tick: the input's records turn the controls; a travel asked for moves the player; then
-/// it steps.
+/// One tick: the input's P and Y start and stop the floor's walks; a travel asked for (last tick)
+/// moves the player; then the climber steps on the floor (its walk and its moves, the records'
+/// presses: `climber::fight::step`), with the wolf if the fight has it.
 @deterministic
 pub fn tick(w: mut World, input: TickInput<World>) {
     for e in input.records {
-        control(mut w.player.controls, e)
         if let Event::KeyDown { key, repeat, .. } = e {
             if (key == Key::P || key == Key::Y) && !repeat {
                 w.tour.on = !w.tour.on
@@ -236,21 +238,19 @@ pub fn tick(w: mut World, input: TickInput<World>) {
     // capsules stay in the full floor's creature/sight field, never in this player set.
     let o = player_obstacles(w.wild, at, OBSTACLES)
     let before = w.player.at
-    if !holds(w.fight) {
-        step_with(mut w.player, GROUND, WATER, o, TRAVEL, input.dt)
-    }
-    if !w.tour.on {
-        step_encounter(
-            mut w.fight,
-            mut w.player,
-            GROUND,
-            WATER,
-            o,
-            FloorSight {},
-            input.records,
-            input.dt,
-        )
-    }
+    let wolf_on = !w.tour.on && watch(mut w.fight, GROUND, w.player, FloorSight {}, input.dt)
+    climber::fight::step(
+        GROUND,
+        WATER,
+        o,
+        TRAVEL,
+        mut w.player,
+        mut w.fight.fight,
+        input.records,
+        wolf_on,
+        input.dt,
+    )
+    settle(mut w.fight)
     let moved = w.player.at.world() - before.world()
     let safe = within_known_wild(before.world(), w.wild.around, covered, moved)
     if length(safe - moved) > 1.0e-5 {
@@ -261,9 +261,7 @@ pub fn tick(w: mut World, input: TickInput<World>) {
     engine::player::place_at(mut w.player, GROUND, o, before.moved(safe), w.player.heading)
     let feet = w.player.at.world()
     w.player.y += o.lift(feet, BODY, TRAVEL.clearance)
-    if w.fight.awake {
-        w.fight.fight.climber.at = vec3(feet.x, w.player.y, feet.y)
-    }
+    w.fight.fight.climber.at = vec3(feet.x, w.player.y, feet.y)
     // The fawn, near enough the player to matter.
     let p = w.player
     let feet = p.at.world()
@@ -361,6 +359,8 @@ fn walk_the_tour(w: mut World) {
         yaw += w.tour.side * AROUND_TURN
     }
     w.player.controls.yaw = turn_to(from: w.player.controls.yaw, to: yaw, most: TURN)
+    // The walk turns the look itself: the camera doesn't follow on its own.
+    w.player.controls.idle_look = 0
     w.player.controls.forward = true
     w.player.controls.run_held = true
 }
@@ -624,4 +624,19 @@ fn authored_local_logs_combine_with_static_walls_and_streams() {
         length(within_known_wild(GATE, initial.around, wildwood::REACH, vec2(0.1, 0.0))) == 0.0,
         "spawn moved before its authored collision answer",
     )
+}
+
+/// The floor's motion answers as the climber's does, within the engine's targets: at pace within a
+/// tenth of a second walking and a fifth running, stopped from a run within a sixth, a right angle
+/// faced within a tenth, a run reversed within under half a second (`engine::player::feel`).
+@test
+fn the_floors_motion_answers_within_a_tenth_of_a_second() {
+    let f = engine::player::feel(TRAVEL)
+    std::io::print(f.table())
+    let e = 1.0e-3
+    assert(f.walk <= 0.1 + e, f"a walk takes {f.walk} s to reach its pace")
+    assert(f.run <= 0.2 + e, f"a run takes {f.run} s to reach its pace")
+    assert(f.stop <= 0.17 + e, f"a run takes {f.stop} s to stop")
+    assert(f.turn <= 0.1 + e, f"a right angle takes {f.turn} s to face")
+    assert(f.reverse <= 0.45 + e, f"a run takes {f.reverse} s to reverse")
 }

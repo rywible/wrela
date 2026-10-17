@@ -3,6 +3,9 @@
 // cloth's points, written each frame (`figure`), as one surface in its own coat shading; and the
 // sword, a field realized once as a mesh of one bone, in the characters' cel treatment.
 //
+// A fast swing leaves a trail: the blade's last few places as a pale arc behind it, fading. A
+// blink leaves the garment's shape where it went from, dissolving.
+//
 // The garment's sheets are drawn as smooth spline surfaces through their points, finer than the
 // cloth is simulated, with creases along them. The hood is the robe's top, open in front, its
 // inside black. The robe's hem burns: the surface runs on past it a little, rising, and licks
@@ -32,9 +35,10 @@ use fight::{WOLF_BODY, WOLF_SKELETON, Wolf}
 use figure::Figure
 use look::{Paint, sword}
 use moves::Pose
+use engine::noise::hash3
 use std::gpu::{
-    ClipPosition, Cull, Flat, GpuBuffer, RenderPass, VertexIndex, buffer, copy, discard, draw,
-    write,
+    ClipPosition, Cull, Flat, FragCoord, GpuBuffer, RenderPass, VertexIndex, buffer, copy, discard,
+    draw, write,
 }
 use std::math::TAU
 use std::transform::translate
@@ -402,15 +406,16 @@ pub fn garment_shadow(v: VertexIndex, points: [vec4], d: Drawing, view: mat4) ->
 
 // ---- the coat's shading ----------------------------------------------------------------------------
 
-/// The shadow-cloth's colour: all but black, a little cold; and the faint violet its edge
-/// gives off (the licks' colour, much dimmer).
-const COAT = vec3(0.012, 0.012, 0.016)
+/// The shadow-cloth's colour: all but black, a little cold, yet enough above black that the
+/// hood's empty inside (black) reads against it and its folds show; and the faint violet its
+/// edge gives off (the licks' colour, much dimmer).
+const COAT = vec3(0.019, 0.019, 0.025)
 const GLOW = vec3(0.012, 0.004, 0.03)
 
 /// The garment at a point (`n` its normal, `fold` from a crease's valley to its crest): cloth
-/// made of shadow, that seems to eat the light round it rather than reflect it. The sun barely
-/// lifts it: its lit side is only a little less black than its shade, so no stripes of light lie
-/// on its folds; its folds show only as a little more dark in their valleys. Toward the edge of
+/// made of shadow, that seems to eat the light round it rather than reflect it. The sun lifts it
+/// a little: its lit side is a little less black than its shade, its folds' valleys darker, so
+/// the folds read at play distance with no stripes of light on them. Toward the edge of
 /// its form it goes darker still, a hole in the scene, and at the very edge it gives off a thin
 /// faint violet, its own, not the sun's.
 fn coat(lt: Lighting, world: vec3, n: vec3, fold: f32) -> vec3 {
@@ -425,10 +430,10 @@ fn coat(lt: Lighting, world: vec3, n: vec3, fold: f32) -> vec3 {
         return CLAY * mix(shade, lit, vec3(t))
     }
     let valley = 1.0 - smoothstep(-0.6, 0.0, fold)
-    let light = mix(shade, lit, vec3(t * 0.5))
+    let light = mix(shade, lit, vec3(t * 0.7))
     let away = 1.0 - max(dot(n, v), 0.0)
     let hole = 1.0 - 0.75 * smoothstep(0.45, 0.85, away)
-    let c = COAT * light * (1.0 - 0.4 * valley) * hole
+    let c = COAT * light * (1.0 - 0.55 * valley) * hole
     c + GLOW * smoothstep(0.88, 0.97, away)
 }
 
@@ -498,16 +503,163 @@ pub fn garment_shade(g: GarmentVertex, lt: Lighting) -> vec4 {
     vec4(through_air(lt, colour, g.world), tag)
 }
 
+// ---- the blink's afterimage -------------------------------------------------------------------------
+
+/// How long the garment's shape stays where a blink left from (s).
+pub const AFTERIMAGE: f32 = 0.28
+
+/// The afterimage's pixel: the garment where it was, black, eaten away from its hem upward as it
+/// fades (`fade` 1 to 0), grain by grain; a veil.
+@fragment
+pub fn afterimage_shade(g: GarmentVertex, pixel: FragCoord, lt: Lighting, fade: f32) -> vec4 {
+    if g.burns.value != 0 && g.uv.y < f32(HOOD_ROWS) && face_open(g.uv) {
+        discard()
+    }
+    let p = pixel.position.xy
+    let grain = hash3(i32(p.x), i32(p.y), i32(lt.cam.frame % 16))
+    // The hem goes first: the cloth's rows down, as a share of the robe's.
+    let low = clamp(g.uv.y / f32(DOWN + HOOD_ROWS), 0.0, 1.0)
+    if grain > fade * fade * (1.3 - 0.6 * low) {
+        discard()
+    }
+    vec4(through_air(lt, INK, g.world), VEIL)
+}
+
+// ---- the blade's trail -----------------------------------------------------------------------------
+
+/// How many of the blade's last places the trail keeps (one a frame), how many times finer it's
+/// drawn between them, and where on the blade it runs from (m along it from the grip's middle).
+pub const TRAIL: u32 = TRAIL_PLACES / 2
+const TRAIL_PLACES: u32 = 16
+const TRAIL_FINER: u32 = 4
+const TRAIL_FROM: f32 = 0.6
+/// How fast the point must go before its path shows (m/s: a cut's, some 80 to 130, not a
+/// wind-up's, under 45, a float's or a step's), and how fast before it shows fully; and how far
+/// the point may move in a frame before the trail starts afresh (a travel: nothing swung).
+const TRAIL_SLOW: f32 = 50.0
+const TRAIL_FAST: f32 = 90.0
+const TRAIL_JUMP: f32 = 3.0
+/// The trail's colour: a cold pale steel, lit as the blade is by the sun, a little brighter at
+/// the edge it's cut by.
+const TRAIL_TINT = vec3(0.8, 0.84, 1.0)
+
+/// How strongly a place of the trail shows, its point having gone `speed` (m/s) to get there.
+pub fn trail_strength(speed: f32) -> f32 {
+    smoothstep(TRAIL_SLOW, TRAIL_FAST, speed)
+}
+
+/// The blade's last places, newest first, two each (the blade where the trail starts, and its
+/// point; `w` how strongly the place shows, `trail_strength`), and whether any shows.
+pub struct Trail {
+    pub at: Vec<vec4>,
+    pub showing: bool,
+}
+
+/// A trail with nothing in it.
+pub fn trail() -> Trail {
+    Trail { at: Vec::from([vec4(0.0); TRAIL_PLACES]), showing: false }
+}
+
+impl Trail {
+    /// The trail a frame on: the blade from `inner` to `tip` now, `dt` seconds after the last;
+    /// afresh (nothing showing) if `afresh` or the blade jumped.
+    pub fn after(mut self, inner: vec3, tip: vec3, afresh: bool, dt: f32) {
+        let was = self.at[1].xyz
+        let jumped = length(tip - was) > TRAIL_JUMP * max(dt * 60.0, 1.0)
+        let speed = if dt > 1.0e-4 { length(tip - was) / dt } else { 0.0 }
+        let strength = if afresh || jumped { 0.0 } else { trail_strength(speed) }
+        var k = TRAIL - 1
+        while k > 0 {
+            self.at[2 * k] = self.at[2 * k - 2]
+            self.at[2 * k + 1] = self.at[2 * k - 1]
+            k -= 1
+        }
+        self.at[0] = vec4(inner, strength)
+        self.at[1] = vec4(tip, strength)
+        self.showing = false
+        for j in 0..TRAIL {
+            if afresh || jumped {
+                self.at[2 * j].w = 0.0
+                self.at[2 * j + 1].w = 0.0
+            }
+            self.showing = self.showing || self.at[2 * j].w > 0.0
+        }
+    }
+}
+
+/// The trail's vertex: where it is, how strongly it shows there (by its place's speed and its
+/// age), and how far across it from the blade's inner end (0) to its point (1).
+pub struct TrailVertex: Copy {
+    pub clip: ClipPosition,
+    pub world: vec3,
+    pub show: f32,
+    pub across: f32,
+}
+
+/// The trail's place `k` back (held to the places kept), its inner end (`side` 0) or its point.
+fn trail_place(trail: [vec4], k: i32, side: u32) -> vec4 {
+    trail[u32(clamp(k, 0, i32(TRAIL) - 1)) * 2 + side]
+}
+
+/// The trail's places `trail` (inner and point, newest first: `Drawn`'s), smoothed through as
+/// splines, `TRAIL_FINER` times finer than they were kept; two triangles a cell.
+@vertex
+pub fn trail_vertex(v: VertexIndex, trail: [vec4], cam: Camera) -> TrailVertex {
+    let cell = v.index / 6
+    let c = v.index % 6
+    let di = [0, 1, 0, 0, 1, 1]
+    let dj = [0, 0, 1, 1, 0, 1]
+    let u = f32(cell + di[c]) / f32(TRAIL_FINER)
+    let side = dj[c]
+    let i = min(u32(floor(u)), TRAIL - 2)
+    let t = u - f32(i)
+    let ii = i32(i)
+    let p = catmull_rom(
+        trail_place(trail, ii - 1, side).xyz,
+        trail_place(trail, ii, side).xyz,
+        trail_place(trail, ii + 1, side).xyz,
+        trail_place(trail, ii + 2, side).xyz,
+        t,
+    )
+    let strength = mix(trail_place(trail, ii, side).w, trail_place(trail, ii + 1, side).w, t)
+    let age = 1.0 - u / f32(TRAIL - 1)
+    TrailVertex {
+        clip: ClipPosition { position: cam.clip(p) },
+        world: p,
+        show: strength * age * sqrt(age),
+        across: f32(side),
+    }
+}
+
+/// The trail's pixel: a pale arc, strongest toward the point and fading toward the grip and with
+/// age; dithered rather than blended (the temporal resolve softens it), and a veil (no line).
+@fragment
+pub fn trail_shade(t: TrailVertex, pixel: FragCoord, lt: Lighting) -> vec4 {
+    let show = t.show * smoothstep(0.0, 0.5, t.across)
+    let p = pixel.position.xy
+    if show <= hash3(i32(p.x), i32(p.y), i32(lt.cam.frame % 16)) {
+        discard()
+    }
+    let edge = smoothstep(0.8, 1.0, t.across)
+    let colour = TRAIL_TINT * (lt.light.sun_colour * (0.8 + 0.4 * edge) + vec3(0.1))
+    vec4(through_air(lt, colour, t.world), VEIL)
+}
+
 // ---- the climber -------------------------------------------------------------------------------
 
 /// The climber as it's drawn: the garment's points this frame and the last (for the motion
-/// target), how far its licks lean back, and the sword; whether it's been written yet, and
+/// target), how far its licks lean back, and the sword and its trail (`trail_strength`: the
+/// places kept, newest first, and whether any shows); whether it's been written yet, and
 /// whether it's shown (not while a blink has it gone).
 pub struct Drawn {
     points: GpuBuffer<vec4>,
     last_points: GpuBuffer<vec4>,
     lean: vec3,
     sword: Rigid,
+    trail: Trail,
+    trail_places: GpuBuffer<vec4>,
+    ghost: GpuBuffer<vec4>,
+    ghost_fade: f32,
     written: bool,
     shown: bool,
 }
@@ -519,6 +671,10 @@ pub fn drawn() -> Drawn {
         last_points: buffer(POINTS),
         lean: vec3(0.0),
         sword: rigid(sword(), SWORD_PART, largest: 12mm),
+        trail: trail(),
+        trail_places: buffer(TRAIL_PLACES),
+        ghost: buffer(POINTS),
+        ghost_fade: 0.0,
         written: false,
         shown: false,
     }
@@ -530,10 +686,10 @@ fn sword_bone(at: vec3, aim: vec3, edge: vec3) -> mat4 {
 }
 
 impl Drawn {
-    /// This frame's figure `f` written to be drawn, the body at `feet` facing `heading` in
-    /// `pose`; not shown while `gone` (a blink). The last frame's places are kept for the motion
-    /// target, unless `still` (the first frame, or the render origin moved: the last frame's are
-    /// in another space).
+    /// This frame's figure `f` written to be drawn, `dt` seconds after the last, the body at
+    /// `feet` facing `heading` in `pose`; not shown while `gone` (a blink). The last frame's
+    /// places are kept for the motion target, unless `still` (the first frame, or the render
+    /// origin moved: the last frame's are in another space).
     pub fn write(
         mut self,
         f: Figure,
@@ -542,12 +698,20 @@ impl Drawn {
         pose: Pose,
         gone: bool,
         still: bool,
+        dt: f32,
     ) {
         let points = f.points()
         if points.len() < POINTS {
             return
         }
         let still = still || !self.written
+        // Gone this frame, shown the last: the garment as it was stays behind, dissolving.
+        if gone && self.shown && !still {
+            copy(from: self.points.items(), to: self.ghost.items_mut())
+            self.ghost_fade = 1.0
+        } else {
+            self.ghost_fade = if still { 0.0 } else { max(self.ghost_fade - dt / AFTERIMAGE, 0.0) }
+        }
         self.written = true
         if !still {
             copy(from: self.points.items(), to: self.last_points.items_mut())
@@ -561,6 +725,10 @@ impl Drawn {
         let (at, aim, edge) = pose.sword.placed(feet, heading)
         self.sword.place(sword_bone(at, aim, edge), still)
         self.shown = !gone
+        self.trail.after(at + aim * TRAIL_FROM, at + aim * body::POINT_AT, still || gone, dt)
+        if self.trail.showing {
+            write(mut self.trail_places, 0, self.trail.at.clone())
+        }
     }
 
     /// The garment and the sword cast into a shadow map (`view` its view).
@@ -581,8 +749,25 @@ impl Drawn {
         self.sword.shadow(pass, view)
     }
 
-    /// The climber drawn into the scene: its garment and its sword.
+    /// The climber drawn into the scene: its garment and its sword, and a blink's afterimage.
     pub fn draw<P: RenderPass>(self, pass: P, lt: Lighting, cam: Camera) {
+        if self.ghost_fade > 0.0 {
+            for d in DRAWINGS {
+                draw(
+                    pass,
+                    garment_vertex.bind(
+                        points: self.ghost.items(),
+                        d: d,
+                        lean: vec3(0.0),
+                        cam: cam,
+                    ),
+                    afterimage_shade.bind(lt, fade: self.ghost_fade),
+                    vertices: vertices_of(d),
+                    cull: Cull::None,
+                    depth: NEAREST,
+                )
+            }
+        }
         if !self.shown {
             return
         }
@@ -597,6 +782,16 @@ impl Drawn {
             )
         }
         self.sword.draw(pass, lt, cam)
+        if self.trail.showing {
+            draw(
+                pass,
+                trail_vertex.bind(trail: self.trail_places.items(), cam: cam),
+                trail_shade.bind(lt),
+                vertices: (TRAIL - 1) * TRAIL_FINER * 6,
+                cull: Cull::None,
+                depth: NEAREST,
+            )
+        }
     }
 
     /// The climber's motion, from the actual preceding cloth and sword positions.
