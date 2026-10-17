@@ -111,16 +111,9 @@ struct Flight: Clone {
     replies: Vec<Reply>,
 }
 
-/// How a call that waits for objects is answered.
-pub enum Route: Copy + Eq {
-    Api,
-    Mcp,
-}
-
 /// A call that waits for objects, to be made again once they're loaded.
 pub struct Parked: Clone {
     pub conn: u32,
-    pub route: Route,
     pub body: Vec<u8>,
     pub waiting: Vec<Id>,
     pub rounds: u32,
@@ -830,25 +823,10 @@ fn route(s: mut Service, conn: u32, req: take Request) {
         let page = digest::page(s.core, now(s))
         return reply(mut s, conn, 200, "text/html; charset=utf-8", bytes::of_str(page.as_str()))
     }
-    if method == "POST" && path == "/mcp" {
-        return call(
-            mut s,
-            Parked { conn, route: Route::Mcp, body: take req.body, waiting: Vec::new(), rounds: 0 },
-        )
-    }
-    if path == "/mcp" {
-        return reply(
-            mut s,
-            conn,
-            405,
-            "text/plain",
-            bytes::of_str("forge's MCP takes POST: one JSON-RPC message each\n"),
-        )
-    }
     if method == "POST" && path == "/api/call" {
         return call(
             mut s,
-            Parked { conn, route: Route::Api, body: take req.body, waiting: Vec::new(), rounds: 0 },
+            Parked { conn, body: take req.body, waiting: Vec::new(), rounds: 0 },
         )
     }
     if method == "GET" && path.starts_with("/api/object/") {
@@ -924,7 +902,6 @@ fn get_object(s: mut Service, conn: u32, hex: str) {
             s.parked.push(
                 Parked {
                     conn,
-                    route: Route::Api,
                     body: bytes::of_str(body.as_str()),
                     waiting: Vec::from([id]),
                     rounds: 0,
@@ -948,7 +925,7 @@ fn ctx_of(s: Service, conn: u32) -> Ctx {
     Ctx { who: if ip.is_empty() { String::from("unknown") } else { ip }, now: now(s), lands }
 }
 
-/// Makes a tool call (an API call or an MCP message), or parks it until what it needs is loaded.
+/// Makes a tool call, or parks it until what it needs is loaded.
 fn call(s: mut Service, p: take Parked) {
     retry(mut s, take p)
 }
@@ -956,11 +933,7 @@ fn call(s: mut Service, p: take Parked) {
 fn retry(s: mut Service, p: take Parked) {
     let doc = match Doc::read(p.body) {
         Ok(d) => take d,
-        Err(why) => {
-            if p.route == Route::Mcp {
-                let e = mcp::error("null", -32700, f"the message isn't JSON: {why}".as_str())
-                return reply(mut s, p.conn, 200, "application/json", bytes::of_str(e.as_str()))
-            }
+        Err(_) => {
             return reply(
                 mut s,
                 p.conn,
@@ -971,23 +944,7 @@ fn retry(s: mut Service, p: take Parked) {
         },
     }
     let ctx = ctx_of(s, p.conn)
-    var rpc_id = String::from("null")
-    let (name, args) = if p.route == Route::Mcp {
-        let m = mcp::read(doc)
-        rpc_id = m.id.clone()
-        match take m.asked {
-            mcp::Asked::Result(r) => {
-                let out = mcp::result(m.id.as_str(), r.as_str())
-                return reply(mut s, p.conn, 200, "application/json", bytes::of_str(out.as_str()))
-            },
-            mcp::Asked::Notice => return reply(mut s, p.conn, 202, "application/json", Vec::new()),
-            mcp::Asked::Error { code, message } => {
-                let out = mcp::error(m.id.as_str(), code, message.as_str())
-                return reply(mut s, p.conn, 200, "application/json", bytes::of_str(out.as_str()))
-            },
-            mcp::Asked::Tool { name, args } => (take name, args),
-        }
-    } else {
+    let (name, args) = {
         let Some(args) = doc.get(doc.root, "args") else {
             return reply(
                 mut s,
@@ -1034,7 +991,6 @@ fn retry(s: mut Service, p: take Parked) {
             s.parked.push(
                 Parked {
                     conn: p.conn,
-                    route: p.route,
                     body: p.body.clone(),
                     waiting,
                     rounds: p.rounds + 1,
@@ -1042,13 +998,7 @@ fn retry(s: mut Service, p: take Parked) {
             )
         },
         Outcome::Done { json, error, durable } => {
-            let (status, kind, body) = if p.route == Route::Mcp {
-                let r = mcp::result(
-                    rpc_id.as_str(),
-                    mcp::tool_result(json.as_str(), error).as_str(),
-                )
-                (200, "application/json", bytes::of_str(r.as_str()))
-            } else if name.as_str() == "object" && !error {
+            let (status, kind, body) = if name.as_str() == "object" && !error {
                 (200, "application/octet-stream", raw_object(s, json.as_str()))
             } else {
                 (if error { 422 } else { 200 }, "application/json", bytes::of_str(json.as_str()))

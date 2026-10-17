@@ -1,9 +1,6 @@
-// forge as a command: one call to a forge service, its answer printed.
-//
-//     forge serve [--listen ADDR] [--machine NAME] [--landers IP,...]   run the service
-//     forge <tool> [key=value...] [--server ADDR]                      call a tool: open, read, ...
-//     forge call <tool> '<json>' [--server ADDR]                       call a tool with JSON arguments
-//     forge import <git-dir> [ref] [--server ADDR]                     import a repository's history
+// forge as a command: one call to a forge service, its answer printed as JSON. This is how agents
+// and people use forge: any harness that runs commands can call it, with nothing to set up.
+// `forge help` lists every tool (core.wrela's `TOOLS`), and `forge help <tool>` shows one.
 //
 // A value that is all digits is a number, `true` and `false` are booleans, and anything else is
 // text. The service is at 127.0.0.1:7171 unless `--server` says otherwise.
@@ -12,7 +9,52 @@ use out::Json
 use platform::service as host
 use service::Service
 
-const USAGE: Text = "usage:\n  forge serve [--listen ADDR] [--machine NAME] [--landers IP,...] [--no-worker]\n  forge work --server ADDR --machine NAME [--jobs N]\n  forge <tool> [key=value...] [--server ADDR]   (tools: open changes read list search write edit remove move status diff snap check job submit close log land)\n  forge call <tool> '<json arguments>' [--server ADDR]\n  forge import <git-dir> [ref] [--server ADDR]\n"
+const COMMANDS: Text = "forge holds wrela's source and runs its checks. A change is an overlay on main: open one,\nread, search and edit its files (it sees main's newest files wherever it hasn't written), check\nits tree on a GPU worker while you work, and submit it; it lands once the suite passes on its\nexact tree. Every tool prints JSON.\n\n  forge <tool> [key=value...] [--server ADDR]\n  forge help <tool>\n  forge call <tool> '<json arguments>' [--server ADDR]\n  forge import <git-dir> [ref] [--server ADDR]\n  forge serve [--listen ADDR] [--machine NAME] [--landers IP,...] [--no-worker]\n  forge work --server ADDR --machine NAME [--jobs N]\n\nTools:\n"
+
+/// What `forge help` prints: the commands, then each tool's usage and what it does.
+pub fn help() -> String {
+    var out = String::from(COMMANDS)
+    for t in core::TOOLS {
+        out.push_str(f"\n  {core::usage(t)}\n")
+        out.push_str(wrapped(t.what, 6).as_str())
+    }
+    out
+}
+
+/// What `forge help <tool>` prints.
+pub fn help_for(name: str) -> Option<String> {
+    let t = core::tool(name)?
+    Some(f"{core::usage(t)}\n{wrapped(t.what, 2)}")
+}
+
+/// `text` in lines of at most 96 characters, each indented by `indent` spaces.
+fn wrapped(text: str, indent: u32) -> String {
+    var out = String::new()
+    var line = String::new()
+    for (from, to) in text.split(" ") {
+        let word = text.slice(from, to)
+        if line.len() > 0 && line.len() + 1 + word.len() + indent > 96 {
+            for _ in 0..indent {
+                out.push_str(" ")
+            }
+            out.push_str(line.as_str())
+            out.push_str("\n")
+            line = String::new()
+        }
+        if line.len() > 0 {
+            line.push_str(" ")
+        }
+        line.push_str(word)
+    }
+    if line.len() > 0 {
+        for _ in 0..indent {
+            out.push_str(" ")
+        }
+        out.push_str(line.as_str())
+        out.push_str("\n")
+    }
+    out
+}
 
 fn done(s: mut Service, code: u32, text: str) {
     if code == 0 {
@@ -100,11 +142,26 @@ pub fn server_of(args: [String]) -> String {
 
 pub fn start(s: mut Service) {
     if s.args.is_empty() || s.args[0].as_str() == "help" || s.args[0].as_str() == "--help" {
-        return done(mut s, 0, USAGE)
+        if s.args.len() > 1 {
+            return match help_for(s.args[1].as_str()) {
+                Some(h) => done(mut s, 0, h.as_str()),
+                None => done(
+                    mut s,
+                    2,
+                    f"forge has no tool `{s.args[1]}`: `forge help` lists them\n".as_str(),
+                ),
+            }
+        }
+        return done(mut s, 0, help().as_str())
+    }
+    let tool = s.args[0].clone()
+    let t = tool.as_str()
+    if t != "call" && t != "import" && core::tool(t).is_none() {
+        return done(mut s, 2, f"forge has no tool `{t}`: `forge help` lists them\n".as_str())
     }
     let (path, body) = match request(s.args) {
         Ok(x) => take x,
-        Err(why) => return done(mut s, 2, f"forge: {why}\n{USAGE}".as_str()),
+        Err(why) => return done(mut s, 2, f"forge: {why}\n".as_str()),
     }
     s.calls = calls::calls(server_of(s.args).as_str())
     calls::call(mut s, "POST", path, "application/json", bytes::of_str(body.as_str()), 1)
@@ -118,6 +175,24 @@ pub fn got(s: mut Service, status: u32, body: take Vec<u8>) {
         return done(mut s, 1, f"forge: {text}".as_str())
     }
     done(mut s, if status < 400 { 0 } else { 1 }, text.as_str())
+}
+
+@test
+fn help_lists_every_tool_and_shows_one() {
+    let all = help()
+    for t in core::TOOLS {
+        assert(all.as_str().find(core::usage(t).as_str()).is_some(), t.name)
+    }
+    let Some(one) = help_for("edit") else { panic("edit has help") }
+    assert(
+        one
+            .as_str()
+            .starts_with(
+                "forge edit change=<text> path=<text> old=<text> new=<text> [all=<true|false>]",
+            ),
+        one.as_str(),
+    )
+    assert(help_for("nope").is_none(), "no such tool")
 }
 
 @test

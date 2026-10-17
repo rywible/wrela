@@ -77,3 +77,40 @@ fn rejects_a_program_with_other_imports() {
         "invalid program: it imports `env.now`, which isn't one of the host's: `wrela.memory`, `wrela.submit`, `wrela.request_status`, `wrela.request_take`, `wrela.limit`, `wrela.audio`, `wrela.input`, `wrela.payload`, `wrela.tick`, `wrela.keep`, `wrela.kept`, `wrela.clock`, `wrela.print`, `wrela.phase`"
     );
 }
+
+#[test]
+fn a_server_build_loaded_again_reads_its_compiled_code_and_runs_the_same() {
+    use wrela_host::server::{Limits, Room, ServerBuild};
+    // A server build that counts its calls in its memory's first word.
+    let wasm = wat::parse_str(
+        r#"(module (memory (export "memory") 1)
+             (func (export "serve") (param f32)
+               (i32.store (i32.const 0) (i32.add (i32.load (i32.const 0)) (i32.const 1)))))"#,
+    )
+    .expect("compiles");
+    let dir = std::env::temp_dir().join(format!("wrela-server-cache-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("server")).expect("a build directory");
+    std::fs::write(dir.join("server/game.wasm"), &wasm).expect("the build");
+    let calls = |b: &ServerBuild| {
+        let mut room = Room::start(b, Limits::default(), None).expect("it starts");
+        room.serve(0.0).expect("a call");
+        room.serve(0.0).expect("another");
+        room.memory_bytes()
+    };
+    let first = ServerBuild::load(&dir).expect("the first load compiles it");
+    let cached: Vec<_> = std::fs::read_dir(dir.join("server/.native"))
+        .expect("its code is kept beside it")
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(cached.len(), 1, "{cached:?}");
+    assert!(cached[0].ends_with("-server.cwasm"), "{cached:?}");
+    let code = dir.join("server/.native").join(&cached[0]);
+    let written = std::fs::metadata(&code).and_then(|m| m.modified()).expect("when it was written");
+    let again = ServerBuild::load(&dir).expect("the second load reads the code back");
+    let still = std::fs::metadata(&code).and_then(|m| m.modified()).expect("when it was written");
+    assert_eq!(written, still, "the second load reads the code, and writes none");
+    assert_eq!(calls(&first), calls(&again));
+    let _ = std::fs::remove_dir_all(&dir);
+}

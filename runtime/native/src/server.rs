@@ -111,12 +111,17 @@ pub struct ServerBuild {
 }
 
 impl ServerBuild {
-    /// The server build in the build directory `dir`: its `server/game.wasm`.
+    /// The server build in the build directory `dir`: its `server/game.wasm`, its compiled code
+    /// kept beside it (`crate::cache`), so a build loaded again isn't compiled again.
     pub fn load(dir: &Path) -> Result<ServerBuild, Failure> {
         let path = dir.join("server").join("game.wasm");
         let wasm = std::fs::read(&path)
             .map_err(|e| Failure::Host(format!("reading {}: {e}", path.display())))?;
-        ServerBuild::from_wasm(&wasm)
+        let hash = wrela_abi::ticks::wasm_hash(&wasm);
+        let module =
+            crate::cache::module_of(&ENGINE, &wasm, hash, Some(&dir.join("server")), "-server")
+                .map_err(|e| Failure::Host(format!("compiling the server build: {e}")))?;
+        ServerBuild::of(module, &wasm)
     }
 
     /// A server build from its module's bytes. Its memory must be its own, and it must export
@@ -124,6 +129,10 @@ impl ServerBuild {
     pub fn from_wasm(wasm: &[u8]) -> Result<ServerBuild, Failure> {
         let module = Module::new(&ENGINE, wasm)
             .map_err(|e| Failure::Host(format!("compiling the server build: {e:#}")))?;
+        ServerBuild::of(module, wasm)
+    }
+
+    fn of(module: Module, wasm: &[u8]) -> Result<ServerBuild, Failure> {
         let shared = module
             .imports()
             .any(|i| matches!(i.ty(), wasmtime::ExternType::Memory(m) if m.is_shared()));

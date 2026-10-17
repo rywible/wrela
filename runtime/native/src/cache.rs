@@ -34,12 +34,12 @@ fn stem(hash: u64) -> String {
 
 /// Where the compiled code of the WASM whose hash is `hash` goes for the build in `dir` (`None`:
 /// a build made for one run, which keeps it only in the shared directory): code for another
-/// machine (an x86-64 host under Rosetta, beside an arm64 one), or code that counts fuel (for
-/// tests), is another file.
-fn path(dir: Option<&Path>, hash: u64, fuel: bool) -> Option<PathBuf> {
+/// machine (an x86-64 host under Rosetta, beside an arm64 one), code that counts fuel (for
+/// tests), or code for another engine (a server's, `kind`), is another file.
+fn path(dir: Option<&Path>, hash: u64, fuel: bool, kind: &str) -> Option<PathBuf> {
     let arch = std::env::consts::ARCH;
     let fuel = if fuel { "-fuel" } else { "" };
-    let name = format!("{}-{arch}{fuel}.cwasm", stem(hash));
+    let name = format!("{}-{arch}{fuel}{kind}.cwasm", stem(hash));
     Some(shared().or_else(|| dir.map(|d| d.join(".native")))?.join(name))
 }
 
@@ -87,8 +87,20 @@ pub(crate) fn module(
     hash: u64,
     dir: Option<&Path>,
 ) -> Result<Module> {
+    module_of(engine, wasm, hash, dir, "")
+}
+
+/// [`module`], for the engine `kind` names in the file's name: a server's (`-server`), whose
+/// settings differ from a client's.
+pub(crate) fn module_of(
+    engine: &Engine,
+    wasm: &[u8],
+    hash: u64,
+    dir: Option<&Path>,
+    kind: &str,
+) -> Result<Module> {
     let compile = || Module::new(engine, wasm).map_err(|e| Error::Program(format!("{e:#}")));
-    let Some(file) = path(dir, hash, engine.get_consume_fuel()) else {
+    let Some(file) = path(dir, hash, engine.get_consume_fuel(), kind) else {
         return compile();
     };
     if file.is_file() {

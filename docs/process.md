@@ -2526,16 +2526,39 @@ named by BLAKE3 ([the BLAKE3 paper](https://github.com/BLAKE3-team/BLAKE3-specs)
 Apache 2.0), written in Wrela and checked against the official test vectors. Diffs are Myers' O(ND)
 algorithm (Myers, "An O(ND) Difference Algorithm and Its Variations", Algorithmica 1986), and
 merges are diff3's, as Khanna, Kunal and Pierce describe it ("A Formal Investigation of Diff3",
-2007). It speaks HTTP/1.1 (RFC 9112) and the Model Context Protocol's JSON-RPC
-([modelcontextprotocol.io](https://modelcontextprotocol.io)), so agents work against it with no
-checkout. It imports git's history with git itself (`log`, `ls-tree`, `cat-file`). docsite's
+2007). It speaks HTTP/1.1 (RFC 9112), and agents work against it with no checkout through its command,
+`forge <tool> key=value...`: any harness that runs commands (Claude Code, Codex, T3 Code) can call
+it, with nothing to set up, and `forge help` teaches every tool from the same table the tools are
+called by. A first version also served the Model Context Protocol; Ryan dropped it, since the
+command already reaches every harness, and one interface is less to keep true. It imports git's history with git itself (`log`, `ls-tree`, `cat-file`). docsite's
 JSON reader moved to `std::json`, so forge and the docs share it.
+
+Each call of the command loads forge's build, and compiling its 6 MB of WASM each time cost
+0.29 s and 2.3 s of CPU a call on the M4 Air (`forge log`, five runs). The service host now keeps
+a server build's compiled code beside it, keyed by the WASM's hash, as the native host does
+(`runtime/native/src/cache.rs`): a call then takes 0.01 s, with under 0.01 s of CPU.
 
 On the M4 Air, forge imported main's 454 commits in 135 s, each commit's objects flushed as it
 landed. A worker's checkout of main then matched `git archive` of the same commit, all 2,032 files
-and their executable bits. Not done yet: workers on other machines, replication and the offsite
-backup, a workspace client for local tools, the temporal item index, reuse of results, and the
-cut-over itself.
+and their executable bits. Through forge's worker, the full
+`tools/check.sh` (831 Rust tests, real GPU shaders and Chrome) passed on main's exact tree in a
+fresh checkout, cold build included, beside two other cold builds. A worker on another machine
+(`forge work`) runs checks for the service over HTTP.
+
+`wrela index --json` lists every item of a package with hashes of its signature and body, its
+effects and calls: the history index forge will keep. `wrela diff-behaviour` compares two versions
+of a function on seeded samples and boundary values (experiment E2). On `noise::fbm2_seen`
+(bf52885a, "same bits") it found 80 of 291 samples that differ: inputs where the old version
+trapped, and the new one returns or runs out of fuel. On `grass::species_of` (eae13d57) it found
+no differences on 768 samples.
+
+HTTP/1.1 stays forge's transport for its command, workers and replicas. Wrela's rooms are the plan
+for a live layer later (code rooms that apply edits in order exactly once, notices pushed to
+agents, a studio view of agents at work), once rooms have a versioned protocol in place of the
+pair id and a wire format that doesn't depend on the build.
+
+Not done yet: replication and the offsite backup, a workspace client for local tools, forge
+keeping and answering the item index, reuse of results, and the cut-over itself.
 
 ## Keeping this record
 

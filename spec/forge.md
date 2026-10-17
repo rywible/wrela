@@ -96,9 +96,9 @@ never reused.
   the service.
 - **F20.** Objects are written before the events that refer to them; a commit's events are
   appended in the order the commits were made.
-- **F21.** The service serves HTTP/1.1 (RFC 9112) with bodies by `content-length`:
-  - `POST /mcp`: one JSON-RPC 2.0 message of the Model Context Protocol; forge's tools are its
-    tools, named `forge_` and the tool.
+- **F21.** The service serves HTTP/1.1 (RFC 9112) with bodies by `content-length`. Agents and
+  people call it through forge's command, `forge <tool> key=value...`, whose `forge help` lists
+  each tool (`forge/core.wrela`'s `TOOLS`):
   - `POST /api/call`: `{"tool": name, "args": {...}}`, answered with the tool's JSON (422 if the
     tool refused).
   - `GET /api/object/<id>`: a blob's bytes, or another object's.

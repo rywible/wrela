@@ -1,6 +1,6 @@
 //! forge end to end (spec/forge.md): the service built from `forge/` and run by the service host
 //! on a small git repository, played here over HTTP as an agent and a lander are. It imports the
-//! repository, serves MCP, runs a check of a change's tree in its worker, lands the change, stops,
+//! repository, serves forge's tools as its command calls them, runs a check of a change's tree in its worker, lands the change, stops,
 //! and starts again from its log, a torn last record cut off.
 
 use std::io::{Read, Write};
@@ -127,23 +127,6 @@ fn call(port: u16, tool: &str, args: serde_json::Value) -> serde_json::Value {
         .unwrap_or_else(|e| panic!("{tool}'s answer isn't JSON ({e}): {text}"))
 }
 
-fn mcp(port: u16, id: u32, method: &str, params: serde_json::Value) -> serde_json::Value {
-    let body = serde_json::json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})
-        .to_string();
-    let (status, text) = http(port, "POST", "/mcp", &body);
-    assert_eq!(status, 200, "{method}: {text}");
-    let v: serde_json::Value = serde_json::from_str(&text).expect("a JSON-RPC answer");
-    assert_eq!(v["id"], id, "{text}");
-    v["result"].clone()
-}
-
-/// What an MCP tool call said: its JSON.
-fn mcp_tool(port: u16, id: u32, name: &str, args: serde_json::Value) -> serde_json::Value {
-    let r = mcp(port, id, "tools/call", serde_json::json!({"name": name, "arguments": args}));
-    assert_eq!(r["isError"], false, "{name}: {r}");
-    serde_json::from_str(r["content"][0]["text"].as_str().expect("text")).expect("the tool's JSON")
-}
-
 fn wait_until(what: &str, mut ok: impl FnMut() -> bool) {
     let start = Instant::now();
     while !ok() {
@@ -201,26 +184,19 @@ fn forge_imports_serves_checks_lands_and_starts_again_from_its_log() {
     let check = call(port, "list", serde_json::json!({"dir": "tools"}));
     assert_eq!(check["entries"][0]["exec"], true, "check.sh is executable: {check}");
 
-    // An agent over MCP: a change, an edit, its own view, a check of its tree.
-    let init = mcp(port, 1, "initialize", serde_json::json!({"protocolVersion": "2025-06-18"}));
-    assert_eq!(init["serverInfo"]["name"], "forge");
-    let tools = mcp(port, 2, "tools/list", serde_json::json!({}));
-    assert!(tools["tools"].as_array().expect("tools").len() >= 10);
-    let opened = mcp_tool(port, 3, "forge_open", serde_json::json!({"intent": "Two becomes 2"}));
+    // An agent, as forge's command calls it: a change, an edit, its own view, a check of its tree.
+    let opened = call(port, "open", serde_json::json!({"intent": "Two becomes 2"}));
     let change = opened["change"].as_str().expect("a change").to_string();
-    mcp_tool(
+    call(
         port,
-        4,
-        "forge_edit",
+        "edit",
         serde_json::json!({"change": change, "path": "a.txt", "old": "two", "new": "2"}),
     );
-    let mine =
-        mcp_tool(port, 5, "forge_read", serde_json::json!({"change": change, "path": "a.txt"}));
+    let mine = call(port, "read", serde_json::json!({"change": change, "path": "a.txt"}));
     assert_eq!(mine["text"], "one\n2\nthree\n");
     let main_side = call(port, "read", serde_json::json!({"path": "a.txt"}));
     assert_eq!(main_side["text"], "one\ntwo\nthree\n", "main is unchanged");
-    let checked =
-        mcp_tool(port, 6, "forge_check", serde_json::json!({"change": change, "check": "rustfmt"}));
+    let checked = call(port, "check", serde_json::json!({"change": change, "check": "rustfmt"}));
     let job = checked["job"].as_str().expect("a job").to_string();
     wait_until("the check", || job_state(port, &job)["state"] == "passed");
     let done = job_state(port, &job);
@@ -248,6 +224,22 @@ fn forge_imports_serves_checks_lands_and_starts_again_from_its_log() {
     assert_eq!(landed["seq"], 3);
     let after = call(port, "read", serde_json::json!({"path": "a.txt"}));
     assert_eq!(after["text"], "one\n2\nthree\n", "main holds the change");
+    // forge's own command: a call to the service, and its exit status.
+    let listen = format!("127.0.0.1:{port}");
+    let cli = run_forge(
+        &build,
+        &scratch.0.join("repo"),
+        &scratch.0.join("repo"),
+        &["log", "--server", &listen],
+    );
+    assert_eq!(cli.join().expect("the command's thread"), 0, "forge log exits 0");
+    let missing = run_forge(
+        &build,
+        &scratch.0.join("repo"),
+        &scratch.0.join("repo"),
+        &["nope", "--server", &listen],
+    );
+    assert_eq!(missing.join().expect("the command's thread"), 2, "an unknown tool exits 2");
     let digest = http(port, "GET", "/", "");
     assert!(digest.1.contains("Two becomes 2"), "the digest names the landing");
 

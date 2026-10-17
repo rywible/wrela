@@ -3,7 +3,7 @@
 // Each tool is a function of what forge knows (`Core`) and the call's arguments: its answer, as
 // JSON, and what must be made durable before the answer is given (objects, then events). A tool
 // that needs objects not in memory says so (`Need`), and the service loads them and calls again.
-// The same tools answer MCP's `tools/call` (mcp.wrela) and forge's own HTTP API.
+// The same tools answer forge's HTTP API and its command, `forge <tool> key=value...`.
 
 use blake3::Id
 use diff::Lines
@@ -164,113 +164,142 @@ fn file_at(c: Core, ch: Option<Change>, path: str) -> Option<File> {
 
 // ---- the tools ---------------------------------------------------------------------------------
 
-/// The tools, for MCP's `tools/list`: each one's name, what it does, and its arguments' schema.
-pub fn tools() -> String {
-    let list: [(Text, Text, Text); 17] = [
-        (
-            "open",
-            "Open a change: an overlay on main that sees main's newest files wherever it hasn't written. Returns its name, as `c12`. Give the intent in one sentence: what the change does and why.",
-            "{\"intent\":{\"type\":\"string\"},\"model\":{\"type\":\"string\"},\"session\":{\"type\":\"string\"}}",
-        ),
-        (
-            "changes",
-            "List the open changes: their names, intents, authors and files touched.",
-            "{}",
-        ),
-        (
-            "read",
-            "Read a file as a change sees it (or main, without `change`): its text, from line `from` (1 first) for `lines` lines. `side: \"main\"` reads main's version of a file the change conflicts on.",
-            "{\"change\":{\"type\":\"string\"},\"path\":{\"type\":\"string\"},\"from\":{\"type\":\"integer\"},\"lines\":{\"type\":\"integer\"},\"side\":{\"type\":\"string\"}}",
-        ),
-        (
-            "list",
-            "List a directory as a change sees it (or main): its files, with sizes, and its directories.",
-            "{\"change\":{\"type\":\"string\"},\"dir\":{\"type\":\"string\"}}",
-        ),
-        (
-            "search",
-            "Find text in the files a change sees (or main): each line that holds `text`, as path, line and the line. `path` limits it to paths that start with it.",
-            "{\"change\":{\"type\":\"string\"},\"text\":{\"type\":\"string\"},\"path\":{\"type\":\"string\"},\"limit\":{\"type\":\"integer\"}}",
-        ),
-        (
-            "write",
-            "Write a whole file in a change. `exec: true` makes it executable.",
-            "{\"change\":{\"type\":\"string\"},\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"},\"exec\":{\"type\":\"boolean\"}}",
-        ),
-        (
-            "edit",
-            "Replace text in a change's file: `old`, which must be in the file exactly once (or every time, with `all: true`), becomes `new`.",
-            "{\"change\":{\"type\":\"string\"},\"path\":{\"type\":\"string\"},\"old\":{\"type\":\"string\"},\"new\":{\"type\":\"string\"},\"all\":{\"type\":\"boolean\"}}",
-        ),
-        (
-            "remove",
-            "Remove a file in a change.",
-            "{\"change\":{\"type\":\"string\"},\"path\":{\"type\":\"string\"}}",
-        ),
-        (
-            "move",
-            "Move a file in a change, from `from` to `to`.",
-            "{\"change\":{\"type\":\"string\"},\"from\":{\"type\":\"string\"},\"to\":{\"type\":\"string\"}}",
-        ),
-        (
-            "status",
-            "A change's state: each file it touched (added, changed, removed, stale while forge merges main's newer version, or conflict), its checks, and why it can't land yet.",
-            "{\"change\":{\"type\":\"string\"}}",
-        ),
-        (
-            "diff",
-            "A change's diff against main, as a unified diff; `path` for one file.",
-            "{\"change\":{\"type\":\"string\"},\"path\":{\"type\":\"string\"}}",
-        ),
-        (
-            "snap",
-            "Name the change's tree as it is now, with a note: a snapshot to come back to.",
-            "{\"change\":{\"type\":\"string\"},\"note\":{\"type\":\"string\"}}",
-        ),
-        (
-            "check",
-            "Run one check (a `tools/check.sh` name, or `suite` for all of them) on the change's tree, on a worker with a hardware GPU. It runs while you work; `job` gives its result.",
-            "{\"change\":{\"type\":\"string\"},\"check\":{\"type\":\"string\"}}",
-        ),
-        (
-            "job",
-            "A check's state and, once it's done, whether it passed and the end of its output.",
-            "{\"job\":{\"type\":\"string\"}}",
-        ),
-        (
-            "submit",
-            "Ask for the change to land: forge runs the suite on its exact tree, and it can land once that passes.",
-            "{\"change\":{\"type\":\"string\"}}",
-        ),
-        (
-            "close",
-            "Close a change without landing it, saying why.",
-            "{\"change\":{\"type\":\"string\"},\"why\":{\"type\":\"string\"}}",
-        ),
-        (
-            "log",
-            "Main's newest landings: what each changed and why.",
-            "{\"limit\":{\"type\":\"integer\"}}",
-        ),
-    ]
-    var j = Json::new()
-    j.arr()
-    for (name, what, props) in list {
-        j.obj()
-        j.kstr("name", f"forge_{name}".as_str())
-        j.kstr("description", what)
-        j.key("inputSchema")
-        j.raw(f"{{\"type\":\"object\",\"properties\":{props}}}".as_str())
-        j.end_obj()
+/// A tool: its name, what it does, and its arguments, each `name` (text), `name:n` (a number) or
+/// `name:b` (`true` or `false`), with `?` after an optional one. `forge help` shows them.
+pub struct Tool: Copy {
+    pub name: Text,
+    pub what: Text,
+    pub args: Text,
+}
+
+/// Every tool, in the order `forge help` lists them.
+pub const TOOLS: [Tool; 18] = [
+    Tool {
+        name: "open",
+        what: "Open a change: an overlay on main that sees main's newest files wherever it hasn't written. Prints its name, as c12. Give the intent in one sentence: what the change does and why.",
+        args: "intent model? session?",
+    },
+    Tool {
+        name: "changes",
+        what: "List the open changes: their names, intents, authors and files touched.",
+        args: "",
+    },
+    Tool {
+        name: "read",
+        what: "Read a file as a change sees it (or main, without change): its text, from line `from` (1 first) for `lines` lines. side=main reads main's version of a file the change conflicts on.",
+        args: "change? path from?:n lines?:n side?",
+    },
+    Tool {
+        name: "list",
+        what: "List a directory as a change sees it (or main): its files, with sizes, and its directories.",
+        args: "change? dir?",
+    },
+    Tool {
+        name: "search",
+        what: "Find text in the files a change sees (or main): each line that holds `text`, as path, line and the line. `path` limits it to paths that start with it.",
+        args: "change? text path? limit?:n",
+    },
+    Tool {
+        name: "write",
+        what: "Write a whole file in a change. exec=true makes it executable.",
+        args: "change path content exec?:b",
+    },
+    Tool {
+        name: "edit",
+        what: "Replace text in a change's file: `old`, which must be in the file exactly once (or every time, with all=true), becomes `new`.",
+        args: "change path old new all?:b",
+    },
+    Tool { name: "remove", what: "Remove a file in a change.", args: "change path" },
+    Tool {
+        name: "move",
+        what: "Move a file in a change, from `from` to `to`.",
+        args: "change from to",
+    },
+    Tool {
+        name: "status",
+        what: "A change's state: each file it touched (added, changed, removed, stale while forge merges main's newer version, or conflict), its checks, and why it can't land yet.",
+        args: "change",
+    },
+    Tool {
+        name: "diff",
+        what: "A change's diff against main, as a unified diff; `path` for one file.",
+        args: "change path?",
+    },
+    Tool {
+        name: "snap",
+        what: "Name the change's tree as it is now, with a note: a snapshot to come back to.",
+        args: "change note?",
+    },
+    Tool {
+        name: "check",
+        what: "Run one check (a tools/check.sh name, or suite for all of them) on the change's tree, on a worker with a hardware GPU. It runs while you work; `job` gives its result.",
+        args: "change check",
+    },
+    Tool {
+        name: "job",
+        what: "A check's state and, once it's done, whether it passed and the end of its output.",
+        args: "job",
+    },
+    Tool {
+        name: "submit",
+        what: "Ask for the change to land: forge runs the suite on its exact tree, and it can land once that passes.",
+        args: "change",
+    },
+    Tool {
+        name: "close",
+        what: "Close a change without landing it, saying why.",
+        args: "change why?",
+    },
+    Tool {
+        name: "log",
+        what: "Main's newest landings: what each changed and why.",
+        args: "limit?:n",
+    },
+    Tool {
+        name: "land",
+        what: "Land a change on main, once its suite passed on its exact tree. Only those forge lets land changes may.",
+        args: "change",
+    },
+]
+
+/// How tool `t` is called: `forge read change=<text> path=<text> [from=<number>] ...`.
+pub fn usage(t: Tool) -> String {
+    var out = f"forge {t.name}"
+    let a = t.args
+    for (from, to) in a.split(" ") {
+        let spec = a.slice(from, to)
+        if spec.is_empty() {
+            continue
+        }
+        let colon = spec.find(":").unwrap_or(spec.len())
+        let optional = spec.slice(from: 0, to: colon).ends_with("?")
+        let name = spec.slice(from: 0, to: if optional { colon - 1 } else { colon })
+        let kind = spec.slice(from: colon, to: spec.len())
+        let value = if kind == ":n" { "<number>" } else if kind == ":b" { "<true|false>" } else {
+            "<text>"
+        }
+        if optional {
+            out.push_str(f" [{name}={value}]")
+        } else {
+            out.push_str(f" {name}={value}")
+        }
     }
-    j.end_arr()
-    take j.text
+    out
+}
+
+/// The tool named `name`.
+pub fn tool(name: str) -> Option<Tool> {
+    for t in TOOLS {
+        if t.name == name {
+            return Some(t)
+        }
+    }
+    None
 }
 
 /// Calls tool `name` with the arguments `doc.args` (an object).
 pub fn call(c: Core, ctx: Ctx, name: str, doc: Doc, args: u32) -> Outcome {
-    let n = if name.starts_with("forge_") { 6 } else { 0 }
-    match name.slice(from: n, to: name.len()) {
+    match name {
         "open" => open(c, ctx, doc, args),
         "changes" => changes(c),
         "read" => read(c, doc, args),
@@ -289,7 +318,7 @@ pub fn call(c: Core, ctx: Ctx, name: str, doc: Doc, args: u32) -> Outcome {
         "close" => close(c, ctx, doc, args),
         "log" => log(c, doc, args),
         "land" => land(c, ctx, doc, args),
-        _ => fail(f"forge has no tool `{name}`".as_str()),
+        _ => fail(f"forge has no tool `{name}`: `forge help` lists them".as_str()),
     }
 }
 
@@ -1168,7 +1197,7 @@ fn seeded(files: [(Text, Text)]) -> Core {
 @test
 fn an_agent_opens_a_change_edits_and_reads_its_own_view() {
     var c = seeded([("src/a.txt", "one\ntwo\nthree\n"), ("src/b.txt", "bee\n"), ("README", "hi\n")])
-    let opened = run(mut c, "forge_open", "{\"intent\":\"Two becomes 2\"}")
+    let opened = run(mut c, "open", "{\"intent\":\"Two becomes 2\"}")
     assert(opened.field(opened.root, "change") == "c1", "the first change")
     let _ = run(
         mut c,
@@ -1294,4 +1323,26 @@ fn a_carry_that_conflicts_keeps_both_versions() {
     let after = run(mut c, "status", "{\"change\":\"c2\"}")
     let files2 = after.get(after.root, "files").unwrap()
     assert(after.field(after.at(files2, 0), "state") == "changed", "resolved by writing it again")
+}
+
+@test
+fn every_tool_has_its_usage_and_is_called_by_its_name() {
+    let Some(read) = tool("read") else { panic("read is a tool") }
+    let u = usage(read)
+    assert(
+        u.as_str() ==
+            "forge read [change=<text>] path=<text> [from=<number>] [lines=<number>] [side=<text>]",
+        u.as_str(),
+    )
+    let c = core("t")
+    for t in TOOLS {
+        let d = doc("{}")
+        match call(c, ctx(), t.name, d, d.root) {
+            Outcome::Done { json, .. } => assert(
+                json.as_str().find("has no tool").is_none(),
+                t.name,
+            ),
+            Outcome::Need(_) => {},
+        }
+    }
 }
