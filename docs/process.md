@@ -2476,6 +2476,10 @@ the CPU slowed six times, the main thread's longest task once a scroll settles o
 page went from about 20 ms to 6.3 ms. These are M4 numbers in headless Chrome, not the Pixel 9's;
 a phone's GPU is several times slower, so its bands are longer in proportion.
 
+On the Pixel 9 a swipe then scrolled smoothly, but a finger held on the page shook it up and down:
+the browser's predicted moves overshoot as a finger slows or turns, and the page followed them.
+The program is told where the finger is again, and nothing predicted.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new
