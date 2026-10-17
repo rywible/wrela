@@ -8,8 +8,9 @@
 use out::Json
 use platform::service as host
 use service::Service
+use std::json::{Json as Doc}
 
-const COMMANDS: Text = "forge holds wrela's source and runs its checks. A change is an overlay on main: open one,\nread, search and edit its files (it sees main's newest files wherever it hasn't written), check\nits tree on a GPU worker while you work, and submit it; it lands once the suite passes on its\nexact tree. Every tool prints JSON.\n\n  forge <tool> [key=value...] [--server ADDR]\n  forge help <tool>\n  forge call <tool> '<json arguments>' [--server ADDR]\n  forge pull change=<cN> [--server ADDR]      make this directory hold a change's files\n  forge push [--server ADDR]                  send back what changed here\n  forge import <git-dir> [ref] [--server ADDR]\n  forge serve [--listen ADDR] [--machine NAME] [--landers IP,...] [--no-worker]\n  forge work --server ADDR --machine NAME [--jobs N]\n  forge replica --server ADDR --machine NAME\n\nTools:\n"
+const COMMANDS: Text = "forge holds wrela's source and runs its checks. A change is an overlay on main: open one,\nread, search and edit its files (it sees main's newest files wherever it hasn't written), check\nits tree on a GPU worker while you work, and submit it; it lands once the suite passes on its\nexact tree. Every tool prints JSON.\n\n  forge <tool> [key=value...] [--server ADDR]\n  forge help <tool>\n  forge call <tool> '<json arguments>' [--server ADDR]\n  forge watch room=<main|checks|all|cN> [from=N] [once=true]   print a room's notices as they come\n  forge pull change=<cN> [--server ADDR]      make this directory hold a change's files\n  forge push [--server ADDR]                  send back what changed here\n  forge import <git-dir> [ref] [--server ADDR]\n  forge serve [--listen ADDR] [--machine NAME] [--acks N] [--peers ADDR,...] [--promote]\n        [--writers RULES] [--landers RULES] [--fleet RULES] [--whois PROGRAM] [--no-worker]\n        (RULES: node:NAME, user:LOGIN, tag:TAG or addresses, between commas)\n  forge work --server ADDR --machine NAME [--jobs N]\n  forge replica --servers ADDR,... --machine NAME [--listen ADDR]\n  forge backup --to URL --auth FILE [--every SECONDS] [--once]\n  forge restore --from URL --auth FILE\n  The studio, live: http://SERVER/studio\n\nTools:\n"
 
 /// What `forge help` prints: the commands, then each tool's usage and what it does.
 pub fn help() -> String {
@@ -140,7 +141,77 @@ pub fn server_of(args: [String]) -> String {
     String::from("127.0.0.1:7171")
 }
 
+/// `forge watch`: the room, where it watches from, and whether it stops at the first notices.
+pub struct Watching: Clone {
+    pub on: bool,
+    room: String,
+    from: String,
+    once: bool,
+}
+
+pub fn not_watching() -> Watching {
+    Watching { on: false, room: String::new(), from: String::new(), once: false }
+}
+
+fn watch(s: mut Service) {
+    let path = if s.watching.from.is_empty() {
+        f"/api/watch?lines=1&room={http::encode(s.watching.room.as_str())}"
+    } else {
+        f"/api/watch?lines=1&room={http::encode(s.watching.room.as_str())}&from={s.watching.from}"
+    }
+    calls::call(mut s, "GET", path.as_str(), "", [], 1)
+}
+
+/// A watch's answer: each notice printed as a line of JSON, then the next ask.
+fn watched(s: mut Service, status: u32, body: take Vec<u8>) {
+    if status != 200 {
+        var text = bytes::text_of(body)
+        text.push_str("\n")
+        return done(mut s, 1, f"forge: {text}".as_str())
+    }
+    // The answer's first line says where the watch goes on from; each line after is a notice.
+    let text = bytes::text_of(body)
+    let t = text.as_str()
+    let first = t.find("\n").unwrap_or(t.len())
+    let Ok(doc) = Doc::read(bytes::of_str(t.slice(from: 0, to: first))) else {
+        return done(mut s, 1, "forge: the watch's answer isn't forge's\n")
+    }
+    if let Some(next) = doc.get(doc.root, "next") {
+        s.watching.from = doc.text(next).to_string()
+    }
+    var printed = 0
+    if first < t.len() {
+        let rest = t.slice(from: first + 1, to: t.len())
+        for (from, to) in rest.split("\n") {
+            if to > from {
+                host::stdout(bytes::of_str(f"{rest.slice(from, to)}\n".as_str()))
+                printed += 1
+            }
+        }
+    }
+    if s.watching.once && printed > 0 {
+        return done(mut s, 0, "")
+    }
+    watch(mut s)
+}
+
 pub fn start(s: mut Service) {
+    if s.args.len() > 0 && s.args[0].as_str() == "watch" {
+        s.calls = calls::calls(server_of(s.args).as_str())
+        s.watching.on = true
+        s.watching.room = String::from("main")
+        for a in s.args {
+            let t = a.as_str()
+            if t.starts_with("room=") {
+                s.watching.room = t.slice(from: 5, to: t.len()).to_string()
+            } else if t.starts_with("from=") {
+                s.watching.from = t.slice(from: 5, to: t.len()).to_string()
+            } else if t == "once=true" {
+                s.watching.once = true
+            }
+        }
+        return watch(mut s)
+    }
     if s.args.is_empty() || s.args[0].as_str() == "help" || s.args[0].as_str() == "--help" {
         if s.args.len() > 1 {
             return match help_for(s.args[1].as_str()) {
@@ -169,6 +240,9 @@ pub fn start(s: mut Service) {
 
 /// The call's answer: printed, and the command's status.
 pub fn got(s: mut Service, status: u32, body: take Vec<u8>) {
+    if s.watching.on {
+        return watched(mut s, status, take body)
+    }
     var text = bytes::text_of(body)
     text.push_str("\n")
     if status == 0 {

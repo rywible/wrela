@@ -1887,3 +1887,61 @@ fn the_item_index_answers_items_changes_and_callers() {
     let cs = who.get(who.root, "callers").unwrap()
     assert(who.count(cs) == 2, "f and h call g")
 }
+
+@test
+fn a_check_that_passed_on_a_tree_isnt_run_again_and_one_waiting_isnt_queued_twice() {
+    var c = seeded([("f", "1\n")])
+    let _ = run(mut c, "open", "{\"intent\":\"one\"}")
+    let _ = run(mut c, "write", "{\"change\":\"c1\",\"path\":\"f\",\"content\":\"2\\n\"}")
+    let first = run(mut c, "check", "{\"change\":\"c1\",\"check\":\"wgsl\"}")
+    assert(first.field(first.root, "job") == "j1", "queued as j1")
+    let again = run(mut c, "check", "{\"change\":\"c1\",\"check\":\"wgsl\"}")
+    assert(again.field(again.root, "job") == "j1" && c.state.jobs.len() == 1, "j1 again")
+    for ev in [
+        Event::Started { job: 1, worker: String::from("w"), time: 1 },
+        Event::Finished { job: 1, evidence: Id::zero(), passed: true, time: 2 },
+    ] {
+        let Ok(()) = apply(mut c.state, ev.clone()) else { panic("it runs") }
+    }
+    let reused = run(mut c, "check", "{\"change\":\"c1\",\"check\":\"wgsl\"}")
+    assert(reused.field(reused.root, "job") == "j1" && c.state.jobs.len() == 1, "j1's pass")
+    assert(reused.get(reused.root, "reused").is_some(), "said to be reused")
+    // Another tree is checked anew; a failure is tried again.
+    let _ = run(mut c, "write", "{\"change\":\"c1\",\"path\":\"f\",\"content\":\"3\\n\"}")
+    let other = run(mut c, "check", "{\"change\":\"c1\",\"check\":\"wgsl\"}")
+    assert(other.field(other.root, "job") == "j2", "a new tree, a new job")
+    for ev in [
+        Event::Started { job: 2, worker: String::from("w"), time: 3 },
+        Event::Finished { job: 2, evidence: Id::zero(), passed: false, time: 4 },
+    ] {
+        let Ok(()) = apply(mut c.state, ev.clone()) else { panic("it runs") }
+    }
+    let retried = run(mut c, "check", "{\"change\":\"c1\",\"check\":\"wgsl\"}")
+    assert(retried.field(retried.root, "job") == "j3", "a failure runs again")
+}
+
+@test
+fn a_caller_that_may_not_write_changes_nothing() {
+    let c = seeded([("f", "1\n")])
+    let reader = Ctx {
+        who: String::from("ryan@x@pop-os"),
+        node: String::from("pop-os"),
+        now: 1,
+        writes: false,
+        lands: false,
+        fleet: false,
+    }
+    let d = doc("{\"intent\":\"no\"}")
+    match call(c, reader.clone(), "open", d, d.root) {
+        Outcome::Done { error, durable, .. } => assert(
+            error && durable.events.is_empty(),
+            "refused",
+        ),
+        Outcome::Need(_) => panic("it needs nothing"),
+    }
+    let r = doc("{\"path\":\"f\"}")
+    match call(c, reader, "read", r, r.root) {
+        Outcome::Done { error, .. } => assert(!error, "but it reads"),
+        Outcome::Need(_) => panic("it needs nothing"),
+    }
+}

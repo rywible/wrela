@@ -661,6 +661,105 @@ fn a_store_backed_up_to_a_bucket_is_restored_whole() {
     stop(port2, promoted);
 }
 
+fn watched(port: u16, query: &str) -> serde_json::Value {
+    let (status, text) = http(port, "GET", &format!("/api/watch?{query}"), "");
+    assert_eq!(status, 200, "{text}");
+    serde_json::from_str(&text).expect("a watch's answer")
+}
+
+#[test]
+fn a_rooms_watchers_see_what_happens_in_it_as_it_happens() {
+    let scratch = Scratch::new("rooms");
+    let (repo, build, data, work) = (
+        scratch.0.join("repo"),
+        scratch.0.join("build"),
+        scratch.0.join("data"),
+        scratch.0.join("work"),
+    );
+    for d in [&repo, &data, &work] {
+        std::fs::create_dir_all(d).expect("a directory");
+    }
+    repository(&repo);
+    wrela_tests::must_build(&repo_root().join("forge"), &build);
+    let port = free_port();
+    let service = start(&build, &data, &work, port);
+    ready(port);
+    http(port, "POST", "/api/import", &serde_json::json!({"git": repo, "ref": "main"}).to_string());
+    wait_until("the import", || call(port, "log", serde_json::json!({}))["main"] == 2);
+    let c1 = call(port, "open", serde_json::json!({"intent": "Watched"}))["change"]
+        .as_str()
+        .expect("a change")
+        .to_string();
+    call(port, "write", serde_json::json!({"change": c1, "path": "a.txt", "content": "uno\n"}));
+
+    // From now: a watch of c1 is held until c1 writes, and its answer names who watches.
+    let now = position(port)["size"].as_u64().expect("the log's end");
+    let room = c1.clone();
+    let held = std::thread::spawn(move || watched(port, &format!("room={room}&from={now}")));
+    std::thread::sleep(Duration::from_millis(300));
+    call(port, "write", serde_json::json!({"change": c1, "path": "new.txt", "content": "n\n"}));
+    let got = held.join().expect("the watch");
+    assert_eq!(got["notices"].as_array().expect("notices").len(), 1, "{got}");
+    assert_eq!(got["notices"][0]["kind"], "wrote");
+    assert_eq!(got["notices"][0]["path"], "new.txt");
+    assert_eq!(got["present"], serde_json::json!(["local"]), "the watcher is in the room");
+    // From the start, every notice of c1 in order; from its `next`, none twice.
+    let all = watched(port, &format!("room={c1}&from=0"));
+    let kinds: Vec<&str> = all["notices"]
+        .as_array()
+        .expect("notices")
+        .iter()
+        .map(|n| n["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["opened", "wrote", "wrote"]);
+    // Main moves under c1: c1's room hears of the carry, and main's of the landing.
+    let next = all["next"].as_u64().expect("next");
+    let c1_room = c1.clone();
+    let carried = std::thread::spawn(move || watched(port, &format!("room={c1_room}&from={next}")));
+    let main_room = std::thread::spawn(move || watched(port, &format!("room=main&from={next}")));
+    std::thread::sleep(Duration::from_millis(300));
+    land_one(port, "a.txt", "one\ntwo\nthree\nfour\n");
+    let main_said = main_room.join().expect("main's watch");
+    assert!(
+        main_said["notices"].as_array().expect("notices").iter().any(|n| n["kind"] == "landed"),
+        "{main_said}"
+    );
+    // The landing changed a.txt, which c1 changed too: c1's room hears main moved under it.
+    let c1_said = carried.join().expect("c1's watch");
+    let kind = c1_said["notices"][0]["kind"].as_str().unwrap_or("").to_string();
+    assert!(kind == "carried" || kind == "conflict", "{c1_said}");
+    assert_eq!(c1_said["notices"][0]["path"], "a.txt");
+    // Bad asks.
+    assert_eq!(http(port, "GET", "/api/watch?room=x9", "").0, 400);
+    assert_eq!(http(port, "GET", "/api/watch?room=main&from=1", "").0, 400, "not a record's end");
+    // The studio: who is where, and the page holds until something happens.
+    let (status, page) = http(port, "GET", "/studio", "");
+    assert_eq!(status, 200);
+    assert!(page.contains("In the rooms") && page.contains("http-equiv=\"refresh\""), "{page}");
+    let end = position(port)["size"].as_u64().expect("the log's end");
+    let studio = std::thread::spawn(move || http(port, "GET", &format!("/studio?after={end}"), ""));
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!studio.is_finished(), "the page waits for something to happen");
+    call(port, "write", serde_json::json!({"change": c1, "path": "seen.txt", "content": "s\n"}));
+    let (status, page) = studio.join().expect("the studio");
+    assert_eq!(status, 200);
+    assert!(page.contains("seen.txt"), "the page shows the write");
+    // forge's command watches a room: it prints the next notices and, once, stops.
+    let listen = format!("127.0.0.1:{port}");
+    let end = position(port)["size"].as_u64().expect("the log's end");
+    let (room, from) = (format!("room={c1}"), format!("from={end}"));
+    let watcher = run_forge(
+        &build,
+        &scratch.0,
+        &work,
+        &["watch", &room, &from, "once=true", "--server", &listen],
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    call(port, "write", serde_json::json!({"change": c1, "path": "cli.txt", "content": "c\n"}));
+    assert_eq!(watcher.join().expect("the command's thread"), 0, "the command saw the write");
+    stop(port, service);
+}
+
 /// forge with `args` and the roots `roots`, on a thread of its own: its exit status.
 fn run_with_roots(
     build: &Path,

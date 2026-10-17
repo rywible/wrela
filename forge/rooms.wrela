@@ -1,0 +1,518 @@
+// Rooms (spec/forge.md F33-F35): the log as callers watch it, live. A room is a view of the log:
+// `main` (landings, main's checks and the store's epochs), `cN` (change N: its writes, carries,
+// conflicts, checks and landing), `checks` (every job) and `all`. A notice is an event's meaning in
+// a room, at the end of the event's record in the log, so a watcher that asks again from the
+// `next` it was given misses nothing and sees nothing twice.
+//
+// `GET /api/watch?room=R&from=X` is held up to 20 s while R has no notice past X. Who watches a room
+// is in it while the ask is held and for 30 s after. `GET /studio` is the digest with who is in
+// which room and the newest notices; `/studio?after=X` is held as a watch of `all` is, and the page
+// asks for itself again once it's shown, so a browser shows forge as it changes with no script.
+
+use blake3::Id
+use out::Json
+use platform::service as host
+use service::{For, LOG, Service, wait}
+use state::{Event, State}
+use std::io::{IoError, print}
+
+/// How long an ask is held, and how long a watcher stays in a room after it.
+const HOLD: u64 = 20000
+const STAY: u64 = 30000
+/// The most log one answer reads, and the newest notices the studio keeps.
+const READ: u64 = 8388608
+const KEPT: u32 = 40
+
+/// An event's notice: its JSON, and the rooms it is in (besides `all`).
+pub struct Notice: Clone {
+    pub json: String,
+    pub rooms: Vec<String>,
+}
+
+/// The room of change `change`'s events: `cN`, or `main` for main's (0).
+fn room_of(change: u64) -> String {
+    if change == 0 { String::from("main") } else { f"c{change}" }
+}
+
+/// The notice of event `ev`, whose record ends at `at`; `st` names a job's change.
+pub fn notice(ev: Event, at: u64, st: State) -> Notice {
+    var j = Json::new()
+    j.obj()
+    j.knum("at", at)
+    var rooms: Vec<String> = Vec::new()
+    match ev {
+        Event::Opened { change, intent, author, model, machine, .. } => {
+            j.kstr("kind", "opened")
+            j.kstr("change", f"c{change}".as_str())
+            j.kstr("intent", intent.as_str())
+            j.kstr("by", author.as_str())
+            j.kstr("model", model.as_str())
+            j.kstr("machine", machine.as_str())
+            rooms.push(room_of(change))
+        },
+        Event::Wrote { change, path, file, .. } => {
+            j.kstr("kind", if file.is_some() { "wrote" } else { "removed" })
+            j.kstr("change", f"c{change}".as_str())
+            j.kstr("path", path.as_str())
+            rooms.push(room_of(change))
+        },
+        Event::Snapped { change, note, tree, .. } => {
+            j.kstr("kind", "snapped")
+            j.kstr("change", f"c{change}".as_str())
+            j.kstr("note", note.as_str())
+            j.kstr("tree", tree.hex().as_str())
+            rooms.push(room_of(change))
+        },
+        Event::Merged { change, path, conflict, .. } => {
+            // Main moved under the change: carried onto it, or in conflict with it.
+            j.kstr("kind", if conflict.is_some() { "conflict" } else { "carried" })
+            j.kstr("change", f"c{change}".as_str())
+            j.kstr("path", path.as_str())
+            rooms.push(room_of(change))
+        },
+        Event::Submitted { change, .. } => {
+            j.kstr("kind", "submitted")
+            j.kstr("change", f"c{change}".as_str())
+            rooms.push(room_of(change))
+        },
+        Event::Closed { change, why, .. } => {
+            j.kstr("kind", "closed")
+            j.kstr("change", f"c{change}".as_str())
+            j.kstr("why", why.as_str())
+            rooms.push(room_of(change))
+        },
+        Event::Landed { seq, change, by, intent, files, .. } => {
+            j.kstr("kind", "landed")
+            j.knum("seq", seq)
+            if change != 0 {
+                j.kstr("change", f"c{change}".as_str())
+                rooms.push(room_of(change))
+            }
+            j.kstr("by", by.as_str())
+            j.kstr("intent", intent.as_str())
+            j.knum("files", u64(files.len()))
+            rooms.push(String::from("main"))
+        },
+        Event::Queued { job, check, change, .. } => {
+            j.kstr("kind", "queued")
+            j.kstr("job", f"j{job}".as_str())
+            j.kstr("check", check.as_str())
+            j.kstr("for", room_of(change).as_str())
+            rooms.push(room_of(change))
+            rooms.push(String::from("checks"))
+        },
+        Event::Started { job, worker, .. } => {
+            j.kstr("kind", "started")
+            j.kstr("job", f"j{job}".as_str())
+            j.kstr("worker", worker.as_str())
+            job_rooms(mut j, mut rooms, st, job)
+        },
+        Event::Finished { job, passed, .. } => {
+            j.kstr("kind", if passed { "passed" } else { "failed" })
+            j.kstr("job", f"j{job}".as_str())
+            job_rooms(mut j, mut rooms, st, job)
+        },
+        Event::Requeued { job, why, .. } => {
+            j.kstr("kind", "requeued")
+            j.kstr("job", f"j{job}".as_str())
+            j.kstr("why", why.as_str())
+            job_rooms(mut j, mut rooms, st, job)
+        },
+        Event::Waived { check, why } => {
+            j.kstr("kind", "waived")
+            j.kstr("check", check.as_str())
+            j.kstr("why", why.as_str())
+            rooms.push(String::from("main"))
+        },
+        Event::Promoted { epoch, machine, .. } => {
+            j.kstr("kind", "promoted")
+            j.knum("epoch", epoch)
+            j.kstr("machine", machine.as_str())
+            rooms.push(String::from("main"))
+        },
+        Event::Fenced { epoch, .. } => {
+            j.kstr("kind", "fenced")
+            j.knum("epoch", epoch)
+            rooms.push(String::from("main"))
+        },
+    }
+    j.end_obj()
+    Notice { json: take j.text, rooms }
+}
+
+/// A job's notice names its check and is in its change's room (or main's) and `checks`.
+fn job_rooms(j: mut Json, rooms: mut Vec<String>, st: State, job: u64) {
+    if st.jobs.contains(job) {
+        borrow jb = st.jobs.at(job)
+        j.kstr("check", jb.check.as_str())
+        j.kstr("for", room_of(jb.change).as_str())
+        rooms.push(room_of(jb.change))
+    }
+    rooms.push(String::from("checks"))
+}
+
+/// Whether `room` is a room: `main`, `checks`, `all` or `cN`.
+pub fn is_room(room: str) -> bool {
+    if room == "main" || room == "checks" || room == "all" {
+        return true
+    }
+    if !room.starts_with("c") || room.len() < 2 || room.len() > 20 {
+        return false
+    }
+    bytes::parse_u64(room.slice(from: 1, to: room.len())).is_some()
+}
+
+/// Whether notice `n` is in `room`.
+fn in_room(n: Notice, room: str) -> bool {
+    if room == "all" {
+        return true
+    }
+    for r in n.rooms {
+        if r.as_str() == room {
+            return true
+        }
+    }
+    false
+}
+
+/// A held ask: a watch of a room from a place in the log, or a page of the studio after one.
+pub struct Watch: Clone {
+    conn: u32,
+    room: String,
+    from: u64,
+    until: u64,
+    who: String,
+    page: bool,
+    reading: bool,
+    /// Whether it is answered as lines: where it goes on from, then each notice.
+    lines: bool,
+}
+
+pub struct Rooms: Clone {
+    watches: Vec<Watch>,
+    /// Who is in which room, until when.
+    present: Vec<(String, String, u64)>,
+    /// The newest notices, newest last.
+    recent: Vec<String>,
+}
+
+pub fn none() -> Rooms {
+    Rooms { watches: Vec::new(), present: Vec::new(), recent: Vec::new() }
+}
+
+/// Keeps what events just became durable mean, for the studio.
+pub fn kept(s: mut Service, events: [Event], ends: [(u64, Id)]) {
+    for i in 0..min(events.len(), ends.len()) {
+        let n = notice(events[i].clone(), ends[i].0, s.core.state)
+        s.rooms.recent.push(take n.json)
+    }
+    if s.rooms.recent.len() > KEPT {
+        let over = s.rooms.recent.len() - KEPT
+        let _ = s.rooms.recent.drain_front(over)
+    }
+}
+
+/// `GET /api/watch?room=R&from=X` (X: the log's end now, if not given).
+pub fn watch(s: mut Service, conn: u32, room: str, from: str, lines: bool) {
+    if !is_room(room) {
+        return service::reply(
+            mut s,
+            conn,
+            400,
+            "application/json",
+            bytes::of_str("{\"error\":\"a room is main, checks, all or a change (c12)\"}"),
+        )
+    }
+    let at = if from.is_empty() { s.log_size } else {
+        match bytes::parse_u64(from) {
+            Some(x) => x,
+            None => s.log_size + 1,
+        }
+    }
+    if at > s.log_size || !(at == 0 || at == s.log_size || ends_at(s, at)) {
+        return service::reply(
+            mut s,
+            conn,
+            400,
+            "application/json",
+            bytes::of_str("{\"error\":\"`from` is a place a watch gave as `next`, or 0\"}"),
+        )
+    }
+    let who = service::ctx_of(s, conn).who
+    enter(mut s, room, who.as_str(), service::now(s) + HOLD + STAY)
+    s.rooms.watches.push(
+        Watch {
+            conn,
+            room: room.to_string(),
+            from: at,
+            until: service::now(s) + HOLD,
+            who,
+            page: false,
+            reading: false,
+            lines,
+        },
+    )
+}
+
+/// Whether a record of the log ends at `at`.
+fn ends_at(s: Service, at: u64) -> bool {
+    var lo = 0
+    var hi = s.ends.len()
+    while lo < hi {
+        let mid = (lo + hi) / 2
+        if s.ends[mid].0 < at {
+            lo = mid + 1
+        } else {
+            hi = mid
+        }
+    }
+    lo < s.ends.len() && s.ends[lo].0 == at
+}
+
+fn enter(s: mut Service, room: str, who: str, until: u64) {
+    for i in 0..s.rooms.present.len() {
+        if s.rooms.present[i].0.as_str() == room && s.rooms.present[i].1.as_str() == who {
+            s.rooms.present[i].2 = max(s.rooms.present[i].2, until)
+            return
+        }
+    }
+    s.rooms.present.push((room.to_string(), who.to_string(), until))
+}
+
+/// Who is in `room` now.
+fn present_in(s: Service, room: str) -> Vec<String> {
+    let now = service::now(s)
+    var out: Vec<String> = Vec::new()
+    for (r, who, until) in s.rooms.present {
+        if until > now && (room == "all" || r.as_str() == room) {
+            var dup = false
+            for x in out {
+                if x.as_str() == who.as_str() {
+                    dup = true
+                }
+            }
+            if !dup {
+                out.push(who.clone())
+            }
+        }
+    }
+    out
+}
+
+/// `GET /studio[?after=X]`.
+pub fn studio(s: mut Service, conn: u32, after: str) {
+    let who = service::ctx_of(s, conn).who
+    enter(mut s, "studio", who.as_str(), service::now(s) + HOLD + STAY)
+    let at = bytes::parse_u64(after).unwrap_or(0)
+    if after.is_empty() || at < s.log_size {
+        return page(mut s, conn)
+    }
+    s.rooms.watches.push(
+        Watch {
+            conn,
+            room: String::from("all"),
+            from: at,
+            until: service::now(s) + HOLD,
+            who,
+            page: true,
+            reading: false,
+            lines: false,
+        },
+    )
+}
+
+fn page(s: mut Service, conn: u32) {
+    var top = String::new()
+    let now = service::now(s)
+    // Who is here, by room.
+    var rooms: Vec<String> = Vec::new()
+    for (r, _, until) in s.rooms.present {
+        if until > now {
+            var dup = false
+            for x in rooms {
+                if x.as_str() == r.as_str() {
+                    dup = true
+                }
+            }
+            if !dup {
+                rooms.push(r.clone())
+            }
+        }
+    }
+    top.push_str("<h2>In the rooms</h2><table>")
+    for r in rooms {
+        let names = present_in(s, r.as_str())
+        var list = String::new()
+        for n in names {
+            if !list.is_empty() {
+                list.push_str(", ")
+            }
+            list.push_str(digest::esc(n.as_str()).as_str())
+        }
+        top.push_str(
+            f"<tr><td class=\"n\"><code>{digest::esc(r.as_str())}</code></td><td>{list}</td></tr>",
+        )
+    }
+    top.push_str("</table><h2>Just now</h2><table>")
+    var k = s.rooms.recent.len()
+    var shown = 0
+    while k > 0 && shown < 20 {
+        k -= 1
+        top.push_str(f"<tr><td><code>{digest::esc(s.rooms.recent[k].as_str())}</code></td></tr>")
+        shown += 1
+    }
+    if shown == 0 {
+        top.push_str("<tr><td class=\"dim\">Nothing since forge started.</td></tr>")
+    }
+    top.push_str("</table>")
+    let refresh = f"<meta http-equiv=\"refresh\" content=\"0;url=/studio?after={s.log_size}\">"
+    let html = digest::page_with(s.core, now, refresh.as_str(), top.as_str())
+    service::reply(mut s, conn, 200, "text/html; charset=utf-8", bytes::of_str(html.as_str()))
+}
+
+/// Answers the held asks the log has grown past, and those held long enough.
+pub fn pump(s: mut Service) {
+    let now = service::now(s)
+    var i = 0
+    while i < s.rooms.watches.len() {
+        let w = s.rooms.watches[i].clone()
+        if !s.conns.contains(w.conn) {
+            let _ = s.rooms.watches.remove(i)
+            continue
+        }
+        if w.reading {
+            i += 1
+            continue
+        }
+        if w.page && (w.from < s.log_size || now >= w.until) {
+            let _ = s.rooms.watches.remove(i)
+            page(mut s, w.conn)
+            continue
+        }
+        if !w.page && w.from < s.log_size {
+            s.rooms.watches[i].reading = true
+            let len = min(s.log_size - w.from, READ)
+            wait(mut s, host::read_range(LOG, w.from, len), For::Watched(w.conn))
+            i += 1
+            continue
+        }
+        if now >= w.until {
+            let _ = s.rooms.watches.remove(i)
+            answer(mut s, w, w.from, Vec::new())
+            continue
+        }
+        i += 1
+    }
+}
+
+/// The log a watch read: its room's notices, if any, are its answer.
+pub fn read(s: mut Service, conn: u32, r: take Result<Vec<u8>, IoError>) {
+    var at = s.rooms.watches.len()
+    for i in 0..s.rooms.watches.len() {
+        if s.rooms.watches[i].conn == conn && s.rooms.watches[i].reading {
+            at = i
+        }
+    }
+    if at == s.rooms.watches.len() {
+        return
+    }
+    let b = match take r {
+        Ok(b) => take b,
+        Err(e) => {
+            let _ = s.rooms.watches.remove(at)
+            return service::reply(mut s, conn, 500, "text/plain", bytes::of_str(e.message()))
+        },
+    }
+    let w = s.rooms.watches[at].clone()
+    let got = log::read(b)
+    var notices: Vec<String> = Vec::new()
+    for k in 0..got.payloads.len() {
+        let Ok(ev) = state::decode(got.payloads[k].clone()) else { continue }
+        let n = notice(ev, w.from + u64(got.ends[k]), s.core.state)
+        if in_room(n.clone(), w.room.as_str()) {
+            notices.push(take n.json)
+        }
+    }
+    let next = w.from + u64(got.whole)
+    if notices.is_empty() && service::now(s) < w.until {
+        // Nothing for its room: it waits on from where it read to.
+        s.rooms.watches[at].from = next
+        s.rooms.watches[at].reading = false
+        return
+    }
+    let _ = s.rooms.watches.remove(at)
+    answer(mut s, w, next, notices)
+}
+
+fn answer(s: mut Service, w: Watch, next: u64, notices: [String]) {
+    enter(mut s, w.room.as_str(), w.who.as_str(), service::now(s) + STAY)
+    var j = Json::new()
+    j.obj()
+    j.kstr("room", w.room.as_str())
+    j.knum("next", next)
+    j.key("present")
+    j.arr()
+    for p in present_in(s, w.room.as_str()) {
+        j.str(p.as_str())
+    }
+    j.end_arr()
+    if w.lines {
+        j.end_obj()
+        var out = take j.text
+        for n in notices {
+            out.push_str("\n")
+            out.push_str(n.as_str())
+        }
+        return service::reply(mut s, w.conn, 200, "text/plain", bytes::of_str(out.as_str()))
+    }
+    j.key("notices")
+    j.arr()
+    for n in notices {
+        j.raw(n.as_str())
+    }
+    j.end_arr()
+    j.end_obj()
+    service::reply(mut s, w.conn, 200, "application/json", bytes::of_str(j.text.as_str()))
+}
+
+@test
+fn each_event_has_a_notice_in_its_rooms() {
+    var st = state::new()
+    let q = Event::Queued {
+        job: 4,
+        check: String::from("suite"),
+        tree: blake3::Id::zero(),
+        change: 7,
+        attempt: 1,
+        time: 1,
+    }
+    let n = notice(q.clone(), 99, st)
+    assert(
+        in_room(n.clone(), "c7") && in_room(n.clone(), "checks") && !in_room(n.clone(), "main"),
+        "c7, checks",
+    )
+    assert(n.json.as_str().starts_with("{\"at\":99,\"kind\":\"queued\""), n.json.as_str())
+    let Ok(()) = state::apply(mut st, take q) else { panic("queued") }
+    let started = notice(Event::Started { job: 4, worker: String::from("w"), time: 2 }, 120, st)
+    assert(
+        in_room(started.clone(), "c7") &&
+            started.json.as_str().find("\"check\":\"suite\"").is_some(),
+        "the job's change",
+    )
+    let merged = Event::Merged {
+        change: 7,
+        path: String::from("a"),
+        base: None,
+        now: None,
+        conflict: Some(object::File { id: blake3::Id::zero(), exec: false, size: 1 }),
+    }
+    let m = notice(merged, 140, st)
+    assert(
+        m.json.as_str().find("\"kind\":\"conflict\"").is_some() && in_room(m, "c7"),
+        "a conflict in c7",
+    )
+    assert(
+        is_room("main") && is_room("c12") && !is_room("c") && !is_room("x1") && !is_room("c1x"),
+        "rooms",
+    )
+}

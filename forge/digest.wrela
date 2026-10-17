@@ -7,7 +7,7 @@ use core::Core
 use state::{Run, Status}
 
 /// `s` with HTML's special characters escaped.
-fn esc(s: str) -> String {
+pub fn esc(s: str) -> String {
     var out = String::new()
     for i in 0..s.len() {
         let b = s.byte(i)
@@ -48,15 +48,24 @@ const STYLE: Text = ":root{color-scheme:light dark;--bg:#fbfaf7;--fg:#1d1c1a;--d
 
 /// The page at `now`.
 pub fn page(c: Core, now: u64) -> String {
+    page_with(c, now, "", "")
+}
+
+/// The page at `now`, with `head` in its head and `top` before its first part: the studio's
+/// (rooms.wrela).
+pub fn page_with(c: Core, now: u64, head: str, top: str) -> String {
     borrow st = c.state
     var h = String::from(
-        "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>forge</title><style>",
+        "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>forge</title>",
     )
+    h.push_str(head)
+    h.push_str("<style>")
     h.push_str(STYLE)
     h.push_str("</style></head><body>")
     h.push_str(
-        f"<h1>forge</h1><div class=\"dim\">main at {st.seq} · {st.files.len()} files · on {esc(c.machine.as_str())}</div>",
+        f"<h1>forge</h1><div class=\"dim\">main at {st.seq} · {st.files.len()} files · on {esc(c.machine.as_str())} · epoch {st.epoch}</div>",
     )
+    h.push_str(top)
     // Open changes.
     h.push_str("<h2>Open changes</h2><table>")
     var open = 0
