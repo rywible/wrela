@@ -119,6 +119,9 @@ never reused.
 - **F23.** A worker is a checkout (the service's `work` root) and the name of its machine. For each
   check it makes the checkout hold the check's tree, writing only the files that differ from what
   it held, and runs `tools/check.sh` (with the check's name, unless the check is `suite`) there.
+  A check named `index:<package>` runs that tree's own `tools/wrela index --json <package>`
+  instead: its output is the package's item index at that tree, which the `items`, `changed` and
+  `callers` tools read.
   `workers/<name>` is what its checkout holds: the byte 1, the count of its files, then each path,
   whether it is executable, its blob's id and its size.
 

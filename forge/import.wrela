@@ -121,7 +121,9 @@ fn git_run(s: mut Service, step: u32, args: [Text], stdin: take Vec<u8>) {
         argv.push(a.to_string())
     }
     if step == LOG {
+        // `--` after it: a ref may share its name with a directory.
         argv.push(s.import.reference.clone())
+        argv.push(String::from("--"))
     }
     run_argv(mut s, step, take argv, take stdin)
 }

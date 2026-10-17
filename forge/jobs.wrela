@@ -281,10 +281,7 @@ fn run(s: mut Service) {
         )
     }
     let check = s.core.state.jobs.at(job).check.clone()
-    var argv: Vec<String> = Vec::from([String::from("tools/check.sh")])
-    if check.as_str() != "suite" {
-        argv.push(check.clone())
-    }
+    let argv = command(check.as_str())
     let r = host::Run {
         tag: job,
         argv,
@@ -295,6 +292,26 @@ fn run(s: mut Service) {
         stdin: Vec::new(),
     }
     wait(mut s, host::run(r), For::Ran(job))
+}
+
+/// What a worker runs for check `check`: `tools/check.sh` with its name (none for `suite`), or for
+/// `index:<package>`, the revision's own `tools/wrela index --json <package>`.
+pub fn command(check: str) -> Vec<String> {
+    if check.starts_with("index:") {
+        return Vec::from(
+            [
+                String::from("tools/wrela"),
+                String::from("index"),
+                String::from("--json"),
+                check.slice(from: 6, to: check.len()).to_string(),
+            ],
+        )
+    }
+    var argv: Vec<String> = Vec::from([String::from("tools/check.sh")])
+    if check != "suite" {
+        argv.push(check.to_string())
+    }
+    argv
 }
 
 pub fn ran(s: mut Service, job: u64, r: take Result<Vec<u8>, IoError>) {
@@ -490,6 +507,19 @@ pub fn remote(s: mut Service, conn: u32, req: take http::Request) {
         )
     }
     json_reply(mut s, conn, 404, "{\"error\":\"no such call\"}")
+}
+
+@test
+fn a_check_names_what_a_worker_runs() {
+    let suite = command("suite")
+    assert(suite.len() == 1 && suite[0].as_str() == "tools/check.sh", "the suite")
+    let one = command("wgsl")
+    assert(one.len() == 2 && one[1].as_str() == "wgsl", "one check")
+    let index = command("index:engine")
+    assert(
+        index.len() == 4 && index[0].as_str() == "tools/wrela" && index[3].as_str() == "engine",
+        "an index",
+    )
 }
 
 @test

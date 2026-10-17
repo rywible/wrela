@@ -173,7 +173,7 @@ pub struct Tool: Copy {
 }
 
 /// Every tool, in the order `forge help` lists them.
-pub const TOOLS: [Tool; 20] = [
+pub const TOOLS: [Tool; 23] = [
     Tool {
         name: "open",
         what: "Open a change: an overlay on main that sees main's newest files wherever it hasn't written. Prints its name, as c12. Give the intent in one sentence: what the change does and why.",
@@ -266,6 +266,21 @@ pub const TOOLS: [Tool; 20] = [
         args: "limit?:n",
     },
     Tool {
+        name: "items",
+        what: "A package's items (functions, types, traits, constants) at a revision of main (`seq`, main's newest without it) or in a change: each path, kind, file and lines, and a function's effects and calls. `path` limits them to paths that start with it. The first ask of a revision indexes it on a worker, with that revision's own compiler: ask again when its job is done.",
+        args: "package change? seq?:n path?",
+    },
+    Tool {
+        name: "changed",
+        what: "The items of a package that differ between two revisions of main: added, removed, and changed in their signature or their body.",
+        args: "package from:n to?:n",
+    },
+    Tool {
+        name: "callers",
+        what: "The items of a package that call `item`, at a revision of main or in a change.",
+        args: "package item change? seq?:n",
+    },
+    Tool {
         name: "land",
         what: "Land a change on main, once its suite passed on its exact tree. Only those forge lets land changes may.",
         args: "change",
@@ -329,6 +344,9 @@ pub fn call(c: Core, ctx: Ctx, name: str, doc: Doc, args: u32) -> Outcome {
         "log" => log(c, doc, args),
         "land" => land(c, ctx, doc, args),
         "files" => files(c, doc, args),
+        "items" => items(c, ctx, doc, args),
+        "changed" => changed(c, ctx, doc, args),
+        "callers" => callers(c, ctx, doc, args),
         "put" => put_blob(c, ctx, doc, args),
         _ => fail(f"forge has no tool `{name}`: `forge help` lists them".as_str()),
     }
@@ -1092,6 +1110,300 @@ fn land(c: Core, ctx: Ctx, doc: Doc, args: u32) -> Outcome {
     ok_with(take j, Durable { objects: all, events: Vec::from([take ev]) })
 }
 
+// ---- the item index ----------------------------------------------------------------------------
+
+/// What indexing a tree gave: its index's JSON, or why there's none yet.
+enum Indexed: Clone {
+    Ready(String),
+    /// Being made: the job, and what to make durable to queue it if it isn't queued yet.
+    Making { job: u64, durable: Durable },
+    Failed(String),
+    Need(Vec<Id>),
+}
+
+/// The tree a call names: a change's, a revision of main's (`seq_key`), or main's newest.
+fn tree_named(c: Core, doc: Doc, args: u32, seq_key: str) -> Result<Id, String> {
+    if !arg(doc, args, "change").is_empty() {
+        let ch = open_change(c, doc, args)?
+        let (tree, _) = tree_of(c, ch)
+        return Ok(tree)
+    }
+    let seq = num_arg(doc, args, seq_key, c.state.seq)
+    if seq == 0 || seq > c.state.seq {
+        return Err(f"main has no revision {seq}: it is at {c.state.seq}")
+    }
+    Ok(c.state.landings[u32(seq - 1)].tree)
+}
+
+/// The index of `package` at `tree`.
+fn index_of(c: Core, ctx: Ctx, tree: Id, pkg: str, next: u64) -> Indexed {
+    let check = f"index:{pkg}"
+    var queued: Option<state::Job> = None
+    for j in c.state.jobs.values() {
+        if j.tree == tree && j.check.as_str() == check.as_str() && j.run != Run::Done {
+            queued = Some(j.clone())
+        }
+    }
+    if let Some(j) = queued {
+        return Indexed::Making { job: j.id, durable: nothing() }
+    }
+    match state::newest_run(c.state, check.as_str(), tree) {
+        Some(j) => {
+            let Some(xb) = c.blobs.get(j.evidence) else {
+                return Indexed::Need(Vec::from([j.evidence]))
+            }
+            let Ok(x) = object::evidence_of(xb) else {
+                return Indexed::Failed(String::from("the index's evidence is malformed"))
+            }
+            let Some(log) = c.blobs.get(x.log) else { return Indexed::Need(Vec::from([x.log])) }
+            // The index is the job's stdout: what comes before its stderr.
+            let marker = bytes::of_str("\n---- stderr ----\n")
+            let end = bytes::find(log, marker, 0).unwrap_or(log.len())
+            let text = bytes::text_of(bytes::slice(log, 0, end))
+            if !j.passed {
+                let start = if log.len() > 2000 { log.len() - 2000 } else { 0 }
+                return Indexed::Failed(
+                    f"indexing failed (j{j.id}): {bytes::text_of(bytes::slice(log, start, log.len()))}",
+                )
+            }
+            Indexed::Ready(text)
+        },
+        None => {
+            let ev = Event::Queued { job: next, check, tree, change: 0, attempt: 1, time: ctx.now }
+            Indexed::Making {
+                job: next,
+                durable: Durable { objects: Vec::new(), events: Vec::from([take ev]) },
+            }
+        },
+    }
+}
+
+/// An index's answer when it isn't ready: being made, failed, or what to load.
+fn not_ready(i: take Indexed) -> Outcome {
+    match take i {
+        Indexed::Making { job, durable } => {
+            var j = Json::new()
+            j.obj()
+            j.kstr("indexing", f"j{job}".as_str())
+            j.kstr("then", "ask again once the job is done")
+            j.end_obj()
+            Outcome::Done { json: take j.text, error: false, durable }
+        },
+        Indexed::Failed(why) => fail(why.as_str()),
+        Indexed::Need(ids) => Outcome::Need(ids),
+        Indexed::Ready(_) => fail("the index is ready"),
+    }
+}
+
+fn package_arg(doc: Doc, args: u32) -> Result<String, String> {
+    let p = arg(doc, args, "package")
+    if p.is_empty() || path_problem(p.as_str()).is_some() || !check_name(p.as_str()) {
+        return Err(String::from("give the package's directory, as `engine` or `games/last-green`"))
+    }
+    Ok(p)
+}
+
+/// The items of index `text` whose paths start with `prefix`, as JSON.
+fn items_json(text: str, prefix: str) -> Result<String, String> {
+    let Ok(doc) = Doc::read(bytes::of_str(text)) else {
+        return Err(String::from("the index isn't JSON"))
+    }
+    let Some(list) = doc.get(doc.root, "items") else {
+        return Err(String::from("the index has no items"))
+    }
+    var j = Json::new()
+    j.obj()
+    j.key("items")
+    j.arr()
+    for i in 0..doc.count(list) {
+        let it = doc.at(list, i)
+        if !doc.field(it, "path").starts_with(prefix) {
+            continue
+        }
+        j.obj()
+        for key in ["path", "kind", "file"] {
+            j.kstr(key, doc.field(it, key))
+        }
+        for key in ["line", "end_line"] {
+            j.key(key)
+            j.raw(doc.field(it, key))
+        }
+        if let Some(fx) = doc.get(it, "effects") {
+            j.key("effects")
+            j.arr()
+            for k in 0..doc.count(fx) {
+                j.str(doc.text(doc.at(fx, k)))
+            }
+            j.end_arr()
+        }
+        if let Some(calls) = doc.get(it, "calls") {
+            j.key("calls")
+            j.arr()
+            for k in 0..doc.count(calls) {
+                j.str(doc.text(doc.at(calls, k)))
+            }
+            j.end_arr()
+        }
+        j.end_obj()
+    }
+    j.end_arr()
+    j.end_obj()
+    Ok(take j.text)
+}
+
+fn items(c: Core, ctx: Ctx, doc: Doc, args: u32) -> Outcome {
+    let pkg = match package_arg(doc, args) {
+        Ok(p) => take p,
+        Err(why) => return fail(why.as_str()),
+    }
+    let tree = match tree_named(c, doc, args, "seq") {
+        Ok(t) => t,
+        Err(why) => return fail(why.as_str()),
+    }
+    match index_of(c, ctx, tree, pkg.as_str(), c.state.next_job) {
+        Indexed::Ready(text) => match items_json(text.as_str(), arg(doc, args, "path").as_str()) {
+            Ok(json) => Outcome::Done { json, error: false, durable: nothing() },
+            Err(why) => fail(why.as_str()),
+        },
+        other => not_ready(take other),
+    }
+}
+
+/// Each item of index `text`: its path, and its signature's and body's hashes.
+fn hashes(text: str) -> Result<SortedMap<String, (String, String)>, String> {
+    let Ok(doc) = Doc::read(bytes::of_str(text)) else {
+        return Err(String::from("the index isn't JSON"))
+    }
+    let Some(list) = doc.get(doc.root, "items") else {
+        return Err(String::from("the index has no items"))
+    }
+    var out: SortedMap<String, (String, String)> = SortedMap::new()
+    for i in 0..doc.count(list) {
+        let it = doc.at(list, i)
+        let _ = out.insert(
+            doc.field(it, "path").to_string(),
+            (doc.field(it, "signature").to_string(), doc.field(it, "body").to_string()),
+        )
+    }
+    Ok(out)
+}
+
+fn changed(c: Core, ctx: Ctx, doc: Doc, args: u32) -> Outcome {
+    let pkg = match package_arg(doc, args) {
+        Ok(p) => take p,
+        Err(why) => return fail(why.as_str()),
+    }
+    let a = match tree_named(c, doc, args, "from") {
+        Ok(t) => t,
+        Err(why) => return fail(why.as_str()),
+    }
+    let b = match tree_named(c, doc, args, "to") {
+        Ok(t) => t,
+        Err(why) => return fail(why.as_str()),
+    }
+    let ia = index_of(c, ctx, a, pkg.as_str(), c.state.next_job)
+    // A second index queued in the same call takes the next job's number.
+    let queued_a = match ia {
+        Indexed::Making { durable, .. } => durable.events.len(),
+        _ => 0,
+    }
+    let ib = index_of(c, ctx, b, pkg.as_str(), c.state.next_job + u64(queued_a))
+    let (ta, tb) = match (take ia, take ib) {
+        (Indexed::Ready(x), Indexed::Ready(y)) => (take x, take y),
+        (Indexed::Making { job, durable }, Indexed::Making { durable: d2, .. }) => {
+            var events = durable.events.clone()
+            for ev in d2.events {
+                events.push(ev.clone())
+            }
+            return not_ready(
+                Indexed::Making { job, durable: Durable { objects: Vec::new(), events } },
+            )
+        },
+        (Indexed::Ready(_), other) => return not_ready(take other),
+        (other, _) => return not_ready(take other),
+    }
+    let (Ok(ha), Ok(hb)) = (hashes(ta.as_str()), hashes(tb.as_str())) else {
+        return fail("an index isn't JSON")
+    }
+    var j = Json::new()
+    j.obj()
+    j.key("items")
+    j.arr()
+    let ka = ha.keys()
+    let va = ha.values()
+    for i in 0..ka.len() {
+        let what = match hb.get(ka[i].clone()) {
+            None => "removed",
+            Some((sig, body)) => {
+                if sig.as_str() != va[i].0.as_str() {
+                    "signature"
+                } else if body.as_str() != va[i].1.as_str() {
+                    "body"
+                } else {
+                    ""
+                }
+            },
+        }
+        if !what.is_empty() {
+            j.obj()
+            j.kstr("path", ka[i].as_str())
+            j.kstr("changed", what)
+            j.end_obj()
+        }
+    }
+    for k in hb.keys() {
+        if !ha.contains(k.clone()) {
+            j.obj()
+            j.kstr("path", k.as_str())
+            j.kstr("changed", "added")
+            j.end_obj()
+        }
+    }
+    j.end_arr()
+    j.end_obj()
+    ok(take j)
+}
+
+fn callers(c: Core, ctx: Ctx, doc: Doc, args: u32) -> Outcome {
+    let pkg = match package_arg(doc, args) {
+        Ok(p) => take p,
+        Err(why) => return fail(why.as_str()),
+    }
+    let item = arg(doc, args, "item")
+    if item.is_empty() {
+        return fail("give the item's path, as `index` names it")
+    }
+    let tree = match tree_named(c, doc, args, "seq") {
+        Ok(t) => t,
+        Err(why) => return fail(why.as_str()),
+    }
+    let text = match index_of(c, ctx, tree, pkg.as_str(), c.state.next_job) {
+        Indexed::Ready(t) => take t,
+        other => return not_ready(take other),
+    }
+    let Ok(d) = Doc::read(bytes::of_str(text.as_str())) else { return fail("the index isn't JSON") }
+    let Some(list) = d.get(d.root, "items") else { return fail("the index has no items") }
+    var j = Json::new()
+    j.obj()
+    j.kstr("item", item.as_str())
+    j.key("callers")
+    j.arr()
+    for i in 0..d.count(list) {
+        let it = d.at(list, i)
+        if let Some(calls) = d.get(it, "calls") {
+            for k in 0..d.count(calls) {
+                if d.text(d.at(calls, k)) == item.as_str() {
+                    j.str(d.field(it, "path"))
+                    break
+                }
+            }
+        }
+    }
+    j.end_arr()
+    j.end_obj()
+    ok(take j)
+}
+
 // ---- carrying changes onto a newer main --------------------------------------------------------
 
 /// The merges that carry change `ch`'s stale touches onto main's files: a merged blob and a
@@ -1410,4 +1722,76 @@ fn every_tool_has_its_usage_and_is_called_by_its_name() {
             Outcome::Need(_) => {},
         }
     }
+}
+
+/// Plays an index job of `pkg` at main's revision `seq`, whose output is `index`.
+fn indexed(c: mut Core, seq: u64, pkg: str, index: str) {
+    let tree = c.state.landings[u32(seq - 1)].tree
+    let job = c.state.next_job
+    let log = object::blob(bytes::of_str(index))
+    let x = object::evidence(
+        object::Evidence {
+            check: f"index:{pkg}",
+            tree,
+            machine: String::from("t"),
+            status: 0,
+            timed_out: false,
+            ms: 1,
+            log: log.id,
+            time: 1,
+        },
+    )
+    let evs = Vec::from(
+        [
+            Event::Queued { job, check: f"index:{pkg}", tree, change: 0, attempt: 1, time: 1 },
+            Event::Finished { job, evidence: x.id, passed: true, time: 2 },
+        ],
+    )
+    let Ok(()) = absorb(
+        mut c,
+        Durable { objects: Vec::from([take log, take x]), events: evs },
+    ) else { panic("indexed") }
+}
+
+@test
+fn the_item_index_answers_items_changes_and_callers() {
+    var c = seeded([("e/a.wrela", "a\n")])
+    // A second revision of main.
+    let ev = Event::Landed {
+        seq: 2,
+        change: 0,
+        revision: object::blob_id(bytes::of_str("r2")),
+        tree: object::blob_id(bytes::of_str("t2")),
+        time: 3,
+        by: String::from("t"),
+        intent: String::from("two"),
+        files: Vec::new(),
+    }
+    let Ok(()) = apply(mut c.state, take ev) else { panic("landed") }
+    // The first ask queues the index of revision 2.
+    let first = run(mut c, "items", "{\"package\":\"e\"}")
+    assert(first.field(first.root, "indexing").starts_with("j"), "it indexes")
+    let one = "{\"errors\":0,\"items\":[{\"path\":\"a::f\",\"kind\":\"function\",\"file\":\"a.wrela\",\"line\":1,\"end_line\":2,\"signature\":\"s1\",\"body\":\"b1\",\"effects\":[],\"calls\":[\"a::g\"]},{\"path\":\"a::g\",\"kind\":\"function\",\"file\":\"a.wrela\",\"line\":3,\"end_line\":4,\"signature\":\"s2\",\"body\":\"b2\",\"effects\":[],\"calls\":[]}]}"
+    let two = "{\"errors\":0,\"items\":[{\"path\":\"a::f\",\"kind\":\"function\",\"file\":\"a.wrela\",\"line\":1,\"end_line\":2,\"signature\":\"s1\",\"body\":\"b9\",\"effects\":[],\"calls\":[\"a::g\"]},{\"path\":\"a::h\",\"kind\":\"function\",\"file\":\"a.wrela\",\"line\":3,\"end_line\":4,\"signature\":\"s3\",\"body\":\"b3\",\"effects\":[],\"calls\":[\"a::g\"]}]}"
+    indexed(mut c, 1, "e", one)
+    indexed(mut c, 2, "e", two)
+    let listed = run(mut c, "items", "{\"package\":\"e\",\"seq\":2,\"path\":\"a::h\"}")
+    let its = listed.get(listed.root, "items").unwrap()
+    assert(listed.count(its) == 1 && listed.field(listed.at(its, 0), "path") == "a::h", "one item")
+    let diff = run(mut c, "changed", "{\"package\":\"e\",\"from\":1,\"to\":2}")
+    let ch = diff.get(diff.root, "items").unwrap()
+    assert(diff.count(ch) == 3, "f's body, g removed, h added")
+    assert(
+        diff.field(diff.at(ch, 0), "changed") == "body" &&
+            diff.field(diff.at(ch, 1), "changed") == "removed",
+        "f and g",
+    )
+    assert(
+        diff.field(diff.at(ch, 2), "path") == "a::h" &&
+            diff.field(diff.at(ch, 2), "changed") == "added",
+        "h",
+    )
+    let who = run(mut c, "callers", "{\"package\":\"e\",\"item\":\"a::g\"}")
+    let cs = who.get(who.root, "callers").unwrap()
+    assert(who.count(cs) == 2, "f and h call g")
 }

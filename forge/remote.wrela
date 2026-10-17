@@ -217,10 +217,7 @@ fn finish_checkout(s: mut Service) {
         s.remote.waiting = false
         return
     }
-    var argv: Vec<String> = Vec::from([String::from("tools/check.sh")])
-    if s.remote.check.as_str() != "suite" {
-        argv.push(s.remote.check.clone())
-    }
+    let argv = jobs::command(s.remote.check.as_str())
     let r = host::Run {
         tag: s.remote.job,
         argv,
