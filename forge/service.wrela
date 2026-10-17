@@ -42,6 +42,8 @@ pub enum Phase: Copy + Eq {
     Client,
     /// Running as a worker of a forge service on another machine (remote.wrela).
     Work,
+    /// Running as a replica of a forge service (replicate.wrela).
+    Replica,
     Stopped,
 }
 
@@ -73,6 +75,12 @@ pub enum For: Clone {
     Client(u32),
     /// A request of a worker on another machine (remote.wrela).
     Remote(u32),
+    /// A request of a replica (replicate.wrela).
+    Replica(u32),
+    /// A read of the log for a replica's ask on connection `conn`.
+    LogPart(u32),
+    /// A wake-up, for what waits on time.
+    Tick,
 }
 
 pub struct Wait {
@@ -94,6 +102,9 @@ pub struct Conn {
     pub busy: bool,
     pub closing: bool,
     pub peer: String,
+    /// Whether its peer is known: its requests wait until it is, since who calls decides what
+    /// they may do.
+    pub known: bool,
 }
 
 /// A commit waiting to be written.
@@ -101,6 +112,8 @@ struct Pend: Clone {
     objects: Vec<Object>,
     records: Vec<u8>,
     reply: Option<Reply>,
+    /// Whether it lands a revision: its answer waits for the replicas (`--acks`).
+    lands: bool,
 }
 
 /// The commits being written: what waits on their writes, and their answers.
@@ -109,6 +122,7 @@ struct Flight: Clone {
     records: Vec<u8>,
     appends_left: u32,
     replies: Vec<Reply>,
+    lands: bool,
 }
 
 /// A call that waits for objects, to be made again once they're loaded.
@@ -151,6 +165,16 @@ pub struct Service {
     pub remote: remote::Remote,
     /// Whether the service runs checks itself.
     pub works: bool,
+    /// Replication (replicate.wrela): the replicas' asks that wait, what each replica holds, how
+    /// many must hold a landing before it's answered, the answers that wait for them, the objects
+    /// asks that wait for loads, a replica's own state, and whether a wake-up is out.
+    pub asks: Vec<replicate::Ask>,
+    pub replicas: Vec<(String, u64)>,
+    pub acks: u32,
+    pub awaiting: Vec<(u64, Vec<Reply>)>,
+    pub object_asks: Vec<(u32, Vec<u8>)>,
+    pub replica: replicate::Replica,
+    ticking: bool,
     /// Whether main moved since the open changes were last carried onto it.
     carry_due: bool,
 }
@@ -182,6 +206,13 @@ pub fn new() -> Service {
         calls: calls::calls(""),
         remote: remote::idle(),
         works: true,
+        asks: Vec::new(),
+        replicas: Vec::new(),
+        acks: 0,
+        awaiting: Vec::new(),
+        object_asks: Vec::new(),
+        replica: replicate::idle(),
+        ticking: false,
         carry_due: false,
     }
 }
@@ -231,7 +262,9 @@ pub fn step(s: mut Service, time: f32) {
         match e {
             Input::Message { conn, .. } => {
                 if let Some(b) = payload(e) {
-                    if s.phase == Phase::Client || s.phase == Phase::Work {
+                    if s.phase == Phase::Client ||
+                        s.phase == Phase::Work ||
+                        s.phase == Phase::Replica {
                         calls::bytes(mut s, conn, b)
                     } else {
                         bytes_in(mut s, conn, b)
@@ -239,7 +272,7 @@ pub fn step(s: mut Service, time: f32) {
                 }
             },
             Input::Connection { conn, open, .. } => {
-                if s.phase == Phase::Client || s.phase == Phase::Work {
+                if s.phase == Phase::Client || s.phase == Phase::Work || s.phase == Phase::Replica {
                     calls::connection(mut s, conn, open)
                 } else if open {
                     let _ = s.conns.insert(
@@ -249,6 +282,7 @@ pub fn step(s: mut Service, time: f32) {
                             busy: false,
                             closing: false,
                             peer: String::new(),
+                            known: false,
                         },
                     )
                     wait(mut s, host::peer(conn), For::Peer(conn))
@@ -271,7 +305,18 @@ pub fn step(s: mut Service, time: f32) {
     if s.phase == Phase::Work {
         remote::pump(mut s)
     }
+    if s.phase == Phase::Replica {
+        replicate::pump(mut s)
+    }
     pump(mut s)
+    if s.phase == Phase::Ready {
+        replicate::pump_asks(mut s)
+        replicate::pump_objects(mut s)
+        if !s.asks.is_empty() && !s.ticking {
+            s.ticking = true
+            wait(mut s, host::after(1000), For::Tick)
+        }
+    }
 }
 
 fn answered(s: mut Service, what: take For, r: take Result<Vec<u8>, IoError>) {
@@ -375,10 +420,12 @@ fn answered(s: mut Service, what: take For, r: take Result<Vec<u8>, IoError>) {
             }
         },
         For::Peer(conn) => {
-            if let Ok(b) = take r {
-                if s.conns.contains(conn) {
+            if s.conns.contains(conn) {
+                if let Ok(b) = take r {
                     s.conns.at_mut(conn).peer = bytes::text_of(b)
                 }
+                s.conns.at_mut(conn).known = true
+                next_request(mut s, conn)
             }
         },
         For::Checkout => jobs::checkout_done(mut s, take r),
@@ -388,6 +435,9 @@ fn answered(s: mut Service, what: take For, r: take Result<Vec<u8>, IoError>) {
         For::Import(step) => import::answered(mut s, step, take r),
         For::Client(_) => calls::connected(mut s, take r),
         For::Remote(what) => remote::answered(mut s, what, take r),
+        For::Replica(what) => replicate::answered(mut s, what, take r),
+        For::LogPart(conn) => replicate::log_read(mut s, conn, take r),
+        For::Tick => s.ticking = false,
     }
 }
 
@@ -412,6 +462,13 @@ fn begin(s: mut Service) {
     if mode.as_str() == "work" {
         s.phase = Phase::Work
         return remote::start(mut s)
+    }
+    if mode.as_str() == "replica" {
+        s.phase = Phase::Replica
+        return replicate::start(mut s)
+    }
+    if let Some(n) = flag(s.args, "--acks") {
+        s.acks = u32(bytes::parse_u64(n.as_str()).unwrap_or(0))
     }
     if mode.as_str() != "serve" {
         s.phase = Phase::Client
@@ -618,14 +675,18 @@ pub fn commit(s: mut Service, d: take Durable, answer: take Option<Reply>) {
         return
     }
     var records: Vec<u8> = Vec::new()
+    var lands = false
     for ev in d.events {
         match ev {
-            Event::Landed { .. } => s.carry_due = true,
+            Event::Landed { .. } => {
+                s.carry_due = true
+                lands = true
+            },
             _ => {},
         }
         bytes::push_run(mut records, log::record(state::encode(ev.clone())))
     }
-    s.queue.push(Pend { objects: take d.objects, records, reply: answer })
+    s.queue.push(Pend { objects: take d.objects, records, reply: answer, lands })
 }
 
 /// Writes the commits that wait, if none are being written.
@@ -633,7 +694,13 @@ fn pump(s: mut Service) {
     if s.flight.is_some() || s.queue.is_empty() || s.phase == Phase::Stopped {
         return
     }
-    var f = Flight { writes_left: 0, records: Vec::new(), appends_left: 0, replies: Vec::new() }
+    var f = Flight {
+        writes_left: 0,
+        records: Vec::new(),
+        appends_left: 0,
+        replies: Vec::new(),
+        lands: false,
+    }
     let pends = replace(mut s.queue, Vec::new())
     for p in pends {
         for o in p.objects {
@@ -644,6 +711,7 @@ fn pump(s: mut Service) {
             f.writes_left += write_object(mut s, o.id, o.bytes)
         }
         bytes::push_run(mut f.records, p.records)
+        f.lands = f.lands || p.lands
         if let Some(r) = p.reply {
             f.replies.push(r.clone())
         }
@@ -657,23 +725,28 @@ fn pump(s: mut Service) {
 
 /// Writes object `id` to its file, in parts if it's large: how many answers it waits for.
 fn write_object(s: mut Service, id: Id, b: [u8]) -> u32 {
-    let path = object::path(DATA, id)
+    write_file(mut s, object::path(DATA, id).as_str(), b, For::Wrote)
+}
+
+/// Writes `b` to the file at `path`, flushed, whole or not at all, in parts if it's large: how
+/// many answers (each for `what`) it waits for.
+pub fn write_file(s: mut Service, path: str, b: [u8], what: For) -> u32 {
     if b.len() <= PART {
-        wait(mut s, host::write(path.as_str(), b), For::Wrote)
+        wait(mut s, host::write(path, b), what.clone())
         return 1
     }
     // Written beside it in parts, then renamed into place: whole or absent after a crash.
     let part = f"{path}.part"
-    wait(mut s, host::write(part.as_str(), bytes::slice(b, 0, PART)), For::Wrote)
+    wait(mut s, host::write(part.as_str(), bytes::slice(b, 0, PART)), what.clone())
     var n = 1
     var at = PART
     while at < b.len() {
         let end = min(at + PART, b.len())
-        wait(mut s, host::append(part.as_str(), bytes::slice(b, at, end)), For::Wrote)
+        wait(mut s, host::append(part.as_str(), bytes::slice(b, at, end)), what.clone())
         n += 1
         at = end
     }
-    wait(mut s, host::rename(part.as_str(), path.as_str()), For::Wrote)
+    wait(mut s, host::rename(part.as_str(), path), what.clone())
     n + 1
 }
 
@@ -730,8 +803,14 @@ fn appended_one(s: mut Service) {
 /// The flight is durable: its answers go.
 fn appended_all(s: mut Service) {
     let Some(f) = replace(mut s.flight, None) else { return }
-    for r in f.replies {
-        reply(mut s, r.conn, r.status, r.kind, r.body.clone())
+    if f.lands && s.acks > 0 {
+        // Answered once enough replicas hold it (replicate.wrela).
+        s.awaiting.push((s.log_size, f.replies.clone()))
+        replicate::release(mut s)
+    } else {
+        for r in f.replies {
+            reply(mut s, r.conn, r.status, r.kind, r.body.clone())
+        }
     }
     pump(mut s)
 }
@@ -764,13 +843,26 @@ fn carry_all(s: mut Service) {
 
 // ---- HTTP --------------------------------------------------------------------------------------
 
+/// Sends `b` on connection `conn`, in parts: a host request holds at most 1 MiB.
+pub fn send_all(conn: u32, b: [u8]) {
+    if b.len() <= PART {
+        return send(conn, b)
+    }
+    var at = 0
+    while at < b.len() {
+        let end = min(at + PART, b.len())
+        send(conn, bytes::slice(b, at, end))
+        at = end
+    }
+}
+
 /// Sends an answer on connection `conn`, then reads its next request.
 pub fn reply(s: mut Service, conn: u32, status: u32, kind: Text, body: [u8]) {
     if !s.conns.contains(conn) {
         return
     }
     let closing = s.conns.at(conn).closing
-    send(conn, http::response(status, kind, body, close: closing))
+    send_all(conn, http::response(status, kind, body, close: closing))
     if closing {
         close(conn)
         let _ = s.conns.remove(conn)
@@ -789,7 +881,7 @@ fn bytes_in(s: mut Service, conn: u32, b: [u8]) {
 }
 
 fn next_request(s: mut Service, conn: u32) {
-    if !s.conns.contains(conn) || s.conns.at(conn).busy {
+    if !s.conns.contains(conn) || s.conns.at(conn).busy || !s.conns.at(conn).known {
         return
     }
     let got = s.conns.at_mut(conn).reader.next()
@@ -865,6 +957,13 @@ fn route(s: mut Service, conn: u32, req: take Request) {
         host::exit(0)
         s.phase = Phase::Stopped
         return
+    }
+    if method == "GET" && path == "/api/log" {
+        let from = bytes::parse_u64(req.param("from").as_str()).unwrap_or(0)
+        return replicate::log_from(mut s, conn, from, req.param("replica").as_str())
+    }
+    if method == "POST" && path == "/api/objects" {
+        return replicate::objects(mut s, conn, req.body)
     }
     if path.starts_with("/api/work") {
         return jobs::remote(mut s, conn, take req)
@@ -1033,4 +1132,16 @@ fn raw_object(s: Service, hex: str) -> Vec<u8> {
         Some(id) => s.core.blobs.get(id).unwrap_or(Vec::new()),
         None => Vec::new(),
     }
+}
+
+impl Service {
+    /// Whether object `id` couldn't be loaded.
+    pub fn missing_has(self, id: Id) -> bool {
+        self.missing.contains(id)
+    }
+}
+
+/// Whether object `id` is loading.
+pub fn loading(s: Service, id: Id) -> bool {
+    s.loading.contains(id)
 }

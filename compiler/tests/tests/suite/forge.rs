@@ -314,3 +314,64 @@ fn a_worker_on_another_machine_runs_a_check_and_the_service_keeps_its_evidence()
     assert_eq!(http(port, "POST", "/api/stop", "").0, 200);
     assert_eq!(service.join().expect("the service's thread"), 0);
 }
+
+#[test]
+fn a_replica_holds_each_landing_before_it_is_answered_and_serves_once_promoted() {
+    let scratch = Scratch::new("replica");
+    let dirs: Vec<PathBuf> = ["repo", "build", "data", "work", "rdata", "rwork"]
+        .iter()
+        .map(|d| scratch.0.join(d))
+        .collect();
+    for d in &dirs {
+        std::fs::create_dir_all(d).expect("a directory");
+    }
+    let (repo, build, data, work, rdata, rwork) =
+        (&dirs[0], &dirs[1], &dirs[2], &dirs[3], &dirs[4], &dirs[5]);
+    repository(repo);
+    wrela_tests::must_build(&repo_root().join("forge"), build);
+    let port = free_port();
+    let listen = format!("127.0.0.1:{port}");
+    // A landing is answered only once one replica holds it.
+    let service = run_forge(build, data, work, &["serve", "--listen", &listen, "--acks", "1"]);
+    ready(port);
+    let replica =
+        run_forge(build, rdata, rwork, &["replica", "--server", &listen, "--machine", "r1"]);
+    http(port, "POST", "/api/import", &serde_json::json!({"git": repo, "ref": "main"}).to_string());
+    wait_until("the import", || call(port, "log", serde_json::json!({}))["main"] == 2);
+    let change = call(port, "open", serde_json::json!({"intent": "Kept twice"}))["change"]
+        .as_str()
+        .expect("a change")
+        .to_string();
+    call(
+        port,
+        "write",
+        serde_json::json!({"change": change, "path": "big.bin", "content": "x".repeat(3_000_000)}),
+    );
+    let suite = call(port, "submit", serde_json::json!({"change": change}))["job"]
+        .as_str()
+        .expect("a job")
+        .to_string();
+    wait_until("the suite", || job_state(port, &suite)["state"] == "passed");
+    let landed = call(port, "land", serde_json::json!({"change": change}));
+    assert_eq!(landed["seq"], 3);
+    // The answer came: the replica's log holds the landing, as a prefix of the service's.
+    let ours = std::fs::read(data.join("events")).expect("the service's log");
+    wait_until("the replica's log", || {
+        std::fs::read(rdata.join("events")).is_ok_and(|theirs| theirs.len() >= ours.len())
+    });
+    let theirs = std::fs::read(rdata.join("events")).expect("the replica's log");
+    assert_eq!(&theirs[..ours.len()], &ours[..], "the replica's log is the service's");
+    // The service stops; the replica, promoted, is the service as of its log.
+    assert_eq!(http(port, "POST", "/api/stop", "").0, 200);
+    assert_eq!(service.join().expect("the service's thread"), 0);
+    drop(replica);
+    let port2 = free_port();
+    let promoted = start(build, rdata, rwork, port2);
+    ready(port2);
+    assert_eq!(call(port2, "log", serde_json::json!({}))["main"], 3);
+    let read = call(port2, "read", serde_json::json!({"path": "big.bin", "lines": 1}));
+    assert_eq!(read["size"], 3_000_000, "a file larger than a request, whole on the replica");
+    assert_eq!(call(port2, "read", serde_json::json!({"path": "README"}))["text"], "forge test\n");
+    assert_eq!(http(port2, "POST", "/api/stop", "").0, 200);
+    assert_eq!(promoted.join().expect("the promoted service's thread"), 0);
+}

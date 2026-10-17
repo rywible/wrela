@@ -3,7 +3,7 @@
 // back to its sender with the purpose it was sent for.
 
 use http::Answer
-use platform::net::{close, send}
+use platform::net::close
 use platform::service as host
 use service::{For, Phase, Service, wait}
 use std::io::IoError
@@ -55,7 +55,7 @@ pub fn connection(s: mut Service, conn: u32, open: bool) {
         return
     }
     if open {
-        send(conn, s.calls.request)
+        service::send_all(conn, s.calls.request)
     } else if s.calls.busy {
         s.calls.busy = false
         got(mut s, 0, bytes::of_str("the service closed the connection before it answered"))
@@ -90,6 +90,8 @@ fn got(s: mut Service, status: u32, body: take Vec<u8>) {
     let purpose = s.calls.purpose
     if s.phase == Phase::Work {
         remote::got(mut s, purpose, status, take body)
+    } else if s.phase == Phase::Replica {
+        replicate::got(mut s, purpose, status, take body)
     } else {
         client::got(mut s, status, take body)
     }

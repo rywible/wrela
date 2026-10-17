@@ -104,6 +104,11 @@ never reused.
   - `GET /api/object/<id>`: a blob's bytes, or another object's.
   - `POST /api/object`: the body as a blob; answered with its id.
   - `POST /api/import`: `{"git": dir, "ref": name}`, into an empty store.
+  - `GET /api/log?from=X&replica=NAME`: the log from byte X (at most 8 MiB of it), for a replica;
+    held up to 20 s while the log holds no more.
+  - `POST /api/objects`: for each 32-byte id of the body, the id, its file's length (a `u32`
+    little-endian; 4294967295 if the service hasn't it) and its file's bytes.
+  - `POST /api/work/next` and `POST /api/work/done`: a worker's asks (F23).
   - `POST /api/stop`: stops the service, for a caller that may land changes.
   - `GET /`: the digest, a page of what forge holds; `GET /health`.
 - **F22.** A caller lands changes only if forge lets it: a caller from the machine itself, or one
@@ -116,3 +121,16 @@ never reused.
   it held, and runs `tools/check.sh` (with the check's name, unless the check is `suite`) there.
   `workers/<name>` is what its checkout holds: the byte 1, the count of its files, then each path,
   whether it is executable, its blob's id and its size.
+
+## Replicas
+
+- **F24.** A replica is a store that follows a service: it asks for the log from where its own
+  ends, fetches every object the new events name (a tree's, a revision's and evidence's objects
+  too), writes each flushed, and then appends the events, as they came, to its own log, flushed. So
+  its log is a prefix of the service's, and every object it names is on its disk.
+- **F25.** Asking for the log from byte X says the replica holds the first X bytes. A service with
+  `--acks N` answers a call that lands a revision only once N replicas hold the log through it;
+  other calls are answered as F19 says.
+- **F26.** A replica becomes the service by running `forge serve` on its data: its state is the
+  fold of its log (F14). The old service must not take calls after that; nothing yet stops it but
+  its operator.

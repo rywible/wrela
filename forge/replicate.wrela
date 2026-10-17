@@ -1,0 +1,506 @@
+// Replicas (spec/forge.md): a store on another machine that holds what the service promised.
+//
+// A replica (`forge replica --server PRIMARY --machine NAME`, with a `data` root) asks the
+// service for its log from where its own ends (`GET /api/log?from=X&replica=NAME`), fetches the
+// objects the new events name (`POST /api/objects`, each checked against its id, a tree's and a
+// revision's objects too), writes them flushed, and only then appends the events, as they came,
+// to its own log. So a replica's log is a prefix of the service's, and every object it names is
+// on the replica's disk: `forge serve` on a replica's data is the service, as of that prefix.
+//
+// Asking from X says the replica holds the log's first X bytes. A service started with
+// `--acks N` answers a landing only once N replicas hold it, so losing the service's machine loses
+// no landing it confirmed. A service with nothing new holds the replica's ask for up to 20 s.
+
+use blake3::Id
+use object::{File}
+use platform::service as host
+use service::{DATA, For, LOG, Service, wait}
+use state::Event
+use std::io::{IoError, print}
+
+/// The most log a replica is sent at once.
+const CHUNK: u64 = 8388608
+
+// ---- the service's side ------------------------------------------------------------------------
+
+/// A replica's ask that waits for the log to grow.
+pub struct Ask: Clone {
+    pub conn: u32,
+    pub from: u64,
+    /// When it is answered with nothing, if the log hasn't grown: milliseconds since 1970.
+    pub until: u64,
+}
+
+/// `GET /api/log?from=X&replica=NAME`: the log from X, once it holds more than X.
+pub fn log_from(s: mut Service, conn: u32, from: u64, replica: str) {
+    if replica.is_empty() {
+        return service::reply(
+            mut s,
+            conn,
+            400,
+            "text/plain",
+            bytes::of_str("give the replica's name\n"),
+        )
+    }
+    if from > s.log_size {
+        return service::reply(
+            mut s,
+            conn,
+            409,
+            "text/plain",
+            bytes::of_str(
+                "the replica's log is longer than the service's: it isn't this service's replica\n",
+            ),
+        )
+    }
+    acked(mut s, replica, from)
+    if from < s.log_size {
+        return send_log(mut s, conn, from)
+    }
+    s.asks.push(Ask { conn, from, until: service::now(s) + 20000 })
+}
+
+/// Reads the log from `from` for connection `conn`'s answer.
+fn send_log(s: mut Service, conn: u32, from: u64) {
+    let len = min(s.log_size - from, CHUNK)
+    wait(mut s, host::read_range(LOG, from, len), For::LogPart(conn))
+}
+
+pub fn log_read(s: mut Service, conn: u32, r: take Result<Vec<u8>, IoError>) {
+    match take r {
+        Ok(b) => service::reply(mut s, conn, 200, "application/octet-stream", b),
+        Err(e) => service::reply(mut s, conn, 500, "text/plain", bytes::of_str(e.message())),
+    }
+}
+
+/// The replica `name` holds the log's first `at` bytes: the answers that waited for it go.
+fn acked(s: mut Service, name: str, at: u64) {
+    var found = false
+    for i in 0..s.replicas.len() {
+        if s.replicas[i].0.as_str() == name {
+            if at > s.replicas[i].1 {
+                s.replicas[i].1 = at
+            }
+            found = true
+        }
+    }
+    if !found {
+        s.replicas.push((name.to_string(), at))
+    }
+    release(mut s)
+}
+
+/// How much of the log `n` replicas hold: the `n`th largest of what each holds.
+fn held_by(s: Service, n: u32) -> u64 {
+    var held: Vec<u64> = Vec::new()
+    for r in s.replicas {
+        held.push(r.1)
+    }
+    if held.len() < n {
+        return 0
+    }
+    held.sort_by(|a, b| a > b)
+    held[n - 1]
+}
+
+/// Sends the answers whose landings enough replicas now hold.
+pub fn release(s: mut Service) {
+    let held = held_by(s, s.acks)
+    var i = 0
+    while i < s.awaiting.len() {
+        if s.awaiting[i].0 <= held {
+            let (_, replies) = s.awaiting.remove(i)
+            for r in replies {
+                service::reply(mut s, r.conn, r.status, r.kind, r.body.clone())
+            }
+        } else {
+            i += 1
+        }
+    }
+}
+
+/// Answers the replicas' asks the log has grown past, and those that waited long enough.
+pub fn pump_asks(s: mut Service) {
+    let now = service::now(s)
+    var i = 0
+    while i < s.asks.len() {
+        let a = s.asks[i].clone()
+        if a.from < s.log_size {
+            let _ = s.asks.remove(i)
+            send_log(mut s, a.conn, a.from)
+        } else if now >= a.until {
+            let _ = s.asks.remove(i)
+            service::reply(mut s, a.conn, 200, "application/octet-stream", [])
+        } else {
+            i += 1
+        }
+    }
+}
+
+/// `POST /api/objects`: for each 32-byte id of the body, the id, the object's length (a `u32`,
+/// 4294967295 if the service hasn't it) and its bytes, as its file holds them.
+pub fn objects(s: mut Service, conn: u32, body: [u8]) {
+    var need: Vec<Id> = Vec::new()
+    var at = 0
+    while at + 32 <= body.len() {
+        let id = Id::of_bytes(body, at)
+        if !s.core.blobs.contains(id) && !s.missing_has(id) {
+            need.push(id)
+        }
+        at += 32
+    }
+    if !need.is_empty() {
+        for id in need {
+            let _ = service::load(mut s, id)
+        }
+        s.object_asks.push((conn, Vec::from(body)))
+        return
+    }
+    var out: Vec<u8> = Vec::new()
+    at = 0
+    while at + 32 <= body.len() {
+        let id = Id::of_bytes(body, at)
+        for b in id.bytes() {
+            out.push(b)
+        }
+        match s.core.blobs.get(id) {
+            Some(content) => {
+                // The blobs in memory are their contents: their files add the kind's byte.
+                let raw = file_bytes(id, content)
+                let n = raw.len()
+                for k in 0..4 {
+                    out.push(u8((n >> (8 * k)) & 255))
+                }
+                bytes::push_run(mut out, raw)
+            },
+            None => {
+                for _ in 0..4 {
+                    out.push(255)
+                }
+            },
+        }
+        at += 32
+    }
+    service::reply(mut s, conn, 200, "application/octet-stream", out)
+}
+
+/// An object's file bytes, from what memory holds of it: a blob's content, or the object.
+fn file_bytes(id: Id, held: [u8]) -> Vec<u8> {
+    if object::check(id, held).is_ok() {
+        return Vec::from(held)
+    }
+    object::blob(held).bytes
+}
+
+/// Answers the objects asks whose objects have all loaded.
+pub fn pump_objects(s: mut Service) {
+    var i = 0
+    while i < s.object_asks.len() {
+        let body = s.object_asks[i].1.clone()
+        var ready = true
+        var at = 0
+        while at + 32 <= body.len() {
+            let id = Id::of_bytes(body, at)
+            if !s.core.blobs.contains(id) && !s.missing_has(id) && service::loading(s, id) {
+                ready = false
+            }
+            at += 32
+        }
+        if ready {
+            let (conn, b) = s.object_asks.remove(i)
+            objects(mut s, conn, b)
+        } else {
+            i += 1
+        }
+    }
+}
+
+// ---- the replica's side ------------------------------------------------------------------------
+
+/// What a replica does next.
+const START: u32 = 0
+const ASK: u32 = 1
+const FETCH: u32 = 2
+const STORE: u32 = 3
+
+pub struct Replica: Clone {
+    name: String,
+    stage: u32,
+    waiting: bool,
+    /// The length of its log.
+    size: u64,
+    /// The whole records it was sent, waiting for their objects.
+    records: Vec<u8>,
+    /// Objects it has, as far as it knows; and those it has asked for.
+    have: SortedMap<Id, bool>,
+    want: Vec<Id>,
+    /// Writes not answered yet.
+    left: u32,
+}
+
+pub fn idle() -> Replica {
+    Replica {
+        name: String::new(),
+        stage: START,
+        waiting: false,
+        size: 0,
+        records: Vec::new(),
+        have: SortedMap::new(),
+        want: Vec::new(),
+        left: 0,
+    }
+}
+
+/// A replica's host requests.
+pub const STAT: u32 = 1
+pub const WROTE: u32 = 2
+pub const APPENDED: u32 = 3
+pub const WOKEN: u32 = 4
+pub const MADE: u32 = 5
+
+pub fn start(s: mut Service) {
+    s.calls = calls::calls(client::server_of(s.args).as_str())
+    var name = String::from("replica")
+    for i in 0..s.args.len() {
+        if s.args[i].as_str() == "--machine" && i + 1 < s.args.len() {
+            name = s.args[i + 1].clone()
+        }
+    }
+    s.replica.name = take name
+    s.replica.waiting = true
+    wait(mut s, host::mkdir("data/objects"), For::Replica(MADE))
+    wait(mut s, host::stat(LOG), For::Replica(STAT))
+    print(f"forge: replicating {s.calls.server} as {s.replica.name}")
+}
+
+pub fn answered(s: mut Service, what: u32, r: take Result<Vec<u8>, IoError>) {
+    if what == MADE {
+        return
+    }
+    if what == STAT {
+        match take r {
+            Ok(b) => {
+                if let Some(st) = host::stat_of(take b) {
+                    s.replica.size = st.size
+                }
+            },
+            Err(e) => return service::fatal(
+                mut s,
+                f"the replica can't stat its log: {e.message()}".as_str(),
+            ),
+        }
+        s.replica.stage = ASK
+        s.replica.waiting = false
+        return
+    }
+    if what == WROTE {
+        if let Err(e) = r {
+            return service::fatal(mut s, f"the replica's write failed: {e.message()}".as_str())
+        }
+        s.replica.left -= 1
+        if s.replica.left == 0 {
+            s.replica.waiting = false
+        }
+        return
+    }
+    if what == APPENDED {
+        match take r {
+            Ok(b) => s.replica.size = host::length_of(take b).unwrap_or(s.replica.size),
+            Err(e) => return service::fatal(
+                mut s,
+                f"the replica's append failed: {e.message()}".as_str(),
+            ),
+        }
+        s.replica.left -= 1
+        if s.replica.left == 0 {
+            s.replica.records = Vec::new()
+            s.replica.stage = ASK
+            s.replica.waiting = false
+        }
+        return
+    }
+    if what == WOKEN {
+        s.replica.waiting = false
+    }
+}
+
+fn later(s: mut Service, ms: u32) {
+    s.replica.waiting = true
+    wait(mut s, host::after(ms), For::Replica(WOKEN))
+}
+
+pub fn pump(s: mut Service) {
+    if s.replica.waiting || s.calls.busy {
+        return
+    }
+    let stage = s.replica.stage
+    if stage == ASK {
+        let path = f"/api/log?from={s.replica.size}&replica={s.replica.name}"
+        s.replica.waiting = true
+        calls::call(mut s, "GET", path.as_str(), "application/octet-stream", [], ASK)
+    } else if stage == FETCH {
+        if s.replica.want.is_empty() {
+            return store(mut s)
+        }
+        // At most 256 objects a call.
+        var body: Vec<u8> = Vec::new()
+        var n = 0
+        while n < 256 && n < s.replica.want.len() {
+            for b in s.replica.want[n].bytes() {
+                body.push(b)
+            }
+            n += 1
+        }
+        s.replica.waiting = true
+        calls::call(mut s, "POST", "/api/objects", "application/octet-stream", body, FETCH)
+    }
+}
+
+/// Every object the records name is on disk: the records go on the end of the log.
+fn store(s: mut Service) {
+    s.replica.stage = STORE
+    s.replica.waiting = true
+    var parts = 0
+    var at = 0
+    let n = s.replica.records.len()
+    while at < n {
+        let end = min(at + 1040000, n)
+        wait(
+            mut s,
+            host::append(LOG, bytes::slice(s.replica.records, at, end)),
+            For::Replica(APPENDED),
+        )
+        parts += 1
+        at = end
+    }
+    s.replica.left = parts
+}
+
+/// `f`'s blob, if it names one.
+fn push_file(f: Option<File>, out: mut Vec<Id>) {
+    if let Some(x) = f {
+        out.push(x.id)
+    }
+}
+
+/// The ids the events name directly.
+fn named(ev: Event, out: mut Vec<Id>) {
+    match ev {
+        Event::Wrote { file: f, .. } => push_file(f, mut out),
+        Event::Snapped { tree, .. } => out.push(tree),
+        Event::Merged { base, now, conflict, .. } => {
+            push_file(base, mut out)
+            push_file(now, mut out)
+            push_file(conflict, mut out)
+        },
+        Event::Landed { revision, tree, files, .. } => {
+            out.push(revision)
+            out.push(tree)
+            for (_, f) in files {
+                push_file(f, mut out)
+            }
+        },
+        Event::Queued { tree, .. } => out.push(tree),
+        Event::Finished { evidence, .. } => {
+            if !evidence.is_zero() {
+                out.push(evidence)
+            }
+        },
+        _ => {},
+    }
+}
+
+/// Asks for `id` unless the replica has it or has asked.
+fn want(s: mut Service, id: Id) {
+    if id.is_zero() || s.replica.have.contains(id) {
+        return
+    }
+    let _ = s.replica.have.insert(id, value: true)
+    s.replica.want.push(id)
+}
+
+pub fn got(s: mut Service, purpose: u32, status: u32, body: take Vec<u8>) {
+    s.replica.waiting = false
+    if status == 0 || status >= 500 {
+        print(f"forge: {bytes::text_of(body)}; the replica tries again in 5 s")
+        return later(mut s, 5000)
+    }
+    if purpose == ASK {
+        if status != 200 {
+            return service::fatal(
+                mut s,
+                f"the service won't send its log: {bytes::text_of(body)}".as_str(),
+            )
+        }
+        if body.is_empty() {
+            return
+        }
+        let read = log::read(body)
+        if read.whole == 0 {
+            return later(mut s, 1000)
+        }
+        s.replica.records = bytes::slice(body, 0, read.whole)
+        var ids: Vec<Id> = Vec::new()
+        for p in read.payloads {
+            match state::decode(p.clone()) {
+                Ok(ev) => named(ev, mut ids),
+                Err(bad) => return service::fatal(
+                    mut s,
+                    f"the service sent an event this replica can't read: {bad.why}".as_str(),
+                ),
+            }
+        }
+        for id in ids {
+            want(mut s, id)
+        }
+        s.replica.stage = FETCH
+    } else if purpose == FETCH {
+        // Each object: written flushed, and the objects it names asked for in turn.
+        var at = 0
+        var asked = 0
+        while at + 36 <= body.len() {
+            let id = Id::of_bytes(body, at)
+            var n: u32 = 0
+            for k in 0..4 {
+                n = n | (u32(body[at + 32 + k]) << (8 * k))
+            }
+            at += 36
+            asked += 1
+            if n == 4294967295 {
+                return service::fatal(mut s, f"the service hasn't object {id.hex()}".as_str())
+            }
+            let raw = bytes::slice(body, at, at + n)
+            at += n
+            let Ok(kind) = object::check(id, raw) else {
+                return service::fatal(mut s, f"object {id.hex()} came with other bytes".as_str())
+            }
+            if kind == object::TREE {
+                if let Ok(entries) = object::entries(raw) {
+                    for e in entries {
+                        want(mut s, e.id)
+                    }
+                }
+            } else if kind == object::REVISION {
+                if let Ok(rev) = object::revision_of(raw) {
+                    want(mut s, rev.tree)
+                    for x in rev.evidence {
+                        want(mut s, x)
+                    }
+                }
+            } else if kind == object::EVIDENCE {
+                if let Ok(x) = object::evidence_of(raw) {
+                    want(mut s, x.log)
+                }
+            }
+            wait(mut s, host::mkdir(object::dir(DATA, id).as_str()), For::Replica(MADE))
+            s.replica.waiting = true
+            s.replica.left += service::write_file(
+                mut s,
+                object::path(DATA, id).as_str(),
+                raw,
+                For::Replica(WROTE),
+            )
+        }
+        let _ = s.replica.want.drain_front(min(asked, s.replica.want.len()))
+    }
+}
