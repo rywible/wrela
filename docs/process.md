@@ -2453,6 +2453,29 @@ that they agree. A script moved the repository's references to the new numbers (
 files), and each reference to a section that split was checked by hand. §22's complete program now builds the
 console's tesseract at rest in place of the blob.
 
+## Docs that scroll without a stall, 2026-10-17
+
+Ryan found the docs still slow on his Pixel 9: scrolling stuttered, and a pull to refresh wiped
+the page and showed its sign in the middle of the screen. Claude (Opus 5.5) traced the stutter to
+the front page's tesseract: the frame it came on the screen raymarched the whole figure, a field
+read from its code and walked node by node on the GPU, in one pass. Now each figure's image is
+drawn a band a frame, a rough image a quarter as fine first and then the sharp one, from a screen
+before the figure reaches the screen; a figure that's dragged or turned still draws its rough
+image whole at once. The page's text and shapes are drawn into tiles 1024 pixels tall, again only
+when they change, and a scroll moves them at whole pixels. A finger's moves reach the program
+where the browser predicts the finger to be, which takes a frame from the lag, and the host stops
+moving the page's semantic elements that haven't moved. A pull to refresh now fetches the page and
+the index again in place, with its sign at the top under the header, and the page doesn't fade in
+again; the `nav/reload` host service went.
+
+Paired runs in headless Chrome on an M4 Air, the front page at 1236 by 2745 pixels (three to the
+CSS pixel) over the same 300-frame wheel scroll, three runs each: GPU time per frame went from a
+median of 0.41 ms to 0.16 ms, and the worst frame from 61–67 ms (the tesseract coming on the
+screen) to 2.9 ms. Drawing the figure ahead costs bands of 1.1 ms median and 2.3 ms at most. With
+the CPU slowed six times, the main thread's longest task once a scroll settles on a long reference
+page went from about 20 ms to 6.3 ms. These are M4 numbers in headless Chrome, not the Pixel 9's;
+a phone's GPU is several times slower, so its bands are longer in proportion.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new

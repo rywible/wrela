@@ -197,11 +197,12 @@ pub struct Docs {
     swipe: Option<(f32, bool)>,
     trail: Vec<(f32, f32)>,
     fling: Option<(f32, bool)>,
-    /// How far the page is stretched past its top (above 0) or its end (below 0), in pixels: a
-    /// finger pulls it, and let go it springs back; and whether a pull let go past `PULL` is
-    /// loading the page again.
+    /// How far a finger pulls past the page's top (above 0), or stretches it past its end (below
+    /// 0), in pixels: let go, it springs back. A pull doesn't move the page; a stretch does.
+    /// Whether a pull let go past `PULL` is fetching the page again, and since when.
     pull: f32,
     reloading: bool,
+    refreshed_at: f32,
     offered: String,
     /// Find on the page: whether it's open, what's typed, where it matches and which is current.
     finding: bool,
@@ -227,6 +228,12 @@ pub struct Docs {
     result_glow: Glow,
     /// When the page being read was shown: it comes in over a moment.
     shown_at: f32,
+    /// The page drawn into images, a tile each, which the screen shows where the page is: a page
+    /// that scrolls draws only its tiles, and a tile is drawn again only when the page's layout
+    /// changes (`laid_version`). Their list, apart from the frame's.
+    tiles: Vec<Tile>,
+    tile_list: DrawList,
+    laid_version: u32,
     /// Each live figure's field, in the page's order; each figure's image as last drawn; and how
     /// many times a field has changed, which numbers each change.
     lives: Vec<Live>,
@@ -258,27 +265,65 @@ struct Live: Clone {
     version: u32,
 }
 
-/// A figure's image: the field drawn into a texture, which the screen shows where the figure is,
-/// and what it was drawn for. A page that scrolls moves the image; it's drawn again only when
-/// what it shows changes, as raymarching a field every frame costs a phone's GPU dearly.
+/// A figure's images: the field drawn into textures, which the screen shows where the figure is.
+/// A page that scrolls moves them; they're drawn again only when what they show changes, as
+/// raymarching a field costs a phone's GPU dearly. They're drawn a band a frame, from a screen
+/// before the figure reaches the screen: the rough image, a quarter as fine, then the sharp one,
+/// once nothing holds the figure. So no frame raymarches a whole figure finely, and a page that
+/// scrolls to a figure finds it drawn. Once the rough image is whole, a change to what the figure
+/// shows draws it again at once, so a figure that's dragged or turned follows.
 struct FigureImage {
     block: u32,
-    image: Texture<Rgba8>,
-    key: ImageKey,
+    rough: Texture<Rgba8>,
+    rough_shows: ImageKey,
+    rough_size: vec2u,
+    sharp: Texture<Rgba8>,
+    sharp_shows: ImageKey,
+    sharp_size: vec2u,
+    /// How many of the rough and the sharp image's rows are drawn, from their tops.
+    rough_rows: u32,
+    rows: u32,
 }
 
-/// What a figure's image shows: its field's change, the camera, its view, the probe, its size in
-/// texels, and the scheme.
+impl FigureImage {
+    fn rough_done(self) -> bool {
+        self.rough_rows >= self.rough_size.y
+    }
+
+    /// Whether the sharp image is whole and shows what the rough one does.
+    fn sharp_done(self) -> bool {
+        self.rows >= self.sharp_size.y && self.sharp_shows == self.rough_shows
+    }
+}
+
+/// What a figure's image shows: its field's change, the camera, its view, the probe and the scheme.
 struct ImageKey: Copy + Eq {
     version: u32,
     turn: f32,
     tilt: f32,
     mode: u32,
     probe: vec4,
-    w: u32,
-    h: u32,
     light: bool,
 }
+
+/// How many bands a figure's rough image is first drawn in, and its sharp one, a band a frame.
+const ROUGH_BANDS: u32 = 8
+const BANDS: u32 = 64
+
+/// A tile of the page: rows `index * TILE` down to the next tile's, drawn into its image `w`
+/// texels wide at the page's `version`; `waiting` while a glyph it drew is on its way from the
+/// host, and it's drawn again.
+struct Tile {
+    image: Texture<Rgba8>,
+    index: u32,
+    version: u32,
+    w: u32,
+    waiting: bool,
+}
+
+/// How tall a tile is, in device pixels, and how many are kept.
+const TILE: f32 = 1024.0
+const TILES_KEPT: u32 = 8
 
 /// A highlight that glides to the row under the pointer, and fades in and out there: where it
 /// is, where it goes, and how strong it is.
@@ -418,6 +463,7 @@ pub fn init() -> Docs {
         fling: None,
         pull: 0.0,
         reloading: false,
+        refreshed_at: -10.0,
         offered: String::new(),
         finding: false,
         find: String::new(),
@@ -434,6 +480,9 @@ pub fn init() -> Docs {
         nav_glow: Glow::none(),
         result_glow: Glow::none(),
         shown_at: -10.0,
+        tiles: Vec::new(),
+        tile_list: DrawList::new(),
+        laid_version: 0,
         lives: Vec::new(),
         images: Vec::new(),
         linear: sampler(),
@@ -509,6 +558,7 @@ fn moving(s: Docs, f: Frame) -> bool {
         s.result_glow.moving() ||
         markers_moving(s) ||
         s.time - s.copied_at < SAID + 0.25 ||
+        figures_drawing(s, f) ||
         s.renderer.waiting()
 }
 
@@ -546,7 +596,7 @@ fn frame_of(s: Docs) -> Frame {
     // The text and its outline sit in the middle of the room right of the list, so a wide screen
     // has its space on both sides rather than all at the right.
     let used = w + (if outlined { rail_gap + rail_w } else { 0.0 })
-    let x = left + max(gutter, (s.screen.x - left - used) * 0.5)
+    let x = floor(left + max(gutter, (s.screen.x - left - used) * 0.5) + 0.5)
     // A page's top leaves room for where it is (its group, over its title).
     let top = header + (if s.route.page.is_empty() { if beside { 64.0 } else { 36.0 } } else {
         if beside { 76.0 } else { 64.0 }
@@ -781,14 +831,20 @@ fn show(s: mut Docs, path: str, blocks: take Vec<Block>, markdown: take String) 
     s.blocks = take blocks
     s.markdown = take markdown
     s.missed.clear()
+    if appears(s.reloading, s.shown.as_str(), path) { s.shown_at = s.time }
     s.shown = path.to_string()
     s.nav_follow = true
     open_shown_group(mut s)
     s.laid_width = 0.0
     s.glide = None
-    s.shown_at = s.time
     if s.seek.is_none() { s.scroll = s.restore.unwrap_or(0.0) }
     s.restore = None
+}
+
+/// Whether the page at `path` appears, rising and fading in, as it's shown after `shown`: a page
+/// loaded again in place by a refresh doesn't, as it was there all along.
+fn appears(reloading: bool, shown: str, path: str) -> bool {
+    !reloading || shown != path
 }
 
 /// How many places the reader left are kept.
@@ -1603,7 +1659,7 @@ fn place_of(s: Docs, at: u32, f: Frame) -> Option<(f32, f32, f32)> {
     borrow p = s.laid.pieces[i]
     let k = min(at - min(s.starts[i], at), p.text.len())
     let x = s.fonts.font(p.face).caret_at(p.text.as_str(), p.size, k)
-    let y = p.at.y + f.top - shift(s)
+    let y = p.at.y + page_y(s, f)
     Some((p.at.x + f.x + x, y - p.size * 0.12, y + p.size * 1.2))
 }
 
@@ -1645,7 +1701,7 @@ fn copy_button(s: Docs, f: Frame) -> Option<Rect> {
 
 /// Where `at` is in the page's text, as a byte.
 fn place(s: Docs, at: vec2, f: Frame) -> Option<u32> {
-    let p = vec2(at.x - f.x, at.y - f.top + shift(s))
+    let p = vec2(at.x - f.x, at.y - page_y(s, f))
     match s.laid.place_at(s.fonts, p) {
         Some((i, k)) => Some(s.starts[i] + k),
         None => None,
@@ -1654,7 +1710,7 @@ fn place(s: Docs, at: vec2, f: Frame) -> Option<u32> {
 
 /// Whether the pointer is over the page's words, which a mouse selects.
 fn over_text(s: Docs, f: Frame) -> bool {
-    let p = vec2(s.pointer.x - f.x, s.pointer.y - f.top + shift(s))
+    let p = vec2(s.pointer.x - f.x, s.pointer.y - page_y(s, f))
     for piece in s.laid.pieces {
         if p.y >= piece.at.y - piece.size * 0.2 &&
             p.y < piece.at.y + piece.size * 1.35 &&
@@ -1767,16 +1823,27 @@ fn stretch(d: f32, h: f32) -> f32 {
     d * 0.55 / (1.0 + d / (h * 0.5))
 }
 
-/// A finger let go: a pull past the page's top far enough loads the page again.
+/// A finger let go: a pull past the page's top far enough fetches the page again.
 fn let_go(s: mut Docs) {
     let page = match s.swipe {
         Some((_, nav)) => !nav,
         None => false,
     }
-    if page && s.pull >= PULL * s.u && !s.reloading {
-        s.reloading = true
-        s.told.push(host::reload())
-    }
+    if page && s.pull >= PULL * s.u && !s.reloading { refresh(mut s) }
+}
+
+/// Fetches the index and the page being read again, in place: the page stays where the reader
+/// is while they come, and is laid out again from them, at the same place.
+fn refresh(s: mut Docs) {
+    s.reloading = true
+    s.refreshed_at = s.time
+    s.index_load = Some(fetch("index.json"))
+    if s.route.page.is_empty() { return }
+    let page = s.route.page.clone()
+    s.pages.retain(|p| p.0 != page)
+    s.restore = Some(s.scroll)
+    s.page_load = Some(fetch(page.as_str()))
+    s.loading = take page
 }
 
 /// A stretch let go springs back; a pull that loads the page again rests where it shows that.
@@ -1785,8 +1852,15 @@ fn spring_on(s: mut Docs, dt: f32) {
         Some((_, nav)) => !nav,
         None => false,
     }
+    // A refresh shows until what it fetched has come, and for a moment at least.
+    if s.reloading &&
+        s.page_load.is_none() &&
+        s.index_load.is_none() &&
+        s.time - s.refreshed_at > 0.6 {
+        s.reloading = false
+    }
     if held || s.pull == 0.0 { return }
-    let rest = if s.reloading { PULL * s.u * 0.75 } else { 0.0 }
+    let rest = if s.reloading { PULL * s.u } else { 0.0 }
     let k = if s.reduced { 1.0 } else { 1.0 - exp(-dt * 14.0) }
     s.pull += (rest - s.pull) * k
     if abs(s.pull - rest) < 0.5 { s.pull = rest }
@@ -1843,7 +1917,7 @@ fn fling_on(s: mut Docs, f: Frame, dt: f32) {
     let slower = v * exp(-dt * 2.4)
     let stopped = dt > 0.0 && after == before
     // The page meets its end still moving: it stretches past it a little, and springs back.
-    if stopped && !nav && !s.reduced { s.pull = -clamp(v * 0.03, -48.0 * s.u, 48.0 * s.u) }
+    if stopped && !nav && !s.reduced && v > 0.0 { s.pull = -min(v * 0.03, 48.0 * s.u) }
     s.fling = if abs(slower) < 12.0 * s.u || stopped { None } else { Some((slower, nav)) }
 }
 
@@ -1950,7 +2024,7 @@ fn parse_u32(t: str) -> u32 {
 /// The link under `at` on the page, if there is one.
 fn link_at(s: Docs, at: vec2, f: Frame) -> Option<String> {
     if at.y < f.header { return None }
-    let p = vec2(at.x - f.x, at.y - f.top + shift(s))
+    let p = vec2(at.x - f.x, at.y - page_y(s, f))
     for spot in s.laid.spots {
         if spot.rect.contains(p) { return Some(spot.target.clone()) }
     }
@@ -2343,7 +2417,7 @@ fn extras(s: Docs, f: Frame) -> Vec<Extra> {
     // A page that couldn't be opened has no neighbours and no Markdown.
     let Some(at_page) = s.index.page(s.shown.as_str()) else { return out }
     let u = s.u
-    let crumb_y = f.top - shift(s) - (if f.beside { 40.0 } else { 36.0 }) * u
+    let crumb_y = page_y(s, f) - (if f.beside { 40.0 } else { 36.0 }) * u
     let dw = s.fonts.font(Face::Sans).measure("Docs", 13.5 * u)
     borrow page = s.index.pages[at_page]
     let (group, _) = group_title(group_of(page.path.as_str(), page.kind.as_str()))
@@ -2709,6 +2783,7 @@ fn keep_laid_out(s: mut Docs, f: Frame) {
     if s.shown.is_empty() { s.blocks = front_blocks(s.index) }
     s.laid = lay_out(s.blocks, s.fonts, f.w, s.u, is_module(s), s.p)
     s.laid_width = f.w
+    s.laid_version += 1
     s.outline = outline_of(s)
     let (text, starts) = s.laid.text()
     s.lowered = lower(text.as_str())
@@ -2792,9 +2867,15 @@ fn mark_left(s: Docs, f: Frame) -> f32 {
     if f.beside { 24.0 * s.u } else { 60.0 * s.u }
 }
 
-/// How far down the page's content is drawn: its scroll, less how far it's stretched.
+/// How far down the page's content is drawn: its scroll, and past its end how far it's stretched.
 fn shift(s: Docs) -> f32 {
-    s.scroll - s.pull
+    s.scroll - min(s.pull, 0.0)
+}
+
+/// Where the page's top is on the screen now, on a whole pixel: its tiles are drawn there as they
+/// were drawn into their images, pixel for pixel.
+fn page_y(s: Docs, f: Frame) -> f32 {
+    floor(f.top - shift(s) + 0.5)
 }
 
 /// A pixel's hairline: at least a device pixel.
@@ -2843,16 +2924,9 @@ fn draw_all(s: mut Docs, f: Frame) {
     s.list.push_clip(Rect::new(0.0, f.header, screen.x, screen.y - f.header))
     // A page just shown comes in: it rises a few pixels and its ink deepens.
     let appear = eased(s.shown_at, s.time, APPEAR, s.reduced)
-    let origin = vec2(f.x, f.top - shift(s) + (1.0 - appear) * 8.0 * u)
-    for sh in s.laid.shapes {
-        let r = Rect::new(sh.rect.x + origin.x, sh.rect.y + origin.y, sh.rect.w, sh.rect.h)
-        if r.bottom() < f.header || r.y > screen.y { continue }
-        let c = vec4(sh.color.xyz, sh.color.w * appear)
-        if sh.ring > 0.0 { s.list.ring(r, c, radius: sh.radius, width: sh.ring) } else {
-            s.list.rect(r, c, radius: sh.radius)
-        }
-    }
-    // A card or a button under a mouse lights up, behind its words.
+    let rise = floor((1.0 - appear) * 8.0 * u + 0.5)
+    let origin = vec2(f.x, page_y(s, f) + rise)
+    // A card or a button under a mouse lights up: a card's edge, a button's ground.
     if !s.finger && !s.searching && s.pointer.y > f.header {
         for spot in s.laid.spots {
             if spot.kind == layout::WORDS { continue }
@@ -2863,26 +2937,25 @@ fn draw_all(s: mut Docs, f: Frame) {
                 spot.rect.h,
             )
             if !r.contains(s.pointer) { continue }
-            let (inset, color) = if spot.kind == CARD_LINK {
-                (hair(s), hex(s.p.surface, 0.7))
-            } else if spot.kind == MAIN {
-                (0.0, hex(s.p.page, 0.14))
-            } else { (hair(s), hex(s.p.surface)) }
-            s.list.rect(r.shrink(inset), color, radius: max(spot.round - inset, 0.0))
+            if spot.kind == MAIN {
+                s.list.rect(r, hex(s.p.page, 0.12), radius: spot.round)
+            } else {
+                s.list.ring(r, hex(s.p.quiet, 0.7), radius: spot.round, width: hair(s))
+            }
         }
     }
     if s.finding {
         let n = lower(s.find.as_str()).len()
         for i in 0..s.matches.len() {
             let a = s.matches[i]
-            mark_range(mut s, a, a + n, origin, f, hex(0xF5C542, if i == s.current { 0.6 } else {
-                0.22
+            mark_range(mut s, a, a + n, origin, f, hex(0xF5C542, if i == s.current { 0.45 } else {
+                0.18
             }))
         }
     }
     if let Some((a, b)) = s.selected {
         if a != b {
-            mark_range(mut s, min(a, b), max(a, b), origin, f, hex(s.p.selection, 0.38))
+            mark_range(mut s, min(a, b), max(a, b), origin, f, hex(s.p.selection, 0.32))
         }
     }
     // The number under the pointer, or held, that drags.
@@ -2893,24 +2966,9 @@ fn draw_all(s: mut Docs, f: Frame) {
         }
         let r = knob_rect(s, f, i)
         if held || (s.knob_held.is_none() && !s.finger && r.contains(s.pointer)) {
-            s.list.rect(r, hex(s.p.field, if held { 0.3 } else { 0.18 }), radius: 4.0 * u)
+            s.list.rect(r, hex(s.p.field, if held { 0.24 } else { 0.14 }), radius: 4.0 * u)
         }
     }
-    for p in s.laid.pieces {
-        let y = p.at.y + origin.y
-        if y > screen.y || y + p.size * 2.0 < f.header { continue }
-        s.fonts.font_mut(p.face).weight = p.weight
-        let _ = s.list.text(
-            s.fonts,
-            p.face,
-            p.text.as_str(),
-            p.size,
-            vec2(p.at.x + origin.x, y),
-            vec4(p.color.xyz, p.color.w * appear),
-        )
-    }
-    s.fonts.sans.weight = 0.0
-    s.fonts.mono.weight = 0.0
     if !s.trouble.is_empty() {
         let _ = s.list.text(
             s.fonts,
@@ -2942,12 +3000,37 @@ fn draw_all(s: mut Docs, f: Frame) {
     if s.finding { draw_find(mut s, f) }
     if s.searching { draw_search(mut s, f) }
     draw_toast(mut s, f)
-    if s.page_load.is_some() && s.trouble.is_empty() { draw_loading(mut s, f) }
+    if s.page_load.is_some() && s.trouble.is_empty() && !s.reloading { draw_loading(mut s, f) }
+    let (first, last) = keep_tiles(mut s, f)
     s.renderer.fetch(mut s.fonts, s.list)
     s.renderer.upload(s.list)
     // Figures whose image is out of date, into their images, before the screen's pass.
     draw_images(mut s, f)
     let pass = begin_screen_pass(clear: hex(s.p.page))
+    for i in first..last {
+        for t in s.tiles {
+            if t.index != i || t.version != s.laid_version { continue }
+            let top = origin.y + f32(i) * TILE
+            let left = tile_left(s, f)
+            let from = max(top, f.header)
+            let to = min(top + TILE, screen.y)
+            if to <= from { continue }
+            draw(
+                pass,
+                quad.bind(screen: screen, rect: vec4(left, from, f32(t.w), to - from)),
+                shown.bind(
+                    image: t.image,
+                    linear: s.linear,
+                    look: Shown {
+                        rect: vec4(left, top, f32(t.w), TILE),
+                        round: 0.0,
+                        alpha: appear,
+                    },
+                ),
+                vertices: 6,
+            )
+        }
+    }
     draw_figures(s, pass, f)
     s.renderer.draw(pass, screen)
     // The header's mark, over the header, as dim as what dims it.
@@ -2969,6 +3052,123 @@ fn draw_all(s: mut Docs, f: Frame) {
         },
     )
     pass.present()
+}
+
+/// How far left of the page's text a tile starts, and how wide it is: room for what reaches past
+/// the text's edge (code's ground in a line, a quote's bar).
+fn tile_left(s: Docs, f: Frame) -> f32 {
+    f.x - floor(12.0 * s.u)
+}
+
+fn tile_width(s: Docs, f: Frame) -> u32 {
+    u32(ceil(f.w + 2.0 * floor(12.0 * s.u)))
+}
+
+/// The tiles the page needs on the screen now, drawn where they're out of date, and one more past
+/// them in the way the page moves, so a scroll finds it drawn; tiles far from the screen go. The
+/// tiles on the screen: from `first` up to `last`.
+fn keep_tiles(s: mut Docs, f: Frame) -> (u32, u32) {
+    if s.laid.height <= 0.0 { return (0, 0) }
+    let top = page_y(s, f)
+    let lo = max(f.header - top, 0.0)
+    let hi = min(s.screen.y - top, s.laid.height)
+    if hi <= lo { return (0, 0) }
+    let first = u32(lo / TILE)
+    let last = u32(hi / TILE) + 1
+    let w = tile_width(s, f)
+    for i in first..last { keep_tile(mut s, f, i, w, first, last) }
+    // One ahead: below while the page goes down, above while it goes up.
+    let up = match s.fling {
+        Some((v, nav)) => !nav && v < 0.0,
+        None => s.trail.len() >= 2 && s.trail[s.trail.len() - 1].0 > s.trail[0].0,
+    }
+    let count = u32(ceil(s.laid.height / TILE))
+    if up && first > 0 { keep_tile(mut s, f, first - 1, w, first, last) } else if !up &&
+        last < count {
+        keep_tile(mut s, f, last, w, first, last)
+    }
+    (first, last)
+}
+
+/// Tile `i` drawn at this layout, `w` wide: as it is, or drawn again in an image of its own or in
+/// the image of a tile far from the screen (`first` to `last`).
+fn keep_tile(s: mut Docs, f: Frame, i: u32, w: u32, first: u32, last: u32) {
+    var k = s.tiles.len()
+    for j in 0..s.tiles.len() {
+        if s.tiles[j].index == i && s.tiles[j].w == w { k = j }
+    }
+    if k < s.tiles.len() && s.tiles[k].version == s.laid_version && !s.tiles[k].waiting { return }
+    if k == s.tiles.len() {
+        // The farthest tile from the screen gives up its image, once enough are kept.
+        var far = s.tiles.len()
+        var distance = 0
+        for j in 0..s.tiles.len() {
+            let t = s.tiles[j].index
+            let d = if t < first { first - t } else if t >= last { t - last + 1 } else { 0 }
+            let stale = s.tiles[j].w != w
+            if (stale || d > 1) &&
+                (stale || d > distance) &&
+                (s.tiles.len() >= TILES_KEPT || stale) {
+                far = j
+                distance = if stale { 1000000 } else { d }
+            }
+        }
+        if far < s.tiles.len() && s.tiles[far].w == w {
+            k = far
+            s.tiles[k].index = i
+        } else {
+            if far < s.tiles.len() { let _ = s.tiles.remove(far) }
+            s.tiles.push(
+                Tile {
+                    image: texture::<Rgba8>(width: w, height: u32(TILE)),
+                    index: i,
+                    version: 0,
+                    w,
+                    waiting: false,
+                },
+            )
+            k = s.tiles.len() - 1
+        }
+    }
+    draw_tile(mut s, f, k)
+}
+
+/// Draws tile `k`: the page's shapes and words in its rows, on the page's ground.
+fn draw_tile(s: mut Docs, f: Frame, k: u32) {
+    let w = s.tiles[k].w
+    let top = f32(s.tiles[k].index) * TILE
+    let left = f.x - tile_left(s, f)
+    s.tile_list.clear(vec2(f32(w), TILE))
+    for sh in s.laid.shapes {
+        let r = Rect::new(sh.rect.x + left, sh.rect.y - top, sh.rect.w, sh.rect.h)
+        if r.bottom() < 0.0 || r.y > TILE { continue }
+        if sh.ring > 0.0 { s.tile_list.ring(r, sh.color, radius: sh.radius, width: sh.ring) } else {
+            s.tile_list.rect(r, sh.color, radius: sh.radius)
+        }
+    }
+    for p in s.laid.pieces {
+        let y = p.at.y - top
+        if y > TILE || y + p.size * 2.0 < 0.0 { continue }
+        s.fonts.font_mut(p.face).weight = p.weight
+        let _ = s.tile_list.text(
+            s.fonts,
+            p.face,
+            p.text.as_str(),
+            p.size,
+            vec2(p.at.x + left, y),
+            p.color,
+        )
+    }
+    s.fonts.sans.weight = 0.0
+    s.fonts.mono.weight = 0.0
+    s.renderer.fetch(mut s.fonts, s.tile_list)
+    // A glyph on its way from the host shows as `?` until it comes: the tile is drawn again then.
+    s.tiles[k].version = s.laid_version
+    s.tiles[k].waiting = !s.tile_list.wanted.is_empty()
+    s.renderer.upload(s.tile_list)
+    let p = begin_pass(mut s.tiles[k].image, clear: hex(s.p.page))
+    s.renderer.draw(p, vec2(f32(w), TILE))
+    p.end()
 }
 
 /// How much a dialog's scrim darkens what's under it, in the reader's scheme.
@@ -3002,15 +3202,16 @@ fn draw_loading(s: mut Docs, f: Frame) {
     s.list.rect(Rect::new(x, f.header - 2.0 * u, w, 2.0 * u), hex(s.p.field))
 }
 
-/// A pull past the page's top: a disc under the header with an arc that grows as the page is
-/// pulled, round once it's far enough to let go, and turning while the page loads again.
+/// A pull past the page's top: a disc that comes down from under the header as the finger pulls,
+/// over the page, which stays still; its arc grows as it comes, is whole once it's far enough to
+/// let go, and turns while the page is fetched again.
 fn draw_pull(s: mut Docs, f: Frame) {
     if s.pull <= 0.5 { return }
     let u = s.u
     let k = clamp(s.pull / (PULL * u), 0.0, 1.0)
     let left = if f.beside { f.nav } else { 0.0 }
-    let c = vec2((left + s.screen.x) * 0.5, f.header + min(s.pull, PULL * u * 1.4) * 0.5)
     let r = 18.0 * u
+    let c = vec2((left + s.screen.x) * 0.5, f.header - r + min(s.pull, PULL * u * 1.3) * 0.9)
     let disc = Rect::new(c.x - r, c.y - r, 2.0 * r, 2.0 * r)
     for i in 1..4 {
         let g = f32(i) * 2.0 * u
@@ -3777,7 +3978,7 @@ fn controls(s: Docs, f: Frame, at: vec2, all: bool) -> Vec<Control> {
     var out: Vec<Control> = Vec::new()
     if s.shown != s.route.page { return out }
     let u = s.u
-    let origin = vec2(f.x, f.top - shift(s))
+    let origin = vec2(f.x, page_y(s, f))
     for i in 0..s.laid.snippets.len() {
         let r = s.laid.snippets[i].rect
         let ground = Rect::new(r.x + origin.x, r.y + origin.y, r.w, r.h)
@@ -3851,7 +4052,7 @@ fn live_of(s: Docs, block: u32) -> Option<u32> {
 /// Where figure `i` is on the screen.
 fn figure_rect(s: Docs, f: Frame, i: u32) -> Rect {
     let r = s.laid.figures[i].rect
-    Rect::new(r.x + f.x, r.y + f.top - shift(s), r.w, r.h)
+    Rect::new(r.x + f.x, r.y + page_y(s, f), r.w, r.h)
 }
 
 /// Where knob `i`'s number is on the screen, with room around it for a finger.
@@ -3860,7 +4061,7 @@ fn knob_rect(s: Docs, f: Frame, i: u32) -> Rect {
     let pad = 3.0 * s.u
     Rect::new(
         p.at.x + f.x - pad,
-        p.at.y + f.top - shift(s) - pad,
+        p.at.y + page_y(s, f) - pad,
         p.w + 2.0 * pad,
         p.size * 1.35 + 2.0 * pad,
     )
@@ -3924,6 +4125,7 @@ fn set_knob(s: mut Docs, i: u32, value: f32) {
         if s.laid.snippets[j].block == k.block { s.laid.snippets[j].text = code.clone() }
     }
     s.blocks[k.block].code = code.clone()
+    s.laid_version += 1
     s.lives[l].read = read(code.as_str(), live_time(s))
     s.changes += 1
     s.lives[l].version = s.changes
@@ -3999,96 +4201,190 @@ fn draw_figures(s: Docs, pass: std::gpu::ScreenPass, f: Frame) {
             if s.images[k].block != block { continue }
             let top = max(r.y, f.header)
             let visible = vec4(r.x, top, r.w, min(r.bottom(), s.screen.y) - top)
-            let look = Shown { rect: vec4(r.x, r.y, r.w, r.h), round: CARD * s.u }
-            draw(
-                pass,
-                quad.bind(screen: s.screen, rect: visible),
-                shown.bind(image: s.images[k].image, linear: s.linear, look: look),
-                vertices: 6,
-            )
+            let look = Shown { rect: vec4(r.x, r.y, r.w, r.h), round: CARD * s.u, alpha: 1.0 }
+            let corners = quad.bind(screen: s.screen, rect: visible)
+            if !s.images[k].rough_done() { continue }
+            if s.images[k].sharp_done() {
+                draw(
+                    pass,
+                    corners,
+                    shown.bind(image: s.images[k].sharp, linear: s.linear, look: look),
+                    vertices: 6,
+                )
+            } else {
+                draw(
+                    pass,
+                    corners,
+                    shown.bind(image: s.images[k].rough, linear: s.linear, look: look),
+                    vertices: 6,
+                )
+            }
         }
     }
 }
 
-/// How finely a figure's image is drawn, in texels to the screen's pixel: the screen's own
-/// up to twice the CSS pixel, and finer screens (a phone's three) a little softer, for less than
-/// half the work; while a hand moves it, or while it moves with time, half as fine again, and
-/// finely once it's still.
-fn image_scale(u: f32, moving: bool) -> f32 {
-    min(1.0, 2.0 / u) * (if moving { 0.5 } else { 1.0 })
+/// How finely a figure's image is drawn, in texels to the screen's pixel: the sharp image as
+/// finely as the screen up to twice the CSS pixel, and finer screens (a phone's three) a little
+/// softer, for less than half the work; the rough one a quarter as finely, a sixteenth of the work.
+fn image_scale(u: f32, rough: bool) -> f32 {
+    min(1.0, 2.0 / u) * (if rough { 0.25 } else { 1.0 })
 }
 
-/// Draws again, into its image, each figure on the screen whose field, camera, view, probe, size
-/// or scheme changed since it was last drawn; before the screen's pass.
-fn draw_images(s: mut Docs, f: Frame) {
-    let light = s.p == theme::LIGHT
+/// How many of an image's `h` rows a band of it is, in `bands` bands.
+fn band_rows(h: u32, bands: u32) -> u32 {
+    max((h + bands - 1) / bands, 1)
+}
+
+/// Whether figure `i` is within `reach` pixels of the screen, under the header.
+fn figure_near(s: Docs, f: Frame, i: u32, reach: f32) -> bool {
+    let r = figure_rect(s, f, i)
+    r.bottom() >= f.header - reach && r.y <= s.screen.y + reach
+}
+
+/// Whether a figure on the screen, or within a screen of it, still has its images to draw.
+fn figures_drawing(s: Docs, f: Frame) -> bool {
     for i in 0..s.laid.figures.len() {
-        let r = figure_rect(s, f, i)
-        if r.bottom() < f.header || r.y > s.screen.y { continue }
+        if !figure_near(s, f, i, reach: s.screen.y) { continue }
         let block = s.laid.figures[i].block
         let Some(l) = live_of(s, block) else { continue }
         let Some(rd) = s.lives[l].read.clone() else { continue }
-        // Held: a number of its being dragged, or the figure turned.
-        let held = match s.knob_held {
-            Some((k, _, _, unsure)) => !unsure && s.laid.knobs[k].block == block,
-            None => false,
-        } || match s.orbit {
-            Some((j, _, _, _, by)) => j == i && by != FINGER_SCROLLS,
-            None => false,
+        var drawn = false
+        for image in s.images {
+            if image.block == block {
+                drawn = image.rough_done() && (image.sharp_done() || (rd.moves && !s.reduced))
+            }
         }
-        // A field that moves with time is drawn each frame: softer, as a held one is.
-        let scale = image_scale(s.u, held || (rd.moves && !s.reduced))
-        let w = max(u32(r.w * scale), 1)
-        let h = max(u32(r.h * scale), 1)
-        let mode = s.lives[l].mode
-        // A slice's probe is the pointer's place on it, where the pointer is over it.
-        let probe = if mode != SURFACE && r.contains(s.pointer) && s.pointer.y > f.header {
-            vec4(slice_point(vec4(r.x, r.y, r.w, r.h), rd.centre, rd.radius, s.pointer), 1.0)
-        } else { vec4(0.0) }
-        let key = ImageKey {
-            version: s.lives[l].version,
-            turn: s.lives[l].turn,
-            tilt: s.lives[l].tilt,
-            mode,
-            probe,
-            w,
-            h,
-            light,
-        }
-        var k = s.images.len()
-        for j in 0..s.images.len() {
-            if s.images[j].block == block { k = j }
-        }
-        if k < s.images.len() && s.images[k].key == key { continue }
-        if k == s.images.len() || s.images[k].key.w != w || s.images[k].key.h != h {
-            let image = FigureImage { block, image: texture::<Rgba8>(width: w, height: h), key }
-            if k == s.images.len() { s.images.push(take image) } else { s.images[k] = take image }
-        }
-        s.images[k].key = key
-        let look = View {
-            rect: vec4(0.0, 0.0, f32(w), f32(h)),
-            turn: key.turn,
-            tilt: key.tilt,
-            centre: rd.centre,
-            radius: rd.radius,
-            floor: rd.floor,
-            u: s.u * scale,
-            light: if light { 1.0 } else { 0.0 },
-            ground: hex(s.p.code),
-            line: hex(s.p.field, if light { 0.45 } else { 0.38 }),
-            body: hex(s.p.figure),
-            rim: hex(s.p.field),
-            mode,
-            probe,
-        }
-        // Each view is a pipeline of its own.
-        let p = begin_pass(mut s.images[k].image)
-        let corners = quad.bind(screen: vec2(f32(w), f32(h)), rect: look.rect)
-        if mode == SURFACE {
-            draw(p, corners, view.bind(scene: rd.scene, look: look), vertices: 6)
-        } else { draw(p, corners, slice_view.bind(scene: rd.scene, look: look), vertices: 6) }
-        p.end()
+        if !drawn { return true }
     }
+    false
+}
+
+/// Draws figures into their images, before the screen's pass: a figure's rough image again at once
+/// wherever what it shows changed (its field, camera, view, probe or scheme), and of the rest one
+/// band a frame, for the figures on the screen first, then those within a screen of it.
+fn draw_images(s: mut Docs, f: Frame) {
+    var band = true
+    for ahead in [false, true] {
+        for i in 0..s.laid.figures.len() {
+            if figure_near(s, f, i, reach: 0.0) == ahead ||
+                !figure_near(s, f, i, reach: s.screen.y) { continue }
+            band = draw_figure_images(mut s, f, i, band) && band
+        }
+    }
+}
+
+/// Keeps figure `i`'s images current, and draws a band of them if `band`, where they want one.
+/// Returns whether the band is still to be drawn.
+fn draw_figure_images(s: mut Docs, f: Frame, i: u32, band: bool) -> bool {
+    let r = figure_rect(s, f, i)
+    let block = s.laid.figures[i].block
+    let Some(l) = live_of(s, block) else { return band }
+    let Some(rd) = s.lives[l].read.clone() else { return band }
+    // Held: a number of its being dragged, or the figure turned.
+    let held = match s.knob_held {
+        Some((k, _, _, unsure)) => !unsure && s.laid.knobs[k].block == block,
+        None => false,
+    } || match s.orbit {
+        Some((j, _, _, _, by)) => j == i && by != FINGER_SCROLLS,
+        None => false,
+    }
+    let mode = s.lives[l].mode
+    // A slice's probe is the pointer's place on it, where the pointer is over it.
+    let probe = if mode != SURFACE && r.contains(s.pointer) && s.pointer.y > f.header {
+        vec4(slice_point(vec4(r.x, r.y, r.w, r.h), rd.centre, rd.radius, s.pointer), 1.0)
+    } else { vec4(0.0) }
+    let shows = ImageKey {
+        version: s.lives[l].version,
+        turn: s.lives[l].turn,
+        tilt: s.lives[l].tilt,
+        mode,
+        probe,
+        light: s.p == theme::LIGHT,
+    }
+    let size = |rough: bool| -> vec2u {
+        let scale = image_scale(s.u, rough)
+        vec2u(max(u32(r.w * scale), 1), max(u32(r.h * scale), 1))
+    }
+    let rough_size = size(true)
+    let sharp_size = size(false)
+    var k = s.images.len()
+    for j in 0..s.images.len() {
+        if s.images[j].block == block { k = j }
+    }
+    if k == s.images.len() ||
+        s.images[k].rough_size != rough_size ||
+        s.images[k].sharp_size != sharp_size {
+        let image = FigureImage {
+            block,
+            rough: texture::<Rgba8>(width: rough_size.x, height: rough_size.y),
+            rough_shows: shows,
+            rough_size,
+            sharp: texture::<Rgba8>(width: sharp_size.x, height: sharp_size.y),
+            sharp_shows: shows,
+            sharp_size,
+            rough_rows: 0,
+            rows: 0,
+        }
+        if k == s.images.len() { s.images.push(take image) } else { s.images[k] = take image }
+    } else if s.images[k].rough_shows != shows {
+        s.images[k].rough_shows = shows
+        if s.images[k].rough_done() {
+            draw_image(mut s, k, rd, shows, rough: true, from: 0, to: rough_size.y)
+        } else { s.images[k].rough_rows = 0 }
+    }
+    // The sharp image starts over for what the rough one shows, and goes on while the figure is
+    // let be, and doesn't move with time.
+    if s.images[k].sharp_shows != shows {
+        s.images[k].sharp_shows = shows
+        s.images[k].rows = 0
+    }
+    if !band { return false }
+    let rough_rows = s.images[k].rough_rows
+    if rough_rows < rough_size.y {
+        let to = min(rough_rows + band_rows(rough_size.y, ROUGH_BANDS), rough_size.y)
+        draw_image(mut s, k, rd, shows, rough: true, from: rough_rows, to: to)
+        s.images[k].rough_rows = to
+        return false
+    }
+    let rows = s.images[k].rows
+    if held || (rd.moves && !s.reduced) || rows >= sharp_size.y { return true }
+    let to = min(rows + band_rows(sharp_size.y, BANDS), sharp_size.y)
+    draw_image(mut s, k, rd, shows, rough: false, from: rows, to: to)
+    s.images[k].rows = to
+    false
+}
+
+/// Draws rows `from` to `to` of figure image `k`'s rough or sharp image, of `rd`'s field as
+/// `shows` says, keeping the rows drawn before.
+fn draw_image(s: mut Docs, k: u32, rd: Read, shows: ImageKey, rough: bool, from: u32, to: u32) {
+    let light = shows.light
+    let size = if rough { s.images[k].rough_size } else { s.images[k].sharp_size }
+    let look = View {
+        rect: vec4(0.0, 0.0, f32(size.x), f32(size.y)),
+        turn: shows.turn,
+        tilt: shows.tilt,
+        centre: rd.centre,
+        radius: rd.radius,
+        floor: rd.floor,
+        u: s.u * image_scale(s.u, rough),
+        light: if light { 1.0 } else { 0.0 },
+        ground: hex(s.p.code),
+        line: hex(s.p.field, if light { 0.45 } else { 0.38 }),
+        body: hex(s.p.figure),
+        rim: hex(s.p.field),
+        mode: shows.mode,
+        probe: shows.probe,
+    }
+    let band = vec4(0.0, f32(from), f32(size.x), f32(to - from))
+    let corners = quad.bind(screen: vec2(f32(size.x), f32(size.y)), rect: band)
+    let p = if rough { begin_pass(mut s.images[k].rough, keep: from > 0) } else {
+        begin_pass(mut s.images[k].sharp, keep: from > 0)
+    }
+    // Each view is a pipeline of its own.
+    if shows.mode == SURFACE {
+        draw(p, corners, view.bind(scene: rd.scene, look: look), vertices: 6)
+    } else { draw(p, corners, slice_view.bind(scene: rd.scene, look: look), vertices: 6) }
+    p.end()
 }
 
 /// Figure `i`'s tabs, in the row over it: each its place, its view and its name.
@@ -4114,7 +4410,7 @@ fn figure_tabs(s: Docs, f: Frame, i: u32) -> Vec<(Rect, u32, String)> {
 fn tabs_rect(s: Docs, f: Frame, i: u32) -> Rect {
     let t = s.laid.figures[i].tabs
     let u = s.u
-    Rect::new(t.x + f.x, t.y + f.top - shift(s), min(220.0 * u, t.w), t.h)
+    Rect::new(t.x + f.x, t.y + page_y(s, f), min(220.0 * u, t.w), t.h)
 }
 
 /// What a reader does with view `mode`, said at the right of the row over its figure: by a
@@ -4137,6 +4433,8 @@ fn draw_figure_overlays(s: mut Docs, f: Frame) {
         let cap = s.laid.figures[i].caption
         if row.y > s.screen.y || r.bottom() + cap.h + 20.0 * u < f.header { continue }
         let Some(l) = live_of(s, s.laid.figures[i].block) else { continue }
+        // Its edge, over its image.
+        s.list.ring(r, hex(s.p.rule), radius: CARD * u, width: hair(s))
         let mode = s.lives[l].mode
         let marker = s.lives[l].marker
         s.list.rect(row, hex(s.p.surface), radius: 8.0 * u)
@@ -4185,7 +4483,7 @@ fn draw_figure_overlays(s: mut Docs, f: Frame) {
                 Face::Sans,
                 lines[k].as_str(),
                 13.5 * u,
-                vec2(cap.x + f.x, cap.y + f.top - shift(s) + f32(k) * 13.5 * u * 1.55),
+                vec2(cap.x + f.x, cap.y + page_y(s, f) + f32(k) * 13.5 * u * 1.55),
                 hex(s.p.quiet),
             )
         }
@@ -4372,7 +4670,7 @@ fn parts_tree(s: Docs, f: Frame) -> Vec<Node> {
     var nodes: Vec<Node> = Vec::new()
     for i in 0..s.laid.parts.len() {
         borrow p = s.laid.parts[i]
-        let rect = vec4(p.rect.x + f.x, p.rect.y + f.top - shift(s), p.rect.w, p.rect.h)
+        let rect = vec4(p.rect.x + f.x, p.rect.y + page_y(s, f), p.rect.w, p.rect.h)
         // The page's parts are under the header, which is drawn over them.
         let shown = semantics::clip(rect, page_view(s, f))
         let role = match p.role {
@@ -4966,11 +5264,26 @@ fn a_swipe_carries_on_at_its_fingers_last_speed() {
     assert(swipe_speed(Vec::from([(1.0, 2.0)]), now: 2.0) == 0.0)
 }
 
-/// A figure's image is as fine as the screen up to twice the CSS pixel, softer on a phone's three,
-/// and half as fine again while it moves.
+/// A page loaded again in place, by a pull, stays as it was; another page appears.
 @test
-fn a_figures_image_is_finest_when_still() {
-    assert(image_scale(1.0, moving: false) == 1.0 && image_scale(2.0, moving: false) == 1.0)
-    assert(abs(image_scale(3.0, moving: false) - 2.0 / 3.0) < 0.0001)
-    assert(abs(image_scale(3.0, moving: true) - 1.0 / 3.0) < 0.0001)
+fn a_refreshed_page_stays_and_another_appears() {
+    assert(!appears(reloading: true, shown: "std/io", path: "std/io"))
+    assert(appears(reloading: true, shown: "std/io", path: "std/arena"))
+    assert(appears(reloading: false, shown: "std/io", path: "std/io"))
+}
+
+/// A figure's sharp image is as fine as the screen up to twice the CSS pixel, softer on a phone's
+/// three; its rough one a quarter as fine. Each is drawn in bands, which cover it, whatever its
+/// height.
+@test
+fn a_figures_image_is_sharp_in_bands_and_rough_at_once() {
+    assert(image_scale(1.0, rough: false) == 1.0 && image_scale(2.0, rough: false) == 1.0)
+    assert(abs(image_scale(3.0, rough: false) - 2.0 / 3.0) < 0.0001)
+    assert(abs(image_scale(3.0, rough: true) - 1.0 / 6.0) < 0.0001)
+    for bands in [ROUGH_BANDS, BANDS] {
+        for h in [1, 7, 8, 9, 63, 64, 65, 646, 1000] {
+            let rows = band_rows(h, bands)
+            assert(rows * bands >= h && (rows - 1) * bands < h, f"{h} in {bands}: {rows}")
+        }
+    }
 }
