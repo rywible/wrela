@@ -144,7 +144,7 @@ pub fn cues(h: mut Heard, w: World) -> Vec<Cue> {
 
 @test
 fn every_counted_sound_is_heard_after_frames_skip_ticks() {
-    var world = fight::spawn()
+    var world = fight::spawn().fight
     var h = heard(world)
     world.tally.swings = 3
     world.tally.hits = 2
@@ -181,10 +181,10 @@ fn every_counted_sound_is_heard_after_frames_skip_ticks() {
     assert(cues(mut h, world).is_empty(), "sounds were repeated on the next frame")
 }
 
-fn sound_test_tick(world: mut World, records: take Vec<Event>) {
-    let tick = world.ticks
+fn sound_test_tick(duel: mut fight::Duel, records: take Vec<Event>) {
+    let tick = duel.fight.ticks
     fight::tick(
-        mut world,
+        mut duel,
         engine::run::TickInput {
             tick,
             dt: 1.0 / 60.0,
@@ -197,12 +197,12 @@ fn sound_test_tick(world: mut World, records: take Vec<Event>) {
 @test
 fn a_blink_arrival_is_heard_when_frames_skip_its_transit() {
     for heard_start in [false, true] {
-        var world = fight::spawn()
-        world.wolf = fight::new_wolf(fight::Level {}, vec2(-60.0, -20.0), 0.0)
-        var h = heard(world)
+        var duel = fight::spawn()
+        duel.fight.wolf = fight::new_wolf(fight::Level {}, vec2(-60.0, -20.0), 0.0)
+        var h = heard(duel.fight)
         for pressed in [true, false] {
             sound_test_tick(
-                mut world,
+                mut duel,
                 Vec::from([
                     Event::PadButton {
                         pad: 0,
@@ -213,9 +213,9 @@ fn a_blink_arrival_is_heard_when_frames_skip_its_transit() {
                 ]),
             )
         }
-        assert(world.tally.blinks == 1 && world.climber.t < moves::BLINK_GONE.x)
+        assert(duel.fight.tally.blinks == 1 && duel.fight.climber.t < moves::BLINK_GONE.x)
         if heard_start {
-            let start = cues(mut h, world)
+            let start = cues(mut h, duel.fight)
             assert(start.len() == 1, "the arrival was heard before transit ended")
             match start[0] {
                 Cue::Whoosh { kind, .. } => assert(kind == GONE),
@@ -223,15 +223,15 @@ fn a_blink_arrival_is_heard_when_frames_skip_its_transit() {
             }
         }
         for _ in 0..moves::BLINK_GONE.y + 1 {
-            sound_test_tick(mut world, Vec::new())
+            sound_test_tick(mut duel, Vec::new())
         }
-        assert(!world.climber.gone())
-        let arrived = cues(mut h, world)
+        assert(!duel.fight.climber.gone())
+        let arrived = cues(mut h, duel.fight)
         assert(arrived.len() == if heard_start { 1 } else { 2 }, "the skipped arrival was lost")
         match arrived[arrived.len() - 1] {
             Cue::Impact { kind, seed, .. } => assert(kind == ARRIVE && seed == 1),
             _ => panic("the arrival cue changed kind"),
         }
-        assert(cues(mut h, world).is_empty(), "the arrival was heard twice")
+        assert(cues(mut h, duel.fight).is_empty(), "the arrival was heard twice")
     }
 }

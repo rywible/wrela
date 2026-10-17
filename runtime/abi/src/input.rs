@@ -19,7 +19,7 @@
 //!
 //! | Kind | `a`, `b` | `c`, `d` |
 //! |---|---|---|
-//! | `PointerMove` | x, y: f32, pixels from the top left, in the canvas's pixels | 0, 0 |
+//! | `PointerMove` | x, y: f32, pixels from the top left, in the canvas's pixels | 1 if the pointer is locked, 0 |
 //! | `PointerDown`, `PointerUp` | x, y | the button (`c`: 0 primary, 1 middle, 2 secondary), 0 |
 //! | `Wheel` | x, y | the scroll, f32 pixels: right and down are positive |
 //! | `KeyDown` | the key ([`KEYS`]), 1 if it's the key repeating | 0, 0 |
@@ -96,8 +96,8 @@
 //! `text` (a `Text` event for each character), `compose` (the `Compose` events for its `text`,
 //! which may be empty), `paste` (its `serial`, default 0), `assist` (its `node`, and its `action`
 //! as [`ASSIST_ACTIONS`] names it, default `activate`), `padbutton`, `padaxis` or `padpress` (a
-//! pad's button pressed then let go); `button` defaults to `primary`; `shift`, `ctrl`, `alt` and
-//! `meta` default to false. A pad's events name its `pad` (0 to 3, default 0); a `padbutton`
+//! pad's button pressed then let go); `button` defaults to `primary`; a `move`'s `locked`,
+//! `shift`, `ctrl`, `alt` and `meta` default to false. A pad's events name its `pad` (0 to 3, default 0); a `padbutton`
 //! names its `button` (as [`PAD_BUTTONS`] does) and whether it's `pressed`, and its `value`
 //! defaults to 1 pressed and 0 not; a `padaxis` names its `axis` ([`PAD_AXES`]) and its
 //! `value`, from -1 to 1. [`parse_script`] reads one.
@@ -562,7 +562,14 @@ pub fn parse_script(text: &str) -> Result<Vec<Scripted>, String> {
         let mut push = |event| out.push(Scripted { at: when, event, payload: Vec::new() });
         match ty {
             "move" => {
-                push(Event::pointer(EventKind::PointerMove, num("x")?, num("y")?, 0, modifiers))
+                let locked = u32::from(flag("locked")?);
+                push(Event::pointer(
+                    EventKind::PointerMove,
+                    num("x")?,
+                    num("y")?,
+                    locked,
+                    modifiers,
+                ))
             }
             "down" | "up" => {
                 let kind = if ty == "down" { EventKind::PointerDown } else { EventKind::PointerUp };
@@ -822,10 +829,12 @@ mod tests {
             {"frame": 2, "type": "wheel", "x": 1, "y": 2, "dx": -3, "dy": 120},
             {"frame": 3, "type": "key", "key": "Tab", "ctrl": true, "meta": true},
             {"frame": 3, "type": "keydown", "key": "KeyA", "repeat": true},
-            {"frame": 4, "type": "text", "text": "aé"}
+            {"frame": 4, "type": "text", "text": "aé"},
+            {"frame": 5, "type": "move", "x": 900, "y": -40, "locked": true}
         ]"#;
         let s = parse_script(script).expect("a valid script");
-        assert_eq!(s.len(), 9);
+        assert_eq!(s.len(), 10);
+        assert_eq!(s[9].event, Event::pointer(EventKind::PointerMove, 900.0, -40.0, 1, 0));
         assert_eq!(s[0].event, Event::pointer(EventKind::PointerMove, 10.5, 20.0, 0, 0));
         assert_eq!(s[1].event.words[2], 2);
         assert_eq!(s[1].event.modifiers, SHIFT);
