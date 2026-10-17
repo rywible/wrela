@@ -30,6 +30,14 @@ pub enum Kind: Copy + Eq {
     Table,
     Rule,
     Code,
+    /// The front page's own blocks, which no Markdown writes: its title, set large; a small
+    /// rounded tag over it; a row of buttons (its runs, each a link, the first the main one);
+    /// and a card that leads to a group of pages (its runs: its title, with the link, its
+    /// package, what it covers, and a line under that), laid in a grid with the cards beside it.
+    Display,
+    Badge,
+    Actions,
+    Card,
 }
 
 pub struct Block: Clone {
