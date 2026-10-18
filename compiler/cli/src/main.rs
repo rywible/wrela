@@ -154,7 +154,13 @@ fn main() -> ExitCode {
         "doc" => doc::run(rest),
         "pipelines" => pipelines::run(rest),
         "profile" => profile::run(rest),
-        "test" => test::run(rest),
+        "test" => {
+            // Each tool test runs in a process of this executable's (§13.2).
+            if let Ok(me) = std::env::current_exe() {
+                wrela_driver::tool_tests::set_runner(me);
+            }
+            test::run(rest)
+        }
         "studio" => studio::run(rest),
         "run" => run::run(rest),
         "tool" => tool::run(rest),

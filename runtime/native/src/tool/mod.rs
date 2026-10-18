@@ -9,10 +9,14 @@
 //! whole may have one (`--timeout`), and an interrupt (Ctrl-C) stops it, inside a call too.
 //!
 //! **Services run beside the tool.** A call never waits on one: the requests a call makes are
-//! carried out after it returns, on the host's worker threads (files, blobs) or by the host's
-//! own loop (timers, the date), and each answer reaches the tool no sooner than its next call.
-//! Every service is given one capability context ([`Caps`]), made from the command line's
-//! grants, and reaches files and secrets through it alone.
+//! carried out after it returns, on the host's worker threads (files, blobs, HTTP, programs) or
+//! by the host's own loop (timers, the date), and each answer reaches the tool no sooner than
+//! its next call. Every service is given one capability context ([`Caps`]), made from the
+//! command line's grants, and reaches files, secrets, hosts and programs through it alone.
+//!
+//! **A tool test's clock is fake** ([`Options::fake_clock`], language.md §13.2). It moves only
+//! when every outstanding request is one the clock answers (a timer, or a fake site's answer
+//! held for its delay): then it jumps to the soonest. While a worker has a request, it waits.
 //!
 //! **Printing never waits.** A line the tool prints goes on a bounded queue, and a thread of the
 //! host's own hands it to the [`Printer`]; a full queue drops the line and counts it. So a
@@ -22,7 +26,10 @@
 //! interrupt, waiting on nothing), the host stops its workers (work not started is dropped,
 //! work in progress gets a bounded grace), stops the clock thread that interrupts calls, and
 //! releases every blob, those of requests the tool never read first ([`Ended`] says what was
-//! left). No file work holds the blob table's lock, so a stuck worker can't hold up the release.
+//! left). A worker running a program kills its process group as it sees the end, and one
+//! waiting for an HTTP response stops waiting (the request's own thread ends by its deadline);
+//! then the directory the run's programs had is removed. No file work holds the blob table's
+//! lock, so a stuck worker can't hold up the release.
 //! A worker still running after the grace makes the end the host's failure (status 71), whatever
 //! the tool's own end was, and `wrela tool` then ends the process, so no worker outlives it. The host keeps no compiled code: it compiles the tool's WASM for each run, so nothing
 //! it loads comes from a directory a tool could write.
@@ -30,10 +37,12 @@
 mod blobs;
 mod caps;
 mod console;
+mod http;
+mod run;
 mod services;
 
 pub use blobs::BlobBudget;
-pub use caps::{Caps, Grants};
+pub use caps::{Caps, Grants, Program, ProgramGrant};
 
 use console::Console;
 use services::{Answer, Services, Task, Work};
@@ -84,6 +93,12 @@ pub struct Options {
     /// Where the tool's `print` lines go, from a thread of the host's own: the tool never waits
     /// on it.
     pub print: Printer,
+    /// The exports the host calls: `tool_init` and `tool`, or a tool test's (§13.2).
+    pub entries: (String, String),
+    /// A tool test's fake clock, from this date (seconds and nanoseconds since 1970): timers
+    /// fire, in the order of their deadlines, as soon as the tool waits on nothing else, and
+    /// `std::tool::testing` sets fakes. `None`: the system's clock, and no fakes.
+    pub fake_clock: Option<(u64, u32)>,
     /// What only tests change.
     #[doc(hidden)]
     pub testing: Testing,
@@ -116,6 +131,8 @@ impl Options {
             blob_budget: BlobBudget::default(),
             interrupt: None,
             print: Arc::new(|line| println!("{line}")),
+            entries: (EXPORT_TOOL_INIT.to_string(), EXPORT_TOOL.to_string()),
+            fake_clock: None,
             testing: Testing::default(),
         }
     }
@@ -285,7 +302,8 @@ impl Pool {
         let (jobs, queue) = mpsc::channel::<(u32, Task)>();
         let queue = Arc::new(Mutex::new(queue));
         let alive = Arc::new((Mutex::new(WORKERS), Condvar::new()));
-        let closing = Arc::new(AtomicBool::new(false));
+        // The services' own: a worker waiting on a program or a response sees it too.
+        let closing = services.closing.clone();
         let mut handles = Vec::new();
         for i in 0..WORKERS {
             let (queue, running, closing) = (queue.clone(), alive.clone(), closing.clone());
@@ -415,9 +433,17 @@ pub fn run(build: &ToolBuild, options: Options) -> Ended {
         Err(e) => return failed(format!("the tool engine: {e:#}")),
     };
     let start = start_bytes(&options.args, options.caps.secrets());
-    let Options { caps, blob_budget, interrupt, print, testing, .. } = options;
+    let Options { caps, blob_budget, interrupt, print, testing, entries, fake_clock, .. } = options;
     let blobs = Mutex::new(blobs::Blobs::new(blob_budget));
-    let services = Arc::new(Services { caps, blobs, io_delay: testing.io_delay });
+    let services = Arc::new(Services {
+        caps,
+        blobs,
+        io_delay: testing.io_delay,
+        closing: Arc::new(AtomicBool::new(false)),
+        testing: fake_clock.is_some(),
+        fakes: Mutex::new(HashMap::new()),
+        work: std::sync::OnceLock::new(),
+    });
     let (done, answers) = mpsc::channel();
     let pool = Pool::start(&services, &done);
     drop(done);
@@ -445,14 +471,23 @@ pub fn run(build: &ToolBuild, options: Options) -> Ended {
         interrupt: &interrupt,
         deadline,
         outstanding: HashSet::new(),
-        timers: BinaryHeap::new(),
+        origin: Instant::now(),
+        fake: fake_clock.map(|(s, n)| Fake { now: Duration::ZERO, utc: Duration::new(s, n) }),
+        timed: BinaryHeap::new(),
+        timed_answers: HashMap::new(),
+        due: HashMap::new(),
         arrived: Vec::new(),
     };
     // The store, and the console's sending end in it, go when `drive` returns.
-    let mut end = run.drive(&engine, build, start, console);
+    let mut end = run.drive(&engine, build, &entries, start, console);
     ticker.stop();
     let workers_left = pool.stop(testing.grace);
     let lines_dropped = writer.stop(testing.grace);
+    // Its programs' files and `HOME`: no program runs now (each worker kills its own as the
+    // tool ends), unless a worker is still past its grace.
+    if let Some(Ok(dir)) = services.work.get() {
+        let _ = std::fs::remove_dir_all(dir);
+    }
     // A worker past its grace may still be changing files: that isn't a clean end.
     if workers_left > 0 {
         end = End::Host(format!(
@@ -466,6 +501,13 @@ pub fn run(build: &ToolBuild, options: Options) -> Ended {
     Ended { end, blobs_released, workers_left, lines_dropped }
 }
 
+/// A tool test's fake clock: the time since the run started, which moves only when the tool
+/// waits on nothing but the clock, and the date at the start.
+struct Fake {
+    now: Duration,
+    utc: Duration,
+}
+
 /// A run in progress: what's outstanding, and where answers come from.
 struct Run<'a> {
     pool: &'a Pool,
@@ -475,17 +517,59 @@ struct Run<'a> {
     deadline: Option<Instant>,
     /// Requests made and not answered yet.
     outstanding: HashSet<u32>,
-    /// The timers' deadlines, soonest first.
-    timers: BinaryHeap<Reverse<(Instant, u32)>>,
+    /// When the run started: the system clock's times are from it.
+    origin: Instant,
+    /// A tool test's fake clock, if this is one.
+    fake: Option<Fake>,
+    /// Answers given to the tool at a time on the run's clock, soonest first: timers', and a
+    /// fake site's held for its delay.
+    timed: BinaryHeap<Reverse<(Duration, u32)>>,
+    timed_answers: HashMap<u32, Answer>,
+    /// When requests a worker carries out may be answered, if not at once: a fake site's delay.
+    due: HashMap<u32, Duration>,
     /// Answers that have arrived since the last call.
     arrived: Vec<(u32, Answer)>,
 }
 
 impl Run<'_> {
+    /// The time on the run's clock: since its start, real or fake.
+    fn now(&self) -> Duration {
+        match &self.fake {
+            Some(f) => f.now,
+            None => self.origin.elapsed(),
+        }
+    }
+
+    /// The date now, as `time/utc` answers it: the system's, or the fake clock's.
+    fn utc(&self) -> Answer {
+        let now = match &self.fake {
+            Some(f) => f.utc + f.now,
+            None => std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default(),
+        };
+        let mut payload = vec![0];
+        payload.extend_from_slice(&now.as_secs().to_le_bytes());
+        payload.extend_from_slice(&now.subsec_nanos().to_le_bytes());
+        Answer::Bytes(payload)
+    }
+
+    /// `answer` to `request`, given to the tool now, or at the time it's due.
+    fn answered(&mut self, request: u32, answer: Answer) {
+        match self.due.remove(&request) {
+            Some(at) if at > self.now() => {
+                self.timed.push(Reverse((at, request)));
+                self.timed_answers.insert(request, answer);
+            }
+            _ => self.arrived.push((request, answer)),
+        }
+    }
+
     fn drive(
         &mut self,
         engine: &Engine,
         build: &ToolBuild,
+        (init_export, tool_export): &(String, String),
         start: Vec<u8>,
         console: Console,
     ) -> End {
@@ -499,8 +583,10 @@ impl Run<'_> {
         if shared || module.get_export(EXPORT_MEMORY).is_none() {
             return End::Host("this isn't a tool build: its memory isn't its own".into());
         }
-        if module.get_export(EXPORT_TOOL).is_none() {
-            return End::Host("this isn't a tool build: it doesn't export `tool`".into());
+        if module.get_export(tool_export).is_none() {
+            return End::Host(format!(
+                "this isn't a tool build: it doesn't export `{tool_export}`"
+            ));
         }
         let state = ToolState {
             start,
@@ -533,14 +619,14 @@ impl Run<'_> {
             Err(e) => return classify(&mut store, None, &e),
         };
         let memory = instance.get_memory(&mut store, EXPORT_MEMORY);
-        let tool = match instance.get_typed_func::<(), u32>(&mut store, EXPORT_TOOL) {
+        let tool = match instance.get_typed_func::<(), u32>(&mut store, tool_export) {
             Ok(f) => f,
-            Err(e) => return End::Host(format!("`tool`: {e:#}")),
+            Err(e) => return End::Host(format!("`{tool_export}`: {e:#}")),
         };
-        if instance.get_export(&mut store, EXPORT_TOOL_INIT).is_some() {
-            let init = match instance.get_typed_func::<(), ()>(&mut store, EXPORT_TOOL_INIT) {
+        if instance.get_export(&mut store, init_export).is_some() {
+            let init = match instance.get_typed_func::<(), ()>(&mut store, init_export) {
                 Ok(f) => f,
-                Err(e) => return End::Host(format!("`tool_init`: {e:#}")),
+                Err(e) => return End::Host(format!("`{init_export}`: {e:#}")),
             };
             if let Err(end) = call(&mut store, memory, |s| init.call(s, ())) {
                 return end;
@@ -586,30 +672,50 @@ impl Run<'_> {
         }
         for (request, service, body) in std::mem::take(&mut s.made) {
             self.outstanding.insert(request);
-            match services::route(&service, &body) {
+            match services::route(self.services, &service, &body) {
                 Work::Now(answer) => self.arrived.push((request, answer)),
-                Work::Timer(after) => match Instant::now().checked_add(after) {
-                    Some(at) => self.timers.push(Reverse((at, request))),
-                    None => self.arrived.push((request, Answer::Bytes(b"\x01too long".to_vec()))),
-                },
+                Work::Timer(after) => {
+                    let at = self.now() + after;
+                    self.timed.push(Reverse((at, request)));
+                    self.timed_answers.insert(request, Answer::Bytes(vec![0]));
+                }
                 Work::Worker(task) => self.pool.send(request, task),
+                Work::Held(after, task) => {
+                    self.due.insert(request, self.now() + after);
+                    self.pool.send(request, task);
+                }
+                Work::Utc => self.arrived.push((request, self.utc())),
+                Work::SetUtc(seconds, nanos) => {
+                    let answer = match &mut self.fake {
+                        Some(f) => {
+                            let set = Duration::new(seconds, nanos);
+                            // The fake time since the start stays; the date it reads moves.
+                            f.utc = set.saturating_sub(f.now);
+                            Answer::Bytes(vec![0])
+                        }
+                        None => Answer::Bytes(b"\x01only a tool test's clock is set".to_vec()),
+                    };
+                    self.arrived.push((request, answer));
+                }
             }
         }
     }
 
     /// Waits until at least one answer has arrived: an error to end the run if nothing is
-    /// outstanding, the timeout passes or an interrupt comes first.
+    /// outstanding, the timeout passes or an interrupt comes first. On a fake clock, once every
+    /// outstanding request waits on the clock alone, the clock jumps to the soonest.
     fn wait(&mut self) -> Result<(), End> {
         loop {
-            while let Ok(a) = self.answers.try_recv() {
-                self.arrived.push(a);
+            while let Ok((request, answer)) = self.answers.try_recv() {
+                self.answered(request, answer);
             }
-            let now = Instant::now();
-            while let Some(&Reverse((at, request))) = self.timers.peek()
+            let now = self.now();
+            while let Some(&Reverse((at, request))) = self.timed.peek()
                 && at <= now
             {
-                self.timers.pop();
-                self.arrived.push((request, Answer::Bytes(vec![0])));
+                self.timed.pop();
+                let answer = self.timed_answers.remove(&request).unwrap_or(Answer::Failed);
+                self.arrived.push((request, answer));
             }
             if !self.arrived.is_empty() {
                 return Ok(());
@@ -620,19 +726,29 @@ impl Run<'_> {
             if let Some(why) = stop_reason(self.interrupt, self.deadline) {
                 return Err(why);
             }
+            // Quiescent: nothing outstanding but what the clock answers.
+            if let Some(fake) = &mut self.fake
+                && self.outstanding.len() == self.timed_answers.len()
+                && let Some(&Reverse((at, _))) = self.timed.peek()
+            {
+                fake.now = fake.now.max(at);
+                continue;
+            }
             let mut wait = WAKE;
-            if let Some(&Reverse((at, _))) = self.timers.peek() {
-                wait = wait.min(at.saturating_duration_since(now));
+            if self.fake.is_none()
+                && let Some(&Reverse((at, _))) = self.timed.peek()
+            {
+                wait = wait.min(at.saturating_sub(now));
             }
             if let Some(d) = self.deadline {
-                wait = wait.min(d.saturating_duration_since(now));
+                wait = wait.min(d.saturating_duration_since(Instant::now()));
             }
             match self.answers.recv_timeout(wait) {
-                Ok(a) => self.arrived.push(a),
+                Ok((request, answer)) => self.answered(request, answer),
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    // No worker is left to answer: only timers can.
-                    if self.timers.is_empty() {
+                    // No worker is left to answer: only the clock can.
+                    if self.timed.is_empty() {
                         return Err(End::Host("the host's workers stopped".into()));
                     }
                     std::thread::sleep(wait);

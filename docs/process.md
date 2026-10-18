@@ -514,6 +514,19 @@ round found that a console nobody reads could hold `print`, and so the run, past
 and Ctrl-C, and that a released blob's bytes left the budget while a write still held them;
 both are fixed with regressions.
 
+The second slice adds tool tests (`@test(tool)`, language.md §13.2), `std::tool::http`,
+`std::tool::run` and SHA-256 in std (`std::hash::sha256`); Claude (Opus 5.5) implemented it to the
+council's design. One outside Rust crate came in: [ureq](https://github.com/algesten/ureq) (MIT or
+Apache-2.0), a blocking HTTP client, which the tool host runs on threads of its own over
+[rustls](https://github.com/rustls/rustls), already in the build. It brings
+[webpki-roots](https://github.com/rustls/webpki-roots) (CDLA-Permissive-2.0), Mozilla's root
+certificates as data, and the small `http`, `httparse`, `ureq-proto` and `utf8-zero` crates (MIT or
+Apache-2.0). [rustix](https://github.com/bytecodealliance/rustix) (Apache-2.0 with the LLVM
+exception, Apache-2.0 or MIT), already in the build for cap-std, kills a program's process group
+without `unsafe`. All are used as libraries; no code was copied. SHA-256 follows FIPS 180-4, and
+its tests are NIST's published vectors (FIPS 180-4's examples and CAVP's short messages), as
+facts, not copied code.
+
 ## The references
 
 ### The rules
