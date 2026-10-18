@@ -82,7 +82,7 @@ The M4 Air has not been measured; its times are reported separately.
 | [Claude Code](https://claude.com/claude-code) (Anthropic), mostly Claude Opus 5.5 | Writes the code, tests and docs, on Ryan's MacBook Air and in cloud sessions |
 | [OpenAI Codex](https://openai.com/codex/) | Reviews performance across the codebase, implements optimizations and regression tests, and measures their effects in a cloud session |
 | Claude Opus 5.5, Sonnet 5.5 and Fable 5.1 | The authors in the blind authoring rounds that test thesis 1 (vision.md); Opus also in the first round |
-| [GPT-6.1-Sol and GPT-6-Astra](https://openai.com/) (OpenAI), as T3 Code child tasks | Since 2026-10-14, reviewers in a council on an implementation plan: each reads the brief and the checkout, returns findings, and rebuts the leader's answers; they don't edit |
+| [GPT-6.1-Sol and GPT-6-Astra](https://openai.com/) (OpenAI), as T3 Code child tasks or `codex exec` runs | Since 2026-10-14, reviewers in a council on an implementation plan: each reads the brief and the checkout, returns findings, and rebuts the leader's answers; they don't edit. Since 2026-10-18 also run read-only through the Codex CLI (`codex exec -s read-only`), on the plan for the two-repository split and on its pull requests |
 | Claude subagents with no context | Blind raters in the lookdev loop: they see only the before and after stills and the anchors |
 | Plan councils: Claude leads; OpenAI Codex GPT-6.1-Sol and GPT-6-Astra review | Since 2026-10-14, two Codex models review a measured plan independently, read-only, and then rebut the leader's answers. Claude decides, implements and verifies. First used for the faster check |
 | Claude projects (claude.ai) | Run several agent threads at once (lookdev items, fixes, rendering setup), with one coordinator |
@@ -484,6 +484,21 @@ the browser also receives the corresponding parity fixes.
 | Tools and engine helpers | 15 | Frozen-source proof, input hashing, server paths, gzip freshness, lock cleanup, admission, executable freshness, nearest cells, camera, clipmap invalidation and static release packaging |
 | Studio, RNG, float parsing and fight sounds | 6 | Invalid diagnostic samples, rounded unit draws, repeated exponent signs, lost tally cues and skipped blink arrivals |
 | Console and session services | 8 | Pending export identity, catalog decode errors, accepted export keys, cover paths, visible load errors, recovery slot selection, export acknowledgement and freed-world resume destinations |
+
+## Two-repository split, 2026-10-18
+
+Ryan decided to split the repository in two: `wrela-compiler` for the hosts, the language and the
+spec, and `wrela` for wrela code only, so that the project's tools have to be wrela programs and the
+toolchain grows what they need (vision.md, "Two repositories"). He chose the names, put the
+host-service bindings in std, ruled out a check in `wrela-compiler` that runs `wrela`, and gave
+Claude the whole move to do alone, merges and the split included. Claude (Opus 5.5) surveyed the
+coupling (a third of recent commits touched both sides; 20 of the Rust test files test engine, UI or
+game code), wrote the plan and ran it by a council: GPT-6.1-Sol and GPT-6-Astra, through the Codex
+CLI, read-only, two rounds. Ryan then let tools run the external programs named on their command
+line, so the deploy keeps Wrangler. The council's changes: an exact Binaryen in each toolchain
+release, tests for tools that touch files and the network, a vertical slice before the other ports,
+source links that name the right repository, and a release comparison that accepts only declared
+differences.
 
 ## The references
 
