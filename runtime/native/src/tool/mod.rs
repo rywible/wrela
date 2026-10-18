@@ -27,7 +27,7 @@
 //! work in progress gets a bounded grace), stops the clock thread that interrupts calls, and
 //! releases every blob, those of requests the tool never read first ([`Ended`] says what was
 //! left). A worker running a program kills its process group as it sees the end, and one
-//! waiting for an HTTP response stops waiting (the request's own thread ends by its deadline);
+//! waiting for an HTTP response shuts its connection down and joins the client's thread;
 //! then the directory the run's programs had is removed. No file work holds the blob table's
 //! lock, so a stuck worker can't hold up the release.
 //! A worker still running after the grace makes the end the host's failure (status 71), whatever
@@ -43,6 +43,7 @@ mod services;
 
 pub use blobs::BlobBudget;
 pub use caps::{Caps, Grants, Program, ProgramGrant};
+pub use run::GROUPS_ENV;
 
 use console::Console;
 use services::{Answer, Services, Task, Work};
@@ -67,8 +68,10 @@ const EPOCH: Duration = Duration::from_millis(10);
 /// How often the host's loop looks for an interrupt while it waits for answers.
 const WAKE: Duration = Duration::from_millis(20);
 
-/// The worker threads that carry out services.
+/// The worker threads that carry out files and blobs, and those that wait on the network and
+/// on programs: two pools, so that a long wait never holds up a file.
 const WORKERS: usize = 4;
+const LONG_WORKERS: usize = 4;
 
 /// How long, once the tool has ended, the host waits for work in progress to finish.
 const GRACE: Duration = Duration::from_secs(5);
@@ -99,24 +102,29 @@ pub struct Options {
     /// fire, in the order of their deadlines, as soon as the tool waits on nothing else, and
     /// `std::tool::testing` sets fakes. `None`: the system's clock, and no fakes.
     pub fake_clock: Option<(u64, u32)>,
+    /// A file the host appends each program's process group to as it starts, for a supervisor
+    /// that must kill them if this host can't (a tool test's, §13.2).
+    pub groups: Option<std::path::PathBuf>,
     /// What only tests change.
     #[doc(hidden)]
     pub testing: Testing,
 }
 
 /// A run's settings that only tests change: the workers' grace, a slow disk under each blob
-/// written to a file, and a clock thread that fails to start.
+/// written to a file (and a slow name service before each HTTP request), a clock thread that
+/// fails to start, and where the run's own directory is.
 #[doc(hidden)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Testing {
     pub grace: Duration,
     pub io_delay: Duration,
     pub fail_clock_thread: bool,
+    pub work_dir: Option<std::path::PathBuf>,
 }
 
 impl Default for Testing {
     fn default() -> Testing {
-        Testing { grace: GRACE, io_delay: Duration::ZERO, fail_clock_thread: false }
+        Testing { grace: GRACE, io_delay: Duration::ZERO, fail_clock_thread: false, work_dir: None }
     }
 }
 
@@ -133,6 +141,7 @@ impl Options {
             print: Arc::new(|line| println!("{line}")),
             entries: (EXPORT_TOOL_INIT.to_string(), EXPORT_TOOL.to_string()),
             fake_clock: None,
+            groups: None,
             testing: Testing::default(),
         }
     }
@@ -298,18 +307,23 @@ struct Pool {
 }
 
 impl Pool {
-    fn start(services: &Arc<Services>, done: &mpsc::Sender<(u32, Answer)>) -> Pool {
+    fn start(
+        services: &Arc<Services>,
+        done: &mpsc::Sender<(u32, Answer)>,
+        name: &str,
+        workers: usize,
+    ) -> Pool {
         let (jobs, queue) = mpsc::channel::<(u32, Task)>();
         let queue = Arc::new(Mutex::new(queue));
-        let alive = Arc::new((Mutex::new(WORKERS), Condvar::new()));
+        let alive = Arc::new((Mutex::new(workers), Condvar::new()));
         // The services' own: a worker waiting on a program or a response sees it too.
         let closing = services.closing.clone();
         let mut handles = Vec::new();
-        for i in 0..WORKERS {
+        for i in 0..workers {
             let (queue, running, closing) = (queue.clone(), alive.clone(), closing.clone());
             let (services, done) = (services.clone(), done.clone());
-            let spawned =
-                std::thread::Builder::new().name(format!("wrela-tool-{i}")).spawn(move || {
+            let spawned = std::thread::Builder::new().name(format!("wrela-tool-{name}-{i}")).spawn(
+                move || {
                     loop {
                         let job = queue.lock().map(|q| q.recv());
                         let Ok(Ok((request, task))) = job else { break };
@@ -320,6 +334,10 @@ impl Pool {
                         let answer = std::panic::catch_unwind(run).unwrap_or_else(|_| {
                             Answer::Bytes(b"\x01the host's service failed".to_vec())
                         });
+                        // A failed request's answer names no blob: those made for it go back.
+                        if matches!(&answer, Answer::Bytes(b) if b.first() == Some(&1)) {
+                            services.blobs().rollback(request);
+                        }
                         if done.send((request, answer)).is_err() {
                             break;
                         }
@@ -327,7 +345,8 @@ impl Pool {
                     let (count, wake) = &*running;
                     *count.lock().unwrap_or_else(std::sync::PoisonError::into_inner) -= 1;
                     wake.notify_all();
-                });
+                },
+            );
             match spawned {
                 Ok(h) => handles.push(h),
                 Err(_) => {
@@ -347,12 +366,18 @@ impl Pool {
         }
     }
 
-    /// Stops the workers: work not started is dropped, and work in progress has `grace` to
-    /// finish. How many are still running then (they're left to finish alone, and the run
-    /// doesn't end cleanly).
-    fn stop(mut self, grace: Duration) -> usize {
+    /// Tells the workers to stop: work not started is dropped, and an idle worker returns.
+    fn close(&mut self) {
         self.closing.store(true, Ordering::Release);
         self.jobs = None;
+    }
+
+    /// Stops the workers: work not started is dropped, and work in progress has until `until`
+    /// to finish. How many are still running then (they're left to finish alone, and the run
+    /// doesn't end cleanly).
+    fn stop(mut self, until: Instant) -> usize {
+        self.close();
+        let grace = until.saturating_duration_since(Instant::now());
         let (count, wake) = &*self.alive;
         let left = count.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let (left, _) = wake
@@ -365,6 +390,24 @@ impl Pool {
             }
         }
         left
+    }
+}
+
+/// The two pools of workers: files and blobs, and long waits (HTTP, programs).
+struct Pools {
+    files: Pool,
+    long: Pool,
+}
+
+impl Pools {
+    /// Stops both, their work in progress sharing one `grace`: how many workers are left.
+    fn stop(self, grace: Duration) -> usize {
+        let until = Instant::now() + grace;
+        let Pools { mut files, mut long } = self;
+        // Both are told first, so neither's work waits on the other's grace.
+        files.close();
+        long.close();
+        long.stop(until) + files.stop(until)
     }
 }
 
@@ -433,7 +476,9 @@ pub fn run(build: &ToolBuild, options: Options) -> Ended {
         Err(e) => return failed(format!("the tool engine: {e:#}")),
     };
     let start = start_bytes(&options.args, options.caps.secrets());
-    let Options { caps, blob_budget, interrupt, print, testing, entries, fake_clock, .. } = options;
+    let Options {
+        caps, blob_budget, interrupt, print, testing, entries, fake_clock, groups, ..
+    } = options;
     let blobs = Mutex::new(blobs::Blobs::new(blob_budget));
     let services = Arc::new(Services {
         caps,
@@ -443,14 +488,19 @@ pub fn run(build: &ToolBuild, options: Options) -> Ended {
         testing: fake_clock.is_some(),
         fakes: Mutex::new(HashMap::new()),
         work: std::sync::OnceLock::new(),
+        work_at: testing.work_dir.clone(),
+        groups,
     });
     let (done, answers) = mpsc::channel();
-    let pool = Pool::start(&services, &done);
+    let pools = Pools {
+        files: Pool::start(&services, &done, "files", WORKERS),
+        long: Pool::start(&services, &done, "long", LONG_WORKERS),
+    };
     drop(done);
     let (console, writer) = match Console::start(print) {
         Ok(c) => c,
         Err(why) => {
-            let workers_left = pool.stop(testing.grace);
+            let workers_left = pools.stop(testing.grace);
             return Ended { workers_left, ..failed(why) };
         }
     };
@@ -458,14 +508,14 @@ pub fn run(build: &ToolBuild, options: Options) -> Ended {
         Ok(t) => t,
         Err(why) => {
             // Before any Wasm runs: the workers already started stop with it.
-            let workers_left = pool.stop(testing.grace);
+            let workers_left = pools.stop(testing.grace);
             drop(console);
             let lines_dropped = writer.stop(testing.grace);
             return Ended { workers_left, lines_dropped, ..failed(why) };
         }
     };
     let mut run = Run {
-        pool: &pool,
+        pools: &pools,
         services: &services,
         answers: &answers,
         interrupt: &interrupt,
@@ -481,7 +531,7 @@ pub fn run(build: &ToolBuild, options: Options) -> Ended {
     // The store, and the console's sending end in it, go when `drive` returns.
     let mut end = run.drive(&engine, build, &entries, start, console);
     ticker.stop();
-    let workers_left = pool.stop(testing.grace);
+    let workers_left = pools.stop(testing.grace);
     let lines_dropped = writer.stop(testing.grace);
     // Its programs' files and `HOME`: no program runs now (each worker kills its own as the
     // tool ends), unless a worker is still past its grace.
@@ -510,7 +560,7 @@ struct Fake {
 
 /// A run in progress: what's outstanding, and where answers come from.
 struct Run<'a> {
-    pool: &'a Pool,
+    pools: &'a Pools,
     services: &'a Arc<Services>,
     answers: &'a mpsc::Receiver<(u32, Answer)>,
     interrupt: &'a Option<Arc<AtomicBool>>,
@@ -679,10 +729,11 @@ impl Run<'_> {
                     self.timed.push(Reverse((at, request)));
                     self.timed_answers.insert(request, Answer::Bytes(vec![0]));
                 }
-                Work::Worker(task) => self.pool.send(request, task),
+                Work::Worker(task) => self.pools.files.send(request, task),
+                Work::Long(task) => self.pools.long.send(request, task),
                 Work::Held(after, task) => {
                     self.due.insert(request, self.now() + after);
-                    self.pool.send(request, task);
+                    self.pools.long.send(request, task);
                 }
                 Work::Utc => self.arrived.push((request, self.utc())),
                 Work::SetUtc(seconds, nanos) => {

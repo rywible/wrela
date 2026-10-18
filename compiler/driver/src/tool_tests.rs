@@ -12,12 +12,20 @@
 //! the job ends, and fails if it panics or traps, if its budget runs out, or if the host fails.
 //! If the process itself is still running [`MARGIN`] past the budget, it's killed, and the test
 //! fails.
+//!
+//! **The supervisor owns every process group a test starts.** A test's programs (its fakes,
+//! and theirs) each lead a group of their own, which the test's host writes to a file of the
+//! test's (`Spec::groups`) as it starts each. When the host can't end them itself (its budget
+//! and the margin passed, it was stopped, it ended without saying how), the supervisor stops
+//! the host's group, then stops and kills every group in the file, then the host's. So does
+//! [`stop_all`], which `wrela test` calls on Ctrl-C.
 
 use crate::consts::Ran;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use wrela_diag::{Diagnostic, SourceMap, codes, has_errors};
 use wrela_lower::BuildData;
@@ -26,7 +34,7 @@ use wrela_sema::defs::Role;
 use wrela_sema::ty::FnId;
 
 /// How long past its budget a test's process may run, to start and to end, before it's killed.
-pub const MARGIN: Duration = Duration::from_secs(20);
+pub const MARGIN: Duration = Duration::from_secs(10);
 
 /// The fake clock's date when a tool test starts: 2026-01-01T00:00:00Z.
 pub const START_UTC: u64 = 1_767_225_600;
@@ -60,6 +68,8 @@ pub struct Spec {
     pub utc: u64,
     /// Where the process writes how the run ended ([`Ended`]).
     pub ended: PathBuf,
+    /// Where the test's host, and each tool program's, writes each program's process group.
+    pub groups: PathBuf,
 }
 
 /// How a tool test's run ended, as its process writes it.
@@ -198,6 +208,7 @@ fn one(
         run,
         utc: START_UTC,
         ended: own.join("ended.json"),
+        groups: own.join("groups.txt"),
     };
     let json = serde_json::to_vec(&spec).map_err(|e| format!("its spec: {e}"))?;
     std::fs::write(own.join("test.json"), json).map_err(|e| format!("its spec: {e}"))?;
@@ -210,26 +221,38 @@ fn one(
     command.stdin(Stdio::null()).stdout(stdout).stderr(stderr);
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut command, 0);
-    let mut child = command.spawn().map_err(|e| format!("can't start its process: {e}"))?;
+    let mut child = {
+        let mut running = RUNNING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if STOPPING.load(Ordering::Acquire) {
+            return Err("`wrela test` was interrupted".into());
+        }
+        let child = command.spawn().map_err(|e| format!("can't start its process: {e}"))?;
+        running.push((child.id() as i32, spec.groups.clone()));
+        child
+    };
+    let group = child.id() as i32;
     let bound = Duration::from_secs_f64(test.budget) + MARGIN;
     let started = Instant::now();
     let killed = loop {
         match child.try_wait() {
             Ok(Some(_)) => break false,
             Ok(None) if started.elapsed() > bound => {
-                kill_group(&mut child);
+                kill_tree(group, &spec.groups);
                 break true;
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(10)),
             Err(e) => {
-                kill_group(&mut child);
+                kill_tree(group, &spec.groups);
+                forget(group);
                 return Err(format!("waiting for its process: {e}"));
             }
         }
     };
+    let _ = child.wait();
     let lines: Vec<String> =
         std::fs::read_to_string(&printed).unwrap_or_default().lines().map(str::to_string).collect();
     if killed {
+        forget(group);
         return Ok((
             Ended {
                 passed: false,
@@ -242,6 +265,11 @@ fn one(
         ));
     }
     let ended = std::fs::read(&spec.ended).ok().and_then(|b| serde_json::from_slice(&b).ok());
+    // A host that ended without saying how didn't end its programs either.
+    if killed || ended.is_none() {
+        kill_tree(group, &spec.groups);
+    }
+    forget(group);
     let Some(ended) = ended else {
         let errors = std::fs::read_to_string(own.join("errors.txt")).unwrap_or_default();
         return Err(format!("its process ended without saying how the run did: {}", errors.trim()));
@@ -249,12 +277,59 @@ fn one(
     Ok((ended, lines))
 }
 
-/// Kills `child`'s process group, and reaps it.
-fn kill_group(child: &mut std::process::Child) {
-    #[cfg(unix)]
-    if let Some(pid) = rustix::process::Pid::from_raw(child.id() as i32) {
-        let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+/// The tool tests running: each host's process group, and its file of programs' groups.
+static RUNNING: Mutex<Vec<(i32, PathBuf)>> = Mutex::new(Vec::new());
+
+/// Set once [`stop_all`] has run: no test starts after it.
+static STOPPING: AtomicBool = AtomicBool::new(false);
+
+/// The test whose host leads `group` has ended.
+fn forget(group: i32) {
+    RUNNING.lock().unwrap_or_else(std::sync::PoisonError::into_inner).retain(|(g, _)| *g != group);
+}
+
+/// Ends every tool test running, with every process group each started, and starts no more:
+/// for `wrela test` on Ctrl-C.
+pub fn stop_all() {
+    STOPPING.store(true, Ordering::Release);
+    let running = RUNNING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    for (group, groups) in running.iter() {
+        kill_tree(*group, groups);
     }
-    let _ = child.kill();
-    let _ = child.wait();
+}
+
+/// Sends `signal` to process group `group`; one that's gone is no error.
+fn signal_group(group: i32, signal: rustix::process::Signal) {
+    if let Some(pid) = rustix::process::Pid::from_raw(group) {
+        let _ = rustix::process::kill_process_group(pid, signal);
+    }
+}
+
+/// Kills the test host's group `group` and every group in the file `groups`: the host is
+/// stopped first, so it starts nothing more, then each group in the file, read again until
+/// it's read no new one, and then all are killed.
+fn kill_tree(group: i32, groups: &Path) {
+    use rustix::process::Signal;
+    signal_group(group, Signal::STOP);
+    let mut stopped: Vec<i32> = Vec::new();
+    for _ in 0..8 {
+        let listed: Vec<i32> = std::fs::read_to_string(groups)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| l.trim().parse().ok())
+            .filter(|&g| g > 1)
+            .collect();
+        let new: Vec<i32> = listed.into_iter().filter(|g| !stopped.contains(g)).collect();
+        if new.is_empty() {
+            break;
+        }
+        for &g in &new {
+            signal_group(g, Signal::STOP);
+        }
+        stopped.extend(new);
+    }
+    for &g in &stopped {
+        signal_group(g, Signal::KILL);
+    }
+    signal_group(group, Signal::KILL);
 }

@@ -28,7 +28,7 @@ fn ran(dir: &std::path::Path) -> Vec<(String, bool, String)> {
 fn the_tool_tests_fixture_passes() {
     let dir = wrela_root().join("compiler/tests/tool_tests");
     let tests = ran(&dir);
-    assert_eq!(tests.len(), 8, "{tests:?}");
+    assert_eq!(tests.len(), 9, "{tests:?}");
     for (name, passed, message) in &tests {
         assert!(passed, "{name}: {message}");
     }
@@ -154,4 +154,146 @@ fn a_tool_test_is_a_job_of_no_parameters_in_a_package_with_a_tool_build() {
         &format!("{tool}@test(tool, budget: 2.5, net: [\"a.example\"])\n@job\nfn t() {{}}\n"),
     );
     assert!(errors.is_empty(), "{errors:?}");
+}
+
+/// A fake program that waits a minute on the system's clock, then exits.
+const SLEEPER: &str = r#"
+use std::job::{Job, Step}
+use std::tool::RUNNING
+use std::tool::time::after
+
+@job
+fn main() -> u32 {
+    var t = after(60.0)
+    while t.poll().is_none() { yield }
+    0
+}
+
+pub fn tool_init() -> Job<main> {
+    main.start()
+}
+
+pub fn tool(job: mut Job<main>) -> u32 {
+    match job.resume() {
+        Step::Yielded => RUNNING,
+        Step::Done(status) => status,
+    }
+}
+"#;
+
+/// A package whose one tool test, of budget `budget`, runs the fake program `sleeper` and waits
+/// for it: the package, and the sleeper's directory, which its process's command line names.
+fn sleeper_package(name: &str, budget: u32) -> (std::path::PathBuf, String) {
+    let main = format!(
+        r#"pub fn tool() -> u32 {{
+    0
+}}
+
+@test(tool, run: [("sleeper", "fakes/sleeper")], budget: {budget})
+@job
+fn waits_for_its_program() {{
+    var r = std::tool::run::run(std::tool::run::command("sleeper", "scratch"))
+    while r.poll().is_none() {{ yield }}
+}}
+"#
+    );
+    let dir = package(
+        name,
+        &[
+            ("wrela.toml", &manifest(&name.replace('-', "_"))),
+            ("main.wrela", &main),
+            ("fakes/sleeper/wrela.toml", &manifest("sleeper")),
+            ("fakes/sleeper/main.wrela", SLEEPER),
+        ],
+    );
+    let sleeper = dir.join("fakes/sleeper").canonicalize().expect("the sleeper");
+    (dir, sleeper.display().to_string())
+}
+
+/// The processes whose command lines have `marker`.
+fn running(marker: &str) -> Vec<String> {
+    let out = std::process::Command::new("pgrep").args(["-f", marker]).output().expect("pgrep");
+    String::from_utf8_lossy(&out.stdout).lines().map(str::to_string).collect()
+}
+
+/// Waits up to `bound` for `done`.
+fn within(bound: std::time::Duration, mut done: impl FnMut() -> bool) -> bool {
+    let started = std::time::Instant::now();
+    while started.elapsed() < bound {
+        if done() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    false
+}
+
+/// Waits for `child` up to `bound`: its exit code, or `None` (and it's killed) past it.
+fn exit_within(child: &mut std::process::Child, bound: std::time::Duration) -> Option<i32> {
+    let mut code = None;
+    let exited = within(bound, || match child.try_wait() {
+        Ok(Some(status)) => {
+            code = status.code();
+            true
+        }
+        _ => false,
+    });
+    if !exited {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    code
+}
+
+#[test]
+fn ctrl_c_ends_wrela_tests_tool_tests_and_every_program_they_started() {
+    let (dir, sleeper) = sleeper_package("tool-tests-ctrl-c", 60);
+    let mut child = wrela()
+        .arg("test")
+        .arg(&dir)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("run wrela test");
+    let started = within(std::time::Duration::from_secs(60), || !running(&sleeper).is_empty());
+    assert!(started, "the fake program started");
+    let sent = std::process::Command::new("kill")
+        .args(["-INT", &child.id().to_string()])
+        .status()
+        .expect("kill");
+    assert!(sent.success());
+    assert_eq!(exit_within(&mut child, std::time::Duration::from_secs(10)), Some(130));
+    let gone = within(std::time::Duration::from_secs(3), || running(&sleeper).is_empty());
+    assert!(gone, "the fake program, in a process group of its own, ended too");
+}
+
+#[test]
+fn a_test_host_that_cant_end_its_programs_has_them_ended_by_wrela_test() {
+    let (dir, sleeper) = sleeper_package("tool-tests-stopped", 3);
+    let mut child = wrela()
+        .arg("test")
+        .arg(&dir)
+        .arg("--json")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("run wrela test");
+    let started = within(std::time::Duration::from_secs(60), || !running(&sleeper).is_empty());
+    assert!(started, "the fake program started");
+    // The test's host is stopped, so it can't end its program at its budget.
+    let host = running("tool --test").into_iter().find(|pid| {
+        let parent = std::process::Command::new("ps").args(["-o", "ppid=", "-p", pid]).output();
+        parent.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == child.id().to_string())
+    });
+    let host = host.expect("the test's host");
+    let stopped = std::process::Command::new("kill").args(["-STOP", &host]).status().expect("kill");
+    assert!(stopped.success());
+    let bound = std::time::Duration::from_secs(3 + 10 + 20);
+    assert_eq!(exit_within(&mut child, bound), Some(1), "the test failed");
+    let mut out = String::new();
+    std::io::Read::read_to_string(child.stdout.as_mut().expect("its output"), &mut out)
+        .expect("read");
+    assert!(out.contains("was killed"), "{out}");
+    let gone = within(std::time::Duration::from_secs(3), || running(&sleeper).is_empty());
+    assert!(gone, "the fake program, in a process group of its own, ended too");
 }

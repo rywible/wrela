@@ -123,6 +123,34 @@ fn the_fake_clock_fires_a_timer_while_a_fake_site_waits() {
     assert(std::time::since(started) < 5.0, "and no real 10 s")
 }
 
+@test(tool, net: ["game.example"])
+@job
+fn a_fake_delay_past_the_deadline_fails_at_the_deadline() {
+    var page = files::write("scratch/sites/game.example/late.txt", utf8("late"))
+    while page.poll().is_none() { yield }
+    var slow = testing::fake("https://game.example/late.txt", Fake::Delay(20.0))
+    while slow.poll().is_none() { yield }
+    var request = http::get("https://game.example/late.txt")
+    request.timeout = 5.0
+    var f = http::fetch(request)
+    var got = f.poll()
+    while got.is_none() {
+        yield
+        got = f.poll()
+    }
+    let Some(polled) = take got else { panic("no answer") }
+    assert(http::read_response(take polled).is_err(), "a real site would have timed out")
+    var u = time::utc_now()
+    var now = u.poll()
+    while now.is_none() {
+        yield
+        now = u.poll()
+    }
+    let Some(p) = take now else { panic("no answer") }
+    let Ok(date) = time::read_utc(take p) else { panic("a date") }
+    assert(date.seconds == 1767225605, "it failed at 5 s of fake time, not 20")
+}
+
 @test(tool)
 @job
 fn fake_timers_fire_in_the_order_of_their_deadlines() {

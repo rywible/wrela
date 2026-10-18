@@ -14,12 +14,16 @@
 //! past the request's deadline; past [`MOST_OUTPUT`] bytes of output; and when the tool ends.
 //! The worker that runs it looks for the tool's end every few milliseconds, so the host's grace
 //! is never spent waiting for a program. Its input and output are files in the host's own
-//! directory for the run, so no pipe a program holds open can hold up the host.
+//! directory for the run, so no pipe a program holds open can hold up the host; they're
+//! removed however the request ends, and the output goes into the answer a chunk at a time,
+//! charged to the blob budget as it's read. The deadline counts from when the host took the
+//! request: one still queued at it isn't started. Each group is written to the supervisor's
+//! file (`Options::groups`), if there is one, as the program starts.
 //!
 //! A `tool:` program is a tool package, which `wrela tool` runs on the tool host in its process,
 //! as any program, with the request's working directory as its one write root (under the same
-//! name), its arguments, the secrets the request names, and the request's deadline as its
-//! `--timeout`.
+//! name), its arguments, the secrets the request names, what's left of the request's deadline
+//! as its `--timeout`, and the supervisor's file of groups ([`GROUPS_ENV`]).
 
 use super::caps::Program;
 use super::services::{Body, Data, Services};
@@ -37,6 +41,10 @@ pub(crate) const MOST_OUTPUT: u64 = 256 << 20;
 /// How often the worker looks at the program.
 const POLL: Duration = Duration::from_millis(10);
 
+/// The environment variable that names a tool child's file of process groups
+/// (`wrela tool` reads it), so a supervisor finds its programs' groups too.
+pub const GROUPS_ENV: &str = "WRELA_TOOL_GROUPS";
+
 /// How long the worker waits for a killed program's exit to be reported.
 const REAP: Duration = Duration::from_secs(1);
 
@@ -48,12 +56,14 @@ pub(crate) struct Run {
     env: Vec<(String, String)>,
     secrets: Vec<String>,
     cwd: String,
+    /// How long it may take, and the moment it must be done by: from when the host took it.
     deadline: Duration,
+    due: Instant,
 }
 
-/// Reads a request: the program, its arguments, its standard input, its variables, the secrets
-/// it's given, the write root it works in, and its deadline.
-pub(crate) fn parse(b: &mut Body) -> Result<Run, String> {
+/// Reads a request, which the host took at `entered`: the program, its arguments, its standard
+/// input, its variables, the secrets it's given, the write root it works in, and its deadline.
+pub(crate) fn parse(b: &mut Body, entered: Instant) -> Result<Run, String> {
     let program = b.str()?;
     let mut args = Vec::new();
     for _ in 0..b.u32()? {
@@ -79,7 +89,7 @@ pub(crate) fn parse(b: &mut Body) -> Result<Run, String> {
     if args.iter().chain(env.iter().map(|(_, v)| v)).any(|a| a.contains('\0')) {
         return Err("an argument or a variable holds a NUL byte".into());
     }
-    Ok(Run { program, args, stdin, env, secrets, cwd, deadline })
+    Ok(Run { program, args, stdin, env, secrets, cwd, deadline, due: entered + deadline })
 }
 
 /// Kills process group `group`, whatever is left of it: a group already gone is no error.
@@ -101,6 +111,30 @@ fn stop(child: &mut std::process::Child, group: i32) {
     }
 }
 
+/// A request's files in the run's directory, removed however the request ends.
+struct Files(Vec<std::path::PathBuf>);
+
+impl Drop for Files {
+    fn drop(&mut self) {
+        for path in &self.0 {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+/// Writes `group` to the supervisor's file of groups, if there is one: before the program can
+/// start anything, a supervisor that has to can kill it.
+fn record(s: &Services, group: i32) -> Result<(), String> {
+    let Some(path) = &s.groups else { return Ok(()) };
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|e| format!("the file of process groups: {e}"))?;
+    std::io::Write::write_all(&mut f, format!("{group}\n").as_bytes())
+        .map_err(|e| format!("the file of process groups: {e}"))
+}
+
 /// The size of the file at `path`, 0 if it can't be read.
 fn size(path: &Path) -> u64 {
     std::fs::metadata(path).map_or(0, |m| m.len())
@@ -118,12 +152,21 @@ pub(crate) fn run(s: &Services, request: u32, r: Run) -> Result<Vec<u8>, String>
         };
         secrets.push((name.clone(), value.to_string()));
     }
+    // Queued past its deadline (the workers were busy): it isn't started.
+    if Instant::now() >= r.due {
+        return Err(format!(
+            "`{}` didn't start within its deadline of {} s",
+            r.program,
+            r.deadline.as_secs_f64()
+        ));
+    }
     let dir = s.work_dir()?;
     let (input, output, errors) = (
         dir.join(format!("{request}.in")),
         dir.join(format!("{request}.out")),
         dir.join(format!("{request}.err")),
     );
+    let _files = Files(vec![input.clone(), output.clone(), errors.clone()]);
     let stdin = match &r.stdin {
         Data::Bytes(b) => std::fs::write(&input, b),
         Data::Blob(id) => {
@@ -146,7 +189,8 @@ pub(crate) fn run(s: &Services, request: u32, r: Run) -> Result<Vec<u8>, String>
             let mut c = Command::new(runner);
             c.arg("tool").arg(package);
             c.arg("--write").arg(format!("{}={}", r.cwd, cwd.display()));
-            c.arg("--timeout").arg(format!("{}", r.deadline.as_secs_f64()));
+            let left = r.due.saturating_duration_since(Instant::now());
+            c.arg("--timeout").arg(format!("{}", left.as_secs_f64().max(0.001)));
             for (name, _) in &secrets {
                 c.arg("--secret").arg(name);
             }
@@ -161,6 +205,10 @@ pub(crate) fn run(s: &Services, request: u32, r: Run) -> Result<Vec<u8>, String>
     for (name, value) in r.env.iter().chain(&secrets) {
         command.env(name, value);
     }
+    // A tool child writes its own programs' groups where this host writes its.
+    if let (Program::Tool { .. }, Some(groups)) = (&program, &s.groups) {
+        command.env(GROUPS_ENV, groups);
+    }
     command
         .current_dir(&cwd)
         .stdin(opened(&input, false)?)
@@ -170,7 +218,10 @@ pub(crate) fn run(s: &Services, request: u32, r: Run) -> Result<Vec<u8>, String>
     std::os::unix::process::CommandExt::process_group(&mut command, 0);
     let mut child = command.spawn().map_err(|e| format!("can't run `{}`: {e}", r.program))?;
     let group = child.id() as i32;
-    let started = Instant::now();
+    if let Err(why) = record(s, group) {
+        stop(&mut child, group);
+        return Err(why);
+    }
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => {
@@ -188,7 +239,7 @@ pub(crate) fn run(s: &Services, request: u32, r: Run) -> Result<Vec<u8>, String>
             stop(&mut child, group);
             return Err(format!("the tool ended before `{}` did", r.program));
         }
-        if started.elapsed() > r.deadline {
+        if Instant::now() >= r.due {
             stop(&mut child, group);
             return Err(format!(
                 "`{}` ran past its deadline of {} s, and the host killed its process group",
@@ -219,15 +270,10 @@ pub(crate) fn run(s: &Services, request: u32, r: Run) -> Result<Vec<u8>, String>
         }
     };
     let mut out = (code as u32).to_le_bytes().to_vec();
-    for path in [&output, &errors] {
-        let bytes = std::fs::read(path).map_err(|e| format!("the program's output: {e}"))?;
-        if bytes.len() as u64 > MOST_OUTPUT {
-            return Err(format!("`{}` wrote more than {MOST_OUTPUT} bytes of output", r.program));
-        }
-        s.put_data(request, &mut out, bytes)?;
-    }
-    for path in [&input, &output, &errors] {
-        let _ = std::fs::remove_file(path);
+    // Into the answer a chunk at a time, charged to the blob budget as they're read.
+    for (path, what) in [(&output, "its standard output"), (&errors, "its standard error")] {
+        let mut f = std::fs::File::open(path).map_err(|e| format!("the program's output: {e}"))?;
+        s.put_read(request, &mut out, &mut f, MOST_OUTPUT, &format!("`{}`'s {what}", r.program))?;
     }
     Ok(out)
 }

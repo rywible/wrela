@@ -120,6 +120,9 @@ pub fn run(args: &[String]) -> ExitCode {
     options.timeout = timeout;
     options.blob_budget = budget;
     options.interrupt = Some(interrupt);
+    // A supervisor (a tool test's) that must be able to kill this tool's programs names a file
+    // for their process groups.
+    options.groups = std::env::var_os(wrela_host::tool::GROUPS_ENV).map(std::path::PathBuf::from);
     let ended = wrela_host::tool::run(&ToolBuild::from_wasm(wasm.clone()), options);
     if !matches!(ended.end, wrela_host::tool::End::Exit(_)) {
         say(format!("error: {}", ended.end));
@@ -159,6 +162,7 @@ fn test(dir: &std::path::Path) -> ExitCode {
             options.timeout = Some(Duration::from_secs_f64(spec.budget));
             options.entries = (spec.init.clone(), spec.resume.clone());
             options.fake_clock = Some((spec.utc, 0));
+            options.groups = Some(spec.groups.clone());
             let ended = wrela_host::tool::run(&ToolBuild::from_wasm(wasm), options);
             let end = match &ended.end {
                 wrela_host::tool::End::Timeout => {

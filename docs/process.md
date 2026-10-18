@@ -525,7 +525,13 @@ Apache-2.0). [rustix](https://github.com/bytecodealliance/rustix) (Apache-2.0 wi
 exception, Apache-2.0 or MIT), already in the build for cap-std, kills a program's process group
 without `unsafe`. All are used as libraries; no code was copied. SHA-256 follows FIPS 180-4, and
 its tests are NIST's published vectors (FIPS 180-4's examples and CAVP's short messages), as
-facts, not copied code.
+facts, not copied code. The council's review of the slice found seven host faults: a `Host` header that
+bypassed the grant, failed requests that kept their blobs and files, deadlines counted from
+dispatch and long waits sharing the file workers, fakes looser than real sites, a supervisor
+that missed its tests' programs' process groups, HTTP requests abandoned rather than closed, and
+bodies read whole before the blob budget was charged. Each is fixed with a regression that fails
+without it; the HTTP client now uses a connection the host makes and can shut down, written
+against ureq's transport interface.
 
 ## The references
 
