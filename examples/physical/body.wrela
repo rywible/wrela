@@ -1,16 +1,20 @@
-// The simulated body, and the stick that moves it: the body (`data/humanoid.wab`), the motion
-// library (`data/mm.wmm`), how the lab drove the body (`data/play.wpl`) and the policy it trained
-// (`data/policy.wnn`), all exported by the motion lab; and the sim's tick, which steps the
-// physics half a control step at a time.
+// The body, and the stick that moves it: the body (`data/humanoid.wab`), the motion library
+// (`data/mm.wmm`), how the lab drove the body (`data/play.wpl`) and the policy it trained
+// (`data/policy.wnn`), all exported by the motion lab; and the sim's tick, half a control step at
+// a time. The body is drawn as the motion matcher plays it (kinematic: the capture, chosen and
+// blended to the stick, its feet held where they stand); a shove hands it to the simulated body,
+// which the policy keeps on its feet, for a moment, then back. K swaps to the simulated body for
+// good (and back).
 //
 // The body is the lab's: z up, facing -y at a yaw of 0, +x its left. The rig's world is y up and
 // faces +z, so a point (x, y, z) of the body's is (x, z, -y) in the rig's (`rig_of`).
 
-use engine::articulated::{Model, Poses, Push, State, kinematics}
-use engine::matching::{Library, Stick}
+use engine::articulated::{MAX_QPOS, Model, Poses, Push, State, kinematics}
+use engine::ground::{Ground, on_ground, step as ground_step}
+use engine::matching::{Library, Matcher, Stick, frame, start as matcher_start, step as matcher_step}
 use engine::player::{Controls, PAD_TURN, TURN_RATE, control, dead_zone, wish}
 use engine::policy::Policy
-use engine::quatd::qrot
+use engine::quatd::{atan2_64, qrot, wrap}
 use engine::run::{Asks, TickInput}
 use engine::sim::{SimState, Tick}
 use engine::tracking::{Settings, Tracked, Tracker}
@@ -30,16 +34,28 @@ pub const TRACKER: Tracker = Tracker::on(
 )
 pub const POLICY: Policy = Policy::of(embed("data/policy.wnn"))
 
-/// A frame the body starts on: the idle clip, standing on both feet.
-pub const START: u32 = 13795
+/// The frame the body starts on: where the library stands still on both feet.
+pub const START: u32 = TRACKER.lib.idle
 
 /// A shove (P, the pad's B): its force on the ribcage (N) and how long it lasts (ticks).
 pub const SHOVE: f64 = 260.0
 pub const SHOVE_TICKS: u32 = 12
 const RIBCAGE: u32 = 3
 
-/// The stick's size for a walk and a run (the library's fastest is a full stick).
-pub const WALKING: f64 = 0.55
+/// A shove's reaction: the simulated body takes over from the kinematic one for this long (ticks),
+/// then hands back, the drawn pose blending from it over `BACK` ticks.
+pub const REACT: u32 = 60
+pub const BACK: u32 = 18
+const FLAT: Ground = Ground { foot: [0.0; 2], foot_v: [0.0; 2], pelvis: 0.0, pelvis_v: 0.0 }
+
+/// A fall: the body lies, let go, this long (ticks), then stands again, its drawn pose blending
+/// from how it lay over `RISE` ticks; its motors keep `LIMP` of their stiffness while it lies.
+pub const LIE: u32 = 45
+pub const RISE: u32 = 36
+pub const LIMP: f64 = 0.1
+
+/// The stick's size for a walk (1.4 m/s) and a run (the library's fastest, a full stick).
+pub const WALKING: f64 = 1.4 / TRACKER.lib.fastest
 pub const RUNNING: f64 = 1.0
 
 /// The sim: the body, the player's controls, whether strafing is held on the keys and on the pad,
@@ -61,6 +77,22 @@ pub struct Sim: Copy + Eq + StateHash + Serialize + SimState {
     /// A shove going on, and the ticks it has left.
     pub push: Push = Push { body: 0, force: vec3d(0.0, 0.0, 0.0), torque: vec3d(0.0, 0.0, 0.0) },
     pub push_left: u32 = 0,
+    /// After a fall: the ticks it still lies; then the ticks its drawn pose still blends from how
+    /// it lay (`lay`) to its own.
+    pub lying: u32 = 0,
+    pub rising: u32 = 0,
+    pub rise: u32 = RISE,
+    pub lay: [f64; MAX_QPOS] = [0.0; MAX_QPOS],
+    /// Whether the body is kinematic (the matcher plays it), whether it waits to be handed to the
+    /// simulation, and when it is simulated for a shove, the ticks until it is kinematic again;
+    /// the matcher, its ground layer, the frame it shows and the frame after it (the stick held).
+    pub kinematic: bool = true,
+    pub handing: bool = false,
+    pub reacting: u32 = 0,
+    pub mm: Matcher,
+    pub g: Ground = FLAT,
+    pub now: [f64; MAX_QPOS] = [0.0; MAX_QPOS],
+    pub next: [f64; MAX_QPOS] = [0.0; MAX_QPOS],
 }
 
 impl Asks for Sim {
@@ -82,7 +114,13 @@ impl Asks for Sim {
 /// looking the same way.
 pub fn spawn(controls: Controls) -> Sim {
     let still = Stick { dir: vec2d(0.0, 0.0), strafe: false, strafe_yaw: 0.0 }
-    Sim { body: TRACKER.start(START, vec2d(0.0, 0.0), 0.0, still), controls }
+    var s = Sim {
+        body: TRACKER.start(START, vec2d(0.0, 0.0), 0.0, still),
+        controls,
+        mm: matcher_start(TRACKER.lib, START, vec2d(0.0, 0.0), 0.0),
+    }
+    to_kinematic(mut s, s.body.mm, s.body.ground)
+    s
 }
 
 /// What the controls ask of the body: the way to go on the floor (the camera's way: the controls'
@@ -110,6 +148,9 @@ pub fn tick(s: mut Sim, input: TickInput<Sim>) {
                 }
                 if key == Key::P && !repeat {
                     shove(mut s)
+                }
+                if key == Key::K && !repeat {
+                    swap(mut s, stick_of(s.controls, s.strafe_key || s.strafe_pad))
                 }
             },
             Event::KeyUp { key, .. } => {
@@ -140,35 +181,156 @@ pub fn tick(s: mut Sim, input: TickInput<Sim>) {
     step(mut s, stick_of(s.controls, s.strafe_key || s.strafe_pad))
 }
 
-/// The body half a control step on: on the first half, the policy acts and the physics runs half
-/// the substeps; on the second, the rest, then the matcher steps on with `stick`. A body that
-/// falls starts again where it is; one still standing that has gone astray from its reference
-/// takes the reference with it.
+/// The body half a control step on, as it is now: kinematic, or simulated (`simulate`); a
+/// shove's simulated moment over, kinematic again where the simulated body stands.
 @deterministic
 pub fn step(s: mut Sim, stick: Stick) {
+    if s.rising > 0 {
+        s.rising -= 1
+    }
+    if s.kinematic {
+        play(mut s, stick)
+        if s.handing && s.half == 1 {
+            to_simulated(mut s, stick)
+        }
+        return
+    }
+    simulate(mut s, stick)
+    if s.reacting > 1 && s.lying == 0 {
+        s.reacting -= 1
+    } else if s.reacting == 1 && s.lying == 0 && s.half == 0 {
+        // Handed back at a control step's start, as the matcher steps.
+        s.lay = s.body.body.qpos
+        s.rise = BACK
+        s.rising = BACK
+        to_kinematic(mut s, s.body.mm, s.body.ground)
+    }
+}
+
+/// The kinematic body half a control step on: on the first half the matcher steps on with
+/// `stick` (on terrain, its ground layer with it) and shows its frame; on the second, the frame
+/// halfway to the next (the matcher's frames are a control step apart).
+fn play(s: mut Sim, stick: Stick) {
+    if s.half == 0 {
+        s.mm = matcher_step(TRACKER.lib, s.mm, stick, search: true)
+        if SETTINGS.terrain {
+            s.g = ground_step(TRACKER.lib, s.mm, s.g, TRACKER.boxes, SETTINGS.dt)
+        }
+        s.now = s.next_of(s.mm, s.g, stick, ahead: false)
+        s.next = s.next_of(s.mm, s.g, stick, ahead: true)
+        s.half = 1
+    } else {
+        s.half = 0
+    }
+    s.ticks += 1
+}
+
+impl Sim {
+    /// The frame the matcher `mm` shows (on terrain, on the ground), or with `ahead` the frame
+    /// after it, the stick held and no search.
+    fn next_of(self, mm: Matcher, g: Ground, stick: Stick, ahead: bool) -> [f64; MAX_QPOS] {
+        var m = mm
+        var gg = g
+        if ahead {
+            m = matcher_step(TRACKER.lib, m, stick, search: false)
+            if SETTINGS.terrain {
+                gg = ground_step(TRACKER.lib, m, gg, TRACKER.boxes, SETTINGS.dt)
+            }
+        }
+        if SETTINGS.terrain { on_ground(TRACKER.lib, m, gg) } else { frame(TRACKER.lib, m) }
+    }
+}
+
+/// The body kinematic, the matcher `mm` (on its ground layer `g`) playing it from now.
+fn to_kinematic(s: mut Sim, mm: Matcher, g: Ground) {
+    let still = Stick { dir: vec2d(0.0, 0.0), strafe: false, strafe_yaw: 0.0 }
+    s.kinematic = true
+    s.handing = false
+    s.reacting = 0
+    s.push_left = 0
+    s.mm = mm
+    s.g = g
+    s.now = s.next_of(mm, g, still, ahead: false)
+    s.next = s.now
+    s.half = 0
+}
+
+/// The kinematic body handed to the simulation as it is drawn: now if it shows its frame, or
+/// else when it next does (a tick on).
+fn hand_over(s: mut Sim, stick: Stick) {
+    if s.half == 1 {
+        to_simulated(mut s, stick)
+    } else {
+        s.handing = true
+    }
+}
+
+/// The body simulated from the kinematic one's frame now (drawn on a control step's first half),
+/// moving toward the next; its matcher and ground layer go on.
+fn to_simulated(s: mut Sim, stick: Stick) {
+    s.body = TRACKER.take_over(s.mm, s.g, s.now, s.next, stick)
+    s.kinematic = false
+    s.handing = false
+    s.half = 0
+}
+
+/// K: kinematic to simulated for good, or back.
+fn swap(s: mut Sim, stick: Stick) {
+    if s.kinematic {
+        s.reacting = 0
+        hand_over(mut s, stick)
+    } else if s.lying == 0 {
+        to_kinematic(mut s, s.body.mm, s.body.ground)
+    }
+}
+
+/// The simulated body half a control step on: on the first half, the policy acts and the physics
+/// runs half the substeps; on the second, the rest, then the matcher steps on with `stick`. A body
+/// that falls lies, then starts again where it is; one still standing that has gone astray from
+/// its reference takes the reference with it.
+fn simulate(s: mut Sim, stick: Stick) {
     let n = TRACKER.set.substeps
     var pushes: Vec<Push> = Vec::new()
     if s.push_left > 0 {
         pushes.push(s.push)
         s.push_left -= 1
     }
+    if s.lying > 0 {
+        // Down: lying let go, then standing again where it lies.
+        TRACKER.limp(mut s.body, n / 2, LIMP)
+        s.lying -= 1
+        if !TRACKER.sane(s.body) {
+            s.lying = 0
+            restart(mut s, s.home, s.home_yaw, stick)
+        } else if s.lying == 0 {
+            let (at, yaw) = TRACKER.root(s.body)
+            s.lay = s.body.body.qpos
+            s.rise = RISE
+            s.rising = RISE
+            restart(mut s, at, yaw, stick)
+        }
+        s.ticks += 1
+        return
+    }
     if s.half == 0 {
         TRACKER.act(POLICY, mut s.body)
         TRACKER.physics(mut s.body, n / 2, pushes)
         s.half = 1
         if !TRACKER.sane(s.body) {
+            s.falls += 1
             restart(mut s, s.home, s.home_yaw, stick)
         }
     } else {
         TRACKER.physics(mut s.body, n - n / 2, pushes)
         s.half = 0
         if !TRACKER.sane(s.body) {
+            s.falls += 1
             restart(mut s, s.home, s.home_yaw, stick)
         } else {
             TRACKER.control(mut s.body, stick)
             if TRACKER.down(s.body) {
-                let (at, yaw) = TRACKER.root(s.body)
-                restart(mut s, at, yaw, stick)
+                s.falls += 1
+                s.lying = LIE
             } else {
                 if TRACKER.astray(s.body) {
                     s.strays += 1
@@ -183,16 +345,21 @@ pub fn step(s: mut Sim, stick: Stick) {
     s.ticks += 1
 }
 
-/// A fall: the body standing again at `at`, facing `yaw`, on the next control step's first half.
+/// The body standing again at `at`, facing `yaw`, on the next control step's first half (after a
+/// fall, or when its physics fails).
 fn restart(s: mut Sim, at: vec2d, yaw: f64, stick: Stick) {
-    s.falls += 1
     s.body = TRACKER.start(START, at, yaw, stick)
     s.half = 0
     s.push_left = 0
 }
 
-/// A shove from behind the camera, along the floor where it looks.
+/// A shove from behind the camera, along the floor where it looks: a kinematic body is handed to
+/// the simulated one for `REACT` ticks to take it.
 fn shove(s: mut Sim) {
+    if s.kinematic {
+        s.reacting = REACT
+        hand_over(mut s, stick_of(s.controls, s.strafe_key || s.strafe_pad))
+    }
     let force = vec2d(f64(sin(s.controls.yaw)), -f64(cos(s.controls.yaw))) * SHOVE
     s.push = Push {
         body: RIBCAGE,
@@ -258,6 +425,41 @@ pub fn pose(t: Tracked) -> Placed {
     placed(kinematics(MODEL, mut q))
 }
 
+/// The kinematic body's pose now: its frame, or halfway to the next on a control step's second
+/// half.
+fn kinematic_pose(s: Sim) -> Placed {
+    var q = s.now
+    let now = placed(kinematics(MODEL, mut q))
+    if s.half == 1 {
+        return now
+    }
+    var q2 = s.next
+    blend(now, placed(kinematics(MODEL, mut q2)), 0.5)
+}
+
+/// `a` where `t` is 0, `b` where it's 1: each joint's place mixed and its turn the short way.
+fn blend(a: Placed, b: Placed, t: f32) -> Placed {
+    var out = a
+    for j in 0..JOINTS {
+        out.at[j] = mix(a.at[j], b.at[j], vec3(t))
+        out.rot[j] = a.rot[j].nlerp(b.rot[j], t)
+    }
+    out
+}
+
+/// How the sim's body is drawn: as it is (kinematic or simulated), or while it rises after a fall
+/// or comes back from a shove, how it was (`lay`) blending into how it is.
+pub fn shown(s: Sim) -> Placed {
+    let now = if s.kinematic { kinematic_pose(s) } else { pose(s.body) }
+    if s.rising == 0 {
+        return now
+    }
+    var q = s.lay
+    let lay = placed(kinematics(MODEL, mut q))
+    let k = 1.0 - f32(s.rising) / f32(s.rise)
+    blend(lay, now, k * k * (3.0 - 2.0 * k))
+}
+
 // ---- tests ---------------------------------------------------------------------------------------
 
 /// A stick held toward `way` (the body's floor: x, y) at `size`, for `ticks` ticks.
@@ -296,12 +498,12 @@ fn the_body_walks_turns_runs_and_stops() {
     )
     hold(mut s, vec2d(0.0, -1.0), 0.0, 60)
     hold(mut s, vec2d(0.0, -1.0), WALKING, 240)
-    let (walked, _) = TRACKER.root(s.body)
+    let (walked, _) = where_now(s)
     hold(mut s, vec2d(-1.0, 0.0), WALKING, 180)
     hold(mut s, vec2d(-1.0, 0.0), RUNNING, 180)
-    let (ran, yaw) = TRACKER.root(s.body)
+    let (ran, yaw) = where_now(s)
     hold(mut s, vec2d(0.0, -1.0), 0.0, 120)
-    let (stopped, _) = TRACKER.root(s.body)
+    let (stopped, _) = where_now(s)
     std::io::print(
         f"falls {s.falls}, astray {s.strays}; walked to {walked.x} {walked.y}; ran to {ran.x} {ran.y} facing {yaw}; stopped at {stopped.x} {stopped.y}",
     )
@@ -311,4 +513,271 @@ fn the_body_walks_turns_runs_and_stops() {
     )
     assert(walked.y < -3.0, "the body walked the way it was asked")
     assert(ran.x < walked.x - 4.0, "the body ran to its right")
+}
+
+/// The body's state as the evaluation reads it: where it stands and which way it faces (the
+/// kinematic body's as drawn: on a control step's second half, halfway to its next frame).
+fn where_now(s: Sim) -> (vec2d, f64) {
+    if !s.kinematic {
+        return TRACKER.root(s.body)
+    }
+    let (a, ya) = root_of(s.now)
+    if s.half == 1 {
+        return (a, ya)
+    }
+    let (b, yb) = root_of(s.next)
+    ((a + b) * 0.5, ya + 0.5 * wrap(yb - ya))
+}
+
+/// Where a pose's pelvis stands along the floor and which way it faces (as `Tracker::root`).
+fn root_of(q: [f64; MAX_QPOS]) -> (vec2d, f64) {
+    let p = vec4d(q[3], q[4], q[5], q[6])
+    let f = qrot(p, vec3d(0.0, -1.0, 0.0))
+    (vec2d(q[0], q[1]), atan2_64(f.x, -f.y))
+}
+
+/// A response must hold this long (ticks: 0.2 s) to count; the body's velocity is its pelvis's
+/// along the floor averaged over as long, centred.
+const SPAN: u32 = 12
+
+/// Where the body stood and which way it faced, each tick from now, the stick held toward `way`
+/// at `size` for `ticks` ticks (the first entry now).
+fn trace(s: mut Sim, way: vec2d, size: f64, ticks: u32) -> (Vec<vec2d>, Vec<f64>) {
+    let stick = Stick { dir: way * size, strafe: false, strafe_yaw: 0.0 }
+    var at: Vec<vec2d> = Vec::new()
+    var face: Vec<f64> = Vec::new()
+    let (p0, y0) = where_now(s)
+    at.push(p0)
+    face.push(y0)
+    for _ in 0..ticks {
+        step(mut s, stick)
+        let (p, y) = where_now(s)
+        at.push(p)
+        face.push(y)
+    }
+    (at, face)
+}
+
+/// The body's velocity along the floor at tick `k` of a trace, averaged over `SPAN` ticks around it.
+fn velocity(at: Vec<vec2d>, k: u32) -> vec2d {
+    let n = u32(at.len())
+    let lo = if k >= SPAN / 2 { k - SPAN / 2 } else { 0 }
+    let hi = if k + SPAN / 2 < n { k + SPAN / 2 } else { n - 1 }
+    (at[hi] - at[lo]) * (60.0 / f64(hi - lo))
+}
+
+/// The time (s) from which `ok` (a sample a tick) holds for `SPAN` ticks: `SPAN + 1` samples in a
+/// row; -1 if it never does.
+fn sustained(ok: Vec<bool>) -> f64 {
+    var run: u32 = 0
+    for k in 0..u32(ok.len()) {
+        run = if ok[k] { run + 1 } else { 0 }
+        if run == SPAN + 1 {
+            return f64(k - SPAN) / 60.0
+        }
+    }
+    -1.0
+}
+
+/// The way the body faces when it faces along `way` (as `Tracker::root` gives it).
+fn yaw_along(way: vec2d) -> f64 {
+    atan2_64(way.x, -way.y)
+}
+
+/// The angle (rad) between two ways along the floor.
+fn apart(u: vec2d, v: vec2d) -> f64 {
+    abs(atan2_64(u.x * v.y - u.y * v.x, dot(u, v)))
+}
+
+/// How long (s) until the body goes `share` of `goal` m/s along `way` (within 15° of it) and keeps
+/// going so, the stick held that way at `size`.
+fn time_to_speed(s: mut Sim, way: vec2d, size: f64, goal: f64, share: f64, most: u32) -> f64 {
+    let (at, _) = trace(mut s, way, size, most)
+    var ok: Vec<bool> = Vec::new()
+    for k in 0..u32(at.len()) {
+        let v = velocity(at, k)
+        ok.push(dot(v, way) >= share * goal && apart(v, way) < 0.26)
+    }
+    sustained(ok)
+}
+
+/// How long (s) until the body faces along `way` and goes that way (both within 15°) at 80% of
+/// `goal` m/s, and keeps on so, the stick held that way at `size`: a turn or a reversal done.
+fn time_to_turn(s: mut Sim, way: vec2d, size: f64, goal: f64, most: u32) -> f64 {
+    let (at, face) = trace(mut s, way, size, most)
+    let yaw = yaw_along(way)
+    var ok: Vec<bool> = Vec::new()
+    for k in 0..u32(at.len()) {
+        let v = velocity(at, k)
+        ok.push(
+            abs(wrap(face[k] - yaw)) < 0.26 && apart(v, way) < 0.26 && dot(v, way) >= 0.8 * goal,
+        )
+    }
+    sustained(ok)
+}
+
+/// How far (m) the body goes once the stick is let go before it stands (under 0.1 m/s, and stays).
+fn stopping(s: mut Sim, most: u32) -> f64 {
+    let (at, _) = trace(mut s, vec2d(0.0, -1.0), 0.0, most)
+    var ok: Vec<bool> = Vec::new()
+    for k in 0..u32(at.len()) {
+        ok.push(length(velocity(at, k)) < 0.1)
+    }
+    let t = sustained(ok)
+    if t < 0.0 {
+        return 99.0
+    }
+    // The way it went, not where it ended: a body that comes back has still gone.
+    var went = 0.0
+    for k in 1..u32(t * 60.0 + 0.5) + 1 {
+        went += length(at[k] - at[k - 1])
+    }
+    went
+}
+
+/// How long (s) until the body answers the stick: its pelvis going 0.15 m/s along `way` (over two
+/// ticks: no look ahead) and keeping on so.
+fn onset(s: mut Sim, way: vec2d, size: f64, most: u32) -> f64 {
+    let (at, _) = trace(mut s, way, size, most)
+    var ok: Vec<bool> = Vec::new()
+    ok.push(false)
+    ok.push(false)
+    for k in 2..u32(at.len()) {
+        ok.push(dot(at[k] - at[k - 2], way) * 30.0 >= 0.15)
+    }
+    sustained(ok)
+}
+
+/// The movement measured, each response counted only once it holds 0.2 s (`SPAN`): from standing,
+/// a walk's first answer and its full speed (90%); a walk's stop (how far it carries on); a 90°
+/// turn and a reversal at a walk (facing and going the new way, both within 15°, at 80% speed);
+/// a run's start (90% of the fastest), its reversal and its stop; none of it falling or astray.
+/// The bounds are the targets this movement is held to (a walk stops within a step, as a person
+/// does: 0.6 m).
+@test
+@fuel(2 ** 40)
+fn the_movement_measures_up() {
+    var s = spawn(
+        Controls {
+            forward: false,
+            back: false,
+            left: false,
+            right: false,
+            turn_left: false,
+            turn_right: false,
+            run_held: false,
+            walk_on: false,
+            run_on: false,
+            yaw: 0.0,
+            pitch: 0.0,
+            dragging: false,
+            pointer: vec2(0.0),
+            typing: false,
+            digits: 0,
+            travel: 0,
+            glide: 0,
+        },
+    )
+    let fwd = vec2d(0.0, -1.0)
+    let right = vec2d(-1.0, 0.0)
+    let walk = WALKING * TRACKER.lib.fastest
+    let run = RUNNING * TRACKER.lib.fastest
+    hold(mut s, fwd, 0.0, 60)
+    var probe = s
+    let answer = onset(mut probe, fwd, WALKING, 60)
+    let walking = time_to_speed(mut s, fwd, WALKING, walk, 0.9, 120)
+    let walk_stop = stopping(mut s, 120)
+    hold(mut s, fwd, WALKING, 120)
+    let turn = time_to_turn(mut s, right, WALKING, walk, 120)
+    let reverse = time_to_turn(mut s, right * -1.0, WALKING, walk, 150)
+    hold(mut s, fwd, 0.0, 90)
+    let running = time_to_speed(mut s, fwd, RUNNING, run, 0.9, 180)
+    hold(mut s, fwd, RUNNING, 60)
+    let run_reverse = time_to_turn(mut s, fwd * -1.0, RUNNING, run, 180)
+    hold(mut s, fwd * -1.0, RUNNING, 60)
+    let run_stop = stopping(mut s, 150)
+    std::io::print(
+        f"walk ({walk} m/s): answers in {answer} s, at speed in {walking} s, stops in {walk_stop} m; 90° turn {turn} s, reversal {reverse} s; run ({run} m/s): at speed in {running} s, reversal {run_reverse} s, stops in {run_stop} m; falls {s.falls}, astray {s.strays}",
+    )
+    assert(
+        s.falls == 0 && s.strays == 0,
+        f"the body fell {s.falls} times and went astray {s.strays}",
+    )
+    assert(answer > 0.0 && answer <= 0.15, f"a walk answers in {answer} s")
+    assert(walking > 0.0 && walking <= 0.8, f"a walk is at speed in {walking} s")
+    assert(walk_stop <= 0.6, f"a walk's stop carries on {walk_stop} m")
+    assert(
+        turn > 0.0 && turn <= 0.8 && reverse > 0.0 && reverse <= 1.1,
+        f"a walk turns in {turn} s and reverses in {reverse} s",
+    )
+    assert(running > 0.0 && running <= 1.5, f"a run is at speed in {running} s")
+    assert(
+        run_reverse > 0.0 && run_reverse <= 1.5 && run_stop <= 1.2,
+        f"a run reverses in {run_reverse} s and stops in {run_stop} m",
+    )
+}
+
+/// A shove while walking: the simulated body takes it, keeps its feet, and hands back to the
+/// kinematic one, which walks on the way the stick asks.
+@test
+@fuel(2 ** 40)
+fn a_shove_is_taken_and_handed_back() {
+    var s = spawn(
+        Controls {
+            forward: false,
+            back: false,
+            left: false,
+            right: false,
+            turn_left: false,
+            turn_right: false,
+            run_held: false,
+            walk_on: false,
+            run_on: false,
+            yaw: 0.0,
+            pitch: 0.0,
+            dragging: false,
+            pointer: vec2(0.0),
+            typing: false,
+            digits: 0,
+            travel: 0,
+            glide: 0,
+        },
+    )
+    let fwd = vec2d(0.0, -1.0)
+    hold(mut s, fwd, 0.0, 30)
+    hold(mut s, fwd, WALKING, 90)
+    // Shoved halfway between the matcher's frames: handed over a tick on, as the body unshoved
+    // (`twin`) is drawn then.
+    hold(mut s, fwd, WALKING, s.half)
+    var twin = s
+    shove(mut s)
+    hold(mut s, fwd, WALKING, 1)
+    hold(mut twin, fwd, WALKING, 1)
+    let taken = !s.kinematic && s.reacting == REACT
+    let (took, drawn) = (shown(s), shown(twin))
+    var jump = 0.0
+    for j in 0..JOINTS {
+        jump = max(jump, f64(length(took.at[j] - drawn.at[j])))
+    }
+    hold(mut s, fwd, WALKING, REACT - 2)
+    let held = !s.kinematic
+    hold(mut s, fwd, WALKING, 3)
+    let back = s.kinematic
+    let (before, _) = where_now(s)
+    hold(mut s, fwd, WALKING, 60)
+    let (after, _) = where_now(s)
+    std::io::print(
+        f"falls {s.falls}, astray {s.strays}; jump at the shove {jump} m; kinematic again: {s.kinematic}; walked on {dot(after - before, fwd)} m",
+    )
+    assert(taken, "a shove hands the body to the simulation")
+    assert(
+        jump < 1.0e-3,
+        f"the simulated body takes over where the drawn one is, not {jump} m away",
+    )
+    assert(held && back, "the simulated body takes the shove for REACT ticks, then hands it back")
+    assert(
+        s.falls == 0 && s.kinematic,
+        f"the body fell {s.falls} times; kinematic again: {s.kinematic}",
+    )
+    assert(dot(after - before, fwd) > 1.0, "after the shove the body walks on the stick's way")
 }

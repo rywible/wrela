@@ -22,7 +22,7 @@ use collide::Box
 use ground::{Ground, height, on_ground, stand, step as ground_step}
 use matching::{Library, Matcher, Stick, frame, peek, rebase, start, step}
 use policy::Policy
-use quatd::{atan2_64, cos64, qconj, qexp, qlog, qmat, qmul, sin64}
+use quatd::{atan2_64, cos64, qconj, qexp, qlog, qmul, sin64}
 use sim::SimState
 use std::hash::StateHash
 use std::serialize::Serialize
@@ -270,7 +270,39 @@ impl Tracker {
             action: [0.0; MAX_MOTORS],
             ground: g,
             supports: [0.0; MAX_WINDOW],
-            last_support: 0.0,
+            last_support: g.pelvis,
+        }
+        self.advance(mut t, stick)
+        t
+    }
+
+    /// The body taking over from a matcher that plays it (a game's kinematic body): posed as
+    /// `now` (the matcher `mm`'s frame as shown, on the ground layer `g`) and moving toward
+    /// `after` (the frame a control step on); the matcher, its offsets and its feet's holds kept,
+    /// and the ground layer go on with `stick`.
+    pub fn take_over(
+        self,
+        mm: Matcher,
+        g: Ground,
+        now: [f64; MAX_QPOS],
+        after: [f64; MAX_QPOS],
+        stick: Stick,
+    ) -> Tracked {
+        var body = State::rest(self.m)
+        body.qpos = now
+        body.qvel = self.velocity_between(now, now, after, self.set.dt)
+        let _ = kinematics(self.m, mut body.qpos)
+        var t = Tracked {
+            body,
+            mm,
+            stick,
+            last: now,
+            window: [[0.0; MAX_QPOS]; MAX_WINDOW],
+            after: [0.0; MAX_QPOS],
+            action: [0.0; MAX_MOTORS],
+            ground: g,
+            supports: [0.0; MAX_WINDOW],
+            last_support: g.pelvis,
         }
         self.advance(mut t, stick)
         t
@@ -330,6 +362,25 @@ impl Tracker {
         let vel = self.velocity_between(t.last, t.window[0], t.after, 2.0 * self.set.dt)
         let (q, v) = self.targets(t.window[0], vel, t.action)
         let _ = control_step(self.m, mut t.body, q, v, self.set.kp, self.set.kd, substeps, pushes)
+    }
+
+    /// The body let go: `substeps` substeps with its motors holding only `share` of their stiffness
+    /// toward the pose it's in, still (a body that fell, settling on the ground).
+    pub fn limp(self, t: mut Tracked, substeps: u32, share: f64) {
+        var kp: Vec<f64> = Vec::new()
+        for k in self.set.kp {
+            kp.push(k * share)
+        }
+        let _ = control_step(
+            self.m,
+            mut t.body,
+            t.body.qpos,
+            [0.0; MAX_DOFS],
+            kp,
+            self.set.kd,
+            substeps,
+            [],
+        )
     }
 
     /// A whole control step with `action` (clipped) and `pushes` on the body: the physics, then
@@ -404,8 +455,9 @@ impl Tracker {
     }
 
     /// The reference moved along the floor to where the body is (the target's pelvis over the
-    /// body's), the feet's holds with it: for a body still standing that has gone astray, which
-    /// then follows the stick from where it is.
+    /// body's), the feet's holds with it (on terrain, the ground layer standing again where they
+    /// are): for a body still standing that has gone astray, which then follows the stick from
+    /// where it is.
     pub fn catch_up(self, t: mut Tracked) {
         let p = self.pelvis(t)
         let d = vec2d(p.x - t.last[0], p.y - t.last[1])
@@ -415,20 +467,30 @@ impl Tracker {
         }
         t.last[0] += d.x
         t.last[1] += d.y
-        self.look_ahead(mut t)
+        if self.set.terrain {
+            // The frame shown rises or falls with the pelvis's support (no jump in its velocity).
+            let g = stand(self.boxes, t.mm)
+            t.last[2] += g.pelvis - t.ground.pelvis
+            t.ground = g
+        }
+        self.window_of(mut t)
     }
 
-    /// The matcher on a frame with `stick`, and the window the body sees then.
+    /// The matcher on a frame with `stick` (on terrain, the ground layer with it), and the window
+    /// the body sees then.
     fn advance(self, t: mut Tracked, stick: Stick) {
         t.mm = step(self.lib, t.mm, stick, search: true)
         t.stick = stick
-        self.look_ahead(mut t)
+        if self.set.terrain {
+            t.ground = ground_step(self.lib, t.mm, t.ground, self.boxes, self.set.dt)
+        }
+        self.window_of(mut t)
     }
 
     /// The window the body sees from the matcher now: its frame and the frames it would show
-    /// after it with the stick held (on terrain: the ground layer a frame on first, and each frame
-    /// on the ground, with its support height).
-    fn look_ahead(self, t: mut Tracked) {
+    /// after it with the stick held (on terrain, each on the ground, with its support height). It
+    /// moves nothing on: the matcher and the ground layer stay where they are.
+    fn window_of(self, t: mut Tracked) {
         let stick = t.stick
         var most = 0
         for p in self.set.peek {
@@ -444,7 +506,6 @@ impl Tracker {
             t.after = ahead[0]
             return
         }
-        t.ground = ground_step(self.lib, t.mm, t.ground, self.boxes, self.set.dt)
         var ahead: Vec<[f64; MAX_QPOS]> = Vec::new()
         var heights: Vec<f64> = Vec::new()
         var s = t.mm
@@ -614,100 +675,4 @@ fn quat_of_mat(c: [vec3d; 3]) -> vec4d {
         q = vec4d((c[0].y - c[1].x) / s, (c[2].x + c[0].z) / s, (c[2].y + c[1].z) / s, 0.25 * s)
     }
     q / sqrt(dot(q, q))
-}
-
-// ---- tests -----------------------------------------------------------------------------------------------
-
-use golden::{Fixture, apart}
-
-fn read_stick(fx: mut Fixture) -> Stick {
-    let dir = vec2d(fx.f(), fx.f())
-    let strafe = fx.f() != 0.0
-    Stick { dir, strafe, strafe_yaw: fx.f() }
-}
-
-/// The tracked body agrees with the lab's (`play.Play`, in f64 on the same library) through a
-/// start and six control steps with random actions (past the clip among them), sticks that walk,
-/// turn, strafe and stop, and a shove on the ribcage: what the policy sees at each, and the body's
-/// state.
-@test
-fn a_tracked_body_agrees_with_the_lab() {
-    let m = Model::of(embed("fixtures/humanoid.wab"))
-    let lib = Library::of(embed("fixtures/matching_small.wmm"), m)
-    let set = Settings::of(embed("fixtures/play.wpl"))
-    var fx = Fixture::of(embed("fixtures/tracking_steps.wfx"))
-    let f0 = u32(fx.f())
-    let yaw = fx.f()
-    let s0 = read_stick(mut fx)
-    let size = u32(fx.f())
-    let tr = Tracker::of(m.clone(), take lib, take set)
-    assert(tr.observation_size() == size, f"the observation is {size} long")
-    var t = tr.start(f0, vec2d(0.0, 0.0), yaw, s0)
-    var worst = apart(tr.observe(t), fx.many(size))
-    let steps = u32(fx.f())
-    for _ in 0..steps {
-        var action = [0.0; MAX_MOTORS]
-        for u in 0..m.nu {
-            action[u] = fx.f()
-        }
-        let s = read_stick(mut fx)
-        let body = u32(fx.f())
-        let force = vec3d(fx.f(), fx.f(), fx.f())
-        let push = Push { body, force, torque: vec3d(0.0, 0.0, 0.0) }
-        if dot(force, force) > 0.0 {
-            tr.drive(mut t, action, s, [push])
-        } else {
-            tr.drive(mut t, action, s, [])
-        }
-        worst = max(worst, apart(t.body.qpos, fx.many(m.nq)))
-        worst = max(worst, apart(t.body.qvel, fx.many(m.nv)))
-        worst = max(worst, apart(tr.observe(t), fx.many(size)))
-    }
-    std::io::print(f"the tracked body: {steps} control steps, worst {worst} from the lab")
-    assert(worst < 1.0e-12, f"the tracked body is {worst} from the lab")
-}
-
-/// On stairs the tracked body agrees with the lab's (`play.Play(terrain=True)`, in f64): the
-/// body standing on the first stair with its feet on a box, driven six control steps up them with
-/// random actions; what the policy sees at each (its heights over the support, its height scan)
-/// and the body's state (its physics touching the boxes).
-@test
-fn a_tracked_body_on_stairs_agrees_with_the_lab() {
-    let m = Model::of(embed("fixtures/humanoid_terrain.wab"))
-    let lib = Library::of(embed("fixtures/matching_small.wmm"), m)
-    let set = Settings::of(embed("fixtures/play_terrain.wpl"))
-    var fx = Fixture::of(embed("fixtures/tracking_terrain.wfx"))
-    let count = u32(fx.f())
-    var boxes: Vec<Box> = Vec::new()
-    for _ in 0..count {
-        let size = vec3d(fx.f(), fx.f(), fx.f())
-        let at = vec3d(fx.f(), fx.f(), fx.f())
-        let mat = qmat(vec4d(fx.f(), fx.f(), fx.f(), fx.f()))
-        boxes.push(Box { at, mat, size })
-    }
-    let f0 = u32(fx.f())
-    let yaw = fx.f()
-    let s0 = read_stick(mut fx)
-    let size = u32(fx.f())
-    let tr = Tracker::on(m.clone(), take lib, take set, take boxes)
-    assert(tr.observation_size() == size, f"the observation is {size} long")
-    var t = tr.start(f0, vec2d(0.0, 0.0), yaw, s0)
-    var worst = apart(tr.observe(t), fx.many(size))
-    let steps = u32(fx.f())
-    for _ in 0..steps {
-        var action = [0.0; MAX_MOTORS]
-        for u in 0..m.nu {
-            action[u] = fx.f()
-        }
-        let s = read_stick(mut fx)
-        tr.drive(mut t, action, s, [])
-        worst = max(worst, apart(t.body.qpos, fx.many(m.nq)))
-        worst = max(worst, apart(t.body.qvel, fx.many(m.nv)))
-        worst = max(worst, apart(tr.observe(t), fx.many(size)))
-    }
-    std::io::print(
-        f"the tracked body on stairs: {steps} control steps, the support at {t.supports[0]} m, worst {worst} from the lab",
-    )
-    assert(t.supports[0] > 0.2, "the body climbed")
-    assert(worst < 1.0e-10, f"the tracked body on stairs is {worst} from the lab")
 }

@@ -1,13 +1,15 @@
-// Physical motion, played: the mannequin as a simulated body (`body`) that the stick moves, on a
-// ground chequered a metre a square. The camera follows it from behind, where the look turns.
+// Movement, played: the mannequin moved by the stick as the motion matcher plays the capture
+// (`body`), on a ground chequered a metre a square; a shove hands it to the simulated body for a
+// moment. The camera follows it from behind, where the look turns.
 //
 //     W A S D, the left stick      move, the camera's way (Shift or R to run)
 //     L held, L1 held              strafe: face where the camera looks
 //     drag, the arrows, Q E        turn the look; Z X tip it
 //     the right stick              turn the look
 //     P, the pad's B               shove it from behind the camera
+//     K                            the simulated body for good, or back
 
-use body::{Sim, pose, spawn, tick}
+use body::{Sim, shown, spawn, tick}
 use engine::creature::MAX_BONES
 use engine::look::{CreatureLook, Mesh as Tolerance}
 use engine::player::{Controls, NONE}
@@ -37,7 +39,7 @@ pub struct Shown: Copy + Plain {
 @deterministic
 fn present(s: Sim) -> Shown {
     Shown {
-        pose: pose(s.body),
+        pose: shown(s),
         yaw: s.controls.yaw,
         pitch: s.controls.pitch,
         falls: s.falls,
@@ -114,7 +116,7 @@ const OVER: f32 = 0.35
 pub fn init() -> Scene {
     let latest = run(spawn(still()), hz: 60, step: tick, present: present)
     print(
-        "physical motion: W A S D or the stick to move (Shift or R to run); hold L or L1 to strafe; drag or the right stick to look",
+        "physical motion: W A S D or the stick to move (Shift or R to run); hold L or L1 to strafe; drag or the right stick to look; P to shove; K for the simulated body",
     )
     Scene {
         snaps: Snapshots::new(take latest, hz: 60),

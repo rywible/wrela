@@ -537,7 +537,7 @@ the browser also receives the corresponding parity fixes.
 | Catmull-Rom splines (Edwin Catmull and Raphael Rom, 1974); two-bone inverse kinematics by the law of cosines | Standard methods; no code taken | The humanoid's motion layer (`examples/humanoid/motion.wrela`): poses sampled smoothly round a cycle, and legs reaching held feet; its arms reaching the sword (`reach.wrela`). |
 | Extended position-based dynamics for rigid bodies: Matthias Müller, Miles Macklin, Nuttapong Chentanez, Stefan Jeschke and Tae-Yong Kim, "Detailed Rigid Body Simulation with Extended Position Based Dynamics", *Computer Graphics Forum* 39(8) (2020) | A published method; no code taken | `engine::rigid`: bodies stepped in substeps, joints, drives and contacts moving them back into place. Its turn drive solves the three axes together through both bodies' inertia (the paper's scalar step turns a long thin body about the wrong axis); its drives take a most torque, so a heavy sword lags its muscles and swings on; thin fast capsules are kept from passing through each other within a substep. |
 | Minimum jerk: Tamar Flash and Neville Hogan, "The coordination of arm movements: an experimentally confirmed mathematical model", *Journal of Neuroscience* 5(7) (1985) | A published model; no code taken | `examples/humanoid/blade.wrela`: a cut's stroke and its wind-up ease as a person's reach does (10u³ − 15u⁴ + 6u⁵). |
-| The ACCAD Open Motion Project (The Ohio State University) | [accad.osu.edu](https://accad.osu.edu/research/motion-lab/mocap-system-and-data), CC BY 3.0; credit: "Open Motion Project by ACCAD/The Ohio State University" | Measured only, outside the repo: its Male 2 crosses, hooks and uppercuts show the pelvis turning about two-thirds as far as the chest, about 35 ms before it, and the weight going 10 to 20 cm toward the strike. `examples/humanoid/blade.wrela` takes those numbers for a cut (`PELVIS_SHARE`, `PELVIS_LEAD`, `trunk`). No data of it is in the repo. |
+| The ACCAD Open Motion Project (The Ohio State University) | [accad.osu.edu](https://accad.osu.edu/research/motion-lab/mocap-system-and-data), CC BY 3.0; credit: "Open Motion Project by ACCAD/The Ohio State University" | Measured only, outside the repo: its Male 2 crosses, hooks and uppercuts show the pelvis turning about two-thirds as far as the chest, about 35 ms before it, and the weight going 10 to 20 cm toward the strike. `examples/humanoid/blade.wrela` takes those numbers for a cut (`PELVIS_SHARE`, `PELVIS_LEAD`, `trunk`). The physical body (`examples/physical`): the walks and runs of Male 1, Male 2 and Female 1 (starts, stops, turns of 45° to 180°, runs, backward and side steps; 114 clips) retargeted to the motion lab's body from their joints' places, their feet set on the floor, and each mirrored, are in the motion-matching library (`data/mm.wmm`) with 100STYLE's Neutral clips, and its policy was trained to follow them; both are adaptations. |
 
 ### Style influences (named, not traced)
 
@@ -2528,20 +2528,57 @@ its own, and the training runs on rented GPUs (RunPod, an RTX 4090 at $0.89 an h
 - A humanoid body (20 rigid parts, 51 degrees of freedom, 45 PD motors) with the proportions of
   100STYLE's skeleton; its feet touch the ground through spheres and a toe capsule.
 - Motion capture: 100STYLE (CC BY 4.0, see the table) retargeted to the body by a two-bone fit per
-  limb.
+  limb. Its fastest motion is about 1.6 m/s and it has no quick reversals, so ACCAD's walks and
+  runs (CC BY 3.0, see the table) were added: retargeted from their joints' places (ACCAD's rest
+  pose isn't 100STYLE's), each actor's trunk and head set to 100STYLE's posture, the feet set on
+  the floor by leg IK, and each clip mirrored. Measuring tools found what was wrong at each step
+  (elbows bent backwards, toes curled, feet in the floor, a figure leaning back with its head up,
+  standing on the start of a sprint, the captures' calibration T-poses being played); each has a
+  test. ACCAD's runs last a second or two, too short to search, so each actor's best gait cycle
+  was looped into a ten-second run, and each stance's foot held still where it stood.
 - Motion matching that turns a stick into a reference motion; a policy trained to keep the
   simulated body on that reference through its motors' targets, with the reference a frame ahead.
+- Terrain as boxes (steps, stairs, ramps, platforms), the reference brought onto it the way games
+  place feet, and a height scan the policy sees.
+- How it was improved: a diagnosis of where trained bodies fail (by the time since the last command
+  change, the turn, the speed, strafing; falls apart from drift), then short runs each warm from
+  the same policy with one thing changed, judged on the same terms, before a long run of the
+  winners. Codex's reviews proposed most of the candidates. A later review found that the
+  evaluation ended a body once it drifted from its reference while the game catches the reference
+  up and goes on; judged as the game plays, bodies fell about ten times as often. Training then
+  caught up as the game does, and turned the stick hard more often. A body that learnt that
+  drifting costs nothing drifted (the reference always came back), so each catch-up, and drifting
+  toward one, was given a cost.
+
+The physical body walked without falling but lagged and wobbled, and it would take many more
+paid runs to answer the stick as a game must. Ryan then decided the movement is kinematic first:
+the motion matcher plays the capture directly (as games do), with IK on top, and physics comes in
+for reactions (a shove hands the body to the simulated one for a moment, then back). The matcher
+was then tuned by a measure of its own (`feel.py`: each response over many trials, held 0.2 s):
+stops and idles searched only when the stick is let go, starts that move at once, the springs and
+the root's pull halved, transitions only when clearly better. Faster springs made held feet slide:
+a held ankle was pinned where it landed, but in the capture a planted foot rolls from heel to toe,
+so the pinned ankle swept the toe along the floor. A held foot now moves as the capture's foot does
+each frame (it rolls, it doesn't slide with the root): on the clean 100STYLE capture, planted feet
+slipped 3 cm/s in a start and stop, not 12.5 (the capture itself: 0.8). Two Codex reviews (GPT-6-Astra
+and GPT-6.1-Sol) found the shove's hand-over jumping from the drawn pose, stops that lost
+their strafing restriction, searches with no frame allowed jumping to frame 0, and a shove that
+outlived a mode switch; each was fixed with a regression test.
 
 In the repo:
 
 - `engine::articulated`: MuJoCo's physics for such a body, as MJX computes it, in f64. A golden test
   checks every stage of a step against the lab's f64 oracle (MJX's method in NumPy) to rounding.
+- `engine::collide`: MJX's contacts of spheres and capsules with boxes, checked against MJX.
 - `engine::quatd`: f64 sine, cosine, arctangent and the exponential (fdlibm's algorithms and
   coefficients, its notice kept in the file).
 - `engine::policy`: the trained network, read in place from exported bytes.
-- `engine::matching` and `engine::tracking`: the lab's matcher and control loop, golden-tested
-  against the lab to rounding.
-- `examples/physical`: the body played with a keyboard or a pad at 60 Hz ticks.
+- `engine::matching`, `engine::ground` and `engine::tracking`: the lab's matcher, its terrain layer
+  and its control loop, golden-tested against the lab to rounding (on stairs too).
+- `examples/physical`: the body played with a keyboard or a pad at 60 Hz ticks, and tests that
+  measure its movement (how fast it starts, stops and turns; that it doesn't fall). The golden
+  tests of the engine modules above are here too (`golden.wrela`), with the fixtures the lab wrote
+  for them (`fixtures/`): the engine holds only source.
 
 | Source | Rights | Use |
 |---|---|---|

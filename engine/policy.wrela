@@ -101,36 +101,3 @@ impl Policy {
         }
     }
 }
-
-// ---- tests ---------------------------------------------------------------------------------------
-
-/// A tiny network exported by the motion lab (`export.py fixture`: 7 inputs, ELU layers of 6 and 5,
-/// 3 outputs, random weights and normalisation) gives the outputs JAX gave for the same inputs; the
-/// last input has one far out, past the clip.
-@test
-fn a_policy_gives_what_it_was_trained_to() {
-    let p = Policy::of(embed("fixtures/policy_tiny.wnn"))
-    assert(p.inputs() == 7 && p.outputs() == 3 && p.layers() == 3, "the tiny network's shape")
-    let xs = [
-        [-3.16545165, -1.17240293, 1.44583617, -0.71566082, 2.87327611, -0.599406387, 0.0727786952],
-        [4.63746255, 1.63531657, -1.51568621, -0.548516924, 1.6215754, 5.8052641, -0.808860982],
-        [-0.730676037, 3.0069408, -2.65937983, -0.875160697, 2.6476169, 1.74105005, 0.27455011],
-        [2.01031306, -8.48448692, 40.0, -2.87893428, -5.00585953, 0.829337279, 2.10163466],
-    ]
-    let ys = [
-        [-23.1043453, 3.24480987, 10.741643],
-        [9.63805771, 68.3625488, 30.272089],
-        [18.5803471, 36.6049728, 6.09038353],
-        [-38.3488731, 23.333416, 12.3596497],
-    ]
-    var worst = 0.0
-    for k in 0..4 {
-        var out = [0.0; 3]
-        p.eval(xs[k], mut out)
-        for j in 0..3 {
-            worst = max(worst, abs(out[j] - ys[k][j]) / max(1.0, abs(ys[k][j])))
-        }
-    }
-    std::io::print(f"the tiny network's worst relative error from JAX: {worst}")
-    assert(worst < 1.0e-5, f"the tiny network is {worst} from JAX")
-}

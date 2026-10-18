@@ -1,0 +1,461 @@
+// Golden tests: the engine's ports of the motion lab agree with what the lab computed, read from
+// fixtures it wrote (`fixtures/`: by its `wrela_fixtures.py`, the tiny policy by `export.py
+// fixture`). `engine::articulated`'s steps and `engine::collide`'s contacts agree with its f64
+// oracle of MJX; `engine::matching`'s matcher, `engine::ground`'s terrain layer and
+// `engine::tracking`'s control loop with its own code run in f64; `engine::policy`'s network with
+// JAX. They are here, with the body they drive, since the engine holds only source and a package's
+// embedded bytes are its own.
+//
+// A fixture is "WFX1", the u32 version 1, then little-endian f64s, each fixture's layout told
+// where it's written.
+
+use engine::articulated::{MAX_DOFS, MAX_QPOS, Model, Push, State, control_step, step as body_step}
+use engine::collide::{Box, Touch, capsule_box, sphere_box}
+use engine::ground::{on_ground, segment, stand, step as ground_step}
+use engine::matching::{Library, Stick, frame, peek, rebase, start, step as match_step}
+use engine::policy::Policy
+use engine::quatd::{normalized3, qmat}
+use engine::tracking::{MAX_MOTORS, Settings, Tracker}
+
+/// A fixture's f64s, read in order.
+struct Fixture {
+    bytes: Bytes,
+    at: u32,
+}
+
+impl Fixture {
+    fn of(bytes: Bytes) -> Fixture {
+        assert(
+            bytes.u32_le(0) == 0x31584657 && bytes.u32_le(4) == 1,
+            "a fixture starts WFX1, version 1",
+        )
+        Fixture { bytes, at: 0 }
+    }
+
+    fn f(mut self) -> f64 {
+        let x = self.bytes.f64_le(8 + 8 * self.at)
+        self.at += 1
+        x
+    }
+
+    fn many(mut self, n: u32) -> Vec<f64> {
+        var out: Vec<f64> = Vec::new()
+        for _ in 0..n {
+            out.push(self.f())
+        }
+        out
+    }
+}
+
+/// The largest difference between `got` and `want`, over the largest entry of `want` (at least 1).
+fn apart(got: [f64], want: Vec<f64>) -> f64 {
+    var big = 1.0
+    var worst = 0.0
+    for i in 0..want.len() {
+        big = max(big, abs(want[i]))
+        worst = max(worst, abs(got[i] - want[i]))
+    }
+    worst / big
+}
+
+// ---- engine::articulated ------------------------------------------------------------------------
+
+/// Six steps of the lab's humanoid from random states (joints past their limits, the body in the
+/// floor, warm starts and none) agree with the float64 oracle (`mjx_ref`, which agrees with MJX in
+/// float64) at every stage: the bodies' places, the mass matrix, the bias forces, the smooth
+/// acceleration, the contacts, the active rows' D and reference accelerations, the solver's
+/// acceleration, and the state after.
+@test
+fn a_step_agrees_with_mjx_stage_by_stage() {
+    let m = Model::of(embed("fixtures/humanoid.wab"))
+    var fx = Fixture::of(embed("fixtures/humanoid_steps.wfx"))
+    let cases = u32(fx.f())
+    var worst = 0.0
+    var rows_seen = 0
+    for case in 0..cases {
+        var s = State::rest(m)
+        for i in 0..m.nq {
+            s.qpos[i] = fx.f()
+        }
+        for i in 0..m.nv {
+            s.qvel[i] = fx.f()
+        }
+        for i in 0..m.nv {
+            s.warm[i] = fx.f()
+        }
+        let ctrl = fx.many(m.nu)
+        let st = body_step(m, mut s, ctrl, [])
+        var xpos: Vec<f64> = Vec::new()
+        for b in 0..m.nbody {
+            xpos.push(st.poses.xpos[b].x)
+            xpos.push(st.poses.xpos[b].y)
+            xpos.push(st.poses.xpos[b].z)
+        }
+        let checks = [
+            apart(xpos, fx.many(3 * m.nbody)),
+            apart(st.mass, fx.many(m.nv * m.nv)),
+            apart(st.bias, fx.many(m.nv)),
+            apart(st.qacc_smooth, fx.many(m.nv)),
+        ]
+        var dist: Vec<f64> = Vec::new()
+        for c in 0..st.contacts.len() {
+            dist.push(st.contacts[c].dist)
+        }
+        let contacts = apart(dist, fx.many(st.contacts.len()))
+        let n = u32(fx.f())
+        assert(n == st.rows.n, f"step {case}: {st.rows.n} active rows, the oracle has {n}")
+        rows_seen += n
+        let d = apart(st.rows.d, fx.many(n))
+        let aref = apart(st.rows.aref, fx.many(n))
+        let qacc = apart(st.qacc, fx.many(m.nv))
+        let qpos = apart(s.qpos, fx.many(m.nq))
+        let qvel = apart(s.qvel, fx.many(m.nv))
+        let warm = apart(s.warm, fx.many(m.nv))
+        let here = max(
+            max(max(checks[0], checks[1]), max(checks[2], checks[3])),
+            max(max(contacts, d), max(max(aref, qacc), max(qpos, max(qvel, warm)))),
+        )
+        std::io::print(
+            f"step {case}: {n} rows; places {checks[0]}, mass {checks[1]}, bias {checks[2]}, smooth {checks[3]}, contacts {contacts}, D {d}, aref {aref}, qacc {qacc}, after {max(qpos, max(qvel, warm))}",
+        )
+        worst = max(worst, here)
+    }
+    assert(rows_seen > 100, "the fixtures exercise limits and contacts")
+    assert(worst < 1.0e-9, f"a step is {worst} from MJX's")
+}
+
+/// Three control steps of the lab's PD (8 substeps each, toward a walk's next frames, from standing
+/// on its frame) agree with the oracle's `sim.Body.physics`.
+@test
+fn a_control_step_agrees_with_the_lab() {
+    let m = Model::of(embed("fixtures/humanoid.wab"))
+    var fx = Fixture::of(embed("fixtures/humanoid_control.wfx"))
+    let cases = u32(fx.f())
+    let kp = fx.many(m.njnt)
+    let kd = fx.f()
+    var worst = 0.0
+    for case in 0..cases {
+        var s = State::rest(m)
+        for i in 0..m.nq {
+            s.qpos[i] = fx.f()
+        }
+        for i in 0..m.nv {
+            s.qvel[i] = fx.f()
+        }
+        for i in 0..m.nv {
+            s.warm[i] = fx.f()
+        }
+        var target = [0.0; MAX_QPOS]
+        var target_vel = [0.0; MAX_DOFS]
+        for i in 0..m.nq {
+            target[i] = fx.f()
+        }
+        for i in 0..m.nv {
+            target_vel[i] = fx.f()
+        }
+        let _ = control_step(m, mut s, target, target_vel, kp, kd, 8, [])
+        let here = max(
+            apart(s.qpos, fx.many(m.nq)),
+            max(apart(s.qvel, fx.many(m.nv)), apart(s.warm, fx.many(m.nv))),
+        )
+        std::io::print(f"control step {case}: {here} from the lab's")
+        worst = max(worst, here)
+    }
+    assert(worst < 1.0e-9, f"a control step is {worst} from the lab's")
+}
+
+// ---- engine::collide ----------------------------------------------------------------------------
+
+/// MJX's `make_frame`, as `engine::articulated` has it: the normal and two tangents.
+fn frame_of(n0: vec3d) -> [vec3d; 3] {
+    let (a, _) = normalized3(n0)
+    var b = if -0.5 < a.y && a.y < 0.5 { vec3d(0.0, 1.0, 0.0) } else { vec3d(0.0, 0.0, 1.0) }
+    b = b - a * dot(a, b)
+    let (bn, _) = normalized3(b)
+    [a, bn, cross(a, bn)]
+}
+
+fn touch_numbers(t: Touch) -> Vec<f64> {
+    let f = frame_of(t.normal)
+    var out: Vec<f64> = Vec::new()
+    out.push(t.dist)
+    for v in [t.pos, f[0], f[1], f[2]] {
+        out.push(v.x)
+        out.push(v.y)
+        out.push(v.z)
+    }
+    out
+}
+
+/// A sphere's and a capsule's contacts with boxes agree with MJX's (in f64) for forty random boxes
+/// and places on and past their faces, edges and corners.
+@test
+fn box_contacts_agree_with_mjx() {
+    var fx = Fixture::of(embed("fixtures/boxes.wfx"))
+    let cases = u32(fx.f())
+    var worst = 0.0
+    for case in 0..cases {
+        let size = vec3d(fx.f(), fx.f(), fx.f())
+        let at = vec3d(fx.f(), fx.f(), fx.f())
+        let mat = qmat(vec4d(fx.f(), fx.f(), fx.f(), fx.f()))
+        let b = Box { at, mat, size }
+        let sc = vec3d(fx.f(), fx.f(), fx.f())
+        let r = fx.f()
+        let cc = vec3d(fx.f(), fx.f(), fx.f())
+        let cq = vec4d(fx.f(), fx.f(), fx.f(), fx.f())
+        let (cr, ch) = (fx.f(), fx.f())
+        let s = sphere_box(sc, r, b)
+        let caps = capsule_box(cc, qmat(cq)[2], cr, ch, b)
+        let a0 = apart(touch_numbers(s), fx.many(13))
+        let a1 = apart(touch_numbers(caps[0]), fx.many(13))
+        let a2 = apart(touch_numbers(caps[1]), fx.many(13))
+        let here = max(a0, max(a1, a2))
+        if here > 1.0e-9 {
+            std::io::print(f"case {case}: sphere {a0}, capsule {a1} {a2}")
+        }
+        worst = max(worst, here)
+    }
+    std::io::print(f"box contacts: worst {worst} from MJX")
+    assert(worst < 1.0e-12, f"box contacts are {worst} from MJX")
+}
+
+// ---- engine::matching ---------------------------------------------------------------------------
+
+/// The matcher agrees with the lab's (`mm.Matcher`, in f64 on the same library) frame by frame
+/// through starts, stops, turns, a reverse, strafing, taps, a circle, a rebase and steps without a
+/// search: the frame it plays, its root, point and facing, the feet's holds and the reference
+/// pose; and in the frames it peeks.
+@test
+fn the_matcher_agrees_with_the_lab() {
+    let m = Model::of(embed("fixtures/humanoid.wab"))
+    let lib = Library::of(embed("fixtures/matching_small.wmm"), m)
+    var fx = Fixture::of(embed("fixtures/matching_steps.wfx"))
+    let f0 = u32(fx.f())
+    let at = vec2d(fx.f(), fx.f())
+    var s = start(lib, f0, at, fx.f())
+    let frames = u32(fx.f())
+    var worst = 0.0
+    var jumps = 0
+    for t in 0..frames {
+        let dir = vec2d(fx.f(), fx.f())
+        let stick = Stick { dir, strafe: fx.f() != 0.0, strafe_yaw: fx.f() }
+        let search = fx.f() != 0.0
+        let rebased = fx.f() != 0.0
+        let to = vec3d(fx.f(), fx.f(), fx.f())
+        if rebased {
+            s = rebase(s, vec2d(to.x, to.y), to.z)
+        }
+        let prev = s.f
+        s = match_step(lib, s, stick, search)
+        if s.f != prev + 1 {
+            jumps += 1
+        }
+        let f = u32(fx.f())
+        assert(s.f == f, f"frame {t}: the matcher plays {s.f}, the lab {f}")
+        let got = [s.root.x, s.root.y, s.root_yaw, s.obj.x, s.obj.y, s.face]
+        let want = fx.many(6)
+        worst = max(worst, apart(got, want))
+        for k in 0..2 {
+            assert(s.planted[k] == (fx.f() != 0.0), f"frame {t}: foot {k}'s hold disagrees")
+        }
+        let q = frame(lib, s)
+        worst = max(worst, apart(q, fx.many(lib.nq)))
+    }
+    let stick = Stick { dir: vec2d(fx.f(), fx.f()), strafe: fx.f() != 0.0, strafe_yaw: fx.f() }
+    var peeked: Vec<[f64; MAX_QPOS]> = Vec::new()
+    peek(lib, s, stick, 3, mut peeked)
+    for k in 0..3 {
+        worst = max(worst, apart(peeked[k], fx.many(lib.nq)))
+    }
+    std::io::print(f"the matcher: {jumps} jumps in {frames} frames, worst {worst} from the lab")
+    assert(jumps > 10, "the scenario jumps")
+    assert(worst < 1.0e-12, f"the matcher is {worst} from the lab")
+}
+
+// ---- engine::ground -----------------------------------------------------------------------------
+
+/// The ground layer agrees with the lab's (`terrain.py`, in f64 on the same library) bringing a
+/// matcher walking forward up four stairs: the feet's and the pelvis's heights and velocities, and
+/// the reference on the terrain, each frame.
+@test
+fn the_ground_layer_agrees_with_the_lab() {
+    let m = Model::of(embed("fixtures/humanoid.wab"))
+    let lib = Library::of(embed("fixtures/matching_small.wmm"), m)
+    var fx = Fixture::of(embed("fixtures/ground_steps.wfx"))
+    let count = u32(fx.f())
+    var boxes: Vec<Box> = Vec::new()
+    for _ in 0..count {
+        let size = vec3d(fx.f(), fx.f(), fx.f())
+        let at = vec3d(fx.f(), fx.f(), fx.f())
+        let mat = qmat(vec4d(fx.f(), fx.f(), fx.f(), fx.f()))
+        boxes.push(Box { at, mat, size })
+    }
+    // The lab's stairs (four steps of 0.14 m, 0.3 m apart, from 0.9 m on) are `segment`'s.
+    var built = 0.0
+    for k in 0..count {
+        let d0 = 0.9 + 0.3 * f64(k)
+        let d1 = if k + 1 < count { d0 + 0.3 } else { 0.9 + 4.0 }
+        let h = 0.14 * f64(k + 1)
+        let b = segment(vec2d(0.0, 0.0), 0.0, d0, d1, h, h)
+        let want = boxes[k]
+        built = max(built, max(length(b.at - want.at), length(b.size - want.size)))
+        for c in 0..3 {
+            built = max(built, length(b.mat[c] - want.mat[c]))
+        }
+    }
+    assert(built < 1.0e-12, f"segment's boxes are {built} from the lab's")
+    let f0 = u32(fx.f())
+    let at = vec2d(fx.f(), fx.f())
+    var s = start(lib, f0, at, fx.f())
+    let stick = Stick { dir: vec2d(fx.f(), fx.f()), strafe: false, strafe_yaw: 0.0 }
+    let frames = u32(fx.f())
+    var g = stand(boxes, s)
+    var worst = 0.0
+    for t in 0..frames {
+        s = match_step(lib, s, stick, search: true)
+        g = ground_step(lib, s, g, boxes, lib.dt)
+        let q = on_ground(lib, s, g)
+        let f = u32(fx.f())
+        assert(s.f == f, f"frame {t}: the matcher plays {s.f}, the lab {f}")
+        worst = max(
+            worst,
+            apart(
+                [g.foot[0], g.foot[1], g.foot_v[0], g.foot_v[1], g.pelvis, g.pelvis_v],
+                fx.many(6),
+            ),
+        )
+        worst = max(worst, apart(q, fx.many(lib.nq)))
+    }
+    std::io::print(
+        f"the ground layer: {frames} frames up the stairs to {g.pelvis} m, worst {worst} from the lab",
+    )
+    assert(g.pelvis > 0.5, "the reference climbed the stairs")
+    assert(worst < 1.0e-12, f"the ground layer is {worst} from the lab")
+}
+
+// ---- engine::tracking ---------------------------------------------------------------------------
+
+fn read_stick(fx: mut Fixture) -> Stick {
+    let dir = vec2d(fx.f(), fx.f())
+    let strafe = fx.f() != 0.0
+    Stick { dir, strafe, strafe_yaw: fx.f() }
+}
+
+/// The tracked body agrees with the lab's (`play.Play`, in f64 on the same library) through a
+/// start and six control steps with random actions (past the clip among them), sticks that walk,
+/// turn, strafe and stop, and a shove on the ribcage: what the policy sees at each, and the body's
+/// state.
+@test
+fn a_tracked_body_agrees_with_the_lab() {
+    let m = Model::of(embed("fixtures/humanoid.wab"))
+    let lib = Library::of(embed("fixtures/matching_small.wmm"), m)
+    let set = Settings::of(embed("fixtures/play.wpl"))
+    var fx = Fixture::of(embed("fixtures/tracking_steps.wfx"))
+    let f0 = u32(fx.f())
+    let yaw = fx.f()
+    let s0 = read_stick(mut fx)
+    let size = u32(fx.f())
+    let tr = Tracker::of(m.clone(), take lib, take set)
+    assert(tr.observation_size() == size, f"the observation is {size} long")
+    var t = tr.start(f0, vec2d(0.0, 0.0), yaw, s0)
+    var worst = apart(tr.observe(t), fx.many(size))
+    let steps = u32(fx.f())
+    for _ in 0..steps {
+        var action = [0.0; MAX_MOTORS]
+        for u in 0..m.nu {
+            action[u] = fx.f()
+        }
+        let s = read_stick(mut fx)
+        let body = u32(fx.f())
+        let force = vec3d(fx.f(), fx.f(), fx.f())
+        let push = Push { body, force, torque: vec3d(0.0, 0.0, 0.0) }
+        if dot(force, force) > 0.0 {
+            tr.drive(mut t, action, s, [push])
+        } else {
+            tr.drive(mut t, action, s, [])
+        }
+        worst = max(worst, apart(t.body.qpos, fx.many(m.nq)))
+        worst = max(worst, apart(t.body.qvel, fx.many(m.nv)))
+        worst = max(worst, apart(tr.observe(t), fx.many(size)))
+    }
+    std::io::print(f"the tracked body: {steps} control steps, worst {worst} from the lab")
+    assert(worst < 1.0e-12, f"the tracked body is {worst} from the lab")
+}
+
+/// On stairs the tracked body agrees with the lab's (`play.Play(terrain=True)`, in f64): the
+/// body standing on the first stair with its feet on a box, driven six control steps up them with
+/// random actions; what the policy sees at each (its heights over the support, its height scan)
+/// and the body's state (its physics touching the boxes).
+@test
+fn a_tracked_body_on_stairs_agrees_with_the_lab() {
+    let m = Model::of(embed("fixtures/humanoid_terrain.wab"))
+    let lib = Library::of(embed("fixtures/matching_small.wmm"), m)
+    let set = Settings::of(embed("fixtures/play_terrain.wpl"))
+    var fx = Fixture::of(embed("fixtures/tracking_terrain.wfx"))
+    let count = u32(fx.f())
+    var boxes: Vec<Box> = Vec::new()
+    for _ in 0..count {
+        let size = vec3d(fx.f(), fx.f(), fx.f())
+        let at = vec3d(fx.f(), fx.f(), fx.f())
+        let mat = qmat(vec4d(fx.f(), fx.f(), fx.f(), fx.f()))
+        boxes.push(Box { at, mat, size })
+    }
+    let f0 = u32(fx.f())
+    let yaw = fx.f()
+    let s0 = read_stick(mut fx)
+    let size = u32(fx.f())
+    let tr = Tracker::on(m.clone(), take lib, take set, take boxes)
+    assert(tr.observation_size() == size, f"the observation is {size} long")
+    var t = tr.start(f0, vec2d(0.0, 0.0), yaw, s0)
+    var worst = apart(tr.observe(t), fx.many(size))
+    let steps = u32(fx.f())
+    for _ in 0..steps {
+        var action = [0.0; MAX_MOTORS]
+        for u in 0..m.nu {
+            action[u] = fx.f()
+        }
+        let s = read_stick(mut fx)
+        tr.drive(mut t, action, s, [])
+        worst = max(worst, apart(t.body.qpos, fx.many(m.nq)))
+        worst = max(worst, apart(t.body.qvel, fx.many(m.nv)))
+        worst = max(worst, apart(tr.observe(t), fx.many(size)))
+    }
+    std::io::print(
+        f"the tracked body on stairs: {steps} control steps, the support at {t.supports[0]} m, worst {worst} from the lab",
+    )
+    assert(t.supports[0] > 0.2, "the body climbed")
+    assert(worst < 1.0e-10, f"the tracked body on stairs is {worst} from the lab")
+}
+
+// ---- engine::policy -----------------------------------------------------------------------------
+
+/// A tiny network exported by the motion lab (`export.py fixture`: 7 inputs, ELU layers of 6 and 5,
+/// 3 outputs, random weights and normalisation) gives the outputs JAX gave for the same inputs; the
+/// last input has one far out, past the clip.
+@test
+fn a_policy_gives_what_it_was_trained_to() {
+    let p = Policy::of(embed("fixtures/policy_tiny.wnn"))
+    assert(p.inputs() == 7 && p.outputs() == 3 && p.layers() == 3, "the tiny network's shape")
+    let xs = [
+        [-3.16545165, -1.17240293, 1.44583617, -0.71566082, 2.87327611, -0.599406387, 0.0727786952],
+        [4.63746255, 1.63531657, -1.51568621, -0.548516924, 1.6215754, 5.8052641, -0.808860982],
+        [-0.730676037, 3.0069408, -2.65937983, -0.875160697, 2.6476169, 1.74105005, 0.27455011],
+        [2.01031306, -8.48448692, 40.0, -2.87893428, -5.00585953, 0.829337279, 2.10163466],
+    ]
+    let ys = [
+        [-23.1043453, 3.24480987, 10.741643],
+        [9.63805771, 68.3625488, 30.272089],
+        [18.5803471, 36.6049728, 6.09038353],
+        [-38.3488731, 23.333416, 12.3596497],
+    ]
+    var worst = 0.0
+    for k in 0..4 {
+        var out = [0.0; 3]
+        p.eval(xs[k], mut out)
+        for j in 0..3 {
+            worst = max(worst, abs(out[j] - ys[k][j]) / max(1.0, abs(ys[k][j])))
+        }
+    }
+    std::io::print(f"the tiny network's worst relative error from JAX: {worst}")
+    assert(worst < 1.0e-5, f"the tiny network is {worst} from JAX")
+}

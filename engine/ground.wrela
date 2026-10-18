@@ -43,9 +43,13 @@ pub fn height(boxes: [Box], xy: vec2d) -> f64 {
         let centre = b.at + n * size[a]
         let z = centre.z - (n.x * (xy.x - centre.x) + n.y * (xy.y - centre.y)) / max(n.z, 1.0e-6)
         let p = vec3d(xy.x, xy.y, z) - b.at
-        let inside = abs(dot(b.mat[0], p)) <= b.size.x + 1.0e-9 &&
-            abs(dot(b.mat[1], p)) <= b.size.y + 1.0e-9 &&
-            abs(dot(b.mat[2], p)) <= b.size.z + 1.0e-9
+        // Inside the top face: within its sides (not along its normal, where the point is on it).
+        var inside = true
+        for k in 0..3 {
+            if k != a && abs(dot(b.mat[k], p)) > size[k] + 1.0e-6 {
+                inside = false
+            }
+        }
         if inside && n.z > 0.2 {
             best = max(best, z)
         }
@@ -175,69 +179,4 @@ pub fn on_ground(lib: Library, s: Matcher, g: Ground) -> [f64; MAX_QPOS] {
         )
     }
     q
-}
-
-// ---- tests -----------------------------------------------------------------------------------------
-
-use articulated::Model
-use golden::{Fixture, apart}
-use matching::{Stick, start, step as match_step}
-
-/// The ground layer agrees with the lab's (`terrain.py`, in f64 on the same library) bringing a
-/// matcher walking forward up four stairs: the feet's and the pelvis's heights and velocities, and
-/// the reference on the terrain, each frame.
-@test
-fn the_ground_layer_agrees_with_the_lab() {
-    let m = Model::of(embed("fixtures/humanoid.wab"))
-    let lib = Library::of(embed("fixtures/matching_small.wmm"), m)
-    var fx = Fixture::of(embed("fixtures/ground_steps.wfx"))
-    let count = u32(fx.f())
-    var boxes: Vec<Box> = Vec::new()
-    for _ in 0..count {
-        let size = vec3d(fx.f(), fx.f(), fx.f())
-        let at = vec3d(fx.f(), fx.f(), fx.f())
-        let mat = qmat(vec4d(fx.f(), fx.f(), fx.f(), fx.f()))
-        boxes.push(Box { at, mat, size })
-    }
-    // The lab's stairs (four steps of 0.14 m, 0.3 m apart, from 0.9 m on) are `segment`'s.
-    var built = 0.0
-    for k in 0..count {
-        let d0 = 0.9 + 0.3 * f64(k)
-        let d1 = if k + 1 < count { d0 + 0.3 } else { 0.9 + 4.0 }
-        let h = 0.14 * f64(k + 1)
-        let b = segment(vec2d(0.0, 0.0), 0.0, d0, d1, h, h)
-        let want = boxes[k]
-        built = max(built, max(length(b.at - want.at), length(b.size - want.size)))
-        for c in 0..3 {
-            built = max(built, length(b.mat[c] - want.mat[c]))
-        }
-    }
-    assert(built < 1.0e-12, f"segment's boxes are {built} from the lab's")
-    let f0 = u32(fx.f())
-    let at = vec2d(fx.f(), fx.f())
-    var s = start(lib, f0, at, fx.f())
-    let stick = Stick { dir: vec2d(fx.f(), fx.f()), strafe: false, strafe_yaw: 0.0 }
-    let frames = u32(fx.f())
-    var g = stand(boxes, s)
-    var worst = 0.0
-    for t in 0..frames {
-        s = match_step(lib, s, stick, search: true)
-        g = step(lib, s, g, boxes, lib.dt)
-        let q = on_ground(lib, s, g)
-        let f = u32(fx.f())
-        assert(s.f == f, f"frame {t}: the matcher plays {s.f}, the lab {f}")
-        worst = max(
-            worst,
-            apart(
-                [g.foot[0], g.foot[1], g.foot_v[0], g.foot_v[1], g.pelvis, g.pelvis_v],
-                fx.many(6),
-            ),
-        )
-        worst = max(worst, apart(q, fx.many(lib.nq)))
-    }
-    std::io::print(
-        f"the ground layer: {frames} frames up the stairs to {g.pelvis} m, worst {worst} from the lab",
-    )
-    assert(g.pelvis > 0.5, "the reference climbed the stairs")
-    assert(worst < 1.0e-12, f"the ground layer is {worst} from the lab")
 }

@@ -20,7 +20,6 @@
 use std::hash::StateHash
 use std::serialize::Serialize
 use sim::SimState
-use golden::{Fixture, apart}
 use collide::{Box, capsule_box, sphere_box}
 use quatd::{PI64, atan2_64, axis_angle, normalized3, normalized4, qconj, qmat, qmul, qrot}
 
@@ -1684,110 +1683,4 @@ pub fn control_step(
         let _ = step(m, mut s, ctrl, pushes)
     }
     kinematics(m, mut s.qpos)
-}
-
-// ---- tests ---------------------------------------------------------------------------------------
-
-/// Six steps of the lab's humanoid from random states (joints past their limits, the body in the
-/// floor, warm starts and none) agree with the float64 oracle (`mjx_ref`, which agrees with MJX in
-/// float64) at every stage: the bodies' places, the mass matrix, the bias forces, the smooth
-/// acceleration, the contacts, the active rows' D and reference accelerations, the solver's
-/// acceleration, and the state after.
-@test
-fn a_step_agrees_with_mjx_stage_by_stage() {
-    let m = Model::of(embed("fixtures/humanoid.wab"))
-    var fx = Fixture::of(embed("fixtures/humanoid_steps.wfx"))
-    let cases = u32(fx.f())
-    var worst = 0.0
-    var rows_seen = 0
-    for case in 0..cases {
-        var s = State::rest(m)
-        for i in 0..m.nq {
-            s.qpos[i] = fx.f()
-        }
-        for i in 0..m.nv {
-            s.qvel[i] = fx.f()
-        }
-        for i in 0..m.nv {
-            s.warm[i] = fx.f()
-        }
-        let ctrl = fx.many(m.nu)
-        let st = step(m, mut s, ctrl, [])
-        var xpos: Vec<f64> = Vec::new()
-        for b in 0..m.nbody {
-            xpos.push(st.poses.xpos[b].x)
-            xpos.push(st.poses.xpos[b].y)
-            xpos.push(st.poses.xpos[b].z)
-        }
-        let checks = [
-            apart(xpos, fx.many(3 * m.nbody)),
-            apart(st.mass, fx.many(m.nv * m.nv)),
-            apart(st.bias, fx.many(m.nv)),
-            apart(st.qacc_smooth, fx.many(m.nv)),
-        ]
-        var dist: Vec<f64> = Vec::new()
-        for c in 0..st.contacts.len() {
-            dist.push(st.contacts[c].dist)
-        }
-        let contacts = apart(dist, fx.many(st.contacts.len()))
-        let n = u32(fx.f())
-        assert(n == st.rows.n, f"step {case}: {st.rows.n} active rows, the oracle has {n}")
-        rows_seen += n
-        let d = apart(st.rows.d, fx.many(n))
-        let aref = apart(st.rows.aref, fx.many(n))
-        let qacc = apart(st.qacc, fx.many(m.nv))
-        let qpos = apart(s.qpos, fx.many(m.nq))
-        let qvel = apart(s.qvel, fx.many(m.nv))
-        let warm = apart(s.warm, fx.many(m.nv))
-        let here = max(
-            max(max(checks[0], checks[1]), max(checks[2], checks[3])),
-            max(max(contacts, d), max(max(aref, qacc), max(qpos, max(qvel, warm)))),
-        )
-        std::io::print(
-            f"step {case}: {n} rows; places {checks[0]}, mass {checks[1]}, bias {checks[2]}, smooth {checks[3]}, contacts {contacts}, D {d}, aref {aref}, qacc {qacc}, after {max(qpos, max(qvel, warm))}",
-        )
-        worst = max(worst, here)
-    }
-    assert(rows_seen > 100, "the fixtures exercise limits and contacts")
-    assert(worst < 1.0e-9, f"a step is {worst} from MJX's")
-}
-
-/// Three control steps of the lab's PD (8 substeps each, toward a walk's next frames, from standing
-/// on its frame) agree with the oracle's `sim.Body.physics`.
-@test
-fn a_control_step_agrees_with_the_lab() {
-    let m = Model::of(embed("fixtures/humanoid.wab"))
-    var fx = Fixture::of(embed("fixtures/humanoid_control.wfx"))
-    let cases = u32(fx.f())
-    let kp = fx.many(m.njnt)
-    let kd = fx.f()
-    var worst = 0.0
-    for case in 0..cases {
-        var s = State::rest(m)
-        for i in 0..m.nq {
-            s.qpos[i] = fx.f()
-        }
-        for i in 0..m.nv {
-            s.qvel[i] = fx.f()
-        }
-        for i in 0..m.nv {
-            s.warm[i] = fx.f()
-        }
-        var target = [0.0; MAX_QPOS]
-        var target_vel = [0.0; MAX_DOFS]
-        for i in 0..m.nq {
-            target[i] = fx.f()
-        }
-        for i in 0..m.nv {
-            target_vel[i] = fx.f()
-        }
-        let _ = control_step(m, mut s, target, target_vel, kp, kd, 8, [])
-        let here = max(
-            apart(s.qpos, fx.many(m.nq)),
-            max(apart(s.qvel, fx.many(m.nv)), apart(s.warm, fx.many(m.nv))),
-        )
-        std::io::print(f"control step {case}: {here} from the lab's")
-        worst = max(worst, here)
-    }
-    assert(worst < 1.0e-9, f"a control step is {worst} from the lab's")
 }
