@@ -500,6 +500,13 @@ release, tests for tools that touch files and the network, a vertical slice befo
 source links that name the right repository, and a release comparison that accepts only declared
 differences.
 
+The first slice is the tool role and its host (language.md §15.5): Claude implemented the council's
+final design. Two outside Rust crates came in. [cap-std](https://github.com/bytecodealliance/cap-std)
+(Bytecode Alliance; Apache-2.0 with the LLVM exception, Apache-2.0 or MIT) opens a tool's files
+relative to a root's directory handle, so no path or symbolic link leaves the root.
+[ctrlc](https://github.com/Detegr/rust-ctrlc) (MIT or Apache-2.0) lets `wrela tool` stop a tool
+on Ctrl-C and clean up after it. Both are used as libraries; no code was copied.
+
 ## The references
 
 ### The rules
