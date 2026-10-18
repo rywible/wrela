@@ -155,7 +155,7 @@ fn heard(s: mut Service) {
     }
     if s.peers.why == TO_PROMOTE {
         // A first look: refused at once if it can't be safe, before any peer is asked to promise.
-        if let Some(why) = unsafe_to_promote(s, Vec::new()) {
+        if let Some(why) = unsafe_to_promote(s, Vec::new(), 0) {
             return service::fatal(mut s, why.as_str())
         }
         s.peers.fence_epoch = max(highest, s.peers.fence_epoch) + 1
@@ -176,16 +176,24 @@ fn heard(s: mut Service) {
 /// Why promoting this store now could lose a landing a service confirmed, if it could: fewer than
 /// half of the stores answered (counting, when `promised` isn't empty, only those that promised),
 /// or one holds log this store lacks.
-fn unsafe_to_promote(s: Service, promised: [bool]) -> Option<String> {
+fn unsafe_to_promote(s: Service, promised: [bool], epoch: u64) -> Option<String> {
     var counted = 1
     for i in 0..s.peers.seen.len() {
         let Some(p) = s.peers.seen[i].clone() else { continue }
+        if epoch > 0 && p.epoch > epoch {
+            // A newer promotion is under way, or done: this one yields to it.
+            return Some(
+                f"{s.peers.addrs[i]} holds epoch {p.epoch}, newer than this promotion's {epoch}",
+            )
+        }
         if !log::holds(s.ends, p.size, p.chain) {
             return Some(
                 f"{s.peers.addrs[i]} ({p.role} on {p.machine}) holds {p.size} bytes of log this store doesn't: promote the store with the most log",
             )
         }
-        if promised.is_empty() || (i < promised.len() && promised[i]) {
+        // A peer counts if it promised this epoch, and its position says the promise still holds.
+        let kept = epoch == 0 || p.epoch == epoch
+        if promised.is_empty() || (i < promised.len() && promised[i] && kept) {
             counted += 1
         }
     }
@@ -229,7 +237,7 @@ fn promise_next(s: mut Service) {
 /// none holds log it lacks.
 fn promote(s: mut Service) {
     let promised = s.peers.promised.clone()
-    if let Some(why) = unsafe_to_promote(s, promised) {
+    if let Some(why) = unsafe_to_promote(s, promised, s.peers.fence_epoch) {
         return service::fatal(
             mut s,
             f"{why} (the peers that promised epoch {s.peers.fence_epoch} follow no older service: promote the right store, and the fleet serves again)".as_str(),

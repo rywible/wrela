@@ -53,14 +53,14 @@ pub fn log_from(s: mut Service, conn: u32, from: u64, chain: str, epoch: u64, re
         )
     }
     if epoch > s.core.state.epoch {
-        service::reply(
-            mut s,
+        // Fenced first, so nothing after this ask is confirmed; the ask's answer goes with it.
+        let r = service::Reply {
             conn,
-            409,
-            "text/plain",
-            bytes::of_str("the replica holds a newer epoch than this service's\n"),
-        )
-        return service::fence(mut s, epoch, None)
+            status: 409,
+            kind: "text/plain",
+            body: bytes::of_str("the replica holds a newer epoch than this service's\n"),
+        }
+        return service::fence(mut s, epoch, Some(take r))
     }
     let at = Id::parse(chain).unwrap_or(Id::zero())
     if !log::holds(s.ends, from, at) {
@@ -162,9 +162,25 @@ pub fn pump_asks(s: mut Service) {
     }
 }
 
-/// `POST /api/objects`: for each 32-byte id of the body, the id, the object's length (a `u32`,
-/// 4294967295 if the service hasn't it) and its bytes, as its file holds them.
+/// An objects answer's length for an object left for another ask: the answer was full.
+pub const LATER: u32 = 4294967294
+/// The most bytes of objects one answer holds, and the most ids one ask names.
+const ANSWER: u32 = 33554432
+const IDS: u32 = 4096
+
+/// `POST /api/objects`: for each 32-byte id of the body (at most 4096), the id, the object's
+/// length (a `u32`: 4294967295 if the service hasn't it, 4294967294 if the answer is full and the
+/// object is left for another ask) and its bytes, as its file holds them.
 pub fn objects(s: mut Service, conn: u32, body: [u8]) {
+    if body.len() > IDS * 32 {
+        return service::reply(
+            mut s,
+            conn,
+            413,
+            "text/plain",
+            bytes::of_str("ask for at most 4096 objects at once\n"),
+        )
+    }
     var need: Vec<Id> = Vec::new()
     var at = 0
     while at + 32 <= body.len() {
@@ -193,6 +209,14 @@ pub fn objects(s: mut Service, conn: u32, body: [u8]) {
                 // The blobs in memory are their contents: their files add the kind's byte.
                 let raw = file_bytes(id, content)
                 let n = raw.len()
+                if out.len() + n > ANSWER && out.len() > 36 {
+                    // Full: this one, and any after it, are for another ask.
+                    for k in 0..4 {
+                        out.push(u8((LATER >> (8 * k)) & 255))
+                    }
+                    at += 32
+                    continue
+                }
                 for k in 0..4 {
                     out.push(u8((n >> (8 * k)) & 255))
                 }
@@ -279,8 +303,10 @@ pub struct Replica: Clone {
     ends: Vec<(u64, Id)>,
     /// The highest epoch the records promote.
     next_epoch: u64,
-    /// Objects it has, as far as it knows; and those it has asked for.
+    /// Objects it has written (a write that fails stops it), those it has asked for and not had
+    /// yet, and those still to ask for.
     have: SortedMap<Id, bool>,
+    asked: SortedMap<Id, bool>,
     want: Vec<Id>,
     /// Writes not answered yet.
     left: u32,
@@ -306,6 +332,7 @@ pub fn idle() -> Replica {
         ends: Vec::new(),
         next_epoch: 0,
         have: SortedMap::new(),
+        asked: SortedMap::new(),
         want: Vec::new(),
         left: 0,
     }
@@ -372,8 +399,11 @@ pub fn start(s: mut Service) {
     s.replica.servers = take servers
     s.replica.waiting = true
     wait(mut s, host::lock("data/lock"), For::Replica(LOCKED))
+    wait(mut s, host::stat("data/key"), For::Exists(service::KEY_FILE))
     wait(mut s, host::read("data/key"), For::Key(0))
+    wait(mut s, host::stat("data/promise"), For::Exists(service::PROMISE_FILE))
     wait(mut s, host::read("data/promise"), For::Replica(PROMISE_READ))
+    wait(mut s, host::stat(LOG), For::Exists(service::LOG_FILE))
     wait(mut s, host::mkdir("data/objects"), For::Replica(MADE))
     wait(mut s, host::read(LOG), For::Replica(READ))
     if !listen.is_empty() {
@@ -573,14 +603,20 @@ pub fn answered(s: mut Service, what: u32, r: take Result<Vec<u8>, IoError>) {
         return
     }
     if what == PROMISE_READ {
-        if let Ok(b) = take r {
-            match promise_of(take b) {
+        match take r {
+            Ok(b) => match promise_of(take b) {
                 Some((epoch, candidate)) => {
                     s.replica.promised = epoch
                     s.replica.promised_to = take candidate
                 },
                 None => return service::fatal(mut s, "data/promise isn't a promise forge kept"),
-            }
+            },
+            // A promise it can't read isn't one it can forget: it stops.
+            Err(e) => {
+                if s.present[service::PROMISE_FILE] {
+                    return service::fatal(mut s, f"can't read data/promise: {e.message()}".as_str())
+                }
+            },
         }
         return
     }
@@ -598,9 +634,7 @@ pub fn answered(s: mut Service, what: u32, r: take Result<Vec<u8>, IoError>) {
         if s.replica.stage == FETCH {
             // Records fetched but not kept: dropped, as the older service never had them
             // confirmed by this replica.
-            s.replica.records = Vec::new()
-            s.replica.ends = Vec::new()
-            s.replica.want = Vec::new()
+            abandon(mut s)
             find(mut s)
         }
         return service::reply(
@@ -626,8 +660,16 @@ pub fn answered(s: mut Service, what: u32, r: take Result<Vec<u8>, IoError>) {
     if what == READ {
         match take r {
             Ok(b) => own_log(mut s, take b),
-            // No log yet: an empty one.
-            Err(_) => own_log(mut s, Vec::new()),
+            Err(e) => {
+                if s.present[service::LOG_FILE] {
+                    return service::fatal(
+                        mut s,
+                        f"can't read the replica's log: {e.message()}".as_str(),
+                    )
+                }
+                // No log yet: an empty one.
+                own_log(mut s, Vec::new())
+            },
         }
         return
     }
@@ -781,11 +823,20 @@ fn named(ev: Event, out: mut Vec<Id>) {
 
 /// Asks for `id` unless the replica has it or has asked.
 fn want(s: mut Service, id: Id) {
-    if id.is_zero() || s.replica.have.contains(id) {
+    if id.is_zero() || s.replica.have.contains(id) || s.replica.asked.contains(id) {
         return
     }
-    let _ = s.replica.have.insert(id, value: true)
+    let _ = s.replica.asked.insert(id, value: true)
     s.replica.want.push(id)
+}
+
+/// Drops the records fetched and the objects asked for, not kept: their service is no longer
+/// followed (F26).
+fn abandon(s: mut Service) {
+    s.replica.records = Vec::new()
+    s.replica.ends = Vec::new()
+    s.replica.want = Vec::new()
+    s.replica.asked = SortedMap::new()
 }
 
 pub fn got(s: mut Service, purpose: u32, status: u32, body: take Vec<u8>) {
@@ -802,6 +853,14 @@ pub fn got(s: mut Service, purpose: u32, status: u32, body: take Vec<u8>) {
         )
         find(mut s)
         return later(mut s, 2000)
+    }
+    if (purpose == ASK || purpose == FETCH) && s.replica.following_epoch < s.replica.promised {
+        // An answer of a service older than the epoch it promised since it asked: not kept.
+        abandon(mut s)
+        return find(mut s)
+    }
+    if purpose == FETCH && s.replica.stage != FETCH {
+        return
     }
     if purpose == ASK {
         if status == 409 {
@@ -855,9 +914,10 @@ pub fn got(s: mut Service, purpose: u32, status: u32, body: take Vec<u8>) {
         }
         s.replica.stage = FETCH
     } else if purpose == FETCH {
-        // Each object: written flushed, and the objects it names asked for in turn.
+        // Each object: written flushed, and the objects it names asked for in turn. One the
+        // service left for another ask (its answer was full) stays wanted.
         var at = 0
-        var asked = 0
+        var got_ids: SortedMap<Id, bool> = SortedMap::new()
         while at + 36 <= body.len() {
             let id = Id::of_bytes(body, at)
             var n: u32 = 0
@@ -865,10 +925,18 @@ pub fn got(s: mut Service, purpose: u32, status: u32, body: take Vec<u8>) {
                 n = n | (u32(body[at + 32 + k]) << (8 * k))
             }
             at += 36
-            asked += 1
             if n == 4294967295 {
                 return service::fatal(mut s, f"the service hasn't object {id.hex()}".as_str())
             }
+            if n == LATER {
+                continue
+            }
+            if n > body.len() - at {
+                return service::fatal(mut s, "the service's objects answer ends inside an object")
+            }
+            let _ = got_ids.insert(id, value: true)
+            let _ = s.replica.asked.remove(id)
+            let _ = s.replica.have.insert(id, value: true)
             let raw = bytes::slice(body, at, at + n)
             at += n
             let Ok(kind) = object::check(id, raw) else {
@@ -901,6 +969,12 @@ pub fn got(s: mut Service, purpose: u32, status: u32, body: take Vec<u8>) {
                 For::Replica(WROTE),
             )
         }
-        let _ = s.replica.want.drain_front(min(asked, s.replica.want.len()))
+        var rest: Vec<Id> = Vec::new()
+        for id in s.replica.want {
+            if !got_ids.contains(id) {
+                rest.push(id)
+            }
+        }
+        s.replica.want = take rest
     }
 }

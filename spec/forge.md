@@ -142,7 +142,8 @@ never reused.
   A check named `index:<package>` runs that tree's own `tools/wrela index --json <package>`
   instead: its output is the package's item index at that tree, which the `items`, `changed` and
   `callers` tools read.
-  `workers/<name>` is what its checkout holds: the byte 2, when the checkout held it
+  `workers/<name>` (its name with each byte but a letter, a digit, `.`, `_` and `-`, and a `.`
+  that begins it, written as `%` and two hex digits) is what its checkout holds: the byte 2, when the checkout held it
   (milliseconds since 1970, by the host's clock), then, as a run, the byte 1, the count of its
   files and each path, whether it is executable, its blob's id and its size. (A first-version
   manifest is that run alone.) A worker writes its checkout's files flushed and saves the manifest

@@ -4,7 +4,7 @@
     tools/forge install              build forge and pin it (and its host) under ~/.forge
     tools/forge help                 every tool, with its arguments
     tools/forge <tool> key=value...  a call to the service; pull and push use this directory
-    tools/forge serve|work|replica [--data DIR] [--work DIR] ...
+    tools/forge serve|work|replica|backup|restore [--data DIR] [--work DIR] ...
 
 The install is pinned: a checkout whose compiler is broken still runs the forge it installed.
 `--data` and `--work` (by default ~/.forge/data and ~/.forge/work) are the store and the checkout
@@ -19,7 +19,7 @@ import sys
 
 HOME = Path(os.environ.get("FORGE_HOME", Path.home() / ".forge"))
 ROOT = Path(__file__).resolve().parent.parent
-KEEPS = ("serve", "work", "replica")
+KEEPS = ("serve", "work", "replica", "backup", "restore")
 
 
 def install():

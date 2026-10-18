@@ -103,12 +103,16 @@ fn sync_dir(dir: &Path) -> Result<(), String> {
     File::open(dir).and_then(|d| d.sync_all()).map_err(|e| io(dir, e))
 }
 
+/// What every name of a file being written ends in: a name no service's own file holds (forge
+/// refuses paths that hold `.wrela-write`).
+pub const WRITING: &str = ".wrela-write";
+
 /// A name for a file beside `path` that no other write uses.
 fn beside(path: &Path) -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    path.with_file_name(format!(".{name}.{}-{n}.part", std::process::id()))
+    path.with_file_name(format!(".{name}.{}-{n}{WRITING}", std::process::id()))
 }
 
 /// Replaces `path`'s bytes with `bytes`, on disk: written beside it, flushed, renamed into
@@ -236,7 +240,7 @@ pub fn serve(roots: &Roots, service: &str, body: &[u8]) -> Option<Result<Vec<u8>
                     let e = e.map_err(|e| io(&path, e))?;
                     let name = e.file_name().to_string_lossy().into_owned();
                     // A write's file beside its target isn't one of the directory's own.
-                    if name.starts_with('.') && name.ends_with(".part") {
+                    if name.contains(WRITING) {
                         continue;
                     }
                     let m = e.metadata().map_err(|e| io(&path, e))?;

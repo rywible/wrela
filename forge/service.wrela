@@ -26,6 +26,10 @@ use std::io::{IoError, Pending, print}
 use std::json::{Json as Doc, Kind}
 
 pub const DATA: Text = "data"
+/// The files whose presence a start asks after (`For::Exists`).
+pub const KEY_FILE: u32 = 0
+pub const PROMISE_FILE: u32 = 1
+pub const LOG_FILE: u32 = 2
 pub const LOG: Text = "data/events"
 /// The most bytes a host request may carry, less room for its path: a larger write goes in parts.
 const PART: u32 = 1040000
@@ -63,6 +67,9 @@ pub enum For: Clone {
     Locked,
     /// What the store promised as a replica (replicate.wrela), read at the start.
     PromiseRead,
+    /// Whether a file read at the start is there (`KEY_FILE`, `PROMISE_FILE`, `LOG_FILE`): asked
+    /// before its read, so a read that fails is told apart from a file that isn't there.
+    Exists(u32),
     /// The store's key: read (0), made from randomness (1), saved (2); and the command's.
     Key(u32),
     ClientKey,
@@ -82,10 +89,12 @@ pub enum For: Clone {
     /// A write or a removal in a worker's checkout, and a look at a file it would keep.
     Checkout,
     Looked(String),
+    Hashed(String),
     /// The host's clock, as a checkout is made.
     Clock,
     /// A look at a file a worker on another machine keeps (remote.wrela).
     RemoteLooked(String),
+    RemoteHashed(String),
     ManifestRead,
     ManifestSaved,
     Ran(u64),
@@ -191,6 +200,8 @@ pub struct Service {
     /// The store's key (`data/key`, readable by its owner alone): a program on this machine that
     /// shows it is the machine itself (F28). The command reads it to call as the machine.
     pub key: String,
+    /// Whether each of the files a start reads is there (`For::Exists`).
+    pub present: Vec<bool>,
     /// The time when the host started: milliseconds since 1970, and the call's seconds since.
     pub start_ms: u64,
     pub time: f32,
@@ -256,6 +267,7 @@ pub fn new() -> Service {
         whois: String::from("tailscale"),
         known: SortedMap::new(),
         key: String::new(),
+        present: Vec::from([false, false, false]),
         start_ms: 0,
         time: 0.0,
         core: core::core("local"),
@@ -430,13 +442,32 @@ fn answered(s: mut Service, what: take For, r: take Result<Vec<u8>, IoError>) {
         For::Made => started_one(mut s, "making a directory", take r),
         For::Key(step) => keyed(mut s, step, take r),
         For::ClientKey => client::keyed(mut s, take r),
+        For::Exists(which) => {
+            let there = match take r {
+                Ok(b) => match host::stat_of(take b) {
+                    Some(st) => st.kind != host::Kind::Missing,
+                    None => true,
+                },
+                // Not known not to be there: a read that fails then stops it.
+                Err(_) => true,
+            }
+            s.present[which] = there
+            if s.phase != Phase::Replica {
+                started_one(mut s, "looking at the store's files", Ok(Vec::new()))
+            }
+        },
         For::PromiseRead => {
             // A promotion's epoch is above any this store promised another candidate.
-            if let Ok(b) = take r {
-                match replicate::promise_of(take b) {
+            match take r {
+                Ok(b) => match replicate::promise_of(take b) {
                     Some((epoch, _)) => s.peers.fence_epoch = epoch,
                     None => return fatal(mut s, "data/promise isn't a promise forge kept"),
-                }
+                },
+                Err(e) => {
+                    if s.present[PROMISE_FILE] {
+                        return fatal(mut s, f"can't read data/promise: {e.message()}".as_str())
+                    }
+                },
             }
             started_one(mut s, "reading the store's promise", Ok(Vec::new()))
         },
@@ -541,8 +572,10 @@ fn answered(s: mut Service, what: take For, r: take Result<Vec<u8>, IoError>) {
         For::Whois(conn, addr) => whois_said(mut s, conn, addr.as_str(), take r),
         For::Checkout => jobs::checkout_done(mut s, take r),
         For::Looked(path) => jobs::looked(mut s, take path, take r),
+        For::Hashed(path) => jobs::hashed(mut s, take path, take r),
         For::Clock => jobs::clocked(mut s, take r),
         For::RemoteLooked(path) => remote::looked(mut s, take path, take r),
+        For::RemoteHashed(path) => remote::hashed(mut s, take path, take r),
         For::ManifestRead => jobs::manifest_read(mut s, take r),
         For::ManifestSaved => jobs::manifest_saved(mut s, take r),
         For::Ran(job) => jobs::ran(mut s, job, take r),
@@ -646,11 +679,20 @@ fn begin(s: mut Service) {
         s.peers.addrs = who::rules(p.as_str())
     }
     s.advertise = flag(s.args, "--advertise").unwrap_or(s.listen.clone())
+    let addr = who::addr_of(s.listen.as_str())
+    if s.works && !who::is_loopback(addr.as_str()) {
+        print(
+            "forge: this service runs checks as its own account, where a writer's check can read the store and its key: on a fleet, serve with --no-worker and run `forge work` as an account that can't",
+        )
+    }
     s.phase = Phase::Disk
     // One program holds a store at a time: its lock first, before anything of it is read.
     s.startup_left = 8
     wait(mut s, host::lock("data/lock"), For::Locked)
+    s.startup_left += 2
+    wait(mut s, host::stat("data/key"), For::Exists(KEY_FILE))
     wait(mut s, host::read("data/key"), For::Key(0))
+    wait(mut s, host::stat("data/promise"), For::Exists(PROMISE_FILE))
     wait(mut s, host::read("data/promise"), For::PromiseRead)
     wait(mut s, host::mkdir("data/objects"), For::Made)
     wait(mut s, host::mkdir("data/workers"), For::Made)
@@ -717,12 +759,20 @@ pub fn started_one(s: mut Service, what: str, r: take Result<Vec<u8>, IoError>) 
 /// The store's key, read or made at the start: 32 random bytes as hex, saved for its owner alone.
 fn keyed(s: mut Service, step: u32, r: take Result<Vec<u8>, IoError>) {
     if step == 0 {
-        if let Ok(b) = take r {
-            let text = bytes::text_of(b)
-            if text.len() == 64 {
+        match take r {
+            Ok(b) => {
+                let text = bytes::text_of(b)
+                if text.len() != 64 {
+                    return fatal(mut s, "data/key isn't a key forge made")
+                }
                 s.key = take text
                 return key_done(mut s)
-            }
+            },
+            Err(e) => {
+                if s.present[KEY_FILE] {
+                    return fatal(mut s, f"can't read data/key: {e.message()}".as_str())
+                }
+            },
         }
         return wait(mut s, host::random(32), For::Key(1))
     }
@@ -991,7 +1041,15 @@ fn pump(s: mut Service) {
         replies: Vec::new(),
         stops: false,
     }
-    let pends = replace(mut s.queue, Vec::new())
+    // A fence is a flight of its own: its answer is the only one that goes with it (F26a).
+    var take_n = 0
+    while take_n < s.queue.len() && !(s.queue[take_n].stops && take_n > 0) {
+        take_n += 1
+        if s.queue[take_n - 1].stops {
+            break
+        }
+    }
+    let pends = s.queue.drain_front(take_n)
     for p in pends {
         for o in p.objects {
             if s.written.contains(o.id) {
@@ -1030,7 +1088,7 @@ pub fn write_unflushed_file(s: mut Service, path: str, b: [u8], exec: bool, what
         wait(mut s, host::write_unflushed(path, b, exec), what.clone())
         return 1
     }
-    let part = f"{path}.part"
+    let part = f"{path}.wrela-write-part"
     wait(mut s, host::write_unflushed(part.as_str(), bytes::slice(b, 0, PART), exec), what.clone())
     var n = 1
     var at = PART
@@ -1051,7 +1109,7 @@ pub fn write_exec_file(s: mut Service, path: str, b: [u8], exec: bool, what: For
         wait(mut s, host::write_file(path, b, exec), what.clone())
         return 1
     }
-    let part = f"{path}.part"
+    let part = f"{path}.wrela-write-part"
     wait(mut s, host::write_file(part.as_str(), bytes::slice(b, 0, PART), exec), what.clone())
     var n = 1
     var at = PART
@@ -1073,7 +1131,7 @@ pub fn write_file(s: mut Service, path: str, b: [u8], what: For) -> u32 {
         return 1
     }
     // Written beside it in parts, then renamed into place: whole or absent after a crash.
-    let part = f"{path}.part"
+    let part = f"{path}.wrela-write-part"
     wait(mut s, host::write(part.as_str(), bytes::slice(b, 0, PART)), what.clone())
     var n = 1
     var at = PART
@@ -1145,11 +1203,10 @@ fn appended_all(s: mut Service) {
     }
     rooms::kept(mut s, f.events, f.ends)
     if f.stops {
-        // The fence is durable: its own answer goes, and the service stops.
+        // The fence is durable: its own answer (the flight's only one) goes, and the service
+        // stops.
         for r in f.replies {
-            if r.status == 200 {
-                reply(mut s, r.conn, r.status, r.kind, r.body.clone())
-            }
+            reply(mut s, r.conn, r.status, r.kind, r.body.clone())
         }
         print("forge: fenced")
         host::exit(1)
@@ -1554,15 +1611,17 @@ fn identify(s: mut Service, conn: u32) {
     let addr = who::addr_of(s.conns.at(conn).peer.as_str())
     if who::is_loopback(addr.as_str()) {
         // A program on this machine is the machine only with the store's key (`next_request`).
-        return known_as(mut s, conn, Some(who::on_machine(addr.as_str(), s.machine.as_str())))
+        let w = who::on_machine(addr.as_str(), s.machine.as_str())
+        return known_as(mut s, conn, Some(take w), 0)
     }
     if !who::is_tailnet(addr.as_str()) {
-        return known_as(mut s, conn, None)
+        return known_as(mut s, conn, None, 0)
     }
     if s.known.contains(addr.clone()) {
+        // What tailscale said holds for its minute, on every connection: not a minute more each.
         let (w, until) = s.known.at(addr.clone()).clone()
         if now(s) < until {
-            return known_as(mut s, conn, Some(take w))
+            return known_as(mut s, conn, Some(take w), until)
         }
     }
     let r = host::Run {
@@ -1595,19 +1654,17 @@ fn whois_said(s: mut Service, conn: u32, addr: str, r: take Result<Vec<u8>, IoEr
         },
         Err(e) => print(f"forge: whois didn't run: {e.message()}"),
     }
+    let until = now(s) + 60000
     if let Some(x) = w.clone() {
-        let _ = s.known.insert(addr.to_string(), (take x, now(s) + 60000))
+        let _ = s.known.insert(addr.to_string(), (take x, until))
     }
     if s.conns.contains(conn) {
-        known_as(mut s, conn, take w)
+        known_as(mut s, conn, take w, until)
     }
 }
 
-fn known_as(s: mut Service, conn: u32, w: take Option<who::Who>) {
-    let until = match w {
-        Some(x) => if x.local { 0 } else { now(s) + 60000 },
-        None => 0,
-    }
+/// Connection `conn`'s caller is `w` (none: refused), until `until` (0: for as long as it's open).
+fn known_as(s: mut Service, conn: u32, w: take Option<who::Who>, until: u64) {
     s.conns.at_mut(conn).who = take w
     s.conns.at_mut(conn).until = until
     s.conns.at_mut(conn).known = true

@@ -94,6 +94,10 @@ pub fn path_problem(p: str) -> Option<Text> {
         if part.is_empty() || part == "." || part == ".." {
             return Some("a path is relative, with `/` between parts, none empty, `.` or `..`")
         }
+        // The service host's name for a file being written: never a file of a tree.
+        if part.find(".wrela-write").is_some() {
+            return Some("a path has no part that holds `.wrela-write`")
+        }
     }
     None
 }

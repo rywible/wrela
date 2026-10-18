@@ -36,6 +36,8 @@ pub struct Worker: Clone {
     /// check changed since, found on disk before the next checkout.
     pub held_at: u64,
     pub changed: SortedMap<String, bool>,
+    /// Whether the checkout is still looking at the files it would keep.
+    pub looking: bool,
 }
 
 pub fn worker(name: str) -> Worker {
@@ -49,11 +51,32 @@ pub fn worker(name: str) -> Worker {
         failed: String::new(),
         held_at: 0,
         changed: SortedMap::new(),
+        looking: false,
     }
 }
 
+/// Where worker `name`'s manifest is kept: `data/workers/` and its name, each byte but a letter,
+/// a digit, `.`, `_` or `-` written as `%` and two hex digits (a name like `pop-os/2` is one file).
 pub fn manifest_path(name: str) -> String {
-    f"data/workers/{name}"
+    let hex = "0123456789ABCDEF"
+    var out = String::from("data/workers/")
+    for i in 0..name.len() {
+        let b = name.byte(i)
+        let plain = (b >= 48 && b <= 57) ||
+            (b >= 65 && b <= 90) ||
+            (b >= 97 && b <= 122) ||
+            b == 46 ||
+            b == 95 ||
+            b == 45
+        if plain && !(i == 0 && b == 46) {
+            out.push_byte(b)
+        } else {
+            out.push_byte(37)
+            out.push_byte(hex.byte(u32(b >> 4)))
+            out.push_byte(hex.byte(u32(b & 15)))
+        }
+    }
+    out
 }
 
 /// What a checkout holds, as its manifest's bytes.
@@ -246,7 +269,15 @@ pub fn pump(s: mut Service) {
 /// may have changed it), then what differs is written, flushed, and what it no longer holds goes.
 fn checkout(s: mut Service, target: take Files) {
     s.worker.changed = SortedMap::new()
-    var left = 0
+    // First, on disk: every file the checkout may hold from now, trusted for nothing, so a crash
+    // or a failure in the middle leaves the next checkout knowing what to clean up.
+    let might = held_or(s.worker.held, target)
+    var left = service::write_file(
+        mut s,
+        manifest_path(s.worker.name.as_str()).as_str(),
+        worker_manifest(might, 0),
+        For::Checkout,
+    )
     let keys = target.keys()
     let values = target.values()
     for i in 0..keys.len() {
@@ -256,13 +287,23 @@ fn checkout(s: mut Service, target: take Files) {
         }
     }
     s.worker.target = take target
+    s.worker.looking = true
     s.worker.left = left
-    if left == 0 {
-        write_checkout(mut s)
-    }
 }
 
-/// A file the checkout would keep, as it is on disk.
+/// Every file of `held` and of `target`: what a checkout between them may leave on disk.
+pub fn held_or(held: Files, target: Files) -> Files {
+    var out = held.clone()
+    let keys = target.keys()
+    let values = target.values()
+    for i in 0..keys.len() {
+        let _ = out.insert(keys[i].clone(), values[i])
+    }
+    out
+}
+
+/// A file the checkout would keep, as it is on disk: if its kind, size and time are as written,
+/// its bytes are read and hashed too, since a check could change them and keep the rest.
 pub fn looked(s: mut Service, path: take String, r: take Result<Vec<u8>, IoError>) {
     let fine = match take r {
         Ok(b) => match host::stat_of(take b) {
@@ -274,11 +315,34 @@ pub fn looked(s: mut Service, path: take String, r: take Result<Vec<u8>, IoError
         },
         Err(_) => false,
     }
-    if !fine {
+    if fine {
+        wait(mut s, host::read(f"{WORK}/{path}".as_str()), For::Hashed(path.clone()))
+        s.worker.left += 1
+    } else {
         let _ = s.worker.changed.insert(take path, value: true)
     }
+    looked_one(mut s)
+}
+
+/// A kept file's bytes: written again unless they are its blob's.
+pub fn hashed(s: mut Service, path: take String, r: take Result<Vec<u8>, IoError>) {
+    let same = match take r {
+        Ok(b) => match s.worker.target.get(path.clone()) {
+            Some(f) => object::blob_id(b) == f.id,
+            None => false,
+        },
+        Err(_) => false,
+    }
+    if !same {
+        let _ = s.worker.changed.insert(take path, value: true)
+    }
+    looked_one(mut s)
+}
+
+fn looked_one(s: mut Service) {
     s.worker.left -= 1
     if s.worker.left == 0 {
+        s.worker.looking = false
         write_checkout(mut s)
     }
 }
@@ -348,6 +412,10 @@ pub fn checkout_done(s: mut Service, r: take Result<Vec<u8>, IoError>) {
             s.worker.failed = f"the checkout: {e.message()}"
         }
     }
+    if s.worker.looking {
+        // The manifest that says the checkout is in the middle of a change.
+        return looked_one(mut s)
+    }
     s.worker.left -= 1
     if s.worker.left == 0 {
         run(mut s)
@@ -372,11 +440,17 @@ pub fn clocked(s: mut Service, r: take Result<Vec<u8>, IoError>) {
         s.worker.held = s.worker.target.clone()
         s.worker.held_at = now
     } else {
-        s.worker.held = SortedMap::new()
+        // Failed: what it may hold is kept, to clean up, but none of it is trusted.
+        s.worker.held = held_or(s.worker.held, s.worker.target)
         s.worker.held_at = 0
     }
     let m = worker_manifest(s.worker.held, s.worker.held_at)
-    wait(mut s, host::write(manifest_path(s.worker.name.as_str()).as_str(), m), For::ManifestSaved)
+    let _ = service::write_file(
+        mut s,
+        manifest_path(s.worker.name.as_str()).as_str(),
+        m,
+        For::ManifestSaved,
+    )
     if !s.worker.failed.is_empty() {
         let why = s.worker.failed.clone()
         return finish(
@@ -732,4 +806,11 @@ fn a_file_a_check_changed_isnt_taken_as_written() {
         !as_written(host::Stat { kind: host::Kind::Missing, size: 0, modified: 0 }, f, at: 100),
         "gone",
     )
+}
+
+@test
+fn a_workers_name_is_one_file_of_its_store() {
+    assert(manifest_path("pop-os").as_str() == "data/workers/pop-os", "a plain name")
+    assert(manifest_path("pop-os/2").as_str() == "data/workers/pop-os%2F2", "one of several")
+    assert(manifest_path("..").as_str() == "data/workers/%2E.", "never a part `..`")
 }

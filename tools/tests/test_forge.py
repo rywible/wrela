@@ -25,6 +25,13 @@ class Command(unittest.TestCase):
             self.assertTrue((Path(home) / "work").is_dir())
             self.assertEqual(Path(store).stat().st_mode & 0o777, 0o700, "the store is its owner's alone")
 
+    def test_a_backup_and_a_restore_have_a_store_and_a_place_for_their_files(self):
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as store:
+            for mode in ("backup", "restore"):
+                line = forge.command([mode, "--data", store, "--once"], "/", Path(home))
+                self.assertIn(f"data={Path(store).resolve()}", line, mode)
+                self.assertIn(f"work={Path(home) / 'work'}", line, mode)
+
     def test_a_call_lends_the_command_the_stores_key_when_it_may_read_it(self):
         with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as here:
             (Path(home) / "data").mkdir()

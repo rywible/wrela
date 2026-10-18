@@ -47,7 +47,15 @@ pub struct Conns {
     next: Arc<AtomicU32>,
     to_loop: Sender<crate::Event>,
     listeners: Arc<Mutex<Vec<Listener>>>,
+    /// How many connections are open: past `MOST_OPEN`, a listener closes what it accepts at once,
+    /// before it costs a thread.
+    open: Arc<AtomicU32>,
 }
+
+/// The most connections a service has open at once.
+const MOST_OPEN: u32 = 2048;
+/// How long a write to a connection may wait for its peer to read.
+const WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// A listener's address, and whether it is to stop: a service that ends stops its listeners, so
 /// its addresses are free again even while its process goes on.
@@ -55,7 +63,12 @@ type Listener = (std::net::SocketAddr, Arc<AtomicBool>);
 
 impl Conns {
     pub fn new(to_loop: Sender<crate::Event>) -> Conns {
-        Conns { next: Arc::new(AtomicU32::new(1)), to_loop, listeners: Arc::default() }
+        Conns {
+            next: Arc::new(AtomicU32::new(1)),
+            to_loop,
+            listeners: Arc::default(),
+            open: Arc::default(),
+        }
     }
 
     /// Stops every listener: each is woken by a connection of its own and closes.
@@ -77,9 +90,14 @@ impl Conns {
         let send = self.to_loop.clone();
         let peer = stream.peer_addr().map(|a| a.to_string()).unwrap_or_default();
         let _ = stream.set_nodelay(true);
+        // A peer that stops reading ends its connection, rather than holding its writer forever.
+        let _ = stream.set_write_timeout(Some(WRITE_TIMEOUT));
+        self.open.fetch_add(1, Ordering::SeqCst);
+        let open = Arc::clone(&self.open);
         let (writer, writes) = mpsc::channel::<Outgoing>();
         let _ = send.send(crate::Event::Net(Net::Opened { conn, tag, peer, writer }));
         let Ok(mut out) = stream.try_clone() else {
+            self.open.fetch_sub(1, Ordering::SeqCst);
             let _ = send.send(crate::Event::Net(Net::Closed { conn }));
             return;
         };
@@ -101,6 +119,7 @@ impl Conns {
                     break;
                 }
             }
+            open.fetch_sub(1, Ordering::SeqCst);
             let _ = send.send(crate::Event::Net(Net::Closed { conn }));
         });
     }
@@ -124,6 +143,10 @@ impl Conns {
             for stream in listener.incoming().flatten() {
                 if stopping.load(Ordering::SeqCst) {
                     break;
+                }
+                if conns.open.load(Ordering::SeqCst) >= MOST_OPEN {
+                    drop(stream);
+                    continue;
                 }
                 conns.attach(stream, conns.number(), u32::from(port));
             }

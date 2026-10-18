@@ -472,12 +472,9 @@ fn step(s: mut Service) {
 }
 
 fn save(s: mut Service) {
-    s.desk.waiting += 1
-    wait(
-        mut s,
-        host::write(STATE, state_bytes(s.desk.change.as_str(), s.desk.held)),
-        For::Desk(SAVED, 0),
-    )
+    // In parts if it's large: a request holds at most 1 MiB.
+    let b = state_bytes(s.desk.change.as_str(), s.desk.held)
+    s.desk.waiting += service::write_file(mut s, STATE, b, For::Desk(SAVED, 0))
 }
 
 fn tool(s: mut Service, name: str, args: str, purpose: u32) {
@@ -536,6 +533,10 @@ pub fn got(s: mut Service, purpose: u32, status: u32, body: take Vec<u8>) {
                 n = n | (u32(body[at + 32 + k]) << (8 * k))
             }
             at += 36
+            if n == replicate::LATER && id == f.id {
+                // The answer was full: the rest are asked for again.
+                break
+            }
             if id != f.id || n == 4294967295 || at + n > body.len() {
                 return finish(mut s, 1, f"forge: the service sent {path} wrong\n".as_str())
             }
