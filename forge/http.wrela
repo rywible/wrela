@@ -286,11 +286,22 @@ pub fn response(status: u32, kind: str, body: [u8], close: bool) -> Vec<u8> {
 
 /// A request to send: its method, path (with its query) and body, and the store's key if it's
 /// given (`x-forge-key`).
-pub fn request(method: str, host: str, path: str, kind: str, body: [u8], key: str) -> Vec<u8> {
-    var out: Vec<u8> = Vec::with_capacity(body.len() + 128)
+pub fn request(
+    method: str,
+    host: str,
+    path: str,
+    kind: str,
+    body: [u8],
+    key: str,
+    fleet: str,
+) -> Vec<u8> {
+    var out: Vec<u8> = Vec::with_capacity(body.len() + 192)
     push_str(mut out, f"{method} {path} HTTP/1.1\r\nhost: {host}\r\n")
     if !key.is_empty() {
         push_str(mut out, f"x-forge-key: {key}\r\n")
+    }
+    if !fleet.is_empty() {
+        push_str(mut out, f"x-forge-fleet: {fleet}\r\n")
     }
     push_str(mut out, f"content-type: {kind}\r\ncontent-length: {body.len()}\r\n\r\n")
     push_run(mut out, body)

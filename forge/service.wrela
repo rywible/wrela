@@ -30,9 +30,13 @@ pub const DATA: Text = "data"
 pub const KEY_FILE: u32 = 0
 pub const PROMISE_FILE: u32 = 1
 pub const LOG_FILE: u32 = 2
+pub const MANIFEST_FILE: u32 = 3
+pub const FLEET_FILE: u32 = 4
 pub const LOG: Text = "data/events"
 /// The most bytes a host request may carry, less room for its path: a larger write goes in parts.
 const PART: u32 = 1040000
+/// The most bytes of answers one host call sends, below the host's 64 MiB of commands a call.
+const CALL_SEND: u64 = 50331648
 
 pub enum Phase: Copy + Eq {
     /// Reading the arguments and the time.
@@ -72,6 +76,8 @@ pub enum For: Clone {
     Exists(u32),
     /// The store's key: read (0), made from randomness (1), saved (2); and the command's.
     Key(u32),
+    /// The fleet's key, as `Key`.
+    Fleet(u32),
     ClientKey,
     ObjectDirs,
     LogStat,
@@ -108,8 +114,9 @@ pub enum For: Clone {
     Replica(u32),
     /// A read of the log for a replica's ask on connection `conn`.
     LogPart(u32),
-    /// A wake-up, for what waits on time.
+    /// A wake-up, for what waits on time; and one for answers that wait for the next call.
     Tick,
+    Wake,
     /// A request of a workspace (workspace.wrela): what it's for, and for which file.
     Desk(u32, u32),
     /// A request of a backup or a restore (backup.wrela); an object it reads, and its kind.
@@ -146,6 +153,8 @@ pub struct Conn {
     /// for tailscale to say again.
     pub who: Option<who::Who>,
     pub until: u64,
+    /// Whether a request on it showed the fleet's key (F28): a fleet caller must.
+    pub fleet_shown: bool,
 }
 
 /// A commit waiting to be written.
@@ -200,6 +209,11 @@ pub struct Service {
     /// The store's key (`data/key`, readable by its owner alone): a program on this machine that
     /// shows it is the machine itself (F28). The command reads it to call as the machine.
     pub key: String,
+    /// The fleet's key (`data/fleet`, the same on every machine of the fleet): what a fleet caller
+    /// shows, beside a `--fleet` rule, so that a check on a fleet machine can't act for it (F28).
+    pub fleet_key: String,
+    /// The account checks run as (`--check-as`); empty for the worker's own.
+    pub check_as: String,
     /// Whether each of the files a start reads is there (`For::Exists`).
     pub present: Vec<bool>,
     /// The time when the host started: milliseconds since 1970, and the call's seconds since.
@@ -247,6 +261,11 @@ pub struct Service {
     pub rooms: rooms::Rooms,
     pub watching: client::Watching,
     ticking: bool,
+    /// What this host call has sent, the answers that wait for the next, and whether a wake-up
+    /// for them is out.
+    sent: u64,
+    outbox: Vec<(u32, Vec<u8>)>,
+    waking: bool,
     /// When the chores that wait on time are next done: jobs past their limit, peers' epochs.
     chores_at: u64,
     /// Whether main moved since the open changes were last carried onto it.
@@ -267,7 +286,9 @@ pub fn new() -> Service {
         whois: String::from("tailscale"),
         known: SortedMap::new(),
         key: String::new(),
-        present: Vec::from([false, false, false]),
+        fleet_key: String::new(),
+        check_as: String::new(),
+        present: Vec::from([false, false, false, false, false]),
         start_ms: 0,
         time: 0.0,
         core: core::core("local"),
@@ -301,6 +322,9 @@ pub fn new() -> Service {
         rooms: rooms::none(),
         watching: client::not_watching(),
         ticking: false,
+        sent: 0,
+        outbox: Vec::new(),
+        waking: false,
         chores_at: 0,
         carry_due: false,
     }
@@ -328,6 +352,8 @@ pub fn step(s: mut Service, time: f32) {
     if s.phase == Phase::Stopped {
         return
     }
+    s.sent = 0
+    send_waiting(mut s)
     if !s.started {
         s.started = true
         wait(mut s, host::args(), For::Args)
@@ -377,6 +403,7 @@ pub fn step(s: mut Service, time: f32) {
                             known: false,
                             who: None,
                             until: 0,
+                            fleet_shown: false,
                         },
                     )
                     wait(mut s, host::peer(conn), For::Peer(conn))
@@ -441,6 +468,7 @@ fn answered(s: mut Service, what: take For, r: take Result<Vec<u8>, IoError>) {
         },
         For::Made => started_one(mut s, "making a directory", take r),
         For::Key(step) => keyed(mut s, step, take r),
+        For::Fleet(step) => fleet_keyed(mut s, step, take r),
         For::ClientKey => client::keyed(mut s, take r),
         For::Exists(which) => {
             let there = match take r {
@@ -452,7 +480,7 @@ fn answered(s: mut Service, what: take For, r: take Result<Vec<u8>, IoError>) {
                 Err(_) => true,
             }
             s.present[which] = there
-            if s.phase != Phase::Replica {
+            if s.phase == Phase::Disk {
                 started_one(mut s, "looking at the store's files", Ok(Vec::new()))
             }
         },
@@ -585,6 +613,7 @@ fn answered(s: mut Service, what: take For, r: take Result<Vec<u8>, IoError>) {
         For::Replica(what) => replicate::answered(mut s, what, take r),
         For::LogPart(conn) => replicate::log_read(mut s, conn, take r),
         For::Tick => s.ticking = false,
+        For::Wake => s.waking = false,
         For::Desk(what, i) => workspace::answered(mut s, what, i, take r),
         For::Backup(what) => backup::answered(mut s, what, take r),
         For::BackupObject(id, kind) => backup::read_object(mut s, id, kind, take r),
@@ -630,6 +659,9 @@ fn begin(s: mut Service) {
     }
     if let Some(w) = flag(s.args, "--whois") {
         s.whois = take w
+    }
+    if let Some(u) = flag(s.args, "--check-as") {
+        s.check_as = take u
     }
     let keeps = mode.as_str() == "serve" || mode.as_str() == "replica" || mode.as_str() == "work"
     if keeps && flag(s.args, "--machine").is_none() {
@@ -680,16 +712,18 @@ fn begin(s: mut Service) {
     }
     s.advertise = flag(s.args, "--advertise").unwrap_or(s.listen.clone())
     let addr = who::addr_of(s.listen.as_str())
-    if s.works && !who::is_loopback(addr.as_str()) {
+    if s.works && s.check_as.is_empty() && !who::is_loopback(addr.as_str()) {
         print(
-            "forge: this service runs checks as its own account, where a writer's check can read the store and its key: on a fleet, serve with --no-worker and run `forge work` as an account that can't",
+            "forge: this service runs checks as its own account, where a writer's check could read the store, its key and the fleet's: on a fleet, give --check-as an account that can't",
         )
     }
     s.phase = Phase::Disk
     // One program holds a store at a time: its lock first, before anything of it is read.
     s.startup_left = 8
     wait(mut s, host::lock("data/lock"), For::Locked)
-    s.startup_left += 2
+    s.startup_left += 4
+    wait(mut s, host::stat("data/fleet"), For::Exists(FLEET_FILE))
+    wait(mut s, host::read("data/fleet"), For::Fleet(0))
     wait(mut s, host::stat("data/key"), For::Exists(KEY_FILE))
     wait(mut s, host::read("data/key"), For::Key(0))
     wait(mut s, host::stat("data/promise"), For::Exists(PROMISE_FILE))
@@ -698,6 +732,12 @@ fn begin(s: mut Service) {
     wait(mut s, host::mkdir("data/workers"), For::Made)
     wait(mut s, host::list("data/objects"), For::ObjectDirs)
     wait(mut s, host::stat(LOG), For::LogStat)
+    s.startup_left += 1
+    wait(
+        mut s,
+        host::stat(jobs::manifest_path(s.worker.name.as_str()).as_str()),
+        For::Exists(MANIFEST_FILE),
+    )
     wait(mut s, host::read(jobs::manifest_path(s.worker.name.as_str()).as_str()), For::ManifestRead)
 }
 
@@ -751,6 +791,14 @@ pub fn started_one(s: mut Service, what: str, r: take Result<Vec<u8>, IoError>) 
                     f"epoch {s.core.state.epoch} is {s.core.state.primary}'s, not {s.machine}'s: `forge serve --promote` makes this store the service".as_str(),
                 )
             }
+            if s.peers.fence_epoch > s.core.state.epoch {
+                // It promised a newer epoch to another store as a replica: it may serve only
+                // as a promotion, which takes an epoch above that one (F26).
+                return fatal(
+                    mut s,
+                    f"this store promised epoch {s.peers.fence_epoch} to another: `forge serve --promote` makes it the service".as_str(),
+                )
+            }
         }
         peers::at_start(mut s, promote)
     }
@@ -792,6 +840,58 @@ fn keyed(s: mut Service, step: u32, r: take Result<Vec<u8>, IoError>) {
         return fatal(mut s, f"the store's key wasn't saved: {e.message()}".as_str())
     }
     key_done(mut s)
+}
+
+/// The fleet's key, read at the start: the first store of a fleet makes it (32 random bytes as
+/// hex, for its owner alone), and every other machine of the fleet holds a copy of it. A replica
+/// and a worker without it stop.
+fn fleet_keyed(s: mut Service, step: u32, r: take Result<Vec<u8>, IoError>) {
+    if step == 0 {
+        match take r {
+            Ok(b) => {
+                let text = bytes::text_of(b).as_str().trim().to_string()
+                if text.len() != 64 {
+                    return fatal(mut s, "data/fleet isn't a key forge made")
+                }
+                s.fleet_key = take text
+                return fleet_done(mut s)
+            },
+            Err(e) => {
+                if s.present[FLEET_FILE] {
+                    return fatal(mut s, f"can't read data/fleet: {e.message()}".as_str())
+                }
+            },
+        }
+        if s.phase != Phase::Disk {
+            return fatal(
+                mut s,
+                "this machine has no fleet key: copy data/fleet from the fleet's first store into this one's data root, readable by forge's account alone",
+            )
+        }
+        return wait(mut s, host::random(32), For::Fleet(1))
+    }
+    if step == 1 {
+        let Ok(b) = take r else { return fatal(mut s, "the system gave no randomness for a key") }
+        if b.len() != 32 {
+            return fatal(mut s, "the system gave too little randomness for a key")
+        }
+        s.fleet_key = Id::of_bytes(b, 0).hex()
+        return wait(
+            mut s,
+            host::write_private("data/fleet", bytes::of_str(s.fleet_key.as_str())),
+            For::Fleet(2),
+        )
+    }
+    if let Err(e) = r {
+        return fatal(mut s, f"the fleet's key wasn't saved: {e.message()}".as_str())
+    }
+    fleet_done(mut s)
+}
+
+fn fleet_done(s: mut Service) {
+    if s.phase == Phase::Disk {
+        started_one(mut s, "the fleet's key", Ok(Vec::new()))
+    }
 }
 
 fn key_done(s: mut Service) {
@@ -980,8 +1080,10 @@ fn unpark(s: mut Service, id: Id) {
 pub fn commit(s: mut Service, d: take Durable, answer: take Option<Reply>) {
     var records: Vec<u8> = Vec::new()
     if !d.events.is_empty() {
+        // A record is sent whole to a replica in one host call, which sends at most 64 MiB: a
+        // call's record is at most 40 MiB.
         let p = state::payload(d.events)
-        if p.len() > log::MOST {
+        if p.len() > 41943040 {
             if let Some(a) = answer {
                 reply(
                     mut s,
@@ -1231,7 +1333,11 @@ fn appended_all(s: mut Service) {
         replicate::release(mut s)
     } else {
         for r in f.replies {
-            reply(mut s, r.conn, r.status, r.kind, r.body.clone())
+            if s.fencing {
+                reply(mut s, r.conn, 503, "text/plain", bytes::of_str("forge was fenced\n"))
+            } else {
+                reply(mut s, r.conn, r.status, r.kind, r.body.clone())
+            }
         }
     }
     pump(mut s)
@@ -1294,14 +1400,52 @@ pub fn reply(s: mut Service, conn: u32, status: u32, kind: Text, body: [u8]) {
         return
     }
     let closing = s.conns.at(conn).closing
-    send_all(conn, http::response(status, kind, body, close: closing))
-    if closing {
+    let out = http::response(status, kind, body, close: closing)
+    // A host call sends at most 64 MiB: past 48 MiB in this one, an answer waits for the next,
+    // and its connection's next request waits for it.
+    if !s.outbox.is_empty() || (s.sent > 0 && s.sent + u64(out.len()) > CALL_SEND) {
+        s.outbox.push((conn, take out))
+        if !s.waking {
+            s.waking = true
+            wait(mut s, host::after(1), For::Wake)
+        }
+        return
+    }
+    sent(mut s, conn, take out)
+}
+
+/// Sends answer `out` on connection `conn`, then reads its next request (or closes it).
+fn sent(s: mut Service, conn: u32, out: take Vec<u8>) {
+    s.sent += u64(out.len())
+    send_all(conn, out)
+    if !s.conns.contains(conn) {
+        return
+    }
+    if s.conns.at(conn).closing {
         close(conn)
         let _ = s.conns.remove(conn)
         return
     }
     s.conns.at_mut(conn).busy = false
     next_request(mut s, conn)
+}
+
+/// Sends the answers that waited for this call, as many as its budget allows.
+fn send_waiting(s: mut Service) {
+    while !s.outbox.is_empty() {
+        let n = u64(s.outbox[0].1.len())
+        if s.sent > 0 && s.sent + n > CALL_SEND {
+            break
+        }
+        let (conn, out) = s.outbox.remove(0)
+        if s.conns.contains(conn) {
+            sent(mut s, conn, take out)
+        }
+    }
+    if !s.outbox.is_empty() && !s.waking {
+        s.waking = true
+        wait(mut s, host::after(1), For::Wake)
+    }
 }
 
 fn bytes_in(s: mut Service, conn: u32, b: [u8]) {
@@ -1361,6 +1505,10 @@ fn next_request(s: mut Service, conn: u32) {
             s.conns.at_mut(conn).busy = true
             if req.closes() {
                 s.conns.at_mut(conn).closing = true
+            }
+            // A caller that shows the fleet's key may act for the fleet, if a rule names it.
+            if !s.fleet_key.is_empty() && req.header("x-forge-fleet") == s.fleet_key.as_str() {
+                s.conns.at_mut(conn).fleet_shown = true
             }
             // A program on this machine that shows the store's key is the machine itself.
             let shown = req.header("x-forge-key")
@@ -1601,7 +1749,7 @@ pub fn ctx_of(s: Service, conn: u32) -> Ctx {
         now: now(s),
         writes,
         lands: who::named(w.clone(), s.landers),
-        fleet: who::named(w, s.fleet),
+        fleet: w.local || (who::named(w, s.fleet) && s.conns.at(conn).fleet_shown),
     }
 }
 

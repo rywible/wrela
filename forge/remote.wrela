@@ -100,18 +100,37 @@ pub fn start(s: mut Service) {
     s.remote.waiting = true
     // Where its manifest is kept, made before anything else.
     wait(mut s, host::mkdir("data/workers"), For::Remote(SAVED))
-    wait(mut s, host::read(manifest_path(s.remote.name.as_str()).as_str()), For::Remote(MANIFEST))
+    wait(mut s, host::stat("data/fleet"), For::Exists(service::FLEET_FILE))
+    wait(mut s, host::read("data/fleet"), For::Fleet(0))
+    let m = manifest_path(s.remote.name.as_str())
+    wait(mut s, host::stat(m.as_str()), For::Exists(service::MANIFEST_FILE))
+    wait(mut s, host::read(m.as_str()), For::Remote(MANIFEST))
     print(f"forge: working for {s.calls.server} as {s.remote.name}")
 }
 
 /// A host request of the worker's answered.
 pub fn answered(s: mut Service, what: u32, r: take Result<Vec<u8>, IoError>) {
     if what == MANIFEST {
-        if let Ok(b) = take r {
-            if let Some((files, at)) = worker_manifest_of(take b) {
-                s.remote.held = take files
-                s.remote.held_at = at
-            }
+        match take r {
+            Ok(b) => match worker_manifest_of(take b) {
+                Some((files, at)) => {
+                    s.remote.held = take files
+                    s.remote.held_at = at
+                },
+                // What the checkout may hold isn't known, so what to clean up isn't: it stops.
+                None => return service::fatal(
+                    mut s,
+                    "the worker's manifest is malformed: remove the work root's files and the manifest to start the checkout afresh",
+                ),
+            },
+            Err(e) => {
+                if s.present[service::MANIFEST_FILE] {
+                    return service::fatal(
+                        mut s,
+                        f"can't read the worker's manifest: {e.message()}".as_str(),
+                    )
+                }
+            },
         }
         s.remote.known = true
         s.remote.waiting = false
@@ -333,7 +352,7 @@ fn clocked(s: mut Service, r: take Result<Vec<u8>, IoError>) {
         s.remote.waiting = false
         return
     }
-    let argv = jobs::command(s.remote.check.as_str())
+    let argv = jobs::as_user(s.check_as.as_str(), jobs::command(s.remote.check.as_str()))
     let r = host::Run {
         tag: s.remote.job,
         argv,
@@ -351,6 +370,11 @@ fn clocked(s: mut Service, r: take Result<Vec<u8>, IoError>) {
 pub fn got(s: mut Service, purpose: u32, status: u32, body: take Vec<u8>) {
     s.remote.waiting = false
     if status == 0 {
+        if purpose == FETCHING {
+            // A checkout cut short: what it may hold is kept, to clean up, but none of it trusted.
+            s.remote.held = jobs::held_or(s.remote.held, s.remote.target)
+            s.remote.held_at = 0
+        }
         print(f"forge: {bytes::text_of(body)}; trying again in 5 s")
         return later(mut s, 5000)
     }

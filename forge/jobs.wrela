@@ -151,12 +151,21 @@ pub fn manifest_read(s: mut Service, r: take Result<Vec<u8>, IoError>) {
                 s.worker.held = take files
                 s.worker.held_at = at
             },
-            None => print(
-                "forge: the worker's manifest is malformed: its checkout is written whole",
+            // What the checkout may hold isn't known, so what to clean up isn't: it stops.
+            None => return service::fatal(
+                mut s,
+                "the worker's manifest is malformed: remove the work root's files and the manifest to start the checkout afresh",
             ),
         },
-        // A worker with no manifest has an empty checkout, as far as forge knows.
-        Err(_) => {},
+        Err(e) => {
+            if s.present[service::MANIFEST_FILE] {
+                return service::fatal(
+                    mut s,
+                    f"can't read the worker's manifest: {e.message()}".as_str(),
+                )
+            }
+            // A worker with no manifest has an empty checkout, as far as forge knows.
+        },
     }
     s.worker.known = true
     service::started_one(mut s, "the worker's manifest", Ok(Vec::new()))
@@ -343,6 +352,10 @@ fn looked_one(s: mut Service) {
     s.worker.left -= 1
     if s.worker.left == 0 {
         s.worker.looking = false
+        if !s.worker.failed.is_empty() {
+            // The manifest that would say what to clean up wasn't saved: nothing is changed.
+            return run(mut s)
+        }
         write_checkout(mut s)
     }
 }
@@ -463,7 +476,7 @@ pub fn clocked(s: mut Service, r: take Result<Vec<u8>, IoError>) {
         )
     }
     let check = s.core.state.jobs.at(job).check.clone()
-    let argv = command(check.as_str())
+    let argv = as_user(s.check_as.as_str(), command(check.as_str()))
     let r = host::Run {
         tag: job,
         argv,
@@ -474,6 +487,28 @@ pub fn clocked(s: mut Service, r: take Result<Vec<u8>, IoError>) {
         stdin: Vec::new(),
     }
     wait(mut s, host::run(r), For::Ran(job))
+}
+
+/// `argv` run as account `user` (`sudo -n -u USER --`), or as the worker's own if `user` is
+/// empty: a check is a writer's code, which an account that can't read the store or the fleet's
+/// key runs safely (`--check-as`, spec F23).
+pub fn as_user(user: str, argv: take Vec<String>) -> Vec<String> {
+    if user.is_empty() {
+        return argv
+    }
+    var out = Vec::from(
+        [
+            String::from("sudo"),
+            String::from("-n"),
+            String::from("-u"),
+            user.to_string(),
+            String::from("--"),
+        ],
+    )
+    for a in argv {
+        out.push(a.clone())
+    }
+    out
 }
 
 /// What a worker runs for check `check`: `tools/check.sh` with its name (none for `suite`), or for
@@ -813,4 +848,16 @@ fn a_workers_name_is_one_file_of_its_store() {
     assert(manifest_path("pop-os").as_str() == "data/workers/pop-os", "a plain name")
     assert(manifest_path("pop-os/2").as_str() == "data/workers/pop-os%2F2", "one of several")
     assert(manifest_path("..").as_str() == "data/workers/%2E.", "never a part `..`")
+}
+
+@test
+fn a_check_runs_as_the_account_it_is_given() {
+    let own = as_user("", command("wgsl"))
+    assert(own.len() == 2 && own[0].as_str() == "tools/check.sh", "the worker's own")
+    let other = as_user("forge-check", command("wgsl"))
+    assert(
+        other.len() == 7 && other[0].as_str() == "sudo" && other[3].as_str() == "forge-check",
+        "sudo",
+    )
+    assert(other[4].as_str() == "--" && other[5].as_str() == "tools/check.sh", "then the check")
 }

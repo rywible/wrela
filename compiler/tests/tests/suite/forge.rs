@@ -317,6 +317,27 @@ fn a_worker_on_another_machine_runs_a_check_and_the_service_keeps_its_evidence()
         .as_str()
         .expect("a job")
         .to_string();
+    // A program on the fleet's machine that doesn't show the fleet's key isn't the fleet, though
+    // a rule names its address: a check there can't report work as a worker.
+    let raw = |headers: &str| {
+        let body = r#"{"worker":"far"}"#;
+        let mut c = TcpStream::connect(("127.0.0.1", port)).expect("forge accepts");
+        let req = format!(
+            "POST /api/work/next HTTP/1.1\r\nhost: x\r\n{headers}connection: close\r\ncontent-length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        c.write_all(req.as_bytes()).expect("sent");
+        let mut out = String::new();
+        c.read_to_string(&mut out).expect("an answer");
+        out
+    };
+    assert!(raw("").starts_with("HTTP/1.1 403"), "no fleet key, no work");
+    let fleet = std::fs::read_to_string(data.join("fleet")).expect("the fleet's key");
+    let bad =
+        raw("x-forge-fleet: 0000000000000000000000000000000000000000000000000000000000000000\r\n");
+    assert!(bad.starts_with("HTTP/1.1 403"), "another key, no work");
+    assert_eq!(fleet.len(), 64);
+    share_fleet_key(data, wdata);
     let worker = run_forge(
         build,
         wdata,
@@ -358,6 +379,7 @@ fn a_replica_holds_each_landing_before_it_is_answered_and_serves_once_promoted()
         &["serve", "--listen", &listen, "--machine", "test", "--acks", "1", "--fleet", "127.0.0.1"],
     );
     ready(port);
+    share_fleet_key(data, rdata);
     let rport = free_port();
     let rlisten = format!("127.0.0.1:{rport}");
     let replica = run_forge(
@@ -429,6 +451,11 @@ fn land_one(port: u16, path: &str, text: &str) -> u64 {
     call(port, "land", serde_json::json!({"change": change}))["seq"].as_u64().expect("a place")
 }
 
+/// Gives store or worker `to` the fleet's key that store `from` made: as an operator copies it.
+fn share_fleet_key(from: &Path, to: &Path) {
+    std::fs::copy(from.join("fleet"), to.join("fleet")).expect("the fleet's key");
+}
+
 fn position(port: u16) -> serde_json::Value {
     let (status, text) = http(port, "GET", "/api/position", "");
     assert_eq!(status, 200, "{text}");
@@ -496,6 +523,8 @@ fn three_stores_fail_over_without_losing_a_confirmed_landing_and_the_old_service
         ],
     );
     ready(pp);
+    share_fleet_key(&pdata, &adata);
+    share_fleet_key(&pdata, &bdata);
     let ra = replica(&adata, &awork, "a", &a, peers_of(&p, &b));
     let rb = replica(&bdata, &bwork, "b", &b, peers_of(&p, &a));
     ready(pa);

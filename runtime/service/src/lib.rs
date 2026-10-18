@@ -32,7 +32,8 @@ use body::{Body, Out};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use wrela_host::server::{Failure, Limits, Net as Command, Room, ServerBuild};
@@ -79,12 +80,22 @@ struct Open {
     tag: u32,
     peer: String,
     writer: Sender<tcp::Outgoing>,
+    /// The bytes sent to it its writer hasn't written yet.
+    queued: Arc<AtomicU64>,
 }
+
+/// What a service's threads may hand its loop before they wait for it: at most 1024 events, so
+/// connections' bytes wait in their sockets, not in memory, while the loop is busy.
+const QUEUED_EVENTS: usize = 1024;
+/// The most bytes that may wait for a connection's writer: past them, a peer that doesn't read
+/// is dropped.
+const QUEUED_BYTES: u64 = 64 << 20;
 
 /// Runs `config` until the program ends it (its status) or a call fails (70 or 75). Its listeners
 /// and connections are closed when it ends.
 pub fn run(config: Config) -> i32 {
-    let (to_loop, from_threads): (Sender<Event>, Receiver<Event>) = mpsc::channel();
+    let (to_loop, from_threads): (SyncSender<Event>, Receiver<Event>) =
+        mpsc::sync_channel(QUEUED_EVENTS);
     let conns = tcp::Conns::new(to_loop.clone());
     let mut open: HashMap<u32, Open> = HashMap::new();
     let code = serve(&config, &conns, &mut open, &to_loop, &from_threads);
@@ -99,7 +110,7 @@ fn serve(
     config: &Config,
     conns: &tcp::Conns,
     open: &mut HashMap<u32, Open>,
-    to_loop: &Sender<Event>,
+    to_loop: &SyncSender<Event>,
     from_threads: &Receiver<Event>,
 ) -> i32 {
     let made: Arc<Mutex<Vec<Request>>> = Arc::default();
@@ -136,7 +147,13 @@ fn serve(
             match c {
                 Command::Send(conn, bytes) => {
                     if let Some(o) = open.get(&conn) {
-                        let _ = o.writer.send(tcp::Outgoing::Bytes(bytes));
+                        let n = bytes.len() as u64;
+                        if o.queued.load(Ordering::SeqCst) + n > QUEUED_BYTES {
+                            let _ = o.writer.send(tcp::Outgoing::Close);
+                        } else {
+                            o.queued.fetch_add(n, Ordering::SeqCst);
+                            let _ = o.writer.send(tcp::Outgoing::Bytes(bytes));
+                        }
                     }
                 }
                 Command::Close(conn) => {
@@ -171,8 +188,8 @@ fn serve(
         for e in events {
             match e {
                 Event::Answer { request, answer } => room.answer(request, answer),
-                Event::Net(tcp::Net::Opened { conn, tag, peer, writer }) => {
-                    open.insert(conn, Open { tag, peer, writer });
+                Event::Net(tcp::Net::Opened { conn, tag, peer, writer, queued }) => {
+                    open.insert(conn, Open { tag, peer, writer, queued });
                     room.push_connection(conn, true, tag);
                 }
                 Event::Net(tcp::Net::Data { conn, bytes }) => {
@@ -205,7 +222,7 @@ fn carry_out(
     conns: &tcp::Conns,
     running: &process::Running,
     open: &HashMap<u32, Open>,
-    to_loop: &Sender<Event>,
+    to_loop: &SyncSender<Event>,
     exit: &mut Option<i32>,
 ) -> Option<Result<Vec<u8>, String>> {
     if let Some(answer) = files::serve(&config.roots, &r.service, &r.body) {

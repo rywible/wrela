@@ -11,8 +11,9 @@
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::mpsc::{self, Sender};
+use std::sync::mpsc::{self, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -24,12 +25,14 @@ pub enum Outgoing {
 
 /// What reaches a service's loop from its connections.
 pub enum Net {
-    /// Connection `conn` opened, tagged `tag`, from `peer`; `writer` writes to it.
+    /// Connection `conn` opened, tagged `tag`, from `peer`; `writer` writes to it, and `queued` is
+    /// how many bytes wait for it to write.
     Opened {
         conn: u32,
         tag: u32,
         peer: String,
         writer: Sender<Outgoing>,
+        queued: Arc<AtomicU64>,
     },
     Data {
         conn: u32,
@@ -45,7 +48,7 @@ pub enum Net {
 #[derive(Clone)]
 pub struct Conns {
     next: Arc<AtomicU32>,
-    to_loop: Sender<crate::Event>,
+    to_loop: SyncSender<crate::Event>,
     listeners: Arc<Mutex<Vec<Listener>>>,
     /// How many connections are open: past `MOST_OPEN`, a listener closes what it accepts at once,
     /// before it costs a thread.
@@ -62,7 +65,7 @@ const WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 type Listener = (std::net::SocketAddr, Arc<AtomicBool>);
 
 impl Conns {
-    pub fn new(to_loop: Sender<crate::Event>) -> Conns {
+    pub fn new(to_loop: SyncSender<crate::Event>) -> Conns {
         Conns {
             next: Arc::new(AtomicU32::new(1)),
             to_loop,
@@ -95,7 +98,9 @@ impl Conns {
         self.open.fetch_add(1, Ordering::SeqCst);
         let open = Arc::clone(&self.open);
         let (writer, writes) = mpsc::channel::<Outgoing>();
-        let _ = send.send(crate::Event::Net(Net::Opened { conn, tag, peer, writer }));
+        let queued = Arc::new(AtomicU64::new(0));
+        let left = Arc::clone(&queued);
+        let _ = send.send(crate::Event::Net(Net::Opened { conn, tag, peer, writer, queued }));
         let Ok(mut out) = stream.try_clone() else {
             self.open.fetch_sub(1, Ordering::SeqCst);
             let _ = send.send(crate::Event::Net(Net::Closed { conn }));
@@ -104,7 +109,9 @@ impl Conns {
         thread::spawn(move || {
             for w in writes {
                 match w {
-                    Outgoing::Bytes(b) if out.write_all(&b).is_ok() => {}
+                    Outgoing::Bytes(b) if out.write_all(&b).is_ok() => {
+                        left.fetch_sub(b.len() as u64, Ordering::SeqCst);
+                    }
                     _ => break,
                 }
             }

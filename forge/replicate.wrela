@@ -136,7 +136,19 @@ pub fn release(s: mut Service) {
         if s.awaiting[i].0 <= held {
             let (_, replies) = s.awaiting.remove(i)
             for r in replies {
-                service::reply(mut s, r.conn, r.status, r.kind, r.body.clone())
+                // An answer can start the next request, a fence among them: then nothing more is
+                // confirmed.
+                if s.fencing {
+                    service::reply(
+                        mut s,
+                        r.conn,
+                        503,
+                        "text/plain",
+                        bytes::of_str("forge was fenced\n"),
+                    )
+                } else {
+                    service::reply(mut s, r.conn, r.status, r.kind, r.body.clone())
+                }
             }
         } else {
             i += 1
@@ -399,6 +411,8 @@ pub fn start(s: mut Service) {
     s.replica.servers = take servers
     s.replica.waiting = true
     wait(mut s, host::lock("data/lock"), For::Replica(LOCKED))
+    wait(mut s, host::stat("data/fleet"), For::Exists(service::FLEET_FILE))
+    wait(mut s, host::read("data/fleet"), For::Fleet(0))
     wait(mut s, host::stat("data/key"), For::Exists(service::KEY_FILE))
     wait(mut s, host::read("data/key"), For::Key(0))
     wait(mut s, host::stat("data/promise"), For::Exists(service::PROMISE_FILE))
@@ -837,6 +851,10 @@ fn abandon(s: mut Service) {
     s.replica.ends = Vec::new()
     s.replica.want = Vec::new()
     s.replica.asked = SortedMap::new()
+    // What it has written is trusted no more as a whole: a tree kept with a subtree not yet
+    // fetched would otherwise be taken as all there. The next records' objects are asked for
+    // again (writing an object again changes nothing).
+    s.replica.have = SortedMap::new()
 }
 
 pub fn got(s: mut Service, purpose: u32, status: u32, body: take Vec<u8>) {

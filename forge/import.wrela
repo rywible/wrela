@@ -201,6 +201,16 @@ fn land_commit(s: mut Service, blobs: take Vec<Object>) {
     let c = s.import.commits[s.import.next].clone()
     var files: Files = SortedMap::new()
     var lost = String::new()
+    // A path forge's tools couldn't write isn't one an import may bring.
+    var bad = String::new()
+    for e in s.import.entries {
+        if let Some(why) = core::path_problem(e.path.as_str()) {
+            bad = f"git holds {e.path}, which forge can't: {why}"
+        }
+    }
+    if !bad.is_empty() {
+        return failed(mut s, bad.as_str())
+    }
     for e in s.import.entries {
         match s.import.shas.get(e.sha.clone()) {
             Some(f) => {

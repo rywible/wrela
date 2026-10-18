@@ -15,7 +15,7 @@
 //! | `fs/stat` | path | kind `u8` (0 none, 1 file, 2 directory, 3 executable file), size `u64`, modified `u64` ms |
 //! | `fs/list` | path | `u32` count, then each entry's kind `u8`, name and size `u64`, by name |
 //! | `fs/mkdir` | path | nothing: it and its parents exist |
-//! | `fs/remove` | path, `u8` 1 to remove a directory and what it holds | nothing |
+//! | `fs/remove` | path, `u8` 1 to remove a directory and what it holds | nothing: the path is gone (as it is if it wasn't there) |
 //! | `fs/rename` | path, path, in one root | nothing: the rename is on disk |
 //! | `fs/lock` | path | nothing: the service holds the file's lock, alone, until it ends |
 //!
@@ -262,10 +262,12 @@ pub fn serve(roots: &Roots, service: &str, body: &[u8]) -> Option<Result<Vec<u8>
             "remove" => {
                 let all = b.u8()? == 1;
                 b.end()?;
+                // A path already gone is removed: removing is the same however often it's asked.
                 let removed = match fs::symlink_metadata(&path) {
                     Ok(m) if m.is_dir() && all => fs::remove_dir_all(&path),
                     Ok(m) if m.is_dir() => fs::remove_dir(&path),
                     Ok(_) => fs::remove_file(&path),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
                     Err(e) => Err(e),
                 };
                 removed.map_err(|e| io(&path, e))?;

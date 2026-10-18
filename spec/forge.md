@@ -9,7 +9,8 @@ never reused.
 ## The store
 
 - **F1.** A store is a directory (the service's `data` root) holding `objects/`, `events`,
-  `workers/`, `key` (F28), `lock` and, for a replica that promised an epoch, `promise` (F26).
+  `workers/`, `key` and `fleet` (F28), `lock` and, for a replica that promised an epoch,
+  `promise` (F26).
   Nothing else in it is forge's. One program holds a store at a time: a service, a replica or a
   restore takes `lock` (an exclusive lock of the file) before it reads anything of it, and keeps
   it while it runs; a backup reads a store without it.
@@ -60,8 +61,8 @@ never reused.
   records before it.
 - **F13.** Each record's payload is one event: a byte for its kind, then its fields, in this order.
   A call that makes more than one event writes them as one record of kind 15, so a crash keeps
-  all of them or none; a record is at most 64 MiB, and a call whose record would be larger is
-  refused.
+  all of them or none. A record is at most 64 MiB; a call whose record would be larger than 40 MiB
+  is refused, so a record goes whole in one answer to a replica.
 
 | Kind | Event | Fields |
 |---|---|---|
@@ -150,9 +151,10 @@ never reused.
   only after the checkout succeeded; before it keeps a file the manifest names, it looks at it on
   disk, and writes it again unless its kind and size are the manifest's and it changed before the
   manifest's time. So a check that changes a file the tree holds doesn't change the next check's
-  tree. The service's own worker runs checks as the service's account, where a writer's check
-  could read the store and its key: on a fleet, run `forge serve --no-worker`, and `forge work` as
-  an account that can't read the store.
+  tree. A check is a writer's code: `--check-as USER` runs it as another account
+  (`sudo -n -u USER --`), which must be able to write the work root but not read the data root,
+  where the store, its key and the fleet's key are. Without it, a check runs as the worker's own
+  account, and on a fleet could act as that machine.
 - **F23a.** A job runs on one worker at a time, as one try (its `attempt`). A worker's report
   counts only for the job's current try on that worker, while it runs. A job goes back to the
   queue (event 14), as a new try, when its worker starts again without it (the service's own
@@ -227,6 +229,14 @@ never reused.
   for 60 s, and asks again before a connection's first request after that. Any other caller, and
   a tailnet caller tailscale can't name, is refused with 403. A worker or a replica on another
   machine is named for its node (`NODE` or `NODE/...`).
+- **F28a.** A fleet caller (F22: one `--fleet` names) acts for the fleet only if its request also
+  shows the fleet's key (`x-forge-fleet`): 64 hex digits in `fleet`, which the fleet's first store
+  makes and every other machine of the fleet holds a copy of, readable by forge's account alone. A
+  replica and a worker without it don't start; forge's fleet calls (a replica's, a worker's, a
+  service's to its peers) show it, and forge's command doesn't. So a check, run as an account
+  that can't read the key, can't report work, hold the log for a replica or fence a service, even
+  from a fleet machine. Every device of one tailnet login is that login: a rule for landers names
+  `node:` machines that run no checks.
 - **F29.** A change's author and a landing's `by` are the caller's login and node
   (`LOGIN@NODE`; `tagged@NODE` for a tagged node, `local@MACHINE` for a program on the machine
   without the key), or `local` for the machine itself.
