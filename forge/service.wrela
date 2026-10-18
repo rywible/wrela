@@ -37,6 +37,8 @@ pub const LOG: Text = "data/events"
 const PART: u32 = 1040000
 /// The most bytes of answers one host call sends, below the host's 64 MiB of commands a call.
 const CALL_SEND: u64 = 50331648
+/// The most bytes of answers that wait for later calls.
+const OUTBOX: u64 = 268435456
 
 pub enum Phase: Copy + Eq {
     /// Reading the arguments and the time.
@@ -264,8 +266,13 @@ pub struct Service {
     /// What this host call has sent, the answers that wait for the next, and whether a wake-up
     /// for them is out.
     sent: u64,
-    outbox: Vec<(u32, Vec<u8>)>,
+    /// Each waiting answer: its connection, its bytes, and whether it may go once fenced (the
+    /// fence's own answer).
+    outbox: Vec<(u32, Vec<u8>, bool)>,
+    waiting_bytes: u64,
     waking: bool,
+    /// Whether the answers being sent are a fence's own.
+    answering_fence: bool,
     /// When the chores that wait on time are next done: jobs past their limit, peers' epochs.
     chores_at: u64,
     /// Whether main moved since the open changes were last carried onto it.
@@ -324,7 +331,9 @@ pub fn new() -> Service {
         ticking: false,
         sent: 0,
         outbox: Vec::new(),
+        waiting_bytes: 0,
         waking: false,
+        answering_fence: false,
         chores_at: 0,
         carry_due: false,
     }
@@ -780,6 +789,14 @@ pub fn started_one(s: mut Service, what: str, r: take Result<Vec<u8>, IoError>) 
             }
         }
         if !promote {
+            if s.peers.fence_epoch > s.core.state.epoch {
+                // It promised an epoch to another store as a replica: it may serve only as a
+                // promotion, which takes an epoch above that one (F26).
+                return fatal(
+                    mut s,
+                    f"this store promised epoch {s.peers.fence_epoch} to another: `forge serve --promote` makes it the service".as_str(),
+                )
+            }
             // A store's first service begins its first epoch; a store whose epoch is another
             // machine's is that service's replica, which serves only once promoted (F26).
             if s.core.state.epoch == 0 {
@@ -789,14 +806,6 @@ pub fn started_one(s: mut Service, what: str, r: take Result<Vec<u8>, IoError>) 
                 return fatal(
                     mut s,
                     f"epoch {s.core.state.epoch} is {s.core.state.primary}'s, not {s.machine}'s: `forge serve --promote` makes this store the service".as_str(),
-                )
-            }
-            if s.peers.fence_epoch > s.core.state.epoch {
-                // It promised a newer epoch to another store as a replica: it may serve only
-                // as a promotion, which takes an epoch above that one (F26).
-                return fatal(
-                    mut s,
-                    f"this store promised epoch {s.peers.fence_epoch} to another: `forge serve --promote` makes it the service".as_str(),
                 )
             }
         }
@@ -1307,9 +1316,11 @@ fn appended_all(s: mut Service) {
     if f.stops {
         // The fence is durable: its own answer (the flight's only one) goes, and the service
         // stops.
+        s.answering_fence = true
         for r in f.replies {
             reply(mut s, r.conn, r.status, r.kind, r.body.clone())
         }
+        s.answering_fence = false
         print("forge: fenced")
         host::exit(1)
         s.phase = Phase::Stopped
@@ -1404,7 +1415,16 @@ pub fn reply(s: mut Service, conn: u32, status: u32, kind: Text, body: [u8]) {
     // A host call sends at most 64 MiB: past 48 MiB in this one, an answer waits for the next,
     // and its connection's next request waits for it.
     if !s.outbox.is_empty() || (s.sent > 0 && s.sent + u64(out.len()) > CALL_SEND) {
-        s.outbox.push((conn, take out))
+        // While answers wait, no new request is read (`next_request`), so they are few; and
+        // their bytes are bounded all the same: past 256 MiB, a caller's answer is dropped with
+        // its connection, and it asks again.
+        if s.waiting_bytes + u64(out.len()) > OUTBOX {
+            close(conn)
+            let _ = s.conns.remove(conn)
+            return
+        }
+        s.waiting_bytes += u64(out.len())
+        s.outbox.push((conn, take out, s.answering_fence))
         if !s.waking {
             s.waking = true
             wait(mut s, host::after(1), For::Wake)
@@ -1432,19 +1452,44 @@ fn sent(s: mut Service, conn: u32, out: take Vec<u8>) {
 
 /// Sends the answers that waited for this call, as many as its budget allows.
 fn send_waiting(s: mut Service) {
+    let was = !s.outbox.is_empty()
     while !s.outbox.is_empty() {
         let n = u64(s.outbox[0].1.len())
         if s.sent > 0 && s.sent + n > CALL_SEND {
             break
         }
-        let (conn, out) = s.outbox.remove(0)
-        if s.conns.contains(conn) {
+        let (conn, out, fence_ok) = s.outbox.remove(0)
+        s.waiting_bytes -= n
+        if !s.conns.contains(conn) {
+            continue
+        }
+        if s.fencing && !fence_ok {
+            // Fenced since it waited: it confirms nothing (F26a).
+            let closing = s.conns.at(conn).closing
+            let no = http::response(
+                503,
+                "text/plain",
+                bytes::of_str("forge was fenced: this call's outcome is unknown\n"),
+                close: closing,
+            )
+            sent(mut s, conn, take no)
+        } else {
             sent(mut s, conn, take out)
         }
     }
     if !s.outbox.is_empty() && !s.waking {
         s.waking = true
         wait(mut s, host::after(1), For::Wake)
+    }
+    if was && s.outbox.is_empty() {
+        // The requests that waited for the answers to go are read now.
+        var all: Vec<u32> = Vec::new()
+        for c in s.conns.keys() {
+            all.push(c)
+        }
+        for c in all {
+            next_request(mut s, c)
+        }
     }
 }
 
@@ -1470,6 +1515,10 @@ fn bytes_in(s: mut Service, conn: u32, b: [u8]) {
 
 fn next_request(s: mut Service, conn: u32) {
     if !s.conns.contains(conn) || s.conns.at(conn).busy || !s.conns.at(conn).known {
+        return
+    }
+    if !s.outbox.is_empty() {
+        // Answers wait for the next host call: no new request until they've gone.
         return
     }
     let until = s.conns.at(conn).until

@@ -262,12 +262,13 @@ pub fn serve(roots: &Roots, service: &str, body: &[u8]) -> Option<Result<Vec<u8>
             "remove" => {
                 let all = b.u8()? == 1;
                 b.end()?;
-                // A path already gone is removed: removing is the same however often it's asked.
+                // A path already gone is removed: removing is the same however often it's asked,
+                // even when its directory is gone too.
                 let removed = match fs::symlink_metadata(&path) {
                     Ok(m) if m.is_dir() && all => fs::remove_dir_all(&path),
                     Ok(m) if m.is_dir() => fs::remove_dir(&path),
                     Ok(_) => fs::remove_file(&path),
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
                     Err(e) => Err(e),
                 };
                 removed.map_err(|e| io(&path, e))?;
@@ -437,6 +438,15 @@ mod tests {
         let target = dir.path().join("f");
         assert!(super::write_via(&target, &part, b"new", 0o644, true).is_err(), "refused");
         assert_eq!(std::fs::read(&outside).expect("still there"), b"keep");
+    }
+
+    #[test]
+    fn removing_what_is_gone_succeeds_even_with_its_directory_gone() {
+        let (r, _dir) = roots();
+        call(&r, "fs/remove", Out::default().str("data/no/such/file").u8(0)).expect("gone already");
+        call(&r, "fs/write", Out::default().str("data/f").bytes(b"x")).expect("a file");
+        call(&r, "fs/remove", Out::default().str("data/f").u8(0)).expect("removed");
+        call(&r, "fs/remove", Out::default().str("data/f").u8(0)).expect("and again");
     }
 
     #[test]

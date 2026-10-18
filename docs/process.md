@@ -2580,6 +2580,27 @@ WebTransport rooms, which admit only a client of the exact same build and which 
 speak: `forge watch` and `GET /api/watch` hold an ask until a room (main, a change, the checks)
 has a notice, a change's room hears when main moves under it, and `/studio` is a live page with
 no script: each answer is held until the log grows, and the page asks for itself again.
+
+GPT-6.1-Sol and GPT-6-Astra then reviewed the code in rounds, read-only through the Codex CLI at
+high reasoning, each round's emphasis swapped between durability and security, each checking the
+last round's fixes in the code rather than the summary. The first round found 30 problems, the
+second 17 more in the fixes and what they missed, the third 11. Among them:
+- promotion snapshots taken before the peers stopped confirming for the old service;
+- promises that two candidates could both win;
+- a fence that let other answers out with it;
+- a replica that took objects it had only asked for as kept;
+- a checkout trusted from its manifest, a file's time, or a cleanup list a failure forgot;
+- loopback callers, and checks on a fleet machine, with powers that only a key now gives;
+- records too large for a replica's read or a host call;
+- unbounded buffers in the program and the host;
+- answers given before what they reported was durable.
+
+Claude checked each finding against the source, fixed those that held, and added a regression
+test where one could show the failure (a spoiled checkout, a nested tree missing from a backup, a
+loopback caller without the store's key, a fleet caller without the fleet's). It left two
+residual risks: a directory swapped for a link between a path's check and its use, which only a
+check running as the host's own account could do; and an operator's setup, since a check must
+run as an account that can't read the store (`--check-as`).
 Workspaces put a change's files on disk for the work that needs them (`forge pull`, `forge push`,
 with `.forgeignore`): on the M4 Air a pull of main's 2,032 files takes 2.7 s and matches
 `git archive`. forge keeps each revision's item index, made by that revision's own compiler on a

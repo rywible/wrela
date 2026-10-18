@@ -995,6 +995,68 @@ fn a_program_on_the_machine_is_the_machine_only_with_the_stores_key() {
     stop(port, again);
 }
 
+#[test]
+fn answers_larger_than_one_host_call_sends_go_over_several() {
+    let scratch = Scratch::new("budget");
+    let dir = |d: &str| {
+        let p = scratch.0.join(d);
+        std::fs::create_dir_all(&p).expect("a directory");
+        p
+    };
+    let (build, data, work) = (dir("build"), dir("data"), dir("work"));
+    wrela_tests::must_build(&repo_root().join("forge"), &build);
+    let port = free_port();
+    let service = start(&build, &data, &work, port);
+    ready(port);
+    // A 24 MiB blob, then three asks for it pipelined on one connection: 72 MiB of answers,
+    // more than one host call may send.
+    let big: Vec<u8> = (0..24usize << 20).map(|i| (i % 251) as u8).collect();
+    let mut c = TcpStream::connect(("127.0.0.1", port)).expect("forge accepts");
+    c.set_read_timeout(Some(Duration::from_secs(60))).expect("a timeout");
+    let put =
+        format!("POST /api/object HTTP/1.1\r\nhost: x\r\ncontent-length: {}\r\n\r\n", big.len());
+    c.write_all(put.as_bytes()).expect("sent");
+    c.write_all(&big).expect("sent");
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        c.read_exact(&mut byte).expect("an answer");
+        head.push(byte[0]);
+    }
+    let mut id_hex = [0u8; 64];
+    c.read_exact(&mut id_hex).expect("its id");
+    let id: Vec<u8> = (0..32)
+        .map(|i| {
+            u8::from_str_radix(std::str::from_utf8(&id_hex[2 * i..2 * i + 2]).unwrap(), 16).unwrap()
+        })
+        .collect();
+    for _ in 0..3 {
+        let ask = format!("POST /api/objects HTTP/1.1\r\nhost: x\r\ncontent-length: 32\r\n\r\n");
+        c.write_all(ask.as_bytes()).expect("sent");
+        c.write_all(&id).expect("sent");
+    }
+    for n in 0..3 {
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            c.read_exact(&mut byte).expect("an answer");
+            head.push(byte[0]);
+        }
+        let text = String::from_utf8_lossy(&head).to_lowercase();
+        assert!(text.starts_with("http/1.1 200"), "answer {n}: {text}");
+        let len: usize = text
+            .lines()
+            .find_map(|l| l.strip_prefix("content-length: "))
+            .and_then(|v| v.trim().parse().ok())
+            .expect("a length");
+        let mut body = vec![0u8; len];
+        c.read_exact(&mut body).expect("its body");
+        assert_eq!(&body[..32], &id[..], "answer {n} names the blob");
+        assert_eq!(&body[37..], &big[..], "answer {n} holds it whole");
+    }
+    assert_eq!(http(port, "GET", "/health", "").0, 200, "the service still serves");
+    stop(port, service);
+}
+
 /// forge with `args` and the roots `roots`, on a thread of its own: its exit status.
 fn run_with_roots(
     build: &Path,
