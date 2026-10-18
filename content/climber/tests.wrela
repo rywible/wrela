@@ -90,8 +90,8 @@ fn button(b: PadButton, down: bool) -> Event {
 
 /// The bot's presses this tick: the stick toward the wolf (as the camera sees it) until it's
 /// near, an attack (if it `attacks`) when it's in reach and prowling, a blink toward it (through
-/// it) when it has crouched long enough (if it `blinks`). It holds each button a few ticks. (fight.json, the
-/// scripted fight, is this bot's presses, its stick rounded to hundredths.)
+/// it) when it has crouched long enough (if it `blinks`). It holds each button a few ticks. (`scripts::FIGHT`,
+/// the scripted fight, is this bot's presses, its stick rounded to hundredths.)
 fn bot(w: World, blinks: bool, attacks: bool, held: mut u32) -> Vec<Event> {
     let c = w.climber
     let to = w.wolf.pos() - c.at.xz

@@ -288,7 +288,7 @@ fn compiled_construction_fields_agree_on_cpu_and_gpu(s: Lab) {
     }
 }
 
-@test(frames: 24, input: "controls.json")
+@test(frames: 24, input: scripts::CONTROLS)
 fn the_lab_selects_another_world_and_replays_its_construction(s: Lab) {
     assert(s.world == World::Ocean && s.seed == 1)
     assert(s.playing && s.visible == 0, "the replay must start before the first solid was built")

@@ -1,0 +1,25 @@
+// The site's scripts of input, which its frame tests give it
+// (`@test(frames: n, input: scripts::NAME)`), as a person would.
+
+use std::input::{Key, Mods, Script}
+
+/// The input of `a_drag_keeps_its_distance_from_its_finger`.
+pub const DRAG: Script = Script::frames()
+    .down(2, vec2(300.0, 600.0))
+    .move_to(3, vec2(300.0, 580.0))
+    .move_to(4, vec2(300.0, 560.0))
+
+/// The input of `search_and_find_take_the_typing`.
+pub const KEYS: Script = Script::frames()
+    .text(2, "/")
+    .text(3, "arena")
+    .press(4, Key::Backspace)
+    .press(6, Key::F, Mods { ctrl: true })
+    .text(7, "ab")
+    .press(8, Key::Backspace)
+    .press(9, Key::Enter)
+
+/// The input of `a_pointer_release_updates_the_drag_before_ending_it`.
+pub const RELEASE: Script = Script::frames()
+    .down(4, vec2(630.0, 200.0))
+    .up(5, vec2(630.0, 300.0))

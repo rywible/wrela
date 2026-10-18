@@ -1,0 +1,10 @@
+// The lab's scripts of input, which its frame tests give it
+// (`@test(frames: n, input: scripts::NAME)`), as a person would.
+
+use std::input::{Key, Script}
+
+/// The input of `the_lab_selects_another_world_and_replays_its_construction`.
+pub const CONTROLS: Script = Script::frames()
+    .press(0, Key::O)
+    .press(2, Key::Right)
+    .press(4, Key::Space)

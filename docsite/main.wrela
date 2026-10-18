@@ -5061,7 +5061,7 @@ fn href_of(s: Docs, target: str) -> String {
 
 /// `/` opens search, which types what follows but not the `/`; Backspace takes a character back.
 /// Command-F opens find in its place, which takes the typing then; Enter there doesn't leave it.
-@test(frames: 12, input: "scripts/keys.json")
+@test(frames: 12, input: scripts::KEYS)
 fn search_and_find_take_the_typing(docs: Docs) {
     assert(!docs.searching, "find took search's place")
     assert(docs.query.as_str() == "aren", docs.query.as_str())
@@ -5327,7 +5327,7 @@ fn a_swipe_carries_on_at_its_fingers_last_speed() {
     assert(swipe_speed(Vec::from([(1.0, 2.0)]), now: 2.0) == 0.0)
 }
 
-@test(frames: 6, input: "scripts/release.json")
+@test(frames: 6, input: scripts::RELEASE)
 fn a_pointer_release_updates_the_drag_before_ending_it(docs: Docs) {
     assert(docs.pointer == vec2(630.0, 300.0))
     assert(docs.slop == 100.0, f"{docs.slop}")
@@ -5336,7 +5336,7 @@ fn a_pointer_release_updates_the_drag_before_ending_it(docs: Docs) {
 
 /// A finger's drag doesn't jump the way it came before it counted as a drag, nor make it up: the
 /// page starts from where it was and stays that far from the finger, moving with it.
-@test(frames: 40, input: "scripts/drag.json")
+@test(frames: 40, input: scripts::DRAG)
 fn a_drag_keeps_its_distance_from_its_finger(docs: Docs) {
     // The finger crossed the slop 20 pixels up, and went 20 more.
     assert(docs.slop == -20.0, f"{docs.slop}")

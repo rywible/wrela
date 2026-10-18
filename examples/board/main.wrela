@@ -2320,7 +2320,7 @@ fn screen_rect(game: App, i: u32) -> Rect {
     game.view.rect(game.board.items[i].rect())
 }
 
-@test(frames: 16, input: "scripts/restore-paste.json")
+@test(frames: 16, input: scripts::RESTORE_PASTE)
 fn undo_does_not_paste_at_a_caret_from_replaced_text(game: App) {
     assert(game.board.items.len() == 1 && game.board.items[0].text == "abc")
     let aim = Aim { typing: Some(Typing::caret(game.board.items[0].id, 1)), revision: 4 }
@@ -2330,7 +2330,7 @@ fn undo_does_not_paste_at_a_caret_from_replaced_text(game: App) {
     )
 }
 
-@test(frames: 20, input: "scripts/restore-paste.json")
+@test(frames: 20, input: scripts::RESTORE_PASTE)
 fn redo_does_not_paste_at_a_caret_from_replaced_text(game: App) {
     assert(game.board.items.len() == 1 && game.board.items[0].text == "a")
     let aim = Aim { typing: Some(Typing::caret(game.board.items[0].id, 3)), revision: 5 }
@@ -2341,7 +2341,7 @@ fn redo_does_not_paste_at_a_caret_from_replaced_text(game: App) {
     )
 }
 
-@test(frames: 47, input: "scripts/note.json")
+@test(frames: 47, input: scripts::NOTE)
 fn a_board_waiting_to_be_written_is_not_yet_saved(game: App) {
     assert(game.writing.is_some(), "the board's store is waiting for its answer")
     assert(game.saved != game.board, "only a successful store marks the board as saved")
@@ -2363,14 +2363,14 @@ fn a_failed_save_stays_dirty_and_a_success_keeps_its_own_snapshot() {
     assert(saved != board, "edits made during the store still need saving")
 }
 
-@test(frames: 48, input: "scripts/note.json")
+@test(frames: 48, input: scripts::NOTE)
 fn a_successful_store_marks_its_board_as_saved(game: App) {
     assert(game.writing.is_none() && game.written.is_none())
     assert(game.saved == game.board)
 }
 
 /// N, a click, typing and Escape leave one note with the text.
-@test(frames: 14, input: "scripts/note.json")
+@test(frames: 14, input: scripts::NOTE)
 fn a_note_is_placed_and_typed(game: App) {
     assert(game.board.items.len() == 1, f"{game.board.items.len()} items")
     let it = game.board.items[0].clone()
@@ -2381,7 +2381,7 @@ fn a_note_is_placed_and_typed(game: App) {
 }
 
 /// R and a drag make a rectangle where the pointer went; dragging it moves it.
-@test(frames: 16, input: "scripts/move.json")
+@test(frames: 16, input: scripts::MOVE)
 fn a_dragged_shape_follows_the_pointer(game: App) {
     assert(game.board.items.len() == 1)
     assert(game.board.items[0].kind == Kind::Box)
@@ -2392,7 +2392,7 @@ fn a_dragged_shape_follows_the_pointer(game: App) {
 }
 
 /// The same, then Cmd+Z: the rectangle is back where it was made.
-@test(frames: 18, input: "scripts/undo.json")
+@test(frames: 18, input: scripts::UNDO)
 fn undo_puts_a_move_back(game: App) {
     assert(game.board.items.len() == 1)
     let r = screen_rect(game, 0)
@@ -2401,7 +2401,7 @@ fn undo_puts_a_move_back(game: App) {
 }
 
 /// L and a drag from one note to another join them.
-@test(frames: 20, input: "scripts/link.json")
+@test(frames: 20, input: scripts::LINK)
 fn a_connector_joins_two_notes(game: App) {
     assert(game.board.items.len() == 3, f"{game.board.items.len()} items")
     let link = game.board.items[2].clone()
@@ -2410,7 +2410,7 @@ fn a_connector_joins_two_notes(game: App) {
 }
 
 /// A marquee over one of two notes selects it alone, and Backspace deletes it.
-@test(frames: 20, input: "scripts/marquee.json")
+@test(frames: 20, input: scripts::MARQUEE)
 fn a_marquee_selects_and_backspace_deletes(game: App) {
     assert(game.board.items.len() == 1, f"{game.board.items.len()} items")
     assert(screen_rect(game, 0).x > 320.0, "the right-hand note is left")
@@ -2418,7 +2418,7 @@ fn a_marquee_selects_and_backspace_deletes(game: App) {
 }
 
 /// P and a drag draw a stroke through the pointer's path.
-@test(frames: 12, input: "scripts/pen.json")
+@test(frames: 12, input: scripts::PEN)
 fn the_pen_draws_a_stroke(game: App) {
     assert(game.board.items.len() == 1)
     let it = game.board.items[0].clone()
@@ -2428,7 +2428,7 @@ fn the_pen_draws_a_stroke(game: App) {
 
 /// Without paste events (this host has none), Cmd+V and a paste both bring the board's own
 /// clipboard: the note copied, twice.
-@test(frames: 12, input: "scripts/paste.json")
+@test(frames: 12, input: scripts::PASTE)
 fn a_paste_without_the_hosts_clipboard_uses_the_boards(game: App) {
     assert(game.capabilities == Some(0), "the host said it has nothing")
     assert(game.board.items.len() == 3, f"{game.board.items.len()} items")
@@ -2437,7 +2437,7 @@ fn a_paste_without_the_hosts_clipboard_uses_the_boards(game: App) {
 
 /// An input method's composing shows and goes; what it commits is typed once, after what was
 /// typed before.
-@test(frames: 12, input: "scripts/compose.json")
+@test(frames: 12, input: scripts::COMPOSE)
 fn composed_text_is_typed_once(game: App) {
     let note = game.board.items[0].clone()
     assert(note.text == "a仮名", f"`{note.text}`")
@@ -2448,7 +2448,7 @@ fn composed_text_is_typed_once(game: App) {
 /// An assistive technology's selection names the lower of two notes, though the upper one is
 /// drawn over it and the note tool is in hand: it's selected, and nothing is made. (The starter
 /// board's ten items take ids 1 to 10, so the first note made is 11, its node 1011.)
-@test(frames: 13, input: "scripts/assist.json")
+@test(frames: 13, input: scripts::ASSIST)
 fn an_assistive_selection_names_its_item(game: App) {
     assert(game.board.items.len() == 2, f"{game.board.items.len()} items")
     assert(game.board.items[0].id == 11)
@@ -2458,7 +2458,7 @@ fn an_assistive_selection_names_its_item(game: App) {
 
 /// Backspace and Delete take a whole character group: an accent with its letter, an emoji with
 /// its skin tone.
-@test(frames: 12, input: "scripts/groups.json")
+@test(frames: 12, input: scripts::GROUPS)
 fn editing_moves_over_whole_groups(game: App) {
     // "a", "e" + U+0301, 👍🏽, "x": Left to before "x", Backspace takes 👍🏽; Left to before
     // "é", Delete takes it.
@@ -2467,7 +2467,7 @@ fn editing_moves_over_whole_groups(game: App) {
 }
 
 /// A note dragged to within a few pixels of its neighbour's top lands exactly on it.
-@test(frames: 18, input: "scripts/snap.json")
+@test(frames: 18, input: scripts::SNAP)
 fn a_dragged_note_snaps_to_its_neighbour(game: App) {
     let a = game.board.items[0].clone()
     let b = game.board.items[1].clone()
@@ -2477,7 +2477,7 @@ fn a_dragged_note_snaps_to_its_neighbour(game: App) {
 }
 
 /// Alt and a drag leave the note where it was and take a copy.
-@test(frames: 14, input: "scripts/alt.json")
+@test(frames: 14, input: scripts::ALT)
 fn an_alt_drag_leaves_a_copy(game: App) {
     assert(game.board.items.len() == 2, f"{game.board.items.len()} items")
     let first = game.board.items[0].clone()
@@ -2489,7 +2489,7 @@ fn an_alt_drag_leaves_a_copy(game: App) {
 }
 
 /// Shift keeps a drag on the axis it has gone further along.
-@test(frames: 14, input: "scripts/shift.json")
+@test(frames: 14, input: scripts::SHIFT)
 fn a_shift_drag_keeps_to_one_axis(game: App) {
     let r = screen_rect(game, 0)
     assert(abs(r.center().y - 240.0) < 0.01, f"y {r.center().y}")
@@ -2508,7 +2508,7 @@ fn arrowheads_go_round() {
 
 /// A drag from the dot on a note's right side to another note joins them; a double click on the
 /// connector types its label.
-@test(frames: 70, input: "scripts/dots.json")
+@test(frames: 70, input: scripts::DOTS)
 fn a_dot_drags_out_a_connector_with_a_label(game: App) {
     assert(game.board.items.len() == 3, f"{game.board.items.len()} items")
     // The right-hand note was made first; the connector runs from the left-hand one to it.
@@ -2524,7 +2524,7 @@ fn a_dot_drags_out_a_connector_with_a_label(game: App) {
 }
 
 /// Alt+Shift+Left selects the last word; typing replaces it, and nothing's selected after.
-@test(frames: 52, input: "scripts/replace.json")
+@test(frames: 52, input: scripts::REPLACE)
 fn typing_replaces_a_selected_word(game: App) {
     let note = game.board.items[0].clone()
     assert(note.text == "hello there", f"`{note.text}`")
@@ -2532,25 +2532,25 @@ fn typing_replaces_a_selected_word(game: App) {
 }
 
 /// Up keeps the caret where it was across: from after "two" to after "one".
-@test(frames: 54, input: "scripts/lines.json")
+@test(frames: 54, input: scripts::LINES)
 fn up_moves_to_the_line_above(game: App) {
     assert(game.board.items[0].text == "one!\ntwo", f"`{game.board.items[0].text}`")
 }
 
 /// Cmd+A and a letter replace everything; Alt+Backspace takes a word, Cmd+Backspace the line.
-@test(frames: 56, input: "scripts/whole.json")
+@test(frames: 56, input: scripts::WHOLE)
 fn select_all_and_deleting_by_word_and_line(game: App) {
     assert(game.board.items[0].text == "end", f"`{game.board.items[0].text}`")
 }
 
 /// The zoom buttons ease: a few frames after 100% is asked for, the camera is on its way; after
 /// half a second, it's there.
-@test(frames: 8, input: "scripts/ease.json")
+@test(frames: 8, input: scripts::EASE)
 fn the_camera_eases_to_a_hundred_percent(game: App) {
     assert(game.goal.is_some() && game.view.zoom != 1.0, f"zoom {game.view.zoom}")
 }
 
-@test(frames: 50, input: "scripts/ease.json")
+@test(frames: 50, input: scripts::EASE)
 fn the_camera_arrives(game: App) {
     assert(game.goal.is_none() && game.view.zoom == 1.0, f"zoom {game.view.zoom}")
 }
@@ -2558,7 +2558,7 @@ fn the_camera_arrives(game: App) {
 /// A right click on a note opens the menu (moved up to stay on the screen: its fourth row,
 /// Duplicate, is at y 335); the row makes a copy and closes it; a right click on empty board
 /// opens one, and a click away closes it doing nothing else.
-@test(frames: 18, input: "scripts/menu.json")
+@test(frames: 18, input: scripts::MENU)
 fn the_context_menu_acts_and_closes(game: App) {
     assert(game.board.items.len() == 2, f"{game.board.items.len()} items")
     assert(game.menu.is_none(), "closed")
@@ -2566,7 +2566,7 @@ fn the_context_menu_acts_and_closes(game: App) {
 }
 
 /// A locked note can't be dragged or deleted.
-@test(frames: 16, input: "scripts/lock.json")
+@test(frames: 16, input: scripts::LOCK)
 fn a_locked_note_stays(game: App) {
     assert(game.board.items.len() == 1)
     assert(game.board.items[0].locked)
@@ -2576,7 +2576,7 @@ fn a_locked_note_stays(game: App) {
 
 /// F and a drag make a frame, numbered; a note put inside it goes with it when the frame is
 /// dragged by its empty space.
-@test(frames: 20, input: "scripts/frame.json")
+@test(frames: 20, input: scripts::FRAME)
 fn a_frame_carries_what_is_inside_it(game: App) {
     assert(game.board.items.len() == 2)
     let frame = game.board.items[0].clone()
@@ -2588,7 +2588,7 @@ fn a_frame_carries_what_is_inside_it(game: App) {
 }
 
 /// The Shapes tool opens its flyout; its triangle is picked, and a click makes one.
-@test(frames: 13, input: "scripts/flyout.json")
+@test(frames: 13, input: scripts::FLYOUT)
 fn the_shapes_flyout_picks_a_triangle(game: App) {
     assert(game.board.items.len() == 1, f"{game.board.items.len()} items")
     assert(game.board.items[0].kind == Kind::Triangle)
@@ -2596,7 +2596,7 @@ fn the_shapes_flyout_picks_a_triangle(game: App) {
 }
 
 /// The text size control steps a text's words up twice: 20, then 28, then 40.
-@test(frames: 12, input: "scripts/size.json")
+@test(frames: 12, input: scripts::SIZE)
 fn text_size_steps_up(game: App) {
     let t = game.board.items[0].clone()
     assert(t.kind == Kind::Text && t.type_size == 40.0, f"{t.type_size}")
@@ -2604,7 +2604,7 @@ fn text_size_steps_up(game: App) {
 }
 
 /// A double click on the board's name selects it; typing renames the board, and Enter keeps it.
-@test(frames: 10, input: "scripts/rename.json")
+@test(frames: 10, input: scripts::RENAME)
 fn the_board_is_renamed(game: App) {
     assert(game.board.name == "Plans", f"`{game.board.name}`")
     assert(game.naming.is_none())
@@ -2612,7 +2612,7 @@ fn the_board_is_renamed(game: App) {
 
 /// M shows the minimap; a click in it brings the camera's middle to the world point there,
 /// on the minimap as it was at the press.
-@test(frames: 8, input: "scripts/minimap.json")
+@test(frames: 8, input: scripts::MINIMAP)
 fn the_minimap_moves_the_camera(game: App) {
     assert(game.map_on)
     // The minimap as it was at the press: the first frame's view, which fits the starting board.
@@ -2626,7 +2626,7 @@ fn the_minimap_moves_the_camera(game: App) {
 
 /// A click away from a note stops typing in it and lets it go, and so does one after a click
 /// that selects it again.
-@test(frames: 48, input: "scripts/off.json")
+@test(frames: 48, input: scripts::OFF)
 fn a_click_off_a_note_lets_it_go(game: App) {
     assert(game.board.items.len() == 1 && game.board.items[0].text == "Hi")
     assert(game.typing.is_none())
@@ -2635,7 +2635,7 @@ fn a_click_off_a_note_lets_it_go(game: App) {
 
 /// Cmd+G makes two notes one group: a click on one selects both, a drag moves both, and a
 /// later click on it, with the group selected, picks it alone.
-@test(frames: 64, input: "scripts/grouping.json")
+@test(frames: 64, input: scripts::GROUPING)
 fn a_group_moves_whole_and_opens_to_a_click(game: App) {
     assert(game.board.items.len() == 2)
     let a = game.board.items[0].clone()
@@ -2652,7 +2652,7 @@ fn a_group_moves_whole_and_opens_to_a_click(game: App) {
 
 /// Shift+2 eases the camera onto what's selected: the starter's first note, 200 units square,
 /// fills the 480 pixels' height but 80 each side, in the middle.
-@test(frames: 70, input: "scripts/zoom.json")
+@test(frames: 70, input: scripts::ZOOM)
 fn shift_two_zooms_to_the_selection(game: App) {
     assert(game.goal.is_none())
     let r = screen_rect(game, game.board.index(1).unwrap())
@@ -2662,7 +2662,7 @@ fn shift_two_zooms_to_the_selection(game: App) {
 
 /// Three notes selected: the Align row's "tops" puts their tops together, and Alt+Shift+H
 /// spaces them evenly across, the outer two staying.
-@test(frames: 20, input: "scripts/align.json")
+@test(frames: 20, input: scripts::ALIGN)
 fn the_align_row_lines_notes_up(game: App) {
     assert(game.aligning, "the row is open")
     let a = game.board.items[0].rect()
@@ -2677,7 +2677,7 @@ fn the_align_row_lines_notes_up(game: App) {
 
 /// Two notes at 100% selected (from x 100 to 540, y 140 to 340): dragging the box's bottom right
 /// handle 110 right and 50 down scales both by 1.25 about the top left.
-@test(frames: 66, input: "scripts/scale.json")
+@test(frames: 66, input: scripts::SCALE)
 fn the_box_round_several_scales_them(game: App) {
     let a = screen_rect(game, 0)
     let b = screen_rect(game, 1)
@@ -2694,7 +2694,7 @@ fn the_box_round_several_scales_them(game: App) {
 
 /// A connector from one note to a second, selected: its end, dragged from the second note's side
 /// to a third note, joins the third instead.
-@test(frames: 74, input: "scripts/end.json")
+@test(frames: 74, input: scripts::END)
 fn a_connectors_end_moves_to_another_item(game: App) {
     assert(game.board.items.len() == 4, f"{game.board.items.len()} items")
     let link = game.board.items[3].clone()
@@ -2705,7 +2705,7 @@ fn a_connectors_end_moves_to_another_item(game: App) {
 
 /// A click on a selected note's right dot makes a note beside it, 60 to the right, and typing
 /// goes into the new one.
-@test(frames: 60, input: "scripts/beside.json")
+@test(frames: 60, input: scripts::BESIDE)
 fn a_dot_click_adds_a_note_beside(game: App) {
     assert(game.board.items.len() == 2, f"{game.board.items.len()} items")
     let r = screen_rect(game, 1)
@@ -2715,7 +2715,7 @@ fn a_dot_click_adds_a_note_beside(game: App) {
 
 /// A note made below one near the screen's bottom edge, past it: the camera eases until it's
 /// all on the screen.
-@test(frames: 120, input: "scripts/below.json")
+@test(frames: 120, input: scripts::BELOW)
 fn the_camera_goes_to_an_item_added_past_the_edge(game: App) {
     assert(game.board.items.len() == 2)
     let r = screen_rect(game, 1)
@@ -2724,7 +2724,7 @@ fn the_camera_goes_to_an_item_added_past_the_edge(game: App) {
 
 /// With the hand chosen from the rail (its second button), a click on the rail's first button,
 /// Select, chooses it: the hand pans the board, not the controls over it.
-@test(frames: 8, input: "scripts/hand.json")
+@test(frames: 8, input: scripts::HAND)
 fn the_hand_lets_go_for_another_tool(game: App) {
     assert(game.tool == Tool::Select, "the select tool is chosen again")
     assert(game.drag == Drag::Idle)

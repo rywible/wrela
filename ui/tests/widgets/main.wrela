@@ -1,5 +1,5 @@
 // Every widget of the ui package on one screen, for frame tests that drive them with scripts of
-// input (`@test(frames: n, input: "...")`), as a person would.
+// input (`@test(frames: n, input: scripts::NAME)`), as a person would.
 
 use std::gpu::{begin_screen_pass}
 use std::input::events
@@ -86,19 +86,19 @@ pub fn frame(state: mut Game, time: f32, width: u32, height: u32) {
 // ---- the tests: each a script of input (scripts/), and what it should leave ------------------
 
 /// A click on a button clicks it once; a press that slides off before it's let go doesn't.
-@test(frames: 8, input: "scripts/button.json")
+@test(frames: 8, input: scripts::BUTTON)
 fn a_button_is_clicked(game: Game) {
     assert(game.clicks == 1, f"{game.clicks} clicks")
 }
 
 /// A click flips a toggle, and so does Space while it has the focus.
-@test(frames: 8, input: "scripts/toggle.json")
+@test(frames: 8, input: scripts::TOGGLE)
 fn a_toggle_flips(game: Game) {
     assert(game.on, "the toggle isn't on")
 }
 
 /// Dragging a slider sets it where it's let go; the arrow keys step it while it has the focus.
-@test(frames: 8, input: "scripts/slider.json")
+@test(frames: 8, input: scripts::SLIDER)
 fn a_slider_drags(game: Game) {
     // Let go at x = 237 of 316 pixels, then one step right (a hundredth).
     let want = 237.0 / 316.0 + 0.01
@@ -106,45 +106,45 @@ fn a_slider_drags(game: Game) {
 }
 
 /// Dragging a number changes it by its step a pixel; a click then lets it be typed.
-@test(frames: 14, input: "scripts/number.json")
+@test(frames: 14, input: scripts::NUMBER)
 fn a_number_drags_and_types(game: Game) {
     assert(game.count == 7.5, f"count {game.count}")
 }
 
 /// Typing into a field, with Backspace, and text past ASCII; Escape puts the text back.
-@test(frames: 16, input: "scripts/text.json")
+@test(frames: 16, input: scripts::TEXT)
 fn a_text_field_types(game: Game) {
     assert(game.name == "Grüße", f"name `{game.name}`")
 }
 
 /// Typing and editing keys in one frame apply in the order they came.
-@test(frames: 6, input: "scripts/order.json")
+@test(frames: 6, input: scripts::ORDER)
 fn typing_and_keys_keep_their_order(game: Game) {
     assert(game.name == "Grüße", f"name `{game.name}`")
 }
 
 /// The wheel scrolls a list; a click selects in it, and Down moves the selection.
-@test(frames: 8, input: "scripts/list.json")
+@test(frames: 8, input: scripts::LIST)
 fn a_list_scrolls_and_selects(game: Game) {
     assert(game.picked == 11, f"picked {game.picked}")
 }
 
 /// A tree's arrow opens a node; a click selects a child; Right opens it and Down goes into it.
-@test(frames: 10, input: "scripts/tree.json")
+@test(frames: 10, input: scripts::TREE)
 fn a_tree_opens_and_selects(game: Game) {
     assert(game.node == 3, f"node {game.node}")
 }
 
 /// Tab moves the focus forward through the widgets in order, Shift+Tab back, and Enter clicks
 /// the focused button.
-@test(frames: 10, input: "scripts/focus.json")
+@test(frames: 10, input: scripts::FOCUS)
 fn tab_moves_the_focus(game: Game) {
     assert(game.clicks == 1 && game.left == 0, f"{game.clicks} clicks, {game.left} on Left")
     assert(game.on, "Space on the toggle")
 }
 
 /// Dragging a split's divider moves it: the second pane's button follows.
-@test(frames: 10, input: "scripts/split.json")
+@test(frames: 10, input: scripts::SPLIT)
 fn a_split_drags(game: Game) {
     assert(game.left == 1, f"{game.left} clicks on Left")
 }
