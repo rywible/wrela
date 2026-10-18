@@ -99,10 +99,9 @@ fn run_forge(
     roots.add("data", data).expect("the data root");
     roots.add("work", work).expect("the work root");
     let build = ServerBuild::load(build).expect("forge's server build");
-    if let Some(i) = args.iter().position(|a| *a == "--listen") {
-        if let Some(port) = args.get(i + 1).and_then(|l| l.rsplit(':').next()?.parse().ok()) {
-            stores().lock().expect("the stores").insert(port, data.to_path_buf());
-        }
+    let listen = args.iter().position(|a| *a == "--listen").and_then(|i| args.get(i + 1));
+    if let Some(port) = listen.and_then(|l| l.rsplit(':').next()?.parse::<u16>().ok()) {
+        stores().lock().expect("the stores").insert(port, data.to_path_buf());
     }
     let args = args.iter().map(|s| s.to_string()).collect();
     std::thread::spawn(move || {
