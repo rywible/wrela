@@ -251,6 +251,9 @@ impl Score {
             let slur = if n.slur == NO_SLUR { NO_SLUR } else { n.slur + first_slur }
             notes.push(Note { voice: v, slur, ..n })
         }
+        // A chord may list its pitches in any order. Sort after parsing so ties and marks
+        // keep the note indexes they used, and the merge receives notes in key order.
+        notes.sort_by(|a, b| before(a, b))
         s.notes = merge_notes(s.notes, notes)
         s.dynamics = merge_dynamics(s.dynamics, r.dynamics)
         s.hairpins = merge_hairpins(s.hairpins, r.hairpins)
@@ -426,6 +429,17 @@ fn joining_passages_resorts_notes_after_voice_remapping() {
     assert(joined.notes.len() == 4)
     assert(joined.notes[2].start == m.bar() && joined.notes[3].start == m.bar())
     assert(joined.notes[2].voice == 0 && joined.notes[3].voice == 1, "joined voices out of order")
+}
+
+@test
+fn chord_notes_are_sorted_without_changing_ties_or_marks() {
+    let s = score("descending chord", meter(beats: 4, unit: 4))
+        .voice("piano", ["<g4 c4>/2~ <c4 g4>/2 !accent |"])
+    assert(s.notes.len() == 2, "both chord pitches continue through the tie")
+    assert(s.notes[0].key == 60 && s.notes[1].key == 67, "chord notes are in key order")
+    for n in s.notes {
+        assert(n.start == 0 && n.length == 4 * TICKS && n.has(ACCENT))
+    }
 }
 
 /// A hairpin begun and not yet ended.

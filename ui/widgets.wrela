@@ -10,7 +10,7 @@
 // or column.
 
 use draw::{DrawList, Rect}
-use text::{Face, Fonts, decode, previous}
+use text::{Face, Fonts, next_cluster, previous_cluster}
 use std::arena::SortedMap
 use std::input::{Button, Event, Key, Mods}
 use std::math::is_finite
@@ -343,6 +343,10 @@ impl Ui {
         self.released
     }
 
+    fn drag_pointer(self) -> vec2 {
+        if self.down { self.pointer } else { self.release_at }
+    }
+
     /// The wheel's scroll this frame, in pixels.
     pub fn wheel(self) -> vec2 {
         self.wheel
@@ -542,8 +546,9 @@ impl Ui {
             self.draw.clip_rect().contains(self.press_at) {
             self.active = id
         }
-        if self.active == id && self.down {
-            let p = if dir == Dir::Row { self.pointer.x - r.x } else { self.pointer.y - r.y }
+        if self.active == id && (self.down || self.released) {
+            let at = self.drag_pointer()
+            let p = if dir == Dir::Row { at.x - r.x } else { at.y - r.y }
             f = clamp(p / max(full, 1.0), 0.05, 0.95)
             let _ = self.fractions.insert(id, f)
         }
@@ -627,10 +632,10 @@ impl Ui {
                 self.drag_start = self.press_at
                 self.drag_value = y
             }
-            if self.active == bar_id && self.down {
+            if self.active == bar_id && (self.down || self.released) {
                 y = clamp(
                     self.drag_value +
-                        (self.pointer.y - self.drag_start.y) * most / max(r.h - bar_h, 1.0),
+                        (self.drag_pointer().y - self.drag_start.y) * most / max(r.h - bar_h, 1.0),
                     0.0,
                     most,
                 )
@@ -805,8 +810,8 @@ impl Ui {
         self.note(text, r)
         let (over, _) = self.interact(id, r, focusable: true)
         let before = value
-        if self.active == id && self.down {
-            let f = clamp((self.pointer.x - r.x) / max(r.w, 1.0), 0.0, 1.0)
+        if self.active == id && (self.down || self.released) {
+            let f = clamp((self.drag_pointer().x - r.x) / max(r.w, 1.0), 0.0, 1.0)
             value = mix(lo, hi, f)
         }
         if self.focus == id {
@@ -838,11 +843,11 @@ impl Ui {
         let editing = self.editing_id() == id
         let (over, clicked) = self.interact(id, field, focusable: true)
         let before = value
-        if self.active == id && self.down && !editing {
+        if self.active == id && (self.down || self.released) && !editing {
             if self.pressed {
                 self.drag_value = value
             }
-            let dx = self.pointer.x - self.drag_start.x
+            let dx = self.drag_pointer().x - self.drag_start.x
             if abs(dx) > 3.0 {
                 self.dragged = true
             }
@@ -994,7 +999,7 @@ impl Ui {
             match self.keys[j] {
                 Key::Backspace => {
                     if cursor > 0 {
-                        let from = previous(s.as_str(), cursor)
+                        let from = previous_cluster(s.as_str(), cursor)
                         let tail = s.as_str().slice(cursor, s.len()).to_string()
                         s.truncate(from)
                         s.push_str(tail.as_str())
@@ -1003,18 +1008,18 @@ impl Ui {
                 },
                 Key::Delete => {
                     if cursor < s.len() {
-                        let (_, next) = decode(s.as_str(), cursor)
+                        let next = next_cluster(s.as_str(), cursor)
                         let tail = s.as_str().slice(next, s.len()).to_string()
                         s.truncate(cursor)
                         s.push_str(tail.as_str())
                     }
                 },
                 Key::Left => {
-                    cursor = previous(s.as_str(), cursor)
+                    cursor = previous_cluster(s.as_str(), cursor)
                 },
                 Key::Right => {
                     if cursor < s.len() {
-                        cursor = decode(s.as_str(), cursor).1
+                        cursor = next_cluster(s.as_str(), cursor)
                     }
                 },
                 Key::Home => cursor = 0,
@@ -1248,6 +1253,105 @@ impl Ui {
 }
 
 // ---- tests ------------------------------------------------------------------------------------
+
+@test
+fn text_editing_moves_and_deletes_whole_character_groups() {
+    var ui = Ui::new(Fonts::load())
+    let id = ui.id("text")
+    let original = "éx"
+    var value = String::from(original)
+    ui.start_editing(id, original)
+    ui.set_cursor(0)
+    let right = Event::KeyDown { key: Key::Right, repeat: false, mods: Mods {} }
+    ui.begin(vec2(200.0, 100.0), [right])
+    let _ = ui.edit_keys(id, mut value)
+    assert(ui.cursor() == 3, "Right moves past the letter and its accent")
+    let left = Event::KeyDown { key: Key::Left, repeat: false, mods: Mods {} }
+    ui.begin(vec2(200.0, 100.0), [left])
+    let _ = ui.edit_keys(id, mut value)
+    assert(ui.cursor() == 0, "Left moves back over the same group")
+    let delete = Event::KeyDown { key: Key::Delete, repeat: false, mods: Mods {} }
+    ui.begin(vec2(200.0, 100.0), [delete])
+    let _ = ui.edit_keys(id, mut value)
+    assert(value == "x", "Delete removes the whole next group")
+
+    value = String::from(original)
+    ui.start_editing(id, original)
+    ui.set_cursor(3)
+    let backspace = Event::KeyDown { key: Key::Backspace, repeat: false, mods: Mods {} }
+    ui.begin(vec2(200.0, 100.0), [backspace])
+    let _ = ui.edit_keys(id, mut value)
+    assert(value == "x" && ui.cursor() == 0, "Backspace removes the whole previous group")
+}
+
+@test
+fn a_slider_uses_the_release_position_and_accepts_a_quick_click() {
+    var ui = Ui::new(Fonts::load())
+    var value = 0.0
+    let down = Event::PointerDown { at: vec2(20.0, 10.0), button: Button::Primary, mods: Mods {} }
+    ui.begin(vec2(200.0, 100.0), [down])
+    ui.slider("level", mut value, lo: 0.0, hi: 1.0)
+    ui.end()
+    let up = Event::PointerUp { at: vec2(160.0, 10.0), button: Button::Primary, mods: Mods {} }
+    ui.begin(vec2(200.0, 100.0), [up])
+    ui.slider("level", mut value, lo: 0.0, hi: 1.0)
+    assert(abs(value - 0.8) < 0.00001)
+    ui.end()
+
+    value = 0.0
+    let moved = Event::PointerMove { at: vec2(190.0, 10.0), mods: Mods {} }
+    ui.begin(vec2(200.0, 100.0), [down, up, moved])
+    ui.slider("level", mut value, lo: 0.0, hi: 1.0)
+    assert(abs(value - 0.8) < 0.00001)
+}
+
+@test
+fn a_number_drag_uses_the_release_position() {
+    var ui = Ui::new(Fonts::load())
+    var value = 3.0
+    let down = Event::PointerDown { at: vec2(100.0, 10.0), button: Button::Primary, mods: Mods {} }
+    ui.begin(vec2(200.0, 100.0), [down])
+    ui.number("count", mut value, step: 0.5)
+    ui.end()
+    let up = Event::PointerUp { at: vec2(120.0, 10.0), button: Button::Primary, mods: Mods {} }
+    ui.begin(vec2(200.0, 100.0), [up])
+    ui.number("count", mut value, step: 0.5)
+    assert(value == 13.0 && ui.editing_id() == 0)
+}
+
+@test
+fn a_split_drag_uses_the_release_position() {
+    var ui = Ui::new(Fonts::load())
+    let down = Event::PointerDown { at: vec2(100.0, 10.0), button: Button::Primary, mods: Mods {} }
+    ui.begin(vec2(200.0, 100.0), [down])
+    ui.begin_split("split", Dir::Row, 0.5)
+    ui.next_pane()
+    ui.end_split()
+    ui.end()
+    let up = Event::PointerUp { at: vec2(150.0, 10.0), button: Button::Primary, mods: Mods {} }
+    ui.begin(vec2(200.0, 100.0), [up])
+    ui.begin_split("split", Dir::Row, 0.5)
+    assert(ui.fractions.get(ui.id("split")) == Some(0.75))
+    ui.next_pane()
+    ui.end_split()
+}
+
+@test
+fn a_scroll_thumb_drag_uses_the_release_position() {
+    var ui = Ui::new(Fonts::load())
+    let down = Event::PointerDown { at: vec2(199.0, 10.0), button: Button::Primary, mods: Mods {} }
+    ui.begin(vec2(200.0, 100.0), [down])
+    ui.begin_scroll("scroll", height: 40.0)
+    let _ = ui.place(vec2(10.0, 200.0))
+    ui.end_scroll()
+    ui.end()
+    let up = Event::PointerUp { at: vec2(199.0, 30.0), button: Button::Primary, mods: Mods {} }
+    ui.begin(vec2(200.0, 100.0), [up])
+    ui.begin_scroll("scroll", height: 40.0)
+    let _ = ui.place(vec2(10.0, 200.0))
+    ui.end_scroll()
+    assert(ui.scrolls.get(ui.id("scroll")) == Some(160.0))
+}
 
 @test
 fn a_press_on_another_widget_ends_text_editing() {

@@ -72,11 +72,16 @@ impl Lights {
     ) -> vec3 {
         let l = view.sun
         let v = normalize(view.eye - world)
-        let h = normalize(l + v)
         let ndl = max(dot(n, l), 0.0)
         let a = max(rough * rough, 0.02)
         let sp = 2.0 / (a * a) - 2.0
-        let spec = pow(max(dot(n, h), 0.0), sp) * (sp + 8.0) / EIGHT_PI * self.f0
+        let half = l + v
+        let spec = if dot(half, half) > 1.0e-12 {
+            let h = normalize(half)
+            pow(max(dot(n, h), 0.0), sp) * (sp + 8.0) / EIGHT_PI * self.f0
+        } else {
+            0.0
+        }
         let hemi = mix(self.ground, self.sky, 0.5 + 0.5 * n.y)
         let sun = self.sun_colour * (ndl * lit)
         self.tonemap(albedo * (hemi * self.ambient + sun) + sun * spec)
@@ -200,14 +205,14 @@ pub fn pose_instances<P: Poser>(
         return
     }
     // The chain from `bone` up to its root.
-    var chain = [0; 16]
+    var chain = [0; MAX_BONES]
     var n = 0
     var b = bone
     loop {
         chain[n] = b
         n += 1
         let parent = u32(sk.bones[b].w)
-        if parent == b || n == 16 {
+        if parent == b || n == MAX_BONES {
             break
         }
         b = parent
@@ -368,7 +373,8 @@ pub fn bend(h: vec3, k: vec3, a: vec3, to: vec3) -> (vec3, vec3) {
     // Across the reach, toward the rest knee.
     let rest_out = (k - h) - dir * dot(k - h, dir)
     let out = if length(rest_out) > 1.0e-6 { normalize(rest_out) } else {
-        normalize(cross(dir, vec3(1.0, 0.0, 0.0)))
+        let across = if abs(dir.x) < 0.9 { vec3(1.0, 0.0, 0.0) } else { vec3(0.0, 1.0, 0.0) }
+        normalize(cross(dir, across))
     }
     let along = (l1 * l1 - l2 * l2 + d * d) / (2.0 * d)
     let knee = h + dir * along + out * sqrt(max(l1 * l1 - along * along, 0.0))
@@ -409,4 +415,41 @@ pub fn palette(skeleton: Skeleton, pose: Pose, root: Transform) -> Palette {
         bones[j[3].index] = world * below
     }
     Palette { bones }
+}
+
+@test
+fn basic_lighting_remains_finite_when_the_view_opposes_the_sun() {
+    let lights = Lights {
+        sun_colour: vec3(1.0),
+        sky: vec3(0.5),
+        ground: vec3(0.2),
+        ambient: 1.0,
+        exposure: 1.0,
+        f0: 0.04,
+        normal_offset: 0.0,
+        compare_bias: 0.0,
+    }
+    let view = View {
+        view_proj: std::transform::identity(),
+        light: std::transform::identity(),
+        eye: vec3(0.0, -1.0, 0.0),
+        sun: vec3(0.0, 1.0, 0.0),
+    }
+    let colour = lights.light(vec3(1.0), 0.5, vec3(0.0, 1.0, 0.0), vec3(0.0), view, 1.0)
+    assert(colour == colour && dot(colour, colour) < 4.0)
+    assert(
+        length(colour - lights.tonemap(vec3(1.5))) < 1.0e-5,
+        "opposite light and view leave diffuse and ambient light without a glint",
+    )
+}
+
+@test
+fn a_straight_limb_bends_along_each_axis_without_nan() {
+    for direction in [vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0)] {
+        let (knee, end) = bend(vec3(0.0), direction, direction * 2.0, direction)
+        assert(knee == knee && end == end, "a collinear limb has a finite bending plane")
+        assert(abs(length(knee) - 1.0) < 1.0e-5)
+        assert(abs(length(end - knee) - 1.0) < 1.0e-5)
+        assert(length(end - direction) < 1.0e-5)
+    }
 }

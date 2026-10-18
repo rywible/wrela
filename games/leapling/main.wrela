@@ -9,7 +9,7 @@ use level::ROWS
 use look::{View, shade}
 use platform::presentation::Link
 use progress::{Progress, clock_text}
-use sim::{Controls, Cue, Phase, STEP, TALL, World, step, world}
+use sim::{Controls, Cue, Phase, STEP, TALL, World, world}
 use std::audio::RingWriter
 use std::gpu::{GpuBuffer, begin_screen_pass, buffer_of, draw, write}
 use std::input::{Input, Key, PadButton}
@@ -194,15 +194,7 @@ pub fn frame(g: mut Game, time: f32, width: u32, height: u32) {
         },
     }
     if g.mode == Mode::Play {
-        g.owed += dt
-        var first = true
-        while g.owed >= STEP {
-            var now = c
-            now.jumped = c.jumped && first
-            step(mut g.world, now)
-            first = false
-            g.owed -= STEP
-        }
+        sim::advance(mut g.world, mut g.owed, c, dt)
         if g.world.phase == Phase::Clear && g.world.since > 3.6 { finish(mut g) }
     }
     for c in g.world.cues {
