@@ -29,13 +29,27 @@ They're hypotheses. Each line says where the evidence stands.
 
 | Layer | What | Written in |
 |---|---|---|
-| 0. Platform hosts | Thin boundary to the outside world: the standard browser runtime and a native host | TypeScript, Rust |
-| 1. Language | The compiler, run ahead of time on the developer's machine; the stdlib | Rust (compiler), wrela (stdlib, with a small unsafe core) |
+| 0. Platform hosts | Thin boundary to the outside world: the browser host, the native host (which also runs tools) and the server host | TypeScript, Rust |
+| 1. Language | The compiler, run ahead of time on the developer's machine; the stdlib, including the bindings to every host service | Rust (compiler), wrela (stdlib, with a small unsafe core) |
 | 2. Engine | Rendering, simulation, animation, audio | wrela |
-| 3. Studio | Agent-native authoring: tools, queries, headless runs, replays | wrela + Rust tooling |
+| 3. Studio | Agent-native authoring: the lens, queries, headless runs, replays, and the project's own tools (releases, deploys, captures) | wrela, as tool programs |
 | 4. Games | The games | wrela |
 
 **The layering rule:** the compiler knows nothing about the engine. The test for any language feature: would it make sense in a wrela program that isn't a game?
+
+### Two repositories
+
+Decided by the owner on 2026-10-18; the move is in progress.
+
+| Repository | Holds |
+|---|---|
+| `wrela-compiler` | Layers 0 and 1: the compiler, std, the three hosts, the spec, and the toolchain's own checks. It releases versioned toolchains. |
+| `wrela` | Layers 2 to 4, and only wrela code: the engine, reusable content, examples, the studio, the UI, the docs site, the console and the games. It pins one toolchain release. |
+
+- **`wrela` holds only wrela code.** Sources are `.wrela`; besides them it has package manifests, assets with their licences, prose (this file, `process.md`, `AGENTS.md`) and one CI file that installs the pinned toolchain and runs it. A tool the project needs is a wrela program, so a missing capability is built into the toolchain, not worked around in another language.
+- **Tools are programs too.** A third role, the tool, runs on the native host with services that it is granted on the command line: files under named roots, named secrets, HTTP to named hosts, builds of packages, driving a build frame by frame, a headless browser, images, a local server, and the external programs it names (such as Cloudflare's Wrangler). The host has the mechanisms; the tools in `wrela` have the policy.
+- **std owns every host contract.** Each host service's bindings are std code, so one toolchain release ships both sides of every contract. Protocols between wrela programs, such as the console's with its games, stay in their packages.
+- **A change across both** is released in `wrela-compiler` first, then `wrela` moves its pin.
 
 ### What ships and how it runs
 
