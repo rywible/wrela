@@ -46,6 +46,9 @@ fn main(given: take Vec<String>) -> u32 {
         toolchain::test(given[1].as_str(), "")
     } else if what.as_str() == "check" {
         toolchain::check(given[1].as_str())
+    } else if what.as_str() == "doc" || what.as_str() == "doc-timed" {
+        let timeout = if what.as_str() == "doc-timed" { 2.0 } else { 0.0 }
+        toolchain::doc_export(paths, given[2].as_str(), "https://example.test/repo", "", timeout)
     } else {
         toolchain::fmt(paths, what.as_str() == "fmt-check")
     }
@@ -74,6 +77,12 @@ fn main(given: take Vec<String>) -> u32 {
                 print(f"message {r.message.as_str()}")
             }
         }
+    } else if what.as_str() == "doc" || what.as_str() == "doc-timed" {
+        let pages = match toolchain::read_exported(take polled) {
+            Ok(n) => n,
+            Err(e) => return failed(e),
+        }
+        print(f"exported {pages}")
     } else if what.as_str() == "check" {
         let checked = match toolchain::read_checked(take polled) {
             Ok(c) => take c,
@@ -433,7 +442,7 @@ fn a_builds_outputs_follow_wrela_builds_rules_and_a_failed_one_leaves_none() {
         .env("WRELA_TESTING_IO_DELAY", "0.5"));
     assert_eq!(code, Some(1), "{printed}");
     assert!(printed.contains("past its deadline of 2 s"), "{printed}");
-    assert_eq!(names(&out.join("a")), Vec::<String>::new(), "nothing it wrote is left");
+    assert!(!there(&out.join("a")), "nothing it wrote, or made, is left");
     let (code, printed) = build("out/a", "build");
     assert!(code == Some(0) && printed.contains("built ok=true"), "a retry builds: {printed}");
     // A list that is a directory: nothing is written, and once it's gone a retry builds.
@@ -463,4 +472,58 @@ fn a_builds_outputs_follow_wrela_builds_rules_and_a_failed_one_leaves_none() {
     assert!(code == Some(0) && printed.contains("built ok=true"), "{printed}");
     assert_eq!(std::fs::read_to_string(out.join("b/notes.txt")).expect("kept"), "mine");
     assert_eq!(std::fs::read_to_string(out.join("user.txt")).expect("kept"), "mine");
+}
+
+/// Whether anything is at `path`.
+fn there(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok()
+}
+
+/// A request that doesn't finish leaves none of its outputs, files or directories, so a retry
+/// into the same place needs no cleaning: a doc export cancelled after its first nested page;
+/// a write that fails part way, of a build and of a doc export; and a build cancelled while
+/// its last write is held, which finds it cancelled once the write is done.
+#[cfg(unix)]
+#[test]
+fn a_request_that_doesnt_finish_leaves_none_of_its_outputs() {
+    let subject =
+        [("subject/wrela.toml", manifest("subject")), ("subject/main.wrela", SUBJECT.into())];
+    let subject: Vec<(&str, &str)> = subject.iter().map(|(p, t)| (*p, t.as_str())).collect();
+    let (tool, src, out) = packages("toolchain-rollback", &subject);
+    let ask = |args: &[&str], env: &[(&str, &str)]| {
+        let mut c = probe(&tool, &src, &out, args);
+        for (k, v) in env {
+            c.env(k, v);
+        }
+        run(&mut c)
+    };
+    // A doc export cancelled at its 2 s deadline while its second page is held.
+    let (code, printed) =
+        ask(&["doc-timed", "src/subject", "out/docs/d"], &[("WRELA_TESTING_HOLD", "#2:3")]);
+    assert_eq!(code, Some(1), "{printed}");
+    assert!(printed.contains("past its deadline"), "{printed}");
+    assert!(!there(&out.join("docs")), "its pages and the directories it made are gone");
+    let (code, printed) = ask(&["doc", "src/subject", "out/docs/d"], &[]);
+    assert!(code == Some(0) && printed.contains("exported"), "a retry: {printed}");
+    // Writes that fail part way.
+    let (code, printed) =
+        ask(&["build", "src/subject", "out/b"], &[("WRELA_TESTING_WRITE_FAIL", "game.wasm")]);
+    assert_eq!(code, Some(1), "{printed}");
+    assert!(printed.contains("failed part way"), "{printed}");
+    assert!(!there(&out.join("b")), "no partial game.wasm, and no directory");
+    let (code, printed) = ask(&["build", "src/subject", "out/b"], &[]);
+    assert!(code == Some(0) && printed.contains("built ok=true"), "a retry: {printed}");
+    let (code, printed) =
+        ask(&["doc", "src/subject", "out/docs/e"], &[("WRELA_TESTING_WRITE_FAIL", "#3")]);
+    assert_eq!(code, Some(1), "{printed}");
+    assert!(!there(&out.join("docs/e")), "no partial page");
+    let (code, printed) = ask(&["doc", "src/subject", "out/docs/e"], &[]);
+    assert!(code == Some(0) && printed.contains("exported"), "a retry: {printed}");
+    // Cancelled at its deadline while its last write (the list) is held, and let go within the
+    // grace: the request fails, and every output it made goes.
+    let (code, printed) =
+        ask(&["build-timed", "src/subject", "out/c"], &[("WRELA_TESTING_HOLD", ".wrela-build:3")]);
+    assert_eq!(code, Some(1), "{printed}");
+    assert!(printed.contains("past its deadline of 2 s"), "{printed}");
+    assert!(!there(&out.join("c")), "nothing it made is left");
 }

@@ -459,7 +459,7 @@ fn work(s: &Services, job: &Job, toolchain: &dyn Toolchain, op: Op) -> Result<Ve
         Op::Build { package, out: into, optimize, simd, debug, lift, overrides } => {
             let dir = caps.dir_path(&package, false)?;
             // The output's root is a write root, checked before any work.
-            caps.make_dirs_nofollow(&into)?;
+            caps.writable(&into)?;
             let mut options = BuildOptions { optimize, lift, simd, debug, overrides: Vec::new() };
             for (name, path) in overrides {
                 options.overrides.push((name, caps.dir_path(&path, false)?));
@@ -528,13 +528,14 @@ fn work(s: &Services, job: &Job, toolchain: &dyn Toolchain, op: Op) -> Result<Ve
             if caps.list(&into).is_ok_and(|e| !e.is_empty()) {
                 return Err(format!("`{into}` isn't empty: export into a new directory"));
             }
-            caps.make_dirs_nofollow(&into)?;
+            caps.writable(&into)?;
             let files = toolchain.doc_export(job, &dirs, &repository, revision, &base)?;
-            let mut written = Written::new(caps);
+            let mut written = Written::new(s);
+            written.make_dirs(&into)?;
             for (path, bytes) in &files {
                 written.write(job, format!("{into}/{path}"), bytes)?;
             }
-            written.keep();
+            written.finish(job)?;
             out.u32(files.len() as u32);
         }
     }
@@ -544,43 +545,80 @@ fn work(s: &Services, job: &Job, toolchain: &dyn Toolchain, op: Op) -> Result<Ve
 /// What a request the toolchain's work stopped for gives, if it stops between phases.
 pub(crate) const CANCELLED: &str = "the toolchain's work was cancelled";
 
-/// What a request wrote, removed if the request doesn't finish (it failed, or was cancelled):
-/// so no partial output, and no file a retry would find in its way, is left.
+/// What a request wrote, removed if the request doesn't finish (it failed, or was cancelled,
+/// also during its last write): each file once it's opened, before it's emptied or written, and
+/// each directory it made, emptied of those files, in the reverse order. So no partial output,
+/// and nothing a retry would find in its way, is left. A file whose open failed isn't touched.
 struct Written<'a> {
-    caps: &'a super::caps::Caps,
-    paths: Vec<String>,
+    s: &'a Services,
+    files: Vec<String>,
+    dirs: Vec<String>,
+    writes: usize,
     kept: bool,
 }
 
 impl<'a> Written<'a> {
-    fn new(caps: &'a super::caps::Caps) -> Written<'a> {
-        Written { caps, paths: Vec::new(), kept: false }
+    fn new(s: &'a Services) -> Written<'a> {
+        Written { s, files: Vec::new(), dirs: Vec::new(), writes: 0, kept: false }
     }
 
-    /// Writes `bytes` at `path`, following no link, unless `job` is cancelled first.
+    /// Makes the directory `path` and those above it, each one made counted as this request's.
+    fn make_dirs(&mut self, path: &str) -> Result<(), String> {
+        self.s.caps.make_dirs_tracked(path, true, &mut self.dirs).map(|_| ())
+    }
+
+    /// Writes `bytes` as the whole file at `path`, following no link, unless `job` is cancelled
+    /// first.
     fn write(&mut self, job: &Job, path: String, bytes: &[u8]) -> Result<(), String> {
+        let s = self.s;
+        self.writes += 1;
+        let chosen = |which: &str| match which.strip_prefix('#') {
+            Some(n) => n.parse() == Ok(self.writes),
+            None => path.ends_with(which),
+        };
         // A test's slow disk.
-        std::thread::sleep(job.services.io_delay);
+        std::thread::sleep(s.io_delay);
         if job.cancelled() {
             return Err(CANCELLED.into());
         }
-        self.caps.write_nofollow(&path, bytes)?;
-        self.paths.push(path);
-        Ok(())
+        let mut file = s.caps.open_output(&path, &mut self.dirs)?;
+        // The request's from here on, before it changes.
+        self.files.push(path.clone());
+        let fail = |e: std::io::Error| format!("`{path}`: {e}");
+        file.set_len(0).map_err(fail)?;
+        if let Some((which, held)) = &s.hold
+            && chosen(which)
+        {
+            std::thread::sleep(*held);
+        }
+        if s.write_fail.as_deref().is_some_and(chosen) {
+            std::io::Write::write_all(&mut file, &bytes[..bytes.len() / 2]).map_err(fail)?;
+            return Err(format!("`{path}`: a test's disk failed part way"));
+        }
+        std::io::Write::write_all(&mut file, bytes).map_err(fail)
     }
 
-    /// The request finished: what it wrote stays.
-    fn keep(mut self) {
+    /// The request finished: what it wrote stays, unless it was cancelled meanwhile, also
+    /// during its last write, and then it all goes.
+    fn finish(mut self, job: &Job) -> Result<(), String> {
+        if job.cancelled() {
+            return Err(CANCELLED.into());
+        }
         self.kept = true;
+        Ok(())
     }
 }
 
 impl Drop for Written<'_> {
     fn drop(&mut self) {
-        if !self.kept {
-            for p in self.paths.iter().rev() {
-                let _ = self.caps.remove_file_nofollow(p);
-            }
+        if self.kept {
+            return;
+        }
+        for p in self.files.iter().rev() {
+            let _ = self.s.caps.remove_file_nofollow(p);
+        }
+        for d in self.dirs.iter().rev() {
+            let _ = self.s.caps.remove_dir_nofollow(d);
         }
     }
 }
@@ -609,7 +647,6 @@ fn write_build(
     let caps = &s.caps;
     let at = |name: &str| format!("{into}/{name}");
     let list = at(LIST);
-    caps.make_dirs_nofollow(into)?;
     // Before anything is removed or written.
     let names = files.iter().map(|(f, _)| f.as_str()).chain([LIST]);
     for name in names {
@@ -631,7 +668,11 @@ fn write_build(
         }
         None => {
             // A directory a build wrote before there was a list: every file a build writes.
-            let present: Vec<String> = caps.list(into)?.into_iter().map(|e| e.name).collect();
+            let present: Vec<String> = match caps.list(into) {
+                Ok(entries) => entries.into_iter().map(|e| e.name).collect(),
+                Err(_) if caps.kind_nofollow(into).ok().flatten().is_none() => Vec::new(),
+                Err(why) => return Err(why),
+            };
             let old = ["game.wasm", "manifest.json"].iter().all(|f| present.iter().any(|p| p == f));
             if old {
                 present.into_iter().filter(|n| toolchain.owns(n)).collect()
@@ -662,7 +703,8 @@ fn write_build(
             ));
         }
     }
-    let mut written = Written::new(caps);
+    let mut written = Written::new(s);
+    written.make_dirs(into)?;
     let mut text = String::new();
     for (name, bytes) in files {
         written.write(job, at(name), bytes)?;
@@ -670,7 +712,7 @@ fn write_build(
         text.push('\n');
     }
     written.write(job, list, text.as_bytes())?;
-    written.keep();
+    written.finish(job)?;
     Ok(files.iter().map(|(f, _)| f.clone()).collect())
 }
 

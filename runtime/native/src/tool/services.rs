@@ -78,6 +78,9 @@ pub(crate) struct Services {
     pub toolchain: Option<super::toolchain::Service>,
     /// The builds the drive service holds.
     pub drives: Mutex<super::drive::Drives>,
+    /// A test's held output write, and its output write that fails part way ([`super::Testing`]).
+    pub hold: Option<(String, Duration)>,
+    pub write_fail: Option<String>,
 }
 
 impl Services {
@@ -580,6 +583,8 @@ mod tests {
             stuck: Arc::new(OnceLock::new()),
             toolchain: None,
             drives: Mutex::default(),
+            hold: None,
+            write_fail: None,
         };
         let mut from = Counted { left: 64 << 20, given: 0 };
         let mut out = Vec::new();

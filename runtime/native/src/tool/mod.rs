@@ -125,7 +125,9 @@ pub struct Options {
 
 /// A run's settings that only tests change: the workers' grace, a slow disk under each blob
 /// written to a file, a clock thread that fails to start, where the run's own directory is, a
-/// pause between a program's start and its record, and a name lookup that stalls.
+/// pause between a program's start and its record, a name lookup that stalls, and, for the
+/// toolchain's outputs, one write held a while and one that fails part way (each chosen by its
+/// path's end, or `#n` for a request's `n`th write).
 #[doc(hidden)]
 #[derive(Clone, Debug)]
 pub struct Testing {
@@ -135,6 +137,8 @@ pub struct Testing {
     pub work_dir: Option<std::path::PathBuf>,
     pub spawn_pause: Duration,
     pub resolve_stall: Duration,
+    pub hold: Option<(String, Duration)>,
+    pub write_fail: Option<String>,
 }
 
 impl Default for Testing {
@@ -146,6 +150,8 @@ impl Default for Testing {
             work_dir: None,
             spawn_pause: Duration::ZERO,
             resolve_stall: Duration::ZERO,
+            hold: None,
+            write_fail: None,
         }
     }
 }
@@ -549,6 +555,8 @@ pub fn run(build: &ToolBuild, options: Options) -> Ended {
         grace: testing.grace,
         stuck: Arc::new(std::sync::OnceLock::new()),
         toolchain: toolchain.map(|toolchain| toolchain::Service { toolchain, cache }),
+        hold: testing.hold.clone(),
+        write_fail: testing.write_fail.clone(),
         drives: Mutex::default(),
     });
     let (done, answers) = mpsc::channel();

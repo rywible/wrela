@@ -44,8 +44,17 @@ mod unix {
         Ok(at)
     }
 
+    /// Makes the directory `name` in `dir`: whether this made it (`false`: it was there).
+    pub(crate) fn make_dir(dir: &Dir, name: &str) -> std::io::Result<bool> {
+        match rustix::fs::mkdirat(dir, name, Mode::from_raw_mode(0o777)) {
+            Ok(()) => Ok(true),
+            Err(e) if e == rustix::io::Errno::EXIST => Ok(false),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     /// The regular file `name` in `dir`, for reading, or for writing (made if it isn't there,
-    /// then emptied), not followed if it's a link.
+    /// and not emptied: the caller empties it), not followed if it's a link.
     pub(crate) fn open_file(dir: &Dir, name: &str, write: bool) -> std::io::Result<std::fs::File> {
         let mut flags = OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
         flags |= if write { OFlags::WRONLY | OFlags::CREATE } else { OFlags::RDONLY };
@@ -53,10 +62,6 @@ mod unix {
             std::fs::File::from(rustix::fs::openat(dir, name, flags, Mode::from_raw_mode(0o666))?);
         if !file.metadata()?.is_file() {
             return Err(std::io::Error::other("it isn't a regular file"));
-        }
-        // Emptied only once it's known to be a file.
-        if write {
-            file.set_len(0)?;
         }
         Ok(file)
     }
@@ -69,7 +74,7 @@ mod unix {
 }
 
 #[cfg(unix)]
-pub(crate) use unix::{open_dir, open_file, remove};
+pub(crate) use unix::{make_dir, open_dir, open_file, remove};
 
 #[cfg(not(unix))]
 pub(crate) fn open_dir(_: &Dir, _: &[&str], _: bool) -> std::io::Result<Dir> {
@@ -78,6 +83,11 @@ pub(crate) fn open_dir(_: &Dir, _: &[&str], _: bool) -> std::io::Result<Dir> {
 
 #[cfg(not(unix))]
 pub(crate) fn open_file(_: &Dir, _: &str, _: bool) -> std::io::Result<std::fs::File> {
+    Err(std::io::Error::other("a confined path needs a Unix"))
+}
+
+#[cfg(not(unix))]
+pub(crate) fn make_dir(_: &Dir, _: &str) -> std::io::Result<bool> {
     Err(std::io::Error::other("a confined path needs a Unix"))
 }
 
@@ -113,6 +123,7 @@ mod tests {
         let (name, above) = parts.split_last().expect("a path has a part");
         let at = open_dir(dir, above, true).map_err(|e| format!("`{path}`: {e}"))?;
         let mut file = open_file(&at, name, true).map_err(|e| format!("`{path}`: {e}"))?;
+        file.set_len(0).map_err(|e| format!("`{path}`: {e}"))?;
         file.write_all(bytes).map_err(|e| format!("`{path}`: {e}"))
     }
 

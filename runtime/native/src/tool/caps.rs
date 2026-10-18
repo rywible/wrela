@@ -513,18 +513,60 @@ impl Caps {
         Ok((at, name.to_string()))
     }
 
-    /// Makes the directory at `path` in a write root and those above it, following no link:
-    /// a link in place of one stops it.
-    pub(crate) fn make_dirs_nofollow(&self, path: &str) -> Result<(), String> {
-        match self.resolve(path, true)? {
-            (_, None) => Ok(()),
-            (root, Some(rel)) => {
-                let parts = crate::confined::parts(rel)?;
-                crate::confined::open_dir(&root.dir, &parts, true)
-                    .map(|_| ())
-                    .map_err(|e| failed(path, e))
+    /// Makes the directories at `path` in a write root, one part at a time, following no link
+    /// (a link in place of one stops it): those above it, and `path` itself if `itself`. Each
+    /// this call made is added to `made`, as a root path, in the order made. The last one,
+    /// opened.
+    pub(crate) fn make_dirs_tracked(
+        &self,
+        path: &str,
+        itself: bool,
+        made: &mut Vec<String>,
+    ) -> Result<Dir, String> {
+        let (root, rel) = self.resolve(path, true)?;
+        let parts = match rel {
+            Some(rel) => crate::confined::parts(rel)?,
+            None if itself => Vec::new(),
+            None => return Err(format!("`{path}` is a root, not a file in one")),
+        };
+        let upto = if itself { parts.len() } else { parts.len().saturating_sub(1) };
+        let mut at = root.dir.try_clone().map_err(|e| failed(path, e))?;
+        let mut prefix = path.split('/').next().unwrap_or_default().to_string();
+        for part in &parts[..upto] {
+            prefix = format!("{prefix}/{part}");
+            if crate::confined::make_dir(&at, part).map_err(|e| failed(path, e))? {
+                made.push(prefix.clone());
             }
+            at = crate::confined::open_dir(&at, &[part], false).map_err(|e| failed(path, e))?;
         }
+        Ok(at)
+    }
+
+    /// Opens the regular file at `path` in a write root to write it, making the directories it
+    /// needs (each made added to `made`) and following no link: made if it isn't there, and not
+    /// emptied, so the caller can count it as its own before it changes it.
+    pub(crate) fn open_output(
+        &self,
+        path: &str,
+        made: &mut Vec<String>,
+    ) -> Result<std::fs::File, String> {
+        let at = self.make_dirs_tracked(path, false, made)?;
+        let name = path.rsplit('/').next().unwrap_or_default();
+        crate::confined::open_file(&at, name, true).map_err(|e| failed(path, e))
+    }
+
+    /// Removes the empty directory at `path` in a write root, following no link.
+    pub(crate) fn remove_dir_nofollow(&self, path: &str) -> Result<(), String> {
+        if self.kind_nofollow(path)? != Some(Kind::Dir) {
+            return Ok(());
+        }
+        let (at, name) = self.parent_nofollow(path, false)?;
+        crate::confined::remove(&at, &name, true).map_err(|e| failed(path, e))
+    }
+
+    /// Whether `path` is in a write root (or is one).
+    pub(crate) fn writable(&self, path: &str) -> Result<(), String> {
+        self.resolve(path, true).map(|_| ())
     }
 
     /// What's at `path` in a write root, not following a link anywhere on the way: `None` if
@@ -546,14 +588,6 @@ impl Caps {
             at = crate::confined::open_dir(&at, &[part], false).map_err(|e| failed(path, e))?;
         }
         unreachable!("a path has a part")
-    }
-
-    /// Writes `bytes` as the whole regular file at `path` in a write root, making the
-    /// directories it needs, following no link on the way or at its end.
-    pub(crate) fn write_nofollow(&self, path: &str, bytes: &[u8]) -> Result<(), String> {
-        let (at, name) = self.parent_nofollow(path, true)?;
-        let mut file = crate::confined::open_file(&at, &name, true).map_err(|e| failed(path, e))?;
-        std::io::Write::write_all(&mut file, bytes).map_err(|e| failed(path, e))
     }
 
     /// The bytes of the regular file at `path` in a write root, at most `most`, following no
