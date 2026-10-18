@@ -716,6 +716,10 @@ fn put_blob(c: Core, ctx: Ctx, doc: Doc, args: u32) -> Outcome {
         }
         return fail("send the blob first: POST /api/object")
     }
+    // Memory holds trees and revisions too: a file is only ever a blob.
+    if object::blob_id(content) != id {
+        return fail(f"{id.hex()} isn't a blob")
+    }
     let file = File { id, exec: bool_arg(doc, args, "exec"), size: u64(content.len()) }
     let ev = Event::Wrote { change: ch.id, path: path.clone(), file: Some(file), time: ctx.now }
     var j = Json::new()
@@ -788,7 +792,7 @@ pub fn tree_of(c: Core, ch: Change) -> (Id, Vec<Object>) {
 
 fn touch_state(c: Core, path: str, t: state::Touch) -> Text {
     let main = c.state.files.get(path.to_string())
-    if t.conflict.is_some() {
+    if t.conflicted {
         "conflict"
     } else if main != t.base {
         "stale"
@@ -1505,6 +1509,7 @@ pub fn carry(c: Core, ch: Change) -> Outcome {
                         base: theirs,
                         now: Some(file),
                         conflict: None,
+                        conflicted: false,
                     },
                 )
                 objects.push(take o)
@@ -1519,6 +1524,7 @@ pub fn carry(c: Core, ch: Change) -> Outcome {
                             base: theirs,
                             now: theirs,
                             conflict: None,
+                            conflicted: false,
                         },
                     )
                 } else {
@@ -1529,6 +1535,7 @@ pub fn carry(c: Core, ch: Change) -> Outcome {
                             base: t.base,
                             now: t.now,
                             conflict: theirs,
+                            conflicted: true,
                         },
                     )
                 }

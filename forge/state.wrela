@@ -19,8 +19,10 @@ pub struct Touch: Clone + Eq {
     pub base: Option<File>,
     /// The change's version (none: the change removed the file).
     pub now: Option<File>,
-    /// Main's newer version, which a merge couldn't carry the change onto.
+    /// Main's newer version, which a merge couldn't carry the change onto (none: main removed
+    /// the file), when `conflicted`.
     pub conflict: Option<File>,
+    pub conflicted: bool,
 }
 
 pub enum Status: Copy + Eq {
@@ -170,6 +172,8 @@ pub enum Event: Clone {
         base: Option<File>,
         now: Option<File>,
         conflict: Option<File>,
+        /// Whether it conflicts: `conflict` is then main's version, or none if main removed it.
+        conflicted: bool,
     },
     Submitted { change: u64, time: u64 },
     Closed { change: u64, why: String, time: u64 },
@@ -247,13 +251,14 @@ pub fn encode(ev: Event) -> Vec<u8> {
             e.id(tree)
             e.num(time)
         },
-        Event::Merged { change, path, base, now, conflict } => {
-            e.u8(4)
+        Event::Merged { change, path, base, now, conflict, conflicted } => {
+            e.u8(16)
             e.num(change)
             e.str(path.as_str())
             enc_file(mut e, base)
             enc_file(mut e, now)
             enc_file(mut e, conflict)
+            e.bool(conflicted)
         },
         Event::Submitted { change, time } => {
             e.u8(5)
@@ -403,12 +408,22 @@ pub fn decode(bytes: take Vec<u8>) -> Result<Event, Bad> {
             time: d.num()?,
         },
         3 => Event::Snapped { change: d.num()?, note: d.string()?, tree: d.id()?, time: d.num()? },
-        4 => Event::Merged {
+        4 => {
+            // The first layout, which couldn't say that main removed a file it conflicts on.
+            let change = d.num()?
+            let path = d.string()?
+            let base = dec_file(mut d)?
+            let now = dec_file(mut d)?
+            let conflict = dec_file(mut d)?
+            Event::Merged { change, path, base, now, conflict, conflicted: conflict.is_some() }
+        },
+        16 => Event::Merged {
             change: d.num()?,
             path: d.string()?,
             base: dec_file(mut d)?,
             now: dec_file(mut d)?,
             conflict: dec_file(mut d)?,
+            conflicted: d.bool()?,
         },
         5 => Event::Submitted { change: d.num()?, time: d.num()? },
         6 => Event::Closed { change: d.num()?, why: d.string()?, time: d.num()? },
@@ -500,16 +515,20 @@ pub fn apply(s: mut State, ev: take Event) -> Result<(), String> {
             if c.touches.contains(path.clone()) {
                 mut t = c.touches.at_mut(path.clone())
                 // A write after a conflict takes main's version as its base: the change has seen it.
-                if let Some(theirs) = t.conflict {
-                    t.base = Some(theirs)
+                if t.conflicted {
+                    t.base = t.conflict
                     t.conflict = None
+                    t.conflicted = false
                 }
                 t.now = file
                 if t.now == t.base {
                     let _ = c.touches.remove(path)
                 }
             } else if file != main {
-                let _ = c.touches.insert(take path, Touch { base: main, now: file, conflict: None })
+                let _ = c.touches.insert(
+                    take path,
+                    Touch { base: main, now: file, conflict: None, conflicted: false },
+                )
             }
         },
         Event::Snapped { change, note, tree, time } => {
@@ -520,15 +539,15 @@ pub fn apply(s: mut State, ev: take Event) -> Result<(), String> {
             c.snaps.push(Snap { note, tree, time })
             c.updated = time
         },
-        Event::Merged { change, path, base, now, conflict } => {
+        Event::Merged { change, path, base, now, conflict, conflicted } => {
             if let Some(why) = not_open(s, change) {
                 return Err(why)
             }
             mut c = s.changes.at_mut(change)
-            if base == now && conflict.is_none() {
+            if base == now && !conflicted {
                 let _ = c.touches.remove(path)
             } else {
-                let _ = c.touches.insert(take path, Touch { base, now, conflict })
+                let _ = c.touches.insert(take path, Touch { base, now, conflict, conflicted })
             }
         },
         Event::Submitted { change, time } => {
@@ -736,7 +755,7 @@ pub fn stale(s: State, c: Change) -> Vec<String> {
     for i in 0..paths.len() {
         let t = touches[i].clone()
         let main = s.files.get(paths[i].clone())
-        let behind = main != t.base && (t.conflict.is_none() || t.conflict != main)
+        let behind = main != t.base && (!t.conflicted || t.conflict != main)
         if behind {
             out.push(paths[i].clone())
         }
@@ -750,7 +769,7 @@ pub fn conflicts(c: Change) -> Vec<String> {
     let paths = c.touches.keys()
     let touches = c.touches.values()
     for i in 0..paths.len() {
-        if touches[i].conflict.is_some() {
+        if touches[i].conflicted {
             out.push(paths[i].clone())
         }
     }
@@ -888,6 +907,7 @@ fn main_moving_past_a_touch_makes_it_stale_until_merged() {
         base: f("1"),
         now: f("ours"),
         conflict: f("theirs"),
+        conflicted: true,
     }
     let Ok(()) = apply(mut s, take merged) else { panic("it merges") }
     let c2 = s.changes.at(1).clone()
@@ -947,6 +967,7 @@ fn events_read_back_as_they_were_written() {
             base: None,
             now: f("1"),
             conflict: f("2"),
+            conflicted: true,
         },
         Event::Landed {
             seq: 1,
@@ -1090,4 +1111,41 @@ fn a_batch_reads_back_as_its_events_and_applies_whole_or_not_at_all() {
     var s = new()
     let bad = [take one, Event::Fenced { epoch: 0, time: 1 }]
     assert(apply_all(mut s, bad).is_err() && s.waived.is_empty(), "none of it")
+}
+
+@test
+fn a_conflict_with_main_removing_the_file_is_resolved_by_a_write() {
+    var s = new()
+    land(mut s, 0, Vec::from([(String::from("a"), f("1"))]))
+    open(mut s, 1)
+    write(mut s, 1, "a", f("ours"))
+    land(mut s, 0, Vec::from([(String::from("a"), None)]))
+    let merged = Event::Merged {
+        change: 1,
+        path: String::from("a"),
+        base: f("1"),
+        now: f("ours"),
+        conflict: None,
+        conflicted: true,
+    }
+    let Ok(()) = apply(mut s, take merged) else { panic("it merges") }
+    let c = s.changes.at(1).clone()
+    assert(stale(s, c.clone()).is_empty() && conflicts(c).len() == 1, "a conflict with a removal")
+    write(mut s, 1, "a", f("kept"))
+    let c2 = s.changes.at(1).clone()
+    assert(conflicts(c2.clone()).is_empty() && stale(s, c2.clone()).is_empty(), "resolved")
+    assert(c2.touches.at(String::from("a")).base.is_none(), "main's removal is its base")
+    // The first layout still reads, as a conflict where it named main's version.
+    var e = codec::Enc::new()
+    e.u8(4)
+    e.num(1)
+    e.str("a")
+    e.u8(0)
+    e.u8(0)
+    e.u8(0)
+    let Ok(old) = decode(take e.bytes) else { panic("it reads") }
+    match old {
+        Event::Merged { conflicted, .. } => assert(!conflicted, "no conflict named"),
+        _ => panic("a merge"),
+    }
 }

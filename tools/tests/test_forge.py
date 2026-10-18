@@ -23,6 +23,16 @@ class Command(unittest.TestCase):
             self.assertIn(f"work={Path(home) / 'work'}", line)
             self.assertEqual(line[line.index("--"):], ["--", "serve", "--listen", "0.0.0.0:7171"])
             self.assertTrue((Path(home) / "work").is_dir())
+            self.assertEqual(Path(store).stat().st_mode & 0o777, 0o700, "the store is its owner's alone")
+
+    def test_a_call_lends_the_command_the_stores_key_when_it_may_read_it(self):
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as here:
+            (Path(home) / "data").mkdir()
+            line = forge.command(["log"], here, Path(home))
+            self.assertNotIn("--root", line[4:line.index("--")], "no key, no key root")
+            (Path(home) / "data/key").write_text("k" * 64)
+            line = forge.command(["log"], here, Path(home))
+            self.assertIn(f"key={Path(home) / 'data'}", line)
 
 
 if __name__ == "__main__":

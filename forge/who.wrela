@@ -82,7 +82,19 @@ fn lowered(a: str) -> String {
     out
 }
 
-/// The machine itself, at `addr`.
+/// A program on this machine that didn't show the store's key: known as `local@MACHINE`, and
+/// allowed what the rules give the machine's node or its address (spec F28).
+pub fn on_machine(addr: str, machine: str) -> Who {
+    Who {
+        local: false,
+        addr: addr.to_string(),
+        node: machine.to_string(),
+        login: String::from("local"),
+        tags: Vec::new(),
+    }
+}
+
+/// The machine itself, at `addr`: a caller that showed the store's key.
 pub fn local(addr: str) -> Who {
     Who {
         local: true,

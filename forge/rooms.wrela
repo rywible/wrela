@@ -63,9 +63,9 @@ pub fn notice(ev: Event, at: u64, st: State) -> Notice {
             j.kstr("tree", tree.hex().as_str())
             rooms.push(room_of(change))
         },
-        Event::Merged { change, path, conflict, .. } => {
+        Event::Merged { change, path, conflicted, .. } => {
             // Main moved under the change: carried onto it, or in conflict with it.
-            j.kstr("kind", if conflict.is_some() { "conflict" } else { "carried" })
+            j.kstr("kind", if conflicted { "conflict" } else { "carried" })
             j.kstr("change", f"c{change}".as_str())
             j.kstr("path", path.as_str())
             rooms.push(room_of(change))
@@ -509,6 +509,7 @@ fn each_event_has_a_notice_in_its_rooms() {
         base: None,
         now: None,
         conflict: Some(object::File { id: blake3::Id::zero(), exec: false, size: 1 }),
+        conflicted: true,
     }
     let m = notice(merged, 140, st)
     assert(

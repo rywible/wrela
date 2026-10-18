@@ -168,6 +168,9 @@ pub struct Workspace: Clone {
     at: u32,
     rules: Vec<Rule>,
     dirs: Vec<String>,
+    /// The directories `.forgeignore` names that are listed anyway, for the files of the change
+    /// in them: a new file there isn't sent, but a file the change holds is still looked at.
+    ignored_dirs: SortedMap<String, bool>,
     found: Vec<(String, bool)>,
     /// What each found file holds, by its place in `found`.
     seen: Vec<File>,
@@ -191,6 +194,7 @@ pub fn idle() -> Workspace {
         at: 0,
         rules: Vec::new(),
         dirs: Vec::new(),
+        ignored_dirs: SortedMap::new(),
         found: Vec::new(),
         seen: Vec::new(),
         content: Vec::new(),
@@ -232,6 +236,17 @@ pub fn start(s: mut Service) {
     wait(mut s, host::mkdir("here/.forge"), For::Desk(WROTE, 0))
 }
 
+/// Whether `held` holds a file under directory `dir`.
+fn holds_under(held: Files, dir: str) -> bool {
+    let prefix = f"{dir}/"
+    for p in held.keys() {
+        if p.as_str().starts_with(prefix.as_str()) {
+            return true
+        }
+    }
+    false
+}
+
 pub fn answered(s: mut Service, what: u32, i: u32, r: take Result<Vec<u8>, IoError>) {
     if what == STATE_READ {
         if let Ok(b) = take r {
@@ -256,22 +271,36 @@ pub fn answered(s: mut Service, what: u32, i: u32, r: take Result<Vec<u8>, IoErr
         }
     } else if what == LISTED {
         let prefix = s.desk.dirs[i].clone()
-        if let Ok(b) = take r {
-            for e in host::entries_of(take b).unwrap_or(Vec::new()) {
-                let path = if prefix.is_empty() { e.name.clone() } else { f"{prefix}/{e.name}" }
-                if path.as_str() == ".forge" ||
-                    path.as_str() == ".git" ||
-                    ignored(s.desk.rules, path.as_str(), dir: e.dir) {
+        let b = match take r {
+            Ok(b) => take b,
+            // A directory it can't list could hide files the change holds: nothing is pushed.
+            Err(e) => return finish(
+                mut s,
+                1,
+                f"forge: can't list {if prefix.is_empty() { String::from(".") } else { prefix.clone() }}: {e.message()}\n".as_str(),
+            ),
+        }
+        let in_ignored = s.desk.ignored_dirs.contains(prefix.clone())
+        for e in host::entries_of(take b).unwrap_or(Vec::new()) {
+            let path = if prefix.is_empty() { e.name.clone() } else { f"{prefix}/{e.name}" }
+            if path.as_str() == ".forge" || path.as_str() == ".git" {
+                continue
+            }
+            let ign = in_ignored || ignored(s.desk.rules, path.as_str(), dir: e.dir)
+            if e.dir {
+                if ign && !holds_under(s.desk.held, path.as_str()) {
                     continue
                 }
-                if e.dir {
-                    s.desk.dirs.push(path.clone())
-                    s.desk.waiting += 1
-                    let n = s.desk.dirs.len() - 1
-                    wait(mut s, host::list(f"{HERE}/{path}".as_str()), For::Desk(LISTED, n))
-                } else {
-                    s.desk.found.push((take path, e.exec))
+                if ign {
+                    let _ = s.desk.ignored_dirs.insert(path.clone(), value: true)
                 }
+                s.desk.dirs.push(path.clone())
+                s.desk.waiting += 1
+                let n = s.desk.dirs.len() - 1
+                wait(mut s, host::list(f"{HERE}/{path}".as_str()), For::Desk(LISTED, n))
+            } else if !ign || s.desk.held.contains(path.clone()) {
+                // `.forgeignore` keeps new files out; a file the change holds is its still.
+                s.desk.found.push((take path, e.exec))
             }
         }
     } else if what == READ {

@@ -9,7 +9,7 @@
 //! | Service | Request | Answer |
 //! |---|---|---|
 //! | `fs/read` | path; optionally `u64` offset and `u64` length (`u64::MAX`: to the end) | the bytes |
-//! | `fs/write` | path, bytes, optionally `u8` flags (1: make it executable; 2: don't flush) | nothing: the file holds exactly the bytes, on disk |
+//! | `fs/write` | path, bytes, optionally `u8` flags (1: make it executable; 2: don't flush; 4: readable by its owner alone) | nothing: the file holds exactly the bytes, on disk |
 //! | `fs/append` | path, bytes | the file's new length, `u64`, on disk |
 //! | `fs/truncate` | path, `u64` length | nothing |
 //! | `fs/stat` | path | kind `u8` (0 none, 1 file, 2 directory, 3 executable file), size `u64`, modified `u64` ms |
@@ -119,11 +119,16 @@ pub fn write_atomically(path: &Path, bytes: &[u8], exec: bool) -> Result<(), Str
 
 /// Replaces `path`'s bytes with `bytes`, as [`write_atomically`] does; flushed only if `flush`.
 fn write_file(path: &Path, bytes: &[u8], exec: bool, flush: bool) -> Result<(), String> {
-    write_via(path, &beside(path), bytes, exec, flush)
+    write_mode(path, bytes, if exec { 0o755 } else { 0o644 }, flush)
 }
 
-/// [`write_file`], through the file `part` beside it, which must not be there yet.
-fn write_via(path: &Path, part: &Path, bytes: &[u8], exec: bool, flush: bool) -> Result<(), String> {
+/// [`write_file`], with the file's Unix permissions `mode`.
+fn write_mode(path: &Path, bytes: &[u8], mode: u32, flush: bool) -> Result<(), String> {
+    write_via(path, &beside(path), bytes, mode, flush)
+}
+
+/// [`write_mode`], through the file `part` beside it, which must not be there yet.
+fn write_via(path: &Path, part: &Path, bytes: &[u8], mode: u32, flush: bool) -> Result<(), String> {
     let part = part.to_path_buf();
     let written = (|| {
         // A new file, never one already there: not a link someone put in its place.
@@ -132,7 +137,7 @@ fn write_via(path: &Path, part: &Path, bytes: &[u8], exec: bool, flush: bool) ->
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            f.set_permissions(fs::Permissions::from_mode(if exec { 0o755 } else { 0o644 }))?;
+            f.set_permissions(fs::Permissions::from_mode(mode))?;
         }
         if flush {
             f.sync_all()?;
@@ -181,7 +186,14 @@ pub fn serve(roots: &Roots, service: &str, body: &[u8]) -> Option<Result<Vec<u8>
                 let bytes = b.bytes()?;
                 let flags = if b.is_empty() { 0 } else { b.u8()? };
                 b.end()?;
-                write_file(&path, bytes, flags & 1 != 0, flags & 2 == 0)?;
+                let mode = if flags & 4 != 0 {
+                    0o600
+                } else if flags & 1 != 0 {
+                    0o755
+                } else {
+                    0o644
+                };
+                write_mode(&path, bytes, mode, flags & 2 == 0)?;
                 Ok(Vec::new())
             }
             "append" => {
@@ -417,7 +429,7 @@ mod tests {
         let part = dir.path().join(".f.part");
         std::os::unix::fs::symlink(&outside, &part).expect("a link");
         let target = dir.path().join("f");
-        assert!(super::write_via(&target, &part, b"new", false, true).is_err(), "refused");
+        assert!(super::write_via(&target, &part, b"new", 0o644, true).is_err(), "refused");
         assert_eq!(std::fs::read(&outside).expect("still there"), b"keep");
     }
 

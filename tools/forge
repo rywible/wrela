@@ -64,8 +64,15 @@ def command(args, cwd, home=HOME):
         for name, path in roots.items():
             path.mkdir(parents=True, exist_ok=True)
             line += ["--root", f"{name}={path}"]
+        # The store is its owner's alone: its key is a program on this machine's way to call as the
+        # machine itself.
+        roots["data"].chmod(0o700)
     else:
         line += ["--root", f"here={Path(cwd).resolve()}"]
+        # This machine's store lends the command its key, if the store is the caller's to read.
+        data = home / "data"
+        if os.access(data / "key", os.R_OK):
+            line += ["--root", f"key={data}"]
     return [*line, "--", *rest]
 
 

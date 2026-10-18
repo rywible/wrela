@@ -195,7 +195,23 @@ fn watched(s: mut Service, status: u32, body: take Vec<u8>) {
     watch(mut s)
 }
 
+/// The command's start: the store's key first, if this machine's store lends it (a `key` root,
+/// readable only by the store's owner), so the command calls as the machine itself.
 pub fn start(s: mut Service) {
+    service::wait(mut s, host::read("key/key"), service::For::ClientKey)
+}
+
+pub fn keyed(s: mut Service, r: take Result<Vec<u8>, std::io::IoError>) {
+    if let Ok(b) = take r {
+        let text = bytes::text_of(b)
+        if text.len() == 64 {
+            s.key = take text
+        }
+    }
+    go(mut s)
+}
+
+fn go(s: mut Service) {
     if s.args.len() > 0 && s.args[0].as_str() == "watch" {
         s.calls = calls::calls(server_of(s.args).as_str())
         s.watching.on = true

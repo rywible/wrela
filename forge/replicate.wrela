@@ -372,6 +372,7 @@ pub fn start(s: mut Service) {
     s.replica.servers = take servers
     s.replica.waiting = true
     wait(mut s, host::lock("data/lock"), For::Replica(LOCKED))
+    wait(mut s, host::read("data/key"), For::Key(0))
     wait(mut s, host::read("data/promise"), For::Replica(PROMISE_READ))
     wait(mut s, host::mkdir("data/objects"), For::Replica(MADE))
     wait(mut s, host::read(LOG), For::Replica(READ))

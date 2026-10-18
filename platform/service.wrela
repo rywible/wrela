@@ -158,6 +158,23 @@ pub fn write_file(path: str, bytes: [u8], exec: bool) -> Pending<u8> {
     request("fs/write", o.bytes)
 }
 
+/// Makes the file at `path` hold exactly `bytes`, flushed, readable and writable by its owner
+/// alone: for a key.
+pub fn write_private(path: str, bytes: [u8]) -> Pending<u8> {
+    var o = Out::new()
+    o.str(path)
+    o.run(bytes)
+    o.u8(4)
+    request("fs/write", o.bytes)
+}
+
+/// `n` bytes of the system's randomness (at most 1024).
+pub fn random(n: u32) -> Pending<u8> {
+    var o = Out::new()
+    o.u32(n)
+    request("service/random", o.bytes)
+}
+
 /// Makes the file at `path` hold exactly `bytes`, whole or not at all, without flushing it to
 /// disk: a crash of the machine may leave the old file. For files that can be made again, as a
 /// worker's checkout can.

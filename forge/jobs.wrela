@@ -601,12 +601,16 @@ pub fn remote(s: mut Service, conn: u32, req: take http::Request) {
         let Some(log) = Id::parse(doc.field(doc.root, "log")) else {
             return json_reply(mut s, conn, 400, "{\"error\":\"give the output's blob id\"}")
         }
-        if !s.core.stored.contains(log) {
+        let is_blob = match s.core.blobs.get(log) {
+            Some(content) => object::blob_id(content) == log,
+            None => false,
+        }
+        if !is_blob {
             return json_reply(
                 mut s,
                 conn,
                 422,
-                "{\"error\":\"send the output first (POST /api/object)\"}",
+                "{\"error\":\"send the output first (POST /api/object), as a blob\"}",
             )
         }
         let status = match doc.get(doc.root, "status") {

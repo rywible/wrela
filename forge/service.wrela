@@ -63,6 +63,9 @@ pub enum For: Clone {
     Locked,
     /// What the store promised as a replica (replicate.wrela), read at the start.
     PromiseRead,
+    /// The store's key: read (0), made from randomness (1), saved (2); and the command's.
+    Key(u32),
+    ClientKey,
     ObjectDirs,
     LogStat,
     LogRead,
@@ -185,6 +188,9 @@ pub struct Service {
     /// who, and until when it holds (milliseconds since 1970).
     pub whois: String,
     known: SortedMap<String, (who::Who, u64)>,
+    /// The store's key (`data/key`, readable by its owner alone): a program on this machine that
+    /// shows it is the machine itself (F28). The command reads it to call as the machine.
+    pub key: String,
     /// The time when the host started: milliseconds since 1970, and the call's seconds since.
     pub start_ms: u64,
     pub time: f32,
@@ -249,6 +255,7 @@ pub fn new() -> Service {
         fleet: Vec::new(),
         whois: String::from("tailscale"),
         known: SortedMap::new(),
+        key: String::new(),
         start_ms: 0,
         time: 0.0,
         core: core::core("local"),
@@ -421,6 +428,8 @@ fn answered(s: mut Service, what: take For, r: take Result<Vec<u8>, IoError>) {
             begin(mut s)
         },
         For::Made => started_one(mut s, "making a directory", take r),
+        For::Key(step) => keyed(mut s, step, take r),
+        For::ClientKey => client::keyed(mut s, take r),
         For::PromiseRead => {
             // A promotion's epoch is above any this store promised another candidate.
             if let Ok(b) = take r {
@@ -639,8 +648,9 @@ fn begin(s: mut Service) {
     s.advertise = flag(s.args, "--advertise").unwrap_or(s.listen.clone())
     s.phase = Phase::Disk
     // One program holds a store at a time: its lock first, before anything of it is read.
-    s.startup_left = 7
+    s.startup_left = 8
     wait(mut s, host::lock("data/lock"), For::Locked)
+    wait(mut s, host::read("data/key"), For::Key(0))
     wait(mut s, host::read("data/promise"), For::PromiseRead)
     wait(mut s, host::mkdir("data/objects"), For::Made)
     wait(mut s, host::mkdir("data/workers"), For::Made)
@@ -702,6 +712,43 @@ pub fn started_one(s: mut Service, what: str, r: take Result<Vec<u8>, IoError>) 
         }
         peers::at_start(mut s, promote)
     }
+}
+
+/// The store's key, read or made at the start: 32 random bytes as hex, saved for its owner alone.
+fn keyed(s: mut Service, step: u32, r: take Result<Vec<u8>, IoError>) {
+    if step == 0 {
+        if let Ok(b) = take r {
+            let text = bytes::text_of(b)
+            if text.len() == 64 {
+                s.key = take text
+                return key_done(mut s)
+            }
+        }
+        return wait(mut s, host::random(32), For::Key(1))
+    }
+    if step == 1 {
+        let Ok(b) = take r else { return fatal(mut s, "the system gave no randomness for a key") }
+        if b.len() != 32 {
+            return fatal(mut s, "the system gave too little randomness for a key")
+        }
+        s.key = Id::of_bytes(b, 0).hex()
+        return wait(
+            mut s,
+            host::write_private("data/key", bytes::of_str(s.key.as_str())),
+            For::Key(2),
+        )
+    }
+    if let Err(e) = r {
+        return fatal(mut s, f"the store's key wasn't saved: {e.message()}".as_str())
+    }
+    key_done(mut s)
+}
+
+fn key_done(s: mut Service) {
+    if s.phase == Phase::Replica {
+        return
+    }
+    started_one(mut s, "the store's key", Ok(Vec::new()))
 }
 
 /// Listens for callers: ready once it does.
@@ -1258,6 +1305,15 @@ fn next_request(s: mut Service, conn: u32) {
             if req.closes() {
                 s.conns.at_mut(conn).closing = true
             }
+            // A program on this machine that shows the store's key is the machine itself.
+            let shown = req.header("x-forge-key")
+            if !s.key.is_empty() && shown == s.key.as_str() {
+                let addr = who::addr_of(s.conns.at(conn).peer.as_str())
+                if who::is_loopback(addr.as_str()) {
+                    s.conns.at_mut(conn).who = Some(who::local(addr.as_str()))
+                    s.conns.at_mut(conn).until = 0
+                }
+            }
             if s.phase == Phase::Replica {
                 return replicate::route(mut s, conn, take req)
             }
@@ -1425,7 +1481,9 @@ pub fn fence_machine(body: [u8]) -> String {
 /// own as it likes; another names its for its node, `NODE` or `NODE/...`.
 pub fn names_its_own(ctx: Ctx, name: str) -> bool {
     let node = ctx.node.as_str()
+    // A program on this machine names its own as it likes: the rules let it in as the machine.
     ctx.who.as_str() == "local" ||
+        ctx.who.as_str().starts_with("local@") ||
         name == node ||
         (name.starts_with(node) && name.len() > node.len() && name.byte(node.len()) == 47)
 }
@@ -1495,7 +1553,8 @@ pub fn ctx_of(s: Service, conn: u32) -> Ctx {
 fn identify(s: mut Service, conn: u32) {
     let addr = who::addr_of(s.conns.at(conn).peer.as_str())
     if who::is_loopback(addr.as_str()) {
-        return known_as(mut s, conn, Some(who::local(addr.as_str())))
+        // A program on this machine is the machine only with the store's key (`next_request`).
+        return known_as(mut s, conn, Some(who::on_machine(addr.as_str(), s.machine.as_str())))
     }
     if !who::is_tailnet(addr.as_str()) {
         return known_as(mut s, conn, None)

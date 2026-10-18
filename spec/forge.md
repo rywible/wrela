@@ -65,7 +65,7 @@ never reused.
 | 1 | A change opened | change, intent, author, model, session, machine, time |
 | 2 | A change wrote a file | change, path, file reference (none: removed), time |
 | 3 | A change named its tree (a snapshot) | change, note, tree, time |
-| 4 | A change's file was carried onto main | change, path, base, now, conflict (file references) |
+| 4 | A change's file was carried onto main (the first layout: it conflicts if conflict names a file) | change, path, base, now, conflict (file references) |
 | 5 | A change asked to land | change, time |
 | 6 | A change closed | change, why, time |
 | 7 | Main landed a revision | place on main, change (0 if imported), revision, tree, time, by, intent, count of files, then each path and file reference |
@@ -77,6 +77,7 @@ never reused.
 | 13 | The service was fenced | epoch, time |
 | 14 | A check went back to the queue | job, why, time |
 | 15 | A call's events, together | the count of events (2 or more), then each event's bytes as a run |
+| 16 | A change's file was carried onto main | change, path, base, now, conflict (file references), whether it conflicts (a bool) |
 
 - **F14.** The state is the fold of the log's events from the start, in order. An event that
   doesn't apply (a change that isn't open, a landing out of place) means the log isn't the
@@ -92,7 +93,8 @@ never reused.
 - **F17.** When main lands a new version of a file a change touched, forge carries the change onto
   it: a three-way merge of the lines of the base, the change's version and main's. A clean merge
   becomes the change's version, with main's as its base; a conflict keeps the change's version
-  and main's beside it. A write of the file resolves the conflict, with main's version as its base.
+  and main's beside it (or that main removed the file). A write of the file resolves the conflict,
+  with main's version (or its absence) as its base.
 - **F18.** A change lands when it touched a file, main hasn't moved past any of its files, none of
   them conflicts, and the suite passed on its exact tree (or the suite was waived). Landing makes
   main's files its files, as a new revision whose evidence is the suite's.

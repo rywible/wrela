@@ -62,7 +62,10 @@ pub fn call_to(
     s.calls.deadline = service::now(s) + ms
     s.calls.purpose = purpose
     s.calls.buf = Vec::new()
-    s.calls.request = http::request(method, to, path, kind, body)
+    // The store's key goes only to this machine's own forge: never across the network.
+    let mine = who::is_loopback(who::addr_of(to).as_str()) || to.starts_with("localhost:")
+    let key = if mine { s.key.clone() } else { String::new() }
+    s.calls.request = http::request(method, to, path, kind, body, key.as_str())
     wait(mut s, host::connect(to), For::Client(s.calls.serial))
 }
 

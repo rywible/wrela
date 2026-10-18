@@ -30,7 +30,8 @@ pub mod tcp;
 
 use body::{Body, Out};
 use std::collections::HashMap;
-use std::io::Write;
+use std::fs::File;
+use std::io::{Read, Write};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -240,6 +241,14 @@ fn carry_out(
             }
             Ok(out.0)
         }
+        "service/random" => b.u32().and_then(|n| {
+            // The system's randomness, for keys: never more than a KiB at once.
+            let mut out = vec![0u8; n.min(1024) as usize];
+            File::open("/dev/urandom")
+                .and_then(|mut f| f.read_exact(&mut out))
+                .map(|()| out)
+                .map_err(|e| format!("/dev/urandom: {e}"))
+        }),
         "service/stdout" => {
             let mut s = std::io::stdout();
             s.write_all(&r.body)

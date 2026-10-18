@@ -80,6 +80,14 @@ fn start(build: &Path, data: &Path, work: &Path, port: u16) -> std::thread::Join
     run_forge(build, data, work, &["serve", "--listen", &listen, "--machine", "test"])
 }
 
+/// The store each port's forge serves, so a test's calls can show its key, as the machine's own
+/// command does (`x-forge-key`).
+fn stores() -> &'static std::sync::Mutex<std::collections::HashMap<u16, PathBuf>> {
+    static STORES: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<u16, PathBuf>>> =
+        std::sync::OnceLock::new();
+    STORES.get_or_init(Default::default)
+}
+
 /// forge with `args`, on a thread of its own, with its two roots: its exit status.
 fn run_forge(
     build: &Path,
@@ -91,6 +99,11 @@ fn run_forge(
     roots.add("data", data).expect("the data root");
     roots.add("work", work).expect("the work root");
     let build = ServerBuild::load(build).expect("forge's server build");
+    if let Some(i) = args.iter().position(|a| *a == "--listen") {
+        if let Some(port) = args.get(i + 1).and_then(|l| l.rsplit(':').next()?.parse().ok()) {
+            stores().lock().expect("the stores").insert(port, data.to_path_buf());
+        }
+    }
     let args = args.iter().map(|s| s.to_string()).collect();
     std::thread::spawn(move || {
         wrela_service::run(wrela_service::Config {
@@ -106,8 +119,10 @@ fn run_forge(
 fn http(port: u16, method: &str, path: &str, body: &str) -> (u32, String) {
     let mut s = TcpStream::connect(("127.0.0.1", port)).expect("forge accepts");
     s.set_read_timeout(Some(Duration::from_secs(60))).expect("a timeout");
+    let store = stores().lock().expect("the stores").get(&port).cloned();
+    let key = store.and_then(|d| std::fs::read_to_string(d.join("key")).ok()).unwrap_or_default();
     let req = format!(
-        "{method} {path} HTTP/1.1\r\nhost: x\r\nconnection: close\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+        "{method} {path} HTTP/1.1\r\nhost: x\r\nx-forge-key: {key}\r\nconnection: close\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
         body.len()
     );
     s.write_all(req.as_bytes()).expect("the request is sent");
@@ -285,7 +300,12 @@ fn a_worker_on_another_machine_runs_a_check_and_the_service_keeps_its_evidence()
     let port = free_port();
     let listen = format!("127.0.0.1:{port}");
     // The service runs no checks itself: its worker is elsewhere.
-    let service = run_forge(build, data, work, &["serve", "--listen", &listen, "--machine", "test", "--no-worker"]);
+    let service = run_forge(
+        build,
+        data,
+        work,
+        &["serve", "--listen", &listen, "--machine", "test", "--no-worker", "--fleet", "127.0.0.1"],
+    );
     ready(port);
     http(port, "POST", "/api/import", &serde_json::json!({"git": repo, "ref": "main"}).to_string());
     wait_until("the import", || call(port, "log", serde_json::json!({}))["main"] == 2);
@@ -332,7 +352,12 @@ fn a_replica_holds_each_landing_before_it_is_answered_and_serves_once_promoted()
     let port = free_port();
     let listen = format!("127.0.0.1:{port}");
     // A landing is answered only once one replica holds it.
-    let service = run_forge(build, data, work, &["serve", "--listen", &listen, "--machine", "test", "--acks", "1"]);
+    let service = run_forge(
+        build,
+        data,
+        work,
+        &["serve", "--listen", &listen, "--machine", "test", "--acks", "1", "--fleet", "127.0.0.1"],
+    );
     ready(port);
     let rport = free_port();
     let rlisten = format!("127.0.0.1:{rport}");
@@ -374,7 +399,12 @@ fn a_replica_holds_each_landing_before_it_is_answered_and_serves_once_promoted()
     stop(rport, replica);
     let port2 = free_port();
     let listen2 = format!("127.0.0.1:{port2}");
-    let promoted = run_forge(build, rdata, rwork, &["serve", "--promote", "--listen", &listen2, "--machine", "promoted"]);
+    let promoted = run_forge(
+        build,
+        rdata,
+        rwork,
+        &["serve", "--promote", "--listen", &listen2, "--machine", "promoted"],
+    );
     ready(port2);
     assert_eq!(call(port2, "log", serde_json::json!({}))["main"], 3);
     let read = call(port2, "read", serde_json::json!({"path": "big.bin", "lines": 1}));
@@ -433,7 +463,17 @@ fn three_stores_fail_over_without_losing_a_confirmed_landing_and_the_old_service
             &build,
             data,
             work,
-            &["replica", "--servers", &servers, "--machine", name, "--listen", listen],
+            &[
+                "replica",
+                "--servers",
+                &servers,
+                "--machine",
+                name,
+                "--listen",
+                listen,
+                "--fleet",
+                "127.0.0.1",
+            ],
         )
     };
 
@@ -442,7 +482,19 @@ fn three_stores_fail_over_without_losing_a_confirmed_landing_and_the_old_service
         &build,
         &pdata,
         &pwork,
-        &["serve", "--listen", &p, "--machine", "p", "--acks", "1", "--peers", &peers_of(&a, &b)],
+        &[
+            "serve",
+            "--listen",
+            &p,
+            "--machine",
+            "p",
+            "--acks",
+            "1",
+            "--peers",
+            &peers_of(&a, &b),
+            "--fleet",
+            "127.0.0.1",
+        ],
     );
     ready(pp);
     let ra = replica(&adata, &awork, "a", &a, peers_of(&p, &b));
@@ -470,7 +522,18 @@ fn three_stores_fail_over_without_losing_a_confirmed_landing_and_the_old_service
         &build,
         &adata,
         &awork,
-        &["serve", "--promote", "--listen", &a, "--machine", "a", "--peers", &peers_of(&p, &b)],
+        &[
+            "serve",
+            "--promote",
+            "--listen",
+            &a,
+            "--machine",
+            "a",
+            "--peers",
+            &peers_of(&p, &b),
+            "--fleet",
+            "127.0.0.1",
+        ],
     );
     assert_eq!(refused.join().expect("its thread"), 1, "the promotion is refused");
     assert_eq!(std::fs::read(adata.join("events")).expect("A's log"), a_log, "A is unchanged");
@@ -494,6 +557,8 @@ fn three_stores_fail_over_without_losing_a_confirmed_landing_and_the_old_service
             "1",
             "--peers",
             &peers_of(&p, &a),
+            "--fleet",
+            "127.0.0.1",
         ],
     );
     ready(pb);
@@ -515,7 +580,17 @@ fn three_stores_fail_over_without_losing_a_confirmed_landing_and_the_old_service
         &build,
         &pdata,
         &pwork,
-        &["serve", "--listen", &p, "--machine", "p", "--peers", &peers_of(&a, &b)],
+        &[
+            "serve",
+            "--listen",
+            &p,
+            "--machine",
+            "p",
+            "--peers",
+            &peers_of(&a, &b),
+            "--fleet",
+            "127.0.0.1",
+        ],
     );
     assert_eq!(back.join().expect("its thread"), 1, "the old service is fenced");
     let again = run_forge(&build, &pdata, &pwork, &["serve", "--listen", &p, "--machine", "p"]);
@@ -660,10 +735,36 @@ fn a_store_backed_up_to_a_bucket_is_restored_whole() {
         "the restored log is the store's"
     );
     assert_eq!(restore(&restored), 1, "a restore into a store that isn't empty is refused");
+    // A pack that lacks a tree inside another (tools/) is caught: every object the log names,
+    // however deep, is checked to be there.
+    {
+        let mut keys = held.lock().expect("the keys");
+        let pack = keys.get("pack/0000000000000000").expect("the first pack").clone();
+        let (mut out, mut at, mut dropped) = (Vec::new(), 0, false);
+        while at + 36 <= pack.len() {
+            let n = u32::from_le_bytes(pack[at + 32..at + 36].try_into().unwrap()) as usize;
+            let raw = &pack[at + 36..at + 36 + n];
+            let tools = raw[0] == 2 && raw.windows(8).any(|w| w == b"check.sh");
+            if tools && !dropped {
+                dropped = true;
+            } else {
+                out.extend_from_slice(&pack[at..at + 36 + n]);
+            }
+            at += 36 + n;
+        }
+        assert!(dropped, "the pack held tools/'s tree");
+        keys.insert("pack/0000000000000000".into(), out);
+    }
+    let lacking = dir("lacking");
+    assert_eq!(restore(&lacking), 1, "a backup that lacks an object isn't restored");
     let port2 = free_port();
     let listen2 = format!("127.0.0.1:{port2}");
-    let promoted =
-        run_forge(&build, &restored, &rwork, &["serve", "--promote", "--listen", &listen2, "--machine", "promoted"]);
+    let promoted = run_forge(
+        &build,
+        &restored,
+        &rwork,
+        &["serve", "--promote", "--listen", &listen2, "--machine", "promoted"],
+    );
     ready(port2);
     assert_eq!(call(port2, "read", serde_json::json!({"path": "more.txt"}))["text"], "more\n");
     let read = call(port2, "read", serde_json::json!({"path": "big.bin", "lines": 1}));
@@ -816,6 +917,54 @@ fn a_file_a_check_changed_is_written_again_before_the_next_check() {
     assert_eq!(check("rustfmt"), "passed");
     assert_eq!(std::fs::read_to_string(work.join("README")).expect("README"), "forge test\n");
     stop(port, service);
+}
+
+#[test]
+fn a_program_on_the_machine_is_the_machine_only_with_the_stores_key() {
+    let scratch = Scratch::new("key");
+    let dir = |d: &str| {
+        let p = scratch.0.join(d);
+        std::fs::create_dir_all(&p).expect("a directory");
+        p
+    };
+    let (build, data, work) = (dir("build"), dir("data"), dir("work"));
+    wrela_tests::must_build(&repo_root().join("forge"), &build);
+    let port = free_port();
+    let service = start(&build, &data, &work, port);
+    ready(port);
+    let key = std::fs::read_to_string(data.join("key")).expect("the store's key");
+    assert_eq!(key.len(), 64);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(data.join("key")).expect("the key").permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "the key is its owner's alone");
+    }
+    // Without the key: a writer, not the machine.
+    let without = |method: &str, path: &str, body: &str| {
+        let mut s = TcpStream::connect(("127.0.0.1", port)).expect("forge accepts");
+        let req = format!(
+            "{method} {path} HTTP/1.1\r\nhost: x\r\nconnection: close\r\ncontent-length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        s.write_all(req.as_bytes()).expect("sent");
+        let mut out = String::new();
+        s.read_to_string(&mut out).expect("an answer");
+        out
+    };
+    let opened = without("POST", "/api/call", r#"{"tool":"open","args":{"intent":"Mine"}}"#);
+    assert!(opened.starts_with("HTTP/1.1 200"), "a writer opens a change: {opened}");
+    let changes = call(port, "changes", serde_json::json!({}));
+    assert_eq!(changes["changes"][0]["author"], "local@test", "named for the machine");
+    assert!(without("POST", "/api/stop", "").starts_with("HTTP/1.1 403"), "it can't stop forge");
+    let import = without("POST", "/api/import", r#"{"git":"/nowhere"}"#);
+    assert!(import.starts_with("HTTP/1.1 403"), "nor import: {import}");
+    // With it, the machine itself.
+    stop(port, service);
+    let again = start(&build, &data, &work, port);
+    ready(port);
+    assert_eq!(std::fs::read_to_string(data.join("key")).expect("the key"), key, "kept");
+    stop(port, again);
 }
 
 /// forge with `args` and the roots `roots`, on a thread of its own: its exit status.
