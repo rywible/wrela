@@ -5,13 +5,14 @@
 //! `..`, symbolic links out of a root, one swapped in after a check, writes to a read root,
 //! secrets not granted, a blob budget spent), and each way it ends: its status, waiting on
 //! nothing, a trap, the timeout and an interrupt, each with its workers stopped and its blobs
-//! released.
+//! released; files that aren't regular files refused without waiting; and a worker stuck past
+//! its grace, or a clock thread that can't start, ending the run as the host's failure.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use wrela_host::tool::{BlobBudget, Caps, End, Ended, Grants, Options, ToolBuild};
+use wrela_host::tool::{BlobBudget, Caps, End, Ended, Grants, Options, Testing, ToolBuild};
 
 /// A scratch directory of its own.
 fn scratch(name: &str) -> PathBuf {
@@ -578,4 +579,167 @@ fn an_interrupt_stops_a_tool_inside_a_call() {
     set.join().expect("the interrupting thread");
     assert_eq!(ended.end, End::Interrupted);
     assert_eq!(ended.end.status(), 130);
+}
+
+const FIFO: &str = r#"
+use std::io::print
+use std::job::{Job, Step}
+use std::tool::{RUNNING, answer}
+use std::tool::blob
+use std::tool::files
+
+@job
+fn main() -> u32 {
+    var nb = blob::new()
+    var made = nb.poll()
+    while made.is_none() {
+        yield
+        made = nb.poll()
+    }
+    let Some(m) = take made else { return 90 }
+    let Ok(b) = blob::read_handle(take m) else { return 91 }
+    var ap = blob::append(b, [u8(1), 2, 3])
+    while ap.poll().is_none() { yield }
+    // A FIFO with nothing at its other end: each is refused at once, and the tool goes on. One
+    // at a time, so no two opens meet at the FIFO's ends.
+    let names = ["write_blob", "read", "write", "read_blob"]
+    for i in 0..4 {
+        var p = match i {
+            0 => files::write_blob("out/fifo", b),
+            1 => files::read("out/fifo"),
+            2 => files::write("out/fifo", [u8(1)]),
+            _ => files::read_blob("out/fifo"),
+        }
+        var got = p.poll()
+        while got.is_none() {
+            yield
+            got = p.poll()
+        }
+        let Some(a) = take got else { return 92 }
+        match answer(take a) {
+            Ok(_) => print(f"{names[i]}: ok"),
+            Err(e) => print(f"{names[i]}: {e.message()}"),
+        }
+    }
+    0
+}
+"#;
+
+#[test]
+fn files_that_arent_regular_files_are_refused_without_waiting() {
+    let build = tool_build("fifo", &format!("{FIFO}{ENTRIES}"));
+    let out = scratch("fifo");
+    let made = std::process::Command::new("mkfifo").arg(out.join("fifo")).status();
+    assert!(made.is_ok_and(|s| s.success()), "mkfifo");
+    let (lines, mut options) = printer(|_| {});
+    options.caps = Caps::open(&Grants::default().root("out", &out, true), |_| None).expect("out");
+    // Bounded, so a host that waits on the FIFO fails here rather than hangs.
+    options.timeout = Some(Duration::from_secs(10));
+    let ended = run(&build, options);
+    let lines = lines.lock().expect("the lines").clone();
+    assert_eq!(ended.end, End::Exit(0), "{lines:?}");
+    assert_eq!(lines.len(), 4, "{lines:?}");
+    for (line, name) in lines.iter().zip(["write_blob", "read", "write", "read_blob"]) {
+        assert!(line.starts_with(&format!("{name}: `out/fifo`")), "{line}");
+    }
+    assert!(lines[1].ends_with("isn't a regular file"), "{lines:?}");
+    assert_eq!(ended.blobs_released, (1, 3), "the blob is released with the run");
+}
+
+const SLOW_WRITE: &str = r#"
+use std::job::{Job, Step}
+use std::tool::{RUNNING, answer}
+use std::tool::blob
+use std::tool::files
+
+@job
+fn main() -> u32 {
+    var nb = blob::new()
+    var made = nb.poll()
+    while made.is_none() {
+        yield
+        made = nb.poll()
+    }
+    let Some(m) = take made else { return 90 }
+    let Ok(b) = blob::read_handle(take m) else { return 91 }
+    var ap = blob::append(b, Vec::filled(1024, u8(7)))
+    while ap.poll().is_none() { yield }
+    var w = files::write_blob("out/slow.bin", b)
+    while w.poll().is_none() { yield }
+    0
+}
+"#;
+
+#[test]
+fn a_worker_stuck_in_a_file_write_ends_the_run_in_bounded_time_as_the_hosts() {
+    let build = tool_build("slow-write", &format!("{SLOW_WRITE}{ENTRIES}"));
+    let out = scratch("slow-write");
+    for interrupted in [false, true] {
+        let (_, mut options) = printer(|_| {});
+        options.caps =
+            Caps::open(&Grants::default().root("out", &out, true), |_| None).expect("out");
+        // A disk that takes 3 s to write the blob, a grace of 100 ms.
+        options.testing = Testing {
+            grace: Duration::from_millis(100),
+            io_delay: Duration::from_secs(3),
+            ..Testing::default()
+        };
+        if interrupted {
+            let interrupt = Arc::new(AtomicBool::new(false));
+            options.interrupt = Some(interrupt.clone());
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(300));
+                interrupt.store(true, Ordering::Release);
+            });
+        } else {
+            options.timeout = Some(Duration::from_millis(300));
+        }
+        let started = Instant::now();
+        let ended = wrela_host::tool::run(&build, options);
+        let took = started.elapsed();
+        // The run ends at its timeout or interrupt plus the grace, not when the write does, and
+        // the blob table is released though the write still holds the blob's bytes.
+        assert!(took < Duration::from_secs(2), "interrupted: {interrupted}, {took:?}");
+        let End::Host(why) = &ended.end else { panic!("{:?}", ended.end) };
+        assert!(why.contains("still running"), "{why}");
+        let first = if interrupted { "interrupted" } else { "timeout" };
+        assert!(why.contains(first), "{why}");
+        assert_eq!(ended.end.status(), 71);
+        assert_eq!(ended.workers_left, 1);
+        assert_eq!(ended.blobs_released, (1, 1024));
+    }
+}
+
+#[test]
+fn a_clock_thread_that_cant_start_ends_the_run_before_any_wasm() {
+    let main = r#"
+use std::io::print
+use std::job::{Job, Step}
+use std::tool::RUNNING
+
+@job
+fn main() -> u32 {
+    0
+}
+
+pub fn tool_init() -> Job<main> {
+    print("tool_init ran")
+    main.start()
+}
+
+pub fn tool(job: mut Job<main>) -> u32 {
+    match job.resume() {
+        Step::Yielded => RUNNING,
+        Step::Done(status) => status,
+    }
+}
+"#;
+    let build = tool_build("no-clock", main);
+    let (lines, mut options) = printer(|_| {});
+    options.testing = Testing { fail_clock_thread: true, ..Testing::default() };
+    let ended = run(&build, options);
+    let End::Host(why) = &ended.end else { panic!("{:?}", ended.end) };
+    assert!(why.contains("can't start the thread that stops calls"), "{why}");
+    assert_eq!(ended.end.status(), 71);
+    assert!(lines.lock().expect("the lines").is_empty(), "no Wasm ran");
 }

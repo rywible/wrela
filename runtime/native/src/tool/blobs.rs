@@ -4,8 +4,12 @@
 //! Each blob is registered under the request that made it as it's made, before the answer that
 //! names it reaches the tool: until the tool reads that answer, the blob is the request's, and a
 //! request that ends unread (the tool ended first) has its blobs released with the rest.
+//!
+//! The table's lock is held for memory work alone, never for a file's: a service that writes a
+//! blob to a file takes a handle to its bytes ([`Blobs::get`]) and writes after letting go.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// The most a tool's blobs may hold at once: bytes, and live handles.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,7 +53,7 @@ impl BlobBudget {
 /// The blobs of one run of a tool.
 #[derive(Debug, Default)]
 pub(crate) struct Blobs {
-    held: HashMap<u32, Vec<u8>>,
+    held: HashMap<u32, Arc<Vec<u8>>>,
     /// The bytes all blobs hold.
     bytes: u64,
     next: u32,
@@ -73,7 +77,7 @@ impl Blobs {
         }
         let id = self.next;
         self.next += 1;
-        self.held.insert(id, Vec::new());
+        self.held.insert(id, Arc::new(Vec::new()));
         self.unpublished.entry(request).or_default().push(id);
         Ok(id)
     }
@@ -93,6 +97,10 @@ impl Blobs {
     pub(crate) fn append(&mut self, id: u32, bytes: &[u8]) -> Result<(), String> {
         self.reserve(bytes.len() as u64)?;
         let blob = self.held.get_mut(&id).ok_or_else(|| no_blob(id))?;
+        // A blob being written to a file is shared with the writer: it isn't copied to grow.
+        let Some(blob) = Arc::get_mut(blob) else {
+            return Err(format!("blob {id} is being written to a file: append once that's done"));
+        };
         blob.extend_from_slice(bytes);
         self.bytes += bytes.len() as u64;
         Ok(())
@@ -117,9 +125,9 @@ impl Blobs {
         Ok(blob[start..end].to_vec())
     }
 
-    /// Blob `id`'s bytes.
-    pub(crate) fn get(&self, id: u32) -> Result<&[u8], String> {
-        self.held.get(&id).map(Vec::as_slice).ok_or_else(|| no_blob(id))
+    /// Blob `id`'s bytes, shared: for work done after the table's lock is let go.
+    pub(crate) fn get(&self, id: u32) -> Result<Arc<Vec<u8>>, String> {
+        self.held.get(&id).cloned().ok_or_else(|| no_blob(id))
     }
 
     /// Frees blob `id`.

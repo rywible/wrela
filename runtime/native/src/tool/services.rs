@@ -44,6 +44,8 @@ fn answer(result: Result<Vec<u8>, String>) -> Answer {
 pub(crate) struct Services {
     pub caps: Caps,
     pub blobs: Mutex<Blobs>,
+    /// How long a blob's write to a file waits before it writes: a test's slow disk.
+    pub io_delay: Duration,
 }
 
 impl Services {
@@ -149,12 +151,19 @@ pub(crate) fn route(service: &str, body: &[u8]) -> Work {
                 Err(why) => return Work::Now(err(&why)),
             };
             Work::Worker(Box::new(move |s, _| {
-                // The blob is held while it's written: its bytes aren't copied.
-                let blobs = s.blobs();
-                let result = blobs.get(id).and_then(|bytes| {
-                    s.caps.write_with(&path, |f| f.write_all(bytes)).map(|_| vec![])
-                });
-                answer(result)
+                // The bytes are shared, not copied, and written once the table's lock is let go.
+                let bytes = match s.blobs().get(id) {
+                    Ok(b) => b,
+                    Err(why) => return err(&why),
+                };
+                answer(
+                    s.caps
+                        .write_with(&path, |f| {
+                            std::thread::sleep(s.io_delay);
+                            f.write_all(&bytes)
+                        })
+                        .map(|_| vec![]),
+                )
             }))
         }
         "blob/new" => match b.end() {

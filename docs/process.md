@@ -505,7 +505,11 @@ final design. Two outside Rust crates came in. [cap-std](https://github.com/byte
 (Bytecode Alliance; Apache-2.0 with the LLVM exception, Apache-2.0 or MIT) opens a tool's files
 relative to a root's directory handle, so no path or symbolic link leaves the root.
 [ctrlc](https://github.com/Detegr/rust-ctrlc) (MIT or Apache-2.0) lets `wrela tool` stop a tool
-on Ctrl-C and clean up after it. Both are used as libraries; no code was copied.
+on Ctrl-C and clean up after it. Both are used as libraries; no code was copied. The
+[libc](https://github.com/rust-lang/libc) bindings (MIT or Apache-2.0), already in the build,
+give the host `O_NONBLOCK`, so opening a FIFO never holds a worker. A second council review
+found that blocked file work could outlast the run's end, that failures to set up interruption
+were ignored, and that a huge `--timeout` panicked; each is fixed with a regression.
 
 ## The references
 

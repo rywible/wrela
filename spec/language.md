@@ -1513,9 +1513,10 @@ wrela tool <package> [--read NAME=DIR]... [--write NAME=DIR]... [--secret NAME].
 - `tool` returns `std::tool::RUNNING` (`u32::MAX`) to be called again, or an exit status from 0 to 255. That status is the process's.
 - If `tool` returns `RUNNING` with no request outstanding, the tool waits on nothing. The host stops it with status 70, and does not call it again.
 - A tool build has one thread, and no GPU, ticker or voice. Its memory may grow to 4 GiB. A call has no deadline: a tool may compute for a long time between requests.
-- `--timeout` is a budget for the whole run (status 124). Ctrl-C stops the tool, also inside a call (status 130). A trap, or a status that is not `RUNNING` or 0 to 255, gives status 70. If the host cannot run the tool, the status is 71.
+- `--timeout` is a budget for the whole run (status 124); a time that the clock cannot reach is a usage error (status 2). Ctrl-C stops the tool, also inside a call (status 130). A trap, or a status that is not `RUNNING` or 0 to 255, gives status 70. If the host cannot run the tool, or cannot stop it (it cannot take Ctrl-C, or cannot start the thread that interrupts calls), the status is 71, and no Wasm runs.
 - Services run on the host's worker threads, so a call never waits for one. An answer reaches the tool no sooner than its next call, as on every host (§17.1).
-- However the tool ends, the host stops its workers within a bounded time and releases all that the tool held. A resource that a request makes belongs to that request until the tool reads the answer. If the tool ends first, the host releases it with the rest. The host keeps no compiled code from one run to the next.
+- However the tool ends, the host stops its workers and releases all that the tool held. Work that has not started is dropped, and work in progress has a grace of 5 s. If a worker is still running after the grace, the run is the host's failure (status 71), whatever the tool's own end was, and `wrela tool` ends the process, so no work outlives it. No file work holds the lock on the tool's blobs, so their release never waits on a file.
+- A resource that a request makes belongs to that request until the tool reads the answer. If the tool ends first, the host releases it with the rest. The host keeps no compiled code from one run to the next.
 
 **A tool is a job.** std has no executor. A tool's work is a `@job fn` that `tool_init` starts and `tool` resumes (§16.3), and the job waits for a request with `yield`. `while p.poll().is_none() { yield }` waits for an answer that the tool does not read, such as a timer's. To read the answer, keep what `poll` gives:
 
@@ -1559,6 +1560,7 @@ pub fn tool(job: mut Job<main>) -> u32 {
 - Grants come only from the command line. The host opens them once, when the tool starts, into one capability context that every service gets. A request outside the grants fails, and the tool continues.
 - `--read NAME=DIR` grants the directory as the root `NAME`. `--write NAME=DIR` grants it for writing, and for reading too. A root that is not a directory, or a name that is granted twice, stops the command before the tool starts.
 - A path is `NAME/relative/path`, with `/` between its parts and no part empty, `.` or `..`. `NAME` alone is the root itself. The host opens each path relative to its root's directory handle, one part at a time. So no path or symbolic link leaves the root, also a link that replaces a directory after a check.
+- The host opens a file without waiting on it, and the opened handle must be a regular file. A FIFO, a socket or a device fails the request at once, by the type of the handle, not of the path.
 - `--secret NAME` reads the environment variable `NAME` when the tool starts. `std::tool::secret(name)` gives it, and gives `None` for a name that is not granted. The host never shows a secret.
 
 **The services** are `std::tool`'s, and each is `@tool`:

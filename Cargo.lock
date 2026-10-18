@@ -3125,6 +3125,7 @@ name = "wrela-host"
 version = "0.1.0"
 dependencies = [
  "cap-std",
+ "libc",
  "png",
  "pollster",
  "wasmtime",

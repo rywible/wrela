@@ -112,6 +112,12 @@ pub fn tool() -> u32 {
     assert_eq!(out.status.code(), Some(124), "{}", String::from_utf8_lossy(&out.stderr));
     assert!(String::from_utf8_lossy(&out.stderr).contains("ran past its timeout"));
     assert!(started.elapsed() < std::time::Duration::from_secs(60));
+    // A timeout too large for the clock is a usage error, not a panic.
+    for huge in ["1e100", "1e300", "inf", "NaN", "-1"] {
+        let out = wrela().arg("tool").arg(&dir).args(["--timeout", huge]).output().expect("run");
+        assert_eq!(out.status.code(), Some(2), "--timeout {huge}");
+        assert!(String::from_utf8_lossy(&out.stderr).contains("--timeout takes seconds"));
+    }
     // A grant that names no directory, or a secret that isn't set, stops it before it starts.
     let out = wrela().arg("tool").arg(&dir).args(["--read", "src"]).output().expect("run");
     assert_eq!(out.status.code(), Some(2));

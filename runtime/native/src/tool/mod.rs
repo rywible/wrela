@@ -18,7 +18,9 @@
 //! interrupt, waiting on nothing), the host stops its workers (work not started is dropped,
 //! work in progress gets a bounded grace), stops the clock thread that interrupts calls, and
 //! releases every blob, those of requests the tool never read first ([`Ended`] says what was
-//! left). The host keeps no compiled code: it compiles the tool's WASM for each run, so nothing
+//! left). No file work holds the blob table's lock, so a stuck worker can't hold up the release.
+//! A worker still running after the grace makes the end the host's failure (status 71), whatever
+//! the tool's own end was, and `wrela tool` then ends the process, so no worker outlives it. The host keeps no compiled code: it compiles the tool's WASM for each run, so nothing
 //! it loads comes from a directory a tool could write.
 
 mod blobs;
@@ -75,6 +77,25 @@ pub struct Options {
     pub interrupt: Option<Arc<AtomicBool>>,
     /// Where the tool's `print` lines go.
     pub print: Printer,
+    /// What only tests change.
+    #[doc(hidden)]
+    pub testing: Testing,
+}
+
+/// A run's settings that only tests change: the workers' grace, a slow disk under each blob
+/// written to a file, and a clock thread that fails to start.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug)]
+pub struct Testing {
+    pub grace: Duration,
+    pub io_delay: Duration,
+    pub fail_clock_thread: bool,
+}
+
+impl Default for Testing {
+    fn default() -> Testing {
+        Testing { grace: GRACE, io_delay: Duration::ZERO, fail_clock_thread: false }
+    }
 }
 
 impl Options {
@@ -88,6 +109,7 @@ impl Options {
             blob_budget: BlobBudget::default(),
             interrupt: None,
             print: Arc::new(|line| println!("{line}")),
+            testing: Testing::default(),
         }
     }
 }
@@ -151,7 +173,8 @@ pub struct Ended {
     pub end: End,
     /// The blobs the tool still held when it ended, which the host released, and their bytes.
     pub blobs_released: (usize, u64),
-    /// Worker threads still running past the grace (0 unless a service was stuck).
+    /// Worker threads still running past the grace (0 unless a service was stuck, and then the
+    /// end is [`End::Host`]).
     pub workers_left: usize,
 }
 
@@ -297,15 +320,16 @@ impl Pool {
         }
     }
 
-    /// Stops the workers: work not started is dropped, and work in progress has [`GRACE`] to
-    /// finish. How many are still running then (they're left to finish alone).
-    fn stop(mut self) -> usize {
+    /// Stops the workers: work not started is dropped, and work in progress has `grace` to
+    /// finish. How many are still running then (they're left to finish alone, and the run
+    /// doesn't end cleanly).
+    fn stop(mut self, grace: Duration) -> usize {
         self.closing.store(true, Ordering::Release);
         self.jobs = None;
         let (count, wake) = &*self.alive;
         let left = count.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let (left, _) = wake
-            .wait_timeout_while(left, GRACE, |n| *n > 0)
+            .wait_timeout_while(left, grace, |n| *n > 0)
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let left = *left;
         if left == 0 {
@@ -324,19 +348,23 @@ struct Ticker {
 }
 
 impl Ticker {
-    fn start(engine: &Engine) -> Ticker {
+    /// Starts the thread, or says why it couldn't: without it, no call could be stopped.
+    fn start(engine: &Engine, fail: bool) -> Result<Ticker, String> {
         let running = Arc::new(AtomicBool::new(true));
         let (r, engine) = (running.clone(), engine.clone());
-        let handle = std::thread::Builder::new()
-            .name("wrela-tool-epochs".into())
-            .spawn(move || {
+        let spawned = if fail {
+            Err(std::io::Error::other("a test's injected failure"))
+        } else {
+            std::thread::Builder::new().name("wrela-tool-epochs".into()).spawn(move || {
                 while r.load(Ordering::Acquire) {
                     std::thread::sleep(EPOCH);
                     engine.increment_epoch();
                 }
             })
-            .ok();
-        Ticker { running, handle }
+        };
+        let handle =
+            spawned.map_err(|e| format!("can't start the thread that stops calls: {e}"))?;
+        Ok(Ticker { running, handle: Some(handle) })
     }
 
     fn stop(mut self) {
@@ -360,23 +388,34 @@ fn stop_reason(interrupt: &Option<Arc<AtomicBool>>, deadline: Option<Instant>) -
 
 /// Runs the tool to its end, and cleans up after it.
 pub fn run(build: &ToolBuild, options: Options) -> Ended {
-    let deadline = options.timeout.map(|t| Instant::now() + t);
+    let failed =
+        |why: String| Ended { end: End::Host(why), blobs_released: (0, 0), workers_left: 0 };
+    let deadline = match options.timeout.map(|t| Instant::now().checked_add(t)) {
+        None => None,
+        Some(Some(d)) => Some(d),
+        Some(None) => return failed("the timeout is further off than the clock reaches".into()),
+    };
     let mut config = Config::new();
     config.wasm_threads(true).epoch_interruption(true);
     let engine = match Engine::new(&config) {
         Ok(e) => e,
-        Err(e) => {
-            let end = End::Host(format!("the tool engine: {e:#}"));
-            return Ended { end, blobs_released: (0, 0), workers_left: 0 };
-        }
+        Err(e) => return failed(format!("the tool engine: {e:#}")),
     };
     let start = start_bytes(&options.args, options.caps.secrets());
-    let Options { caps, blob_budget, interrupt, print, .. } = options;
-    let services = Arc::new(Services { caps, blobs: Mutex::new(blobs::Blobs::new(blob_budget)) });
+    let Options { caps, blob_budget, interrupt, print, testing, .. } = options;
+    let blobs = Mutex::new(blobs::Blobs::new(blob_budget));
+    let services = Arc::new(Services { caps, blobs, io_delay: testing.io_delay });
     let (done, answers) = mpsc::channel();
     let pool = Pool::start(&services, &done);
     drop(done);
-    let ticker = Ticker::start(&engine);
+    let ticker = match Ticker::start(&engine, testing.fail_clock_thread) {
+        Ok(t) => t,
+        Err(why) => {
+            // Before any Wasm runs: the workers already started stop with it.
+            let workers_left = pool.stop(testing.grace);
+            return Ended { workers_left, ..failed(why) };
+        }
+    };
     let mut run = Run {
         pool: &pool,
         services: &services,
@@ -387,9 +426,17 @@ pub fn run(build: &ToolBuild, options: Options) -> Ended {
         timers: BinaryHeap::new(),
         arrived: Vec::new(),
     };
-    let end = run.drive(&engine, build, start, print);
+    let mut end = run.drive(&engine, build, start, print);
     ticker.stop();
-    let workers_left = pool.stop();
+    let workers_left = pool.stop(testing.grace);
+    // A worker past its grace may still be changing files: that isn't a clean end.
+    if workers_left > 0 {
+        end = End::Host(format!(
+            "{workers_left} of the host's workers were still running {:?} after the tool ended ({end})",
+            testing.grace
+        ));
+    }
+    // No file work holds the table's lock, so a stuck worker can't keep this waiting.
     let blobs_released =
         services.blobs.lock().unwrap_or_else(std::sync::PoisonError::into_inner).release_all();
     Ended { end, blobs_released, workers_left }
@@ -511,7 +558,10 @@ impl Run<'_> {
             self.outstanding.insert(request);
             match services::route(&service, &body) {
                 Work::Now(answer) => self.arrived.push((request, answer)),
-                Work::Timer(after) => self.timers.push(Reverse((Instant::now() + after, request))),
+                Work::Timer(after) => match Instant::now().checked_add(after) {
+                    Some(at) => self.timers.push(Reverse((at, request))),
+                    None => self.arrived.push((request, Answer::Bytes(b"\x01too long".to_vec()))),
+                },
                 Work::Worker(task) => self.pool.send(request, task),
             }
         }

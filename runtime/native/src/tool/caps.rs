@@ -3,9 +3,13 @@
 //! as a handle (`cap_std::fs::Dir`), and every path is opened relative to it, one part at a time,
 //! so no path, `..` or symbolic link leaves it, even a link put in place of a directory after a
 //! check.
+//!
+//! A file is opened without waiting (`O_NONBLOCK`), so a FIFO with nothing at its other end can't
+//! hold a worker, and the opened handle must be a regular file: a FIFO, a socket or a device is
+//! refused, by the handle's own type, not the path's.
 
 use cap_std::ambient_authority;
-use cap_std::fs::{Dir, FileType};
+use cap_std::fs::{Dir, File, FileType, OpenOptions};
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::PathBuf;
@@ -132,6 +136,29 @@ fn failed(path: &str, e: std::io::Error) -> String {
     format!("`{path}`: {e}")
 }
 
+/// Opens the file `rel` of `dir` (`path`, as the tool names it) for reading, or for writing
+/// (made if it isn't there, then emptied), without waiting on it: a regular file, or an error.
+fn open_file(dir: &Dir, rel: &str, path: &str, write: bool) -> Result<File, String> {
+    let mut options = OpenOptions::new();
+    if write {
+        options.write(true).create(true);
+    } else {
+        options.read(true);
+    }
+    #[cfg(unix)]
+    cap_std::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NONBLOCK);
+    let file = dir.open_with(rel, &options).map_err(|e| failed(path, e))?;
+    let kind = file.metadata().map_err(|e| failed(path, e))?.file_type();
+    if !kind.is_file() {
+        return Err(format!("`{path}` isn't a regular file"));
+    }
+    // Emptied only once it's known to be a file.
+    if write {
+        file.set_len(0).map_err(|e| failed(path, e))?;
+    }
+    Ok(file)
+}
+
 impl Caps {
     /// Opens `grants`: each root's directory, and each secret from `env` (the environment, for
     /// `wrela tool`). A root that isn't a directory, a name given twice and a secret the
@@ -214,7 +241,7 @@ impl Caps {
     /// The bytes of the file at `path`, at most [`MOST_BYTES`].
     pub(crate) fn read(&self, path: &str) -> Result<Vec<u8>, String> {
         let (dir, rel) = self.file(path, false)?;
-        let file = dir.open(rel).map_err(|e| failed(path, e))?;
+        let file = open_file(dir, rel, path, false)?;
         let mut bytes = Vec::new();
         // One byte past the most tells a file that's too large, however its size changes.
         file.take(MOST_BYTES as u64 + 1).read_to_end(&mut bytes).map_err(|e| failed(path, e))?;
@@ -235,7 +262,7 @@ impl Caps {
         mut each: impl FnMut(&[u8]) -> Result<(), String>,
     ) -> Result<(), String> {
         let (dir, rel) = self.file(path, false)?;
-        let mut file = dir.open(rel).map_err(|e| failed(path, e))?;
+        let mut file = open_file(dir, rel, path, false)?;
         let len = file.metadata().map_err(|e| failed(path, e))?.len();
         size(len)?;
         let mut chunk = vec![0; 1 << 20];
@@ -250,11 +277,7 @@ impl Caps {
 
     /// Writes `bytes` as the whole file at `path`, making the directories it needs.
     pub(crate) fn write(&self, path: &str, bytes: &[u8]) -> Result<(), String> {
-        let (dir, rel) = self.file(path, true)?;
-        if let Some((parent, _)) = rel.rsplit_once('/') {
-            dir.create_dir_all(parent).map_err(|e| failed(path, e))?;
-        }
-        dir.write(rel, bytes).map_err(|e| failed(path, e))
+        self.write_with(path, |f| f.write_all(bytes))
     }
 
     /// The entries of the directory at `path`, sorted by name. A link is listed as a link, with
@@ -322,7 +345,7 @@ impl Caps {
         if let Some((parent, _)) = rel.rsplit_once('/') {
             dir.create_dir_all(parent).map_err(|e| failed(path, e))?;
         }
-        let mut file = dir.create(rel).map_err(|e| failed(path, e))?;
+        let mut file = open_file(dir, rel, path, true)?;
         write(&mut file).map_err(|e| failed(path, e))
     }
 }
