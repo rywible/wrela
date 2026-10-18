@@ -101,6 +101,7 @@ pub fn parse(file: FileId, text: &str) -> Result<Manifest, Vec<Diagnostic>> {
     let mut errors = Vec::new();
     let mut section = String::new();
     let mut keys = HashSet::new();
+    let mut sections = HashSet::new();
     let mut offset = 0u32;
     // The end of a value that ran over lines: the lines before it are read.
     let mut skip_to = 0u32;
@@ -127,6 +128,16 @@ pub fn parse(file: FileId, text: &str) -> Result<Manifest, Vec<Diagnostic>> {
             };
             section = name.trim().to_string();
             let span = Span::new(file, at, at + content.len() as u32);
+            // As in TOML, a section is declared once: a second `[workspace]` would replace the
+            // first's members.
+            if !sections.insert(section.clone()) {
+                errors.push(bad(
+                    at,
+                    content.len(),
+                    format!("`[{section}]` is declared more than once"),
+                ));
+                continue;
+            }
             match section.as_str() {
                 "package" => out.package = true,
                 "dependencies" => {}
@@ -501,6 +512,9 @@ mod tests {
             "[dependencies]\nmath = { path = \"../one\", path = \"../two\" }\n",
             "[dependencies]\nmath = { workspace = true, workspace = true }\n",
             "[workspace]\nmembers = [\"a\"]\nmembers = [\"b\"]\n",
+            "[workspace]\nmembers = [\"a\"]\n[workspace]\nmembers = [\"b\"]\n",
+            "[workspace]\n[package]\nname = \"x\"\n[workspace]\n",
+            "[dependencies]\na = { path = \"../a\" }\n[dependencies]\nb = { path = \"../b\" }\n",
         ] {
             assert!(parse(file(), text).is_err(), "accepted duplicate key in {text}");
         }

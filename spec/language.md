@@ -409,7 +409,7 @@ members = [
 - **`name = { workspace = true }` is the member named `name`.** A member's name is its `[package] name`; a member without one has its directory's name, with `-` read as `_`. A package can use a member this way whether it is a member or not. A dependency has a `path` or `workspace = true`, not both (E0219).
 - **A workspace's manifest is a package's too only if it has `[package]`.** Without one, its directory isn't a package, and checking or building it is E0223.
 - **Each member is a package with a name of its own.** A member that isn't a directory with a `wrela.toml`, a `/*` that names no package, and two members with one name are E0223. A directory listed twice is one member. A workspace dependency with no workspace above it, or with no member of that name, is E0220.
-- **`path` dependencies work in a workspace and outside it.** `members` is the only key of `[workspace]`; any other key is E0219.
+- **`path` dependencies work in a workspace and outside it.** `members` is the only key of `[workspace]`; any other key, or a section declared twice, is E0219.
 
 ## 4. Types
 

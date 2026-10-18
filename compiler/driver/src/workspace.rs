@@ -11,6 +11,15 @@ use crate::manifest::{self, Source, WorkspaceDecl};
 use std::path::{Path, PathBuf};
 use wrela_diag::{Diagnostic, FileId, Span, codes};
 
+/// A workspace's members.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Members {
+    pub list: Vec<Member>,
+    /// A member's manifest didn't read, so its name isn't known: what's wrong with it is
+    /// reported where it was read, and a dependency no member has needn't be reported too.
+    pub unread: bool,
+}
+
 /// One member of a workspace.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Member {
@@ -36,11 +45,18 @@ pub fn find(dir: &Path) -> Option<PathBuf> {
     }
 }
 
-/// The members of the workspace `decl` declares, in the manifest at `path`, each `/*` read as the directories in it that have a `wrela.toml`, and what's
-/// wrong with them (E0223). A directory listed twice is one member.
-pub fn members(path: &Path, decl: &WorkspaceDecl) -> (Vec<Member>, Vec<Diagnostic>) {
+/// The members of the workspace `decl` declares, in the manifest at `path`, each `/*` read as
+/// the directories in it that have a `wrela.toml`, and what's wrong with them (E0223). A
+/// directory listed twice is one member. `manifest_of` reads a member's manifest, by its path
+/// in its canonical directory: `None` when it doesn't read (and the caller reports why).
+pub fn members(
+    path: &Path,
+    decl: &WorkspaceDecl,
+    manifest_of: &mut dyn FnMut(&Path) -> Option<manifest::Manifest>,
+) -> (Members, Vec<Diagnostic>) {
     let base = path.parent().unwrap_or(Path::new("."));
     let mut out: Vec<(Member, Span)> = Vec::new();
+    let mut unread = false;
     let mut errors = Vec::new();
     let bad = |span: Span, msg: String| Diagnostic::new(codes::E0223, span, msg);
     for (entry, span) in &decl.members {
@@ -98,7 +114,11 @@ pub fn members(path: &Path, decl: &WorkspaceDecl) -> (Vec<Member>, Vec<Diagnosti
             if out.iter().any(|(m, _)| m.dir == canon) {
                 continue;
             }
-            let Some(name) = member_name(&dir) else {
+            let Some(m) = manifest_of(&canon.join("wrela.toml")) else {
+                unread = true;
+                continue;
+            };
+            let Some(name) = member_name(&m, &canon) else {
                 errors.push(
                     bad(span, format!("the member `{}` has no name", dir.display()))
                         .with_help("give its `wrela.toml` a `[package]` with `name = \"...\"`"),
@@ -125,16 +145,24 @@ pub fn members(path: &Path, decl: &WorkspaceDecl) -> (Vec<Member>, Vec<Diagnosti
             out.push((Member { name, dir: canon }, span));
         }
     }
-    (out.into_iter().map(|(m, _)| m).collect(), errors)
+    (Members { list: out.into_iter().map(|(m, _)| m).collect(), unread }, errors)
 }
 
-/// A member's name: its `[package] name`, else its directory's with `-` read as `_` (a member
-/// whose manifest doesn't read is named so too, and its errors are reported when it's loaded).
-fn member_name(dir: &Path) -> Option<String> {
-    manifest::name_in(dir).or_else(|| {
+/// The name of the member in `dir` whose manifest is `m`: its `[package] name`, else its
+/// directory's with `-` read as `_`.
+fn member_name(m: &manifest::Manifest, dir: &Path) -> Option<String> {
+    m.name.as_ref().map(|(n, _)| n.clone()).or_else(|| {
         let n = dir.file_name()?.to_string_lossy().replace('-', "_");
         wrela_syntax::lexer::is_name(&n).then_some(n)
     })
+}
+
+/// The manifest at `path`, or why it doesn't read.
+fn read(path: &Path) -> Result<manifest::Manifest, String> {
+    let text =
+        std::fs::read_to_string(path).map_err(|e| format!("can't read {}: {e}", path.display()))?;
+    manifest::parse(FileId(0), &text)
+        .map_err(|e| format!("{} doesn't read: {}", path.display(), e[0].message))
 }
 
 /// `path` relative to `base`, with `/` between its parts: how a message names a member.
@@ -147,10 +175,7 @@ fn relative(path: &Path, base: &Path) -> String {
 /// loading them. The first problem is the error.
 pub fn dependency_dirs(pkg: &Path) -> Result<Vec<(String, PathBuf)>, String> {
     let path = pkg.join("wrela.toml");
-    let text = std::fs::read_to_string(&path)
-        .map_err(|e| format!("can't read {}: {e}", path.display()))?;
-    let m = manifest::parse(FileId(0), &text)
-        .map_err(|e| format!("{} doesn't read: {}", path.display(), e[0].message))?;
+    let m = read(&path)?;
     let mut members: Option<Vec<Member>> = None;
     let mut out = Vec::new();
     for d in m.deps {
@@ -186,15 +211,17 @@ fn workspace_members(pkg: &Path) -> Result<Vec<Member>, String> {
             pkg.display()
         )
     })?;
-    let text = std::fs::read_to_string(&path)
-        .map_err(|e| format!("can't read {}: {e}", path.display()))?;
-    let m = manifest::parse(FileId(0), &text)
-        .map_err(|e| format!("{} doesn't read: {}", path.display(), e[0].message))?;
-    let decl = m.workspace.expect("found by its `[workspace]`");
-    let (members, errors) = members(&path, &decl);
+    let decl = read(&path)?.workspace.expect("found by its `[workspace]`");
+    let mut unread = None;
+    let (members, errors) = members(&path, &decl, &mut |p| {
+        read(p).map_err(|e| unread = unread.take().or(Some(e))).ok()
+    });
+    if let Some(e) = unread {
+        return Err(e);
+    }
     match errors.first() {
         Some(e) => Err(format!("{}: {}", path.display(), e.message)),
-        None => Ok(members),
+        None => Ok(members.list),
     }
 }
 
@@ -422,6 +449,53 @@ mod tests {
             }
             let _ = std::fs::remove_dir_all(&d);
         }
+    }
+
+    /// A package's own `[workspace]` is checked though no dependency is found through it.
+    #[test]
+    fn a_packages_own_workspace_is_checked() {
+        let d = tree(
+            "own",
+            &[
+                ("wrela.toml", "[package]\nname = \"app\"\n\n[workspace]\nmembers = [\"gone\"]\n"),
+                ("main.wrela", FRAME),
+            ],
+        );
+        let got = errors(&d);
+        assert!(
+            got.iter()
+                .any(|(c, m)| *c == "E0223" && m.contains("the member `gone` isn't a directory")),
+            "{got:?}"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A member whose manifest doesn't read is reported as that manifest's error, where it is,
+    /// and not as a dependency no member has.
+    #[test]
+    fn a_members_manifest_that_doesnt_read_is_its_error() {
+        let d = tree(
+            "unread",
+            &[
+                ("wrela.toml", "[workspace]\nmembers = [\"app\", \"geo\"]\n"),
+                ("geo/wrela.toml", "[package]\nname = 3\n"),
+                (
+                    "app/wrela.toml",
+                    "[package]\nname = \"app\"\n\n[dependencies]\ngeo = { workspace = true }\n",
+                ),
+                ("app/main.wrela", FRAME),
+            ],
+        );
+        let out = crate::check(&d.join("app"));
+        let got: Vec<(&str, String)> = (out.diagnostics.iter().filter(|d| d.is_error()))
+            .map(|d| {
+                let file = d.span().map(|s| out.sources.file(s.file).name.clone());
+                (d.code.as_str(), file.unwrap_or_default())
+            })
+            .collect();
+        assert_eq!(got, [("E0219", "../geo/wrela.toml".to_string())]);
+        assert!(dependency_dirs(&d.join("app")).is_err_and(|e| e.contains("geo")));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
