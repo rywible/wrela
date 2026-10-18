@@ -26,7 +26,8 @@ MIT-licensed language, compiler, engine and agent-native studio for browser game
 | Language | `compiler/` (Rust: syntax → sema → IR → lower → WASM/WGSL), `compiler/std` (Wrela); compiler knows no engine |
 | Engine | `engine/` (Wrela); no game names, places or tuning |
 | Studio | `studio/`, `ui/`, `docsite/` (docs.wrela.dev) (Wrela), `tools/` |
-| Games | `games/<game>/` (Wrela), with its cover; `games/console.toml` lists the released games. Games depend on engine and `examples/`; only studio fixtures depend on a game |
+| Content | `content/` (Wrela): creatures, plants and characters that games and examples build on |
+| Games | `games/<game>/` (Wrela), with its cover; `games/console.toml` lists the released games. Games and `examples/` depend on engine and `content/`; only tests and studio fixtures depend on an example or a game |
 
 The repo is splitting into `wrela-compiler` (hosts, language, spec, their checks) and `wrela` (wrela code only): `docs/vision.md`, "Two repositories". New tools for the Wrela side are Wrela programs; where one needs a capability the toolchain lacks, add the capability to the toolchain. Until an existing Python tool is ported, keep maintaining it and its regression tests, including the changes the split needs.
 
