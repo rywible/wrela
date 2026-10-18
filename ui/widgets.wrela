@@ -1326,7 +1326,7 @@ fn a_slider_uses_the_release_position_and_accepts_a_quick_click() {
     ui.end()
 
     value = 0.0
-    let moved = Event::PointerMove { at: vec2(190.0, 10.0), mods: Mods {} }
+    let moved = Event::PointerMove { at: vec2(190.0, 10.0), locked: false, mods: Mods {} }
     ui.begin(vec2(200.0, 100.0), [down, up, moved])
     ui.slider("level", mut value, lo: 0.0, hi: 1.0)
     assert(abs(value - 0.8) < 0.00001)

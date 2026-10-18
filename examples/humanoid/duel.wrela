@@ -845,7 +845,9 @@ fn heavy_cuts_break_a_guard() {
     var blocked = 0
     var reeled = false
     for k in 0..240 {
-        let you = Asked { heavy: k == 10 || k == 110 }
+        // The second asked as soon as the first's recoil ends, so it lands before the guard's
+        // poise has come back (`CALM`), not in a race with it.
+        let you = Asked { heavy: k == 10 || k == 90 }
         step(mut d, [you, Asked { guard: true }], s, 1.0 / 60.0)
         if d.news == BLOCKED {
             blocked += 1
