@@ -1,4 +1,4 @@
-// The board and the system clipboard. A copy offers the selection (`platform::host::offer`) as
+// The board and the system clipboard. A copy offers the selection (`std::host::offer`) as
 // plain text, its items' words, and as HTML that carries the items themselves, so a paste in
 // another board brings them back whole and a paste anywhere else brings the words. A paste goes
 // where it was aimed when it happened: into the text being typed at its caret, if that text

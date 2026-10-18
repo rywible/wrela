@@ -2,7 +2,7 @@
 // its progress in `SAVE` when it returns to the console; this program files it under the
 // player's profile, backs it up before a new game, and hands it to the game it starts.
 use leapling::progress::{Progress, describe, read}
-use platform::host
+use std::host
 use platform::protocol::{Reply, Request, SaveFile, SaveInfo, valid_key}
 use std::io::{Pending, load as read_file, store}
 use std::reload::{hand_over, keep, prepare}
@@ -392,7 +392,7 @@ fn answered(s: mut Session, result: Result<Vec<u8>, std::io::IoError>) {
         Phase::Launch => {
             // A failed hand-over leaves this session running; close its surface so the
             // console's readiness wait fails and can offer Retry.
-            s.io = Some(std::host::request("surface/failed", [u8(0); 0]))
+            s.io = Some(host::failed())
             s.phase = Phase::Idle
         },
         Phase::Idle => {},
@@ -407,7 +407,7 @@ pub fn frame(s: mut Session, time: f32, width: u32, height: u32) {
     }
     if let Some(result) = environment {
         s.environment = None
-        if let Ok(bytes) = result { if let Some(now) = host::word(bytes, 1) { s.saved = now } }
+        if let Ok(bytes) = result { if let Some(now) = host::read_environment(bytes).seconds { s.saved = now } }
     }
     var answer = None
     match mut s.io {
@@ -428,11 +428,9 @@ pub fn frame(s: mut Session, time: f32, width: u32, height: u32) {
     if let Some(result) = incoming {
         s.incoming = None
         if let Ok(bytes) = result {
-            let Some(id) = host::word(bytes) else { return }
-            s.call = id
-            var body = Vec::new()
-            for i in 4..bytes.len() { body.push(bytes[i]) }
-            let request: Result<Request, LoadError> = load(take body)
+            let Some(call) = host::read_call(bytes) else { return }
+            s.call = call.id
+            let request: Result<Request, LoadError> = load(take call.bytes)
             match request {
                 Ok(r) => begin(mut s, r),
                 Err(_) => error(mut s, "Unsupported session message."),

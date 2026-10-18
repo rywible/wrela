@@ -13,7 +13,7 @@ use tesseract::{Artifact, artifact, corners}
 use brand::facet
 use brand::facet::MarkRun
 use brand::manrope::MANROPE
-use platform::host
+use std::host
 use platform::protocol::{Reply, Request, SaveInfo, valid_key}
 use std::gpu::{
     GpuBuffer, Rgba8, Rgba16Float, Sampler, Texture, begin_pass, begin_screen_pass, buffer,
@@ -407,7 +407,7 @@ fn abandon(s: mut Console, id: Option<u32>) {
     s.step = Step::Idle
     s.prepared_slot = None
     match id {
-        Some(id) => s.closing = Some(host::surface("surface/close", id)),
+        Some(id) => s.closing = Some(host::close(id)),
         None => s.need_open = true,
     }
     s.handle = None
@@ -442,7 +442,7 @@ fn quietly_retry(s: mut Console) {
     s.step = Step::Idle
     s.prepared_slot = None
     s.exporting = None
-    if let Some(id) = s.handle { s.closing = Some(host::surface("surface/close", id)) }
+    if let Some(id) = s.handle { s.closing = Some(host::close(id)) }
     s.handle = None
     s.need_open = false
     s.retry_at = s.presentation + RETRY_SECONDS
@@ -463,13 +463,13 @@ fn export_name(plan: ExportPlan) -> String {
 
 fn answer(s: mut Console, bytes: take Vec<u8>) {
     if s.stale {
-        let id = if s.step == Step::Open { host::word(bytes) } else { s.handle }
+        let id = if s.step == Step::Open { host::read_surface(bytes) } else { s.handle }
         abandon(mut s, id)
         return
     }
     match s.step {
         Step::Open => {
-            let Some(id) = host::word(bytes) else {
+            let Some(id) = host::read_surface(bytes) else {
                 quietly_retry(mut s)
                 return
             }
@@ -510,7 +510,7 @@ fn answer(s: mut Console, bytes: take Vec<u8>) {
                 },
                 Reply::Started => {
                     let Some(id) = s.handle else { return }
-                    s.pending = Some(host::surface("surface/frame", id))
+                    s.pending = Some(host::wait_ready(id))
                     s.step = Step::Frame
                 },
                 Reply::Exported { bytes } => {
@@ -533,7 +533,7 @@ fn answer(s: mut Console, bytes: take Vec<u8>) {
             let Some(id) = s.handle else { return }
             s.pending = Some(host::show(id, s.profile.game))
             // Keep the closure request alive before the host suspends this console.
-            s.closing = Some(host::surface("surface/closed", id))
+            s.closing = Some(host::wait_closed(id))
             s.step = Step::Show
         },
         Step::Show => {
@@ -599,11 +599,10 @@ fn update(s: mut Console) {
     if let Some(result) = poll(mut s.environment) {
         s.reloaded = Some(false)
         if let Ok(bytes) = result {
-            if !bytes.is_empty() { s.reduced = bytes[0] != 0 }
-            s.reloaded = Some(reloaded(bytes))
-            if let Some(ratio) = host::word(bytes, 5) {
-                s.pixel_ratio = clamp(f32(ratio) / 1024.0, 0.5, 4.0)
-            }
+            let env = host::read_environment(bytes)
+            if !bytes.is_empty() { s.reduced = env.reduced_motion }
+            s.reloaded = Some(env.reloaded)
+            if let Some(ratio) = env.pixel_ratio { s.pixel_ratio = clamp(ratio, 0.5, 4.0) }
         }
     }
     if let Some(result) = poll(mut s.profile_load) {
@@ -769,7 +768,7 @@ fn act(s: mut Console, action: Action) {
                 s.stale = true
             } else if s.closing.is_none() {
                 s.need_open = s.handle.is_none()
-                if let Some(id) = s.handle { s.closing = Some(host::surface("surface/close", id)) }
+                if let Some(id) = s.handle { s.closing = Some(host::close(id)) }
                 s.handle = None
             }
         },
@@ -818,7 +817,7 @@ fn act(s: mut Console, action: Action) {
         Action::Retry => {
             if s.step == Step::Idle && s.closing.is_none() {
                 s.need_open = s.handle.is_none()
-                if let Some(id) = s.handle { s.closing = Some(host::surface("surface/close", id)) }
+                if let Some(id) = s.handle { s.closing = Some(host::close(id)) }
                 s.handle = None
             }
         },
@@ -1761,10 +1760,6 @@ fn without_fragment(address: Vec<u8>) -> Option<String> {
 
 // Whether the environment (`host::environment`) says this page load reloaded the tab. A host
 // that doesn't say gives a visit.
-fn reloaded(environment: [u8]) -> bool {
-    environment.len() > 9 && environment[9] != 0
-}
-
 // A traced layer's size: the screen divided by a whole number, so its thin bright lines are
 // not resampled into dashes, and about `budget` pixels.
 fn traced_size(width: u32, height: u32, budget: f32) -> (u32, u32) {
@@ -1982,9 +1977,10 @@ fn a_reload_starts_at_the_library_and_a_visit_plays_the_opening() {
     for _ in 0..10 { visit.push(u8(0)) }
     var reload = visit.clone()
     reload[9] = u8(1)
-    assert(!reloaded(visit), "a visit plays the opening")
-    assert(reloaded(reload))
-    assert(!reloaded([u8(1), u8(0), u8(0), u8(0), u8(0)]), "a host that doesn't say: a visit")
+    assert(!host::read_environment(visit).reloaded, "a visit plays the opening")
+    assert(host::read_environment(reload).reloaded)
+    let short = host::read_environment([u8(1), u8(0), u8(0), u8(0), u8(0)])
+    assert(!short.reloaded, "a host that doesn't say: a visit")
 }
 
 @test

@@ -14,8 +14,8 @@ use clip::{Aim, Into, destination, items_of}
 use edit::{Caret, Step}
 use minimap::Map
 use paint::{ACCENT, PAPER, Typing}
-use platform::host
-use platform::host::Pasted
+use std::host
+use std::host::Pasted
 use std::gpu::begin_screen_pass
 use std::input::{Assist, Button, Composer, Event, Key, Mods, events}
 use std::io::{Pending, load as read_file, store}
@@ -322,10 +322,11 @@ fn answers(s: mut App) {
     if let Some(result) = poll(mut s.environment) {
         var capabilities = 0
         if let Ok(bytes) = result {
-            capabilities = host::capabilities(bytes)
-            s.reduced = !bytes.is_empty() && bytes[0] != 0
-            if let Some(ratio) = host::word(bytes, 5) {
-                let u = clamp(f32(ratio) / 1024.0, 0.5, 4.0)
+            let env = host::read_environment(bytes)
+            capabilities = env.capabilities
+            s.reduced = env.reduced_motion
+            if let Some(ratio) = env.pixel_ratio {
+                let u = clamp(ratio, 0.5, 4.0)
                 // The same world point stays in the middle of the screen.
                 let middle = s.view.to_world(0.5 * s.screen)
                 s.view.unit = u

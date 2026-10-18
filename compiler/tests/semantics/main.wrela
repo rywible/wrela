@@ -2,7 +2,7 @@
 // frame, and what a person does to them printed as it's read (`std::io::print`, test mode's
 // log.txt). The field's text is read after each `Event::Field`, and printed when it changes.
 
-use platform::host
+use std::host
 use std::input::{Event, events}
 use std::io::{Pending, print}
 use std::semantics
