@@ -178,14 +178,20 @@ fn past<G: Ground>(ground: G, ob: Obstacle, from: vec3, to: vec3, run: f32) -> f
     if ob.thing == Thing::Stream {
         return 1.0
     }
-    let (apart, t) = segments_apart(from.xz, to.xz, ob.a, ob.b)
-    if apart >= ob.r || t * run < ENDS || (1.0 - t) * run < ENDS {
+    // Exclude the bodies' room from the sightline itself. An obstacle can start beside a
+    // body and still extend across the line beyond that room.
+    let inset = ENDS / run
+    let start = mix(from.xz, to.xz, vec2(inset))
+    let end = mix(from.xz, to.xz, vec2(1.0 - inset))
+    let (apart, along) = segments_apart(start, end, ob.a, ob.b)
+    if apart >= ob.r {
         return 1.0
     }
     if ob.thing == Thing::Shrub {
         return THICKET
     }
     if ob.thing == Thing::Log {
+        let t = inset + along * (1.0 - 2.0 * inset)
         let p = mix(from, to, vec3(t))
         // Packing grows the horizontal radius; the recorded height keeps the actual top.
         return if p.y - ground.height(p.x, p.z) > ob.depth { 1.0 } else { 0.0 }
@@ -402,6 +408,26 @@ fn a_logs_recorded_height_controls_what_it_hides() {
         clear_over(Flat {}, o([log(1.0, 0.2)]).obstacles, from, to) == 1.0,
         "a wide low log leaves the sightline above its top clear",
     )
+}
+
+/// A long obstacle can reach past the body's room even when its nearest end is beside it.
+@test
+fn a_wall_along_the_sightline_is_not_hidden_by_the_endpoint_exclusion() {
+    let from = vec3(0.0, 1.0, 0.0)
+    let to = vec3(0.0, 1.0, 10.0)
+    for start in [0.0, 5.0] {
+        let wall = Obstacle {
+            a: vec2(0.0, start),
+            b: vec2(0.0, start + 5.0),
+            r: 0.4,
+            thing: Thing::Wall,
+            depth: 0.0,
+        }
+        assert(
+            clear_over(Flat {}, o([wall]).obstacles, from, to) == 0.0,
+            "a wall extending along the sightline was transparent",
+        )
+    }
 }
 
 /// Hearing: a run is heard to `hearing` and fades with distance, through anything and from

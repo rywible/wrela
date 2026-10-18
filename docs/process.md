@@ -2536,6 +2536,70 @@ No paired frame-time or gate-time comparison was made, so there is no performanc
 agent tool finding was that `primer` covers language areas, with no engine, studio or games area;
 the audit used `context` and source inspection for those layers.
 
+## Further current-state bug audit, 2026-10-17
+
+Ryan requested another autonomous sweep of the whole current codebase. Codex (GPT-6) and
+parallel agents started from a clean checkout of `origin/main` at `5ea9f887`, inspected each
+layer, reproduced defects before fixing them, and retained focused regressions. Independent
+agents reviewed the borrow checker and command transactions, where changes cross several
+paths. No outside asset, algorithm reference or generative media model was added.
+
+The compiler fixes preserve nested borrow-field loans and aggregate storage lifetimes, check
+projected deterministic callables, finish float power inference, and compare match literals at
+their inferred precision. Other fixes cover interval derivation limits, BOM formatting, numeric
+source edits and refactors, lifted units, package paths, reference input limits, and solver ranges.
+The studio now rounds a source literal in its written unit and exponent. That metadata comes
+from the compiler through `std::lift::Source`, rather than a second unit parser.
+
+Both client hosts now hold command batches until an exported call returns successfully, as
+§18.3 requires. A trap discards commands, request reservations and resource changes. A failure
+while committing commands stops later submission. Resource rollback records only changed
+handles; successful calls still copy each submitted batch, and the native host decodes it again.
+Other host fixes cover server initializer signatures, queued input, ABI binding validation,
+worker failures, network retries and room decoding, URLs, pointer buttons, surface limits,
+semantic order and readback cleanup.
+
+The standard library, engine and application fixes cover composition, stable rotations,
+large-angle loops, spatial queries and fields, blocked paths, cadence reports, held-key aliases,
+source rounding, text focus, glyph atlases, same-frame drops, scene parsing, pointer release,
+board saves, paste lifetimes and connector geometry. Review of the plant change also checked
+derived intervals and gradients: numeric guards must bound the interval without changing a
+derivative at tied distances. View culling now includes viewport corners and intersecting spheres.
+The gait lowers the body along world up, and combat checks the blade sweep's active interval
+instead of the next tick. Existing fight hit-rate and outcome assertions remain unchanged.
+Tool fixes separate release hash fields, count the final deploy history file, and preserve
+Markdown fences, table cells and link URLs.
+The extra held-key state changes the serialized `Controls` shape and its hash; old external
+serialized controls need rebuilding. Current Last Green durable saves store `Carry`, not
+`Controls`, so their format is unchanged. Art, lore and game tuning were not changed.
+
+The retained checks use bounded fixtures, state and resource assertions, and hardware shader
+checks for GPU behavior. The full gate passed all 32 check groups, including 934 Rust tests,
+in 337.6 seconds on the combined source. This sweep does not prove that no bugs remain,
+prolonged play stability or whole-scene visual quality.
+The available `primer` areas cover the language; source and `context` inspection filled the
+engine, studio and game tool gap.
+
+One combined run stopped inside Bun 1.4.2's WebAssembly exception interpreter. Its symbolicated
+crash report and the upstream [WebKit exception path](https://github.com/oven-sh/WebKit/blob/main/Source/JavaScriptCore/wasm/WasmIPIntSlowPaths.cpp)
+were read to locate the abort; no source code or assets were copied. Process and memory counters
+showed no exhausted limit. All 73 program tests passed under syscall tracing, and a small
+exception fixture passed 1,000 iterations. The intermittent runner failure was not fixed or
+hidden by changing tests; the full gate was repeated with every test retained.
+
+Five alternating pairs of `wrela profile` runs compared a saved earlier host with the final
+host on this Linux machine's AMD Lucienne GPU (RADV RENOIR, Vulkan). Both CLI binaries were
+pinned before the runs, with builds and other GPU work idle. Each run used the same renderer
+fixture and compiled build hash, no input, 1280×720, one worker, 120 warmup frames and 600
+measured frames in span mode. The median of run medians was 0.07740 → 0.07748 ms for the GPU
+span and 0.39468 → 0.40208 ms for a synchronized CPU frame call. The median paired change was
+−0.05% for GPU span (pairs −0.10% to +0.36%) and +0.60% for CPU frame calls (−0.19% to +2.31%).
+The CPU times include GPU waits; these are not Chrome frame rates. Reports remain under
+`target/bug-sweep-profile/`. The earlier host already contained some audit changes, so this is
+not a whole-sweep comparison against main. This small scene does not measure large command
+batches, initialization, or the separate field, ray and culling costs. No M4 Air was available,
+and no paired gate-time baseline was recorded.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new

@@ -369,7 +369,12 @@ pub fn bend(h: vec3, k: vec3, a: vec3, to: vec3) -> (vec3, vec3) {
     let (l1, l2) = (length(k - h), length(a - k))
     let span = to - h
     let d = clamp(length(span), abs(l1 - l2) + 1.0e-4, (l1 + l2) * 0.9999)
-    let dir = if length(span) > 1.0e-6 { normalize(span) } else { normalize(a - h) }
+    let dir = if length(span) > 1.0e-6 { normalize(span) } else if length(a - h) > 1.0e-6 {
+        normalize(a - h)
+    } else {
+        // A folded rest limb has its end at its root; its first bone still gives a direction.
+        normalize(k - h)
+    }
     // Across the reach, toward the rest knee.
     let rest_out = (k - h) - dir * dot(k - h, dir)
     let out = if length(rest_out) > 1.0e-6 { normalize(rest_out) } else {
@@ -452,4 +457,14 @@ fn a_straight_limb_bends_along_each_axis_without_nan() {
         assert(abs(length(end - knee) - 1.0) < 1.0e-5)
         assert(length(end - direction) < 1.0e-5)
     }
+}
+
+@test
+fn a_folded_limb_can_target_its_root_without_nan() {
+    let root = vec3(0.0)
+    let (knee, end) = bend(root, vec3(0.0, 1.0, 0.0), root, root)
+    assert(knee == knee && end == end, "a folded limb has a finite reach direction")
+    assert(abs(length(knee - root) - 1.0) < 1.0e-5)
+    assert(abs(length(end - knee) - 1.0) < 1.0e-5)
+    assert(length(end - root) < 0.001)
 }

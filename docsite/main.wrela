@@ -1214,6 +1214,8 @@ fn handle(s: mut Docs, e: Event, f: Frame) {
             s.pointer = at
         },
         Event::PointerUp { at, button, .. } => if button == Button::Primary {
+            s.pointer = at
+            drag(mut s, at, f)
             s.thumb = None
             let_go(mut s)
             start_fling(mut s)
@@ -5322,6 +5324,13 @@ fn a_swipe_carries_on_at_its_fingers_last_speed() {
     // Rested a fifth of a second: no fling.
     assert(swipe_speed(trail, now: 1.0 + 7.0 / 60.0 + 0.2) == 0.0)
     assert(swipe_speed(Vec::from([(1.0, 2.0)]), now: 2.0) == 0.0)
+}
+
+@test(frames: 6, input: "scripts/release.json")
+fn a_pointer_release_updates_the_drag_before_ending_it(docs: Docs) {
+    assert(docs.pointer == vec2(630.0, 300.0))
+    assert(docs.slop == 100.0, f"{docs.slop}")
+    assert(docs.thumb.is_none())
 }
 
 /// A finger's drag doesn't jump the way it came before it counted as a drag, nor make it up: the

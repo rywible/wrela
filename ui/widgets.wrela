@@ -671,6 +671,9 @@ impl Ui {
                 self.focus = id
             }
         }
+        if self.editing_id() == id && self.focus != id {
+            self.end_editing()
+        }
         var clicked = self.released &&
             self.active == id &&
             r.contains(self.release_at) &&
@@ -1235,7 +1238,13 @@ impl Ui {
         if self.pressed &&
             self.last_rect.contains(self.press_at) &&
             self.draw.clip_rect().contains(self.press_at) {
-            self.payload = Some(payload)
+            if self.released && !self.down {
+                self.dropped = Some(payload)
+                self.dropped_at = self.release_at
+                self.payload = None
+            } else {
+                self.payload = Some(payload)
+            }
         }
     }
 
@@ -1253,6 +1262,24 @@ impl Ui {
 }
 
 // ---- tests ------------------------------------------------------------------------------------
+
+@test
+fn drag_and_drop_handles_a_press_and_release_in_one_frame() {
+    var ui = Ui::new(Fonts::load())
+    ui.begin(
+        vec2(200.0),
+        [
+            Event::PointerDown { at: vec2(10.0), button: Button::Primary, mods: Mods {} },
+            Event::PointerUp { at: vec2(10.0, 40.0), button: Button::Primary, mods: Mods {} },
+        ],
+    )
+    ui.label("source")
+    ui.drag_source(12)
+    ui.label("target")
+    assert(ui.dropped() == Some(12))
+    assert(ui.payload.is_none())
+    ui.end()
+}
 
 @test
 fn text_editing_moves_and_deletes_whole_character_groups() {
@@ -1351,6 +1378,26 @@ fn a_scroll_thumb_drag_uses_the_release_position() {
     let _ = ui.place(vec2(10.0, 200.0))
     ui.end_scroll()
     assert(ui.scrolls.get(ui.id("scroll")) == Some(160.0))
+}
+
+@test
+fn typing_after_a_press_goes_only_to_the_new_text_field() {
+    var ui = Ui::new(Fonts::load())
+    var first = String::from("old")
+    var second = String::from("new")
+    ui.start_editing(ui.id("first"), first.as_str())
+    ui.begin(
+        vec2(300.0, 100.0),
+        [
+            Event::PointerDown { at: vec2(150.0, 40.0), button: Button::Primary, mods: Mods {} },
+            Event::Text { char: 120 },
+        ],
+    )
+    let _ = ui.text_field("first", mut first)
+    let _ = ui.text_field("second", mut second)
+    ui.end()
+    assert(first.as_str() == "old", first.as_str())
+    assert(second.as_str() == "newx", second.as_str())
 }
 
 @test

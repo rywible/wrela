@@ -80,13 +80,14 @@ impl<S: Copy + Plain> Snapshots<S> {
     }
 }
 
-/// `d` the short way round a cycle `period` long: within half a period of 0.
+/// `d` the short way round a cycle `period` long (positive): within half a period of 0.
 pub fn short_way(d: f32, period: f32) -> f32 {
-    var w = d
-    while w > 0.5 * period {
+    // Repeated subtraction stops making progress when the period is below d's float step.
+    var w = d % period
+    if w > 0.5 * period {
         w -= period
     }
-    while w < -0.5 * period {
+    if w < -0.5 * period {
         w += period
     }
     w
@@ -101,4 +102,15 @@ pub fn lerp_angle(a: f32, b: f32, t: f32) -> f32 {
 pub fn lerp_phase(a: f32, b: f32, t: f32) -> f32 {
     let p = a + short_way(b - a, 1.0) * t
     p - floor(p)
+}
+
+@test
+fn a_large_cycle_difference_still_takes_the_short_way() {
+    for d in [1.0e20, -1.0e20] {
+        assert(short_way(d, 1.0) == 0.0, "whole cycles did not wrap to zero")
+    }
+    assert(short_way(d: 0.5, period: 1.0) == 0.5)
+    assert(short_way(d: -0.5, period: 1.0) == -0.5)
+    assert(short_way(d: 3.75, period: 1.0) == -0.25)
+    assert(short_way(d: -3.75, period: 1.0) == 0.25)
 }

@@ -236,7 +236,7 @@ pub fn tick(w: mut World, input: TickInput<World>) {
     // capsules stay in the full floor's creature/sight field, never in this player set.
     let o = player_obstacles(w.wild, at, OBSTACLES)
     let before = w.player.at
-    if !holds(w.fight) {
+    if w.tour.on || !holds(w.fight) {
         step_with(mut w.player, GROUND, WATER, o, TRAVEL, input.dt)
     }
     if !w.tour.on {
@@ -444,6 +444,33 @@ fn reports_the_active_tours_waypoint_count() {
     w.tour.road = true
     let expected = f"\"tour\": [true, 0, {EGG_ROAD.len()}]"
     assert(report(w, 0).find(expected.as_str()).is_some())
+}
+
+/// A tour pauses combat, so a move or hit stop left in that encounter cannot hold its walk.
+@test
+fn a_tour_walks_while_an_encounter_is_paused() {
+    var expected = spawn_world()
+    expected.tour.on = true
+    expected.wild.around = expected.player.at.world()
+    var during_move = expected
+    during_move.fight.awake = true
+    during_move.fight.fight.climber.act = climber::moves::Act::Slash
+    var during_stop = expected
+    during_stop.fight.awake = true
+    during_stop.fight.fight.stop = 3
+    let before = expected.player.at.world()
+    let input: TickInput<World> = TickInput {
+        tick: 0,
+        dt: 1.0 / 60.0,
+        records: Vec::new(),
+        answers: Vec::new(),
+    }
+    tick(mut expected, input)
+    assert(length(expected.player.at.world() - before) > 0.0, "the fixture must walk")
+    tick(mut during_move, input)
+    tick(mut during_stop, input)
+    assert(during_move.player.at == expected.player.at, "a paused move stopped the tour")
+    assert(during_stop.player.at == expected.player.at, "a paused hit stop stopped the tour")
 }
 
 /// The wildwood answer's explicit height selects low-log clearance, while zero remains a

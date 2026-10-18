@@ -103,6 +103,8 @@ pub struct App {
     environment: Option<Pending<u8>>,
     loading: Option<Pending<u8>>,
     writing: Option<Pending<u8>>,
+    /// The exact snapshot whose storage request is still pending.
+    written: Option<Board>,
     cursor: Option<Pending<u8>>,
     shown_cursor: Text,
     /// The board as last saved, and when it last changed.
@@ -181,6 +183,7 @@ pub fn init() -> App {
         environment: Some(host::environment()),
         loading: Some(read_file(SAVED)),
         writing: None,
+        written: None,
         cursor: None,
         shown_cursor: "default",
         changed_at: 0.0,
@@ -370,8 +373,17 @@ fn answers(s: mut App) {
             }
         }
     }
-    let _ = poll(mut s.writing)
+    if let Some(result) = poll(mut s.writing) {
+        finish_write(mut s.saved, mut s.written, result.is_ok())
+    }
     let _ = poll(mut s.cursor)
+}
+
+/// Only an acknowledged store changes what is saved; a failed one leaves the board dirty.
+fn finish_write(saved: mut Board, written: mut Option<Board>, ok: bool) {
+    if let Some(board) = replace(mut written, None) {
+        if ok { saved = take board }
+    }
 }
 
 /// Saves the board once it has rested a moment after a change.
@@ -383,7 +395,8 @@ fn keep(s: mut App) {
     if s.writing.is_none() && s.drag == Drag::Idle && s.time - s.changed_at > 0.75 {
         let bytes = save(s.board)
         s.writing = Some(store(SAVED, bytes))
-        s.saved = s.board.clone()
+        s.written = Some(s.board.clone())
+        s.changed_at = s.time
     }
 }
 
@@ -887,6 +900,7 @@ fn recolor(s: mut App, index: u32) {
 fn undo(s: mut App) {
     stop_typing(mut s)
     if s.history.undo(mut s.board) {
+        s.revision += 1
         s.selected.retain(|id| s.board.index(id).is_some())
     }
 }
@@ -894,6 +908,7 @@ fn undo(s: mut App) {
 fn redo(s: mut App) {
     stop_typing(mut s)
     if s.history.redo(mut s.board) {
+        s.revision += 1
         s.selected.retain(|id| s.board.index(id).is_some())
     }
 }
@@ -2302,6 +2317,55 @@ fn tell(s: mut App) {
 
 fn screen_rect(game: App, i: u32) -> Rect {
     game.view.rect(game.board.items[i].rect())
+}
+
+@test(frames: 16, input: "scripts/restore-paste.json")
+fn undo_does_not_paste_at_a_caret_from_replaced_text(game: App) {
+    assert(game.board.items.len() == 1 && game.board.items[0].text == "abc")
+    let aim = Aim { typing: Some(Typing::caret(game.board.items[0].id, 1)), revision: 4 }
+    assert(
+        destination(aim, game.typing, game.revision, game.board) == Into::Board,
+        "undo changes the text a pending paste was aimed at",
+    )
+}
+
+@test(frames: 20, input: "scripts/restore-paste.json")
+fn redo_does_not_paste_at_a_caret_from_replaced_text(game: App) {
+    assert(game.board.items.len() == 1 && game.board.items[0].text == "a")
+    let aim = Aim { typing: Some(Typing::caret(game.board.items[0].id, 3)), revision: 5 }
+    assert(game.revision == 6, "undo and redo each change the text revision")
+    assert(
+        destination(aim, game.typing, game.revision, game.board) == Into::Board,
+        "redo cannot reuse a caret past the restored text's end",
+    )
+}
+
+@test(frames: 47, input: "scripts/note.json")
+fn a_board_waiting_to_be_written_is_not_yet_saved(game: App) {
+    assert(game.writing.is_some(), "the board's store is waiting for its answer")
+    assert(game.saved != game.board, "only a successful store marks the board as saved")
+}
+
+@test
+fn a_failed_save_stays_dirty_and_a_success_keeps_its_own_snapshot() {
+    var saved = Board::new()
+    let before = saved.clone()
+    var board = saved.clone()
+    board.name = String::from("First change")
+    var written = Some(board.clone())
+    finish_write(mut saved, mut written, ok: false)
+    assert(written.is_none() && saved == before && saved != board, "the failed store can retry")
+    written = Some(board.clone())
+    board.name = String::from("Changed while saving")
+    finish_write(mut saved, mut written, ok: true)
+    assert(written.is_none() && saved.name == "First change")
+    assert(saved != board, "edits made during the store still need saving")
+}
+
+@test(frames: 48, input: "scripts/note.json")
+fn a_successful_store_marks_its_board_as_saved(game: App) {
+    assert(game.writing.is_none() && game.written.is_none())
+    assert(game.saved == game.board)
 }
 
 /// N, a click, typing and Escape leave one note with the text.

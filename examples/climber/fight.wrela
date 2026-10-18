@@ -1016,7 +1016,8 @@ fn blade_hits(w: mut World) {
         return
     }
     let f = frames(c.act)
-    if c.landed || !f.is_active(c.t) || w.wolf.mood == Mood::Down {
+    // The tick has advanced: this sweep covers the interval starting at t - 1.
+    if c.landed || c.t == 0 || !f.is_active(c.t - 1) || w.wolf.mood == Mood::Down {
         return
     }
     var prev = c
@@ -1067,6 +1068,38 @@ fn blade_hits(w: mut World) {
         w.tally.wolf_downs += 1
     } else {
         w.wolf.mood = Mood::Flinch
+    }
+}
+
+/// A sweep ending at a tick covers the interval before it: none of the wind-up or recovery,
+/// and all of the active intervals, including the last one.
+@test
+fn blade_sweeps_cover_exactly_the_active_intervals() {
+    for act in [Act::Slash, Act::Backslash] {
+        let f = frames(act)
+        for (elapsed, should_hit) in [
+            (f.windup, false),
+            (f.windup + 1, true),
+            (f.windup + f.active, true),
+            (f.windup + f.active + 1, false),
+        ] {
+            var w = spawn()
+            w.climber.start(act)
+            w.climber.t = elapsed
+            w.climber.fade = 10
+            // Put the pelvis on the edge at the interval's end: contact is certain, so only
+            // the interval's eligibility can decide whether the blow lands.
+            let (a, b) = blade_at(w.climber, 0.0)
+            w.wolf.walker.root.pos = (a + b) * 0.5 - wolf::creature::J_PELVIS
+            w.wolf.walker.root.heading = 0.0
+            w.wolf.walker.height = 0.0
+            w.wolf.walker.pitch = 0.0
+            blade_hits(mut w)
+            assert(
+                (w.tally.hits == 1) == should_hit,
+                "the sweep used its end tick instead of its active interval",
+            )
+        }
     }
 }
 
