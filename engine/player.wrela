@@ -70,6 +70,9 @@ pub struct Controls: Copy + Eq + Plain + StateHash + Serialize + SimState {
     pub turn_left: bool,
     pub turn_right: bool,
     pub run_held: bool,
+    /// The individual keys in the forward, back and run pairs: releasing one must not
+    /// release its action while the other is still held.
+    paired_keys: u32 = 0,
     pub walk_on: bool,
     pub run_on: bool,
     pub yaw: f32,
@@ -152,6 +155,26 @@ fn digit(k: Key) -> Option<u32> {
     }
 }
 
+/// Changes one key in an action's pair without releasing the other key.
+fn hold_pair(c: mut Controls, key: Key, down: bool) {
+    let (bit, pair) = match key {
+        Key::W => (1, 3),
+        Key::Up => (2, 3),
+        Key::S => (4, 12),
+        Key::Down => (8, 12),
+        Key::ShiftLeft => (16, 48),
+        Key::ShiftRight => (32, 48),
+        _ => return,
+    }
+    c.paired_keys = if down { c.paired_keys | bit } else { c.paired_keys & !bit }
+    let held = (c.paired_keys & pair) != 0
+    match pair {
+        3 => c.forward = held,
+        12 => c.back = held,
+        _ => c.run_held = held,
+    }
+}
+
 /// The controls after input event `e`.
 @deterministic
 pub fn control(c: mut Controls, e: Event) {
@@ -170,17 +193,12 @@ pub fn control(c: mut Controls, e: Event) {
                 c.typing = false
                 return
             }
+            hold_pair(mut c, key, down: true)
             match key {
-                Key::W => c.forward = true,
-                Key::Up => c.forward = true,
-                Key::S => c.back = true,
-                Key::Down => c.back = true,
                 Key::A => c.left = true,
                 Key::D => c.right = true,
                 Key::Left => c.turn_left = true,
                 Key::Right => c.turn_right = true,
-                Key::ShiftLeft => c.run_held = true,
-                Key::ShiftRight => c.run_held = true,
                 _ => {},
             }
             if !repeat {
@@ -201,17 +219,12 @@ pub fn control(c: mut Controls, e: Event) {
             }
         },
         Event::KeyUp { key, .. } => {
+            hold_pair(mut c, key, down: false)
             match key {
-                Key::W => c.forward = false,
-                Key::Up => c.forward = false,
-                Key::S => c.back = false,
-                Key::Down => c.back = false,
                 Key::A => c.left = false,
                 Key::D => c.right = false,
                 Key::Left => c.turn_left = false,
                 Key::Right => c.turn_right = false,
-                Key::ShiftLeft => c.run_held = false,
-                Key::ShiftRight => c.run_held = false,
                 _ => {},
             }
         },
@@ -247,14 +260,8 @@ pub fn turn_to(from: f32, to: f32, most: f32) -> f32 {
 
 /// An angle in (-π, π].
 fn wrap(a: f32) -> f32 {
-    var x = a
-    while x > PI {
-        x -= TAU
-    }
-    while x <= -PI {
-        x += TAU
-    }
-    x
+    let x = present::short_way(a, TAU)
+    if x <= -PI { x + TAU } else { x }
 }
 
 /// Where the controls ask the player to go, as a direction on the plane (length 0 or 1), and
@@ -522,6 +529,33 @@ fn in_the_way(p: vec3, o: Obstacles, o_from: vec2, height: fn(vec2) -> f32) -> b
     hit
 }
 
+/// Either key in a binding keeps its action held until both keys are released.
+@test
+fn releasing_one_of_two_bound_keys_keeps_the_other_held() {
+    let pressed = |key: Key| Event::KeyDown { key, repeat: false, mods: std::input::Mods {} }
+    let released = |key: Key| Event::KeyUp { key, mods: std::input::Mods {} }
+    for pair in [(Key::W, Key::Up), (Key::S, Key::Down), (Key::ShiftLeft, Key::ShiftRight)] {
+        for reversed in [false, true] {
+            var c = spawn(Shelf { high: 0.0 }, Place::of(vec2(0.0)), 0.0).controls
+            let first = if reversed { pair.1 } else { pair.0 }
+            let second = if reversed { pair.0 } else { pair.1 }
+            control(mut c, pressed(first))
+            control(mut c, Event::KeyDown { key: first, repeat: true, mods: std::input::Mods {} })
+            control(mut c, pressed(second))
+            let Ok(back) = std::serialize::load::<Controls>(std::serialize::save(c)) else {
+                assert(false, "held keys did not survive saving")
+                return
+            }
+            assert(c == back)
+            c = back
+            control(mut c, released(first))
+            assert(c.forward || c.back || c.run_held, "releasing an alias released a held key")
+            control(mut c, released(second))
+            assert(!c.forward && !c.back && !c.run_held, "the last release left a key held")
+        }
+    }
+}
+
 /// Extra travel digits cannot overflow the sim's input state.
 @test
 fn a_long_travel_number_keeps_the_last_valid_prefix() {
@@ -643,6 +677,16 @@ fn a_placed_player_stands_on_the_ground() {
     place_at(mut p, ground, none, Place::of(vec2(15.0, 6.0)), 7.0)
     assert(abs(p.y - 3.0) < 1.0e-5, f"stands at {p.y}")
     assert(abs(p.heading - wrap(7.0)) < 1.0e-5, f"faces {p.heading}")
+}
+
+/// Wrapping a finite angle must finish even when one turn is smaller than its float step.
+@test
+fn a_large_heading_wraps_without_losing_progress() {
+    for heading in [1.0e20, -1.0e20] {
+        let turned = turn_to(from: heading, to: heading, most: 0.1)
+        assert(turned > -PI && turned <= PI, "a finite heading did not wrap")
+    }
+    assert(turn_to(from: -PI, to: -PI, most: 0.0) == PI)
 }
 
 /// A heading turns toward its target by the most it may, the short way round, and stops on it.

@@ -1315,6 +1315,9 @@ pub fn way(s: Sight, from: vec2, to: vec2) -> Vec<vec2> {
     }
     let start = nearest_walkable(s, from)
     let goal = nearest_walkable(s, to)
+    if s.walk[start] <= 0.1 || s.walk[goal] <= 0.1 {
+        return out
+    }
     let nn = g.cells()
     var cost: Vec<f32> = Vec::filled(nn, 1.0e30)
     var came: Vec<u32> = Vec::filled(nn, grow::NONE)
@@ -1476,15 +1479,6 @@ pub fn cadence(m: Map, walks: [Walk], region: u32) -> Cadence {
     var time = 0.0
     var longest = 0.0
     for w in walks {
-        var last = 0.0
-        for a in w.arrivals {
-            if region == grow::NONE || u32(a.z) == region {
-                gaps.push(a.y - last)
-                longest = max(longest, a.y - last)
-                last = a.y
-                arrivals += 1
-            }
-        }
         // The time in the region: its share of the path's points.
         var share = 1.0
         if region != grow::NONE {
@@ -1496,7 +1490,19 @@ pub fn cadence(m: Map, walks: [Walk], region: u32) -> Cadence {
             }
             share = f32(inside) / f32(max(w.path.len(), 1))
         }
-        gaps.push(w.time * share - last)
+        var last = 0.0
+        for a in w.arrivals {
+            if region == grow::NONE || u32(a.z) == region {
+                let gap = (a.y - last) * share
+                gaps.push(gap)
+                longest = max(longest, gap)
+                last = a.y
+                arrivals += 1
+            }
+        }
+        let trailing = (w.time - last) * share
+        gaps.push(trailing)
+        longest = max(longest, trailing)
         for f in w.found {
             if m.sites[u32(f.x)].keystone() &&
                 (region == grow::NONE || m.region_of(m.sites[u32(f.x)].at) == region) {
@@ -1531,6 +1537,9 @@ pub fn reachable(s: Sight, from: vec2) -> Vec<bool> {
     }
     var queue: Vec<u32> = Vec::new()
     let c0 = nearest_walkable(s, from)
+    if s.walk[c0] <= 0.1 {
+        return out
+    }
     out[c0] = true
     queue.push(c0)
     var head = 0
@@ -1570,7 +1579,7 @@ pub fn nearest_walkable(s: Sight, p: vec2) -> u32 {
             if i >= 0 && j >= 0 && i < i32(g.nx) && j < i32(g.nz) {
                 let k = u32(j) * g.nx + u32(i)
                 let e = length(g.centre(k) - p)
-                if s.walk[k] > 0.1 && e < d {
+                if s.walk[k] > 0.1 && e <= 12.0 && e < d {
                     d = e
                     best = k
                 }
@@ -1817,6 +1826,9 @@ pub fn eye_level(s: Sight, at: vec2, dir: vec2, dist: f32, eye: f32) -> f32 {
 /// `eye_level` averaged over the directions within `half` of `yaw`, one each 0.025 radians (as
 /// fine as a near trunk needs).
 pub fn seen_beyond(s: Sight, at: vec2, yaw: f32, half: f32, dist: f32, eye: f32) -> f32 {
+    if half == 0.0 {
+        return eye_level(s, at, vec2(cos(yaw), sin(yaw)), dist, eye)
+    }
     let n = u32(ceil(2.0 * half / 0.025)) + 1
     var sum = 0.0
     for i in 0..n {
@@ -1839,7 +1851,10 @@ pub fn opening_cover(trees: [Tree], at: vec2, radius: f32) -> f32 {
     let g = Grid::over(at - vec2(r), at + vec2(r), 2.0)
     var shut: Vec<bool> = Vec::filled(g.cells(), value: false)
     for t in trees {
-        if t.state == State::Alive && t.tall > 4.0 && !t.pinned && length(t.at - at) < r + 15.0 {
+        if t.state == State::Alive &&
+            t.tall > 4.0 &&
+            !t.pinned &&
+            length(t.at + t.lean - at) < r + t.reach {
             disk(g, t.at + t.lean, t.reach, |k| { shut[k] = true })
         }
     }
@@ -1872,6 +1887,13 @@ fn cadence_json(c: Cadence) -> String {
     f"{{\"draws_per_hour\": {c.arrivals_per_hour:.2}, \"median_gap\": {c.median_gap:.1}, \"longest_gap\": {c.longest_gap:.1}, \"lost\": {c.lost:.4}, \"blocked\": {c.blocked:.4}, \"keystones_per_hour\": {c.keystones_per_hour:.2}}}"
 }
 
+fn json_string(s: str) -> String {
+    var out = String::from("\"")
+    std::fmt::json_text(mut out, s)
+    out.push_str("\"")
+    out
+}
+
 /// A view as JSON (a lookbook shot's numbers): its strongest draw and how many draw at
 /// least `FAINT`, whether it's dead (nothing draws) or quiet (only features draw: no site, opening,
 /// crest or trail), and each draw: what pulls (and the site's name, for a site's), how strongly.
@@ -1891,7 +1913,7 @@ pub fn view_json(m: Map, v: View) -> String {
             Pull::Feature => "a feature",
         }
         let sep = if i == 0 { "" } else { ", " }
-        draws.push_str(f"{sep}{{\"pull\": \"{what}\", \"strength\": {d.strength:.3}}}")
+        draws.push_str(f"{sep}{{\"pull\": {json_string(what)}, \"strength\": {d.strength:.3}}}")
     }
     f"{{\"best\": {v.best:.3}, \"count\": {v.count}, \"dead\": {flag(v.best < FAINT)}, \"quiet\": {flag(major < FAINT)}, \"draws\": [{draws}]}}"
 }
@@ -1918,7 +1940,7 @@ pub fn report<G: Ground>(ground: G, m: Map, c: Checked) -> String {
     for r in 0..m.regions.len() {
         let sep = if r + 1 < m.regions.len() { "," } else { "" }
         out.push_str(
-            f"    {{\"name\": \"{m.regions[r].name}\", {coverage_json(c.regions[r])}, \"pilgrims\": {cadence_json(cadence(m, c.pilgrims, r))}}}{sep}\n",
+            f"    {{\"name\": {json_string(m.regions[r].name)}, {coverage_json(c.regions[r])}, \"pilgrims\": {cadence_json(cadence(m, c.pilgrims, r))}}}{sep}\n",
         )
     }
     out.push_str("  ],\n  \"relations\": [\n")
@@ -1932,7 +1954,7 @@ pub fn report<G: Ground>(ground: G, m: Map, c: Checked) -> String {
         let reached = reaches(c.sight, c.reach, r.from(), r.within())
         let sep = if i + 1 < m.relations.len() { "," } else { "" }
         out.push_str(
-            f"    {{\"name\": \"{r.name()}\", \"site\": \"{m.sites[r.to()].name}\", \"landmark\": {flag(r.landmark())}, \"hidden\": {flag(hidden)}, \"from\": [{r.from().x:.1}, {r.from().y:.1}], \"draw\": {h.at:.3}, \"before\": {h.before:.3}, \"holds\": {flag(h.holds)}, \"reached\": {flag(reached)}}}{sep}\n",
+            f"    {{\"name\": {json_string(r.name())}, \"site\": {json_string(m.sites[r.to()].name)}, \"landmark\": {flag(r.landmark())}, \"hidden\": {flag(hidden)}, \"from\": [{r.from().x:.1}, {r.from().y:.1}], \"draw\": {h.at:.3}, \"before\": {h.before:.3}, \"holds\": {flag(h.holds)}, \"reached\": {flag(reached)}}}{sep}\n",
         )
     }
     out.push_str("  ],\n  \"openings\": [\n")
@@ -1942,7 +1964,7 @@ pub fn report<G: Ground>(ground: G, m: Map, c: Checked) -> String {
         let open = cover <= OPEN
         let sep = if i + 1 < m.openings.len() { "," } else { "" }
         out.push_str(
-            f"    {{\"name\": \"{o.name}\", \"cover\": {cover:.3}, \"open\": {flag(open)}}}{sep}\n",
+            f"    {{\"name\": {json_string(o.name)}, \"cover\": {cover:.3}, \"open\": {flag(open)}}}{sep}\n",
         )
     }
     out.push_str("  ],\n  \"sites\": [\n")
@@ -1951,7 +1973,7 @@ pub fn report<G: Ground>(ground: G, m: Map, c: Checked) -> String {
         let reached = reaches(c.sight, c.reach, k.at, k.reach)
         let sep = if i + 1 < m.sites.len() { "," } else { "" }
         out.push_str(
-            f"    {{\"name\": \"{k.name}\", \"kind\": {u32(k.kind)}, \"critical\": {flag(critical(k))}, \"reached\": {flag(reached)}}}{sep}\n",
+            f"    {{\"name\": {json_string(k.name)}, \"kind\": {u32(k.kind)}, \"critical\": {flag(critical(k))}, \"reached\": {flag(reached)}}}{sep}\n",
         )
     }
     let (median, all) = critical_path(m, c.trail)
@@ -1970,7 +1992,7 @@ pub fn report<G: Ground>(ground: G, m: Map, c: Checked) -> String {
             if !found.is_empty() {
                 found.push_str(", ")
             }
-            found.push_str(f"\"{m.sites[i].name}\": {n}")
+            found.push_str(f"{json_string(m.sites[i].name)}: {n}")
         }
     }
     // Each pilgrim's start, and its time lost and blocked: for finding where walkers get stuck.
@@ -2113,6 +2135,254 @@ fn dot_at(rgb: mut Vec<vec3>, w: u32, h: u32, p: vec2, r: f32, col: vec3) {
 }
 
 // ---- tests ------------------------------------------------------------------------------------
+
+/// A small sight grid with just the walking data used by path and reachability checks.
+fn walking_grid(g: Grid, walk: take Vec<f32>) -> Sight {
+    Sight {
+        grid: g,
+        ground: Vec::new(),
+        top: Vec::new(),
+        base: Vec::new(),
+        crown: Vec::new(),
+        under: Vec::new(),
+        stems: Vec::new(),
+        brush_top: Vec::new(),
+        trunk_start: Vec::new(),
+        trunks: Vec::new(),
+        solids: Vec::new(),
+        open: Vec::new(),
+        trail: Vec::new(),
+        walk,
+        features: Vec::new(),
+        feature_bins: Vec::new(),
+        bins: g,
+    }
+}
+
+@test
+fn blocked_cells_are_not_reachable_without_a_walkable_start() {
+    let g = Grid { lo: vec2(0.0), nx: 2, nz: 2, cell: 4.0 }
+    let s = walking_grid(g, Vec::filled(g.cells(), 0.0))
+    let at = g.centre(0)
+    for can in reachable(s, at) {
+        assert(!can, "a blocked start was marked reachable")
+    }
+    assert(way(s, at, at).is_empty(), "a blocked start produced a route")
+}
+
+@test
+fn walking_starts_snap_only_within_twelve_metres() {
+    let g = Grid { lo: vec2(0.0), nx: 2, nz: 2, cell: 16.0 }
+    let s = walking_grid(g, Vec::from([0.0, 1.0, 0.0, 0.0]))
+    assert(nearest_walkable(s, g.centre(0)) == 0, "snapped sixteen metres across blocked ground")
+    assert(nearest_walkable(s, vec2(12.0, 8.0)) == 1, "a cell twelve metres away is in reach")
+}
+
+fn two_region_map() -> Map {
+    Map {
+        lo: vec2(0.0),
+        hi: vec2(32.0),
+        present: 0,
+        land: place::Land {
+            hills: [vec4(0.0); 8],
+            hollows: [vec4(0.0); 8],
+            ridges: [vec4(0.0); 24],
+            ravines: [vec4(0.0); 16],
+            ravine_fall: 0.0,
+            crags: [vec4(0.0); 4],
+            ramps: vec4(0.0),
+            floors: vec4(0.0),
+            tilt: vec4(0.0),
+        },
+        sites: Vec::new(),
+        relations: Vec::new(),
+        openings: Vec::new(),
+        routes: Vec::new(),
+        water: place::Water {
+            meres: [vec4(0.0); 2],
+            springs: [vec2(0.0); 8],
+            spring_count: 0,
+            falls: [vec2(0.0); 2],
+        },
+        events: Vec::new(),
+        wind: vec2(1.0, 0.0),
+        kept: Vec::new(),
+        regions: Vec::from(
+            [
+                place::Region {
+                    name: "one",
+                    kind: place::Kind::HighForest,
+                    at: vec2(8.0),
+                    character: place::Character {},
+                },
+                place::Region {
+                    name: "two",
+                    kind: place::Kind::HighForest,
+                    at: vec2(24.0),
+                    character: place::Character {},
+                },
+            ],
+        ),
+        herd: place::Herd { arrives: 0, trips: 0, drink: vec2(0.0), rest: vec2(0.0) },
+    }
+}
+
+@test
+fn cadence_counts_trailing_gaps_in_the_regions_time() {
+    let m = two_region_map()
+    let walk = Walk {
+        path: Vec::from([vec2(8.0), vec2(24.0)]),
+        arrivals: Vec::from([vec3(0.0, 80.0, 1.0)]),
+        found: Vec::new(),
+        lost: 0.0,
+        time: 100.0,
+        blocked: 0.0,
+    }
+    var walks: Vec<Walk> = Vec::new()
+    walks.push(take walk)
+    let quiet = cadence(m, walks, 0)
+    assert(quiet.median_gap == 50.0)
+    assert(quiet.longest_gap == 50.0, "a region with no arrivals lost its whole gap")
+    let regional = cadence(m, walks, 1)
+    assert(
+        regional.median_gap == 40.0,
+        "regional gaps must use the same time share as its duration",
+    )
+    assert(regional.longest_gap == 40.0)
+    let all = cadence(m, walks, grow::NONE)
+    assert(all.median_gap == 80.0 && all.longest_gap == 80.0)
+}
+
+@test
+fn a_single_sight_direction_has_no_angular_division() {
+    let g = Grid { lo: vec2(0.0), nx: 2, nz: 2, cell: 4.0 }
+    var s = walking_grid(g, Vec::filled(g.cells(), 1.0))
+    s.ground = Vec::filled(g.cells(), 0.0)
+    assert(seen_beyond(s, g.centre(0), yaw: 0.7, half: 0.0, dist: 0.0, eye: 1.7) == 1.0)
+}
+
+@test
+fn opening_cover_follows_the_crowns_reach_and_lean() {
+    let tree = Tree {
+        at: vec2(20.0, 0.0),
+        kind: 0,
+        born: 0,
+        tall: 10.0,
+        reach: 6.0,
+        lean: vec2(-20.0, 0.0),
+        girth: 1.0,
+        light: 1.0,
+        vigour: 1.0,
+        state: State::Alive,
+        died: 0,
+        fell: 0,
+        fall: vec2(0.0),
+        cause: grow::Cause::Old,
+        pinned: false,
+        shaped: grow::NONE,
+        lift: 2.0,
+        fork: 0.0,
+        seed: 1,
+    }
+    assert(
+        opening_cover([tree], vec2(0.0), radius: 5.0) == 1.0,
+        "a crown leaning over the opening was ignored",
+    )
+    let wide = Tree { lean: vec2(0.0), reach: 25.0, ..tree }
+    assert(
+        opening_cover([wide], vec2(0.0), radius: 5.0) == 1.0,
+        "a wide crown over the opening was ignored",
+    )
+    assert(opening_cover([Tree { pinned: true, ..tree }], vec2(0.0), radius: 5.0) == 0.0)
+}
+
+@test
+fn view_json_escapes_site_names() {
+    var m = two_region_map()
+    m.sites.push(
+        Site {
+            kind: SiteKind::Anchor,
+            feature: Feature::Ground,
+            at: vec2(8.0),
+            name: "a\"b\\c\nδ",
+        },
+    )
+    var draws: Bounded<Draw, MAX_DRAWS> = Bounded::new()
+    draws.push(Draw { pull: Pull::Key, site: 0, target: vec2(8.0), strength: 1.0 })
+    let view = View { at: vec2(8.0), walkable: true, draws, best: 1.0, count: 1 }
+    assert(
+        view_json(m, view).find("\"pull\": \"a\\\"b\\\\c\\nδ\"").is_some(),
+        "site names must be escaped in view JSON",
+    )
+}
+
+struct ReportGround: Copy {}
+
+impl Ground for ReportGround {
+    fn height(self, x: f32, z: f32) -> f32 {
+        0.0
+    }
+    fn past_edge(self, p: vec2) -> f32 {
+        -1.0
+    }
+    fn rock(self, p: vec2) -> f32 {
+        0.0
+    }
+}
+
+@test
+fn interest_report_escapes_all_authored_names() {
+    var m = two_region_map()
+    m.regions[0].name = "region\"\\\nδ"
+    m.sites.push(
+        Site {
+            kind: SiteKind::Anchor,
+            feature: Feature::Ground,
+            at: vec2(8.0),
+            name: "site\"\\\nδ",
+        },
+    )
+    m.relations.push(
+        Relation::Seen {
+            from: vec2(8.0),
+            within: 1.0,
+            to: 0,
+            landmark: false,
+            name: "relation\"\\\nδ",
+        },
+    )
+    m.openings.push(
+        place::Opening {
+            at: vec2(8.0),
+            radius: 1.0,
+            keeper: place::Keeper::Nothing,
+            name: "opening\"\\\nδ",
+        },
+    )
+    let g = Grid { lo: vec2(0.0), nx: 2, nz: 2, cell: 16.0 }
+    let coverage = Coverage { walkable: 4, dead: 0.0, quiet: 0.0, rich: 0.0, area: 0.001 }
+    let checked = Checked {
+        sight: walking_grid(g, Vec::filled(g.cells(), 1.0)),
+        views: Vec::new(),
+        coverage,
+        regions: Vec::filled(2, coverage),
+        held: Vec::from([Held { at: 1.0, before: 0.0, holds: true }]),
+        magpies: Vec::new(),
+        pilgrims: Vec::new(),
+        trail: Vec::new(),
+        reach: Vec::filled(g.cells(), value: true),
+        openings: Vec::from([0.0]),
+    }
+    let json = report(ReportGround {}, m, checked)
+    for name in ["region", "site", "relation", "opening"] {
+        assert(
+            json.find(f"\"name\": \"{name}\\\"\\\\\\nδ\"").is_some(),
+            f"{name}'s name is not escaped in report JSON",
+        )
+    }
+    assert(json.find("\"site\": \"site\\\"\\\\\\nδ\"").is_some())
+    assert(json.find("\"found\": {\"site\\\"\\\\\\nδ\": 0}").is_some())
+}
 
 /// The map lens's QUICK check does not schedule even a sampled curious walker.
 @test

@@ -665,7 +665,7 @@ impl Fonts {
         var bytes: Vec<u8> = Vec::filled(self.width * self.baked * 4, 0)
         for f in 0..2 {
             borrow font = self.font(if f == 0 { Face::Sans } else { Face::Mono })
-            for i in 0..font.count() {
+            for i in 0..font.kerned {
                 let g = font.glyph(i)
                 for row in 0..g.height {
                     let base = ((g.atlas_y + row) * self.width + g.atlas_x) * 4
@@ -679,6 +679,28 @@ impl Fonts {
         }
         bytes
     }
+}
+
+@test
+fn rebuilding_the_baked_atlas_ignores_made_glyphs() {
+    var fonts = Fonts::load()
+    let before = fonts.atlas()
+    fonts.sans.ask("狼")
+    fonts.sans.add(
+        "狼",
+        Made {
+            advance: 1.0,
+            left: 0.0,
+            top: 30.0,
+            width: 4,
+            height: 4,
+            color: false,
+            texels: Vec::filled(64, 0),
+        },
+        x: 1,
+        y: fonts.baked,
+    )
+    assert(fonts.atlas() == before)
 }
 
 @test

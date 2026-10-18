@@ -122,7 +122,7 @@ pub fn read(code: str, time: f32) -> Option<Read> {
     var r = Reader::new(code, time)
     let Some(root) = r.result() else { return None }
     if r.failed || r.nodes.is_empty() { return None }
-    let scene = r.scene_of(root)
+    let Some(scene) = r.scene_of(root) else { return None }
     if scene.len == 0 { return None }
     var knobs = r.used.clone()
     knobs.sort_by(|a, b| a.0 < b.0)
@@ -623,14 +623,14 @@ impl Reader {
             self.at = back
             return last
         }
-        let num = |k: u32| -> Option<f32> {
-            match args[k].1 {
+        let num = |k: u32, name: str| -> Option<f32> {
+            match argument(args, k, name) {
                 Some(Value::Num(n)) => Some(n),
                 _ => None,
             }
         }
-        let vec = |k: u32| -> Option<vec3> {
-            match args[k].1 {
+        let vec = |k: u32, name: str| -> Option<vec3> {
+            match argument(args, k, name) {
                 Some(Value::Vec(v)) => Some(v),
                 Some(Value::Num(n)) => Some(vec3(n)),
                 _ => None,
@@ -639,11 +639,11 @@ impl Reader {
         if name == "vec3" {
             var v = vec3()
             if args.len() == 1 && args[0].0.is_empty() {
-                let Some(n) = num(0) else { return self.fail() }
+                let Some(n) = num(0, "") else { return self.fail() }
                 return Some(Value::Vec(vec3(n)))
             }
             for k in 0..args.len() {
-                let Some(n) = num(k) else { return self.fail() }
+                let Some(n) = num(k, args[k].0.as_str()) else { return self.fail() }
                 let which = if !args[k].0.is_empty() { args[k].0.clone() } else if k == 0 {
                     String::from("x")
                 } else if k == 1 { String::from("y") } else { String::from("z") }
@@ -656,7 +656,7 @@ impl Reader {
         }
         if name == "sin" || name == "cos" || name == "abs" || name == "sqrt" {
             if args.len() != 1 { return self.fail() }
-            let Some(x) = num(0) else { return self.fail() }
+            let Some(x) = num(0, "x") else { return self.fail() }
             let y = if name == "sin" { sin(x) } else if name == "cos" { cos(x) } else if name ==
                 "abs" {
                 abs(x)
@@ -665,21 +665,28 @@ impl Reader {
         }
         if name == "min" || name == "max" {
             if args.len() != 2 { return self.fail() }
-            let (Some(a), Some(b)) = (num(0), num(1)) else { return self.fail() }
+            let (Some(a), Some(b)) = (num(0, "a"), num(1, "b")) else { return self.fail() }
             return Some(Value::Num(if name == "min" { min(a, b) } else { max(a, b) }))
         }
         if name == "sphere" && args.len() == 1 {
-            let Some(r) = num(0) else { return self.fail() }
+            let Some(r) = num(0, "radius") else { return self.fail() }
             return Some(self.primitive(SPHERE, vec4(r, 0.0, 0.0, 0.0), vec4(0.0)))
         }
         if name == "round_cone" && args.len() == 4 {
-            let (Some(a), Some(b), Some(r1), Some(r2)) = (vec(0), vec(1), num(2), num(3)) else {
+            let (Some(a), Some(b), Some(r1), Some(r2)) = (
+                vec(0, "a"),
+                vec(1, "b"),
+                num(2, "r_top"),
+                num(3, "r_bottom"),
+            ) else {
                 return self.fail()
             }
             return Some(self.primitive(ROUND_CONE, vec4(a, r1), vec4(b, r2)))
         }
         if (name == "cuboid" || name == "ellipsoid" || name == "oval") && args.len() == 1 {
-            let Some(v) = vec(0) else { return self.fail() }
+            let Some(v) = vec(0, if name == "cuboid" { "half" } else { "radii" }) else {
+                return self.fail()
+            }
             let kind = if name == "cuboid" { CUBOID } else if name == "ellipsoid" {
                 ELLIPSOID
             } else {
@@ -718,7 +725,7 @@ impl Reader {
         if name == "named" { return Some(Value::Shape(a)) }
         if name == "translate" || name == "scale" {
             if args.len() != 1 { return None }
-            let by = match args[0].1 {
+            let by = match argument(args, 0, "by") {
                 Some(Value::Vec(by)) => by,
                 Some(Value::Num(n)) => vec3(n),
                 _ => return None,
@@ -736,9 +743,9 @@ impl Reader {
         } else if name == "smooth_subtract" { SMOOTH_SUBTRACT } else { return None }
         let smooth = kind == SMOOTH_UNION || kind == SMOOTH_INTERSECT || kind == SMOOTH_SUBTRACT
         if args.len() != (if smooth { 2 } else { 1 }) { return None }
-        let Some(Value::Shape(b)) = args[0].1 else { return None }
+        let Some(Value::Shape(b)) = argument(args, 0, "b") else { return None }
         let k = if smooth {
-            match args[1].1 {
+            match argument(args, 1, "k") {
                 Some(Value::Num(k)) => k,
                 _ => return None,
             }
@@ -767,26 +774,34 @@ impl Reader {
     }
 
     /// The scene of the shape at node `root`: it and the nodes it combines, each after its parts.
-    fn scene_of(self, root: u32) -> Scene {
+    fn scene_of(self, root: u32) -> Option<Scene> {
         var scene = Scene::empty()
-        let _ = self.place(mut scene, root)
-        scene
+        let Some(_) = self.place(mut scene, root) else { return None }
+        Some(scene)
     }
 
-    fn place(self, scene: mut Scene, n: u32) -> u32 {
+    fn place(self, scene: mut Scene, n: u32) -> Option<u32> {
         var node = self.nodes[n]
         if node.kind >= UNION {
-            node.a = self.place(mut scene, node.a)
-            node.b = self.place(mut scene, node.b)
+            let Some(a) = self.place(mut scene, node.a) else { return None }
+            let Some(b) = self.place(mut scene, node.b) else { return None }
+            node.a = a
+            node.b = b
         }
-        if scene.len >= NODES {
-            scene.len = 0
-            return 0
-        }
+        if scene.len >= NODES { return None }
         scene.nodes[scene.len] = node
         scene.len += 1
-        scene.len - 1
+        Some(scene.len - 1)
     }
+}
+
+/// A parameter's argument, either in its position or named for it.
+fn argument(args: [(String, Option<Value>)], at: u32, name: str) -> Option<Value> {
+    if at < args.len() && args[at].0.is_empty() { return args[at].1.clone() }
+    for a in args {
+        if a.0.as_str() == name { return a.1.clone() }
+    }
+    None
 }
 
 /// `a op b` for numbers and vectors: op 0 adds, 1 subtracts, 2 multiplies, 3 divides.
@@ -1172,6 +1187,17 @@ pub fn tesseract() -> String {
 }
 
 @test
+fn a_scene_past_the_node_limit_is_not_partly_read() {
+    var code = String::from("let shape = sphere(1.0)")
+    for _ in 0..15 { code.push_str(".union(sphere(1.0))") }
+    assert(read(code.as_str(), 0.0).is_some())
+    code.push_str(".union(sphere(1.0))")
+    assert(read(code.as_str(), 0.0).is_none())
+    code.push_str(".union(sphere(1.0))")
+    assert(read(code.as_str(), 0.0).is_none())
+}
+
+@test
 fn the_front_pages_tesseract_reads_as_std_builds_it() {
     let code = tesseract()
     let Some(r) = read(code.as_str(), 0.0) else {
@@ -1231,6 +1257,17 @@ fn a_function_reads_as_its_last_call_calls_it() {
     for (a, b) in r.knobs { texts.push(code.slice(from: a, to: b).to_string()) }
     assert(texts.len() == 6, f"{texts.len()} knobs")
     for t in texts { assert(t.as_str() != "0.125" && t.as_str() != "16", t.as_str()) }
+}
+
+@test
+fn primitives_and_combinators_read_named_arguments_in_any_order() {
+    let code = "let shape = round_cone(r_bottom: 0.1, b: vec3(y: 1.0), r_top: 0.3, a: vec3()).smooth_union(k: 0.2, b: sphere(0.5))"
+    let Some(r) = read(code, 0.0) else { panic("the named arguments read") }
+    let want = round_cone(vec3(), vec3(y: 1.0), r_top: 0.3, r_bottom: 0.1)
+        .smooth_union(sphere(0.5), k: 0.2)
+    for p in [vec3(0.4, 0.3, 0.0), vec3(0.1, 0.9, 0.2)] {
+        assert(abs(evaluate(r.scene, p) - want.distance(p)) < 0.00001)
+    }
 }
 
 @test

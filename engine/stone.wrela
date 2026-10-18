@@ -752,10 +752,26 @@ pub const NEAR_RADII: f32 = 6.0
 pub fn in_view(sp: vec4, eye: vec3, forward: vec3, tan_half: f32, wide: f32) -> bool {
     let to = sp.xyz - eye
     let ahead = dot(to, forward)
-    if ahead < -sp.w || length(to - forward * ahead) > wide * max(ahead, 0.0) + sp.w {
+    // Distance from a cone's sloped side: the radius projects onto its unit normal,
+    // rather than only across the view axis.
+    let margin = sp.w * sqrt(1.0 + wide * wide)
+    if ahead < -sp.w || length(to - forward * ahead) > wide * max(ahead, 0.0) + margin {
         return false
     }
     sp.w >= SEEN_SPAN * tan_half * length(to)
+}
+
+@test
+fn a_rock_sphere_crossing_the_sloped_view_edge_is_kept() {
+    let eye = vec3(0.0)
+    let forward = vec3(0.0, 0.0, 1.0)
+    let edge = vec3(10.0, 0.0, 10.0)
+    let outside = normalize(vec3(1.0, 0.0, -1.0))
+    let centre = edge + outside * 0.9
+    assert(
+        in_view(vec4(centre, 1.0), eye, forward, tan_half: 0.7, wide: 1.0),
+        "a sphere crossing the cone's edge was culled",
+    )
 }
 
 @test
@@ -847,7 +863,8 @@ impl Rocks {
     pub fn cull(mut self, cam: Camera, origin: vec3) {
         self.origin = origin
         var seen: Vec<u32> = Vec::with_capacity(self.spheres.len())
-        let wide = cam.tan_half * max(cam.aspect, 1.0) * 1.2
+        // A cone enclosing the rectangular view reaches its corners, along the diagonal.
+        let wide = cam.tan_half * sqrt(1.0 + cam.aspect * cam.aspect)
         for k in 0..self.far.len() {
             for level in 0..2 {
                 let at = 2 * k + level
