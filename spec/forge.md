@@ -8,8 +8,11 @@ never reused.
 
 ## The store
 
-- **F1.** A store is a directory (the service's `data` root) holding `objects/`, `events` and
-  `workers/`. Nothing else in it is forge's.
+- **F1.** A store is a directory (the service's `data` root) holding `objects/`, `events`,
+  `workers/`, `key` (F28), `lock` and, for a replica that promised an epoch, `promise` (F26).
+  Nothing else in it is forge's. One program holds a store at a time: a service, a replica or a
+  restore takes `lock` (an exclusive lock of the file) before it reads anything of it, and keeps
+  it while it runs; a backup reads a store without it.
 - **F2.** An object is a file under `objects/`, named by its id: the first two hex digits of the id
   are a directory, the other 62 the file's name (`objects/ab/cdef…`). An object's file never
   changes once written.
@@ -139,8 +142,16 @@ never reused.
   A check named `index:<package>` runs that tree's own `tools/wrela index --json <package>`
   instead: its output is the package's item index at that tree, which the `items`, `changed` and
   `callers` tools read.
-  `workers/<name>` is what its checkout holds: the byte 1, the count of its files, then each path,
-  whether it is executable, its blob's id and its size.
+  `workers/<name>` is what its checkout holds: the byte 2, when the checkout held it
+  (milliseconds since 1970, by the host's clock), then, as a run, the byte 1, the count of its
+  files and each path, whether it is executable, its blob's id and its size. (A first-version
+  manifest is that run alone.) A worker writes its checkout's files flushed and saves the manifest
+  only after the checkout succeeded; before it keeps a file the manifest names, it looks at it on
+  disk, and writes it again unless its kind and size are the manifest's and it changed before the
+  manifest's time. So a check that changes a file the tree holds doesn't change the next check's
+  tree. The service's own worker runs checks as the service's account, where a writer's check
+  could read the store and its key: on a fleet, run `forge serve --no-worker`, and `forge work` as
+  an account that can't read the store.
 - **F23a.** A job runs on one worker at a time, as one try (its `attempt`). A worker's report
   counts only for the job's current try on that worker, while it runs. A job goes back to the
   queue (event 14), as a new try, when its worker starts again without it (the service's own
@@ -168,8 +179,11 @@ never reused.
   service serves a store whose epoch is another machine's only to promote it.
   `forge serve --promote` makes a replica's data the service: it asks each of `--peers` for its
   position (`GET /api/position`: role, epoch, log size and chain); asks each to promise an epoch
-  above every one it saw (`POST /api/fence`), after which a replica follows no service of an older
-  epoch and drops the records it fetched and hasn't kept, and an older service is fenced; asks for
+  above every one it saw and any its own store promised (`POST /api/fence`, naming the candidate's
+  machine), after which a replica follows no service of an older epoch and drops the records it
+  fetched and hasn't kept, and an older service is fenced. A replica promises an epoch to one
+  candidate only, and keeps the promise in `promise` (the byte 1, the epoch, the candidate's
+  machine), flushed, before it answers. The candidate then asks for
   their positions again; and, if more than half of the stores (the peers that promised, and
   itself) answered and no peer's log isn't a prefix of its own, appends `promoted` with that epoch
   and serves. Else it refuses, and the peers that promised wait for a promotion that succeeds.
@@ -200,14 +214,21 @@ never reused.
 
 ## Callers
 
-- **F28.** A caller is known by its connection's peer address. An address of the machine itself
-  (`127.0.0.1`, `::1`) is the machine. An address of the tailnet (`100.64.0.0/10`,
+- **F28.** A caller is known by its connection's peer address. A caller from an address of the
+  machine itself (`127.0.0.1`, `::1`) is the machine if its request shows the store's key
+  (`x-forge-key`: the 64 hex digits of `key`, 32 random bytes that the store's first start writes,
+  readable by its owner alone); else it is `local@MACHINE`, whose node is the machine's name.
+  forge's command shows the key of the store it is lent (`tools/forge` lends it when the caller may
+  read it), and sends it to no other machine. An address of the tailnet (`100.64.0.0/10`,
   `fd7a:115c:a1e0::/48`) is known by asking tailscale whose it is (`tailscale whois --json ADDR`,
   or the program `--whois` names, with the same answer): its node is the first label of
   `Node.Name`, its login `UserProfile.LoginName`, and its tags `Node.Tags`. forge keeps an answer
-  for 60 s. Any other caller, and a tailnet caller tailscale can't name, is refused with 403.
-- **F29.** A call's author and a landing's `by` are the caller's login and node (`LOGIN@NODE`), or
-  `local` for the machine; an author the call gives is kept beside it, not in its place.
+  for 60 s, and asks again before a connection's first request after that. Any other caller, and
+  a tailnet caller tailscale can't name, is refused with 403. A worker or a replica on another
+  machine is named for its node (`NODE` or `NODE/...`).
+- **F29.** A change's author and a landing's `by` are the caller's login and node
+  (`LOGIN@NODE`; `tagged@NODE` for a tagged node, `local@MACHINE` for a program on the machine
+  without the key), or `local` for the machine itself.
 
 ## Backups
 
