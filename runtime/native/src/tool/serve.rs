@@ -352,6 +352,7 @@ fn start(
     // A failed start's server is closed by the worker, which rolls the request back.
     let thread = spawned.map_err(|e| format!("can't start the server's thread: {e}"))?;
     server.threads.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(thread);
+    s.signal("listening");
     if s.fail_server_start {
         return Err("a test's failure, once the server listens".into());
     }
@@ -381,6 +382,7 @@ fn accept(s: &Arc<Services>, server: &Arc<Server>, listener: TcpListener) {
                 let id = NEXT.fetch_add(1, Ordering::Relaxed);
                 conns.insert(id, kept);
                 drop(conns);
+                s.signal("connection");
                 let (services, serving) = (s.clone(), server.clone());
                 let spawned =
                     std::thread::Builder::new().name("wrela-serve-conn".into()).spawn(move || {
@@ -563,6 +565,7 @@ fn post(
         };
         st.queued.push_back(Post { id, path, body, charged, reply, due });
         charge.1 = 0;
+        s.signal("post");
         server.deliver(s, &mut st);
         id
     };

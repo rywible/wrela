@@ -133,8 +133,9 @@ pub struct Options {
 /// written to a file, a clock thread that fails to start, where the run's own directory is, a
 /// pause between a program's start and its record, a name lookup that stalls, and, for the
 /// toolchain's outputs, one write held a while and one that fails part way (each chosen by its
-/// path's end, or `#n` for a request's `n`th write), a server's start that fails once it listens, and image work that holds a while, seeing no
-/// cancel.
+/// path's end, or `#n` for a request's `n`th write), a server's start that fails once it
+/// listens, image work that holds a while, seeing no cancel, and a [`Signal`] of the moments a
+/// test waits for.
 #[doc(hidden)]
 #[derive(Clone, Debug)]
 pub struct Testing {
@@ -148,6 +149,21 @@ pub struct Testing {
     pub write_fail: Option<String>,
     pub fail_server_start: bool,
     pub image_stall: Duration,
+    pub signal: Option<Signal>,
+}
+
+/// What a test is told as the host reaches a moment it waits for, so it acts then rather than
+/// after a guessed time: `"write"` (a blob's write to a file starts), `"resolve"` (an HTTP
+/// request's name lookup starts), `"image"` (an image's work starts), `"listening"` (a server
+/// listens), `"connection"` (a server takes a connection) and `"post"` (a server queues a post).
+#[doc(hidden)]
+#[derive(Clone)]
+pub struct Signal(pub Arc<dyn Fn(&'static str) + Send + Sync>);
+
+impl std::fmt::Debug for Signal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Signal")
+    }
 }
 
 impl Default for Testing {
@@ -163,6 +179,7 @@ impl Default for Testing {
             write_fail: None,
             fail_server_start: false,
             image_stall: Duration::ZERO,
+            signal: None,
         }
     }
 }
@@ -255,6 +272,7 @@ pub struct Ended {
 }
 
 /// A tool build: its module's bytes, compiled for each run.
+#[derive(Clone)]
 pub struct ToolBuild {
     wasm: Vec<u8>,
 }
@@ -578,6 +596,7 @@ pub fn run(build: &ToolBuild, options: Options) -> Ended {
         write_fail: testing.write_fail.clone(),
         fail_server_start: testing.fail_server_start,
         image_stall: testing.image_stall,
+        signal: testing.signal.clone(),
         strays: Mutex::default(),
         drives: Mutex::default(),
         servers: Mutex::default(),

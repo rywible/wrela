@@ -5,7 +5,7 @@
 //! frame goes through blobs into a 960×540 cover, as tools/console.py makes one; and an image
 //! too large for the blob budget is refused from its header, before it's decoded.
 
-use crate::tool::{printer, run, scratch, tool_build};
+use crate::tool::{printer, reached, run, scratch, signals, tool_build};
 use std::path::{Path, PathBuf};
 use wrela_host::tool::{BlobBudget, Caps, End, Grants, Testing};
 
@@ -19,7 +19,7 @@ use wrela_host::tool::{BlobBudget, Caps, End, Grants, Testing};
 ///   (`out/cover.webp`) decoded back (`out/cover-back.rgba`), and the frame as a PNG decoded
 ///   back (`out/frame-back.rgba`);
 /// - `huge`: `in/huge.png`, read as bytes, decoded: it prints why it can't be;
-/// - `stall`: starts a resize, and ends 0.3 s later while it runs.
+/// - `stall`: starts a resize, and waits until it's interrupted.
 const IMAGE_TOOL: &str = r#"
 use std::io::{IoError, print}
 use std::job::{Job, Step}
@@ -103,7 +103,7 @@ fn main(given: take Vec<String>) -> u32 {
         // A resize that's still running when the tool ends.
         let small = image::Image { width: 4, height: 4, rgba: Data::Bytes(Vec::filled(64, u8(9))) }
         let _r = image::resize(small, image::Size { width: 2, height: 2 })
-        var t = time::after(0.3)
+        var t = time::after(600.0)
         while t.poll().is_none() { yield }
         return 0
     }
@@ -569,22 +569,32 @@ fn crc32(bytes: &[u8]) -> u32 {
 
 #[test]
 fn a_codec_that_ignores_its_cancel_ends_the_run_as_the_hosts_failure() {
-    // The resize's work holds 3 s first, seeing no cancel; the tool ends 0.3 s in, and the work
-    // has a grace of 0.2 s.
+    // The resize's work holds 30 s first, seeing no cancel; the tool is interrupted once the
+    // work has started, and the work has a grace of 0.2 s.
     let build = tool_build("image-tool-stall", IMAGE_TOOL);
     let input = scratch("image-stall-in");
     let grants = Grants::default().root("in", &input, false).root("out", &input, true);
     let (lines, mut options) = printer(|_| {});
     options.caps = Caps::open(&grants, |_| None).expect("granted");
     options.args = vec!["stall".into()];
+    let (signal, told) = signals();
+    let grace = std::time::Duration::from_millis(200);
     options.testing = Testing {
-        grace: std::time::Duration::from_millis(200),
-        image_stall: std::time::Duration::from_secs(3),
+        grace,
+        image_stall: std::time::Duration::from_secs(30),
+        signal: Some(signal),
         ..Testing::default()
     };
-    let started = std::time::Instant::now();
-    let ended = wrela_host::tool::run(&build, options);
-    assert!(started.elapsed() < std::time::Duration::from_secs(2), "{:?}", started.elapsed());
+    let interrupt = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    options.interrupt = Some(interrupt.clone());
+    let running = std::thread::spawn(move || wrela_host::tool::run(&build, options));
+    reached(&told, "image");
+    interrupt.store(true, std::sync::atomic::Ordering::Release);
+    let interrupted = std::time::Instant::now();
+    let ended = running.join().expect("the run");
+    // The worker gives up within half the grace, and the run waits the grace for its thread.
+    let took = interrupted.elapsed();
+    assert!(took < 2 * grace + std::time::Duration::from_secs(1), "{took:?}");
     let End::Host(why) = &ended.end else { panic!("{:?} {lines:?}", ended.end) };
     assert!(why.contains("still running") && why.contains("didn't stop within"), "{why}");
     assert_eq!(ended.end.status(), 71);

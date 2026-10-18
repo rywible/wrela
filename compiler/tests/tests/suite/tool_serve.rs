@@ -7,9 +7,11 @@
 //! leaves nothing when its body ends short; and however the tool ends, its server's port is
 //! closed and its connections shut, in bounded time, also a server whose answer it never read.
 
-use crate::tool::{printer, run, scratch, tool_build};
+use crate::tool::{printer, reached, run, scratch, signals, tool_build};
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpStream};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use wrela_host::tool::{BlobBudget, Caps, End, Ended, Grants, Testing};
@@ -18,13 +20,13 @@ use wrela_host::tool::{BlobBudget, Caps, End, Ended, Grants, Testing};
 /// - `echo`: answers each post with its path and its body's size (`/ignore` it doesn't answer,
 ///   and `/quit` it answers `bye`, then ends);
 /// - `nothing`: waits 0.2 s for a post that doesn't come, and ends;
-/// - `end`: ends 0.5 s after it starts serving;
-/// - `unread`: starts serving on the port its third argument names, and ends 1 s later without
-///   reading the answer.
+/// - `end`: serves until it's interrupted;
+/// - `unread`: starts serving on the port its third argument names, and waits, without reading
+///   the answer, until it's interrupted.
 ///
-/// A start that fails prints why, and ends 1 s later with status 1.
+/// A start that fails prints why, and waits until it's interrupted.
 ///
-/// Its posts each wait at most 0.3 s for an answer (5 s for `end`).
+/// Its posts each wait at most 0.3 s for an answer (600 s for `end`).
 const SERVE_TOOL: &str = r#"
 use std::io::print
 use std::job::{Job, Step}
@@ -52,10 +54,10 @@ fn main(given: take Vec<String>) -> u32 {
         port = p
     }
     // Long enough, for `end`, that a post is still waiting when the tool ends.
-    let post_timeout = if what.as_str() == "end" { 5.0 } else { 0.3 }
+    let post_timeout = if what.as_str() == "end" { 600.0 } else { 0.3 }
     var s = serve::start(root.as_str(), u16(port), post_timeout)
     if what.as_str() == "unread" {
-        var t = time::after(1.0)
+        var t = time::after(600.0)
         while t.poll().is_none() { yield }
         return 0
     }
@@ -69,15 +71,15 @@ fn main(given: take Vec<String>) -> u32 {
         Ok(x) => take x,
         Err(e) => {
             print(f"error: {e.message()}")
-            // Long enough to see that the failed start's server is gone.
-            var t = time::after(1.0)
+            // Until the test, having seen the failed start's server gone, interrupts it.
+            var t = time::after(600.0)
             while t.poll().is_none() { yield }
             return 1
         },
     }
     print(f"serving {started.origin.as_str()}")
     if what.as_str() == "end" {
-        var t = time::after(0.5)
+        var t = time::after(600.0)
         while t.poll().is_none() { yield }
         return 0
     }
@@ -172,7 +174,7 @@ fn serving(
     args: &[String],
     budget: Option<BlobBudget>,
 ) -> (mpsc::Receiver<String>, std::thread::JoinHandle<Ended>) {
-    serving_with(name, grants, args, budget, Testing::default())
+    serving_with(name, grants, args, budget, Testing::default(), None)
 }
 
 /// [`serving`], with a test's settings.
@@ -182,6 +184,7 @@ fn serving_with(
     args: &[String],
     budget: Option<BlobBudget>,
     testing: Testing,
+    interrupt: Option<Arc<AtomicBool>>,
 ) -> (mpsc::Receiver<String>, std::thread::JoinHandle<Ended>) {
     let build = tool_build(&format!("serve-{name}"), SERVE_TOOL);
     let (sent, lines) = mpsc::channel();
@@ -196,6 +199,7 @@ fn serving_with(
         options.blob_budget = b;
     }
     options.testing = testing;
+    options.interrupt = interrupt;
     (lines, std::thread::spawn(move || run(&build, options)))
 }
 
@@ -363,26 +367,37 @@ fn the_tools_end_shuts_its_servers_connections_in_bounded_time() {
     let root = scratch("serve-end");
     std::fs::write(root.join("index.html"), "x").expect("a page");
     let grants = Grants::default().root("site", &root, false);
-    let (lines, tool) = serving("end", grants, &["end".into(), "site".into()], None);
+    let (signal, told) = signals();
+    let testing = Testing { signal: Some(signal), ..Testing::default() };
+    let interrupt = Arc::new(AtomicBool::new(false));
+    let args = ["end".into(), "site".into()];
+    let (lines, tool) = serving_with("end", grants, &args, None, testing, Some(interrupt.clone()));
     let port = port_of(&lines);
-    // A connection that sends half a head and stalls, and a post nobody takes.
+    // A connection that sends half a head and stalls, and a post nobody takes, each taken by
+    // the server (and the post queued) before the tool ends.
     let mut stalled = TcpStream::connect(("127.0.0.1", port)).expect("connect");
     stalled.write_all(b"GET / HTTP/1.1\r\nHost: 127.0").expect("half a head");
+    reached(&told, "connection");
     let mut posted = TcpStream::connect(("127.0.0.1", port)).expect("connect");
     let own = format!("http://127.0.0.1:{port}");
     posted.write_all(&request(port, "POST", "/waits", Some(&own), b"p")).expect("a post");
+    reached(&told, "post");
+    interrupt.store(true, Ordering::Release);
     let ended = tool.join().expect("the tool's thread");
-    let returned = Instant::now();
-    assert_eq!(ended.end, End::Exit(0));
+    assert_eq!(ended.end, End::Interrupted);
     assert_eq!(ended.workers_left, 0, "every thread of the server's was joined");
     for s in [&mut stalled, &mut posted] {
-        // A socket the server has shut may refuse a timeout (macOS): its read ends at once.
-        let _ = s.set_read_timeout(Some(Duration::from_secs(5)));
+        // Shut as the run ended: the read ends at once, not at this timeout. (A socket the
+        // server has shut may refuse a timeout, on macOS: its read ends at once too.)
+        let _ = s.set_read_timeout(Some(Duration::from_secs(60)));
         let mut rest = Vec::new();
-        let _ = s.read_to_end(&mut rest);
-        assert!(returned.elapsed() < Duration::from_secs(1), "shut as the run ended");
-        let text = String::from_utf8_lossy(&rest);
+        if let Err(e) = s.read_to_end(&mut rest) {
+            let waited =
+                matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut);
+            assert!(!waited, "the connection was left open: {e}");
+        }
         // Answered 503 as it closed, or shut first, perhaps part way through that answer.
+        let text = String::from_utf8_lossy(&rest);
         let closing = "HTTP/1.1 503 Service Unavailable";
         assert!(text.starts_with(closing) || closing.starts_with(&*text), "{text}");
     }
@@ -397,20 +412,20 @@ fn a_server_whose_answer_the_tool_never_read_is_closed_with_the_run() {
         let l = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
         l.local_addr().expect("its address").port()
     };
-    let started = Instant::now();
+    let (signal, told) = signals();
+    let testing = Testing { signal: Some(signal), ..Testing::default() };
+    let interrupt = Arc::new(AtomicBool::new(false));
+    let args = ["unread".into(), "site".into(), port.to_string()];
     let (_lines, tool) =
-        serving("unread", grants, &["unread".into(), "site".into(), port.to_string()], None);
+        serving_with("unread", grants, &args, None, testing, Some(interrupt.clone()));
     // It listens while the tool waits, though the tool never learns of it.
-    let listening = (0..100).any(|_| {
-        std::thread::sleep(Duration::from_millis(10));
-        TcpStream::connect(("127.0.0.1", port)).is_ok()
-    });
-    assert!(listening, "the server started");
+    reached(&told, "listening");
+    assert!(TcpStream::connect(("127.0.0.1", port)).is_ok(), "the server started");
+    interrupt.store(true, Ordering::Release);
     let ended = tool.join().expect("the tool's thread");
-    assert_eq!(ended.end, End::Exit(0));
+    assert_eq!(ended.end, End::Interrupted);
     assert_eq!(ended.workers_left, 0);
     assert!(closed(port), "the request's server went with the run");
-    assert!(started.elapsed() < Duration::from_secs(10));
 }
 
 #[test]
@@ -421,16 +436,22 @@ fn a_start_that_fails_once_its_server_listens_closes_it_at_once() {
         let l = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
         l.local_addr().expect("its address").port()
     };
-    let testing = Testing { fail_server_start: true, ..Testing::default() };
+    let (signal, told) = signals();
+    let testing = Testing { fail_server_start: true, signal: Some(signal), ..Testing::default() };
+    let interrupt = Arc::new(AtomicBool::new(false));
     let args = ["echo".into(), "site".into(), port.to_string()];
-    let (lines, tool) = serving_with("failed", grants, &args, None, testing);
-    let said = lines.recv_timeout(Duration::from_secs(20)).expect("the tool says why");
+    let (lines, tool) =
+        serving_with("failed", grants, &args, None, testing, Some(interrupt.clone()));
+    reached(&told, "listening");
+    let said = lines.recv_timeout(Duration::from_secs(60)).expect("the tool says why");
     assert_eq!(said, "error: a test's failure, once the server listens");
-    // While the tool still runs: the server its request made was closed with the request, so
-    // its port is closed already, not held by a listener nothing answers.
+    // The tool still runs, and waits: the server its request made was closed with the request,
+    // so its port is closed already, not held by a listener nothing answers.
     assert!(closed(port), "the failed request's listener is gone");
+    assert!(!tool.is_finished(), "the tool still runs");
+    interrupt.store(true, Ordering::Release);
     let ended = tool.join().expect("the tool's thread");
-    assert_eq!(ended.end, End::Exit(1));
+    assert_eq!(ended.end, End::Interrupted);
     assert_eq!(ended.workers_left, 0);
 }
 
@@ -441,25 +462,20 @@ fn a_post_whose_body_comes_past_its_deadline_fails_then_and_reaches_no_one() {
     let (lines, tool) = serving("late", grants, &["echo".into(), "site".into()], None);
     let port = port_of(&lines);
     let own = format!("http://127.0.0.1:{port}");
-    // Half a body, then the rest a second later: past the post's 0.3 s.
+    // Half a body, and the rest only after the answer: the answer can only be the deadline's.
     let mut s = TcpStream::connect(("127.0.0.1", port)).expect("connect");
     let started = Instant::now();
     let head = format!(
         "POST /late HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: {own}\r\nContent-Length: 10\r\n\r\n01234"
     );
     s.write_all(head.as_bytes()).expect("half a post");
-    let mut rest = s.try_clone().expect("a clone");
-    let sender = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_secs(1));
-        let _ = rest.write_all(b"56789");
-    });
-    s.set_read_timeout(Some(Duration::from_secs(5))).expect("a timeout");
+    // Past the post's 0.3 s and before a connection's 10 s idle limit.
+    s.set_read_timeout(Some(Duration::from_secs(9))).expect("a timeout");
     let mut response = String::new();
     let _ = s.read_to_string(&mut response);
-    let took = started.elapsed();
     assert!(response.starts_with("HTTP/1.1 504"), "{response}");
-    assert!(took >= Duration::from_millis(250) && took < Duration::from_millis(900), "{took:?}");
-    sender.join().expect("the rest was sent");
+    assert!(started.elapsed() >= Duration::from_millis(300), "{:?}", started.elapsed());
+    let _ = s.write_all(b"56789");
     exchange(port, &request(port, "POST", "/quit", Some(&own), b""));
     assert_eq!(tool.join().expect("the tool's thread").end, End::Exit(0));
     let said: Vec<String> = lines.try_iter().collect();

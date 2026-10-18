@@ -90,6 +90,8 @@ pub(crate) struct Services {
     pub fail_server_start: bool,
     /// A test's image work that holds this long first, seeing no cancel.
     pub image_stall: Duration,
+    /// What tells a test the host has reached a moment it waits for.
+    pub signal: Option<super::Signal>,
     /// The threads of work given up on (it didn't stop within the grace after it was
     /// cancelled): the run's end waits for them with the rest, and counts those still running.
     pub strays: Mutex<Vec<std::thread::JoinHandle<()>>>,
@@ -117,6 +119,13 @@ impl Services {
         let answers = self.answers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(to) = answers.as_ref() {
             let _ = to.send((request, answer));
+        }
+    }
+
+    /// Tells a test the host has reached `moment` ([`super::Signal`]).
+    pub(crate) fn signal(&self, moment: &'static str) {
+        if let Some(signal) = &self.signal {
+            (signal.0)(moment);
         }
     }
 
@@ -438,6 +447,7 @@ pub(crate) fn route(s: &Services, service: &str, body: &[u8]) -> Work {
                 answer(
                     s.caps
                         .write_with(&path, |f| {
+                            s.signal("write");
                             std::thread::sleep(s.io_delay);
                             f.write_all(&bytes)
                         })
@@ -603,6 +613,7 @@ pub(crate) fn for_test(budget: super::BlobBudget) -> Services {
         write_fail: None,
         fail_server_start: false,
         image_stall: Duration::ZERO,
+        signal: None,
         strays: Mutex::default(),
     }
 }

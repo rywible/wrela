@@ -254,8 +254,12 @@ fn apart(
     let (sent, got) = std::sync::mpsc::channel();
     let flag = cancel.clone();
     let stall = s.image_stall;
+    let signal = s.signal.clone();
     let spawned =
         std::thread::Builder::new().name(format!("wrela-image-{request}")).spawn(move || {
+            if let Some(signal) = &signal {
+                (signal.0)("image");
+            }
             // A test's codec that doesn't see its cancel.
             std::thread::sleep(stall);
             let run = std::panic::AssertUnwindSafe(|| job(&flag));
