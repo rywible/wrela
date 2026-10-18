@@ -1,0 +1,112 @@
+// The widgets' scripts of input, which their frame tests give them
+// (`@test(frames: n, input: scripts::NAME)`), as a person would.
+
+use std::input::{Key, Mods, Script}
+
+/// The input of `a_button_is_clicked`.
+pub const BUTTON: Script = Script::frames()
+    .move_to(1, vec2(30.0, 12.0))
+    .down(2, vec2(30.0, 12.0))
+    .up(3, vec2(30.0, 12.0))
+    .down(4, vec2(30.0, 12.0))
+    .move_to(5, vec2(200.0, 300.0))
+    .up(6, vec2(200.0, 300.0))
+
+/// The input of `tab_moves_the_focus`.
+pub const FOCUS: Script = Script::frames()
+    .press(1, Key::Tab)
+    .press(2, Key::Tab)
+    .press(3, Key::Tab, Mods { shift: true })
+    .press(4, Key::Enter)
+    .press(5, Key::Tab)
+    .press(6, Key::Space)
+
+/// The input of `a_list_scrolls_and_selects`.
+pub const LIST: Script = Script::frames()
+    .move_to(1, vec2(100.0, 200.0))
+    .wheel(2, vec2(100.0, 200.0), vec2(0.0, 280.0))
+    .down(4, vec2(100.0, 150.0))
+    .up(5, vec2(100.0, 150.0))
+    .press(6, Key::Down)
+
+/// The input of `a_number_drags_and_types`.
+pub const NUMBER: Script = Script::frames()
+    .down(1, vec2(100.0, 96.0))
+    .move_to(2, vec2(120.0, 96.0))
+    .move_to(3, vec2(140.0, 96.0))
+    .up(4, vec2(140.0, 96.0))
+    .down(6, vec2(150.0, 96.0))
+    .up(7, vec2(150.0, 96.0))
+    .press(8, Key::Backspace)
+    .press(8, Key::Backspace)
+    .press(8, Key::Backspace)
+    .press(8, Key::Backspace)
+    .press(8, Key::Backspace)
+    .press(8, Key::Backspace)
+    .press(8, Key::Backspace)
+    .press(8, Key::Backspace)
+    .text(9, "7.5")
+    .press(10, Key::Enter)
+
+/// The input of `typing_and_keys_keep_their_order`.
+pub const ORDER: Script = Script::frames()
+    .down(1, vec2(200.0, 124.0))
+    .up(2, vec2(200.0, 124.0))
+    .press(3, Key::Backspace)
+    .press(3, Key::Backspace)
+    .press(3, Key::Backspace)
+    .press(3, Key::Backspace)
+    .text(3, "Grüx")
+    .press(3, Key::Backspace)
+    .text(3, "ße")
+    .press(3, Key::Enter)
+
+/// The input of `a_slider_drags`.
+pub const SLIDER: Script = Script::frames()
+    .down(1, vec2(10.0, 68.0))
+    .move_to(2, vec2(120.0, 70.0))
+    .move_to(3, vec2(237.0, 75.0))
+    .up(4, vec2(237.0, 75.0))
+    .press(6, Key::Right)
+
+/// The input of `a_split_drags`.
+pub const SPLIT: Script = Script::frames()
+    .down(1, vec2(320.0, 300.0))
+    .move_to(2, vec2(360.0, 300.0))
+    .move_to(3, vec2(400.0, 300.0))
+    .up(4, vec2(400.0, 300.0))
+    .down(6, vec2(412.0, 176.0))
+    .up(7, vec2(412.0, 176.0))
+
+/// The input of `a_text_field_types`.
+pub const TEXT: Script = Script::frames()
+    .down(1, vec2(200.0, 124.0))
+    .up(2, vec2(200.0, 124.0))
+    .press(3, Key::Backspace)
+    .press(3, Key::Backspace)
+    .press(3, Key::Backspace)
+    .press(3, Key::Backspace)
+    .text(4, "Grüß")
+    .text(5, "e")
+    .press(6, Key::Enter)
+    .down(8, vec2(200.0, 124.0))
+    .up(9, vec2(200.0, 124.0))
+    .text(10, "xyz")
+    .press(11, Key::Escape)
+
+/// The input of `a_toggle_flips`.
+pub const TOGGLE: Script = Script::frames()
+    .down(1, vec2(40.0, 40.0))
+    .up(2, vec2(40.0, 40.0))
+    .down(3, vec2(40.0, 40.0))
+    .up(3, vec2(40.0, 40.0))
+    .press(5, Key::Space)
+
+/// The input of `a_tree_opens_and_selects`.
+pub const TREE: Script = Script::frames()
+    .down(1, vec2(330.0, 12.0))
+    .up(2, vec2(330.0, 12.0))
+    .down(4, vec2(420.0, 68.0))
+    .up(5, vec2(420.0, 68.0))
+    .press(6, Key::Right)
+    .press(7, Key::Down)
