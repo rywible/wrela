@@ -1031,8 +1031,8 @@ fn answers_larger_than_one_host_call_sends_go_over_several() {
         })
         .collect();
     for _ in 0..3 {
-        let ask = format!("POST /api/objects HTTP/1.1\r\nhost: x\r\ncontent-length: 32\r\n\r\n");
-        c.write_all(ask.as_bytes()).expect("sent");
+        let ask = b"POST /api/objects HTTP/1.1\r\nhost: x\r\ncontent-length: 32\r\n\r\n";
+        c.write_all(ask).expect("sent");
         c.write_all(&id).expect("sent");
     }
     for n in 0..3 {
