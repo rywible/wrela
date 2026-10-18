@@ -48,8 +48,9 @@ pub struct Physique: Clone + StateHash {
     pub collision: Vec<Capsule>,
 }
 
-/// A cube around the field, from its skeleton's rest positions grown by a metre, halved
-/// until the field's interval shows it in a smaller one: the region the octrees cover.
+/// The octrees' cube: the skeleton's rest positions grown by a metre, enlarged to include
+/// each known finite item bound. An item with no known bound keeps the skeleton-based search
+/// region; this does not establish coverage for arbitrary unbounded fields.
 fn cover<C, K: Creature<C>>(c: K) -> Box3 {
     let s = c.skeleton()
     var lo = vec3(1.0e9)
@@ -59,8 +60,16 @@ fn cover<C, K: Creature<C>>(c: K) -> Box3 {
         lo = min(lo, p)
         hi = max(hi, p)
     }
+    lo -= vec3(1.0)
+    hi += vec3(1.0)
+    for b in c.field().item_bounds() {
+        if b.radius < 1.0e29 {
+            lo = min(lo, b.centre - vec3(b.radius))
+            hi = max(hi, b.centre + vec3(b.radius))
+        }
+    }
     let centre = 0.5 * (lo + hi)
-    let half = max(max(hi.x - lo.x, hi.y - lo.y), hi.z - lo.z) * 0.5 + 1.0
+    let half = max(max(hi.x - lo.x, hi.y - lo.y), hi.z - lo.z) * 0.5
     Box3 { lo: centre - half, hi: centre + half }
 }
 
@@ -430,4 +439,94 @@ pub fn adaptive_physique<C, K: Creature<C>>(
     }
     out.total = props(all.0, all.1, all.2, all.3)
     out
+}
+
+fn sphere_for_cover() -> Creature<f32> {
+    var skeleton = creature::Skeleton::new()
+    let root = skeleton.root("root", vec3(0.0))
+    creature::creature(skeleton).part(root, std::field::sphere(2.0).with(1.0))
+}
+
+@test
+fn creature_bounds_include_a_part_beyond_the_skeleton_margin() {
+    let c = sphere_for_cover()
+    let b = bounds(c)
+    for axis in 0..3 {
+        assert(
+            b.lo[axis] <= -2.0 && b.hi[axis] >= 2.0,
+            "the bounds contain the whole two-metre sphere",
+        )
+    }
+}
+
+@test
+fn integration_counts_a_part_beyond_the_skeleton_margin() {
+    let c = sphere_for_cover()
+    let mass = integrate(c, |density: f32| density, Per::Whole, finest: 0.25)
+    let expected = 4.0 * std::math::PI * 8.0 / 3.0
+    assert(
+        abs(mass.total.mass - expected) < 1.0,
+        f"sphere mass {mass.total.mass}, expected {expected}",
+    )
+}
+
+@test
+fn fitted_capsules_include_a_part_beyond_the_skeleton_margin() {
+    let c = sphere_for_cover()
+    let capsules = fit_capsules(c, Per::Whole, tolerance: 0.25)
+    assert(capsules.len() == 1)
+    assert(
+        capsules[0].radius >= 2.0 && capsules[0].radius <= 2.25,
+        "the fitted capsule contains the two-metre sphere within the sampling tolerance",
+    )
+}
+
+fn disconnected_for_cover() -> Creature<f32> {
+    var skeleton = creature::Skeleton::new()
+    let root = skeleton.root("root", vec3(0.0))
+    creature::creature(skeleton)
+        .part(root, std::field::sphere(0.5).with(1.0))
+        .part(root, std::field::sphere(0.5).translate(vec3(6.0, 0.0, 0.0)).with(1.0))
+}
+
+@test
+fn physique_keeps_disconnected_parts_with_known_bounds() {
+    let c = disconnected_for_cover()
+    let b = bounds(c)
+    assert(b.lo.x <= -0.5 && b.hi.x >= 6.5, "both disconnected spheres are bounded")
+    let mass = integrate(c, |density: f32| density, Per::Whole, finest: 0.25)
+    let expected = 2.0 * 4.0 * std::math::PI * 0.125 / 3.0
+    assert(abs(mass.total.mass - expected) < 0.15, "both disconnected spheres have mass")
+    assert(abs(mass.total.centre.x - 3.0) < 0.1, "the mass lies between the two spheres")
+    let capsules = fit_capsules(c, Per::Whole, tolerance: 0.25)
+    assert(
+        capsules.len() == 1 && capsules[0].radius >= 6.5,
+        "the capsule reaches the disconnected sphere",
+    )
+}
+
+struct UnknownBoundSphere: Copy + GpuData {}
+
+impl std::field::Surface for UnknownBoundSphere {
+    fn distance(self, p: vec3) -> f32 {
+        length(p) - 0.5
+    }
+}
+
+impl std::field::Field<f32> for UnknownBoundSphere {
+    fn channels(self, p: vec3) -> f32 {
+        1.0
+    }
+}
+
+fn unknown_for_cover() -> Creature<f32> {
+    var skeleton = creature::Skeleton::new()
+    let root = skeleton.root("root", vec3(0.0))
+    creature::creature(skeleton).part(root, UnknownBoundSphere {})
+}
+
+@test
+fn an_unknown_item_bound_keeps_the_skeleton_search_region() {
+    let b = cover(unknown_for_cover())
+    assert(b.lo == vec3(-1.0) && b.hi == vec3(1.0), "unknown bounds keep the fallback region")
 }

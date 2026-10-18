@@ -807,8 +807,10 @@ fn wolf_step<G: Terrain>(ground: G, w: mut Wolf, c: Climber, dt: f32, tally: mut
                 if length(off) < 0.5 {
                     w.circle = 0
                 }
-                way = normalize(off)
                 ahead = length(off)
+                if ahead > 1.0e-4 {
+                    way = off / ahead
+                }
             } else if dist > KEEP {
                 ahead = dist - KEEP
             } else if abs(facing) > 0.2 {

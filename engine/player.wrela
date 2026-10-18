@@ -76,8 +76,8 @@ pub struct Controls: Copy + Eq + Plain + StateHash + Serialize + SimState {
     pub pitch: f32,
     pub dragging: bool,
     pub pointer: vec2,
-    /// A travel's digits so far (`typing`), and the site the last Enter asked for (`NONE` for
-    /// none: the floor's sim reads it and sets it back).
+    /// A travel's digits so far (`typing`; extra digits beyond a `u32` are ignored), and the
+    /// site the last Enter asked for (`NONE` for none: the floor's sim reads it and sets it back).
     pub typing: bool,
     pub digits: u32,
     pub travel: u32,
@@ -159,7 +159,9 @@ pub fn control(c: mut Controls, e: Event) {
         Event::KeyDown { key, repeat, .. } => {
             if c.typing {
                 if let Some(d) = digit(key) {
-                    c.digits = c.digits * 10 + d
+                    if c.digits <= (4294967295 - d) / 10 {
+                        c.digits = c.digits * 10 + d
+                    }
                     return
                 }
                 if key == Key::Enter {
@@ -518,6 +520,20 @@ fn in_the_way(p: vec3, o: Obstacles, o_from: vec2, height: fn(vec2) -> f32) -> b
         })
     }
     hit
+}
+
+/// Extra travel digits cannot overflow the sim's input state.
+@test
+fn a_long_travel_number_keeps_the_last_valid_prefix() {
+    var c = spawn(Shelf { high: 0.0 }, Place::of(vec2(0.0)), 0.0).controls
+    let pressed = |key: Key| Event::KeyDown { key, repeat: false, mods: std::input::Mods {} }
+    control(mut c, pressed(Key::G))
+    for _ in 0..20 {
+        control(mut c, pressed(Key::Digit9))
+    }
+    assert(c.typing && c.digits == 999999999, "overflowing digits changed the valid prefix")
+    control(mut c, pressed(Key::Enter))
+    assert(!c.typing && c.travel == 999999999)
 }
 
 /// A framing with no arm reaches the same over-head fallback without dividing by its length.

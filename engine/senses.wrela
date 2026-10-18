@@ -187,8 +187,8 @@ fn past<G: Ground>(ground: G, ob: Obstacle, from: vec3, to: vec3, run: f32) -> f
     }
     if ob.thing == Thing::Log {
         let p = mix(from, to, vec3(t))
-        // A log's top: its girth (its radius) twice over the ground.
-        return if p.y - ground.height(p.x, p.z) > 2.0 * ob.r { 1.0 } else { 0.0 }
+        // Packing grows the horizontal radius; the recorded height keeps the actual top.
+        return if p.y - ground.height(p.x, p.z) > ob.depth { 1.0 } else { 0.0 }
     }
     0.0
 }
@@ -328,7 +328,13 @@ fn zero_hearing_is_silent() {
 /// but not a sightline over it; and rising ground hides it.
 @test
 fn trunks_thickets_logs_and_the_ground_hide_a_body() {
-    let thing = |a: vec2, b: vec2, r: f32, thing: Thing| Obstacle { a, b, r, thing, depth: 0.0 }
+    let thing = |a: vec2, b: vec2, r: f32, thing: Thing| Obstacle {
+        a,
+        b,
+        r,
+        thing,
+        depth: if thing == Thing::Log { 2.0 * r } else { 0.0 },
+    }
     let body = walker_at(vec2(0.0, 30.0))
     let open = sense(TEST_SENSES, LOOKING, body, Open {}).seen
     let trunk = o([thing(vec2(0.1, 15.0), vec2(0.1, 15.0), 0.4, Thing::Trunk)])
@@ -374,6 +380,28 @@ impl Ground for Rise {
     fn rock(self, p: vec2) -> f32 {
         0.0
     }
+}
+
+/// Packed logs keep a vertical extent independent of the capsule's horizontal radius.
+@test
+fn a_logs_recorded_height_controls_what_it_hides() {
+    let log = |radius: f32, height: f32| Obstacle {
+        a: vec2(-3.0, 15.0),
+        b: vec2(3.0, 15.0),
+        r: radius,
+        thing: Thing::Log,
+        depth: height,
+    }
+    let from = vec3(0.0, 0.7, 0.0)
+    let to = vec3(0.0, 0.7, 30.0)
+    assert(
+        clear_over(Flat {}, o([log(0.1, 1.2)]).obstacles, from, to) == 0.0,
+        "a narrow tall log hides the sightline below its top",
+    )
+    assert(
+        clear_over(Flat {}, o([log(1.0, 0.2)]).obstacles, from, to) == 1.0,
+        "a wide low log leaves the sightline above its top clear",
+    )
 }
 
 /// Hearing: a run is heard to `hearing` and fades with distance, through anything and from

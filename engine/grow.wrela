@@ -156,9 +156,10 @@ impl Grid {
         var ab: Vec<u32> = Vec::filled(nx * nz, NONE)
         for j in 0..nz {
             for i in 0..nx {
-                var m = 1.0e9
-                var w = NONE
-                for k in 0..(2 * r + 1) {
+                let first = self.index(i32(i) - r, i32(j))
+                var m = g[first]
+                var w = by[first]
+                for k in 1..(2 * r + 1) {
                     let c = self.index(i32(i) + k - r, i32(j))
                     if g[c] < m {
                         m = g[c]
@@ -173,9 +174,10 @@ impl Grid {
         var bb: Vec<u32> = Vec::filled(nx * nz, NONE)
         for j in 0..nz {
             for i in 0..nx {
-                var m = 1.0e9
-                var w = NONE
-                for k in 0..(2 * r + 1) {
+                let first = self.index(i32(i), i32(j) - r)
+                var m = a[first]
+                var w = ab[first]
+                for k in 1..(2 * r + 1) {
                     let c = self.index(i32(i), i32(j) + k - r)
                     if a[c] < m {
                         m = a[c]
@@ -195,8 +197,8 @@ impl Grid {
         var a: Vec<f32> = Vec::filled(nx * nz, 1.0e9)
         for j in 0..nz {
             for i in 0..nx {
-                var m = 1.0e9
-                for k in 0..(2 * r + 1) {
+                var m = g[self.index(i32(i) - r, i32(j))]
+                for k in 1..(2 * r + 1) {
                     m = min(m, g[self.index(i32(i) + k - r, i32(j))])
                 }
                 a[j * nx + i] = m
@@ -205,8 +207,8 @@ impl Grid {
         var b: Vec<f32> = Vec::filled(nx * nz, 1.0e9)
         for j in 0..nz {
             for i in 0..nx {
-                var m = 1.0e9
-                for k in 0..(2 * r + 1) {
+                var m = a[self.index(i32(i), i32(j) - r)]
+                for k in 1..(2 * r + 1) {
                     m = min(m, a[self.index(i32(i), i32(j) + k - r)])
                 }
                 b[j * nx + i] = m
@@ -2553,6 +2555,18 @@ fn simulated<G: Ground>(
 }
 
 // ---- tests ----------------------------------------------------------------------------------------
+
+@test
+fn grid_minima_keep_values_above_a_billion_and_their_sources() {
+    let g = Grid::over(vec2(0.0), vec2(2.0), 1.0)
+    let values = [3.0e9, 2.0e9, 4.0e9, 5.0e9]
+    let sources = [7, 8, 9, 10]
+    assert(g.reach_min(values, 0) == Vec::from(values), "zero radius preserves every value")
+    let (least, by) = g.reach_min_by(values, sources, 1)
+    assert(least == Vec::filled(4, 2.0e9), "the minimum comes from the field")
+    assert(by == Vec::filled(n: 4, value: 8), "each minimum retains its source")
+    assert(g.reach_min(values, 1) == least)
+}
 
 /// Level ground, rock past x = 40 m.
 struct Level: Copy {}
