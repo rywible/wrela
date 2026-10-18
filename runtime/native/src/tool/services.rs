@@ -88,6 +88,11 @@ pub(crate) struct Services {
     pub write_fail: Option<String>,
     /// A test's start of a server that fails once the server listens.
     pub fail_server_start: bool,
+    /// A test's image work that holds this long first, seeing no cancel.
+    pub image_stall: Duration,
+    /// The threads of work given up on (it didn't stop within the grace after it was
+    /// cancelled): the run's end waits for them with the rest, and counts those still running.
+    pub strays: Mutex<Vec<std::thread::JoinHandle<()>>>,
 }
 
 impl Services {
@@ -573,11 +578,39 @@ fn read_blob(s: &Services, request: u32, path: &str) -> Result<Vec<u8>, String> 
     }
 }
 
+/// Services with no grants and `budget`, for a test of one service.
+#[cfg(test)]
+pub(crate) fn for_test(budget: super::BlobBudget) -> Services {
+    Services {
+        caps: Caps::open(&super::caps::Grants::default(), |_| None).expect("no grants"),
+        blobs: Mutex::new(Blobs::new(budget)),
+        io_delay: Duration::ZERO,
+        closing: Arc::new(AtomicBool::new(false)),
+        testing: false,
+        fakes: Mutex::new(HashMap::new()),
+        work: OnceLock::new(),
+        work_at: None,
+        groups: None,
+        spawn_pause: Duration::ZERO,
+        resolve_stall: Duration::ZERO,
+        grace: Duration::ZERO,
+        stuck: Arc::new(OnceLock::new()),
+        toolchain: None,
+        drives: Mutex::default(),
+        servers: Mutex::default(),
+        answers: Mutex::new(None),
+        hold: None,
+        write_fail: None,
+        fail_server_start: false,
+        image_stall: Duration::ZERO,
+        strays: Mutex::default(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tool::BlobBudget;
-    use crate::tool::caps::Grants;
 
     /// A reader of `left` zeros that counts what it gave.
     struct Counted {
@@ -597,28 +630,7 @@ mod tests {
 
     #[test]
     fn a_body_past_the_budget_is_refused_as_it_arrives_and_its_blob_given_back() {
-        let services = Services {
-            caps: Caps::open(&Grants::default(), |_| None).expect("no grants"),
-            blobs: Mutex::new(Blobs::new(BlobBudget { bytes: 1 << 20, handles: 4 })),
-            io_delay: Duration::ZERO,
-            closing: Arc::new(AtomicBool::new(false)),
-            testing: false,
-            fakes: Mutex::new(HashMap::new()),
-            work: OnceLock::new(),
-            work_at: None,
-            groups: None,
-            spawn_pause: Duration::ZERO,
-            resolve_stall: Duration::ZERO,
-            grace: Duration::ZERO,
-            stuck: Arc::new(OnceLock::new()),
-            toolchain: None,
-            drives: Mutex::default(),
-            servers: Mutex::default(),
-            answers: Mutex::new(None),
-            hold: None,
-            write_fail: None,
-            fail_server_start: false,
-        };
+        let services = for_test(BlobBudget { bytes: 1 << 20, handles: 4 });
         let mut from = Counted { left: 64 << 20, given: 0 };
         let mut out = Vec::new();
         let read = services.put_read(1, &mut out, &mut from, u64::MAX, "the body");

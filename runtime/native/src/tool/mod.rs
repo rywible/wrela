@@ -133,7 +133,8 @@ pub struct Options {
 /// written to a file, a clock thread that fails to start, where the run's own directory is, a
 /// pause between a program's start and its record, a name lookup that stalls, and, for the
 /// toolchain's outputs, one write held a while and one that fails part way (each chosen by its
-/// path's end, or `#n` for a request's `n`th write), and a server's start that fails once it listens.
+/// path's end, or `#n` for a request's `n`th write), a server's start that fails once it listens, and image work that holds a while, seeing no
+/// cancel.
 #[doc(hidden)]
 #[derive(Clone, Debug)]
 pub struct Testing {
@@ -146,6 +147,7 @@ pub struct Testing {
     pub hold: Option<(String, Duration)>,
     pub write_fail: Option<String>,
     pub fail_server_start: bool,
+    pub image_stall: Duration,
 }
 
 impl Default for Testing {
@@ -160,6 +162,7 @@ impl Default for Testing {
             hold: None,
             write_fail: None,
             fail_server_start: false,
+            image_stall: Duration::ZERO,
         }
     }
 }
@@ -574,6 +577,8 @@ pub fn run(build: &ToolBuild, options: Options) -> Ended {
         hold: testing.hold.clone(),
         write_fail: testing.write_fail.clone(),
         fail_server_start: testing.fail_server_start,
+        image_stall: testing.image_stall,
+        strays: Mutex::default(),
         drives: Mutex::default(),
         servers: Mutex::default(),
         answers: Mutex::new(None),
@@ -643,6 +648,20 @@ pub fn run(build: &ToolBuild, options: Options) -> Ended {
         }
     }
     services.answers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+    // Work given up on as it ran past its grace: each thread still running now is left.
+    let strays = std::mem::take(
+        &mut *services.strays.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+    );
+    for t in strays {
+        while !t.is_finished() && Instant::now() < until {
+            std::thread::sleep(EPOCH);
+        }
+        if t.is_finished() {
+            let _ = t.join();
+        } else {
+            workers_left += 1;
+        }
+    }
     let lines_dropped = writer.stop(testing.grace);
     // Its programs' files and `HOME`: no program runs now (each worker kills its own as the
     // tool ends), unless a worker is still past its grace.
@@ -651,10 +670,16 @@ pub fn run(build: &ToolBuild, options: Options) -> Ended {
     }
     // A worker past its grace may still be changing files: that isn't a clean end.
     if workers_left > 0 {
+        let stuck = services.stuck.get().map_or(String::new(), |why| format!(": {why}"));
         end = End::Host(format!(
-            "{workers_left} of the host's workers were still running {:?} after the tool ended ({end})",
+            "{workers_left} of the host's workers were still running {:?} after the tool ended ({end}){stuck}",
             testing.grace
         ));
+    } else if let Some(why) = services.stuck.get()
+        && !matches!(end, End::Host(_))
+    {
+        // Work that didn't stop, seen only as the run was cleaned up.
+        end = End::Host(format!("{why} ({end})"));
     }
     // No file work holds the table's lock, so a stuck worker can't keep this waiting.
     let blobs_released =

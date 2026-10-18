@@ -7,7 +7,7 @@
 
 use crate::tool::{printer, run, scratch, tool_build};
 use std::path::{Path, PathBuf};
-use wrela_host::tool::{BlobBudget, Caps, End, Grants};
+use wrela_host::tool::{BlobBudget, Caps, End, Grants, Testing};
 
 /// A tool that does what its first argument says, with `in` and `out`:
 /// - `decode`: each fixture, as `out/<name>.rgba`;
@@ -18,7 +18,8 @@ use wrela_host::tool::{BlobBudget, Caps, End, Grants};
 /// - `frame`: `in/frame.rgba` (1920×1080) fit into 960×540 (`out/cover.rgba`), as a WebP
 ///   (`out/cover.webp`) decoded back (`out/cover-back.rgba`), and the frame as a PNG decoded
 ///   back (`out/frame-back.rgba`);
-/// - `huge`: `in/huge.png`, read as bytes, decoded: it prints why it can't be.
+/// - `huge`: `in/huge.png`, read as bytes, decoded: it prints why it can't be;
+/// - `stall`: starts a resize, and ends 0.3 s later while it runs.
 const IMAGE_TOOL: &str = r#"
 use std::io::{IoError, print}
 use std::job::{Job, Step}
@@ -27,6 +28,7 @@ use std::tool::blob
 use std::tool::blob::{Blob, Data}
 use std::tool::files
 use std::tool::image
+use std::tool::time
 
 fn blob_of(polled: take Result<Vec<u8>, IoError>, what: str) -> Data {
     match blob::read_handle(take polled) {
@@ -95,6 +97,14 @@ fn main(given: take Vec<String>) -> u32 {
             done(take wp, "write")
             print(f"{name}: {decoded.width}x{decoded.height}")
         }
+        return 0
+    }
+    if what.as_str() == "stall" {
+        // A resize that's still running when the tool ends.
+        let small = image::Image { width: 4, height: 4, rgba: Data::Bytes(Vec::filled(64, u8(9))) }
+        let _r = image::resize(small, image::Size { width: 2, height: 2 })
+        var t = time::after(0.3)
+        while t.poll().is_none() { yield }
         return 0
     }
     if what.as_str() == "huge" {
@@ -540,7 +550,8 @@ fn an_image_past_the_blob_budget_is_refused_from_its_header() {
     std::fs::write(input.join("huge.png"), &png).expect("the header");
     let (lines, _) = image_tool("huge", &input, Some(BlobBudget { bytes: 64 << 20, handles: 16 }));
     assert_eq!(lines.len(), 1);
-    assert!(lines[0].starts_with("refused: `decode` needs 536870912 bytes"), "{lines:?}");
+    // Its RGBA (256 MiB) and the decoder's buffers besides: past 64 MiB.
+    assert!(lines[0].starts_with("refused: `decode` needs "), "{lines:?}");
     assert!(lines[0].contains("budget of 67108864"), "{lines:?}");
 }
 
@@ -554,4 +565,28 @@ fn crc32(bytes: &[u8]) -> u32 {
         }
     }
     !crc
+}
+
+#[test]
+fn a_codec_that_ignores_its_cancel_ends_the_run_as_the_hosts_failure() {
+    // The resize's work holds 3 s first, seeing no cancel; the tool ends 0.3 s in, and the work
+    // has a grace of 0.2 s.
+    let build = tool_build("image-tool-stall", IMAGE_TOOL);
+    let input = scratch("image-stall-in");
+    let grants = Grants::default().root("in", &input, false).root("out", &input, true);
+    let (lines, mut options) = printer(|_| {});
+    options.caps = Caps::open(&grants, |_| None).expect("granted");
+    options.args = vec!["stall".into()];
+    options.testing = Testing {
+        grace: std::time::Duration::from_millis(200),
+        image_stall: std::time::Duration::from_secs(3),
+        ..Testing::default()
+    };
+    let started = std::time::Instant::now();
+    let ended = wrela_host::tool::run(&build, options);
+    assert!(started.elapsed() < std::time::Duration::from_secs(2), "{:?}", started.elapsed());
+    let End::Host(why) = &ended.end else { panic!("{:?} {lines:?}", ended.end) };
+    assert!(why.contains("still running") && why.contains("didn't stop within"), "{why}");
+    assert_eq!(ended.end.status(), 71);
+    assert_eq!(ended.workers_left, 1, "the codec's thread is counted");
 }

@@ -140,6 +140,30 @@ fn png_most(w: u32, h: u32) -> u64 {
     raw + 5 * (raw / 16383 + 1) + 4096
 }
 
+/// The most bytes a lossy WebP of `w`×`h` takes: no more than its pixels' RGBA, and the
+/// container's and the codec's own bytes, which a tiny image's are more than its pixels.
+fn webp_most(w: u32, h: u32) -> u64 {
+    u64::from(w) * u64::from(h) * 4 + 64 * 1024
+}
+
+/// The most bytes a resize of `size` to `to` holds: its output, the horizontal pass's rows (four
+/// `f32`s a pixel, unless the width stays), and both axes' weights.
+fn resize_most(size: (u32, u32), to: (u32, u32)) -> u64 {
+    let out = u64::from(to.0) * u64::from(to.1) * 4;
+    let rows = if to.0 == size.0 { 0 } else { u64::from(to.0) * u64::from(size.1) * 16 };
+    out + rows + weights_most(size.0, to.0) + weights_most(size.1, to.1)
+}
+
+/// The most bytes [`weights`] holds resampling `from` pixels to `to`: each output pixel's entry
+/// (its first pixel and its `Vec`), its weights (at most `6 × from / to + 2` of them when it
+/// shrinks, 8 when it grows, as `f32`s), and one pixel's weights as `f64`s while they're made.
+fn weights_most(from: u32, to: u32) -> u64 {
+    let (from, to) = (u64::from(from), u64::from(to));
+    let taps = 6 * from.max(to) + 2 * to;
+    let one = 6 * from.div_ceil(to) + 8;
+    to * (std::mem::size_of::<(usize, Vec<f32>)>() as u64) + 4 * taps + 8 * one
+}
+
 /// The work the request does, on its own thread: what it gives (a size and bytes), or why not.
 type Job = Box<dyn FnOnce(&AtomicBool) -> Result<(u32, u32, Vec<u8>), String> + Send>;
 
@@ -163,23 +187,20 @@ fn carry_out(
     let (reserve, sized, job): (u64, bool, Job) = match op {
         Op::Decode(data) => {
             let input = bytes(s, data)?;
-            let (_, w, h) = header(&input)?;
-            side(w, h)?;
-            // The RGBA, and the decoder's own buffer of the image's pixels.
-            let rgba = u64::from(w) * u64::from(h) * 4;
-            (2 * rgba, true, Box::new(move |cancel| decode(&input, cancel)))
+            let layout = header(&input)?;
+            side(layout.width, layout.height)?;
+            // The RGBA, and the most the decoder holds besides.
+            let rgba = u64::from(layout.width) * u64::from(layout.height) * 4;
+            (rgba + layout.working, true, Box::new(move |cancel| decode(&input, cancel)))
         }
         Op::Resize { rgba, size, to } => {
             let input = bytes(s, rgba)?;
             pixels(&input, size)?;
-            let out = u64::from(to.0) * u64::from(to.1) * 4;
-            // The horizontal pass's rows, four `f32`s a pixel.
-            let between = if to.0 == size.0 { 0 } else { u64::from(to.0) * u64::from(size.1) * 16 };
             let job: Job = Box::new(move |cancel| {
-                let out = lanczos(&input, size, to, cancel)?;
+                let (out, _) = lanczos(&input, size, to, cancel)?;
                 Ok((to.0, to.1, out))
             });
-            (out + between, true, job)
+            (resize_most(size, to), true, job)
         }
         Op::Png { rgba, size } => {
             let input = bytes(s, rgba)?;
@@ -188,18 +209,21 @@ fn carry_out(
             let job: Job = Box::new(move |cancel| {
                 Ok((size.0, size.1, encode_png(&input, size, most, cancel)?))
             });
-            (most, false, job)
+            // The encoder's buffer, the blob it's shrunk to (`Blobs::fill`), and the
+            // compressor's state and a row.
+            (2 * most + 4 * u64::from(size.0) + (1 << 20), false, job)
         }
         Op::Webp { rgba, size, quality, method } => {
             let input = bytes(s, rgba)?;
             pixels(&input, size)?;
+            let most = webp_most(size.0, size.1);
             let n = input.len() as u64;
-            // libwebp's copy of the pixels, its YUV planes, and the encoded bytes (at most as many
-            // as the pixels': libwebp's own, then the answer's).
+            // libwebp's copy of the pixels and its YUV and alpha planes (at most the pixels'
+            // bytes again), and the encoded bytes: libwebp's own, then the answer's.
             let job: Job = Box::new(move |cancel| {
-                Ok((size.0, size.1, encode_webp(&input, size, quality, method, n, cancel)?))
+                Ok((size.0, size.1, encode_webp(&input, size, quality, method, most, cancel)?))
             });
-            (3 * n, false, job)
+            (2 * n + 2 * most, false, job)
         }
     };
     let id = s.blobs().create_reserved(request, reserve).map_err(|why| {
@@ -229,8 +253,11 @@ fn apart(
     let cancel = Arc::new(AtomicBool::new(false));
     let (sent, got) = std::sync::mpsc::channel();
     let flag = cancel.clone();
+    let stall = s.image_stall;
     let spawned =
         std::thread::Builder::new().name(format!("wrela-image-{request}")).spawn(move || {
+            // A test's codec that doesn't see its cancel.
+            std::thread::sleep(stall);
             let run = std::panic::AssertUnwindSafe(|| job(&flag));
             let result = std::panic::catch_unwind(run)
                 .unwrap_or_else(|_| Err("the image's work failed (it panicked)".into()));
@@ -269,6 +296,8 @@ fn apart(
     let _ = s.stuck.set(format!(
         "`{what}` for request {request} didn't stop within {grace:?} of being cancelled"
     ));
+    // Left to the run's end, which counts it if it still runs.
+    s.strays.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(thread);
     Err(why)
 }
 
@@ -284,39 +313,226 @@ enum Format {
     Webp,
 }
 
-/// `bytes`' format, by its first bytes, and its size, from its header alone.
-fn header(bytes: &[u8]) -> Result<(Format, u32, u32), String> {
-    let format = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-        Format::Png
-    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
-        Format::Jpeg
-    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
-        Format::Webp
-    } else {
-        return Err("the bytes aren't a PNG, a JPEG or a WebP".into());
-    };
-    let (w, h) = match format {
+/// An encoded image as its headers give it, before anything is decoded: its format, its size,
+/// and the most bytes its decoder holds besides the RGBA it gives (audited from each crate's
+/// allocations).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Layout {
+    format: Format,
+    width: u32,
+    height: u32,
+    working: u64,
+}
+
+/// `bytes`' format, by its first bytes, its size, from its headers alone, and its decoder's most.
+fn header(bytes: &[u8]) -> Result<Layout, String> {
+    let n = bytes.len() as u64;
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         // Its first chunk, `IHDR`, read here: nothing of the rest is.
-        Format::Png => match bytes.get(8..24) {
-            Some(h) if h[..8] == [0, 0, 0, 13, b'I', b'H', b'D', b'R'] => {
-                let be = |at: usize| u32::from_be_bytes(h[at..at + 4].try_into().expect("4"));
-                (be(8), be(12))
+        let Some(h) = bytes.get(8..24).filter(|h| h[..8] == [0, 0, 0, 13, b'I', b'H', b'D', b'R'])
+        else {
+            return Err("the PNG doesn't start with its header (`IHDR`)".into());
+        };
+        let be = |at: usize| u32::from_be_bytes(h[at..at + 4].try_into().expect("4"));
+        let (width, height) = (be(8), be(12));
+        let (w, hh) = (u64::from(width), u64::from(height));
+        // png 0.18: its output buffer (8-bit, at most four channels), its rows being unfiltered
+        // (each at most 8 bytes a pixel and a filter byte: the previous row, the current one, and
+        // the data stream it keeps a few of, with at least 128 KiB), what the decompressor keeps,
+        // and its text and colour profile, at most `png_reader`'s 4 MiB.
+        let row = 8 * w + 1;
+        let working = 4 * w * hh + 16 * row + (512 << 10) + (4 << 20);
+        return Ok(Layout { format: Format::Png, width, height, working });
+    }
+    if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        let mut d = jpeg_decoder(bytes);
+        d.decode_headers().map_err(|e| format!("the JPEG: {e:?}"))?;
+        let info = d.info().ok_or("the JPEG has no size")?;
+        let (width, height) = (u32::from(info.width), u32::from(info.height));
+        let (w, h) = (u64::from(width) + 32, u64::from(height) + 32);
+        // zune-jpeg 0.5: a progressive JPEG's coefficients, an `i16` for each of up to four
+        // components' samples over its MCUs (each at most 32 pixels each way), its rows'
+        // upsampling buffers, and its copies of the file's metadata (at most the file).
+        let working = 8 * w * h + 256 * w + n + (1 << 20);
+        return Ok(Layout { format: Format::Jpeg, width, height, working });
+    }
+    if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        let webp = webp_layout(bytes)?;
+        let (w, h) = (u64::from(webp.width), u64::from(webp.height));
+        // libwebp 1.3: the RGBA it decodes into, then a lossy image's or a lossless one's own.
+        let mut working = 4 * w * h;
+        match webp.image {
+            WebpImage::Lossless(len) => working += lossless_most(w, h, len),
+            WebpImage::Lossy => {
+                // `AllocateMemory` (frame_dec.c): for each 16 pixels across, its intra modes,
+                // top samples, macroblock info and data, filter info and its rows' cache, all
+                // under 5000 bytes; and the alpha plane, decoded at the image's size.
+                working += 5000 * w.div_ceil(16) + (64 << 10);
+                match webp.alpha {
+                    WebpAlpha::None => {}
+                    WebpAlpha::Raw => working += w * h,
+                    WebpAlpha::Lossless(len) => working += w * h + lossless_most(w, h, len),
+                }
             }
-            _ => return Err("the PNG doesn't start with its header (`IHDR`)".into()),
-        },
-        Format::Jpeg => {
-            let mut d = jpeg_decoder(bytes);
-            d.decode_headers().map_err(|e| format!("the JPEG: {e:?}"))?;
-            let info = d.info().ok_or("the JPEG has no size")?;
-            (u32::from(info.width), u32::from(info.height))
         }
-        Format::Webp => {
-            let d = image_webp::WebPDecoder::new(std::io::Cursor::new(bytes))
-                .map_err(|e| format!("the WebP: {e}"))?;
-            d.dimensions()
+        return Ok(Layout {
+            format: Format::Webp,
+            width: webp.width,
+            height: webp.height,
+            working,
+        });
+    }
+    Err("the bytes aren't a PNG, a JPEG or a WebP".into())
+}
+
+/// The most bytes libwebp 1.3's lossless decoder (vp8l_dec.c) holds for a `w`×`h` image coded in
+/// `len` bytes: its pixels and cache rows (`AllocateInternalBuffers32b`, four bytes each); its
+/// Huffman groups, each five tables of at most 2300 + 2704 four-byte codes (`kTableSize`) and
+/// its group (under 1 KiB); the transforms' and the Huffman image's subsampled pixels (at most a
+/// quarter each way, five of them), each with one group; the group mapping (65536 `int`s); and
+/// its code lengths. Groups are at most 1000 and the image's pixels without a mapping, and with
+/// one the distinct groups the Huffman image names: at most its pixels, 65536, and its literals'
+/// bits (`8 × len`: distinct values each take at least a bit).
+fn lossless_most(w: u64, h: u64, len: u64) -> u64 {
+    const GROUP: u64 = 4 * (2300 + 2704) + 1024;
+    let sub = w.div_ceil(4) * h.div_ceil(4);
+    let groups = (w * h).min(1000) + sub.min(65536).min(8 * len);
+    4 * (w * h + 17 * w) + GROUP * (groups + 5) + 5 * 4 * sub + 4 * 65536 + (1 << 20)
+}
+
+/// What a WebP's chunks say, read before it's decoded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Webp {
+    width: u32,
+    height: u32,
+    image: WebpImage,
+    alpha: WebpAlpha,
+}
+
+/// A WebP's image: lossy (`VP8 `), or lossless (`VP8L`) in this many bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WebpImage {
+    Lossy,
+    Lossless(u64),
+}
+
+/// A lossy WebP's alpha (`ALPH`): none, its bytes as they are, or lossless in this many bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WebpAlpha {
+    None,
+    Raw,
+    Lossless(u64),
+}
+
+/// The size a `VP8 ` chunk's key frame or a `VP8L` chunk's header gives.
+fn webp_frame(lossless: bool, payload: &[u8]) -> Result<(u32, u32), String> {
+    if lossless {
+        // A signature byte, then the width and height less 1 in 14 bits each, and a version of 0.
+        let Some(&[0x2f, a, b, c, d]) = payload.get(..5).and_then(|p| <&[u8; 5]>::try_from(p).ok())
+        else {
+            return Err("the WebP's lossless image has no header".into());
+        };
+        let v = u32::from_le_bytes([a, b, c, d]);
+        if v >> 29 != 0 {
+            return Err("the WebP's lossless image has an unknown version".into());
         }
+        return Ok(((v & 0x3fff) + 1, ((v >> 14) & 0x3fff) + 1));
+    }
+    // A key frame's tag (its first bit 0), its start code, then the width and height in 14 bits.
+    match payload.get(..10) {
+        Some(p) if p[0] & 1 == 0 && p[3..6] == [0x9d, 0x01, 0x2a] => {
+            let le = |at: usize| u32::from(u16::from_le_bytes([p[at], p[at + 1]]) & 0x3fff);
+            Ok((le(6), le(8)))
+        }
+        _ => Err("the WebP's lossy image isn't a key frame".into()),
+    }
+}
+
+/// Reads a WebP's chunks: each within the file and the RIFF's length; a simple WebP's one image,
+/// or an extended one's canvas and its one image of the canvas's size, and its alpha, if it's
+/// lossy and has alpha (raw alpha holds a byte for each pixel). An animation is refused, as is
+/// an image of another size than its canvas, so the decoder never works on a size the canvas
+/// doesn't give.
+fn webp_layout(bytes: &[u8]) -> Result<Webp, String> {
+    let bad = |why: &str| Err(format!("the WebP {why}"));
+    let riff = u32::from_le_bytes(bytes[4..8].try_into().expect("4")) as usize;
+    let Some(end) = riff.checked_add(8).filter(|&e| e <= bytes.len() && e >= 12) else {
+        return bad("is shorter than its RIFF header says");
     };
-    Ok((format, w, h))
+    let mut chunks = Vec::new();
+    let mut at = 12;
+    while at < end {
+        let Some(head) = bytes.get(at..at + 8).filter(|_| at + 8 <= end) else {
+            return bad("has a chunk cut short");
+        };
+        let len = u32::from_le_bytes(head[4..8].try_into().expect("4")) as usize;
+        let start = at + 8;
+        let Some(stop) = start.checked_add(len).filter(|&s| s <= end) else {
+            return bad("has a chunk that reaches past its end");
+        };
+        chunks.push((<[u8; 4]>::try_from(&head[..4]).expect("4"), &bytes[start..stop]));
+        at = stop + (len & 1);
+    }
+    let image = |name: &[u8; 4], payload: &[u8]| -> Result<(WebpImage, (u32, u32)), String> {
+        let lossless = name == b"VP8L";
+        let kind =
+            if lossless { WebpImage::Lossless(payload.len() as u64) } else { WebpImage::Lossy };
+        Ok((kind, webp_frame(lossless, payload)?))
+    };
+    let Some(&(first, payload)) = chunks.first() else { return bad("has no chunks") };
+    match &first {
+        b"VP8 " | b"VP8L" => {
+            let (kind, (width, height)) = image(&first, payload)?;
+            Ok(Webp { width, height, image: kind, alpha: WebpAlpha::None })
+        }
+        b"VP8X" => {
+            let Some(x) = payload.get(..10) else { return bad("has a short VP8X header") };
+            if x[0] & 0x02 != 0 {
+                return bad("is animated: only a still image is decoded");
+            }
+            let le24 = |at: usize| u32::from_le_bytes([x[at], x[at + 1], x[at + 2], 0]) + 1;
+            let canvas = (le24(4), le24(7));
+            let mut found: Option<(WebpImage, (u32, u32))> = None;
+            let mut alpha = WebpAlpha::None;
+            for &(name, payload) in &chunks[1..] {
+                match &name {
+                    b"ANIM" | b"ANMF" => {
+                        return bad("is animated: only a still image is decoded");
+                    }
+                    b"VP8 " | b"VP8L" if found.is_some() => return bad("has two images"),
+                    b"VP8 " | b"VP8L" => found = Some(image(&name, payload)?),
+                    b"ALPH" if found.is_some() => return bad("has its alpha after its image"),
+                    b"ALPH" if alpha != WebpAlpha::None => return bad("has two alphas"),
+                    b"ALPH" => {
+                        let Some(&info) = payload.first() else { return bad("has an empty ALPH") };
+                        alpha = match info & 0x03 {
+                            0 => {
+                                let pixels = u64::from(canvas.0) * u64::from(canvas.1);
+                                if ((payload.len() - 1) as u64) < pixels {
+                                    return bad("has fewer alpha bytes than pixels");
+                                }
+                                WebpAlpha::Raw
+                            }
+                            1 => WebpAlpha::Lossless(payload.len() as u64),
+                            _ => return bad("has an unknown alpha compression"),
+                        };
+                    }
+                    _ => {}
+                }
+            }
+            let Some((kind, size)) = found else { return bad("has no image") };
+            if size != canvas {
+                return Err(format!(
+                    "the WebP's image is {}×{}, not its canvas's {}×{}",
+                    size.0, size.1, canvas.0, canvas.1
+                ));
+            }
+            // A lossless image keeps its own alpha: an `ALPH` beside it is ignored.
+            let alpha = if kind == WebpImage::Lossy { alpha } else { WebpAlpha::None };
+            Ok(Webp { width: canvas.0, height: canvas.1, image: kind, alpha })
+        }
+        _ => bad("doesn't start with an image or a VP8X header"),
+    }
 }
 
 fn png_reader(bytes: &[u8]) -> Result<png::Reader<std::io::Cursor<&[u8]>>, String> {
@@ -336,26 +552,24 @@ fn jpeg_decoder(bytes: &[u8]) -> zune_jpeg::JpegDecoder<std::io::Cursor<&[u8]>> 
     zune_jpeg::JpegDecoder::new_with_options(std::io::Cursor::new(bytes), options)
 }
 
-/// `channels` bytes a pixel, as RGBA8: grey, grey and alpha, or RGB, made opaque where they have
-/// no alpha.
-fn to_rgba(pixels: Vec<u8>, channels: usize) -> Vec<u8> {
-    if channels == 4 {
-        return pixels;
-    }
+/// `channels` bytes a pixel, as RGBA8: grey, grey and alpha, RGB or RGBA, made opaque where they
+/// have no alpha.
+fn to_rgba(pixels: &[u8], channels: usize) -> Vec<u8> {
     let mut out = Vec::with_capacity(pixels.len() / channels * 4);
     for p in pixels.chunks_exact(channels) {
         match channels {
             1 => out.extend_from_slice(&[p[0], p[0], p[0], 255]),
             2 => out.extend_from_slice(&[p[0], p[0], p[0], p[1]]),
-            _ => out.extend_from_slice(&[p[0], p[1], p[2], 255]),
+            3 => out.extend_from_slice(&[p[0], p[1], p[2], 255]),
+            _ => out.extend_from_slice(p),
         }
     }
     out
 }
 
-/// Decodes `bytes` (a PNG, a JPEG or a WebP: its first frame, if it has several) as RGBA8.
+/// Decodes `bytes` (a PNG, its first frame if it has several, a JPEG or a still WebP) as RGBA8.
 fn decode(bytes: &[u8], cancel: &AtomicBool) -> Result<(u32, u32, Vec<u8>), String> {
-    let (format, w, h) = header(bytes)?;
+    let Layout { format, width: w, height: h, .. } = header(bytes)?;
     stopped(cancel)?;
     let rgba = match format {
         Format::Png => {
@@ -372,20 +586,17 @@ fn decode(bytes: &[u8], cancel: &AtomicBool) -> Result<(u32, u32, Vec<u8>), Stri
                 png::ColorType::Rgba => 4,
                 other => return Err(format!("the PNG's pixels are {other:?}")),
             };
-            to_rgba(out, channels)
+            if channels == 4 { out } else { to_rgba(&out, channels) }
         }
         Format::Jpeg => {
             let mut d = jpeg_decoder(bytes);
             d.decode().map_err(|e| format!("the JPEG: {e:?}"))?
         }
         Format::Webp => {
-            let mut d = image_webp::WebPDecoder::new(std::io::Cursor::new(bytes))
-                .map_err(|e| format!("the WebP: {e}"))?;
-            let size = d.output_buffer_size().ok_or("the WebP is too large")?;
-            let mut out = vec![0; size];
-            d.read_image(&mut out).map_err(|e| format!("the WebP: {e}"))?;
+            let image =
+                webp::Decoder::new(bytes).decode().ok_or("libwebp couldn't decode the WebP")?;
             stopped(cancel)?;
-            to_rgba(out, if d.has_alpha() { 4 } else { 3 })
+            to_rgba(&image, if image.is_alpha() { 4 } else { 3 })
         }
     };
     if rgba.len() as u64 != u64::from(w) * u64::from(h) * 4 {
@@ -433,13 +644,16 @@ pub(crate) fn weights(from: u32, to: u32) -> Vec<(usize, Vec<f32>)> {
 }
 
 /// `rgba` (`w`×`h`) resized to `to` with Lanczos3: horizontally, then vertically, each pass
-/// skipped where the size stays, over premultiplied alpha, rounded to 8 bits once at the end.
+/// skipped where the size stays, over premultiplied alpha, rounded to 8 bits once at the end. A
+/// resize that keeps the width reads its vertical pass from `rgba` itself, with no rows between.
+/// The output, and the bytes the work held besides (its rows and weights), as [`resize_most`]
+/// reserves them.
 fn lanczos(
     rgba: &[u8],
     (w, h): (u32, u32),
     to: (u32, u32),
     cancel: &AtomicBool,
-) -> Result<Vec<u8>, String> {
+) -> Result<(Vec<u8>, u64), String> {
     let (w, h) = (w as usize, h as usize);
     let (tw, th) = (to.0 as usize, to.1 as usize);
     // Premultiplied, as Pillow's RGBA resize is (through "RGBa").
@@ -447,11 +661,16 @@ fn lanczos(
         let a = f32::from(p[3]) / 255.0;
         [f32::from(p[0]) * a, f32::from(p[1]) * a, f32::from(p[2]) * a, f32::from(p[3])]
     };
-    let mut rows: Vec<[f32; 4]> = Vec::with_capacity(tw * h);
-    if tw == w {
-        rows.extend(rgba.chunks_exact(4).map(premultiplied));
-    } else {
+    let held = |ws: &[(usize, Vec<f32>)]| -> u64 {
+        let entry = std::mem::size_of::<(usize, Vec<f32>)>() as u64;
+        ws.iter().map(|(_, k)| entry + 4 * k.capacity() as u64).sum()
+    };
+    let mut scratch = 0;
+    let mut rows: Vec<[f32; 4]> = Vec::new();
+    if tw != w {
+        rows.reserve_exact(tw * h);
         let across = weights(w as u32, to.0);
+        scratch += held(&across);
         for y in 0..h {
             stopped(cancel)?;
             let row = &rgba[y * w * 4..(y + 1) * w * 4];
@@ -466,19 +685,28 @@ fn lanczos(
                 rows.push(sum);
             }
         }
+        scratch += 16 * rows.capacity() as u64;
     }
+    let at = |x: usize, y: usize| -> [f32; 4] {
+        if tw == w {
+            premultiplied(&rgba[(y * w + x) * 4..(y * w + x) * 4 + 4])
+        } else {
+            rows[y * tw + x]
+        }
+    };
     let down = (th != h).then(|| weights(h as u32, to.1));
+    scratch += down.as_deref().map_or(0, held);
     let mut out = Vec::with_capacity(tw * th * 4);
     for y in 0..th {
         stopped(cancel)?;
         for x in 0..tw {
             let p = match &down {
-                None => rows[y * tw + x],
+                None => at(x, y),
                 Some(down) => {
                     let (lo, ks) = &down[y];
                     let mut sum = [0.0f32; 4];
                     for (k, wt) in ks.iter().enumerate() {
-                        let q = rows[(lo + k) * tw + x];
+                        let q = at(x, lo + k);
                         for c in 0..4 {
                             sum[c] += q[c] * wt;
                         }
@@ -496,7 +724,7 @@ fn lanczos(
             out.extend_from_slice(&[byte(p[0] * un), byte(p[1] * un), byte(p[2] * un), byte(a)]);
         }
     }
-    Ok(out)
+    Ok((out, scratch))
 }
 
 /// A `Vec` written to no further than its capacity: past it, writing fails, so an encoder can't
@@ -604,11 +832,159 @@ mod tests {
             e.set_color(png::ColorType::Rgb);
             e.write_header().expect("a header").write_image_data(&[7; 18]).expect("pixels");
         }
-        assert_eq!(header(&png), Ok((Format::Png, 3, 2)));
+        let layout = header(&png).expect("a header");
+        assert_eq!((layout.format, layout.width, layout.height), (Format::Png, 3, 2));
         assert!(header(b"GIF89a").unwrap_err().contains("aren't"));
         let (w, h, rgba) = decode(&png, &AtomicBool::new(false)).expect("decoded");
         assert_eq!((w, h), (3, 2));
         assert_eq!(&rgba[..4], &[7, 7, 7, 255]);
         assert!(decode(&png, &AtomicBool::new(true)).unwrap_err().contains("cancelled"));
+    }
+
+    /// A lossy WebP of `w`×`h` from libwebp, as a simple file (`VP8 ` alone) if it's opaque.
+    fn webp_of(rgba: &[u8], w: u32, h: u32, quality: f32, method: u8) -> Vec<u8> {
+        let cancel = AtomicBool::new(false);
+        encode_webp(rgba, (w, h), quality, method, webp_most(w, h), &cancel).expect("encoded")
+    }
+
+    /// The payload of the chunk `name` in the WebP `file`.
+    fn chunk(file: &[u8], name: &[u8; 4]) -> Vec<u8> {
+        let mut at = 12;
+        while at + 8 <= file.len() {
+            let len = u32::from_le_bytes(file[at + 4..at + 8].try_into().expect("4")) as usize;
+            if &file[at..at + 4] == name {
+                return file[at + 8..at + 8 + len].to_vec();
+            }
+            at += 8 + len + (len & 1);
+        }
+        panic!("no {name:?} chunk")
+    }
+
+    /// A RIFF file of `chunks`.
+    fn riff(chunks: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
+        let mut body = b"WEBP".to_vec();
+        for (name, payload) in chunks {
+            body.extend_from_slice(*name);
+            body.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            body.extend_from_slice(payload);
+            if payload.len() % 2 == 1 {
+                body.push(0);
+            }
+        }
+        let mut out = b"RIFF".to_vec();
+        out.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        out.extend_from_slice(&body);
+        out
+    }
+
+    /// A VP8X header for a `w`×`h` canvas with `flags`.
+    fn vp8x(flags: u8, w: u32, h: u32) -> Vec<u8> {
+        let mut x = vec![flags, 0, 0, 0];
+        x.extend_from_slice(&(w - 1).to_le_bytes()[..3]);
+        x.extend_from_slice(&(h - 1).to_le_bytes()[..3]);
+        x
+    }
+
+    #[test]
+    fn a_webp_whose_image_isnt_its_canvas_is_refused_before_anything_is_reserved() {
+        // A real 16×16 lossy frame, its header saying 16383×16383, under a 1×1 canvas: a decoder
+        // that trusts the frame would allocate its planes from it.
+        let encoded = webp_of(&[90; 16 * 16 * 4], 16, 16, 75.0, 0);
+        let real = chunk(&encoded, b"VP8 ");
+        let mut frame = real.clone();
+        frame[6..8].copy_from_slice(&16383u16.to_le_bytes());
+        frame[8..10].copy_from_slice(&16383u16.to_le_bytes());
+        let bomb = riff(&[(b"VP8X", vp8x(0, 1, 1)), (b"VP8 ", frame.clone())]);
+        let refused = header(&bomb).expect_err("refused");
+        assert!(refused.contains("not its canvas's 1×1"), "{refused}");
+        // Through the service, under a tiny budget: refused from its chunks, nothing reserved.
+        let s = Arc::new(super::super::services::for_test(super::super::BlobBudget {
+            bytes: 1 << 10,
+            handles: 4,
+        }));
+        let due = Instant::now() + Duration::from_secs(10);
+        let op = Op::Decode(Data::Bytes(bomb));
+        let why = carry_out(&s, 1, op, due, Duration::from_secs(10)).expect_err("refused");
+        assert!(why.contains("canvas"), "{why}");
+        assert_eq!(s.blobs().counted(), (0, 0));
+        // The same frame alone is what its header says, and its decoder's work is counted.
+        let alone = riff(&[(b"VP8 ", frame)]);
+        let layout = header(&alone).expect("a simple WebP");
+        assert_eq!((layout.width, layout.height), (16383, 16383));
+        assert!(layout.working >= 4 * 16383 * 16383);
+        // Each chunk within the file, a still image, and raw alpha for every pixel.
+        let real = &real[..];
+        let mut cut = riff(&[(b"VP8X", vp8x(0, 16, 16)), (b"VP8 ", real.to_vec())]);
+        cut.truncate(cut.len() - 4);
+        assert!(header(&cut).unwrap_err().contains("shorter"));
+        let animated = riff(&[(b"VP8X", vp8x(0x02, 16, 16)), (b"VP8 ", real.to_vec())]);
+        assert!(header(&animated).unwrap_err().contains("animated"));
+        let anmf = riff(&[(b"VP8X", vp8x(0, 16, 16)), (b"ANMF", vec![0; 16])]);
+        assert!(header(&anmf).unwrap_err().contains("animated"));
+        let short =
+            riff(&[(b"VP8X", vp8x(0x10, 16, 16)), (b"ALPH", vec![0; 9]), (b"VP8 ", real.to_vec())]);
+        assert!(header(&short).unwrap_err().contains("alpha bytes"));
+        let two =
+            riff(&[(b"VP8X", vp8x(0, 16, 16)), (b"VP8 ", real.to_vec()), (b"VP8 ", real.to_vec())]);
+        assert!(header(&two).unwrap_err().contains("two images"));
+        let fine = riff(&[(b"VP8X", vp8x(0, 16, 16)), (b"VP8 ", real.to_vec())]);
+        let (w, h, rgba) = decode(&fine, &AtomicBool::new(false)).expect("decoded");
+        assert_eq!((w, h, rgba[3]), (16, 16, 255));
+    }
+
+    #[test]
+    fn a_resize_reserves_all_it_holds_a_height_only_one_too() {
+        let cancel = AtomicBool::new(false);
+        for (size, to) in [
+            ((37, 23), (37, 11)),
+            ((37, 23), (37, 60)),
+            ((37, 23), (16, 23)),
+            ((37, 23), (16, 11)),
+            ((5, 400), (300, 7)),
+            ((400, 5), (7, 300)),
+            ((1, 1), (64, 64)),
+        ] {
+            let rgba = vec![200; (size.0 * size.1 * 4) as usize];
+            let (out, held) = lanczos(&rgba, size, to, &cancel).expect("resized");
+            let used = out.capacity() as u64 + held;
+            let reserved = resize_most(size, to);
+            assert!(used <= reserved, "{size:?} to {to:?}: {used} held, {reserved} reserved");
+        }
+    }
+
+    #[test]
+    fn an_encode_keeps_only_its_bytes_in_the_budget() {
+        let s = Arc::new(super::super::services::for_test(super::super::BlobBudget {
+            bytes: 64 << 20,
+            handles: 64,
+        }));
+        let due = Instant::now() + Duration::from_secs(30);
+        // A flat image compresses to far less than the worst case reserved for it.
+        for request in 1..=8 {
+            let op = Op::Png { rgba: Data::Bytes(vec![9; 64 * 64 * 4]), size: (64, 64) };
+            carry_out(&s, request, op, due, Duration::from_secs(30)).expect("encoded");
+            let (charged, held) = s.blobs().counted();
+            assert_eq!(held, charged, "after {request} encodes, what's held is what's charged");
+        }
+        assert!(s.blobs().counted().0 < 8 * 4096, "each blob is its PNG's few bytes");
+    }
+
+    #[test]
+    fn tiny_webps_round_trip_opaque_and_transparent() {
+        let cancel = AtomicBool::new(false);
+        for (w, h) in [(1, 1), (2, 2)] {
+            for alpha in [255u8, 0, 128] {
+                let rgba: Vec<u8> =
+                    (0..w * h).flat_map(|i| [200, 40, (i * 60) as u8, alpha]).collect();
+                for (quality, method) in [(0.0, 0), (75.0, 4), (100.0, 6)] {
+                    let webp = webp_of(&rgba, w, h, quality, method);
+                    let (bw, bh, back) = decode(&webp, &cancel).expect("decoded back");
+                    assert_eq!((bw, bh), (w, h));
+                    for p in back.chunks_exact(4) {
+                        assert_eq!(p[3], alpha, "{w}×{h} q{quality} m{method}: alpha is lossless");
+                    }
+                }
+            }
+        }
     }
 }

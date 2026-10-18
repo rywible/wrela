@@ -110,6 +110,9 @@ fn main(given: take Vec<String>) -> u32 {
                 return 2
             },
         }
+        if post.path.as_str() == "/late" {
+            print("got /late")
+        }
         if post.path.as_str() == "/ignore" {
             print("ignored a post")
             continue
@@ -373,12 +376,15 @@ fn the_tools_end_shuts_its_servers_connections_in_bounded_time() {
     assert_eq!(ended.end, End::Exit(0));
     assert_eq!(ended.workers_left, 0, "every thread of the server's was joined");
     for s in [&mut stalled, &mut posted] {
-        s.set_read_timeout(Some(Duration::from_secs(5))).expect("a timeout");
+        // A socket the server has shut may refuse a timeout (macOS): its read ends at once.
+        let _ = s.set_read_timeout(Some(Duration::from_secs(5)));
         let mut rest = Vec::new();
         let _ = s.read_to_end(&mut rest);
         assert!(returned.elapsed() < Duration::from_secs(1), "shut as the run ended");
         let text = String::from_utf8_lossy(&rest);
-        assert!(text.is_empty() || text.starts_with("HTTP/1.1 503"), "{text}");
+        // Answered 503 as it closed, or shut first, perhaps part way through that answer.
+        let closing = "HTTP/1.1 503 Service Unavailable";
+        assert!(text.starts_with(closing) || closing.starts_with(&*text), "{text}");
     }
     assert!(closed(port));
 }
@@ -426,4 +432,36 @@ fn a_start_that_fails_once_its_server_listens_closes_it_at_once() {
     let ended = tool.join().expect("the tool's thread");
     assert_eq!(ended.end, End::Exit(1));
     assert_eq!(ended.workers_left, 0);
+}
+
+#[test]
+fn a_post_whose_body_comes_past_its_deadline_fails_then_and_reaches_no_one() {
+    let root = scratch("serve-late");
+    let grants = Grants::default().root("site", &root, false);
+    let (lines, tool) = serving("late", grants, &["echo".into(), "site".into()], None);
+    let port = port_of(&lines);
+    let own = format!("http://127.0.0.1:{port}");
+    // Half a body, then the rest a second later: past the post's 0.3 s.
+    let mut s = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+    let started = Instant::now();
+    let head = format!(
+        "POST /late HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: {own}\r\nContent-Length: 10\r\n\r\n01234"
+    );
+    s.write_all(head.as_bytes()).expect("half a post");
+    let mut rest = s.try_clone().expect("a clone");
+    let sender = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(1));
+        let _ = rest.write_all(b"56789");
+    });
+    s.set_read_timeout(Some(Duration::from_secs(5))).expect("a timeout");
+    let mut response = String::new();
+    let _ = s.read_to_string(&mut response);
+    let took = started.elapsed();
+    assert!(response.starts_with("HTTP/1.1 504"), "{response}");
+    assert!(took >= Duration::from_millis(250) && took < Duration::from_millis(900), "{took:?}");
+    sender.join().expect("the rest was sent");
+    exchange(port, &request(port, "POST", "/quit", Some(&own), b""));
+    assert_eq!(tool.join().expect("the tool's thread").end, End::Exit(0));
+    let said: Vec<String> = lines.try_iter().collect();
+    assert!(said.is_empty(), "the late post reached the tool: {said:?}");
 }

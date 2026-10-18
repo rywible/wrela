@@ -77,14 +77,18 @@ impl Servers {
 }
 
 /// A post the server holds: its number, what it was sent to, its body, the bytes charged for
-/// it, and where its answer goes.
+/// it, where its answer goes, and its deadline.
 struct Post {
     id: u32,
     path: String,
     body: Vec<u8>,
     charged: u64,
     reply: mpsc::Sender<Arc<Vec<u8>>>,
+    due: Instant,
 }
+
+/// Where a post's answer goes, and by when.
+type Reply = (mpsc::Sender<Arc<Vec<u8>>>, Instant);
 
 /// What a server's threads share and change.
 #[derive(Default)]
@@ -93,10 +97,40 @@ struct State {
     /// Posts not given to the tool yet, oldest first.
     queued: VecDeque<Post>,
     /// Posts given to the tool, waiting for its answer, by number.
-    given: HashMap<u32, mpsc::Sender<Arc<Vec<u8>>>>,
+    given: HashMap<u32, Reply>,
     /// `next_post` requests waiting for a post, oldest first, with their deadlines.
     waiting: VecDeque<(u32, Instant, Duration)>,
     closed: bool,
+}
+
+impl State {
+    /// The oldest waiting `next_post` and the oldest queued post, if both are there and neither
+    /// is past its deadline at `now`; and the bytes charged for the posts passed over, past
+    /// theirs, which are dropped (their connections answer 504), to give back. A waiter past its
+    /// deadline is left for the server's thread to fail.
+    fn pair(&mut self, now: Instant) -> (Option<(u32, Post)>, u64) {
+        let mut refund = 0;
+        while self.queued.front().is_some_and(|p| p.due <= now) {
+            refund += self.queued.pop_front().expect("a post").charged;
+        }
+        let ready = self.waiting.front().is_some_and(|(_, due, _)| *due > now);
+        if !ready || self.queued.is_empty() {
+            return (None, refund);
+        }
+        let (request, _, _) = self.waiting.pop_front().expect("a waiter");
+        (Some((request, self.queued.pop_front().expect("a post"))), refund)
+    }
+
+    /// Where post `id`'s answer goes, if it waits for one at `now`: not past its deadline.
+    fn claim(&mut self, id: u32, now: Instant) -> Result<mpsc::Sender<Arc<Vec<u8>>>, String> {
+        match self.given.remove(&id) {
+            Some((reply, due)) if due > now => Ok(reply),
+            Some(_) => Err(format!("post {id}'s deadline has passed: its page was answered 504")),
+            None => Err(format!(
+                "post {id} isn't waiting for an answer: it was answered, or its deadline passed, or its connection closed"
+            )),
+        }
+    }
 }
 
 /// A running server.
@@ -159,9 +193,10 @@ impl Server {
     /// Gives queued posts to waiting `next_post`s, oldest to oldest, for as long as both are
     /// there.
     fn deliver(&self, s: &Services, st: &mut State) {
-        while !st.waiting.is_empty() && !st.queued.is_empty() {
-            let (request, _, _) = st.waiting.pop_front().expect("a waiter");
-            let post = st.queued.pop_front().expect("a post");
+        loop {
+            let (pair, refund) = st.pair(Instant::now());
+            s.blobs().refund(refund);
+            let Some((request, post)) = pair else { return };
             let mut out = Out::default();
             out.u32(post.id).str(&post.path);
             if post.body.len() <= super::caps::MOST_BYTES {
@@ -181,7 +216,7 @@ impl Server {
                     }
                 }
             }
-            st.given.insert(post.id, post.reply);
+            st.given.insert(post.id, (post.reply, post.due));
             s.send(request, super::services::answer(Ok(out.0)));
         }
     }
@@ -274,12 +309,7 @@ fn answer(s: &Services, handle: u32, post: u32, data: Data) -> Result<(), String
         Data::Bytes(b) => Arc::new(b),
         Data::Blob(id) => s.blobs().get(id)?,
     };
-    let reply = server.state().given.remove(&post);
-    let Some(reply) = reply else {
-        return Err(format!(
-            "post {post} isn't waiting for an answer: it was answered, or its deadline passed, or its connection closed"
-        ));
-    };
+    let reply = server.state().claim(post, Instant::now())?;
     reply.send(bytes).map_err(|_| format!("post {post}'s connection closed before the answer"))
 }
 
@@ -338,6 +368,8 @@ fn accept(s: &Arc<Services>, server: &Arc<Server>, listener: TcpListener) {
         expire(s, server);
         match listener.accept() {
             Ok((stream, _)) => {
+                // A post's deadline counts from here.
+                let taken = Instant::now();
                 let mut conns =
                     server.conns.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 // Under the lock `close` shuts the connections in: one taken after it is
@@ -352,7 +384,7 @@ fn accept(s: &Arc<Services>, server: &Arc<Server>, listener: TcpListener) {
                 let (services, serving) = (s.clone(), server.clone());
                 let spawned =
                     std::thread::Builder::new().name("wrela-serve-conn".into()).spawn(move || {
-                        let _ = connection(&services, &serving, stream);
+                        let _ = connection(&services, &serving, stream, taken);
                         serving
                             .conns
                             .lock()
@@ -398,7 +430,12 @@ fn expire(s: &Services, server: &Server) {
 }
 
 /// Answers one connection's request.
-fn connection(s: &Services, server: &Server, stream: TcpStream) -> std::io::Result<()> {
+fn connection(
+    s: &Services,
+    server: &Server,
+    stream: TcpStream,
+    taken: Instant,
+) -> std::io::Result<()> {
     stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(IDLE))?;
     stream.set_write_timeout(Some(IDLE))?;
@@ -434,22 +471,31 @@ fn connection(s: &Services, server: &Server, stream: TcpStream) -> std::io::Resu
             ),
             None => respond(&mut out, 403, "text/plain", b"a page puts only its results/"),
         },
-        "POST" => post(s, server, head, &mut reader, &mut out),
+        "POST" => post(s, server, head, &mut reader, &mut out, taken + server.post_deadline),
         _ => respond(&mut out, 405, "text/plain", b"not allowed"),
     }
 }
 
 /// A post: its body charged to the budget, then read, queued for the tool, and its answer
-/// waited for until its deadline.
+/// waited for, all by `due`, its deadline from when the server took its connection: past it, a
+/// body still being read, a post still queued, and one whose answer hasn't come are each
+/// answered 504, and their bytes given back.
 fn post(
     s: &Services,
     server: &Server,
     head: crate::loopback::Head,
-    reader: &mut impl std::io::Read,
+    reader: &mut BufReader<TcpStream>,
     out: &mut TcpStream,
+    due: Instant,
 ) -> std::io::Result<()> {
     let respond = crate::loopback::respond;
-    let taken = Instant::now();
+    let late = |out: &mut TcpStream| {
+        let why = format!(
+            "the tool didn't answer the post within its deadline of {} s",
+            server.post_deadline.as_secs_f64()
+        );
+        respond(out, 504, "text/plain", why.as_bytes())
+    };
     let charged = head.length as u64;
     if let Err(why) = s.blobs().charge(charged) {
         return respond(
@@ -468,7 +514,31 @@ fn post(
     }
     let mut charge = Charge(s, charged);
     let mut body = vec![0; head.length];
-    reader.read_exact(&mut body)?;
+    let mut got = 0;
+    while got < body.len() {
+        let left = due.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return late(out);
+        }
+        reader.get_ref().set_read_timeout(Some(left.min(IDLE)))?;
+        match std::io::Read::read(reader, &mut body[got..]) {
+            Ok(0) => return Err(std::io::ErrorKind::UnexpectedEof.into()),
+            Ok(n) => got += n,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                if left <= IDLE {
+                    continue;
+                }
+                return Err(e);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
     let (reply, answered) = mpsc::channel();
     let id = {
         let mut st = server.state();
@@ -480,6 +550,10 @@ fn post(
             drop(st);
             return respond(out, 503, "text/plain", b"the tool has as many posts as it holds");
         }
+        if Instant::now() >= due {
+            drop(st);
+            return late(out);
+        }
         st.next_post += 1;
         let id = st.next_post;
         let path = if head.query.is_empty() {
@@ -487,15 +561,16 @@ fn post(
         } else {
             format!("{}?{}", head.path, head.query)
         };
-        st.queued.push_back(Post { id, path, body, charged, reply });
+        st.queued.push_back(Post { id, path, body, charged, reply, due });
         charge.1 = 0;
         server.deliver(s, &mut st);
         id
     };
-    let due = taken + server.post_deadline;
     loop {
         match answered.recv_timeout(POLL) {
             Ok(bytes) => return respond(out, 200, "application/octet-stream", &bytes),
+            // Dropped past its deadline (`State::pair`), or the server closed.
+            Err(mpsc::RecvTimeoutError::Disconnected) if Instant::now() >= due => return late(out),
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 return respond(out, 503, "text/plain", b"the server closed");
             }
@@ -513,11 +588,55 @@ fn post(
             }
             st.given.remove(&id);
             drop(st);
-            let why = format!(
-                "the tool didn't answer the post within its deadline of {} s",
-                server.post_deadline.as_secs_f64()
-            );
-            return respond(out, 504, "text/plain", why.as_bytes());
+            // An answer the tool gave just before its deadline.
+            if let Ok(bytes) = answered.try_recv() {
+                return respond(out, 200, "application/octet-stream", &bytes);
+            }
+            return late(out);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn post(id: u32, due: Instant) -> (Post, mpsc::Receiver<Arc<Vec<u8>>>) {
+        let (reply, answered) = mpsc::channel();
+        let p = Post { id, path: "/p".into(), body: vec![1; 3], charged: 3, reply, due };
+        (p, answered)
+    }
+
+    #[test]
+    fn a_post_past_its_deadline_is_neither_delivered_nor_answered() {
+        let now = Instant::now();
+        let (soon, later) = (now + Duration::from_secs(1), now + Duration::from_secs(9));
+        let mut st = State::default();
+        let (expired, dropped) = post(1, soon);
+        let (fresh, _kept) = post(2, later);
+        st.queued.push_back(expired);
+        st.queued.push_back(fresh);
+        st.waiting.push_back((7, later, Duration::from_secs(9)));
+        // At 2 s: the first post's deadline has passed; it's dropped, its bytes given back, and
+        // the waiter gets the second.
+        let at = now + Duration::from_secs(2);
+        let (pair, refund) = st.pair(at);
+        assert_eq!(refund, 3);
+        let Some((request, p)) = pair else { panic!("the fresh post is delivered") };
+        assert_eq!((request, p.id), (7, 2));
+        assert!(dropped.recv().is_err(), "the expired post's connection hears it's gone");
+        // An answer before its deadline is taken; one after it isn't.
+        st.given.insert(2, (p.reply, later));
+        assert!(st.claim(2, at).is_ok());
+        let (p3, _r3) = post(3, soon);
+        st.given.insert(3, (p3.reply, soon));
+        let late = st.claim(3, at).expect_err("past its deadline");
+        assert!(late.contains("deadline"), "{late}");
+        assert!(st.claim(3, at).is_err(), "and it's gone");
+        // A waiter past its own deadline isn't given a post.
+        let (p4, _r4) = post(4, later);
+        st.queued.push_back(p4);
+        st.waiting.push_back((8, soon, Duration::from_secs(1)));
+        assert!(st.pair(at).0.is_none());
     }
 }

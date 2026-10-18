@@ -9,7 +9,8 @@
 // A POST, which is taken only from the server's own pages (their `Origin`), goes to the tool:
 // `next_post` gives the oldest one not given yet, and `answer` sends the page the tool's bytes.
 // A post's body (at most 16 MiB) is charged to the tool's blob budget before it's read. A post
-// the tool doesn't answer within its deadline (30 s unless `start` gives another) fails with 504,
+// has a deadline (30 s unless `start` gives another) from when its connection is taken: one whose
+// body is still coming then, or that the tool hasn't taken or answered, fails with 504,
 // and a `next_post` that no post comes for fails at its own (60 s unless it asks for another).
 // These deadlines are on the system's clock, also in a tool test.
 //

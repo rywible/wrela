@@ -98,8 +98,11 @@ impl Blobs {
     }
 
     /// Puts `data` in blob `id`, made by [`Blobs::create_reserved`] with at least as many bytes
-    /// reserved: its bytes take the reservation's place, and what's left of it is let go.
-    pub(crate) fn fill(&mut self, id: u32, data: Vec<u8>) -> Result<(), String> {
+    /// reserved: its bytes take the reservation's place, and what's left of it is let go. The
+    /// blob keeps only its bytes, not room the work that made them had (an encoder's worst
+    /// case): `data` is shrunk to fit first, while the reservation still counts it.
+    pub(crate) fn fill(&mut self, id: u32, mut data: Vec<u8>) -> Result<(), String> {
+        data.shrink_to_fit();
         let Some(&room) = self.reserved.get(&id) else {
             return Err(format!("blob {id} has no bytes reserved"));
         };
@@ -137,6 +140,15 @@ impl Blobs {
         };
         self.held.insert(id, Arc::new(data));
         Ok(id)
+    }
+
+    /// The bytes the budget counts, and the bytes the blobs hold with their room to grow: what a
+    /// test compares.
+    #[cfg(test)]
+    pub(crate) fn counted(&self) -> (u64, u64) {
+        let held = self.held.values().map(|b| b.capacity() as u64).sum::<u64>()
+            + self.reserved.values().sum::<u64>();
+        (self.bytes, held)
     }
 
     /// Whether `more` bytes fit the budget beside what the blobs hold.

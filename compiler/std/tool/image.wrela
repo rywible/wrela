@@ -1,12 +1,13 @@
-// A tool's images (language.md §15.5): PNG, JPEG and WebP decoded to RGBA8, resized with
+// A tool's images (language.md §15.5): PNG, JPEG and still WebP decoded to RGBA8, resized with
 // Lanczos3, and encoded as PNG or as lossy WebP, by the host on the CPU, beside the tool. The
 // same inputs give the same bytes. Pixels are RGBA8, rows top to bottom, in a blob the host
 // holds: each answer's pixels or encoded bytes are a new blob, and each request takes bytes or a
 // blob (`blob::Data`), such as a `files::read_blob` answer or a drive capture's pixels.
 //
-// The host reads each request's sizes first (an image's header, the pixels' dimensions), then
-// reserves the answer's blob, and the bytes its own work holds, in the tool's blob budget, before
-// anything is decoded: an image that doesn't fit fails then, without being decoded. Each request
+// The host reads each request's sizes first (an image's headers, the pixels' dimensions), then
+// reserves the answer's blob, and the most its own work holds, in the tool's blob budget, before
+// anything is decoded: an image that doesn't fit fails then, without being decoded. A WebP whose
+// image isn't its canvas's size, or that is animated, is refused. Each request
 // has a deadline, 60 s unless it asks for another (at most 600 s), from when the host takes it.
 // An image is 1 to 16384 pixels each way.
 //
@@ -62,7 +63,7 @@ fn timed(service: str, w: take Writer, timeout: f64) -> Pending<u8> {
     ask(service, take w.into_bytes())
 }
 
-/// Decodes `bytes`, a PNG, a JPEG or a WebP (its first frame, if it has several), as RGBA8:
+/// Decodes `bytes`, a PNG (its first frame, if it has several), a JPEG or a still WebP, as RGBA8:
 /// `read_image` reads the answer. Grey, indexed and 16-bit PNGs come out as RGBA8, and an image
 /// with no alpha comes out opaque.
 @tool
