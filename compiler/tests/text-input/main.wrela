@@ -1,7 +1,7 @@
 // Text mode, seen from the program: on from the first frame, at a caret near the top left, and
 // every event that edits text printed as it's read (`std::io::print`, test mode's log.txt).
 
-use platform::host
+use std::host
 use std::input::{Event, events}
 use std::io::{Pending, print}
 

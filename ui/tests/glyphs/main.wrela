@@ -7,7 +7,8 @@ use std::gpu::{
 }
 use std::io::Pending
 use ui::draw::{DrawList, Renderer}
-use ui::raster::{Raster, image}
+use std::host::GlyphImage
+use ui::raster::image
 use ui::text::{Face, Fonts}
 
 const SIDE: u32 = 64
@@ -31,14 +32,14 @@ fn copy(t: Texture<Rgba8>, out: mut Slots<u32>, id: GlobalId) {
 }
 
 /// A host's drawing of a group: an orange square, 64 pixels at 128 an em.
-fn orange() -> Raster {
+fn orange() -> GlyphImage {
     var pixels: Vec<u8> = Vec::filled(64 * 64 * 4, 0)
     for i in 0..64 * 64 {
         pixels[i * 4] = 255
         pixels[i * 4 + 1] = 128
         pixels[i * 4 + 3] = 255
     }
-    Raster {
+    GlyphImage {
         px: 128.0,
         advance: 64.0,
         left: 0.0,

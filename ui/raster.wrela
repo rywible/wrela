@@ -7,23 +7,11 @@
 // The distance transform gives the squared distance to the nearest feature, one line at a time
 // as the lower envelope of parabolas, columns then rows.
 
-/// A host's drawing: its advance, where its pixels sit from the pen (left, and top above the
-/// baseline), all in pixels at `px` an em; its size, whether it has colour of its own, and its
-/// RGBA pixels, rows from the top.
-pub struct Raster: Clone {
-    pub px: f32,
-    pub advance: f32,
-    pub left: f32,
-    pub top: f32,
-    pub width: u32,
-    pub height: u32,
-    pub colored: bool,
-    pub pixels: Vec<u8>,
-}
+use std::host::GlyphImage
 
-/// A glyph made from a raster: its advance (ems), where its texels sit from the pen (left, and
-/// top above the baseline, in pixels at the font's em), their size, whether they're a colour
-/// image, and the texels, RGBA rows from the top (a field in red).
+/// A glyph made from a host's drawing (`GlyphImage`): its advance (ems), where its texels sit from
+/// the pen (left, and top above the baseline, in pixels at the font's em), their size, whether
+/// they're a colour image, and the texels, RGBA rows from the top (a field in red).
 pub struct Made: Clone {
     pub advance: f32,
     pub left: f32,
@@ -32,42 +20,6 @@ pub struct Made: Clone {
     pub height: u32,
     pub color: bool,
     pub texels: Vec<u8>,
-}
-
-fn word(b: [u8], at: u32) -> u32 {
-    u32(b[at]) | (u32(b[at + 1]) << 8) | (u32(b[at + 2]) << 16) | (u32(b[at + 3]) << 24)
-}
-
-/// A host's answer, drawn at `px` pixels an em: `None` if it isn't one.
-pub fn read_raster(bytes: [u8], px: f32) -> Option<Raster> {
-    if bytes.len() < 21 {
-        return None
-    }
-    let width = word(bytes, 12)
-    let height = word(bytes, 16)
-    if width == 0 ||
-        height == 0 ||
-        width > 4096 ||
-        height > 4096 ||
-        bytes.len() != 21 + width * height * 4 {
-        return None
-    }
-    var pixels: Vec<u8> = Vec::with_capacity(width * height * 4)
-    for i in 21..bytes.len() {
-        pixels.push(bytes[i])
-    }
-    Some(
-        Raster {
-            px,
-            advance: bitcast_f32(word(bytes, 0)),
-            left: bitcast_f32(word(bytes, 4)),
-            top: bitcast_f32(word(bytes, 8)),
-            width,
-            height,
-            colored: bytes[20] != 0,
-            pixels,
-        },
-    )
 }
 
 /// Bigger than any squared distance in a grid `w` × `h`: the transform's "no feature".
@@ -141,7 +93,7 @@ fn signed(ink: [bool], inside: [f32], outside: [f32], i: u32) -> f32 {
 
 /// A field glyph from `r`'s ink (its alpha), at `em` pixels an em, whose bytes stand for `spread`
 /// pixels each side of the edge, padded as the baker pads (`ceil(spread) + 1` texels).
-pub fn field(r: Raster, em: f32, spread: f32) -> Made {
+pub fn field(r: GlyphImage, em: f32, spread: f32) -> Made {
     let k = em / r.px
     let pad = ceil(spread) + 1.0
     // The drawing, with room round it for the field's padding, as ink or not.
@@ -205,7 +157,7 @@ pub fn field(r: Raster, em: f32, spread: f32) -> Made {
 
 /// A colour image glyph from `r`, at `em` pixels an em: each texel the average of the drawn
 /// pixels under it, weighted by their alpha, so its edges don't darken.
-pub fn image(r: Raster, em: f32) -> Made {
+pub fn image(r: GlyphImage, em: f32) -> Made {
     let k = em / r.px
     let cw = max(u32(ceil(f32(r.width) * k)), 1)
     let ch = max(u32(ceil(f32(r.height) * k)), 1)
@@ -254,7 +206,7 @@ pub fn image(r: Raster, em: f32) -> Made {
 // ---- tests ------------------------------------------------------------------------------------
 
 /// A raster `w` × `h` whose ink is the rectangle from `lo` to `hi` (exclusive), black or a colour.
-fn drawn(w: u32, h: u32, lo: vec2u, hi: vec2u, rgb: vec3u) -> Raster {
+fn drawn(w: u32, h: u32, lo: vec2u, hi: vec2u, rgb: vec3u) -> GlyphImage {
     var pixels: Vec<u8> = Vec::filled(w * h * 4, 0)
     for y in lo.y..hi.y {
         for x in lo.x..hi.x {
@@ -265,7 +217,7 @@ fn drawn(w: u32, h: u32, lo: vec2u, hi: vec2u, rgb: vec3u) -> Raster {
             pixels[at + 3] = 255
         }
     }
-    Raster {
+    GlyphImage {
         px: 128.0,
         advance: 64.0,
         left: 2.0,
@@ -331,23 +283,4 @@ fn an_emoji_stays_a_colour_image() {
     // The left texel is all ink, the right none: no darkened mix at the edge.
     assert(m.texels[0] == 255 && m.texels[1] == 128 && m.texels[3] == 255)
     assert(m.texels[7] == 0)
-}
-
-@test
-fn a_hosts_answer_reads_back() {
-    var bytes: Vec<u8> = Vec::new()
-    for w in [bitcast_u32(40.0), bitcast_u32(-1.0), bitcast_u32(30.0), 1, 2] {
-        bytes.push(u8(w & 255))
-        bytes.push(u8((w >> 8) & 255))
-        bytes.push(u8((w >> 16) & 255))
-        bytes.push(u8(w >> 24))
-    }
-    bytes.push(1)
-    for _ in 0..8 {
-        bytes.push(9)
-    }
-    let Some(r) = read_raster(bytes, 128.0) else { panic("an answer") }
-    assert(r.advance == 40.0 && r.left == -1.0 && r.top == 30.0 && r.colored && r.pixels.len() == 8)
-    bytes.push(0)
-    assert(read_raster(bytes, 128.0).is_none(), "a byte too many")
 }

@@ -6,8 +6,8 @@
 // A glyph's coverage comes from its distance field, so text is sharp at any size from one
 // atlas; a shape's comes from its own distance, so its edges are smooth at any angle.
 
-use raster::{Made, field, image, read_raster}
-use std::host::request
+use raster::{Made, field, image}
+use std::host
 use std::io::Pending
 use text::{Face, Fonts, next_cluster}
 use std::gpu::{
@@ -664,16 +664,13 @@ impl Renderer {
                 continue
             }
             font.ask(w.text.as_str())
-            var body: Vec<u8> = Vec::new()
-            body.push(if w.face == Face::Sans { 0 } else { 1 })
-            for b in [DRAWN_PX & 255, (DRAWN_PX >> 8) & 255, 0, 0] {
-                body.push(u8(b))
-            }
-            for i in 0..w.text.len() {
-                body.push(w.text.as_str().byte(i))
-            }
+            let face = if w.face == Face::Sans { u8(0) } else { u8(1) }
             self.asking.push(
-                Asking { face: w.face, text: w.text.clone(), answer: request("font/glyph", body) },
+                Asking {
+                    face: w.face,
+                    text: w.text.clone(),
+                    answer: host::glyph(face, DRAWN_PX, w.text.as_str()),
+                },
             )
         }
         var i = 0
@@ -684,7 +681,7 @@ impl Renderer {
             }
             let asked = self.asking.remove(i)
             let Ok(bytes) = answer else { continue }
-            let Some(drawn) = read_raster(bytes, f32(DRAWN_PX)) else { continue }
+            let Some(drawn) = host::read_glyph(bytes, f32(DRAWN_PX)) else { continue }
             borrow font = fonts.font(asked.face)
             let made = if drawn.colored { image(drawn, font.em) } else {
                 field(drawn, font.em, font.spread)

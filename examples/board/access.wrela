@@ -1,5 +1,5 @@
 // The board for screen readers and the keyboard: its controls and its items as a semantic tree
-// (std::semantics, `platform::host::publish`), and what a person does to them (`Event::Assist`)
+// (std::semantics, `std::host::publish`), and what a person does to them (`Event::Assist`)
 // as actions by node number. Controls are numbered below `ITEMS`, in a group; the items are a
 // list's options, and an item's node is `ITEMS` plus its id, so what's drawn over it never decides
 // what's acted on.

@@ -10,7 +10,7 @@
 // pad. The console can also ask, as the browser's Back does.
 use std::input::{Event, Key, Mods, Pad, PadButton, PADS}
 use std::io::{Pending, store}
-use host::{asked_to_return, ready, return_to_parent}
+use std::host::{asked_to_return, ready, return_to_parent}
 
 pub struct Link {
     signalled: bool,
