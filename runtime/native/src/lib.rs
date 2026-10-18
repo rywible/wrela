@@ -48,8 +48,8 @@ pub mod build_memory {
     pub use crate::shared::{slice, write};
 }
 pub use program::{
-    BuildHelpers, Failure, HelperRun, HostHandler, PostHandler, Ticked, Value, metered_engine,
-    refuse_host_functions,
+    BuildHelpers, Failure, HelperRun, HostHandler, PostHandler, Stop, Ticked, Value,
+    metered_engine, refuse_host_functions,
 };
 pub use wrela_abi::input::{Event, Scripted, parse_script};
 pub use wrela_abi::ticks::{TickLog, frame_time, lockstep_ticks};
@@ -280,6 +280,36 @@ fn compile_build_with_shaders(dir: &Path, fuel: Option<u64>, shaders: bool) -> R
     let sidecar = Path::new(&manifest.wasm).with_extension(wrela_abi::lines::SIDECAR);
     let sidecar = std::fs::read(dir.join(sidecar)).ok();
     let compiled = program::compile_cached(&wasm, wasm_hash, beside, fuel, sidecar.as_deref())?;
+    Ok(Build { manifest, shaders, wasm_hash, compiled })
+}
+
+/// What reads a build's files for a driven load: a file's bytes by its name in the build (the
+/// tool host reads them through its grants).
+pub type ReadBuild<'a> = dyn FnMut(&str) -> std::result::Result<Vec<u8>, String> + 'a;
+
+/// A build read through `read`, compiled to be driven (the tool host's `drive`, language.md
+/// §15.5): on the interruptible engine, its calls ended by `stop`, and with no compiled code
+/// read from or kept anywhere. `shaders` reads its WGSL too.
+fn driven_build(read: &mut ReadBuild, stop: Stop, shaders: bool) -> Result<Build> {
+    let mut file = |name: &str| read(name).map_err(|why| Error::Program(format!("{name}: {why}")));
+    let text = |bytes: Vec<u8>, name: &str| {
+        String::from_utf8(bytes).map_err(|_| Error::Program(format!("{name} isn't UTF-8")))
+    };
+    let manifest = Manifest::parse(&text(file("manifest.json")?, "manifest.json")?)?;
+    let wasm = file(&manifest.wasm)?;
+    let shaders = if shaders {
+        let mut out = Vec::new();
+        for p in &manifest.pipelines {
+            out.push(text(file(&p.shader)?, &p.shader)?);
+        }
+        out
+    } else {
+        Vec::new()
+    };
+    let wasm_hash = wrela_abi::ticks::wasm_hash(&wasm);
+    let sidecar = Path::new(&manifest.wasm).with_extension(wrela_abi::lines::SIDECAR);
+    let sidecar = read(&sidecar.to_string_lossy()).ok();
+    let compiled = program::compile_interruptible(&wasm, sidecar.as_deref(), stop)?;
     Ok(Build { manifest, shaders, wasm_hash, compiled })
 }
 
@@ -555,6 +585,31 @@ impl Host {
         let dir = dir.as_ref();
         let options = &options.homed(dir);
         let build = compile_build(dir, None)?;
+        Host::start(build, dir, options, true)
+    }
+
+    /// A build read through `read`, to be driven (the tool host's `drive`, language.md §15.5):
+    /// its calls end when `stop` is due, on each of its threads, and it keeps and reads no
+    /// compiled code. It can't hand over to another build or hot reload (a request to fails).
+    /// `dir` is where its program's file requests read; its storage is `options.storage`, which
+    /// a driven build must name.
+    pub fn load_driven(
+        read: &mut ReadBuild,
+        dir: &Path,
+        stop: Stop,
+        options: &Options,
+    ) -> Result<Host> {
+        if options.storage.is_none() || options.reloadable {
+            return Err(Error::Program(
+                "a driven build names its storage, and isn't reloadable".into(),
+            ));
+        }
+        let build = driven_build(read, stop, true)?;
+        Host::start(build, dir, options, false)
+    }
+
+    /// Starts `build`, in `dir`, on a new device; `hands_over` lets it hand over to other builds.
+    fn start(build: Build, dir: &Path, options: &Options, hands_over: bool) -> Result<Host> {
         let gpu = Gpu::new(&build.manifest, &build.shaders, options.timing)?;
         let n = workers(options.workers);
         let mut program = Program::instantiate_with(
@@ -569,7 +624,9 @@ impl Host {
         if options.reloadable {
             program.keep_ticks();
         }
-        program.hand_over_here();
+        if hands_over {
+            program.hand_over_here();
+        }
         let mut host = Host {
             program: Some(program),
             build,
@@ -869,6 +926,17 @@ impl Host {
     pub fn adapter(&mut self) -> String {
         self.p().executor().adapter()
     }
+
+    /// FNV-1a 64 over every byte the program has submitted since it loaded.
+    pub fn hash(&mut self) -> u64 {
+        self.p().hash().value()
+    }
+
+    /// Makes each helper hold back a task's result for `micros` microseconds once it's ready
+    /// ([`CpuHost::hold_jobs`]).
+    pub fn hold_jobs(&mut self, micros: u32) {
+        self.p().hold_jobs(micros);
+    }
 }
 
 /// Executes nothing: for [`CpuHost`], whose commands are only checked.
@@ -937,6 +1005,14 @@ impl CpuBuild {
 
     fn load_compiled(dir: &Path, fuel: Option<u64>) -> Result<CpuBuild> {
         Ok(Self::from_build(dir, compile_build(dir, fuel)?))
+    }
+
+    /// A build read through `read`, to be driven (the tool host's `drive`, language.md §15.5):
+    /// its hosts' calls end when `stop` is due, on each of their threads, and it keeps and reads
+    /// no compiled code. Its shaders aren't read. `dir` is where its program's file requests
+    /// read.
+    pub fn load_driven(read: &mut ReadBuild, dir: &Path, stop: Stop) -> Result<CpuBuild> {
+        Ok(Self::from_build(dir, driven_build(read, stop, false)?).quiet())
     }
 
     fn from_build(dir: &Path, build: Build) -> CpuBuild {
@@ -1139,6 +1215,12 @@ impl CpuHost {
     /// trapped (the program's panic).
     pub fn tick(&mut self) -> Result<Ticked> {
         self.program.tick()
+    }
+
+    /// Runs the next tick with `script`'s records of it (its tick-keyed events) queued after the
+    /// rest, as `wrela-host --no-gpu` does.
+    pub fn scripted_tick(&mut self, script: &[Scripted]) -> Result<()> {
+        self.program.scripted_tick(script, None)
     }
 
     /// Replays a tick log's first `ticks` ticks (all it has, if fewer), after `init`: checks the

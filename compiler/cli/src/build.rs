@@ -98,9 +98,17 @@ pub fn run(args: &[String]) -> ExitCode {
 
 /// The build's files with `game.wasm` optimized, and its trap locations beside it.
 fn optimized(files: &mut Vec<(String, Vec<u8>)>) -> Result<(), String> {
+    optimized_with(files, wrela_driver::optimize::optimize)
+}
+
+/// [`optimized`], with `optimize` making the optimized code and its table.
+pub(crate) fn optimized_with(
+    files: &mut Vec<(String, Vec<u8>)>,
+    optimize: impl FnOnce(&[u8]) -> Result<(Vec<u8>, Vec<u8>), String>,
+) -> Result<(), String> {
     let wasm =
         files.iter_mut().find(|(f, _)| f == "game.wasm").ok_or("the build has no game.wasm")?;
-    let (code, lines) = wrela_driver::optimize::optimize(&wasm.1)?;
+    let (code, lines) = optimize(&wasm.1)?;
     wasm.1 = code;
     files.push((LINES.to_string(), lines));
     Ok(())

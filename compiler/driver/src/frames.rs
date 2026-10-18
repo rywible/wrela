@@ -27,6 +27,7 @@ pub const HEIGHT: u32 = 480;
 
 /// Runs frame and tick tests `tests` (§13), given the constants computed into `data`: each
 /// test's failure, if it failed, with the errors building them found.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     checked: &Checked,
     sources: &SourceMap,
@@ -35,6 +36,7 @@ pub fn run(
     root: &Path,
     fuel: u64,
     bless: bool,
+    reach: &crate::reach::Reach,
 ) -> (Vec<crate::consts::Ran>, Vec<Diagnostic>) {
     let mut roots = wrela_lower::Roots::of(checked);
     roots.tests = tests.to_vec();
@@ -94,7 +96,7 @@ pub fn run(
         let ticks = matches!(run, TestRun::Ticks(_));
         let input = match &attrs.test_input {
             None => Input::Script(Vec::new()),
-            Some((input, span)) => match input_of(checked, data, root, input, ticks) {
+            Some((input, span)) => match input_of(checked, data, root, input, ticks, reach) {
                 Ok(s) => s,
                 Err((shown, why)) => {
                     let d = Diagnostic::new(
@@ -196,10 +198,11 @@ fn input_of(
     root: &Path,
     input: &TestInput,
     ticks: bool,
+    reach: &crate::reach::Reach,
 ) -> Result<Input, (String, String)> {
     match input {
         TestInput::File(path) => {
-            read_input(root, path, ticks).map_err(|why| (format!("`{path}`"), why))
+            read_input(reach, root, path, ticks).map_err(|why| (format!("`{path}`"), why))
         }
         TestInput::Const(c) => {
             let shown = checked.program.const_(*c).short();
@@ -221,7 +224,12 @@ fn input_of(
 
 /// The input at `path` in the package at `root`, or why it can't be read: a tick log (for a
 /// tick test, `ticks`) if its bytes start as one, else a script.
-fn read_input(root: &Path, path: &str, ticks: bool) -> Result<Input, String> {
+fn read_input(
+    reach: &crate::reach::Reach,
+    root: &Path,
+    path: &str,
+    ticks: bool,
+) -> Result<Input, String> {
     if wrela_abi::check::path_problem(path).is_some() {
         return Err("must be a path inside the package, with `/` between its parts".into());
     }
@@ -230,10 +238,10 @@ fn read_input(root: &Path, path: &str, ticks: bool) -> Result<Input, String> {
     if !full.starts_with(&root) {
         return Err("is outside the package".into());
     }
-    if !full.is_file() {
+    if !reach.is_file(&full) {
         return Err("isn't a regular file".into());
     }
-    let bytes = std::fs::read(full).map_err(|e| format!("can't be read: {e}"))?;
+    let bytes = reach.read(&full).map_err(|e| format!("can't be read: {e}"))?;
     if ticks && bytes.starts_with(&wrela_abi::ticks::MAGIC) {
         let log =
             wrela_host::TickLog::decode(&bytes).map_err(|e| format!("isn't a tick log: {e}"))?;
@@ -521,10 +529,20 @@ mod tests {
         symlink(outside.join("input.json"), pkg.join("outside.json")).expect("file symlink");
         symlink(&pkg, scratch.0.join("package-link")).expect("package symlink");
 
-        assert!(read_input(&pkg, "linked/input.json", false).is_err());
-        assert!(read_input(&pkg, "outside.json", false).is_err());
-        assert!(read_input(&pkg, "input.json", false).is_ok());
-        assert!(read_input(&scratch.0.join("package-link"), "input.json", false).is_ok());
+        assert!(
+            read_input(&crate::reach::Reach::anywhere(), &pkg, "linked/input.json", false).is_err()
+        );
+        assert!(read_input(&crate::reach::Reach::anywhere(), &pkg, "outside.json", false).is_err());
+        assert!(read_input(&crate::reach::Reach::anywhere(), &pkg, "input.json", false).is_ok());
+        assert!(
+            read_input(
+                &crate::reach::Reach::anywhere(),
+                &scratch.0.join("package-link"),
+                "input.json",
+                false
+            )
+            .is_ok()
+        );
     }
 
     #[cfg(unix)]

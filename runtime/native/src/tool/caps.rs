@@ -472,6 +472,48 @@ impl Caps {
         }
     }
 
+    /// The directory at `path`, by its real path, if it's a directory inside its root (the root
+    /// itself for `NAME`), and the root is granted for writing if `write`: what the toolchain
+    /// and drive services give the compiler and the native host, which read through `reach`.
+    pub(crate) fn dir_path(&self, path: &str, write: bool) -> Result<PathBuf, String> {
+        let (root, rel) = self.resolve(path, write)?;
+        let Some(rel) = rel else { return Ok(root.path.clone()) };
+        // Opened through the root's handle, so a link can't lead it out.
+        let meta = root.dir.metadata(rel).map_err(|e| failed(path, e))?;
+        if !meta.is_dir() {
+            return Err(format!("`{path}` isn't a directory"));
+        }
+        let real = root.path.join(rel).canonicalize().map_err(|e| failed(path, e))?;
+        if !real.starts_with(&root.path) {
+            return Err(format!("`{path}` leads outside its root"));
+        }
+        Ok(real)
+    }
+
+    /// Every root's real path and a handle of its own to its directory, read roots and write
+    /// roots alike: where the toolchain service lets the compiler read.
+    pub(crate) fn readable(&self) -> Result<Vec<(PathBuf, Dir)>, String> {
+        self.roots
+            .iter()
+            .map(|(name, r)| {
+                let dir = r.dir.try_clone().map_err(|e| format!("the root `{name}`: {e}"))?;
+                Ok((r.path.clone(), dir))
+            })
+            .collect()
+    }
+
+    /// The bytes of the regular file at `path`, at most `most`: more is an error.
+    pub(crate) fn read_most(&self, path: &str, most: u64) -> Result<Vec<u8>, String> {
+        let (dir, rel) = self.file(path, false)?;
+        let file = open_file(dir, rel, path, false)?;
+        let mut bytes = Vec::new();
+        file.take(most + 1).read_to_end(&mut bytes).map_err(|e| failed(path, e))?;
+        if bytes.len() as u64 > most {
+            return Err(format!("`{path}` is more than {most} bytes"));
+        }
+        Ok(bytes)
+    }
+
     /// The bytes of the file at `path`, at most [`MOST_BYTES`].
     pub(crate) fn read(&self, path: &str) -> Result<Vec<u8>, String> {
         let (dir, rel) = self.file(path, false)?;
