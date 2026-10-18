@@ -535,6 +535,33 @@ against ureq's transport interface. A second round found a program that could ta
 supervisor knew of it, and a stalled name lookup that outlasted its deadline when the tool had no
 timeout; both are fixed with regressions.
 
+The fourth slice adds `std::tool::image` and `std::tool::serve` (language.md §15.5); Claude (Opus
+5.5) implemented it. The images come from outside Rust crates, used as libraries; no code was
+copied. [png](https://github.com/image-rs/image-png) (MIT or Apache-2.0), already in the build for
+the GPU host's frames, reads and writes PNGs. [zune-jpeg](https://github.com/etemesi254/zune-image)
+and its `zune-core` (MIT, Apache-2.0 or Zlib) decode JPEGs, without their SIMD paths so that a
+JPEG gives the same pixels on every machine. [webp](https://github.com/jaredforth/webp) (MIT or
+Apache-2.0) and [libwebp-sys](https://github.com/NoXF/libwebp-sys) (MIT) decode WebPs and encode
+lossy ones through Google's [libwebp](https://chromium.googlesource.com/webm/libwebp) 1.3.1 (BSD-3-Clause,
+with Google's patent grant), which libwebp-sys compiles from its own copy of the source, with
+`jobserver` and `glob` (MIT or Apache-2.0) at build time. tools/console.py makes its covers with
+Pillow (HPND licence) and libwebp: the resize follows Pillow's Lanczos3 weights (each output
+pixel's centre, the kernel widened by the shrink, the weights normalized) and its premultiplied
+RGBA, and `image::fit` follows the size rule of Pillow's `thumbnail`, as described in its
+documentation and source; no code was copied. The resize's test computes its reference from the
+Lanczos formula itself. The image fixtures in compiler/tests/images are four flat colours that
+Claude made: the PNG and the WebP with the png and webp crates, the JPEG from the PNG with
+macOS's `sips`. The council's review of the slice (GPT-6.1-Sol and GPT-6-Astra) found a WebP
+whose frame wasn't its canvas's size decoded at the frame's size under the canvas's reservation
+(image-webp, which the first version used, decodes the frame first, and its lossless decoder's
+Huffman tables have no bound a reservation could hold; libwebp's are bounded by the image's
+size, so it decodes WebPs now, after the host reads every chunk), a resize and an encoder that
+held more than they reserved, a 1×1 WebP that couldn't be encoded, posts whose deadlines
+weren't kept while their bodies were read or after they were given to the tool, and a codec
+that didn't stop leaving the run's end clean. Each is fixed with a regression that fails
+without it. The local server is the toolchain's (the driver's servers' HTTP moved to
+`wrela_host::loopback`, which both now use), and adds no crate.
+
 ## The references
 
 ### The rules
