@@ -6,8 +6,8 @@
 name = "last_green"
 
 [dependencies]
-climber = { path = "../../content/climber" }
-engine = { path = "../../engine" }
-fawn = { path = "../../content/fawn" }
-great_tree = { path = "../../content/great-tree" }
-platform = { path = "../../platform" }
+climber = { workspace = true }
+engine = { workspace = true }
+fawn = { workspace = true }
+great_tree = { workspace = true }
+platform = { workspace = true }

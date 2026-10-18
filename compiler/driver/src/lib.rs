@@ -27,6 +27,7 @@ pub mod script;
 pub mod serve;
 pub mod shipped;
 pub mod studio;
+pub mod workspace;
 
 /// std's modules: each one's path and source.
 pub use wrela_sema::STD_SOURCES;
@@ -795,6 +796,8 @@ fn load_with(root: &Path, overlay: &Overlay) -> (SourceMap, Vec<Diagnostic>, Opt
         visiting: Vec::new(),
         layout_failed: false,
         files: Vec::new(),
+        manifests: Vec::new(),
+        workspaces: Vec::new(),
     };
     for (k, (name, text)) in STD_SOURCES.iter().enumerate() {
         // std's files come first in every compile, so their file ids, and what parsing them
@@ -874,6 +877,11 @@ struct Loader {
     layout_failed: bool,
     /// Every package's files but std's: each one's package and path.
     files: Vec<(wrela_diag::FileId, usize, std::path::PathBuf)>,
+    /// Each manifest read, by its path (in a canonical directory), and what it says if it reads:
+    /// a workspace's that is a package's too is read, and its errors reported, once.
+    manifests: Vec<(std::path::PathBuf, Option<manifest::Manifest>)>,
+    /// Each workspace consulted, by its manifest's path, and its members if it reads.
+    workspaces: Vec<(std::path::PathBuf, Option<Vec<workspace::Member>>)>,
 }
 
 impl Loader {
@@ -942,7 +950,9 @@ impl Loader {
             match text {
                 Ok(text) => {
                     let f = self.sources.add(display, text);
-                    match manifest::parse(f, &self.sources.file(f).text.clone()) {
+                    let parsed = manifest::parse(f, &self.sources.file(f).text.clone());
+                    self.manifests.push((canon.join("wrela.toml"), parsed.clone().ok()));
+                    match parsed {
                         Ok(m) => m,
                         Err(errors) => {
                             self.diags.extend(errors);
@@ -963,6 +973,20 @@ impl Loader {
         } else {
             manifest::Manifest::default()
         };
+        if let Some(w) = manifest.workspace.as_ref().filter(|_| !manifest.package) {
+            self.diags.push(
+                Diagnostic::new(
+                    codes::E0223,
+                    w.span,
+                    "this `wrela.toml` is a workspace's, with no `[package]`, so its directory isn't a package",
+                )
+                .with_help("check or build one of its members, or add a `[package]` to make it one"),
+            );
+            if program {
+                self.layout_failed = true;
+            }
+            return None;
+        }
         let pkg_name = match (&manifest.name, name) {
             (Some((n, _)), _) => n.clone(),
             (None, Some(n)) => n.to_string(),
@@ -978,7 +1002,7 @@ impl Loader {
             lifted: false,
         });
         self.dirs.push((canon.clone(), index));
-        self.visiting.push((canon, pkg_name, at));
+        self.visiting.push((canon.clone(), pkg_name, at));
         let files = match package::find_files(dir) {
             Ok(files) => files,
             Err(errors) => {
@@ -1049,7 +1073,13 @@ impl Loader {
                 );
                 continue;
             }
-            let dep_dir = dir.join(&dep.path);
+            let dep_dir = match &dep.source {
+                manifest::Source::Path(path) => dir.join(path),
+                manifest::Source::Workspace => match self.member(&canon, &dep.name, dep.span) {
+                    Some(d) => d,
+                    None => continue,
+                },
+            };
             if let Some(j) =
                 self.package(&dep_dir, Some(&dep.name), PackageKind::Dependency, Some(dep.span))
             {
@@ -1058,6 +1088,85 @@ impl Loader {
         }
         self.visiting.pop();
         Some(index)
+    }
+
+    /// The directory of the member named `name` of the workspace of the package in `dir`,
+    /// which depends on it at `at`; `None` when there's none (reported, E0220).
+    fn member(&mut self, dir: &Path, name: &str, at: Span) -> Option<std::path::PathBuf> {
+        let Some(path) = workspace::find(dir) else {
+            self.diags.push(
+                Diagnostic::new(
+                    codes::E0220,
+                    at,
+                    format!("the dependency `{name}` is a workspace's member, but no `wrela.toml` at or above this package has `[workspace]`"),
+                )
+                .with_help("give it a `path`, or list its directory in the `members` of a workspace above this package"),
+            );
+            return None;
+        };
+        // A workspace that doesn't read is reported already.
+        let members = self.workspace(&path)?;
+        if let Some(m) = members.iter().find(|m| m.name == name) {
+            return Some(m.dir.clone());
+        }
+        let shown = self.shown(&path);
+        self.diags.push(
+            Diagnostic::new(codes::E0220, at, format!("the workspace `{shown}` has no member named `{name}`"))
+                .with_note("a member's name is its `[package] name`, else its directory's with `-` read as `_`")
+                .with_help("list the package's directory in the workspace's `members`, or fix the name"),
+        );
+        None
+    }
+
+    /// The members of the workspace whose manifest is at `path`, read once: `None` if it doesn't
+    /// read (reported).
+    fn workspace(&mut self, path: &Path) -> Option<Vec<workspace::Member>> {
+        if let Some((_, members)) = self.workspaces.iter().find(|w| w.0 == path) {
+            return members.clone();
+        }
+        let members = self.manifest_at(path).and_then(|m| {
+            let (members, errors) = workspace::members(path, m.workspace.as_ref()?);
+            self.diags.extend(errors);
+            Some(members)
+        });
+        self.workspaces.push((path.to_path_buf(), members.clone()));
+        members
+    }
+
+    /// The manifest at `path` (in a canonical directory), read once: `None` if it doesn't read
+    /// (reported).
+    fn manifest_at(&mut self, path: &Path) -> Option<manifest::Manifest> {
+        if let Some((_, m)) = self.manifests.iter().find(|m| m.0 == path) {
+            return m.clone();
+        }
+        let shown = self.shown(path);
+        let parsed = match std::fs::read_to_string(path) {
+            Ok(text) => {
+                let f = self.sources.add(shown, text);
+                manifest::parse(f, &self.sources.file(f).text.clone())
+                    .map_err(|errors| self.diags.extend(errors))
+                    .ok()
+            }
+            Err(why) => {
+                let f = self.sources.add(shown.clone(), "");
+                self.diags.push(Diagnostic::new(
+                    codes::E0205,
+                    Span::new(f, 0, 0),
+                    format!("can't read `{shown}`: {why}"),
+                ));
+                None
+            }
+        };
+        self.manifests.push((path.to_path_buf(), parsed.clone()));
+        parsed
+    }
+
+    /// How a diagnostic shows the file at `path`: by its path from the program's directory.
+    fn shown(&self, path: &Path) -> String {
+        match self.dirs.first() {
+            Some((root, _)) => lift::relative(path, root),
+            None => path.display().to_string(),
+        }
     }
 }
 

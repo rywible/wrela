@@ -5,5 +5,5 @@
 name = "stair"
 
 [dependencies]
-engine = { path = "../../../engine" }
-platform = { path = "../../../platform" }
+engine = { workspace = true }
+platform = { workspace = true }
