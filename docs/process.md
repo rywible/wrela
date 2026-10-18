@@ -509,7 +509,10 @@ on Ctrl-C and clean up after it. Both are used as libraries; no code was copied.
 [libc](https://github.com/rust-lang/libc) bindings (MIT or Apache-2.0), already in the build,
 give the host `O_NONBLOCK`, so opening a FIFO never holds a worker. A second council review
 found that blocked file work could outlast the run's end, that failures to set up interruption
-were ignored, and that a huge `--timeout` panicked; each is fixed with a regression.
+were ignored, and that a huge `--timeout` panicked; each is fixed with a regression. A third
+round found that a console nobody reads could hold `print`, and so the run, past `--timeout`
+and Ctrl-C, and that a released blob's bytes left the budget while a write still held them;
+both are fixed with regressions.
 
 ## The references
 

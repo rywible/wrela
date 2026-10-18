@@ -280,6 +280,7 @@ use std::io::{IoError, Pending, print}
 use std::job::{Job, Step}
 use std::tool::{RUNNING, answer, secret}
 use std::tool::files
+use std::tool::time::after
 
 /// Prints what an answer says: `ok`, or why the request failed.
 fn say(what: str, polled: take Result<Vec<u8>, IoError>) {
@@ -334,8 +335,23 @@ fn main() -> u32 {
     if secret("PATH").is_none() {
         print("secret PATH: not granted")
     }
-    // A directory checked, then swapped for a link out of the root before it's read.
+    // A directory checked, then swapped for a link out of the root before it's read: the test's
+    // printer swaps it, on the host's console thread, and the tool waits until it sees the swap.
     print("checked in/swap")
+    loop {
+        var s = files::stat("in/swap")
+        var st = s.poll()
+        while st.is_none() {
+            yield
+            st = s.poll()
+        }
+        let Some(a) = take st else { return 91 }
+        if answer(take a).is_err() {
+            break
+        }
+        var t = after(0.01)
+        while t.poll().is_none() { yield }
+    }
     var p = files::read("in/swap/secret.txt")
     var got = p.poll()
     while got.is_none() {

@@ -103,8 +103,21 @@ pub fn run(args: &[String]) -> ExitCode {
     options.interrupt = Some(interrupt);
     let ended = wrela_host::tool::run(&ToolBuild::from_wasm(wasm.clone()), options);
     if !matches!(ended.end, wrela_host::tool::End::Exit(_)) {
-        eprintln!("error: {}", ended.end);
+        say(format!("error: {}", ended.end));
     }
     // Ends the process here, so a worker still past its grace (the end says so) can't outlive it.
     std::process::exit(i32::from(ended.end.status()))
+}
+
+/// Writes `text` to standard error from a thread of its own, waiting for it at most a second:
+/// a standard error that nobody reads can't keep the process from ending.
+fn say(text: String) {
+    let (done, wait) = std::sync::mpsc::channel();
+    let spawned = std::thread::Builder::new().spawn(move || {
+        eprintln!("{text}");
+        let _ = done.send(());
+    });
+    if spawned.is_ok() {
+        let _ = wait.recv_timeout(Duration::from_secs(1));
+    }
 }

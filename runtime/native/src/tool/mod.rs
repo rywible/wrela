@@ -14,6 +14,10 @@
 //! Every service is given one capability context ([`Caps`]), made from the command line's
 //! grants, and reaches files and secrets through it alone.
 //!
+//! **Printing never waits.** A line the tool prints goes on a bounded queue, and a thread of the
+//! host's own hands it to the [`Printer`]; a full queue drops the line and counts it. So a
+//! console nobody reads can't hold a call where the clock thread can't stop it.
+//!
 //! **Every end is clean.** However the tool ends (its exit status, a trap, `--timeout`, an
 //! interrupt, waiting on nothing), the host stops its workers (work not started is dropped,
 //! work in progress gets a bounded grace), stops the clock thread that interrupts calls, and
@@ -25,11 +29,13 @@
 
 mod blobs;
 mod caps;
+mod console;
 mod services;
 
 pub use blobs::BlobBudget;
 pub use caps::{Caps, Grants};
 
+use console::Console;
 use services::{Answer, Services, Task, Work};
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
@@ -75,7 +81,8 @@ pub struct Options {
     pub blob_budget: BlobBudget,
     /// Set (by a Ctrl-C handler) to stop the tool.
     pub interrupt: Option<Arc<AtomicBool>>,
-    /// Where the tool's `print` lines go.
+    /// Where the tool's `print` lines go, from a thread of the host's own: the tool never waits
+    /// on it.
     pub print: Printer,
     /// What only tests change.
     #[doc(hidden)]
@@ -176,6 +183,8 @@ pub struct Ended {
     /// Worker threads still running past the grace (0 unless a service was stuck, and then the
     /// end is [`End::Host`]).
     pub workers_left: usize,
+    /// The lines the tool printed that the console didn't take in time, and the host dropped.
+    pub lines_dropped: u64,
 }
 
 /// A tool build: its module's bytes, compiled for each run.
@@ -213,7 +222,7 @@ struct ToolState {
     answered: HashMap<u32, Answer>,
     /// The requests whose answers the current call read.
     taken: Vec<u32>,
-    print: Printer,
+    console: Console,
     clock: Instant,
 }
 
@@ -388,8 +397,12 @@ fn stop_reason(interrupt: &Option<Arc<AtomicBool>>, deadline: Option<Instant>) -
 
 /// Runs the tool to its end, and cleans up after it.
 pub fn run(build: &ToolBuild, options: Options) -> Ended {
-    let failed =
-        |why: String| Ended { end: End::Host(why), blobs_released: (0, 0), workers_left: 0 };
+    let failed = |why: String| Ended {
+        end: End::Host(why),
+        blobs_released: (0, 0),
+        workers_left: 0,
+        lines_dropped: 0,
+    };
     let deadline = match options.timeout.map(|t| Instant::now().checked_add(t)) {
         None => None,
         Some(Some(d)) => Some(d),
@@ -408,12 +421,21 @@ pub fn run(build: &ToolBuild, options: Options) -> Ended {
     let (done, answers) = mpsc::channel();
     let pool = Pool::start(&services, &done);
     drop(done);
+    let (console, writer) = match Console::start(print) {
+        Ok(c) => c,
+        Err(why) => {
+            let workers_left = pool.stop(testing.grace);
+            return Ended { workers_left, ..failed(why) };
+        }
+    };
     let ticker = match Ticker::start(&engine, testing.fail_clock_thread) {
         Ok(t) => t,
         Err(why) => {
             // Before any Wasm runs: the workers already started stop with it.
             let workers_left = pool.stop(testing.grace);
-            return Ended { workers_left, ..failed(why) };
+            drop(console);
+            let lines_dropped = writer.stop(testing.grace);
+            return Ended { workers_left, lines_dropped, ..failed(why) };
         }
     };
     let mut run = Run {
@@ -426,9 +448,11 @@ pub fn run(build: &ToolBuild, options: Options) -> Ended {
         timers: BinaryHeap::new(),
         arrived: Vec::new(),
     };
-    let mut end = run.drive(&engine, build, start, print);
+    // The store, and the console's sending end in it, go when `drive` returns.
+    let mut end = run.drive(&engine, build, start, console);
     ticker.stop();
     let workers_left = pool.stop(testing.grace);
+    let lines_dropped = writer.stop(testing.grace);
     // A worker past its grace may still be changing files: that isn't a clean end.
     if workers_left > 0 {
         end = End::Host(format!(
@@ -439,7 +463,7 @@ pub fn run(build: &ToolBuild, options: Options) -> Ended {
     // No file work holds the table's lock, so a stuck worker can't keep this waiting.
     let blobs_released =
         services.blobs.lock().unwrap_or_else(std::sync::PoisonError::into_inner).release_all();
-    Ended { end, blobs_released, workers_left }
+    Ended { end, blobs_released, workers_left, lines_dropped }
 }
 
 /// A run in progress: what's outstanding, and where answers come from.
@@ -458,7 +482,13 @@ struct Run<'a> {
 }
 
 impl Run<'_> {
-    fn drive(&mut self, engine: &Engine, build: &ToolBuild, start: Vec<u8>, print: Printer) -> End {
+    fn drive(
+        &mut self,
+        engine: &Engine,
+        build: &ToolBuild,
+        start: Vec<u8>,
+        console: Console,
+    ) -> End {
         let module = match Module::new(engine, &build.wasm) {
             Ok(m) => m,
             Err(e) => return End::Host(format!("compiling the tool build: {e:#}")),
@@ -480,7 +510,7 @@ impl Run<'_> {
             made: Vec::new(),
             answered: HashMap::new(),
             taken: Vec::new(),
-            print,
+            console,
             clock: Instant::now(),
         };
         let mut store = Store::new(engine, state);
@@ -760,7 +790,8 @@ fn linker(engine: &Engine) -> wasmtime::Result<Linker<ToolState>> {
         IMPORT_PRINT,
         |mut c: Caller<'_, ToolState>, at: u32, len: u32| {
             let line = String::from_utf8_lossy(&read(&mut c, at, len)?).into_owned();
-            (c.data().print)(&line);
+            // Queued, never waited on: a console that doesn't take lines can't hold the tool.
+            c.data().console.print(line);
             Ok(())
         },
     )?;

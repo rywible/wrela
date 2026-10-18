@@ -131,3 +131,65 @@ pub fn tool() -> u32 {
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("isn't set in the environment"));
 }
+
+/// Waits for `child` at most `bound`: its exit code, or `None` (and it's killed) past it.
+fn exit_within(child: &mut std::process::Child, bound: std::time::Duration) -> Option<i32> {
+    let started = std::time::Instant::now();
+    while started.elapsed() < bound {
+        if let Some(status) = child.try_wait().expect("wait") {
+            return status.code();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    None
+}
+
+#[test]
+fn a_console_nobody_reads_holds_up_neither_the_timeout_nor_ctrl_c() {
+    use std::io::Read;
+    use std::process::Stdio;
+    // Prints without end, in one call: its standard output fills and nobody drains it.
+    let main = r#"
+use std::io::print
+
+pub fn tool() -> u32 {
+    let line = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    loop {
+        print(line)
+    }
+    0
+}
+"#;
+    let dir =
+        package("tool-console", &[("wrela.toml", &manifest("tool_console")), ("main.wrela", main)]);
+    let bound = std::time::Duration::from_secs(30);
+    let mut child = wrela()
+        .arg("tool")
+        .arg(&dir)
+        .args(["--timeout", "1"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run wrela tool");
+    assert_eq!(exit_within(&mut child, bound), Some(124), "the timeout ends it");
+
+    let mut child = wrela()
+        .arg("tool")
+        .arg(&dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run wrela tool");
+    // Once it prints, it runs (its Ctrl-C handler is set); then nothing reads what it prints.
+    let mut first = [0u8; 1];
+    child.stdout.as_mut().expect("its output").read_exact(&mut first).expect("a line");
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let sent = std::process::Command::new("kill")
+        .args(["-INT", &child.id().to_string()])
+        .status()
+        .expect("kill");
+    assert!(sent.success());
+    assert_eq!(exit_within(&mut child, bound), Some(130), "the first Ctrl-C ends it");
+}

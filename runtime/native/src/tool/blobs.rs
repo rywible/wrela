@@ -7,6 +7,7 @@
 //!
 //! The table's lock is held for memory work alone, never for a file's: a service that writes a
 //! blob to a file takes a handle to its bytes ([`Blobs::get`]) and writes after letting go.
+//! While it writes, the blob can't be appended to or released, so its bytes stay counted.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -130,8 +131,15 @@ impl Blobs {
         self.held.get(&id).cloned().ok_or_else(|| no_blob(id))
     }
 
-    /// Frees blob `id`.
+    /// Frees blob `id`. A blob being written to a file is refused, as an append to it is: its
+    /// bytes stay charged to the budget until the write is done with them.
     pub(crate) fn release(&mut self, id: u32) -> Result<(), String> {
+        let blob = self.held.get(&id).ok_or_else(|| no_blob(id))?;
+        if Arc::strong_count(blob) > 1 {
+            return Err(format!(
+                "blob {id} is being written to a file: release it once that's done"
+            ));
+        }
         let blob = self.held.remove(&id).ok_or_else(|| no_blob(id))?;
         self.bytes -= blob.len() as u64;
         for ids in self.unpublished.values_mut() {
@@ -179,6 +187,21 @@ mod tests {
         b.release(one).expect("released");
         b.create(4).expect("a handle is free again");
         assert_eq!(b.release_all(), (2, 0));
+    }
+
+    #[test]
+    fn a_blob_being_written_stays_charged_until_the_write_lets_go() {
+        let mut b = Blobs::new(BlobBudget { bytes: 8, handles: 4 });
+        let one = b.create(1).expect("a blob");
+        b.append(one, &[1; 8]).expect("8 bytes");
+        // A write to a file holds the bytes.
+        let writing = b.get(one).expect("held");
+        assert!(b.release(one).unwrap_err().contains("being written"));
+        let two = b.create(2).expect("a handle");
+        assert!(b.append(two, &[2; 8]).unwrap_err().contains("budget"), "the 8 bytes are held");
+        drop(writing);
+        b.release(one).expect("released once the write is done");
+        b.append(two, &[2; 8]).expect("the budget is free again");
     }
 
     #[test]
