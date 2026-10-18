@@ -3,5 +3,5 @@
 name = "grazer"
 
 [dependencies]
-engine = { path = "../../engine" }
-round1 = { path = "../round1" }
+engine = { workspace = true }
+round1 = { workspace = true }

@@ -5,6 +5,6 @@
 name = "map"
 
 [dependencies]
-maplens = { path = ".." }
-engine = { path = "../../../engine" }
-last_green = { path = "../../../games/last-green" }
+maplens = { workspace = true }
+engine = { workspace = true }
+last_green = { workspace = true }

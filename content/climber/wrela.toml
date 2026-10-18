@@ -6,5 +6,5 @@
 name = "climber"
 
 [dependencies]
-engine = { path = "../../engine" }
-wolf = { path = "../wolf" }
+engine = { workspace = true }
+wolf = { workspace = true }

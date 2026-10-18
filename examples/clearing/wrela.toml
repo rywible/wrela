@@ -6,6 +6,6 @@
 name = "clearing"
 
 [dependencies]
-engine = { path = "../../engine" }
-fawn = { path = "../../content/fawn" }
-great_tree = { path = "../../content/great-tree" }
+engine = { workspace = true }
+fawn = { workspace = true }
+great_tree = { workspace = true }

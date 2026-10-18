@@ -5,5 +5,5 @@
 name = "climber_arena"
 
 [dependencies]
-engine = { path = "../../engine" }
-climber = { path = "../../content/climber" }
+engine = { workspace = true }
+climber = { workspace = true }

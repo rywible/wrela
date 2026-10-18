@@ -4,5 +4,5 @@
 name = "leapling_session"
 
 [dependencies]
-leapling = { path = ".." }
-platform = { path = "../../../platform" }
+leapling = { workspace = true }
+platform = { workspace = true }

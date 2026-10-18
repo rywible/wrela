@@ -4,6 +4,6 @@
 name = "maplens"
 
 [dependencies]
-studio = { path = ".." }
-ui = { path = "../../ui" }
-engine = { path = "../../engine" }
+studio = { workspace = true }
+ui = { workspace = true }
+engine = { workspace = true }

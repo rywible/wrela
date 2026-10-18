@@ -4,5 +4,5 @@
 name = "docsite"
 
 [dependencies]
-ui = { path = "../ui" }
-brand = { path = "../ui/brand" }
+ui = { workspace = true }
+brand = { workspace = true }

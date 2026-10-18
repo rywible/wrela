@@ -2,6 +2,6 @@
 name = "console"
 
 [dependencies]
-ui = { path = "../ui" }
-platform = { path = "../platform" }
-brand = { path = "../ui/brand" }
+ui = { workspace = true }
+platform = { workspace = true }
+brand = { workspace = true }

@@ -7,6 +7,6 @@
 name = "climber_lab"
 
 [dependencies]
-engine = { path = "../../engine" }
-climber = { path = "../../content/climber" }
-wolf = { path = "../../content/wolf" }
+engine = { workspace = true }
+climber = { workspace = true }
+wolf = { workspace = true }

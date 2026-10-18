@@ -1,0 +1,25 @@
+# The workspace: every wrela package of the project but the toolchain's own (compiler/std and
+# compiler/tests), which depend on each other by name (`engine = { workspace = true }`). The
+# directory itself isn't a package.
+[workspace]
+members = [
+    "console",
+    "content/*",
+    "docsite",
+    "engine",
+    "examples/*",
+    "games/*",
+    "games/last-green/session",
+    "games/last-green/stair",
+    "games/last-green/test-floor",
+    "games/leapling/session",
+    "platform",
+    "studio",
+    "studio/glue",
+    "studio/maplens",
+    "studio/maplens/glue",
+    "studio/tests/views",
+    "ui",
+    "ui/brand",
+    "ui/tests/*",
+]
