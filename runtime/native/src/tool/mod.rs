@@ -10,13 +10,15 @@
 //!
 //! **Services run beside the tool.** A call never waits on one: the requests a call makes are
 //! carried out after it returns, on the host's worker threads (files, blobs, HTTP, programs, the
-//! toolchain, driven builds) or by the host's own loop (timers, the date), and each answer
-//! reaches the tool no sooner than its next call. Every service is given one capability context ([`Caps`]), made from the
+//! toolchain, driven builds, images, servers) or by the host's own loop (timers, the date, a
+//! served post's wait, which the server answers when a post comes), and each answer reaches the
+//! tool no sooner than its next call. Every service is given one capability context ([`Caps`]), made from the
 //! command line's grants, and reaches files, secrets, hosts and programs through it alone.
 //!
 //! **A tool test's clock is fake** ([`Options::fake_clock`], language.md §13.2). It moves only
 //! when every outstanding request is one the clock answers (a timer, or a fake site's answer
-//! held for its delay): then it jumps to the soonest. While a worker has a request, it waits.
+//! held for its delay), or one that waits on an event no tool test makes (a served post): then
+//! it jumps to the soonest. While a worker has a request, it waits.
 //!
 //! **Printing never waits.** A line the tool prints goes on a bounded queue, and a thread of the
 //! host's own hands it to the [`Printer`]; a full queue drops the line and counts it. So a
@@ -28,10 +30,12 @@
 //! releases every blob, those of requests the tool never read first ([`Ended`] says what was
 //! left). A worker running a program kills its process group as it sees the end, one
 //! waiting for an HTTP response shuts its connection down and joins the client's thread, one
-//! waiting for the toolchain cancels its work, and every driven build's calls are stopped, then
-//! each build is closed, with the same grace; then the directory the run's programs had is
-//! removed. No file work holds the blob table's lock, so a stuck worker can't hold up the
-//! release. A worker or a driven build still running after the grace makes the end the host's
+//! waiting for the toolchain or an image cancels its work, and every driven build's calls are
+//! stopped, then each build and each server is closed, with the same grace (a server's listener
+//! and connections are shut and its threads joined, so its port is closed when the run
+//! returns); then the directory the run's programs had is removed. No file work holds the blob
+//! table's lock, so a stuck worker can't hold up the release. A worker, a driven build or a
+//! server's thread still running after the grace makes the end the host's
 //! failure (status 71), whatever the tool's own end was, and `wrela tool` then ends the process,
 //! so no worker outlives it. The host keeps no compiled code: it compiles the tool's WASM, and a
 //! driven build's, for each run, so nothing it loads comes from a directory a tool could write.
@@ -41,7 +45,9 @@ mod caps;
 mod console;
 mod drive;
 mod http;
+mod image;
 mod run;
+mod serve;
 mod services;
 pub mod toolchain;
 
@@ -127,7 +133,7 @@ pub struct Options {
 /// written to a file, a clock thread that fails to start, where the run's own directory is, a
 /// pause between a program's start and its record, a name lookup that stalls, and, for the
 /// toolchain's outputs, one write held a while and one that fails part way (each chosen by its
-/// path's end, or `#n` for a request's `n`th write).
+/// path's end, or `#n` for a request's `n`th write), and a server's start that fails once it listens.
 #[doc(hidden)]
 #[derive(Clone, Debug)]
 pub struct Testing {
@@ -139,6 +145,7 @@ pub struct Testing {
     pub resolve_stall: Duration,
     pub hold: Option<(String, Duration)>,
     pub write_fail: Option<String>,
+    pub fail_server_start: bool,
 }
 
 impl Default for Testing {
@@ -152,6 +159,7 @@ impl Default for Testing {
             resolve_stall: Duration::ZERO,
             hold: None,
             write_fail: None,
+            fail_server_start: false,
         }
     }
 }
@@ -376,6 +384,14 @@ impl Pool {
                                         .set("a failed request's driven build didn't close".into());
                                 }
                             }
+                            let made = services.servers().rollback(request);
+                            for server in made {
+                                if !server.close(&services, services.grace) {
+                                    let _ = services
+                                        .stuck
+                                        .set("a failed request's server didn't close".into());
+                                }
+                            }
                         }
                         if done.send((request, answer)).is_err() {
                             break;
@@ -557,9 +573,14 @@ pub fn run(build: &ToolBuild, options: Options) -> Ended {
         toolchain: toolchain.map(|toolchain| toolchain::Service { toolchain, cache }),
         hold: testing.hold.clone(),
         write_fail: testing.write_fail.clone(),
+        fail_server_start: testing.fail_server_start,
         drives: Mutex::default(),
+        servers: Mutex::default(),
+        answers: Mutex::new(None),
     });
     let (done, answers) = mpsc::channel();
+    *services.answers.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+        Some(done.clone());
     let pools = Pools {
         files: Pool::start(&services, &done, "files", WORKERS),
         long: Pool::start(&services, &done, "long", LONG_WORKERS),
@@ -596,6 +617,7 @@ pub fn run(build: &ToolBuild, options: Options) -> Ended {
         timed_answers: HashMap::new(),
         due: HashMap::new(),
         arrived: Vec::new(),
+        later: HashSet::new(),
     };
     // The store, and the console's sending end in it, go when `drive` returns.
     let mut end = run.drive(&engine, build, &entries, start, console);
@@ -612,6 +634,15 @@ pub fn run(build: &ToolBuild, options: Options) -> Ended {
             workers_left += 1;
         }
     }
+    // And each server: its listener and connections shut, its threads joined, so its port is
+    // closed when this returns. Nothing answers the run's requests after this.
+    let servers = services.servers().take_all();
+    for server in servers {
+        if !server.close(&services, until.saturating_duration_since(Instant::now())) {
+            workers_left += 1;
+        }
+    }
+    services.answers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
     let lines_dropped = writer.stop(testing.grace);
     // Its programs' files and `HOME`: no program runs now (each worker kills its own as the
     // tool ends), unless a worker is still past its grace.
@@ -659,6 +690,10 @@ struct Run<'a> {
     due: HashMap<u32, Duration>,
     /// Answers that have arrived since the last call.
     arrived: Vec<(u32, Answer)>,
+    /// Requests a service answers itself when something happens ([`Work::Later`]), not answered
+    /// yet: in a tool test, nothing makes that happen (nothing posts to its server), so the fake
+    /// clock moves while they wait.
+    later: HashSet<u32>,
 }
 
 impl Run<'_> {
@@ -785,6 +820,7 @@ impl Run<'_> {
             let s = store.data_mut();
             for (request, answer) in self.arrived.drain(..) {
                 self.outstanding.remove(&request);
+                self.later.remove(&request);
                 s.answered.insert(request, answer);
             }
         }
@@ -798,9 +834,11 @@ impl Run<'_> {
             let mut blobs =
                 self.services.blobs.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let mut drives = self.services.drives();
+            let mut servers = self.services.servers();
             for request in s.taken.drain(..) {
                 blobs.publish(request);
                 drives.publish(request);
+                servers.publish(request);
             }
         }
         for (request, service, body) in std::mem::take(&mut s.made) {
@@ -819,6 +857,12 @@ impl Run<'_> {
                     self.due.insert(request, self.now() + after);
                     self.pools.long.send(request, task);
                 }
+                Work::Later(register) => match register(self.services, request) {
+                    Some(answer) => self.arrived.push((request, answer)),
+                    None => {
+                        self.later.insert(request);
+                    }
+                },
                 Work::Utc => self.arrived.push((request, self.utc())),
                 Work::SetUtc(seconds, nanos) => {
                     let answer = match &mut self.fake {
@@ -861,9 +905,10 @@ impl Run<'_> {
             if let Some(why) = stop_reason(self.interrupt, self.deadline, &self.services.stuck) {
                 return Err(why);
             }
-            // Quiescent: nothing outstanding but what the clock answers.
+            // Quiescent: nothing outstanding but what the clock answers, and what waits on an
+            // event no tool test makes.
             if let Some(fake) = &mut self.fake
-                && self.outstanding.len() == self.timed_answers.len()
+                && self.outstanding.len() == self.timed_answers.len() + self.later.len()
                 && let Some(&Reverse((at, _))) = self.timed.peek()
             {
                 fake.now = fake.now.max(at);

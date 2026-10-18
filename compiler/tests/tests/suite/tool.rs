@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use wrela_host::tool::{BlobBudget, Caps, End, Ended, Grants, Options, Testing, ToolBuild};
 
 /// A scratch directory of its own.
-fn scratch(name: &str) -> PathBuf {
+pub(crate) fn scratch(name: &str) -> PathBuf {
     let dir = wrela_tests::scratch_root(env!("CARGO_TARGET_TMPDIR")).join(format!("tool-{name}"));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("a scratch directory");
@@ -23,7 +23,7 @@ fn scratch(name: &str) -> PathBuf {
 }
 
 /// The tool build of a package whose `main.wrela` is `main`.
-fn tool_build(name: &str, main: &str) -> ToolBuild {
+pub(crate) fn tool_build(name: &str, main: &str) -> ToolBuild {
     let dir = scratch(&format!("{name}-package"));
     let ident = name.replace('-', "_");
     std::fs::write(dir.join("wrela.toml"), format!("[package]\nname = \"{ident}\"\n"))
@@ -41,7 +41,9 @@ fn tool_build(name: &str, main: &str) -> ToolBuild {
 }
 
 /// What the tool printed, and a printer that keeps it, calling `also` with each line first.
-fn printer(also: impl Fn(&str) + Send + Sync + 'static) -> (Arc<Mutex<Vec<String>>>, Options) {
+pub(crate) fn printer(
+    also: impl Fn(&str) + Send + Sync + 'static,
+) -> (Arc<Mutex<Vec<String>>>, Options) {
     let lines = Arc::new(Mutex::new(Vec::new()));
     let kept = lines.clone();
     let mut options = Options::new(Caps::open(&Grants::default(), |_| None).expect("no grants"));
@@ -53,14 +55,14 @@ fn printer(also: impl Fn(&str) + Send + Sync + 'static) -> (Arc<Mutex<Vec<String
 }
 
 /// Runs `build` with `options`, checking that the run left no worker behind.
-fn run(build: &ToolBuild, options: Options) -> Ended {
+pub(crate) fn run(build: &ToolBuild, options: Options) -> Ended {
     let ended = wrela_host::tool::run(build, options);
     assert_eq!(ended.workers_left, 0, "every worker stopped: {ended:?}");
     ended
 }
 
 /// The `tool_init` and `tool` that start and resume a job `main` of no parameters.
-const ENTRIES: &str = r#"
+pub(crate) const ENTRIES: &str = r#"
 pub fn tool_init() -> Job<main> {
     main.start()
 }
