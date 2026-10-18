@@ -10,6 +10,7 @@ import { pathUrl } from "./path.ts";
 import { type Compiled, type Io, Program, type ProgramOptions } from "./program.ts";
 import type { Bytes } from "./stream.ts";
 import { UTF8 } from "./wasm.ts";
+import { parseScript, type Scripted } from "./input.ts";
 
 export interface Build {
   manifest: Manifest;
@@ -42,6 +43,11 @@ async function getText(fetchFn: Fetch, url: URL): Promise<string> {
   }
 }
 
+/** Loads a test's input script, with the native host's text and input rules. */
+export async function loadScript(url: URL, fetchFn: Fetch = (url) => fetch(url)): Promise<Scripted[]> {
+  return parseScript(await getText(fetchFn, url));
+}
+
 /** Fetches and validates a build; its files resolve against `base`. */
 export async function loadBuild(base: string, fetchFn: Fetch = (url) => fetch(url)): Promise<Build> {
   const manifest = parseManifest(await getText(fetchFn, new URL("manifest.json", base)));
@@ -64,7 +70,7 @@ export async function loadLines(base: string, manifest: Manifest, fetchFn: Fetch
 }
 
 /**
- * Where a program in this browser keeps its requests' bytes: `Fetch` reads a file of the build
+ * Where a program in this browser keeps its requests' bytes: `Fetch` and `Post` use the build
  * at `files` (the page's build, `base`, unless a hot reload swapped another in), and storage is
  * the origin's private file system, under `wrela/` and the page's path (so two games on one
  * origin don't share it). Paths are checked before they get here (`pathProblem`).
@@ -112,7 +118,7 @@ export function browserIo(
     },
     async post(url, body) {
       // Only to the build's own origin: the path is relative (`pathProblem`).
-      const response = await fetchFn(pathUrl(base, url), { method: "POST", body });
+      const response = await fetchFn(pathUrl(files, url), { method: "POST", body });
       if (!response.ok) throw new Error(`POST ${url} failed: ${response.status} ${response.statusText}`);
       return new Uint8Array(await response.arrayBuffer());
     },

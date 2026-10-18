@@ -186,12 +186,17 @@ impl<S: Surface> Surface for Alone<S> {
 /// `far`: sphere tracing as fieldview's, 0.8 of the distance a step. A field that overstates
 /// its distance anywhere (a seam, a fitted table) can carry a step past the surface, so a ray
 /// that lands inside goes back by 0.8 of the distance, but at most half the way to the last
-/// point outside (`after`'s reasons).
+/// point outside (`after`'s reasons). From inside, the signs are reversed to find the exit.
 pub fn trace<S: Surface>(field: S, o: vec3, dir: vec3, far: f32) -> f32 {
     var t = 0.0
     var outside = 0.0
-    for _ in 0..STEPS {
-        let d = field.distance(o + dir * t)
+    var side = 1.0
+    for step in 0..STEPS {
+        var d = field.distance(o + dir * t)
+        if step == 0 && d < 0.0 {
+            side = -1.0
+        }
+        d *= side
         if abs(d) < 0.0002 {
             return t
         }
@@ -206,6 +211,14 @@ pub fn trace<S: Surface>(field: S, o: vec3, dir: vec3, far: f32) -> f32 {
         }
     }
     -1.0
+}
+
+@test
+fn a_ray_starting_inside_a_surface_finds_its_exit() {
+    let field = std::field::sphere(1.0)
+    let dir = vec3(1.0, 0.0, 0.0)
+    assert(abs(trace(field, vec3(0.0), dir, far: 2.0) - 1.0) < 0.0002)
+    assert(trace(field, vec3(0.0), dir, far: 0.5) < 0.0)
 }
 
 /// Where the ray from `o` along `dir` enters and leaves the box `lo`..`hi`: (t0, t1), t1 < t0

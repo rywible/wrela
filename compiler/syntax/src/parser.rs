@@ -619,7 +619,8 @@ impl<'a> Parser<'a> {
     /// before `a`'s line.
     fn join_lines(&self, a: Span, b: Span) -> Vec<wrela_diag::Edit> {
         let between = &self.text[a.end as usize..b.start as usize];
-        let line_start = self.text[..a.start as usize].rfind('\n').map_or(0, |i| i + 1);
+        let first = if self.text.starts_with('\u{feff}') { 3 } else { 0 };
+        let line_start = self.text[..a.start as usize].rfind('\n').map_or(first, |i| i + 1);
         let line = &self.text[line_start..a.start as usize];
         let indent = &line[..line.len() - line.trim_start_matches([' ', '\t']).len()];
         // Only space and comments lie between two tokens, so each `//` starts a comment.
@@ -703,15 +704,7 @@ impl<'a> Parser<'a> {
             };
             match self.parse_item() {
                 Ok(item) => {
-                    if let Some(span) = too_deep(&item) {
-                        self.too_deep_error(span);
-                        items.push(Item {
-                            kind: ItemKind::Error(item.kind.name().cloned()),
-                            ..item
-                        });
-                    } else {
-                        items.push(item);
-                    }
+                    items.push(item);
                     if !self.at_sep() && !self.at(T::Eof) {
                         self.missing_sep("an item");
                         let rest = self.span();
@@ -1694,19 +1687,16 @@ fn use_bindings<'a>(u: &'a UseTree, prefix: &mut Vec<&'a str>, f: &mut impl FnMu
     prefix.truncate(depth);
 }
 
-/// Where an item's expressions are deeper than [`MAX_EXPR_DEPTH`], if anywhere. Iterative, so
-/// the check itself doesn't recurse as deep as the tree.
-fn too_deep(item: &Item) -> Option<Span> {
-    let mut roots: Vec<&Expr> = Vec::new();
-    item.for_each_body_expr(&mut |e| roots.push(e));
-    for root in roots {
-        let mut stack: Vec<(&Expr, u32)> = vec![(root, 1)];
-        while let Some((e, d)) = stack.pop() {
-            if d > MAX_EXPR_DEPTH {
-                return Some(root.span.shrink_to_start());
-            }
-            e.for_each_child(&mut |c| stack.push((c, d + 1)));
+/// Whether an expression is deeper than [`MAX_EXPR_DEPTH`]. Iterative, so the check itself
+/// doesn't recurse as deep as the tree. Every expression is checked as it is parsed, including
+/// attribute arguments and array lengths in types, which aren't part of an item's body.
+fn expression_too_deep(root: &Expr) -> bool {
+    let mut stack: Vec<(&Expr, u32)> = vec![(root, 1)];
+    while let Some((e, d)) = stack.pop() {
+        if d > MAX_EXPR_DEPTH {
+            return true;
         }
+        e.for_each_child(&mut |c| stack.push((c, d + 1)));
     }
-    None
+    false
 }

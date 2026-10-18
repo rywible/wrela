@@ -75,6 +75,15 @@ test("text is characters: a lone surrogate is refused, as the native host refuse
   expect(() => parseScript('[{"frame": 0, "type": "text", "text": "\\ud800"}]')).toThrow("lone surrogate");
 });
 
+test("scripts reject malformed JSON strings and numbers in every field", () => {
+  for (const script of [
+    '[{"frame":0,"type":"message","text":"\\ud800"}]',
+    '[{"frame":0,"type":"move","extra":"\\ud800"}]',
+    '[{"frame":0,"type":"move","extra":1e400}]',
+    '[{"frame":0,"type":"move","extra":' + "[".repeat(126) + "0" + "]".repeat(126) + "}]",
+  ]) expect(() => parseScript(script)).toThrow("the script isn't JSON:");
+});
+
 test("keys are the ABI's numbers", () => {
   expect(keyCode("KeyA")).toBe(1);
   expect(keyCode("Tab")).toBe(40);
@@ -123,6 +132,55 @@ test("a program's pointer lock: a press locks it, a locked move goes on by its m
   input.lockPointer(false);
   expect(page.pointerLockElement).toBe(null);
   expect(ring.read().events).toEqual(pointerEvent(EventKind.PointerMove, 610, 4, 0, 0));
+}));
+
+test("key and pointer releases wait for room in a full ring", () => onPage((page) => {
+  for (const how of ["events", "blur", "cancel"]) {
+    const canvas = page.createElement("canvas");
+    const ring = InputRing.create();
+    listen(canvas as unknown as HTMLCanvasElement, ring, () => 1, () => ({ width: 100, height: 100 }));
+    page.dispatchEvent(domEvent("keydown", { code: "ArrowRight", key: "ArrowRight" }));
+    canvas.dispatchEvent(domEvent("pointerdown", { clientX: 5, clientY: 6, pointerId: 1, button: 0 }));
+    ring.read();
+    for (let i = 0; i < InputRing.CAPACITY; i++) ring.write(textEvent(65), i);
+    if (how === "blur") page.dispatchEvent(new Event("blur"));
+    else {
+      page.dispatchEvent(domEvent("keyup", { code: "ArrowRight", key: "ArrowRight" }));
+      canvas.dispatchEvent(domEvent(how === "cancel" ? "pointercancel" : "pointerup", { clientX: 5, clientY: 6, pointerId: 1, button: 0 }));
+    }
+    expect(ring.read().events.length).toBe(InputRing.CAPACITY * EVENT_SIZE);
+    page.frame();
+    expect(ring.read().events).toEqual(bytes([
+      keyEvent(false, keyCode("ArrowRight"), false, 0), pointerEvent(EventKind.PointerUp, 5, 6, 0, 0),
+    ]));
+  }
+}));
+
+test("a finger's move is where it is, never where the browser predicts it", () => onPage((page) => {
+  const canvas = page.createElement("canvas");
+  const ring = InputRing.create();
+  listen(canvas as unknown as HTMLCanvasElement, ring, () => 1, () => ({ width: 100, height: 100 }));
+  const ahead = () => [{ clientX: 31, clientY: 42 }, { clientX: 33, clientY: 47 }];
+  canvas.dispatchEvent(domEvent("pointermove", { clientX: 30, clientY: 40, pointerId: 1, pointerType: "touch", getPredictedEvents: ahead }));
+  expect(ring.read().events).toEqual(pointerEvent(EventKind.PointerMove, 30, 40, 0, 0));
+}));
+
+test("a held pointer's samples are written once each, when the browser read them", () => onPage((page) => {
+  const canvas = page.createElement("canvas");
+  const ring = InputRing.create();
+  listen(canvas as unknown as HTMLCanvasElement, ring, () => 1000 + performance.now(), () => ({ width: 100, height: 100 }));
+  const at = (e: Event, timeStamp: number) => Object.defineProperty(e, "timeStamp", { value: timeStamp });
+  const t0 = performance.now() - 50;
+  canvas.dispatchEvent(at(domEvent("pointerdown", { clientX: 0, clientY: 0, pointerId: 1, pointerType: "touch", button: 0 }), t0));
+  ring.read();
+  const a = { clientX: 0, clientY: 10, timeStamp: t0 + 4 };
+  const b = { clientX: 0, clientY: 20, timeStamp: t0 + 8 };
+  // Taken as it's read, then again among a move's coalesced samples: written once.
+  canvas.dispatchEvent(at(domEvent("pointerrawupdate", { clientX: a.clientX, clientY: a.clientY, pointerId: 1, getCoalescedEvents: () => [a] }), a.timeStamp));
+  canvas.dispatchEvent(at(domEvent("pointermove", { clientX: b.clientX, clientY: b.clientY, pointerId: 1, getCoalescedEvents: () => [a, b] }), b.timeStamp));
+  const { events, times } = ring.read();
+  expect(events).toEqual(new Uint8Array([...pointerEvent(EventKind.PointerMove, 0, 10, 0, 0), ...pointerEvent(EventKind.PointerMove, 0, 20, 0, 0)]));
+  expect(times.map((t) => Math.round(t - 1000 - t0))).toEqual([4, 8]);
 }));
 
 const bytes = (events: Uint8Array[]) => new Uint8Array(events.flatMap((e) => [...e]));
@@ -183,6 +241,26 @@ test("a composition that doesn't fit waits whole, and a newer change replaces it
   field.dispatchEvent(domEvent("compositionend", { data: "abc" }));
   page.frame();
   expect(ring.read().events).toEqual(bytes([...composeEvents("abc"), ...composeEvents(""), ...chars("abc")]));
+}));
+
+test("text and composition commits larger than the ring arrive in order without blocking later text", () => onPage((page) => {
+  for (const composing of [false, true]) {
+    const canvas = page.createElement("canvas");
+    const ring = InputRing.create();
+    const input = listen(canvas as unknown as HTMLCanvasElement, ring, () => 1, () => ({ width: 100, height: 100 }));
+    input.textInput(true, { x: 0, y: 0, w: 1, h: 10 });
+    const field = page.activeElement!;
+    const text = "a".repeat(InputRing.CAPACITY) + "😀";
+    field.dispatchEvent(domEvent(composing ? "compositionend" : "input", { inputType: "insertText", data: text }));
+    field.dispatchEvent(domEvent("input", { inputType: "insertText", data: "z" }));
+    const first = ring.read().events;
+    page.frame();
+    const second = ring.read().events;
+    const expected = bytes([
+      ...(composing ? composeEvents("") : []), ...chars(text), ...chars("z"),
+    ]);
+    expect(Buffer.from(new Uint8Array([...first, ...second])).equals(Buffer.from(expected))).toBe(true);
+  }
 }));
 
 test("a paste is kept by its serial, and a copy takes what the program offers", () => onPage((page) => {
@@ -309,6 +387,27 @@ test("pad polling delivers held controls changed while the parent was inactive",
   }
 });
 
+test("pad polling retries controls released while the input ring is full", () => onPage((page) => {
+  const gamepads = Object.getOwnPropertyDescriptor(navigator, "getGamepads");
+  let pads = [{ connected: true, mapping: "standard", buttons: [{ value: 1, pressed: true }], axes: [0.5] }];
+  Object.defineProperty(navigator, "getGamepads", { value: () => pads, configurable: true });
+  try {
+    const ring = InputRing.create();
+    pollPads(ring, () => 1);
+    page.frame();
+    ring.read();
+    for (let i = 0; i < InputRing.CAPACITY; i++) ring.write(textEvent(65), i);
+    pads = [];
+    page.frame();
+    expect(ring.read().events.length).toBe(InputRing.CAPACITY * EVENT_SIZE);
+    page.frame();
+    expect(ring.read().events).toEqual(bytes([padButtonEvent(0, 0, 0, false), padAxisEvent(0, 0, 0)]));
+  } finally {
+    if (gamepads) Object.defineProperty(navigator, "getGamepads", gamepads);
+    else Reflect.deleteProperty(navigator, "getGamepads");
+  }
+}));
+
 test("a pad not in the standard mapping sends nothing", () => {
   const last: (PadState | null)[] = [null, null, null, null];
   const raw = { connected: true, mapping: "", buttons: [{ value: 1, pressed: true }], axes: [0.5] };
@@ -364,4 +463,32 @@ test("a press on a field the overlay draws gives it the keys; the keys it hands 
   forward!.key(domEvent("keydown", { code: "Enter", key: "Enter" }) as KeyboardEvent, true);
   forward!.key(domEvent("keyup", { code: "Enter", key: "Enter" }) as KeyboardEvent, false);
   expect(ring.read().events).toEqual(new Uint8Array([...keyEvent(true, keyCode("Enter"), false, 0), ...keyEvent(false, keyCode("Enter"), false, 0)]));
+}));
+
+test("giving the overlay focus releases keys whose up event now belongs to it", () => onPage((page) => {
+  const canvas = page.createElement("canvas");
+  const field = page.createElement("input");
+  const overlay = {
+    contains: (e: Element | null) => e === (field as unknown),
+    enter: () => false,
+    focusAt: () => (field.focus(), true),
+    connect: () => {},
+  };
+  const ring = InputRing.create();
+  listen(canvas as unknown as HTMLCanvasElement, ring, () => 1, () => ({ width: 100, height: 100 }), overlay);
+  for (const how of ["pointer", "focus"]) {
+    canvas.focus();
+    page.dispatchEvent(domEvent("keydown", { code: "ArrowRight", key: "ArrowRight" }));
+    ring.read();
+    if (how === "pointer") canvas.dispatchEvent(domEvent("pointerdown", { clientX: 5, clientY: 5, button: 0, pointerId: 1 }));
+    else {
+      field.focus();
+      page.dispatchEvent(new Event("focusin"));
+    }
+    page.dispatchEvent(domEvent("keyup", { code: "ArrowRight", key: "ArrowRight" }));
+    expect(ring.read().events).toEqual(bytes([
+      ...(how === "pointer" ? [pointerEvent(EventKind.PointerDown, 5, 5, 0, 0)] : []),
+      keyEvent(false, keyCode("ArrowRight"), false, 0),
+    ]));
+  }
 }));

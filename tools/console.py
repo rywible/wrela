@@ -252,6 +252,11 @@ def docs_redirects(directory, release):
     return "\n".join(lines) + "\n"
 
 
+# The docs' page in each scheme (docsite/theme.wrela `DARK.page`, `LIGHT.page`).
+PAGE_DARK = "#09090B"
+PAGE_LIGHT = "#FFFFFF"
+
+
 def docs_page(docs, directory):
     """The docs page's description, its Markdown for agents, and its own text (`main#wrela-text`):
     the docs' pages, each a link to its Markdown, for whoever doesn't run the program, such as an
@@ -268,9 +273,15 @@ def docs_page(docs, directory):
             f'\n<meta property="og:url" content="{home}/">'
             f'\n<link rel="alternate" type="text/markdown" href="/llms.txt" title="The docs as Markdown">'
             f'\n<script src="pages.js" defer></script>'
+            # The docs' page colours (docsite/theme.wrela), behind the canvas before the program
+            # draws and in a phone's browser bar, so the page doesn't open black.
+            f'\n<meta name="theme-color" media="(prefers-color-scheme: dark)" content="{PAGE_DARK}">'
+            f'\n<meta name="theme-color" media="(prefers-color-scheme: light)" content="{PAGE_LIGHT}">'
             # A reader may still pinch the docs larger, as on any page; a finger's swipe is the
             # program's.
-            f'\n<style>html canvas#screen {{ touch-action: pinch-zoom; }}</style>')
+            f'\n<style>html canvas#screen {{ touch-action: pinch-zoom; }}'
+            f' html, body {{ background: {PAGE_DARK}; }}'
+            f' @media (prefers-color-scheme: light) {{ html, body {{ background: {PAGE_LIGHT}; }} }}</style>')
     index = json.loads((directory / "index.json").read_text())
     groups = {}
     for page in index.get("pages", []):
@@ -380,8 +391,14 @@ def package(config, output):
             marker.unlink()
         for file in sorted(directory.rglob("*")):
             if file.is_file():
-                digest.update(str(file.relative_to(output)).encode())
-                digest.update(file.read_bytes())
+                path = file.relative_to(output).as_posix().encode()
+                body = file.read_bytes()
+                # Frame both fields: a file `a` containing `bc` must not hash like `ab`
+                # containing `c`, nor may file contents absorb the next file's path.
+                digest.update(len(path).to_bytes(8, "big"))
+                digest.update(path)
+                digest.update(len(body).to_bytes(8, "big"))
+                digest.update(body)
     release = digest.hexdigest()[:20]
     for index, line in enumerate(catalog):
         parts = line.split("\t")

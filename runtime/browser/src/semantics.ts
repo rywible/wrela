@@ -184,6 +184,8 @@ export class Semantics implements Overlay {
   #root: HTMLDivElement | null = null;
   #live: HTMLDivElement | null = null;
   #els = new Map<number, HTMLElement>();
+  /** Where each element was last placed, so a geometry that didn't move it leaves it alone. */
+  #places = new WeakMap<HTMLElement, string>();
   #nodes = new Map<number, Node>();
   #fields = new Map<number, FieldState>();
   #forms = new Map<number, HTMLFormElement>();
@@ -280,6 +282,7 @@ export class Semantics implements Overlay {
     if (name) document.title = name;
     const seen = new Set<number>();
     const children = new Map<number, HTMLElement[]>();
+    const fields = new Map<HTMLElement, HTMLElement[]>();
     for (const n of nodes) {
       seen.add(n.id);
       const el = this.#element(n);
@@ -288,6 +291,12 @@ export class Semantics implements Overlay {
       const list = children.get(n.parent) ?? [];
       list.push(el);
       children.set(n.parent, list);
+      const form = el.parentElement;
+      if (form?.tagName === "FORM") {
+        const inputs = fields.get(form) ?? [];
+        inputs.push(el);
+        fields.set(form, inputs);
+      }
     }
     // Nodes that went: a focused one hands the focus back to the canvas.
     for (const [id, el] of this.#els) {
@@ -300,6 +309,9 @@ export class Semantics implements Overlay {
       if (focused) this.canvas.focus();
     }
     for (const [form, el] of this.#forms) if (el.childElementCount === 0) { el.remove(); this.#forms.delete(form); }
+    // A form takes its fields' place among the semantic children, but its own inputs must
+    // follow the tree's order too, for keyboard navigation and screen readers.
+    for (const [form, inputs] of fields) this.#order(form, inputs, null);
     // Each parent's children, in order; the root's after its live region.
     for (const [parent, els] of children) {
       const holder = parent === 0 ? root : this.#els.get(parent)!;
@@ -339,6 +351,11 @@ export class Semantics implements Overlay {
       const el = this.#els.get(id);
       const n = this.#nodes.get(id);
       if (!el || !n || CONTAINERS.has(n.role)) continue;
+      // Only what moved is touched: after a scroll most of a long page stays out of view, and
+      // restyling every element costs the thread a phone's touches arrive on.
+      const place = `${x * sx},${y * sy},${w * sx},${h * sy}`;
+      if (this.#places.get(el) === place) continue;
+      this.#places.set(el, place);
       Object.assign(el.style, { left: `${x * sx}px`, top: `${y * sy}px`, width: `${w * sx}px`, height: `${h * sy}px` });
       // A link takes the pointer only where it's drawn and can be seen.
       el.classList.toggle("wrela-hit", w > 0 && h > 0);
@@ -371,6 +388,7 @@ export class Semantics implements Overlay {
     if (old && old.dataset.role === String(n.role) && old.tagName === wanted.toUpperCase() &&
       (n.role !== Role.Field || old.dataset.kind === String(n.field!.kind))) return old;
     old?.remove();
+    this.#fields.delete(n.id);
     const el = document.createElement(wanted);
     el.className = CONTAINERS.has(n.role) ? "wrela-node wrela-holder" : "wrela-node";
     el.dataset.role = String(n.role);
@@ -378,6 +396,8 @@ export class Semantics implements Overlay {
     const id = n.id;
     switch (n.role) {
       case Role.Button:
+      case Role.Checkbox:
+      case Role.Switch:
         el.addEventListener("click", () => this.write(assistEvent(id, Action.Activate)));
         break;
       case Role.Link: {
@@ -546,6 +566,7 @@ export class Semantics implements Overlay {
     // The form a field belongs to: a password manager saves a form's fields together.
     const form = this.#form(spec.form);
     if (el.parentElement !== form && form !== null) form.append(el);
+    else if (form === null && el.parentElement?.tagName === "FORM") this.root.append(el);
     if (spec.replace > f.applied) {
       if (f.revision === spec.seen && !f.composing) {
         el.value = spec.text;
@@ -577,7 +598,10 @@ export class Semantics implements Overlay {
       const item: HTMLElement = el.parentElement?.tagName === "FORM" && el.parentElement !== holder ? el.parentElement : el;
       if (item === ref) { ref = ref.nextElementSibling; continue; }
       // Moving an element takes its focus away: one in its place already keeps it.
-      if (item.parentElement === holder && item.contains(document.activeElement)) continue;
+      if (item.parentElement === holder && item.contains(document.activeElement)) {
+        ref = item.nextElementSibling;
+        continue;
+      }
       holder.insertBefore(item, ref);
     }
   }
@@ -636,6 +660,9 @@ export class Semantics implements Overlay {
       return siblings[to]!;
     };
     switch (role) {
+      case Role.Link:
+        if (!n?.href && e.key === "Enter") { this.write(assistEvent(id, Action.Activate)); e.preventDefault(); }
+        break;
       case Role.Tab: {
         const tabs = [...(el.parentElement?.children ?? [])].filter((c) => (c as HTMLElement).dataset.role === String(Role.Tab)) as HTMLElement[];
         const next = step(tabs, true);

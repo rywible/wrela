@@ -186,6 +186,8 @@ fn perf_ui_frame_buffers_and_typing_preserve_behavior() {
         );
     std::fs::write(dir.join("text.wrela"), text).expect("empty test fonts");
     let tests = r#"
+use text::{decode, previous}
+
 impl Ui {
     // The previous edit_keys body, to compare text, cursor, focus and termination exactly.
     fn reference_edit_keys(mut self, id: u32, s: mut String) -> u32 {
@@ -325,9 +327,8 @@ fn typed_runs_and_keys_match_the_previous_editor() {
 "#;
     let widgets = format!("{}\n{tests}", source("ui/widgets.wrela"));
     std::fs::write(dir.join("widgets.wrela"), widgets).expect("UI tests");
-    // The two focused cases plus every retained production UI regression.
-    // Includes the caller-selected font atlas regression copied from text.wrela.
-    passes(&dir, 30);
+    // The two focused cases plus all 37 retained production UI regressions.
+    passes(&dir, 39);
 }
 
 #[test]

@@ -157,6 +157,8 @@ impl Item {
         if d.x == 0.0 && d.y == 0.0 {
             return c
         }
+        // A pen has no box: connectors meet its origin, as elbow connectors do.
+        if self.kind == Kind::Pen { return c }
         if self.kind == Kind::Triangle {
             // The nearest side the ray from the middle crosses.
             let (a, b, z) = self.corners()
@@ -169,6 +171,20 @@ impl Item {
                     let u = ((p.x - c.x) * d.y - (p.y - c.y) * d.x) / den
                     if t > 0.0 && u >= 0.0 && u <= 1.0 { reach = min(reach, t) }
                 }
+            }
+            return c + d * reach
+        }
+        if self.kind == Kind::Pill {
+            let r = min(h.x, h.y)
+            let half = max(h.x, h.y) - r
+            let ray = if h.x >= h.y { abs(d) } else { abs(d.yx) }
+            let reach = if ray.y > 0.0 && ray.x * r <= half * ray.y {
+                r / ray.y
+            } else {
+                // The far crossing of the round cap at the end of the middle segment.
+                let squared = dot(d, d)
+                (ray.x * half + sqrt(max(r * r * squared - half * half * ray.y * ray.y, 0.0))) /
+                    squared
             }
             return c + d * reach
         }
@@ -892,6 +908,42 @@ fn a_link_ends_on_its_items_edges() {
     assert(length(p - vec2(50.0, 50.0)) < 1.0e-3, "straight down, to the bottom of the curve")
     e.kind = Kind::Diamond
     assert(length(e.edge(vec2(200.0, 25.0)) - vec2(100.0, 25.0)) < 1.0e-3)
+}
+
+@test
+fn straight_connectors_meet_the_rounded_edges_of_pills() {
+    for size in [vec2(200.0, 60.0), vec2(60.0, 200.0), vec2(80.0)] {
+        let p = Item::new(Kind::Pill, vec2(10.0, -20.0), size, color: 0)
+        let r = 0.5 * min(size.x, size.y)
+        let along = if size.x >= size.y { vec2(0.5 * size.x - r, 0.0) } else {
+            vec2(0.0, 0.5 * size.y - r)
+        }
+        for i in 0..32 {
+            let angle = f32(i) * std::math::TAU / 32.0
+            let d = vec2(cos(angle), sin(angle))
+            let edge = p.edge(p.center() + d * 500.0)
+            let radius = distance_to_line(edge, p.center() - along, p.center() + along)
+            assert(abs(radius - r) < 0.001, "the endpoint lies on the pill, not its box")
+            let from = edge - p.center()
+            assert(dot(from, d) > 0.0 && abs(from.x * d.y - from.y * d.x) < 0.001)
+        }
+    }
+}
+
+@test
+fn a_straight_connector_can_start_on_a_pen_stroke() {
+    var b = Board::new()
+    var pen = Item::new(Kind::Pen, vec2(10.0, 20.0), vec2(0.0), color: 0)
+    pen.points.push(vec2(0.0))
+    pen.points.push(vec2(20.0, 10.0))
+    let from = b.add(take pen)
+    let to = b.add(Item::new(Kind::Box, vec2(100.0, 0.0), vec2(40.0), color: 0))
+    var link = Item::new(Kind::Link, vec2(0.0), vec2(0.0), color: 0)
+    link.from = from
+    link.to = to
+    link.style = 0
+    let route = b.route(link)
+    assert(route.len() == 2 && route[0] == vec2(10.0, 20.0) && route[1] == vec2(100.0, 20.0))
 }
 
 @test

@@ -704,12 +704,10 @@ pub(crate) fn literal_values(
         let mut now_ranges = Vec::new();
         for l in literals.iter().filter(|l| l.file as usize == file) {
             let (start, end) = moved(then, &current, l.start, l.end)?;
-            let with_minus = |text: &str, start: u32| {
-                crate::edit::minus_before(text.as_bytes(), start as usize)
-                    .map_or(start, |minus| minus as u32)
-            };
-            before_ranges.push((with_minus(then.text(), l.start), l.end));
-            now_ranges.push((with_minus(current.text(), start), end));
+            // `moved` already includes the literal's own sign. Another minus before it is
+            // an operator in the code and must remain unchanged for a table-only update.
+            before_ranges.push((l.start, l.end));
+            now_ranges.push((start, end));
         }
         if then.outside_literals(before_ranges) != current.outside_literals(now_ranges) {
             return None;
@@ -720,7 +718,11 @@ pub(crate) fn literal_values(
     for l in literals {
         let current = texts.get(l.file as usize)?;
         let (s, e) = moved(&lifted[l.file as usize].1, current, l.start, l.end)?;
-        values.push(crate::edit::signed_value(&current.text()[s as usize..e as usize])?);
+        let value = crate::edit::signed_value(&current.text()[s as usize..e as usize])?;
+        if !value.is_finite() {
+            return None;
+        }
+        values.push(value);
     }
     Some(values)
 }
@@ -785,15 +787,23 @@ fn plan_edits(
     crate::edit::plan(&lens, &out)
 }
 
-/// The edits of a body `{"edits": [[literal, value], ...]}`, as the lens posts them.
+/// The edits of a body `{"edits": [[literal, value], ...]}`, as the lens posts them: every
+/// entry must be a pair of a `u32` literal index and a finite `f32` value.
 pub fn parse_edits(body: &[u8]) -> Option<Vec<(u32, f32)>> {
-    serde_json::from_slice::<serde_json::Value>(body).ok().and_then(|v| {
-        v["edits"].as_array().map(|es| {
-            es.iter()
-                .filter_map(|e| Some((e.get(0)?.as_u64()? as u32, e.get(1)?.as_f64()? as f32)))
-                .collect()
+    let v = serde_json::from_slice::<serde_json::Value>(body).ok()?;
+    v.get("edits")?
+        .as_array()?
+        .iter()
+        .map(|entry| {
+            let pair = entry.as_array()?;
+            if pair.len() != 2 {
+                return None;
+            }
+            let index = u32::try_from(pair[0].as_u64()?).ok()?;
+            let value = pair[1].as_f64()? as f32;
+            value.is_finite().then_some((index, value))
         })
-    })
+        .collect()
 }
 
 /// Applies a body of the lens's edits to the subject's files through `wrela edit`: the JSON
@@ -852,6 +862,59 @@ mod tests {
     use super::*;
 
     #[test]
+    fn overflowing_literals_require_a_rebuild() {
+        let dir =
+            std::env::temp_dir().join(format!("wrela-studio-overflow-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("directory");
+        let text =
+            "pub fn value() -> f32 { 0.5 }\npub fn frame(time: f32, width: u32, height: u32) {}\n";
+        let file = dir.join("main.wrela");
+        std::fs::write(&file, text).expect("source");
+        assert!(!crate::check(&dir).has_errors(), "the initial program checks");
+        let built = crate::live::scan(std::slice::from_ref(&dir), &Files::new());
+        let lifted = vec![(file.clone(), Numbers::new(text))];
+        let start = text.find("0.5").expect("literal") as u32;
+        let literals =
+            vec![crate::lift::ReportLiteral { file: 0, start, end: start + 3, value: 0.5 }];
+        for value in ["1e99", "-1e99", "1e99m", "16777217", "18446744073709551615"] {
+            std::fs::write(&file, text.replace("0.5", value)).expect("changed source");
+            assert!(
+                crate::check(&dir).diagnostics.iter().any(|d| d.code == wrela_diag::codes::E0006),
+                "the compiler rejects {value} as unrepresentable"
+            );
+            let now = crate::live::scan(std::slice::from_ref(&dir), &Files::new());
+            assert!(
+                literal_values(&lifted, &literals, &now, &built).is_none(),
+                "{value} must rebuild to report its compiler error"
+            );
+        }
+        for value in ["16777216", "16777217.0"] {
+            std::fs::write(&file, text.replace("0.5", value)).expect("valid changed source");
+            assert!(!crate::check(&dir).has_errors(), "the compiler accepts {value}");
+            let now = crate::live::scan(std::slice::from_ref(&dir), &Files::new());
+            assert_eq!(literal_values(&lifted, &literals, &now, &built), Some(vec![16777216.0]));
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn edit_posts_reject_an_invalid_entry_without_keeping_other_edits() {
+        assert_eq!(
+            parse_edits(br#"{"edits": [[7, -0.5], [2, 1.0]]}"#),
+            Some(vec![(7, -0.5), (2, 1.0)])
+        );
+        for body in [
+            br#"{"edits": [[0, 1.0], [1, "invalid"]]}"#.as_slice(),
+            br#"{"edits": [[4294967296, 1.0]]}"#.as_slice(),
+            br#"{"edits": [[0, 1e100]]}"#.as_slice(),
+            br#"{"edits": [[0, 1.0, 2.0]]}"#.as_slice(),
+        ] {
+            assert!(parse_edits(body).is_none(), "{}", String::from_utf8_lossy(body));
+        }
+    }
+
+    #[test]
     fn unlifted_numbers_and_binary_minus_changes_require_a_rebuild() {
         let dir =
             std::env::temp_dir().join(format!("wrela-studio-unlifted-{}", std::process::id()));
@@ -876,6 +939,12 @@ mod tests {
         std::fs::write(&file, text.replace("0.5", "-0.25")).expect("lifted edit");
         let now = crate::live::scan(std::slice::from_ref(&dir), &Files::new());
         assert_eq!(literal_values(&lifted, &literals, &now, &built), Some(vec![-0.25]));
+        std::fs::write(&file, text.replace("0.5", "--0.25")).expect("two new negations");
+        let now = crate::live::scan(std::slice::from_ref(&dir), &Files::new());
+        assert!(
+            literal_values(&lifted, &literals, &now, &built).is_none(),
+            "an extra unary operator cannot be lost from a literal-only update"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import console
 
 
-def packaged(root, docs=False):
+def packaged(root, docs=False, extra_files=None):
     """A release of a console and one game (and the docs, if `docs`), built from stand-in builds,
     and its stand-in cover."""
     cover = root / "cover.png"
@@ -50,6 +50,9 @@ def packaged(root, docs=False):
         (output / "files").mkdir()
         (output / "files/tile.bin").write_bytes(b"tile")
         (output / "game.lines").write_bytes(b"lines")
+        if package == "console":
+            for name, data in (extra_files or {}).items():
+                (output / name).write_bytes(data)
 
     image = MagicMock()
     image.__enter__.return_value = image
@@ -73,6 +76,17 @@ def packaged(root, docs=False):
 
 
 class StaticRelease(unittest.TestCase):
+    def test_release_identity_distinguishes_file_paths_from_their_contents(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            reports = []
+            for number, files in enumerate(({"a": b"bc"}, {"ab": b"c"}, {"a": b"bc"})):
+                root = Path(temporary) / str(number)
+                root.mkdir()
+                _, report, _ = packaged(root, extra_files=files)
+                reports.append(report)
+            self.assertNotEqual(reports[0]["release"], reports[1]["release"])
+            self.assertEqual(reports[0]["release"], reports[2]["release"])
+
     def test_build_names_cannot_collide_with_release_directories(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -217,7 +231,8 @@ cover = "cover.png"
                 self.assertTrue((shipped / name).is_file(), name)
             self.assertIn('<script src="pages.js" defer></script>', page)
             # It comes before the program's own style, so it says more to win: a pinch still zooms.
-            self.assertIn("<style>html canvas#screen { touch-action: pinch-zoom; }</style>", page)
+            self.assertIn("<style>html canvas#screen { touch-action: pinch-zoom; } html, body { background: #09090B; }", page)
+            self.assertIn('<meta name="theme-color" media="(prefers-color-scheme: light)" content="#FFFFFF">', page)
             self.assertIn('<a href="https://docs.example/std/llms-full.txt">std/llms-full.txt</a>', text)
             self.assertNotIn("spec/llms-full.txt", text)
             self.assertIn("<code>https://docs.example/#std/arena:arena-insert</code>", text)

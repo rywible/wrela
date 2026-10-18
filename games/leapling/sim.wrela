@@ -260,6 +260,21 @@ fn moved(c: Course, at: vec2, vel: vec2, half: f32, tall: f32) -> Moved {
     Moved { at: p, walled, landed, struck }
 }
 
+// Consume a frame's time in fixed steps. A press enters the hero's buffer even when the
+// frame is too short to step, so the next step can use it.
+pub fn advance(w: mut World, owed: mut f32, c: Controls, dt: f32) {
+    if c.jumped { w.hero.buffer = BUFFER }
+    owed += dt
+    var first = true
+    while owed >= STEP {
+        var now = c
+        now.jumped = c.jumped && first
+        step(mut w, now)
+        first = false
+        owed -= STEP
+    }
+}
+
 pub fn step(w: mut World, c: Controls) {
     w.since += STEP
     w.shake = max(w.shake - STEP * 1.5, 0.0)
@@ -679,4 +694,17 @@ fn a_spring_throws_the_hero_high_and_the_pit_brings_it_back_to_the_checkpoint() 
     w.checkpoint = vec2(20.5, 2.0)
     for _ in 0..400 { step(mut w, idle()) }
     assert(w.phase == Phase::Playing && w.hero.at == vec2(20.5, 2.0), "back at the checkpoint")
+}
+
+@test
+fn jump_presses_between_simulation_steps_are_kept() {
+    var w = bare(vec2(5.5, 2.0))
+    var owed = 0.0
+    advance(mut w, mut owed, press(), STEP * 0.5)
+    assert(w.clock == 0.0 && w.hero.grounded, "the first frame has no simulation step")
+    advance(mut w, mut owed, idle(), STEP * 0.5)
+    assert(w.hero.vel.y > 15.0, "a short tap still jumps when the next frame steps")
+    var jumps = 0
+    for cue in w.cues { if cue == Cue::Jump { jumps += 1 } }
+    assert(jumps == 1, "the press is consumed once")
 }

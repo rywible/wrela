@@ -70,6 +70,17 @@ fn step(d: mut Duel, events: take Vec<Event>) {
     tick(mut d, TickInput { tick: t, dt: 1.0 / 60.0, records: events, answers: Vec::new() })
 }
 
+@test
+fn a_wolf_arriving_at_its_circle_goal_keeps_a_finite_direction() {
+    var d = spawn()
+    d.fight.wolf.circle = 1
+    d.fight.wolf.goal = d.fight.wolf.pos()
+    step(mut d, Vec::new())
+    let at = d.fight.wolf.walker.root.pos
+    assert(at == at && dot(at, at) < 1.0e6)
+    assert(d.fight.wolf.circle == 0, "the wolf finished circling")
+}
+
 fn stick(x: f32, y: f32) -> Vec<Event> {
     var v: Vec<Event> = Vec::new()
     v.push(Event::PadAxis { pad: 0, axis: PadAxis::LeftX, value: x })

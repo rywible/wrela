@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { MANIFEST_VERSION } from "../src/abi.gen.ts";
 import { pathProblem } from "../src/check.ts";
-import { browserIo, type Fetch, loadBuild } from "../src/loader.ts";
+import { browserIo, type Fetch, loadBuild, loadScript } from "../src/loader.ts";
 import { ManifestError } from "../src/manifest.ts";
 import { FIRST_LIGHT, readFixture, readFixtureText } from "./fixtures.ts";
 
@@ -57,6 +57,13 @@ test("reads text files as strict UTF-8 that keeps a byte-order mark, as the nati
   await expect(loadBuild(BASE, files)).rejects.toThrow("http://localhost/game/manifest.json isn't UTF-8");
 });
 
+test("input scripts reject a byte-order mark and malformed UTF-8 instead of changing the text", async () => {
+  const url = new URL("input.json", BASE);
+  await expect(loadScript(url, server({ "input.json": "\uFEFF[]" }).fetch)).rejects.toThrow("the script isn't JSON");
+  const invalid = new Uint8Array([...new TextEncoder().encode('[{"frame":0,"type":"text","text":"'), 0xff, ...new TextEncoder().encode('"}]')]);
+  await expect(loadScript(url, async () => new Response(invalid))).rejects.toThrow("input.json isn't UTF-8");
+});
+
 test("names a file it can't fetch", async () => {
   const manifest = readFixtureText("manifest.json").replace("fill.wgsl", "missing.wgsl");
   await expect(loadBuild(BASE, server({ "manifest.json": manifest }).fetch)).rejects.toThrow(
@@ -80,6 +87,20 @@ test("fetches and posts literal percent escapes inside the build", async () => {
   expect(requested).toEqual([
     { url: "http://localhost/game/%252e%252e/secret.bin", method: "GET" },
     { url: "http://localhost/game/.%252E/admin", method: "POST" },
+  ]);
+});
+
+test("a replacement build fetches and posts relative to its own directory", async () => {
+  const requested: { url: string; method: string }[] = [];
+  const io = browserIo(BASE, async (url, init) => {
+    requested.push({ url: url.href, method: init?.method ?? "GET" });
+    return new Response(Uint8Array.of(1));
+  }, "http://localhost/next/");
+  await io.fetch("data.bin");
+  await io.post("save", Uint8Array.of(2));
+  expect(requested).toEqual([
+    { url: "http://localhost/next/data.bin", method: "GET" },
+    { url: "http://localhost/next/save", method: "POST" },
   ]);
 });
 

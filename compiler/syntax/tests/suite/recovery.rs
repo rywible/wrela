@@ -159,6 +159,17 @@ fn print_fix_keeps_a_leading_bom_first() {
 }
 
 #[test]
+fn join_lines_fix_keeps_a_leading_bom_first() {
+    let source = "\u{feff}fn f() { if true {} // why\n    else {} }\n";
+    let parsed = parse(FileId(0), source);
+    let diagnostic =
+        parsed.diagnostics.iter().find(|d| d.code.as_str() == "E0111").expect("else error");
+    let fixed = wrela_diag::apply_edits(source, &diagnostic.fixes[0].edits);
+    assert!(fixed.starts_with("\u{feff}// why\n"), "{fixed}");
+    assert!(!parse(FileId(0), &fixed).has_errors(), "{fixed}");
+}
+
+#[test]
 fn print_fix_does_not_call_a_local_binding() {
     for source in [
         "fn f(print: i32) { println!(\"hello\") }\n",
@@ -282,4 +293,26 @@ fn long_try_chain_is_bounded_while_parsing() {
     let source = format!("fn f(x: i32) {{ x{} }}\n", "?".repeat(20_000));
     let parsed = parse(FileId(0), &source);
     assert!(parsed.diagnostics.iter().any(|d| d.code.as_str() == "E0112"));
+}
+
+#[test]
+fn expression_depth_limit_applies_to_attributes_and_array_lengths() {
+    let at_limit = format!("1{}", " + 1".repeat(wrela_syntax::MAX_EXPR_DEPTH as usize - 1));
+    let too_deep = format!("{at_limit} + 1");
+    for expression in [&at_limit, &too_deep] {
+        for source in [
+            format!("@attribute({expression})\nfn f() {{}}\n"),
+            format!("type T = [i32; {expression}]\n"),
+            format!("fn f(x: [i32; {expression}]) {{}}\n"),
+            format!("struct S {{ x: [i32; {expression}] }}\n"),
+        ] {
+            let parsed = parse(FileId(0), &source);
+            let errors: Vec<_> = parsed.diagnostics.iter().filter(|d| d.is_error()).collect();
+            if expression == &at_limit {
+                assert!(errors.is_empty(), "{source}: {errors:#?}");
+            } else {
+                assert!(errors.iter().any(|d| d.code.as_str() == "E0112"), "{source}: {errors:#?}");
+            }
+        }
+    }
 }

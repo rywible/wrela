@@ -10,14 +10,14 @@
 
 use std::path::Path;
 use std::sync::LazyLock;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use wasmtime::{Caller, Config, Engine, Linker, Module, Store, TypedFunc};
 use wrela_abi::input::{EVENT_SIZE, Event, Queue};
 use wrela_abi::stream::{self, Command};
 use wrela_abi::{
-    EXPORT_MEMORY, EXPORT_SERVE, EXPORT_SERVE_INIT, IMPORT_INPUT, IMPORT_LIMIT, IMPORT_MODULE,
-    IMPORT_PAYLOAD, IMPORT_PHASE, IMPORT_PRINT, IMPORT_REQUEST_STATUS, IMPORT_REQUEST_TAKE,
-    IMPORT_SUBMIT,
+    EXPORT_MEMORY, EXPORT_SERVE, EXPORT_SERVE_INIT, IMPORT_CLOCK, IMPORT_INPUT, IMPORT_LIMIT,
+    IMPORT_MODULE, IMPORT_PAYLOAD, IMPORT_PHASE, IMPORT_PRINT, IMPORT_REQUEST_STATUS,
+    IMPORT_REQUEST_TAKE, IMPORT_SUBMIT,
 };
 
 /// How often the engines' epoch advances: a deadline is a whole number of these.
@@ -26,6 +26,9 @@ const EPOCH: Duration = Duration::from_millis(1);
 /// At most this many printed lines are kept for each room; past it, lines are counted, not
 /// kept, so printing can't grow the host's memory or make it wait.
 const PRINTED_CAP: usize = 256;
+
+/// Every room reads the same clock, including a room started again after a failure.
+static CLOCK_ZERO: LazyLock<Instant> = LazyLock::new(Instant::now);
 
 /// The server engine: a call can be interrupted at its deadline (epochs advance on a thread of
 /// their own), and modules may use atomics on their own memory.
@@ -277,7 +280,10 @@ impl Room {
             .get_memory(&mut store, EXPORT_MEMORY)
             .ok_or_else(|| Failure::Host("the program has no memory export".into()))?;
         let mut room = Room { store, serve, memory, limits };
-        if let Ok(init) = instance.get_typed_func::<(), ()>(&mut room.store, EXPORT_SERVE_INIT) {
+        if instance.get_export(&mut room.store, EXPORT_SERVE_INIT).is_some() {
+            let init = instance
+                .get_typed_func::<(), ()>(&mut room.store, EXPORT_SERVE_INIT)
+                .map_err(|e| Failure::Host(format!("`serve_init`: {e:#}")))?;
             room.call(|store| init.call(store, ()))?;
         }
         Ok(room)
@@ -471,18 +477,20 @@ fn linker() -> wasmtime::Result<Linker<RoomState>> {
         IMPORT_MODULE,
         IMPORT_REQUEST_TAKE,
         |mut c: Caller<'_, RoomState>, request: u32, at: u32| {
+            let m = memory(&mut c)?;
             let Some(answer) = c.data_mut().answered.remove(&request) else {
                 return Err(wasmtime::format_err!(
                     "request_take({request}): the request isn't answered"
                 ));
             };
-            let bytes = answer.unwrap_or_default();
-            let m = memory(&mut c)?;
-            m.write(&mut c, at as usize, &bytes).map_err(|_| {
-                wasmtime::format_err!(
+            let bytes = answer.as_ref().map_or(&[][..], Vec::as_slice);
+            if m.write(&mut c, at as usize, bytes).is_err() {
+                c.data_mut().answered.insert(request, answer);
+                return Err(wasmtime::format_err!(
                     "request_take({request}, {at}) reaches past the end of the program's memory"
-                )
-            })
+                ));
+            }
+            Ok(())
         },
     )?;
     // A server has no GPU: every limit is 0.
@@ -509,8 +517,17 @@ fn linker() -> wasmtime::Result<Linker<RoomState>> {
         IMPORT_MODULE,
         IMPORT_INPUT,
         |mut c: Caller<'_, RoomState>, at: u32, cap: u32| -> wasmtime::Result<i32> {
-            let bytes = c.data_mut().input.take(cap);
             let m = memory(&mut c)?;
+            let n = (cap as usize).min(c.data().input.len());
+            let fits = (at as usize)
+                .checked_add(n * EVENT_SIZE as usize)
+                .is_some_and(|end| end <= m.data_size(&c));
+            if !fits {
+                return Err(wasmtime::format_err!(
+                    "input({at}, {cap}) reaches past the end of the program's memory"
+                ));
+            }
+            let bytes = c.data_mut().input.take(cap);
             m.write(&mut c, at as usize, &bytes).map_err(|_| {
                 wasmtime::format_err!(
                     "input({at}, {cap}) reaches past the end of the program's memory"
@@ -542,6 +559,13 @@ fn linker() -> wasmtime::Result<Linker<RoomState>> {
             Ok(bytes.len() as i32)
         },
     )?;
+    linker.func_wrap(IMPORT_MODULE, IMPORT_CLOCK, |mut c: Caller<'_, RoomState>, at: u32| {
+        let bytes = CLOCK_ZERO.elapsed().as_secs_f64().to_le_bytes();
+        let m = memory(&mut c)?;
+        m.write(&mut c, at as usize, &bytes).map_err(|_| {
+            wasmtime::format_err!("clock({at}) reaches past the end of the program's memory")
+        })
+    })?;
     // A phase's timing is for frames; a room ignores it (§17.3's `trace`).
     linker.func_wrap(
         IMPORT_MODULE,
@@ -549,4 +573,109 @@ fn linker() -> wasmtime::Result<Linker<RoomState>> {
         |_: Caller<'_, RoomState>, _at: u32, _len: u32| {},
     )?;
     Ok(linker)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_input_copy_keeps_the_rooms_events() {
+        let wasm = wat::parse_str(
+            r#"(module
+                (import "wrela" "input" (func $input (param i32 i32) (result i32)))
+                (memory (export "memory") 1)
+                (func (export "serve") (param $at f32)
+                    local.get $at i32.trunc_f32_u i32.const 1 call $input drop))"#,
+        )
+        .expect("server module");
+        let build = ServerBuild::from_wasm(&wasm).expect("server build");
+        let mut room = Room::start(&build, Limits::default(), None).expect("room");
+        room.push_connection(7, true, 3);
+        assert!(room.serve(65536.0).is_err(), "the event does not fit");
+        assert_eq!(room.queued(), 1, "a failed copy must not consume the event");
+        room.serve(0.0).expect("copy the event inside memory");
+        assert_eq!(room.queued(), 0);
+        assert_eq!(
+            &room.memory.data(&room.store)[..EVENT_SIZE as usize],
+            Event::connection(7, true, 3).bytes()
+        );
+    }
+
+    #[test]
+    fn failed_answer_copy_keeps_the_rooms_answer() {
+        let batch = stream::Encoder::new().host_request(7, "echo", &[4, 5, 6]).finish();
+        let escaped: String = batch.iter().map(|b| format!("\\{b:02x}")).collect();
+        let wasm = wat::parse_str(format!(
+            r#"(module
+                (import "wrela" "submit" (func $submit (param i32 i32)))
+                (import "wrela" "request_take" (func $take (param i32 i32)))
+                (memory (export "memory") 1)
+                (data (i32.const 100) "{escaped}")
+                (func (export "serve") (param $at f32)
+                    local.get $at f32.const 0 f32.eq
+                    if
+                        i32.const 100 i32.const {} call $submit
+                    else
+                        i32.const 7 local.get $at i32.trunc_f32_u call $take
+                    end))"#,
+            batch.len()
+        ))
+        .expect("server module");
+        let build = ServerBuild::from_wasm(&wasm).expect("server build");
+        let answer: Answers = std::sync::Arc::new(|_, body| Ok(body.to_vec()));
+        let mut room = Room::start(&build, Limits::default(), Some(answer)).expect("room");
+        room.serve(0.0).expect("request an answer");
+        assert!(room.serve(65536.0).is_err(), "the answer does not fit");
+        room.serve(4.0).expect("copy the answer inside memory");
+        assert_eq!(&room.memory.data(&room.store)[4..7], &[4, 5, 6]);
+        assert!(room.store.data().answered.is_empty(), "a successful copy consumes the answer");
+    }
+
+    #[test]
+    fn a_server_does_not_skip_an_invalid_initializer() {
+        for init in [
+            r#"(func (export "serve_init") (param i32))"#,
+            r#"(func (export "serve_init") (result i32) i32.const 1)"#,
+            r#"(global (export "serve_init") i32 (i32.const 1))"#,
+        ] {
+            let wasm = wat::parse_str(format!(
+                r#"(module (memory (export "memory") 1)
+                    {init}
+                    (func (export "serve") (param f32)))"#,
+            ))
+            .expect("server module");
+            let build = ServerBuild::from_wasm(&wasm).expect("server build");
+            let error = match Room::start(&build, Limits::default(), None) {
+                Ok(_) => panic!("the invalid initializer was skipped: {init}"),
+                Err(error) => error,
+            };
+            assert!(matches!(&error, Failure::Host(why) if why.contains("serve_init")), "{error}");
+        }
+    }
+
+    #[test]
+    fn a_server_reads_a_monotonic_clock() {
+        let wasm = wat::parse_str(
+            r#"(module
+                (import "wrela" "clock" (func $clock (param i32)))
+                (memory (export "memory") 1)
+                (func (export "serve") (param f32)
+                    i32.const 0 call $clock))"#,
+        )
+        .expect("server module");
+        let build = ServerBuild::from_wasm(&wasm).expect("server build");
+        let mut room = Room::start(&build, Limits::default(), None).expect("room with a clock");
+        room.serve(0.0).expect("first clock read");
+        let read = |room: &Room| {
+            f64::from_le_bytes(room.memory.data(&room.store)[..8].try_into().expect("clock"))
+        };
+        let first = read(&room);
+        room.serve(1.0).expect("second clock read");
+        let second = read(&room);
+        assert!(first >= 0.0 && second >= first, "the clock went back: {first}, {second}");
+        let mut later = Room::start(&build, Limits::default(), None).expect("a later room");
+        later.serve(0.0).expect("another room's clock");
+        assert!(read(&later) >= second, "rooms share the server's clock");
+    }
 }

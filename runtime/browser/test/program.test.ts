@@ -8,6 +8,7 @@ import { checkAbi, otherInstance, Program, ProgramError, runWorker, TrapError, t
 import { StateHash } from "../src/hash.ts";
 import { type Command, StreamError } from "../src/stream.ts";
 import { Lines, locate, wasmOffsets } from "../src/lines.ts";
+import { Net } from "../src/net.ts";
 import { Encoder } from "./encoder.ts";
 import { checker, Recorder, readFixture, readFixtureText, shapes } from "./fixtures.ts";
 import { batchProgram, buildModule, FRAME_TYPE, type Import, op, SUBMIT } from "./wasm-builder.ts";
@@ -257,6 +258,14 @@ test("a program without helper control memory reports no helper work", async () 
   expect(program.workerChunks()).toBe(0);
 });
 
+test("requesting tick hashes accepts programs without ticker control memory", async () => {
+  for (const memory of [0, 1]) {
+    const program = await Program.load(buildModule({ memory, funcs: [frameOnly] }), checker(), new Recorder(), { tickHashes: true });
+    expect(() => program.frame(0, 1, 1)).not.toThrow();
+    expect(program.ticker).toBeNull();
+  }
+});
+
 test("a helper export needs control memory before any helper is started", async () => {
   let spawned = 0;
   const wasm = buildModule({ memory: 0, funcs: [frameOnly,
@@ -311,6 +320,32 @@ test("nothing runs after the host fails a command", async () => {
   expect(executor.log).toEqual(["BeginScreenPass"]);
 });
 
+test("a synchronous capability failure during commit prevents later commands", async () => {
+  const bad = new Encoder().unprepare("floor").createBuffer(1, 4).finish();
+  const next = new Encoder().writeBuffer(1, 0, new Uint8Array(4)).finish();
+  const executor = new Recorder();
+  const program = await Program.load(batchProgram([[bad], [next]]), checker(), executor, { builds: {
+    prepare: async () => {}, handOver: async () => {}, unprepare: () => { throw new Error("capability lost"); },
+  } });
+  expect(() => program.frame(0, 1, 1)).toThrow("capability lost");
+  expect(() => program.frame(1, 1, 1)).toThrow("the host failed to carry out an earlier command (capability lost)");
+  expect(executor.log).toEqual(["Unprepare"]);
+});
+
+test("a failure while flushing committed work prevents later commands", async () => {
+  class FailedFlush extends Recorder {
+    override flush(): void { throw new Error("flush lost"); }
+  }
+  const executor = new FailedFlush();
+  const program = await Program.load(batchProgram([
+    [new Encoder().createBuffer(1, 4).finish()],
+    [new Encoder().writeBuffer(1, 0, new Uint8Array(4)).finish()],
+  ]), checker(), executor);
+  expect(() => program.frame(0, 1, 1)).toThrow("flush lost");
+  expect(() => program.frame(1, 1, 1)).toThrow("the host failed to carry out an earlier command (flush lost)");
+  expect(executor.log).toEqual(["CreateBuffer"]);
+});
+
 test("a failed submit fails the call even if the module catches it", async () => {
   const nan = new Encoder().beginScreenPass([NaN, 0, 0, 1]).finish();
   // try { submit(16, len) } catch_all {} (WASM exception handling)
@@ -356,9 +391,157 @@ test("a failed audio or ticker start fails the call even if the module catches i
   }
 });
 
+test("invalid memory and request imports fail the call even if the module catches them", async () => {
+  const cases: { name: string; args: number[]; result?: boolean; message: string }[] = [
+    { name: "request_take", args: [9, 0], message: "request_take(9): the request isn't answered" },
+    { name: "input", args: [65536, 1], result: true, message: "input(65536, 1) reaches past the end of the program's memory" },
+    { name: "keep", args: [65536, 1], message: "keep(65536, 1) reaches past the end of the program's memory" },
+    { name: "kept", args: [65536, 1], result: true, message: "kept(65536, 1) reaches past the end of the program's memory" },
+    { name: "clock", args: [65536], message: "clock(65536) reaches past the end of the program's memory" },
+    { name: "print", args: [65536, 1], message: "print(65536, 1) reaches past the end of the program's memory" },
+    { name: "phase", args: [65536, 1], message: "phase(65536, 1) reaches past the end of the program's memory" },
+  ];
+  for (const { name, args, result, message } of cases) {
+    const host: FuncImport = { module: "wrela", name, kind: "func", type: { params: args.map(() => "i32"), results: result ? ["i32"] : [] } };
+    const body = [0x06, 0x40, ...args.flatMap(op.i32), ...op.call(0), ...(result ? [0x1a] : []), 0x19, 0x0b];
+    const program = await Program.load(
+      buildModule({ imports: [host], memory: 1, funcs: [{ type: FRAME_TYPE, body, export: "frame" }] }),
+      checker(), new Recorder(), { kept: Uint8Array.of(1) },
+    );
+    program.queueInput(new Uint8Array(EVENT_SIZE));
+    expect(() => program.frame(0, 1, 1)).toThrow(TrapError);
+    expect(() => program.frame(0, 1, 1)).toThrow(message);
+  }
+});
+
+test("a caught host trap prevents later host side effects in the same call", async () => {
+  const KEEP: FuncImport = { module: "wrela", name: "keep", kind: "func", type: { params: ["i32", "i32"], results: [] } };
+  const PRINT: FuncImport = { ...KEEP, name: "print" };
+  const program = await load(buildModule({
+    imports: [KEEP, PRINT], memory: 1, funcs: [{ type: FRAME_TYPE, export: "frame", body: [
+      0x06, 0x40, ...op.i32(65536), ...op.i32(1), ...op.call(0), 0x19, 0x0b,
+      ...op.i32(16), ...op.i32(5), ...op.call(1),
+    ] }], data: [{ offset: 16, bytes: new TextEncoder().encode("later") }],
+  }));
+  const log = spyOn(console, "log").mockImplementation(() => {});
+  try {
+    expect(() => program.frame(0, 1, 1)).toThrow("keep(65536, 1)");
+    expect(log).not.toHaveBeenCalled();
+  } finally { log.mockRestore(); }
+});
+
+test("another thread cannot hide a refused host import or continue its host effects", async () => {
+  const PRINT: FuncImport = { module: "wrela", name: "print", kind: "func", type: { params: ["i32", "i32"], results: [] } };
+  for (const printAfter of [false, true]) {
+    const module = await WebAssembly.compile(buildModule({ imports: [SUBMIT, PRINT], memory: 1, funcs: [{
+      type: { params: [], results: [] }, export: "run", body: [
+        0x06, 0x40, ...op.i32(0), ...op.i32(0), ...op.call(0), 0x19, 0x0b,
+        ...(printAfter ? [...op.i32(16), ...op.i32(5), ...op.call(1)] : []),
+      ],
+    }], data: [{ offset: 16, bytes: new TextEncoder().encode("later") }] }));
+    const instance = await otherInstance(module, new WebAssembly.Memory({ initial: 1, maximum: 16384, shared: true }), "a helper");
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      expect(() => (instance.exports.run as () => void)()).toThrow("a helper can't call the host");
+      expect(log).not.toHaveBeenCalled();
+    } finally { log.mockRestore(); }
+  }
+});
+
 test("reports program traps", async () => {
   const program = await load(buildModule({ memory: 1, funcs: [{ type: FRAME_TYPE, body: op.unreachable, export: "frame" }] }));
   expect(() => program.frame(0, 1, 1)).toThrow(TrapError);
+});
+
+test("a trapping export commits none of its submitted commands", async () => {
+  const batch = new Encoder().createBuffer(1, 16).finish();
+  for (const name of ["init", "frame", "other"]) {
+    const executor = new Recorder();
+    const loading = Program.load(buildModule({
+      imports: [SUBMIT], memory: 1,
+      funcs: [...(name === "frame" ? [] : [frameOnly]), {
+        type: name === "frame" ? FRAME_TYPE : { params: [], results: [] },
+        body: [...op.i32(16), ...op.i32(batch.length), ...op.call(0), ...op.unreachable], export: name,
+      }], data: [{ offset: 16, bytes: batch }],
+    }), checker(), executor, { hash: true });
+    if (name === "init") await expect(loading).rejects.toThrow(TrapError);
+    else {
+      const program = await loading;
+      const call = () => name === "frame" ? program.frame(0, 1, 1) : program.call(name);
+      expect(call).toThrow(TrapError);
+      // The same handle can be checked again: no resource from the trapped call remains.
+      expect(call).toThrow(TrapError);
+      const hash = new StateHash();
+      hash.update(batch);
+      hash.update(batch);
+      expect(program.hash!.hex()).toBe(hash.hex());
+    }
+    expect(executor.log).toEqual([]);
+  }
+});
+
+test("a trapped call restores replaced resources and its open pass", async () => {
+  const batches = [
+    new Encoder().createBuffer(1, 64).createTexture(2, 1, 1, "rgba8unorm").createSampler(3, false, false, null).finish(),
+    new Encoder().destroyBuffer(1).createTexture(1, 1, 1, "rgba8unorm")
+      .destroyTexture(2).createBuffer(2, 4).destroySampler(3).createBuffer(3, 4)
+      .createBuffer(4, 4).destroyBuffer(4).beginScreenPass([0, 0, 0, 1]).finish(),
+    new Encoder().writeBuffer(1, 60, new Uint8Array(4)).destroyTexture(2).destroySampler(3)
+      .createBuffer(4, 4).beginScreenPass([0, 0, 0, 1]).present().finish(),
+  ];
+  const data: { offset: number; bytes: Uint8Array }[] = [];
+  let offset = 16;
+  const funcs = batches.map((batch, i) => {
+    const body = [...op.i32(offset), ...op.i32(batch.length), ...op.call(0), ...(i === 1 ? op.unreachable : [])];
+    data.push({ offset, bytes: batch });
+    offset += batch.length;
+    return { type: { params: [], results: [] }, body, export: ["init", "bad", "recover"][i]! };
+  });
+  const executor = new Recorder();
+  const program = await Program.load(buildModule({ imports: [SUBMIT], memory: 1, funcs: [frameOnly, ...funcs], data }), checker(), executor);
+  const initialized = executor.log.slice();
+  expect(() => program.call("bad")).toThrow(TrapError);
+  expect(executor.log).toEqual(initialized);
+  expect(() => program.call("recover")).not.toThrow();
+  expect(executor.log.slice(initialized.length)).toEqual(["WriteBuffer", "DestroyTexture", "DestroySampler", "CreateBuffer", "BeginScreenPass", "Present", "end"]);
+});
+
+test("submitted bytes survive reuse of the program's command memory before return", async () => {
+  const batch = new Encoder().createBuffer(1, 4).writeBuffer(1, 0, Uint8Array.of(1, 2, 3, 4)).finish();
+  const uploaded: number[][] = [];
+  class Uploads extends Recorder {
+    override execute(cmd: Command): void {
+      if (cmd.op === "WriteBuffer") uploaded.push([...cmd.data]);
+      super.execute(cmd);
+    }
+  }
+  const program = await Program.load(buildModule({ imports: [SUBMIT], memory: 1, funcs: [{
+    type: FRAME_TYPE, export: "frame", body: [
+      ...op.i32(16), ...op.i32(batch.length), ...op.call(0),
+      ...op.i32(16 + batch.length - 4), ...op.i32(0x08070605), 0x36, 0x02, 0x00,
+    ],
+  }], data: [{ offset: 16, bytes: batch }] }), checker(), new Uploads());
+  program.frame(0, 1, 1);
+  expect(uploaded).toEqual([[1, 2, 3, 4]]);
+});
+
+test("a trapped call prints immediately while its command work is discarded", async () => {
+  const PRINT: Import = { module: "wrela", name: "print", kind: "func", type: { params: ["i32", "i32"], results: [] } };
+  const batch = new Encoder().createBuffer(1, 4).finish();
+  const line = new TextEncoder().encode("before trap");
+  const executor = new Recorder();
+  const program = await Program.load(buildModule({ imports: [SUBMIT, PRINT], memory: 1, funcs: [{
+    type: FRAME_TYPE, export: "frame", body: [
+      ...op.i32(16), ...op.i32(batch.length), ...op.call(0),
+      ...op.i32(16 + batch.length), ...op.i32(line.length), ...op.call(1), ...op.unreachable,
+    ],
+  }], data: [{ offset: 16, bytes: batch }, { offset: 16 + batch.length, bytes: line }] }), checker(), executor);
+  const log = spyOn(console, "log").mockImplementation(() => expect(executor.log).toEqual([]));
+  try {
+    expect(() => program.frame(0, 1, 1)).toThrow(TrapError);
+    expect(log).toHaveBeenCalledWith("wrela: before trap");
+    expect(executor.log).toEqual([]);
+  } finally { log.mockRestore(); }
 });
 
 test("a trap without its table carries its offsets until the page locates it", async () => {
@@ -579,6 +762,47 @@ describe("requests", () => {
     );
   const later = () => new Promise((r) => setTimeout(r, 0));
 
+  test("duplicate requests reject every staged effect and release their reservations", async () => {
+    const bad = new Encoder().createBuffer(1, 4).fetch(4, "level").fetch(4, "level").finish();
+    const good = new Encoder().createBuffer(1, 4).fetch(4, "level").finish();
+    let fetched = 0;
+    const executor = new Recorder();
+    const p = await Program.load(buildModule({
+      imports: [SUBMIT], memory: 1, funcs: [frameOnly,
+        { type: NONE_TYPE, export: "bad", body: [0x06, 0x40, ...op.i32(16), ...op.i32(bad.length), ...op.call(0), 0x19, 0x0b] },
+        { type: NONE_TYPE, export: "good", body: [...op.i32(16 + bad.length), ...op.i32(good.length), ...op.call(0)] },
+      ], data: [{ offset: 16, bytes: bad }, { offset: 16 + bad.length, bytes: good }],
+    }), checker(), executor, { io: {
+      fetch: async () => { fetched++; return new Uint8Array(); },
+      storageRead: async () => new Uint8Array(), storageWrite: async () => {}, post: async () => new Uint8Array(),
+    } });
+    expect(() => p.call("bad")).toThrow("request 4 is already in use");
+    expect(executor.log).toEqual([]);
+    expect(fetched).toBe(0);
+    p.call("good");
+    expect(executor.log).toEqual(["CreateBuffer", "Fetch", "end"]);
+    expect(fetched).toBe(1);
+  });
+
+  test("a later invalid batch rejects the whole export before its requests start", async () => {
+    const earlier = new Encoder().createBuffer(1, 4).fetch(4, "level").finish();
+    const later = new Encoder().writeBuffer(1, 4, new Uint8Array(4)).finish();
+    const executor = new Recorder();
+    let fetched = 0;
+    const p = await Program.load(buildModule({ imports: [SUBMIT], memory: 1, funcs: [{
+      type: FRAME_TYPE, export: "frame", body: [
+        ...op.i32(16), ...op.i32(earlier.length), ...op.call(0),
+        ...op.i32(16 + earlier.length), ...op.i32(later.length), ...op.call(0),
+      ],
+    }], data: [{ offset: 16, bytes: earlier }, { offset: 16 + earlier.length, bytes: later }] }), checker(), executor, { io: {
+      fetch: async () => { fetched++; return new Uint8Array(); },
+      storageRead: async () => new Uint8Array(), storageWrite: async () => {}, post: async () => new Uint8Array(),
+    } });
+    expect(() => p.frame(0, 1, 1)).toThrow("overruns buffer 1");
+    expect(executor.log).toEqual([]);
+    expect(fetched).toBe(0);
+  });
+
   test("are answered from a later call, then taken once", async () => {
     const io = {
       fetch: async (url: string) => (url === "data/level.bin" ? Uint8Array.of(1, 2, 3, 4, 5) : Promise.reject(new Error("no such file"))),
@@ -682,6 +906,7 @@ describe("requests", () => {
     const word = (x: number) => Uint8Array.of(x & 255, (x >> 8) & 255, (x >> 16) & 255, x >>> 24);
     const done: string[] = [];
     const net = {
+      plan: () => ({ open() {}, send() {}, close() {} }),
       open: (conn: number, room: string) => void done.push(`open ${conn} ${room}`),
       send: (conn: number, bytes: Uint8Array) => void done.push(`send ${conn} ${[...bytes].join(",")}`),
       close: (conn: number) => void done.push(`close ${conn}`),
@@ -701,6 +926,46 @@ describe("requests", () => {
     expect(() => short.call("ask")).toThrow("`net/send` needs a connection's number");
     const other = await program(new Encoder().hostRequest(4, "net/listen", word(1)).finish(), { net });
     expect(() => other.call("ask")).toThrow("`net/listen` isn't a network command this host has");
+  });
+
+  test("a duplicate network open fails during submit before any staged work commits", async () => {
+    const PRINT: Import = { module: "wrela", name: "print", kind: "func", type: { params: ["i32", "i32"], results: [] } };
+    const body = Uint8Array.of(7, 0, 0, 0, ...new TextEncoder().encode("room"));
+    const batch = new Encoder().createBuffer(1, 4).hostRequest(4, "net/open", body).hostRequest(5, "net/open", body).finish();
+    const wasm = buildModule({ imports: [SUBMIT, PRINT], memory: 1, funcs: [{ type: FRAME_TYPE, export: "frame", body: [
+      0x06, 0x40, ...op.i32(16), ...op.i32(batch.length), ...op.call(0), 0x19, 0x0b,
+      ...op.i32(0), ...op.i32(0), ...op.call(1),
+    ] }], data: [{ offset: 16, bytes: batch }] });
+    // A valid pair keeps the first open pending, so a second open of its number must fail.
+    const paired = Uint8Array.from([...wasm, 0, 19, 10, ...new TextEncoder().encode("wrela.pair"), 1, 0, 0, 0, 0, 0, 0, 0]);
+    const executor = new Recorder();
+    const net = new Net(() => "https://site.example/", () => {});
+    const fetched = spyOn(globalThis, "fetch").mockImplementation((() => new Promise<Response>(() => {})) as unknown as typeof fetch);
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const p = await Program.load(paired, checker(), executor, { net });
+      expect(() => p.frame(0, 1, 1)).toThrow("connection 7 is open");
+      expect(executor.log).toEqual([]);
+      expect(fetched).not.toHaveBeenCalled();
+      expect(log).not.toHaveBeenCalled();
+    } finally {
+      net.closeAll();
+      fetched.mockRestore();
+      log.mockRestore();
+    }
+  });
+
+  test("network room text keeps a leading UTF-8 byte-order mark", async () => {
+    const rooms: string[] = [];
+    const room = "\uFEFFroom";
+    const net = {
+      plan: () => ({ open() {}, send() {}, close() {} }),
+      open: (_conn: number, room: string) => { rooms.push(room); },
+      send() {}, close() {}, closeAll() {},
+    };
+    const p = await program(new Encoder().hostRequest(4, "net/open", Uint8Array.of(7, 0, 0, 0, ...new TextEncoder().encode(room))).finish(), { net });
+    p.call("ask");
+    expect(rooms).toEqual([room]);
   });
 
   test("host capability methods retain their IO receiver", async () => {

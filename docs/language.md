@@ -159,6 +159,7 @@ Limits keep every build finite.
 - Expressions, blocks, types and patterns nest at most 128 deep, and an expression's tree is at most 512 deep (E0112).
 - A generic function's instantiations go at most 256 calls deep.
 - A type has at most 4096 parts, counting a part each time it appears (E0412, E0329). This holds for any value's type and for type arguments: a type that doubles at each step, like `(a, a)`, grows past any machine.
+- A computed constant's value nests at most 256 aggregate containers deep (E0704). Each struct, tuple, enum, array, vector, matrix, `Box` and `Vec` counts once along a path through the value; scalar leaves do not count. This also bounds chains through heap pointers.
 - A value larger than the CPU stack traps when the function that holds it is entered, as a stack overflow does.
 - In GPU code, a type larger than WGSL allows (2³¹ − 1 bytes) is an error (E0702).
 
@@ -1601,6 +1602,7 @@ All three are in std, built on the unsafe core (§6.12), and none of them is spe
   - `f` is `@deterministic`, so the result is a function of `input` alone, whichever thread runs it and whenever.
   - A task that no helper has started runs inside `join`. With no helpers, every task runs there, and a task that joins another can't deadlock.
   - A trap in a task is the program's panic at its `join`.
+  - Dropping a task completes its work as `join` does, then drops the result and releases its slot and memory. A trap is the program's panic there too.
   - `done()` says whether the task has finished, and is `nondet`. With no helpers (a page on a machine with two cores), `done()` runs a task that hasn't run yet, so a program that polls a task before it joins it doesn't wait forever.
   - A parallel call (`par_each_mut`, §16.1) inside a task, or inside a `@parallel fn`, runs on that thread alone.
 
@@ -2464,7 +2466,7 @@ A lifted build reads a package's `f32` literals from a table instead of building
   - A negative literal is one entry, with its minus.
 - **The CPU** reads the table from memory. **The GPU** reads it from a storage buffer that every pipeline of a lifted build binds last. Before a dispatch or a draw, the program uploads the table if it changed since the last upload. So a change reaches both with the next frame, and never needs a rebuild.
 - **The build reports every float literal** of the lifted packages in `lift.json`: whether it is lifted, and why. The build also keeps each lifted file's text and hash (FNV-1a 64, 16 hex digits), so a tool can show a literal's line and write a change back.
-- **`std::lift`** is the program's view of its table: `count()` and `literal(i)`; a `Literal`'s `value()`, `built_value()`, `set(v)` and `source()` (file, bytes, line, column); `files()`, `file_name(i)`, `file_path(i)`, `file_text(i)` and `file_hash(i)`. A build that is not lifted has no literals: `count()` is 0.
+- **`std::lift`** is the program's view of its table: `count()` and `literal(i)`; a `Literal`'s `value()`, `built_value()`, `set(v)` and `source()` (file, bytes, line, column, and the written mantissa's unit including its exponent and suffix); `files()`, `file_name(i)`, `file_path(i)`, `file_text(i)` and `file_hash(i)`. A build that is not lifted has no literals: `count()` is 0.
 - **`std::lift::gradient(f, which)`** gives `f`'s value and its derivative by each literal of `which`. This is a parameter gradient, derived in forward mode as `gradient` is (§14.2), through everything that `f` calls, including the code that builds values from literals. It runs on the CPU. `reads(f)` gives the literals that `f`'s code can read on the CPU, through everything that it calls, for any `fn() -> T`.
 - **A host changes a literal** through the export that a lifted build has, `__lift_set(literal, value)`, as `set` does. `std::lift::generation()` counts the table's changes. A `Watch` (`Watch::new(reads(f))`) says when a literal that it watches has a new value (`changed()`, once per change). A program cooks again, at that time, what it cooked from literals at load.
 

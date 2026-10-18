@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { Semantics } from "../src/semantics.ts";
-import { BrowserPlatform, decodeImage, environment, exportName, iconLink, linkUrl, MESSAGE_LIMIT, PASTE_EVENTS, PortRpc, prefetch, programUrl, sameOriginAddress, SEMANTICS, TEXT_INPUT, wordAt, wordBytes } from "../src/platform.ts";
+import { BrowserPlatform, decodeImage, environment, exportName, iconLink, linkUrl, MESSAGE_LIMIT, PASTE_EVENTS, PortRpc, prefetch, programUrl, sameOriginAddress, SEMANTICS, shownName, TEXT_INPUT, wordAt, wordBytes } from "../src/platform.ts";
 import { Reader, Writer } from "../src/wire.ts";
 
 test("program channels correlate replies and close outstanding requests", async () => {
@@ -16,6 +16,23 @@ test("program channels correlate replies and close outstanding requests", async 
     await expect(waiting).rejects.toThrow("closed");
     await expect(left.call(new Uint8Array())).rejects.toThrow("closed");
   } finally { left.close(); right.close(); }
+});
+
+test("clipboard writes preserve an initial byte-order mark as text", async () => {
+  const oldWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const oldClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+  let written = "";
+  Object.defineProperty(globalThis, "window", { configurable: true, value: { parent: {}, addEventListener() {} } });
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (text: string) => { written = text; } } });
+  const platform = new BrowserPlatform({ style: {} } as HTMLCanvasElement, () => {});
+  try {
+    await platform.request("clipboard/write", new TextEncoder().encode("\uFEFFtext"));
+    expect(written).toBe("\uFEFFtext");
+  } finally {
+    platform.dispose();
+    if (oldWindow) Object.defineProperty(globalThis, "window", oldWindow); else Reflect.deleteProperty(globalThis, "window");
+    if (oldClipboard) Object.defineProperty(navigator, "clipboard", oldClipboard); else Reflect.deleteProperty(navigator, "clipboard");
+  }
 });
 
 test("the environment says whether this page load reloaded the tab, what the host has, then the colour scheme", () => {
@@ -168,6 +185,13 @@ test("export filenames fit full session keys and reject traversal or truncation"
   expect(exportName(body(longest)).name).toBe(longest);
   for (const name of ["../save", "save/path", "", "x".repeat(241)]) expect(() => exportName(body(name))).toThrow("filename");
   expect(() => exportName(wordBytes(10))).toThrow("filename");
+});
+
+test("shown program names accept every catalog key including a leading hyphen", () => {
+  const body = (name: string) => new Writer().u32(1).raw(new TextEncoder().encode(name)).bytes();
+  for (const name of ["-", "-game", "a0-", "-".repeat(64)]) expect(shownName(body(name))).toBe(name);
+  for (const name of ["_", "A", "../game", "-".repeat(65)]) expect(() => shownName(body(name))).toThrow("invalid program name");
+  expect(shownName(wordBytes(1))).toBeNull();
 });
 
 test("icons are square PNGs the build shipped, linked from the page", () => {
@@ -337,8 +361,10 @@ test("a shown program is named in the address, and Back asks it to return", asyn
     expect(at).toBe(0);
     // A program that returns by itself takes its entry with it.
     const second = await platform.request("surface/open", new TextEncoder().encode("https://game.example/session/"));
+    (location as { pathname: string }).pathname = "//nested.example/";
     await show(second, "last-green");
     expect(at).toBe(1);
+    expect(new URL(entries[at]!.url, "https://console.example/").href).toBe("https://console.example//nested.example/?from=link#last-green");
     frame.onload?.();
     expect(at).toBe(0);
   } finally {
@@ -364,6 +390,15 @@ test("a program's address stays on its page's origin, and a link is an http or h
   }
 });
 
+test("same-origin navigation cannot turn a double-slash path into another origin", () => {
+  const here = "https://docs.example/v0.1/";
+  const requested = new URL("https://docs.example//elsewhere.example/path?q=x#part");
+  const address = sameOriginAddress(requested.href, here);
+  const followed = new URL(address, here);
+  expect(followed.href).toBe(requested.href);
+  expect(() => sameOriginAddress("blob:https://docs.example/identifier", here)).toThrow();
+});
+
 test("a top-level program moves through its own addresses, and hears Back and Forward", async () => {
   const names = ["window", "history", "location"] as const;
   const saved = names.map((n) => Object.getOwnPropertyDescriptor(globalThis, n));
@@ -378,9 +413,7 @@ test("a top-level program moves through its own addresses, and hears Back and Fo
     get search() { return new URL(entries[at]!, "https://docs.example").search; },
     get hash() { return new URL(entries[at]!, "https://docs.example").hash; },
     get href() { return new URL(entries[at]!, "https://docs.example").href; },
-    reload: () => { reloads++; },
   };
-  let reloads = 0;
   const pages = {
     state: null,
     pushState: (_s: unknown, _t: string, url: string) => { entries.splice(at + 1); entries.push(url); at++; },
@@ -407,9 +440,14 @@ test("a top-level program moves through its own addresses, and hears Back and Fo
     back();
     expect(await text("nav/changed")).toBe("/v0.1/");
     await expect(text("nav/push", "https://elsewhere.example/")).rejects.toThrow("own origin");
-    // A reload loads the page again, at the address it's at.
-    await text("nav/reload");
-    expect(reloads).toBe(1);
+    // The reported address can be passed back to navigation, even when its path starts //.
+    await text("nav/push", "https://docs.example//nested.example/path");
+    const current = await text("nav/location");
+    await text("nav/replace", current);
+    expect(location.href).toBe("https://docs.example//nested.example/path");
+    await text("nav/push", "/next");
+    back();
+    expect(await text("nav/changed")).toBe(current);
     // A program in a frame has no address of its own.
     page.parent = {};
     await expect(text("nav/push", "#x")).rejects.toThrow("no address of its own");

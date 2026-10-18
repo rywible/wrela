@@ -92,14 +92,18 @@ pub fn parse(src: str) -> Vec<Block> {
         // A fenced block of code, to its closing fence.
         if t.starts_with("```") {
             flush(mut blocks, mut para)
-            let lang = t.slice(3, t.len()).trim().to_string()
+            let fence = count_of(t, 96)
+            let lang = t.slice(fence, t.len()).trim().to_string()
             var code = String::new()
             i += 1
+            let first = i
             while i < lines.len() {
                 let (ca, cb) = lines[i]
                 let c = src.slice(ca, cb)
-                if c.trim().starts_with("```") { break }
-                if !code.is_empty() { code.push_str("\n") }
+                let trimmed = c.trim()
+                let ticks = count_of(trimmed, 96)
+                if ticks >= fence && trimmed.slice(ticks, trimmed.len()).is_empty() { break }
+                if i > first { code.push_str("\n") }
                 code.push_str(c)
                 i += 1
             }
@@ -523,6 +527,16 @@ fn is_letter(cp: u32) -> bool {
         (cp >= 0xFE30 && cp <= 0xFE4F) ||
         cp >= 0x1F000
     !sign
+}
+
+@test
+fn fenced_code_keeps_blank_lines_and_shorter_fences() {
+    let blocks = parse("````wrela\n\nlet a = 1\n```\n\n````\n")
+    assert(blocks.len() == 1 && blocks[0].kind == Kind::Code)
+    assert(blocks[0].lang.as_str() == "wrela")
+    assert(blocks[0].code.as_str() == "\nlet a = 1\n```\n")
+    let blank = parse("```\n\n\n```\n")
+    assert(blank.len() == 1 && blank[0].code.as_str() == "\n")
 }
 
 @test

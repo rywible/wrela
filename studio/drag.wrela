@@ -1,6 +1,6 @@
 // A drag (AC9 of #39): begin at a surface point, follow the target as it moves, and finish:
-// prune, round each literal to its source's decimals, and measure what moved. See solve.wrela
-// for the problem solved at each step.
+// prune, round each literal to its source's decimals and unit, and measure what moved.
+// See solve.wrela for the problem solved at each step.
 
 use diagnose
 use json::{List, list, obj}
@@ -10,7 +10,7 @@ use solve::{
 }
 use std::collections::Vec
 use std::field::{Surface, part_families, part_image}
-use std::lift::{Literal, literal}
+use std::lift::{Literal, literal, round_to}
 use std::string::String
 use std::gpu::GpuBuffer
 use surface::{Reading, Snapping, Spot}
@@ -437,10 +437,15 @@ fn decimals(i: u32) -> u32 {
     let Some(l) = literal(i) else { return 0 }
     let s = l.source()
     let text = std::lift::file_text(s.file)
+    decimals_of(text.slice(s.start, s.end))
+}
+
+fn decimals_of(text: str) -> u32 {
     var n = 0
     var after = false
-    for b in s.start..s.end {
+    for b in 0..text.len() {
         let c = text.byte(b)
+        if c == 95 { continue }
         if c == 46 {
             after = true
         } else if after && c >= 48 && c <= 57 {
@@ -452,22 +457,26 @@ fn decimals(i: u32) -> u32 {
     n
 }
 
-/// `v` rounded to the decimals of literal `i`'s text.
-pub fn to_decimals(i: u32, v: f32) -> f32 {
-    rounded(v, decimals(i))
+@test
+fn literal_decimals_count_digits_between_separators() {
+    assert(decimals_of("0.12_5") == 3)
+    assert(decimals_of("1.0_2e-3") == 2)
+    assert(decimals_of("15cm") == 0)
 }
 
-/// `v` rounded to `n` decimals (0, not -0, when it rounds to zero: the source can't write -0).
-fn rounded(v: f32, n: u32) -> f32 {
-    let k = pow(10.0, f32(n))
-    let r = round(v * k) / k
-    if r == 0.0 { 0.0 } else { r }
+fn rounding_unit(i: u32) -> f64 {
+    if let Some(l) = literal(i) { l.source().unit } else { 1.0 }
+}
+
+/// `v` rounded to the mantissa decimals, exponent and unit of literal `i`'s text.
+pub fn to_decimals(i: u32, v: f32) -> f32 {
+    round_to(v, decimals(i), rounding_unit(i))
 }
 
 /// Finishes the drag: a few more steps; prunes literals carrying under 5% of the target's move
 /// (back to where they began) and solves again; rounds each changed literal to its source's
-/// decimals, largest change first, solving the rest again after each (the last gets as many
-/// more decimals as keep its rounding under 5% of its change).
+/// decimals and unit, largest change first, solving the rest again after each (the last gets
+/// as many more decimals as keep its rounding under 5% of its change).
 pub fn finish(
     d: mut Drag,
     grad8: fn(vec3, [Literal; 8]) -> (f32, [f32; 8]),
@@ -506,12 +515,13 @@ pub fn finish(
             }
         }
         var n = decimals(d.lits[big])
-        var v = rounded(d.now[big], n)
+        let unit = rounding_unit(d.lits[big])
+        var v = round_to(d.now[big], n, unit)
         left -= 1
         if left == 0 {
             while abs(v - d.now[big]) > 0.05 * most && n < 7 {
                 n += 1
-                v = rounded(d.now[big], n)
+                v = round_to(d.now[big], n, unit)
             }
         }
         d.now[big] = v

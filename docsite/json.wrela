@@ -57,12 +57,14 @@ impl Json {
     pub fn whole(self, v: u32) -> Option<u32> {
         if self.values[v].kind != Kind::Number { return None }
         let t = self.values[v].text.as_str()
-        if t.is_empty() || t.len() > 9 { return None }
-        var n = 0
+        if t.is_empty() || t.len() > 10 { return None }
+        var n: u32 = 0
         for i in 0..t.len() {
             let b = t.byte(i)
             if b < 48 || b > 57 { return None }
-            n = n * 10 + u32(b - 48)
+            let digit = u32(b - 48)
+            if n > (4294967295 - digit) / 10 { return None }
+            n = n * 10 + digit
         }
         Some(n)
     }
@@ -170,18 +172,36 @@ fn value(json: mut Json, b: [u8], at: mut u32, depth: u32) -> Result<u32, String
             }
         }
     }
-    // A number: written as it is, checked only for its characters.
+    // A JSON number: an integer, an optional fraction, then an optional exponent.
     let start = at
-    while at < b.len() {
-        let d = b[at]
-        let ok = (d >= 48 && d <= 57) || d == 45 || d == 43 || d == 46 || d == 101 || d == 69
-        if !ok { break }
+    if b[at] == 45 { at += 1 }
+    if at >= b.len() { return Err(f"no digit at byte {at}") }
+    if b[at] == 48 {
         at += 1
+    } else {
+        if b[at] < 49 || b[at] > 57 { return Err(f"no digit at byte {at}") }
+        while at < b.len() && digit(b[at]) { at += 1 }
     }
-    if at == start { return Err(f"no value at byte {start}") }
+    if at < b.len() && b[at] == 46 {
+        at += 1
+        let first = at
+        while at < b.len() && digit(b[at]) { at += 1 }
+        if at == first { return Err(f"a fraction has no digit, at byte {at}") }
+    }
+    if at < b.len() && (b[at] == 101 || b[at] == 69) {
+        at += 1
+        if at < b.len() && (b[at] == 43 || b[at] == 45) { at += 1 }
+        let first = at
+        while at < b.len() && digit(b[at]) { at += 1 }
+        if at == first { return Err(f"an exponent has no digit, at byte {at}") }
+    }
     var text = String::new()
     for i in start..at { text.push_byte(b[i]) }
     Ok(json.push(Kind::Number, take text))
+}
+
+fn digit(c: u8) -> bool {
+    c >= 48 && c <= 57
 }
 
 /// The string at `at` (its opening quote), with its escapes read.
@@ -295,6 +315,31 @@ fn a_document_reads_into_values_and_their_fields() {
     assert(json.kind(json.get(json.root, "commit").unwrap()) == Kind::Null)
     assert(json.kind(json.get(json.root, "ok").unwrap()) == Kind::True)
     assert(json.get(json.root, "missing").is_none() && json.field(json.root, "missing") == "")
+}
+
+@test
+fn numbers_follow_json_grammar() {
+    for bad in ["+1", "01", "-01", ".1", "1.", "1e", "1e+", "--1", "1+2", "NaN"] {
+        assert(Json::read(bytes(bad)).is_err(), bad)
+    }
+    for good in ["0", "-0", "1", "-12.5", "0.25", "1e3", "1E-3", "1e+3"] {
+        assert(Json::read(bytes(good)).is_ok(), good)
+    }
+}
+
+@test
+fn whole_values_use_the_u32_range() {
+    for (text, expected) in [
+        ("1000000000", Some(1000000000)),
+        ("4294967295", Some(4294967295)),
+        ("4294967296", None),
+        ("9999999999", None),
+        ("1.0", None),
+        ("-1", None),
+    ] {
+        let Ok(json) = Json::read(bytes(text)) else { panic(text) }
+        assert(json.whole(json.root) == expected, text)
+    }
 }
 
 @test

@@ -333,7 +333,7 @@ impl Font {
         var end = to
         var first = true
         self.walk(text.slice(from, to), size, 0.0, |i, g, pen| {
-            if !first && pen + self.glyphs[g].advance * size > width {
+            if !first && pen + (self.glyphs[g].advance + self.tracking) * size > width {
                 end = from + i
                 return false
             }
@@ -458,6 +458,19 @@ fn wrapping_breaks_at_spaces_newlines_and_long_words() {
         total += p.1 - p.0
     }
     assert(total == long.len(), "every byte is on a line once")
+}
+
+@test
+fn wrapping_accounts_for_tracking() {
+    var font = Font::of(Face::Sans)
+    font.tracking = 0.25
+    let size = 16.0
+    let text = "aaaa"
+    let width = font.measure("aa", size) - 0.5 * font.tracking * size
+    let lines = font.wrap(text, size, width)
+    for line in lines {
+        assert(font.measure(text.slice(line.0, line.1), size) <= width)
+    }
 }
 
 fn chars(cps: [u32]) -> String {
@@ -652,7 +665,7 @@ impl Fonts {
         var bytes: Vec<u8> = Vec::filled(self.width * self.baked * 4, 0)
         for f in 0..2 {
             borrow font = self.font(if f == 0 { Face::Sans } else { Face::Mono })
-            for i in 0..font.count() {
+            for i in 0..font.kerned {
                 let g = font.glyph(i)
                 for row in 0..g.height {
                     let base = ((g.atlas_y + row) * self.width + g.atlas_x) * 4
@@ -666,6 +679,28 @@ impl Fonts {
         }
         bytes
     }
+}
+
+@test
+fn rebuilding_the_baked_atlas_ignores_made_glyphs() {
+    var fonts = Fonts::load()
+    let before = fonts.atlas()
+    fonts.sans.ask("狼")
+    fonts.sans.add(
+        "狼",
+        Made {
+            advance: 1.0,
+            left: 0.0,
+            top: 30.0,
+            width: 4,
+            height: 4,
+            color: false,
+            texels: Vec::filled(64, 0),
+        },
+        x: 1,
+        y: fonts.baked,
+    )
+    assert(fonts.atlas() == before)
 }
 
 @test

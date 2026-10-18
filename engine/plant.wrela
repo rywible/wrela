@@ -39,7 +39,10 @@ impl Clump {
     /// How far `p` is outside it (m; below 0 inside): exact on its axes, and for a sphere.
     pub fn distance(self, p: vec3) -> f32 {
         let v = p - self.centre
-        let l = max(length(vec3(v.x, v.y / self.squash, v.z)), 1.0e-4)
+        let l = length(vec3(v.x, v.y / self.squash, v.z))
+        if l == 0.0 {
+            return -self.radius * min(self.squash, 1.0)
+        }
         // In its unsquashed frame `p` is `l - radius` out; back in the world that's as much
         // shorter as the ray from its centre is.
         (l - self.radius) * length(v) / l
@@ -133,7 +136,7 @@ pub struct Plant: Copy + GpuData {
     pub clumps: Bounded<Clump, MAX_CLUMPS>,
     pub leaves: Leaves,
     pub bark: Bark,
-    /// How softly the crown's clumps blend (per metre: higher is harder).
+    /// How softly the crown's clumps blend (positive, per metre: higher is harder).
     pub blend: f32,
 }
 
@@ -236,19 +239,38 @@ impl Plant {
     /// The crown's field at `p`: the soft union of its clumps (an exponential smooth minimum),
     /// and its gradient. Its gradient is a mean of unit vectors, so it never exceeds 1.
     pub fn crown(self, p: vec3) -> (f32, vec3) {
+        self.crown_offset(p, MAX_CLUMPS, by: 0.0)
+    }
+
+    // The same blend with clump `moved` offset by `by`, for the field's part editing.
+    fn crown_offset(self, p: vec3, moved: u32, by: f32) -> (f32, vec3) {
+        if self.clumps.is_empty() {
+            return (1.0e9, vec3(0.0, 1.0, 0.0))
+        }
         let k = self.blend
+        var nearest = self.clumps[0].distance(p) + if moved == 0 { by } else { 0.0 }
         var s = 0.0
         var g = vec3(0.0)
         for i in 0..self.clumps.len() {
             let c = self.clumps[i]
-            let w = exp(-k * c.distance(p))
+            let d = c.distance(p) + if i == moved { by } else { 0.0 }
+            // Keep all exponents nonpositive, rescaling the sum when a closer clump becomes
+            // its reference. Absolute distances can underflow or overflow the exponential.
+            if d < nearest {
+                let scale = exp(min(k * (d - nearest), 0.0))
+                s *= scale
+                g *= scale
+                nearest = d
+            }
+            let w = exp(min(k * (nearest - d), 1.0e-4))
             s += w
             g += c.normal(p) * w
         }
-        if s <= 0.0 {
-            return (1.0e9, vec3(0.0, 1.0, 0.0))
-        }
-        (-log(s) / k, g / s)
+        // The nearest clump contributes 1. The weight's exponent is at most 0 and the sum
+        // at least 1; slack bounds avoid derivative ties at those valid endpoints (min/max
+        // average derivatives at a tie). The exponent's small slack keeps spatial bounds tight.
+        let sum = max(s, 0.5)
+        (nearest - log(sum) / k, g / sum)
     }
 
     /// The limbs' field at `p`: the nearest limb's distance.
@@ -371,13 +393,8 @@ impl Surface for Plant {
         }
         // A clump raised by `by`: its term in the crown's blend, moved.
         let j = i - self.limbs.len()
-        let k = self.blend
-        var s = 0.0
-        for c in 0..self.clumps.len() {
-            let d = self.clumps[c].distance(p) + if c == j { by } else { 0.0 }
-            s += exp(-k * d)
-        }
-        min(self.wood(p), -log(max(s, 1.0e-30)) / k)
+        let (crown, _) = self.crown_offset(p, j, by)
+        min(self.wood(p), crown)
     }
 
     fn lipschitz(self, near: f32) -> f32 {
@@ -1334,6 +1351,89 @@ pub fn full(v: VertexIndex, z: f32) -> ClipPosition {
 }
 
 // ---- tests -----------------------------------------------------------------------------------------
+
+@test
+fn a_clumps_centre_stays_inside_its_surface() {
+    let ball = Clump { centre: vec3(0.0), radius: 2.0 }
+    assert(ball.distance(ball.centre) == -2.0, "a sphere's centre is a radius inside")
+    for delta in [1.0e-6, 1.0e-5, 1.0e-4] {
+        assert(abs(ball.distance(vec3(delta, 0.0, 0.0)) - (delta - 2.0)) < 1.0e-5)
+    }
+    let cushion = Clump { squash: 0.5, ..ball }
+    assert(cushion.distance(cushion.centre) == -1.0, "the nearest surface is the cushion's top")
+}
+
+@test
+fn crown_blending_keeps_distant_values_finite() {
+    var p = plant(Leaves {}, Bark {})
+    p.clump(vec3(0.0), radius: 2.0)
+    let (far, normal) = p.crown(vec3(1000.0, 0.0, 0.0))
+    assert(abs(far - 998.0) < 1.0e-3, "a distant crown lost its distance to underflow")
+    assert(length(normal - vec3(1.0, 0.0, 0.0)) < 1.0e-5)
+}
+
+@test
+fn crown_blending_keeps_deep_values_finite() {
+    var p = plant(Leaves {}, Bark {})
+    p.blend = 100.0
+    p.clump(vec3(10.0, 0.0, 0.0), radius: 1.0)
+    p.clump(vec3(0.0), radius: 2.0)
+    p.clump(vec3(0.0), radius: 2.0)
+    let (deep, direction) = p.crown(vec3(0.0))
+    assert(abs(deep - (-2.0 - log(2.0) / 100.0)) < 1.0e-5)
+    assert(abs(length(direction) - 1.0) < 1.0e-5)
+}
+
+@test
+fn crown_part_offsets_preserve_distant_values() {
+    var p = plant(Leaves {}, Bark {})
+    p.clump(vec3(0.0), radius: 2.0)
+    let at = vec3(1000.0, 0.0, 0.0)
+    assert(abs(p.part_offset(at, 0, by: 0.0) - p.distance(at)) < 1.0e-3)
+    assert(abs(p.part_offset(at, 0, by: 10.0) - 1008.0) < 1.0e-3)
+}
+
+@test
+fn crown_part_offsets_preserve_deep_values() {
+    var p = plant(Leaves {}, Bark {})
+    p.blend = 100.0
+    p.clump(vec3(0.0), radius: 2.0)
+    p.clump(vec3(0.0), radius: 2.0)
+    let at = vec3(0.0)
+    assert(abs(p.part_offset(at, 0, by: 0.0) - p.distance(at)) < 1.0e-5)
+    assert(abs(p.part_offset(at, 0, by: 0.01) - (-2.0 - log(1.0 + exp(-1.0)) / 100.0)) < 1.0e-5)
+}
+
+@test
+fn crown_intervals_bound_wide_boxes_outside_the_plant() {
+    var p = plant(Leaves {}, Bark {})
+    p.clump(vec3(-10.0, 0.0, 0.0), radius: 2.0)
+    p.clump(vec3(10.0, 0.0, 0.0), radius: 2.0)
+    let b = std::derive::Box3 { lo: vec3(100.0, -100.0, -100.0), hi: vec3(100.1, 100.0, 100.0) }
+    let r = std::derive::interval(|q: vec3| p.distance(q), b)
+    assert(
+        r.lo > 0.0 && r.hi < 1000.0,
+        f"a far box has an unbounded crown interval: {r.lo} to {r.hi}",
+    )
+}
+
+@test
+fn tied_clumps_have_symmetric_derived_gradient() {
+    var p = plant(Leaves {}, Bark {})
+    p.clump(vec3(-2.0, 0.0, 0.0), radius: 1.0)
+    p.clump(vec3(2.0, 0.0, 0.0), radius: 1.0)
+    for x in [0.0, -0.1, 0.1] {
+        let at = vec3(x, 0.0, 0.0)
+        let derived = std::derive::gradient(|q: vec3| p.distance(q), at)
+        let (_, expected) = p.crown(at)
+        assert(
+            length(derived - expected) < 1.0e-5,
+            f"clump gradient {derived} differs from {expected}",
+        )
+    }
+    let weight = std::derive::gradient(|by: f32| p.part_offset(vec3(0.0), 0, by), 0.0)
+    assert(abs(weight - 0.5) < 1.0e-5, "equal clumps must share a part offset equally")
+}
 
 /// A cushion clump is as wide as its radius and `squash` as tall, its top faces up and its side
 /// out; at `squash` 1 it's the sphere it was.

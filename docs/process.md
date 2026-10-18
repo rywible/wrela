@@ -2591,6 +2591,153 @@ In the repo:
 | DReCon (Bergamin, Clavet, Holden and Forbes, SIGGRAPH Asia 2019) | A published method | A policy that tracks a motion-matched reference. |
 | PPO (Schulman et al., 2017); the adaptive learning rate of rsl_rl (Rudin et al., "Learning to Walk in Minutes", 2022) | Published methods; rsl_rl is BSD-3, read, not copied | The lab's trainer. |
 
+## Docs that scroll without a stall, 2026-10-17
+
+Ryan found the docs still slow on his Pixel 9: scrolling stuttered, and a pull to refresh wiped
+the page and showed its sign in the middle of the screen. Claude (Opus 5.5) traced the stutter to
+the front page's tesseract: the frame it came on the screen raymarched the whole figure, a field
+read from its code and walked node by node on the GPU, in one pass. Now each figure's image is
+drawn a band a frame, a rough image a quarter as fine first and then the sharp one, from a screen
+before the figure reaches the screen; a figure that's dragged or turned still draws its rough
+image whole at once. The page's text and shapes are drawn into tiles 1024 pixels tall, again only
+when they change, and a scroll moves them at whole pixels. A finger's moves reach the program
+where the browser predicts the finger to be, which takes a frame from the lag, and the host stops
+moving the page's semantic elements that haven't moved. A pull to refresh now fetches the page and
+the index again in place, with its sign at the top under the header, and the page doesn't fade in
+again; the `nav/reload` host service went.
+
+Paired runs in headless Chrome on an M4 Air, the front page at 1236 by 2745 pixels (three to the
+CSS pixel) over the same 300-frame wheel scroll, three runs each: GPU time per frame went from a
+median of 0.41 ms to 0.16 ms, and the worst frame from 61–67 ms (the tesseract coming on the
+screen) to 2.9 ms. Drawing the figure ahead costs bands of 1.1 ms median and 2.3 ms at most. With
+the CPU slowed six times, the main thread's longest task once a scroll settles on a long reference
+page went from about 20 ms to 6.3 ms. These are M4 numbers in headless Chrome, not the Pixel 9's;
+a phone's GPU is several times slower, so its bands are longer in proportion.
+
+On the Pixel 9 a swipe then scrolled smoothly, but a finger held on the page shook it up and down:
+the browser's predicted moves overshoot as a finger slows or turns, and the page followed them.
+The program is told where the finger is again, and nothing predicted.
+
+A held finger still stuttered: the main thread hands the program a pointer's moves when the
+browser does, and the worker's frames keep their own clock, so a frame sometimes found no move and
+the next two frames' worth. The host now resamples a held pointer as Chrome does its own scrolling:
+it takes each sample with the time the browser read it (as it's read, with `pointerrawupdate`, or
+from a move's coalesced samples), and gives each frame one move, where the pointer was a little
+before that frame, between the samples around that moment. How far before covers how far a
+frame's newest sample has trailed it over the last two seconds. In a simulation at 120 Hz with the
+moves of one frame in three a frame late, each frame's step was within 1% of the finger's against
+0 or 2 frames' worth before, for about 15 ms more lag behind the finger. A hardware check on the
+Pixel 9 is still to come.
+
+On the Pixel 9 that was much better, but a little behind native scrolling; the page shook when
+search closed; and it opened in pieces. Claude (Opus 5.5) modelled a phone's touch (samples every 4
+or 8 ms, read 2 to 6 ms late, frames at 120 Hz) and found the resampler waited a sample's gap more
+than it needed: without it, a held finger's page trails it by about 9.5 ms against about 17 before,
+its steps still within 1% of the finger's, with no overshoot as the finger stops or turns; moves as
+they come trail by 6 to 9 ms with steps up to 50% uneven. A drag no longer jumps the 10 pixels its
+finger moved before it counted as a drag: it begins where it is and makes them up over a tenth of a
+second. A phone's keyboard now opens over the page (`interactive-widget=resizes-visual`), so the
+canvas isn't resized and stretched as the keyboard slides, the likely cause of the shake, which
+headless Chrome can't show. On the phone the making up felt uncanny, the page sliding under a held
+finger at the start of a drag, so a drag now keeps that distance from its finger, as a phone's own
+pages do. The docs now open as a whole: their page's colour from the first
+moment, in the page and in a phone's browser bar, then everything fades in together once the first
+page is ready.
+
+## Current-state bug audit, 2026-10-17
+
+Ryan asked Codex and parallel agents to inspect the current code across the repository, reproduce
+bugs and fix them without further approval. The checkout was clean and fast-forwarded from
+`origin/main` to `d832d54a` before work began. The agents reviewed compiler and host mechanisms,
+the standard library, engine, studio, UI, tools, console and game state. Other agents checked the
+larger fixes independently. Each retained fix has a regression that failed before the correction;
+temporary probes stayed outside the shipped sources and were removed.
+
+The fixes cover parser limits and recovery; constant lengths, generic shader types and GPU
+limits; closure captures, build roles and computed values; intervals for vector operations;
+source edits, refactors, mesh queries and numeric comparisons; host failures, clocks, reloads,
+GPU commands and input; journal and network lifecycles; task cleanup, numeric parsing and fields;
+simulation, score ordering, spatial queries and controls; text editing, drags and studio buffers;
+and JSON and HTML documentation. They correct observed failures, rather than change the games'
+art, lore or tuning. No generative media model or new outside asset was used.
+
+Both GPU hosts now require `indirect-first-instance`: valid indirect draw arguments may set it,
+including arguments written by a GPU. A device without the feature gives an explicit error.
+Dropping a task now completes its work and releases its result, slot and heap blocks. A computed
+constant deeper than 256 aggregate containers reports E0704 instead of overflowing the compiler's
+stack. These two resource rules are stated in the language spec and source reference comments.
+
+The regressions use bounded inputs, lifecycle assertions, real hardware GPU pixels where needed,
+and CPU hosts for command and state checks. The complete local gate verifies the combined change.
+This audit does not prove that no bugs remain, nor prolonged play or whole-scene visual quality.
+No paired frame-time or gate-time comparison was made, so there is no performance claim. The
+agent tool finding was that `primer` covers language areas, with no engine, studio or games area;
+the audit used `context` and source inspection for those layers.
+
+## Further current-state bug audit, 2026-10-17
+
+Ryan requested another autonomous sweep of the whole current codebase. Codex (GPT-6) and
+parallel agents started from a clean checkout of `origin/main` at `5ea9f887`, inspected each
+layer, reproduced defects before fixing them, and retained focused regressions. Independent
+agents reviewed the borrow checker and command transactions, where changes cross several
+paths. No outside asset, algorithm reference or generative media model was added.
+
+The compiler fixes preserve nested borrow-field loans and aggregate storage lifetimes, check
+projected deterministic callables, finish float power inference, and compare match literals at
+their inferred precision. Other fixes cover interval derivation limits, BOM formatting, numeric
+source edits and refactors, lifted units, package paths, reference input limits, and solver ranges.
+The studio now rounds a source literal in its written unit and exponent. That metadata comes
+from the compiler through `std::lift::Source`, rather than a second unit parser.
+
+Both client hosts now hold command batches until an exported call returns successfully, as
+§18.3 requires. A trap discards commands, request reservations and resource changes. A failure
+while committing commands stops later submission. Resource rollback records only changed
+handles; successful calls still copy each submitted batch, and the native host decodes it again.
+Other host fixes cover server initializer signatures, queued input, ABI binding validation,
+worker failures, network retries and room decoding, URLs, pointer buttons, surface limits,
+semantic order and readback cleanup.
+
+The standard library, engine and application fixes cover composition, stable rotations,
+large-angle loops, spatial queries and fields, blocked paths, cadence reports, held-key aliases,
+source rounding, text focus, glyph atlases, same-frame drops, scene parsing, pointer release,
+board saves, paste lifetimes and connector geometry. Review of the plant change also checked
+derived intervals and gradients: numeric guards must bound the interval without changing a
+derivative at tied distances. View culling now includes viewport corners and intersecting spheres.
+The gait lowers the body along world up, and combat checks the blade sweep's active interval
+instead of the next tick. Existing fight hit-rate and outcome assertions remain unchanged.
+Tool fixes separate release hash fields, count the final deploy history file, and preserve
+Markdown fences, table cells and link URLs.
+The extra held-key state changes the serialized `Controls` shape and its hash; old external
+serialized controls need rebuilding. Current Last Green durable saves store `Carry`, not
+`Controls`, so their format is unchanged. Art, lore and game tuning were not changed.
+
+The retained checks use bounded fixtures, state and resource assertions, and hardware shader
+checks for GPU behavior. The full gate passed all 32 check groups, including 934 Rust tests,
+in 337.6 seconds on the combined source. This sweep does not prove that no bugs remain,
+prolonged play stability or whole-scene visual quality.
+The available `primer` areas cover the language; source and `context` inspection filled the
+engine, studio and game tool gap.
+
+One combined run stopped inside Bun 1.4.2's WebAssembly exception interpreter. Its symbolicated
+crash report and the upstream [WebKit exception path](https://github.com/oven-sh/WebKit/blob/main/Source/JavaScriptCore/wasm/WasmIPIntSlowPaths.cpp)
+were read to locate the abort; no source code or assets were copied. Process and memory counters
+showed no exhausted limit. All 73 program tests passed under syscall tracing, and a small
+exception fixture passed 1,000 iterations. The intermittent runner failure was not fixed or
+hidden by changing tests; the full gate was repeated with every test retained.
+
+Five alternating pairs of `wrela profile` runs compared a saved earlier host with the final
+host on this Linux machine's AMD Lucienne GPU (RADV RENOIR, Vulkan). Both CLI binaries were
+pinned before the runs, with builds and other GPU work idle. Each run used the same renderer
+fixture and compiled build hash, no input, 1280×720, one worker, 120 warmup frames and 600
+measured frames in span mode. The median of run medians was 0.07740 → 0.07748 ms for the GPU
+span and 0.39468 → 0.40208 ms for a synchronized CPU frame call. The median paired change was
+−0.05% for GPU span (pairs −0.10% to +0.36%) and +0.60% for CPU frame calls (−0.19% to +2.31%).
+The CPU times include GPU waits; these are not Chrome frame rates. Reports remain under
+`target/bug-sweep-profile/`. The earlier host already contained some audit changes, so this is
+not a whole-sweep comparison against main. This small scene does not measure large command
+batches, initialization, or the separate field, ray and culling costs. No M4 Air was available,
+and no paired gate-time baseline was recorded.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new

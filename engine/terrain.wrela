@@ -848,7 +848,7 @@ pub fn raycast<T: Terrain>(terrain: T, from: vec3, dir: vec3, reach: f32) -> Hit
     let rate = abs(dir.y) + terrain.steepest() * length(dir.xz)
     var t = 0.0
     var before = 0.0
-    for _ in 0..256 {
+    while t <= reach {
         let p = from + dir * t
         let gap = p.y - terrain.height(p.x, p.z)
         if gap <= 0.0 {
@@ -880,8 +880,12 @@ pub fn raycast<T: Terrain>(terrain: T, from: vec3, dir: vec3, reach: f32) -> Hit
         if t >= reach {
             break
         }
+        let next = min(t + max(gap / max(rate, 1.0e-3), 1.0e-3), reach)
+        if next <= t {
+            break
+        }
         before = t
-        t = min(t + max(gap / max(rate, 1.0e-3), 1.0e-3), reach)
+        t = next
     }
     Hit { point: from, normal: vec3(0.0, 1.0, 0.0), distance: reach, hit: false }
 }
@@ -1162,4 +1166,27 @@ fn material_weights_follow_the_clipmap_morph() {
         assert(abs(value.z - expected) < 1.0e-5, f"material changed to {value} at {xz}")
         assert(abs(value.y + value.z - 1.0) < 1.0e-5, "material blend lost its total weight")
     }
+}
+
+struct RaycastPlain: Copy + GpuData {}
+
+impl Terrain for RaycastPlain {
+    fn height(self, x: f32, z: f32) -> f32 {
+        0.0
+    }
+    fn cover(self, at: vec3, n: vec3) -> Cover {
+        Cover { albedo: vec3(0.0), grass: 0.0 }
+    }
+}
+
+@test
+fn shallow_ground_rays_reach_their_hit() {
+    let dir = normalize(vec3(1.0, -0.01, 0.0))
+    let hit = raycast(RaycastPlain {}, vec3(0.0, 1.0, 0.0), dir, reach: 200.0)
+    assert(hit.hit, "a ray stopped before its ground intersection")
+    assert(abs(hit.distance - 1.0 / -dir.y) < 0.01)
+    let short = raycast(RaycastPlain {}, vec3(0.0, 1.0, 0.0), dir, reach: 50.0)
+    assert(!short.hit, "a ray searched past its reach")
+    let end = raycast(RaycastPlain {}, vec3(0.0, 1.0, 0.0), vec3(0.0, -1.0, 0.0), reach: 1.0)
+    assert(end.hit && end.distance == 1.0, "a hit exactly at the ray's reach was lost")
 }

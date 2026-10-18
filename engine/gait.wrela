@@ -140,9 +140,39 @@ fn add_chain(b: mut Body, s: Skeleton, chain: [Bone], k: f32) {
 }
 
 /// The body's frame in the world: its root's place, turned by its heading and pitched (nose up
-/// turns +z toward +y: about the body's +x), raised to its height.
+/// turns +z toward +y: about the body's -x), raised to its height.
 pub fn body_frame(w: Walker) -> mat4 {
-    translate(w.root.pos + vec3(0.0, w.height, 0.0)) * rotate_y(w.root.heading) * rotate_x(w.pitch)
+    translate(w.root.pos + vec3(0.0, w.height, 0.0)) * rotate_y(w.root.heading) * rotate_x(-w.pitch)
+}
+
+/// A positive pitch follows higher forefeet: the body's nose goes up in world space.
+@test
+fn an_uphill_pitch_raises_the_front_of_the_body() {
+    let foot = Foot {
+        planted: true,
+        at: vec3(0.0),
+        normal: vec3(0.0, 1.0, 0.0),
+        from: vec3(0.0),
+    }
+    var w = Walker {
+        root: Transform { pos: vec3(3.0, 2.0, 1.0), heading: 0.0 },
+        phase: 0.0,
+        speed: 0.0,
+        turn: 0.0,
+        feet: [foot; 4],
+        springs: [Spring { pos: vec3(0.0), vel: vec3(0.0) }; SPRINGS],
+        along: 0.0,
+        height: 0.0,
+        pitch: 0.3,
+    }
+    for heading in [0.0, 1.0, -2.0] {
+        w.root.heading = heading
+        let m = body_frame(w)
+        let front = apply(m, vec3(0.0, 0.0, 1.0))
+        let back = apply(m, vec3(0.0, 0.0, -1.0))
+        assert(front.y > w.root.pos.y && back.y < w.root.pos.y, "an uphill pitch lowered the nose")
+        assert(abs(length(front - back) - 2.0) < 1.0e-5, "pitch changed the body's length")
+    }
 }
 
 /// A box holding the walker's body posed: `rest` (a box holding it at rest) carried by its
@@ -209,8 +239,8 @@ pub fn stand<T: Terrain>(terrain: T, b: Body, at: vec2, heading: f32) -> Walker 
 const REACH: f32 = 0.995
 
 /// How far the body must come down (m, 0 or less) for leg `i` to reach its foot: its hip moves
-/// along the body's up, and its ankle's target is fixed (by the foot's place and the body's
-/// turn).
+/// along world up as its height changes, and its ankle's target is fixed (by the foot's place
+/// and the body's turn).
 fn drop_to_reach(w: Walker, b: Body, i: u32) -> f32 {
     let m = body_frame(w)
     let up = (m * vec4(0.0, 1.0, 0.0, 0.0)).xyz
@@ -221,11 +251,73 @@ fn drop_to_reach(w: Walker, b: Body, i: u32) -> f32 {
     if dot(v, v) <= r * r {
         return 0.0
     }
-    // |v - up d|² = r²: the nearest d below 0 (or, past the leg's reach across, the nearest
+    // |v - (0, d, 0)|² = r²: the nearest d below 0 (or, past the leg's reach across, the nearest
     // its hip comes).
-    let along = dot(up, v)
+    let along = v.y
     let disc = along * along - dot(v, v) + r * r
     min(if disc >= 0.0 { along + sqrt(disc) } else { along }, 0.0)
+}
+
+/// Lowering the pitched body's height must put a planted ankle within its leg's reach.
+@test
+fn a_pitched_body_lowers_along_world_up_to_reach_its_feet() {
+    let foot = Foot {
+        planted: true,
+        at: vec3(0.0),
+        normal: vec3(0.0, 1.0, 0.0),
+        from: vec3(0.0),
+    }
+    var w = Walker {
+        root: Transform { pos: vec3(3.0, 2.0, 1.0), heading: 0.0 },
+        phase: 0.0,
+        speed: 0.0,
+        turn: 0.0,
+        feet: [foot; 4],
+        springs: [Spring { pos: vec3(0.0), vel: vec3(0.0) }; SPRINGS],
+        along: 0.0,
+        height: 0.0,
+        pitch: 0.0,
+    }
+    var b = Body {
+        soles: [vec3(0.0); 4],
+        foot_height: [0.0; 4],
+        hips: [vec3(0.0); 4],
+        reach: [1.0; 4],
+        ankle_to_foot: [vec3(0.0); 4],
+        spring_bones: Bounded::new(),
+        spring_tips: Bounded::new(),
+        stiffness: Bounded::new(),
+    }
+    for pitch in [-0.5, 0.5] {
+        let side = if pitch < 0.0 { -1.0 } else { 1.0 }
+        b.hips[0] = vec3(0.0, 1.0, side)
+        w.pitch = pitch
+        for heading in [0.0, 1.0, -2.0] {
+            w.root.heading = heading
+            let root = translate(w.root.pos) * rotate_y(heading)
+            w.feet[0].at = apply(root, vec3(0.0, 0.0, side))
+            for foot_height in [0.0, 0.2] {
+                w.height = 0.0
+                b.foot_height[0] = foot_height
+                b.ankle_to_foot[0] = vec3(0.0, foot_height * 0.5, side * foot_height * 0.25)
+                let before = body_frame(w)
+                let ankle = w.feet[0].at +
+                    (before * vec4(0.0, foot_height, 0.0, 0.0)).xyz -
+                    (before * vec4(b.ankle_to_foot[0], 0.0)).xyz
+                assert(
+                    length(ankle - apply(before, b.hips[0])) > b.reach[0],
+                    "fixture leg already reaches",
+                )
+                w.height += drop_to_reach(w, b, 0)
+                let after = body_frame(w)
+                let distance = length(ankle - apply(after, b.hips[0]))
+                assert(
+                    abs(distance - b.reach[0]) < 1.0e-5,
+                    "lowering a pitched body missed its ankle target",
+                )
+            }
+        }
+    }
 }
 
 /// Its body's height and pitch, eased toward what its feet ask: the pelvis as low as its lowest

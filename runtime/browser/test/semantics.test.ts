@@ -146,6 +146,31 @@ test("a link is an <a> to its address: a plain click is the program's, a modifie
   o.geometry(geometry([[1, 10, 20, 30, 8], [2, 0, 0, 0, 0]]));
   expect([el(1).style.left, el(1).style.top, el(1).style.width, el(1).style.height]).toEqual(["5px", "10px", "15px", "4px"]);
   expect([el(1).classes.has("wrela-hit"), el(2).classes.has("wrela-hit")]).toEqual([true, false]);
+  // A geometry that doesn't move an element leaves it alone; one that does places it.
+  el(1).style.left = "untouched";
+  o.geometry(geometry([[1, 10, 20, 30, 8], [2, 0, 0, 0, 0]]));
+  expect(el(1).style.left).toBe("untouched");
+  o.geometry(geometry([[1, 10, 30, 30, 8], [2, 0, 0, 0, 0]]));
+  expect([el(1).style.left, el(1).style.top]).toEqual(["5px", "15px"]);
+}));
+
+test("a link without an address activates from the keyboard", () => onPage((page) => {
+  const { o, events, el } = overlay(page);
+  o.tree(tree([{ id: 1, role: Role.Link, label: "Run" }]));
+  el(1).focus();
+  events.length = 0;
+  const enter = domEvent("keydown", { key: "Enter" });
+  el(1).dispatchEvent(enter);
+  expect(events).toEqual([assistEvent(1, Action.Activate)]);
+  expect(enter.defaultPrevented).toBe(true);
+}));
+
+test("checkboxes and switches activate from an assistive click", () => onPage((page) => {
+  const { o, events, el } = overlay(page);
+  o.tree(tree([{ id: 1, role: Role.Checkbox, label: "Accept" }, { id: 2, role: Role.Switch, label: "Sound" }]));
+  el(1).click();
+  el(2).click();
+  expect(events).toEqual([assistEvent(1, Action.Activate), assistEvent(2, Action.Activate)]);
 }));
 
 test("an update keeps each element and its focus; the program's focus moves it; leaving says so", () => onPage((page) => {
@@ -246,6 +271,51 @@ test("the program replaces a field's text only if it has read the field's newest
   made.value = "again!";
   made.dispatchEvent(domEvent("input"));
   expect(new DataView(o.fieldState(1).buffer).getUint32(4, true)).toBe(4);
+}));
+
+test("a node that changes from a field drops its old field state", () => onPage((page) => {
+  const { o, el } = overlay(page);
+  o.tree(tree([{ id: 1, role: Role.Field, field: { replace: 1, text: "old" } }]));
+  const field = el(1);
+  o.tree(tree([{ id: 1, role: Role.Button, label: "Continue" }]));
+  expect(el(1)).not.toBe(field);
+  expect(() => o.fieldState(1)).toThrow("node 1 has no field");
+}));
+
+test("a field can leave its form while keeping its element and text", () => onPage((page) => {
+  const { o, el } = overlay(page);
+  o.tree(tree([{ id: 1, role: Role.Field, field: { form: 1, replace: 1, text: "draft" } }]));
+  const field = el(1);
+  o.tree(tree([{ id: 1, role: Role.Field, field: { replace: 1 } }]));
+  expect(el(1)).toBe(field);
+  expect(field.value).toBe("draft");
+  expect(field.parentElement === (o.root as unknown as FakeElement)).toBe(true);
+  expect(() => o.submit(1)).toThrow("no form 1");
+}));
+
+test("fields in a form follow their tree's order without replacing their inputs", () => onPage((page) => {
+  const { o, el } = overlay(page);
+  const first: Spec = { id: 1, role: Role.Field, field: { form: 1, replace: 1, text: "first" } };
+  const second: Spec = { id: 2, role: Role.Field, field: { form: 1, replace: 1, text: "second" } };
+  o.tree(tree([first, second]));
+  const inputs = [el(1), el(2)] as const;
+  o.tree(tree([second, first]));
+  expect(el(1)).toBe(inputs[0]);
+  expect(el(2)).toBe(inputs[1]);
+  expect(el(1).parentElement!.children.map((input) => input.id)).toEqual(["wrela-node-2", "wrela-node-1"]);
+  expect([el(1).value, el(2).value]).toEqual(["first", "second"]);
+}));
+
+test("a focused node can move before its sibling without moving its element", () => onPage((page) => {
+  const { o, el } = overlay(page);
+  const first: Spec = { id: 1, role: Role.Button, label: "First" };
+  const second: Spec = { id: 2, role: Role.Button, label: "Second" };
+  o.tree(tree([first, second]));
+  const focused = el(2);
+  focused.focus();
+  o.tree(tree([second, first]));
+  expect(page.activeElement).toBe(focused);
+  expect(el(1).parentElement!.children.filter((node) => node.id).map((node) => node.id)).toEqual(["wrela-node-2", "wrela-node-1"]);
 }));
 
 test("tabs, sliders and a modal dialog have their keyboard patterns", () => onPage((page) => {
