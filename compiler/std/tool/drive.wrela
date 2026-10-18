@@ -129,8 +129,7 @@ pub struct Ran: Clone {
     pub trap: Option<Trap>,
 }
 
-/// A GPU build's screen: its size, and its pixels, RGBA8, rows top to bottom (a blob, unless it
-/// fits 512 KiB).
+/// A GPU build's screen: its size, and its pixels, RGBA8, rows top to bottom, in a blob.
 pub struct Capture: Clone {
     pub width: u32,
     pub height: u32,
@@ -211,8 +210,9 @@ pub fn ticks(b: Build, n: u32, script: Script, timeout: f64 = 0.0) -> Pending<u8
     timeout_ask("drive/ticks", take w, timeout)
 }
 
-/// A GPU build's screen after its last frame: `read_capture` reads the answer. The pixels are
-/// charged to the tool's blob budget before they're read back.
+/// A GPU build's screen after its last frame, in a blob: `read_capture` reads the answer. The
+/// pixels' bytes and their blob are reserved in the tool's blob budget before they're read
+/// back, so a capture that doesn't fit fails before it's read.
 @tool
 pub fn capture(b: Build, timeout: f64 = 0.0) -> Pending<u8> {
     timeout_ask("drive/capture", handle_body(b), timeout)

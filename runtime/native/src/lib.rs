@@ -23,6 +23,7 @@
 //! of it, so export tests need no GPU.
 
 mod cache;
+mod confined;
 mod error;
 #[cfg(feature = "gpu")]
 mod gpu;
@@ -147,6 +148,7 @@ fn io(
 ) -> program::Io {
     program::Io {
         build: Some(dir.to_path_buf()),
+        build_dir: None,
         storage: Some(storage.map_or_else(|| dir.join("storage"), Path::to_path_buf)),
         post,
         host,
@@ -283,15 +285,25 @@ fn compile_build_with_shaders(dir: &Path, fuel: Option<u64>, shaders: bool) -> R
     Ok(Build { manifest, shaders, wasm_hash, compiled })
 }
 
-/// What reads a build's files for a driven load: a file's bytes by its name in the build (the
-/// tool host reads them through its grants).
-pub type ReadBuild<'a> = dyn FnMut(&str) -> std::result::Result<Vec<u8>, String> + 'a;
+/// A build's directory, opened: a driven build reads its files, and its program fetches, only
+/// through it.
+pub use cap_std::fs::Dir as BuildDir;
 
-/// A build read through `read`, compiled to be driven (the tool host's `drive`, language.md
-/// §15.5): on the interruptible engine, its calls ended by `stop`, and with no compiled code
-/// read from or kept anywhere. `shaders` reads its WGSL too.
-fn driven_build(read: &mut ReadBuild, stop: Stop, shaders: bool) -> Result<Build> {
-    let mut file = |name: &str| read(name).map_err(|why| Error::Program(format!("{name}: {why}")));
+/// The directory at `path`, opened as a [`BuildDir`].
+pub fn open_build_dir(path: &Path) -> std::io::Result<BuildDir> {
+    BuildDir::open_ambient_dir(path, cap_std::ambient_authority())
+}
+
+/// The most bytes a driven build's file may have.
+const MOST_DRIVEN_FILE: u64 = 512 << 20;
+
+/// A build read through its directory's handle `build`, compiled to be driven (the tool host's
+/// `drive`, language.md §15.5): on the interruptible engine, its calls ended by `stop`, and with
+/// no compiled code read from or kept anywhere. `shaders` reads its WGSL too. No file is
+/// reached through a link.
+fn driven_build(build: &BuildDir, stop: Stop, shaders: bool) -> Result<Build> {
+    let read = |name: &str| confined::read(build, name, MOST_DRIVEN_FILE);
+    let file = |name: &str| read(name).map_err(|why| Error::Program(format!("{name}: {why}")));
     let text = |bytes: Vec<u8>, name: &str| {
         String::from_utf8(bytes).map_err(|_| Error::Program(format!("{name} isn't UTF-8")))
     };
@@ -585,38 +597,43 @@ impl Host {
         let dir = dir.as_ref();
         let options = &options.homed(dir);
         let build = compile_build(dir, None)?;
-        Host::start(build, dir, options, true)
+        Host::start(build, dir, options, true, None)
     }
 
-    /// A build read through `read`, to be driven (the tool host's `drive`, language.md §15.5):
-    /// its calls end when `stop` is due, on each of its threads, and it keeps and reads no
-    /// compiled code. It can't hand over to another build or hot reload (a request to fails).
-    /// `dir` is where its program's file requests read; its storage is `options.storage`, which
-    /// a driven build must name.
-    pub fn load_driven(
-        read: &mut ReadBuild,
-        dir: &Path,
-        stop: Stop,
-        options: &Options,
-    ) -> Result<Host> {
+    /// The build in the directory `build`, opened at `dir`, to be driven (the tool host's
+    /// `drive`, language.md §15.5): its calls end when `stop` is due, on each of its threads,
+    /// and it keeps and reads no compiled code. Its files, and its program's fetches, are read
+    /// through `build` alone, so a link put in place of `dir` later leads nowhere. It can't hand
+    /// over to another build or hot reload (a request to fails). Its storage is
+    /// `options.storage`, which a driven build must name.
+    pub fn load_driven(build: BuildDir, dir: &Path, stop: Stop, options: &Options) -> Result<Host> {
         if options.storage.is_none() || options.reloadable {
             return Err(Error::Program(
                 "a driven build names its storage, and isn't reloadable".into(),
             ));
         }
-        let build = driven_build(read, stop, true)?;
-        Host::start(build, dir, options, false)
+        let compiled = driven_build(&build, stop, true)?;
+        Host::start(compiled, dir, options, false, Some(std::sync::Arc::new(build)))
     }
 
-    /// Starts `build`, in `dir`, on a new device; `hands_over` lets it hand over to other builds.
-    fn start(build: Build, dir: &Path, options: &Options, hands_over: bool) -> Result<Host> {
+    /// Starts `build`, in `dir`, on a new device; `hands_over` lets it hand over to other builds,
+    /// and its fetches read through `handle` if it's given.
+    fn start(
+        build: Build,
+        dir: &Path,
+        options: &Options,
+        hands_over: bool,
+        handle: Option<std::sync::Arc<BuildDir>>,
+    ) -> Result<Host> {
         let gpu = Gpu::new(&build.manifest, &build.shaders, options.timing)?;
         let n = workers(options.workers);
+        let mut io = options.io(dir);
+        io.build_dir = handle;
         let mut program = Program::instantiate_with(
             &build.compiled,
             &build.manifest,
             gpu,
-            options.io(dir),
+            io,
             options.record,
             n,
             false,
@@ -968,6 +985,8 @@ pub struct CpuBuild {
     record: bool,
     /// Whether the caller shows the program's printed lines itself.
     quiet: bool,
+    /// A driven build's directory, opened: its programs fetch through it.
+    handle: Option<std::sync::Arc<BuildDir>>,
 }
 
 impl CpuBuild {
@@ -1007,12 +1026,14 @@ impl CpuBuild {
         Ok(Self::from_build(dir, compile_build(dir, fuel)?))
     }
 
-    /// A build read through `read`, to be driven (the tool host's `drive`, language.md §15.5):
-    /// its hosts' calls end when `stop` is due, on each of their threads, and it keeps and reads
-    /// no compiled code. Its shaders aren't read. `dir` is where its program's file requests
-    /// read.
-    pub fn load_driven(read: &mut ReadBuild, dir: &Path, stop: Stop) -> Result<CpuBuild> {
-        Ok(Self::from_build(dir, driven_build(read, stop, false)?).quiet())
+    /// The build in the directory `build`, opened at `dir`, to be driven (the tool host's
+    /// `drive`, language.md §15.5): its hosts' calls end when `stop` is due, on each of their
+    /// threads, and it keeps and reads no compiled code. Its shaders aren't read. Its files, and
+    /// its programs' fetches, are read through `build` alone.
+    pub fn load_driven(build: BuildDir, dir: &Path, stop: Stop) -> Result<CpuBuild> {
+        let mut out = Self::from_build(dir, driven_build(&build, stop, false)?).quiet();
+        out.handle = Some(std::sync::Arc::new(build));
+        Ok(out)
     }
 
     fn from_build(dir: &Path, build: Build) -> CpuBuild {
@@ -1024,6 +1045,7 @@ impl CpuBuild {
             wasm_hash,
             record: false,
             quiet: false,
+            handle: None,
         }
     }
 
@@ -1097,7 +1119,8 @@ impl CpuBuild {
     /// `storage` (by default, `storage/` in the build's directory), and without running
     /// `init`: call [`CpuHost::init`] next, which says why it failed if it does.
     pub fn instantiate_in(&self, workers: u32, storage: Option<&Path>) -> Result<CpuHost> {
-        let io = io(&self.dir, storage, None, None, self.quiet);
+        let mut io = io(&self.dir, storage, None, None, self.quiet);
+        io.build_dir = self.handle.clone();
         let n = self::workers(workers);
         let (compiled, manifest) = (&self.compiled, &self.manifest);
         let program =

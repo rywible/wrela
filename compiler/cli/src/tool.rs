@@ -219,8 +219,9 @@ fn test(dir: &std::path::Path) -> ExitCode {
 }
 
 /// The host's settings that only the command's own tests change, from the environment: a pause
-/// between a program's start and its record (`WRELA_TESTING_SPAWN_PAUSE`) and a name lookup
-/// that stalls (`WRELA_TESTING_RESOLVE_STALL`), each in seconds.
+/// between a program's start and its record (`WRELA_TESTING_SPAWN_PAUSE`), a name lookup that
+/// stalls (`WRELA_TESTING_RESOLVE_STALL`) and a slow disk under each output written
+/// (`WRELA_TESTING_IO_DELAY`), each in seconds.
 fn testing() -> wrela_host::tool::Testing {
     let seconds = |name: &str| {
         std::env::var(name)
@@ -232,6 +233,7 @@ fn testing() -> wrela_host::tool::Testing {
     wrela_host::tool::Testing {
         spawn_pause: seconds("WRELA_TESTING_SPAWN_PAUSE"),
         resolve_stall: seconds("WRELA_TESTING_RESOLVE_STALL"),
+        io_delay: seconds("WRELA_TESTING_IO_DELAY"),
         ..wrela_host::tool::Testing::default()
     }
 }

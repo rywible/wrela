@@ -75,7 +75,8 @@ static TICKING: std::sync::Mutex<Ticking> = std::sync::Mutex::new(None);
 /// What ends a driven program's calls (the tool host's `drive`, language.md §15.5): once it's
 /// stopped, or past its deadline, every call into the program on any of its threads (its own,
 /// its helpers', the ticker's) traps with an interrupt within about 10 ms, as the engine's epoch
-/// moves. A wait in a call (a job's join, `atomic.wait`) isn't interrupted, but a helper's trap
+/// moves. The first thread that sees its deadline pass stops it for good, so every other
+/// thread of that call stops too, whatever deadline is set after. A wait in a call (a job's join, `atomic.wait`) isn't interrupted, but a helper's trap
 /// wakes what waits for it. While a `Stop` is alive, a thread of the host's moves the epoch on;
 /// the last one's drop ends and joins it.
 #[derive(Clone)]
@@ -150,6 +151,9 @@ impl Stop {
         store.set_epoch_deadline(1);
         store.epoch_deadline_callback(move |_| {
             Ok(if stop.is_due() {
+                // Latched before this thread stops: a deadline cleared once this call has
+                // answered doesn't let another of its threads (a helper held in a wait) go on.
+                stop.stop();
                 wasmtime::UpdateDeadline::Interrupt
             } else {
                 wasmtime::UpdateDeadline::Continue(1)
@@ -184,6 +188,8 @@ pub struct Failure {
     /// Where in the source it happened, if the build says (its trap locations), else the
     /// innermost frame's code offset.
     pub at: Option<String>,
+    /// The ticker's tick it happened in, if it happened in one (alone, or in a lockstep frame).
+    pub tick: Option<u32>,
 }
 
 /// Carries out commands that have already been decoded, sequenced and checked.
@@ -325,6 +331,9 @@ const CALLED_WHILE_STARTING: &str =
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Io {
     pub build: Option<PathBuf>,
+    /// A driven build's directory, opened: when it's there, `Fetch` reads through it alone, one
+    /// part at a time, following no link (`crate::confined`), and never by `build`'s path.
+    pub build_dir: Option<Arc<cap_std::fs::Dir>>,
     pub storage: Option<PathBuf>,
     pub post: Option<PostHandler>,
     pub host: Option<HostHandler>,
@@ -446,8 +455,11 @@ impl Requests {
             }
             Command::Fetch { request, url } => {
                 self.start(*request, cmd.opcode())?;
-                let a = Self::file(&self.io.build, url, "build to fetch from")
-                    .and_then(|f| std::fs::read(f).map_err(|e| e.to_string()));
+                let a = match &self.io.build_dir {
+                    Some(dir) => crate::confined::read(dir, url, u64::MAX),
+                    None => Self::file(&self.io.build, url, "build to fetch from")
+                        .and_then(|f| std::fs::read(f).map_err(|e| e.to_string())),
+                };
                 (*request, a)
             }
             Command::HostRequest { request, service, body } => {
@@ -1503,7 +1515,8 @@ impl<E: Executor> Program<E> {
             })
             .unwrap_or_default();
         let kind = trap.downcast_ref::<wasmtime::Trap>().copied();
-        self.last_failure = Some(Failure { frames, trap: kind, panic: panic.clone(), at });
+        self.last_failure =
+            Some(Failure { frames, trap: kind, panic: panic.clone(), at, tick: None });
         Error::Trap(match panic {
             Some(msg) => format!("panic: {msg}: {what}"),
             None => what,
@@ -1819,7 +1832,11 @@ impl<E: Executor> Program<E> {
 
     /// Tick `k` trapped: the program's panic, as the host reports it.
     fn tick_trapped(&mut self, k: u32, trap: &wasmtime::Error) -> Error {
-        match self.trapped(trap, memory::THREAD_TICK) {
+        let error = self.trapped(trap, memory::THREAD_TICK);
+        if let Some(f) = &mut self.last_failure {
+            f.tick = Some(k);
+        }
+        match error {
             Error::Trap(why) => Error::Trap(format!("in tick {k}: {why}")),
             e => e,
         }

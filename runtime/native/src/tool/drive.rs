@@ -40,9 +40,6 @@ const DEADLINE: Duration = Duration::from_secs(60);
 /// How often the worker looks at the operation it waits for.
 const POLL: Duration = Duration::from_millis(10);
 
-/// The most bytes a driven build's file may have.
-const MOST_FILE: u64 = 512 << 20;
-
 /// The most lines `logs` gives at once (the rest are counted); each is at most 16 KiB.
 const MOST_LINES: usize = 4096;
 
@@ -209,7 +206,6 @@ struct Actor {
     origin: Instant,
     inited: bool,
     next_frame: u32,
-    ticks: u32,
     /// Why it runs nothing more: it trapped, or a call was stopped.
     ended: Option<String>,
 }
@@ -223,11 +219,16 @@ impl Actor {
         }
     }
 
-    /// A trap of `e` in `step` number `number`.
+    /// A trap of `e` in `step` number `number`, or in the tick the host says it happened in:
+    /// a lockstep frame runs ticks too, and the ticker numbers them, not this.
     fn trap(&mut self, e: &crate::Error, step: u8, number: u32) -> Trap {
         let failure = self.failure();
         let message = e.to_string();
         self.ended = Some(format!("it trapped: {message}"));
+        let (step, number) = match failure.as_ref().and_then(|f| f.tick) {
+            Some(k) => (2, k),
+            None => (step, number),
+        };
         Trap {
             message,
             panic: failure.as_ref().and_then(|f| f.panic.clone()).unwrap_or_default(),
@@ -304,13 +305,17 @@ impl Actor {
                     return Err("ticks alone run on a build loaded without the GPU".into());
                 }
                 for _ in 0..n {
-                    let k = self.ticks;
                     let start = self.since();
                     let done = self.cpu().map_or(Ok(()), |host| host.scripted_tick(&script));
-                    self.ticks += 1;
-                    if let Err(e) = done {
-                        ran.trap = Some(self.trap(&e, 2, k));
-                        break;
+                    match done {
+                        Ok(()) => {}
+                        // No ticker, say: not a trap.
+                        Err(crate::Error::Program(why)) => return Err(why),
+                        Err(e) => {
+                            // A tick's trap: the host numbers it.
+                            ran.trap = Some(self.trap(&e, 2, 0));
+                            break;
+                        }
                     }
                     ran.steps.push((start, self.since()));
                 }
@@ -366,11 +371,10 @@ impl Actor {
     }
 }
 
-/// The host for `load`, made on the build's own thread: its files read through the grants.
+/// The host for `load`, made on the build's own thread: its directory opened through the grants
+/// once, now, and its files and its program's fetches read through that handle alone.
 fn start(s: &Services, load: &Load, stop: crate::Stop, storage: PathBuf) -> Result<Hosted, String> {
-    let dir = s.caps.dir_path(&load.path, false)?;
-    let path = load.path.clone();
-    let mut read = |name: &str| s.caps.read_most(&format!("{path}/{name}"), MOST_FILE);
+    let (dir, handle) = s.caps.open_dir(&load.path)?;
     if load.gpu {
         #[cfg(feature = "gpu")]
         {
@@ -382,7 +386,7 @@ fn start(s: &Services, load: &Load, stop: crate::Stop, storage: PathBuf) -> Resu
                 defer_init: true,
                 ..crate::Options::default()
             };
-            let mut host = crate::Host::load_driven(&mut read, &dir, stop, &options)
+            let mut host = crate::Host::load_driven(handle, &dir, stop, &options)
                 .map_err(|e| e.to_string())?;
             // Only if asked: the word is the jobs' protocol's, which a program without jobs may
             // keep other bytes in.
@@ -394,7 +398,7 @@ fn start(s: &Services, load: &Load, stop: crate::Stop, storage: PathBuf) -> Resu
         #[cfg(not(feature = "gpu"))]
         return Err("this tool host was built without the GPU".into());
     }
-    let build = crate::CpuBuild::load_driven(&mut read, &dir, stop).map_err(|e| e.to_string())?;
+    let build = crate::CpuBuild::load_driven(handle, &dir, stop).map_err(|e| e.to_string())?;
     let host = build.instantiate_in(load.workers, Some(&storage)).map_err(|e| e.to_string())?;
     if load.hold > 0 {
         host.hold_jobs(load.hold);
@@ -609,7 +613,6 @@ fn loaded(s: &Arc<Services>, request: u32, load: Load, due: Instant) -> Answer {
                 origin: Instant::now(),
                 inited: false,
                 next_frame: 0,
-                ticks: 0,
                 ended: None,
             };
             if sent.send(Ok(Reply::Loaded(since.elapsed().as_secs_f64()))).is_err() {
@@ -689,10 +692,17 @@ fn operate(
             }
         }
         let _idle = Idle(&driven);
-        // The screen's bytes are charged before they're held.
+        // The screen's bytes and its blob are reserved before it's read back: a capture that
+        // doesn't fit isn't read. The blob is the request's, so a failure gives them back.
+        let mut screen = None;
         if matches!(command, Command::Capture) {
             let (w, h) = driven.size;
-            s.blobs().fits(u64::from(w) * u64::from(h) * 4)?;
+            let bytes = u64::from(w) * u64::from(h) * 4;
+            let id = s
+                .blobs()
+                .create_reserved(request, bytes)
+                .map_err(|why| format!("the screen's {bytes} bytes: {why}"))?;
+            screen = Some(id);
         }
         let (sent, reply) = mpsc::channel();
         {
@@ -711,12 +721,9 @@ fn operate(
         match reply {
             Reply::Ran(ran) => write_ran(&mut out, &ran, &driven.stop, due, what, deadline)?,
             Reply::Screen(w, h, rgba) => {
-                out.u32(w).u32(h);
-                let mut sink = s.sink(request, u64::MAX);
-                for chunk in rgba.chunks(1 << 20) {
-                    sink.push(chunk, "the screen")?;
-                }
-                sink.finish(&mut out.0);
+                let id = screen.ok_or("a screen nobody asked for")?;
+                s.blobs().fill(id, rgba)?;
+                out.u32(w).u32(h).u8(1).u32(id);
             }
             Reply::Hash(hash) => {
                 out.u64(hash);

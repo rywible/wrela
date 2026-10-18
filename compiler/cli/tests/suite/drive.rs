@@ -24,6 +24,7 @@ use std::tool::{RUNNING, ToolError, answer, args}
 use std::tool::blob::Data
 use std::tool::drive
 use std::tool::files
+use std::tool::time
 
 const SCRIPT: Script = Script::frames()
     .move_to(1, vec2(10.0, 20.0))
@@ -42,6 +43,55 @@ fn utf8(text: str) -> Vec<u8> {
         out.push(text.byte(i))
     }
     out
+}
+
+fn report(polled: take Result<Vec<u8>, IoError>) {
+    match drive::read_capture(take polled) {
+        Ok(_) => print("captured"),
+        Err(e) => print(f"refused: {e.message()}"),
+    }
+}
+
+@job
+fn two(n: take u32) -> u32 {
+    // The fixture twice, a frame each, then both screens captured at once.
+    var builds: Vec<drive::Build> = Vec::new()
+    for _ in 0..2 {
+        var l = drive::load("fx", drive::gpu())
+        var lg = l.poll()
+        while lg.is_none() {
+            yield
+            lg = l.poll()
+        }
+        let Some(lp) = take lg else { return 90 }
+        let loaded = match drive::read_loaded(take lp) {
+            Ok(x) => x,
+            Err(e) => return failed(e),
+        }
+        var i = drive::init(loaded.build)
+        while i.poll().is_none() { yield }
+        var f = drive::frames(loaded.build, 1, Script::frames())
+        while f.poll().is_none() { yield }
+        builds.push(loaded.build)
+    }
+    var a = drive::capture(builds[0])
+    var b = drive::capture(builds[1])
+    var ga = a.poll()
+    var gb = b.poll()
+    while ga.is_none() || gb.is_none() {
+        yield
+        if ga.is_none() {
+            ga = a.poll()
+        }
+        if gb.is_none() {
+            gb = b.poll()
+        }
+    }
+    let Some(pa) = take ga else { return 90 }
+    let Some(pb) = take gb else { return 90 }
+    report(take pa)
+    report(take pb)
+    n
 }
 
 @job
@@ -116,6 +166,39 @@ fn main(given: take Vec<String>) -> u32 {
         if let Err(e) = drive::read_ran(take apol) {
             print(f"after: {e.message()}")
         }
+    } else if what.as_str() == "fetch" {
+        // Loaded: say so, and wait until the build's directory has been swapped.
+        var m = files::write("out/loaded", utf8("1"))
+        while m.poll().is_none() { yield }
+        var waiting = true
+        while waiting {
+            var st = files::stat("out/go")
+            var sg = st.poll()
+            while sg.is_none() {
+                yield
+                sg = st.poll()
+            }
+            let Some(sp) = take sg else { return 90 }
+            if answer(take sp).is_ok() {
+                waiting = false
+            } else {
+                var t = time::after(0.02)
+                while t.poll().is_none() { yield }
+            }
+        }
+        var f = drive::frames(b, 2, Script::frames())
+        while f.poll().is_none() { yield }
+        var g = drive::logs(b)
+        var gg = g.poll()
+        while gg.is_none() {
+            yield
+            gg = g.poll()
+        }
+        let Some(gp) = take gg else { return 90 }
+        let Ok(logs) = drive::read_logs(take gp) else { return 98 }
+        for line in logs.lines {
+            print(f"log {line.as_str()}")
+        }
     } else if what.as_str() == "gpu" {
         var f = drive::frames(b, 3, Script::frames())
         while f.poll().is_none() { yield }
@@ -169,12 +252,25 @@ fn main(given: take Vec<String>) -> u32 {
     0
 }
 
-pub fn tool_init() -> Job<main> {
-    main.start(args())
+pub enum Running {
+    Main(Job<main>),
+    Two(Job<two>),
 }
 
-pub fn tool(job: mut Job<main>) -> u32 {
-    match job.resume() {
+pub fn tool_init() -> Running {
+    let given = args()
+    if given.len() > 0 && given[0].as_str() == "two" {
+        return Running::Two(two.start(0))
+    }
+    Running::Main(main.start(take given))
+}
+
+pub fn tool(running: mut Running) -> u32 {
+    let step = match mut running {
+        Running::Main(j) => j.resume(),
+        Running::Two(j) => j.resume(),
+    }
+    match step {
         Step::Yielded => RUNNING,
         Step::Done(status) => status,
     }
@@ -336,4 +432,166 @@ fn a_deadline_stops_driven_wasm_that_never_ends() {
     let (code, printed) = run(&mut drive(&tool, &src, &out, "2", &["spin-forever"]));
     assert_eq!(code, Some(124), "{printed}");
     assert!(started.elapsed() < Duration::from_secs(20), "{:?}", started.elapsed());
+}
+
+/// A program whose main thread spins forever after starting two tasks: the first ends at once
+/// (and its helper then holds its result back), the second spins forever.
+const RACE: &str = r#"
+use std::par::spawn
+
+@deterministic
+fn quick(n: take u32) -> u32 {
+    n + 1
+}
+
+@deterministic
+fn forever(n: take u32) -> u32 {
+    var i = n
+    while i < 4000000000 {
+        i = (i * 3 + 1) % 1000
+    }
+    i
+}
+
+pub fn frame(time: f32, width: u32, height: u32) {}
+
+pub fn race(n: u32) -> u32 {
+    let a = spawn(n, quick)
+    let b = spawn(n, forever)
+    var i = n
+    while i < 4000000000 {
+        i = (i * 7 + 1) % 1000
+    }
+    take a.join() + take b.join()
+}
+"#;
+
+/// The main thread's call stops at its deadline while its helper is held in a wait (no WASM
+/// runs there to see the deadline); the deadline is then cleared, as an answered operation
+/// clears it. The helper, when it goes on to the task that never ends, stops too: the first
+/// thread to see the deadline stopped the build for good. So dropping the host ends.
+#[test]
+fn a_helper_held_past_the_main_threads_deadline_stops_too() {
+    let dir = package("drive-race", &[("wrela.toml", &manifest("race")), ("main.wrela", RACE)]);
+    let build = dir.join("build-out");
+    let built = wrela().arg("build").arg(&dir).arg("-o").arg(&build).output().expect("wrela build");
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let handle = wrela_host::open_build_dir(&build).expect("the build's directory");
+    let stop = wrela_host::Stop::new().expect("a stop");
+    let driven = wrela_host::CpuBuild::load_driven(handle, &build, stop.clone()).expect("driven");
+    let mut host = driven.instantiate_in(2, Some(&dir.join("storage"))).expect("instantiate");
+    host.hold_jobs(1_000_000);
+    host.init().expect("init");
+    stop.set_deadline(Some(Instant::now() + Duration::from_millis(300)));
+    let e = host.call_export("race", &[wrela_host::Value::I32(0)]).expect_err("interrupted");
+    assert!(e.to_string().contains("interrupt"), "{e}");
+    stop.set_deadline(None);
+    // The helper's hold ends, and it starts the task that never ends.
+    std::thread::sleep(Duration::from_millis(1500));
+    let (done, ended) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        drop(host);
+        let _ = done.send(());
+    });
+    assert!(ended.recv_timeout(Duration::from_secs(5)).is_ok(), "the helper still runs");
+}
+
+/// Two captures at once whose screens together are past the blob budget, or past its handles:
+/// the host reserves each one's bytes and blob before it reads the screen back, so one is
+/// refused, before it's read, and the other comes back.
+#[test]
+fn two_captures_past_the_blob_budget_admit_one() {
+    let (tool, src, out) = setup("drive-budget");
+    for (budget, why) in [("1500K", "budget"), ("2G,1", "blobs")] {
+        let c = drive(&tool, &src, &out, "60", &["two"]);
+        let at = c.get_args().position(|a| a == "--timeout").expect("a timeout");
+        let mut args: Vec<std::ffi::OsString> = c.get_args().map(Into::into).collect();
+        args.insert(at, "--blob-budget".into());
+        args.insert(at + 1, budget.into());
+        let mut c = wrela();
+        c.args(args);
+        let (code, printed) = run(&mut c);
+        assert_eq!(code, Some(0), "{printed}");
+        assert_eq!(printed.matches("captured").count(), 1, "{budget}: {printed}");
+        assert!(
+            printed.contains("refused: the screen's 921600 bytes") && printed.contains(why),
+            "{printed}"
+        );
+    }
+}
+
+/// A program that fetches `data.txt` from its build on its first frame, and prints what it got
+/// on its second.
+const FETCHER: &str = r#"
+use std::io::{Pending, fetch, print}
+
+pub struct Game {
+    asked: Option<Pending<u8>>,
+}
+
+pub fn init() -> Game {
+    Game { asked: None }
+}
+
+pub fn frame(game: mut Game, time: f32, width: u32, height: u32) {
+    match mut game.asked {
+        Some(p) => {
+            match p.poll() {
+                Some(Ok(bytes)) => print(f"fetched {bytes.len()} bytes"),
+                Some(Err(e)) => print(f"fetch failed: {e.message()}"),
+                None => print("fetch waits"),
+            }
+            return
+        },
+        None => {},
+    }
+    game.asked = Some(fetch("data.txt"))
+}
+"#;
+
+/// A driven build's program fetches through the build's directory as it was opened at load: the
+/// directory swapped for a link out of the root after the load leads nowhere.
+#[cfg(unix)]
+#[test]
+fn a_driven_fetch_reads_the_build_opened_at_load() {
+    let dir = package(
+        "drive-fetch",
+        &[
+            ("tool/wrela.toml", &manifest("driver")),
+            ("tool/main.wrela", TOOL),
+            ("subject/wrela.toml", &manifest("fetcher")),
+            ("subject/main.wrela", FETCHER),
+        ],
+    );
+    let (tool, src, out) = (dir.join("tool"), dir.join("src"), dir.join("out"));
+    std::fs::create_dir_all(&out).expect("out");
+    let built = wrela()
+        .arg("build")
+        .arg(dir.join("subject"))
+        .arg("-o")
+        .arg(src.join("build"))
+        .output()
+        .expect("wrela build");
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    std::fs::write(src.join("build/data.txt"), "inside").expect("data");
+    let outside = dir.join("outside");
+    std::fs::create_dir_all(&outside).expect("outside");
+    std::fs::write(outside.join("data.txt"), "the user's secret").expect("secret");
+    let child = drive(&tool, &src, &out, "60", &["fetch"])
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("wrela tool");
+    let started = Instant::now();
+    while !out.join("loaded").exists() {
+        assert!(started.elapsed() < Duration::from_secs(60), "the tool never loaded the build");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::fs::rename(src.join("build"), src.join("moved")).expect("move the build");
+    std::os::unix::fs::symlink(&outside, src.join("build")).expect("a link out");
+    std::fs::write(out.join("go"), "").expect("go");
+    let output = child.wait_with_output().expect("wait");
+    let printed = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{printed}");
+    assert!(printed.contains("log fetched 6 bytes"), "the build as opened: {printed}");
+    assert!(!printed.contains("17 bytes"), "nothing from where the link leads: {printed}");
 }

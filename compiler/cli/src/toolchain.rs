@@ -94,6 +94,10 @@ impl wrela_host::tool::Toolchain for Compiler {
         Ok(diagnostics_of(&out.sources, &out.diagnostics))
     }
 
+    fn owns(&self, name: &str) -> bool {
+        crate::build::written_by_build(name)
+    }
+
     fn sources(&self, job: &Job, dir: &Path) -> Result<Vec<PathBuf>, String> {
         let reach = Reach::of_dirs(job.roots()?);
         let (mut files, mut errors) = (Vec::new(), Vec::new());

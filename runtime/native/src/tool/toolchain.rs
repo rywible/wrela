@@ -45,8 +45,8 @@ const MOST_TEXT: usize = 16 << 10;
 /// The most lines of a test's output an answer carries.
 const MOST_LINES: usize = 256;
 
-/// The list of files a build wrote into its output directory, as `wrela build` keeps it.
-const LIST: &str = ".wrela-build";
+/// The list of files a build wrote into its output directory, which `wrela build` keeps too.
+pub const LIST: &str = ".wrela-build";
 
 /// The compiler, as the tool host runs it: each method does one request's work, reading only
 /// through the job's roots and stopping when the job is cancelled. None writes a file: the host
@@ -60,6 +60,9 @@ pub trait Toolchain: Send + Sync {
     fn test(&self, job: &Job, package: &Path, filter: Option<&str>) -> Result<Tested, String>;
     /// The package's diagnostics, as `wrela check` finds them.
     fn check(&self, job: &Job, package: &Path) -> Result<Vec<Diagnostic>, String>;
+    /// Whether a build writes a file named `name` into its output: what the list of the files
+    /// the last build wrote ([`LIST`]) may name (`wrela build`'s rule).
+    fn owns(&self, name: &str) -> bool;
     /// The `.wrela` files under `dir` that `wrela fmt` formats, by their real paths.
     fn sources(&self, job: &Job, dir: &Path) -> Result<Vec<PathBuf>, String>;
     /// `text` formatted, or its syntax errors, rendered.
@@ -456,7 +459,7 @@ fn work(s: &Services, job: &Job, toolchain: &dyn Toolchain, op: Op) -> Result<Ve
         Op::Build { package, out: into, optimize, simd, debug, lift, overrides } => {
             let dir = caps.dir_path(&package, false)?;
             // The output's root is a write root, checked before any work.
-            caps.make_dirs(&into)?;
+            caps.make_dirs_nofollow(&into)?;
             let mut options = BuildOptions { optimize, lift, simd, debug, overrides: Vec::new() };
             for (name, path) in overrides {
                 options.overrides.push((name, caps.dir_path(&path, false)?));
@@ -466,7 +469,7 @@ fn work(s: &Services, job: &Job, toolchain: &dyn Toolchain, op: Op) -> Result<Ve
                 return Err(CANCELLED.into());
             }
             let ok = !built.diagnostics.iter().any(|d| d.error);
-            let written = write_build(s, &into, if ok { &built.files } else { &[] })?;
+            let written = write_build(s, job, toolchain, &into, &built.files, ok)?;
             out.u8(u8::from(ok)).u32(written.len() as u32);
             for f in &written {
                 out.str(f);
@@ -525,22 +528,13 @@ fn work(s: &Services, job: &Job, toolchain: &dyn Toolchain, op: Op) -> Result<Ve
             if caps.list(&into).is_ok_and(|e| !e.is_empty()) {
                 return Err(format!("`{into}` isn't empty: export into a new directory"));
             }
-            caps.make_dirs(&into)?;
+            caps.make_dirs_nofollow(&into)?;
             let files = toolchain.doc_export(job, &dirs, &repository, revision, &base)?;
-            if job.cancelled() {
-                return Err(CANCELLED.into());
-            }
-            let mut written: Vec<String> = Vec::new();
+            let mut written = Written::new(caps);
             for (path, bytes) in &files {
-                let at = format!("{into}/{path}");
-                if let Err(why) = caps.write(&at, bytes) {
-                    for w in &written {
-                        let _ = caps.remove(w);
-                    }
-                    return Err(why);
-                }
-                written.push(at);
+                written.write(job, format!("{into}/{path}"), bytes)?;
             }
+            written.keep();
             out.u32(files.len() as u32);
         }
     }
@@ -550,60 +544,133 @@ fn work(s: &Services, job: &Job, toolchain: &dyn Toolchain, op: Op) -> Result<Ve
 /// What a request the toolchain's work stopped for gives, if it stops between phases.
 pub(crate) const CANCELLED: &str = "the toolchain's work was cancelled";
 
-/// Writes a build's `files` into the write root path `into` as `wrela build` writes them: the
-/// files an earlier build wrote there (its list) and this one doesn't are removed first, a file
-/// this build would replace that no build wrote is refused, and the list names what this one
-/// wrote. Its files' paths. If a write fails, the files this request wrote are removed.
+/// What a request wrote, removed if the request doesn't finish (it failed, or was cancelled):
+/// so no partial output, and no file a retry would find in its way, is left.
+struct Written<'a> {
+    caps: &'a super::caps::Caps,
+    paths: Vec<String>,
+    kept: bool,
+}
+
+impl<'a> Written<'a> {
+    fn new(caps: &'a super::caps::Caps) -> Written<'a> {
+        Written { caps, paths: Vec::new(), kept: false }
+    }
+
+    /// Writes `bytes` at `path`, following no link, unless `job` is cancelled first.
+    fn write(&mut self, job: &Job, path: String, bytes: &[u8]) -> Result<(), String> {
+        // A test's slow disk.
+        std::thread::sleep(job.services.io_delay);
+        if job.cancelled() {
+            return Err(CANCELLED.into());
+        }
+        self.caps.write_nofollow(&path, bytes)?;
+        self.paths.push(path);
+        Ok(())
+    }
+
+    /// The request finished: what it wrote stays.
+    fn keep(mut self) {
+        self.kept = true;
+    }
+}
+
+impl Drop for Written<'_> {
+    fn drop(&mut self) {
+        if !self.kept {
+            for p in self.paths.iter().rev() {
+                let _ = self.caps.remove_file_nofollow(p);
+            }
+        }
+    }
+}
+
+/// Whether `name` is a path inside a directory: parts with `/` between, none empty, `.` or `..`.
+fn simple(name: &str) -> bool {
+    !name.is_empty() && name.split('/').all(|p| !p.is_empty() && p != "." && p != "..")
+}
+
+/// Writes a build's `files` into the write root path `into` by `wrela build`'s rules
+/// (compiler/cli/src/build.rs), each followed by no link: a link at any output's path, or at
+/// the list of what the last build wrote ([`LIST`]), stops it before anything changes; the
+/// files the list names that a build writes (`Toolchain::owns`) and this one doesn't are
+/// removed (all of them, for a build with errors, `ok` false); a file this build would write that
+/// no build wrote stops it; and the list names what this one wrote, last. If anything fails, or
+/// `job` is cancelled, the files this request wrote are removed. Its files' paths.
 fn write_build(
     s: &Services,
+    job: &Job,
+    toolchain: &dyn Toolchain,
     into: &str,
     files: &[(String, Vec<u8>)],
+    ok: bool,
 ) -> Result<Vec<String>, String> {
+    use super::caps::Kind;
     let caps = &s.caps;
-    let list = format!("{into}/{LIST}");
-    let simple = |name: &str| {
-        !name.is_empty() && name.split('/').all(|p| !p.is_empty() && p != "." && p != "..")
-    };
-    let owned: Vec<String> = match caps.read_most(&list, MOST_SOURCE) {
-        Ok(bytes) => String::from_utf8_lossy(&bytes)
-            .lines()
-            .filter(|l| simple(l))
-            .map(String::from)
-            .collect(),
-        Err(_) => Vec::new(),
-    };
-    for name in owned.iter().filter(|n| !files.iter().any(|(f, _)| f == *n)) {
-        let _ = caps.remove(&format!("{into}/{name}"));
-    }
-    if files.is_empty() {
-        let _ = caps.remove(&list);
-        return Ok(Vec::new());
-    }
-    for (name, _) in files {
+    let at = |name: &str| format!("{into}/{name}");
+    let list = at(LIST);
+    caps.make_dirs_nofollow(into)?;
+    // Before anything is removed or written.
+    let names = files.iter().map(|(f, _)| f.as_str()).chain([LIST]);
+    for name in names {
         if !simple(name) {
             return Err(format!("the build has a file named `{name}`"));
         }
-        if !owned.contains(name) && caps.stat(&format!("{into}/{name}")).is_ok() {
+        if caps.kind_nofollow(&at(name))? == Some(Kind::Link) {
+            return Err(format!("`{}` is a symbolic link, so it won't be used", at(name)));
+        }
+    }
+    let owned: Vec<String> = match caps.kind_nofollow(&list)? {
+        Some(Kind::File) => {
+            let bytes = caps.read_nofollow(&list, MOST_SOURCE)?.unwrap_or_default();
+            String::from_utf8_lossy(&bytes)
+                .lines()
+                .filter(|l| simple(l) && toolchain.owns(l))
+                .map(String::from)
+                .collect()
+        }
+        None => {
+            // A directory a build wrote before there was a list: every file a build writes.
+            let present: Vec<String> = caps.list(into)?.into_iter().map(|e| e.name).collect();
+            let old = ["game.wasm", "manifest.json"].iter().all(|f| present.iter().any(|p| p == f));
+            if old {
+                present.into_iter().filter(|n| toolchain.owns(n)).collect()
+            } else {
+                Vec::new()
+            }
+        }
+        Some(_) => return Err(format!("can't read `{list}`: it isn't a regular file")),
+    };
+    let stale: Vec<&String> =
+        owned.iter().filter(|n| !files.iter().any(|(f, _)| f == *n)).collect();
+    for name in &stale {
+        if caps.kind_nofollow(&at(name))? == Some(Kind::Link) {
+            return Err(format!("`{}` is a symbolic link, so it won't be used", at(name)));
+        }
+    }
+    for name in &stale {
+        caps.remove_file_nofollow(&at(name))?;
+    }
+    if !ok {
+        return Ok(Vec::new());
+    }
+    for (name, _) in files {
+        if !owned.contains(name) && caps.kind_nofollow(&at(name))?.is_some() {
             return Err(format!(
-                "`{into}/{name}` is in the way: an earlier build didn't write it, so it isn't replaced"
+                "`{}` is in the way: an earlier build didn't write it, so it isn't replaced",
+                at(name)
             ));
         }
     }
-    let mut written: Vec<String> = Vec::new();
+    let mut written = Written::new(caps);
     let mut text = String::new();
     for (name, bytes) in files {
-        let at = format!("{into}/{name}");
-        if let Err(why) = caps.write(&at, bytes) {
-            for w in &written {
-                let _ = caps.remove(w);
-            }
-            return Err(why);
-        }
-        written.push(at);
+        written.write(job, at(name), bytes)?;
         text.push_str(name);
         text.push('\n');
     }
-    caps.write(&list, text.as_bytes())?;
+    written.write(job, list, text.as_bytes())?;
+    written.keep();
     Ok(files.iter().map(|(f, _)| f.clone()).collect())
 }
 
@@ -624,7 +691,11 @@ fn format(
         match caps.stat(p)?.kind {
             super::caps::Kind::Dir => {
                 let dir = caps.dir_path(p, false)?;
-                for f in toolchain.sources(job, &dir)? {
+                let found = toolchain.sources(job, &dir)?;
+                if found.is_empty() {
+                    return Err(format!("`{p}` holds no `.wrela` file to format"));
+                }
+                for f in found {
                     let Ok(rel) = f.strip_prefix(&dir) else { continue };
                     let parts: Vec<String> =
                         rel.components().map(|c| c.as_os_str().to_string_lossy().into()).collect();

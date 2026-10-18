@@ -182,6 +182,12 @@ impl Reach {
                 if follow { std::fs::metadata(path) } else { std::fs::symlink_metadata(path) };
             return meta.map(|m| Some(Kind::of(m.file_type()))).or_else(missing);
         };
+        // A root itself: its own handle says what it is, since its directory is outside it.
+        if let Ok(c) = path.canonicalize()
+            && let Some(root) = roots.iter().find(|r| r.path == c)
+        {
+            return root.dir.dir_metadata().map(|m| Some(Kind::of_cap(m.file_type())));
+        }
         // The link itself is located by its directory, which must be in a root.
         let (parent, name) = match (path.parent(), path.file_name()) {
             (Some(p), Some(n)) if !p.as_os_str().is_empty() => (p, Some(n)),
@@ -284,6 +290,9 @@ mod tests {
         );
         assert_eq!(reach.kind(&inside.join("none"), false).expect("missing"), None);
         assert!(reach.covers(&inside.join("not/yet")) && !reach.covers(&outside_dir));
+        // A root itself is what its own handle says, though its directory is outside it.
+        assert_eq!(reach.kind(&inside, false).expect("the root"), Some(Kind::Dir));
+        assert!(reach.is_dir(&inside) && reach.entries(&inside).is_ok());
         let anywhere = Reach::anywhere();
         assert_eq!(anywhere.read(&inside.join("link.txt")).expect("anywhere"), b"s");
         let _ = std::fs::remove_dir_all(&base);

@@ -25,10 +25,22 @@ pub(crate) fn collect_in(
     errors: &mut Vec<String>,
 ) {
     use wrela_driver::reach::Kind;
-    if !reach.is_dir(path) {
+    // A path that can't be read is an error, never a path with nothing to format.
+    let kind = match reach.kind(path, true) {
+        Ok(Some(kind)) => kind,
+        Ok(None) => {
+            errors.push(format!("`{}` isn't there", path.display()));
+            return;
+        }
+        Err(e) => {
+            errors.push(format!("can't read `{}`: {e}", path.display()));
+            return;
+        }
+    };
+    if kind != Kind::Dir {
         if path.extension().is_some_and(|x| x == "wrela") {
             // A pipe or a device would block or never end when read.
-            if !reach.is_file(path) {
+            if kind != Kind::File {
                 errors.push(format!("`{}` isn't a regular file", path.display()));
                 return;
             }

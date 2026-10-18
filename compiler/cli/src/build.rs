@@ -120,7 +120,7 @@ const LINES: &str = "game.lines";
 /// Whether a build writes a file with this name: `game.wasm`, `manifest.json`, a pipeline's
 /// `pipeline_<n>.wgsl`, a file of the runtime, a server build's `server/game.wasm` or a tool
 /// build's `tool/tool.wasm`.
-fn written_by_build(name: &str) -> bool {
+pub(crate) fn written_by_build(name: &str) -> bool {
     let pipeline = name
         .strip_prefix("pipeline_")
         .and_then(|n| n.strip_suffix(".wgsl"))
@@ -141,8 +141,9 @@ fn written_by_build(name: &str) -> bool {
         || wrela_driver::build::RUNTIME_FILES.iter().any(|(f, _)| *f == name)
 }
 
-/// The file in the output directory that lists the files the last build wrote there.
-const LIST: &str = ".wrela-build";
+/// The file in the output directory that lists the files the last build wrote there: the tool
+/// host's toolchain service keeps it by the same rules (`crate::toolchain`).
+const LIST: &str = wrela_host::tool::toolchain::LIST;
 
 /// A build output (or its ownership list) that's a symbolic link. Writing a symlink would
 /// replace its target, which isn't a file this build owns.

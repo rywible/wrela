@@ -78,14 +78,14 @@ fn rejects_a_program_with_other_imports() {
     );
 }
 
-/// A driven build (the tool host's `drive`, language.md §15.5), read through its reader and
-/// compiled to be stopped, runs as a loaded one: the same frames give the same hash.
+/// A driven build (the tool host's `drive`, language.md §15.5), read through its directory's
+/// handle and compiled to be stopped, runs as a loaded one: the same frames give the same hash.
 #[test]
 fn a_driven_build_runs_as_a_loaded_one() {
     let dir = common::first_light_copy("driven");
-    let mut read = |name: &str| std::fs::read(dir.join(name)).map_err(|e| e.to_string());
+    let handle = wrela_host::open_build_dir(&dir).expect("the build's directory");
     let stop = wrela_host::Stop::new().expect("a stop");
-    let driven = CpuBuild::load_driven(&mut read, &dir, stop).expect("driven");
+    let driven = CpuBuild::load_driven(handle, &dir, stop).expect("driven");
     let loaded = CpuBuild::load(&dir).expect("loaded");
     let mut hashes = Vec::new();
     for build in [driven, loaded] {

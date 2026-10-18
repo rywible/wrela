@@ -490,6 +490,92 @@ impl Caps {
         Ok(real)
     }
 
+    /// The directory at `path` (a root path, or a root), opened through its root's handle one
+    /// part at a time, following no link: its real path, and the handle, which later reads go
+    /// through, so a link put in its place after this leads nowhere.
+    pub(crate) fn open_dir(&self, path: &str) -> Result<(PathBuf, Dir), String> {
+        let (root, rel) = self.resolve(path, false)?;
+        let parts: Vec<&str> = rel.map_or_else(Vec::new, |r| r.split('/').collect());
+        let dir =
+            crate::confined::open_dir(&root.dir, &parts, false).map_err(|e| failed(path, e))?;
+        let real = parts.iter().fold(root.path.clone(), |p, part| p.join(part));
+        Ok((real, dir))
+    }
+
+    /// The directory above the file at `path` in a write root, opened one part at a time
+    /// through the root's handle without following a link (made, with `create`), and the
+    /// file's name: what output that must not be written through a link is written in.
+    fn parent_nofollow(&self, path: &str, create: bool) -> Result<(Dir, String), String> {
+        let (dir, rel) = self.file(path, true)?;
+        let parts = crate::confined::parts(rel)?;
+        let (name, above) = parts.split_last().expect("a path has a part");
+        let at = crate::confined::open_dir(dir, above, create).map_err(|e| failed(path, e))?;
+        Ok((at, name.to_string()))
+    }
+
+    /// Makes the directory at `path` in a write root and those above it, following no link:
+    /// a link in place of one stops it.
+    pub(crate) fn make_dirs_nofollow(&self, path: &str) -> Result<(), String> {
+        match self.resolve(path, true)? {
+            (_, None) => Ok(()),
+            (root, Some(rel)) => {
+                let parts = crate::confined::parts(rel)?;
+                crate::confined::open_dir(&root.dir, &parts, true)
+                    .map(|_| ())
+                    .map_err(|e| failed(path, e))
+            }
+        }
+    }
+
+    /// What's at `path` in a write root, not following a link anywhere on the way: `None` if
+    /// nothing is, `Link` if a part of it is a link (so nothing is reached through it).
+    pub(crate) fn kind_nofollow(&self, path: &str) -> Result<Option<Kind>, String> {
+        let (dir, rel) = self.file(path, true)?;
+        let parts = crate::confined::parts(rel)?;
+        let mut at = dir.try_clone().map_err(|e| failed(path, e))?;
+        for (k, part) in parts.iter().enumerate() {
+            let meta = match at.symlink_metadata(part) {
+                Ok(m) => m,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(e) => return Err(failed(path, e)),
+            };
+            let kind = Kind::of(meta.file_type());
+            if k + 1 == parts.len() || kind != Kind::Dir {
+                return Ok(Some(kind));
+            }
+            at = crate::confined::open_dir(&at, &[part], false).map_err(|e| failed(path, e))?;
+        }
+        unreachable!("a path has a part")
+    }
+
+    /// Writes `bytes` as the whole regular file at `path` in a write root, making the
+    /// directories it needs, following no link on the way or at its end.
+    pub(crate) fn write_nofollow(&self, path: &str, bytes: &[u8]) -> Result<(), String> {
+        let (at, name) = self.parent_nofollow(path, true)?;
+        let mut file = crate::confined::open_file(&at, &name, true).map_err(|e| failed(path, e))?;
+        std::io::Write::write_all(&mut file, bytes).map_err(|e| failed(path, e))
+    }
+
+    /// The bytes of the regular file at `path` in a write root, at most `most`, following no
+    /// link: `None` if nothing is there.
+    pub(crate) fn read_nofollow(&self, path: &str, most: u64) -> Result<Option<Vec<u8>>, String> {
+        if self.kind_nofollow(path)?.is_none() {
+            return Ok(None);
+        }
+        let (dir, rel) = self.file(path, true)?;
+        crate::confined::read(dir, rel, most).map(Some)
+    }
+
+    /// Removes the regular file at `path` in a write root, if one is there, following no link:
+    /// a link or a directory there is left.
+    pub(crate) fn remove_file_nofollow(&self, path: &str) -> Result<(), String> {
+        if self.kind_nofollow(path)? != Some(Kind::File) {
+            return Ok(());
+        }
+        let (at, name) = self.parent_nofollow(path, false)?;
+        crate::confined::remove(&at, &name, false).map_err(|e| failed(path, e))
+    }
+
     /// Every root's real path and a handle of its own to its directory, read roots and write
     /// roots alike: where the toolchain service lets the compiler read.
     pub(crate) fn readable(&self) -> Result<Vec<(PathBuf, Dir)>, String> {

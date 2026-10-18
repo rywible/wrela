@@ -32,10 +32,13 @@ fn main(given: take Vec<String>) -> u32 {
     let what = given[0].clone()
     var paths: Vec<String> = Vec::new()
     paths.push(given[1].clone())
-    var p = if what.as_str() == "build" || what.as_str() == "build-optimized" {
+    var p = if what.as_str() == "build" || what.as_str() == "build-optimized" || what.as_str() == "build-timed" {
         var options = toolchain::options()
         if what.as_str() == "build-optimized" {
             options.optimize = true
+            options.timeout = 2.0
+        }
+        if what.as_str() == "build-timed" {
             options.timeout = 2.0
         }
         toolchain::build(given[1].as_str(), given[2].as_str(), options)
@@ -52,7 +55,7 @@ fn main(given: take Vec<String>) -> u32 {
         got = p.poll()
     }
     let Some(polled) = take got else { return 90 }
-    if what.as_str() == "build" || what.as_str() == "build-optimized" {
+    if what.as_str() == "build" || what.as_str() == "build-optimized" || what.as_str() == "build-timed" {
         let built = match toolchain::read_built(take polled) {
             Ok(b) => take b,
             Err(e) => return failed(e),
@@ -373,4 +376,91 @@ fn a_deadline_or_the_tools_end_kills_wasm_opt_and_ends_in_bounded_time() {
     assert!(started.elapsed() < Duration::from_secs(30), "{:?}", started.elapsed());
     let pid = std::fs::read_to_string(&pids).expect("wasm-opt ran");
     assert!(!alive(pid.trim()), "the tool's end kills wasm-opt's group");
+}
+
+/// A root granted as the package itself (`--read pkg=DIR`): its directory is outside it, and
+/// it's still a package to build, check and test, and a directory to format.
+#[test]
+fn a_granted_root_is_itself_a_package_and_a_directory_to_format() {
+    let messy = "pub fn helper() -> u32 {\nreturn   1\n}\n";
+    let subject = [
+        ("subject/wrela.toml", manifest("subject")),
+        ("subject/main.wrela", SUBJECT.into()),
+        ("subject/extra.wrela", messy.into()),
+    ];
+    let subject: Vec<(&str, &str)> = subject.iter().map(|(p, t)| (*p, t.as_str())).collect();
+    let (tool, src, out) = packages("toolchain-root", &subject);
+    let probe_pkg = |args: &[&str]| {
+        let mut c = wrela();
+        c.arg("tool").arg(&tool);
+        c.arg("--read").arg(format!("pkg={}", src.join("subject").display()));
+        c.arg("--write").arg(format!("out={}", out.display()));
+        c.arg("--timeout").arg("120").arg("--").args(args);
+        run(&mut c)
+    };
+    let (code, printed) = probe_pkg(&["build", "pkg", "out/b"]);
+    assert_eq!(code, Some(0), "{printed}");
+    assert!(printed.contains("built ok=true"), "{printed}");
+    let (code, printed) = probe_pkg(&["check", "pkg"]);
+    assert!(code == Some(0) && printed.contains("checked ok=true"), "{printed}");
+    let (code, printed) = probe_pkg(&["test", "pkg"]);
+    assert!(code == Some(0) && printed.contains("test passes passed=true"), "{printed}");
+    let (code, printed) = probe_pkg(&["fmt-check", "pkg"]);
+    assert_eq!(code, Some(0), "{printed}");
+    assert!(printed.contains("changed pkg/extra.wrela"), "{printed}");
+    // A directory with nothing to format is an error, not a pass.
+    std::fs::create_dir_all(out.join("empty")).expect("empty");
+    let (code, printed) = probe_pkg(&["fmt-check", "out/empty"]);
+    assert_eq!(code, Some(1), "{printed}");
+    assert!(printed.contains("holds no `.wrela` file"), "{printed}");
+}
+
+/// The builds' outputs follow `wrela build`'s rules, and a request that doesn't finish leaves
+/// none of its own: cancelled while it writes, its files go, so a retry finds nothing in its way;
+/// a list that isn't a file stops it before anything is written; a link at an output's path
+/// stops it, and a list naming a file no build writes doesn't remove it.
+#[cfg(unix)]
+#[test]
+fn a_builds_outputs_follow_wrela_builds_rules_and_a_failed_one_leaves_none() {
+    let subject =
+        [("subject/wrela.toml", manifest("subject")), ("subject/main.wrela", SUBJECT.into())];
+    let subject: Vec<(&str, &str)> = subject.iter().map(|(p, t)| (*p, t.as_str())).collect();
+    let (tool, src, out) = packages("toolchain-outputs", &subject);
+    let build =
+        |into: &str, mode: &str| run(&mut probe(&tool, &src, &out, &[mode, "src/subject", into]));
+    // Cancelled at its 2 s deadline while it writes (each file takes 0.5 s).
+    let (code, printed) = run(probe(&tool, &src, &out, &["build-timed", "src/subject", "out/a"])
+        .env("WRELA_TESTING_IO_DELAY", "0.5"));
+    assert_eq!(code, Some(1), "{printed}");
+    assert!(printed.contains("past its deadline of 2 s"), "{printed}");
+    assert_eq!(names(&out.join("a")), Vec::<String>::new(), "nothing it wrote is left");
+    let (code, printed) = build("out/a", "build");
+    assert!(code == Some(0) && printed.contains("built ok=true"), "a retry builds: {printed}");
+    // A list that is a directory: nothing is written, and once it's gone a retry builds.
+    std::fs::create_dir_all(out.join("b/.wrela-build")).expect("a directory");
+    let (code, printed) = build("out/b", "build");
+    assert_eq!(code, Some(1), "{printed}");
+    assert!(printed.contains("isn't a regular file"), "{printed}");
+    assert_eq!(names(&out.join("b")), [".wrela-build"], "nothing written");
+    std::fs::remove_dir(out.join("b/.wrela-build")).expect("remove");
+    let (code, printed) = build("out/b", "build");
+    assert!(code == Some(0) && printed.contains("built ok=true"), "{printed}");
+    // game.wasm replaced by a link to the user's file: the build stops, and the file is kept.
+    std::fs::write(out.join("user.txt"), "mine").expect("the user's file");
+    std::fs::remove_file(out.join("b/game.wasm")).expect("remove");
+    std::os::unix::fs::symlink("../user.txt", out.join("b/game.wasm")).expect("a link inside");
+    let (code, printed) = build("out/b", "build");
+    assert_eq!(code, Some(1), "{printed}");
+    assert!(printed.contains("game.wasm` is a symbolic link"), "{printed}");
+    assert_eq!(std::fs::read_to_string(out.join("user.txt")).expect("kept"), "mine");
+    // A forged list naming the user's files: they aren't a build's, so they're kept.
+    std::fs::remove_file(out.join("b/game.wasm")).expect("remove the link");
+    std::fs::write(out.join("b/notes.txt"), "mine").expect("the user's notes");
+    let list = std::fs::read_to_string(out.join("b/.wrela-build")).expect("the list");
+    std::fs::write(out.join("b/.wrela-build"), format!("{list}notes.txt\n../user.txt\n"))
+        .expect("forge");
+    let (code, printed) = build("out/b", "build");
+    assert!(code == Some(0) && printed.contains("built ok=true"), "{printed}");
+    assert_eq!(std::fs::read_to_string(out.join("b/notes.txt")).expect("kept"), "mine");
+    assert_eq!(std::fs::read_to_string(out.join("user.txt")).expect("kept"), "mine");
 }

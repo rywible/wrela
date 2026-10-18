@@ -94,3 +94,67 @@ fn a_trapping_job_traps_at_the_tick_that_takes_it() {
         while c.poll().is_none() { yield }
     }
 }
+
+/// A trap's stage and number are the host's: tick 20's trap, reached by frames then ticks, or
+/// by frames alone, is in tick 20, as its message says.
+@test(tool, read: [("repo", "../../..")], budget: 120)
+@job
+fn a_trap_is_numbered_by_the_tick_the_host_ran() {
+    var b = toolchain::build("repo/engine/tests/run-jobs", "scratch/build", toolchain::options())
+    var built = b.poll()
+    while built.is_none() {
+        yield
+        built = b.poll()
+    }
+    let Some(polled) = take built else { panic("no answer") }
+    let Ok(build) = toolchain::read_built(take polled) else { panic("the build's request") }
+    assert(build.ok, "the package builds")
+    // Frames then ticks, and frames alone: either way the trap is in tick 20, which a lockstep
+    // frame runs as much as `ticks` does.
+    for ticks_after in [true, false] {
+        var options = drive::cpu()
+        options.workers = 2
+        var l = drive::load("scratch/build", options)
+        var loaded = l.poll()
+        while loaded.is_none() {
+            yield
+            loaded = l.poll()
+        }
+        let Some(lp) = take loaded else { panic("no answer") }
+        let Ok(it) = drive::read_loaded(take lp) else { panic("the build loads") }
+        let h = it.build
+        var i = drive::init(h)
+        while i.poll().is_none() { yield }
+        var f = drive::frames(h, if ticks_after { 10 } else { 40 }, Script::frames())
+        var framed = f.poll()
+        while framed.is_none() {
+            yield
+            framed = f.poll()
+        }
+        let Some(fp) = take framed else { panic("no answer") }
+        let Ok(frames) = drive::read_ran(take fp) else { panic("the frames' request") }
+        var trapped = take frames.trap
+        if ticks_after {
+            assert(trapped.is_none(), "ten frames run ticks before 20")
+            var t = drive::ticks(h, 20, Script::ticks())
+            var ticked = t.poll()
+            while ticked.is_none() {
+                yield
+                ticked = t.poll()
+            }
+            let Some(tp) = take ticked else { panic("no answer") }
+            let Ok(ticks) = drive::read_ran(take tp) else { panic("the ticks' request") }
+            trapped = take ticks.trap
+        }
+        let Some(trap) = trapped else { panic("tick 20 traps") }
+        let m = trap.message.as_str()
+        assert(m.find("in tick 20").is_some(), m)
+        assert(
+            trap.stage == drive::Stage::Tick && trap.number == 20,
+            f"stage, number {trap.number}: {m}",
+        )
+        assert(trap.panic.as_str() == "a job's input was 13", trap.panic.as_str())
+        var c = drive::close(h)
+        while c.poll().is_none() { yield }
+    }
+}
