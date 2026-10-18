@@ -531,7 +531,9 @@ dispatch and long waits sharing the file workers, fakes looser than real sites, 
 that missed its tests' programs' process groups, HTTP requests abandoned rather than closed, and
 bodies read whole before the blob budget was charged. Each is fixed with a regression that fails
 without it; the HTTP client now uses a connection the host makes and can shut down, written
-against ureq's transport interface.
+against ureq's transport interface. A second round found a program that could take its own process group before the
+supervisor knew of it, and a stalled name lookup that outlasted its deadline when the tool had no
+timeout; both are fixed with regressions.
 
 ## The references
 

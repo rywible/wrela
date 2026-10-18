@@ -174,6 +174,8 @@ pub struct Caps {
     programs: BTreeMap<String, Program>,
     /// `PATH` when the grants were opened: the baseline a program's environment starts from.
     path: String,
+    /// The `wrela` that runs `tool:` programs and launches supervised ones.
+    runner: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for Caps {
@@ -373,7 +375,15 @@ impl Caps {
             let found = find_program(name, grant, &path, grants.tool_runner.as_ref())?;
             programs.insert(name.clone(), found);
         }
-        Ok(Caps { roots, secrets, net, fake_net, programs, path })
+        Ok(Caps {
+            roots,
+            secrets,
+            net,
+            fake_net,
+            programs,
+            path,
+            runner: grants.tool_runner.clone(),
+        })
     }
 
     /// The secrets granted, by name, with their values.
@@ -400,6 +410,11 @@ impl Caps {
         self.programs.get(name).ok_or_else(|| {
             format!("the program `{name}` isn't granted: `--allow-run {name}` grants it")
         })
+    }
+
+    /// The `wrela` that launches a supervised program, if there is one.
+    pub(crate) fn runner(&self) -> Option<&std::path::Path> {
+        self.runner.as_deref()
     }
 
     /// `PATH` when the grants were opened.

@@ -11,9 +11,10 @@
 //! scoped to it. Its connection is made here ([`Connect`]), and the worker keeps a handle to
 //! the socket: past the deadline, or once the tool ends, it shuts the socket down, so whatever
 //! the client waits on returns, and the worker joins the thread before it answers. Names are
-//! resolved on that thread too, so no thread is left behind. A thread that still doesn't
-//! return (a name lookup that never ends) keeps its worker, and the run's end is then the
-//! host's failure, as for any worker past its grace.
+//! resolved on that thread too, so no thread is left behind. A thread that still hasn't
+//! returned the grace after it was cancelled (a name lookup, which no socket cuts) ends the
+//! run at once as the host's failure (status 71), with or without a timeout; its worker is
+//! left past the grace, and `wrela tool` ends the process.
 //!
 //! A tool test's hosts are fake sites (`Caps::host` says which): the host answers a `GET` (or a
 //! `HEAD`) with the file at `scratch/sites/<host>/<path>`, through the capability context like
@@ -365,9 +366,12 @@ impl Transport for Tcp {
     }
 }
 
-/// Names resolved on the client's own thread, with no thread of their own.
+/// Names resolved on the client's own thread, with no thread of their own; `stall` is a
+/// test's lookup that takes that long.
 #[derive(Debug)]
-struct Resolve;
+struct Resolve {
+    stall: Duration,
+}
 
 impl Resolver for Resolve {
     fn resolve(
@@ -376,6 +380,7 @@ impl Resolver for Resolve {
         _: &ureq::config::Config,
         _: NextTimeout,
     ) -> Result<ResolvedSocketAddrs, ureq::Error> {
+        std::thread::sleep(self.stall);
         let host = uri.host().ok_or(ureq::Error::HostNotFound)?;
         let port = uri.port_u16().unwrap_or(443);
         let mut out = self.empty();
@@ -400,10 +405,21 @@ fn real(s: &Services, request: u32, f: &Fetch) -> Result<Vec<u8>, String> {
             .name("wrela-tool-http".into())
             .spawn_scoped(scope, || send(s, request, f, &body, &socket));
         let client = client.map_err(|e| format!("can't start the request's thread: {e}"))?;
+        let mut cancelled: Option<Instant> = None;
         while !client.is_finished() {
             let ended = s.closing.load(Ordering::Acquire);
             if (ended || Instant::now() >= f.due) && !stopped.swap(true, Ordering::AcqRel) {
                 socket.cancel();
+                cancelled = Some(Instant::now());
+            }
+            // Cancelled and still not back (a name lookup, which no socket cuts): the run can't
+            // end cleanly, so the host ends it now as its failure, whether or not it has a
+            // timeout, and this worker is left past the grace.
+            if cancelled.is_some_and(|at| at.elapsed() >= s.grace) {
+                let _ = s.stuck.set(format!(
+                    "a request to {} didn't stop within {:?} of being cancelled",
+                    f.url, s.grace
+                ));
             }
             std::thread::sleep(POLL);
         }
@@ -430,8 +446,6 @@ fn send(
     socket: &Socket,
 ) -> Result<Vec<u8>, String> {
     let failed = |e: &dyn std::fmt::Display| format!("{}: {e}", f.url);
-    // A test's slow name service: the time before the client starts, which no cancel cuts.
-    std::thread::sleep(s.io_delay);
     let left = f.due.saturating_duration_since(Instant::now());
     if left.is_zero() {
         return Err(expired(f));
@@ -444,7 +458,7 @@ fn send(
         .timeout_global(Some(left))
         .build();
     let connector = Connect(socket.clone()).chain(RustlsConnector::default());
-    let agent = ureq::Agent::with_parts(config, connector, Resolve);
+    let agent = ureq::Agent::with_parts(config, connector, Resolve { stall: s.resolve_stall });
     let mut builder = ureq::http::Request::builder().method(f.method.as_str()).uri(&f.url);
     for (name, value) in &f.headers {
         builder = builder.header(name, value);

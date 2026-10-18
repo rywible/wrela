@@ -43,7 +43,7 @@ mod services;
 
 pub use blobs::BlobBudget;
 pub use caps::{Caps, Grants, Program, ProgramGrant};
-pub use run::GROUPS_ENV;
+pub use run::{GROUPS_ENV, launch};
 
 use console::Console;
 use services::{Answer, Services, Task, Work};
@@ -111,8 +111,8 @@ pub struct Options {
 }
 
 /// A run's settings that only tests change: the workers' grace, a slow disk under each blob
-/// written to a file (and a slow name service before each HTTP request), a clock thread that
-/// fails to start, and where the run's own directory is.
+/// written to a file, a clock thread that fails to start, where the run's own directory is, a
+/// pause between a program's start and its record, and a name lookup that stalls.
 #[doc(hidden)]
 #[derive(Clone, Debug)]
 pub struct Testing {
@@ -120,11 +120,20 @@ pub struct Testing {
     pub io_delay: Duration,
     pub fail_clock_thread: bool,
     pub work_dir: Option<std::path::PathBuf>,
+    pub spawn_pause: Duration,
+    pub resolve_stall: Duration,
 }
 
 impl Default for Testing {
     fn default() -> Testing {
-        Testing { grace: GRACE, io_delay: Duration::ZERO, fail_clock_thread: false, work_dir: None }
+        Testing {
+            grace: GRACE,
+            io_delay: Duration::ZERO,
+            fail_clock_thread: false,
+            work_dir: None,
+            spawn_pause: Duration::ZERO,
+            resolve_stall: Duration::ZERO,
+        }
     }
 }
 
@@ -445,8 +454,16 @@ impl Ticker {
     }
 }
 
-/// Why the run must stop now, if it must: an interrupt, or the timeout.
-fn stop_reason(interrupt: &Option<Arc<AtomicBool>>, deadline: Option<Instant>) -> Option<End> {
+/// Why the run must stop now, if it must: a worker whose work can't be stopped (the host's
+/// failure), an interrupt, or the timeout.
+fn stop_reason(
+    interrupt: &Option<Arc<AtomicBool>>,
+    deadline: Option<Instant>,
+    stuck: &std::sync::OnceLock<String>,
+) -> Option<End> {
+    if let Some(why) = stuck.get() {
+        return Some(End::Host(why.clone()));
+    }
     if interrupt.as_ref().is_some_and(|i| i.load(Ordering::Acquire)) {
         return Some(End::Interrupted);
     }
@@ -490,6 +507,10 @@ pub fn run(build: &ToolBuild, options: Options) -> Ended {
         work: std::sync::OnceLock::new(),
         work_at: testing.work_dir.clone(),
         groups,
+        spawn_pause: testing.spawn_pause,
+        resolve_stall: testing.resolve_stall,
+        grace: testing.grace,
+        stuck: Arc::new(std::sync::OnceLock::new()),
     });
     let (done, answers) = mpsc::channel();
     let pools = Pools {
@@ -653,8 +674,9 @@ impl Run<'_> {
         store.limiter(|s| s);
         store.set_epoch_deadline(1);
         let (interrupt, deadline) = (self.interrupt.clone(), self.deadline);
+        let stuck = self.services.stuck.clone();
         store.epoch_deadline_callback(move |mut cx| {
-            if let Some(why) = stop_reason(&interrupt, deadline) {
+            if let Some(why) = stop_reason(&interrupt, deadline, &stuck) {
                 cx.data_mut().stopped = Some(why);
                 return Ok(UpdateDeadline::Interrupt);
             }
@@ -684,7 +706,7 @@ impl Run<'_> {
             self.after_call(&mut store);
         }
         loop {
-            if let Some(why) = stop_reason(self.interrupt, self.deadline) {
+            if let Some(why) = stop_reason(self.interrupt, self.deadline, &self.services.stuck) {
                 return why;
             }
             let status = match call(&mut store, memory, |s| tool.call(s, ())) {
@@ -774,7 +796,7 @@ impl Run<'_> {
             if self.outstanding.is_empty() {
                 return Err(End::WaitsOnNothing);
             }
-            if let Some(why) = stop_reason(self.interrupt, self.deadline) {
+            if let Some(why) = stop_reason(self.interrupt, self.deadline, &self.services.stuck) {
                 return Err(why);
             }
             // Quiescent: nothing outstanding but what the clock answers.

@@ -932,7 +932,7 @@ use std::tool::http
 @job
 fn main(given: take Vec<String>) -> u32 {
     var request = http::get(given[0].as_str())
-    request.timeout = 60.0
+    request.timeout = if given.len() > 1 { 0.3 } else { 60.0 }
     var f = http::fetch(request)
     var got = f.poll()
     while got.is_none() {
@@ -993,21 +993,22 @@ fn the_tools_end_closes_a_connection_that_waits_and_a_stuck_one_is_the_hosts_fai
     assert!(closed <= returned + Duration::from_millis(50), "closed before the run returned");
 
     // A request whose client can't be stopped (a name lookup that doesn't return, here a
-    // test's slow resolver) keeps its worker past the grace: the host's failure.
+    // test's stalled resolver) ends the run as the host's failure once the grace after its
+    // deadline passes, though the run has no timeout; its worker is left past the grace.
     let (_, mut options) = printer(|_| {});
     options.caps = Caps::open(&Grants::default().net(&host), |_| None).expect("granted");
-    options.args = vec![format!("https://{host}/")];
-    options.timeout = Some(Duration::from_millis(300));
+    options.args = vec![format!("https://{host}/"), "short".into()];
     options.testing = Testing {
         grace: Duration::from_millis(100),
-        io_delay: Duration::from_secs(3),
+        resolve_stall: Duration::from_secs(3),
         ..Testing::default()
     };
     let started = Instant::now();
     let ended = wrela_host::tool::run(&build, options);
     assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
     let End::Host(why) = &ended.end else { panic!("{:?}", ended.end) };
-    assert!(why.contains("still running"), "{why}");
+    assert!(why.contains("didn't stop within") && why.contains("still running"), "{why}");
+    assert_eq!(ended.end.status(), 71);
     assert_eq!(ended.workers_left, 1);
 }
 

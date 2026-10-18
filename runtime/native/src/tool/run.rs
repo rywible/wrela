@@ -92,6 +92,36 @@ pub(crate) fn parse(b: &mut Body, entered: Instant) -> Result<Run, String> {
     Ok(Run { program, args, stdin, env, secrets, cwd, deadline, due: entered + deadline })
 }
 
+/// What `wrela tool --launch <go> <program> [args...]` does, in the launched process: waits
+/// until the file `go` is there (the host has recorded this process's group), at most
+/// [`LAUNCH_WAIT`], then takes a process group of its own and becomes `program`. Only an
+/// error returns.
+pub fn launch(go: &Path, program: &std::ffi::OsStr, args: &[std::ffi::OsString]) -> String {
+    let since = Instant::now();
+    while !go.exists() {
+        if since.elapsed() > LAUNCH_WAIT {
+            return "the host never let the program go".into();
+        }
+        std::thread::sleep(POLL);
+    }
+    if let Err(e) = rustix::process::setpgid(None, None) {
+        return format!("can't take a process group: {e}");
+    }
+    #[cfg(unix)]
+    {
+        let e = std::os::unix::process::CommandExt::exec(Command::new(program).args(args));
+        format!("can't run {}: {e}", program.to_string_lossy())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = args;
+        "launching needs a Unix".into()
+    }
+}
+
+/// How long a launched program waits for its host to let it go.
+const LAUNCH_WAIT: Duration = Duration::from_secs(30);
+
 /// Kills process group `group`, whatever is left of it: a group already gone is no error.
 fn kill_group(group: i32) {
     if let Some(pid) = rustix::process::Pid::from_raw(group) {
@@ -102,6 +132,8 @@ fn kill_group(group: i32) {
 /// Kills `child`'s process group, and waits up to [`REAP`] for its exit to be reported.
 fn stop(child: &mut std::process::Child, group: i32) {
     kill_group(group);
+    // One still in the host's group, started but not let go, has no group of its own yet.
+    let _ = child.kill();
     let since = Instant::now();
     while since.elapsed() < REAP {
         if !matches!(child.try_wait(), Ok(None)) {
@@ -166,7 +198,8 @@ pub(crate) fn run(s: &Services, request: u32, r: Run) -> Result<Vec<u8>, String>
         dir.join(format!("{request}.out")),
         dir.join(format!("{request}.err")),
     );
-    let _files = Files(vec![input.clone(), output.clone(), errors.clone()]);
+    let go = dir.join(format!("{request}.go"));
+    let _files = Files(vec![input.clone(), output.clone(), errors.clone(), go.clone()]);
     let stdin = match &r.stdin {
         Data::Bytes(b) => std::fs::write(&input, b),
         Data::Blob(id) => {
@@ -179,22 +212,48 @@ pub(crate) fn run(s: &Services, request: u32, r: Run) -> Result<Vec<u8>, String>
         let f = if create { std::fs::File::create(path) } else { std::fs::File::open(path) };
         f.map_err(|e| format!("the program's input or output: {e}"))
     };
-    let mut command = match &program {
-        Program::Native(path) => {
-            let mut c = Command::new(path);
-            c.args(&r.args);
+    // What runs: the executable and its arguments.
+    let (exe, mut argv): (std::path::PathBuf, Vec<std::ffi::OsString>) = match &program {
+        Program::Native(path) => (path.clone(), r.args.iter().map(Into::into).collect()),
+        Program::Tool { runner, package } => {
+            let left = r.due.saturating_duration_since(Instant::now());
+            let mut a: Vec<std::ffi::OsString> = vec!["tool".into(), package.into()];
+            a.push("--write".into());
+            a.push(format!("{}={}", r.cwd, cwd.display()).into());
+            a.push("--timeout".into());
+            a.push(format!("{}", left.as_secs_f64().max(0.001)).into());
+            for (name, _) in &secrets {
+                a.push("--secret".into());
+                a.push(name.into());
+            }
+            a.push("--".into());
+            a.extend(r.args.iter().map(Into::into));
+            (runner.clone(), a)
+        }
+    };
+    // Under a supervisor, the program starts in this host's group, through `wrela tool
+    // --launch`, which waits until its group is recorded, then takes a group of its own and
+    // becomes the program: so there's no moment when it has a group nobody knows of.
+    let launcher = match (&s.groups, s.caps.runner()) {
+        (None, _) => None,
+        (Some(_), Some(runner)) => Some(runner.to_path_buf()),
+        (Some(_), None) => {
+            return Err(
+                "a supervised program needs `wrela tool --launch`, and nothing here runs it".into(),
+            );
+        }
+    };
+    let mut command = match &launcher {
+        None => {
+            let mut c = Command::new(&exe);
+            c.args(&argv);
+            #[cfg(unix)]
+            std::os::unix::process::CommandExt::process_group(&mut c, 0);
             c
         }
-        Program::Tool { runner, package } => {
+        Some(runner) => {
             let mut c = Command::new(runner);
-            c.arg("tool").arg(package);
-            c.arg("--write").arg(format!("{}={}", r.cwd, cwd.display()));
-            let left = r.due.saturating_duration_since(Instant::now());
-            c.arg("--timeout").arg(format!("{}", left.as_secs_f64().max(0.001)));
-            for (name, _) in &secrets {
-                c.arg("--secret").arg(name);
-            }
-            c.arg("--").args(&r.args);
+            c.arg("tool").arg("--launch").arg(&go).arg(&exe).args(argv.drain(..));
             c
         }
     };
@@ -214,13 +273,19 @@ pub(crate) fn run(s: &Services, request: u32, r: Run) -> Result<Vec<u8>, String>
         .stdin(opened(&input, false)?)
         .stdout(opened(&output, true)?)
         .stderr(opened(&errors, true)?);
-    #[cfg(unix)]
-    std::os::unix::process::CommandExt::process_group(&mut command, 0);
     let mut child = command.spawn().map_err(|e| format!("can't run `{}`: {e}", r.program))?;
     let group = child.id() as i32;
+    // A test's moment between the start and the record, when only this host's group holds it.
+    std::thread::sleep(s.spawn_pause);
     if let Err(why) = record(s, group) {
         stop(&mut child, group);
         return Err(why);
+    }
+    if launcher.is_some()
+        && let Err(e) = std::fs::write(&go, b"")
+    {
+        stop(&mut child, group);
+        return Err(format!("letting the program go: {e}"));
     }
     let status = loop {
         match child.try_wait() {

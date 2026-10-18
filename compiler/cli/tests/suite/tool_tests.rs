@@ -297,3 +297,27 @@ fn a_test_host_that_cant_end_its_programs_has_them_ended_by_wrela_test() {
     let gone = within(std::time::Duration::from_secs(3), || running(&sleeper).is_empty());
     assert!(gone, "the fake program, in a process group of its own, ended too");
 }
+
+#[test]
+fn a_program_started_but_not_yet_recorded_ends_with_its_tests_host() {
+    let (dir, sleeper) = sleeper_package("tool-tests-unrecorded", 60);
+    // The host pauses between starting its program and recording the program's group.
+    let mut child = wrela()
+        .arg("test")
+        .arg(&dir)
+        .env("WRELA_TESTING_SPAWN_PAUSE", "60")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("run wrela test");
+    let started = within(std::time::Duration::from_secs(60), || !running(&sleeper).is_empty());
+    assert!(started, "the fake program started");
+    let sent = std::process::Command::new("kill")
+        .args(["-INT", &child.id().to_string()])
+        .status()
+        .expect("kill");
+    assert!(sent.success());
+    assert_eq!(exit_within(&mut child, std::time::Duration::from_secs(10)), Some(130));
+    let gone = within(std::time::Duration::from_secs(3), || running(&sleeper).is_empty());
+    assert!(gone, "the unrecorded program was still in its host's group, and ended with it");
+}

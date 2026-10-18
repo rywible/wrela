@@ -66,6 +66,14 @@ pub(crate) struct Services {
     /// Where each program's process group is written as it starts, for a supervisor that must
     /// kill them if this host can't (a tool test's, §13.2).
     pub groups: Option<PathBuf>,
+    /// A test's moment between a program's start and its record.
+    pub spawn_pause: Duration,
+    /// A test's name lookup that takes this long, which nothing cancels.
+    pub resolve_stall: Duration,
+    /// How long a cancelled HTTP client has to return before the run is the host's failure.
+    pub grace: Duration,
+    /// Set by a worker whose work can't be stopped: the host ends the run as its failure.
+    pub stuck: Arc<OnceLock<String>>,
 }
 
 impl Services {
@@ -550,6 +558,10 @@ mod tests {
             work: OnceLock::new(),
             work_at: None,
             groups: None,
+            spawn_pause: Duration::ZERO,
+            resolve_stall: Duration::ZERO,
+            grace: Duration::ZERO,
+            stuck: Arc::new(OnceLock::new()),
         };
         let mut from = Counted { left: 64 << 20, given: 0 };
         let mut out = Vec::new();

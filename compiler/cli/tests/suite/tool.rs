@@ -538,5 +538,19 @@ fn http_reaches_only_a_granted_host_and_a_stuck_server_holds_up_no_end() {
         .expect("run wrela tool");
     assert_eq!(out.status.code(), Some(124), "{}", String::from_utf8_lossy(&out.stderr));
     assert!(started.elapsed() < std::time::Duration::from_secs(15), "{:?}", started.elapsed());
+    // A name lookup that stalls past the request's deadline, which no socket cuts, with no
+    // `--timeout`: the host's failure, the grace after the deadline, and the process (with the
+    // client's thread) ends.
+    let started = std::time::Instant::now();
+    let out = wrela()
+        .arg("tool")
+        .arg(&dir)
+        .args(["--net", &host, "--", &url, "short"])
+        .env("WRELA_TESTING_RESOLVE_STALL", "60")
+        .output()
+        .expect("run wrela tool");
+    assert_eq!(out.status.code(), Some(71), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("didn't stop within"));
+    assert!(started.elapsed() < std::time::Duration::from_secs(20), "{:?}", started.elapsed());
     drop(held);
 }

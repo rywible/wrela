@@ -27,6 +27,14 @@ pub fn run(args: &[String]) -> ExitCode {
     {
         return test(std::path::Path::new(dir));
     }
+    if let [flag, go, program, rest @ ..] = args
+        && flag == "--launch"
+    {
+        let rest: Vec<std::ffi::OsString> = rest.iter().map(Into::into).collect();
+        let why = wrela_host::tool::launch(std::path::Path::new(go), program.as_ref(), &rest);
+        eprintln!("error: {why}");
+        return ExitCode::from(127);
+    }
     let mut grants = Grants { tool_runner: std::env::current_exe().ok(), ..Grants::default() };
     let mut timeout = None;
     let mut budget = BlobBudget::default();
@@ -123,6 +131,7 @@ pub fn run(args: &[String]) -> ExitCode {
     // A supervisor (a tool test's) that must be able to kill this tool's programs names a file
     // for their process groups.
     options.groups = std::env::var_os(wrela_host::tool::GROUPS_ENV).map(std::path::PathBuf::from);
+    options.testing = testing();
     let ended = wrela_host::tool::run(&ToolBuild::from_wasm(wasm.clone()), options);
     if !matches!(ended.end, wrela_host::tool::End::Exit(_)) {
         say(format!("error: {}", ended.end));
@@ -163,6 +172,7 @@ fn test(dir: &std::path::Path) -> ExitCode {
             options.entries = (spec.init.clone(), spec.resume.clone());
             options.fake_clock = Some((spec.utc, 0));
             options.groups = Some(spec.groups.clone());
+            options.testing = testing();
             let ended = wrela_host::tool::run(&ToolBuild::from_wasm(wasm), options);
             let end = match &ended.end {
                 wrela_host::tool::End::Timeout => {
@@ -185,6 +195,24 @@ fn test(dir: &std::path::Path) -> ExitCode {
     }
     // Ends the process here, so a worker still past its grace can't outlive it.
     std::process::exit(if ended.passed { 0 } else { 1 })
+}
+
+/// The host's settings that only the command's own tests change, from the environment: a pause
+/// between a program's start and its record (`WRELA_TESTING_SPAWN_PAUSE`) and a name lookup
+/// that stalls (`WRELA_TESTING_RESOLVE_STALL`), each in seconds.
+fn testing() -> wrela_host::tool::Testing {
+    let seconds = |name: &str| {
+        std::env::var(name)
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .and_then(|s| Duration::try_from_secs_f64(s).ok())
+            .unwrap_or(Duration::ZERO)
+    };
+    wrela_host::tool::Testing {
+        spawn_pause: seconds("WRELA_TESTING_SPAWN_PAUSE"),
+        resolve_stall: seconds("WRELA_TESTING_RESOLVE_STALL"),
+        ..wrela_host::tool::Testing::default()
+    }
 }
 
 /// Writes `text` to standard error from a thread of its own, waiting for it at most a second:
