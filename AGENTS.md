@@ -14,7 +14,7 @@ MIT-licensed language, compiler, engine and agent-native studio for browser game
 
 ## Context and layers
 
-- `docs/language.md`: current spec. Find headings with `rg -n '^#' docs/language.md`; read relevant sections.
+- `spec/language.md`: current spec. Find headings with `rg -n '^#' spec/language.md`; read relevant sections.
 - `docs/vision.md`: goals and architecture. Read "The lore" before story work; add no lore Ryan has not stated.
 - `docs/process.md`: public record of human/AI work and outside sources.
 - Prefer `tools/wrela context <item> <package>`, `tools/wrela query`, `tools/wrela doc` and `tools/wrela primer <area>` for Wrela. Fall back to `rg`; report tool gaps as studio findings.
@@ -43,6 +43,6 @@ The repo is splitting into `wrela-compiler` (hosts, language, spec, their checks
 
 ## Records
 
-- `AGENTS.md` is the sole repo instruction file. Add no prose docs beyond the spec (`docs/language.md`, `spec/`), `docs/vision.md` and `docs/process.md`: reference docs come from source through `wrela doc --export`; remove any temporary task notes before committing. Run checks locally. CI only builds and deploys releases from `main` (`.github/workflows/deploy.yml`); add no checks to it.
+- `AGENTS.md` is the sole repo instruction file. Add no prose docs beyond the spec (`spec/`), `docs/vision.md` and `docs/process.md`: reference docs come from source through `wrela doc --export`; remove any temporary task notes before committing. Run checks locally. CI only builds and deploys releases from `main` (`.github/workflows/deploy.yml`); add no checks to it.
 - Update `docs/process.md` for new references, outside assets/algorithms, AI tools/models or kinds of AI work: source, rights, what it teaches and how used. Keep style references outside the repo. Never trace/sample/recreate specific reference shots, characters or designs; never create assets with generative image/audio/music/voice/video models.
 - Use clear, concrete English, roughly 80% ASD-STE100.
