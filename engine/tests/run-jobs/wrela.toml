@@ -1,0 +1,8 @@
+# A job that traps does so at the tick that takes it (#43 AC6), through the tool host: the
+# package's tool test builds the package through `std::tool::toolchain` and drives its ticks
+# through `std::tool::drive`, with no helpers, one or seven, and with jobs slowed.
+[package]
+name = "run_jobs"
+
+[dependencies]
+engine = { workspace = true }
