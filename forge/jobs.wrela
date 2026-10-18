@@ -32,6 +32,10 @@ pub struct Worker: Clone {
     /// The checkout's writes and removals not answered yet.
     pub left: u32,
     pub failed: String,
+    /// When its checkout last held what `held` says (milliseconds since 1970), and the files a
+    /// check changed since, found on disk before the next checkout.
+    pub held_at: u64,
+    pub changed: SortedMap<String, bool>,
 }
 
 pub fn worker(name: str) -> Worker {
@@ -43,6 +47,8 @@ pub fn worker(name: str) -> Worker {
         target: SortedMap::new(),
         left: 0,
         failed: String::new(),
+        held_at: 0,
+        changed: SortedMap::new(),
     }
 }
 
@@ -83,10 +89,45 @@ pub fn manifest_of(b: take Vec<u8>) -> Option<Files> {
     Some(out)
 }
 
+/// A worker's manifest (`workers/<name>`): the byte 2, when its checkout held its files, then
+/// the files (`manifest`'s bytes) as a run.
+pub fn worker_manifest(files: Files, at: u64) -> Vec<u8> {
+    var e = Enc::new()
+    e.u8(2)
+    e.num(at)
+    e.run(manifest(files))
+    take e.bytes
+}
+
+/// A worker's manifest's files and time; one of the first version holds no time, so each of its
+/// files is checked as one a check may have changed.
+pub fn worker_manifest_of(b: take Vec<u8>) -> Option<(Files, u64)> {
+    if b.is_empty() || b[0] != 2 {
+        let files = manifest_of(take b)?
+        return Some((files, 0))
+    }
+    var d = Dec::new(take b)
+    let _ = d.u8().ok()?
+    let at = d.num().ok()?
+    let files = manifest_of(d.run().ok()?)?
+    d.end().ok()?
+    Some((files, at))
+}
+
+/// Whether a file on disk (`st`) is as the checkout last wrote it (`f`, by `at`): its kind and size
+/// the same, and changed no later. A check that changed it is caught here.
+pub fn as_written(st: host::Stat, f: File, at: u64) -> bool {
+    let kind = if f.exec { host::Kind::Program } else { host::Kind::File }
+    st.kind == kind && st.size == f.size && st.modified < at
+}
+
 pub fn manifest_read(s: mut Service, r: take Result<Vec<u8>, IoError>) {
     match take r {
-        Ok(b) => match manifest_of(take b) {
-            Some(files) => s.worker.held = take files,
+        Ok(b) => match worker_manifest_of(take b) {
+            Some((files, at)) => {
+                s.worker.held = take files
+                s.worker.held_at = at
+            },
             None => print(
                 "forge: the worker's manifest is malformed: its checkout is written whole",
             ),
@@ -201,15 +242,61 @@ pub fn pump(s: mut Service) {
     checkout(mut s, take files)
 }
 
-/// Makes the checkout hold `target`: writes what differs, removes what it no longer holds.
+/// Makes the checkout hold `target`: first each file it would keep is looked at on disk (a check
+/// may have changed it), then what differs is written, flushed, and what it no longer holds goes.
 fn checkout(s: mut Service, target: take Files) {
+    s.worker.changed = SortedMap::new()
+    var left = 0
+    let keys = target.keys()
+    let values = target.values()
+    for i in 0..keys.len() {
+        if s.worker.held.get(keys[i].clone()) == Some(values[i]) {
+            wait(mut s, host::stat(f"{WORK}/{keys[i]}".as_str()), For::Looked(keys[i].clone()))
+            left += 1
+        }
+    }
+    s.worker.target = take target
+    s.worker.left = left
+    if left == 0 {
+        write_checkout(mut s)
+    }
+}
+
+/// A file the checkout would keep, as it is on disk.
+pub fn looked(s: mut Service, path: take String, r: take Result<Vec<u8>, IoError>) {
+    let fine = match take r {
+        Ok(b) => match host::stat_of(take b) {
+            Some(st) => match s.worker.target.get(path.clone()) {
+                Some(f) => as_written(st, f, s.worker.held_at),
+                None => false,
+            },
+            None => false,
+        },
+        Err(_) => false,
+    }
+    if !fine {
+        let _ = s.worker.changed.insert(take path, value: true)
+    }
+    s.worker.left -= 1
+    if s.worker.left == 0 {
+        write_checkout(mut s)
+    }
+}
+
+fn write_checkout(s: mut Service) {
+    if !s.worker.changed.is_empty() {
+        print(
+            f"forge: {s.worker.changed.len()} files of the checkout changed since it was written; writing them again",
+        )
+    }
+    let target = s.worker.target.clone()
     var dirs: SortedMap<String, bool> = SortedMap::new()
     var writes: Vec<(String, File)> = Vec::new()
     let keys = target.keys()
     let values = target.values()
     for i in 0..keys.len() {
         let held = s.worker.held.get(keys[i].clone())
-        if held != Some(values[i]) {
+        if held != Some(values[i]) || s.worker.changed.contains(keys[i].clone()) {
             writes.push((keys[i].clone(), values[i]))
             let p = keys[i].as_str()
             var last = p.len()
@@ -235,36 +322,9 @@ fn checkout(s: mut Service, target: take Files) {
             s.worker.failed = f"the blob of {path} isn't in memory"
             continue
         }
+        // Flushed, so a manifest saved after it never names a file a crash lost.
         let at = f"{WORK}/{path}"
-        if content.len() <= 1040000 {
-            wait(mut s, host::write_unflushed(at.as_str(), content, exec: f.exec), For::Checkout)
-            left += 1
-        } else {
-            let part = f"{at}.part"
-            wait(
-                mut s,
-                host::write_unflushed(
-                    part.as_str(),
-                    bytes::slice(content, from: 0, to: 1040000),
-                    exec: f.exec,
-                ),
-                For::Checkout,
-            )
-            left += 1
-            var from = 1040000
-            while from < content.len() {
-                let to = min(from + 1040000, content.len())
-                wait(
-                    mut s,
-                    host::append(part.as_str(), bytes::slice(content, from, to)),
-                    For::Checkout,
-                )
-                left += 1
-                from = to
-            }
-            wait(mut s, host::rename(part.as_str(), at.as_str()), For::Checkout)
-            left += 1
-        }
+        left += service::write_exec_file(mut s, at.as_str(), content, f.exec, For::Checkout)
     }
     var gone: Vec<String> = Vec::new()
     for p in s.worker.held.keys() {
@@ -276,7 +336,6 @@ fn checkout(s: mut Service, target: take Files) {
         wait(mut s, host::remove(f"{WORK}/{p}".as_str(), all: false), For::Checkout)
         left += 1
     }
-    s.worker.target = take target
     s.worker.left = left
     if left == 0 {
         run(mut s)
@@ -295,11 +354,28 @@ pub fn checkout_done(s: mut Service, r: take Result<Vec<u8>, IoError>) {
     }
 }
 
-/// Runs the job, once the checkout holds its tree.
+/// Runs the job, once the checkout holds its tree. The manifest names the tree only if the
+/// checkout made it; after a failure, the next checkout writes every file again.
 fn run(s: mut Service) {
+    // The host's clock, not the call's: files are told apart from the checkout's own by it.
+    wait(mut s, host::now(), For::Clock)
+}
+
+/// The time the checkout was made: its manifest is saved, and the check runs.
+pub fn clocked(s: mut Service, r: take Result<Vec<u8>, IoError>) {
+    let now = match take r {
+        Ok(b) => host::millis_of(take b).unwrap_or(0),
+        Err(_) => 0,
+    }
     let job = s.worker.job
-    s.worker.held = s.worker.target.clone()
-    let m = manifest(s.worker.held)
+    if s.worker.failed.is_empty() && now > 0 {
+        s.worker.held = s.worker.target.clone()
+        s.worker.held_at = now
+    } else {
+        s.worker.held = SortedMap::new()
+        s.worker.held_at = 0
+    }
+    let m = worker_manifest(s.worker.held, s.worker.held_at)
     wait(mut s, host::write(manifest_path(s.worker.name.as_str()).as_str(), m), For::ManifestSaved)
     if !s.worker.failed.is_empty() {
         let why = s.worker.failed.clone()
@@ -596,7 +672,8 @@ fn a_manifest_reads_back() {
     let id = object::blob_id(bytes::of_str("x"))
     let _ = files.insert(String::from("tools/check.sh"), File { id, exec: true, size: 1 })
     let _ = files.insert(String::from("a/b"), File { id, exec: false, size: 1 })
-    let Some(back) = manifest_of(manifest(files)) else { panic("it reads") }
+    let Some((back, at)) = worker_manifest_of(worker_manifest(files, 77)) else { panic("it reads") }
+    assert(at == 77, "its time")
     assert(
         back.len() == 2 &&
             back.get(String::from("tools/check.sh")) == Some(File { id, exec: true, size: 1 }),
@@ -626,4 +703,29 @@ fn a_trees_files_are_read_from_memory_or_named_to_load() {
         Ok(f) => assert(f.len() == 1 && f.contains(String::from("d/a")), "d/a"),
         Err(_) => panic("everything is in memory"),
     }
+}
+
+@test
+fn a_file_a_check_changed_isnt_taken_as_written() {
+    let id = object::blob_id(bytes::of_str("x"))
+    let f = File { id, exec: false, size: 1 }
+    let st = host::Stat { kind: host::Kind::File, size: 1, modified: 100 }
+    assert(as_written(st, f, at: 101), "as written")
+    assert(!as_written(st, f, at: 100), "changed as it was written")
+    assert(
+        !as_written(host::Stat { kind: host::Kind::File, size: 1, modified: 101 }, f, at: 100),
+        "changed after",
+    )
+    assert(
+        !as_written(host::Stat { kind: host::Kind::File, size: 2, modified: 50 }, f, at: 100),
+        "another size",
+    )
+    assert(
+        !as_written(host::Stat { kind: host::Kind::Program, size: 1, modified: 50 }, f, at: 100),
+        "made executable",
+    )
+    assert(
+        !as_written(host::Stat { kind: host::Kind::Missing, size: 0, modified: 0 }, f, at: 100),
+        "gone",
+    )
 }

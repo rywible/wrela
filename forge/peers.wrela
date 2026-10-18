@@ -71,7 +71,7 @@ pub struct Peers: Clone {
     pub asking: bool,
     why: u32,
     /// A promotion's epoch, and whether each peer asked so far promised it.
-    fence_epoch: u64,
+    pub fence_epoch: u64,
     promised: Vec<bool>,
 }
 
@@ -210,6 +210,7 @@ fn promise_next(s: mut Service) {
     var j = Json::new()
     j.obj()
     j.knum("epoch", s.peers.fence_epoch)
+    j.kstr("machine", s.machine.as_str())
     j.kstr("primary", s.advertise.as_str())
     j.end_obj()
     calls::call_to(

@@ -59,6 +59,10 @@ pub enum For: Clone {
     Now,
     /// A directory made at the start.
     Made,
+    /// The store's lock, taken at the start.
+    Locked,
+    /// What the store promised as a replica (replicate.wrela), read at the start.
+    PromiseRead,
     ObjectDirs,
     LogStat,
     LogRead,
@@ -72,8 +76,13 @@ pub enum For: Clone {
     Peer(u32),
     /// What tailscale said of the caller on connection `conn`, at address `addr` (who.wrela).
     Whois(u32, String),
-    /// A write or a removal in a worker's checkout.
+    /// A write or a removal in a worker's checkout, and a look at a file it would keep.
     Checkout,
+    Looked(String),
+    /// The host's clock, as a checkout is made.
+    Clock,
+    /// A look at a file a worker on another machine keeps (remote.wrela).
+    RemoteLooked(String),
     ManifestRead,
     ManifestSaved,
     Ran(u64),
@@ -120,8 +129,11 @@ pub struct Conn {
     /// Whether its peer is known: its requests wait until it is, since who calls decides what
     /// they may do.
     pub known: bool,
-    /// Who calls, once known; none for a caller forge refuses (F28).
+    /// Who calls, once known; none for a caller forge refuses (F28). Until when tailscale's word
+    /// holds (milliseconds since 1970; 0 for the machine itself): its next request after that waits
+    /// for tailscale to say again.
     pub who: Option<who::Who>,
+    pub until: u64,
 }
 
 /// A commit waiting to be written.
@@ -345,6 +357,7 @@ pub fn step(s: mut Service, time: f32) {
                             peer: String::new(),
                             known: false,
                             who: None,
+                            until: 0,
                         },
                     )
                     wait(mut s, host::peer(conn), For::Peer(conn))
@@ -408,6 +421,21 @@ fn answered(s: mut Service, what: take For, r: take Result<Vec<u8>, IoError>) {
             begin(mut s)
         },
         For::Made => started_one(mut s, "making a directory", take r),
+        For::PromiseRead => {
+            // A promotion's epoch is above any this store promised another candidate.
+            if let Ok(b) = take r {
+                match replicate::promise_of(take b) {
+                    Some((epoch, _)) => s.peers.fence_epoch = epoch,
+                    None => return fatal(mut s, "data/promise isn't a promise forge kept"),
+                }
+            }
+            started_one(mut s, "reading the store's promise", Ok(Vec::new()))
+        },
+        For::Locked => started_one(
+            mut s,
+            "another forge holds this store (its lock, data/lock)",
+            take r,
+        ),
         For::ObjectDirs => {
             match take r {
                 Ok(b) => {
@@ -503,6 +531,9 @@ fn answered(s: mut Service, what: take For, r: take Result<Vec<u8>, IoError>) {
         },
         For::Whois(conn, addr) => whois_said(mut s, conn, addr.as_str(), take r),
         For::Checkout => jobs::checkout_done(mut s, take r),
+        For::Looked(path) => jobs::looked(mut s, take path, take r),
+        For::Clock => jobs::clocked(mut s, take r),
+        For::RemoteLooked(path) => remote::looked(mut s, take path, take r),
         For::ManifestRead => jobs::manifest_read(mut s, take r),
         For::ManifestSaved => jobs::manifest_saved(mut s, take r),
         For::Ran(job) => jobs::ran(mut s, job, take r),
@@ -607,7 +638,10 @@ fn begin(s: mut Service) {
     }
     s.advertise = flag(s.args, "--advertise").unwrap_or(s.listen.clone())
     s.phase = Phase::Disk
-    s.startup_left = 5
+    // One program holds a store at a time: its lock first, before anything of it is read.
+    s.startup_left = 7
+    wait(mut s, host::lock("data/lock"), For::Locked)
+    wait(mut s, host::read("data/promise"), For::PromiseRead)
     wait(mut s, host::mkdir("data/objects"), For::Made)
     wait(mut s, host::mkdir("data/workers"), For::Made)
     wait(mut s, host::list("data/objects"), For::ObjectDirs)
@@ -963,6 +997,27 @@ pub fn write_unflushed_file(s: mut Service, path: str, b: [u8], exec: bool, what
     n + 1
 }
 
+/// Writes `b` to the file at `path`, flushed, whole or not at all, in parts if it's large, and
+/// executable if `exec`: how many answers (each for `what`) it waits for.
+pub fn write_exec_file(s: mut Service, path: str, b: [u8], exec: bool, what: For) -> u32 {
+    if b.len() <= PART {
+        wait(mut s, host::write_file(path, b, exec), what.clone())
+        return 1
+    }
+    let part = f"{path}.part"
+    wait(mut s, host::write_file(part.as_str(), bytes::slice(b, 0, PART), exec), what.clone())
+    var n = 1
+    var at = PART
+    while at < b.len() {
+        let end = min(at + PART, b.len())
+        wait(mut s, host::append(part.as_str(), bytes::slice(b, at, end)), what.clone())
+        n += 1
+        at = end
+    }
+    wait(mut s, host::rename(part.as_str(), path), what.clone())
+    n + 1
+}
+
 /// Writes `b` to the file at `path`, flushed, whole or not at all, in parts if it's large: how
 /// many answers (each for `what`) it waits for.
 pub fn write_file(s: mut Service, path: str, b: [u8], what: For) -> u32 {
@@ -1169,6 +1224,12 @@ fn next_request(s: mut Service, conn: u32) {
     if !s.conns.contains(conn) || s.conns.at(conn).busy || !s.conns.at(conn).known {
         return
     }
+    let until = s.conns.at(conn).until
+    if until != 0 && now(s) >= until && s.conns.at(conn).reader.held() > 0 {
+        // What tailscale said of this caller is a minute old: it's asked again first.
+        s.conns.at_mut(conn).known = false
+        return identify(mut s, conn)
+    }
     if s.conns.at(conn).who.is_none() {
         // A caller forge can't name: refused, whatever it asks.
         s.conns.at_mut(conn).closing = true
@@ -1352,6 +1413,14 @@ pub fn fence_epoch(body: [u8]) -> u64 {
     }
 }
 
+/// The machine a fence's body names as its candidate; empty if it names none.
+pub fn fence_machine(body: [u8]) -> String {
+    match Doc::read(body) {
+        Ok(doc) => doc.field(doc.root, "machine").to_string(),
+        Err(_) => String::new(),
+    }
+}
+
 /// Whether a worker or a replica named `name` may be the caller's: the machine itself names its
 /// own as it likes; another names its for its node, `NODE` or `NODE/...`.
 pub fn names_its_own(ctx: Ctx, name: str) -> bool {
@@ -1476,7 +1545,12 @@ fn whois_said(s: mut Service, conn: u32, addr: str, r: take Result<Vec<u8>, IoEr
 }
 
 fn known_as(s: mut Service, conn: u32, w: take Option<who::Who>) {
+    let until = match w {
+        Some(x) => if x.local { 0 } else { now(s) + 60000 },
+        None => 0,
+    }
     s.conns.at_mut(conn).who = take w
+    s.conns.at_mut(conn).until = until
     s.conns.at_mut(conn).known = true
     next_request(mut s, conn)
 }

@@ -40,6 +40,7 @@ const STATTED: u32 = 7
 const APPENDED: u32 = 8
 const MADE: u32 = 9
 const MADE_DIR: u32 = 10
+const LOCKED: u32 = 11
 
 // Stages.
 const HEAD: u32 = 1
@@ -267,8 +268,9 @@ pub fn start(s: mut Service, restoring: bool) {
         }
     }
     if restoring {
-        // Into an empty store only.
-        s.backup.left = 1
+        // Into an empty store only, which no other program holds.
+        s.backup.left = 2
+        wait(mut s, host::lock("data/lock"), For::Backup(LOCKED))
         return wait(mut s, host::stat(LOG), For::Backup(STATTED))
     }
     get_head(mut s)
@@ -319,6 +321,12 @@ fn status_of(r: take Result<Vec<u8>, IoError>) -> Result<u32, String> {
 
 pub fn answered(s: mut Service, what: u32, r: take Result<Vec<u8>, IoError>) {
     s.backup.left -= 1
+    if what == LOCKED {
+        if r.is_err() {
+            return service::fatal(mut s, "another forge holds this store (its lock, data/lock)")
+        }
+        return
+    }
     if what == STATTED {
         if let Ok(b) = take r {
             if let Some(st) = host::stat_of(take b) {

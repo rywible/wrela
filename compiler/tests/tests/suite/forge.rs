@@ -334,8 +334,14 @@ fn a_replica_holds_each_landing_before_it_is_answered_and_serves_once_promoted()
     // A landing is answered only once one replica holds it.
     let service = run_forge(build, data, work, &["serve", "--listen", &listen, "--machine", "test", "--acks", "1"]);
     ready(port);
-    let replica =
-        run_forge(build, rdata, rwork, &["replica", "--server", &listen, "--machine", "r1"]);
+    let rport = free_port();
+    let rlisten = format!("127.0.0.1:{rport}");
+    let replica = run_forge(
+        build,
+        rdata,
+        rwork,
+        &["replica", "--server", &listen, "--machine", "r1", "--listen", &rlisten],
+    );
     http(port, "POST", "/api/import", &serde_json::json!({"git": repo, "ref": "main"}).to_string());
     wait_until("the import", || call(port, "log", serde_json::json!({}))["main"] == 2);
     let change = call(port, "open", serde_json::json!({"intent": "Kept twice"}))["change"]
@@ -364,7 +370,8 @@ fn a_replica_holds_each_landing_before_it_is_answered_and_serves_once_promoted()
     // The service stops; the replica, promoted, is the service as of its log.
     assert_eq!(http(port, "POST", "/api/stop", "").0, 200);
     assert_eq!(service.join().expect("the service's thread"), 0);
-    drop(replica);
+    // The replica holds its store until it stops: only then is the store another's to serve.
+    stop(rport, replica);
     let port2 = free_port();
     let listen2 = format!("127.0.0.1:{port2}");
     let promoted = run_forge(build, rdata, rwork, &["serve", "--promote", "--listen", &listen2, "--machine", "promoted"]);
@@ -760,6 +767,54 @@ fn a_rooms_watchers_see_what_happens_in_it_as_it_happens() {
     std::thread::sleep(Duration::from_millis(300));
     call(port, "write", serde_json::json!({"change": c1, "path": "cli.txt", "content": "c\n"}));
     assert_eq!(watcher.join().expect("the command's thread"), 0, "the command saw the write");
+    stop(port, service);
+}
+
+#[test]
+fn a_file_a_check_changed_is_written_again_before_the_next_check() {
+    let scratch = Scratch::new("poison");
+    let dir = |d: &str| {
+        let p = scratch.0.join(d);
+        std::fs::create_dir_all(&p).expect("a directory");
+        p
+    };
+    let (repo, build, data, work) = (dir("repo"), dir("build"), dir("data"), dir("work"));
+    repository(&repo);
+    // A check that spoils README, which every check reads.
+    let check = repo.join("tools/check.sh");
+    std::fs::write(
+        &check,
+        "#!/bin/sh\ntest \"$(cat README)\" = \"forge test\" || exit 1\nif [ \"$1\" = spoil ]; then echo spoiled > README; fi\n",
+    )
+    .expect("check.sh");
+    git(&repo, &["commit", "-qam", "A check that spoils README"]);
+    wrela_tests::must_build(&repo_root().join("forge"), &build);
+    let port = free_port();
+    let service = start(&build, &data, &work, port);
+    ready(port);
+    http(port, "POST", "/api/import", &serde_json::json!({"git": repo, "ref": "main"}).to_string());
+    wait_until("the import", || call(port, "log", serde_json::json!({}))["main"] == 3);
+    let change = call(port, "open", serde_json::json!({"intent": "Checked twice"}))["change"]
+        .as_str()
+        .expect("a change")
+        .to_string();
+    call(port, "write", serde_json::json!({"change": change, "path": "x.txt", "content": "x\n"}));
+    let check = |name: &str| {
+        let job = call(port, "check", serde_json::json!({"change": change, "check": name}))["job"]
+            .as_str()
+            .expect("a job")
+            .to_string();
+        wait_until("the check", || {
+            let st = job_state(port, &job)["state"].clone();
+            st == "passed" || st == "failed"
+        });
+        job_state(port, &job)["state"].clone()
+    };
+    assert_eq!(check("spoil"), "passed", "it spoils README after it reads it");
+    assert_eq!(std::fs::read_to_string(work.join("README")).expect("README"), "spoiled\n");
+    // The next check of the same tree sees README as the tree holds it, not as the last check left it.
+    assert_eq!(check("rustfmt"), "passed");
+    assert_eq!(std::fs::read_to_string(work.join("README")).expect("README"), "forge test\n");
     stop(port, service);
 }
 

@@ -268,6 +268,9 @@ pub struct Replica: Clone {
     /// follows no service older than that (F26).
     following_epoch: u64,
     promised: u64,
+    promised_to: String,
+    /// A promise being kept on disk before it's given: its connection, epoch and candidate.
+    promising: Option<(u32, u64, String)>,
     /// How many times running the service it follows refused its log: twice is a log that
     /// isn't the service's.
     refused: u32,
@@ -296,6 +299,8 @@ pub fn idle() -> Replica {
         following: String::new(),
         following_epoch: 0,
         promised: 0,
+        promised_to: String::new(),
+        promising: None,
         refused: 0,
         records: Vec::new(),
         ends: Vec::new(),
@@ -314,6 +319,29 @@ pub const WOKEN: u32 = 4
 pub const MADE: u32 = 5
 pub const CUT: u32 = 6
 pub const LISTENING: u32 = 7
+pub const LOCKED: u32 = 8
+pub const PROMISE_READ: u32 = 9
+pub const PROMISED: u32 = 10
+
+/// `data/promise`'s bytes: the byte 1, the epoch promised and the candidate's machine.
+pub fn promise(epoch: u64, candidate: str) -> Vec<u8> {
+    var e = codec::Enc::new()
+    e.u8(1)
+    e.num(epoch)
+    e.str(candidate)
+    take e.bytes
+}
+
+pub fn promise_of(b: take Vec<u8>) -> Option<(u64, String)> {
+    var d = codec::Dec::new(take b)
+    if d.u8().ok() != Some(1) {
+        return None
+    }
+    let epoch = d.num().ok()?
+    let candidate = d.string().ok()?
+    d.end().ok()?
+    Some((epoch, candidate))
+}
 
 /// `forge replica --servers A,B,... --machine NAME [--listen ADDR]` (or `--server A`).
 pub fn start(s: mut Service) {
@@ -343,6 +371,8 @@ pub fn start(s: mut Service) {
     s.replica.name = take name
     s.replica.servers = take servers
     s.replica.waiting = true
+    wait(mut s, host::lock("data/lock"), For::Replica(LOCKED))
+    wait(mut s, host::read("data/promise"), For::Replica(PROMISE_READ))
     wait(mut s, host::mkdir("data/objects"), For::Replica(MADE))
     wait(mut s, host::read(LOG), For::Replica(READ))
     if !listen.is_empty() {
@@ -481,28 +511,45 @@ pub fn route(s: mut Service, conn: u32, req: take http::Request) {
                 bytes::of_str("only a lander or the fleet fences\n"),
             )
         }
-        // A promise: no service older than `epoch` is followed again, so none can count on this
-        // replica to confirm anything (F26).
+        // A promise to one candidate (F26): no service older than `epoch` is followed again, so
+        // none can count on this replica to confirm anything, and no other candidate gets this
+        // epoch. It is kept on disk before it is given, so a restart doesn't give it twice.
         let epoch = service::fence_epoch(req.body)
-        let promises = epoch > s.replica.epoch && epoch >= s.replica.promised
-        if promises && epoch > s.replica.promised {
-            print(f"forge: promised epoch {epoch}; following no older service")
-            s.replica.promised = epoch
-            if s.replica.stage == FETCH {
-                // Records fetched but not kept: dropped, as the older service never had them
-                // confirmed by this replica.
-                s.replica.records = Vec::new()
-                s.replica.ends = Vec::new()
-                s.replica.want = Vec::new()
-                find(mut s)
-            }
+        let candidate = service::fence_machine(req.body)
+        let p = s.replica.promised
+        let mine = candidate.as_str() == s.replica.promised_to.as_str()
+        if epoch <= s.replica.epoch || epoch < p || (epoch == p && !mine) || candidate.is_empty() {
+            return service::reply(
+                mut s,
+                conn,
+                200,
+                "application/json",
+                bytes::of_str("{\"promised\":false}"),
+            )
         }
-        return service::reply(
+        if epoch == p {
+            return service::reply(
+                mut s,
+                conn,
+                200,
+                "application/json",
+                bytes::of_str("{\"promised\":true}"),
+            )
+        }
+        if s.replica.promising.is_some() {
+            return service::reply(
+                mut s,
+                conn,
+                503,
+                "text/plain",
+                bytes::of_str("another promise is being kept\n"),
+            )
+        }
+        s.replica.promising = Some((conn, epoch, candidate.clone()))
+        return wait(
             mut s,
-            conn,
-            200,
-            "application/json",
-            bytes::of_str(if promises { "{\"promised\":true}" } else { "{\"promised\":false}" }),
+            host::write("data/promise", promise(epoch, candidate.as_str())),
+            For::Replica(PROMISED),
         )
     }
     service::reply(
@@ -517,6 +564,51 @@ pub fn route(s: mut Service, conn: u32, req: take http::Request) {
 pub fn answered(s: mut Service, what: u32, r: take Result<Vec<u8>, IoError>) {
     if what == MADE {
         return
+    }
+    if what == LOCKED {
+        if r.is_err() {
+            return service::fatal(mut s, "another forge holds this store (its lock, data/lock)")
+        }
+        return
+    }
+    if what == PROMISE_READ {
+        if let Ok(b) = take r {
+            match promise_of(take b) {
+                Some((epoch, candidate)) => {
+                    s.replica.promised = epoch
+                    s.replica.promised_to = take candidate
+                },
+                None => return service::fatal(mut s, "data/promise isn't a promise forge kept"),
+            }
+        }
+        return
+    }
+    if what == PROMISED {
+        let Some((conn, epoch, candidate)) = replace(mut s.replica.promising, None) else { return }
+        if let Err(e) = r {
+            return service::fatal(
+                mut s,
+                f"the replica can't keep its promise: {e.message()}".as_str(),
+            )
+        }
+        print(f"forge: promised epoch {epoch} to {candidate}; following no older service")
+        s.replica.promised = epoch
+        s.replica.promised_to = take candidate
+        if s.replica.stage == FETCH {
+            // Records fetched but not kept: dropped, as the older service never had them
+            // confirmed by this replica.
+            s.replica.records = Vec::new()
+            s.replica.ends = Vec::new()
+            s.replica.want = Vec::new()
+            find(mut s)
+        }
+        return service::reply(
+            mut s,
+            conn,
+            200,
+            "application/json",
+            bytes::of_str("{\"promised\":true}"),
+        )
     }
     if what == LISTENING {
         if let Err(e) = r {

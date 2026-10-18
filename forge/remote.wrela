@@ -7,7 +7,7 @@
 // service keeps the evidence. A worker with nothing to do asks again every two seconds.
 
 use blake3::Id
-use jobs::{WORK, manifest, manifest_of, manifest_path}
+use jobs::{WORK, manifest_path, worker_manifest, worker_manifest_of}
 use object::{File, Files}
 use out::Json
 use platform::service as host
@@ -28,12 +28,17 @@ pub const WROTE: u32 = 2
 pub const RAN: u32 = 3
 pub const WOKEN: u32 = 4
 pub const DONE_WITH: u32 = 5
+pub const CLOCKED: u32 = 6
 
 pub struct Remote: Clone {
     name: String,
     /// The checks to run before it stops; 0 for no end.
     jobs_left: u64,
     held: Files,
+    /// When its checkout last held `held` (by the host's clock), and how many files it kept are
+    /// still being looked at on disk.
+    held_at: u64,
+    looking: u32,
     known: bool,
     stage: u32,
     /// Whether a call or a host request the worker waits on is out.
@@ -58,6 +63,8 @@ pub fn idle() -> Remote {
         name: String::new(),
         jobs_left: 0,
         held: SortedMap::new(),
+        held_at: 0,
+        looking: 0,
         known: false,
         stage: IDLE,
         waiting: false,
@@ -98,8 +105,9 @@ pub fn start(s: mut Service) {
 pub fn answered(s: mut Service, what: u32, r: take Result<Vec<u8>, IoError>) {
     if what == MANIFEST {
         if let Ok(b) = take r {
-            if let Some(files) = manifest_of(take b) {
+            if let Some((files, at)) = worker_manifest_of(take b) {
                 s.remote.held = take files
+                s.remote.held_at = at
             }
         }
         s.remote.known = true
@@ -146,6 +154,8 @@ pub fn answered(s: mut Service, what: u32, r: take Result<Vec<u8>, IoError>) {
         s.remote.waiting = false
     } else if what == WOKEN {
         s.remote.waiting = false
+    } else if what == CLOCKED {
+        clocked(mut s, take r)
     }
 }
 
@@ -202,7 +212,30 @@ pub fn pump(s: mut Service) {
     }
 }
 
-/// The checkout holds the job's files: what it no longer holds goes, and the check runs.
+/// A file the checkout keeps, as it is on disk: fetched again if a check changed it.
+pub fn looked(s: mut Service, path: take String, r: take Result<Vec<u8>, IoError>) {
+    let f = s.remote.target.get(path.clone())
+    let fine = match take r {
+        Ok(b) => match (host::stat_of(take b), f) {
+            (Some(st), Some(x)) => jobs::as_written(st, x, s.remote.held_at),
+            _ => false,
+        },
+        Err(_) => false,
+    }
+    if !fine {
+        if let Some(x) = f {
+            s.remote.fetch.push((take path, x))
+        }
+    }
+    s.remote.looking -= 1
+    if s.remote.looking == 0 {
+        print(f"forge: j{s.remote.job} ({s.remote.check}): {s.remote.fetch.len()} files to fetch")
+        s.remote.waiting = false
+    }
+}
+
+/// The checkout holds the job's files: what it no longer holds goes, the host's clock says when,
+/// and then the manifest is saved and the check runs.
 fn finish_checkout(s: mut Service) {
     var gone: Vec<String> = Vec::new()
     for p in s.remote.held.keys() {
@@ -213,14 +246,33 @@ fn finish_checkout(s: mut Service) {
     for p in gone {
         wait(mut s, host::remove(f"{WORK}/{p}".as_str(), all: false), For::Remote(DONE_WITH))
     }
-    s.remote.held = s.remote.target.clone()
-    wait(
-        mut s,
-        host::write(manifest_path(s.remote.name.as_str()).as_str(), manifest(s.remote.held)),
-        For::Remote(DONE_WITH),
-    )
     s.remote.stage = RUNNING
     s.remote.waiting = true
+    wait(mut s, host::now(), For::Remote(CLOCKED))
+}
+
+/// The checkout's time: the manifest names its files only if it made them all; after a failure
+/// the next checkout writes every file again.
+fn clocked(s: mut Service, r: take Result<Vec<u8>, IoError>) {
+    let now = match take r {
+        Ok(b) => host::millis_of(take b).unwrap_or(0),
+        Err(_) => 0,
+    }
+    if s.remote.status == 0 && now > 0 {
+        s.remote.held = s.remote.target.clone()
+        s.remote.held_at = now
+    } else {
+        s.remote.held = SortedMap::new()
+        s.remote.held_at = 0
+    }
+    wait(
+        mut s,
+        host::write(
+            manifest_path(s.remote.name.as_str()).as_str(),
+            worker_manifest(s.remote.held, s.remote.held_at),
+        ),
+        For::Remote(DONE_WITH),
+    )
     if s.remote.status != 0 {
         // The checkout failed: that is what the check says.
         s.remote.stage = SENDING
@@ -271,20 +323,36 @@ pub fn got(s: mut Service, purpose: u32, status: u32, body: take Vec<u8>) {
             }
         }
         var fetch: Vec<(String, File)> = Vec::new()
+        var looking = 0
         let keys = target.keys()
         let values = target.values()
         for i in 0..keys.len() {
             if s.remote.held.get(keys[i].clone()) != Some(values[i]) {
                 fetch.push((keys[i].clone(), values[i]))
+            } else {
+                // A file it keeps is looked at on disk first: a check may have changed it.
+                wait(
+                    mut s,
+                    host::stat(f"{WORK}/{keys[i]}".as_str()),
+                    For::RemoteLooked(keys[i].clone()),
+                )
+                looking += 1
             }
         }
-        print(f"forge: j{s.remote.job} ({s.remote.check}): {fetch.len()} files to fetch")
         s.remote.target = take target
         s.remote.fetch = take fetch
         s.remote.at = 0
         s.remote.status = 0
         s.remote.output = Vec::new()
+        s.remote.looking = looking
         s.remote.stage = FETCHING
+        if looking > 0 {
+            s.remote.waiting = true
+        } else {
+            print(
+                f"forge: j{s.remote.job} ({s.remote.check}): {s.remote.fetch.len()} files to fetch",
+            )
+        }
     } else if purpose == FETCHING {
         let (path, f) = s.remote.fetch[s.remote.at].clone()
         if status != 200 || object::blob_id(body) != f.id {
@@ -307,12 +375,12 @@ pub fn got(s: mut Service, purpose: u32, status: u32, body: take Vec<u8>) {
             )
         }
         s.remote.waiting = true
-        s.remote.parts = service::write_unflushed_file(
+        s.remote.parts = service::write_exec_file(
             mut s,
             f"{WORK}/{p}".as_str(),
             body,
-            exec: f.exec,
-            what: For::Remote(WROTE),
+            f.exec,
+            For::Remote(WROTE),
         )
     } else if purpose == SENDING {
         if status != 200 {

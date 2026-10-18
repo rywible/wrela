@@ -17,6 +17,7 @@
 //! | `fs/mkdir` | path | nothing: it and its parents exist |
 //! | `fs/remove` | path, `u8` 1 to remove a directory and what it holds | nothing |
 //! | `fs/rename` | path, path, in one root | nothing: the rename is on disk |
+//! | `fs/lock` | path | nothing: the service holds the file's lock, alone, until it ends |
 //!
 //! "On disk" means flushed (`fsync`, a full flush on macOS) before the answer: a write goes to a
 //! file beside its target, which is flushed and renamed into place, and the directory is flushed;
@@ -39,6 +40,9 @@ use std::time::UNIX_EPOCH;
 #[derive(Clone, Debug, Default)]
 pub struct Roots {
     roots: BTreeMap<String, PathBuf>,
+    /// The files whose locks the service holds (`fs/lock`): released when the roots are dropped,
+    /// as the service ends.
+    locks: std::sync::Arc<std::sync::Mutex<Vec<File>>>,
 }
 
 /// Whether `name` names a root: 1 to 64 of a-z, 0-9, `-` and `_`.
@@ -115,9 +119,15 @@ pub fn write_atomically(path: &Path, bytes: &[u8], exec: bool) -> Result<(), Str
 
 /// Replaces `path`'s bytes with `bytes`, as [`write_atomically`] does; flushed only if `flush`.
 fn write_file(path: &Path, bytes: &[u8], exec: bool, flush: bool) -> Result<(), String> {
-    let part = beside(path);
+    write_via(path, &beside(path), bytes, exec, flush)
+}
+
+/// [`write_file`], through the file `part` beside it, which must not be there yet.
+fn write_via(path: &Path, part: &Path, bytes: &[u8], exec: bool, flush: bool) -> Result<(), String> {
+    let part = part.to_path_buf();
     let written = (|| {
-        let mut f = File::create(&part)?;
+        // A new file, never one already there: not a link someone put in its place.
+        let mut f = OpenOptions::new().write(true).create_new(true).open(&part)?;
         f.write_all(bytes)?;
         #[cfg(unix)]
         {
@@ -257,6 +267,25 @@ pub fn serve(roots: &Roots, service: &str, body: &[u8]) -> Option<Result<Vec<u8>
                 }
                 Ok(Vec::new())
             }
+            "lock" => {
+                b.end()?;
+                let f = OpenOptions::new()
+                    .create(true)
+                    .truncate(false)
+                    .write(true)
+                    .open(&path)
+                    .map_err(|e| io(&path, e))?;
+                match f.try_lock() {
+                    Ok(()) => {
+                        roots.locks.lock().expect("the locks' lock").push(f);
+                        Ok(Vec::new())
+                    }
+                    Err(std::fs::TryLockError::WouldBlock) => {
+                        Err(format!("{}: another program holds its lock", path.display()))
+                    }
+                    Err(std::fs::TryLockError::Error(e)) => Err(io(&path, e)),
+                }
+            }
             _ => Err(format!("`{service}` isn't a files service")),
         }
     })())
@@ -367,6 +396,29 @@ mod tests {
             std::os::unix::fs::symlink("/", dir.path().join("out")).expect("a link");
             assert!(r.resolve("data/out/etc").is_err());
         }
+    }
+
+    #[test]
+    fn a_lock_is_held_by_one_service_at_a_time() {
+        let (r, _dir) = roots();
+        call(&r, "fs/lock", Out::default().str("data/lock")).expect("the first holds it");
+        let again = Roots { roots: r.roots.clone(), locks: Default::default() };
+        let refused = call(&again, "fs/lock", Out::default().str("data/lock"));
+        assert!(refused.is_err_and(|e| e.contains("holds its lock")), "a second is refused");
+        drop(r);
+        call(&again, "fs/lock", Out::default().str("data/lock")).expect("free once the first ends");
+    }
+
+    #[test]
+    fn a_write_never_follows_a_link_put_where_its_file_beside_goes() {
+        let (_r, dir) = roots();
+        let outside = dir.path().join("outside");
+        std::fs::write(&outside, b"keep").expect("a file outside");
+        let part = dir.path().join(".f.part");
+        std::os::unix::fs::symlink(&outside, &part).expect("a link");
+        let target = dir.path().join("f");
+        assert!(super::write_via(&target, &part, b"new", false, true).is_err(), "refused");
+        assert_eq!(std::fs::read(&outside).expect("still there"), b"keep");
     }
 
     #[test]

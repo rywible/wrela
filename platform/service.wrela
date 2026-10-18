@@ -259,6 +259,12 @@ pub fn remove(path: str, all: bool) -> Pending<u8> {
 }
 
 /// Renames `from` to `to`, in one root, on disk: `to` is replaced whole.
+/// Takes the lock of the file at `path`, created if it isn't there, for as long as the service
+/// runs: an error if another program holds it.
+pub fn lock(path: str) -> Pending<u8> {
+    path_request("fs/lock", path)
+}
+
 pub fn rename(from: str, to: str) -> Pending<u8> {
     var o = Out::new()
     o.str(from)
