@@ -25,8 +25,9 @@ use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
-/// Flattens a GPU module (see the module docs).
-pub fn flatten_gpu(m: &mut Module) -> Result<()> {
+/// Flattens a GPU module (see the module docs). `checked`: a debug build's bounds checks
+/// ([`crate::bounds`]) are added after, so no branch that indexes is made into selects.
+pub fn flatten_gpu(m: &mut Module, checked: bool) -> Result<()> {
     let keep = outlined(m);
     inline_all(m, &keep)?;
     // The calls left are to the kept functions, which take values: only a store writes a
@@ -45,7 +46,7 @@ pub fn flatten_gpu(m: &mut Module) -> Result<()> {
         collapse_rebuilds(&mut f);
         cse(&mut f);
         dce(&mut f);
-        if_convert(m, &mut f);
+        if_convert(m, &mut f, checked);
         cse(&mut f);
         dce(&mut f);
         m.functions[i] = f;
@@ -71,12 +72,13 @@ const MERGE_SIZE: usize = 3 * SELECT_SIZE;
 /// one whose sides compute the same expressions of different operands (`smin`'s two sides, and
 /// their derived gradients) computes them once, of selected operands. After every derivation,
 /// so an interval still sees the branch (GPU only: computing a side that isn't taken can't trap
-/// there).
-fn if_convert(m: &Module, f: &mut Function) {
+/// there). With `checked`, a side that indexes stays a branch: as selects, a guarded index
+/// (`i > 0 && a[i - 1] > 0.0`) would be computed, and checked, where the guard fails.
+fn if_convert(m: &Module, f: &mut Function, checked: bool) {
     let mut body = std::mem::take(&mut f.body);
     // The innermost first: a converted `if` makes the one around it straight too.
     visit::expand(&mut body, &mut |s, b| match s {
-        Stmt::If { cond, then, else_ } => match as_selects(m, f, cond, &then, &else_) {
+        Stmt::If { cond, then, else_ } => match as_selects(m, f, cond, &then, &else_, checked) {
             Some(straight) => b.extend(straight),
             None => b.push(Stmt::If { cond, then, else_ }),
         },
@@ -94,6 +96,7 @@ fn as_selects(
     cond: ValueId,
     then: &Block,
     else_: &Block,
+    checked: bool,
 ) -> Option<Block> {
     // A small branch's size counts its sides' `At`s too, though they compute nothing: the
     // GPU ratios were measured with that count. A larger one's counts what its sides compute.
@@ -115,7 +118,7 @@ fn as_selects(
                     stored.push(l);
                 }
             }
-            Stmt::Let(_, e) if select_safe(m, e) => {}
+            Stmt::Let(_, e) if select_safe(m, e, checked) => {}
             Stmt::At(_) => {}
             _ => return None,
         }
@@ -366,10 +369,13 @@ fn live(code: Block) -> Block {
 
 /// Whether an expression can be computed where its branch isn't taken: it does nothing but
 /// compute, reads only locals and uniforms, and isn't a derivative (which wants the uniform
-/// control flow it's in).
-fn select_safe(m: &Module, e: &Expr) -> bool {
+/// control flow it's in); with `checked`, it indexes nothing.
+fn select_safe(m: &Module, e: &Expr, checked: bool) -> bool {
     match e {
         Expr::Builtin(Builtin::Dpdx | Builtin::Dpdy | Builtin::Fwidth, _) => false,
+        // What the bounds checks check: only where the program computes it.
+        Expr::Load(p) if checked && p.has_index() => false,
+        Expr::ExtractDyn(..) if checked => false,
         Expr::Load(p) => match p.root {
             PlaceRoot::Local(_) => true,
             PlaceRoot::Resource(r) => {
@@ -2769,7 +2775,7 @@ mod tests {
             Stmt::Let(out, Expr::Load(Place::local(w))),
             Stmt::Return(Some(out)),
         ];
-        if_convert(&m, &mut f);
+        if_convert(&m, &mut f, false);
         let ifs = f.body.iter().filter(|st| matches!(st, Stmt::If { .. })).count();
         assert_eq!(ifs, 1, "the guard stays a branch, the other doesn't: {:?}", f.body);
         let mut exprs: HashMap<ValueId, Expr> = HashMap::new();
@@ -2802,6 +2808,46 @@ mod tests {
         );
         let muls = exprs.values().filter(|e| matches!(e, Expr::Binary(BinOp::Mul, ..))).count();
         assert_eq!(muls, STEPS + 1, "each product once: {:?}", f.body);
+    }
+
+    /// `if i > 0 { v = a[i - 1] }` becomes a select, which reads `a[i - 1]` where `i` is 0: WGSL
+    /// gives an element in range there. Where a debug build's bounds checks follow, the check
+    /// would fail where the program reads nothing, so the branch stays.
+    #[test]
+    fn a_guarded_index_stays_a_branch_where_bounds_are_checked() {
+        for checked in [false, true] {
+            let mut m = Module::default();
+            let (f32t, u32t, boolt) = (m.types.f32(), m.types.u32(), m.types.bool());
+            let table = m.types.intern(TypeDef::Array(f32t, 4));
+            let param = Param { name: "i".into(), ty: u32t, by_ref: false, mutable: false };
+            let mut f = Function::new("f", vec![param], Some(f32t));
+            let (a, v) = (f.new_local("a", table), f.new_local("v", f32t));
+            let [i, zero, one, prev] = [(); 4].map(|_| f.new_value(u32t));
+            let (c, read, out, nothing) =
+                (f.new_value(boolt), f.new_value(f32t), f.new_value(f32t), f.new_value(f32t));
+            f.body = vec![
+                Stmt::Let(i, Expr::Param(0)),
+                Stmt::Let(zero, Expr::Const(Const::U32(0))),
+                Stmt::Let(one, Expr::Const(Const::U32(1))),
+                Stmt::Let(nothing, Expr::Const(Const::F32(0.0))),
+                Stmt::Store(Place::local(v), nothing),
+                Stmt::Let(c, Expr::Binary(BinOp::Gt, i, zero)),
+                Stmt::If {
+                    cond: c,
+                    then: vec![
+                        Stmt::Let(prev, Expr::Binary(BinOp::WrappingSub, i, one)),
+                        Stmt::Let(read, Expr::Load(Place::local(a).with(Proj::Index(prev)))),
+                        Stmt::Store(Place::local(v), read),
+                    ],
+                    else_: Vec::new(),
+                },
+                Stmt::Let(out, Expr::Load(Place::local(v))),
+                Stmt::Return(Some(out)),
+            ];
+            if_convert(&m, &mut f, checked);
+            let ifs = f.body.iter().filter(|st| matches!(st, Stmt::If { .. })).count();
+            assert_eq!(ifs, usize::from(checked), "checked {checked}: {:?}", f.body);
+        }
     }
 
     /// A function given the same large uniform data from two calls is copied once with that
