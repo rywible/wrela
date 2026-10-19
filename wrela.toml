@@ -11,6 +11,7 @@ members = [
     "engine/tests/run-jobs",
     "examples/*",
     "games/*",
+    "games/last-green/open-questions",
     "games/last-green/session",
     "games/last-green/stair",
     "games/last-green/test-floor",
@@ -25,11 +26,10 @@ members = [
     "ui/brand",
     "ui/tests/*",
 ]
-# Members whose tests the whole suite doesn't run yet, as the gate hasn't: the floor's own tests
-# bake its whole scene for many minutes, and seven of them fail. The gate runs bounded copies of
-# its modules (compiler/tests last_green.rs) until the Wrela side's tests move into Wrela, which
-# removes this list. `wrela suite wrela::games/last-green::` still runs them.
-untested = ["games/last-green"]
+# Members whose tests the whole suite doesn't run: the floor's tests that fail on a question of
+# what the game should do, until it's answered (its wrela.toml). `wrela suite
+# wrela::games/last-green/open-questions::` still runs them.
+untested = ["games/last-green/open-questions"]
 # The files the workspace may hold: wrela sources and manifests, assets with their licences, the
 # prose, and the one CI file. Each of the `wrela` repository's files is one of these.
 allow = [
