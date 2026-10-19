@@ -133,6 +133,52 @@ fn main(given: take Vec<String>) -> u32 {
     if what.as_str() == "rejected" {
         script = Script::new().wait(Until::done(), timeout: 2.0)
     }
+    if what.as_str() == "busy" {
+        // Three more browsers, and a wait of 600 s on each of the four: every long worker.
+        var all: Vec<browser::Browser> = Vec::new()
+        all.push(b)
+        for _ in 0..3 {
+            var o2 = browser::open(url.as_str(), width: 320, height: 240)
+            var og2 = o2.poll()
+            while og2.is_none() {
+                yield
+                og2 = o2.poll()
+            }
+            let Some(op2) = take og2 else { return 90 }
+            let Ok(b2) = browser::read_opened(take op2) else { return 91 }
+            all.push(b2)
+        }
+        var waits: Vec<std::io::Pending<u8>> = Vec::new()
+        for x in all {
+            waits.push(browser::run(x, Script::new().wait(Until::done(), timeout: 600.0), timeout: 600.0))
+        }
+        var t = time::after(1.0)
+        while t.poll().is_none() { yield }
+        // The first is closed, its close queued behind the four waits.
+        var c = browser::close(b)
+        var cg = c.poll()
+        var rg = waits[0].poll()
+        while cg.is_none() || rg.is_none() {
+            yield
+            if cg.is_none() {
+                cg = c.poll()
+            }
+            if rg.is_none() {
+                rg = waits[0].poll()
+            }
+        }
+        let Some(rp) = take rg else { return 90 }
+        match answer(take rp) {
+            Ok(_) => print("run: done"),
+            Err(e) => print(f"run: {e.message()}"),
+        }
+        let Some(cp) = take cg else { return 90 }
+        match answer(take cp) {
+            Ok(_) => print("close: closed"),
+            Err(e) => print(f"close: {e.message()}"),
+        }
+        return 0
+    }
     if what.as_str() == "gather" {
         script = Script::new().wait(Until::title(Match::starts("gathered")))
     }
@@ -189,7 +235,7 @@ fn main(given: take Vec<String>) -> u32 {
             .click(Element::css("button").with_text("Copy"))
             .wait(Until::clipboard(Match::is("copied!")))
     }
-    if what.as_str() == "done" || what.as_str() == "delayed" {
+    if what.as_str() == "done" || what.as_str() == "delayed" || what.as_str() == "huge" {
         script = Script::new().wait(Until::done())
     }
     if what.as_str() == "never" {
@@ -219,6 +265,21 @@ fn main(given: take Vec<String>) -> u32 {
             return 0
         }
         if what.as_str() == "two" {
+            return 0
+        }
+        if what.as_str() == "huge" {
+            var d = browser::results(b)
+            var dg = d.poll()
+            while dg.is_none() {
+                yield
+                dg = d.poll()
+            }
+            let Some(dp) = take dg else { return 90 }
+            match browser::read_attribute(take dp) {
+                Ok(Some(t)) => print(f"results: {t.as_str()}"),
+                Ok(None) => print("results: none"),
+                Err(e) => print(f"results: {e.message()}"),
+            }
             return 0
         }
         if what.as_str() != "never" {
@@ -448,6 +509,12 @@ const DONE: &str = r#"<!doctype html>
 <script>fetch("results/DONE", { method: "PUT", body: "ok" });</script>
 "#;
 
+/// A page whose result is "ok", a MiB of spaces, then "failed".
+const HUGE: &str = r#"<!doctype html>
+<title>Huge</title>
+<script>fetch("results/DONE", { method: "PUT", body: "ok" + " ".repeat(1 << 20) + "failed" });</script>
+"#;
+
 const NEVER: &str = "<!doctype html><title>Never</title><p>This page never reports.</p>\n";
 
 /// A page that gathers ICE candidates against a STUN and a TURN server at `DATAGRAMS`, a UDP
@@ -646,6 +713,45 @@ fn a_page_reaches_only_its_tools_servers() {
     assert!(said(&format!("refused a connection to 127.0.0.1:{op}")), "{printed:?}");
     assert!(said(&format!("refused a connection to localhost:{op2}")), "{printed:?}");
     assert!(said("refused a connection to example.com:443"), "{printed:?}");
+}
+
+/// A close is taken as the host takes it: with four browsers waiting 600 s each, on every
+/// worker that waits, a close of one ends its wait at once, and so finds a worker, and both end
+/// within the cleanup grace.
+#[test]
+#[ignore = "needs the runtime"]
+fn a_close_queued_behind_every_worker_still_ends_its_browsers_wait() {
+    let moments = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let kept = moments.clone();
+    let signal = Signal(Arc::new(move |m| kept.lock().expect("moments").push((m, Instant::now()))));
+    let testing = Testing { signal: Some(signal), ..Testing::default() };
+    let (printed, ended) = browse("busy", "busy", "never.html", NEVER, grants, testing);
+    assert_eq!(ended.end, End::Exit(0), "{printed:?}");
+    let seen = moments.lock().expect("moments").clone();
+    let closing = seen.iter().find(|(m, _)| *m == "closing").map(|(_, t)| *t).expect("taken");
+    let runs = seen.iter().filter(|(m, t)| *m == "run" && *t < closing).count();
+    assert_eq!(runs, 4, "every long worker waited as the close came: {seen:?}");
+    assert!(printed[1].starts_with("run: ") && printed[1].contains("closed"), "{printed:?}");
+    assert_eq!(printed[2], "close: closed");
+    let grace = Testing::default().grace;
+    assert!(closing.elapsed() < grace, "both ended within the grace: {:?}", closing.elapsed());
+}
+
+/// A result past the most that's read of one is an error that says so, never its first part:
+/// "ok", a MiB of spaces, then "failed" isn't "ok".
+#[test]
+#[ignore = "needs the runtime"]
+fn a_result_past_its_limit_fails_rather_than_read_in_part() {
+    let (printed, ended) = browse("huge", "huge", "huge.html", HUGE, grants, Testing::default());
+    assert_eq!(ended.end, End::Exit(0), "{printed:?}");
+    assert!(
+        printed[1].starts_with("run: ") && printed[1].contains("more than the 1048576"),
+        "{printed:?}"
+    );
+    assert!(
+        printed[2].starts_with("results: ") && printed[2].contains("more than the 1048576"),
+        "{printed:?}"
+    );
 }
 
 /// WebRTC sends no UDP around the proxy: a page gathering ICE candidates against a STUN and a

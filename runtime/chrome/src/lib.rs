@@ -600,6 +600,11 @@ impl Browser {
         self.inner.conn.close(Duration::from_secs(1));
     }
 
+    /// [`Browser::disconnect`], waiting for nothing: for a caller that mustn't block.
+    pub fn cut(&self) {
+        self.inner.conn.cut();
+    }
+
     /// Ends Chrome: its pipe, then its process group, then its profile and its proxy. Whether it
     /// ended cleanly (the group gone, the profile removed, every thread joined) within its
     /// bounded grace.
@@ -619,8 +624,9 @@ impl Drop for Browser {
     }
 }
 
-/// What the page put in results/DONE, once its server has kept it.
-pub type Done = Arc<dyn Fn() -> Option<String> + Send + Sync>;
+/// What the page put in results/DONE, once its server has kept it: its text, or why it can't
+/// be read whole (it's past the most a result is read as).
+pub type Done = Arc<dyn Fn() -> Option<Result<String, String>> + Send + Sync>;
 
 /// How to open a tab.
 #[derive(Clone, Default)]
@@ -855,9 +861,9 @@ impl Tab {
         Ok(seen.printed.clone())
     }
 
-    /// What the page put in `results/DONE`, once its server has kept it: `None` until then, and
-    /// for a tab opened with nothing to tell it.
-    pub fn done(&self) -> Option<String> {
+    /// What the page put in `results/DONE`, once its server has kept it (or why it can't be
+    /// read whole): `None` until then, and for a tab opened with nothing to tell it.
+    pub fn done(&self) -> Option<Result<String, String>> {
         self.done.as_ref().and_then(|d| d())
     }
 

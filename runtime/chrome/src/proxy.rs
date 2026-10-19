@@ -196,11 +196,18 @@ fn serve(
     let mut out = client.try_clone()?;
     let mut reader = BufReader::new(client);
     let mut head = Vec::new();
+    // The head's bytes so far: each read takes at most what's left of the allowance.
+    let mut read = 0u64;
     loop {
         let mut line = Vec::new();
-        let n = (&mut reader).take(MOST_HEAD).read_until(b'\n', &mut line)?;
-        if n == 0 || head.len() + line.len() > MOST_HEAD as usize {
+        let n = (&mut reader).take(MOST_HEAD - read).read_until(b'\n', &mut line)? as u64;
+        read += n;
+        if n == 0 {
             return respond(&mut out, "400 Bad Request", "a request's head ended too soon");
+        }
+        if !line.ends_with(b"\n") {
+            let why = format!("a request's head is at most {MOST_HEAD} bytes");
+            return respond(&mut out, "431 Request Header Fields Too Large", &why);
         }
         let blank = line == b"\r\n" || line == b"\n";
         head.push(String::from_utf8_lossy(&line).into_owned());
@@ -360,13 +367,14 @@ mod tests {
                 head.push_str(&l);
             }
             c.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi").unwrap();
-            head
+            (head, served)
         });
         let through = ask(format!(
             "GET http://127.0.0.1:{sp}/page HTTP/1.1\r\nHost: 127.0.0.1:{sp}\r\nProxy-Connection: keep-alive\r\nX-Wrela-Browser: forged\r\n\r\n"
         ));
         assert!(through.ends_with("hi"), "{through}");
-        let head = server.join().expect("the server");
+        let (head, served) = server.join().expect("the server");
+        served.set_nonblocking(true).expect("nonblocking");
         assert!(head.starts_with("GET /page HTTP/1.1\r\n"), "{head}");
         assert!(head.contains("Connection: close") && !head.contains("Proxy-Connection"), "{head}");
         assert!(head.contains("X-Wrela-Browser: b7") && !head.contains("forged"), "{head}");
@@ -381,6 +389,14 @@ mod tests {
             assert!(said.starts_with("HTTP/1.1 403"), "{refused}: {said}");
         }
         assert!(other.accept().is_err(), "nothing reached the other port");
+        // Two headers, each well under the head's allowance, that pass it together.
+        let half = "a".repeat(40 << 10);
+        let long = format!(
+            "GET http://127.0.0.1:{sp}/ HTTP/1.1\r\nHost: x\r\nA: {half}\r\nB: {half}\r\n\r\n"
+        );
+        let said = ask(long);
+        assert!(said.starts_with("HTTP/1.1 431"), "{said}");
+        assert!(served.accept().is_err(), "a head past its allowance reached no destination");
         assert_eq!(notes.lock().unwrap().len(), 5, "{:?}", notes.lock().unwrap());
         assert!(proxy.close(Duration::from_secs(5)));
     }

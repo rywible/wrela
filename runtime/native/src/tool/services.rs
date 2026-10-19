@@ -401,7 +401,7 @@ pub(crate) fn route(s: &Services, service: &str, body: &[u8]) -> Work {
         _ if name.starts_with("image/") => super::image::route(&name["image/".len()..], &mut b),
         _ if name.starts_with("serve/") => super::serve::route(&name["serve/".len()..], &mut b),
         _ if name.starts_with("browser/") => {
-            super::browser::route(&name["browser/".len()..], &mut b)
+            super::browser::route(s, &name["browser/".len()..], &mut b)
         }
         "run/run" => match super::run::parse(&mut b, std::time::Instant::now()) {
             Ok(r) => Work::Long(Box::new(move |s, request| answer(super::run::run(s, request, r)))),

@@ -181,9 +181,15 @@ impl Connection {
     /// Chrome shuts down), and the writer's thread is joined, waiting at most `grace`: whether
     /// it ended.
     pub fn close(&self, grace: Duration) -> bool {
+        self.cut();
+        join(&self.writer, grace)
+    }
+
+    /// Closes the connection without waiting for anything: every waiting caller fails at once,
+    /// and the writer's queue ends, so it closes the pipe as it returns.
+    pub fn cut(&self) {
         self.shared.end("the DevTools connection was closed".into());
         lock(&self.out).take();
-        join(&self.writer, grace)
     }
 
     /// Waits at most `grace` for the reader's thread, which ends when Chrome's end of the pipe

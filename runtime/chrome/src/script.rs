@@ -466,8 +466,11 @@ impl Until {
                         "this page's results reach no server that tells the driver of them".into(),
                     );
                 }
-                let d = tab.done();
-                (d.is_some(), "no server has kept a results/DONE of the page's".into())
+                match tab.done() {
+                    // A result that can't be read whole is no result to wait for.
+                    Some(Err(why)) => return Err(why),
+                    d => (d.is_some(), "no server has kept a results/DONE of the page's".into()),
+                }
             }
             Until::All(parts) => {
                 let mut seen = Vec::new();

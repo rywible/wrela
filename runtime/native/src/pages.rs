@@ -402,8 +402,12 @@ fn connection(
             let written =
                 loopback::put_result(&mut out, &at, name, &mut reader, head.length as u64)?;
             if written && *name == "DONE" && above.join("/") == page {
-                let text = crate::confined::read(&at, "results/DONE", 1 << 20).unwrap_or_default();
-                *lock(done) = Some(String::from_utf8_lossy(&text).trim().to_string());
+                // One past what's read is a failure that says so, never the part that fits.
+                let text = match crate::confined::read(&at, "results/DONE", 1 << 20) {
+                    Ok(t) => String::from_utf8_lossy(&t).trim().to_string(),
+                    Err(why) => format!("its results/DONE can't be read: {why}"),
+                };
+                *lock(done) = Some(text);
             }
             Ok(())
         }

@@ -26,8 +26,9 @@
 //! host's end of its pipe, so if the host is killed it shuts down too, and the run's directory
 //! is swept at the next run.
 //!
-//! **Closing is never held up.** Each browser has a cancel flag, which `close` (or the tool's
-//! end) sets before anything else, then closes the browser's pipe: every request using it
+//! **Closing is never held up.** Each browser has a cancel flag, which `close` sets as the host
+//! takes the request (before any worker does: every worker may be busy, with this browser's
+//! wait among them), or the tool's end sets, then closes the browser's pipe: every request using it
 //! (a wait, even of 600 s, reads the flag as it waits) fails at once, and lets the page go; then
 //! `close` takes the page within the grace, or the run is the host's failure.
 //!
@@ -103,6 +104,12 @@ impl Held {
         self.browser.disconnect();
     }
 
+    /// [`Held::cancel`], waiting for nothing: as the host takes a close, before any worker does.
+    fn cut(&self) {
+        self.cancelled.store(true, Ordering::Release);
+        self.browser.cut();
+    }
+
     /// Closes it: cancels what uses it, takes its page within the grace, then ends its process
     /// group, profile and proxy. Whether that ended cleanly.
     pub(crate) fn close(&self) -> bool {
@@ -159,8 +166,10 @@ enum Look {
     Results,
 }
 
-/// How request `name` of the browser service, with `b`, is carried out.
-pub(crate) fn route(name: &str, b: &mut Body) -> Work {
+/// How request `name` of the browser service, with `b`, is carried out. A close cancels its
+/// browser here, as the host takes it: a request using the browser fails at once, and frees its
+/// worker, though every worker is busy and the close waits for one.
+pub(crate) fn route(s: &Services, name: &str, b: &mut Body) -> Work {
     let entered = Instant::now();
     let parsed = (|| -> Result<Work, String> {
         Ok(match name {
@@ -241,6 +250,11 @@ pub(crate) fn route(name: &str, b: &mut Body) -> Work {
             "close" => {
                 let handle = b.u32()?;
                 b.end()?;
+                let held = s.browsers().held.get(&handle).cloned();
+                if let Some(held) = held {
+                    held.cut();
+                }
+                s.signal("closing");
                 Work::Long(Box::new(move |s, _| {
                     s.signal("close");
                     let held = s.browsers().held.remove(&handle);
@@ -468,7 +482,7 @@ fn observe(tab: &wrela_chrome::Tab, look: &Look, due: Instant) -> Result<Vec<u8>
                 );
             }
             match tab.done() {
-                Some(d) => out.u8(1).str(&d),
+                Some(d) => out.u8(1).str(&d?),
                 None => out.u8(0),
             };
         }

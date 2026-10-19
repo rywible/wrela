@@ -162,8 +162,8 @@ pub struct Testing {
 /// after a guessed time: `"write"` (a blob's write to a file starts), `"resolve"` (an HTTP
 /// request's name lookup starts), `"image"` (an image's work starts), `"listening"` (a server
 /// listens), `"connection"` (a server takes a connection), `"post"` (a server queues a post),
-/// `"browser"` (a browser has opened its page), `"run"` (a browser's script starts) and
-/// `"close"` (a browser's close starts).
+/// `"browser"` (a browser has opened its page), `"run"` (a browser's script starts),
+/// `"closing"` (the host takes a browser's close) and `"close"` (a worker starts it).
 #[doc(hidden)]
 #[derive(Clone)]
 pub struct Signal(pub Arc<dyn Fn(&'static str) + Send + Sync>);
