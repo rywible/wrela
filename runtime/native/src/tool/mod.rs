@@ -31,7 +31,8 @@
 //! left). A worker running a program kills its process group as it sees the end, one
 //! waiting for an HTTP response shuts its connection down and joins the client's thread, one
 //! waiting for the toolchain or an image cancels its work, and every driven build's calls are
-//! stopped, then each build and each server is closed, with the same grace (a server's listener
+//! stopped and every browser's connection closed, then each build, each server and each browser
+//! (its process group and its profile) is closed, with the same grace (a server's listener
 //! and connections are shut and its threads joined, so its port is closed when the run
 //! returns); then the directory the run's programs had is removed. No file work holds the blob
 //! table's lock, so a stuck worker can't hold up the release. A worker, a driven build or a
@@ -41,6 +42,7 @@
 //! driven build's, for each run, so nothing it loads comes from a directory a tool could write.
 
 mod blobs;
+mod browser;
 mod caps;
 mod console;
 mod drive;
@@ -413,6 +415,14 @@ impl Pool {
                                         .set("a failed request's server didn't close".into());
                                 }
                             }
+                            let made = services.browsers().rollback(request);
+                            for browser in made {
+                                if !browser.close() {
+                                    let _ = services.stuck.set(
+                                        "a failed request's browser didn't end cleanly".into(),
+                                    );
+                                }
+                            }
                         }
                         if done.send((request, answer)).is_err() {
                             break;
@@ -600,6 +610,7 @@ pub fn run(build: &ToolBuild, options: Options) -> Ended {
         strays: Mutex::default(),
         drives: Mutex::default(),
         servers: Mutex::default(),
+        browsers: Mutex::default(),
         answers: Mutex::new(None),
     });
     let (done, answers) = mpsc::channel();
@@ -646,8 +657,10 @@ pub fn run(build: &ToolBuild, options: Options) -> Ended {
     // The store, and the console's sending end in it, go when `drive` returns.
     let mut end = run.drive(&engine, build, &entries, start, console);
     ticker.stop();
-    // Driven builds' running calls stop first, so the workers waiting on them return.
+    // Driven builds' running calls stop first, and every browser's connection closes, so the
+    // workers waiting on them return.
     services.drives().stop_all();
+    services.browsers().disconnect_all();
     let mut workers_left = pools.stop(testing.grace);
     // Then each driven build closes, on its own thread: one that doesn't within the grace is
     // left, as a stuck worker is.
@@ -663,6 +676,13 @@ pub fn run(build: &ToolBuild, options: Options) -> Ended {
     let servers = services.servers().take_all();
     for server in servers {
         if !server.close(&services, until.saturating_duration_since(Instant::now())) {
+            workers_left += 1;
+        }
+    }
+    // And each browser: its process group killed and its profile removed.
+    let browsers = services.browsers().take_all();
+    for b in browsers {
+        if !b.close() {
             workers_left += 1;
         }
     }
@@ -879,10 +899,12 @@ impl Run<'_> {
                 self.services.blobs.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let mut drives = self.services.drives();
             let mut servers = self.services.servers();
+            let mut browsers = self.services.browsers();
             for request in s.taken.drain(..) {
                 blobs.publish(request);
                 drives.publish(request);
                 servers.publish(request);
+                browsers.publish(request);
             }
         }
         for (request, service, body) in std::mem::take(&mut s.made) {

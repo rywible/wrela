@@ -273,6 +273,13 @@ macro_rules! lang_items {
 
             /// Where each lang item lives in std.
             pub const PATHS: &'static [(Lang, &'static str)] = &[$( (Lang::$v, $path), )*];
+
+            /// Where it lives in std.
+            pub fn path(self) -> &'static str {
+                match self {
+                    $( Lang::$v => $path, )*
+                }
+            }
         }
     };
 }
@@ -375,6 +382,7 @@ lang_items! {
     HostCommand = "std::host::host_command",
     Shipped = "std::io::Shipped",
     Script = "std::input::Script",
+    BrowserScript = "std::tool::browser::Script",
     PrepareCommand = "std::reload::prepare_command",
     UnprepareCommand = "std::reload::unprepare_command",
     HandOverCommand = "std::reload::hand_over_command",

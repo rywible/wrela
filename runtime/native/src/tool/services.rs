@@ -80,6 +80,8 @@ pub(crate) struct Services {
     pub drives: Mutex<super::drive::Drives>,
     /// The servers the serve service holds.
     pub servers: Mutex<super::serve::Servers>,
+    /// The browsers the browser service holds.
+    pub browsers: Mutex<super::browser::Browsers>,
     /// Where a service that answers a request itself, later, sends the answer
     /// ([`Work::Later`]): the run's own channel, until it ends.
     pub answers: Mutex<Option<std::sync::mpsc::Sender<(u32, Answer)>>>,
@@ -111,6 +113,11 @@ impl Services {
     /// The servers.
     pub(crate) fn servers(&self) -> std::sync::MutexGuard<'_, super::serve::Servers> {
         self.servers.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The browsers.
+    pub(crate) fn browsers(&self) -> std::sync::MutexGuard<'_, super::browser::Browsers> {
+        self.browsers.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Gives `answer` to `request`, which a service answers itself ([`Work::Later`]): nothing,
@@ -389,6 +396,9 @@ pub(crate) fn route(s: &Services, service: &str, body: &[u8]) -> Work {
         _ if name.starts_with("drive/") => super::drive::route(&name["drive/".len()..], &mut b),
         _ if name.starts_with("image/") => super::image::route(&name["image/".len()..], &mut b),
         _ if name.starts_with("serve/") => super::serve::route(&name["serve/".len()..], &mut b),
+        _ if name.starts_with("browser/") => {
+            super::browser::route(&name["browser/".len()..], &mut b)
+        }
         "run/run" => match super::run::parse(&mut b, std::time::Instant::now()) {
             Ok(r) => Work::Long(Box::new(move |s, request| answer(super::run::run(s, request, r)))),
             Err(why) => Work::Now(err(&why)),
@@ -608,6 +618,7 @@ pub(crate) fn for_test(budget: super::BlobBudget) -> Services {
         toolchain: None,
         drives: Mutex::default(),
         servers: Mutex::default(),
+        browsers: Mutex::default(),
         answers: Mutex::new(None),
         hold: None,
         write_fail: None,

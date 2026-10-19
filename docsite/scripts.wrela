@@ -1,7 +1,10 @@
 // The site's scripts of input, which its frame tests give it
-// (`@test(frames: n, input: scripts::NAME)`), as a person would.
+// (`@test(frames: n, input: scripts::NAME)`), as a person would; and its browser script, which
+// compiler/tests gives the site in Chrome.
 
 use std::input::{Key, Mods, Script}
+use std::tool::browser
+use std::tool::browser::{Element, Match, Permission, Until}
 
 /// The input of `a_drag_keeps_its_distance_from_its_finger`.
 pub const DRAG: Script = Script::frames()
@@ -23,3 +26,29 @@ pub const KEYS: Script = Script::frames()
 pub const RELEASE: Script = Script::frames()
     .down(4, vec2(630.0, 200.0))
     .up(5, vec2(630.0, 300.0))
+
+/// What `the_docs_in_chrome_are_links_an_outline_and_titles` (compiler/tests) does to the site in
+/// Chrome, over the small corpus in `scripts/corpus`: the list of pages opens a page, which names
+/// the tab, has its sections as an outline's links and its next page as a link, which opens that
+/// page; its code's copy button and its copy of the page put them on the clipboard; and an item
+/// has a link to itself.
+pub const READER: browser::Script = browser::Script::new()
+    .wait(
+        Until::title(Match::is("Wrela docs"))
+            .and(Until::exists(Element::css("a[href$=\"#std/io\"]")))
+            .and(Until::count(Element::css("a").with_text("6. Memory"), 2)),
+        timeout: 30.0,
+    )
+    .click(Element::css("a[href$=\"#spec/language/6-memory\"]"))
+    .wait(Until::title(Match::is("6. Memory | Wrela docs")))
+    .wait(Until::texts("[aria-label=\"On this page\"] a", ["6.1 Values", "6.2 Parameter modes"]))
+    .click(Element::css("a").with_text("Next page: std::io"))
+    .wait(Until::title(Match::is("std::io | Wrela docs")).and(Until::hash(Match::is("#std/io"))))
+    .grant(Permission::Clipboard)
+    .emulate_focus()
+    .click(Element::css("button").with_text("Copy code"))
+    .wait(Until::exists(Element::css("button").with_text("Copied")))
+    .wait(Until::clipboard(Match::is("pub fn fetch(url: str) -> Pending<u8>")))
+    .click(Element::css("button").with_text("Copy page"))
+    .wait(Until::clipboard(Match::starts("# std::io\n\nRequests to the host.")))
+    .wait(Until::exists(Element::css("a[href$=\"#std/io:fetch\"]").with_text("Link to fetch")))

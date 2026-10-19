@@ -69,6 +69,11 @@ impl Servers {
         ids.iter().filter_map(|id| self.held.remove(id)).collect()
     }
 
+    /// The ports of the servers running: what a browser of the tool's may reach.
+    pub(crate) fn ports(&self) -> Vec<u16> {
+        self.held.values().map(|s| s.port).collect()
+    }
+
     /// Takes every server, to close: the tool has ended.
     pub(crate) fn take_all(&mut self) -> Vec<Arc<Server>> {
         self.unpublished.clear();

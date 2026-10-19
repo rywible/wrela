@@ -1,6 +1,6 @@
 //! `wrela tool <package-dir> [--read NAME=DIR]... [--write NAME=DIR]... [--secret NAME]...
-//! [--net HOST]... [--allow-run NAME[=PATH|=tool:DIR]]... [--timeout S] [--blob-budget B]
-//! [-- args...]`: builds the package's tool build and runs it on the native host's tool profile
+//! [--net HOST]... [--allow-run NAME[=PATH|=tool:DIR]]... [--browser] [--timeout S]
+//! [--blob-budget B] [-- args...]`: builds the package's tool build and runs it on the native host's tool profile
 //! (language.md §15.5, `wrela_host::tool`), with what the command line grants it and nothing
 //! else. A `tool:` program is run by this same executable, as `wrela tool`.
 //!
@@ -51,6 +51,11 @@ pub fn run(args: &[String]) -> ExitCode {
         }
         if !flag.starts_with('-') && dir.is_none() {
             dir = Some(std::path::PathBuf::from(a));
+            continue;
+        }
+        // Chrome for `std::tool::browser`: a grant with no value.
+        if flag == "--browser" {
+            grants.browser = true;
             continue;
         }
         if !matches!(

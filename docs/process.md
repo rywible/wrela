@@ -562,6 +562,20 @@ that didn't stop leaving the run's end clean. Each is fixed with a regression th
 without it. The local server is the toolchain's (the driver's servers' HTTP moved to
 `wrela_host::loopback`, which both now use), and adds no crate.
 
+The fifth slice drives Chrome from Rust: a DevTools protocol driver (runtime/chrome), which both
+the compiler's browser tests (`wrela_host::pages`, in place of tools/headless.py and
+tools/chrome_session.py) and `std::tool::browser` (language.md §15.5) use; Claude (Opus 5.5)
+implemented it. One outside Rust crate came in: [tungstenite](https://github.com/snapview/tungstenite-rs)
+(MIT or Apache-2.0), a WebSocket client, used for its client handshake alone over loopback,
+with the small `sha1` crate it brings (MIT or Apache-2.0). `base64`, `shlex`
+and `rustix` (MIT or Apache-2.0; rustix also Apache-2.0 with the LLVM exception) were already in
+the build. All are used as libraries; no code was copied. The DevTools protocol's methods and
+events (Target, Runtime, Log, Input, Fetch, Emulation, Browser and Page) follow Chrome's published
+protocol documentation, as facts. The browser scripts that tested the docs site, the semantic
+tree and text input moved from JSON with JavaScript conditions to typed Wrela constants
+(`std::tool::browser::Script`), each condition kept; their fixed waits became waits for the line
+the program printed.
+
 ## The references
 
 ### The rules
