@@ -13,8 +13,8 @@ description = "Games made in Wrela, a language and engine for games that run in 
 package = "docsite"
 worker = "wrela-docs"
 domain = "docs.wrela.dev"
-description = "The reference for Wrela: the language, its standard library, and the engine, ui and platform packages."
-packages = ["engine", "ui", "platform"]
+description = "The reference for Wrela: the language, its standard library, the engine, ui and platform packages, and the studio's tool."
+packages = ["engine", "ui", "platform", "studio/tool"]
 
 [[games]]
 id = "leapling"

@@ -6,7 +6,7 @@
 //
 // Each action is an export and a command, and answers with one line of JSON (`std::io::print`),
 // as the field lens's do (M3's rule): an agent calls them headless, a person clicks, drags and
-// types. What the lens needs of the floor comes as functions (the program `wrela studio`
+// types. What the lens needs of the floor comes as functions (the program `wrela tool studio`
 // writes round it passes them): the map, the ground's height, and the preview.
 
 use engine::interest::{FAINT, Preview, Walk, views_grid}

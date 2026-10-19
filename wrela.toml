@@ -1,7 +1,7 @@
 # The workspace: every wrela package of the project but the toolchain's own (compiler/std and
 # compiler/tests), which depend on each other by name (`engine = { workspace = true }`). The
 # directory itself isn't a package. `wrela suite` checks it all: the members' format, the
-# allowlist below and every member's tests (spec/language.md §3.6, §23.10).
+# allowlist below and every member's tests (spec/language.md §3.6, §23.9).
 [workspace]
 members = [
     "console",
@@ -21,6 +21,7 @@ members = [
     "studio/maplens",
     "studio/maplens/glue",
     "studio/tests/views",
+    "studio/tool",
     "ui",
     "ui/brand",
     "ui/tests/*",
@@ -77,3 +78,10 @@ pending = [
     "references/wolf/side-walking.toml",
     "references/wolf/three-quarter-front.toml",
 ]
+
+# The studio's tool (studio/tool): the lens on a subject, built, served and run headless. It
+# reads the workspace and writes a subject's literals back through `wrela edit`'s code, so it
+# writes the workspace; its own output goes in build/studio.
+[tools.studio]
+package = "studio/tool"
+write = ["ws=.", "out=build/studio"]

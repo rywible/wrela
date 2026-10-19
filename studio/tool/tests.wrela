@@ -1,0 +1,1492 @@
+// The tool's tests (language.md §13.2): each builds the lens on a small subject written into its
+// `scratch` root (or a copy of a test subject of content/), through the toolchain, and runs its
+// actions headless through the drive service, as the command line does: on the CPU where the
+// answers need no frame, on the machine's GPU (never a software renderer) where they draw. The
+// workspace is the read root `ws`, where the studio's packages are. Each test waits for the lens
+// by its `busy` export, never by time.
+//
+// The drags on the great tree are checked independently of the lens: the copy is rebuilt from
+// the written files (a normal build) and measured on the CPU, as AC9 of #39 asked.
+
+use glue::replace
+use json::{Doc, Kind, TOP, parse}
+use lens::{
+    ACTIONS, Built, Lens, Place, blob_bytes, build, call, cpu_action, last_json, logs, read_png,
+    read_text, save_png, screen, settle, start, write_text,
+}
+use main::{Command, SIZE, compare, read_command, run}
+use std::collections::{Box, Vec}
+use std::job::Step
+use std::string::String
+use std::tool::answer
+use std::tool::blob
+use std::tool::drive
+use std::tool::drive::Scalar
+use std::tool::files
+use std::tool::toolchain
+use std::tool::toolchain::Override
+
+/// Where a test builds the lens on the package `scratch/<name>`.
+fn place(name: str) -> Place {
+    Place {
+        ws: String::from("ws"),
+        files: String::from("scratch"),
+        outs: String::from("scratch/out"),
+        page: String::new(),
+        subject: String::from(f"scratch/{name}"),
+        out: String::from(f"scratch/out/{name}"),
+        overrides: Vec::new(),
+        debug: false,
+    }
+}
+
+/// Literals written in the styles a drag rounds to, a value, and what it rounds to.
+const ROUNDINGS: [(Text, f32, f32); 4] = [
+    ("15cm", 0.156, 0.16),
+    ("0cm", 0.156, 0.16),
+    ("1.0e-3", 0.00126, 0.0013),
+    ("2.5e-3cm", 0.0000264, 0.000026),
+]
+
+/// The actions that answer on the CPU, as the synchronous test calls them.
+const SYNCHRONOUS: [Text; 7] = ["literals", "parts", "probe", "ray", "measure", "spec", "view"]
+
+/// A frame that does nothing: a subject's main module.
+const FRAME: Text = "pub fn frame(time: f32, width: u32, height: u32) {}\n"
+
+/// A ball 30 cm across on the ground.
+const BALL: Text = "use std::field::{Surface, sphere}\n\npub fn subject() -> Surface {\n    sphere(0.30).translate(vec3(0.0, 0.30, 0.0))\n}\n"
+
+/// The ball's spec (one check holds, one misses).
+const BALL_SPEC: Text = "use subject::subject\nuse std::field::{top, width}\nuse std::lift::Checks\n\npub fn spec<C: Checks>(c: mut C) {\n    let f = subject()\n    c.near(\"height\", top(f, x: 0.0, z: 0.0), 0.60)\n    c.near(\"width\", width(f, y: 0.30, z: 0.0), 0.70, within: 0.01)\n}\n"
+
+/// The ball's blueprint: from the side, a circle 2 cm wider all round; from the front, its own.
+const BALL_BLUEPRINT: Text = "use std::collections::Vec\n\nfn circle(r: f32) -> Vec<vec2> {\n    var out: Vec<vec2> = Vec::new()\n    for i in 0..96 {\n        let a = f32(i) / 96.0 * 6.2831855\n        out.push(vec2(r * cos(a), 0.30 + r * sin(a)))\n    }\n    out\n}\n\npub fn side() -> Vec<vec2> {\n    circle(0.32)\n}\n\npub fn front() -> Vec<vec2> {\n    circle(0.30)\n}\n"
+
+/// The sphere `literals` and the CPU's answers are checked on.
+const SPHERE: Text = "use std::field::{Surface, sphere}\n\npub fn subject() -> Surface {\n    sphere(0.375)\n}\n"
+
+/// Writes the package `scratch/<name>`: its manifest, an empty main, and `files` (each a name
+/// and its text).
+@job
+fn write_package(name: take String, files: take Vec<(String, String)>) {
+    var all: Vec<(String, String)> = Vec::new()
+    all.push((String::from("wrela.toml"), String::from(f"[package]\nname = \"{name.as_str()}\"\n")))
+    all.push((String::from("main.wrela"), String::from(FRAME)))
+    for k in 0..files.len() {
+        all.push(files[k].clone())
+    }
+    for k in 0..all.len() {
+        let (file, text) = all[k].clone()
+        var w = Box::new(
+            write_text.start(String::from(f"scratch/{name.as_str()}/{file.as_str()}"), take text),
+        )
+        var done = false
+        while !done {
+            match w.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(r) => {
+                    assert(r.is_ok(), "the package's files are written")
+                    done = true
+                },
+            }
+        }
+    }
+}
+
+/// The lens built at `place`, which must build.
+@job
+fn lens_built(at: take Place) -> Built {
+    var b = Box::new(build.start(take at))
+    loop {
+        match b.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                let Ok(built) = take r else { panic("the lens's program is written and built") }
+                assert(built.errors.is_empty(), built.errors.as_str())
+                return built
+            },
+        }
+    }
+}
+
+/// The lens `built`, loaded and started, its screen `n` pixels square (on the CPU alone with
+/// `cpu`), its fit's reference `reference`.
+@job
+fn opened(built: take Built, n: take u32, cpu: take bool, reference: take Option<Vec<u8>>) -> Lens {
+    var s = Box::new(start.start(take built, n, n, cpu, take reference))
+    loop {
+        match s.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                let Ok(lens) = take r else { panic("the lens loads and starts") }
+                return lens
+            },
+        }
+    }
+}
+
+/// An action: its export called, frames until the lens isn't busy, and its answer (the last
+/// JSON line it printed).
+@job
+fn act(lens: mut Lens, name: take String, args: take Vec<Scalar>) -> Doc {
+    var c = Box::new(call.start(name.clone(), take args, deferred: false))
+    var called = false
+    while !called {
+        match c.get_mut().resume(mut lens) {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                if let Err(why) = r {
+                    panic(f"{name.as_str()}: {why.as_str()}")
+                }
+                called = true
+            },
+        }
+    }
+    var l = Box::new(logs.start())
+    loop {
+        match l.get_mut().resume(mut lens) {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                let Ok(lines) = take r else { panic("the lens's lines") }
+                let Some(line) = last_json(lines) else { panic(f"{name.as_str()}: no answer") }
+                let Some(d) = parse(line.as_str()) else {
+                    panic(f"{name.as_str()}: {line.as_str()}")
+                }
+                return d
+            },
+        }
+    }
+}
+
+/// The lens's screen.
+@job
+fn pixels(lens: mut Lens) -> Vec<u8> {
+    var s = Box::new(screen.start())
+    loop {
+        match s.get_mut().resume(mut lens) {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                let Ok(px) = take r else { panic("the screen") }
+                return px
+            },
+        }
+    }
+}
+
+fn f(x: f32) -> Scalar {
+    Scalar::F32(x)
+}
+
+fn u(x: u32) -> Scalar {
+    Scalar::I32(i32(x))
+}
+
+/// Number `key` of object `n`.
+fn num(d: Doc, n: u32, key: str) -> f64 {
+    let Some(v) = d.get(n, key) else { panic(f"no `{key}`") }
+    let Some(x) = d.num(v) else { panic(f"`{key}` isn't a number") }
+    x
+}
+
+/// Text `key` of object `n`.
+fn text(d: Doc, n: u32, key: str) -> String {
+    let Some(v) = d.get(n, key) else { panic(f"no `{key}`") }
+    let Some(t) = d.text(v) else { panic(f"`{key}` isn't a text") }
+    t
+}
+
+/// Element `i` of list `key` of object `n`.
+fn item(d: Doc, n: u32, key: str, i: u32) -> u32 {
+    let Some(l) = d.get(n, key) else { panic(f"no `{key}`") }
+    let Some(e) = d.at(l, i) else { panic(f"`{key}` has no {i}") }
+    e
+}
+
+/// A point `[x, y, z]` of list node `n`.
+fn point(d: Doc, n: u32) -> vec3 {
+    var p = vec3(0.0)
+    for k in 0..3 {
+        let Some(e) = d.at(n, k) else { panic("a point") }
+        let Some(x) = d.num(e) else { panic("a point's number") }
+        if k == 0 {
+            p.x = f32(x)
+        } else if k == 1 {
+            p.y = f32(x)
+        } else {
+            p.z = f32(x)
+        }
+    }
+    p
+}
+
+/// The index of the literal `literals`'s answer lists in `file` with `text` at `column`.
+fn literal_at(d: Doc, file: str, text_of: str, column: u32) -> u32 {
+    let Some(list) = d.get(TOP, "literals") else { panic("literals") }
+    for k in 0..d.count(list) {
+        let Some(l) = d.at(list, k) else { continue }
+        if text(d, l, "file").as_str() == file &&
+            text(d, l, "text").as_str() == text_of &&
+            num(d, l, "column") == f64(column) {
+            return u32(num(d, l, "index"))
+        }
+    }
+    panic(f"no literal `{text_of}` at column {column} of {file}")
+}
+
+/// studio/glue, the lens's program, checks alone (on its sphere), and exports each action of
+/// `ACTIONS`, with the state and then its arguments, which the headless runner passes.
+@test(tool, read: [("ws", "../..")], budget: 120)
+@job
+fn the_lens_program_exports_each_action() {
+    var c = toolchain::check("ws/studio/glue")
+    var checked = c.poll()
+    while checked.is_none() {
+        yield
+        checked = c.poll()
+    }
+    let Some(cp) = take checked else { panic("no answer") }
+    let Ok(ch) = toolchain::read_checked(take cp) else { panic("the check's request") }
+    assert(ch.ok, "studio/glue checks alone")
+    var r = Box::new(read_text.start(String::from("ws/studio/glue/main.wrela")))
+    var main: Option<String> = None
+    var read = false
+    while !read {
+        match r.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(x) => {
+                let Ok(Some(t)) = take x else { panic("studio/glue/main.wrela") }
+                main = Some(take t)
+                read = true
+            },
+        }
+    }
+    let Some(t) = take main else { panic("main.wrela") }
+    let text = t.as_str()
+    for a in ACTIONS {
+        let (name, args) = a
+        let Some(at) = text.find(f"pub fn {name}(state: mut Lens") else {
+            panic(f"studio/glue exports no `{name}`")
+        }
+        let rest = text.slice(at, text.len())
+        let end = match rest.find("\n") {
+            Some(e) => e,
+            None => rest.len(),
+        }
+        let line = rest.slice(0, end)
+        var kinds = String::new()
+        let parts = line.split(", ")
+        for k in 1..parts.len() {
+            let (from, to) = parts[k]
+            kinds.push_str(if line.slice(from, to).find(": f32").is_some() { "f" } else { "u" })
+        }
+        assert(kinds.as_str() == args, f"`{name}`'s arguments: {line}")
+    }
+    var exports = 0
+    var at = 0
+    while let Some(i) = text.slice(at, text.len()).find("\npub fn ") {
+        exports += 1
+        at += i + 1
+    }
+    if text.starts_with("pub fn ") {
+        exports += 1
+    }
+    assert(exports == ACTIONS.len() + 3, "init, frame and busy, and each action")
+}
+
+/// A drag rounds a literal to its source's unit and exponent: `15cm` to centimetres,
+/// `1.0e-3` to its mantissa's decimals, through `studio::drag::to_decimals` in a lifted build.
+@test(tool, read: [("ws", "../..")], budget: 300)
+@job
+fn literal_rounding_uses_the_source_unit_and_exponent() {
+    var files: Vec<(String, String)> = Vec::new()
+    files.push(
+        (
+            String::from("main.wrela"),
+            String::from(
+                "pub fn centimetres() -> f32 { 15cm }\npub fn zero() -> f32 { 0cm }\npub fn exponent() -> f32 { 1.0e-3 }\npub fn combined() -> f32 { 2.5e-3cm }\npub fn rounded(i: u32, v: f32) -> f32 { studio::drag::to_decimals(i, v) }\npub fn frame(time: f32, width: u32, height: u32) {}\n",
+            ),
+        ),
+    )
+    files.push(
+        (
+            String::from("wrela.toml"),
+            String::from(
+                "[package]\nname = \"rounding\"\n\n[dependencies]\nstudio = { workspace = true }\n",
+            ),
+        ),
+    )
+    var w = Box::new(write_package.start(String::from("rounding"), take files))
+    var written = false
+    while !written {
+        match w.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => written = true,
+        }
+    }
+    var options = toolchain::options()
+    options.lift.push(String::from("rounding"))
+    options.overrides.push(
+        Override { name: String::from("studio"), dir: String::from("ws/studio") },
+    )
+    var b = toolchain::build("scratch/rounding", "scratch/rounding-build", options)
+    var built = b.poll()
+    while built.is_none() {
+        yield
+        built = b.poll()
+    }
+    let Some(bp) = take built else { panic("no answer") }
+    let Ok(result) = toolchain::read_built(take bp) else { panic("the build's request") }
+    assert(result.ok, "the package builds lifted")
+    var r = files::read("scratch/rounding-build/lift.json")
+    var got = r.poll()
+    while got.is_none() {
+        yield
+        got = r.poll()
+    }
+    let Some(rp) = take got else { panic("no answer") }
+    let Ok(bytes) = answer(take rp) else { panic("lift.json") }
+    let Some(report_text) = String::from_utf8(take bytes) else { panic("UTF-8") }
+    let Some(report) = parse(report_text.as_str()) else { panic("lift.json is JSON") }
+    let Some(literals) = report.get(TOP, "literals") else { panic("literals") }
+    var options = drive::cpu()
+    options.workers = 1
+    var l = drive::load("scratch/rounding-build", options)
+    var loaded = l.poll()
+    while loaded.is_none() {
+        yield
+        loaded = l.poll()
+    }
+    let Some(lp) = take loaded else { panic("no answer") }
+    let Ok(it) = drive::read_loaded(take lp) else { panic("the build loads") }
+    var i = drive::init(it.build)
+    while i.poll().is_none() { yield }
+    for case in 0..4 {
+        let (written, value, expected) = ROUNDINGS[case]
+        let literal = written.to_string()
+        var index = 4294967295
+        for k in 0..report.count(literals) {
+            let Some(l) = report.at(literals, k) else { continue }
+            if text(report, l, "text") == literal {
+                index = k
+            }
+        }
+        assert(index != 4294967295, f"the lifted literal {literal.as_str()}")
+        var c = drive::call(it.build, "rounded", [u(index), f(value)])
+        var called = c.poll()
+        while called.is_none() {
+            yield
+            called = c.poll()
+        }
+        let Some(cp) = take called else { panic("no answer") }
+        let Ok(ran) = drive::read_ran(take cp) else { panic("the call") }
+        let Scalar::F32(rounded) = ran.results[0] else { panic("an f32") }
+        assert(
+            rounded == expected,
+            f"rounding {value} in the style of {literal.as_str()}: {rounded}",
+        )
+    }
+}
+
+/// Nothing of the studio is in a game's build: the wolf's (its own program, which the lens is
+/// built around) holds none of the lens's code, kernels or strings.
+@test(tool, read: [("ws", "../..")], budget: 300)
+@job
+fn nothing_of_the_studio_is_in_a_games_build() {
+    var b = toolchain::build("ws/content/wolf", "scratch/wolf", toolchain::options())
+    var built = b.poll()
+    while built.is_none() {
+        yield
+        built = b.poll()
+    }
+    let Some(bp) = take built else { panic("no answer") }
+    let Ok(result) = toolchain::read_built(take bp) else { panic("the build's request") }
+    assert(result.ok, "the wolf builds")
+    for file in ["scratch/wolf/manifest.json", "scratch/wolf/game.wasm"] {
+        var r = files::read_blob(file)
+        var got = r.poll()
+        while got.is_none() {
+            yield
+            got = r.poll()
+        }
+        let Some(rp) = take got else { panic("no answer") }
+        let Ok(handle) = blob::read_handle(take rp) else { panic(file) }
+        var j = Box::new(blob_bytes.start(handle))
+        var bytes: Vec<u8> = Vec::new()
+        var read = false
+        while !read {
+            match j.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(x) => {
+                    let Ok(b) = take x else { panic(file) }
+                    bytes = take b
+                    read = true
+                },
+            }
+        }
+        let needles = if file.ends_with("manifest.json") {
+            ["start_rays", "step_rays", "sample_grid", "snap_points", "show_canvas", "step_minima"]
+        } else {
+            [
+                "studio/edit",
+                "studio/reference",
+                "\"action\"",
+                "studio/edit",
+                "studio/edit",
+                "studio/edit",
+            ]
+        }
+        for needle in needles {
+            assert(!holds(bytes, needle), f"the game's build has {needle}")
+        }
+    }
+    var t = Box::new(read_text.start(String::from("ws/content/wolf/wrela.toml")))
+    loop {
+        match t.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(x) => {
+                let Ok(Some(toml)) = take x else { panic("the wolf's manifest") }
+                assert(toml.as_str().find("studio").is_none(), "the wolf depends on the studio")
+                return
+            },
+        }
+    }
+}
+
+/// Whether `bytes` hold `needle`'s.
+fn holds(bytes: [u8], needle: str) -> bool {
+    let n = needle.len()
+    if n == 0 || bytes.len() < n {
+        return n == 0
+    }
+    for i in 0..bytes.len() - n + 1 {
+        var all = true
+        for k in 0..n {
+            if bytes[i + k] != needle.byte(k) {
+                all = false
+                break
+            }
+        }
+        if all {
+            return true
+        }
+    }
+    false
+}
+
+/// The actions whose answers need only the lens's state on the CPU run without the GPU or a
+/// frame: the literals the lens lifts, and its synchronous queries; and with a PNG, on the GPU,
+/// they answer the same.
+@test(tool, read: [("ws", "../..")], budget: 300)
+@job
+fn synchronous_answers_need_no_gpu_or_rendered_frame() {
+    for name in ["literals", "parts", "probe", "ray", "measure", "spec", "view"] {
+        assert(cpu_action(name), name)
+    }
+    for name in ["write", "move", "fit", "describe", "diagnose"] {
+        assert(!cpu_action(name), name)
+    }
+    var files: Vec<(String, String)> = Vec::new()
+    files.push((String::from("subject.wrela"), String::from(SPHERE)))
+    files.push((String::from("wrela.toml"), String::from("[package]\nname = \"lens_subject\"\n")))
+    var w = Box::new(write_package.start(String::from("lens_subject"), take files))
+    var written = false
+    while !written {
+        match w.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => written = true,
+        }
+    }
+    var b = Box::new(lens_built.start(place("lens_subject")))
+    var built: Option<Built> = None
+    while built.is_none() {
+        match b.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(x) => built = Some(take x),
+        }
+    }
+    let Some(lb) = take built else { panic("built") }
+    var o = Box::new(opened.start(lb.clone(), 896, cpu: true, reference: None))
+    var opened_lens: Option<Lens> = None
+    while opened_lens.is_none() {
+        match o.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(x) => opened_lens = Some(take x),
+        }
+    }
+    let Some(ol) = take opened_lens else { panic("opened") }
+    var lens = take ol
+    for which in 0..7 {
+        let name = SYNCHRONOUS[which].to_string()
+        var args: Vec<Scalar> = Vec::new()
+        if which == 2 {
+            args = Vec::from([f(1.0), f(0.0), f(0.0)])
+        } else if which == 3 {
+            args = Vec::from([f(1.0), f(0.0), f(0.0), f(-1.0), f(0.0), f(0.0)])
+        } else if which == 4 {
+            args = Vec::from([f(0.0), f(0.0), f(0.0), f(3.0), f(4.0), f(0.0)])
+        } else if which == 6 {
+            args = Vec::from([u(0)])
+        }
+        // On the CPU, as the command line runs these: the export called, no frame.
+        var cl = drive::call(lens.b, name.as_str(), take args)
+        var called = cl.poll()
+        while called.is_none() {
+            yield
+            called = cl.poll()
+        }
+        let Some(cp) = take called else { panic("no answer") }
+        let Ok(ran) = drive::read_ran(take cp) else { panic(name.as_str()) }
+        assert(ran.trap.is_none(), name.as_str())
+        var l = Box::new(logs.start())
+        var answer_text: Option<String> = None
+        while answer_text.is_none() {
+            match l.get_mut().resume(mut lens) {
+                Step::Yielded => yield,
+                Step::Done(x) => {
+                    let Ok(lines) = take x else { panic("lines") }
+                    let Some(j) = last_json(lines) else { panic(f"{name.as_str()}: no answer") }
+                    answer_text = Some(take j)
+                },
+            }
+        }
+        let Some(at) = take answer_text else { panic("answer") }
+        let Some(d) = parse(at.as_str()) else { panic(at.as_str()) }
+        assert(text(d, TOP, "action") == name || which == 3 || which == 4, at.as_str())
+        if which == 0 {
+            // The sphere's radius, its one literal, as the build lifted it.
+            assert(num(d, TOP, "count") == 1.0, at.as_str())
+            let l = item(d, TOP, "literals", 0)
+            assert(
+                num(d, l, "index") == 0.0 &&
+                    num(d, l, "line") == 4.0 &&
+                    num(d, l, "column") == 12.0,
+            )
+            assert(
+                text(d, l, "package").as_str() == "lens_subject" &&
+                    text(d, l, "file").as_str() == "subject.wrela",
+            )
+            assert(text(d, l, "text").as_str() == "0.375" && num(d, l, "value") == 0.375)
+            assert(text(d, l, "source").as_str() == "    sphere(0.375)", at.as_str())
+        } else if which == 1 {
+            let Some(parts) = d.get(TOP, "parts") else { panic("parts") }
+            assert(num(d, TOP, "count") == f64(d.count(parts)))
+        } else if which == 2 {
+            assert(num(d, TOP, "distance") == 0.625, at.as_str())
+            let Some(inside) = d.get(TOP, "inside") else { panic("inside") }
+            assert(!d.is_true(inside))
+        } else if which == 3 {
+            let Some(hit) = d.get(TOP, "hit") else { panic("hit") }
+            assert(d.is_true(hit) && abs(num(d, TOP, "distance") - 0.625) < 0.001, at.as_str())
+        } else if which == 4 {
+            assert(num(d, TOP, "distance") == 5.0, at.as_str())
+        } else if which == 5 {
+            assert(text(d, TOP, "error").as_str().find("no spec").is_some(), at.as_str())
+        } else {
+            assert(text(d, TOP, "view").as_str() == "side")
+            let Some(framings) = d.get(TOP, "framings") else { panic("framings") }
+            assert(d.count(framings) == 4)
+        }
+    }
+    // The lens's build is the browser's: no compiled code is kept beside it.
+    var lst = files::list("scratch/out/lens_subject/page")
+    var listed = lst.poll()
+    while listed.is_none() {
+        yield
+        listed = lst.poll()
+    }
+    let Some(lp) = take listed else { panic("no answer") }
+    let Ok(entries) = files::read_list(take lp) else { panic("the page lists") }
+    var wasm = false
+    var manifest = false
+    var shaders = 0
+    for k in 0..entries.len() {
+        let n = entries[k].name.as_str()
+        wasm = wasm || n == "game.wasm"
+        manifest = manifest || n == "manifest.json"
+        if n.ends_with(".wgsl") {
+            shaders += 1
+        }
+        assert(n != ".native", "the tool keeps no compiled code")
+    }
+    assert(wasm && manifest && shaders > 0, "the browser's artifacts")
+    // With a PNG, the same answers, from the GPU's lens, which draws.
+    var png = Box::new(literals_with_a_png_keeps_the_same_answer_and_draws.start(take lb))
+    loop {
+        match png.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+}
+
+/// An action named wrong, or with arguments that aren't its own, or a flag the tool doesn't
+/// take, is refused before the lens is built (status 2), and nothing is written.
+@test(tool, read: [("ws", "../..")], budget: 300)
+@job
+fn invalid_actions_are_rejected_before_building() {
+    var files: Vec<(String, String)> = Vec::new()
+    files.push((String::from("subject.wrela"), String::from(SPHERE)))
+    var w = Box::new(write_package.start(String::from("invalid"), take files))
+    var written = false
+    while !written {
+        match w.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => written = true,
+        }
+    }
+    let cases = [
+        ("no-such-action", "", "", ""),
+        ("probe", "", "", ""),
+        ("probe", "NaN", "0", "0"),
+        ("view", "-1", "", ""),
+        ("literals", "1", "", ""),
+    ]
+    for case in cases {
+        let (a, x, y, z) = case
+        var given: Vec<String> = Vec::new()
+        given.push(String::from("invalid"))
+        for word in [a, x, y, z] {
+            if !word.is_empty() {
+                given.push(String::from(word))
+            }
+        }
+        let Some(c) = read_command(given) else { panic("a command") }
+        var r = Box::new(
+            run.start(place("invalid"), c.clone(), String::from(a), String::from("invalid")),
+        )
+        loop {
+            match r.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(status) => {
+                    assert(status == 2, f"{a} {x}")
+                    break
+                },
+            }
+        }
+    }
+    for flag in ["literals", "look", "serve"] {
+        let words = [String::from("invalid"), String::from(flag), String::from("--artifacts-only")]
+        assert(read_command(words).is_none(), "a flag the tool doesn't take")
+    }
+    var s = files::stat("scratch/out")
+    var stated = s.poll()
+    while stated.is_none() {
+        yield
+        stated = s.poll()
+    }
+    let Some(sp) = take stated else { panic("no answer") }
+    assert(files::read_entry(take sp).is_err(), "an invalid action must not start a build")
+}
+
+/// With a PNG, an action that answers on the CPU runs on the GPU instead: the same answer, and
+/// the lens drew the subject.
+@job
+fn literals_with_a_png_keeps_the_same_answer_and_draws(lb: take Built) {
+    var answers: Vec<String> = Vec::new()
+    for gpu in [false, true] {
+        var o = Box::new(opened.start(lb.clone(), 64, !gpu, None))
+        var opened_lens: Option<Lens> = None
+        while opened_lens.is_none() {
+            match o.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(x) => opened_lens = Some(take x),
+            }
+        }
+        let Some(ol) = take opened_lens else { panic("opened") }
+        var lens = take ol
+        for which in 0..2 {
+            let name = if which == 0 { "literals" } else { "probe" }
+            let args = if which == 0 { Vec::new() } else { Vec::from([f(1.0), f(0.0), f(0.0)]) }
+            if gpu {
+                var a = Box::new(act.start(String::from(name), take args))
+                loop {
+                    match a.get_mut().resume(mut lens) {
+                        Step::Yielded => yield,
+                        Step::Done(d) => {
+                            answers.push(d.write(TOP))
+                            break
+                        },
+                    }
+                }
+            } else {
+                var cl = drive::call(lens.b, name, take args)
+                while cl.poll().is_none() { yield }
+                var l = Box::new(logs.start())
+                loop {
+                    match l.get_mut().resume(mut lens) {
+                        Step::Yielded => yield,
+                        Step::Done(x) => {
+                            let Ok(lines) = take x else { panic("lines") }
+                            let Some(j) = last_json(lines) else { panic("an answer") }
+                            let Some(d) = parse(j.as_str()) else { panic("JSON") }
+                            answers.push(d.write(TOP))
+                            break
+                        },
+                    }
+                }
+            }
+        }
+        if gpu {
+            var p = Box::new(pixels.start())
+            loop {
+                match p.get_mut().resume(mut lens) {
+                    Step::Yielded => yield,
+                    Step::Done(px) => {
+                        assert(px.len() == 64 * 64 * 4, "the screen's size")
+                        var differs = false
+                        for i in 0..64 * 64 {
+                            for c in 0..4 {
+                                if px[i * 4 + c] != px[c] {
+                                    differs = true
+                                }
+                            }
+                        }
+                        assert(differs, "the lens drew no subject")
+                        break
+                    },
+                }
+            }
+        }
+        var cl = drive::close(lens.b)
+        while cl.poll().is_none() { yield }
+    }
+    assert(answers[0] == answers[2], "the literals' answer with a PNG")
+    assert(answers[1] == answers[3], "a CPU field query must match the rendered lens")
+}
+
+/// The tools of authoring round 3 (#39), on the ball: `spec` reports each check; `blueprint`
+/// measures where the silhouette misses an outline, by how much and which way; `fit_blueprint`
+/// fits a literal to it; `zoom` frames a close-up and the colour mode draws (clay, for a
+/// subject without channels).
+@test(tool, read: [("ws", "../..")], budget: 600)
+@job
+fn specs_blueprints_and_close_ups_answer_on_a_ball() {
+    var files: Vec<(String, String)> = Vec::new()
+    files.push((String::from("subject.wrela"), String::from(BALL)))
+    files.push((String::from("spec.wrela"), String::from(BALL_SPEC)))
+    files.push((String::from("blueprint.wrela"), String::from(BALL_BLUEPRINT)))
+    var w = Box::new(write_package.start(String::from("ball"), take files))
+    var written = false
+    while !written {
+        match w.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => written = true,
+        }
+    }
+    var b = Box::new(lens_built.start(place("ball")))
+    var built: Option<Built> = None
+    while built.is_none() {
+        match b.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(x) => built = Some(take x),
+        }
+    }
+    let Some(lb) = take built else { panic("built") }
+    var o = Box::new(opened.start(take lb, 512, cpu: false, reference: None))
+    var opened_lens: Option<Lens> = None
+    while opened_lens.is_none() {
+        match o.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(x) => opened_lens = Some(take x),
+        }
+    }
+    let Some(ol) = take opened_lens else { panic("opened") }
+    var lens = take ol
+    // Each action in turn, its answer checked.
+    let steps = [
+        "spec",
+        "blueprint 0",
+        "blueprint 1",
+        "blueprint 2",
+        "literals",
+        "choose_none",
+        "choose",
+        "fit_blueprint",
+        "blueprint 0",
+        "zoom",
+        "mode",
+        "view",
+        "zoom off",
+    ]
+    var radius = 0
+    for k in 0..steps.len() {
+        let step = steps[k]
+        var name = String::from(step)
+        var args: Vec<Scalar> = Vec::new()
+        if step.starts_with("blueprint ") {
+            name = String::from("blueprint")
+            args = Vec::from([u(u32(step.byte(10) - 48))])
+        } else if step == "choose" {
+            args = Vec::from([u(radius)])
+        } else if step == "fit_blueprint" {
+            args = Vec::from([u(0), u(256)])
+        } else if step == "zoom" {
+            args = Vec::from([f(0.0), f(0.6), f(0.0), f(0.05)])
+        } else if step == "zoom off" {
+            name = String::from("zoom")
+            args = Vec::from([f(0.0), f(0.0), f(0.0), f(0.0)])
+        } else if step == "mode" {
+            args = Vec::from([u(5), u(0)])
+        } else if step == "view" {
+            args = Vec::from([u(0)])
+        }
+        var a = Box::new(act.start(take name, take args))
+        var answered: Option<Doc> = None
+        while answered.is_none() {
+            match a.get_mut().resume(mut lens) {
+                Step::Yielded => yield,
+                Step::Done(d) => answered = Some(take d),
+            }
+        }
+        let Some(d) = take answered else { panic("an answer") }
+        let all = d.write(TOP)
+        let s = all.as_str()
+        if step == "spec" {
+            assert(num(d, TOP, "held") == 1.0 && num(d, TOP, "missed") == 1.0, s)
+            let width = item(d, TOP, "checks", 1)
+            assert(text(d, width, "name").as_str() == "width", s)
+            assert(abs(num(d, width, "miss") + 0.1) < 0.001, s)
+        } else if step == "blueprint 0" && k == 1 {
+            assert(abs(num(d, TOP, "mean_miss_cm") - 2.0) < 0.2, s)
+            assert(num(d, TOP, "within_1cm") == 0.0, s)
+            let worst = item(d, TOP, "misses", 0)
+            assert(text(d, worst, "so").as_str() == "the subject falls short of the outline", s)
+        } else if step == "blueprint 1" {
+            assert(num(d, TOP, "within_1cm") == 1.0, s)
+        } else if step == "blueprint 2" {
+            assert(text(d, TOP, "error").as_str().find("no top outline").is_some(), s)
+        } else if step == "literals" {
+            radius = literal_at(d, "subject.wrela", "0.30", 12)
+        } else if step == "fit_blueprint" {
+            let Some(list) = d.get(TOP, "literals") else { panic(s) }
+            var after = -1.0
+            for i in 0..d.count(list) {
+                let Some(l) = d.at(list, i) else { continue }
+                if num(d, l, "literal") == f64(radius) {
+                    after = num(d, l, "after")
+                }
+            }
+            assert(abs(after - 0.32) < 0.003, f"the radius fitted to {after}: {s}")
+        } else if step == "blueprint 0" {
+            assert(num(d, TOP, "mean_miss_cm") < 0.3, s)
+        } else if step == "zoom" {
+            assert(num(d, TOP, "half") == 0.05, s)
+        } else if step == "mode" {
+            assert(text(d, TOP, "mode").as_str() == "colour", s)
+        } else if step == "view" {
+            // Zoomed on the top of the ball: clay fills the lower half of the view (and the
+            // views' grid is the fitted ball's: a stale one culls bands of it).
+            var p = Box::new(pixels.start())
+            loop {
+                match p.get_mut().resume(mut lens) {
+                    Step::Yielded => yield,
+                    Step::Done(px) => {
+                        let i = ((512 * 3 / 4) * 512 + 256) * 4
+                        assert(px[i] > 150 && px[i + 1] > 150 && px[i + 2] > 150, "clay")
+                        break
+                    },
+                }
+            }
+        } else if step == "zoom off" {
+            assert(text(d, TOP, "framing").as_str() == "the subject", s)
+        }
+    }
+}
+
+/// AC9 of #51: the great tree is a plant in wrela source (content/great-tree, `engine::plant`),
+/// and the lens draws it, probes it and drags its literals, as it does a creature's. A tree is
+/// ten times a creature's size: the lens searches for its bounds in a box that grows until it
+/// holds the subject, and its rays reach past the subject's far side. The drag is written
+/// through `wrela edit`'s code to a copy, which is rebuilt (a normal build) and measured on the
+/// CPU: the dragged point lands within 1 mm of its target.
+@test(tool, read: [("ws", "../..")], budget: 600)
+@job
+fn the_lens_draws_probes_and_drags_the_great_tree() {
+    // The copy, its dependency on the engine read from the workspace.
+    var copied: Vec<(String, String)> = Vec::new()
+    for file in ["main.wrela", "subject.wrela", "tree.wrela", "wrela.toml"] {
+        var r = Box::new(read_text.start(String::from(f"ws/content/great-tree/{file}")))
+        loop {
+            match r.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(x) => {
+                    let Ok(Some(t)) = take x else { panic(file) }
+                    copied.push((String::from(file), take t))
+                    break
+                },
+            }
+        }
+    }
+    for k in 0..copied.len() {
+        let (file, t) = copied[k].clone()
+        var w = Box::new(write_text.start(String::from(f"scratch/tree/{file.as_str()}"), take t))
+        loop {
+            match w.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(x) => {
+                    assert(x.is_ok(), "the copy")
+                    break
+                },
+            }
+        }
+    }
+    var at = place("tree")
+    at.overrides.push(Override { name: String::from("engine"), dir: String::from("ws/engine") })
+    var b = Box::new(lens_built.start(at.clone()))
+    var built: Option<Built> = None
+    while built.is_none() {
+        match b.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(x) => built = Some(take x),
+        }
+    }
+    let Some(lb) = take built else { panic("built") }
+    var o = Box::new(opened.start(take lb, 512, cpu: false, reference: None))
+    var opened_lens: Option<Lens> = None
+    while opened_lens.is_none() {
+        match o.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(x) => opened_lens = Some(take x),
+        }
+    }
+    let Some(ol) = take opened_lens else { panic("opened") }
+    var lens = take ol
+    // Drawn: the whole tree, its crown 16 m up, framed in the side view.
+    var steps: Vec<(String, Vec<Scalar>)> = Vec::new()
+    steps.push((String::from("describe"), Vec::new()))
+    steps.push((String::from("view"), Vec::from([u(0)])))
+    steps.push((String::from("ray"), Vec::from([f(5.0), f(0.5), f(0.0), f(-1.0), f(0.0), f(0.0)])))
+    steps.push(
+        (String::from("ray"), Vec::from([f(30.0), f(12.0), f(0.0), f(-1.0), f(0.0), f(0.0)])),
+    )
+    steps.push((String::from("probe"), Vec::from([f(0.0), f(0.5), f(0.0)])))
+    var crown = vec3(0.0)
+    for k in 0..steps.len() {
+        let (name, args) = steps[k].clone()
+        var a = Box::new(act.start(take name, take args))
+        var answered: Option<Doc> = None
+        while answered.is_none() {
+            match a.get_mut().resume(mut lens) {
+                Step::Yielded => yield,
+                Step::Done(d) => answered = Some(take d),
+            }
+        }
+        let Some(d) = take answered else { panic("an answer") }
+        let all = d.write(TOP)
+        let s = all.as_str()
+        if k == 0 {
+            let Some(lo) = d.get(TOP, "lo") else { panic(s) }
+            let Some(hi) = d.get(TOP, "hi") else { panic(s) }
+            let l = point(d, lo)
+            let h = point(d, hi)
+            assert(h.y > 15.0 && h.x - l.x > 18.0, f"the tree's bounds: {s}")
+        } else if k == 1 {
+            var p = Box::new(pixels.start())
+            loop {
+                match p.get_mut().resume(mut lens) {
+                    Step::Yielded => yield,
+                    Step::Done(px) => {
+                        var drawn = 0
+                        for i in 0..512 * 512 {
+                            var differs = false
+                            for c in 0..3 {
+                                if abs(i32(px[i * 4 + c]) - i32(px[c])) > 24 {
+                                    differs = true
+                                }
+                            }
+                            if differs {
+                                drawn += 1
+                            }
+                        }
+                        let share = f32(drawn) / f32(512 * 512)
+                        assert(share > 0.1, f"the tree covers {share * 100.0}% of the side view")
+                        break
+                    },
+                }
+            }
+        } else if k == 2 || k == 3 {
+            // Probed: the trunk's wood and the crown's clumps, each part named.
+            let Some(hit) = d.get(TOP, "hit") else { panic(s) }
+            assert(d.is_true(hit), s)
+            let Some(part) = d.get(TOP, "part") else { panic(s) }
+            let name = text(d, part, "name")
+            assert(name.as_str() == (if k == 2 { "limb" } else { "clump" }), s)
+            if k == 3 {
+                let Some(pt) = d.get(TOP, "point") else { panic(s) }
+                crown = point(d, pt)
+            }
+        } else {
+            assert(num(d, TOP, "distance") < -0.5, f"inside the trunk: {s}")
+        }
+    }
+    // Dragged: a point on the crown's side 25 cm out, written through `wrela edit`.
+    let to = crown + vec3(0.25, 0.0, 0.0)
+    var m = Box::new(
+        act.start(
+            String::from("move"),
+            Vec::from([f(crown.x), f(crown.y), f(crown.z), f(to.x), f(to.y), f(to.z)]),
+        ),
+    )
+    var moved: Option<Doc> = None
+    while moved.is_none() {
+        match m.get_mut().resume(mut lens) {
+            Step::Yielded => yield,
+            Step::Done(d) => moved = Some(take d),
+        }
+    }
+    let Some(md) = take moved else { panic("the move") }
+    let mall = md.write(TOP)
+    let Some(changed) = md.get(TOP, "literals") else { panic(mall.as_str()) }
+    assert(md.count(changed) >= 1 && md.count(changed) <= 8, mall.as_str())
+    assert(num(md, TOP, "error_mm") <= 1.0, mall.as_str())
+    let Some(target) = md.get(TOP, "to") else { panic(mall.as_str()) }
+    let landing = point(md, target)
+    var wr = Box::new(act.start(String::from("write"), Vec::new()))
+    var wrote: Option<Doc> = None
+    while wrote.is_none() {
+        match wr.get_mut().resume(mut lens) {
+            Step::Yielded => yield,
+            Step::Done(d) => wrote = Some(take d),
+        }
+    }
+    let Some(wd) = take wrote else { panic("the write") }
+    let wall = wd.write(TOP)
+    let Some(a) = wd.get(TOP, "answer") else { panic(wall.as_str()) }
+    let Some(ok) = wd.get(a, "written") else { panic(wall.as_str()) }
+    assert(wd.is_true(ok), wall.as_str())
+    // The copy rebuilt from its written files, measured on the CPU.
+    var options = toolchain::options()
+    options.overrides.push(
+        Override { name: String::from("engine"), dir: String::from("ws/engine") },
+    )
+    var rb = toolchain::build("scratch/tree", "scratch/tree-rebuilt", options)
+    var rebuilt = rb.poll()
+    while rebuilt.is_none() {
+        yield
+        rebuilt = rb.poll()
+    }
+    let Some(rp) = take rebuilt else { panic("no answer") }
+    let Ok(result) = toolchain::read_built(take rp) else { panic("the rebuild's request") }
+    assert(result.ok, "the written tree builds")
+    var l = drive::load("scratch/tree-rebuilt", drive::cpu())
+    var loaded = l.poll()
+    while loaded.is_none() {
+        yield
+        loaded = l.poll()
+    }
+    let Some(lp) = take loaded else { panic("no answer") }
+    let Ok(it) = drive::read_loaded(take lp) else { panic("the rebuilt tree loads") }
+    var i = drive::init(it.build)
+    while i.poll().is_none() { yield }
+    var c = drive::call(it.build, "distance", [f(landing.x), f(landing.y), f(landing.z)])
+    var called = c.poll()
+    while called.is_none() {
+        yield
+        called = c.poll()
+    }
+    let Some(cp) = take called else { panic("no answer") }
+    let Ok(ran) = drive::read_ran(take cp) else { panic("distance") }
+    let Scalar::F32(d) = ran.results[0] else { panic("an f32") }
+    assert(abs(d) <= 0.001, f"the rebuilt tree is {abs(d) * 1000.0} mm from the target")
+}
+
+/// The ball, then its copies for a comparison.
+@job
+fn ball(name: take String, subject: take String) {
+    var files: Vec<(String, String)> = Vec::new()
+    files.push((String::from("subject.wrela"), take subject))
+    var w = Box::new(write_package.start(take name, take files))
+    loop {
+        match w.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => return,
+        }
+    }
+}
+
+/// A comparison's answer: `words` as the command line gives them (the subject first), on the
+/// lens `shared` built on the subject, or one built for it now.
+@job
+fn compared(words: take Vec<String>, shared: take Option<Built>) -> Doc {
+    let Some(c) = read_command(words.clone()) else { panic("a command") }
+    let subject = words[0].clone()
+    var b = Box::new(lens_built.start(place(subject.as_str())))
+    var built: Option<Built> = take shared
+    while built.is_none() {
+        match b.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(x) => built = Some(take x),
+        }
+    }
+    let Some(lb) = take built else { panic("built") }
+    var rest: Vec<String> = Vec::new()
+    for k in 2..c.rest.len() {
+        rest.push(c.rest[k].clone())
+    }
+    var j = Box::new(
+        compare.start(place(subject.as_str()), take lb, c.rest[1].clone(), take rest, c.clone()),
+    )
+    loop {
+        match j.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(x) => {
+                let Ok(answered) = take x else { panic("the comparison") }
+                let (status, answer) = take answered
+                assert(status == 0, "the comparison's words")
+                let Some(d) = parse(answer.as_str()) else { panic(answer.as_str()) }
+                return d
+            },
+        }
+    }
+}
+
+/// The size of the PNG at `path`.
+@job
+fn png_size(path: take String) -> (u32, u32) {
+    var r = Box::new(read_png.start(take path))
+    loop {
+        match r.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(x) => {
+                let Ok(Some(image)) = take x else { panic("a PNG") }
+                let (w, h, _) = take image
+                return (w, h)
+            },
+        }
+    }
+}
+
+/// `beside`: a ball beside a photo of itself (a dark disc drawn where the ball is, registered)
+/// covers it; moved 10 cm, it covers less.
+@job
+fn a_ball_beside_its_own_photo_covers_it(ball_built: take Built) {
+    // The photo: 400×300 pixels, 2 mm a pixel, the ground on row 280, z = 0 on column 200; a
+    // dark disc where the ball is (0.30 m across its radius, its centre 0.30 m up).
+    var rgba: Vec<u8> = Vec::with_capacity(400 * 300 * 4)
+    for y in 0..300 {
+        for x in 0..400 {
+            let z = (f32(x) + 0.5 - 200.0) * 0.002
+            let up = (280.0 - f32(y) - 0.5) * 0.002
+            let v = if z * z + (up - 0.30) * (up - 0.30) < 0.30 * 0.30 { 40 } else { 240 }
+            rgba.push(v)
+            rgba.push(v)
+            rgba.push(v)
+            rgba.push(if v == 40 { 255 } else { 240 })
+        }
+    }
+    var s = Box::new(
+        save_png.start(String::from("scratch/photo.png"), width: 400, height: 300, rgba: take rgba),
+    )
+    loop {
+        match s.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(x) => {
+                assert(x.is_ok(), "the photo")
+                break
+            },
+        }
+    }
+    var m = Box::new(
+        write_text.start(
+            String::from("scratch/photo.toml"),
+            String::from(
+                "ground_px = 280\nmetres_per_px = 0.002\nz0_px = 200\nfaces = \"right\"\n",
+            ),
+        ),
+    )
+    loop {
+        match m.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    var moved = Box::new(
+        ball.start(
+            String::from("beside_moved"),
+            replace(BALL, "vec3(0.0, 0.30, 0.0)", "vec3(0.0, 0.30, 0.10)"),
+        ),
+    )
+    loop {
+        match moved.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    for k in 0..2 {
+        let name = if k == 0 { "ball" } else { "beside_moved" }
+        var words: Vec<String> = Vec::new()
+        for word in [name, "beside", "photo.toml", "--png", "beside.png"] {
+            words.push(String::from(word))
+        }
+        let shared = if k == 0 { Some(ball_built.clone()) } else { None }
+        var cmp = Box::new(compared.start(take words, take shared))
+        var answered: Option<Doc> = None
+        while answered.is_none() {
+            match cmp.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(d) => answered = Some(take d),
+            }
+        }
+        let Some(d) = take answered else { panic("an answer") }
+        let all = d.write(TOP)
+        let share = num(d, TOP, "silhouette_on_dark_photo_pixels")
+        if k == 0 {
+            // Pixels on the disc's edge blend it with the background.
+            assert(share > 0.95, all.as_str())
+            var p = Box::new(png_size.start(String::from("scratch/beside.png")))
+            loop {
+                match p.get_mut().resume() {
+                    Step::Yielded => yield,
+                    Step::Done(size) => {
+                        assert(size == (3 * 448, 448), "three panels at half size")
+                        break
+                    },
+                }
+            }
+        } else {
+            assert(share < 0.9, all.as_str())
+        }
+    }
+}
+
+/// `variants` and `sweep`: two balls side by side, and one literal swept, each a numbered
+/// panel.
+@job
+fn variants_and_sweeps_are_numbered_panels(ball_built: take Built) {
+    var bl = Box::new(
+        ball.start(String::from("variant_b"), replace(BALL, "sphere(0.30)", "sphere(0.20)")),
+    )
+    loop {
+        match bl.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    var words: Vec<String> = Vec::new()
+    for word in ["ball", "variants", "variant_b", "--png", "variants.png"] {
+        words.push(String::from(word))
+    }
+    var cmp = Box::new(compared.start(take words, Some(ball_built.clone())))
+    var answered: Option<Doc> = None
+    while answered.is_none() {
+        match cmp.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(d) => answered = Some(take d),
+        }
+    }
+    let Some(v) = take answered else { panic("an answer") }
+    let Some(panels) = v.get(TOP, "panels") else { panic("panels") }
+    assert(v.count(panels) == 2, v.write(TOP).as_str())
+    var p = Box::new(png_size.start(String::from("scratch/variants.png")))
+    loop {
+        match p.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(size) => {
+                let (w, _) = size
+                assert(w == 2 * 448, "two panels")
+                break
+            },
+        }
+    }
+    // The radius: the literal `0.30` at column 12 of subject.wrela.
+    var o = Box::new(opened.start(ball_built.clone(), 64, cpu: true, reference: None))
+    var opened_lens: Option<Lens> = None
+    while opened_lens.is_none() {
+        match o.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(x) => opened_lens = Some(take x),
+        }
+    }
+    let Some(ol) = take opened_lens else { panic("opened") }
+    var lens = take ol
+    var cl = drive::call(lens.b, "literals", [])
+    while cl.poll().is_none() { yield }
+    var l = Box::new(logs.start())
+    var radius = 0
+    loop {
+        match l.get_mut().resume(mut lens) {
+            Step::Yielded => yield,
+            Step::Done(x) => {
+                let Ok(lines) = take x else { panic("lines") }
+                let Some(j) = last_json(lines) else { panic("literals") }
+                let Some(d) = parse(j.as_str()) else { panic("JSON") }
+                radius = literal_at(d, "subject.wrela", "0.30", 12)
+                break
+            },
+        }
+    }
+    var cls = drive::close(lens.b)
+    while cls.poll().is_none() { yield }
+    var sweep: Vec<String> = Vec::new()
+    sweep.push(String::from("ball"))
+    sweep.push(String::from("sweep"))
+    sweep.push(String::from(f"{radius}"))
+    for word in ["0.1", "0.2", "0.3", "--png", "sweep.png"] {
+        sweep.push(String::from(word))
+    }
+    var sw = Box::new(compared.start(take sweep, Some(ball_built.clone())))
+    var swept: Option<Doc> = None
+    while swept.is_none() {
+        match sw.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(d) => swept = Some(take d),
+        }
+    }
+    let Some(s) = take swept else { panic("an answer") }
+    let Some(sp) = s.get(TOP, "panels") else { panic("panels") }
+    assert(s.count(sp) == 3, s.write(TOP).as_str())
+    let expected = [0.1, 0.2, 0.3]
+    for k in 0..3 {
+        let Some(p) = s.at(sp, k) else { panic("a panel") }
+        assert(f32(num(s, p, "value")) == expected[k], s.write(TOP).as_str())
+    }
+}
+
+/// A comparison draws only the final image of consecutive view controls: the pixels are those
+/// of each control drawn in turn, also after a literal changed (the field reaches the GPU before
+/// the image).
+@job
+fn deferred_view_controls_keep_the_same_pixels_after_literal_changes(lb: take Built) {
+    for set in [false, true] {
+        var images: Vec<Vec<u8>> = Vec::new()
+        var framings: Vec<String> = Vec::new()
+        for batched in [false, true] {
+            // A fresh lens each time.
+            var o = Box::new(opened.start(lb.clone(), 64, cpu: false, reference: None))
+            var opened_lens: Option<Lens> = None
+            while opened_lens.is_none() {
+                match o.get_mut().resume() {
+                    Step::Yielded => yield,
+                    Step::Done(x) => opened_lens = Some(take x),
+                }
+            }
+            let Some(ol) = take opened_lens else { panic("opened") }
+            var lens = take ol
+            var v = Box::new(call.start(String::from("view"), Vec::from([u(0)]), batched))
+            loop {
+                match v.get_mut().resume(mut lens) {
+                    Step::Yielded => yield,
+                    Step::Done(x) => {
+                        assert(x.is_ok(), "view")
+                        break
+                    },
+                }
+            }
+            var l = Box::new(logs.start())
+            var framing = look::Framing { z: 0.0, y: 0.0, half: 0.0 }
+            loop {
+                match l.get_mut().resume(mut lens) {
+                    Step::Yielded => yield,
+                    Step::Done(x) => {
+                        let Ok(lines) = take x else { panic("lines") }
+                        let Some(j) = last_json(lines) else { panic("the view's answer") }
+                        let Ok(fr) = look::own_framing(j.as_str()) else { panic("a framing") }
+                        framing = fr
+                        break
+                    },
+                }
+            }
+            framings.push(String::from(f"{framing.z} {framing.y} {framing.half}"))
+            var calls: Vec<(String, Vec<Scalar>)> = Vec::new()
+            if set {
+                calls.push((String::from("set"), Vec::from([u(0), f(0.15)])))
+            }
+            calls.push(
+                (
+                    String::from("zoom"),
+                    Vec::from([f(0.0), f(framing.y), f(framing.z), f(framing.half)]),
+                ),
+            )
+            calls.push((String::from("mode"), Vec::from([u(2), u(0)])))
+            calls.push((String::from("view"), Vec::from([u(0)])))
+            if batched {
+                var s = Box::new(main::shot.start(take calls))
+                loop {
+                    match s.get_mut().resume(mut lens) {
+                        Step::Yielded => yield,
+                        Step::Done(x) => {
+                            let Ok(px) = take x else { panic("one image after view controls") }
+                            images.push(take px)
+                            break
+                        },
+                    }
+                }
+            } else {
+                for k in 0..calls.len() {
+                    let (name, args) = calls[k].clone()
+                    var c = Box::new(call.start(take name, take args, deferred: false))
+                    loop {
+                        match c.get_mut().resume(mut lens) {
+                            Step::Yielded => yield,
+                            Step::Done(x) => {
+                                assert(x.is_ok(), "render each control separately")
+                                break
+                            },
+                        }
+                    }
+                }
+                var p = Box::new(pixels.start())
+                loop {
+                    match p.get_mut().resume(mut lens) {
+                        Step::Yielded => yield,
+                        Step::Done(px) => {
+                            images.push(take px)
+                            break
+                        },
+                    }
+                }
+            }
+            var cl = drive::close(lens.b)
+            while cl.poll().is_none() { yield }
+        }
+        assert(framings[0] == framings[1], "the framing without an extra image")
+        assert(images[0] == images[1], if set { "after a literal changed" } else { "as built" })
+    }
+}
+
+/// The comparisons and the view controls they batch, on one build of the ball: `beside`,
+/// `variants` and `sweep`, and the pixels of deferred view controls.
+@test(tool, read: [("ws", "../..")], budget: 600)
+@job
+fn the_ball_compares_by_eye() {
+    var bl = Box::new(ball.start(String::from("ball"), String::from(BALL)))
+    loop {
+        match bl.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    var b = Box::new(lens_built.start(place("ball")))
+    var built: Option<Built> = None
+    while built.is_none() {
+        match b.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(x) => built = Some(take x),
+        }
+    }
+    let Some(lb) = take built else { panic("built") }
+    var a = Box::new(a_ball_beside_its_own_photo_covers_it.start(lb.clone()))
+    loop {
+        match a.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    var v = Box::new(variants_and_sweeps_are_numbered_panels.start(lb.clone()))
+    loop {
+        match v.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    var d = Box::new(
+        deferred_view_controls_keep_the_same_pixels_after_literal_changes.start(take lb),
+    )
+    loop {
+        match d.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+}

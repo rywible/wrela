@@ -1,7 +1,7 @@
 // The grazer as a program. It realizes the grazer's mesh once (sketch 02's extraction) and walks
 // it on the spot with sketch 01's cycle, skinned by the palette the gait's pose gives
 // (`engine::walk`). Its exports give the tests (subjects.rs) the grazer's distance and points
-// around it; the lens draws it too (`wrela studio content/grazer`).
+// around it; the lens draws it too (`wrela tool studio -- content/grazer`).
 
 use creature::{Coat, grazer}
 use engine::creature::Creature
