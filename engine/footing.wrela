@@ -586,6 +586,16 @@ const STEPS = [
 ]
 
 impl Walkable {
+    /// Takes out each cell that `o` blocks, as `walkable_of` judges it (a player and `CLEAR`
+    /// round it): for solids that the mask's own obstacles don't hold.
+    pub fn without(mut self, o: Obstacles) {
+        for c in 0..self.grid.cells() {
+            if self.ok[c] && o.blocked(self.grid.centre(c), BODY + CLEAR) {
+                self.ok[c] = false
+            }
+        }
+    }
+
     /// The walkable cell nearest `p` (looked for within 20 cells), or `grow::NONE`.
     pub fn nearest(self, p: vec2) -> u32 {
         let g = self.grid
@@ -849,7 +859,42 @@ fn a_way_doesnt_cross_a_steep_band_between_two_cells() {
     assert(!crossed.way(vec2(5.0, 5.0), vec2(15.0, 5.0)).is_empty(), "a gentle band is crossed")
 }
 
-/// A body on ground too steep to stand on steps off it, down, but not up it (the floor's walk
+/// A solid that the mask's obstacles don't hold, taken out of it, closes the cells round it as
+/// the mask's own would, and a way goes round it.
+@test
+fn a_mask_without_a_solid_closes_its_cells_as_its_own_obstacles_do() {
+    let (w, o) = dry()
+    let flat = Band { from: 30.0, to: 31.0, rise: 0.0 }
+    let log = Obstacle {
+        a: vec2(10.0, 2.0),
+        b: vec2(10.0, 18.0),
+        r: 0.4,
+        thing: Thing::Log,
+        depth: 1.0 / 0.0,
+    }
+    let own = walkable_of(
+        flat,
+        w,
+        Obstacles::of([log], vec2(0.0), vec2(20.0)),
+        vec2(0.0),
+        vec2(20.0),
+        1.0,
+    )
+    var mask = walkable_of(flat, w, o, vec2(0.0), vec2(20.0), 1.0)
+    assert(!mask.way(vec2(5.0, 10.0), vec2(15.0, 10.0)).is_empty(), "open ground is crossed")
+    mask.without(Obstacles::of([log], vec2(0.0), vec2(20.0)))
+    assert(mask.ok == own.ok, "the cells closed differ from the mask's own obstacles'")
+    let way = mask.way(vec2(5.0, 10.0), vec2(15.0, 10.0))
+    assert(!way.is_empty(), "no way round the log")
+    for p in way {
+        assert(
+            abs(p.x - 10.0) > BODY + 0.4 || p.y < 2.0 || p.y > 18.0,
+            f"the way crosses the log at {p}",
+        )
+    }
+}
+
+/// A body on ground too steep to stand on steps off it, down, but not up it/// A body on ground too steep to stand on steps off it, down, but not up it (the floor's walk
 /// stopped for good on the crag's talus); one that stands is still held back from ground too
 /// steep.
 @test

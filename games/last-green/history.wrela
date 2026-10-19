@@ -250,8 +250,10 @@ fn checked() -> Vec<(String, Vec<u8>)> {
     let c = check(ground::GROUND, m, species::habits(), e, OBSTACLES, stones::stones(m), FULL)
     let text = report(ground::GROUND, m, c)
     // The floor's walk, on a walkable mask a metre a cell that knows the logs, walls and
-    // thickets (the check's sight grid, 4 m a cell, doesn't).
-    let mask = walkable_of(ground::GROUND, m.water, OBSTACLES, map::LO, map::HI, 1.0)
+    // thickets (the check's sight grid, 4 m a cell, doesn't), and the fallen wood a player
+    // can't cross as the sim fits it (`solid_wood`).
+    var mask = walkable_of(ground::GROUND, m.water, OBSTACLES, map::LO, map::HI, 1.0)
+    mask.without(solid_wood(decisions().trees))
     let (walk, missed) = mask.tour(nearest_first(tour_stops()), 2.0)
     print(f"the floor's walk: {walk.len()} points; {missed.len()} stops it can't reach")
     for p in missed {
@@ -317,6 +319,44 @@ fn checked() -> Vec<(String, Vec<u8>)> {
             (String::from("shots.json"), Vec::from(shots.as_bytes())),
         ],
     )
+}
+
+/// The fallen wood a player can't cross: each log's capsules as the sim fits them round the
+/// player (`logs::obstacles`, `wildwood::trunks_round`), higher than the travel's clearance.
+/// `OBSTACLES` holds only the thicker logs, and coarsely: a way planned without these led the
+/// floor's walk into a log on a slope it can't go round.
+fn solid_wood(trees: [engine::grow::Tree]) -> Obstacles {
+    var parts: Vec<WoodPart> = Vec::new()
+    for t in trees {
+        if t.state == engine::grow::State::Log {
+            if parts.is_empty() || parts[parts.len() - 1].logs.len() == 256 {
+                parts.push(WoodPart { logs: Vec::new(), solid: Vec::new() })
+            }
+            parts[parts.len() - 1].logs.push(t)
+        }
+    }
+    parts.par_each_mut(|part| {
+        borrow g = ground::GROUND
+        for o in logs::obstacles(
+            part.logs,
+            |at: vec2| engine::grow::Ground::height(g, at.x, at.y),
+        ) {
+            if !o.cleared(world::TRAVEL.clearance) {
+                part.solid.push(o)
+            }
+        }
+    })
+    var all: Vec<engine::footing::Obstacle> = Vec::new()
+    for mut part in parts {
+        all.append(mut part.solid)
+    }
+    Obstacles::of(all, domain_lo(), domain_hi())
+}
+
+/// Fallen trees, and the solid wood of theirs that `solid_wood` finds, a helper's share.
+struct WoodPart {
+    logs: Vec<engine::grow::Tree>,
+    solid: Vec<engine::footing::Obstacle>,
 }
 
 /// A shot's least share of its subject seen (`interest::transmit` from its eye to what it looks
