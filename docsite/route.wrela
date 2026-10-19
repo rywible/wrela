@@ -107,8 +107,7 @@ pub fn follow(from: str, to: str) -> Option<Target> {
 fn an_address_names_a_page_and_a_place_and_back() {
     let r = Route::of("/v0.1/?x=1#std/arena:arena-push")
     assert(r == Route { page: String::from("std/arena.md"), anchor: String::from("arena-push") })
-    let frag = r.fragment()
-    assert(frag.as_str() == "#std/arena:arena-push")
+    assert(r.fragment().as_str() == "#std/arena:arena-push")
     let top = Route::of("/#spec/lexical")
     assert(top.anchor.is_empty() && top.page.as_str() == "spec/lexical.md")
     for front in ["/", "/#", "/#../secret", "/#a b", "/#std/io:<x>"] {

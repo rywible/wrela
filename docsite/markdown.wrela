@@ -564,16 +564,13 @@ fn blocks_read_as_the_export_and_the_spec_write_them() {
             ),
     )
     assert(b[0].level == 1 && b[0].anchor.as_str() == "std-arena")
-    // Each value is bound before it's compared: `assert` frees a temporary too soon (#240).
-    let para = plain(b[1].runs)
-    assert(para.as_str() == "Arenas and handles. On two lines.")
+    assert(plain(b[1].runs).as_str() == "Arenas and handles. On two lines.")
     // A repeated heading's anchor is numbered, as the export numbers it.
     assert(b[2].anchor.as_str() == "arena" && b[11].anchor.as_str() == "arena-2")
     // An item's source links to its line.
     assert(b[3].runs[2].link.as_str() == "https://x.dev/arena.wrela#L12")
     assert(b[4].lang.as_str() == "wrela" && b[4].code.as_str() == "pub struct Arena<T>")
-    let item = plain(b[5].runs)
-    assert(item.as_str() == "one bold more of one" && b[5].runs[1].style == BOLD)
+    assert(plain(b[5].runs).as_str() == "one bold more of one" && b[5].runs[1].style == BOLD)
     assert(b[6].level == 1 && b[6].runs[1].style == CODE && b[7].number == 3)
     assert(b[9].columns == 2 && b[9].cells.len() == 4 && b[9].cells[2][0].text.as_str() == "x|y")
     assert(b[9].cells[3][0].style == ITALIC)
@@ -596,8 +593,7 @@ fn inline_marks_style_runs_but_words_and_sums_stay_plain() {
     let flat = plain(cited)
     assert(flat.as_str() == "&T isn't a type (ty.no-ref). A swizzle (v.x, v.y).", flat.as_str())
     assert(cited[4].style == CODE)
-    let accents = plain(inlines("é **ü** `ρ`"))
-    assert(accents.as_str() == "é ü ρ")
+    assert(plain(inlines("é **ü** `ρ`")).as_str() == "é ü ρ")
     assert(r[r.len() - 1].style == 0)
     for (heading, want) in [
         ("6.1 Values, copies and moves", "6-1-values-copies-and-moves"),
