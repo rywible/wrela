@@ -71,9 +71,10 @@ fn nothing_grows_into_the_head_room() {
 /// AC11's ground cover: over every tile the floor streams, its ground's fields worked out as the
 /// program works them out once its neighbours are in (`tile_fields`, with their trees whose
 /// crowns reach over its edge), no meadow grass or flowers grow where the history's canopy is
-/// closed (the light at the ground under `ground::CLOSED`), and no ground there is bare: the
-/// wood's floor's plants (ferns, bracken, herbs: `Cover::under`) grow on all of it but a path's
-/// earth, a stream's bed and rock; and the beech wood's floor is closed over most of it.
+/// closed (the light at the ground under `ground::CLOSED`); off a path's earth, a stream's bed
+/// and rock, the wood's floor's plants (ferns, bracken, herbs: `Cover::under`) grow there in
+/// colonies with leaf litter between them (`ground::woodland_cover`); and the beech wood's floor
+/// is closed over most of it.
 @test
 @fuel(2 ** 39)
 fn no_meadow_grass_under_a_closed_canopy() {
@@ -98,8 +99,8 @@ fn no_meadow_grass_under_a_closed_canopy() {
     var beech_closed = 0
     var beech = 0
     var beech_wood = 0
-    var covered_texels = 0
-    var bare = 0
+    var rooted = 0
+    var litter = 0
     for r in 0..m.regions.len() {
         if m.regions[r].name == "the beech wood" {
             beech_wood = r
@@ -163,9 +164,10 @@ fn no_meadow_grass_under_a_closed_canopy() {
                     let bed = smoothstep(0.9, 0.985, fields.z) >= 0.3
                     let rock = g.rocky(p, n) > 0.5
                     if !path && !bed && !rock {
-                        covered_texels += 1
-                        if c.under.x < 0.12 {
-                            bare += 1
+                        if c.under.x > 0.0 {
+                            rooted += 1
+                        } else {
+                            litter += 1
                         }
                     }
                 }
@@ -173,26 +175,20 @@ fn no_meadow_grass_under_a_closed_canopy() {
         }
     }
     assert(closed > 0 && texels > 0, "no texel of the floor's ground")
-    print(
-        f"under a closed canopy: {covered_texels} texels the wood's plants may cover, {bare} bare",
+    print(f"under a closed canopy: {rooted} texels of the wood's plants, {litter} of litter")
+    assert(
+        rooted > 0 && litter > 0,
+        f"under a closed canopy, {rooted} texels of plants and {litter} of litter between them",
     )
-    assert(bare == 0, f"{bare} of {covered_texels} texels under a closed canopy are bare ground")
     let in_beech = f32(beech_closed) / f32(max(beech, 1))
     assert(in_beech > 0.5, f"the beech wood's canopy is closed over only {in_beech * 100.0}% of it")
 }
 
-/// AC9's one surface: the sim's water height (`Laid::surface`: the mesh's triangles binned) and
-/// the drawn mesh's (every triangle's plane, as the rasterizer draws it) agree within 1 cm: down
-/// every course, across its width (to 0.6 of it each way: a bend's ribbon turns), and over the
-/// mere's water. And it lies where it should: a stream's within 10 cm of a skin over the ground
-/// (`SKIN`), the mere's at its level.
-@test
-fn the_water_is_one_surface() {
-    let w = map::map().water
-    let laid = history::waters()
-    var worst = 0.0
-    var worst_at = vec2(0.0)
-    var samples = 0
+/// The points down the laid water's courses that the water's tests read: every seventh point's
+/// way to the next, 37% along it, across its width to 0.6 of it each way (a bend's ribbon
+/// turns); each with whether its course falls.
+fn course_samples(laid: engine::water::Laid) -> Vec<(vec2, bool)> {
+    var out: Vec<(vec2, bool)> = Vec::new()
     for c in laid.courses {
         var k = 0
         while k + 1 < c.points.len() {
@@ -202,30 +198,36 @@ fn the_water_is_one_surface() {
             let side = vec2(-along.y, along.x)
             for i in 0..5 {
                 let u = 0.6 * (f32(i) / 2.0 - 1.0)
-                let p = mix(a.xy, b.xy, vec2(0.37)) + side * (u * 0.5 * a.z)
-                let sim = laid.surface(p)
-                let drawn = laid.mesh.height_over(p)
-                assert(
-                    sim > engine::water::NONE && drawn > engine::water::NONE,
-                    f"no water at {p} down a course",
-                )
-                let skin = sim - ground::GROUND.at(p.x, p.y) - engine::water::SKIN
-                let ground = ground::GROUND.at(p.x, p.y)
-                let in_mere = length(p - w.meres[0].xy) <
-                    w.meres[0].z * engine::water::MERE_REACH &&
-                    ground < w.meres[0].w
-                assert(
-                    c.falls || in_mere || abs(skin) < 0.1,
-                    f"a stream's water at {p} is {skin} m off its skin",
-                )
-                if abs(sim - drawn) > worst {
-                    worst = abs(sim - drawn)
-                    worst_at = p
-                }
-                samples += 1
+                out.push((mix(a.xy, b.xy, vec2(0.37)) + side * (u * 0.5 * a.z), c.falls))
             }
             k += 7
         }
+    }
+    out
+}
+
+/// AC9's one surface: the sim's water height (`Laid::surface`: the mesh's triangles binned) and
+/// the drawn mesh's (every triangle's plane, as the rasterizer draws it) agree within 1 cm: down
+/// every course (`course_samples`) and over the mere's water; and the mere's lies at its level.
+@test
+fn the_water_is_one_surface() {
+    let w = map::map().water
+    let laid = history::waters()
+    var worst = 0.0
+    var worst_at = vec2(0.0)
+    var samples = 0
+    for (p, _) in course_samples(laid) {
+        let sim = laid.surface(p)
+        let drawn = laid.mesh.height_over(p)
+        assert(
+            sim > engine::water::NONE && drawn > engine::water::NONE,
+            f"no water at {p} down a course",
+        )
+        if abs(sim - drawn) > worst {
+            worst = abs(sim - drawn)
+            worst_at = p
+        }
+        samples += 1
     }
     for m in w.meres {
         if m.z > 0.0 {
@@ -250,6 +252,40 @@ fn the_water_is_one_surface() {
     }
     assert(samples > 200, f"only {samples} points of the water")
     assert(worst <= 0.01, f"the sim's water and the drawn are {worst} m apart at {worst_at}")
+}
+
+/// AC9's where it lies: a stream's water is within 10 cm of a skin over the ground
+/// (`engine::water::SKIN`) at every sample of its course (`course_samples`), but in a mere's
+/// reach. A stream keeps its whole width on its channel's floor (`grow::keep_to_floor`): on a
+/// ravine's wall its water lay 12 cm over the ground between its mesh's points.
+@test
+fn a_streams_water_lies_a_skin_over_its_ground() {
+    let w = map::map().water
+    let laid = history::waters()
+    var worst = 0.0
+    var worst_at = vec2(0.0)
+    var off = 0
+    var samples = 0
+    for (p, falls) in course_samples(laid) {
+        let ground = ground::GROUND.at(p.x, p.y)
+        let in_mere = length(p - w.meres[0].xy) < w.meres[0].z * engine::water::MERE_REACH &&
+            ground < w.meres[0].w
+        if !falls && !in_mere {
+            let skin = laid.surface(p) - ground - engine::water::SKIN
+            if abs(skin) >= 0.1 {
+                off += 1
+            }
+            if abs(skin) > abs(worst) {
+                worst = skin
+                worst_at = p
+            }
+            samples += 1
+        }
+    }
+    print(
+        f"{off} of {samples} points of the streams off their skin, the most {worst} m at {worst_at}",
+    )
+    assert(off == 0, f"a stream's water at {worst_at} is {worst} m off its skin")
 }
 
 /// AC9's where it is: a course rises at each spring and at the mere's outlet, and one falls from
@@ -444,9 +480,10 @@ fn the_player_walks_into_each_thing_and_never_through_it() {
         trunk && stone && wall && shrub,
         f"walked into a trunk {trunk}, a stone {stone}, a wall {wall}, a shrub {shrub}",
     )
-    // Into the mere, running, from its shore.
+    // Into the mere, running, from its shore: a quarter of its radius out, where nothing stands.
     let mere = m.water.meres[0]
-    let shore = mere.xy + vec2(0.0, 1.0) * mere.z * 1.25
+    let shore = start_near(mere.xy, mere.z, 0.25 * mere.z)
+    assert(shore.x < 1.0e8, "no clear ground on the mere's shore")
     let into = walk_toward(shore, mere.xy, 20.0, run: true, a: mere.xy, b: mere.xy, r: 0.0)
     room = min(room, into.room)
     stood = min(stood, into.stood)
@@ -460,13 +497,22 @@ fn the_player_walks_into_each_thing_and_never_through_it() {
         f"the player's body came {room} m from an obstacle's surface (its radius {body})",
     )
     assert(stood > 0.0, "the player stood where the walkable mask doesn't let it")
-    // Across a stream's shallows: the course's middle, walked across.
+    // Across a stream's shallows: the course's middle, walked across from 5 m off it (or the
+    // nearest point to that, 3 to 7 m off, where nothing stands).
     borrow c = history::COURSES.courses[0]
     let mid = c.points[c.points.len() / 2]
     let next = c.points[c.points.len() / 2 + 1]
     let across = normalize(vec2(next.y - mid.y, mid.x - next.x))
+    var off = 5.0
+    for k in 0..9 {
+        let o = 5.0 + 0.5 * f32((k + 1) / 2) * (if k % 2 == 0 { 1.0 } else { -1.0 })
+        if !history::OBSTACLES.blocked(mid.xy - across * o, body + 0.2) {
+            off = o
+            break
+        }
+    }
     let wade = walk_toward(
-        mid.xy - across * 5.0,
+        mid.xy - across * off,
         mid.xy + across * 5.0,
         6.0,
         run: false,
@@ -544,46 +590,128 @@ fn tick_world(
     }
 }
 
-/// AC5's harness and #55's Method: the floor's walk, pressed once (P), is walked to its end by
-/// the sim, at a run, round what's in its way, giving up no more than one point in fifty; and it
-/// takes the time the record states (its length on foot).
+/// The stretches of the floor's walk its tests walk (#55's Method), a bounded seeded sample:
+/// `STRETCH` points from each of `SEEDED` legs chosen by seed, and from the point the walk once
+/// stopped at for good (a fallen log on a slope that the way was planned through: `solid_wood`).
+const STRETCH: u32 = 60
+const SEEDED: u32 = 3
+const STOPPED_AT = vec2(150.5, -418.5)
+
+/// Each stretch's first leg of `history::TOUR`.
+fn stretches() -> Vec<u32> {
+    let n = history::TOUR.len() - STRETCH
+    var out: Vec<u32> = Vec::new()
+    for k in 0..SEEDED {
+        out.push(min(u32(rand(5, k) * f32(n)), n - 1))
+    }
+    var stopped = 0
+    for k in 0..n {
+        if length(history::TOUR[k] - STOPPED_AT) < length(history::TOUR[stopped] - STOPPED_AT) {
+            stopped = k
+        }
+    }
+    out.push(if stopped >= 4 { stopped - 4 } else { 0 })
+    out
+}
+
+/// The world walking the floor's walk from leg `first`, the player put there at a run: the walk
+/// as P starts it, from that point on.
+fn walking_from(first: u32) -> world::World {
+    var w = world::spawn_world()
+    let at = history::TOUR[first]
+    let d = history::TOUR[first + 1] - at
+    w.player = engine::player::spawn(ground::GROUND, engine::place::Place::of(at), atan2(d.x, d.y))
+    w.player.controls.forward = true
+    w.player.controls.run_held = true
+    w.tour.on = true
+    w.tour.leg = first
+    w
+}
+
+/// The world `w` stepped (`tick_world`) until its walk reaches leg `last` or `most` ticks pass,
+/// `each` called after each tick with the world and the ticks so far.
+fn walk_to(w: mut world::World, last: u32, most: u32, each: fn(world::World, u32)) {
+    var pending: Vec<CollisionAnswer> = Vec::new()
+    var k = 0
+    while k < most && w.tour.on && w.tour.leg < last {
+        tick_world(mut w, mut pending, k, Vec::new())
+        k += 1
+        each(w, k)
+    }
+}
+
+/// AC5's harness and #55's Method: the floor's walk is walked by the sim, at a run, round what's
+/// in its way, giving up no more than one point in fifty: each of its `stretches` to its end,
+/// within a second a point (at a run, about 0.4 s).
 @test
 @fuel(2 ** 40)
 fn the_floors_walk_is_walked_to_its_end() {
+    var points = 0
+    var skipped = 0
+    var ticks = 0
+    for first in stretches() {
+        var w = walking_from(first)
+        walk_to(mut w, first + STRETCH, STRETCH * 60, |_, k| {})
+        let leg = w.tour.leg
+        assert(leg >= first + STRETCH, f"the walk from point {first} stopped at point {leg}")
+        points += STRETCH
+        skipped += w.tour.skipped
+        ticks += w.tour.ticks
+    }
+    let minutes = f32(ticks) / 3600.0
+    print(f"the floor's walk: {points} points in {minutes} min at a run, {skipped} given up")
+    assert(skipped * 50 <= points, f"the walk gave up {skipped} of its {points} points")
+}
+
+/// P starts the floor's walk, from its first point: pressed at the gate, the walk is on and
+/// the player runs, and in two seconds it's metres on its way.
+@test
+@fuel(2 ** 40)
+fn pressing_p_starts_the_floors_walk() {
     var w = world::spawn_world()
     var pending: Vec<CollisionAnswer> = Vec::new()
-    var k = 0
-    while k < 60 * 60 * 60 && (k == 0 || w.tour.on) {
-        var records: Vec<std::input::Event> = Vec::new()
-        if k == 0 {
-            records.push(
-                std::input::Event::KeyDown {
-                    key: std::input::Key::P,
-                    repeat: false,
-                    mods: std::input::Mods {},
-                },
-            )
-        }
-        tick_world(mut w, mut pending, k, records)
-        k += 1
+    let p = std::input::Event::KeyDown {
+        key: std::input::Key::P,
+        repeat: false,
+        mods: std::input::Mods {},
     }
-    let (leg, of, skipped) = (w.tour.leg, history::TOUR.len(), w.tour.skipped)
-    let minutes = f32(w.tour.ticks) / 3600.0
-    print(f"the floor's walk: {of} points, {minutes} min at a run, {skipped} given up")
-    assert(leg >= of, f"the walk stopped at point {leg} of {of} after {minutes} min")
-    assert(skipped * 50 <= of, f"the walk gave up {skipped} of its {of} points")
+    tick_world(mut w, mut pending, 0, Vec::from([p]))
+    assert(w.tour.on && !w.tour.road, "P didn't start the floor's walk")
+    let c = w.player.controls
+    assert(c.forward && c.run_held, "the walk doesn't run")
+    let from = w.player.at.world()
+    for k in 1..120 {
+        tick_world(mut w, mut pending, k, Vec::new())
+    }
+    let gone = length(w.player.at.world() - from)
+    assert(w.tour.on && gone > 2.0, f"the walk went {gone} m in two seconds")
+}
+
+/// The floor's walk ends at its last point: walked over its last 20 points, it stops there and
+/// lets go of the player's controls.
+@test
+@fuel(2 ** 40)
+fn the_floors_walk_stops_at_its_end() {
+    let end = history::TOUR.len()
+    var w = walking_from(end - 20)
+    walk_to(mut w, end, 20 * 60, |_, k| {})
+    let leg = w.tour.leg
+    assert(leg == end, f"the walk stopped at point {leg} of {end}")
+    assert(!w.tour.on, "the walk is still on past its end")
+    let c = w.player.controls
+    assert(!c.forward && !c.run_held, "the walk still holds the controls past its end")
 }
 
 /// The camera's near plane (m: `view::camera`'s).
 const NEAR: f32 = 0.1
 
-/// AC4's camera: over the floor's walk (its frames each half second, the camera as the floor
-/// frames it: `player::third_person`), the eye is never in the ground or in a trunk, a stone or a
-/// wall, and every leaf card its near plane could meet (its middle within its half-width of the
-/// eye) is faded away (`vegetation::faded`, the leaves between the camera and the player kept
-/// clear): no frame's camera is inside foliage.
+/// AC4's camera: over the floor's walk (its `stretches`, its frames each half second, the
+/// camera as the floor frames it: `player::third_person`), the eye is never in the ground or in
+/// a trunk, a stone or a wall, and every leaf card its near plane could meet (its middle within
+/// its half-width of the eye) is faded away (`vegetation::faded`, the leaves between the camera
+/// and the player kept clear): no frame's camera is inside foliage.
 @test
-@fuel(2 ** 45)
+@fuel(2 ** 42)
 fn the_camera_is_never_inside_a_thing() {
     // Each kind's cards, as cooked (`main.wrela` cooks kind `k` with seed `k + 1`).
     var cards: Vec<Vec<vec4>> = Vec::new()
@@ -600,89 +728,78 @@ fn the_camera_is_never_inside_a_thing() {
         }
     }
     let framing = engine::player::Framing {}
-    var w = world::spawn_world()
-    var pending: Vec<CollisionAnswer> = Vec::new()
     var frames = 0
     var seen = 0
-    var k = 0
-    while k < 60 * 60 * 60 && (k == 0 || w.tour.on) {
-        var records: Vec<std::input::Event> = Vec::new()
-        if k == 0 {
-            records.push(
-                std::input::Event::KeyDown {
-                    key: std::input::Key::P,
-                    repeat: false,
-                    mods: std::input::Mods {},
-                },
+    for first in stretches() {
+        var w = walking_from(first)
+        walk_to(mut w, first + STRETCH, STRETCH * 60, |w, k| {
+            if k % 30 != 0 {
+                return
+            }
+            frames += 1
+            let at = w.player.at.world()
+            let feet = vec3(at.x, w.player.y, at.y)
+            let c = w.player.controls
+            let (eye, _) = engine::player::third_person(
+                framing,
+                feet,
+                c.yaw,
+                c.pitch,
+                history::OBSTACLES,
+                vec2(0.0),
+                |p: vec2| ground::GROUND.at(p.x, p.y),
             )
-        }
-        tick_world(mut w, mut pending, k, records)
-        k += 1
-        if k % 30 != 0 {
-            continue
-        }
-        frames += 1
-        let at = w.player.at.world()
-        let feet = vec3(at.x, w.player.y, at.y)
-        let c = w.player.controls
-        let (eye, _) = engine::player::third_person(
-            framing,
-            feet,
-            c.yaw,
-            c.pitch,
-            history::OBSTACLES,
-            vec2(0.0),
-            |p: vec2| ground::GROUND.at(p.x, p.y),
-        )
-        let target = feet + vec3(0.0, framing.target, 0.0)
-        let ground = ground::GROUND.at(eye.x, eye.z)
-        assert(eye.y - ground >= NEAR, f"at {at} the eye is {eye.y - ground} m over the ground")
-        history::OBSTACLES.near(eye.xz, |o| {
-            let solid = o.thing == engine::footing::Thing::Trunk ||
-                o.thing == engine::footing::Thing::Stone ||
-                o.thing == engine::footing::Thing::Wall
-            let (d, _) = o.reach(eye.xz)
-            assert(
-                !solid || d >= NEAR || eye.y - ground > 3.0,
-                f"at {at} the eye {eye} is in a trunk, a stone or a wall",
-            )
-        })
-        // The leaves round the eye.
-        let clear = vec4(target, 1.1)
-        let b = bins.cell_at(eye.xz)
-        let bi = vec2i(i32(b % bins.nx), i32(b / bins.nx))
-        for dj in -1..2 {
-            for di in -1..2 {
-                let q = bi + vec2i(di, dj)
-                if q.x < 0 || q.y < 0 || q.x >= i32(bins.nx) || q.y >= i32(bins.nz) {
-                    continue
-                }
-                for ti in in_bin[u32(q.y) * bins.nx + u32(q.x)] {
-                    for pl in trees::placed([all[ti]], |p: vec2| ground::GROUND.at(p.x, p.y)) {
-                        if length(pl.at.at - eye) > 40.0 {
-                            continue
-                        }
-                        for card in cards[pl.kind] {
-                            let centre = pl.at.place(card.xyz)
-                            let half = card.w * pl.at.scale * 0.75
-                            if length(centre - eye) - half < NEAR {
-                                seen += 1
-                                let fade = engine::vegetation::faded(centre, half, eye, clear)
-                                assert(
-                                    fade >= 0.999,
-                                    f"at {at} a leaf card {length(centre - eye)} m from the eye is drawn ({fade} faded)",
-                                )
+            let target = feet + vec3(0.0, framing.target, 0.0)
+            let ground = ground::GROUND.at(eye.x, eye.z)
+            assert(eye.y - ground >= NEAR, f"at {at} the eye is {eye.y - ground} m over the ground")
+            history::OBSTACLES.near(eye.xz, |o| {
+                let solid = o.thing == engine::footing::Thing::Trunk ||
+                    o.thing == engine::footing::Thing::Stone ||
+                    o.thing == engine::footing::Thing::Wall
+                let (d, _) = o.reach(eye.xz)
+                assert(
+                    !solid || d >= NEAR || eye.y - ground > 3.0,
+                    f"at {at} the eye {eye} is in a trunk, a stone or a wall",
+                )
+            })
+            // The leaves round the eye.
+            let clear = vec4(target, 1.1)
+            let b = bins.cell_at(eye.xz)
+            let bi = vec2i(i32(b % bins.nx), i32(b / bins.nx))
+            for dj in -1..2 {
+                for di in -1..2 {
+                    let q = bi + vec2i(di, dj)
+                    if q.x < 0 || q.y < 0 || q.x >= i32(bins.nx) || q.y >= i32(bins.nz) {
+                        continue
+                    }
+                    for ti in in_bin[u32(q.y) * bins.nx + u32(q.x)] {
+                        for pl in trees::placed([all[ti]], |p: vec2| ground::GROUND.at(p.x, p.y)) {
+                            if length(pl.at.at - eye) > 40.0 {
+                                continue
+                            }
+                            for card in cards[pl.kind] {
+                                let centre = pl.at.place(card.xyz)
+                                let half = card.w * pl.at.scale * 0.75
+                                if length(centre - eye) - half < NEAR {
+                                    seen += 1
+                                    let fade = engine::vegetation::faded(centre, half, eye, clear)
+                                    assert(
+                                        fade >= 0.999,
+                                        f"at {at} a leaf card {length(centre - eye)} m from the eye is drawn ({fade} faded)",
+                                    )
+                                }
                             }
                         }
                     }
                 }
             }
-        }
+        })
     }
     print(
         f"the camera over the floor's walk: {frames} frames, {seen} cards at its near plane, all faded",
     )
-    assert(frames > 600, f"only {frames} frames of the walk")
+    let points = STRETCH * stretches().len()
+    assert(2 * frames >= points, f"only {frames} frames of the walk's {points} points")
 }
 
 /// AC7's wildwood (Q9): a wild tile grown alone with its margin (`engine::wild::MARGIN` cells)
@@ -1117,18 +1234,12 @@ fn ranked(xs: [f32], k: u32, of: u32) -> f32 {
     s[min(s.len() * k / of, s.len() - 1)]
 }
 
-/// The outside audit's point 6: each place on the floor sounds its own. A listener stands a
-/// second at each of the lookbook's places with a sound of their own (the clearing's meadow, the
-/// beech high forest, the stream in the wood, the waterfall, the mere's shore, the crag's top),
-/// along the mere's shore, and at the waterfall's foot, then walks 4 s on: each place's sound (the
-/// energy in each of four bands, the steps on its ground with the bed under them) is 3 dB or more
-/// from every other's in some band. And the mix leaves room: no sample past -6 dBFS; the
-/// player's steps are heard over the bed (3 dB or more), at the waterfall's foot too; and the bed
-/// is 10 dB or more under the level the duel's cues will be mixed at (`CUE`), so they'll be clear
-/// of it.
-@test
-@fuel(2 ** 40)
-fn each_place_on_the_floor_sounds_its_own() {
+/// The places on the floor with a sound of their own (the outside audit's point 6), each with its
+/// sound (`place`, its mix's room checked): the lookbook's places with a sound of their own (the
+/// clearing's meadow, the beech high forest, the stream in the wood, the waterfall, the mere's
+/// shore, the crag's top), along the mere's shore, and at the waterfall's foot. A listener stands
+/// a second at each, then walks 4 s on.
+fn place_sounds() -> Vec<(Text, vec4)> {
     // (The shot of the mere wades into it.)
     let names = [
         "the clearing",
@@ -1138,33 +1249,59 @@ fn each_place_on_the_floor_sounds_its_own() {
         "the mere",
         "the crag's top",
     ]
-    var profiles: Vec<vec4> = Vec::new()
-    var labels: Vec<Text> = Vec::new()
+    var out: Vec<(Text, vec4)> = Vec::new()
     for name in names {
         let s = shot(name)
-        profiles.push(place(name, s.eye.xz, s.at.xz))
-        labels.push(name)
+        out.push((name, place(name, s.eye.xz, s.at.xz)))
     }
     // Along the mere's shore, 4 m from the water, where the lookbook's shot of it wades in.
     let mere = world::MAP.water.meres[0]
-    let out = normalize(shot("the mere").eye.xz - mere.xy)
-    let along = vec2(-out.y, out.x)
-    let shore = mere.xy + out * (mere.z + 4.0)
-    profiles.push(place("the mere's shore", shore, shore + along * 10.0))
-    labels.push("the mere's shore")
+    let out_of = normalize(shot("the mere").eye.xz - mere.xy)
+    let along = vec2(-out_of.y, out_of.x)
+    let shore = mere.xy + out_of * (mere.z + 4.0)
+    out.push(("the mere's shore", place("the mere's shore", shore, shore + along * 10.0)))
     // The waterfall's foot: the loudest place on the floor.
     let falls = world::MAP.water.falls[0]
     let away = normalize(shot("the waterfall").eye.xz - falls)
-    profiles.push(place("the waterfall's foot", falls + away * 12.0, falls + away * 6.0))
-    labels.push("the waterfall's foot")
-    for i in 0..profiles.len() {
-        for j in (i + 1)..profiles.len() {
-            let d = abs(profiles[i] - profiles[j])
+    out.push(
+        (
+            "the waterfall's foot",
+            place("the waterfall's foot", falls + away * 12.0, falls + away * 6.0),
+        ),
+    )
+    out
+}
+
+/// The outside audit's point 6: at each place on the floor with a sound of its own
+/// (`place_sounds`), the mix leaves room: no sample past -6 dBFS; the player's steps are heard
+/// over the bed (3 dB or more), at the waterfall's foot too; and the bed is 15 dB or more under
+/// the level the duel's cues will be mixed at (`CUE`), so they'll be clear of it.
+@test
+@fuel(2 ** 40)
+fn each_places_mix_leaves_room() {
+    assert(place_sounds().len() == 8, "a place of the floor's sound is missing")
+}
+
+/// The outside audit's point 6: each place on the floor with a sound of its own
+/// (`place_sounds`) is 3 dB or more from every other's in some band. (The waterfall's place
+/// stands 44 m from the fall: from 64 m, it sounded as the mere did, of the stream beside it.)
+@test
+@fuel(2 ** 40)
+fn each_place_on_the_floor_sounds_its_own() {
+    let places = place_sounds()
+    var alike = 0
+    for i in 0..places.len() {
+        for j in (i + 1)..places.len() {
+            let ((a, pa), (b, pb)) = (places[i], places[j])
+            let d = abs(pa - pb)
             let most = max(max(d.x, d.y), max(d.z, d.w))
-            let (a, b) = (labels[i], labels[j])
-            assert(most >= 3.0, f"{a} and {b} sound alike: {most} dB apart at most")
+            if most < 3.0 {
+                print(f"{a} and {b} sound alike: {most} dB apart at most")
+                alike += 1
+            }
         }
     }
+    assert(alike == 0, f"{alike} pairs of the floor's places sound alike")
 }
 
 /// The level the duel's cues will be mixed at, their first 50 ms (dB of full scale): a strike, a

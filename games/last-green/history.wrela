@@ -250,8 +250,10 @@ fn checked() -> Vec<(String, Vec<u8>)> {
     let c = check(ground::GROUND, m, species::habits(), e, OBSTACLES, stones::stones(m), FULL)
     let text = report(ground::GROUND, m, c)
     // The floor's walk, on a walkable mask a metre a cell that knows the logs, walls and
-    // thickets (the check's sight grid, 4 m a cell, doesn't).
-    let mask = walkable_of(ground::GROUND, m.water, OBSTACLES, map::LO, map::HI, 1.0)
+    // thickets (the check's sight grid, 4 m a cell, doesn't), and the fallen wood a player
+    // can't cross as the sim fits it (`solid_wood`).
+    var mask = walkable_of(ground::GROUND, m.water, OBSTACLES, map::LO, map::HI, 1.0)
+    mask.without(solid_wood(decisions().trees))
     let (walk, missed) = mask.tour(nearest_first(tour_stops()), 2.0)
     print(f"the floor's walk: {walk.len()} points; {missed.len()} stops it can't reach")
     for p in missed {
@@ -317,6 +319,53 @@ fn checked() -> Vec<(String, Vec<u8>)> {
             (String::from("shots.json"), Vec::from(shots.as_bytes())),
         ],
     )
+}
+
+/// The fallen wood a player can't cross: each log's capsules as the sim fits them round the
+/// player (`logs::obstacles`), as it meets them (`solid_colliders`). `OBSTACLES` holds only the
+/// thicker logs, and coarsely: a way planned without these led the floor's walk into a log on a
+/// slope it can't go round.
+fn solid_wood(trees: [engine::grow::Tree]) -> Obstacles {
+    var parts: Vec<WoodPart> = Vec::new()
+    for t in trees {
+        if t.state == engine::grow::State::Log {
+            if parts.is_empty() || parts[parts.len() - 1].logs.len() == 256 {
+                parts.push(WoodPart { logs: Vec::new(), solid: Vec::new() })
+            }
+            parts[parts.len() - 1].logs.push(t)
+        }
+    }
+    parts.par_each_mut(|part| {
+        borrow g = ground::GROUND
+        part.solid = solid_colliders(
+            logs::obstacles(part.logs, |at: vec2| engine::grow::Ground::height(g, at.x, at.y)),
+        )
+    })
+    var all: Vec<engine::footing::Obstacle> = Vec::new()
+    for mut part in parts {
+        all.append(mut part.solid)
+    }
+    Obstacles::of(all, domain_lo(), domain_hi())
+}
+
+/// The colliders a player meets for fitted log capsules `capsules`, as the sim makes them: each
+/// a local answer's circle round it (`wildwood::log_circle`, `world::answered`), those the
+/// travel can't cross (higher than its clearance).
+fn solid_colliders(capsules: [engine::footing::Obstacle]) -> Vec<engine::footing::Obstacle> {
+    var out: Vec<engine::footing::Obstacle> = Vec::new()
+    for o in capsules {
+        let c = world::answered(wildwood::log_circle(o))
+        if !c.cleared(world::TRAVEL.clearance) {
+            out.push(c)
+        }
+    }
+    out
+}
+
+/// Fallen trees, and the solid wood of theirs that `solid_wood` finds, a helper's share.
+struct WoodPart {
+    logs: Vec<engine::grow::Tree>,
+    solid: Vec<engine::footing::Obstacle>,
 }
 
 /// A shot's least share of its subject seen (`interest::transmit` from its eye to what it looks
@@ -582,4 +631,50 @@ fn tour_of(files: Shipped) -> Vec<vec2> {
         k += 8
     }
     out
+}
+
+/// The walk's mask leaves open no cell where a player would meet solid fallen wood: short solid
+/// capsules (0.5 m, 0.1 m across, one 0.65 m from a cell's middle across it, the rest seeded at
+/// any angle) taken out of an open mask (`solid_colliders`) leave each open cell's middle clear
+/// of the colliders the sim makes of them round a player (`world::player_obstacles`).
+@test
+fn the_walks_mask_keeps_out_of_the_wood_a_player_meets() {
+    var capsules: Vec<engine::footing::Obstacle> = Vec::new()
+    let solid = |at: vec2, a: f32| engine::footing::Obstacle {
+        a: at - vec2(cos(a), sin(a)) * 0.25,
+        b: at + vec2(cos(a), sin(a)) * 0.25,
+        r: 0.1,
+        thing: engine::footing::Thing::Log,
+        depth: 1.0 / 0.0,
+    }
+    capsules.push(solid(vec2(5.5, 6.15), 0.0))
+    for k in 0..24 {
+        let at = vec2(1.0) +
+            vec2(engine::noise::rand(3, 2 * k), engine::noise::rand(3, 2 * k + 1)) * 14.0
+        capsules.push(solid(at, engine::noise::rand(4, k) * 6.2831853))
+    }
+    let (lo, hi) = (vec2(0.0), vec2(16.0))
+    let grid = Grid::over(lo, hi, 1.0)
+    var mask = engine::footing::Walkable { grid, ok: Vec::filled(grid.cells(), value: true) }
+    mask.without(Obstacles::of(solid_colliders(capsules), lo, hi))
+    var wild = world::spawn_world().wild
+    for i in 0..capsules.len() {
+        wild.trunks[i] = wildwood::log_circle(capsules[i])
+    }
+    wild.count = capsules.len()
+    let nothing: Vec<engine::footing::Obstacle> = Vec::new()
+    var open = 0
+    for c in 0..grid.cells() {
+        if mask.ok[c] {
+            let p = grid.centre(c)
+            let met = world::player_obstacles(wild, p, Obstacles::of(nothing, lo, hi))
+            assert(
+                !met.blocked_over(p, engine::footing::BODY, world::TRAVEL.clearance),
+                f"the mask is open at {p}, where a player meets solid wood",
+            )
+            open += 1
+        }
+    }
+    assert(!mask.ok[grid.cell_at(vec2(5.5))], "the cell beside the short log is open")
+    assert(open > 100, f"only {open} cells open")
 }

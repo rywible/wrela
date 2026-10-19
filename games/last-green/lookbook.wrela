@@ -105,13 +105,13 @@ pub const SHOTS = [
         moves: vec2(1.6, -1.2),
     },
     // The stream falling from the plateau's lip, from the valley's floor: the stream leads to it.
-    // The eye on the bank, 5 m from the water's edge, where the pool shows past the bank.
+    // The eye on the bank, 5 m from the water's edge and 44 m from the fall, where it hears the
+    // fall over the stream: the stream leads to the fall's foot, its lip 42 m over the eye.
     Shot {
         name: "the waterfall",
-        eye: vec3(-283.0, 1.7, -112.0),
-        at: vec3(-222.0, 14.0, -152.0),
+        eye: vec3(-261.5, 1.7, -137.5),
+        at: vec3(-222.0, 10.0, -152.0),
         moves: vec2(1.5, -1.0),
-        fovy: 0.7,
         reach: 8.0,
     },
     // Silver snags over young birch.

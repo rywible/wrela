@@ -297,7 +297,7 @@ fn an_off_lattice_hollow_keeps_exact_clearance_under_the_rendered_log() {
     var centre = vec2(0.0)
     var top = 0.0
     var away = 0.0
-    for ring in 2..4 {
+    for ring in 0..(3 * RINGS) {
         let (a, _, ar) = limb_axis(trunk, f32(ring) / f32(3 * RINGS))
         let (b, _, br) = limb_axis(trunk, f32(ring + 1) / f32(3 * RINGS))
         let pieces = max(u32(ceil(length(b - a) / SEGMENT)), 1)
