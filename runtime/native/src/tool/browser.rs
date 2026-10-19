@@ -12,10 +12,11 @@
 //! `--net` grants (443 for a grant with none). Anything else is refused before a connection is
 //! made, and the page's console says so. A tool test's fake sites aren't the browser's.
 //!
-//! **A page's result is what its server kept.** `results` and a wait for it read the
-//! `results/DONE` the page's server (the tool's own, on the port of the URL it opened) has
-//! written since the page opened, not a request in flight: one the server refused, or hasn't
-//! finished, isn't there yet.
+//! **A page's result is what its server kept, for this browser.** `results` and a wait for it
+//! read the `results/DONE` that the page's server (the tool's own, on the port of the URL it
+//! opened) has written from a request of this browser's: the proxy names each request with the
+//! browser's session, and the server keeps a result for each session. A request in flight, one
+//! the server refused or hasn't finished, and another browser's page's, aren't this one's.
 //!
 //! **A browser is a resource of its request.** Its process group is recorded for the
 //! supervisor (`run::let_go`) before Chrome runs; it's registered under the `open` request as
@@ -347,6 +348,9 @@ fn open(
     launch.window = size;
     launch.startup = launch.startup.min(left);
     launch.cancel = Some(s.closing.clone());
+    // What the proxy names this browser's requests with: its results are its own.
+    let session = format!("browser-{handle}");
+    launch.session = Some(session.clone());
     let weak: Weak<Services> = Arc::downgrade(s);
     launch.policy = Some(Arc::new(move |d: Dest| weak.upgrade().is_some_and(|s| allowed(&s, d))));
     let spawner = Owned { s, go: s.work_dir()?.join(format!("{request}.browser.go")) };
@@ -373,11 +377,8 @@ fn open(
     }
     // The page's result: what its server keeps from now on.
     let done = served_port(url).and_then(|port| s.servers().on_port(port)).map(|server| {
-        let since = server.done().0;
-        let d: wrela_chrome::Done = Arc::new(move || {
-            let (count, text) = server.done();
-            (count > since).then_some(text)
-        });
+        let session = session.clone();
+        let d: wrela_chrome::Done = Arc::new(move || server.done(&session));
         d
     });
     let options = TabOptions { size: Some(size), console: None, done };

@@ -9,6 +9,10 @@
 //! `Connection: close`, so a later request can't ride along to another host). A tunnel (`CONNECT
 //! host:port`: HTTPS, and every WebSocket) is let through only to an exact [`Dest::Tunnel`] the
 //! policy grants. Anything else is answered 403 before any connection is made, and reported.
+//!
+//! **A request names its browser.** Each plain HTTP request it lets through carries the
+//! browser's session ([`SESSION_HEADER`]), set by the proxy (a page's own is dropped), so a
+//! server of the tool's knows which browser's page put a result.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -31,6 +35,9 @@ pub type Policy = Arc<dyn Fn(Dest) -> bool + Send + Sync>;
 
 /// What the proxy refused: each as the console says it.
 pub type Refused = Arc<dyn Fn(String) + Send + Sync>;
+
+/// The header that names the browser a request came from: the proxy's own, never a page's.
+pub const SESSION_HEADER: &str = "X-Wrela-Browser";
 
 /// The most bytes a request's head may have.
 const MOST_HEAD: u64 = 64 << 10;
@@ -55,7 +62,11 @@ pub(crate) struct Proxy {
 
 impl Proxy {
     /// Starts a proxy on a free port of 127.0.0.1.
-    pub(crate) fn start(policy: Policy, refused: Refused) -> Result<Proxy, String> {
+    pub(crate) fn start(
+        policy: Policy,
+        refused: Refused,
+        session: Option<String>,
+    ) -> Result<Proxy, String> {
         let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| format!("the proxy: {e}"))?;
         let port = listener.local_addr().map_err(|e| e.to_string())?.port();
         listener.set_nonblocking(true).map_err(|e| e.to_string())?;
@@ -64,7 +75,7 @@ impl Proxy {
         let (s, o) = (stopping.clone(), open.clone());
         let thread = std::thread::Builder::new()
             .name("wrela-chrome-proxy".into())
-            .spawn(move || accept(&listener, &policy, &refused, &s, &o))
+            .spawn(move || accept(&listener, &policy, &refused, session.as_deref(), &s, &o))
             .map_err(|e| format!("can't start the proxy: {e}"))?;
         Ok(Proxy { port, stopping, open, thread: Mutex::new(Some(thread)) })
     }
@@ -99,6 +110,7 @@ fn accept(
     listener: &TcpListener,
     policy: &Policy,
     refused: &Refused,
+    session: Option<&str>,
     stopping: &AtomicBool,
     open: &Arc<Mutex<HashMap<u64, TcpStream>>>,
 ) {
@@ -115,10 +127,11 @@ fn accept(
                 let Ok(kept) = client.try_clone() else { continue };
                 lock(open).insert(id, kept);
                 let (policy, refused, open2) = (policy.clone(), refused.clone(), open.clone());
+                let session = session.map(str::to_string);
                 let spawned = std::thread::Builder::new()
                     .name("wrela-chrome-proxy-conn".into())
                     .spawn(move || {
-                        let _ = serve(client, &policy, &refused, &open2, id);
+                        let _ = serve(client, &policy, &refused, session.as_deref(), &open2, id);
                         if let Some(c) = lock(&open2).remove(&id) {
                             let _ = c.shutdown(Shutdown::Both);
                         }
@@ -173,6 +186,7 @@ fn serve(
     client: TcpStream,
     policy: &Policy,
     refused: &Refused,
+    session: Option<&str>,
     open: &Arc<Mutex<HashMap<u64, TcpStream>>>,
     id: u64,
 ) -> std::io::Result<()> {
@@ -231,8 +245,10 @@ fn serve(
     for h in &head[1..] {
         let lower = h.to_ascii_lowercase();
         let hop = ["proxy-connection:", "proxy-authorization:", "keep-alive:"];
+        let named = format!("{}:", SESSION_HEADER.to_ascii_lowercase());
         if h.trim().is_empty()
             || hop.iter().any(|p| lower.starts_with(p))
+            || lower.starts_with(&named)
             || (!upgrade && lower.starts_with("connection:"))
         {
             continue;
@@ -242,6 +258,9 @@ fn serve(
     if !upgrade {
         // One request on this connection: a later one can't ride along to another host.
         sent.push_str("Connection: close\r\n");
+    }
+    if let Some(s) = session {
+        sent.push_str(&format!("{SESSION_HEADER}: {s}\r\n"));
     }
     sent.push_str("\r\n");
     dest.write_all(sent.as_bytes())?;
@@ -314,8 +333,12 @@ mod tests {
         });
         let notes = Arc::new(Mutex::new(Vec::new()));
         let kept = notes.clone();
-        let proxy =
-            Proxy::start(policy, Arc::new(move |n| kept.lock().unwrap().push(n))).expect("a proxy");
+        let proxy = Proxy::start(
+            policy,
+            Arc::new(move |n| kept.lock().unwrap().push(n)),
+            Some("b7".into()),
+        )
+        .expect("a proxy");
         let ask = |request: String| {
             let mut s = TcpStream::connect(("127.0.0.1", proxy.port)).expect("connect");
             s.write_all(request.as_bytes()).expect("send");
@@ -340,12 +363,13 @@ mod tests {
             head
         });
         let through = ask(format!(
-            "GET http://127.0.0.1:{sp}/page HTTP/1.1\r\nHost: 127.0.0.1:{sp}\r\nProxy-Connection: keep-alive\r\n\r\n"
+            "GET http://127.0.0.1:{sp}/page HTTP/1.1\r\nHost: 127.0.0.1:{sp}\r\nProxy-Connection: keep-alive\r\nX-Wrela-Browser: forged\r\n\r\n"
         ));
         assert!(through.ends_with("hi"), "{through}");
         let head = server.join().expect("the server");
         assert!(head.starts_with("GET /page HTTP/1.1\r\n"), "{head}");
         assert!(head.contains("Connection: close") && !head.contains("Proxy-Connection"), "{head}");
+        assert!(head.contains("X-Wrela-Browser: b7") && !head.contains("forged"), "{head}");
         for refused in [
             format!("GET http://127.0.0.1:{op}/ HTTP/1.1\r\nHost: x\r\n\r\n"),
             format!("CONNECT 127.0.0.1:{op} HTTP/1.1\r\nHost: x\r\n\r\n"),

@@ -139,6 +139,8 @@ pub struct Launch {
     pub policy: Option<Policy>,
     /// Set to give up the start: the browser is ended at once.
     pub cancel: Option<Arc<AtomicBool>>,
+    /// What the proxy names the browser as to the servers it reaches ([`proxy::SESSION_HEADER`]).
+    pub session: Option<String>,
 }
 
 impl Launch {
@@ -164,6 +166,7 @@ impl Launch {
             startup: STARTUP,
             policy: None,
             cancel: None,
+            session: None,
         })
     }
 
@@ -196,11 +199,14 @@ impl Launch {
         a.push(format!("--window-size={},{}", self.window.0, self.window.1).into());
         if let Some(port) = proxy {
             // Every connection through the proxy: no implicit bypass of loopback, local or
-            // link-local addresses, and no QUIC or WebTransport, which it can't carry.
+            // link-local addresses, and no QUIC, WebTransport or WebRTC UDP, which it can't
+            // carry.
             a.push(format!("--proxy-server=http://127.0.0.1:{port}").into());
             a.push("--proxy-bypass-list=<-loopback>".into());
             a.push("--disable-quic".into());
             a.push("--disable-blink-features=WebTransport".into());
+            // WebRTC's UDP (ICE, STUN, TURN) only through the proxy, which carries none.
+            a.push("--force-webrtc-ip-handling-policy=disable_non_proxied_udp".into());
         }
         a.extend(platform_args(std::env::consts::OS).iter().map(OsString::from));
         a.extend(self.args.iter().map(OsString::from));
@@ -273,9 +279,10 @@ fn adopt_descendants() -> Result<(), String> {
 }
 
 /// Reaps every exited process of group `group` that is this process's child (Linux, where this
-/// process adopts them): whether none is left, exited or running.
+/// process adopts them, once it has started a browser: a granted program's orphans too): whether
+/// none is left, exited or running. The tool host's `run` reaps its programs' groups with it.
 #[cfg(target_os = "linux")]
-fn reap_group(group: rustix::process::Pid) -> bool {
+pub fn reap_group(group: rustix::process::Pid) -> bool {
     loop {
         match rustix::process::waitpgid(group, rustix::process::WaitOptions::NOHANG) {
             // One reaped: look again.
@@ -408,11 +415,25 @@ impl Browser {
                         t.line(line.clone());
                     }
                 });
-                Some(proxy::Proxy::start(policy.clone(), refused)?)
+                Some(proxy::Proxy::start(policy.clone(), refused, launch.session.clone())?)
             }
         };
         std::fs::create_dir(&launch.profile)
             .map_err(|e| format!("Chrome's profile ({}): {e}", launch.profile.display()))?;
+        if launch.policy.is_some() {
+            // WebRTC sends UDP only through a proxy, and the proxy carries none: the profile's
+            // own setting, which Chrome reads as it starts.
+            let prefs = json!({"webrtc": {"ip_handling_policy": "disable_non_proxied_udp",
+                                          "multiple_routes_enabled": false,
+                                          "nonproxied_udp_enabled": false}});
+            let default = launch.profile.join("Default");
+            let written = std::fs::create_dir(&default)
+                .and_then(|()| std::fs::write(default.join("Preferences"), prefs.to_string()));
+            if let Err(e) = written {
+                let _ = std::fs::remove_dir_all(&launch.profile);
+                return Err(format!("Chrome's preferences: {e}"));
+            }
+        }
         let log_path = launch.profile.join("chrome.log");
         let started = (|| {
             let log = std::fs::File::create(&log_path).map_err(|e| format!("Chrome's log: {e}"))?;
@@ -943,6 +964,7 @@ mod tests {
             startup: STARTUP,
             policy: None,
             cancel: None,
+            session: None,
         };
         let argv = |proxy: Option<u16>| -> Vec<String> {
             l.argv(proxy).iter().map(|a| a.to_string_lossy().into_owned()).collect()
@@ -967,6 +989,7 @@ mod tests {
             "--proxy-server=http://127.0.0.1:4321",
             "--proxy-bypass-list=<-loopback>",
             "--disable-quic",
+            "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
         ] {
             assert!(a.contains(&flag.to_string()), "{flag}: {a:?}");
         }

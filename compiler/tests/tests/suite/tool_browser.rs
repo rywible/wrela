@@ -133,6 +133,44 @@ fn main(given: take Vec<String>) -> u32 {
     if what.as_str() == "rejected" {
         script = Script::new().wait(Until::done(), timeout: 2.0)
     }
+    if what.as_str() == "gather" {
+        script = Script::new().wait(Until::title(Match::starts("gathered")))
+    }
+    if what.as_str() == "two" {
+        // A second browser, on the same server, whose page puts its result.
+        var o2 = browser::open(f"{started.origin.as_str()}/done.html".as_str())
+        var og2 = o2.poll()
+        while og2.is_none() {
+            yield
+            og2 = o2.poll()
+        }
+        let Some(op2) = take og2 else { return 90 }
+        let Ok(b2) = browser::read_opened(take op2) else { return 91 }
+        var r2 = browser::run(b2, Script::new().wait(Until::done()))
+        var rg2 = r2.poll()
+        while rg2.is_none() {
+            yield
+            rg2 = r2.poll()
+        }
+        let Some(rp2) = take rg2 else { return 90 }
+        match answer(take rp2) {
+            Ok(_) => print("the second's page is done"),
+            Err(e) => print(f"the second: {e.message()}"),
+        }
+        var d = browser::results(b)
+        var dg = d.poll()
+        while dg.is_none() {
+            yield
+            dg = d.poll()
+        }
+        let Some(dp) = take dg else { return 90 }
+        match browser::read_attribute(take dp) {
+            Ok(Some(t)) => print(f"the first's result: {t.as_str()}"),
+            Ok(None) => print("the first has no result"),
+            Err(e) => print(f"results: {e.message()}"),
+        }
+        script = Script::new().wait(Until::done(), timeout: 1.0)
+    }
     if what.as_str() == "clipboard" {
         var c = browser::clipboard(b)
         var cg = c.poll()
@@ -178,6 +216,9 @@ fn main(given: take Vec<String>) -> u32 {
                 Ok(_) => print("kept a DONE"),
                 Err(_) => print("kept no DONE"),
             }
+            return 0
+        }
+        if what.as_str() == "two" {
             return 0
         }
         if what.as_str() != "never" {
@@ -276,7 +317,7 @@ fn main(given: take Vec<String>) -> u32 {
         let Ok(head) = answer(take hp) else { return 2 }
         print(f"capture {capture.width}x{capture.height} png {head.len() == 8 && head[1] == 80 && head[2] == 78 && head[3] == 71}")
     }
-    if what.as_str() == "refused" || what.as_str() == "act" {
+    if what.as_str() == "refused" || what.as_str() == "act" || what.as_str() == "gather" {
         var c = browser::console(b)
         var cg = c.poll()
         while cg.is_none() {
@@ -408,6 +449,27 @@ const DONE: &str = r#"<!doctype html>
 "#;
 
 const NEVER: &str = "<!doctype html><title>Never</title><p>This page never reports.</p>\n";
+
+/// A page that gathers ICE candidates against a STUN and a TURN server at `DATAGRAMS`, a UDP
+/// port of this machine, and says in its title when it has, or 5 s have passed.
+const GATHERING: &str = r#"<!doctype html>
+<title>Gathering</title>
+<script>
+const pc = new RTCPeerConnection({ iceServers: [
+  { urls: "stun:127.0.0.1:DATAGRAMS" },
+  { urls: "turn:127.0.0.1:DATAGRAMS?transport=udp", username: "u", credential: "c" },
+] });
+pc.createDataChannel("d");
+const kinds = [];
+pc.onicecandidate = (e) => { if (e.candidate) kinds.push(e.candidate.type); };
+const gathered = new Promise((done) => {
+  pc.onicegatheringstatechange = () => { if (pc.iceGatheringState === "complete") done(); };
+  setTimeout(done, 5000);
+});
+pc.createOffer().then((o) => pc.setLocalDescription(o));
+gathered.then(() => { document.title = "gathered " + kinds.join(" "); });
+</script>
+"#;
 
 /// A page of 4,097 items, and a button that copies 20,000 bytes, the last a `!`.
 const WHOLE: &str = r#"<!doctype html>
@@ -584,6 +646,39 @@ fn a_page_reaches_only_its_tools_servers() {
     assert!(said(&format!("refused a connection to 127.0.0.1:{op}")), "{printed:?}");
     assert!(said(&format!("refused a connection to localhost:{op2}")), "{printed:?}");
     assert!(said("refused a connection to example.com:443"), "{printed:?}");
+}
+
+/// WebRTC sends no UDP around the proxy: a page gathering ICE candidates against a STUN and a
+/// TURN server on a listening UDP port of this machine sends it no datagram.
+#[test]
+#[ignore = "needs the runtime"]
+fn webrtc_sends_no_datagram_past_the_proxy() {
+    let udp = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind");
+    udp.set_nonblocking(true).expect("nonblocking");
+    let port = udp.local_addr().expect("addr").port();
+    let page = GATHERING.replace("DATAGRAMS", &port.to_string());
+    let (printed, ended) =
+        browse("gather", "gather", "gather.html", &page, grants, Testing::default());
+    assert_eq!(ended.end, End::Exit(0), "{printed:?}");
+    assert!(printed.iter().any(|l| l.starts_with("title gathered")), "{printed:?}");
+    let mut buf = [0u8; 1500];
+    assert!(udp.recv(&mut buf).is_err(), "a datagram reached the STUN server's port: {printed:?}");
+}
+
+/// A page's result is its own browser's: of two browsers on one server, the one whose page puts
+/// its result sees it, and the other, whose page puts none, has none and waits on.
+#[test]
+#[ignore = "needs the runtime"]
+fn a_result_is_its_own_browsers() {
+    let root = scratch("browser-two");
+    std::fs::write(root.join("done.html"), DONE).expect("the page");
+    std::fs::write(root.join("never.html"), NEVER).expect("the page");
+    let (printed, ended) =
+        browse_in(&root, "two", "never.html", "scratch", grants, Testing::default());
+    assert_eq!(ended.end, End::Exit(0), "{printed:?}");
+    assert_eq!(printed[1], "the second's page is done", "{printed:?}");
+    assert_eq!(printed[2], "the first has no result", "{printed:?}");
+    assert!(printed[3].contains("never had the page's results/DONE"), "{printed:?}");
 }
 
 /// No observation is cut short: all of 4,097 elements' texts, and a clipboard of 20,000 bytes.

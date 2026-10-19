@@ -156,9 +156,9 @@ pub(crate) struct Server {
     conns: Mutex<HashMap<u64, TcpStream>>,
     /// Its threads: the one that accepts, and each connection's.
     threads: Mutex<Vec<JoinHandle<()>>>,
-    /// The `results/DONE`s it has kept, counted, and the last one's text: a browser's page has
-    /// put its result once the count passes what it was when the page opened.
-    done: Mutex<(u64, String)>,
+    /// The `results/DONE` it has kept for each browser session (the session its browser's proxy
+    /// named the put with): a browser's page has put its result once its session's is here.
+    done: Mutex<HashMap<String, String>>,
 }
 
 impl Server {
@@ -166,9 +166,9 @@ impl Server {
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// How many `results/DONE`s it has kept, and the last one's text.
-    pub(crate) fn done(&self) -> (u64, String) {
-        self.done.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+    /// The `results/DONE` it has kept for browser session `session`, if it has.
+    pub(crate) fn done(&self, session: &str) -> Option<String> {
+        self.done.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(session).cloned()
     }
 
     /// Closes it: its waiters fail, its posts' bytes are given back, its listener and
@@ -237,6 +237,21 @@ impl Server {
             st.given.insert(post.id, (post.reply, post.due));
             s.send(request, super::services::answer(Ok(out.0)));
         }
+    }
+}
+
+/// A reader that keeps what it gives, up to 1 MiB: a result's body as it's written.
+struct Tee<'a> {
+    from: &'a mut dyn std::io::Read,
+    kept: Vec<u8>,
+}
+
+impl std::io::Read for Tee<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.from.read(buf)?;
+        let room = (1usize << 20).saturating_sub(self.kept.len());
+        self.kept.extend_from_slice(&buf[..n.min(room)]);
+        Ok(n)
     }
 }
 
@@ -353,7 +368,7 @@ fn start(
         stopping: AtomicBool::new(false),
         conns: Mutex::new(HashMap::new()),
         threads: Mutex::new(Vec::new()),
-        done: Mutex::new((0, String::new())),
+        done: Mutex::new(HashMap::new()),
     });
     // Registered under its request before anything runs, and before any answer names it.
     let handle = {
@@ -490,21 +505,26 @@ fn connection(
                 {
                     std::thread::sleep(*held);
                 }
+                // The body as it's written, so the result kept is this put's own.
+                let mut body = Tee { from: &mut reader, kept: Vec::new() };
                 let put = crate::loopback::put_result(
                     &mut out,
                     &server.dir,
                     name,
-                    &mut reader,
+                    &mut body,
                     head.length as u64,
                 );
-                // Kept: a browser's page has put its result now, not when it asked to.
+                // Kept: the browser that put it has its result now, not when it asked to.
                 if matches!(put, Ok(true))
                     && name == "DONE"
-                    && let Ok(text) = crate::confined::read(&server.dir, "results/DONE", 1 << 20)
+                    && let Some(session) = &head.session
                 {
-                    let mut done =
-                        server.done.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                    *done = (done.0 + 1, String::from_utf8_lossy(&text).trim().to_string());
+                    let text = String::from_utf8_lossy(&body.kept).trim().to_string();
+                    server
+                        .done
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(session.clone(), text);
                 }
                 put.map(|_| ())
             }

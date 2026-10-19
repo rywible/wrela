@@ -20,13 +20,15 @@ pub const MAX_BODY: usize = 16 << 20;
 /// The most bytes a request's head (its line and headers) may have.
 const MAX_HEAD: u64 = 64 << 10;
 
-/// A request's head: its method, its path and query, and its body's length (read after it).
+/// A request's head: its method, its path and query, its body's length (read after it), and
+/// the browser session a tool's browser's proxy named it with ([`wrela_chrome::proxy::SESSION_HEADER`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Head {
     pub method: String,
     pub path: String,
     pub query: String,
     pub length: usize,
+    pub session: Option<String>,
 }
 
 impl Head {
@@ -74,6 +76,7 @@ pub fn read_head(
     let (method, target) = (parts.next().unwrap_or("").to_string(), parts.next().unwrap_or("/"));
     let mut length = Some(0usize);
     let (mut host, mut origin, mut framed) = (String::new(), None::<String>, false);
+    let mut session = None;
     loop {
         let Some(h) = line(reader)? else {
             too_long(out)?;
@@ -92,6 +95,8 @@ pub fn read_head(
                 origin = Some(v.to_ascii_lowercase());
             } else if k.eq_ignore_ascii_case("transfer-encoding") {
                 framed = true;
+            } else if k.eq_ignore_ascii_case(wrela_chrome::proxy::SESSION_HEADER) {
+                session = Some(v.to_string());
             }
         }
     }
@@ -116,7 +121,7 @@ pub fn read_head(
         return Ok(None);
     }
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
-    Ok(Some(Head { method, path: path.to_string(), query: query.to_string(), length }))
+    Ok(Some(Head { method, path: path.to_string(), query: query.to_string(), length, session }))
 }
 
 /// `path` with its URL escapes decoded, once: `None` if an escape is malformed, names a `/` or a
