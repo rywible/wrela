@@ -583,6 +583,15 @@ tree and text input moved from JSON with JavaScript conditions to typed Wrela co
 (`std::tool::browser::Script`), each condition kept; their fixed waits became waits for the line
 the program printed.
 
+The sixth slice checks the workspace in one command, `wrela suite` (language.md §13.2): its
+members' format, its allowlist (`[workspace] allow`) and every member's tests. It also names the
+workspace's tools with their grants (`[tools.<name>]`, §3.6 and §15.5). Claude (Opus 5.5)
+implemented it, and it adds no crate. The allowlist reads `.gitignore` files as git does, after
+git's documented pattern format (gitignore(5)), as facts; no code was copied. The Rust tests that
+only ran a member's own tests were removed, because the suite runs those tests. The floor's own
+tests (games/last-green) never ran in the gate: on this Mac they take about 11 minutes, and 7 of
+112 fail. The manifest lists the package as `untested` until those tests are bounded.
+
 ## The references
 
 ### The rules

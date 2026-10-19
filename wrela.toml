@@ -1,6 +1,7 @@
 # The workspace: every wrela package of the project but the toolchain's own (compiler/std and
 # compiler/tests), which depend on each other by name (`engine = { workspace = true }`). The
-# directory itself isn't a package.
+# directory itself isn't a package. `wrela suite` checks it all: the members' format, the
+# allowlist below and every member's tests (spec/language.md §3.6, §23.10).
 [workspace]
 members = [
     "console",
@@ -23,4 +24,61 @@ members = [
     "ui",
     "ui/brand",
     "ui/tests/*",
+]
+# Members whose tests the whole suite doesn't run yet, as the gate hasn't: the floor's own tests
+# bake its whole scene for many minutes, and seven of them fail. The gate runs bounded copies of
+# its modules (compiler/tests last_green.rs) until the Wrela side's tests move into Wrela, which
+# removes this list. `wrela suite wrela::games/last-green::` still runs them.
+untested = ["games/last-green"]
+# The files the workspace may hold: wrela sources and manifests, assets with their licences, the
+# prose, and the one CI file. Each of the `wrela` repository's files is one of these.
+allow = [
+    "**/*.wrela",
+    "**/wrela.toml",
+    "**/*.png",
+    "**/*.jpg",
+    "**/*.jpeg",
+    "**/*.webp",
+    "**/*.ttf",
+    "**/*.otf",
+    "**/*.obj",
+    "**/*.stl",
+    "**/*.wav",
+    "**/LICENSE*",
+    "**/OFL-*.txt",
+    "**/*.LICENSE.txt",
+    "AGENTS.md",
+    "README.md",
+    "docs/vision.md",
+    "docs/process.md",
+    ".gitignore",
+    ".github/workflows/deploy.yml",
+]
+# The toolchain's files, which go to `wrela-compiler` when the repository splits: until then the
+# allowlist check doesn't look at them. The split removes this list.
+exclude = [
+    "compiler/**",
+    "runtime/**",
+    "spec/**",
+    "tools/**",
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    "rustfmt.toml",
+]
+# Files that the split's plan still removes or makes wrela values: reported, not refused, until
+# they go. The split removes this list.
+pending = [
+    ".claude/launch.json",
+    "games/console.toml",
+    "references/grazer/bison-front-snow.toml",
+    "references/grazer/bison-front-walking.toml",
+    "references/grazer/bison-three-quarter.toml",
+    "references/wolf/front-head.toml",
+    "references/wolf/sculpt-standing.parts.toml",
+    "references/wolf/sculpt-standing.sweeps.toml",
+    "references/wolf/sculpt-standing.toml",
+    "references/wolf/side-standing.toml",
+    "references/wolf/side-walking.toml",
+    "references/wolf/three-quarter-front.toml",
 ]
