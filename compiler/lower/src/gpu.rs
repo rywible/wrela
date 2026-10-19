@@ -2763,7 +2763,7 @@ fn verify(cx: &mut Cx, mb: &mut ModuleBuilder, name: &str) -> Option<()> {
     }
     if cx.emit {
         checked = checked
-            .and_then(|()| ir::opt::flatten_gpu(&mut mb.m, cx.data.debug))
+            .and_then(|()| ir::opt::flatten_gpu(&mut mb.m))
             .and_then(|()| ir::gpu_memory::lay_out_gpu_memory(&mut mb.m))
             .and_then(|()| ir::verify(&mb.m));
     }

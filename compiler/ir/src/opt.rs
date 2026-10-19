@@ -25,9 +25,8 @@ use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 
-/// Flattens a GPU module (see the module docs). `checked`: a debug build's bounds checks
-/// ([`crate::bounds`]) are added after, so no branch that indexes is made into selects.
-pub fn flatten_gpu(m: &mut Module, checked: bool) -> Result<()> {
+/// Flattens a GPU module (see the module docs).
+pub fn flatten_gpu(m: &mut Module) -> Result<()> {
     let keep = outlined(m);
     inline_all(m, &keep)?;
     // The calls left are to the kept functions, which take values: only a store writes a
@@ -46,7 +45,7 @@ pub fn flatten_gpu(m: &mut Module, checked: bool) -> Result<()> {
         collapse_rebuilds(&mut f);
         cse(&mut f);
         dce(&mut f);
-        if_convert(m, &mut f, checked);
+        if_convert(m, &mut f);
         cse(&mut f);
         dce(&mut f);
         m.functions[i] = f;
@@ -72,13 +71,30 @@ const MERGE_SIZE: usize = 3 * SELECT_SIZE;
 /// one whose sides compute the same expressions of different operands (`smin`'s two sides, and
 /// their derived gradients) computes them once, of selected operands. After every derivation,
 /// so an interval still sees the branch (GPU only: computing a side that isn't taken can't trap
-/// there). With `checked`, a side that indexes stays a branch: as selects, a guarded index
-/// (`i > 0 && a[i - 1] > 0.0`) would be computed, and checked, where the guard fails.
-fn if_convert(m: &Module, f: &mut Function, checked: bool) {
+/// there). A side that indexes by a value not known to be in range stays a branch: a guarded
+/// index (`i > 0 && a[i - 1] > 0.0`) computed where the guard fails is out of range, and WGSL
+/// may end the invocation there (and a debug build's bounds check would fail).
+fn if_convert(m: &Module, f: &mut Function) {
     let mut body = std::mem::take(&mut f.body);
+    // The constant indices: an index known in range is computed safely anywhere.
+    let mut known: HashMap<ValueId, u64> = HashMap::new();
+    visit::walk(&body, &mut |s| {
+        if let Stmt::Let(v, Expr::Const(c)) = s {
+            let n = match c {
+                Const::U32(n) => Some(u64::from(*n)),
+                Const::I32(n) => u64::try_from(*n).ok(),
+                Const::U64(n) => Some(*n),
+                Const::I64(n) => u64::try_from(*n).ok(),
+                _ => None,
+            };
+            if let Some(n) = n {
+                known.insert(*v, n);
+            }
+        }
+    });
     // The innermost first: a converted `if` makes the one around it straight too.
     visit::expand(&mut body, &mut |s, b| match s {
-        Stmt::If { cond, then, else_ } => match as_selects(m, f, cond, &then, &else_, checked) {
+        Stmt::If { cond, then, else_ } => match as_selects(m, f, cond, &then, &else_, &known) {
             Some(straight) => b.extend(straight),
             None => b.push(Stmt::If { cond, then, else_ }),
         },
@@ -96,7 +112,7 @@ fn as_selects(
     cond: ValueId,
     then: &Block,
     else_: &Block,
-    checked: bool,
+    known: &HashMap<ValueId, u64>,
 ) -> Option<Block> {
     // A small branch's size counts its sides' `At`s too, though they compute nothing: the
     // GPU ratios were measured with that count. A larger one's counts what its sides compute.
@@ -118,7 +134,7 @@ fn as_selects(
                     stored.push(l);
                 }
             }
-            Stmt::Let(_, e) if select_safe(m, e, checked) => {}
+            Stmt::Let(_, e) if select_safe(m, f, e, known) => {}
             Stmt::At(_) => {}
             _ => return None,
         }
@@ -368,22 +384,48 @@ fn live(code: Block) -> Block {
 }
 
 /// Whether an expression can be computed where its branch isn't taken: it does nothing but
-/// compute, reads only locals and uniforms, and isn't a derivative (which wants the uniform
-/// control flow it's in); with `checked`, it indexes nothing.
-fn select_safe(m: &Module, e: &Expr, checked: bool) -> bool {
+/// compute, reads only locals and uniforms, indexes only by constants in range (`known`), and
+/// isn't a derivative (which wants the uniform control flow it's in).
+fn select_safe(m: &Module, f: &Function, e: &Expr, known: &HashMap<ValueId, u64>) -> bool {
+    let in_range = |i: &ValueId, n: u32| known.get(i).is_some_and(|&k| k < u64::from(n));
     match e {
         Expr::Builtin(Builtin::Dpdx | Builtin::Dpdy | Builtin::Fwidth, _) => false,
-        // What the bounds checks check: only where the program computes it.
-        Expr::Load(p) if checked && p.has_index() => false,
-        Expr::ExtractDyn(..) if checked => false,
-        Expr::Load(p) => match p.root {
-            PlaceRoot::Local(_) => true,
-            PlaceRoot::Resource(r) => {
-                matches!(m.resources[r.index()].kind, ResourceKind::Uniform { .. })
-            }
+        Expr::ExtractDyn(x, i) => match m.types.get(f.value_ty(*x)) {
+            TypeDef::Array(_, n) => in_range(i, *n),
+            TypeDef::Vector(_, n) | TypeDef::Matrix(n, _) => in_range(i, u32::from(*n)),
             _ => false,
         },
+        Expr::Load(p) if p.has_index() => {
+            let Some((mut t, path)) = m.place_start(f, p) else { return false };
+            for proj in path {
+                if let Proj::Index(i) = proj {
+                    let ok = match m.types.get(t) {
+                        TypeDef::Array(_, n) => in_range(i, *n),
+                        TypeDef::Vector(_, n) | TypeDef::Matrix(n, _) => in_range(i, u32::from(*n)),
+                        _ => false,
+                    };
+                    if !ok {
+                        return false;
+                    }
+                }
+                let Some(next) = m.proj_ty(t, proj) else { return false };
+                t = next;
+            }
+            select_safe_root(m, p)
+        }
+        Expr::Load(p) => select_safe_root(m, p),
         e => e.only_computes(),
+    }
+}
+
+/// Whether a load from `p`'s root can be computed anywhere: a local's or a uniform's.
+fn select_safe_root(m: &Module, p: &Place) -> bool {
+    match p.root {
+        PlaceRoot::Local(_) => true,
+        PlaceRoot::Resource(r) => {
+            matches!(m.resources[r.index()].kind, ResourceKind::Uniform { .. })
+        }
+        _ => false,
     }
 }
 
@@ -2775,7 +2817,7 @@ mod tests {
             Stmt::Let(out, Expr::Load(Place::local(w))),
             Stmt::Return(Some(out)),
         ];
-        if_convert(&m, &mut f, false);
+        if_convert(&m, &mut f);
         let ifs = f.body.iter().filter(|st| matches!(st, Stmt::If { .. })).count();
         assert_eq!(ifs, 1, "the guard stays a branch, the other doesn't: {:?}", f.body);
         let mut exprs: HashMap<ValueId, Expr> = HashMap::new();
@@ -2810,12 +2852,12 @@ mod tests {
         assert_eq!(muls, STEPS + 1, "each product once: {:?}", f.body);
     }
 
-    /// `if i > 0 { v = a[i - 1] }` becomes a select, which reads `a[i - 1]` where `i` is 0: WGSL
-    /// gives an element in range there. Where a debug build's bounds checks follow, the check
-    /// would fail where the program reads nothing, so the branch stays.
+    /// `if i > 0 { v = a[i - 1] }` stays a branch: as a select, `a[i - 1]` would be read where
+    /// `i` is 0, out of range, where WGSL may end the invocation (and a debug build's bounds
+    /// check fails). `a[3]`, known in range, is read anywhere: that branch becomes a select.
     #[test]
-    fn a_guarded_index_stays_a_branch_where_bounds_are_checked() {
-        for checked in [false, true] {
+    fn a_guarded_index_stays_a_branch_and_a_constant_one_does_not() {
+        for constant in [false, true] {
             let mut m = Module::default();
             let (f32t, u32t, boolt) = (m.types.f32(), m.types.u32(), m.types.bool());
             let table = m.types.intern(TypeDef::Array(f32t, 4));
@@ -2825,6 +2867,10 @@ mod tests {
             let [i, zero, one, prev] = [(); 4].map(|_| f.new_value(u32t));
             let (c, read, out, nothing) =
                 (f.new_value(boolt), f.new_value(f32t), f.new_value(f32t), f.new_value(f32t));
+            let index = match constant {
+                true => Expr::Const(Const::U32(3)),
+                false => Expr::Binary(BinOp::WrappingSub, i, one),
+            };
             f.body = vec![
                 Stmt::Let(i, Expr::Param(0)),
                 Stmt::Let(zero, Expr::Const(Const::U32(0))),
@@ -2835,7 +2881,7 @@ mod tests {
                 Stmt::If {
                     cond: c,
                     then: vec![
-                        Stmt::Let(prev, Expr::Binary(BinOp::WrappingSub, i, one)),
+                        Stmt::Let(prev, index),
                         Stmt::Let(read, Expr::Load(Place::local(a).with(Proj::Index(prev)))),
                         Stmt::Store(Place::local(v), read),
                     ],
@@ -2844,9 +2890,9 @@ mod tests {
                 Stmt::Let(out, Expr::Load(Place::local(v))),
                 Stmt::Return(Some(out)),
             ];
-            if_convert(&m, &mut f, checked);
+            if_convert(&m, &mut f);
             let ifs = f.body.iter().filter(|st| matches!(st, Stmt::If { .. })).count();
-            assert_eq!(ifs, usize::from(checked), "checked {checked}: {:?}", f.body);
+            assert_eq!(ifs, usize::from(!constant), "constant {constant}: {:?}", f.body);
         }
     }
 
