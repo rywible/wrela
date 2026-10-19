@@ -583,6 +583,21 @@ tree and text input moved from JSON with JavaScript conditions to typed Wrela co
 (`std::tool::browser::Script`), each condition kept; their fixed waits became waits for the line
 the program printed.
 
+The sixth slice checks the workspace in one command, `wrela suite` (language.md §13.2): its
+members' format, its allowlist (`[workspace] allow`) and every member's tests. It also names the
+workspace's tools with their grants (`[tools.<name>]`, §3.6 and §15.5). Claude (Opus 5.5)
+implemented it, and it adds no crate. The allowlist reads `.gitignore` files as git does, after
+git's documented pattern format (gitignore(5)), as facts; no code was copied. The Rust tests that
+only ran a member's own tests were removed, because the suite runs those tests. The floor's own
+tests (games/last-green) never ran in the gate: on this Mac they take about 11 minutes, and 7 of
+112 fail. The manifest lists the package as `untested` until those tests are bounded. The council's review (GPT-6.1-Sol and GPT-6-Astra) found four faults. Write roots were made,
+and narrowed roots checked, by path, so a directory swapped after the check could lead outside;
+they are now opened and made through directory handles that follow no link, and the run gets
+those handles. A failing tool test's printed lines were missing from its report. A trailing
+`/**` in an ignore rule hid files that a later `!` rule takes back. A checkout's own
+`.git/info/exclude` could hide a file. Each fault is fixed, with a regression that fails
+without the fix.
+
 ## The references
 
 ### The rules

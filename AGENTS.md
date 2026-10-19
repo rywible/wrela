@@ -38,7 +38,7 @@ The repo is splitting into `wrela-compiler` (hosts, language, spec, their checks
 - Use real shaders on hardware GPUs for pixel/buffer assertions and CPU hosts for command/state assertions. Fail if a hardware adapter is unavailable; never use software rendering. Rendering tests assert correctness, without frame-time or FPS thresholds. Keep performance comparisons in `tools/wrela profile`.
 - `tools/check.sh` runs every retained test and infrastructure check, including real GPU shaders and small Chrome agreement scenarios. `tools/check.sh <check-name>` runs exactly one; a name that ends in `::` runs that group. Unknown, ambiguous or empty selections fail.
 - Names: Rust `module::test` or `crate::target::module::test`; Python `tools::test_module.Class.test_method`; browser `browser::file.test.ts::full test name`; Wrela `wrela::<package-path>::<test-name>` (`compiler/std` for std). Groups: a Rust module path such as `renderer::` (in one test program), `wrela::<package-path>::`, `browser::file.test.ts::`.
-- Infrastructure names: `rustfmt`, `wrela-fmt`, `clippy`, `doc`, `tools`, `browser`, `browser-types`, `browser-dist`, `browser-size`, `wgsl`. Use normal formatters.
+- Infrastructure names: `rustfmt`, `wrela-fmt` (the toolchain's own Wrela), `wrela-suite` (`wrela suite`: the workspace's format, allowlist and tests; a member's Wrela name goes to it), `clippy`, `doc`, `tools`, `browser`, `browser-types`, `browser-dist`, `browser-size`, `wgsl`. Use normal formatters.
 - Passing checks does not prove prolonged stability, whole-scene quality or reference-machine frame rates. Keep extended captures and benchmarks outside checks.
 
 ## Records

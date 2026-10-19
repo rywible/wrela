@@ -441,7 +441,11 @@ pub fn frame(s: mut Session, time: f32, width: u32, height: u32) {
     }
     if let Some(result) = environment {
         s.environment = None
-        if let Ok(bytes) = result { if let Some(now) = host::read_environment(bytes).seconds { s.saved = now } }
+        if let Ok(bytes) = result {
+            if let Some(now) = host::read_environment(bytes).seconds {
+                s.saved = now
+            }
+        }
     }
     var answer = None
     match mut s.io {
