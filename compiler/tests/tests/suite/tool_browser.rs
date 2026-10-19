@@ -35,13 +35,16 @@ use std::tool::blob
 use std::tool::blob::Data
 use std::tool::browser
 use std::tool::browser::{Element, Match, Permission, Script, Until}
+use std::tool::files
 use std::tool::serve
+use std::tool::time
 
 @job
 fn main(given: take Vec<String>) -> u32 {
     let what = given[0].clone()
     let page = given[1].clone()
-    var s = serve::start("scratch")
+    let root = if given.len() > 2 { given[2].clone() } else { String::from("scratch") }
+    var s = serve::start(root.as_str())
     var sg = s.poll()
     while sg.is_none() {
         yield
@@ -90,6 +93,46 @@ fn main(given: take Vec<String>) -> u32 {
     if what.as_str() == "refused" {
         script = Script::new().wait(Until::title(Match::starts("tried")))
     }
+    if what.as_str() == "whole" {
+        script = Script::new()
+            .wait(Until::count(Element::css("li"), 4097))
+            .grant(Permission::Clipboard)
+            .emulate_focus()
+            .click(Element::css("button").with_text("Copy"))
+            .wait(Until::clipboard(Match::ends("!")))
+    }
+    if what.as_str() == "closing" {
+        // A wait of 600 s, and the browser closed while it waits.
+        var r = browser::run(b, Script::new().wait(Until::done(), timeout: 600.0), timeout: 600.0)
+        var t = time::after(0.3)
+        while t.poll().is_none() { yield }
+        var c = browser::close(b)
+        var cg = c.poll()
+        var rg = r.poll()
+        while cg.is_none() || rg.is_none() {
+            yield
+            if cg.is_none() {
+                cg = c.poll()
+            }
+            if rg.is_none() {
+                rg = r.poll()
+            }
+        }
+        let Some(rp) = take rg else { return 90 }
+        match answer(take rp) {
+            Ok(_) => print("run: done"),
+            Err(e) => print(f"run: {e.message()}"),
+        }
+        let Some(cp) = take cg else { return 90 }
+        match answer(take cp) {
+            Ok(_) => print("close: closed"),
+            Err(e) => print(f"close: {e.message()}"),
+        }
+        return 0
+    }
+    if what.as_str() == "rejected" {
+        script = Script::new().wait(Until::done(), timeout: 2.0)
+    }
     if what.as_str() == "clipboard" {
         var c = browser::clipboard(b)
         var cg = c.poll()
@@ -108,7 +151,7 @@ fn main(given: take Vec<String>) -> u32 {
             .click(Element::css("button").with_text("Copy"))
             .wait(Until::clipboard(Match::is("copied!")))
     }
-    if what.as_str() == "done" {
+    if what.as_str() == "done" || what.as_str() == "delayed" {
         script = Script::new().wait(Until::done())
     }
     if what.as_str() == "never" {
@@ -123,6 +166,20 @@ fn main(given: take Vec<String>) -> u32 {
     let Some(rp) = take rg else { return 90 }
     if let Err(e) = answer(take rp) {
         print(f"run: {e.message()}")
+        if what.as_str() == "rejected" {
+            var f = files::read(f"{root.as_str()}/results/DONE".as_str())
+            var fg = f.poll()
+            while fg.is_none() {
+                yield
+                fg = f.poll()
+            }
+            let Some(fp) = take fg else { return 90 }
+            match answer(take fp) {
+                Ok(_) => print("kept a DONE"),
+                Err(_) => print("kept no DONE"),
+            }
+            return 0
+        }
         if what.as_str() != "never" {
             return 1
         }
@@ -252,6 +309,44 @@ fn main(given: take Vec<String>) -> u32 {
         let Ok(t) = browser::read_text(take cp) else { return 2 }
         print(f"clipboard after: {t.as_str()}")
     }
+    if what.as_str() == "whole" {
+        var x = browser::texts(b, "li")
+        var xg = x.poll()
+        while xg.is_none() {
+            yield
+            xg = x.poll()
+        }
+        let Some(xp) = take xg else { return 90 }
+        match browser::read_texts(take xp) {
+            Ok(items) => print(f"items {items.len()}, the last {items[items.len() - 1].as_str()}"),
+            Err(e) => print(f"texts: {e.message()}"),
+        }
+        var c = browser::clipboard(b)
+        var cg = c.poll()
+        while cg.is_none() {
+            yield
+            cg = c.poll()
+        }
+        let Some(cp) = take cg else { return 90 }
+        match browser::read_text(take cp) {
+            Ok(t) => print(f"clipboard {t.len()} bytes"),
+            Err(e) => print(f"clipboard: {e.message()}"),
+        }
+    }
+    if what.as_str() == "delayed" {
+        // The result the browser saw is the one its server kept: on disk before close.
+        var f = files::read(f"{root.as_str()}/results/DONE".as_str())
+        var fg = f.poll()
+        while fg.is_none() {
+            yield
+            fg = f.poll()
+        }
+        let Some(fp) = take fg else { return 90 }
+        match answer(take fp) {
+            Ok(bytes) => print(f"kept {bytes.len()} bytes"),
+            Err(e) => print(f"kept nothing: {e.message()}"),
+        }
+    }
     if what.as_str() == "done" {
         var d = browser::results(b)
         var dg = d.poll()
@@ -314,21 +409,65 @@ const DONE: &str = r#"<!doctype html>
 
 const NEVER: &str = "<!doctype html><title>Never</title><p>This page never reports.</p>\n";
 
-/// A page that tries three things it may not reach, from the page and from its worker, and says
-/// in its title what each did: `OTHER` is another server's port on this machine.
-const REFUSING: &str = r#"<!doctype html>
-<title>Refusing</title>
+/// A page of 4,097 items, and a button that copies 20,000 bytes, the last a `!`.
+const WHOLE: &str = r#"<!doctype html>
+<title>Whole</title>
+<ul id="items"></ul>
+<button onclick="navigator.clipboard.writeText('x'.repeat(19999) + '!')">Copy</button>
 <script>
-const other = "http://127.0.0.1:OTHER/x";
-const tried = (u) => fetch(u).then(() => "reached", () => "refused");
-const worker = new Worker(URL.createObjectURL(new Blob(
-  [`fetch("${other}/w").then(() => postMessage("reached"), () => postMessage("refused"));`],
-  { type: "text/javascript" })));
-const fromWorker = new Promise((done) => { worker.onmessage = (e) => done(e.data); });
-Promise.all([tried(other), tried("https://example.com/"), fromWorker])
-  .then((r) => { document.title = "tried " + r.join(" "); });
+const list = document.getElementById("items");
+for (let i = 0; i < 4097; i++) {
+  const li = document.createElement("li");
+  li.textContent = "item " + i;
+  list.appendChild(li);
+}
 </script>
 "#;
+
+/// A page that tries, from itself and from its worker, what it may not reach: a plain fetch, a
+/// WebSocket, a secure WebSocket and WebTransport to listening ports of this machine that aren't
+/// its server's (`OTHER` for TCP, `DATAGRAMS` for UDP), the same to another port of a host the
+/// tool is granted (`localhost`, its port 443 alone), and a fetch to a host it isn't granted.
+/// Its title says what each did.
+const REFUSING: &str = r##"<!doctype html>
+<title>Refusing</title>
+<script>
+const attempts = `
+  var fetched = (u) => fetch(u).then(() => "reached", () => "refused");
+  var socket = (u) => new Promise((done) => {
+    try {
+      const w = new WebSocket(u);
+      w.onopen = () => done("reached");
+      w.onerror = () => done("refused");
+    } catch (e) { done("refused"); }
+  });
+  var transport = (u) => {
+    try { return new WebTransport(u).ready.then(() => "reached", () => "refused"); }
+    catch (e) { return Promise.resolve("refused"); }
+  };
+  // An attempt that neither fails nor succeeds in 5 s says so.
+  var bounded = (p) => Promise.race([p, new Promise((done) => setTimeout(() => done("hung"), 5000))]);
+  var tried = () => Promise.all([
+    fetched("http://127.0.0.1:OTHER/x"), fetched("https://example.com/"),
+    socket("ws://127.0.0.1:OTHER/"), socket("wss://127.0.0.1:OTHER/"),
+    transport("https://127.0.0.1:DATAGRAMS/"),
+    socket("ws://localhost:OTHER2/"), socket("wss://localhost:OTHER2/"),
+    transport("https://localhost:DATAGRAMS2/"),
+  ].map(bounded));
+`;
+// Declared with `var`, so the page's own scope has them too.
+eval(attempts);
+const worker = new Worker(URL.createObjectURL(new Blob(
+  [attempts + "tried().then((r) => postMessage(r.join(' ')));"], { type: "text/javascript" })));
+const fromWorker = new Promise((done) => {
+  worker.onmessage = (e) => done(e.data);
+  worker.onerror = (e) => done("the worker failed: " + e.message);
+  setTimeout(() => done("the worker hung"), 8000);
+});
+Promise.all([tried().then((r) => r.join(" ")), fromWorker])
+  .then((r) => { document.title = "tried " + r.join(" | "); }, (e) => { document.title = "tried: " + e; });
+</script>
+"##;
 
 /// The grants a browser tool gets: its scratch root, and Chrome.
 fn grants(root: &Path) -> Grants {
@@ -347,12 +486,24 @@ fn browse(
 ) -> (Vec<String>, Ended) {
     let root = scratch(&format!("browser-{test}"));
     std::fs::write(root.join(name), page).expect("the page");
+    browse_in(&root, what, name, "scratch", grants, testing)
+}
+
+/// [`browse`], in `root`, the page already there, served from the root named `served`.
+fn browse_in(
+    root: &Path,
+    what: &str,
+    name: &str,
+    served: &str,
+    grants: impl FnOnce(&Path) -> Grants,
+    testing: Testing,
+) -> (Vec<String>, Ended) {
     // Built once, for the tests at once.
     static BUILD: std::sync::OnceLock<wrela_host::tool::ToolBuild> = std::sync::OnceLock::new();
     let build = BUILD.get_or_init(|| tool_build("browser-tool", BROWSER_TOOL));
     let (lines, mut options) = printer(|_| {});
-    options.caps = Caps::open(&grants(&root), |_| None).expect("granted");
-    options.args = vec![what.to_string(), name.to_string()];
+    options.caps = Caps::open(&grants(root), |_| None).expect("granted");
+    options.args = vec![what.to_string(), name.to_string(), served.to_string()];
     options.timeout = Some(Duration::from_secs(60));
     options.testing = testing;
     let ended = run(build, options);
@@ -389,22 +540,112 @@ fn a_tool_acts_on_a_page_and_reads_what_it_shows() {
     assert_eq!(ended.blobs_released.0, 1, "the capture's blob, which the tool kept");
 }
 
+/// No connection a page or its worker makes reaches what the tool isn't granted: neither plain
+/// HTTP nor a WebSocket, secure or not, nor WebTransport, to another port of this machine or of
+/// a granted host. Every one is refused, and no listener there is reached.
 #[test]
 #[ignore = "needs the runtime"]
 fn a_page_reaches_only_its_tools_servers() {
-    // Another server on this machine, which the page must not reach.
-    let other = std::net::TcpListener::bind("127.0.0.1:0").expect("listen");
-    other.set_nonblocking(true).expect("nonblocking");
-    let port = other.local_addr().expect("addr").port();
-    let page = REFUSING.replace("OTHER", &port.to_string());
+    let listen = || {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").expect("listen");
+        l.set_nonblocking(true).expect("nonblocking");
+        let port = l.local_addr().expect("addr").port();
+        (l, port)
+    };
+    let datagrams = || {
+        let u = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind");
+        u.set_nonblocking(true).expect("nonblocking");
+        let port = u.local_addr().expect("addr").port();
+        (u, port)
+    };
+    let ((other, op), (other2, op2)) = (listen(), listen());
+    let ((udp, up), (udp2, up2)) = (datagrams(), datagrams());
+    let page = REFUSING
+        .replace("OTHER2", &op2.to_string())
+        .replace("OTHER", &op.to_string())
+        .replace("DATAGRAMS2", &up2.to_string())
+        .replace("DATAGRAMS", &up.to_string());
+    let with_localhost = |root: &Path| grants(root).net("localhost");
     let (printed, ended) =
-        browse("refused", "refused", "refusing.html", &page, grants, Testing::default());
+        browse("refused", "refused", "refusing.html", &page, with_localhost, Testing::default());
     assert_eq!(ended.end, End::Exit(0), "{printed:?}");
-    assert!(printed.contains(&"title tried refused refused refused".to_string()), "{printed:?}");
-    let refusals = printed.iter().filter(|l| l.contains("the host refused GET")).count();
-    assert!(refusals >= 3, "the page's two and its worker's: {printed:?}");
-    assert!(printed.iter().any(|l| l.contains(&format!("127.0.0.1:{port}/x/w"))), "{printed:?}");
-    assert!(other.accept().is_err(), "nothing reached the other server");
+    let refused = ["refused"; 8].join(" ");
+    let title = format!("title tried {refused} | {refused}");
+    assert!(printed.contains(&title), "{printed:?}");
+    for (what, l) in
+        [("this machine's other port", &other), ("the granted host's other port", &other2)]
+    {
+        assert!(l.accept().is_err(), "nothing reached {what}");
+    }
+    let mut buf = [0u8; 64];
+    assert!(udp.recv(&mut buf).is_err() && udp2.recv(&mut buf).is_err(), "no datagram came");
+    let said = |what: &str| printed.iter().any(|l| l.contains(what));
+    assert!(said(&format!("refused GET http://127.0.0.1:{op}/x")), "{printed:?}");
+    assert!(said(&format!("refused a connection to 127.0.0.1:{op}")), "{printed:?}");
+    assert!(said(&format!("refused a connection to localhost:{op2}")), "{printed:?}");
+    assert!(said("refused a connection to example.com:443"), "{printed:?}");
+}
+
+/// No observation is cut short: all of 4,097 elements' texts, and a clipboard of 20,000 bytes.
+#[test]
+#[ignore = "needs the runtime"]
+fn observations_are_whole() {
+    let (printed, ended) =
+        browse("whole", "whole", "whole.html", WHOLE, grants, Testing::default());
+    assert_eq!(ended.end, End::Exit(0), "{printed:?}");
+    let want = ["opened", "items 4097, the last item 4096", "clipboard 20000 bytes", "closed"];
+    assert_eq!(printed, want);
+}
+
+/// A close while a script waits 600 s for a result ends both at once: the wait fails, saying the
+/// browser was closed, and the close succeeds, within the cleanup grace.
+#[test]
+#[ignore = "needs the runtime"]
+fn a_close_during_a_long_wait_ends_both_at_once() {
+    let moments = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let kept = moments.clone();
+    let signal = Signal(Arc::new(move |m| kept.lock().expect("moments").push((m, Instant::now()))));
+    let testing = Testing { signal: Some(signal), ..Testing::default() };
+    let (printed, ended) = browse("closing", "closing", "never.html", NEVER, grants, testing);
+    assert_eq!(ended.end, End::Exit(0), "{printed:?}");
+    let at = |name: &str| {
+        moments.lock().expect("moments").iter().find(|(m, _)| *m == name).map(|(_, t)| *t)
+    };
+    let (run, close) = (at("run").expect("the wait ran"), at("close").expect("the close ran"));
+    assert!(run < close, "the close came while the wait waited");
+    assert_eq!(printed[0], "opened");
+    assert!(printed[1].starts_with("run: ") && printed[1].contains("closed"), "{printed:?}");
+    assert_eq!(printed[2], "close: closed");
+    let grace = Testing::default().grace;
+    assert!(close.elapsed() < grace, "both ended within the grace: {:?}", close.elapsed());
+}
+
+/// A page's result is seen once its server has kept it: a wait for one whose write the server
+/// holds a second ends only after it's on disk, and one the server refuses (its root is read
+/// only) is never seen.
+#[test]
+#[ignore = "needs the runtime"]
+fn a_result_is_seen_only_once_its_server_kept_it() {
+    let held = Testing {
+        hold: Some(("results/DONE".into(), Duration::from_secs(1))),
+        ..Testing::default()
+    };
+    let (printed, ended) = browse("delayed", "delayed", "done.html", DONE, grants, held);
+    assert_eq!(ended.end, End::Exit(0), "{printed:?}");
+    assert_eq!(printed, ["opened", "kept 2 bytes", "closed"]);
+    let read_only = |root: &Path| {
+        Grants { browser: true, ..Grants::default() }
+            .root("scratch", root.join("scratch-unused"), true)
+            .root("site", root, false)
+    };
+    let root = scratch("browser-rejected");
+    std::fs::create_dir_all(root.join("scratch-unused")).expect("a write root");
+    std::fs::write(root.join("done.html"), DONE).expect("the page");
+    let (printed, ended) =
+        browse_in(&root, "rejected", "done.html", "site", read_only, Testing::default());
+    assert_eq!(ended.end, End::Exit(0), "{printed:?}");
+    assert!(printed[1].contains("never had the page's results/DONE"), "{printed:?}");
+    assert_eq!(printed[2], "kept no DONE");
 }
 
 #[test]

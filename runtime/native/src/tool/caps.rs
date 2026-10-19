@@ -397,12 +397,6 @@ impl Caps {
         self.browser
     }
 
-    /// The hosts `--net` grants, each with its port if the grant names one (not a tool test's
-    /// fakes).
-    pub(crate) fn net_hosts(&self) -> Vec<String> {
-        self.net.iter().cloned().collect()
-    }
-
     /// The secrets granted, by name, with their values.
     pub(crate) fn secrets(&self) -> &[(String, String)] {
         &self.secrets

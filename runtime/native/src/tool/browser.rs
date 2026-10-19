@@ -1,30 +1,42 @@
 //! `std::tool::browser` (language.md §15.5): Chrome stable, headless, on the hardware GPU, with a
 //! throwaway profile in the host's own directory for the run, driven over the DevTools protocol
-//! (`wrela_chrome`). `open` starts a browser of its own for a page; `run` carries out a script's
-//! typed steps; the observations read what the page shows; `capture` gives its screen as a PNG;
-//! `close` ends it. Starting one needs the `--browser` grant.
+//! on Chrome's pipe (`wrela_chrome`). `open` starts a browser of its own for a page; `run`
+//! carries out a script's typed steps; the observations read what the page shows; `capture`
+//! gives its screen as a PNG; `close` ends it. Starting one needs the `--browser` grant.
 //!
-//! **A browser reaches only what the tool is granted.** Every request of its pages and workers
-//! (service and shared workers too, each paused at its start until it's held) is paused by the
-//! DevTools Fetch domain, and goes on only to an origin of one of the tool's running servers
-//! (`std::tool::serve`, `http://127.0.0.1:<port>`) or to `https://` a host `--net` grants: any
-//! other fails as blocked, and the page's console says so. A host name it isn't granted leads to
-//! a dead proxy, so a WebSocket, which the Fetch domain doesn't see, reaches no other host either.
-//! A tool test's fake sites aren't the browser's.
+//! **A browser reaches only what the tool is granted.** Every connection it makes, of its
+//! pages, their workers and Chrome itself, goes through a proxy of the host's
+//! (`wrela_chrome::proxy`), with no implicit bypass, and QUIC and WebTransport off. A plain HTTP
+//! request goes on only to an origin of one of the tool's running servers (`std::tool::serve`,
+//! `http://127.0.0.1:<port>`); a tunnel (HTTPS, a WebSocket) only to a host and port that
+//! `--net` grants (443 for a grant with none). Anything else is refused before a connection is
+//! made, and the page's console says so. A tool test's fake sites aren't the browser's.
+//!
+//! **A page's result is what its server kept.** `results` and a wait for it read the
+//! `results/DONE` the page's server (the tool's own, on the port of the URL it opened) has
+//! written since the page opened, not a request in flight: one the server refused, or hasn't
+//! finished, isn't there yet.
 //!
 //! **A browser is a resource of its request.** Its process group is recorded for the
-//! supervisor (`run::start_owned`) before Chrome runs; it's registered under the `open` request
-//! as soon as Chrome answers, before its page opens and before the answer that names it reaches
+//! supervisor (`run::let_go`) before Chrome runs; it's registered under the `open` request as
+//! soon as Chrome answers, before its page opens and before the answer that names it reaches
 //! the tool. If the request fails, or the tool ends first, the host closes it: the group killed,
-//! the profile removed. A start in progress when the tool ends is given up. The host closes every
-//! browser when the tool ends: first every connection (each call waiting on Chrome fails at
-//! once, so its worker returns), then every process group.
+//! the profile removed. A start in progress when the tool ends is given up. Chrome holds the
+//! host's end of its pipe, so if the host is killed it shuts down too, and the run's directory
+//! is swept at the next run.
+//!
+//! **Closing is never held up.** Each browser has a cancel flag, which `close` (or the tool's
+//! end) sets before anything else, then closes the browser's pipe: every request using it
+//! (a wait, even of 600 s, reads the flag as it waits) fails at once, and lets the page go; then
+//! `close` takes the page within the grace, or the run is the host's failure.
 //!
 //! **Deadlines count from the request.** Each request has one (60 s, or its `timeout`, at most
-//! 600 s), from when the host took it; a script's waits and clicks are bounded by it too, and a
-//! wait looks for the tool's end as it waits. A capture reserves its blob's most bytes (a PNG of
-//! the viewport, stored) in the budget before it asks Chrome for the screen.
+//! 600 s), from when the host took it; a script's waits and clicks are bounded by it too. A
+//! capture reserves its blob's most bytes (a PNG of the viewport, stored) in the budget before
+//! it asks Chrome for the screen. No observation is cut short: one whose answer would be more
+//! than 512 KiB fails, saying so.
 
+use super::caps::MOST_BYTES;
 use super::services::{Answer, Body, Services, Work};
 use super::toolchain::Out;
 use std::collections::HashMap;
@@ -32,7 +44,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 use wrela_chrome::script::{Element, Query, Seen};
-use wrela_chrome::{Browser, Launch, TabOptions};
+use wrela_chrome::{Browser, Dest, Launch, Spawner, TabOptions};
 
 /// A request's deadline unless it asks for another.
 const DEADLINE: Duration = Duration::from_secs(60);
@@ -64,31 +76,54 @@ impl Browsers {
         self.held.drain().map(|(_, b)| b).collect()
     }
 
-    /// Closes every browser's connection: each call waiting on Chrome fails at once.
+    /// Cancels every browser's requests and closes its pipe: each request waiting on Chrome, or
+    /// on what it's seen, fails at once.
     pub(crate) fn disconnect_all(&self) {
         for b in self.held.values() {
-            b.browser.disconnect();
+            b.cancel();
         }
     }
 }
 
-/// A browser and its page, and whether a request is using it.
+/// A browser and its page, whether a request is using it, and its cancel flag.
 pub(crate) struct Held {
     browser: Browser,
     tab: Mutex<Option<wrela_chrome::Tab>>,
     busy: AtomicBool,
+    cancelled: AtomicBool,
+    /// How long `close` may wait for a request to let the page go.
+    grace: Duration,
 }
 
 impl Held {
-    /// Closes it: its page, its process group and its profile. Whether that ended cleanly.
-    pub(crate) fn close(&self) -> bool {
-        // A request using the page fails at once, and lets it go.
+    /// Sets the cancel flag, then closes the pipe: what uses the browser fails at once.
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
         self.browser.disconnect();
-        let tab = self.tab.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
-        if let Some(t) = tab {
-            let _ = t.close(Instant::now() + Duration::from_millis(500));
+    }
+
+    /// Closes it: cancels what uses it, takes its page within the grace, then ends its process
+    /// group, profile and proxy. Whether that ended cleanly.
+    pub(crate) fn close(&self) -> bool {
+        self.cancel();
+        let until = Instant::now() + self.grace;
+        let tab = loop {
+            match self.tab.try_lock() {
+                Ok(mut t) => break Some(t.take()),
+                Err(std::sync::TryLockError::Poisoned(p)) => break Some(p.into_inner().take()),
+                Err(std::sync::TryLockError::WouldBlock) if Instant::now() < until => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                // A request that didn't let the page go: the browser ends under it anyway.
+                Err(std::sync::TryLockError::WouldBlock) => break None,
+            }
+        };
+        let took = tab.is_some();
+        if let Some(Some(t)) = tab {
+            let _ = t.close(Instant::now() + Duration::from_millis(100));
         }
-        self.browser.close()
+        let ended = self.browser.close();
+        took && ended
     }
 }
 
@@ -145,11 +180,15 @@ pub(crate) fn route(name: &str, b: &mut Body) -> Work {
                 let limit = deadline(b)?;
                 let due = entered + limit;
                 Work::Long(Box::new(move |s, _| {
-                    super::services::answer(using(s, handle, due, |_, tab| {
+                    super::services::answer(using(s, handle, due, |held, tab| {
                         let closing = s.closing.clone();
                         let stop = move || {
+                            if held.cancelled.load(Ordering::Acquire) {
+                                return Some("the browser was closed".to_string());
+                            }
                             closing.load(Ordering::Acquire).then(|| "the tool ended".to_string())
                         };
+                        s.signal("run");
                         let ran = wrela_chrome::script::run(tab, &steps, due, &stop);
                         ran.map(|()| Vec::new()).map_err(|why| {
                             if Instant::now() >= due {
@@ -202,6 +241,7 @@ pub(crate) fn route(name: &str, b: &mut Body) -> Work {
                 let handle = b.u32()?;
                 b.end()?;
                 Work::Long(Box::new(move |s, _| {
+                    s.signal("close");
                     let held = s.browsers().held.remove(&handle);
                     let Some(held) = held else {
                         return failure(format!("the tool holds no browser {handle}"));
@@ -220,39 +260,61 @@ pub(crate) fn route(name: &str, b: &mut Body) -> Work {
     parsed.unwrap_or_else(|why| Work::Now(failure(why)))
 }
 
-/// Whether a page of the tool's may reach `url`: an origin of one of its running servers, or
-/// `https://` a host `--net` grants (not a tool test's fake). `data:`, `blob:` and `about:`
-/// reach nothing.
-fn allowed(s: &Services, url: &str) -> bool {
-    if url.starts_with("data:") || url.starts_with("blob:") || url.starts_with("about:") {
-        return true;
+/// Whether a connection of the tool's browser may go to `dest`: plain HTTP only to one of its
+/// running servers, `http://127.0.0.1:<port>`; a tunnel (HTTPS, a WebSocket) only to a host and
+/// port `--net` grants (443 for a grant with none), not a tool test's fake.
+fn allowed(s: &Services, dest: Dest) -> bool {
+    match dest {
+        Dest::Http { host, port } => host == "127.0.0.1" && s.servers().ports().contains(&port),
+        Dest::Tunnel { host, port } => {
+            let named = format!("{host}:{port}");
+            s.caps.host(&named) == Some(false) || (port == 443 && s.caps.host(host) == Some(false))
+        }
     }
-    let Some((scheme, rest)) = url.split_once("://") else { return false };
+}
+
+/// The port of `url`'s origin, if it's `http://127.0.0.1:<port>`.
+fn served_port(url: &str) -> Option<u16> {
+    let rest = url.strip_prefix("http://127.0.0.1:")?;
+    rest.split(['/', '?', '#']).next()?.parse().ok()
+}
+
+/// Whether the tool may open `url`: an origin of one of its servers, or a granted `https://`.
+fn may_open(s: &Services, url: &str) -> bool {
+    if let Some(port) = served_port(url) {
+        return allowed(s, Dest::Http { host: "127.0.0.1", port });
+    }
+    let Some(rest) = url.strip_prefix("https://") else { return false };
     let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
     if authority.contains('@') {
         return false;
     }
-    match scheme {
-        "http" => {
-            let Some(port) =
-                authority.strip_prefix("127.0.0.1:").and_then(|p| p.parse::<u16>().ok())
-            else {
-                return false;
-            };
-            s.servers().ports().contains(&port)
-        }
-        "https" => {
-            let host = authority.to_ascii_lowercase();
-            let host = host.strip_suffix(":443").unwrap_or(&host);
-            s.caps.host(host) == Some(false)
-        }
-        _ => false,
-    }
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((h, p)) => (h, p.parse().unwrap_or(0)),
+        None => (authority, 443),
+    };
+    allowed(s, Dest::Tunnel { host: &host.to_ascii_lowercase(), port })
 }
 
-/// The hosts `--net` grants: the dead proxy lets these by.
-fn granted_hosts(s: &Services) -> Vec<String> {
-    s.caps.net_hosts().iter().map(|h| h.split(':').next().unwrap_or(h).to_string()).collect()
+/// The tool host's way to start Chrome: through `run::owned_command`, so a supervisor's file of
+/// groups has Chrome's before it runs.
+struct Owned<'a> {
+    s: &'a Services,
+    go: std::path::PathBuf,
+}
+
+impl Spawner for Owned<'_> {
+    fn command(
+        &self,
+        exe: &std::path::Path,
+        args: &[std::ffi::OsString],
+    ) -> Result<std::process::Command, String> {
+        super::run::owned_command(self.s, exe, args.to_vec(), &self.go)
+    }
+
+    fn started(&self, child: &mut std::process::Child) -> Result<i32, String> {
+        super::run::let_go(self.s, child, &self.go)
+    }
 }
 
 /// Opens `url` in a browser of its own for `request`, by `due`: its handle.
@@ -266,7 +328,7 @@ fn open(
     if !s.caps.browser() {
         return Err("the browser isn't granted: `--browser` grants it".into());
     }
-    if !allowed(s, url) {
+    if !may_open(s, url) {
         return Err(format!(
             "`{url}` isn't one of the tool's servers' origins or an `https://` host it's granted"
         ));
@@ -286,21 +348,19 @@ fn open(
     launch.startup = launch.startup.min(left);
     launch.cancel = Some(s.closing.clone());
     let weak: Weak<Services> = Arc::downgrade(s);
-    let policy: wrela_chrome::Policy =
-        Arc::new(move |url: &str| weak.upgrade().is_some_and(|s| allowed(&s, url)));
-    launch.policy = Some((policy, granted_hosts(s)));
-    let go = s.work_dir()?.join(format!("{request}.browser.go"));
-    let spawn = |exe: &std::path::Path, args: &[std::ffi::OsString], log: std::fs::File| {
-        let err = log.try_clone().map_err(|e| format!("Chrome's log: {e}"))?;
-        let mut command = super::run::owned_command(s, exe, args.to_vec(), &go)?;
-        command.stdin(std::process::Stdio::null()).stdout(log).stderr(err);
-        super::run::start_owned(s, &mut command, &go, "Chrome")
-    };
-    let launched = Browser::launch(launch, &spawn);
+    launch.policy = Some(Arc::new(move |d: Dest| weak.upgrade().is_some_and(|s| allowed(&s, d))));
+    let spawner = Owned { s, go: s.work_dir()?.join(format!("{request}.browser.go")) };
+    let launched = Browser::launch(launch, &spawner);
     // Chrome has started (or won't): the file that let it go has done its work.
-    let _ = std::fs::remove_file(&go);
+    let _ = std::fs::remove_file(&spawner.go);
     let browser = launched?;
-    let held = Arc::new(Held { browser, tab: Mutex::new(None), busy: AtomicBool::new(true) });
+    let held = Arc::new(Held {
+        browser,
+        tab: Mutex::new(None),
+        busy: AtomicBool::new(true),
+        cancelled: AtomicBool::new(false),
+        grace: s.grace,
+    });
     // Registered under its request before its page opens, and before any answer names it.
     {
         let mut b = s.browsers();
@@ -308,10 +368,20 @@ fn open(
         b.unpublished.entry(request).or_default().push(handle);
     }
     if s.closing.load(Ordering::Acquire) {
-        // The tool ended as it started: its end may have closed every connection already.
+        // The tool ended as it started: its end may have closed every pipe already.
         return Err("the tool ended before the browser opened".into());
     }
-    let tab = held.browser.open(url, TabOptions { size: Some(size), console: None }, due)?;
+    // The page's result: what its server keeps from now on.
+    let done = served_port(url).and_then(|port| s.servers().on_port(port)).map(|server| {
+        let since = server.done().0;
+        let d: wrela_chrome::Done = Arc::new(move || {
+            let (count, text) = server.done();
+            (count > since).then_some(text)
+        });
+        d
+    });
+    let options = TabOptions { size: Some(size), console: None, done };
+    let tab = held.browser.open(url, options, due)?;
     // A page between documents has no context to ask yet: until it has one.
     loop {
         match tab.hardware_adapter(due) {
@@ -346,6 +416,9 @@ fn using(
         .get(&handle)
         .cloned()
         .ok_or_else(|| format!("the tool holds no browser {handle}"))?;
+    if held.cancelled.load(Ordering::Acquire) {
+        return Err(format!("the browser {handle} was closed"));
+    }
     if held.busy.swap(true, Ordering::AcqRel) {
         return Err(format!("the browser {handle} is busy with another request"));
     }
@@ -361,44 +434,54 @@ fn using(
     work(&held, tab)
 }
 
-/// What `look` reads of `tab`'s page, as `std::tool::browser`'s readers read it.
+/// An observation's answer, whole: one past [`MOST_BYTES`] fails, rather than be cut short.
+fn whole(out: Out, what: &str) -> Result<Vec<u8>, String> {
+    if out.0.len() > MOST_BYTES {
+        return Err(format!(
+            "{what} is {} bytes, more than an answer holds ({MOST_BYTES}): observe less of the page",
+            out.0.len()
+        ));
+    }
+    Ok(out.0)
+}
+
+/// What `look` reads of `tab`'s page, as `std::tool::browser`'s readers read it, whole.
 fn observe(tab: &wrela_chrome::Tab, look: &Look, due: Instant) -> Result<Vec<u8>, String> {
     let mut out = Out::default();
     let texts = |out: &mut Out, lines: &[String]| {
         out.u32(lines.len() as u32);
         for l in lines {
-            out.str(&super::toolchain::bounded(l));
+            out.str(l);
         }
     };
     match look {
         Look::Console => {
-            // At most what an answer holds: the last lines, each bounded.
-            let lines = tab.console();
-            let from = lines.len().saturating_sub(4096);
-            texts(&mut out, &lines[from..]);
+            texts(&mut out, &tab.console()?);
+            return whole(out, "the console");
         }
-        Look::Results => match tab.done() {
-            Some(d) => {
-                out.u8(1).str(&super::toolchain::bounded(&d));
+        Look::Results => {
+            if !tab.knows_done() {
+                return Err(
+                    "the page isn't served by one of the tool's servers, which keep its results"
+                        .into(),
+                );
             }
-            None => {
-                out.u8(0);
-            }
-        },
+            match tab.done() {
+                Some(d) => out.u8(1).str(&d),
+                None => out.u8(0),
+            };
+        }
         Look::Page(q) => match wrela_chrome::script::observe(tab, q, due)? {
             Seen::Text(t) => {
-                out.str(&super::toolchain::bounded(&t));
+                out.str(&t);
             }
-            Seen::Texts(t) => {
-                let from = t.len().saturating_sub(4096);
-                texts(&mut out, &t[..t.len() - from]);
-            }
+            Seen::Texts(t) => texts(&mut out, &t),
             Seen::Count(n) => {
                 out.u32(n);
             }
             Seen::Attribute(a) => match a {
                 Some(a) => {
-                    out.u8(1).str(&super::toolchain::bounded(&a));
+                    out.u8(1).str(&a);
                 }
                 None => {
                     out.u8(0);
@@ -406,7 +489,7 @@ fn observe(tab: &wrela_chrome::Tab, look: &Look, due: Instant) -> Result<Vec<u8>
             },
             Seen::Active(a) => match a {
                 Some((tag, id)) => {
-                    out.u8(1).str(&tag).str(&super::toolchain::bounded(&id));
+                    out.u8(1).str(&tag).str(&id);
                 }
                 None => {
                     out.u8(0);
@@ -414,7 +497,7 @@ fn observe(tab: &wrela_chrome::Tab, look: &Look, due: Instant) -> Result<Vec<u8>
             },
         },
     }
-    Ok(out.0)
+    whole(out, "the observation")
 }
 
 /// The most bytes a PNG of `w` × `h` RGBA pixels takes: its rows stored, each with its filter
@@ -454,5 +537,13 @@ mod tests {
         assert!(png_bound(1, 1) >= 5);
         let raw = 1080 * (1 + 4 * 1920);
         assert!(png_bound(1920, 1080) > raw && png_bound(1920, 1080) < raw + raw / 100 + 65536);
+    }
+
+    #[test]
+    fn a_served_url_names_its_port() {
+        assert_eq!(served_port("http://127.0.0.1:8123/page.html#test"), Some(8123));
+        assert_eq!(served_port("http://127.0.0.1:8123"), Some(8123));
+        assert_eq!(served_port("http://localhost:8123/"), None);
+        assert_eq!(served_port("https://127.0.0.1:8123/"), None);
     }
 }

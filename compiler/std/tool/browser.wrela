@@ -7,14 +7,17 @@
 // JavaScript, and the comparisons a tool makes of what it observed are its own: `Match` holds
 // them.
 //
-// A browser reaches only the tool's own local servers (`std::tool::serve`'s origins) and the
-// hosts `--net` grants, over HTTPS: the host pauses every request of its pages and their
-// workers, and refuses one to any other origin. Starting one needs `--browser`.
+// A browser reaches only the tool's own local servers (`std::tool::serve`'s origins, over plain
+// HTTP) and the hosts and ports `--net` grants (over HTTPS, or a secure WebSocket): every
+// connection it makes goes through a proxy of the host's, which refuses any other, and it has no
+// QUIC or WebTransport. Starting one needs `--browser` (`browser: true` in a tool test).
 //
 // A browser is a resource of its `open` request until the tool reads the answer, and the host
 // closes it (its process group killed, its profile removed) if the request fails or the tool
-// ends first; it closes every browser when the tool ends. Each request has a deadline, 60 s
-// unless it asks for another (at most 600 s), from when the host takes it.
+// ends first; it closes every browser when the tool ends, and Chrome shuts down if the host is
+// killed. `close` is never held up by a request using the browser: that request fails at once.
+// Each request has a deadline, 60 s unless it asks for another (at most 600 s), from when the
+// host takes it. An observation is never cut short: one that would be more than 512 KiB fails.
 //
 // A `Script` is a value, made in a constant as `std::input::Script` is: the compiler's own browser
 // tests give their pages one (`wrela_driver::script::browser_script` reads it).
@@ -211,8 +214,9 @@ impl Until {
         Until { json: f"{{\"printed\": {text_json(line).as_str()}}}" }
     }
 
-    /// The page put its test-mode result, `results/DONE` (seen by a tool's browser, whose
-    /// requests the host holds).
+    /// The page's test-mode result, `results/DONE`, has been kept: written by the tool's server
+    /// that serves the page, since the page opened (a put the server refused, or hasn't finished,
+    /// isn't).
     pub fn done() -> Until {
         Until { json: String::from("{\"done\": true}") }
     }
@@ -468,8 +472,8 @@ pub fn console(b: Browser, timeout: f64 = 0.0) -> Pending<u8> {
     ask("browser/observe", observe(b, 7, timeout).into_bytes())
 }
 
-/// What the page put in `results/DONE` (test mode's result: `ok`, or why it failed), if it
-/// has: `read_attribute` reads the answer.
+/// What the page's server has kept of its `results/DONE` since the page opened (test mode's
+/// result: `ok`, or why it failed), if it has: `read_attribute` reads the answer.
 @tool
 pub fn results(b: Browser, timeout: f64 = 0.0) -> Pending<u8> {
     ask("browser/observe", observe(b, 8, timeout).into_bytes())

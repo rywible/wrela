@@ -69,12 +69,13 @@ struct Lease {
     shared: &'static Mutex<Shared>,
 }
 
-/// Starts the process's Chrome, with a profile of its own in the system's temporary directory.
+/// Starts the process's Chrome, with a profile of its own in the process's directory of
+/// profiles in the system's temporary directory (where those of processes that died are swept).
 fn launch() -> Result<Browser, String> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
-    let profile = std::env::temp_dir().join(format!("wrela-chrome-{}-{n}", std::process::id()));
-    Launch::new(profile).and_then(|l| Browser::launch(l, &wrela_chrome::spawn_in_own_group))
+    let profile = wrela_chrome::profiles(&std::env::temp_dir())?.join(format!("browser-{n}"));
+    Launch::new(profile).and_then(|l| Browser::launch(l, &wrela_chrome::OwnGroup))
 }
 
 impl Lease {
@@ -182,7 +183,7 @@ fn drive(
     let deadline = started + timeout;
     let console = results.join("console.log");
     let lease = Lease::take()?;
-    let options = TabOptions { size: None, console: Some(console.clone()) };
+    let options = TabOptions { size: None, console: Some(console.clone()), done: None };
     let tab = lease.browser.open(url, options, deadline)?;
     let stopped = AtomicBool::new(false);
     let stop = || stopped.load(Ordering::Acquire).then(|| "the page's run ended".to_string());
@@ -398,8 +399,9 @@ fn connection(
             let Ok(at) = crate::confined::open_dir(dir, above, false) else {
                 return refused(&mut out);
             };
-            loopback::put_result(&mut out, &at, name, &mut reader, head.length as u64)?;
-            if *name == "DONE" && above.join("/") == page {
+            let written =
+                loopback::put_result(&mut out, &at, name, &mut reader, head.length as u64)?;
+            if written && *name == "DONE" && above.join("/") == page {
                 let text = crate::confined::read(&at, "results/DONE", 1 << 20).unwrap_or_default();
                 *lock(done) = Some(String::from_utf8_lossy(&text).trim().to_string());
             }

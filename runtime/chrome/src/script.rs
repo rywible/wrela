@@ -456,19 +456,18 @@ impl Until {
                 (a.is_some_and(|(t, _)| &t == tag), format!("{what} had the focus"))
             }
             Until::Printed(line) => {
-                let printed = tab.printed();
+                let printed = tab.printed()?;
                 let last = printed.last().map_or("nothing".into(), |l| format!("{l:?}"));
                 (printed.iter().any(|l| l == line), format!("the program last printed {last}"))
             }
             Until::Done => {
-                if !tab.held() {
+                if !tab.knows_done() {
                     return Err(
-                        "only a browser whose requests the host holds sees the page's results"
-                            .into(),
+                        "this page's results reach no server that tells the driver of them".into(),
                     );
                 }
                 let d = tab.done();
-                (d.is_some(), "the page put no results/DONE".into())
+                (d.is_some(), "no server has kept a results/DONE of the page's".into())
             }
             Until::All(parts) => {
                 let mut seen = Vec::new();
@@ -521,6 +520,11 @@ fn wait(
     loop {
         if let Some(why) = stop() {
             return Err(why);
+        }
+        // What a wait reads may be kept on this side (what the program printed, the page's
+        // result): a browser that has closed has nothing more coming.
+        if let Some(why) = tab.ended() {
+            return Err(format!("the browser closed: {why}"));
         }
         if tab.crashed() {
             return Err("the page crashed".into());
@@ -602,6 +606,9 @@ fn one(
                 if let Some(why) = stop() {
                     return Err(why);
                 }
+                if let Some(why) = tab.ended() {
+                    return Err(format!("the browser closed: {why}"));
+                }
                 let at = match tab
                     .evaluate(&format!("{OBSERVE}({q})"), due.max(Instant::now() + LOOK))
                 {
@@ -612,6 +619,7 @@ fn one(
                 if let (Some(x), Some(y)) = (at["x"].as_f64(), at["y"].as_f64()) {
                     return click(tab, x, y, deadline);
                 }
+
                 if Instant::now() >= due {
                     return Err(format!(
                         "no element {} of some size in the viewport within {} s",

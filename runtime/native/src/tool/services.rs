@@ -58,8 +58,9 @@ pub(crate) struct Services {
     pub testing: bool,
     /// A tool test's fakes for its fake sites' URLs.
     pub fakes: Mutex<HashMap<String, Fake>>,
-    /// The run's own directory, made when a program first runs: its `HOME`, and its input and
-    /// output files. `work_at` names it, for a test; else it's a new one in the system's
+    /// The run's own directory, made when a program or a browser first runs: its `HOME`, its
+    /// input and output files, and its browsers' profiles; those of a host that was killed are
+    /// removed when the next makes its own. `work_at` names it, for a test; else it's a new one in the system's
     /// temporary directory.
     pub work: OnceLock<Result<PathBuf, String>>,
     pub work_at: Option<PathBuf>,
@@ -151,6 +152,9 @@ impl Services {
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_or(0, |d| d.subsec_nanos());
                 let dir = self.work_at.clone().unwrap_or_else(|| {
+                    // What a killed host left (its programs' files, its browsers' profiles)
+                    // goes first.
+                    wrela_chrome::sweep(&std::env::temp_dir(), "wrela-tool-");
                     std::env::temp_dir()
                         .join(format!("wrela-tool-{}-{n}-{nanos}", std::process::id()))
                 });

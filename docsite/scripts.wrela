@@ -27,28 +27,53 @@ pub const RELEASE: Script = Script::frames()
     .down(4, vec2(630.0, 200.0))
     .up(5, vec2(630.0, 300.0))
 
-/// What `the_docs_in_chrome_are_links_an_outline_and_titles` (compiler/tests) does to the site in
-/// Chrome, over the small corpus in `scripts/corpus`: the list of pages opens a page, which names
-/// the tab, has its sections as an outline's links and its next page as a link, which opens that
-/// page; its code's copy button and its copy of the page put them on the clipboard; and an item
-/// has a link to itself.
+/// What `the_exported_docs_in_chrome_are_links_an_outline_and_titles` (compiler/cli's tests)
+/// does to the site in Chrome, over the docs that `wrela doc --export` writes of
+/// compiler/tests/docs-guide: search, opened by its key, finds an item, whose result opens the
+/// item's page; the page names the tab, has its items as an outline's links and its
+/// next page as a link, which opens that page; its code's copy button and its copy of the page
+/// put them on the clipboard; and an item has a link to itself.
 pub const READER: browser::Script = browser::Script::new()
+    .wait(Until::title(Match::is("Wrela docs")), timeout: 30.0)
+    .press(Key::Slash)
+    .wait(Until::active("input"))
+    .insert_text("walk")
     .wait(
-        Until::title(Match::is("Wrela docs"))
-            .and(Until::exists(Element::css("a[href$=\"#std/io\"]")))
-            .and(Until::count(Element::css("a").with_text("6. Memory"), 2)),
-        timeout: 30.0,
+        Until::count(
+            Element::css("[role=option]").with_text(
+                "docs_guide::paths::walk: Walks n steps, and [STEPS] more.",
+            ),
+            1,
+        ),
     )
-    .click(Element::css("a[href$=\"#spec/language/6-memory\"]"))
-    .wait(Until::title(Match::is("6. Memory | Wrela docs")))
-    .wait(Until::texts("[aria-label=\"On this page\"] a", ["6.1 Values", "6.2 Parameter modes"]))
-    .click(Element::css("a").with_text("Next page: std::io"))
-    .wait(Until::title(Match::is("std::io | Wrela docs")).and(Until::hash(Match::is("#std/io"))))
+    .click(
+        Element::css("[role=option]").with_text(
+            "docs_guide::paths::walk: Walks n steps, and [STEPS] more.",
+        ),
+    )
+    .wait(
+        Until::title(Match::is("docs_guide::paths | Wrela docs"))
+            .and(Until::hash(Match::starts("#docs_guide/paths"))),
+    )
+    .wait(Until::texts("[aria-label=\"On this page\"] a", ["STEPS", "walk"]))
+    .click(Element::css("a").with_text("Next page: docs_guide::start"))
+    .wait(
+        Until::title(Match::is("docs_guide::start | Wrela docs"))
+            .and(Until::hash(Match::is("#docs_guide/start"))),
+    )
     .grant(Permission::Clipboard)
     .emulate_focus()
     .click(Element::css("button").with_text("Copy code"))
     .wait(Until::exists(Element::css("button").with_text("Copied")))
-    .wait(Until::clipboard(Match::is("pub fn fetch(url: str) -> Pending<u8>")))
+    .wait(Until::clipboard(Match::is("pub fn greet(name: str) -> u32")))
     .click(Element::css("button").with_text("Copy page"))
-    .wait(Until::clipboard(Match::starts("# std::io\n\nRequests to the host.")))
-    .wait(Until::exists(Element::css("a[href$=\"#std/io:fetch\"]").with_text("Link to fetch")))
+    .wait(
+        Until::clipboard(
+            Match::starts("# docs_guide::start\n\nThe guide's start: what a reader opens first."),
+        ),
+    )
+    .wait(
+        Until::exists(
+            Element::css("a[href$=\"#docs_guide/start:greet\"]").with_text("Link to greet"),
+        ),
+    )

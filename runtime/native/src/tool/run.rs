@@ -210,20 +210,31 @@ pub(crate) fn start_owned(
     program: &str,
 ) -> Result<(std::process::Child, i32), String> {
     let mut child = command.spawn().map_err(|e| format!("can't run `{program}`: {e}"))?;
+    let group = let_go(s, &mut child, go)?;
+    Ok((child, group))
+}
+
+/// `child`, an [`owned_command`] just started, recorded for a supervisor and let go: the process
+/// group it leads. If it can't be, it's killed.
+pub(crate) fn let_go(
+    s: &Services,
+    child: &mut std::process::Child,
+    go: &Path,
+) -> Result<i32, String> {
     let group = child.id() as i32;
     // A test's moment between the start and the record, when only this host's group holds it.
     std::thread::sleep(s.spawn_pause);
     if let Err(why) = record(s, group) {
-        stop(&mut child, group);
+        stop(child, group);
         return Err(why);
     }
     if s.groups.is_some()
         && let Err(e) = std::fs::write(go, b"")
     {
-        stop(&mut child, group);
+        stop(child, group);
         return Err(format!("letting the program go: {e}"));
     }
-    Ok((child, group))
+    Ok(group)
 }
 
 /// Waits for `child`, which leads process group `group`, looking every few milliseconds for the

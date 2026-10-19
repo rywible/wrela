@@ -74,6 +74,11 @@ impl Servers {
         self.held.values().map(|s| s.port).collect()
     }
 
+    /// The server on `port`, if one runs there.
+    pub(crate) fn on_port(&self, port: u16) -> Option<Arc<Server>> {
+        self.held.values().find(|s| s.port == port).cloned()
+    }
+
     /// Takes every server, to close: the tool has ended.
     pub(crate) fn take_all(&mut self) -> Vec<Arc<Server>> {
         self.unpublished.clear();
@@ -151,11 +156,19 @@ pub(crate) struct Server {
     conns: Mutex<HashMap<u64, TcpStream>>,
     /// Its threads: the one that accepts, and each connection's.
     threads: Mutex<Vec<JoinHandle<()>>>,
+    /// The `results/DONE`s it has kept, counted, and the last one's text: a browser's page has
+    /// put its result once the count passes what it was when the page opened.
+    done: Mutex<(u64, String)>,
 }
 
 impl Server {
     fn state(&self) -> std::sync::MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// How many `results/DONE`s it has kept, and the last one's text.
+    pub(crate) fn done(&self) -> (u64, String) {
+        self.done.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
 
     /// Closes it: its waiters fail, its posts' bytes are given back, its listener and
@@ -340,6 +353,7 @@ fn start(
         stopping: AtomicBool::new(false),
         conns: Mutex::new(HashMap::new()),
         threads: Mutex::new(Vec::new()),
+        done: Mutex::new((0, String::new())),
     });
     // Registered under its request before anything runs, and before any answer names it.
     let handle = {
@@ -469,13 +483,31 @@ fn connection(
                 "text/plain",
                 b"this server's root is granted for reading only: it takes no results",
             ),
-            Some(name) => crate::loopback::put_result(
-                &mut out,
-                &server.dir,
-                name,
-                &mut reader,
-                head.length as u64,
-            ),
+            Some(name) => {
+                // A test's held write of a result.
+                if let Some((which, held)) = &s.hold
+                    && format!("results/{name}").ends_with(which.as_str())
+                {
+                    std::thread::sleep(*held);
+                }
+                let put = crate::loopback::put_result(
+                    &mut out,
+                    &server.dir,
+                    name,
+                    &mut reader,
+                    head.length as u64,
+                );
+                // Kept: a browser's page has put its result now, not when it asked to.
+                if matches!(put, Ok(true))
+                    && name == "DONE"
+                    && let Ok(text) = crate::confined::read(&server.dir, "results/DONE", 1 << 20)
+                {
+                    let mut done =
+                        server.done.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    *done = (done.0 + 1, String::from_utf8_lossy(&text).trim().to_string());
+                }
+                put.map(|_| ())
+            }
             None => respond(&mut out, 403, "text/plain", b"a page puts only its results/"),
         },
         "POST" => post(s, server, head, &mut reader, &mut out, taken + server.post_deadline),

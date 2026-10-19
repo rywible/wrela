@@ -163,8 +163,8 @@ pub fn run(args: &[String]) -> ExitCode {
 
 /// Runs the tool test that `dir/test.json` describes, writes how it ended where the spec says,
 /// and ends the process: status 0 if the test passed, 1 if it failed, 2 if the spec can't be
-/// read. Its grants are a write root `scratch`, its fake sites and its `tool:` programs, on a
-/// fake clock, with its budget as the timeout.
+/// read. Its grants are a write root `scratch`, its fake sites and its `tool:` programs (and
+/// Chrome, if it asks, on the real clock), on a fake clock, with its budget as the timeout.
 fn test(dir: &std::path::Path) -> ExitCode {
     use wrela_driver::tool_tests::{Ended, Spec};
     let read = std::fs::read(dir.join("test.json"))
@@ -180,6 +180,7 @@ fn test(dir: &std::path::Path) -> ExitCode {
     let mut grants = Grants {
         fake_net: spec.net.clone(),
         tool_runner: std::env::current_exe().ok(),
+        browser: spec.browser,
         ..Grants::default()
     }
     .root("scratch", &spec.scratch, true);
@@ -195,6 +196,8 @@ fn test(dir: &std::path::Path) -> ExitCode {
             options.timeout = Some(Duration::from_secs_f64(spec.budget));
             options.entries = (spec.init.clone(), spec.resume.clone());
             options.fake_clock = Some((spec.utc, 0));
+            // A live browser keeps the system's time: the clock doesn't jump past its page.
+            options.real_clock = spec.browser;
             options.groups = Some(spec.groups.clone());
             options.toolchain = Some(Arc::new(crate::toolchain::Compiler));
             options.cache = crate::toolchain::cache_dir();

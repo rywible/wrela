@@ -1,20 +1,21 @@
 //! Chrome stable, driven over the DevTools protocol (CDP) from Rust: for the tool host's
 //! browser service (`std::tool::browser`, language.md §15.5) and the compiler's own browser
 //! tests. Chrome runs headless (`--headless=new`) on the machine's hardware GPU, with a
-//! throwaway profile, in a process group of its own; a page's console, the requests it makes and
-//! what it puts in `results/DONE` reach the driver as DevTools events.
+//! throwaway profile, in a process group of its own; a page's console reaches the driver as
+//! DevTools events, over Chrome's pipe ([`cdp`]).
 //!
 //! **Every end is bounded and clean.** [`Browser::close`] (and its drop, so a panic too) closes
-//! the connection, kills the process group (`SIGKILL`: the profile is thrown away, so nothing is
-//! lost), waits at most two seconds for the group to be gone, and removes the profile. Nothing it started outlives it unless its
-//! own process is killed first; a supervisor that must cover that records the group, which the
-//! [`Spawn`] hook is given the chance to do before Chrome runs.
+//! the pipe, kills the process group (`SIGKILL`: the profile is thrown away, so nothing is
+//! lost), waits at most two seconds for the group to be gone (on Linux, reaping it: the process
+//! that starts Chrome adopts its descendants, as tools/headless.py did), and removes the profile.
+//! If the process that started Chrome dies first, even by `SIGKILL`, the pipe's end closes and
+//! Chrome shuts down; its profile, in a directory of that process's own ([`profiles`]), is
+//! removed at the next start. A supervisor that must kill the group records it, which the
+//! [`Spawner`] is given the chance to do before Chrome runs.
 //!
-//! **A browser may be held to a policy** ([`Policy`]): every request of its pages and workers,
-//! service and shared workers too, is paused by DevTools' Fetch domain (each worker is paused at
-//! its start until its requests are), and one the policy refuses fails as blocked. A browser
-//! with a policy also routes every host name it doesn't grant to a dead proxy, so a WebSocket,
-//! which the Fetch domain doesn't see, reaches no other host either.
+//! **A browser may be held to a policy** ([`Policy`]): every connection it makes, of its pages,
+//! its workers and Chrome itself, goes through a proxy of the driver's ([`proxy`]), which lets
+//! one through only to an exact scheme, host and port the policy grants.
 //!
 //! **No JavaScript crosses this API.** Scripts and observations are typed ([`script`]); the
 //! driver's one function in the page reads what an observation names.
@@ -26,19 +27,22 @@
 
 pub mod cdp;
 mod keys;
+pub mod proxy;
 pub mod script;
+
+pub use proxy::{Dest, Policy};
 
 use cdp::{Connection, Event};
 use serde_json::{Value, json};
 use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Child;
+use std::process::{Child, Command};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
-/// How long Chrome may take to publish its debugging port.
+/// How long Chrome may take to answer on its pipe.
 pub const STARTUP: Duration = Duration::from_secs(15);
 
 /// How long a killed group has to be seen gone.
@@ -92,43 +96,47 @@ pub fn platform_args(os: &str) -> &'static [&'static str] {
     }
 }
 
-/// Whether a page's request for `url` may go: a browser's [`Policy`].
-pub type Policy = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+/// Starts Chrome for the driver: the command it runs, and, once it has started, the process
+/// group it leads. The tool host's records the group for its supervisor before it lets Chrome
+/// run (`wrela tool --launch`).
+pub trait Spawner {
+    /// A command that runs `exe` with `args`, in a process group of its own once it's let go.
+    fn command(&self, exe: &Path, args: &[OsString]) -> Result<Command, String>;
+    /// `child` has started: its process group, once it's recorded and let go.
+    fn started(&self, child: &mut Child) -> Result<i32, String>;
+}
 
-/// Starts Chrome's executable with its arguments, its output going to the log: the child, and
-/// the process group it leads. The tool host's records the group for its supervisor first.
-pub type Spawn<'a> = &'a dyn Fn(&Path, &[OsString], std::fs::File) -> Result<(Child, i32), String>;
+/// A [`Spawner`] for a process of no supervisor's: Chrome leads a new process group at once.
+pub struct OwnGroup;
 
-/// [`Spawn`] for a process of no supervisor's: Chrome leads a new process group.
-pub fn spawn_in_own_group(
-    exe: &Path,
-    args: &[OsString],
-    log: std::fs::File,
-) -> Result<(Child, i32), String> {
-    let err = log.try_clone().map_err(|e| format!("Chrome's log: {e}"))?;
-    let mut c = std::process::Command::new(exe);
-    c.args(args).stdin(std::process::Stdio::null()).stdout(log).stderr(err);
-    #[cfg(unix)]
-    std::os::unix::process::CommandExt::process_group(&mut c, 0);
-    let child = c.spawn().map_err(|e| format!("can't run Chrome ({}): {e}", exe.display()))?;
-    let group = child.id() as i32;
-    Ok((child, group))
+impl Spawner for OwnGroup {
+    fn command(&self, exe: &Path, args: &[OsString]) -> Result<Command, String> {
+        let mut c = Command::new(exe);
+        c.args(args);
+        #[cfg(unix)]
+        std::os::unix::process::CommandExt::process_group(&mut c, 0);
+        Ok(c)
+    }
+
+    fn started(&self, child: &mut Child) -> Result<i32, String> {
+        Ok(child.id() as i32)
+    }
 }
 
 /// How to start a browser.
 pub struct Launch {
     pub binary: PathBuf,
     /// The profile's directory, which the launch makes (it mustn't be there) and the close
-    /// removes.
+    /// removes: in a directory of the process's own ([`profiles`]).
     pub profile: PathBuf,
     /// The window's size, for each page.
     pub window: (u32, u32),
     /// More arguments: `WRELA_CHROME_ARGS`'s.
     pub args: Vec<String>,
     pub startup: Duration,
-    /// What its pages may reach, if it's held to a policy; and, for the dead proxy, the host
-    /// names it grants (`127.0.0.1` always).
-    pub policy: Option<(Policy, Vec<String>)>,
+    /// Where its connections may go, if it's held to a policy: every one goes through the
+    /// driver's proxy ([`proxy`]).
+    pub policy: Option<Policy>,
     /// Set to give up the start: the browser is ended at once.
     pub cancel: Option<Arc<AtomicBool>>,
 }
@@ -159,14 +167,20 @@ impl Launch {
         })
     }
 
-    /// The command line: Chrome's flags, then the platform's and the launch's.
-    fn argv(&self) -> Vec<OsString> {
+    /// The command line: Chrome's flags, a proxy's if it has one, then the platform's and the
+    /// launch's.
+    fn argv(&self, proxy: Option<u16>) -> Vec<OsString> {
         let mut a: Vec<OsString> = [
             "--headless=new",
-            "--remote-debugging-port=0",
+            // DevTools on fds 3 and 4: Chrome ends when their other ends close.
+            "--remote-debugging-pipe",
             "--no-first-run",
             "--no-default-browser-check",
             "--disable-extensions",
+            // No requests of Chrome's own: updates, sync, safe browsing's lists.
+            "--disable-background-networking",
+            "--disable-component-update",
+            "--disable-sync",
             "--disable-background-timer-throttling",
             "--disable-renderer-backgrounding",
             "--disable-backgrounding-occluded-windows",
@@ -180,12 +194,13 @@ impl Launch {
         .collect();
         a.push(format!("--user-data-dir={}", self.profile.display()).into());
         a.push(format!("--window-size={},{}", self.window.0, self.window.1).into());
-        if let Some((_, hosts)) = &self.policy {
-            // What the Fetch domain doesn't see (a WebSocket) finds no other host either.
-            let mut bypass = vec!["127.0.0.1".to_string()];
-            bypass.extend(hosts.iter().cloned());
-            a.push("--proxy-server=127.0.0.1:9".into());
-            a.push(format!("--proxy-bypass-list={}", bypass.join(";")).into());
+        if let Some(port) = proxy {
+            // Every connection through the proxy: no implicit bypass of loopback, local or
+            // link-local addresses, and no QUIC or WebTransport, which it can't carry.
+            a.push(format!("--proxy-server=http://127.0.0.1:{port}").into());
+            a.push("--proxy-bypass-list=<-loopback>".into());
+            a.push("--disable-quic".into());
+            a.push("--disable-blink-features=WebTransport".into());
         }
         a.extend(platform_args(std::env::consts::OS).iter().map(OsString::from));
         a.extend(self.args.iter().map(OsString::from));
@@ -207,6 +222,92 @@ fn runnable(path: &Path) -> bool {
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Whether process `pid` still runs (as anyone's).
+pub fn alive(pid: i32) -> bool {
+    rustix::process::Pid::from_raw(pid).is_some_and(|p| {
+        matches!(rustix::process::test_kill_process(p), Ok(()) | Err(rustix::io::Errno::PERM))
+    })
+}
+
+/// This process's directory for its browsers' profiles, `<base>/wrela-chrome-<pid>`, made if
+/// it isn't there. Those of processes that have died (killed before they could remove them) are
+/// removed first: a profile outlives its process only until the next start.
+pub fn profiles(base: &Path) -> Result<PathBuf, String> {
+    sweep(base, "wrela-chrome-");
+    let dir = base.join(format!("wrela-chrome-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    Ok(dir)
+}
+
+/// Removes each directory of `base` named `<prefix><pid>` or `<prefix><pid>-...` whose process
+/// has died: what a killed process left.
+pub fn sweep(base: &Path, prefix: &str) {
+    let Ok(entries) = std::fs::read_dir(base) else { return };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let Some(rest) = name.strip_prefix(prefix) else { continue };
+        let Ok(pid) = rest.split('-').next().unwrap_or("").parse::<i32>() else { continue };
+        let ours = pid == std::process::id() as i32;
+        // A link isn't followed: only a directory of a dead process's goes.
+        let dir = e.file_type().is_ok_and(|t| t.is_dir());
+        if !ours && dir && !alive(pid) {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
+}
+
+/// Makes this process the subreaper of its descendants (Linux): a process Chrome leaves when its
+/// parent dies is this process's to reap, as tools/headless.py did, not an init's that may not.
+#[cfg(target_os = "linux")]
+fn adopt_descendants() -> Result<(), String> {
+    static ADOPTED: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
+    ADOPTED
+        .get_or_init(|| {
+            rustix::process::set_child_subreaper(Some(rustix::process::getpid())).map_err(|e| {
+                format!("can't adopt Chrome's processes (PR_SET_CHILD_SUBREAPER): {e}")
+            })
+        })
+        .clone()
+}
+
+/// Reaps every exited process of group `group` that is this process's child (Linux, where this
+/// process adopts them): whether none is left, exited or running.
+#[cfg(target_os = "linux")]
+fn reap_group(group: rustix::process::Pid) -> bool {
+    loop {
+        match rustix::process::waitpgid(group, rustix::process::WaitOptions::NOHANG) {
+            // One reaped: look again.
+            Ok(Some(_)) => {}
+            // Some still run.
+            Ok(None) => return false,
+            // None of ours is in the group.
+            Err(_) => return true,
+        }
+    }
+}
+
+/// Hands the pipe's ends to the child as its fds 3 (what it reads) and 4 (what it writes), as
+/// `--remote-debugging-pipe` takes them.
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn hand_pipes(c: &mut Command, read: std::os::fd::RawFd, write: std::os::fd::RawFd) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: the closure runs in the child between `fork` and `exec`, and calls only `fcntl`
+    // and `dup2`, which are async-signal-safe; it allocates nothing and touches no lock. The
+    // ends are first copied above 10 (closed at `exec`), so neither `dup2` can overwrite the
+    // other's source; `dup2` gives fds 3 and 4 without close-on-exec.
+    unsafe {
+        c.pre_exec(move || {
+            let r = libc::fcntl(read, libc::F_DUPFD_CLOEXEC, 10);
+            let w = libc::fcntl(write, libc::F_DUPFD_CLOEXEC, 10);
+            if r < 0 || w < 0 || libc::dup2(r, 3) < 0 || libc::dup2(w, 4) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
 }
 
 /// The process and profile of a browser: what [`Browser::close`] ends, also while it's still
@@ -241,6 +342,8 @@ impl Process {
         let mut gone = false;
         while since.elapsed() < REAP {
             let reaped = exited(&mut child);
+            #[cfg(target_os = "linux")]
+            let reaped = reaped && group.is_none_or(reap_group);
             // macOS refuses (EPERM) to signal a group whose processes have all exited but not
             // been reaped: that group is gone too.
             let empty = group.is_none_or(|pid| {
@@ -276,33 +379,71 @@ impl Process {
 /// A running Chrome.
 pub struct Browser {
     inner: Arc<Inner>,
+    tabs: Tabs,
 }
 
 struct Inner {
     conn: Connection,
     process: Process,
-    policy: Option<Policy>,
+    proxy: Option<proxy::Proxy>,
     window: (u32, u32),
-    /// The thread that handles the browser's own events: its service and shared workers'.
-    events: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
+/// The tabs a browser's proxy tells of what it refused.
+type Tabs = Arc<Mutex<Vec<std::sync::Weak<TabState>>>>;
+
 impl Browser {
-    /// Starts Chrome as `launch` says, through `spawn`, and connects to it. A browser that
+    /// Starts Chrome as `launch` says, through `spawner`, and connects to it. A browser that
     /// doesn't start is ended, and its profile removed, before this returns.
-    pub fn launch(launch: Launch, spawn: Spawn) -> Result<Browser, String> {
+    pub fn launch(launch: Launch, spawner: &dyn Spawner) -> Result<Browser, String> {
+        #[cfg(target_os = "linux")]
+        adopt_descendants()?;
+        let tabs: Tabs = Arc::default();
+        let proxy = match &launch.policy {
+            None => None,
+            Some(policy) => {
+                let told = tabs.clone();
+                let refused: proxy::Refused = Arc::new(move |line| {
+                    for t in lock(&told).iter().filter_map(std::sync::Weak::upgrade) {
+                        t.line(line.clone());
+                    }
+                });
+                Some(proxy::Proxy::start(policy.clone(), refused)?)
+            }
+        };
         std::fs::create_dir(&launch.profile)
             .map_err(|e| format!("Chrome's profile ({}): {e}", launch.profile.display()))?;
         let log_path = launch.profile.join("chrome.log");
-        let log = match std::fs::File::create(&log_path) {
-            Ok(f) => f,
-            Err(e) => {
-                let _ = std::fs::remove_dir_all(&launch.profile);
-                return Err(format!("Chrome's log: {e}"));
+        let started = (|| {
+            let log = std::fs::File::create(&log_path).map_err(|e| format!("Chrome's log: {e}"))?;
+            let err = log.try_clone().map_err(|e| format!("Chrome's log: {e}"))?;
+            let (chrome_reads, to) = std::io::pipe().map_err(|e| format!("a pipe: {e}"))?;
+            let (from, chrome_writes) = std::io::pipe().map_err(|e| format!("a pipe: {e}"))?;
+            let mut c =
+                spawner.command(&launch.binary, &launch.argv(proxy.as_ref().map(|p| p.port)))?;
+            c.stdin(std::process::Stdio::null()).stdout(log).stderr(err);
+            #[cfg(unix)]
+            {
+                use std::os::fd::AsRawFd;
+                hand_pipes(&mut c, chrome_reads.as_raw_fd(), chrome_writes.as_raw_fd());
             }
-        };
-        let (child, group) = match spawn(&launch.binary, &launch.argv(), log) {
-            Ok(c) => c,
+            let mut child = c
+                .spawn()
+                .map_err(|e| format!("can't run Chrome ({}): {e}", launch.binary.display()))?;
+            // Chrome's ends are its own now: ours close, so its exit ends the pipe.
+            drop((chrome_reads, chrome_writes));
+            let group = match spawner.started(&mut child) {
+                Ok(g) => g,
+                Err(why) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(why);
+                }
+            };
+            Ok((child, group, to, from))
+        })();
+        let (child, group, to, from) = match started {
+            Ok(s) => s,
             Err(why) => {
                 let _ = std::fs::remove_dir_all(&launch.profile);
                 return Err(why);
@@ -314,41 +455,33 @@ impl Browser {
             profile: launch.profile.clone(),
             ended: Mutex::new(None),
         };
-        let started = (|| {
+        let connected = Connection::start(to, from).and_then(|conn| {
             let deadline = Instant::now() + launch.startup;
-            let (port, path) = loop {
-                // Chrome may not have finished writing the file: until the deadline.
-                let text = std::fs::read_to_string(launch.profile.join("DevToolsActivePort"));
-                let mut lines = text.as_deref().unwrap_or("").lines();
-                if let (Some(Ok(port)), Some(path)) =
-                    (lines.next().map(str::parse::<u16>), lines.next())
-                    && port > 0
-                {
-                    break (port, path.to_string());
+            loop {
+                let ask = (Instant::now() + Duration::from_millis(250)).min(deadline);
+                match conn.call(None, "Browser.getVersion", json!({}), ask) {
+                    Ok(_) => return Ok(conn),
+                    Err(why) if conn.ended().is_some() => return Err(why),
+                    Err(_) if Instant::now() >= deadline => {
+                        return Err(format!("no DevTools answer after {:?}", launch.startup));
+                    }
+                    Err(_) if launch.cancel.as_ref().is_some_and(|c| c.load(Ordering::Acquire)) => {
+                        return Err("its start was given up".into());
+                    }
+                    Err(_) => {}
                 }
-                if let Some(c) = lock(&process.child).as_mut()
-                    && let Ok(Some(status)) = c.try_wait()
-                {
-                    return Err(format!("it exited with {status}"));
-                }
-                if Instant::now() >= deadline {
-                    return Err(format!("no debugging port after {:?}", launch.startup));
-                }
-                if launch.cancel.as_ref().is_some_and(|c| c.load(Ordering::Acquire)) {
-                    return Err("its start was given up".into());
-                }
-                std::thread::sleep(Duration::from_millis(20));
-            };
-            // On loopback a handshake is quick: one that isn't has no answer coming.
-            Connection::open(port, &path, deadline.min(Instant::now() + Duration::from_secs(5)))
-        })();
-        let conn = match started {
+            }
+        });
+        let conn = match connected {
             Ok(c) => c,
             Err(why) => {
+                process.end();
                 let log = std::fs::read_to_string(&log_path).unwrap_or_default();
                 let tail: Vec<&str> = log.lines().rev().take(12).collect();
-                process.end();
                 let tail: Vec<&str> = tail.into_iter().rev().collect();
+                if let Some(p) = &proxy {
+                    p.close(Duration::from_secs(1));
+                }
                 return Err(format!(
                     "Chrome ({}) didn't start: {why}\n{}",
                     launch.binary.display(),
@@ -356,44 +489,8 @@ impl Browser {
                 ));
             }
         };
-        let inner = Arc::new(Inner {
-            conn,
-            process,
-            policy: launch.policy.map(|(p, _)| p),
-            window: launch.window,
-            events: Mutex::new(None),
-        });
-        let browser = Browser { inner };
-        if browser.inner.policy.is_some() {
-            browser.hold_workers()?;
-        }
-        Ok(browser)
-    }
-
-    /// Pauses each service and shared worker at its start until its requests are held to the
-    /// policy too: the browser's own auto-attach, its events handled on a thread of its own.
-    fn hold_workers(&self) -> Result<(), String> {
-        let (to, events) = mpsc::channel();
-        let _ = self.inner.conn.route("", to);
-        let inner = Arc::downgrade(&self.inner);
-        let thread = std::thread::Builder::new()
-            .name("wrela-chrome-workers".into())
-            .spawn(move || {
-                while let Ok(e) = events.recv() {
-                    let Some(inner) = inner.upgrade() else { break };
-                    handle(&inner, None, &e);
-                }
-            })
-            .map_err(|e| format!("can't start the browser's events thread: {e}"))?;
-        *lock(&self.inner.events) = Some(thread);
-        let filter = json!([{"type": "service_worker"}, {"type": "shared_worker"}]);
-        self.inner.conn.call(
-            None,
-            "Target.setAutoAttach",
-            json!({"autoAttach": true, "waitForDebuggerOnStart": true, "flatten": true, "filter": filter}),
-            Instant::now() + EVENT_CALL,
-        )?;
-        Ok(())
+        let inner = Arc::new(Inner { conn, process, proxy, window: launch.window });
+        Ok(Browser { inner, tabs })
     }
 
     /// Whether Chrome still runs and its connection is open.
@@ -411,7 +508,8 @@ impl Browser {
 
     /// Opens `url` in a new window of its own, by `deadline`: its tab. With a size, its viewport
     /// is that size at a device scale of 1; with a console file, each console line of its page
-    /// and workers is appended there as it comes.
+    /// and workers is appended there as it comes; with `done`, what the page's results/DONE
+    /// holds once its server has kept it.
     pub fn open(&self, url: &str, options: TabOptions, deadline: Instant) -> Result<Tab, String> {
         let conn = &self.inner.conn;
         let made = conn.call(
@@ -422,11 +520,13 @@ impl Browser {
         )?;
         let target = made["targetId"].as_str().ok_or("Target.createTarget gave no target")?;
         let state = Arc::new(TabState::new(options.console.as_deref())?);
+        lock(&self.tabs).push(Arc::downgrade(&state));
         let mut tab = Tab {
             inner: self.inner.clone(),
             target: target.to_string(),
             session: String::new(),
             state: state.clone(),
+            done: options.done.clone(),
             thread: None,
             tag: 0,
             closed: AtomicBool::new(false),
@@ -448,7 +548,7 @@ impl Browser {
             .spawn(move || {
                 while let Ok(e) = events.recv() {
                     let Some(inner) = inner.upgrade() else { break };
-                    handle(&inner, Some(&st), &e);
+                    handle(&inner, &st, &e);
                 }
             })
             .map_err(|e| format!("can't start the tab's events thread: {e}"))?;
@@ -457,9 +557,6 @@ impl Browser {
         conn.call(s, "Runtime.enable", json!({}), deadline)?;
         conn.call(s, "Log.enable", json!({}), deadline)?;
         conn.call(s, "Inspector.enable", json!({}), deadline)?;
-        if self.inner.policy.is_some() {
-            conn.call(s, "Fetch.enable", fetch_patterns(), deadline)?;
-        }
         conn.call(
             s,
             "Target.setAutoAttach",
@@ -476,29 +573,22 @@ impl Browser {
         Ok(tab)
     }
 
-    /// Closes the DevTools connection alone: every call waiting on it fails at once, and none can
-    /// be made. The process stays until [`Browser::close`].
+    /// Closes the DevTools pipe: every call waiting on it fails at once, none can be made, and
+    /// Chrome, its end closed, shuts down. [`Browser::close`] then ends what's left.
     pub fn disconnect(&self) {
         self.inner.conn.close(Duration::from_secs(1));
     }
 
-    /// Ends Chrome: its connection, then its process group, then its profile. Whether it ended
-    /// cleanly (the group gone and the profile removed) within its bounded grace.
+    /// Ends Chrome: its pipe, then its process group, then its profile and its proxy. Whether it
+    /// ended cleanly (the group gone, the profile removed, every thread joined) within its
+    /// bounded grace.
     pub fn close(&self) -> bool {
         let closed = self.inner.conn.close(Duration::from_secs(1));
         let ended = self.inner.process.end();
-        let events = lock(&self.inner.events).take();
-        if let Some(t) = events {
-            // The connection's end ends its channel, and so the thread.
-            let since = Instant::now();
-            while !t.is_finished() && since.elapsed() < Duration::from_secs(1) {
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            if t.is_finished() {
-                let _ = t.join();
-            }
-        }
-        closed && ended
+        // Chrome's end of the pipe has closed with it.
+        let read = self.inner.conn.join_reader(Duration::from_secs(2));
+        let proxied = self.inner.proxy.as_ref().is_none_or(|p| p.close(Duration::from_secs(2)));
+        closed && ended && read && proxied
     }
 }
 
@@ -508,19 +598,19 @@ impl Drop for Browser {
     }
 }
 
-fn fetch_patterns() -> Value {
-    json!({"patterns": [{"urlPattern": "*", "requestStage": "Request"}]})
-}
+/// What the page put in results/DONE, once its server has kept it.
+pub type Done = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 
 /// How to open a tab.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct TabOptions {
     pub size: Option<(u32, u32)>,
     pub console: Option<PathBuf>,
+    pub done: Option<Done>,
 }
 
-/// What a tab's events tell: its console, the program's printed lines, its result, the
-/// requests its policy refused, whether it crashed.
+/// What a tab's events tell: its console, the program's printed lines, whether it crashed, and
+/// its viewport's size.
 struct TabState {
     seen: Mutex<Seen>,
     changed: Condvar,
@@ -531,13 +621,15 @@ struct TabState {
 struct Seen {
     console: Vec<String>,
     printed: Vec<String>,
-    done: Option<String>,
-    refused: Vec<String>,
+    /// The lines past [`MOST_LINES`] that weren't kept, of the console and of what was printed.
+    console_dropped: usize,
+    printed_dropped: usize,
     crashed: bool,
     size: Option<(u32, u32)>,
 }
 
-/// The most console lines a tab keeps (the file gets them all).
+/// The most console lines a tab keeps (the file gets them all): past them, an observation of
+/// the console, or a wait for a printed line, fails, saying so.
 const MOST_LINES: usize = 100_000;
 
 impl TabState {
@@ -559,13 +651,17 @@ impl TabState {
             let _ = f.flush();
         }
         let mut seen = lock(&self.seen);
-        if let Some(p) = text.strip_prefix("wrela: ")
-            && seen.printed.len() < MOST_LINES
-        {
-            seen.printed.push(p.to_string());
+        if let Some(p) = text.strip_prefix("wrela: ") {
+            if seen.printed.len() < MOST_LINES {
+                seen.printed.push(p.to_string());
+            } else {
+                seen.printed_dropped += 1;
+            }
         }
         if seen.console.len() < MOST_LINES {
             seen.console.push(text);
+        } else {
+            seen.console_dropped += 1;
         }
         drop(seen);
         self.changed.notify_all();
@@ -599,90 +695,43 @@ fn console_text(params: &Value) -> String {
     parts.join(" ")
 }
 
-/// Handles event `e` of a tab's page or one of its workers (`state` is the tab's), or of the
-/// browser's own workers.
-fn handle(inner: &Inner, state: Option<&TabState>, e: &Event) {
+/// Handles event `e` of a tab's page or one of its workers.
+fn handle(inner: &Inner, state: &TabState, e: &Event) {
     let conn = &inner.conn;
     let soon = || Instant::now() + EVENT_CALL;
-    let s = Some(e.session.as_str());
     match e.method.as_str() {
-        "Runtime.consoleAPICalled" => {
-            if let Some(st) = state {
-                st.line(console_text(&e.params));
-            }
-        }
+        "Runtime.consoleAPICalled" => state.line(console_text(&e.params)),
         "Runtime.exceptionThrown" => {
-            if let Some(st) = state {
-                let d = &e.params["exceptionDetails"];
-                let text = d["exception"]["description"].as_str().or(d["text"].as_str());
-                st.line(format!("Uncaught {}", text.unwrap_or("an exception")));
-            }
+            let d = &e.params["exceptionDetails"];
+            let text = d["exception"]["description"].as_str().or(d["text"].as_str());
+            state.line(format!("Uncaught {}", text.unwrap_or("an exception")));
         }
         "Log.entryAdded" => {
             let entry = &e.params["entry"];
             // A worker's console is its own session's, which the page's log repeats.
-            if let Some(st) = state
-                && entry["source"] != "worker"
-            {
-                st.line(entry["text"].as_str().unwrap_or("").to_string());
+            if entry["source"] != "worker" {
+                state.line(entry["text"].as_str().unwrap_or("").to_string());
             }
         }
-        "Inspector.targetCrashed" => {
-            if let Some(st) = state {
-                st.change(|seen| seen.crashed = true);
-            }
-        }
+        "Inspector.targetCrashed" => state.change(|seen| seen.crashed = true),
         "Target.attachedToTarget" => {
-            // A worker (or a frame of another process) the page or the browser started, paused
-            // until its requests are held to the policy too.
+            // A worker (or a frame of another process) the page started, paused until its
+            // console is heard too.
             let Some(child) = e.params["sessionId"].as_str() else { return };
             let c = Some(child);
-            if inner.policy.is_some() {
-                let _ = conn.call(c, "Fetch.enable", fetch_patterns(), soon());
-            }
-            if state.is_some() {
-                let _ = conn.call(c, "Runtime.enable", json!({}), soon());
-                let _ = conn.call(c, "Log.enable", json!({}), soon());
-                let _ = conn.call(
-                    c,
-                    "Target.setAutoAttach",
-                    json!({"autoAttach": true, "waitForDebuggerOnStart": true, "flatten": true}),
-                    soon(),
-                );
-            }
+            let _ = conn.call(c, "Runtime.enable", json!({}), soon());
+            let _ = conn.call(c, "Log.enable", json!({}), soon());
+            let _ = conn.call(
+                c,
+                "Target.setAutoAttach",
+                json!({"autoAttach": true, "waitForDebuggerOnStart": true, "flatten": true}),
+                soon(),
+            );
             let _ = conn.call(c, "Runtime.runIfWaitingForDebugger", json!({}), soon());
         }
         "Target.detachedFromTarget" => {
             if let Some(child) = e.params["sessionId"].as_str() {
                 conn.unroute_session(child);
-            }
-        }
-        "Fetch.requestPaused" => {
-            let Some(id) = e.params["requestId"].as_str() else { return };
-            let request = &e.params["request"];
-            let url = request["url"].as_str().unwrap_or("");
-            let allowed = inner.policy.as_ref().is_none_or(|p| p(url));
-            if allowed {
-                if let Some(st) = state
-                    && request["method"] == "PUT"
-                    && url.split(['?', '#']).next().is_some_and(|u| u.ends_with("/results/DONE"))
-                {
-                    let body = request["postData"].as_str().unwrap_or("").trim().to_string();
-                    st.change(|seen| seen.done = Some(body));
-                }
-                let _ = conn.call(s, "Fetch.continueRequest", json!({"requestId": id}), soon());
-            } else {
-                let _ = conn.call(
-                    s,
-                    "Fetch.failRequest",
-                    json!({"requestId": id, "errorReason": "BlockedByClient"}),
-                    soon(),
-                );
-                if let Some(st) = state {
-                    let method = request["method"].as_str().unwrap_or("GET");
-                    st.change(|seen| seen.refused.push(format!("{method} {url}")));
-                    st.line(format!("the host refused {method} {url}: it isn't a granted origin"));
-                }
             }
         }
         _ => {}
@@ -695,6 +744,7 @@ pub struct Tab {
     target: String,
     session: String,
     state: Arc<TabState>,
+    done: Option<Done>,
     thread: Option<std::thread::JoinHandle<()>>,
     /// The tag of its sessions' route.
     tag: u64,
@@ -758,36 +808,52 @@ impl Tab {
         }
     }
 
-    /// Every console line of the page and its workers so far (at most 100 000).
-    pub fn console(&self) -> Vec<String> {
-        lock(&self.state.seen).console.clone()
+    /// Every console line of the page and its workers so far: an error if there were more than
+    /// a tab keeps (100 000), rather than some of them.
+    pub fn console(&self) -> Result<Vec<String>, String> {
+        let seen = lock(&self.state.seen);
+        if seen.console_dropped > 0 {
+            return Err(format!(
+                "the console had more than {MOST_LINES} lines: {} more weren't kept",
+                seen.console_dropped
+            ));
+        }
+        Ok(seen.console.clone())
     }
 
     /// The lines the program printed (`std::io::print`, which the browser runtime shows on the
-    /// console as `wrela: <line>`).
-    pub fn printed(&self) -> Vec<String> {
-        lock(&self.state.seen).printed.clone()
+    /// console as `wrela: <line>`): an error if there were more than a tab keeps.
+    pub fn printed(&self) -> Result<Vec<String>, String> {
+        let seen = lock(&self.state.seen);
+        if seen.printed_dropped > 0 {
+            return Err(format!(
+                "the program printed more than {MOST_LINES} lines: {} more weren't kept",
+                seen.printed_dropped
+            ));
+        }
+        Ok(seen.printed.clone())
     }
 
-    /// What the page put in `results/DONE`, if it has (seen only by a browser with a policy,
-    /// whose requests the driver pauses).
+    /// What the page put in `results/DONE`, once its server has kept it: `None` until then, and
+    /// for a tab opened with nothing to tell it.
     pub fn done(&self) -> Option<String> {
-        lock(&self.state.seen).done.clone()
+        self.done.as_ref().and_then(|d| d())
     }
 
-    /// The requests the policy refused: each method and URL.
-    pub fn refused(&self) -> Vec<String> {
-        lock(&self.state.seen).refused.clone()
+    /// Whether the tab was opened with what tells it its page's result.
+    pub fn knows_done(&self) -> bool {
+        self.done.is_some()
+    }
+
+    /// Why the tab's connection to Chrome ended, if it has: the browser closed, or Chrome
+    /// exited.
+    pub fn ended(&self) -> Option<String> {
+        self.inner.conn.ended()
     }
 
     /// Whether the page's process crashed.
     pub fn crashed(&self) -> bool {
         lock(&self.state.seen).crashed
-    }
-
-    /// Whether the tab's browser holds its requests to a policy.
-    pub fn held(&self) -> bool {
-        self.inner.policy.is_some()
     }
 
     /// Waits at most `wait` for anything new to be seen.
@@ -868,8 +934,8 @@ mod tests {
     }
 
     #[test]
-    fn a_launch_names_its_profile_window_and_a_policys_dead_proxy() {
-        let mut l = Launch {
+    fn a_launch_names_its_pipe_profile_window_and_a_policys_proxy() {
+        let l = Launch {
             binary: "chrome".into(),
             profile: "/p".into(),
             window: (640, 480),
@@ -878,19 +944,75 @@ mod tests {
             policy: None,
             cancel: None,
         };
-        let argv = |l: &Launch| -> Vec<String> {
-            l.argv().iter().map(|a| a.to_string_lossy().into_owned()).collect()
+        let argv = |proxy: Option<u16>| -> Vec<String> {
+            l.argv(proxy).iter().map(|a| a.to_string_lossy().into_owned()).collect()
         };
-        let a = argv(&l);
-        assert!(a.contains(&"--headless=new".to_string()));
-        assert!(a.contains(&"--user-data-dir=/p".to_string()));
-        assert!(a.contains(&"--window-size=640,480".to_string()));
-        assert!(!a.iter().any(|x| x.starts_with("--proxy")), "{a:?}");
+        let a = argv(None);
+        for flag in [
+            "--headless=new",
+            "--remote-debugging-pipe",
+            "--user-data-dir=/p",
+            "--window-size=640,480",
+            "--x",
+        ] {
+            assert!(a.contains(&flag.to_string()), "{flag}: {a:?}");
+        }
+        assert!(
+            !a.iter().any(|x| x.starts_with("--proxy") || x.starts_with("--remote-debugging-port")),
+            "{a:?}"
+        );
         assert_eq!(a.last().map(String::as_str), Some("about:blank"));
-        assert!(a.contains(&"--x".to_string()));
-        l.policy = Some((Arc::new(|_| true), vec!["example.org".into()]));
-        let a = argv(&l);
-        assert!(a.contains(&"--proxy-bypass-list=127.0.0.1;example.org".to_string()), "{a:?}");
+        let a = argv(Some(4321));
+        for flag in [
+            "--proxy-server=http://127.0.0.1:4321",
+            "--proxy-bypass-list=<-loopback>",
+            "--disable-quic",
+        ] {
+            assert!(a.contains(&flag.to_string()), "{flag}: {a:?}");
+        }
+    }
+
+    #[test]
+    fn a_dead_processs_profiles_are_swept_and_a_living_ones_kept() {
+        let base = std::env::temp_dir().join(format!("wrela-sweep-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).expect("base");
+        // A child that has exited: its pid is no process's now.
+        let mut gone = Command::new("true").spawn().expect("true");
+        gone.wait().expect("wait");
+        let dead = base.join(format!("wrela-chrome-{}", gone.id()));
+        let living = base.join(format!("wrela-chrome-{}", std::process::id()));
+        let parent = base.join(format!("wrela-chrome-{}-7", std::os::unix::process::parent_id()));
+        let other = base.join("wrela-chrome-notapid");
+        for d in [&dead, &living, &parent, &other] {
+            std::fs::create_dir_all(d.join("browser-1")).expect("a profile");
+        }
+        let ours = profiles(&base).expect("ours");
+        assert_eq!(ours, living);
+        assert!(!dead.exists(), "a dead process's profiles are swept");
+        assert!(living.exists() && parent.exists() && other.exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn on_linux_the_driver_adopts_and_reaps_chromes_group() {
+        use std::os::unix::process::CommandExt;
+        adopt_descendants().expect("a subreaper");
+        let mut c = Command::new("sh")
+            .args(["-c", "sleep 30 & exit 0"])
+            .process_group(0)
+            .spawn()
+            .expect("sh");
+        let group = rustix::process::Pid::from_raw(c.id() as i32).expect("a group");
+        c.wait().expect("sh exits");
+        // Its child is ours now; killed, it's reaped with the group.
+        let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
+        let since = Instant::now();
+        while !reap_group(group) {
+            assert!(since.elapsed() < Duration::from_secs(5), "the orphan was reaped");
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     #[test]

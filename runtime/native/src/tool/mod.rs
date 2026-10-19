@@ -117,6 +117,9 @@ pub struct Options {
     /// fire, in the order of their deadlines, as soon as the tool waits on nothing else, and
     /// `std::tool::testing` sets fakes. `None`: the system's clock, and no fakes.
     pub fake_clock: Option<(u64, u32)>,
+    /// A tool test's run on the system's clock, its fakes kept: one with a live browser, whose
+    /// page the clock mustn't jump past (`browser: true`, language.md §13.2).
+    pub real_clock: bool,
     /// A file the host appends each program's process group to as it starts, for a supervisor
     /// that must kill them if this host can't (a tool test's, §13.2).
     pub groups: Option<std::path::PathBuf>,
@@ -134,8 +137,9 @@ pub struct Options {
 /// A run's settings that only tests change: the workers' grace, a slow disk under each blob
 /// written to a file, a clock thread that fails to start, where the run's own directory is, a
 /// pause between a program's start and its record, a name lookup that stalls, and, for the
-/// toolchain's outputs, one write held a while and one that fails part way (each chosen by its
-/// path's end, or `#n` for a request's `n`th write), a server's start that fails once it
+/// toolchain's outputs, one write held a while (a served page's result too, by `results/<name>`)
+/// and one that fails part way (each chosen by its path's end, or `#n` for a request's `n`th
+/// write), a server's start that fails once it
 /// listens, image work that holds a while, seeing no cancel, and a [`Signal`] of the moments a
 /// test waits for.
 #[doc(hidden)]
@@ -157,7 +161,9 @@ pub struct Testing {
 /// What a test is told as the host reaches a moment it waits for, so it acts then rather than
 /// after a guessed time: `"write"` (a blob's write to a file starts), `"resolve"` (an HTTP
 /// request's name lookup starts), `"image"` (an image's work starts), `"listening"` (a server
-/// listens), `"connection"` (a server takes a connection) and `"post"` (a server queues a post).
+/// listens), `"connection"` (a server takes a connection), `"post"` (a server queues a post),
+/// `"browser"` (a browser has opened its page), `"run"` (a browser's script starts) and
+/// `"close"` (a browser's close starts).
 #[doc(hidden)]
 #[derive(Clone)]
 pub struct Signal(pub Arc<dyn Fn(&'static str) + Send + Sync>);
@@ -199,6 +205,7 @@ impl Options {
             print: Arc::new(|line| println!("{line}")),
             entries: (EXPORT_TOOL_INIT.to_string(), EXPORT_TOOL.to_string()),
             fake_clock: None,
+            real_clock: false,
             groups: None,
             toolchain: None,
             cache: None,
@@ -581,6 +588,7 @@ pub fn run(build: &ToolBuild, options: Options) -> Ended {
         testing,
         entries,
         fake_clock,
+        real_clock,
         groups,
         toolchain,
         cache,
@@ -647,7 +655,9 @@ pub fn run(build: &ToolBuild, options: Options) -> Ended {
         deadline,
         outstanding: HashSet::new(),
         origin: Instant::now(),
-        fake: fake_clock.map(|(s, n)| Fake { now: Duration::ZERO, utc: Duration::new(s, n) }),
+        fake: fake_clock
+            .filter(|_| !real_clock)
+            .map(|(s, n)| Fake { now: Duration::ZERO, utc: Duration::new(s, n) }),
         timed: BinaryHeap::new(),
         timed_answers: HashMap::new(),
         due: HashMap::new(),
@@ -938,7 +948,9 @@ impl Run<'_> {
                             f.utc = set.saturating_sub(f.now);
                             Answer::Bytes(vec![0])
                         }
-                        None => Answer::Bytes(b"\x01only a tool test's clock is set".to_vec()),
+                        None => Answer::Bytes(
+                            b"\x01only a tool test's fake clock is set: not the system's".to_vec(),
+                        ),
                     };
                     self.arrived.push((request, answer));
                 }

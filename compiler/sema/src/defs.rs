@@ -721,6 +721,9 @@ pub struct ToolTest {
     /// The roots the test may read (`read: [("repo", "../..")]`): each name, and its directory,
     /// relative to the test's package (it may lead above it, with `..`). Never written.
     pub read: Vec<(String, String)>,
+    /// Whether `std::tool::browser` may start Chrome (`browser: true`): the test then runs on
+    /// the real clock, as a live browser does.
+    pub browser: bool,
 }
 
 /// A GPU frame test's golden (§13): a PNG in the package, by its path, where the path is

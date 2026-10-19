@@ -236,28 +236,31 @@ pub fn get_file(
 /// `name` is a plain file name, and `results/` and the file are reached through the handle
 /// following no link. The bytes go to a new file of their own beside it, which then takes the
 /// result's place, so a reader never sees half of one. If the body ends short, or a write fails,
-/// the new file is removed, and `results/` too if this put made it.
+/// the new file is removed, and `results/` too if this put made it. Whether the result was
+/// written (a refused put is answered, and isn't).
 pub fn put_result(
     out: &mut dyn Write,
     dir: &Dir,
     name: &str,
     body: &mut dyn Read,
     length: u64,
-) -> std::io::Result<()> {
+) -> std::io::Result<bool> {
     let plain = !name.is_empty()
         && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
         && !name.starts_with('.');
     if !plain {
-        return respond(out, 403, "text/plain", b"a result is a plain file name");
+        return respond(out, 403, "text/plain", b"a result is a plain file name").map(|()| false);
     }
     if length > MAX_BODY as u64 {
         let why = format!("a result is at most {MAX_BODY} bytes");
-        return respond(out, 413, "text/plain", why.as_bytes());
+        return respond(out, 413, "text/plain", why.as_bytes()).map(|()| false);
     }
     let refused = |out: &mut dyn Write| {
         respond(out, 403, "text/plain", b"a result path cannot contain a symbolic link")
     };
-    let Ok(made) = crate::confined::make_dir(dir, "results") else { return refused(out) };
+    let Ok(made) = crate::confined::make_dir(dir, "results") else {
+        return refused(out).map(|()| false);
+    };
     let undo = |results: Option<&Dir>, tmp: &str| {
         if let Some(r) = results {
             let _ = crate::confined::remove(r, tmp, false);
@@ -268,7 +271,7 @@ pub fn put_result(
     };
     let Ok(results) = crate::confined::open_dir(dir, &["results"], false) else {
         undo(None, "");
-        return refused(out);
+        return refused(out).map(|()| false);
     };
     // A file of this put's own: several pages may put one result at once.
     static PUTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -288,7 +291,7 @@ pub fn put_result(
         let _ = respond(out, 400, "text/plain", b"the result wasn't written");
         return Err(e);
     }
-    respond(out, 201, "text/plain", b"")
+    respond(out, 201, "text/plain", b"").map(|()| true)
 }
 
 /// Renames `from` in `dir` to `to` in it: a link at `to` is replaced, not followed.

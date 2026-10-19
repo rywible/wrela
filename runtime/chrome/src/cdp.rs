@@ -1,24 +1,23 @@
-//! The DevTools protocol over Chrome's WebSocket: one connection to the browser, its pages'
-//! and workers' sessions flattened onto it (`Target.attachToTarget` with `flatten`), so each
-//! message names its session.
+//! The DevTools protocol over Chrome's pipe (`--remote-debugging-pipe`): Chrome reads messages
+//! on its fd 3 and writes them on its fd 4, each a JSON text ended by a NUL byte. One pipe pair
+//! carries the browser, its pages' and their workers' sessions (`Target.attachToTarget` with
+//! `flatten`), so each message names its session.
 //!
-//! **One thread owns the socket.** It sends what callers queue and reads what Chrome sends, in
-//! turn, with a short read timeout, so no caller ever holds the socket. An answer goes to the
-//! caller waiting for its `id`; an event goes to the channel of its session, and a session that
-//! a routed session's auto-attach makes is routed to the same channel before its first event can
-//! arrive. A caller waits at most until its deadline. When the socket closes or fails, every
-//! waiting caller is told why, and every channel ends.
+//! **Chrome ends with the pipe.** When the pipe's other end closes, because this connection
+//! closed it or because the process that held it died, even by `SIGKILL`, Chrome shuts down.
+//!
+//! **A thread writes and a thread reads.** Callers queue what they send, so none ever holds the
+//! pipe; the reader gives an answer to the caller waiting for its `id`, and an event to the
+//! channel of its session, and routes a session that a routed session's auto-attach makes to the
+//! same channel before its first event can arrive. A caller waits at most until its deadline.
+//! When the pipe closes or fails, every waiting caller is told why, and every channel ends.
 
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::net::TcpStream;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
-use tungstenite::{Message, WebSocket};
-
-/// How long the socket's thread reads before it looks for messages to send.
-const TURN: Duration = Duration::from_millis(5);
 
 /// The largest message Chrome may send: a screenshot's base64 at 16384 pixels each way.
 const MOST_MESSAGE: usize = 1536 << 20;
@@ -33,97 +32,87 @@ pub struct Event {
 
 type Reply = mpsc::Sender<Result<Value, String>>;
 
-/// What the socket's thread and the callers share.
+/// What the threads and the callers share.
 struct Shared {
     pending: Mutex<HashMap<u64, Reply>>,
     /// Each session's channel, with the tag of the route it came from.
     routes: Mutex<HashMap<String, (u64, mpsc::Sender<Event>)>>,
     /// Why the connection ended, once it has.
     ended: Mutex<Option<String>>,
-    stop: AtomicBool,
+}
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 impl Shared {
-    fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-        m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
     /// Ends the connection for `why`: each waiting caller hears it, and each channel ends.
     fn end(&self, why: String) {
-        let mut ended = Self::lock(&self.ended);
+        let mut ended = lock(&self.ended);
         if ended.is_none() {
             *ended = Some(why.clone());
         }
         drop(ended);
-        for (_, reply) in Self::lock(&self.pending).drain() {
+        for (_, reply) in lock(&self.pending).drain() {
             let _ = reply.send(Err(why.clone()));
         }
-        Self::lock(&self.routes).clear();
+        lock(&self.routes).clear();
     }
 }
 
 /// A connection to a browser's DevTools.
 pub struct Connection {
     shared: Arc<Shared>,
-    out: mpsc::Sender<String>,
+    out: Mutex<Option<mpsc::Sender<Vec<u8>>>>,
     next: AtomicU64,
     tags: AtomicU64,
-    thread: Mutex<Option<std::thread::JoinHandle<()>>>,
+    writer: Mutex<Option<std::thread::JoinHandle<()>>>,
+    reader: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl Connection {
-    /// Connects to the DevTools WebSocket at `ws://127.0.0.1:<port><path>` by `deadline`.
-    pub fn open(port: u16, path: &str, deadline: Instant) -> Result<Connection, String> {
-        let left = deadline.saturating_duration_since(Instant::now()).max(TURN);
-        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-        let stream = TcpStream::connect_timeout(&addr, left)
-            .map_err(|e| format!("can't reach DevTools on port {port}: {e}"))?;
-        stream.set_read_timeout(Some(left)).map_err(|e| e.to_string())?;
-        stream.set_write_timeout(Some(Duration::from_secs(10))).map_err(|e| e.to_string())?;
-        let _ = stream.set_nodelay(true);
-        let config = tungstenite::protocol::WebSocketConfig::default()
-            .max_message_size(Some(MOST_MESSAGE))
-            .max_frame_size(Some(MOST_MESSAGE));
-        let url = format!("ws://127.0.0.1:{port}{path}");
-        let (socket, _) =
-            tungstenite::client::client_with_config(url.as_str(), stream, Some(config))
-                .map_err(|e| format!("DevTools refused the WebSocket: {e}"))?;
-        socket.get_ref().set_read_timeout(Some(TURN)).map_err(|e| e.to_string())?;
-        Ok(Connection::start(socket))
-    }
-
-    /// The connection over `socket`, whose handshake is done, and its thread.
-    fn start(socket: WebSocket<TcpStream>) -> Connection {
+    /// The connection over the pipe's two ends: what writes to Chrome, and what reads from it.
+    pub fn start(
+        to: impl Write + Send + 'static,
+        from: impl Read + Send + 'static,
+    ) -> Result<Connection, String> {
         let shared = Arc::new(Shared {
             pending: Mutex::new(HashMap::new()),
             routes: Mutex::new(HashMap::new()),
             ended: Mutex::new(None),
-            stop: AtomicBool::new(false),
         });
-        let (out, queued) = mpsc::channel::<String>();
+        let (out, queued) = mpsc::channel::<Vec<u8>>();
         let s = shared.clone();
-        let thread = std::thread::Builder::new()
-            .name("wrela-chrome-devtools".into())
-            .spawn(move || serve(socket, &s, &queued));
-        let thread = match thread {
-            Ok(t) => Some(t),
+        let writer = std::thread::Builder::new()
+            .name("wrela-chrome-write".into())
+            .spawn(move || write_all(to, &queued, &s))
+            .map_err(|e| format!("can't start the DevTools writer: {e}"))?;
+        let s = shared.clone();
+        let reader = std::thread::Builder::new()
+            .name("wrela-chrome-read".into())
+            .spawn(move || read_all(from, &s));
+        let reader = match reader {
+            Ok(t) => t,
             Err(e) => {
-                shared.end(format!("can't start the DevTools thread: {e}"));
-                None
+                // The writer ends with its queue, and the pipe with it.
+                drop(out);
+                let _ = writer.join();
+                return Err(format!("can't start the DevTools reader: {e}"));
             }
         };
-        Connection {
+        Ok(Connection {
             shared,
-            out,
+            out: Mutex::new(Some(out)),
             next: AtomicU64::new(1),
             tags: AtomicU64::new(1),
-            thread: Mutex::new(thread),
-        }
+            writer: Mutex::new(Some(writer)),
+            reader: Mutex::new(Some(reader)),
+        })
     }
 
     /// Why the connection ended, if it has.
     pub fn ended(&self) -> Option<String> {
-        Shared::lock(&self.shared.ended).clone()
+        lock(&self.shared.ended).clone()
     }
 
     /// Routes session `session`'s events (`""`: the browser's own) to `to`, and those of each
@@ -131,19 +120,19 @@ impl Connection {
     pub fn route(&self, session: &str, to: mpsc::Sender<Event>) -> u64 {
         let tag = self.tags.fetch_add(1, Ordering::Relaxed);
         if self.ended().is_none() {
-            Shared::lock(&self.shared.routes).insert(session.to_string(), (tag, to));
+            lock(&self.shared.routes).insert(session.to_string(), (tag, to));
         }
         tag
     }
 
     /// Stops routing the sessions of route `tag`: its channel ends.
     pub fn unroute(&self, tag: u64) {
-        Shared::lock(&self.shared.routes).retain(|_, (t, _)| *t != tag);
+        lock(&self.shared.routes).retain(|_, (t, _)| *t != tag);
     }
 
     /// Stops routing session `session` (it has detached).
     pub fn unroute_session(&self, session: &str) {
-        Shared::lock(&self.shared.routes).remove(session);
+        lock(&self.shared.routes).remove(session);
     }
 
     /// Calls `method` with `params` in `session` (`None`: the browser's), waiting for its answer
@@ -164,14 +153,17 @@ impl Connection {
             message["sessionId"] = Value::String(s.to_string());
         }
         let (reply, answer) = mpsc::channel();
-        Shared::lock(&self.shared.pending).insert(id, reply);
-        // The thread may have ended between the check and the insert: it drained `pending`.
+        lock(&self.shared.pending).insert(id, reply);
+        // The connection may have ended between the check and the insert: it drained `pending`.
         if let Some(why) = self.ended() {
-            Shared::lock(&self.shared.pending).remove(&id);
+            lock(&self.shared.pending).remove(&id);
             return Err(format!("{method}: {why}"));
         }
-        if self.out.send(message.to_string()).is_err() {
-            Shared::lock(&self.shared.pending).remove(&id);
+        let mut bytes = message.to_string().into_bytes();
+        bytes.push(0);
+        let sent = lock(&self.out).as_ref().is_some_and(|o| o.send(bytes).is_ok());
+        if !sent {
+            lock(&self.shared.pending).remove(&id);
             return Err(format!("{method}: the DevTools connection has closed"));
         }
         let left = deadline.saturating_duration_since(Instant::now());
@@ -179,26 +171,43 @@ impl Connection {
             Ok(Ok(v)) => Ok(v),
             Ok(Err(why)) => Err(format!("{method}: {why}")),
             Err(_) => {
-                Shared::lock(&self.shared.pending).remove(&id);
+                lock(&self.shared.pending).remove(&id);
                 Err(format!("{method}: no answer by its deadline"))
             }
         }
     }
 
-    /// Closes the connection and joins its thread, waiting at most `grace`: whether it ended.
+    /// Closes the connection: every waiting caller fails at once, the pipe to Chrome closes (and
+    /// Chrome shuts down), and the writer's thread is joined, waiting at most `grace`: whether
+    /// it ended.
     pub fn close(&self, grace: Duration) -> bool {
-        self.shared.stop.store(true, Ordering::Release);
-        let Some(t) = Shared::lock(&self.thread).take() else { return true };
-        let until = Instant::now() + grace;
-        while !t.is_finished() {
-            if Instant::now() >= until {
-                return false;
-            }
-            std::thread::sleep(TURN);
-        }
-        let _ = t.join();
-        true
+        self.shared.end("the DevTools connection was closed".into());
+        lock(&self.out).take();
+        join(&self.writer, grace)
     }
+
+    /// Waits at most `grace` for the reader's thread, which ends when Chrome's end of the pipe
+    /// closes (it has exited): whether it ended.
+    pub fn join_reader(&self, grace: Duration) -> bool {
+        join(&self.reader, grace)
+    }
+}
+
+/// Joins the thread in `t`, if it ends within `grace`.
+fn join(t: &Mutex<Option<std::thread::JoinHandle<()>>>, grace: Duration) -> bool {
+    let mut held = lock(t);
+    let Some(thread) = held.as_ref() else { return true };
+    let until = Instant::now() + grace;
+    while !thread.is_finished() {
+        if Instant::now() >= until {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    if let Some(thread) = held.take() {
+        let _ = thread.join();
+    }
+    true
 }
 
 impl Drop for Connection {
@@ -207,47 +216,37 @@ impl Drop for Connection {
     }
 }
 
-/// The socket's thread: sends what's queued, reads what comes, until it's stopped or the socket
-/// ends.
-fn serve(mut socket: WebSocket<TcpStream>, s: &Shared, queued: &mpsc::Receiver<String>) {
+/// The writer's thread: each queued message, until the queue ends (the connection closed) or a
+/// write fails. Its end of the pipe closes as it returns.
+fn write_all(mut to: impl Write, queued: &mpsc::Receiver<Vec<u8>>, s: &Shared) {
+    while let Ok(bytes) = queued.recv() {
+        if let Err(e) = to.write_all(&bytes).and_then(|()| to.flush()) {
+            s.end(format!("DevTools: {e}"));
+            return;
+        }
+    }
+}
+
+/// The reader's thread: each message, until Chrome's end closes.
+fn read_all(from: impl Read, s: &Shared) {
+    let mut from = BufReader::with_capacity(1 << 20, from);
     let why = loop {
-        if s.stop.load(Ordering::Acquire) {
-            let _ = socket.close(None);
-            let _ = socket.flush();
-            break "the DevTools connection was closed".to_string();
-        }
-        let mut failed = None;
-        for text in queued.try_iter() {
-            if let Err(e) = socket.write(Message::text(text)) {
-                failed = Some(format!("DevTools: {e}"));
-                break;
+        let mut message = Vec::new();
+        let read = (&mut from).take(MOST_MESSAGE as u64 + 1).read_until(0, &mut message);
+        match read {
+            Ok(0) => break "Chrome closed its DevTools pipe".to_string(),
+            Ok(_) if message.last() != Some(&0) => {
+                break if message.len() > MOST_MESSAGE {
+                    format!("DevTools sent a message of more than {MOST_MESSAGE} bytes")
+                } else {
+                    "Chrome closed its DevTools pipe".to_string()
+                };
             }
-        }
-        if let Some(why) = failed {
-            break why;
-        }
-        // A pong to a ping is queued by the read, and sent by this flush.
-        match socket.flush() {
-            Ok(()) => {}
-            Err(tungstenite::Error::Io(e))
-                if matches!(
-                    e.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) => {}
-            Err(e) => break format!("DevTools: {e}"),
-        }
-        match socket.read() {
-            Ok(Message::Text(t)) => dispatch(s, t.as_str()),
-            Ok(Message::Close(_)) => break "DevTools closed the connection".into(),
-            Ok(_) => {}
-            Err(tungstenite::Error::Io(e))
-                if matches!(
-                    e.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) => {}
-            Err(tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed) => {
-                break "DevTools closed the connection".into();
+            Ok(_) => {
+                message.pop();
+                dispatch(s, &message);
             }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
             Err(e) => break format!("DevTools: {e}"),
         }
     };
@@ -255,10 +254,10 @@ fn serve(mut socket: WebSocket<TcpStream>, s: &Shared, queued: &mpsc::Receiver<S
 }
 
 /// Gives a message to the caller waiting for its answer, or to its session's channel.
-fn dispatch(s: &Shared, text: &str) {
-    let Ok(message) = serde_json::from_str::<Value>(text) else { return };
+fn dispatch(s: &Shared, bytes: &[u8]) {
+    let Ok(message) = serde_json::from_slice::<Value>(bytes) else { return };
     if let Some(id) = message.get("id").and_then(Value::as_u64) {
-        let Some(reply) = Shared::lock(&s.pending).remove(&id) else { return };
+        let Some(reply) = lock(&s.pending).remove(&id) else { return };
         let answer = match message.get("error") {
             Some(e) => {
                 Err(e.get("message").and_then(Value::as_str).unwrap_or("an error").to_string())
@@ -271,7 +270,7 @@ fn dispatch(s: &Shared, text: &str) {
     let Some(method) = message.get("method").and_then(Value::as_str) else { return };
     let session = message.get("sessionId").and_then(Value::as_str).unwrap_or("").to_string();
     let params = message.get("params").cloned().unwrap_or(Value::Null);
-    let mut routes = Shared::lock(&s.routes);
+    let mut routes = lock(&s.routes);
     let Some((tag, to)) = routes.get(&session).cloned() else { return };
     // A session this one attached to is routed with it before any of its own events come.
     if method == "Target.attachedToTarget"
@@ -283,46 +282,47 @@ fn dispatch(s: &Shared, text: &str) {
     let key = session.clone();
     if to.send(Event { session, method: method.to_string(), params }).is_err() {
         // Nobody reads this session's events any more.
-        Shared::lock(&s.routes).remove(&key);
+        lock(&s.routes).remove(&key);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::TcpListener;
 
-    /// A WebSocket server of the test's own, on loopback: for each text message it gets, it
-    /// sends a ping and an event, then what `answer` gives for the message, with its `id`.
-    fn serve_fake(
-        answer: impl Fn(&Value) -> Value + Send + 'static,
-    ) -> (u16, std::thread::JoinHandle<Vec<String>>) {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("listen");
-        let port = listener.local_addr().expect("addr").port();
-        let thread = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().expect("accept");
-            let mut ws = tungstenite::accept(stream).expect("handshake");
+    /// A fake Chrome on the other ends of two pipes: for each message it reads, it sends an
+    /// event, then what `answer` gives for it, with its `id`. What it read, once its input ends.
+    fn fake(
+        answer: impl Fn(&Value) -> Option<Value> + Send + 'static,
+    ) -> (Connection, std::thread::JoinHandle<Vec<String>>) {
+        let (chrome_reads, to) = std::io::pipe().expect("a pipe");
+        let (from, mut chrome_writes) = std::io::pipe().expect("a pipe");
+        let chrome = std::thread::spawn(move || {
             let mut seen = Vec::new();
+            let mut input = BufReader::new(chrome_reads);
             loop {
-                match ws.read() {
-                    Ok(Message::Text(t)) => {
-                        let m: Value = serde_json::from_str(t.as_str()).expect("json");
-                        seen.push(m["method"].as_str().unwrap_or("").to_string());
-                        ws.send(Message::Ping(b"hi".to_vec().into())).expect("ping");
-                        let event = json!({"method": "Page.event", "sessionId": "s", "params": {}});
-                        ws.send(Message::text(event.to_string())).expect("event");
-                        let mut a = answer(&m);
-                        a["id"] = m["id"].clone();
-                        ws.send(Message::text(a.to_string())).expect("answer");
-                    }
-                    Ok(Message::Pong(_)) => seen.push("pong".into()),
-                    Ok(Message::Close(_)) | Err(_) => break,
-                    Ok(_) => {}
+                let mut m = Vec::new();
+                if input.read_until(0, &mut m).unwrap_or(0) == 0 {
+                    break;
+                }
+                m.pop();
+                let m: Value = serde_json::from_slice(&m).expect("json");
+                seen.push(m["method"].as_str().unwrap_or("").to_string());
+                let event = json!({"method": "Page.event", "sessionId": "s", "params": {}});
+                let mut out = event.to_string().into_bytes();
+                out.push(0);
+                if let Some(mut a) = answer(&m) {
+                    a["id"] = m["id"].clone();
+                    out.extend(a.to_string().into_bytes());
+                    out.push(0);
+                }
+                if chrome_writes.write_all(&out).is_err() {
+                    break;
                 }
             }
             seen
         });
-        (port, thread)
+        (Connection::start(to, from).expect("a connection"), chrome)
     }
 
     fn soon() -> Instant {
@@ -331,8 +331,7 @@ mod tests {
 
     #[test]
     fn calls_are_answered_in_order_and_events_reach_their_session() {
-        let (port, server) = serve_fake(|m| json!({"result": {"ok": m["method"]}}));
-        let conn = Connection::open(port, "/devtools/browser/x", soon()).expect("connect");
+        let (conn, chrome) = fake(|m| Some(json!({"result": {"ok": m["method"]}})));
         let (to, events) = mpsc::channel();
         conn.route("s", to);
         let a = conn.call(Some("s"), "Input.insertText", json!({"text": "か"}), soon());
@@ -341,48 +340,54 @@ mod tests {
         assert_eq!(b, json!({"ok": "Browser.getVersion"}));
         let e = events.recv_timeout(Duration::from_secs(5)).expect("an event");
         assert_eq!((e.session.as_str(), e.method.as_str()), ("s", "Page.event"));
-        assert!(conn.close(Duration::from_secs(5)), "its thread ends");
-        let seen = server.join().expect("the server");
-        let calls: Vec<&String> = seen.iter().filter(|s| *s != "pong").collect();
-        assert_eq!(calls, ["Input.insertText", "Browser.getVersion"]);
-        assert!(seen.iter().any(|s| s == "pong"), "a ping is answered: {seen:?}");
+        assert!(conn.close(Duration::from_secs(5)), "its writer ends, and the pipe with it");
+        assert_eq!(chrome.join().expect("the fake"), ["Input.insertText", "Browser.getVersion"]);
+        assert!(conn.join_reader(Duration::from_secs(5)), "Chrome's end closed: the reader ends");
     }
 
     #[test]
-    fn an_error_says_why_and_a_closed_socket_fails_every_caller() {
-        let (port, server) = serve_fake(|_| json!({"error": {"message": "no such key"}}));
-        let conn = Connection::open(port, "/devtools/browser/x", soon()).expect("connect");
+    fn an_error_says_why_and_a_closed_pipe_fails_every_caller() {
+        let (conn, chrome) = fake(|m| {
+            (m["method"] != "Page.navigate").then(|| json!({"error": {"message": "no such key"}}))
+        });
         let e = conn.call(None, "Input.dispatchKeyEvent", json!({}), soon()).expect_err("an error");
         assert_eq!(e, "Input.dispatchKeyEvent: no such key");
-        conn.close(Duration::from_secs(5));
-        server.join().expect("the server");
+        // A call waiting when the pipe closes fails at once, not at its deadline.
+        let began = Instant::now();
+        std::thread::scope(|sc| {
+            let waiting = sc.spawn(|| {
+                conn.call(
+                    None,
+                    "Page.navigate",
+                    json!({}),
+                    Instant::now() + Duration::from_secs(60),
+                )
+            });
+            while lock(&conn.shared.pending).is_empty() {
+                std::thread::yield_now();
+            }
+            conn.close(Duration::from_secs(5));
+            let e = waiting.join().expect("the caller").expect_err("closed");
+            assert!(e.contains("closed"), "{e}");
+        });
+        assert!(began.elapsed() < Duration::from_secs(5));
+        chrome.join().expect("the fake");
         let e = conn.call(None, "Page.navigate", json!({}), soon()).expect_err("closed");
         assert!(e.contains("closed"), "{e}");
     }
 
     #[test]
-    fn a_call_nobody_answers_fails_at_its_deadline() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("listen");
-        let port = listener.local_addr().expect("addr").port();
-        let (done, finished) = mpsc::channel::<()>();
-        let server = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().expect("accept");
-            let mut ws = tungstenite::accept(stream).expect("handshake");
-            ws.get_ref().set_read_timeout(Some(Duration::from_millis(10))).expect("timeout");
-            // Reads and never answers, until the test is done.
-            while matches!(finished.try_recv(), Err(mpsc::TryRecvError::Empty)) {
-                let _ = ws.read();
-            }
-        });
-        let conn = Connection::open(port, "/devtools/browser/x", soon()).expect("connect");
+    fn a_call_nobody_answers_fails_at_its_deadline_and_chromes_exit_ends_the_reader() {
+        let (conn, chrome) = fake(|_| None);
         let began = Instant::now();
         let e = conn
             .call(None, "Runtime.evaluate", json!({}), Instant::now() + Duration::from_millis(200))
             .expect_err("no answer");
         assert!(e.contains("deadline"), "{e}");
         assert!(began.elapsed() < Duration::from_secs(2), "{:?}", began.elapsed());
-        drop(done);
         conn.close(Duration::from_secs(5));
-        server.join().expect("the server");
+        chrome.join().expect("the fake");
+        assert!(conn.join_reader(Duration::from_secs(5)));
+        assert_eq!(conn.ended().as_deref(), Some("the DevTools connection was closed"));
     }
 }
