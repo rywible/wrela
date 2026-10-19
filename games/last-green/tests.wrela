@@ -621,6 +621,45 @@ fn the_floors_walk_is_walked_to_its_end() {
     assert(skipped * 50 <= points, f"the walk gave up {skipped} of its {points} points")
 }
 
+/// P starts the floor's walk, from its first point: pressed at the gate, the walk is on and
+/// the player runs, and in two seconds it's metres on its way.
+@test
+@fuel(2 ** 40)
+fn pressing_p_starts_the_floors_walk() {
+    var w = world::spawn_world()
+    var pending: Vec<CollisionAnswer> = Vec::new()
+    let p = std::input::Event::KeyDown {
+        key: std::input::Key::P,
+        repeat: false,
+        mods: std::input::Mods {},
+    }
+    tick_world(mut w, mut pending, 0, Vec::from([p]))
+    assert(w.tour.on && !w.tour.road, "P didn't start the floor's walk")
+    let c = w.player.controls
+    assert(c.forward && c.run_held, "the walk doesn't run")
+    let from = w.player.at.world()
+    for k in 1..120 {
+        tick_world(mut w, mut pending, k, Vec::new())
+    }
+    let gone = length(w.player.at.world() - from)
+    assert(w.tour.on && gone > 2.0, f"the walk went {gone} m in two seconds")
+}
+
+/// The floor's walk ends at its last point: walked over its last 20 points, it stops there and
+/// lets go of the player's controls.
+@test
+@fuel(2 ** 40)
+fn the_floors_walk_stops_at_its_end() {
+    let end = history::TOUR.len()
+    var w = walking_from(end - 20)
+    walk_to(mut w, end, 20 * 60, |_, k| {})
+    let leg = w.tour.leg
+    assert(leg == end, f"the walk stopped at point {leg} of {end}")
+    assert(!w.tour.on, "the walk is still on past its end")
+    let c = w.player.controls
+    assert(!c.forward && !c.run_held, "the walk still holds the controls past its end")
+}
+
 /// The camera's near plane (m: `view::camera`'s).
 const NEAR: f32 = 0.1
 

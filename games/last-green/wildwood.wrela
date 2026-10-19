@@ -164,7 +164,7 @@ pub fn trunks_round(p: vec2, reach: f32) -> Vec<vec4> {
 
 /// A short capsule enclosed by one circle, with its explicit wood height in the answer's
 /// fourth word. Zero height is reserved for standing trunks and stones.
-fn log_circle(o: engine::footing::Obstacle) -> vec4 {
+pub fn log_circle(o: engine::footing::Obstacle) -> vec4 {
     vec4((o.a + o.b) * 0.5, o.r + 0.5 * length(o.b - o.a), o.depth)
 }
 

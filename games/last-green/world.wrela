@@ -280,27 +280,30 @@ fn near_wild(p: vec2, d: f32) -> bool {
     p.x < lo.x || p.y < lo.y || p.x >= hi.x || p.y >= hi.y
 }
 
+/// The obstacle a circle of a local answer (`wildwood::trunks_round`: x, z, radius and wood
+/// height) is to the player: a log's wood if it has a height, else a standing trunk or stone.
+pub fn answered(t: vec4) -> engine::footing::Obstacle {
+    engine::footing::Obstacle {
+        a: t.xy,
+        b: t.xy,
+        r: t.z,
+        thing: if t.w > 0.0 { engine::footing::Thing::Log } else {
+            engine::footing::Thing::Trunk
+        },
+        depth: t.w,
+    }
+}
+
 /// Combine fitted local wood with nearby static standing solids, walls, and water. The
 /// static disk covers the lift collar and a full blink; its bin margin includes capsule starts.
-fn player_obstacles(
+pub fn player_obstacles(
     w: Wildside,
     at: vec2,
     fixed: engine::footing::Obstacles,
 ) -> engine::footing::Obstacles {
     var all: Vec<engine::footing::Obstacle> = Vec::with_capacity(w.count)
     for i in 0..w.count {
-        let t = w.trunks[i]
-        all.push(
-            engine::footing::Obstacle {
-                a: t.xy,
-                b: t.xy,
-                r: t.z,
-                thing: if t.w > 0.0 { engine::footing::Thing::Log } else {
-                    engine::footing::Thing::Trunk
-                },
-                depth: t.w,
-            },
-        )
+        all.push(answered(w.trunks[i]))
     }
     fixed.within(at, 16.0, |o| {
         if o.thing != engine::footing::Thing::Log {
