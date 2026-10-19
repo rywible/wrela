@@ -1,7 +1,10 @@
 // The site's scripts of input, which its frame tests give it
-// (`@test(frames: n, input: scripts::NAME)`), as a person would.
+// (`@test(frames: n, input: scripts::NAME)`), as a person would; and its browser script, which
+// compiler/tests gives the site in Chrome.
 
 use std::input::{Key, Mods, Script}
+use std::tool::browser
+use std::tool::browser::{Element, Match, Permission, Until}
 
 /// The input of `a_drag_keeps_its_distance_from_its_finger`.
 pub const DRAG: Script = Script::frames()
@@ -23,3 +26,54 @@ pub const KEYS: Script = Script::frames()
 pub const RELEASE: Script = Script::frames()
     .down(4, vec2(630.0, 200.0))
     .up(5, vec2(630.0, 300.0))
+
+/// What `the_exported_docs_in_chrome_are_links_an_outline_and_titles` (compiler/cli's tests)
+/// does to the site in Chrome, over the docs that `wrela doc --export` writes of
+/// compiler/tests/docs-guide: search, opened by its key, finds an item, whose result opens the
+/// item's page; the page names the tab, has its items as an outline's links and its
+/// next page as a link, which opens that page; its code's copy button and its copy of the page
+/// put them on the clipboard; and an item has a link to itself.
+pub const READER: browser::Script = browser::Script::new()
+    .wait(Until::title(Match::is("Wrela docs")), timeout: 30.0)
+    .press(Key::Slash)
+    .wait(Until::active("input"))
+    .insert_text("walk")
+    .wait(
+        Until::count(
+            Element::css("[role=option]").with_text(
+                "docs_guide::paths::walk: Walks n steps, and [STEPS] more.",
+            ),
+            1,
+        ),
+    )
+    .click(
+        Element::css("[role=option]").with_text(
+            "docs_guide::paths::walk: Walks n steps, and [STEPS] more.",
+        ),
+    )
+    .wait(
+        Until::title(Match::is("docs_guide::paths | Wrela docs"))
+            .and(Until::hash(Match::starts("#docs_guide/paths"))),
+    )
+    .wait(Until::texts("[aria-label=\"On this page\"] a", ["STEPS", "walk"]))
+    .click(Element::css("a").with_text("Next page: docs_guide::start"))
+    .wait(
+        Until::title(Match::is("docs_guide::start | Wrela docs"))
+            .and(Until::hash(Match::is("#docs_guide/start"))),
+    )
+    .grant(Permission::Clipboard)
+    .emulate_focus()
+    .click(Element::css("button").with_text("Copy code"))
+    .wait(Until::exists(Element::css("button").with_text("Copied")))
+    .wait(Until::clipboard(Match::is("pub fn greet(name: str) -> u32")))
+    .click(Element::css("button").with_text("Copy page"))
+    .wait(
+        Until::clipboard(
+            Match::starts("# docs_guide::start\n\nThe guide's start: what a reader opens first."),
+        ),
+    )
+    .wait(
+        Until::exists(
+            Element::css("a[href$=\"#docs_guide/start:greet\"]").with_text("Link to greet"),
+        ),
+    )

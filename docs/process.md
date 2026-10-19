@@ -562,6 +562,27 @@ that didn't stop leaving the run's end clean. Each is fixed with a regression th
 without it. The local server is the toolchain's (the driver's servers' HTTP moved to
 `wrela_host::loopback`, which both now use), and adds no crate.
 
+The fifth slice drives Chrome from Rust: a DevTools protocol driver (runtime/chrome), which both
+the compiler's browser tests (`wrela_host::pages`, in place of tools/headless.py and
+tools/chrome_session.py) and `std::tool::browser` (language.md §15.5) use; Claude (Opus 5.5)
+implemented it. It adds no outside crate: `base64`, `shlex`, `libc` and `rustix` (MIT or
+Apache-2.0; rustix also Apache-2.0 with the LLVM exception) were already in the build, used as
+libraries; no code was copied. The council's review (GPT-6.1-Sol and GPT-6-Astra) moved the
+driver from a WebSocket (tungstenite, now removed) to Chrome's pipe (`--remote-debugging-pipe`,
+fds 3 and 4, as Playwright launches Chrome), so Chrome ends when the process that started it
+dies; handing the pipe over is the crate's one `unsafe` block (`dup2` between `fork` and
+`exec`). It also found a browser's network confined only in part (loopback ports, a granted
+host's other ports, WebSockets and WebTransport), now through a proxy of the host's; a close
+held up by a long wait; Linux's adoption of Chrome's descendants missing (restored as
+tools/headless.py had it, and not yet run on Linux); observations cut short; a result seen
+before its server kept it; no browser in tool tests; and a checked-in docs corpus, now an
+export of a fixture package. Each is fixed with a regression that failed without the fix. The DevTools protocol's methods and
+events (Target, Runtime, Log, Input, Fetch, Emulation, Browser and Page) follow Chrome's published
+protocol documentation, as facts. The browser scripts that tested the docs site, the semantic
+tree and text input moved from JSON with JavaScript conditions to typed Wrela constants
+(`std::tool::browser::Script`), each condition kept; their fixed waits became waits for the line
+the program printed.
+
 ## The references
 
 ### The rules
