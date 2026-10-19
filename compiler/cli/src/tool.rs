@@ -28,7 +28,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use wrela_driver::workspace::Workspace;
-use wrela_host::tool::{BlobBudget, Caps, Grants, Options, ProgramGrant, ToolBuild};
+use wrela_host::tool::{BlobBudget, Caps, Grants, Opened, Options, ProgramGrant, ToolBuild};
 
 pub fn run(args: &[String]) -> ExitCode {
     if let [flag, dir] = args
@@ -130,6 +130,12 @@ pub fn run(args: &[String]) -> ExitCode {
     if let Err(status) = crate::package_dir(&dir) {
         return status;
     }
+    if let Some(at) = std::env::var_os("WRELA_TESTING_GRANTS_HOLD")
+        && let Err(why) = held(std::path::Path::new(&at))
+    {
+        eprintln!("error: {why}");
+        return ExitCode::from(71);
+    }
     let caps = match Caps::open(&grants, |name| std::env::var(name).ok()) {
         Ok(c) => c,
         Err(why) => {
@@ -225,19 +231,20 @@ fn named(
 }
 
 /// The grants the workspace declares for `tool`, its paths from the workspace's directory. Each
-/// root must stay inside the workspace, links and all, and a missing `write` root is made.
+/// root is opened from the workspace's directory one part at a time, following no link, and a
+/// missing `write` root is made the same way ([`Opened::within`]): so it is inside the
+/// workspace, and the run gets that handle, not the path opened again.
 fn declared(ws: &Workspace, tool: &wrela_driver::manifest::ToolDecl) -> Result<Grants, String> {
+    let top = Opened::at(&ws.root)?;
     let mut g = Grants::default();
     for (roots, write) in [(&tool.read, false), (&tool.write, true)] {
         for (name, path) in roots {
-            let dir = if write { made_inside(&ws.root, path)? } else { ws.root.join(path) };
-            let canonical = dir
-                .canonicalize()
-                .map_err(|e| format!("the root `{name}` ({}): {e}", dir.display()))?;
-            if !canonical.starts_with(&ws.root) {
-                return Err(format!("the root `{name}` ({path}) leads outside the workspace"));
-            }
-            g = g.root(name, canonical, write);
+            let opened = top.within(path, write).map_err(|e| {
+                format!("the root `{name}` ({path}) isn't a directory inside the workspace: {e}")
+            })?;
+            let dir = if path == "." { ws.root.clone() } else { ws.root.join(path) };
+            g = g.root(name, dir, write);
+            g.opened.push((name.clone(), opened));
         }
     }
     for program in &tool.run {
@@ -256,28 +263,6 @@ fn declared(ws: &Workspace, tool: &wrela_driver::manifest::ToolDecl) -> Result<G
     g.secrets = tool.secrets.clone();
     g.browser = tool.browser;
     Ok(g)
-}
-
-/// `root/path`, made if missing, one directory at a time: no part may be a link or anything but
-/// a directory, so nothing is made outside `root`.
-fn made_inside(root: &std::path::Path, path: &str) -> Result<std::path::PathBuf, String> {
-    let mut at = root.to_path_buf();
-    for part in path.split('/').filter(|p| *p != ".") {
-        at.push(part);
-        match std::fs::symlink_metadata(&at) {
-            Ok(m) if m.is_dir() => {}
-            Ok(_) => {
-                return Err(format!(
-                    "`{path}` isn't a directory inside the workspace: `{}` is in the way",
-                    at.display()
-                ));
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => std::fs::create_dir(&at)
-                .map_err(|e| format!("can't make the write root `{path}`: {e}"))?,
-            Err(e) => return Err(format!("can't read `{}`: {e}", at.display())),
-        }
-    }
-    Ok(at)
 }
 
 /// The grants and timeout of a run of a declared tool: what the command line gives, if it gives
@@ -318,14 +303,18 @@ fn narrowed(
         let canonical = dir
             .canonicalize()
             .map_err(|e| format!("the root `{name}` ({}): {e}", dir.display()))?;
-        let within = declared
-            .roots
-            .iter()
-            .any(|(n, d, w)| n == name && (*w || !*write) && canonical.starts_with(d));
-        if !within {
+        let mine = declared.roots.iter().find(|(n, _, w)| n == name && (*w || !*write));
+        let Some(rel) = mine.and_then(|(_, d, _)| canonical.strip_prefix(d).ok()) else {
             return Err(wider(shown));
-        }
+        };
+        // Opened from the declared root's handle, following no link: what replaces a part of
+        // the path after this check can't lead the run anywhere else.
+        let rel = rel.to_str().filter(|r| !r.is_empty()).unwrap_or(".");
+        let (_, top) = (declared.opened.iter().find(|(n, _)| n == name))
+            .ok_or_else(|| format!("the root `{name}` wasn't opened"))?;
+        let opened = top.within(rel, false).map_err(|e| format!("{shown}: {e}"))?;
         out.roots.push((name.clone(), canonical, *write));
+        out.opened.push((name.clone(), opened));
     }
     for (name, grant) in &given.programs {
         let Some((_, mine)) = declared.programs.iter().find(|(n, _)| n == name) else {
@@ -429,6 +418,21 @@ fn test(dir: &std::path::Path) -> ExitCode {
     }
     // Ends the process here, so a worker still past its grace can't outlive it.
     std::process::exit(if ended.passed { 0 } else { 1 })
+}
+
+/// For the command's own tests (`WRELA_TESTING_GRANTS_HOLD`, a directory): once the grants are
+/// checked, before they are opened, says so (the file `checked`) and waits for the file `go`, so
+/// a test can change the directories in between at a moment it knows.
+fn held(at: &std::path::Path) -> Result<(), String> {
+    std::fs::write(at.join("checked"), "").map_err(|e| format!("the testing hold: {e}"))?;
+    let until = Instant::now() + Duration::from_secs(60);
+    while !at.join("go").exists() {
+        if Instant::now() > until {
+            return Err("the testing hold waited a minute for `go`".into());
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    Ok(())
 }
 
 /// The host's settings that only the command's own tests change, from the environment: a pause

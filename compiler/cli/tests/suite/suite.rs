@@ -278,3 +278,51 @@ fn a_workspace_that_doesnt_read_or_isnt_there_stops_the_suite() {
     assert_eq!(status, Some(2), "{out}");
     assert!(out.contains("has `[workspace]`"), "{out}");
 }
+
+/// What a failing test printed is in its report, once: a tool test's lines, which its process
+/// captured, and a test of code's, which `wrela test` showed as they were made; by its group and
+/// by its name alike.
+#[test]
+fn a_failing_tests_lines_are_in_its_report_once() {
+    let tooled = r#"pub fn tool() -> u32 {
+    0
+}
+
+@test(tool)
+@job
+fn prints_then_fails() {
+    std::io::print("tool-marker-5c1e")
+    panic("the tool test fails")
+}
+
+@test
+fn prints_then_breaks() {
+    std::io::print("code-marker-9d2b")
+    assert(1 == 2, "the test of code fails")
+}
+"#;
+    let ws = package(
+        "suite-printed",
+        &[
+            ("wrela.toml", &manifest(&["tooled"], "")),
+            (".gitignore", "**/build/\n"),
+            ("tooled/wrela.toml", "[package]\nname = \"tooled\"\n"),
+            ("tooled/main.wrela", tooled),
+        ],
+    );
+    for args in [
+        &["wrela::tooled::"][..],
+        &["wrela::tooled::prints_then_fails"],
+        &["wrela::tooled::prints_then_breaks"],
+    ] {
+        let (status, out) = suite(&ws, args);
+        assert_eq!(status, Some(1), "{args:?}: {out}");
+        let ran = |name: &str| args[0].ends_with("::") || args[0].ends_with(name);
+        for (test, marker) in
+            [("prints_then_fails", "tool-marker-5c1e"), ("prints_then_breaks", "code-marker-9d2b")]
+        {
+            let want = usize::from(ran(test));
+            assert_eq!(out.matches(marker).count(), want, "{args:?}: `{marker}` in:\n{out}");
+        }
+    }
+}

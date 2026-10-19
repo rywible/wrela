@@ -590,7 +590,13 @@ implemented it, and it adds no crate. The allowlist reads `.gitignore` files as 
 git's documented pattern format (gitignore(5)), as facts; no code was copied. The Rust tests that
 only ran a member's own tests were removed, because the suite runs those tests. The floor's own
 tests (games/last-green) never ran in the gate: on this Mac they take about 11 minutes, and 7 of
-112 fail. The manifest lists the package as `untested` until those tests are bounded.
+112 fail. The manifest lists the package as `untested` until those tests are bounded. The council's review (GPT-6.1-Sol and GPT-6-Astra) found four faults. Write roots were made,
+and narrowed roots checked, by path, so a directory swapped after the check could lead outside;
+they are now opened and made through directory handles that follow no link, and the run gets
+those handles. A failing tool test's printed lines were missing from its report. A trailing
+`/**` in an ignore rule hid files that a later `!` rule takes back. A checkout's own
+`.git/info/exclude` could hide a file. Each fault is fixed, with a regression that fails
+without the fix.
 
 ## The references
 

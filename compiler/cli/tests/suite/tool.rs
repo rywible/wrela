@@ -858,3 +858,54 @@ fn a_workspaces_tools_are_checked_when_it_is_read() {
     assert!(out.contains("isn't a directory inside the workspace"), "{out}");
     assert_eq!(std::fs::read_dir(&outside).expect("read").count(), 0, "nothing was made outside");
 }
+
+/// A directory of the workspace swapped for a link outside it, after the grants are checked and
+/// before the tool runs (at the moment the command says it has checked them), neither widens a
+/// narrowed root nor moves a write root made inside the workspace: the run keeps the
+/// directories it checked, and nothing outside is read or made.
+#[test]
+fn a_directory_swapped_after_the_grants_are_checked_leads_nowhere_new() {
+    let ws = copy_workspace("tool-swap", "");
+    let outside = package(
+        "tool-swap-outside",
+        &[("in/sub/notes.txt", "outside"), ("in/notes.txt", "outside"), ("out/.keep", "")],
+    );
+    let hold = package("tool-swap-hold", &[]);
+    let canonical = ws.canonicalize().expect("canonical");
+    let read = format!("in={}", canonical.join("data/in/sub").display());
+    let mut child = wrela()
+        .arg("tool")
+        .args(["copy", "--read", &read, "--write"])
+        .arg(format!("out={}", canonical.join("data/out").display()))
+        .args(["--", "notes.txt"])
+        .current_dir(&ws)
+        .env("WRELA_TESTING_GRANTS_HOLD", &hold)
+        .spawn()
+        .expect("run wrela tool");
+    // The write root wasn't there: the command made it, before it said it had checked.
+    assert!(
+        within(std::time::Duration::from_secs(60), || hold.join("checked").exists()),
+        "the grants were checked"
+    );
+    assert!(ws.join("data/out").is_dir(), "the write root was made");
+    std::fs::rename(ws.join("data"), ws.join("data-kept")).expect("move the checked directory");
+    std::os::unix::fs::symlink(&outside, ws.join("data")).expect("a link outside");
+    std::fs::write(hold.join("go"), "").expect("go");
+    let status = child.wait().expect("the tool ends");
+    assert_eq!(status.code(), Some(1), "the tool copied its one file");
+    let copied = std::fs::read_to_string(ws.join("data-kept/out/copy/notes.txt"));
+    assert_eq!(copied.expect("copied into the checked root").as_str(), "narrowed");
+    assert!(!outside.join("out/copy").exists(), "nothing was made outside the workspace");
+}
+
+/// Whether `done` holds within `bound`, asked every few milliseconds.
+fn within(bound: std::time::Duration, mut done: impl FnMut() -> bool) -> bool {
+    let until = std::time::Instant::now() + bound;
+    while std::time::Instant::now() < until {
+        if done() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    done()
+}

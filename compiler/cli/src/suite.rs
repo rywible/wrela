@@ -260,7 +260,7 @@ fn allow(ws: &Workspace) -> (Ended, Vec<String>) {
 /// each test.
 fn tests(ws: &Workspace, dir: &Path) -> (Ended, Vec<String>) {
     match report(dir, None) {
-        Ok(r) => r.ended(&ws.path_of(dir)),
+        Ok(r) => r.ended(&ws.path_of(dir), false),
         Err(why) => (Ended { failure: Some(why), log: String::new(), tests: 0 }, Vec::new()),
     }
 }
@@ -290,8 +290,10 @@ fn report(dir: &Path, exact: Option<&str>) -> Result<Report, String> {
 }
 
 impl Report {
-    /// How the run ended, for the member at `path`, and a line for each test.
-    fn ended(&self, path: &str) -> (Ended, Vec<String>) {
+    /// How the run ended, for the member at `path`, and a line for each test. The log has what
+    /// each failed test printed (each test's, with `all`) that `wrela test` didn't show as it was
+    /// made: a tool test's lines, which its own process captured.
+    fn ended(&self, path: &str, all: bool) -> (Ended, Vec<String>) {
         let mut log = self.stderr.clone();
         let mut lines = Vec::new();
         let mut failed = Vec::new();
@@ -299,7 +301,16 @@ impl Report {
         for t in &tests {
             let name = t["name"].as_str().unwrap_or("?");
             let at = t["at"].as_str().unwrap_or("?");
-            if t["passed"].as_bool() == Some(true) {
+            let passed = t["passed"].as_bool() == Some(true);
+            if all || !passed {
+                for line in t["printed"].as_array().into_iter().flatten() {
+                    let line = line.as_str().unwrap_or_default();
+                    if !self.stderr.contains(&format!("{name}: {line}")) {
+                        log.push_str(&format!("{name}: {line}\n"));
+                    }
+                }
+            }
+            if passed {
                 lines.push(format!("ok wrela::{path}::{name} ({at})"));
             } else {
                 lines.push(format!("FAILED wrela::{path}::{name} ({at})"));
@@ -357,7 +368,7 @@ fn exact(ws: &Workspace, package: &str, test: &str) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let (mut ended, lines) = report.ended(package);
+    let (mut ended, lines) = report.ended(package, true);
     let ran = report.json["tests"].as_array().map_or(0, Vec::len);
     if ended.failure.is_none() && (ran != 1 || report.json["tests"][0]["name"] != test) {
         ended.failure = Some(format!("the runner ran {ran} tests, not exactly `{test}`"));

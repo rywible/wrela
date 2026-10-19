@@ -1,13 +1,14 @@
 //! What `wrela suite` checks of a workspace beside its tests (language.md §13.2): which names it
 //! takes, and the allowlist, `[workspace] allow`, over the workspace's files.
 //!
-//! **The workspace's files** are every file under its directory that its ignore files don't
-//! ignore: each directory's `.gitignore`, and `.git/info/exclude` if the directory is a git
-//! checkout. Git's index isn't read, so the check needs no git and runs the same on a copy of
+//! **The workspace's files** are every file under its directory that its `.gitignore` files
+//! don't ignore. Git's index isn't read, so the check needs no git and runs the same on a copy of
 //! the files (an archive of them, say). A file that git would show as untracked is checked
-//! too, so a stray file fails before it is committed. The ignore files are read as git reads
-//! them, apart from `[...]` classes, which match their text, and the user's own excludes
-//! (`core.excludesFile`), which aren't read. `.git` is never looked into, and a link is a file.
+//! too, so a stray file fails before it is committed. Only the versioned ignore files count: a
+//! checkout's own excludes (`.git/info/exclude`, `core.excludesFile`) aren't read, so they hide
+//! nothing and every checkout of the same files gives the same answer. The `.gitignore` files
+//! are read as git reads them, apart from `[...]` classes, which match their text. `.git` is
+//! never looked into, and a link is a file.
 //!
 //! **Each file is excluded, allowed, pending or refused.** One that an `exclude` glob matches
 //! isn't looked at. Else one that an `allow` glob matches is allowed, and else one that a
@@ -101,13 +102,13 @@ impl Rule {
             if glob.is_empty() {
                 continue;
             }
-            rules.push(Rule {
-                base: base.to_string(),
-                glob: glob.into(),
-                negated,
-                dirs_only,
-                anchored,
-            });
+            // A trailing `/**` is what's inside the directory, at any depth, and not the
+            // directory itself (a manifest's glob matches it too): one part, then any.
+            let glob = match glob.strip_suffix("/**") {
+                Some(dir) => format!("{dir}/*/**"),
+                None => glob.to_string(),
+            };
+            rules.push(Rule { base: base.to_string(), glob, negated, dirs_only, anchored });
         }
         rules
     }
@@ -137,11 +138,6 @@ impl Rule {
 /// `/` between its parts, sorted.
 pub fn files(root: &Path) -> Result<Vec<String>, String> {
     let mut rules = Vec::new();
-    if root.join(".git").is_dir()
-        && let Ok(text) = std::fs::read_to_string(root.join(".git/info/exclude"))
-    {
-        rules.extend(Rule::read("", &text));
-    }
     let mut out = Vec::new();
     walk(root, "", &mut rules, &mut out)?;
     out.sort();
@@ -346,7 +342,10 @@ mod tests {
         let d = tree(
             "ignored",
             &[
-                (".gitignore", "# outputs\n/target/\n**/build/\n*.log\n!keep.log\n"),
+                (
+                    ".gitignore",
+                    "# outputs\n/target/\n**/build/\n*.log\n!keep.log\nabc/**\n!abc/keep.py\n",
+                ),
                 ("target/x", ""),
                 ("a/target/y", ""),
                 ("a/build/z", ""),
@@ -356,16 +355,46 @@ mod tests {
                 ("a/b/c.txt", ""),
                 ("a/b/d/e", ""),
                 ("a/c.txt", ""),
-                (".git/info/exclude", "secret\n"),
+                // A trailing `/**` matches what's inside `abc`, not `abc` itself, so a file in it
+                // can be taken back (gitignore(5)).
+                ("abc/keep.py", ""),
+                ("abc/other.py", ""),
+                ("abc/deeper/x.py", ""),
                 (".git/HEAD", ""),
-                ("secret", ""),
             ],
         );
+        let found = files(&d).expect("walks");
         assert_eq!(
-            files(&d).expect("walks"),
-            [".gitignore", "a/b/.gitignore", "a/c.txt", "a/keep.log", "a/target/y"]
+            found,
+            [".gitignore", "a/b/.gitignore", "a/c.txt", "a/keep.log", "a/target/y", "abc/keep.py"]
         );
+        let decl = crate::manifest::parse(
+            wrela_diag::FileId(0),
+            "[workspace]\nmembers = []\nallow = [\"**/.gitignore\", \"**/*.log\", \"**/*.txt\", \"a/target/*\"]\n",
+        )
+        .expect("reads")
+        .workspace
+        .expect("a workspace");
+        assert_eq!(allowlist(&decl, &found).refused, ["abc/keep.py"]);
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Only the versioned ignore files count: a checkout's own `.git/info/exclude` can't hide a
+    /// file, so the same files give the same answer in every checkout and in a copy.
+    #[test]
+    fn a_checkouts_own_excludes_hide_nothing() {
+        let files_of = |name: &str, exclude: bool| {
+            let mut fs = vec![("secret.py", ""), (".git/HEAD", "")];
+            if exclude {
+                fs.push((".git/info/exclude", "secret.py\n"));
+            }
+            let d = tree(name, &fs);
+            let found = files(&d).expect("walks");
+            let _ = std::fs::remove_dir_all(&d);
+            found
+        };
+        assert_eq!(files_of("excluded", true), files_of("plain", false));
+        assert_eq!(files_of("excluded", true), ["secret.py"]);
     }
 
     /// The names the suite takes, as `tools/check.sh` reads its own: none, or one that is a
