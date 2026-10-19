@@ -1,0 +1,923 @@
+// The lens served to Chrome (`serve`): the lens's build, over `std::tool::serve` on 127.0.0.1
+// only, which answers only requests addressed to this machine by name (so a page elsewhere
+// can't reach it through DNS rebinding) and takes posts only from its own pages (their
+// `Origin`), so another site open in the browser can't edit the files. The lens's edits (a post
+// to `studio/edit` beside the page) are written through `toolchain::edit`, and its fit's
+// request for the reference image (`studio/reference`) is answered with `--reference`'s mask:
+// one blob for every fit, given back when the server ends. A post's body of any size the server
+// takes (a blob past 512 KiB) is read and given back; every post is answered, whatever another
+// did.
+//
+// The tool watches the subject's files every 200 ms, sources of any size. A change that touches
+// only literals (another tool's edit) goes to the open lens as new values, which it sets with
+// no rebuild; any other change builds the lens again. Each build is a generation of the
+// server's, a directory of its own (`<out>/serve/<run>-<n>`), and the page is in it, so a
+// page's posts name the build that made it. A build is served only once it built and its page
+// is ready: the root page is then its page, and a page of another build goes to it; a build
+// that fails leaves the last good one served, with its error in the state. A rebuild goes on
+// beside the posts, which are answered meanwhile. An edit is taken only from a page of the
+// build served, and not while the lens is built again, since its literals' numbers are its
+// build's. A served build starts with its literals' values as it has them, and the source's
+// since then follow as updates, so a literal changed while it was built reaches the page. A
+// source that can't be read (but for one that went) is reported. The page's script asks the
+// tool what's new every 250 ms, once the page's own scripts have run: a post to `studio/state`
+// beside the page with `{"since": n}` answers the build served, its version, whether it's being
+// built again, its error, and the literal updates since `n`, which the script types into the
+// lens as its `set` command.
+
+use lens::{
+    Built, Place, blob_bytes, build, data_of, failed, parse_edits, read_text, text_of, tool,
+    write_text,
+}
+use json::{TOP, f64_text, obj, parse, quoted}
+use look::f32_text
+use std::collections::{Box, Vec, replace}
+use std::io::print
+use std::string::String
+use std::job::{Job, Step}
+use std::tool::{MOST_BYTES, answer}
+use std::tool::blob
+use std::tool::blob::Data
+use std::tool::files
+use std::tool::files::Kind
+use std::tool::serve
+use std::tool::time
+use std::tool::toolchain
+
+/// The script the page gets: it asks what's new (a post to `studio/state` beside the page, so
+/// the tool knows which build asks), goes to the build served once it isn't the page's own, and
+/// types each literal update into the lens as `set <literal> <value>`.
+fn script() -> String {
+    var s = String::new()
+    s.push_str("<script>\n")
+    s.push_str("(() => {\n")
+    s.push_str("  const here = new URL(document.baseURI).pathname.split(\"/\")[1];\n")
+    s.push_str("  let since = 0;\n")
+    s.push_str("  const type = (line) => {\n")
+    s.push_str("    for (const ch of line + \"\\n\") {\n")
+    s.push_str("      const key = ch === \"\\n\" ? \"Enter\" : ch;\n")
+    s.push_str("      const code = ch === \"\\n\" ? \"Enter\" : \"\";\n")
+    s.push_str("      window.dispatchEvent(new KeyboardEvent(\"keydown\", { key, code }));\n")
+    s.push_str("      window.dispatchEvent(new KeyboardEvent(\"keyup\", { key, code }));\n")
+    s.push_str("    }\n")
+    s.push_str("  };\n")
+    s.push_str("  const tick = async () => {\n")
+    s.push_str("    try {\n")
+    s.push_str(
+        "      const r = await fetch(\"studio/state\", { method: \"POST\", body: JSON.stringify({ since }), cache: \"no-store\" });\n",
+    )
+    s.push_str("      const s = await r.json();\n")
+    s.push_str("      if (s.build !== here) { location.replace(`/${s.build}/`); return; }\n")
+    s.push_str("      for (const [i, v] of s.updates) type(`set ${i} ${v}`);\n")
+    s.push_str("      since = s.next;\n")
+    s.push_str("    } catch (_) {}\n")
+    s.push_str("    setTimeout(tick, 250);\n")
+    s.push_str("  };\n")
+    // Once the page's own scripts have run, so the lens's input listens before anything is typed.
+    s.push_str(
+        "  if (document.readyState === \"complete\") tick(); else window.addEventListener(\"load\", tick);\n",
+    )
+    s.push_str("})();\n")
+    s.push_str("</script>\n")
+    s
+}
+
+/// The page at the root of the server: the page of the build served now (`html`, generation
+/// `build`), its files and posts beside it there.
+pub fn root_page(build: str, html: str) -> String {
+    glue::replace(html, "<head>", f"<head>\n<base href=\"/{build}/\">")
+}
+
+/// The literal values a lens has when it loads a build (`built`, as the build has them), and
+/// the updates that bring them to the source's values now (`now`, if the source changed in its
+/// literals alone): a literal changed while the build was made reaches the page too.
+pub fn seeded(built: [f32], now: Option<Vec<f32>>) -> (Vec<f32>, Vec<(u32, f32)>) {
+    var values: Vec<f32> = Vec::from(built)
+    var updates: Vec<(u32, f32)> = Vec::new()
+    if let Some(v) = now {
+        for i in 0..min(v.len(), values.len()) {
+            if bitcast_u32(values[i]) != bitcast_u32(v[i]) {
+                updates.push((i, v[i]))
+                values[i] = v[i]
+            }
+        }
+    }
+    (values, updates)
+}
+
+/// A post's path read as the build it came from (the first part, a generation the server
+/// names) and what it asks for (`studio/edit`); a path with one part has no build.
+pub fn post_route(path: str) -> (String, String) {
+    let end = match path.find("?") {
+        Some(q) => q,
+        None => path.len(),
+    }
+    let trimmed = path.slice(min(1, end), end)
+    if trimmed.starts_with("studio/") {
+        return (String::new(), String::from(trimmed))
+    }
+    match trimmed.find("/") {
+        Some(k) => (
+            String::from(trimmed.slice(0, k)),
+            String::from(trimmed.slice(k + 1, trimmed.len())),
+        ),
+        None => (String::new(), String::from(trimmed)),
+    }
+}
+
+/// What the server knows as it runs: the build it serves (its generation, which names the
+/// directory the page is in, and how many it has served), the literals the lens should set, in
+/// order, the values the lens has (the build's, then each update's), the files the build
+/// lifted, the files as the build saw them, and why the last rebuild failed, if it did.
+pub struct Live: Clone {
+    pub build: String,
+    pub version: u32,
+    pub updates: Vec<(u32, f32)>,
+    pub values: Vec<f32>,
+    pub lifted: Vec<String>,
+    pub built: Vec<(String, String)>,
+    pub error: Option<String>,
+}
+
+/// The state's answer to a page that has seen the updates before `since`.
+pub fn state_answer(live: Live, since: u32, rebuilding: bool) -> String {
+    var updates = String::from("[")
+    for k in since..live.updates.len() {
+        if k > since {
+            updates.push_str(",")
+        }
+        let (i, v) = live.updates[k]
+        updates.push_str(f"[{i},{f32_text(v).as_str()}]")
+    }
+    updates.push_str("]")
+    let error = match live.error.clone() {
+        Some(e) => quoted(e.as_str()),
+        None => String::from("null"),
+    }
+    obj()
+        .text("build", live.build.as_str())
+        .raw("error", error.as_str())
+        .int("next", live.updates.len())
+        .raw("rebuilding", if rebuilding { "true" } else { "false" })
+        .raw("updates", updates.as_str())
+        .int("version", live.version)
+        .done()
+}
+
+/// Whether what changed from `built` to `now` (each file's path and text) is in the lifted
+/// files alone, which the toolchain then reads for new values: no file came or went, and every
+/// other file is as the build saw it.
+pub fn only_lifted_changed(
+    built: [(String, String)],
+    now: [(String, String)],
+    lifted: [String],
+) -> bool {
+    if built.len() != now.len() {
+        return false
+    }
+    for k in 0..now.len() {
+        let (path, text) = now[k].clone()
+        let (was, then) = built[k].clone()
+        if path != was {
+            return false
+        }
+        var is_lifted = false
+        for l in lifted {
+            if l.as_str() == path.as_str() {
+                is_lifted = true
+            }
+        }
+        if !is_lifted && text != then {
+            return false
+        }
+    }
+    true
+}
+
+/// The source files (modules and manifests, not build output) of the package at `dir`, each
+/// with its text, sorted by path.
+@job
+pub fn scan(dir: take String) -> Result<Vec<(String, String)>, String> {
+    var out: Vec<(String, String)> = Vec::new()
+    var todo: Vec<(String, bool)> = Vec::new()
+    todo.push((dir.clone(), true))
+    while !todo.is_empty() {
+        let (d, top) = todo[todo.len() - 1].clone()
+        todo.truncate(todo.len() - 1)
+        var l = files::list(d.as_str())
+        var got = l.poll()
+        while got.is_none() {
+            yield
+            got = l.poll()
+        }
+        let Some(polled) = take got else { return Err(failed("no answer")) }
+        let entries = tool(files::read_list(take polled))?
+        for k in 0..entries.len() {
+            let e = entries[k].clone()
+            let name = e.name.as_str()
+            if name.starts_with(".") {
+                continue
+            }
+            let path = String::from(f"{d.as_str()}/{name}")
+            if e.kind == Kind::Dir {
+                if !(top && (name == "build" || name == "results" || name == "target")) {
+                    todo.push((take path, false))
+                }
+            } else if e.kind == Kind::File && (name.ends_with(".wrela") || name == "wrela.toml") {
+                var r = Box::new(read_source.start(path.clone(), e.size))
+                var read: Option<Result<Option<String>, String>> = None
+                while read.is_none() {
+                    match r.get_mut().resume() {
+                        Step::Yielded => yield,
+                        Step::Done(x) => read = Some(take x),
+                    }
+                }
+                let Some(rx) = take read else { return Err(failed("no answer")) }
+                // A file that went between the list and the read is a change, read next time.
+                if let Some(text) = (take rx)? {
+                    out.push((take path, take text))
+                }
+            }
+        }
+    }
+    sort_by_path(mut out)
+    Ok(out)
+}
+
+/// The text of the source file at `path`, `size` bytes as its directory listed it: read whole,
+/// or through a blob past 512 KiB. `None` if it went since it was listed; any other failure is
+/// the error.
+@job
+pub fn read_source(path: take String, size: take u64) -> Result<Option<String>, String> {
+    var bytes: Option<Vec<u8>> = None
+    var why = String::new()
+    if size <= u64(MOST_BYTES) {
+        var r = files::read(path.as_str())
+        var got = r.poll()
+        while got.is_none() {
+            yield
+            got = r.poll()
+        }
+        let Some(rp) = take got else { return Err(failed("no answer")) }
+        match answer(take rp) {
+            Ok(b) => bytes = Some(take b),
+            Err(e) => why = String::from(e.message()),
+        }
+    } else {
+        var r = files::read_blob(path.as_str())
+        var got = r.poll()
+        while got.is_none() {
+            yield
+            got = r.poll()
+        }
+        let Some(rp) = take got else { return Err(failed("no answer")) }
+        match blob::read_handle(take rp) {
+            Ok(b) => {
+                var j = Box::new(blob_bytes.start(b))
+                var read: Option<Result<Vec<u8>, String>> = None
+                while read.is_none() {
+                    match j.get_mut().resume() {
+                        Step::Yielded => yield,
+                        Step::Done(x) => read = Some(take x),
+                    }
+                }
+                var rel = blob::release(b)
+                while rel.poll().is_none() { yield }
+                let Some(rx) = take read else { return Err(failed("no answer")) }
+                bytes = Some((take rx)?)
+            },
+            Err(e) => why = String::from(e.message()),
+        }
+    }
+    if let Some(b) = take bytes {
+        return match String::from_utf8(take b) {
+            Some(t) => Ok(Some(t)),
+            None => Err(String::from(f"{path.as_str()} isn't UTF-8")),
+        }
+    }
+    // Gone since it was listed, or a failure to report.
+    var s = files::stat(path.as_str())
+    var stated = s.poll()
+    while stated.is_none() {
+        yield
+        stated = s.poll()
+    }
+    let Some(sp) = take stated else { return Err(failed("no answer")) }
+    if files::read_entry(take sp).is_err() {
+        return Ok(None)
+    }
+    Err(String::from(f"can't read {path.as_str()}: {why.as_str()}"))
+}
+
+fn sort_by_path(files: mut Vec<(String, String)>) {
+    for i in 1..files.len() {
+        var j = i
+        while j > 0 && files[j - 1].0 > files[j].0 {
+            let a = files[j - 1].clone()
+            files[j - 1] = files[j].clone()
+            files[j] = take a
+            j -= 1
+        }
+    }
+}
+
+/// The build's page, its `index.html` given the script that keeps it current.
+@job
+fn give_script(page: take String) -> Result<(), String> {
+    let index = String::from(f"{page.as_str()}/index.html")
+    var r = Box::new(read_text.start(index.clone()))
+    var got: Option<Result<Option<String>, String>> = None
+    while got.is_none() {
+        match r.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(x) => got = Some(take x),
+        }
+    }
+    let Some(x) = take got else { return Err(failed("no answer")) }
+    let Some(html) = (take x)? else {
+        return Err(String::from(f"the lens's build has no index.html"))
+    }
+    let with = glue::replace(html.as_str(), "</body>", f"{script().as_str()}</body>")
+    var w = Box::new(write_text.start(take index, take with))
+    var done: Option<Result<(), String>> = None
+    while done.is_none() {
+        match w.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(x) => done = Some(take x),
+        }
+    }
+    let Some(d) = take done else { return Err(failed("no answer")) }
+    take d
+}
+
+/// The lifted build's literals: its lifted files, their values as the build has them, and their
+/// values in the files now.
+@job
+fn literals_of(built: take Built) -> Result<(Vec<String>, Vec<f32>, Option<Vec<f32>>), String> {
+    var l = toolchain::literals(built.program.as_str(), built.page.as_str())
+    var got = l.poll()
+    while got.is_none() {
+        yield
+        got = l.poll()
+    }
+    let Some(polled) = take got else { return Err(failed("no answer")) }
+    let lit = tool(toolchain::read_literals(take polled))?
+    Ok((lit.files.clone(), lit.built.clone(), lit.values.clone()))
+}
+
+/// What a server's caller sees of it as it runs, and asks of it: its origin once it listens,
+/// the build it serves (its generation and its page's directory), how many builds it has served,
+/// whether it's building the lens again, how many literal updates it has sent, why the last
+/// build failed (empty if it didn't); `stop`, which the caller sets to close it, and `hold`,
+/// which keeps a finished build from being served until the caller lets it go (`held` says one
+/// waits): a test's.
+pub struct Control: Clone {
+    pub origin: String,
+    pub build: String,
+    pub page: String,
+    pub version: u32,
+    pub rebuilding: bool,
+    pub updates: u32,
+    pub error: String,
+    pub stop: bool,
+    pub hold: bool,
+    pub held: bool,
+}
+
+/// A control for a server nobody stops or holds.
+pub fn control() -> Control {
+    Control {
+        origin: String::new(),
+        build: String::new(),
+        page: String::new(),
+        version: 1,
+        rebuilding: false,
+        updates: 0,
+        error: String::new(),
+        stop: false,
+        hold: false,
+        held: false,
+    }
+}
+
+/// The place a served lens is first built in: its page is generation 1 of the server's builds,
+/// `<out>/serve/<run>-1`, where `run` names this run of the server, so a page of another run
+/// never names one of this run's builds.
+pub fn serving_place(place: take Place, run: str) -> Place {
+    var p = take place
+    p.page = String::from(f"{p.out.as_str()}/serve/{run}-1")
+    p
+}
+
+/// What an edit is answered while the lens is built again: its literals may be another build's.
+const REBUILDING: Text = "{\"why\":\"the lens is being built again: edit once the page has reloaded\",\"written\":false}"
+
+/// What an edit from a page of another build than the one served is answered: its literals'
+/// numbers are that build's.
+const OTHER_BUILD: Text = "{\"why\":\"the page has another build of the lens than the one served: it goes to the new one; edit there\",\"written\":false}"
+
+/// Serves the lens's build `built` (of the subject at `place`, named `shown`), built into a
+/// generation's directory (`serving_place`), on 127.0.0.1:`port`, until `control.stop` (the
+/// command line's server runs until the tool is stopped). Each build is a generation of its
+/// own, the page's directory: a build is served (the root page goes to it, and pages of other
+/// builds go to it) only once it built, and a failed one leaves the last good one served, with
+/// its error in the state. An edit is taken only from a page of the build served, and not while
+/// the lens is built again. A post is answered whatever happens to another.
+@job
+pub fn run_server(
+    place: take Place,
+    built: take Built,
+    port: take u16,
+    mask: take Option<Vec<u8>>,
+    shown: take String,
+    control: mut Control,
+) -> Result<(), String> {
+    var current = built.clone()
+    // The generations: `<root>/<run>-<n>`.
+    let parts = current.page.as_str().split("/")
+    let (last_from, last_to) = parts[parts.len() - 1]
+    let root = String::from(current.page.as_str().slice(0, max(last_from, 1) - 1))
+    let first = String::from(current.page.as_str().slice(last_from, last_to))
+    let Some(dash) = last_dash(first.as_str()) else {
+        return Err(String::from(f"`{current.page.as_str()}` isn't a served generation's directory"))
+    }
+    let run = String::from(first.as_str().slice(0, dash))
+    var generation = 1
+    var previous = String::new()
+    var g = Box::new(publish.start(current.page.clone(), root.clone(), first.clone()))
+    var given: Option<Result<(), String>> = None
+    while given.is_none() {
+        match g.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(x) => given = Some(take x),
+        }
+    }
+    let Some(gx) = take given else { return Err(failed("no answer")) }
+    (take gx)?
+    // The fit's reference: one blob (or bytes) for every fit, given back when the server ends.
+    var reference: Option<Data> = None
+    if let Some(m) = take mask {
+        var d = Box::new(data_of.start(take m))
+        var made: Option<Result<Data, String>> = None
+        while made.is_none() {
+            match d.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(x) => made = Some(take x),
+            }
+        }
+        let Some(mx) = take made else { return Err(failed("no answer")) }
+        reference = Some((take mx)?)
+    }
+    var st = serve::start(root.as_str(), port)
+    var started = st.poll()
+    while started.is_none() {
+        yield
+        started = st.poll()
+    }
+    let Some(sp) = take started else { return Err(failed("no answer")) }
+    let server = tool(serve::read_started(take sp))?
+    var lj = Box::new(literals_of.start(current.clone()))
+    var lit: Option<Result<(Vec<String>, Vec<f32>, Option<Vec<f32>>), String>> = None
+    while lit.is_none() {
+        match lj.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(x) => lit = Some(take x),
+        }
+    }
+    let Some(lx) = take lit else { return Err(failed("no answer")) }
+    let (lifted, compiled, now_values) = (take lx)?
+    let (values, updates) = seeded(compiled, take now_values)
+    var sc = Box::new(scan.start(place.subject.clone()))
+    var scanned: Option<Result<Vec<(String, String)>, String>> = None
+    while scanned.is_none() {
+        match sc.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(x) => scanned = Some(take x),
+        }
+    }
+    let Some(sx) = take scanned else { return Err(failed("no answer")) }
+    let seen = (take sx)?
+    var live = Live {
+        build: first.clone(),
+        version: 1,
+        updates,
+        values,
+        lifted,
+        built: seen.clone(),
+        error: None,
+    }
+    var last = take seen
+    control.origin = server.origin.clone()
+    control.build = first.clone()
+    control.page = current.page.clone()
+    control.version = 1
+    control.updates = live.updates.len()
+    print(f"the lens on `{shown.as_str()}`: {server.origin.as_str()}/")
+    // A build of the lens under way, into the next generation's directory, and the files as it
+    // read them; a finished one the caller holds.
+    var rebuild: Option<Box<Job<build>>> = None
+    var next_build = String::new()
+    var rebuilt_from: Vec<(String, String)> = Vec::new()
+    var finished: Option<Result<Built, String>> = None
+    var post = serve::next_post(server.server, 600.0)
+    var timer = time::after(0.2)
+    loop {
+        if control.stop {
+            var c = serve::close(server.server)
+            while c.poll().is_none() { yield }
+            if let Some(Data::Blob(b)) = take reference {
+                var rel = blob::release(b)
+                while rel.poll().is_none() { yield }
+            }
+            return Ok(())
+        }
+        var idle = true
+        if let Some(polled) = post.poll() {
+            idle = false
+            if let Ok(p) = serve::read_post(take polled) {
+                // A body past 512 KiB comes as a blob: read, then given back.
+                var body: Vec<u8> = Vec::new()
+                var unread = String::new()
+                match p.body.clone() {
+                    Data::Bytes(b) => body = take b,
+                    Data::Blob(b) => {
+                        var j = Box::new(blob_bytes.start(b))
+                        var read: Option<Result<Vec<u8>, String>> = None
+                        while read.is_none() {
+                            match j.get_mut().resume() {
+                                Step::Yielded => yield,
+                                Step::Done(x) => read = Some(take x),
+                            }
+                        }
+                        var rel = blob::release(b)
+                        while rel.poll().is_none() { yield }
+                        match take read {
+                            Some(Ok(bytes)) => body = take bytes,
+                            Some(Err(why)) => unread = take why,
+                            None => unread = String::from("no answer"),
+                        }
+                    },
+                }
+                var reply = Data::empty()
+                let (from, asked) = post_route(p.path.as_str())
+                if !unread.is_empty() {
+                    reply = text_data(f"{{\"error\":{quoted(unread.as_str()).as_str()}}}")
+                } else if asked == "studio/state" {
+                    var since = 0
+                    if let Some(text) = String::from_utf8(body.clone()) {
+                        if let Some(d) = parse(text.as_str()) {
+                            if let Some(s) = d.get(TOP, "since") {
+                                if let Some(n) = d.num(s) {
+                                    since = u32(min(max(n, 0.0), f64(live.updates.len())))
+                                }
+                            }
+                        }
+                    }
+                    // A page of another build gets every update of the build served, which it
+                    // goes to.
+                    if from != live.build {
+                        since = 0
+                    }
+                    reply = text_data(state_answer(live, since, rebuild.is_some()).as_str())
+                } else if asked == "studio/edit" {
+                    if from != live.build {
+                        reply = text_data(OTHER_BUILD)
+                    } else if rebuild.is_some() || finished.is_some() {
+                        reply = text_data(REBUILDING)
+                    } else {
+                        var e = Box::new(
+                            lens::edit.start(
+                                current.program.clone(),
+                                current.page.clone(),
+                                body.clone(),
+                            ),
+                        )
+                        var done: Option<Result<String, String>> = None
+                        while done.is_none() {
+                            match e.get_mut().resume() {
+                                Step::Yielded => yield,
+                                Step::Done(x) => done = Some(take x),
+                            }
+                        }
+                        let answer_text = match take done {
+                            Some(Ok(t)) => take t,
+                            Some(Err(why)) => String::from(
+                                f"{{\"why\":{quoted(why.as_str()).as_str()},\"written\":false}}",
+                            ),
+                            None => String::from("{\"why\":\"no answer\",\"written\":false}"),
+                        }
+                        // The values are the lens's already, so they aren't updates for it.
+                        if answer_text.as_str().find("\"written\":true").is_some() {
+                            let text = match String::from_utf8(take body) {
+                                Some(t) => take t,
+                                None => String::new(),
+                            }
+                            if let Some(edits) = parse_edits(text.as_str()) {
+                                for k in 0..edits.len() {
+                                    let (i, v) = edits[k]
+                                    if i < live.values.len() {
+                                        live.values[i] = v
+                                    }
+                                }
+                            }
+                        }
+                        reply = text_data(answer_text.as_str())
+                    }
+                } else if asked == "studio/reference" {
+                    // A fit with no reference reads an empty one, which it refuses.
+                    match reference.clone() {
+                        Some(r) => reply = take r,
+                        None => print(
+                            "the fit asked for a reference image: serve with --reference",
+                        ),
+                    }
+                } else {
+                    reply = text_data(
+                        f"{{\"error\":{quoted(f"nothing answers `{asked.as_str()}` here").as_str()}}}",
+                    )
+                }
+                var a = serve::answer(server.server, p.id, reply)
+                while a.poll().is_none() { yield }
+            }
+            post = serve::next_post(server.server, 600.0)
+        }
+        // A build under way goes on a step at a time, the posts answered meanwhile.
+        match mut rebuild {
+            Some(b) => match b.get_mut().resume() {
+                Step::Yielded => {},
+                Step::Done(x) => finished = Some(take x),
+            },
+            None => {},
+        }
+        if finished.is_some() {
+            rebuild = None
+        }
+        control.held = finished.is_some() && control.hold
+        if finished.is_some() && !control.hold {
+            idle = false
+            let Some(result) = replace(mut finished, None) else { return Err(failed("no answer")) }
+            control.rebuilding = false
+            var outcome: Result<Built, String> = Err(String::new())
+            match take result {
+                Ok(next) => {
+                    if next.errors.is_empty() {
+                        outcome = Ok(take next)
+                    } else {
+                        print(next.errors.as_str())
+                        outcome = Err(next.errors.clone())
+                    }
+                },
+                Err(why) => {
+                    print(f"error: {why.as_str()}")
+                    outcome = Err(take why)
+                },
+            }
+            // A build that built is served once its page is ready, its literals' values the
+            // build's and then the source's now.
+            if let Ok(next) = outcome.clone() {
+                var g2 = Box::new(
+                    publish.start(next.page.clone(), root.clone(), next_build.clone()),
+                )
+                var ready: Option<Result<(), String>> = None
+                while ready.is_none() {
+                    match g2.get_mut().resume() {
+                        Step::Yielded => yield,
+                        Step::Done(x) => ready = Some(take x),
+                    }
+                }
+                var lj2 = Box::new(literals_of.start(next.clone()))
+                var lit2: Option<Result<(Vec<String>, Vec<f32>, Option<Vec<f32>>), String>> = None
+                while lit2.is_none() {
+                    match lj2.get_mut().resume() {
+                        Step::Yielded => yield,
+                        Step::Done(x) => lit2 = Some(take x),
+                    }
+                }
+                match (take ready, take lit2) {
+                    (Some(Ok(())), Some(Ok(found))) => {
+                        let (lifted2, compiled2, now2) = take found
+                        let (values2, updates2) = seeded(compiled2, take now2)
+                        // The generation before the last goes; the last stays for a page that
+                        // is still on its way to the new one.
+                        if !previous.is_empty() {
+                            var rm = files::remove_all(f"{root.as_str()}/{previous.as_str()}")
+                            while rm.poll().is_none() { yield }
+                        }
+                        previous = live.build.clone()
+                        current = take next
+                        generation += 1
+                        live.build = next_build.clone()
+                        live.version += 1
+                        live.updates = take updates2
+                        live.values = take values2
+                        live.lifted = take lifted2
+                        live.built = rebuilt_from.clone()
+                        live.error = None
+                        control.build = live.build.clone()
+                        control.page = current.page.clone()
+                        control.version = live.version
+                        control.updates += live.updates.len()
+                        control.error = String::new()
+                        print(f"rebuilt the lens (version {live.version})")
+                    },
+                    (Some(Err(why)), _) => outcome = Err(take why),
+                    (_, Some(Err(why))) => outcome = Err(take why),
+                    _ => outcome = Err(failed("no answer")),
+                }
+            }
+            // A build that failed leaves the last good one served, and goes.
+            if let Err(why) = take outcome {
+                var rm = files::remove_all(f"{root.as_str()}/{next_build.as_str()}")
+                while rm.poll().is_none() { yield }
+                control.error = why.clone()
+                live.error = Some(take why)
+            }
+            // The files as the build read them: a change since is looked at next.
+            last = rebuilt_from.clone()
+        }
+        if timer.poll().is_some() {
+            idle = false
+            var s = Box::new(scan.start(place.subject.clone()))
+            var got: Option<Result<Vec<(String, String)>, String>> = None
+            while got.is_none() {
+                match s.get_mut().resume() {
+                    Step::Yielded => yield,
+                    Step::Done(x) => got = Some(take x),
+                }
+            }
+            match take got {
+                Some(Ok(now)) => {
+                    // Changes made while a build is under way are looked at once it's done.
+                    if rebuild.is_none() && finished.is_none() && now != last {
+                        var values: Option<Vec<f32>> = None
+                        if only_lifted_changed(live.built, now, live.lifted) &&
+                            live.error.is_none() {
+                            var lj3 = Box::new(literals_of.start(current.clone()))
+                            var lit3: Option<Result<(Vec<String>, Vec<f32>, Option<Vec<f32>>), String>> = None
+                            while lit3.is_none() {
+                                match lj3.get_mut().resume() {
+                                    Step::Yielded => yield,
+                                    Step::Done(x) => lit3 = Some(take x),
+                                }
+                            }
+                            if let Some(Ok(found)) = take lit3 {
+                                let (_, _, v) = take found
+                                values = take v
+                            }
+                        }
+                        match take values {
+                            Some(v) => {
+                                for i in 0..min(v.len(), live.values.len()) {
+                                    if bitcast_u32(live.values[i]) != bitcast_u32(v[i]) {
+                                        live.updates.push((i, v[i]))
+                                        live.values[i] = v[i]
+                                        control.updates += 1
+                                    }
+                                }
+                            },
+                            None => {
+                                next_build = String::from(f"{run.as_str()}-{generation + 1}")
+                                var into = place.clone()
+                                into.page = String::from(f"{root.as_str()}/{next_build.as_str()}")
+                                rebuild = Some(Box::new(build.start(take into)))
+                                rebuilt_from = now.clone()
+                                control.rebuilding = true
+                            },
+                        }
+                        last = take now
+                    }
+                },
+                Some(Err(why)) => print(f"error: {why.as_str()}"),
+                None => {},
+            }
+            timer = time::after(0.2)
+        }
+        if idle {
+            yield
+        }
+    }
+}
+
+/// Where the last `-` of `name` is.
+fn last_dash(name: str) -> Option<u32> {
+    var k = name.len()
+    while k > 0 {
+        k -= 1
+        if name.byte(k) == 45 {
+            return Some(k)
+        }
+    }
+    None
+}
+
+/// The build in `page` (generation `build` of the server's root `root`) made ready and served:
+/// its page given the script, then the root's page made its page.
+@job
+fn publish(page: take String, root: take String, build: take String) -> Result<(), String> {
+    var g = Box::new(give_script.start(page.clone()))
+    var given: Option<Result<(), String>> = None
+    while given.is_none() {
+        match g.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(x) => given = Some(take x),
+        }
+    }
+    let Some(gx) = take given else { return Err(failed("no answer")) }
+    (take gx)?
+    var r = Box::new(read_text.start(String::from(f"{page.as_str()}/index.html")))
+    var html: Option<Result<Option<String>, String>> = None
+    while html.is_none() {
+        match r.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(x) => html = Some(take x),
+        }
+    }
+    let Some(hx) = take html else { return Err(failed("no answer")) }
+    let Some(text) = (take hx)? else { return Err(String::from("the build has no index.html")) }
+    var w = Box::new(
+        write_text.start(
+            String::from(f"{root.as_str()}/index.html"),
+            root_page(build.as_str(), text.as_str()),
+        ),
+    )
+    var done: Option<Result<(), String>> = None
+    while done.is_none() {
+        match w.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(x) => done = Some(take x),
+        }
+    }
+    let Some(d) = take done else { return Err(failed("no answer")) }
+    take d
+}
+
+/// `text`'s bytes as an answer's: themselves (a post's answer here is at most a few KiB, but
+/// an edit's diff can be more: past 512 KiB, it's cut to an error).
+fn text_data(text: str) -> Data {
+    if text.len() > MOST_BYTES {
+        let cut = String::from("{\"error\":\"the answer is more than 512 KiB\"}")
+        return Data::Bytes(Vec::from(cut.as_bytes()))
+    }
+    let owned = String::from(text)
+    Data::Bytes(Vec::from(owned.as_bytes()))
+}
+
+@test
+fn the_state_answers_the_updates_since_a_page_saw_them() {
+    var live = Live {
+        build: String::from("b-2"),
+        version: 2,
+        updates: Vec::new(),
+        values: Vec::new(),
+        lifted: Vec::new(),
+        built: Vec::new(),
+        error: None,
+    }
+    live.updates.push((3, 0.25))
+    live.updates.push((1, -1.0))
+    assert(
+        state_answer(live, 0, rebuilding: false).as_str() ==
+            "{\"build\":\"b-2\",\"error\":null,\"next\":2,\"rebuilding\":false,\"updates\":[[3,0.25],[1,-1.0]],\"version\":2}",
+    )
+    assert(
+        state_answer(live, 1, rebuilding: true).as_str() ==
+            "{\"build\":\"b-2\",\"error\":null,\"next\":2,\"rebuilding\":true,\"updates\":[[1,-1.0]],\"version\":2}",
+    )
+}
+
+@test
+fn only_a_change_in_lifted_files_can_be_new_values() {
+    var built: Vec<(String, String)> = Vec::new()
+    built.push((String::from("ws/a/main.wrela"), String::from("x")))
+    built.push((String::from("ws/a/subject.wrela"), String::from("0.5")))
+    var lifted: Vec<String> = Vec::new()
+    lifted.push(String::from("ws/a/subject.wrela"))
+    var now = built.clone()
+    now[1] = (String::from("ws/a/subject.wrela"), String::from("0.25"))
+    assert(only_lifted_changed(built, now, lifted))
+    now[0] = (String::from("ws/a/main.wrela"), String::from("y"))
+    assert(!only_lifted_changed(built, now, lifted), "another file changed")
+    var more = built.clone()
+    more.push((String::from("ws/a/z.wrela"), String::new()))
+    assert(!only_lifted_changed(built, more, lifted), "a file came")
+}
+
+@test
+fn a_build_starts_at_its_own_values_and_the_sources_follow() {
+    let (values, updates) = seeded([0.5, 1.0, 2.0], Some(Vec::from([0.5, 0.25, 2.0])))
+    assert(values.len() == 3 && values[1] == 0.25, "the source's values")
+    assert(updates.len() == 1, "one literal changed since the build read it")
+    let (i, v) = updates[0]
+    assert(i == 1 && v == 0.25)
+    let (as_built, none) = seeded([0.5], None)
+    assert(as_built[0] == 0.5 && none.len() == 0, "a source past its literals waits for a build")
+}
+
+@test
+fn a_post_names_the_build_whose_page_made_it() {
+    assert(post_route("/t-2/studio/edit") == (String::from("t-2"), String::from("studio/edit")))
+    assert(
+        post_route("/t-1/studio/state?x=1") == (String::from("t-1"), String::from("studio/state")),
+    )
+    assert(post_route("/studio/edit") == (String::new(), String::from("studio/edit")))
+}

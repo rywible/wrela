@@ -1,0 +1,391 @@
+// The lens's program around a subject (the glue): what the tool writes into its output before
+// it builds the lens. The program is studio/glue's `main.wrela` (an export for each action) and
+// a module `subject`, which this writes for the subject: its colours from its channels, its
+// channels' numbers for the probe, its spec and its blueprint's outlines. What it needs to know
+// of the subject, the compiler tells it: the tool writes a probe beside the subject and asks
+// `toolchain::query` about it (`probe` and `read_probe`). A floor's map lens is
+// studio/maplens/glue's program, with the floor's `lens` module in place of the Last Green's.
+
+use json::{Doc, Kind, TOP, parse}
+use std::collections::Vec
+use std::string::String
+
+/// What the glue needs to know of a subject.
+pub struct Subject: Clone {
+    /// The package's name (its manifest's, or its directory's).
+    pub name: String,
+    /// The channels' float fields, each by its path from the channels (`albedo.r`) and how
+    /// many floats it holds (1 for an `f32`, 2 to 4 for a vector); none if the subject has no
+    /// channels.
+    pub channels: Vec<(String, u32)>,
+    /// The channels' type as the glue names it (`wolf::creature::Coat`, `std::field::Color`)
+    /// and the path to its colour: its first `r`, `g`, `b` floats (`albedo`, or empty when the
+    /// type is the colour). `None` if the channels hold no colour the glue can name.
+    pub albedo: Option<(String, String)>,
+    /// Whether the package has a spec (a module `spec` with `pub fn spec<C: Checks>(c: mut
+    /// C)`), and which outlines its blueprint has (a module `blueprint` with `pub fn side()`,
+    /// `front()`, `top()`, each `-> Vec<vec2>`).
+    pub spec: bool,
+    pub outlines: [bool; 3],
+}
+
+/// The name a package's manifest (`text`) gives it, or its directory's last part (`dir`) with
+/// `_` for `-`, as a workspace names a member without one.
+pub fn package_name(text: str, dir: str) -> String {
+    var in_package = false
+    for range in text.lines() {
+        let (from, to) = range
+        let line = text.slice(from, to).trim()
+        if line.starts_with("[") {
+            in_package = line == "[package]"
+            continue
+        }
+        if in_package && line.starts_with("name") {
+            let Some(eq) = line.find("=") else { continue }
+            let value = line.slice(eq + 1, line.len()).trim()
+            if value.len() >= 2 && value.starts_with("\"") {
+                let rest = value.slice(1, value.len())
+                if let Some(end) = rest.find("\"") {
+                    return String::from(rest.slice(0, end))
+                }
+            }
+        }
+    }
+    var name = String::new()
+    let parts = dir.split("/")
+    let (from, to) = parts[parts.len() - 1]
+    for i in from..to {
+        let b = dir.byte(i)
+        name.push_byte(if b == 45 { 95 } else { b })
+    }
+    name
+}
+
+/// Whether the package whose module `lens` is `text` is a floor, which the map lens shows: its
+/// `lens` has `pub fn map()` and `pub fn preview()`.
+pub fn is_floor(text: str) -> bool {
+    text.find("pub fn map(").is_some() && text.find("pub fn preview(").is_some()
+}
+
+/// Whether a floor's `lens` (`text`) surveys its geology for the map lens: `pub fn geology()`.
+pub fn has_geology(text: str) -> bool {
+    text.find("pub fn geology(").is_some()
+}
+
+/// The probe's module: the subject's channels at a point, whose type the compiler gives
+/// (`fields probe.wrela:4:9`). It doesn't check if the subject has no channels.
+pub fn probe_text(name: str) -> String {
+    String::from(
+        f"// Written by `wrela tool studio`: what it asks the compiler of `{name}`.\n\nfn channels_at(p: vec3) {{\n    let c = {name}::subject::subject().channels(p)\n}}\n",
+    )
+}
+
+/// The probe's program: a frame that does nothing.
+pub fn probe_main() -> String {
+    String::from("pub fn frame(time: f32, width: u32, height: u32) {}\n")
+}
+
+/// The queries about the probe: the channels' fields, then whether the subject, its spec and
+/// each of its outlines are there.
+pub fn probe_queries(name: str) -> Vec<String> {
+    var q: Vec<String> = Vec::new()
+    q.push(String::from("fields probe.wrela:4:9"))
+    for f in [
+        "subject::subject",
+        "spec::spec",
+        "blueprint::side",
+        "blueprint::front",
+        "blueprint::top",
+    ] {
+        q.push(String::from(f"callees {name}::{f}"))
+    }
+    q
+}
+
+/// The manifest of a program written around the subject `name`: its other dependencies are
+/// `deps`, each a member of the workspace (the tool overrides each with its directory).
+pub fn manifest(program: str, name: str, deps: [String]) -> String {
+    var m = String::from(
+        f"# Written by `wrela tool studio`: the {program} on `{name}`.\n[package]\nname = \"{program}\"\n\n[dependencies]\n",
+    )
+    for d in deps {
+        m.push_str(f"{d.as_str()} = {{ workspace = true }}\n")
+    }
+    m.push_str(f"{name} = {{ workspace = true }}\n")
+    m
+}
+
+/// What the probe's answers (`json`, `toolchain::query`'s) say of the subject `name`.
+pub fn read_probe(name: str, json: str) -> Result<Subject, String> {
+    let Some(d) = parse(json) else { return Err(String::from("the compiler's answer isn't JSON")) }
+    let there = |k: u32| -> bool {
+        match d.at(TOP, k) {
+            Some(a) => d.get(a, "error").is_none(),
+            None => false,
+        }
+    }
+    if !there(1) {
+        return Err(
+            String::from(
+                f"`{name}` has no `pub fn subject()` in a module `subject` (subject.wrela): the lens shows what it returns, a `Surface`",
+            ),
+        )
+    }
+    var s = Subject {
+        name: String::from(name),
+        channels: Vec::new(),
+        albedo: None,
+        spec: there(2),
+        outlines: [there(3), there(4), there(5)],
+    }
+    let Some(f) = d.at(TOP, 0) else { return Ok(s) }
+    let Some(fields) = d.get(f, "fields") else { return Ok(s) }
+    for k in 0..d.count(fields) {
+        let Some(field) = d.at(fields, k) else { continue }
+        let (Some(p), Some(t)) = (d.get(field, "path"), d.get(field, "type")) else { continue }
+        let (Some(path), Some(ty)) = (d.text(p), d.text(t)) else { continue }
+        let n = match ty.as_str() {
+            "f32" => 1,
+            "vec2" => 2,
+            "vec3" => 3,
+            "vec4" => 4,
+            _ => 0,
+        }
+        if n > 0 {
+            s.channels.push((take path, n))
+        }
+    }
+    // The colour, in a type the glue can name: the subject's own, or std's.
+    if let Some(tp) = d.get(f, "path") {
+        if let Some(ty) = d.text(tp) {
+            let own = ty.as_str().starts_with(f"{name}::")
+            if own || ty.as_str().starts_with("std::") {
+                if let Some(prefix) = colour(s.channels) {
+                    s.albedo = Some((take ty, take prefix))
+                }
+            }
+        }
+    }
+    Ok(s)
+}
+
+/// The path to the first `r`, `g`, `b` floats among `channels`.
+fn colour(channels: [(String, u32)]) -> Option<String> {
+    let has = |path: str| -> bool {
+        for c in channels {
+            let (q, n) = c
+            if q.as_str() == path && n == 1 {
+                return true
+            }
+        }
+        false
+    }
+    for c in channels {
+        let (q, _) = c
+        let p = q.as_str()
+        var base = String::new()
+        if p.ends_with(".r") {
+            base.push_str(p.slice(0, p.len() - 2))
+        } else if p != "r" {
+            continue
+        }
+        let at = |k: str| -> String {
+            if base.is_empty() { String::from(k) } else { String::from(f"{base.as_str()}.{k}") }
+        }
+        if has(at("r").as_str()) && has(at("g").as_str()) && has(at("b").as_str()) {
+            return Some(base)
+        }
+    }
+    None
+}
+
+/// The lens program's module `subject` for `s`: what the lens needs of it (studio/glue's own
+/// module is a sphere's).
+pub fn glue_text(s: Subject) -> String {
+    let name = s.name.as_str()
+    var g = String::from(
+        f"// Written by `wrela tool studio`: what the lens needs of the package `{name}` (studio/glue's\n// own `subject.wrela` is a sphere's).\n\nuse std::collections::Vec\nuse std::lift::{{Literal, gradient, reads}}\nuse std::string::String\nuse studio::json::obj\nuse {name}::subject::subject\n",
+    )
+    if !s.channels.is_empty() {
+        g.push_str("use std::field::Field\n")
+    }
+    g.push_str("use studio::paint::Colours\n")
+    // The subject as the views see it: coloured by its channels' albedo where they hold one.
+    match s.albedo.clone() {
+        Some(albedo) => {
+            let (ty, prefix) = albedo
+            let at = |c: str| -> String {
+                if prefix.is_empty() {
+                    String::from(f"c.{c}")
+                } else {
+                    String::from(f"c.{prefix.as_str()}.{c}")
+                }
+            }
+            let ty = ty.as_str()
+            g.push_str("use std::field::{PartName, Surface}\n\n")
+            g.push_str("/// The subject, coloured by its channels, for the views' colour mode.\n")
+            g.push_str("struct Painted<F>: Copy + GpuData {\n    field: F,\n}\n\n")
+            g.push_str(f"impl<F: Field<{ty}>> Surface for Painted<F> {{\n")
+            g.push_str(
+                "    fn distance(self, p: vec3) -> f32 {\n        self.field.distance(p)\n    }\n\n",
+            )
+            g.push_str(
+                "    fn part_offset(self, p: vec3, i: u32, by: f32) -> f32 {\n        self.field.part_offset(p, i, by)\n    }\n\n",
+            )
+            g.push_str("    fn parts(self) -> u32 {\n        self.field.parts()\n    }\n\n")
+            g.push_str(
+                "    fn part_at(self, p: vec3) -> (f32, u32) {\n        self.field.part_at(p)\n    }\n\n",
+            )
+            g.push_str(
+                "    fn part_distance(self, p: vec3, i: u32) -> f32 {\n        self.field.part_distance(p, i)\n    }\n\n",
+            )
+            g.push_str(
+                "    fn part_name(self, i: u32) -> PartName {\n        self.field.part_name(i)\n    }\n\n",
+            )
+            g.push_str(
+                "    fn lipschitz(self, near: f32) -> f32 {\n        self.field.lipschitz(near)\n    }\n}\n\n",
+            )
+            g.push_str(f"impl<F: Field<{ty}>> Colours for Painted<F> {{\n")
+            g.push_str(
+                f"    fn colour_at(self, p: vec3) -> vec3 {{\n        let c = self.field.channels(p)\n        vec3({at("r").as_str()}, {at("g").as_str()}, {at("b").as_str()})\n    }}\n}}\n\n",
+            )
+            g.push_str("pub fn painted() -> Colours {\n    Painted { field: subject() }\n}\n")
+        },
+        None => g.push_str(
+            "\npub fn painted() -> Colours {\n    studio::paint::Clay { field: subject() }\n}\n",
+        ),
+    }
+    g.push_str(
+        "\npub fn grad(p: vec3, which: [Literal; 16]) -> (f32, [f32; 16]) {\n    gradient(|| subject().distance(p), which)\n}\n\n",
+    )
+    g.push_str(
+        "pub fn grad8(p: vec3, which: [Literal; 8]) -> (f32, [f32; 8]) {\n    gradient(|| subject().distance(p), which)\n}\n\n",
+    )
+    g.push_str(
+        "pub fn reached() -> Vec<Literal> {\n    var out: Vec<Literal> = Vec::new()\n    for l in reads(|| subject().distance(vec3(0.0))) {\n        out.push(l)\n    }\n    out\n}\n\n",
+    )
+    g.push_str(
+        "pub fn part_reads(p: vec3, part: u32) -> Vec<Literal> {\n    var out: Vec<Literal> = Vec::new()\n    for l in reads(|| subject().part_distance(p, part)) {\n        out.push(l)\n    }\n    out\n}\n\n",
+    )
+    if s.channels.is_empty() {
+        g.push_str("pub fn channels(p: vec3) -> String {\n    String::new()\n}\n\n")
+    } else {
+        g.push_str(
+            "pub fn channels(p: vec3) -> String {\n    let c = subject().channels(p)\n    obj()",
+        )
+        for k in 0..s.channels.len() {
+            let (path, n) = s.channels[k].clone()
+            let path = path.as_str()
+            if n == 1 {
+                g.push_str(f"\n        .num(\"{path}\", c.{path})")
+            } else if n == 3 {
+                g.push_str(f"\n        .vec(\"{path}\", c.{path})")
+            } else {
+                for axis in ["x", "y", "z", "w"] {
+                    if (axis == "z" && n < 3) || (axis == "w" && n < 4) {
+                        continue
+                    }
+                    g.push_str(f"\n        .num(\"{path}.{axis}\", c.{path}.{axis})")
+                }
+            }
+        }
+        g.push_str("\n        .done()\n}\n\n")
+    }
+    // The spec, as a report.
+    if s.spec {
+        g.push_str(
+            f"pub fn spec_report() -> String {{\n    var r = std::lift::Report::new()\n    {name}::spec::spec(mut r)\n    r.done()\n}}\n\n",
+        )
+    } else {
+        g.push_str(
+            "pub fn spec_report() -> String {\n    String::from(\"{\\\"error\\\":\\\"the package has no spec: write `pub fn spec<C: Checks>(c: mut C)` in spec.wrela\\\"}\")\n}\n\n",
+        )
+    }
+    // The blueprint's outlines, by facing (0 side, 1 front, 2 top).
+    g.push_str("pub fn outline(facing: u32) -> Vec<vec2> {\n")
+    let facings = ["side", "front", "top"]
+    for i in 0..3 {
+        if s.outlines[i] {
+            g.push_str(
+                f"    if facing == {i} {{\n        return {name}::blueprint::{facings[i]}()\n    }}\n",
+            )
+        }
+    }
+    g.push_str("    Vec::new()\n}\n")
+    g
+}
+
+/// The map lens's module `floor` for the floor `name`, from studio/maplens/glue's
+/// (`template`, the Last Green's): the floor's name in its place, and no geology if its lens
+/// surveys none.
+pub fn floor_text(template: str, name: str, geology: bool) -> String {
+    var out = replace(template, "last_green", name)
+    if !geology {
+        out = replace(out.as_str(), f"Some({name}::lens::geology())", "None")
+    }
+    out
+}
+
+/// `text` with each `from` replaced by `to`.
+pub fn replace(text: str, from: str, to: str) -> String {
+    var out = String::new()
+    var at = 0
+    while at < text.len() {
+        let rest = text.slice(at, text.len())
+        match rest.find(from) {
+            Some(i) => {
+                out.push_str(rest.slice(0, i))
+                out.push_str(to)
+                at += i + from.len()
+            },
+            None => {
+                out.push_str(rest)
+                at = text.len()
+            },
+        }
+    }
+    out
+}
+
+@test
+fn a_package_is_named_by_its_manifest_or_its_directory() {
+    assert(package_name("[package]\nname = \"wolf\"\n\n[dependencies]\n", "ws/content/x") == "wolf")
+    assert(package_name("[dependencies]\nname = \"no\"\n", "ws/content/great-tree") == "great_tree")
+    assert(package_name("", "ball") == "ball")
+}
+
+@test
+fn the_probe_names_the_subjects_colour_and_its_channels() {
+    let answer = "[{\"fields\":[{\"path\":\"albedo\",\"type\":\"Color\"},{\"path\":\"albedo.r\",\"type\":\"f32\"},{\"path\":\"albedo.g\",\"type\":\"f32\"},{\"path\":\"albedo.b\",\"type\":\"f32\"},{\"path\":\"wet\",\"type\":\"vec2\"}],\"path\":\"wolf::creature::Coat\"},{\"callees\":[]},{\"error\":\"nothing is named\"},{\"callees\":[]},{\"error\":\"no\"},{\"error\":\"no\"}]"
+    let Ok(s) = read_probe("wolf", answer) else { panic("a subject") }
+    assert(s.channels.len() == 4 && s.spec == false && s.outlines[0] && !s.outlines[1])
+    let Some(albedo) = s.albedo.clone() else { panic("a colour") }
+    let (ty, prefix) = albedo
+    assert(ty.as_str() == "wolf::creature::Coat" && prefix.as_str() == "albedo")
+    let g = glue_text(s)
+    assert(g.as_str().find("impl<F: Field<wolf::creature::Coat>> Colours").is_some())
+    assert(g.as_str().find("vec3(c.albedo.r, c.albedo.g, c.albedo.b)").is_some())
+    assert(
+        g.as_str().find(".num(\"wet.x\", c.wet.x)\n        .num(\"wet.y\", c.wet.y)\n").is_some(),
+    )
+    assert(g.as_str().find("return wolf::blueprint::side()").is_some())
+    // A dependency's type the glue can't name, and no subject at all.
+    let theirs = "[{\"fields\":[{\"path\":\"r\",\"type\":\"f32\"},{\"path\":\"g\",\"type\":\"f32\"},{\"path\":\"b\",\"type\":\"f32\"}],\"path\":\"engine::Tint\"},{\"callees\":[]},{\"error\":\"\"},{\"error\":\"\"},{\"error\":\"\"},{\"error\":\"\"}]"
+    let Ok(t) = read_probe("wolf", theirs) else { panic("a subject") }
+    assert(t.albedo.is_none() && t.channels.len() == 3)
+    let none = "[{\"error\":\"\"},{\"error\":\"nothing\"},{\"error\":\"\"},{\"error\":\"\"},{\"error\":\"\"},{\"error\":\"\"}]"
+    assert(read_probe("ball", none).is_err(), "no subject()")
+}
+
+@test
+fn a_floors_module_is_the_last_greens_with_its_name() {
+    let t = "pub fn map() -> Map {\n    last_green::lens::map()\n}\npub fn geology() -> Option<Survey> {\n    Some(last_green::lens::geology())\n}\n"
+    let with = floor_text(t, "moor", geology: true)
+    assert(
+        with.as_str().find("moor::lens::map()").is_some() &&
+            with.as_str().find("Some(moor::lens::geology())").is_some(),
+    )
+    let without = floor_text(t, "moor", geology: false)
+    assert(without.as_str().find("    None\n").is_some())
+    assert(is_floor("pub fn map() {}\npub fn preview() {}") && !is_floor("pub fn map() {}"))
+}

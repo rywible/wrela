@@ -1,0 +1,483 @@
+// Looking at the lens by eye, headless: `look`, the work loop in one answer (the contact sheet
+// saved, what changed since the last look marked on a copy, and the diagnosis and the spec in
+// brief), and the comparisons: `beside <manifest>` (the side view beside a registered reference
+// photo, at the photo's own scale, and the two overlaid), `variants <package>...` (several
+// versions of a subject side by side, at one framing) and `sweep <literal> <value>...` (one
+// literal's values side by side). Each comparison writes one PNG of numbered panels and prints
+// a JSON answer naming what's in each panel.
+//
+// A photo's registration is in its manifest (`references/`): `ground_px` (the ground's row),
+// `metres_per_px`, `z0_px` (the column at z = 0) and `faces` (`right` or `left`, the way the
+// animal faces in the photo). The photo itself is read as PNG: `<manifest stem>.png`.
+
+use json::{Doc, Kind, TOP, f64_text, number_of, obj, parse, quoted, round3}
+use std::collections::Vec
+use std::string::String
+
+/// A photo's registration: how its pixels map to the creature's side view (z, y), in metres.
+pub struct Registration: Copy {
+    pub ground_px: f32,
+    pub metres_per_px: f32,
+    pub z0_px: f32,
+    pub faces_right: bool,
+}
+
+/// A manifest's values: each `key = value` line's, a number or a quoted text, in any table.
+fn manifest_value(text: str, key: str) -> Option<String> {
+    for range in text.lines() {
+        let (from, to) = range
+        let line = text.slice(from, to).trim()
+        if line.starts_with("#") || line.starts_with("[") {
+            continue
+        }
+        let Some(eq) = line.find("=") else { continue }
+        if line.slice(0, eq).trim() != key {
+            continue
+        }
+        let value = line.slice(eq + 1, line.len()).trim()
+        if value.starts_with("\"") {
+            let rest = value.slice(1, value.len())
+            let end = rest.find("\"")?
+            return Some(String::from(rest.slice(0, end)))
+        }
+        let cut = match value.find("#") {
+            Some(hash) => hash,
+            None => value.len(),
+        }
+        return Some(String::from(value.slice(0, cut).trim()))
+    }
+    None
+}
+
+/// The registration a manifest (`text`, the file at `path`) gives.
+pub fn registration(path: str, text: str) -> Result<Registration, String> {
+    let number = |key: str| -> Result<f32, String> {
+        let Some(v) = manifest_value(text, key) else {
+            return Err(
+                String::from(
+                    f"{path} has no `{key}` (a photo's registration: ground_px, metres_per_px, z0_px, faces)",
+                ),
+            )
+        }
+        let Some(x) = number_of(v.as_str()) else {
+            return Err(
+                String::from(
+                    f"{path} has no `{key}` (a photo's registration: ground_px, metres_per_px, z0_px, faces)",
+                ),
+            )
+        }
+        let f = f32(x)
+        if !(abs(f) <= 340282346638528859811704183484516925440.0) {
+            return Err(String::from(f"{path}: `{key}` is too large for an f32"))
+        }
+        Ok(f)
+    }
+    let metres_per_px = number("metres_per_px")?
+    if !(metres_per_px > 0.0) {
+        return Err(String::from(f"{path}: `metres_per_px` must be finite and positive"))
+    }
+    let faces_left = match manifest_value(text, "faces") {
+        Some(f) => f.as_str() == "left",
+        None => false,
+    }
+    Ok(
+        Registration {
+            ground_px: number("ground_px")?,
+            metres_per_px,
+            z0_px: number("z0_px")?,
+            faces_right: !faces_left,
+        },
+    )
+}
+
+/// A registered photo: its registration, its size and its RGBA8 pixels.
+pub struct Photo: Clone {
+    pub r: Registration,
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+impl Photo {
+    /// The photo's colour at side-view point (z, y), bilinear; white off the photo.
+    pub fn at(self, z: f32, y: f32) -> vec3 {
+        let dz = z / self.r.metres_per_px
+        let x = if self.r.faces_right { self.r.z0_px + dz } else { self.r.z0_px - dz }
+        let yp = self.r.ground_px - y / self.r.metres_per_px
+        let x0 = floor(x)
+        let y0 = floor(yp)
+        let fx = x - x0
+        let fy = yp - y0
+        let a = self.px(x0, y0)
+        let b = self.px(x0 + 1.0, y0)
+        let c = self.px(x0, y0 + 1.0)
+        let d = self.px(x0 + 1.0, y0 + 1.0)
+        let top = a + (b - a) * fx
+        let bottom = c + (d - c) * fx
+        top + (bottom - top) * fy
+    }
+
+    fn px(self, x: f32, y: f32) -> vec3 {
+        if x < 0.0 || y < 0.0 || x >= f32(self.width) || y >= f32(self.height) {
+            return vec3(255.0)
+        }
+        let i = 4 * (u32(y) * self.width + u32(x))
+        vec3(f32(self.rgba[i]), f32(self.rgba[i + 1]), f32(self.rgba[i + 2]))
+    }
+}
+
+/// A square framing of the side view: centred at (z, y), `half` metres to each edge.
+pub struct Framing: Copy {
+    pub z: f32,
+    pub y: f32,
+    pub half: f32,
+}
+
+impl Framing {
+    /// The side-view point under pixel (`sx`, `sy`) of an `n`-pixel square: the side view looks
+    /// along −x, so the screen's right is −z (the front is on the left).
+    pub fn point(self, sx: f32, sy: f32, n: f32) -> vec2 {
+        vec2(self.z - (sx / n - 0.5) * 2.0 * self.half, self.y + (0.5 - sy / n) * 2.0 * self.half)
+    }
+}
+
+/// The side framing in the lens's `view` answer (`json`): its first framing's.
+pub fn own_framing(json: str) -> Result<Framing, String> {
+    let Some(d) = parse(json) else { return Err(String::from("the view's answer isn't JSON")) }
+    let Some(fs) = d.get(TOP, "framings") else {
+        return Err(String::from("the view's answer has no framings"))
+    }
+    let Some(side) = d.at(fs, 0) else {
+        return Err(String::from("the view's answer has no framings"))
+    }
+    let c = |k: u32| -> f32 {
+        let Some(centre) = d.get(side, "centre") else { return 0.0 }
+        let Some(v) = d.at(centre, k) else { return 0.0 }
+        match d.num(v) {
+            Some(x) => f32(x),
+            None => 0.0,
+        }
+    }
+    let half = match d.get(side, "half") {
+        Some(h) => match d.num(h) {
+            Some(x) => f32(x),
+            None => 1.0,
+        },
+        None => 1.0,
+    }
+    Ok(Framing { z: c(2), y: c(1), half })
+}
+
+/// `x` as JSON writes an `f32` (as Rust's `serde_json` does): its shortest text, `.0` when
+/// whole.
+pub fn f32_text(x: f32) -> String {
+    if !(abs(x) <= 340282346638528859811704183484516925440.0) {
+        return String::from("null")
+    }
+    var s = String::from(f"{x}")
+    if s.as_str().find(".").is_none() && s.as_str().find("e").is_none() {
+        s.push_str(".0")
+    }
+    s
+}
+
+/// The pixels from (`x`, `y`), `dw` across and `dh` down, of an image `w` pixels wide, set to
+/// `rgb` (those in the image).
+pub fn fill(out: mut Vec<u8>, w: u32, x: u32, y: u32, dw: u32, dh: u32, rgb: vec3) {
+    for py in y..y + dh {
+        for px in x..x + dw {
+            let o = (py * w + px) * 4
+            if o + 3 < out.len() {
+                out[o] = u8(rgb.x)
+                out[o + 1] = u8(rgb.y)
+                out[o + 2] = u8(rgb.z)
+            }
+        }
+    }
+}
+
+/// The digits of a 5×7 bitmap font: each row's bits, the leftmost the 16s.
+const DIGITS: [[u32; 7]; 10] = [
+    [14, 17, 19, 21, 25, 17, 14],
+    [4, 12, 4, 4, 4, 4, 14],
+    [14, 17, 1, 2, 4, 8, 31],
+    [31, 2, 4, 2, 1, 17, 14],
+    [2, 6, 10, 18, 31, 2, 2],
+    [31, 16, 30, 1, 1, 17, 14],
+    [6, 8, 16, 30, 17, 17, 14],
+    [31, 1, 2, 4, 8, 8, 8],
+    [14, 17, 17, 14, 17, 17, 14],
+    [14, 17, 17, 15, 1, 2, 12],
+]
+
+/// `n` in a 5×7 bitmap font, 3 pixels a dot, dark on a light box, at (`x`, `y`).
+pub fn number(out: mut Vec<u8>, w: u32, x: u32, y: u32, n: u32) {
+    let text = String::from(f"{n}")
+    let scale = 3
+    let bw = text.len() * 6 * scale + 2 * scale
+    let bh = 9 * scale
+    fill(mut out, w, x, y, bw, bh, vec3(250.0, 250.0, 235.0))
+    for k in 0..text.len() {
+        let glyph = DIGITS[u32(text.as_str().byte(k) - 48)]
+        for r in 0..7 {
+            for c in 0..5 {
+                if glyph[r] & (16 >> c) != 0 {
+                    let px = x + scale + (k * 6 + c) * scale
+                    let py = y + scale + r * scale
+                    fill(mut out, w, px, py, scale, scale, vec3(20.0, 20.0, 30.0))
+                }
+            }
+        }
+    }
+}
+
+/// Panels in a grid, each `n` pixels square shrunk to half, with a number in the top-left
+/// corner of each (three or fewer in a row, more in two rows): its size and its pixels.
+pub fn sheet(panels: [Vec<u8>], n: u32) -> (u32, u32, Vec<u8>) {
+    let shrink = 2
+    var columns = if panels.len() <= 3 { panels.len() } else { (panels.len() + 1) / 2 }
+    columns = max(columns, 1)
+    let cell = n / shrink
+    let rows = (panels.len() + columns - 1) / columns
+    let w = cell * columns
+    let h = cell * rows
+    var out: Vec<u8> = Vec::with_capacity(w * h * 4)
+    for _ in 0..w * h * 4 {
+        out.push(255)
+    }
+    for k in 0..panels.len() {
+        let cx = (k % columns) * cell
+        let cy = (k / columns) * cell
+        for y in 0..cell {
+            for x in 0..cell {
+                // A box filter over the shrunk pixels.
+                var acc = vec3(0.0)
+                for dy in 0..shrink {
+                    for dx in 0..shrink {
+                        let i = ((y * shrink + dy) * n + x * shrink + dx) * 4
+                        acc += vec3(f32(panels[k][i]), f32(panels[k][i + 1]), f32(panels[k][i + 2]))
+                    }
+                }
+                let o = ((cy + y) * w + cx + x) * 4
+                // Whole numbers: the sum's quarter, rounded down.
+                out[o] = u8(floor(acc.x / 4.0))
+                out[o + 1] = u8(floor(acc.y / 4.0))
+                out[o + 2] = u8(floor(acc.z / 4.0))
+                out[o + 3] = 255
+            }
+        }
+        // A thin border, and the panel's number.
+        let border = vec3(150.0, 150.0, 160.0)
+        fill(mut out, w, cx, cy, cell, 1, border)
+        fill(mut out, w, cx, cy + cell - 1, cell, 1, border)
+        fill(mut out, w, cx, cy, 1, cell, border)
+        fill(mut out, w, cx + cell - 1, cy, 1, cell, border)
+        number(mut out, w, cx + 6, cy + 6, k + 1)
+    }
+    (w, h, out)
+}
+
+/// What changed between two screens of one size: `now` with each pixel that differs from
+/// `before` by more than 24 in a channel marked red, and how many did.
+pub fn changed(now: [u8], before: [u8]) -> (Vec<u8>, u32) {
+    var marked: Vec<u8> = Vec::from(now)
+    var count = 0
+    var i = 0
+    while i + 3 < now.len() && i + 3 < before.len() {
+        var diff = 0
+        for c in 0..3 {
+            let a = i32(now[i + c])
+            let b = i32(before[i + c])
+            diff = max(diff, abs(a - b))
+        }
+        if diff > 24 {
+            count += 1
+            marked[i] = 255
+            marked[i + 1] = marked[i + 1] / 3
+            marked[i + 2] = marked[i + 2] / 3
+        }
+        i += 4
+    }
+    (marked, count)
+}
+
+/// `look`'s answer: the PNG it saved (`png`), what changed (`changed`, already JSON), and the
+/// diagnosis's (`diagnose`) and the spec's (`spec`) answers in brief.
+pub fn look_answer(png: str, changed: str, diagnose: str, spec: str) -> String {
+    let d = match parse(diagnose) {
+        Some(d) => take d,
+        None => empty(),
+    }
+    let s = match parse(spec) {
+        Some(s) => take s,
+        None => empty(),
+    }
+    let raw = |doc: Doc, n: Option<u32>| -> String {
+        match n {
+            Some(k) => doc.write(k),
+            None => String::from("null"),
+        }
+    }
+    let at = |k: str| -> Option<u32> { d.get(TOP, k) }
+    // The bounds' size: each axis's `hi - lo`, to 3 decimals.
+    var size = String::from("[")
+    for k in 0..3 {
+        let lo = match at("lo") {
+            Some(l) => match d.at(l, k) {
+                Some(v) => match d.num(v) {
+                    Some(x) => x,
+                    None => 0.0,
+                },
+                None => 0.0,
+            },
+            None => 0.0,
+        }
+        let hi = match at("hi") {
+            Some(h) => match d.at(h, k) {
+                Some(v) => match d.num(v) {
+                    Some(x) => x,
+                    None => 0.0,
+                },
+                None => 0.0,
+            },
+            None => 0.0,
+        }
+        if k > 0 {
+            size.push_str(",")
+        }
+        size.push_str(f64_text(round3(hi - lo)).as_str())
+    }
+    size.push_str("]")
+    var worst = String::from("[")
+    if let Some(w) = at("worst_gradients") {
+        for k in 0..min(d.count(w), 3) {
+            if k > 0 {
+                worst.push_str(",")
+            }
+            if let Some(e) = d.at(w, k) {
+                worst.push_str(d.write(e).as_str())
+            }
+        }
+    }
+    worst.push_str("]")
+    let lowest = match at("lo") {
+        Some(l) => raw(d, d.at(l, 1)),
+        None => String::from("null"),
+    }
+    let brief = obj()
+        .raw("below_ground", raw(d, at("below_ground")).as_str())
+        .raw("cut_off", raw(d, at("cut_off")).as_str())
+        .raw("largest_gradient", raw(d, at("largest_gradient")).as_str())
+        .raw("lowest", lowest.as_str())
+        .raw("mass_kg", raw(d, at("mass")).as_str())
+        .raw("pieces", raw(d, at("pieces")).as_str())
+        .raw("pieces_if_thin_parts_join", raw(d, at("pieces_if_thin_parts_join")).as_str())
+        .raw("size_m", size.as_str())
+        .raw("worst_gradients", worst.as_str())
+        .done()
+    var spec_brief = quoted("no spec (spec.wrela)")
+    if let Some(checks) = s.get(TOP, "checks") {
+        if s.kind(checks) == Kind::List {
+            var misses = String::from("[")
+            var first = true
+            for k in 0..s.count(checks) {
+                let Some(c) = s.at(checks, k) else { continue }
+                let holds = match s.get(c, "holds") {
+                    Some(h) => s.is_true(h),
+                    None => false,
+                }
+                if holds {
+                    continue
+                }
+                if !first {
+                    misses.push_str(",")
+                }
+                first = false
+                let m = obj()
+                    .raw("miss", raw(s, s.get(c, "miss")).as_str())
+                    .raw("name", raw(s, s.get(c, "name")).as_str())
+                    .raw("target", raw(s, s.get(c, "target")).as_str())
+                    .raw("value", raw(s, s.get(c, "value")).as_str())
+                    .done()
+                misses.push_str(m.as_str())
+            }
+            misses.push_str("]")
+            spec_brief = obj()
+                .raw("held", raw(s, s.get(TOP, "held")).as_str())
+                .raw("missed", raw(s, s.get(TOP, "missed")).as_str())
+                .raw("misses", misses.as_str())
+                .done()
+        }
+    }
+    obj()
+        .text("action", "look")
+        .raw("changed", changed)
+        .raw("diagnose", brief.as_str())
+        .text("png", png)
+        .raw("spec", spec_brief.as_str())
+        .done()
+}
+
+/// A document of one `null`.
+fn empty() -> Doc {
+    let Some(d) = parse("null") else { panic("null is JSON") }
+    d
+}
+
+@test
+fn a_photo_registration_needs_a_positive_scale() {
+    for scale in ["0", "-0.1"] {
+        let text = String::from(f"ground_px = 0\nmetres_per_px = {scale}\nz0_px = 0\n")
+        let Err(e) = registration("photo.toml", text.as_str()) else { panic("accepted") }
+        assert(e.as_str().find("must be finite and positive").is_some(), e.as_str())
+    }
+    for text in [
+        "ground_px = 1e300\nmetres_per_px = 0.1\nz0_px = 0\n",
+        "ground_px = 0\nmetres_per_px = 1e300\nz0_px = 0\n",
+        "ground_px = 0\nmetres_per_px = 0.1\nz0_px = 1e300\n",
+    ] {
+        let Err(e) = registration("photo.toml", text) else { panic("accepted") }
+        assert(e.as_str().find("too large for an f32").is_some(), e.as_str())
+    }
+    let Ok(r) = registration(
+        "p.toml",
+        "# a photo\nground_px = 280\nmetres_per_px = 0.002\nz0_px = 200\nfaces = \"left\"\n",
+    ) else {
+        panic("a registration")
+    }
+    assert(r.ground_px == 280.0 && r.metres_per_px == 0.002 && r.z0_px == 200.0 && !r.faces_right)
+}
+
+@test
+fn a_sheet_numbers_its_panels_in_rows() {
+    var a: Vec<u8> = Vec::new()
+    for _ in 0..64 * 64 {
+        a.push(0)
+        a.push(0)
+        a.push(0)
+        a.push(255)
+    }
+    var panels: Vec<Vec<u8>> = Vec::new()
+    for _ in 0..4 {
+        panels.push(a.clone())
+    }
+    let (w, h, px) = sheet(panels, 64)
+    // Four panels: two rows of two, each half size.
+    assert(w == 64 && h == 64 && px.len() == 64 * 64 * 4)
+    // The border, and the black inside.
+    assert(px[0] == 150 && px[(20 * 64 + 30) * 4] == 0)
+}
+
+@test
+fn look_answers_in_brief_with_its_keys_in_order() {
+    let d = "{\"lo\":[-0.3,0,-0.3],\"hi\":[0.3,0.6,0.3],\"pieces\":1,\"pieces_if_thin_parts_join\":1,\"below_ground\":0,\"cut_off\":false,\"mass\":12.5,\"largest_gradient\":1.01,\"worst_gradients\":[1,2,3,4]}"
+    let s = "{\"held\":1,\"missed\":1,\"checks\":[{\"name\":\"h\",\"holds\":true},{\"name\":\"w\",\"holds\":false,\"value\":0.6,\"target\":0.7,\"miss\":-0.1}]}"
+    let a = look_answer("look.png", "null", d, s)
+    assert(
+        a.as_str() ==
+            "{\"action\":\"look\",\"changed\":null,\"diagnose\":{\"below_ground\":0,\"cut_off\":false,\"largest_gradient\":1.01,\"lowest\":0,\"mass_kg\":12.5,\"pieces\":1,\"pieces_if_thin_parts_join\":1,\"size_m\":[0.6,0.6,0.6],\"worst_gradients\":[1,2,3]},\"png\":\"look.png\",\"spec\":{\"held\":1,\"missed\":1,\"misses\":[{\"miss\":-0.1,\"name\":\"w\",\"target\":0.7,\"value\":0.6}]}}",
+        a.as_str(),
+    )
+    let none = look_answer("look.png", "null", d, "{\"action\":\"spec\",\"error\":\"no spec\"}")
+    assert(none.as_str().ends_with("\"spec\":\"no spec (spec.wrela)\"}"))
+}

@@ -1,7 +1,7 @@
 // The map lens's program (#55 AC13): the map lens (the `maplens` package) on a floor. Each action
 // is an export, and a command the lens reads as typed text (the compiler's `MAP_ACTIONS` lists
 // them, for its headless runner). What the lens needs of the floor is `floor.wrela`'s:
-// `wrela studio <floor>` writes one for the floor's `lens` module.
+// `wrela tool studio -- <floor>` writes one for the floor's `lens` module.
 
 use engine::interest::Preview
 use floor::{geology as survey, map, preview}

@@ -1,7 +1,7 @@
 // The wolf as a program. It realizes the wolf's mesh once (sketch 02's extraction) and walks
 // it on the spot with sketch 01's cycle, skinned by the palette the gait's pose gives
 // (`engine::walk`). Its exports give the tests (subjects.rs) the wolf's distance and points
-// around it; the lens draws it too (`wrela studio content/wolf`).
+// around it; the lens draws it too (`wrela tool studio -- content/wolf`).
 
 use creature::{Coat, wolf}
 use engine::creature::Creature

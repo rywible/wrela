@@ -1001,6 +1001,11 @@ fn group_summary(index: Index, g: str) -> String {
             "What the host gives a program: its address, the network and how it's shown.",
         )
     }
+    if g == "studio_tool" {
+        return String::from(
+            "The lens on a subject: `wrela tool studio`, its actions, its server and its headless runs.",
+        )
+    }
     var names: Vec<String> = Vec::new()
     for p in index.pages {
         if group_of(p.path.as_str(), p.kind.as_str()) != g || names.len() >= 4 { continue }
@@ -1177,7 +1182,11 @@ fn group_title(g: str) -> (String, String) {
         "Standard library"
     } else if g == "engine" {
         "Engine"
-    } else if g == "ui" { "Drawing and widgets" } else if g == "platform" { "Host services" } else {
+    } else if g == "ui" { "Drawing and widgets" } else if g == "platform" {
+        "Host services"
+    } else if g == "studio_tool" {
+        "The studio's tool"
+    } else {
         return (g.to_string(), g.to_string())
     }
     (name.to_string(), if g == "spec" { String::new() } else { g.to_string() })

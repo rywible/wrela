@@ -1,0 +1,492 @@
+// JSON, read and written: the lens prints its answers as JSON lines, the toolchain answers a
+// query as JSON, and the tool's own answers (`look`, `beside`, `variants`, `sweep`) are JSON.
+// A document is read into an arena of nodes, each found by its index; a number keeps the text
+// it was written with, so an answer the tool passes on reads as the lens wrote it.
+
+use std::collections::Vec
+use std::fmt::json_text
+use std::string::String
+
+/// What a node is.
+pub enum Kind: Copy + Eq {
+    Null,
+    Bool,
+    Num,
+    Text,
+    List,
+    Obj,
+}
+
+/// A value of a document: its kind, its text (a number's as written, a text's unescaped, a
+/// bool's `true` or `false`), and a list's or an object's members (each a node's index, and for
+/// an object its key).
+struct Node: Clone {
+    kind: Kind,
+    text: String,
+    keys: Vec<String>,
+    kids: Vec<u32>,
+}
+
+/// A JSON document: its values, the first of them its top.
+pub struct Doc: Clone {
+    nodes: Vec<Node>,
+}
+
+/// The top of a document.
+pub const TOP: u32 = 0
+
+/// The document `text` holds, or `None` if it isn't one JSON value.
+pub fn parse(text: str) -> Option<Doc> {
+    var d = Doc { nodes: Vec::new() }
+    var at = 0
+    value(mut d, text, mut at, 0)?
+    at = blanks(text, at)
+    if at != text.len() {
+        return None
+    }
+    Some(d)
+}
+
+fn blanks(t: str, at: u32) -> u32 {
+    var i = at
+    while i < t.len() {
+        let b = t.byte(i)
+        if b != 32 && b != 9 && b != 10 && b != 13 {
+            break
+        }
+        i += 1
+    }
+    i
+}
+
+fn node(d: mut Doc, kind: Kind, text: take String) -> u32 {
+    let i = d.nodes.len()
+    d.nodes.push(Node { kind, text, keys: Vec::new(), kids: Vec::new() })
+    i
+}
+
+/// Reads one value of `t` from `at` into `d`: its node's index.
+fn value(d: mut Doc, t: str, at: mut u32, depth: u32) -> Option<u32> {
+    if depth > 64 {
+        return None
+    }
+    at = blanks(t, at)
+    if at >= t.len() {
+        return None
+    }
+    let b = t.byte(at)
+    if b == 123 {
+        let me = node(mut d, Kind::Obj, String::new())
+        at += 1
+        at = blanks(t, at)
+        if at < t.len() && t.byte(at) == 125 {
+            at += 1
+            return Some(me)
+        }
+        loop {
+            at = blanks(t, at)
+            let key = string(t, mut at)?
+            at = blanks(t, at)
+            if at >= t.len() || t.byte(at) != 58 {
+                return None
+            }
+            at += 1
+            let kid = value(mut d, t, mut at, depth + 1)?
+            d.nodes[me].keys.push(take key)
+            d.nodes[me].kids.push(kid)
+            at = blanks(t, at)
+            if at >= t.len() {
+                return None
+            }
+            if t.byte(at) == 44 {
+                at += 1
+            } else if t.byte(at) == 125 {
+                at += 1
+                return Some(me)
+            } else {
+                return None
+            }
+        }
+    }
+    if b == 91 {
+        let me = node(mut d, Kind::List, String::new())
+        at += 1
+        at = blanks(t, at)
+        if at < t.len() && t.byte(at) == 93 {
+            at += 1
+            return Some(me)
+        }
+        loop {
+            let kid = value(mut d, t, mut at, depth + 1)?
+            d.nodes[me].kids.push(kid)
+            at = blanks(t, at)
+            if at >= t.len() {
+                return None
+            }
+            if t.byte(at) == 44 {
+                at += 1
+            } else if t.byte(at) == 93 {
+                at += 1
+                return Some(me)
+            } else {
+                return None
+            }
+        }
+    }
+    if b == 34 {
+        let s = string(t, mut at)?
+        return Some(node(mut d, Kind::Text, take s))
+    }
+    for (word, kind) in [("true", Kind::Bool), ("false", Kind::Bool), ("null", Kind::Null)] {
+        if t.slice(at, t.len()).starts_with(word) {
+            at += word.len()
+            return Some(node(mut d, kind, String::from(word)))
+        }
+    }
+    let start = at
+    while at < t.len() {
+        let c = t.byte(at)
+        let numeric = (c >= 48 && c <= 57) || c == 45 || c == 43 || c == 46 || c == 101 || c == 69
+        if !numeric {
+            break
+        }
+        at += 1
+    }
+    if at == start {
+        return None
+    }
+    let text = t.slice(start, at)
+    number_of(text)?
+    Some(node(mut d, Kind::Num, String::from(text)))
+}
+
+/// A JSON string of `t` at `at` (its opening quote), unescaped; `at` moves past its end.
+fn string(t: str, at: mut u32) -> Option<String> {
+    if at >= t.len() || t.byte(at) != 34 {
+        return None
+    }
+    at += 1
+    var out = String::new()
+    while at < t.len() {
+        let b = t.byte(at)
+        if b == 34 {
+            at += 1
+            return Some(out)
+        }
+        if b == 92 {
+            if at + 1 >= t.len() {
+                return None
+            }
+            let e = t.byte(at + 1)
+            at += 2
+            if e == 110 {
+                out.push_byte(10)
+            } else if e == 116 {
+                out.push_byte(9)
+            } else if e == 114 {
+                out.push_byte(13)
+            } else if e == 98 {
+                out.push_byte(8)
+            } else if e == 102 {
+                out.push_byte(12)
+            } else if e == 117 {
+                if at + 4 > t.len() {
+                    return None
+                }
+                var cp = 0
+                for k in 0..4 {
+                    let h = t.byte(at + k)
+                    let v = if h >= 48 && h <= 57 {
+                        u32(h - 48)
+                    } else if h >= 97 && h <= 102 {
+                        u32(h - 87)
+                    } else if h >= 65 && h <= 70 {
+                        u32(h - 55)
+                    } else {
+                        return None
+                    }
+                    cp = cp * 16 + v
+                }
+                at += 4
+                out.push_char(cp)
+            } else {
+                out.push_byte(e)
+            }
+            continue
+        }
+        out.push_byte(b)
+        at += 1
+    }
+    None
+}
+
+/// The number a JSON number's text spells, as an `f64`, or `None` if it isn't one.
+pub fn number_of(text: str) -> Option<f64> {
+    var i = 0
+    let n = text.len()
+    var neg = false
+    if i < n && text.byte(i) == 45 {
+        neg = true
+        i += 1
+    }
+    var mant = 0.0
+    var digits = 0
+    var scale = 0
+    while i < n && text.byte(i) >= 48 && text.byte(i) <= 57 {
+        mant = mant * 10.0 + f64(text.byte(i) - 48)
+        digits += 1
+        i += 1
+    }
+    if i < n && text.byte(i) == 46 {
+        i += 1
+        while i < n && text.byte(i) >= 48 && text.byte(i) <= 57 {
+            mant = mant * 10.0 + f64(text.byte(i) - 48)
+            scale -= 1
+            digits += 1
+            i += 1
+        }
+    }
+    if digits == 0 {
+        return None
+    }
+    if i < n && (text.byte(i) == 101 || text.byte(i) == 69) {
+        i += 1
+        var eneg = false
+        if i < n && (text.byte(i) == 45 || text.byte(i) == 43) {
+            eneg = text.byte(i) == 45
+            i += 1
+        }
+        let e = text.slice(i, n).parse_u32()?
+        if e > 400 {
+            return None
+        }
+        scale += if eneg { 0 - i32(e) } else { i32(e) }
+        i = n
+    }
+    if i != n {
+        return None
+    }
+    var p = 1.0
+    for _ in 0..u32(abs(scale)) {
+        p *= 10.0
+    }
+    let v = if scale < 0 { mant / p } else { mant * p }
+    Some(if neg { -v } else { v })
+}
+
+impl Doc {
+    /// What node `n` is.
+    pub fn kind(self, n: u32) -> Kind {
+        self.nodes[n].kind
+    }
+
+    /// Member `key` of object `n`, if it has one.
+    pub fn get(self, n: u32, key: str) -> Option<u32> {
+        let o = self.nodes[n].clone()
+        if o.kind != Kind::Obj {
+            return None
+        }
+        for k in 0..o.keys.len() {
+            if o.keys[k].as_str() == key {
+                return Some(o.kids[k])
+            }
+        }
+        None
+    }
+
+    /// Element `i` of list `n`, if it has one.
+    pub fn at(self, n: u32, i: u32) -> Option<u32> {
+        let o = self.nodes[n].clone()
+        if o.kind != Kind::List || i >= o.kids.len() {
+            return None
+        }
+        Some(o.kids[i])
+    }
+
+    /// How many elements list `n` has (0 if it isn't one).
+    pub fn count(self, n: u32) -> u32 {
+        if self.nodes[n].kind == Kind::List { self.nodes[n].kids.len() } else { 0 }
+    }
+
+    /// Number `n`'s value, if it's a number.
+    pub fn num(self, n: u32) -> Option<f64> {
+        if self.nodes[n].kind != Kind::Num {
+            return None
+        }
+        number_of(self.nodes[n].text.as_str())
+    }
+
+    /// Text `n`'s text, if it's a text.
+    pub fn text(self, n: u32) -> Option<String> {
+        if self.nodes[n].kind != Kind::Text {
+            return None
+        }
+        Some(self.nodes[n].text.clone())
+    }
+
+    /// Whether `n` is `true`.
+    pub fn is_true(self, n: u32) -> bool {
+        self.nodes[n].kind == Kind::Bool && self.nodes[n].text.as_str() == "true"
+    }
+
+    /// Node `n` written as JSON, compact, its numbers as they were written.
+    pub fn write(self, n: u32) -> String {
+        var out = String::new()
+        self.write_into(n, mut out)
+        out
+    }
+
+    fn write_into(self, n: u32, out: mut String) {
+        let o = self.nodes[n].clone()
+        match o.kind {
+            Kind::Null => out.push_str("null"),
+            Kind::Bool | Kind::Num => out.push_str(o.text.as_str()),
+            Kind::Text => {
+                out.push_str("\"")
+                json_text(mut out, o.text.as_str())
+                out.push_str("\"")
+            },
+            Kind::List => {
+                out.push_str("[")
+                for k in 0..o.kids.len() {
+                    if k > 0 {
+                        out.push_str(",")
+                    }
+                    self.write_into(o.kids[k], mut out)
+                }
+                out.push_str("]")
+            },
+            Kind::Obj => {
+                out.push_str("{")
+                for k in 0..o.kids.len() {
+                    if k > 0 {
+                        out.push_str(",")
+                    }
+                    out.push_str("\"")
+                    json_text(mut out, o.keys[k].as_str())
+                    out.push_str("\":")
+                    self.write_into(o.kids[k], mut out)
+                }
+                out.push_str("}")
+            },
+        }
+    }
+}
+
+/// `x` as JSON writes an `f64` (as Rust's `serde_json` does, for the answers this tool's
+/// answers were before): its shortest text, with `.0` when it's whole; `null` if it isn't
+/// finite.
+pub fn f64_text(x: f64) -> String {
+    if !(abs(x) <= 1.7976931348623157e308) {
+        return String::from("null")
+    }
+    var s = String::from(f"{x}")
+    if s.as_str().find(".").is_none() && s.as_str().find("e").is_none() {
+        s.push_str(".0")
+    }
+    s
+}
+
+/// `x` rounded to 3 decimals, as the answers give shares and sizes.
+pub fn round3(x: f64) -> f64 {
+    let r = x * 1000.0
+    let whole = floor(r)
+    let rounded = if r - whole >= 0.5 { whole + 1.0 } else { whole }
+    rounded / 1000.0
+}
+
+/// One JSON object being written, its keys in the order given: `obj().raw("a", "1").done()`.
+pub struct Obj {
+    out: String,
+    first: bool,
+}
+
+pub fn obj() -> Obj {
+    Obj { out: String::from("{"), first: true }
+}
+
+impl Obj {
+    /// Member `k`, already written as JSON.
+    pub fn raw(take self, k: str, json: str) -> Obj {
+        var o = take self
+        if !o.first {
+            o.out.push_str(",")
+        }
+        o.first = false
+        o.out.push_str("\"")
+        json_text(mut o.out, k)
+        o.out.push_str("\":")
+        o.out.push_str(json)
+        o
+    }
+
+    /// Member `k`, a text.
+    pub fn text(take self, k: str, s: str) -> Obj {
+        let o = take self
+        take o.raw(k, quoted(s).as_str())
+    }
+
+    /// Member `k`, an `f64`.
+    pub fn num(take self, k: str, x: f64) -> Obj {
+        let o = take self
+        take o.raw(k, f64_text(x).as_str())
+    }
+
+    /// Member `k`, a whole number.
+    pub fn int(take self, k: str, n: u32) -> Obj {
+        let o = take self
+        take o.raw(k, f"{n}")
+    }
+
+    pub fn done(take self) -> String {
+        var o = take self
+        o.out.push_str("}")
+        take o.out
+    }
+}
+
+/// `s` as a JSON string, quoted.
+pub fn quoted(s: str) -> String {
+    var out = String::from("\"")
+    json_text(mut out, s)
+    out.push_str("\"")
+    out
+}
+
+@test
+fn a_document_reads_back_as_it_was_written() {
+    let text = "{\"a\": [1, 2.50, -3e-2], \"b\": {\"c\": \"x\\\"y\\u00e9\"}, \"d\": true, \"e\": null}"
+    let Some(d) = parse(text) else { panic("a document") }
+    let Some(a) = d.get(TOP, "a") else { panic("a") }
+    assert(d.count(a) == 3)
+    let Some(second) = d.at(a, 1) else { panic("a[1]") }
+    assert(d.num(second) == Some(2.5))
+    let Some(third) = d.at(a, 2) else { panic("a[2]") }
+    let Some(x) = d.num(third) else { panic("a number") }
+    assert(abs(x + 0.03) < 1e-12)
+    let Some(b) = d.get(TOP, "b") else { panic("b") }
+    let Some(c) = d.get(b, "c") else { panic("c") }
+    let Some(s) = d.text(c) else { panic("text") }
+    assert(s.as_str() == "x\"yé")
+    let Some(t) = d.get(TOP, "d") else { panic("d") }
+    assert(d.is_true(t))
+    assert(
+        d.write(TOP).as_str() ==
+            "{\"a\":[1,2.50,-3e-2],\"b\":{\"c\":\"x\\\"yé\"},\"d\":true,\"e\":null}",
+    )
+    for bad in ["", "{", "[1,]", "{\"a\" 1}", "1 2", "\"open", "-", "tru"] {
+        assert(parse(bad).is_none(), bad)
+    }
+}
+
+@test
+fn floats_are_written_as_the_answers_were() {
+    assert(f64_text(0.125).as_str() == "0.125")
+    assert(f64_text(2.0).as_str() == "2.0")
+    assert(f64_text(-0.5).as_str() == "-0.5")
+    assert(round3(0.12345) == 0.123 && round3(0.6666) == 0.667)
+    assert(
+        obj().num("x", 1.0).int("n", 3).text("s", "a\"b").done().as_str() ==
+            "{\"x\":1.0,\"n\":3,\"s\":\"a\\\"b\"}",
+    )
+}

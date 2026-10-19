@@ -148,17 +148,31 @@ pub fn begin<S: Surface>(
 
 /// Makes `lits` the drag's literals, each where it is now, free.
 fn take_literals(d: mut Drag, lits: [u32]) {
-    d.lits.clear()
-    d.original.clear()
-    d.now.clear()
-    d.active.clear()
-    d.held.clear()
+    choose_literals(mut d.lits, mut d.original, mut d.now, mut d.active, mut d.held, lits, value)
+}
+
+/// Makes `lits` the chosen literals, each at `value_of`'s value, free and in play: the room the
+/// vectors have is kept, so choosing again doesn't allocate.
+fn choose_literals(
+    chosen: mut Vec<u32>,
+    original: mut Vec<f32>,
+    now: mut Vec<f32>,
+    active: mut Vec<bool>,
+    held: mut Vec<bool>,
+    lits: [u32],
+    value_of: fn(u32) -> f32,
+) {
+    chosen.clear()
+    original.clear()
+    now.clear()
+    active.clear()
+    held.clear()
     for i in lits {
-        d.lits.push(i)
-        d.original.push(value(i))
-        d.now.push(value(i))
-        d.active.push(true)
-        d.held.push(false)
+        chosen.push(i)
+        original.push(value_of(i))
+        now.push(value_of(i))
+        active.push(true)
+        held.push(false)
     }
 }
 
@@ -455,6 +469,58 @@ fn decimals_of(text: str) -> u32 {
         }
     }
     n
+}
+
+fn eighths(i: u32) -> f32 {
+    f32(i) * 0.125
+}
+
+@test
+fn perf_choosing_literals_again_reuses_room_and_resets_every_value() {
+    var lits: Vec<u32> = Vec::new()
+    var original: Vec<f32> = Vec::new()
+    var now: Vec<f32> = Vec::new()
+    var active: Vec<bool> = Vec::new()
+    var held: Vec<bool> = Vec::new()
+    choose_literals(
+        mut lits,
+        mut original,
+        mut now,
+        mut active,
+        mut held,
+        [1, 2, 3, 4, 5, 6, 7, 8],
+        eighths,
+    )
+    for k in 0..8 {
+        now[k] = -1.0
+        active[k] = false
+        held[k] = true
+    }
+    let before = std::alloc::allocations()
+    choose_literals(mut lits, mut original, mut now, mut active, mut held, [8, 2, 8], eighths)
+    assert(std::alloc::allocations() == before, "choosing again allocated")
+    assert(
+        lits.len() == 3 &&
+            original.len() == 3 &&
+            now.len() == 3 &&
+            active.len() == 3 &&
+            held.len() == 3,
+        "old literals left over",
+    )
+    for k in 0..3 {
+        let i = [8, 2, 8][k]
+        assert(
+            lits[k] == i &&
+                original[k] == eighths(i) &&
+                now[k] == eighths(i) &&
+                active[k] &&
+                !held[k],
+            "literal state changed",
+        )
+    }
+    choose_literals(mut lits, mut original, mut now, mut active, mut held, [u32(0); 0], eighths)
+    choose_literals(mut lits, mut original, mut now, mut active, mut held, [4, 3, 2, 1], eighths)
+    assert(std::alloc::allocations() == before, "an empty choice lost its room")
 }
 
 @test

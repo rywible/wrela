@@ -1,7 +1,7 @@
 // The lens (AC8–AC10 of #39): views of any surface, probes, diagnostics, click to source,
 // drag to edit and fit to a reference, each an action an agent can call and a person can do.
 //
-// The lens keeps plain state. The program `wrela studio` writes around it (the glue) passes
+// The lens keeps plain state. The program `wrela tool studio` writes around it (the glue) passes
 // four functions to the actions that need them, since a lens function can't keep a function
 // in a closure: `subject()`, which builds the subject's field from its literals (in a lifted
 // build an edit is a write to the table, and the next call sees it); `grad(p, which)`, the

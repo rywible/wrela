@@ -1,7 +1,7 @@
-// What the map lens (`wrela studio games/last-green`, #55 AC13) reads of the floor: its map as
-// its literals say now, its ground, its preview (the history at the preview's grain, checked as
-// the bake is: with the crowns as they're drawn and the built things), and its geology. The game
-// never calls these, so none of it is in its build.
+// What the map lens (`wrela tool studio -- games/last-green`, #55 AC13) reads of the floor: its
+// map as its literals say now, its ground, its preview (the history at the preview's grain,
+// checked as the bake is: with the crowns as they're drawn and the built things), and its
+// geology. The game never calls these, so none of it is in its build.
 
 use engine::footing::obstacles_of
 use engine::grow::{Ground, PREVIEW, simulate}
