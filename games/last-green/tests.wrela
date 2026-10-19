@@ -187,7 +187,7 @@ fn no_meadow_grass_under_a_closed_canopy() {
 /// The points down the laid water's courses that the water's tests read: every seventh point's
 /// way to the next, 37% along it, across its width to 0.6 of it each way (a bend's ribbon
 /// turns); each with whether its course falls.
-pub fn course_samples(laid: engine::water::Laid) -> Vec<(vec2, bool)> {
+fn course_samples(laid: engine::water::Laid) -> Vec<(vec2, bool)> {
     var out: Vec<(vec2, bool)> = Vec::new()
     for c in laid.courses {
         var k = 0
@@ -209,7 +209,6 @@ pub fn course_samples(laid: engine::water::Laid) -> Vec<(vec2, bool)> {
 /// AC9's one surface: the sim's water height (`Laid::surface`: the mesh's triangles binned) and
 /// the drawn mesh's (every triangle's plane, as the rasterizer draws it) agree within 1 cm: down
 /// every course (`course_samples`) and over the mere's water; and the mere's lies at its level.
-/// (Where a stream's lies is games/last-green/open-questions'.)
 @test
 fn the_water_is_one_surface() {
     let w = map::map().water
@@ -253,6 +252,40 @@ fn the_water_is_one_surface() {
     }
     assert(samples > 200, f"only {samples} points of the water")
     assert(worst <= 0.01, f"the sim's water and the drawn are {worst} m apart at {worst_at}")
+}
+
+/// AC9's where it lies: a stream's water is within 10 cm of a skin over the ground
+/// (`engine::water::SKIN`) at every sample of its course (`course_samples`), but in a mere's
+/// reach. A stream keeps its whole width on its channel's floor (`grow::keep_to_floor`): on a
+/// ravine's wall its water lay 12 cm over the ground between its mesh's points.
+@test
+fn a_streams_water_lies_a_skin_over_its_ground() {
+    let w = map::map().water
+    let laid = history::waters()
+    var worst = 0.0
+    var worst_at = vec2(0.0)
+    var off = 0
+    var samples = 0
+    for (p, falls) in course_samples(laid) {
+        let ground = ground::GROUND.at(p.x, p.y)
+        let in_mere = length(p - w.meres[0].xy) < w.meres[0].z * engine::water::MERE_REACH &&
+            ground < w.meres[0].w
+        if !falls && !in_mere {
+            let skin = laid.surface(p) - ground - engine::water::SKIN
+            if abs(skin) >= 0.1 {
+                off += 1
+            }
+            if abs(skin) > abs(worst) {
+                worst = skin
+                worst_at = p
+            }
+            samples += 1
+        }
+    }
+    print(
+        f"{off} of {samples} points of the streams off their skin, the most {worst} m at {worst_at}",
+    )
+    assert(off == 0, f"a stream's water at {worst_at} is {worst} m off its skin")
 }
 
 /// AC9's where it is: a course rises at each spring and at the mere's outlet, and one falls from
@@ -464,13 +497,22 @@ fn the_player_walks_into_each_thing_and_never_through_it() {
         f"the player's body came {room} m from an obstacle's surface (its radius {body})",
     )
     assert(stood > 0.0, "the player stood where the walkable mask doesn't let it")
-    // Across a stream's shallows: the course's middle, walked across.
+    // Across a stream's shallows: the course's middle, walked across from 5 m off it (or the
+    // nearest point to that, 3 to 7 m off, where nothing stands).
     borrow c = history::COURSES.courses[0]
     let mid = c.points[c.points.len() / 2]
     let next = c.points[c.points.len() / 2 + 1]
     let across = normalize(vec2(next.y - mid.y, mid.x - next.x))
+    var off = 5.0
+    for k in 0..9 {
+        let o = 5.0 + 0.5 * f32((k + 1) / 2) * (if k % 2 == 0 { 1.0 } else { -1.0 })
+        if !history::OBSTACLES.blocked(mid.xy - across * o, body + 0.2) {
+            off = o
+            break
+        }
+    }
     let wade = walk_toward(
-        mid.xy - across * 5.0,
+        mid.xy - across * off,
         mid.xy + across * 5.0,
         6.0,
         run: false,
@@ -1196,9 +1238,8 @@ fn ranked(xs: [f32], k: u32, of: u32) -> f32 {
 /// sound (`place`, its mix's room checked): the lookbook's places with a sound of their own (the
 /// clearing's meadow, the beech high forest, the stream in the wood, the waterfall, the mere's
 /// shore, the crag's top), along the mere's shore, and at the waterfall's foot. A listener stands
-/// a second at each, then walks 4 s on. (That each sounds its own is
-/// games/last-green/open-questions'.)
-pub fn place_sounds() -> Vec<(Text, vec4)> {
+/// a second at each, then walks 4 s on.
+fn place_sounds() -> Vec<(Text, vec4)> {
     // (The shot of the mere wades into it.)
     let names = [
         "the clearing",
@@ -1239,6 +1280,28 @@ pub fn place_sounds() -> Vec<(Text, vec4)> {
 @fuel(2 ** 40)
 fn each_places_mix_leaves_room() {
     assert(place_sounds().len() == 8, "a place of the floor's sound is missing")
+}
+
+/// The outside audit's point 6: each place on the floor with a sound of its own
+/// (`place_sounds`) is 3 dB or more from every other's in some band. (The waterfall's place
+/// stands 44 m from the fall: from 64 m, it sounded as the mere did, of the stream beside it.)
+@test
+@fuel(2 ** 40)
+fn each_place_on_the_floor_sounds_its_own() {
+    let places = place_sounds()
+    var alike = 0
+    for i in 0..places.len() {
+        for j in (i + 1)..places.len() {
+            let ((a, pa), (b, pb)) = (places[i], places[j])
+            let d = abs(pa - pb)
+            let most = max(max(d.x, d.y), max(d.z, d.w))
+            if most < 3.0 {
+                print(f"{a} and {b} sound alike: {most} dB apart at most")
+                alike += 1
+            }
+        }
+    }
+    assert(alike == 0, f"{alike} pairs of the floor's places sound alike")
 }
 
 /// The level the duel's cues will be mixed at, their first 50 ms (dB of full scale): a strike, a

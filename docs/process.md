@@ -1247,6 +1247,14 @@ Ryan then asked Claude to keep improving it. Claude judged the grown view's stil
 - **Floor plants:** the grown view's wood floor is as bare as the play floor's under its beeches;
   it is the floor's shared look, not this layer's.
 
+On 2026-10-19, when the floor's own tests first ran in the suite, two failures were questions of
+what the game should do, and Ryan answered both. A stream lay up its ravine's wall: "Keep it on
+the floor." Each stream point now moves across its course until the stream's whole width is on
+its channel's floor; where the floor is narrower than the stream, the stream runs down the
+floor's middle, as wide as the floor. The waterfall's lookbook place, 64 m from the fall,
+sounded like the mere's: "Move the spot nearer." Its eye now stands on the stream's bank 44 m
+from the fall, and the stream leads the eye to the fall's foot. The roar's carry is unchanged.
+
 ## The ancient wood, 2026-10-16
 
 Ryan said the grown wood didn't read as a mythical elven forest and that its trees and plants

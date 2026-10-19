@@ -2018,7 +2018,7 @@ pub fn streams<G: Ground>(ground: G, m: Map, land: Land) -> Vec<Stream> {
         var steps = 0
         loop {
             if pts.is_empty() || length(p - last) >= 4.0 {
-                let width = clamp(1.2 + 0.9 * gathered, 1.2, 4.0)
+                let width = clamp(1.2 + 0.9 * gathered, NARROWEST, 4.0)
                 let depth = 0.18 + 0.1 * min(gathered, 3.0)
                 pts.push(vec4(p.x, p.y, width, depth))
                 last = p
@@ -2058,10 +2058,67 @@ pub fn streams<G: Ground>(ground: G, m: Map, land: Land) -> Vec<Stream> {
         for _ in 0..2 {
             smooth_course(mut pts)
         }
+        keep_to_floor(ground, mut pts)
         out.push(Stream { points: pts })
         si += 1
     }
     out
+}
+
+/// How far a stream's bed may rise across it (m) and still be its floor: past that, a bank.
+const FLOOR_RISE: f32 = 0.25
+/// A stream's least width (m).
+const NARROWEST: f32 = 1.2
+
+/// Each point of a stream's course (but its ends) moved across it so its whole width lies on
+/// its channel's floor, where it fits: the floor is the ground across it, out to its width each
+/// way, within `FLOOR_RISE` of the lowest under its water, unbroken. A smoothed course cuts a
+/// bend's inside, and on a ravine's flat floor the drainage can run beside a wall: either laid
+/// the water up the wall. On a floor narrower than the stream, it runs down the floor's middle
+/// as wide as the floor (`NARROWEST` at the least).
+fn keep_to_floor<G: Ground>(ground: G, points: mut Vec<vec4>) {
+    let n = points.len()
+    if n < 3 {
+        return
+    }
+    let step = 0.25
+    for k in 1..(n - 1) {
+        let p = points[k]
+        let along = normalize(points[k + 1].xy - points[k - 1].xy + vec2(1.0e-6, 0.0))
+        let side = vec2(-along.y, along.x)
+        let half = 0.5 * p.z
+        let reach = i32(ceil(p.z / step))
+        let at = |j: i32| {
+            let q = p.xy + side * (f32(j) * step)
+            ground.height(q.x, q.y)
+        }
+        // The lowest ground under its water now, and the floor round it.
+        let within = i32(floor(half / step))
+        var low = 1.0e9
+        var lowest = 0
+        for j in -within..(within + 1) {
+            let h = at(j)
+            if h < low {
+                low = h
+                lowest = j
+            }
+        }
+        var lo = lowest
+        while lo > -reach && at(lo - 1) <= low + FLOOR_RISE {
+            lo -= 1
+        }
+        var hi = lowest
+        while hi < reach && at(hi + 1) <= low + FLOOR_RISE {
+            hi += 1
+        }
+        let (from, to) = (f32(lo) * step, f32(hi) * step)
+        if to - from >= p.z {
+            points[k] = vec4(p.xy + side * clamp(0.0, from + half, to - half), p.z, p.w)
+        } else {
+            let width = max(to - from, NARROWEST)
+            points[k] = vec4(p.xy + side * (0.5 * (from + to)), width, p.w)
+        }
+    }
 }
 
 /// One smoothing pass, keeping the original left neighbour before replacing a point.
@@ -2566,6 +2623,52 @@ fn grid_minima_keep_values_above_a_billion_and_their_sources() {
     assert(least == Vec::filled(4, 2.0e9), "the minimum comes from the field")
     assert(by == Vec::filled(n: 4, value: 8), "each minimum retains its source")
     assert(g.reach_min(values, 1) == least)
+}
+
+/// A channel along z: a flat floor `floor` m each way of x = 0, walls rising steeply past it.
+struct Channel: Copy {
+    floor: f32,
+}
+
+impl Ground for Channel {
+    fn height(self, x: f32, z: f32) -> f32 {
+        2.0 * max(abs(x) - self.floor, 0.0)
+    }
+
+    fn past_edge(self, p: vec2) -> f32 {
+        -100.0
+    }
+
+    fn rock(self, p: vec2) -> f32 {
+        0.0
+    }
+}
+
+/// A stream run beside its channel's wall is moved onto its floor, its whole width on it; one
+/// that already lies on it stays where it is; on a floor narrower than it, it runs down the
+/// floor's middle, as wide as the floor.
+@test
+fn a_streams_whole_width_keeps_to_its_channels_floor() {
+    let course = |x: f32| Vec::from_fn(8, |k| vec4(x, 4.0 * f32(k), 4.0, 0.3))
+    var beside = course(2.5)
+    keep_to_floor(Channel { floor: 4.0 }, mut beside)
+    for k in 1..7 {
+        let x = beside[k].x
+        assert(abs(x) + 2.0 <= 4.0 + 0.25, f"the stream's edge lies up the wall: its middle at {x}")
+    }
+    assert(beside[0].x == 2.5 && beside[7].x == 2.5, "the course's ends moved")
+    var on = course(-1.0)
+    keep_to_floor(Channel { floor: 4.0 }, mut on)
+    for p in on {
+        assert(p.x == -1.0, f"a stream on the floor moved to {p.x}")
+    }
+    var narrow = course(1.0)
+    keep_to_floor(Channel { floor: 1.0 }, mut narrow)
+    for k in 1..7 {
+        let (x, w) = (narrow[k].x, narrow[k].z)
+        assert(abs(x) <= 0.25, f"on a narrow floor, its middle at {x}")
+        assert(abs(x) + 0.5 * w <= 1.0 + 0.25, f"on a narrow floor, its edge at {abs(x) + 0.5 * w}")
+    }
 }
 
 /// Level ground, rock past x = 40 m.
