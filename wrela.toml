@@ -111,4 +111,6 @@ write = ["ws=."]
 package = "studio/release"
 read = ["ws=."]
 write = ["out=build/release", "work=build/release-work"]
-timeout = 3600
+# 90 minutes: a cold build on CI's 4-core runner (each of The Last Green's histories bakes for
+# minutes). Its builds may take most of it (studio/release/main.wrela's BUILD_TIMEOUT).
+timeout = 5400

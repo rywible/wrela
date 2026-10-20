@@ -4,7 +4,8 @@
 // for its font licences and the members of a workspace.
 
 use catalog::{Build, CATALOG, Catalog, Console, Docs, Game, check, is_component, origin, paths}
-use main::{build_options, export_conflict, licences, parse_args, workspace_of}
+use io::read_files
+use main::{BUILD_TIMEOUT, build_options, export_conflict, licences, parse_args, workspace_of}
 use manifest::{joined, parse}
 use pages::{Page, cells, in_order, page_html, render}
 use site::{
@@ -154,6 +155,7 @@ fn the_command_line_takes_a_revision() {
 @test
 fn released_builds_are_optimized() {
     assert(build_options().optimize)
+    assert(build_options().timeout == BUILD_TIMEOUT)
 }
 
 // ---- The fingerprint ---------------------------------------------------------------------------
@@ -682,4 +684,32 @@ fn workspace_members_are_the_nearest_workspaces() {
     }
     let Some(t) = take again else { panic("no answer") }
     assert(t.is_err(), "two members named great_tree")
+}
+
+/// A build's deadline fits the run's budget, with 5 minutes left for the covers and the
+/// writing: the deadline counts a build's wait behind the others, so it's most of the budget.
+@test(tool, read: [("ws", "../..")], budget: 30)
+@job
+fn the_builds_deadline_fits_the_runs_budget() {
+    var j = Box::new(read_files.start(Vec::from([String::from("ws/wrela.toml")])))
+    var manifest = String::new()
+    loop {
+        match j.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                let Ok(all) = take r else { panic("no wrela.toml") }
+                let Some(t) = String::from_utf8(all[0].clone()) else { panic("not UTF-8") }
+                manifest = take t
+                break
+            },
+        }
+    }
+    let Some(at) = manifest.find("[tools.release]") else { panic("no [tools.release]") }
+    let section = manifest.slice(at, manifest.len())
+    let Some(t) = section.find("\ntimeout = ") else { panic("no timeout") }
+    let rest = section.slice(t + 11, section.len())
+    let Some(end) = rest.find("\n") else { panic("no end of line") }
+    let Some(budget) = rest.slice(0, end).parse_u32() else { panic("a timeout in seconds") }
+    assert(BUILD_TIMEOUT > 600.0, "longer than a request's deadline without a budget")
+    assert(BUILD_TIMEOUT + 300.0 <= f64(budget), f"{BUILD_TIMEOUT} s in a budget of {budget} s")
 }

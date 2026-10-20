@@ -71,8 +71,15 @@ pub const COVER_BOX: Size = Size { width: 960, height: 540 }
 pub const COVER_QUALITY: f64 = 90.0
 pub const COVER_METHOD: u8 = 6
 
-/// How long a build, the docs' export or an image may take, in seconds.
+/// How long an image may take, in seconds.
 pub const LONGEST: f64 = 600.0
+
+/// How long a build or the docs' export may take, in seconds: most of the run's budget
+/// (`[tools.release] timeout`, 5400 s), less 5 minutes for the covers and the writing. Every
+/// build is asked for at once and the host runs four at a time, so a build's deadline, which
+/// counts from when the host takes the request, also counts its wait for the others: on a cold
+/// cache and a 4-core runner, the last build starts long after the first.
+pub const BUILD_TIMEOUT: f64 = 5100.0
 
 pub const USAGE: Text = "usage: wrela tool release -- --revision <commit>"
 
@@ -280,7 +287,7 @@ fn release(given: take String) -> Result<String, String> {
             corpus.as_str(),
             REPOSITORY,
             revision.as_str(),
-            timeout: LONGEST,
+            timeout: BUILD_TIMEOUT,
         ),
     )
     var j3 = Box::new(all.start(take builds))
@@ -778,7 +785,7 @@ fn last_part(path: str) -> String {
 pub fn build_options() -> toolchain::BuildOptions {
     var options = toolchain::options()
     options.optimize = true
-    options.timeout = LONGEST
+    options.timeout = BUILD_TIMEOUT
     options
 }
 
