@@ -7,14 +7,46 @@
 // past surfaces inside it where a sculpt crosses itself), at most `r_max`; a station whose point
 // is outside the mesh has none (radii 0). So each part lies inside the mesh, but for
 // interpolation between stations and angles, and where no part reaches shows as a hole.
+//
+// Parts are fitted at once, each on a helper of the tool's (`each_on_helpers`): each part's fit
+// is a function of its own inputs, so the replica is the same with any number of helpers.
 
 use math
 use mesh::{Solid, cross3, dot3, keeps_handedness, len3, names_each_axis_once, parse, place, unit3}
 use references::manifest::{Parts, Point, Registration, Seam}
 use solve::{Banded, catmull_rom_weights, fourier, least_squares}
 use std::collections::Vec
+use std::par::{Task, spawn}
 use std::string::String
 use sweeps::{Fitted, Kind, Measured, Path, SLACK, inside_fitted, inside_measured, section_at}
+
+/// `f` of each of `inputs`, in order, each a task on the tool's helpers (`std::par::spawn`).
+/// They are joined from the last: the tool's own thread runs the tasks that no helper has
+/// started, while the helpers run the first ones, so put the longest first. Each result is `f`
+/// of its input alone, whichever thread runs it: the same as `f` of each in turn.
+pub fn each_on_helpers<I, O, F: @deterministic fn(take I) -> O>(
+    inputs: take Vec<I>,
+    f: F,
+) -> Vec<O> {
+    var tasks: Vec<Task<O>> = Vec::with_capacity(inputs.len())
+    var queued = take inputs
+    var backwards: Vec<I> = Vec::with_capacity(queued.len())
+    while let Some(input) = queued.pop() {
+        backwards.push(take input)
+    }
+    while let Some(input) = backwards.pop() {
+        tasks.push(spawn(take input, f))
+    }
+    var joined: Vec<O> = Vec::with_capacity(tasks.len())
+    while let Some(task) = tasks.pop() {
+        joined.push(take task.join())
+    }
+    var out: Vec<O> = Vec::with_capacity(joined.len())
+    while let Some(o) = joined.pop() {
+        out.push(take o)
+    }
+    out
+}
 
 /// `x` rounded to the nearest integer, halves away from zero (as Rust's `f64::round`; wrela's
 /// `round` takes halves to even).
@@ -628,6 +660,27 @@ fn sweep_point(sm: SweepMeasure, n: u32, back: f64) -> vec3d {
     sm.path.point(sm.measured.s[i], theta, sm.measured.radii[n] - back)
 }
 
+/// A sweep's fit, as `fit_sweeps` asks a helper for it: from its measured radii and their kinds
+/// (`sweeps::fit`), or again from its `previous` fit, with the radii `floor` holds up
+/// (`sweeps::refit`).
+struct SweepFit {
+    measured: Measured,
+    kinds: Vec<Kind>,
+    floor: Vec<bool>,
+    previous: Option<Fitted>,
+    sections: u32,
+    bumps: u32,
+    r_max: f64,
+}
+
+/// The fit that `ask` asks for.
+fn fit_sweep(ask: take SweepFit) -> Fitted {
+    match ask.previous {
+        None => sweeps::fit(ask.measured, ask.kinds, ask.sections, ask.bumps, ask.r_max),
+        Some(previous) => sweeps::refit(ask.measured, ask.kinds, ask.floor, previous, ask.r_max),
+    }
+}
+
 /// How many rounds `fit_sweeps` holds up radii the fitted sweeps don't reach, at most.
 const SWEEP_FLOOR_ROUNDS: u32 = 10
 
@@ -671,12 +724,23 @@ pub fn fit_sweeps(parts: [Part], measured: take Vec<Measure>) -> Vec<Sampled> {
         }
         kinds.push(take ks)
     }
-    var fitted: Vec<Fitted> = Vec::with_capacity(count)
+    // Each sweep fitted at once, on the helpers.
+    var asks: Vec<SweepFit> = Vec::with_capacity(count)
     for e in 0..count {
-        borrow sm = swept[e].1
         borrow p = parts[swept[e].0]
-        fitted.push(sweeps::fit(sm.measured, kinds[e], p.sections, p.bumps, p.r_max))
+        asks.push(
+            SweepFit {
+                measured: swept[e].1.measured.clone(),
+                kinds: kinds[e].clone(),
+                floor: Vec::new(),
+                previous: None,
+                sections: p.sections,
+                bumps: p.bumps,
+                r_max: p.r_max,
+            },
+        )
     }
+    var fitted = each_on_helpers(take asks, fit_sweep)
     var floors: Vec<Vec<bool>> = Vec::with_capacity(count)
     for e in 0..count {
         floors.push(Vec::filled(swept[e].1.measured.radii.len(), value: false))
@@ -739,11 +803,24 @@ pub fn fit_sweeps(parts: [Part], measured: take Vec<Measure>) -> Vec<Sampled> {
                 floors[e][n] = true
             }
         }
+        var asks: Vec<SweepFit> = Vec::with_capacity(again.len())
         for e in again {
-            borrow sm = swept[e].1
-            let r_max = parts[swept[e].0].r_max
-            let f = sweeps::refit(sm.measured, kinds[e], floors[e], fitted[e], r_max)
-            fitted[e] = take f
+            borrow p = parts[swept[e].0]
+            asks.push(
+                SweepFit {
+                    measured: swept[e].1.measured.clone(),
+                    kinds: kinds[e].clone(),
+                    floor: floors[e].clone(),
+                    previous: Some(fitted[e].clone()),
+                    sections: p.sections,
+                    bumps: p.bumps,
+                    r_max: p.r_max,
+                },
+            )
+        }
+        var refitted = each_on_helpers(take asks, fit_sweep)
+        while let Some(f) = refitted.pop() {
+            fitted[again[refitted.len()]] = take f
         }
         within = if within >= 0.016 { 1.0 / 0.0 } else { 2.0 * within }
     }
@@ -815,11 +892,13 @@ const FLOOR_ROUNDS: u32 = 64
 /// The rounds go on until every point is reached.
 pub fn compress(sampled: [Sampled], c: Compression) -> (Vec<(Sampled, u32)>, u32) {
     var floors: Vec<Vec<bool>> = Vec::with_capacity(sampled.len())
-    var out: Vec<(Sampled, u32)> = Vec::with_capacity(sampled.len())
+    // Each part compressed at once, on the helpers.
+    var asks: Vec<CompactFit> = Vec::with_capacity(sampled.len())
     for s in sampled {
         floors.push(Vec::filled(s.radii_count(), value: false))
-        out.push(fit_compact(s, c, []))
+        asks.push(CompactFit { sampled: s.clone(), c, floor: Vec::new() })
     }
+    var out = each_on_helpers(take asks, fit_compact_of)
     var within = 10
     for _ in 0..FLOOR_ROUNDS {
         var lofts: Vec<Option<Loft>> = Vec::with_capacity(out.len())
@@ -882,11 +961,17 @@ pub fn compress(sampled: [Sampled], c: Compression) -> (Vec<(Sampled, u32)>, u32
         if !any_refit && !further {
             break
         }
+        var again: Vec<u32> = Vec::new()
+        var asks: Vec<CompactFit> = Vec::new()
         for k in 0..sampled.len() {
             if refit[k] {
-                let f = fit_compact(sampled[k], c, floors[k])
-                out[k] = take f
+                again.push(k)
+                asks.push(CompactFit { sampled: sampled[k].clone(), c, floor: floors[k].clone() })
             }
+        }
+        var refitted = each_on_helpers(take asks, fit_compact_of)
+        while let Some(f) = refitted.pop() {
+            out[again[refitted.len()]] = take f
         }
         within = if within >= 80 { 2147483647 } else { 2 * within }
     }
@@ -899,6 +984,18 @@ pub fn compress(sampled: [Sampled], c: Compression) -> (Vec<(Sampled, u32)>, u32
         }
     }
     (out, floored)
+}
+
+/// A part's compression, as `compress` asks a helper for it (`fit_compact`).
+struct CompactFit {
+    sampled: Sampled,
+    c: Compression,
+    floor: Vec<bool>,
+}
+
+/// The compression that `ask` asks for.
+fn fit_compact_of(ask: take CompactFit) -> (Sampled, u32) {
+    fit_compact(ask.sampled, ask.c, ask.floor)
 }
 
 /// How far past a measured radius `fit_compact` lets its fit go before holding it back (0.1 mm),
