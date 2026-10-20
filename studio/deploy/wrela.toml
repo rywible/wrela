@@ -1,0 +1,8 @@
+# The deploy tool (`wrela tool deploy`): deploys a release that the release tool built to
+# Cloudflare Workers, keeping what live clients use (main.wrela says how). Its tests deploy to
+# fake sites through a fake `npx` (fakes/npx).
+[package]
+name = "deploy_tool"
+
+[dependencies]
+release_tool = { workspace = true }

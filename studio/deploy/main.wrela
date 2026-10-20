@@ -1,0 +1,875 @@
+// The deploy tool (`wrela tool deploy`): deploys a release that `wrela tool release` built to
+// Cloudflare Workers, keeping what live clients use.
+//
+// ```text
+// wrela tool deploy -- [--require-main-head] [--dry-run]
+// ```
+//
+// The release is the root `release` (build/release). A client keeps the console it loaded, and
+// the console pins each game's release: a deploy must keep serving every release a client may
+// still hold. The console serves `deploys.json`, the history of deploys. A release is kept while
+// it's live and for `KEEP` after it stops being live (policy.wrela). The live site is the
+// archive: each kept release's files are fetched from the Worker that serves them, each checked
+// against the SHA-256 its `files.json` lists, and uploaded again with the new release. A file
+// that doesn't arrive, or doesn't match, stops the deploy before `deploys.json` is written, and
+// so does a Worker over the file limits: nothing is dropped to make room. With
+// `--require-main-head`, a deploy whose commit is no longer the head of `main` (as GitHub's git
+// service advertises it, as `git ls-remote` reads it) stops before it changes anything. The docs
+// are the one exception to keeping: nothing pins their releases, and they deploy last, so a kept
+// release the docs Worker answers 404 for never went live there, and no reader holds it.
+//
+// Wrangler deploys each Worker (`npx --yes wrangler@<WRANGLER>`, granted as `npx`), with the
+// secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` given to it alone. The games deploy
+// first and then the console, so a console never offers a game release its Worker doesn't serve
+// yet; the docs, which no other Worker depends on, go last, so a failure there leaves the console
+// and games up to date. Each Worker must serve the new release, byte for byte, and the console
+// must list it as the one live release, before the deploy passes. The log says, for each
+// Worker, what it keeps, how many files it uploads, what Wrangler said and that it serves the
+// release.
+//
+// `--dry-run` does all but run Wrangler: it restores the kept releases and writes
+// `deploys.json`. The grants are the workspace's (`[tools.deploy]`), so the secrets must be set,
+// if only to empty values, for a dry run too.
+
+use policy::{
+    CLOUDFLARE, Deploy, Found, Limits, Release, Worker, deploy_order, history_json, home, is_inside,
+    kept, main_head, next_history, quoted, read_history, read_release, redirected, uploads,
+}
+use release_tool::io::{data_bytes, read_files, write_files}
+use release_tool::tree::hex_sha
+use std::io::{IoError, Pending, print}
+use std::job::{Job, Step}
+use std::json::parse as parse_json
+use std::tool::{RUNNING, answer, args, secret}
+use std::tool::files
+use std::tool::files::Kind
+use std::tool::http
+use std::tool::http::{Header, Request}
+use std::tool::run
+use std::tool::time
+
+/// The root the release is in: `wrela tool release`'s output.
+pub const RELEASE: Text = "release"
+
+/// The repository whose `main` deploys.
+pub const REPOSITORY: Text = "https://github.com/rywible/wrela"
+
+/// The Wrangler that deploys, pinned, as `npx` runs it.
+pub const WRANGLER: Text = "wrangler@4.151.0"
+
+/// The secrets Wrangler gets, when they're granted.
+pub const SECRETS: [Text; 2] = ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
+
+/// How many files of a kept release are fetched at once.
+pub const AT_ONCE: u32 = 16
+
+/// How long a request to a live site, and a Worker's deploy, may take, in seconds.
+pub const FETCH_TIMEOUT: f64 = 60.0
+pub const DEPLOY_TIMEOUT: f64 = 600.0
+
+/// How many times a Worker is asked whether it serves the new release, and the seconds between.
+pub const TRIES: u32 = 12
+pub const BETWEEN_TRIES: f64 = 5.0
+
+pub const USAGE: Text = "usage: wrela tool deploy -- [--require-main-head] [--dry-run]"
+
+/// What a deploy does: the root its release is in, whether it stops unless its commit is the
+/// head of `main`, whether it stops before Wrangler runs, the Workers' limits, and the
+/// repository whose `main` it checks.
+pub struct Options: Clone {
+    pub root: String,
+    pub require_main_head: bool,
+    pub dry_run: bool,
+    pub limits: Limits,
+    pub repository: String,
+}
+
+/// The options the command line gives, or `None` for a usage error.
+pub fn parse_args(given: [String]) -> Option<Options> {
+    var o = Options {
+        root: String::from(RELEASE),
+        require_main_head: false,
+        dry_run: false,
+        limits: CLOUDFLARE,
+        repository: String::from(REPOSITORY),
+    }
+    for a in given {
+        if a.as_str() == "--require-main-head" && !o.require_main_head {
+            o.require_main_head = true
+        } else if a.as_str() == "--dry-run" && !o.dry_run {
+            o.dry_run = true
+        } else {
+            return None
+        }
+    }
+    Some(o)
+}
+
+@job
+fn main(given: take Vec<String>) -> u32 {
+    let Some(o) = parse_args(given) else {
+        print(USAGE)
+        return 2
+    }
+    var j = Box::new(deploy.start(take o))
+    loop {
+        match j.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                match take r {
+                    Ok(_) => return 0,
+                    Err(e) => {
+                        print(f"deploy: {e.as_str()}")
+                        return 1
+                    },
+                }
+            },
+        }
+    }
+}
+
+pub fn tool_init() -> Job<main> {
+    main.start(args())
+}
+
+pub fn tool(job: mut Job<main>) -> u32 {
+    match job.resume() {
+        Step::Yielded => RUNNING,
+        Step::Done(status) => status,
+    }
+}
+
+// ---- Requests ----------------------------------------------------------------------------------
+
+/// A request's answer, once it comes.
+@job
+pub fn answered(given: take Pending<u8>) -> Result<Vec<u8>, IoError> {
+    var p = take given
+    var got = p.poll()
+    while got.is_none() {
+        yield
+        got = p.poll()
+    }
+    let Some(polled) = take got else { panic("polled") }
+    take polled
+}
+
+/// What a live site answered: its status and its body.
+pub struct Got: Clone {
+    pub status: u16,
+    pub body: Vec<u8>,
+}
+
+/// A `GET` of `url`, following a redirect that stays on its origin (at most 5), as a Worker's
+/// assets redirect `/x/index.html` to `/x/`. A request that fails is an error; a status isn't.
+@job
+pub fn get(given: take String) -> Result<Got, String> {
+    var url = take given
+    for _ in 0..6 {
+        var req = http::get(url.as_str())
+        req.headers.push(
+            Header { name: String::from("User-Agent"), value: String::from("wrela-deploy") },
+        )
+        req.timeout = FETCH_TIMEOUT
+        var j = Box::new(answered.start(http::fetch(req)))
+        var polled: Result<Vec<u8>, IoError> = Ok(Vec::new())
+        loop {
+            match j.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(r) => {
+                    polled = take r
+                    break
+                },
+            }
+        }
+        let response = match http::read_response(take polled) {
+            Ok(r) => take r,
+            Err(e) => return Err(String::from(f"GET {url.as_str()}: {e.message()}")),
+        }
+        let status = response.status
+        if status == 301 || status == 302 || status == 303 || status == 307 || status == 308 {
+            let Some(location) = response.header("location") else {
+                return Err(String::from(f"GET {url.as_str()}: a redirect with no location"))
+            }
+            let Some(next) = redirected(url.as_str(), location.as_str()) else {
+                return Err(
+                    String::from(
+                        f"GET {url.as_str()}: a redirect off its origin, to {location.as_str()}",
+                    ),
+                )
+            }
+            url = take next
+            continue
+        }
+        var jb = Box::new(data_bytes.start(response.body.clone()))
+        loop {
+            match jb.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(r) => {
+                    match take r {
+                        Ok(body) => return Ok(Got { status, body }),
+                        Err(e) => return Err(String::from(f"GET {url.as_str()}: {e.as_str()}")),
+                    }
+                },
+            }
+        }
+    }
+    Err(String::from(f"GET {url.as_str()}: too many redirects"))
+}
+
+/// Each `GET` of `urls`, at once.
+@job
+pub fn get_all(given: take Vec<String>) -> Vec<Result<Got, String>> {
+    let urls = take given
+    var jobs: Vec<Job<get>> = Vec::new()
+    var got: Vec<Option<Result<Got, String>>> = Vec::new()
+    for u in urls {
+        jobs.push(get.start(u.clone()))
+        got.push(None)
+    }
+    var left = urls.len()
+    while left > 0 {
+        for k in 0..jobs.len() {
+            if got[k].is_none() {
+                match jobs[k].resume() {
+                    Step::Yielded => {},
+                    Step::Done(r) => {
+                        got[k] = Some(take r)
+                        left -= 1
+                    },
+                }
+            }
+        }
+        if left > 0 {
+            yield
+        }
+    }
+    var out: Vec<Result<Got, String>> = Vec::new()
+    for k in 0..got.len() {
+        let Some(r) = replace(mut got[k], None) else { panic("every request is answered") }
+        out.push(take r)
+    }
+    out
+}
+
+/// The body at `url`, which must answer 200.
+@job
+pub fn fetch_ok(given: take String) -> Result<Vec<u8>, String> {
+    let url = take given
+    var j = Box::new(get.start(url.clone()))
+    loop {
+        match j.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                let got = (take r)?
+                if got.status != 200 {
+                    return Err(String::from(f"GET {url.as_str()}: HTTP {got.status}"))
+                }
+                return Ok(got.body.clone())
+            },
+        }
+    }
+}
+
+/// The deploys the console at `domain` lists, oldest first.
+@job
+pub fn history(given: take String) -> Result<Vec<Deploy>, String> {
+    let domain = take given
+    var j = Box::new(fetch_ok.start(String::from(f"https://{domain.as_str()}/deploys.json")))
+    loop {
+        match j.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                let body = (take r)?
+                let Some(text) = String::from_utf8(take body) else {
+                    return Err(String::from(f"{domain.as_str()}'s deploys.json isn't UTF-8"))
+                }
+                return read_history(text.as_str())
+            },
+        }
+    }
+}
+
+/// The whole of the file at `path`, a root path.
+@job
+pub fn read_one(given: take String) -> Result<Vec<u8>, String> {
+    let path = take given
+    var j = Box::new(read_files.start(Vec::from([path.clone()])))
+    loop {
+        match j.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                var all = (take r)?
+                return Ok(replace(mut all[0], Vec::new()))
+            },
+        }
+    }
+}
+
+/// Every entry under the directory `dir` (a root path), each by its path there, with its kind
+/// and size: a link is listed, not followed.
+@job
+pub fn found(given: take String) -> Result<Vec<Found>, String> {
+    let dir = take given
+    var out: Vec<Found> = Vec::new()
+    var todo: Vec<String> = Vec::from([String::new()])
+    while !todo.is_empty() {
+        let rel = todo.drain_front(1)[0].clone()
+        let path = if rel.is_empty() { dir.clone() } else {
+            String::from(f"{dir.as_str()}/{rel.as_str()}")
+        }
+        var j = Box::new(answered.start(files::list(path.as_str())))
+        var polled: Result<Vec<u8>, IoError> = Ok(Vec::new())
+        loop {
+            match j.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(r) => {
+                    polled = take r
+                    break
+                },
+            }
+        }
+        let entries = match files::read_list(take polled) {
+            Ok(e) => take e,
+            Err(e) => return Err(String::from(f"{path.as_str()}: {e.message()}")),
+        }
+        for e in entries {
+            let at = if rel.is_empty() { e.name.clone() } else {
+                String::from(f"{rel.as_str()}/{e.name.as_str()}")
+            }
+            if e.kind == Kind::Dir {
+                todo.push(take at)
+            } else {
+                out.push(Found { path: at, kind: e.kind, size: e.size })
+            }
+        }
+    }
+    Ok(out)
+}
+
+// ---- Keeping -----------------------------------------------------------------------------------
+
+/// Fetches the kept `release` from the Worker `w` serves, by its `listing` (its `files.json`,
+/// as fetched), into the Worker's `releases/<release>` in `root`: each file checked against its
+/// SHA-256, and one already there must be the same. How many files it keeps.
+@job
+pub fn restore(
+    given_release: take String,
+    given_worker: take Worker,
+    given_listing: take Vec<u8>,
+    given_root: take String,
+) -> Result<u32, String> {
+    let release = take given_release
+    let w = take given_worker
+    let listing = take given_listing
+    let root = take given_root
+    let base = String::from(f"https://{w.domain.as_str()}/releases/{release.as_str()}/")
+    let destination = String::from(
+        f"{root.as_str()}/{w.worker.as_str()}/releases/{release.as_str()}",
+    )
+    let Some(text) = String::from_utf8(listing.clone()) else {
+        return Err(String::from(f"{release.as_str()}: its files.json isn't UTF-8"))
+    }
+    let Some(doc) = parse_json(text.as_str()) else {
+        return Err(String::from(f"{release.as_str()}: its files.json isn't JSON"))
+    }
+    var wanted: Vec<(String, String)> = Vec::new()
+    for (path, n) in doc.members(0) {
+        let Some(digest) = doc.text(n) else {
+            return Err(String::from(f"{release.as_str()}: {path.as_str()} has no SHA-256"))
+        }
+        if !is_inside(path.as_str()) {
+            return Err(String::from(f"{release.as_str()}: invalid path '{path.as_str()}'"))
+        }
+        wanted.push((path.clone(), take digest))
+    }
+    wanted.sort_by(|a: (String, String), b: (String, String)| a.0 < b.0)
+    // What's there already: the release may have this release's files (a redeploy).
+    var jf = Box::new(found.start(destination.clone()))
+    var there: Vec<String> = Vec::new()
+    loop {
+        match jf.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                match take r {
+                    Ok(list) => {
+                        for f in list {
+                            there.push(f.path.clone())
+                        }
+                    },
+                    // No such directory: nothing is there.
+                    Err(_) => {},
+                }
+                break
+            },
+        }
+    }
+    var at = 0
+    while at < wanted.len() {
+        let n = min(AT_ONCE, wanted.len() - at)
+        var urls: Vec<String> = Vec::new()
+        for k in 0..n {
+            urls.push(String::from(f"{base.as_str()}{quoted(wanted[at + k].0.as_str()).as_str()}"))
+        }
+        var jg = Box::new(get_all.start(urls.clone()))
+        var got: Vec<Result<Got, String>> = Vec::new()
+        loop {
+            match jg.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(r) => {
+                    got = take r
+                    break
+                },
+            }
+        }
+        var items: Vec<(String, Vec<u8>)> = Vec::new()
+        for k in 0..n {
+            let r = replace(mut got[k], Ok(Got { status: 0, body: Vec::new() }))
+            let g = (take r)?
+            if g.status != 200 {
+                return Err(String::from(f"GET {urls[k].as_str()}: HTTP {g.status}"))
+            }
+            let path = wanted[at + k].0.clone()
+            let digest = wanted[at + k].1.clone()
+            if hex_sha(g.body).as_str() != digest.as_str() {
+                return Err(
+                    String::from(
+                        f"{release.as_str()}/{path.as_str()} from {w.domain.as_str()} doesn't match its SHA-256",
+                    ),
+                )
+            }
+            items.push((path.clone(), g.body.clone()))
+        }
+        var jk = Box::new(keep.start(take items, destination.clone(), there.clone()))
+        loop {
+            match jk.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(r) => {
+                    (take r)?
+                    break
+                },
+            }
+        }
+        at += n
+    }
+    var jl = Box::new(
+        keep.start(
+            Vec::from([(String::from("files.json"), listing.clone())]),
+            destination.clone(),
+            there.clone(),
+        ),
+    )
+    loop {
+        match jl.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                (take r)?
+                break
+            },
+        }
+    }
+    Ok(wanted.len())
+}
+
+/// Writes each file of `items` (its path in `dir`, and its bytes) into `dir`, unless it's
+/// `there` already: then it must be the same, since a release's URLs are immutable.
+@job
+pub fn keep(
+    given_items: take Vec<(String, Vec<u8>)>,
+    given_dir: take String,
+    given_there: take Vec<String>,
+) -> Result<(), String> {
+    var items = take given_items
+    let dir = take given_dir
+    let there = take given_there
+    var new: Vec<(String, Vec<u8>)> = Vec::new()
+    for k in 0..items.len() {
+        let path = String::from(f"{dir.as_str()}/{items[k].0.as_str()}")
+        var known = false
+        for t in there {
+            if t.as_str() == items[k].0.as_str() {
+                known = true
+            }
+        }
+        if !known {
+            new.push((take path, replace(mut items[k].1, Vec::new())))
+            continue
+        }
+        var j = Box::new(read_one.start(path.clone()))
+        loop {
+            match j.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(r) => {
+                    let had = (take r)?
+                    if had != items[k].1 {
+                        return Err(
+                            String::from(f"an immutable release cannot change: {path.as_str()}"),
+                        )
+                    }
+                    break
+                },
+            }
+        }
+    }
+    var jw = Box::new(write_files.start(take new))
+    loop {
+        match jw.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => return take r,
+        }
+    }
+}
+
+// ---- The deploy --------------------------------------------------------------------------------
+
+/// The seconds since 1970, now.
+@job
+pub fn now() -> Result<i64, String> {
+    var j = Box::new(answered.start(time::utc_now()))
+    loop {
+        match j.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                match time::read_utc(take r) {
+                    Ok(t) => return Ok(i64(t.seconds)),
+                    Err(e) => return Err(String::from(e.message())),
+                }
+            },
+        }
+    }
+}
+
+/// The deploy `o` says: the history it leaves.
+@job
+pub fn deploy(given: take Options) -> Result<Vec<Deploy>, String> {
+    let o = take given
+    let root = o.root.clone()
+    var jr = Box::new(read_one.start(String::from(f"{root.as_str()}/release.json")))
+    var report: Option<Release> = None
+    loop {
+        match jr.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                let bytes = (take r)?
+                let Some(text) = String::from_utf8(take bytes) else {
+                    return Err(String::from("release.json isn't UTF-8"))
+                }
+                report = Some(read_release(text.as_str())?)
+                break
+            },
+        }
+    }
+    let Some(rel) = take report else { panic("read") }
+    let console = home(rel)
+    var jn = Box::new(now.start())
+    var at: i64 = 0
+    loop {
+        match jn.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                at = (take r)?
+                break
+            },
+        }
+    }
+    var jh = Box::new(history.start(console.domain.clone()))
+    var deploys: Vec<Deploy> = Vec::new()
+    loop {
+        match jh.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                deploys = (take r)?
+                break
+            },
+        }
+    }
+    print(f"deploying release {rel.release.as_str()} of {rel.source.as_str()}")
+    let keeping = kept(deploys, at, rel.release.as_str())
+    for di in 0..keeping.len() {
+        let d = keeping[di].clone()
+        for wi in 0..rel.workers.len() {
+            let w = rel.workers[wi].clone()
+            // A Worker the kept release didn't have (a game added since) has nothing to keep.
+            var had = false
+            for name in d.workers {
+                if name.as_str() == w.worker.as_str() {
+                    had = true
+                }
+            }
+            if !had {
+                continue
+            }
+            let url = String::from(
+                f"https://{w.domain.as_str()}/releases/{d.release.as_str()}/files.json",
+            )
+            var jl = Box::new(get.start(url.clone()))
+            var listing: Vec<u8> = Vec::new()
+            loop {
+                match jl.get_mut().resume() {
+                    Step::Yielded => yield,
+                    Step::Done(r) => {
+                        let g = (take r)?
+                        if g.status == 404 && w.docs {
+                            print(
+                                f"{w.worker.as_str()} never served {d.release.as_str()}: nothing to keep",
+                            )
+                        } else if g.status != 200 {
+                            return Err(String::from(f"GET {url.as_str()}: HTTP {g.status}"))
+                        } else {
+                            listing = g.body.clone()
+                        }
+                        break
+                    },
+                }
+            }
+            if listing.is_empty() {
+                continue
+            }
+            var jk = Box::new(
+                restore.start(d.release.clone(), w.clone(), take listing, root.clone()),
+            )
+            loop {
+                match jk.get_mut().resume() {
+                    Step::Yielded => yield,
+                    Step::Done(r) => {
+                        let n = (take r)?
+                        print(
+                            f"{w.worker.as_str()} keeps {d.release.as_str()}: {n} files from {w.domain.as_str()}",
+                        )
+                        break
+                    },
+                }
+            }
+        }
+    }
+    var names: Vec<String> = Vec::new()
+    for wi in 0..rel.workers.len() {
+        let w = rel.workers[wi].clone()
+        names.push(w.worker.clone())
+    }
+    let after = next_history(deploys, rel.release.as_str(), rel.source.as_str(), names, at)
+    let path = String::from(f"{root.as_str()}/{console.worker.as_str()}/deploys.json")
+    var jw = Box::new(
+        write_files.start(Vec::from([(take path, Vec::from(history_json(after).as_bytes()))])),
+    )
+    loop {
+        match jw.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                (take r)?
+                break
+            },
+        }
+    }
+    for wi in 0..rel.workers.len() {
+        let w = rel.workers[wi].clone()
+        var jf = Box::new(found.start(String::from(f"{root.as_str()}/{w.worker.as_str()}")))
+        loop {
+            match jf.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(r) => {
+                    let list = (take r)?
+                    let n = uploads(list, o.limits)?
+                    print(f"{w.worker.as_str()} ({w.domain.as_str()}): {n} files")
+                    break
+                },
+            }
+        }
+    }
+    if o.require_main_head {
+        let url = String::from(f"{o.repository.as_str()}.git/info/refs?service=git-upload-pack")
+        var jm = Box::new(fetch_ok.start(url.clone()))
+        loop {
+            match jm.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(r) => {
+                    let body = (take r)?
+                    let Some(head) = main_head(body) else {
+                        return Err(String::from(f"{url.as_str()} names no head of main"))
+                    }
+                    if head.as_str() != rel.source.as_str() {
+                        return Err(
+                            String::from(
+                                f"{rel.source.as_str()} is no longer the head of main ({head.as_str()} is); a newer push deploys",
+                            ),
+                        )
+                    }
+                    break
+                },
+            }
+        }
+    }
+    if o.dry_run {
+        print("a dry run: nothing deployed")
+        return Ok(after)
+    }
+    let order = deploy_order(rel.workers)
+    for wi in 0..order.len() {
+        let w = order[wi].clone()
+        var c = run::command("npx", root.as_str())
+        c.args = Vec::from(
+            [
+                String::from("--yes"),
+                String::from(WRANGLER),
+                String::from("deploy"),
+                String::from("--config"),
+                String::from(f"{w.worker.as_str()}.wrangler.json"),
+            ],
+        )
+        for name in SECRETS {
+            if secret(name).is_some() {
+                c.secrets.push(String::from(name))
+            }
+        }
+        c.timeout = DEPLOY_TIMEOUT
+        print(f"{w.worker.as_str()}: wrangler deploy")
+        var j = Box::new(answered.start(run::run(c)))
+        var polled: Result<Vec<u8>, IoError> = Ok(Vec::new())
+        loop {
+            match j.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(r) => {
+                    polled = take r
+                    break
+                },
+            }
+        }
+        let ran = match run::read_ran(take polled) {
+            Ok(r) => take r,
+            Err(e) => return Err(
+                String::from(f"wrangler deploy of {w.worker.as_str()}: {e.message()}"),
+            ),
+        }
+        for stream in 0..2 {
+            let data = if stream == 0 { ran.stdout.clone() } else { ran.stderr.clone() }
+            var jd = Box::new(data_bytes.start(take data))
+            loop {
+                match jd.get_mut().resume() {
+                    Step::Yielded => yield,
+                    Step::Done(r) => {
+                        let bytes = (take r)?
+                        match String::from_utf8(take bytes) {
+                            Some(t) => {
+                                let said = t.trim()
+                                if !said.is_empty() {
+                                    print(said)
+                                }
+                            },
+                            None => print("(wrangler's output isn't UTF-8)"),
+                        }
+                        break
+                    },
+                }
+            }
+        }
+        if ran.status != 0 {
+            return Err(String::from(f"wrangler deploy of {w.worker.as_str()} exited {ran.status}"))
+        }
+    }
+    var jv = Box::new(verify.start(take rel, root.clone()))
+    loop {
+        match jv.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                (take r)?
+                break
+            },
+        }
+    }
+    Ok(after)
+}
+
+/// Waits until each Worker of `rel` serves its release, byte for byte (its `files.json` as the
+/// release in `root` has it), and the console lists it as the one live release.
+@job
+pub fn verify(given: take Release, given_root: take String) -> Result<(), String> {
+    let rel = take given
+    let root = take given_root
+    for wi in 0..rel.workers.len() {
+        let w = rel.workers[wi].clone()
+        let local = String::from(
+            f"{root.as_str()}/{w.worker.as_str()}/releases/{rel.release.as_str()}/files.json",
+        )
+        var jr = Box::new(read_one.start(take local))
+        var want: Vec<u8> = Vec::new()
+        loop {
+            match jr.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(r) => {
+                    want = (take r)?
+                    break
+                },
+            }
+        }
+        let url = String::from(
+            f"https://{w.domain.as_str()}/releases/{rel.release.as_str()}/files.json",
+        )
+        var tries = 0
+        loop {
+            var jg = Box::new(get.start(url.clone()))
+            var serves = false
+            loop {
+                match jg.get_mut().resume() {
+                    Step::Yielded => yield,
+                    Step::Done(r) => {
+                        if let Ok(g) = take r {
+                            serves = g.status == 200 && g.body == want
+                        }
+                        break
+                    },
+                }
+            }
+            if serves {
+                break
+            }
+            tries += 1
+            if tries == TRIES {
+                return Err(
+                    String::from(
+                        f"{w.domain.as_str()} doesn't serve release {rel.release.as_str()}",
+                    ),
+                )
+            }
+            var jt = Box::new(answered.start(time::after(BETWEEN_TRIES)))
+            loop {
+                match jt.get_mut().resume() {
+                    Step::Yielded => yield,
+                    Step::Done(_) => break,
+                }
+            }
+        }
+        print(f"{w.worker.as_str()} ({w.domain.as_str()}) serves release {rel.release.as_str()}")
+    }
+    let console = home(rel)
+    var jh = Box::new(history.start(console.domain.clone()))
+    loop {
+        match jh.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                let deploys = (take r)?
+                var live = String::new()
+                var count = 0
+                var only = true
+                for d in deploys {
+                    if d.live_until.is_none() {
+                        if count > 0 {
+                            live.push_str(", ")
+                        }
+                        live.push_str(d.release.as_str())
+                        count += 1
+                        only = only && d.release.as_str() == rel.release.as_str()
+                    }
+                }
+                if count != 1 || !only {
+                    return Err(
+                        String::from(
+                            f"{console.domain.as_str()} lists [{live.as_str()}] live, not {rel.release.as_str()}",
+                        ),
+                    )
+                }
+                print(f"{console.domain.as_str()} lists {rel.release.as_str()} as live")
+                return Ok(())
+            },
+        }
+    }
+}

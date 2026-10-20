@@ -1,7 +1,7 @@
 // The released console and its games, and the reference docs: each a Cloudflare Worker serving
-// static assets on its own domain. `wrela tool release` builds a release of them all, and
-// tools/deploy.py deploys it. The console reads the catalog that a release writes for it
-// (catalog.tsv), not this value: what it shows is what the release built.
+// static assets on its own domain. `wrela tool release` builds a release of them all, and the
+// deploy tool (studio/deploy) deploys it. The console reads the catalog that a release writes
+// for it (catalog.tsv), not this value: what it shows is what the release built.
 //
 // The catalog is a value of the release tool's own package, because the tool is its only
 // reader: the console and the games build without it, and it names packages and Workers, which

@@ -1,0 +1,559 @@
+// What a deploy decides, as plain functions: the deploy history the console serves
+// (`deploys.json`) and the releases it keeps, the dates it records, the files a Worker may
+// upload, the order the Workers deploy in, the head of `main` as GitHub's git service advertises
+// it, and where a live site's redirect leads. main.wrela does the requests.
+
+use release_tool::json::{Json, indented, member, text}
+use release_tool::tree::{MAX_FILE, MAX_FILES, PRIVATE}
+use std::json::{Doc, Kind as JsonKind, TOP, parse as parse_json}
+use std::tool::files::Kind
+
+/// How long a release stays after it stops being live, in seconds: a tab left open that long
+/// can still play. 14 days.
+pub const KEEP: i64 = 14 * 24 * 3600
+
+/// A deploy the history lists: its release, the commit it was built from, its Workers, and when
+/// it went live and stopped being live (`None` while it's live), each in seconds since 1970.
+pub struct Deploy: Clone {
+    pub release: String,
+    pub source: String,
+    pub workers: Vec<String>,
+    pub live_from: i64,
+    pub live_until: Option<i64>,
+}
+
+/// Whether `id` is a release's id: 20 lowercase hexadecimal digits.
+pub fn is_release(id: str) -> bool {
+    if id.len() != 20 {
+        return false
+    }
+    for i in 0..id.len() {
+        let b = id.byte(i)
+        if !((b >= 48 && b <= 57) || (b >= 97 && b <= 102)) {
+            return false
+        }
+    }
+    true
+}
+
+fn text_at(d: Doc, n: u32, key: str) -> Result<String, String> {
+    let Some(k) = d.get(n, key) else { return Err(String::from(f"a deploy has no `{key}`")) }
+    let Some(t) = d.text(k) else { return Err(String::from(f"a deploy's `{key}` isn't text")) }
+    Ok(t)
+}
+
+/// The deploys a `deploys.json` lists, oldest first, or why it isn't one.
+pub fn read_history(json: str) -> Result<Vec<Deploy>, String> {
+    let Some(d) = parse_json(json) else { return Err(String::from("deploys.json isn't JSON")) }
+    let Some(list) = d.get(TOP, "deploys") else {
+        return Err(String::from("deploys.json has no `deploys`"))
+    }
+    if d.kind(list) != JsonKind::List {
+        return Err(String::from("deploys.json's `deploys` isn't a list"))
+    }
+    var out: Vec<Deploy> = Vec::new()
+    for i in 0..d.count(list) {
+        let Some(n) = d.at(list, i) else { return Err(String::from("a deploy is missing")) }
+        let release = text_at(d, n, "release")?
+        if !is_release(release.as_str()) {
+            return Err(String::from(f"invalid release in the history: '{release.as_str()}'"))
+        }
+        let source = text_at(d, n, "source")?
+        let Some(ws) = d.get(n, "workers") else {
+            return Err(String::from("a deploy has no `workers`"))
+        }
+        if d.kind(ws) != JsonKind::List {
+            return Err(String::from("a deploy's `workers` isn't a list"))
+        }
+        var workers: Vec<String> = Vec::new()
+        for k in 0..d.count(ws) {
+            let Some(w) = d.at(ws, k) else { return Err(String::from("a worker is missing")) }
+            let Some(name) = d.text(w) else { return Err(String::from("a worker isn't text")) }
+            workers.push(take name)
+        }
+        let from = text_at(d, n, "live_from")?
+        let Some(live_from) = parse_stamp(from.as_str()) else {
+            return Err(String::from(f"invalid date in the history: '{from.as_str()}'"))
+        }
+        let Some(u) = d.get(n, "live_until") else {
+            return Err(String::from("a deploy has no `live_until`"))
+        }
+        var live_until: Option<i64> = None
+        if d.kind(u) != JsonKind::Null {
+            let Some(until) = d.text(u) else {
+                return Err(String::from("a deploy's `live_until` isn't text"))
+            }
+            let Some(t) = parse_stamp(until.as_str()) else {
+                return Err(String::from(f"invalid date in the history: '{until.as_str()}'"))
+            }
+            live_until = Some(t)
+        }
+        out.push(Deploy { release, source, workers, live_from, live_until })
+    }
+    Ok(out)
+}
+
+/// The releases a deploy of `release` at `now` keeps: those live, or live within `KEEP`.
+pub fn kept(deploys: [Deploy], now: i64, release: str) -> Vec<Deploy> {
+    var out: Vec<Deploy> = Vec::new()
+    for d in deploys {
+        if d.release.as_str() == release {
+            continue
+        }
+        let keep = match d.live_until {
+            None => true,
+            Some(until) => now - until <= KEEP,
+        }
+        if keep {
+            out.push(d.clone())
+        }
+    }
+    out
+}
+
+/// The history after `release` goes live at `now`: the live one ends, the expired ones go, and
+/// a redeploy of a release takes the place of its earlier entry.
+pub fn next_history(
+    deploys: [Deploy],
+    release: str,
+    source: str,
+    workers: [String],
+    now: i64,
+) -> Vec<Deploy> {
+    var out: Vec<Deploy> = Vec::new()
+    for d in deploys {
+        if d.release.as_str() == release {
+            continue
+        }
+        var e = d.clone()
+        let until = match e.live_until {
+            None => now,
+            Some(u) => u,
+        }
+        e.live_until = Some(until)
+        if now - until <= KEEP {
+            out.push(take e)
+        }
+    }
+    out.push(
+        Deploy {
+            release: String::from(release),
+            source: String::from(source),
+            workers: Vec::from(workers),
+            live_from: now,
+            live_until: None,
+        },
+    )
+    out
+}
+
+/// `deploys.json` for `deploys`: indented by two spaces, with a newline at its end.
+pub fn history_json(deploys: [Deploy]) -> String {
+    var list: Vec<Json> = Vec::new()
+    for d in deploys {
+        var ws: Vec<Json> = Vec::new()
+        for w in d.workers {
+            ws.push(text(w.as_str()))
+        }
+        var m: Vec<(String, Json)> = Vec::new()
+        m.push(member("release", text(d.release.as_str())))
+        m.push(member("source", text(d.source.as_str())))
+        m.push(member("workers", Json::List(take ws)))
+        m.push(member("live_from", text(stamp(d.live_from).as_str())))
+        m.push(
+            member(
+                "live_until",
+                match d.live_until {
+                    None => Json::Null,
+                    Some(t) => text(stamp(t).as_str()),
+                },
+            ),
+        )
+        list.push(Json::Obj(take m))
+    }
+    var top: Vec<(String, Json)> = Vec::new()
+    top.push(member("deploys", Json::List(take list)))
+    var out = indented(Json::Obj(take top))
+    out.push_str("\n")
+    out
+}
+
+// ---- Dates -------------------------------------------------------------------------------------
+
+/// The days from 1970-01-01 to the date `y`-`m`-`d` (Howard Hinnant's `days_from_civil`).
+fn days_from_civil(year: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { year - 1 } else { year }
+    let era = (if y >= 0 { y } else { y - 399 }) / 400
+    let yoe = y - era * 400
+    let mp = if m > 2 { m - 3 } else { m + 9 }
+    let doy = (153 * mp + 2) / 5 + d - 1
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
+    era * 146097 + doe - 719468
+}
+
+/// The date `days` after 1970-01-01: its year, month and day (`civil_from_days`).
+fn civil_from_days(days: i64) -> (i64, i64, i64) {
+    let z = days + 719468
+    let era = (if z >= 0 { z } else { z - 146096 }) / 146097
+    let doe = z - era * 146097
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
+    let mp = (5 * doy + 2) / 153
+    let d = doy - (153 * mp + 2) / 5 + 1
+    let m = if mp < 10 { mp + 3 } else { mp - 9 }
+    (if m <= 2 { yoe + era * 400 + 1 } else { yoe + era * 400 }, m, d)
+}
+
+fn digits(out: mut String, n: i64, width: u32) {
+    var s = String::from(f"{n}")
+    while s.len() < width {
+        s = String::from(f"0{s.as_str()}")
+    }
+    out.push_str(s.as_str())
+}
+
+/// `t` (seconds since 1970) as the history writes a date: `2026-10-15T12:00:00+00:00`, in UTC.
+pub fn stamp(t: i64) -> String {
+    let days = (if t >= 0 { t } else { t - 86399 }) / 86400
+    let s = t - days * 86400
+    let (y, m, d) = civil_from_days(days)
+    var out = String::new()
+    digits(mut out, y, 4)
+    out.push_str("-")
+    digits(mut out, m, 2)
+    out.push_str("-")
+    digits(mut out, d, 2)
+    out.push_str("T")
+    digits(mut out, s / 3600, 2)
+    out.push_str(":")
+    digits(mut out, s / 60 % 60, 2)
+    out.push_str(":")
+    digits(mut out, s % 60, 2)
+    out.push_str("+00:00")
+    out
+}
+
+fn number(s: str, from: u32, to: u32) -> Option<i64> {
+    var n: i64 = 0
+    for i in from..to {
+        let b = s.byte(i)
+        if b < 48 || b > 57 {
+            return None
+        }
+        n = n * 10 + i64(b - 48)
+    }
+    Some(n)
+}
+
+/// The seconds since 1970 of a date as the history writes it, `YYYY-MM-DDTHH:MM:SS` and its
+/// offset from UTC (`+HH:MM`, `-HH:MM` or `Z`), or `None` if it isn't one.
+pub fn parse_stamp(s: str) -> Option<i64> {
+    if s.len() < 20 || s.byte(4) != 45 || s.byte(7) != 45 || s.byte(10) != 84 {
+        return None
+    }
+    if s.byte(13) != 58 || s.byte(16) != 58 {
+        return None
+    }
+    let y = number(s, from: 0, to: 4)?
+    let m = number(s, from: 5, to: 7)?
+    let d = number(s, from: 8, to: 10)?
+    let h = number(s, from: 11, to: 13)?
+    let mi = number(s, from: 14, to: 16)?
+    let sec = number(s, from: 17, to: 19)?
+    if m < 1 || m > 12 || d < 1 || d > 31 || h > 23 || mi > 59 || sec > 59 {
+        return None
+    }
+    let offset = if s.len() == 20 && s.byte(19) == 90 {
+        0
+    } else if s.len() == 25 && (s.byte(19) == 43 || s.byte(19) == 45) && s.byte(22) == 58 {
+        let o = number(s, from: 20, to: 22)? * 3600 + number(s, from: 23, to: 25)? * 60
+        if s.byte(19) == 43 { o } else { -o }
+    } else {
+        return None
+    }
+    Some(days_from_civil(y, m, d) * 86400 + h * 3600 + mi * 60 + sec - offset)
+}
+
+// ---- Uploads -----------------------------------------------------------------------------------
+
+/// How much a Worker may upload: the most files, and the largest file, in bytes.
+pub struct Limits: Copy {
+    pub most_files: u32,
+    pub largest: u64,
+}
+
+/// Cloudflare's limits, as the release tool checks them (studio/release/tree.wrela).
+pub const CLOUDFLARE: Limits = Limits { most_files: MAX_FILES, largest: MAX_FILE }
+
+/// An entry under a Worker's directory: its path there, its kind and its size.
+pub struct Found: Clone {
+    pub path: String,
+    pub kind: Kind,
+    pub size: u64,
+}
+
+/// How many files a Worker uploads from `entries` (its directory's, in any order), or why it
+/// can't: a symbolic link, private or runtime output, hidden build metadata, a file larger than
+/// Cloudflare serves, or more files than a Worker may have. Nothing is dropped to make room.
+pub fn uploads(entries: [Found], limits: Limits) -> Result<u32, String> {
+    var sorted: Vec<Found> = Vec::from(entries)
+    sorted.sort_by(|a: Found, b: Found| a.path < b.path)
+    var files: u32 = 0
+    for e in sorted {
+        let p = e.path.as_str()
+        if e.kind == Kind::Link {
+            return Err(String::from(f"release assets cannot be symbolic links: {p}"))
+        }
+        if e.kind != Kind::File {
+            return Err(String::from(f"not a file or a directory: {p}"))
+        }
+        for (a, b) in p.split("/") {
+            let part = p.slice(a, b)
+            for private in PRIVATE {
+                if part == private {
+                    return Err(String::from(f"private/runtime output in release: {p}"))
+                }
+            }
+        }
+        for (a, b) in p.split("/") {
+            if p.slice(a, b).starts_with(".") {
+                return Err(String::from(f"hidden build metadata in release: {p}"))
+            }
+        }
+        if e.size > limits.largest {
+            return Err(String::from(f"Cloudflare file limit exceeded: {p}"))
+        }
+        files += 1
+    }
+    if files > limits.most_files {
+        return Err(String::from("Cloudflare file-count limit exceeded"))
+    }
+    Ok(files)
+}
+
+/// Whether `path`, a path a kept release's `files.json` lists, stays in its release: parts
+/// separated by `/`, none empty, `.` or `..`, and no `\` or NUL.
+pub fn is_inside(path: str) -> bool {
+    if path.is_empty() {
+        return false
+    }
+    for i in 0..path.len() {
+        if path.byte(i) == 92 || path.byte(i) == 0 {
+            return false
+        }
+    }
+    for (a, b) in path.split("/") {
+        let part = path.slice(a, b)
+        if part.is_empty() || part == "." || part == ".." {
+            return false
+        }
+    }
+    true
+}
+
+/// `path` as a URL's path: each byte but a letter, a digit, `_`, `.`, `-`, `~` and `/` as `%XX`,
+/// as Python's `urllib.parse.quote` writes it.
+pub fn quoted(path: str) -> String {
+    let hex = "0123456789ABCDEF"
+    var out = String::new()
+    for i in 0..path.len() {
+        let b = path.byte(i)
+        let plain = (b >= 48 && b <= 57) ||
+            (b >= 65 && b <= 90) ||
+            (b >= 97 && b <= 122) ||
+            b == 95 ||
+            b == 46 ||
+            b == 45 ||
+            b == 126 ||
+            b == 47
+        if plain {
+            out.push_byte(b)
+        } else {
+            out.push_str("%")
+            out.push_byte(hex.byte(u32(b >> 4)))
+            out.push_byte(hex.byte(u32(b & 15)))
+        }
+    }
+    out
+}
+
+// ---- Workers -----------------------------------------------------------------------------------
+
+/// A Worker of the release, as `release.json` says: its name and domain, and whether it's the
+/// console or the docs.
+pub struct Worker: Clone {
+    pub worker: String,
+    pub domain: String,
+    pub console: bool,
+    pub docs: bool,
+}
+
+/// What `release.json` says: the commit, the release's id and its Workers.
+pub struct Release: Clone {
+    pub source: String,
+    pub release: String,
+    pub workers: Vec<Worker>,
+}
+
+/// The release a `release.json` describes, or why it doesn't: its id must be a release's, and
+/// exactly one Worker the console.
+pub fn read_release(json: str) -> Result<Release, String> {
+    let Some(d) = parse_json(json) else { return Err(String::from("release.json isn't JSON")) }
+    let Some(s) = d.get(TOP, "source") else {
+        return Err(String::from("release.json has no source"))
+    }
+    let Some(source) = d.text(s) else {
+        return Err(String::from("release.json's source isn't text"))
+    }
+    let Some(r) = d.get(TOP, "release") else {
+        return Err(String::from("release.json has no release"))
+    }
+    let Some(release) = d.text(r) else {
+        return Err(String::from("release.json's release isn't text"))
+    }
+    if !is_release(release.as_str()) {
+        return Err(String::from(f"invalid release: '{release.as_str()}'"))
+    }
+    let Some(ws) = d.get(TOP, "workers") else {
+        return Err(String::from("release.json has no workers"))
+    }
+    var workers: Vec<Worker> = Vec::new()
+    var consoles = 0
+    for k in 0..d.count(ws) {
+        let Some(w) = d.at(ws, k) else { return Err(String::from("a worker is missing")) }
+        let Some(nw) = d.get(w, "worker") else { return Err(String::from("a worker has no name")) }
+        let Some(worker) = d.text(nw) else {
+            return Err(String::from("a worker's name isn't text"))
+        }
+        let Some(nd) = d.get(w, "domain") else {
+            return Err(String::from("a worker has no domain"))
+        }
+        let Some(domain) = d.text(nd) else {
+            return Err(String::from("a worker's domain isn't text"))
+        }
+        let console = match d.get(w, "console") {
+            Some(c) => d.is_true(c),
+            None => false,
+        }
+        let docs = match d.get(w, "docs") {
+            Some(c) => d.is_true(c),
+            None => false,
+        }
+        if console {
+            consoles += 1
+        }
+        workers.push(Worker { worker, domain, console, docs })
+    }
+    if consoles != 1 {
+        return Err(String::from("release.json needs exactly one console"))
+    }
+    Ok(Release { source, release, workers })
+}
+
+/// The console's Worker of `r`.
+pub fn home(r: Release) -> Worker {
+    for w in r.workers {
+        if w.console {
+            return w.clone()
+        }
+    }
+    panic("read_release checks there is a console")
+}
+
+/// The Workers in the order they deploy: the games first, then the console that pins their
+/// releases, then the docs, which no other Worker depends on. So a console never offers a game
+/// release its Worker doesn't serve yet, and a failure in the docs leaves the rest up to date.
+pub fn deploy_order(workers: [Worker]) -> Vec<Worker> {
+    var out: Vec<Worker> = Vec::new()
+    for rank in 0..3 {
+        for w in workers {
+            let r = if w.docs { 2 } else if w.console { 1 } else { 0 }
+            if r == rank {
+                out.push(w.clone())
+            }
+        }
+    }
+    out
+}
+
+// ---- The head of main --------------------------------------------------------------------------
+
+/// The commit `refs/heads/main` names in a git service's advertisement of its refs (the body of
+/// `GET <repository>.git/info/refs?service=git-upload-pack`: pkt-lines, each its length in four
+/// hexadecimal digits, then `<commit> <ref>`, the first with `\0` and the capabilities after),
+/// or `None` if it names none or isn't one.
+pub fn main_head(body: [u8]) -> Option<String> {
+    var at: u32 = 0
+    while at + 4 <= body.len() {
+        var n: u32 = 0
+        for i in at..at + 4 {
+            let b = body[i]
+            let v = if b >= 48 && b <= 57 {
+                u32(b - 48)
+            } else if b >= 97 && b <= 102 {
+                u32(b - 87)
+            } else {
+                return None
+            }
+            n = n * 16 + v
+        }
+        if n == 0 {
+            at += 4
+            continue
+        }
+        if n < 4 || at + n > body.len() {
+            return None
+        }
+        // `<40 hex> refs/heads/main`, then `\0` or `\n` or the line's end.
+        let line = at + 4
+        let end = at + n
+        let name = "refs/heads/main"
+        if end - line >= 41 + name.len() && body[line + 40] == 32 {
+            var same = true
+            for k in 0..name.len() {
+                if body[line + 41 + k] != name.byte(k) {
+                    same = false
+                }
+            }
+            let after = line + 41 + name.len()
+            let ends = after == end || body[after] == 0 || body[after] == 10
+            if same && ends {
+                var sha = String::new()
+                for k in 0..40 {
+                    let b = body[line + k]
+                    if !((b >= 48 && b <= 57) || (b >= 97 && b <= 102)) {
+                        return None
+                    }
+                    sha.push_byte(b)
+                }
+                return Some(sha)
+            }
+        }
+        at = end
+    }
+    None
+}
+
+// ---- Redirects ---------------------------------------------------------------------------------
+
+/// The URL a redirect from `url` to `location` leads to, if it stays on `url`'s origin: a
+/// Worker's assets redirect `/x/index.html` to `/x/`, and nothing leads a deploy elsewhere.
+pub fn redirected(url: str, location: str) -> Option<String> {
+    if !url.starts_with("https://") {
+        return None
+    }
+    let rest = url.slice(8, url.len())
+    let origin_len = match rest.find("/") {
+        Some(k) => 8 + k,
+        None => url.len(),
+    }
+    let origin = url.slice(0, origin_len)
+    if location.starts_with("/") && !location.starts_with("//") {
+        return Some(String::from(f"{origin}{location}"))
+    }
+    if location.starts_with(origin) &&
+        (location.len() == origin.len() || location.byte(origin.len()) == 47) {
+        return Some(String::from(location))
+    }
+    None
+}

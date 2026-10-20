@@ -1,7 +1,8 @@
 # Builds a release of the console, its games and the docs from each push to main
-# (`wrela tool release`, studio/release) and deploys it to Cloudflare Workers (tools/deploy.py). It
-# only ships: every check stays local (tools/check.sh). Its credentials are the `production`
-# environment's, which only main can use.
+# (`wrela tool release`, studio/release) and deploys it to Cloudflare Workers (`wrela tool
+# deploy`, studio/deploy, which runs Wrangler through `npx`). It only ships: every check stays
+# local (tools/check.sh). Its credentials are the `production` environment's, which only main can
+# use; the deploy tool gives them to Wrangler alone.
 name: Deploy
 
 on:
@@ -37,11 +38,7 @@ jobs:
           tar xzf "$RUNNER_TEMP/binaryen.tgz" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/binaryen-$BINARYEN/bin" >> "$GITHUB_PATH"
 
-      # For tools/deploy.py.
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
+      # For Wrangler, which the deploy tool runs through `npx`.
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -56,4 +53,4 @@ jobs:
       - name: Deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: python3 tools/deploy.py --release build/release --require-main-head
+        run: target/release/wrela tool deploy -- --require-main-head
