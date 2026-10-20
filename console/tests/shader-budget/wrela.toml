@@ -1,0 +1,5 @@
+# The console's shipped build (console): it builds as it ships, and each of its shaders is within
+# the shipped budget of 256 KiB of WGSL (what a browser compiles while it loads). The tool test
+# builds it through `std::tool::toolchain` and measures what the build wrote.
+[package]
+name = "console_shader_budget"
