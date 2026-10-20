@@ -1,0 +1,647 @@
+// The tool tests: each writes a package into `scratch` holding the floor's map files (and the
+// modules its checks need) copied from games/last-green, and a main module, then runs its tests
+// (each must pass, and as many must run as its files declare) or builds it, with the engine and
+// the content it names read from the workspace.
+
+use std::collections::{Box, Vec}
+use std::job::Step
+use std::string::String
+use std::tool::answer
+use std::tool::files
+use std::tool::toolchain
+use std::tool::toolchain::Override
+
+/// The floor's files that make its map.
+const MAP_FILES: [Text; 4] = ["map.wrela", "ground.wrela", "species.wrela", "stones.wrela"]
+
+/// A main module that does nothing else.
+const FRAME: Text = "pub fn frame(time: f32, width: u32, height: u32) {}\n"
+
+/// The bounded history the simulation's package has in place of the game's: no baked wood, a short tour.
+const HISTORY: [Text; 10] = [
+    "",
+    "use engine::footing::Obstacles",
+    "",
+    "pub const OBSTACLES: Obstacles = Obstacles::of(Vec::new(), vec2(-128.0), vec2(128.0))",
+    "pub const TOUR: Vec<vec2> = Vec::from([vec2(0.0, 16.0), vec2(16.0, 16.0)])",
+    "",
+    "pub fn tiles_lo() -> vec2i { vec2i(-1) }",
+    "pub fn tiles_hi() -> vec2i { vec2i(1) }",
+    "pub fn draw_at(at: vec2) -> f32 { 0.0 }",
+    "",
+]
+
+/// The bounded wildwood the simulation's package has in place of the game's.
+const WILDWOOD: [Text; 13] = [
+    "",
+    "pub const REACH: f32 = 60.0",
+    "pub const MOST_TRUNKS: u32 = 512",
+    "pub const EGG = vec2(32.0)",
+    "pub const ROAD_START = vec2(16.0)",
+    "",
+    "pub fn road_points(every: f32) -> Vec<vec2> {",
+    "    Vec::from([ROAD_START, EGG])",
+    "}",
+    "",
+    "pub fn trunks_round(at: vec2, reach: f32) -> Vec<vec4> { Vec::new() }",
+    "pub fn covered(last: vec4, count: u32, around: vec2) -> f32 { REACH }",
+    "",
+]
+
+/// The map's anatomy and area, as tests.
+const ANATOMY: [Text; 32] = [
+    "",
+    "use engine::interest::floor_area",
+    "use engine::place::{SiteKind, refusals}",
+    "",
+    "@test",
+    "fn anatomy() {",
+    "    let m = map::map()",
+    "    assert(m.count(SiteKind::Gate) == 1, \"one gate\")",
+    "    assert(m.count(SiteKind::Town) == 1, \"one town's site\")",
+    "    let anchors = m.count(SiteKind::Anchor)",
+    "    assert(anchors >= 3 && anchors <= 5, f\"3 to 5 anchors: {anchors}\")",
+    "    assert(m.count(SiteKind::Arena) == 1, \"one Warden's arena\")",
+    "    assert(m.count(SiteKind::Rest) >= 1, \"rest points\")",
+    "    assert(m.count(SiteKind::Waystone) >= 1, \"waystones\")",
+    "    let echoes = m.count(SiteKind::Echo)",
+    "    assert(echoes >= 25 && echoes <= 35, f\"25 to 35 echoes' sites: {echoes}\")",
+    "    assert(m.count(SiteKind::View) >= 1, \"views\")",
+    "}",
+    "",
+    "@test",
+    "fn area() {",
+    "    let a = floor_area(ground::GROUND, map::map())",
+    "    assert(a > 2.7 && a < 3.3, f\"about 3 km², within 10%: {a}\")",
+    "}",
+    "",
+    "@test",
+    "fn nothing_to_refuse() {",
+    "    assert(refusals(map::map()).len() == 0, \"the floor's map has an opening or a route with no keeper at work\")",
+    "}",
+    "",
+    "pub fn frame(time: f32, width: u32, height: u32) {}",
+    "",
+]
+
+/// A program that grows the floor's map, changed by an edit (`m`, mutable), at the preview's grain, in a constant: before the edit.
+const GROWN_HEAD: [Text; 8] = [
+    "",
+    "use engine::grow::{History, PREVIEW, Start, simulate}",
+    "",
+    "const GROWN: u32 = grown()",
+    "",
+    "fn grown() -> u32 {",
+    "    var m = map::map()",
+    "    ",
+]
+
+/// After the edit.
+const GROWN_TAIL: [Text; 9] = [
+    "",
+    "    let h = simulate(ground::GROUND, m, species::habits(), PREVIEW, map::LO, map::HI, stones::stones(m), |land, year| Start::wild(land))",
+    "    h.trees.len()",
+    "}",
+    "",
+    "pub fn frame(time: f32, width: u32, height: u32) {",
+    "    let _ = GROWN",
+    "}",
+    "",
+]
+
+/// The elves' tests, on a small land of good soil by a river.
+const ELVES: [Text; 107] = [
+    "",
+    "use engine::grow::{Grid, Land, Left, NEVER, NONE, UNBROWSED}",
+    "use engine::soil::soil",
+    "use peoples::{Culture, RECLAIMED, Use, left_by, settle}",
+    "",
+    "/// A level land 1200 m by 800 m of deep loam, a river along its south edge.",
+    "fn land() -> Land {",
+    "    let grid = Grid::over(vec2(0.0), vec2(1200.0, 800.0), 4.0)",
+    "    let nn = grid.cells()",
+    "    var water: Vec<bool> = Vec::new()",
+    "    for c in 0..nn {",
+    "        water.push(grid.centre(c).y < 12.0)",
+    "    }",
+    "    Land {",
+    "        grid,",
+    "        heights: Vec::filled(nn, 0.0),",
+    "        habitable: Vec::filled(nn, value: true),",
+    "        wet: Vec::filled(nn, 0.3),",
+    "        thin: Vec::filled(nn, 0.0),",
+    "        soil: Vec::filled(nn, soil(lap: 0.002, slope: 0.01, rock: 0.0, wet: 0.3)),",
+    "        exposed: Vec::filled(nn, 0.0),",
+    "        cap: Vec::filled(nn, 1.0e9),",
+    "        capped_by: Vec::filled(nn, NONE),",
+    "        lawn: Vec::filled(nn, value: false),",
+    "        kept: Vec::filled(nn, NONE),",
+    "        opened: Vec::filled(nn, NEVER),",
+    "        browsed: Vec::filled(nn, UNBROWSED),",
+    "        water,",
+    "        region: Vec::filled(nn, 0),",
+    "    }",
+    "}",
+    "",
+    "const ELVES = Culture { apart: 250.0, tribes_apart: 500.0, field_reach: 300.0, pasture_reach: 450.0, reach: 600.0 }",
+    "",
+    "@test",
+    "fn two_tribes_far_apart() {",
+    "    let p = settle(land(), ELVES, 0, 300)",
+    "    var tribes = [0, 0]",
+    "    for s in p.settlements {",
+    "        tribes[s.tribe] += 1",
+    "    }",
+    "    assert(tribes[0] >= 1 && tribes[1] >= 1, f\"both tribes settle: {tribes[0]} and {tribes[1]}\")",
+    "    let a = p.grid.centre(p.settlements[0].at)",
+    "    let b = p.grid.centre(p.settlements[1].at)",
+    "    assert(length(a - b) >= 500.0, f\"the tribes' first settlements stand apart: {length(a - b)} m\")",
+    "    assert(a.y < 260.0 && b.y < 260.0, f\"near the river: {a.y} and {b.y} m from it\")",
+    "}",
+    "",
+    "@test",
+    "fn fields_near_and_pasture_beyond() {",
+    "    let p = settle(land(), ELVES, 0, 300)",
+    "    var near = [0.0, 0.0]",
+    "    var count = [0.0, 0.0]",
+    "    for c in 0..p.grid.cells() {",
+    "        let u = Use::from_u32(u32(p.last[c])).unwrap()",
+    "        let k = if u == Use::Field { 0 } else if u == Use::Pasture { 1 } else { 2 }",
+    "        if k == 2 {",
+    "            continue",
+    "        }",
+    "        var d = 1.0e9",
+    "        for s in p.settlements {",
+    "            d = min(d, length(p.grid.centre(c) - p.grid.centre(s.at)))",
+    "        }",
+    "        near[k] += d",
+    "        count[k] += 1.0",
+    "    }",
+    "    assert(count[0] > 0.0 && count[1] > 0.0, f\"fields {count[0]} and pasture {count[1]}\")",
+    "    assert(near[0] / count[0] < near[1] / count[1], f\"fields {near[0] / count[0]} m from home, pasture {near[1] / count[1]} m\")",
+    "}",
+    "",
+    "@test",
+    "fn left_as_last_used_with_old_trees_in_the_pasture() {",
+    "    let l = land()",
+    "    let p = settle(l, ELVES, 0, 300)",
+    "    let s = left_by(p, l, species::habits(), ELVES, 300, 0)",
+    "    var grazed = 0.0",
+    "    for c in 0..l.grid.cells() {",
+    "        let was = Left::from_u32(u32(s.left[c])).unwrap()",
+    "        let pc = p.grid.cell_at(l.grid.centre(c))",
+    "        let used = Use::from_u32(u32(p.last[pc])).unwrap()",
+    "        let want = if p.last_year[pc] < 300 - RECLAIMED { Left::Wild } else if used == Use::Field { Left::Tilled } else if used == Use::Pasture { Left::Grazed } else if used == Use::Wood { Left::Cut } else if used == Use::Settled { Left::Built } else { Left::Wild }",
+    "        assert(was == want, \"each cell left as it was last used, if in the years before\")",
+    "        if was == Left::Grazed {",
+    "            grazed += l.grid.cell * l.grid.cell",
+    "        }",
+    "    }",
+    "    let want = grazed / ELVES.veteran",
+    "    let n = f32(s.standing.len())",
+    "    assert(n > 0.7 * want && n < 1.3 * want, f\"about one old tree to each {ELVES.veteran} m² of pasture: {n} for {want}\")",
+    "    let habits = species::habits()",
+    "    for t in s.standing {",
+    "        let full = habits[t.kind].crown * t.tall",
+    "        assert(t.reach > 0.99 * full, f\"open-grown: crown {t.reach} m, its kind's {full} m\")",
+    "    }",
+    "}",
+    "",
+    "@test",
+    "fn left_long_before_the_plague_is_wood_again() {",
+    "    let l = land()",
+    "    let p = settle(l, ELVES, 0, 200)",
+    "    let s = left_by(p, l, species::habits(), ELVES, 400, 0)",
+    "    for b in s.left {",
+    "        assert(Left::from_u32(u32(b)).unwrap() == Left::Wild, \"the wood has it back\")",
+    "    }",
+    "    assert(s.standing.len() == 0, \"no tree kept\")",
+    "}",
+    "",
+]
+
+/// A world's seed, as a test.
+const SEEDS: [Text; 30] = [
+    "",
+    "use engine::grow::{PREVIEW, Start, Tree, simulate}",
+    "",
+    "fn grown(seed: u32) -> Vec<Tree> {",
+    "    var m = map::map()",
+    "    m.seed = seed",
+    "    let lo = vec2(500.0, -1100.0)",
+    "    var h = simulate(ground::GROUND, m, species::habits(), PREVIEW, lo, lo + vec2(160.0), stones::stones(m), |land, year| Start::wild(land))",
+    "    take h.trees",
+    "}",
+    "",
+    "fn same(a: [Tree], b: [Tree]) -> bool {",
+    "    if a.len() != b.len() {",
+    "        return false",
+    "    }",
+    "    for i in 0..a.len() {",
+    "        if length(a[i].at - b[i].at) > 0.0 || a[i].tall != b[i].tall {",
+    "            return false",
+    "        }",
+    "    }",
+    "    true",
+    "}",
+    "",
+    "@test",
+    "fn seeds() {",
+    "    let a = grown(0)",
+    "    assert(same(a, grown(0)), \"the same seed grows the same world\")",
+    "    assert(!same(a, grown(7)), \"another seed grows another world\")",
+    "}",
+    "",
+]
+
+/// `lines`, joined by newlines.
+fn joined(lines: [Text]) -> String {
+    var out = String::new()
+    for k in 0..lines.len() {
+        if k > 0 {
+            out.push_str("\n")
+        }
+        out.push_str(lines[k])
+    }
+    out
+}
+
+/// How many of `text`'s lines are `@test` alone: the tests it declares.
+fn declared(text: str) -> u32 {
+    var n = 0
+    var start = 0
+    for i in 0..text.len() + 1 {
+        if i == text.len() || text.byte(i) == 10 {
+            var a = start
+            var b = i
+            while a < b && (text.byte(a) == 32 || text.byte(a) == 9 || text.byte(a) == 13) {
+                a += 1
+            }
+            while b > a &&
+                (text.byte(b - 1) == 32 || text.byte(b - 1) == 9 || text.byte(b - 1) == 13) {
+                b -= 1
+            }
+            if text.slice(a, b) == "@test" {
+                n += 1
+            }
+            start = i + 1
+        }
+    }
+    n
+}
+
+/// The text of `path`.
+@job
+fn text_of(path: take String) -> String {
+    var r = files::read(path.as_str())
+    var got = r.poll()
+    while got.is_none() {
+        yield
+        got = r.poll()
+    }
+    let Some(rp) = take got else { panic("no answer") }
+    let Ok(bytes) = answer(take rp) else { panic(f"{path.as_str()} reads") }
+    let Some(text) = String::from_utf8(take bytes) else { panic(f"{path.as_str()} isn't UTF-8") }
+    text
+}
+
+/// Writes `text` at `path`.
+@job
+fn written(path: take String, text: take String) {
+    var w = files::write(path.as_str(), text.as_bytes())
+    var got = w.poll()
+    while got.is_none() {
+        yield
+        got = w.poll()
+    }
+    let Some(wp) = take got else { panic("no answer") }
+    assert(answer(take wp).is_ok(), f"{path.as_str()} is written")
+}
+
+/// A package to write: the floor's map files and `copied` of its other modules, `texts` (each a
+/// file's name and text), and the content packages it depends on beside the engine.
+struct Package: Clone {
+    name: String,
+    copied: Vec<String>,
+    texts: Vec<(String, String)>,
+    content: Vec<(String, String)>,
+}
+
+/// `name`'s package with `main` as its main module and nothing else yet.
+fn map_package(name: str, main: take String) -> Package {
+    var texts: Vec<(String, String)> = Vec::new()
+    texts.push((String::from("main.wrela"), take main))
+    Package { name: String::from(name), copied: Vec::new(), texts, content: Vec::new() }
+}
+
+/// The package written into `scratch/<name>`: how many tests its files declare.
+@job
+fn wrote(p: take Package) -> u32 {
+    var tests = 0
+    var copied: Vec<String> = Vec::new()
+    for k in 0..MAP_FILES.len() {
+        copied.push(String::from(MAP_FILES[k]))
+    }
+    for k in 0..p.copied.len() {
+        copied.push(p.copied[k].clone())
+    }
+    for k in 0..copied.len() {
+        let file = copied[k].clone()
+        var r = Box::new(text_of.start(String::from(f"repo/games/last-green/{file.as_str()}")))
+        var text = String::new()
+        loop {
+            match r.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(t) => {
+                    text = take t
+                    break
+                },
+            }
+        }
+        tests += declared(text.as_str())
+        var w = Box::new(
+            written.start(String::from(f"scratch/{p.name.as_str()}/{file.as_str()}"), take text),
+        )
+        loop {
+            match w.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(_) => break,
+            }
+        }
+    }
+    for k in 0..p.texts.len() {
+        let (file, text) = p.texts[k].clone()
+        if file.as_str() == "main.wrela" {
+            tests += declared(text.as_str())
+        }
+        var w = Box::new(
+            written.start(String::from(f"scratch/{p.name.as_str()}/{file.as_str()}"), take text),
+        )
+        loop {
+            match w.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(_) => break,
+            }
+        }
+    }
+    var manifest = String::from(
+        "[package]\nname = \"floor_map\"\n\n[dependencies]\nengine = { workspace = true }\n",
+    )
+    for k in 0..p.content.len() {
+        let (dep, _) = p.content[k].clone()
+        manifest.push_str(f"{dep.as_str()} = {{ workspace = true }}\n")
+    }
+    var w = Box::new(
+        written.start(String::from(f"scratch/{p.name.as_str()}/wrela.toml"), take manifest),
+    )
+    loop {
+        match w.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    tests
+}
+
+/// The overrides for `p`'s dependencies: the workspace's engine and content.
+fn overrides(p: Package) -> Vec<Override> {
+    var out: Vec<Override> = Vec::new()
+    out.push(Override { name: String::from("engine"), dir: String::from("repo/engine") })
+    for k in 0..p.content.len() {
+        let (dep, dir) = p.content[k].clone()
+        out.push(Override { name: dep, dir: String::from(f"repo/content/{dir.as_str()}") })
+    }
+    out
+}
+
+/// The package written and its tests run: every one passes, and as many run as its files
+/// declare.
+@job
+fn passes(p: take Package) {
+    var w = Box::new(wrote.start(p.clone()))
+    var declared_tests = 0
+    loop {
+        match w.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(n) => {
+                declared_tests = n
+                break
+            },
+        }
+    }
+    var t = toolchain::test_with(f"scratch/{p.name.as_str()}".as_str(), "", overrides(p), 600.0)
+    var got = t.poll()
+    while got.is_none() {
+        yield
+        got = t.poll()
+    }
+    let Some(tp) = take got else { panic("no answer") }
+    let Ok(run) = toolchain::read_tested(take tp) else { panic("the tests' request") }
+    for d in run.diagnostics {
+        assert(!d.error, d.rendered.as_str())
+    }
+    for r in run.results {
+        assert(r.passed, f"{r.name.as_str()} ({r.at.as_str()}): {r.message.as_str()}")
+    }
+    assert(
+        run.results.len() == declared_tests,
+        f"{p.name.as_str()}: {run.results.len()} tests ran, {declared_tests} declared",
+    )
+}
+
+/// The world's geology (`geology.wrela`, its land made and its places found, which the bare view
+/// draws), its own tests run beside the map's: the square is cut as deep as the region round it,
+/// and each shot of a place sees it. Its making runs once, in this package's build.
+@test(tool, read: [("repo", "../../../..")], budget: 600)
+@job
+fn the_worlds_geology_is_made_and_its_places_seen() {
+    var p = map_package("geology", String::from(FRAME))
+    p.copied.push(String::from("geology.wrela"))
+    p.copied.push(String::from("lookbook.wrela"))
+    var j = Box::new(passes.start(take p))
+    loop {
+        match j.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+}
+
+/// Terrain, trees and masonry use bounded fields and small seeded fixtures. Copy only their
+/// modules, so discovering their tests cannot prepare the full game's history constants.
+@test(tool, read: [("repo", "../../../..")], budget: 600)
+@job
+fn the_environments_bounded_art_and_collision_regressions_pass() {
+    var p = map_package("environment-art", String::from(FRAME))
+    p.copied.push(String::from("trees.wrela"))
+    p.copied.push(String::from("blockouts.wrela"))
+    p.content.push((String::from("great_tree"), String::from("great-tree")))
+    var j = Box::new(passes.start(take p))
+    loop {
+        match j.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+}
+
+/// Run the production simulation and encounter on the map, with a short tour and no baked
+/// wood. The tick's movement and control regressions need no full-scene history or growth.
+@test(tool, read: [("repo", "../../../..")], budget: 600)
+@job
+fn the_worlds_bounded_simulation_regressions_pass() {
+    var p = map_package("world", String::from(FRAME))
+    for file in ["world.wrela", "encounter.wrela", "behaviour.wrela", "fawns.wrela"] {
+        p.copied.push(String::from(file))
+    }
+    p.texts.push((String::from("history.wrela"), joined(HISTORY)))
+    p.texts.push((String::from("wildwood.wrela"), joined(WILDWOOD)))
+    p.content.push((String::from("climber"), String::from("climber")))
+    p.content.push((String::from("fawn"), String::from("fawn")))
+    var j = Box::new(passes.start(take p))
+    loop {
+        match j.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+}
+
+/// AC1: the floor's map is wrela source written with the engine's types, and holds #44's
+/// anatomy: a gate, a town's site, 3–5 anchors, a Warden's arena, rest points, waystones, 25–35
+/// echoes' sites and views; its area is 3 km² within 10% (Q1); and the engine's own refusals
+/// (`place::refusals`) find nothing to refuse in it.
+@test(tool, read: [("repo", "../../../..")], budget: 600)
+@job
+fn the_floors_map_has_its_anatomy_and_area() {
+    let p = map_package("anatomy", joined(ANATOMY))
+    var j = Box::new(passes.start(take p))
+    loop {
+        match j.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+}
+
+/// The build of a map the history refuses, changed by `edit`, fails with E0704 alone, naming
+/// the opening and why, before the history runs.
+@job
+fn refused(name: take String, edit: take String, opening: take String, why: take String) {
+    var main = joined(GROWN_HEAD)
+    main.push_str(edit.as_str())
+    main.push_str(joined(GROWN_TAIL).as_str())
+    let p = map_package(name.as_str(), take main)
+    var w = Box::new(wrote.start(p.clone()))
+    loop {
+        match w.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    var options = toolchain::options()
+    options.overrides = overrides(p)
+    var b = toolchain::build(
+        f"scratch/{name.as_str()}".as_str(),
+        f"scratch/{name.as_str()}-build".as_str(),
+        options,
+    )
+    var got = b.poll()
+    while got.is_none() {
+        yield
+        got = b.poll()
+    }
+    let Some(bp) = take got else { panic("no answer") }
+    let Ok(build) = toolchain::read_built(take bp) else { panic("the build's request") }
+    var text = String::new()
+    for d in build.diagnostics {
+        text.push_str(d.rendered.as_str())
+    }
+    assert(
+        build.diagnostics.len() == 1 && build.diagnostics[0].code.as_str() == "E0704",
+        text.as_str(),
+    )
+    assert(text.as_str().find("the map can't be grown").is_some(), text.as_str())
+    assert(
+        text.as_str().find(opening.as_str()).is_some() &&
+            text.as_str().find(why.as_str()).is_some(),
+        f"the refusal names `{opening.as_str()}`: {text.as_str()}",
+    )
+}
+
+/// AC1, keepers: a map with an opening that has no keeper is refused before the history runs,
+/// the opening named.
+@test(tool, read: [("repo", "../../../..")], budget: 600)
+@job
+fn an_opening_with_no_keeper_is_refused_by_name() {
+    var j = Box::new(
+        refused.start(
+            String::from("no-keeper"),
+            String::from("m.openings[0].keeper = engine::place::Keeper::Nothing"),
+            String::from("the clearing's meadow"),
+            String::from("no keeper"),
+        ),
+    )
+    loop {
+        match j.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+}
+
+/// AC1, keepers: a map with an opening whose keeper stops before the present (people who left)
+/// is refused before the history runs, the opening named.
+@test(tool, read: [("repo", "../../../..")], budget: 600)
+@job
+fn an_opening_whose_keeper_stops_before_the_present_is_refused_by_name() {
+    var j = Box::new(
+        refused.start(
+            String::from("keeper-gone"),
+            String::from(
+                "m.openings[0].keeper = engine::place::Keeper::People { from: 300, to: map::PRESENT - 100 }",
+            ),
+            String::from("the clearing's meadow"),
+            String::from("left"),
+        ),
+    )
+    loop {
+        match j.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+}
+
+/// The elves (peoples.wrela) on a small land of good soil by a river: the two tribes come to the
+/// best places, far enough apart; each settlement tills the soil nearest it, grazes beyond, and
+/// leaves the land as it last used it, with old trees standing only in the pasture, about one in
+/// each `veteran` of it; land they left long before the plague has gone back to the wood.
+@test(tool, read: [("repo", "../../../..")], budget: 600)
+@job
+fn the_elves_settle_the_best_land_and_leave_it_as_they_used_it() {
+    var p = map_package("elves", joined(ELVES))
+    p.copied.push(String::from("peoples.wrela"))
+    var j = Box::new(passes.start(take p))
+    loop {
+        match j.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+}
+
+/// A world's seed (`Map::seed`): the same map grown with another seed is another world, and with
+/// the same seed, the same world. On a corner of the floor at the preview's grain.
+@test(tool, read: [("repo", "../../../..")], budget: 600)
+@job
+fn a_seed_grows_another_world_and_the_same_seed_the_same() {
+    let p = map_package("seeds", joined(SEEDS))
+    var j = Box::new(passes.start(take p))
+    loop {
+        match j.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+}

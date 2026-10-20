@@ -4,6 +4,7 @@
 // `counts` and `count` read the last frame's counts back, and `megabytes` the clusters' size.
 // Frames are drawn at the times the tests name (`drive::frame_at`), and the screen captured.
 
+use hosts::both::{Both, both_hosts, difference}
 use std::collections::{Box, Vec}
 use std::io::print
 use std::job::Step
@@ -471,4 +472,34 @@ fn a_cut_opens_no_crack_and_keeps_its_silhouettes() {
     assert(shown > W * H / 10, f"the copies cover too little to test: {shown} pixels")
     assert(cracks == 0, f"the cut opened {cracks} cracks")
     assert(far == 0, f"{far} pixels differ away from the finest level's silhouettes")
+}
+
+/// Chrome draws the moving eye's cut of the 64 copies as the native host does: frames within a
+/// mean of 0.5/255 after 30 frames (Tint takes the clusters' shaders, and its atomics keep each
+/// cluster's quads together as wgpu's do). Not the same state hash: cooking's buffers are fitted
+/// once its counts are read back, at a frame each host chooses.
+@test(tool, read: [("repo", "../../../..")], browser: true, budget: 300)
+@job
+fn the_browser_draws_the_native_hosts_clusters() {
+    var j = Box::new(
+        both_hosts.start(
+            String::from("repo/examples/clusters"),
+            String::from("clusters-browser"),
+            W,
+            H,
+            frames: 30,
+            testing: true,
+        ),
+    )
+    var drawn: Option<Both> = None
+    while drawn.is_none() {
+        match j.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(b) => drawn = Some(take b),
+        }
+    }
+    let Some(both) = take drawn else { panic("both hosts") }
+    let (mean, most) = difference(both.chrome, both.native)
+    print(f"Chrome against the native host: mean {mean}/255, max {most}/255")
+    assert(mean <= 0.5, f"mean difference {mean}")
 }

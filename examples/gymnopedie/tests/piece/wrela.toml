@@ -1,0 +1,6 @@
+# Spike 14 (#48), the Gymnopédie as a program (examples/gymnopedie): every number of its
+# performance is lifted, and engine::piano renders the same samples every time. The tool tests
+# build the piece through `std::tool::toolchain` (lifted, or as it ships) and render its voice
+# offline through `std::tool::drive`.
+[package]
+name = "gymnopedie_piece"

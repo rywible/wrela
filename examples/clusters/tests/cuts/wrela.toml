@@ -1,6 +1,10 @@
 # The clusters' cuts (examples/clusters, `engine::clusters`) on the hardware GPU: a cut of
 # several levels holds every quad it wants, fits its buffers, opens no crack and keeps its
-# silhouettes. The tool tests build the example as a test build (its `@testing` exports) through
-# `std::tool::toolchain`, and drive it through `std::tool::drive`.
+# silhouettes, and Chrome draws its cut as the native host does. The tool tests build the
+# example as a test build (its `@testing` exports) through `std::tool::toolchain`, and drive it
+# through `std::tool::drive` (and Chrome's test mode).
 [package]
 name = "clusters_cuts"
+
+[dependencies]
+hosts = { workspace = true }

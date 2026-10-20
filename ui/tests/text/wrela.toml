@@ -1,5 +1,5 @@
-# Test strings at several sizes, in both fonts, which the Rust suite compares with a reference
-# rasterizer's (AC2).
+# Test strings at several sizes, in both fonts, which its tool test compares with a reference
+# rasterizer's picture of them (goldens/reference.png, AC2).
 [package]
 name = "text"
 

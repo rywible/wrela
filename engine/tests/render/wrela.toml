@@ -1,7 +1,11 @@
 # The engine's rendering on the hardware GPU, through its fixtures here (each a package of its
 # own, not a workspace member): temporal AA's depth, gathering, sway, reconstruction and
 # vacancy, static shadows, foliage occlusion, character materials, water reflections and the
-# plant field's numerics. The tool tests build each fixture through `std::tool::toolchain`,
-# draw its frames through `std::tool::drive` on the GPU and read the screen it captures.
+# plant field's numerics; and far volumes' widths and impostors' samples in Chrome too. The tool
+# tests build each fixture through `std::tool::toolchain`, draw its frames through
+# `std::tool::drive` on the GPU (and in Chrome's test mode) and read the screens.
 [package]
 name = "engine_render"
+
+[dependencies]
+hosts = { workspace = true }

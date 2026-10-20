@@ -1,0 +1,7 @@
+# The console session's save policy (games/last-green/session): exporting a recovered save
+# acknowledges only a successful reply, and a new game backs up the recovered continuation.
+# The tool test writes the session's main module, with a fixture, into a package of its own,
+# builds it with the workspace's engine and platform, and drives it on the CPU, recording its
+# commands.
+[package]
+name = "session_export"

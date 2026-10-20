@@ -1,0 +1,303 @@
+// The tool tests: the baker's refusals of bad geometry, each a package written into `scratch`
+// with an empty font and built through the toolchain with the workspace's ui; and the lines
+// drawn on the machine's hardware GPU (never a software renderer), 1280 × 1400, compared with
+// the reference picture of the same glyphs at the same places, which ab_glyph 0.2 drew (it
+// computes each pixel's exact coverage from the outlines, white over the background).
+
+use std::collections::{Box, Vec}
+use std::io::print
+use std::job::Step
+use std::string::String
+use std::tool::answer
+use std::tool::blob
+use std::tool::blob::Data
+use std::tool::drive
+use std::tool::files
+use std::tool::image
+use std::tool::toolchain
+use std::tool::toolchain::Override
+
+/// The screen's size.
+const W: u32 = 1280
+const H: u32 = 1400
+
+/// The most bytes a blob read gives at once.
+const CHUNK: u64 = 524288
+
+/// The lines' sizes, two lines each (main.wrela's).
+const SIZES: [f32; 7] = [10.0, 12.0, 16.0, 24.0, 32.0, 48.0, 72.0]
+
+/// Each case of bad geometry: its name, its `em` and `spread`, and the option its refusal names.
+const GEOMETRY: [(Text, Text, Text, Text); 4] = [
+    ("zero-em", "0.0", "4.0", "`em`"),
+    ("negative-spread", "32.0", "-1.0", "`spread`"),
+    ("infinite-em", "bitcast_f32(0x7f800000)", "4.0", "`em`"),
+    ("nan-spread", "32.0", "bitcast_f32(0x7fc00000)", "`spread`"),
+]
+
+/// Writes `bytes` at `path`.
+@job
+fn written(path: take String, bytes: take Vec<u8>) {
+    var w = files::write(path.as_str(), bytes)
+    var got = w.poll()
+    while got.is_none() {
+        yield
+        got = w.poll()
+    }
+    let Some(wp) = take got else { panic("no answer") }
+    assert(answer(take wp).is_ok(), f"{path.as_str()} is written")
+}
+
+/// `text`'s bytes.
+fn utf8(text: str) -> Vec<u8> {
+    var out: Vec<u8> = Vec::new()
+    for i in 0..text.len() {
+        out.push(text.byte(i))
+    }
+    out
+}
+
+/// The baker rejects invalid sampling geometry before it tries to read the font: a build with
+/// an `em` or a `spread` that's zero, negative, infinite or not a number fails, naming it, and
+/// saying it must be a positive finite number.
+@test(tool, read: [("repo", "../../..")], budget: 300)
+@job
+fn font_baking_needs_positive_finite_geometry() {
+    for k in 0..GEOMETRY.len() {
+        let (name, em, spread, option) = GEOMETRY[k]
+        let dir = String::from(f"scratch/{name}")
+        var files_of: Vec<(String, Vec<u8>)> = Vec::new()
+        files_of.push(
+            (
+                String::from("wrela.toml"),
+                utf8(
+                    "[package]\nname = \"font_geometry\"\n\n[dependencies]\nui = { workspace = true }\n",
+                ),
+            ),
+        )
+        files_of.push((String::from("empty.ttf"), Vec::new()))
+        files_of.push(
+            (
+                String::from("main.wrela"),
+                utf8(
+                    f"use ui::ttf::{{Baked, bake}}\n\nconst FONT: Baked = bake(embed(\"empty.ttf\"), em: {em}, spread: {spread})\n\npub fn frame(time: f32, width: u32, height: u32) {{\n    let _ = FONT.fields.len()\n}}\n".as_str(),
+                ),
+            ),
+        )
+        for j in 0..files_of.len() {
+            let (file, bytes) = files_of[j].clone()
+            var w = Box::new(
+                written.start(String::from(f"{dir.as_str()}/{file.as_str()}"), take bytes),
+            )
+            loop {
+                match w.get_mut().resume() {
+                    Step::Yielded => yield,
+                    Step::Done(_) => break,
+                }
+            }
+        }
+        var options = toolchain::options()
+        options.overrides.push(Override { name: String::from("ui"), dir: String::from("repo/ui") })
+        var b = toolchain::build(dir.as_str(), f"scratch/{name}-build".as_str(), options)
+        var got = b.poll()
+        while got.is_none() {
+            yield
+            got = b.poll()
+        }
+        let Some(bp) = take got else { panic("no answer") }
+        let Ok(build) = toolchain::read_built(take bp) else { panic("the build's request") }
+        var rendered = String::new()
+        for d in build.diagnostics {
+            rendered.push_str(d.rendered.as_str())
+        }
+        assert(
+            !build.ok && rendered.as_str().find(option).is_some(),
+            f"{name}: {rendered.as_str()}",
+        )
+        assert(
+            rendered.as_str().find("positive finite number").is_some(),
+            f"{name}: {rendered.as_str()}",
+        )
+    }
+}
+
+/// Where line `i` of a face's lines starts: its top (main.wrela's `line_top`).
+fn line_top(face: u32, i: u32) -> f32 {
+    var y = 10.0 + f32(face) * 700.0
+    for k in 0..i {
+        y += SIZES[k / 2] * 1.4 + 6.0
+    }
+    y
+}
+
+/// The bytes of `data`, read from its blob if it's one.
+@job
+fn bytes_of(data: take Data) -> Vec<u8> {
+    var out: Vec<u8> = Vec::new()
+    match take data {
+        Data::Bytes(v) => out = take v,
+        Data::Blob(held) => {
+            var n = blob::len(held)
+            var counted = n.poll()
+            while counted.is_none() {
+                yield
+                counted = n.poll()
+            }
+            let Some(np) = take counted else { panic("no answer") }
+            let Ok(size) = blob::read_len(take np) else { panic("the blob's length") }
+            var at: u64 = 0
+            while at < size {
+                let len = u32(min(size - at, CHUNK))
+                var r = blob::read(held, at, len)
+                var read = r.poll()
+                while read.is_none() {
+                    yield
+                    read = r.poll()
+                }
+                let Some(rp) = take read else { panic("no answer") }
+                let Ok(chunk) = answer(take rp) else { panic("the blob's bytes") }
+                for j in 0..chunk.len() {
+                    out.push(chunk[j])
+                }
+                at += u64(len)
+            }
+        },
+    }
+    out
+}
+
+/// The mean difference, in 255ths, between the GPU's frame and the reference over the line at
+/// `top`, `size` pixels per em, across the screen (both RGBA8).
+fn line_mean(frame: [u8], reference: [u8], top: f32, size: f32) -> f64 {
+    let y0 = u32(floor(top))
+    let y1 = u32(ceil(top + size * 1.4))
+    var sum = 0.0
+    var n = 0.0
+    for y in y0..y1 {
+        for x in 0..W {
+            for ch in 0..3 {
+                let at = 4 * (y * W + x) + ch
+                let (got, want) = (f64(frame[at]), f64(reference[at]))
+                sum += abs(got - want)
+                n += 1.0
+            }
+        }
+    }
+    sum / n
+}
+
+/// Test strings at 16, 24 and 48 px match the same font drawn by a reference rasterizer within
+/// a mean of 4/255; the other sizes, 12 px among them, are measured and printed.
+@test(tool, read: [("repo", "../../..")], budget: 300)
+@job
+fn text_matches_a_reference_rasterizer() {
+    var b = toolchain::build("repo/ui/tests/text", "scratch/build", toolchain::options())
+    var built = b.poll()
+    while built.is_none() {
+        yield
+        built = b.poll()
+    }
+    let Some(bp) = take built else { panic("no answer") }
+    let Ok(build) = toolchain::read_built(take bp) else { panic("the build's request") }
+    for d in build.diagnostics {
+        assert(!d.error, d.rendered.as_str())
+    }
+    assert(build.ok, "the lines build")
+    var load = drive::gpu()
+    load.width = W
+    load.height = H
+    var l = drive::load("scratch/build", load)
+    var loaded = l.poll()
+    while loaded.is_none() {
+        yield
+        loaded = l.poll()
+    }
+    let Some(lp) = take loaded else { panic("no answer") }
+    let Ok(it) = drive::read_loaded(take lp) else { panic("the lines load on a hardware GPU") }
+    let h = it.build
+    var i = drive::init(h)
+    var inited = i.poll()
+    while inited.is_none() {
+        yield
+        inited = i.poll()
+    }
+    let Some(ip) = take inited else { panic("no answer") }
+    let Ok(init) = drive::read_ran(take ip) else { panic("init's request") }
+    assert(init.trap.is_none(), "init runs")
+    var f = drive::frame_at(h, 0.0)
+    var framed = f.poll()
+    while framed.is_none() {
+        yield
+        framed = f.poll()
+    }
+    let Some(fp) = take framed else { panic("no answer") }
+    let Ok(ran) = drive::read_ran(take fp) else { panic("the frame's request") }
+    assert(ran.trap.is_none(), "the frame draws")
+    var c = drive::capture(h)
+    var captured = c.poll()
+    while captured.is_none() {
+        yield
+        captured = c.poll()
+    }
+    let Some(cp) = take captured else { panic("no answer") }
+    let Ok(shot) = drive::read_capture(take cp) else { panic("the capture") }
+    var sb = Box::new(bytes_of.start(take shot.rgba))
+    var frame: Vec<u8> = Vec::new()
+    loop {
+        match sb.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(v) => {
+                frame = take v
+                break
+            },
+        }
+    }
+    var g = files::read_blob("repo/ui/tests/text/goldens/reference.png")
+    var golden = g.poll()
+    while golden.is_none() {
+        yield
+        golden = g.poll()
+    }
+    let Some(gp) = take golden else { panic("no answer") }
+    let Ok(png) = blob::read_handle(take gp) else { panic("the reference reads") }
+    var d = image::decode(Data::Blob(png))
+    var decoded = d.poll()
+    while decoded.is_none() {
+        yield
+        decoded = d.poll()
+    }
+    let Some(dp) = take decoded else { panic("no answer") }
+    let Ok(picture) = image::read_image(take dp) else { panic("the reference decodes") }
+    assert(picture.width == W && picture.height == H, "the reference is the screen's size")
+    var rb = Box::new(bytes_of.start(take picture.rgba))
+    var reference: Vec<u8> = Vec::new()
+    loop {
+        match rb.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(v) => {
+                reference = take v
+                break
+            },
+        }
+    }
+    assert(frame.len() == reference.len(), "both are RGBA8 of the screen")
+    var worst = 0.0
+    for face in 0..2 {
+        for line in 0..14 {
+            let size = SIZES[line / 2]
+            let mean = line_mean(frame, reference, line_top(face, line), size)
+            let checked = size == 16.0 || size == 24.0 || size == 48.0
+            let name = if face == 0 { "Inter-Regular-Latin1" } else {
+                "JetBrainsMono-Regular-Latin1"
+            }
+            print(
+                f"{name} {size} px, line {line % 2}: mean {mean}/255{if checked { "" } else { " (measured)" }}",
+            )
+            if checked {
+                worst = max(worst, mean)
+                assert(mean <= 4.0, f"{name} at {size} px: a mean of {mean}/255")
+            }
+        }
+    }
+    print(f"worst checked line: {worst}/255")
+}
