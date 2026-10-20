@@ -9,7 +9,7 @@
 // probe asks doesn't depend on which instance answers, so the report is the same however many
 // there are.
 
-use math
+use std::math
 use mesh::{Solid, cross3, dot3, len3, unit3}
 use std::collections::Vec
 use std::string::String

@@ -70,7 +70,9 @@ use std::tool::drive
 use std::tool::drive::Scalar
 use std::tool::files
 use std::tool::toolchain
+use std::tool::files::rooted
 use std::tool::toolchain::Override
+use std::string::parse_f64_at
 
 /// The root the tool reads and writes the workspace in, and the root its builds go in.
 pub const WS: Text = "ws"
@@ -96,32 +98,6 @@ fn unknown(a: str) -> u32 {
     usage()
 }
 
-/// `path` (from the workspace's directory) in root `root`, or `None` if it isn't one: no part
-/// empty, `.` or `..`, and not absolute.
-pub fn rooted(root: str, path: str) -> Option<String> {
-    var to = path.len()
-    while to > 1 && path.byte(to - 1) == 47 {
-        to -= 1
-    }
-    let whole = path.slice(0, to)
-    if whole == "." {
-        return Some(String::from(root))
-    }
-    let from = if whole.starts_with("./") { 2 } else { 0 }
-    let p = path.slice(from, to)
-    if p.is_empty() || p.starts_with("/") {
-        return None
-    }
-    for range in p.split("/") {
-        let (a, b) = range
-        let part = p.slice(a, b)
-        if part.is_empty() || part == "." || part == ".." {
-            return None
-        }
-    }
-    Some(String::from(f"{root}/{p}"))
-}
-
 /// The last part of a path.
 fn last_part(path: str) -> String {
     var at = 0
@@ -136,7 +112,7 @@ fn last_part(path: str) -> String {
 /// The number an argument spells: an `f64`.
 fn number_arg(text: str) -> Option<f64> {
     let owned = String::from(text)
-    mesh::parse_f64(owned.as_bytes(), 0, text.len())
+    parse_f64_at(owned.as_bytes(), 0, text.len())
 }
 
 /// The parts named `name`, read and checked.

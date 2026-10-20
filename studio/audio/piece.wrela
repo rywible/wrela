@@ -1,0 +1,346 @@
+// A take as a piece's `describe()` prints it (JSON lines: the piece, its voices, each note as
+// played, the pedals' points and the beats), and what `describe`, `numbers` and `midi` make of
+// it.
+
+use dsp::{db, peak_of, rms, round, round_away, sat_u32, sat_u64, sat_u8}
+use json::{Value, nums, obj, text}
+use std::audio::SAMPLE_RATE
+use std::collections::Vec
+use std::string::String
+use std::json::{Doc, Kind, TOP, parse}
+
+/// A note as played: its key, its voice (an index into the take's voices), when it's struck and
+/// let go (seconds), how hard (0 to 1), and its bar.
+pub struct Played: Copy {
+    pub key: u32,
+    pub voice: u32,
+    pub onset: f64,
+    pub release: f64,
+    pub velocity: f64,
+    pub bar: u32,
+}
+
+/// A take: the piece's title, the take's name, its bars and beats to a bar, how long it plays,
+/// its voices' names, its notes, the pedals' points (a time and a depth), and each beat's time.
+pub struct Take: Clone {
+    pub title: String,
+    pub name: String,
+    pub bars: u32,
+    pub beats_per_bar: u32,
+    pub seconds: f64,
+    pub voices: Vec<String>,
+    pub notes: Vec<Played>,
+    pub sustain: Vec<(f64, f64)>,
+    pub soft: Vec<(f64, f64)>,
+    pub beats: Vec<f64>,
+}
+
+/// An empty take.
+pub fn empty() -> Take {
+    Take {
+        title: String::new(),
+        name: String::new(),
+        bars: 0,
+        beats_per_bar: 0,
+        seconds: 0.0,
+        voices: Vec::new(),
+        notes: Vec::new(),
+        sustain: Vec::new(),
+        soft: Vec::new(),
+        beats: Vec::new(),
+    }
+}
+
+/// Member `k` of `d`'s top object as a number, or 0.
+fn num(d: Doc, k: str) -> f64 {
+    match d.get(TOP, k) {
+        Some(n) => d.num(n).unwrap_or(0.0),
+        None => 0.0,
+    }
+}
+
+/// Member `k` of `d`'s top object as a text, or empty.
+fn words(d: Doc, k: str) -> String {
+    match d.get(TOP, k) {
+        Some(n) => d.text(n).unwrap_or(String::new()),
+        None => String::new(),
+    }
+}
+
+/// The take `lines` describe, each line a JSON object: the piece's (`title`), a voice's
+/// (`name`), a note's (`key`), a pedal's point (`sustain`, `soft`) or a beat's (`beat`).
+pub fn read(lines: [String]) -> Result<Take, String> {
+    var t = empty()
+    for line in lines {
+        let Some(d) = parse(line.as_str()) else {
+            return Err(String::from(f"`describe()` printed {line}: it isn't JSON"))
+        }
+        if d.kind(TOP) != Kind::Obj {
+            continue
+        }
+        if d.get(TOP, "title").is_some() {
+            t.title = words(d, "title")
+            t.name = words(d, "take")
+            t.bars = sat_u32(num(d, "bars"))
+            t.beats_per_bar = sat_u32(num(d, "beats_per_bar"))
+            t.seconds = num(d, "seconds")
+        } else if d.get(TOP, "name").is_some() {
+            t.voices.push(words(d, "name"))
+        } else if d.get(TOP, "key").is_some() {
+            t.notes.push(
+                Played {
+                    key: sat_u32(num(d, "key")),
+                    voice: sat_u32(num(d, "voice")),
+                    onset: num(d, "onset"),
+                    release: num(d, "release"),
+                    velocity: num(d, "velocity"),
+                    bar: sat_u32(num(d, "bar")),
+                },
+            )
+        } else if d.get(TOP, "sustain").is_some() {
+            t.sustain.push((num(d, "sustain"), num(d, "depth")))
+        } else if d.get(TOP, "soft").is_some() {
+            t.soft.push((num(d, "soft"), num(d, "depth")))
+        } else if d.get(TOP, "beat").is_some() {
+            t.beats.push(num(d, "beat"))
+        }
+    }
+    Ok(t)
+}
+
+fn pairs(points: [(f64, f64)]) -> Value {
+    var out: Vec<Value> = Vec::with_capacity(points.len())
+    for (a, b) in points {
+        out.push(nums([a, b]))
+    }
+    Value::List(out)
+}
+
+fn texts(xs: [String]) -> Value {
+    var out: Vec<Value> = Vec::with_capacity(xs.len())
+    for x in xs {
+        out.push(text(x.as_str()))
+    }
+    Value::List(out)
+}
+
+/// `describe`'s answer: the take, each note with its voice's name.
+pub fn described(t: Take) -> Value {
+    var notes: Vec<Value> = Vec::with_capacity(t.notes.len())
+    for n in t.notes {
+        let voice = if n.voice < t.voices.len() { text(t.voices[n.voice].as_str()) } else {
+            Value::Null
+        }
+        notes.push(
+            obj()
+                .with("key", Value::Int(i64(n.key)))
+                .with("voice", take voice)
+                .with("bar", Value::Int(i64(n.bar)))
+                .with("onset", Value::Num(n.onset))
+                .with("release", Value::Num(n.release))
+                .with("velocity", Value::Num(n.velocity)),
+        )
+    }
+    obj()
+        .with("title", text(t.title.as_str()))
+        .with("take", text(t.name.as_str()))
+        .with("bars", Value::Int(i64(t.bars)))
+        .with("seconds", Value::Num(t.seconds))
+        .with("voices", texts(t.voices))
+        .with("notes", Value::List(take notes))
+        .with("sustain", pairs(t.sustain))
+        .with("soft", pairs(t.soft))
+        .with("beats", nums(t.beats))
+}
+
+/// `numbers`' answer: the take in numbers, from its samples (the two channels interleaved): per
+/// bar, its tempo, its loudness and each voice's mean velocity; and the whole take's level.
+pub fn numbers(t: Take, samples: [f32]) -> Result<Value, String> {
+    let rate = f64(SAMPLE_RATE)
+    let per = t.beats_per_bar
+    var bars: Vec<Value> = Vec::new()
+    for b in 0..t.bars {
+        let i = u64(b) * u64(per)
+        let j = (u64(b) + 1) * u64(per)
+        if i >= u64(t.beats.len()) || j >= u64(t.beats.len()) {
+            break
+        }
+        let start = t.beats[u32(i)]
+        let end = t.beats[u32(j)]
+        let bpm = 60.0 * f64(per) / (end - start)
+        let from = sat_u32(2.0 * start * rate)
+        if from >= samples.len() {
+            break
+        }
+        let to = min(sat_u32(2.0 * end * rate), samples.len())
+        if from > to {
+            return Err(String::from("the take's beat times must be in increasing order"))
+        }
+        var voices = obj()
+        for v in 0..t.voices.len() {
+            var sum = 0.0
+            var count = 0
+            for n in t.notes {
+                if n.bar == b + 1 && n.voice == v {
+                    sum += n.velocity
+                    count += 1
+                }
+            }
+            if count > 0 {
+                voices = take voices.with(
+                    t.voices[v].as_str(),
+                    Value::Num(round(sum / f64(count), 3)),
+                )
+            }
+        }
+        bars.push(
+            obj()
+                .with("bar", Value::Int(i64(b) + 1))
+                .with("start", Value::Num(round(start, 3)))
+                .with("bpm", Value::Num(round(bpm, 1)))
+                .with("rms_db", Value::Num(round(db(rms(samples, from, to)), 1)))
+                .with("velocity", take voices),
+        )
+    }
+    Ok(
+        obj()
+            .with("title", text(t.title.as_str()))
+            .with("take", text(t.name.as_str()))
+            .with("seconds", Value::Num(round(t.seconds, 2)))
+            .with("notes", Value::Int(i64(t.notes.len())))
+            .with("peak_db", Value::Num(round(db(f64(peak_of(samples))), 1)))
+            .with("rms_db", Value::Num(round(db(rms(samples, 0, samples.len())), 1)))
+            .with("bars", Value::List(take bars)),
+    )
+}
+
+/// MIDI's variable-length number: seven bits a byte, most significant first.
+fn vlq(out: mut Vec<u8>, n: u64) {
+    var bytes: Vec<u8> = Vec::new()
+    var x = n
+    bytes.push(u8(x & 127))
+    x = x >> 7
+    while x > 0 {
+        bytes.push(u8(x & 127) | 128)
+        x = x >> 7
+    }
+    var k = bytes.len()
+    while k > 0 {
+        k -= 1
+        out.push(bytes[k])
+    }
+}
+
+/// An event: its tick, its order at that tick (offs before ons), and its three bytes.
+struct Event: Copy {
+    tick: u64,
+    order: u32,
+    bytes: [u8; 3],
+}
+
+fn tick(s: f64) -> u64 {
+    sat_u64(round_away(max(s, 0.0) * 960.0))
+}
+
+/// The take as a standard MIDI file: one track at 960 ticks a second (a quarter note a second),
+/// its notes, and the pedals as controllers 64 (sustain) and 67 (soft).
+pub fn midi(t: Take) -> Vec<u8> {
+    var events: Vec<Event> = Vec::new()
+    for n in t.notes {
+        let v = clamp(sat_u8(round_away(n.velocity * 127.0)), 1, 127)
+        let key = u8(n.key & 255)
+        events.push(Event { tick: tick(n.onset), order: 1, bytes: [144, key, v] })
+        events.push(Event { tick: tick(n.release), order: 0, bytes: [128, key, 0] })
+    }
+    for (at, depth) in t.sustain {
+        events.push(
+            Event { tick: tick(at), order: 0, bytes: [176, 64, sat_u8(round_away(depth * 127.0))] },
+        )
+    }
+    for (at, depth) in t.soft {
+        events.push(
+            Event { tick: tick(at), order: 0, bytes: [176, 67, sat_u8(round_away(depth * 127.0))] },
+        )
+    }
+    events.sort_by(|a, b| a.tick < b.tick || (a.tick == b.tick && a.order < b.order))
+    var track: Vec<u8> = Vec::new()
+    // Tempo: a quarter note a second.
+    for b in [u8(0), 255, 81, 3, 15, 66, 64] {
+        track.push(b)
+    }
+    var last: u64 = 0
+    for e in events {
+        vlq(mut track, e.tick - last)
+        for b in e.bytes {
+            track.push(b)
+        }
+        last = e.tick
+    }
+    for b in [u8(0), 255, 47, 0] {
+        track.push(b)
+    }
+    var file: Vec<u8> = Vec::from(
+        [u8(77), 84, 104, 100, 0, 0, 0, 6, 0, 0, 0, 1, 3, 192, 77, 84, 114, 107],
+    )
+    let len = track.len()
+    for k in 0..4 {
+        file.push(u8((len >> (24 - 8 * k)) & 255))
+    }
+    file.append(mut track)
+    file
+}
+
+@test
+fn a_take_reads_from_its_lines() {
+    var lines: Vec<String> = Vec::new()
+    for l in [
+        "{\"title\":\"T\",\"take\":\"a\",\"bars\":2,\"beats_per_bar\":1,\"seconds\":1.5}",
+        "{\"name\":\"melody\"}",
+        "{\"key\":69,\"voice\":0,\"onset\":0.25,\"release\":1,\"velocity\":0.78740156,\"bar\":1}",
+        "{\"sustain\":0,\"depth\":1}",
+        "{\"soft\":0.5,\"depth\":0}",
+        "{\"beat\":0}",
+        "{\"beat\":0.75}",
+    ] {
+        lines.push(String::from(l))
+    }
+    let Ok(t) = read(lines) else { panic("a take") }
+    assert(t.title.as_str() == "T" && t.bars == 2 && t.notes.len() == 1 && t.beats.len() == 2)
+    assert(t.notes[0].velocity == 0.78740156 && t.notes[0].onset == 0.25)
+    let d = described(t).compact()
+    assert(
+        d
+            .as_str()
+            .starts_with("{\"bars\":2,\"beats\":[0.0,0.75],\"notes\":[{\"bar\":1,\"key\":69,"),
+        d.as_str(),
+    )
+    let m = midi(t)
+    // The header, then the tempo, then the note on: key 69 at velocity 100, a quarter-second in.
+    assert(m[0] == 77 && m[12] == 3 && m[13] == 192)
+    var on = false
+    for i in 0..m.len() - 2 {
+        if m[i] == 144 && m[i + 1] == 69 && m[i + 2] == 100 {
+            on = true
+        }
+    }
+    assert(on, "a note on")
+    var bad: Vec<String> = Vec::new()
+    bad.push(String::from("not json"))
+    assert(read(bad).is_err())
+}
+
+@test
+fn a_short_render_counts_only_the_bars_it_reaches() {
+    var t = empty()
+    t.bars = 2
+    t.beats_per_bar = 1
+    t.beats = Vec::from([0.0, 0.2, 0.4])
+    // A tenth of a second: bar 2 starts past it.
+    let samples: Vec<f32> = Vec::filled(9600, value: 0.0)
+    let Ok(n) = numbers(t, samples) else { panic("numbers") }
+    let text = n.compact()
+    assert(
+        text.as_str().find("\"bar\":1").is_some() && text.as_str().find("\"bar\":2").is_none(),
+        text.as_str(),
+    )
+}

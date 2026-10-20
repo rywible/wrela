@@ -5,7 +5,7 @@
 // least squares. The path, its planes and its sections' blend are the engine's, written again
 // here in f64, so the planes measured are the planes the engine draws.
 
-use math
+use std::math
 use mesh::{Solid, cross3, dot3, len3, unit3}
 use solve::{Banded, catmull_rom, least_squares}
 use std::collections::Vec
@@ -27,14 +27,14 @@ pub struct Section: Copy {
 
 /// `a` as an angle in [-π, π).
 pub fn wrap(a: f64) -> f64 {
-    a - math::TAU * floor((a + math::PI) / math::TAU)
+    a - math::TAU_F64 * floor((a + math::PI_F64) / math::TAU_F64)
 }
 
 /// The least xⁿ + yⁿ over a quadrant whose extents are `a` and `b`, as the engine's `radius`
 /// holds it (there, so a derived interval stays finite).
 /// `two` is min(1, 2^(1 − n/2)), the same for each quadrant.
 fn least(a: f64, b: f64, n: f64, two: f64) -> f64 {
-    math::pow(max(a, b), -n) * two
+    math::pow_f64(max(a, b), -n) * two
 }
 
 impl Section {
@@ -55,7 +55,7 @@ impl Section {
         let down = max(self.down, 0.0001)
         let left = max(self.left, 0.0001)
         let right = max(self.right, 0.0001)
-        let two = min(1.0, math::pow(2.0, 1.0 - 0.5 * n))
+        let two = min(1.0, math::pow_f64(2.0, 1.0 - 0.5 * n))
         Outline {
             section: self,
             n,
@@ -112,16 +112,16 @@ impl Outline {
     pub fn base(self, theta: f64) -> f64 {
         let s = self.section
         let phi = theta - s.turn
-        let c = math::cos(phi)
-        let sn = math::sin(phi)
+        let c = math::cos_f64(phi)
+        let sn = math::sin_f64(phi)
         let a = max(if c >= 0.0 { s.up } else { s.down }, 0.0001)
         let b = max(if sn >= 0.0 { s.left } else { s.right }, 0.0001)
         let quadrant = 2 * (if c < 0.0 { 1 } else { 0 }) + (if sn < 0.0 { 1 } else { 0 })
         let x = max(abs(c) / a, 0.000001)
         let y = max(abs(sn) / b, 0.000001)
         1.0 /
-            math::pow(
-                max(math::pow(x, self.n) + math::pow(y, self.n), self.least[quadrant]),
+            math::pow_f64(
+                max(math::pow_f64(x, self.n) + math::pow_f64(y, self.n), self.least[quadrant]),
                 self.inv_n,
             )
     }
@@ -133,7 +133,7 @@ pub fn on_base(base: f64, bumps: [vec3d; 4], theta: f64) -> f64 {
     for k in bumps {
         let d = abs(wrap(theta - k.x))
         if d < k.z {
-            let q = math::cos(0.5 * math::PI * d / max(k.z, 0.0001))
+            let q = math::cos_f64(0.5 * math::PI_F64 * d / max(k.z, 0.0001))
             r += k.y * q * q
         }
     }
@@ -174,15 +174,15 @@ impl Ring {
         }
         for t in theta {
             let phi = t - sec.turn
-            let c = math::cos(phi)
-            let sn = math::sin(phi)
+            let c = math::cos_f64(phi)
+            let sn = math::sin_f64(phi)
             let ea = max(if c >= 0.0 { sec.up } else { sec.down }, 0.0001)
             let eb = max(if sn >= 0.0 { sec.left } else { sec.right }, 0.0001)
             let q = 2 * (if c < 0.0 { 1 } else { 0 }) + (if sn < 0.0 { 1 } else { 0 })
             let x = max(abs(c) / ea, 0.000001)
             let y = max(abs(sn) / eb, 0.000001)
-            let xn = math::pow(x, o.n)
-            let yn = math::pow(y, o.n)
+            let xn = math::pow_f64(x, o.n)
+            let yn = math::pow_f64(y, o.n)
             r.c.push(c)
             r.s.push(sn)
             r.quadrant.push(q)
@@ -190,7 +190,7 @@ impl Ring {
             r.y.push(y)
             r.xn.push(xn)
             r.yn.push(yn)
-            r.base.push(1.0 / math::pow(max(xn + yn, o.least[q]), o.inv_n))
+            r.base.push(1.0 / math::pow_f64(max(xn + yn, o.least[q]), o.inv_n))
         }
         r
     }
@@ -208,22 +208,22 @@ impl Ring {
             var xn = self.xn[j]
             var yn = self.yn[j]
             if q == 4 {
-                xn = math::pow(self.x[j], o.n)
-                yn = math::pow(self.y[j], o.n)
+                xn = math::pow_f64(self.x[j], o.n)
+                yn = math::pow_f64(self.y[j], o.n)
             } else if q == 0 && self.c[j] >= 0.0 {
-                xn = math::pow(max(abs(self.c[j]) / max(sec.up, 0.0001), 0.000001), o.n)
+                xn = math::pow_f64(max(abs(self.c[j]) / max(sec.up, 0.0001), 0.000001), o.n)
             } else if q == 2 && self.c[j] < 0.0 {
-                xn = math::pow(max(abs(self.c[j]) / max(sec.down, 0.0001), 0.000001), o.n)
+                xn = math::pow_f64(max(abs(self.c[j]) / max(sec.down, 0.0001), 0.000001), o.n)
             } else if q == 1 && self.s[j] >= 0.0 {
-                yn = math::pow(max(abs(self.s[j]) / max(sec.left, 0.0001), 0.000001), o.n)
+                yn = math::pow_f64(max(abs(self.s[j]) / max(sec.left, 0.0001), 0.000001), o.n)
             } else if q == 3 && self.s[j] < 0.0 {
-                yn = math::pow(max(abs(self.s[j]) / max(sec.right, 0.0001), 0.000001), o.n)
+                yn = math::pow_f64(max(abs(self.s[j]) / max(sec.right, 0.0001), 0.000001), o.n)
             } else {
                 // Neither this angle's extent nor its squareness moved.
                 out.push(self.base[j])
                 continue
             }
-            out.push(1.0 / math::pow(max(xn + yn, o.least[quad]), o.inv_n))
+            out.push(1.0 / math::pow_f64(max(xn + yn, o.least[quad]), o.inv_n))
         }
         out
     }
@@ -433,7 +433,7 @@ impl Path {
             let q_in = q - nn * dot3(q, nn)
             let rho = len3(q_in)
             let theta = if rho < 0.000001 { 0.0 } else {
-                math::atan2(dot3(q_in, v), dot3(q_in, uu))
+                math::atan2_f64(dot3(q_in, v), dot3(q_in, uu))
             }
             let first = i == 0
             let last = i + 2 == n
@@ -454,7 +454,7 @@ impl Path {
     /// The point `r` from the path, `s` along it, at angle `theta`.
     pub fn point(self, s: f64, theta: f64, r: f64) -> vec3d {
         let (c, u, v) = self.plane(s)
-        c + (u * (r * math::cos(theta)) + v * (r * math::sin(theta)))
+        c + (u * (r * math::cos_f64(theta)) + v * (r * math::sin_f64(theta)))
     }
 }
 
@@ -527,8 +527,8 @@ pub fn measure(solid: Solid, path: Path, spacing: f64, angles: u32, r_max: f64) 
         let (c, u, v) = path.plane(si)
         let inside = solid.inside(c)
         for j in 0..angles {
-            let theta = math::TAU * f64(j) / f64(angles)
-            let d = u * math::cos(theta) + v * math::sin(theta)
+            let theta = math::TAU_F64 * f64(j) / f64(angles)
+            let d = u * math::cos_f64(theta) + v * math::sin_f64(theta)
             var r = 0.0
             if inside {
                 if let Some(e) = solid.exit(c, d) {
@@ -557,7 +557,7 @@ impl Measured {
     /// The angles of each station's radii.
     fn thetas(self) -> Vec<f64> {
         let a = self.angles
-        Vec::from_fn(a, |j| math::TAU * f64(j) / f64(a))
+        Vec::from_fn(a, |j| math::TAU_F64 * f64(j) / f64(a))
     }
 
     /// The measured radius `s` along the path and at angle `theta`: linear between stations and
@@ -569,7 +569,7 @@ impl Measured {
         let i0 = min(u32(ts), n - 2)
         let f = ts - f64(i0)
         let a = self.angles
-        let js = rem_euclid(theta / math::TAU, 1.0) * f64(a)
+        let js = rem_euclid(theta / math::TAU_F64, 1.0) * f64(a)
         let j0 = min(u32(js), a - 1)
         let g = js - f64(j0)
         let j1 = (j0 + 1) % a

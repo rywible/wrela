@@ -12,7 +12,8 @@
 // ground_px,metres_per_px,z0_px,right|left` gives one for a photo the package doesn't register.
 // The photo itself is read as PNG.
 
-use json::{Doc, Kind, TOP, f64_text, number_of, obj, parse, quoted, round3}
+use std::json::{Doc, Kind, TOP, number_of, parse}
+use json::{f64_text, obj, quoted, round3}
 use references::manifest::{Facing, SideRegistration}
 use std::collections::Vec
 use std::string::String

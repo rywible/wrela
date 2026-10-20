@@ -6,7 +6,7 @@
 // `toolchain::query` about it (`probe` and `read_probe`). A floor's map lens is
 // studio/maplens/glue's program, with the floor's `lens` module in place of the Last Green's.
 
-use json::{Doc, Kind, TOP, parse}
+use std::json::{Doc, Kind, TOP, parse}
 use std::collections::Vec
 use std::string::String
 

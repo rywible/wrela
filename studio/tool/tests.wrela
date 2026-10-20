@@ -9,7 +9,7 @@
 // the written files (a normal build) and measured on the CPU, as AC9 of #39 asked.
 
 use glue::replace
-use json::{Doc, Kind, TOP, parse}
+use std::json::{Doc, Kind, TOP, parse}
 use lens::{
     ACTIONS, Built, Lens, Place, blob_bytes, build, call, cpu_action, last_json, logs, read_png,
     read_text, save_png, screen, settle, start, write_text,

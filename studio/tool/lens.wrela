@@ -10,7 +10,8 @@ use glue::{
     Subject, floor_text, glue_text, has_geology, is_floor, manifest, package_name, probe_main,
     probe_queries, probe_text, read_probe,
 }
-use json::{Kind, TOP, parse, quoted}
+use std::json::{Kind, TOP, parse}
+use json::quoted
 use std::collections::{Box, Vec}
 use std::job::Step
 use std::input::{Key, Script}

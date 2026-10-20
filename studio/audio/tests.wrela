@@ -1,0 +1,514 @@
+// The audio tool's tests: a piece (fixtures/piece: a sine, and two takes it describes) built,
+// described and rendered through the toolchain and the drive service, its numbers pinned and its
+// files written; and the measuring tools on sounds made here whose numbers are known: struck
+// strings (their partials stretched by a known B, struck at a known point, each decaying in two
+// stages), a decay of two stages, and clicks in a sine and in silence. These are the Rust
+// command's tests (`wrela audio`), ported, with the numbers it gave.
+
+use clicks::{Click, clicks}
+use dsp::rms
+use io::{Rendered, build_piece, quanta, read_file, write_file}
+use main::{Args, parse_args, piece_command, partials_command, speed, take_of, voice_of}
+use measure::{measure, onset_noise, two_stage, typical_b}
+use model::strike
+use piece::{Take, numbers}
+use std::collections::{Box, Vec}
+use std::job::Step
+use std::string::String
+use std::tool::{answer}
+use std::tool::files
+use std::math
+
+const RATE: f64 = 48000.0
+
+/// The piece's files, copied from `fx` into `scratch/piece`, where its build can go.
+@job
+fn copy_piece() -> u32 {
+    for name in ["wrela.toml", "main.wrela"] {
+        var r = files::read(f"fx/piece/{name}")
+        var got = r.poll()
+        while got.is_none() {
+            yield
+            got = r.poll()
+        }
+        let Some(polled) = take got else { panic("no answer") }
+        let Ok(bytes) = answer(take polled) else { panic(f"the fixture's {name}") }
+        var w = files::write(f"scratch/piece/{name}", bytes)
+        while w.poll().is_none() { yield }
+    }
+    0
+}
+
+fn args(words: [Text]) -> Args {
+    var given: Vec<String> = Vec::new()
+    for w in words {
+        given.push(String::from(w))
+    }
+    let Some(a) = parse_args(given) else { panic("the arguments parse") }
+    var out = take a
+    out.root = String::from("scratch")
+    out
+}
+
+/// What `piece_command` gives for `words`.
+@job
+fn command(words: take Vec<Text>) -> Result<(), String> {
+    var j = Box::new(piece_command.start(args(words)))
+    loop {
+        match j.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => return take r,
+        }
+    }
+}
+
+/// The bytes of `scratch/<path>`.
+@job
+fn read_back(path: take Text) -> Vec<u8> {
+    var j = Box::new(read_file.start(String::from(f"scratch/{path}"), String::from(path)))
+    loop {
+        match j.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                let Ok(bytes) = take r else { panic(f"{path} was written") }
+                return bytes
+            },
+        }
+    }
+}
+
+fn near(a: f64, b: f64, within: f64) -> bool {
+    abs(a - b) <= within
+}
+
+@test(tool, read: [("fx", "fixtures")], budget: 180)
+@job
+fn a_piece_is_described_rendered_and_written() {
+    var c = Box::new(copy_piece.start())
+    loop {
+        match c.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    var b = Box::new(build_piece.start(String::from("scratch/piece")))
+    var built: Option<Result<String, String>> = None
+    while built.is_none() {
+        match b.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => built = Some(take r),
+        }
+    }
+    let Some(Ok(build)) = take built else { panic("the piece builds") }
+    assert(build.as_str() == "scratch/piece/build/audio")
+
+    // The take, as the piece describes it.
+    let a = args(["piece", "describe"])
+    var t = Box::new(take_of.start(a.clone(), build.clone()))
+    var described: Option<Result<Take, String>> = None
+    while described.is_none() {
+        match t.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => described = Some(take r),
+        }
+    }
+    let Some(Ok(take_)) = take described else { panic("the take is described") }
+    assert(take_.title.as_str() == "Études" && take_.name.as_str() == "whole")
+    assert(take_.voices.len() == 2 && take_.notes.len() == 3 && take_.beats.len() == 5)
+    assert(take_.sustain.len() == 2 && take_.soft.len() == 1 && take_.bars == 2)
+
+    // Its voice: a second, 375 quanta, the two channels interleaved.
+    var v = Box::new(voice_of.start(a.clone(), build.clone(), timed: false))
+    var voiced: Option<Result<(Rendered, f64), String>> = None
+    while voiced.is_none() {
+        match v.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => voiced = Some(take r),
+        }
+    }
+    let Some(Ok((voice, seconds))) = take voiced else { panic("the voice renders") }
+    assert(seconds == 1.0 && voice.samples.len() == 2 * 48000 && voice.times.is_empty())
+    assert(voice.samples[0] == 0.0 && voice.samples[1] == 0.0)
+    // A sine's RMS is its amplitude over √2: (0.5² + 0.25²) / 4, both channels together.
+    let level = rms(voice.samples, 0, voice.samples.len())
+    assert(near(level, b: sqrt(0.078125), within: 0.0001), f"rms {level}")
+    let report = numbers(take_, voice.samples)
+    let Ok(n) = report else { panic("numbers") }
+    let text = n.compact()
+    for pinned in [
+        "\"peak_db\":-6.0",
+        "\"rms_db\":-11.1",
+        "\"notes\":3",
+        "{\"bar\":1,\"bpm\":240.0,\"rms_db\":-11.1,\"start\":0.0,\"velocity\":{\"bass\":0.5,\"melody\":0.75}}",
+        "{\"bar\":2,\"bpm\":240.0,\"rms_db\":-11.1,\"start\":0.5,\"velocity\":{\"melody\":0.25}}",
+    ] {
+        assert(text.as_str().find(pinned).is_some(), f"{pinned} in {text}")
+    }
+
+    // Each quantum timed: as many times as quanta.
+    var s = Box::new(voice_of.start(a.clone(), build.clone(), timed: true))
+    var timed: Option<Result<(Rendered, f64), String>> = None
+    while timed.is_none() {
+        match s.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => timed = Some(take r),
+        }
+    }
+    let Some(Ok((fast, _))) = take timed else { panic("the timed voice renders") }
+    assert(fast.times.len() == 375 && fast.samples.len() == voice.samples.len())
+    let sp = speed(fast.times, 1.0).compact()
+    assert(
+        sp.as_str().find("\"quanta\":375").is_some() &&
+            sp.as_str().find("\"quantum_budget_ms\":2.667").is_some(),
+        sp.as_str(),
+    )
+    // Its times say where they were measured: not comparable with the native host's.
+    assert(
+        sp.as_str().find("\"measured_in\":\"a driven build, with interruption checks").is_some(),
+        sp.as_str(),
+    )
+
+    // Take 1 sounds half a second: 188 quanta.
+    let short = args(["piece", "describe", "--take", "1"])
+    var h = Box::new(voice_of.start(take short, build.clone(), timed: false))
+    var half: Option<Result<(Rendered, f64), String>> = None
+    while half.is_none() {
+        match h.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => half = Some(take r),
+        }
+    }
+    let Some(Ok((brief, brief_seconds))) = take half else { panic("take 1 renders") }
+    assert(brief_seconds == 0.5 && brief.samples.len() == 188 * 128 * 2)
+
+    // The files: the WAV holds the samples rendered, the MIDI file the notes, the sheet a PNG
+    // 1800 pixels wide.
+    let commands: [[Text; 3]; 3] = [
+        ["piece", "wav", "out/a.wav"],
+        ["piece", "midi", "out/a.mid"],
+        ["piece", "sheet", "out/a.png"],
+    ]
+    for k in 0..3 {
+        var j = Box::new(command.start(Vec::from(commands[k])))
+        loop {
+            match j.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(r) => {
+                    assert(r.is_ok(), "the command writes its file")
+                    break
+                },
+            }
+        }
+    }
+    var w = Box::new(read_back.start("out/a.wav"))
+    var wav_bytes: Vec<u8> = Vec::new()
+    loop {
+        match w.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                wav_bytes = take r
+                break
+            },
+        }
+    }
+    let Ok(read) = wav::read(wav_bytes, "a.wav") else { panic("a WAV") }
+    assert(read.channels == 2 && read.rate == 48000.0 && read.samples.len() == voice.samples.len())
+    for i in 0..read.samples.len() {
+        assert(bitcast_u32(read.samples[i]) == bitcast_u32(voice.samples[i]), f"sample {i}")
+    }
+    var m = Box::new(read_back.start("out/a.mid"))
+    var mid: Vec<u8> = Vec::new()
+    loop {
+        match m.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                mid = take r
+                break
+            },
+        }
+    }
+    assert(mid[0] == 77 && mid[1] == 84 && mid[2] == 104 && mid[3] == 100, "MThd")
+    // The first note on: key 69 at velocity 95 (0.75 × 127, rounded).
+    var on = false
+    for i in 0..mid.len() - 2 {
+        if mid[i] == 144 && mid[i + 1] == 69 && mid[i + 2] == 95 {
+            on = true
+        }
+    }
+    assert(on, "the note on")
+    var p = Box::new(read_back.start("out/a.png"))
+    var png: Vec<u8> = Vec::new()
+    loop {
+        match p.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                png = take r
+                break
+            },
+        }
+    }
+    assert(png[1] == 80 && png[2] == 78 && png[3] == 71, "a PNG")
+    let width = (u32(png[16]) << 24) | (u32(png[17]) << 16) | (u32(png[18]) << 8) | u32(png[19])
+    let height = (u32(png[20]) << 24) | (u32(png[21]) << 16) | (u32(png[22]) << 8) | u32(png[23])
+    assert(width == 1800 && height == 1260, f"{width}x{height}")
+
+    // A file to write is asked for, and the piece's bars are kept to.
+    var e = Box::new(command.start(Vec::from(["piece", "wav"])))
+    loop {
+        match e.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                let Err(why) = take r else { panic("wav needs a file") }
+                assert(why.as_str() == "wav needs a file to write")
+                break
+            },
+        }
+    }
+    var f = Box::new(command.start(Vec::from(["piece", "sheet", "out/b.png", "--bars", "2-3"])))
+    loop {
+        match f.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                let Err(why) = take r else { panic("bars past the take") }
+                assert(why.as_str() == "bars 2-3 must be within 1-2 and in order", why.as_str())
+                break
+            },
+        }
+    }
+}
+
+/// What a made note's string is: its key, its inharmonicity, where the hammer strikes (a
+/// fraction of the string), and how hard (0 to 1: louder and brighter when larger).
+struct Made: Copy {
+    key: u32,
+    b: f64,
+    x0: f64,
+    velocity: f64,
+}
+
+/// A struck string, `seconds` long, mono: each partial a sine whose amplitude falls in two
+/// stages, quiet where the strike point is a node of it.
+fn string(m: Made, seconds: f64) -> Vec<f32> {
+    let f0 = 440.0 * math::pow_f64(2.0, (f64(m.key) - 69.0) / 12.0)
+    let n = u32(seconds * RATE)
+    var out: Vec<f64> = Vec::filled(n, value: 0.0)
+    for p in 1..61 {
+        let pf = f64(p)
+        let f = pf * f0 * sqrt(1.0 + m.b * pf * pf)
+        if f > 11000.0 {
+            break
+        }
+        let comb = abs(math::sin_f64(math::PI_F64 * pf * m.x0))
+        let a = 0.05 * m.velocity * comb / math::pow_f64(pf, 1.5 - 0.5 * m.velocity)
+        // Seconds for each stage to fall 60 dB, and the aftersound's share.
+        let t1 = 0.6 / (1.0 + 0.05 * pf)
+        let t2 = 6.0 / (1.0 + 0.05 * pf)
+        let r = 0.1
+        // A rotation each sample, not a sine: the tests make many notes.
+        let c = math::cos_f64(math::TAU_F64 * f / RATE)
+        let s = math::sin_f64(math::TAU_F64 * f / RATE)
+        let d1 = math::pow_f64(10.0, -3.0 / (t1 * RATE))
+        let d2 = math::pow_f64(10.0, -3.0 / (t2 * RATE))
+        var x = 1.0
+        var y = 0.0
+        var e1 = a * (1.0 - r)
+        var e2 = a * r
+        for i in 0..n {
+            out[i] += (e1 + e2) * y
+            let nx = c * x - s * y
+            y = s * x + c * y
+            x = nx
+            e1 *= d1
+            e2 *= d2
+        }
+    }
+    var samples: Vec<f32> = Vec::with_capacity(n)
+    for v in out {
+        samples.push(f32(v))
+    }
+    samples
+}
+
+@test(tool, budget: 120)
+@job
+fn partials_find_a_strings_tuning_stretch_and_strike() {
+    let made = Made { key: 48, b: 0.0003, x0: 0.12, velocity: 0.8 }
+    let samples = string(made, 3.0)
+    let m = measure(samples, RATE, made.key, from: 0.0, seconds: 2.0)
+    let nominal = 440.0 * math::pow_f64(2.0, (48.0 - 69.0) / 12.0)
+    assert(abs(m.cents()) < 1.0, f"f0 {m.f0} for {nominal}: {m.cents()} cents")
+    assert(abs(m.inharmonicity / made.b - 1.0) < 0.02, f"B {m.inharmonicity}")
+    assert(m.partials.len() >= 50, f"{m.partials.len()} partials")
+    for p in m.partials {
+        let pf = f64(p.n)
+        let hz = pf * nominal * sqrt(1.0 + made.b * pf * pf)
+        assert(abs(p.hz - hz) < 0.1, f"partial {p.n} at {p.hz} Hz for {hz}")
+        // The strike point, 0.12 of the string, is a node of the 25th and 50th partials: they
+        // aren't there to find.
+        assert(p.n != 25 && p.n != 50, f"partial {p.n} is at a node")
+    }
+    // Each partial's two stages: a prompt sound that dies faster than the aftersound.
+    var second: Option<u32> = None
+    for i in 0..m.partials.len() {
+        if m.partials[i].n == 2 {
+            second = Some(i)
+        }
+    }
+    let Some(k) = second else { panic("the 2nd partial") }
+    let Some(d) = two_stage(m.partials[k].levels, m.dt) else { panic("a decay") }
+    assert(d.prompt < d.after, f"prompt {d.prompt} s, after {d.after} s")
+    // The partials it leaves quiet say where the hammer struck.
+    let x = strike(m)
+    assert(abs(x - 0.12) <= 0.0051, f"the strike at {x}")
+    // A fundamental under 150 Hz leaves no room between partials for the strike's noise.
+    assert(onset_noise(samples, RATE, m, 0.0).is_none())
+    let report = measure::report(samples, RATE, made.key, from: 0.0, seconds: 2.0).compact()
+    assert(report.as_str().starts_with("{\"cents_from_equal\":"), report.as_str())
+    assert(report.as_str().find("\"key\":48").is_some())
+    assert(near(typical_b(40), b: 0.00011, within: 0.0000000001) && typical_b(50) > typical_b(40))
+}
+
+@test
+fn two_stage_recovers_a_known_decay_and_ignores_the_floor() {
+    let dt = 0.02
+    // Two seconds hold both the prompt and the tail; a much longer tail can dominate this grid
+    // search's fit to the short prompt.
+    var levels: Vec<f64> = Vec::new()
+    for i in 0..100 {
+        let t = f64(i) * dt
+        levels.push(
+            -12.0 +
+                10.0 *
+                    math::log10_f64(
+                        0.9 * math::pow_f64(10.0, -6.0 * t / 0.6) +
+                            0.1 * math::pow_f64(10.0, -6.0 * t / 6.0),
+                    ),
+        )
+    }
+    let Some(fit) = two_stage(levels, dt) else { panic("a decay") }
+    assert(abs(fit.prompt / 0.6 - 1.0) < 0.05, f"prompt {fit.prompt}")
+    assert(abs(fit.after / 6.0 - 1.0) < 0.05, f"after {fit.after}")
+    assert(abs(fit.after_db - 10.0 * math::log10_f64(0.1 / 0.9)) < 0.5)
+    assert(fit.error < 0.1, f"error {fit.error}")
+    let floor: Vec<f64> = Vec::filled(20, value: -120.0)
+    assert(two_stage(floor, dt).is_none())
+}
+
+@test
+fn clicks_finds_a_click_and_only_it() {
+    var sine: Vec<f32> = Vec::new()
+    for i in 0..96000 {
+        sine.push(f32(0.3 * math::sin_f64(math::TAU_F64 * 440.0 * f64(i) / RATE)))
+    }
+    var clicked = sine.clone()
+    clicked[48000] += 0.3
+    assert(clicks(sine, RATE).is_empty(), "no clicks in a sine")
+    let found = clicks(clicked, RATE)
+    assert(found.len() == 1, f"{found.len()} clicks")
+    assert(abs(found[0].at - 1.0) < 0.002, f"a click at {found[0].at} s")
+}
+
+@test
+fn clicks_in_silence_keep_their_peak_times_and_levels() {
+    let rate = 8000.0
+    var samples: Vec<f32> = Vec::filled(24000, value: 0.0)
+    assert(clicks(samples, rate).is_empty())
+    samples[8000] = 0.5
+    samples[16000] = 0.5
+    let found = clicks(samples, rate)
+    assert(found.len() == 2)
+    assert(found[0].at == 0.9995 && found[1].at == 1.9995, f"{found[0].at}, {found[1].at}")
+    let expected = 10.0 * math::log10_f64(6.0 * 0.25 / 8.0 / 0.0000000001)
+    assert(found[0].db == expected && found[1].db == expected, f"{found[0].db}")
+}
+
+@test
+fn clicks_accepts_a_low_rate_wav() {
+    var samples: Vec<f32> = Vec::filled(1000, value: 0.0)
+    samples[500] = 0.5
+    let found = clicks(samples, 1000.0)
+    assert(found.len() == 1 && abs(found[0].at - 0.5) < 0.005)
+}
+
+@test
+fn a_clicks_moment_is_its_notes() {
+    let onsets = [1.0]
+    let releases = [2.0]
+    let at = |t: f64| Click { at: t, db: 13.0 }
+    assert(
+        clicks::kind_of(at(1.005), have_notes: true, onsets: onsets, releases: releases) == "onset",
+    )
+    assert(
+        clicks::kind_of(at(2.03), have_notes: true, onsets: onsets, releases: releases) ==
+            "release",
+    )
+    assert(
+        clicks::kind_of(at(1.5), have_notes: true, onsets: onsets, releases: releases) == "other",
+    )
+    assert(
+        clicks::kind_of(at(1.5), have_notes: false, onsets: onsets, releases: releases) ==
+            "unknown",
+    )
+}
+
+@test
+fn audio_lengths_that_cannot_render_are_errors() {
+    let Ok(n) = quanta(1.0) else { panic("a second") }
+    assert(n == 375)
+    for seconds in [0.0, -1.0, bitcast_f64(u64(0x7FF8000000000000)), 1.0 / 0.0, 1e12] {
+        assert(quanta(seconds).is_err(), f"accepted {seconds}")
+    }
+}
+
+@test(tool, budget: 60)
+@job
+fn partials_refuses_keys_and_ranges_it_cannot_measure() {
+    var bytes = wav::header(samples: 100, channels: 1)
+    for _ in 0..400 {
+        bytes.push(0)
+    }
+    var parts: Vec<Vec<u8>> = Vec::new()
+    parts.push(take bytes)
+    var w = Box::new(write_file.start(String::from("scratch/x.wav"), take parts))
+    loop {
+        match w.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                assert(r.is_ok(), "the WAV is written")
+                break
+            },
+        }
+    }
+    let cases: [(Text, Text); 10] = [
+        ("--from", "inf"),
+        ("--from", "NaN"),
+        ("--from", "-1"),
+        ("--from", "1e300"),
+        ("--from", "1"),
+        ("--seconds", "inf"),
+        ("--seconds", "NaN"),
+        ("--seconds", "0"),
+        ("--seconds", "-1"),
+        ("--key", "128"),
+    ]
+    for (flag, value) in cases {
+        var given: Vec<String> = Vec::new()
+        for word in ["partials", "x.wav", "--key", "60", flag, value] {
+            given.push(String::from(word))
+        }
+        // A number that isn't one is a usage error; one out of range, the command's.
+        let Some(parsed) = parse_args(given) else { continue }
+        var a = take parsed
+        a.root = String::from("scratch")
+        var j = Box::new(partials_command.start(take a))
+        loop {
+            match j.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(r) => {
+                    assert(r.is_err(), f"accepted {flag} {value}")
+                    break
+                },
+            }
+        }
+    }
+}

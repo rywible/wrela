@@ -1,7 +1,7 @@
 // The linear algebra the fits share: a banded symmetric solve (Cholesky's), least squares by
 // the normal equations, uniform Catmull–Rom weights, and a Fourier series' terms.
 
-use math
+use std::math
 use std::collections::Vec
 
 /// A symmetric matrix that's zero more than `band` from its diagonal, by its lower half, and
@@ -190,8 +190,8 @@ pub fn fourier(theta: f64, k: u32) -> Vec<f64> {
     var t: Vec<f64> = Vec::with_capacity(2 * k + 1)
     t.push(1.0)
     for h in 1..k + 1 {
-        t.push(math::cos(f64(h) * theta))
-        t.push(math::sin(f64(h) * theta))
+        t.push(math::cos_f64(f64(h) * theta))
+        t.push(math::sin_f64(f64(h) * theta))
     }
     t
 }

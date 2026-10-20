@@ -29,7 +29,8 @@ use lens::{
     Built, Place, blob_bytes, build, data_of, failed, parse_edits, read_text, text_of, tool,
     write_text,
 }
-use json::{TOP, f64_text, obj, parse, quoted}
+use std::json::{TOP, parse}
+use json::{f64_text, obj, quoted}
 use look::f32_text
 use std::collections::{Box, Vec, replace}
 use std::io::print

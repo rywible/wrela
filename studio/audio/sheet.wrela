@@ -1,0 +1,651 @@
+// A take's sheet: one PNG an agent reads instead of listening. From the top: the piano roll
+// (each note from its onset to its release, its voice's colour, brighter when struck harder,
+// with bar lines and their numbers), each note's velocity, the tempo beat by beat, the pedals'
+// depth, the loudness, and a spectrogram (30 Hz to 12 kHz, log-spaced). The spectrogram's
+// columns are transformed on the tool's helpers.
+
+use dsp::{Plan, db, max_of, min_of, rms, round_away, sat_u32}
+use io::{RATE, release}
+use piece::Take
+use std::collections::{Box, Vec}
+use std::job::Step
+use std::string::String
+use std::tool::{MOST_BYTES, ToolError, answer}
+use std::tool::blob
+use std::tool::blob::{Blob, Data}
+use std::tool::files
+use std::tool::image
+use std::math
+
+const WIDTH: u32 = 1800
+const LEFT: u32 = 70
+const PLOT: u32 = WIDTH - LEFT - 20
+
+/// Each voice's colour, in order.
+const VOICES: [vec3u; 6] = [
+    vec3u(240, 140, 40),
+    vec3u(70, 140, 230),
+    vec3u(80, 190, 90),
+    vec3u(180, 100, 220),
+    vec3u(220, 80, 80),
+    vec3u(200, 200, 70),
+]
+
+const GRID: vec3u = vec3u(55, 55, 60)
+const LABEL: vec3u = vec3u(200, 200, 205)
+const WHITE: vec3u = vec3u(255, 255, 255)
+
+/// An RGB image, rows top to bottom, its background a dark grey.
+pub struct Image: Clone {
+    pub w: u32,
+    pub h: u32,
+    pub px: Vec<u8>,
+}
+
+impl Image {
+    pub fn new(w: u32, h: u32) -> Image {
+        Image { w, h, px: Vec::filled(w * h * 3, value: 18) }
+    }
+
+    pub fn set(mut self, x: u32, y: u32, c: vec3u) {
+        if x < self.w && y < self.h {
+            let i = 3 * (y * self.w + x)
+            self.px[i] = u8(c.x)
+            self.px[i + 1] = u8(c.y)
+            self.px[i + 2] = u8(c.z)
+        }
+    }
+
+    pub fn rect(mut self, x0: u32, y0: u32, x1: u32, y1: u32, c: vec3u) {
+        // Clipped first: what's past the image draws nothing.
+        let ye = min(max(y1, y0 + 1), self.h)
+        let xe = min(max(x1, x0 + 1), self.w)
+        var y = y0
+        while y < ye {
+            var x = x0
+            while x < xe {
+                self.set(x, y, c)
+                x += 1
+            }
+            y += 1
+        }
+    }
+
+    pub fn line(mut self, x0: f64, y0: f64, x1: f64, y1: f64, c: vec3u) {
+        let n = max(sat_u32(ceil(max_of(abs(x1 - x0), abs(y1 - y0)))), 1)
+        for i in 0..n + 1 {
+            let t = f64(i) / f64(n)
+            self.set(
+                sat_u32(round_away(x0 + (x1 - x0) * t)),
+                sat_u32(round_away(y0 + (y1 - y0) * t)),
+                c,
+            )
+        }
+    }
+
+    /// Text in a 5×7 font, `scale` pixels a dot, from its top-left corner.
+    pub fn text(mut self, x: u32, y: u32, s: str, scale: u32, c: vec3u) {
+        var pen = x
+        var i = 0
+        while i < s.len() {
+            let (cp, len) = s.char_at(i).unwrap_or((63, 1))
+            i += len
+            let up = if cp == 233 || cp == 201 {
+                69
+            } else if cp >= 97 && cp <= 122 {
+                cp - 32
+            } else {
+                cp
+            }
+            for (k, rows) in FONT {
+                if k != up {
+                    continue
+                }
+                for r in 0..7 {
+                    let bits = rows[r]
+                    for col in 0..5 {
+                        if (u32(bits) & (16 >> col)) != 0 {
+                            self.rect(
+                                pen + col * scale,
+                                y + r * scale,
+                                pen + (col + 1) * scale,
+                                y + (r + 1) * scale,
+                                c,
+                            )
+                        }
+                    }
+                }
+                break
+            }
+            pen += 6 * scale
+        }
+    }
+
+    /// Its pixels as RGBA8, opaque, in chunks of at most 512 KiB.
+    pub fn rgba_chunks(self) -> Vec<Vec<u8>> {
+        var out: Vec<Vec<u8>> = Vec::new()
+        var chunk: Vec<u8> = Vec::with_capacity(MOST_BYTES)
+        let n = self.w * self.h
+        for p in 0..n {
+            if chunk.len() + 4 > MOST_BYTES {
+                out.push(take chunk)
+                chunk = Vec::with_capacity(MOST_BYTES)
+            }
+            chunk.push(self.px[3 * p])
+            chunk.push(self.px[3 * p + 1])
+            chunk.push(self.px[3 * p + 2])
+            chunk.push(255)
+        }
+        if !chunk.is_empty() {
+            out.push(take chunk)
+        }
+        out
+    }
+}
+
+/// How many characters `s` has.
+fn chars(s: str) -> u32 {
+    var n = 0
+    var i = 0
+    while i < s.len() {
+        let (_, len) = s.char_at(i).unwrap_or((63, 1))
+        i += len
+        n += 1
+    }
+    n
+}
+
+fn shade(c: vec3u, t: f64) -> vec3u {
+    let t = clamp(t, 0.0, 1.0)
+    vec3u(sat_u32(f64(c.x) * t), sat_u32(f64(c.y) * t), sat_u32(f64(c.z) * t))
+}
+
+/// A heat colour for `t` from 0 to 1: black, purple, orange, white.
+fn heat(t: f64) -> vec3u {
+    let t = clamp(t, 0.0, 1.0)
+    let stops = [
+        vec3d(0.0, 0.0, 0.0),
+        vec3d(90.0, 20.0, 120.0),
+        vec3d(230.0, 90.0, 30.0),
+        vec3d(255.0, 240.0, 200.0),
+    ]
+    let x = t * 3.0
+    let i = min(u32(floor(x)), 2)
+    let u = x - f64(i)
+    let a = stops[i]
+    let b = stops[i + 1]
+    vec3u(
+        sat_u32(a.x + (b.x - a.x) * u),
+        sat_u32(a.y + (b.y - a.y) * u),
+        sat_u32(a.z + (b.z - a.z) * u),
+    )
+}
+
+/// A pedal's depth at `s`, between its points.
+fn depth(points: [(f64, f64)], s: f64) -> f64 {
+    var d = 0.0
+    if points.len() >= 2 {
+        for k in 1..points.len() {
+            let (a, da) = points[k - 1]
+            let (b, db) = points[k]
+            if s >= a && s < b {
+                let u = (s - a) / max_of(b - a, 0.000000001)
+                return da + (db - da) * u
+            }
+            d = db
+        }
+    }
+    if points.len() == 1 { points[0].1 } else { d }
+}
+
+/// A column of the spectrogram: its pixel, and its colours from the top.
+struct Column: Clone {
+    px: u32,
+    colors: Vec<vec3u>,
+}
+
+/// The sheet, as an RGB image, for the whole take or bars `bars` (first and last, from 1), of
+/// the take's samples (the two channels interleaved).
+pub fn draw(t: Take, samples: [f32], bars: Option<(u32, u32)>) -> Result<Image, String> {
+    let (first, last) = bars.unwrap_or((1, t.bars))
+    if first == 0 || last < first || last > t.bars || last == 4294967295 {
+        return Err(String::from(f"bars {first}-{last} must be within 1-{t.bars} and in order"))
+    }
+    let per = max(t.beats_per_bar, 1)
+    let bar_time = |b: u32| {
+        let i = u64(b - 1) * u64(per)
+        if i < u64(t.beats.len()) { Some(t.beats[u32(i)]) } else { None }
+    }
+    let Some(t0) = bar_time(first) else { return Err(String::from(f"the take has no bar {first}")) }
+    let t1 = match bar_time(last + 1) {
+        Some(x) => x,
+        None => max_of(t.seconds, t0 + 1.0),
+    }
+    let x_of = |s: f64| f64(LEFT) + (s - t0) / (t1 - t0) * f64(PLOT)
+
+    let roll_top: u32 = 40
+    let roll_h: u32 = 420
+    let vel_top = roll_top + roll_h + 30
+    let vel_h: u32 = 110
+    let tempo_top = vel_top + vel_h + 30
+    let tempo_h: u32 = 120
+    let pedal_top = tempo_top + tempo_h + 30
+    let pedal_h: u32 = 50
+    let loud_top = pedal_top + pedal_h + 30
+    let loud_h: u32 = 90
+    let spec_top = loud_top + loud_h + 30
+    let spec_h: u32 = 260
+    var img = Image::new(WIDTH, spec_top + spec_h + 20)
+
+    let title = String::from(f"{t.title} - {t.name} - bars {first}-{last} - {t1 - t0:.1} s")
+    img.text(LEFT, 10, title.as_str(), scale: 2, c: LABEL)
+    var x = LEFT + 6 * 2 * chars(title.as_str()) + 40
+    for i in 0..t.voices.len() {
+        let name = t.voices[i].as_str()
+        img.rect(x, 12, x + 14, 24, VOICES[i % 6])
+        img.text(x + 20, 12, name, scale: 2, c: LABEL)
+        x += 20 + 12 * chars(name) + 30
+    }
+
+    // Bar lines over every lane, with every bar's number (every fourth's, when there are many).
+    let step: u32 = if last - first > 40 { 4 } else { 1 }
+    let lanes = [
+        (roll_top, roll_h),
+        (vel_top, vel_h),
+        (tempo_top, tempo_h),
+        (pedal_top, pedal_h),
+        (loud_top, loud_h),
+    ]
+    for b in first..last + 2 {
+        let Some(s) = bar_time(b) else { continue }
+        let bx = sat_u32(x_of(s))
+        for (top, h) in lanes {
+            img.rect(bx, top, bx + 1, top + h, GRID)
+        }
+        if b <= last && (b - first) % step == 0 {
+            img.text(bx + 2, roll_top - 12, f"{b}", scale: 1, c: LABEL)
+        }
+    }
+
+    // The piano roll.
+    var lo_key: u32 = 4294967295
+    var hi_key: u32 = 0
+    var any = false
+    for n in t.notes {
+        if n.release >= t0 && n.onset <= t1 {
+            any = true
+            lo_key = min(lo_key, n.key)
+            hi_key = max(hi_key, n.key)
+        }
+    }
+    if !any {
+        lo_key = 21
+        hi_key = 108
+    }
+    let lo = if lo_key >= 2 { lo_key - 2 } else { 0 }
+    let hi = hi_key + 2
+    let row = f64(roll_h) / f64(hi - lo + 1)
+    let y_of_key = |k: u32| f64(roll_top) + f64(hi - k) * row
+    for k in lo..hi + 1 {
+        // C's lines, labelled.
+        if k % 12 == 0 {
+            let y = sat_u32(y_of_key(k))
+            img.rect(LEFT, y, LEFT + PLOT, y + 1, GRID)
+            img.text(8, if y >= 4 { y - 4 } else { 0 }, f"C{i64(k / 12) - 1}", scale: 1, c: LABEL)
+        }
+    }
+    for n in t.notes {
+        if n.release < t0 || n.onset > t1 {
+            continue
+        }
+        let c = shade(VOICES[n.voice % 6], 0.35 + 0.65 * n.velocity)
+        let x0 = x_of(max_of(n.onset, t0))
+        let x1 = x_of(min_of(n.release, t1))
+        let y = y_of_key(n.key)
+        let bottom = sat_u32(y + max_of(row, 2.0) - 1.0)
+        img.rect(sat_u32(x0), sat_u32(y), sat_u32(max_of(x1, x0 + 2.0)), bottom, c)
+        // The onset, bright.
+        img.rect(sat_u32(x0), sat_u32(y), sat_u32(x0) + 2, bottom, WHITE)
+    }
+
+    // Velocities.
+    img.text(8, vel_top, "VEL", scale: 1, c: LABEL)
+    for v in [0.25, 0.5, 0.75] {
+        let y = vel_top + sat_u32((1.0 - v) * f64(vel_h))
+        img.rect(LEFT, y, LEFT + PLOT, y + 1, GRID)
+        img.text(40, if y >= 3 { y - 3 } else { 0 }, f"{v:.2}", scale: 1, c: LABEL)
+    }
+    for n in t.notes {
+        if n.onset < t0 || n.onset > t1 {
+            continue
+        }
+        let nx = sat_u32(x_of(n.onset))
+        let ny = vel_top + sat_u32((1.0 - n.velocity) * f64(vel_h))
+        img.rect(if nx >= 1 { nx - 1 } else { 0 }, if ny >= 1 { ny - 1 } else {
+            0
+        }, nx + 2, ny + 2, VOICES[n.voice % 6])
+    }
+
+    // The tempo: each beat's, in quarter notes a minute.
+    var bpm: Vec<(f64, f64)> = Vec::new()
+    if t.beats.len() >= 2 {
+        for k in 1..t.beats.len() {
+            let a = t.beats[k - 1]
+            let b = t.beats[k]
+            if b > t0 && a < t1 && b > a {
+                bpm.push((0.5 * (a + b), 60.0 / (b - a)))
+            }
+        }
+    }
+    var bmin = 1.7976931348623157e308
+    var bmax = -1.7976931348623157e308
+    for (_, v) in bpm {
+        bmin = min_of(bmin, v)
+        bmax = max_of(bmax, v)
+    }
+    bmin = max_of(floor(bmin - 5.0), 0.0)
+    bmax = ceil(bmax + 5.0)
+    let y_of_bpm = |v: f64| f64(tempo_top) +
+        (1.0 - (v - bmin) / max_of(bmax - bmin, 1.0)) * f64(tempo_h)
+    img.text(8, tempo_top, "BPM", scale: 1, c: LABEL)
+    img.text(40, tempo_top + 10, f"{bmax:.0}", scale: 1, c: LABEL)
+    img.text(40, tempo_top + tempo_h - 8, f"{bmin:.0}", scale: 1, c: LABEL)
+    if bpm.len() >= 2 {
+        for k in 1..bpm.len() {
+            let (ax, av) = bpm[k - 1]
+            let (bx, bv) = bpm[k]
+            img.line(x_of(ax), y_of_bpm(av), x_of(bx), y_of_bpm(bv), vec3u(120, 220, 255))
+        }
+    }
+
+    // The pedals: sustain filled, soft as a line.
+    img.text(8, pedal_top, "PED", scale: 1, c: LABEL)
+    let floor_y = pedal_top + pedal_h
+    for px in 0..PLOT {
+        let s = t0 + (t1 - t0) * f64(px) / f64(PLOT)
+        let h = sat_u32(depth(t.sustain, s) * f64(pedal_h))
+        if h <= floor_y {
+            img.rect(LEFT + px, floor_y - h, LEFT + px + 1, floor_y, vec3u(60, 90, 170))
+        }
+        let sh = sat_u32(depth(t.soft, s) * f64(pedal_h))
+        if sh <= floor_y {
+            img.set(LEFT + px, floor_y - sh, vec3u(255, 170, 60))
+        }
+    }
+
+    // Loudness: RMS over 50 ms, in dB of full scale.
+    img.text(8, loud_top, "DB", scale: 1, c: LABEL)
+    let y_of_db = |d: f64| f64(loud_top) + clamp(-d / 60.0, 0.0, 1.0) * f64(loud_h)
+    for d in [-20.0, -40.0] {
+        let y = sat_u32(y_of_db(d))
+        img.rect(LEFT, y, LEFT + PLOT, y + 1, GRID)
+        img.text(40, if y >= 3 { y - 3 } else { 0 }, f"{d:.0}", scale: 1, c: LABEL)
+    }
+    var prev: Option<(f64, f64)> = None
+    var px: u32 = 0
+    while px < PLOT {
+        let s = t0 + (t1 - t0) * f64(px) / f64(PLOT)
+        let a = sat_u32(2.0 * s * RATE) & 4294967294
+        let b = min(sat_u32(2.0 * (s + 0.05) * RATE), samples.len())
+        let d = if a < b { db(rms(samples, a, b)) } else { -120.0 }
+        let p = (x_of(s), y_of_db(d))
+        if let Some((qx, qy)) = prev {
+            img.line(qx, qy, p.0, p.1, vec3u(230, 230, 120))
+        }
+        prev = Some(p)
+        px += 2
+    }
+
+    // The spectrogram, of both channels together.
+    let frames = samples.len() / 2
+    var mono: Vec<f32> = Vec::with_capacity(frames)
+    for i in 0..frames {
+        mono.push(0.5 * (samples[2 * i] + samples[2 * i + 1]))
+    }
+    let n: u32 = 4096
+    let f_lo = 30.0
+    let f_hi = 12000.0
+    img.text(8, spec_top, "HZ", scale: 1, c: LABEL)
+    for f in [100.0, 1000.0, 10000.0] {
+        let y = f64(spec_top) +
+            (1.0 - math::log_f64(f / f_lo) / math::log_f64(f_hi / f_lo)) * f64(spec_h)
+        img.text(30, sat_u32(y), f"{f:.0}", scale: 1, c: LABEL)
+    }
+    var bands: Vec<(u32, u32)> = Vec::with_capacity(spec_h)
+    for py in 0..spec_h {
+        let u0 = 1.0 - f64(py + 1) / f64(spec_h)
+        let u1 = 1.0 - f64(py) / f64(spec_h)
+        let fa = f_lo * math::pow_f64(f_hi / f_lo, u0)
+        let fb = f_lo * math::pow_f64(f_hi / f_lo, u1)
+        let ka = sat_u32(fa * f64(n) / RATE)
+        let kb = max(sat_u32(fb * f64(n) / RATE), ka + 1)
+        bands.push((min(ka, n / 2 - 1), min(kb, n / 2)))
+    }
+    let plan = Plan::new(n)
+    var columns: Vec<Column> = Vec::from_fn(PLOT, |p| Column { px: p, colors: Vec::new() })
+    columns.par_each_mut(|col| {
+        let s = t0 + (t1 - t0) * f64(col.px) / f64(PLOT)
+        let centre = sat_u32(s * RATE)
+        let at = if centre >= n / 2 { centre - n / 2 } else { 0 }
+        var room = plan.scratch()
+        plan.transform(mono, at, mut room)
+        for (ka, kb) in bands {
+            var m = 0.0
+            for k in ka..kb {
+                m = max_of(m, room.mag[k])
+            }
+            col.colors.push(heat((db(m) + 100.0) / 80.0))
+        }
+    })
+    for col in columns {
+        for py in 0..spec_h {
+            img.set(LEFT + col.px, spec_top + py, col.colors[py])
+        }
+    }
+    Ok(img)
+}
+
+fn said(e: ToolError) -> String {
+    String::from(e.message())
+}
+
+/// A new blob of `parts`' bytes, one after another (each at most 512 KiB).
+@job
+pub fn blob_of(given: take Vec<Vec<u8>>) -> Result<Blob, String> {
+    var parts = take given
+    var n = blob::new()
+    var made = n.poll()
+    while made.is_none() {
+        yield
+        made = n.poll()
+    }
+    let Some(mp) = take made else { return Err(String::from("no answer")) }
+    let b = match blob::read_handle(take mp) {
+        Ok(b) => b,
+        Err(e) => return Err(said(e)),
+    }
+    for k in 0..parts.len() {
+        let part = replace(mut parts[k], Vec::new())
+        var a = blob::append(b, part)
+        var got = a.poll()
+        while got.is_none() {
+            yield
+            got = a.poll()
+        }
+        let Some(polled) = take got else { return Err(String::from("no answer")) }
+        if let Err(e) = answer(take polled) {
+            var r = Box::new(release.start(b))
+            loop {
+                match r.get_mut().resume() {
+                    Step::Yielded => yield,
+                    Step::Done(_) => break,
+                }
+            }
+            return Err(said(e))
+        }
+    }
+    Ok(b)
+}
+
+/// Draws the sheet and writes it as a PNG at `path` (a root path; `shown` as the command line
+/// gave it).
+@job
+pub fn write_sheet(
+    t: take Take,
+    samples: take Vec<f32>,
+    bars: take Option<(u32, u32)>,
+    path: take String,
+    shown: take String,
+) -> Result<(), String> {
+    let img = draw(t, samples, bars)?
+    var bj = Box::new(blob_of.start(img.rgba_chunks()))
+    var made: Option<Result<Blob, String>> = None
+    while made.is_none() {
+        match bj.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => made = Some(take r),
+        }
+    }
+    let Some(m) = take made else { return Err(String::from("no answer")) }
+    let pixels = (take m)?
+    var e = image::encode_png(
+        image::Image { width: img.w, height: img.h, rgba: Data::Blob(pixels) },
+        timeout: 600.0,
+    )
+    var got = e.poll()
+    while got.is_none() {
+        yield
+        got = e.poll()
+    }
+    var r = Box::new(release.start(pixels))
+    loop {
+        match r.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    let Some(polled) = take got else { return Err(String::from("no answer")) }
+    let png = match image::read_encoded(take polled) {
+        Ok(d) => take d,
+        Err(e) => return Err(said(e)),
+    }
+    let written = match png {
+        Data::Bytes(bytes) => {
+            var w = files::write(path.as_str(), bytes)
+            var wg = w.poll()
+            while wg.is_none() {
+                yield
+                wg = w.poll()
+            }
+            let Some(wp) = take wg else { return Err(String::from("no answer")) }
+            answer(take wp)
+        },
+        Data::Blob(b) => {
+            var w = files::write_blob(path.as_str(), b)
+            var wg = w.poll()
+            while wg.is_none() {
+                yield
+                wg = w.poll()
+            }
+            var rel = Box::new(release.start(b))
+            loop {
+                match rel.get_mut().resume() {
+                    Step::Yielded => yield,
+                    Step::Done(_) => break,
+                }
+            }
+            let Some(wp) = take wg else { return Err(String::from("no answer")) }
+            answer(take wp)
+        },
+    }
+    match written {
+        Ok(_) => Ok(()),
+        Err(e) => Err(String::from(f"can't write {shown}: {e.message()}")),
+    }
+}
+
+/// A 5×7 font: each character's code point and its rows' five dots, the leftmost in bit 4.
+const FONT: [(u32, [u8; 7]); 46] = [
+    (48, [14, 17, 19, 21, 25, 17, 14]),
+    (49, [4, 12, 4, 4, 4, 4, 14]),
+    (50, [14, 17, 1, 2, 4, 8, 31]),
+    (51, [31, 2, 4, 2, 1, 17, 14]),
+    (52, [2, 6, 10, 18, 31, 2, 2]),
+    (53, [31, 16, 30, 1, 1, 17, 14]),
+    (54, [6, 8, 16, 30, 17, 17, 14]),
+    (55, [31, 1, 2, 4, 8, 8, 8]),
+    (56, [14, 17, 17, 14, 17, 17, 14]),
+    (57, [14, 17, 17, 15, 1, 2, 12]),
+    (65, [14, 17, 17, 31, 17, 17, 17]),
+    (66, [30, 17, 17, 30, 17, 17, 30]),
+    (67, [14, 17, 16, 16, 16, 17, 14]),
+    (68, [28, 18, 17, 17, 17, 18, 28]),
+    (69, [31, 16, 16, 30, 16, 16, 31]),
+    (70, [31, 16, 16, 30, 16, 16, 16]),
+    (71, [14, 17, 16, 23, 17, 17, 15]),
+    (72, [17, 17, 17, 31, 17, 17, 17]),
+    (73, [14, 4, 4, 4, 4, 4, 14]),
+    (74, [7, 2, 2, 2, 2, 18, 12]),
+    (75, [17, 18, 20, 24, 20, 18, 17]),
+    (76, [16, 16, 16, 16, 16, 16, 31]),
+    (77, [17, 27, 21, 21, 17, 17, 17]),
+    (78, [17, 17, 25, 21, 19, 17, 17]),
+    (79, [14, 17, 17, 17, 17, 17, 14]),
+    (80, [30, 17, 17, 30, 16, 16, 16]),
+    (81, [14, 17, 17, 17, 21, 18, 13]),
+    (82, [30, 17, 17, 30, 20, 18, 17]),
+    (83, [15, 16, 16, 14, 1, 1, 30]),
+    (84, [31, 4, 4, 4, 4, 4, 4]),
+    (85, [17, 17, 17, 17, 17, 17, 14]),
+    (86, [17, 17, 17, 17, 17, 10, 4]),
+    (87, [17, 17, 17, 21, 21, 21, 10]),
+    (88, [17, 17, 10, 4, 10, 17, 17]),
+    (89, [17, 17, 17, 10, 4, 4, 4]),
+    (90, [31, 1, 2, 4, 8, 16, 31]),
+    (46, [0, 0, 0, 0, 0, 12, 12]),
+    (45, [0, 0, 0, 31, 0, 0, 0]),
+    (58, [0, 12, 12, 0, 12, 12, 0]),
+    (47, [1, 2, 2, 4, 8, 8, 16]),
+    (40, [2, 4, 8, 8, 8, 4, 2]),
+    (41, [8, 4, 2, 2, 2, 4, 8]),
+    (37, [24, 25, 2, 4, 8, 19, 3]),
+    (35, [10, 10, 31, 10, 31, 10, 10]),
+    (61, [0, 0, 31, 0, 31, 0, 0]),
+    (63, [0, 0, 0, 0, 0, 0, 0]),
+]
+
+@test
+fn bar_ranges_outside_the_take_are_errors() {
+    var t = piece::empty()
+    t.bars = 2
+    t.beats_per_bar = 1
+    t.seconds = 1.0
+    t.beats = Vec::from([0.0, 0.5, 1.0])
+    for bars in [(0, 1), (2, 1), (1, 3), (1, 4294967295)] {
+        assert(draw(t, [f32(0.0); 0], Some(bars)).is_err(), f"accepted {bars.0}-{bars.1}")
+    }
+}
+
+@test
+fn a_sheet_draws_the_lowest_midi_key() {
+    var t = piece::empty()
+    t.bars = 1
+    t.beats_per_bar = 1
+    t.seconds = 1.0
+    t.voices.push(String::from("piano"))
+    t.notes.push(
+        piece::Played { key: 0, voice: 0, onset: 0.0, release: 0.5, velocity: 0.8, bar: 1 },
+    )
+    t.beats = Vec::from([0.0, 1.0])
+    let Ok(img) = draw(t, [f32(0.0); 0], None) else { panic("a sheet for MIDI key 0") }
+    assert(img.w == 1800 && img.h == 1260)
+    // The note's onset, bright, at the roll's left.
+    var white = 0
+    for y in 40..460 {
+        let i = 3 * (y * img.w + LEFT)
+        if img.px[i] == 255 && img.px[i + 1] == 255 {
+            white += 1
+        }
+    }
+    assert(white > 0, "the onset is drawn")
+}

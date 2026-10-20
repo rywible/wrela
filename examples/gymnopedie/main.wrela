@@ -2,7 +2,7 @@
 // score exactly, at the performance's tempo, steady); take 1 is the performance in
 // performance.wrela. Takes 2 and 3 are the same, dry: without the room, as the listening test
 // plays them beside a recorded piano. The program plays take 1 unless `choose` says otherwise
-// before the first frame. `describe` prints the take for `wrela audio`'s tools.
+// before the first frame. `describe` prints the take for the audio tool (studio/audio).
 
 use engine::perform::{Performance, deadpan, perform}
 use engine::piano::{Model, piano, play_piano}

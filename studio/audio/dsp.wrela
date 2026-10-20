@@ -1,0 +1,320 @@
+// Sound as numbers: levels, rounding as the Rust command did, and a Hann-windowed Fourier
+// transform. A sheet and a note's measurement each transform hundreds of windows of one size,
+// so a `Plan` keeps the window, the bit-reversal swaps and the twiddles, which every transform
+// of that size reads (on any thread), and each transform writes only its own `Scratch`.
+//
+// The transform and its order of operations are the Rust command's (`wrela audio`), so its
+// spectra are the same to within what this tool's cosines differ from the host's libm by.
+
+use std::collections::Vec
+use std::math
+
+/// A level in decibels (of full scale, for samples): 20 log₁₀ x, x at least 10⁻¹².
+pub fn db(x: f64) -> f64 {
+    20.0 * math::log10_f64(max_of(x, 0.000000000001))
+}
+
+/// The larger of `a` and `b`, or `b` if `a` is NaN (as Rust's `f64::max`).
+pub fn max_of(a: f64, b: f64) -> f64 {
+    if a != a {
+        return b
+    }
+    if b != b {
+        return a
+    }
+    if a > b { a } else { b }
+}
+
+/// The smaller of `a` and `b`, or `b` if `a` is NaN (as Rust's `f64::min`).
+pub fn min_of(a: f64, b: f64) -> f64 {
+    if a != a {
+        return b
+    }
+    if b != b {
+        return a
+    }
+    if a < b { a } else { b }
+}
+
+/// `x` within `lo` and `hi` (as Rust's `f64::clamp`).
+pub fn clamp_of(x: f64, lo: f64, hi: f64) -> f64 {
+    if x < lo {
+        lo
+    } else if x > hi {
+        hi
+    } else {
+        x
+    }
+}
+
+/// The RMS of `samples`: 0 for none.
+pub fn rms(samples: [f32], from: u32, to: u32) -> f64 {
+    if to <= from {
+        return 0.0
+    }
+    var sum = 0.0
+    for i in from..to {
+        let x = f64(samples[i])
+        sum += x * x
+    }
+    sqrt(sum / f64(to - from))
+}
+
+/// The largest magnitude among `samples`.
+pub fn peak_of(samples: [f32]) -> f32 {
+    var m: f32 = 0.0
+    for x in samples {
+        let a = abs(x)
+        if a > m {
+            m = a
+        }
+    }
+    m
+}
+
+/// `x` rounded to the nearest whole number, halves away from 0 (Rust's `f64::round`).
+pub fn round_away(x: f64) -> f64 {
+    if !(abs(x) < 4503599627370496.0) {
+        return x
+    }
+    let t = trunc(x)
+    if abs(x - t) >= 0.5 {
+        if x < 0.0 { t - 1.0 } else { t + 1.0 }
+    } else {
+        t
+    }
+}
+
+/// `x` rounded to `places` decimals (0 to 4), as the Rust command rounded: `(x · 10^p).round()
+/// / 10^p`.
+pub fn round(x: f64, places: u32) -> f64 {
+    let s = [1.0, 10.0, 100.0, 1000.0, 10000.0][places]
+    round_away(x * s) / s
+}
+
+/// `x` as a `u32`, as Rust's `as` casts: NaN and below 0 are 0, past the most the most.
+pub fn sat_u32(x: f64) -> u32 {
+    if !(x > 0.0) {
+        return 0
+    }
+    if x >= 4294967295.0 {
+        return 4294967295
+    }
+    u32(x)
+}
+
+/// `x` as a `u64`, as Rust's `as` casts.
+pub fn sat_u64(x: f64) -> u64 {
+    if !(x > 0.0) {
+        return 0
+    }
+    if x >= 18446744073709551615.0 {
+        return 18446744073709551615
+    }
+    u64(x)
+}
+
+/// `x` as a `u8`, as Rust's `as` casts.
+pub fn sat_u8(x: f64) -> u8 {
+    if !(x > 0.0) {
+        return 0
+    }
+    if x >= 255.0 {
+        return 255
+    }
+    u8(x)
+}
+
+/// A Hann-windowed radix-2 transform of `n` samples: its window, its bit-reversal swaps, and
+/// each stage's twiddles (all stages' in one list, a stage of `len` from `len / 2 - 1` on).
+pub struct Plan: Clone {
+    pub n: u32,
+    window: Vec<f64>,
+    swaps: Vec<(u32, u32)>,
+    twiddles: Vec<(f64, f64)>,
+}
+
+/// What one transform writes: its real and imaginary parts, and the magnitudes (`n / 2`).
+pub struct Scratch: Clone {
+    re: Vec<f64>,
+    im: Vec<f64>,
+    pub mag: Vec<f64>,
+}
+
+impl Plan {
+    /// The plan for `n` samples, a power of two of at least 2.
+    pub fn new(n: u32) -> Plan {
+        assert(n >= 2 && (n & (n - 1)) == 0, "a transform's size is a power of two")
+        var window: Vec<f64> = Vec::with_capacity(n)
+        for i in 0..n {
+            window.push(0.5 - 0.5 * math::cos_f64(math::TAU_F64 * f64(i) / f64(n)))
+        }
+        var swaps: Vec<(u32, u32)> = Vec::new()
+        var j: u32 = 0
+        for i in 1..n {
+            var bit = n >> 1
+            while (j & bit) != 0 {
+                j = j ^ bit
+                bit = bit >> 1
+            }
+            j = j | bit
+            if i < j {
+                swaps.push((i, j))
+            }
+        }
+        var twiddles: Vec<(f64, f64)> = Vec::with_capacity(n)
+        var len: u32 = 2
+        while len <= n {
+            let w = -2.0 * math::PI_F64 / f64(len)
+            let wr = math::cos_f64(w)
+            let wi = math::sin_f64(w)
+            var cr = 1.0
+            var ci = 0.0
+            for _ in 0..len / 2 {
+                twiddles.push((cr, ci))
+                let next = cr * wr - ci * wi
+                ci = cr * wi + ci * wr
+                cr = next
+            }
+            len = len << 1
+        }
+        Plan { n, window, swaps, twiddles }
+    }
+
+    /// Room for one transform at a time.
+    pub fn scratch(self) -> Scratch {
+        Scratch {
+            re: Vec::filled(self.n, value: 0.0),
+            im: Vec::filled(self.n, value: 0.0),
+            mag: Vec::filled(self.n / 2, value: 0.0),
+        }
+    }
+
+    /// The magnitudes of the `n` samples from `at`, zero past the end, in `s.mag`: a sine of
+    /// amplitude 1 peaks at 1 (the window's gain is n / 4).
+    pub fn transform(self, samples: [f32], at: u32, s: mut Scratch) {
+        let n = self.n
+        let len = samples.len()
+        for i in 0..n {
+            let k = u64(at) + u64(i)
+            let x = if k < u64(len) { f64(samples[u32(k)]) } else { 0.0 }
+            s.re[i] = x * self.window[i]
+            s.im[i] = 0.0
+        }
+        for (i, j) in self.swaps {
+            let r = s.re[i]
+            s.re[i] = s.re[j]
+            s.re[j] = r
+        }
+        var half: u32 = 1
+        var base: u32 = 0
+        while half < n {
+            var start: u32 = 0
+            while start < n {
+                for k in 0..half {
+                    let (cr, ci) = self.twiddles[base + k]
+                    let a = start + k
+                    let b = a + half
+                    let br = s.re[b]
+                    let bi = s.im[b]
+                    let tr = br * cr - bi * ci
+                    let ti = br * ci + bi * cr
+                    let ar = s.re[a]
+                    let ai = s.im[a]
+                    s.re[b] = ar - tr
+                    s.im[b] = ai - ti
+                    s.re[a] = ar + tr
+                    s.im[a] = ai + ti
+                }
+                start += 2 * half
+            }
+            base += half
+            half = half << 1
+        }
+        let scale = f64(n)
+        for k in 0..n / 2 {
+            s.mag[k] = sqrt(s.re[k] * s.re[k] + s.im[k] * s.im[k]) * 4.0 / scale
+        }
+    }
+
+    /// One transform's magnitudes: `transform` with room of its own.
+    pub fn spectrum(self, samples: [f32], at: u32) -> Vec<f64> {
+        var s = self.scratch()
+        self.transform(samples, at, mut s)
+        take s.mag
+    }
+}
+
+/// The peak in `mag` between bins `lo` and `hi`: its bin, interpolated by a parabola through its
+/// neighbours' logs, and its magnitude. Of equal magnitudes, the last (as Rust's `max_by`).
+pub fn peak(mag: [f64], lo: u32, hi: u32) -> Option<(f64, f64)> {
+    if mag.len() < 3 {
+        return None
+    }
+    let hi = min(hi, mag.len() - 2)
+    let lo = max(lo, 1)
+    if lo >= hi {
+        return None
+    }
+    var k = lo
+    for j in lo + 1..hi + 1 {
+        if mag[j] >= mag[k] {
+            k = j
+        }
+    }
+    let a = math::log_f64(max_of(mag[k - 1], 0.000000000000001))
+    let b = math::log_f64(max_of(mag[k], 0.000000000000001))
+    let c = math::log_f64(max_of(mag[k + 1], 0.000000000000001))
+    let d = a - 2.0 * b + c
+    let off = if abs(d) > 0.000000000001 { 0.5 * (a - c) / d } else { 0.0 }
+    Some((f64(k) + clamp_of(off, lo: -0.5, hi: 0.5), mag[k]))
+}
+
+@test
+fn a_transform_matches_a_direct_one_and_clears_reused_room() {
+    let n: u32 = 64
+    var samples: Vec<f32> = Vec::new()
+    for i in 0..3 * n {
+        samples.push(
+            f32(0.4 * math::sin_f64(math::TAU_F64 * 7.0 * f64(i) / f64(n)) + 0.1 * f64(i % 11)),
+        )
+    }
+    let plan = Plan::new(n)
+    var s = plan.scratch()
+    for at in [0, 17, samples.len() - 11, samples.len() + 5, 0] {
+        plan.transform(samples, at, mut s)
+        for k in 0..n / 2 {
+            var re = 0.0
+            var im = 0.0
+            for i in 0..n {
+                let j = at + i
+                let x = if j < samples.len() { f64(samples[j]) } else { 0.0 }
+                let w = 0.5 - 0.5 * math::cos_f64(math::TAU_F64 * f64(i) / f64(n))
+                let angle = -math::TAU_F64 * f64(i * k) / f64(n)
+                re += x * w * math::cos_f64(angle)
+                im += x * w * math::sin_f64(angle)
+            }
+            let want = sqrt(re * re + im * im) * 4.0 / f64(n)
+            assert(abs(s.mag[k] - want) < 0.000000000001, f"at {at}, bin {k}: {s.mag[k]} vs {want}")
+        }
+    }
+}
+
+@test
+fn rounding_is_the_rust_commands() {
+    assert(
+        round_away(2.5) == 3.0 &&
+            round_away(-2.5) == -3.0 &&
+            round_away(0.49999999999999994) == 0.0,
+    )
+    assert(round(1.2345, 3) == 1.235 && round(-33.07533352158692, 1) == -33.1)
+    assert(
+        sat_u32(-1.0) == 0 &&
+            sat_u32(bitcast_f64(u64(0x7FF8000000000000))) == 0 &&
+            sat_u32(1e12) == 4294967295,
+    )
+    assert(sat_u8(300.0) == 255 && sat_u8(127.9) == 127)
+    let m = [1.0, 2.0, 5.0, 5.0, 2.0, 1.0]
+    let Some((k, a)) = peak(m, lo: 0, hi: 10) else { panic("a peak") }
+    assert(a == 5.0 && k == 2.5, f"the last of equal peaks, pulled half a bin: {k}")
+}
