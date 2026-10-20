@@ -1,0 +1,1316 @@
+// Triangle meshes: OBJ and binary STL files, placed in a creature's frame, and a bounding volume
+// hierarchy for the questions a replica asks of a sculpt: where a ray first meets the surface,
+// whether a point is inside, and how far the nearest surface is. In `f64`, so a sculpt's thin
+// parts don't fall between rounding errors.
+
+use references::manifest::{Axis, Registration}
+use std::collections::Vec
+use math
+use std::string::String
+
+// Vector arithmetic, each sum in a fixed order (so the bits are the same wherever it runs).
+
+pub fn dot3(a: vec3d, b: vec3d) -> f64 {
+    a.x * b.x + a.y * b.y + a.z * b.z
+}
+
+pub fn cross3(a: vec3d, b: vec3d) -> vec3d {
+    vec3d(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x)
+}
+
+pub fn len3(a: vec3d) -> f64 {
+    sqrt(dot3(a, a))
+}
+
+/// `a` scaled to unit length.
+pub fn unit3(a: vec3d) -> vec3d {
+    a * (1.0 / len3(a))
+}
+
+/// A triangle soup with shared vertices.
+pub struct Mesh: Clone {
+    pub vertices: Vec<vec3d>,
+    pub triangles: Vec<[u32; 3]>,
+}
+
+/// Reads an OBJ (its `v` and `f` lines; polygons are fanned into triangles) or a binary STL
+/// (vertices merged where their coordinates are equal), by the extension of its file's `name`.
+pub fn parse(name: str, bytes: [u8]) -> Result<Mesh, String> {
+    var ext = String::new()
+    if let Some(dot) = last_dot(name) {
+        for i in dot + 1..name.len() {
+            let b = name.byte(i)
+            ext.push_byte(if b >= 65 && b <= 90 { b + 32 } else { b })
+        }
+    }
+    if ext.as_str() == "obj" {
+        parse_obj(bytes)
+    } else if ext.as_str() == "stl" {
+        parse_stl(bytes)
+    } else {
+        Err(String::from(f"{name}: a mesh is an .obj or .stl file"))
+    }
+}
+
+fn last_dot(s: str) -> Option<u32> {
+    var at: Option<u32> = None
+    for i in 0..s.len() {
+        if s.byte(i) == 46 {
+            at = Some(i)
+        }
+    }
+    at
+}
+
+fn is_space(b: u8) -> bool {
+    b == 32 || (b >= 9 && b <= 13)
+}
+
+/// The words of `line` (its bytes from `from` to `to`), each its first byte and its end.
+fn words(text: [u8], from: u32, to: u32) -> Vec<(u32, u32)> {
+    var out: Vec<(u32, u32)> = Vec::new()
+    var i = from
+    while i < to {
+        while i < to && is_space(text[i]) {
+            i += 1
+        }
+        let start = i
+        while i < to && !is_space(text[i]) {
+            i += 1
+        }
+        if i > start {
+            out.push((start, i))
+        }
+    }
+    out
+}
+
+fn is_digit(b: u8) -> bool {
+    b >= 48 && b <= 57
+}
+
+/// The finite `f64` that `text[from..to]` spells (`[+-]digits[.digits][e[+-]digits]`), or
+/// `None`: the nearest one (ties to even), as Rust's `parse` reads it. Up to 15 significant
+/// digits with a decimal exponent within ±22 take one exact division or product (Clinger's fast
+/// path); others are read exactly (`nearest_f64`), every digit to `KEPT`.
+pub fn parse_f64(text: [u8], from: u32, to: u32) -> Option<f64> {
+    var i = from
+    var neg = false
+    if i < to && (text[i] == 45 || text[i] == 43) {
+        neg = text[i] == 45
+        i += 1
+    }
+    // The significant digits (to `KEPT`), and the power of ten after the last one kept.
+    var digits: Vec<u8> = Vec::new()
+    var exponent: i64 = 0
+    var more = false
+    var seen = false
+    while i < to && is_digit(text[i]) {
+        seen = true
+        let d = text[i] - 48
+        if digits.len() < KEPT {
+            if !digits.is_empty() || d != 0 {
+                digits.push(d)
+            }
+        } else {
+            exponent += 1
+            more = more || d != 0
+        }
+        i += 1
+    }
+    if i < to && text[i] == 46 {
+        i += 1
+        while i < to && is_digit(text[i]) {
+            seen = true
+            let d = text[i] - 48
+            if digits.len() < KEPT {
+                if !digits.is_empty() || d != 0 {
+                    digits.push(d)
+                }
+                exponent -= 1
+            } else {
+                more = more || d != 0
+            }
+            i += 1
+        }
+    }
+    if !seen {
+        return None
+    }
+    if i < to && (text[i] == 101 || text[i] == 69) {
+        i += 1
+        var eneg = false
+        if i < to && (text[i] == 45 || text[i] == 43) {
+            eneg = text[i] == 45
+            i += 1
+        }
+        if i >= to {
+            return None
+        }
+        var e: i64 = 0
+        while i < to && is_digit(text[i]) {
+            if e < 100000 {
+                e = e * 10 + i64(text[i] - 48)
+            }
+            i += 1
+        }
+        exponent += if eneg { -e } else { e }
+    }
+    if i != to {
+        return None
+    }
+    var v = 0.0
+    if !digits.is_empty() {
+        // The value is below 10^(top + 1) and at least 10^top.
+        let top = exponent + i64(digits.len()) - 1
+        var mant: u64 = 0
+        if digits.len() <= 19 {
+            for d in digits {
+                mant = mant * 10 + u64(d)
+            }
+        }
+        if !more && digits.len() <= 15 && exponent >= -22 && exponent <= 22 {
+            // Both exact in an f64: one rounding.
+            let p = POWERS[u32(abs(exponent))]
+            v = if exponent < 0 { f64(mant) / p } else { f64(mant) * p }
+        } else if top > 309 {
+            v = 1.0 / 0.0
+        } else if top >= -330 {
+            v = nearest_f64(digits, exponent, more)
+        }
+    }
+    if !(abs(v) < 1.0 / 0.0) {
+        return None
+    }
+    Some(if neg { -v } else { v })
+}
+
+/// The most significant digits `parse_f64` keeps: past 768, a digit can't move the nearest f64,
+/// only whether the value is a tie (so the rest count as whether they're 0).
+const KEPT: u32 = 800
+
+/// The f64 nearest the integer `digits` spell (decimal, the first the most significant) times
+/// 10^`e10` (ties to even), or a little more than that if `more` (digits past them weren't all
+/// 0): the quotient of the exact numerator and denominator in big integers, to 57 bits, then
+/// rounded once, to the precision the result has (fewer bits for a subnormal).
+fn nearest_f64(digits: [u8], e10: i64, more: bool) -> f64 {
+    var num = big_of(0)
+    for d in digits {
+        big_mul_small(mut num, 10)
+        big_add_small(mut num, u32(d))
+    }
+    var den = big_of(1)
+    if e10 >= 0 {
+        for _ in 0..u32(e10) {
+            big_mul_small(mut num, 10)
+        }
+    } else {
+        for _ in 0..u32(-e10) {
+            big_mul_small(mut den, 10)
+        }
+    }
+    // num · 2^s / den in [2^55, 2^57).
+    let s = 56 - (i64(big_bits(num)) - i64(big_bits(den)))
+    var x = if s >= 0 { big_shl(num, u32(s)) } else { num.clone() }
+    let d = if s < 0 { big_shl(den, u32(-s)) } else { den.clone() }
+    var q: u64 = 0
+    var bit = 58
+    while bit > 0 {
+        bit -= 1
+        let t = big_shl(d, bit)
+        if big_cmp(x, t) >= 0 {
+            big_sub(mut x, t)
+            q = q | (u64(1) << bit)
+        }
+    }
+    var sticky = more
+    for limb in x {
+        sticky = sticky || limb != 0
+    }
+    let qb = 64 - q.leading_zeros()
+    let e2 = -s
+    let lead = e2 + i64(qb) - 1
+    if lead > 1023 {
+        return 1.0 / 0.0
+    }
+    var keep: i64 = 53
+    if lead < -1022 {
+        keep = 53 - (-1022 - lead)
+    }
+    if keep < 0 {
+        return 0.0
+    }
+    let drop = i64(qb) - keep
+    var m = if drop >= 64 { u64(0) } else { q >> u32(drop) }
+    let rest = if drop >= 64 { q } else { q & ((u64(1) << u32(drop)) - 1) }
+    let half = if drop >= 65 { u64(0) } else { u64(1) << u32(drop - 1) }
+    if drop <= 64 && (rest > half || (rest == half && (sticky || (m & 1) == 1))) {
+        m += 1
+    }
+    // m × 2^(e2 + drop), each step exact: the result is representable.
+    var v = f64(m)
+    var k = e2 + drop
+    while k > 1000 {
+        v *= bitcast_f64(u64(0x7E70000000000000))
+        k -= 1000
+    }
+    while k < -1000 {
+        v *= bitcast_f64(u64(0x0170000000000000))
+        k += 1000
+    }
+    v * bitcast_f64(u64(k + 1023) << 52)
+}
+
+fn big_of(x: u64) -> Vec<u32> {
+    var a: Vec<u32> = Vec::new()
+    a.push(u32(x & 4294967295))
+    a.push(u32(x >> 32))
+    big_trim(mut a)
+    a
+}
+
+fn big_trim(a: mut Vec<u32>) {
+    while a.len() > 1 && a[a.len() - 1] == 0 {
+        let _ = a.pop()
+    }
+}
+
+/// `a` times `m`.
+fn big_mul_small(a: mut Vec<u32>, m: u32) {
+    var carry: u64 = 0
+    for i in 0..a.len() {
+        let t = u64(a[i]) * u64(m) + carry
+        a[i] = u32(t & 4294967295)
+        carry = t >> 32
+    }
+    if carry > 0 {
+        a.push(u32(carry))
+    }
+}
+
+/// `a` plus `m`.
+fn big_add_small(a: mut Vec<u32>, m: u32) {
+    var carry = u64(m)
+    var i = 0
+    while carry > 0 {
+        if i == a.len() {
+            a.push(0)
+        }
+        let t = u64(a[i]) + carry
+        a[i] = u32(t & 4294967295)
+        carry = t >> 32
+        i += 1
+    }
+}
+
+/// `a` times 2^`bits`.
+fn big_shl(a: [u32], bits: u32) -> Vec<u32> {
+    let words = bits / 32
+    let b = bits % 32
+    var out: Vec<u32> = Vec::filled(words, 0)
+    var carry: u32 = 0
+    for limb in a {
+        if b == 0 {
+            out.push(limb)
+        } else {
+            out.push((limb << b) | carry)
+            carry = limb >> (32 - b)
+        }
+    }
+    if carry > 0 {
+        out.push(carry)
+    }
+    big_trim(mut out)
+    out
+}
+
+/// -1, 0 or 1 as `a` is less than, equal to or more than `b` (both trimmed).
+fn big_cmp(a: [u32], b: [u32]) -> i32 {
+    if a.len() != b.len() {
+        return if a.len() < b.len() { -1 } else { 1 }
+    }
+    var i = a.len()
+    while i > 0 {
+        i -= 1
+        if a[i] != b[i] {
+            return if a[i] < b[i] { -1 } else { 1 }
+        }
+    }
+    0
+}
+
+/// `a` less `b`, which is at most `a`.
+fn big_sub(a: mut Vec<u32>, b: [u32]) {
+    var owed: i64 = 0
+    for i in 0..a.len() {
+        var t = i64(a[i]) - owed - (if i < b.len() { i64(b[i]) } else { 0 })
+        if t < 0 {
+            t += 4294967296
+            owed = 1
+        } else {
+            owed = 0
+        }
+        a[i] = u32(t)
+    }
+    big_trim(mut a)
+}
+
+/// How many bits `a` takes.
+fn big_bits(a: [u32]) -> u32 {
+    let top = a[a.len() - 1]
+    32 * (a.len() - 1) + (32 - top.leading_zeros())
+}
+
+/// 10^0 to 10^22, each exact in an f64.
+const POWERS: [f64; 23] = [
+    1.0,
+    10.0,
+    100.0,
+    1000.0,
+    10000.0,
+    100000.0,
+    1000000.0,
+    10000000.0,
+    100000000.0,
+    1000000000.0,
+    10000000000.0,
+    100000000000.0,
+    1000000000000.0,
+    10000000000000.0,
+    100000000000000.0,
+    1000000000000000.0,
+    10000000000000000.0,
+    100000000000000000.0,
+    1000000000000000000.0,
+    10000000000000000000.0,
+    100000000000000000000.0,
+    1000000000000000000000.0,
+    10000000000000000000000.0,
+]
+
+/// The `i64` that `text[from..to]` spells, or `None`.
+fn parse_index(text: [u8], from: u32, to: u32) -> Option<i64> {
+    var i = from
+    var neg = false
+    if i < to && (text[i] == 45 || text[i] == 43) {
+        neg = text[i] == 45
+        i += 1
+    }
+    if i >= to {
+        return None
+    }
+    var n: i64 = 0
+    while i < to {
+        if !is_digit(text[i]) || n > 100000000000000000 {
+            return None
+        }
+        n = n * 10 + i64(text[i] - 48)
+        i += 1
+    }
+    Some(if neg { -n } else { n })
+}
+
+/// An OBJ's mesh: its `v` lines' points and its `f` lines' polygons, fanned into triangles.
+pub fn parse_obj(text: [u8]) -> Result<Mesh, String> {
+    var vertices: Vec<vec3d> = Vec::new()
+    var triangles: Vec<[u32; 3]> = Vec::new()
+    var start = 0
+    var line = 0
+    while start < text.len() {
+        var end = start
+        while end < text.len() && text[end] != 10 {
+            end += 1
+        }
+        line += 1
+        let ws = words(text, start, end)
+        start = end + 1
+        if ws.len() == 0 {
+            continue
+        }
+        let (a, b) = ws[0]
+        if b - a != 1 {
+            continue
+        }
+        if text[a] == 118 {
+            var p = [0.0; 3]
+            for k in 0..3 {
+                var x: Option<f64> = None
+                if k + 1 < ws.len() {
+                    let (from, to) = ws[k + 1]
+                    x = parse_f64(text, from, to)
+                }
+                let Some(v) = x else {
+                    return Err(String::from(f"line {line}: a vertex has three finite numbers"))
+                }
+                p[k] = v
+            }
+            vertices.push(vec3d(p[0], p[1], p[2]))
+        } else if text[a] == 102 {
+            var corners: Vec<u32> = Vec::new()
+            for w in 1..ws.len() {
+                let (from, to) = ws[w]
+                var cut = from
+                while cut < to && text[cut] != 47 {
+                    cut += 1
+                }
+                let Some(i) = parse_index(text, from, cut) else {
+                    return Err(String::from(f"line {line}: a face's corner isn't a number"))
+                }
+                // OBJ counts from 1; a negative index counts back from the last vertex.
+                let at = if i < 0 { i64(vertices.len()) + i } else { i - 1 }
+                if at < 0 || at >= i64(vertices.len()) {
+                    return Err(String::from(f"line {line}: a face names a vertex that isn't there"))
+                }
+                corners.push(u32(at))
+            }
+            if corners.len() >= 3 {
+                for k in 1..corners.len() - 1 {
+                    triangles.push([corners[0], corners[k], corners[k + 1]])
+                }
+            }
+        }
+    }
+    if triangles.is_empty() {
+        return Err(String::from("the OBJ has no faces"))
+    }
+    Ok(Mesh { vertices, triangles })
+}
+
+fn u32_at(bytes: [u8], at: u32) -> u32 {
+    u32(bytes[at]) |
+        (u32(bytes[at + 1]) << 8) |
+        (u32(bytes[at + 2]) << 16) |
+        (u32(bytes[at + 3]) << 24)
+}
+
+/// A binary STL's mesh: its triangles' corners, merged where their coordinates are equal (both
+/// zeros as one), numbered in the order they first appear.
+pub fn parse_stl(bytes: [u8]) -> Result<Mesh, String> {
+    if bytes.len() < 84 {
+        return Err(String::from("the STL is too short to be a binary STL"))
+    }
+    let n = u32_at(bytes, 80)
+    if u64(bytes.len()) != 84 + 50 * u64(n) {
+        return Err(String::from("the STL isn't a binary STL (ASCII STL isn't read)"))
+    }
+    if n == 0 {
+        return Err(String::from("the STL has no triangles"))
+    }
+    // Each corner's coordinates and their bits (a zero's as 0).
+    var points: Vec<vec3d> = Vec::with_capacity(3 * n)
+    var keys: Vec<[u32; 3]> = Vec::with_capacity(3 * n)
+    for t in 0..n {
+        for c in 0..3 {
+            var key = [u32(0); 3]
+            var p = [0.0; 3]
+            for k in 0..3 {
+                let bits = u32_at(bytes, 84 + 50 * t + 12 + 12 * c + 4 * k)
+                p[k] = f64(bitcast_f32(bits))
+                if !(abs(p[k]) < 1.0 / 0.0) {
+                    return Err(String::from("an STL vertex has a non-finite coordinate"))
+                }
+                key[k] = if p[k] == 0.0 { 0 } else { bits }
+            }
+            points.push(vec3d(p[0], p[1], p[2]))
+            keys.push(key)
+        }
+    }
+    // The corners by their keys (stable, so each run of equal keys starts at its first).
+    var order: Vec<u32> = Vec::from_fn(3 * n, |i| i)
+    order.sort_by(|a, b| key_before(keys[a], keys[b]))
+    var first: Vec<u32> = Vec::filled(3 * n, 0)
+    var s = 0
+    while s < order.len() {
+        var e = s
+        while e < order.len() && keys[order[e]] == keys[order[s]] {
+            first[order[e]] = order[s]
+            e += 1
+        }
+        s = e
+    }
+    var vertices: Vec<vec3d> = Vec::new()
+    var index: Vec<u32> = Vec::filled(3 * n, 0)
+    var triangles: Vec<[u32; 3]> = Vec::with_capacity(n)
+    for c in 0..3 * n {
+        if first[c] == c {
+            index[c] = vertices.len()
+            vertices.push(points[c])
+        } else {
+            index[c] = index[first[c]]
+        }
+    }
+    for t in 0..n {
+        triangles.push([index[3 * t], index[3 * t + 1], index[3 * t + 2]])
+    }
+    Ok(Mesh { vertices, triangles })
+}
+
+fn key_before(a: [u32; 3], b: [u32; 3]) -> bool {
+    if a[0] != b[0] {
+        return a[0] < b[0]
+    }
+    if a[1] != b[1] {
+        return a[1] < b[1]
+    }
+    a[2] < b[2]
+}
+
+/// `x`'s place in IEEE 754's total order (Rust's `total_cmp`): -0 before +0.
+fn total_key(x: f64) -> i64 {
+    let b = i64(bitcast_u64(x))
+    if b < 0 {
+        b ^ 9223372036854775807
+    } else {
+        b
+    }
+}
+
+/// Whether `a` comes before `b` in IEEE 754's total order.
+pub fn total_before(a: f64, b: f64) -> bool {
+    total_key(a) < total_key(b)
+}
+
+fn find(parent: mut Vec<u32>, start: u32) -> u32 {
+    var x = start
+    while parent[x] != x {
+        parent[x] = parent[parent[x]]
+        x = parent[x]
+    }
+    x
+}
+
+impl Mesh {
+    /// The mesh's pieces (triangles joined by shared vertices), largest first (then by their
+    /// first triangle): each piece's triangles.
+    pub fn pieces(self) -> Vec<Vec<u32>> {
+        var parent: Vec<u32> = Vec::from_fn(self.vertices.len(), |i| i)
+        for t in self.triangles {
+            let r = find(mut parent, t[0])
+            for k in 1..3 {
+                let s = find(mut parent, t[k])
+                parent[s] = r
+            }
+        }
+        // Each root's piece, in the order the pieces' first triangles come.
+        var slot: Vec<u32> = Vec::filled(self.vertices.len(), 4294967295)
+        var pieces: Vec<Vec<u32>> = Vec::new()
+        for i in 0..self.triangles.len() {
+            let r = find(mut parent, self.triangles[i][0])
+            if slot[r] == 4294967295 {
+                slot[r] = pieces.len()
+                pieces.push(Vec::new())
+            }
+            pieces[slot[r]].push(i)
+        }
+        // Largest first; the pieces are in their first triangles' order already, and the sort
+        // keeps it among equals.
+        var order: Vec<u32> = Vec::from_fn(pieces.len(), |i| i)
+        order.sort_by(|a, b| pieces[a].len() > pieces[b].len())
+        var out: Vec<Vec<u32>> = Vec::with_capacity(pieces.len())
+        for k in order {
+            out.push(pieces[k].clone())
+        }
+        out
+    }
+
+    /// The triangles' corners, each triangle's three points.
+    pub fn corners(self, triangles: [u32]) -> Vec<[vec3d; 3]> {
+        var out: Vec<[vec3d; 3]> = Vec::with_capacity(triangles.len())
+        for t in triangles {
+            let c = self.triangles[t]
+            out.push([self.vertices[c[0]], self.vertices[c[1]], self.vertices[c[2]]])
+        }
+        out
+    }
+}
+
+/// Whether a registration's axes name each file axis once.
+pub fn names_each_axis_once(r: Registration) -> bool {
+    var seen = [false; 3]
+    for a in r.axes {
+        seen[a.index()] = true
+    }
+    seen[0] && seen[1] && seen[2]
+}
+
+/// Whether a registration's axes keep handedness (an odd number of swaps or negations mirrors
+/// the mesh, which turns its triangles inside out).
+pub fn keeps_handedness(r: Registration) -> bool {
+    let m = |a: Axis| -> vec3d {
+        var v = vec3d(0.0)
+        v[a.index()] = a.sign()
+        v
+    }
+    dot3(cross3(m(r.axes[0]), m(r.axes[1])), m(r.axes[2])) > 0.0
+}
+
+/// `p`, in the file's coordinates, in the creature's frame.
+pub fn place(r: Registration, p: vec3d) -> vec3d {
+    let q = p - r.origin
+    var out = vec3d(0.0)
+    for k in 0..3 {
+        let a = r.axes[k]
+        out[k] = q[a.index()] * a.sign() * r.metres_per_unit
+    }
+    out
+}
+
+/// A node of the hierarchy: its box, and a leaf's triangles (`count`, more than 0, from `first`
+/// in the solid's `order`), or an inner node's two children (a count of 0).
+struct Node: Copy {
+    lo: vec3d,
+    hi: vec3d,
+    first: u32,
+    count: u32,
+    children: [u32; 2],
+}
+
+const LEAF: u32 = 4
+
+/// The largest finite f64.
+pub const BIG: f64 = 1.7976931348623157e308
+
+/// Triangles placed in a creature's frame, wound so their normals point out, and a bounding
+/// volume hierarchy over them.
+pub struct Solid: Clone {
+    pub triangles: Vec<[vec3d; 3]>,
+    nodes: Vec<Node>,
+    order: Vec<u32>,
+}
+
+fn centroid(t: [vec3d; 3]) -> vec3d {
+    (t[0] + t[1] + t[2]) * (1.0 / 3.0)
+}
+
+impl Solid {
+    /// The triangles, wound outward: if their signed volume is negative, every one is turned.
+    pub fn new(triangles: take Vec<[vec3d; 3]>) -> Solid {
+        var tris = take triangles
+        var volume = 0.0
+        for t in tris {
+            volume += dot3(t[0], cross3(t[1], t[2]))
+        }
+        if volume < 0.0 {
+            for i in 0..tris.len() {
+                let t = tris[i]
+                tris[i] = [t[0], t[2], t[1]]
+            }
+        }
+        let n = tris.len()
+        var s = Solid { triangles: tris, nodes: Vec::new(), order: Vec::from_fn(n, |i| i) }
+        let _ = s.build(0, n)
+        s
+    }
+
+    /// The box around every triangle.
+    pub fn bounds(self) -> (vec3d, vec3d) {
+        (self.nodes[0].lo, self.nodes[0].hi)
+    }
+
+    fn build(mut self, start: u32, end: u32) -> u32 {
+        var lo = vec3d(BIG)
+        var hi = vec3d(-BIG)
+        var clo = vec3d(BIG)
+        var chi = vec3d(-BIG)
+        for i in start..end {
+            let tri = self.triangles[self.order[i]]
+            for p in tri {
+                lo = min(lo, p)
+                hi = max(hi, p)
+            }
+            let c = centroid(tri)
+            clo = min(clo, c)
+            chi = max(chi, c)
+        }
+        let index = self.nodes.len()
+        self.nodes.push(Node { lo, hi, first: start, count: end - start, children: [0, 0] })
+        if end - start <= LEAF {
+            return index
+        }
+        // The axis the centroids spread along most (the last of equals, as Rust's `max_by`).
+        let ext = chi - clo
+        var axis = 0
+        for k in 1..3 {
+            if !total_before(ext[k], ext[axis]) {
+                axis = k
+            }
+        }
+        // This range of the order, sorted by centroid along the axis (stable).
+        var part: Vec<u32> = Vec::with_capacity(end - start)
+        var key: Vec<f64> = Vec::with_capacity(end - start)
+        for i in start..end {
+            part.push(i - start)
+            key.push(centroid(self.triangles[self.order[i]])[axis])
+        }
+        part.sort_by(|a, b| total_before(key[a], key[b]))
+        var sorted: Vec<u32> = Vec::with_capacity(end - start)
+        for k in part {
+            sorted.push(self.order[start + k])
+        }
+        for i in start..end {
+            self.order[i] = sorted[i - start]
+        }
+        let mid = (start + end) / 2
+        let left = self.build(start, mid)
+        let right = self.build(mid, end)
+        self.nodes[index].count = 0
+        self.nodes[index].children = [left, right]
+        index
+    }
+
+    /// Every crossing of the surface by the ray from `o` along `d` (unit length): its distance,
+    /// and +1 where the ray leaves (meets a triangle's outward side from inside) or -1 where it
+    /// enters. Nearest first; a crossing through an edge or a vertex counted once.
+    pub fn crossings(self, o: vec3d, d: vec3d) -> Vec<(f64, i32)> {
+        let inv = vec3d(1.0 / d.x, 1.0 / d.y, 1.0 / d.z)
+        var hits: Vec<(f64, i32, u32)> = Vec::new()
+        var stack: Vec<u32> = Vec::new()
+        stack.push(0)
+        while let Some(i) = stack.pop() {
+            let node = self.nodes[i]
+            if !slab(o, inv, node.lo, node.hi) {
+                continue
+            }
+            if node.count > 0 {
+                for k in node.first..node.first + node.count {
+                    let t = self.order[k]
+                    let tri = self.triangles[t]
+                    if let Some(h) = ray_triangle(o, d, tri) {
+                        if h > 0.0 {
+                            let n = cross3(tri[1] - tri[0], tri[2] - tri[0])
+                            hits.push((h, if dot3(n, d) > 0.0 { 1 } else { -1 }, t))
+                        }
+                    }
+                }
+            } else {
+                stack.push(node.children[0])
+                stack.push(node.children[1])
+            }
+        }
+        hits.sort_by(|a, b| {
+            let (ka, kb) = (total_key(a.0), total_key(b.0))
+            if ka != kb { ka < kb } else { a.1 < b.1 }
+        })
+        // A ray through an edge or a vertex meets each triangle there: one crossing, where the
+        // triangles share a corner. (One that grazes an edge between a face turned towards it
+        // and one turned away crosses both ways, and those stay: they cancel. Two surfaces that
+        // cross each other where the ray does are two crossings.)
+        var merged: Vec<(f64, i32, u32)> = Vec::with_capacity(hits.len())
+        for c in hits {
+            var same = false
+            var m = merged.len()
+            while m > 0 {
+                m -= 1
+                let prev = merged[m]
+                if !(abs(c.0 - prev.0) <= 0.000000001 * max(prev.0, 1.0)) {
+                    break
+                }
+                if prev.1 == c.1 && self.share_a_corner(prev.2, c.2) {
+                    same = true
+                    break
+                }
+            }
+            if !same {
+                merged.push(c)
+            }
+        }
+        var out: Vec<(f64, i32)> = Vec::with_capacity(merged.len())
+        for c in merged {
+            out.push((c.0, c.1))
+        }
+        out
+    }
+
+    fn share_a_corner(self, a: u32, b: u32) -> bool {
+        let ta = self.triangles[a]
+        let tb = self.triangles[b]
+        for p in ta {
+            for q in tb {
+                if p == q {
+                    return true
+                }
+            }
+        }
+        false
+    }
+
+    /// The winding number at `o`: how many times the surface wraps it (1 inside, 0 outside, 2
+    /// where two parts of a sculpt that cross each other overlap): its exits along a ray, less
+    /// its entries.
+    pub fn winding(self, o: vec3d, d: vec3d) -> i32 {
+        var w = 0
+        for c in self.crossings(o, d) {
+            w += c.1
+        }
+        w
+    }
+
+    /// Whether `p` is inside: a winding number of at least 1, the majority of three rays in
+    /// unrelated directions (one may graze an edge). Where a sculpt crosses itself, parity
+    /// would call the overlap outside; the winding number doesn't.
+    pub fn inside(self, p: vec3d) -> bool {
+        var votes = 0
+        for d in DIRECTIONS {
+            if self.winding(p, unit3(d)) >= 1 {
+                votes += 1
+            }
+        }
+        votes >= 2
+    }
+
+    /// How far the ray from `o` along `d` (unit length) goes before it's outside: where the
+    /// winding number first falls to 0, past any surface inside the solid (where a sculpt
+    /// crosses itself). `None` if `o` is outside.
+    pub fn exit(self, o: vec3d, d: vec3d) -> Option<f64> {
+        let hits = self.crossings(o, d)
+        var w = 0
+        for c in hits {
+            w += c.1
+        }
+        if w < 1 {
+            return None
+        }
+        for c in hits {
+            w -= c.1
+            if w < 1 {
+                return Some(c.0)
+            }
+        }
+        None
+    }
+
+    /// The distance from `p` to the nearest point of the surface.
+    pub fn nearest(self, p: vec3d) -> f64 {
+        var best = BIG
+        var stack: Vec<u32> = Vec::new()
+        stack.push(0)
+        while let Some(i) = stack.pop() {
+            let node = self.nodes[i]
+            if box_distance(p, node.lo, node.hi) >= best {
+                continue
+            }
+            if node.count > 0 {
+                for k in node.first..node.first + node.count {
+                    let q = closest_on_triangle(p, self.triangles[self.order[k]])
+                    best = min(best, len3(p - q))
+                }
+            } else {
+                stack.push(node.children[0])
+                stack.push(node.children[1])
+            }
+        }
+        best
+    }
+}
+
+/// The directions `inside` casts its rays along, before they're made unit length.
+const DIRECTIONS: [vec3d; 3] = [
+    vec3d(0.5773, 0.5774, 0.5773),
+    vec3d(-0.6247, 0.2316, 0.7458),
+    vec3d(0.1513, -0.8838, 0.4427),
+]
+
+/// Whether the ray from `o` (whose direction's reciprocals are `inv`) meets the box.
+fn slab(o: vec3d, inv: vec3d, lo: vec3d, hi: vec3d) -> bool {
+    var t0 = 0.0
+    var t1 = BIG
+    for k in 0..3 {
+        if abs(inv[k]) == 1.0 / 0.0 {
+            // Parallel to these faces (0 × ∞ would be NaN): inside the slab or never in it.
+            if o[k] < lo[k] || o[k] > hi[k] {
+                return false
+            }
+            continue
+        }
+        let a = (lo[k] - o[k]) * inv[k]
+        let b = (hi[k] - o[k]) * inv[k]
+        let near = if a < b { a } else { b }
+        let far = if a < b { b } else { a }
+        t0 = max(t0, near)
+        t1 = min(t1, far)
+        if t0 > t1 {
+            return false
+        }
+    }
+    true
+}
+
+fn box_distance(p: vec3d, lo: vec3d, hi: vec3d) -> f64 {
+    var s = 0.0
+    for k in 0..3 {
+        let d = max(max(lo[k] - p[k], p[k] - hi[k]), 0.0)
+        s += d * d
+    }
+    sqrt(s)
+}
+
+/// Möller and Trumbore's test: the distance along the ray to the triangle, either side.
+pub fn ray_triangle(o: vec3d, d: vec3d, t: [vec3d; 3]) -> Option<f64> {
+    let e1 = t[1] - t[0]
+    let e2 = t[2] - t[0]
+    let p = cross3(d, e2)
+    let det = dot3(e1, p)
+    if abs(det) < 0.000000000000000001 {
+        return None
+    }
+    let inv = 1.0 / det
+    let s = o - t[0]
+    let u = dot3(s, p) * inv
+    if !(u >= 0.0 && u <= 1.0) {
+        return None
+    }
+    let q = cross3(s, e1)
+    let v = dot3(d, q) * inv
+    if v < 0.0 || u + v > 1.0 {
+        return None
+    }
+    Some(dot3(e2, q) * inv)
+}
+
+/// The point of triangle `t` nearest `p` (Ericson, Real-Time Collision Detection 5.1.5).
+fn closest_on_triangle(p: vec3d, t: [vec3d; 3]) -> vec3d {
+    let a = t[0]
+    let b = t[1]
+    let c = t[2]
+    let ab = b - a
+    let ac = c - a
+    if cross3(ab, ac) == vec3d(0.0) {
+        // A collapsed triangle is the union of its segments. The face-region formulas below can
+        // divide by zero when two corners coincide.
+        var best = a
+        var best_d = 0.0
+        let ends = [(a, b), (b, c), (c, a)]
+        for k in 0..3 {
+            let (from, to) = ends[k]
+            let edge = to - from
+            let squared = dot3(edge, edge)
+            let along = if squared == 0.0 {
+                0.0
+            } else {
+                clamp(dot3(p - from, edge) / squared, 0.0, 1.0)
+            }
+            let q = from + edge * along
+            let dq = dot3(p - q, p - q)
+            if k == 0 || total_before(dq, best_d) {
+                best = q
+                best_d = dq
+            }
+        }
+        return best
+    }
+    let ap = p - a
+    let d1 = dot3(ab, ap)
+    let d2 = dot3(ac, ap)
+    if d1 <= 0.0 && d2 <= 0.0 {
+        return a
+    }
+    let bp = p - b
+    let d3 = dot3(ab, bp)
+    let d4 = dot3(ac, bp)
+    if d3 >= 0.0 && d4 <= d3 {
+        return b
+    }
+    let vc = d1 * d4 - d3 * d2
+    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
+        return a + ab * (d1 / (d1 - d3))
+    }
+    let cp = p - c
+    let d5 = dot3(ab, cp)
+    let d6 = dot3(ac, cp)
+    if d6 >= 0.0 && d5 <= d6 {
+        return c
+    }
+    let vb = d5 * d2 - d1 * d6
+    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
+        return a + ac * (d2 / (d2 - d6))
+    }
+    let va = d3 * d6 - d5 * d4
+    if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
+        return b + (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6)))
+    }
+    let denom = 1.0 / (va + vb + vc)
+    a + (ab * (vb * denom) + ac * (vc * denom))
+}
+
+// ---- tests ------------------------------------------------------------------------------------
+
+/// A sphere of radius `r` at `c`: `rings` bands of `segments` quads, poles fanned, wound
+/// outward, as OBJ text.
+pub(package) fn sphere_obj(c: vec3d, r: f64, rings: u32, segments: u32) -> String {
+    var s = String::new()
+    let at = |i: u32, j: u32| -> vec3d {
+        let th = math::PI * f64(i) / f64(rings)
+        let ph = math::TAU * f64(j) / f64(segments)
+        vec3d(
+            c.x + r * math::sin(th) * math::cos(ph),
+            c.y + r * math::cos(th),
+            c.z + r * math::sin(th) * math::sin(ph),
+        )
+    }
+    s.push_str(f"v {c.x} {c.y + r} {c.z}\n")
+    for i in 1..rings {
+        for j in 0..segments {
+            let p = at(i, j)
+            s.push_str(f"v {p.x} {p.y} {p.z}\n")
+        }
+    }
+    s.push_str(f"v {c.x} {c.y - r} {c.z}\n")
+    let ring = |i: u32, j: u32| -> u32 { 2 + (i - 1) * segments + j % segments }
+    let bottom = 2 + (rings - 1) * segments
+    for j in 0..segments {
+        s.push_str(f"f 1 {ring(1, j + 1)} {ring(1, j)}\n")
+    }
+    for i in 1..rings - 1 {
+        for j in 0..segments {
+            s.push_str(f"f {ring(i, j)} {ring(i, j + 1)} {ring(i + 1, j + 1)} {ring(i + 1, j)}\n")
+        }
+    }
+    for j in 0..segments {
+        s.push_str(f"f {ring(rings - 1, j)} {ring(rings - 1, j + 1)} {bottom}\n")
+    }
+    s
+}
+
+fn obj(text: str) -> Result<Mesh, String> {
+    let owned = String::from(text)
+    parse_obj(owned.as_bytes())
+}
+
+fn solid_of(text: str) -> Solid {
+    let Ok(m) = obj(text) else { panic("parse") }
+    let all: Vec<u32> = Vec::from_fn(m.triangles.len(), |i| i)
+    Solid::new(m.corners(all))
+}
+
+@test
+fn obj_faces_are_fanned_and_indices_count_from_1_or_back() {
+    let text = "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nf 1/1/1 2/2/2 3 4\nf -1 -2 -3\n"
+    let Ok(m) = obj(text) else { panic("parse") }
+    assert(m.triangles.len() == 3)
+    assert(
+        m.triangles[0] == [0, 1, 2] && m.triangles[1] == [0, 2, 3] && m.triangles[2] == [3, 2, 1],
+    )
+    assert(obj("v 0 0 0\nf 1 2 3\n").is_err())
+    assert(obj("v NaN 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n").is_err())
+}
+
+@test
+fn numbers_read_as_the_nearest_f64() {
+    let cases = [
+        ("0.1", 0.1),
+        ("-2.5e-3", -0.0025),
+        ("6.590000", 6.59),
+        ("1E2", 100.0),
+        (".5", 0.5),
+        ("5.", 5.0),
+        ("+0.130761", 0.130761),
+        ("123456789012345678", 123456789012345680.0),
+        ("0.24999999999999997", 0.24999999999999997),
+        ("2.965925826289068", 2.965925826289068),
+        ("9007199254740993", 9007199254740992.0),
+        ("9007199254740995", 9007199254740996.0),
+        ("9007199254740993.0000000000001", 9007199254740994.0),
+        ("2.2250738585072014e-308", 2.2250738585072014e-308),
+        ("4.9406564584124654e-324", 5e-324),
+        ("1.7976931348623157e308", 1.7976931348623157e308),
+        ("0.000000000000000000000000000001234567890123456789", 1.2345678901234568e-30),
+    ]
+    for (text, want) in cases {
+        let owned = String::from(text)
+        let Some(x) = parse_f64(owned.as_bytes(), 0, text.len()) else { panic(f"{text}") }
+        assert(x == want, f"{text}: {x}")
+    }
+    // Past 19 digits, each digit still counts: the nearest f64 by its bits, as Rust's `parse`
+    // gives them (a tie goes to the even one, and a digit past it breaks the tie).
+    let exact: [(Text, u64); 7] = [
+        ("1.0000000000000001111", 0x3ff0000000000001),
+        ("1.00000000000000011102230246251565404236316680908203125", 0x3ff0000000000000),
+        ("1.000000000000000111022302462515654042363166809082031251", 0x3ff0000000000001),
+        ("1.000000000000000111022302462515654042363166809082031249", 0x3ff0000000000000),
+        ("1.00000000000000033306690738754696212708950042724609375", 0x3ff0000000000002),
+        (
+            "9007199254740993.00000000000000000000000000000000000000000000000000000000000000000000000000001",
+            0x4340000000000001,
+        ),
+        (
+            "0.10000000000000000555111512312578270211815834045410156250000000000001",
+            0x3fb999999999999a,
+        ),
+    ]
+    for (text, bits) in exact {
+        let owned = String::from(text)
+        let Some(x) = parse_f64(owned.as_bytes(), 0, text.len()) else { panic(f"{text}") }
+        assert(bitcast_u64(x) == bits, f"{text}: {x}")
+    }
+    for text in ["", "-", "e5", "1e", "1.2.3", "inf", "nan", "1e999"] {
+        let owned = String::from(text)
+        assert(parse_f64(owned.as_bytes(), 0, text.len()).is_none(), text)
+    }
+}
+
+/// A binary STL of these triangles, in f32 corners.
+fn stl(triangles: [[vec3; 3]]) -> Vec<u8> {
+    var bytes: Vec<u8> = Vec::filled(80, 0)
+    let n = triangles.len()
+    for k in 0..4 {
+        bytes.push(u8((n >> (8 * k)) & 255))
+    }
+    for t in triangles {
+        for _ in 0..12 {
+            bytes.push(0)
+        }
+        for p in t {
+            for k in 0..3 {
+                let b = bitcast_u32(p[k])
+                for i in 0..4 {
+                    bytes.push(u8((b >> (8 * i)) & 255))
+                }
+            }
+        }
+        bytes.push(0)
+        bytes.push(0)
+    }
+    bytes
+}
+
+@test
+fn a_binary_stl_merges_equal_corners() {
+    let bytes = stl(
+        [
+            [vec3(0.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0)],
+            [vec3(1.0, 0.0, 0.0), vec3(1.0, 1.0, 0.0), vec3(0.0, 1.0, 0.0)],
+        ],
+    )
+    let Ok(m) = parse_stl(bytes) else { panic("parse") }
+    assert(m.vertices.len() == 4 && m.triangles.len() == 2)
+    assert(m.triangles[1] == [1, 3, 2])
+    var short: Vec<u8> = Vec::new()
+    for i in 0..100 {
+        short.push(bytes[i])
+    }
+    assert(parse_stl(short).is_err())
+    // A header that counts no triangles is no mesh, as an OBJ without faces isn't.
+    let empty: Vec<u8> = Vec::filled(84, 0)
+    let Err(e) = parse_stl(empty) else { panic("no triangles") }
+    assert(e.as_str().find("no triangles").is_some())
+    var non_finite = bytes.clone()
+    let inf = bitcast_u32(1.0 / 0.0)
+    for i in 0..4 {
+        non_finite[96 + i] = u8((inf >> (8 * i)) & 255)
+    }
+    let Err(e) = parse_stl(non_finite) else { panic("non-finite") }
+    assert(e.as_str().find("non-finite").is_some())
+}
+
+@test
+fn stl_signed_zero_corners_belong_to_the_same_piece() {
+    let bytes = stl(
+        [
+            [vec3(0.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0)],
+            [vec3(1.0, -0.0, -0.0), vec3(1.0, 1.0, 0.0), vec3(-0.0, 1.0, -0.0)],
+        ],
+    )
+    let Ok(m) = parse_stl(bytes) else { panic("parse") }
+    assert(m.vertices.len() == 4)
+    let pieces = m.pieces()
+    assert(pieces.len() == 1 && pieces[0].len() == 2)
+}
+
+@test
+fn axes_name_each_file_axis_once_and_keep_handedness() {
+    let r = Registration {
+        axes: [Axis::MinusZ, Axis::Y, Axis::X],
+        origin: vec3d(1.0, 0.0, 0.0),
+        metres_per_unit: 0.5,
+    }
+    assert(names_each_axis_once(r) && keeps_handedness(r))
+    assert(place(r, vec3d(1.0, 2.0, 4.0)) == vec3d(-2.0, 1.0, 0.0))
+    assert(!names_each_axis_once(Registration { axes: [Axis::X, Axis::X, Axis::Z] }))
+    assert(!keeps_handedness(Registration { axes: [Axis::MinusX, Axis::Y, Axis::Z] }))
+}
+
+@test
+fn a_sphere_answers_inside_exit_and_nearest() {
+    let s = solid_of(sphere_obj(vec3d(0.0), 1.0, rings: 24, segments: 48).as_str())
+    assert(s.inside(vec3d(0.1, 0.2, -0.1)))
+    assert(!s.inside(vec3d(1.2, 0.0, 0.0)))
+    // The tessellation is within 1 - cos(π / 48) of the sphere: under 0.3%.
+    for d in [vec3d(1.0, 0.0, 0.0), vec3d(0.0, 0.0, -1.0), unit3(vec3d(1.0, 2.0, 3.0))] {
+        let Some(e) = s.exit(vec3d(0.0), d) else { panic("an exit") }
+        assert(abs(e - 1.0) < 0.01, f"exit {e}")
+    }
+    assert(s.exit(vec3d(2.0, 0.0, 0.0), vec3d(1.0, 0.0, 0.0)).is_none())
+    assert(abs(s.nearest(vec3d(2.0, 0.0, 0.0)) - 1.0) < 0.01)
+}
+
+/// Two spheres that cross each other, as a sculpt's parts can: the overlap is inside (the
+/// winding number is 2 there, where parity would say outside), and a ray from it leaves at the
+/// outer surface, past the inner one.
+@test
+fn where_a_mesh_crosses_itself_the_overlap_is_inside() {
+    let Ok(a) = parse_obj(sphere_obj(vec3d(0.0), 1.0, rings: 16, segments: 32).as_bytes()) else {
+        panic("parse")
+    }
+    let Ok(b) = parse_obj(
+        sphere_obj(vec3d(1.0, 0.0, 0.0), 1.0, rings: 16, segments: 32).as_bytes(),
+    ) else {
+        panic("parse")
+    }
+    var m = a.clone()
+    let n = m.vertices.len()
+    for v in b.vertices {
+        m.vertices.push(v)
+    }
+    for t in b.triangles {
+        m.triangles.push([t[0] + n, t[1] + n, t[2] + n])
+    }
+    let all: Vec<u32> = Vec::from_fn(m.triangles.len(), |i| i)
+    let s = Solid::new(m.corners(all))
+    let p = vec3d(0.5, 0.0, 0.0)
+    assert(s.winding(p, vec3d(0.0, 1.0, 0.0)) == 2)
+    assert(s.inside(p))
+    let Some(e) = s.exit(p, vec3d(1.0, 0.0, 0.0)) else { panic("an exit") }
+    assert(abs(e - 1.5) < 0.02, f"exit {e}")
+}
+
+@test
+fn nearest_handles_collapsed_triangle_edges() {
+    let z = vec3d(0.0)
+    let x = vec3d(1.0, 0.0, 0.0)
+    for t in [[z, z, x], [z, x, z], [x, z, z]] {
+        var tris: Vec<[vec3d; 3]> = Vec::new()
+        tris.push(t)
+        let s = Solid::new(take tris)
+        assert(s.nearest(vec3d(0.5, 1.0, 0.0)) == 1.0)
+    }
+    var point: Vec<[vec3d; 3]> = Vec::new()
+    point.push([z, z, z])
+    assert(Solid::new(take point).nearest(vec3d(0.0, 1.0, 0.0)) == 1.0)
+}
+
+/// The hierarchy finds every crossing brute force finds.
+@test
+fn crossings_agree_with_brute_force() {
+    let s = solid_of(sphere_obj(vec3d(0.2, -0.1, 0.3), 0.8, rings: 12, segments: 24).as_str())
+    var x: u64 = 0x2545F4914F6CDD1D
+    let rnd = || -> f64 {
+        x = x ^ (x << 13)
+        x = x ^ (x >> 7)
+        x = x ^ (x << 17)
+        f64(x >> 11) / 9007199254740992.0 * 2.0 - 1.0
+    }
+    for _ in 0..200 {
+        let o = vec3d(rnd() * 1.5, rnd() * 1.5, rnd() * 1.5)
+        let d = unit3(vec3d(rnd(), rnd(), rnd()))
+        let fast = s.crossings(o, d).len()
+        var brute = 0
+        for t in s.triangles {
+            if let Some(h) = ray_triangle(o, d, t) {
+                if h > 0.0 {
+                    brute += 1
+                }
+            }
+        }
+        assert(fast == brute)
+    }
+}

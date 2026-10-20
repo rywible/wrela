@@ -1187,20 +1187,6 @@ fn a_ball_beside_its_own_photo_covers_it(ball_built: take Built) {
             },
         }
     }
-    var m = Box::new(
-        write_text.start(
-            String::from("scratch/photo.toml"),
-            String::from(
-                "ground_px = 280\nmetres_per_px = 0.002\nz0_px = 200\nfaces = \"right\"\n",
-            ),
-        ),
-    )
-    loop {
-        match m.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
     var moved = Box::new(
         ball.start(
             String::from("beside_moved"),
@@ -1216,7 +1202,15 @@ fn a_ball_beside_its_own_photo_covers_it(ball_built: take Built) {
     for k in 0..2 {
         let name = if k == 0 { "ball" } else { "beside_moved" }
         var words: Vec<String> = Vec::new()
-        for word in [name, "beside", "photo.toml", "--png", "beside.png"] {
+        for word in [
+            name,
+            "beside",
+            "photo.png",
+            "--registration",
+            "280,0.002,200,right",
+            "--png",
+            "beside.png",
+        ] {
             words.push(String::from(word))
         }
         let shared = if k == 0 { Some(ball_built.clone()) } else { None }

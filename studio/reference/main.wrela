@@ -1,0 +1,1121 @@
+// The reference tool (`wrela tool reference`): replicas of reference meshes as wrela packages,
+// and how far a package's surface is from its mesh's.
+//
+// ```text
+// wrela tool reference -- replica <parts> -o <dir> [--harmonics k] [--sections-every m] [--seam m]
+// wrela tool reference -- deviation <parts> <package-dir> [--points n] [--json]
+// ```
+//
+// `<parts>` names a replica's parts in the `references` package (`references::index::PARTS`:
+// `wolf/lofts`, `wolf/sweeps`): its sculpt, its landmarks (points in the creature's frame) and
+// its parts, in order, each with its axis (`from`, `to`), the direction of its angle 0 (`up`),
+// its parent part (the first is the root), its stations' spacing, its radii per station
+// (`angles`), its longest radius (`r_max`), its seam, how far its axis runs on past its ends
+// (`overlap`) and how far it sinks toward a cap inside another part (`taper`); a part with
+// `sections` is a sweep, through `through`, with `bumps` and `ends`. Paths are from the
+// workspace's directory (the root `ws`); the replica's package depends on the workspace's engine.
+//
+// **`replica`** writes the replica's package in `<dir>`: a skeleton, a bone per part at the start
+// of its axis, and a loft or a sweep for each part (replica.wrela says how each is measured).
+// - Each axis runs `overlap` (2 cm) past its ends and is then trimmed to the mesh, so parts
+//   that meet at a joint overlap. At an end inside another part, the part sinks by up to `taper`
+//   toward its cap, so it passes under its neighbour instead of ending in a step.
+// - A radius is where a ray from the axis leaves the mesh: where the ray's winding number falls
+//   to 0. So the ray passes surfaces inside the mesh where a sculpt crosses itself. A radius
+//   held at the longest (its ray ran into another part) is filled from the measured radii
+//   around it. Radii are integers, in tenths of a millimetre, so a lifted build does not lift
+//   them.
+// - `--harmonics k --sections-every m` compresses each table: each section a Fourier series of
+//   `k` harmonics, each coefficient a Catmull–Rom curve through a control section every `m`
+//   metres, fitted to the measured radii by least squares (a radius held at the longest is
+//   free). Where no other part reaches a radius's point (or the points halfway to the next
+//   radii), the fit is held up to the measured radius, so the compressed parts leave no crack
+//   where the dense parts left none. The tool says how many numbers the compact form takes.
+// - A sweep's radii are measured in its own planes every `spacing`; each is the part's own
+//   surface, or shared (another part, as measured, holds its point: the ray ran on along it).
+//   Each station's section is fitted alone, outward from the station with the most of its own
+//   surface, each from its neighbour's, so a bump follows its feature; the control sections are
+//   fitted to those by least squares, then all at once: own radii in full, shared radii only
+//   where the fit passes them. Where no fitted part reaches 2.5 mm inside a measured radius, the
+//   radius is held to within 2 mm and its part is fitted again, the parts that came nearest
+//   first (sweeps.wrela).
+// - `--seam m` joins every part with a seam `m` wide (0: hard).
+//
+// **`deviation`** builds the package and runs it on the CPU, through its exports `distance(x,
+// y, z)` and `part(x, y, z)`, and reports (deviation.wrela; `--json` as JSON):
+// - at points spread over the mesh's surface (skipping surfaces inside it; `--points`, 20,000
+//   unless given), how far short of the mesh the package is, or how far past it outward: the
+//   shares within 2 mm and 5 mm, and the mean, by part, with the worst places;
+// - the volumes inside one and not the other, at as many points through the mesh's box;
+// - rays from five views (the two sides, the top, the front and a three-quarter view, one every
+//   2 mm) that pass through the mesh but meet nothing of the package, inside its outline or at
+//   its rim: places where a viewer would see through it.
+
+use deviation::{
+    Ask, Deviation, PartAt, Probe, RayRow, Rng, SeeThrough, SurfacePoint, VolumePoint, draw_surface,
+    draw_volume, misses, view_rows,
+}
+use mesh::{Solid, len3}
+use replica::{
+    Compression, Measure, Reference, Sampled, Shape, compress, fit_sweeps, ident, manifest,
+    replica_source, sample, taper, text_of, trimmed,
+}
+use std::collections::{Box, Vec}
+use std::io::{IoError, Pending, print}
+use std::job::{Job, Step}
+use std::string::String
+use std::tool::{MOST_BYTES, RUNNING, ToolError, answer, args}
+use std::tool::blob
+use std::tool::drive
+use std::tool::drive::Scalar
+use std::tool::files
+use std::tool::toolchain
+use std::tool::toolchain::Override
+
+/// The root the tool reads and writes the workspace in, and the root its builds go in.
+pub const WS: Text = "ws"
+pub const OUT: Text = "out"
+
+/// How many instances of a package `deviation` runs at once, each on a worker of the tool
+/// host's (a worker per core): the tool's own thread does the mesh's part meanwhile.
+pub const INSTANCES: u32 = 8
+
+pub const USAGE: Text = "usage: wrela tool reference -- replica <parts> -o <dir> [--harmonics k] [--sections-every m] [--seam m]\n       wrela tool reference -- deviation <parts> <package-dir> [--points n] [--json]"
+
+fn usage() -> u32 {
+    print(USAGE)
+    2
+}
+
+fn unknown(a: str) -> u32 {
+    if a.starts_with("-") {
+        print(f"error: unknown option `{a}`")
+    } else {
+        print(f"error: unexpected argument `{a}`")
+    }
+    usage()
+}
+
+/// `path` (from the workspace's directory) in root `root`, or `None` if it isn't one: no part
+/// empty, `.` or `..`, and not absolute.
+pub fn rooted(root: str, path: str) -> Option<String> {
+    var to = path.len()
+    while to > 1 && path.byte(to - 1) == 47 {
+        to -= 1
+    }
+    let whole = path.slice(0, to)
+    if whole == "." {
+        return Some(String::from(root))
+    }
+    let from = if whole.starts_with("./") { 2 } else { 0 }
+    let p = path.slice(from, to)
+    if p.is_empty() || p.starts_with("/") {
+        return None
+    }
+    for range in p.split("/") {
+        let (a, b) = range
+        let part = p.slice(a, b)
+        if part.is_empty() || part == "." || part == ".." {
+            return None
+        }
+    }
+    Some(String::from(f"{root}/{p}"))
+}
+
+/// The last part of a path.
+fn last_part(path: str) -> String {
+    var at = 0
+    for i in 0..path.len() {
+        if path.byte(i) == 47 {
+            at = i + 1
+        }
+    }
+    String::from(path.slice(at, path.len()))
+}
+
+/// The number an argument spells: an `f64`.
+fn number_arg(text: str) -> Option<f64> {
+    let owned = String::from(text)
+    mesh::parse_f64(owned.as_bytes(), 0, text.len())
+}
+
+/// The parts named `name`, read and checked.
+fn reference_named(name: str) -> Result<Reference, String> {
+    let Some(parts) = references::index::parts(name) else {
+        var names = String::new()
+        for n in references::index::PARTS {
+            if !names.is_empty() {
+                names.push_str(", ")
+            }
+            names.push_str(n)
+        }
+        return Err(String::from(f"no parts named `{name}`: the references' parts are {names}"))
+    }
+    replica::read(parts)
+}
+
+fn tool_error(r: take Result<Vec<u8>, ToolError>) -> Result<Vec<u8>, String> {
+    match take r {
+        Ok(b) => Ok(b),
+        Err(e) => Err(String::from(e.message())),
+    }
+}
+
+@job
+fn main(given: take Vec<String>) -> u32 {
+    if given.is_empty() {
+        return usage()
+    }
+    var rest: Vec<String> = Vec::new()
+    for i in 1..given.len() {
+        rest.push(given[i].clone())
+    }
+    let command = given[0].clone()
+    if command.as_str() == "replica" {
+        var j = Box::new(replica_command.start(take rest))
+        loop {
+            match j.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(status) => return status,
+            }
+        }
+    }
+    if command.as_str() == "deviation" {
+        var j = Box::new(deviation_command.start(take rest))
+        loop {
+            match j.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(status) => return status,
+            }
+        }
+    }
+    usage()
+}
+
+pub fn tool_init() -> Job<main> {
+    main.start(args())
+}
+
+pub fn tool(job: mut Job<main>) -> u32 {
+    match job.resume() {
+        Step::Yielded => RUNNING,
+        Step::Done(status) => status,
+    }
+}
+
+// ---- replica ----------------------------------------------------------------------------------
+
+/// What `replica`'s command line asks: the parts, the output directory (as given), and the
+/// compression and seam, if given.
+pub struct ReplicaArgs: Clone {
+    pub parts: String,
+    pub out: String,
+    pub harmonics: Option<u32>,
+    pub every: Option<f64>,
+    pub seam: Option<f64>,
+}
+
+/// `replica`'s arguments, or the status of a usage error (after its message).
+pub fn replica_args(given: [String]) -> Result<ReplicaArgs, u32> {
+    var parts: Option<String> = None
+    var out: Option<String> = None
+    var a = ReplicaArgs {
+        parts: String::new(),
+        out: String::new(),
+        harmonics: None,
+        every: None,
+        seam: None,
+    }
+    var i = 0
+    while i < given.len() {
+        let w = given[i].as_str()
+        let value = if i + 1 < given.len() { Some(given[i + 1].clone()) } else { None }
+        if w == "--harmonics" {
+            let Some(v) = value else { return Err(usage()) }
+            let Some(k) = v.as_str().parse_u32() else { return Err(usage()) }
+            a.harmonics = Some(k)
+            i += 2
+        } else if w == "--sections-every" {
+            let Some(v) = value else { return Err(usage()) }
+            let Some(m) = number_arg(v.as_str()) else { return Err(usage()) }
+            if !(m > 0.0) {
+                return Err(usage())
+            }
+            a.every = Some(m)
+            i += 2
+        } else if w == "--seam" {
+            let Some(v) = value else { return Err(usage()) }
+            let Some(m) = number_arg(v.as_str()) else { return Err(usage()) }
+            if !(m >= 0.0) {
+                return Err(usage())
+            }
+            a.seam = Some(m)
+            i += 2
+        } else if w == "-o" || w == "--out" {
+            let Some(v) = take value else { return Err(usage()) }
+            out = Some(take v)
+            i += 2
+        } else if parts.is_none() && !w.starts_with("-") {
+            parts = Some(String::from(w))
+            i += 1
+        } else {
+            return Err(unknown(w))
+        }
+    }
+    let Some(p) = take parts else { return Err(usage()) }
+    let Some(o) = take out else { return Err(usage()) }
+    a.parts = take p
+    a.out = take o
+    Ok(a)
+}
+
+/// The replica's parts as `args` asks, measured and fitted (and compressed), with the lines to
+/// print before the package is written, and each part's numbers if compressed.
+pub fn make_replica(
+    file: Reference,
+    solid: Solid,
+    args: ReplicaArgs,
+) -> Result<(Vec<Sampled>, Vec<String>, Vec<u32>), String> {
+    var measured: Vec<Measure> = Vec::new()
+    for p in file.parts {
+        if p.sections > 0 {
+            measured.push(Measure::Sweep(replica::measure_sweep(solid, p)?))
+            continue
+        }
+        let Some((t, start, end)) = trimmed(solid, p) else {
+            return Err(String::from(f"part `{p.name}`: its axis isn't inside the mesh"))
+        }
+        measured.push(Measure::Loft(sample(solid, t, vec2d(start, end))))
+    }
+    var sampled = fit_sweeps(file.parts, take measured)
+    taper(mut sampled)
+    // Compressed: each part's table from a few harmonics at a few sections.
+    var lines: Vec<String> = Vec::new()
+    var numbers: Vec<u32> = Vec::new()
+    if args.harmonics.is_some() || args.every.is_some() {
+        let c = Compression {
+            harmonics: args.harmonics.unwrap_or(4294967295),
+            every: args.every.unwrap_or(0.0),
+        }
+        let (compact, floored) = compress(sampled, c)
+        for k in 0..compact.len() {
+            sampled[k] = compact[k].0.clone()
+            numbers.push(compact[k].1)
+        }
+        lines.push(
+            String::from(
+                f"compressed: {floored} measured radii held up, where no part reached them",
+            ),
+        )
+    }
+    Ok((sampled, lines, numbers))
+}
+
+/// What `replica` says of each part, after writing the package.
+pub fn part_lines(sampled: [Sampled], numbers: [u32]) -> Vec<String> {
+    var lines: Vec<String> = Vec::new()
+    for s in sampled {
+        match s.shape {
+            Shape::Sweep(sw) => {
+                borrow f = sw.fitted
+                let length = sweeps::Path::new(sw.points, s.part.up).length()
+                lines.push(
+                    String::from(
+                        f"{s.part.name}: a sweep through {sw.points.len()} points, {f.sections.len()} sections of {f.bumps} bumps, {length:.3} m: {100.0 * f.within_2mm:.0}% of its own surface's {sw.own} radii within 2 mm, {f.rms * 1000.0:.1} mm rms; {sw.floored} held up",
+                    ),
+                )
+            },
+            Shape::Loft(t) => {
+                var trim = String::new()
+                if t.trim.x + t.trim.y > 0.0 {
+                    trim = String::from(
+                        f", trimmed {t.trim.x * 1000.0:.0} mm at its start and {t.trim.y * 1000.0:.0} at its end (outside the mesh)",
+                    )
+                }
+                var outside = String::new()
+                if !t.outside.is_empty() {
+                    var list = String::from("[")
+                    for k in 0..t.outside.len() {
+                        if k > 0 {
+                            list.push_str(", ")
+                        }
+                        list.push_str(f"{t.outside[k]}")
+                    }
+                    list.push_str("]")
+                    outside = String::from(
+                        f", stations {list} of 0 to {t.stations - 1} outside the mesh",
+                    )
+                }
+                var held = String::new()
+                if t.held > 0 {
+                    held = String::from(f", {t.held} radii held at r_max")
+                }
+                let length = len3(s.part.to - s.part.from)
+                lines.push(
+                    String::from(
+                        f"{s.part.name}: {t.stations} stations of {s.part.angles} radii, {length:.3} m{trim}{outside}{held}",
+                    ),
+                )
+            },
+        }
+    }
+    if !numbers.is_empty() {
+        var dense = 0
+        var total = 0
+        for k in 0..sampled.len() {
+            dense += sampled[k].radii_count()
+            total += numbers[k]
+            lines.push(
+                String::from(
+                    f"{sampled[k].part.name}: {numbers[k]} numbers (of {sampled[k].radii_count()})",
+                ),
+            )
+        }
+        lines.push(String::from(f"compressed: {total} numbers, of {dense}"))
+    }
+    lines
+}
+
+@job
+fn replica_command(given: take Vec<String>) -> u32 {
+    let a = match replica_args(given) {
+        Ok(a) => take a,
+        Err(status) => return status,
+    }
+    let Some(out) = rooted(WS, a.out.as_str()) else {
+        print(f"error: `{a.out}` isn't a path in the workspace")
+        return 2
+    }
+    var file = match reference_named(a.parts.as_str()) {
+        Ok(f) => take f,
+        Err(why) => {
+            print(f"error: {why}")
+            return 1
+        },
+    }
+    if let Some(k) = a.seam {
+        // Every part's seam, the parts' overridden: 0 is hard.
+        for i in 0..file.parts.len() {
+            file.parts[i].seam = if k > 0.0 { Some(k) } else { None }
+        }
+    }
+    let solid = match file.solid() {
+        Ok(s) => take s,
+        Err(why) => {
+            print(f"error: {why}")
+            return 1
+        },
+    }
+    let (sampled, before, numbers) = match make_replica(file, solid, a) {
+        Ok(r) => take r,
+        Err(why) => {
+            print(f"error: {why}")
+            return 1
+        },
+    }
+    for l in before {
+        print(l.as_str())
+    }
+    let name = ident(last_part(out.as_str()).as_str())
+    var w = Box::new(
+        write_package.start(
+            out.clone(),
+            String::from(a.out.as_str()),
+            manifest(file, name.as_str()),
+            replica_source(file, sampled),
+        ),
+    )
+    loop {
+        match w.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                if let Err(why) = r {
+                    print(f"error: {why}")
+                    return 1
+                }
+                break
+            },
+        }
+    }
+    for l in part_lines(sampled, numbers) {
+        print(l.as_str())
+    }
+    print(f"wrote {a.out}")
+    0
+}
+
+/// Writes `text` as the whole file at `path`, in a write root: at once, or through a blob if
+/// it's more than a request carries.
+@job
+pub fn write_file(path: take String, text: take String) -> Result<(), String> {
+    let size = text.len()
+    if size <= MOST_BYTES {
+        var p = files::write(path.as_str(), text.as_bytes())
+        var got = p.poll()
+        while got.is_none() {
+            yield
+            got = p.poll()
+        }
+        let Some(polled) = take got else { return Err(String::from("no answer")) }
+        let _ = tool_error(answer(take polled))?
+        return Ok(())
+    }
+    var n = blob::new()
+    var made = n.poll()
+    while made.is_none() {
+        yield
+        made = n.poll()
+    }
+    let Some(mp) = take made else { return Err(String::from("no answer")) }
+    let b = match blob::read_handle(take mp) {
+        Ok(b) => b,
+        Err(e) => return Err(String::from(e.message())),
+    }
+    var at = 0
+    var result: Result<(), String> = Ok(())
+    while at < size && result.is_ok() {
+        let end = min(at + MOST_BYTES, size)
+        var chunk: Vec<u8> = Vec::with_capacity(end - at)
+        for i in at..end {
+            chunk.push(text.as_bytes()[i])
+        }
+        var p = blob::append(b, chunk)
+        var got = p.poll()
+        while got.is_none() {
+            yield
+            got = p.poll()
+        }
+        let Some(polled) = take got else { return Err(String::from("no answer")) }
+        if let Err(why) = tool_error(answer(take polled)) {
+            result = Err(take why)
+        }
+        at = end
+    }
+    if result.is_ok() {
+        var p = files::write_blob(path.as_str(), b)
+        var got = p.poll()
+        while got.is_none() {
+            yield
+            got = p.poll()
+        }
+        let Some(polled) = take got else { return Err(String::from("no answer")) }
+        if let Err(why) = tool_error(answer(take polled)) {
+            result = Err(take why)
+        }
+    }
+    var r = blob::release(b)
+    var released = r.poll()
+    while released.is_none() {
+        yield
+        released = r.poll()
+    }
+    result
+}
+
+/// Writes the replica's package in `out` (a root path; `shown` as the command line gave it): its
+/// manifest, its replica, its subject and its main module, the wrela files formatted.
+@job
+pub fn write_package(
+    out: take String,
+    shown: take String,
+    toml: take String,
+    source: take String,
+) -> Result<(), String> {
+    var files_to_write: Vec<(String, String)> = Vec::new()
+    files_to_write.push((String::from(f"{out}/wrela.toml"), take toml))
+    files_to_write.push((String::from(f"{out}/replica.wrela"), take source))
+    files_to_write.push((String::from(f"{out}/subject.wrela"), text_of(replica::SUBJECT)))
+    files_to_write.push((String::from(f"{out}/main.wrela"), text_of(replica::MAIN)))
+    for k in 0..files_to_write.len() {
+        let (path, text) = files_to_write[k].clone()
+        var w = Box::new(write_file.start(take path, take text))
+        loop {
+            match w.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(r) => {
+                    (take r)?
+                    break
+                },
+            }
+        }
+    }
+    var paths: Vec<String> = Vec::new()
+    for f in ["replica.wrela", "subject.wrela", "main.wrela"] {
+        paths.push(String::from(f"{out}/{f}"))
+    }
+    var p = toolchain::fmt(paths, check: false)
+    var got = p.poll()
+    while got.is_none() {
+        yield
+        got = p.poll()
+    }
+    let Some(polled) = take got else { return Err(String::from("no answer")) }
+    let formatted = match toolchain::read_formatted(take polled) {
+        Ok(f) => take f,
+        Err(e) => return Err(String::from(e.message())),
+    }
+    if !formatted.failed.is_empty() {
+        let f = last_part(formatted.failed[0].path.as_str())
+        return Err(
+            String::from(
+                f"the generated {f} doesn't parse (a bug in `wrela tool reference`): `wrela check {shown}`",
+            ),
+        )
+    }
+    Ok(())
+}
+
+// ---- deviation --------------------------------------------------------------------------------
+
+/// What `deviation`'s command line asks: the parts, the package, how many points, and JSON.
+pub struct DeviationArgs: Clone {
+    pub parts: String,
+    pub pkg: String,
+    pub points: u32,
+    pub json: bool,
+}
+
+/// `deviation`'s arguments, or the status of a usage error (after its message).
+pub fn deviation_args(given: [String]) -> Result<DeviationArgs, u32> {
+    var parts: Option<String> = None
+    var pkg: Option<String> = None
+    var points: u32 = 20000
+    var json = false
+    var i = 0
+    while i < given.len() {
+        let w = given[i].as_str()
+        if w == "--points" {
+            if i + 1 >= given.len() {
+                return Err(usage())
+            }
+            let Some(n) = given[i + 1].as_str().parse_u32() else { return Err(usage()) }
+            if n == 0 {
+                return Err(usage())
+            }
+            points = n
+            i += 2
+        } else if w == "--json" {
+            json = true
+            i += 1
+        } else if parts.is_none() && !w.starts_with("-") {
+            parts = Some(String::from(w))
+            i += 1
+        } else if pkg.is_none() && !w.starts_with("-") {
+            pkg = Some(String::from(w))
+            i += 1
+        } else {
+            return Err(unknown(w))
+        }
+    }
+    let Some(p) = take parts else { return Err(usage()) }
+    let Some(k) = take pkg else { return Err(usage()) }
+    Ok(DeviationArgs { parts: p, pkg: k, points, json })
+}
+
+@job
+fn deviation_command(given: take Vec<String>) -> u32 {
+    let a = match deviation_args(given) {
+        Ok(a) => take a,
+        Err(status) => return status,
+    }
+    let Some(pkg) = rooted(WS, a.pkg.as_str()) else {
+        print(f"error: `{a.pkg}` isn't a path in the workspace")
+        return 2
+    }
+    let file = match reference_named(a.parts.as_str()) {
+        Ok(f) => take f,
+        Err(why) => {
+            print(f"error: {why}")
+            return 1
+        },
+    }
+    let solid = match file.solid() {
+        Ok(s) => take s,
+        Err(why) => {
+            print(f"error: {why}")
+            return 1
+        },
+    }
+    var names: Vec<String> = Vec::new()
+    for p in file.parts {
+        names.push(p.name.clone())
+    }
+    let out = String::from(f"{OUT}/deviation/{ident(last_part(pkg.as_str()).as_str())}")
+    var j = Box::new(
+        measure.start(
+            take pkg,
+            String::from(a.pkg.as_str()),
+            take out,
+            take names,
+            a.points,
+            Vec::new(),
+        ),
+    )
+    loop {
+        match j.get_mut().resume(solid) {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                match r {
+                    Ok(report) => {
+                        if a.json {
+                            print(report.to_json().as_str())
+                        } else {
+                            let text = report.to_text()
+                            for range in text.as_str().lines() {
+                                let (from, to) = range
+                                print(text.as_str().slice(from, to))
+                            }
+                        }
+                        return 0
+                    },
+                    Err(why) => {
+                        print(f"error: {why}")
+                        return 1
+                    },
+                }
+            },
+        }
+    }
+}
+
+/// How far the package at `package` (a root path; `shown` as the command line gave it) is from
+/// `solid`, at `points` points: built into `out`, run on the CPU as `INSTANCES` instances, and
+/// each instance closed at the end.
+@job
+pub fn measure(
+    pkg: take String,
+    shown: take String,
+    out: take String,
+    names: take Vec<String>,
+    points: take u32,
+    overrides: take Vec<Override>,
+    solid: Solid,
+) -> Result<Deviation, String> {
+    var l = Box::new(load_package.start(take pkg, take shown, take out, take overrides, INSTANCES))
+    var loaded: Option<Result<Vec<drive::Build>, String>> = None
+    while loaded.is_none() {
+        match l.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => loaded = Some(take r),
+        }
+    }
+    let Some(r) = take loaded else { return Err(String::from("no answer")) }
+    let builds = (take r)?
+    var m = Box::new(report.start(builds.clone(), take names, points))
+    var result: Option<Result<Deviation, String>> = None
+    while result.is_none() {
+        match m.get_mut().resume(solid) {
+            Step::Yielded => yield,
+            Step::Done(r) => result = Some(take r),
+        }
+    }
+    // Every instance closed, however the measuring went.
+    var c = Box::new(close_all.start(builds.clone()))
+    var closed = false
+    while !closed {
+        match c.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => closed = true,
+        }
+    }
+    let Some(done) = take result else { return Err(String::from("no answer")) }
+    done
+}
+
+/// Builds the package at `pkg` into `out` (its dependencies read from `overrides` where they
+/// name one) and loads it `count` times on the CPU, each instance's `init` run.
+@job
+pub fn load_package(
+    pkg: take String,
+    shown: take String,
+    out: take String,
+    overrides: take Vec<Override>,
+    count: take u32,
+) -> Result<Vec<drive::Build>, String> {
+    var s = files::stat(f"{pkg}/main.wrela")
+    var stated = s.poll()
+    while stated.is_none() {
+        yield
+        stated = s.poll()
+    }
+    let Some(st) = take stated else { return Err(String::from("no answer")) }
+    if files::read_entry(take st).is_err() {
+        return Err(String::from(f"{shown} isn't a package (it has no main.wrela)"))
+    }
+    var options = toolchain::options()
+    options.overrides = take overrides
+    var b = toolchain::build(pkg.as_str(), out.as_str(), options)
+    var built = b.poll()
+    while built.is_none() {
+        yield
+        built = b.poll()
+    }
+    let Some(bp) = take built else { return Err(String::from("no answer")) }
+    let result = match toolchain::read_built(take bp) {
+        Ok(r) => take r,
+        Err(e) => return Err(String::from(e.message())),
+    }
+    if !result.ok {
+        var why = String::new()
+        for d in result.diagnostics {
+            if d.error {
+                why.push_str(d.rendered.as_str())
+            }
+        }
+        return Err(take why)
+    }
+    var options = drive::cpu()
+    options.workers = 1
+    var loads: Vec<Pending<u8>> = Vec::new()
+    for _ in 0..count {
+        loads.push(drive::load(out.as_str(), options))
+    }
+    var builds: Vec<drive::Build> = Vec::new()
+    var failure: Option<String> = None
+    var answered: Vec<bool> = Vec::filled(count, value: false)
+    var left = count
+    while left > 0 {
+        for k in 0..count {
+            if answered[k] {
+                continue
+            }
+            if let Some(polled) = loads[k].poll() {
+                answered[k] = true
+                left -= 1
+                match drive::read_loaded(take polled) {
+                    Ok(it) => builds.push(it.build),
+                    Err(e) => failure = Some(String::from(f"can't run the replica: {e.message()}")),
+                }
+            }
+        }
+        if left > 0 {
+            yield
+        }
+    }
+    var inits: Vec<Pending<u8>> = Vec::new()
+    if failure.is_none() {
+        for b in builds {
+            inits.push(drive::init(b))
+        }
+    }
+    var answered_inits: Vec<bool> = Vec::filled(inits.len(), value: false)
+    var waiting = inits.len()
+    while waiting > 0 {
+        for k in 0..inits.len() {
+            if answered_inits[k] {
+                continue
+            }
+            if let Some(polled) = inits[k].poll() {
+                answered_inits[k] = true
+                waiting -= 1
+                match drive::read_ran(take polled) {
+                    Ok(ran) => {
+                        if let Some(t) = ran.trap {
+                            failure = Some(String::from(f"can't run the replica: {t.message}"))
+                        }
+                    },
+                    Err(e) => failure = Some(String::from(f"can't run the replica: {e.message()}")),
+                }
+            }
+        }
+        if waiting > 0 {
+            yield
+        }
+    }
+    if let Some(why) = take failure {
+        var c = Box::new(close_all.start(builds.clone()))
+        var closed = false
+        while !closed {
+            match c.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(_) => closed = true,
+            }
+        }
+        return Err(take why)
+    }
+    Ok(builds)
+}
+
+/// Closes each of `builds`, and waits until the host has.
+@job
+pub fn close_all(builds: take Vec<drive::Build>) -> u32 {
+    var closing: Vec<Pending<u8>> = Vec::new()
+    for b in builds {
+        closing.push(drive::close(b))
+    }
+    var answered: Vec<bool> = Vec::filled(closing.len(), value: false)
+    var open = closing.len()
+    while open > 0 {
+        for k in 0..closing.len() {
+            if !answered[k] && closing[k].poll().is_some() {
+                answered[k] = true
+                open -= 1
+            }
+        }
+        if open > 0 {
+            yield
+        }
+    }
+    0
+}
+
+/// The report: the surface points asked, then the volume points, then each view's rays, and
+/// the parts where they see through.
+@job
+fn report(
+    builds: take Vec<drive::Build>,
+    names: take Vec<String>,
+    points: take u32,
+    solid: Solid,
+) -> Result<Deviation, String> {
+    var rng = Rng { state: 0x9E3779B97F4A7C15 }
+    let (drawn, hidden) = draw_surface(solid, points, mut rng)?
+    var s = Box::new(ask_all.start(builds.clone(), take drawn))
+    var surface: Vec<SurfacePoint> = Vec::new()
+    var surface_done = false
+    while !surface_done {
+        match s.get_mut().resume(solid) {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                surface = (take r)?
+                surface_done = true
+            },
+        }
+    }
+    let (volume_drawn, box_volume) = draw_volume(solid, points, mut rng)
+    var v = Box::new(ask_all.start(builds.clone(), take volume_drawn))
+    var volume: Vec<VolumePoint> = Vec::new()
+    var volume_done = false
+    while !volume_done {
+        match v.get_mut().resume(solid) {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                volume = (take r)?
+                volume_done = true
+            },
+        }
+    }
+    var both = 0
+    var mesh_only = 0
+    var package_only = 0
+    var furthest_past = 0.0
+    for p in volume {
+        if p.in_mesh && p.in_package {
+            both += 1
+        } else if p.in_mesh {
+            mesh_only += 1
+        } else if p.in_package {
+            package_only += 1
+            furthest_past = max(furthest_past, p.past)
+        }
+    }
+    var see_through: Vec<SeeThrough> = Vec::new()
+    var rays = [u32(0); 5]
+    for view in 0..5 {
+        let (rows, nv) = view_rows(solid, view)
+        var r = Box::new(ask_all.start(builds.clone(), take rows))
+        var asked: Vec<RayRow> = Vec::new()
+        var rows_done = false
+        while !rows_done {
+            match r.get_mut().resume(solid) {
+                Step::Yielded => yield,
+                Step::Done(x) => {
+                    asked = (take x)?
+                    rows_done = true
+                },
+            }
+        }
+        let (missed, through) = misses(asked, nv, view)
+        rays[view] = through
+        var at: Vec<PartAt> = Vec::with_capacity(missed.len())
+        for m in missed {
+            at.push(PartAt::new(m.at))
+        }
+        var p = Box::new(ask_all.start(builds.clone(), take at))
+        var parts: Vec<PartAt> = Vec::new()
+        var parts_done = false
+        while !parts_done {
+            match p.get_mut().resume(solid) {
+                Step::Yielded => yield,
+                Step::Done(x) => {
+                    parts = (take x)?
+                    parts_done = true
+                },
+            }
+        }
+        for k in 0..missed.len() {
+            var m = missed[k]
+            m.part = parts[k].part
+            see_through.push(m)
+        }
+    }
+    Ok(
+        Deviation {
+            names,
+            surface,
+            hidden,
+            both,
+            mesh_only,
+            package_only,
+            box_volume,
+            volume_points: points,
+            furthest_past,
+            see_through,
+            rays,
+        },
+    )
+}
+
+/// The export an ask calls, and its arguments.
+fn call_of(b: drive::Build, ask: Ask) -> Pending<u8> {
+    let (export, p) = match ask {
+        Ask::Distance(p) => ("distance", p),
+        Ask::Part(p) => ("part", p),
+    }
+    drive::call(b, export, [Scalar::F32(f32(p.x)), Scalar::F32(f32(p.y)), Scalar::F32(f32(p.z))])
+}
+
+/// An answer's number, as `ask` expects it: a distance's one `f32`, or a part's one `u32` (which
+/// crosses as an `i32`). Anything else is the package's fault, said in its words.
+pub fn answer_of(ask: Ask, polled: take Result<Vec<u8>, IoError>) -> Result<f64, String> {
+    let export = match ask {
+        Ask::Distance(_) => "distance",
+        Ask::Part(_) => "part",
+    }
+    let ran = match drive::read_ran(take polled) {
+        Ok(r) => take r,
+        Err(e) => return Err(String::from(f"can't run the package's `{export}`: {e.message()}")),
+    }
+    if let Some(t) = ran.trap {
+        return Err(String::from(f"the package's `{export}` trapped: {t.message}"))
+    }
+    var gave = String::new()
+    for k in 0..ran.results.len() {
+        if k > 0 {
+            gave.push_str(", ")
+        }
+        gave.push_str(
+            match ran.results[k] {
+                Scalar::I32(_) => "an i32",
+                Scalar::I64(_) => "an i64",
+                Scalar::F32(_) => "an f32",
+                Scalar::F64(_) => "an f64",
+            },
+        )
+    }
+    if ran.results.len() == 1 {
+        match ask {
+            Ask::Distance(_) => if let Scalar::F32(d) = ran.results[0] {
+                return Ok(f64(d))
+            },
+            Ask::Part(_) => if let Scalar::I32(i) = ran.results[0] {
+                return Ok(f64(u32(i)))
+            },
+        }
+    }
+    let want = match ask {
+        Ask::Distance(_) => "an f32",
+        Ask::Part(_) => "a u32",
+    }
+    if gave.is_empty() {
+        gave = String::from("nothing")
+    }
+    Err(String::from(f"the package's `{export}` gave {gave}, not {want}"))
+}
+
+/// Each of `tasks` asked of the package's instances (`builds`) to its end, each instance taking
+/// the next task as it comes free: the tasks, done. An answer is taken from its instance as soon
+/// as it's read; if one fails, the calls still out are answered (and not read) before the
+/// failure is given, so no instance is busy when it's closed.
+@job
+pub fn ask_all<T: Probe>(
+    builds: take Vec<drive::Build>,
+    tasks: take Vec<T>,
+    solid: Solid,
+) -> Result<Vec<T>, String> {
+    var work = take tasks
+    let k = builds.len()
+    var pending: Vec<Option<Pending<u8>>> = Vec::from_fn(k, |_| None)
+    var asked: Vec<Ask> = Vec::filled(k, Ask::Part(vec3d(0.0)))
+    var task_of: Vec<u32> = Vec::filled(k, 0)
+    var next = 0
+    var done = 0
+    var failure: Option<String> = None
+    while done < work.len() && failure.is_none() {
+        for s in 0..k {
+            var polled: Option<Result<Vec<u8>, IoError>> = None
+            var busy = false
+            match mut pending[s] {
+                Some(p) => {
+                    busy = true
+                    polled = p.poll()
+                },
+                None => {},
+            }
+            if busy && polled.is_none() {
+                continue
+            }
+            // Consumed: the instance is free, whatever its answer says.
+            pending[s] = None
+            var ask: Option<Ask> = None
+            if let Some(answer) = take polled {
+                match answer_of(asked[s], take answer) {
+                    Ok(x) => {
+                        ask = work[task_of[s]].next(solid, x)
+                        if ask.is_none() {
+                            done += 1
+                        }
+                    },
+                    Err(why) => {
+                        failure = Some(take why)
+                        break
+                    },
+                }
+            }
+            // A free instance takes the next task that has a question.
+            while ask.is_none() && next < work.len() {
+                task_of[s] = next
+                next += 1
+                ask = work[task_of[s]].next(solid, 0.0)
+                if ask.is_none() {
+                    done += 1
+                }
+            }
+            if let Some(q) = ask {
+                asked[s] = q
+                pending[s] = Some(call_of(builds[s], q))
+            }
+        }
+        if done < work.len() && failure.is_none() {
+            yield
+        }
+    }
+    if failure.is_none() {
+        return Ok(work)
+    }
+    var out = 0
+    for s in 0..k {
+        if pending[s].is_some() {
+            out += 1
+        }
+    }
+    // Each answer read in the call it reaches the tool in: one left unread doesn't count as
+    // outstanding, and a tool that waits on none is stopped.
+    while out > 0 {
+        for s in 0..k {
+            var answered = false
+            match mut pending[s] {
+                Some(p) => answered = p.poll().is_some(),
+                None => {},
+            }
+            if answered {
+                pending[s] = None
+                out -= 1
+            }
+        }
+        if out > 0 {
+            yield
+        }
+    }
+    Err(take failure.unwrap_or(String::new()))
+}

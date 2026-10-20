@@ -1,16 +1,19 @@
 // Looking at the lens by eye, headless: `look`, the work loop in one answer (the contact sheet
 // saved, what changed since the last look marked on a copy, and the diagnosis and the spec in
-// brief), and the comparisons: `beside <manifest>` (the side view beside a registered reference
+// brief), and the comparisons: `beside <photo>` (the side view beside a registered reference
 // photo, at the photo's own scale, and the two overlaid), `variants <package>...` (several
 // versions of a subject side by side, at one framing) and `sweep <literal> <value>...` (one
 // literal's values side by side). Each comparison writes one PNG of numbered panels and prints
 // a JSON answer naming what's in each panel.
 //
-// A photo's registration is in its manifest (`references/`): `ground_px` (the ground's row),
-// `metres_per_px`, `z0_px` (the column at z = 0) and `faces` (`right` or `left`, the way the
-// animal faces in the photo). The photo itself is read as PNG: `<manifest stem>.png`.
+// A photo's registration is its value in the `references` package (`SideRegistration`): the
+// ground's row, metres a pixel, the column at z = 0, and the way the animal faces. `beside
+// references/wolf/side-standing.png` takes `wolf/side-standing.jpg`'s; `--registration
+// ground_px,metres_per_px,z0_px,right|left` gives one for a photo the package doesn't register.
+// The photo itself is read as PNG.
 
 use json::{Doc, Kind, TOP, f64_text, number_of, obj, parse, quoted, round3}
+use references::manifest::{Facing, SideRegistration}
 use std::collections::Vec
 use std::string::String
 
@@ -22,70 +25,85 @@ pub struct Registration: Copy {
     pub faces_right: bool,
 }
 
-/// A manifest's values: each `key = value` line's, a number or a quoted text, in any table.
-fn manifest_value(text: str, key: str) -> Option<String> {
-    for range in text.lines() {
-        let (from, to) = range
-        let line = text.slice(from, to).trim()
-        if line.starts_with("#") || line.starts_with("[") {
-            continue
+/// The registration a `references` photo has, as the lens reads it.
+pub fn registration_of(r: SideRegistration) -> Registration {
+    Registration {
+        ground_px: f32(r.ground_px),
+        metres_per_px: f32(r.metres_per_px),
+        z0_px: f32(r.z0_px),
+        faces_right: r.faces == Facing::Right,
+    }
+}
+
+/// The registration of the `references` photo at `path` (from the workspace's directory,
+/// `references/<dir>/<name>` with any extension), if the package registers one there.
+pub fn registered(path: str) -> Option<Registration> {
+    if !path.starts_with("references/") {
+        return None
+    }
+    let rest = path.slice(11, path.len())
+    var dot = rest.len()
+    var slash = 0
+    for i in 0..rest.len() {
+        if rest.byte(i) == 46 {
+            dot = i
         }
-        let Some(eq) = line.find("=") else { continue }
-        if line.slice(0, eq).trim() != key {
-            continue
+        if rest.byte(i) == 47 {
+            slash = i
         }
-        let value = line.slice(eq + 1, line.len()).trim()
-        if value.starts_with("\"") {
-            let rest = value.slice(1, value.len())
-            let end = rest.find("\"")?
-            return Some(String::from(rest.slice(0, end)))
+    }
+    if dot < slash {
+        dot = rest.len()
+    }
+    let stem = rest.slice(0, dot)
+    for jpg in ["jpg", "jpeg", "png"] {
+        if let Some(p) = references::index::photo(f"{stem}.{jpg}".as_str()) {
+            return Some(registration_of(p.registration?))
         }
-        let cut = match value.find("#") {
-            Some(hash) => hash,
-            None => value.len(),
-        }
-        return Some(String::from(value.slice(0, cut).trim()))
     }
     None
 }
 
-/// The registration a manifest (`text`, the file at `path`) gives.
-pub fn registration(path: str, text: str) -> Result<Registration, String> {
-    let number = |key: str| -> Result<f32, String> {
-        let Some(v) = manifest_value(text, key) else {
+/// The registration `--registration` gives: `ground_px,metres_per_px,z0_px,right|left`.
+pub fn parse_registration(text: str) -> Result<Registration, String> {
+    let parts = text.split(",")
+    if parts.len() != 4 {
+        return Err(
+            String::from(
+                f"`{text}` isn't a registration: ground_px,metres_per_px,z0_px,right|left",
+            ),
+        )
+    }
+    var numbers: [f32; 3] = [0.0; 3]
+    for k in 0..3 {
+        let (a, b) = parts[k]
+        let Some(x) = number_of(text.slice(a, b).trim()) else {
             return Err(
                 String::from(
-                    f"{path} has no `{key}` (a photo's registration: ground_px, metres_per_px, z0_px, faces)",
-                ),
-            )
-        }
-        let Some(x) = number_of(v.as_str()) else {
-            return Err(
-                String::from(
-                    f"{path} has no `{key}` (a photo's registration: ground_px, metres_per_px, z0_px, faces)",
+                    f"`{text}` isn't a registration: ground_px,metres_per_px,z0_px,right|left",
                 ),
             )
         }
         let f = f32(x)
         if !(abs(f) <= 340282346638528859811704183484516925440.0) {
-            return Err(String::from(f"{path}: `{key}` is too large for an f32"))
+            return Err(String::from(f"`{text}`: {text.slice(a, b)} is too large for an f32"))
         }
-        Ok(f)
+        numbers[k] = f
     }
-    let metres_per_px = number("metres_per_px")?
-    if !(metres_per_px > 0.0) {
-        return Err(String::from(f"{path}: `metres_per_px` must be finite and positive"))
+    if !(numbers[1] > 0.0) {
+        return Err(String::from(f"`{text}`: metres_per_px must be finite and positive"))
     }
-    let faces_left = match manifest_value(text, "faces") {
-        Some(f) => f.as_str() == "left",
-        None => false,
+    let (a, b) = parts[3]
+    let faces = text.slice(a, b).trim()
+    if faces != "right" && faces != "left" {
+        return Err(String::from(f"`{text}`: a photo faces right or left"))
     }
     Ok(
         Registration {
-            ground_px: number("ground_px")?,
-            metres_per_px,
-            z0_px: number("z0_px")?,
-            faces_right: !faces_left,
+            ground_px: numbers[0],
+            metres_per_px: numbers[1],
+            z0_px: numbers[2],
+            faces_right: faces == "right",
         },
     )
 }
@@ -427,25 +445,27 @@ fn empty() -> Doc {
 @test
 fn a_photo_registration_needs_a_positive_scale() {
     for scale in ["0", "-0.1"] {
-        let text = String::from(f"ground_px = 0\nmetres_per_px = {scale}\nz0_px = 0\n")
-        let Err(e) = registration("photo.toml", text.as_str()) else { panic("accepted") }
+        let text = String::from(f"0,{scale},0,right")
+        let Err(e) = parse_registration(text.as_str()) else { panic("accepted") }
         assert(e.as_str().find("must be finite and positive").is_some(), e.as_str())
     }
-    for text in [
-        "ground_px = 1e300\nmetres_per_px = 0.1\nz0_px = 0\n",
-        "ground_px = 0\nmetres_per_px = 1e300\nz0_px = 0\n",
-        "ground_px = 0\nmetres_per_px = 0.1\nz0_px = 1e300\n",
-    ] {
-        let Err(e) = registration("photo.toml", text) else { panic("accepted") }
+    for text in ["1e300,0.1,0,right", "0,1e300,0,right", "0,0.1,1e300,right"] {
+        let Err(e) = parse_registration(text) else { panic("accepted") }
         assert(e.as_str().find("too large for an f32").is_some(), e.as_str())
     }
-    let Ok(r) = registration(
-        "p.toml",
-        "# a photo\nground_px = 280\nmetres_per_px = 0.002\nz0_px = 200\nfaces = \"left\"\n",
-    ) else {
-        panic("a registration")
-    }
+    assert(parse_registration("0,0.1,0").is_err() && parse_registration("0,0.1,0,up").is_err())
+    let Ok(r) = parse_registration("280, 0.002, 200, left") else { panic("a registration") }
     assert(r.ground_px == 280.0 && r.metres_per_px == 0.002 && r.z0_px == 200.0 && !r.faces_right)
+}
+
+/// The side photo of the wolf is registered (its PNG beside its JPEG takes its values); the
+/// others aren't.
+@test
+fn a_references_photo_carries_its_registration() {
+    let Some(r) = registered("references/wolf/side-standing.png") else { panic("registered") }
+    assert(r.ground_px == 720.0 && r.metres_per_px == f32(0.0018957) && r.faces_right)
+    assert(registered("references/wolf/side-walking.png").is_none())
+    assert(registered("photos/side-standing.png").is_none())
 }
 
 @test

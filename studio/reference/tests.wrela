@@ -1,0 +1,647 @@
+// The tool's tests: a ball (fixtures/ball.obj: radius 1 about (0.0131, 2, 0.0077), 12 rings of
+// 23 segments; 0.1 m once placed) replicated as two lofts (one along y, one out to +x, whose
+// short longest radius holds most of its rays) and compressed, and a lumpy pear
+// (fixtures/pear.obj) as a sweep, each pinned to what the Rust command it replaced (`wrela
+// reference`, before the tool) made of it with the same settings: the same stations, trims and
+// held radii, the same tables (their sums), and for the replicas built and measured, the same
+// deviation. A sweep's fit turns on the last bits of its arithmetic, and this tool's f64 math
+// isn't the host's libm, so its fit is held to the Rust command's own envelope under 1-ulp
+// changes; the Rust command with this tool's math gives this tool's fit exactly. The rest are
+// the Rust command's tests, ported, and the tool's own failures.
+
+use deviation::{Deviation, Stats}
+use main::{ReplicaArgs, make_replica, measure, write_package}
+use mesh::{Solid, len3, parse_stl}
+use references::manifest::{Landmark, Part, Parts, Point, Registration, Sculpt, Seam}
+use replica::{
+    Compression, Lofted, Reference, Sampled, Shape, compress, fill_held, fit_compact, ident,
+    manifest, quoted_name, read, replica_source,
+}
+use std::collections::{Box, Vec}
+use std::job::Step
+use std::string::String
+use std::tool::drive
+use std::tool::drive::Scalar
+use std::tool::toolchain::Override
+
+/// The ball, a sculpt for the tests.
+pub const BALL: Sculpt = Sculpt {
+    title: "Ball",
+    author: "wrela's tests",
+    licence: "MIT",
+    registration: Registration { metres_per_unit: 0.1 },
+    mesh: "ball.obj",
+    bytes: embed("fixtures/ball.obj"),
+}
+
+const BOTTOM: Landmark = Landmark { name: "bottom", at: vec3d(0.0, 0.09, 0.0) }
+const CENTRE: Landmark = Landmark { name: "centre", at: vec3d(0.0, 0.2, 0.0) }
+
+/// Two lofts: the ball along y, and a part out to +x from its centre, its rays held at 3 cm.
+pub const LOFTS: Parts = Parts {
+    name: "ball/lofts",
+    sculpt: BALL,
+    spacing: 0.005,
+    taper: 0.001,
+    landmarks: Vec::from([BOTTOM, CENTRE]),
+    parts: Vec::from(
+        [
+            Part {
+                name: "ball",
+                from: Point::At(BOTTOM),
+                to: Point::Xyz(vec3d(0.0, 0.31, 0.0)),
+                up: Some(vec3d(0.0, 0.0, 1.0)),
+                angles: Some(32),
+            },
+            Part {
+                name: "side",
+                from: Point::At(CENTRE),
+                to: Point::Xyz(vec3d(0.09, 0.2, 0.0)),
+                parent: "ball",
+                angles: Some(16),
+                r_max: Some(0.03),
+            },
+        ],
+    ),
+}
+
+/// A lumpy pear (fixtures/pear.obj), with no symmetry for a fit to lean on.
+pub const PEAR: Sculpt = Sculpt {
+    title: "Pear",
+    author: "wrela's tests",
+    licence: "MIT",
+    registration: Registration { metres_per_unit: 0.1 },
+    mesh: "pear.obj",
+    bytes: embed("fixtures/pear.obj"),
+}
+
+/// The pear as one sweep through a bent path, 3 sections of 2 bumps.
+pub const SWEEP: Parts = Parts {
+    name: "pear/sweep",
+    sculpt: PEAR,
+    landmarks: Vec::new(),
+    parts: Vec::from(
+        [
+            Part {
+                name: "pear",
+                from: Point::Xyz(vec3d(0.0013, 0.12, 0.0007)),
+                through: Vec::from([Point::Xyz(vec3d(0.01, 0.25, 0.005))]),
+                to: Point::Xyz(vec3d(0.0013, 0.36, 0.0007)),
+                up: Some(vec3d(0.0, 0.0, 1.0)),
+                angles: Some(24),
+                spacing: Some(0.01),
+                sections: 3,
+                bumps: 2,
+            },
+        ],
+    ),
+}
+
+fn args(harmonics: Option<u32>, every: Option<f64>) -> ReplicaArgs {
+    ReplicaArgs {
+        parts: String::new(),
+        out: String::new(),
+        harmonics,
+        every,
+        seam: None,
+    }
+}
+
+/// The replica of `parts` as `a` asks: its parts, the lines said before writing it, and each
+/// part's numbers.
+fn replica_of(parts: Parts, a: ReplicaArgs) -> (Reference, Vec<Sampled>, Vec<String>, Vec<u32>) {
+    let Ok(file) = read(parts) else { panic("the parts read") }
+    let Ok(solid) = file.solid() else { panic("the mesh reads") }
+    let Ok(made) = make_replica(file, solid, a) else { panic("the replica is made") }
+    let (sampled, before, numbers) = take made
+    (file, sampled, before, numbers)
+}
+
+fn table(s: Sampled) -> Lofted {
+    let Shape::Loft(t) = s.shape else { panic("a loft") }
+    t.clone()
+}
+
+fn sum(radii: [i32]) -> i64 {
+    var total: i64 = 0
+    for r in radii {
+        total += i64(r)
+    }
+    total
+}
+
+@test
+fn the_ball_s_lofts_measure_as_the_rust_command_measured_them() {
+    let (_, sampled, before, numbers) = replica_of(LOFTS.clone(), args(None, None))
+    assert(before.is_empty() && numbers.is_empty())
+    let ball = table(sampled[0])
+    let side = table(sampled[1])
+    // "ball: 41 stations of 32 radii, 0.198 m, trimmed 31 mm at its start and 31 at its end";
+    // "side: 26 stations of 16 radii, 0.121 m, trimmed 0 mm at its start and 9 at its end, 385
+    // radii held at r_max".
+    assert(ball.stations == 41 && side.stations == 26)
+    assert(round(ball.trim.x * 1000.0) == 31.0 && round(ball.trim.y * 1000.0) == 31.0)
+    assert(round(side.trim.x * 1000.0) == 0.0 && round(side.trim.y * 1000.0) == 9.0)
+    assert(ball.held == 0 && side.held == 385)
+    assert(abs(len3(sampled[0].part.to - sampled[0].part.from) - 0.198) < 0.0005)
+    // The tables, radius for radius (each the same as the Rust command's): their sums and
+    // first radii.
+    assert(sum(ball.radii) == 996631, f"{sum(ball.radii)}")
+    assert(sum(side.radii) == 119370, f"{sum(side.radii)}")
+    assert(ball.radii[0] == 82 && ball.radii[1] == 85 && side.radii[0] == 290)
+}
+
+@test
+fn the_ball_s_lofts_compress_as_the_rust_command_compressed_them() {
+    let (_, sampled, before, numbers) = replica_of(LOFTS.clone(), args(Some(2), Some(0.02)))
+    assert(before.len() == 1)
+    assert(
+        before[0].as_str() == "compressed: 1329 measured radii held up, where no part reached them",
+        before[0].as_str(),
+    )
+    // 0.198 m in sections every 2 cm (11 of 5 numbers), and 0.121 m (8 of 5).
+    assert(numbers[0] == 55 && numbers[1] == 40)
+    assert(sum(table(sampled[0]).radii) == 1022134, f"{sum(table(sampled[0]).radii)}")
+    assert(sum(table(sampled[1]).radii) == 27255, f"{sum(table(sampled[1]).radii)}")
+}
+
+@test(tool, budget: 120)
+@job
+fn the_pear_s_sweep_fits_within_the_rust_command_s_own_envelope() {
+    let (_, sampled, _, _) = replica_of(SWEEP.clone(), args(None, None))
+    let Shape::Sweep(sw) = sampled[0].shape else { panic("a sweep part is fitted as one") }
+    // The Rust command's, with its measured radii each moved an ulp up or down (8 patterns),
+    // and with its sin, cos, atan2 and pow results moved so (8 more): every one "a sweep
+    // through 3 points, 3 sections of 2 bumps, 0.280 m: 34% of its own surface's 696 radii
+    // within 2 mm, 10.6 mm rms; 245 to 247 held up", the rms from 0.010587583338583 to
+    // 0.010587583338676 m. The Rust command with this tool's f64 math gives this tool's fit,
+    // bit for bit (0.010587583338652 m, 247 held up): the envelope is the acceptance bound.
+    assert(sw.points.len() == 3 && sw.fitted.sections.len() == 3 && sw.fitted.bumps == 2)
+    assert(sw.own == 696, f"{sw.own}")
+    assert(sw.fitted.within_2mm == 240.0 / 696.0, f"{sw.fitted.within_2mm}")
+    assert(
+        sw.fitted.rms >= 0.010587583338582 && sw.fitted.rms <= 0.010587583338676,
+        f"{sw.fitted.rms}",
+    )
+    assert(sw.floored >= 245 && sw.floored <= 247, f"{sw.floored}")
+}
+
+/// A replica of `parts` as `a` asks, written into `scratch/<name>` and measured against the
+/// ball at 2000 points.
+@job
+fn deviation_of(parts: take Parts, a: take ReplicaArgs, name: take String) -> Deviation {
+    let (file, sampled, _, _) = replica_of(parts, a)
+    let dir = String::from(f"scratch/{name}")
+    var w = Box::new(
+        write_package.start(
+            dir.clone(),
+            dir.clone(),
+            manifest(file, ident(name.as_str()).as_str()),
+            replica_source(file, sampled),
+        ),
+    )
+    var written = false
+    while !written {
+        match w.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                if let Err(why) = r {
+                    panic(f"the package is written: {why}")
+                }
+                written = true
+            },
+        }
+    }
+    let Ok(solid) = file.solid() else { panic("the mesh reads") }
+    var names: Vec<String> = Vec::new()
+    for p in LOFTS.parts {
+        names.push(String::from(p.name))
+    }
+    var m = Box::new(
+        measure.start(
+            dir.clone(),
+            take dir,
+            String::from(f"scratch/build/{name}"),
+            take names,
+            2000,
+            // The replica's engine is the workspace's, and its scratch isn't in the workspace.
+            Vec::from([Override { name: String::from("engine"), dir: String::from("ws/engine") }]),
+        ),
+    )
+    loop {
+        match m.get_mut().resume(solid) {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                match r {
+                    Ok(d) => return d.clone(),
+                    Err(why) => panic(f"the replica is measured: {why}"),
+                }
+            },
+        }
+    }
+}
+
+/// The replicas built and measured, each against the Rust command's report of the same
+/// replica of the same ball: the surface's mean, the volumes and the see-through rays.
+@test(tool, read: [("ws", "../..")], budget: 600)
+@job
+fn the_ball_s_replicas_deviate_as_the_rust_command_found() {
+    var j = Box::new(deviation_of.start(LOFTS.clone(), args(None, None), String::from("lofts")))
+    var lofts: Option<Deviation> = None
+    while lofts.is_none() {
+        match j.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(d) => lofts = Some(d.clone()),
+        }
+    }
+    let Some(d) = take lofts else { panic("a report") }
+    let all = d.stats(None)
+    assert(all.n == 2000 && d.hidden == 0)
+    assert(all.mean == 0.00014788640660923135, f"mean {all.mean}")
+    assert(all.worst == 0.0012701539089903235 && all.within_2mm == 1.0)
+    assert(d.iou() == 0.9916943521594684, f"{d.iou()}")
+    assert(d.furthest_past == 0.0, f"{d.furthest_past}")
+    let rays = [7750, 7752, 7734, 7752, 7749]
+    for v in 0..5 {
+        assert(d.rays[v] == rays[v], f"view {v}: {d.rays[v]} rays")
+    }
+    var inside = 0
+    for r in d.see_through {
+        if r.inside {
+            inside += 1
+        }
+    }
+    assert(inside == 0 && d.see_through.len() == 207, f"{inside} {d.see_through.len()}")
+    // Compressed: a mean of 0.36 mm, 89% within 2 mm, nothing to see through.
+    var c = Box::new(
+        deviation_of.start(LOFTS.clone(), args(Some(2), Some(0.02)), String::from("compact")),
+    )
+    var compact: Option<Deviation> = None
+    while compact.is_none() {
+        match c.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(d) => compact = Some(d.clone()),
+        }
+    }
+    let Some(e) = take compact else { panic("a report") }
+    let st = e.stats(None)
+    assert(
+        st.mean == 0.00035779823290518303 && st.within_2mm == 0.8865,
+        f"{st.mean} {st.within_2mm}",
+    )
+    assert(e.iou() == 0.9756888168557536 && e.see_through.len() == 38, f"{e.iou()}")
+    // The pear's sweep, against the Rust command's report of the same replica (the Rust
+    // command with this tool's f64 math made it, bit for bit): a mean of 2.8 mm, 54% within
+    // 2 mm, 90% of the volume shared, 3 rays seen through inside the outline.
+    var s = Box::new(deviation_of.start(SWEEP.clone(), args(None, None), String::from("sweep")))
+    var swept: Option<Deviation> = None
+    while swept.is_none() {
+        match s.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(d) => swept = Some(d.clone()),
+        }
+    }
+    let Some(f) = take swept else { panic("a report") }
+    let sf = f.stats(None)
+    assert(sf.mean == 0.002797239838788932 && sf.within_2mm == 0.5395, f"{sf.mean} {sf.within_2mm}")
+    assert(f.iou() == 0.9002976190476191 && f.furthest_past == 0.018538264069506885, f"{f.iou()}")
+    let pear_rays = [11003, 8160, 12090, 9834, 11819]
+    var through = 0
+    for v in 0..5 {
+        assert(f.rays[v] == pear_rays[v], f"view {v}: {f.rays[v]}")
+    }
+    for r in f.see_through {
+        if r.inside {
+            through += 1
+        }
+    }
+    assert(through == 3 && f.see_through.len() == 224, f"{through} {f.see_through.len()}")
+}
+
+@test
+fn generated_identifiers_are_never_empty_or_keywords() {
+    assert(ident("front leg").as_str() == "front_leg")
+    assert(ident("123").as_str() == "part_123")
+    assert(ident("!!!").as_str() == "part")
+    assert(ident("struct").as_str() == "part_struct")
+    assert(ident(" Ear--Tip  left ").as_str() == "ear_tip_left")
+}
+
+@test
+fn generated_names_keep_their_contents_on_one_line() {
+    let q = quoted_name("left \"side\"\\part\nnext\rline\tend")
+    assert(q.as_str() == "\"left \\\"side\\\"\\\\part\\nnext\\rline\\tend\"", q.as_str())
+}
+
+/// A circle of radius 300 with a run held at 600 (its rays ran into another part): filled, the
+/// run follows the circle.
+@test
+fn held_radii_are_filled_from_the_measured_ones() {
+    var held: Vec<bool> = Vec::new()
+    var radii: Vec<i32> = Vec::new()
+    for j in 0..32 {
+        let h = j >= 10 && j < 16
+        held.push(h)
+        radii.push(if h { 600 } else { 300 })
+    }
+    fill_held(mut radii, held, at: 0, a: 32, r_max: 0.06)
+    for r in radii {
+        assert(abs(r - 300) <= 2, f"{r}")
+    }
+    // All held, or none: left alone.
+    var all: Vec<i32> = Vec::filled(8, 600)
+    let all_held: Vec<bool> = Vec::filled(8, value: true)
+    fill_held(mut all, all_held, at: 0, a: 8, r_max: 0.06)
+    for r in all {
+        assert(r == 600)
+    }
+}
+
+/// A straight part along z, 9 stations of 24 radii (`radius(station, angle)`), some held.
+fn straight(
+    name: Text,
+    centre: vec2d,
+    radius: fn(u32, u32) -> f64,
+    held: fn(u32) -> bool,
+) -> Sampled {
+    let stations = 9
+    let angles = 24
+    var radii: Vec<i32> = Vec::new()
+    var held_at: Vec<bool> = Vec::new()
+    var count = 0
+    for i in 0..stations {
+        for j in 0..angles {
+            let h = held(j)
+            held_at.push(h)
+            if h {
+                count += 1
+            }
+            radii.push(i32(replica::round_away(radius(i, j) * 10000.0)))
+        }
+    }
+    Sampled {
+        part: replica::Part {
+            name: String::from(name),
+            from: vec3d(centre.x, centre.y, 0.0),
+            to: vec3d(centre.x, centre.y, 0.08),
+            up: vec3d(0.0, 1.0, 0.0),
+            parent: None,
+            spacing: 0.01,
+            angles,
+            r_max: 0.06,
+            seam: None,
+            taper: 0.0,
+            overlap: 0.0,
+            sections: 0,
+            bumps: 0,
+            through: Vec::new(),
+            ends: vec2d(0.0),
+        },
+        shape: Shape::Loft(
+            Lofted {
+                u: vec3d(0.0, 1.0, 0.0),
+                stations,
+                radii,
+                outside: Vec::new(),
+                held: count,
+                held_at,
+                trim: vec2d(0.0),
+            },
+        ),
+    }
+}
+
+/// The radius two harmonics give, changing linearly along the axis.
+fn two_harmonics(i: u32, j: u32) -> f64 {
+    let t = f64(i) / 8.0
+    let a = math::TAU * f64(j) / 24.0
+    0.03 + 0.01 * t + 0.006 * math::cos(a) + 0.003 * math::sin(2.0 * a) * (1.0 - t)
+}
+
+/// A table whose sections are two harmonics, changing linearly along the axis, with a run of
+/// held radii (their rays ran into another part) set to `r_max`: two harmonics and two control
+/// sections recover it where it was measured, ignoring the held run.
+@test
+fn compression_recovers_harmonics_and_leaves_held_radii_free() {
+    let s = straight(
+        "test",
+        vec2d(0.0),
+        |i, j| if j >= 5 && j < 9 { 0.06 } else { two_harmonics(i, j) },
+        |j| j >= 5 && j < 9,
+    )
+    let (c, numbers) = fit_compact(s, Compression { harmonics: 2, every: 0.08 }, [])
+    assert(numbers == 2 * 5)
+    let t = table(c)
+    for i in 0..9 {
+        for j in 0..24 {
+            if j >= 5 && j < 9 {
+                continue
+            }
+            let got = f64(t.radii[i * 24 + j]) / 10000.0
+            assert(abs(got - two_harmonics(i, j)) < 0.0003, f"station {i}, angle {j}: {got}")
+        }
+    }
+}
+
+/// A circle of radius 3 cm with a run of radii at 5 cm (angles 5 and 6: rays that ran along a
+/// neighbour), and the neighbour, a cylinder around them. At two harmonics the circle's part
+/// can't follow the run: held up to the circle where nothing else reaches it, it's never short of
+/// a measured radius there, and the run, which the neighbour reaches, is free.
+@test
+fn compression_holds_up_what_no_other_part_reaches() {
+    let theta = math::TAU * 5.5 / 24.0
+    // Angle θ's direction is cos θ u + sin θ (w × u), with u = +y and w = +z.
+    let at = vec2d(-0.045 * math::sin(theta), 0.045 * math::cos(theta))
+    let body = straight("body", vec2d(0.0), |_, j| if j == 5 || j == 6 { 0.05 } else {
+        0.03
+    }, |_| false)
+    let neighbour = straight("neighbour", at, |_, _| 0.015, |_| false)
+    let c = Compression { harmonics: 2, every: 0.08 }
+    let (free, _) = fit_compact(body, c, [])
+    var short = false
+    let fr = table(free).radii
+    let br = table(body).radii
+    for n in 0..fr.len() {
+        short = short || fr[n] < br[n] - 5
+    }
+    assert(short)
+    let (out, floored) = compress([body.clone(), neighbour.clone()], c)
+    assert(floored > 0)
+    let fitted = table(out[0].0).radii
+    for n in 0..fitted.len() {
+        if n % 24 == 5 || n % 24 == 6 {
+            assert(fitted[n] < 450, f"the run, at {n}: {fitted[n]}")
+        } else {
+            assert(fitted[n] >= br[n], f"at {n}: {fitted[n]} < {br[n]}")
+        }
+    }
+    // The neighbour, a circle, is its two harmonics exactly.
+    for r in table(out[1].0).radii {
+        assert(abs(r - 150) <= 1, f"{r}")
+    }
+}
+
+/// A binary STL (fixtures/tetra.stl): a tetrahedron, and a triangle apart from it, to ignore.
+@test
+fn a_binary_stl_s_largest_piece_is_a_solid() {
+    let bytes = embed("fixtures/tetra.stl")
+    var v: Vec<u8> = Vec::with_capacity(bytes.len())
+    for i in 0..bytes.len() {
+        v.push(bytes.at(i))
+    }
+    let Ok(m) = parse_stl(v) else { panic("the STL reads") }
+    assert(m.vertices.len() == 7 && m.triangles.len() == 5)
+    let pieces = m.pieces()
+    assert(pieces.len() == 2 && pieces[0].len() == 4 && pieces[1].len() == 1)
+    let s = Solid::new(m.corners(pieces[0]))
+    assert(s.inside(vec3d(0.25, 0.25, 0.25)) && !s.inside(vec3d(1.0, 1.0, 1.0)))
+    let Some(e) = s.exit(vec3d(0.1, 0.1, 0.1), vec3d(1.0, 0.0, 0.0)) else { panic("an exit") }
+    assert(abs(e - 0.7) < 0.000001, f"{e}")
+}
+
+/// A part whose parent comes after it, or none where it isn't the first, is refused.
+@test
+fn parts_name_their_parents_before_them() {
+    var parts = LOFTS.clone()
+    parts.parts[1].parent = ""
+    let Err(why) = read(parts) else { panic("a second root") }
+    assert(why.as_str().find("only the first part is the root").is_some(), why.as_str())
+    var twice = LOFTS.clone()
+    twice.parts[1].name = "Ball"
+    let Err(e) = read(twice) else { panic("two identifiers alike") }
+    assert(e.as_str().find("both become the identifier").is_some(), e.as_str())
+}
+
+/// The report on the probe package `fixtures/probes/<name>` against the ball, at `points`
+/// points: its error, if it fails.
+@job
+fn probe_failure(name: take String, points: take u32) -> String {
+    let Ok(file) = read(LOFTS.clone()) else { panic("the parts read") }
+    let Ok(solid) = file.solid() else { panic("the mesh reads") }
+    var names: Vec<String> = Vec::new()
+    names.push(String::from("ball"))
+    let dir = String::from(f"ws/studio/reference/fixtures/probes/{name}")
+    var m = Box::new(
+        measure.start(
+            dir.clone(),
+            take dir,
+            String::from(f"scratch/build/{name}"),
+            take names,
+            points,
+            Vec::new(),
+        ),
+    )
+    loop {
+        match m.get_mut().resume(solid) {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                match r {
+                    Ok(_) => panic(f"the probe package `{name}` was measured"),
+                    Err(why) => return why.clone(),
+                }
+            },
+        }
+    }
+}
+
+/// A distance export that traps on one instance while the others' calls are out ends the
+/// report promptly with the trap, and an export that isn't there, or gives the wrong type,
+/// ends it with what the package gave: never a hang, and never a number read as another.
+@test(tool, read: [("ws", "../..")], budget: 120)
+@job
+fn a_package_s_failing_or_mistyped_exports_end_the_report() {
+    let cases = [
+        ("traps", "the package's `distance` trapped"),
+        ("no_part", "can't run the package's `part`"),
+        ("int_distance", "the package's `distance` gave an i32, not an f32"),
+        ("float_part", "the package's `part` gave an f32, not a u32"),
+    ]
+    for k in 0..4 {
+        let (name, want) = cases[k]
+        var j = Box::new(probe_failure.start(String::from(name), 400))
+        var why: Option<String> = None
+        while why.is_none() {
+            match j.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(w) => why = Some(w.clone()),
+            }
+        }
+        let Some(w) = take why else { panic("an error") }
+        assert(w.as_str().find(want).is_some(), f"{name}: {w}")
+    }
+}
+
+/// After a failed question, every instance is idle and can be closed: each closed instance's
+/// handle names nothing afterwards.
+@test(tool, read: [("ws", "../..")], budget: 120)
+@job
+fn instances_close_after_a_failed_question() {
+    let Ok(file) = read(LOFTS.clone()) else { panic("the parts read") }
+    let Ok(solid) = file.solid() else { panic("the mesh reads") }
+    var l = Box::new(
+        main::load_package.start(
+            String::from("ws/studio/reference/fixtures/probes/traps"),
+            String::from("traps"),
+            String::from("scratch/build/traps"),
+            Vec::new(),
+            4,
+        ),
+    )
+    var loaded: Option<Vec<drive::Build>> = None
+    while loaded.is_none() {
+        match l.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                let Ok(b) = r else { panic("the probe package loads") }
+                loaded = Some(b.clone())
+            },
+        }
+    }
+    let Some(builds) = take loaded else { panic("builds") }
+    var rng = deviation::Rng { state: 7 }
+    let (drawn, _) = deviation::draw_volume(solid, 200, mut rng)
+    var a = Box::new(main::ask_all.start(builds.clone(), take drawn))
+    var failed = false
+    while !failed {
+        match a.get_mut().resume(solid) {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                assert(r.is_err(), "a point past x = 0.05 traps")
+                failed = true
+            },
+        }
+    }
+    var c = Box::new(main::close_all.start(builds.clone()))
+    var closed = false
+    while !closed {
+        match c.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => closed = true,
+        }
+    }
+    for b in builds {
+        var p = drive::call(b, "distance", [Scalar::F32(0.0), Scalar::F32(0.2), Scalar::F32(0.0)])
+        var got = p.poll()
+        while got.is_none() {
+            yield
+            got = p.poll()
+        }
+        let Some(polled) = take got else { panic("an answer") }
+        assert(drive::read_ran(take polled).is_err(), "a closed instance's handle names nothing")
+    }
+}
+
+/// Control sections every 10⁻¹² m are more than the stations: the table is fitted at every
+/// station, as with no spacing given.
+@test
+fn sections_closer_than_the_stations_are_every_station() {
+    let s = straight("test", vec2d(0.0), |i, j| two_harmonics(i, j), |_| false)
+    let (fine, n_fine) = fit_compact(s, Compression { harmonics: 2, every: 0.000000000001 }, [])
+    let (every, n_every) = fit_compact(s, Compression { harmonics: 2, every: 0.0 }, [])
+    assert(n_fine == n_every && n_every == 9 * 5, f"{n_fine} {n_every}")
+    let a = table(fine).radii
+    let b = table(every).radii
+    for n in 0..a.len() {
+        assert(a[n] == b[n], f"radius {n}: {a[n]} against {b[n]}")
+    }
+}

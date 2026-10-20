@@ -1,0 +1,11 @@
+// A part export of the wrong type: an f32.
+
+pub fn distance(x: f32, y: f32, z: f32) -> f32 {
+    length(vec3(x, y - 0.2, z)) - 0.1
+}
+
+pub fn part(x: f32, y: f32, z: f32) -> f32 {
+    0.0
+}
+
+pub fn frame(time: f32, width: u32, height: u32) {}
