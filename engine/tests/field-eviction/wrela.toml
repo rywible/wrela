@@ -1,0 +1,6 @@
+# engine::terrain's clipmap recooks the tile that a replaced field block evicts.
+[package]
+name = "field_eviction"
+
+[dependencies]
+engine = { workspace = true }

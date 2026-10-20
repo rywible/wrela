@@ -1,0 +1,6 @@
+# engine::stone's culling keeps each rock that the view sees, on a CPU frame.
+[package]
+name = "rock_culling"
+
+[dependencies]
+engine = { workspace = true }

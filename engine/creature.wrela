@@ -21,7 +21,7 @@
 
 use physique
 use physique::{Capsule, Mass, Per}
-use std::derive::{Box3, Interval, interval, value_gradient_with}
+use std::derive::{Box3, Interval, gradient, interval, value_gradient_with}
 use std::field::{
     Blend, Bound, Field, Surface, PartName, UNBOUNDED, smin, smin_and_weight, smin_weight,
 }
@@ -2577,4 +2577,47 @@ impl<C: Blend + Copy, P: PartChannels<C>> Creature<C> for Body<P> {
     fn nearest_bone(self, p: vec3) -> Bone {
         Bone { index: self.parts.weigh(p, image: false, scale: 1.0, best: (FAR, 0)).1 }
     }
+}
+
+// ---- tests --------------------------------------------------------------------------------------
+
+// The crease join sinks a groove where two forms meet, and nowhere else, within its stated
+// steepness.
+
+fn left_ball(p: vec3) -> f32 {
+    length(p - vec3(-0.06, 0.0, 0.0)) - 0.1
+}
+
+fn right_ball(p: vec3) -> f32 {
+    length(p - vec3(0.06, 0.0, 0.0)) - 0.1
+}
+
+/// Two balls 0.1 across, 0.12 apart, joined by a crease 2 cm wide and 5 mm deep.
+fn creased(p: vec3) -> f32 {
+    crease(k: 0.02, depth: 0.005).apply(left_ball(p), right_ball(p), 0.0)
+}
+
+@test
+fn a_crease_sinks_where_two_forms_meet() {
+    // On the circle where the balls meet (x = 0, 8 cm from the axis), the union's surface:
+    // creased, it's 5 mm inside the surface there.
+    assert(abs(creased(vec3(0.0, 0.08, 0.0)) - 0.005) < 0.0001)
+    // On the far side of a ball, it's the union; deep inside where they overlap (4 cm), it's
+    // raised by the depth at most, and still inside.
+    let far = vec3(-0.16, 0.0, 0.0)
+    assert(abs(creased(far) - min(left_ball(far), right_ball(far))) < 0.000001)
+    let inside = creased(vec3())
+    assert(inside < -0.03 && inside <= min(left_ball(vec3()), right_ball(vec3())) + 0.0050001)
+    // Its gradient stays within its steepness near the surface.
+    let most = crease(k: 0.02, depth: 0.005).steepness()
+    let around = Box3 { lo: vec3(-0.2), hi: vec3(0.2) }
+    var n = 0
+    for i in 0..20000 {
+        let p = around.sample(9, i)
+        if abs(creased(p)) < 0.01 {
+            assert(length(gradient(|q: vec3| creased(q), p)) <= most * 1.0001)
+            n += 1
+        }
+    }
+    assert(n > 500)
 }

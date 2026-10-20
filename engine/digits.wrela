@@ -6,6 +6,7 @@
 // the knuckle, and how much smaller the outer ones are. Each digit is a part of its own, so the
 // clefts between them show and the pads under them keep their form.
 
+use std::derive::Box3
 use std::field::Surface
 use sweep::{Sweep, section, sweep}
 
@@ -103,4 +104,50 @@ impl<const N: u32> Surface for Digits<N> {
         }
         most
     }
+}
+
+// ---- tests --------------------------------------------------------------------------------------
+
+// Digits are toes apart from each other, their tips where they're placed, their gradient near 1.
+
+/// A wolf's fore paw's four toes: 4 cm across, 3.5 cm long, 9 mm thick, pointing along +z.
+fn paw() -> Digits<4> {
+    digits(
+        vec3(0.0, 0.02, 0.0),
+        forward: vec3(z: 1.0),
+        up: vec3(y: 1.0),
+        spread: 0.04,
+        length: 0.035,
+        thick: 0.009,
+    )
+}
+
+@test
+fn digits_are_toes_apart() {
+    let p = paw()
+    // Each toe's path, halfway, is inside it, and the gap between two toes' tips, at their
+    // height, is outside every toe.
+    for i in 0..4 {
+        assert(p.distance(p.toes[i].at[p.toes[i].vertices / 2]) < -0.005)
+    }
+    let a = p.toes[1].at[p.toes[1].vertices - 1]
+    let b = p.toes[2].at[p.toes[2].vertices - 1]
+    assert(p.distance(0.5 * (a + b)) > 0.0, f"between the tips: {p.distance(0.5 * (a + b))}")
+    // The outer toes are shorter: their tips are behind the middle ones'.
+    let outer = p.toes[0].at[p.toes[0].vertices - 1]
+    assert(outer.z < a.z - 0.002, f"tips {outer.z} {a.z}")
+    // Near its surface, its gradient is near 1: down to 0.6 at a tip's dome, whose distance
+    // (an ellipse's, scaled by its shorter half-axis) never overstates.
+    let around = Box3 { lo: vec3(-0.04, 0.0, -0.01), hi: vec3(0.04, 0.04, 0.05) }
+    var n = 0
+    for i in 0..40000 {
+        let q = around.sample(10, i)
+        if abs(p.distance(q)) < 0.0005 {
+            let (_d, g) = p.sample(q)
+            assert(length(g) > 0.6 && length(g) < 1.2, f"gradient {length(g)}")
+            n += 1
+        }
+    }
+    assert(n > 100, f"{n} near")
+    assert(p.lipschitz(0.001) < 1.0e30, f"bound {p.lipschitz(0.001)}")
 }

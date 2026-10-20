@@ -1,0 +1,7 @@
+# A fixture of engine/tests/errors (not a workspace member): a skeleton of `MAX_BONES` bones,
+# and one of a bone more, whose test fails.
+[package]
+name = "bones"
+
+[dependencies]
+engine = { workspace = true }

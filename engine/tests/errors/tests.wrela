@@ -1,0 +1,114 @@
+// The tool tests: each score mistake is a package written to `scratch` and built through the
+// toolchain, with the workspace's engine read for its dependency, and its E0704 says where the
+// mistake is; the bones fixture's tests run through the toolchain, and the second fails with
+// the limit named.
+
+use std::collections::Vec
+use std::string::String
+use std::tool::files
+use std::tool::toolchain
+use std::tool::toolchain::Override
+
+/// Each score's name, its voices (after `score("s", meter(beats: 3, unit: 4))`), and what its
+/// E0704's message holds.
+const SCORES: [(Text, Text, Text); 9] = [
+    (
+        "short_bar",
+        ".voice(\"melody\", [\"e4/4 g4 b4 | c5/2 | d5/2. |\"])",
+        "s, voice `melody`, bar 2, beat 3: bar 2 holds 2 beats, but 3/4 has 3",
+    ),
+    ("long_bar", ".voice(\"melody\", [\"e4/4 g4 b4 c5 |\"])", "bar 1 holds 4 beats, but 3/4 has 3"),
+    (
+        "off_the_keyboard",
+        ".voice(\"melody\", [\"g#0/2. |\"])",
+        "this pitch isn't one of the piano's 88 keys (A0 to C8)",
+    ),
+    ("no_octave", ".voice(\"melody\", [\"c9/2. |\"])", "a pitch needs an octave from 0 to 8"),
+    (
+        "lost_tie",
+        ".voice(\"melody\", [\"e4/2.~ | f4/2. |\"])",
+        "bar 2, beat 1: a tie continues to no note of the same pitch",
+    ),
+    ("open_hairpin", ".voice(\"melody\", [\"e4/2. !< | f4/2. |\"])", "a hairpin isn't ended"),
+    ("open_slur", ".voice(\"melody\", [\"e4/2. ( | f4/2. |\"])", "a slur isn't ended"),
+    ("unknown_mark", ".voice(\"melody\", [\"e4/2. !loud |\"])", "`!loud` isn't a mark"),
+    (
+        "voices_disagree",
+        ".voice(\"melody\", [\"e4/2. | f4/2. |\"]).voice(\"bass\", [\"e2/2. |\"])",
+        "s: voice `bass` has 1 bars, but the voices before it have 2",
+    ),
+]
+
+/// A mistake in a score fails the build where it is: its E0704 names the score, the voice, the
+/// bar and the beat, and what is wrong.
+@test(tool, read: [("repo", "../../..")], budget: 300)
+@job
+fn a_mistake_in_a_score_fails_the_build_where_it_is() {
+    for case in SCORES {
+        let (name, voices, want) = case
+        let manifest = "[package]\nname = \"scores\"\n\n[dependencies]\nengine = { workspace = true }\n"
+        let main = f"use engine::score::{{Score, meter, score}}\n\nconst S: Score = score(\"s\", meter(beats: 3, unit: 4)){voices}\n\npub fn frame(time: f32, width: u32, height: u32) {{}}\n"
+        var texts: Vec<(String, String)> = Vec::new()
+        texts.push((String::from("wrela.toml"), String::from(manifest)))
+        texts.push((String::from("main.wrela"), take main))
+        for k in 0..texts.len() {
+            let (leaf, text) = texts[k].clone()
+            var w = files::write(f"scratch/{name}/{leaf.as_str()}", text.as_bytes())
+            var written = w.poll()
+            while written.is_none() {
+                yield
+                written = w.poll()
+            }
+            let Some(wp) = take written else { panic("no answer") }
+            assert(std::tool::answer(take wp).is_ok(), f"{name}: {leaf.as_str()} is written")
+        }
+        var options = toolchain::options()
+        options.overrides.push(
+            Override { name: String::from("engine"), dir: String::from("repo/engine") },
+        )
+        var b = toolchain::build(f"scratch/{name}", f"scratch/out/{name}", options)
+        var built = b.poll()
+        while built.is_none() {
+            yield
+            built = b.poll()
+        }
+        let Some(bp) = take built else { panic("no answer") }
+        let Ok(build) = toolchain::read_built(take bp) else { panic("the build's request") }
+        assert(!build.ok, f"{name}: the build fails")
+        var found = false
+        for d in build.diagnostics {
+            if d.code.as_str() == "E0704" {
+                assert(d.message.as_str().find(want).is_some(), f"{name}: {d.message.as_str()}")
+                found = true
+            }
+        }
+        assert(found, f"{name}: no E0704")
+    }
+}
+
+/// A skeleton holds `MAX_BONES` (64) bones, enough for round 1's grazer brief with a withers, a
+/// jaw and shoulder blades (two round 4 authors dropped joints to fit 32); one more fails the
+/// test that grows it, with the limit named.
+@test(tool, read: [("repo", "../../..")], budget: 120)
+@job
+fn a_skeleton_holds_64_bones_and_says_so_past_them() {
+    var t = toolchain::test("repo/engine/tests/errors/bones", "")
+    var tested = t.poll()
+    while tested.is_none() {
+        yield
+        tested = t.poll()
+    }
+    let Some(tp) = take tested else { panic("no answer") }
+    let Ok(run) = toolchain::read_tested(take tp) else { panic("the test's request") }
+    for d in run.diagnostics {
+        assert(!d.error, d.rendered.as_str())
+    }
+    assert(run.results.len() == 2, "both tests ran")
+    assert(run.results[0].name.as_str() == "holds_its_limit" && run.results[0].passed, "64 bones")
+    let past = run.results[1].clone()
+    assert(past.name.as_str() == "one_past_it_fails" && !past.passed, "65 bones fail")
+    assert(
+        past.message.as_str().find("a skeleton has at most 64 bones").is_some(),
+        past.message.as_str(),
+    )
+}

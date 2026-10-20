@@ -1,0 +1,26 @@
+// A fixture of engine/tests/errors: its first test passes, and its second fails, with the limit
+// named. Its tool test runs both through the toolchain.
+
+use engine::creature::{MAX_BONES, Skeleton}
+
+/// A chain of `n` bones.
+fn grown(n: u32) -> Skeleton {
+    var s = Skeleton::new()
+    var last = s.root("root", vec3(0.0, 1.0, 0.0))
+    for _ in 1..n {
+        last = s.bone("joint", last, vec3(0.0, 0.0, 0.01))
+    }
+    s
+}
+
+@test
+fn holds_its_limit() {
+    assert(MAX_BONES == 64 && grown(64).len() == 64)
+}
+
+@test
+fn one_past_it_fails() {
+    let _s = grown(65)
+}
+
+pub fn frame(time: f32, width: u32, height: u32) {}

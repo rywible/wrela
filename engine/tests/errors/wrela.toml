@@ -1,0 +1,5 @@
+# The engine's errors where a person meets them: a mistake in a score fails the build at the
+# score (E0704), and a skeleton past `MAX_BONES` fails the test that grows it, with the limit
+# named. The package's tool tests build and test small packages through `std::tool::toolchain`.
+[package]
+name = "engine_errors"
