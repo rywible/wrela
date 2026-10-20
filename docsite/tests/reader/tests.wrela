@@ -1,0 +1,284 @@
+// The tool tests: the site's test build in `scratch/<name>/page`, the guide's export beside it
+// (none of the export's files replacing the site's), served, and opened in Chrome at the site's
+// test fragment, where a browser script runs; the page's result must be `ok`.
+
+use docsite::scripts::READER
+use std::collections::{Box, Vec}
+use std::job::Step
+use std::string::String
+use std::tool::answer
+use std::tool::blob
+use std::tool::browser
+use std::input::Key
+use std::tool::browser::{Element, Match, Script, Until}
+use std::tool::files
+use std::tool::files::Kind
+use std::tool::serve
+use std::tool::toolchain
+
+/// The site's test run: 900 frames, 1400 × 900.
+const FRAGMENT: Text = "#test&frames=900&width=1400&height=900"
+
+/// Where the exported docs' sources are.
+const REPOSITORY: Text = "https://github.com/rywible/wrela"
+
+/// The text of `path`, or empty if it isn't there.
+@job
+fn text_of(path: take String) -> String {
+    var r = files::read(path.as_str())
+    var got = r.poll()
+    while got.is_none() {
+        yield
+        got = r.poll()
+    }
+    let Some(rp) = take got else { panic("no answer") }
+    let Ok(bytes) = answer(take rp) else { return String::new() }
+    let Some(text) = String::from_utf8(take bytes) else { return String::new() }
+    text
+}
+
+/// Copies every file under `from` to the same path under `to`, none already there.
+@job
+fn copy_into(from: take String, to: take String) {
+    var todo: Vec<(String, String)> = Vec::new()
+    todo.push((take from, take to))
+    while todo.len() > 0 {
+        let Some(pair) = todo.pop() else { break }
+        let src = pair.0.clone()
+        let dest = pair.1.clone()
+        var l = files::list(src.as_str())
+        var listed = l.poll()
+        while listed.is_none() {
+            yield
+            listed = l.poll()
+        }
+        let Some(lp) = take listed else { panic("no answer") }
+        let Ok(entries) = files::read_list(take lp) else { panic(f"{src.as_str()} lists") }
+        for k in 0..entries.len() {
+            let e = entries[k].clone()
+            let s = String::from(f"{src.as_str()}/{e.name.as_str()}")
+            let d = String::from(f"{dest.as_str()}/{e.name.as_str()}")
+            if e.kind == Kind::Dir {
+                var m = files::make_dirs(d.as_str())
+                while m.poll().is_none() {
+                    yield
+                }
+                todo.push((take s, take d))
+                continue
+            }
+            var st = files::stat(d.as_str())
+            var stat = st.poll()
+            while stat.is_none() {
+                yield
+                stat = st.poll()
+            }
+            let Some(sp) = take stat else { panic("no answer") }
+            assert(answer(take sp).is_err(), f"the export's {d.as_str()} would replace the site's")
+            var r = files::read_blob(s.as_str())
+            var read = r.poll()
+            while read.is_none() {
+                yield
+                read = r.poll()
+            }
+            let Some(rp) = take read else { panic("no answer") }
+            let Ok(held) = blob::read_handle(take rp) else { panic(f"{s.as_str()} reads") }
+            var w = files::write_blob(d.as_str(), held)
+            var written = w.poll()
+            while written.is_none() {
+                yield
+                written = w.poll()
+            }
+            let Some(wp) = take written else { panic("no answer") }
+            assert(answer(take wp).is_ok(), f"{d.as_str()} is written")
+        }
+    }
+}
+
+/// `scratch/<name>/page`: the site's test build, the guide's export beside it.
+@job
+fn docs_page(name: take String) -> String {
+    let page = String::from(f"scratch/{name.as_str()}/page")
+    let export = String::from(f"scratch/{name.as_str()}/export")
+    var options = toolchain::options()
+    options.testing = true
+    var b = toolchain::build("repo/docsite", page.as_str(), options)
+    var built = b.poll()
+    while built.is_none() {
+        yield
+        built = b.poll()
+    }
+    let Some(bp) = take built else { panic("no answer") }
+    let Ok(build) = toolchain::read_built(take bp) else { panic("the build's request") }
+    for d in build.diagnostics {
+        assert(!d.error, d.rendered.as_str())
+    }
+    assert(build.ok, "the site builds")
+    var packages: Vec<String> = Vec::new()
+    packages.push(String::from("repo/docsite/tests/reader/guide"))
+    var x = toolchain::doc_export(packages, export.as_str(), REPOSITORY, "")
+    var exported = x.poll()
+    while exported.is_none() {
+        yield
+        exported = x.poll()
+    }
+    let Some(xp) = take exported else { panic("no answer") }
+    let Ok(pages) = toolchain::read_exported(take xp) else { panic("the guide exports") }
+    assert(pages > 0, "the export wrote pages")
+    var c = Box::new(copy_into.start(take export, page.clone()))
+    loop {
+        match c.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    page
+}
+
+/// The page at `page` served and opened in Chrome, `script` run there and then its end waited
+/// for, which must be `ok`: why it failed, if it did.
+@job
+fn run(page: take String, script: take Script) -> Result<(), String> {
+    var s = serve::start(page.as_str())
+    var started = s.poll()
+    while started.is_none() {
+        yield
+        started = s.poll()
+    }
+    let Some(sp) = take started else { panic("no answer") }
+    let Ok(srv) = serve::read_started(take sp) else { panic("the site's server starts") }
+    var o = browser::open(f"{srv.origin.as_str()}/{FRAGMENT}".as_str(), width: 1400, height: 900)
+    var opened = o.poll()
+    while opened.is_none() {
+        yield
+        opened = o.poll()
+    }
+    let Some(op) = take opened else { panic("no answer") }
+    let Ok(b) = browser::read_opened(take op) else { panic("Chrome opens the site") }
+    var r = browser::run(b, take script.wait(Until::done(), timeout: 300.0), 330.0)
+    var ran = r.poll()
+    while ran.is_none() {
+        yield
+        ran = r.poll()
+    }
+    let Some(rp) = take ran else { panic("no answer") }
+    var outcome: Result<(), String> = Ok(())
+    match answer(take rp) {
+        Ok(_) => {
+            var d = browser::results(b)
+            var done = d.poll()
+            while done.is_none() {
+                yield
+                done = d.poll()
+            }
+            let Some(dp) = take done else { panic("no answer") }
+            let Ok(result) = browser::read_attribute(take dp) else { panic("the site's result") }
+            match result {
+                Some(said) => {
+                    if said.as_str() != "ok" {
+                        outcome = Err(said.clone())
+                    }
+                },
+                None => outcome = Err(String::from("the site wrote no result")),
+            }
+        },
+        Err(e) => outcome = Err(String::from(e.message())),
+    }
+    var shut = browser::close(b)
+    while shut.poll().is_none() {
+        yield
+    }
+    var stop = serve::close(srv.server)
+    while stop.poll().is_none() {
+        yield
+    }
+    outcome
+}
+
+/// In Chrome, the exported docs are real links: search finds an item, whose result opens its
+/// page, which names the tab, has its items as an outline's links and its next page as a link,
+/// which opens that page; a copy button and the page's copy reach the clipboard; an item links
+/// to itself. No tree is refused.
+@test(tool, read: [("repo", "../../..")], browser: true, budget: 600)
+@job
+fn the_exported_docs_in_chrome_are_links_an_outline_and_titles() {
+    var p = Box::new(docs_page.start(String::from("docs-chrome")))
+    var page = String::new()
+    loop {
+        match p.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(x) => {
+                page = take x
+                break
+            },
+        }
+    }
+    var r = Box::new(run.start(page.clone(), READER.clone()))
+    loop {
+        match r.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(outcome) => {
+                if let Err(why) = outcome {
+                    panic(f"the browser run failed: {why.as_str()}")
+                }
+                break
+            },
+        }
+    }
+    var l = Box::new(text_of.start(String::from(f"{page.as_str()}/results/log.txt")))
+    loop {
+        match l.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(log) => {
+                assert(log.as_str().find("isn't sent").is_none(), log.as_str())
+                break
+            },
+        }
+    }
+}
+
+/// The reader script's expectations are checked: with the outline it waits for changed (its
+/// second item `wander`, not `walk`), the run fails, saying what the page had.
+@test(tool, read: [("repo", "../../..")], browser: true, budget: 600)
+@job
+fn the_docs_scripts_outline_is_an_expectation_that_fails_when_wrong() {
+    var p = Box::new(docs_page.start(String::from("docs-chrome-wrong")))
+    var page = String::new()
+    loop {
+        match p.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(x) => {
+                page = take x
+                break
+            },
+        }
+    }
+    let result = "docs_guide::paths::walk: Walks n steps, and [STEPS] more."
+    // The reader's steps up to its outline, which it waits for wrong, for 3 s.
+    let wrong = Script::new()
+        .wait(Until::title(Match::is("Wrela docs")), timeout: 30.0)
+        .press(Key::Slash)
+        .wait(Until::active("input"))
+        .insert_text("walk")
+        .wait(Until::count(Element::css("[role=option]").with_text(result), 1))
+        .click(Element::css("[role=option]").with_text(result))
+        .wait(
+            Until::title(Match::is("docs_guide::paths | Wrela docs"))
+                .and(Until::hash(Match::starts("#docs_guide/paths"))),
+        )
+        .wait(Until::texts("[aria-label=\"On this page\"] a", ["STEPS", "wander"]), timeout: 3.0)
+    var r = Box::new(run.start(take page, take wrong))
+    loop {
+        match r.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(outcome) => {
+                let Err(failed) = outcome else { panic("a wrong outline passed") }
+                assert(
+                    failed.as_str().find("wander").is_some() &&
+                        failed.as_str().find("\"walk\"").is_some(),
+                    failed.as_str(),
+                )
+                break
+            },
+        }
+    }
+}
