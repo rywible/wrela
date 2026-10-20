@@ -631,6 +631,124 @@ fn instances_close_after_a_failed_question() {
     }
 }
 
+/// The spokes' names: seventeen parts besides the ball.
+const SPOKES: [Text; 17] = [
+    "spoke a",
+    "spoke b",
+    "spoke c",
+    "spoke d",
+    "spoke e",
+    "spoke f",
+    "spoke g",
+    "spoke h",
+    "spoke i",
+    "spoke j",
+    "spoke k",
+    "spoke l",
+    "spoke m",
+    "spoke n",
+    "spoke o",
+    "spoke p",
+    "spoke q",
+]
+
+/// A replica with as many parts as the wolf's sweeps (the ball and seventeen spokes out of its
+/// centre, in its middle plane) is written, built and run: its type is a list of pairs nested
+/// 17 deep. Its distance is inside at the centre, and a point on spoke `a`'s axis, past the
+/// ball's inner parts, is nearest one of its parts.
+@test(tool, read: [("ws", "../..")], budget: 120)
+@job
+fn a_replica_of_many_parts_builds_and_runs() {
+    var parts = LOFTS.clone()
+    parts.parts.truncate(1)
+    for k in 0..17 {
+        let a = 2.0 * math::PI * f64(k) / 17.0
+        parts.parts.push(
+            Part {
+                name: SPOKES[k],
+                from: Point::At(CENTRE),
+                to: Point::Xyz(vec3d(0.09 * math::cos(a), 0.2, 0.09 * math::sin(a))),
+                parent: "ball",
+                angles: Some(8),
+                r_max: Some(0.03),
+            },
+        )
+    }
+    let (file, sampled, _, _) = replica_of(parts, args(None, None))
+    assert(sampled.len() == 18, f"{sampled.len()} parts")
+    let dir = String::from("scratch/many")
+    var w = Box::new(
+        write_package.start(
+            dir.clone(),
+            dir.clone(),
+            manifest(file, "many"),
+            replica_source(file, sampled),
+        ),
+    )
+    var written = false
+    while !written {
+        match w.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                if let Err(why) = r {
+                    panic(f"the package is written: {why}")
+                }
+                written = true
+            },
+        }
+    }
+    var l = Box::new(
+        main::load_package.start(
+            dir.clone(),
+            take dir,
+            String::from("scratch/build/many"),
+            Vec::from([Override { name: String::from("engine"), dir: String::from("ws/engine") }]),
+            1,
+        ),
+    )
+    var loaded: Option<Vec<drive::Build>> = None
+    while loaded.is_none() {
+        match l.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                match r {
+                    Ok(b) => loaded = Some(b.clone()),
+                    Err(why) => panic(f"the replica builds and loads: {why}"),
+                }
+            },
+        }
+    }
+    let Some(builds) = take loaded else { panic("builds") }
+    let asks = [
+        ("distance", [Scalar::F32(0.0013), Scalar::F32(0.2), Scalar::F32(0.0008)]),
+        ("part", [Scalar::F32(0.07), Scalar::F32(0.2), Scalar::F32(0.0)]),
+    ]
+    for (export, at) in asks {
+        var p = drive::call(builds[0], export, at)
+        var got = p.poll()
+        while got.is_none() {
+            yield
+            got = p.poll()
+        }
+        let Some(polled) = take got else { panic("an answer") }
+        let Ok(ran) = drive::read_ran(take polled) else { panic(f"`{export}` runs") }
+        assert(ran.trap.is_none() && ran.results.len() == 1, f"`{export}` gives one value")
+        match ran.results[0] {
+            Scalar::F32(d) => assert(export == "distance" && d < -0.05, f"distance {d}"),
+            Scalar::I32(i) => assert(export == "part" && i >= 0 && i < 18, f"part {i}"),
+            _ => panic(f"`{export}` gave another type"),
+        }
+    }
+    var c = Box::new(main::close_all.start(builds.clone()))
+    var closed = false
+    while !closed {
+        match c.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => closed = true,
+        }
+    }
+}
+
 /// Control sections every 10⁻¹² m are more than the stations: the table is fitted at every
 /// station, as with no spacing given.
 @test
