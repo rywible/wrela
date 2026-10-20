@@ -1,0 +1,6 @@
+# A workspace whose console depends on a member by name, which depends on a package by its path.
+[workspace]
+members = [
+    "console",
+    "ui/*",
+]

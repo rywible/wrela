@@ -1,0 +1,1103 @@
+// The docs as plain HTML pages, for a browser that can't run the docs' program (no WebGPU, as on
+// many phones) and for whoever reads a page without scripts: each Markdown page of the export
+// (`wrela doc --export`) as `<path>.html` beside it, styled as the docs are, with the same
+// anchors, and linked to the pages before and after it. `pages.js` sends such a browser from an
+// address of the docs (`/#std/arena:arena-insert`) to its page (`/std/arena.html#arena-insert`).
+//
+// The Markdown is the export's: headings, paragraphs, lists, fenced code, tables, quotes and
+// rules, with code, bold, italics and links inline (docsite/markdown.wrela reads the same).
+
+/// The docs' fonts, served beside the pages: Manrope for text, JetBrains Mono for code. Each is
+/// a path from the workspace's directory.
+pub const FONTS: [Text; 2] = [
+    "ui/brand/fonts/Manrope-Medium.ttf",
+    "ui/fonts/JetBrainsMono-Regular-Latin1.ttf",
+]
+
+/// The pages' style, `pages.css`, a line at a time: the docs' colours (docsite/theme.wrela),
+/// in the reader's scheme, dark unless it asks for light.
+pub const CSS: [Text; 64] = [
+    "@font-face { font-family: Manrope; src: url(Manrope-Medium.ttf); font-display: swap; }",
+    "@font-face { font-family: \"JetBrains Mono\"; src: url(JetBrainsMono-Regular-Latin1.ttf); font-display: swap; }",
+    ":root {",
+    "  --page: #15171B; --surface: #1C1F24; --rule: #262A31; --text: #C9CED5; --strong: #F1F3F5;",
+    "  --quiet: #8B929C; --field: #A9BCD0; color-scheme: dark;",
+    "}",
+    "@media (prefers-color-scheme: light) {",
+    "  :root {",
+    "    --page: #F8F9FB; --surface: #EEF0F3; --rule: #DCE0E5; --text: #2E333B; --strong: #0D1015;",
+    "    --quiet: #5B636E; --field: #2D5B88; color-scheme: light;",
+    "  }",
+    "}",
+    "* { box-sizing: border-box; }",
+    "html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }",
+    "body {",
+    "  margin: 0; background: var(--page); color: var(--text);",
+    "  font: 16px/1.65 Manrope, system-ui, -apple-system, sans-serif; letter-spacing: -0.005em;",
+    "}",
+    "header {",
+    "  position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 12px;",
+    "  padding: 14px max(16px, env(safe-area-inset-left)); background: #000; color: #F4F5F7;",
+    "}",
+    "header a { color: inherit; text-decoration: none; }",
+    "header .mark { font-weight: 700; letter-spacing: 0.12em; font-size: 17px; }",
+    "header .docs { color: #8B929C; font-size: 15px; }",
+    "header .live { margin-left: auto; font-size: 14px; color: #A9BCD0; }",
+    "main, footer { max-width: 42rem; margin: 0 auto; padding: 0 20px; }",
+    "main { padding-top: 28px; }",
+    ".group { color: var(--quiet); font-size: 14px; margin: 0 0 6px; }",
+    "h1, h2, h3, h4 { color: var(--strong); line-height: 1.25; font-weight: 700; scroll-margin-top: 72px; }",
+    "h1 { font-size: 30px; margin: 0 0 14px; letter-spacing: -0.01em; }",
+    "h1 + p { font-size: 18px; line-height: 1.6; }",
+    "h2 { font-size: 22px; margin: 40px 0 10px; }",
+    "h3 { font-size: 18px; margin: 28px 0 8px; }",
+    "h4 { font-size: 16px; margin: 22px 0 6px; }",
+    "h1 a.anchor, h2 a.anchor, h3 a.anchor, h4 a.anchor { color: inherit; text-decoration: none; }",
+    "p, ul, ol, blockquote, table { margin: 0 0 14px; }",
+    "ul, ol { padding-left: 22px; }",
+    "li { margin: 4px 0; }",
+    "a { color: var(--strong); text-decoration-color: var(--field); text-underline-offset: 3px; }",
+    "strong { color: var(--strong); }",
+    "code {",
+    "  font: 0.88em \"JetBrains Mono\", ui-monospace, Menlo, monospace; background: var(--surface);",
+    "  padding: 1px 4px; border-radius: 3px; overflow-wrap: anywhere;",
+    "}",
+    "pre {",
+    "  background: var(--surface); border-radius: 6px; padding: 14px; overflow-x: auto;",
+    "  font-size: 13.5px; line-height: 1.55; margin: 0 0 16px; -webkit-overflow-scrolling: touch;",
+    "}",
+    "pre code { background: none; padding: 0; font-size: 1em; overflow-wrap: normal; }",
+    "p.meta { font-size: 13px; color: var(--quiet); margin-top: -4px; }",
+    "p.meta code { background: none; padding: 0; color: var(--field); }",
+    "blockquote { margin-left: 0; padding-left: 14px; border-left: 3px solid var(--field); color: var(--quiet); }",
+    "hr { border: 0; border-top: 1px solid var(--rule); margin: 28px 0; }",
+    ".table { overflow-x: auto; margin: 0 0 16px; }",
+    "table { border-collapse: collapse; font-size: 14px; min-width: 100%; }",
+    "th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }",
+    "th { color: var(--strong); }",
+    "footer { padding-top: 12px; padding-bottom: 48px; }",
+    "footer nav { display: flex; justify-content: space-between; gap: 16px; border-top: 1px solid var(--rule); padding-top: 18px; }",
+    "footer nav a { text-decoration: none; display: block; max-width: 48%; }",
+    "footer nav a span { display: block; color: var(--quiet); font-size: 13px; }",
+    "footer nav a.next { text-align: right; margin-left: auto; }",
+    "footer .md { display: inline-block; margin-top: 20px; font-size: 14px; color: var(--field); }",
+]
+
+/// The pages' script, `pages.js`, a line at a time: when the docs' program can't run (the browser host shows the page's own
+/// text, `text-shown`), it sends the browser from an address of the docs to its page as HTML.
+pub const SCRIPT: [Text; 8] = [
+    "// When the docs' program can't run here, the page an address names opens as plain HTML.",
+    "new MutationObserver(function () {",
+    "  if (!document.documentElement.classList.contains(\"text-shown\")) return;",
+    "  var h = location.hash.slice(1), k = h.indexOf(\":\");",
+    "  var page = k < 0 ? h : h.slice(0, k), place = k < 0 ? \"\" : h.slice(k + 1);",
+    "  if (!/^[A-Za-z0-9_./-]+$/.test(page) || page.indexOf(\"..\") >= 0) return;",
+    "  location.replace(\"/\" + page + \".html\" + (place && /^[A-Za-z0-9_.-]+$/.test(place) ? \"#\" + place : \"\"));",
+    "}).observe(document.documentElement, { attributes: true, attributeFilter: [\"class\"] });",
+]
+
+// ---- Text --------------------------------------------------------------------------------------
+
+/// `lines`, each ended by a newline: `CSS` or `SCRIPT` as a file.
+pub fn file_of(lines: [Text]) -> String {
+    var out = String::new()
+    for l in lines {
+        out.push_str(l)
+        out.push_str("\n")
+    }
+    out
+}
+
+/// Pushes the character that starts at byte `i` of `s` onto `out`: how many bytes it has.
+pub fn push_at(out: mut String, s: str, i: u32) -> u32 {
+    let b = s.byte(i)
+    if b < 128 {
+        out.push_byte(b)
+        return 1
+    }
+    var k = i + 1
+    while k < s.len() && s.byte(k) >= 128 && s.byte(k) < 192 {
+        k += 1
+    }
+    out.push_str(s.slice(i, k))
+    k - i
+}
+
+/// `s` without the ASCII byte `b`.
+pub fn without(s: str, b: u8) -> String {
+    var out = String::new()
+    var from = 0
+    for i in 0..s.len() {
+        if s.byte(i) == b {
+            out.push_str(s.slice(from, i))
+            from = i + 1
+        }
+    }
+    out.push_str(s.slice(from, s.len()))
+    out
+}
+
+/// `s` with `&`, `<` and `>` as HTML's entities, and with `quote`, `"` and `'` too.
+pub fn escape(s: str, quote: bool) -> String {
+    var out = String::new()
+    escape_into(mut out, s, quote)
+    out
+}
+
+fn escape_into(out: mut String, s: str, quote: bool) {
+    var from = 0
+    for i in 0..s.len() {
+        let b = s.byte(i)
+        let entity = if b == 38 {
+            "&amp;"
+        } else if b == 60 {
+            "&lt;"
+        } else if b == 62 {
+            "&gt;"
+        } else if quote && b == 34 {
+            "&quot;"
+        } else if quote && b == 39 {
+            "&#x27;"
+        } else {
+            ""
+        }
+        if !entity.is_empty() {
+            out.push_str(s.slice(from, i))
+            out.push_str(entity)
+            from = i + 1
+        }
+    }
+    out.push_str(s.slice(from, s.len()))
+}
+
+/// `s` with `escape`'s entities, without `quote`, read back as the characters they stand for.
+fn unescape(s: str) -> String {
+    var out = String::new()
+    var i = 0
+    while i < s.len() {
+        let rest = s.slice(i, s.len())
+        if rest.starts_with("&amp;") {
+            out.push_byte(38)
+            i += 5
+        } else if rest.starts_with("&lt;") {
+            out.push_byte(60)
+            i += 4
+        } else if rest.starts_with("&gt;") {
+            out.push_byte(62)
+            i += 4
+        } else {
+            i += push_at(mut out, s, i)
+        }
+    }
+    out
+}
+
+/// The code point that starts at byte `i` of `s`.
+fn cp_at(s: str, i: u32) -> u32 {
+    match s.char_at(i) {
+        Some((cp, _)) => cp,
+        None => 0,
+    }
+}
+
+/// The code point that ends just before byte `i` of `s` (`i` above 0).
+fn cp_before(s: str, i: u32) -> u32 {
+    var k = i - 1
+    while k > 0 && s.byte(k) >= 128 && s.byte(k) < 192 {
+        k -= 1
+    }
+    cp_at(s, k)
+}
+
+/// Whether `cp` is whitespace, as Python's `str.isspace` has it.
+fn is_space(cp: u32) -> bool {
+    (cp >= 9 && cp <= 13) ||
+        (cp >= 28 && cp <= 32) ||
+        cp == 133 ||
+        cp == 160 ||
+        cp == 5760 ||
+        (cp >= 8192 && cp <= 8202) ||
+        cp == 8232 ||
+        cp == 8233 ||
+        cp == 8239 ||
+        cp == 8287 ||
+        cp == 12288
+}
+
+/// `s` without whitespace at either end.
+pub fn strip(s: str) -> borrow str {
+    var from = 0
+    var to = s.len()
+    while from < to {
+        let Some((cp, len)) = s.char_at(from) else { break }
+        if !is_space(cp) {
+            break
+        }
+        from += len
+    }
+    while to > from {
+        var k = to - 1
+        while k > from && s.byte(k) >= 128 && s.byte(k) < 192 {
+            k -= 1
+        }
+        if !is_space(cp_at(s, k)) {
+            break
+        }
+        to = k
+    }
+    s.slice(from, to)
+}
+
+fn is_ascii_alnum(cp: u32) -> bool {
+    (cp >= 48 && cp <= 57) || (cp >= 65 && cp <= 90) || (cp >= 97 && cp <= 122)
+}
+
+/// Whether `cp` is a letter or a digit, as Python's `str.isalnum` has it, for the scripts the
+/// docs are written in: ASCII, Latin, Greek and Cyrillic, and the super- and subscript digits.
+fn is_alnum(cp: u32) -> bool {
+    if cp < 128 {
+        return is_ascii_alnum(cp)
+    }
+    cp == 170 ||
+        cp == 178 ||
+        cp == 179 ||
+        cp == 181 ||
+        cp == 185 ||
+        cp == 186 ||
+        (cp >= 188 && cp <= 190) ||
+        (cp >= 192 && cp <= 591 && cp != 215 && cp != 247) ||
+        cp == 902 ||
+        (cp >= 904 && cp <= 1023 && cp != 1014) ||
+        (cp >= 1024 && cp <= 1153) ||
+        (cp >= 1162 && cp <= 1327) ||
+        cp == 8304 ||
+        (cp >= 8308 && cp <= 8313) ||
+        cp == 8319 ||
+        (cp >= 8320 && cp <= 8329)
+}
+
+/// Whether `cp` is a word character, as a regular expression's `\w` reads it.
+fn is_word(cp: u32) -> bool {
+    cp == 95 || is_alnum(cp)
+}
+
+/// `cp` in lowercase, for the scripts `is_alnum` knows.
+fn lower(cp: u32) -> u32 {
+    if (cp >= 65 && cp <= 90) || (cp >= 192 && cp <= 222 && cp != 215) {
+        return cp + 32
+    }
+    if (cp >= 913 && cp <= 939 && cp != 930) || (cp >= 1040 && cp <= 1071) {
+        return cp + 32
+    }
+    if cp >= 1024 && cp <= 1039 {
+        return cp + 80
+    }
+    if cp >= 256 && cp <= 383 && cp % 2 == 0 && cp != 312 {
+        return cp + 1
+    }
+    cp
+}
+
+// ---- Anchors -----------------------------------------------------------------------------------
+
+/// A heading's anchor, as the export makes it: its letters and digits in lowercase, a run of
+/// spaces, `-`, `_`, `:` and `.` as one `-`, and no `-` at either end.
+pub fn slug(heading: str) -> String {
+    var out = String::new()
+    var i = 0
+    while i < heading.len() {
+        let Some((cp, len)) = heading.char_at(i) else { break }
+        let c = lower(cp)
+        if is_alnum(c) {
+            out.push_char(c)
+        } else if (c == 32 || c == 45 || c == 95 || c == 58 || c == 46) &&
+            !out.as_str().ends_with("-") {
+            out.push_byte(45)
+        }
+        i += len
+    }
+    var from = 0
+    var to = out.len()
+    while from < to && out.as_str().byte(from) == 45 {
+        from += 1
+    }
+    while to > from && out.as_str().byte(to - 1) == 45 {
+        to -= 1
+    }
+    String::from(out.as_str().slice(from, to))
+}
+
+/// Each heading's anchor on a page: a repeat gets `-2`, `-3` and so on.
+pub struct Anchors: Clone {
+    seen: Vec<(String, u32)>,
+}
+
+impl Anchors {
+    pub fn new() -> Anchors {
+        Anchors { seen: Vec::new() }
+    }
+
+    /// The anchor of the next heading of words `heading`.
+    pub fn of(mut self, heading: str) -> String {
+        let base = slug(heading)
+        for k in 0..self.seen.len() {
+            if self.seen[k].0.as_str() == base.as_str() {
+                self.seen[k].1 += 1
+                let n = self.seen[k].1
+                return String::from(f"{base.as_str()}-{n}")
+            }
+        }
+        self.seen.push((base.clone(), 1))
+        base
+    }
+}
+
+/// A line of Markdown's words, without its marks: its links' labels, without backticks or `**`.
+pub fn plain(markdown: str) -> String {
+    // `[label](anything)` is its label.
+    var t = String::new()
+    var i = 0
+    let n = markdown.len()
+    while i < n {
+        if markdown.byte(i) == 91 {
+            var k = i + 1
+            while k < n && markdown.byte(k) != 93 {
+                k += 1
+            }
+            if k + 1 < n && markdown.byte(k + 1) == 40 {
+                var j = k + 2
+                while j < n && markdown.byte(j) != 41 {
+                    j += 1
+                }
+                if j < n {
+                    t.push_str(markdown.slice(i + 1, k))
+                    i = j + 1
+                    continue
+                }
+            }
+        }
+        i += push_at(mut t, markdown, i)
+    }
+    // Then without its backticks, then without its `**`s.
+    let u = without(t.as_str(), 96)
+    var out = String::new()
+    let s = u.as_str()
+    var k = 0
+    while k < s.len() {
+        if s.byte(k) == 42 && k + 1 < s.len() && s.byte(k + 1) == 42 {
+            k += 2
+        } else {
+            k += push_at(mut out, s, k)
+        }
+    }
+    out
+}
+
+// ---- Inline ------------------------------------------------------------------------------------
+
+/// A link of a page, for its HTML page: another page's Markdown is its HTML page.
+pub fn href(link: str) -> String {
+    var scheme = 0
+    while scheme < link.len() && link.byte(scheme) >= 97 && link.byte(scheme) <= 122 {
+        scheme += 1
+    }
+    if (scheme > 0 && scheme < link.len() && link.byte(scheme) == 58) || link.starts_with("#") {
+        return String::from(link)
+    }
+    let cut = match link.find("#") {
+        Some(k) => k,
+        None => link.len(),
+    }
+    let path = link.slice(0, cut)
+    var out = String::new()
+    if path.ends_with(".md") {
+        out.push_str(path.slice(0, path.len() - 3))
+        out.push_str(".html")
+    } else {
+        out.push_str(path)
+    }
+    if cut + 1 < link.len() {
+        out.push_str(link.slice(cut, link.len()))
+    }
+    out
+}
+
+fn is_space_byte(b: u8) -> bool {
+    (b >= 9 && b <= 13) || (b >= 28 && b <= 32)
+}
+
+/// Replaces each `<mark>n<mark>` (`n` in decimal) in `t` with `kept[n]`.
+fn put_back(t: str, mark: u8, kept: [String]) -> String {
+    var out = String::new()
+    var i = 0
+    while i < t.len() {
+        if t.byte(i) == mark {
+            var k = i + 1
+            while k < t.len() && t.byte(k) >= 48 && t.byte(k) <= 57 {
+                k += 1
+            }
+            if k > i + 1 && k < t.len() && t.byte(k) == mark {
+                if let Some(n) = t.slice(i + 1, k).parse_u32() {
+                    if n < kept.len() {
+                        out.push_str(kept[n].as_str())
+                        i = k + 1
+                        continue
+                    }
+                }
+            }
+        }
+        i += push_at(mut out, t, i)
+    }
+    out
+}
+
+/// A line of Markdown as HTML: its code, links, bold and italics; everything else escaped.
+pub fn inline(markdown: str) -> String {
+    // Code first, kept aside as `\0n\0`, so nothing inside it is read as a mark.
+    var codes: Vec<String> = Vec::new()
+    var a = String::new()
+    var i = 0
+    let n = markdown.len()
+    while i < n {
+        if markdown.byte(i) == 96 {
+            var j = i + 1
+            while j < n && markdown.byte(j) != 96 {
+                j += 1
+            }
+            if j < n && j > i + 1 {
+                var code = String::from("<code>")
+                escape_into(mut code, markdown.slice(i + 1, j), quote: false)
+                code.push_str("</code>")
+                a.push_byte(0)
+                a.push_str(f"{codes.len()}")
+                a.push_byte(0)
+                codes.push(take code)
+                i = j + 1
+                continue
+            }
+        }
+        // A character, whole: a run of bytes up to the next backtick.
+        var k = i + 1
+        while k < n && markdown.byte(k) != 96 {
+            k += 1
+        }
+        if markdown.byte(i) == 96 {
+            k = i + 1
+        }
+        a.push_str(markdown.slice(i, k))
+        i = k
+    }
+    let b = escape(a.as_str(), quote: false)
+    // Links: a label is styled, but its destination's marks stay URL characters, kept aside as
+    // `\1n\1`.
+    var urls: Vec<String> = Vec::new()
+    var c = String::new()
+    let s = b.as_str()
+    let m = s.len()
+    var from = 0
+    var p = 0
+    while p < m {
+        if s.byte(p) != 91 {
+            p += 1
+            continue
+        }
+        var k = p + 1
+        while k < m && s.byte(k) != 93 {
+            k += 1
+        }
+        if k == p + 1 || k + 1 >= m || s.byte(k + 1) != 40 {
+            p += 1
+            continue
+        }
+        var j = k + 2
+        while j < m && s.byte(j) != 41 && !is_space_byte(s.byte(j)) {
+            j += 1
+        }
+        if j == k + 2 || j >= m || s.byte(j) != 41 {
+            p += 1
+            continue
+        }
+        let target = href(unescape(s.slice(k + 2, j)).as_str())
+        c.push_str(s.slice(from, p))
+        c.push_str("<a href=\"")
+        c.push_byte(1)
+        c.push_str(f"{urls.len()}")
+        c.push_byte(1)
+        c.push_str("\">")
+        c.push_str(s.slice(p + 1, k))
+        c.push_str("</a>")
+        urls.push(escape(target.as_str(), quote: true))
+        p = j + 1
+        from = p
+    }
+    c.push_str(s.slice(from, m))
+    let d = strong(c.as_str())
+    let e = emphasis(d.as_str())
+    let f = put_back(e.as_str(), 0, codes)
+    put_back(f.as_str(), 1, urls)
+}
+
+/// `**text**` as `<strong>text</strong>`, the shortest text of at least one character.
+fn strong(s: str) -> String {
+    var out = String::new()
+    let n = s.len()
+    var from = 0
+    var i = 0
+    while i + 1 < n {
+        if s.byte(i) != 42 || s.byte(i + 1) != 42 {
+            i += 1
+            continue
+        }
+        var j = i + 3
+        var found = false
+        while j + 1 < n {
+            if s.byte(j) == 42 && s.byte(j + 1) == 42 {
+                found = true
+                break
+            }
+            j += 1
+        }
+        if !found {
+            i += 1
+            continue
+        }
+        out.push_str(s.slice(from, i))
+        out.push_str("<strong>")
+        out.push_str(s.slice(i + 2, j))
+        out.push_str("</strong>")
+        i = j + 2
+        from = i
+    }
+    out.push_str(s.slice(from, n))
+    out
+}
+
+/// `*text*` as `<em>text</em>`: text that doesn't start with a space or hold a `*`, between
+/// stars that no word character or other star touches from outside.
+fn emphasis(s: str) -> String {
+    var out = String::new()
+    let n = s.len()
+    var from = 0
+    var i = 0
+    while i < n {
+        if s.byte(i) != 42 {
+            i += 1
+            continue
+        }
+        var before_ok = true
+        if i > 0 {
+            let cp = cp_before(s, i)
+            before_ok = cp != 42 && !is_word(cp)
+        }
+        if !before_ok || i + 1 >= n || s.byte(i + 1) == 42 || is_space(cp_at(s, i + 1)) {
+            i += 1
+            continue
+        }
+        var j = i + 2
+        while j < n && s.byte(j) != 42 {
+            j += 1
+        }
+        var after_ok = j < n
+        if after_ok && j + 1 < n {
+            let cp = cp_at(s, j + 1)
+            after_ok = cp != 42 && !is_word(cp)
+        }
+        if !after_ok {
+            i += 1
+            continue
+        }
+        out.push_str(s.slice(from, i))
+        out.push_str("<em>")
+        out.push_str(s.slice(i + 1, j))
+        out.push_str("</em>")
+        i = j + 1
+        from = i
+    }
+    out.push_str(s.slice(from, n))
+    out
+}
+
+// ---- Blocks ------------------------------------------------------------------------------------
+
+/// A list item's line, as `( *)([-*+]|\d{1,4}\.) (.*)`: its indent, its marker and its text.
+pub fn item(line: str) -> Option<(u32, String, String)> {
+    var k = 0
+    while k < line.len() && line.byte(k) == 32 {
+        k += 1
+    }
+    let indent = k
+    if k >= line.len() {
+        return None
+    }
+    let b = line.byte(k)
+    if b == 45 || b == 42 || b == 43 {
+        k += 1
+    } else {
+        var d = k
+        while d < line.len() && line.byte(d) >= 48 && line.byte(d) <= 57 {
+            d += 1
+        }
+        if d == k || d - k > 4 || d >= line.len() || line.byte(d) != 46 {
+            return None
+        }
+        k = d + 1
+    }
+    if k >= line.len() || line.byte(k) != 32 {
+        return None
+    }
+    Some((indent, String::from(line.slice(indent, k)), String::from(line.slice(k + 1, line.len()))))
+}
+
+/// A table row's cells, keeping code spans and escaped bars in their cell.
+pub fn cells(row: str) -> Vec<String> {
+    var parts: Vec<String> = Vec::new()
+    var cell = String::new()
+    var code = false
+    let text = strip(row)
+    var i = if text.starts_with("|") { 1 } else { 0 }
+    while i < text.len() {
+        let c = text.byte(i)
+        if c == 92 && i + 1 < text.len() && text.byte(i + 1) == 124 {
+            cell.push_byte(124)
+            i += 2
+            continue
+        }
+        if c == 96 {
+            code = !code
+        }
+        if c == 124 && !code {
+            parts.push(String::from(strip(cell.as_str())))
+            cell = String::new()
+            i += 1
+        } else {
+            i += push_at(mut cell, text, i)
+        }
+    }
+    if !cell.is_empty() {
+        parts.push(String::from(strip(cell.as_str())))
+    }
+    parts
+}
+
+/// Whether `t` is a table's rule under its head: `|`, then only whitespace, `|`, `:` and `-`.
+fn is_table_rule(t: str) -> bool {
+    if t.len() < 2 || t.byte(0) != 124 {
+        return false
+    }
+    var i = 1
+    while i < t.len() {
+        let Some((cp, len)) = t.char_at(i) else { return false }
+        if !(is_space(cp) || cp == 124 || cp == 58 || cp == 45) {
+            return false
+        }
+        i += len
+    }
+    true
+}
+
+/// The level of a heading line (`t` stripped), as `(#{1,6}) (.*)`, and where its text starts.
+fn heading(t: str) -> Option<(u32, u32)> {
+    var k = 0
+    while k < t.len() && t.byte(k) == 35 {
+        k += 1
+    }
+    if k == 0 || k > 6 || k >= t.len() || t.byte(k) != 32 {
+        return None
+    }
+    Some((k, k + 1))
+}
+
+/// Whether a paragraph is an item's kind and place, under its heading: `` `fn` · ``.
+fn is_meta(text: str) -> bool {
+    if !text.starts_with("`") {
+        return false
+    }
+    var i = 1
+    while i < text.len() {
+        let Some((cp, len)) = text.char_at(i) else { return false }
+        if cp == 96 {
+            return i > 1 && text.slice(i + 1, text.len()).starts_with(" · ")
+        }
+        if !(cp == 32 || is_word(cp)) {
+            return false
+        }
+        i += len
+    }
+    false
+}
+
+/// What the last block was.
+enum Last: Copy + Eq {
+    Nothing,
+    Para,
+    Heading,
+    Other,
+}
+
+fn flush(out: mut Vec<String>, para: mut Vec<String>, last: mut Last) {
+    if para.is_empty() {
+        return
+    }
+    var text = String::new()
+    for k in 0..para.len() {
+        if k > 0 {
+            text.push_str(" ")
+        }
+        text.push_str(para[k].as_str())
+    }
+    let body = inline(text.as_str())
+    if last == Last::Heading && is_meta(text.as_str()) {
+        out.push(String::from(f"<p class=\"meta\">{body.as_str()}</p>"))
+    } else {
+        out.push(String::from(f"<p>{body.as_str()}</p>"))
+    }
+    para.clear()
+    last = Last::Para
+}
+
+/// Ends each open list deeper than `depth`, or every one with `all`.
+fn close_lists(out: mut Vec<String>, lists: mut Vec<(Text, u32)>, depth: u32, all: bool) {
+    while !lists.is_empty() && (all || lists[lists.len() - 1].1 > depth) {
+        let Some((tag, _)) = lists.pop() else { break }
+        out.push(String::from(f"</li></{tag}>"))
+    }
+}
+
+fn joined(parts: [String]) -> String {
+    var s = String::new()
+    for k in 0..parts.len() {
+        if k > 0 {
+            s.push_str(" ")
+        }
+        s.push_str(parts[k].as_str())
+    }
+    s
+}
+
+/// A page's Markdown as HTML, its headings with the export's anchors.
+pub fn render(markdown: str) -> String {
+    let lines = markdown.split("\n")
+    let count = lines.len()
+    var out: Vec<String> = Vec::new()
+    var anchors = Anchors::new()
+    var para: Vec<String> = Vec::new()
+    // Each open list's tag and depth.
+    var lists: Vec<(Text, u32)> = Vec::new()
+    var last = Last::Nothing
+    var i = 0
+    while i < count {
+        let line = markdown.slice(lines[i].0, lines[i].1)
+        let t = strip(line)
+        if t.starts_with("```") {
+            flush(mut out, mut para, mut last)
+            close_lists(mut out, mut lists, 0, all: true)
+            var fence = 0
+            while fence < t.len() && t.byte(fence) == 96 {
+                fence += 1
+            }
+            var code = String::new()
+            var first = true
+            i += 1
+            while i < count {
+                let closing = strip(markdown.slice(lines[i].0, lines[i].1))
+                var ticks = 0
+                while ticks < closing.len() && closing.byte(ticks) == 96 {
+                    ticks += 1
+                }
+                if closing.len() >= fence && ticks == closing.len() {
+                    break
+                }
+                if !first {
+                    code.push_str("\n")
+                }
+                code.push_str(markdown.slice(lines[i].0, lines[i].1))
+                first = false
+                i += 1
+            }
+            out.push(
+                String::from(
+                    f"<pre><code>{escape(code.as_str(), quote: false).as_str()}</code></pre>",
+                ),
+            )
+            last = Last::Other
+            i += 1
+            continue
+        }
+        if t.is_empty() {
+            flush(mut out, mut para, mut last)
+            i += 1
+            continue
+        }
+        if let Some((level, from)) = heading(t) {
+            flush(mut out, mut para, mut last)
+            close_lists(mut out, mut lists, 0, all: true)
+            let text = strip(t.slice(from, t.len()))
+            let anchor = anchors.of(plain(text).as_str())
+            let a = anchor.as_str()
+            out.push(
+                String::from(
+                    f"<h{level} id=\"{a}\"><a class=\"anchor\" href=\"#{a}\">{inline(text).as_str()}</a></h{level}>",
+                ),
+            )
+            last = Last::Heading
+            i += 1
+            continue
+        }
+        if t == "---" || t == "***" || t == "___" {
+            flush(mut out, mut para, mut last)
+            close_lists(mut out, mut lists, 0, all: true)
+            out.push(String::from("<hr>"))
+            last = Last::Other
+            i += 1
+            continue
+        }
+        if t.starts_with("|") && i + 1 < count {
+            let next = markdown.slice(lines[i + 1].0, lines[i + 1].1)
+            if is_table_rule(strip(next)) && next.find("-").is_some() {
+                flush(mut out, mut para, mut last)
+                close_lists(mut out, mut lists, 0, all: true)
+                let head = cells(t)
+                var row = String::from("<div class=\"table\"><table><thead><tr>")
+                for c in head {
+                    row.push_str(f"<th>{inline(c.as_str()).as_str()}</th>")
+                }
+                row.push_str("</tr></thead><tbody>")
+                out.push(take row)
+                i += 2
+                while i < count && strip(markdown.slice(lines[i].0, lines[i].1)).starts_with("|") {
+                    let r = cells(markdown.slice(lines[i].0, lines[i].1))
+                    var tr = String::from("<tr>")
+                    for k in 0..head.len() {
+                        let cell = if k < r.len() { r[k].clone() } else { String::new() }
+                        tr.push_str(f"<td>{inline(cell.as_str()).as_str()}</td>")
+                    }
+                    tr.push_str("</tr>")
+                    out.push(take tr)
+                    i += 1
+                }
+                out.push(String::from("</tbody></table></div>"))
+                last = Last::Other
+                continue
+            }
+        }
+        if t.starts_with(">") {
+            flush(mut out, mut para, mut last)
+            close_lists(mut out, mut lists, 0, all: true)
+            var quote: Vec<String> = Vec::new()
+            while i < count {
+                let q = strip(markdown.slice(lines[i].0, lines[i].1))
+                if !q.starts_with(">") {
+                    break
+                }
+                quote.push(String::from(strip(q.slice(1, q.len()))))
+                i += 1
+            }
+            out.push(
+                String::from(
+                    f"<blockquote><p>{inline(joined(quote).as_str()).as_str()}</p></blockquote>",
+                ),
+            )
+            last = Last::Other
+            continue
+        }
+        if let Some((indent, marker, words)) = item(line) {
+            flush(mut out, mut para, mut last)
+            let depth = indent / 2
+            let ordered = marker.as_str().byte(0) >= 48 && marker.as_str().byte(0) <= 57
+            let tag: Text = if ordered { "ol" } else { "ul" }
+            var text: Vec<String> = Vec::new()
+            text.push(String::from(strip(words.as_str())))
+            i += 1
+            while i < count {
+                let raw = markdown.slice(lines[i].0, lines[i].1)
+                let c = strip(raw)
+                if c.is_empty() ||
+                    item(raw).is_some() ||
+                    c.starts_with("```") ||
+                    c.starts_with("|") ||
+                    c.starts_with("#") {
+                    break
+                }
+                text.push(String::from(c))
+                i += 1
+            }
+            // Deeper: a list inside the item. Shallower: the deeper lists end. The same depth: the
+            // next item, or a list of the other kind in its place.
+            close_lists(mut out, mut lists, depth, all: false)
+            let top = lists.len()
+            if top > 0 && lists[top - 1].1 == depth && lists[top - 1].0 == tag {
+                out.push(String::from("</li>"))
+            } else {
+                if top > 0 && lists[top - 1].1 == depth {
+                    let Some((other, _)) = lists.pop() else { panic("an open list") }
+                    out.push(String::from(f"</li></{other}>"))
+                }
+                let m = marker.as_str()
+                if ordered && m != "1." {
+                    out.push(String::from(f"<{tag} start=\"{m.slice(0, m.len() - 1)}\">"))
+                } else {
+                    out.push(String::from(f"<{tag}>"))
+                }
+                lists.push((tag, depth))
+            }
+            out.push(String::from(f"<li>{inline(joined(text).as_str()).as_str()}"))
+            last = Last::Other
+            continue
+        }
+        if !lists.is_empty() && !line.starts_with(" ") {
+            close_lists(mut out, mut lists, 0, all: true)
+        }
+        para.push(String::from(t))
+        i += 1
+    }
+    flush(mut out, mut para, mut last)
+    close_lists(mut out, mut lists, 0, all: true)
+    var html = String::new()
+    for k in 0..out.len() {
+        if k > 0 {
+            html.push_str("\n")
+        }
+        html.push_str(out[k].as_str())
+    }
+    html
+}
+
+// ---- Pages -------------------------------------------------------------------------------------
+
+/// A page of the export's index: its path (of its Markdown), title, summary and kind.
+pub struct Page: Clone {
+    pub path: String,
+    pub title: String,
+    pub summary: String,
+    pub kind: String,
+}
+
+/// A page's group, as the docs list it: the language (`spec`), or its package.
+pub fn group_of(page: Page) -> String {
+    if page.kind.as_str() == "spec" {
+        return String::from("spec")
+    }
+    let p = page.path.as_str()
+    match p.find("/") {
+        Some(k) => String::from(p.slice(0, k)),
+        None => String::from(p),
+    }
+}
+
+/// Where a group comes in the docs: the language, then std, then the packages by name.
+pub fn group_before(a: str, b: str) -> bool {
+    let rank = |g: str| if g == "spec" { 0 } else if g == "std" { 1 } else { 2 }
+    let (x, y) = (rank(a), rank(b))
+    if x != y {
+        return x < y
+    }
+    x == 2 && a < b
+}
+
+/// The pages in the docs' order, each group's pages in the index's order.
+pub fn in_order(pages: [Page]) -> Vec<Page> {
+    var groups: Vec<String> = Vec::new()
+    for p in pages {
+        let g = group_of(p)
+        var known = false
+        for h in groups {
+            if h.as_str() == g.as_str() {
+                known = true
+            }
+        }
+        if !known {
+            groups.push(take g)
+        }
+    }
+    groups.sort_by(|a: String, b: String| group_before(a.as_str(), b.as_str()))
+    var out: Vec<Page> = Vec::new()
+    for g in groups {
+        for p in pages {
+            if group_of(p).as_str() == g.as_str() {
+                out.push(p.clone())
+            }
+        }
+    }
+    out
+}
+
+/// A group's heading on a page.
+pub fn group_title(group: str) -> String {
+    if group == "spec" {
+        return String::from("The language")
+    }
+    if group == "std" {
+        return String::from("Standard library")
+    }
+    if group == "engine" {
+        return String::from("Engine")
+    }
+    if group == "ui" {
+        return String::from("Drawing and widgets")
+    }
+    if group == "platform" {
+        return String::from("Host services")
+    }
+    String::from(group)
+}
+
+/// A path without its last three bytes (`.md`).
+pub fn stem(path: str) -> borrow str {
+    path.slice(0, path.len() - 3)
+}
+
+/// A page of the docs as HTML: the header, its group, its body, and its neighbours.
+pub fn page_html(page: Page, body: str, before: Option<Page>, after: Option<Page>) -> String {
+    let path = page.path.as_str()
+    var up = String::new()
+    var slash = 0
+    for k in 0..path.len() {
+        if path.byte(k) == 47 {
+            up.push_str("../")
+            slash = k + 1
+        }
+    }
+    let name = escape(stem(path.slice(slash, path.len())), quote: true)
+    let live = escape(f"/#{stem(path)}", quote: true)
+    let title = escape(page.title.as_str(), quote: true)
+    let plain_summary = without(page.summary.as_str(), 96)
+    let summary = escape(plain_summary.as_str(), quote: true)
+    var near = String::new()
+    if let Some(b) = before {
+        let to = escape(stem(b.path.as_str()), quote: true)
+        let t = escape(b.title.as_str(), quote: true)
+        near.push_str(
+            f"<a class=\"previous\" href=\"{up.as_str()}{to.as_str()}.html\"><span>Previous</span>{t.as_str()}</a>",
+        )
+    }
+    if let Some(a) = after {
+        let to = escape(stem(a.path.as_str()), quote: true)
+        let t = escape(a.title.as_str(), quote: true)
+        near.push_str(
+            f"<a class=\"next\" href=\"{up.as_str()}{to.as_str()}.html\"><span>Next</span>{t.as_str()}</a>",
+        )
+    }
+    let group = escape(group_title(group_of(page).as_str()).as_str(), quote: true)
+    var h = String::new()
+    h.push_str("<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n")
+    h.push_str(
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">\n",
+    )
+    h.push_str(f"<title>{title.as_str()} | Wrela docs</title>\n")
+    h.push_str(f"<meta name=\"description\" content=\"{summary.as_str()}\">\n")
+    h.push_str(f"<link rel=\"alternate\" type=\"text/markdown\" href=\"{name.as_str()}.md\">\n")
+    h.push_str(f"<link rel=\"stylesheet\" href=\"{up.as_str()}pages.css\">\n")
+    h.push_str("</head>\n<body>\n")
+    h.push_str(
+        f"<header><a class=\"mark\" href=\"/\">WRELA</a><span class=\"docs\">docs</span><a class=\"live\" href=\"{live.as_str()}\">Live docs</a></header>\n",
+    )
+    h.push_str("<main>\n")
+    h.push_str(f"<p class=\"group\">{group.as_str()}</p>\n")
+    h.push_str(body)
+    h.push_str("\n</main>\n")
+    h.push_str(
+        f"<footer><nav>{near.as_str()}</nav><a class=\"md\" href=\"{name.as_str()}.md\">This page as Markdown</a></footer>\n",
+    )
+    h.push_str("</body>\n</html>\n")
+    h
+}

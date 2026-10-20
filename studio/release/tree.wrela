@@ -1,0 +1,202 @@
+// A Worker's files as the release assembles them, before any is written: each file's path in
+// the Worker's directory and where its bytes are (a file in a root, such as a build's output,
+// or bytes the tool made). The release's fingerprint frames each file's path and bytes in the
+// order of their paths' parts, and `files.json` lists each file's SHA-256.
+
+use site::Top
+use std::hash::sha256::{Sha256, hex}
+
+/// Where a file's bytes are: a file in a root (`work/...`, `ws/...`), or bytes the tool holds.
+pub enum Source: Clone {
+    File(String),
+    Bytes(Vec<u8>),
+}
+
+/// A file of a Worker: its path there, its bytes, its size and its SHA-256 in hexadecimal, once
+/// it's read (empty before).
+pub struct Entry: Clone {
+    pub path: String,
+    pub source: Source,
+    pub size: u64,
+    pub sha: String,
+}
+
+/// A Worker's files: one entry per path.
+pub struct Tree: Clone {
+    pub entries: Vec<Entry>,
+}
+
+/// The largest file Cloudflare serves, and the most files a Worker's assets may have.
+pub const MAX_FILE: u64 = 25 * 1024 * 1024
+pub const MAX_FILES: u32 = 20000
+
+/// The parts of a path that never ship: private storage and runtime output.
+pub const PRIVATE: [Text; 4] = ["storage", "results", ".native", "node_modules"]
+
+impl Tree {
+    pub fn new() -> Tree {
+        Tree { entries: Vec::new() }
+    }
+
+    /// The entry at `path`, if there is one.
+    pub fn find(self, path: str) -> Option<u32> {
+        for k in 0..self.entries.len() {
+            if self.entries[k].path.as_str() == path {
+                return Some(k)
+            }
+        }
+        None
+    }
+
+    /// Puts `source` at `path`, in place of a file there.
+    pub fn put(mut self, path: str, source: take Source) {
+        let size = match source {
+            Source::Bytes(b) => u64(b.len()),
+            Source::File(_) => 0,
+        }
+        let sha = match source {
+            Source::Bytes(b) => hex_sha(b),
+            Source::File(_) => String::new(),
+        }
+        let e = Entry { path: String::from(path), source, size, sha }
+        match self.find(path) {
+            Some(k) => {
+                self.entries[k] = take e
+            },
+            None => self.entries.push(take e),
+        }
+    }
+
+    /// Puts bytes at `path`.
+    pub fn put_bytes(mut self, path: str, bytes: [u8]) {
+        self.put(path, Source::Bytes(Vec::from(bytes)))
+    }
+
+    /// Takes the entry at `path` out, if there is one.
+    pub fn remove(mut self, path: str) {
+        if let Some(k) = self.find(path) {
+            let _ = self.entries.remove(k)
+        }
+    }
+
+    /// Sorts the entries by their paths' parts.
+    pub fn sort(mut self) {
+        self.entries.sort_by(|a: Entry, b: Entry| before_by_parts(a.path.as_str(), b.path.as_str()))
+    }
+
+    /// The names of its top entries, each a file or a directory, and for a directory whether a
+    /// Markdown file is inside it; sorted by name.
+    pub fn tops(self) -> Vec<Top> {
+        var out: Vec<Top> = Vec::new()
+        for e in self.entries {
+            let p = e.path.as_str()
+            let cut = match p.find("/") {
+                Some(k) => k,
+                None => p.len(),
+            }
+            let name = p.slice(0, cut)
+            let dir = cut < p.len()
+            let md = dir && p.ends_with(".md")
+            var known = false
+            for k in 0..out.len() {
+                if out[k].name.as_str() == name {
+                    known = true
+                    out[k].markdown = out[k].markdown || md
+                }
+            }
+            if !known {
+                out.push(Top { name: String::from(name), dir, markdown: md })
+            }
+        }
+        out.sort_by(|a: Top, b: Top| a.name < b.name)
+        out
+    }
+
+    /// Its files and their bytes in all.
+    pub fn totals(self) -> (u64, u64) {
+        var bytes: u64 = 0
+        for e in self.entries {
+            bytes += e.size
+        }
+        (u64(self.entries.len()), bytes)
+    }
+}
+
+/// `bytes`' SHA-256 in hexadecimal.
+pub fn hex_sha(bytes: [u8]) -> String {
+    var h = Sha256::new()
+    h.update(bytes)
+    hex(h.finish())
+}
+
+/// Whether path `a` goes before path `b`, part by part: each part byte by byte, and a part that
+/// is the start of another first. So `x/y` goes before `x-y`, as `x` goes before `x-y`.
+pub fn before_by_parts(a: str, b: str) -> bool {
+    let n = min(a.len(), b.len())
+    for i in 0..n {
+        let x = if a.byte(i) == 47 { 0 } else { u32(a.byte(i)) + 1 }
+        let y = if b.byte(i) == 47 { 0 } else { u32(b.byte(i)) + 1 }
+        if x != y {
+            return x < y
+        }
+    }
+    a.len() < b.len()
+}
+
+/// The 8 bytes of `n`, the most significant first.
+pub fn big_endian(n: u64) -> [u8; 8] {
+    var out: [u8; 8] = [0; 8]
+    var v = n
+    for k in 0..8 {
+        out[7 - k] = u8(v & u64(255))
+        v = v >> 8
+    }
+    out
+}
+
+/// Starts a file's frame in the fingerprint: its path's length and its path, then its bytes'
+/// length, each length 8 bytes, the most significant first. The bytes come next. So a file `a`
+/// holding `bc` doesn't hash as `ab` holding `c`, nor can a file's bytes take in the next path.
+pub fn frame(digest: mut Sha256, path: str, size: u64) {
+    let p = String::from(path)
+    digest.update(big_endian(u64(p.len())))
+    digest.update(p.as_bytes())
+    digest.update(big_endian(size))
+}
+
+/// Why a Worker's files can't ship, if they can't: a private or runtime part, a hidden part, a
+/// file past Cloudflare's size, or more files than it serves. `entries` are sorted by parts.
+pub fn check_files(entries: [Entry]) -> Result<(), String> {
+    for e in entries {
+        let p = e.path.as_str()
+        for (a, b) in p.split("/") {
+            let part = p.slice(a, b)
+            for private in PRIVATE {
+                if part == private {
+                    return Err(String::from(f"private/runtime output in release: {p}"))
+                }
+            }
+        }
+        for (a, b) in p.split("/") {
+            if p.slice(a, b).starts_with(".") {
+                return Err(String::from(f"hidden build metadata in release: {p}"))
+            }
+        }
+        if e.size > MAX_FILE {
+            return Err(String::from(f"Cloudflare file limit exceeded: {p}"))
+        }
+    }
+    if entries.len() > MAX_FILES {
+        return Err(String::from("Cloudflare file-count limit exceeded"))
+    }
+    Ok(())
+}
+
+/// `files.json`: each entry's path and SHA-256, compact, sorted by path.
+pub fn files_json(entries: [Entry]) -> String {
+    var members: Vec<(String, json::Json)> = Vec::new()
+    for e in entries {
+        members.push(json::member(e.path.as_str(), json::text(e.sha.as_str())))
+    }
+    json::compact(json::Json::Obj(take members))
+}
