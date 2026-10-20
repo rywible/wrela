@@ -1,0 +1,480 @@
+// What a release serves beside its builds: each Worker's headers and redirects, its Wrangler
+// configuration, the console's catalog, prefetch lists and card, the docs page's head and text,
+// and the storage namespace each bootstrap names.
+
+use catalog::{Catalog, Console, Docs, Game, origin_of}
+use json::{Json, indented, member, text}
+use pages::{Page, escape, group_before, group_of, stem}
+
+/// The Workers runtime each release's Workers run on.
+pub const COMPATIBILITY_DATE: Text = "2026-10-12"
+
+/// The docs' page in each scheme (docsite/theme.wrela `DARK.page`, `LIGHT.page`).
+pub const PAGE_DARK: Text = "#09090B"
+pub const PAGE_LIGHT: Text = "#FFFFFF"
+
+/// `s` with each `from` replaced by `to`, left to right.
+pub fn replace_all(s: str, from: str, to: str) -> String {
+    var out = String::new()
+    var i = 0
+    var start = 0
+    let n = from.len()
+    while n > 0 && i + n <= s.len() {
+        var hit = true
+        for k in 0..n {
+            if s.byte(i + k) != from.byte(k) {
+                hit = false
+                break
+            }
+        }
+        if hit {
+            out.push_str(s.slice(start, i))
+            out.push_str(to)
+            i += n
+            start = i
+        } else {
+            i += 1
+            while i < s.len() && s.byte(i) >= 128 && s.byte(i) < 192 {
+                i += 1
+            }
+        }
+    }
+    out.push_str(s.slice(start, s.len()))
+    out
+}
+
+/// A Worker's headers. Its assets are public; the origin-owned OPFS is never uploaded or served.
+/// `parent` is the console's origin; `children` are the origins its page may frame and fetch
+/// from; an `embedded` game's files are readable by the console.
+pub fn headers(parent: str, children: [String], embedded: bool) -> String {
+    let ancestors = if embedded { String::from(parent) } else { String::from("'none'") }
+    var frame_src = String::new()
+    var connect_src = String::from("'self'")
+    var policy = String::from("cross-origin-isolated=(self")
+    for k in 0..children.len() {
+        if k > 0 {
+            frame_src.push_str(" ")
+        }
+        frame_src.push_str(children[k].as_str())
+        connect_src.push_str(" ")
+        connect_src.push_str(children[k].as_str())
+        policy.push_str(f" \"{children[k].as_str()}\"")
+    }
+    if children.is_empty() {
+        frame_src.push_str("'none'")
+    }
+    policy.push_str(")")
+    // The console fetches a game's files ahead (its prefetch list) as readable CORS requests
+    // with credentials, as the game's own page fetches them, so the browser's cache keeps them.
+    var shared = String::new()
+    if embedded {
+        shared.push_str(
+            f"\n  Access-Control-Allow-Origin: {parent}\n  Access-Control-Allow-Credentials: true",
+        )
+    }
+    var h = String::from("/*\n  Cross-Origin-Opener-Policy: same-origin\n")
+    h.push_str("  Cross-Origin-Embedder-Policy: require-corp\n")
+    h.push_str(f"  Cross-Origin-Resource-Policy: cross-origin{shared.as_str()}\n")
+    h.push_str(f"  Permissions-Policy: {policy.as_str()}\n")
+    h.push_str("  X-Content-Type-Options: nosniff\n  Referrer-Policy: origin\n")
+    h.push_str(
+        f"  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:; connect-src {connect_src.as_str()}; img-src 'self' blob:; frame-src {frame_src.as_str()}; frame-ancestors {ancestors.as_str()}; object-src 'none'; base-uri 'self'\n",
+    )
+    h.push_str("/*.wasm\n  Content-Type: application/wasm\n")
+    h.push_str("/*.wgsl\n  Content-Type: text/plain; charset=utf-8\n")
+    h
+}
+
+/// The docs Worker's headers: the program's, and its Markdown and text readable by anyone, as
+/// what they are.
+pub fn docs_headers(home: str) -> String {
+    let none: [String; 0] = []
+    let raw = "\n  Access-Control-Allow-Origin: *"
+    var h = headers(home, none, embedded: false)
+    h.push_str(f"/*.md\n  Content-Type: text/markdown; charset=utf-8{raw}\n")
+    h.push_str(f"/*.txt\n  Content-Type: text/plain; charset=utf-8{raw}\n")
+    h.push_str(f"/*.json{raw}\n")
+    h
+}
+
+/// What every Worker's headers end with: a release's files are kept, its entry points never.
+pub const CACHE_RULES: Text = "/releases/*\n  Cache-Control: public, max-age=31536000, immutable\n/\n  Cache-Control: no-cache\n/index.html\n  Cache-Control: no-cache\n/deploys.json\n  Cache-Control: no-cache\n"
+
+/// A top entry of the docs' Worker before its release is put in `releases/`: its name, whether
+/// it's a directory, and for a directory whether a Markdown file is somewhere inside it.
+pub struct Top: Clone {
+    pub name: String,
+    pub dir: bool,
+    pub markdown: bool,
+}
+
+/// Stable addresses for the docs' raw files (`/llms.txt`, `/std/io.md`): each leads to this
+/// release's copy, so an agent's link outlives the release. `tops` are sorted by name.
+pub fn docs_redirects(tops: [Top], release: str) -> String {
+    var out = String::new()
+    for t in tops {
+        let name = t.name.as_str()
+        if t.dir && t.markdown {
+            out.push_str(f"/{name}/* /releases/{release}/{name}/:splat 302\n")
+        } else if !t.dir &&
+            (suffix(name) == ".txt" || suffix(name) == ".json") &&
+            name != "manifest.json" &&
+            name != "files.json" {
+            out.push_str(f"/{name} /releases/{release}/{name} 302\n")
+        }
+    }
+    if out.is_empty() {
+        out.push_str("\n")
+    }
+    out
+}
+
+/// A file name's suffix: from its last `.`, if that is neither its first byte nor its last.
+pub fn suffix(name: str) -> borrow str {
+    var k = name.len()
+    while k > 0 {
+        k -= 1
+        if name.byte(k) == 46 {
+            if k == 0 || k + 1 == name.len() {
+                return name.slice(from: 0, to: 0)
+            }
+            return name.slice(k, name.len())
+        }
+    }
+    name.slice(from: 0, to: 0)
+}
+
+/// The console page's description, and the card a link to it shows where it is shared: its
+/// first game's cover, `cover`.
+pub fn card(console: Console, release: str, cover: str) -> String {
+    let home = origin_of(console.domain)
+    let h = home.as_str()
+    let t = escape(console.description, quote: true)
+    let text = t.as_str()
+    var out = String::new()
+    out.push_str(f"\n<meta name=\"description\" content=\"{text}\">")
+    out.push_str("\n<meta property=\"og:type\" content=\"website\">")
+    out.push_str("\n<meta property=\"og:site_name\" content=\"wrela\">")
+    out.push_str("\n<meta property=\"og:title\" content=\"wrela\">")
+    out.push_str(f"\n<meta property=\"og:description\" content=\"{text}\">")
+    out.push_str(f"\n<meta property=\"og:url\" content=\"{h}/\">")
+    out.push_str(f"\n<meta property=\"og:image\" content=\"{h}/releases/{release}/{cover}\">")
+    out.push_str("\n<meta name=\"twitter:card\" content=\"summary_large_image\">")
+    out
+}
+
+/// A line of Markdown as HTML: escaped, with its `code` as code.
+pub fn code_of(markdown: str) -> String {
+    let e = escape(markdown, quote: false)
+    let s = e.as_str()
+    var out = String::new()
+    var code = false
+    var from = 0
+    for i in 0..s.len() + 1 {
+        if i == s.len() || s.byte(i) == 96 {
+            if code {
+                out.push_str("<code>")
+                out.push_str(s.slice(from, i))
+                out.push_str("</code>")
+            } else {
+                out.push_str(s.slice(from, i))
+            }
+            code = !code
+            from = i + 1
+        }
+    }
+    out
+}
+
+/// The docs page's description, its Markdown for agents, and its own text (`main#wrela-text`):
+/// the docs' pages, each a link to its HTML page, for whoever doesn't run the program, such as
+/// an agent that reads the page as HTML or a browser without WebGPU. An address's fragment never
+/// reaches the server, so the text says how an address names a page. The browser host shows it
+/// when the program can't run and removes it once the program draws. `has` says whether the
+/// docs have a file at a path (`llms.txt`, `std/llms-full.txt`).
+pub fn docs_page(docs: Docs, pages: [Page], has: [String]) -> (String, String) {
+    let t = escape(docs.description, quote: true)
+    let text = t.as_str()
+    let home_owned = origin_of(docs.domain)
+    let home = home_owned.as_str()
+    var head = String::new()
+    head.push_str(f"\n<meta name=\"description\" content=\"{text}\">")
+    head.push_str("\n<meta property=\"og:type\" content=\"website\">")
+    head.push_str("\n<meta property=\"og:site_name\" content=\"wrela\">")
+    head.push_str("\n<meta property=\"og:title\" content=\"Wrela docs\">")
+    head.push_str(f"\n<meta property=\"og:description\" content=\"{text}\">")
+    head.push_str(f"\n<meta property=\"og:url\" content=\"{home}/\">")
+    head.push_str(
+        "\n<link rel=\"alternate\" type=\"text/markdown\" href=\"/llms.txt\" title=\"The docs as Markdown\">",
+    )
+    head.push_str("\n<script src=\"pages.js\" defer></script>")
+    // The docs' page colours, behind the canvas before the program draws and in a phone's
+    // browser bar, so the page doesn't open black.
+    head.push_str(
+        f"\n<meta name=\"theme-color\" media=\"(prefers-color-scheme: dark)\" content=\"{PAGE_DARK}\">",
+    )
+    head.push_str(
+        f"\n<meta name=\"theme-color\" media=\"(prefers-color-scheme: light)\" content=\"{PAGE_LIGHT}\">",
+    )
+    // A reader may still pinch the docs larger, as on any page; a finger's swipe is the
+    // program's.
+    head.push_str(
+        f"\n<style>html canvas#screen {{ touch-action: pinch-zoom; }} html, body {{ background: {PAGE_DARK}; }} @media (prefers-color-scheme: light) {{ html, body {{ background: {PAGE_LIGHT}; }} }}</style>",
+    )
+    // The groups: the language, then std, then the packages by name, as `llms.txt` has them.
+    var groups: Vec<String> = Vec::new()
+    for p in pages {
+        let g = group_of(p)
+        var known = false
+        for h in groups {
+            if h.as_str() == g.as_str() {
+                known = true
+            }
+        }
+        if !known {
+            groups.push(take g)
+        }
+    }
+    groups.sort_by(|a: String, b: String| group_before(a.as_str(), b.as_str()))
+    var files: Vec<(String, String)> = Vec::new()
+    files.push(
+        (
+            String::from("llms.txt"),
+            String::from("every page with its summary, and how to read the docs"),
+        ),
+    )
+    files.push(
+        (
+            String::from("index.json"),
+            String::from("every item with its signature, its page and its source line"),
+        ),
+    )
+    for g in groups {
+        let path = String::from(f"{g.as_str()}/llms-full.txt")
+        if contains(has, path.as_str()) {
+            let what = if g.as_str() == "spec" { String::from("the language") } else { g.clone() }
+            files.push((path.clone(), String::from(f"{what.as_str()}'s pages in one file")))
+        }
+    }
+    files.push((String::from("llms-full.txt"), String::from("every page in one file")))
+    // A person first: the pages, each as plain HTML. Then an agent: the Markdown, and how an
+    // address names a page, as its fragment never reaches the server.
+    var body: Vec<String> = Vec::new()
+    body.push(String::from("<main id=\"wrela-text\">"))
+    body.push(String::from("<h1>Wrela docs</h1>"))
+    body.push(String::from(f"<p>{text}</p>"))
+    body.push(
+        String::from(
+            "<p>These pages are a Wrela program that draws with WebGPU. Here they are as plain pages, for a browser that can't run it.</p>",
+        ),
+    )
+    for g in groups {
+        if g.as_str() == "spec" {
+            body.push(String::from("<h2>The language</h2>"))
+        } else {
+            body.push(String::from(f"<h2>{escape(g.as_str(), quote: true).as_str()}</h2>"))
+        }
+        body.push(String::from("<ul>"))
+        for p in pages {
+            if group_of(p).as_str() != g.as_str() {
+                continue
+            }
+            let to = escape(stem(p.path.as_str()), quote: true)
+            let title = escape(p.title.as_str(), quote: true)
+            let link = String::from(f"<a href=\"{home}/{to.as_str()}.html\">{title.as_str()}</a>")
+            if p.summary.is_empty() {
+                body.push(String::from(f"<li>{link.as_str()}</li>"))
+            } else {
+                body.push(
+                    String::from(
+                        f"<li>{link.as_str()}: {code_of(p.summary.as_str()).as_str()}</li>",
+                    ),
+                )
+            }
+        }
+        body.push(String::from("</ul>"))
+    }
+    body.push(String::from("<h2>For agents</h2>"))
+    body.push(String::from("<p>Each page is Markdown too:</p>"))
+    body.push(String::from("<ul>"))
+    for (name, what) in files {
+        if contains(has, name.as_str()) {
+            body.push(
+                String::from(
+                    f"<li><a href=\"{home}/{name.as_str()}\">{name.as_str()}</a>: {what.as_str()}.</li>",
+                ),
+            )
+        }
+    }
+    body.push(String::from("</ul>"))
+    body.push(
+        String::from(
+            f"<p>An address of these docs names its page after <code>#</code>, and a heading on it after <code>:</code>. <code>{home}/#std/arena:arena-insert</code> is the heading <code>arena-insert</code> of <a href=\"{home}/std/arena.md\">{home}/std/arena.md</a>.</p>",
+        ),
+    )
+    body.push(String::from("</main>"))
+    var all = String::new()
+    for b in body {
+        all.push_str("\n")
+        all.push_str(b.as_str())
+    }
+    (head, all)
+}
+
+fn contains(names: [String], name: str) -> bool {
+    for n in names {
+        if n.as_str() == name {
+            return true
+        }
+    }
+    false
+}
+
+/// A Worker's Wrangler configuration: its release's assets, on its custom domain only.
+pub fn wrangler_config(worker: str, domain: str) -> String {
+    var route: Vec<(String, Json)> = Vec::new()
+    route.push(member("pattern", text(domain)))
+    route.push(member("custom_domain", Json::Bool(true)))
+    var assets: Vec<(String, Json)> = Vec::new()
+    assets.push(member("directory", text(f"./{worker}")))
+    var c: Vec<(String, Json)> = Vec::new()
+    c.push(member("name", text(worker)))
+    c.push(member("compatibility_date", text(COMPATIBILITY_DATE)))
+    c.push(member("assets", Json::Obj(take assets)))
+    c.push(member("routes", Json::List(Vec::from([Json::Obj(take route)]))))
+    c.push(member("workers_dev", Json::Bool(false)))
+    c.push(member("preview_urls", Json::Bool(false)))
+    var out = indented(Json::Obj(take c))
+    out.push_str("\n")
+    out
+}
+
+/// The catalog as JSON, compact with its keys sorted: the first bytes of the release's
+/// fingerprint.
+pub fn catalog_json(c: Catalog) -> Json {
+    var console: Vec<(String, Json)> = Vec::new()
+    console.push(member("package", text(c.console.dir)))
+    console.push(member("worker", text(c.console.worker)))
+    console.push(member("domain", text(c.console.domain)))
+    console.push(member("description", text(c.console.description)))
+    var packages: Vec<Json> = Vec::new()
+    for p in c.docs.packages {
+        packages.push(text(p))
+    }
+    var docs: Vec<(String, Json)> = Vec::new()
+    docs.push(member("package", text(c.docs.dir)))
+    docs.push(member("worker", text(c.docs.worker)))
+    docs.push(member("domain", text(c.docs.domain)))
+    docs.push(member("description", text(c.docs.description)))
+    docs.push(member("packages", Json::List(take packages)))
+    var games: Vec<Json> = Vec::new()
+    for g in c.games {
+        var builds: Vec<(String, Json)> = Vec::new()
+        for b in g.builds {
+            builds.push(member(b.name, text(b.dir)))
+        }
+        var game: Vec<(String, Json)> = Vec::new()
+        game.push(member("id", text(g.id)))
+        game.push(member("title", text(g.title)))
+        game.push(member("worker", text(g.worker)))
+        game.push(member("domain", text(g.domain)))
+        game.push(member("session", text(g.session)))
+        game.push(member("builds", Json::Obj(take builds)))
+        game.push(member("cover", text(g.cover)))
+        games.push(Json::Obj(take game))
+    }
+    var top: Vec<(String, Json)> = Vec::new()
+    top.push(member("console", Json::Obj(take console)))
+    top.push(member("docs", Json::Obj(take docs)))
+    top.push(member("games", Json::List(take games)))
+    Json::Obj(take top)
+}
+
+/// A game's line of the console's catalog: its id, title, session's address, cover file and the
+/// cover's size, between tabs.
+pub fn catalog_line(game: Game, release: str, cover: str, width: u32, height: u32) -> String {
+    let o = origin_of(game.domain)
+    String::from(
+        f"{game.id}\t{game.title}\t{o.as_str()}/releases/{release}/{game.session}/\t{cover}\t{width}\t{height}",
+    )
+}
+
+/// The builds of `game` in the order the console fetches them: the session first, then the
+/// others in the catalog's order.
+pub fn fetch_order(game: Game) -> Vec<Text> {
+    var out: Vec<Text> = Vec::new()
+    out.push(game.session)
+    for b in game.builds {
+        if b.name != game.session {
+            out.push(b.name)
+        }
+    }
+    out
+}
+
+/// Whether the console fetches a build's file at `path` (in the build) ahead of time: its
+/// runtime, WASM and shaders, not the files a game streams as it plays (`files/`), nor its trap
+/// locations (`.lines`), which only a crash reads, nor its pages (`.html`): a frame's page is a
+/// navigation, which the browser caches apart from fetches.
+pub fn prefetched(path: str) -> bool {
+    !(path == "files" ||
+        path.starts_with("files/") ||
+        path.ends_with(".lines") ||
+        path.ends_with(".html"))
+}
+
+/// What the console fetches of a game ahead of time, once it's idle: each build's files that
+/// `prefetched` keeps, by their address. `builds` holds each build's name and its files' paths,
+/// in `fetch_order`, its paths sorted by their parts.
+pub fn prefetch_list(game: Game, release: str, builds: [(Text, Vec<String>)]) -> String {
+    let o = origin_of(game.domain)
+    var out = String::new()
+    for (name, paths) in builds {
+        for p in paths {
+            if prefetched(p.as_str()) {
+                out.push_str(f"{o.as_str()}/releases/{release}/{name}/{p.as_str()}\n")
+            }
+        }
+    }
+    if out.is_empty() {
+        out.push_str("\n")
+    }
+    out
+}
+
+/// A bootstrap page with the storage namespace its program keeps its files under: the same in
+/// every release, so a release doesn't lose what the last one stored.
+pub fn with_storage(page: str, namespace: str) -> String {
+    replace_all(page, "<head>", f"<head>\n<meta name=\"wrela-storage\" content=\"{namespace}\">")
+}
+
+/// What `release.json` says of a Worker: its name and domain, whether it's the console or the
+/// docs, and its files and bytes.
+pub struct Report: Clone {
+    pub worker: String,
+    pub domain: String,
+    pub console: bool,
+    pub docs: bool,
+    pub files: u64,
+    pub bytes: u64,
+}
+
+/// `release.json`: the release's source revision, its id, and each Worker's report.
+pub fn release_json(source: str, release: str, workers: [Report]) -> String {
+    var list: Vec<Json> = Vec::new()
+    for w in workers {
+        var m: Vec<(String, Json)> = Vec::new()
+        m.push(member("worker", text(w.worker.as_str())))
+        m.push(member("domain", text(w.domain.as_str())))
+        m.push(member("console", Json::Bool(w.console)))
+        m.push(member("docs", Json::Bool(w.docs)))
+        m.push(member("files", Json::Int(w.files)))
+        m.push(member("bytes", Json::Int(w.bytes)))
+        list.push(Json::Obj(take m))
+    }
+    var top: Vec<(String, Json)> = Vec::new()
+    top.push(member("source", text(source)))
+    top.push(member("release", text(release)))
+    top.push(member("workers", Json::List(take list)))
+    indented(Json::Obj(take top))
+}

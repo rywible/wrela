@@ -1,0 +1,171 @@
+// JSON as a release writes it: a value written compact, with `, ` between members and `: ` after
+// a key and its keys sorted (the release's fingerprint and `files.json`), or indented by two
+// spaces, its members in their order (`release.json`, a Worker's Wrangler configuration).
+// Strings are ASCII: `"`, `\` and control characters escaped (`\n`, `\r`, `\t`, `\b`, `\f`, else
+// `\u00XX`, DEL too), and each character past ASCII as `\uXXXX`, a surrogate pair past U+FFFF.
+
+/// A JSON value: text, a boolean, a whole number, a list or an object.
+pub enum Json: Clone {
+    Text(String),
+    Bool(bool),
+    Int(u64),
+    List(Vec<Json>),
+    Obj(Vec<(String, Json)>),
+}
+
+/// A text value.
+pub fn text(s: str) -> Json {
+    Json::Text(String::from(s))
+}
+
+/// A member of an object.
+pub fn member(key: str, value: take Json) -> (String, Json) {
+    (String::from(key), take value)
+}
+
+const HEX: Text = "0123456789abcdef"
+
+fn hex4(out: mut String, v: u32) {
+    out.push_str("\\u")
+    for k in 0..4 {
+        out.push_byte(HEX.byte((v >> (12 - 4 * k)) & 15))
+    }
+}
+
+/// `s` as a JSON string, quotes and all.
+pub fn quoted(out: mut String, s: str) {
+    out.push_byte(34)
+    var i = 0
+    while i < s.len() {
+        let b = s.byte(i)
+        if b == 34 || b == 92 {
+            out.push_byte(92)
+            out.push_byte(b)
+        } else if b == 10 {
+            out.push_str("\\n")
+        } else if b == 13 {
+            out.push_str("\\r")
+        } else if b == 9 {
+            out.push_str("\\t")
+        } else if b == 8 {
+            out.push_str("\\b")
+        } else if b == 12 {
+            out.push_str("\\f")
+        } else if b < 32 || b == 127 {
+            hex4(mut out, u32(b))
+        } else if b < 128 {
+            out.push_byte(b)
+        } else {
+            let Some((cp, len)) = s.char_at(i) else { panic("a string is always UTF-8") }
+            if cp > 65535 {
+                let v = cp - 65536
+                hex4(mut out, 55296 + (v >> 10))
+                hex4(mut out, 56320 + (v & 1023))
+            } else {
+                hex4(mut out, cp)
+            }
+            i += len
+            continue
+        }
+        i += 1
+    }
+    out.push_byte(34)
+}
+
+fn sorted(members: [(String, Json)]) -> Vec<(String, Json)> {
+    var v: Vec<(String, Json)> = Vec::from(members)
+    v.sort_by(|a: (String, Json), b: (String, Json)| a.0 < b.0)
+    v
+}
+
+/// `j` written compact, its keys sorted.
+pub fn compact(j: Json) -> String {
+    var out = String::new()
+    compact_into(j, mut out)
+    out
+}
+
+fn compact_into(j: Json, out: mut String) {
+    match j {
+        Json::Text(s) => quoted(mut out, s.as_str()),
+        Json::Bool(b) => out.push_str(if b { "true" } else { "false" }),
+        Json::Int(n) => out.push_str(f"{n}"),
+        Json::List(items) => {
+            out.push_str("[")
+            for k in 0..items.len() {
+                if k > 0 {
+                    out.push_str(", ")
+                }
+                compact_into(items[k], mut out)
+            }
+            out.push_str("]")
+        },
+        Json::Obj(members) => {
+            out.push_str("{")
+            let s = sorted(members)
+            for k in 0..s.len() {
+                if k > 0 {
+                    out.push_str(", ")
+                }
+                quoted(mut out, s[k].0.as_str())
+                out.push_str(": ")
+                compact_into(s[k].1, mut out)
+            }
+            out.push_str("}")
+        },
+    }
+}
+
+/// `j` indented by two spaces a level, its members in order, with no newline after it.
+pub fn indented(j: Json) -> String {
+    var out = String::new()
+    indented_into(j, 0, mut out)
+    out
+}
+
+fn newline(out: mut String, depth: u32) {
+    out.push_str("\n")
+    for _ in 0..depth {
+        out.push_str("  ")
+    }
+}
+
+fn indented_into(j: Json, depth: u32, out: mut String) {
+    match j {
+        Json::List(items) => {
+            if items.is_empty() {
+                out.push_str("[]")
+                return
+            }
+            out.push_str("[")
+            for k in 0..items.len() {
+                if k > 0 {
+                    out.push_str(",")
+                }
+                newline(mut out, depth + 1)
+                indented_into(items[k], depth + 1, mut out)
+            }
+            newline(mut out, depth)
+            out.push_str("]")
+        },
+        Json::Obj(members) => {
+            if members.is_empty() {
+                out.push_str("{}")
+                return
+            }
+            out.push_str("{")
+            for k in 0..members.len() {
+                if k > 0 {
+                    out.push_str(",")
+                }
+                newline(mut out, depth + 1)
+                quoted(mut out, members[k].0.as_str())
+                out.push_str(": ")
+                indented_into(members[k].1, depth + 1, mut out)
+            }
+            newline(mut out, depth)
+            out.push_str("}")
+        },
+        _ => compact_into(j, mut out),
+    }
+}

@@ -1,0 +1,533 @@
+// The release's requests, a batch at a time: files read, copied and written whole through blobs,
+// and directories walked. Each is a job that waits for its answers; at most `AT_ONCE` of a
+// batch's requests are outstanding at once, so a release of hundreds of files keeps the host's
+// file workers busy without holding every file at once.
+
+use std::io::{IoError, Pending}
+use std::job::Step
+use std::tool::{MOST_BYTES, answer}
+use std::tool::blob
+use std::tool::blob::{Blob, Data}
+use std::tool::files
+use std::tool::files::Kind
+
+/// How many requests of a batch are outstanding at once.
+pub const AT_ONCE: u32 = 32
+
+/// Waits for every request of `given`: their answers, in order.
+@job
+pub fn all(given: take Vec<Pending<u8>>) -> Vec<Result<Vec<u8>, IoError>> {
+    var ps = take given
+    var got: Vec<Option<Result<Vec<u8>, IoError>>> = Vec::new()
+    for _ in 0..ps.len() {
+        got.push(None)
+    }
+    var left = ps.len()
+    while left > 0 {
+        for k in 0..ps.len() {
+            if got[k].is_none() {
+                if let Some(p) = ps[k].poll() {
+                    got[k] = Some(take p)
+                    left -= 1
+                }
+            }
+        }
+        if left > 0 {
+            yield
+        }
+    }
+    var out: Vec<Result<Vec<u8>, IoError>> = Vec::new()
+    for k in 0..got.len() {
+        let Some(r) = replace(mut got[k], None) else { panic("every request is answered") }
+        out.push(take r)
+    }
+    out
+}
+
+/// Each answer's bytes, or why the first that failed did, said with `what` and its index.
+pub fn answers(
+    polled: take Vec<Result<Vec<u8>, IoError>>,
+    what: [String],
+) -> Result<Vec<Vec<u8>>, String> {
+    var rs = take polled
+    var out: Vec<Vec<u8>> = Vec::new()
+    for k in 0..rs.len() {
+        let r = replace(mut rs[k], Ok(Vec::new()))
+        match answer(take r) {
+            Ok(b) => out.push(take b),
+            Err(e) => return Err(String::from(f"{what[k].as_str()}: {e.message()}")),
+        }
+    }
+    Ok(out)
+}
+
+/// A blob's handle, as an answer gives it.
+pub fn handle(bytes: [u8]) -> Result<Blob, String> {
+    var w: Vec<u8> = Vec::from([u8(0)])
+    for b in bytes {
+        w.push(b)
+    }
+    match blob::read_handle(Ok(take w)) {
+        Ok(b) => Ok(b),
+        Err(e) => Err(String::from(e.message())),
+    }
+}
+
+/// A `u64`, as a `blob::len` answer gives it.
+fn length(bytes: [u8]) -> Result<u64, String> {
+    var w: Vec<u8> = Vec::from([u8(0)])
+    for b in bytes {
+        w.push(b)
+    }
+    match blob::read_len(Ok(take w)) {
+        Ok(n) => Ok(n),
+        Err(e) => Err(String::from(e.message())),
+    }
+}
+
+/// The whole of each file at `paths` (root paths), in order.
+@job
+pub fn read_files(given: take Vec<String>) -> Result<Vec<Vec<u8>>, String> {
+    let paths = take given
+    var out: Vec<Vec<u8>> = Vec::new()
+    var at = 0
+    while at < paths.len() {
+        let n = min(AT_ONCE, paths.len() - at)
+        var names: Vec<String> = Vec::new()
+        var ps: Vec<Pending<u8>> = Vec::new()
+        for k in 0..n {
+            names.push(paths[at + k].clone())
+            ps.push(files::read_blob(paths[at + k].as_str()))
+        }
+        var j = Box::new(all.start(take ps))
+        var got: Vec<Result<Vec<u8>, IoError>> = Vec::new()
+        loop {
+            match j.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(r) => {
+                    got = take r
+                    break
+                },
+            }
+        }
+        let read = answers(take got, names)?
+        var blobs: Vec<Blob> = Vec::new()
+        for r in read {
+            blobs.push(handle(r)?)
+        }
+        // Their lengths, then their chunks, then the blobs given back.
+        var ls: Vec<Pending<u8>> = Vec::new()
+        for b in blobs {
+            ls.push(blob::len(b))
+        }
+        var jl = Box::new(all.start(take ls))
+        var lens: Vec<Result<Vec<u8>, IoError>> = Vec::new()
+        loop {
+            match jl.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(r) => {
+                    lens = take r
+                    break
+                },
+            }
+        }
+        let sized = answers(take lens, names)?
+        var chunks: Vec<Pending<u8>> = Vec::new()
+        var whose: Vec<String> = Vec::new()
+        var counts: Vec<u32> = Vec::new()
+        for k in 0..n {
+            let size = length(sized[k])?
+            let c = u32((size + u64(MOST_BYTES) - 1) / u64(MOST_BYTES))
+            counts.push(c)
+            for i in 0..c {
+                chunks.push(blob::read(blobs[k], u64(i) * u64(MOST_BYTES), MOST_BYTES))
+                whose.push(names[k].clone())
+            }
+        }
+        var jc = Box::new(all.start(take chunks))
+        var parts: Vec<Result<Vec<u8>, IoError>> = Vec::new()
+        loop {
+            match jc.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(r) => {
+                    parts = take r
+                    break
+                },
+            }
+        }
+        var rs: Vec<Pending<u8>> = Vec::new()
+        for b in blobs {
+            rs.push(blob::release(b))
+        }
+        var jr = Box::new(all.start(take rs))
+        loop {
+            match jr.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(_) => break,
+            }
+        }
+        var bytes = answers(take parts, whose)?
+        var c = 0
+        for k in 0..n {
+            var whole: Vec<u8> = Vec::new()
+            for _ in 0..counts[k] {
+                whole.append(mut bytes[c])
+                c += 1
+            }
+            out.push(take whole)
+        }
+        at += n
+    }
+    Ok(out)
+}
+
+/// Copies each file `from` to `to` (root paths, `to` in a write root), whole, through a blob.
+@job
+pub fn copy_files(given: take Vec<(String, String)>) -> Result<(), String> {
+    let pairs = take given
+    var at = 0
+    while at < pairs.len() {
+        let n = min(AT_ONCE, pairs.len() - at)
+        var names: Vec<String> = Vec::new()
+        var ps: Vec<Pending<u8>> = Vec::new()
+        for k in 0..n {
+            names.push(pairs[at + k].0.clone())
+            ps.push(files::read_blob(pairs[at + k].0.as_str()))
+        }
+        var j = Box::new(all.start(take ps))
+        var got: Vec<Result<Vec<u8>, IoError>> = Vec::new()
+        loop {
+            match j.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(r) => {
+                    got = take r
+                    break
+                },
+            }
+        }
+        let read = answers(take got, names)?
+        var blobs: Vec<Blob> = Vec::new()
+        for r in read {
+            blobs.push(handle(r)?)
+        }
+        var ws: Vec<Pending<u8>> = Vec::new()
+        var targets: Vec<String> = Vec::new()
+        for k in 0..n {
+            ws.push(files::write_blob(pairs[at + k].1.as_str(), blobs[k]))
+            targets.push(pairs[at + k].1.clone())
+        }
+        var jw = Box::new(all.start(take ws))
+        var written: Vec<Result<Vec<u8>, IoError>> = Vec::new()
+        loop {
+            match jw.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(r) => {
+                    written = take r
+                    break
+                },
+            }
+        }
+        var rs: Vec<Pending<u8>> = Vec::new()
+        for b in blobs {
+            rs.push(blob::release(b))
+        }
+        var jr = Box::new(all.start(take rs))
+        loop {
+            match jr.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(_) => break,
+            }
+        }
+        let _ = answers(take written, targets)?
+        at += n
+    }
+    Ok(())
+}
+
+/// Writes each file's bytes as the whole file at its path (a root path in a write root): at
+/// once, or through a blob if they're more than a request carries.
+@job
+pub fn write_files(given: take Vec<(String, Vec<u8>)>) -> Result<(), String> {
+    var items = take given
+    var at = 0
+    while at < items.len() {
+        let n = min(AT_ONCE, items.len() - at)
+        var names: Vec<String> = Vec::new()
+        // The small files at once; each large one through a blob of its own.
+        var ps: Vec<Pending<u8>> = Vec::new()
+        var large: Vec<u32> = Vec::new()
+        for k in 0..n {
+            if items[at + k].1.len() <= MOST_BYTES {
+                names.push(items[at + k].0.clone())
+                ps.push(files::write(items[at + k].0.as_str(), items[at + k].1))
+            } else {
+                large.push(at + k)
+            }
+        }
+        var j = Box::new(all.start(take ps))
+        var got: Vec<Result<Vec<u8>, IoError>> = Vec::new()
+        loop {
+            match j.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(r) => {
+                    got = take r
+                    break
+                },
+            }
+        }
+        let _ = answers(take got, names)?
+        for index in large {
+            let path = items[index].0.clone()
+            let shown: Vec<String> = Vec::from([path.clone()])
+            var made: Vec<Pending<u8>> = Vec::new()
+            made.push(blob::new())
+            var jn = Box::new(all.start(take made))
+            var nb: Vec<Result<Vec<u8>, IoError>> = Vec::new()
+            loop {
+                match jn.get_mut().resume() {
+                    Step::Yielded => yield,
+                    Step::Done(r) => {
+                        nb = take r
+                        break
+                    },
+                }
+            }
+            let handles = answers(take nb, shown)?
+            let b = handle(handles[0])?
+            let bytes = replace(mut items[index].1, Vec::new())
+            // Its chunks, in order: one at a time.
+            var from = 0
+            while from < bytes.len() {
+                let to = min(from + MOST_BYTES, bytes.len())
+                var chunk: Vec<u8> = Vec::with_capacity(to - from)
+                for i in from..to {
+                    chunk.push(bytes[i])
+                }
+                var one: Vec<Pending<u8>> = Vec::new()
+                one.push(blob::append(b, chunk))
+                var ja = Box::new(all.start(take one))
+                var r: Vec<Result<Vec<u8>, IoError>> = Vec::new()
+                loop {
+                    match ja.get_mut().resume() {
+                        Step::Yielded => yield,
+                        Step::Done(x) => {
+                            r = take x
+                            break
+                        },
+                    }
+                }
+                let _ = answers(take r, shown)?
+                from = to
+            }
+            // Written, then given back: a blob being written can't be released.
+            for step in 0..2 {
+                var wr: Vec<Pending<u8>> = Vec::new()
+                wr.push(if step == 0 { files::write_blob(path.as_str(), b) } else {
+                    blob::release(b)
+                })
+                var jw = Box::new(all.start(take wr))
+                var w: Vec<Result<Vec<u8>, IoError>> = Vec::new()
+                loop {
+                    match jw.get_mut().resume() {
+                        Step::Yielded => yield,
+                        Step::Done(x) => {
+                            w = take x
+                            break
+                        },
+                    }
+                }
+                let _ = answers(take w, shown)?
+            }
+        }
+        at += n
+    }
+    Ok(())
+}
+
+/// The files under the directory `dir` (a root path), each by its path there, in no order. A
+/// symbolic link, or anything but a file or a directory, is refused.
+@job
+pub fn walk(dir: take String) -> Result<Vec<String>, String> {
+    var out: Vec<String> = Vec::new()
+    // Directories still to list, each by its path from `dir` ("" for `dir` itself).
+    var todo: Vec<String> = Vec::from([String::new()])
+    while !todo.is_empty() {
+        let n = min(AT_ONCE, todo.len())
+        let batch = todo.drain_front(n)
+        var names: Vec<String> = Vec::new()
+        var ps: Vec<Pending<u8>> = Vec::new()
+        for rel in batch {
+            let path = if rel.is_empty() {
+                dir.clone()
+            } else {
+                String::from(f"{dir.as_str()}/{rel.as_str()}")
+            }
+            ps.push(files::list(path.as_str()))
+            names.push(take path)
+        }
+        var j = Box::new(all.start(take ps))
+        var got: Vec<Result<Vec<u8>, IoError>> = Vec::new()
+        loop {
+            match j.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(r) => {
+                    got = take r
+                    break
+                },
+            }
+        }
+        for k in 0..n {
+            let r = replace(mut got[k], Ok(Vec::new()))
+            let entries = match files::read_list(take r) {
+                Ok(e) => take e,
+                Err(e) => return Err(String::from(f"{names[k].as_str()}: {e.message()}")),
+            }
+            for e in entries {
+                let rel = if batch[k].is_empty() {
+                    e.name.clone()
+                } else {
+                    String::from(f"{batch[k].as_str()}/{e.name.as_str()}")
+                }
+                match e.kind {
+                    Kind::File => out.push(take rel),
+                    Kind::Dir => todo.push(take rel),
+                    Kind::Link => {
+                        return Err(
+                            String::from(
+                                f"release assets cannot be symbolic links: {names[k].as_str()}/{e.name.as_str()}",
+                            ),
+                        )
+                    },
+                    Kind::Other => {
+                        return Err(
+                            String::from(
+                                f"not a file or a directory: {names[k].as_str()}/{e.name.as_str()}",
+                            ),
+                        )
+                    },
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The bytes `data` holds: in the answer itself, or in a blob, read whole and then given back.
+@job
+pub fn data_bytes(data: take Data) -> Result<Vec<u8>, String> {
+    let b = match take data {
+        Data::Bytes(bytes) => return Ok(take bytes),
+        Data::Blob(b) => b,
+    }
+    let shown: Vec<String> = Vec::from([String::from("a blob")])
+    var ls: Vec<Pending<u8>> = Vec::new()
+    ls.push(blob::len(b))
+    var jl = Box::new(all.start(take ls))
+    var lens: Vec<Result<Vec<u8>, IoError>> = Vec::new()
+    loop {
+        match jl.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                lens = take r
+                break
+            },
+        }
+    }
+    let sized = answers(take lens, shown)?
+    let size = length(sized[0])?
+    var chunks: Vec<Pending<u8>> = Vec::new()
+    var whose: Vec<String> = Vec::new()
+    let c = u32((size + u64(MOST_BYTES) - 1) / u64(MOST_BYTES))
+    for i in 0..c {
+        chunks.push(blob::read(b, u64(i) * u64(MOST_BYTES), MOST_BYTES))
+        whose.push(String::from("a blob"))
+    }
+    var jc = Box::new(all.start(take chunks))
+    var parts: Vec<Result<Vec<u8>, IoError>> = Vec::new()
+    loop {
+        match jc.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                parts = take r
+                break
+            },
+        }
+    }
+    var jr = Box::new(release_blobs.start(Vec::from([b])))
+    loop {
+        match jr.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    var bytes = answers(take parts, whose)?
+    var whole: Vec<u8> = Vec::new()
+    for k in 0..c {
+        whole.append(mut bytes[k])
+    }
+    Ok(whole)
+}
+
+/// Gives each blob back.
+@job
+pub fn release_blobs(given: take Vec<Blob>) -> u32 {
+    let blobs = take given
+    var rs: Vec<Pending<u8>> = Vec::new()
+    for b in blobs {
+        rs.push(blob::release(b))
+    }
+    var j = Box::new(all.start(take rs))
+    loop {
+        match j.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    0
+}
+
+/// Removes everything in the directory `dir` (a root path in a write root), leaving it empty.
+@job
+pub fn empty(dir: take String) -> Result<(), String> {
+    var ls: Vec<Pending<u8>> = Vec::new()
+    ls.push(files::list(dir.as_str()))
+    var j = Box::new(all.start(take ls))
+    var listed: Vec<Result<Vec<u8>, IoError>> = Vec::new()
+    loop {
+        match j.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                listed = take r
+                break
+            },
+        }
+    }
+    let entries = match files::read_list(replace(mut listed[0], Ok(Vec::new()))) {
+        Ok(l) => take l,
+        Err(e) => return Err(String::from(f"{dir.as_str()}: {e.message()}")),
+    }
+    var rs: Vec<Pending<u8>> = Vec::new()
+    var names: Vec<String> = Vec::new()
+    for e in entries {
+        let path = String::from(f"{dir.as_str()}/{e.name.as_str()}")
+        if e.kind == Kind::Dir {
+            rs.push(files::remove_all(path.as_str()))
+        } else {
+            rs.push(files::remove(path.as_str()))
+        }
+        names.push(take path)
+    }
+    var jr = Box::new(all.start(take rs))
+    var removed: Vec<Result<Vec<u8>, IoError>> = Vec::new()
+    loop {
+        match jr.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                removed = take r
+                break
+            },
+        }
+    }
+    let _ = answers(take removed, names)?
+    Ok(())
+}

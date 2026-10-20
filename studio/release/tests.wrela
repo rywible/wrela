@@ -1,0 +1,685 @@
+// The release tool's tests: the catalog's checks, the fingerprint's framing, each Worker's
+// headers, redirects, configuration and lists, the docs' page and plain pages (their Markdown,
+// anchors and links), and, as tool tests on small fixtures, the walk of a package's dependencies
+// for its font licences and the members of a workspace.
+
+use catalog::{Build, CATALOG, Catalog, Console, Docs, Game, check, is_component, origin, paths}
+use main::{build_options, export_conflict, licences, parse_args, workspace_of}
+use manifest::{joined, parse}
+use pages::{Page, cells, in_order, page_html, render}
+use site::{
+    Top, card, catalog_line, code_of, docs_headers, docs_page, docs_redirects, fetch_order, headers,
+    prefetch_list, release_json, replace_all, suffix, with_storage, wrangler_config,
+}
+use std::hash::sha256::{Sha256, hex}
+use std::job::Step
+use tree::{Entry, Source, Tree, before_by_parts, check_files, files_json, frame}
+
+fn contains(haystack: str, needle: str) -> bool {
+    haystack.find(needle).is_some()
+}
+
+// ---- The catalog -------------------------------------------------------------------------------
+
+fn one_game(
+    session: Text,
+    build: Text,
+    domain: Text,
+    description: Text,
+    console_domain: Text,
+) -> Catalog {
+    Catalog {
+        console: Console {
+            dir: "console",
+            worker: "console-host",
+            domain: console_domain,
+            description,
+        },
+        docs: Docs {
+            dir: "docsite",
+            worker: "docs-host",
+            domain: "docs.example",
+            description: "The reference.",
+            packages: Vec::from(["engine"]),
+        },
+        games: Vec::from(
+            [
+                Game {
+                    id: "game",
+                    title: "Game",
+                    worker: "game-host",
+                    domain,
+                    session,
+                    builds: Vec::from([Build { name: build, dir: "session" }]),
+                    cover: "cover.png",
+                },
+            ],
+        ),
+    }
+}
+
+fn fails_with(c: Catalog, why: str) {
+    match check(c) {
+        Ok(_) => panic(f"passed, but should fail with `{why}`"),
+        Err(e) => assert(contains(e.as_str(), why), e.as_str()),
+    }
+}
+
+@test
+fn the_released_catalog_passes_its_checks() {
+    assert(check(CATALOG).is_ok())
+    // Each package's manifest and each cover must be in the workspace.
+    let wanted = paths(CATALOG)
+    var covers = 0
+    for (path, why) in wanted {
+        if path.as_str().ends_with("cover.png") {
+            covers += 1
+            assert(contains(why.as_str(), "cover"), why.as_str())
+        }
+    }
+    assert(covers == CATALOG.games.len())
+}
+
+@test
+fn build_names_cannot_collide_with_release_directories() {
+    fails_with(
+        one_game("releases", "releases", "game.example", "A console.", "console.example"),
+        "reserved",
+    )
+    assert(
+        check(
+            one_game("session", "session", "game.example", "A console.", "console.example"),
+        ).is_ok(),
+    )
+    fails_with(one_game("session", "session", "game.example", "", "console.example"), "description")
+    fails_with(
+        one_game("session", "session", "www.example", "A console.", "console.example"),
+        "own hosts",
+    )
+    fails_with(
+        one_game("session", "session", "console.example", "A console.", "console.example"),
+        "shares",
+    )
+    fails_with(
+        one_game("session", "other", "game.example", "A console.", "console.example"),
+        "session",
+    )
+}
+
+@test
+fn domains_and_catalog_components_reject_header_and_path_injection() {
+    for value in ["../game", "a/b", "name\nHeader: injected", "", "-a", "A"] {
+        assert(!is_component(value), value)
+    }
+    assert(is_component("last-green") && is_component("a1"))
+    for domain in [
+        "example.com\nOther: value",
+        "https://example.com",
+        "a..example.com",
+        "localhost",
+        ".a.b",
+        "a.b-",
+    ] {
+        assert(origin(domain).is_err(), domain)
+    }
+    let Ok(o) = origin("games.wrela.dev") else { panic("a domain") }
+    assert(o.as_str() == "https://games.wrela.dev")
+    let h = headers(
+        "https://games.wrela.dev",
+        Vec::from([String::from("https://one.games.wrela.dev")]),
+        embedded: false,
+    )
+    assert(contains(h.as_str(), "cross-origin-isolated=(self \"https://one.games.wrela.dev\")"))
+    assert(contains(h.as_str(), "frame-ancestors 'none'"))
+    let none: [String; 0] = []
+    let child = headers("https://games.wrela.dev", none, embedded: true)
+    assert(contains(child.as_str(), "frame-ancestors https://games.wrela.dev"))
+    assert(contains(child.as_str(), "Cross-Origin-Embedder-Policy: require-corp"))
+    assert(contains(child.as_str(), "/*.wgsl\n  Content-Type: text/plain"))
+}
+
+@test
+fn the_command_line_takes_a_revision() {
+    let Some(r) = parse_args(
+        Vec::from([String::from("--revision"), String::from("488edbe8")]),
+    ) else {
+        panic("a revision")
+    }
+    assert(r.as_str() == "488edbe8")
+    assert(parse_args(Vec::from([String::from("--revision"), String::from("main")])).is_none())
+    assert(parse_args(Vec::from([String::from("--revision")])).is_none())
+    assert(parse_args(Vec::from([String::from("--output"), String::from("488edbe8")])).is_none())
+}
+
+@test
+fn released_builds_are_optimized() {
+    assert(build_options().optimize)
+}
+
+// ---- The fingerprint ---------------------------------------------------------------------------
+
+fn digest_of(files: [(Text, Text)]) -> String {
+    var d = Sha256::new()
+    for (path, body) in files {
+        let b = String::from(body)
+        frame(mut d, path, u64(b.len()))
+        d.update(b.as_bytes())
+    }
+    hex(d.finish())
+}
+
+@test
+fn the_release_identity_distinguishes_file_paths_from_their_contents() {
+    let a = digest_of([("a", "bc")])
+    let b = digest_of([("ab", "c")])
+    let again = digest_of([("a", "bc")])
+    assert(a.as_str() != b.as_str())
+    assert(a.as_str() == again.as_str())
+    // A frame is the path's length, the path and the body's length, each length 8 bytes, the
+    // most significant first.
+    var d = Sha256::new()
+    frame(mut d, "a", 2)
+    var e = Sha256::new()
+    e.update([u8(0), 0, 0, 0, 0, 0, 0, 1, 97, 0, 0, 0, 0, 0, 0, 0, 2])
+    assert(hex(d.finish()).as_str() == hex(e.finish()).as_str())
+}
+
+@test
+fn files_are_read_in_the_order_of_their_paths_parts() {
+    assert(before_by_parts("x/y", "x-y"))
+    assert(before_by_parts("x", "x/y"))
+    assert(before_by_parts("a/c", "ab/c"))
+    assert(!before_by_parts("b", "a/z"))
+    var t = Tree::new()
+    for p in ["x-y", "x/y", "x", "a.txt"] {
+        t.put_bytes(p, String::from(p).as_bytes())
+    }
+    t.sort()
+    let want = ["a.txt", "x", "x/y", "x-y"]
+    for k in 0..4 {
+        assert(t.entries[k].path.as_str() == want[k], t.entries[k].path.as_str())
+    }
+}
+
+@test
+fn private_storage_and_hidden_files_cannot_be_uploaded() {
+    var t = Tree::new()
+    t.put_bytes("game.wasm", String::from("wasm").as_bytes())
+    assert(check_files(t.entries).is_ok())
+    t.put_bytes("storage/save", String::from("private").as_bytes())
+    let Err(e) = check_files(t.entries) else { panic("private storage") }
+    assert(contains(e.as_str(), "private"), e.as_str())
+    t.remove("storage/save")
+    t.put_bytes("a/.native/x", String::from("cache").as_bytes())
+    assert(check_files(t.entries).is_err(), "runtime output")
+    t.remove("a/.native/x")
+    t.put_bytes(".wrela-build", String::from("[]").as_bytes())
+    let Err(h) = check_files(t.entries) else { panic("hidden") }
+    assert(contains(h.as_str(), "hidden"), h.as_str())
+}
+
+@test
+fn each_release_lists_its_files_for_a_later_deploy_to_keep() {
+    var t = Tree::new()
+    t.put_bytes("session/game.wasm", String::from("wasm").as_bytes())
+    t.put_bytes("LICENSE", String::from("MIT").as_bytes())
+    let listed = files_json(t.entries)
+    let wasm = tree::hex_sha(String::from("wasm").as_bytes())
+    let mit = tree::hex_sha(String::from("MIT").as_bytes())
+    assert(
+        listed.as_str() ==
+            f"{{\"LICENSE\": \"{mit.as_str()}\", \"session/game.wasm\": \"{wasm.as_str()}\"}}",
+        listed.as_str(),
+    )
+    var empty = Tree::new()
+    assert(files_json(empty.entries).as_str() == "{}")
+    let (count, bytes) = t.totals()
+    assert(count == 2 && bytes == 7)
+    empty.put("x", Source::File(String::from("work/x")))
+    assert(empty.entries[0].sha.is_empty(), "a file's hash is read with it")
+}
+
+// ---- Each Worker -------------------------------------------------------------------------------
+
+@test
+fn every_bootstrap_has_its_storage_namespace() {
+    let page = with_storage("<html><head><title>wrela</title></head></html>", "console")
+    assert(
+        page.as_str() ==
+            "<html><head>\n<meta name=\"wrela-storage\" content=\"console\"><title>wrela</title></head></html>",
+    )
+    assert(replace_all("a·<b>·<b>", "<b>", "c").as_str() == "a·c·c")
+}
+
+@test
+fn each_worker_serves_its_assets_on_its_domain_only() {
+    let w = wrangler_config("game-host", "game.example")
+    assert(
+        w.as_str() ==
+            "{\n  \"name\": \"game-host\",\n  \"compatibility_date\": \"2026-10-12\",\n  \"assets\": {\n    \"directory\": \"./game-host\"\n  },\n  \"routes\": [\n    {\n      \"pattern\": \"game.example\",\n      \"custom_domain\": true\n    }\n  ],\n  \"workers_dev\": false,\n  \"preview_urls\": false\n}\n",
+        w.as_str(),
+    )
+    var reports: Vec<site::Report> = Vec::new()
+    reports.push(
+        site::Report {
+            worker: String::from("console-host"),
+            domain: String::from("console.example"),
+            console: true,
+            docs: false,
+            files: 3,
+            bytes: 12,
+        },
+    )
+    let r = release_json("abc1234", "0123456789abcdef0123", reports)
+    assert(
+        contains(
+            r.as_str(),
+            "{\n  \"source\": \"abc1234\",\n  \"release\": \"0123456789abcdef0123\",\n  \"workers\": [\n    {\n      \"worker\": \"console-host\",",
+        ),
+    )
+    assert(
+        contains(
+            r.as_str(),
+            "\"console\": true,\n      \"docs\": false,\n      \"files\": 3,\n      \"bytes\": 12\n    }\n  ]\n}",
+        ),
+    )
+}
+
+@test
+fn the_console_may_fetch_its_games_files_and_shows_a_card_where_shared() {
+    let policy = headers(
+        "https://console.example",
+        Vec::from([String::from("https://game.example")]),
+        embedded: false,
+    )
+    assert(contains(policy.as_str(), "connect-src 'self' https://game.example;"))
+    assert(!contains(policy.as_str(), "Access-Control-Allow-Origin"))
+    let none: [String; 0] = []
+    let game = headers("https://console.example", none, embedded: true)
+    assert(contains(game.as_str(), "connect-src 'self';"))
+    assert(contains(game.as_str(), "Access-Control-Allow-Origin: https://console.example\n"))
+    assert(contains(game.as_str(), "Access-Control-Allow-Credentials: true\n"))
+    let console = Console {
+        dir: "console",
+        worker: "console-host",
+        domain: "console.example",
+        description: "Games & <more>",
+    }
+    let c = card(console, "R", "cover-0123456789abcdef.webp")
+    assert(contains(c.as_str(), "<meta name=\"description\" content=\"Games &amp; &lt;more&gt;\">"))
+    assert(contains(c.as_str(), "<meta property=\"og:url\" content=\"https://console.example/\">"))
+    assert(
+        contains(
+            c.as_str(),
+            "<meta property=\"og:image\" content=\"https://console.example/releases/R/cover-0123456789abcdef.webp\">",
+        ),
+    )
+}
+
+@test
+fn the_console_prefetches_a_games_runtime_and_wasm_from_its_origin() {
+    let game = Game {
+        id: "game",
+        title: "Game",
+        worker: "game-host",
+        domain: "game.example",
+        session: "session",
+        builds: Vec::from(
+            [Build { name: "floor", dir: "floor" }, Build { name: "session", dir: "session" }],
+        ),
+        cover: "cover.png",
+    }
+    let order = fetch_order(game)
+    assert(order.len() == 2 && order[0] == "session" && order[1] == "floor")
+    var builds: Vec<(Text, Vec<String>)> = Vec::new()
+    builds.push(
+        (
+            "session",
+            Vec::from(
+                [
+                    String::from("files/tile.bin"),
+                    String::from("game.lines"),
+                    String::from("game.wasm"),
+                    String::from("index.html"),
+                ],
+            ),
+        ),
+    )
+    builds.push(("floor", Vec::from([String::from("main.js")])))
+    let list = prefetch_list(game, "R", builds)
+    assert(
+        list.as_str() ==
+            "https://game.example/releases/R/session/game.wasm\nhttps://game.example/releases/R/floor/main.js\n",
+        list.as_str(),
+    )
+    let line = catalog_line(game, "R", "cover-0123456789abcdef.webp", width: 960, height: 540)
+    assert(
+        line.as_str() ==
+            "game\tGame\thttps://game.example/releases/R/session/\tcover-0123456789abcdef.webp\t960\t540",
+    )
+}
+
+// ---- The docs ----------------------------------------------------------------------------------
+
+fn file(name: Text) -> Top {
+    Top { name: String::from(name), dir: false, markdown: false }
+}
+
+fn dir(name: Text, markdown: bool) -> Top {
+    Top { name: String::from(name), dir: true, markdown }
+}
+
+@test
+fn the_docs_have_stable_addresses_for_agents() {
+    let tops = [
+        file("LICENSE"),
+        file("OFL-Manrope.txt"),
+        dir("files", markdown: false),
+        file("index.json"),
+        file("llms.txt"),
+        file("manifest.json"),
+        dir("std", markdown: true),
+    ]
+    let r = docs_redirects(tops, "R")
+    assert(
+        r.as_str() ==
+            "/OFL-Manrope.txt /releases/R/OFL-Manrope.txt 302\n/index.json /releases/R/index.json 302\n/llms.txt /releases/R/llms.txt 302\n/std/* /releases/R/std/:splat 302\n",
+        r.as_str(),
+    )
+    let h = docs_headers("https://docs.example")
+    assert(
+        contains(
+            h.as_str(),
+            "/*.md\n  Content-Type: text/markdown; charset=utf-8\n  Access-Control-Allow-Origin: *",
+        ),
+    )
+    assert(contains(h.as_str(), "frame-ancestors 'none'"))
+    assert(contains(h.as_str(), "connect-src 'self';"))
+    assert(suffix("llms-full.txt") == ".txt" && suffix(".hidden") == "" && suffix("a.") == "")
+}
+
+@test
+fn the_export_cannot_take_the_place_of_the_program() {
+    let program = [file("index.html"), file("game.wasm")]
+    let Some(name) = export_conflict(
+        program,
+        Vec::from([String::from("index.html"), String::from("std/io.md")]),
+    ) else {
+        panic("a conflict")
+    }
+    assert(name.as_str() == "index.html")
+    assert(export_conflict(program, Vec::from([String::from("std/io.md")])).is_none())
+}
+
+fn page(path: Text, title: Text, summary: Text, kind: Text) -> Page {
+    Page {
+        path: String::from(path),
+        title: String::from(title),
+        summary: String::from(summary),
+        kind: String::from(kind),
+    }
+}
+
+@test
+fn the_docs_page_lists_each_page_for_a_person_then_an_agent() {
+    let docs = Docs {
+        dir: "docsite",
+        worker: "docs-host",
+        domain: "docs.example",
+        description: "The reference.",
+        packages: Vec::new(),
+    }
+    let pages = [
+        page("std/io.md", "std::io", "", "module"),
+        page("spec/language/6-memory.md", "6. Memory", "Values & `moves`.", "spec"),
+    ]
+    let has = [
+        String::from("llms.txt"),
+        String::from("index.json"),
+        String::from("std/llms-full.txt"),
+    ]
+    let (head, text) = docs_page(docs, pages, has)
+    assert(contains(head.as_str(), "<meta name=\"description\" content=\"The reference.\">"))
+    assert(
+        contains(
+            head.as_str(),
+            "<link rel=\"alternate\" type=\"text/markdown\" href=\"/llms.txt\"",
+        ),
+    )
+    assert(contains(head.as_str(), "<script src=\"pages.js\" defer></script>"))
+    assert(
+        contains(
+            head.as_str(),
+            "<style>html canvas#screen { touch-action: pinch-zoom; } html, body { background: #09090B; }",
+        ),
+    )
+    assert(
+        contains(
+            head.as_str(),
+            "<meta name=\"theme-color\" media=\"(prefers-color-scheme: light)\" content=\"#FFFFFF\">",
+        ),
+    )
+    let t = text.as_str()
+    assert(t.starts_with("\n<main id=\"wrela-text\">"))
+    let Some(language) = t.find("<h2>The language</h2>") else { panic("the language") }
+    let Some(agents) = t.find("<h2>For agents</h2>") else { panic("for agents") }
+    assert(language < agents, "a person's pages first")
+    assert(
+        contains(
+            t,
+            "<li><a href=\"https://docs.example/spec/language/6-memory.html\">6. Memory</a>: Values &amp; <code>moves</code>.</li>",
+        ),
+    )
+    assert(contains(t, "<li><a href=\"https://docs.example/std/io.html\">std::io</a></li>"))
+    assert(contains(t, "<a href=\"https://docs.example/std/llms-full.txt\">std/llms-full.txt</a>"))
+    assert(!contains(t, "spec/llms-full.txt"))
+    assert(!contains(t, "https://docs.example/llms-full.txt"), "the whole file isn't there")
+    assert(contains(t, "<code>https://docs.example/#std/arena:arena-insert</code>"))
+    assert(code_of("a `b` <c>").as_str() == "a <code>b</code> &lt;c&gt;")
+}
+
+@test
+fn each_page_is_html_beside_its_markdown_with_its_neighbours() {
+    let pages = [
+        page("std/io.md", "std::io", "Requests.", "module"),
+        page("spec/language/6-memory.md", "6. Memory", "Values.", "spec"),
+    ]
+    let ordered = in_order(pages)
+    // The language first: its page's next is std's.
+    assert(ordered[0].path.as_str() == "spec/language/6-memory.md")
+    let memory = page_html(ordered[0], "<h1>6. Memory</h1>", None, Some(ordered[1].clone()))
+    let m = memory.as_str()
+    assert(contains(m, "<a class=\"next\" href=\"../../std/io.html\"><span>Next</span>std::io</a>"))
+    assert(contains(m, "<link rel=\"stylesheet\" href=\"../../pages.css\">"))
+    assert(contains(m, "href=\"/#spec/language/6-memory\">Live docs"))
+    assert(contains(m, "<link rel=\"alternate\" type=\"text/markdown\" href=\"6-memory.md\">"))
+    let io = page_html(ordered[1], "", Some(ordered[0].clone()), None)
+    assert(contains(io.as_str(), "<a class=\"previous\" href=\"../spec/language/6-memory.html\">"))
+    assert(contains(io.as_str(), "<p class=\"group\">Standard library</p>"))
+    assert(contains(io.as_str(), "<title>std::io | Wrela docs</title>"))
+}
+
+// ---- Markdown ----------------------------------------------------------------------------------
+
+@test
+fn link_destinations_do_not_receive_text_styles() {
+    let out = render("[**file**](https://example.test/a**b**c?q=*value*)")
+    assert(
+        out.as_str() ==
+            "<p><a href=\"https://example.test/a**b**c?q=*value*\"><strong>file</strong></a></p>",
+        out.as_str(),
+    )
+}
+
+@test
+fn fenced_code_keeps_shorter_fences_and_backticks_with_text() {
+    let out = render("````wrela\n\nlet a = 1\n```\n````still code\n\n````\n")
+    assert(
+        out.as_str() == "<pre><code>\nlet a = 1\n```\n````still code\n</code></pre>",
+        out.as_str(),
+    )
+}
+
+@test
+fn escaped_pipes_stay_in_their_table_cells() {
+    for first in ["`x\\|y`", "`x|y`"] {
+        let out = render(f"| A | B |\n|---|---|\n| {first} | *z* |\n")
+        assert(contains(out.as_str(), "<td><code>x|y</code></td><td><em>z</em></td>"), out.as_str())
+    }
+    let c = cells("| a || c |")
+    assert(c.len() == 3 && c[0].as_str() == "a" && c[1].as_str() == "" && c[2].as_str() == "c")
+}
+
+@test
+fn link_queries_are_escaped_once() {
+    let out = render("[search](https://example.test/?q=fields&sort=name)")
+    assert(
+        contains(out.as_str(), "href=\"https://example.test/?q=fields&amp;sort=name\""),
+        out.as_str(),
+    )
+    assert(!contains(out.as_str(), "&amp;amp;"))
+}
+
+@test
+fn headings_take_the_exports_anchors_and_repeats_are_numbered() {
+    let out = render(
+        "# std::arena\n\n## Arena::insert\n\n## `Arena`\n\n## Arena\n\n## §6.8 Handles…\n",
+    )
+    let o = out.as_str()
+    assert(contains(o, "<h1 id=\"std-arena\">"), o)
+    assert(contains(o, "<h2 id=\"arena-insert\">"), o)
+    assert(contains(o, "<h2 id=\"arena\">"), o)
+    assert(contains(o, "<h2 id=\"arena-2\">"), o)
+    assert(contains(o, "<h2 id=\"6-8-handles\">"), o)
+}
+
+@test
+fn links_to_pages_lead_to_their_html_and_code_is_kept_as_written() {
+    let out = render(
+        "See [§6.8](../spec/language/6-memory.md#6-8-handles) and [the source](https://github.com/x/a.md#L3), `a < b` and **this**.",
+    )
+    let o = out.as_str()
+    assert(contains(o, "<a href=\"../spec/language/6-memory.html#6-8-handles\">§6.8</a>"), o)
+    assert(contains(o, "<a href=\"https://github.com/x/a.md#L3\">the source</a>"), o)
+    assert(contains(o, "<code>a &lt; b</code>"), o)
+    assert(contains(o, "<strong>this</strong>"), o)
+}
+
+@test
+fn blocks_lists_code_tables_and_an_items_kind_under_its_heading() {
+    let out = render(
+        "## fetch\n\n`fn` · [`io.wrela:3`](https://x/io#L3)\n\n```wrela\nlet a = <b>\n```\n\n- one\n  - inner\n- two\n\n3. three\n4. four\n\n| A | B |\n|---|---|\n| x | y |\n\n> quiet\n",
+    )
+    let o = out.as_str()
+    assert(contains(o, "<p class=\"meta\"><code>fn</code> · "), o)
+    assert(contains(o, "<pre><code>let a = &lt;b&gt;</code></pre>"), o)
+    assert(contains(o, "<ul>\n<li>one\n<ul>\n<li>inner\n</li></ul>\n</li>\n<li>two\n</li></ul>"), o)
+    assert(contains(o, "<ol start=\"3\">"), o)
+    assert(contains(o, "<th>A</th><th>B</th>"), o)
+    assert(contains(o, "<td>x</td><td>y</td>"), o)
+    assert(contains(o, "<blockquote><p>quiet</p></blockquote>"), o)
+}
+
+@test
+fn emphasis_needs_stars_no_word_touches() {
+    let out = render("a *b* c 2*3*4 and *not closed")
+    assert(out.as_str() == "<p>a <em>b</em> c 2*3*4 and *not closed</p>", out.as_str())
+}
+
+// ---- Manifests ---------------------------------------------------------------------------------
+
+@test
+fn a_manifest_names_its_dependencies_and_members() {
+    let m = parse(
+        "# a comment\n[package]\nname = \"console\"\n\n[dependencies]\nbrand = { workspace = true }\nui = { path = \"..\" }\n\n[workspace]\nmembers = [\n    \"console\",\n    \"ui/*\", # all of them\n]\n",
+    )
+    let Some(name) = m.name else { panic("a name") }
+    assert(name.as_str() == "console")
+    assert(m.dependencies.len() == 2)
+    assert(m.dependencies[0].name.as_str() == "brand" && m.dependencies[0].path.is_none())
+    let Some(p) = m.dependencies[1].path else { panic("a path") }
+    assert(p.as_str() == "..")
+    let Some(members) = m.members else { panic("members") }
+    assert(members.len() == 2 && members[1].as_str() == "ui/*")
+    assert(parse("[package]\n").members.is_none())
+    let Some(none) = parse("[workspace]\n").members else { panic("a workspace") }
+    assert(none.is_empty())
+    let Some(up) = joined("ws/ui/brand", "..") else { panic("inside") }
+    assert(up.as_str() == "ws/ui")
+    assert(joined("ws", "..").is_none())
+}
+
+// ---- Tool tests --------------------------------------------------------------------------------
+
+/// A redistributed release ships the font licences of its package and of each package it
+/// depends on: through a dependency of a dependency, one a member of the workspace found by its
+/// name and one found by its path.
+@test(tool, read: [("fx", "fixtures/licences")], budget: 30)
+@job
+fn releases_ship_the_font_licences_of_every_package_they_build() {
+    var j = Box::new(licences.start(String::from("fx/console")))
+    var got: Option<Result<Vec<(String, String)>, String>> = None
+    loop {
+        match j.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                got = Some(take r)
+                break
+            },
+        }
+    }
+    let Some(r) = take got else { panic("no answer") }
+    let found = match take r {
+        Ok(f) => take f,
+        Err(e) => panic(e.as_str()),
+    }
+    var names = String::new()
+    for (name, path) in found {
+        names.push_str(f"{name.as_str()}={path.as_str()};")
+    }
+    assert(
+        names.as_str() ==
+            "OFL-example.txt=fx/console/fonts/OFL-example.txt;OFL-Brand.txt=fx/ui/brand/fonts/OFL-Brand.txt;OFL-Ui.txt=fx/ui/fonts/OFL-Ui.txt;",
+        names.as_str(),
+    )
+}
+
+/// A workspace dependency is the nearest workspace's member, by its name or its directory's.
+@test(tool, read: [("fx", "fixtures/nearest"), ("twice", "fixtures/twice")], budget: 30)
+@job
+fn workspace_members_are_the_nearest_workspaces() {
+    var j = Box::new(workspace_of.start(String::from("fx/inner/great-tree")))
+    var got: Option<Result<(String, Vec<(String, String)>), String>> = None
+    loop {
+        match j.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                got = Some(take r)
+                break
+            },
+        }
+    }
+    let Some(r) = take got else { panic("no answer") }
+    let (root, members) = match take r {
+        Ok(f) => take f,
+        Err(e) => panic(e.as_str()),
+    }
+    assert(root.as_str() == "fx/inner", root.as_str())
+    assert(members.len() == 2, "the inner workspace's members")
+    assert(members[0].0.as_str() == "app" && members[0].1.as_str() == "fx/inner")
+    assert(members[1].0.as_str() == "great_tree" && members[1].1.as_str() == "fx/inner/great-tree")
+    // Two members of one name are refused.
+    var k = Box::new(workspace_of.start(String::from("twice")))
+    var again: Option<Result<(String, Vec<(String, String)>), String>> = None
+    loop {
+        match k.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                again = Some(take r)
+                break
+            },
+        }
+    }
+    let Some(t) = take again else { panic("no answer") }
+    assert(t.is_err(), "two members named great_tree")
+}

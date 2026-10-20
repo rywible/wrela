@@ -1,0 +1,312 @@
+// The released console and its games, and the reference docs: each a Cloudflare Worker serving
+// static assets on its own domain. `wrela tool release` builds a release of them all, and
+// tools/deploy.py deploys it. The console reads the catalog that a release writes for it
+// (catalog.tsv), not this value: what it shows is what the release built.
+//
+// The catalog is a value of the release tool's own package, because the tool is its only
+// reader: the console and the games build without it, and it names packages and Workers, which
+// are a release's business, not a program's.
+
+/// A build of a game: its name (its directory in the game's Worker) and its package.
+pub struct Build: Clone {
+    pub name: Text,
+    pub dir: Text,
+}
+
+/// A game: its id (its storage namespace and its prefetch list), its title, its Worker and
+/// domain, the build the console opens (`session`), its builds, and its cover, a PNG that Wrela
+/// rendered.
+pub struct Game: Clone {
+    pub id: Text,
+    pub title: Text,
+    pub worker: Text,
+    pub domain: Text,
+    pub session: Text,
+    pub builds: Vec<Build>,
+    pub cover: Text,
+}
+
+/// The console: its package, Worker, domain, and the one-line description its page has.
+pub struct Console: Clone {
+    pub dir: Text,
+    pub worker: Text,
+    pub domain: Text,
+    pub description: Text,
+}
+
+/// The reference docs: a Wrela program (`package`) beside the docs that `wrela doc --export`
+/// writes of std and `packages`.
+pub struct Docs: Clone {
+    pub dir: Text,
+    pub worker: Text,
+    pub domain: Text,
+    pub description: Text,
+    pub packages: Vec<Text>,
+}
+
+/// What a release holds.
+pub struct Catalog: Clone {
+    pub console: Console,
+    pub docs: Docs,
+    pub games: Vec<Game>,
+}
+
+/// The production release, wrela.dev.
+pub const CATALOG: Catalog = Catalog {
+    console: Console {
+        dir: "console",
+        worker: "wrela-console",
+        domain: "wrela.dev",
+        description: "Games made in Wrela, a language and engine for games that run in the browser.",
+    },
+    docs: Docs {
+        dir: "docsite",
+        worker: "wrela-docs",
+        domain: "docs.wrela.dev",
+        description: "The reference for Wrela: the language, its standard library, the engine, ui and platform packages, and the studio's tool.",
+        packages: Vec::from(["engine", "ui", "platform", "studio/tool"]),
+    },
+    games: Vec::from(
+        [
+            Game {
+                id: "leapling",
+                title: "Leapling",
+                worker: "wrela-leapling",
+                domain: "leapling.wrela.dev",
+                session: "session",
+                builds: Vec::from(
+                    [
+                        Build { name: "session", dir: "games/leapling/session" },
+                        Build { name: "leapling", dir: "games/leapling" },
+                    ],
+                ),
+                cover: "games/leapling/cover.png",
+            },
+            Game {
+                id: "last-green",
+                title: "The Last Green",
+                worker: "wrela-last-green",
+                domain: "last-green.wrela.dev",
+                session: "session",
+                builds: Vec::from(
+                    [
+                        Build { name: "session", dir: "games/last-green/session" },
+                        Build { name: "last-green", dir: "games/last-green" },
+                        Build { name: "stair", dir: "games/last-green/stair" },
+                        Build { name: "test-floor", dir: "games/last-green/test-floor" },
+                    ],
+                ),
+                cover: "games/last-green/cover.png",
+            },
+        ],
+    ),
+}
+
+/// The names a game's build can't take: the paths the release puts beside its builds.
+pub const RESERVED_BUILD_NAMES: [Text; 7] = [
+    "releases",
+    "_headers",
+    "_redirects",
+    "index.html",
+    "LICENSE",
+    "deploys.json",
+    "files.json",
+]
+
+/// The project's own hosts beside the console's domain, which no game may take.
+pub const RESERVED_HOSTS: [Text; 4] = ["www", "docs", "api", "studio"]
+
+fn is_lower_or_digit(b: u8) -> bool {
+    (b >= 97 && b <= 122) || (b >= 48 && b <= 57)
+}
+
+/// Whether `value` can be a part of a path, a header or a catalog line: 1 to 64 lowercase
+/// letters, digits and `-`, not starting with `-`.
+pub fn is_component(value: str) -> bool {
+    if value.is_empty() || value.len() > 64 || !is_lower_or_digit(value.byte(0)) {
+        return false
+    }
+    for i in 1..value.len() {
+        let b = value.byte(i)
+        if !is_lower_or_digit(b) && b != 45 {
+            return false
+        }
+    }
+    true
+}
+
+fn component(value: str) -> Result<(), String> {
+    if is_component(value) {
+        Ok(())
+    } else {
+        Err(String::from(f"invalid release component: '{value}'"))
+    }
+}
+
+/// The origin of a custom domain (`https://` and the domain), or why it isn't one: lowercase
+/// letters, digits, `.` and `-`, starting and ending with a letter or digit, with a `.` and no
+/// `..`.
+pub fn origin(domain: str) -> Result<String, String> {
+    let bad = Err(String::from("invalid custom domain"))
+    if domain.is_empty() || !is_lower_or_digit(domain.byte(0)) {
+        return bad
+    }
+    if !is_lower_or_digit(domain.byte(domain.len() - 1)) {
+        return bad
+    }
+    for i in 0..domain.len() {
+        let b = domain.byte(i)
+        if !is_lower_or_digit(b) && b != 45 && b != 46 {
+            return bad
+        }
+    }
+    if domain.find("..").is_some() || domain.find(".").is_none() {
+        return bad
+    }
+    Ok(String::from(f"https://{domain}"))
+}
+
+/// A domain's origin, for a domain `check` has passed.
+pub fn origin_of(domain: str) -> String {
+    match origin(domain) {
+        Ok(o) => o,
+        Err(e) => panic(e.as_str()),
+    }
+}
+
+fn one_line(text: str) -> bool {
+    !text.is_empty() && text.find("\r").is_none() && text.find("\n").is_none()
+}
+
+fn has(names: [String], name: str) -> bool {
+    for n in names {
+        if n.as_str() == name {
+            return true
+        }
+    }
+    false
+}
+
+/// The first part of a domain: its host's own name.
+fn first_label(domain: str) -> borrow str {
+    match domain.find(".") {
+        Some(k) => domain.slice(0, k),
+        None => domain,
+    }
+}
+
+/// Why `c` can't be released, if it can't: a part that isn't a component, a Worker or a domain
+/// two projects share, a game on one of the project's own hosts, a title or description that
+/// isn't one line, a session that isn't one of its game's builds, or a build with a reserved
+/// name. Whether its packages and covers are there is the tool's to check (`paths`).
+pub fn check(c: Catalog) -> Result<(), String> {
+    var workers: Vec<String> = Vec::new()
+    var domains: Vec<String> = Vec::new()
+    component(c.console.worker)?
+    workers.push(String::from(c.console.worker))
+    domains.push(String::from(c.console.domain))
+    origin(c.console.domain)?
+    if !one_line(c.console.description) {
+        return Err(String::from("the console needs a one-line description"))
+    }
+    var seen: Vec<String> = Vec::new()
+    for game in c.games {
+        component(game.id)?
+        if has(seen, game.id) {
+            return Err(String::from("duplicate game id"))
+        }
+        seen.push(String::from(game.id))
+        component(game.worker)?
+        if has(workers, game.worker) || has(domains, game.domain) {
+            return Err(String::from(f"{game.id} shares a worker or a domain"))
+        }
+        workers.push(String::from(game.worker))
+        domains.push(String::from(game.domain))
+        origin(game.domain)?
+        for host in RESERVED_HOSTS {
+            if first_label(game.domain) == host {
+                return Err(String::from(f"{game.domain} is one of the project's own hosts"))
+            }
+        }
+        component(game.session)?
+        if game.title.is_empty() || game.title.find("\t").is_some() || !one_line(game.title) {
+            return Err(String::from("invalid catalog title"))
+        }
+        var session = false
+        for b in game.builds {
+            if b.name == game.session {
+                session = true
+            }
+        }
+        if !session {
+            return Err(String::from("the session build is missing"))
+        }
+        var names: Vec<String> = Vec::new()
+        for b in game.builds {
+            for reserved in RESERVED_BUILD_NAMES {
+                if b.name == reserved {
+                    return Err(String::from(f"reserved build name: '{b.name}'"))
+                }
+            }
+            component(b.name)?
+            if has(names, b.name) {
+                return Err(String::from(f"{game.id} has two builds named {b.name}"))
+            }
+            names.push(String::from(b.name))
+        }
+    }
+    if seen.is_empty() {
+        return Err(String::from("the release needs at least one game"))
+    }
+    component(c.docs.worker)?
+    if has(workers, c.docs.worker) || has(domains, c.docs.domain) {
+        return Err(String::from("the docs share a worker or a domain"))
+    }
+    origin(c.docs.domain)?
+    if !one_line(c.docs.description) {
+        return Err(String::from("the docs need a one-line description"))
+    }
+    Ok(())
+}
+
+/// What must be in the workspace for `c` to build, each a path from the workspace's directory
+/// and what to say if it isn't there: each package's manifest, and each game's cover.
+pub fn paths(c: Catalog) -> Vec<(String, String)> {
+    var out: Vec<(String, String)> = Vec::new()
+    let p = c.console.dir
+    out.push(
+        (
+            String::from(f"{p}/wrela.toml"),
+            String::from("the console package is not inside the repository"),
+        ),
+    )
+    for game in c.games {
+        out.push(
+            (String::from(game.cover), String::from(f"missing Wrela-rendered cover for {game.id}")),
+        )
+        for b in game.builds {
+            out.push(
+                (
+                    String::from(f"{b.dir}/wrela.toml"),
+                    String::from("a build package is not inside the repository"),
+                ),
+            )
+        }
+    }
+    let d = c.docs.dir
+    out.push(
+        (
+            String::from(f"{d}/wrela.toml"),
+            String::from(f"a docs package is not inside the repository: {d}"),
+        ),
+    )
+    for q in c.docs.packages {
+        out.push(
+            (
+                String::from(f"{q}/wrela.toml"),
+                String::from(f"a docs package is not inside the repository: {q}"),
+            ),
+        )
+    }
+    out
+}

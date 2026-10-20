@@ -1718,7 +1718,7 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
 // Fetches the games' files ahead of time, while the library waits: one game at a time, the
 // selection first, then the rest in order, and never while a game is starting (the host
 // stops it when a game opens). Each game's list is beside the catalog
-// (tools/console.py's `prefetch_list`).
+// (studio/release/site.wrela's `prefetch_list`).
 fn prefetch_games(s: mut Console) {
     if let Some(_) = poll(mut s.prefetching) { s.prefetched += 1 }
     if let Some(result) = poll(mut s.prefetch_list) {

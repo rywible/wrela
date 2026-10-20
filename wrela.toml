@@ -34,6 +34,7 @@ members = [
     "studio/maplens/glue",
     "studio/audio",
     "studio/reference",
+    "studio/release",
     "studio/tests/views",
     "studio/tool",
     "ui",
@@ -80,7 +81,6 @@ exclude = [
 # they go. The split removes this list.
 pending = [
     ".claude/launch.json",
-    "games/console.toml",
 ]
 
 # The studio's tool (studio/tool): the lens on a subject, built, served and run headless. It
@@ -103,3 +103,12 @@ write = ["ws=.", "out=build/reference"]
 [tools.audio]
 package = "studio/audio"
 write = ["ws=."]
+
+# The release tool (studio/release): a release of the console, its games and the docs for
+# Cloudflare Workers, which tools/deploy.py deploys. It reads the workspace, stages its builds in
+# build/release-work and writes the release in build/release, which must be empty.
+[tools.release]
+package = "studio/release"
+read = ["ws=."]
+write = ["out=build/release", "work=build/release-work"]
+timeout = 3600

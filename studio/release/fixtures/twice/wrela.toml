@@ -1,0 +1,6 @@
+# Two members named great_tree: this one, and its directory great-tree.
+[package]
+name = "great_tree"
+
+[workspace]
+members = [".", "*"]

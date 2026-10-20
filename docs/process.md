@@ -544,11 +544,12 @@ JPEG gives the same pixels on every machine. [webp](https://github.com/jaredfort
 Apache-2.0) and [libwebp-sys](https://github.com/NoXF/libwebp-sys) (MIT) decode WebPs and encode
 lossy ones through Google's [libwebp](https://chromium.googlesource.com/webm/libwebp) 1.3.1 (BSD-3-Clause,
 with Google's patent grant), which libwebp-sys compiles from its own copy of the source, with
-`jobserver` and `glob` (MIT or Apache-2.0) at build time. tools/console.py makes its covers with
-Pillow (HPND licence) and libwebp: the resize follows Pillow's Lanczos3 weights (each output
-pixel's centre, the kernel widened by the shrink, the weights normalized) and its premultiplied
-RGBA, and `image::fit` follows the size rule of Pillow's `thumbnail`, as described in its
-documentation and source; no code was copied. The resize's test computes its reference from the
+`jobserver` and `glob` (MIT or Apache-2.0) at build time. The release tool (studio/release) makes
+its covers through these, as the Python release script it replaced made them with Pillow (HPND
+licence) and libwebp: the resize follows Pillow's Lanczos3 weights (each output pixel's centre,
+the kernel widened by the shrink, the weights normalized) and its premultiplied RGBA, and
+`image::fit` follows the size rule of Pillow's `thumbnail`, as described in its documentation and
+source; no code was copied. The resize's test computes its reference from the
 Lanczos formula itself. The image fixtures in compiler/tests/images are four flat colours that
 Claude made: the PNG and the WebP with the png and webp crates, the JPEG from the PNG with
 macOS's `sips`. The council's review of the slice (GPT-6.1-Sol and GPT-6-Astra) found a WebP
