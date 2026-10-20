@@ -1,0 +1,826 @@
+// The wolf's references: a sculpt, measured and replicated by `wrela tool reference`
+// (studio/reference), and four photos.
+//
+// The sculpt isn't in the public domain, as the photos are: it's CC BY 4.0, not MIT. A
+// creature fitted to it is an adaptation, so its source carries the sculpt's `attribution`,
+// and a game that ships such a creature credits the author too.
+
+use manifest::{
+    Axis, Facing, Landmark, Part, Parts, Photo, Point, Registration, Sculpt, Seam, SideRegistration,
+}
+
+/// The sculpt: a reference mesh for authoring.
+///
+/// What the licence rests on, checked 2026-10-05: the page's own metadata gives the licence
+/// (http://creativecommons.org/licenses/by/4.0/); the uploader's profile names Drew Vaughan, a
+/// games artist who sculpts in ZBrush, with a portfolio of his own characters; the file is a
+/// ZBrush 4.7 export; a reverse image search of the preview (Bing) found only two Pinterest pins
+/// of this listing, from 2022 and 2023.
+///
+/// The mesh: 10,901 vertices and 21,782 triangles, closed (no open or non-manifold edges): one
+/// body, and four stray pieces of two triangles each near the front paws, to ignore. A sculpt
+/// with its coat modelled as form (ruff, thighs, a brush tail) and fine fur strokes cut into it.
+///
+/// How the mesh maps to a creature's frame: its axes are already the frame's; `origin` is the
+/// mesh point that goes to the frame's origin (on the ground, midway between the nose and the
+/// tail's base), and each unit is `metres_per_unit`, which puts the withers 0.8 m up.
+///
+/// Measured on the mesh: the ground at y = -0.0736, the nose at z = 6.59, the tail's base at
+/// z = -4.3 (where the back's line breaks to the tail), and the withers 7.35 above the ground
+/// (on the back's midline above the elbow; the back rises to the head without a bump, so give
+/// or take 0.15). So at 0.8 m withers the wolf is about 1.18 m from nose to tail base (1.15 to
+/// 1.21), close to the side photo's 1.1 m.
+pub const SCULPT: Sculpt = Sculpt {
+    title: "Fantasy wolf miniature",
+    author: "Drew Vaughan (3ddrew)",
+    author_url: "https://www.thingiverse.com/3ddrew",
+    source: "https://www.thingiverse.com/thing:680145",
+    original: "https://www.thingiverse.com/download:1092583",
+    original_name: "svaughan_wolfMini.OBJ",
+    published: "2015-02-12",
+    licence: "CC BY 4.0",
+    licence_url: "https://creativecommons.org/licenses/by/4.0/",
+    attribution: "\"Fantasy wolf miniature\" by Drew Vaughan (https://www.thingiverse.com/thing:680145), CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)",
+    changes: "none: the file as downloaded, renamed",
+    sha256: "f25f6a3d0e0157a9f47a8dde747760b98271e320d99af18e3aa01ea89b0d6587",
+    checked: "2026-10-05",
+    pose: "standing, all four paws down, mouth slightly open",
+    registration: Registration {
+        axes: [Axis::X, Axis::Y, Axis::Z],
+        origin: vec3d(0.0, -0.0736, 1.145),
+        metres_per_unit: 0.1088,
+    },
+    mesh: "sculpt-standing.obj",
+    bytes: embed("wolf/sculpt-standing.obj"),
+}
+
+/// A wolf's head from the front.
+pub const FRONT_HEAD: Photo = Photo {
+    file: "front-head.jpg",
+    title: "Wolf - Scott Flaherty.jpg",
+    author: "USFWS/Scott Flaherty",
+    credit: "This image originates from the National Digital Library of the United States Fish and Wildlife Service at this page This tag does not indicate the copyright status of the attached work. A normal copyright tag is still required. See Commons:Licensing.See Category:Images from the United States Fish an",
+    source: "https://commons.wikimedia.org/wiki/File:Wolf_-_Scott_Flaherty.jpg",
+    original: "https://upload.wikimedia.org/wikipedia/commons/2/27/Wolf_-_Scott_Flaherty.jpg",
+    original_size: vec2u(1174, 1355),
+    licence: "Public domain: a work of the US federal government",
+    taken: "the 1174 by 1355 rendition Wikimedia Commons serves, unchanged",
+    view: "front",
+}
+
+/// A wolf standing, from the side. Its registration maps it to a creature's side view, for
+/// `wrela tool studio -- <package> beside references/wolf/side-standing.png` (the photo as PNG):
+/// the ground's row, metres a pixel (the withers, row 298, 0.8 m up), the column at z = 0
+/// (midway between the nose and the tail's base), and the way the wolf faces.
+pub const SIDE_STANDING: Photo = Photo {
+    file: "side-standing.jpg",
+    title: "Black and grey wolf (female from Druid pack, \"Half Black\") standing in road near Lamar River bridge (f7420519-1dd8-b71b-0b38-d5ffcfa1d981).jpg",
+    author: "NPS/Jim Peaco",
+    credit: "NPGallery",
+    source: "https://commons.wikimedia.org/wiki/File:Black_and_grey_wolf_(female_from_Druid_pack,_%22Half_Black%22)_standing_in_road_near_Lamar_River_bridge_(f7420519-1dd8-b71b-0b38-d5ffcfa1d981).jpg",
+    original: "https://upload.wikimedia.org/wikipedia/commons/b/b0/Black_and_grey_wolf_%28female_from_Druid_pack%2C_%22Half_Black%22%29_standing_in_road_near_Lamar_River_bridge_%28f7420519-1dd8-b71b-0b38-d5ffcfa1d981%29.jpg",
+    original_size: vec2u(2116, 1375),
+    licence: "Public domain: a work of the US federal government",
+    taken: "the 1280 by 832 rendition Wikimedia Commons serves, unchanged",
+    view: "side",
+    registration: Some(
+        SideRegistration {
+            ground_px: 720.0,
+            metres_per_px: 0.0018957,
+            z0_px: 461.5,
+            faces: Facing::Right,
+        },
+    ),
+}
+
+/// A wolf walking, from the side.
+pub const SIDE_WALKING: Photo = Photo {
+    file: "side-walking.jpg",
+    title: "Gray Wolf (6545954933).jpg",
+    author: "USFWS Midwest Region from United States",
+    credit: "Gray Wolf",
+    source: "https://commons.wikimedia.org/wiki/File:Gray_Wolf_(6545954933).jpg",
+    original: "https://upload.wikimedia.org/wikipedia/commons/7/7a/Gray_Wolf_%286545954933%29.jpg",
+    original_size: vec2u(1103, 755),
+    licence: "Public domain: a work of the US federal government",
+    taken: "the 1103 by 755 rendition Wikimedia Commons serves, unchanged",
+    view: "side",
+}
+
+/// A wolf from three-quarters in front.
+pub const THREE_QUARTER_FRONT: Photo = Photo {
+    file: "three-quarter-front.jpg",
+    title: "Wolf in the road near Artist Paint Pots (cropped).jpg",
+    author: "Yellowstone National Park",
+    credit: "Wolf in the road near Artist Paint Pots",
+    source: "https://commons.wikimedia.org/wiki/File:Wolf_in_the_road_near_Artist_Paint_Pots_(cropped).jpg",
+    original: "https://upload.wikimedia.org/wikipedia/commons/d/d9/Wolf_in_the_road_near_Artist_Paint_Pots_%28cropped%29.jpg",
+    original_size: vec2u(2983, 2221),
+    licence: "Public domain: a work of the US federal government",
+    taken: "the 1280 by 953 rendition Wikimedia Commons serves, unchanged",
+    view: "three-quarter front",
+}
+
+/// The photos.
+pub const PHOTOS: [Photo; 4] = [FRONT_HEAD, SIDE_STANDING, SIDE_WALKING, THREE_QUARTER_FRONT]
+
+// The landmarks: points in the creature's frame (metres, +y up, facing +z, +x the wolf's left),
+// measured on the registered sculpt by slicing it. The sculpt is mirror-symmetric, so the right
+// side's are the left's with x negated.
+
+pub const CHEST: Landmark = Landmark { name: "chest", at: vec3d(0.0, 0.6, 0.29) }
+pub const RUMP: Landmark = Landmark { name: "rump", at: vec3d(0.0, 0.565, -0.53) }
+pub const HAUNCH_LEFT: Landmark = Landmark { name: "haunch left", at: vec3d(0.05, 0.57, -0.49) }
+pub const SEAT_LEFT: Landmark = Landmark { name: "seat left", at: vec3d(0.07, 0.57, -0.585) }
+pub const HAUNCH_RIGHT: Landmark = Landmark { name: "haunch right", at: vec3d(-0.05, 0.57, -0.49) }
+pub const SEAT_RIGHT: Landmark = Landmark { name: "seat right", at: vec3d(-0.07, 0.57, -0.585) }
+pub const NECK_BASE: Landmark = Landmark { name: "neck base", at: vec3d(0.0, 0.64, 0.14) }
+pub const SKULL: Landmark = Landmark { name: "skull", at: vec3d(0.0, 0.8, 0.36) }
+pub const OCCIPUT: Landmark = Landmark { name: "occiput", at: vec3d(0.0, 0.84, 0.28) }
+pub const NOSE: Landmark = Landmark { name: "nose", at: vec3d(0.0, 0.713, 0.588) }
+pub const JAW: Landmark = Landmark { name: "jaw", at: vec3d(0.0, 0.69, 0.42) }
+pub const SHEATH: Landmark = Landmark { name: "sheath", at: vec3d(0.0, 0.49, -0.28) }
+pub const SHEATH_TIP: Landmark = Landmark { name: "sheath tip", at: vec3d(0.0, 0.418, -0.255) }
+pub const CHIN: Landmark = Landmark { name: "chin", at: vec3d(0.0, 0.676, 0.556) }
+pub const EAR_LEFT: Landmark = Landmark { name: "ear left", at: vec3d(0.06, 0.86, 0.385) }
+pub const EAR_TIP_LEFT: Landmark = Landmark { name: "ear tip left", at: vec3d(0.098, 0.952, 0.43) }
+pub const EAR_RIGHT: Landmark = Landmark { name: "ear right", at: vec3d(-0.06, 0.86, 0.385) }
+pub const EAR_TIP_RIGHT: Landmark = Landmark {
+    name: "ear tip right",
+    at: vec3d(-0.098, 0.952, 0.43),
+}
+pub const TAIL_ROOT: Landmark = Landmark { name: "tail root", at: vec3d(0.0, 0.655, -0.53) }
+pub const TAIL_TOP: Landmark = Landmark { name: "tail top", at: vec3d(0.0, 0.62, -0.635) }
+pub const TAIL_BEND: Landmark = Landmark { name: "tail bend", at: vec3d(0.0, 0.48, -0.665) }
+pub const TAIL_TIP: Landmark = Landmark { name: "tail tip", at: vec3d(0.0, 0.2, -0.676) }
+pub const ELBOW_LEFT: Landmark = Landmark { name: "elbow left", at: vec3d(0.1, 0.52, 0.09) }
+pub const CARPUS_LEFT: Landmark = Landmark { name: "carpus left", at: vec3d(0.113, 0.15, 0.107) }
+pub const ABOVE_CARPUS_LEFT: Landmark = Landmark {
+    name: "above carpus left",
+    at: vec3d(0.113, 0.18, 0.105),
+}
+pub const FORE_HEEL_LEFT: Landmark = Landmark {
+    name: "fore heel left",
+    at: vec3d(0.114, 0.05, 0.135),
+}
+pub const FORE_PAW_LEFT: Landmark = Landmark {
+    name: "fore paw left",
+    at: vec3d(0.115, 0.025, 0.105),
+}
+pub const FORE_TOES_LEFT: Landmark = Landmark {
+    name: "fore toes left",
+    at: vec3d(0.115, 0.025, 0.255),
+}
+pub const INNER_TOE_LEFT: Landmark = Landmark {
+    name: "inner toe left",
+    at: vec3d(0.074, 0.014, 0.17),
+}
+pub const INNER_TOE_TIP_LEFT: Landmark = Landmark {
+    name: "inner toe tip left",
+    at: vec3d(0.07, 0.01, 0.214),
+}
+pub const OUTER_TOE_LEFT: Landmark = Landmark {
+    name: "outer toe left",
+    at: vec3d(0.148, 0.016, 0.175),
+}
+pub const OUTER_TOE_TIP_LEFT: Landmark = Landmark {
+    name: "outer toe tip left",
+    at: vec3d(0.152, 0.014, 0.226),
+}
+pub const ELBOW_RIGHT: Landmark = Landmark { name: "elbow right", at: vec3d(-0.1, 0.52, 0.09) }
+pub const CARPUS_RIGHT: Landmark = Landmark { name: "carpus right", at: vec3d(-0.113, 0.15, 0.107) }
+pub const ABOVE_CARPUS_RIGHT: Landmark = Landmark {
+    name: "above carpus right",
+    at: vec3d(-0.113, 0.18, 0.105),
+}
+pub const FORE_HEEL_RIGHT: Landmark = Landmark {
+    name: "fore heel right",
+    at: vec3d(-0.114, 0.05, 0.135),
+}
+pub const FORE_PAW_RIGHT: Landmark = Landmark {
+    name: "fore paw right",
+    at: vec3d(-0.115, 0.025, 0.105),
+}
+pub const FORE_TOES_RIGHT: Landmark = Landmark {
+    name: "fore toes right",
+    at: vec3d(-0.115, 0.025, 0.255),
+}
+pub const INNER_TOE_RIGHT: Landmark = Landmark {
+    name: "inner toe right",
+    at: vec3d(-0.074, 0.014, 0.17),
+}
+pub const INNER_TOE_TIP_RIGHT: Landmark = Landmark {
+    name: "inner toe tip right",
+    at: vec3d(-0.07, 0.01, 0.214),
+}
+pub const OUTER_TOE_RIGHT: Landmark = Landmark {
+    name: "outer toe right",
+    at: vec3d(-0.148, 0.016, 0.175),
+}
+pub const OUTER_TOE_TIP_RIGHT: Landmark = Landmark {
+    name: "outer toe tip right",
+    at: vec3d(-0.152, 0.014, 0.226),
+}
+pub const HIP_LEFT: Landmark = Landmark { name: "hip left", at: vec3d(0.076, 0.56, -0.45) }
+pub const STIFLE_LEFT: Landmark = Landmark { name: "stifle left", at: vec3d(0.083, 0.31, -0.435) }
+pub const BELOW_STIFLE_LEFT: Landmark = Landmark {
+    name: "below stifle left",
+    at: vec3d(0.085, 0.26, -0.45),
+}
+pub const ABOVE_STIFLE_LEFT: Landmark = Landmark {
+    name: "above stifle left",
+    at: vec3d(0.081, 0.36, -0.425),
+}
+pub const HOCK_LEFT: Landmark = Landmark { name: "hock left", at: vec3d(0.091, 0.2, -0.555) }
+pub const BELOW_HOCK_LEFT: Landmark = Landmark {
+    name: "below hock left",
+    at: vec3d(0.093, 0.165, -0.562),
+}
+pub const ABOVE_HOCK_LEFT: Landmark = Landmark {
+    name: "above hock left",
+    at: vec3d(0.09, 0.235, -0.54),
+}
+pub const HIND_HEEL_LEFT: Landmark = Landmark {
+    name: "hind heel left",
+    at: vec3d(0.097, 0.055, -0.53),
+}
+pub const HIND_PAW_LEFT: Landmark = Landmark {
+    name: "hind paw left",
+    at: vec3d(0.098, 0.045, -0.575),
+}
+pub const HIND_TOES_LEFT: Landmark = Landmark {
+    name: "hind toes left",
+    at: vec3d(0.098, 0.045, -0.455),
+}
+pub const HIP_RIGHT: Landmark = Landmark { name: "hip right", at: vec3d(-0.076, 0.56, -0.45) }
+pub const STIFLE_RIGHT: Landmark = Landmark {
+    name: "stifle right",
+    at: vec3d(-0.083, 0.31, -0.435),
+}
+pub const BELOW_STIFLE_RIGHT: Landmark = Landmark {
+    name: "below stifle right",
+    at: vec3d(-0.085, 0.26, -0.45),
+}
+pub const ABOVE_STIFLE_RIGHT: Landmark = Landmark {
+    name: "above stifle right",
+    at: vec3d(-0.081, 0.36, -0.425),
+}
+pub const HOCK_RIGHT: Landmark = Landmark { name: "hock right", at: vec3d(-0.091, 0.2, -0.555) }
+pub const BELOW_HOCK_RIGHT: Landmark = Landmark {
+    name: "below hock right",
+    at: vec3d(-0.093, 0.165, -0.562),
+}
+pub const ABOVE_HOCK_RIGHT: Landmark = Landmark {
+    name: "above hock right",
+    at: vec3d(-0.09, 0.235, -0.54),
+}
+pub const HIND_HEEL_RIGHT: Landmark = Landmark {
+    name: "hind heel right",
+    at: vec3d(-0.097, 0.055, -0.53),
+}
+pub const HIND_PAW_RIGHT: Landmark = Landmark {
+    name: "hind paw right",
+    at: vec3d(-0.098, 0.045, -0.575),
+}
+pub const HIND_TOES_RIGHT: Landmark = Landmark {
+    name: "hind toes right",
+    at: vec3d(-0.098, 0.045, -0.455),
+}
+
+/// The landmarks, in the order they were measured.
+pub const LANDMARKS: [Landmark; 62] = [
+    CHEST,
+    RUMP,
+    HAUNCH_LEFT,
+    SEAT_LEFT,
+    HAUNCH_RIGHT,
+    SEAT_RIGHT,
+    NECK_BASE,
+    SKULL,
+    OCCIPUT,
+    NOSE,
+    JAW,
+    SHEATH,
+    SHEATH_TIP,
+    CHIN,
+    EAR_LEFT,
+    EAR_TIP_LEFT,
+    EAR_RIGHT,
+    EAR_TIP_RIGHT,
+    TAIL_ROOT,
+    TAIL_TOP,
+    TAIL_BEND,
+    TAIL_TIP,
+    ELBOW_LEFT,
+    CARPUS_LEFT,
+    ABOVE_CARPUS_LEFT,
+    FORE_HEEL_LEFT,
+    FORE_PAW_LEFT,
+    FORE_TOES_LEFT,
+    INNER_TOE_LEFT,
+    INNER_TOE_TIP_LEFT,
+    OUTER_TOE_LEFT,
+    OUTER_TOE_TIP_LEFT,
+    ELBOW_RIGHT,
+    CARPUS_RIGHT,
+    ABOVE_CARPUS_RIGHT,
+    FORE_HEEL_RIGHT,
+    FORE_PAW_RIGHT,
+    FORE_TOES_RIGHT,
+    INNER_TOE_RIGHT,
+    INNER_TOE_TIP_RIGHT,
+    OUTER_TOE_RIGHT,
+    OUTER_TOE_TIP_RIGHT,
+    HIP_LEFT,
+    STIFLE_LEFT,
+    BELOW_STIFLE_LEFT,
+    ABOVE_STIFLE_LEFT,
+    HOCK_LEFT,
+    BELOW_HOCK_LEFT,
+    ABOVE_HOCK_LEFT,
+    HIND_HEEL_LEFT,
+    HIND_PAW_LEFT,
+    HIND_TOES_LEFT,
+    HIP_RIGHT,
+    STIFLE_RIGHT,
+    BELOW_STIFLE_RIGHT,
+    ABOVE_STIFLE_RIGHT,
+    HOCK_RIGHT,
+    BELOW_HOCK_RIGHT,
+    ABOVE_HOCK_RIGHT,
+    HIND_HEEL_RIGHT,
+    HIND_PAW_RIGHT,
+    HIND_TOES_RIGHT,
+]
+
+/// The parts of a replica of the sculpt as lofts: a loft per part, on a straight axis inside
+/// the sculpt. The rump has a cleft on the midline under the tail, so the torso stops before it
+/// and a buttock on each side goes on, and the tail's root runs back along the top (below a
+/// crease on its crest) before it turns down. A fore paw's inner and outer toes have parts of
+/// their own: from the paw's axis, the clefts between the toes (up to 1.7 cm high) hide their
+/// pads. Neighbouring parts overlap at each joint (each part is inside the sculpt, so overlap
+/// costs nothing), so no wedge at a bend is left out of both.
+///
+/// Stations every 1.5 cm (1 cm gained nothing measurable, and its tables were at the size where
+/// building the creature overflows the CPU's 8 MiB stack); each axis runs on 2 cm past its ends,
+/// and where an end is inside another part, the part sinks by up to 2 mm toward its cap there,
+/// so it passes under its neighbour before it ends (where it ended proud of it, the lens drew a
+/// line).
+pub const LOFTS: Parts = Parts {
+    name: "wolf/lofts",
+    sculpt: SCULPT,
+    spacing: 0.015,
+    overlap: 0.02,
+    taper: 0.002,
+    landmarks: Vec::from(LANDMARKS),
+    parts: Vec::from(
+        [
+            Part {
+                name: "torso",
+                from: Point::At(CHEST),
+                to: Point::At(RUMP),
+                angles: Some(64),
+                r_max: Some(0.22),
+            },
+            Part {
+                name: "neck",
+                from: Point::At(NECK_BASE),
+                to: Point::At(SKULL),
+                parent: "torso",
+                angles: Some(64),
+                r_max: Some(0.25),
+            },
+            Part {
+                name: "head",
+                from: Point::At(OCCIPUT),
+                to: Point::At(NOSE),
+                parent: "neck",
+                angles: Some(64),
+                r_max: Some(0.14),
+            },
+            // The chin's tip and the buttocks' backs are round: at 1.5 cm, the straight line from a
+            // section to the small one where the axis leaves the sculpt cut their corners (the
+            // buttocks' by up to 2 cm, leaving a slit under the tail you could see through).
+            Part {
+                name: "jaw",
+                from: Point::At(JAW),
+                to: Point::At(CHIN),
+                parent: "head",
+                spacing: Some(0.005),
+                angles: Some(32),
+                r_max: Some(0.05),
+            },
+            Part {
+                name: "ear left",
+                from: Point::At(EAR_LEFT),
+                to: Point::At(EAR_TIP_LEFT),
+                parent: "head",
+                angles: Some(64),
+                r_max: Some(0.05),
+            },
+            Part {
+                name: "ear right",
+                from: Point::At(EAR_RIGHT),
+                to: Point::At(EAR_TIP_RIGHT),
+                parent: "head",
+                angles: Some(64),
+                r_max: Some(0.05),
+            },
+            Part {
+                name: "sheath",
+                from: Point::At(SHEATH),
+                to: Point::At(SHEATH_TIP),
+                parent: "torso",
+                angles: Some(32),
+                r_max: Some(0.04),
+            },
+            Part {
+                name: "buttock left",
+                from: Point::At(HAUNCH_LEFT),
+                to: Point::At(SEAT_LEFT),
+                parent: "torso",
+                spacing: Some(0.006),
+                angles: Some(48),
+                r_max: Some(0.12),
+            },
+            Part {
+                name: "buttock right",
+                from: Point::At(HAUNCH_RIGHT),
+                to: Point::At(SEAT_RIGHT),
+                parent: "torso",
+                spacing: Some(0.006),
+                angles: Some(48),
+                r_max: Some(0.12),
+            },
+            Part {
+                name: "tail root",
+                from: Point::At(TAIL_ROOT),
+                to: Point::At(TAIL_TOP),
+                parent: "torso",
+                angles: Some(32),
+                r_max: Some(0.08),
+            },
+            Part {
+                name: "tail upper",
+                from: Point::At(TAIL_TOP),
+                to: Point::At(TAIL_BEND),
+                parent: "tail root",
+                angles: Some(32),
+                r_max: Some(0.08),
+            },
+            Part {
+                name: "tail",
+                from: Point::At(TAIL_BEND),
+                to: Point::At(TAIL_TIP),
+                parent: "tail upper",
+                angles: Some(32),
+                r_max: Some(0.08),
+            },
+            Part {
+                name: "forearm left",
+                from: Point::At(ELBOW_LEFT),
+                to: Point::At(CARPUS_LEFT),
+                parent: "torso",
+                angles: Some(32),
+                r_max: Some(0.1),
+            },
+            Part {
+                name: "pastern left",
+                from: Point::At(ABOVE_CARPUS_LEFT),
+                to: Point::At(FORE_HEEL_LEFT),
+                parent: "forearm left",
+                angles: Some(32),
+                r_max: Some(0.05),
+            },
+            Part {
+                name: "fore paw left",
+                from: Point::At(FORE_PAW_LEFT),
+                to: Point::At(FORE_TOES_LEFT),
+                parent: "pastern left",
+                angles: Some(32),
+                r_max: Some(0.06),
+            },
+            Part {
+                name: "inner toe left",
+                from: Point::At(INNER_TOE_LEFT),
+                to: Point::At(INNER_TOE_TIP_LEFT),
+                parent: "fore paw left",
+                spacing: Some(0.008),
+                angles: Some(32),
+                r_max: Some(0.025),
+            },
+            Part {
+                name: "outer toe left",
+                from: Point::At(OUTER_TOE_LEFT),
+                to: Point::At(OUTER_TOE_TIP_LEFT),
+                parent: "fore paw left",
+                spacing: Some(0.008),
+                angles: Some(32),
+                r_max: Some(0.025),
+            },
+            Part {
+                name: "forearm right",
+                from: Point::At(ELBOW_RIGHT),
+                to: Point::At(CARPUS_RIGHT),
+                parent: "torso",
+                angles: Some(32),
+                r_max: Some(0.1),
+            },
+            Part {
+                name: "pastern right",
+                from: Point::At(ABOVE_CARPUS_RIGHT),
+                to: Point::At(FORE_HEEL_RIGHT),
+                parent: "forearm right",
+                angles: Some(32),
+                r_max: Some(0.05),
+            },
+            Part {
+                name: "fore paw right",
+                from: Point::At(FORE_PAW_RIGHT),
+                to: Point::At(FORE_TOES_RIGHT),
+                parent: "pastern right",
+                angles: Some(32),
+                r_max: Some(0.06),
+            },
+            Part {
+                name: "inner toe right",
+                from: Point::At(INNER_TOE_RIGHT),
+                to: Point::At(INNER_TOE_TIP_RIGHT),
+                parent: "fore paw right",
+                spacing: Some(0.008),
+                angles: Some(32),
+                r_max: Some(0.025),
+            },
+            Part {
+                name: "outer toe right",
+                from: Point::At(OUTER_TOE_RIGHT),
+                to: Point::At(OUTER_TOE_TIP_RIGHT),
+                parent: "fore paw right",
+                spacing: Some(0.008),
+                angles: Some(32),
+                r_max: Some(0.025),
+            },
+            Part {
+                name: "thigh left",
+                from: Point::At(HIP_LEFT),
+                to: Point::At(BELOW_STIFLE_LEFT),
+                parent: "torso",
+                angles: Some(48),
+                r_max: Some(0.11),
+            },
+            Part {
+                name: "gaskin left",
+                from: Point::At(ABOVE_STIFLE_LEFT),
+                to: Point::At(BELOW_HOCK_LEFT),
+                parent: "thigh left",
+                angles: Some(32),
+                r_max: Some(0.09),
+            },
+            Part {
+                name: "metatarsus left",
+                from: Point::At(ABOVE_HOCK_LEFT),
+                to: Point::At(HIND_HEEL_LEFT),
+                parent: "gaskin left",
+                angles: Some(32),
+                r_max: Some(0.08),
+            },
+            Part {
+                name: "hind paw left",
+                from: Point::At(HIND_PAW_LEFT),
+                to: Point::At(HIND_TOES_LEFT),
+                parent: "metatarsus left",
+                angles: Some(32),
+                r_max: Some(0.06),
+            },
+            Part {
+                name: "thigh right",
+                from: Point::At(HIP_RIGHT),
+                to: Point::At(BELOW_STIFLE_RIGHT),
+                parent: "torso",
+                angles: Some(48),
+                r_max: Some(0.11),
+            },
+            Part {
+                name: "gaskin right",
+                from: Point::At(ABOVE_STIFLE_RIGHT),
+                to: Point::At(BELOW_HOCK_RIGHT),
+                parent: "thigh right",
+                angles: Some(32),
+                r_max: Some(0.09),
+            },
+            Part {
+                name: "metatarsus right",
+                from: Point::At(ABOVE_HOCK_RIGHT),
+                to: Point::At(HIND_HEEL_RIGHT),
+                parent: "gaskin right",
+                angles: Some(32),
+                r_max: Some(0.08),
+            },
+            Part {
+                name: "hind paw right",
+                from: Point::At(HIND_PAW_RIGHT),
+                to: Point::At(HIND_TOES_RIGHT),
+                parent: "metatarsus right",
+                angles: Some(32),
+                r_max: Some(0.06),
+            },
+        ],
+    ),
+}
+
+/// The parts of a replica of the sculpt as sweeps (engine/sweep.wrela): a leg is one sweep from
+/// its hip or elbow through its joints to its toes, the tail one from its root to its tip; the
+/// torso, neck, head and the small parts are straight sweeps. Each part's control sections
+/// (`sections`, evenly along its path, 4 bumps each) are fitted to radii measured in its own
+/// planes.
+///
+/// Radii measured every centimetre along each path; each path runs on 2 cm past its ends. Parts
+/// join with 8 mm smooth seams: where several fitted parts overlap (the hindquarters), their
+/// surfaces cross, and a hard union shows the plates.
+pub const SWEEPS: Parts = Parts {
+    name: "wolf/sweeps",
+    sculpt: SCULPT,
+    spacing: 0.01,
+    overlap: 0.02,
+    seam: Seam::Smooth(0.008),
+    landmarks: Vec::from(LANDMARKS),
+    parts: Vec::from(
+        [
+            Part {
+                name: "torso",
+                from: Point::At(CHEST),
+                to: Point::At(RUMP),
+                angles: Some(64),
+                r_max: Some(0.22),
+                sections: 20,
+            },
+            Part {
+                name: "neck",
+                from: Point::At(NECK_BASE),
+                to: Point::At(SKULL),
+                parent: "torso",
+                angles: Some(64),
+                r_max: Some(0.25),
+                sections: 9,
+            },
+            Part {
+                name: "head",
+                from: Point::At(OCCIPUT),
+                to: Point::At(NOSE),
+                parent: "neck",
+                angles: Some(64),
+                r_max: Some(0.14),
+                sections: 12,
+                ends: vec2d(0.0, 0.01),
+            },
+            Part {
+                name: "jaw",
+                from: Point::At(JAW),
+                to: Point::At(CHIN),
+                parent: "head",
+                angles: Some(32),
+                r_max: Some(0.05),
+                sections: 5,
+            },
+            Part {
+                name: "ear left",
+                from: Point::At(EAR_LEFT),
+                to: Point::At(EAR_TIP_LEFT),
+                parent: "head",
+                angles: Some(48),
+                r_max: Some(0.05),
+                sections: 4,
+            },
+            Part {
+                name: "ear right",
+                from: Point::At(EAR_RIGHT),
+                to: Point::At(EAR_TIP_RIGHT),
+                parent: "head",
+                angles: Some(48),
+                r_max: Some(0.05),
+                sections: 4,
+            },
+            Part {
+                name: "sheath",
+                from: Point::At(SHEATH),
+                to: Point::At(SHEATH_TIP),
+                parent: "torso",
+                angles: Some(32),
+                r_max: Some(0.04),
+                sections: 3,
+            },
+            Part {
+                name: "buttock left",
+                from: Point::At(HAUNCH_LEFT),
+                to: Point::At(SEAT_LEFT),
+                parent: "torso",
+                angles: Some(48),
+                r_max: Some(0.12),
+                sections: 4,
+            },
+            Part {
+                name: "buttock right",
+                from: Point::At(HAUNCH_RIGHT),
+                to: Point::At(SEAT_RIGHT),
+                parent: "torso",
+                angles: Some(48),
+                r_max: Some(0.12),
+                sections: 4,
+            },
+            Part {
+                name: "tail",
+                from: Point::At(TAIL_ROOT),
+                to: Point::At(TAIL_TIP),
+                parent: "torso",
+                angles: Some(32),
+                r_max: Some(0.08),
+                sections: 10,
+                through: Vec::from([Point::At(TAIL_TOP), Point::At(TAIL_BEND)]),
+            },
+            Part {
+                name: "fore leg left",
+                from: Point::At(ELBOW_LEFT),
+                to: Point::At(FORE_TOES_LEFT),
+                up: Some(vec3d(0.0, 0.0, 1.0)),
+                parent: "torso",
+                angles: Some(48),
+                r_max: Some(0.1),
+                sections: 12,
+                through: Vec::from([Point::At(CARPUS_LEFT), Point::At(FORE_HEEL_LEFT)]),
+            },
+            Part {
+                name: "fore leg right",
+                from: Point::At(ELBOW_RIGHT),
+                to: Point::At(FORE_TOES_RIGHT),
+                up: Some(vec3d(0.0, 0.0, 1.0)),
+                parent: "torso",
+                angles: Some(48),
+                r_max: Some(0.1),
+                sections: 12,
+                through: Vec::from([Point::At(CARPUS_RIGHT), Point::At(FORE_HEEL_RIGHT)]),
+            },
+            Part {
+                name: "hind leg left",
+                from: Point::At(HIP_LEFT),
+                to: Point::At(HIND_TOES_LEFT),
+                up: Some(vec3d(0.0, 0.0, 1.0)),
+                parent: "torso",
+                angles: Some(48),
+                r_max: Some(0.11),
+                sections: 14,
+                through: Vec::from(
+                    [Point::At(STIFLE_LEFT), Point::At(HOCK_LEFT), Point::At(HIND_HEEL_LEFT)],
+                ),
+            },
+            Part {
+                name: "hind leg right",
+                from: Point::At(HIP_RIGHT),
+                to: Point::At(HIND_TOES_RIGHT),
+                up: Some(vec3d(0.0, 0.0, 1.0)),
+                parent: "torso",
+                angles: Some(48),
+                r_max: Some(0.11),
+                sections: 14,
+                through: Vec::from(
+                    [Point::At(STIFLE_RIGHT), Point::At(HOCK_RIGHT), Point::At(HIND_HEEL_RIGHT)],
+                ),
+            },
+            Part {
+                name: "inner toe left",
+                from: Point::At(INNER_TOE_LEFT),
+                to: Point::At(INNER_TOE_TIP_LEFT),
+                parent: "fore leg left",
+                angles: Some(32),
+                r_max: Some(0.025),
+                sections: 3,
+            },
+            Part {
+                name: "outer toe left",
+                from: Point::At(OUTER_TOE_LEFT),
+                to: Point::At(OUTER_TOE_TIP_LEFT),
+                parent: "fore leg left",
+                angles: Some(32),
+                r_max: Some(0.025),
+                sections: 3,
+            },
+            Part {
+                name: "inner toe right",
+                from: Point::At(INNER_TOE_RIGHT),
+                to: Point::At(INNER_TOE_TIP_RIGHT),
+                parent: "fore leg right",
+                angles: Some(32),
+                r_max: Some(0.025),
+                sections: 3,
+            },
+            Part {
+                name: "outer toe right",
+                from: Point::At(OUTER_TOE_RIGHT),
+                to: Point::At(OUTER_TOE_TIP_RIGHT),
+                parent: "fore leg right",
+                angles: Some(32),
+                r_max: Some(0.025),
+                sections: 3,
+            },
+        ],
+    ),
+}

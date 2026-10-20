@@ -1,0 +1,492 @@
+// Sine, cosine, arctangent and powers of f64s, for the measurements: a sculpt's thin parts stay
+// apart in f64 (mesh.wrela), and the angles and powers that place a ray or shape a section
+// keep the same precision. std's transcendentals are f32 (an f64's are E0702, language.md
+// §11.4), so these are the tool's own, over the ranges it uses: `sin` and `cos` of |x| below
+// 2^20·π/2, `pow` of a positive, finite base. Each is within an ulp of the true value where
+// sampled (300,000 points of each against the host's libm, outside the repository).
+//
+// Credit (MIT licence): the algorithms and coefficients follow musl's libm (FreeBSD msun, and
+// Sun's fdlibm before it): __sin and __cos, __rem_pio2's medium range reduction, atan and
+// atan2, exp and log. `pow` is e^(y·log x) with log x and the product carried in two f64s
+// (Dekker's products), so its error is exp's; x¹, x², x⁻¹, √x and 2ⁿ are exact, as a correctly
+// rounded libm's are.
+
+// π/2's reduction (__rem_pio2): 1.5 / f64's epsilon rounds to an integer when added and taken
+// away; 2/π; π/2 in three parts of 33 bits, each with the rest after it; π/4.
+const TOINT: f64 = 6755399441055744.0
+const INV_PIO2: f64 = bitcast_f64(u64(0x3FE45F306DC9C883))
+const PIO2_1: f64 = bitcast_f64(u64(0x3FF921FB54400000))
+const PIO2_1T: f64 = bitcast_f64(u64(0x3DD0B4611A626331))
+const PIO2_2: f64 = bitcast_f64(u64(0x3DD0B4611A600000))
+const PIO2_2T: f64 = bitcast_f64(u64(0x3BA3198A2E037073))
+const PIO2_3: f64 = bitcast_f64(u64(0x3BA3198A2E000000))
+const PIO2_3T: f64 = bitcast_f64(u64(0x397B839A252049C1))
+const PIO4: f64 = bitcast_f64(u64(0x3FE921FB54442D18))
+
+/// π, and the rest of it past an f64.
+pub const PI: f64 = bitcast_f64(u64(0x400921FB54442D18))
+const PI_LO: f64 = bitcast_f64(u64(0x3CA1A62633145C07))
+
+/// 2π.
+pub const TAU: f64 = bitcast_f64(u64(0x401921FB54442D18))
+
+// __sin's and __cos's polynomials.
+const S1: f64 = bitcast_f64(u64(0xBFC5555555555549))
+const S2: f64 = bitcast_f64(u64(0x3F8111111110F8A6))
+const S3: f64 = bitcast_f64(u64(0xBF2A01A019C161D5))
+const S4: f64 = bitcast_f64(u64(0x3EC71DE357B1FE7D))
+const S5: f64 = bitcast_f64(u64(0xBE5AE5E68A2B9CEB))
+const S6: f64 = bitcast_f64(u64(0x3DE5D93A5ACFD57C))
+const C1: f64 = bitcast_f64(u64(0x3FA555555555554C))
+const C2: f64 = bitcast_f64(u64(0xBF56C16C16C15177))
+const C3: f64 = bitcast_f64(u64(0x3EFA01A019CB1590))
+const C4: f64 = bitcast_f64(u64(0xBE927E4F809C52AD))
+const C5: f64 = bitcast_f64(u64(0x3E21EE9EBDB4B1C4))
+const C6: f64 = bitcast_f64(u64(0xBDA8FAE9BE8838D4))
+
+// atan's table (atan of 0.5, 1, 1.5 and ∞, each in two parts) and polynomial.
+const ATAN_HI: [f64; 4] = [
+    0.463647609000806093515,
+    0.785398163397448278999,
+    0.982793723247329054082,
+    1.57079632679489655800,
+]
+const ATAN_LO: [f64; 4] = [
+    0.0000000000000000226987774529616870924,
+    0.0000000000000000306161699786838301793,
+    0.0000000000000000139033110312309984516,
+    0.0000000000000000612323399573676603587,
+]
+const AT: [f64; 11] = [
+    0.333333333333329318027,
+    -0.199999999998764832476,
+    0.142857142725034663711,
+    -0.111111104054623557880,
+    0.0909088713343650656196,
+    -0.0769187620504482999495,
+    0.0666107313738753120669,
+    -0.0583357013379057348645,
+    0.0497687799461593236017,
+    -0.0365315727442169155270,
+    0.0162858201153657823623,
+]
+
+// exp's and log's: ln 2 in two parts (the first with 32 bits to spare), 1/ln 2, and their
+// polynomials.
+const LN2_HI: f64 = bitcast_f64(u64(0x3FE62E42FEE00000))
+const LN2_LO: f64 = bitcast_f64(u64(0x3DEA39EF35793C76))
+const INV_LN2: f64 = bitcast_f64(u64(0x3FF71547652B82FE))
+const P1: f64 = bitcast_f64(u64(0x3FC555555555553E))
+const P2: f64 = bitcast_f64(u64(0xBF66C16C16BEBD93))
+const P3: f64 = bitcast_f64(u64(0x3F11566AAF25DE2C))
+const P4: f64 = bitcast_f64(u64(0xBEBBBD41C5D26BF1))
+const P5: f64 = bitcast_f64(u64(0x3E66376972BEA4D0))
+const LG1: f64 = bitcast_f64(u64(0x3FE5555555555593))
+const LG2: f64 = bitcast_f64(u64(0x3FD999999997FA04))
+const LG3: f64 = bitcast_f64(u64(0x3FD2492494229359))
+const LG4: f64 = bitcast_f64(u64(0x3FCC71C51D8E78AF))
+const LG5: f64 = bitcast_f64(u64(0x3FC7466496CB03DE))
+const LG6: f64 = bitcast_f64(u64(0x3FC39A09D078C69F))
+const LG7: f64 = bitcast_f64(u64(0x3FC2F112DF3E5244))
+
+/// The high 32 bits of `x`'s magnitude.
+fn high(x: f64) -> u32 {
+    u32((bitcast_u64(x) >> 32) & 0x7fffffff)
+}
+
+fn sin_kernel(x: f64, y: f64, tail: bool) -> f64 {
+    let z = x * x
+    let w = z * z
+    let r = S2 + z * (S3 + z * S4) + z * w * (S5 + z * S6)
+    let v = z * x
+    if !tail {
+        x + v * (S1 + z * r)
+    } else {
+        x - ((z * (0.5 * y - v * r) - y) - v * S1)
+    }
+}
+
+fn cos_kernel(x: f64, y: f64) -> f64 {
+    let z = x * x
+    let w = z * z
+    let r = z * (C1 + z * (C2 + z * C3)) + w * w * (C4 + z * (C5 + z * C6))
+    let hz = 0.5 * z
+    let one = 1.0 - hz
+    one + (((1.0 - one) - hz) + (z * r - x * y))
+}
+
+/// `x` less the nearest multiple `n` of π/2, as two f64s (y0 + y1, |y0| <= π/4 about), and
+/// `n`: __rem_pio2's reduction for |x| < 2^20·π/2.
+fn reduce(x: f64) -> (f64, f64, i32) {
+    assert(high(x) < 0x413921fb, f"the tool's sin and cos take |x| < 2^20·π/2, not {x}")
+    var fn_ = x * INV_PIO2 + TOINT - TOINT
+    var n = i32(fn_)
+    var r = x - fn_ * PIO2_1
+    var w = fn_ * PIO2_1T
+    if r - w < -PIO4 {
+        n -= 1
+        fn_ -= 1.0
+        r = x - fn_ * PIO2_1
+        w = fn_ * PIO2_1T
+    } else if r - w > PIO4 {
+        n += 1
+        fn_ += 1.0
+        r = x - fn_ * PIO2_1
+        w = fn_ * PIO2_1T
+    }
+    var y0 = r - w
+    let ex = high(x) >> 20
+    var ey = u32((bitcast_u64(y0) >> 52) & 0x7ff)
+    if ex > ey + 16 {
+        var t = r
+        w = fn_ * PIO2_2
+        r = t - w
+        w = fn_ * PIO2_2T - ((t - r) - w)
+        y0 = r - w
+        ey = u32((bitcast_u64(y0) >> 52) & 0x7ff)
+        if ex > ey + 49 {
+            t = r
+            w = fn_ * PIO2_3
+            r = t - w
+            w = fn_ * PIO2_3T - ((t - r) - w)
+            y0 = r - w
+        }
+    }
+    (y0, (r - y0) - w, n)
+}
+
+/// The sine of `x`, in radians, |x| < 2^20·π/2.
+pub fn sin(x: f64) -> f64 {
+    if high(x) <= 0x3fe921fb {
+        if high(x) < 0x3e500000 {
+            return x
+        }
+        return sin_kernel(x, 0.0, tail: false)
+    }
+    let (a, b, n) = reduce(x)
+    let q = n & 3
+    if q == 0 {
+        sin_kernel(a, b, tail: true)
+    } else if q == 1 {
+        cos_kernel(a, b)
+    } else if q == 2 {
+        -sin_kernel(a, b, tail: true)
+    } else {
+        -cos_kernel(a, b)
+    }
+}
+
+/// The cosine of `x`, in radians, |x| < 2^20·π/2.
+pub fn cos(x: f64) -> f64 {
+    if high(x) <= 0x3fe921fb {
+        if high(x) < 0x3e46a09e {
+            return 1.0
+        }
+        return cos_kernel(x, 0.0)
+    }
+    let (a, b, n) = reduce(x)
+    let q = n & 3
+    if q == 0 {
+        cos_kernel(a, b)
+    } else if q == 1 {
+        -sin_kernel(a, b, tail: true)
+    } else if q == 2 {
+        -cos_kernel(a, b)
+    } else {
+        sin_kernel(a, b, tail: true)
+    }
+}
+
+/// The angle whose tangent is `x`, in [-π/2, π/2].
+pub fn atan(x: f64) -> f64 {
+    if x != x {
+        return x
+    }
+    let neg = x < 0.0
+    var a = abs(x)
+    if a > 100000000000000000000.0 {
+        return if neg { -ATAN_HI[3] } else { ATAN_HI[3] }
+    }
+    if a < 0.0000000074505805969238281 {
+        return x
+    }
+    var id: i32 = -1
+    if a >= 0.4375 {
+        if a < 0.6875 {
+            id = 0
+            a = (2.0 * a - 1.0) / (2.0 + a)
+        } else if a < 1.1875 {
+            id = 1
+            a = (a - 1.0) / (a + 1.0)
+        } else if a < 2.4375 {
+            id = 2
+            a = (a - 1.5) / (1.0 + 1.5 * a)
+        } else {
+            id = 3
+            a = -1.0 / a
+        }
+    }
+    let z = a * a
+    let w = z * z
+    let s1 = z * (AT[0] + w * (AT[2] + w * (AT[4] + w * (AT[6] + w * (AT[8] + w * AT[10])))))
+    let s2 = w * (AT[1] + w * (AT[3] + w * (AT[5] + w * (AT[7] + w * AT[9]))))
+    let r = if id < 0 {
+        a - a * (s1 + s2)
+    } else {
+        ATAN_HI[u32(id)] - ((a * (s1 + s2) - ATAN_LO[u32(id)]) - a)
+    }
+    if neg {
+        -r
+    } else {
+        r
+    }
+}
+
+fn sign_bit(x: f64) -> bool {
+    (bitcast_u64(x) >> 63) == 1
+}
+
+/// The angle from the positive x axis to the point (`x`, `y`), in [-π, π].
+pub fn atan2(y: f64, x: f64) -> f64 {
+    if x != x || y != y {
+        return x + y
+    }
+    if x == 1.0 {
+        return atan(y)
+    }
+    if y == 0.0 {
+        if !sign_bit(x) {
+            return y
+        }
+        return if sign_bit(y) { -PI } else { PI }
+    }
+    if x == 0.0 {
+        return if y > 0.0 { 0.5 * PI } else { -0.5 * PI }
+    }
+    let inf = 1.0 / 0.0
+    if abs(x) == inf {
+        if abs(y) == inf {
+            let q = if x > 0.0 { 0.25 * PI } else { 0.75 * PI }
+            return if y > 0.0 { q } else { -q }
+        }
+        let q = if x > 0.0 { 0.0 } else { PI }
+        return if y > 0.0 { q } else { -q }
+    }
+    if abs(y) == inf {
+        return if y > 0.0 { 0.5 * PI } else { -0.5 * PI }
+    }
+    let ex = high(x) >> 20
+    let ey = high(y) >> 20
+    // |y/x| past 2^60, or below 2^-60 with x < 0: atan's own limits.
+    let z = if ey > ex + 60 {
+        0.5 * PI + 0.5 * PI_LO
+    } else if x < 0.0 && ex > ey + 60 {
+        0.0
+    } else {
+        atan(abs(y / x))
+    }
+    if x > 0.0 {
+        return if y > 0.0 { z } else { -z }
+    }
+    if y > 0.0 {
+        PI - (z - PI_LO)
+    } else {
+        (z - PI_LO) - PI
+    }
+}
+
+/// `y` times 2^`n`.
+fn scaled(y: f64, n: i32) -> f64 {
+    var v = y
+    var k = n
+    if k > 1023 {
+        v *= bitcast_f64(u64(0x7FE0000000000000))
+        k -= 1023
+        if k > 1023 {
+            v *= bitcast_f64(u64(0x7FE0000000000000))
+            k = min(k - 1023, 1023)
+        }
+    } else if k < -1022 {
+        // 2^-1022 · 2^53, so a subnormal result is rounded once.
+        v *= bitcast_f64(u64(0x0360000000000000))
+        k += 969
+        if k < -1022 {
+            v *= bitcast_f64(u64(0x0360000000000000))
+            k = max(k + 969, -1022)
+        }
+    }
+    v * bitcast_f64(u64(k + 1023) << 52)
+}
+
+/// e to the power `x`.
+pub fn exp(x: f64) -> f64 {
+    if x != x {
+        return x
+    }
+    if x > 709.782712893383973096 {
+        return 1.0 / 0.0
+    }
+    if x < -745.13321910194110842 {
+        return 0.0
+    }
+    let ax = abs(x)
+    var k: i32 = 0
+    var hi = x
+    var lo = 0.0
+    var r = x
+    if ax > 0.5 * 0.693147180559945286227 {
+        if ax >= 1.5 * 0.693147180559945286227 {
+            k = i32(INV_LN2 * x + if x < 0.0 { -0.5 } else { 0.5 })
+        } else {
+            k = if x < 0.0 { -1 } else { 1 }
+        }
+        hi = x - f64(k) * LN2_HI
+        lo = f64(k) * LN2_LO
+        r = hi - lo
+    } else if ax <= 0.0000000037252902984619141 {
+        return 1.0 + x
+    }
+    let xx = r * r
+    let c = r - xx * (P1 + xx * (P2 + xx * (P3 + xx * (P4 + xx * P5))))
+    let y = 1.0 + (r * c / (2.0 - c) - lo + hi)
+    if k == 0 {
+        y
+    } else {
+        scaled(y, k)
+    }
+}
+
+/// `a` as two halves of 26 bits (Veltkamp's split), for exact products.
+fn split(a: f64) -> (f64, f64) {
+    let c = 134217729.0 * a
+    let hi = c - (c - a)
+    (hi, a - hi)
+}
+
+/// `a * b`, and its rounding error: the two sum to the exact product (Dekker).
+fn two_product(a: f64, b: f64) -> (f64, f64) {
+    let p = a * b
+    let (ah, al) = split(a)
+    let (bh, bl) = split(b)
+    (p, ((ah * bh - p) + ah * bl + al * bh) + al * bl)
+}
+
+/// `a + b`, and its rounding error (Knuth).
+fn two_sum(a: f64, b: f64) -> (f64, f64) {
+    let s = a + b
+    let bb = s - a
+    (s, (a - (s - bb)) + (b - bb))
+}
+
+/// The natural logarithm of a positive, finite `x`, as two f64s whose sum is within about 2^-62
+/// of it, relatively: log's reduction to 2^k (1 + f), with f - f²/2 and the sum carried exactly.
+fn log_parts(x: f64) -> (f64, f64) {
+    var bits = bitcast_u64(x)
+    var hx = u32(bits >> 32)
+    var k: i32 = 0
+    if hx < 0x00100000 {
+        // A subnormal: scaled up by 2^54 first.
+        k -= 54
+        bits = bitcast_u64(x * 18014398509481984.0)
+        hx = u32(bits >> 32)
+    }
+    hx += 0x3ff00000 - 0x3fe6a09e
+    k += i32(hx >> 20) - 0x3ff
+    hx = (hx & 0x000fffff) + 0x3fe6a09e
+    let m = bitcast_f64((u64(hx) << 32) | (bits & 0xffffffff))
+    let f = m - 1.0
+    let (ff, ffe) = two_product(f, f)
+    let hfsq = 0.5 * ff
+    let s = f / (2.0 + f)
+    let z = s * s
+    let w = z * z
+    let t1 = w * (LG2 + w * (LG4 + w * LG6))
+    let t2 = z * (LG1 + w * (LG3 + w * (LG5 + w * LG7)))
+    let dk = f64(k)
+    let small = s * (hfsq + t2 + t1) + dk * LN2_LO
+    let (a, ae) = two_sum(f, -hfsq)
+    let (b, be) = two_sum(dk * LN2_HI, a)
+    two_sum(b, be + ae - 0.5 * ffe + small)
+}
+
+/// The natural logarithm of `x`: minus infinity at 0, NaN below 0.
+pub fn log(x: f64) -> f64 {
+    if x != x || x == 1.0 / 0.0 {
+        return x
+    }
+    if x == 0.0 {
+        return -1.0 / 0.0
+    }
+    if x < 0.0 {
+        return (x - x) / (x - x)
+    }
+    let (hi, lo) = log_parts(x)
+    hi + lo
+}
+
+/// `x` to the power `y`, for a positive, finite `x` and a finite `y`.
+pub fn pow(x: f64, y: f64) -> f64 {
+    assert(x > 0.0 && x < 1.0 / 0.0, f"the tool's pow takes a positive, finite base, not {x}")
+    if y == 0.0 || x == 1.0 {
+        return 1.0
+    }
+    // The powers a correctly rounded libm gives exactly, given so: a section's squareness is
+    // often held at 1 or 2, and its quadrants' floor is a power of two. Within an ulp of them,
+    // fits that turn on the last bits went their own way (the wolf's hind leg, 62% of its
+    // surface within 2 mm where the host's libm gave 84%).
+    if y == 1.0 {
+        return x
+    }
+    if y == 2.0 {
+        return x * x
+    }
+    if y == -1.0 {
+        return 1.0 / x
+    }
+    if y == 0.5 {
+        return sqrt(x)
+    }
+    if x == 2.0 && y == trunc(y) && abs(y) <= 1000.0 {
+        return scaled(1.0, i32(y))
+    }
+    let (hi, lo) = log_parts(x)
+    let (p, pe) = two_product(y, hi)
+    let (q, qe) = two_sum(p, pe + y * lo)
+    let e = exp(q)
+    e + e * qe
+}
+
+/// How many of `want`'s ulps `got` is from it.
+fn ulps(got: f64, want: f64) -> f64 {
+    abs(got - want) / max(abs(want) * 0.0000000000000002220446049250313, 0.0)
+}
+
+@test
+fn the_functions_are_within_an_ulp_of_their_values() {
+    // Each against the nearest f64 to the true value.
+    let cases = [
+        (sin(0.5), 0.479425538604203),
+        (cos(0.5), 0.8775825618903728),
+        (sin(TAU * 7.0 / 48.0), 0.7933533402912352),
+        (cos(100.0), 0.8623188722876839),
+        (sin(-3.0), -0.1411200080598672),
+        (cos(1000000.0), 0.9367521275331447),
+        (atan2(y: 1.0, x: 1.0), 0.7853981633974483),
+        (atan2(y: -1.0, x: -2.0), -2.677945044588987),
+        (atan2(y: 0.0, x: -1.0), PI),
+        (exp(1.0), 2.718281828459045),
+        (exp(-700.0), 9.85967654375977e-305),
+        (log(10.0), 2.302585092994046),
+        (pow(x: 2.0, y: 0.5), 1.4142135623730951),
+        (pow(x: 0.001, y: 3.5), 0.000000000031622776601683794),
+        (pow(x: 7.0, y: -2.25), 0.012546696999005395),
+    ]
+    for (got, want) in cases {
+        assert(ulps(got, want) <= 1.0, f"{got} against {want}")
+    }
+    assert(sin(0.0) == 0.0 && cos(0.0) == 1.0 && exp(0.0) == 1.0 && log(1.0) == 0.0)
+    // Exact where the power is.
+    let x = 0.123456789
+    assert(pow(x, y: 1.0) == x && pow(x, y: 2.0) == x * x && pow(x, y: -1.0) == 1.0 / x)
+    assert(pow(x, y: 0.5) == sqrt(x) && pow(2.0, y: -3.0) == 0.125 && pow(2.0, y: 10.0) == 1024.0)
+}

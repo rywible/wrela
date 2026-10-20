@@ -1,0 +1,768 @@
+// How far a package's surface is from its reference mesh's: at points spread over the mesh's
+// surface (short of it, or past it outward), through the mesh's box (the volumes inside one and
+// not the other), and along rays from five views (where a viewer would see through it).
+//
+// The package is built through the toolchain and run on the CPU (`std::tool::drive`), as
+// several instances that answer at once: each answers its exports `distance(x, y, z)` and
+// `part(x, y, z)` (a replica's main.wrela has both). Each question's work is a probe (`Probe`),
+// a few questions in turn, and the instances take the probes as they come free; what each
+// probe asks doesn't depend on which instance answers, so the report is the same however many
+// there are.
+
+use math
+use mesh::{Solid, cross3, dot3, len3, unit3}
+use std::collections::Vec
+use std::string::String
+
+/// A question for the package: its distance at a point, or the part nearest it.
+pub enum Ask: Copy {
+    Distance(vec3d),
+    Part(vec3d),
+}
+
+/// Work for the package: a question at a time, each from the last one's answer.
+pub trait Probe {
+    /// The next question, given the last one's answer (0 before the first): `None` when done.
+    fn next(mut self, solid: Solid, answer: f64) -> Option<Ask>
+}
+
+/// A small, fixed random sequence (xorshift), so a report is the same each run.
+pub struct Rng: Copy {
+    pub state: u64,
+}
+
+impl Rng {
+    pub fn next(mut self) -> f64 {
+        self.state = self.state ^ (self.state << 13)
+        self.state = self.state ^ (self.state >> 7)
+        self.state = self.state ^ (self.state << 17)
+        f64(self.state >> 11) / 9007199254740992.0
+    }
+}
+
+/// How far past the mesh a surface point's probe steps, outward along its normal, one after
+/// another.
+const STEPS: [f64; 5] = [0.002, 0.005, 0.01, 0.02, 0.04]
+
+/// A point on the mesh's surface, with its outward normal: how far the package is from the mesh
+/// there (more than 0 where it's short of the mesh: the package's distance; less where it's past
+/// it: how far it reaches beyond the mesh outward from there), and the part nearest.
+pub struct SurfacePoint: Copy {
+    pub at: vec3d,
+    pub normal: vec3d,
+    pub deviation: f64,
+    pub part: u32,
+    stage: u32,
+    step: u32,
+}
+
+impl SurfacePoint {
+    pub fn new(at: vec3d, normal: vec3d) -> SurfacePoint {
+        SurfacePoint { at, normal, deviation: 0.0, part: 0, stage: 0, step: 0 }
+    }
+
+    /// The question for step `self.step` outward, or the part once it's done: a probe that
+    /// reaches the mesh again stops.
+    fn outward(mut self, solid: Solid) -> Option<Ask> {
+        while self.step < 5 {
+            let q = self.at + self.normal * STEPS[self.step]
+            if solid.inside(q) {
+                break
+            }
+            self.stage = 2
+            return Some(Ask::Distance(q))
+        }
+        self.stage = 3
+        Some(Ask::Part(self.at))
+    }
+}
+
+impl Probe for SurfacePoint {
+    fn next(mut self, solid: Solid, answer: f64) -> Option<Ask> {
+        if self.stage == 0 {
+            self.stage = 1
+            return Some(Ask::Distance(self.at))
+        }
+        if self.stage == 1 {
+            // Short of the mesh: the package's distance. Past it: probe outward along the
+            // normal, and take the mesh's distance at the furthest probe still inside the
+            // package (and outside the mesh).
+            self.deviation = max(answer, 0.0)
+            if answer > 0.0 {
+                self.stage = 3
+                return Some(Ask::Part(self.at))
+            }
+            return self.outward(solid)
+        }
+        if self.stage == 2 {
+            if answer >= 0.0 {
+                self.stage = 3
+                return Some(Ask::Part(self.at))
+            }
+            self.deviation = -solid.nearest(self.at + self.normal * STEPS[self.step])
+            self.step += 1
+            return self.outward(solid)
+        }
+        if self.stage == 3 {
+            self.part = u32(answer)
+            self.stage = 4
+        }
+        None
+    }
+}
+
+/// A point of the mesh's box: whether it's inside the mesh and inside the package, and, inside
+/// the package alone, how far past the mesh.
+pub struct VolumePoint: Copy {
+    pub at: vec3d,
+    pub in_mesh: bool,
+    pub in_package: bool,
+    pub past: f64,
+    asked: bool,
+}
+
+impl Probe for VolumePoint {
+    fn next(mut self, solid: Solid, answer: f64) -> Option<Ask> {
+        if !self.asked {
+            self.asked = true
+            self.in_mesh = solid.inside(self.at)
+            return Some(Ask::Distance(self.at))
+        }
+        self.in_package = answer < 0.0
+        if self.in_package && !self.in_mesh {
+            self.past = solid.nearest(self.at)
+        }
+        None
+    }
+}
+
+/// A row of a view's rays, each tested for the package along each stretch inside the mesh,
+/// stepping by a quarter of the package's distance (at least 0.5 mm) until it's inside the
+/// package: each ray's state (0 where it misses the mesh, 1 where it passes through the mesh and
+/// the package, 2 through the mesh alone) and where it enters the mesh.
+pub struct RayRow: Clone {
+    /// Ray j starts at `base + v (v0 + (j + 1/2) cell) + back`, and runs along `d`.
+    base: vec3d,
+    v: vec3d,
+    v0: f64,
+    back: vec3d,
+    d: vec3d,
+    count: u32,
+    pub states: Vec<u8>,
+    pub entries: Vec<vec3d>,
+    started: bool,
+    ray: u32,
+    o: vec3d,
+    stretches: Vec<vec2d>,
+    stretch: u32,
+    t: f64,
+}
+
+impl RayRow {
+    fn new(base: vec3d, v: vec3d, v0: f64, back: vec3d, d: vec3d, count: u32) -> RayRow {
+        RayRow {
+            base,
+            v,
+            v0,
+            back,
+            d,
+            count,
+            states: Vec::with_capacity(count),
+            entries: Vec::with_capacity(count),
+            started: false,
+            ray: 0,
+            o: vec3d(0.0),
+            stretches: Vec::new(),
+            stretch: 0,
+            t: 0.0,
+        }
+    }
+
+    /// The stretches of ray `self.ray` inside the mesh: where the winding number is at least 1.
+    fn begin(mut self, solid: Solid) {
+        self.o = (self.base + self.v * (self.v0 + (f64(self.ray) + 0.5) * RAY_CELL)) + self.back
+        self.stretches.clear()
+        var w = 0
+        var start: Option<f64> = None
+        for c in solid.crossings(self.o, self.d) {
+            let (t, sign) = c
+            let was = w
+            w -= sign
+            if was < 1 && w >= 1 {
+                start = Some(t)
+            } else if was >= 1 && w < 1 {
+                if let Some(s) = start {
+                    self.stretches.push(vec2d(s, t))
+                    start = None
+                }
+            }
+        }
+        self.stretch = 0
+        if !self.stretches.is_empty() {
+            self.t = self.stretches[0].x + 0.0003
+        }
+    }
+
+    /// Ends the ray with `state`, and begins the next.
+    fn end(mut self, solid: Solid, state: u8) {
+        self.states.push(state)
+        self.entries.push(
+            if state == 0 { vec3d(0.0) } else { self.o + self.d * self.stretches[0].x },
+        )
+        self.ray += 1
+        if self.ray < self.count {
+            self.begin(solid)
+        }
+    }
+
+    /// The next question along the rays from where they are, ending each ray that needs none.
+    fn ahead(mut self, solid: Solid) -> Option<Ask> {
+        while self.ray < self.count {
+            if self.stretches.is_empty() {
+                self.end(solid, 0)
+                continue
+            }
+            while self.stretch < self.stretches.len() &&
+                !(self.t < self.stretches[self.stretch].y) {
+                self.stretch += 1
+                if self.stretch < self.stretches.len() {
+                    self.t = self.stretches[self.stretch].x + 0.0003
+                }
+            }
+            if self.stretch >= self.stretches.len() {
+                self.end(solid, 2)
+                continue
+            }
+            return Some(Ask::Distance(self.o + self.d * self.t))
+        }
+        None
+    }
+}
+
+impl Probe for RayRow {
+    fn next(mut self, solid: Solid, answer: f64) -> Option<Ask> {
+        if !self.started {
+            self.started = true
+            if self.count == 0 {
+                return None
+            }
+            self.begin(solid)
+            return self.ahead(solid)
+        }
+        if answer < 0.0 {
+            self.end(solid, 1)
+        } else {
+            self.t += max(answer / 4.0, 0.0005)
+        }
+        self.ahead(solid)
+    }
+}
+
+/// The part nearest a point.
+pub struct PartAt: Copy {
+    pub at: vec3d,
+    pub part: u32,
+    asked: bool,
+}
+
+impl PartAt {
+    pub fn new(at: vec3d) -> PartAt {
+        PartAt { at, part: 0, asked: false }
+    }
+}
+
+impl Probe for PartAt {
+    fn next(mut self, solid: Solid, answer: f64) -> Option<Ask> {
+        let _ = solid
+        if !self.asked {
+            self.asked = true
+            return Some(Ask::Part(self.at))
+        }
+        self.part = u32(answer)
+        None
+    }
+}
+
+/// The views the see-through rays look from: the sides, the top, the front, and a
+/// three-quarter view and its mirror image.
+pub const VIEWS: [(Text, vec3d); 5] = [
+    ("side", vec3d(1.0, 0.0, 0.0)),
+    ("top", vec3d(0.0, 1.0, 0.0)),
+    ("front", vec3d(0.0, 0.0, 1.0)),
+    ("three-quarter", vec3d(0.62, 0.45, 0.62)),
+    ("three-quarter, mirrored", vec3d(-0.62, 0.45, 0.62)),
+]
+
+/// The spacing of the see-through rays.
+pub const RAY_CELL: f64 = 0.002
+
+/// A view's grid of rays over the mesh's box, `RAY_CELL` apart: one row of rays for each step
+/// across, and the rows' length.
+pub fn view_rows(solid: Solid, view: u32) -> (Vec<RayRow>, u32) {
+    let (lo, hi) = solid.bounds()
+    var corners: Vec<vec3d> = Vec::new()
+    for k in 0..8 {
+        corners.push(
+            vec3d(
+                if k & 1 == 0 { lo.x } else { hi.x },
+                if k & 2 == 0 { lo.y } else { hi.y },
+                if k & 4 == 0 { lo.z } else { hi.z },
+            ),
+        )
+    }
+    // The rays run against the view's direction, from the viewer's side.
+    let d = unit3(VIEWS[view].1) * -1.0
+    let helper = if abs(d.y) > 0.9 { vec3d(1.0, 0.0, 0.0) } else { vec3d(0.0, 1.0, 0.0) }
+    let u = unit3(cross3(helper, d))
+    let v = cross3(d, u)
+    let range = |axis: vec3d| -> vec2d {
+        var a = mesh::BIG
+        var b = -mesh::BIG
+        for c in corners {
+            let p = dot3(c, axis)
+            a = min(a, p)
+            b = max(b, p)
+        }
+        vec2d(a, b)
+    }
+    let ru = range(u)
+    let rv = range(v)
+    let rd = range(d)
+    let nu = u32((ru.y - ru.x) / RAY_CELL) + 1
+    let nv = u32((rv.y - rv.x) / RAY_CELL) + 1
+    var rows: Vec<RayRow> = Vec::with_capacity(nu)
+    for i in 0..nu {
+        rows.push(
+            RayRow::new(u * (ru.x + (f64(i) + 0.5) * RAY_CELL), v, rv.x, d * (rd.x - 0.01), d, nv),
+        )
+    }
+    (rows, nv)
+}
+
+/// A ray that passes through the mesh but meets nothing of the package: its view (in `VIEWS`),
+/// where it enters the mesh, the part nearest there, and whether it's inside the mesh's outline
+/// (every ray within two cells passes through the mesh), not at its rim, where a ray grazes the
+/// mesh for a millimetre or two.
+pub struct SeeThrough: Copy {
+    pub view: u32,
+    pub at: vec3d,
+    pub part: u32,
+    pub inside: bool,
+}
+
+/// How a package differs from its mesh.
+pub struct Deviation: Clone {
+    pub names: Vec<String>,
+    pub surface: Vec<SurfacePoint>,
+    /// Points skipped because their surface is inside the mesh (where it crosses itself).
+    pub hidden: u32,
+    /// At points spread evenly through the mesh's box: inside both, the mesh alone, the package
+    /// alone, and the box's volume (m³), with how many points.
+    pub both: u32,
+    pub mesh_only: u32,
+    pub package_only: u32,
+    pub box_volume: f64,
+    pub volume_points: u32,
+    /// How far past the mesh the package reaches, at most (m).
+    pub furthest_past: f64,
+    /// Rays from each of `VIEWS`, one every `RAY_CELL`, that pass through the mesh but meet
+    /// nothing of the package: where you'd see through it.
+    pub see_through: Vec<SeeThrough>,
+    /// How many rays passed through the mesh, by view.
+    pub rays: [u32; 5],
+}
+
+/// The surface points to draw: `points` spread evenly over the mesh's surface (triangles chosen
+/// by area, then a point in each), and how many were skipped as hidden; the random sequence
+/// goes on from there.
+pub fn draw_surface(
+    solid: Solid,
+    points: u32,
+    rng: mut Rng,
+) -> Result<(Vec<SurfacePoint>, u32), String> {
+    var cumulative: Vec<f64> = Vec::with_capacity(solid.triangles.len())
+    var total = -0.0
+    var acc = 0.0
+    for t in solid.triangles {
+        let area = 0.5 * len3(cross3(t[1] - t[0], t[2] - t[0]))
+        total += area
+        acc += area
+        cumulative.push(acc)
+    }
+    var drawn: Vec<SurfacePoint> = Vec::with_capacity(points)
+    var hidden = 0
+    while drawn.len() < points {
+        let x = rng.next() * total
+        // The first triangle whose running total reaches x.
+        var lo = 0
+        var hi = cumulative.len()
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if cumulative[mid] < x {
+                lo = mid + 1
+            } else {
+                hi = mid
+            }
+        }
+        let t = solid.triangles[min(lo, solid.triangles.len() - 1)]
+        var a = rng.next()
+        var b = rng.next()
+        if a + b > 1.0 {
+            a = 1.0 - a
+            b = 1.0 - b
+        }
+        let p = t[0] + ((t[1] - t[0]) * a + (t[2] - t[0]) * b)
+        // A surface inside the solid (where a sculpt crosses itself) can't be seen: skip it.
+        let n = unit3(cross3(t[1] - t[0], t[2] - t[0]))
+        if solid.inside(p + n * 0.001) {
+            hidden += 1
+            if hidden > 10 * points {
+                return Err(String::from("the mesh's surface is all inside it"))
+            }
+            continue
+        }
+        drawn.push(SurfacePoint::new(p, n))
+    }
+    Ok((drawn, hidden))
+}
+
+/// The volume points to draw: `points` spread evenly through the mesh's box, 2 cm larger each
+/// way, and the box's volume.
+pub fn draw_volume(solid: Solid, points: u32, rng: mut Rng) -> (Vec<VolumePoint>, f64) {
+    let (lo0, hi0) = solid.bounds()
+    let lo = lo0 - vec3d(0.02)
+    let hi = hi0 + vec3d(0.02)
+    let size = hi - lo
+    var drawn: Vec<VolumePoint> = Vec::with_capacity(points)
+    for _ in 0..points {
+        let x = lo.x + rng.next() * size.x
+        let y = lo.y + rng.next() * size.y
+        let z = lo.z + rng.next() * size.z
+        drawn.push(
+            VolumePoint {
+                at: vec3d(x, y, z),
+                in_mesh: false,
+                in_package: false,
+                past: 0.0,
+                asked: false,
+            },
+        )
+    }
+    (drawn, size.x * size.y * size.z)
+}
+
+/// A view's rays that see through the package (their part still to ask), and how many passed
+/// through the mesh: a ray that passes through the mesh alone is inside the outline if every
+/// ray within two cells of it passes through the mesh too, or at its rim.
+pub fn misses(rows: [RayRow], nv: u32, view: u32) -> (Vec<SeeThrough>, u32) {
+    let nu = rows.len()
+    var out: Vec<SeeThrough> = Vec::new()
+    var through = 0
+    for i in 0..nu {
+        for j in 0..nv {
+            if rows[i].states[j] != 0 {
+                through += 1
+            }
+        }
+    }
+    for i in 0..nu {
+        for j in 0..nv {
+            if rows[i].states[j] != 2 {
+                continue
+            }
+            var inside = i >= 2 && j >= 2 && i + 2 < nu && j + 2 < nv
+            if inside {
+                for a in i - 2..i + 3 {
+                    for b in j - 2..j + 3 {
+                        if rows[a].states[b] == 0 {
+                            inside = false
+                        }
+                    }
+                }
+            }
+            out.push(SeeThrough { view, at: rows[i].entries[j], part: 0, inside })
+        }
+    }
+    (out, through)
+}
+
+fn percentile(sorted: [f64], q: f64) -> f64 {
+    if sorted.len() == 0 {
+        return 0.0
+    }
+    sorted[u32(replica::round_away(f64(sorted.len() - 1) * q))]
+}
+
+/// How far surface points are from the mesh (m): how many, the mean, median, 90th percentile
+/// and worst of their distances, and the shares within 2 mm and 5 mm.
+pub struct Stats: Copy {
+    pub n: u32,
+    pub mean: f64,
+    pub median: f64,
+    pub p90: f64,
+    pub worst: f64,
+    pub within_2mm: f64,
+    pub within_5mm: f64,
+}
+
+impl Deviation {
+    /// The statistics of the surface points nearest part `part`, or of all.
+    pub fn stats(self, part: Option<u32>) -> Stats {
+        var magnitudes: Vec<f64> = Vec::new()
+        for p in self.surface {
+            if part.is_none() || part == Some(p.part) {
+                magnitudes.push(abs(p.deviation))
+            }
+        }
+        magnitudes.sort_by(|a, b| mesh::total_before(a, b))
+        let n = magnitudes.len()
+        let share = |tolerance: f64| -> f64 {
+            if n == 0 {
+                return 0.0
+            }
+            var k = 0
+            for d in magnitudes {
+                if d <= tolerance {
+                    k += 1
+                }
+            }
+            f64(k) / f64(n)
+        }
+        var sum = -0.0
+        for d in magnitudes {
+            sum += d
+        }
+        Stats {
+            n,
+            mean: if n == 0 { 0.0 } else { sum / f64(n) },
+            median: percentile(magnitudes, 0.5),
+            p90: percentile(magnitudes, 0.9),
+            worst: if n == 0 { 0.0 } else { magnitudes[n - 1] },
+            within_2mm: share(0.002),
+            within_5mm: share(0.005),
+        }
+    }
+
+    fn cm3(self, count: u32) -> f64 {
+        self.box_volume * f64(count) / f64(self.volume_points) * 1000000.0
+    }
+
+    /// The volume inside both, of the volume inside either.
+    pub fn iou(self) -> f64 {
+        let union = self.both + self.mesh_only + self.package_only
+        if union == 0 { 0.0 } else { f64(self.both) / f64(union) }
+    }
+
+    /// The `n` worst places at least 2 cm apart, of part `part` or of all: indices of `surface`.
+    pub fn worst(self, n: u32, part: Option<u32>) -> Vec<u32> {
+        var all: Vec<u32> = Vec::new()
+        for i in 0..self.surface.len() {
+            if part.is_none() || part == Some(self.surface[i].part) {
+                all.push(i)
+            }
+        }
+        all.sort_by(|a, b| {
+            mesh::total_before(abs(self.surface[b].deviation), abs(self.surface[a].deviation))
+        })
+        var out: Vec<u32> = Vec::new()
+        for k in all {
+            var apart = true
+            for q in out {
+                if !(len3(self.surface[q].at - self.surface[k].at) > 0.02) {
+                    apart = false
+                }
+            }
+            if apart {
+                out.push(k)
+                if out.len() == n {
+                    break
+                }
+            }
+        }
+        out
+    }
+
+    fn name_of(self, part: u32) -> String {
+        if part < self.names.len() { self.names[part].clone() } else { String::from("?") }
+    }
+
+    /// The report, as text.
+    pub fn to_text(self) -> String {
+        var s = String::new()
+        let all = self.stats(None)
+        s.push_str(
+            f"surface, {all.n} points ({self.hidden} more skipped, inside the mesh where it crosses itself): mean {all.mean * 1000.0:.1} mm, median {all.median * 1000.0:.1}, 90% {all.p90 * 1000.0:.1}, worst {all.worst * 1000.0:.1}; {all.within_2mm * 100.0:.0}% within 2 mm, {all.within_5mm * 100.0:.0}% within 5 mm\n",
+        )
+        s.push_str(
+            f"volume: {self.iou() * 100.0:.0}% shared (intersection over union); the mesh's alone {self.cm3(self.mesh_only):.0} cm³, the replica's alone {self.cm3(self.package_only):.0} cm³, at most {self.furthest_past * 1000.0:.1} mm past the mesh\n",
+        )
+        var inside: Vec<SeeThrough> = Vec::new()
+        for r in self.see_through {
+            if r.inside {
+                inside.push(r)
+            }
+        }
+        var views = String::new()
+        for v in 0..5 {
+            var k = 0
+            for r in inside {
+                if r.view == v {
+                    k += 1
+                }
+            }
+            if v > 0 {
+                views.push_str(", ")
+            }
+            views.push_str(f"{VIEWS[v].0} {k} of {self.rays[v]}")
+        }
+        s.push_str(
+            f"see-through, rays every {RAY_CELL * 1000.0} mm from 5 views: {inside.len()} inside the outline ({views}), {self.see_through.len() - inside.len()} more at its rim\n",
+        )
+        // By part, in the order of their names.
+        var names: Vec<String> = Vec::new()
+        for r in inside {
+            let name = self.name_of(r.part)
+            var seen = false
+            for m in names {
+                if m.as_str() == name.as_str() {
+                    seen = true
+                }
+            }
+            if !seen {
+                names.push(take name)
+            }
+        }
+        names.sort_by(|a, b| text_before(a.as_str(), b.as_str()))
+        for name in names {
+            var n = 0
+            var at: Option<vec3d> = None
+            for r in inside {
+                if self.name_of(r.part).as_str() == name.as_str() {
+                    n += 1
+                    if at.is_none() {
+                        at = Some(r.at)
+                    }
+                }
+            }
+            let p = at.unwrap_or(vec3d(0.0))
+            s.push_str(f"  {name}: {n}, at ({p.x:.3}, {p.y:.3}, {p.z:.3}) and near\n")
+        }
+        s.push_str("by part (the part nearest each point):\n")
+        for i in 0..self.names.len() {
+            let st = self.stats(Some(i))
+            s.push_str(
+                f"  {self.names[i]:<20} {st.n:>6} points  mean {st.mean * 1000.0:>5.1} mm  90% {st.p90 * 1000.0:>5.1}  worst {st.worst * 1000.0:>6.1}  {st.within_2mm * 100.0:>3.0}% within 2 mm  {st.within_5mm * 100.0:>3.0}% within 5\n",
+            )
+        }
+        s.push_str("worst places (more than 0: the replica is short of the mesh; less: past it):\n")
+        for k in self.worst(5, None) {
+            borrow p = self.surface[k]
+            let d = p.deviation * 1000.0
+            let signed = if d >= 0.0 { String::from(f"+{d:.1}") } else { String::from(f"{d:.1}") }
+            s.push_str(
+                f"  {signed} mm at ({p.at.x:.3}, {p.at.y:.3}, {p.at.z:.3}), {self.name_of(p.part)}\n",
+            )
+        }
+        s
+    }
+
+    /// The report, as JSON (each object's keys in order).
+    pub fn to_json(self) -> String {
+        let all = self.stats(None)
+        var parts = String::from("[")
+        for i in 0..self.names.len() {
+            let st = self.stats(Some(i))
+            if i > 0 {
+                parts.push_str(",")
+            }
+            var places = String::from("[")
+            let worst = self.worst(3, Some(i))
+            for w in 0..worst.len() {
+                borrow p = self.surface[worst[w]]
+                if w > 0 {
+                    places.push_str(",")
+                }
+                places.push_str(f"{{\"at\":{point_json(p.at)},\"distance\":{number(p.deviation)}}}")
+            }
+            places.push_str("]")
+            parts.push_str(
+                f"{{\"mean\":{number(st.mean)},\"median\":{number(st.median)},\"p90\":{number(st.p90)},\"part\":{quote(self.names[i].as_str())},\"points\":{st.n},\"within_2mm\":{number(st.within_2mm)},\"within_5mm\":{number(st.within_5mm)},\"worst\":{number(st.worst)},\"worst_places\":{places}}}",
+            )
+        }
+        parts.push_str("]")
+        var worst = String::from("[")
+        let w5 = self.worst(5, None)
+        for w in 0..w5.len() {
+            borrow p = self.surface[w5[w]]
+            if w > 0 {
+                worst.push_str(",")
+            }
+            worst.push_str(
+                f"{{\"at\":{point_json(p.at)},\"distance\":{number(p.deviation)},\"part\":{self.part_json(p.part)}}}",
+            )
+        }
+        worst.push_str("]")
+        var views = String::from("[")
+        for v in 0..5 {
+            if v > 0 {
+                views.push_str(",")
+            }
+            views.push_str(f"{{\"name\":{quote(VIEWS[v].0)},\"towards\":{point_json(VIEWS[v].1)}}}")
+        }
+        views.push_str("]")
+        var missed = String::from("[")
+        var inside = 0
+        for k in 0..self.see_through.len() {
+            let r = self.see_through[k]
+            if r.inside {
+                inside += 1
+            }
+            if k > 0 {
+                missed.push_str(",")
+            }
+            missed.push_str(
+                f"{{\"at\":{point_json(r.at)},\"inside\":{r.inside},\"part\":{self.part_json(r.part)},\"view\":{r.view}}}",
+            )
+        }
+        missed.push_str("]")
+        let rays = f"[{self.rays[0]},{self.rays[1]},{self.rays[2]},{self.rays[3]},{self.rays[4]}]"
+        String::from(
+            f"{{\"parts\":{parts},\"see_through\":{{\"inside\":{inside},\"missed\":{missed},\"rays\":{rays},\"views\":{views}}},\"surface\":{{\"hidden\":{self.hidden},\"mean\":{number(all.mean)},\"median\":{number(all.median)},\"p90\":{number(all.p90)},\"points\":{all.n},\"within_2mm\":{number(all.within_2mm)},\"within_5mm\":{number(all.within_5mm)},\"worst\":{number(all.worst)}}},\"volume\":{{\"furthest_past\":{number(self.furthest_past)},\"iou\":{number(self.iou())},\"mesh_only_cm3\":{number(self.cm3(self.mesh_only))},\"replica_only_cm3\":{number(self.cm3(self.package_only))}}},\"worst\":{worst}}}",
+        )
+    }
+
+    /// A part's name as JSON: `null` for an index past the names.
+    fn part_json(self, part: u32) -> String {
+        if part < self.names.len() { quote(self.names[part].as_str()) } else {
+            String::from("null")
+        }
+    }
+}
+
+/// Whether text `a` sorts before `b`, byte by byte.
+fn text_before(a: str, b: str) -> bool {
+    let n = min(a.len(), b.len())
+    for i in 0..n {
+        if a.byte(i) != b.byte(i) {
+            return a.byte(i) < b.byte(i)
+        }
+    }
+    a.len() < b.len()
+}
+
+/// A finite number as JSON (`null` otherwise).
+fn number(x: f64) -> String {
+    if abs(x) < 1.0 / 0.0 { String::from(f"{x}") } else { String::from("null") }
+}
+
+fn point_json(p: vec3d) -> String {
+    String::from(f"[{number(p.x)},{number(p.y)},{number(p.z)}]")
+}
+
+/// `s` as a JSON string.
+fn quote(s: str) -> String {
+    var out = String::from("\"")
+    std::fmt::json_text(mut out, s)
+    out.push_str("\"")
+    out
+}

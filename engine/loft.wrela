@@ -5,8 +5,8 @@
 // flat at the axis's ends.
 //
 // A loft holds any section that's star-shaped about the axis, so it can take a measured form as
-// it is: `wrela reference replica` samples a sculpt's surface into lofts. The distance isn't
-// exact (the radius is measured in each section's plane, not to the nearest point), so
+// it is: `wrela tool reference -- replica` samples a sculpt's surface into lofts. The distance
+// isn't exact (the radius is measured in each section's plane, not to the nearest point), so
 // `Lipschitz` bounds its gradient from the table's slopes.
 
 use std::field::Surface

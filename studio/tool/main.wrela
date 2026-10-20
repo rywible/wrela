@@ -7,7 +7,7 @@
 //
 // ```text
 // wrela tool studio -- <package-dir> [serve [--port N] | build | run <script> | look
-//     | beside <manifest> | variants <package-dir>... | sweep <literal> <value>...
+//     | beside <photo> | variants <package-dir>... | sweep <literal> <value>...
 //     | <action> [args...]] [--png FILE] [--view F] [--size WxH] [--reference PNG] [--debug]
 // ```
 //
@@ -83,7 +83,10 @@ use lens::{
     Built, Lens, Place, actions, build, call, cpu_action, failed, last_json, logs, read_png,
     read_text, reference_mask, save_png, screen, start, typed,
 }
-use look::{Framing, Photo, changed, f32_text, look_answer, own_framing, registration, sheet}
+use look::{
+    Framing, Photo, changed, f32_text, look_answer, own_framing, parse_registration, registered,
+    sheet,
+}
 use json::{f64_text, obj, quoted, round3}
 use std::collections::{Box, Vec}
 use std::input::Script
@@ -104,7 +107,7 @@ pub const OUT: Text = "out"
 /// (wider, the lens draws its panel for people beside them).
 pub const SIZE: (u32, u32) = (896, 896)
 
-const USAGE: Text = "usage: wrela tool studio -- <package-dir> [serve [--port N] | build | run <script> | look | beside <manifest> | variants <package-dir>... | sweep <literal> <value>... | <action> [args...]] [--png FILE] [--view F] [--size WxH] [--reference PNG] [--debug]"
+const USAGE: Text = "usage: wrela tool studio -- <package-dir> [serve [--port N] | build | run <script> | look | beside <photo> | variants <package-dir>... | sweep <literal> <value>... | <action> [args...]] [--png FILE] [--view F] [--size WxH] [--reference PNG] [--debug]"
 
 /// The command line, read: the positional words, and the flags.
 pub struct Command: Clone {
@@ -152,7 +155,7 @@ pub fn read_command(given: [String]) -> Option<Command> {
         }
         if a == "--debug" {
             c.debug = true
-        } else if a.starts_with("--") && a != "--view" {
+        } else if a.starts_with("--") && a != "--view" && a != "--registration" {
             // A flag this tool doesn't take, refused before anything is built.
             return None
         } else {
@@ -931,8 +934,9 @@ pub fn look_cmd(
     Ok(look_answer(png.as_str(), changed_json.as_str(), answers[0].as_str(), answers[1].as_str()))
 }
 
-/// `beside <manifest>`, `variants <package>...` and `sweep <literal> <value>...`, each with
-/// `[--view f]` and its PNG (`--png`, or `<action>.png`): 0, or 2 for a usage error.
+/// `beside <photo> [--registration g,m,z,faces]`, `variants <package>...` and `sweep <literal>
+/// <value>...`, each with `[--view f]` and its PNG (`--png`, or `<action>.png`): 0, or 2 for a
+/// usage error.
 @job
 pub fn compare(
     place: take Place,
@@ -943,8 +947,17 @@ pub fn compare(
 ) -> Result<(u32, String), String> {
     var facing = 0
     var plain: Vec<String> = Vec::new()
+    var given_registration: Option<String> = None
     var i = 0
     while i < args.len() {
+        if args[i].as_str() == "--registration" {
+            if i + 1 >= args.len() || action.as_str() != "beside" {
+                return Ok((2, String::new()))
+            }
+            given_registration = Some(args[i + 1].clone())
+            i += 2
+            continue
+        }
         if args[i].as_str() == "--view" {
             if i + 1 >= args.len() {
                 return Ok((2, String::new()))
@@ -1010,23 +1023,20 @@ pub fn compare(
         if plain.len() != 1 {
             return Ok((2, String::new()))
         }
-        let Some(manifest) = rooted(place.files.as_str(), plain[0].as_str()) else {
+        let Some(photo_path) = rooted(place.files.as_str(), plain[0].as_str()) else {
             return Ok((2, String::new()))
         }
-        var t = Box::new(read_text.start(manifest.clone()))
-        var text: Option<Result<Option<String>, String>> = None
-        while text.is_none() {
-            match t.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(x) => text = Some(take x),
-            }
+        let reg = match given_registration {
+            Some(text) => parse_registration(text.as_str())?,
+            None => match registered(plain[0].as_str()) {
+                Some(r) => r,
+                None => return Err(
+                    String::from(
+                        f"{plain[0].as_str()} has no registration: the references package registers its side photos (`references/<dir>/<name>.png` takes `<dir>/<name>.jpg`'s); give another photo's with `--registration ground_px,metres_per_px,z0_px,right|left`",
+                    ),
+                ),
+            },
         }
-        let Some(tx) = take text else { return Err(failed("no answer")) }
-        let Some(mt) = (take tx)? else {
-            return Err(String::from(f"can't read {plain[0].as_str()}"))
-        }
-        let reg = registration(plain[0].as_str(), mt.as_str())?
-        let photo_path = String::from(f"{manifest.as_str().slice(0, manifest.len() - 5)}.png")
         var p = Box::new(read_png.start(photo_path.clone()))
         var read: Option<Result<Option<(u32, u32, Vec<u8>)>, String>> = None
         while read.is_none() {
@@ -1036,12 +1046,12 @@ pub fn compare(
             }
         }
         let Some(px) = take read else { return Err(failed("no answer")) }
-        let shown = String::from(f"{plain[0].as_str().slice(0, plain[0].len() - 5)}.png")
+        let shown = plain[0].clone()
         let image = match take px {
             Ok(Some(img)) => take img,
             _ => return Err(
                 String::from(
-                    f"can't read the photo {shown.as_str()}: a reference is read as PNG beside its manifest (`sips -s format png photo.jpg --out {shown.as_str()}`)",
+                    f"can't read the photo {shown.as_str()}: a photo is read as PNG (`sips -s format png photo.jpg --out {shown.as_str()}`)",
                 ),
             ),
         }

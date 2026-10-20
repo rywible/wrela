@@ -1,0 +1,1391 @@
+// Sweeps for `replica`: a part with `sections` is a sweep (engine/sweep.wrela) along a smooth
+// path from its `from` through its `through` to its `to`. Its radii are measured in the sweep's
+// own section planes (where a ray from the path leaves the mesh, as a loft's are), and its
+// control sections, named (extents, squareness, turn) with up to four bumps, fitted to them by
+// least squares. The path, its planes and its sections' blend are the engine's, written again
+// here in f64, so the planes measured are the planes the engine draws.
+
+use math
+use mesh::{Solid, cross3, dot3, len3, unit3}
+use solve::{Banded, catmull_rom, least_squares}
+use std::collections::Vec
+
+/// The most vertices a sweep's path has (the engine's `VERTICES`).
+pub const VERTICES: u32 = 33
+
+/// A section across a sweep, as the engine's: extents up (angle 0), left, down and right;
+/// squareness; turn; and four bumps, each (angle, height, half-width), height 0 for none.
+pub struct Section: Copy {
+    pub up: f64 = 0.0,
+    pub left: f64 = 0.0,
+    pub down: f64 = 0.0,
+    pub right: f64 = 0.0,
+    pub square: f64 = 0.0,
+    pub turn: f64 = 0.0,
+    pub bumps: [vec3d; 4] = [vec3d(0.0); 4],
+}
+
+/// `a` as an angle in [-π, π).
+pub fn wrap(a: f64) -> f64 {
+    a - math::TAU * floor((a + math::PI) / math::TAU)
+}
+
+/// The least xⁿ + yⁿ over a quadrant whose extents are `a` and `b`, as the engine's `radius`
+/// holds it (there, so a derived interval stays finite).
+/// `two` is min(1, 2^(1 − n/2)), the same for each quadrant.
+fn least(a: f64, b: f64, n: f64, two: f64) -> f64 {
+    math::pow(max(a, b), -n) * two
+}
+
+impl Section {
+    pub fn round(r: f64) -> Section {
+        Section { up: r, left: r, down: r, right: r, square: 2.0 }
+    }
+
+    /// Its radius at angle `theta` (radians from up, toward the left): the engine's.
+    pub fn radius(self, theta: f64) -> f64 {
+        self.outline().radius(theta)
+    }
+
+    /// Ready to give its radius at many angles, with what its numbers alone decide worked out
+    /// once.
+    pub fn outline(self) -> Outline {
+        let n = max(self.square, 1.0)
+        let up = max(self.up, 0.0001)
+        let down = max(self.down, 0.0001)
+        let left = max(self.left, 0.0001)
+        let right = max(self.right, 0.0001)
+        let two = min(1.0, math::pow(2.0, 1.0 - 0.5 * n))
+        Outline {
+            section: self,
+            n,
+            inv_n: 1.0 / n,
+            least: [
+                least(up, left, n, two),
+                least(up, right, n, two),
+                least(down, left, n, two),
+                least(down, right, n, two),
+            ],
+        }
+    }
+
+    /// Its numbers, the named six and then `bumps` bumps' three.
+    pub fn params(self, bumps: u32) -> Vec<f64> {
+        var p = Vec::from([self.up, self.left, self.down, self.right, self.square, self.turn])
+        for k in 0..bumps {
+            let b = self.bumps[k]
+            p.push(b.x)
+            p.push(b.y)
+            p.push(b.z)
+        }
+        p
+    }
+
+    pub fn from_params(p: [f64]) -> Section {
+        var s = Section { up: p[0], left: p[1], down: p[2], right: p[3], square: p[4], turn: p[5] }
+        var k = 0
+        while 6 + 3 * k + 2 < p.len() {
+            s.bumps[k] = vec3d(p[6 + 3 * k], p[7 + 3 * k], p[8 + 3 * k])
+            k += 1
+        }
+        s
+    }
+}
+
+/// A section's radius at many angles (`Section::outline`): its squareness, and each quadrant's
+/// `least`, up-left, up-right, down-left, down-right.
+pub struct Outline: Copy {
+    section: Section,
+    n: f64,
+    inv_n: f64,
+    least: [f64; 4],
+}
+
+impl Outline {
+    /// `Section::radius`, the same number.
+    pub fn radius(self, theta: f64) -> f64 {
+        on_base(self.base(theta), self.section.bumps, theta)
+    }
+
+    /// The radius at `theta` before the bumps: the superellipse alone, which the section's
+    /// extents, squareness and turn decide (its bumps don't).
+    pub fn base(self, theta: f64) -> f64 {
+        let s = self.section
+        let phi = theta - s.turn
+        let c = math::cos(phi)
+        let sn = math::sin(phi)
+        let a = max(if c >= 0.0 { s.up } else { s.down }, 0.0001)
+        let b = max(if sn >= 0.0 { s.left } else { s.right }, 0.0001)
+        let quadrant = 2 * (if c < 0.0 { 1 } else { 0 }) + (if sn < 0.0 { 1 } else { 0 })
+        let x = max(abs(c) / a, 0.000001)
+        let y = max(abs(sn) / b, 0.000001)
+        1.0 /
+            math::pow(
+                max(math::pow(x, self.n) + math::pow(y, self.n), self.least[quadrant]),
+                self.inv_n,
+            )
+    }
+}
+
+/// The radius at `theta` of a section whose superellipse is `base` there, with `bumps` added.
+pub fn on_base(base: f64, bumps: [vec3d; 4], theta: f64) -> f64 {
+    var r = base
+    for k in bumps {
+        let d = abs(wrap(theta - k.x))
+        if d < k.z {
+            let q = math::cos(0.5 * math::PI * d / max(k.z, 0.0001))
+            r += k.y * q * q
+        }
+    }
+    max(r, 0.0)
+}
+
+/// A section's outline at a station's angles, with the parts of each superellipse radius kept
+/// (each angle's cosine and sine from the turn, its quadrant, its coordinates scaled by their
+/// extents and their powers), so a step of one of the section's numbers recomputes only what
+/// that number moves: the same bits as computing it all again.
+pub struct Ring: Clone {
+    o: Outline,
+    c: Vec<f64>,
+    s: Vec<f64>,
+    quadrant: Vec<u32>,
+    x: Vec<f64>,
+    y: Vec<f64>,
+    xn: Vec<f64>,
+    yn: Vec<f64>,
+    pub base: Vec<f64>,
+}
+
+impl Ring {
+    /// `sec`'s outline at `theta`.
+    pub fn of(sec: Section, theta: [f64]) -> Ring {
+        let o = sec.outline()
+        let a = theta.len()
+        var r = Ring {
+            o,
+            c: Vec::with_capacity(a),
+            s: Vec::with_capacity(a),
+            quadrant: Vec::with_capacity(a),
+            x: Vec::with_capacity(a),
+            y: Vec::with_capacity(a),
+            xn: Vec::with_capacity(a),
+            yn: Vec::with_capacity(a),
+            base: Vec::with_capacity(a),
+        }
+        for t in theta {
+            let phi = t - sec.turn
+            let c = math::cos(phi)
+            let sn = math::sin(phi)
+            let ea = max(if c >= 0.0 { sec.up } else { sec.down }, 0.0001)
+            let eb = max(if sn >= 0.0 { sec.left } else { sec.right }, 0.0001)
+            let q = 2 * (if c < 0.0 { 1 } else { 0 }) + (if sn < 0.0 { 1 } else { 0 })
+            let x = max(abs(c) / ea, 0.000001)
+            let y = max(abs(sn) / eb, 0.000001)
+            let xn = math::pow(x, o.n)
+            let yn = math::pow(y, o.n)
+            r.c.push(c)
+            r.s.push(sn)
+            r.quadrant.push(q)
+            r.x.push(x)
+            r.y.push(y)
+            r.xn.push(xn)
+            r.yn.push(yn)
+            r.base.push(1.0 / math::pow(max(xn + yn, o.least[q]), o.inv_n))
+        }
+        r
+    }
+
+    /// The superellipse radii of `sec`, which is this ring's section with its number `q` (one of
+    /// the named six: up, left, down, right, squareness, turn) stepped.
+    pub fn stepped(self, sec: Section, q: u32, theta: [f64]) -> Vec<f64> {
+        if q == 5 {
+            return bases(sec.outline(), theta)
+        }
+        let o = sec.outline()
+        var out: Vec<f64> = Vec::with_capacity(theta.len())
+        for j in 0..theta.len() {
+            let quad = self.quadrant[j]
+            var xn = self.xn[j]
+            var yn = self.yn[j]
+            if q == 4 {
+                xn = math::pow(self.x[j], o.n)
+                yn = math::pow(self.y[j], o.n)
+            } else if q == 0 && self.c[j] >= 0.0 {
+                xn = math::pow(max(abs(self.c[j]) / max(sec.up, 0.0001), 0.000001), o.n)
+            } else if q == 2 && self.c[j] < 0.0 {
+                xn = math::pow(max(abs(self.c[j]) / max(sec.down, 0.0001), 0.000001), o.n)
+            } else if q == 1 && self.s[j] >= 0.0 {
+                yn = math::pow(max(abs(self.s[j]) / max(sec.left, 0.0001), 0.000001), o.n)
+            } else if q == 3 && self.s[j] < 0.0 {
+                yn = math::pow(max(abs(self.s[j]) / max(sec.right, 0.0001), 0.000001), o.n)
+            } else {
+                // Neither this angle's extent nor its squareness moved.
+                out.push(self.base[j])
+                continue
+            }
+            out.push(1.0 / math::pow(max(xn + yn, o.least[quad]), o.inv_n))
+        }
+        out
+    }
+}
+
+/// The engine's blend of four sections by `w`, bumps matched by place, their angles blended
+/// around `b`'s.
+fn blend(a: Section, b: Section, c: Section, d: Section, w: [f64; 4]) -> Section {
+    var out = Section {
+        up: w[0] * a.up + w[1] * b.up + w[2] * c.up + w[3] * d.up,
+        left: w[0] * a.left + w[1] * b.left + w[2] * c.left + w[3] * d.left,
+        down: w[0] * a.down + w[1] * b.down + w[2] * c.down + w[3] * d.down,
+        right: w[0] * a.right + w[1] * b.right + w[2] * c.right + w[3] * d.right,
+        square: w[0] * a.square + w[1] * b.square + w[2] * c.square + w[3] * d.square,
+        turn: w[0] * a.turn + w[1] * b.turn + w[2] * c.turn + w[3] * d.turn,
+    }
+    for i in 0..4 {
+        // An empty slot takes the angle and width of a section that fills it, as the engine's.
+        let like = slot(b, i, slot(c, i, slot(a, i, d.bumps[i])))
+        let ka = slot(a, i, like)
+        let kb = slot(b, i, like)
+        let kc = slot(c, i, like)
+        let kd = slot(d, i, like)
+        let at = kb.x
+        let angle = at + w[0] * wrap(ka.x - at) + w[2] * wrap(kc.x - at) + w[3] * wrap(kd.x - at)
+        let h = w[0] * ka.y + w[1] * kb.y + w[2] * kc.y + w[3] * kd.y
+        let wd = w[0] * ka.z + w[1] * kb.z + w[2] * kc.z + w[3] * kd.z
+        out.bumps[i] = vec3d(angle, h, max(wd, 0.0001))
+    }
+    out
+}
+
+/// `s`'s bump in slot `i`, or, if it's empty, `like`'s angle and width at no height.
+fn slot(s: Section, i: u32, like: vec3d) -> vec3d {
+    let k = s.bumps[i]
+    if k.y == 0.0 && k.z == 0.0 { vec3d(like.x, 0.0, like.z) } else { k }
+}
+
+/// The control section a station `f` of the way along the path takes most from (it takes from
+/// `m - 1` to `m + 2`, held to the sections there are).
+fn span(places: [f64], f: f64) -> u32 {
+    var m = 0
+    if places.len() > 1 {
+        for i in 0..places.len() - 1 {
+            if f >= places[i] {
+                m = i
+            }
+        }
+    }
+    m
+}
+
+/// The section `f` of the way along the path: the engine's `section_at`.
+pub fn section_at(sections: [Section], places: [f64], f: f64) -> Section {
+    let n = sections.len()
+    if n == 1 || f <= places[0] {
+        return sections[0]
+    }
+    if f >= places[n - 1] {
+        return sections[n - 1]
+    }
+    let m = span(places, f)
+    let x = clamp((f - places[m]) / (places[m + 1] - places[m]), 0.0, 1.0)
+    let b = sections[m]
+    let c = sections[m + 1]
+    let a = if m == 0 { blend(c, b, c, c, [-1.0, 2.0, 0.0, 0.0]) } else { sections[m - 1] }
+    let d = if m + 2 == n { blend(b, c, b, b, [-1.0, 2.0, 0.0, 0.0]) } else { sections[m + 2] }
+    blend(a, b, c, d, catmull_rom(x))
+}
+
+// ---- the path ---------------------------------------------------------------------------------
+
+/// A sweep's path, cut into straight pieces, as the engine cuts it: each vertex, the plane's
+/// normal there, angle 0's direction there, and how far along the path it is.
+pub struct Path: Clone {
+    pub at: Vec<vec3d>,
+    pub normal: Vec<vec3d>,
+    pub up: Vec<vec3d>,
+    pub along: Vec<f64>,
+}
+
+fn lerp(a: vec3d, b: vec3d, t: f64) -> vec3d {
+    a + (b - a) * t
+}
+
+fn unit(v: vec3d) -> vec3d {
+    v * (1.0 / max(len3(v), 1e-9))
+}
+
+/// `u` turned as the turn from unit `from` to unit `to` turns it.
+fn carry(u: vec3d, from: vec3d, to: vec3d) -> vec3d {
+    let axis = cross3(from, to)
+    let s = len3(axis)
+    let c = dot3(from, to)
+    if s < 0.000001 {
+        return u
+    }
+    let k = axis * (1.0 / s)
+    (u * c + cross3(k, u) * s) + k * (dot3(k, u) * (1.0 - c))
+}
+
+impl Path {
+    /// The engine's path through `points` (2 to `VERTICES`), angle 0 toward `up` at its start.
+    pub fn new(points: [vec3d], up: vec3d) -> Path {
+        let p = points.len()
+        assert(p >= 2 && p <= VERTICES, "a sweep's path has 2 to 33 points")
+        let per = if p == 2 { 1 } else { min(8, (VERTICES - 1) / (p - 1)) }
+        var at: Vec<vec3d> = Vec::new()
+        for i in 0..p - 1 {
+            let p1 = points[i]
+            let p2 = points[i + 1]
+            let p0 = if i == 0 { p1 * 2.0 - p2 } else { points[i - 1] }
+            let p3 = if i + 2 == p { p2 * 2.0 - p1 } else { points[i + 2] }
+            let k0 = 0.0
+            let k1 = k0 + max(sqrt(len3(p1 - p0)), 0.0001)
+            let k2 = k1 + max(sqrt(len3(p2 - p1)), 0.0001)
+            let k3 = k2 + max(sqrt(len3(p3 - p2)), 0.0001)
+            for j in 0..per {
+                let t = k1 + (k2 - k1) * f64(j) / f64(per)
+                let a1 = lerp(p0, p1, (t - k0) / (k1 - k0))
+                let a2 = lerp(p1, p2, (t - k1) / (k2 - k1))
+                let a3 = lerp(p2, p3, (t - k2) / (k3 - k2))
+                let b1 = lerp(a1, a2, (t - k0) / (k2 - k0))
+                let b2 = lerp(a2, a3, (t - k1) / (k3 - k1))
+                at.push(lerp(b1, b2, (t - k1) / (k2 - k1)))
+            }
+        }
+        at.push(points[p - 1])
+        let n = at.len()
+        var normal: Vec<vec3d> = Vec::with_capacity(n)
+        for i in 0..n {
+            let back = if i == 0 { at[1] - at[0] } else { at[i] - at[i - 1] }
+            let ahead = if i + 1 == n { at[i] - at[i - 1] } else { at[i + 1] - at[i] }
+            normal.push(unit3(unit3(back) + unit3(ahead)))
+        }
+        var frame: Vec<vec3d> = Vec::filled(n, vec3d(0.0))
+        var along: Vec<f64> = Vec::filled(n, 0.0)
+        frame[0] = unit3(up - normal[0] * dot3(up, normal[0]))
+        for i in 1..n {
+            let u = carry(frame[i - 1], normal[i - 1], normal[i])
+            frame[i] = unit3(u - normal[i] * dot3(u, normal[i]))
+            along[i] = along[i - 1] + len3(at[i] - at[i - 1])
+        }
+        Path { at, normal, up: frame, along }
+    }
+
+    pub fn length(self) -> f64 {
+        self.along[self.along.len() - 1]
+    }
+
+    /// The section plane `s` along the path: its centre, and its up and left (angle 0 and π/2):
+    /// the engine's plane through a point there.
+    pub fn plane(self, along_path: f64) -> (vec3d, vec3d, vec3d) {
+        let s = clamp(along_path, 0.0, self.length())
+        var i = 0
+        for k in 0..self.at.len() - 1 {
+            if self.along[k] <= s {
+                i = k
+            }
+        }
+        let a = self.at[i]
+        let b = self.at[i + 1]
+        let n0 = self.normal[i]
+        let n1 = self.normal[i + 1]
+        let w = unit(b - a)
+        let len = len3(b - a)
+        let c0 = dot3(n0, w)
+        let c1 = dot3(n1, w)
+        let t = clamp(s - self.along[i], 0.0, len)
+        // t = λ L c1 / ((1 − λ) c0 + λ c1), for λ.
+        let lam = clamp(t * c0 / max(len * c1 - t * c1 + t * c0, 1e-12), 0.0, 1.0)
+        let (_, u, v) = self.frame(i, lam)
+        (a + w * t, u, v)
+    }
+
+    /// The plane `lam` of the way from piece `i`'s start plane to its end plane: its normal, and
+    /// its up and left (angle 0 and π/2).
+    fn frame(self, i: u32, lam: f64) -> (vec3d, vec3d, vec3d) {
+        let n = unit(lerp(self.normal[i], self.normal[i + 1], lam))
+        let u = lerp(self.up[i], self.up[i + 1], lam)
+        let uu = unit(u - n * dot3(u, n))
+        (n, uu, cross3(uu, n))
+    }
+
+    /// Where `p` is about the path, as the engine's `place`: how far along it (less than 0
+    /// before its start, more than its length past its end), how far from it in its plane, and
+    /// at what angle.
+    pub fn place(self, p: vec3d) -> (f64, f64, f64) {
+        let n = self.at.len()
+        var best = (0.0, 0.0, 0.0)
+        var key = 1.0 / 0.0
+        for i in 0..n - 1 {
+            let a = self.at[i]
+            let b = self.at[i + 1]
+            let n0 = self.normal[i]
+            let n1 = self.normal[i + 1]
+            let g0 = dot3(n0, p - a)
+            let g1 = dot3(n1, b - p)
+            let lam = clamp(g0 / max(g0 + g1, 1e-9), 0.0, 1.0)
+            let w = unit(b - a)
+            let c0 = dot3(n0, w)
+            let c1 = dot3(n1, w)
+            let len = len3(b - a)
+            let t = clamp(lam * len * c1 / max((1.0 - lam) * c0 + lam * c1, 0.000001), 0.0, len)
+            let (nn, uu, v) = self.frame(i, lam)
+            let q = p - (a + w * t)
+            let q_in = q - nn * dot3(q, nn)
+            let rho = len3(q_in)
+            let theta = if rho < 0.000001 { 0.0 } else {
+                math::atan2(dot3(q_in, v), dot3(q_in, uu))
+            }
+            let first = i == 0
+            let last = i + 2 == n
+            let before = if first { min(g0, 0.0) } else { 0.0 }
+            let past = if last { max(-g1, 0.0) } else { 0.0 }
+            let outside = (if first { 0.0 } else { max(-g0, 0.0) }) + (if last { 0.0 } else {
+                max(-g1, 0.0)
+            })
+            let k = if outside > 0.0 { 10000.0 + sqrt(rho * rho + outside * outside) } else { rho }
+            if k < key {
+                key = k
+                best = (self.along[i] + t + before + past, rho, theta)
+            }
+        }
+        best
+    }
+
+    /// The point `r` from the path, `s` along it, at angle `theta`.
+    pub fn point(self, s: f64, theta: f64, r: f64) -> vec3d {
+        let (c, u, v) = self.plane(s)
+        c + (u * (r * math::cos(theta)) + v * (r * math::sin(theta)))
+    }
+}
+
+/// `points` run on by `overlap` past each end (along the path's direction there), then each end
+/// moved along the path to where it's inside the mesh (to 1 mm): the trimmed points, and how
+/// much went from each end; `None` if none of the path is inside.
+pub fn trimmed(
+    solid: Solid,
+    points: [vec3d],
+    up: vec3d,
+    overlap: f64,
+) -> Option<(Vec<vec3d>, f64, f64)> {
+    var pts = Vec::from(points)
+    let n = pts.len()
+    let start = unit(pts[1] - pts[0])
+    let end = unit(pts[n - 1] - pts[n - 2])
+    pts[0] = pts[0] - start * overlap
+    pts[n - 1] = pts[n - 1] + end * overlap
+    let path = Path::new(pts, up)
+    let len = path.length()
+    let steps = u32(max(ceil(len / 0.001), 1.0))
+    var first: Option<u32> = None
+    for k in 0..steps + 1 {
+        if solid.inside(path.plane(len * f64(k) / f64(steps)).0) {
+            first = Some(k)
+            break
+        }
+    }
+    let f = first?
+    var last = f
+    var k = steps
+    while k > f {
+        if solid.inside(path.plane(len * f64(k) / f64(steps)).0) {
+            last = k
+            break
+        }
+        k -= 1
+    }
+    if last == f {
+        return None
+    }
+    let step = len / f64(steps)
+    pts[0] = path.plane(len * f64(f) / f64(steps)).0
+    pts[n - 1] = path.plane(len * f64(last) / f64(steps)).0
+    Some((pts, f64(f) * step, f64(steps - last) * step))
+}
+
+// ---- measuring and fitting --------------------------------------------------------------------
+
+/// The radii measured along a path: at stations along it (`s`, evenly from 0 to its length),
+/// `angles` each (`radii[i * angles + j]`, metres), and which ran on past `r_max` (held there:
+/// free, as a loft's are).
+pub struct Measured: Clone {
+    pub s: Vec<f64>,
+    pub angles: u32,
+    pub radii: Vec<f64>,
+    pub held: Vec<bool>,
+}
+
+pub fn measure(solid: Solid, path: Path, spacing: f64, angles: u32, r_max: f64) -> Measured {
+    let len = path.length()
+    let stations = max(u32(ceil(len / spacing)) + 1, 2)
+    var s: Vec<f64> = Vec::with_capacity(stations)
+    for i in 0..stations {
+        s.push(len * f64(i) / f64(stations - 1))
+    }
+    var radii: Vec<f64> = Vec::with_capacity(stations * angles)
+    var held: Vec<bool> = Vec::with_capacity(stations * angles)
+    for si in s {
+        let (c, u, v) = path.plane(si)
+        let inside = solid.inside(c)
+        for j in 0..angles {
+            let theta = math::TAU * f64(j) / f64(angles)
+            let d = u * math::cos(theta) + v * math::sin(theta)
+            var r = 0.0
+            if inside {
+                if let Some(e) = solid.exit(c, d) {
+                    r = e
+                }
+            }
+            held.push(r > r_max)
+            radii.push(min(r, r_max))
+        }
+    }
+    Measured { s, angles, radii, held }
+}
+
+/// `a` modulo `b`, in [0, `b`).
+fn rem_euclid(a: f64, b: f64) -> f64 {
+    let r = a % b
+    if r < 0.0 { r + abs(b) } else { r }
+}
+
+impl Measured {
+    /// The path's length.
+    fn len(self) -> f64 {
+        self.s[self.s.len() - 1]
+    }
+
+    /// The angles of each station's radii.
+    fn thetas(self) -> Vec<f64> {
+        let a = self.angles
+        Vec::from_fn(a, |j| math::TAU * f64(j) / f64(a))
+    }
+
+    /// The measured radius `s` along the path and at angle `theta`: linear between stations and
+    /// angles, as a loft's.
+    pub fn radius(self, s: f64, theta: f64) -> f64 {
+        let n = self.s.len()
+        let len = self.len()
+        let ts = clamp(s / len, 0.0, 1.0) * f64(n - 1)
+        let i0 = min(u32(ts), n - 2)
+        let f = ts - f64(i0)
+        let a = self.angles
+        let js = rem_euclid(theta / math::TAU, 1.0) * f64(a)
+        let j0 = min(u32(js), a - 1)
+        let g = js - f64(j0)
+        let j1 = (j0 + 1) % a
+        let r00 = self.radii[i0 * a + j0]
+        let r01 = self.radii[i0 * a + j1]
+        let r10 = self.radii[(i0 + 1) * a + j0]
+        let r11 = self.radii[(i0 + 1) * a + j1]
+        let near = r00 + (r01 - r00) * g
+        let far = r10 + (r11 - r10) * g
+        near + (far - near) * f
+    }
+}
+
+/// Whether `p` is inside a part as measured (its radii, linear between them; flat ends).
+pub fn inside_measured(path: Path, m: Measured, p: vec3d) -> bool {
+    let (along, rho, theta) = path.place(p)
+    along >= 0.0 && along <= path.length() && rho < m.radius(along, theta)
+}
+
+/// Whether `p` is inside a fitted sweep (flat ends).
+pub fn inside_fitted(path: Path, f: Fitted, p: vec3d) -> bool {
+    let (along, rho, theta) = path.place(p)
+    let len = path.length()
+    along >= 0.0 &&
+        along <= len &&
+        rho < section_at(f.sections, f.places, along / len).radius(theta)
+}
+
+/// What a measured radius is to its part's fit: its own surface (no other part holds the point
+/// 0.5 mm inside it), shared (another does: a ray that ran on along it), or held at `r_max`.
+pub enum Kind: Copy + Eq {
+    Own,
+    Shared,
+    Held,
+}
+
+/// What a fit gave: the control sections at their places, how many bumps each has, and how far
+/// the fit is from the measured radii of the part's own surface (root mean square, and the
+/// share within 2 mm).
+pub struct Fitted: Clone {
+    pub sections: Vec<Section>,
+    pub places: Vec<f64>,
+    pub bumps: u32,
+    pub rms: f64,
+    pub within_2mm: f64,
+}
+
+/// The numbers a fit moves for each section: the named six, then three per bump.
+fn per_section(bumps: u32) -> u32 {
+    6 + 3 * bumps
+}
+
+/// Elements `from` to `to` of `xs`.
+fn part_of<T: Copy>(xs: [T], from: u32, to: u32) -> Vec<T> {
+    var out: Vec<T> = Vec::with_capacity(to - from)
+    for i in from..to {
+        out.push(xs[i])
+    }
+    out
+}
+
+fn unpack(x: [f64], k: u32, bumps: u32) -> Vec<Section> {
+    let p = per_section(bumps)
+    var out: Vec<Section> = Vec::with_capacity(k)
+    for i in 0..k {
+        out.push(Section::from_params(part_of(x, i * p, (i + 1) * p)))
+    }
+    out
+}
+
+/// Extents from 0.1 mm to `r_max`; squareness from 1 to 8; a bump 0.2 to 1.6 radians wide (a
+/// narrower one is a fin, not a form: fitted to rays that ran along another part, they stood out
+/// of the hindquarters like blades) and at most half its section's mean extent high (each way):
+/// two bumps can't cancel to nothing.
+fn hold(x: mut Vec<f64>, bumps: u32, r_max: f64) {
+    let p = per_section(bumps)
+    var s = 0
+    while s + p <= x.len() {
+        for e in 0..4 {
+            x[s + e] = clamp(x[s + e], 0.0001, r_max)
+        }
+        x[s + 4] = clamp(x[s + 4], 1.0, 8.0)
+        let most = 0.125 * (x[s] + x[s + 1] + x[s + 2] + x[s + 3])
+        for b in 0..bumps {
+            let at = s + 6 + 3 * b
+            x[at + 1] = clamp(x[at + 1], -most, most)
+            x[at + 2] = clamp(x[at + 2], 0.2, 1.6)
+        }
+        s += p
+    }
+}
+
+/// How far short of a measured radius a fitted sweep may be where it's held up (`refit`):
+/// within the replica's 2 mm. A part short of its own surface by a little isn't a crack (its own
+/// inside is behind it); one short by more where nothing else reaches opens one.
+pub const SLACK: f64 = 0.002
+
+/// How much a shared radius counts where the fit is short of it (in full where it's past it:
+/// there the sweep would leave the mesh).
+const SHARED: f64 = 0.02
+
+/// A measured radius's weight in a fit, by its kind and how far it is past the fit (`e`): a
+/// radius of the part's own surface in full; a shared one in full where the fit passes it and
+/// by `SHARED` where it's short; one held, not at all.
+fn weight(kind: Kind, e: f64) -> f64 {
+    match kind {
+        Kind::Own => 1.0,
+        Kind::Shared => if e < 0.0 { 1.0 } else { SHARED },
+        Kind::Held => 0.0,
+    }
+}
+
+/// Whether a section's number `q` is a bump's, and which of its bump's numbers (0 the angle, 1
+/// the height, 2 the width).
+fn bump_slot(q: u32) -> Option<u32> {
+    if q >= 6 { Some((q - 6) % 3) } else { None }
+}
+
+/// The finite-difference step for a section's number `q`: finer for extents and bumps' heights.
+fn diff_step(q: u32) -> f64 {
+    if q < 4 || bump_slot(q) == Some(1) { 0.00001 } else { 0.0001 }
+}
+
+/// The weights of each control section (at `places`) in the section `f` of the way along: the
+/// engine's curve, its control sections past the first and last carried on as lines.
+fn curve_weights(places: [f64], f: f64) -> Vec<f64> {
+    let k = places.len()
+    var out: Vec<f64> = Vec::filled(k, 0.0)
+    if k == 1 || f <= places[0] {
+        out[0] = 1.0
+        return out
+    }
+    if f >= places[k - 1] {
+        out[k - 1] = 1.0
+        return out
+    }
+    let m = span(places, f)
+    let x = clamp((f - places[m]) / (places[m + 1] - places[m]), 0.0, 1.0)
+    let w = catmull_rom(x)
+    for d in 0..4 {
+        let wd = w[d]
+        let c = i64(m) + i64(d) - 1
+        if c == -1 {
+            out[0] += 2.0 * wd
+            out[1] -= wd
+        } else if c > i64(k - 1) {
+            out[k - 1] += 2.0 * wd
+            out[k - 2] -= wd
+        } else {
+            out[u32(c)] += wd
+        }
+    }
+    out
+}
+
+/// Fits `k` control sections (evenly along the path) with `bumps` bumps each to the measured
+/// radii (`kinds`). Each station first, alone: the one with the most of its own surface from a
+/// circle (bumps added a time each where it misses most), then each further one from its
+/// neighbour's fit, held a little toward it, so a bump follows its feature along the path. Each
+/// number of the control sections then by least squares to those stations' (the curve is linear
+/// in them, bumps' angles unwrapped along the path); then all together (`rounds`). Fitting each
+/// control section to the station nearest it, bumps sorted by angle, mixed unrelated bumps
+/// between sections: 56% of a hind leg within 2 mm, where these held 91%.
+pub fn fit(m: Measured, kinds: [Kind], k: u32, bumps: u32, r_max: f64) -> Fitted {
+    let len = m.len()
+    var places: Vec<f64> = Vec::new()
+    if k == 1 {
+        places.push(0.0)
+    } else {
+        for i in 0..k {
+            places.push(f64(i) / f64(k - 1))
+        }
+    }
+    let a = m.angles
+    let theta = m.thetas()
+    let n = m.s.len()
+    // The station with the most of its own surface (the last of equals, as Rust's
+    // `max_by_key`).
+    var start = 0
+    var most = 0
+    for i in 0..n {
+        var own = 0
+        for j in 0..a {
+            if kinds[i * a + j] == Kind::Own {
+                own += 1
+            }
+        }
+        if i == 0 || own >= most {
+            start = i
+            most = own
+        }
+    }
+    var per: Vec<Section> = Vec::filled(n, Section {})
+    per[start] = fit_station(
+        theta,
+        part_of(m.radii, start * a, (start + 1) * a),
+        part_of(kinds, start * a, (start + 1) * a),
+        None,
+        bumps,
+        r_max,
+    )
+    for i in start + 1..n {
+        let prev = per[i - 1]
+        per[i] = fit_station(
+            theta,
+            part_of(m.radii, i * a, (i + 1) * a),
+            part_of(kinds, i * a, (i + 1) * a),
+            Some(prev),
+            bumps,
+            r_max,
+        )
+    }
+    var i = start
+    while i > 0 {
+        i -= 1
+        let next = per[i + 1]
+        per[i] = fit_station(
+            theta,
+            part_of(m.radii, i * a, (i + 1) * a),
+            part_of(kinds, i * a, (i + 1) * a),
+            Some(next),
+            bumps,
+            r_max,
+        )
+    }
+    // Each number's track along the path (bumps' angles unwrapped), then its control values.
+    let p = per_section(bumps)
+    var tracks: Vec<Vec<f64>> = Vec::with_capacity(n)
+    for sec in per {
+        tracks.push(sec.params(bumps))
+    }
+    for b in 0..bumps {
+        let q = 6 + 3 * b
+        for i in 1..n {
+            tracks[i][q] = tracks[i - 1][q] + wrap(tracks[i][q] - tracks[i - 1][q])
+        }
+    }
+    var basis: Vec<Vec<f64>> = Vec::with_capacity(n)
+    for s in m.s {
+        basis.push(curve_weights(places, s / len))
+    }
+    var x: Vec<f64> = Vec::filled(k * p, 0.0)
+    for q in 0..p {
+        var ys: Vec<f64> = Vec::with_capacity(n)
+        for t in tracks {
+            ys.push(t[q])
+        }
+        let c = least_squares(basis, ys, ridge: 1e-9)
+        for i in 0..c.len() {
+            x[i * p + q] = c[i]
+        }
+    }
+    let no_floor: Vec<bool> = Vec::filled(m.radii.len(), value: false)
+    let fitted = rounds(m, kinds, no_floor, places, take x, bumps, r_max, count: 3)
+    finish(m, kinds, unpack(fitted, k, bumps), take places, bumps)
+}
+
+/// How hard a station's fit is held toward its neighbour's: per number, a miss of this many of a
+/// section's mean extent counts as much as one radius missed by that extent.
+const PULL: f64 = 0.3
+
+/// One station's section, fitted to its radii (`kinds`): from a circle at the median of its own
+/// radii, bumps added one at a time where it misses most; or from `from`, held toward it
+/// (`PULL`). Levenberg and Marquardt's method, its numbers held within `hold`'s bounds.
+fn fit_station(
+    theta: [f64],
+    r: [f64],
+    kinds: [Kind],
+    from: Option<Section>,
+    bumps: u32,
+    r_max: f64,
+) -> Section {
+    let p = per_section(bumps)
+    match from {
+        Some(prev) => {
+            let x0 = prev.params(bumps)
+            let size = 0.25 * max(prev.up + prev.left + prev.down + prev.right, 0.004)
+            // A number's natural size: extents and heights in metres, squareness in units,
+            // angles at the section's size.
+            var unit: Vec<f64> = Vec::with_capacity(p)
+            for q in 0..p {
+                unit.push(
+                    if q == 4 {
+                        0.03 / size
+                    } else if q == 5 {
+                        1.0
+                    } else if q >= 6 && bump_slot(q) != Some(1) {
+                        1.0
+                    } else {
+                        1.0 / size
+                    },
+                )
+            }
+            let w = weights(theta, r, kinds, prev)
+            let x = station_lm(theta, r, w, x0.clone(), bumps, r_max, |x| {
+                var out: Vec<f64> = Vec::with_capacity(p)
+                for q in 0..p {
+                    let d = if bump_slot(q) == Some(0) { wrap(x[q] - x0[q]) } else { x[q] - x0[q] }
+                    out.push(PULL * size * d * unit[q])
+                }
+                take out
+            })
+            Section::from_params(x)
+        },
+        None => {
+            var own: Vec<f64> = Vec::new()
+            for j in 0..r.len() {
+                if kinds[j] == Kind::Own && r[j] > 0.0 {
+                    own.push(r[j])
+                }
+            }
+            own.sort_by(|a, b| mesh::total_before(a, b))
+            let med = min(if own.is_empty() { 0.02 } else { own[own.len() / 2] }, r_max)
+            var sec = Section::round(med)
+            var x = sec.params(0)
+            x = station_lm(
+                theta,
+                r,
+                weights(theta, r, kinds, sec),
+                take x,
+                0,
+                r_max,
+                |_| Vec::new(),
+            )
+            for b in 0..bumps {
+                sec = Section::from_params(x)
+                let outline = sec.outline()
+                var worst = 0.0
+                var at = 0.0
+                var e_at = 0.0
+                for j in 0..theta.len() {
+                    let e = r[j] - outline.radius(theta[j])
+                    let counted = match kinds[j] {
+                        Kind::Own => abs(e),
+                        Kind::Shared => max(-e, 0.0),
+                        Kind::Held => 0.0,
+                    }
+                    if counted > worst {
+                        worst = counted
+                        at = theta[j]
+                        e_at = e
+                    }
+                }
+                x.push(at)
+                x.push(clamp(e_at, -0.04, 0.04))
+                x.push(0.4)
+                let w = weights(theta, r, kinds, Section::from_params(x))
+                x = station_lm(theta, r, w, take x, b + 1, r_max, |_| Vec::new())
+            }
+            var out = Section::from_params(x)
+            for b in min(bumps, 4)..4 {
+                out.bumps[b] = vec3d(0.0)
+            }
+            out
+        },
+    }
+}
+
+/// Each radius's weight against `sec`'s fit (`weight`).
+fn weights(theta: [f64], r: [f64], kinds: [Kind], sec: Section) -> Vec<f64> {
+    let outline = sec.outline()
+    var out: Vec<f64> = Vec::with_capacity(theta.len())
+    for j in 0..theta.len() {
+        out.push(weight(kinds[j], r[j] - outline.radius(theta[j])))
+    }
+    out
+}
+
+/// One station's weighted misses (`w`) of its radii `f` (a section's, at `theta`), then the
+/// terms `extra` gives of the section's numbers `x`.
+fn station_errors(
+    r: [f64],
+    w: [f64],
+    f: [f64],
+    x: [f64],
+    extra: fn([f64]) -> Vec<f64>,
+) -> Vec<f64> {
+    var e: Vec<f64> = Vec::with_capacity(f.len())
+    for j in 0..f.len() {
+        e.push(sqrt(w[j]) * (f[j] - r[j]))
+    }
+    for v in extra(x) {
+        e.push(v)
+    }
+    e
+}
+
+/// A section's radii at `theta`, its superellipse's `base` there.
+fn radii_on(base: [f64], bumps: [vec3d; 4], theta: [f64]) -> Vec<f64> {
+    var f: Vec<f64> = Vec::with_capacity(theta.len())
+    for j in 0..theta.len() {
+        f.push(on_base(base[j], bumps, theta[j]))
+    }
+    f
+}
+
+/// A section's superellipse at `theta`.
+fn bases(o: Outline, theta: [f64]) -> Vec<f64> {
+    var out: Vec<f64> = Vec::with_capacity(theta.len())
+    for t in theta {
+        out.push(o.base(t))
+    }
+    out
+}
+
+/// One station's weighted misses (`w`), then the terms `extra` gives, of a section's numbers.
+fn station_misses(
+    theta: [f64],
+    r: [f64],
+    w: [f64],
+    x: [f64],
+    extra: fn([f64]) -> Vec<f64>,
+) -> Vec<f64> {
+    let sec = Section::from_params(x)
+    let f = radii_on(bases(sec.outline(), theta), sec.bumps, theta)
+    station_errors(r, w, f, x, extra)
+}
+
+fn sum_of_squares(e: [f64]) -> f64 {
+    var s = -0.0
+    for v in e {
+        s += v * v
+    }
+    s
+}
+
+fn dot_of(a: [f64], b: [f64]) -> f64 {
+    var s = -0.0
+    for i in 0..a.len() {
+        s += a[i] * b[i]
+    }
+    s
+}
+
+/// Minimizes one station's weighted misses (`w`) and the terms `extra` gives, over `x` (a
+/// section's numbers, `bumps` bumps).
+fn station_lm(
+    theta: [f64],
+    r: [f64],
+    w: [f64],
+    x: take Vec<f64>,
+    bumps: u32,
+    r_max: f64,
+    extra: fn([f64]) -> Vec<f64>,
+) -> Vec<f64> {
+    let p = x.len()
+    let stop = Stop { steps: 100, gain: 0.000001, damping: 10000000.0 }
+    var now = take x
+    hold(mut now, bumps, r_max)
+    var c = sum_of_squares(station_misses(theta, r, w, now, extra))
+    var lambda = 0.001
+    for _ in 0..stop.steps {
+        // JᵀJ and Jᵀe at `now`, by finite differences. A bump's number doesn't move the
+        // superellipse, so its steps reuse the section's.
+        let sec = Section::from_params(now)
+        let ring = Ring::of(sec, theta)
+        let e0 = station_errors(r, w, radii_on(ring.base, sec.bumps, theta), now, extra)
+        var jac: Vec<Vec<f64>> = Vec::with_capacity(p)
+        for q in 0..p {
+            let step = diff_step(q)
+            var y = now.clone()
+            y[q] += step
+            let stepped = Section::from_params(y)
+            let e1 = if q >= 6 {
+                station_errors(r, w, radii_on(ring.base, stepped.bumps, theta), y, extra)
+            } else {
+                station_errors(
+                    r,
+                    w,
+                    radii_on(ring.stepped(stepped, q, theta), stepped.bumps, theta),
+                    y,
+                    extra,
+                )
+            }
+            var col: Vec<f64> = Vec::with_capacity(e0.len())
+            for i in 0..e0.len() {
+                col.push((e1[i] - e0[i]) / step)
+            }
+            jac.push(take col)
+        }
+        var h = Banded::new(p, band: p)
+        var g: Vec<f64> = Vec::filled(p, 0.0)
+        for q in 0..p {
+            g[q] = dot_of(jac[q], e0)
+            for t in 0..q + 1 {
+                h.add(q, t, dot_of(jac[q], jac[t]))
+            }
+        }
+        let y = lm_candidate(now, lambda, take h, g, bumps, r_max)
+        let cy = sum_of_squares(station_misses(theta, r, w, y, extra))
+        if !lm_accept(mut now, mut c, mut lambda, take y, cy, stop) {
+            break
+        }
+    }
+    now
+}
+
+/// When `levenberg_marquardt` stops: after `steps` steps, after a step that lowers the cost by
+/// less than `gain` of it, or when the damping passes `damping`.
+struct Stop: Copy {
+    steps: u32,
+    gain: f64,
+    damping: f64,
+}
+
+/// A step of Levenberg and Marquardt's method from `x` (sections' numbers, `bumps` bumps each,
+/// held within `hold`'s bounds), by `h`'s JᵀJ and `g`'s Jᵀe at `x`, damped by `lambda`: the
+/// point it reaches.
+fn lm_candidate(
+    x: [f64],
+    lambda: f64,
+    h: take Banded,
+    g: [f64],
+    bumps: u32,
+    r_max: f64,
+) -> Vec<f64> {
+    var m = take h
+    for q in 0..x.len() {
+        let d = m.at(q, q)
+        m.add(q, q, lambda * d + 0.000000000001)
+    }
+    var minus: Vec<f64> = Vec::with_capacity(g.len())
+    for v in g {
+        minus.push(-v)
+    }
+    let step = take m.solve(take minus)
+    var y: Vec<f64> = Vec::with_capacity(x.len())
+    for q in 0..x.len() {
+        y.push(x[q] + step[q])
+    }
+    hold(mut y, bumps, r_max)
+    y
+}
+
+/// Takes the step to `y`, of cost `cy`, if it lowers the cost `c` of `x`, and damps the next
+/// less; or damps it more: whether to go on.
+fn lm_accept(
+    x: mut Vec<f64>,
+    c: mut f64,
+    lambda: mut f64,
+    y: take Vec<f64>,
+    cy: f64,
+    stop: Stop,
+) -> bool {
+    if cy < c {
+        let gain = (c - cy) / max(c, 1e-30)
+        x = take y
+        c = cy
+        lambda = max(lambda / 3.0, 0.000000001)
+        if gain < stop.gain {
+            return false
+        }
+    } else {
+        lambda *= 5.0
+        if lambda > stop.damping {
+            return false
+        }
+    }
+    true
+}
+
+/// A fit again from `previous`, its radii in `floor` held up to within `SLACK` of their length:
+/// each one the fit is shorter than that pressed on harder each round, until none is.
+pub fn refit(m: Measured, kinds: [Kind], floor: [bool], previous: Fitted, r_max: f64) -> Fitted {
+    let used = previous.bumps
+    var x: Vec<f64> = Vec::new()
+    for s in previous.sections {
+        for v in s.params(used) {
+            x.push(v)
+        }
+    }
+    let fitted = rounds(m, kinds, floor, previous.places, take x, used, r_max, count: 12)
+    finish(
+        m,
+        kinds,
+        unpack(fitted, previous.sections.len(), used),
+        previous.places.clone(),
+        used,
+    )
+}
+
+fn finish(
+    m: Measured,
+    kinds: [Kind],
+    sections: take Vec<Section>,
+    places: take Vec<f64>,
+    bumps: u32,
+) -> Fitted {
+    let len = m.len()
+    let a = m.angles
+    let theta = m.thetas()
+    var sq = 0.0
+    var n = 0
+    var within = 0
+    for i in 0..m.s.len() {
+        let outline = section_at(sections, places, m.s[i] / len).outline()
+        for j in 0..a {
+            if kinds[i * a + j] != Kind::Own {
+                continue
+            }
+            let e = m.radii[i * a + j] - outline.radius(theta[j])
+            sq += e * e
+            n += 1
+            if abs(e) <= 0.002 {
+                within += 1
+            }
+        }
+    }
+    Fitted {
+        sections,
+        places,
+        bumps,
+        rms: sqrt(sq / f64(max(n, 1))),
+        within_2mm: f64(within) / f64(max(n, 1)),
+    }
+}
+
+/// `count` rounds of `sweep_lm`, the radii weighted from each round's fit: a radius of the
+/// part's own surface in full; a shared one in full where the fit passes it (it would leave the
+/// mesh) and by `SHARED` where it's short; one held, not at all; and one in `floor` the fit is
+/// short of, harder each round (stopping early once none is short).
+fn rounds(
+    m: Measured,
+    kinds: [Kind],
+    floor: [bool],
+    places: [f64],
+    x: take Vec<f64>,
+    bumps: u32,
+    r_max: f64,
+    count: u32,
+) -> Vec<f64> {
+    let a = m.angles
+    let len = m.len()
+    let theta = m.thetas()
+    let k = places.len()
+    var now = take x
+    var press: Vec<f64> = Vec::filled(m.radii.len(), 0.0)
+    var any_floor = false
+    for f in floor {
+        any_floor = any_floor || f
+    }
+    for round in 0..count {
+        let secs = unpack(now, k, bumps)
+        var w: Vec<f64> = Vec::filled(m.radii.len(), 0.0)
+        var short = false
+        for i in 0..m.s.len() {
+            let outline = section_at(secs, places, m.s[i] / len).outline()
+            for j in 0..a {
+                let n = i * a + j
+                let e = m.radii[n] - outline.radius(theta[j])
+                if floor[n] && e > SLACK + 0.00005 {
+                    press[n] = max(press[n] * 10.0, 10.0)
+                    short = true
+                }
+                w[n] = weight(kinds[n], e)
+            }
+        }
+        if round > 2 && !short && any_floor {
+            break
+        }
+        now = sweep_lm(m, places, take now, bumps, w, press, r_max)
+    }
+    now
+}
+
+/// Station `i`'s radii's weighted misses, of its radii `f`; then, for each held up (`press`),
+/// how far the fit is shorter than it less `SLACK` (0 where it isn't).
+fn errors_of(m: Measured, w: [f64], press: [f64], i: u32, f: [f64]) -> Vec<f64> {
+    let a = m.angles
+    var e: Vec<f64> = Vec::with_capacity(2 * a)
+    for j in 0..a {
+        e.push(sqrt(w[i * a + j]) * (f[j] - m.radii[i * a + j]))
+    }
+    for j in 0..a {
+        e.push(sqrt(press[i * a + j]) * min(f[j] - (m.radii[i * a + j] - SLACK), 0.0))
+    }
+    e
+}
+
+/// Station `i`'s radii's weighted misses, of the sections `secs` (`errors_of`).
+fn misses(
+    m: Measured,
+    places: [f64],
+    theta: [f64],
+    w: [f64],
+    press: [f64],
+    secs: [Section],
+    i: u32,
+) -> Vec<f64> {
+    let sec = section_at(secs, places, m.s[i] / m.len())
+    errors_of(m, w, press, i, radii_on(bases(sec.outline(), theta), sec.bumps, theta))
+}
+
+/// Minimizes the weighted squared misses of the measured radii (`w`, 0 for those held), and how
+/// far the fit is short of each held up (`press`, less `SLACK`), over `x` (the control sections'
+/// numbers, `bumps` bumps each).
+fn sweep_lm(
+    m: Measured,
+    places: [f64],
+    x: take Vec<f64>,
+    bumps: u32,
+    w: [f64],
+    press: [f64],
+    r_max: f64,
+) -> Vec<f64> {
+    let len = m.len()
+    let theta = m.thetas()
+    let k = places.len()
+    let p = per_section(bumps)
+    let n = x.len()
+    // The control sections each station takes from.
+    var support: Vec<(u32, u32)> = Vec::with_capacity(m.s.len())
+    for s in m.s {
+        if k == 1 {
+            support.push((0, 1))
+        } else {
+            let mm = span(places, s / len)
+            support.push((if mm > 0 { mm - 1 } else { 0 }, min(mm + 3, k)))
+        }
+    }
+    let cost = |x: [f64]| -> f64 {
+        let secs = unpack(x, k, bumps)
+        var total = -0.0
+        for i in 0..m.s.len() {
+            total += sum_of_squares(misses(m, places, theta, w, press, secs, i))
+        }
+        total
+    }
+    let stop = Stop { steps: 60, gain: 0.00001, damping: 1000000.0 }
+    var now = take x
+    hold(mut now, bumps, r_max)
+    var c = cost(now)
+    var lambda = 0.001
+    for _ in 0..stop.steps {
+        var h = Banded::new(n, band: 4 * p)
+        var g: Vec<f64> = Vec::filled(n, 0.0)
+        var secs = unpack(now, k, bumps)
+        for i in 0..m.s.len() {
+            // A bump's number doesn't move the superellipse, so its steps reuse the station's.
+            let f = m.s[i] / m.len()
+            let sec = section_at(secs, places, f)
+            let ring = Ring::of(sec, theta)
+            let e0 = errors_of(m, w, press, i, radii_on(ring.base, sec.bumps, theta))
+            let (lo, hi) = support[i]
+            var cols: Vec<u32> = Vec::new()
+            for s in lo..hi {
+                for q in s * p..(s + 1) * p {
+                    cols.push(q)
+                }
+            }
+            var jac: Vec<Vec<f64>> = Vec::with_capacity(cols.len())
+            for q in cols {
+                // Number q stepped: only its section changes.
+                let step = diff_step(q % p)
+                let s = q / p
+                var y: Vec<f64> = Vec::with_capacity(p)
+                for v in s * p..(s + 1) * p {
+                    y.push(now[v])
+                }
+                y[q % p] += step
+                let kept = secs[s]
+                secs[s] = Section::from_params(y)
+                let stepped = section_at(secs, places, f)
+                let e1 = if q % p >= 6 {
+                    errors_of(m, w, press, i, radii_on(ring.base, stepped.bumps, theta))
+                } else {
+                    errors_of(
+                        m,
+                        w,
+                        press,
+                        i,
+                        radii_on(ring.stepped(stepped, q % p, theta), stepped.bumps, theta),
+                    )
+                }
+                secs[s] = kept
+                var col: Vec<f64> = Vec::with_capacity(e0.len())
+                for t in 0..e0.len() {
+                    col.push((e1[t] - e0[t]) / step)
+                }
+                jac.push(take col)
+            }
+            for ci in 0..cols.len() {
+                let q = cols[ci]
+                g[q] += dot_of(jac[ci], e0)
+                for cj in 0..cols.len() {
+                    let r = cols[cj]
+                    if r <= q {
+                        h.add(q, r, dot_of(jac[ci], jac[cj]))
+                    }
+                }
+            }
+        }
+        let y = lm_candidate(now, lambda, take h, g, bumps, r_max)
+        let cy = cost(y)
+        if !lm_accept(mut now, mut c, mut lambda, take y, cy, stop) {
+            break
+        }
+    }
+    now
+}
+
+@test
+fn place_prefers_a_segment_whose_planes_hold_the_point() {
+    let diagonal = sqrt(0.5)
+    let path = Path {
+        at: Vec::from([vec3d(0.0), vec3d(1.0, 0.0, 0.0), vec3d(1.0, 1.0, 0.0)]),
+        normal: Vec::from(
+            [vec3d(1.0, 0.0, 0.0), vec3d(diagonal, diagonal, 0.0), vec3d(0.0, 1.0, 0.0)],
+        ),
+        up: Vec::from([vec3d(0.0, 0.0, 1.0), vec3d(0.0, 0.0, 1.0), vec3d(0.0, 0.0, 1.0)]),
+        along: Vec::from([0.0, 1.0, 2.0]),
+    }
+    let (along, rho, _) = path.place(vec3d(1.2, -0.3, 0.0))
+    // The first segment's end plane is x + y = 1. This point is before that plane, so the engine
+    // chooses the first segment, even though the next segment's end section is closer in
+    // Euclidean distance.
+    assert(along < 1.0, f"assigned to the next segment: {along}")
+    assert(rho > 0.4, f"used the next segment's radius: {rho}")
+}

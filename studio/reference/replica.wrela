@@ -1,0 +1,1476 @@
+// A replica of a reference mesh: a part's table of radii (a loft, engine/loft.wrela) or its
+// fitted sections (a sweep, sweeps.wrela), measured from the mesh, compressed if asked, and
+// written as a wrela package.
+//
+// Each station's radius in each direction is where a ray from the axis leaves the mesh (its
+// largest piece, placed by the sculpt's registration: where the winding number falls to 0, so
+// past surfaces inside it where a sculpt crosses itself), at most `r_max`; a station whose point
+// is outside the mesh has none (radii 0). So each part lies inside the mesh, but for
+// interpolation between stations and angles, and where no part reaches shows as a hole.
+
+use math
+use mesh::{Solid, cross3, dot3, keeps_handedness, len3, names_each_axis_once, parse, place, unit3}
+use references::manifest::{Parts, Point, Registration, Seam}
+use solve::{Banded, catmull_rom_weights, fourier, least_squares}
+use std::collections::Vec
+use std::string::String
+use sweeps::{Fitted, Kind, Measured, Path, SLACK, inside_fitted, inside_measured, section_at}
+
+/// `x` rounded to the nearest integer, halves away from zero (as Rust's `f64::round`; wrela's
+/// `round` takes halves to even).
+pub fn round_away(x: f64) -> f64 {
+    let t = trunc(x)
+    if abs(x - t) >= 0.5 {
+        t + (if x < 0.0 { -1.0 } else { 1.0 })
+    } else {
+        t
+    }
+}
+
+/// A part, read and checked: its axis's ends in metres in the creature's frame.
+pub struct Part: Clone {
+    pub name: String,
+    pub from: vec3d,
+    pub to: vec3d,
+    pub up: vec3d,
+    pub parent: Option<u32>,
+    pub spacing: f64,
+    pub angles: u32,
+    pub r_max: f64,
+    /// A smooth seam's width; `None` is hard.
+    pub seam: Option<f64>,
+    /// How far the part sinks toward a cap inside another part (`taper`), in metres.
+    pub taper: f64,
+    /// How far the axis runs on past each end (then it's trimmed to the mesh): parts that meet
+    /// at a joint overlap, so no wedge at a bend between two straight axes is left out of both.
+    pub overlap: f64,
+    /// A sweep's control sections, and bumps on each; 0 sections is a loft. A sweep's path runs
+    /// from `from` through `through` to `to`, and its ends' domes reach `ends` past them.
+    pub sections: u32,
+    pub bumps: u32,
+    pub through: Vec<vec3d>,
+    pub ends: vec2d,
+}
+
+/// A replica's reference, read and checked: its name, the mesh's file name and bytes, the
+/// registration that places it, the credit it carries, its parts and its landmarks.
+pub struct Reference: Clone {
+    pub name: String,
+    pub mesh: String,
+    pub bytes: Vec<u8>,
+    pub registration: Registration,
+    pub attribution: String,
+    pub parts: Vec<Part>,
+    pub landmarks: Vec<(String, vec3d)>,
+}
+
+fn point_of(p: Point) -> vec3d {
+    match p {
+        Point::At(l) => l.at,
+        Point::Xyz(x) => x,
+    }
+}
+
+/// `parts`, read and checked.
+pub fn read(given: Parts) -> Result<Reference, String> {
+    let r = given.sculpt.registration
+    if !names_each_axis_once(r) {
+        return Err(String::from("`axes` names each file axis once"))
+    }
+    if !keeps_handedness(r) {
+        return Err(String::from("`axes` mirror the mesh: give axes that keep its handedness"))
+    }
+    let sculpt = given.sculpt
+    let attribution = if sculpt.attribution.is_empty() {
+        String::from(f"\"{sculpt.title}\" by {sculpt.author}, {sculpt.licence}")
+    } else {
+        String::from(sculpt.attribution)
+    }
+    var parts: Vec<Part> = Vec::new()
+    for t in given.parts {
+        let name = String::from(t.name)
+        if name.is_empty() {
+            return Err(String::from(f"{given.name}: a part needs a `name`"))
+        }
+        for p in parts {
+            if p.name.as_str() == name.as_str() {
+                return Err(String::from(f"two parts are named `{name}`"))
+            }
+            if ident(p.name.as_str()).as_str() == ident(name.as_str()).as_str() {
+                return Err(
+                    String::from(
+                        f"parts `{p.name}` and `{name}` both become the identifier `{ident(name.as_str())}`",
+                    ),
+                )
+            }
+        }
+        let from = point_of(t.from)
+        let to = point_of(t.to)
+        let w = to - from
+        if len3(w) < 0.000001 {
+            return Err(String::from(f"part `{name}`: its axis has no length"))
+        }
+        let wu = unit3(w)
+        let up = match t.up {
+            Some(u) => u,
+            None => if abs(wu.y) > 0.9 { vec3d(0.0, 0.0, 1.0) } else { vec3d(0.0, 1.0, 0.0) },
+        }
+        if len3(cross3(up, wu)) < 0.1 {
+            return Err(String::from(f"part `{name}`: `up` runs along the axis"))
+        }
+        var parent: Option<u32> = None
+        if !t.parent.is_empty() {
+            for i in 0..parts.len() {
+                if parts[i].name.as_str() == t.parent {
+                    parent = Some(i)
+                }
+            }
+            if parent.is_none() {
+                return Err(
+                    String::from(f"part `{name}`: its parent `{t.parent}` isn't a part before it"),
+                )
+            }
+        }
+        if parent.is_none() && !parts.is_empty() {
+            return Err(
+                String::from(f"part `{name}`: only the first part is the root; give its `parent`"),
+            )
+        }
+        // A setting the part doesn't give is its parts': a number more than 0, or (overlap,
+        // taper) 0 or more.
+        let spacing = t.spacing.unwrap_or(given.spacing)
+        let r_max = t.r_max.unwrap_or(given.r_max)
+        let overlap = t.overlap.unwrap_or(given.overlap)
+        let taper = t.taper.unwrap_or(given.taper)
+        let angles = t.angles.unwrap_or(given.angles)
+        if !(spacing > 0.0) {
+            return Err(String::from(f"part `{name}`: `spacing` is a positive number"))
+        }
+        if !(r_max > 0.0) {
+            return Err(String::from(f"part `{name}`: `r_max` is a positive number"))
+        }
+        if !(overlap >= 0.0) {
+            return Err(String::from(f"part `{name}`: `overlap` is 0 or more"))
+        }
+        if !(taper >= 0.0) {
+            return Err(String::from(f"part `{name}`: `taper` is 0 or more"))
+        }
+        if angles < 3 {
+            return Err(String::from(f"part `{name}`: `angles` is a whole number, at least 3"))
+        }
+        let seam = match t.seam.unwrap_or(given.seam) {
+            Seam::Hard => None,
+            Seam::Smooth(k) => {
+                if !(k > 0.0) {
+                    return Err(String::from(f"part `{name}`: `seam` is hard or a width"))
+                }
+                Some(k)
+            },
+        }
+        if t.sections > 32 {
+            return Err(String::from(f"part `{name}`: `sections` is a whole number to 32"))
+        }
+        if t.bumps > 4 {
+            return Err(String::from(f"part `{name}`: `bumps` is a whole number to 4"))
+        }
+        var through: Vec<vec3d> = Vec::new()
+        for p in t.through {
+            through.push(point_of(p))
+        }
+        if !through.is_empty() && t.sections == 0 {
+            return Err(
+                String::from(
+                    f"part `{name}`: a path `through` points is a sweep's: give `sections`",
+                ),
+            )
+        }
+        if through.len() + 2 > sweeps::VERTICES {
+            return Err(String::from(f"part `{name}`: a sweep's path has at most 33 points"))
+        }
+        if !(t.ends.x >= 0.0 && t.ends.y >= 0.0) {
+            return Err(String::from(f"part `{name}`: `ends` is [start, end], 0 or more"))
+        }
+        parts.push(
+            Part {
+                name,
+                from,
+                to,
+                up,
+                parent,
+                spacing,
+                angles,
+                r_max,
+                seam,
+                overlap,
+                taper,
+                sections: t.sections,
+                bumps: t.bumps,
+                through,
+                ends: t.ends,
+            },
+        )
+    }
+    if parts.is_empty() {
+        return Err(String::from(f"{given.name}: no parts"))
+    }
+    if parts.len() > 64 {
+        return Err(
+            String::from("a skeleton has at most 64 bones, so a replica has at most 64 parts"),
+        )
+    }
+    var landmarks: Vec<(String, vec3d)> = Vec::new()
+    for l in given.landmarks {
+        landmarks.push((String::from(l.name), l.at))
+    }
+    var bytes: Vec<u8> = Vec::with_capacity(sculpt.bytes.len())
+    for i in 0..sculpt.bytes.len() {
+        bytes.push(sculpt.bytes.at(i))
+    }
+    Ok(
+        Reference {
+            name: String::from(given.name),
+            mesh: String::from(sculpt.mesh),
+            bytes,
+            registration: r,
+            attribution,
+            parts,
+            landmarks,
+        },
+    )
+}
+
+impl Reference {
+    /// The mesh's largest piece, placed in the creature's frame.
+    pub fn solid(self) -> Result<Solid, String> {
+        let m = parse(self.mesh.as_str(), self.bytes)?
+        let pieces = m.pieces()
+        if pieces.is_empty() {
+            return Err(String::from("the mesh has no triangles"))
+        }
+        var corners = m.corners(pieces[0])
+        for i in 0..corners.len() {
+            let t = corners[i]
+            corners[i] = [
+                place(self.registration, t[0]),
+                place(self.registration, t[1]),
+                place(self.registration, t[2]),
+            ]
+        }
+        Ok(Solid::new(take corners))
+    }
+}
+
+// ---- sampling ---------------------------------------------------------------------------------
+
+/// A loft's table: its radii, in tenths of a millimetre, station by station.
+pub struct Lofted: Clone {
+    /// Angle 0's direction, perpendicular to the axis.
+    pub u: vec3d,
+    pub stations: u32,
+    pub radii: Vec<i32>,
+    /// The stations whose point is outside the mesh, and how many radii are held at `r_max`.
+    pub outside: Vec<u32>,
+    pub held: u32,
+    /// Which radii are held at `r_max` (their rays run on, into another part).
+    pub held_at: Vec<bool>,
+    /// How much of the run-on axis went at each end (`trimmed`).
+    pub trim: vec2d,
+}
+
+/// A part's sweep: its path's points (trimmed to the mesh), its fitted sections, and how many
+/// measured radii are the part's own surface, and how many were held up.
+pub struct Swept: Clone {
+    pub points: Vec<vec3d>,
+    pub fitted: Fitted,
+    pub own: u32,
+    pub floored: u32,
+}
+
+/// What a part is drawn as.
+pub enum Shape: Clone {
+    Loft(Lofted),
+    Sweep(Swept),
+}
+
+/// A part as the replica draws it: a loft's table, or, for a part with `sections`, a sweep.
+pub struct Sampled: Clone {
+    pub part: Part,
+    pub shape: Shape,
+}
+
+impl Sampled {
+    /// Whether it's a loft.
+    pub fn is_loft(self) -> bool {
+        match self.shape {
+            Shape::Loft(_) => true,
+            Shape::Sweep(_) => false,
+        }
+    }
+
+    /// How many radii its table has (0 for a sweep).
+    pub fn radii_count(self) -> u32 {
+        match self.shape {
+            Shape::Loft(t) => t.radii.len(),
+            Shape::Sweep(_) => 0,
+        }
+    }
+}
+
+/// A loft's table as the engine's loft reads it (engine/loft.wrela), to test points against.
+pub struct Loft: Clone {
+    a: vec3d,
+    w: vec3d,
+    u: vec3d,
+    v: vec3d,
+    len: f64,
+    angles: u32,
+    stations: u32,
+    radii: Vec<i32>,
+}
+
+impl Loft {
+    /// `s`'s table, if it's a loft.
+    pub fn of(s: Sampled) -> Option<Loft> {
+        let Shape::Loft(t) = s.shape else { return None }
+        let d = s.part.to - s.part.from
+        let w = unit3(d)
+        Some(
+            Loft {
+                a: s.part.from,
+                w,
+                u: t.u,
+                v: cross3(w, t.u),
+                len: len3(d),
+                angles: s.part.angles,
+                stations: t.stations,
+                radii: t.radii.clone(),
+            },
+        )
+    }
+
+    /// The point `r` from the axis at station `i` and angle `j` (each may be between two).
+    pub fn point(self, i: f64, j: f64, r: f64) -> vec3d {
+        let o = self.a + self.w * (self.len * i / f64(self.stations - 1))
+        let theta = math::TAU * j / f64(self.angles)
+        let d = self.u * math::cos(theta) + self.v * math::sin(theta)
+        o + d * r
+    }
+
+    /// Whether `p` is inside: between the caps, and nearer the axis than the radius there (the
+    /// table's, linear along the axis and around it).
+    pub fn inside(self, p: vec3d) -> bool {
+        let q = p - self.a
+        let along = dot3(q, self.w)
+        if along < 0.0 || along > self.len {
+            return false
+        }
+        let x = dot3(q, self.u)
+        let y = dot3(q, self.v)
+        let rho = sqrt(x * x + y * y)
+        let stations = self.stations
+        let angles = self.angles
+        let ts = along / self.len * f64(stations - 1)
+        let i0 = min(u32(ts), stations - 2)
+        let f = clamp(ts - f64(i0), 0.0, 1.0)
+        let turns = rem_euclid(math::atan2(y, x) / math::TAU, 1.0)
+        let js = turns * f64(angles)
+        let j0 = min(u32(js), angles - 1)
+        let g = clamp(js - f64(j0), 0.0, 1.0)
+        let j1 = (j0 + 1) % angles
+        let r00 = f64(self.radii[i0 * angles + j0]) / 10000.0
+        let r01 = f64(self.radii[i0 * angles + j1]) / 10000.0
+        let r10 = f64(self.radii[(i0 + 1) * angles + j0]) / 10000.0
+        let r11 = f64(self.radii[(i0 + 1) * angles + j1]) / 10000.0
+        let near = r00 + (r01 - r00) * g
+        let far = r10 + (r11 - r10) * g
+        rho < near + (far - near) * f
+    }
+}
+
+fn rem_euclid(a: f64, b: f64) -> f64 {
+    let r = a % b
+    if r < 0.0 { r + abs(b) } else { r }
+}
+
+/// Whether any loft but `k`'s holds `p`.
+fn inside_another(lofts: [Option<Loft>], k: u32, p: vec3d) -> bool {
+    for l in 0..lofts.len() {
+        if l == k {
+            continue
+        }
+        if let Some(other) = lofts[l] {
+            if other.inside(p) {
+                return true
+            }
+        }
+    }
+    false
+}
+
+/// Angle `j` of `angles`'s direction around the axis `w`, from `u` by the right hand: as the
+/// engine's loft reads it (cos θ u + sin θ (w × u)).
+fn direction(w: vec3d, u: vec3d, j: u32, angles: u32) -> vec3d {
+    let theta = math::TAU * f64(j) / f64(angles)
+    u * math::cos(theta) + cross3(w, u) * math::sin(theta)
+}
+
+/// The part with its axis run on by `overlap` past each end, then trimmed to where it's inside
+/// the mesh (to 1 mm), so its end stations aren't empty: how much went from each end (of the
+/// run-on axis), or `None` if none of it is inside.
+pub fn trimmed(solid: Solid, part: Part) -> Option<(Part, f64, f64)> {
+    let w = unit3(part.to - part.from)
+    var p = part.clone()
+    p.from = p.from - w * p.overlap
+    p.to = p.to + w * p.overlap
+    let axis = p.to - p.from
+    let len = len3(axis)
+    let steps = u32(max(ceil(len / 0.001), 1.0))
+    let from = p.from
+    let at = |k: u32| -> vec3d { from + axis * (f64(k) / f64(steps)) }
+    var first: Option<u32> = None
+    for k in 0..steps + 1 {
+        if solid.inside(at(k)) {
+            first = Some(k)
+            break
+        }
+    }
+    let f = first?
+    var last = f
+    var k = steps
+    while k > f {
+        if solid.inside(at(k)) {
+            last = k
+            break
+        }
+        k -= 1
+    }
+    if last == f {
+        return None
+    }
+    var out = p.clone()
+    out.from = at(f)
+    out.to = at(last)
+    let step = len / f64(steps)
+    Some((out, f64(f) * step, f64(steps - last) * step))
+}
+
+/// The part's table, sampled from the solid along its axis; `trim` is how much of its run-on
+/// axis went at each end (`trimmed`).
+pub fn sample(solid: Solid, part: Part, trim: vec2d) -> Sampled {
+    let axis = part.to - part.from
+    let len = len3(axis)
+    let w = unit3(axis)
+    let u = unit3(part.up - w * dot3(part.up, w))
+    let stations = max(u32(ceil(len / part.spacing)) + 1, 2)
+    let a = part.angles
+    var held_at: Vec<bool> = Vec::with_capacity(stations * a)
+    var radii: Vec<i32> = Vec::with_capacity(stations * a)
+    var outside: Vec<u32> = Vec::new()
+    var held = 0
+    for i in 0..stations {
+        let c = part.from + axis * (f64(i) / f64(stations - 1))
+        if !solid.inside(c) {
+            outside.push(i)
+            for _ in 0..a {
+                radii.push(0)
+                held_at.push(false)
+            }
+            continue
+        }
+        for j in 0..a {
+            let d = direction(w, u, j, a)
+            var r = 0.0
+            if let Some(e) = solid.exit(c, d) {
+                r = e
+            }
+            if r > part.r_max {
+                held += 1
+                r = part.r_max
+            }
+            held_at.push(r >= part.r_max)
+            radii.push(i32(round_away(r * 10000.0)))
+        }
+        fill_held(mut radii, held_at, i * a, a, part.r_max)
+    }
+    Sampled {
+        part: part.clone(),
+        shape: Shape::Loft(Lofted { u, stations, radii, outside, held, held_at, trim }),
+    }
+}
+
+/// The harmonics a held run is filled from (`fill_held`).
+const FILL_HARMONICS: u32 = 8
+
+/// A station's held radii (its `a` radii from `at`; their rays ran on into another part, so any
+/// value up to `r_max` is inside the sculpt) filled from the measured ones around them: a Fourier
+/// series of the measured radii, held to [0, `r_max`]. A run held at `r_max` beside a short
+/// measured radius is a step in the table, and interpolating across it between stations made
+/// slivers past the sculpt (6.5 mm at most on the wolf; 3 mm filled).
+pub fn fill_held(radii: mut Vec<i32>, held: [bool], at: u32, a: u32, r_max: f64) {
+    var any_held = false
+    var all_held = true
+    for j in 0..a {
+        any_held = any_held || held[at + j]
+        all_held = all_held && held[at + j]
+    }
+    if all_held || !any_held {
+        return
+    }
+    let k = min(FILL_HARMONICS, (a - 1) / 2)
+    var basis: Vec<Vec<f64>> = Vec::new()
+    var ys: Vec<f64> = Vec::new()
+    for j in 0..a {
+        if !held[at + j] {
+            basis.push(fourier(math::TAU * f64(j) / f64(a), k))
+            ys.push(f64(radii[at + j]))
+        }
+    }
+    let c = least_squares(basis, ys, ridge: 0.001 * f64(ys.len()))
+    for j in 0..a {
+        if held[at + j] {
+            let terms = fourier(math::TAU * f64(j) / f64(a), k)
+            var r = -0.0
+            for q in 0..terms.len() {
+                r += terms[q] * c[q]
+            }
+            radii[at + j] = i32(round_away(clamp(r, 0.0, r_max * 10000.0)))
+        }
+    }
+}
+
+/// Each part sunk by up to its `taper` over what's left of its axis's run-on (`overlap`) at each
+/// end that's inside another part (a joint): from nothing where the run-on starts to all of it at
+/// the cap, so the part passes under its neighbour before it ends. A part that ended proud of its
+/// neighbour (by a fraction of a millimetre: two lofts' sections of one surface differ that much)
+/// left a step, which a render drew as a line across the form (the torso's front cap, the neck's
+/// at the withers). A table's `trim` is how much of its run-on axis went at each end.
+pub fn taper(sampled: mut Vec<Sampled>) {
+    var lofts: Vec<Option<Loft>> = Vec::with_capacity(sampled.len())
+    for s in sampled {
+        lofts.push(Loft::of(s))
+    }
+    var joints: Vec<(bool, bool)> = Vec::with_capacity(sampled.len())
+    for k in 0..sampled.len() {
+        joints.push(
+            (
+                inside_another(lofts, k, sampled[k].part.from),
+                inside_another(lofts, k, sampled[k].part.to),
+            ),
+        )
+    }
+    for k in 0..sampled.len() {
+        let part = sampled[k].part.clone()
+        match mut sampled[k].shape {
+            Shape::Loft(t) => {
+                let len = len3(part.to - part.from)
+                let l0 = if joints[k].0 { part.overlap - t.trim.x } else { 0.0 }
+                let l1 = if joints[k].1 { part.overlap - t.trim.y } else { 0.0 }
+                let a = part.angles
+                for i in 0..t.stations {
+                    let d = len * f64(i) / f64(t.stations - 1)
+                    var sink = 0.0
+                    if l0 > 0.0 && d < l0 {
+                        sink = max(sink, 1.0 - d / l0)
+                    }
+                    if l1 > 0.0 && len - d < l1 {
+                        sink = max(sink, 1.0 - (len - d) / l1)
+                    }
+                    let by = i32(round_away(sink * part.taper * 10000.0))
+                    for n in i * a..(i + 1) * a {
+                        t.radii[n] = max(t.radii[n] - by, 0)
+                    }
+                }
+            },
+            Shape::Sweep(_) => {},
+        }
+    }
+}
+
+// ---- sweeps -----------------------------------------------------------------------------------
+
+/// A sweep part as measured: its path's points (from `from` through `through` to `to`, run on
+/// by `overlap` and trimmed to the mesh), its path, and its radii, measured in its own planes
+/// every `spacing` along it, `angles` round.
+pub struct SweepMeasure: Clone {
+    pub points: Vec<vec3d>,
+    pub path: Path,
+    pub measured: Measured,
+}
+
+pub fn measure_sweep(solid: Solid, p: Part) -> Result<SweepMeasure, String> {
+    var points: Vec<vec3d> = Vec::new()
+    points.push(p.from)
+    for t in p.through {
+        points.push(t)
+    }
+    points.push(p.to)
+    let Some((trimmed_points, _, _)) = sweeps::trimmed(solid, points, p.up, p.overlap) else {
+        return Err(String::from(f"part `{p.name}`: its path isn't inside the mesh"))
+    }
+    let path = Path::new(trimmed_points, p.up)
+    let measured = sweeps::measure(solid, path, p.spacing, p.angles, p.r_max)
+    Ok(SweepMeasure { points: trimmed_points, path, measured })
+}
+
+/// A part as measured: a loft's table, sampled; or a sweep's radii, to be fitted with the other
+/// sweeps' (`fit_sweeps`).
+pub enum Measure: Clone {
+    Loft(Sampled),
+    Sweep(SweepMeasure),
+}
+
+/// The point `back` inside measured radius `n` of a sweep.
+fn sweep_point(sm: SweepMeasure, n: u32, back: f64) -> vec3d {
+    let a = sm.measured.angles
+    let i = n / a
+    let j = n % a
+    let theta = math::TAU * f64(j) / f64(a)
+    sm.path.point(sm.measured.s[i], theta, sm.measured.radii[n] - back)
+}
+
+/// How many rounds `fit_sweeps` holds up radii the fitted sweeps don't reach, at most.
+const SWEEP_FLOOR_ROUNDS: u32 = 10
+
+/// Each part as the replica draws it: a loft as it was sampled, and each sweep fitted
+/// (`sweeps::fit`). Each measured radius is its part's own surface, unless another part (as
+/// measured) holds the point 0.5 mm inside it: then it's a ray that ran on along that part,
+/// which holds it. Then, as compression does (`compress`), where no fitted part reaches the
+/// point 0.5 mm inside a measured radius, that radius is held up and its part fitted again
+/// (`sweeps::refit`), until every one is reached.
+pub fn fit_sweeps(parts: [Part], measured: take Vec<Measure>) -> Vec<Sampled> {
+    // The sweeps, with their parts' indices.
+    var swept: Vec<(u32, SweepMeasure)> = Vec::new()
+    for k in 0..measured.len() {
+        match measured[k] {
+            Measure::Sweep(sm) => swept.push((k, sm.clone())),
+            Measure::Loft(_) => {},
+        }
+    }
+    let count = swept.len()
+    var kinds: Vec<Vec<Kind>> = Vec::with_capacity(count)
+    for e in 0..count {
+        let (k, sm) = swept[e].clone()
+        var ks: Vec<Kind> = Vec::with_capacity(sm.measured.radii.len())
+        for n in 0..sm.measured.radii.len() {
+            if sm.measured.held[n] {
+                ks.push(Kind::Held)
+                continue
+            }
+            let r = sm.measured.radii[n]
+            var shared = false
+            if r > 0.0005 {
+                let p = sweep_point(sm, n, 0.0005)
+                for o in swept {
+                    if o.0 != k && inside_measured(o.1.path, o.1.measured, p) {
+                        shared = true
+                        break
+                    }
+                }
+            }
+            ks.push(if shared { Kind::Shared } else { Kind::Own })
+        }
+        kinds.push(take ks)
+    }
+    var fitted: Vec<Fitted> = Vec::with_capacity(count)
+    for e in 0..count {
+        borrow sm = swept[e].1
+        borrow p = parts[swept[e].0]
+        fitted.push(sweeps::fit(sm.measured, kinds[e], p.sections, p.bumps, p.r_max))
+    }
+    var floors: Vec<Vec<bool>> = Vec::with_capacity(count)
+    for e in 0..count {
+        floors.push(Vec::filled(swept[e].1.measured.radii.len(), value: false))
+    }
+    // Held up first where a part came nearest (short by under 4 mm, then 8, 16, then any), so a
+    // part that reaches a place well (a leg, the flank's fold) is held up before one that can't
+    // follow it (the torso, which swelled 40 mm past the sculpt there).
+    var within = 0.004
+    for _ in 0..SWEEP_FLOOR_ROUNDS {
+        // Each sweep's radii no fitted sweep reaches: those to hold up now, and whether any is
+        // left for a later round.
+        var holds: Vec<Vec<u32>> = Vec::with_capacity(count)
+        var further = false
+        for e in 0..count {
+            borrow sm = swept[e].1
+            borrow f = fitted[e]
+            let a = sm.measured.angles
+            let len = sm.path.length()
+            var hold: Vec<u32> = Vec::new()
+            for n in 0..sm.measured.radii.len() {
+                if kinds[e][n] == Kind::Held ||
+                    floors[e][n] ||
+                    sm.measured.radii[n] <= SLACK + 0.0005 {
+                    continue
+                }
+                let p = sweep_point(sm, n, SLACK + 0.0005)
+                var reached = false
+                for o in 0..count {
+                    if inside_fitted(swept[o].1.path, fitted[o], p) {
+                        reached = true
+                        break
+                    }
+                }
+                if reached {
+                    continue
+                }
+                let i = n / a
+                let j = n % a
+                let theta = math::TAU * f64(j) / f64(a)
+                let own = section_at(f.sections, f.places, sm.measured.s[i] / len).radius(theta)
+                if sm.measured.radii[n] - own <= within {
+                    hold.push(n)
+                } else {
+                    further = true
+                }
+            }
+            holds.push(take hold)
+        }
+        var again: Vec<u32> = Vec::new()
+        for e in 0..count {
+            if !holds[e].is_empty() {
+                again.push(e)
+            }
+        }
+        if again.is_empty() && !further {
+            break
+        }
+        for e in 0..count {
+            for n in holds[e] {
+                floors[e][n] = true
+            }
+        }
+        for e in again {
+            borrow sm = swept[e].1
+            let r_max = parts[swept[e].0].r_max
+            let f = sweeps::refit(sm.measured, kinds[e], floors[e], fitted[e], r_max)
+            fitted[e] = take f
+        }
+        within = if within >= 0.016 { 1.0 / 0.0 } else { 2.0 * within }
+    }
+    var out: Vec<Sampled> = Vec::with_capacity(measured.len())
+    var e = 0
+    for k in 0..measured.len() {
+        match measured[k] {
+            Measure::Loft(s) => out.push(s.clone()),
+            Measure::Sweep(sm) => {
+                var part = parts[k].clone()
+                part.from = sm.points[0]
+                part.to = sm.points[sm.points.len() - 1]
+                var own = 0
+                for x in kinds[e] {
+                    if x == Kind::Own {
+                        own += 1
+                    }
+                }
+                var floored = 0
+                for f in floors[e] {
+                    if f {
+                        floored += 1
+                    }
+                }
+                out.push(
+                    Sampled {
+                        part,
+                        shape: Shape::Sweep(
+                            Swept {
+                                points: sm.points.clone(),
+                                fitted: fitted[e].clone(),
+                                own,
+                                floored,
+                            },
+                        ),
+                    },
+                )
+                e += 1
+            },
+        }
+    }
+    out
+}
+
+// ---- compression ------------------------------------------------------------------------------
+
+/// How a table is compressed: `harmonics` around each section (`4294967295`: all the table's),
+/// and control sections every `every` metres along the axis (0: every station's), smooth
+/// between.
+pub struct Compression: Copy {
+    pub harmonics: u32,
+    pub every: f64,
+}
+
+/// How many rounds `compress` holds up radii the compressed parts don't reach, at most.
+const FLOOR_ROUNDS: u32 = 64
+
+/// The parts' tables compressed, each with how many numbers its compact form has, and how many
+/// measured radii are held up. Each part is fitted by least squares (`fit_compact`). A part short
+/// of its measured surface opened cracks you could see through where it meets its neighbours at
+/// a thin form or a fold (150 rays from five views, at 8 harmonics). But held up to every
+/// measured radius, a section can't follow a narrow run of long radii (rays that ran along a leg
+/// before they left the sculpt) without swinging out elsewhere (35 mm past the sculpt), and the
+/// leg holds that run anyway. So a measured radius is held up where no other part reaches the
+/// point 0.5 mm inside it, or halfway from it to the next station's or the next angle's: at once
+/// where its own part reaches it (so a fit again can't lose it); and where no part does, its part
+/// is fitted again. In the first rounds, only the radii its part came within 1 mm of, then 2, 4,
+/// 8, then any: so a neighbour that reaches a long run's end is held up before the run's part is.
+/// The rounds go on until every point is reached.
+pub fn compress(sampled: [Sampled], c: Compression) -> (Vec<(Sampled, u32)>, u32) {
+    var floors: Vec<Vec<bool>> = Vec::with_capacity(sampled.len())
+    var out: Vec<(Sampled, u32)> = Vec::with_capacity(sampled.len())
+    for s in sampled {
+        floors.push(Vec::filled(s.radii_count(), value: false))
+        out.push(fit_compact(s, c, []))
+    }
+    var within = 10
+    for _ in 0..FLOOR_ROUNDS {
+        var lofts: Vec<Option<Loft>> = Vec::with_capacity(out.len())
+        for o in out {
+            lofts.push(Loft::of(o.0))
+        }
+        var refit: Vec<bool> = Vec::filled(sampled.len(), value: false)
+        var further = false
+        for k in 0..sampled.len() {
+            let Some(loft) = Loft::of(sampled[k]) else { continue }
+            let Shape::Loft(t) = sampled[k].shape else { continue }
+            let Shape::Loft(fit) = out[k].0.shape else { continue }
+            let a = sampled[k].part.angles
+            // Each measured radius's point, and the points halfway to the next station's and the
+            // next angle's (at the table's radius there): where no other part reaches one, the
+            // radii on either side of it are held up, unless their own part reaches it.
+            for n in 0..t.radii.len() {
+                let i = n / a
+                let j = n % a
+                var ends: Vec<(u32, f64, f64)> = Vec::new()
+                ends.push((n, 0.0, 0.0))
+                if i + 1 < t.stations {
+                    ends.push((n + a, 0.5, 0.0))
+                }
+                ends.push((i * a + (j + 1) % a, 0.0, 0.5))
+                for end in ends {
+                    let (m, di, dj) = end
+                    if t.held_at[n] || t.held_at[m] || (floors[k][n] && floors[k][m]) {
+                        continue
+                    }
+                    let r = 0.5 * f64(t.radii[n] + t.radii[m]) - 5.0
+                    if r <= 0.0 {
+                        continue
+                    }
+                    let p = loft.point(f64(i) + di, f64(j) + dj, r / 10000.0)
+                    if inside_another(lofts, k, p) {
+                        continue
+                    }
+                    for q in [n, m] {
+                        if floors[k][q] {
+                            continue
+                        }
+                        let short = t.radii[q] - fit.radii[q]
+                        if short < 5 {
+                            floors[k][q] = true
+                        } else if short <= within {
+                            floors[k][q] = true
+                            refit[k] = true
+                        } else {
+                            further = true
+                        }
+                    }
+                }
+            }
+        }
+        var any_refit = false
+        for r in refit {
+            any_refit = any_refit || r
+        }
+        if !any_refit && !further {
+            break
+        }
+        for k in 0..sampled.len() {
+            if refit[k] {
+                let f = fit_compact(sampled[k], c, floors[k])
+                out[k] = take f
+            }
+        }
+        within = if within >= 80 { 2147483647 } else { 2 * within }
+    }
+    var floored = 0
+    for f in floors {
+        for x in f {
+            if x {
+                floored += 1
+            }
+        }
+    }
+    (out, floored)
+}
+
+/// How far past a measured radius `fit_compact` lets its fit go before holding it back (0.1 mm),
+/// and how hard it holds it back at most (a floor's press grows without end).
+const CEILING: i32 = 30
+const HOLD_MOST: f64 = 1000.0
+
+/// How many rounds `fit_compact` presses on the floors it falls short of, at most: each presses
+/// ten times harder.
+const PRESS_ROUNDS: u32 = 24
+
+/// A part's table compressed, and how many numbers the compact form has. Each section is a
+/// Fourier series of `harmonics` (a₀, then aₖ and bₖ), and each coefficient a Catmull–Rom curve
+/// along the axis through control sections: the control sections' coefficients are the compact
+/// form, fitted to the table's measured radii by least squares. A held radius (its ray runs into
+/// another part) is free, as any value up to `r_max` is inside the sculpt. The radii `floor`
+/// flags are pressed on, harder each round, until the fit isn't short of one, and the table,
+/// expanded back to the stations and angles, held to [0, `r_max`] and to 0.1 mm, is at least
+/// each of them. A sweep is left as it is, and counts no numbers.
+pub fn fit_compact(s: Sampled, c: Compression, floor: [bool]) -> (Sampled, u32) {
+    let Shape::Loft(table) = s.shape else { return (s.clone(), 0) }
+    let is_floor = |n: u32| -> bool { n < floor.len() && floor[n] }
+    let a = s.part.angles
+    let k = min(c.harmonics, (a - 1) / 2)
+    let coefficients = 2 * k + 1
+    var around: Vec<Vec<f64>> = Vec::with_capacity(a)
+    for j in 0..a {
+        around.push(fourier(math::TAU * f64(j) / f64(a), k))
+    }
+    let len = len3(s.part.to - s.part.from)
+    let stations = table.stations
+    let controls = if c.every <= 0.0 {
+        stations
+    } else {
+        // Held to the stations in f64 first: a tiny `every` gives a count past any integer.
+        u32(clamp(ceil(len / c.every) + 1.0, 2.0, f64(stations)))
+    }
+    // Each station's weights on the control sections: its own, or a Catmull–Rom curve's.
+    var along: Vec<Vec<(u32, f64)>> = Vec::with_capacity(stations)
+    for i in 0..stations {
+        var ws: Vec<(u32, f64)> = Vec::new()
+        if controls == stations {
+            ws.push((i, 1.0))
+        } else {
+            let t = f64(i) / f64(stations - 1)
+            let w = catmull_rom_weights(t, controls)
+            for q in 0..w.len() {
+                if w[q] != 0.0 {
+                    ws.push((q, w[q]))
+                }
+            }
+        }
+        along.push(take ws)
+    }
+    // Unknown `c * coefficients + q` is control section c's coefficient q; a radius depends on
+    // the coefficients of the four control sections around it at most.
+    let unknowns = controls * coefficients
+    let band = if controls == stations { coefficients } else { 4 * coefficients }
+    var measured = 0
+    for h in table.held_at {
+        if !h {
+            measured += 1
+        }
+    }
+    measured = max(measured, 1)
+    // A little ridge on the harmonics, so a section measured over a narrow arc doesn't swing
+    // wildly where it's free.
+    let ridge = 0.001 * f64(measured) / f64(controls)
+    let radii = table.radii.clone()
+    var rows: Vec<Vec<(u32, f64)>> = Vec::with_capacity(radii.len())
+    for n in 0..radii.len() {
+        let i = n / a
+        let j = n % a
+        var row: Vec<(u32, f64)> = Vec::with_capacity(along[i].len() * coefficients)
+        for cw in along[i] {
+            let (cc, w) = cw
+            for q in 0..around[j].len() {
+                row.push((cc * coefficients + q, w * around[j][q]))
+            }
+        }
+        rows.push(take row)
+    }
+    let value = |x: [f64], n: u32| -> f64 {
+        var v = -0.0
+        for e in rows[n] {
+            v += e.1 * x[e.0]
+        }
+        v
+    }
+    var press: Vec<f64> = Vec::filled(radii.len(), 0.0)
+    var hold: Vec<f64> = Vec::filled(radii.len(), 0.0)
+    var x: Vec<f64> = Vec::filled(unknowns, 0.0)
+    for _ in 0..PRESS_ROUNDS {
+        var m = Banded::new(unknowns, band)
+        var rhs: Vec<f64> = Vec::filled(unknowns, 0.0)
+        for n in 0..rows.len() {
+            let w = if table.held_at[n] { 0.0 } else { 1.0 + press[n] + hold[n] }
+            if w == 0.0 {
+                continue
+            }
+            let y = f64(radii[n])
+            borrow r = rows[n]
+            for e in r {
+                rhs[e.0] += w * e.1 * y
+            }
+            // A row's unknowns rise, so those up to each are the row's first.
+            m.add_outer(r, w)
+        }
+        for u in 0..unknowns {
+            m.add(u, u, if u % coefficients == 0 { 1e-9 } else { max(ridge, 1e-9) })
+        }
+        x = take m.solve(take rhs)
+        // Short of a floor by more than half its last digit: pressed on harder. Past a measured
+        // radius by more than `CEILING`: held back harder, but less hard, and only so hard.
+        var changed = false
+        for n in 0..radii.len() {
+            if is_floor(n) && value(x, n) < f64(radii[n]) - 0.5 {
+                press[n] = max(press[n] * 10.0, 10.0)
+                changed = true
+            }
+        }
+        for n in 0..radii.len() {
+            if !table.held_at[n] && value(x, n) > f64(radii[n] + CEILING) && hold[n] < HOLD_MOST {
+                hold[n] = clamp(hold[n] * 3.0, 1.0, HOLD_MOST)
+                changed = true
+            }
+        }
+        if !changed {
+            break
+        }
+    }
+    let top = s.part.r_max * 10000.0
+    var fitted: Vec<i32> = Vec::with_capacity(radii.len())
+    for n in 0..radii.len() {
+        let r = i32(round_away(clamp(value(x, n), 0.0, top)))
+        fitted.push(if is_floor(n) { max(r, radii[n]) } else { r })
+    }
+    var compact = table.clone()
+    compact.radii = take fitted
+    (Sampled { part: s.part.clone(), shape: Shape::Loft(take compact) }, controls * coefficients)
+}
+
+// ---- the package ------------------------------------------------------------------------------
+
+/// `text` as `//` comment lines of at most 100 columns (a word longer than a line, such as a
+/// link, gets a line of its own).
+pub fn comment(text: str) -> String {
+    var out = String::new()
+    var line = String::from("//")
+    var i = 0
+    while i < text.len() {
+        while i < text.len() && is_blank(text.byte(i)) {
+            i += 1
+        }
+        let start = i
+        while i < text.len() && !is_blank(text.byte(i)) {
+            i += 1
+        }
+        if i == start {
+            continue
+        }
+        let word = text.slice(start, i)
+        if line.len() > 2 && line.len() + 1 + word.len() > 100 {
+            out.push_str(line.as_str())
+            out.push_str("\n")
+            line = String::from("//")
+        }
+        line.push_str(" ")
+        line.push_str(word)
+    }
+    out.push_str(line.as_str())
+    out.push_str("\n")
+    out
+}
+
+fn is_blank(b: u8) -> bool {
+    b == 32 || (b >= 9 && b <= 13)
+}
+
+/// A name as a wrela string literal, keeping its contents on one source line.
+pub fn quoted_name(name: str) -> String {
+    var out = String::from("\"")
+    for i in 0..name.len() {
+        let b = name.byte(i)
+        if b == 92 {
+            out.push_str("\\\\")
+        } else if b == 34 {
+            out.push_str("\\\"")
+        } else if b == 10 {
+            out.push_str("\\n")
+        } else if b == 13 {
+            out.push_str("\\r")
+        } else if b == 9 {
+            out.push_str("\\t")
+        } else if b == 0 {
+            out.push_str("\\0")
+        } else {
+            out.push_byte(b)
+        }
+    }
+    out.push_str("\"")
+    out
+}
+
+/// `name` on one line: each line break a space.
+fn one_line(name: str) -> String {
+    var out = String::new()
+    for i in 0..name.len() {
+        let b = name.byte(i)
+        out.push_byte(if b == 10 || b == 13 { 32 } else { b })
+    }
+    out
+}
+
+/// A number as a wrela `f32` literal, to 0.01 mm.
+pub fn num(x: f64) -> String {
+    let v = if abs(x) < 0.000005 { 0.0 } else { x }
+    var s = f"{v:.5}"
+    var end = s.len()
+    while end > 0 && s.as_str().byte(end - 1) == 48 {
+        end -= 1
+    }
+    s.truncate(end)
+    if s.as_str().ends_with(".") {
+        s.push_str("0")
+    }
+    s
+}
+
+fn vec_text(p: vec3d) -> String {
+    String::from(f"vec3({num(p.x)}, {num(p.y)}, {num(p.z)})")
+}
+
+/// The words that are wrela's keywords (spec/lexical.md, L11).
+const KEYWORDS: [Text; 33] = [
+    "as",
+    "borrow",
+    "break",
+    "const",
+    "continue",
+    "dyn",
+    "else",
+    "enum",
+    "false",
+    "fn",
+    "for",
+    "if",
+    "impl",
+    "in",
+    "let",
+    "loop",
+    "match",
+    "mut",
+    "package",
+    "pub",
+    "return",
+    "self",
+    "Self",
+    "struct",
+    "take",
+    "trait",
+    "true",
+    "type",
+    "unsafe",
+    "use",
+    "var",
+    "while",
+    "yield",
+]
+
+/// A part's name as an identifier: its words joined by `_`, and never empty or a keyword.
+pub fn ident(name: str) -> String {
+    var s = String::new()
+    for i in 0..name.len() {
+        let b = name.byte(i)
+        let alnum = (b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122)
+        let c = if !alnum { 95 } else if b >= 65 && b <= 90 { b + 32 } else { b }
+        if c == 95 && s.len() > 0 && s.as_str().byte(s.len() - 1) == 95 {
+            continue
+        }
+        s.push_byte(c)
+    }
+    var from = 0
+    var to = s.len()
+    while from < to && s.as_str().byte(from) == 95 {
+        from += 1
+    }
+    while to > from && s.as_str().byte(to - 1) == 95 {
+        to -= 1
+    }
+    let t = String::from(s.as_str().slice(from, to))
+    if t.is_empty() {
+        return String::from("part")
+    }
+    let first = t.as_str().byte(0)
+    var keyword = false
+    for k in KEYWORDS {
+        if t.as_str() == k {
+            keyword = true
+        }
+    }
+    if (first >= 48 && first <= 57) || keyword {
+        String::from(f"part_{t}")
+    } else {
+        t
+    }
+}
+
+/// The capitals of an identifier.
+fn upper(s: str) -> String {
+    var out = String::new()
+    for i in 0..s.len() {
+        let b = s.byte(i)
+        out.push_byte(if b >= 97 && b <= 122 { b - 32 } else { b })
+    }
+    out
+}
+
+/// The replica's manifest: package `name`, on the workspace's engine.
+pub fn manifest(file: Reference, name: str) -> String {
+    String::from(
+        f"# A replica, written by `wrela tool reference` from {one_line(file.name.as_str())}.\n[package]\nname = \"{name}\"\n\n[dependencies]\nengine = {{ workspace = true }}\n",
+    )
+}
+
+/// The replica as the package's subject, for the lens: its lines.
+pub const SUBJECT: [Text; 9] = [
+    "// The replica, as the package's subject.",
+    "",
+    "use engine::creature::Creature",
+    "use replica::replica",
+    "use std::field::{Color, Field}",
+    "",
+    "pub fn subject() -> Field<Color> {",
+    "    replica().field()",
+    "}",
+]
+
+/// The replica for tools (`deviation` measures it through these): its lines.
+pub const MAIN: [Text; 21] = [
+    "// The replica for tools: `wrela tool reference -- deviation` measures it through these.",
+    "",
+    "use engine::creature::{Creature, CreatureField}",
+    "use replica::{Parts, replica}",
+    "use std::field::Surface",
+    "",
+    "pub fn init() -> CreatureField<Parts> {",
+    "    replica().field()",
+    "}",
+    "",
+    "/// The replica's distance at a point.",
+    "pub fn distance(state: CreatureField<Parts>, x: f32, y: f32, z: f32) -> f32 {",
+    "    state.distance(vec3(x, y, z))",
+    "}",
+    "",
+    "/// The part nearest a point: its index, in the parts file's order.",
+    "pub fn part(state: CreatureField<Parts>, x: f32, y: f32, z: f32) -> u32 {",
+    "    state.part_at(vec3(x, y, z)).1",
+    "}",
+    "",
+    "pub fn frame(state: mut CreatureField<Parts>, time: f32, width: u32, height: u32) {}",
+]
+
+/// The replica's module: its skeleton, its parts and their tables or sections.
+pub fn replica_source(file: Reference, sampled: [Sampled]) -> String {
+    var g = String::new()
+    g.push_str(
+        comment(
+            f"A replica of {file.mesh}, written by `wrela tool reference` from {file.name}. Don't edit it: refactor a copy.",
+        ).as_str(),
+    )
+    g.push_str("//\n")
+    var all_sweeps = true
+    var lofts = false
+    var any_sweep = false
+    var smooth = false
+    var hard = false
+    for s in sampled {
+        all_sweeps = all_sweeps && !s.is_loft()
+        lofts = lofts || s.is_loft()
+        any_sweep = any_sweep || !s.is_loft()
+        smooth = smooth || s.part.seam.is_some()
+        hard = hard || s.part.seam.is_none()
+    }
+    let how = if all_sweeps {
+        "its surface fitted by sweeps. Each part's sections are fitted to radii measured from its path, where a ray leaves the sculpt (where its winding number falls to 0)"
+    } else {
+        "its surface sampled into lofts. Each part's radius at each station and angle is where a ray from the part's axis leaves the sculpt (where its winding number falls to 0), in tenths of a millimetre"
+    }
+    g.push_str(comment(f"Adapted from {file.attribution}: {how}.").as_str())
+    g.push_str("\n")
+    var seams = String::new()
+    if hard {
+        seams.push_str("hard")
+    }
+    if smooth {
+        if hard {
+            seams.push_str(", ")
+        }
+        seams.push_str("smooth")
+    }
+    g.push_str(f"use engine::creature::{{Body, Placed, Skeleton, Then, creature, {seams}}}\n")
+    if lofts {
+        g.push_str("use engine::loft::{Loft, loft}\n")
+    }
+    if any_sweep {
+        g.push_str("use engine::sweep::{Sweep, section, sweep}\n")
+    }
+    g.push_str("use std::field::{Color, Surface, With, rgb}\n\n")
+    // The parts' type.
+    var ty = leaf(sampled[0])
+    for k in 1..sampled.len() {
+        ty = String::from(f"Then<{ty}, {leaf(sampled[k])}>")
+    }
+    g.push_str(f"/// The replica's parts, in the parts file's order.\npub type Parts = {ty}\n\n")
+    g.push_str("/// Clay.\nfn clay() -> Color {\n    rgb(r: 0.74, g: 0.72, b: 0.68)\n}\n\n")
+    if lofts {
+        g.push_str(
+            "/// A table of radii in tenths of a millimetre, in metres.\nfn metres<const N: u32>(tenths: [i32; N]) -> [f32; N] {\n    var out = [0.0; N]\n    for i in 0..N {\n        out[i] = f32(tenths[i]) * 0.0001\n    }\n    out\n}\n\n",
+        )
+    }
+    // The skeleton: a bone per part, at the start of its axis.
+    g.push_str(
+        "/// The skeleton: a bone per part, at the start of the part's axis.\npub fn skeleton() -> Skeleton {\n    var s = Skeleton::new()\n",
+    )
+    for i in 0..sampled.len() {
+        borrow s = sampled[i]
+        // A bone is named for the parts under it; the rest are found by name (`find`).
+        let id = ident(s.part.name.as_str())
+        var bind = String::new()
+        for t in sampled {
+            if t.part.parent == Some(i) {
+                bind = String::from(f"let {id} = ")
+                break
+            }
+        }
+        match s.part.parent {
+            None => g.push_str(
+                f"    {bind}s.root({quoted_name(s.part.name.as_str())}, {vec_text(s.part.from)})\n",
+            ),
+            Some(p) => g.push_str(
+                f"    {bind}s.joint({quoted_name(s.part.name.as_str())}, {ident(sampled[p].part.name.as_str())}, {vec_text(s.part.from)})\n",
+            ),
+        }
+    }
+    g.push_str("    s\n}\n\n")
+    // The whole.
+    g.push_str(
+        "/// The replica: each part on its bone, in the parts file's order.\npub fn replica() -> Body<Parts> {\n    let s = skeleton()\n    creature(s)\n",
+    )
+    for s in sampled {
+        let seam = match s.part.seam {
+            None => String::from("hard()"),
+            Some(k) => String::from(f"smooth({num(k)})"),
+        }
+        let q = quoted_name(s.part.name.as_str())
+        g.push_str(
+            f"        .join({q}, s.find({q}), {ident(s.part.name.as_str())}().with(clay()), seam: {seam})\n",
+        )
+    }
+    g.push_str("}\n\n")
+    // Each part.
+    for s in sampled {
+        let id = ident(s.part.name.as_str())
+        match s.shape {
+            Shape::Sweep(sw) => g.push_str(
+                sweep_source(id.as_str(), s, sw, file.landmarks).as_str(),
+            ),
+            Shape::Loft(t) => {
+                let n = t.radii.len()
+                g.push_str(
+                    f"/// {one_line(s.part.name.as_str())}: {t.stations} stations of {s.part.angles} radii, from {vec_text(s.part.from)} to {vec_text(s.part.to)}.\npub fn {id}() -> Loft<{n}> {{\n    loft(\n        vec3(),\n        {vec_text(s.part.to - s.part.from)},\n        {vec_text(t.u)},\n        stations: {t.stations},\n        angles: {s.part.angles},\n        radii: metres({upper(id.as_str())}),\n    )\n}}\n\n",
+                )
+                g.push_str(f"const {upper(id.as_str())}: [i32; {n}] = [\n")
+                let a = s.part.angles
+                for i in 0..t.stations {
+                    g.push_str("    ")
+                    for j in 0..a {
+                        if j > 0 {
+                            g.push_str(", ")
+                        }
+                        g.push_str(f"{t.radii[i * a + j]}")
+                    }
+                    g.push_str(",\n")
+                }
+                g.push_str("]\n\n")
+            },
+        }
+    }
+    g
+}
+
+/// A part's type in the replica's `Parts`.
+fn leaf(s: Sampled) -> String {
+    match s.shape {
+        Shape::Sweep(sw) => String::from(f"Placed<With<Sweep<{sw.fitted.sections.len()}>, Color>>"),
+        Shape::Loft(t) => String::from(f"Placed<With<Loft<{t.radii.len()}>, Color>>"),
+    }
+}
+
+/// `x` to `step`, halves away from zero, as a literal.
+fn to_step(x: f64, per: f64) -> String {
+    num(round_away(x * per) / per)
+}
+
+/// A sweep part's function: its path's points (from its bone, at its first), its up (the
+/// part's), and its fitted sections (every bump on every section, so they stay matched by
+/// place).
+fn sweep_source(id: str, s: Sampled, sw: Swept, landmarks: [(String, vec3d)]) -> String {
+    borrow f = sw.fitted
+    var g = String::new()
+    g.push_str(
+        f"/// {one_line(s.part.name.as_str())}: a sweep through {sw.points.len()} points, {f.sections.len()} sections (within 2 mm of {100.0 * f.within_2mm:.0}% of the measured radii; {f.rms * 1000.0:.1} mm rms).\n",
+    )
+    g.push_str(f"pub fn {id}() -> Sweep<{f.sections.len()}> {{\n    sweep(\n        [\n")
+    for p in sw.points {
+        g.push_str(f"            {vec_text(p - sw.points[0])},\n")
+    }
+    g.push_str(f"        ],\n        up: {vec_text(s.part.up)},\n        sections: [\n")
+    let path = Path::new(sw.points, s.part.up)
+    for k in 0..f.sections.len() {
+        let sec = f.sections[k]
+        // Where it is: how far along, and the landmark it's at (within 4 cm), if any.
+        let along = f.places[k] * path.length()
+        let at = path.plane(along).0
+        var near: Option<u32> = None
+        var best = 0.0
+        for l in 0..landmarks.len() {
+            let d = len3(landmarks[l].1 - at)
+            if d < 0.04 && (near.is_none() || mesh::total_before(d, best)) {
+                near = Some(l)
+                best = d
+            }
+        }
+        match near {
+            Some(l) => g.push_str(
+                f"            // {along * 100.0:.0} cm along: at {quoted_name(landmarks[l].0.as_str())}\n",
+            ),
+            None => g.push_str(f"            // {along * 100.0:.0} cm along\n"),
+        }
+        g.push_str(
+            f"            section(up: {to_step(sec.up, 10000.0)}, down: {to_step(sec.down, 10000.0)}, left: {to_step(sec.left, 10000.0)}, right: {to_step(sec.right, 10000.0)}, square: {to_step(sec.square, 100.0)}, turn: {to_step(sec.turn, 1000.0)})",
+        )
+        for b in 0..min(s.part.bumps, 4) {
+            let bump = sec.bumps[b]
+            if bump.z > 0.0 {
+                g.push_str(
+                    f"\n                .bump(at: {to_step(bump.x, 1000.0)}, height: {to_step(bump.y, 10000.0)}, width: {to_step(bump.z, 1000.0)})",
+                )
+            }
+        }
+        g.push_str(",\n")
+    }
+    var places = String::new()
+    for k in 0..f.places.len() {
+        if k > 0 {
+            places.push_str(", ")
+        }
+        places.push_str(to_step(f.places[k], 10000.0).as_str())
+    }
+    g.push_str(
+        f"        ],\n        places: [{places}],\n        ends: vec2({num(s.part.ends.x)}, {num(s.part.ends.y)}),\n    )\n}}\n\n",
+    )
+    g
+}
+
+/// `lines`, each ended by a line break.
+pub fn text_of(lines: [Text]) -> String {
+    var out = String::new()
+    for l in lines {
+        out.push_str(l)
+        out.push_str("\n")
+    }
+    out
+}

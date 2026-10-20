@@ -1,0 +1,249 @@
+// The linear algebra the fits share: a banded symmetric solve (Cholesky's), least squares by
+// the normal equations, uniform Catmull–Rom weights, and a Fourier series' terms.
+
+use math
+use std::collections::Vec
+
+/// A symmetric matrix that's zero more than `band` from its diagonal, by its lower half, and
+/// solved by Cholesky's method in time linear in its size.
+pub struct Banded: Clone {
+    n: u32,
+    band: u32,
+    /// Row i's entries from column i − band to i, row after row: (i, j) is at (i + 1) band + j.
+    cells: Vec<f64>,
+}
+
+impl Banded {
+    pub fn new(n: u32, band: u32) -> Banded {
+        Banded { n, band, cells: Vec::filled(n * (band + 1), 0.0) }
+    }
+
+    /// Adds `v` at (`i`, `j`), `j` ≤ `i` and within the band.
+    pub fn add(mut self, i: u32, j: u32, v: f64) {
+        let at = (i + 1) * self.band + j
+        self.cells[at] += v
+    }
+
+    /// Adds `w` times the lower half of the outer product of a sparse row with itself: for each
+    /// of its entries (unknown, weight), in rising order of unknowns, `w` times its weight times
+    /// each entry's up to it.
+    pub fn add_outer(mut self, row: [(u32, f64)], w: f64) {
+        for e in 0..row.len() {
+            let (u, wu) = row[e]
+            let at = (u + 1) * self.band
+            let scaled = w * wu
+            for f in 0..e + 1 {
+                let (v, wv) = row[f]
+                self.cells[at + v] += scaled * wv
+            }
+        }
+    }
+
+    /// The entry at (`i`, `j`), `j` ≤ `i` and within the band: row i's from column i − band
+    /// sit at (i + 1) band onward.
+    pub fn at(self, i: u32, j: u32) -> f64 {
+        self.cells[(i + 1) * self.band + j]
+    }
+
+    /// The `x` with M x = `b` (M positive definite).
+    pub fn solve(take self, b: take Vec<f64>) -> Vec<f64> {
+        let n = self.n
+        let band = self.band
+        var c = take self.cells
+        var x = take b
+        // M = L Lᵀ, L in place of M's lower half.
+        for i in 0..n {
+            let ri = (i + 1) * band
+            let lo = if i > band { i - band } else { 0 }
+            for j in lo..i + 1 {
+                let rj = (j + 1) * band
+                var sum = c[ri + j]
+                let from = max(lo, if j > band { j - band } else { 0 })
+                for k in from..j {
+                    sum -= c[ri + k] * c[rj + k]
+                }
+                c[ri + j] = if i == j { sqrt(max(sum, 1e-300)) } else { sum / c[rj + j] }
+            }
+        }
+        for i in 0..n {
+            let ri = (i + 1) * band
+            var s = -0.0
+            for k in (if i > band { i - band } else { 0 })..i {
+                s += c[ri + k] * x[k]
+            }
+            x[i] = (x[i] - s) / c[ri + i]
+        }
+        var i = n
+        while i > 0 {
+            i -= 1
+            var s = -0.0
+            for k in i + 1..min(i + band + 1, n) {
+                s += c[(k + 1) * band + i] * x[k]
+            }
+            x[i] = (x[i] - s) / c[(i + 1) * band + i]
+        }
+        x
+    }
+}
+
+/// The `x` that minimizes |B x − y|² + `ridge` |x'|² (B's rows `basis`, each `n` long; x' all of
+/// x but its first), by its normal equations and Gaussian elimination with partial pivoting: a
+/// whisker of ridge keeps a control nothing samples at 0 rather than undefined.
+pub fn least_squares(basis: [Vec<f64>], y: [f64], ridge: f64) -> Vec<f64> {
+    let n = basis[0].len()
+    let w = n + 1
+    var m: Vec<f64> = Vec::filled(n * w, 0.0)
+    for r in 0..basis.len() {
+        borrow row = basis[r]
+        let yi = y[r]
+        for p in 0..n {
+            if row[p] == 0.0 {
+                continue
+            }
+            for q in 0..n {
+                m[p * w + q] += row[p] * row[q]
+            }
+            m[p * w + n] += row[p] * yi
+        }
+    }
+    for p in 0..n {
+        m[p * w + p] += if p == 0 { 1e-9 } else { max(ridge, 1e-9) }
+    }
+    for col in 0..n {
+        // The last of the largest, as Rust's `max_by`.
+        var pivot = col
+        for r in col + 1..n {
+            if abs(m[r * w + col]) >= abs(m[pivot * w + col]) {
+                pivot = r
+            }
+        }
+        if pivot != col {
+            for k in 0..w {
+                let t = m[col * w + k]
+                m[col * w + k] = m[pivot * w + k]
+                m[pivot * w + k] = t
+            }
+        }
+        for r in col + 1..n {
+            let f = m[r * w + col] / m[col * w + col]
+            if f != 0.0 {
+                for k in col..w {
+                    m[r * w + k] -= f * m[col * w + k]
+                }
+            }
+        }
+    }
+    var x: Vec<f64> = Vec::filled(n, 0.0)
+    var r = n
+    while r > 0 {
+        r -= 1
+        var s = -0.0
+        for c in r + 1..n {
+            s += m[r * w + c] * x[c]
+        }
+        x[r] = (m[r * w + n] - s) / m[r * w + r]
+    }
+    x
+}
+
+/// The four weights of uniform Catmull–Rom control values `f` of the way from the second to the
+/// third.
+pub fn catmull_rom(f: f64) -> [f64; 4] {
+    let f2 = f * f
+    let f3 = f * f * f
+    [
+        -0.5 * f3 + f2 - 0.5 * f,
+        1.5 * f3 - 2.5 * f2 + 1.0,
+        -1.5 * f3 + 2.0 * f2 + 0.5 * f,
+        0.5 * f3 - 0.5 * f2,
+    ]
+}
+
+/// The weights of `controls` uniform Catmull–Rom control values at `t` in [0, 1]. Past the first
+/// and last, a control is extrapolated (2 p₀ − p₁), so a straight line is reproduced exactly, to
+/// its ends.
+pub fn catmull_rom_weights(t: f64, controls: u32) -> Vec<f64> {
+    let x = t * f64(controls - 1)
+    let m = min(u32(floor(x)), controls - 2)
+    let f = x - f64(m)
+    let w = catmull_rom(f)
+    var out: Vec<f64> = Vec::filled(controls, 0.0)
+    let last = controls - 1
+    for d in 0..4 {
+        let wd = w[d]
+        let i = i64(m) + i64(d) - 1
+        if i == -1 {
+            out[0] += 2.0 * wd
+            out[1] -= wd
+        } else if i > i64(last) {
+            out[last] += 2.0 * wd
+            out[last - 1] -= wd
+        } else {
+            out[u32(i)] += wd
+        }
+    }
+    out
+}
+
+/// The Fourier series' terms at `theta`, to `k` harmonics: 1, then cos hθ and sin hθ for each.
+pub fn fourier(theta: f64, k: u32) -> Vec<f64> {
+    var t: Vec<f64> = Vec::with_capacity(2 * k + 1)
+    t.push(1.0)
+    for h in 1..k + 1 {
+        t.push(math::cos(f64(h) * theta))
+        t.push(math::sin(f64(h) * theta))
+    }
+    t
+}
+
+@test
+fn catmull_rom_weights_sum_to_1_and_pass_through_their_controls() {
+    for t in [0.0, 0.13, 0.5, 0.77, 1.0] {
+        var sum = 0.0
+        for w in catmull_rom_weights(t, 5) {
+            sum += w
+        }
+        assert(abs(sum - 1.0) < 1e-12)
+    }
+    let mid = catmull_rom_weights(0.5, 5)
+    assert(mid[0] == 0.0 && mid[1] == 0.0 && mid[2] == 1.0 && mid[3] == 0.0 && mid[4] == 0.0)
+    // A line, to its ends.
+    for t in [0.0, 0.05, 0.3, 0.95, 1.0] {
+        let w = catmull_rom_weights(t, 3)
+        let y = w[0] * 1.0 + w[1] * 3.0 + w[2] * 5.0
+        assert(abs(y - (1.0 + 4.0 * t)) < 1e-12, f"{t}: {y}")
+    }
+}
+
+@test
+fn least_squares_recovers_an_exact_fit() {
+    var basis: Vec<Vec<f64>> = Vec::new()
+    var y: Vec<f64> = Vec::new()
+    for i in 0..6 {
+        let x = f64(i)
+        basis.push(Vec::from([1.0, x, x * x]))
+        y.push(2.0 - 0.5 * x + 0.25 * x * x)
+    }
+    let x = least_squares(basis, y, ridge: 1e-12)
+    let want = [2.0, -0.5, 0.25]
+    for k in 0..3 {
+        assert(abs(x[k] - want[k]) < 1e-6, f"{x[k]}")
+    }
+}
+
+@test
+fn a_banded_solve_matches_a_dense_one() {
+    // A tridiagonal matrix (2 on the diagonal, -1 beside it) times (1, 2, 3, 4).
+    var m = Banded::new(4, band: 1)
+    for i in 0..4 {
+        m.add(i, i, 2.0)
+        if i > 0 {
+            m.add(i, i - 1, -1.0)
+        }
+    }
+    let x = take m.solve(Vec::from([0.0, 0.0, 0.0, 5.0]))
+    let want = [1.0, 2.0, 3.0, 4.0]
+    for k in 0..4 {
+        assert(abs(x[k] - want[k]) < 1e-12, f"{x[k]}")
+    }
+}

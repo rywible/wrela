@@ -1,0 +1,174 @@
+// What a reference is: a sculpt (a mesh, with where it comes from, its licence and how it maps
+// to a creature's frame), a photo (where it comes from, its licence and, for a side view, how
+// its pixels map to the creature's side view), and the parts of a replica of a sculpt, for
+// `wrela tool reference` (studio/reference).
+//
+// A creature's frame is +y up, the animal facing +z, +x its left, in metres.
+
+/// A mesh's file axis, maybe negated: what one of the creature's frame axes is.
+pub enum Axis: Copy + Eq {
+    X,
+    Y,
+    Z,
+    MinusX,
+    MinusY,
+    MinusZ,
+}
+
+impl Axis {
+    /// The file axis, 0 to 2 for x to z.
+    pub fn index(self) -> u32 {
+        match self {
+            Axis::X => 0,
+            Axis::MinusX => 0,
+            Axis::Y => 1,
+            Axis::MinusY => 1,
+            Axis::Z => 2,
+            Axis::MinusZ => 2,
+        }
+    }
+
+    /// 1, or -1 for a negated axis.
+    pub fn sign(self) -> f64 {
+        match self {
+            Axis::X => 1.0,
+            Axis::Y => 1.0,
+            Axis::Z => 1.0,
+            _ => -1.0,
+        }
+    }
+}
+
+/// How a mesh's coordinates map to a creature's frame: each frame axis is a file axis, maybe
+/// negated (`axes`, for x, y and z), after moving `origin` (in the file's coordinates) to the
+/// frame's origin, times `metres_per_unit`.
+pub struct Registration: Copy {
+    pub axes: [Axis; 3] = [Axis::X, Axis::Y, Axis::Z],
+    pub origin: vec3d = vec3d(0.0),
+    pub metres_per_unit: f64 = 1.0,
+}
+
+/// A reference mesh for authoring: where it comes from, its licence, how it maps to a
+/// creature's frame, and the mesh itself (an OBJ, or a binary STL, by its file's extension).
+pub struct Sculpt: Copy {
+    pub title: Text,
+    pub author: Text,
+    pub author_url: Text = "",
+    pub source: Text = "",
+    pub original: Text = "",
+    pub original_name: Text = "",
+    pub published: Text = "",
+    pub licence: Text,
+    pub licence_url: Text = "",
+    /// The credit a work adapted from it carries ("" for `"<title>" by <author>, <licence>`).
+    pub attribution: Text = "",
+    pub changes: Text = "",
+    pub sha256: Text = "",
+    /// When what the licence rests on was checked.
+    pub checked: Text = "",
+    pub pose: Text = "",
+    pub registration: Registration = Registration {},
+    /// The mesh's file name, beside this module.
+    pub mesh: Text,
+    /// The mesh's bytes.
+    pub bytes: Bytes,
+}
+
+/// The way an animal faces in a side view.
+pub enum Facing: Copy + Eq {
+    Right,
+    Left,
+}
+
+/// How a side photo maps to a creature's side view (z, y): the ground's row, metres a pixel,
+/// the column at z = 0, and the way the animal faces.
+pub struct SideRegistration: Copy {
+    pub ground_px: f64,
+    pub metres_per_px: f64,
+    pub z0_px: f64,
+    pub faces: Facing = Facing::Right,
+}
+
+/// A reference photo for authoring: its file, where it comes from and its licence, and for a
+/// side view, how it maps to a creature's side view.
+pub struct Photo: Copy {
+    /// The photo's file name, beside this module.
+    pub file: Text,
+    pub title: Text,
+    pub author: Text,
+    pub credit: Text,
+    pub source: Text,
+    pub original: Text,
+    /// The original's width and height, in pixels.
+    pub original_size: vec2u,
+    pub licence: Text,
+    /// What was taken from the original.
+    pub taken: Text,
+    pub view: Text,
+    pub registration: Option<SideRegistration> = None,
+}
+
+/// A named point in a creature's frame, metres.
+pub struct Landmark: Copy {
+    pub name: Text,
+    pub at: vec3d,
+}
+
+/// Where an axis's end is: a landmark, or a point.
+pub enum Point: Copy {
+    At(Landmark),
+    Xyz(vec3d),
+}
+
+/// How a part joins the others: hard, or by a smooth seam this wide, in metres.
+pub enum Seam: Copy {
+    Hard,
+    Smooth(f64),
+}
+
+/// A part of a replica: its name (also its bone's), its axis (`from` to `to`), and how it's
+/// measured. A setting it doesn't give (`None`) is its parts' (`Parts`).
+pub struct Part: Clone {
+    pub name: Text,
+    pub from: Point,
+    pub to: Point,
+    /// Angle 0's direction (`None`: +y, or +z for an axis near +y).
+    pub up: Option<vec3d> = None,
+    /// The part whose bone is its bone's parent ("" for the root, the first part).
+    pub parent: Text = "",
+    /// Between stations, at most (m).
+    pub spacing: Option<f64> = None,
+    /// Radii per station.
+    pub angles: Option<u32> = None,
+    /// The longest radius (m): a ray that runs on is held there.
+    pub r_max: Option<f64> = None,
+    pub seam: Option<Seam> = None,
+    /// How far the axis runs on past each end (m), then is trimmed.
+    pub overlap: Option<f64> = None,
+    /// How far it sinks toward a cap inside another part (m).
+    pub taper: Option<f64> = None,
+    /// A sweep's control sections (0: a loft).
+    pub sections: u32 = 0,
+    /// A sweep's path's points between `from` and `to`.
+    pub through: Vec<Point> = Vec::new(),
+    /// A sweep's bumps on each section.
+    pub bumps: u32 = 4,
+    /// A sweep's domes, how far past each end (m).
+    pub ends: vec2d = vec2d(0.0),
+}
+
+/// The parts of a replica of a sculpt, in order, with their landmarks and the settings a part
+/// takes unless it gives its own.
+pub struct Parts: Clone {
+    /// Its name, as `wrela tool reference` takes it.
+    pub name: Text,
+    pub sculpt: Sculpt,
+    pub spacing: f64 = 0.01,
+    pub angles: u32 = 48,
+    pub r_max: f64 = 1.0,
+    pub seam: Seam = Seam::Hard,
+    pub overlap: f64 = 0.02,
+    pub taper: f64 = 0.0,
+    pub landmarks: Vec<Landmark>,
+    pub parts: Vec<Part>,
+}

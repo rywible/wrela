@@ -1,0 +1,7 @@
+# The reference tool (`wrela tool reference`): replicas of reference meshes as packages, and how
+# far a package's surface is from its mesh's (main.wrela says how).
+[package]
+name = "reference_tool"
+
+[dependencies]
+references = { workspace = true }

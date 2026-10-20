@@ -1,0 +1,33 @@
+// The references by name: each replica's parts, as `wrela tool reference` takes them, and each
+// photo, by its path in this package.
+
+use manifest::{Parts, Photo}
+
+/// The names of the parts of each replica.
+pub const PARTS: [Text; 2] = ["wolf/lofts", "wolf/sweeps"]
+
+/// The parts named `name` (one of `PARTS`).
+pub fn parts(name: str) -> Option<Parts> {
+    if name == "wolf/lofts" {
+        return Some(wolf::LOFTS.clone())
+    }
+    if name == "wolf/sweeps" {
+        return Some(wolf::SWEEPS.clone())
+    }
+    None
+}
+
+/// The photo at `path` in this package (`wolf/side-standing.jpg`).
+pub fn photo(path: str) -> Option<Photo> {
+    for p in wolf::PHOTOS {
+        if path.starts_with("wolf/") && path.slice(5, path.len()) == p.file {
+            return Some(p)
+        }
+    }
+    for p in grazer::PHOTOS {
+        if path.starts_with("grazer/") && path.slice(7, path.len()) == p.file {
+            return Some(p)
+        }
+    }
+    None
+}

@@ -1,0 +1,48 @@
+// The grazer's references: three photos of bison, public domain.
+
+use manifest::Photo
+
+/// A bull bison from the front, in snow.
+pub const BISON_FRONT_SNOW: Photo = Photo {
+    file: "bison-front-snow.jpg",
+    title: "Lone bull bison in the road during a snow storm (26675703407).jpg",
+    author: "Yellowstone National Park",
+    credit: "Lone bull bison in the road during a snow storm",
+    source: "https://commons.wikimedia.org/wiki/File:Lone_bull_bison_in_the_road_during_a_snow_storm_(26675703407).jpg",
+    original: "https://upload.wikimedia.org/wikipedia/commons/1/13/Lone_bull_bison_in_the_road_during_a_snow_storm_%2826675703407%29.jpg",
+    original_size: vec2u(8688, 5792),
+    licence: "Public domain: a work of the US federal government",
+    taken: "the 1280 by 853 rendition Wikimedia Commons serves, unchanged",
+    view: "front",
+}
+
+/// A bull bison walking, from the front.
+pub const BISON_FRONT_WALKING: Photo = Photo {
+    file: "bison-front-walking.jpg",
+    title: "Bull bison walks in the road near Midway Geyser Basin (49598054537).jpg",
+    author: "Yellowstone National Park",
+    credit: "Bull bison walks in the road near Midway Geyser Basin",
+    source: "https://commons.wikimedia.org/wiki/File:Bull_bison_walks_in_the_road_near_Midway_Geyser_Basin_(49598054537).jpg",
+    original: "https://upload.wikimedia.org/wikipedia/commons/a/a8/Bull_bison_walks_in_the_road_near_Midway_Geyser_Basin_%2849598054537%29.jpg",
+    original_size: vec2u(4000, 6000),
+    licence: "Public domain: a work of the US federal government",
+    taken: "the 1280 by 1920 rendition Wikimedia Commons serves, unchanged",
+    view: "front",
+}
+
+/// A bison from three-quarters.
+pub const BISON_THREE_QUARTER: Photo = Photo {
+    file: "bison-three-quarter.jpg",
+    title: "American bison k5680-1.jpg",
+    author: "Jack Dykinga",
+    credit: "This image was released by the Agricultural Research Service, the research agency of the United States Department of Agriculture, with the ID K5680-1 (next).",
+    source: "https://commons.wikimedia.org/wiki/File:American_bison_k5680-1.jpg",
+    original: "https://upload.wikimedia.org/wikipedia/commons/8/8d/American_bison_k5680-1.jpg",
+    original_size: vec2u(2700, 1761),
+    licence: "Public domain: a work of the US federal government",
+    taken: "the 1280 by 835 rendition Wikimedia Commons serves, unchanged",
+    view: "three-quarter",
+}
+
+/// The photos.
+pub const PHOTOS: [Photo; 3] = [BISON_FRONT_SNOW, BISON_FRONT_WALKING, BISON_THREE_QUARTER]
