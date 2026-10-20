@@ -1,0 +1,7 @@
+# The streamed wood's selection (engine/wood.wrela's `Chosen`) on the hardware GPU: through
+# list changes, it dispatches only the current lists, keeps its room and retained buffers, and
+# selects every instance it should. The tool test writes the production module, with a small
+# fixture, into a package of its own, builds it, drives its frames recording their commands, and
+# reads the lists' buffers back.
+[package]
+name = "wood_selection"

@@ -1,0 +1,11 @@
+# The herd's grazers realized by the engine (examples/herd, `engine::realize`) on the hardware
+# GPU: a realization spread over frames in slices is the whole one's, and one past WebGPU's
+# 65,535 workgroups along x is whole. The tool tests build the package through
+# `std::tool::toolchain`, call its exports and read its mesh's buffers back through
+# `std::tool::drive`.
+[package]
+name = "herd_realize"
+
+[dependencies]
+engine = { workspace = true }
+herd = { workspace = true }

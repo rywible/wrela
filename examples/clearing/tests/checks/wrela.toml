@@ -1,0 +1,7 @@
+# The clearing's checks (#51, the clearing specified in #28) of what examples/clearing draws
+# and how: its source and WGSL (the call graph, through `wrela query`'s queries, and the
+# pipelines its build holds), the wind, its static shadows' draws (counted in its recorded
+# commands), and frames with the camera inside a crown. The tool tests build the clearing as a
+# test build (its `test_*` exports) through `std::tool::toolchain` and drive it on the CPU.
+[package]
+name = "clearing_checks"

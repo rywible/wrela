@@ -1,0 +1,389 @@
+// The tool tests: each builds this package (a normal build), loads it on the machine's hardware
+// GPU (never a software renderer), calls its exports, and reads the mesh they realized back from
+// the program's newest eight buffers: the vertices' count and items, the quads' count and items,
+// the draw's and the skin pass's arguments, the holes and the tally. A mesh is compared by its
+// counts and its triangles, each as its corners' bits from its lowest corner on (so the
+// vertices' order in the buffer, which slices change, doesn't matter, but the winding does),
+// sorted.
+
+use std::collections::{Box, Vec}
+use std::io::print
+use std::job::Step
+use std::string::String
+use std::tool::answer
+use std::tool::blob
+use std::tool::blob::Data
+use std::tool::drive
+use std::tool::drive::Scalar
+use std::tool::toolchain
+
+/// The most bytes a blob read gives at once.
+const CHUNK: u64 = 524288
+
+/// A mesh's buffers, in the order `Mesh::new` makes them.
+const MESH_BUFFERS: u32 = 8
+
+/// The draw's arguments and the tally, among the mesh's buffers.
+const PARTS: [u32; 2] = [4, 7]
+
+/// The cells the grazer is realized at, the slices it's spread over, and the slab's.
+const CELLS: [f32; 2] = [0.03, 0.015]
+const SLICES: [u32; 3] = [1, 5, 40]
+const SLAB_SLICES: [u32; 2] = [0, 2]
+
+/// The bytes of a vertex in the vertices' buffer; its position is its first three floats.
+const VERTEX_BYTES: u32 = 48
+
+/// A triangle: its corners' bits, from its lowest corner on.
+struct Tri: Copy {
+    k: [u32; 9],
+}
+
+/// Whether `a` sorts before `b`, word by word.
+fn before(a: Tri, b: Tri) -> bool {
+    for i in 0..9 {
+        if a.k[i] != b.k[i] {
+            return a.k[i] < b.k[i]
+        }
+    }
+    false
+}
+
+/// A realized mesh: its live blocks, triangles, holes and flags, and its triangles, sorted.
+struct Ours {
+    live: u32,
+    tris: u32,
+    holes: u32,
+    flags: u32,
+    sorted: Vec<Tri>,
+}
+
+/// The package, built into `scratch/build`, loaded on the GPU, `init` run.
+@job
+fn opened() -> drive::Build {
+    var b = toolchain::build(
+        "repo/examples/herd/tests/realize",
+        "scratch/build",
+        toolchain::options(),
+    )
+    var built = b.poll()
+    while built.is_none() {
+        yield
+        built = b.poll()
+    }
+    let Some(bp) = take built else { panic("no answer") }
+    let Ok(build) = toolchain::read_built(take bp) else { panic("the build's request") }
+    for d in build.diagnostics {
+        assert(!d.error, d.rendered.as_str())
+    }
+    assert(build.ok, "the package builds")
+    var l = drive::load("scratch/build", drive::gpu())
+    var loaded = l.poll()
+    while loaded.is_none() {
+        yield
+        loaded = l.poll()
+    }
+    let Some(lp) = take loaded else { panic("no answer") }
+    let Ok(it) = drive::read_loaded(take lp) else { panic("the build loads on a hardware GPU") }
+    var i = drive::init(it.build)
+    var inited = i.poll()
+    while inited.is_none() {
+        yield
+        inited = i.poll()
+    }
+    let Some(ip) = take inited else { panic("no answer") }
+    let Ok(init) = drive::read_ran(take ip) else { panic("init's request") }
+    if let Some(trap) = init.trap {
+        panic(trap.message.as_str())
+    }
+    it.build
+}
+
+/// The first `most` bytes (all, for 0) of buffer `handle`, read back.
+@job
+fn bytes_of(h: take drive::Build, handle: take u32, most: take u64) -> Vec<u8> {
+    var r = drive::read_buffer(h, handle)
+    var got = r.poll()
+    while got.is_none() {
+        yield
+        got = r.poll()
+    }
+    let Some(rp) = take got else { panic("no answer") }
+    let Ok(data) = drive::read_bytes(take rp) else { panic(f"buffer {handle}'s bytes") }
+    var out: Vec<u8> = Vec::new()
+    match take data {
+        Data::Bytes(v) => {
+            let n = if most == 0 { v.len() } else { min(v.len(), u32(most)) }
+            for j in 0..n {
+                out.push(v[j])
+            }
+        },
+        Data::Blob(held) => {
+            var c = blob::len(held)
+            var counted = c.poll()
+            while counted.is_none() {
+                yield
+                counted = c.poll()
+            }
+            let Some(cp) = take counted else { panic("no answer") }
+            let Ok(size) = blob::read_len(take cp) else { panic("the blob's length") }
+            let want = if most == 0 { size } else { min(size, most) }
+            var at: u64 = 0
+            while at < want {
+                let len = u32(min(want - at, CHUNK))
+                var p = blob::read(held, at, len)
+                var read = p.poll()
+                while read.is_none() {
+                    yield
+                    read = p.poll()
+                }
+                let Some(pp) = take read else { panic("no answer") }
+                let Ok(chunk) = answer(take pp) else { panic("the blob's bytes") }
+                for j in 0..chunk.len() {
+                    out.push(chunk[j])
+                }
+                at += u64(len)
+            }
+            var gone = blob::release(held)
+            while gone.poll().is_none() {
+                yield
+            }
+        },
+    }
+    out
+}
+
+/// Word `i` of `bytes`, little-endian.
+fn word(bytes: [u8], i: u32) -> u32 {
+    let at = 4 * i
+    u32(bytes[at]) |
+        (u32(bytes[at + 1]) << 8) |
+        (u32(bytes[at + 2]) << 16) |
+        (u32(bytes[at + 3]) << 24)
+}
+
+/// The export `name` called with `args`, which must not trap; then the mesh it realized, from
+/// the newest eight buffers.
+@job
+fn realized(h: take drive::Build, name: take String, args: take Vec<Scalar>) -> Ours {
+    var c = drive::call(h, name.as_str(), args)
+    var called = c.poll()
+    while called.is_none() {
+        yield
+        called = c.poll()
+    }
+    let Some(cp) = take called else { panic("no answer") }
+    let Ok(ran) = drive::read_ran(take cp) else { panic(f"{name.as_str()}'s request") }
+    if let Some(trap) = ran.trap {
+        panic(f"{name.as_str()}: {trap.message.as_str()}")
+    }
+    var l = drive::buffers(h)
+    var listed = l.poll()
+    while listed.is_none() {
+        yield
+        listed = l.poll()
+    }
+    let Some(lp) = take listed else { panic("no answer") }
+    let Ok(held) = drive::read_buffers(take lp) else { panic("the buffers") }
+    assert(held.len() >= MESH_BUFFERS, "the mesh's buffers")
+    let first = held.len() - MESH_BUFFERS
+    var parts: Vec<Vec<u8>> = Vec::new()
+    // The draw's arguments and the tally first: they say how much of the others to read.
+    for j in 0..2 {
+        let k = PARTS[j]
+        var r = Box::new(bytes_of.start(h, held[first + k], 0))
+        loop {
+            match r.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(v) => {
+                    parts.push(take v)
+                    break
+                },
+            }
+        }
+    }
+    let draw = word(parts[0], 0)
+    let (nv, holes, flags, live) = (
+        word(parts[1], 0),
+        word(parts[1], 1),
+        word(parts[1], 2),
+        word(parts[1], 5),
+    )
+    var v = Box::new(bytes_of.start(h, held[first + 1], u64(nv) * u64(VERTEX_BYTES)))
+    var verts: Vec<u8> = Vec::new()
+    loop {
+        match v.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(x) => {
+                verts = take x
+                break
+            },
+        }
+    }
+    var q = Box::new(bytes_of.start(h, held[first + 3], u64(draw) * 4))
+    var quads: Vec<u8> = Vec::new()
+    loop {
+        match q.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(x) => {
+                quads = take x
+                break
+            },
+        }
+    }
+    var sorted: Vec<Tri> = Vec::with_capacity(draw / 3)
+    for t in 0..draw / 3 {
+        var corners = [[0; 3]; 3]
+        for k in 0..3 {
+            let index = word(quads, 3 * t + k)
+            assert(index < nv, f"triangle {t} names vertex {index} of {nv}")
+            for c in 0..3 {
+                corners[k][c] = word(verts, index * (VERTEX_BYTES / 4) + c)
+            }
+        }
+        // The lowest corner, the first of equal ones.
+        var low = 0
+        for k in 1..3 {
+            let (a, b) = (corners[k], corners[low])
+            if a[0] < b[0] || (a[0] == b[0] && (a[1] < b[1] || (a[1] == b[1] && a[2] < b[2]))) {
+                low = k
+            }
+        }
+        var key = [0; 9]
+        for k in 0..3 {
+            let corner = corners[(low + k) % 3]
+            for c in 0..3 {
+                key[3 * k + c] = corner[c]
+            }
+        }
+        sorted.push(Tri { k: key })
+    }
+    sorted.sort_by(before)
+    Ours { live, tris: draw / 3, holes, flags, sorted }
+}
+
+/// Whether two meshes' sorted triangles are the same.
+fn same_triangles(a: Ours, b: Ours) -> bool {
+    if a.sorted.len() != b.sorted.len() {
+        return false
+    }
+    for i in 0..a.sorted.len() {
+        if before(a.sorted[i], b.sorted[i]) || before(b.sorted[i], a.sorted[i]) {
+            return false
+        }
+    }
+    true
+}
+
+/// A `Realizer` spreads a level change over frames (`record_vertices` a slice at a time): the
+/// mesh is the one a whole realization makes, triangle for triangle, at 3 and 1.5 cm, in 1, 5
+/// and 40 slices (40: most are past the live blocks' end, and empty).
+@test(tool, read: [("repo", "../../../..")], budget: 600)
+@job
+fn a_realization_in_slices_is_the_whole_ones() {
+    var o = Box::new(opened.start())
+    var h: Option<drive::Build> = None
+    while h.is_none() {
+        match o.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(b) => h = Some(b),
+        }
+    }
+    let Some(b) = h else { panic("opened") }
+    for c in 0..2 {
+        let cell = CELLS[c]
+        var args: Vec<Scalar> = Vec::new()
+        args.push(Scalar::I32(1))
+        args.push(Scalar::F32(cell))
+        var w = Box::new(realized.start(b, String::from("realize"), take args))
+        var whole: Option<Ours> = None
+        while whole.is_none() {
+            match w.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(m) => whole = Some(take m),
+            }
+        }
+        let Some(want) = take whole else { panic("the whole mesh") }
+        assert(want.tris > 1000 && want.holes == 0 && want.flags == 0, f"{cell} m: whole")
+        for n in 0..3 {
+            let slices = SLICES[n]
+            var sargs: Vec<Scalar> = Vec::new()
+            sargs.push(Scalar::I32(1))
+            sargs.push(Scalar::F32(cell))
+            sargs.push(Scalar::I32(i32(slices)))
+            var s = Box::new(realized.start(b, String::from("realize_sliced"), take sargs))
+            var got: Option<Ours> = None
+            while got.is_none() {
+                match s.get_mut().resume() {
+                    Step::Yielded => yield,
+                    Step::Done(m) => got = Some(take m),
+                }
+            }
+            let Some(sliced) = take got else { panic("the sliced mesh") }
+            assert(
+                sliced.live == want.live &&
+                    sliced.tris == want.tris &&
+                    sliced.holes == want.holes &&
+                    sliced.flags == want.flags,
+                f"{cell} m in {slices} slices: {sliced.live} live, {sliced.tris} triangles, {sliced.holes} holes, {sliced.flags} flags; whole {want.live}, {want.tris}, {want.holes}, {want.flags}",
+            )
+            assert(
+                same_triangles(sliced, want),
+                f"{cell} m in {slices} slices: the triangles differ",
+            )
+        }
+        print(f"{cell} m: {want.tris} triangles, the same in 1, 5 and 40 slices")
+    }
+}
+
+/// More live blocks than WebGPU dispatches workgroups along x (65,535): the slab, 750 × 750 × 3
+/// cells, about 70,000 live blocks. Its passes go in chunks, so its mesh is whole: a quad for
+/// each lattice edge its faces cross (2 × 750² + 4 × 750 × 3), no holes, and the same triangles
+/// in 2 slices (the second past 65,535 blocks on its own). It can't be smaller.
+@test(tool, read: [("repo", "../../../..")], budget: 600, blobs: "512M,64")
+@job
+fn a_realization_past_65535_live_blocks_is_whole() {
+    var o = Box::new(opened.start())
+    var h: Option<drive::Build> = None
+    while h.is_none() {
+        match o.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(b) => h = Some(b),
+        }
+    }
+    let Some(b) = h else { panic("opened") }
+    var meshes: Vec<Ours> = Vec::new()
+    for n in 0..2 {
+        let slices = SLAB_SLICES[n]
+        var args: Vec<Scalar> = Vec::new()
+        args.push(Scalar::I32(i32(slices)))
+        var r = Box::new(realized.start(b, String::from("realize_slab"), take args))
+        var done = false
+        while !done {
+            match r.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(m) => {
+                    meshes.push(take m)
+                    done = true
+                },
+            }
+        }
+    }
+    let Some(sliced) = meshes.pop() else { panic("the sliced mesh") }
+    let Some(whole) = meshes.pop() else { panic("the whole mesh") }
+    let quads = 2 * 750 * 750 + 4 * 750 * 3
+    assert(whole.live > 65535, f"only {whole.live} live blocks")
+    assert(
+        whole.tris == 2 * quads && whole.holes == 0 && whole.flags == 0,
+        f"{whole.tris} triangles, {whole.holes} holes, {whole.flags} flags",
+    )
+    assert(
+        sliced.live == whole.live &&
+            sliced.tris == whole.tris &&
+            sliced.holes == whole.holes &&
+            sliced.flags == whole.flags,
+        "the counts differ in 2 slices",
+    )
+    assert(same_triangles(sliced, whole), "the triangles differ in 2 slices")
+    print(f"{whole.live} live blocks, {whole.tris} triangles")
+}
