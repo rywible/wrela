@@ -1,0 +1,11 @@
+# engine::sound's mixer with every source sounding: the same samples every time, in both
+# hosts, as when the mixer was made. The package's tool tests build it through
+# `std::tool::toolchain`, render its voice offline through `std::tool::drive`, and in Chrome's
+# AudioWorklet through the browser runtime's test mode. The audio tool times its quanta
+# (`wrela tool audio -- engine/tests/mixer speed`).
+[package]
+name = "mixer"
+
+[dependencies]
+engine = { workspace = true }
+hosts = { workspace = true }

@@ -1,0 +1,233 @@
+// The tool tests: the package built (as it ships) through the toolchain, and its voice's first
+// second rendered offline: on the native host's CPU (one thread, after a frame starts it), each
+// time from a new load, and in Chrome's AudioWorklet (the browser runtime's test mode renders it
+// and writes `results/audio.f32`).
+
+use hosts::both::{bytes_of, file_bytes, in_chrome}
+use std::collections::{Box, Vec}
+use std::io::print
+use std::job::Step
+use std::math::log10_f64
+use std::string::String
+use std::tool::drive
+use std::tool::toolchain
+
+/// A second at 48 kHz, in quanta of 128 samples.
+const MIXED: u32 = 375
+
+/// The second's FNV-1a 64 of its samples' bytes when the mixer was made: it changes only when the
+/// mixer's sound does.
+const MIXED_HASH: Text = "791d08e6bc49c2d7"
+
+/// The package built into `scratch/mixer`.
+@job
+fn built() -> bool {
+    var b = toolchain::build("repo/engine/tests/mixer", "scratch/mixer", toolchain::options())
+    var got = b.poll()
+    while got.is_none() {
+        yield
+        got = b.poll()
+    }
+    let Some(bp) = take got else { panic("no answer") }
+    let Ok(build) = toolchain::read_built(take bp) else { panic("the build's request") }
+    for d in build.diagnostics {
+        assert(!d.error, d.rendered.as_str())
+    }
+    assert(build.ok, "the mixer builds")
+    true
+}
+
+/// The mixer's second from the native host: `f32`s, little-endian, left and right interleaved.
+@job
+fn mixed() -> Vec<u8> {
+    var load = drive::cpu()
+    load.workers = 1
+    load.width = 16
+    load.height = 16
+    var l = drive::load("scratch/mixer", load)
+    var loaded = l.poll()
+    while loaded.is_none() {
+        yield
+        loaded = l.poll()
+    }
+    let Some(lp) = take loaded else { panic("no answer") }
+    let Ok(it) = drive::read_loaded(take lp) else { panic("the mixer loads") }
+    let h = it.build
+    var i = drive::init(h)
+    var inited = i.poll()
+    while inited.is_none() {
+        yield
+        inited = i.poll()
+    }
+    let Some(ip) = take inited else { panic("no answer") }
+    let Ok(init) = drive::read_ran(take ip) else { panic("init's request") }
+    assert(init.trap.is_none(), "init runs")
+    var f = drive::frame_at(h, 0.0)
+    var framed = f.poll()
+    while framed.is_none() {
+        yield
+        framed = f.poll()
+    }
+    let Some(fp) = take framed else { panic("no answer") }
+    let Ok(ran) = drive::read_ran(take fp) else { panic("the frame's request") }
+    assert(ran.trap.is_none(), "the frame starts the voice")
+    var a = drive::audio(h, MIXED)
+    var rendered = a.poll()
+    while rendered.is_none() {
+        yield
+        rendered = a.poll()
+    }
+    let Some(ap) = take rendered else { panic("no answer") }
+    let Ok(audio) = drive::read_audio(take ap) else { panic("the voice renders") }
+    var s = Box::new(bytes_of.start(take audio.samples))
+    var out: Vec<u8> = Vec::new()
+    loop {
+        match s.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(v) => {
+                out = take v
+                break
+            },
+        }
+    }
+    var c = drive::close(h)
+    while c.poll().is_none() {
+        yield
+    }
+    out
+}
+
+/// Sample `i` of `bytes`, little-endian `f32`s.
+fn sample(bytes: [u8], i: u32) -> f32 {
+    let at = 4 * i
+    bitcast_f32(
+        u32(bytes[at]) |
+            (u32(bytes[at + 1]) << 8) |
+            (u32(bytes[at + 2]) << 16) |
+            (u32(bytes[at + 3]) << 24),
+    )
+}
+
+/// FNV-1a 64 of `bytes`, as 16 hex digits (the hosts' state hash's).
+fn fnv(bytes: [u8]) -> String {
+    var h: u64 = 0xcbf29ce484222325
+    for b in bytes {
+        h = (h ^ u64(b)).wrapping_mul(0x100000001b3)
+    }
+    String::from(f"{h:016x}")
+}
+
+/// Whether two byte strings are the same; the first index where they differ, if not.
+fn first_difference(a: [u8], b: [u8]) -> Option<u32> {
+    if a.len() != b.len() {
+        return Some(min(a.len(), b.len()))
+    }
+    for i in 0..a.len() {
+        if a[i] != b[i] {
+            return Some(i)
+        }
+    }
+    None
+}
+
+/// The mixer's second: in [-1, 1], louder to the left than the right (the sources are placed
+/// round the listener, not ahead), the same when rendered again, and hashing as it did when the
+/// mixer was made.
+@test(tool, read: [("repo", "../../..")], budget: 300)
+@job
+fn the_mixer_mixes_the_same_samples_every_time() {
+    var b = Box::new(built.start())
+    loop {
+        match b.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    var runs: Vec<Vec<u8>> = Vec::new()
+    for _ in 0..2 {
+        var m = Box::new(mixed.start())
+        loop {
+            match m.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(v) => {
+                    runs.push(take v)
+                    break
+                },
+            }
+        }
+    }
+    let samples = runs[0].clone()
+    let n = samples.len() / 4
+    assert(n == MIXED * 128 * 2, f"{n} samples")
+    var peak = 0.0
+    var left = 0.0
+    var right = 0.0
+    for i in 0..n {
+        let x = sample(samples, i)
+        peak = max(peak, abs(x))
+        let e = f64(x) * f64(x)
+        if i % 2 == 0 {
+            left += e
+        } else {
+            right += e
+        }
+    }
+    assert(peak > 0.01 && peak < 1.0, f"peak {peak}")
+    assert(abs(log10_f64(left / right)) > 0.05, "no side louder")
+    assert(first_difference(runs[1], samples).is_none(), "rendered again, the samples differ")
+    let hash = fnv(samples)
+    assert(hash.as_str() == MIXED_HASH, f"the mixer's sound changed: {hash.as_str()}")
+}
+
+/// Chrome's AudioWorklet, rendering the mixer offline, gives the native host's samples, bit for
+/// bit.
+@test(tool, read: [("repo", "../../..")], browser: true, budget: 300)
+@job
+fn both_hosts_mix_the_same_samples() {
+    var b = Box::new(built.start())
+    loop {
+        match b.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    var m = Box::new(mixed.start())
+    var want: Vec<u8> = Vec::new()
+    loop {
+        match m.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(v) => {
+                want = take v
+                break
+            },
+        }
+    }
+    var c = Box::new(
+        in_chrome.start(
+            String::from("scratch/mixer"),
+            String::from(f"#test&frames=2&width=16&height=16&fps=60&workers=1&audio={MIXED}"),
+        ),
+    )
+    loop {
+        match c.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    var r = Box::new(file_bytes.start(String::from("scratch/mixer/results/audio.f32")))
+    var chrome: Vec<u8> = Vec::new()
+    loop {
+        match r.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(v) => {
+                chrome = take v
+                break
+            },
+        }
+    }
+    assert(chrome.len() == want.len(), f"{chrome.len()} bytes of samples, not {want.len()}")
+    if let Some(i) = first_difference(chrome, want) {
+        panic(f"the samples differ from sample {i / 4}")
+    }
+    print("Chrome's samples are the native host's")
+}

@@ -66,7 +66,7 @@ pub fn bytes_of(data: take Data) -> Vec<u8> {
 
 /// The bytes of the file at `path`.
 @job
-fn file_bytes(path: take String) -> Vec<u8> {
+pub fn file_bytes(path: take String) -> Vec<u8> {
     var r = files::read_blob(path.as_str())
     var got = r.poll()
     while got.is_none() {
@@ -96,6 +96,59 @@ fn trimmed(bytes: take Vec<u8>) -> String {
         b -= 1
     }
     String::from(text.as_str().slice(a, b))
+}
+
+/// The build in `out` (a write root's directory: its page writes its results there) run in
+/// headless Chrome's test mode with the URL fragment `fragment` (`#test&frames=...`), to its end,
+/// which must be `ok`: its results are in `out/results/`.
+@job
+pub fn in_chrome(out: take String, fragment: take String) -> bool {
+    var s = serve::start(out.as_str())
+    var started = s.poll()
+    while started.is_none() {
+        yield
+        started = s.poll()
+    }
+    let Some(sp) = take started else { panic("no answer") }
+    let Ok(srv) = serve::read_started(take sp) else { panic("the page's server starts") }
+    let url = f"{srv.origin.as_str()}/{fragment.as_str()}"
+    var o = browser::open(url.as_str())
+    var opened = o.poll()
+    while opened.is_none() {
+        yield
+        opened = o.poll()
+    }
+    let Some(op) = take opened else { panic("no answer") }
+    let Ok(page) = browser::read_opened(take op) else { panic("Chrome opens the page") }
+    var r = browser::run(page, Script::new().wait(Until::done(), timeout: 120.0), 150.0)
+    var ran = r.poll()
+    while ran.is_none() {
+        yield
+        ran = r.poll()
+    }
+    let Some(rp) = take ran else { panic("no answer") }
+    if let Err(e) = answer(take rp) {
+        panic(f"the page's run: {e.message()}")
+    }
+    var d = browser::results(page)
+    var done = d.poll()
+    while done.is_none() {
+        yield
+        done = d.poll()
+    }
+    let Some(dp) = take done else { panic("no answer") }
+    let Ok(result) = browser::read_attribute(take dp) else { panic("the page's result") }
+    let Some(said) = result else { panic("the page wrote no result") }
+    assert(said.as_str() == "ok", f"the browser run failed: {said.as_str()}")
+    var shut = browser::close(page)
+    while shut.poll().is_none() {
+        yield
+    }
+    var stop = serve::close(srv.server)
+    while stop.poll().is_none() {
+        yield
+    }
+    true
 }
 
 /// The package at `pkg` (a root path), built into `scratch/<name>` (its page too; a test build,
@@ -190,50 +243,17 @@ pub fn both_hosts(
         yield
     }
     // Chrome: the page served from the build's directory, in test mode.
-    var s = serve::start(out.as_str())
-    var started = s.poll()
-    while started.is_none() {
-        yield
-        started = s.poll()
-    }
-    let Some(sp) = take started else { panic("no answer") }
-    let Ok(srv) = serve::read_started(take sp) else { panic("the page's server starts") }
-    let url = f"{srv.origin.as_str()}/#test&frames={frames}&width={width}&height={height}&fps=60&workers=1"
-    var o = browser::open(url.as_str())
-    var opened = o.poll()
-    while opened.is_none() {
-        yield
-        opened = o.poll()
-    }
-    let Some(op) = take opened else { panic("no answer") }
-    let Ok(page) = browser::read_opened(take op) else { panic("Chrome opens the page") }
-    var r = browser::run(page, Script::new().wait(Until::done(), timeout: 120.0), 150.0)
-    var ran = r.poll()
-    while ran.is_none() {
-        yield
-        ran = r.poll()
-    }
-    let Some(rp) = take ran else { panic("no answer") }
-    if let Err(e) = answer(take rp) {
-        panic(f"the page's run: {e.message()}")
-    }
-    var d = browser::results(page)
-    var done = d.poll()
-    while done.is_none() {
-        yield
-        done = d.poll()
-    }
-    let Some(dp) = take done else { panic("no answer") }
-    let Ok(result) = browser::read_attribute(take dp) else { panic("the page's result") }
-    let Some(said) = result else { panic("the page wrote no result") }
-    assert(said.as_str() == "ok", f"the browser run failed: {said.as_str()}")
-    var shut = browser::close(page)
-    while shut.poll().is_none() {
-        yield
-    }
-    var stop = serve::close(srv.server)
-    while stop.poll().is_none() {
-        yield
+    var c2 = Box::new(
+        in_chrome.start(
+            out.clone(),
+            String::from(f"#test&frames={frames}&width={width}&height={height}&fps=60&workers=1"),
+        ),
+    )
+    loop {
+        match c2.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
     }
     var fb = Box::new(file_bytes.start(String::from(f"{out.as_str()}/results/frame.rgba")))
     var chrome: Vec<u8> = Vec::new()

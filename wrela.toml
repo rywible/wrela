@@ -5,8 +5,10 @@
 [workspace]
 members = [
     "console",
+    "console/tests/build",
     "content/*",
     "docsite",
+    "docsite/tests/reader",
     "engine",
     "engine/tests/*",
     "examples/*",

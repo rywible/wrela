@@ -1,0 +1,10 @@
+# The docs site (docsite) in Chrome over docs the toolchain exports: `wrela doc --export` of
+# guide/ (a small package written for this, not a workspace member: two modules, their items,
+# code and links) beside the language's spec and std, as the site serves them. The tool tests
+# build the site, export the guide through `std::tool::toolchain`, and run the site's reader
+# script (`scripts::READER`) in headless Chrome.
+[package]
+name = "docsite_reader"
+
+[dependencies]
+docsite = { workspace = true }

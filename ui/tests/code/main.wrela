@@ -1,5 +1,5 @@
 // A screen of source code in the monospace font at 13 pixels per em, 10,000 glyphs at 1080p,
-// drawn each frame (compiler/tests/tests/suite/text.rs times it).
+// drawn each frame: a scene for `tools/wrela profile` to time.
 
 use std::gpu::{begin_screen_pass}
 use ui::draw::{DrawList, Renderer}
