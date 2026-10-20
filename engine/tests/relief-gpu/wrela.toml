@@ -1,0 +1,6 @@
+# engine::landform's relief on the GPU: a kernel reads a full-size relief as the CPU does.
+[package]
+name = "relief_gpu"
+
+[dependencies]
+engine = { workspace = true }

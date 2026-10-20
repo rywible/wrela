@@ -14,12 +14,15 @@
 // and mirrored. Every block is a union of exact distances (round cones, spheres, ovals inside),
 // blended smoothly, so the whole has a gradient near 1 (`diagnose`).
 
-use creature::{Body, Group, Inside, Modify, Placed, Skeleton, Then, creature, group, smooth}
+use creature::{
+    Body, Creature, Group, Inside, Modify, Placed, Skeleton, Then, creature, group, smooth,
+}
 pub use creature::{Ground, ground}
 use std::field::{
-    Blend, Field, Surface, Oval, PartName, Rotate, SmoothUnionAll, Translate, Tube, oval,
-    round_cone, smax, smin, tube,
+    Blend, Color, Field, Surface, Oval, PartName, Rotate, SmoothUnionAll, Translate, Tube, bottom,
+    front, oval, rgb, round_cone, smax, smin, top, tube,
 }
+use std::derive::Box3
 use std::math::PI
 use std::quat::Quat
 use std::units::deg
@@ -1195,4 +1198,65 @@ pub fn canine<C: Copy + GpuData + Blend>(c: Canine, coat: Coat<C>) -> Body<Canin
         .add(canine_hind_leg(s, c, coat, 1.0))
         .add(canine_hind_leg(s, c, coat, -1.0))
         .add(canine_tail(s, c, coat))
+}
+
+// ---- tests --------------------------------------------------------------------------------------
+
+// The kit's canine with a wolf's proportions: its withers 0.8 m up and its nose where the
+// reference photo's is, its paws on the ground and not below it, and its gradient near 1 where
+// the renderer steps (its blocks are exact distances, blended).
+
+fn grey() -> Color {
+    rgb(r: 0.5, g: 0.5, b: 0.5)
+}
+
+fn coat() -> Coat<Color> {
+    Coat {
+        back: grey(),
+        saddle: grey(),
+        belly: grey(),
+        legs: grey(),
+        muzzle: grey(),
+        ears: grey(),
+        eyes: grey(),
+        nose: grey(),
+        tail_tip: grey(),
+    }
+}
+
+@test
+fn the_kits_wolf_stands_at_its_height() {
+    let f = canine(wolf(), coat()).field()
+    let withers = top(f, x: 0.0, z: 0.07)
+    assert(abs(withers - 0.8) < 0.04)
+    let nose = front(f, x: 0.0, y: 0.72)
+    assert(nose > 0.5 && nose < 0.62)
+}
+
+@test
+fn the_kits_wolfs_paws_are_on_the_ground() {
+    let f = canine(wolf(), coat()).field()
+    let s = canine_skeleton(wolf())
+    for name in ["fore paw left", "hind paw left"] {
+        let p = s.rest(s.find(name))
+        let sole = bottom(f, x: p.x, z: p.z)
+        assert(abs(sole) < 0.002)
+    }
+}
+
+@test
+fn the_kits_wolfs_gradient_stays_near_1() {
+    let f = canine(wolf(), coat()).field()
+    let around = Box3 { lo: vec3(-0.25, -0.02, -0.75), hi: vec3(0.25, 1.05, 0.7) }
+    var worst = 0.0
+    var near = 0
+    for i in 0..6000 {
+        let p = around.sample(3, i)
+        let (d, g) = f.sample(p)
+        if abs(d) < 0.01 {
+            worst = max(worst, length(g))
+            near += 1
+        }
+    }
+    assert(near > 100 && worst < 1.25)
 }

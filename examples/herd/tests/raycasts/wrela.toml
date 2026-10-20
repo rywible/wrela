@@ -1,0 +1,8 @@
+# The herd's terrain rays (examples/herd/terrain.wrela) keep their hits and steps: the package's
+# tool test builds it through `std::tool::toolchain` and calls its `compare` through
+# `std::tool::drive`, on the CPU, with the inputs that a test of code can't make.
+[package]
+name = "raycasts"
+
+[dependencies]
+herd = { workspace = true }

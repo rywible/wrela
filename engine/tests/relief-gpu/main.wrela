@@ -1,16 +1,10 @@
-//! The engine's landforms on the GPU (`engine::landform::Relief`): a relief a terrain holds is
-//! read by the same code on the CPU and the GPU, so the drawn ground and the sim's feet agree.
+// A full-size relief (the Last Green's far land's 40,960 cells, a storage block well over the
+// uniform limit, as the terrain's cook binds it) sampled by a kernel at its cells' middles,
+// inside cells, on and past its edges and at its last cell: the rise within 1 mm of the CPU's,
+// each cell's packed rise decoded exactly, its wetness within a float's rounding. So the drawn
+// ground and the sim's feet agree.
 
-/// A full-size relief (the Last Green's far land's 40,960 cells, a storage block well over the
-/// uniform limit, as the terrain's cook binds it) sampled by a kernel at its cells' middles, inside
-/// cells, on and past its edges and at its last cell: the rise within 1 mm of the CPU's, each
-/// cell's packed rise decoded exactly, its wetness within a float's rounding.
-#[test]
-fn a_relief_reads_the_same_on_the_gpu_as_on_the_cpu() {
-    let dir = super::engine_package(
-        "landform/relief-gpu",
-        "relief_gpu",
-        r#"use engine::grow::Grid
+use engine::grow::Grid
 use engine::landform::{Relief, pack}
 use std::gpu::{GlobalId, GpuBuffer, Slots, buffer, dispatch, read, write}
 use std::io::Pending
@@ -108,8 +102,4 @@ fn the_gpu_reads_the_relief_as_the_cpu_does(s: State) {
         assert(g.z == h.relief.rise(c), f"cell {c}'s rise")
         assert(abs(g.w - h.relief.wet(c)) < 1.0e-6, f"cell {c}'s wetness")
     }
-}
-"#,
-    );
-    assert_eq!(super::tests_pass(&dir), 1);
 }

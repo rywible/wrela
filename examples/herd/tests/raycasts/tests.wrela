@@ -1,0 +1,128 @@
+// The tool test: it builds this package (a normal build, as a game ships) through the toolchain
+// service, then calls `compare` on the native host's CPU at the herd's terrain: from 16 places
+// along six directions (straight down, with signed zeros, up, level, slanted, and down by the
+// smallest float) with limits of 0, 0.5 and 10; from non-finite places; along non-finite
+// directions; and from the largest height. Each ray's hit keeps its bits and its march count.
+
+use std::collections::Vec
+use std::tool::drive
+use std::tool::drive::Scalar
+use std::tool::toolchain
+
+/// `bits` as a float: the values that a test can't compute without a NaN check failing it.
+fn f(bits: u32) -> f32 {
+    bitcast_f32(bits)
+}
+
+/// Each ray: where from, which way and how far.
+fn rays() -> Vec<(vec3, vec3, f32)> {
+    let zero = f(2147483648)
+    let infinity = f(2139095040)
+    let nan = f(2143289344)
+    let directions = [
+        vec3(0.0, -1.0, 0.0),
+        vec3(zero, -1.0, zero),
+        vec3(0.0, 1.0, zero),
+        vec3(zero, 0.0, 0.0),
+        vec3(0.125, -1.0, -0.25),
+        vec3(f(1), -1.0, 0.0),
+    ]
+    var out: Vec<(vec3, vec3, f32)> = Vec::new()
+    for i in 0..16 {
+        let from = vec3(f32((i * 37) % 101) - 50.0, 5.0, f32((i * 71) % 103) - 50.0)
+        for dir in directions {
+            for limit in [0.0, 0.5, 10.0] {
+                out.push((from, dir, limit))
+            }
+        }
+    }
+    for x in [0.0, zero, infinity, f(4286578688), nan] {
+        for dir in directions {
+            out.push((vec3(x, 5.0, zero), dir, 10.0))
+        }
+    }
+    for dir in [vec3(0.0, infinity, 0.0), vec3(0.0, nan, 0.0)] {
+        out.push((vec3(0.0, 5.0, 0.0), dir, infinity))
+    }
+    out.push((vec3(0.0, f(2139095039), 0.0), vec3(0.0, 1.0, 0.0), infinity))
+    out
+}
+
+/// A scalar result's bits.
+fn word(s: Scalar) -> u32 {
+    match s {
+        Scalar::I32(x) => u32(x),
+        _ => panic("`compare` gives 32-bit words"),
+    }
+}
+
+@test(tool, read: [("repo", "../../../..")], budget: 120)
+@job
+fn terrain_rays_keep_their_hits_and_steps() {
+    var b = toolchain::build(
+        "repo/examples/herd/tests/raycasts",
+        "scratch/build",
+        toolchain::options(),
+    )
+    var built = b.poll()
+    while built.is_none() {
+        yield
+        built = b.poll()
+    }
+    let Some(polled) = take built else { panic("no answer") }
+    let Ok(build) = toolchain::read_built(take polled) else { panic("the build's request") }
+    for d in build.diagnostics {
+        assert(!d.error, d.rendered.as_str())
+    }
+    assert(build.ok, "the package builds")
+    var l = drive::load("scratch/build", drive::cpu())
+    var loaded = l.poll()
+    while loaded.is_none() {
+        yield
+        loaded = l.poll()
+    }
+    let Some(lp) = take loaded else { panic("no answer") }
+    let Ok(it) = drive::read_loaded(take lp) else { panic("the build loads") }
+    let h = it.build
+    var i = drive::init(h)
+    var inited = i.poll()
+    while inited.is_none() {
+        yield
+        inited = i.poll()
+    }
+    let Some(ip) = take inited else { panic("no answer") }
+    let Ok(init) = drive::read_ran(take ip) else { panic("init's request") }
+    assert(init.trap.is_none(), "init runs")
+    let all = rays()
+    assert(all.len() == 321, "every ray")
+    for ray in all {
+        let (from, dir, limit) = ray
+        let args = [
+            Scalar::F32(from.x),
+            Scalar::F32(from.y),
+            Scalar::F32(from.z),
+            Scalar::F32(dir.x),
+            Scalar::F32(dir.y),
+            Scalar::F32(dir.z),
+            Scalar::F32(limit),
+        ]
+        var c = drive::call(h, "compare", args)
+        var called = c.poll()
+        while called.is_none() {
+            yield
+            called = c.poll()
+        }
+        let Some(cp) = take called else { panic("no answer") }
+        let Ok(ran) = drive::read_ran(take cp) else { panic("the call's request") }
+        if let Some(trap) = ran.trap {
+            panic(trap.message.as_str())
+        }
+        assert(ran.results.len() == 4, "`compare` gives four words")
+        let (a, sa) = (word(ran.results[0]), word(ran.results[1]))
+        let (r, sr) = (word(ran.results[2]), word(ran.results[3]))
+        assert(
+            a == r && sa == sr,
+            f"from ({bitcast_u32(from.x)}, {bitcast_u32(from.y)}, {bitcast_u32(from.z)}), dir ({bitcast_u32(dir.x)}, {bitcast_u32(dir.y)}, {bitcast_u32(dir.z)}), limit {bitcast_u32(limit)}: hit {a} in {sa}, the reference's {r} in {sr}",
+        )
+    }
+}

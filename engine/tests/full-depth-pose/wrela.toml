@@ -1,0 +1,6 @@
+# engine::render's pose_instances keeps the root of a skeleton of MAX_BONES bones, on the GPU.
+[package]
+name = "full_depth_pose"
+
+[dependencies]
+engine = { workspace = true }
