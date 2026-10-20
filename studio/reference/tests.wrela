@@ -23,6 +23,7 @@ use std::string::String
 use std::tool::drive
 use std::tool::drive::Scalar
 use std::tool::toolchain::Override
+use std::math
 
 /// The ball, a sculpt for the tests.
 pub const BALL: Sculpt = Sculpt {
@@ -414,8 +415,8 @@ fn straight(
 /// The radius two harmonics give, changing linearly along the axis.
 fn two_harmonics(i: u32, j: u32) -> f64 {
     let t = f64(i) / 8.0
-    let a = math::TAU * f64(j) / 24.0
-    0.03 + 0.01 * t + 0.006 * math::cos(a) + 0.003 * math::sin(2.0 * a) * (1.0 - t)
+    let a = math::TAU_F64 * f64(j) / 24.0
+    0.03 + 0.01 * t + 0.006 * math::cos_f64(a) + 0.003 * math::sin_f64(2.0 * a) * (1.0 - t)
 }
 
 /// A table whose sections are two harmonics, changing linearly along the axis, with a run of
@@ -449,9 +450,9 @@ fn compression_recovers_harmonics_and_leaves_held_radii_free() {
 /// a measured radius there, and the run, which the neighbour reaches, is free.
 @test
 fn compression_holds_up_what_no_other_part_reaches() {
-    let theta = math::TAU * 5.5 / 24.0
+    let theta = math::TAU_F64 * 5.5 / 24.0
     // Angle θ's direction is cos θ u + sin θ (w × u), with u = +y and w = +z.
-    let at = vec2d(-0.045 * math::sin(theta), 0.045 * math::cos(theta))
+    let at = vec2d(-0.045 * math::sin_f64(theta), 0.045 * math::cos_f64(theta))
     let body = straight("body", vec2d(0.0), |_, j| if j == 5 || j == 6 { 0.05 } else {
         0.03
     }, |_| false)
@@ -662,12 +663,12 @@ fn a_replica_of_many_parts_builds_and_runs() {
     var parts = LOFTS.clone()
     parts.parts.truncate(1)
     for k in 0..17 {
-        let a = 2.0 * math::PI * f64(k) / 17.0
+        let a = 2.0 * math::PI_F64 * f64(k) / 17.0
         parts.parts.push(
             Part {
                 name: SPOKES[k],
                 from: Point::At(CENTRE),
-                to: Point::Xyz(vec3d(0.09 * math::cos(a), 0.2, 0.09 * math::sin(a))),
+                to: Point::Xyz(vec3d(0.09 * math::cos_f64(a), 0.2, 0.09 * math::sin_f64(a))),
                 parent: "ball",
                 angles: Some(8),
                 r_max: Some(0.03),

@@ -21,6 +21,7 @@ members = [
     "studio/glue",
     "studio/maplens",
     "studio/maplens/glue",
+    "studio/audio",
     "studio/reference",
     "studio/tests/views",
     "studio/tool",
@@ -84,3 +85,10 @@ write = ["ws=.", "out=build/studio"]
 [tools.reference]
 package = "studio/reference"
 write = ["ws=.", "out=build/reference"]
+
+# The audio tool (studio/audio): a piece's take as a WAV file, its notes, numbers, MIDI and
+# sheet, and measurements of recordings (a note's partials, a piano model, clicks). It builds a
+# piece in its `build/audio` and writes where its command line says, in the workspace.
+[tools.audio]
+package = "studio/audio"
+write = ["ws=."]

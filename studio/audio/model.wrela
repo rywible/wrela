@@ -1,0 +1,926 @@
+// `model <dir> --out <file.wrela> [--against <dir>]`: fits engine::piano's `Model` to recorded
+// notes. `<dir>` holds `<key>-<velocity>.wav`, each one note (MIDI's key and velocity) struck
+// at the start and held, for 16 keys at 5 velocities. For each key the fit measures:
+// - its tuning and inharmonicity (B), from its partials' frequencies;
+// - where its hammer strikes, from the partials it leaves quiet;
+// - its partials' levels when struck, at each velocity, by frequency band (the strike's quiet
+//   partials put back first, so a band's level is the hammer's and the board's);
+// - its partials' decays, by band: the prompt sound's and the aftersound's times to fall 60 dB,
+//   and the aftersound's level.
+//
+// A band's numbers are fitted by least squares to its partials, as engine::piano reads them
+// (linearly between bands' centres), a little smoothed. Measuring a level takes a window of a
+// third of a second, in which a fast decay falls a few dB, so a model made from measurements
+// alone plays quieter partials than it measured. `--against <dir>` closes that loop: it's the
+// same notes played by the model now in `--out` (by examples/piano), and the fit moves each
+// number by what separates its measurement from the recording's. A few rounds settle it.
+//
+// It writes the model as a wrela constant, `GRAND`, with its source said in a comment, formatted
+// as `wrela fmt` leaves it. The notes are measured on the tool's helpers, a note to each.
+
+use dsp::{Plan, clamp_of, max_of}
+use io::read_file
+use json::{Value, obj}
+use main::{Args, in_root}
+use measure::{Decay, Measured, N, Setup, assemble, frame_levels, line, setup, two_stage}
+use std::collections::{Box, Vec}
+use std::io::print
+use std::job::Step
+use std::string::String
+use std::tool::{ToolError, answer}
+use std::tool::files
+use std::tool::files::Kind
+use std::tool::toolchain
+use std::string::parse_f64_at
+use std::math
+
+/// The bands' count. Their centres run from 25 Hz to 12 kHz, evenly in log frequency, as
+/// engine::piano spaces them.
+pub const BANDS: u32 = 16
+const KEYS: u32 = 16
+const VELOCITIES: u32 = 5
+
+/// The band (as a fraction between centres) of a frequency.
+pub fn band_of(hz: f64) -> f64 {
+    clamp_of(
+        math::log_f64(hz / 25.0) / math::log_f64(12000.0 / 25.0) * f64(BANDS - 1),
+        lo: 0.0,
+        hi: f64(BANDS - 1),
+    )
+}
+
+fn median(xs: take Vec<f64>) -> Option<f64> {
+    if xs.is_empty() {
+        return None
+    }
+    var v = take xs
+    v.sort_by(|a, b| a < b)
+    Some(v[v.len() / 2])
+}
+
+/// A band table fitted to `points` (a band position and a value each): least squares as
+/// engine::piano interpolates (each point is its two nearest bands, weighted by nearness), with
+/// a little smoothing. Bands below the points take the first band they reach; above them, each
+/// falls `slope` from the one before.
+pub fn band_fit(points: [(f64, f64)], slope: f64) -> Vec<f64> {
+    if points.is_empty() {
+        return Vec::filled(BANDS, value: 0.0)
+    }
+    var lo: u32 = 4294967295
+    var hi: u32 = 0
+    for (b, _) in points {
+        lo = min(lo, u32(floor(b)))
+        hi = max(hi, min(u32(ceil(b)), BANDS - 1))
+    }
+    hi = max(hi, lo)
+    let n = hi - lo + 1
+    // The normal equations: (WᵀW + λ DᵀD) x = Wᵀy, D the second difference.
+    var a: Vec<Vec<f64>> = Vec::new()
+    for _ in 0..n {
+        a.push(Vec::filled(n, value: 0.0))
+    }
+    var rhs: Vec<f64> = Vec::filled(n, value: 0.0)
+    for (b, y) in points {
+        let i = min(u32(floor(b)), hi) - lo
+        let f = b - floor(b)
+        let w = [(i, 1.0 - f), (min(i + 1, n - 1), f)]
+        for (r, wr) in w {
+            rhs[r] += wr * y
+            for (c, wc) in w {
+                a[r][c] += wr * wc
+            }
+        }
+    }
+    let lambda = 0.05 * max_of(f64(points.len()) / f64(n), 1.0)
+    if n >= 2 {
+        for i in 1..n - 1 {
+            let d = [(i - 1, 1.0), (i, -2.0), (i + 1, 1.0)]
+            for (r, wr) in d {
+                for (c, wc) in d {
+                    a[r][c] += lambda * wr * wc
+                }
+            }
+        }
+    }
+    // A band with no point near it is held near its neighbours by the smoothing alone; a tiny
+    // pull to the points' mean keeps the system solvable.
+    var sum = 0.0
+    for (_, y) in points {
+        sum += y
+    }
+    let mean = sum / f64(points.len())
+    for i in 0..n {
+        a[i][i] += 0.000001
+        rhs[i] += 0.000001 * mean
+    }
+    let x = solve(take a, take rhs)
+    var out: Vec<f64> = Vec::with_capacity(BANDS)
+    for b in 0..BANDS {
+        out.push(
+            if b < lo {
+                x[0]
+            } else if b > hi {
+                x[n - 1] + slope * f64(b - hi)
+            } else {
+                x[b - lo]
+            },
+        )
+    }
+    out
+}
+
+/// `a x = b`, by Gaussian elimination with partial pivoting.
+fn solve(given_a: take Vec<Vec<f64>>, given_b: take Vec<f64>) -> Vec<f64> {
+    var a = take given_a
+    var b = take given_b
+    let n = b.len()
+    for c in 0..n {
+        // The largest pivot below; of equal ones, the last (as Rust's `max_by`).
+        var p = c
+        for i in c + 1..n {
+            if abs(a[i][c]) >= abs(a[p][c]) {
+                p = i
+            }
+        }
+        a.swap(c, p)
+        b.swap(c, p)
+        let d = if abs(a[c][c]) < 0.000000000001 { 0.000000000001 } else { a[c][c] }
+        for r in c + 1..n {
+            let f = a[r][c] / d
+            for k in c..n {
+                a[r][k] = a[r][k] - f * a[c][k]
+            }
+            b[r] = b[r] - f * b[c]
+        }
+    }
+    var x: Vec<f64> = Vec::filled(n, value: 0.0)
+    var r = n
+    while r > 0 {
+        r -= 1
+        // Rust's float sums start from -0.0.
+        var s = -0.0
+        for k in r + 1..n {
+            s += a[r][k] * x[k]
+        }
+        x[r] = (b[r] - s) / if abs(a[r][r]) < 0.000000000001 { 0.000000000001 } else { a[r][r] }
+    }
+    x
+}
+
+/// Where the hammer strikes, as a fraction of the string: the fraction whose quiet partials
+/// (those with a node there) best explain the dips in `m`'s levels.
+pub fn strike(m: Measured) -> f64 {
+    let count = m.partials.len()
+    var levels: Vec<(u32, f64)> = Vec::with_capacity(count)
+    for p in m.partials {
+        levels.push((p.n, p.peak_db()))
+    }
+    // Each level's difference from its neighbours' median: its dip.
+    var dips: Vec<f64> = Vec::with_capacity(count)
+    for i in 0..count {
+        var around: Vec<f64> = Vec::new()
+        let from = if i >= 3 { i - 3 } else { 0 }
+        for j in from..min(i + 4, count) {
+            if j != i {
+                around.push(levels[j].1)
+            }
+        }
+        dips.push(levels[i].1 - median(take around).unwrap_or(levels[i].1))
+    }
+    var best_x = 0.125
+    var best_r = -1.7976931348623157e308
+    var x = 0.07
+    while x <= 0.17 {
+        // How well 20 log₁₀ |sin(π n x)| follows the dips: their correlation.
+        var comb: Vec<f64> = Vec::with_capacity(count)
+        for (n, _) in levels {
+            comb.push(
+                20.0 * math::log10_f64(max_of(abs(math::sin_f64(math::PI_F64 * f64(n) * x)), 0.05)),
+            )
+        }
+        var sc = 0.0
+        var sd = 0.0
+        for i in 0..count {
+            sc += comb[i]
+            sd += dips[i]
+        }
+        let mc = sc / f64(count)
+        let md = sd / f64(count)
+        var cov = -0.0
+        var vc = -0.0
+        var vd = -0.0
+        for i in 0..count {
+            cov += (comb[i] - mc) * (dips[i] - md)
+        }
+        for i in 0..count {
+            let e = comb[i] - mc
+            vc += e * e
+        }
+        for i in 0..count {
+            let e = dips[i] - md
+            vd += e * e
+        }
+        let r = cov / max_of(sqrt(vc * vd), 0.000000000001)
+        if r > best_r {
+            best_x = x
+            best_r = r
+        }
+        x += 0.0025
+    }
+    best_x
+}
+
+/// A recorded note: its key and velocity, its file, its samples (mono) and rate, how many
+/// seconds it's measured over, whether its decays count (one of the three loudest velocities),
+/// and what was measured.
+struct Note: Clone {
+    key: u32,
+    velocity: u32,
+    mono: Vec<f32>,
+    rate: f64,
+    seconds: f64,
+    decays_count: bool,
+    measured: Option<Measured>,
+    decays: Vec<Option<Decay>>,
+}
+
+/// Recorded notes, measured: by key (ascending), then velocity.
+struct Notes: Clone {
+    keys: Vec<u32>,
+    velocities: Vec<u32>,
+    /// `KEYS × VELOCITIES` notes, by key then velocity.
+    by: Vec<Note>,
+}
+
+impl Notes {
+    fn at(self, key: u32, vel: u32) -> borrow Note {
+        self.by[key * self.velocities.len() + vel]
+    }
+}
+
+fn said(e: ToolError) -> String {
+    String::from(e.message())
+}
+
+/// `<key>-<velocity>.wav`'s key and velocity.
+fn note_name(name: str) -> Option<(u32, u32)> {
+    if !name.ends_with(".wav") {
+        return None
+    }
+    let stem = name.slice(0, name.len() - 4)
+    let dash = stem.find("-")?
+    let key = stem.slice(0, dash).parse_u32()?
+    let vel = stem.slice(dash + 1, stem.len()).parse_u32()?
+    Some((key, vel))
+}
+
+fn list_text(xs: [u32]) -> String {
+    var s = String::from("[")
+    for i in 0..xs.len() {
+        if i > 0 {
+            s.push_str(", ")
+        }
+        s.push_str(f"{xs[i]}")
+    }
+    s.push_str("]")
+    s
+}
+
+/// The notes in `dir` (a root path; `shown` as given), read and measured.
+@job
+fn read_notes(dir: take String, shown: take String) -> Result<Notes, String> {
+    var l = files::list(dir.as_str())
+    var got = l.poll()
+    while got.is_none() {
+        yield
+        got = l.poll()
+    }
+    let Some(polled) = take got else { return Err(String::from("no answer")) }
+    let entries = match files::read_list(take polled) {
+        Ok(e) => take e,
+        Err(e) => return Err(String::from(f"can't read {shown}: {e.message()}")),
+    }
+    var named: Vec<(u32, u32, String)> = Vec::new()
+    for e in entries {
+        if e.kind == Kind::Dir {
+            continue
+        }
+        if let Some((k, v)) = note_name(e.name.as_str()) {
+            named.push((k, v, e.name.clone()))
+        }
+    }
+    named.sort_by(|a, b| a.0 < b.0 || (a.0 == b.0 && a.1 < b.1))
+    if named.is_empty() {
+        return Err(String::from(f"{shown} has no notes"))
+    }
+    // The keys, and the first key's velocities: every key has to have the same.
+    var keys: Vec<u32> = Vec::new()
+    var velocities: Vec<u32> = Vec::new()
+    for (k, v, _) in named {
+        if keys.is_empty() || keys[keys.len() - 1] != k {
+            keys.push(k)
+        }
+        if k == named[0].0 && (velocities.is_empty() || velocities[velocities.len() - 1] != v) {
+            velocities.push(v)
+        }
+    }
+    var same = named.len() == keys.len() * velocities.len()
+    if same {
+        for i in 0..named.len() {
+            let (k, v, _) = named[i]
+            if k != keys[i / velocities.len()] || v != velocities[i % velocities.len()] {
+                same = false
+            }
+        }
+    }
+    if keys.len() != KEYS || velocities.len() != VELOCITIES || !same {
+        return Err(
+            String::from(
+                f"the model needs {KEYS} keys, each at the same {VELOCITIES} velocities; {shown} has {keys.len()} keys at {list_text(velocities)}",
+            ),
+        )
+    }
+    var by: Vec<Note> = Vec::new()
+    for i in 0..named.len() {
+        let (k, v, name) = named[i].clone()
+        let path = String::from(f"{dir}/{name}")
+        let file = String::from(f"{shown}/{name}")
+        var r = Box::new(read_file.start(take path, file.clone()))
+        var bytes: Option<Result<Vec<u8>, String>> = None
+        while bytes.is_none() {
+            match r.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(b) => bytes = Some(take b),
+            }
+        }
+        let Some(b) = take bytes else { return Err(String::from("no answer")) }
+        let w = wav::read((take b)?, file.as_str())?
+        let mono = w.mono()
+        let length = f64(mono.len()) / w.rate - 0.5
+        by.push(
+            Note {
+                key: k,
+                velocity: v,
+                mono,
+                rate: w.rate,
+                seconds: if length < 12.0 { length } else { 12.0 },
+                decays_count: i % VELOCITIES >= 2,
+                measured: None,
+                decays: Vec::new(),
+            },
+        )
+    }
+    // Each note's partials found, then every note's frames read on the tool's helpers, and the
+    // decays that count: those of the three loudest velocities' partials, within 50 dB of their
+    // note's loudest.
+    var setups: Vec<Setup> = Vec::with_capacity(by.len())
+    for note in by {
+        setups.push(setup(note.mono, note.rate, note.key, 0.0, note.seconds))
+    }
+    var frames: Vec<NoteFrame> = Vec::new()
+    for k in 0..by.len() {
+        for t in 0..setups[k].frames {
+            frames.push(NoteFrame { note: k, t, levels: Vec::new() })
+        }
+    }
+    let plan = Plan::new(N)
+    frames.par_each_mut(|f| {
+        var room = plan.scratch()
+        borrow note = by[f.note]
+        f.levels = frame_levels(plan, note.mono, setups[f.note], f.t, note.rate, mut room)
+    })
+    var at = 0
+    for k in 0..by.len() {
+        var scan: Vec<Vec<f64>> = Vec::with_capacity(setups[k].frames)
+        for _ in 0..setups[k].frames {
+            scan.push(replace(mut frames[at].levels, Vec::new()))
+            at += 1
+        }
+        by[k].measured = Some(assemble(setups[k], scan))
+        by[k].mono = Vec::new()
+    }
+    var fits: Vec<PartialFit> = Vec::new()
+    for k in 0..by.len() {
+        if !by[k].decays_count {
+            continue
+        }
+        borrow m = measured_of(by[k])
+        var loudest = -200.0
+        for p in m.partials {
+            loudest = max_of(loudest, p.peak_db())
+        }
+        for i in 0..m.partials.len() {
+            if m.partials[i].peak_db() >= loudest - 50.0 {
+                fits.push(PartialFit { note: k, partial: i, decay: None })
+            }
+        }
+        by[k].decays = Vec::filled(m.partials.len(), value: None)
+    }
+    fits.par_each_mut(|f| {
+        borrow m = measured_of(by[f.note])
+        f.decay = two_stage(m.partials[f.partial].levels, m.dt)
+    })
+    for f in fits {
+        by[f.note].decays[f.partial] = f.decay
+    }
+    Ok(Notes { keys, velocities, by })
+}
+
+/// A frame of a note to read, and what it read.
+struct NoteFrame: Clone {
+    note: u32,
+    t: u32,
+    levels: Vec<f64>,
+}
+
+/// A partial of a note whose decay counts, and its decay.
+struct PartialFit: Clone {
+    note: u32,
+    partial: u32,
+    decay: Option<Decay>,
+}
+
+/// A model's numbers, in the order engine::piano's `Model` keeps them.
+struct Tables: Clone {
+    inharmonicity: Vec<f64>,
+    tuning: Vec<f64>,
+    strike: Vec<f64>,
+    levels: Vec<f64>,
+    prompt: Vec<f64>,
+    after: Vec<f64>,
+    after_db: Vec<f64>,
+}
+
+fn measured_of(n: Note) -> borrow Measured {
+    let Some(m) = n.measured else { panic("a note is measured before its tables") }
+    m
+}
+
+/// The tables `notes` measure. `strikes`, if given, are used instead of measuring them, so a
+/// model's own notes are measured with the strike points it was made with.
+fn tables(notes: Notes, strikes: Option<Vec<f64>>) -> (Tables, Vec<Value>) {
+    var t = Tables {
+        inharmonicity: Vec::new(),
+        tuning: Vec::new(),
+        strike: Vec::new(),
+        levels: Vec::new(),
+        prompt: Vec::new(),
+        after: Vec::new(),
+        after_db: Vec::new(),
+    }
+    var report: Vec<Value> = Vec::new()
+    let vels = notes.velocities.len()
+    for i in 0..notes.keys.len() {
+        let key = notes.keys[i]
+        // The loudest velocity but one: many partials, and the hammer not yet at its hardest.
+        borrow main = measured_of(notes.at(i, 3))
+        var bs: Vec<f64> = Vec::new()
+        var cs: Vec<f64> = Vec::new()
+        for v in 0..vels {
+            borrow m = measured_of(notes.at(i, v))
+            bs.push(m.inharmonicity)
+            cs.push(m.cents())
+        }
+        t.inharmonicity.push(median(take bs).unwrap_or(0.0))
+        t.tuning.push(median(take cs).unwrap_or(0.0))
+        // Too few partials show no pattern of quiet ones: then 0.12, typical of a grand's.
+        let x0 = match strikes {
+            Some(s) => s[i],
+            None => if main.partials.len() >= 30 {
+                clamp_of(strike(main), lo: 0.09, hi: 0.15)
+            } else { 0.12 },
+        }
+        t.strike.push(x0)
+        for v in 0..vels {
+            borrow m = measured_of(notes.at(i, v))
+            var points: Vec<(f64, f64)> = Vec::new()
+            for p in m.partials {
+                let comb = max_of(abs(math::sin_f64(math::PI_F64 * f64(p.n) * x0)), 0.15)
+                points.push((band_of(p.hz), p.peak_db() - 20.0 * math::log10_f64(comb)))
+            }
+            for x in band_fit(points, -10.0) {
+                t.levels.push(x)
+            }
+        }
+        // Decays don't depend much on velocity: the three loudest velocities' partials, pooled.
+        var pp: Vec<(f64, f64)> = Vec::new()
+        var ap: Vec<(f64, f64)> = Vec::new()
+        var rp: Vec<(f64, f64)> = Vec::new()
+        for v in 2..vels {
+            borrow note = notes.at(i, v)
+            borrow m = measured_of(note)
+            for k in 0..m.partials.len() {
+                let Some(d) = note.decays[k] else { continue }
+                if d.error > 4.0 {
+                    continue
+                }
+                let b = band_of(m.partials[k].hz)
+                pp.push((b, math::log_f64(clamp_of(d.prompt, lo: 0.05, hi: 60.0))))
+                ap.push((b, math::log_f64(clamp_of(d.after, lo: 0.1, hi: 300.0))))
+                rp.push((b, clamp_of(d.after_db, lo: -50.0, hi: -3.0)))
+            }
+        }
+        // Above the last band measured, decays shorten: a band's time is 0.7 of the one below.
+        let pf = band_fit(pp, math::log_f64(0.7))
+        let af = band_fit(ap, math::log_f64(0.7))
+        for x in pf {
+            t.prompt.push(math::exp_f64(x))
+        }
+        for k in 0..af.len() {
+            t.after.push(max_of(math::exp_f64(af[k]), math::exp_f64(pf[k])))
+        }
+        for x in band_fit(rp, 0.0) {
+            t.after_db.push(x)
+        }
+        report.push(
+            obj()
+                .with("key", Value::Int(i64(key)))
+                .with("inharmonicity", Value::Num(t.inharmonicity[t.inharmonicity.len() - 1]))
+                .with("cents", Value::Num(t.tuning[t.tuning.len() - 1]))
+                .with("strike", Value::Num(x0))
+                .with("partials", Value::Int(i64(main.partials.len()))),
+        )
+    }
+    // A top key has too few partials to fit B: its B follows the trend of the keys above middle
+    // C that have enough (log B is close to a line in the key there). A tuning more than 30
+    // cents out is a fundamental not found: its neighbours' is taken.
+    var counts: Vec<u32> = Vec::new()
+    for i in 0..notes.keys.len() {
+        counts.push(measured_of(notes.at(i, 3)).partials.len())
+    }
+    var trend: Vec<(f64, f64)> = Vec::new()
+    for i in 0..notes.keys.len() {
+        if notes.keys[i] >= 60 && counts[i] >= 10 {
+            trend.push((f64(notes.keys[i]), math::log_f64(t.inharmonicity[i])))
+        }
+    }
+    if trend.len() >= 2 {
+        let (slope, at0) = line(trend)
+        for i in 0..notes.keys.len() {
+            if notes.keys[i] >= 60 && counts[i] < 10 {
+                t.inharmonicity[i] = math::exp_f64(at0 + slope * f64(notes.keys[i]))
+            }
+        }
+    }
+    let tuning = t.tuning.clone()
+    let n = notes.keys.len()
+    for i in 0..n {
+        if abs(tuning[i]) > 30.0 {
+            var near: Vec<f64> = Vec::new()
+            let from = if i >= 2 { i - 2 } else { 0 }
+            for j in from..min(i + 3, n) {
+                if j != i && abs(tuning[j]) <= 30.0 {
+                    near.push(tuning[j])
+                }
+            }
+            t.tuning[i] = median(take near).unwrap_or(0.0)
+        }
+    }
+    (t, report)
+}
+
+/// The numbers of array `name` in a model's source: `name: [ ... ]`.
+pub fn array(source: str, name: str) -> Option<Vec<f64>> {
+    let at = source.find(f"{name}: [")?
+    let start = at + name.len() + 3
+    let rest = source.slice(start, source.len())
+    let end = start + rest.find("]")?
+    let body = source.slice(start, end)
+    var out: Vec<f64> = Vec::new()
+    for (a, b) in body.split(",") {
+        let x = body.slice(a, b).trim()
+        if x.is_empty() {
+            continue
+        }
+        let owned = String::from(x)
+        out.push(parse_f64_at(owned.as_bytes(), 0, x.len())?)
+    }
+    Some(out)
+}
+
+fn array_exact(source: str, name: str, expected: u32) -> Result<Vec<f64>, String> {
+    let Some(values) = array(source, name) else {
+        return Err(String::from(f"the current model has no `{name}`"))
+    }
+    if values.len() != expected {
+        return Err(
+            String::from(
+                f"the current model has {values.len()} `{name}` values, but needs {expected}",
+            ),
+        )
+    }
+    Ok(values)
+}
+
+/// `x` with `digits` decimals (1 to 4), as Rust's `{x:.digits$}` writes it.
+fn fixed(x: f64, digits: u32) -> String {
+    String::from(
+        match digits {
+            1 => f"{x:.1}",
+            2 => f"{x:.2}",
+            3 => f"{x:.3}",
+            _ => f"{x:.4}",
+        },
+    )
+}
+
+/// `x` as Rust's `{x:.3e}` writes it: four significant digits (the exact value rounded, ties to
+/// even), then `e` and the exponent.
+pub fn sci3(x: f64) -> String {
+    if x == 0.0 {
+        return String::from("0.000e0")
+    }
+    let sign = if x < 0.0 { "-" } else { "" }
+    // The exact value's digits, to 60 places: enough for any number the model writes.
+    let exact = String::from(f"{abs(x):.60}")
+    let t = exact.as_str()
+    var digits: Vec<u8> = Vec::new()
+    var point: i32 = 0
+    var seen_point = false
+    for i in 0..t.len() {
+        let c = t.byte(i)
+        if c == 46 {
+            seen_point = true
+            continue
+        }
+        if digits.is_empty() && c == 48 {
+            if seen_point {
+                point -= 1
+            }
+            continue
+        }
+        digits.push(c - 48)
+        if !seen_point {
+            point += 1
+        }
+    }
+    // x = 0.d₁d₂… × 10^point, so its exponent is point − 1.
+    var e = point - 1
+    var kept: Vec<u32> = Vec::new()
+    for i in 0..4 {
+        kept.push(if i < digits.len() { u32(digits[i]) } else { 0 })
+    }
+    let next = if digits.len() > 4 { digits[4] } else { 0 }
+    var rest_zero = true
+    for i in 5..max(digits.len(), 5) {
+        if digits[i] != 0 {
+            rest_zero = false
+        }
+    }
+    let up = next > 5 || (next == 5 && (!rest_zero || kept[3] % 2 == 1))
+    if up {
+        var k = 4
+        var carry = true
+        while carry && k > 0 {
+            k -= 1
+            kept[k] += 1
+            if kept[k] == 10 {
+                kept[k] = 0
+            } else {
+                carry = false
+            }
+        }
+        if carry {
+            // It rounded up to the next power of ten.
+            kept = Vec::from([u32(1), 0, 0, 0])
+            e += 1
+        }
+    }
+    String::from(f"{sign}{kept[0]}.{kept[1]}{kept[2]}{kept[3]}e{e}")
+}
+
+/// `xs` in rows of `BANDS`, each number with `digits` decimals.
+fn numbers(xs: [f64], digits: u32) -> String {
+    var out = String::new()
+    for i in 0..xs.len() {
+        if i > 0 {
+            out.push_str(if i % BANDS == 0 { ",\n        " } else { ", " })
+        }
+        out.push_str(fixed(xs[i], digits).as_str())
+    }
+    out
+}
+
+fn moved(now: [f64], want: [f64], got: [f64], i: u32) -> f64 {
+    now[i] * clamp_of(want[i] / got[i], lo: 0.5, hi: 2.0)
+}
+
+/// The model's source, as the tool writes it before formatting.
+fn source(t: Tables, keys: [u32], velocities: [u32], shown: str) -> String {
+    var keys_f: Vec<f64> = Vec::new()
+    for k in keys {
+        keys_f.push(f64(k))
+    }
+    var vels_f: Vec<f64> = Vec::new()
+    for v in velocities {
+        vels_f.push(f64(v) / 127.0)
+    }
+    var b = String::new()
+    for i in 0..t.inharmonicity.len() {
+        if i > 0 {
+            b.push_str(", ")
+        }
+        b.push_str(sci3(t.inharmonicity[i]).as_str())
+    }
+    var s = String::new()
+    s.push_str(
+        f"// A grand piano for engine::piano: the model's numbers, fitted to the recordings in {shown}\n",
+    )
+    s.push_str(
+        f"// ({KEYS * VELOCITIES} notes, {KEYS} keys at {VELOCITIES} velocities each). They are measurements of those\n",
+    )
+    s.push_str(
+        "// recordings, moved by rounds of the model's own notes measured against them. The\n",
+    )
+    s.push_str("// recordings' source and licence are in docs/process.md.\n")
+    s.push_str("//\n")
+    s.push_str(
+        f"// Written by `wrela tool audio -- model {shown}`; edit the tool, not this file.\n",
+    )
+    s.push_str("\nuse piano::Model\n\npub const GRAND: Model = Model {\n")
+    s.push_str(f"    keys: [{numbers(keys_f, 1)}],\n")
+    s.push_str(f"    velocities: [{numbers(vels_f, 4)}],\n")
+    s.push_str(f"    inharmonicity: [{b}],\n")
+    s.push_str(f"    tuning: [{numbers(t.tuning, 2)}],\n")
+    s.push_str(f"    strike: [{numbers(t.strike, 4)}],\n")
+    s.push_str(f"    levels: [\n        {numbers(t.levels, 1)}\n    ],\n")
+    s.push_str(f"    prompt: [\n        {numbers(t.prompt, 3)}\n    ],\n")
+    s.push_str(f"    after: [\n        {numbers(t.after, 2)}\n    ],\n")
+    s.push_str(f"    after_db: [\n        {numbers(t.after_db, 1)}\n    ],\n")
+    s.push_str("}\n")
+    s
+}
+
+/// The notes in `dir` (as given), read and measured.
+@job
+fn notes_in(root: take String, shown: take String) -> Result<Notes, String> {
+    let dir = in_root(root.as_str(), shown.as_str())?
+    var r = Box::new(read_notes.start(take dir, take shown))
+    loop {
+        match r.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(n) => return take n,
+        }
+    }
+}
+
+/// `model`: the fit, written to `--out` and formatted, and what it measured of each key.
+@job
+pub fn fit_model(a: take Args) -> Result<(), String> {
+    let shown = a.rest[0].clone()
+    let Some(out_shown) = a.out.clone() else { return Err(String::from("model needs --out")) }
+    let out = in_root(a.root.as_str(), out_shown.as_str())?
+    var rj = Box::new(notes_in.start(a.root.clone(), shown.clone()))
+    var got: Option<Result<Notes, String>> = None
+    while got.is_none() {
+        match rj.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(n) => got = Some(take n),
+        }
+    }
+    let Some(g) = take got else { return Err(String::from("no answer")) }
+    let reference = (take g)?
+    let (made, report) = tables(reference, None)
+    var t = take made
+    if let Some(played) = a.against.clone() {
+        // The model now, and how its notes measure: each number moves by what separates its
+        // notes' measurement from the recording's.
+        var sr = Box::new(read_file.start(out.clone(), String::from(f"the model now, {out_shown}")))
+        var text: Option<Result<Vec<u8>, String>> = None
+        while text.is_none() {
+            match sr.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(b) => text = Some(take b),
+            }
+        }
+        let Some(tb) = take text else { return Err(String::from("no answer")) }
+        let Some(now) = String::from_utf8((take tb)?) else {
+            return Err(String::from(f"the model now, {out_shown}, isn't UTF-8"))
+        }
+        let levels = array_exact(now.as_str(), "levels", t.levels.len())?
+        let prompt = array_exact(now.as_str(), "prompt", t.prompt.len())?
+        let after = array_exact(now.as_str(), "after", t.after.len())?
+        let after_db = array_exact(now.as_str(), "after_db", t.after_db.len())?
+        var pj = Box::new(notes_in.start(a.root.clone(), take played))
+        var pg: Option<Result<Notes, String>> = None
+        while pg.is_none() {
+            match pj.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(n) => pg = Some(take n),
+            }
+        }
+        let Some(pn) = take pg else { return Err(String::from("no answer")) }
+        let (m, _) = tables((take pn)?, Some(t.strike.clone()))
+        var nl: Vec<f64> = Vec::new()
+        for i in 0..levels.len() {
+            nl.push(levels[i] + clamp_of(t.levels[i] - m.levels[i], lo: -12.0, hi: 12.0))
+        }
+        var np: Vec<f64> = Vec::new()
+        for i in 0..prompt.len() {
+            np.push(clamp_of(moved(prompt, t.prompt, m.prompt, i), lo: 0.05, hi: 60.0))
+        }
+        var na: Vec<f64> = Vec::new()
+        for i in 0..after.len() {
+            na.push(clamp_of(moved(after, t.after, m.after, i), lo: 0.1, hi: 300.0))
+        }
+        var nd: Vec<f64> = Vec::new()
+        for i in 0..after_db.len() {
+            nd.push(
+                clamp_of(
+                    after_db[i] + clamp_of(t.after_db[i] - m.after_db[i], lo: -6.0, hi: 6.0),
+                    lo: -50.0,
+                    hi: -3.0,
+                ),
+            )
+        }
+        t.levels = take nl
+        t.prompt = take np
+        t.after = take na
+        t.after_db = take nd
+    }
+    let text = source(t, reference.keys, reference.velocities, shown.as_str())
+    var parts: Vec<Vec<u8>> = Vec::new()
+    var bytes: Vec<u8> = Vec::with_capacity(text.len())
+    for i in 0..text.len() {
+        bytes.push(text.as_str().byte(i))
+    }
+    parts.push(take bytes)
+    var w = Box::new(io::write_file.start(out.clone(), take parts))
+    loop {
+        match w.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                if let Err(why) = take r {
+                    return Err(String::from(f"can't write {out_shown}: {why}"))
+                }
+                break
+            },
+        }
+    }
+    // As `wrela fmt` leaves it, so the file is formatted as every other is.
+    var paths: Vec<String> = Vec::new()
+    paths.push(out.clone())
+    var f = toolchain::fmt(paths, check: false)
+    var fg = f.poll()
+    while fg.is_none() {
+        yield
+        fg = f.poll()
+    }
+    let Some(fp) = take fg else { return Err(String::from("no answer")) }
+    match toolchain::read_formatted(take fp) {
+        Ok(formatted) => {
+            if !formatted.failed.is_empty() {
+                return Err(String::from("the model's source doesn't parse"))
+            }
+        },
+        Err(e) => return Err(said(e)),
+    }
+    print(
+        obj()
+            .with("model", Value::Text(take out_shown))
+            .with("keys", Value::List(take report))
+            .pretty()
+            .as_str(),
+    )
+    Ok(())
+}
+
+@test
+fn current_model_tables_need_the_fitted_length() {
+    let Ok(values) = array_exact("levels: [1.0, 2.0]", "levels", 2) else {
+        panic("a matching table")
+    }
+    assert(values.len() == 2 && values[1] == 2.0)
+    assert(array_exact("levels: [1.0, 2.0]", "levels", 3).is_err())
+    assert(array_exact("prompt: [1.0]", "levels", 1).is_err())
+}
+
+@test
+fn exponents_are_written_as_rust_writes_them() {
+    let cases: [(f64, Text); 6] = [
+        (0.0002192369482323195, "2.192e-4"),
+        (0.01053, "1.053e-2"),
+        (0.000086431, "8.643e-5"),
+        (0.0099996, "1.000e-2"),
+        (0.02441, "2.441e-2"),
+        (1.5, "1.500e0"),
+    ]
+    for (x, want) in cases {
+        let got = sci3(x)
+        assert(got.as_str() == want, f"{x}: {got}")
+    }
+}
+
+@test
+fn a_band_fit_follows_its_points_and_extends_past_them() {
+    var points: Vec<(f64, f64)> = Vec::new()
+    for k in 2..10 {
+        points.push((f64(k) + 0.25, -10.0 - 2.0 * f64(k)))
+    }
+    let fit = band_fit(points, -10.0)
+    assert(fit.len() == 16)
+    // A line is a band fit's own: smoothing doesn't bend it.
+    assert(abs(fit[5] - (-10.0 - 2.0 * 4.75)) < 0.05, f"{fit[5]}")
+    assert(fit[0] == fit[2], "below the points: the first band they reach")
+    assert(abs(fit[12] - (fit[10] - 20.0)) < 0.000001, "above them: falling by the slope")
+}

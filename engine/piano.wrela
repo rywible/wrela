@@ -38,12 +38,12 @@
 // come from: there the recording's notes are short and the fits fail. So the decays follow a
 // string's losses (`Losses`), the levels a hammer's spectrum (`held`), and a blow keeps at least
 // the overtones a felt hammer gives (`overtones`), as loud in all as measured. Below it, the
-// measured tables are used as they are. A fit by `wrela audio model` against renders of the
+// measured tables are used as they are. A fit by the audio tool's `model` against renders of the
 // piano measures the top through these.
 //
 // There is no noise of the strike (a keybed's thump, a hammer's click): the strings' own attack
 // comes within 2.7 dB of the recorded piano's sharpness, and filtered noise added to close that
-// gap clicked (`wrela audio clicks`).
+// gap clicked (the audio tool's `clicks`).
 //
 // The resonators are kept four to a `vec4`, so the bank's arithmetic is SIMD (language.md §11).
 // Everything the audio thread does is f32 arithmetic in a fixed order, so both hosts give the

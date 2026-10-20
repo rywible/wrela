@@ -1,0 +1,66 @@
+// A piece for the audio tool's tests: an A (440 Hz) at 0.5 in the left channel and 0.25 in the
+// right, started on the first frame, for a second (take 0) or half of one (take 1). It
+// describes two bars of two beats each: two voices, three notes, the sustain pedal down and up,
+// and the soft pedal held.
+
+use std::audio::play
+use std::io::print
+use std::math::TAU
+
+pub struct Sine {
+    phase: f32,
+}
+
+@audio
+fn sing(s: mut Sine, left: mut [f32], right: mut [f32]) {
+    for i in 0..left.len() {
+        let x = sin(s.phase)
+        left[i] = 0.5 * x
+        right[i] = 0.25 * x
+        s.phase += TAU * 440.0 / 48000.0
+        if s.phase > TAU {
+            s.phase -= TAU
+        }
+    }
+}
+
+pub struct Piece {
+    which: u32,
+    started: bool,
+}
+
+pub fn init() -> Piece {
+    Piece { which: 0, started: false }
+}
+
+pub fn choose(p: mut Piece, which: u32) {
+    assert(!p.started, "a take is chosen before the piece starts")
+    p.which = which
+}
+
+pub fn frame(p: mut Piece, time: f32, width: u32, height: u32) {
+    if !p.started {
+        p.started = true
+        play(Sine { phase: 0.0 }, sing)
+    }
+}
+
+pub fn seconds(p: Piece) -> f32 {
+    if p.which == 1 { 0.5 } else { 1.0 }
+}
+
+pub fn describe(p: Piece) {
+    let name = if p.which == 1 { "short" } else { "whole" }
+    print(f"{{\"title\":\"Études\",\"take\":\"{name}\",\"bars\":2,\"beats_per_bar\":2,\"seconds\":1}}")
+    print("{\"name\":\"melody\"}")
+    print("{\"name\":\"bass\"}")
+    print("{\"key\":69,\"voice\":0,\"onset\":0,\"release\":0.5,\"velocity\":0.75,\"bar\":1}")
+    print("{\"key\":72,\"voice\":0,\"onset\":0.5,\"release\":1,\"velocity\":0.25,\"bar\":2}")
+    print("{\"key\":45,\"voice\":1,\"onset\":0,\"release\":1,\"velocity\":0.5,\"bar\":1}")
+    print("{\"sustain\":0,\"depth\":1}")
+    print("{\"sustain\":0.6,\"depth\":0}")
+    print("{\"soft\":0,\"depth\":0.5}")
+    for b in 0..5 {
+        print(f"{{\"beat\":{f32(b) * 0.25}}}")
+    }
+}

@@ -1,8 +1,8 @@
 // One note on engine::piano: `choose(key, velocity, whole)` (MIDI's numbers) before the first
 // frame, then the note is struck at once and held for 12 seconds, with no pedal. With `whole`
 // 0, the strings alone, as the model is fitted to them; with 1, the board and the sympathetic
-// strings too (no room). It follows `wrela audio`'s protocol:
-// `wrela audio examples/piano wav c4.wav --take 60,64,0`.
+// strings too (no room). It follows the audio tool's protocol:
+// `wrela tool audio -- examples/piano wav c4.wav --take 60,64,0`.
 
 use engine::perform::{PedalPoint, Performance, Played}
 use engine::piano::{Model, piano, play_piano}

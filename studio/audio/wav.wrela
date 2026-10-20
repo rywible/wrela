@@ -1,0 +1,243 @@
+// WAV files: a voice's samples written as 32-bit floats at the voice's rate, and a recording's
+// read back from 16-, 24- and 32-bit PCM or 32-bit floats.
+
+use std::audio::SAMPLE_RATE
+use std::collections::Vec
+use std::string::String
+
+fn push_tag(out: mut Vec<u8>, tag: str) {
+    for k in 0..tag.len() {
+        out.push(tag.byte(k))
+    }
+}
+
+fn push_u16(out: mut Vec<u8>, x: u32) {
+    out.push(u8(x & 255))
+    out.push(u8((x >> 8) & 255))
+}
+
+fn push_u32(out: mut Vec<u8>, x: u32) {
+    for k in 0..4 {
+        out.push(u8((x >> (8 * k)) & 255))
+    }
+}
+
+/// The header of a 32-bit float WAV file of `samples` samples (`channels` interleaved) at the
+/// voice's rate: what comes before the samples' bytes, little-endian `f32`s.
+pub fn header(samples: u32, channels: u32) -> Vec<u8> {
+    let rate = SAMPLE_RATE
+    let data = samples * 4
+    var out: Vec<u8> = Vec::with_capacity(58)
+    push_tag(mut out, "RIFF")
+    push_u32(mut out, 50 + data)
+    push_tag(mut out, "WAVEfmt ")
+    push_u32(mut out, 18)
+    // IEEE float.
+    push_u16(mut out, 3)
+    push_u16(mut out, channels)
+    push_u32(mut out, rate)
+    push_u32(mut out, rate * 4 * channels)
+    push_u16(mut out, 4 * channels)
+    push_u16(mut out, 32)
+    push_u16(mut out, 0)
+    push_tag(mut out, "fact")
+    push_u32(mut out, 4)
+    push_u32(mut out, samples / channels)
+    push_tag(mut out, "data")
+    push_u32(mut out, data)
+    out
+}
+
+/// A recording: its samples (channels interleaved, as `f32`s in [-1, 1]), its channels and its
+/// rate.
+pub struct Wav: Clone {
+    pub samples: Vec<f32>,
+    pub channels: u32,
+    pub rate: f64,
+}
+
+impl Wav {
+    /// Its channels averaged, in `f32`s (each frame's samples summed in order, then divided).
+    pub fn mono(self) -> Vec<f32> {
+        let c = self.channels
+        let frames = self.samples.len() / c
+        var out: Vec<f32> = Vec::with_capacity(frames)
+        for i in 0..frames {
+            var s: f32 = 0.0
+            for j in 0..c {
+                s += self.samples[i * c + j]
+            }
+            out.push(s / f32(c))
+        }
+        out
+    }
+}
+
+fn u16_at(b: [u8], i: u32) -> u32 {
+    u32(b[i]) | (u32(b[i + 1]) << 8)
+}
+
+fn u32_at(b: [u8], i: u32) -> u32 {
+    u32(b[i]) | (u32(b[i + 1]) << 8) | (u32(b[i + 2]) << 16) | (u32(b[i + 3]) << 24)
+}
+
+fn is(b: [u8], at: u32, tag: str) -> bool {
+    for k in 0..4 {
+        if b[at + k] != tag.byte(k) {
+            return false
+        }
+    }
+    true
+}
+
+/// The WAV file `bytes` (named `name` in an error): 16-, 24- and 32-bit PCM and 32-bit float,
+/// WAVE_FORMAT_EXTENSIBLE's too.
+pub fn read(bytes: [u8], name: str) -> Result<Wav, String> {
+    if bytes.len() < 12 || !is(bytes, 0, "RIFF") || !is(bytes, 8, "WAVE") {
+        return Err(String::from(f"{name} isn't a WAV file"))
+    }
+    var format: u32 = 0
+    var channels: u32 = 0
+    var rate: u32 = 0
+    var bits: u32 = 0
+    var at: u32 = 12
+    while u64(at) + 8 <= u64(bytes.len()) {
+        let len = u32_at(bytes, at + 4)
+        let body = at + 8
+        if len > bytes.len() - body {
+            return Err(String::from(f"{name} has a truncated WAV chunk"))
+        }
+        if is(bytes, at, "fmt ") {
+            if len < 16 || (u16_at(bytes, body) == 0xFFFE && len < 40) {
+                return Err(String::from(f"{name} has a short `fmt ` chunk"))
+            }
+            format = u16_at(bytes, body)
+            channels = u16_at(bytes, body + 2)
+            rate = u32_at(bytes, body + 4)
+            bits = u16_at(bytes, body + 14)
+            if channels == 0 || rate == 0 {
+                return Err(String::from(f"{name} has no channels or sample rate"))
+            }
+            if format == 0xFFFE {
+                // WAVE_FORMAT_EXTENSIBLE: the sub-format's first two bytes are the format.
+                format = u16_at(bytes, body + 24)
+            }
+        } else if is(bytes, at, "data") {
+            if channels == 0 {
+                return Err(String::from(f"{name}: no `fmt ` chunk before the data"))
+            }
+            let size: u32 = if format == 1 && bits == 16 {
+                2
+            } else if format == 1 && bits == 24 {
+                3
+            } else if (format == 1 || format == 3) && bits == 32 {
+                4
+            } else {
+                return Err(String::from(f"{name}: WAV format {format} at {bits} bits isn't read"))
+            }
+            if len % (size * channels) != 0 {
+                return Err(String::from(f"{name} has an incomplete WAV sample frame"))
+            }
+            let n = len / size
+            var samples: Vec<f32> = Vec::with_capacity(n)
+            for k in 0..n {
+                let i = body + k * size
+                if size == 2 {
+                    let v = i32(u16_at(bytes, i) << 16) >> 16
+                    samples.push(f32(v) / 32768.0)
+                } else if size == 3 {
+                    let v = i32(
+                        (u32(bytes[i]) << 8) |
+                            (u32(bytes[i + 1]) << 16) |
+                            (u32(bytes[i + 2]) << 24),
+                    ) >> 8
+                    samples.push(f32(v) / 8388608.0)
+                } else if format == 1 {
+                    samples.push(f32(i32(u32_at(bytes, i))) / 2147483648.0)
+                } else {
+                    samples.push(bitcast_f32(u32_at(bytes, i)))
+                }
+            }
+            return Ok(Wav { samples, channels, rate: f64(rate) })
+        }
+        at = body + len + (len % 2)
+    }
+    Err(String::from(f"{name} has no data"))
+}
+
+@test
+fn a_written_wav_reads_back() {
+    var bytes = header(samples: 4, channels: 2)
+    for x in [0.5, -0.25, 1.0, 0.0] {
+        let b = bitcast_u32(f32(x))
+        for k in 0..4 {
+            bytes.push(u8((b >> (8 * k)) & 255))
+        }
+    }
+    assert(bytes.len() == 58 + 16)
+    let Ok(w) = read(bytes, "x.wav") else { panic("a WAV") }
+    assert(w.channels == 2 && w.rate == 48000.0 && w.samples.len() == 4 && w.samples[1] == -0.25)
+    let m = w.mono()
+    assert(m.len() == 2 && m[0] == 0.125 && m[1] == 0.5)
+}
+
+@test
+fn malformed_wav_chunks_are_errors() {
+    let fmt: [u8; 24] = [
+        102, 109, 116, 32, 16, 0, 0, 0, 1, 0, 2, 0, 128, 187, 0, 0, 0, 238, 2, 0, 4, 0, 16, 0,
+    ]
+    let short_fmt: Vec<u8> = Vec::from([u8(102), 109, 116, 32, 2, 0, 0, 0, 1, 0])
+    let extensible: Vec<u8> = Vec::from(
+        [
+            u8(102),
+            109,
+            116,
+            32,
+            18,
+            0,
+            0,
+            0,
+            254,
+            255,
+            1,
+            0,
+            128,
+            187,
+            0,
+            0,
+            0,
+            238,
+            2,
+            0,
+            4,
+            0,
+            32,
+            0,
+            0,
+            0,
+        ],
+    )
+    let bare_data: Vec<u8> = Vec::from([u8(100), 97, 116, 97, 4, 0, 0, 0, 0, 0])
+    var truncated: Vec<u8> = Vec::from(fmt)
+    for b in [u8(100), 97, 116, 97, 4, 0, 0, 0, 0, 0] {
+        truncated.push(b)
+    }
+    var incomplete: Vec<u8> = Vec::from(fmt)
+    for b in [u8(100), 97, 116, 97, 2, 0, 0, 0, 0, 0] {
+        incomplete.push(b)
+    }
+    for chunk in [
+        take short_fmt,
+        take extensible,
+        take bare_data,
+        take truncated,
+        take incomplete,
+    ] {
+        var bytes: Vec<u8> = Vec::from([u8(82), 73, 70, 70, 0, 0, 0, 0, 87, 65, 86, 69])
+        for b in chunk {
+            bytes.push(b)
+        }
+        assert(read(bytes, "bad.wav").is_err(), "a malformed chunk was read")
+    }
+    assert(read([u8(1), 2, 3], "tiny.wav").is_err())
+}

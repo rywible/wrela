@@ -1,0 +1,257 @@
+// The tool's answers as JSON, written as the Rust command they replace wrote them (`serde_json`):
+// an object's keys in sorted order, a whole number as an integer, an `f64` in its shortest text
+// (ryu's form: an exponent past 16 digits before the point or 5 zeros after it) with `.0` when
+// it's whole, and `null` for a NaN or an infinity. `compact` writes it on one line, `pretty`
+// with two spaces an indent.
+
+use std::collections::Vec
+use std::fmt::json_text
+use std::string::String
+
+/// A JSON value.
+pub enum Value: Clone {
+    Null,
+    Bool(bool),
+    Int(i64),
+    Num(f64),
+    Text(String),
+    List(Vec<Value>),
+    Obj(Vec<(String, Value)>),
+}
+
+/// An object, its members to be added with `with`.
+pub fn obj() -> Value {
+    Value::Obj(Vec::new())
+}
+
+/// A list of `f64`s.
+pub fn nums(xs: [f64]) -> Value {
+    var out: Vec<Value> = Vec::with_capacity(xs.len())
+    for x in xs {
+        out.push(Value::Num(x))
+    }
+    Value::List(out)
+}
+
+/// A text.
+pub fn text(s: str) -> Value {
+    Value::Text(String::from(s))
+}
+
+/// An `f64`, or `null`.
+pub fn opt(x: Option<f64>) -> Value {
+    match x {
+        Some(v) => Value::Num(v),
+        None => Value::Null,
+    }
+}
+
+impl Value {
+    /// This object with member `key` added.
+    pub fn with(take self, key: str, v: take Value) -> Value {
+        var o = take self
+        match mut o {
+            Value::Obj(members) => members.push((String::from(key), take v)),
+            _ => panic("`with` adds a member to an object"),
+        }
+        o
+    }
+
+    /// On one line, as `serde_json::to_string` writes it.
+    pub fn compact(self) -> String {
+        var out = String::new()
+        write(mut out, self, 0, pretty: false)
+        out
+    }
+
+    /// Indented, as `serde_json::to_string_pretty` writes it.
+    pub fn pretty(self) -> String {
+        var out = String::new()
+        write(mut out, self, 0, pretty: true)
+        out
+    }
+}
+
+fn indent(out: mut String, depth: u32) {
+    for _ in 0..depth {
+        out.push_str("  ")
+    }
+}
+
+fn write(out: mut String, v: Value, depth: u32, pretty: bool) {
+    match v {
+        Value::Null => out.push_str("null"),
+        Value::Bool(b) => out.push_str(if b { "true" } else { "false" }),
+        Value::Int(n) => out.push_str(f"{n}"),
+        Value::Num(x) => number(mut out, x),
+        Value::Text(s) => {
+            out.push_str("\"")
+            json_text(mut out, s.as_str())
+            out.push_str("\"")
+        },
+        Value::List(items) => {
+            if items.is_empty() {
+                out.push_str("[]")
+                return
+            }
+            out.push_str("[")
+            for k in 0..items.len() {
+                if k > 0 {
+                    out.push_str(",")
+                }
+                if pretty {
+                    out.push_str("\n")
+                    indent(mut out, depth + 1)
+                }
+                write(mut out, items[k], depth + 1, pretty)
+            }
+            if pretty {
+                out.push_str("\n")
+                indent(mut out, depth)
+            }
+            out.push_str("]")
+        },
+        Value::Obj(members) => {
+            if members.is_empty() {
+                out.push_str("{}")
+                return
+            }
+            // Sorted by key, as a `BTreeMap`'s are: by their bytes.
+            var order: Vec<u32> = Vec::from_fn(members.len(), |i| i)
+            order.sort_by(|a, b| members[a].0.as_str() < members[b].0.as_str())
+            out.push_str("{")
+            for k in 0..order.len() {
+                if k > 0 {
+                    out.push_str(",")
+                }
+                if pretty {
+                    out.push_str("\n")
+                    indent(mut out, depth + 1)
+                }
+                let (key, value) = members[order[k]].clone()
+                out.push_str("\"")
+                json_text(mut out, key.as_str())
+                out.push_str(if pretty { "\": " } else { "\":" })
+                write(mut out, value, depth + 1, pretty)
+            }
+            if pretty {
+                out.push_str("\n")
+                indent(mut out, depth)
+            }
+            out.push_str("}")
+        },
+    }
+}
+
+/// `x` as `serde_json` writes an `f64` (ryu's form), or `null` if it isn't finite.
+pub fn number(out: mut String, x: f64) {
+    if !(abs(x) <= 1.7976931348623157e308) {
+        out.push_str("null")
+        return
+    }
+    if x == 0.0 {
+        out.push_str(if bitcast_u64(x) >> 63 == 1 { "-0.0" } else { "0.0" })
+        return
+    }
+    // The shortest digits that read back as `x`, and where the point goes: x is 0.digits × 10^kk.
+    let shortest = String::from(f"{abs(x)}")
+    let s = shortest.as_str()
+    var digits = String::new()
+    var kk: i32 = 0
+    let point = match s.find(".") {
+        Some(p) => p,
+        None => s.len(),
+    }
+    if s.starts_with("0") {
+        var i = point + 1
+        while i < s.len() && s.byte(i) == 48 {
+            kk -= 1
+            i += 1
+        }
+        digits.push_str(s.slice(i, s.len()))
+    } else {
+        kk = i32(point)
+        digits.push_str(s.slice(0, point))
+        if point < s.len() {
+            digits.push_str(s.slice(point + 1, s.len()))
+        }
+    }
+    var n = digits.len()
+    while n > 1 && digits.as_str().byte(n - 1) == 48 {
+        n -= 1
+    }
+    digits.truncate(n)
+    let d = digits.as_str()
+    let length = i32(n)
+    let k = kk - length
+    if x < 0.0 {
+        out.push_str("-")
+    }
+    if k >= 0 && kk <= 16 {
+        out.push_str(d)
+        for _ in 0..u32(k) {
+            out.push_str("0")
+        }
+        out.push_str(".0")
+    } else if kk > 0 && kk <= 16 {
+        out.push_str(d.slice(0, u32(kk)))
+        out.push_str(".")
+        out.push_str(d.slice(u32(kk), n))
+    } else if kk > -5 && kk <= 0 {
+        out.push_str("0.")
+        for _ in 0..u32(-kk) {
+            out.push_str("0")
+        }
+        out.push_str(d)
+    } else {
+        out.push_str(d.slice(from: 0, to: 1))
+        if n > 1 {
+            out.push_str(".")
+            out.push_str(d.slice(1, n))
+        }
+        out.push_str(f"e{kk - 1}")
+    }
+}
+
+/// `x` as `number` writes it.
+pub fn number_text(x: f64) -> String {
+    var out = String::new()
+    number(mut out, x)
+    out
+}
+
+@test
+fn numbers_are_written_as_serde_json_writes_them() {
+    let cases: [(f64, Text); 14] = [
+        (1.0, "1.0"),
+        (-12.5, "-12.5"),
+        (216.72727966308594, "216.72727966308594"),
+        (0.0002192369482323195, "0.0002192369482323195"),
+        (0.00001, "0.00001"),
+        (0.000001, "1e-6"),
+        (0.0000015, "1.5e-6"),
+        (1000000000000000.0, "1000000000000000.0"),
+        (10000000000000000.0, "1e16"),
+        (123456789012345680.0, "1.2345678901234568e17"),
+        (-0.0, "-0.0"),
+        (0.1, "0.1"),
+        (100.0, "100.0"),
+        (1.0 / 0.0, "null"),
+    ]
+    for (x, want) in cases {
+        let got = number_text(x)
+        assert(got.as_str() == want, f"{x}: {got}")
+    }
+}
+
+@test
+fn objects_are_sorted_and_indented() {
+    let v = obj()
+        .with("b", Value::Int(2))
+        .with("a", Value::List(Vec::from([Value::Num(1.5), Value::Null])))
+        .with("c", Value::List(Vec::new()))
+        .with("d", obj())
+    assert(v.compact().as_str() == "{\"a\":[1.5,null],\"b\":2,\"c\":[],\"d\":{}}")
+    let pretty = "{\n  \"a\": [\n    1.5,\n    null\n  ],\n  \"b\": 2,\n  \"c\": [],\n  \"d\": {}\n}"
+    assert(v.pretty().as_str() == pretty, v.pretty().as_str())
+}

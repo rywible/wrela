@@ -1,0 +1,557 @@
+// The tool's requests: files and blobs read and written whole, a piece built through the
+// toolchain, and its build driven on the CPU (`std::tool::drive`): started with its take chosen,
+// described, and its voice rendered offline. Each is a job that waits for its answers.
+
+use piece::Take
+use std::collections::{Box, Vec}
+use std::io::{IoError, Pending}
+use std::job::Step
+use std::string::String
+use std::tool::{MOST_BYTES, ToolError, answer}
+use std::tool::blob
+use std::tool::blob::{Blob, Data}
+use std::tool::drive
+use std::tool::drive::Scalar
+use std::tool::files
+use std::tool::toolchain
+
+/// How many reads of a blob are asked at once.
+const READS: u32 = 8
+
+/// The audio thread's rate and quantum.
+pub const RATE: f64 = 48000.0
+pub const QUANTUM: u32 = 128
+
+fn said(e: ToolError) -> String {
+    String::from(e.message())
+}
+
+/// `blob`'s bytes, in chunks of at most 512 KiB, read `READS` at a time.
+@job
+pub fn read_blob(b: take Blob) -> Result<Vec<Vec<u8>>, String> {
+    var l = blob::len(b)
+    var got = l.poll()
+    while got.is_none() {
+        yield
+        got = l.poll()
+    }
+    let Some(polled) = take got else { return Err(String::from("no answer")) }
+    let size = match blob::read_len(take polled) {
+        Ok(n) => n,
+        Err(e) => return Err(said(e)),
+    }
+    let chunks = u32((size + u64(MOST_BYTES) - 1) / u64(MOST_BYTES))
+    var out: Vec<Vec<u8>> = Vec::with_capacity(chunks)
+    var next: u32 = 0
+    while next < chunks {
+        let n = min(READS, chunks - next)
+        var reads: Vec<Pending<u8>> = Vec::new()
+        for k in 0..n {
+            reads.push(blob::read(b, u64(next + k) * u64(MOST_BYTES), MOST_BYTES))
+        }
+        var answers: Vec<Option<Result<Vec<u8>, IoError>>> = Vec::new()
+        for _ in 0..n {
+            answers.push(None)
+        }
+        var left = n
+        while left > 0 {
+            for k in 0..n {
+                if answers[k].is_none() {
+                    if let Some(p) = reads[k].poll() {
+                        answers[k] = Some(take p)
+                        left -= 1
+                    }
+                }
+            }
+            if left > 0 {
+                yield
+            }
+        }
+        for k in 0..n {
+            let Some(polled) = replace(mut answers[k], None) else {
+                return Err(String::from("no answer"))
+            }
+            match answer(take polled) {
+                Ok(bytes) => out.push(take bytes),
+                Err(e) => return Err(said(e)),
+            }
+        }
+        next += n
+    }
+    Ok(out)
+}
+
+/// Gives `b` back to the host.
+@job
+pub fn release(b: take Blob) -> u32 {
+    var r = blob::release(b)
+    while r.poll().is_none() { yield }
+    0
+}
+
+/// The bytes `data` holds, from a blob or in the answer itself; a blob is released after.
+@job
+pub fn data_bytes(data: take Data) -> Result<Vec<Vec<u8>>, String> {
+    let b = match take data {
+        Data::Bytes(bytes) => {
+            var out: Vec<Vec<u8>> = Vec::new()
+            out.push(take bytes)
+            return Ok(out)
+        },
+        Data::Blob(b) => b,
+    }
+    var j = Box::new(read_blob.start(b))
+    var result: Option<Result<Vec<Vec<u8>>, String>> = None
+    while result.is_none() {
+        match j.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => result = Some(take r),
+        }
+    }
+    var r = Box::new(release.start(b))
+    loop {
+        match r.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    let Some(done) = take result else { return Err(String::from("no answer")) }
+    done
+}
+
+/// The whole file at `path` (a root path), named `shown` in an error.
+@job
+pub fn read_file(path: take String, shown: take String) -> Result<Vec<u8>, String> {
+    var f = files::read_blob(path.as_str())
+    var got = f.poll()
+    while got.is_none() {
+        yield
+        got = f.poll()
+    }
+    let Some(polled) = take got else { return Err(String::from("no answer")) }
+    let b = match blob::read_handle(take polled) {
+        Ok(b) => b,
+        Err(e) => return Err(String::from(f"can't read {shown}: {e.message()}")),
+    }
+    var j = Box::new(data_bytes.start(Data::Blob(b)))
+    var result: Option<Result<Vec<Vec<u8>>, String>> = None
+    while result.is_none() {
+        match j.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => result = Some(take r),
+        }
+    }
+    let Some(done) = take result else { return Err(String::from("no answer")) }
+    var chunks = (take done)?
+    var size = 0
+    for c in chunks {
+        size += c.len()
+    }
+    var out: Vec<u8> = Vec::with_capacity(size)
+    for k in 0..chunks.len() {
+        out.append(mut chunks[k])
+    }
+    Ok(out)
+}
+
+/// Writes `parts`, one after another, as the whole file at `path` (a root path, in a write
+/// root): at once, or through a blob if they're more than a request carries.
+@job
+pub fn write_file(path: take String, given: take Vec<Vec<u8>>) -> Result<(), String> {
+    var parts = take given
+    var size = 0
+    for p in parts {
+        size += p.len()
+    }
+    if size <= MOST_BYTES {
+        var whole: Vec<u8> = Vec::with_capacity(size)
+        for p in parts {
+            for x in p {
+                whole.push(x)
+            }
+        }
+        var w = files::write(path.as_str(), whole)
+        var got = w.poll()
+        while got.is_none() {
+            yield
+            got = w.poll()
+        }
+        let Some(polled) = take got else { return Err(String::from("no answer")) }
+        return match answer(take polled) {
+            Ok(_) => Ok(()),
+            Err(e) => Err(said(e)),
+        }
+    }
+    var n = blob::new()
+    var made = n.poll()
+    while made.is_none() {
+        yield
+        made = n.poll()
+    }
+    let Some(mp) = take made else { return Err(String::from("no answer")) }
+    let b = match blob::read_handle(take mp) {
+        Ok(b) => b,
+        Err(e) => return Err(said(e)),
+    }
+    var result: Result<(), String> = Ok(())
+    // Each part as it is, if it fits a request (a blob's chunks do), else a chunk at a time.
+    var k = 0
+    while result.is_ok() && k < parts.len() {
+        let part = replace(mut parts[k], Vec::new())
+        var at = 0
+        while result.is_ok() && (at < part.len() || (at == 0 && part.is_empty())) {
+            let end = min(at + MOST_BYTES, part.len())
+            var a = if at == 0 && end == part.len() {
+                blob::append(b, part)
+            } else {
+                var chunk: Vec<u8> = Vec::with_capacity(end - at)
+                for i in at..end {
+                    chunk.push(part[i])
+                }
+                blob::append(b, chunk)
+            }
+            var got = a.poll()
+            while got.is_none() {
+                yield
+                got = a.poll()
+            }
+            let Some(polled) = take got else { return Err(String::from("no answer")) }
+            if let Err(e) = answer(take polled) {
+                result = Err(said(e))
+            }
+            if end == at {
+                break
+            }
+            at = end
+        }
+        k += 1
+    }
+    if result.is_ok() {
+        var w = files::write_blob(path.as_str(), b)
+        var got = w.poll()
+        while got.is_none() {
+            yield
+            got = w.poll()
+        }
+        let Some(polled) = take got else { return Err(String::from("no answer")) }
+        if let Err(e) = answer(take polled) {
+            result = Err(said(e))
+        }
+    }
+    var r = Box::new(release.start(b))
+    loop {
+        match r.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    result
+}
+
+/// Builds the piece at `pkg` (a root path) into its `build/audio`: that directory, or the
+/// build's errors.
+@job
+pub fn build_piece(pkg: take String) -> Result<String, String> {
+    let out = String::from(f"{pkg}/build/audio")
+    var b = toolchain::build(pkg.as_str(), out.as_str(), toolchain::options())
+    var built = b.poll()
+    while built.is_none() {
+        yield
+        built = b.poll()
+    }
+    let Some(bp) = take built else { return Err(String::from("no answer")) }
+    let result = match toolchain::read_built(take bp) {
+        Ok(r) => take r,
+        Err(e) => return Err(said(e)),
+    }
+    if !result.ok {
+        var why = String::new()
+        for d in result.diagnostics {
+            if d.error {
+                why.push_str(d.rendered.as_str())
+            }
+        }
+        return Err(take why)
+    }
+    Ok(out)
+}
+
+fn trapped(what: str, ran: take drive::Ran) -> Result<drive::Ran, String> {
+    match ran.trap {
+        Some(t) => Err(String::from(f"{what}: {t.message}")),
+        None => Ok(ran),
+    }
+}
+
+/// Calls `export` with `args` on `b`: what it ran, or why it failed (`what` names it).
+@job
+pub fn call(
+    b: take drive::Build,
+    export: take String,
+    args: take Vec<Scalar>,
+    what: take String,
+) -> Result<drive::Ran, String> {
+    var c = drive::call(b, export.as_str(), args, timeout: 600.0)
+    var got = c.poll()
+    while got.is_none() {
+        yield
+        got = c.poll()
+    }
+    let Some(polled) = take got else { return Err(String::from("no answer")) }
+    match drive::read_ran(take polled) {
+        Ok(ran) => trapped(what.as_str(), take ran),
+        Err(e) => Err(String::from(f"{what}: {e.message()}")),
+    }
+}
+
+/// The piece built in `build`, loaded on the CPU and started (`init`), with `chosen` its take
+/// (`choose(...)`, if given).
+@job
+pub fn start_piece(
+    build: take String,
+    chosen: take Option<Vec<u32>>,
+) -> Result<drive::Build, String> {
+    var options = drive::cpu()
+    options.width = 16
+    options.height = 16
+    var l = drive::load(build.as_str(), options)
+    var lg = l.poll()
+    while lg.is_none() {
+        yield
+        lg = l.poll()
+    }
+    let Some(lp) = take lg else { return Err(String::from("no answer")) }
+    let b = match drive::read_loaded(take lp) {
+        Ok(it) => it.build,
+        Err(e) => return Err(said(e)),
+    }
+    var i = drive::init(b, timeout: 600.0)
+    var ig = i.poll()
+    while ig.is_none() {
+        yield
+        ig = i.poll()
+    }
+    let Some(ip) = take ig else { return Err(String::from("no answer")) }
+    match drive::read_ran(take ip) {
+        Ok(ran) => {
+            let _ = trapped("`init`", take ran)?
+        },
+        Err(e) => return Err(said(e)),
+    }
+    let Some(t) = take chosen else { return Ok(b) }
+    var args: Vec<Scalar> = Vec::new()
+    var list = String::new()
+    for n in t {
+        args.push(Scalar::I32(i32(n)))
+        if !list.is_empty() {
+            list.push_str(", ")
+        }
+        list.push_str(f"{n}")
+    }
+    var c = Box::new(
+        call.start(b, String::from("choose"), take args, String::from(f"`choose([{list}])`")),
+    )
+    loop {
+        match c.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                let _ = (take r)?
+                break
+            },
+        }
+    }
+    Ok(b)
+}
+
+/// The take that `b`'s `describe()` prints.
+@job
+pub fn describe_piece(b: take drive::Build) -> Result<Take, String> {
+    var c = Box::new(
+        call.start(b, String::from("describe"), Vec::new(), String::from("`describe()`")),
+    )
+    loop {
+        match c.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                let _ = (take r)?
+                break
+            },
+        }
+    }
+    var lines: Vec<String> = Vec::new()
+    loop {
+        var o = drive::logs(b)
+        var got = o.poll()
+        while got.is_none() {
+            yield
+            got = o.poll()
+        }
+        let Some(polled) = take got else { return Err(String::from("no answer")) }
+        let logs = match drive::read_logs(take polled) {
+            Ok(l) => take l,
+            Err(e) => return Err(said(e)),
+        }
+        for l in logs.lines {
+            lines.push(l.clone())
+        }
+        if logs.waiting == 0 {
+            break
+        }
+    }
+    piece::read(lines)
+}
+
+/// How many seconds `b`'s take sounds: `given`, or the piece's `seconds()`.
+@job
+pub fn length_of(b: take drive::Build, given: take Option<f64>) -> Result<f64, String> {
+    if let Some(s) = given {
+        return Ok(s)
+    }
+    var c = Box::new(
+        call.start(b, String::from("seconds"), Vec::new(), String::from("`seconds()`")),
+    )
+    var ran: Option<Result<drive::Ran, String>> = None
+    while ran.is_none() {
+        match c.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => ran = Some(take r),
+        }
+    }
+    let Some(r) = take ran else { return Err(String::from("no answer")) }
+    let done = (take r)?
+    if done.results.is_empty() {
+        return Err(String::from("`seconds()` returns no f32"))
+    }
+    match done.results[0] {
+        Scalar::F32(s) => Ok(f64(s)),
+        Scalar::F64(s) => Ok(s),
+        _ => Err(String::from("`seconds()` returns no f32")),
+    }
+}
+
+/// How many quanta `seconds` takes, or why it can't be rendered.
+pub fn quanta(seconds: f64) -> Result<u32, String> {
+    let count = ceil(seconds * RATE / f64(QUANTUM))
+    if !(abs(seconds) <= 1.7976931348623157e308) || seconds <= 0.0 || !(count <= 4294967295.0) {
+        return Err(
+            String::from(
+                "audio length must be a positive, finite number of seconds within the render limit",
+            ),
+        )
+    }
+    Ok(u32(count))
+}
+
+/// A voice rendered: its samples' bytes as the host gave them (little-endian `f32`s, the two
+/// channels interleaved), the samples, and each quantum's seconds if timed.
+pub struct Rendered: Clone {
+    pub bytes: Vec<Vec<u8>>,
+    pub samples: Vec<f32>,
+    pub times: Vec<f64>,
+}
+
+fn f32s(chunks: [Vec<u8>]) -> Vec<f32> {
+    var size = 0
+    for c in chunks {
+        size += c.len() / 4
+    }
+    var out: Vec<f32> = Vec::with_capacity(size)
+    for c in chunks {
+        let n = c.len() / 4
+        for k in 0..n {
+            let i = 4 * k
+            out.push(
+                bitcast_f32(
+                    u32(c[i]) |
+                        (u32(c[i + 1]) << 8) |
+                        (u32(c[i + 2]) << 16) |
+                        (u32(c[i + 3]) << 24),
+                ),
+            )
+        }
+    }
+    out
+}
+
+fn f64s(chunks: [Vec<u8>]) -> Vec<f64> {
+    var out: Vec<f64> = Vec::new()
+    for c in chunks {
+        let n = c.len() / 8
+        for k in 0..n {
+            var bits: u64 = 0
+            for j in 0..8 {
+                bits = bits | (u64(c[8 * k + j]) << (8 * j))
+            }
+            out.push(bitcast_f64(bits))
+        }
+    }
+    out
+}
+
+/// `b`'s voice over `seconds`, after its first frame (when a piece starts it): each quantum
+/// timed alone if `timed`.
+@job
+pub fn render_piece(
+    b: take drive::Build,
+    seconds: take f64,
+    timed: take bool,
+) -> Result<Rendered, String> {
+    let n = quanta(seconds)?
+    var f = drive::frames(b, 1, std::input::Script::frames(), timeout: 600.0)
+    var fg = f.poll()
+    while fg.is_none() {
+        yield
+        fg = f.poll()
+    }
+    let Some(fp) = take fg else { return Err(String::from("no answer")) }
+    match drive::read_ran(take fp) {
+        Ok(ran) => {
+            let _ = trapped("the first frame", take ran)?
+        },
+        Err(e) => return Err(String::from(f"the first frame: {e.message()}")),
+    }
+    var a = drive::audio(b, n, timed, timeout: 600.0)
+    var ag = a.poll()
+    while ag.is_none() {
+        yield
+        ag = a.poll()
+    }
+    let Some(ap) = take ag else { return Err(String::from("no answer")) }
+    let voice = match drive::read_audio(take ap) {
+        Ok(v) => take v,
+        Err(e) => return Err(said(e)),
+    }
+    var times: Vec<f64> = Vec::new()
+    if let Some(t) = voice.times.clone() {
+        var j = Box::new(data_bytes.start(take t))
+        var result: Option<Result<Vec<Vec<u8>>, String>> = None
+        while result.is_none() {
+            match j.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(r) => result = Some(take r),
+            }
+        }
+        let Some(r) = take result else { return Err(String::from("no answer")) }
+        times = f64s((take r)?)
+    }
+    var j = Box::new(data_bytes.start(voice.samples.clone()))
+    var result: Option<Result<Vec<Vec<u8>>, String>> = None
+    while result.is_none() {
+        match j.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => result = Some(take r),
+        }
+    }
+    let Some(r) = take result else { return Err(String::from("no answer")) }
+    let bytes = (take r)?
+    let samples = f32s(bytes)
+    Ok(Rendered { bytes, samples, times })
+}
+
+/// Closes `b`.
+@job
+pub fn close(b: take drive::Build) -> u32 {
+    var c = drive::close(b)
+    while c.poll().is_none() { yield }
+    0
+}

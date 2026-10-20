@@ -98,6 +98,7 @@ use std::tool::drive
 use std::tool::drive::Scalar
 use std::tool::files
 use std::tool::time
+use std::tool::files::rooted
 
 /// The root the tool reads the workspace in, and the root its output goes in.
 pub const WS: Text = "ws"
@@ -178,35 +179,6 @@ pub fn parse_size(s: str) -> Option<(u32, u32)> {
         return None
     }
     Some((w, h))
-}
-
-/// A path the command line gives, from the workspace's directory: `NAME/path`, or `None` if it
-/// isn't a plain relative path.
-pub fn rooted(root: str, path: str) -> Option<String> {
-    var from = 0
-    var to = path.len()
-    while to > 1 && path.byte(to - 1) == 47 {
-        to -= 1
-    }
-    let whole = path.slice(0, to)
-    if whole == "." {
-        return Some(String::from(root))
-    }
-    if whole.starts_with("./") {
-        from = 2
-    }
-    let p = path.slice(from, to)
-    if p.is_empty() || p.starts_with("/") {
-        return None
-    }
-    for range in p.split("/") {
-        let (a, b) = range
-        let part = p.slice(a, b)
-        if part.is_empty() || part == "." || part == ".." {
-            return None
-        }
-    }
-    Some(String::from(f"{root}/{p}"))
 }
 
 /// One of the lens's actions, as the command line gives it: its export and the export's

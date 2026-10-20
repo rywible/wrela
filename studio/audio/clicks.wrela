@@ -1,0 +1,272 @@
+// The clicks in a recording, for an agent that can't hear them. A click is a burst of high
+// frequencies, sharp beside what's around it: the signal's second difference (which favours the
+// highs), its energy over 1 ms, more than 12 dB over its median within 50 ms either side, and the
+// most within 2 ms. With a take's notes (`describe`'s answer), each click is put with what's
+// happening when it starts: a note struck (within 8 ms after an onset), a note let go or the
+// pedal lifted (within 40 ms after a release, or the sustain pedal crossing half its travel), or
+// neither.
+
+use dsp::{round, round_away}
+use io::read_file
+use json::{Value, obj, opt, text}
+use main::{Args, in_root}
+use std::collections::{Box, Vec}
+use std::io::print
+use std::job::Step
+use std::string::String
+use std::json::{Kind, TOP, parse}
+use std::math
+
+const DB_OVER: f64 = 12.0
+
+/// A click: when it starts (seconds), and how far over its surroundings (dB).
+pub struct Click: Copy {
+    pub at: f64,
+    pub db: f64,
+}
+
+/// The median of `xs` (its middle element once sorted: the higher of two).
+fn median(xs: mut Vec<f64>) -> f64 {
+    xs.sort_by(|a, b| a < b)
+    xs[xs.len() / 2]
+}
+
+/// The clicks in `mono` (at `rate`).
+pub fn clicks(mono: [f32], rate: f64) -> Vec<Click> {
+    // 0.5 ms and 1 ms, at least a sample each.
+    let step = max(u32(rate / 2000.0), 1)
+    let width = max(u32(rate / 1000.0), 1)
+    let n = mono.len()
+    var d: Vec<f64> = Vec::with_capacity(if n > 2 { n - 2 } else { 0 })
+    for i in 2..n {
+        d.push(f64(mono[i]) - 2.0 * f64(mono[i - 1]) + f64(mono[i - 2]))
+    }
+    let count = if d.len() > width { (d.len() - width) / step } else { 0 }
+    var frames: Vec<f64> = Vec::with_capacity(count)
+    for f in 0..count {
+        var s = 0.0
+        for j in f * step..f * step + width {
+            s += d[j] * d[j]
+        }
+        let e = s / f64(width)
+        frames.push(if e > 1e-30 { e } else { 1e-30 })
+    }
+    let around = max(u32(round_away(rate * 0.05 / f64(step))), 1)
+    let local = max(u32(round_away(rate * 0.002 / f64(step))), 1)
+    var out: Vec<Click> = Vec::new()
+    var i = 0
+    while i < frames.len() {
+        if frames[i] <= 0.0000000001 {
+            i += 1
+            continue
+        }
+        // Only a local peak can be a click. Most frames need no median at all.
+        let lo_l = if i >= local { i - local } else { 0 }
+        let hi_l = min(i + local + 1, frames.len())
+        var local_max = true
+        for j in lo_l..hi_l {
+            if frames[j] > frames[i] {
+                local_max = false
+                break
+            }
+        }
+        if !local_max {
+            i += 1
+            continue
+        }
+        let lo = if i >= around { i - around } else { 0 }
+        let hi = min(i + around, frames.len())
+        var near: Vec<f64> = Vec::with_capacity(hi - lo)
+        for j in lo..hi {
+            near.push(frames[j])
+        }
+        // Silence's median is no level to stand out from: a click must be over -100 dB too.
+        let m = median(mut near)
+        let floor = if m > 0.0000000001 { m } else { 0.0000000001 }
+        let level = 10.0 * math::log10_f64(frames[i] / floor)
+        if level > DB_OVER {
+            out.push(Click { at: f64(i * step) / rate, db: level })
+            i += local
+        } else {
+            i += 1
+        }
+    }
+    out
+}
+
+/// What's happening when click `c` starts, with a take's onsets and releases.
+pub fn kind_of(c: Click, have_notes: bool, onsets: [f64], releases: [f64]) -> Text {
+    if !have_notes {
+        return "unknown"
+    }
+    for x in onsets {
+        if c.at >= x - 0.002 && c.at <= x + 0.008 {
+            return "onset"
+        }
+    }
+    for x in releases {
+        if c.at >= x - 0.002 && c.at <= x + 0.04 {
+            return "release"
+        }
+    }
+    "other"
+}
+
+/// `clicks`' answer.
+@job
+pub fn clicks_report(a: take Args) -> Result<(), String> {
+    let shown = a.rest[0].clone()
+    let path = in_root(a.root.as_str(), shown.as_str())?
+    var r = Box::new(read_file.start(take path, shown.clone()))
+    var bytes: Option<Result<Vec<u8>, String>> = None
+    while bytes.is_none() {
+        match r.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(b) => bytes = Some(take b),
+        }
+    }
+    let Some(b) = take bytes else { return Err(String::from("no answer")) }
+    let w = wav::read((take b)?, shown.as_str())?
+    let mono = w.mono()
+    let found = clicks(mono, w.rate)
+    let seconds = f64(mono.len()) / w.rate
+    // What's happening at each click, with a take's notes.
+    var onsets: Vec<f64> = Vec::new()
+    var releases: Vec<f64> = Vec::new()
+    let have_notes = a.notes.is_some()
+    if let Some(notes) = a.notes.clone() {
+        let notes_path = in_root(a.root.as_str(), notes.as_str())?
+        var nr = Box::new(read_file.start(take notes_path, notes.clone()))
+        var got: Option<Result<Vec<u8>, String>> = None
+        while got.is_none() {
+            match nr.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(b) => got = Some(take b),
+            }
+        }
+        let Some(g) = take got else { return Err(String::from("no answer")) }
+        let raw = (take g)?
+        let Some(text_of) = String::from_utf8(take raw) else {
+            return Err(String::from(f"{notes}: it isn't UTF-8"))
+        }
+        let Some(d) = parse(text_of.as_str()) else {
+            return Err(String::from(f"{notes}: it isn't JSON"))
+        }
+        let listed = match d.get(TOP, "notes") {
+            Some(n) => n,
+            None => return Err(String::from("the take has no notes")),
+        }
+        if d.kind(listed) != Kind::List {
+            return Err(String::from("the take has no notes"))
+        }
+        let num = |n: Option<u32>| match n {
+            Some(k) => d.num(k).unwrap_or(0.0),
+            None => 0.0,
+        }
+        for k in 0..d.count(listed) {
+            let Some(note) = d.at(listed, k) else { continue }
+            onsets.push(num(d.get(note, "onset")))
+            releases.push(num(d.get(note, "release")))
+        }
+        // The pedal rising past half its travel lifts the dampers... and falling past it lets
+        // them land: either is a release of sorts.
+        if let Some(points) = d.get(TOP, "sustain") {
+            let count = d.count(points)
+            for k in 1..count {
+                let (Some(pa), Some(pb)) = (d.at(points, k - 1), d.at(points, k)) else { continue }
+                let da = num(d.at(pa, 1))
+                let db = num(d.at(pb, 1))
+                if (da - 0.5) * (db - 0.5) < 0.0 {
+                    releases.push(num(d.at(pb, 0)))
+                }
+            }
+        }
+    }
+    var kinds: Vec<Text> = Vec::with_capacity(found.len())
+    for c in found {
+        kinds.push(kind_of(c, have_notes, onsets, releases))
+    }
+    let count = |k: str| {
+        var n = 0
+        for x in kinds {
+            if x == k {
+                n += 1
+            }
+        }
+        n
+    }
+    let mean_db = |k: str| {
+        var s = 0.0
+        var n = 0
+        for i in 0..found.len() {
+            if kinds[i] == k {
+                s += found[i].db
+                n += 1
+            }
+        }
+        if n == 0 { None } else { Some(round(s / f64(n), 1)) }
+    }
+    // How long after the last release each click elsewhere comes: a pattern there (a click
+    // every few ms for a while after each release) is a damper's doing.
+    var since: Vec<f64> = Vec::new()
+    for i in 0..found.len() {
+        if kinds[i] != "other" {
+            continue
+        }
+        let at = found[i].at
+        var best: Option<f64> = None
+        for r0 in releases {
+            if r0 <= at {
+                let gap = at - r0
+                best = match best {
+                    Some(b) => Some(if gap < b { gap } else { b }),
+                    None => Some(gap),
+                }
+            }
+        }
+        if let Some(g) = best {
+            since.push(1000.0 * g)
+        }
+    }
+    since.sort_by(|a, b| a < b)
+    let quartile = |q: u32| {
+        let k = since.len() * q / 4
+        if k < since.len() { Some(round(since[k], 0)) } else { None }
+    }
+    var order: Vec<u32> = Vec::from_fn(found.len(), |i| i)
+    order.sort_by(|x, y| found[x].db > found[y].db)
+    var strongest: Vec<Value> = Vec::new()
+    for k in 0..min(12, order.len()) {
+        let c = found[order[k]]
+        strongest.push(
+            obj()
+                .with("at", Value::Num(round(c.at, 3)))
+                .with("db", Value::Num(round(c.db, 1)))
+                .with("when", text(kinds[order[k]])),
+        )
+    }
+    print(
+        obj()
+            .with("file", text(shown.as_str()))
+            .with("seconds", Value::Num(round(seconds, 1)))
+            .with("clicks", Value::Int(i64(found.len())))
+            .with("per_minute", Value::Num(round(f64(found.len()) / seconds * 60.0, 1)))
+            .with("at_onsets", Value::Int(i64(count("onset"))))
+            .with("at_onsets_mean_db", opt(mean_db("onset")))
+            .with("at_releases", Value::Int(i64(count("release"))))
+            .with("at_releases_mean_db", opt(mean_db("release")))
+            .with("elsewhere", Value::Int(i64(count("other"))))
+            .with("elsewhere_mean_db", opt(mean_db("other")))
+            .with(
+                "elsewhere_ms_after_a_release",
+                obj()
+                    .with("quartile_1", opt(quartile(1)))
+                    .with("median", opt(quartile(2)))
+                    .with("quartile_3", opt(quartile(3))),
+            )
+            .with("strongest", Value::List(take strongest))
+            .pretty()
+            .as_str(),
+    )
+    Ok(())
+}

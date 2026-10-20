@@ -11,7 +11,7 @@
 // Parts are fitted at once, each on a helper of the tool's (`each_on_helpers`): each part's fit
 // is a function of its own inputs, so the replica is the same with any number of helpers.
 
-use math
+use std::math
 use mesh::{Solid, cross3, dot3, keeps_handedness, len3, names_each_axis_once, parse, place, unit3}
 use references::manifest::{Parts, Point, Registration, Seam}
 use solve::{Banded, catmull_rom_weights, fourier, least_squares}
@@ -383,8 +383,8 @@ impl Loft {
     /// The point `r` from the axis at station `i` and angle `j` (each may be between two).
     pub fn point(self, i: f64, j: f64, r: f64) -> vec3d {
         let o = self.a + self.w * (self.len * i / f64(self.stations - 1))
-        let theta = math::TAU * j / f64(self.angles)
-        let d = self.u * math::cos(theta) + self.v * math::sin(theta)
+        let theta = math::TAU_F64 * j / f64(self.angles)
+        let d = self.u * math::cos_f64(theta) + self.v * math::sin_f64(theta)
         o + d * r
     }
 
@@ -404,7 +404,7 @@ impl Loft {
         let ts = along / self.len * f64(stations - 1)
         let i0 = min(u32(ts), stations - 2)
         let f = clamp(ts - f64(i0), 0.0, 1.0)
-        let turns = rem_euclid(math::atan2(y, x) / math::TAU, 1.0)
+        let turns = rem_euclid(math::atan2_f64(y, x) / math::TAU_F64, 1.0)
         let js = turns * f64(angles)
         let j0 = min(u32(js), angles - 1)
         let g = clamp(js - f64(j0), 0.0, 1.0)
@@ -442,8 +442,8 @@ fn inside_another(lofts: [Option<Loft>], k: u32, p: vec3d) -> bool {
 /// Angle `j` of `angles`'s direction around the axis `w`, from `u` by the right hand: as the
 /// engine's loft reads it (cos θ u + sin θ (w × u)).
 fn direction(w: vec3d, u: vec3d, j: u32, angles: u32) -> vec3d {
-    let theta = math::TAU * f64(j) / f64(angles)
-    u * math::cos(theta) + cross3(w, u) * math::sin(theta)
+    let theta = math::TAU_F64 * f64(j) / f64(angles)
+    u * math::cos_f64(theta) + cross3(w, u) * math::sin_f64(theta)
 }
 
 /// The part with its axis run on by `overlap` past each end, then trimmed to where it's inside
@@ -553,14 +553,14 @@ pub fn fill_held(radii: mut Vec<i32>, held: [bool], at: u32, a: u32, r_max: f64)
     var ys: Vec<f64> = Vec::new()
     for j in 0..a {
         if !held[at + j] {
-            basis.push(fourier(math::TAU * f64(j) / f64(a), k))
+            basis.push(fourier(math::TAU_F64 * f64(j) / f64(a), k))
             ys.push(f64(radii[at + j]))
         }
     }
     let c = least_squares(basis, ys, ridge: 0.001 * f64(ys.len()))
     for j in 0..a {
         if held[at + j] {
-            let terms = fourier(math::TAU * f64(j) / f64(a), k)
+            let terms = fourier(math::TAU_F64 * f64(j) / f64(a), k)
             var r = -0.0
             for q in 0..terms.len() {
                 r += terms[q] * c[q]
@@ -656,7 +656,7 @@ fn sweep_point(sm: SweepMeasure, n: u32, back: f64) -> vec3d {
     let a = sm.measured.angles
     let i = n / a
     let j = n % a
-    let theta = math::TAU * f64(j) / f64(a)
+    let theta = math::TAU_F64 * f64(j) / f64(a)
     sm.path.point(sm.measured.s[i], theta, sm.measured.radii[n] - back)
 }
 
@@ -779,7 +779,7 @@ pub fn fit_sweeps(parts: [Part], measured: take Vec<Measure>) -> Vec<Sampled> {
                 }
                 let i = n / a
                 let j = n % a
-                let theta = math::TAU * f64(j) / f64(a)
+                let theta = math::TAU_F64 * f64(j) / f64(a)
                 let own = section_at(f.sections, f.places, sm.measured.s[i] / len).radius(theta)
                 if sm.measured.radii[n] - own <= within {
                     hold.push(n)
@@ -1023,7 +1023,7 @@ pub fn fit_compact(s: Sampled, c: Compression, floor: [bool]) -> (Sampled, u32) 
     let coefficients = 2 * k + 1
     var around: Vec<Vec<f64>> = Vec::with_capacity(a)
     for j in 0..a {
-        around.push(fourier(math::TAU * f64(j) / f64(a), k))
+        around.push(fourier(math::TAU_F64 * f64(j) / f64(a), k))
     }
     let len = len3(s.part.to - s.part.from)
     let stations = table.stations

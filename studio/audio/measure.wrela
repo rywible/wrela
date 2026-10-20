@@ -1,0 +1,557 @@
+// A recorded note's partials, measured: their frequencies, their levels over time, and their
+// decays in two stages. `partials` reports one note (`report`); `model` fits engine::piano's
+// tables to many (model.wrela).
+//
+// The frequencies come from a long spectrum just after the strike (longer for low keys, whose
+// partials are close), searched twice: first where a typical piano's inharmonicity B puts each
+// partial, widely; then where the B those fit puts it, narrowly. A low key's fundamental is
+// often too weak to find, so no partial is relied on alone. Then each partial's level is read
+// every 1024 samples from a spectrum of 16384, and its fall fitted by two exponentials.
+
+use dsp::{Plan, Scratch, clamp_of, db, max_of, min_of, peak, round, round_away, sat_u32}
+use json::{Value, obj, opt}
+use std::collections::Vec
+use std::math
+
+/// A partial of a recorded note: its number, its frequency, and its level (dB of full scale)
+/// every `Measured::dt` seconds.
+pub struct Partial: Clone {
+    pub n: u32,
+    pub hz: f64,
+    pub levels: Vec<f64>,
+}
+
+impl Partial {
+    /// Its loudest level, near the start (in its first 20 levels).
+    pub fn peak_db(self) -> f64 {
+        var m = -200.0
+        for i in 0..min(20, self.levels.len()) {
+            m = max_of(m, self.levels[i])
+        }
+        m
+    }
+}
+
+/// A recorded note's partials.
+pub struct Measured: Clone {
+    pub nominal: f64,
+    pub f0: f64,
+    pub inharmonicity: f64,
+    pub partials: Vec<Partial>,
+    pub dt: f64,
+}
+
+impl Measured {
+    /// The first partial's frequency, in cents from equal temperament at A4 = 440 Hz.
+    pub fn cents(self) -> f64 {
+        1200.0 * math::log2_f64(self.f0 * sqrt(1.0 + self.inharmonicity) / self.nominal)
+    }
+}
+
+/// The window a search looks for a partial within: widely (each partial within 3% for the
+/// first two, 1% after, plus what a typical B's error grows to as p³), or narrowly (0.8%).
+struct Window: Copy {
+    wide: bool,
+    nominal: f64,
+    typical: f64,
+    fine: f64,
+}
+
+impl Window {
+    fn width(self, f: f64, p: f64) -> f64 {
+        if self.wide {
+            let off = if p <= 2.0 { 0.03 * f } else { 0.01 * f }
+            max_of(
+                min_of(off + 0.3 * p * p * p * self.nominal * self.typical, 0.4 * self.nominal),
+                2.0 * self.fine,
+            )
+        } else {
+            max_of(min_of(0.008 * f, 0.4 * self.nominal), 4.0 * self.fine)
+        }
+    }
+}
+
+/// 2^((key − 69) / 12) · 440 Hz.
+pub fn nominal_of(key: u32) -> f64 {
+    440.0 * math::pow_f64(2.0, (f64(key) - 69.0) / 12.0)
+}
+
+/// What a note's measurement finds before it reads levels: its nominal frequency, f₀ and B, its
+/// partials' numbers and frequencies, where it starts (a sample), how many frames it reads, and
+/// how many seconds a frame is.
+pub struct Setup: Clone {
+    pub nominal: f64,
+    pub f0: f64,
+    pub b: f64,
+    pub found: Vec<(u32, f64)>,
+    pub start: u32,
+    pub frames: u32,
+    pub dt: f64,
+}
+
+/// The size of the spectra levels are read from, and how many samples apart they are.
+pub const N: u32 = 16384
+pub const HOP: u32 = 1024
+
+/// A note's partials, found in `samples` (mono, at `rate`) from `from` seconds on, to be read over
+/// `seconds`: their frequencies, which fit an inharmonicity B.
+pub fn setup(samples: [f32], rate: f64, key: u32, from: f64, seconds: f64) -> Setup {
+    let start = sat_u32(from * rate)
+    let nominal = nominal_of(key)
+    let long: u32 = if key < 48 { 65536 } else { 16384 }
+    let fine = rate / f64(long)
+    let early = Plan::new(long).spectrum(samples, start + HOP)
+    var loudest = 0.0
+    for x in early {
+        loudest = max_of(loudest, x)
+    }
+    let typical = typical_b(key)
+    // A sample can be 40 cents out (a top key's, recorded sharp): the first partials are
+    // searched for within 3%.
+    let wide = Window { wide: true, nominal, typical, fine }
+    let first = search(
+        early,
+        fine,
+        nominal,
+        typical,
+        loudest * math::pow_f64(10.0, -55.0 / 20.0),
+        wide,
+        refit: false,
+    )
+    // Too few partials to fit (a top key's): the first one found sets f₀, with a typical B.
+    var found_first: Option<f64> = None
+    for (p, f) in first {
+        if p == 1 {
+            found_first = Some(f / sqrt(1.0 + typical))
+            break
+        }
+    }
+    let guess = match fit(first) {
+        Some(x) => x,
+        None => (found_first.unwrap_or(nominal), typical),
+    }
+    var f0 = guess.0
+    var b = guess.1
+    let narrow = Window { wide: false, nominal, typical, fine }
+    let found = search(
+        early,
+        fine,
+        f0,
+        b,
+        loudest * math::pow_f64(10.0, -70.0 / 20.0),
+        narrow,
+        refit: true,
+    )
+    if let Some((a, c)) = fit(found) {
+        f0 = a
+        b = c
+    }
+    b = clamp_of(b, lo: 0.00002, hi: 0.05)
+    let frames = max(sat_u32(seconds * rate) / HOP, 1)
+    Setup { nominal, f0, b, found, start, frames, dt: f64(HOP) / rate }
+}
+
+/// Frame `t`'s levels of `s`'s partials (dB): each partial's loudest bin within two of its own,
+/// in a spectrum of `N` samples (`plan`'s), `room` its room.
+pub fn frame_levels(
+    plan: Plan,
+    samples: [f32],
+    s: Setup,
+    t: u32,
+    rate: f64,
+    room: mut Scratch,
+) -> Vec<f64> {
+    plan.transform(samples, s.start + t * HOP, mut room)
+    let bin = rate / f64(N)
+    let len = room.mag.len()
+    var out: Vec<f64> = Vec::with_capacity(s.found.len())
+    for (_, f) in s.found {
+        let k = sat_u32(round_away(f / bin))
+        let lo = if k >= 2 { k - 2 } else { 0 }
+        let hi = min(k + 2, len - 1)
+        var a = 0.0
+        var j = lo
+        while j <= hi {
+            a = max_of(a, room.mag[j])
+            j += 1
+        }
+        out.push(db(a))
+    }
+    out
+}
+
+/// The measurement of `s`, its frames' levels read (`scan[t]`, each partial's in order).
+pub fn assemble(s: Setup, scan: [Vec<f64>]) -> Measured {
+    var partials: Vec<Partial> = Vec::with_capacity(s.found.len())
+    for i in 0..s.found.len() {
+        var levels: Vec<f64> = Vec::with_capacity(scan.len())
+        for t in 0..scan.len() {
+            levels.push(scan[t][i])
+        }
+        let (p, hz) = s.found[i]
+        partials.push(Partial { n: p, hz, levels })
+    }
+    Measured { nominal: s.nominal, f0: s.f0, inharmonicity: s.b, partials, dt: s.dt }
+}
+
+/// A frame to read, and what it read.
+struct Frame: Clone {
+    t: u32,
+    levels: Vec<f64>,
+}
+
+/// A note's partials, measured from `samples` (mono, at `rate`) from `from` seconds on, over
+/// `seconds`: their frequencies, which fit an inharmonicity B, and their levels over time, each
+/// frame read on the tool's helpers.
+pub fn measure(samples: [f32], rate: f64, key: u32, from: f64, seconds: f64) -> Measured {
+    let s = setup(samples, rate, key, from, seconds)
+    let plan = Plan::new(N)
+    var scan: Vec<Frame> = Vec::from_fn(s.frames, |t| Frame { t, levels: Vec::new() })
+    scan.par_each_mut(|fr| {
+        var room = plan.scratch()
+        fr.levels = frame_levels(plan, samples, s, fr.t, rate, mut room)
+    })
+    var levels: Vec<Vec<f64>> = Vec::with_capacity(scan.len())
+    for k in 0..scan.len() {
+        levels.push(replace(mut scan[k].levels, Vec::new()))
+    }
+    assemble(s, levels)
+}
+
+/// A typical grand piano's inharmonicity at `key`: about 10⁻⁴ in the bass's wound strings,
+/// doubling every 10 keys above them (Young; Fletcher and Rossing).
+pub fn typical_b(key: u32) -> f64 {
+    let k = f64(key)
+    if k >= 40.0 {
+        0.00011 * math::exp_f64(0.0693 * (k - 40.0))
+    } else {
+        0.00011 * math::exp_f64(0.035 * (40.0 - k))
+    }
+}
+
+/// The partials found in `mag` (bins `bin` Hz apart) where `f0` and `b` put them, each within
+/// `window` and louder than `floor`: their numbers and frequencies. With `refit`, f₀ and B are
+/// fitted again to the partials found so far before each next one is looked for: a B far from
+/// the guess puts the high partials many windows away from where it says, and an error there
+/// grows as p³.
+fn search(
+    mag: [f64],
+    bin: f64,
+    f0: f64,
+    b: f64,
+    floor: f64,
+    window: Window,
+    refit: bool,
+) -> Vec<(u32, f64)> {
+    var found: Vec<(u32, f64)> = Vec::new()
+    var f = f0
+    var bb = b
+    for p in 1..97 {
+        if refit && found.len() >= 6 {
+            if let Some((a, c)) = fit(found) {
+                f = a
+                bb = c
+            }
+        }
+        let pf = f64(p)
+        let predict = pf * f * sqrt(1.0 + bb * pf * pf)
+        if predict > 14000.0 || predict / bin >= f64(mag.len() - 2) {
+            break
+        }
+        let w = window.width(predict, pf)
+        let lo = sat_u32(max_of((predict - w) / bin, 1.0))
+        let hi = sat_u32((predict + w) / bin)
+        let Some((k, a)) = peak(mag, lo, hi) else { continue }
+        // A peak at the window's edge is a neighbour's slope, not this partial.
+        if a < floor || k <= f64(lo) || k >= f64(hi) {
+            continue
+        }
+        found.push((p, k * bin))
+    }
+    found
+}
+
+/// f₀ and B fitted to partials' numbers and frequencies: (f_p / p)² = f₀² + f₀² B p² is a line in
+/// p². `None` with fewer than four, or a fit that makes no sense.
+fn fit(found: [(u32, f64)]) -> Option<(f64, f64)> {
+    if found.len() < 4 {
+        return None
+    }
+    var pts: Vec<(f64, f64)> = Vec::with_capacity(found.len())
+    for (q, f) in found {
+        let qf = f64(q)
+        let r = f / qf
+        pts.push((qf * qf, r * r))
+    }
+    let (slope, a0) = line(pts)
+    if a0 > 0.0 && slope >= 0.0 { Some((sqrt(a0), slope / a0)) } else { None }
+}
+
+/// A least-squares line through `pts`: its slope and its value at 0.
+pub fn line(pts: [(f64, f64)]) -> (f64, f64) {
+    let m = f64(pts.len())
+    var sx = 0.0
+    var sy = 0.0
+    for (a, c) in pts {
+        sx = sx + a
+        sy = sy + c
+    }
+    var sxx = 0.0
+    var sxy = 0.0
+    for (a, c) in pts {
+        sxx = sxx + a * a
+        sxy = sxy + a * c
+    }
+    let slope = (m * sxy - sx * sy) / (m * sxx - sx * sx)
+    (slope, (sy - slope * sx) / m)
+}
+
+/// A partial's decay in two stages: its prompt sound's and its aftersound's seconds to fall
+/// 60 dB, the aftersound's level when struck, in dB below the prompt sound's, and the fit's RMS
+/// error, in dB.
+pub struct Decay: Copy {
+    pub prompt: f64,
+    pub after: f64,
+    pub after_db: f64,
+    pub error: f64,
+}
+
+/// The mixture's levels at `pts`, for 10^`log_seconds` seconds to fall 60 dB.
+fn curve(pts: [(f64, f64)], log_seconds: f64) -> Vec<f64> {
+    let seconds = math::pow_f64(10.0, log_seconds)
+    var out: Vec<f64> = Vec::with_capacity(pts.len())
+    for (t, _) in pts {
+        out.push(math::pow_f64(10.0, -6.0 * t / seconds))
+    }
+    out
+}
+
+/// How far a mixture of `prompt` and `after` (a share `r` of the aftersound) is from the levels,
+/// its level L₀ the mean residual: the sum of squares.
+fn cost(pts: [(f64, f64)], model: mut Vec<f64>, prompt: [f64], after: [f64], r: f64) -> f64 {
+    for j in 0..pts.len() {
+        model[j] = 10.0 * math::log10_f64(max_of((1.0 - r) * prompt[j] + r * after[j], 1e-30))
+    }
+    var s = 0.0
+    for j in 0..pts.len() {
+        s += pts[j].1 - model[j]
+    }
+    let l0 = s / f64(pts.len())
+    var e = 0.0
+    for j in 0..pts.len() {
+        let d = pts[j].1 - l0 - model[j]
+        e += d * d
+    }
+    e
+}
+
+/// Fits a level's fall (dB, every `dt` seconds) with two exponentials:
+/// L(t) = L₀ + 10 log₁₀((1 − r) 10^(−6t/T₁) + r 10^(−6t/T₂)), from its peak until it's 60 dB
+/// down (or near the floor). `None` if there's too little of it.
+pub fn two_stage(levels: [f64], dt: f64) -> Option<Decay> {
+    var top: u32 = 0
+    var peak_level = -200.0
+    for i in 0..min(20, levels.len()) {
+        if levels[i] > peak_level {
+            top = i
+            peak_level = levels[i]
+        }
+    }
+    let low = max_of(peak_level - 60.0, -110.0)
+    var end = levels.len()
+    for i in top..levels.len() {
+        if levels[i] < low {
+            end = i
+            break
+        }
+    }
+    // Every point at first, then sparser: the slow part needs fewer.
+    var pts: Vec<(f64, f64)> = Vec::new()
+    for i in top..end {
+        if i - top < 40 || (i - top) % 4 == 0 {
+            pts.push((f64(i - top) * dt, levels[i]))
+        }
+    }
+    if pts.len() < 8 {
+        return None
+    }
+    // All mixtures on a grid share a small set of exponential curves: each is computed once.
+    var model: Vec<f64> = Vec::filled(pts.len(), value: 0.0)
+    // A coarse grid in logs, then finer ones around the best.
+    var lt1 = 0.0
+    var lt2 = 1.0
+    var lr = -2.0
+    var best = 1.7976931348623157e308
+    var afters: Vec<(f64, Vec<f64>)> = Vec::new()
+    for j in 0..14 {
+        let b = -0.5 + 3.0 * f64(j) / 13.0
+        afters.push((b, curve(pts, b)))
+    }
+    for i in 0..14 {
+        let a = -1.0 + 2.6 * f64(i) / 13.0
+        let prompt = curve(pts, a)
+        for (b, after) in afters {
+            for k in 0..10 {
+                let c = -4.0 + 3.7 * f64(k) / 9.0
+                if b < a {
+                    continue
+                }
+                let e = cost(pts, mut model, prompt, after, math::pow_f64(10.0, c))
+                if e < best {
+                    best = e
+                    lt1 = a
+                    lt2 = b
+                    lr = c
+                }
+            }
+        }
+    }
+    var step = (0.2, 0.23, 0.4)
+    for _ in 0..4 {
+        let (c1, c2, c3) = (lt1, lt2, lr)
+        var near: Vec<(f64, Vec<f64>)> = Vec::new()
+        for j in 0..5 {
+            let b = c2 + step.1 * f64(i32(j) - 2) / 2.0
+            near.push((b, curve(pts, b)))
+        }
+        for i in 0..5 {
+            let a = c1 + step.0 * f64(i32(i) - 2) / 2.0
+            let prompt = curve(pts, a)
+            for (b, after) in near {
+                for k in 0..5 {
+                    let c = min_of(c3 + step.2 * f64(i32(k) - 2) / 2.0, -0.01)
+                    if b < a {
+                        continue
+                    }
+                    let e = cost(pts, mut model, prompt, after, math::pow_f64(10.0, c))
+                    if e < best {
+                        best = e
+                        lt1 = a
+                        lt2 = b
+                        lr = c
+                    }
+                }
+            }
+        }
+        step = (step.0 / 2.0, step.1 / 2.0, step.2 / 2.0)
+    }
+    let r = math::pow_f64(10.0, lr)
+    Some(
+        Decay {
+            prompt: math::pow_f64(10.0, lt1),
+            after: math::pow_f64(10.0, lt2),
+            after_db: 10.0 * math::log10_f64(r / (1.0 - r)),
+            error: sqrt(best / f64(pts.len())),
+        },
+    )
+}
+
+/// The strike's noise: in the first 43 ms, the energy between the partials (more than 70 Hz from
+/// each, 200 Hz to 8 kHz) over the energy at them, in dB. The hammer's knock and the action's are
+/// most of it. `None` where the partials are too close together to leave room between them (a
+/// fundamental under 150 Hz).
+pub fn onset_noise(samples: [f32], rate: f64, m: Measured, from: f64) -> Option<f64> {
+    if m.f0 < 150.0 {
+        return None
+    }
+    let n: u32 = 2048
+    let bin = rate / f64(n)
+    let mag = Plan::new(n).spectrum(samples, sat_u32(from * rate))
+    var tonal = 0.0
+    var between = 0.0
+    for k in 0..mag.len() {
+        let a = mag[k]
+        let hz = f64(k) * bin
+        if !(hz >= 200.0 && hz <= 8000.0) {
+            continue
+        }
+        // The nearest partial, where f0 and B put it.
+        let p = max_of(round_away(hz / m.f0), 1.0)
+        let near = p * m.f0 * sqrt(1.0 + m.inharmonicity * p * p)
+        if abs(hz - near) <= 70.0 {
+            tonal += a * a
+        } else {
+            between += a * a
+        }
+    }
+    if tonal > 0.0 { Some(10.0 * math::log10_f64(max_of(between, 1e-30) / tonal)) } else { None }
+}
+
+/// A partial's levels, and the decay fitted to them.
+struct Fitted: Clone {
+    levels: Vec<f64>,
+    decay: Option<Decay>,
+}
+
+/// Each partial's decay (`two_stage`), on the tool's helpers.
+pub fn decays(m: Measured) -> Vec<Option<Decay>> {
+    var fits: Vec<Fitted> = Vec::new()
+    for p in m.partials {
+        fits.push(Fitted { levels: p.levels.clone(), decay: None })
+    }
+    let dt = m.dt
+    fits.par_each_mut(|f| {
+        f.decay = two_stage(f.levels, dt)
+    })
+    var out: Vec<Option<Decay>> = Vec::with_capacity(fits.len())
+    for f in fits {
+        out.push(f.decay)
+    }
+    out
+}
+
+/// `partials`' report: a note's partials as JSON.
+pub fn report(samples: [f32], rate: f64, key: u32, from: f64, seconds: f64) -> Value {
+    let m = measure(samples, rate, key, from, seconds)
+    let noise = onset_noise(samples, rate, m, from)
+    var loudest = -200.0
+    for p in m.partials {
+        loudest = max_of(loudest, p.peak_db())
+    }
+    let fitted = decays(m)
+    var partials: Vec<Value> = Vec::new()
+    for i in 0..m.partials.len() {
+        borrow p = m.partials[i]
+        let d = fitted[i]
+        let (prompt, after, after_db, error) = match d {
+            Some(d) => (
+                Value::Num(round(d.prompt, 3)),
+                Value::Num(round(d.after, 3)),
+                Value::Num(round(d.after_db, 1)),
+                Value::Num(round(d.error, 2)),
+            ),
+            None => (Value::Null, Value::Null, Value::Null, Value::Null),
+        }
+        partials.push(
+            obj()
+                .with("n", Value::Int(i64(p.n)))
+                .with("hz", Value::Num(round(p.hz, 2)))
+                .with(
+                    "cents_above_harmonic",
+                    Value::Num(round(1200.0 * math::log2_f64(p.hz / (f64(p.n) * m.f0)), 2)),
+                )
+                .with("level_db", Value::Num(round(p.peak_db() - loudest, 1)))
+                .with("prompt_t60", take prompt)
+                .with("after_t60", take after)
+                .with("after_db", take after_db)
+                .with("fit_error_db", take error),
+        )
+    }
+    obj()
+        .with("key", Value::Int(i64(key)))
+        .with("nominal_hz", Value::Num(round(m.nominal, 3)))
+        .with("f0_hz", Value::Num(round(m.f0, 3)))
+        .with("cents_from_equal", Value::Num(round(m.cents(), 2)))
+        .with("inharmonicity", Value::Num(m.inharmonicity))
+        .with("loudest_db", Value::Num(round(loudest, 1)))
+        .with(
+            "onset_noise_db",
+            opt(
+                match noise {
+                    Some(x) => Some(round(x, 1)),
+                    None => None,
+                },
+            ),
+        )
+        .with("partials", Value::List(take partials))
+}
