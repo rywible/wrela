@@ -29,6 +29,7 @@ use noise::{noise2, rand}
 use place::{Event, EventKind, Keeper, Map, Relation, RouteKind, to_segment}
 use events::events
 use soil::{Soil, soil_from}
+use std::alloc::allocations
 use std::io::print
 use std::math::TAU
 use std::time::phase
@@ -2760,4 +2761,50 @@ fn a_survey_takes_the_land_it_is_given() {
         same = same && own.wet[c] == given.wet[c] && !own.water[c] == !given.water[c]
     }
     assert(!same, "a land not given took the given land")
+}
+
+/// Smoothing a stream's course (`smooth_course`), twice, keeps every bit of the old
+/// operation's result (`reference_smooth`) at every length up to 64 and on paths of steps,
+/// alternations, signed zeros, the smallest floats, huge ones and scatter, and allocates
+/// nothing.
+fn reference_smooth(points: mut Vec<vec4>) {
+    let was = points.clone()
+    for k in 1..(max(was.len(), 2) - 1) {
+        let mid = (was[k - 1].xy + was[k + 1].xy) * 0.5
+        points[k] = vec4(mix(was[k].xy, mid, vec2(0.5)), was[k].z, was[k].w)
+    }
+}
+
+@test
+fn stream_smoothing_keeps_every_bit_without_allocating() {
+    for n in 0..65 {
+        for path in 0..6 {
+            var points = Vec::from_fn(n, |k| {
+                let x = if path == 0 { f32(k) * 0.125 } else if path == 1 {
+                    if k % 2 == 0 { -1000.0 } else { 1000.0 }
+                } else if path == 2 {
+                    bitcast_f32(if k % 2 == 0 { u32(0) } else { u32(2147483648) })
+                } else if path == 3 {
+                    bitcast_f32(k + 1)
+                } else if path == 4 {
+                    1.0e30 / f32(k + 1)
+                } else { f32((k * 7919 + 104729) % 1237) - 600.0 }
+                vec4(x, x * -0.75, f32(k) + 0.25, f32(k) * -0.375)
+            })
+            var expected = points.clone()
+            let before = allocations()
+            smooth_course(mut points)
+            smooth_course(mut points)
+            assert(allocations() == before, "smoothing allocated")
+            reference_smooth(mut expected)
+            reference_smooth(mut expected)
+            for k in 0..n {
+                let (a, b) = (points[k], expected[k])
+                assert(bitcast_u32(a.x) == bitcast_u32(b.x), "x changed")
+                assert(bitcast_u32(a.y) == bitcast_u32(b.y), "y changed")
+                assert(bitcast_u32(a.z) == bitcast_u32(b.z), "width changed")
+                assert(bitcast_u32(a.w) == bitcast_u32(b.w), "depth changed")
+            }
+        }
+    }
 }

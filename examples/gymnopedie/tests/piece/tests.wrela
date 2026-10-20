@@ -1,0 +1,226 @@
+// The tool tests: a lifted build of the piece, whose report (`lift.json`) says what was lifted
+// in performance.wrela; and two seconds of take 1, rendered offline on the CPU twice, each from
+// a new load, after a frame starts the piece.
+
+use std::collections::{Box, Vec}
+use std::job::Step
+use std::json::{Doc, TOP, parse}
+use std::string::String
+use std::tool::answer
+use std::tool::blob
+use std::tool::blob::Data
+use std::tool::drive
+use std::tool::files
+use std::tool::toolchain
+
+/// The most bytes a blob read gives at once.
+const CHUNK: u64 = 524288
+
+/// The piece, built into `out` (lifting its own literals, if `lift`), with no errors.
+@job
+fn built(out: take String, lift: take bool) -> bool {
+    var options = toolchain::options()
+    if lift {
+        options.lift.push(String::from("gymnopedie"))
+    }
+    var b = toolchain::build("repo/examples/gymnopedie", out.as_str(), options)
+    var got = b.poll()
+    while got.is_none() {
+        yield
+        got = b.poll()
+    }
+    let Some(bp) = take got else { panic("no answer") }
+    let Ok(build) = toolchain::read_built(take bp) else { panic("the build's request") }
+    for d in build.diagnostics {
+        assert(!d.error, d.rendered.as_str())
+    }
+    assert(build.ok, "the piece builds")
+    true
+}
+
+/// How many items of list `key` of the report name file `file`.
+fn in_file(d: Doc, key: str, file: u32) -> u32 {
+    let Some(list) = d.get(TOP, key) else { panic(f"the report's `{key}`") }
+    var n = 0
+    for k in 0..d.count(list) {
+        let Some(item) = d.at(list, k) else { continue }
+        let Some(f) = d.get(item, "file") else { continue }
+        if d.num(f) == Some(f64(file)) {
+            n += 1
+        }
+    }
+    n
+}
+
+/// Every number of the taste and the marks is lifted, so a tool can change it while the piece
+/// plays (AC4): the report lists every float literal, lifted or not, so none left out is every
+/// one lifted.
+@test(tool, read: [("repo", "../../../..")], budget: 300)
+@job
+fn every_number_of_the_performance_is_lifted() {
+    var b = Box::new(built.start(String::from("scratch/lifted"), lift: true))
+    loop {
+        match b.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    var r = files::read("scratch/lifted/lift.json")
+    var got = r.poll()
+    while got.is_none() {
+        yield
+        got = r.poll()
+    }
+    let Some(rp) = take got else { panic("no answer") }
+    let Ok(bytes) = answer(take rp) else { panic("lift.json reads") }
+    let Some(text) = String::from_utf8(take bytes) else { panic("lift.json is UTF-8") }
+    let Some(d) = parse(text.as_str()) else { panic("lift.json is JSON") }
+    let Some(files_list) = d.get(TOP, "files") else { panic("the report's files") }
+    var file: Option<u32> = None
+    for k in 0..d.count(files_list) {
+        let Some(f) = d.at(files_list, k) else { continue }
+        let Some(p) = d.get(f, "path") else { continue }
+        if d.text(p) == Some(String::from("performance.wrela")) && file.is_none() {
+            file = Some(k)
+        }
+    }
+    let Some(performance) = file else { panic("performance.wrela is lifted") }
+    let lifted = in_file(d, "literals", performance)
+    assert(lifted >= 30, f"{lifted} literals lifted")
+    assert(in_file(d, "not_lifted", performance) == 0, "a literal of the performance isn't lifted")
+}
+
+/// The piece's samples from the native host's offline run: `seconds` of take 1, from a new
+/// load on the CPU (one thread), after a frame (16 × 16) starts it.
+@job
+fn samples(seconds: take f64) -> Vec<u8> {
+    var load = drive::cpu()
+    load.workers = 1
+    load.width = 16
+    load.height = 16
+    var l = drive::load("scratch/piece", load)
+    var loaded = l.poll()
+    while loaded.is_none() {
+        yield
+        loaded = l.poll()
+    }
+    let Some(lp) = take loaded else { panic("no answer") }
+    let Ok(it) = drive::read_loaded(take lp) else { panic("the piece loads") }
+    let h = it.build
+    var i = drive::init(h)
+    var inited = i.poll()
+    while inited.is_none() {
+        yield
+        inited = i.poll()
+    }
+    let Some(ip) = take inited else { panic("no answer") }
+    let Ok(init) = drive::read_ran(take ip) else { panic("init's request") }
+    assert(init.trap.is_none(), "init runs")
+    var f = drive::frame_at(h, 0.0)
+    var framed = f.poll()
+    while framed.is_none() {
+        yield
+        framed = f.poll()
+    }
+    let Some(fp) = take framed else { panic("no answer") }
+    let Ok(ran) = drive::read_ran(take fp) else { panic("the frame's request") }
+    assert(ran.trap.is_none(), "the frame starts the piece")
+    let quanta = u32(ceil(seconds * 48000.0 / 128.0))
+    var a = drive::audio(h, quanta)
+    var rendered = a.poll()
+    while rendered.is_none() {
+        yield
+        rendered = a.poll()
+    }
+    let Some(ap) = take rendered else { panic("no answer") }
+    let Ok(audio) = drive::read_audio(take ap) else { panic("the voice renders") }
+    var out: Vec<u8> = Vec::new()
+    match take audio.samples {
+        Data::Bytes(v) => out = take v,
+        Data::Blob(held) => {
+            var n = blob::len(held)
+            var counted = n.poll()
+            while counted.is_none() {
+                yield
+                counted = n.poll()
+            }
+            let Some(np) = take counted else { panic("no answer") }
+            let Ok(size) = blob::read_len(take np) else { panic("the blob's length") }
+            var at: u64 = 0
+            while at < size {
+                let len = u32(min(size - at, CHUNK))
+                var r = blob::read(held, at, len)
+                var read = r.poll()
+                while read.is_none() {
+                    yield
+                    read = r.poll()
+                }
+                let Some(rp) = take read else { panic("no answer") }
+                let Ok(chunk) = answer(take rp) else { panic("the blob's bytes") }
+                for j in 0..chunk.len() {
+                    out.push(chunk[j])
+                }
+                at += u64(len)
+            }
+        },
+    }
+    var c = drive::close(h)
+    while c.poll().is_none() {
+        yield
+    }
+    out
+}
+
+/// Sample `i` of `bytes`, little-endian `f32`s.
+fn sample(bytes: [u8], i: u32) -> f32 {
+    let at = 4 * i
+    bitcast_f32(
+        u32(bytes[at]) |
+            (u32(bytes[at + 1]) << 8) |
+            (u32(bytes[at + 2]) << 16) |
+            (u32(bytes[at + 3]) << 24),
+    )
+}
+
+/// The piece's first notes, rendered twice: the same samples. (The left hand's first chord is
+/// on beat 2 of bar 1; two seconds hold it.)
+@test(tool, read: [("repo", "../../../..")], budget: 300)
+@job
+fn the_piano_renders_the_same_samples_every_time() {
+    var b = Box::new(built.start(String::from("scratch/piece"), lift: false))
+    loop {
+        match b.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    var runs: Vec<Vec<u8>> = Vec::new()
+    for _ in 0..2 {
+        var s = Box::new(samples.start(2.0))
+        loop {
+            match s.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(v) => {
+                    runs.push(take v)
+                    break
+                },
+            }
+        }
+    }
+    let first = runs[0].clone()
+    let n = first.len() / 4
+    assert(n > 0, "samples came back")
+    var peak = 0.0
+    for i in 0..n {
+        let x = sample(first, i)
+        // Neither infinite nor not a number: its exponent isn't all ones.
+        assert((bitcast_u32(x) >> 23) & 255 != 255, f"sample {i} isn't finite")
+        peak = max(peak, abs(x))
+    }
+    assert(peak > 0.01 && peak < 1.0, f"peak {peak}")
+    let second = runs[1].clone()
+    assert(second.len() == first.len(), "the same number of samples")
+    for i in 0..first.len() {
+        assert(first[i] == second[i], f"byte {i} of the samples differs")
+    }
+}

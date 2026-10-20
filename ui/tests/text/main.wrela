@@ -1,5 +1,7 @@
 // Test strings at 10 to 72 pixels per em, in both fonts, white on a dark grey, each line's top
-// at a known place (compiler/tests/tests/suite/text.rs lays the same lines out and compares).
+// at a known place. tests.wrela draws them on the GPU and compares them with a reference
+// rasterizer's picture of the same glyphs at the same places (goldens/reference.png); this
+// module's tests pin what that picture was made from: the fonts' bakes and the lines' layout.
 
 use std::gpu::{begin_screen_pass}
 use std::hash::Hasher
@@ -10,6 +12,9 @@ use ui::text::{Face, Font, Fonts}
 pub const SIZES: [f32; 7] = [10.0, 12.0, 16.0, 24.0, 32.0, 48.0, 72.0]
 const LATIN: Text = "The quick brown fox jumps over the lazy dog: 0123456789"
 const MORE: Text = "Grüße, Æsir! ¿Qué? £5 © ÿ ñ ß Ø"
+
+/// The layout's hash (`layout_hash`) when the reference picture was drawn.
+const LAYOUT: u64 = 8046416755935635671
 
 pub struct Scene {
     fonts: Fonts,
@@ -59,35 +64,13 @@ fn face_of(face: u32) -> Face {
     if face == 0 { Face::Sans } else { Face::Mono }
 }
 
-/// The face's ascender, ems: where a line's baseline is below its top.
-pub fn ascender(face: u32) -> f32 {
-    Font::of(face_of(face)).ascender
-}
-
-/// Where glyph `k` of line `i` of the face's lines goes: its pen (pixels from the left), as
-/// the line is laid out from x 10.
-pub fn pen(face: u32, i: u32, k: u32) -> f32 {
-    let font = Font::of(face_of(face))
-    let text = if i % 2 == 0 { LATIN } else { MORE }
-    var at = 0.0
-    var n = 0
-    let _ = font.walk(text, SIZES[i / 2], 10.0, |_i, _g, x| {
-        if n == k {
-            at = x
-        }
-        n += 1
-        n <= k
-    })
-    at
-}
-
 /// The bytes of the face's fields.
-pub fn field_bytes(face: u32) -> u32 {
+fn field_bytes(face: u32) -> u32 {
     Font::of(face_of(face)).field_bytes()
 }
 
 /// All glyph field bytes, in order: a regression for the baker's exact output.
-pub fn field_hash(face: u32) -> u64 {
+fn field_hash(face: u32) -> u64 {
     let font = Font::of(face_of(face))
     var h = Hasher::new()
     h.write_u32(font.field_bytes())
@@ -98,4 +81,48 @@ pub fn field_hash(face: u32) -> u64 {
         }
     }
     h.finish()
+}
+
+/// The layout's hash: each face's ascender, then each line's glyphs' pens (pixels from the
+/// left), as the line is laid out from x 10.
+fn layout_hash() -> u64 {
+    var h = Hasher::new()
+    for f in 0..2 {
+        let font = Font::of(face_of(f))
+        h.write_u32(bitcast_u32(font.ascender))
+        for i in 0..14 {
+            let text = if i % 2 == 0 { LATIN } else { MORE }
+            let _ = font.walk(text, SIZES[i / 2], 10.0, |_i, _g, x| {
+                h.write_u32(bitcast_u32(x))
+                true
+            })
+        }
+    }
+    h.finish()
+}
+
+/// The package's tool, which does nothing: its tool tests are in tests.wrela.
+pub fn tool() -> u32 {
+    0
+}
+
+/// The build bakes each font from its file (ui/ttf.wrela), into at most 200 KB of fields: what
+/// a font adds to a build. Every baked byte matches the original per-segment-distance baker:
+/// choosing the nearest squared distance must not change its output.
+@test
+fn the_fonts_are_baked_small() {
+    let hashes = [17162884810785632069, 7364730740798196822]
+    for face in 0..2 {
+        let bytes = field_bytes(face)
+        assert(bytes > 100 * 1024 && bytes <= 200 * 1024, f"face {face}: {bytes} bytes of fields")
+        assert(field_hash(face) == hashes[face], f"face {face}: baked fields changed")
+    }
+}
+
+/// The reference picture (goldens/reference.png) was drawn by a reference rasterizer (ab_glyph
+/// 0.2) with the glyphs at this layout's pens and baselines: if the layout changes, the picture
+/// is another's, and must be drawn again (docs/process.md says how).
+@test
+fn the_reference_is_of_this_layout() {
+    assert(layout_hash() == LAYOUT, f"the layout changed: {layout_hash()}")
 }

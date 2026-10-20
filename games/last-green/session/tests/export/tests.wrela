@@ -1,0 +1,350 @@
+// The tool test: the session's main.wrela with `FIXTURE` after it (exports that set up a failed
+// recovery, export it, answer the reply, and back up before a new game), built as a package of
+// its own and loaded on the CPU for each case, recording its commands: which slot the export
+// goes to and whether its reply succeeds.
+
+use std::collections::{Box, Vec}
+use std::job::Step
+use std::string::String
+use std::tool::answer
+use std::tool::drive
+use std::tool::drive::{Recorded, Scalar}
+use std::tool::files
+use std::tool::toolchain
+use std::tool::toolchain::Override
+
+/// Each case: the export's other slot (0: `continue`, 1: `imported`), and whether its reply
+/// succeeds.
+const CASES: [(u32, u32); 3] = [(0, 0), (0, 1), (1, 1)]
+
+/// What the fixture writes the backup to, and the request it says what it expects by.
+const BACKUP: Text = "profiles/player-1/previous"
+const EXPECTED: Text = "app/fixture/expected"
+
+const FIXTURE: [Text; 73] = [
+    "",
+    "pub fn fixture_export(s: mut Session, other_slot: u32) {",
+    "    s = failed_recovery_fixture()",
+    "    let slot = if other_slot == 0 { \"continue\" } else { \"imported\" }",
+    "    let request = Request::Export { profile: s.active.clone(), slot: slot.to_string() }",
+    "    begin(mut s, request)",
+    "    if s.phase == Phase::ReadSlot {",
+    "        let file = SaveFile {",
+    "            game: String::from(GAME),",
+    "            version: 1,",
+    "            saved: 17,",
+    "            body: s.recovered.clone(),",
+    "        }",
+    "        answered(mut s, Ok(save(file)))",
+    "    }",
+    "    assert(s.phase == Phase::Reply)",
+    "}",
+    "",
+    "pub fn fixture_reply(s: mut Session, succeeded: u32) -> u32 {",
+    "    let recovered = s.recovered.clone()",
+    "    let exported_recovery = match s.request {",
+    "        Some(Request::Export { profile, slot }) => profile == s.active && slot == \"continue\",",
+    "        _ => false,",
+    "    }",
+    "    if succeeded != 0 {",
+    "        answered(mut s, Ok(Vec::new()))",
+    "    } else {",
+    "        var reply = None",
+    "        match mut s.io {",
+    "            Some(p) => reply = p.poll(),",
+    "            None => {},",
+    "        }",
+    "        let Some(reply) = reply else { return 0 }",
+    "        assert(reply.is_err(), \"the CPU host has no parent channel\")",
+    "        answered(mut s, reply)",
+    "    }",
+    "    assert(s.phase == Phase::Idle)",
+    "    assert(s.recovered == recovered, \"export must preserve recovery bytes\")",
+    "    let request = Request::Prepare { profile: s.active.clone(), slot: String::new() }",
+    "    begin(mut s, request)",
+    "    if succeeded != 0 && exported_recovery {",
+    "        if s.phase == Phase::Backup { 1 } else { 0 }",
+    "    } else {",
+    "        if s.phase == Phase::Reply { 1 } else { 0 }",
+    "    }",
+    "}",
+    "",
+    "pub fn fixture_backup(s: mut Session) {",
+    "    assert(s.phase == Phase::Backup)",
+    "    let stale = SaveFile {",
+    "        game: String::from(GAME),",
+    "        version: 1,",
+    "        saved: 17,",
+    "        body: save(",
+    "            CarryFixture {",
+    "                tower: engine::tower::Tower::new(2),",
+    "                at: 0,",
+    "                door: STAIR,",
+    "                going: 0xFFFFFFFE,",
+    "            },",
+    "        ),",
+    "    }",
+    "    answered(mut s, Ok(save(stale)))",
+    "    assert(s.phase == Phase::BackupSaved)",
+    "    let expected = SaveFile {",
+    "        game: String::from(GAME),",
+    "        version: 1,",
+    "        saved: s.saved,",
+    "        body: s.recovered.clone(),",
+    "    }",
+    "    let _ = std::host::custom(\"fixture/expected\", save(expected))",
+    "}",
+    "",
+]
+
+/// Writes `text` at `path`.
+@job
+fn written(path: take String, text: take String) {
+    var w = files::write(path.as_str(), text.as_bytes())
+    var got = w.poll()
+    while got.is_none() {
+        yield
+        got = w.poll()
+    }
+    let Some(wp) = take got else { panic("no answer") }
+    assert(answer(take wp).is_ok(), f"{path.as_str()} is written")
+}
+
+/// The fixture package, written into `scratch/session` and built into `scratch/build`.
+@job
+fn built() -> bool {
+    var r = files::read("repo/games/last-green/session/main.wrela")
+    var read = r.poll()
+    while read.is_none() {
+        yield
+        read = r.poll()
+    }
+    let Some(rp) = take read else { panic("no answer") }
+    let Ok(bytes) = answer(take rp) else { panic("the session's main.wrela reads") }
+    let Some(session) = String::from_utf8(take bytes) else { panic("main.wrela is UTF-8") }
+    var main = take session
+    for k in 0..FIXTURE.len() {
+        if k > 0 {
+            main.push_str("\n")
+        }
+        main.push_str(FIXTURE[k])
+    }
+    var m = Box::new(written.start(String::from("scratch/session/main.wrela"), take main))
+    loop {
+        match m.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    var t = files::read("repo/games/last-green/session/wrela.toml")
+    var tr = t.poll()
+    while tr.is_none() {
+        yield
+        tr = t.poll()
+    }
+    let Some(tp) = take tr else { panic("no answer") }
+    let Ok(tb) = answer(take tp) else { panic("the session's manifest reads") }
+    let Some(manifest) = String::from_utf8(take tb) else { panic("its manifest is UTF-8") }
+    var w = Box::new(written.start(String::from("scratch/session/wrela.toml"), take manifest))
+    loop {
+        match w.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    var options = toolchain::options()
+    options.overrides.push(
+        Override { name: String::from("engine"), dir: String::from("repo/engine") },
+    )
+    options.overrides.push(
+        Override { name: String::from("platform"), dir: String::from("repo/platform") },
+    )
+    var b = toolchain::build("scratch/session", "scratch/build", options)
+    var got = b.poll()
+    while got.is_none() {
+        yield
+        got = b.poll()
+    }
+    let Some(bp) = take got else { panic("no answer") }
+    let Ok(build) = toolchain::read_built(take bp) else { panic("the build's request") }
+    for d in build.diagnostics {
+        assert(!d.error, d.rendered.as_str())
+    }
+    assert(build.ok, "the session fixture builds")
+    true
+}
+
+/// The build, loaded on the CPU recording its commands, `init` run.
+@job
+fn started() -> drive::Build {
+    var load = drive::cpu()
+    load.record = true
+    var l = drive::load("scratch/build", load)
+    var loaded = l.poll()
+    while loaded.is_none() {
+        yield
+        loaded = l.poll()
+    }
+    let Some(lp) = take loaded else { panic("no answer") }
+    let Ok(it) = drive::read_loaded(take lp) else { panic("the session loads") }
+    var i = drive::init(it.build)
+    var inited = i.poll()
+    while inited.is_none() {
+        yield
+        inited = i.poll()
+    }
+    let Some(ip) = take inited else { panic("no answer") }
+    let Ok(init) = drive::read_ran(take ip) else { panic("init's request") }
+    if let Some(trap) = init.trap {
+        panic(trap.message.as_str())
+    }
+    it.build
+}
+
+/// The export `name` called with `args`, which must not trap: its results.
+@job
+fn called(h: take drive::Build, name: take String, args: take Vec<Scalar>) -> Vec<Scalar> {
+    var c = drive::call(h, name.as_str(), args)
+    var got = c.poll()
+    while got.is_none() {
+        yield
+        got = c.poll()
+    }
+    let Some(cp) = take got else { panic("no answer") }
+    let Ok(ran) = drive::read_ran(take cp) else { panic(f"{name.as_str()}'s request") }
+    if let Some(trap) = ran.trap {
+        panic(f"{name.as_str()}: {trap.message.as_str()}")
+    }
+    take ran.results
+}
+
+/// Every command recorded since the last time, however many answers they take.
+@job
+fn recorded(h: take drive::Build) -> Vec<Recorded> {
+    var out: Vec<Recorded> = Vec::new()
+    loop {
+        var c = drive::commands(h)
+        var got = c.poll()
+        while got.is_none() {
+            yield
+            got = c.poll()
+        }
+        let Some(cp) = take got else { panic("no answer") }
+        let Ok(r) = drive::read_commands(take cp) else { panic("the commands") }
+        for k in 0..r.commands.len() {
+            out.push(r.commands[k].clone())
+        }
+        if r.waiting == 0 {
+            return out
+        }
+    }
+}
+
+/// Whether two byte strings are the same.
+fn same(a: [u8], b: [u8]) -> bool {
+    if a.len() != b.len() {
+        return false
+    }
+    for i in 0..a.len() {
+        if a[i] != b[i] {
+            return false
+        }
+    }
+    true
+}
+
+/// Console policy is Wrela: exporting a recovered save acknowledges only a successful reply,
+/// to either slot, and only an export of the recovery to `continue` that succeeds makes the next
+/// new game back it up first; that backup is the current recovered continuation.
+@test(tool, read: [("repo", "../../../../..")], budget: 300)
+@job
+fn exporting_a_recovered_save_acknowledges_only_a_successful_reply() {
+    var b = Box::new(built.start())
+    loop {
+        match b.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    for k in 0..CASES.len() {
+        let (other_slot, succeeded) = CASES[k]
+        var s = Box::new(started.start())
+        var opened: Option<drive::Build> = None
+        while opened.is_none() {
+            match s.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(x) => opened = Some(x),
+            }
+        }
+        let Some(h) = opened else { panic("the session") }
+        var eargs: Vec<Scalar> = Vec::new()
+        eargs.push(Scalar::I32(i32(other_slot)))
+        var e = Box::new(called.start(h, String::from("fixture_export"), take eargs))
+        loop {
+            match e.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(_) => break,
+            }
+        }
+        var rargs: Vec<Scalar> = Vec::new()
+        rargs.push(Scalar::I32(i32(succeeded)))
+        var r = Box::new(called.start(h, String::from("fixture_reply"), take rargs))
+        var replied = 0
+        loop {
+            match r.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(v) => {
+                    replied = match v[0] {
+                        Scalar::I32(x) => u32(x),
+                        _ => panic("fixture_reply gives a number"),
+                    }
+                    break
+                },
+            }
+        }
+        assert(replied == 1, f"other slot={other_slot}, successful reply={succeeded}")
+        if other_slot == 0 && succeeded == 1 {
+            var d = Box::new(recorded.start(h))
+            loop {
+                match d.get_mut().resume() {
+                    Step::Yielded => yield,
+                    Step::Done(_) => break,
+                }
+            }
+            var u = Box::new(called.start(h, String::from("fixture_backup"), Vec::new()))
+            loop {
+                match u.get_mut().resume() {
+                    Step::Yielded => yield,
+                    Step::Done(_) => break,
+                }
+            }
+            var c = Box::new(recorded.start(h))
+            var commands: Vec<Recorded> = Vec::new()
+            loop {
+                match c.get_mut().resume() {
+                    Step::Yielded => yield,
+                    Step::Done(v) => {
+                        commands = take v
+                        break
+                    },
+                }
+            }
+            var backup: Vec<Vec<u8>> = Vec::new()
+            var expected: Vec<Vec<u8>> = Vec::new()
+            for j in 0..commands.len() {
+                let kind = commands[j].kind.as_str()
+                let target = commands[j].target.as_str()
+                if kind == "StorageWrite" && target == BACKUP {
+                    backup.push(commands[j].bytes.clone())
+                } else if kind == "HostRequest" && target == EXPECTED {
+                    expected.push(commands[j].bytes.clone())
+                }
+            }
+            assert(expected.len() == 1, "one current recovery envelope")
+            assert(
+                backup.len() == expected.len() && same(backup[0], expected[0]),
+                "New game backs up the current recovered continuation",
+            )
+        }
+    }
+}

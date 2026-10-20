@@ -1,0 +1,310 @@
+// The tool test: ui's widgets, draw, text, ttf and raster modules copied into `scratch/ui`, its
+// two baked fonts replaced by `EMPTY`, and `TESTS` after widgets.wrela; their tests run through
+// the toolchain, every one passing, as many as the files declare.
+
+use std::collections::{Box, Vec}
+use std::job::Step
+use std::string::String
+use std::tool::answer
+use std::tool::files
+use std::tool::toolchain
+
+/// ui's modules the package holds.
+const MODULES: [Text; 5] = [
+    "widgets.wrela",
+    "draw.wrela",
+    "text.wrela",
+    "ttf.wrela",
+    "raster.wrela",
+]
+
+/// The fonts text.wrela bakes, which `EMPTY` replaces.
+const BAKES: [Text; 2] = [
+    "bake(embed(\"fonts/Inter-Regular-Latin1.ttf\"), em: 32.0, spread: 4.0)",
+    "bake(embed(\"fonts/JetBrainsMono-Regular-Latin1.ttf\"), em: 32.0, spread: 4.0)",
+]
+
+/// The two focused cases, after widgets.wrela: frames reuse their buffers, and typing matches
+/// the editor before it (`reference_edit_keys`, its old body).
+const TESTS: [Text; 140] = [
+    "",
+    "use text::{decode, previous}",
+    "",
+    "impl Ui {",
+    "    // The previous edit_keys body, to compare text, cursor, focus and termination exactly.",
+    "    fn reference_edit_keys(mut self, id: u32, s: mut String) -> u32 {",
+    "        var cursor = min(self.cursor(), s.len())",
+    "        var done = 0",
+    "        var t = 0",
+    "        for j in 0..self.keys.len() + 1 {",
+    "            let upto = if j < self.keys.len() { self.typed_before[j] } else { self.typed.len() }",
+    "            while t < upto {",
+    "                let tail = s.as_str().slice(cursor, s.len()).to_string()",
+    "                s.truncate(cursor)",
+    "                s.push_char(self.typed[t])",
+    "                cursor = s.len()",
+    "                s.push_str(tail.as_str())",
+    "                t += 1",
+    "            }",
+    "            if j == self.keys.len() { break }",
+    "            match self.keys[j] {",
+    "                Key::Backspace => {",
+    "                    if cursor > 0 {",
+    "                        let from = previous(s.as_str(), cursor)",
+    "                        let tail = s.as_str().slice(cursor, s.len()).to_string()",
+    "                        s.truncate(from)",
+    "                        s.push_str(tail.as_str())",
+    "                        cursor = from",
+    "                    }",
+    "                },",
+    "                Key::Delete => {",
+    "                    if cursor < s.len() {",
+    "                        let (_, next) = decode(s.as_str(), cursor)",
+    "                        let tail = s.as_str().slice(next, s.len()).to_string()",
+    "                        s.truncate(cursor)",
+    "                        s.push_str(tail.as_str())",
+    "                    }",
+    "                },",
+    "                Key::Left => cursor = previous(s.as_str(), cursor),",
+    "                Key::Right => {",
+    "                    if cursor < s.len() { cursor = decode(s.as_str(), cursor).1 }",
+    "                },",
+    "                Key::Home => cursor = 0,",
+    "                Key::End => cursor = s.len(),",
+    "                Key::Enter => done = 1,",
+    "                Key::NumpadEnter => done = 1,",
+    "                Key::Escape => done = 2,",
+    "                _ => {},",
+    "            }",
+    "        }",
+    "        self.set_cursor(cursor)",
+    "        if done != 0 {",
+    "            self.editing = None",
+    "            self.focus = if done == 1 { id } else { 0 }",
+    "        }",
+    "        done",
+    "    }",
+    "}",
+    "",
+    "@test",
+    "fn warm_frames_do_not_allocate() {",
+    "    var ui = Ui::new(Fonts::load())",
+    "    let screen = vec2(640.0, 480.0)",
+    "    let r = Rect::new(x: 12.0, y: 24.0, w: 80.0, h: 32.0)",
+    "    // Both buffers get room, then every frame keeps its predecessor and empties its own.",
+    "    for frame in 0..4 {",
+    "        ui.begin(screen, [Event::Text { char: 0 }; 0])",
+    "        ui.note(\"seen\", r)",
+    "        for id in 1..33 {",
+    "            ui.focusable.push(id)",
+    "        }",
+    "        ui.end()",
+    "    }",
+    "    let before = std::alloc::allocations()",
+    "    for frame in 0..12 {",
+    "        ui.begin(screen, [Event::Text { char: 0 }; 0])",
+    "        assert(ui.seen.is_empty() && ui.focusable.is_empty(), \"frame was not cleared\")",
+    "        assert(ui.find(\"seen\") == Some(r), \"previous frame label lost\")",
+    "        assert(ui.last_focusable.len() == 32, \"previous focus order lost\")",
+    "        ui.note(\"seen\", r)",
+    "        for id in 1..33 {",
+    "            ui.focusable.push(id)",
+    "        }",
+    "        ui.end()",
+    "    }",
+    "    assert(std::alloc::allocations() == before, \"warm frame buffers allocated\")",
+    "    ui.focus = 20",
+    "    ui.begin(screen, [Event::KeyDown { key: Key::Tab, repeat: false, mods: Mods {} }])",
+    "    assert(ui.focus == 21, \"Tab order changed\")",
+    "    // An empty frame still replaces the previous one; nothing can be found two frames back.",
+    "    ui.end()",
+    "    ui.begin(screen, [Event::KeyDown { key: Key::Tab, repeat: false, mods: Mods { shift: true } }])",
+    "    assert(ui.find(\"seen\").is_none(), \"a label survived an empty frame\")",
+    "    assert(ui.last_focusable.is_empty() && ui.focus == 21, \"empty frame focus changed\")",
+    "    ui.focusable.push(10)",
+    "    ui.focusable.push(20)",
+    "    ui.focusable.push(30)",
+    "    ui.focus = 20",
+    "    ui.end()",
+    "    ui.begin(screen, [Event::KeyDown { key: Key::Tab, repeat: false, mods: Mods { shift: true } }])",
+    "    assert(ui.focus == 10, \"Shift+Tab order changed\")",
+    "}",
+    "",
+    "@test",
+    "fn typed_runs_and_keys_match_the_previous_editor() {",
+    "    for scenario in 0..10 {",
+    "        for cursor in [0, 1, 3, 4, 8, 12] {",
+    "            var ui = Ui::new(Fonts::load())",
+    "            var old = Ui::new(Fonts::load())",
+    "            ui.typed = Vec::from([65, 233, 128512, 66])",
+    "            if scenario > 0 {",
+    "                let keys = [Key::Backspace, Key::Delete, Key::Left, Key::Right, Key::Home,",
+    "                    Key::End, Key::Enter, Key::NumpadEnter, Key::Escape]",
+    "                ui.keys.push(keys[scenario - 1])",
+    "                ui.typed_before.push(scenario % 5)",
+    "                ui.keys.push(Key::Left)",
+    "                ui.typed_before.push(4)",
+    "            }",
+    "            old.typed = ui.typed.clone()",
+    "            old.keys = ui.keys.clone()",
+    "            old.typed_before = ui.typed_before.clone()",
+    "            ui.editing = Some(Editing { id: 7, cursor, before: String::new(), buffer: String::new() })",
+    "            old.editing = Some(Editing { id: 7, cursor, before: String::new(), buffer: String::new() })",
+    "            var actual = String::from(\"aßz🌲tail\")",
+    "            var expected = actual.clone()",
+    "            let before = std::alloc::allocations()",
+    "            let a = ui.edit_keys(7, mut actual)",
+    "            let used = std::alloc::allocations() - before",
+    "            let was = std::alloc::allocations()",
+    "            let b = old.reference_edit_keys(7, mut expected)",
+    "            let old_used = std::alloc::allocations() - was",
+    "            assert(actual == expected && a == b && ui.cursor() == old.cursor() &&",
+    "                ui.focus == old.focus, \"typing behavior changed\")",
+    "            if scenario == 0 && cursor == 0 {",
+    "                assert(old_used >= used + 3, \"typing did not save the repeated tail allocations\")",
+    "            }",
+    "        }",
+    "    }",
+    "}",
+    "",
+]
+
+/// A zero-area fallback glyph, which lays out text without a bake or a draw; its self-kern
+/// exercises the caret regression when both letters fall back to it.
+const EMPTY: Text = "Baked { em: 32.0, spread: 4.0, ascender: 0.0, descender: 0.0, line_gap: 0.0, glyphs: Vec::from([ttf::BakedGlyph { codepoint: 63, advance: 1.0, left: 0.0, top: 0.0, width: 0, height: 0, offset: 0 }]), kerning: Vec::from([ttf::Kern { left: 0, right: 0, units: -4096 }]), fields: Vec::new() }"
+
+/// `text` with each `from` replaced by `to`, left to right.
+fn replaced(text: str, from: str, to: str) -> String {
+    var out: Vec<u8> = Vec::new()
+    var i = 0
+    while i < text.len() {
+        var hit = i + from.len() <= text.len()
+        if hit {
+            for j in 0..from.len() {
+                if text.byte(i + j) != from.byte(j) {
+                    hit = false
+                    break
+                }
+            }
+        }
+        if hit {
+            for j in 0..to.len() {
+                out.push(to.byte(j))
+            }
+            i += from.len()
+        } else {
+            out.push(text.byte(i))
+            i += 1
+        }
+    }
+    let Some(s) = String::from_utf8(take out) else { panic("a replacement keeps UTF-8") }
+    s
+}
+
+/// How many of `text`'s lines are `@test` alone: the tests it declares.
+fn declared(text: str) -> u32 {
+    var n = 0
+    var start = 0
+    for i in 0..text.len() + 1 {
+        if i == text.len() || text.byte(i) == 10 {
+            var a = start
+            var b = i
+            while a < b && (text.byte(a) == 32 || text.byte(a) == 9) {
+                a += 1
+            }
+            while b > a &&
+                (text.byte(b - 1) == 32 || text.byte(b - 1) == 9 || text.byte(b - 1) == 13) {
+                b -= 1
+            }
+            if text.slice(a, b) == "@test" {
+                n += 1
+            }
+            start = i + 1
+        }
+    }
+    n
+}
+
+/// Writes `text` at `path`.
+@job
+fn written(path: take String, text: take String) {
+    var w = files::write(path.as_str(), text.as_bytes())
+    var got = w.poll()
+    while got.is_none() {
+        yield
+        got = w.poll()
+    }
+    let Some(wp) = take got else { panic("no answer") }
+    assert(answer(take wp).is_ok(), f"{path.as_str()} is written")
+}
+
+/// The ui's frames keep their predecessors' labels and focus order without allocating once
+/// warm, an empty frame still replaces the one before, Tab and Shift+Tab keep their order, and
+/// typed runs and keys edit as the previous editor did, saving its repeated tail allocations;
+/// and ui's own regressions pass beside them.
+@test(tool, read: [("repo", "../../..")], budget: 300)
+@job
+fn perf_ui_frame_buffers_and_typing_preserve_behavior() {
+    var tests = 0
+    for k in 0..MODULES.len() {
+        let file = MODULES[k]
+        var r = files::read(f"repo/ui/{file}".as_str())
+        var got = r.poll()
+        while got.is_none() {
+            yield
+            got = r.poll()
+        }
+        let Some(rp) = take got else { panic("no answer") }
+        let Ok(bytes) = answer(take rp) else { panic(f"ui/{file} reads") }
+        let Some(source) = String::from_utf8(take bytes) else { panic(f"ui/{file} is UTF-8") }
+        var text = take source
+        if file == "text.wrela" {
+            for b in BAKES {
+                assert(text.as_str().find(b).is_some(), f"text.wrela bakes {b}")
+                text = replaced(text.as_str(), b, EMPTY)
+            }
+        }
+        tests += declared(text.as_str())
+        if file == "widgets.wrela" {
+            for j in 0..TESTS.len() {
+                text.push_str("\n")
+                text.push_str(TESTS[j])
+            }
+            tests += 2
+        }
+        var w = Box::new(written.start(String::from(f"scratch/ui/{file}"), take text))
+        loop {
+            match w.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(_) => break,
+            }
+        }
+    }
+    var m = Box::new(
+        written.start(
+            String::from("scratch/ui/main.wrela"),
+            String::from("pub fn frame(time: f32, width: u32, height: u32) {}\n"),
+        ),
+    )
+    loop {
+        match m.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    var t = toolchain::test("scratch/ui", "", 300.0)
+    var got = t.poll()
+    while got.is_none() {
+        yield
+        got = t.poll()
+    }
+    let Some(tp) = take got else { panic("no answer") }
+    let Ok(run) = toolchain::read_tested(take tp) else { panic("the tests' request") }
+    for d in run.diagnostics {
+        assert(!d.error, d.rendered.as_str())
+    }
+    for r in run.results {
+        assert(r.passed, f"{r.name.as_str()} ({r.at.as_str()}): {r.message.as_str()}")
+    }
+    assert(run.results.len() == tests, f"{run.results.len()} tests ran, {tests} declared")
+}

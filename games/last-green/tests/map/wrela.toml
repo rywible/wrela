@@ -1,0 +1,6 @@
+# The floor's map, simulation and small growth fixtures (games/last-green): its modules copied
+# into packages of their own with the tests that need them, so discovering their tests can't
+# prepare the full game's history constants. The tool tests write each package, test or build
+# it through `std::tool::toolchain` with the workspace's packages read for its dependencies.
+[package]
+name = "last_green_map"

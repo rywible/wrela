@@ -1,0 +1,6 @@
+# The ui's frames reuse their buffers and its typing keeps the editor's behaviour: the tool test
+# copies ui's modules into a package of its own, its fonts a zero-area fallback glyph (so text
+# lays out without a bake), with two focused tests after widgets.wrela, and runs them with all
+# of ui's own regressions.
+[package]
+name = "ui_frame_buffers"

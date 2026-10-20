@@ -72,3 +72,70 @@ impl<A: Clone> Timers<A> {
         self.pending.len()
     }
 }
+
+// ---- tests --------------------------------------------------------------------------------------
+
+/// The old insertion, a linear search from the end, against which `after`'s search is checked.
+fn reference(pending: mut Vec<Timer<u32>>, now: Tick, delay: f32, dt: f32, seq: u64) {
+    let due = now + u32(ceil(delay / dt))
+    var at = pending.len()
+    while at > 0 && pending[at - 1].due > due {
+        at -= 1
+    }
+    pending.insert(at, Timer { due, seq, action: u32(seq) })
+}
+
+fn same(timers: Timers<u32>, expected: [Timer<u32>]) {
+    assert(timers.len() == expected.len(), "timer count changed")
+    for k in 0..expected.len() {
+        borrow a = timers.pending[k]
+        borrow b = expected[k]
+        assert(a.due == b.due && a.seq == b.seq && a.action == b.action, "timer order changed")
+    }
+}
+
+/// Timers' search keeps what the old insertion gave: each timer's due tick, its sequence and
+/// its action, in order, through cancellations and draining, in five patterns of delays.
+@test
+fn timer_search_preserves_due_ticks_sequence_and_cancellation() {
+    for pattern in 0..5 {
+        var timers = Timers::<u32>::new()
+        var expected: Vec<Timer<u32>> = Vec::new()
+        let now = if pattern == 4 { 4000000000 } else { 12 }
+        for i in 0..256 {
+            let delay = if pattern == 0 { f32(i) } else if pattern == 1 {
+                f32(255 - i)
+            } else if pattern == 2 { 3.25 } else { f32((i * 37) % 101) * 0.125 }
+            let dt = if pattern == 3 { 0.125 } else { 0.5 }
+            let seq = timers.after(now, delay, dt, action: i)
+            assert(seq == u64(i), "timer id changed")
+            reference(mut expected, now, delay, dt, seq)
+            same(timers, expected)
+            if i % 7 == 3 {
+                let canceled = u64(i / 2)
+                timers.cancel(canceled)
+                expected.retain(|t| t.seq != canceled)
+                same(timers, expected)
+            }
+        }
+        for tick in 0..514 {
+            var n = 0
+            while n < expected.len() && expected[n].due <= now + tick {
+                n += 1
+            }
+            let want = expected.drain_front(n)
+            let got = timers.take_due(now + tick)
+            assert(got.len() == want.len(), "due count changed")
+            for k in 0..want.len() {
+                assert(
+                    got[k].due == want[k].due &&
+                        got[k].seq == want[k].seq &&
+                        got[k].action == want[k].action,
+                    "due order changed",
+                )
+            }
+            same(timers, expected)
+        }
+        assert(timers.len() == 0, "timers left pending")
+    }
+}

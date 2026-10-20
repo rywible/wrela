@@ -1,0 +1,5 @@
+# What the workspace's tool tests share to run a build in both hosts: the native host on the
+# hardware GPU and headless Chrome's test mode, each drawing the same frames (`both::both_hosts`),
+# and the difference between their frames. A library: it has no tests of its own.
+[package]
+name = "hosts"
