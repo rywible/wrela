@@ -1,0 +1,1088 @@
+// The deploy tool's tests: the history, its dates and the releases it keeps, the files a Worker
+// may upload, the order of the Workers, the head of `main` and redirects, as plain tests; and
+// as tool tests against fake sites and a fake `npx` (fakes/npx), the deploy itself: what it
+// keeps, what stops it before it changes anything, and the Workers deployed in order, each
+// serving the release.
+
+use main::{Options, deploy, parse_args, verify}
+use policy::{
+    CLOUDFLARE, Deploy, Found, Limits, Release, Worker, deploy_order, history_json, is_inside, kept,
+    main_head, next_history, parse_stamp, quoted, read_history, read_release, redirected, stamp,
+    uploads,
+}
+use release_tool::catalog::CATALOG
+use release_tool::io::{read_files, write_files}
+use release_tool::json::{Json, compact, member, text}
+use release_tool::site::{Report, release_json, wrangler_config}
+use release_tool::tree::hex_sha
+use std::io::Pending
+use std::job::Step
+use std::tool::answer
+use std::tool::files
+use std::tool::files::Kind
+use std::tool::testing
+use std::tool::testing::Fake
+use std::tool::time::Utc
+
+fn contains(haystack: str, needle: str) -> bool {
+    haystack.find(needle).is_some()
+}
+
+// ---- The history -------------------------------------------------------------------------------
+
+const A: Text = "aaaaaaaaaaaaaaaaaaaa"
+const B: Text = "bbbbbbbbbbbbbbbbbbbb"
+const C: Text = "cccccccccccccccccccc"
+const D: Text = "dddddddddddddddddddd"
+const DAY: i64 = 86400
+
+/// The commit the tests' release D is built from.
+const SOURCE: Text = "235bac2f6ee4865141b2d2347ddae9f175a6ff17"
+
+/// The tests' now: 2026-10-15T12:00:00Z.
+fn now() -> i64 {
+    let Some(t) = parse_stamp("2026-10-15T12:00:00+00:00") else { panic("a date") }
+    t
+}
+
+fn workers(docs: bool) -> Vec<String> {
+    var w = Vec::from([String::from("console-host"), String::from("game-host")])
+    if docs {
+        w.push(String::from("docs-host"))
+    }
+    w
+}
+
+fn entry(release: str, until: Option<i64>, docs: bool) -> Deploy {
+    Deploy {
+        release: String::from(release),
+        source: String::from("x"),
+        workers: workers(docs: docs),
+        live_from: now() - 30 * DAY,
+        live_until: until,
+    }
+}
+
+/// A ended 20 days ago, B 3 days ago, and C is live.
+fn history(docs: bool) -> Vec<Deploy> {
+    Vec::from(
+        [
+            entry(A, Some(now() - 20 * DAY), docs: docs),
+            entry(B, Some(now() - 3 * DAY), docs: docs),
+            entry(C, None, docs: docs),
+        ],
+    )
+}
+
+fn releases(deploys: [Deploy]) -> String {
+    var out = String::new()
+    for d in deploys {
+        out.push_str(d.release.slice(from: 0, to: 1))
+    }
+    out
+}
+
+@test
+fn a_release_stays_for_its_window_after_it_stops_being_live() {
+    let h = history(docs: false)
+    assert(releases(kept(h, now(), D)).as_str() == "bc")
+    // Redeploying the live release keeps the others it would have kept.
+    assert(releases(kept(h, now(), C)).as_str() == "b")
+    let after = next_history(h, D, "head", workers(docs: false), now())
+    assert(releases(after).as_str() == "bcd")
+    assert(after[0].live_until == Some(now() - 3 * DAY))
+    assert(after[1].live_until == Some(now()), "the live one ends now")
+    assert(after[2].live_until.is_none() && after[2].live_from == now())
+    assert(after[2].source.as_str() == "head" && after[2].workers.len() == 2)
+    // A release exactly `KEEP` past its end is still kept; a second later it isn't.
+    let edge = Vec::from([entry(A, Some(now() - 14 * DAY), docs: false)])
+    assert(kept(edge, now(), D).len() == 1)
+    assert(kept(edge, now() + 1, D).is_empty())
+}
+
+@test
+fn dates_read_and_write_as_the_history_has_them() {
+    for s in [
+        "2026-10-15T20:32:18+00:00",
+        "2024-02-29T00:00:00+00:00",
+        "1970-01-01T00:00:00+00:00",
+    ] {
+        let Some(t) = parse_stamp(s) else { panic(s) }
+        assert(stamp(t).as_str() == s, stamp(t).as_str())
+    }
+    assert(parse_stamp("1970-01-02T00:00:00Z") == Some(DAY))
+    assert(parse_stamp("1970-01-01T01:00:00+01:00") == Some(0))
+    assert(parse_stamp("1970-01-01T00:00:00-00:30") == Some(1800))
+    for bad in ["2026-10-15", "2026-13-01T00:00:00+00:00", "2026-10-15 12:00:00+00:00", "x"] {
+        assert(parse_stamp(bad).is_none(), bad)
+    }
+}
+
+@test
+fn the_history_reads_back_as_it_is_written() {
+    let h = next_history(history(docs: false), D, "head", workers(docs: false), now())
+    let json = history_json(h)
+    let Ok(again) = read_history(json.as_str()) else { panic("reads") }
+    assert(history_json(again).as_str() == json.as_str())
+    // As Python's `json.dumps(indent=2)` wrote it: the live site's history reads the same.
+    let one = Vec::from([entry(D, None, docs: false)])
+    let want = "{\n  \"deploys\": [\n    {\n      \"release\": \"dddddddddddddddddddd\",\n      \"source\": \"x\",\n      \"workers\": [\n        \"console-host\",\n        \"game-host\"\n      ],\n      \"live_from\": \"2026-09-15T12:00:00+00:00\",\n      \"live_until\": null\n    }\n  ]\n}\n"
+    assert(history_json(one).as_str() == want, history_json(one).as_str())
+    let bad = "{\"deploys\": [{\"release\": \"../x\", \"source\": \"x\", \"workers\": [], \"live_from\": \"2026-09-15T12:00:00+00:00\", \"live_until\": null}]}"
+    match read_history(bad) {
+        Ok(_) => panic("an invalid release reads"),
+        Err(e) => assert(contains(e.as_str(), "invalid release"), e.as_str()),
+    }
+    assert(read_history("{}").is_err())
+}
+
+// ---- Uploads, order, main's head, redirects ----------------------------------------------------
+
+fn file(path: Text, size: u64) -> Found {
+    Found { path: String::from(path), kind: Kind::File, size }
+}
+
+fn refused(entries: [Found], limits: Limits, why: str) {
+    match uploads(entries, limits) {
+        Ok(_) => panic(f"uploads, but should fail with `{why}`"),
+        Err(e) => assert(contains(e.as_str(), why), e.as_str()),
+    }
+}
+
+@test
+fn private_storage_and_symlinks_cannot_be_uploaded() {
+    assert(uploads([file("game.wasm", 4)], CLOUDFLARE) == Ok(1))
+    refused([file("game.wasm", 4), file("storage/save", 7)], CLOUDFLARE, "private")
+    refused([file("a/results/DONE", 1)], CLOUDFLARE, "private")
+    refused([file(".native/x", 1)], CLOUDFLARE, "private")
+    refused([file("a/.wrangler/state", 1)], CLOUDFLARE, "hidden")
+    refused(
+        [file("game.wasm", 4), Found { path: String::from("outside"), kind: Kind::Link, size: 0 }],
+        CLOUDFLARE,
+        "symbolic",
+    )
+    refused([file("big.bin", CLOUDFLARE.largest + 1)], CLOUDFLARE, "file limit")
+    assert(uploads([file("big.bin", CLOUDFLARE.largest)], CLOUDFLARE) == Ok(1))
+    let three = Limits { most_files: 3, largest: CLOUDFLARE.largest }
+    assert(uploads([file("a", 1), file("b", 1), file("c", 1)], three) == Ok(3))
+    refused([file("a", 1), file("b", 1), file("c", 1), file("d", 1)], three, "file-count")
+}
+
+@test
+fn kept_paths_stay_in_their_release_and_quote_as_urls() {
+    assert(is_inside("session/files/floor/t1_-1.bin"))
+    for bad in ["", "../../escape", "a//b", "./a", "a/.", "/abs", "a\\b"] {
+        assert(!is_inside(bad), bad)
+    }
+    assert(quoted("session/files/floor/t1_-1.bin").as_str() == "session/files/floor/t1_-1.bin")
+    assert(quoted("a b/c%d~é").as_str() == "a%20b/c%25d~%C3%A9")
+}
+
+fn worker(name: Text, console: bool, docs: bool) -> Worker {
+    Worker { worker: String::from(name), domain: String::from(f"{name}.example"), console, docs }
+}
+
+@test
+fn the_games_deploy_before_the_console_and_the_docs_last() {
+    let order = deploy_order(
+        [
+            worker("docs", console: false, docs: true),
+            worker("console", console: true, docs: false),
+            worker("one", console: false, docs: false),
+            worker("two", console: false, docs: false),
+        ],
+    )
+    var names = String::new()
+    for w in order {
+        names.push_str(f"{w.worker.as_str()} ")
+    }
+    assert(names.as_str() == "one two console docs ", names.as_str())
+}
+
+/// A pkt-line: its length in four hexadecimal digits, then `line`.
+fn pkt(out: mut Vec<u8>, line: str) {
+    let hex = "0123456789abcdef"
+    let n = line.len() + 4
+    for k in 0..4 {
+        out.push(hex.byte((n >> (12 - 4 * k)) & 15))
+    }
+    for i in 0..line.len() {
+        out.push(line.byte(i))
+    }
+}
+
+/// GitHub's advertisement of a repository whose `main` is at `head`.
+fn advertised(head: str) -> Vec<u8> {
+    let other = "0123456789012345678901234567890123456789"
+    var out: Vec<u8> = Vec::new()
+    pkt(mut out, "# service=git-upload-pack\n")
+    for b in String::from("0000").as_bytes() {
+        out.push(b)
+    }
+    var first = String::from(f"{head} HEAD")
+    first.push_byte(0)
+    first.push_str("multi_ack symref=HEAD:refs/heads/main\n")
+    pkt(mut out, first.as_str())
+    pkt(mut out, f"{other} refs/heads/main-old\n")
+    pkt(mut out, f"{head} refs/heads/main\n")
+    pkt(mut out, f"{other} refs/pull/1/head\n")
+    for b in String::from("0000").as_bytes() {
+        out.push(b)
+    }
+    out
+}
+
+@test
+fn mains_head_is_read_from_the_advertised_refs() {
+    let head = "235bac2f6ee4865141b2d2347ddae9f175a6ff17"
+    let Some(got) = main_head(advertised(head)) else { panic("main's head") }
+    assert(got.as_str() == head, got.as_str())
+    var none: Vec<u8> = Vec::new()
+    pkt(mut none, f"{head} refs/heads/mainline\n")
+    assert(main_head(none).is_none())
+    assert(main_head(Vec::from(String::from("zzzz").as_bytes())).is_none(), "not a pkt-line")
+    assert(
+        main_head(Vec::from(String::from("00ff").as_bytes())).is_none(),
+        "a pkt-line past the end",
+    )
+}
+
+@test
+fn redirects_are_followed_only_on_their_origin() {
+    let from = "https://wrela.dev/releases/x/index.html"
+    let Some(a) = redirected(from, "/releases/x/") else { panic("a path") }
+    assert(a.as_str() == "https://wrela.dev/releases/x/")
+    let Some(b) = redirected(from, "https://wrela.dev/releases/x/") else { panic("its origin") }
+    assert(b.as_str() == "https://wrela.dev/releases/x/")
+    for off in [
+        "https://wrela.devil/x",
+        "https://evil.example/",
+        "//evil.example/",
+        "http://wrela.dev/",
+    ] {
+        assert(redirected(from, off).is_none(), off)
+    }
+}
+
+@test
+fn the_command_line_takes_its_flags_once() {
+    let Some(o) = parse_args(
+        [String::from("--dry-run"), String::from("--require-main-head")],
+    ) else {
+        panic("flags")
+    }
+    assert(o.dry_run && o.require_main_head && o.root.as_str() == "release")
+    let none: [String; 0] = []
+    let Some(plain) = parse_args(none) else { panic("no flags") }
+    assert(!plain.dry_run && !plain.require_main_head)
+    assert(parse_args([String::from("--dry-run"), String::from("--dry-run")]).is_none())
+    assert(parse_args([String::from("--release"), String::from("build/release")]).is_none())
+}
+
+@test
+fn a_release_names_one_console() {
+    let one = release_json(
+        "head",
+        D,
+        [
+            Report {
+                worker: String::from("c"),
+                domain: String::from("c.example"),
+                console: true,
+                docs: false,
+                files: 0,
+                bytes: 0,
+            },
+            Report {
+                worker: String::from("d"),
+                domain: String::from("d.example"),
+                console: false,
+                docs: true,
+                files: 0,
+                bytes: 0,
+            },
+        ],
+    )
+    let Ok(r) = read_release(one.as_str()) else { panic("reads") }
+    assert(r.release.as_str() == D && r.workers.len() == 2 && r.workers[1].docs)
+    let none = release_json(
+        "head",
+        D,
+        [
+            Report {
+                worker: String::from("d"),
+                domain: String::from("d.example"),
+                console: false,
+                docs: true,
+                files: 0,
+                bytes: 0,
+            },
+        ],
+    )
+    assert(read_release(none.as_str()).is_err())
+    assert(read_release(release_json("head", "D", [])).is_err(), "an invalid id")
+}
+
+// ---- Tool tests: setting up --------------------------------------------------------------------
+
+/// Puts `body` at `path` in the test's scratch, in place of what `out` put there before: one
+/// write a path, since a batch writes its files at once.
+fn put(out: mut Vec<(String, Vec<u8>)>, path: str, body: str) {
+    let at = String::from(f"scratch/{path}")
+    let bytes = Vec::from(String::from(body).as_bytes())
+    for k in 0..out.len() {
+        if out[k].0.as_str() == at.as_str() {
+            out[k].1 = take bytes
+            return
+        }
+    }
+    out.push((take at, take bytes))
+}
+
+/// `files` (each a path and its bytes) as the fake site `domain` serves `release`, with its
+/// `files.json`.
+fn serve(out: mut Vec<(String, Vec<u8>)>, domain: str, release: str, files: [(Text, String)]) {
+    var listing: Vec<(String, Json)> = Vec::new()
+    for (path, body) in files {
+        listing.push(member(path, text(hex_sha(body.as_bytes()).as_str())))
+        put(mut out, f"sites/{domain}/releases/{release}/{path}", body.as_str())
+    }
+    put(
+        mut out,
+        f"sites/{domain}/releases/{release}/files.json",
+        compact(Json::Obj(take listing)).as_str(),
+    )
+}
+
+/// A release D as `wrela tool release` leaves it, with the docs if `docs` (listed first if
+/// `docs_first`), and the live site: B and C on the console and the game, and the history.
+fn site(docs: bool, docs_first: bool) -> Vec<(String, Vec<u8>)> {
+    var out: Vec<(String, Vec<u8>)> = Vec::new()
+    var reports: Vec<Report> = Vec::new()
+    let docs_report = Report {
+        worker: String::from("docs-host"),
+        domain: String::from("docs.example"),
+        console: false,
+        docs: true,
+        files: 0,
+        bytes: 0,
+    }
+    if docs && docs_first {
+        reports.push(docs_report.clone())
+    }
+    reports.push(
+        Report {
+            worker: String::from("console-host"),
+            domain: String::from("console.example"),
+            console: true,
+            docs: false,
+            files: 0,
+            bytes: 0,
+        },
+    )
+    reports.push(
+        Report {
+            worker: String::from("game-host"),
+            domain: String::from("game.example"),
+            console: false,
+            docs: false,
+            files: 0,
+            bytes: 0,
+        },
+    )
+    if docs && !docs_first {
+        reports.push(docs_report.clone())
+    }
+    put(mut out, "release.json", release_json(SOURCE, D, reports).as_str())
+    for r in reports {
+        put(mut out, f"{r.worker.as_str()}/releases/{D}/index.html", "new")
+        put(
+            mut out,
+            f"{r.worker.as_str()}.wrangler.json",
+            wrangler_config(r.worker.as_str(), r.domain.as_str()).as_str(),
+        )
+    }
+    for release in [B, C] {
+        serve(mut out, "console.example", release, [("index.html", String::from(release))])
+        serve(
+            mut out,
+            "game.example",
+            release,
+            [
+                ("session/game.wasm", String::from(release)),
+                ("session/files/floor/t1_-1.bin", String::from("tile")),
+            ],
+        )
+    }
+    put(mut out, "sites/console.example/deploys.json", history_json(history(docs: docs)).as_str())
+    out
+}
+
+fn options(dry_run: bool) -> Options {
+    Options {
+        root: String::from("scratch"),
+        require_main_head: !dry_run,
+        dry_run,
+        limits: CLOUDFLARE,
+        repository: String::from("https://github.com/rywible/wrela"),
+    }
+}
+
+/// The URL GitHub advertises the repository's refs at.
+const REFS: Text = "https://github.com/rywible/wrela.git/info/refs?service=git-upload-pack"
+
+/// Writes `files`, and sets the fake clock to the tests' now.
+@job
+fn set_up(given: take Vec<(String, Vec<u8>)>) -> u32 {
+    var w = Box::new(write_files.start(take given))
+    loop {
+        match w.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                if let Err(e) = take r {
+                    panic(e.as_str())
+                }
+                break
+            },
+        }
+    }
+    var p = testing::set_utc(Utc { seconds: u64(now()), nanos: 0 })
+    var got = p.poll()
+    while got.is_none() {
+        yield
+        got = p.poll()
+    }
+    let Some(polled) = take got else { panic("no answer") }
+    assert(answer(take polled).is_ok(), "the fake clock")
+    0
+}
+
+/// Sets `fake` for `url` on the fake sites.
+@job
+fn faked(given: take String, given_fake: take Fake) -> u32 {
+    let url = take given
+    var p = testing::fake(url.as_str(), take given_fake)
+    var got = p.poll()
+    while got.is_none() {
+        yield
+        got = p.poll()
+    }
+    let Some(polled) = take got else { panic("no answer") }
+    assert(answer(take polled).is_ok(), url.as_str())
+    0
+}
+
+/// The deploy `o` says, run to its end.
+@job
+fn deployed(given: take Options) -> Result<Vec<Deploy>, String> {
+    var j = Box::new(deploy.start(take given))
+    loop {
+        match j.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => return take r,
+        }
+    }
+}
+
+/// The file at `path` (a root path), or `None` if it isn't there.
+@job
+fn read(given: take String) -> Option<String> {
+    var j = Box::new(read_files.start(Vec::from([take given])))
+    loop {
+        match j.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                let Ok(all) = take r else { return None }
+                return String::from_utf8(all[0].clone())
+            },
+        }
+    }
+}
+
+/// Whether anything is at `path` (a root path).
+@job
+fn there(given: take String) -> bool {
+    var p = files::stat(take given)
+    var got = p.poll()
+    while got.is_none() {
+        yield
+        got = p.poll()
+    }
+    let Some(polled) = take got else { panic("no answer") }
+    files::read_entry(take polled).is_ok()
+}
+
+fn failed(r: Result<Vec<Deploy>, String>, why: str) {
+    match r {
+        Ok(_) => panic(f"deployed, but should fail with `{why}`"),
+        Err(e) => assert(contains(e.as_str(), why), e.as_str()),
+    }
+}
+
+// ---- Tool tests --------------------------------------------------------------------------------
+
+/// A dry run restores the kept releases from the live site, each file checked, and writes the
+/// history it would serve; a release past its window isn't kept.
+@test(tool, net: ["console.example", "game.example"], budget: 60)
+@job
+fn kept_releases_come_back_from_the_live_site_checked() {
+    var s = Box::new(set_up.start(site(docs: false, docs_first: false)))
+    loop {
+        match s.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    var j = Box::new(deployed.start(options(dry_run: true)))
+    var result: Result<Vec<Deploy>, String> = Err(String::new())
+    loop {
+        match j.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                result = take r
+                break
+            },
+        }
+    }
+    let after = match take result {
+        Ok(a) => take a,
+        Err(e) => panic(e.as_str()),
+    }
+    var checks: Vec<(String, String)> = Vec::new()
+    for release in [B, C] {
+        checks.push(
+            (
+                String::from(f"scratch/game-host/releases/{release}/session/game.wasm"),
+                String::from(release),
+            ),
+        )
+        checks.push(
+            (
+                String::from(f"scratch/game-host/releases/{release}/session/files/floor/t1_-1.bin"),
+                String::from("tile"),
+            ),
+        )
+        checks.push(
+            (
+                String::from(f"scratch/console-host/releases/{release}/index.html"),
+                String::from(release),
+            ),
+        )
+    }
+    for k in 0..checks.len() {
+        var r = Box::new(read.start(checks[k].0.clone()))
+        loop {
+            match r.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(got) => {
+                    let Some(t) = take got else { panic(checks[k].0.as_str()) }
+                    assert(t.as_str() == checks[k].1.as_str(), checks[k].0.as_str())
+                    break
+                },
+            }
+        }
+    }
+    let paths = Vec::from(
+        [
+            String::from(f"scratch/game-host/releases/{C}/files.json"),
+            String::from(f"scratch/game-host/releases/{A}"),
+        ],
+    )
+    for k in 0..paths.len() {
+        var t = Box::new(there.start(paths[k].clone()))
+        loop {
+            match t.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(is) => {
+                    assert(is == (k == 0), paths[k].as_str())
+                    break
+                },
+            }
+        }
+    }
+    var r = Box::new(read.start(String::from("scratch/console-host/deploys.json")))
+    loop {
+        match r.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(got) => {
+                let Some(t) = take got else { panic("no deploys.json") }
+                assert(t.as_str() == history_json(after).as_str(), t.as_str())
+                assert(releases(after).as_str() == "bcd")
+                break
+            },
+        }
+    }
+}
+
+/// A kept file that doesn't match, doesn't arrive or leaves its release stops the deploy, and
+/// no history is written.
+@job
+fn spoiled(
+    given: take String,
+    given_fake: take Option<Fake>,
+    given_files: take Vec<(String, Vec<u8>)>,
+) {
+    let why = take given
+    var s = Box::new(set_up.start(site(docs: false, docs_first: false)))
+    loop {
+        match s.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    let url = String::from(f"https://game.example/releases/{C}/session/game.wasm")
+    if let Some(f) = take given_fake {
+        var j = Box::new(faked.start(take url, take f))
+        loop {
+            match j.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(_) => break,
+            }
+        }
+    }
+    var w = Box::new(set_up.start(take given_files))
+    loop {
+        match w.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    var j = Box::new(deployed.start(options(dry_run: true)))
+    loop {
+        match j.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                failed(take r, why.as_str())
+                break
+            },
+        }
+    }
+    var t = Box::new(there.start(String::from("scratch/console-host/deploys.json")))
+    loop {
+        match t.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(is) => {
+                assert(!is, "a deploys.json was written")
+                break
+            },
+        }
+    }
+}
+
+@test(tool, net: ["console.example", "game.example"], budget: 60)
+@job
+fn a_file_that_does_not_match_stops_the_deploy() {
+    var j = Box::new(
+        spoiled.start(
+            String::from("doesn't match its SHA-256"),
+            Some(Fake::Bytes(Vec::from(String::from("tampered").as_bytes()))),
+            Vec::new(),
+        ),
+    )
+    loop {
+        match j.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+}
+
+@test(tool, net: ["console.example", "game.example"], budget: 60)
+@job
+fn a_file_that_does_not_arrive_stops_the_deploy() {
+    var j = Box::new(spoiled.start(String::from("HTTP 404"), Some(Fake::Missing), Vec::new()))
+    loop {
+        match j.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+}
+
+@test(tool, net: ["console.example", "game.example"], budget: 60)
+@job
+fn a_file_that_leaves_its_release_stops_the_deploy() {
+    var escape: Vec<(String, Vec<u8>)> = Vec::new()
+    // Its listing alone: no file can be at a path that leaves the site.
+    let listing = Json::Obj(
+        Vec::from([member("../../escape", text(hex_sha(String::from("x").as_bytes()).as_str()))]),
+    )
+    put(mut escape, f"sites/game.example/releases/{C}/files.json", compact(listing).as_str())
+    var j = Box::new(spoiled.start(String::from("invalid path"), None, take escape))
+    loop {
+        match j.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+}
+
+/// A kept release that's in the release already must be the same: its URLs are immutable.
+@test(tool, net: ["console.example", "game.example"], budget: 60)
+@job
+fn a_kept_release_cannot_change_under_its_immutable_urls() {
+    var files = site(docs: false, docs_first: false)
+    put(mut files, f"game-host/releases/{C}/session/game.wasm", "different")
+    var s = Box::new(set_up.start(take files))
+    loop {
+        match s.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    var j = Box::new(deployed.start(options(dry_run: true)))
+    loop {
+        match j.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                failed(take r, "immutable")
+                break
+            },
+        }
+    }
+}
+
+/// The docs keep no release they never served (404), but a game's missing release still stops
+/// the deploy, and so does a docs failure that isn't one.
+@test(tool, net: ["console.example", "game.example", "docs.example"], budget: 60)
+@job
+fn a_kept_release_the_docs_never_served_is_skipped_but_a_game_s_is_not() {
+    var files = site(docs: true, docs_first: false)
+    // The docs served C, and never B.
+    serve(mut files, "docs.example", C, [("index.html", String::from("docs"))])
+    var s = Box::new(set_up.start(take files))
+    loop {
+        match s.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    var j = Box::new(deployed.start(options(dry_run: true)))
+    loop {
+        match j.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                if let Err(e) = take r {
+                    panic(e.as_str())
+                }
+                break
+            },
+        }
+    }
+    let checks = [
+        (String::from(f"scratch/docs-host/releases/{B}"), false),
+        (String::from(f"scratch/docs-host/releases/{C}/index.html"), true),
+        (String::from(f"scratch/game-host/releases/{B}/session/game.wasm"), true),
+    ]
+    for k in 0..3 {
+        var t = Box::new(there.start(checks[k].0.clone()))
+        loop {
+            match t.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(is) => {
+                    assert(is == checks[k].1, checks[k].0.as_str())
+                    break
+                },
+            }
+        }
+    }
+    // A docs failure that isn't a 404 stops it.
+    var f = Box::new(
+        faked.start(
+            String::from(f"https://docs.example/releases/{B}/files.json"),
+            Fake::Status(503),
+        ),
+    )
+    loop {
+        match f.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    var j2 = Box::new(deployed.start(options(dry_run: true)))
+    loop {
+        match j2.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                failed(take r, "HTTP 503")
+                break
+            },
+        }
+    }
+    // A game's missing release stops it.
+    var c = Box::new(
+        faked.start(String::from(f"https://docs.example/releases/{B}/files.json"), Fake::Clear),
+    )
+    loop {
+        match c.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    var m = Box::new(
+        faked.start(String::from(f"https://game.example/releases/{B}/files.json"), Fake::Missing),
+    )
+    loop {
+        match m.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    var j3 = Box::new(deployed.start(options(dry_run: true)))
+    loop {
+        match j3.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                failed(take r, "HTTP 404")
+                break
+            },
+        }
+    }
+}
+
+/// A Worker over its file limit fails the deploy rather than drop a release; the limit counts
+/// the history the console serves.
+@test(tool, net: ["console.example", "game.example"], budget: 60)
+@job
+fn a_worker_over_its_file_limit_fails_rather_than_drops_a_release() {
+    var s = Box::new(set_up.start(site(docs: false, docs_first: false)))
+    loop {
+        match s.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    var o = options(dry_run: true)
+    o.limits = Limits { most_files: 3, largest: CLOUDFLARE.largest }
+    var j = Box::new(deployed.start(take o))
+    loop {
+        match j.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                failed(take r, "file-count")
+                break
+            },
+        }
+    }
+}
+
+@test(tool, net: ["console.example", "game.example"], budget: 60)
+@job
+fn the_file_limit_includes_the_deploy_history() {
+    var files = site(docs: false, docs_first: false)
+    put(mut files, "sites/console.example/deploys.json", "{\"deploys\": []}")
+    var s = Box::new(set_up.start(take files))
+    loop {
+        match s.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    // The console has one asset before deploys.json is written, and two after.
+    var o = options(dry_run: true)
+    o.limits = Limits { most_files: 1, largest: CLOUDFLARE.largest }
+    var j = Box::new(deployed.start(take o))
+    loop {
+        match j.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                failed(take r, "file-count")
+                break
+            },
+        }
+    }
+}
+
+/// A deploy whose commit is no longer main's head runs no Wrangler.
+@test(
+    tool,
+    net: ["console.example", "game.example", "github.com"],
+    run: [("npx", "fakes/npx")],
+    budget: 120,
+)
+@job
+fn a_deploy_no_longer_at_main_s_head_changes_nothing() {
+    var s = Box::new(set_up.start(site(docs: false, docs_first: false)))
+    loop {
+        match s.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    var f = Box::new(
+        faked.start(
+            String::from(REFS),
+            Fake::Bytes(advertised("1111111111111111111111111111111111111111")),
+        ),
+    )
+    loop {
+        match f.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    var j = Box::new(deployed.start(options(dry_run: false)))
+    loop {
+        match j.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                failed(take r, "no longer the head of main")
+                break
+            },
+        }
+    }
+    var t = Box::new(there.start(String::from("scratch/npx.log")))
+    loop {
+        match t.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(is) => {
+                assert(!is, "wrangler ran")
+                break
+            },
+        }
+    }
+}
+
+/// The games deploy before the console and the docs after it, through the pinned Wrangler, and
+/// each Worker then serves the release, and the console lists it live.
+@test(
+    tool,
+    net: ["console.example", "game.example", "docs.example", "github.com"],
+    run: [("npx", "fakes/npx")],
+    budget: 300,
+)
+@job
+fn the_games_deploy_before_the_console_the_docs_after_and_each_serves_the_release() {
+    // The docs, listed first, still go last: a failure there leaves the console live.
+    var files = site(docs: true, docs_first: true)
+    for w in ["console-host", "game-host", "docs-host"] {
+        let listing = Json::Obj(
+            Vec::from(
+                [member("index.html", text(hex_sha(String::from("new").as_bytes()).as_str()))],
+            ),
+        )
+        put(mut files, f"{w}/releases/{D}/files.json", compact(listing).as_str())
+    }
+    var s = Box::new(set_up.start(take files))
+    loop {
+        match s.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    var f = Box::new(faked.start(String::from(REFS), Fake::Bytes(advertised(SOURCE))))
+    loop {
+        match f.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    var j = Box::new(deployed.start(options(dry_run: false)))
+    loop {
+        match j.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                if let Err(e) = take r {
+                    panic(e.as_str())
+                }
+                break
+            },
+        }
+    }
+    var r = Box::new(read.start(String::from("scratch/npx.log")))
+    loop {
+        match r.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(got) => {
+                let Some(log) = take got else { panic("wrangler never ran") }
+                assert(log.as_str() == "game-host\nconsole-host\ndocs-host\n", log.as_str())
+                break
+            },
+        }
+    }
+}
+
+/// A Worker that doesn't serve the release, once deployed, fails the deploy.
+@test(tool, net: ["console.example", "game.example"], budget: 60)
+@job
+fn a_worker_that_does_not_serve_the_release_fails_the_deploy() {
+    var files = site(docs: false, docs_first: false)
+    put(mut files, f"console-host/releases/{D}/files.json", "{}")
+    put(mut files, f"game-host/releases/{D}/files.json", "{}")
+    var s = Box::new(set_up.start(take files))
+    loop {
+        match s.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    let rel = Release {
+        source: String::from("head"),
+        release: String::from(D),
+        workers: Vec::from(
+            [
+                worker("console-host", console: true, docs: false),
+                worker("game-host", console: false, docs: false),
+            ],
+        ),
+    }
+    var j = Box::new(verify.start(take rel, String::from("scratch")))
+    loop {
+        match j.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                match take r {
+                    Ok(_) => panic("verified"),
+                    Err(e) => assert(contains(e.as_str(), "doesn't serve"), e.as_str()),
+                }
+                break
+            },
+        }
+    }
+}
+
+/// The workspace grants the deploy tool the catalog's domains and GitHub alone, the pinned
+/// `npx`, and Cloudflare's secrets: a domain that the catalog gains is a grant to add.
+@test(tool, read: [("ws", "../..")], budget: 30)
+@job
+fn the_deploy_tool_is_granted_the_catalogs_domains() {
+    var r = Box::new(read.start(String::from("ws/wrela.toml")))
+    var manifest = String::new()
+    loop {
+        match r.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(got) => {
+                let Some(t) = take got else { panic("no wrela.toml") }
+                manifest = take t
+                break
+            },
+        }
+    }
+    let Some(at) = manifest.find("[tools.deploy]") else { panic("no [tools.deploy]") }
+    let section = manifest.slice(at, manifest.len())
+    let Some(net_at) = section.find("\nnet = [") else { panic("no net") }
+    let net = section.slice(net_at, section.len())
+    let Some(end) = net.find("]") else { panic("net isn't closed") }
+    let hosts = net.slice(0, end)
+    var want: Vec<String> = Vec::from(
+        [String::from(CATALOG.console.domain), String::from(CATALOG.docs.domain)],
+    )
+    for g in CATALOG.games {
+        want.push(String::from(g.domain))
+    }
+    want.push(String::from("github.com"))
+    var count = 0
+    for _ in hosts.split("\"") {
+        count += 1
+    }
+    // Each host quoted once: two quotes a host, and the text around them.
+    assert(count == 2 * want.len() + 1, hosts)
+    for h in want {
+        assert(contains(hosts, f"\"{h.as_str()}\""), h.as_str())
+    }
+    assert(contains(section, "\nrun = [\"npx\"]"), "npx")
+    assert(
+        contains(section, "\nsecrets = [\"CLOUDFLARE_API_TOKEN\", \"CLOUDFLARE_ACCOUNT_ID\"]"),
+        "secrets",
+    )
+}

@@ -1,0 +1,133 @@
+// A fake `npx` for the deploy tool's tests: `npx --yes wrangler@4.151.0 deploy --config
+// <worker>.wrangler.json`, run in the write root `scratch`, "deploys" the Worker as Wrangler
+// would: it copies each file of the configuration's assets directory to the fake site of its
+// route, `scratch/sites/<domain>/`, adds the Worker's name to `scratch/npx.log` (a line each, in
+// the order they ran) and prints what it uploaded. Any other command exits 2.
+
+use release_tool::io::{copy_files, read_files, walk, write_files}
+use std::io::print
+use std::job::{Job, Step}
+use std::json::{TOP, parse}
+use std::tool::{RUNNING, args}
+
+/// The write root the deploy runs it in.
+const ROOT: Text = "scratch"
+
+@job
+fn main(given: take Vec<String>) -> u32 {
+    let a = take given
+    let pinned = a.len() == 5 &&
+        a[0].as_str() == "--yes" &&
+        a[1].as_str() == "wrangler@4.151.0" &&
+        a[2].as_str() == "deploy" &&
+        a[3].as_str() == "--config" &&
+        a[4].as_str().ends_with(".wrangler.json")
+    if !pinned {
+        print("usage: npx --yes wrangler@4.151.0 deploy --config <worker>.wrangler.json")
+        return 2
+    }
+    var jc = Box::new(read_files.start(Vec::from([String::from(f"{ROOT}/{a[4].as_str()}")])))
+    var config = String::new()
+    loop {
+        match jc.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                let Ok(all) = take r else { return 3 }
+                let Some(t) = String::from_utf8(all[0].clone()) else { return 3 }
+                config = take t
+                break
+            },
+        }
+    }
+    let Some(d) = parse(config.as_str()) else { return 4 }
+    let Some(name) = d.get(TOP, "name") else { return 4 }
+    let Some(worker) = d.text(name) else { return 4 }
+    let Some(assets) = d.get(TOP, "assets") else { return 4 }
+    let Some(dir) = d.get(assets, "directory") else { return 4 }
+    let Some(directory) = d.text(dir) else { return 4 }
+    let Some(routes) = d.get(TOP, "routes") else { return 4 }
+    let Some(route) = d.at(routes, 0) else { return 4 }
+    let Some(pattern) = d.get(route, "pattern") else { return 4 }
+    let Some(domain) = d.text(pattern) else { return 4 }
+    if directory.as_str() != f"./{worker.as_str()}" {
+        return 4
+    }
+    let from = String::from(f"{ROOT}/{worker.as_str()}")
+    var jw = Box::new(walk.start(from.clone()))
+    var paths: Vec<String> = Vec::new()
+    loop {
+        match jw.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                let Ok(p) = take r else { return 5 }
+                paths = take p
+                break
+            },
+        }
+    }
+    var pairs: Vec<(String, String)> = Vec::new()
+    for p in paths {
+        pairs.push(
+            (
+                String::from(f"{from.as_str()}/{p.as_str()}"),
+                String::from(f"{ROOT}/sites/{domain.as_str()}/{p.as_str()}"),
+            ),
+        )
+    }
+    var jp = Box::new(copy_files.start(take pairs))
+    loop {
+        match jp.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                if (take r).is_err() {
+                    return 6
+                }
+                break
+            },
+        }
+    }
+    // The log, a line added: it isn't there before the first run.
+    let log = String::from(f"{ROOT}/npx.log")
+    var jl = Box::new(read_files.start(Vec::from([log.clone()])))
+    var lines: Vec<u8> = Vec::new()
+    loop {
+        match jl.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                if let Ok(all) = take r {
+                    lines = all[0].clone()
+                }
+                break
+            },
+        }
+    }
+    for b in worker.as_bytes() {
+        lines.push(b)
+    }
+    lines.push(10)
+    var jo = Box::new(write_files.start(Vec::from([(take log, take lines)])))
+    loop {
+        match jo.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                if (take r).is_err() {
+                    return 7
+                }
+                break
+            },
+        }
+    }
+    print(f"Uploaded {paths.len()} files of {worker.as_str()} to {domain.as_str()}")
+    0
+}
+
+pub fn tool_init() -> Job<main> {
+    main.start(args())
+}
+
+pub fn tool(job: mut Job<main>) -> u32 {
+    match job.resume() {
+        Step::Yielded => RUNNING,
+        Step::Done(status) => status,
+    }
+}

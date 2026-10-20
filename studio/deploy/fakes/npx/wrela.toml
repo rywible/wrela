@@ -1,0 +1,7 @@
+# A fake `npx` for the deploy tool's tests (studio/deploy/tests.wrela): it deploys as Wrangler
+# would, to the test's fake sites.
+[package]
+name = "npx"
+
+[dependencies]
+release_tool = { workspace = true }

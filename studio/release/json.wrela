@@ -1,11 +1,13 @@
-// JSON as a release writes it: a value written compact, with `, ` between members and `: ` after
-// a key and its keys sorted (the release's fingerprint and `files.json`), or indented by two
-// spaces, its members in their order (`release.json`, a Worker's Wrangler configuration).
-// Strings are ASCII: `"`, `\` and control characters escaped (`\n`, `\r`, `\t`, `\b`, `\f`, else
-// `\u00XX`, DEL too), and each character past ASCII as `\uXXXX`, a surrogate pair past U+FFFF.
+// JSON as a release and a deploy write it: a value written compact, with `, ` between members
+// and `: ` after a key and its keys sorted (the release's fingerprint and `files.json`), or
+// indented by two spaces, its members in their order (`release.json`, a Worker's Wrangler
+// configuration, the deploy history). Strings are ASCII: `"`, `\` and control characters
+// escaped (`\n`, `\r`, `\t`, `\b`, `\f`, else `\u00XX`, DEL too), and each character past ASCII
+// as `\uXXXX`, a surrogate pair past U+FFFF.
 
-/// A JSON value: text, a boolean, a whole number, a list or an object.
+/// A JSON value: null, text, a boolean, a whole number, a list or an object.
 pub enum Json: Clone {
+    Null,
     Text(String),
     Bool(bool),
     Int(u64),
@@ -87,6 +89,7 @@ pub fn compact(j: Json) -> String {
 
 fn compact_into(j: Json, out: mut String) {
     match j {
+        Json::Null => out.push_str("null"),
         Json::Text(s) => quoted(mut out, s.as_str()),
         Json::Bool(b) => out.push_str(if b { "true" } else { "false" }),
         Json::Int(n) => out.push_str(f"{n}"),
