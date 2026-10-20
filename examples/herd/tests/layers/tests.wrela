@@ -1,0 +1,153 @@
+// The tool test: it lists engine/ and examples/herd/ through the files service, each directory
+// to its end but the outputs git ignores (`build`, `results` and `.native` directories) and this
+// package (whose code names what it looks for), and reads each source.
+
+use std::collections::{Box, Vec}
+use std::job::Step
+use std::string::String
+use std::tool::answer
+use std::tool::files
+use std::tool::files::Kind
+
+/// This package, which names what the test looks for.
+const SELF: Text = "repo/examples/herd/tests/layers"
+
+/// The directories that hold outputs, never sources (the workspace's .gitignore ignores them).
+fn output(name: str) -> bool {
+    name == "build" || name == "results" || name == ".native"
+}
+
+/// Every file under `root` (a root path), outputs left out.
+@job
+fn files_under(root: take String) -> Vec<String> {
+    var out: Vec<String> = Vec::new()
+    var todo: Vec<String> = Vec::new()
+    todo.push(take root)
+    while todo.len() > 0 {
+        let Some(dir) = todo.pop() else { break }
+        var l = files::list(dir.as_str())
+        var listed = l.poll()
+        while listed.is_none() {
+            yield
+            listed = l.poll()
+        }
+        let Some(lp) = take listed else { panic("no answer") }
+        let Ok(entries) = files::read_list(take lp) else { panic(f"{dir.as_str()} lists") }
+        for e in entries {
+            let path = String::from(f"{dir.as_str()}/{e.name.as_str()}")
+            match e.kind {
+                Kind::Dir => {
+                    if !output(e.name.as_str()) && path.as_str() != SELF {
+                        todo.push(take path)
+                    }
+                },
+                _ => out.push(take path),
+            }
+        }
+    }
+    out
+}
+
+/// The text at `path`.
+@job
+fn text_of(path: take String) -> String {
+    var r = files::read(path.as_str())
+    var got = r.poll()
+    while got.is_none() {
+        yield
+        got = r.poll()
+    }
+    let Some(rp) = take got else { panic("no answer") }
+    let Ok(bytes) = answer(take rp) else { panic(f"{path.as_str()} reads") }
+    let Some(text) = String::from_utf8(take bytes) else { panic(f"{path.as_str()} isn't UTF-8") }
+    text
+}
+
+/// A file's text without its comments (`//` to the line's end; wrela has no others).
+fn code_of(text: str) -> String {
+    var out: Vec<u8> = Vec::new()
+    var in_comment = false
+    var i = 0
+    while i < text.len() {
+        let b = text.byte(i)
+        if b == 10 {
+            in_comment = false
+        } else if !in_comment && b == 47 && i + 1 < text.len() && text.byte(i + 1) == 47 {
+            in_comment = true
+        }
+        if !in_comment {
+            out.push(b)
+        }
+        i += 1
+    }
+    // Cut at ASCII bytes only, so it's still UTF-8.
+    let Some(code) = String::from_utf8(take out) else { panic("a source's code isn't UTF-8") }
+    code
+}
+
+/// AC7, layering: the engine doesn't depend on the herd, and no code in it names the herd's
+/// modules or its grazer (its comments may cite them; M6's history has a herd of its own, a
+/// word of the floor's map, not this example's); neither uses `unsafe`. And AC9's "no ratio is
+/// met by hand": the engine and the herd are wrela sources and their manifests alone, with no
+/// WGSL or JS of their own.
+@test(tool, read: [("repo", "../../../..")], budget: 120)
+@job
+fn the_engine_and_the_herd_keep_their_layers() {
+    for d in 0..2 {
+        let root = if d == 0 { "repo/engine" } else { "repo/examples/herd" }
+        var w = Box::new(files_under.start(String::from(root)))
+        var found: Vec<String> = Vec::new()
+        var walked = false
+        while !walked {
+            match w.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(v) => {
+                    found = take v
+                    walked = true
+                },
+            }
+        }
+        assert(found.len() > 10, f"{root} has its files")
+        for k in 0..found.len() {
+            let path = found[k].clone()
+            let wrela = path.as_str().ends_with(".wrela")
+            assert(
+                wrela || path.as_str().ends_with("/wrela.toml"),
+                f"{path.as_str()} isn't a wrela source or a manifest",
+            )
+            if !wrela && path.as_str() != "repo/engine/wrela.toml" {
+                continue
+            }
+            var t = Box::new(text_of.start(path.clone()))
+            var text = String::new()
+            var read = false
+            while !read {
+                match t.get_mut().resume() {
+                    Step::Yielded => yield,
+                    Step::Done(x) => {
+                        text = take x
+                        read = true
+                    },
+                }
+            }
+            if !wrela {
+                assert(
+                    text.as_str().find("herd").is_none(),
+                    f"the engine depends on the herd: {text.as_str()}",
+                )
+                continue
+            }
+            let code = code_of(text.as_str())
+            if d == 0 {
+                for word in ["grazer", "Grazer", "herd::", "unsafe"] {
+                    assert(
+                        code.as_str().find(word).is_none(),
+                        f"{path.as_str()} has `{word}` in its code",
+                    )
+                }
+            } else {
+                assert(code.as_str().find("unsafe").is_none(), f"{path.as_str()} uses `unsafe`")
+            }
+        }
+    }
+}

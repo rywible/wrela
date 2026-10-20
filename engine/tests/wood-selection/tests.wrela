@@ -1,0 +1,536 @@
+// The tool test: it reads engine/wood.wrela and makes it a fixture package's main module, only
+// its module paths changed (`impostor::` to `engine::impostor::`, and so on), so the fixture can
+// drive `Chosen`'s private lifecycle directly; all its kernels and methods stay. The fixture
+// (`FIXTURE`) lays out one kind and selects 73, 3, 2, 0, 40 and 201 instances in six frames. The
+// package is built with the engine read from the workspace, loaded on the GPU recording its
+// commands, and each frame's dispatches and buffers are checked.
+
+use std::collections::{Box, Vec}
+use std::job::Step
+use std::string::String
+use std::tool::answer
+use std::tool::blob
+use std::tool::blob::Data
+use std::tool::drive
+use std::tool::drive::{Bound, Scalar}
+use std::tool::files
+use std::tool::toolchain
+use std::tool::toolchain::Override
+
+/// The most bytes a blob read gives at once.
+const CHUNK: u64 = 524288
+
+/// The engine's modules wood.wrela names by their own paths.
+const MODULES: [Text; 8] = [
+    "impostor",
+    "lit",
+    "lod",
+    "plant",
+    "shadow",
+    "vegetation",
+    "view",
+    "noise",
+]
+
+/// How many instances each frame selects.
+const SELECTED: [u32; 6] = [73, 3, 2, 0, 40, 201]
+
+const FIXTURE: [Text; 84] = [
+    "pub struct Fixture {",
+    "    kinds: Vec<Kind>,",
+    "    chosen: Chosen,",
+    "    every: GpuBuffer<Instance>,",
+    "    metadata: GpuBuffer<u32>,",
+    "    metadata_values: Vec<u32>,",
+    "    lods: GpuBuffer<Lod>,",
+    "    depth: DepthTexture,",
+    "}",
+    "",
+    "fn fixture_kind() -> Kind {",
+    "    let leaves = engine::plant::Leaves {}",
+    "    let bark = engine::plant::Bark {}",
+    "    Kind {",
+    "        plant: engine::plant::plant(leaves, bark),",
+    "        cards: buffer(1),",
+    "        card_count: 8,",
+    "        orders: buffer(1),",
+    "        limbs: buffer(1),",
+    "        limb_count: 1,",
+    "        top: 2.0,",
+    "        reach: 1.0,",
+    "        impostor: engine::impostor::Impostor {",
+    "            colour: std::gpu::texture::<Rgba8>(1, 1),",
+    "            normal: std::gpu::texture::<std::gpu::Rgba16Float>(1, 1),",
+    "            bake: engine::impostor::Bake { mid: vec3(0.0, 1.0, 0.0), half: 1.0, leaves, bark },",
+    "            bounds: buffer(1),",
+    "        },",
+    "        volume: engine::impostor::Cooked {",
+    "            grid: std::gpu::texture3d::<std::gpu::Rgba16Float>(1, 1, 1),",
+    "            grid_depth: std::gpu::texture3d::<std::gpu::Rgba16Float>(1, 1, 1),",
+    "        },",
+    "    }",
+    "}",
+    "",
+    "pub fn init() -> Fixture {",
+    "    let kinds = Vec::from_fn(1, |_| fixture_kind())",
+    "    var chosen = Chosen::empty()",
+    "    chosen.lay_out(kinds, [u32(0); 0], [73], WAYS)",
+    "    let every = buffer_of(Vec::from_fn(256, |i| Instance {",
+    "        at: vec3(f32(i), 0.0, 10.0), scale: 1.0, ..NO_INSTANCE",
+    "    }))",
+    "    let metadata_values = Vec::filled(256, NO_KIND)",
+    "    let metadata = buffer_of(metadata_values)",
+    "    let lods = buffer_of([Lod {",
+    "        cards_to: 80.0, cards_limit: 80.0, impostor_px: 128.0, impostors_to: 4000.0,",
+    "        leaf: 0.1, top: 2.0, reach: 1.0, card_px: 12.0, cell: 1.0,",
+    "    }])",
+    "    Fixture {",
+    "        kinds, chosen, every, metadata, metadata_values, lods,",
+    "        depth: std::gpu::depth_texture(1, 1),",
+    "    }",
+    "}",
+    "",
+    "pub fn frame(state: mut Fixture, time: f32, width: u32, height: u32) {",
+    "    let n = [73, 3, 2, 0, 40, 201][u32(time)]",
+    "    // The third frame selects fewer instances on the same layout. Its old counts must",
+    "    // be reset by run, rather than by a newly created count buffer in lay_out.",
+    "    if u32(time) != 2 {",
+    "        state.chosen.lay_out(state.kinds, [u32(0); 0], [n], WAYS)",
+    "    }",
+    "    if u32(time) == 1 {",
+    "        // Poison room outside the shrunken lists. No dispatch or draw may consume it.",
+    "        let poison = Instance { at: vec3(-999.0), scale: 777.0, ..NO_INSTANCE }",
+    "        write(mut state.chosen.instances, 160, [poison; 32])",
+    "        write(mut state.chosen.drawn, 160, [poison; 32])",
+    "    }",
+    "    for i in 0..256 {",
+    "        state.metadata_values[i] = if i < n { 0 } else { NO_KIND }",
+    "    }",
+    "    write(mut state.metadata, 0, state.metadata_values)",
+    "    let cam = engine::view::first_camera(vec3(0.0), vec3(0.0, 0.0, 1.0), 1.0, 1, 1)",
+    "    let c = Choose {",
+    "        cam, corner: 1.0, kinds: 1, shadow: 1, instances: 256,",
+    "        square: vec4(-1000.0, -1000.0, 1000.0, 1000.0),",
+    "    }",
+    "    let before = std::alloc::allocations()",
+    "    state.chosen.run(c, state.every, state.metadata, state.lods)",
+    "    state.chosen.occlude(cam, state.depth, state.every, state.lods)",
+    "    assert(std::alloc::allocations() == before, \"selection allocated its count reset\")",
+    "}",
+    "",
+    "pub fn places(state: Fixture) -> u32 { state.chosen.places }",
+    "pub fn capacity(state: Fixture) -> u32 { state.chosen.instances.len() }",
+]
+
+/// `text` with each `from` replaced by `to`, left to right.
+fn replaced(text: str, from: str, to: str) -> String {
+    var out: Vec<u8> = Vec::new()
+    var i = 0
+    while i < text.len() {
+        var hit = i + from.len() <= text.len()
+        if hit {
+            for j in 0..from.len() {
+                if text.byte(i + j) != from.byte(j) {
+                    hit = false
+                    break
+                }
+            }
+        }
+        if hit {
+            for j in 0..to.len() {
+                out.push(to.byte(j))
+            }
+            i += from.len()
+        } else {
+            out.push(text.byte(i))
+            i += 1
+        }
+    }
+    let Some(s) = String::from_utf8(take out) else { panic("an ASCII replacement keeps UTF-8") }
+    s
+}
+
+/// Writes `text` at `path`.
+@job
+fn written(path: take String, text: take String) {
+    var w = files::write(path.as_str(), text.as_bytes())
+    var got = w.poll()
+    while got.is_none() {
+        yield
+        got = w.poll()
+    }
+    let Some(wp) = take got else { panic("no answer") }
+    assert(answer(take wp).is_ok(), f"{path.as_str()} is written")
+}
+
+/// The fixture package, written into `scratch/fixture`, built into `scratch/build`, loaded on
+/// the GPU (a 1 × 1 screen) recording its commands, `init` run and its commands taken.
+@job
+fn opened() -> drive::Build {
+    var r = files::read("repo/engine/wood.wrela")
+    var read = r.poll()
+    while read.is_none() {
+        yield
+        read = r.poll()
+    }
+    let Some(rp) = take read else { panic("no answer") }
+    let Ok(bytes) = answer(take rp) else { panic("engine/wood.wrela reads") }
+    let Some(source) = String::from_utf8(take bytes) else { panic("wood.wrela is UTF-8") }
+    var wood = take source
+    for k in 0..MODULES.len() {
+        let m = MODULES[k]
+        wood = replaced(wood.as_str(), f"{m}::".as_str(), f"engine::{m}::".as_str())
+    }
+    var main = take wood
+    main.push_str("\n")
+    for k in 0..FIXTURE.len() {
+        main.push_str(FIXTURE[k])
+        main.push_str("\n")
+    }
+    var m = Box::new(written.start(String::from("scratch/fixture/main.wrela"), take main))
+    loop {
+        match m.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    let manifest = String::from(
+        "[package]\nname = \"wood_selection_perf\"\n\n[dependencies]\nengine = { workspace = true }\n",
+    )
+    var t = Box::new(written.start(String::from("scratch/fixture/wrela.toml"), take manifest))
+    loop {
+        match t.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    var options = toolchain::options()
+    options.overrides.push(
+        Override { name: String::from("engine"), dir: String::from("repo/engine") },
+    )
+    var b = toolchain::build("scratch/fixture", "scratch/build", options)
+    var built = b.poll()
+    while built.is_none() {
+        yield
+        built = b.poll()
+    }
+    let Some(bp) = take built else { panic("no answer") }
+    let Ok(build) = toolchain::read_built(take bp) else { panic("the build's request") }
+    for d in build.diagnostics {
+        assert(!d.error, d.rendered.as_str())
+    }
+    assert(build.ok, "the fixture builds")
+    var load = drive::gpu()
+    load.width = 1
+    load.height = 1
+    load.record = true
+    var l = drive::load("scratch/build", load)
+    var loaded = l.poll()
+    while loaded.is_none() {
+        yield
+        loaded = l.poll()
+    }
+    let Some(lp) = take loaded else { panic("no answer") }
+    let Ok(it) = drive::read_loaded(take lp) else { panic("the fixture loads on a hardware GPU") }
+    var i = drive::init(it.build)
+    var inited = i.poll()
+    while inited.is_none() {
+        yield
+        inited = i.poll()
+    }
+    let Some(ip) = take inited else { panic("no answer") }
+    let Ok(init) = drive::read_ran(take ip) else { panic("init's request") }
+    if let Some(trap) = init.trap {
+        panic(trap.message.as_str())
+    }
+    var c = Box::new(recorded.start(it.build))
+    loop {
+        match c.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    it.build
+}
+
+/// Every command recorded since the last time, however many answers they take.
+@job
+fn recorded(h: take drive::Build) -> Vec<drive::Recorded> {
+    var out: Vec<drive::Recorded> = Vec::new()
+    loop {
+        var c = drive::commands(h)
+        var got = c.poll()
+        while got.is_none() {
+            yield
+            got = c.poll()
+        }
+        let Some(cp) = take got else { panic("no answer") }
+        let Ok(r) = drive::read_commands(take cp) else { panic("the commands") }
+        for k in 0..r.commands.len() {
+            out.push(r.commands[k].clone())
+        }
+        if r.waiting == 0 {
+            return out
+        }
+    }
+}
+
+/// The fixture's export `name`'s number.
+@job
+fn number(h: take drive::Build, name: take String) -> u32 {
+    var c = drive::call(h, name.as_str(), [])
+    var got = c.poll()
+    while got.is_none() {
+        yield
+        got = c.poll()
+    }
+    let Some(cp) = take got else { panic("no answer") }
+    let Ok(ran) = drive::read_ran(take cp) else { panic(f"{name.as_str()}'s request") }
+    if let Some(trap) = ran.trap {
+        panic(trap.message.as_str())
+    }
+    match ran.results[0] {
+        Scalar::I32(x) => u32(x),
+        _ => panic(f"{name.as_str()} gives a number"),
+    }
+}
+
+/// Buffer `handle`'s bytes, read back.
+@job
+fn bytes_of(h: take drive::Build, handle: take u32) -> Vec<u8> {
+    var r = drive::read_buffer(h, handle)
+    var got = r.poll()
+    while got.is_none() {
+        yield
+        got = r.poll()
+    }
+    let Some(rp) = take got else { panic("no answer") }
+    let Ok(data) = drive::read_bytes(take rp) else { panic(f"buffer {handle}'s bytes") }
+    var out: Vec<u8> = Vec::new()
+    match take data {
+        Data::Bytes(v) => out = take v,
+        Data::Blob(held) => {
+            var n = blob::len(held)
+            var counted = n.poll()
+            while counted.is_none() {
+                yield
+                counted = n.poll()
+            }
+            let Some(np) = take counted else { panic("no answer") }
+            let Ok(size) = blob::read_len(take np) else { panic("the blob's length") }
+            var at: u64 = 0
+            while at < size {
+                let len = u32(min(size - at, CHUNK))
+                var p = blob::read(held, at, len)
+                var part = p.poll()
+                while part.is_none() {
+                    yield
+                    part = p.poll()
+                }
+                let Some(pp) = take part else { panic("no answer") }
+                let Ok(chunk) = answer(take pp) else { panic("the blob's bytes") }
+                for j in 0..chunk.len() {
+                    out.push(chunk[j])
+                }
+                at += u64(len)
+            }
+        },
+    }
+    out
+}
+
+/// The word at byte `at` of `bytes`, little-endian.
+fn word(bytes: [u8], at: u32) -> u32 {
+    u32(bytes[at]) |
+        (u32(bytes[at + 1]) << 8) |
+        (u32(bytes[at + 2]) << 16) |
+        (u32(bytes[at + 3]) << 24)
+}
+
+/// The last part of a pipeline's name (after its last `::`).
+fn last_part(name: str) -> String {
+    var start = 0
+    var i = 0
+    while i + 1 < name.len() {
+        if name.byte(i) == 58 && name.byte(i + 1) == 58 {
+            start = i + 2
+        }
+        i += 1
+    }
+    String::from(name.slice(start, name.len()))
+}
+
+/// Selection keeps its lists to what each frame selects: the gather, cull and hide passes cover
+/// the active span alone; shrinking and regrowing keep the room (a larger regrowth gains room)
+/// and the instance buffer; each frame's lists hold exactly its instances, none hidden, and the
+/// draws' counts are its own; a shrink leaves the poisoned room outside its lists untouched.
+@test(tool, read: [("repo", "../../..")], budget: 300)
+@job
+fn wood_selection_dispatches_only_current_lists_after_shrink_and_regrowth() {
+    var o = Box::new(opened.start())
+    var opened_build: Option<drive::Build> = None
+    while opened_build.is_none() {
+        match o.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(b) => opened_build = Some(b),
+        }
+    }
+    let Some(h) = opened_build else { panic("opened") }
+    var ic = Box::new(number.start(h, String::from("capacity")))
+    var initial_capacity = 0
+    loop {
+        match ic.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(v) => {
+                initial_capacity = v
+                break
+            },
+        }
+    }
+    var first_instances: Option<u32> = None
+    for frame in 0..6 {
+        let n = SELECTED[frame]
+        var f = drive::frame_at(h, f32(frame))
+        var framed = f.poll()
+        while framed.is_none() {
+            yield
+            framed = f.poll()
+        }
+        let Some(fp) = take framed else { panic("no answer") }
+        let Ok(ran) = drive::read_ran(take fp) else { panic("the frame's request") }
+        if let Some(trap) = ran.trap {
+            panic(f"frame {frame}: {trap.message.as_str()}")
+        }
+        let active = max((n + 31) / 32 * 32 * 5, 1)
+        var p = Box::new(number.start(h, String::from("places")))
+        var places = 0
+        loop {
+            match p.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(v) => {
+                    places = v
+                    break
+                },
+            }
+        }
+        assert(places == active, f"frame {frame}'s active span: {places}, not {active}")
+        var c = Box::new(number.start(h, String::from("capacity")))
+        var capacity = 0
+        loop {
+            match c.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(v) => {
+                    capacity = v
+                    break
+                },
+            }
+        }
+        if frame < 5 {
+            assert(capacity == initial_capacity, "shrinking or regrowth discarded room")
+        } else {
+            assert(capacity > initial_capacity, "larger regrowth did not gain room")
+        }
+        var r = Box::new(recorded.start(h))
+        var commands: Vec<drive::Recorded> = Vec::new()
+        loop {
+            match r.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(v) => {
+                    commands = take v
+                    break
+                },
+            }
+        }
+        var gathered: Option<Bound> = None
+        var drawn: Option<Bound> = None
+        var arguments: Option<Bound> = None
+        var spans: Vec<u32> = Vec::new()
+        for k in 0..commands.len() {
+            let cmd = commands[k].clone()
+            if cmd.kind.as_str() != "Dispatch" {
+                continue
+            }
+            let name = last_part(cmd.pipeline.as_str())
+            if name.as_str() == "gather" {
+                spans.push(cmd.groups.x)
+                gathered = Some(cmd.bindings[3])
+            } else if name.as_str() == "cull" {
+                spans.push(cmd.groups.x)
+            } else if name.as_str() == "hide" {
+                spans.push(cmd.groups.x)
+                drawn = Some(cmd.bindings[1])
+            } else if name.as_str() == "draws_of" {
+                arguments = Some(cmd.bindings[3])
+            }
+        }
+        let span = (active + 63) / 64
+        assert(
+            spans.len() == 3 && spans[0] == span && spans[1] == span && spans[2] == span,
+            f"dispatch bounds in frame {frame}: {spans.len()} passes, not 3 of {span} groups",
+        )
+        let Some(g) = gathered else { panic("gathered instances") }
+        let Some(d) = drawn else { panic("drawn instances") }
+        let Some(a) = arguments else { panic("draw arguments") }
+        var ab = Box::new(bytes_of.start(h, a.handle))
+        var args: Vec<u8> = Vec::new()
+        loop {
+            match ab.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(v) => {
+                    args = take v
+                    break
+                },
+            }
+        }
+        for list in 0..5 {
+            let expected = if list == 0 { n } else { 0 }
+            assert(word(args, list * 40 + 4) == expected, f"cards in list {list}")
+            assert(word(args, list * 40 + 24) == expected, f"limbs in list {list}")
+        }
+        var ib = Box::new(bytes_of.start(h, g.handle))
+        var instances: Vec<u8> = Vec::new()
+        loop {
+            match ib.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(v) => {
+                    instances = take v
+                    break
+                },
+            }
+        }
+        var sb = Box::new(bytes_of.start(h, d.handle))
+        var shown: Vec<u8> = Vec::new()
+        loop {
+            match sb.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(v) => {
+                    shown = take v
+                    break
+                },
+            }
+        }
+        let stride = g.size / capacity
+        var ids: Vec<u32> = Vec::new()
+        for i in 0..n {
+            ids.push(u32(bitcast_f32(word(instances, i * stride))))
+        }
+        ids.sort_by(|x: u32, y: u32| x < y)
+        for i in 0..n {
+            assert(ids[i] == i, "a selected instance was stale or missing")
+        }
+        for i in 0..n {
+            for b in i * stride..(i + 1) * stride {
+                assert(shown[b] == instances[b], "a card-list instance was hidden")
+            }
+        }
+        if frame == 0 {
+            first_instances = Some(g.handle)
+        } else if frame == 1 {
+            assert(first_instances == Some(g.handle), "shrink replaced the instance buffer")
+            for i in 160..192 {
+                assert(word(instances, i * stride) == bitcast_u32(-999.0), "retained tail changed")
+                assert(word(shown, i * stride) == bitcast_u32(-999.0), "retained tail changed")
+            }
+        }
+    }
+}

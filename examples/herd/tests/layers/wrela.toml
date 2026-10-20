@@ -1,0 +1,5 @@
+# The engine's and the herd's layers (#42 AC7, AC9): their files are wrela sources and manifests
+# alone, the engine depends on no example and names no herd or grazer in its code, and neither
+# uses `unsafe`. The package's tool test reads the files through `std::tool::files`.
+[package]
+name = "herd_layers"
