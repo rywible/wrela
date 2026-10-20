@@ -1,0 +1,807 @@
+// The tool tests: each builds one of this package's fixtures (a normal build, as a game ships),
+// loads it on the machine's hardware GPU (never a software renderer) with a small screen, runs
+// `init`, then draws frames at the times it names (`drive::frame_at`, as the native host's
+// `run_frames` draws them) and captures the screen after each group of them. Each test reads
+// those screens' pixels: RGBA8, rows top to bottom.
+
+use std::collections::{Box, Vec}
+use std::io::print
+use std::job::Step
+use std::string::String
+use std::tool::answer
+use std::tool::blob
+use std::tool::blob::Data
+use std::tool::drive
+use std::tool::toolchain
+
+/// The most bytes a blob read gives at once.
+const CHUNK: u64 = 524288
+
+/// The screens of the fixture `name`: built into `scratch/<name>`, loaded on the GPU with a
+/// `width` × `height` screen and `init` run, then for each group of `groups`, a frame at each of
+/// its times and the screen captured.
+@job
+fn screens(
+    name: take String,
+    width: take u32,
+    height: take u32,
+    groups: take Vec<Vec<f32>>,
+) -> Vec<Screen> {
+    let pkg = String::from(f"repo/engine/tests/render/{name.as_str()}")
+    let out = String::from(f"scratch/{name.as_str()}")
+    var b = toolchain::build(pkg.as_str(), out.as_str(), toolchain::options())
+    var built = b.poll()
+    while built.is_none() {
+        yield
+        built = b.poll()
+    }
+    let Some(bp) = take built else { panic("no answer") }
+    let Ok(build) = toolchain::read_built(take bp) else { panic("the build's request") }
+    for d in build.diagnostics {
+        assert(!d.error, d.rendered.as_str())
+    }
+    assert(build.ok, f"{name.as_str()} builds")
+    var options = drive::gpu()
+    options.width = width
+    options.height = height
+    var l = drive::load(out.as_str(), options)
+    var loaded = l.poll()
+    while loaded.is_none() {
+        yield
+        loaded = l.poll()
+    }
+    let Some(lp) = take loaded else { panic("no answer") }
+    let Ok(it) = drive::read_loaded(take lp) else { panic("the build loads on a hardware GPU") }
+    let h = it.build
+    var i = drive::init(h)
+    var inited = i.poll()
+    while inited.is_none() {
+        yield
+        inited = i.poll()
+    }
+    let Some(ip) = take inited else { panic("no answer") }
+    let Ok(init) = drive::read_ran(take ip) else { panic("init's request") }
+    if let Some(trap) = init.trap {
+        panic(trap.message.as_str())
+    }
+    var out_screens: Vec<Screen> = Vec::new()
+    for g in 0..groups.len() {
+        for k in 0..groups[g].len() {
+            let time = groups[g][k]
+            var f = drive::frame_at(h, time)
+            var framed = f.poll()
+            while framed.is_none() {
+                yield
+                framed = f.poll()
+            }
+            let Some(fp) = take framed else { panic("no answer") }
+            let Ok(ran) = drive::read_ran(take fp) else { panic("the frame's request") }
+            if let Some(trap) = ran.trap {
+                panic(trap.message.as_str())
+            }
+        }
+        var c = drive::capture(h)
+        var captured = c.poll()
+        while captured.is_none() {
+            yield
+            captured = c.poll()
+        }
+        let Some(cp) = take captured else { panic("no answer") }
+        let Ok(shot) = drive::read_capture(take cp) else { panic("the capture") }
+        assert(shot.width == width && shot.height == height, "the capture is the screen")
+        var pixels: Vec<u8> = Vec::new()
+        match take shot.rgba {
+            Data::Bytes(v) => pixels = take v,
+            Data::Blob(held) => {
+                var n = blob::len(held)
+                var counted = n.poll()
+                while counted.is_none() {
+                    yield
+                    counted = n.poll()
+                }
+                let Some(np) = take counted else { panic("no answer") }
+                let Ok(size) = blob::read_len(take np) else { panic("the blob's length") }
+                var at: u64 = 0
+                while at < size {
+                    let len = u32(min(size - at, CHUNK))
+                    var r = blob::read(held, at, len)
+                    var read = r.poll()
+                    while read.is_none() {
+                        yield
+                        read = r.poll()
+                    }
+                    let Some(rp) = take read else { panic("no answer") }
+                    let Ok(chunk) = answer(take rp) else { panic("the blob's bytes") }
+                    for j in 0..chunk.len() {
+                        pixels.push(chunk[j])
+                    }
+                    at += u64(len)
+                }
+            },
+        }
+        assert(pixels.len() == 4 * width * height, "every pixel came back")
+        out_screens.push(Screen { width, pixels })
+    }
+    out_screens
+}
+
+/// One group of frames at `times`, then the screen.
+fn together(times: [f32]) -> Vec<Vec<f32>> {
+    var g: Vec<f32> = Vec::new()
+    for t in times {
+        g.push(t)
+    }
+    var out: Vec<Vec<f32>> = Vec::new()
+    out.push(take g)
+    out
+}
+
+/// A frame at each of `times`, the screen after each.
+fn each(times: [f32]) -> Vec<Vec<f32>> {
+    var out: Vec<Vec<f32>> = Vec::new()
+    for t in times {
+        var g: Vec<f32> = Vec::new()
+        g.push(t)
+        out.push(take g)
+    }
+    out
+}
+
+/// A captured screen: its width, and its pixels, RGBA8, rows top to bottom.
+struct Screen: Clone {
+    width: u32,
+    pixels: Vec<u8>,
+}
+
+impl Screen {
+    /// Channel `c` of pixel (`x`, `y`).
+    fn at(self, x: u32, y: u32, c: u32) -> u32 {
+        u32(self.pixels[4 * (y * self.width + x) + c])
+    }
+
+    /// Pixel (`x`, `y`)'s red, green and blue.
+    fn rgb(self, x: u32, y: u32) -> [u32; 3] {
+        [self.at(x, y, 0), self.at(x, y, 1), self.at(x, y, 2)]
+    }
+}
+
+/// How far apart two channels are.
+fn apart(a: u32, b: u32) -> u32 {
+    if a > b { a - b } else { b - a }
+}
+
+/// Whether every channel of `a` is within `within` of `b`'s.
+fn within(a: [u32; 3], b: [u32; 3], most: u32) -> bool {
+    apart(a[0], b[0]) <= most && apart(a[1], b[1]) <= most && apart(a[2], b[2]) <= most
+}
+
+/// How far apart two pixels are, summed over their channels.
+fn distance(a: [u32; 3], b: [u32; 3]) -> u32 {
+    apart(a[0], b[0]) + apart(a[1], b[1]) + apart(a[2], b[2])
+}
+
+/// Whether every channel of `a` is more than `b`'s plus `by` (an 8-bit sum, at most 255).
+fn above(a: [u32; 3], b: [u32; 3], by: u32) -> bool {
+    a[0] > min(b[0] + by, 255) && a[1] > min(b[1] + by, 255) && a[2] > min(b[2] + by, 255)
+}
+
+/// A pixel's channels, for a message.
+fn shown(p: [u32; 3]) -> String {
+    String::from(f"({p[0]}, {p[1]}, {p[2]})")
+}
+
+/// Colour bounds do not distinguish two surfaces with the same palette. A changed depth must
+/// reject that history for newly hidden geometry, revealed geometry, and revealed sky. A
+/// matching depth keeps temporal accumulation, so rejecting all history cannot pass.
+@test(tool, read: [("repo", "../../..")], budget: 120)
+@job
+fn temporal_depth_rejects_occluded_history_and_keeps_matching_surfaces() {
+    var s = Box::new(
+        screens.start(
+            String::from("temporal-depth"),
+            width: 96,
+            height: 40,
+            groups: together([0.0]),
+        ),
+    )
+    var shots: Vec<Screen> = Vec::new()
+    var done = false
+    while !done {
+        match s.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(v) => {
+                shots = take v
+                done = true
+            },
+        }
+    }
+    borrow f = shots[0]
+    // Four-times-distant blue samples next to near red samples cannot bleed through the
+    // foreground, nor can the foreground expand over the visible background beside it.
+    for edge in [(4, [204, 13, 13]), (6, [13, 13, 204])] {
+        let (x, expected) = edge
+        let actual = f.rgb(x, 3)
+        assert(within(actual, expected, 1), f"opaque edge at {x}: {shown(actual).as_str()}")
+    }
+    var retained = 0
+    for y in [3, 11, 19] {
+        for x in 3..29 {
+            let reference = f.rgb(x, y)
+            let rejected = f.rgb(x + 32, y)
+            assert(
+                within(reference, rejected, 1),
+                f"stale depth at ({x}, {y}): fresh {shown(reference).as_str()}, resolved {shown(rejected).as_str()}",
+            )
+            retained += distance(reference, f.rgb(x + 64, y))
+        }
+    }
+    assert(retained > 1000, f"matching surfaces lost their history: {retained}")
+}
+
+/// At the output's size, a resolve that gathers its nearest sample's neighbourhood itself gives
+/// what one reading the shared neighbourhoods gives: the same samples, held in 32 bits rather
+/// than stored in half floats, so within a step of 8 bits. The history is clipped (it's a blue
+/// the scene doesn't hold), so the clip reads the neighbourhoods too.
+@test(tool, read: [("repo", "../../..")], budget: 120)
+@job
+fn temporal_resolve_gathering_its_neighbourhood_matches_the_shared_one() {
+    var s = Box::new(
+        screens.start(
+            String::from("temporal-gathered"),
+            width: 48,
+            height: 24,
+            groups: together([0.0]),
+        ),
+    )
+    var shots: Vec<Screen> = Vec::new()
+    var done = false
+    while !done {
+        match s.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(v) => {
+                shots = take v
+                done = true
+            },
+        }
+    }
+    borrow f = shots[0]
+    var clipped = 0
+    for y in 0..24 {
+        for x in 0..24 {
+            let shared = f.rgb(x, y)
+            let gathered = f.rgb(x + 24, y)
+            assert(
+                within(shared, gathered, 1),
+                f"({x}, {y}): shared {shown(shared).as_str()}, gathered {shown(gathered).as_str()}",
+            )
+            // The history's blue, 204 in 8 bits: clipped toward the scene wherever it differs.
+            if shared[2] < 190 {
+                clipped += 1
+            }
+        }
+    }
+    assert(clipped > 24 * 24 / 2, f"the history wasn't clipped: {clipped} pixels")
+}
+
+/// Grass the wind moves keeps its blades through temporal AA when its motion is in the motion
+/// target (`deforming_of`): after 12 frames of blades sliding 1.5 pixels a frame, the resolve
+/// with their motion is at most three quarters as far from a fresh resolve (no history) as the
+/// one without, which fades them toward the ground. (Not half: at a blade's leading edge its
+/// motion can point at the ground's history, and there the camera reprojects it, as before.)
+@test(tool, read: [("repo", "../../..")], budget: 120)
+@job
+fn temporal_keeps_swaying_grass_that_draws_its_motion() {
+    var times: Vec<f32> = Vec::new()
+    for i in 0..12 {
+        times.push(f32(i) / 60.0)
+    }
+    var s = Box::new(
+        screens.start(
+            String::from("temporal-sway"),
+            width: 192,
+            height: 32,
+            groups: together(times),
+        ),
+    )
+    var shots: Vec<Screen> = Vec::new()
+    var done = false
+    while !done {
+        match s.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(v) => {
+                shots = take v
+                done = true
+            },
+        }
+    }
+    borrow f = shots[0]
+    var with = 0
+    var without = 0
+    for y in 0..32 {
+        for x in 0..64 {
+            let fresh = f.rgb(x + 128, y)
+            with += distance(f.rgb(x, y), fresh)
+            without += distance(f.rgb(x + 64, y), fresh)
+        }
+    }
+    print(f"distance from a fresh resolve: {with} with motion, {without} without")
+    assert(4 * with <= 3 * without, f"with motion {with}, without {without}")
+}
+
+/// Leaves and a solid silhouette against sky are partial coverage. Their stored depth can change
+/// with jitter without the history becoming invalid. Keep that history and the spatial
+/// background contribution, while the opaque rows above retain depth rejection.
+@test(tool, read: [("repo", "../../..")], budget: 120)
+@job
+fn temporal_keeps_partial_leaf_and_sky_coverage_across_depth_changes() {
+    var s = Box::new(
+        screens.start(
+            String::from("temporal-depth"),
+            width: 96,
+            height: 40,
+            groups: together([0.0]),
+        ),
+    )
+    var shots: Vec<Screen> = Vec::new()
+    var done = false
+    while !done {
+        match s.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(v) => {
+                shots = take v
+                done = true
+            },
+        }
+    }
+    borrow f = shots[0]
+    for row in [(27, "leaf coverage"), (35, "sky silhouette")] {
+        let (y, surface) = row
+        // The red and blue surfaces share an output pixel's reconstruction footprint.
+        let edge = f.rgb(4, y)
+        assert(
+            edge[0] < 202 && edge[0] > 150 && edge[2] > 14,
+            f"{surface} lost spatial coverage: {shown(edge).as_str()}",
+        )
+        var accumulated = 0
+        for x in 3..29 {
+            let changed = f.rgb(x + 32, y)
+            let same = f.rgb(x + 64, y)
+            assert(
+                within(changed, same, 1),
+                f"{surface} discarded coverage history at {x}: {shown(changed).as_str()} vs {shown(same).as_str()}",
+            )
+            accumulated += distance(f.rgb(x, y), changed)
+        }
+        assert(accumulated > 500, f"{surface} did not accumulate history: {accumulated}")
+    }
+}
+
+/// Reconstruction must reproduce an exactly aligned scene sample, and remain continuous when
+/// the sample crosses the boundary of its four-tap footprint.
+@test(tool, read: [("repo", "../../..")], budget: 120)
+@job
+fn temporal_current_reconstruction_interpolates_samples_without_a_boundary_jump() {
+    var s = Box::new(
+        screens.start(
+            String::from("temporal-reconstruction"),
+            width: 64,
+            height: 16,
+            groups: together([0.0]),
+        ),
+    )
+    var shots: Vec<Screen> = Vec::new()
+    var done = false
+    while !done {
+        match s.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(v) => {
+                shots = take v
+                done = true
+            },
+        }
+    }
+    borrow f = shots[0]
+    for y in 2..14 {
+        for x in 2..14 {
+            let source = f.rgb(x, y)
+            for case in [(16, "aligned"), (32, "before boundary"), (48, "after boundary")] {
+                let (offset, what) = case
+                let actual = f.rgb(x + offset, y)
+                assert(
+                    within(source, actual, 1),
+                    f"{what} at ({x}, {y}): source {shown(source).as_str()}, resolved {shown(actual).as_str()}",
+                )
+            }
+        }
+    }
+}
+
+/// A scene larger than its output still has a four-tap reconstruction footprint. Its support
+/// must end at the adjacent source sample rather than retaining a nonzero weight that disappears
+/// when that sample leaves the footprint. This checks resampling continuity, not the low-pass
+/// filtering needed for a general-purpose downsampler.
+@test(tool, read: [("repo", "../../..")], budget: 120)
+@job
+fn temporal_current_reconstruction_stays_continuous_when_reducing_resolution() {
+    var s = Box::new(
+        screens.start(
+            String::from("temporal-reconstruction"),
+            width: 64,
+            height: 24,
+            groups: together([0.0]),
+        ),
+    )
+    var shots: Vec<Screen> = Vec::new()
+    var done = false
+    while !done {
+        match s.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(v) => {
+                shots = take v
+                done = true
+            },
+        }
+    }
+    borrow f = shots[0]
+    for y in 17..23 {
+        for x in 1..7 {
+            let source = f.rgb(x, y)
+            for case in [(8, "aligned"), (16, "before boundary"), (24, "after boundary")] {
+                let (offset, what) = case
+                let actual = f.rgb(x + offset, y)
+                assert(
+                    within(source, actual, 1),
+                    f"reduced {what} at ({x}, {y}): source {shown(source).as_str()}, resolved {shown(actual).as_str()}",
+                )
+            }
+        }
+    }
+}
+
+/// Static shadow detail follows its receiver, without relying on history to hide sampling
+/// noise: the first frame's soft edge, and each later frame's (the receiver moved `frame % 7`
+/// pixels, the dynamic cascade through the world) the same light, shifted.
+@test(tool, read: [("repo", "../../..")], budget: 120)
+@job
+fn static_shadow_edges_keep_their_light_across_frames_and_view_motion() {
+    var times: Vec<f32> = Vec::new()
+    for frame in 0..16 {
+        times.push(f32(frame) / 60.0)
+    }
+    var s = Box::new(
+        screens.start(String::from("shadow-stability"), width: 64, height: 16, groups: each(times)),
+    )
+    var shots: Vec<Screen> = Vec::new()
+    var done = false
+    while !done {
+        match s.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(v) => {
+                shots = take v
+                done = true
+            },
+        }
+    }
+    borrow reference = shots[0]
+    var partial = 0
+    var dark = 0
+    var lit = 0
+    for y in 0..16 {
+        for x in 0..64 {
+            let r = reference.at(x, y, 0)
+            if r > 0 && r < 255 {
+                partial += 1
+            }
+            if r == 0 {
+                dark += 1
+            }
+            if r == 255 {
+                lit += 1
+            }
+        }
+    }
+    assert(
+        partial > 50 && dark > 100 && lit > 100,
+        f"filter lost its soft edge or contrast: {partial} partial, {dark} dark, {lit} lit",
+    )
+    for frame in 1..16 {
+        borrow current = shots[frame]
+        let shift = frame % 7
+        for y in 0..16 {
+            for x in 0..64 - shift {
+                let before = reference.rgb(x, y)
+                let after = current.rgb(x + shift, y)
+                assert(
+                    before[0] == after[0] && before[1] == after[1] && before[2] == after[2],
+                    f"static shadow changed at ({x}, {y}) in frame {frame}",
+                )
+            }
+        }
+    }
+}
+
+/// Foliage occlusion keeps a gap a single pixel wide: the open block's 128, the wood's 0.
+@test(tool, read: [("repo", "../../..")], budget: 120)
+@job
+fn foliage_occlusion_preserves_even_a_single_pixel_gap() {
+    var s = Box::new(
+        screens.start(
+            String::from("wood-occlusion"),
+            width: 24,
+            height: 8,
+            groups: together([0.0]),
+        ),
+    )
+    var shots: Vec<Screen> = Vec::new()
+    var done = false
+    while !done {
+        match s.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(v) => {
+                shots = take v
+                done = true
+            },
+        }
+    }
+    borrow f = shots[0]
+    for y in 0..8 {
+        for x in 0..24 {
+            let actual = f.at(x, y, 0)
+            let expected = if x < 8 { 128 } else { 0 }
+            assert(
+                apart(actual, expected) <= 1,
+                f"block at ({x}, {y}) gave {actual}, expected {expected}",
+            )
+        }
+    }
+}
+
+/// A dark moving surface can leave history that still fits the revealed background's
+/// neighbourhood and depth. Previous motion must remove it only where the surface left.
+@test(tool, read: [("repo", "../../..")], budget: 120)
+@job
+fn temporal_vacated_pixels_drop_cloth_history_without_resetting_unchanged_ground() {
+    var s = Box::new(
+        screens.start(
+            String::from("temporal-vacancy"),
+            width: 48,
+            height: 16,
+            groups: together([0.0]),
+        ),
+    )
+    var shots: Vec<Screen> = Vec::new()
+    var done = false
+    while !done {
+        match s.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(v) => {
+                shots = take v
+                done = true
+            },
+        }
+    }
+    borrow f = shots[0]
+    for y in 2..14 {
+        for x in [2, 4, 6] {
+            let fresh = f.rgb(x, y)
+            let resolved = f.rgb(x + 16, y)
+            let disabled = f.rgb(x + 32, y)
+            assert(
+                within(fresh, resolved, 1),
+                f"vacated cloth at ({x}, {y}): fresh {shown(fresh).as_str()}, resolved {shown(resolved).as_str()}",
+            )
+            assert(
+                above(fresh, disabled, 32),
+                f"fixture no longer exposes dark cloth history at ({x}, {y}): fresh {shown(fresh).as_str()}, disabled {shown(disabled).as_str()}",
+            )
+        }
+        for x in [10, 12, 14] {
+            let fresh = f.rgb(x, y)
+            let resolved = f.rgb(x + 16, y)
+            let disabled = f.rgb(x + 32, y)
+            assert(
+                within(resolved, disabled, 1),
+                f"unchanged ground reset at ({x}, {y}): enabled {shown(resolved).as_str()}, disabled {shown(disabled).as_str()}",
+            )
+            assert(
+                above(fresh, resolved, 32),
+                f"unchanged ground lost accumulation at ({x}, {y}): fresh {shown(fresh).as_str()}, resolved {shown(resolved).as_str()}",
+            )
+        }
+    }
+}
+
+/// The middle row's three panels (polished metal, rough metal, matte) of a screen.
+fn panels(frame: Screen) -> [[u32; 3]; 3] {
+    [frame.rgb(x: 8, y: 8), frame.rgb(x: 25, y: 8), frame.rgb(x: 42, y: 8)]
+}
+
+/// Character materials reflect by view, roughness and metallicity: polished metal's highlight
+/// moves and is narrower than rough metal's, which keeps a broad shoulder; metal's reflectance
+/// has its colour; matte doesn't change with the view; metal reflects the environment away from
+/// the sun, by the view's direction; and the clay view is one diffuse grey.
+@test(tool, read: [("repo", "../../..")], budget: 120)
+@job
+fn character_materials_reflect_by_view_roughness_and_metallicity() {
+    let times = [0.0, 0.35, 0.75, 1.0, 2.4, 3.0]
+    var s = Box::new(
+        screens.start(
+            String::from("character-material"),
+            width: 51,
+            height: 17,
+            groups: each(times),
+        ),
+    )
+    var shots: Vec<Screen> = Vec::new()
+    var done = false
+    while !done {
+        match s.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(v) => {
+                shots = take v
+                done = true
+            },
+        }
+    }
+    let peak = panels(shots[0])
+    let shoulder = panels(shots[1])
+    let away = panels(shots[2])
+    print(
+        f"material peak {peak[0][0]} {peak[1][0]} {peak[2][0]}, shoulder {shoulder[0][0]}, away {away[0][0]} {away[1][0]}",
+    )
+    assert(peak[0][0] > shoulder[0][0] + 40, "polished metal has no moving highlight")
+    assert(peak[0][0] > peak[1][0] + 100, "roughness did not broaden the peak")
+    assert(away[1][0] > away[0][0] + 2, "rough metal lost its broad highlight shoulder")
+    assert(peak[0][0] > peak[0][1] && peak[0][1] > peak[0][2], "metal reflectance lost its colour")
+    for c in 0..3 {
+        assert(apart(peak[2][c], away[2][c]) <= 2, "matte material changed with the view")
+    }
+    let env_front = panels(shots[3])
+    let env_side = panels(shots[4])
+    assert(env_front[0][0] > 30, "metal has no environment reflection away from direct sun")
+    assert(
+        apart(env_front[0][0], env_side[0][0]) > 5,
+        "environment reflection ignores view direction",
+    )
+    let clay = panels(shots[5])
+    for c in 0..3 {
+        assert(clay[0][c] == clay[1][c], "rough metal remains glossy in clay view")
+        assert(clay[0][c] == clay[2][c], "metal loses diffuse clay light")
+    }
+}
+
+/// A moving sampling grid must not borrow an occluder's colour or detach from its depth. The
+/// reflection's march reads every third step's texel and, where that lands behind a surface,
+/// tests the two before it first. Over walls thick enough that no surface lies between its
+/// reads, it meets each where one step at a time met it: the same step, distance and pixel, for
+/// walls met at every step of the march.
+@test(tool, read: [("repo", "../../..")], budget: 120)
+@job
+fn water_reflections_marched_in_threes_meet_what_single_steps_meet() {
+    var s = Box::new(
+        screens.start(String::from("water-steps"), width: 192, height: 32, groups: together([0.0])),
+    )
+    var shots: Vec<Screen> = Vec::new()
+    var done = false
+    while !done {
+        match s.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(v) => {
+                shots = take v
+                done = true
+            },
+        }
+    }
+    borrow f = shots[0]
+    var seen = [false; 256]
+    for y in 0..32 {
+        for x in 0..96 {
+            for c in 0..4 {
+                assert(
+                    f.at(x, y, c) == f.at(x + 96, y, c),
+                    f"({x}, {y}): threes against single steps",
+                )
+            }
+            if f.at(x, y, 3) > 0 {
+                seen[f.at(x, y, 0)] = true
+            }
+        }
+    }
+    var steps = 0
+    for k in 0..256 {
+        if seen[k] {
+            steps += 1
+        }
+    }
+    assert(steps >= 15, f"walls met at too few of the march's steps: {steps}")
+}
+
+/// Water reflections follow the raster's jitter without the foreground's colour leaking: at
+/// each of five sub-pixel shifts, the red far surface stays red beside the blue occluder, and
+/// the planar reflection's ramp stays where it is, confident.
+@test(tool, read: [("repo", "../../..")], budget: 120)
+@job
+fn water_reflections_follow_raster_jitter_without_foreground_colour_leaks() {
+    let shifts = [-0.49, -0.2, 0.0, 0.2, 0.49]
+    var s = Box::new(
+        screens.start(
+            String::from("water-reflection"),
+            width: 64,
+            height: 16,
+            groups: each(shifts),
+        ),
+    )
+    var shots: Vec<Screen> = Vec::new()
+    var done = false
+    while !done {
+        match s.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(v) => {
+                shots = take v
+                done = true
+            },
+        }
+    }
+    var ramp: Option<u32> = None
+    for k in 0..5 {
+        let shift = shifts[k]
+        borrow f = shots[k]
+        for y in 0..16 {
+            for x in 0..64 {
+                let c = f.rgb(x, y)
+                if x < 32 {
+                    assert(
+                        c[0] >= 254 && c[1] > 20 && c[2] <= 1,
+                        f"jitter {shift}: red surface lost or blue occluder leaked at ({x},{y}): {shown(c).as_str()}",
+                    )
+                } else {
+                    assert(
+                        apart(c[0], 128) <= 1 && c[1] >= 254 && c[2] == 0,
+                        f"jitter {shift}: planar reflection shifted or lost confidence: {shown(c).as_str()}",
+                    )
+                    if let Some(reference) = ramp {
+                        assert(apart(c[0], reference) <= 1, "reflection ramp changes with jitter")
+                    } else {
+                        ramp = Some(c[0])
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The production plant field stays finite on the GPU: each of the five panels (the clump's
+/// centre, a distant crown, a hard blend deep inside, and part offsets at those distant and
+/// deep points) is green at its centre, after two frames.
+@test(tool, read: [("repo", "../../..")], budget: 120)
+@job
+fn plant_fields_remain_finite_at_centres_and_extreme_blend_distances() {
+    var s = Box::new(
+        screens.start(
+            String::from("crown-numerics"),
+            width: 80,
+            height: 16,
+            groups: together([0.0, 1.0 / 60.0]),
+        ),
+    )
+    var shots: Vec<Screen> = Vec::new()
+    var done = false
+    while !done {
+        match s.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(v) => {
+                shots = take v
+                done = true
+            },
+        }
+    }
+    borrow f = shots[0]
+    let want = [0, 255, 0, 255]
+    for panel in 0..5 {
+        let x = panel * 16 + 8
+        for c in 0..4 {
+            let got = f.at(x, 8, c)
+            assert(apart(got, want[c]) <= 2, f"plant numeric panel {panel}: channel {c} is {got}")
+        }
+    }
+}
