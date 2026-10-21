@@ -22,6 +22,7 @@ use std::tool::files
 use std::tool::files::Kind
 use std::tool::testing
 use std::tool::testing::Fake
+use std::tool::time
 use std::tool::time::Utc
 
 fn contains(haystack: str, needle: str) -> bool {
@@ -614,14 +615,29 @@ fn kept_releases_come_back_from_the_live_site_checked() {
     }
 }
 
+/// The fake clock's seconds now.
+@job
+fn clock() -> u64 {
+    var p = time::utc_now()
+    var got = p.poll()
+    while got.is_none() {
+        yield
+        got = p.poll()
+    }
+    let Some(polled) = take got else { panic("no answer") }
+    let Ok(t) = time::read_utc(take polled) else { panic("the fake clock") }
+    t.seconds
+}
+
 /// A kept file that doesn't match, doesn't arrive or leaves its release stops the deploy, and
-/// no history is written.
+/// no history is written: how many seconds of the fake clock the deploy took (its retries'
+/// waits).
 @job
 fn spoiled(
     given: take String,
     given_fake: take Option<Fake>,
     given_files: take Vec<(String, Vec<u8>)>,
-) {
+) -> u64 {
     let why = take given
     var s = Box::new(set_up.start(site(docs: false, docs_first: false)))
     loop {
@@ -647,6 +663,17 @@ fn spoiled(
             Step::Done(_) => break,
         }
     }
+    var c0 = Box::new(clock.start())
+    var started: u64 = 0
+    loop {
+        match c0.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(t) => {
+                started = t
+                break
+            },
+        }
+    }
     var j = Box::new(deployed.start(options(dry_run: true)))
     loop {
         match j.get_mut().resume() {
@@ -667,8 +694,16 @@ fn spoiled(
             },
         }
     }
+    var c1 = Box::new(clock.start())
+    loop {
+        match c1.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(ended) => return ended - started,
+        }
+    }
 }
 
+/// A mismatch is a definite answer: the deploy stops at once, with no retry.
 @test(tool, net: ["console.example", "game.example"], budget: 60)
 @job
 fn a_file_that_does_not_match_stops_the_deploy() {
@@ -682,11 +717,15 @@ fn a_file_that_does_not_match_stops_the_deploy() {
     loop {
         match j.get_mut().resume() {
             Step::Yielded => yield,
-            Step::Done(_) => break,
+            Step::Done(waited) => {
+                assert(waited == 0, "a mismatch is not retried")
+                break
+            },
         }
     }
 }
 
+/// A 404 is a definite answer too: no retry.
 @test(tool, net: ["console.example", "game.example"], budget: 60)
 @job
 fn a_file_that_does_not_arrive_stops_the_deploy() {
@@ -694,7 +733,79 @@ fn a_file_that_does_not_arrive_stops_the_deploy() {
     loop {
         match j.get_mut().resume() {
             Step::Yielded => yield,
+            Step::Done(waited) => {
+                assert(waited == 0, "a 404 is not retried")
+                break
+            },
+        }
+    }
+}
+
+/// A file whose fetch keeps failing in transport, or whose origin keeps answering 503, is tried
+/// 5 times, the waits between 15 s in all, and then stops the deploy, saying so.
+@test(tool, net: ["console.example", "game.example"], budget: 60)
+@job
+fn a_file_that_keeps_failing_stops_the_deploy_after_its_retries() {
+    for k in 0..2 {
+        // The 503 first: a fake's failures in transport come before its status.
+        let (why, fake) = if k == 0 {
+            ("HTTP 503, 5 tries", Fake::Status(503))
+        } else {
+            ("connection reset (a fake site's failure) (5 tries)", Fake::Fail(100))
+        }
+        var j = Box::new(spoiled.start(String::from(why), Some(take fake), Vec::new()))
+        loop {
+            match j.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(waited) => {
+                    assert(waited == 15, why)
+                    break
+                },
+            }
+        }
+    }
+}
+
+/// A file whose fetch fails in transport twice, then answers, is kept: the deploy goes on.
+@test(tool, net: ["console.example", "game.example"], budget: 60)
+@job
+fn a_file_that_fails_in_transport_then_answers_is_kept() {
+    var s = Box::new(set_up.start(site(docs: false, docs_first: false)))
+    loop {
+        match s.get_mut().resume() {
+            Step::Yielded => yield,
             Step::Done(_) => break,
+        }
+    }
+    let url = String::from(f"https://game.example/releases/{C}/session/game.wasm")
+    var f = Box::new(faked.start(take url, Fake::Fail(2)))
+    loop {
+        match f.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
+    }
+    var j = Box::new(deployed.start(options(dry_run: true)))
+    loop {
+        match j.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(r) => {
+                if let Err(e) = take r {
+                    panic(e.as_str())
+                }
+                break
+            },
+        }
+    }
+    var r = Box::new(read.start(String::from(f"scratch/game-host/releases/{C}/session/game.wasm")))
+    loop {
+        match r.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(got) => {
+                let Some(t) = take got else { panic("the kept file") }
+                assert(t.as_str() == C, t.as_str())
+                break
+            },
         }
     }
 }
