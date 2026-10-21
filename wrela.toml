@@ -33,6 +33,12 @@ members = [
     "studio/maplens",
     "studio/maplens/glue",
     "studio/audio",
+    "studio/toolkit",
+    "studio/listening",
+    "studio/lookbook",
+    "studio/motion",
+    "studio/round",
+    "studio/serve",
     "studio/reference",
     "studio/release",
     "studio/deploy",
@@ -103,6 +109,47 @@ write = ["ws=.", "out=build/reference"]
 # piece in its `build/audio` and writes where its command line says, in the workspace.
 [tools.audio]
 package = "studio/audio"
+write = ["ws=."]
+
+# The listening tool (studio/listening): blind listening tests of wrela's piano. It builds and
+# renders the pieces as the audio tool does, and writes the tests where its command line says, in
+# the workspace. sfizz's `sfizz_render` plays the sampled piano: it isn't vendored, so it must be
+# on PATH (a release from https://sfz.tools/sfizz/, its `bin/` on PATH).
+[tools.listening]
+package = "studio/listening"
+write = ["ws=."]
+run = ["sfizz_render"]
+
+# The lookbook tool (studio/lookbook): each shot of the floor's lookbook as a still on the native
+# host's GPU and a clip in Chrome. It reads the floor's build (games/last-green/build), serves it
+# to Chrome and writes the clips' keys and the page's results there, and writes the stills and
+# clips where its command line says, in the workspace.
+[tools.lookbook]
+package = "studio/lookbook"
+write = ["ws=."]
+browser = true
+
+# The motion tool (studio/motion): short captures of the floor in motion on the native host's GPU.
+# It reads the floor's build and writes each capture's frames, clip and contact sheet where its
+# command line says, in the workspace. FFmpeg (with x264) makes the clips: it isn't vendored, so
+# it must be on PATH (`brew install ffmpeg`, or the distribution's `ffmpeg` package).
+[tools.motion]
+package = "studio/motion"
+write = ["ws=."]
+run = ["ffmpeg"]
+
+# The round tool (studio/round): a play round of the floor in headless Chrome, summarized, then
+# its lookbook's stills. It serves the floor's build to Chrome and writes the round's keys and
+# the page's results there, and writes the round in target/rounds/round-<n>.
+[tools.round]
+package = "studio/round"
+write = ["ws=."]
+browser = true
+
+# The serve tool (studio/serve): a directory of the workspace served to a browser on this
+# machine, its pages' results written into its `results/`.
+[tools.serve]
+package = "studio/serve"
 write = ["ws=."]
 
 # The release tool (studio/release): a release of the console, its games and the docs for

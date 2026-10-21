@@ -1,0 +1,100 @@
+// A page in test mode, run in Chrome to its end (language.md §15.5; runtime/browser's test mode):
+// a build's directory served on a free port (`std::tool::serve`), opened in headless Chrome
+// (`std::tool::browser`) with a test mode's hash, and waited on until it writes `results/DONE`
+// (`ok`, or why it failed). The page's other results land in the directory's `results/`, which
+// each run empties first; its console goes to `results/console.log`.
+
+use std::io::print
+use std::time::now
+use std::tool::browser
+use std::tool::files
+use std::tool::serve
+use std::tool::time::after
+use wait::{done, said, wait}
+use whole::{chunked, write_file}
+
+/// How often the page's result is looked for, in seconds.
+const LOOK: f64 = 1.0
+
+/// Runs the page in `dir` (a root path in a write root) at `width` × `height`, with `hash` (as
+/// `#test&frames=...`), until it writes `results/DONE` or `timeout` seconds pass: whether it
+/// wrote `ok`, or why not. The console's last 20 lines are printed, as is how long it took.
+@job
+pub fn run_page(
+    dir: take String,
+    hash: take String,
+    width: take u32,
+    height: take u32,
+    timeout: take f64,
+) -> Result<(), String> {
+    let results = String::from(f"{dir}/results")
+    // What an earlier run left, a stale DONE above all, isn't this run's.
+    var gone = wait(files::remove_all(results.as_str()))
+    while !gone.ready() { yield }
+    let _ = gone.bytes()
+    var made = wait(files::make_dirs(results.as_str()))
+    while !made.ready() { yield }
+    let _ = made.bytes()?
+    var st = wait(serve::start(dir.as_str()))
+    while !st.ready() { yield }
+    let started = said(serve::read_started(st.polled()))?
+    let start = now()
+    var op = wait(browser::open(f"{started.origin}/{hash}", width, height, timeout: 120.0))
+    while !op.ready() { yield }
+    let b = said(browser::read_opened(op.polled()))?
+    var result: Result<(), String> = Err(String::from(f"timed out after {timeout:.0}s"))
+    while now() - start < timeout {
+        var t = wait(after(LOOK))
+        while !t.ready() { yield }
+        var r = wait(browser::results(b))
+        while !r.ready() { yield }
+        match said(browser::read_attribute(r.polled())) {
+            Ok(Some(body)) => {
+                let text = body.as_str().trim()
+                result = if text == "ok" {
+                    Ok(())
+                } else {
+                    Err(String::from(f"page failed: {text}"))
+                }
+                break
+            },
+            Ok(None) => {},
+            Err(e) => {
+                result = Err(take e)
+                break
+            },
+        }
+    }
+    var c = wait(browser::console(b))
+    while !c.ready() { yield }
+    let lines = match said(browser::read_texts(c.polled())) {
+        Ok(l) => take l,
+        Err(e) => Vec::from([String::from(f"(the console couldn't be read: {e})")]),
+    }
+    var log = String::new()
+    for l in lines {
+        log.push_str(l.as_str())
+        log.push_str("\n")
+    }
+    var j = Box::new(
+        write_file.start(
+            String::from(f"{results}/console.log"),
+            chunked(Vec::from(log.as_bytes())),
+        ),
+    )
+    var w = done(j.get_mut().resume())
+    while w.is_none() {
+        yield
+        w = done(j.get_mut().resume())
+    }
+    var shut = wait(browser::close(b))
+    while !shut.ready() { yield }
+    var down = wait(serve::close(started.server))
+    while !down.ready() { yield }
+    print(f"elapsed {now() - start:.1}s; console: {results}/console.log")
+    let from = if lines.len() > 20 { lines.len() - 20 } else { 0 }
+    for k in from..lines.len() {
+        print(f"  {lines[k]}")
+    }
+    result
+}

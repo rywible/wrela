@@ -109,7 +109,7 @@ Decided after spikes 01–12 (2026-10-02). **Cook fields on device; rasterize wh
 
 ## Audio
 
-Spike 14 (#48, 2026-10-06) asked whether music can be a program: Satie's first Gymnopédie as a **score** in code, a **performance** in code, and a **piano** that plays it. The owner judged it blind, against the same notes played by a sampled concert piano. Its code is on main (`engine::score`, `engine::perform`, `engine::piano`, `examples/gymnopedie`, the audio tool (`studio/audio`, then `wrela audio`), `tools/listening.py`); its listening renders stay on the branch `spike-14`.
+Spike 14 (#48, 2026-10-06) asked whether music can be a program: Satie's first Gymnopédie as a **score** in code, a **performance** in code, and a **piano** that plays it. The owner judged it blind, against the same notes played by a sampled concert piano. Its code is on main (`engine::score`, `engine::perform`, `engine::piano`, `examples/gymnopedie`, the audio tool (`studio/audio`, then `wrela audio`), the listening tool (`studio/listening`)); its listening renders stay on the branch `spike-14`.
 
 - **The score** (`engine::score`) is LilyPond-like notation that a constant reads, and the form (the repeat, its endings) is code. A mistake fails the build at its voice, bar and beat. The piece is 3.8 KB of notation and 12 KB as built; the same 221 s at 128 kbps is 3.5 MB, so about 300 times more.
 - **The performance** (`engine::perform`) is what a pianist controls and nothing else: each note's onset, hammer velocity and release, and the pedals. A taste (habits) and marks (this time, at places) write it; flourishes are in seconds, not beats; every number lifts. A taste of only a tempo is the deadpan.

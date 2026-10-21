@@ -1,0 +1,18 @@
+// The serve tool's tests: its command line.
+
+use main::{PORT, parse_args}
+
+@test
+fn the_command_line_takes_a_directory_and_a_port() {
+    let Some((dir, port)) = parse_args([]) else { panic("the workspace") }
+    assert(dir.as_str() == "ws" && port == PORT)
+    let Some((build, free)) = parse_args(
+        [String::from("games/last-green/build"), String::from("--port"), String::from("0")],
+    ) else {
+        panic("a build on a free port")
+    }
+    assert(build.as_str() == "ws/games/last-green/build" && free == 0)
+    assert(parse_args([String::from("/tmp")]).is_none(), "outside the workspace")
+    assert(parse_args([String::from("--port"), String::from("70000")]).is_none(), "no such port")
+    assert(parse_args([String::from("a"), String::from("b")]).is_none(), "two directories")
+}

@@ -51,10 +51,7 @@
 
 use clicks::clicks_report
 use dsp::{db, peak_of, rms, round}
-use io::{
-    RATE, Rendered, build_piece, close, describe_piece, length_of, read_file, render_piece,
-    start_piece, write_file,
-}
+use io::{RATE, Rendered, build_piece, close, describe_piece, length_of, render_piece, start_piece}
 use json::{Value, obj, text}
 use measure::report
 use model::fit_model
@@ -68,6 +65,7 @@ use std::tool::{RUNNING, args}
 use std::tool::drive
 use std::string::parse_f64_at
 use std::tool::files::rooted
+use toolkit::whole::{read_file, write_file}
 
 /// The root the tool reads and writes the workspace in.
 pub const WS: Text = "ws"

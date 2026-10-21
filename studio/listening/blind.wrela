@@ -1,0 +1,294 @@
+// Blind listening's arithmetic: renders matched in loudness and length, shuffled, cut into
+// excerpts with fades, written as 16-bit WAV files, and a gate's answers scored. Pure, so its
+// tests need no render.
+
+use audio_tool::json::{Value, obj, text}
+use engine::rng::Rng
+use std::collections::Vec
+use std::math
+use std::string::String
+
+/// How long an excerpt rings past its last bar (s), and its fades in and out (s).
+pub const RING: f64 = 1.5
+pub const FADE_IN: f64 = 0.02
+pub const FADE_OUT: f64 = 0.3
+
+/// The gate passes at 12 of 16 (p < 0.05 against a coin toss).
+pub const GATE_PASS: u32 = 12
+
+/// A render: its samples (channels interleaved), its channels and its rate.
+pub struct Render: Clone {
+    pub samples: Vec<f64>,
+    pub channels: u32,
+    pub rate: u32,
+}
+
+/// The RMS level and peak of `samples`, padded with silence to `len` samples.
+pub fn level(samples: [f64], len: u32) -> (f64, f64) {
+    var sum = 0.0
+    var peak = 0.0
+    for x in samples {
+        sum += x * x
+        if abs(x) > peak {
+            peak = abs(x)
+        }
+    }
+    (sqrt(sum / f64(max(len, 1))), peak)
+}
+
+/// The gain for each of the renders whose levels and peaks are `levels` that brings all to one
+/// RMS level: as loud as it can be with every peak at -1 dBFS or below.
+pub fn matched(levels: [(f64, f64)]) -> Vec<f64> {
+    let ceiling = math::pow_f64(10.0, -1.0 / 20.0)
+    var target = 0.0
+    for k in 0..levels.len() {
+        let t = levels[k].0 * ceiling / levels[k].1
+        if k == 0 || t < target {
+            target = t
+        }
+    }
+    var out: Vec<f64> = Vec::new()
+    for (rms, _) in levels {
+        out.push(target / rms)
+    }
+    out
+}
+
+/// `x` rounded to the nearest whole number, ties to even, as Python's `round` does.
+pub fn round_even(x: f64) -> f64 {
+    let r = floor(x)
+    let d = x - r
+    if d > 0.5 {
+        return r + 1.0
+    }
+    if d < 0.5 {
+        return r
+    }
+    if floor(r / 2.0) * 2.0 == r { r } else { r + 1.0 }
+}
+
+/// `x` rounded to `places` places, as Python's `round(x, places)` gives it.
+pub fn rounded(x: f64, places: u32) -> f64 {
+    let s = if places == 1 { String::from(f"{x:.1}") } else { String::from(f"{x:.2}") }
+    s.as_str().parse_f64().unwrap_or(x)
+}
+
+fn push_u16(out: mut Vec<u8>, x: u32) {
+    out.push(u8(x & 255))
+    out.push(u8((x >> 8) & 255))
+}
+
+fn push_u32(out: mut Vec<u8>, x: u32) {
+    for k in 0..4 {
+        out.push(u8((x >> (8 * k)) & 255))
+    }
+}
+
+/// A 16-bit PCM WAV file of `samples` times `gain`, padded with silence to `len` samples, each
+/// `x * 32767`, rounded, as spike 14's round 3 was written.
+pub fn pcm16(samples: [f64], gain: f64, len: u32, channels: u32, rate: u32) -> Vec<u8> {
+    var out: Vec<u8> = Vec::with_capacity(44 + 2 * len)
+    for t in ["RIFF"] {
+        for k in 0..4 {
+            out.push(t.byte(k))
+        }
+    }
+    push_u32(mut out, 36 + 2 * len)
+    for k in 0..8 {
+        out.push("WAVEfmt ".byte(k))
+    }
+    push_u32(mut out, 16)
+    push_u16(mut out, 1)
+    push_u16(mut out, channels)
+    push_u32(mut out, rate)
+    push_u32(mut out, rate * 2 * channels)
+    push_u16(mut out, 2 * channels)
+    push_u16(mut out, 16)
+    for k in 0..4 {
+        out.push("data".byte(k))
+    }
+    push_u32(mut out, 2 * len)
+    for i in 0..len {
+        let x = if i < samples.len() { samples[i] * gain } else { 0.0 }
+        let v = clamp(round_even(x * 32767.0), -32768.0, 32767.0)
+        let bits = u32(i32(v)) & 65535
+        push_u16(mut out, bits)
+    }
+    out
+}
+
+/// An order of `n` things, shuffled by `rng` (Fisher–Yates).
+pub fn shuffled(n: u32, rng: mut Rng) -> Vec<u32> {
+    var order: Vec<u32> = Vec::from_fn(n, |i| i)
+    var i = n
+    while i > 1 {
+        let j = min(u32(rng.next() * f64(i)), i - 1)
+        i -= 1
+        order.swap(i, j)
+    }
+    order
+}
+
+/// A blind set: each render as a file (its letter, its bytes) in shuffled order, matched in
+/// loudness and length, and the key that says which is which.
+pub struct Blind: Clone {
+    pub files: Vec<(String, Vec<u8>)>,
+    pub key: Value,
+}
+
+/// The blind set of `renders` (each a name and its render), lettered from `letters`, in the
+/// order `order` gives.
+pub fn blind(renders: [(String, Render)], letters: str, order: [u32]) -> Blind {
+    var longest = 0
+    for (_, r) in renders {
+        longest = max(longest, r.samples.len())
+    }
+    var levels: Vec<(f64, f64)> = Vec::new()
+    for (_, r) in renders {
+        levels.push(level(r.samples, longest))
+    }
+    let gains = matched(levels)
+    var files: Vec<(String, Vec<u8>)> = Vec::new()
+    var key = obj()
+    for k in 0..order.len() {
+        let letter = String::from(letters.slice(k, k + 1))
+        let name = renders[order[k]].0.clone()
+        borrow r = renders[order[k]].1
+        let gain = gains[order[k]]
+        files.push((letter.clone(), pcm16(r.samples, gain, longest, r.channels, r.rate)))
+        key = (take key).with(
+            letter.as_str(),
+            obj()
+                .with("render", text(name.as_str()))
+                .with("gain_db", Value::Num(rounded(20.0 * math::log10_f64(gain), 2)))
+                .with(
+                    "seconds",
+                    Value::Num(rounded(f64(longest) / f64(r.channels) / f64(r.rate), 1)),
+                ),
+        )
+    }
+    Blind { files, key }
+}
+
+/// `samples` (channels interleaved) from `start` to `end` seconds, faded in and out.
+pub fn cut(samples: [f64], channels: u32, rate: u32, start: f64, end: f64) -> Vec<f64> {
+    let a = min(u32(start * f64(rate)) * channels, samples.len())
+    let b = max(a, min(u32(end * f64(rate)) * channels, samples.len()))
+    var out: Vec<f64> = Vec::with_capacity(b - a)
+    for i in a..b {
+        out.push(samples[i])
+    }
+    let frames = out.len() / channels
+    let fade_in_end = min(frames, u32(ceil(FADE_IN * f64(rate))))
+    let tail = u32(ceil(FADE_OUT * f64(rate))) + 1
+    let fade_out_start = max(fade_in_end, if frames > tail { frames - tail } else { 0 })
+    for i in 0..frames {
+        if i >= fade_in_end && i < fade_out_start {
+            continue
+        }
+        let t = f64(i) / f64(rate)
+        let g = min(min(1.0, t / FADE_IN), f64(frames - 1 - i) / f64(rate) / FADE_OUT)
+        for c in 0..channels {
+            out[i * channels + c] = out[i * channels + c] * g
+        }
+    }
+    out
+}
+
+/// When bar `first` starts and bar `last` ends (s), from a take's beats and bars: the beats run
+/// to the last bar's end.
+pub fn excerpt_times(beats: [f64], bars: u32, first: u32, last: u32) -> (f64, f64) {
+    let per = (beats.len() - 1) / bars
+    (beats[(first - 1) * per], beats[min(last * per, beats.len() - 1)])
+}
+
+/// The chance of `k` or more heads in `n` tosses of a fair coin.
+pub fn binomial_p(k: u32, n: u32) -> f64 {
+    var total = 0.0
+    var comb = 1.0
+    for i in 0..n + 1 {
+        if i >= k {
+            total += comb
+        }
+        comb = comb * f64(n - i) / f64(i + 1)
+    }
+    total / math::pow_f64(2.0, f64(n))
+}
+
+/// A gate's pair: its number (`01`), the letter that's wrela's piano, its piece and its bars.
+pub struct Pair: Clone {
+    pub n: String,
+    pub wrela: String,
+}
+
+/// How many answered pairs chose wrela's piano, of how many, the chance a coin does as well, and
+/// whether the gate passes; or which pairs have no answer. `answers` is the answers' text, one
+/// line a pair (`01 A`).
+pub fn score(key: [Pair], answers: str) -> Result<Value, String> {
+    var picked: Vec<(String, String)> = Vec::new()
+    for (a, b) in answers.lines() {
+        let line = answers.slice(a, b)
+        var parts: Vec<String> = Vec::new()
+        for (x, y) in line.split(" ") {
+            if y > x {
+                parts.push(String::from(line.slice(x, y)))
+            }
+        }
+        if parts.len() != 2 {
+            continue
+        }
+        let letter = parts[1].as_str()
+        let up = if letter == "a" || letter == "A" {
+            "A"
+        } else if letter == "b" || letter == "B" {
+            "B"
+        } else {
+            ""
+        }
+        if up.is_empty() {
+            continue
+        }
+        var n = parts[0].clone()
+        while n.len() < 2 {
+            n = String::from(f"0{n}")
+        }
+        picked.push((take n, String::from(up)))
+    }
+    var missing = String::new()
+    var wrela = 0
+    for p in key {
+        var found: Option<String> = None
+        for (n, l) in picked {
+            if n.as_str() == p.n.as_str() {
+                found = Some(l.clone())
+            }
+        }
+        match found {
+            Some(l) => {
+                if l.as_str() == p.wrela.as_str() {
+                    wrela += 1
+                }
+            },
+            None => {
+                if !missing.is_empty() {
+                    missing.push_str(", ")
+                }
+                missing.push_str(p.n.as_str())
+            },
+        }
+    }
+    if !missing.is_empty() {
+        return Err(String::from(f"no answer for pairs {missing}"))
+    }
+    Ok(
+        obj()
+            .with("wrela", Value::Int(i64(wrela)))
+            .with("of", Value::Int(i64(key.len())))
+            .with("p", Value::Num(rounded4(binomial_p(wrela, key.len()))))
+            .with("passes", Value::Bool(wrela >= GATE_PASS)),
+    )
+}
+
+fn rounded4(x: f64) -> f64 {
+    String::from(f"{x:.4}").as_str().parse_f64().unwrap_or(x)
+}

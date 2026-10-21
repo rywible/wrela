@@ -1,0 +1,8 @@
+# The lookbook tool (`wrela tool lookbook`): each shot of the floor's lookbook as a still on the
+# native host and a clip in Chrome (main.wrela says how). The round tool (studio/round) renders
+# its stills after a round, and the motion tool (studio/motion) chooses its shots as it does.
+[package]
+name = "lookbook_tool"
+
+[dependencies]
+toolkit = { workspace = true }

@@ -1,0 +1,9 @@
+# The round tool (`wrela tool round`): a play round of the floor in headless Chrome, summarized,
+# then its lookbook's stills (main.wrela says how).
+[package]
+name = "round_tool"
+
+[dependencies]
+lookbook_tool = { workspace = true }
+release_tool = { workspace = true }
+toolkit = { workspace = true }

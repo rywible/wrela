@@ -1,6 +1,6 @@
 // The specimens: each of the history's species at a run of ages, grown in the open and among
 // others (`engine::grow::grown`), stood apart on level ground and drawn as the floor draws its
-// trees (`trees::placed`). The specimen view (F8's sixth, `tools/lookbook.py --view specimens`)
+// trees (`trees::placed`). The specimen view (F8's sixth, `wrela tool lookbook -- <dir> --view specimens`)
 // shows them a species a shot, to judge their forms beside each other.
 
 use engine::bake::{Decisions, WET_N, WEAR_N}
@@ -153,7 +153,7 @@ pub fn shots() -> Vec<Shot> {
     out
 }
 
-/// The shots' names, as `tools/lookbook.py` reads them (`files/specimens/shots.json`).
+/// The shots' names, as the lookbook tool reads them (`files/specimens/shots.json`).
 pub const FILES: std::io::Shipped = std::io::ship("specimens", shot_files())
 
 fn shot_files() -> Vec<(String, Vec<u8>)> {

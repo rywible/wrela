@@ -7,7 +7,8 @@
 
 use clicks::{Click, clicks}
 use dsp::rms
-use io::{Rendered, build_piece, quanta, read_file, write_file}
+use io::{Rendered, build_piece, quanta}
+use toolkit::whole::{read_file, write_file}
 use main::{Args, parse_args, piece_command, partials_command, speed, take_of, voice_of}
 use measure::{measure, onset_noise, two_stage, typical_b}
 use model::strike

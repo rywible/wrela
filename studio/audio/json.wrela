@@ -2,7 +2,7 @@
 // an object's keys in sorted order, a whole number as an integer, an `f64` in its shortest text
 // (ryu's form: an exponent past 16 digits before the point or 5 zeros after it) with `.0` when
 // it's whole, and `null` for a NaN or an infinity. `compact` writes it on one line, `pretty`
-// with two spaces an indent.
+// with two spaces an indent; `pretty_in_order` too, but with an object's members in their order.
 
 use std::collections::Vec
 use std::fmt::json_text
@@ -70,6 +70,14 @@ impl Value {
         write(mut out, self, 0, pretty: true)
         out
     }
+
+    /// Indented, an object's members in the order they were added, as Python's
+    /// `json.dumps(v, indent=2)` writes it.
+    pub fn pretty_in_order(self) -> String {
+        var out = String::new()
+        write(mut out, self, 0, pretty: true, sorted: false)
+        out
+    }
 }
 
 fn indent(out: mut String, depth: u32) {
@@ -78,7 +86,7 @@ fn indent(out: mut String, depth: u32) {
     }
 }
 
-fn write(out: mut String, v: Value, depth: u32, pretty: bool) {
+fn write(out: mut String, v: Value, depth: u32, pretty: bool, sorted: bool = true) {
     match v {
         Value::Null => out.push_str("null"),
         Value::Bool(b) => out.push_str(if b { "true" } else { "false" }),
@@ -103,7 +111,7 @@ fn write(out: mut String, v: Value, depth: u32, pretty: bool) {
                     out.push_str("\n")
                     indent(mut out, depth + 1)
                 }
-                write(mut out, items[k], depth + 1, pretty)
+                write(mut out, items[k], depth + 1, pretty, sorted)
             }
             if pretty {
                 out.push_str("\n")
@@ -118,7 +126,9 @@ fn write(out: mut String, v: Value, depth: u32, pretty: bool) {
             }
             // Sorted by key, as a `BTreeMap`'s are: by their bytes.
             var order: Vec<u32> = Vec::from_fn(members.len(), |i| i)
-            order.sort_by(|a, b| members[a].0.as_str() < members[b].0.as_str())
+            if sorted {
+                order.sort_by(|a, b| members[a].0.as_str() < members[b].0.as_str())
+            }
             out.push_str("{")
             for k in 0..order.len() {
                 if k > 0 {
@@ -132,7 +142,7 @@ fn write(out: mut String, v: Value, depth: u32, pretty: bool) {
                 out.push_str("\"")
                 json_text(mut out, key.as_str())
                 out.push_str(if pretty { "\": " } else { "\":" })
-                write(mut out, value, depth + 1, pretty)
+                write(mut out, value, depth + 1, pretty, sorted)
             }
             if pretty {
                 out.push_str("\n")

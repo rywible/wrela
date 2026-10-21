@@ -34,7 +34,7 @@ The repo is splitting into `wrela-compiler` (hosts, language, spec, their checks
 ## Quality and checks
 
 - Language features must make sense outside games. Shared helpers live once in engine/std, in the appropriate layer.
-- Test rules on small fixtures, bounded seeded samples and explicit resource lifecycle assertions. Judge changes only to the look with the lookbook.
+- Test rules on small fixtures, bounded seeded samples and explicit resource lifecycle assertions. Judge changes only to the look with the lookbook (`wrela tool lookbook`; `wrela tool motion` for motion).
 - Use real shaders on hardware GPUs for pixel/buffer assertions and CPU hosts for command/state assertions. Fail if a hardware adapter is unavailable; never use software rendering. Rendering tests assert correctness, without frame-time or FPS thresholds. Keep performance comparisons in `tools/wrela profile`.
 - `tools/check.sh` runs every retained test and infrastructure check, including real GPU shaders and small Chrome agreement scenarios. `tools/check.sh <check-name>` runs exactly one; a name that ends in `::` runs that group. Unknown, ambiguous or empty selections fail.
 - Names: Rust `module::test` or `crate::target::module::test`; Python `tools::test_module.Class.test_method`; browser `browser::file.test.ts::full test name`; Wrela `wrela::<package-path>::<test-name>` (`compiler/std` for std). Groups: a Rust module path such as `renderer::` (in one test program), `wrela::<package-path>::`, `browser::file.test.ts::`.

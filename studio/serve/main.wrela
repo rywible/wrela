@@ -1,0 +1,91 @@
+// The serve tool (`wrela tool serve`): a directory of the workspace (a build, a test page),
+// served on 127.0.0.1 for a browser on this machine, until it's stopped (Ctrl-C).
+//
+// ```text
+// wrela tool serve -- [dir] [--port N]
+// ```
+//
+// The directory is from the workspace's directory (`.` unless given), on port 8417 unless
+// `--port` gives another (0: a free one). The server keeps the toolchain's servers' rules
+// (`std::tool::serve`): it answers only requests that name this machine, every answer is
+// cross-origin isolated as the browser runtime needs, a GET is the file (`/` is `index.html`),
+// and a PUT of `/results/<name>` writes a page's result into the directory's `results/`. A post
+// from its pages is answered empty.
+
+use std::io::print
+use std::job::{Job, Step}
+use std::tool::{RUNNING, args}
+use std::tool::blob::Data
+use std::tool::files::rooted
+use std::tool::serve
+use toolkit::wait::{said, wait}
+
+pub const USAGE: Text = "usage: wrela tool serve -- [dir] [--port N]"
+
+/// The port unless `--port` gives another.
+pub const PORT: u16 = 8417
+
+/// The directory (a root path) and port the command line gives, or `None` for a usage error.
+pub fn parse_args(given: [String]) -> Option<(String, u16)> {
+    var dir: Option<String> = None
+    var port = PORT
+    var k = 0
+    while k < given.len() {
+        let a = given[k].as_str()
+        if a == "--port" && k + 1 < given.len() {
+            let n = given[k + 1].as_str().parse_u32()?
+            if n > 65535 {
+                return None
+            }
+            port = u16(n)
+            k += 1
+        } else if dir.is_none() {
+            dir = Some(rooted("ws", a)?)
+        } else {
+            return None
+        }
+        k += 1
+    }
+    Some(((take dir).unwrap_or(String::from("ws")), port))
+}
+
+@job
+fn main(given: take Vec<String>) -> u32 {
+    let Some((dir, port)) = parse_args(given) else {
+        print(USAGE)
+        return 2
+    }
+    var st = wait(serve::start(dir.as_str(), port))
+    while !st.ready() { yield }
+    let started = match said(serve::read_started(st.polled())) {
+        Ok(s) => take s,
+        Err(e) => {
+            print(f"serve: {e}")
+            return 1
+        },
+    }
+    let shown = if dir.as_str() == "ws" { String::from(".") } else {
+        String::from(dir.as_str().slice(3, dir.len()))
+    }
+    print(f"serving {shown} at {started.origin}/")
+    loop {
+        var p = wait(serve::next_post(started.server, 600.0))
+        while !p.ready() { yield }
+        if let Ok(post) = serve::read_post(p.polled()) {
+            var a = wait(serve::answer(started.server, post.id, Data::empty()))
+            while !a.ready() { yield }
+        }
+    }
+    0
+}
+
+pub fn tool_init() -> Job<main> {
+    main.start(args())
+}
+
+pub fn tool(job: mut Job<main>) -> u32 {
+    match job.resume() {
+        Step::Yielded => RUNNING,
+        Step::Done(status) => status,
+    }
+}

@@ -1,0 +1,85 @@
+// The motion tool's tests: its command line, its captures' keys and frames, and its contact
+// sheet's layout and labels, on small fixtures.
+
+use captures::{LABEL_AT, LABEL_SCALE, NAMES, capture, cell, compose, parse_args, picks}
+
+fn texts(lines: [Text]) -> Vec<String> {
+    var out: Vec<String> = Vec::new()
+    for l in lines {
+        out.push(String::from(l))
+    }
+    out
+}
+
+@test
+fn the_command_line_takes_a_directory_a_size_and_captures() {
+    let Ok(o) = parse_args(texts(["build/m", "--size", "64x48", "canopy", "gust"])) else {
+        panic("a run")
+    }
+    assert(o.out.as_str() == "ws/build/m" && o.width == 64 && o.height == 48)
+    assert(o.captures.len() == 2 && o.captures[0].name == "canopy" && o.captures[1].name == "gust")
+    let Ok(all) = parse_args(texts(["build/m"])) else { panic("every capture") }
+    assert(all.captures.len() == NAMES.len() && all.width == 1280 && all.height == 720)
+    let Err(why) = parse_args(texts(["build/m", "fog"])) else { panic("an unknown capture") }
+    assert(why.as_str().find("no capture fog").is_some(), why.as_str())
+    assert(parse_args(texts([])).is_err(), "no directory")
+}
+
+@test
+fn each_capture_keeps_its_frames_and_its_keys_in_order() {
+    for n in NAMES {
+        let Some(c) = capture(n) else { panic(n) }
+        assert(c.first < c.last, n)
+    }
+    let Some(r) = capture("reversal") else { panic("reversal") }
+    assert(r.first == 285 && r.last == 460)
+    // The events in frame order: W and Shift down at 200, the arrows, and both up at 460.
+    let j = r.keys.as_json()
+    var frames: Vec<u32> = Vec::new()
+    var at = 0
+    loop {
+        let Some(k) = j.slice(at, j.len()).find("\"frame\": ") else { break }
+        let from = at + k + 9
+        var to = from
+        while j.byte(to) >= 48 && j.byte(to) <= 57 {
+            to += 1
+        }
+        frames.push(j.slice(from, to).parse_u32().unwrap())
+        at = to
+    }
+    let want = [200, 200, 300, 372, 372, 444, 460, 460]
+    assert(frames.len() == 8, j)
+    for i in 0..8 {
+        assert(frames[i] == want[i], j)
+    }
+    let Some(dark) = capture("arrive-dark") else { panic("arrive-dark") }
+    assert(
+        dark.first == 300 &&
+            dark.last == 450 &&
+            dark.keys.as_json().find("\"frame\": 300").is_some(),
+    )
+    assert(capture("fog").is_none())
+}
+
+@test
+fn a_sheet_is_six_frames_three_across_each_labelled() {
+    let p = picks(first: 300, last: 420)
+    let want = [300, 324, 348, 372, 396, 420]
+    for k in 0..6 {
+        assert(p[k] == want[k], f"{p[k]}")
+    }
+    let (x, y) = cell(k: 4, w: 10, h: 8)
+    assert(x == 10 && y == 8)
+    // Six 40 × 30 frames, each one grey of its own.
+    var frames: Vec<Vec<u8>> = Vec::new()
+    for k in 0..6 {
+        frames.push(Vec::filled(40 * 30 * 4, value: u8(40 * k + 20)))
+    }
+    let img = compose(frames, [1, 2, 3, 4, 5, 6], w: 40, h: 30)
+    assert(img.w == 120 && img.h == 60)
+    let at = |x: u32, y: u32| img.px[3 * (y * img.w + x)]
+    // Each cell's far corner is its frame; its label's box is half as bright, and its digit white.
+    assert(at(39, 29) == 20 && at(119, 59) == 220 && at(79, 0) == 60)
+    assert(at(LABEL_AT + 4 * LABEL_SCALE, LABEL_AT) == 10, "the box over frame 0")
+    assert(at(80 + LABEL_AT + 2 * LABEL_SCALE, 30 + LABEL_AT) == 255, "the top of frame 5's 6")
+}

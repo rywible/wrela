@@ -1,0 +1,236 @@
+// Files and blobs moved whole (language.md §15.5): a request carries at most 512 KiB, so a larger
+// file is read and written through a blob, a chunk at a time. Each is a job that waits for its
+// answers (`wait`).
+
+use std::tool::MOST_BYTES
+use std::tool::blob
+use std::tool::blob::{Blob, Data}
+use std::tool::files
+use std::tool::image
+use wait::{done, said, wait, wait_all}
+
+/// How many reads of a blob are asked at once.
+const READS: u32 = 8
+
+/// `b`'s bytes, in chunks of at most 512 KiB, read `READS` at a time.
+@job
+pub fn read_blob(b: take Blob) -> Result<Vec<Vec<u8>>, String> {
+    var l = wait(blob::len(b))
+    while !l.ready() { yield }
+    let size = said(blob::read_len(l.polled()))?
+    let chunks = u32((size + u64(MOST_BYTES) - 1) / u64(MOST_BYTES))
+    var out: Vec<Vec<u8>> = Vec::with_capacity(chunks)
+    var next: u32 = 0
+    while next < chunks {
+        let n = min(READS, chunks - next)
+        var reads: Vec<std::io::Pending<u8>> = Vec::new()
+        for k in 0..n {
+            reads.push(blob::read(b, u64(next + k) * u64(MOST_BYTES), MOST_BYTES))
+        }
+        var w = wait_all(take reads)
+        while !w.ready() { yield }
+        var got = w.bytes()?
+        for k in 0..got.len() {
+            out.push(replace(mut got[k], Vec::new()))
+        }
+        next += n
+    }
+    Ok(out)
+}
+
+/// Gives `b` back to the host.
+@job
+pub fn release(b: take Blob) -> u32 {
+    var r = wait(blob::release(b))
+    while !r.ready() { yield }
+    0
+}
+
+/// The bytes `data` holds, in the answer itself or in a blob, which is released after.
+@job
+pub fn data_bytes(data: take Data) -> Result<Vec<Vec<u8>>, String> {
+    let b = match take data {
+        Data::Bytes(bytes) => return Ok(Vec::from([take bytes])),
+        Data::Blob(b) => b,
+    }
+    var j = Box::new(read_blob.start(b))
+    var r = done(j.get_mut().resume())
+    while r.is_none() {
+        yield
+        r = done(j.get_mut().resume())
+    }
+    var g = wait(blob::release(b))
+    while !g.ready() { yield }
+    (take r).unwrap()
+}
+
+/// `chunks`, one after another, as one run of bytes.
+pub fn joined(chunks: take Vec<Vec<u8>>) -> Vec<u8> {
+    var parts = take chunks
+    var size = 0
+    for c in parts {
+        size += c.len()
+    }
+    var out: Vec<u8> = Vec::with_capacity(size)
+    for k in 0..parts.len() {
+        out.append(mut parts[k])
+    }
+    out
+}
+
+/// The whole file at `path` (a root path), named `shown` in an error.
+@job
+pub fn read_file(path: take String, shown: take String) -> Result<Vec<u8>, String> {
+    var f = wait(files::read_blob(path.as_str()))
+    while !f.ready() { yield }
+    let b = match blob::read_handle(f.polled()) {
+        Ok(b) => b,
+        Err(e) => return Err(String::from(f"can't read {shown}: {e.message()}")),
+    }
+    var j = Box::new(data_bytes.start(Data::Blob(b)))
+    var r = done(j.get_mut().resume())
+    while r.is_none() {
+        yield
+        r = done(j.get_mut().resume())
+    }
+    Ok(joined((take r).unwrap()?))
+}
+
+/// A new blob of `parts`' bytes, one after another (each at most 512 KiB).
+@job
+pub fn blob_of(given: take Vec<Vec<u8>>) -> Result<Blob, String> {
+    var parts = take given
+    var n = wait(blob::new())
+    while !n.ready() { yield }
+    let b = said(blob::read_handle(n.polled()))?
+    for k in 0..parts.len() {
+        let part = replace(mut parts[k], Vec::new())
+        var a = wait(blob::append(b, part))
+        while !a.ready() { yield }
+        if let Err(e) = a.bytes() {
+            var g = wait(blob::release(b))
+            while !g.ready() { yield }
+            return Err(take e)
+        }
+    }
+    Ok(b)
+}
+
+/// `bytes` cut into chunks of at most 512 KiB.
+pub fn chunked(bytes: take Vec<u8>) -> Vec<Vec<u8>> {
+    if bytes.len() <= MOST_BYTES {
+        return Vec::from([take bytes])
+    }
+    var out: Vec<Vec<u8>> = Vec::new()
+    var at = 0
+    while at < bytes.len() {
+        let end = min(at + MOST_BYTES, bytes.len())
+        var chunk: Vec<u8> = Vec::with_capacity(end - at)
+        for i in at..end {
+            chunk.push(bytes[i])
+        }
+        out.push(take chunk)
+        at = end
+    }
+    out
+}
+
+/// Writes `parts`, one after another, as the whole file at `path` (a root path, in a write
+/// root): at once, or through a blob if they're more than a request carries.
+@job
+pub fn write_file(path: take String, given: take Vec<Vec<u8>>) -> Result<(), String> {
+    var parts = take given
+    var size = 0
+    for p in parts {
+        size += p.len()
+    }
+    if size <= MOST_BYTES {
+        var w = wait(files::write(path.as_str(), joined(take parts)))
+        while !w.ready() { yield }
+        let _ = w.bytes()?
+        return Ok(())
+    }
+    // Each part as it is, if it fits a request (a blob's chunks do), else a chunk at a time.
+    var fitted: Vec<Vec<u8>> = Vec::new()
+    for k in 0..parts.len() {
+        var cut = chunked(replace(mut parts[k], Vec::new()))
+        for c in 0..cut.len() {
+            fitted.push(replace(mut cut[c], Vec::new()))
+        }
+    }
+    var j = Box::new(blob_of.start(take fitted))
+    var r = done(j.get_mut().resume())
+    while r.is_none() {
+        yield
+        r = done(j.get_mut().resume())
+    }
+    let b = (take r).unwrap()?
+    var w = wait(files::write_blob(path.as_str(), b))
+    while !w.ready() { yield }
+    let written = w.bytes()
+    var g = wait(blob::release(b))
+    while !g.ready() { yield }
+    let _ = (take written)?
+    Ok(())
+}
+
+/// Writes `data` as the whole file at `path` (a root path, in a write root); a blob is released
+/// after.
+@job
+pub fn write_data(path: take String, data: take Data) -> Result<(), String> {
+    match take data {
+        Data::Bytes(bytes) => {
+            var w = wait(files::write(path.as_str(), bytes))
+            while !w.ready() { yield }
+            let _ = w.bytes()?
+            Ok(())
+        },
+        Data::Blob(b) => {
+            var w = wait(files::write_blob(path.as_str(), b))
+            while !w.ready() { yield }
+            let written = w.bytes()
+            var g = wait(blob::release(b))
+            while !g.ready() { yield }
+            let _ = (take written)?
+            Ok(())
+        },
+    }
+}
+
+/// Copies the file `from` to `to` (root paths, `to` in a write root), whole, through a blob.
+@job
+pub fn copy_file(from: take String, to: take String) -> Result<(), String> {
+    var f = wait(files::read_blob(from.as_str()))
+    while !f.ready() { yield }
+    let b = match blob::read_handle(f.polled()) {
+        Ok(b) => b,
+        Err(e) => return Err(String::from(f"can't read {from}: {e.message()}")),
+    }
+    var j = Box::new(write_data.start(take to, Data::Blob(b)))
+    var r = done(j.get_mut().resume())
+    while r.is_none() {
+        yield
+        r = done(j.get_mut().resume())
+    }
+    (take r).unwrap()
+}
+
+/// Encodes `img` as a PNG and writes it at `path` (a root path in a write root); the image's
+/// pixels' blob, if it has one, is released after.
+@job
+pub fn write_png(img: take image::Image, path: take String) -> Result<(), String> {
+    var e = wait(image::encode_png(img.clone(), timeout: 600.0))
+    while !e.ready() { yield }
+    if let Data::Blob(pixels) = img.rgba {
+        var g = wait(blob::release(pixels))
+        while !g.ready() { yield }
+    }
+    let png = said(image::read_encoded(e.polled()))?
+    var j = Box::new(write_data.start(take path, take png))
+    var r = done(j.get_mut().resume())
+    while r.is_none() {
+        yield
+        r = done(j.get_mut().resume())
+    }
+    (take r).unwrap()
+}

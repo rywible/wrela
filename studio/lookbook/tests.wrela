@@ -1,0 +1,181 @@
+// The lookbook tool's tests: its command line, the keys that choose a shot, the shots' names
+// and files, and the interest check's line, on small fixtures.
+
+use shots::{
+    VIEWS, WS, check_line, keys, names_in, names_listed, parse_args, shown_path, size_of, stem,
+}
+use std::json::parse
+use std::tool::blob::Data
+use std::tool::files
+use std::tool::image
+use toolkit::wait::{done, said, wait}
+use toolkit::whole::{copy_file, data_bytes, joined, read_file, write_file, write_png}
+
+fn texts(lines: [Text]) -> Vec<String> {
+    var out: Vec<String> = Vec::new()
+    for l in lines {
+        out.push(String::from(l))
+    }
+    out
+}
+
+@test
+fn the_command_line_takes_a_directory_its_options_and_shots() {
+    let Ok(o) = parse_args(
+        texts(
+            [
+                "build/lb",
+                "--stills",
+                "--view",
+                "grown",
+                "--size",
+                "1280x720",
+                "--jobs",
+                "3",
+                "2",
+                "5",
+            ],
+        ),
+    ) else {
+        panic("a run")
+    }
+    assert(o.out.as_str() == "ws/build/lb" && o.stills && !o.capture, o.out.as_str())
+    assert(VIEWS[o.view].0 == "grown" && o.width == 1280 && o.height == 720 && o.jobs == 3)
+    assert(o.picks.len() == 2 && o.picks[0] == 2 && o.picks[1] == 5)
+    let Ok(plain) = parse_args(texts(["out"])) else { panic("defaults") }
+    assert(plain.width == 1920 && plain.height == 1080 && plain.jobs == 1 && plain.workers == 8)
+    assert(parse_args(texts(["out", "--view", "fog"])).is_err(), "an unknown view")
+    assert(parse_args(texts(["out", "--jobs", "0"])).is_err(), "no jobs")
+    assert(parse_args(texts(["out", "--size", "1280"])).is_err(), "a size without its height")
+    assert(parse_args(texts(["/tmp/out"])).is_err(), "a directory outside the workspace")
+    assert(parse_args(texts([])).is_err(), "no directory")
+    assert(size_of("0x5").is_none() && size_of("64x48").is_some())
+    assert(shown_path("ws/build/lb") == "build/lb" && WS == "ws")
+}
+
+@test
+fn a_shot_is_chosen_as_a_player_would_after_its_view() {
+    // F7 (capture mode), F8 twice (silhouette), then L, 1, 2, Enter: all at frame 1.
+    let k = keys(i: 12, presses: 2, capture: true)
+    let j = k.as_json()
+    var at = 0
+    var codes: Vec<String> = Vec::new()
+    loop {
+        let Some(c) = j.slice(at, j.len()).find("\"code\": ") else { break }
+        let from = at + c + 8
+        var to = from
+        while j.byte(to) >= 48 && j.byte(to) <= 57 {
+            to += 1
+        }
+        codes.push(String::from(j.slice(from, to)))
+        at = to
+    }
+    let want = [
+        u32(std::input::Key::F7),
+        u32(std::input::Key::F8),
+        u32(std::input::Key::F8),
+        u32(std::input::Key::L),
+        u32(std::input::Key::Digit1),
+        u32(std::input::Key::Digit2),
+        u32(std::input::Key::Enter),
+    ]
+    assert(codes.len() == want.len(), j)
+    for i in 0..want.len() {
+        assert(codes[i].as_str() == String::from(f"{want[i]}").as_str(), j)
+    }
+    assert(j.find("\"frame\": 2").is_none(), j)
+}
+
+@test
+fn shots_are_named_from_the_lookbook_or_the_build() {
+    let source = "const SHOTS = [\n    Shot {\n        name: \"the clearing\",\n        eye: x,\n    },\n    Shot { name: \"the crag's top\", eye: y },\n    // Shot {} in a comment, unnamed\n]"
+    let names = names_in(source)
+    assert(names.len() == 2, f"{names.len()}")
+    assert(names[0].as_str() == "the clearing" && names[1].as_str() == "the crag's top")
+    assert(stem(1, names[1].as_str()).as_str() == "01-the-crags-top")
+    assert(stem(12, "the ring").as_str() == "12-the-ring")
+    let Some(listed) = names_listed("[\"a bare ridge\", \"the scarp\"]") else { panic("a list") }
+    assert(listed.len() == 2 && listed[1].as_str() == "the scarp")
+    assert(names_listed("{\"a\": 1}").is_none() && names_listed("[1]").is_none())
+}
+
+@test
+fn the_checks_line_says_its_state_and_strongest_draws() {
+    let Some(doc) = parse(
+        "[{\"view\": {\"best\": 0.789, \"count\": 10, \"dead\": false, \"quiet\": false, \"draws\": [{\"pull\": \"the great oak\", \"strength\": 0.789}, {\"pull\": \"the crag\", \"strength\": 0.692}, {\"pull\": \"the gap\", \"strength\": 0.351}, {\"pull\": \"a trail\", \"strength\": 0.35}, {\"pull\": \"a feature\", \"strength\": 0.3}]}}, {\"view\": {\"best\": 0.1, \"count\": 0, \"dead\": false, \"quiet\": true, \"draws\": []}}]",
+    ) else {
+        panic("the check's numbers")
+    }
+    let Some(line) = check_line(doc, 0) else { panic("shot 0") }
+    assert(
+        line.as_str() ==
+            "  the check: 10 draw; strongest 0.79 (the great oak 0.79, the crag 0.69, the gap 0.35, a trail 0.35)",
+        line.as_str(),
+    )
+    let Some(quiet) = check_line(doc, 1) else { panic("shot 1") }
+    assert(quiet.as_str() == "  the check: quiet; strongest 0.10", quiet.as_str())
+    assert(check_line(doc, 2).is_none(), "no such shot")
+}
+
+/// The toolkit's whole files, as the stills and clips use them: a file past a request's 512 KiB
+/// written and read back through a blob, copied, and pixels written as a PNG that decodes to them.
+@test(tool, budget: 60)
+@job
+fn files_and_pngs_go_whole_through_the_toolkit() {
+    var big: Vec<u8> = Vec::new()
+    for i in 0..600000 {
+        big.push(u8(i % 251))
+    }
+    var w = Box::new(write_file.start(String::from("scratch/a/big.bin"), Vec::from([big.clone()])))
+    var wr = done(w.get_mut().resume())
+    while wr.is_none() {
+        yield
+        wr = done(w.get_mut().resume())
+    }
+    assert((take wr).unwrap().is_ok(), "written")
+    var c = Box::new(
+        copy_file.start(String::from("scratch/a/big.bin"), String::from("scratch/b.bin")),
+    )
+    var cr = done(c.get_mut().resume())
+    while cr.is_none() {
+        yield
+        cr = done(c.get_mut().resume())
+    }
+    assert((take cr).unwrap().is_ok(), "copied")
+    var r = Box::new(read_file.start(String::from("scratch/b.bin"), String::from("b.bin")))
+    var rr = done(r.get_mut().resume())
+    while rr.is_none() {
+        yield
+        rr = done(r.get_mut().resume())
+    }
+    let Ok(back) = (take rr).unwrap() else { panic("read") }
+    assert(back.len() == big.len() && back[599999] == big[599999] && back[524288] == big[524288])
+    // A 3 × 2 image, its pixels distinct, as a PNG that decodes to them.
+    var px: Vec<u8> = Vec::new()
+    for i in 0..24 {
+        px.push(u8(10 * i))
+    }
+    let img = image::Image { width: 3, height: 2, rgba: Data::Bytes(px.clone()) }
+    var p = Box::new(write_png.start(take img, String::from("scratch/s.png")))
+    var pr = done(p.get_mut().resume())
+    while pr.is_none() {
+        yield
+        pr = done(p.get_mut().resume())
+    }
+    assert((take pr).unwrap().is_ok(), "the PNG")
+    var f = wait(files::read("scratch/s.png"))
+    while !f.ready() { yield }
+    let Ok(png) = f.bytes() else { panic("the PNG's bytes") }
+    var d = wait(image::decode(Data::Bytes(take png)))
+    while !d.ready() { yield }
+    let Ok(decoded) = said(image::read_image(d.polled())) else { panic("decoded") }
+    var j = Box::new(data_bytes.start(decoded.rgba.clone()))
+    var jr = done(j.get_mut().resume())
+    while jr.is_none() {
+        yield
+        jr = done(j.get_mut().resume())
+    }
+    let Ok(chunks) = (take jr).unwrap() else { panic("its pixels") }
+    let got = joined(take chunks)
+    assert(decoded.width == 3 && decoded.height == 2 && got.len() == 24 && got[23] == 230)
+}

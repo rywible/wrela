@@ -1,0 +1,9 @@
+# The motion tool (`wrela tool motion`): short captures of the floor in motion on the native
+# host, each kept as its frames, a clip FFmpeg makes and a contact sheet (main.wrela says how).
+[package]
+name = "motion_tool"
+
+[dependencies]
+audio_tool = { workspace = true }
+lookbook_tool = { workspace = true }
+toolkit = { workspace = true }
