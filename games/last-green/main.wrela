@@ -38,6 +38,7 @@ use climber::draw::{CastWolf, Drawn, cast_wolf, drawn, wolf_bones}
 use climber::figure::{Figure, figure}
 use climber::moves::{Act, drift_rate, locomotion}
 use climber::sounds::{Heard, cues, heard}
+use clouds::weather::{CLOUD_WIND, weather}
 use history::{BAKED, OBSTACLES, tiles_hi, tiles_lo}
 use ground::{FIGHT, FIGHT_WAY, GROUND, STONE_FEET, STONE_MARGIN, fought, unbuilt}
 use provenance::NearTile
@@ -2241,7 +2242,7 @@ fn cook_sky(s: mut Floor, eye: vec3, wind: Wind) {
             s.sky.cook_noise()
             s.noise_cooked = true
         } else if !s.sky_cooked {
-            let w = clouds::weather()
+            let w = weather()
             s.sky.cook_weather(w.clouds, w.fair, w.gap, s.light.sun, s.repeat, shadows: true)
             s.sky_cooked = true
         }
@@ -2255,7 +2256,7 @@ fn cook_sky(s: mut Floor, eye: vec3, wind: Wind) {
             s.tables,
             eye,
             // The field's drift, less the render origin (`Clouds::drift`).
-            drift: clouds::CLOUD_WIND * wind.time - s.cam.keyed().xz,
+            drift: CLOUD_WIND * wind.time - s.cam.keyed().xz,
             rep: s.repeat,
             s: s.linear,
             still: false,
