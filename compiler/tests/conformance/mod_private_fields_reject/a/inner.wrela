@@ -1,8 +1,0 @@
-pub struct Secret: Copy {
-    hidden: i32,
-    pub shown: i32,
-}
-
-pub fn make() -> Secret {
-    Secret { hidden: 42, shown: 1 }
-}

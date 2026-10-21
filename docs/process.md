@@ -610,6 +610,21 @@ a pinned SHA-256, with its licence. Two outside Rust crates came in, used as lib
 [flate2](https://github.com/rust-lang/flate2-rs) (MIT or Apache-2.0), already in the build,
 ungzips it; ureq downloads it. No code was copied.
 
+## The split, done, 2026-10-21
+
+The repository split on 2026-10-21. `rywible/wrela-compiler` took the compiler, std, the hosts, the
+spec and the toolchain's own checks, with their history (filtered from this repository's `main`
+with `git filter-branch`); its toolchain is released by tag. This repository kept everything
+written in Wrela and pins toolchain 0.1.0. From 2026-10-18 to 2026-10-21 Claude (Opus 5.5) and its
+subagents did the move in 34 pull requests (#287–#320): a tool role on the native host and its
+services, so the project's tools (release, deploy, lookbook, motion, round, listening, audio,
+reference, the lens) became Wrela programs; tests moved to the side they test; and the toolchain
+learned to package, publish and pin itself. A council of GPT-6.1-Sol and GPT-6-Astra (Codex CLI,
+read-only) reviewed the plan and most pull requests; Ryan decided the names, the bindings in std,
+external programs for tools, helper threads for tools, the temporaries rule (E0522) and The Last
+Green's two water and sound questions. From here the toolchain's record continues in
+wrela-compiler's `docs/process.md`.
+
 ## The references
 
 ### The rules

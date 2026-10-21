@@ -1,8 +1,10 @@
 # Builds a release of the console, its games and the docs from each push to main
 # (`wrela tool release`, studio/release) and deploys it to Cloudflare Workers (`wrela tool
-# deploy`, studio/deploy, which runs Wrangler through `npx`). It only ships: every check stays
-# local (tools/check.sh). Its credentials are the `production` environment's, which only main can
-# use; the deploy tool gives them to Wrangler alone.
+# deploy`, studio/deploy, which runs Wrangler through `npx`). It builds with the toolchain release
+# that the workspace pins (`toolchain` in wrela.toml), downloaded from rywible/wrela-compiler's
+# GitHub release and checked against its SHA256SUMS; the release has its own Binaryen `wasm-opt`.
+# It only ships: every check stays local (`wrela suite`). Its credentials are the `production`
+# environment's, which only main can use; the deploy tool gives them to Wrangler alone.
 name: Deploy
 
 on:
@@ -25,32 +27,36 @@ jobs:
     environment: production
     env:
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-      BINARYEN: version_133
-      BINARYEN_SHA256: 2dc9c7813f5375db93d96ead4b78222fcc3e2677bbb832297af4797782a37489
     steps:
       - uses: actions/checkout@v4
 
-      - name: Binaryen
+      # Where `wrela` keeps the release it would download itself: ~/.wrela/toolchains/X.Y.Z.
+      - name: The pinned toolchain
         run: |
-          curl -fsSLo "$RUNNER_TEMP/binaryen.tgz" \
-            "https://github.com/WebAssembly/binaryen/releases/download/$BINARYEN/binaryen-$BINARYEN-x86_64-linux.tar.gz"
-          echo "$BINARYEN_SHA256  $RUNNER_TEMP/binaryen.tgz" | sha256sum -c -
-          tar xzf "$RUNNER_TEMP/binaryen.tgz" -C "$RUNNER_TEMP"
-          echo "$RUNNER_TEMP/binaryen-$BINARYEN/bin" >> "$GITHUB_PATH"
+          version=$(sed -n 's/^toolchain = "\([0-9]*\.[0-9]*\.[0-9]*\)".*/\1/p' wrela.toml | head -n 1)
+          if [ -z "$version" ]; then echo "error: wrela.toml pins no toolchain" >&2; exit 1; fi
+          name="wrela-$version-x86_64-unknown-linux-gnu.tar.gz"
+          base="https://github.com/rywible/wrela-compiler/releases/download/v$version"
+          cd "$RUNNER_TEMP"
+          curl -fsSLO "$base/$name"
+          curl -fsSLO "$base/SHA256SUMS"
+          grep "  $name\$" SHA256SUMS | sha256sum -c -
+          dir="$HOME/.wrela/toolchains/$version"
+          mkdir -p "$dir"
+          tar xzf "$name" -C "$dir"
+          echo "$dir/bin" >> "$GITHUB_PATH"
 
       # For Wrangler, which the deploy tool runs through `npx`.
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
 
-      - uses: Swatinem/rust-cache@v2
-
       - name: Build the release
         run: |
-          cargo build --release -p wrela -p wrela-host --bins
-          target/release/wrela tool release -- --revision "$GITHUB_SHA"
+          wrela toolchain
+          wrela tool release -- --revision "$GITHUB_SHA"
 
       - name: Deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: target/release/wrela tool deploy -- --require-main-head
+        run: wrela tool deploy -- --require-main-head

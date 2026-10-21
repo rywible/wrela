@@ -1,6 +1,0 @@
-// mistake: `.iter().map(...)`, as in Rust
-// expect: E0207
-// fix: no
-fn doubled(xs: Vec<f32>) -> f32 {
-    xs.iter().map(|x| x * 2.0).sum()
-}

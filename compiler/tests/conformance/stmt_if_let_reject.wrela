@@ -1,4 +1,0 @@
-// rejects: stmt.if-let
-fn radius(s: Option<f32>) -> f32 {
-    if let Some(r) = s { r } //~ E0300
-}

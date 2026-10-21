@@ -1,8 +1,0 @@
-// mistake: continuing a line with a leading operator
-// expect: E0103
-// fix: yes
-fn f(a: f32, b: f32) -> f32 {
-    let x = a
-        + b
-    x
-}

@@ -1,4 +1,0 @@
-// rejects: ty.option
-fn f() -> Option<f32> {
-    null //~ E0200
-}

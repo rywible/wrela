@@ -39,7 +39,7 @@ They're hypotheses. Each line says where the evidence stands.
 
 ### Two repositories
 
-Decided by the owner on 2026-10-18; the move is in progress.
+Decided by the owner on 2026-10-18; done on 2026-10-21. The toolchain lives in [rywible/wrela-compiler](https://github.com/rywible/wrela-compiler).
 
 | Repository | Holds |
 |---|---|

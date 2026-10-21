@@ -1,8 +1,0 @@
-// `shapes::blob` would name both this function and the module in shapes/blob.wrela.
-pub fn blob(r: f32) -> f32 { //~ E0201
-    r
-}
-
-pub fn round(r: f32) -> f32 {
-    r * r
-}
