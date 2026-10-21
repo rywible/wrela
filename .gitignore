@@ -14,3 +14,5 @@ node_modules/
 # Local tools' state, never the repository's: Claude Code's worktrees and Wrangler's cache
 .claude/worktrees/
 /.wrangler/
+# The app's local preview configurations (this machine's own).
+.claude/launch.json

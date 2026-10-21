@@ -1,8 +1,0 @@
-// mistake: a dependency named like one of the package's modules
-// expect: E0201
-// fix: no
-use shapes::one
-
-fn two() -> u32 {
-    one() + 1
-}

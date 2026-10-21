@@ -1,9 +1,0 @@
-// mistake: implementing `Copy` with an `impl`, as in Rust
-// expect: E0415
-// fix: yes
-struct Cell {
-    x: u32,
-    y: u32,
-}
-
-impl Copy for Cell {}

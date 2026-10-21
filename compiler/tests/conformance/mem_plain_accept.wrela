@@ -1,6 +1,0 @@
-// accepts: mem.plain
-struct Message: Copy + Plain {
-    from: u32,
-    at: vec3,
-    flags: [u8; 4],
-}

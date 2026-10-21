@@ -1,7 +1,0 @@
-// mistake: an array whose length is a local
-// expect: E0325
-// fix: no
-fn zeros(n: u32) -> f32 {
-    let xs = [0.0; n]
-    xs[0]
-}

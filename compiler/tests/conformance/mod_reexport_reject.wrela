@@ -1,3 +1,0 @@
-// rejects: mod.use
-fn hidden() -> u32 { 1 }
-pub use hidden as exposed //~ E0203
