@@ -5,6 +5,7 @@
 // writes that transfer itself: the colour quantized as the sRGB target stores it, decoded, then
 // raised to 1/2.2. M5 replaces all of it with the look the owner picks (#28).
 
+use engine::light::srgb
 use engine::render::{Lights, Look, View}
 use grazer::Tissue
 use std::field::value_noise
@@ -37,18 +38,14 @@ const HOOF = vec3(0.0130, 0.0090, 0.0070)
 /// The dapple's frequency, per metre.
 const DAPPLE = 3.0
 
-/// sRGB's encoding of a linear value, and its decoding.
-pub fn srgb_encode(x: f32) -> f32 {
-    if x <= 0.0031308 { 12.92 * x } else { 1.055 * pow(x, 1.0 / 2.4) - 0.055 }
-}
-
+/// sRGB's decoding of an encoded value (`engine::light::srgb` encodes).
 pub fn srgb_decode(x: f32) -> f32 {
     if x <= 0.04045 { x / 12.92 } else { pow((x + 0.055) / 1.055, 2.4) }
 }
 
 /// A linear value as an sRGB target stores it (encoded, eight bits), read back (decoded).
 fn stored(x: f32) -> f32 {
-    srgb_decode(round(clamp(srgb_encode(x), 0.0, 1.0) * 255.0) / 255.0)
+    srgb_decode(round(clamp(srgb(x), 0.0, 1.0) * 255.0) / 255.0)
 }
 
 /// What the spike's screen shows of a colour `c` it shaded: each component `stored`, then raised

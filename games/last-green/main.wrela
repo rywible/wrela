@@ -19,7 +19,7 @@ use engine::paint::{
 }
 use engine::place::{Place, TILE}
 use engine::plant::{Plant, Wind, full, leaf_atlas}
-use engine::player::{Arm, Focus, Framing, follow}
+use engine::player::{Arm, Focus, Framing, digit, follow}
 use engine::present::Snapshots
 use engine::probes::{Baked, Trace, grid}
 use engine::run::run
@@ -412,8 +412,10 @@ fn cook_tile(input: take TileInput) -> Cooked {
             far_coarse,
         }
     }
-    let routes = if src == FLOOR { map::map().routes } else { growth::growth_map().routes }
-    let fields = engine::bake::tile_fields(d, input.others, species::habits(), routes, map::PRESENT)
+    // (The floor's routes from its map as the build made it, not the map made again a tile.)
+    let grown = if src == FLOOR { Vec::new() } else { growth::growth_map().routes }
+    borrow routes = if src == FLOOR { world::MAP.routes } else { grown }
+    let fields = engine::bake::tile_fields(d, input.others, species::HABITS, routes, map::PRESENT)
     if input.fields_only {
         return Cooked { tile: t, trees: Vec::new(), placed: Vec::new(), fields, far, far_coarse }
     }
@@ -437,6 +439,23 @@ struct Cooking {
     with: u32,
     fields_only: bool,
     far_only: bool,
+}
+
+/// `input` cooked on a helper (`cook_tile`), from the source drawn: kept with its tile's bytes
+/// as they came (`bytes`) and the neighbours' trees it's cooked with (`with`).
+fn cook(s: mut Floor, input: take TileInput, bytes: take Vec<u8>, with: u32) {
+    let (tile, fields_only, far_only) = (input.tile, input.fields_only, input.far_only)
+    s.cooking.push(
+        Cooking {
+            tile,
+            source: s.source,
+            job: std::par::spawn(take input, cook_tile),
+            bytes,
+            with,
+            fields_only,
+            far_only,
+        },
+    )
 }
 
 /// Publish only the latest requested neighbour set. Jobs can finish out of order; an older
@@ -852,6 +871,7 @@ pub fn init() -> Floor {
     let waters = history::waters()
     let world = spawn_world()
     let start = world.player.at.world()
+    let fight_heard = heard(world.fight.fight)
     let latest = run(take world, hz: 60, step: tick, present: snapshot)
     print(f"the floor: {BAKED.len()} files baked, {OBSTACLES.len()} obstacles")
     let atlas = leaf_atlas(6)
@@ -981,7 +1001,7 @@ pub fn init() -> Floor {
         press: None,
         clicked: None,
         hearing: sound::start(),
-        fight_heard: heard(spawn_world().fight.fight),
+        fight_heard,
         map: harness::HarnessMap::new(),
         origin: vec2i(0),
         shafts_on: false,
@@ -1528,17 +1548,7 @@ fn stream(s: mut Floor, eye: vec2) {
                     fields_only: false,
                     far_only: false,
                 }
-                s.cooking.push(
-                    Cooking {
-                        tile: t,
-                        source: s.source,
-                        job: std::par::spawn(take input, cook_tile),
-                        bytes: Vec::from(bytes),
-                        with,
-                        fields_only: false,
-                        far_only: false,
-                    },
-                )
+                cook(mut s, take input, Vec::from(bytes), with)
                 s.tiles_in += 1
                 done = true
             },
@@ -1611,17 +1621,7 @@ fn stream(s: mut Floor, eye: vec2) {
                         fields_only: true,
                         far_only: false,
                     }
-                    s.cooking.push(
-                        Cooking {
-                            tile: n,
-                            source: s.source,
-                            job: std::par::spawn(take input, cook_tile),
-                            bytes: Vec::new(),
-                            with,
-                            fields_only: true,
-                            far_only: false,
-                        },
-                    )
+                    cook(mut s, take input, Vec::new(), with)
                     s.grounds[g].with = with
                 }
             }
@@ -1661,17 +1661,7 @@ fn stream(s: mut Floor, eye: vec2) {
                     fields_only: false,
                     far_only: false,
                 }
-                s.cooking.push(
-                    Cooking {
-                        tile: best,
-                        source: s.source,
-                        job: std::par::spawn(take input, cook_tile),
-                        bytes: Vec::new(),
-                        with,
-                        fields_only: false,
-                        far_only: false,
-                    },
-                )
+                cook(mut s, take input, Vec::new(), with)
                 s.tiles_in += 1
             } else {
                 match fetch_of(s.source, tile_name(best).as_str()) {
@@ -1714,17 +1704,7 @@ fn stream(s: mut Floor, eye: vec2) {
                 fields_only: false,
                 far_only: true,
             }
-            s.cooking.push(
-                Cooking {
-                    tile: best,
-                    source: s.source,
-                    job: std::par::spawn(take input, cook_tile),
-                    bytes: Vec::new(),
-                    with: 0,
-                    fields_only: false,
-                    far_only: true,
-                },
-            )
+            cook(mut s, take input, Vec::new(), 0)
         }
     }
     var f = 0
@@ -1758,18 +1738,13 @@ fn stream(s: mut Floor, eye: vec2) {
         for j in lo.y..(hi.y + 1) {
             for x in lo.x..(hi.x + 1) {
                 let t = vec2i(x, j)
-                let (fine, coarse) = if s.source == GROWN_LAND {
-                    (
-                        trees::far_placed(far, t, grown_at, step: 1),
-                        trees::far_placed(far, t, grown_at, step: 2),
-                    )
-                } else {
-                    (
-                        trees::far_placed(far, t, height_at, step: 1),
-                        trees::far_placed(far, t, height_at, step: 2),
-                    )
-                }
-                s.far_layer.push(FarTile { tile: t, fine, coarse })
+                s.far_layer.push(
+                    FarTile {
+                        tile: t,
+                        fine: far_on(s.source, far, t, step: 1),
+                        coarse: far_on(s.source, far, t, step: 2),
+                    },
+                )
             }
         }
     }
@@ -1956,20 +1931,7 @@ fn keys(s: mut Floor, time: f32) {
         }
         if let Event::KeyDown { key, .. } = e {
             if s.typing_shot {
-                let d = match key {
-                    Key::Digit0 => Some(0),
-                    Key::Digit1 => Some(1),
-                    Key::Digit2 => Some(2),
-                    Key::Digit3 => Some(3),
-                    Key::Digit4 => Some(4),
-                    Key::Digit5 => Some(5),
-                    Key::Digit6 => Some(6),
-                    Key::Digit7 => Some(7),
-                    Key::Digit8 => Some(8),
-                    Key::Digit9 => Some(9),
-                    _ => None,
-                }
-                if let Some(d) = d {
+                if let Some(d) = digit(key) {
                     s.shot_digits = s.shot_digits * 10 + d
                     continue
                 }
@@ -2126,130 +2088,130 @@ fn static_shadows(s: mut Floor, sh: Shadows, wind: Wind) {
     if s.terrain_cooked > 0 && s.near.ready {
         return
     }
-    // The world's views' casters are its land's: its rocks and the ground itself, and in the grown
-    // view its trees; none of what's built on the floor.
-    if s.view == GROWN || s.view == SPECIMENS {
-        // (As the floor's far cascade waits for all that casts into it, once: the built things,
-        // though not drawn here, call for it again as they're done.)
-        let ready = s.far_fetch.is_none() && s.wood.is_some() && s.to_build.is_empty()
-        let none: Option<engine::stone::Rocks> = None
-        borrow rocks = if s.view == GROWN { s.rocks } else { none }
-        s.strip_drawn = s.near.drawing() || (s.far.drawing() && ready)
-        let nothing: Vec<engine::stone::Realized> = Vec::new()
-        let no_banks = engine::stone::Instances { prototypes: Vec::new(), placements: Vec::new() }
-        if s.near.drawing() {
-            s.near.draw_strip(
-                mut s.wood,
-                nothing,
-                no_banks,
-                rocks,
-                s.clipmap,
-                ground_casts: true,
-                sun: SUN,
-                sh: sh,
-                wind: wind,
-                s: s.linear,
-                cam: s.cam,
-                on: on,
-                name: "shadows near",
-            )
-        } else if s.far.drawing() && ready {
-            s.far.draw_strip(
-                mut s.wood,
-                nothing,
-                no_banks,
-                rocks,
-                s.clipmap,
-                ground_casts: true,
-                sun: SUN,
-                sh: sh,
-                wind: wind,
-                s: s.linear,
-                cam: s.cam,
-                on: on,
-                name: "shadows far",
-            )
-        }
-        return
-    }
-    if s.view == BARE {
-        s.strip_drawn = s.near.drawing() || s.far.drawing()
-        var none: Option<engine::wood::Wood> = None
-        let nothing: Vec<engine::stone::Realized> = Vec::new()
-        let no_banks = engine::stone::Instances { prototypes: Vec::new(), placements: Vec::new() }
-        if s.near.drawing() {
-            s.near.draw_strip(
-                mut none,
-                nothing,
-                no_banks,
-                s.rocks,
-                s.clipmap,
-                ground_casts: true,
-                sun: SUN,
-                sh: sh,
-                wind: wind,
-                s: s.linear,
-                cam: s.cam,
-                on: on,
-                name: "shadows near",
-            )
-        } else if s.far.drawing() {
-            s.far.draw_strip(
-                mut none,
-                nothing,
-                no_banks,
-                s.rocks,
-                s.clipmap,
-                ground_casts: true,
-                sun: SUN,
-                sh: sh,
-                wind: wind,
-                s: s.linear,
-                cam: s.cam,
-                on: on,
-                name: "shadows far",
-            )
-        }
-        return
-    }
     // The far cascade waits for all that casts into it at load (the far layer, the built
     // things): drawn before, it was drawn whole again as each came (on lavapipe, 48 s each of a
-    // lookbook still's 390 s).
+    // lookbook still's 390 s). (The built things, though not drawn in the world's views, call
+    // for it again there as they're done.)
     let far_casts = s.far_fetch.is_none() && s.wood.is_some() && s.to_build.is_empty()
-    s.strip_drawn = s.near.drawing() || (s.far.drawing() && far_casts)
-    if s.near.drawing() {
-        s.near.draw_strip(
-            mut s.wood,
-            s.built,
-            s.banks,
-            None,
-            s.clipmap,
-            ground_casts: false,
+    if of_world(s.view) {
+        // The world's views' casters are its land's: its rocks and the ground itself, and in the
+        // grown view its trees; none of what's built on the floor.
+        let nothing: Vec<engine::stone::Realized> = Vec::new()
+        let no_banks = engine::stone::Instances { prototypes: Vec::new(), placements: Vec::new() }
+        let none: Option<engine::stone::Rocks> = None
+        borrow rocks = if rocky(s.view) { s.rocks } else { none }
+        if s.view == BARE {
+            // (No trees on the bare land, and nothing for its far cascade to wait for.)
+            var no_wood: Option<engine::wood::Wood> = None
+            s.strip_drawn = static_strip(
+                mut s.near,
+                mut s.far,
+                mut no_wood,
+                nothing,
+                no_banks,
+                rocks,
+                s.clipmap,
+                sh,
+                wind,
+                s.linear,
+                s.cam,
+                on,
+                far_ready: true,
+                ground_casts: true,
+            )
+        } else {
+            s.strip_drawn = static_strip(
+                mut s.near,
+                mut s.far,
+                mut s.wood,
+                nothing,
+                no_banks,
+                rocks,
+                s.clipmap,
+                sh,
+                wind,
+                s.linear,
+                s.cam,
+                on,
+                far_ready: far_casts,
+                ground_casts: true,
+            )
+        }
+        return
+    }
+    s.strip_drawn = static_strip(
+        mut s.near,
+        mut s.far,
+        mut s.wood,
+        s.built,
+        s.banks,
+        None,
+        s.clipmap,
+        sh,
+        wind,
+        s.linear,
+        s.cam,
+        on,
+        far_ready: far_casts,
+        ground_casts: false,
+    )
+}
+
+/// A strip of whichever static cascade is being drawn (the near first, the far once
+/// `far_ready`) with these casters: whether one was drawn.
+fn static_strip(
+    near: mut Kept,
+    far: mut Kept,
+    wood: mut Option<Wood>,
+    built: [Realized],
+    banks: Instances,
+    rocks: Option<engine::stone::Rocks>,
+    ground: Clipmap,
+    sh: Shadows,
+    wind: Wind,
+    linear: Sampler,
+    cam: Camera,
+    on: bool,
+    far_ready: bool,
+    ground_casts: bool,
+) -> bool {
+    if near.drawing() {
+        near.draw_strip(
+            mut wood,
+            built,
+            banks,
+            rocks,
+            ground,
+            ground_casts: ground_casts,
             sun: SUN,
             sh: sh,
             wind: wind,
-            s: s.linear,
-            cam: s.cam,
+            s: linear,
+            cam: cam,
             on: on,
             name: "shadows near",
         )
-    } else if s.far.drawing() && far_casts {
-        s.far.draw_strip(
-            mut s.wood,
-            s.built,
-            s.banks,
-            None,
-            s.clipmap,
-            ground_casts: false,
+        return true
+    }
+    if far.drawing() && far_ready {
+        far.draw_strip(
+            mut wood,
+            built,
+            banks,
+            rocks,
+            ground,
+            ground_casts: ground_casts,
             sun: SUN,
             sh: sh,
             wind: wind,
-            s: s.linear,
-            cam: s.cam,
+            s: linear,
+            cam: cam,
             on: on,
             name: "shadows far",
         )
+        return true
     }
+    false
 }
 
 /// The moving map: the climber, every frame.
@@ -2664,17 +2626,12 @@ fn draw_scene(s: mut Floor, cam: Camera, sh: Shadows, wind: Wind) {
         if world {
             break
         }
-        let to = s.built[i].at[3].xyz - cam.eye
-        let d = length(to)
-        let r = s.built_reach[i]
         // Keep resident structures wherever their bounds meet the view. Distance cutoffs
         // removed stones and walls while they still covered several pixels.
-        let ahead = dot(to, cam.forward)
-        let wide = (cam.tan_half * max(cam.aspect, 1.0) * 1.5) * max(ahead, 0.0) + r
-        let off = length(to - cam.forward * ahead)
-        if ahead < -r || off > wide {
+        if !meets_view(cam, s.built[i].at[3].xyz, s.built_reach[i]) {
             continue
         }
+        let d = length(s.built[i].at[3].xyz - cam.eye)
         match s.built_far[i] {
             Some(f) => {
                 let far = blockouts::tower_far_share(d)
@@ -2693,10 +2650,7 @@ fn draw_scene(s: mut Floor, cam: Camera, sh: Shadows, wind: Wind) {
         if world || p.prototype >= s.banks.prototypes.len() {
             continue
         }
-        let to = p.at[3].xyz - cam.eye
-        let ahead = dot(to, cam.forward)
-        let wide = cam.tan_half * max(cam.aspect, 1.0) * 1.5 * max(ahead, 0.0) + p.reach
-        if ahead < -p.reach || length(to - cam.forward * ahead) > wide {
+        if !meets_view(cam, p.at[3].xyz, p.reach) {
             continue
         }
         borrow prototype = s.banks.prototypes[p.prototype]
@@ -3089,7 +3043,7 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     // How fast the glide speeds up along the way it faces, and turns, eased over a tenth of a
     // second so a tick's step doesn't jolt the body's lean.
     if s.dt > 1.0e-4 && !moved {
-        let ahead = vec2(sin(facing), cos(facing))
+        let ahead = engine::player::facing(facing)
         let change = vec2(
             dot(velocity - s.glide_velocity, ahead) / s.dt,
             engine::present::lerp_angle(0.0, facing - s.glide_heading, 1.0) / s.dt,
@@ -3411,6 +3365,15 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     s.frames += 1
 }
 
+/// Whether a thing at `at` (render space) reaching `reach` round it meets camera `cam`'s view:
+/// ahead of it, within a cone half again as wide as the view's widest half angle.
+fn meets_view(cam: Camera, at: vec3, reach: f32) -> bool {
+    let to = at - cam.eye
+    let ahead = dot(to, cam.forward)
+    let wide = cam.tan_half * max(cam.aspect, 1.0) * 1.5 * max(ahead, 0.0) + reach
+    !(ahead < -reach || length(to - cam.forward * ahead) > wide)
+}
+
 /// A built thing drawn in `pass` (its colours cooked, its place its matrix).
 fn draw_built<P: RenderPass>(
     pass: P,
@@ -3456,7 +3419,6 @@ fn a_capture_fills_its_caches_in_a_few_frames_then_steps_as_play() {
     assert(load_steps(capture: true, filling: false) == 1, "a whole cache steps as in play")
 }
 
-/// Sun shafts on (`on` 1) or off.
 /// Goes back down to the stair as if the player's feet stood at (`x`, `z`): 1 if the way was
 /// taken (they're at the door), else 0.
 @testing
@@ -3464,6 +3426,7 @@ pub fn test_leave(s: mut Floor, x: f32, z: f32) -> f32 {
     if s.exit.leave(vec2(x, z)) { 1.0 } else { 0.0 }
 }
 
+/// Sun shafts on (`on` 1) or off.
 @testing
 pub fn test_shafts(s: mut Floor, on: u32) {
     s.shafts_on = on != 0

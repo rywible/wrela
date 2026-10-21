@@ -994,24 +994,29 @@ pub fn group_before(a: str, b: str) -> bool {
     x == 2 && a < b
 }
 
-/// The pages in the docs' order, each group's pages in the index's order.
-pub fn in_order(pages: [Page]) -> Vec<Page> {
-    var groups: Vec<String> = Vec::new()
+/// The groups of `pages`, each once, in the docs' order (`group_before`).
+pub fn groups(pages: [Page]) -> Vec<String> {
+    var out: Vec<String> = Vec::new()
     for p in pages {
         let g = group_of(p)
         var known = false
-        for h in groups {
+        for h in out {
             if h.as_str() == g.as_str() {
                 known = true
             }
         }
         if !known {
-            groups.push(take g)
+            out.push(take g)
         }
     }
-    groups.sort_by(|a: String, b: String| group_before(a.as_str(), b.as_str()))
+    out.sort_by(|a: String, b: String| group_before(a.as_str(), b.as_str()))
+    out
+}
+
+/// The pages in the docs' order, each group's pages in the index's order.
+pub fn in_order(pages: [Page]) -> Vec<Page> {
     var out: Vec<Page> = Vec::new()
-    for g in groups {
+    for g in groups(pages) {
         for p in pages {
             if group_of(p).as_str() == g.as_str() {
                 out.push(p.clone())

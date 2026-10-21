@@ -2,7 +2,7 @@
 // build from foundations upward. They retain a clear gate. A changed environment can refuse a
 // plan; failure is explicit, never replaced by a free finished building.
 
-use engine::construction::{Built, Ground, Piece, Refusal, Worksite}
+use engine::construction::{Built, Piece, Refusal, Worksite}
 use engine::history::{Calendar, Event, Process, Progress, run}
 use worlds::{Forest, Habitat, Ocean}
 use std::math::TAU
@@ -53,6 +53,7 @@ impl<H: Habitat> People<H> {
     }
 
     fn seek(mut self, calendar: Calendar<Task>) {
+        let half = self.habitat.culture().half
         var best = -1.0e20
         for i in 0..64 {
             let angle = TAU * calendar.draw(i, 1)
@@ -67,9 +68,7 @@ impl<H: Habitat> People<H> {
             var valid = true
             for x in [-1.0, 0.0, 1.0] {
                 for z in [-1.0, 0.0, 1.0] {
-                    let q = at +
-                        axis * (x * self.habitat.culture().half.x) +
-                        vec2(-axis.y, axis.x) * (z * self.habitat.culture().half.y)
+                    let q = at + axis * (x * half.x) + vec2(-axis.y, axis.x) * (z * half.y)
                     let h = self.habitat.height(q)
                     lo = min(lo, h)
                     hi = max(hi, h)
@@ -94,7 +93,7 @@ impl<H: Habitat> People<H> {
         // This is an actor changing scope before work starts, not rerolling the world seed.
         for trial in 0..5 {
             let scale = 1.0 - 0.12 * f32(trial)
-            self.half = vec2(self.habitat.culture().half.x, self.habitat.culture().half.y) * scale
+            self.half = half * scale
             self.design()
             var need = [0.0; 2]
             for p in self.plan { need[p.material] += p.volume() }
@@ -120,11 +119,12 @@ impl<H: Habitat> People<H> {
 
     fn design(mut self) {
         self.plan.clear()
+        let culture = self.habitat.culture()
         let h = self.half
-        let t = self.habitat.culture().thickness
-        self.gate = min(2.0, self.habitat.culture().materials[1].max_span * 0.5 - t)
+        let t = culture.thickness
+        self.gate = min(2.0, culture.materials[1].max_span * 0.5 - t)
         var bottom = 1.0e20
-        var top = self.habitat.culture().safe_floor
+        var top = culture.safe_floor
         // Dense, bounded samples of this small study's smooth ground. The construction engine
         // separately verifies every actual support point before installing a solid.
         for i in 0..9 {
@@ -154,7 +154,7 @@ impl<H: Habitat> People<H> {
             if tread_top <= low + 0.05 { break }
             self.plan.push(self.piece(vec2(0.0, z), vec2(self.gate, 0.3), low - 0.1, tread_top, 0))
         }
-        let wall_top = top + self.habitat.culture().wall_height
+        let wall_top = top + culture.wall_height
         // Side walls include their corners. Front/back fit between them, without double volume.
         self.plan.push(self.piece(vec2(-h.x, 0.0), vec2(t, h.y + t), top, wall_top, 0))
         self.plan.push(self.piece(vec2(h.x, 0.0), vec2(t, h.y + t), top, wall_top, 0))

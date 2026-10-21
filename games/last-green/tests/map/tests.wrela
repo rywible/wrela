@@ -3,11 +3,10 @@
 // (each must pass, and as many must run as its files declare) or builds it, with the engine and
 // the content it names read from the workspace.
 
+use hosts::steps::{declared, text_of, written}
 use std::collections::{Box, Vec}
 use std::job::Step
 use std::string::String
-use std::tool::answer
-use std::tool::files
 use std::tool::toolchain
 use std::tool::toolchain::Override
 
@@ -264,58 +263,6 @@ fn joined(lines: [Text]) -> String {
         out.push_str(lines[k])
     }
     out
-}
-
-/// How many of `text`'s lines are `@test` alone: the tests it declares.
-fn declared(text: str) -> u32 {
-    var n = 0
-    var start = 0
-    for i in 0..text.len() + 1 {
-        if i == text.len() || text.byte(i) == 10 {
-            var a = start
-            var b = i
-            while a < b && (text.byte(a) == 32 || text.byte(a) == 9 || text.byte(a) == 13) {
-                a += 1
-            }
-            while b > a &&
-                (text.byte(b - 1) == 32 || text.byte(b - 1) == 9 || text.byte(b - 1) == 13) {
-                b -= 1
-            }
-            if text.slice(a, b) == "@test" {
-                n += 1
-            }
-            start = i + 1
-        }
-    }
-    n
-}
-
-/// The text of `path`.
-@job
-fn text_of(path: take String) -> String {
-    var r = files::read(path.as_str())
-    var got = r.poll()
-    while got.is_none() {
-        yield
-        got = r.poll()
-    }
-    let Some(rp) = take got else { panic("no answer") }
-    let Ok(bytes) = answer(take rp) else { panic(f"{path.as_str()} reads") }
-    let Some(text) = String::from_utf8(take bytes) else { panic(f"{path.as_str()} isn't UTF-8") }
-    text
-}
-
-/// Writes `text` at `path`.
-@job
-fn written(path: take String, text: take String) {
-    var w = files::write(path.as_str(), text.as_bytes())
-    var got = w.poll()
-    while got.is_none() {
-        yield
-        got = w.poll()
-    }
-    let Some(wp) = take got else { panic("no answer") }
-    assert(answer(take wp).is_ok(), f"{path.as_str()} is written")
 }
 
 /// A package to write: the floor's map files and `copied` of its other modules, `texts` (each a

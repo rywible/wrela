@@ -1,12 +1,10 @@
 // A play round's script of keys and its summary: what is pure of the round tool, so its tests
 // need no build or browser.
 
-use lookbook_tool::shots::{choose, digit}
+use lookbook_tool::shots::{choose, typed}
 use release_tool::json::quoted
-use std::collections::Vec
 use std::input::{Key, Script}
 use std::json::{Doc, Kind, TOP}
-use std::string::String
 
 pub const FPS: u32 = 60
 
@@ -47,12 +45,7 @@ fn pressed(given: take Script, at: u32, keys: [Key]) -> Script {
 
 /// `s` with travel to site `site` at frame `at`: G, its number's digits, Enter.
 fn travel(given: take Script, at: u32, site: u32) -> Script {
-    var s = (take given).press(at, Key::G)
-    let digits = String::from(f"{site}")
-    for k in 0..digits.len() {
-        s = (take s).press(at, digit(u32(digits.as_str().byte(k)) - 48))
-    }
-    (take s).press(at, Key::Enter)
+    typed(take given, at, Key::G, site)
 }
 
 /// The round's keys and how many frames it runs: the floor's walk (P), each of `shots`

@@ -36,15 +36,18 @@ pub fn digits<const N: u32>(
     let f = normalize(forward)
     let u = normalize(up - f * dot(up, f))
     let left = cross(u, f)
-    var toes = [toe(at, f, u, length, thick, curl); N]
-    for i in 0..N {
+    let nth = |i: u32| {
         // From -0.5 (the first, on the right) to 0.5 (the last).
         let x = if N == 1 { 0.0 } else { f32(i) / f32(N - 1) - 0.5 }
         // The middle third full size, the outermost `outer` times it, linear between.
         let size = mix(1.0, outer, saturate((2.0 * abs(x) - 1.0 / 3.0) * 1.5))
         let angle = splay * x
         let d = f * cos(angle) + left * sin(angle)
-        toes[i] = toe(at + left * (spread * x), d, u, length * size, thick * size, curl)
+        toe(at + left * (spread * x), d, u, length * size, thick * size, curl)
+    }
+    var toes = [nth(0); N]
+    for i in 1..N {
+        toes[i] = nth(i)
     }
     Digits { toes }
 }

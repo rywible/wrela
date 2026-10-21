@@ -14,14 +14,14 @@
 //
 // Each frame: the host's answers (the display, the index, a page, the address), the input, the
 // layout if the page or the width changed, the drawing, then what the host is told: the pointer's
-// shape and the page's parts for screen readers. A frame draws only when the picture changes or
-// something on it moves: a page left open costs the GPU nothing, and what costs most to draw, a
-// live field, is drawn into an image once and moved after.
+// shape and the page's parts for screen readers. A frame draws and tells only when the picture
+// changes or something on it moves: a page left open costs the GPU nothing, and what costs most to
+// draw, a live field, is drawn into an image once and moved after.
 
 use brand::facet
 use brand::facet::MarkRun
 use field::{Look, field, quad}
-use index::{Hit, Index, lower}
+use index::{Hit, Index, last_name, lower}
 use layout::{BUTTON, CARD_LINK, Laid, MAIN, Role, lay_out}
 use live::{
     DISTANCE, Read, SURFACE, Shown, View, read, shown, slice_point, slice_view, solid, view,
@@ -602,6 +602,8 @@ pub struct Frame: Copy {
     search: Rect,
     /// The page's outline, at the right of its text where the screen has room (else empty).
     rail: Rect,
+    /// The screen under the header, where the page and what's over it are drawn.
+    body: Rect,
 }
 
 fn frame_of(s: Docs) -> Frame {
@@ -636,7 +638,8 @@ fn frame_of(s: Docs) -> Frame {
     let rail = if outlined {
         Rect::new(x + w + rail_gap, header + 40.0 * u, rail_w, s.screen.y - header - 64.0 * u)
     } else { Rect::new(x: 0.0, y: 0.0, w: 0.0, h: 0.0) }
-    Frame { header, nav, beside, x, w, top, search, rail }
+    let body = Rect::new(0.0, header, s.screen.x, s.screen.y - header)
+    Frame { header, nav, beside, x, w, top, search, rail, body }
 }
 
 // ---- the host's answers ------------------------------------------------------------------------
@@ -659,8 +662,8 @@ fn answers(s: mut Docs) {
     }
     if let Some(result) = poll(mut s.index_load) {
         s.dirty = true
-        match result {
-            Ok(bytes) => match Index::read(bytes) {
+        match take result {
+            Ok(bytes) => match Index::read(take bytes) {
                 Ok(index) => {
                     s.index = take index
                     // The language first, then std, then the packages: the order a reader learns
@@ -708,8 +711,8 @@ fn answers(s: mut Docs) {
     if let Some(result) = poll(mut s.page_load) {
         s.dirty = true
         let path = s.loading.clone()
-        match result {
-            Ok(bytes) => match String::from_utf8(bytes.clone()) {
+        match take result {
+            Ok(bytes) => match String::from_utf8(take bytes) {
                 Some(text) => {
                     let blocks = parse(text.as_str())
                     if s.pages.len() >= KEPT { let _ = s.pages.remove(0) }
@@ -818,12 +821,7 @@ fn go_to(s: mut Docs, route: Route, push: bool) {
     s.trouble.clear()
     if push {
         let fragment = route.fragment()
-        let address = if fragment.is_empty() {
-            match s.base {
-                Some(b) => b.clone(),
-                None => String::from("#"),
-            }
-        } else { take fragment }
+        let address = if fragment.is_empty() { href_of(s, "home:") } else { take fragment }
         s.told.push(host::push_address(address.as_str()))
     }
     s.seek = take seek
@@ -950,7 +948,8 @@ fn front_blocks(index: Index) -> Vec<Block> {
         },
     )
     let field = f"## A field, drawn live\n\nA field is a function over space, such as the distance from a point to a surface. `std::field` joins, cuts, moves and displaces fields, and the compiler derives each field's gradient and its bounds over a box from the field's own code ([§14](spec/language/14-derived-interpretations.md)). Below, a tesseract at rest, the console's artifact made of a few such fields, is drawn from this code as you change it; [a complete program](spec/language/22-a-complete-program.md) draws a field with a shader of its own.\n\n```wrela\n{live::tesseract().as_str()}```\n\n## Browse the docs\n"
-    for b in parse(field.as_str()) { out.push(b.clone()) }
+    var parsed = parse(field.as_str())
+    out.append(mut parsed)
     for g in groups_in(index) {
         let (name, pkg) = group_title(g.as_str())
         var count = 0
@@ -975,7 +974,8 @@ fn front_blocks(index: Index) -> Vec<Block> {
             },
         )
     }
-    for b in parse(front(index).as_str()) { out.push(b.clone()) }
+    var listed = parse(front(index).as_str())
+    out.append(mut listed)
     take out
 }
 
@@ -1235,7 +1235,7 @@ fn handle(s: mut Docs, e: Event, f: Frame) {
                 s.press = None
                 s.swipe = None
             }
-            release(mut s, at)
+            release(mut s)
         },
         Event::Wheel { at, delta, .. } => {
             s.fling = None
@@ -1530,10 +1530,7 @@ fn press(s: mut Docs, at: vec2, f: Frame) {
     if s.touch_selection {
         if let Some(b) = copy_button(s, f) {
             if b.contains(at) {
-                let words = selected_words(s)
-                copy(mut s, "copy:selection", words.as_str())
-                s.touch_selection = false
-                s.selected = None
+                copy_selection(mut s)
                 return
             }
         }
@@ -1553,16 +1550,9 @@ fn press(s: mut Docs, at: vec2, f: Frame) {
     if at.y < f.header {
         for (r, what) in header_buttons(s, f) {
             if !r.contains(at) { continue }
-            if what.as_str() == "menu" {
-                s.nav_open = !s.nav_open
-                s.nav_at = s.time
-                // Open, it shows the page being read at its top, its sections under it.
-                if s.nav_open { s.nav_follow = true }
-            } else if what.as_str() == "home" {
-                go_to(mut s, Route::front(), push: true)
-            } else if !s.index.repository.is_empty() {
-                s.told.push(host::open_link(s.index.repository.as_str()))
-            }
+            header_button(mut s, what.as_str())
+            // Open, the list shows the page being read at its top, its sections under it.
+            if what.as_str() == "menu" && s.nav_open { s.nav_follow = true }
         }
         return
     }
@@ -1651,11 +1641,7 @@ fn press(s: mut Docs, at: vec2, f: Frame) {
 /// its moves from then on carry the selection's end, as on any page.
 fn held_long(s: mut Docs, f: Frame) {
     let Some((from, moved, _)) = s.press else { return }
-    let page = match s.swipe {
-        Some((_, nav)) => !nav,
-        None => false,
-    }
-    if moved || !s.finger || !page || s.time - s.press_at < HOLD { return }
+    if moved || !s.finger || !swipes_page(s) || s.time - s.press_at < HOLD { return }
     let Some(k) = place(s, from, f) else { return }
     let (a, b) = word_at(s.text.as_str(), k)
     if a == b { return }
@@ -1671,7 +1657,7 @@ fn held_long(s: mut Docs, f: Frame) {
 /// The word round byte `k` of `text`: its letters, digits, `_` and `:`, and the bytes past ASCII;
 /// else the byte itself.
 fn word_at(text: str, k: u32) -> (u32, u32) {
-    let wordy = |b: u8| -> bool { live::is_word(b) || b >= 128 || b == 58 }
+    let wordy = |b: u8| -> bool { highlight::is_word(b) || b >= 128 || b == 58 }
     if k >= text.len() { return (k, k) }
     if !wordy(text.byte(k)) { return (k, min(k + 1, text.len())) }
     var a = k
@@ -1874,11 +1860,15 @@ fn stretch(d: f32, h: f32) -> f32 {
 
 /// A finger let go: a pull past the page's top far enough fetches the page again.
 fn let_go(s: mut Docs) {
-    let page = match s.swipe {
+    if swipes_page(s) && s.pull >= PULL * s.u && !s.reloading { refresh(mut s) }
+}
+
+/// Whether a finger's press scrolls the page, rather than the list of pages or nothing.
+fn swipes_page(s: Docs) -> bool {
+    match s.swipe {
         Some((_, nav)) => !nav,
         None => false,
     }
-    if page && s.pull >= PULL * s.u && !s.reloading { refresh(mut s) }
 }
 
 /// Fetches the index and the page being read again, in place: the page stays where the reader
@@ -1897,10 +1887,6 @@ fn refresh(s: mut Docs) {
 
 /// A stretch let go springs back; a pull that loads the page again rests where it shows that.
 fn spring_on(s: mut Docs, dt: f32) {
-    let held = match s.swipe {
-        Some((_, nav)) => !nav,
-        None => false,
-    }
     // A refresh shows until what it fetched has come, and for a moment at least.
     if s.reloading &&
         s.page_load.is_none() &&
@@ -1908,7 +1894,7 @@ fn spring_on(s: mut Docs, dt: f32) {
         s.time - s.refreshed_at > 0.6 {
         s.reloading = false
     }
-    if held || s.pull == 0.0 { return }
+    if swipes_page(s) || s.pull == 0.0 { return }
     let rest = if s.reloading { PULL * s.u } else { 0.0 }
     let k = if s.reduced { 1.0 } else { 1.0 - exp(-dt * 14.0) }
     s.pull += (rest - s.pull) * k
@@ -1971,7 +1957,7 @@ fn fling_on(s: mut Docs, f: Frame, dt: f32) {
 }
 
 /// The pointer let go: a press that didn't move follows the link it was on, and selects nothing.
-fn release(s: mut Docs, at: vec2) {
+fn release(s: mut Docs) {
     if s.handle != 0 {
         s.handle = 0
         return
@@ -1981,7 +1967,6 @@ fn release(s: mut Docs, at: vec2) {
     let still = !moved
     s.press = None
     s.swipe = None
-    let _ = at
     if !still { return }
     s.selected = None
     if !link.is_empty() { follow_link(mut s, link.as_str()) }
@@ -2047,6 +2032,27 @@ fn copy(s: mut Docs, what: str, text: str) {
     s.copied_at = -10.0
 }
 
+/// Copies what a finger selected, and lets the selection go.
+fn copy_selection(s: mut Docs) {
+    let words = selected_words(s)
+    copy(mut s, "copy:selection", words.as_str())
+    s.touch_selection = false
+    s.selected = None
+}
+
+/// What header button `what` does (`header_buttons`): opens or closes the list of pages, goes to
+/// the front page, or opens the repository.
+fn header_button(s: mut Docs, what: str) {
+    if what == "menu" {
+        s.nav_open = !s.nav_open
+        s.nav_at = s.time
+    } else if what == "home" {
+        go_to(mut s, Route::front(), push: true)
+    } else if !s.index.repository.is_empty() {
+        s.told.push(host::open_link(s.index.repository.as_str()))
+    }
+}
+
 /// What control `what` says of its copy, for a moment after it: whether it worked.
 fn copy_said(s: Docs, what: str) -> Option<String> {
     said(s.copied.as_str(), s.copied_at, s.copy_ok, s.time, what)
@@ -2098,25 +2104,14 @@ fn assisted(s: mut Docs, node: u32, action: Assist, f: Frame) {
     }
     if node >= TAB_LISTS { return }
     if node == COPY_SELECTION {
-        let words = selected_words(s)
-        copy(mut s, "copy:selection", words.as_str())
-        s.touch_selection = false
-        s.selected = None
+        copy_selection(mut s)
         return
     }
     if node >= HEADER_NODES && node < COPY_SELECTION {
         let buttons = header_buttons(s, f)
         let i = node - HEADER_NODES
         if action == Assist::Activate && i < buttons.len() {
-            let what = buttons[i].1.clone()
-            if what.as_str() == "menu" {
-                s.nav_open = !s.nav_open
-                s.nav_at = s.time
-            } else if what.as_str() == "home" {
-                go_to(mut s, Route::front(), push: true)
-            } else if !s.index.repository.is_empty() {
-                s.told.push(host::open_link(s.index.repository.as_str()))
-            }
+            header_button(mut s, buttons[i].1.as_str())
         }
         return
     }
@@ -2291,15 +2286,10 @@ fn is_open(s: Docs, g: str) -> bool {
 
 /// The list shows the page being read: its group opens.
 fn open_shown_group(s: mut Docs) {
-    var shown_group: Option<String> = None
-    for p in s.index.pages {
-        if p.path == s.shown {
-            shown_group = Some(group_of(p.path.as_str(), p.kind.as_str()).to_string())
-        }
-    }
-    if let Some(g) = shown_group {
-        if !is_open(s, g.as_str()) { toggle_group(mut s, g.as_str()) }
-    }
+    let Some(i) = s.index.page(s.shown.as_str()) else { return }
+    borrow p = s.index.pages[i]
+    let g = group_of(p.path.as_str(), p.kind.as_str()).to_string()
+    if !is_open(s, g.as_str()) { toggle_group(mut s, g.as_str()) }
 }
 
 /// Opens group `g`'s pages in the list, or closes them.
@@ -2433,13 +2423,6 @@ fn is_module(s: Docs) -> bool {
     !s.shown.is_empty() && !s.shown.as_str().starts_with("spec/") && s.missed.is_empty()
 }
 
-/// A path's last name: `insert` of `Arena::insert`.
-fn last_name(t: str) -> borrow str {
-    var k = t.len()
-    while k >= 2 && !(t.byte(k - 1) == 58 && t.byte(k - 2) == 58) { k -= 1 }
-    if k < 2 { t } else { t.slice(from: k, to: t.len()) }
-}
-
 /// The pages before and after the one being read, in the list's order: each its title and path.
 fn neighbours(s: Docs) -> (Option<(String, String)>, Option<(String, String)>) {
     borrow pages = s.index.pages
@@ -2480,7 +2463,7 @@ fn extras(s: Docs, f: Frame) -> Vec<Extra> {
     )
     let markdown = f"file:{s.shown.as_str()}"
     if f.rail.w > 0.0 {
-        let rows = s.outline.clone()
+        borrow rows = s.outline
         let row = 28.0 * u
         let top = f.rail.y + 32.0 * u
         let fits = max(u32(max(f.rail.h - 120.0 * u, 0.0) / row), 1)
@@ -2581,7 +2564,7 @@ fn draw_extras(s: mut Docs, f: Frame) {
     let ex = extras(s, f)
     if ex.is_empty() { return }
     let u = s.u
-    s.list.push_clip(Rect::new(0.0, f.header, s.screen.x, s.screen.y - f.header))
+    s.list.push_clip(f.body)
     var rows_top = -1.0
     var rows_bottom = 0.0
     for e in ex {
@@ -2815,10 +2798,10 @@ fn extra_at(s: Docs, at: vec2, f: Frame) -> Option<String> {
 
 /// The page's title, as the browser's tab and history show it.
 fn title_of(s: Docs) -> String {
-    for p in s.index.pages {
-        if p.path == s.shown { return f"{p.title.as_str()} | Wrela docs" }
+    match s.index.page(s.shown.as_str()) {
+        Some(i) => f"{s.index.pages[i].title.as_str()} | Wrela docs",
+        None => String::from("Wrela docs"),
     }
-    String::from("Wrela docs")
 }
 
 // ---- layout and drawing ------------------------------------------------------------------------
@@ -2834,10 +2817,7 @@ fn keep_laid_out(s: mut Docs, f: Frame) {
     s.laid_width = f.w
     s.laid_version += 1
     s.outline = outline_of(s)
-    let (text, starts) = s.laid.text()
-    s.lowered = lower(text.as_str())
-    s.text = take text
-    s.starts = take starts
+    keep_text(mut s)
     s.selected = None
     // Each figure's field, keeping its turn where the block is the same.
     var lives: Vec<Live> = Vec::new()
@@ -2853,13 +2833,13 @@ fn keep_laid_out(s: mut Docs, f: Frame) {
                 mode = l.mode
             }
         }
-        let r = read(code.as_str(), 0.0)
         s.changes += 1
         lives.push(
             Live {
                 block: fig.block,
                 code,
-                read: r,
+                // The layout read the block at time 0 to find its figure.
+                read: Some(fig.read.clone()),
                 turn,
                 tilt,
                 mode,
@@ -2888,6 +2868,14 @@ fn keep_laid_out(s: mut Docs, f: Frame) {
     if !f.beside { s.nav_dirty = true }
     refresh_matches(mut s, f)
     seek(mut s, f, glide: false)
+}
+
+/// The page as plain text, as it's laid out now, for selection, copies and find.
+fn keep_text(s: mut Docs) {
+    let (text, starts) = s.laid.text()
+    s.lowered = lower(text.as_str())
+    s.text = take text
+    s.starts = take starts
 }
 
 /// Scrolls to the anchor the reader asked for, once the page is laid out: gliding there on the
@@ -2982,7 +2970,7 @@ fn draw_all(s: mut Docs, f: Frame) {
     }
     s.list.clear(screen)
     // The page.
-    s.list.push_clip(Rect::new(0.0, f.header, screen.x, screen.y - f.header))
+    s.list.push_clip(f.body)
     // A page just shown comes in: it rises a few pixels and its ink deepens.
     let appear = eased(s.shown_at, s.time, APPEAR, s.reduced)
     let origin = vec2(f.x, page_y(s, f))
@@ -3005,7 +2993,8 @@ fn draw_all(s: mut Docs, f: Frame) {
         }
     }
     if s.finding {
-        let n = lower(s.find.as_str()).len()
+        // A match is as long as what's typed: lowercase (`lower`) keeps a text's length.
+        let n = s.find.len()
         for i in 0..s.matches.len() {
             let a = s.matches[i]
             mark_range(mut s, a, a + n, origin, f, hex(0xF5C542, if i == s.current { 0.45 } else {
@@ -3312,7 +3301,7 @@ fn draw_pull(s: mut Docs, f: Frame) {
 /// that copies it.
 fn draw_selection(s: mut Docs, f: Frame) {
     let u = s.u
-    s.list.push_clip(Rect::new(0.0, f.header, s.screen.x, s.screen.y - f.header))
+    s.list.push_clip(f.body)
     for (c, _) in handles(s, f) {
         s.list.rect(Rect::new(c.x - u, c.y - 22.0 * u, 2.0 * u, 22.0 * u), hex(s.p.selection))
         s.list.rect(
@@ -3441,10 +3430,7 @@ fn draw_nav(s: mut Docs, f: Frame) {
     let dx = -(1.0 - a) * f.nav
     let r = Rect::new(dx, f.header, f.nav, screen.y - f.header)
     if !f.beside {
-        s.list.rect(
-            Rect::new(0.0, f.header, screen.x, screen.y - f.header),
-            hex(VOID, scrim(s) * a),
-        )
+        s.list.rect(f.body, hex(VOID, scrim(s) * a))
         shadow(mut s, r, 0.0, a)
     }
     s.list.rect(r, hex(s.p.page))
@@ -4082,7 +4068,7 @@ fn controls(s: Docs, f: Frame, at: vec2, all: bool) -> Vec<Control> {
 /// gutter beside a section's heading, stronger under the pointer.
 fn draw_controls(s: mut Docs, f: Frame) {
     let u = s.u
-    s.list.push_clip(Rect::new(0.0, f.header, s.screen.x, s.screen.y - f.header))
+    s.list.push_clip(f.body)
     for c in controls(s, f, s.pointer, all: false) {
         let hover = !s.finger && c.rect.contains(s.pointer)
         if c.copy {
@@ -4160,7 +4146,7 @@ fn knob_name(s: Docs, i: u32) -> String {
     if e == 0 || code.byte(e - 1) != 58 { return String::from("number") }
     e -= 1
     var a = e
-    while a > 0 && (live::is_word(code.byte(a - 1))) { a -= 1 }
+    while a > 0 && highlight::is_word(code.byte(a - 1)) { a -= 1 }
     if a == e { String::from("number") } else { code.slice(from: a, to: e).to_string() }
 }
 
@@ -4200,10 +4186,7 @@ fn set_knob(s: mut Docs, i: u32, value: f32) {
     s.changes += 1
     s.lives[l].version = s.changes
     s.lives[l].code = take code
-    let (text, starts) = s.laid.text()
-    s.lowered = lower(text.as_str())
-    s.text = take text
-    s.starts = take starts
+    keep_text(mut s)
 }
 
 /// The time a moving field is read at: the program's, or still when the system asks for less
@@ -4319,11 +4302,14 @@ fn figures_drawing(s: Docs, f: Frame) -> bool {
         if !figure_near(s, f, i, reach: s.screen.y) { continue }
         let block = s.laid.figures[i].block
         let Some(l) = live_of(s, block) else { continue }
-        let Some(rd) = s.lives[l].read.clone() else { continue }
+        let moves = match s.lives[l].read {
+            Some(rd) => rd.moves,
+            None => continue,
+        }
         var drawn = false
         for image in s.images {
             if image.block == block {
-                drawn = image.rough_done() && (image.sharp_done() || (rd.moves && !s.reduced))
+                drawn = image.rough_done() && (image.sharp_done() || (moves && !s.reduced))
             }
         }
         if !drawn { return true }
@@ -4498,7 +4484,7 @@ fn hint(mode: u32, finger: bool) -> String {
 /// pointer, the distance there.
 fn draw_figure_overlays(s: mut Docs, f: Frame) {
     let u = s.u
-    s.list.push_clip(Rect::new(0.0, f.header, s.screen.x, s.screen.y - f.header))
+    s.list.push_clip(f.body)
     for i in 0..s.laid.figures.len() {
         let r = figure_rect(s, f, i)
         let row = tabs_rect(s, f, i)
@@ -4643,6 +4629,34 @@ fn draw_scrollbar(s: mut Docs, f: Frame, nav: bool) {
 // ---- what the host is told ---------------------------------------------------------------------
 
 fn tell(s: mut Docs, f: Frame, changed: bool) {
+    // What's under the pointer, the box being typed in and what's selected change only with input
+    // or motion, which change the frame.
+    if changed { tell_input(mut s, f) }
+    // The tree is told what changed, and only then; a change held back while the page moved is
+    // told once it stops.
+    if s.capabilities & host::SEMANTICS == 0 || !(changed || s.owed) { return }
+    // While a finger moves the page, or it carries on, glides or springs back, its parts' places
+    // aren't told at all: the host moves an element for each, on the thread a phone's touches
+    // arrive on, and a finger's press goes to this program whatever element it lands on. They're
+    // told once the page is still. A mouse's wheel tells them ten times a second, as a mouse
+    // clicks the elements themselves.
+    let moved = s.scroll != s.told_at.0 || s.nav_scroll != s.told_at.1 || s.pull != 0.0
+    let touched = s.fling.is_some() || s.swipe.is_some() || s.pull != 0.0 || s.handle != 0
+    if moved && (touched || (s.glide.is_some() && s.time - s.told_at.2 < 0.1)) {
+        s.owed = true
+        return
+    }
+    s.owed = false
+    s.told_at = (s.scroll, s.nav_scroll, s.time)
+    let nodes = parts_tree(s, f)
+    let view = vec4(0.0, 0.0, s.screen.x, s.screen.y)
+    let title = title_of(s)
+    host::publish(mut s.told, mut s.tree, title.as_str(), nodes, view)
+}
+
+/// Tells the host the pointer's shape over what's under it, whether search's or find's box takes
+/// typing, and what a copy takes.
+fn tell_input(s: mut Docs, f: Frame) {
     var over_control = false
     for c in controls(s, f, s.pointer, all: false) {
         if c.rect.contains(s.pointer) { over_control = true }
@@ -4712,26 +4726,6 @@ fn tell(s: mut Docs, f: Frame, changed: bool) {
         s.told.push(host::offer(words.as_str(), ""))
         s.offered = take words
     }
-    // The tree is told what changed, and only then; a change held back while the page moved is
-    // told once it stops.
-    if s.capabilities & host::SEMANTICS == 0 || !(changed || s.owed) { return }
-    // While a finger moves the page, or it carries on, glides or springs back, its parts' places
-    // aren't told at all: the host moves an element for each, on the thread a phone's touches
-    // arrive on, and a finger's press goes to this program whatever element it lands on. They're
-    // told once the page is still. A mouse's wheel tells them ten times a second, as a mouse
-    // clicks the elements themselves.
-    let moved = s.scroll != s.told_at.0 || s.nav_scroll != s.told_at.1 || s.pull != 0.0
-    let touched = s.fling.is_some() || s.swipe.is_some() || s.pull != 0.0 || s.handle != 0
-    if moved && (touched || (s.glide.is_some() && s.time - s.told_at.2 < 0.1)) {
-        s.owed = true
-        return
-    }
-    s.owed = false
-    s.told_at = (s.scroll, s.nav_scroll, s.time)
-    let nodes = parts_tree(s, f)
-    let view = vec4(0.0, 0.0, s.screen.x, s.screen.y)
-    let title = title_of(s)
-    host::publish(mut s.told, mut s.tree, title.as_str(), nodes, view)
 }
 
 /// The page's parts as a semantic tree, in reading order, whether or not they're on screen (a
@@ -5268,9 +5262,7 @@ fn a_glide_eases_to_its_place_and_stops_there() {
 @test
 fn a_missing_page_lists_what_may_be_it() {
     let doc = "{\"pages\": [{\"path\": \"std/arena.md\", \"title\": \"std::arena\", \"summary\": \"Arenas.\", \"kind\": \"module\"}], \"items\": [{\"path\": \"std::arena::Arena\", \"kind\": \"struct\", \"summary\": \"Values with handles.\", \"page\": \"std/arena.md\", \"anchor\": \"arena\", \"source\": \"compiler/std/arena.wrela\", \"line\": 12}], \"sections\": [{\"page\": \"spec/language/6-memory.md\", \"anchor\": \"6-8-handles-and-arenas\", \"headings\": [\"6. Memory\", \"6.8 Handles and arenas\"], \"text\": \"An arena holds values.\"}]}"
-    var bytes: Vec<u8> = Vec::new()
-    for i in 0..doc.len() { bytes.push(doc.byte(i)) }
-    let Ok(index) = Index::read(bytes) else {
+    let Ok(index) = Index::read(Vec::from(String::from(doc).as_bytes())) else {
         assert(false, "the index")
         return
     }

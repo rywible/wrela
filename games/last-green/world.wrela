@@ -6,7 +6,7 @@
 
 use engine::footing::{BODY, Obstacle, Obstacles, Thing, stands}
 use engine::place::{Place, Water}
-use engine::player::{Motion, NONE, Player, control, spawn, step_with, turn_to}
+use engine::player::{Motion, NONE, Player, control, facing, spawn, step_with, turn_to}
 use behaviour::{Fawn, STEPPED_WITHIN, presence, spawn_fawn, step_fawn}
 use encounter::{Encounter, encounter, holds, step_encounter}
 use engine::run::{Asks, TickInput}
@@ -282,39 +282,29 @@ fn near_wild(p: vec2, d: f32) -> bool {
 
 /// The obstacle a circle of a local answer (`wildwood::trunks_round`: x, z, radius and wood
 /// height) is to the player: a log's wood if it has a height, else a standing trunk or stone.
-pub fn answered(t: vec4) -> engine::footing::Obstacle {
-    engine::footing::Obstacle {
+pub fn answered(t: vec4) -> Obstacle {
+    Obstacle {
         a: t.xy,
         b: t.xy,
         r: t.z,
-        thing: if t.w > 0.0 { engine::footing::Thing::Log } else {
-            engine::footing::Thing::Trunk
-        },
+        thing: if t.w > 0.0 { Thing::Log } else { Thing::Trunk },
         depth: t.w,
     }
 }
 
 /// Combine fitted local wood with nearby static standing solids, walls, and water. The
 /// static disk covers the lift collar and a full blink; its bin margin includes capsule starts.
-pub fn player_obstacles(
-    w: Wildside,
-    at: vec2,
-    fixed: engine::footing::Obstacles,
-) -> engine::footing::Obstacles {
-    var all: Vec<engine::footing::Obstacle> = Vec::with_capacity(w.count)
+pub fn player_obstacles(w: Wildside, at: vec2, fixed: Obstacles) -> Obstacles {
+    var all: Vec<Obstacle> = Vec::with_capacity(w.count)
     for i in 0..w.count {
         all.push(answered(w.trunks[i]))
     }
     fixed.within(at, 16.0, |o| {
-        if o.thing != engine::footing::Thing::Log {
+        if o.thing != Thing::Log {
             all.push(o)
         }
     })
-    engine::footing::Obstacles::of(
-        all,
-        at - vec2(wildwood::REACH + 32.0),
-        at + vec2(wildwood::REACH + 32.0),
-    )
+    Obstacles::of(all, at - vec2(wildwood::REACH + 32.0), at + vec2(wildwood::REACH + 32.0))
 }
 
 /// A tick of the floor's walk: the look turned to the point it's making for, forward held at a
@@ -380,7 +370,7 @@ fn travel(p: mut Player, s: vec3, from: f32) {
         let r = s.z + 3.0 + 4.0 * f32(ring)
         for k in 0..16 {
             let a = from + TAU * f32(k) / 16.0
-            let q = at + vec2(sin(a), cos(a)) * r
+            let q = at + facing(a) * r
             if stands(GROUND, WATER, OBSTACLES, q) > 0.0 && !OBSTACLES.blocked(q, BODY) {
                 p.at = Place::of(q)
                 p.y = GROUND.at(q.x, q.y)
@@ -426,7 +416,7 @@ pub fn report(w: World, ticks: u32) -> String {
     // What draws here and ahead, by the check (its strongest draw at 20, 40 and 60 m the way the
     // player faces).
     let draw = history::draw_at(at)
-    let toward = vec2(sin(p.heading), cos(p.heading))
+    let toward = facing(p.heading)
     var ahead = -1.0
     for d in [20.0, 40.0, 60.0] {
         ahead = max(ahead, history::draw_at(at + toward * d))
@@ -502,14 +492,22 @@ fn wildwood_log_answers_decode_height_and_preserve_standing_solids() {
 /// leave its coverage. Stop at the known boundary until that answer arrives. A first entry or
 /// teleport outside the known disc also waits for its requested local collision data.
 fn needs_wild_answer(at: vec2, around: vec2, covered: f32) -> bool {
-    let safe = max(covered - BODY - 0.04, 0.0)
+    let safe = known_room(covered)
     let reserve = TRAVEL.run * f32(ASK_DUE) / 60.0 + BODY + 2.0
     let after = min(ASK_AGAIN, max(covered - reserve, min(1.0, safe * 0.5)))
     safe == 0.0 || length(at - around) > after
 }
 
+/// How far from where a local answer was asked round the body stands clear inside the disc it
+/// covers, `covered` m round (m).
+fn known_room(covered: f32) -> f32 {
+    max(covered - BODY - 0.04, 0.0)
+}
+
+/// The part of `moved` from `from` that keeps the body inside the known local answer round
+/// `around` (`known_room`): all of it inside, up to its edge across it, none from outside.
 fn within_known_wild(from: vec2, around: vec2, covered: f32, moved: vec2) -> vec2 {
-    let radius = max(covered - BODY - 0.04, 0.0)
+    let radius = known_room(covered)
     let at = from - around
     let end = at + moved
     if dot(end, end) <= radius * radius {
@@ -630,7 +628,7 @@ fn authored_local_logs_combine_with_static_walls_and_streams() {
     var high = 0.0
     for _ in 0..100 {
         let (moved, _) = engine::footing::step_over(
-            behaviour::Flat {},
+            engine::terrain::Flat {},
             behaviour::DRY,
             combined,
             at,

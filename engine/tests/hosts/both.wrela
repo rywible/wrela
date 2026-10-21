@@ -7,6 +7,7 @@
 use std::collections::{Box, Vec}
 use std::job::Step
 use std::string::String
+use std::tool::MOST_BYTES
 use std::tool::answer
 use std::tool::blob
 use std::tool::blob::Data
@@ -16,9 +17,7 @@ use std::tool::drive
 use std::tool::files
 use std::tool::serve
 use std::tool::toolchain
-
-/// The most bytes a blob read gives at once.
-const CHUNK: u64 = 524288
+use steps::{built, screen}
 
 /// What both hosts drew: each one's state hash (16 hex digits) and last frame (RGBA8).
 pub struct Both: Clone {
@@ -45,7 +44,7 @@ pub fn bytes_of(data: take Data) -> Vec<u8> {
             let Ok(size) = blob::read_len(take np) else { panic("the blob's length") }
             var at: u64 = 0
             while at < size {
-                let len = u32(min(size - at, CHUNK))
+                let len = u32(min(size - at, u64(MOST_BYTES)))
                 var r = blob::read(held, at, len)
                 var read = r.poll()
                 while read.is_none() {
@@ -166,18 +165,15 @@ pub fn both_hosts(
     let out = String::from(f"scratch/{name.as_str()}")
     var options = toolchain::options()
     options.testing = testing
-    var b = toolchain::build(pkg.as_str(), out.as_str(), options)
-    var built = b.poll()
-    while built.is_none() {
-        yield
-        built = b.poll()
+    var b = Box::new(
+        built.start(take pkg, out.clone(), take options, String::from(f"{name.as_str()} builds")),
+    )
+    loop {
+        match b.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
     }
-    let Some(bp) = take built else { panic("no answer") }
-    let Ok(build) = toolchain::read_built(take bp) else { panic("the build's request") }
-    for d in build.diagnostics {
-        assert(!d.error, d.rendered.as_str())
-    }
-    assert(build.ok, f"{name.as_str()} builds")
     // The native host: its frames at their times, then its screen and its hash.
     var load = drive::gpu()
     load.width = width
@@ -211,15 +207,7 @@ pub fn both_hosts(
         let Ok(ran) = drive::read_ran(take fp) else { panic("the frame's request") }
         assert(ran.trap.is_none(), "the native frame draws")
     }
-    var c = drive::capture(h)
-    var captured = c.poll()
-    while captured.is_none() {
-        yield
-        captured = c.poll()
-    }
-    let Some(cp) = take captured else { panic("no answer") }
-    let Ok(shot) = drive::read_capture(take cp) else { panic("the capture") }
-    var nb = Box::new(bytes_of.start(take shot.rgba))
+    var nb = Box::new(screen.start(h))
     var native: Vec<u8> = Vec::new()
     loop {
         match nb.get_mut().resume() {

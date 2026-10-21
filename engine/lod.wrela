@@ -61,7 +61,7 @@ pub fn place(l: Lod, cam: Camera, at: vec3, scale: f32) -> (f32, f32) {
     let r = l.reach * scale
     let d = length(at + vec3(0.0, l.top * 0.5 * scale, 0.0) - cam.eye)
     // The finest level whose cards look no wider than CARD_PX (each level grows them by sqrt(2)).
-    let px = card_width(l, cam, at, scale)
+    let px = card_width_at(l, cam, d, r, scale)
     var level = clamp(2.0 * log2(l.card_px / max(px, 1.0e-4)), 0.0, f32(CARD_LEVELS - 1))
     // A large crown or a narrow lens keeps its geometry until the impostor has enough
     // samples across it. The owner bounds this extension to its loaded geometry's range.
@@ -88,6 +88,11 @@ pub fn place(l: Lod, cam: Camera, at: vec3, scale: f32) -> (f32, f32) {
 pub fn card_width(l: Lod, cam: Camera, at: vec3, scale: f32) -> f32 {
     let r = l.reach * scale
     let d = length(at + vec3(0.0, l.top * 0.5 * scale, 0.0) - cam.eye)
+    card_width_at(l, cam, d, r, scale)
+}
+
+/// `card_width` of an instance whose middle is `d` from the eye and whose reach is `r`.
+fn card_width_at(l: Lod, cam: Camera, d: f32, r: f32, scale: f32) -> f32 {
     l.leaf * scale / max(cam.footprint(max(d - r * 0.5, 0.5)), 1.0e-4)
 }
 
@@ -177,6 +182,11 @@ pub fn packed(keep: vec4) -> u32 {
     s.x | (s.y << 14) | (c.x << 28) | (c.y << 30)
 }
 
+/// A share packed by `packed`: its start and end, each in [0, 1].
+pub fn unpacked(k: u32) -> (f32, f32) {
+    (f32(k & 16383) / 16383.0, f32((k >> 14) & 16383) / 16383.0)
+}
+
 /// How much of the switch between its share's start and end a card shrinks over, by its own
 /// draw (`by_card`).
 pub const CARD_BAND: f32 = 0.1
@@ -190,8 +200,7 @@ pub const CARD_BAND: f32 = 0.1
 /// part of the pixels, and a bush faded near the eye left only them, as see-through leaves on
 /// the ground.)
 pub fn by_card(k: u32, h: f32) -> (u32, f32) {
-    let start = f32(k & 16383) / 16383.0
-    let end = f32((k >> 14) & 16383) / 16383.0
+    let (start, end) = unpacked(k)
     if start <= 0.0 && end >= 1.0 {
         return (k, 1.0)
     }
@@ -206,13 +215,11 @@ pub fn by_card(k: u32, h: f32) -> (u32, f32) {
 /// the pixel's draw (`draw_packed`) is in the share. A whole share holds every pixel, with no
 /// draw.
 pub fn keeps_packed(k: u32, pixel: vec2) -> bool {
-    let start = f32(k & 16383) / 16383.0
-    let end = f32((k >> 14) & 16383) / 16383.0
+    let (start, end) = unpacked(k)
     if start <= 0.0 && end >= 1.0 {
         return true
     }
-    let c = vec2u((k >> 28) & 3, (k >> 30) & 3)
-    let u = bayer((vec2u(pixel) + c) & vec2u(3))
+    let u = draw_packed(k, pixel, vec2u(0))
     u >= start && u < end
 }
 
@@ -234,11 +241,11 @@ pub fn ways(level: f32, faint: f32) -> (bool, u32, u32) {
     let s = switched(level)
     let lower = u32(k)
     let upper = if s > 0.0 && lower < VOLUME { lower + 1 } else { lower }
-    let both_kept = s < 1.0
-    if !both_kept {
-        return (true, upper, upper)
+    // Within the switch, both ways; past it, the lower keeps nothing.
+    if s < 1.0 {
+        return (true, lower, upper)
     }
-    (true, lower, upper)
+    (true, upper, upper)
 }
 
 /// On a still's grid (`view::jitter_of`), 16 frames in a row keep each pixel of a share at

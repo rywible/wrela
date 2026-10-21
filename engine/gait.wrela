@@ -148,23 +148,8 @@ pub fn body_frame(w: Walker) -> mat4 {
 /// A positive pitch follows higher forefeet: the body's nose goes up in world space.
 @test
 fn an_uphill_pitch_raises_the_front_of_the_body() {
-    let foot = Foot {
-        planted: true,
-        at: vec3(0.0),
-        normal: vec3(0.0, 1.0, 0.0),
-        from: vec3(0.0),
-    }
-    var w = Walker {
-        root: Transform { pos: vec3(3.0, 2.0, 1.0), heading: 0.0 },
-        phase: 0.0,
-        speed: 0.0,
-        turn: 0.0,
-        feet: [foot; 4],
-        springs: [Spring { pos: vec3(0.0), vel: vec3(0.0) }; SPRINGS],
-        along: 0.0,
-        height: 0.0,
-        pitch: 0.3,
-    }
+    var w = still(Transform { pos: vec3(3.0, 2.0, 1.0), heading: 0.0 })
+    w.pitch = 0.3
     for heading in [0.0, 1.0, -2.0] {
         w.root.heading = heading
         let m = body_frame(w)
@@ -201,25 +186,27 @@ fn apply(m: mat4, p: vec3) -> vec3 {
     (m * vec4(p, 1.0)).xyz
 }
 
-/// A walker standing at `at` on `terrain`, facing `heading`, its feet planted under it and its
-/// springs at rest.
-pub fn stand<T: Terrain>(terrain: T, b: Body, at: vec2, heading: f32) -> Walker {
-    var w = Walker {
-        root: Transform { pos: vec3(at.x, terrain.height(at.x, at.y), at.y), heading },
+/// A walker standing still at `root`, level, its feet planted at the origin and its springs
+/// there, at rest: what `stand` settles onto the terrain.
+fn still(root: Transform) -> Walker {
+    let foot = Foot { planted: true, at: vec3(0.0), normal: vec3(0.0, 1.0, 0.0), from: vec3(0.0) }
+    Walker {
+        root,
         phase: 0.0,
         speed: 0.0,
         turn: 0.0,
-        feet: [Foot {
-            planted: true,
-            at: vec3(0.0),
-            normal: vec3(0.0, 1.0, 0.0),
-            from: vec3(0.0),
-        }; 4],
+        feet: [foot; 4],
         springs: [Spring { pos: vec3(0.0), vel: vec3(0.0) }; SPRINGS],
         along: 0.0,
         height: 0.0,
         pitch: 0.0,
     }
+}
+
+/// A walker standing at `at` on `terrain`, facing `heading`, its feet planted under it and its
+/// springs at rest.
+pub fn stand<T: Terrain>(terrain: T, b: Body, at: vec2, heading: f32) -> Walker {
+    var w = still(Transform { pos: vec3(at.x, terrain.height(at.x, at.y), at.y), heading })
     let m = body_frame(w)
     for i in 0..4 {
         let rest = apply(m, b.soles[i])
@@ -261,23 +248,7 @@ fn drop_to_reach(w: Walker, b: Body, i: u32) -> f32 {
 /// Lowering the pitched body's height must put a planted ankle within its leg's reach.
 @test
 fn a_pitched_body_lowers_along_world_up_to_reach_its_feet() {
-    let foot = Foot {
-        planted: true,
-        at: vec3(0.0),
-        normal: vec3(0.0, 1.0, 0.0),
-        from: vec3(0.0),
-    }
-    var w = Walker {
-        root: Transform { pos: vec3(3.0, 2.0, 1.0), heading: 0.0 },
-        phase: 0.0,
-        speed: 0.0,
-        turn: 0.0,
-        feet: [foot; 4],
-        springs: [Spring { pos: vec3(0.0), vel: vec3(0.0) }; SPRINGS],
-        along: 0.0,
-        height: 0.0,
-        pitch: 0.0,
-    }
+    var w = still(Transform { pos: vec3(3.0, 2.0, 1.0), heading: 0.0 })
     var b = Body {
         soles: [vec3(0.0); 4],
         foot_height: [0.0; 4],
@@ -498,8 +469,7 @@ pub fn palette(s: Skeleton, b: Body, w: Walker) -> Palette {
     let legs = s.legs()
     for i in 0..s.leg_count() {
         let j = legs[i].joints
-        let rest = |x: Bone| s.rest(x)
-        let (h, k, a, f) = (rest(j[0]), rest(j[1]), rest(j[2]), rest(j[3]))
+        let (h, k, a, f) = (s.rest(j[0]), s.rest(j[1]), s.rest(j[2]), s.rest(j[3]))
         // The foot joint's target, in the body's space: over its sole by its rest height.
         let sole = apply(inv, w.feet[i].at)
         let foot_to = sole + vec3(0.0, b.foot_height[i], 0.0)

@@ -5,3 +5,6 @@
 # test build (its `test_*` exports) through `std::tool::toolchain` and drive it on the CPU.
 [package]
 name = "clearing_checks"
+
+[dependencies]
+hosts = { workspace = true }

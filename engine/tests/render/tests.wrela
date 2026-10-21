@@ -4,19 +4,13 @@
 // `run_frames` draws them) and captures the screen after each group of them. Each test reads
 // those screens' pixels: RGBA8, rows top to bottom.
 
-use hosts::both::{Both, both_hosts, difference}
+use hosts::both::{Both, both_hosts, bytes_of, difference}
 use std::collections::{Box, Vec}
 use std::io::print
 use std::job::Step
 use std::string::String
-use std::tool::answer
-use std::tool::blob
-use std::tool::blob::Data
 use std::tool::drive
 use std::tool::toolchain
-
-/// The most bytes a blob read gives at once.
-const CHUNK: u64 = 524288
 
 /// The screens of the fixture `name`: built into `scratch/<name>`, loaded on the GPU with a
 /// `width` × `height` screen and `init` run, then for each group of `groups`, a frame at each of
@@ -90,35 +84,16 @@ fn screens(
         let Some(cp) = take captured else { panic("no answer") }
         let Ok(shot) = drive::read_capture(take cp) else { panic("the capture") }
         assert(shot.width == width && shot.height == height, "the capture is the screen")
+        var bytes = Box::new(bytes_of.start(take shot.rgba))
         var pixels: Vec<u8> = Vec::new()
-        match take shot.rgba {
-            Data::Bytes(v) => pixels = take v,
-            Data::Blob(held) => {
-                var n = blob::len(held)
-                var counted = n.poll()
-                while counted.is_none() {
-                    yield
-                    counted = n.poll()
-                }
-                let Some(np) = take counted else { panic("no answer") }
-                let Ok(size) = blob::read_len(take np) else { panic("the blob's length") }
-                var at: u64 = 0
-                while at < size {
-                    let len = u32(min(size - at, CHUNK))
-                    var r = blob::read(held, at, len)
-                    var read = r.poll()
-                    while read.is_none() {
-                        yield
-                        read = r.poll()
-                    }
-                    let Some(rp) = take read else { panic("no answer") }
-                    let Ok(chunk) = answer(take rp) else { panic("the blob's bytes") }
-                    for j in 0..chunk.len() {
-                        pixels.push(chunk[j])
-                    }
-                    at += u64(len)
-                }
-            },
+        loop {
+            match bytes.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(v) => {
+                    pixels = take v
+                    break
+                },
+            }
         }
         assert(pixels.len() == 4 * width * height, "every pixel came back")
         out_screens.push(Screen { width, pixels })
@@ -128,24 +103,12 @@ fn screens(
 
 /// One group of frames at `times`, then the screen.
 fn together(times: [f32]) -> Vec<Vec<f32>> {
-    var g: Vec<f32> = Vec::new()
-    for t in times {
-        g.push(t)
-    }
-    var out: Vec<Vec<f32>> = Vec::new()
-    out.push(take g)
-    out
+    Vec::from([Vec::from(times)])
 }
 
 /// A frame at each of `times`, the screen after each.
 fn each(times: [f32]) -> Vec<Vec<f32>> {
-    var out: Vec<Vec<f32>> = Vec::new()
-    for t in times {
-        var g: Vec<f32> = Vec::new()
-        g.push(t)
-        out.push(take g)
-    }
-    out
+    Vec::from_fn(times.len(), |k| Vec::from([times[k]]))
 }
 
 /// A captured screen: its width, and its pixels, RGBA8, rows top to bottom.

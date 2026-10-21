@@ -3,10 +3,9 @@
 // cuboid fields; no authored field is evaluated per screen pixel. The look is a construction
 // blockout, not a finished floor's art direction.
 
-use engine::construction::{Built, Ground}
+use engine::construction::Built
 use engine::render::{View, view}
 use people::{FORESTS, OCEANS, Study}
-use std::field::Surface
 use std::gpu::{
     ClipPosition, Cull, DepthTexture, GlobalId, GpuBuffer, Slots, VertexIndex,
     begin_screen_pass_with_depth, buffer, depth_texture, dispatch, draw, read, write,
@@ -113,26 +112,33 @@ fn geometry(world: World, seed: u32, study: Study, visible: u32) -> Vec<Vertex> 
             }
         }
     }
+    // The ground: a 32 × 32 grid of 2 m quads round the study, each corner sampled once.
+    let colour = if world == World::Forest { vec3(0.15, 0.23, 0.1) } else {
+        vec3(0.36, 0.4, 0.31)
+    }
+    var corners: Vec<Vertex> = Vec::with_capacity(33 * 33)
+    for z in 0..33 {
+        for x in 0..33 {
+            let q = study.at + vec2(f32(x) - 16.0, f32(z) - 16.0) * 2.0
+            let y = terrain(world, seed, q)
+            let n = normalize(
+                vec3(
+                    terrain(world, seed, q - vec2(0.1, 0.0)) -
+                        terrain(world, seed, q + vec2(0.1, 0.0)),
+                    0.2,
+                    terrain(world, seed, q - vec2(0.0, 0.1)) -
+                        terrain(world, seed, q + vec2(0.0, 0.1)),
+                ),
+            )
+            corners.push(Vertex { at: vec3(q.x, y, q.y), normal: n, colour })
+        }
+    }
     let dx = [0, 1, 0, 0, 1, 1]
     let dz = [0, 0, 1, 1, 0, 1]
     for z in 0..32 {
         for x in 0..32 {
             for c in 0..6 {
-                let q = study.at + vec2(f32(x + dx[c]) - 16.0, f32(z + dz[c]) - 16.0) * 2.0
-                let y = terrain(world, seed, q)
-                let n = normalize(
-                    vec3(
-                        terrain(world, seed, q - vec2(0.1, 0.0)) -
-                            terrain(world, seed, q + vec2(0.1, 0.0)),
-                        0.2,
-                        terrain(world, seed, q - vec2(0.0, 0.1)) -
-                            terrain(world, seed, q + vec2(0.0, 0.1)),
-                    ),
-                )
-                let colour = if world == World::Forest { vec3(0.15, 0.23, 0.1) } else {
-                    vec3(0.36, 0.4, 0.31)
-                }
-                vertices.push(Vertex { at: vec3(q.x, y, q.y), normal: n, colour })
+                vertices.push(corners[(z + dz[c]) * 33 + x + dx[c]])
             }
         }
     }

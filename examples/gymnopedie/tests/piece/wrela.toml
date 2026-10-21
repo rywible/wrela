@@ -4,3 +4,6 @@
 # offline through `std::tool::drive`.
 [package]
 name = "gymnopedie_piece"
+
+[dependencies]
+hosts = { workspace = true }

@@ -21,25 +21,17 @@ pub fn parse(text: str) -> Option<Vec<Card>> {
         let part = |i: u32| row.slice(columns[i].0, columns[i].1).to_string()
         let Some(width) = part(4).parse_u32() else { return None }
         let Some(height) = part(5).parse_u32() else { return None }
-        if !valid_key(part(0)) ||
-            part(1).is_empty() ||
-            part(2).is_empty() ||
-            path_problem(part(3)).is_some() ||
+        let (id, title, session, cover) = (part(0), part(1), part(2), part(3))
+        if !valid_key(id) ||
+            title.is_empty() ||
+            session.is_empty() ||
+            path_problem(cover).is_some() ||
             width == 0 ||
             height == 0 ||
             width > 2048 ||
             height > 2048 { return None }
-        for c in cards { if c.id == part(0) { return None } }
-        cards.push(
-            Card {
-                id: part(0).to_string(),
-                title: part(1).to_string(),
-                session: part(2).to_string(),
-                cover: part(3).to_string(),
-                width,
-                height,
-            },
-        )
+        for c in cards { if c.id == id { return None } }
+        cards.push(Card { id, title, session, cover, width, height })
     }
     if cards.is_empty() { None } else { Some(cards) }
 }

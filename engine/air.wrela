@@ -364,15 +364,16 @@ fn march(
             transmittance(trans, s, r, mu_s)
         }
         let scattered = md.rayleigh * phase_r + vec3(md.mie * phase_m)
+        let scattering = md.scattering()
         var source = lit * scattered
         if !isotropic {
-            source += multiple(m, s, r, mu_s) * md.scattering()
+            source += multiple(m, s, r, mu_s) * scattering
         }
         let step = exp(-md.extinction * dt)
         // Each sample's light integrated over its step, as the step thins it.
         let ext = max(md.extinction, vec3(1.0e-9))
         light += through * (source - source * step) / ext
-        as_one += through * (md.scattering() - md.scattering() * step) / ext
+        as_one += through * (scattering - scattering * step) / ext
         through *= step
     }
     if isotropic && ground > 0.0 && ground <= far + 1.0e-3 {

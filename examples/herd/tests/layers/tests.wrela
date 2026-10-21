@@ -2,10 +2,10 @@
 // to its end but the outputs git ignores (`build`, `results` and `.native` directories) and this
 // package (whose code names what it looks for), and reads each source.
 
+use hosts::steps::text_of
 use std::collections::{Box, Vec}
 use std::job::Step
 use std::string::String
-use std::tool::answer
 use std::tool::files
 use std::tool::files::Kind
 
@@ -46,21 +46,6 @@ fn files_under(root: take String) -> Vec<String> {
         }
     }
     out
-}
-
-/// The text at `path`.
-@job
-fn text_of(path: take String) -> String {
-    var r = files::read(path.as_str())
-    var got = r.poll()
-    while got.is_none() {
-        yield
-        got = r.poll()
-    }
-    let Some(rp) = take got else { panic("no answer") }
-    let Ok(bytes) = answer(take rp) else { panic(f"{path.as_str()} reads") }
-    let Some(text) = String::from_utf8(take bytes) else { panic(f"{path.as_str()} isn't UTF-8") }
-    text
 }
 
 /// A file's text without its comments (`//` to the line's end; wrela has no others).

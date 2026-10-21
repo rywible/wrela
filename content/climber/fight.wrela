@@ -1,6 +1,6 @@
 // The fight's simulation (#30): the climber against the wolf on any ground (`Terrain`: the arena's
-// is level, the Last Green's its own), stepped on the ticker's thread at 60 Hz (`engine::run`), deterministic, so a tick log replays to the same state
-// hash in both hosts.
+// is level, the Last Green's its own), stepped on the ticker's thread at 60 Hz (`engine::run`),
+// deterministic, so a tick log replays to the same state hash in both hosts.
 //
 // The climber is driven by a gamepad (a keyboard stands in): the left stick moves it relative to
 // the camera, the right stick turns the camera; East is a blink when tapped (gone, and there again
@@ -26,7 +26,6 @@ use engine::sim::{SimState, Tick}
 use body::{BODY_HIGH, BODY_LOW, BODY_RADIUS, GUARD_AT, POINT_AT}
 use moves::{Act, BLINK_GONE, Pose, REST, drift_rate, frames, locomotion, pose}
 use engine::terrain::{Cover, Terrain}
-use std::field::Blend
 use std::hash::StateHash
 use std::input::{Event, Key, PadAxis, PadButton}
 use std::math::{PI, TAU}
@@ -668,8 +667,8 @@ fn press(c: mut Climber, now: Controls, before: Controls) {
 
 /// The climber's tick: a buffered move started when it can be, the move's tick (its travel, and
 /// its turn toward the stick in its wind-up), or, if it `glides`, its glide (speed eased toward
-/// the stick's, turned toward it); its sword brought to the guard when the fight is `near`; stamina spent and
-/// regained.
+/// the stick's, turned toward it); its sword brought to the guard when the fight is `near`;
+/// stamina spent and regained.
 fn climber_step<G: Terrain>(
     ground: G,
     c: mut Climber,
@@ -782,7 +781,6 @@ fn wolf_step<G: Terrain>(ground: G, w: mut Wolf, c: Climber, dt: f32, tally: mut
     let dist = length(to)
     let dir = if dist > 1.0e-4 { to / dist } else { w.forward() }
     let facing = short_way(atan2(dir.x, dir.y) - w.walker.root.heading, TAU)
-    let g = ground
     w.t += 1
     if w.wait > 0 {
         w.wait -= 1
@@ -821,7 +819,7 @@ fn wolf_step<G: Terrain>(ground: G, w: mut Wolf, c: Climber, dt: f32, tally: mut
             let keep = w.walker.root.pos
             step(
                 mut w.walker,
-                g,
+                ground,
                 path,
                 WOLF_BODY,
                 walk,
@@ -848,7 +846,7 @@ fn wolf_step<G: Terrain>(ground: G, w: mut Wolf, c: Climber, dt: f32, tally: mut
             w.walker.root.heading += clamp(facing, -0.8 * dt, 0.8 * dt)
             step(
                 mut w.walker,
-                g,
+                ground,
                 Toward { from: w.pos(), dir, length: 0.0 },
                 WOLF_BODY,
                 PROWL,
@@ -868,7 +866,7 @@ fn wolf_step<G: Terrain>(ground: G, w: mut Wolf, c: Climber, dt: f32, tally: mut
         Mood::Lunge => {
             let path = Toward { from: w.pos(), dir: w.aim, length: 100.0 }
             w.walker.speed = if w.bit { w.walker.speed } else { BOUND.speed }
-            step(mut w.walker, g, path, WOLF_BODY, BOUND, go: !w.bit, dt: dt)
+            step(mut w.walker, ground, path, WOLF_BODY, BOUND, go: !w.bit, dt: dt)
             if w.t >= LUNGE {
                 w.mood = Mood::Recover
                 w.t = 0
@@ -877,7 +875,7 @@ fn wolf_step<G: Terrain>(ground: G, w: mut Wolf, c: Climber, dt: f32, tally: mut
         Mood::Recover => {
             step(
                 mut w.walker,
-                g,
+                ground,
                 Toward { from: w.pos(), dir, length: 0.0 },
                 WOLF_BODY,
                 PROWL,
@@ -896,12 +894,12 @@ fn wolf_step<G: Terrain>(ground: G, w: mut Wolf, c: Climber, dt: f32, tally: mut
             let push = 0.35 * (1.0 - f32(w.t) / 8.0)
             if w.t < 8 {
                 let p = w.walker.root.pos + vec3(w.pushed.x, 0.0, w.pushed.y) * (push * dt * 8.0)
-                w.walker.root.pos = vec3(p.x, g.height(p.x, p.z), p.z)
+                w.walker.root.pos = vec3(p.x, ground.height(p.x, p.z), p.z)
             }
             w.walker.speed = 0.0
             step(
                 mut w.walker,
-                g,
+                ground,
                 Toward { from: w.pos(), dir, length: 0.0 },
                 WOLF_BODY,
                 PROWL,
@@ -921,7 +919,7 @@ fn wolf_step<G: Terrain>(ground: G, w: mut Wolf, c: Climber, dt: f32, tally: mut
         Mood::Down => {
             step(
                 mut w.walker,
-                g,
+                ground,
                 Toward { from: w.pos(), dir, length: 0.0 },
                 WOLF_BODY,
                 PROWL,

@@ -184,11 +184,12 @@ fn per_band(table: [f32; 256], at: (u32, f32), hz: f32) -> f32 {
     let b = band_at(hz)
     let b0 = min(u32(b), BANDS - 2)
     let u = b - f32(b0)
-    let lo = table[at.0 * BANDS + b0] +
-        (table[at.0 * BANDS + b0 + 1] - table[at.0 * BANDS + b0]) * u
-    let k1 = at.0 + 1
-    let hi = table[k1 * BANDS + b0] + (table[k1 * BANDS + b0 + 1] - table[k1 * BANDS + b0]) * u
-    lo + (hi - lo) * at.1
+    let row = |k: u32| {
+        let i = k * BANDS + b0
+        table[i] + (table[i + 1] - table[i]) * u
+    }
+    let lo = row(at.0)
+    lo + (row(at.0 + 1) - lo) * at.1
 }
 
 /// The level table's number at a key, a velocity (its index among the model's) and a frequency.
@@ -226,11 +227,14 @@ fn fit_losses(m: Model, table: [f32; 256], k: u32, b3: Option<f32>) -> vec2 {
     let from = u32(band_at(fundamental(m, u32(m.keys[k]))))
     var weight = [0.0; 16]
     var rate = [0.0; 16]
+    // Each band's frequency squared (f in kHz).
+    var f2 = [0.0; 16]
     for b in from..BANDS {
         // The fit's own bounds are no measurement: 50 ms to a minute.
         let t = clamp(table[k * BANDS + b], 0.05, 60.0)
         rate[b] = 1.0 / t
         weight[b] = t
+        f2[b] = (band_hz(b) / 1000.0) * (band_hz(b) / 1000.0)
     }
     var fit = vec2(0.0)
     for _ in 0..4 {
@@ -238,10 +242,9 @@ fn fit_losses(m: Model, table: [f32; 256], k: u32, b3: Option<f32>) -> vec2 {
         var s = vec3(0.0)
         var y = vec2(0.0)
         for b in from..BANDS {
-            let f2 = (band_hz(b) / 1000.0) * (band_hz(b) / 1000.0)
             let q = weight[b] * weight[b]
-            s += q * vec3(1.0, f2, f2 * f2)
-            y += q * rate[b] * vec2(1.0, f2)
+            s += q * vec3(1.0, f2[b], f2[b] * f2[b])
+            y += q * rate[b] * vec2(1.0, f2[b])
         }
         if let Some(given) = b3 {
             fit = vec2((y.x - given * s.y) / s.x, given)
@@ -254,8 +257,7 @@ fn fit_losses(m: Model, table: [f32; 256], k: u32, b3: Option<f32>) -> vec2 {
         }
         fit.x = max(fit.x, 1e-3)
         for b in from..BANDS {
-            let f2 = (band_hz(b) / 1000.0) * (band_hz(b) / 1000.0)
-            let off = abs(log(rate[b] / (fit.x + fit.y * f2)))
+            let off = abs(log(rate[b] / (fit.x + fit.y * f2[b])))
             weight[b] = 1.0 / rate[b] / max(1.0, off / 0.7)
         }
     }
@@ -635,6 +637,8 @@ impl Piano {
         // A damped string's time: A0's to the top damper's, evenly in log time.
         let u = clamp(f32(key - LOWEST) / f32(m.undamped_from - LOWEST), 0.0, 1.0)
         let damped = m.damped_low * pow(m.damped_high / m.damped_low, u)
+        // A damper stops the higher partials faster.
+        let damped_rate = |f: f32| FALL_60_DB / damped * (1.0 + f / 2000.0)
         var count = 0
         for n in 1..PARTIALS + 1 {
             let f = partial(n)
@@ -690,8 +694,6 @@ impl Piano {
                 (1.0 + m.scatter_decay * (2.0 * scatter(key, n, 4) - 1.0))
             let after = decay(l, m.after, l.after, at, f) *
                 (1.0 + m.scatter_decay * (2.0 * scatter(key, n, 5) - 1.0))
-            // A damper stops the higher partials faster.
-            let damped_rate = FALL_60_DB / damped * (1.0 + f / 2000.0)
             lanes.push(
                 Lane {
                     hz: f,
@@ -700,7 +702,7 @@ impl Piano {
                     share: comb(n) * sqrt(1.0 - r),
                     after: 0.0,
                     phantom: 0.0,
-                    damper: max(damped_rate - FALL_60_DB / prompt, 0.0),
+                    damper: max(damped_rate(f) - FALL_60_DB / prompt, 0.0),
                 },
             )
             lanes.push(
@@ -711,7 +713,7 @@ impl Piano {
                     share: comb(n) * sqrt(r),
                     after: 1.0,
                     phantom: 0.0,
-                    damper: max(damped_rate - FALL_60_DB / max(after, prompt), 0.0),
+                    damper: max(damped_rate(f) - FALL_60_DB / max(after, prompt), 0.0),
                 },
             )
         }
@@ -734,10 +736,7 @@ impl Piano {
                         share: comb(n),
                         after: 0.0,
                         phantom: 1.0,
-                        damper: max(
-                            FALL_60_DB / damped * (1.0 + f / 2000.0) - FALL_60_DB / t,
-                            0.0,
-                        ),
+                        damper: max(damped_rate(f) - FALL_60_DB / t, 0.0),
                     },
                 )
             }
@@ -771,20 +770,20 @@ impl Piano {
                 let w = TAU * l.hz / RATE
                 let phase = TAU * scatter(key, i, 6)
                 let apart = m.scatter_pan * (2.0 * scatter(key, i, 7) - 1.0)
-                cw = set(cw, lane, cos(w))
-                sw = set(sw, lane, sin(w))
-                rate = set(rate, lane, decay_rate(l.t60))
-                share = set(share, lane, l.share)
-                phase_c = set(phase_c, lane, cos(phase))
-                phase_s = set(phase_s, lane, sin(phase))
-                after = set(after, lane, l.after)
-                phantom = set(phantom, lane, l.phantom)
-                height = set(height, lane, band_at(l.hz) / f32(BANDS - 1))
-                damper = set(damper, lane, l.damper / RATE)
-                pan_left = set(pan_left, lane, 1.0 - pan + apart)
-                pan_right = set(pan_right, lane, 1.0 + pan - apart)
+                cw[lane] = cos(w)
+                sw[lane] = sin(w)
+                rate[lane] = decay_rate(l.t60)
+                share[lane] = l.share
+                phase_c[lane] = cos(phase)
+                phase_s[lane] = sin(phase)
+                after[lane] = l.after
+                phantom[lane] = l.phantom
+                height[lane] = band_at(l.hz) / f32(BANDS - 1)
+                damper[lane] = l.damper / RATE
+                pan_left[lane] = 1.0 - pan + apart
+                pan_right[lane] = 1.0 + pan - apart
                 for v in 0..MODEL_VELOCITIES {
-                    by_velocity[v] = set(by_velocity[v], lane, l.levels[v])
+                    by_velocity[v][lane] = l.levels[v]
                 }
             }
             self.re.push(vec4(0.0))
@@ -832,10 +831,10 @@ impl Piano {
                 let t = 0.5 * decay(l, m.after, l.after, at, f)
                 let r = exp(-decay_rate(t))
                 let w = TAU * f / RATE
-                self.sym_cw[g] = set(self.sym_cw[g], lane, 2.0 * cos(w))
-                self.sym_rate[g] = set(self.sym_rate[g], lane, decay_rate(t))
+                self.sym_cw[g][lane] = 2.0 * cos(w)
+                self.sym_rate[g][lane] = decay_rate(t)
                 // A two-pole resonator's gain at its frequency is about g / ((1 - r) 2 sin w).
-                self.sym_g[g] = set(self.sym_g[g], lane, m.sympathy * (1.0 - r) * 2.0 * sin(w))
+                self.sym_g[g][lane] = m.sympathy * (1.0 - r) * 2.0 * sin(w)
             }
         }
         self.set_sympathy(0.0)
@@ -1126,21 +1125,6 @@ fn depth_at(points: Vec<Point>, at: u32) -> f32 {
     depth
 }
 
-/// `v` with lane `lane` set to `x`.
-fn set(v: vec4, lane: u32, x: f32) -> vec4 {
-    var out = v
-    if lane == 0 {
-        out.x = x
-    } else if lane == 1 {
-        out.y = x
-    } else if lane == 2 {
-        out.z = x
-    } else {
-        out.w = x
-    }
-    out
-}
-
 /// The piano's voice: one quantum of `piano`, into the channels.
 @audio
 pub fn play_piano(p: mut Piano, left: mut [f32], right: mut [f32]) {
@@ -1183,16 +1167,14 @@ pub fn play_piano(p: mut Piano, left: mut [f32], right: mut [f32]) {
 
 /// One note, `key` struck at `velocity` and held, no pedal.
 fn one_note(key: u32, velocity: f32) -> Performance {
-    var notes: Vec<perform::Played> = Vec::new()
-    notes.push(perform::Played { key, voice: 0, onset: 0.0, release: 10.0, velocity, note: 0 })
-    var none: Vec<PedalPoint> = Vec::new()
-    none.push(PedalPoint { at: 0.0, depth: 0.0 })
-    var beats: Vec<f64> = Vec::new()
-    beats.push(0.0)
-    Performance { notes, sustain: none.clone(), soft: none, beats, length: 10.0 }
+    let notes = Vec::from(
+        [perform::Played { key, voice: 0, onset: 0.0, release: 10.0, velocity, note: 0 }],
+    )
+    let none = Vec::from([PedalPoint { at: 0.0, depth: 0.0 }])
+    Performance { notes, sustain: none.clone(), soft: none, beats: Vec::from([0.0]), length: 10.0 }
 }
 
-/// Quanta `from` to `to` of `p`'s voice: the energy of the channels' mean, and of its sample
+/// The next `quanta` quanta of `p`'s voice: the energy of the channels' mean, and of its sample
 /// to sample differences (the highs).
 fn heard(p: mut Piano, quanta: u32) -> vec2 {
     var l = [0.0; 128]

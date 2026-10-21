@@ -16,7 +16,7 @@
 // at the banks and where it falls. No vertex moves: the ripples are the shading's. Three looks
 // (`WaterLook`): clear, peat-dark, and painted.
 
-use grow::{Ground, Heap, Stream}
+use grow::{Grid, Ground, NONE as NO_CELL, Stream}
 use light::{CLAY, LUMA, Light, sun_reflection}
 use lit::{Lighting, sun_and_gloss, through_air}
 use noise::noise2
@@ -607,7 +607,7 @@ const HOLLOW_DEEP: f32 = 0.3
 const HOLLOW_WIDE: f32 = 2.0
 
 /// A fall's way down from `from`: the ground round it on a grid (`FALL_REACH` each way), its
-/// hollows filled by flooding from the grid's border (as `grow::drainage`), so the water spills
+/// hollows filled by flooding from the grid's border (`landform::drainage`), so the water spills
 /// out of a hollow on the slope by its lowest rim; then down it steepest first, smoothed, to its
 /// foot: where the ground under its last 20 steps fell less than a metre. And each hollow it
 /// passes through that fills deep enough (`HOLLOW_DEEP`) and wide enough (`HOLLOW_WIDE`) to be a
@@ -615,40 +615,15 @@ const HOLLOW_WIDE: f32 = 2.0
 /// it fills) and its level.
 fn fall_path<G: Ground>(g: G, from: vec2) -> (Vec<vec2>, Vec<vec4>) {
     let n = u32(2.0 * FALL_REACH / FALL_CELL)
-    let lo = from - vec2(FALL_REACH)
-    let at = |c: u32| lo + (vec2(f32(c % n), f32(c / n)) + vec2(0.5)) * FALL_CELL
+    let grid = Grid { lo: from - vec2(FALL_REACH), nx: n, nz: n, cell: FALL_CELL }
+    let at = |c: u32| grid.centre(c)
     var heights: Vec<f32> = Vec::with_capacity(n * n)
     for c in 0..(n * n) {
         let p = at(c)
         heights.push(g.height(p.x, p.y))
     }
-    var filled: Vec<f32> = Vec::filled(n * n, 0.0)
-    var done: Vec<bool> = Vec::filled(n * n, value: false)
-    var heap = Heap { items: Vec::new() }
-    for c in 0..(n * n) {
-        let (i, j) = (c % n, c / n)
-        if i == 0 || j == 0 || i == n - 1 || j == n - 1 {
-            filled[c] = heights[c]
-            done[c] = true
-            heap.push(filled[c], c)
-        }
-    }
-    while !heap.items.is_empty() {
-        let top = heap.pop()
-        let h = bitcast_f32(top.x)
-        let c = top.y
-        for k in 0..8 {
-            let q = vec2i(i32(c % n), i32(c / n)) + EIGHT[k]
-            if q.x >= 0 && q.y >= 0 && q.x < i32(n) && q.y < i32(n) {
-                let d = u32(q.y) * n + u32(q.x)
-                if !done[d] {
-                    done[d] = true
-                    filled[d] = max(heights[d], h + 1.0e-3)
-                    heap.push(filled[d], d)
-                }
-            }
-        }
-    }
+    let flood = landform::drainage(grid, heights, landform::border(grid))
+    borrow filled = flood.filled
     var out: Vec<vec2> = Vec::from([from])
     var drops: Vec<f32> = Vec::from([g.height(from.x, from.y)])
     var c = u32(FALL_REACH / FALL_CELL) * (n + 1)
@@ -656,23 +631,11 @@ fn fall_path<G: Ground>(g: G, from: vec2) -> (Vec<vec2>, Vec<vec4>) {
     // The hollow the way is in (its deepest cell so far), if any.
     var deepest = n * n
     for _ in 0..(4 * n) {
-        var next = c
-        var best = 0.0
-        for k in 0..8 {
-            let q = vec2i(i32(c % n), i32(c / n)) + EIGHT[k]
-            if q.x >= 0 && q.y >= 0 && q.x < i32(n) && q.y < i32(n) {
-                let d = u32(q.y) * n + u32(q.x)
-                let fall = (filled[c] - filled[d]) / length(vec2(EIGHT[k]))
-                if fall > best {
-                    best = fall
-                    next = d
-                }
-            }
-        }
-        if next == c {
+        // Down the steepest way over the filled ground, to where none is lower.
+        if flood.down[c] == NO_CELL {
             break
         }
-        c = next
+        c = flood.down[c]
         out.push(at(c))
         // In a hollow: its deepest cell; out of it, the hollow as a pool if it's one.
         if filled[c] - heights[c] > 0.02 {
@@ -726,18 +689,6 @@ fn hollow_radius(filled: [f32], heights: [f32], n: u32, c: u32) -> f32 {
     }
     best * FALL_CELL
 }
-
-/// A cell's eight neighbours.
-const EIGHT = [
-    vec2i(-1, -1),
-    vec2i(0, -1),
-    vec2i(1, -1),
-    vec2i(-1, 0),
-    vec2i(1, 0),
-    vec2i(-1, 1),
-    vec2i(0, 1),
-    vec2i(1, 1),
-]
 
 /// The water laid: its courses and pools (the sim's, `surface`) and its mesh (the drawing's).
 pub struct Laid: Clone {
@@ -1079,7 +1030,7 @@ pub fn reflection_march(cam: Camera, below: Texture<Rgba16Float>, world: vec3, r
         seen = if ends { 0.0 } else { below.load(x: u32(px.x), y: u32(px.y)).a }
         if ends || seen < d {
             let s1 = below.load(x: u32(p1.x), y: u32(p1.y)).a
-            if s1 < d1 && d1 - s1 < l1 * 1.5 + 0.2 {
+            if s1 < d1 && d1 - s1 < thickness(l1) {
                 px = p1
                 seen = s1
                 d = d1
@@ -1089,7 +1040,7 @@ pub fn reflection_march(cam: Camera, below: Texture<Rgba16Float>, world: vec3, r
             }
             if !end2 {
                 let s2 = below.load(x: u32(p2.x), y: u32(p2.y)).a
-                if s2 < d2 && d2 - s2 < l2 * 1.5 + 0.2 {
+                if s2 < d2 && d2 - s2 < thickness(l2) {
                     px = p2
                     seen = s2
                     d = d2
@@ -1101,7 +1052,7 @@ pub fn reflection_march(cam: Camera, below: Texture<Rgba16Float>, world: vec3, r
             if ends {
                 return Met { hit: false, px, seen, d, len }
             }
-            if d - seen < len * 1.5 + 0.2 {
+            if d - seen < thickness(len) {
                 hit = true
                 break
             }
@@ -1109,6 +1060,12 @@ pub fn reflection_march(cam: Camera, below: Texture<Rgba16Float>, world: vec3, r
         len *= 1.18
     }
     Met { hit, px, seen, d, len }
+}
+
+/// How far behind what's there a reflection's step of length `len` may go and still meet it (m):
+/// the ray's thickness.
+fn thickness(len: f32) -> f32 {
+    len * 1.5 + 0.2
 }
 
 /// Whether pixel `px` is off a target `screen` pixels in size.
@@ -1131,9 +1088,9 @@ fn reflection_at(
     // A hit close to the ray thickness limit is uncertain. Fade it before the next frame can
     // lose it; nearest-depth tests still prevent foreground leaks.
     let trust = smoothstep(0.0, 0.08 * cam.screen.y, edge) *
-        (1.0 - smoothstep(0.25, 1.0, (d - seen) / (len * 1.5 + 0.2)))
+        (1.0 - smoothstep(0.25, 1.0, (d - seen) / thickness(len)))
     let spread = 1.0 + rough * 4.0
-    let tolerance = min(len * 1.5 + 0.2, 0.05 + seen * 0.02)
+    let tolerance = min(thickness(len), 0.05 + seen * 0.02)
     let filtered = reflection_colour(below, px + vec2(spread, 0.0), seen, tolerance) +
         reflection_colour(below, px - vec2(spread, 0.0), seen, tolerance) +
         reflection_colour(below, px + vec2(0.0, spread), seen, tolerance) +
@@ -1322,6 +1279,7 @@ pub fn mist_over(
     var through = 1.0
     var lit = vec3(0.0)
     let keyed = cam.keyed()
+    let drift = vec3(0.0, -at.time * 0.7, at.time * 0.15)
     for i in 0..min(at.count, mists.len()) {
         let m = mists[i]
         let centre = m.xyz - cam.origin
@@ -1347,7 +1305,6 @@ pub fn mist_over(
             let r2 = dot(rel, rel)
             let fade = (1.0 - min(r2, 1.0)) * (1.0 - min(r2, 1.0))
             let low = 1.0 - 0.6 * smoothstep(-0.6, 0.8, rel.y)
-            let drift = vec3(0.0, -at.time * 0.7, at.time * 0.15)
             let n = noise::noise3((q + keyed) * 0.25 + drift * 0.6)
             d += fade * low * smoothstep(0.2, 0.75, n)
         }
@@ -1468,15 +1425,9 @@ impl Ground for Plain {
 fn a_held_course_never_rises_down_its_way() {
     let g = Plain { fall: 0.05, bump: 1.5 }
     let pts = Vec::from_fn(11, |i| vec4(f32(i) * 4.0, 0.0, 2.0, 0.3))
-    let none = Water {
-        meres: [vec4(0.0); 2],
-        springs: [vec2(0.0); 8],
-        spring_count: 0,
-        falls: [vec2(0.0); 2],
-    }
     for held in [true, false] {
         let pools: Vec<vec4> = Vec::new()
-        let m = lay(g, none, [Course { points: pts.clone(), falls: false, held }], pools)
+        let m = lay(g, Water {}, [Course { points: pts.clone(), falls: false, held }], pools)
         // Each section's middle point: the ribbon's sixth of its `ACROSS + 2` a section.
         var last = 1.0e9
         var rises = 0.0
@@ -1531,14 +1482,8 @@ fn a_lakes_sheet_keeps_to_its_basin() {
             holds[c] = i >= 2 && i <= 4 && j >= 2 && j <= 4
         }
         let sh = Sheet { lo: vec2(16.0, -40.0), nx: 10, nz: 10, cell: 8.0, level: 0.2, holds }
-        let none = Water {
-            meres: [vec4(0.0); 2],
-            springs: [vec2(0.0); 8],
-            spring_count: 0,
-            falls: [vec2(0.0); 2],
-        }
         let (courses, pools): (Vec<Course>, Vec<vec4>) = (Vec::new(), Vec::new())
-        let m = lay_with(g, none, courses, pools, [take sh])
+        let m = lay_with(g, Water {}, courses, pools, [take sh])
         var inside = 0
         for v in m.verts {
             assert(v.at.y == 0.2, "a sheet's point off its level")

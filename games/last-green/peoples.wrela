@@ -80,11 +80,10 @@ pub struct Peopled: Clone {
     pub settlements: Vec<Settlement>,
 }
 
-/// The lay of the land as the people see it, a cell of their grid each: its height, how well crops grow in its soil now
-/// and at its best, whether they can live or farm there, its walking cost (m on the level for a
-/// cell's side), and how good a place to live it is.
+/// The lay of the land as the people see it, a cell of their grid each: how well crops grow in its
+/// soil now and at its best, whether they can live or farm there, its walking cost (m on the level
+/// for a cell's side), and how good a place to live it is.
 struct Lay: Clone {
-    height: Vec<f32>,
     fertile: Vec<f32>,
     best: Vec<f32>,
     farm: Vec<bool>,
@@ -97,11 +96,7 @@ const STEP: i32 = 10
 
 /// A people of `culture` on `land` from year `from`, who leave in year `to`.
 pub fn settle(land: Land, culture: Culture, from: i32, to: i32) -> Peopled {
-    let g = Grid::over(
-        land.grid.lo,
-        land.grid.lo + vec2(f32(land.grid.nx), f32(land.grid.nz)) * land.grid.cell,
-        CELL,
-    )
+    let g = Grid::over(land.grid.lo, land.grid.hi(), CELL)
     var gr = ground_of(land, g)
     let nn = g.cells()
     var out = Peopled {
@@ -295,10 +290,13 @@ fn claim(
         }
     }
     for kind in [Use::Field, Use::Pasture, Use::Wood] {
-        let reach = if kind == Use::Field { culture.field_reach } else if kind == Use::Pasture {
-            culture.pasture_reach
+        // How far they walk for it, and how much of it a person needs.
+        let (reach, each) = if kind == Use::Field {
+            (culture.field_reach, culture.field)
+        } else if kind == Use::Pasture {
+            (culture.pasture_reach, culture.pasture)
         } else {
-            culture.reach
+            (culture.reach, culture.wood)
         }
         // Every settlement's bid for every free cell it could use, worth more the better its
         // soil (for a field), the nearer, and if it held it last decade; the best bids win, a
@@ -311,13 +309,7 @@ fn claim(
             if t.people <= 0.0 {
                 continue
             }
-            need[s] = t.people * (if kind == Use::Field {
-                culture.field
-            } else if kind == Use::Pasture {
-                culture.pasture
-            } else {
-                culture.wood
-            })
+            need[s] = t.people * each
             borrow cost = costs[s]
             for c in 0..nn {
                 if held[c] != NONE || cost[c] > reach {
@@ -457,7 +449,7 @@ fn ground_of(land: Land, g: Grid) -> Lay {
         let sun = 1.0 + 0.25 * south[c]
         site.push(if ok { near_soil[c] * watered * level * sun } else { 0.0 })
     }
-    Lay { height, fertile: fertile.clone(), best: fertile, farm, graze, cost, site }
+    Lay { fertile: fertile.clone(), best: fertile, farm, graze, cost, site }
 }
 
 /// How long a place the elves left before the plague stays what they made it (years): after

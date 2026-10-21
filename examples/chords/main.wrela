@@ -10,12 +10,11 @@
 //   bars 25-32  high: the top two octaves, from p to ff (where the reference warbles)
 //   bars 33-40  pedalled: broken chords over the keyboard, the pedal changed with the harmony
 
-use engine::perform::{Performance, deadpan}
+use engine::perform::{Performance, deadpan, describe as describe_take}
 use engine::piano::{Model, piano, play_piano}
 use engine::piano_grand::GRAND
 use engine::score::{Score, meter, score}
 use std::audio::play
-use std::io::print
 
 const SOFT = score("soft", meter(beats: 4, unit: 4)).voice(
     "chords",
@@ -102,31 +101,9 @@ pub fn seconds(game: Game) -> f32 {
     f32(played().length) + 4.0
 }
 
-/// The take as JSON lines, as examples/gymnopedie gives its: the piece, its voices, each note
-/// as played, the pedals, and when each beat fell.
+/// The take as JSON lines (engine::perform's `describe`), as examples/gymnopedie gives its.
 pub fn describe(game: Game) {
-    let p = played()
-    print(
-        f"{{\"title\":\"{CHORDS.title}\",\"take\":\"deadpan\",\"bars\":{CHORDS.bars},\"beats_per_bar\":{CHORDS.meter.beats},\"seconds\":{p.length}}}",
-    )
-    for i in 0..CHORDS.voices.len() {
-        print(f"{{\"voice\":{i},\"name\":\"{CHORDS.voices[i]}\"}}")
-    }
-    for n in p.notes {
-        let written = CHORDS.notes[n.note]
-        print(
-            f"{{\"key\":{n.key},\"voice\":{n.voice},\"onset\":{n.onset},\"release\":{n.release},\"velocity\":{n.velocity},\"bar\":{CHORDS.bar_of(written.start)}}}",
-        )
-    }
-    for s in p.sustain {
-        print(f"{{\"sustain\":{s.at},\"depth\":{s.depth}}}")
-    }
-    for s in p.soft {
-        print(f"{{\"soft\":{s.at},\"depth\":{s.depth}}}")
-    }
-    for b in p.beats {
-        print(f"{{\"beat\":{b}}}")
-    }
+    describe_take(CHORDS, "deadpan", played())
 }
 
 @test

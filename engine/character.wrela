@@ -123,7 +123,7 @@ pub fn materials<C, F: Parts<C>, L: Look<C>>(
     out
 }
 
-/// A character realized: its mesh and each vertex's colour.
+/// A character realized: its mesh and each vertex's material (`materials`).
 pub struct Realized {
     pub mesh: Mesh,
     pub materials: GpuBuffer<Material>,

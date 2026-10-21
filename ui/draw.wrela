@@ -28,6 +28,13 @@ impl Rect {
         Rect { x, y, w, h }
     }
 
+    /// The rectangle with corners `a` and `b`, either way round.
+    pub fn spanning(a: vec2, b: vec2) -> Rect {
+        let lo = min(a, b)
+        let hi = max(a, b)
+        Rect::new(lo.x, lo.y, hi.x - lo.x, hi.y - lo.y)
+    }
+
     pub fn contains(self, p: vec2) -> bool {
         p.x >= self.x && p.y >= self.y && p.x < self.x + self.w && p.y < self.y + self.h
     }
@@ -49,6 +56,19 @@ impl Rect {
         let x1 = min(self.x + self.w, o.x + o.w)
         let y1 = min(self.y + self.h, o.y + o.h)
         Rect { x: x0, y: y0, w: max(x1 - x0, 0.0), h: max(y1 - y0, 0.0) }
+    }
+
+    /// Whether it and `o` overlap; edges that only touch count.
+    pub fn overlaps(self, o: Rect) -> bool {
+        self.x <= o.right() && self.right() >= o.x && self.y <= o.bottom() && self.bottom() >= o.y
+    }
+
+    /// Whether `inner` lies wholly in it, edges included.
+    pub fn encloses(self, inner: Rect) -> bool {
+        inner.x >= self.x &&
+            inner.y >= self.y &&
+            inner.right() <= self.right() &&
+            inner.bottom() <= self.bottom()
     }
 
     pub fn center(self) -> vec2 {
@@ -154,23 +174,28 @@ impl DrawList {
         }
     }
 
+    /// Adds a quad of `kind` over `rect` (x, y, width, height), clipped to the clipping
+    /// rectangle now.
+    fn push(
+        mut self,
+        rect: vec4,
+        uv: vec4,
+        color: Unorm8x4,
+        kind: u32,
+        scale: f32 = 0.0,
+        radius: f32 = 0.0,
+        third: vec2 = vec2(0.0),
+    ) {
+        self.quads.push(Quad { rect, uv, color, clip: self.clip, scale, radius, kind, third })
+    }
+
     /// A rectangle of `color`, its corners rounded by `radius` pixels.
     pub fn rect(mut self, r: Rect, color: vec4, radius: f32 = 0.0) {
         if r.w <= 0.0 || r.h <= 0.0 || color.w <= 0.0 {
             return
         }
-        self.quads.push(
-            Quad {
-                rect: vec4(r.x, r.y, r.w, r.h),
-                uv: vec4(0.0),
-                color: Unorm8x4::encode(color),
-                clip: self.clip,
-                scale: 0.0,
-                radius: min(radius, 0.5 * min(r.w, r.h)),
-                kind: BOX,
-                third: vec2(0.0),
-            },
-        )
+        let radius = min(radius, 0.5 * min(r.w, r.h))
+        self.push(vec4(r.x, r.y, r.w, r.h), vec4(0.0), Unorm8x4::encode(color), BOX, radius: radius)
     }
 
     /// The rounded outline of `r`, `width` pixels wide, inside it.
@@ -178,18 +203,9 @@ impl DrawList {
         if r.w <= 0.0 || r.h <= 0.0 || color.w <= 0.0 || width <= 0.0 {
             return
         }
-        self.quads.push(
-            Quad {
-                rect: vec4(r.x, r.y, r.w, r.h),
-                uv: vec4(width, 0.0, width, 0.0),
-                color: Unorm8x4::encode(color),
-                clip: self.clip,
-                scale: 0.0,
-                radius: min(radius, 0.5 * min(r.w, r.h)),
-                kind: BOX,
-                third: vec2(0.0),
-            },
-        )
+        let radius = min(radius, 0.5 * min(r.w, r.h))
+        let uv = vec4(width, 0.0, width, 0.0)
+        self.push(vec4(r.x, r.y, r.w, r.h), uv, Unorm8x4::encode(color), BOX, radius: radius)
     }
 
     /// The ellipse that fills `r`; with `width` above 0, only its outline, that wide inside it.
@@ -207,18 +223,8 @@ impl DrawList {
         if r.w <= 0.0 || r.h <= 0.0 || color.w <= 0.0 {
             return
         }
-        self.quads.push(
-            Quad {
-                rect: vec4(r.x, r.y, r.w, r.h),
-                uv: vec4(width, 0.0, width, 0.0),
-                color: Unorm8x4::encode(color),
-                clip: self.clip,
-                scale: 0.0,
-                radius: 0.0,
-                kind,
-                third: vec2(0.0),
-            },
-        )
+        let uv = vec4(width, 0.0, width, 0.0)
+        self.push(vec4(r.x, r.y, r.w, r.h), uv, Unorm8x4::encode(color), kind)
     }
 
     /// A line from `a` to `b`, `width` pixels wide, with round ends.
@@ -230,18 +236,7 @@ impl DrawList {
         let h = 0.5 * width
         let lo = min(a, b) - vec2(h + 1.0)
         let hi = max(a, b) + vec2(h + 1.0)
-        self.quads.push(
-            Quad {
-                rect: vec4(lo, hi - lo),
-                uv: vec4(a, b),
-                color: Unorm8x4::encode(color),
-                clip: self.clip,
-                scale: 0.0,
-                radius: h,
-                kind: LINE,
-                third: vec2(0.0),
-            },
-        )
+        self.push(vec4(lo, hi - lo), vec4(a, b), Unorm8x4::encode(color), LINE, radius: h)
     }
 
     /// The triangle with corners `a`, `b` and `c`; with `width` above 0, only its outline, that
@@ -253,18 +248,8 @@ impl DrawList {
         // Its quad holds the corners, and a pixel more for the edge's smoothing.
         let lo = min(min(a, b), c) - vec2(1.0)
         let hi = max(max(a, b), c) + vec2(1.0)
-        self.quads.push(
-            Quad {
-                rect: vec4(lo, hi - lo),
-                uv: vec4(a, b),
-                color: Unorm8x4::encode(color),
-                clip: self.clip,
-                scale: 0.0,
-                radius: width,
-                kind: TRIANGLE,
-                third: c,
-            },
-        )
+        let packed = Unorm8x4::encode(color)
+        self.push(vec4(lo, hi - lo), vec4(a, b), packed, TRIANGLE, radius: width, third: c)
     }
 
     /// The outline of `r`, `width` pixels wide, inside it.
@@ -314,27 +299,21 @@ impl DrawList {
             }
             if g.color {
                 // A colour glyph's texels are its image, a texel round the ink.
-                self.quads.push(
-                    Quad {
-                        rect: vec4(
-                            pen + g.left * k,
-                            baseline - g.top * k,
-                            f32(g.width) * k,
-                            f32(g.height) * k,
-                        ),
-                        uv: vec4(
-                            f32(g.atlas_x) / aw,
-                            f32(g.atlas_y) / ah,
-                            f32(g.atlas_x + g.width) / aw,
-                            f32(g.atlas_y + g.height) / ah,
-                        ),
-                        color: packed,
-                        clip: self.clip,
-                        scale: 0.0,
-                        radius: 0.0,
-                        kind: IMAGE,
-                        third: vec2(0.0),
-                    },
+                self.push(
+                    vec4(
+                        pen + g.left * k,
+                        baseline - g.top * k,
+                        f32(g.width) * k,
+                        f32(g.height) * k,
+                    ),
+                    vec4(
+                        f32(g.atlas_x) / aw,
+                        f32(g.atlas_y) / ah,
+                        f32(g.atlas_x + g.width) / aw,
+                        f32(g.atlas_y + g.height) / ah,
+                    ),
+                    packed,
+                    IMAGE,
                 )
             } else if g.width > 0 {
                 // The field reaches `pad` texels past the ink; only half a pixel of it is drawn,
@@ -348,17 +327,13 @@ impl DrawList {
                 let fh = f32(g.height) - 2.0 * inset
                 let u0 = (f32(g.atlas_x) + inset) / aw
                 let v0 = (f32(g.atlas_y) + inset) / ah
-                self.quads.push(
-                    Quad {
-                        rect: vec4(x, y, fw * k, fh * k),
-                        uv: vec4(u0, v0, u0 + fw / aw, v0 + fh / ah),
-                        color: packed,
-                        clip: self.clip,
-                        scale,
-                        radius: font.weight * size,
-                        kind: BOX,
-                        third: vec2(0.0),
-                    },
+                self.push(
+                    vec4(x, y, fw * k, fh * k),
+                    vec4(u0, v0, u0 + fw / aw, v0 + fh / ah),
+                    packed,
+                    BOX,
+                    scale: scale,
+                    radius: font.weight * size,
                 )
             }
             true
@@ -557,8 +532,8 @@ fn triangle_distance(p: vec2, a: vec2, b: vec2, c: vec2) -> f32 {
     if s0 >= 0.0 && s1 >= 0.0 && s2 >= 0.0 { -d } else { d }
 }
 
-/// The distance from `p` to the line from `a` to `b`.
-fn line_distance(p: vec2, a: vec2, b: vec2) -> f32 {
+/// The distance from `p` to the line segment from `a` to `b`.
+pub fn line_distance(p: vec2, a: vec2, b: vec2) -> f32 {
     let ab = b - a
     let along = dot(ab, ab)
     let t = if along > 0.0 { clamp(dot(p - a, ab) / along, 0.0, 1.0) } else { 0.0 }

@@ -315,6 +315,12 @@ fn hued(base: vec3, tint: vec4, k: f32) -> vec3 {
     mix(base, tint.xyz, tint.w * k)
 }
 
+// The studio's soft room, lighter overhead and faintly lit low down, so metal always has
+// something to show.
+fn room(d: vec3) -> vec3 {
+    vec3(0.095) * smoothstep(-0.25, 0.9, d.y) + vec3(0.04) * smoothstep(0.1, -0.6, d.y)
+}
+
 // The studio as polished things see it: a broad key overhead, two tall strips
 // behind, a low fill, a band behind, and a soft room so metal always has something to show.
 // Across one pixel a strut's reflection sweeps about 0.4 radians of it, so no softbox is
@@ -327,25 +333,23 @@ pub fn studio(d: vec3, tint: vec4) -> vec3 {
     let right = panel(d, normalize(vec3(0.9, 0.18, -0.4)), vec2(0.14, 0.95), 0.3)
     let fill = panel(d, normalize(vec3(0.6, -0.05, 0.8)), vec2(0.6, 0.22), 0.3)
     let back = panel(d, normalize(vec3(0.0, 0.25, -1.0)), vec2(0.9, 0.12), 0.25)
-    let room = vec3(0.095) * smoothstep(-0.25, 0.9, d.y) + vec3(0.04) * smoothstep(0.1, -0.6, d.y)
     hued(vec3(1.0, 0.99, 0.98), tint, 0.4) * key * 1.8 +
         hued(vec3(0.9, 0.94, 1.0), tint, 0.85) * (left * 1.3 + right * 1.1) +
         hued(vec3(0.95, 0.95, 1.0), tint, 0.5) * fill * 0.45 +
         hued(vec3(0.95, 0.96, 1.0), tint, 0.85) * back * 0.6 +
-        room * hued(vec3(1.0), tint, 0.85)
+        room(d) * hued(vec3(1.0), tint, 0.85)
 }
 
 // The studio blurred, as a strut too thin to resolve its softboxes sees it: each softbox a
 // broad lobe toward it.
 fn blurred(d: vec3, tint: vec4) -> vec3 {
     let lobe = |axis: vec3, k: f32| -> f32 { pow(saturate(dot(d, normalize(axis))), k) }
-    let room = vec3(0.095) * smoothstep(-0.25, 0.9, d.y) + vec3(0.04) * smoothstep(0.1, -0.6, d.y)
     hued(vec3(1.0, 0.99, 0.98), tint, 0.4) * lobe(vec3(-0.35, 0.9, 0.35), 3.0) * 1.0 +
         hued(vec3(0.9, 0.94, 1.0), tint, 0.85) *
             (lobe(vec3(-0.92, 0.12, -0.38), 4.0) * 0.45 + lobe(vec3(0.9, 0.18, -0.4), 4.0) * 0.4) +
         hued(vec3(0.95, 0.95, 1.0), tint, 0.5) * lobe(vec3(0.6, -0.05, 0.8), 2.0) * 0.25 +
         hued(vec3(0.95, 0.96, 1.0), tint, 0.85) * lobe(vec3(0.0, 0.25, -1.0), 3.0) * 0.25 +
-        room * hued(vec3(1.0), tint, 0.85)
+        room(d) * hued(vec3(1.0), tint, 0.85)
 }
 
 // The dark the camera sees straight on: no softboxes, a faint glow low down. A tint colours

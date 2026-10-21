@@ -750,10 +750,16 @@ pub fn letter(codepoint: u32) -> Letter {
     Letter { advance: width * 0.01 + 2.0 * SIDE, strokes: s, clip }
 }
 
-fn glyph_pieces(l: Letter, shift: vec2) -> Vec<Piece> {
+// A letter's pieces at `half` stroke, moved by `shift`: its clip planes stay in its own frame,
+// at the baseline and cap height.
+fn letter_pieces(l: Letter, half: f32, shift: vec2) -> Vec<Piece> {
     var out: Vec<Piece> = Vec::new()
-    for stroke in l.strokes { for p in pieces(stroke, HALF, l.clip, shift) { out.push(p) } }
+    for stroke in l.strokes { for p in pieces(stroke, half, l.clip, shift) { out.push(p) } }
     out
+}
+
+fn glyph_pieces(l: Letter, shift: vec2) -> Vec<Piece> {
+    letter_pieces(l, HALF, shift)
 }
 
 // ---- kerning ---------------------------------------------------------------------------------
@@ -846,20 +852,20 @@ fn mark_letters() -> Vec<Letter> {
 /// The mark's pieces in ems, centred on the origin horizontally, baseline at y = 0.
 pub fn mark() -> Vec<Piece> {
     let letters = mark_letters()
-    var width = -MARK_GAP
-    for l in letters { width += l.advance + MARK_GAP }
     var out: Vec<Piece> = Vec::new()
-    var pen = -width * 0.5
+    var pen = -row_width(letters) * 0.5
     for l in letters {
-        for stroke in l.strokes {
-            for p in pieces(stroke, MARK_HALF, l.clip, vec2(pen, 0.0)) {
-                // The clip planes stay in the letter's own frame: baseline and cap height.
-                out.push(p)
-            }
-        }
+        for p in letter_pieces(l, MARK_HALF, vec2(pen, 0.0)) { out.push(p) }
         pen += l.advance + MARK_GAP
     }
     out
+}
+
+// The width of `letters` set in a row, `MARK_GAP` apart.
+fn row_width(letters: [Letter]) -> f32 {
+    var width = -MARK_GAP
+    for l in letters { width += l.advance + MARK_GAP }
+    width
 }
 
 /// The mark's runs for the GPU: each run's ends, its cuts, the run it turns into, and its
@@ -908,9 +914,7 @@ pub fn mark_distance(p: vec2, s: MarkRun) -> f32 {
 }
 
 pub fn mark_width() -> f32 {
-    var width = -MARK_GAP
-    for l in mark_letters() { width += l.advance + MARK_GAP }
-    width
+    row_width(mark_letters())
 }
 
 /// The font, baked from the drawings when the program is built: no font file, and no outline

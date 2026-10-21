@@ -1,5 +1,5 @@
 // The linear algebra the fits share: a banded symmetric solve (Cholesky's), least squares by
-// the normal equations, uniform Catmull–Rom weights, and a Fourier series' terms.
+// the normal equations, Catmull–Rom weights, and a Fourier series' terms.
 
 use std::math
 use std::collections::Vec
@@ -165,8 +165,12 @@ pub fn catmull_rom(f: f64) -> [f64; 4] {
 pub fn catmull_rom_weights(t: f64, controls: u32) -> Vec<f64> {
     let x = t * f64(controls - 1)
     let m = min(u32(floor(x)), controls - 2)
-    let f = x - f64(m)
-    let w = catmull_rom(f)
+    spread(catmull_rom(x - f64(m)), m, controls)
+}
+
+/// Catmull–Rom weights `w` of the four control values from `m − 1` to `m + 2`, as weights of
+/// each of `controls`: one past the first or the last is extrapolated (2 p₀ − p₁).
+pub fn spread(w: [f64; 4], m: u32, controls: u32) -> Vec<f64> {
     var out: Vec<f64> = Vec::filled(controls, 0.0)
     let last = controls - 1
     for d in 0..4 {

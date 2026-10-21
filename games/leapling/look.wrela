@@ -2,7 +2,7 @@
 // sky with its sun, three ridges behind the course at their own depths, the course's cells, the
 // things in it, the hero, sparks, and the type over all. The hero's antenna and the gate light
 // what is near them.
-use std::gpu::{FragCoord}
+use std::gpu::FragCoord
 
 // What the shader is told each frame. Counts are floats, as the GPU reads them.
 pub struct View: Copy + GpuData {
@@ -484,7 +484,7 @@ fn hero_over(col: vec3, p: vec2, view: View, lit: vec3, aa: f32) -> vec3 {
             let a = abs(abs(eye.x) - abs(eye.y)) - 0.012
             if abs(eye.x) < 0.06 && abs(eye.y) < 0.06 && a < 0.0 { out = vec3(0.15, 0.08, 0.15) }
         } else {
-            let blink = if fract(view.time * 0.23 + at.x * 0.0) > 0.97 { 0.15 } else { 1.0 }
+            let blink = if fract(view.time * 0.23) > 0.97 { 0.15 } else { 1.0 }
             let d = ellipse(eye, vec2(0.06, 0.1 * blink))
             out = over(out, vec3(0.08, 0.05, 0.12), saturate(-d / aa))
             let glint = length(eye - vec2(0.02, 0.04)) - 0.022

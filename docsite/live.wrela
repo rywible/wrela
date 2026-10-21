@@ -10,6 +10,7 @@
 // `smooth_union`, `intersect`, `smooth_intersect`, `smooth_subtract`, `translate`, `scale`). A
 // block it can't read is shown as code alone.
 use field::Vertex
+use highlight::is_word
 use std::field::{Bound, Surface, cuboid, ellipsoid, oval, round_cone, smax, smin, sphere}
 use std::gpu::{Over, Rgba8, Sampler, Texture}
 
@@ -893,10 +894,6 @@ fn tokens(t: str) -> Vec<Token> {
 
 fn is_digit(b: u8) -> bool {
     b >= 48 && b <= 57
-}
-
-pub fn is_word(b: u8) -> bool {
-    is_digit(b) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || b == 95
 }
 
 /// `code` with the number at bytes `start` to `end` set to `value`, written with at least as many

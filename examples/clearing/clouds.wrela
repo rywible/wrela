@@ -2,7 +2,7 @@
 // forest, placed for the shot, and fair-weather clouds between them (spike 15's cloudscape),
 // drifting with the wind (`engine::sky`).
 
-use engine::noise::{pick, rand}
+use engine::noise::pick
 use engine::sky::{Cumulus, Gap}
 
 /// How much of the sky beyond the cloudscape's cumulus fair-weather clouds cover (`fair` of

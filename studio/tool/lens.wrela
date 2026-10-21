@@ -7,25 +7,26 @@
 // edit`'s code) and answers a reference with the mask it was given.
 
 use glue::{
-    Subject, floor_text, glue_text, has_geology, is_floor, manifest, package_name, probe_main,
-    probe_queries, probe_text, read_probe,
+    floor_text, glue_text, has_geology, is_floor, manifest, package_name, probe_main, probe_queries,
+    probe_text, read_probe,
 }
 use std::json::{Kind, TOP, parse}
 use json::quoted
 use std::collections::{Box, Vec}
-use std::job::Step
 use std::input::{Key, Script}
-use std::io::{IoError, print}
+use std::math::is_finite
 use std::string::String
-use std::tool::{MOST_BYTES, ToolError, answer}
+use std::tool::{MOST_BYTES, ToolError}
 use std::tool::blob
-use std::tool::blob::{Blob, Data}
+use std::tool::blob::Data
 use std::tool::drive
 use std::tool::drive::Scalar
 use std::tool::files
 use std::tool::image
 use std::tool::toolchain
 use std::tool::toolchain::Override
+use toolkit::wait::{done, said, wait}
+use toolkit::whole::{blob_of, chunked, data_bytes, joined, write_data}
 
 /// The lens's exported actions: each one's name and arguments (`f`: an `f32`, `u`: a `u32`).
 /// studio/glue exports each, and the headless runner calls them by this table.
@@ -106,15 +107,7 @@ pub fn failed(why: str) -> String {
     String::from(why)
 }
 
-/// A service's answer, its error in the host's words.
-pub fn tool<T>(r: take Result<T, ToolError>) -> Result<T, String> {
-    match take r {
-        Ok(x) => Ok(x),
-        Err(e) => Err(String::from(e.message())),
-    }
-}
-
-/// [`tool`], its error after `what`.
+/// A service's answer, its error in the host's words after `what`.
 pub fn tool_saying<T>(r: take Result<T, ToolError>, what: str) -> Result<T, String> {
     match take r {
         Ok(x) => Ok(x),
@@ -122,49 +115,28 @@ pub fn tool_saying<T>(r: take Result<T, ToolError>, what: str) -> Result<T, Stri
     }
 }
 
-/// A request's answer read as text.
-pub fn text_of(polled: take Result<Vec<u8>, IoError>) -> Result<String, String> {
-    let bytes = tool(answer(take polled))?
-    match String::from_utf8(take bytes) {
-        Some(s) => Ok(s),
-        None => Err(failed("a file isn't UTF-8")),
-    }
-}
-
 /// Reads the text file at `path`: `None` if it isn't there.
 @job
 pub fn read_text(path: take String) -> Result<Option<String>, String> {
-    var s = files::stat(path.as_str())
-    var stated = s.poll()
-    while stated.is_none() {
-        yield
-        stated = s.poll()
-    }
-    let Some(st) = take stated else { return Err(failed("no answer")) }
-    if files::read_entry(take st).is_err() {
+    var s = wait(files::stat(path.as_str()))
+    while !s.ready() { yield }
+    if files::read_entry(s.polled()).is_err() {
         return Ok(None)
     }
-    var r = files::read(path.as_str())
-    var got = r.poll()
-    while got.is_none() {
-        yield
-        got = r.poll()
+    var r = wait(files::read(path.as_str()))
+    while !r.ready() { yield }
+    match String::from_utf8(r.bytes()?) {
+        Some(s) => Ok(Some(s)),
+        None => Err(failed("a file isn't UTF-8")),
     }
-    let Some(polled) = take got else { return Err(failed("no answer")) }
-    Ok(Some(text_of(take polled)?))
 }
 
 /// Writes `text` as the whole file at `path`, in a write root.
 @job
 pub fn write_text(path: take String, text: take String) -> Result<(), String> {
-    var w = files::write(path.as_str(), text.as_bytes())
-    var got = w.poll()
-    while got.is_none() {
-        yield
-        got = w.poll()
-    }
-    let Some(polled) = take got else { return Err(failed("no answer")) }
-    tool(answer(take polled))?
+    var w = wait(files::write(path.as_str(), text.as_bytes()))
+    while !w.ready() { yield }
+    w.bytes()?
     Ok(())
 }
 
@@ -177,28 +149,22 @@ pub fn build(place: take Place) -> Result<Built, String> {
     let ws = place.ws.clone()
     // The subject's name, and whether it's a floor.
     var j = Box::new(read_text.start(String::from(f"{subject.as_str()}/wrela.toml")))
-    var manifest_text: Option<Result<Option<String>, String>> = None
+    var manifest_text = done(j.get_mut().resume())
     while manifest_text.is_none() {
-        match j.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => manifest_text = Some(take r),
-        }
+        yield
+        manifest_text = done(j.get_mut().resume())
     }
-    let Some(read) = take manifest_text else { return Err(failed("no answer")) }
-    let Some(m) = (take read)? else {
+    let Some(m) = (take manifest_text).unwrap()? else {
         return Err(failed(f"`{subject.as_str()}` isn't a package: it has no wrela.toml"))
     }
     let name = package_name(m.as_str(), subject.as_str())
     var l = Box::new(read_text.start(String::from(f"{subject.as_str()}/lens.wrela")))
-    var lens_text: Option<Result<Option<String>, String>> = None
+    var lens_text = done(l.get_mut().resume())
     while lens_text.is_none() {
-        match l.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => lens_text = Some(take r),
-        }
+        yield
+        lens_text = done(l.get_mut().resume())
     }
-    let Some(lread) = take lens_text else { return Err(failed("no answer")) }
-    let lens_module = (take lread)?
+    let lens_module = (take lens_text).unwrap()?
     var floor = false
     var geology = false
     if let Some(t) = lens_module {
@@ -220,15 +186,12 @@ pub fn build(place: take Place) -> Result<Built, String> {
         let glue_dir = String::from(f"{ws.as_str()}/studio/maplens/glue")
         for f in ["main.wrela", "floor.wrela"] {
             var t = Box::new(read_text.start(String::from(f"{glue_dir.as_str()}/{f}")))
-            var got: Option<Result<Option<String>, String>> = None
+            var got = done(t.get_mut().resume())
             while got.is_none() {
-                match t.get_mut().resume() {
-                    Step::Yielded => yield,
-                    Step::Done(r) => got = Some(take r),
-                }
+                yield
+                got = done(t.get_mut().resume())
             }
-            let Some(r) = take got else { return Err(failed("no answer")) }
-            let Some(text) = (take r)? else {
+            let Some(text) = (take got).unwrap()? else {
                 return Err(failed(f"there's no {glue_dir.as_str()}/{f}"))
             }
             let written = if f == "floor.wrela" {
@@ -271,39 +234,30 @@ pub fn build(place: take Place) -> Result<Built, String> {
         for k in 0..probes.len() {
             let (path, text) = probes[k].clone()
             var w = Box::new(write_text.start(take path, take text))
-            var done: Option<Result<(), String>> = None
-            while done.is_none() {
-                match w.get_mut().resume() {
-                    Step::Yielded => yield,
-                    Step::Done(r) => done = Some(take r),
-                }
+            var ended = done(w.get_mut().resume())
+            while ended.is_none() {
+                yield
+                ended = done(w.get_mut().resume())
             }
-            let Some(r) = take done else { return Err(failed("no answer")) }
-            (take r)?
+            (take ended).unwrap()?
         }
-        var q = toolchain::query(
-            probe.as_str(),
-            probe_queries(name.as_str()),
-            overrides: overrides.clone(),
+        var q = wait(
+            toolchain::query(
+                probe.as_str(),
+                probe_queries(name.as_str()),
+                overrides: overrides.clone(),
+            ),
         )
-        var asked = q.poll()
-        while asked.is_none() {
-            yield
-            asked = q.poll()
-        }
-        let Some(polled) = take asked else { return Err(failed("no answer")) }
-        let json = tool(toolchain::read_queried(take polled))?
+        while !q.ready() { yield }
+        let json = said(toolchain::read_queried(q.polled()))?
         let s = read_probe(name.as_str(), json.as_str())?
         var t = Box::new(read_text.start(String::from(f"{ws.as_str()}/studio/glue/main.wrela")))
-        var got: Option<Result<Option<String>, String>> = None
+        var got = done(t.get_mut().resume())
         while got.is_none() {
-            match t.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(r) => got = Some(take r),
-            }
+            yield
+            got = done(t.get_mut().resume())
         }
-        let Some(r) = take got else { return Err(failed("no answer")) }
-        let Some(main) = (take r)? else {
+        let Some(main) = (take got).unwrap()? else {
             return Err(failed(f"there's no {ws.as_str()}/studio/glue/main.wrela"))
         }
         writes.push((String::from(f"{program.as_str()}/main.wrela"), take main))
@@ -318,15 +272,12 @@ pub fn build(place: take Place) -> Result<Built, String> {
     for k in 0..writes.len() {
         let (path, text) = writes[k].clone()
         var w = Box::new(write_text.start(take path, take text))
-        var done: Option<Result<(), String>> = None
-        while done.is_none() {
-            match w.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(r) => done = Some(take r),
-            }
+        var ended = done(w.get_mut().resume())
+        while ended.is_none() {
+            yield
+            ended = done(w.get_mut().resume())
         }
-        let Some(r) = take done else { return Err(failed("no answer")) }
-        (take r)?
+        (take ended).unwrap()?
     }
     options.overrides = take overrides
     let page = if place.page.is_empty() {
@@ -334,14 +285,9 @@ pub fn build(place: take Place) -> Result<Built, String> {
     } else {
         place.page.clone()
     }
-    var b = toolchain::build(program.as_str(), page.as_str(), options)
-    var built = b.poll()
-    while built.is_none() {
-        yield
-        built = b.poll()
-    }
-    let Some(polled) = take built else { return Err(failed("no answer")) }
-    let result = tool(toolchain::read_built(take polled))?
+    var b = wait(toolchain::build(program.as_str(), page.as_str(), options))
+    while !b.ready() { yield }
+    let result = said(toolchain::read_built(b.polled()))?
     if !result.ok {
         var why = String::new()
         for k in 0..result.diagnostics.len() {
@@ -446,14 +392,9 @@ pub fn start(
     var options = if cpu { drive::cpu() } else { drive::gpu() }
     options.width = width
     options.height = height
-    var l = drive::load(built.page.as_str(), options)
-    var loaded = l.poll()
-    while loaded.is_none() {
-        yield
-        loaded = l.poll()
-    }
-    let Some(lp) = take loaded else { return Err(failed("no answer")) }
-    let it = tool_saying(drive::read_loaded(take lp), "can't run the lens")?
+    var l = wait(drive::load(built.page.as_str(), options))
+    while !l.ready() { yield }
+    let it = tool_saying(drive::read_loaded(l.polled()), "can't run the lens")?
     var lens = Lens {
         b: it.build,
         width,
@@ -465,26 +406,18 @@ pub fn start(
         reference,
         now: 0.0,
     }
-    var i = drive::init(lens.b)
-    var inited = i.poll()
-    while inited.is_none() {
-        yield
-        inited = i.poll()
-    }
-    let Some(ip) = take inited else { return Err(failed("no answer")) }
-    let ran = trapped(tool(drive::read_ran(take ip))?)?
+    var i = wait(drive::init(lens.b))
+    while !i.ready() { yield }
+    let ran = trapped(said(drive::read_ran(i.polled()))?)?
     lens.now = ran.started + ran.elapsed
     if !cpu {
         var f = Box::new(frames.start(Script::frames()))
-        var done: Option<Result<(), String>> = None
-        while done.is_none() {
-            match f.get_mut().resume(mut lens) {
-                Step::Yielded => yield,
-                Step::Done(r) => done = Some(take r),
-            }
+        var ended = done(f.get_mut().resume(mut lens))
+        while ended.is_none() {
+            yield
+            ended = done(f.get_mut().resume(mut lens))
         }
-        let Some(r) = take done else { return Err(failed("no answer")) }
-        (take r)?
+        (take ended).unwrap()?
     }
     Ok(lens)
 }
@@ -492,26 +425,18 @@ pub fn start(
 /// The lens's next frame, with `script`'s events, then its posts answered.
 @job
 pub fn frames(lens: mut Lens, script: take Script) -> Result<(), String> {
-    var f = drive::frames(lens.b, 1, script)
-    var framed = f.poll()
-    while framed.is_none() {
-        yield
-        framed = f.poll()
-    }
-    let Some(fp) = take framed else { return Err(failed("no answer")) }
-    let ran = trapped(tool(drive::read_ran(take fp))?)?
+    var f = wait(drive::frames(lens.b, 1, script))
+    while !f.ready() { yield }
+    let ran = trapped(said(drive::read_ran(f.polled()))?)?
     lens.now = ran.started + ran.elapsed
     lens.frame += 1
     var p = Box::new(answer_posts.start())
-    var done: Option<Result<(), String>> = None
-    while done.is_none() {
-        match p.get_mut().resume(mut lens) {
-            Step::Yielded => yield,
-            Step::Done(r) => done = Some(take r),
-        }
+    var ended = done(p.get_mut().resume(mut lens))
+    while ended.is_none() {
+        yield
+        ended = done(p.get_mut().resume(mut lens))
     }
-    let Some(r) = take done else { return Err(failed("no answer")) }
-    r
+    (take ended).unwrap()
 }
 
 /// Export `name` called with `args`: its results. A trap is the error.
@@ -521,14 +446,9 @@ pub fn invoke(
     name: take String,
     args: take Vec<Scalar>,
 ) -> Result<Vec<Scalar>, String> {
-    var c = drive::call(lens.b, name.as_str(), args)
-    var called = c.poll()
-    while called.is_none() {
-        yield
-        called = c.poll()
-    }
-    let Some(cp) = take called else { return Err(failed("no answer")) }
-    let ran = trapped(tool(drive::read_ran(take cp))?)?
+    var c = wait(drive::call(lens.b, name.as_str(), args))
+    while !c.ready() { yield }
+    let ran = trapped(said(drive::read_ran(c.polled()))?)?
     lens.now = ran.started + ran.elapsed
     Ok(ran.results.clone())
 }
@@ -539,15 +459,12 @@ pub fn settle(lens: mut Lens) -> Result<(), String> {
     let began = lens.now
     loop {
         var b = Box::new(invoke.start(String::from("busy"), Vec::new()))
-        var got: Option<Result<Vec<Scalar>, String>> = None
+        var got = done(b.get_mut().resume(mut lens))
         while got.is_none() {
-            match b.get_mut().resume(mut lens) {
-                Step::Yielded => yield,
-                Step::Done(r) => got = Some(take r),
-            }
+            yield
+            got = done(b.get_mut().resume(mut lens))
         }
-        let Some(r) = take got else { return Err(failed("no answer")) }
-        let results = (take r)?
+        let results = (take got).unwrap()?
         var busy = false
         if results.len() == 1 {
             if let Scalar::I32(x) = results[0] {
@@ -555,15 +472,12 @@ pub fn settle(lens: mut Lens) -> Result<(), String> {
             }
         }
         var f = Box::new(frames.start(Script::frames()))
-        var done: Option<Result<(), String>> = None
-        while done.is_none() {
-            match f.get_mut().resume(mut lens) {
-                Step::Yielded => yield,
-                Step::Done(r) => done = Some(take r),
-            }
+        var ended = done(f.get_mut().resume(mut lens))
+        while ended.is_none() {
+            yield
+            ended = done(f.get_mut().resume(mut lens))
         }
-        let Some(fr) = take done else { return Err(failed("no answer")) }
-        (take fr)?
+        (take ended).unwrap()?
         if !busy {
             return Ok(())
         }
@@ -585,61 +499,46 @@ pub fn call(
     deferred: take bool,
 ) -> Result<(), String> {
     var d = Box::new(drop_logs.start())
-    var dropped: Option<Result<(), String>> = None
+    var dropped = done(d.get_mut().resume(mut lens))
     while dropped.is_none() {
-        match d.get_mut().resume(mut lens) {
-            Step::Yielded => yield,
-            Step::Done(r) => dropped = Some(take r),
-        }
+        yield
+        dropped = done(d.get_mut().resume(mut lens))
     }
-    let Some(dr) = take dropped else { return Err(failed("no answer")) }
-    (take dr)?
+    (take dropped).unwrap()?
     var i = Box::new(invoke.start(name.clone(), take args))
-    var got: Option<Result<Vec<Scalar>, String>> = None
+    var got = done(i.get_mut().resume(mut lens))
     while got.is_none() {
-        match i.get_mut().resume(mut lens) {
-            Step::Yielded => yield,
-            Step::Done(r) => got = Some(take r),
-        }
+        yield
+        got = done(i.get_mut().resume(mut lens))
     }
-    let Some(r) = take got else { return Err(failed("no answer")) }
-    (take r)?
+    (take got).unwrap()?
     let n = name.clone()
     if deferred && lens.field && (n == "zoom" || n == "mode" || n == "view") {
         return Ok(())
     }
     var p = Box::new(answer_posts.start())
-    var answered: Option<Result<(), String>> = None
+    var answered = done(p.get_mut().resume(mut lens))
     while answered.is_none() {
-        match p.get_mut().resume(mut lens) {
-            Step::Yielded => yield,
-            Step::Done(r) => answered = Some(take r),
-        }
+        yield
+        answered = done(p.get_mut().resume(mut lens))
     }
-    let Some(ar) = take answered else { return Err(failed("no answer")) }
-    (take ar)?
+    (take answered).unwrap()?
     if settles(lens.field, n.as_str()) {
         var s = Box::new(settle.start())
-        var done: Option<Result<(), String>> = None
-        while done.is_none() {
-            match s.get_mut().resume(mut lens) {
-                Step::Yielded => yield,
-                Step::Done(r) => done = Some(take r),
-            }
+        var ended = done(s.get_mut().resume(mut lens))
+        while ended.is_none() {
+            yield
+            ended = done(s.get_mut().resume(mut lens))
         }
-        let Some(sr) = take done else { return Err(failed("no answer")) }
-        return sr
+        return (take ended).unwrap()
     }
     var f = Box::new(frames.start(Script::frames()))
-    var done: Option<Result<(), String>> = None
-    while done.is_none() {
-        match f.get_mut().resume(mut lens) {
-            Step::Yielded => yield,
-            Step::Done(r) => done = Some(take r),
-        }
+    var ended = done(f.get_mut().resume(mut lens))
+    while ended.is_none() {
+        yield
+        ended = done(f.get_mut().resume(mut lens))
     }
-    let Some(fr) = take done else { return Err(failed("no answer")) }
-    fr
+    (take ended).unwrap()
 }
 
 /// The lines the lens printed since the last time.
@@ -647,14 +546,9 @@ pub fn call(
 pub fn logs(lens: mut Lens) -> Result<Vec<String>, String> {
     var out: Vec<String> = Vec::new()
     loop {
-        var g = drive::logs(lens.b)
-        var got = g.poll()
-        while got.is_none() {
-            yield
-            got = g.poll()
-        }
-        let Some(polled) = take got else { return Err(failed("no answer")) }
-        let l = tool(drive::read_logs(take polled))?
+        var g = wait(drive::logs(lens.b))
+        while !g.ready() { yield }
+        let l = said(drive::read_logs(g.polled()))?
         for k in 0..l.lines.len() {
             out.push(l.lines[k].clone())
         }
@@ -667,14 +561,9 @@ pub fn logs(lens: mut Lens) -> Result<Vec<String>, String> {
 @job
 fn drop_logs(lens: mut Lens) -> Result<(), String> {
     loop {
-        var g = drive::logs(lens.b)
-        var got = g.poll()
-        while got.is_none() {
-            yield
-            got = g.poll()
-        }
-        let Some(polled) = take got else { return Err(failed("no answer")) }
-        let l = tool(drive::read_logs(take polled))?
+        var g = wait(drive::logs(lens.b))
+        while !g.ready() { yield }
+        let l = said(drive::read_logs(g.polled()))?
         if l.waiting == 0 {
             return Ok(())
         }
@@ -697,14 +586,9 @@ pub fn last_json(lines: [String]) -> Option<String> {
 /// for the reference with the reference, and any other post fails, saying nothing answers it.
 @job
 pub fn answer_posts(lens: mut Lens) -> Result<(), String> {
-    var q = drive::posts(lens.b)
-    var got = q.poll()
-    while got.is_none() {
-        yield
-        got = q.poll()
-    }
-    let Some(polled) = take got else { return Err(failed("no answer")) }
-    let posts = tool(drive::read_posts(take polled))?
+    var q = wait(drive::posts(lens.b))
+    while !q.ready() { yield }
+    let posts = said(drive::read_posts(q.polled()))?
     for k in 0..posts.len() {
         let post = posts[k].clone()
         let url = post.url.as_str()
@@ -714,15 +598,12 @@ pub fn answer_posts(lens: mut Lens) -> Result<(), String> {
                 return Err(failed("a post's body is a blob"))
             }
             var e = Box::new(edit.start(lens.program.clone(), lens.page.clone(), take body))
-            var done: Option<Result<String, String>> = None
-            while done.is_none() {
-                match e.get_mut().resume() {
-                    Step::Yielded => yield,
-                    Step::Done(r) => done = Some(take r),
-                }
+            var ended = done(e.get_mut().resume())
+            while ended.is_none() {
+                yield
+                ended = done(e.get_mut().resume())
             }
-            let Some(r) = take done else { return Err(failed("no answer")) }
-            let text = (take r)?
+            let text = (take ended).unwrap()?
             reply = Ok(Vec::from(text.as_bytes()))
         } else if url == "studio/reference" {
             reply = match lens.reference.clone() {
@@ -733,37 +614,24 @@ pub fn answer_posts(lens: mut Lens) -> Result<(), String> {
         match take reply {
             Ok(bytes) => {
                 var d = Box::new(data_of.start(take bytes))
-                var made: Option<Result<Data, String>> = None
+                var made = done(d.get_mut().resume())
                 while made.is_none() {
-                    match d.get_mut().resume() {
-                        Step::Yielded => yield,
-                        Step::Done(r) => made = Some(take r),
-                    }
-                }
-                let Some(m) = take made else { return Err(failed("no answer")) }
-                let data = (take m)?
-                var a = drive::answer(lens.b, post.id, data.clone())
-                var sent = a.poll()
-                while sent.is_none() {
                     yield
-                    sent = a.poll()
+                    made = done(d.get_mut().resume())
                 }
-                let Some(sp) = take sent else { return Err(failed("no answer")) }
-                tool(answer(take sp))?
+                let data = (take made).unwrap()?
+                var a = wait(drive::answer(lens.b, post.id, data.clone()))
+                while !a.ready() { yield }
+                a.bytes()?
                 if let Data::Blob(bl) = data {
                     var rel = blob::release(bl)
                     while rel.poll().is_none() { yield }
                 }
             },
             Err(why) => {
-                var a = drive::fail(lens.b, post.id, why.as_str())
-                var sent = a.poll()
-                while sent.is_none() {
-                    yield
-                    sent = a.poll()
-                }
-                let Some(sp) = take sent else { return Err(failed("no answer")) }
-                let _ = tool(answer(take sp))?
+                var a = wait(drive::fail(lens.b, post.id, why.as_str()))
+                while !a.ready() { yield }
+                let _ = a.bytes()?
             },
         }
     }
@@ -776,32 +644,13 @@ pub fn data_of(bytes: take Vec<u8>) -> Result<Data, String> {
     if bytes.len() <= MOST_BYTES {
         return Ok(Data::Bytes(take bytes))
     }
-    var n = blob::new()
-    var made = n.poll()
+    var j = Box::new(blob_of.start(chunked(take bytes)))
+    var made = done(j.get_mut().resume())
     while made.is_none() {
         yield
-        made = n.poll()
+        made = done(j.get_mut().resume())
     }
-    let Some(mp) = take made else { return Err(failed("no answer")) }
-    let b = tool(blob::read_handle(take mp))?
-    var at = 0
-    while at < bytes.len() {
-        let end = min(at + MOST_BYTES, bytes.len())
-        var chunk: Vec<u8> = Vec::with_capacity(end - at)
-        for i in at..end {
-            chunk.push(bytes[i])
-        }
-        var a = blob::append(b, chunk)
-        var appended = a.poll()
-        while appended.is_none() {
-            yield
-            appended = a.poll()
-        }
-        let Some(ap) = take appended else { return Err(failed("no answer")) }
-        tool(answer(take ap))?
-        at = end
-    }
-    Ok(Data::Blob(b))
+    Ok(Data::Blob((take made).unwrap()?))
 }
 
 /// The edits of a body `{"edits": [[literal, value], ...]}`, as the lens posts them: every
@@ -823,7 +672,7 @@ pub fn parse_edits(body: str) -> Option<Vec<(u32, f32)>> {
             return None
         }
         let v = f32(d.num(d.at(entry, 1)?)?)
-        if !(abs(v) <= 340282346638528859811704183484516925440.0) {
+        if !is_finite(v) {
             return None
         }
         out.push((u32(i), v))
@@ -846,74 +695,28 @@ pub fn edit(program: take String, page: take String, body: take Vec<u8>) -> Resu
             ),
         )
     }
-    var e = toolchain::edit(program.as_str(), page.as_str(), edits)
-    var got = e.poll()
-    while got.is_none() {
-        yield
-        got = e.poll()
-    }
-    let Some(polled) = take got else { return Err(failed("no answer")) }
-    match toolchain::read_edited(take polled) {
+    var e = wait(toolchain::edit(program.as_str(), page.as_str(), edits))
+    while !e.ready() { yield }
+    match toolchain::read_edited(e.polled()) {
         Ok(answer) => Ok(answer),
         Err(e) => Ok(String::from(f"{{\"why\":{quoted(e.message()).as_str()},\"written\":false}}")),
     }
 }
 
-/// The bytes of `blob`, read in chunks.
-@job
-pub fn blob_bytes(b: take Blob) -> Result<Vec<u8>, String> {
-    var l = blob::len(b)
-    var got = l.poll()
-    while got.is_none() {
-        yield
-        got = l.poll()
-    }
-    let Some(lp) = take got else { return Err(failed("no answer")) }
-    let n = tool(blob::read_len(take lp))?
-    var out: Vec<u8> = Vec::with_capacity(u32(n))
-    var at: u64 = 0
-    while at < n {
-        let len = u32(min(n - at, u64(MOST_BYTES)))
-        var r = blob::read(b, at, len)
-        var read = r.poll()
-        while read.is_none() {
-            yield
-            read = r.poll()
-        }
-        let Some(rp) = take read else { return Err(failed("no answer")) }
-        let chunk = tool(answer(take rp))?
-        for i in 0..chunk.len() {
-            out.push(chunk[i])
-        }
-        at += u64(len)
-    }
-    Ok(out)
-}
-
 /// The lens's screen: its RGBA8 pixels.
 @job
 pub fn screen(lens: mut Lens) -> Result<Vec<u8>, String> {
-    var c = drive::capture(lens.b)
-    var got = c.poll()
-    while got.is_none() {
-        yield
-        got = c.poll()
-    }
-    let Some(cp) = take got else { return Err(failed("no answer")) }
-    let cap = tool(drive::read_capture(take cp))?
+    var c = wait(drive::capture(lens.b))
+    while !c.ready() { yield }
+    let cap = said(drive::read_capture(c.polled()))?
     let Data::Blob(b) = cap.rgba else { return Err(failed("the screen isn't a blob")) }
-    var j = Box::new(blob_bytes.start(b))
-    var bytes: Option<Result<Vec<u8>, String>> = None
+    var j = Box::new(data_bytes.start(Data::Blob(b)))
+    var bytes = done(j.get_mut().resume())
     while bytes.is_none() {
-        match j.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => bytes = Some(take r),
-        }
+        yield
+        bytes = done(j.get_mut().resume())
     }
-    var rel = blob::release(b)
-    while rel.poll().is_none() { yield }
-    let Some(r) = take bytes else { return Err(failed("no answer")) }
-    r
+    Ok(joined((take bytes).unwrap()?))
 }
 
 /// RGBA8 pixels, `width` by `height`, written as a PNG at `path`.
@@ -925,90 +728,56 @@ pub fn save_png(
     rgba: take Vec<u8>,
 ) -> Result<(), String> {
     var d = Box::new(data_of.start(take rgba))
-    var made: Option<Result<Data, String>> = None
+    var made = done(d.get_mut().resume())
     while made.is_none() {
-        match d.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => made = Some(take r),
-        }
-    }
-    let Some(m) = take made else { return Err(failed("no answer")) }
-    let pixels = (take m)?
-    var e = image::encode_png(image::Image { width, height, rgba: pixels.clone() })
-    var got = e.poll()
-    while got.is_none() {
         yield
-        got = e.poll()
+        made = done(d.get_mut().resume())
     }
+    let pixels = (take made).unwrap()?
+    var e = wait(image::encode_png(image::Image { width, height, rgba: pixels.clone() }))
+    while !e.ready() { yield }
     if let Data::Blob(b) = pixels {
         var rel = blob::release(b)
         while rel.poll().is_none() { yield }
     }
-    let Some(ep) = take got else { return Err(failed("no answer")) }
-    let png = tool(image::read_encoded(take ep))?
-    var w = match png.clone() {
-        Data::Bytes(bytes) => files::write(path.as_str(), bytes),
-        Data::Blob(b) => files::write_blob(path.as_str(), b),
-    }
-    var wrote = w.poll()
+    let png = said(image::read_encoded(e.polled()))?
+    var w = Box::new(write_data.start(path.clone(), take png))
+    var wrote = done(w.get_mut().resume())
     while wrote.is_none() {
         yield
-        wrote = w.poll()
+        wrote = done(w.get_mut().resume())
     }
-    if let Data::Blob(b) = png {
-        var rel = blob::release(b)
-        while rel.poll().is_none() { yield }
+    match (take wrote).unwrap() {
+        Ok(()) => Ok(()),
+        Err(why) => Err(String::from(f"can't write {path.as_str()}: {why.as_str()}")),
     }
-    let Some(wp) = take wrote else { return Err(failed("no answer")) }
-    tool_saying(answer(take wp), f"can't write {path.as_str()}")?
-    Ok(())
 }
 
 /// The PNG (or JPEG, or WebP) at `path`, read: its size and its RGBA8 pixels; `None` if no file
 /// is there.
 @job
 pub fn read_png(path: take String) -> Result<Option<(u32, u32, Vec<u8>)>, String> {
-    var s = files::stat(path.as_str())
-    var stated = s.poll()
-    while stated.is_none() {
-        yield
-        stated = s.poll()
-    }
-    let Some(st) = take stated else { return Err(failed("no answer")) }
-    if files::read_entry(take st).is_err() {
+    var s = wait(files::stat(path.as_str()))
+    while !s.ready() { yield }
+    if files::read_entry(s.polled()).is_err() {
         return Ok(None)
     }
-    var r = files::read_blob(path.as_str())
-    var got = r.poll()
-    while got.is_none() {
-        yield
-        got = r.poll()
-    }
-    let Some(rp) = take got else { return Err(failed("no answer")) }
-    let file = tool(blob::read_handle(take rp))?
-    var d = image::decode(Data::Blob(file))
-    var decoded = d.poll()
-    while decoded.is_none() {
-        yield
-        decoded = d.poll()
-    }
+    var r = wait(files::read_blob(path.as_str()))
+    while !r.ready() { yield }
+    let file = said(blob::read_handle(r.polled()))?
+    var d = wait(image::decode(Data::Blob(file)))
+    while !d.ready() { yield }
     var rel = blob::release(file)
     while rel.poll().is_none() { yield }
-    let Some(dp) = take decoded else { return Err(failed("no answer")) }
-    let img = tool_saying(image::read_image(take dp), path.as_str())?
+    let img = tool_saying(image::read_image(d.polled()), path.as_str())?
     let Data::Blob(pixels) = img.rgba else { return Err(failed("the pixels aren't a blob")) }
-    var j = Box::new(blob_bytes.start(pixels))
-    var bytes: Option<Result<Vec<u8>, String>> = None
+    var j = Box::new(data_bytes.start(Data::Blob(pixels)))
+    var bytes = done(j.get_mut().resume())
     while bytes.is_none() {
-        match j.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => bytes = Some(take r),
-        }
+        yield
+        bytes = done(j.get_mut().resume())
     }
-    var rel2 = blob::release(pixels)
-    while rel2.poll().is_none() { yield }
-    let Some(br) = take bytes else { return Err(failed("no answer")) }
-    Ok(Some((img.width, img.height, (take br)?)))
+    Ok(Some((img.width, img.height, joined((take bytes).unwrap()?))))
 }
 
 /// A reference image for the lens's fit (`fit`), as its post `studio/reference` takes it: the

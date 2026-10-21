@@ -7,7 +7,7 @@
 // An outline's points are in its view's own coordinates, in metres: from the side (z, y), +z
 // the subject's front; from the front (x, y), +x its left; from the top (x, z).
 
-use json::{List, list, obj}
+use json::{list, obj}
 use std::collections::Vec
 use std::field::Surface
 use std::string::String

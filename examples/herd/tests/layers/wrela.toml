@@ -3,3 +3,6 @@
 # uses `unsafe`. The package's tool test reads the files through `std::tool::files`.
 [package]
 name = "herd_layers"
+
+[dependencies]
+hosts = { workspace = true }

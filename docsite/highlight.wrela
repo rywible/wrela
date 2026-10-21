@@ -72,6 +72,11 @@ const TYPES = [
     "mat4",
 ]
 
+/// Whether `b` can be in a name or a number: a letter, a digit or `_`.
+pub fn is_word(b: u8) -> bool {
+    (b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || b == 95
+}
+
 /// A line's spans: each a byte range and what it is, in order, covering the line.
 pub fn spans(line: str) -> Vec<(u32, u32, Token)> {
     var out: Vec<(u32, u32, Token)> = Vec::new()
@@ -95,17 +100,17 @@ pub fn spans(line: str) -> Vec<(u32, u32, Token)> {
             continue
         }
         if b >= 48 && b <= 57 {
-            while i < n && is_name(line.byte(i)) { i += 1 }
+            while i < n && is_word(line.byte(i)) { i += 1 }
             // A fraction, but not a range (`0..4`).
             if i + 1 < n && line.byte(i) == 46 && line.byte(i + 1) >= 48 && line.byte(i + 1) <= 57 {
                 i += 1
-                while i < n && is_name(line.byte(i)) { i += 1 }
+                while i < n && is_word(line.byte(i)) { i += 1 }
             }
             out.push((start, i, Token::Number))
             continue
         }
-        if is_name(b) {
-            while i < n && is_name(line.byte(i)) { i += 1 }
+        if is_word(b) {
+            while i < n && is_word(line.byte(i)) { i += 1 }
             let word = line.slice(start, i)
             var kind = Token::Plain
             for k in KEYWORDS { if word == k { kind = Token::Keyword } }
@@ -120,17 +125,13 @@ pub fn spans(line: str) -> Vec<(u32, u32, Token)> {
         // past ASCII is taken whole.
         while i < n {
             let c = line.byte(i)
-            if is_name(c) || c == 34 || (c == 47 && i + 1 < n && line.byte(i + 1) == 47) { break }
+            if is_word(c) || c == 34 || (c == 47 && i + 1 < n && line.byte(i + 1) == 47) { break }
             i += 1
             while i < n && line.byte(i) >= 128 && line.byte(i) < 192 { i += 1 }
         }
         out.push((start, i, Token::Plain))
     }
     take out
-}
-
-fn is_name(b: u8) -> bool {
-    (b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || b == 95
 }
 
 @test

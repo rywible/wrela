@@ -3,3 +3,6 @@
 # (studio/deploy) deploys it.
 [package]
 name = "release_tool"
+
+[dependencies]
+toolkit = { workspace = true }

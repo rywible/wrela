@@ -44,12 +44,17 @@ pub fn sun_view(sun: vec3, centre: vec3, span: f32, reach: f32) -> mat4 {
         look_at(centre + sun * reach, centre)
 }
 
+/// The basis the sun toward `sun` sees: its forward (away from the sun), right and up.
+fn sun_basis(sun: vec3) -> (vec3, vec3, vec3) {
+    let fwd = -normalize(sun)
+    let right = normalize(cross(fwd, vec3(0.0, 1.0, 0.0)))
+    (fwd, right, cross(right, fwd))
+}
+
 /// Snap a replacement static cascade to the texel grid of its previous map. The reference
 /// moves with render space, so shifting the render origin does not change the grid.
 pub fn snapped_centre(sun: vec3, centre: vec3, reference: vec3, texel: f32) -> vec3 {
-    let fwd = -normalize(sun)
-    let right = normalize(cross(fwd, vec3(0.0, 1.0, 0.0)))
-    let up = cross(right, fwd)
+    let (fwd, right, up) = sun_basis(sun)
     let delta = centre - reference
     reference +
         right * (round(dot(delta, right) / texel) * texel) +
@@ -76,9 +81,7 @@ pub fn shadows(
     moving_side: u32,
 ) -> Shadows {
     let s = normalize(sun)
-    let fwd = -s
-    let right = normalize(cross(fwd, vec3(0.0, 1.0, 0.0)))
-    let up = cross(right, fwd)
+    let (fwd, right, up) = sun_basis(sun)
     // The moving map's centre snapped to its texels, so its edges don't crawl as it follows.
     let texel = moving_span / f32(moving_side)
     let snapped = vec3(
@@ -199,9 +202,7 @@ pub fn statically_sunlit(
 @test
 fn static_shadow_replacement_keeps_its_texel_grid() {
     let sun = normalize(vec3(0.9, 0.407, -0.159))
-    let fwd = -sun
-    let right = normalize(cross(fwd, vec3(0.0, 1.0, 0.0)))
-    let up = cross(right, fwd)
+    let (_, right, up) = sun_basis(sun)
     let reference = vec3(12.3, 7.1, -22.6)
     let texel = 144.0 / 2048.0
     let at = reference + vec3(41.37, -2.1, 13.6)

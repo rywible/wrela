@@ -6,16 +6,16 @@
 // pedal lifted (within 40 ms after a release, or the sustain pedal crossing half its travel), or
 // neither.
 
-use dsp::{round, round_away}
-use toolkit::whole::read_file
+use dsp::{median, round, round_away}
 use json::{Value, obj, opt, text}
 use main::{Args, in_root}
 use std::collections::{Box, Vec}
 use std::io::print
-use std::job::Step
 use std::string::String
 use std::json::{Kind, TOP, parse}
 use std::math
+use toolkit::wait::done
+use toolkit::whole::read_file
 
 const DB_OVER: f64 = 12.0
 
@@ -23,12 +23,6 @@ const DB_OVER: f64 = 12.0
 pub struct Click: Copy {
     pub at: f64,
     pub db: f64,
-}
-
-/// The median of `xs` (its middle element once sorted: the higher of two).
-fn median(xs: mut Vec<f64>) -> f64 {
-    xs.sort_by(|a, b| a < b)
-    xs[xs.len() / 2]
 }
 
 /// The clicks in `mono` (at `rate`).
@@ -81,7 +75,7 @@ pub fn clicks(mono: [f32], rate: f64) -> Vec<Click> {
             near.push(frames[j])
         }
         // Silence's median is no level to stand out from: a click must be over -100 dB too.
-        let m = median(mut near)
+        let m = median(take near).unwrap_or(0.0)
         let floor = if m > 0.0000000001 { m } else { 0.0000000001 }
         let level = 10.0 * math::log10_f64(frames[i] / floor)
         if level > DB_OVER {
@@ -118,15 +112,12 @@ pub fn clicks_report(a: take Args) -> Result<(), String> {
     let shown = a.rest[0].clone()
     let path = in_root(a.root.as_str(), shown.as_str())?
     var r = Box::new(read_file.start(take path, shown.clone()))
-    var bytes: Option<Result<Vec<u8>, String>> = None
+    var bytes = done(r.get_mut().resume())
     while bytes.is_none() {
-        match r.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(b) => bytes = Some(take b),
-        }
+        yield
+        bytes = done(r.get_mut().resume())
     }
-    let Some(b) = take bytes else { return Err(String::from("no answer")) }
-    let w = wav::read((take b)?, shown.as_str())?
+    let w = wav::read((take bytes).unwrap()?, shown.as_str())?
     let mono = w.mono()
     let found = clicks(mono, w.rate)
     let seconds = f64(mono.len()) / w.rate
@@ -137,15 +128,12 @@ pub fn clicks_report(a: take Args) -> Result<(), String> {
     if let Some(notes) = a.notes.clone() {
         let notes_path = in_root(a.root.as_str(), notes.as_str())?
         var nr = Box::new(read_file.start(take notes_path, notes.clone()))
-        var got: Option<Result<Vec<u8>, String>> = None
+        var got = done(nr.get_mut().resume())
         while got.is_none() {
-            match nr.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(b) => got = Some(take b),
-            }
+            yield
+            got = done(nr.get_mut().resume())
         }
-        let Some(g) = take got else { return Err(String::from("no answer")) }
-        let raw = (take g)?
+        let raw = (take got).unwrap()?
         let Some(text_of) = String::from_utf8(take raw) else {
             return Err(String::from(f"{notes}: it isn't UTF-8"))
         }

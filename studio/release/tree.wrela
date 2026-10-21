@@ -164,24 +164,32 @@ pub fn frame(digest: mut Sha256, path: str, size: u64) {
     digest.update(big_endian(size))
 }
 
-/// Why a Worker's files can't ship, if they can't: a private or runtime part, a hidden part, a
-/// file past Cloudflare's size, or more files than it serves. `entries` are sorted by parts.
+/// Why a file at `path` in a Worker can't ship, if it can't: a private or runtime part
+/// (`PRIVATE`), or a hidden part. The release checks it, and the deploy again.
+pub fn check_path(path: str) -> Result<(), String> {
+    for (a, b) in path.split("/") {
+        let part = path.slice(a, b)
+        for private in PRIVATE {
+            if part == private {
+                return Err(String::from(f"private/runtime output in release: {path}"))
+            }
+        }
+    }
+    for (a, b) in path.split("/") {
+        if path.slice(a, b).starts_with(".") {
+            return Err(String::from(f"hidden build metadata in release: {path}"))
+        }
+    }
+    Ok(())
+}
+
+/// Why a Worker's files can't ship, if they can't: a private, runtime or hidden part
+/// (`check_path`), a file past Cloudflare's size, or more files than it serves. `entries` are
+/// sorted by parts.
 pub fn check_files(entries: [Entry]) -> Result<(), String> {
     for e in entries {
         let p = e.path.as_str()
-        for (a, b) in p.split("/") {
-            let part = p.slice(a, b)
-            for private in PRIVATE {
-                if part == private {
-                    return Err(String::from(f"private/runtime output in release: {p}"))
-                }
-            }
-        }
-        for (a, b) in p.split("/") {
-            if p.slice(a, b).starts_with(".") {
-                return Err(String::from(f"hidden build metadata in release: {p}"))
-            }
-        }
+        check_path(p)?
         if e.size > MAX_FILE {
             return Err(String::from(f"Cloudflare file limit exceeded: {p}"))
         }

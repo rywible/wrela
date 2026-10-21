@@ -37,10 +37,10 @@ use std::derive::Box3
 use std::job::{Job, Step}
 use scene::{FOVY, Ground, LOOK_AT, MEADOW, SUN, on_ground, start_eye}
 use std::gpu::{
-    Address, ClipPosition, ComparisonSampler, Cull, DepthTexture, FragmentShader, GpuBuffer,
-    GpuSpan, R32Uint, RenderPass, Rgba16Float, Rgba8, Sampler, Texture, begin_depth_pass,
-    begin_pass, begin_pass_with_depth, begin_screen_pass, buffer, buffer_of, comparison_sampler,
-    depth_texture, draw, label, sampler, texture, writable_texture, write,
+    Address, ComparisonSampler, Cull, DepthTexture, GpuBuffer, GpuSpan, R32Uint, Rgba16Float, Rgba8,
+    Sampler, Texture, begin_depth_pass, begin_pass, begin_pass_with_depth, begin_screen_pass,
+    buffer, buffer_of, comparison_sampler, depth_texture, draw, label, sampler, texture,
+    writable_texture, write,
 }
 use std::input::{Event, Key, events}
 use std::io::print
@@ -1462,8 +1462,6 @@ pub fn test_reference(s: mut Clearing, first: u32, count: u32, step: u32, rays: 
     )
 }
 
-/// Whether everything cooked at load is done (1), and how far along its path the camera is (s;
-/// negative before it starts).
 /// The clipmap's layout (`engine::terrain`), which a capture of its texels has: a level's texels
 /// a side, its quads a side, a row's texels in the buffer, and a level's.
 @testing
@@ -1498,6 +1496,8 @@ pub fn test_moving(s: Clearing) -> vec4 {
     s.moves_in
 }
 
+/// Whether everything cooked at load is done (1), and how far along its path the camera is (s;
+/// negative before it starts).
 @testing
 pub fn test_ready(s: Clearing) -> vec2 {
     vec2(if s.ready { 1.0 } else { 0.0 }, if s.carried.path_from < 0.0 { -1.0 } else {

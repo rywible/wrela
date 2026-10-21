@@ -4,10 +4,10 @@
 // `scratch/<tour>/store`. Each frame is at time 0; the stair's `report` says where the player
 // is, and its doors; `running` says which build runs.
 
+use hosts::steps::{replaced, text_of, written}
 use std::collections::{Box, Vec}
 use std::job::Step
 use std::string::String
-use std::tool::answer
 use std::tool::drive
 use std::tool::drive::Scalar
 use std::tool::files
@@ -37,19 +37,14 @@ fn built(pkg: take String, out: take String) -> bool {
     var options = toolchain::options()
     options.testing = true
     options.overrides = overrides()
-    var b = toolchain::build(pkg.as_str(), out.as_str(), options)
-    var got = b.poll()
-    while got.is_none() {
-        yield
-        got = b.poll()
+    let what = String::from(f"{pkg.as_str()} builds")
+    var b = Box::new(hosts::steps::built.start(take pkg, take out, take options, take what))
+    loop {
+        match b.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(v) => return v,
+        }
     }
-    let Some(bp) = take got else { panic("no answer") }
-    let Ok(build) = toolchain::read_built(take bp) else { panic("the build's request") }
-    for d in build.diagnostics {
-        assert(!d.error, d.rendered.as_str())
-    }
-    assert(build.ok, f"{pkg.as_str()} builds")
-    true
 }
 
 /// The stair at `scratch/<tour>/stair`, loaded with its storage in `scratch/<tour>/store`, and
@@ -547,21 +542,6 @@ fn the_tower_is_saved_over_a_reload() {
     }
 }
 
-/// The text of `path`.
-@job
-fn text_of(path: take String) -> String {
-    var r = files::read(path.as_str())
-    var got = r.poll()
-    while got.is_none() {
-        yield
-        got = r.poll()
-    }
-    let Some(rp) = take got else { panic("no answer") }
-    let Ok(bytes) = answer(take rp) else { panic(f"{path.as_str()} reads") }
-    let Some(text) = String::from_utf8(take bytes) else { panic(f"{path.as_str()} isn't UTF-8") }
-    text
-}
-
 /// The line of `text` that starts with `start`.
 fn line_starting(text: str, start: str) -> String {
     var at = 0
@@ -577,47 +557,6 @@ fn line_starting(text: str, start: str) -> String {
         at = end + 1
     }
     panic(f"no line starts with `{start}`")
-}
-
-/// `text` with each `from` replaced by `to`, left to right.
-fn replaced(text: str, from: str, to: str) -> String {
-    var out: Vec<u8> = Vec::new()
-    var i = 0
-    while i < text.len() {
-        var hit = i + from.len() <= text.len()
-        if hit {
-            for j in 0..from.len() {
-                if text.byte(i + j) != from.byte(j) {
-                    hit = false
-                    break
-                }
-            }
-        }
-        if hit {
-            for j in 0..to.len() {
-                out.push(to.byte(j))
-            }
-            i += from.len()
-        } else {
-            out.push(text.byte(i))
-            i += 1
-        }
-    }
-    let Some(s) = String::from_utf8(take out) else { panic("a replacement keeps UTF-8") }
-    s
-}
-
-/// Writes `text` at `path`.
-@job
-fn written(path: take String, text: take String) {
-    var w = files::write(path.as_str(), text.as_bytes())
-    var got = w.poll()
-    while got.is_none() {
-        yield
-        got = w.poll()
-    }
-    let Some(wp) = take got else { panic("no answer") }
-    assert(answer(take wp).is_ok(), f"{path.as_str()} is written")
 }
 
 /// The first floor's real gate and door declarations and exit operation, on the small test

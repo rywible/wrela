@@ -1,7 +1,8 @@
 // The lens's views (AC8 of #39): any surface, orthographic, from the side, the front, three
-// quarters above and the top, on a metric grid, the ground at y = 0. A fragment shader traces
-// each pixel's ray through the field, as round 1's tool (fieldview) did, and shades it as clay,
-// or by part (std::field's parts, language.md §23), or one part alone.
+// quarters above and the top, on a metric grid, the ground at y = 0. Each pixel's ray is traced
+// through the field, as round 1's tool (fieldview) traced it, in compute passes (below), and a
+// fragment shader shades it as clay, or by part (std::field's parts, language.md §23), or one
+// part alone.
 
 use std::derive::Box3
 use std::field::Surface

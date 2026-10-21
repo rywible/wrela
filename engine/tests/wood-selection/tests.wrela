@@ -5,20 +5,15 @@
 // package is built with the engine read from the workspace, loaded on the GPU recording its
 // commands, and each frame's dispatches and buffers are checked.
 
+use hosts::both::bytes_of
+use hosts::steps::{built, recorded, replaced, text_of, word, written}
 use std::collections::{Box, Vec}
 use std::job::Step
 use std::string::String
-use std::tool::answer
-use std::tool::blob
-use std::tool::blob::Data
 use std::tool::drive
 use std::tool::drive::{Bound, Scalar}
-use std::tool::files
 use std::tool::toolchain
 use std::tool::toolchain::Override
-
-/// The most bytes a blob read gives at once.
-const CHUNK: u64 = 524288
 
 /// The engine's modules wood.wrela names by their own paths.
 const MODULES: [Text; 8] = [
@@ -122,61 +117,21 @@ const FIXTURE: [Text; 84] = [
     "pub fn capacity(state: Fixture) -> u32 { state.chosen.instances.len() }",
 ]
 
-/// `text` with each `from` replaced by `to`, left to right.
-fn replaced(text: str, from: str, to: str) -> String {
-    var out: Vec<u8> = Vec::new()
-    var i = 0
-    while i < text.len() {
-        var hit = i + from.len() <= text.len()
-        if hit {
-            for j in 0..from.len() {
-                if text.byte(i + j) != from.byte(j) {
-                    hit = false
-                    break
-                }
-            }
-        }
-        if hit {
-            for j in 0..to.len() {
-                out.push(to.byte(j))
-            }
-            i += from.len()
-        } else {
-            out.push(text.byte(i))
-            i += 1
-        }
-    }
-    let Some(s) = String::from_utf8(take out) else { panic("an ASCII replacement keeps UTF-8") }
-    s
-}
-
-/// Writes `text` at `path`.
-@job
-fn written(path: take String, text: take String) {
-    var w = files::write(path.as_str(), text.as_bytes())
-    var got = w.poll()
-    while got.is_none() {
-        yield
-        got = w.poll()
-    }
-    let Some(wp) = take got else { panic("no answer") }
-    assert(answer(take wp).is_ok(), f"{path.as_str()} is written")
-}
-
 /// The fixture package, written into `scratch/fixture`, built into `scratch/build`, loaded on
 /// the GPU (a 1 × 1 screen) recording its commands, `init` run and its commands taken.
 @job
 fn opened() -> drive::Build {
-    var r = files::read("repo/engine/wood.wrela")
-    var read = r.poll()
-    while read.is_none() {
-        yield
-        read = r.poll()
+    var r = Box::new(text_of.start(String::from("repo/engine/wood.wrela")))
+    var wood = String::new()
+    loop {
+        match r.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(v) => {
+                wood = take v
+                break
+            },
+        }
     }
-    let Some(rp) = take read else { panic("no answer") }
-    let Ok(bytes) = answer(take rp) else { panic("engine/wood.wrela reads") }
-    let Some(source) = String::from_utf8(take bytes) else { panic("wood.wrela is UTF-8") }
-    var wood = take source
     for k in 0..MODULES.len() {
         let m = MODULES[k]
         wood = replaced(wood.as_str(), f"{m}::".as_str(), f"engine::{m}::".as_str())
@@ -208,18 +163,20 @@ fn opened() -> drive::Build {
     options.overrides.push(
         Override { name: String::from("engine"), dir: String::from("repo/engine") },
     )
-    var b = toolchain::build("scratch/fixture", "scratch/build", options)
-    var built = b.poll()
-    while built.is_none() {
-        yield
-        built = b.poll()
+    var b = Box::new(
+        built.start(
+            String::from("scratch/fixture"),
+            String::from("scratch/build"),
+            take options,
+            String::from("the fixture builds"),
+        ),
+    )
+    loop {
+        match b.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
     }
-    let Some(bp) = take built else { panic("no answer") }
-    let Ok(build) = toolchain::read_built(take bp) else { panic("the build's request") }
-    for d in build.diagnostics {
-        assert(!d.error, d.rendered.as_str())
-    }
-    assert(build.ok, "the fixture builds")
     var load = drive::gpu()
     load.width = 1
     load.height = 1
@@ -253,28 +210,6 @@ fn opened() -> drive::Build {
     it.build
 }
 
-/// Every command recorded since the last time, however many answers they take.
-@job
-fn recorded(h: take drive::Build) -> Vec<drive::Recorded> {
-    var out: Vec<drive::Recorded> = Vec::new()
-    loop {
-        var c = drive::commands(h)
-        var got = c.poll()
-        while got.is_none() {
-            yield
-            got = c.poll()
-        }
-        let Some(cp) = take got else { panic("no answer") }
-        let Ok(r) = drive::read_commands(take cp) else { panic("the commands") }
-        for k in 0..r.commands.len() {
-            out.push(r.commands[k].clone())
-        }
-        if r.waiting == 0 {
-            return out
-        }
-    }
-}
-
 /// The fixture's export `name`'s number.
 @job
 fn number(h: take drive::Build, name: take String) -> u32 {
@@ -297,7 +232,7 @@ fn number(h: take drive::Build, name: take String) -> u32 {
 
 /// Buffer `handle`'s bytes, read back.
 @job
-fn bytes_of(h: take drive::Build, handle: take u32) -> Vec<u8> {
+fn buffer_bytes(h: take drive::Build, handle: take u32) -> Vec<u8> {
     var r = drive::read_buffer(h, handle)
     var got = r.poll()
     while got.is_none() {
@@ -306,45 +241,13 @@ fn bytes_of(h: take drive::Build, handle: take u32) -> Vec<u8> {
     }
     let Some(rp) = take got else { panic("no answer") }
     let Ok(data) = drive::read_bytes(take rp) else { panic(f"buffer {handle}'s bytes") }
-    var out: Vec<u8> = Vec::new()
-    match take data {
-        Data::Bytes(v) => out = take v,
-        Data::Blob(held) => {
-            var n = blob::len(held)
-            var counted = n.poll()
-            while counted.is_none() {
-                yield
-                counted = n.poll()
-            }
-            let Some(np) = take counted else { panic("no answer") }
-            let Ok(size) = blob::read_len(take np) else { panic("the blob's length") }
-            var at: u64 = 0
-            while at < size {
-                let len = u32(min(size - at, CHUNK))
-                var p = blob::read(held, at, len)
-                var part = p.poll()
-                while part.is_none() {
-                    yield
-                    part = p.poll()
-                }
-                let Some(pp) = take part else { panic("no answer") }
-                let Ok(chunk) = answer(take pp) else { panic("the blob's bytes") }
-                for j in 0..chunk.len() {
-                    out.push(chunk[j])
-                }
-                at += u64(len)
-            }
-        },
+    var b = Box::new(bytes_of.start(take data))
+    loop {
+        match b.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(v) => return v,
+        }
     }
-    out
-}
-
-/// The word at byte `at` of `bytes`, little-endian.
-fn word(bytes: [u8], at: u32) -> u32 {
-    u32(bytes[at]) |
-        (u32(bytes[at + 1]) << 8) |
-        (u32(bytes[at + 2]) << 16) |
-        (u32(bytes[at + 3]) << 24)
 }
 
 /// The last part of a pipeline's name (after its last `::`).
@@ -471,7 +374,7 @@ fn wood_selection_dispatches_only_current_lists_after_shrink_and_regrowth() {
         let Some(g) = gathered else { panic("gathered instances") }
         let Some(d) = drawn else { panic("drawn instances") }
         let Some(a) = arguments else { panic("draw arguments") }
-        var ab = Box::new(bytes_of.start(h, a.handle))
+        var ab = Box::new(buffer_bytes.start(h, a.handle))
         var args: Vec<u8> = Vec::new()
         loop {
             match ab.get_mut().resume() {
@@ -487,7 +390,7 @@ fn wood_selection_dispatches_only_current_lists_after_shrink_and_regrowth() {
             assert(word(args, list * 40 + 4) == expected, f"cards in list {list}")
             assert(word(args, list * 40 + 24) == expected, f"limbs in list {list}")
         }
-        var ib = Box::new(bytes_of.start(h, g.handle))
+        var ib = Box::new(buffer_bytes.start(h, g.handle))
         var instances: Vec<u8> = Vec::new()
         loop {
             match ib.get_mut().resume() {
@@ -498,7 +401,7 @@ fn wood_selection_dispatches_only_current_lists_after_shrink_and_regrowth() {
                 },
             }
         }
-        var sb = Box::new(bytes_of.start(h, d.handle))
+        var sb = Box::new(buffer_bytes.start(h, d.handle))
         var shown: Vec<u8> = Vec::new()
         loop {
             match sb.get_mut().resume() {

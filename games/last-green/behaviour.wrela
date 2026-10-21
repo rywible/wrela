@@ -9,15 +9,15 @@
 
 use engine::creature::{MAX_BONES, Skeleton}
 use engine::footing::{Obstacles, stands}
-use engine::gait::{Body, Path, Walk, Walker, body, body_frame, stand, step}
+use engine::gait::{Body, Path, Walk, Walker, stand, step}
 use engine::noise::rand
 use engine::place::Water
 use engine::present::short_way
-use engine::render::{Palette, bone_matrix}
+use engine::render::bone_matrix
 use engine::senses::{Awareness, Occluders, Presence, Senses, sense}
 use engine::sim::{SimState, Transform}
-use engine::terrain::Terrain
-use fawn::creature::skeleton
+use engine::terrain::{Flat, Terrain}
+use fawn::creature::{skeleton, walker_body}
 use fawns::{HEAD_LIFT, NECK_LEAN, SIZE}
 use std::hash::StateHash
 use std::math::TAU
@@ -57,27 +57,7 @@ pub const GLADE = vec3(141.2, 38.1, -1.4)
 /// The fawn's skeleton at its size, and its body for walking: springs on its neck (to its head)
 /// and its tail, as the clearing's.
 pub const SKELETON: Skeleton = skeleton().scaled(SIZE)
-pub const BODY: Body = walker_body()
-
-fn walker_body() -> Body {
-    let s = SKELETON
-    let head = [
-        s.find("neck 0"),
-        s.find("neck 1"),
-        s.find("neck 2"),
-        s.find("neck 3"),
-        s.find("head"),
-    ]
-    let tail = [
-        s.find("tail 0"),
-        s.find("tail 1"),
-        s.find("tail 2"),
-        s.find("tail 3"),
-        s.find("tail 4"),
-        s.find("tail 5"),
-    ]
-    body(s, head, tail, head_k: 90.0, tail_k: 40.0)
-}
+pub const BODY: Body = walker_body(SKELETON, head_k: 90.0, tail_k: 40.0)
 
 /// How it senses: watching, it sees a moving player at 70 m, keen within 50° of where its head
 /// turns and half as keen out to 150°; grazing, its eyes down in the grass, it sees less far and
@@ -411,13 +391,22 @@ fn neck_bones() -> [u32; 5] {
     ]
 }
 
+/// Where its neck's base and its poll are at rest, at the grazer's size (`palette` turns its
+/// neck and its head about them).
+const NECK_BASE: vec3 = rest_of("neck 0")
+const POLL: vec3 = rest_of("head")
+
+fn rest_of(name: Text) -> vec3 {
+    let s = skeleton()
+    s.rest(s.find(name))
+}
+
 /// Its palette as `f` stands, in the world less `origin` (render space): its walker's pose
 /// (`gait::palette`, at its size), its neck leaned forward and pitched down by its neck's pitch
 /// about its base, turned there by most of its neck's turn and at the poll by the rest, and its
 /// head lifted at the poll as the lookbook's fawn stands (`fawns::at_rest`).
 pub fn palette(f: Fawn, origin: vec3) -> [mat4; MAX_BONES] {
     let s = SKELETON
-    let rest = skeleton()
     let posed = engine::gait::palette(s, BODY, f.walker)
     let to_render = std::transform::translate(-origin)
     let grow = scale(vec3(SIZE))
@@ -432,15 +421,10 @@ pub fn palette(f: Fawn, origin: vec3) -> [mat4; MAX_BONES] {
     let x = vec3(1.0, 0.0, 0.0)
     let y = vec3(0.0, 1.0, 0.0)
     let base = Quat::axis_angle(y, 0.7 * f.neck.y).mul(Quat::axis_angle(x, NECK_LEAN + f.neck.x))
-    turn_about(
-        mut bones,
-        NECK,
-        rest.rest(rest.find("neck 0")),
-        frame.mul(base).mul(frame.inverse()),
-    )
+    turn_about(mut bones, NECK, NECK_BASE, frame.mul(base).mul(frame.inverse()))
     let poll = Quat::axis_angle(y, 0.3 * f.neck.y).mul(Quat::axis_angle(x, -HEAD_LIFT))
     let head = [NECK[4]]
-    turn_about(mut bones, head, rest.rest(rest.find("head")), frame.mul(poll).mul(frame.inverse()))
+    turn_about(mut bones, head, POLL, frame.mul(poll).mul(frame.inverse()))
     bones
 }
 
@@ -467,33 +451,6 @@ pub fn report(f: Fawn) -> String {
 
 // ---- tests ---------------------------------------------------------------------------------------
 
-/// Level open ground with nothing on it, and no water: for the tests (here and `encounter`).
-pub struct Flat: Copy + GpuData {}
-
-impl Terrain for Flat {
-    fn height(self, x: f32, z: f32) -> f32 {
-        0.0
-    }
-
-    fn cover(self, at: vec3, n: vec3) -> engine::terrain::Cover {
-        engine::terrain::Cover { albedo: vec3(0.0), grass: 0.0 }
-    }
-}
-
-impl engine::grow::Ground for Flat {
-    fn height(self, x: f32, z: f32) -> f32 {
-        0.0
-    }
-
-    fn past_edge(self, p: vec2) -> f32 {
-        -1.0e9
-    }
-
-    fn rock(self, p: vec2) -> f32 {
-        0.0
-    }
-}
-
 /// Nothing hides anything: for the tests (here and `encounter`).
 pub struct Open: Copy {}
 
@@ -504,12 +461,8 @@ impl Occluders for Open {
     }
 }
 
-pub const DRY = Water {
-    meres: [vec4(0.0); 2],
-    springs: [vec2(0.0); 8],
-    spring_count: 0,
-    falls: [vec2(0.0); 2],
-}
+/// No water: for the tests (here and `encounter`).
+pub const DRY = Water {}
 
 /// The player in the tests: where it is on the plane, and its motion.
 struct Walking: Copy {

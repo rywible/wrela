@@ -254,10 +254,10 @@ impl Score {
         // A chord may list its pitches in any order. Sort after parsing so ties and marks
         // keep the note indexes they used, and the merge receives notes in key order.
         notes.sort_by(|a, b| before(a, b))
-        s.notes = merge_notes(s.notes, notes)
-        s.dynamics = merge_dynamics(s.dynamics, r.dynamics)
-        s.hairpins = merge_hairpins(s.hairpins, r.hairpins)
-        s.pedal = merge_pedal(s.pedal, r.pedal)
+        s.notes = merge(s.notes, notes, before)
+        s.dynamics = merge(s.dynamics, r.dynamics, |x, y| x.at < y.at)
+        s.hairpins = merge(s.hairpins, r.hairpins, |x, y| x.from < y.from)
+        s.pedal = merge(s.pedal, r.pedal, |x, y| x.at < y.at)
         s
     }
 
@@ -296,7 +296,7 @@ impl Score {
         }
         // Remapping voices can reverse notes at the same tick; merge needs each input sorted.
         notes.sort_by(|a, b| before(a, b))
-        s.notes = merge_notes(s.notes, notes)
+        s.notes = merge(s.notes, notes, before)
         for d in next.dynamics {
             s.dynamics.push(Dynamic { at: d.at + offset, level: d.level })
         }
@@ -354,60 +354,14 @@ fn before(a: Note, b: Note) -> bool {
     a.key < b.key
 }
 
-fn merge_notes(a: Vec<Note>, b: Vec<Note>) -> Vec<Note> {
-    var out: Vec<Note> = Vec::with_capacity(a.len() + b.len())
+/// `a` and `b`, each sorted by `before`, merged into one sorted run: where neither goes before
+/// the other, `a`'s first.
+fn merge<T: Copy>(a: Vec<T>, b: Vec<T>, before: fn(T, T) -> bool) -> Vec<T> {
+    var out: Vec<T> = Vec::with_capacity(a.len() + b.len())
     var i = 0
     var j = 0
     while i < a.len() || j < b.len() {
         if j == b.len() || (i < a.len() && !before(b[j], a[i])) {
-            out.push(a[i])
-            i += 1
-        } else {
-            out.push(b[j])
-            j += 1
-        }
-    }
-    out
-}
-
-fn merge_dynamics(a: Vec<Dynamic>, b: Vec<Dynamic>) -> Vec<Dynamic> {
-    var out: Vec<Dynamic> = Vec::with_capacity(a.len() + b.len())
-    var i = 0
-    var j = 0
-    while i < a.len() || j < b.len() {
-        if j == b.len() || (i < a.len() && a[i].at <= b[j].at) {
-            out.push(a[i])
-            i += 1
-        } else {
-            out.push(b[j])
-            j += 1
-        }
-    }
-    out
-}
-
-fn merge_hairpins(a: Vec<Hairpin>, b: Vec<Hairpin>) -> Vec<Hairpin> {
-    var out: Vec<Hairpin> = Vec::with_capacity(a.len() + b.len())
-    var i = 0
-    var j = 0
-    while i < a.len() || j < b.len() {
-        if j == b.len() || (i < a.len() && a[i].from <= b[j].from) {
-            out.push(a[i])
-            i += 1
-        } else {
-            out.push(b[j])
-            j += 1
-        }
-    }
-    out
-}
-
-fn merge_pedal(a: Vec<PedalMark>, b: Vec<PedalMark>) -> Vec<PedalMark> {
-    var out: Vec<PedalMark> = Vec::with_capacity(a.len() + b.len())
-    var i = 0
-    var j = 0
-    while i < a.len() || j < b.len() {
-        if j == b.len() || (i < a.len() && a[i].at <= b[j].at) {
             out.push(a[i])
             i += 1
         } else {

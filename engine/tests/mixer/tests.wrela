@@ -4,6 +4,7 @@
 // and writes `results/audio.f32`).
 
 use hosts::both::{bytes_of, file_bytes, in_chrome}
+use hosts::steps::sample
 use std::collections::{Box, Vec}
 use std::io::print
 use std::job::Step
@@ -22,19 +23,20 @@ const MIXED_HASH: Text = "791d08e6bc49c2d7"
 /// The package built into `scratch/mixer`.
 @job
 fn built() -> bool {
-    var b = toolchain::build("repo/engine/tests/mixer", "scratch/mixer", toolchain::options())
-    var got = b.poll()
-    while got.is_none() {
-        yield
-        got = b.poll()
+    var b = Box::new(
+        hosts::steps::built.start(
+            String::from("repo/engine/tests/mixer"),
+            String::from("scratch/mixer"),
+            toolchain::options(),
+            String::from("the mixer builds"),
+        ),
+    )
+    loop {
+        match b.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(v) => return v,
+        }
     }
-    let Some(bp) = take got else { panic("no answer") }
-    let Ok(build) = toolchain::read_built(take bp) else { panic("the build's request") }
-    for d in build.diagnostics {
-        assert(!d.error, d.rendered.as_str())
-    }
-    assert(build.ok, "the mixer builds")
-    true
 }
 
 /// The mixer's second from the native host: `f32`s, little-endian, left and right interleaved.
@@ -95,17 +97,6 @@ fn mixed() -> Vec<u8> {
         yield
     }
     out
-}
-
-/// Sample `i` of `bytes`, little-endian `f32`s.
-fn sample(bytes: [u8], i: u32) -> f32 {
-    let at = 4 * i
-    bitcast_f32(
-        u32(bytes[at]) |
-            (u32(bytes[at + 1]) << 8) |
-            (u32(bytes[at + 2]) << 16) |
-            (u32(bytes[at + 3]) << 24),
-    )
 }
 
 /// FNV-1a 64 of `bytes`, as 16 hex digits (the hosts' state hash's).

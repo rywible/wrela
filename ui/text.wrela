@@ -249,12 +249,12 @@ impl Font {
     /// (kerned), until `visit` returns false. The pen after the last glyph laid out.
     pub fn walk(self, text: str, size: f32, pen: f32, visit: fn(u32, u32, f32) -> bool) -> f32 {
         var x = pen
-        var prev = 4294967295
+        var prev = NONE
         var i = 0
         while i < text.len() {
             let next = next_cluster(text, i)
             let g = self.group_glyph(text, i, next)
-            if prev != 4294967295 {
+            if prev != NONE {
                 x += self.kern(prev, g) * size
             }
             if !visit(i, g, x) {
@@ -610,16 +610,12 @@ fn pack(font: mut Font, width: u32, start: u32) -> u32 {
 impl Fonts {
     /// Both fonts, their glyphs placed in an atlas 1024 texels wide.
     pub fn load() -> Fonts {
-        var sans = Font::of(Face::Sans)
-        var mono = Font::of(Face::Mono)
-        let width = 1024
-        let mid = pack(mut sans, width, 1)
-        let baked = pack(mut mono, width, mid)
-        Fonts { sans, mono, width, height: baked + MADE_ROWS, baked, shelf: vec3u(1, baked, 0) }
+        Fonts::from_baked(SANS, MONO)
     }
 
     /// Fonts of two baked faces of the program's choice: `Face::Sans` draws with the first and
-    /// `Face::Mono` with the second. `load` gives the default pair, Inter and JetBrains Mono.
+    /// `Face::Mono` with the second, their glyphs placed in an atlas 1024 texels wide. `load`
+    /// gives the default pair, Inter and JetBrains Mono.
     pub fn from_baked(first: Baked, second: Baked) -> Fonts {
         var sans = Font::from_baked(first)
         var mono = Font::from_baked(second)

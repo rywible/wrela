@@ -9,18 +9,17 @@
 // types. What the lens needs of the floor comes as functions (the program `wrela tool studio`
 // writes round it passes them): the map, the ground's height, and the preview.
 
+use engine::grow::Grid
 use engine::interest::{FAINT, Preview, Walk, views_grid}
 use engine::landform::{Landform, PlaceKind, Survey, landform}
-use engine::place::{Map, Relation}
-use std::collections::Vec
+use engine::place::Map
 use std::gpu::{Rgba8, Texture, begin_screen_pass, draw, texture}
 use std::input::{Button, Event, Key, events}
 use std::io::print
-use std::lift::{Literal, file_name, file_text, gradient, reads}
+use std::lift::{Literal, file_name, file_text, reads}
 use std::par::Task
-use std::string::String
 use std::time::now
-use studio::json::{List, list, obj}
+use studio::json::{list, obj}
 use studio::view::{BACKGROUND, cover_area, show_canvas}
 use ui::draw::{Rect, Renderer}
 use ui::text::{Face, Fonts, previous}
@@ -66,8 +65,8 @@ pub struct MapLens {
     /// The literals moved since the build, and the write of them on its way.
     pub moved: Vec<Literal>,
     pub writing: Option<std::io::Pending<u8>>,
-    /// Where the pointer went down, and the item there.
-    pub press: Option<(vec2, Item)>,
+    /// Where the pointer went down, and the item there, if any.
+    pub press: Option<(vec2, Option<Item>)>,
     /// The command being typed, the commands typed while the lens was busy (each runs when it
     /// isn't, in order, so a session's answers don't depend on how fast its frames come), the
     /// labels' toolkit and its renderer, and how many answers.
@@ -708,6 +707,15 @@ fn ground_colour(p: Preview, c: u32, shade: f32) -> vec3 {
     trail * shade * unwalkable
 }
 
+/// How the relief of `heights` (on `g`) at `q` faces a light from the north-west: 0 to 1.
+fn lit(g: Grid, heights: [f32], q: vec2) -> f32 {
+    let e = g.cell
+    let dx = g.sample(heights, q + vec2(e, 0.0)) - g.sample(heights, q - vec2(e, 0.0))
+    let dz = g.sample(heights, q + vec2(0.0, e)) - g.sample(heights, q - vec2(0.0, e))
+    let n = normalize(vec3(-dx, 2.0 * e, -dz))
+    max(dot(n, normalize(vec3(-1.0, 1.4, -1.0))), 0.0)
+}
+
 /// Layer `layer` of the geology `s` at `q` (in its grid), as a colour; `range`, its surface's
 /// lowest and highest (m).
 fn stratum_colour(s: Survey, layer: u32, q: vec2, range: vec2) -> vec3 {
@@ -717,11 +725,7 @@ fn stratum_colour(s: Survey, layer: u32, q: vec2, range: vec2) -> vec3 {
     let col = if layer == 1 {
         // The relief, lit from the north-west, tinted from the valleys' green through brown and
         // grey to white on the heights.
-        let e = g.cell
-        let dx = g.sample(s.surface, q + vec2(e, 0.0)) - g.sample(s.surface, q - vec2(e, 0.0))
-        let dz = g.sample(s.surface, q + vec2(0.0, e)) - g.sample(s.surface, q - vec2(0.0, e))
-        let n = normalize(vec3(-dx, 2.0 * e, -dz))
-        let shade = 0.35 + 0.65 * max(dot(n, normalize(vec3(-1.0, 1.4, -1.0))), 0.0)
+        let shade = 0.35 + 0.65 * lit(g, s.surface, q)
         let t = saturate((g.sample(s.surface, q) - range.x) / max(range.y - range.x, 1.0))
         let tint = if t < 0.35 {
             mix(vec3(0.25, 0.4, 0.2), vec3(0.45, 0.4, 0.25), vec3(t / 0.35))
@@ -792,10 +796,7 @@ fn draw_image(lens: mut MapLens, m: Map) {
                         vec3(0.12, 0.12, 0.14)
                     }
                     let o = (y * w + x) * 4
-                    let rgb = sqrt(clamp(col, vec3(0.0), vec3(1.0)))
-                    px[o] = u8(rgb.x * 255.0)
-                    px[o + 1] = u8(rgb.y * 255.0)
-                    px[o + 2] = u8(rgb.z * 255.0)
+                    put_rgb(mut px, o, col)
                     px[o + 3] = 255
                 }
             }
@@ -812,14 +813,7 @@ fn draw_image(lens: mut MapLens, m: Map) {
                     let c = g.cell_at(q)
                     if (lens.layers & GROUND) != 0 {
                         // The relief, lit from the north-west.
-                        let e = g.cell
-                        let dx = g.sample(s.ground, q + vec2(e, 0.0)) -
-                            g.sample(s.ground, q - vec2(e, 0.0))
-                        let dz = g.sample(s.ground, q + vec2(0.0, e)) -
-                            g.sample(s.ground, q - vec2(0.0, e))
-                        let n = normalize(vec3(-dx, 2.0 * e, -dz))
-                        let shade = 0.55 + 0.45 * max(dot(n, normalize(vec3(-1.0, 1.4, -1.0))), 0.0)
-                        col = ground_colour(p, c, shade)
+                        col = ground_colour(p, c, 0.55 + 0.45 * lit(g, s.ground, q))
                     } else {
                         col = vec3(0.3)
                     }
@@ -838,10 +832,7 @@ fn draw_image(lens: mut MapLens, m: Map) {
                     }
                 }
                 let o = (y * w + x) * 4
-                let rgb = sqrt(clamp(col, vec3(0.0), vec3(1.0)))
-                px[o] = u8(rgb.x * 255.0)
-                px[o + 1] = u8(rgb.y * 255.0)
-                px[o + 2] = u8(rgb.z * 255.0)
+                put_rgb(mut px, o, col)
                 px[o + 3] = 255
             }
         }
@@ -861,18 +852,23 @@ fn draw_image(lens: mut MapLens, m: Map) {
     lens.dirty = false
 }
 
+/// Writes `col` (linear, clamped, then a square root's gamma) as the RGB of the pixel at byte
+/// `o` of an RGBA8 image.
+fn put_rgb(px: mut Vec<u8>, o: u32, col: vec3) {
+    let rgb = sqrt(clamp(col, vec3(0.0), vec3(1.0)))
+    px[o] = u8(rgb.x * 255.0)
+    px[o + 1] = u8(rgb.y * 255.0)
+    px[o + 2] = u8(rgb.z * 255.0)
+}
+
 /// A filled dot of radius `r` pixels at `at` in an RGBA8 image `w` by `h`.
 fn dot_into(px: mut Vec<u8>, w: u32, h: u32, at: vec2, r: f32, col: vec3) {
-    let rgb = sqrt(clamp(col, vec3(0.0), vec3(1.0)))
     let lo = vec2i(floor(at - vec2(r)))
     let hi = vec2i(ceil(at + vec2(r)))
     for y in max(lo.y, 0)..min(hi.y + 1, i32(h)) {
         for x in max(lo.x, 0)..min(hi.x + 1, i32(w)) {
             if length(vec2(f32(x) + 0.5, f32(y) + 0.5) - at) <= r {
-                let o = (u32(y) * w + u32(x)) * 4
-                px[o] = u8(rgb.x * 255.0)
-                px[o + 1] = u8(rgb.y * 255.0)
-                px[o + 2] = u8(rgb.z * 255.0)
+                put_rgb(mut px, (u32(y) * w + u32(x)) * 4, col)
             }
         }
     }
@@ -1041,20 +1037,13 @@ pub fn frame(
             },
             Event::PointerDown { at, button, .. } => {
                 if button == Button::Primary {
-                    lens.press = match item_under(lens, map(), at, 12.0) {
-                        Some(it) => Some((at, it)),
-                        None => Some((at, Item::Site { i: 4294967295 })),
-                    }
+                    lens.press = Some((at, item_under(lens, map(), at, 12.0)))
                 }
             },
             Event::PointerUp { at, button, .. } => {
                 if button == Button::Primary {
                     if let Some((from, it)) = std::collections::replace(mut lens.press, None) {
-                        let held = match it {
-                            Item::Site { i } => i != 4294967295,
-                            _ => true,
-                        }
-                        if held && length(at - from) > 3.0 {
+                        if it.is_some() && length(at - from) > 3.0 {
                             drag(mut lens, map, start, from.x, from.y, at.x, at.y)
                         } else {
                             click(mut lens, map, from.x, from.y)
@@ -1099,19 +1088,10 @@ pub fn command(
     line: str,
 ) {
     var words: Vec<String> = Vec::new()
-    var word = String::new()
-    for i in 0..line.len() {
-        let b = line.byte(i)
-        if b == 32 {
-            if !word.is_empty() {
-                words.push(std::collections::replace(mut word, String::new()))
-            }
-        } else {
-            word.push_byte(b)
+    for (a, b) in line.split(" ") {
+        if b > a {
+            words.push(String::from(line.slice(a, b)))
         }
-    }
-    if !word.is_empty() {
-        words.push(take word)
     }
     if words.is_empty() {
         return

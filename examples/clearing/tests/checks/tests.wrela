@@ -5,15 +5,14 @@
 // clearing on the CPU at 320 × 180, its frames in lockstep with its ticker, so two runs draw the
 // same; the static shadows' test counts the draws its recorded commands make.
 
+use hosts::steps::{recorded, text_of}
 use std::collections::{Box, Vec}
 use std::input::Script
 use std::job::Step
 use std::json::{Doc, TOP, parse}
 use std::string::String
-use std::tool::answer
 use std::tool::drive
 use std::tool::drive::{Recorded, Scalar}
-use std::tool::files
 use std::tool::toolchain
 
 /// The output's size.
@@ -78,39 +77,25 @@ struct Pipeline: Clone {
     wgsl: String,
 }
 
-/// The text of the file at `path`.
-@job
-fn text_of(path: take String) -> String {
-    var r = files::read(path.as_str())
-    var got = r.poll()
-    while got.is_none() {
-        yield
-        got = r.poll()
-    }
-    let Some(rp) = take got else { panic("no answer") }
-    let Ok(bytes) = answer(take rp) else { panic(f"{path.as_str()} reads") }
-    let Some(text) = String::from_utf8(take bytes) else { panic(f"{path.as_str()} isn't UTF-8") }
-    text
-}
-
 /// The clearing, built as a test build into `scratch/clearing`.
 @job
 fn built() -> bool {
     var options = toolchain::options()
     options.testing = true
-    var b = toolchain::build("repo/examples/clearing", "scratch/clearing", options)
-    var got = b.poll()
-    while got.is_none() {
-        yield
-        got = b.poll()
+    var b = Box::new(
+        hosts::steps::built.start(
+            String::from("repo/examples/clearing"),
+            String::from("scratch/clearing"),
+            take options,
+            String::from("the clearing builds"),
+        ),
+    )
+    loop {
+        match b.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(v) => return v,
+        }
     }
-    let Some(bp) = take got else { panic("no answer") }
-    let Ok(build) = toolchain::read_built(take bp) else { panic("the build's request") }
-    for d in build.diagnostics {
-        assert(!d.error, d.rendered.as_str())
-    }
-    assert(build.ok, "the clearing builds")
-    true
 }
 
 /// The text of `key` of object `n`, or empty.
@@ -692,28 +677,6 @@ fn steps(h: take drive::Build, n: take u32) {
     let Ok(ran) = drive::read_ran(take fp) else { panic("the frames' request") }
     if let Some(trap) = ran.trap {
         panic(f"frame {trap.number}: {trap.message.as_str()}")
-    }
-}
-
-/// Every command recorded since the last time, however many answers they take.
-@job
-fn recorded(h: take drive::Build) -> Vec<Recorded> {
-    var out: Vec<Recorded> = Vec::new()
-    loop {
-        var c = drive::commands(h)
-        var got = c.poll()
-        while got.is_none() {
-            yield
-            got = c.poll()
-        }
-        let Some(cp) = take got else { panic("no answer") }
-        let Ok(r) = drive::read_commands(take cp) else { panic("the commands") }
-        for k in 0..r.commands.len() {
-            out.push(r.commands[k].clone())
-        }
-        if r.waiting == 0 {
-            return out
-        }
     }
 }
 

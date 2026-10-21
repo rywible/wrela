@@ -4,3 +4,6 @@
 # it through `std::tool::toolchain` with the workspace's packages read for its dependencies.
 [package]
 name = "last_green_map"
+
+[dependencies]
+hosts = { workspace = true }

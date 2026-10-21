@@ -3,13 +3,12 @@
 // its own and loaded on the CPU for each case, recording its commands: which slot the export
 // goes to and whether its reply succeeds.
 
+use hosts::steps::{recorded, text_of, written}
 use std::collections::{Box, Vec}
 use std::job::Step
 use std::string::String
-use std::tool::answer
 use std::tool::drive
 use std::tool::drive::{Recorded, Scalar}
-use std::tool::files
 use std::tool::toolchain
 use std::tool::toolchain::Override
 
@@ -97,32 +96,20 @@ const FIXTURE: [Text; 73] = [
     "",
 ]
 
-/// Writes `text` at `path`.
-@job
-fn written(path: take String, text: take String) {
-    var w = files::write(path.as_str(), text.as_bytes())
-    var got = w.poll()
-    while got.is_none() {
-        yield
-        got = w.poll()
-    }
-    let Some(wp) = take got else { panic("no answer") }
-    assert(answer(take wp).is_ok(), f"{path.as_str()} is written")
-}
-
 /// The fixture package, written into `scratch/session` and built into `scratch/build`.
 @job
 fn built() -> bool {
-    var r = files::read("repo/games/last-green/session/main.wrela")
-    var read = r.poll()
-    while read.is_none() {
-        yield
-        read = r.poll()
+    var r = Box::new(text_of.start(String::from("repo/games/last-green/session/main.wrela")))
+    var main = String::new()
+    loop {
+        match r.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(v) => {
+                main = take v
+                break
+            },
+        }
     }
-    let Some(rp) = take read else { panic("no answer") }
-    let Ok(bytes) = answer(take rp) else { panic("the session's main.wrela reads") }
-    let Some(session) = String::from_utf8(take bytes) else { panic("main.wrela is UTF-8") }
-    var main = take session
     for k in 0..FIXTURE.len() {
         if k > 0 {
             main.push_str("\n")
@@ -136,15 +123,17 @@ fn built() -> bool {
             Step::Done(_) => break,
         }
     }
-    var t = files::read("repo/games/last-green/session/wrela.toml")
-    var tr = t.poll()
-    while tr.is_none() {
-        yield
-        tr = t.poll()
+    var t = Box::new(text_of.start(String::from("repo/games/last-green/session/wrela.toml")))
+    var manifest = String::new()
+    loop {
+        match t.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(v) => {
+                manifest = take v
+                break
+            },
+        }
     }
-    let Some(tp) = take tr else { panic("no answer") }
-    let Ok(tb) = answer(take tp) else { panic("the session's manifest reads") }
-    let Some(manifest) = String::from_utf8(take tb) else { panic("its manifest is UTF-8") }
     var w = Box::new(written.start(String::from("scratch/session/wrela.toml"), take manifest))
     loop {
         match w.get_mut().resume() {
@@ -159,19 +148,20 @@ fn built() -> bool {
     options.overrides.push(
         Override { name: String::from("platform"), dir: String::from("repo/platform") },
     )
-    var b = toolchain::build("scratch/session", "scratch/build", options)
-    var got = b.poll()
-    while got.is_none() {
-        yield
-        got = b.poll()
+    var b = Box::new(
+        hosts::steps::built.start(
+            String::from("scratch/session"),
+            String::from("scratch/build"),
+            take options,
+            String::from("the session fixture builds"),
+        ),
+    )
+    loop {
+        match b.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(v) => return v,
+        }
     }
-    let Some(bp) = take got else { panic("no answer") }
-    let Ok(build) = toolchain::read_built(take bp) else { panic("the build's request") }
-    for d in build.diagnostics {
-        assert(!d.error, d.rendered.as_str())
-    }
-    assert(build.ok, "the session fixture builds")
-    true
 }
 
 /// The build, loaded on the CPU recording its commands, `init` run.
@@ -216,41 +206,6 @@ fn called(h: take drive::Build, name: take String, args: take Vec<Scalar>) -> Ve
         panic(f"{name.as_str()}: {trap.message.as_str()}")
     }
     take ran.results
-}
-
-/// Every command recorded since the last time, however many answers they take.
-@job
-fn recorded(h: take drive::Build) -> Vec<Recorded> {
-    var out: Vec<Recorded> = Vec::new()
-    loop {
-        var c = drive::commands(h)
-        var got = c.poll()
-        while got.is_none() {
-            yield
-            got = c.poll()
-        }
-        let Some(cp) = take got else { panic("no answer") }
-        let Ok(r) = drive::read_commands(take cp) else { panic("the commands") }
-        for k in 0..r.commands.len() {
-            out.push(r.commands[k].clone())
-        }
-        if r.waiting == 0 {
-            return out
-        }
-    }
-}
-
-/// Whether two byte strings are the same.
-fn same(a: [u8], b: [u8]) -> bool {
-    if a.len() != b.len() {
-        return false
-    }
-    for i in 0..a.len() {
-        if a[i] != b[i] {
-            return false
-        }
-    }
-    true
 }
 
 /// Console policy is Wrela: exporting a recovered save acknowledges only a successful reply,
@@ -342,7 +297,7 @@ fn exporting_a_recovered_save_acknowledges_only_a_successful_reply() {
             }
             assert(expected.len() == 1, "one current recovery envelope")
             assert(
-                backup.len() == expected.len() && same(backup[0], expected[0]),
+                backup.len() == expected.len() && backup[0] == expected[0],
                 "New game backs up the current recovered continuation",
             )
         }

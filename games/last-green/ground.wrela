@@ -60,13 +60,15 @@ pub fn fought(xz: vec2, w: f32) -> f32 {
     max(disc, way)
 }
 
-pub const KNOLL = vec2(7.0, 33.0)
 pub const STAND = vec2(-1.5, 0.0)
 
 /// The gap in the forest at the clearing's edge, as angles from `STAND` (radians,
 /// `atan2(x, z)`).
 pub const GAP_FROM: f32 = -0.80
 pub const GAP_TO: f32 = -0.07
+
+/// The Watch's top, where the tower stands (`map`'s): granite, rocky and heathy.
+const WATCH = vec2(560.0, -470.0)
 
 /// Where the plateau's edge is, and the direction across it: beyond it, the land falls away.
 pub const EDGE = vec2(-24.0, 66.0)
@@ -128,9 +130,6 @@ fn plunge(p: vec2, y: f32) -> f32 {
     let sill = 0.6 * notch * exp(-(q - 1.12) * (q - 1.12) / 0.02)
     mix(bowl + sill, y, smoothstep(1.1, 1.9, q))
 }
-
-/// The worn track: a quadratic Bézier from the clearing's foot to the great tree (M5's).
-pub const TRACK = [vec2(-7.0, -2.0), vec2(-4.5, 17.0), vec2(4.0, 27.0)]
 
 /// How far `p` is past the plateau's edge (m; negative on the plateau).
 pub fn past_edge(p: vec2) -> f32 {
@@ -338,7 +337,7 @@ impl Ground {
         let open = within * smoothstep(2.0, 10.0, length(s))
         y += 3.0 * smoothstep(18.0, 60.0, r) * (1.0 - open)
         // The great tree's rise, and the rise the clearing's camera started on.
-        let k = p - KNOLL
+        let k = p - map::KNOLL
         y += 2.4 * exp(-dot(k, k) / 120.0)
         y += 3.2 * exp(-dot(s, s) / 260.0)
         // The map's shapes, faded out round the clearing, whose own layout holds there.
@@ -352,10 +351,10 @@ impl Ground {
     /// soil over it takes and the wood's floor's plants follow, and its colour.
     pub fn bedrock(self, p: vec2, y: f32, w: f32) -> (f32, vec3) {
         let fold = 7.0 * (fbm2_seen(p * 0.004 + vec2(3.0, 9.0), 2, w * 0.004) - 0.5)
-        let lay = y + dot(p, vec2(0.05, -0.035)) + fold
+        let lay = y + dot(p, BED_DIP) + fold
         let f = fract(lay / 18.0)
         let sand = smoothstep(0.18, 0.3, f) * smoothstep(0.78, 0.66, f)
-        let watch = 1.0 - smoothstep(30.0, 60.0, length(p - vec2(560.0, -470.0)))
+        let watch = 1.0 - smoothstep(30.0, 60.0, length(p - WATCH))
         let granite = max(self.land.crag_rock(p), watch)
         let acid = max(mix(0.15, 0.85, sand), granite)
         let beds = mix(vec3(0.19, 0.19, 0.205), vec3(0.31, 0.26, 0.19), vec3(sand))
@@ -375,14 +374,14 @@ impl Ground {
     pub fn treeless(self, p: vec2) -> bool {
         let y = self.at(p.x, p.y)
         let n = self.normal(p.x, p.y, 1.0)
-        self.rocky(p, n) > 0.5 || past_edge(p) > 10.0 && above_trees(p, y, 0.0) > 0.5
+        self.rocky(p, n) > 0.5 || past_edge(p) > 10.0 && above_trees(tree_line(p, y, 0.0)) > 0.5
     }
 
     /// How rocky the ground is at `p` (0 to 1): the crags and their scree, the Watch's granite top,
     /// and the ravine's walls (where `n`, the ground's normal, is steep).
     pub fn rocky(self, p: vec2, n: vec3) -> f32 {
         var bald = self.land.crag_rock(p)
-        let w = length(p - vec2(560.0, -470.0)) + 8.0 * noise2(p * 0.09)
+        let w = length(p - WATCH) + 8.0 * noise2(p * 0.09)
         bald = max(bald, 0.75 * (1.0 - smoothstep(26.0, 40.0, w)))
         let steep = smoothstep(0.82, 0.62, n.y)
         // The plateau's scarp: its cliff, and the talus fallen from it at its foot, stony,
@@ -393,11 +392,16 @@ impl Ground {
     }
 }
 
-/// How far past the tree line the land at `xz`, `y` high, is, as a sample `w` metres across sees it
-/// (0 below it, 1 above it): it lies at about 345 m, higher and lower with a broad noise.
-fn above_trees(xz: vec2, y: f32, w: f32) -> f32 {
-    let high = y + 70.0 * (fbm2_seen(xz * 0.004 + vec2(2.0, 8.0), 3, w * 0.004) - 0.5)
+/// How far past the tree line land `high` up (`tree_line`) is (0 below it, 1 above it): it lies
+/// at about 345 m.
+fn above_trees(high: f32) -> f32 {
     smoothstep(330.0, 360.0, high)
+}
+
+/// The land's height at `xz`, `y` high, as the mountain's belts read it, as a sample `w` metres
+/// across sees it: higher and lower with a broad noise, so their edges are broken, not blurred.
+fn tree_line(xz: vec2, y: f32, w: f32) -> f32 {
+    y + 70.0 * (fbm2_seen(xz * 0.004 + vec2(2.0, 8.0), 3, w * 0.004) - 0.5)
 }
 
 /// The light at the ground (the history's, `engine::bake::tile_fields`) under which the canopy is
@@ -520,8 +524,8 @@ impl Ground {
         // one grey-green had no material boundaries: pass 1): the woods below the tree line; above
         // it, high pasture; rock on the steep, scree fanned under it, snow high on what's not
         // steep. Each edge broken by a broad noise, not blurred.
-        let high = at.y + 70.0 * (fbm2_seen(xz * 0.004 + vec2(2.0, 8.0), 3, w * 0.004) - 0.5)
-        let alpine = above_trees(xz, at.y, w) * down
+        let high = tree_line(xz, at.y, w)
+        let alpine = above_trees(high) * down
         a = mix(a, mix(vec3(0.15, 0.16, 0.06), vec3(0.20, 0.18, 0.09), vec3(patches)), vec3(alpine))
         let lean = n.y + 0.1 * (noise2_seen(xz * 0.012, w * 0.012) - 0.5)
         let up = smoothstep(180.0, 240.0, high) * down
@@ -542,7 +546,7 @@ impl Ground {
             smoothstep(
                 30.0,
                 55.0,
-                length(xz - vec2(560.0, -470.0)) + 10.0 * noise2_seen(xz * 0.07, w * 0.07),
+                length(xz - WATCH) + 10.0 * noise2_seen(xz * 0.07, w * 0.07),
             )
         a = mix(
             a,
@@ -1211,7 +1215,7 @@ fn creek_bank_viewpoint_stays_connected_to_its_outer_rim() {
     let no_streams: Vec<engine::grow::Stream> = Vec::new()
     let obstacles = engine::footing::obstacles_of(
         no_trees,
-        species::habits(),
+        species::HABITS,
         no_streams,
         stones::stones(m),
         stones::walls(m),
@@ -1250,17 +1254,7 @@ fn creek_bank_viewpoint_stays_connected_to_its_outer_rim() {
 /// stay bare, while its gentle soil pockets can root plants without relying on wetness.
 @test
 fn dry_ravine_rim_exposes_soil_without_planting_its_cut_face() {
-    var land = Land {
-        hills: [vec4(0.0); 8],
-        hollows: [vec4(0.0); 8],
-        ridges: [vec4(0.0); 24],
-        ravines: [vec4(0.0); 16],
-        ravine_fall: 0.0,
-        crags: [vec4(0.0); 4],
-        ramps: vec4(0.0),
-        floors: vec4(0.0),
-        tilt: vec4(0.0),
-    }
+    var land = Land {}
     land.ravines[0] = vec4(-100.0, -300.0, 7.0, 10.0)
     land.ravines[1] = vec4(100.0, -300.0, 7.0, 10.0)
     let g = Ground { land }

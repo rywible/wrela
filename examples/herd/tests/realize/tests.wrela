@@ -6,19 +6,18 @@
 // vertices' order in the buffer, which slices change, doesn't matter, but the winding does),
 // sorted.
 
+use hosts::steps::{built, word}
 use std::collections::{Box, Vec}
 use std::io::print
 use std::job::Step
 use std::string::String
+use std::tool::MOST_BYTES
 use std::tool::answer
 use std::tool::blob
 use std::tool::blob::Data
 use std::tool::drive
 use std::tool::drive::Scalar
 use std::tool::toolchain
-
-/// The most bytes a blob read gives at once.
-const CHUNK: u64 = 524288
 
 /// A mesh's buffers, in the order `Mesh::new` makes them.
 const MESH_BUFFERS: u32 = 8
@@ -61,22 +60,20 @@ struct Ours {
 /// The package, built into `scratch/build`, loaded on the GPU, `init` run.
 @job
 fn opened() -> drive::Build {
-    var b = toolchain::build(
-        "repo/examples/herd/tests/realize",
-        "scratch/build",
-        toolchain::options(),
+    var b = Box::new(
+        built.start(
+            String::from("repo/examples/herd/tests/realize"),
+            String::from("scratch/build"),
+            toolchain::options(),
+            String::from("the package builds"),
+        ),
     )
-    var built = b.poll()
-    while built.is_none() {
-        yield
-        built = b.poll()
+    loop {
+        match b.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
     }
-    let Some(bp) = take built else { panic("no answer") }
-    let Ok(build) = toolchain::read_built(take bp) else { panic("the build's request") }
-    for d in build.diagnostics {
-        assert(!d.error, d.rendered.as_str())
-    }
-    assert(build.ok, "the package builds")
     var l = drive::load("scratch/build", drive::gpu())
     var loaded = l.poll()
     while loaded.is_none() {
@@ -130,7 +127,7 @@ fn bytes_of(h: take drive::Build, handle: take u32, most: take u64) -> Vec<u8> {
             let want = if most == 0 { size } else { min(size, most) }
             var at: u64 = 0
             while at < want {
-                let len = u32(min(want - at, CHUNK))
+                let len = u32(min(want - at, u64(MOST_BYTES)))
                 var p = blob::read(held, at, len)
                 var read = p.poll()
                 while read.is_none() {
@@ -151,15 +148,6 @@ fn bytes_of(h: take drive::Build, handle: take u32, most: take u64) -> Vec<u8> {
         },
     }
     out
-}
-
-/// Word `i` of `bytes`, little-endian.
-fn word(bytes: [u8], i: u32) -> u32 {
-    let at = 4 * i
-    u32(bytes[at]) |
-        (u32(bytes[at + 1]) << 8) |
-        (u32(bytes[at + 2]) << 16) |
-        (u32(bytes[at + 3]) << 24)
 }
 
 /// The export `name` called with `args`, which must not trap; then the mesh it realized, from
@@ -205,9 +193,9 @@ fn realized(h: take drive::Build, name: take String, args: take Vec<Scalar>) -> 
     let draw = word(parts[0], 0)
     let (nv, holes, flags, live) = (
         word(parts[1], 0),
-        word(parts[1], 1),
-        word(parts[1], 2),
-        word(parts[1], 5),
+        word(parts[1], 4),
+        word(parts[1], 8),
+        word(parts[1], 20),
     )
     var v = Box::new(bytes_of.start(h, held[first + 1], u64(nv) * u64(VERTEX_BYTES)))
     var verts: Vec<u8> = Vec::new()
@@ -235,10 +223,10 @@ fn realized(h: take drive::Build, name: take String, args: take Vec<Scalar>) -> 
     for t in 0..draw / 3 {
         var corners = [[0; 3]; 3]
         for k in 0..3 {
-            let index = word(quads, 3 * t + k)
+            let index = word(quads, 4 * (3 * t + k))
             assert(index < nv, f"triangle {t} names vertex {index} of {nv}")
             for c in 0..3 {
-                corners[k][c] = word(verts, index * (VERTEX_BYTES / 4) + c)
+                corners[k][c] = word(verts, index * VERTEX_BYTES + 4 * c)
             }
         }
         // The lowest corner, the first of equal ones.

@@ -1,8 +1,6 @@
 // The play: the hero, the things and the course, stepped 120 times a second so the game plays
 // the same at any frame rate. Nothing here draws or sounds: each step leaves cues for that.
-use level::{
-    AIR, BRICK, Course, GROUND, Kind, LEDGE, PRIZE, ROWS, SPIKES, Thing, USED, course, solid,
-}
+use level::{Course, Kind, LEDGE, PRIZE, SPIKES, Thing, USED, course, solid}
 
 pub const STEP: f32 = 1.0 / 120.0
 
@@ -561,7 +559,7 @@ fn come_back(w: mut World) {
 
 // ---- tests -------------------------------------------------------------------------------------
 
-// A world on the first course, the hero at `at`, the things cleared but `keep`'s kind.
+// A world on the first course, the hero at `at`, its things cleared.
 fn bare(at: vec2) -> World {
     var w = world(0)
     w.course.things.clear()

@@ -235,9 +235,7 @@ impl Camera {
     /// Where a world point was on the target last frame, in pixels (unjittered: as the history
     /// holds it).
     pub fn last_pixel(self, world: vec3) -> vec2 {
-        let c = self.last_view_proj * vec4(world, 1.0)
-        let ndc = c.xy / c.w
-        vec2((ndc.x * 0.5 + 0.5) * self.screen.x, (0.5 - ndc.y * 0.5) * self.screen.y)
+        self.pixel_of(self.last_view_proj * vec4(world, 1.0))
     }
 
     /// The angle between where it looks and its view's corners (radians).
@@ -247,7 +245,11 @@ impl Camera {
 
     /// Where a world point is on the target this frame, in pixels, unjittered.
     pub fn pixel(self, world: vec3) -> vec2 {
-        let c = self.view_proj * vec4(world, 1.0)
+        self.pixel_of(self.view_proj * vec4(world, 1.0))
+    }
+
+    /// Where clip position `c` is on the target, in pixels from its top left.
+    fn pixel_of(self, c: vec4) -> vec2 {
         let ndc = c.xy / c.w
         vec2((ndc.x * 0.5 + 0.5) * self.screen.x, (0.5 - ndc.y * 0.5) * self.screen.y)
     }

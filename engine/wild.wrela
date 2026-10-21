@@ -11,7 +11,7 @@
 // tile (`seam_error`).
 
 use grow::{Cause, Habit, NONE as NO_PIN, State, Tree}
-use noise::{fbm2, rand}
+use noise::{fbm2, rand, wrapped}
 use place::TILE
 
 /// The wildwood's cell (m), a tile's side in cells, the margin grown round a tile (cells), and
@@ -116,8 +116,8 @@ pub fn grow_wild(
                 let s = soils[j * n + i]
                 var out = c
                 // Wind: gaps from a coarse grid of events (64 m cells), keyed by the world.
-                let ei = (wi - ((wi % 16) + 16) % 16) / 16
-                let ej = (wj - ((wj % 16) + 16) % 16) / 16
+                let ei = (wi - wrapped(wi, 16)) / 16
+                let ej = (wj - wrapped(wj, 16)) / 16
                 var thrown = false
                 if draw(ei, ej, step: step, salt: 7) < 0.03 {
                     let centre = (vec2(f32(ei), f32(ej)) +

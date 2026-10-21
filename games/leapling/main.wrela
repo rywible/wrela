@@ -4,19 +4,18 @@
 // Keys: the arrows or A and D to move, Space, W, Z or the up arrow to jump, Shift or X to run,
 // Enter to start and to pause. A controller: the stick or pad, A to jump, X to run, Start.
 use engine::plant::full
-use letters::{Typeset, measure, typeset}
+use letters::{Typeset, typeset}
 use level::ROWS
 use look::{View, shade}
 use platform::presentation::Link
-use progress::{Progress, clock_text}
-use sim::{Controls, Cue, Phase, STEP, TALL, World, world}
+use progress::{Progress, SAVE, clock_text}
+use sim::{Controls, Cue, Phase, STEP, World, world}
 use std::audio::RingWriter
 use std::gpu::{GpuBuffer, begin_screen_pass, buffer_of, draw, write}
 use std::input::{Input, Key, PadButton}
 use std::reload::kept
 use std::serialize::save
 
-const SAVE: Text = "leapling/save"
 // How many cells high the view is.
 const VIEW_ROWS: f32 = 10.5
 const THINGS: u32 = 96
@@ -66,6 +65,7 @@ fn kept_progress() -> Progress {
 pub fn init() -> Game {
     let w = world(0)
     let start = w.course.start
+    let cells = w.course.cells.len() / 4 + 1
     Game {
         console: Link::new(),
         input: Input::new(),
@@ -79,7 +79,7 @@ pub fn init() -> Game {
         camera: vec2(start.x + 5.0, 5.25),
         ahead: 1.0,
         clock: 0.0,
-        cells: buffer_of(Vec::filled(156 * ROWS / 4 + 1, vec4(0.0))),
+        cells: buffer_of(Vec::filled(cells, vec4(0.0))),
         things: buffer_of(Vec::filled(THINGS * 2, vec4(0.0))),
         sparks: buffer_of(Vec::filled(SPARKS * 2, vec4(0.0))),
         bumps: buffer_of(Vec::filled(BUMPS, vec4(0.0))),
@@ -107,9 +107,9 @@ fn pad_bits(i: Input) -> u32 {
     bits
 }
 
-fn controls(g: mut Game) -> Controls {
+// The controls this frame, the controller's buttons held as `bits` (`pad_bits`).
+fn controls(g: mut Game, bits: u32) -> Controls {
     borrow i = g.input
-    let bits = pad_bits(i)
     let fresh = bits & !g.pads
     g.pads = bits
     let left = i.held(Key::Left) || i.held(Key::A) || (bits & 8) != 0
@@ -129,10 +129,6 @@ fn controls(g: mut Game) -> Controls {
     Controls { dir, jump, jumped, run }
 }
 
-fn start_pressed(g: Game) -> bool {
-    g.input.pressed(Key::Enter) || (pad_bits(g.input) & 4) != 0 && (g.pads & 4) == 0
-}
-
 // ---- the frame ---------------------------------------------------------------------------------
 
 pub fn frame(g: mut Game, time: f32, width: u32, height: u32) {
@@ -145,12 +141,13 @@ pub fn frame(g: mut Game, time: f32, width: u32, height: u32) {
     g.since += dt
     g.input.read()
     g.console.input(g.input)
-    let start = start_pressed(g)
+    let bits = pad_bits(g.input)
+    let pad_start = (bits & 4) != 0
+    let start = g.input.pressed(Key::Enter) || pad_start && (g.pads & 4) == 0
     // Escape pauses play; from the title, the pause or the results it goes back to the console.
     let escape = g.input.pressed(Key::Escape)
     if escape && g.mode != Mode::Play { g.console.returning = true }
-    let pad_start = (pad_bits(g.input) & 4) != 0
-    var c = controls(mut g)
+    var c = controls(mut g, bits)
     if !pad_start { g.pads = g.pads & !4 }
     match g.mode {
         Mode::Title => {
@@ -222,10 +219,10 @@ pub fn frame(g: mut Game, time: f32, width: u32, height: u32) {
 }
 
 fn finish(g: mut Game) {
-    let w = g.world.clone()
-    g.progress.cleared = max(g.progress.cleared, w.number + 1)
-    g.progress.coins += w.coins
-    if g.progress.best == 0.0 || w.clock < g.progress.best { g.progress.best = w.clock }
+    let clock = g.world.clock
+    g.progress.cleared = max(g.progress.cleared, g.world.number + 1)
+    g.progress.coins += g.world.coins
+    if g.progress.best == 0.0 || clock < g.progress.best { g.progress.best = clock }
     g.mode = Mode::Results
     g.since = 0.0
 }
@@ -246,17 +243,17 @@ fn follow(g: mut Game, dt: f32, width: u32, height: u32) {
 // ---- drawing -----------------------------------------------------------------------------------
 
 fn present(g: mut Game, width: u32, height: u32) {
-    let w = g.world.clone()
     let screen = vec2(f32(width), f32(height))
     let scale = screen.y / VIEW_ROWS
     // The course's cells, when they change.
-    if w.dirty {
+    if g.world.dirty {
+        borrow cells = g.world.course.cells
         var packed: Vec<vec4> = Vec::new()
         var i = 0
-        while i < w.course.cells.len() {
+        while i < cells.len() {
             var v = vec4(0.0)
             for k in 0..4 {
-                if i + k < w.course.cells.len() { v[k] = f32(w.course.cells[i + k]) }
+                if i + k < cells.len() { v[k] = f32(cells[i + k]) }
             }
             packed.push(v)
             i += 4
@@ -264,6 +261,8 @@ fn present(g: mut Game, width: u32, height: u32) {
         write(mut g.cells, 0, packed)
         g.world.dirty = false
     }
+    hud(mut g, screen)
+    borrow w = g.world
     // The things near the view.
     let reach = screen.x / scale * 0.5 + 4.0
     var things: Vec<vec4> = Vec::new()
@@ -298,11 +297,10 @@ fn present(g: mut Game, width: u32, height: u32) {
     }
     let bump_count = bumps.len()
     if !bumps.is_empty() { write(mut g.bumps, 0, bumps) }
-    hud(mut g, screen)
     let run_count = g.text.runs.len() / 2
     if !g.text.runs.is_empty() {
-        write(mut g.runs, 0, g.text.runs.clone())
-        write(mut g.segments, 0, g.text.segments.clone())
+        write(mut g.runs, 0, g.text.runs)
+        write(mut g.segments, 0, g.text.segments)
     }
     // The hero squashes as it lands and stretches as it rises.
     let h = w.hero
@@ -358,7 +356,7 @@ fn present(g: mut Game, width: u32, height: u32) {
 
 fn hud(g: mut Game, screen: vec2) {
     g.text.clear()
-    let w = g.world.clone()
+    let (coins, clock, phase) = (g.world.coins, g.world.clock, g.world.phase)
     let h = screen.y
     let small = h * 0.038
     let pad = h * 0.045
@@ -408,8 +406,8 @@ fn hud(g: mut Game, screen: vec2) {
             g.text.write("ESC  CONSOLE", vec2(pad, pad), small * 0.55, white, grey: 0.6)
         },
         _ => {
-            g.text.write(f"*{w.coins}", vec2(pad, pad), small, gold, glow: 4.0)
-            let t = clock_text(w.clock)
+            g.text.write(f"*{coins}", vec2(pad, pad), small, gold, glow: 4.0)
+            let t = clock_text(clock)
             g.text.write(t.as_str(), vec2(screen.x - pad, pad), small, white, glow: 3.0, align: 1.0)
             if g.mode == Mode::Play && g.since < 2.4 {
                 let fade = saturate((2.4 - g.since) * 2.0)
@@ -448,7 +446,7 @@ fn hud(g: mut Game, screen: vec2) {
                     align: 0.5,
                 )
             }
-            if w.phase == Phase::Clear && g.mode == Mode::Play {
+            if phase == Phase::Clear && g.mode == Mode::Play {
                 g.text.write(
                     "COURSE CLEAR!",
                     vec2(screen.x * 0.5, h * 0.22),
@@ -467,7 +465,7 @@ fn hud(g: mut Game, screen: vec2) {
                     glow: 14.0,
                     align: 0.5,
                 )
-                let t = clock_text(w.clock)
+                let t = clock_text(clock)
                 g.text.write(
                     f"TIME {t}",
                     vec2(screen.x * 0.5, h * 0.27),
@@ -477,7 +475,7 @@ fn hud(g: mut Game, screen: vec2) {
                     align: 0.5,
                 )
                 g.text.write(
-                    f"COINS {w.coins}",
+                    f"COINS {coins}",
                     vec2(screen.x * 0.5, h * 0.34),
                     small * 1.2,
                     gold,

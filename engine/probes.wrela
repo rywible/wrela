@@ -680,7 +680,7 @@ pub fn map_probes(
         return
     }
     let plane = id.x / cols
-    let (p, q) = if id.y == cols * LAYERS {
+    let (p, q) = if open_row {
         (open[0], open[1])
     } else {
         let i = grid.index(id.x % cols, id.y % cols, id.y / cols)

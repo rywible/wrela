@@ -17,7 +17,7 @@
 // The rays run on the GPU in passes, one evaluation of the field each (see view.wrela).
 
 use drag
-use json::{List, list, obj}
+use json::{list, obj}
 use lens::source_json
 use solve::{add_row, cholesky, derive, set, value}
 use std::collections::Vec

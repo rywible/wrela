@@ -15,6 +15,7 @@ use engine::terrain::{Cover, Terrain}
 use geology::{Bare, SQUARE, SQUARE_COLLAR, SQUARE_N, SQUARE_SOIL, WATER, WORLD}
 use lookbook::Shot
 use std::io::{Shipped, ship}
+use std::math::TAU
 
 // ---- the land as its water left it ---------------------------------------------------------------
 
@@ -148,11 +149,6 @@ impl Terrain for Grown {
 pub const LO: vec2 = vec2(tiles_lo()) * TILE
 pub const HI: vec2 = vec2(tiles_hi() + vec2i(1)) * TILE
 
-/// The square's far corner.
-fn square_hi() -> vec2 {
-    SQUARE.lo + vec2(f32(SQUARE.nx), f32(SQUARE.nz)) * SQUARE.cell
-}
-
 impl Ground for Grown {
     fn height(self, x: f32, z: f32) -> f32 {
         self.at(x, z)
@@ -164,26 +160,39 @@ impl Ground for Grown {
         -min(min(p.x - LO.x, HI.x - p.x), min(p.y - LO.y, HI.y - p.y))
     }
 
-    /// Whether a tree can stand at `p` (`ROCK`): 1 where none can, 0 where one can.
+    /// Whether a tree can stand at `p` (`ROCK`): 1 where none can (past `ROCKS` too), 0 where one
+    /// can.
     fn rock(self, p: vec2) -> f32 {
-        let i = vec2i(floor((p - ROCKS.lo) / ROCKS.cell))
-        if i.x < 0 || i.y < 0 || i.x >= i32(ROCKS.nx) || i.y >= i32(ROCKS.nz) {
-            return 1.0
+        match rocks_cell(p) {
+            Some(c) => if ROCK[c] { 1.0 } else { 0.0 },
+            None => 1.0,
         }
-        if ROCK[u32(i.y) * ROCKS.nx + u32(i.x)] { 1.0 } else { 0.0 }
     }
 }
 
 // ---- where no tree stands --------------------------------------------------------------------------
 
+/// The cell of `ROCKS` that holds `p`, if one does.
+fn rocks_cell(p: vec2) -> Option<u32> {
+    let i = ROCKS.ij(p)
+    if i.x < 0 || i.y < 0 || i.x >= i32(ROCKS.nx) || i.y >= i32(ROCKS.nz) {
+        return None
+    }
+    Some(u32(i.y) * ROCKS.nx + u32(i.x))
+}
+
 /// Whether `p` is on what no tree stands on (`HARD`).
 fn hard_at(p: vec2) -> bool {
-    let i = ROCKS.ij(p)
-    i.x >= 0 &&
-        i.y >= 0 &&
-        i.x < i32(ROCKS.nx) &&
-        i.y < i32(ROCKS.nz) &&
-        HARD[u32(i.y) * ROCKS.nx + u32(i.x)]
+    match rocks_cell(p) {
+        Some(c) => HARD[c],
+        None => false,
+    }
+}
+
+/// Whether `p` is on one of `land`'s faces: steeper than 0.9, over solid rock.
+fn on_face(land: Bare, p: vec2) -> bool {
+    let m = land.made(p)
+    length(m.yz) >= 0.9 && geology::solid(geology::stratum(p, m.x))
 }
 
 /// The grid where no tree stands is kept on (`ROCK`): what the history grows over, at 2 m.
@@ -216,10 +225,8 @@ fn hard_mask() -> Vec<bool> {
     var hard: Vec<bool> = Vec::filled(g.cells(), value: false)
     for c in 0..g.cells() {
         let p = g.centre(c)
-        let m = land.made(p)
-        let face = length(m.yz) >= 0.9 && geology::solid(geology::stratum(p, m.x))
         let pond = land.square.within(p, 0.0) > 0.0 && WATER.depth[SQUARE.cell_at(p)] > 0.0
-        hard[c] = face || pond
+        hard[c] = on_face(land, p) || pond
     }
     // The rock's solids: each block's footprint, its box's (x, z) extent round its middle.
     for r in geology::rock_placements(land, geology::tor_points(WORLD.places)) {
@@ -329,7 +336,7 @@ pub fn waters() -> engine::water::WaterMesh {
 /// The history's present: the floor's.
 pub const PRESENT: i32 = map::PRESENT
 
-/// The wood's mix (`engine::place::Character::mix`, by `species::habits`): its trees alike, so the
+/// The wood's mix (`engine::place::Character::mix`, by `species::HABITS`): its trees alike, so the
 /// ground picks among them as it suits each (`engine::grow::takes`); its shrubs few, as in each of
 /// the floor's regions (`map`), which a wood with no mix would fill with them.
 const WOOD = [0.2, 0.2, 0.15, 0.05, 0.0, 0.2, 0.2, 0.0]
@@ -351,27 +358,12 @@ pub fn growth_map() -> Map {
         lo: LO,
         hi: HI,
         present: PRESENT,
-        land: engine::place::Land {
-            hills: [vec4(0.0); 8],
-            hollows: [vec4(0.0); 8],
-            ridges: [vec4(0.0); 24],
-            ravines: [vec4(0.0); 16],
-            ravine_fall: 0.0,
-            crags: [vec4(0.0); 4],
-            ramps: vec4(0.0),
-            floors: vec4(0.0),
-            tilt: vec4(0.0),
-        },
+        land: engine::place::Land {},
         sites: Vec::new(),
         relations: Vec::new(),
         openings: Vec::new(),
         routes: Vec::new(),
-        water: engine::place::Water {
-            meres: [vec4(0.0); 2],
-            springs: [vec2(0.0); 8],
-            spring_count: 0,
-            falls: [vec2(0.0); 2],
-        },
+        water: engine::place::Water {},
         events: Vec::new(),
         wind: vec2(0.75, -0.66),
         kept: Vec::new(),
@@ -446,7 +438,7 @@ pub fn tiles_lo() -> vec2i {
 }
 
 pub fn tiles_hi() -> vec2i {
-    tile_of(square_hi() - vec2(0.01))
+    tile_of(SQUARE.hi() - vec2(0.01))
 }
 
 /// Its bake, at the floor's grain (`engine::grow::BAKE`), each standing tree's fork chosen among
@@ -477,8 +469,7 @@ pub fn kept_clear(p: vec2) -> bool {
     if p.x >= LO.x && p.y >= LO.y && p.x < HI.x && p.y < HI.y {
         return true
     }
-    let m = LAND.land.made(p)
-    length(m.yz) >= 0.9 && geology::solid(geology::stratum(p, m.x))
+    on_face(LAND.land, p)
 }
 
 /// No ride runs through the grown view's wildwood.
@@ -507,20 +498,19 @@ pub const SHOTS: Shots = shots()
 fn shots() -> Shots {
     borrow w = WORLD
     let trees = decisions().trees
-    // Each standing stem as it's drawn (`trees::as_drawn`: its girth at breast height).
+    // Each standing stem as it's drawn (`trees::as_drawn`: its girth at breast height); and what
+    // a place's shot sees past: each stem, and each crown low enough to stand at the eye (`LOW`),
+    // its reach round it.
     var stems: Vec<vec3> = Vec::new()
-    for t in trees::as_drawn(trees) {
-        if t.state != State::Log && t.state != State::Gone && t.tall > 1.5 {
-            stems.push(vec3(t.at, t.girth))
-        }
-    }
-    // What a place's shot sees past: each stem, and each crown low enough to stand at the eye
-    // (`LOW`), its reach round it.
     var wood: Vec<vec3> = Vec::new()
     for t in trees::as_drawn(trees) {
+        let stem = t.state != State::Log && t.state != State::Gone && t.tall > 1.5
+        if stem {
+            stems.push(vec3(t.at, t.girth))
+        }
         if t.state == State::Alive && t.tall < LOW {
             wood.push(vec3(t.at, t.reach))
-        } else if t.state != State::Log && t.state != State::Gone && t.tall > 1.5 {
+        } else if stem {
             wood.push(vec3(t.at, t.girth))
         }
     }
@@ -565,7 +555,7 @@ fn ancient(trees: [engine::grow::Tree], stems: [vec3]) -> Shot {
     var from = best.at + vec2(0.0, -ANCIENT_FROM)
     var clearest = -1.0
     for k in 0..16 {
-        let a = 6.2831853 * f32(k) / 16.0
+        let a = TAU * f32(k) / 16.0
         let eye = best.at + vec2(sin(a), cos(a)) * ANCIENT_FROM
         if hard_at(eye) || length(LAND.land.made(eye).yz) > 0.4 {
             continue
@@ -665,7 +655,7 @@ fn off_wood(s: Shot, wood: [vec3]) -> Shot {
 /// which most trees stand over 15 m, with a way clear of its stems: `CANDIDATES`, `LONG_WAY`),
 /// looking along that way; and over it, 45 m up there, out across it to the horizon the same way.
 fn in_wood(trees: [engine::grow::Tree], stems: [vec3]) -> (Shot, Shot) {
-    let g = Grid::over(SQUARE.lo, square_hi(), 16.0)
+    let g = Grid::over(SQUARE.lo, SQUARE.hi(), 16.0)
     var tall: Vec<u32> = Vec::filled(g.cells(), 0)
     for t in trees {
         if t.state == State::Alive && t.tall > 15.0 {
@@ -756,7 +746,7 @@ fn longest_way(stems: [vec3], p: vec2) -> (f32, vec2) {
     var way = vec2(0.0, 1.0)
     var longest = 0.0
     for k in 0..16 {
-        let a = 6.2831853 * f32(k) / 16.0
+        let a = TAU * f32(k) / 16.0
         let along = vec2(sin(a), cos(a))
         var d = 0.0
         while d < 60.0 && clear_of(near, p, along, d + 2.0) {

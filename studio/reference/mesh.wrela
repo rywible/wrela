@@ -67,7 +67,8 @@ fn last_dot(s: str) -> Option<u32> {
     at
 }
 
-fn is_space(b: u8) -> bool {
+/// Whether `b` is ASCII white space.
+pub fn is_space(b: u8) -> bool {
     b == 32 || (b >= 9 && b <= 13)
 }
 
@@ -577,6 +578,27 @@ impl Solid {
             if w < 1 {
                 return Some(c.0)
             }
+        }
+        None
+    }
+
+    /// The first and the last of the steps 0 to `steps` whose point (`at`) is inside: the first
+    /// looked for from step 0, the last from `steps` back to it. `None` unless two are.
+    pub fn inside_span(self, steps: u32, at: fn(u32) -> vec3d) -> Option<(u32, u32)> {
+        var first: Option<u32> = None
+        for k in 0..steps + 1 {
+            if self.inside(at(k)) {
+                first = Some(k)
+                break
+            }
+        }
+        let f = first?
+        var k = steps
+        while k > f {
+            if self.inside(at(k)) {
+                return Some((f, k))
+            }
+            k -= 1
         }
         None
     }

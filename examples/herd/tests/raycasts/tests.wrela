@@ -4,7 +4,10 @@
 // smallest float) with limits of 0, 0.5 and 10; from non-finite places; along non-finite
 // directions; and from the largest height. Each ray's hit keeps its bits and its march count.
 
-use std::collections::Vec
+use hosts::steps::built
+use std::collections::{Box, Vec}
+use std::job::Step
+use std::string::String
 use std::tool::drive
 use std::tool::drive::Scalar
 use std::tool::toolchain
@@ -59,22 +62,20 @@ fn word(s: Scalar) -> u32 {
 @test(tool, read: [("repo", "../../../..")], budget: 120)
 @job
 fn terrain_rays_keep_their_hits_and_steps() {
-    var b = toolchain::build(
-        "repo/examples/herd/tests/raycasts",
-        "scratch/build",
-        toolchain::options(),
+    var b = Box::new(
+        built.start(
+            String::from("repo/examples/herd/tests/raycasts"),
+            String::from("scratch/build"),
+            toolchain::options(),
+            String::from("the package builds"),
+        ),
     )
-    var built = b.poll()
-    while built.is_none() {
-        yield
-        built = b.poll()
+    loop {
+        match b.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
     }
-    let Some(polled) = take built else { panic("no answer") }
-    let Ok(build) = toolchain::read_built(take polled) else { panic("the build's request") }
-    for d in build.diagnostics {
-        assert(!d.error, d.rendered.as_str())
-    }
-    assert(build.ok, "the package builds")
     var l = drive::load("scratch/build", drive::cpu())
     var loaded = l.poll()
     while loaded.is_none() {

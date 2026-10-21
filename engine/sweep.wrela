@@ -72,8 +72,7 @@ impl Section {
                 return s
             }
         }
-        assert(false, "a section has four bumps at most")
-        s
+        panic("a section has four bumps at most")
     }
 
     /// Its radius at angle `theta` (radians from up, toward the left).
@@ -422,16 +421,30 @@ fn rank(pl: Place, outside: f32) -> f32 {
     )
 }
 
-/// How far the radius changes per metre along the path (`along`) and per radian around it
-/// (`around`), by central differences.
-fn slopes<const S: u32>(sw: Sweep<S>, sec: Section, s: f32, theta: f32) -> vec2 {
+/// The sections a millimetre either side of a place along a sweep's path (held at its ends),
+/// and where they are (`lo` before `hi`): `slopes` reads the radius's change along the path
+/// from them, at any angle.
+struct Sides: Copy {
+    lo: f32,
+    hi: f32,
+    before: Section,
+    after: Section,
+}
+
+/// The sections either side of `s` metres along `sw`'s path.
+fn sides<const S: u32>(sw: Sweep<S>, s: f32) -> Sides {
     let len = sw.length()
     let ds = 1mm
-    let a = clamp(s - ds, 0.0, len)
-    let b = clamp(s + ds, 0.0, len)
-    let along = if b > a {
-        (sw.section_at(b / len).radius(theta) - sw.section_at(a / len).radius(theta)) /
-            max(b - a, 0.000000001)
+    let lo = clamp(s - ds, 0.0, len)
+    let hi = clamp(s + ds, 0.0, len)
+    Sides { lo, hi, before: sw.section_at(lo / len), after: sw.section_at(hi / len) }
+}
+
+/// How far the radius at `theta` changes per metre along the path (`along`), from the sections
+/// either side (`at`), and per radian around it (`around`) on `sec`, by central differences.
+fn slopes(sec: Section, at: Sides, theta: f32) -> vec2 {
+    let along = if at.hi > at.lo {
+        (at.after.radius(theta) - at.before.radius(theta)) / max(at.hi - at.lo, 0.000000001)
     } else {
         0.0
     }
@@ -477,12 +490,13 @@ impl<const S: u32> Surface for Sweep<S> {
         for i in 0..64 {
             let f = f32(i) / 63.0
             let sec = self.section_at(f)
+            let at = sides(self, f * len)
             for j in 0..64 {
                 let theta = TAU * f32(j) / 64.0
                 let r = sec.radius(theta)
                 least = min(least, r)
-                let k = slopes(self, sec, f * len, theta)
-                let k2 = slopes(self, sec, f * len, theta + 0.02)
+                let k = slopes(sec, at, theta)
+                let k2 = slopes(sec, at, theta + 0.02)
                 grows = max(
                     grows,
                     abs(k2.y - k.y) / 0.02 / max(r * r, 0.000001) +
@@ -499,12 +513,13 @@ impl<const S: u32> Surface for Sweep<S> {
             let turn = acos(clamp(dot(self.normal[i - 1], self.normal[i + 1]), -1.0, 1.0))
             let kappa = turn / max(0.5 * (self.along[i + 1] - self.along[i - 1]), 0.000001)
             let sec = self.section_at(self.along[i] / len)
+            let at = sides(self, self.along[i])
             var r = 0.0
             var slope = 0.0
             for j in 0..32 {
                 let theta = TAU * f32(j) / 32.0
                 r = max(r, sec.radius(theta))
-                slope = max(slope, abs(slopes(self, sec, self.along[i], theta).x))
+                slope = max(slope, abs(slopes(sec, at, theta).x))
             }
             let kr = kappa * (r + near)
             if kr >= 0.9 {
@@ -562,7 +577,7 @@ impl<const S: u32> Sweep<S> {
         let s = clamp(pl.along, 0.0, len)
         let sec = self.section_at(s / len)
         let r = sec.radius(pl.theta)
-        let k = slopes(self, sec, s, pl.theta)
+        let k = slopes(sec, sides(self, s), pl.theta)
         let around = k.y / max(max(pl.rho, 0.5 * r), 0.001)
         let side = (pl.rho - r) / sqrt(1.0 + k.x * k.x + around * around)
         let past = max(-pl.along, pl.along - len)

@@ -57,20 +57,6 @@ pub struct Block: Clone {
     pub anchor: String = String::new(),
 }
 
-impl Block {
-    /// The block's words without their styles: a heading's or a paragraph's text, a table's cells
-    /// one after another, a code block's code.
-    pub fn plain(self) -> String {
-        if self.kind == Kind::Code { return self.code.clone() }
-        var out = plain(self.runs)
-        for cell in self.cells {
-            if !out.is_empty() { out.push_str(" ") }
-            out.push_str(plain(cell).as_str())
-        }
-        take out
-    }
-}
-
 /// Runs' text, one after another.
 pub fn plain(runs: [Run]) -> String {
     var out = String::new()

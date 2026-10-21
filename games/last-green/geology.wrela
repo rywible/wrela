@@ -654,7 +654,8 @@ fn made() -> Made {
         square: Relief::of(s, Vec::filled(SQUARE_N, 0.0)),
         soil: [0; SQUARE_SOIL],
     }
-    land.soil = soil_layer(land, s)
+    let wet: Vec<f32> = Vec::from_fn(SQUARE_N, |c| wetness(land, s, c))
+    land.soil = soil_layer(land, s, wet)
     let found = found_places(land, s)
     let names = named(found)
     let (shots, shot_names) = shots_of(land, rock_placements(land, tor_points(found)), found, names)
@@ -665,7 +666,6 @@ fn made() -> Made {
     } else {
         s.lakes[c]
     })
-    let wet: Vec<f32> = Vec::from_fn(SQUARE_N, |c| wetness(land, s, c))
     Made {
         world: World { land, places: found, names, shots, shot_names },
         water: Water { depth, lakes, streams, wet },
@@ -841,11 +841,10 @@ const DEEPEST: f32 = 2.5
 
 /// The square's soil, cell by cell (`pack_soil`), two to a word: what the ground's shape and its
 /// water make of it (`engine::soil::soil`, after Heimsath and others, 1997: its curvature at 12 and
-/// 32 m and its slope off the land as made, `s` its making; its wetness the topographic index,
-/// ln of the area draining through it a metre of its width over its slope), and its talus
-/// (`talus`). No rock is given it bare: where it's too steep or too sharp a crest to hold a soil,
-/// the soil says so.
-fn soil_layer(land: Bare, s: Landscape) -> [u32; SQUARE_SOIL] {
+/// 32 m and its slope off the land as made, `s` its making; its wetness `wet`, each cell's
+/// `wetness`), and its talus (`talus`). No rock is given it bare: where it's too steep or too
+/// sharp a crest to hold a soil, the soil says so.
+fn soil_layer(land: Bare, s: Landscape, wet: [f32]) -> [u32; SQUARE_SOIL] {
     let g = SQUARE
     let talus = talus(land, s)
     var out = [0; SQUARE_SOIL]
@@ -865,7 +864,7 @@ fn soil_layer(land: Bare, s: Landscape) -> [u32; SQUARE_SOIL] {
                 slope = length(vec2(e - w, n - so)) / (2.0 * d)
             }
         }
-        let here = soil(lap: lap, slope: slope, rock: 0.0, wet: wetness(land, s, c))
+        let here = soil(lap: lap, slope: slope, rock: 0.0, wet: wet[c])
         out[c / 2] |= pack_soil(here.depth, here.kind, talus[c]) << (16 * (c % 2))
     }
     out
@@ -1368,7 +1367,7 @@ fn ledges(land: Bare, c: u32, p: vec2, m: vec3, out: mut Vec<Placement>) {
         }
         let w = j.half * (0.75 + 0.2 * rand(j.seed, 20))
         let t = atan2(-JOINTS.y, JOINTS.x) + 0.08 * (rand(j.seed, 11) - 0.5)
-        let (x, z) = (vec2(cos(t), -sin(t)), vec2(sin(t), cos(t)))
+        let (x, z) = axes(t)
         var lo = 1.0e9
         var hi = -1.0e9
         for e in 0..9 {
@@ -1549,7 +1548,7 @@ fn column(land: Bare, j: Jointed, up: vec2, cliff: f32, top: f32, out: mut Vec<P
         // all over is left out (what's over it stands on the land), and the lowest reaches down
         // to it.
         let t = turn + 0.04 * (rand(bed_seed, 6) - 0.5)
-        let (x, z) = (vec2(cos(t), -sin(t)), vec2(sin(t), cos(t)))
+        let (x, z) = axes(t)
         // (Buried, it's judged at its bed's full width, which the bed over it stands on; and a
         // soft bed the land buries where it's weathered back isn't.)
         var under = 1.0e9
@@ -1674,9 +1673,8 @@ fn granite_block(land: Bare, mid: vec2, half: vec2, up: vec2, seed: u32, out: mu
         let q = seed ^ u32(u + 100000).wrapping_mul(2654435761)
         let at = mid + up * (0.5 * rand(q, 4)) + across * (0.4 * (rand(q, 5) - 0.5))
         let w = wide * (0.9 + 0.1 * rand(q, 6))
-        // (`rotate_y` turns +x toward -z.)
         let t = atan2(-JOINTS.y, JOINTS.x) + 0.1 * (rand(q, 9) - 0.5)
-        let (x, z) = (vec2(cos(t), -sin(t)), vec2(sin(t), cos(t)))
+        let (x, z) = axes(t)
         var under = 1.0e9
         var buried = true
         for e in 0..9 {
@@ -1822,12 +1820,16 @@ fn scree(land: Bare, p: vec2, m: vec3, seed: u32, out: mut Vec<Placement>) {
     }
 }
 
+/// A piece's own x and z on the plane, turned `turn` about y (`rotate_y` turns +x toward -z).
+fn axes(turn: f32) -> (vec2, vec2) {
+    (vec2(cos(turn), -sin(turn)), vec2(sin(turn), cos(turn)))
+}
+
 /// The lowest the land is under a piece at `q`, its half extents `half` (x, z) turned `turn`:
 /// where it settles, sunk into the ground uphill of it, not hanging over the ground downhill.
 fn lowest(land: Bare, q: vec2, half: vec2, turn: f32) -> f32 {
-    // (`rotate_y` turns +x toward -z.)
-    let x = vec2(cos(turn), -sin(turn)) * half.x
-    let z = vec2(sin(turn), cos(turn)) * half.y
+    let (ax, az) = axes(turn)
+    let (x, z) = (ax * half.x, az * half.y)
     var y = land.at(q.x, q.y)
     for k in 0..4 {
         let at = q + x * (f32(k % 2) * 2.0 - 1.0) + z * (f32(k / 2) * 2.0 - 1.0)
@@ -1872,8 +1874,7 @@ fn extent(land: Bare, p: vec2, up: vec2) -> (f32, f32) {
 /// one under it, tight on it. Round it, its clitter: the blocks fallen from it, the most downhill.
 fn tor(land: Bare, p: vec2, m: vec3, s: Stratum, seed: u32, out: mut Vec<Placement>) {
     let turn = atan2(-JOINTS.y, JOINTS.x) + 0.2 * (rand(seed, 197) - 0.5)
-    // (`rotate_y` turns +x toward -z.)
-    let (x, z) = (vec2(cos(turn), -sin(turn)), vec2(sin(turn), cos(turn)))
+    let (x, z) = axes(turn)
     let nx = 3 + u32(2.0 * rand(seed, 199))
     let nz = 2
     let cell = vec2(3.4 + 1.4 * rand(seed, 196), 3.0 + 1.2 * rand(seed, 195))
@@ -2053,6 +2054,10 @@ pub fn shots_of(
     var have = [false; PlaceKind]
     for i in 0..found.len() {
         let f = found[i]
+        // (One of each kind but the overlooks, the first that's seen.)
+        if f.kind != PlaceKind::Overlook && have[f.kind] {
+            continue
+        }
         let at = f.at
         let across = vec2(-f.toward.y, f.toward.x)
         let out = if length(at - MIDDLE) > 1.0 { normalize(at - MIDDLE) } else { vec2(0.0, -1.0) }
@@ -2153,9 +2158,6 @@ pub fn shots_of(
             _ => None,
         }
         if let Some((name, s)) = shot {
-            if f.kind != PlaceKind::Overlook && have[f.kind] {
-                continue
-            }
             let highest = if f.kind == PlaceKind::Lake || f.kind == PlaceKind::Tor { 10.0 } else {
                 40.0
             }
@@ -2470,7 +2472,7 @@ fn the_rock_as_solids_lies_on_its_land() {
     let placed = rock_placements(land, tor_points(WORLD.places))
     assert(placed.len() > 2000 && placed.len() < 100000, f"{placed.len()} rocks placed")
     let lo = SQUARE.lo
-    let hi = lo + vec2(f32(SQUARE.nx), f32(SQUARE.nz)) * SQUARE.cell
+    let hi = SQUARE.hi()
     let (starts, order) = by_cell(placed)
     for i in 0..placed.len() {
         let p = placed[i]
@@ -2805,7 +2807,7 @@ fn no_talus_lies_in_a_stream_or_past_the_square() {
         }
     }
     assert(n > 1000, f"only {n} points in streams")
-    let hi = SQUARE.lo + vec2(f32(SQUARE.nx), f32(SQUARE.nz)) * SQUARE.cell
+    let hi = SQUARE.hi()
     for k in 0..400 {
         let t = f32(k) / 400.0
         for p in [

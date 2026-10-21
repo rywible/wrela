@@ -435,7 +435,7 @@ impl Seam {
         if self.lowers() && x.lo >= min_hi + w {
             return c
         }
-        let mask = c.mask.or(bit(first))
+        let mask = c.mask.or(PartMask::bit(first))
         match self.join {
             // `smin`'s interval: the smaller one's, less up to a quarter of the width where the
             // two come within it.
@@ -760,9 +760,7 @@ impl<F: Surface> Placed<F> {
     fn bone_for(self, image: bool) -> u32 {
         if image { self.other } else { self.bone }
     }
-}
 
-impl<F: Surface> Placed<F> {
     /// Its distance's interval over `b` (`Lipschitz::interval_near`): its field's over `b`
     /// reflected, where it's mirrored, and moved to its origin.
     fn interval_over(self, b: Box3) -> Interval {
@@ -1283,11 +1281,6 @@ impl InMask {
     }
 }
 
-/// Item `first`'s bit in a mask (`PartMask::bit`).
-fn bit(first: u32) -> PartMask {
-    PartMask::bit(first)
-}
-
 /// `PartList::fold_offset`'s leaf where no leaf is raised.
 pub const NO_LEAF: u32 = 0xffffffff
 
@@ -1489,7 +1482,7 @@ impl<M: Modifier> PartList for Modify<M> {
     }
 
     fn modifiers(self, first: u32) -> PartMask {
-        bit(first)
+        PartMask::bit(first)
     }
 
     /// A modifier has no parts.
@@ -1559,7 +1552,7 @@ impl<M: Modifier> PartList for Modify<M> {
 
     fn cull(self, b: Box3, k: f32, first: u32, min_hi: f32, c: Culled) -> Culled {
         let x = self.modifier.interval(Interval { lo: c.lo, hi: c.hi }, b)
-        Culled { mask: c.mask.or(bit(first)), lo: x.lo, hi: x.hi }
+        Culled { mask: c.mask.or(PartMask::bit(first)), lo: x.lo, hi: x.hi }
     }
 
     fn bound(self, near: f32, k: f32, bound: f32) -> f32 {

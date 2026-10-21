@@ -3,6 +3,9 @@
 use level::COURSES
 use std::serialize::{LoadError, Serialize, load}
 
+// Where the game leaves its progress as it returns to the console.
+pub const SAVE: Text = "leapling/save"
+
 pub struct Progress: Clone + Serialize {
     // Courses cleared, coins taken in all, and the best time over a course (0 for none).
     pub cleared: u32,

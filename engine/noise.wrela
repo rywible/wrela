@@ -107,6 +107,11 @@ pub fn noise3(p: vec3) -> f32 {
     mix(a, b, u.z)
 }
 
+/// `q` turned and scaled for a fractal's next layer: about 37° and by 2.
+fn turned(q: vec2) -> vec2 {
+    vec2(1.6 * q.x - 1.2 * q.y, 1.2 * q.x + 1.6 * q.y)
+}
+
 /// Fractal value noise in about [0, 1]: `octaves` layers, each turned and at twice the
 /// frequency and half the amplitude of the last; 0 with no layers.
 pub fn fbm2(p: vec2, octaves: u32) -> f32 {
@@ -120,7 +125,7 @@ pub fn fbm2(p: vec2, octaves: u32) -> f32 {
     for _ in 0..octaves {
         s += a * noise2(q)
         total += a
-        q = vec2(1.6 * q.x - 1.2 * q.y, 1.2 * q.x + 1.6 * q.y) + vec2(17.3, -9.1)
+        q = turned(q) + vec2(17.3, -9.1)
         a *= 0.5
     }
     s / total
@@ -163,7 +168,7 @@ pub fn fbm2_seen(p: vec2, octaves: u32, w: f32) -> f32 {
     for _ in 0..octaves {
         s += a * seen(q, kept_at(w * f))
         total += a
-        q = vec2(1.6 * q.x - 1.2 * q.y, 1.2 * q.x + 1.6 * q.y) + vec2(17.3, -9.1)
+        q = turned(q) + vec2(17.3, -9.1)
         a *= 0.5
         f *= 2.0
     }
@@ -184,7 +189,7 @@ pub fn ridged2(p: vec2, octaves: u32) -> f32 {
         let n = 1.0 - abs(2.0 * noise2(q) - 1.0)
         s += a * n * n
         total += a
-        q = vec2(1.6 * q.x - 1.2 * q.y, 1.2 * q.x + 1.6 * q.y) + vec2(-4.7, 13.9)
+        q = turned(q) + vec2(-4.7, 13.9)
         a *= 0.5
     }
     s / total
@@ -202,8 +207,9 @@ pub fn cell_size(p: vec2, cell: f32) -> f32 {
 }
 
 /// The finer of the two powers of two round `size`, and how far `size` is from it toward the
-/// coarser (in [0, 1), in octaves).
-fn octave_of(size: f32) -> (f32, f32) {
+/// coarser (in [0, 1), in octaves): for a pattern blended between two sizes so it keeps its size
+/// on screen.
+pub fn octave_of(size: f32) -> (f32, f32) {
     let level = log2(max(size, 1.0e-8))
     (exp2(floor(level)), fract(level))
 }
@@ -231,15 +237,6 @@ pub fn hashed_threshold_of(p: vec2, seed: u32, size: f32) -> f32 {
         1.0 - (1.0 - x) * (1.0 - x) / k
     }
     clamp(t, 1.0e-6, 1.0)
-}
-
-/// A draw in [0, 1) that holds still on a surface: the point `p` of its own coordinates cut
-/// into cells `cell` pixels wide (the finer power of two round that size), the `k`th draw of a
-/// seed's. For shading that varies pixel to pixel but not frame to frame. A fragment shader's,
-/// in uniform control flow (its derivatives).
-pub fn surface_draw(p: vec2, seed: u32, k: u32, cell: f32) -> f32 {
-    let (lo, _) = octave_of(cell_size(p, cell))
-    cell_draw(floor(p / lo), seed ^ hash_u32(k))
 }
 
 // ---- tests ------------------------------------------------------------------------------------
@@ -277,7 +274,7 @@ fn faded_layers_left_out_give_the_same_bits() {
             for _ in 0..octaves {
                 s += a * mix(0.5, noise2(q), kept_at(w * f))
                 total += a
-                q = vec2(1.6 * q.x - 1.2 * q.y, 1.2 * q.x + 1.6 * q.y) + vec2(17.3, -9.1)
+                q = turned(q) + vec2(17.3, -9.1)
                 a *= 0.5
                 f *= 2.0
             }

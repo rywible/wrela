@@ -127,10 +127,12 @@ pub fn shapes(log: Placed, height: fn(vec2) -> f32) -> Vec<Obstacle> {
     var sampled = sample_ground(log, limbs)
     var segments = 0
     for limb in limbs {
-        let (start, _, _) = limb_axis(limb, 0.0)
-        var previous = height(start.xz)
+        // Each ring interval's start is the last one's end.
+        let (start, _, start_r) = limb_axis(limb, 0.0)
+        var a = start
+        var ar = start_r
+        var previous = height(a.xz)
         for ring in 0..(3 * RINGS) {
-            let (a, _, ar) = limb_axis(limb, f32(ring) / f32(3 * RINGS))
             let (b, _, br) = limb_axis(limb, f32(ring + 1) / f32(3 * RINGS))
             let pieces = max(u32(ceil(length(b - a) / SEGMENT)), 1)
             for i in 0..pieces {
@@ -171,6 +173,8 @@ pub fn shapes(log: Placed, height: fn(vec2) -> f32) -> Vec<Obstacle> {
                     assert(all.len() <= MOST, "fallen wood exceeded its collision record bound")
                 }
             }
+            a = b
+            ar = br
         }
     }
     all
@@ -238,7 +242,7 @@ fn a_low_rendered_log_is_crossed_with_continuous_lift() {
     var high = 0.0
     for _ in 0..120 {
         let (moved, _) = engine::footing::step_over(
-            behaviour::Flat {},
+            engine::terrain::Flat {},
             behaviour::DRY,
             o,
             at,

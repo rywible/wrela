@@ -39,7 +39,7 @@ fn line_at(m: Map, g: Grid, t: Tree) -> f32 {
 fn nothing_grows_into_the_head_room() {
     let m = map::map()
     let g = Grid::over(domain_lo(), domain_hi(), BAKE.cell)
-    let habits = species::habits()
+    let habits = species::HABITS
     let u = decisions()
     var zoned = 0
     for t in u.trees {
@@ -80,16 +80,14 @@ fn nothing_grows_into_the_head_room() {
 fn no_meadow_grass_under_a_closed_canopy() {
     let lo = tiles_lo()
     let hi = tiles_hi()
-    let habits = species::habits()
+    let habits = species::HABITS
     let m = map::map()
     borrow g = ground::GROUND
-    var trees: Vec<Vec<Tree>> = Vec::new()
+    var tiles: Vec<engine::bake::Decisions> = Vec::new()
     for j in lo.y..(hi.y + 1) {
         for i in lo.x..(hi.x + 1) {
-            trees.push(
-                decode_tile(
-                    BAKED.bytes(BAKED.find(tile_name(vec2i(i, j)).as_str()).unwrap()),
-                ).trees,
+            tiles.push(
+                decode_tile(BAKED.bytes(BAKED.find(tile_name(vec2i(i, j)).as_str()).unwrap())),
             )
         }
     }
@@ -109,7 +107,6 @@ fn no_meadow_grass_under_a_closed_canopy() {
     for j in lo.y..(hi.y + 1) {
         for i in lo.x..(hi.x + 1) {
             let t = vec2i(i, j)
-            let d = decode_tile(BAKED.bytes(BAKED.find(tile_name(t).as_str()).unwrap()))
             var others: Vec<Tree> = Vec::new()
             for dj in -1..2 {
                 for di in -1..2 {
@@ -119,10 +116,11 @@ fn no_meadow_grass_under_a_closed_canopy() {
                         n.y >= lo.y &&
                         n.x <= hi.x &&
                         n.y <= hi.y {
-                        reaching(t, trees[u32((n.y - lo.y) * nx + n.x - lo.x)], mut others)
+                        reaching(t, tiles[u32((n.y - lo.y) * nx + n.x - lo.x)].trees, mut others)
                     }
                 }
             }
+            borrow d = tiles[u32((j - lo.y) * nx + i - lo.x)]
             let f = tile_fields(d, others, habits, m.routes, map::PRESENT)
             let cell = TILE / f32(WEAR_N)
             for k in 0..(WEAR_N * WEAR_N) {
@@ -335,10 +333,8 @@ fn in_course(laid: engine::water::Laid, p: vec2) -> bool {
         if !c.falls {
             for i in 0..c.points.len() - 1 {
                 let a = c.points[i]
-                let b = c.points[i + 1]
-                let ab = b.xy - a.xy
-                let t = clamp(dot(p - a.xy, ab) / max(dot(ab, ab), 1.0e-6), 0.0, 1.0)
-                if length(p - (a.xy + ab * t)) < 0.5 * a.z - BANK {
+                let (d, _) = engine::place::to_segment(p, a.xy, c.points[i + 1].xy)
+                if d < 0.5 * a.z - BANK {
                     return true
                 }
             }
@@ -409,7 +405,7 @@ fn walk_toward(from: vec2, to: vec2, seconds: f32, run: bool, a: vec2, b: vec2, 
 fn start_near(at: vec2, r: f32, away: f32) -> vec2 {
     let w = map::map().water
     for k in 0..16 {
-        let a = 6.2831853 * f32(k) / 16.0
+        let a = TAU * f32(k) / 16.0
         let s = at + vec2(cos(a), sin(a)) * (r + away)
         if engine::footing::stands(ground::GROUND, w, history::OBSTACLES, s) > 0.0 &&
             !history::OBSTACLES.blocked(s, engine::footing::BODY + 0.2) {
@@ -429,11 +425,12 @@ fn the_player_walks_into_each_thing_and_never_through_it() {
     let m = map::map()
     let body = engine::footing::BODY
     // Each thing's candidates: its middle, its radius (a wall: its ends).
+    let habits = species::HABITS
     var trunks: Vec<vec3> = Vec::new()
     var shrubs: Vec<vec3> = Vec::new()
     for t in decisions().trees {
         if t.state == State::Alive && m.inside(t.at) {
-            if species::habits()[t.kind].thorny {
+            if habits[t.kind].thorny {
                 if t.tall > 0.8 && shrubs.len() < 40 {
                     shrubs.push(vec3(t.at + t.lean, 0.7 * t.reach))
                 }
@@ -532,15 +529,17 @@ fn the_player_walks_into_each_thing_and_never_through_it() {
 /// as it's drawn at a player's chest (1.2 m), to 5 cm: the player stops where the trunk is seen.
 @test
 fn a_trunk_stops_the_player_where_it_is_drawn() {
+    let m = map::map()
+    let habits = species::HABITS
     var worst = 0.0
     var at = vec2(0.0)
     var n = 0
     for t in decisions().trees {
         if (t.state == State::Alive || t.state == State::Snag) &&
             t.tall > 2.0 &&
-            !species::habits()[t.kind].thorny &&
+            !habits[t.kind].thorny &&
             !t.pinned &&
-            map::map().inside(t.at) {
+            m.inside(t.at) {
             var r = 0.0
             history::OBSTACLES.near(t.at, |o| {
                 if o.thing == engine::footing::Thing::Trunk && length(o.a - t.at) < 0.05 {
@@ -1091,7 +1090,7 @@ fn near_tile(t: vec2i) -> NearTile {
             }
         }
     }
-    let fields = tile_fields(d, others, species::habits(), map::map().routes, map::PRESENT)
+    let fields = tile_fields(d, others, species::HABITS, map::map().routes, map::PRESENT)
     NearTile { tile: t, bytes: Vec::new(), trees: Vec::new(), fields, with: 0 }
 }
 
@@ -1179,14 +1178,7 @@ fn quanta(seconds: f32) -> u32 {
 /// The bed under the steps over quanta `from` to `to`, in dB: the quietest quarter of their
 /// windows of 8 quanta (21 ms; a step rings over a few).
 fn bed_db(l: Listener, from: u32, to: u32) -> f32 {
-    var windows: Vec<f32> = Vec::new()
-    var q = from
-    while q + 8 <= to {
-        windows.push(total_db(l.level(q, q + 8)))
-        q += 8
-    }
-    windows.sort_by(|a, b| a < b)
-    windows[windows.len() / 4]
+    ranked(windows(l, from, to, n: 8), k: 1, of: 4)
 }
 
 /// The lookbook's shot named `name`.

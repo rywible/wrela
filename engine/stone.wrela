@@ -249,10 +249,21 @@ pub fn realize_stone_within(
     turn: f32,
     look: CreatureLook,
 ) -> Realized {
-    let s = stone(radius, squash, seed)
-    let mesh = realize_rigid(s, look)
-    let colours = colours(mesh, s.field(), ByChannels {}, cell: 1cm)
-    Realized { mesh, colours, at: translate(at) * rotate_y(turn), seed }
+    realize_rock(stone(radius, squash, seed), look, 1cm, translate(at) * rotate_y(turn), seed)
+}
+
+/// Rock `c` realized as one rigid mesh as `look` says, its colours cooked a cell `cell` across,
+/// placed by `at`, its tone's seed `seed`: a stone, a bed, or a game's built thing of rock.
+pub fn realize_rock(
+    c: Creature<Rock>,
+    look: CreatureLook,
+    cell: f32,
+    at: mat4,
+    seed: u32,
+) -> Realized {
+    let mesh = realize_rigid(c, look)
+    let colours = colours(mesh, c.field(), ByChannels {}, cell)
+    Realized { mesh, colours, at, seed }
 }
 
 /// What a stone's vertex passes on.
@@ -437,11 +448,8 @@ pub fn bed(b: Bed) -> Creature<Rock> {
 /// Bed `b` realized at `at` (its frame's origin in the world): cells of about 45 cm (its faces
 /// are planes; an edge rounds by about a cell), its colours a cell 25 cm.
 pub fn realize_bed(b: Bed, at: vec3) -> Realized {
-    let c = bed(b)
     let look = CreatureLook { surface: Tolerance { tolerance: 50cm, largest: 45cm } }
-    let mesh = realize_rigid(c, look)
-    let colours = colours(mesh, c.field(), ByChannels {}, cell: 25cm)
-    Realized { mesh, colours, at: translate(at), seed: b.seed }
+    realize_rock(bed(b), look, 25cm, translate(at), b.seed)
 }
 
 // ---- rocks: many solids from a few ----------------------------------------------------------------
@@ -696,10 +704,7 @@ pub fn realize_block(
     cell: f32,
     steps: f32 = 0.05,
 ) -> Realized {
-    let c = worn(b, rough, steps: steps)
-    let mesh = realize_rigid(c, look)
-    let colours = colours(mesh, c.field(), ByChannels {}, cell)
-    Realized { mesh, colours, at: translate(vec3(0.0)), seed: b.seed }
+    realize_rock(worn(b, rough, steps: steps), look, cell, translate(vec3(0.0)), b.seed)
 }
 
 /// A rock's placement as the GPU reads it: where its prototype goes (its transform, and that

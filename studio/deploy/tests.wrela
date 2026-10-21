@@ -15,15 +15,13 @@ use release_tool::io::{read_files, write_files}
 use release_tool::json::{Json, compact, member, text}
 use release_tool::site::{Report, release_json, wrangler_config}
 use release_tool::tree::hex_sha
-use std::io::Pending
-use std::job::Step
-use std::tool::answer
 use std::tool::files
 use std::tool::files::Kind
 use std::tool::testing
 use std::tool::testing::Fake
 use std::tool::time
 use std::tool::time::Utc
+use toolkit::wait::{done, wait}
 
 fn contains(haystack: str, needle: str) -> bool {
     haystack.find(needle).is_some()
@@ -436,25 +434,17 @@ const REFS: Text = "https://github.com/rywible/wrela.git/info/refs?service=git-u
 @job
 fn set_up(given: take Vec<(String, Vec<u8>)>) -> u32 {
     var w = Box::new(write_files.start(take given))
-    loop {
-        match w.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => {
-                if let Err(e) = take r {
-                    panic(e.as_str())
-                }
-                break
-            },
-        }
-    }
-    var p = testing::set_utc(Utc { seconds: u64(now()), nanos: 0 })
-    var got = p.poll()
-    while got.is_none() {
+    var r = done(w.get_mut().resume())
+    while r.is_none() {
         yield
-        got = p.poll()
+        r = done(w.get_mut().resume())
     }
-    let Some(polled) = take got else { panic("no answer") }
-    assert(answer(take polled).is_ok(), "the fake clock")
+    if let Err(e) = (take r).unwrap() {
+        panic(e.as_str())
+    }
+    var c = wait(testing::set_utc(Utc { seconds: u64(now()), nanos: 0 }))
+    while !c.ready() { yield }
+    assert(c.bytes().is_ok(), "the fake clock")
     0
 }
 
@@ -462,14 +452,9 @@ fn set_up(given: take Vec<(String, Vec<u8>)>) -> u32 {
 @job
 fn faked(given: take String, given_fake: take Fake) -> u32 {
     let url = take given
-    var p = testing::fake(url.as_str(), take given_fake)
-    var got = p.poll()
-    while got.is_none() {
-        yield
-        got = p.poll()
-    }
-    let Some(polled) = take got else { panic("no answer") }
-    assert(answer(take polled).is_ok(), url.as_str())
+    var f = wait(testing::fake(url.as_str(), take given_fake))
+    while !f.ready() { yield }
+    assert(f.bytes().is_ok(), url.as_str())
     0
 }
 
@@ -477,40 +462,33 @@ fn faked(given: take String, given_fake: take Fake) -> u32 {
 @job
 fn deployed(given: take Options) -> Result<Vec<Deploy>, String> {
     var j = Box::new(deploy.start(take given))
-    loop {
-        match j.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => return take r,
-        }
+    var r = done(j.get_mut().resume())
+    while r.is_none() {
+        yield
+        r = done(j.get_mut().resume())
     }
+    (take r).unwrap()
 }
 
 /// The file at `path` (a root path), or `None` if it isn't there.
 @job
 fn read(given: take String) -> Option<String> {
     var j = Box::new(read_files.start(Vec::from([take given])))
-    loop {
-        match j.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => {
-                let Ok(all) = take r else { return None }
-                return String::from_utf8(all[0].clone())
-            },
-        }
+    var r = done(j.get_mut().resume())
+    while r.is_none() {
+        yield
+        r = done(j.get_mut().resume())
     }
+    let Ok(all) = (take r).unwrap() else { return None }
+    String::from_utf8(all[0].clone())
 }
 
 /// Whether anything is at `path` (a root path).
 @job
 fn there(given: take String) -> bool {
-    var p = files::stat(take given)
-    var got = p.poll()
-    while got.is_none() {
-        yield
-        got = p.poll()
-    }
-    let Some(polled) = take got else { panic("no answer") }
-    files::read_entry(take polled).is_ok()
+    var s = wait(files::stat(take given))
+    while !s.ready() { yield }
+    files::read_entry(s.polled()).is_ok()
 }
 
 fn failed(r: Result<Vec<Deploy>, String>, why: str) {
@@ -528,24 +506,14 @@ fn failed(r: Result<Vec<Deploy>, String>, why: str) {
 @job
 fn kept_releases_come_back_from_the_live_site_checked() {
     var s = Box::new(set_up.start(site(docs: false, docs_first: false)))
-    loop {
-        match s.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
+    while done(s.get_mut().resume()).is_none() { yield }
     var j = Box::new(deployed.start(options(dry_run: true)))
-    var result: Result<Vec<Deploy>, String> = Err(String::new())
-    loop {
-        match j.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => {
-                result = take r
-                break
-            },
-        }
+    var r = done(j.get_mut().resume())
+    while r.is_none() {
+        yield
+        r = done(j.get_mut().resume())
     }
-    let after = match take result {
+    let after = match (take r).unwrap() {
         Ok(a) => take a,
         Err(e) => panic(e.as_str()),
     }
@@ -572,16 +540,14 @@ fn kept_releases_come_back_from_the_live_site_checked() {
     }
     for k in 0..checks.len() {
         var r = Box::new(read.start(checks[k].0.clone()))
-        loop {
-            match r.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(got) => {
-                    let Some(t) = take got else { panic(checks[k].0.as_str()) }
-                    assert(t.as_str() == checks[k].1.as_str(), checks[k].0.as_str())
-                    break
-                },
-            }
+        var got = done(r.get_mut().resume())
+        while got.is_none() {
+            yield
+            got = done(r.get_mut().resume())
         }
+        let got = (take got).unwrap()
+        let Some(t) = take got else { panic(checks[k].0.as_str()) }
+        assert(t.as_str() == checks[k].1.as_str(), checks[k].0.as_str())
     }
     let paths = Vec::from(
         [
@@ -591,41 +557,32 @@ fn kept_releases_come_back_from_the_live_site_checked() {
     )
     for k in 0..paths.len() {
         var t = Box::new(there.start(paths[k].clone()))
-        loop {
-            match t.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(is) => {
-                    assert(is == (k == 0), paths[k].as_str())
-                    break
-                },
-            }
+        var is = done(t.get_mut().resume())
+        while is.is_none() {
+            yield
+            is = done(t.get_mut().resume())
         }
+        let is = (take is).unwrap()
+        assert(is == (k == 0), paths[k].as_str())
     }
     var r = Box::new(read.start(String::from("scratch/console-host/deploys.json")))
-    loop {
-        match r.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(got) => {
-                let Some(t) = take got else { panic("no deploys.json") }
-                assert(t.as_str() == history_json(after).as_str(), t.as_str())
-                assert(releases(after).as_str() == "bcd")
-                break
-            },
-        }
+    var got = done(r.get_mut().resume())
+    while got.is_none() {
+        yield
+        got = done(r.get_mut().resume())
     }
+    let got = (take got).unwrap()
+    let Some(t) = take got else { panic("no deploys.json") }
+    assert(t.as_str() == history_json(after).as_str(), t.as_str())
+    assert(releases(after).as_str() == "bcd")
 }
 
 /// The fake clock's seconds now.
 @job
 fn clock() -> u64 {
-    var p = time::utc_now()
-    var got = p.poll()
-    while got.is_none() {
-        yield
-        got = p.poll()
-    }
-    let Some(polled) = take got else { panic("no answer") }
-    let Ok(t) = time::read_utc(take polled) else { panic("the fake clock") }
+    var c = wait(time::utc_now())
+    while !c.ready() { yield }
+    let Ok(t) = time::read_utc(c.polled()) else { panic("the fake clock") }
     t.seconds
 }
 
@@ -640,67 +597,44 @@ fn spoiled(
 ) -> u64 {
     let why = take given
     var s = Box::new(set_up.start(site(docs: false, docs_first: false)))
-    loop {
-        match s.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
+    while done(s.get_mut().resume()).is_none() { yield }
     let url = String::from(f"https://game.example/releases/{C}/session/game.wasm")
     if let Some(f) = take given_fake {
         var j = Box::new(faked.start(take url, take f))
-        loop {
-            match j.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(_) => break,
-            }
-        }
+        while done(j.get_mut().resume()).is_none() { yield }
     }
     var w = Box::new(set_up.start(take given_files))
-    loop {
-        match w.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
+    while done(w.get_mut().resume()).is_none() { yield }
     var c0 = Box::new(clock.start())
-    var started: u64 = 0
-    loop {
-        match c0.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(t) => {
-                started = t
-                break
-            },
-        }
+    var t0 = done(c0.get_mut().resume())
+    while t0.is_none() {
+        yield
+        t0 = done(c0.get_mut().resume())
     }
+    let started = (take t0).unwrap()
     var j = Box::new(deployed.start(options(dry_run: true)))
-    loop {
-        match j.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => {
-                failed(take r, why.as_str())
-                break
-            },
-        }
+    var r = done(j.get_mut().resume())
+    while r.is_none() {
+        yield
+        r = done(j.get_mut().resume())
     }
+    let r = (take r).unwrap()
+    failed(take r, why.as_str())
     var t = Box::new(there.start(String::from("scratch/console-host/deploys.json")))
-    loop {
-        match t.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(is) => {
-                assert(!is, "a deploys.json was written")
-                break
-            },
-        }
+    var is = done(t.get_mut().resume())
+    while is.is_none() {
+        yield
+        is = done(t.get_mut().resume())
     }
+    let is = (take is).unwrap()
+    assert(!is, "a deploys.json was written")
     var c1 = Box::new(clock.start())
-    loop {
-        match c1.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(ended) => return ended - started,
-        }
+    var t1 = done(c1.get_mut().resume())
+    while t1.is_none() {
+        yield
+        t1 = done(c1.get_mut().resume())
     }
+    (take t1).unwrap() - started
 }
 
 /// A mismatch is a definite answer: the deploy stops at once, with no retry.
@@ -714,15 +648,13 @@ fn a_file_that_does_not_match_stops_the_deploy() {
             Vec::new(),
         ),
     )
-    loop {
-        match j.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(waited) => {
-                assert(waited == 0, "a mismatch is not retried")
-                break
-            },
-        }
+    var waited = done(j.get_mut().resume())
+    while waited.is_none() {
+        yield
+        waited = done(j.get_mut().resume())
     }
+    let waited = (take waited).unwrap()
+    assert(waited == 0, "a mismatch is not retried")
 }
 
 /// A 404 is a definite answer too: no retry.
@@ -730,15 +662,13 @@ fn a_file_that_does_not_match_stops_the_deploy() {
 @job
 fn a_file_that_does_not_arrive_stops_the_deploy() {
     var j = Box::new(spoiled.start(String::from("HTTP 404"), Some(Fake::Missing), Vec::new()))
-    loop {
-        match j.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(waited) => {
-                assert(waited == 0, "a 404 is not retried")
-                break
-            },
-        }
+    var waited = done(j.get_mut().resume())
+    while waited.is_none() {
+        yield
+        waited = done(j.get_mut().resume())
     }
+    let waited = (take waited).unwrap()
+    assert(waited == 0, "a 404 is not retried")
 }
 
 /// A file whose fetch keeps failing in transport, or whose origin keeps answering 503, is tried
@@ -754,15 +684,13 @@ fn a_file_that_keeps_failing_stops_the_deploy_after_its_retries() {
             ("connection reset (a fake site's failure) (5 tries)", Fake::Fail(100))
         }
         var j = Box::new(spoiled.start(String::from(why), Some(take fake), Vec::new()))
-        loop {
-            match j.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(waited) => {
-                    assert(waited == 15, why)
-                    break
-                },
-            }
+        var waited = done(j.get_mut().resume())
+        while waited.is_none() {
+            yield
+            waited = done(j.get_mut().resume())
         }
+        let waited = (take waited).unwrap()
+        assert(waited == 15, why)
     }
 }
 
@@ -771,43 +699,29 @@ fn a_file_that_keeps_failing_stops_the_deploy_after_its_retries() {
 @job
 fn a_file_that_fails_in_transport_then_answers_is_kept() {
     var s = Box::new(set_up.start(site(docs: false, docs_first: false)))
-    loop {
-        match s.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
+    while done(s.get_mut().resume()).is_none() { yield }
     let url = String::from(f"https://game.example/releases/{C}/session/game.wasm")
     var f = Box::new(faked.start(take url, Fake::Fail(2)))
-    loop {
-        match f.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
+    while done(f.get_mut().resume()).is_none() { yield }
     var j = Box::new(deployed.start(options(dry_run: true)))
-    loop {
-        match j.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => {
-                if let Err(e) = take r {
-                    panic(e.as_str())
-                }
-                break
-            },
-        }
+    var r = done(j.get_mut().resume())
+    while r.is_none() {
+        yield
+        r = done(j.get_mut().resume())
+    }
+    let r = (take r).unwrap()
+    if let Err(e) = take r {
+        panic(e.as_str())
     }
     var r = Box::new(read.start(String::from(f"scratch/game-host/releases/{C}/session/game.wasm")))
-    loop {
-        match r.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(got) => {
-                let Some(t) = take got else { panic("the kept file") }
-                assert(t.as_str() == C, t.as_str())
-                break
-            },
-        }
+    var got = done(r.get_mut().resume())
+    while got.is_none() {
+        yield
+        got = done(r.get_mut().resume())
     }
+    let got = (take got).unwrap()
+    let Some(t) = take got else { panic("the kept file") }
+    assert(t.as_str() == C, t.as_str())
 }
 
 @test(tool, net: ["console.example", "game.example"], budget: 60)
@@ -820,12 +734,7 @@ fn a_file_that_leaves_its_release_stops_the_deploy() {
     )
     put(mut escape, f"sites/game.example/releases/{C}/files.json", compact(listing).as_str())
     var j = Box::new(spoiled.start(String::from("invalid path"), None, take escape))
-    loop {
-        match j.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
+    while done(j.get_mut().resume()).is_none() { yield }
 }
 
 /// A kept release that's in the release already must be the same: its URLs are immutable.
@@ -835,22 +744,15 @@ fn a_kept_release_cannot_change_under_its_immutable_urls() {
     var files = site(docs: false, docs_first: false)
     put(mut files, f"game-host/releases/{C}/session/game.wasm", "different")
     var s = Box::new(set_up.start(take files))
-    loop {
-        match s.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
+    while done(s.get_mut().resume()).is_none() { yield }
     var j = Box::new(deployed.start(options(dry_run: true)))
-    loop {
-        match j.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => {
-                failed(take r, "immutable")
-                break
-            },
-        }
+    var r = done(j.get_mut().resume())
+    while r.is_none() {
+        yield
+        r = done(j.get_mut().resume())
     }
+    let r = (take r).unwrap()
+    failed(take r, "immutable")
 }
 
 /// The docs keep no release they never served (404), but a game's missing release still stops
@@ -862,23 +764,16 @@ fn a_kept_release_the_docs_never_served_is_skipped_but_a_game_s_is_not() {
     // The docs served C, and never B.
     serve(mut files, "docs.example", C, [("index.html", String::from("docs"))])
     var s = Box::new(set_up.start(take files))
-    loop {
-        match s.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
+    while done(s.get_mut().resume()).is_none() { yield }
     var j = Box::new(deployed.start(options(dry_run: true)))
-    loop {
-        match j.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => {
-                if let Err(e) = take r {
-                    panic(e.as_str())
-                }
-                break
-            },
-        }
+    var r = done(j.get_mut().resume())
+    while r.is_none() {
+        yield
+        r = done(j.get_mut().resume())
+    }
+    let r = (take r).unwrap()
+    if let Err(e) = take r {
+        panic(e.as_str())
     }
     let checks = [
         (String::from(f"scratch/docs-host/releases/{B}"), false),
@@ -887,15 +782,13 @@ fn a_kept_release_the_docs_never_served_is_skipped_but_a_game_s_is_not() {
     ]
     for k in 0..3 {
         var t = Box::new(there.start(checks[k].0.clone()))
-        loop {
-            match t.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(is) => {
-                    assert(is == checks[k].1, checks[k].0.as_str())
-                    break
-                },
-            }
+        var is = done(t.get_mut().resume())
+        while is.is_none() {
+            yield
+            is = done(t.get_mut().resume())
         }
+        let is = (take is).unwrap()
+        assert(is == checks[k].1, checks[k].0.as_str())
     }
     // A docs failure that isn't a 404 stops it.
     var f = Box::new(
@@ -904,51 +797,32 @@ fn a_kept_release_the_docs_never_served_is_skipped_but_a_game_s_is_not() {
             Fake::Status(503),
         ),
     )
-    loop {
-        match f.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
+    while done(f.get_mut().resume()).is_none() { yield }
     var j2 = Box::new(deployed.start(options(dry_run: true)))
-    loop {
-        match j2.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => {
-                failed(take r, "HTTP 503")
-                break
-            },
-        }
+    var r = done(j2.get_mut().resume())
+    while r.is_none() {
+        yield
+        r = done(j2.get_mut().resume())
     }
+    let r = (take r).unwrap()
+    failed(take r, "HTTP 503")
     // A game's missing release stops it.
     var c = Box::new(
         faked.start(String::from(f"https://docs.example/releases/{B}/files.json"), Fake::Clear),
     )
-    loop {
-        match c.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
+    while done(c.get_mut().resume()).is_none() { yield }
     var m = Box::new(
         faked.start(String::from(f"https://game.example/releases/{B}/files.json"), Fake::Missing),
     )
-    loop {
-        match m.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
+    while done(m.get_mut().resume()).is_none() { yield }
     var j3 = Box::new(deployed.start(options(dry_run: true)))
-    loop {
-        match j3.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => {
-                failed(take r, "HTTP 404")
-                break
-            },
-        }
+    var r = done(j3.get_mut().resume())
+    while r.is_none() {
+        yield
+        r = done(j3.get_mut().resume())
     }
+    let r = (take r).unwrap()
+    failed(take r, "HTTP 404")
 }
 
 /// A Worker over its file limit fails the deploy rather than drop a release; the limit counts
@@ -957,24 +831,17 @@ fn a_kept_release_the_docs_never_served_is_skipped_but_a_game_s_is_not() {
 @job
 fn a_worker_over_its_file_limit_fails_rather_than_drops_a_release() {
     var s = Box::new(set_up.start(site(docs: false, docs_first: false)))
-    loop {
-        match s.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
+    while done(s.get_mut().resume()).is_none() { yield }
     var o = options(dry_run: true)
     o.limits = Limits { most_files: 3, largest: CLOUDFLARE.largest }
     var j = Box::new(deployed.start(take o))
-    loop {
-        match j.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => {
-                failed(take r, "file-count")
-                break
-            },
-        }
+    var r = done(j.get_mut().resume())
+    while r.is_none() {
+        yield
+        r = done(j.get_mut().resume())
     }
+    let r = (take r).unwrap()
+    failed(take r, "file-count")
 }
 
 @test(tool, net: ["console.example", "game.example"], budget: 60)
@@ -983,25 +850,18 @@ fn the_file_limit_includes_the_deploy_history() {
     var files = site(docs: false, docs_first: false)
     put(mut files, "sites/console.example/deploys.json", "{\"deploys\": []}")
     var s = Box::new(set_up.start(take files))
-    loop {
-        match s.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
+    while done(s.get_mut().resume()).is_none() { yield }
     // The console has one asset before deploys.json is written, and two after.
     var o = options(dry_run: true)
     o.limits = Limits { most_files: 1, largest: CLOUDFLARE.largest }
     var j = Box::new(deployed.start(take o))
-    loop {
-        match j.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => {
-                failed(take r, "file-count")
-                break
-            },
-        }
+    var r = done(j.get_mut().resume())
+    while r.is_none() {
+        yield
+        r = done(j.get_mut().resume())
     }
+    let r = (take r).unwrap()
+    failed(take r, "file-count")
 }
 
 /// A deploy whose commit is no longer main's head runs no Wrangler.
@@ -1014,44 +874,30 @@ fn the_file_limit_includes_the_deploy_history() {
 @job
 fn a_deploy_no_longer_at_main_s_head_changes_nothing() {
     var s = Box::new(set_up.start(site(docs: false, docs_first: false)))
-    loop {
-        match s.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
+    while done(s.get_mut().resume()).is_none() { yield }
     var f = Box::new(
         faked.start(
             String::from(REFS),
             Fake::Bytes(advertised("1111111111111111111111111111111111111111")),
         ),
     )
-    loop {
-        match f.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
+    while done(f.get_mut().resume()).is_none() { yield }
     var j = Box::new(deployed.start(options(dry_run: false)))
-    loop {
-        match j.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => {
-                failed(take r, "no longer the head of main")
-                break
-            },
-        }
+    var r = done(j.get_mut().resume())
+    while r.is_none() {
+        yield
+        r = done(j.get_mut().resume())
     }
+    let r = (take r).unwrap()
+    failed(take r, "no longer the head of main")
     var t = Box::new(there.start(String::from("scratch/npx.log")))
-    loop {
-        match t.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(is) => {
-                assert(!is, "wrangler ran")
-                break
-            },
-        }
+    var is = done(t.get_mut().resume())
+    while is.is_none() {
+        yield
+        is = done(t.get_mut().resume())
     }
+    let is = (take is).unwrap()
+    assert(!is, "wrangler ran")
 }
 
 /// The games deploy before the console and the docs after it, through the pinned Wrangler, and
@@ -1075,42 +921,28 @@ fn the_games_deploy_before_the_console_the_docs_after_and_each_serves_the_releas
         put(mut files, f"{w}/releases/{D}/files.json", compact(listing).as_str())
     }
     var s = Box::new(set_up.start(take files))
-    loop {
-        match s.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
+    while done(s.get_mut().resume()).is_none() { yield }
     var f = Box::new(faked.start(String::from(REFS), Fake::Bytes(advertised(SOURCE))))
-    loop {
-        match f.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
+    while done(f.get_mut().resume()).is_none() { yield }
     var j = Box::new(deployed.start(options(dry_run: false)))
-    loop {
-        match j.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => {
-                if let Err(e) = take r {
-                    panic(e.as_str())
-                }
-                break
-            },
-        }
+    var r = done(j.get_mut().resume())
+    while r.is_none() {
+        yield
+        r = done(j.get_mut().resume())
+    }
+    let r = (take r).unwrap()
+    if let Err(e) = take r {
+        panic(e.as_str())
     }
     var r = Box::new(read.start(String::from("scratch/npx.log")))
-    loop {
-        match r.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(got) => {
-                let Some(log) = take got else { panic("wrangler never ran") }
-                assert(log.as_str() == "game-host\nconsole-host\ndocs-host\n", log.as_str())
-                break
-            },
-        }
+    var got = done(r.get_mut().resume())
+    while got.is_none() {
+        yield
+        got = done(r.get_mut().resume())
     }
+    let got = (take got).unwrap()
+    let Some(log) = take got else { panic("wrangler never ran") }
+    assert(log.as_str() == "game-host\nconsole-host\ndocs-host\n", log.as_str())
 }
 
 /// A Worker that doesn't serve the release, once deployed, fails the deploy.
@@ -1121,12 +953,7 @@ fn a_worker_that_does_not_serve_the_release_fails_the_deploy() {
     put(mut files, f"console-host/releases/{D}/files.json", "{}")
     put(mut files, f"game-host/releases/{D}/files.json", "{}")
     var s = Box::new(set_up.start(take files))
-    loop {
-        match s.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
+    while done(s.get_mut().resume()).is_none() { yield }
     let rel = Release {
         source: String::from("head"),
         release: String::from(D),
@@ -1138,17 +965,15 @@ fn a_worker_that_does_not_serve_the_release_fails_the_deploy() {
         ),
     }
     var j = Box::new(verify.start(take rel, String::from("scratch")))
-    loop {
-        match j.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => {
-                match take r {
-                    Ok(_) => panic("verified"),
-                    Err(e) => assert(contains(e.as_str(), "doesn't serve"), e.as_str()),
-                }
-                break
-            },
-        }
+    var r = done(j.get_mut().resume())
+    while r.is_none() {
+        yield
+        r = done(j.get_mut().resume())
+    }
+    let r = (take r).unwrap()
+    match take r {
+        Ok(_) => panic("verified"),
+        Err(e) => assert(contains(e.as_str(), "doesn't serve"), e.as_str()),
     }
 }
 
@@ -1158,17 +983,12 @@ fn a_worker_that_does_not_serve_the_release_fails_the_deploy() {
 @job
 fn the_deploy_tool_is_granted_the_catalogs_domains() {
     var r = Box::new(read.start(String::from("ws/wrela.toml")))
-    var manifest = String::new()
-    loop {
-        match r.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(got) => {
-                let Some(t) = take got else { panic("no wrela.toml") }
-                manifest = take t
-                break
-            },
-        }
+    var got = done(r.get_mut().resume())
+    while got.is_none() {
+        yield
+        got = done(r.get_mut().resume())
     }
+    let Some(manifest) = (take got).unwrap() else { panic("no wrela.toml") }
     let Some(at) = manifest.find("[tools.deploy]") else { panic("no [tools.deploy]") }
     let section = manifest.slice(at, manifest.len())
     let Some(net_at) = section.find("\nnet = [") else { panic("no net") }

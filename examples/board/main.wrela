@@ -22,7 +22,7 @@ use std::io::{Pending, load as read_file, store}
 use std::semantics::Sent
 use std::serialize::{LoadError, load, save}
 use ui::draw::{DrawList, Rect, Renderer}
-use ui::text::{Face, Fonts, next_cluster, previous_cluster}
+use ui::text::{Face, Fonts}
 use view::View
 
 /// Where the board is kept.
@@ -401,7 +401,6 @@ fn keep(s: mut App) {
     }
 }
 
-/// The selection's rectangle on the screen, if anything's selected.
 /// What's selected, for its bar: its rectangle on the screen, and whether it has connectors.
 fn selection(s: App) -> Option<Selection> {
     if s.selected.is_empty() {
@@ -499,18 +498,12 @@ fn map_of(s: App) -> Map {
 /// The minimap with the camera at `view`.
 fn map_with(s: App, view: View) -> Map {
     let u = unit(s)
-    let seen = Rect::new(
-        view.pan.x,
-        view.pan.y,
-        s.screen.x / view.scale(),
-        s.screen.y / view.scale(),
-    )
     Map::place(
         s.screen,
         u,
         above: 12.0 * u + 48.0 * u + 10.0 * u,
         board: s.board.whole(),
-        seen: seen,
+        seen: view.seen(s.screen),
     )
 }
 
@@ -657,16 +650,21 @@ fn stop_typing(s: mut App) {
     }
 }
 
+/// Item `i` made as tall as its words, if it's text.
+fn refit(s: mut App, i: u32) {
+    if s.board.items[i].kind == Kind::Text {
+        borrow font = s.fonts.font(Face::Sans)
+        s.board.items[i].size.y = paint::text_height(font, s.board.items[i])
+    }
+}
+
 /// Replaces the typed item's text with `text`, the caret at `c`.
 fn retype(s: mut App, text: take String, c: Caret) {
     let Some(t) = s.typing else { return }
     let Some(i) = s.board.index(t.id) else { return }
     s.board.items[i].text = take text
     s.revision += 1
-    if s.board.items[i].kind == Kind::Text {
-        borrow font = s.fonts.font(Face::Sans)
-        s.board.items[i].size.y = paint::text_height(font, s.board.items[i])
-    }
+    refit(mut s, i)
     s.typing = Some(Typing { id: t.id, at: c.at, anchor: c.anchor })
 }
 
@@ -709,6 +707,12 @@ fn vertical(s: App, t: Typing, down: bool) -> u32 {
     paint::offset_at(font, it, l, vec2(p.x, y))
 }
 
+/// How far a key with `mods` moves or deletes: a line with Cmd, a word with Alt, else a
+/// character group.
+fn step_of(mods: Mods) -> Step {
+    if mods.command() { Step::Line } else if mods.alt { Step::Word } else { Step::Char }
+}
+
 /// A key while typing: the caret's moves (by character, word with Alt, or line with Cmd; Shift
 /// selects as it goes), deleting the same ways, a new line, select all, cut, undo, and Escape
 /// (or Cmd+Enter) to stop.
@@ -717,7 +721,7 @@ fn typing_key(s: mut App, key: Key, mods: Mods) {
     let Some(i) = s.board.index(t.id) else { return }
     let old = s.board.items[i].text.as_str()
     let c = caret_of(t)
-    let step = if mods.command() { Step::Line } else if mods.alt { Step::Word } else { Step::Char }
+    let step = step_of(mods)
     if key == Key::Escape || (key == Key::Enter && mods.command()) {
         stop_typing(mut s)
     } else if mods.command() && key == Key::Z {
@@ -840,7 +844,7 @@ fn name_char(s: mut App, c: u32) {
 /// A key while the board's name is being typed: the same moves and deletes as text, and Enter
 /// or Escape to stop (an empty name goes back to "Untitled board").
 fn naming_key(s: mut App, c: Caret, key: Key, mods: Mods) {
-    let step = if mods.command() { Step::Line } else if mods.alt { Step::Word } else { Step::Char }
+    let step = step_of(mods)
     let old = s.board.name.as_str()
     var next = c
     var name: Option<String> = None
@@ -914,6 +918,11 @@ fn redo(s: mut App) {
     }
 }
 
+/// Copies of what's selected, with what's inside the frames in it.
+fn copied(s: App) -> Vec<Item> {
+    s.board.copy(s.board.with_contents(s.selected))
+}
+
 /// Pastes `items` a step further each time, selected.
 fn paste(s: mut App, items: [Item]) {
     if items.is_empty() {
@@ -952,10 +961,7 @@ fn pasted(s: mut App, aim: Aim, got: Option<Pasted>) {
             )
             s.board.items[i].text = take text
             s.revision += 1
-            if s.board.items[i].kind == Kind::Text {
-                borrow font = s.fonts.font(Face::Sans)
-                s.board.items[i].size.y = paint::text_height(font, s.board.items[i])
-            }
+            refit(mut s, i)
             if let Some(t) = s.typing {
                 if t.id == id {
                     s.typing = Some(Typing::caret(id, after.at))
@@ -1055,10 +1061,7 @@ fn act(s: mut App, a: Action) {
                 if has(s.selected, it.id) && !it.locked && sizes_words(it.kind) {
                     let next = paint::next_size(it.type_size, paint::usual(it.kind))
                     s.board.items[i].type_size = next
-                    if s.board.items[i].kind == Kind::Text {
-                        borrow font = s.fonts.font(Face::Sans)
-                        s.board.items[i].size.y = paint::text_height(font, s.board.items[i])
-                    }
+                    refit(mut s, i)
                 }
             }
         },
@@ -1095,16 +1098,16 @@ fn act(s: mut App, a: Action) {
             select(mut s, all)
         },
         Action::Duplicate => {
-            let items = s.board.copy(s.board.with_contents(s.selected))
+            let items = copied(s)
             s.pastes = 0
             paste(mut s, items)
         },
         Action::Copy => {
-            s.clipboard = s.board.copy(s.board.with_contents(s.selected))
+            s.clipboard = copied(s)
             s.pastes = 0
         },
         Action::Cut => {
-            s.clipboard = s.board.copy(s.board.with_contents(s.selected))
+            s.clipboard = copied(s)
             s.pastes = 0
             delete_selection(mut s)
         },
@@ -1288,6 +1291,15 @@ fn corner_at(s: App, at: vec2) -> Option<(u32, vec2)> {
     None
 }
 
+/// Whether a press on item `id` at screen point `at` is the second of a double click: soon after
+/// the last press, on the same item and near it.
+fn double_click(s: App, id: u32, at: vec2) -> bool {
+    match s.click {
+        Some(c) => c.id == id && s.time - c.time < 0.45 && length(c.at - at) < 6.0 * unit(s),
+        None => false,
+    }
+}
+
 /// Starts moving the camera with the pointer, from screen point `at`.
 fn pan_from(s: mut App, at: vec2) {
     s.goal = None
@@ -1359,13 +1371,7 @@ fn press(s: mut App, at: vec2, button: Button, mods: Mods, chrome: Chrome) {
             borrow it = s.board.items[i]
             let l = paint::layout(font, it)
             let byte = paint::offset_at(font, it, l, w)
-            let double = match s.click {
-                Some(c) => c.id == t.id &&
-                    s.time - c.time < 0.45 &&
-                    length(c.at - at) < 6.0 * unit(s),
-                None => false,
-            }
-            if double {
+            if double_click(s, t.id, at) {
                 let (from, to) = edit::word_at(it.text.as_str(), byte)
                 s.typing = Some(Typing { id: t.id, at: to, anchor: from })
                 s.click = None
@@ -1398,8 +1404,7 @@ fn press(s: mut App, at: vec2, button: Button, mods: Mods, chrome: Chrome) {
             begin_typing(mut s, id, 0, keep: false)
             s.tool = Tool::Select
         },
-        Tool::Shape => s.drag = Drag::Shape { from: w },
-        Tool::Frame => s.drag = Drag::Shape { from: w },
+        Tool::Shape | Tool::Frame => s.drag = Drag::Shape { from: w },
         Tool::Link => if let Some(id) = s.board.hit(w, slack(s)) {
             let Some(i) = s.board.index(id) else { return }
             if s.board.items[i].kind != Kind::Link {
@@ -1454,10 +1459,7 @@ fn press_select(s: mut App, at: vec2, w: vec2, mods: Mods) {
         return
     }
     // A second press on the same item, soon and near: type into it.
-    let double = match s.click {
-        Some(c) => c.id == id && s.time - c.time < 0.45 && length(c.at - at) < 6.0 * unit(s),
-        None => false,
-    }
+    let double = double_click(s, id, at)
     s.click = Some(Click { time: s.time, at, id })
     let Some(i) = s.board.index(id) else { return }
     if double && s.board.items[i].has_text() && !s.board.items[i].locked {
@@ -1507,6 +1509,11 @@ fn snap_targets(s: App, besides: [u32]) -> Vec<Rect> {
     out
 }
 
+/// What a marquee from world point `from` to `to` sweeps up: what it touches, with their groups.
+fn swept(b: Board, from: vec2, to: vec2) -> Vec<u32> {
+    b.with_groups(b.touching(Rect::spanning(from, to)))
+}
+
 /// How near (world units) something must come to a line to snap to it: 6 pixels.
 fn reach(s: App) -> f32 {
     6.0 * unit(s) / s.view.scale()
@@ -1520,7 +1527,7 @@ fn moved(s: mut App, at: vec2, mods: Mods) {
             checkpoint(mut s)
             // Alt drags out a copy, leaving the originals where they were.
             if mods.alt {
-                let items = s.board.copy(s.board.with_contents(s.selected))
+                let items = copied(s)
                 let ids = s.board.paste(items, vec2(0.0))
                 select(mut s, ids)
             }
@@ -1565,10 +1572,7 @@ fn moved(s: mut App, at: vec2, mods: Mods) {
             } else { anchor.y })
             s.board.items[i].at = lo
             s.board.items[i].size = size
-            if s.board.items[i].kind == Kind::Text {
-                borrow font = s.fonts.font(Face::Sans)
-                s.board.items[i].size.y = paint::text_height(font, s.board.items[i])
-            }
+            refit(mut s, i)
         },
         Drag::Dot { from, at: start, .. } => if length(at - start) > 3.0 * unit(s) {
             s.drag = Drag::Link { from }
@@ -1636,11 +1640,7 @@ fn released(s: mut App, at: vec2, mods: Mods) {
         Drag::Scale { .. } => s.originals.clear(),
         Drag::Dot { from, d, .. } => add_beside(mut s, from, d),
         Drag::Marquee { from, add } => {
-            let lo = min(from, w)
-            let hi = max(from, w)
-            let ids = s.board.with_groups(
-                s.board.touching(Rect::new(lo.x, lo.y, hi.x - lo.x, hi.y - lo.y)),
-            )
+            let ids = swept(s.board, from, w)
             if !add {
                 s.selected.clear()
             }
@@ -1714,7 +1714,6 @@ fn released(s: mut App, at: vec2, mods: Mods) {
         },
         _ => {},
     }
-    let _ = mods
     s.guides.clear()
     s.drag = Drag::Idle
 }
@@ -1920,11 +1919,7 @@ fn draw(s: mut App, screen: vec2) {
     // What's selected, and what the pointer is over or a marquee touches.
     let ring = max(1.5 * u, 1.0)
     let touched = match s.drag {
-        Drag::Marquee { from, .. } => {
-            let lo = min(from, w)
-            let hi = max(from, w)
-            s.board.with_groups(s.board.touching(Rect::new(lo.x, lo.y, hi.x - lo.x, hi.y - lo.y)))
-        },
+        Drag::Marquee { from, .. } => swept(s.board, from, w),
         _ => Vec::new(),
     }
     for i in 0..s.board.items.len() {
@@ -2003,25 +1998,14 @@ fn draw(s: mut App, screen: vec2) {
     if let Some(b) = around {
         list.ring(b, ACCENT, radius: 2.0 * u, width: ring)
         if idle {
-            for c in [vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(1.0, 1.0)] {
-                let p = vec2(b.x, b.y) + c * vec2(b.w, b.h)
-                let h = Rect::new(p.x - 4.5 * u, p.y - 4.5 * u, 9.0 * u, 9.0 * u)
-                list.rect(h, vec4(1.0), radius: 2.0 * u)
-                list.ring(h, ACCENT, radius: 2.0 * u, width: ring)
-            }
+            handles(mut list, b, u, ring)
         }
     }
     if idle {
         if s.selected.len() == 1 {
             if let Some(i) = s.board.index(s.selected[0]) {
                 if s.board.items[i].boxed() && s.typing.is_none() {
-                    let r = s.view.rect(s.board.items[i].rect())
-                    for c in [vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(1.0, 1.0)] {
-                        let p = vec2(r.x, r.y) + c * vec2(r.w, r.h)
-                        let h = Rect::new(p.x - 4.5 * u, p.y - 4.5 * u, 9.0 * u, 9.0 * u)
-                        list.rect(h, vec4(1.0), radius: 2.0 * u)
-                        list.ring(h, ACCENT, radius: 2.0 * u, width: ring)
-                    }
+                    handles(mut list, s.view.rect(s.board.items[i].rect()), u, ring)
                 }
             }
         }
@@ -2051,18 +2035,12 @@ fn draw(s: mut App, screen: vec2) {
     // What the pointer is making.
     match s.drag {
         Drag::Marquee { from, .. } => {
-            let a = s.view.to_screen(from)
-            let lo = min(a, s.pointer)
-            let hi = max(a, s.pointer)
-            let r = Rect::new(lo.x, lo.y, hi.x - lo.x, hi.y - lo.y)
+            let r = Rect::spanning(s.view.to_screen(from), s.pointer)
             list.rect(r, vec4(ACCENT.xyz, 0.08))
             list.ring(r, vec4(ACCENT.xyz, 0.8), width: max(1.0 * u, 1.0))
         },
         Drag::Shape { from } => {
-            let a = s.view.to_screen(from)
-            let lo = min(a, s.pointer)
-            let hi = max(a, s.pointer)
-            let r = Rect::new(lo.x, lo.y, hi.x - lo.x, hi.y - lo.y)
+            let r = Rect::spanning(s.view.to_screen(from), s.pointer)
             let ink = vec4(ACCENT.xyz, 0.9)
             let kind = if s.tool == Tool::Frame { Kind::Frame } else { s.shape }
             match kind {
@@ -2171,14 +2149,7 @@ fn draw(s: mut App, screen: vec2) {
                 list.rect(r, paint::FILLS[it.color % paint::COLORS], radius: 0.5 * u)
             }
         }
-        let seen = m.rect_of(
-            Rect::new(
-                s.view.pan.x,
-                s.view.pan.y,
-                screen.x / s.view.scale(),
-                screen.y / s.view.scale(),
-            ),
-        )
+        let seen = m.rect_of(s.view.seen(screen))
         list.rect(seen, vec4(ACCENT.xyz, 0.08), radius: 2.0 * u)
         list.ring(seen, ACCENT, radius: 2.0 * u, width: max(1.5 * u, 1.0))
         list.pop_clip()
@@ -2193,6 +2164,16 @@ fn draw(s: mut App, screen: vec2) {
     if want != s.shown_cursor && s.cursor.is_none() {
         s.shown_cursor = want
         s.cursor = Some(host::cursor(want))
+    }
+}
+
+/// The handles at screen rectangle `r`'s corners, which resize or scale what it holds.
+fn handles(list: mut DrawList, r: Rect, u: f32, ring: f32) {
+    for c in [vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(1.0, 1.0)] {
+        let p = vec2(r.x, r.y) + c * vec2(r.w, r.h)
+        let h = Rect::new(p.x - 4.5 * u, p.y - 4.5 * u, 9.0 * u, 9.0 * u)
+        list.rect(h, vec4(1.0), radius: 2.0 * u)
+        list.ring(h, ACCENT, radius: 2.0 * u, width: ring)
     }
 }
 

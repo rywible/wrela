@@ -9,8 +9,8 @@
 // of shadow like flame are cut from the cloth's own edge.
 
 use cape::{
-    AROUND, DOWN, FACE, HOOD_ROWS, MANTLE_ROWS, MANTLE_SHEET, POINTS, SLEEVE_ROUND, SLEEVE_ROWS,
-    SLEEVE_SHEETS, body_frame, face_open,
+    AROUND, DOWN, HOOD_ROWS, MANTLE_ROWS, MANTLE_SHEET, POINTS, SLEEVE_ROUND, SLEEVE_ROWS,
+    SLEEVE_SHEETS, face_open,
 }
 use engine::character::{
     Cast, MotionVertex, PartOf, Realized, cast, character, character_motion, character_shade,
@@ -248,9 +248,9 @@ fn folds(d: Drawing, uv: vec2) -> f32 {
 }
 
 /// The cloth's creases at `uv` on drawing `d`: its folds (`folds`), shallow at its top (all but
-/// none over the hood) and deeper toward its foot (on the robe, running on down the train as the lines it drags in). How far
-/// the cloth stands out (m, along its normal), how fast that changes round it (m a column), and
-/// how far it is from a valley (-1) to a crest (1).
+/// none over the hood) and deeper toward its foot (on the robe, running on down the train as the
+/// lines it drags in). How far the cloth stands out (m, along its normal), how fast that changes
+/// round it (m a column), and how far it is from a valley (-1) to a crest (1).
 fn crease(d: Drawing, uv: vec2) -> (f32, f32, f32) {
     // The hood hangs nearly smooth over the head: its folds begin at the collar.
     let smooth = if d.burns != 0 {
@@ -552,7 +552,7 @@ impl Drawn {
         if !still {
             copy(from: self.points.items(), to: self.last_points.items_mut())
         }
-        write(mut self.points, 0, points.clone())
+        write(mut self.points, 0, points)
         if still {
             write(mut self.last_points, 0, points)
         }

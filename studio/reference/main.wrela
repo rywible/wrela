@@ -52,8 +52,7 @@
 //   its rim: places where a viewer would see through it.
 
 use deviation::{
-    Ask, Deviation, PartAt, Probe, RayRow, Rng, SeeThrough, SurfacePoint, VolumePoint, draw_surface,
-    draw_volume, misses, view_rows,
+    Ask, Deviation, PartAt, Probe, Rng, SeeThrough, draw_surface, draw_volume, misses, view_rows,
 }
 use mesh::{Solid, len3}
 use replica::{
@@ -64,15 +63,15 @@ use std::collections::{Box, Vec}
 use std::io::{IoError, Pending, print}
 use std::job::{Job, Step}
 use std::string::String
-use std::tool::{MOST_BYTES, RUNNING, ToolError, answer, args}
-use std::tool::blob
+use std::tool::{RUNNING, args}
 use std::tool::drive
 use std::tool::drive::Scalar
 use std::tool::files
 use std::tool::toolchain
 use std::tool::files::rooted
 use std::tool::toolchain::Override
-use std::string::parse_f64_at
+use toolkit::wait::{done, said, wait}
+use toolkit::whole::write_file
 
 /// The root the tool reads and writes the workspace in, and the root its builds go in.
 pub const WS: Text = "ws"
@@ -109,12 +108,6 @@ fn last_part(path: str) -> String {
     String::from(path.slice(at, path.len()))
 }
 
-/// The number an argument spells: an `f64`.
-fn number_arg(text: str) -> Option<f64> {
-    let owned = String::from(text)
-    parse_f64_at(owned.as_bytes(), 0, text.len())
-}
-
 /// The parts named `name`, read and checked.
 fn reference_named(name: str) -> Result<Reference, String> {
     let Some(parts) = references::index::parts(name) else {
@@ -128,13 +121,6 @@ fn reference_named(name: str) -> Result<Reference, String> {
         return Err(String::from(f"no parts named `{name}`: the references' parts are {names}"))
     }
     replica::read(parts)
-}
-
-fn tool_error(r: take Result<Vec<u8>, ToolError>) -> Result<Vec<u8>, String> {
-    match take r {
-        Ok(b) => Ok(b),
-        Err(e) => Err(String::from(e.message())),
-    }
 }
 
 @job
@@ -213,7 +199,7 @@ pub fn replica_args(given: [String]) -> Result<ReplicaArgs, u32> {
             i += 2
         } else if w == "--sections-every" {
             let Some(v) = value else { return Err(usage()) }
-            let Some(m) = number_arg(v.as_str()) else { return Err(usage()) }
+            let Some(m) = v.as_str().parse_f64() else { return Err(usage()) }
             if !(m > 0.0) {
                 return Err(usage())
             }
@@ -221,7 +207,7 @@ pub fn replica_args(given: [String]) -> Result<ReplicaArgs, u32> {
             i += 2
         } else if w == "--seam" {
             let Some(v) = value else { return Err(usage()) }
-            let Some(m) = number_arg(v.as_str()) else { return Err(usage()) }
+            let Some(m) = v.as_str().parse_f64() else { return Err(usage()) }
             if !(m >= 0.0) {
                 return Err(usage())
             }
@@ -420,74 +406,6 @@ fn replica_command(given: take Vec<String>) -> u32 {
     0
 }
 
-/// Writes `text` as the whole file at `path`, in a write root: at once, or through a blob if
-/// it's more than a request carries.
-@job
-pub fn write_file(path: take String, text: take String) -> Result<(), String> {
-    let size = text.len()
-    if size <= MOST_BYTES {
-        var p = files::write(path.as_str(), text.as_bytes())
-        var got = p.poll()
-        while got.is_none() {
-            yield
-            got = p.poll()
-        }
-        let Some(polled) = take got else { return Err(String::from("no answer")) }
-        let _ = tool_error(answer(take polled))?
-        return Ok(())
-    }
-    var n = blob::new()
-    var made = n.poll()
-    while made.is_none() {
-        yield
-        made = n.poll()
-    }
-    let Some(mp) = take made else { return Err(String::from("no answer")) }
-    let b = match blob::read_handle(take mp) {
-        Ok(b) => b,
-        Err(e) => return Err(String::from(e.message())),
-    }
-    var at = 0
-    var result: Result<(), String> = Ok(())
-    while at < size && result.is_ok() {
-        let end = min(at + MOST_BYTES, size)
-        var chunk: Vec<u8> = Vec::with_capacity(end - at)
-        for i in at..end {
-            chunk.push(text.as_bytes()[i])
-        }
-        var p = blob::append(b, chunk)
-        var got = p.poll()
-        while got.is_none() {
-            yield
-            got = p.poll()
-        }
-        let Some(polled) = take got else { return Err(String::from("no answer")) }
-        if let Err(why) = tool_error(answer(take polled)) {
-            result = Err(take why)
-        }
-        at = end
-    }
-    if result.is_ok() {
-        var p = files::write_blob(path.as_str(), b)
-        var got = p.poll()
-        while got.is_none() {
-            yield
-            got = p.poll()
-        }
-        let Some(polled) = take got else { return Err(String::from("no answer")) }
-        if let Err(why) = tool_error(answer(take polled)) {
-            result = Err(take why)
-        }
-    }
-    var r = blob::release(b)
-    var released = r.poll()
-    while released.is_none() {
-        yield
-        released = r.poll()
-    }
-    result
-}
-
 /// Writes the replica's package in `out` (a root path; `shown` as the command line gave it): its
 /// manifest, its replica, its subject and its main module, the wrela files formatted.
 @job
@@ -504,32 +422,21 @@ pub fn write_package(
     files_to_write.push((String::from(f"{out}/main.wrela"), text_of(replica::MAIN)))
     for k in 0..files_to_write.len() {
         let (path, text) = files_to_write[k].clone()
-        var w = Box::new(write_file.start(take path, take text))
-        loop {
-            match w.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(r) => {
-                    (take r)?
-                    break
-                },
-            }
+        var w = Box::new(write_file.start(take path, Vec::from([Vec::from(text.as_bytes())])))
+        var written = done(w.get_mut().resume())
+        while written.is_none() {
+            yield
+            written = done(w.get_mut().resume())
         }
+        (take written).unwrap()?
     }
     var paths: Vec<String> = Vec::new()
     for f in ["replica.wrela", "subject.wrela", "main.wrela"] {
         paths.push(String::from(f"{out}/{f}"))
     }
-    var p = toolchain::fmt(paths, check: false)
-    var got = p.poll()
-    while got.is_none() {
-        yield
-        got = p.poll()
-    }
-    let Some(polled) = take got else { return Err(String::from("no answer")) }
-    let formatted = match toolchain::read_formatted(take polled) {
-        Ok(f) => take f,
-        Err(e) => return Err(String::from(e.message())),
-    }
+    var p = wait(toolchain::fmt(paths, check: false))
+    while !p.ready() { yield }
+    let formatted = said(toolchain::read_formatted(p.polled()))?
     if !formatted.failed.is_empty() {
         let f = last_part(formatted.failed[0].path.as_str())
         return Err(
@@ -668,34 +575,22 @@ pub fn measure(
     solid: Solid,
 ) -> Result<Deviation, String> {
     var l = Box::new(load_package.start(take pkg, take shown, take out, take overrides, INSTANCES))
-    var loaded: Option<Result<Vec<drive::Build>, String>> = None
+    var loaded = done(l.get_mut().resume())
     while loaded.is_none() {
-        match l.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => loaded = Some(take r),
-        }
+        yield
+        loaded = done(l.get_mut().resume())
     }
-    let Some(r) = take loaded else { return Err(String::from("no answer")) }
-    let builds = (take r)?
+    let builds = (take loaded).unwrap()?
     var m = Box::new(report.start(builds.clone(), take names, points))
-    var result: Option<Result<Deviation, String>> = None
+    var result = done(m.get_mut().resume(solid))
     while result.is_none() {
-        match m.get_mut().resume(solid) {
-            Step::Yielded => yield,
-            Step::Done(r) => result = Some(take r),
-        }
+        yield
+        result = done(m.get_mut().resume(solid))
     }
     // Every instance closed, however the measuring went.
     var c = Box::new(close_all.start(builds.clone()))
-    var closed = false
-    while !closed {
-        match c.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => closed = true,
-        }
-    }
-    let Some(done) = take result else { return Err(String::from("no answer")) }
-    done
+    while done(c.get_mut().resume()).is_none() { yield }
+    (take result).unwrap()
 }
 
 /// Builds the package at `pkg` into `out` (its dependencies read from `overrides` where they
@@ -708,29 +603,16 @@ pub fn load_package(
     overrides: take Vec<Override>,
     count: take u32,
 ) -> Result<Vec<drive::Build>, String> {
-    var s = files::stat(f"{pkg}/main.wrela")
-    var stated = s.poll()
-    while stated.is_none() {
-        yield
-        stated = s.poll()
-    }
-    let Some(st) = take stated else { return Err(String::from("no answer")) }
-    if files::read_entry(take st).is_err() {
+    var s = wait(files::stat(f"{pkg}/main.wrela"))
+    while !s.ready() { yield }
+    if files::read_entry(s.polled()).is_err() {
         return Err(String::from(f"{shown} isn't a package (it has no main.wrela)"))
     }
     var options = toolchain::options()
     options.overrides = take overrides
-    var b = toolchain::build(pkg.as_str(), out.as_str(), options)
-    var built = b.poll()
-    while built.is_none() {
-        yield
-        built = b.poll()
-    }
-    let Some(bp) = take built else { return Err(String::from("no answer")) }
-    let result = match toolchain::read_built(take bp) {
-        Ok(r) => take r,
-        Err(e) => return Err(String::from(e.message())),
-    }
+    var b = wait(toolchain::build(pkg.as_str(), out.as_str(), options))
+    while !b.ready() { yield }
+    let result = said(toolchain::read_built(b.polled()))?
     if !result.ok {
         var why = String::new()
         for d in result.diagnostics {
@@ -800,13 +682,7 @@ pub fn load_package(
     }
     if let Some(why) = take failure {
         var c = Box::new(close_all.start(builds.clone()))
-        var closed = false
-        while !closed {
-            match c.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(_) => closed = true,
-            }
-        }
+        while done(c.get_mut().resume()).is_none() { yield }
         return Err(take why)
     }
     Ok(builds)
@@ -847,30 +723,20 @@ fn report(
     var rng = Rng { state: 0x9E3779B97F4A7C15 }
     let (drawn, hidden) = draw_surface(solid, points, mut rng)?
     var s = Box::new(ask_all.start(builds.clone(), take drawn))
-    var surface: Vec<SurfacePoint> = Vec::new()
-    var surface_done = false
-    while !surface_done {
-        match s.get_mut().resume(solid) {
-            Step::Yielded => yield,
-            Step::Done(r) => {
-                surface = (take r)?
-                surface_done = true
-            },
-        }
+    var surface_asked = done(s.get_mut().resume(solid))
+    while surface_asked.is_none() {
+        yield
+        surface_asked = done(s.get_mut().resume(solid))
     }
+    let surface = (take surface_asked).unwrap()?
     let (volume_drawn, box_volume) = draw_volume(solid, points, mut rng)
     var v = Box::new(ask_all.start(builds.clone(), take volume_drawn))
-    var volume: Vec<VolumePoint> = Vec::new()
-    var volume_done = false
-    while !volume_done {
-        match v.get_mut().resume(solid) {
-            Step::Yielded => yield,
-            Step::Done(r) => {
-                volume = (take r)?
-                volume_done = true
-            },
-        }
+    var volume_asked = done(v.get_mut().resume(solid))
+    while volume_asked.is_none() {
+        yield
+        volume_asked = done(v.get_mut().resume(solid))
     }
+    let volume = (take volume_asked).unwrap()?
     var both = 0
     var mesh_only = 0
     var package_only = 0
@@ -890,17 +756,12 @@ fn report(
     for view in 0..5 {
         let (rows, nv) = view_rows(solid, view)
         var r = Box::new(ask_all.start(builds.clone(), take rows))
-        var asked: Vec<RayRow> = Vec::new()
-        var rows_done = false
-        while !rows_done {
-            match r.get_mut().resume(solid) {
-                Step::Yielded => yield,
-                Step::Done(x) => {
-                    asked = (take x)?
-                    rows_done = true
-                },
-            }
+        var rows_asked = done(r.get_mut().resume(solid))
+        while rows_asked.is_none() {
+            yield
+            rows_asked = done(r.get_mut().resume(solid))
         }
+        let asked = (take rows_asked).unwrap()?
         let (missed, through) = misses(asked, nv, view)
         rays[view] = through
         var at: Vec<PartAt> = Vec::with_capacity(missed.len())
@@ -908,17 +769,12 @@ fn report(
             at.push(PartAt::new(m.at))
         }
         var p = Box::new(ask_all.start(builds.clone(), take at))
-        var parts: Vec<PartAt> = Vec::new()
-        var parts_done = false
-        while !parts_done {
-            match p.get_mut().resume(solid) {
-                Step::Yielded => yield,
-                Step::Done(x) => {
-                    parts = (take x)?
-                    parts_done = true
-                },
-            }
+        var parts_asked = done(p.get_mut().resume(solid))
+        while parts_asked.is_none() {
+            yield
+            parts_asked = done(p.get_mut().resume(solid))
         }
+        let parts = (take parts_asked).unwrap()?
         for k in 0..missed.len() {
             var m = missed[k]
             m.part = parts[k].part

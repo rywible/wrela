@@ -70,10 +70,10 @@ pub fn sword() -> Creature<Paint> {
     // A wedge: thick along the back, down to a fine line at the edge.
     let thick = BLADE_THICK * 0.5
     let taper = (thick - 0.0015) / (EDGE_HIGH - BACK)
-    let outline = |inset: f32| half_space(vec3(-1.0, 0.0, 0.0), -BACK - inset)
+    let outline = half_space(vec3(-1.0, 0.0, 0.0), -BACK)
         .smooth_intersect(half_space(vec3(0.0, -1.0, 0.0), -GUARD_AT), k: 0.002)
-        .smooth_intersect(side(edge_low, belly, inset), k: 0.002)
-        .smooth_intersect(side(belly, TIP, inset), k: 0.003)
+        .smooth_intersect(side(edge_low, belly, 0.0), k: 0.002)
+        .smooth_intersect(side(belly, TIP, 0.0), k: 0.003)
         .smooth_intersect(side(TIP, shoulder, 0.0), k: 0.002)
     let wedge = half_space(vec3(taper, 0.0, 1.0), thick + taper * BACK)
         .smooth_intersect(half_space(vec3(taper, 0.0, -1.0), thick + taper * BACK), k: 0.002)
@@ -82,7 +82,7 @@ pub fn sword() -> Creature<Paint> {
         ellipsoid(vec3(0.022, 0.016, 0.05)).translate(vec3(BACK, 1.4, 0.0)),
         ellipsoid(vec3(0.018, 0.013, 0.05)).translate(vec3(BACK, 1.5, 0.0)),
     ].union()
-    let blade = outline(0.0).smooth_intersect(wedge, k: 0.002).smooth_subtract(notches, k: 0.003)
+    let blade = outline.smooth_intersect(wedge, k: 0.002).smooth_subtract(notches, k: 0.003)
     // The honed bevel: the blade less its outline moved in from the edge (the back is unground);
     // the flat is the rest, so the two meet at one line and never share a surface.
     let inner = side(edge_low, belly, 0.02).smooth_intersect(side(belly, TIP, 0.02), k: 0.003)

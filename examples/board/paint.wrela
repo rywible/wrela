@@ -181,7 +181,6 @@ pub fn text_height(font: Font, it: Item) -> f32 {
     f32(max(lines.len(), 1)) * font.line_height(size)
 }
 
-/// An item's words' size: its own, or `usual`.
 /// The size of words on an item of `kind` that hasn't had its own chosen.
 pub fn usual(kind: Kind) -> f32 {
     match kind {
@@ -191,6 +190,7 @@ pub fn usual(kind: Kind) -> f32 {
     }
 }
 
+/// An item's words' size: its own, or `usual`.
 fn sized(it: Item, usual: f32) -> f32 {
     if it.type_size > 0.0 { it.type_size } else { usual }
 }
@@ -437,10 +437,7 @@ pub fn connector(list: mut DrawList, points: [vec2], style: u32, color: vec4, wi
     let n = points.len()
     let head = max(11.0 * k, 7.0)
     // The line stops short where a head covers its end, so the head's tip stays sharp.
-    var ends: Vec<vec2> = Vec::new()
-    for p in points {
-        ends.push(p)
-    }
+    var ends = Vec::from(points)
     if style & END_ARROW != 0 {
         ends[n - 1] = shortened(points[n - 1], points[n - 2], head)
     }

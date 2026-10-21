@@ -2,19 +2,7 @@
 // evicted tile as well as the incoming tile, even when the new tile lies outside every visible
 // level. A tile at a level's final row or column also invalidates its sampled endpoint.
 
-use engine::terrain::{Clipmap, Cover, Terrain}
-
-struct Flat: Copy + GpuData {}
-
-impl Terrain for Flat {
-    fn height(self, x: f32, z: f32) -> f32 {
-        0.0
-    }
-
-    fn cover(self, at: vec3, n: vec3) -> Cover {
-        Cover { albedo: vec3(0.5), grass: 0.0 }
-    }
-}
+use engine::terrain::{Clipmap, Flat}
 
 pub struct State {
     clip: Clipmap,

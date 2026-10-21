@@ -83,15 +83,13 @@ use lens::{
     Built, Lens, Place, actions, build, call, cpu_action, failed, last_json, logs, read_png,
     read_text, reference_mask, save_png, screen, start, typed,
 }
-use look::{
-    Framing, Photo, changed, f32_text, look_answer, own_framing, parse_registration, registered,
-    sheet,
-}
-use json::{f64_text, obj, quoted, round3}
+use look::{Framing, Photo, changed, look_answer, own_framing, parse_registration, registered, sheet}
+use json::{f32_text, obj, round3}
 use std::collections::{Box, Vec}
 use std::input::Script
 use std::io::print
 use std::job::{Job, Step}
+use std::math::is_finite
 use std::string::String
 use std::tool::{RUNNING, args}
 use std::tool::drive
@@ -99,6 +97,8 @@ use std::tool::drive::Scalar
 use std::tool::files
 use std::tool::time
 use std::tool::files::rooted
+use toolkit::command::size_of
+use toolkit::wait::{done, wait}
 
 /// The root the tool reads the workspace in, and the root its output goes in.
 pub const WS: Text = "ws"
@@ -143,7 +143,7 @@ pub fn read_command(given: [String]) -> Option<Command> {
             } else if a == "--reference" {
                 c.reference = Some(String::from(v))
             } else if a == "--size" {
-                c.size = parse_size(v)?
+                c.size = size_of(v)?
             } else {
                 let p = v.parse_u32()?
                 if p > 65535 {
@@ -168,17 +168,6 @@ pub fn read_command(given: [String]) -> Option<Command> {
         return None
     }
     Some(c)
-}
-
-/// `WxH`, as `--size` takes it.
-pub fn parse_size(s: str) -> Option<(u32, u32)> {
-    let x = s.find("x")?
-    let w = s.slice(0, x).parse_u32()?
-    let h = s.slice(x + 1, s.len()).parse_u32()?
-    if w == 0 || h == 0 {
-        return None
-    }
-    Some((w, h))
 }
 
 /// One of the lens's actions, as the command line gives it: its export and the export's
@@ -245,9 +234,7 @@ pub fn parse_action(
             }
         } else {
             match a.parse_f32() {
-                Some(x) => if abs(x) <= 340282346638528859811704183484516925440.0 {
-                    Some(Scalar::F32(x))
-                } else { None },
+                Some(x) => if is_finite(x) { Some(Scalar::F32(x)) } else { None },
                 None => None,
             }
         }
@@ -286,12 +273,12 @@ fn main(given: take Vec<String>) -> u32 {
     var w = Box::new(
         run.start(take place, c.clone(), take action, String::from(c.rest[0].as_str())),
     )
-    loop {
-        match w.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(status) => return status,
-        }
+    var ended = done(w.get_mut().resume())
+    while ended.is_none() {
+        yield
+        ended = done(w.get_mut().resume())
     }
+    (take ended).unwrap()
 }
 
 /// What a command line (`c`) asks of the lens on the subject at `place` (named `shown` on the
@@ -299,6 +286,11 @@ fn main(given: take Vec<String>) -> u32 {
 @job
 pub fn run(place: take Place, c: take Command, action: take String, shown: take String) -> u32 {
     let a = action.clone()
+    // The words after the action: its arguments.
+    var rest: Vec<String> = Vec::new()
+    for k in 2..c.rest.len() {
+        rest.push(c.rest[k].clone())
+    }
     let commands = ["serve", "build", "look", "beside", "variants", "sweep", "run"]
     var command = false
     for k in commands {
@@ -321,21 +313,14 @@ pub fn run(place: take Place, c: take Command, action: take String, shown: take 
     var requested: Option<Action> = None
     if !command {
         var l = Box::new(read_text.start(String::from(f"{place.subject.as_str()}/lens.wrela")))
-        var got: Option<Result<Option<String>, String>> = None
+        var got = done(l.get_mut().resume())
         while got.is_none() {
-            match l.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(r) => got = Some(take r),
-            }
+            yield
+            got = done(l.get_mut().resume())
         }
-        let Some(r) = take got else { return 1 }
         var floor = false
-        if let Ok(Some(t)) = take r {
+        if let Ok(Some(t)) = (take got).unwrap() {
             floor = glue::is_floor(t.as_str())
-        }
-        var rest: Vec<String> = Vec::new()
-        for k in 2..c.rest.len() {
-            rest.push(c.rest[k].clone())
         }
         match parse_action(actions(floor), a.as_str(), rest) {
             Ok(p) => requested = Some(take p),
@@ -352,15 +337,12 @@ pub fn run(place: take Place, c: take Command, action: take String, shown: take 
             return 2
         }
         var p = Box::new(read_png.start(take path))
-        var got: Option<Result<Option<(u32, u32, Vec<u8>)>, String>> = None
+        var got = done(p.get_mut().resume())
         while got.is_none() {
-            match p.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(x) => got = Some(take x),
-            }
+            yield
+            got = done(p.get_mut().resume())
         }
-        let Some(x) = take got else { return 1 }
-        match take x {
+        match (take got).unwrap() {
             Ok(Some(image)) => {
                 let (iw, ih, rgba) = image
                 match reference_mask(iw, ih, rgba) {
@@ -385,28 +367,20 @@ pub fn run(place: take Place, c: take Command, action: take String, shown: take 
     // run's go first.
     var at = place.clone()
     if a == "serve" {
-        var u = time::utc_now()
-        var now = u.poll()
-        while now.is_none() {
-            yield
-            now = u.poll()
-        }
-        let Some(up) = take now else { return 1 }
-        let Ok(date) = time::read_utc(take up) else { return 1 }
+        var u = wait(time::utc_now())
+        while !u.ready() { yield }
+        let Ok(date) = time::read_utc(u.polled()) else { return 1 }
         var rm = files::remove_all(f"{place.out.as_str()}/serve")
         while rm.poll().is_none() { yield }
         at = server::serving_place(take at, f"{date.seconds}{date.nanos}")
     }
     var b = Box::new(build.start(take at))
-    var got: Option<Result<Built, String>> = None
+    var got = done(b.get_mut().resume())
     while got.is_none() {
-        match b.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => got = Some(take r),
-        }
+        yield
+        got = done(b.get_mut().resume())
     }
-    let Some(r) = take got else { return 1 }
-    let built = match take r {
+    let built = match (take got).unwrap() {
         Ok(x) => take x,
         Err(why) => {
             print(f"error: {why.as_str()}")
@@ -438,15 +412,12 @@ pub fn run(place: take Place, c: take Command, action: take String, shown: take 
             ),
         )
         var control = server::control()
-        var done: Option<Result<(), String>> = None
-        while done.is_none() {
-            match s.get_mut().resume(mut control) {
-                Step::Yielded => yield,
-                Step::Done(x) => done = Some(take x),
-            }
+        var ended = done(s.get_mut().resume(mut control))
+        while ended.is_none() {
+            yield
+            ended = done(s.get_mut().resume(mut control))
         }
-        let Some(x) = take done else { return 1 }
-        result = take x
+        result = (take ended).unwrap()
     } else if a == "look" {
         let png = match c.png.clone() {
             Some(p) => take p,
@@ -455,35 +426,25 @@ pub fn run(place: take Place, c: take Command, action: take String, shown: take 
         var l = Box::new(
             look_cmd.start(built.clone(), place.out.clone(), place.files.clone(), take png, c.size),
         )
-        var done: Option<Result<String, String>> = None
-        while done.is_none() {
-            match l.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(x) => done = Some(take x),
-            }
+        var ended = done(l.get_mut().resume())
+        while ended.is_none() {
+            yield
+            ended = done(l.get_mut().resume())
         }
-        let Some(x) = take done else { return 1 }
-        match take x {
+        match (take ended).unwrap() {
             Ok(answer) => print(answer.as_str()),
             Err(why) => result = Err(take why),
         }
     } else if a == "beside" || a == "variants" || a == "sweep" {
-        var rest: Vec<String> = Vec::new()
-        for k in 2..c.rest.len() {
-            rest.push(c.rest[k].clone())
-        }
         var j = Box::new(
             compare.start(place.clone(), built.clone(), action.clone(), take rest, c.clone()),
         )
-        var done: Option<Result<(u32, String), String>> = None
-        while done.is_none() {
-            match j.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(x) => done = Some(take x),
-            }
+        var ended = done(j.get_mut().resume())
+        while ended.is_none() {
+            yield
+            ended = done(j.get_mut().resume())
         }
-        let Some(x) = take done else { return 1 }
-        match take x {
+        match (take ended).unwrap() {
             Ok(answered) => {
                 let (status, answer) = take answered
                 if status != 0 {
@@ -504,28 +465,22 @@ pub fn run(place: take Place, c: take Command, action: take String, shown: take 
             return 2
         }
         var t = Box::new(read_text.start(script.clone()))
-        var text: Option<Result<Option<String>, String>> = None
+        var text = done(t.get_mut().resume())
         while text.is_none() {
-            match t.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(x) => text = Some(take x),
-            }
+            yield
+            text = done(t.get_mut().resume())
         }
-        let Some(x) = take text else { return 1 }
-        let Ok(Some(lines)) = take x else {
+        let Ok(Some(lines)) = (take text).unwrap() else {
             print(f"error: can't read {c.rest[2].as_str()}")
             return 2
         }
         var s = Box::new(session.start(built.clone(), take script, take lines, c.size, take mask))
-        var done: Option<Result<(), String>> = None
-        while done.is_none() {
-            match s.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(x) => done = Some(take x),
-            }
+        var ended = done(s.get_mut().resume())
+        while ended.is_none() {
+            yield
+            ended = done(s.get_mut().resume())
         }
-        let Some(x) = take done else { return 1 }
-        result = take x
+        result = (take ended).unwrap()
     } else {
         let Some(act) = take requested else { return 2 }
         let png = match c.png.clone() {
@@ -533,15 +488,12 @@ pub fn run(place: take Place, c: take Command, action: take String, shown: take 
             None => None,
         }
         var o = Box::new(one_action.start(built.clone(), take act, c.size, take png, take mask))
-        var done: Option<Result<Vec<String>, String>> = None
-        while done.is_none() {
-            match o.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(x) => done = Some(take x),
-            }
+        var ended = done(o.get_mut().resume())
+        while ended.is_none() {
+            yield
+            ended = done(o.get_mut().resume())
         }
-        let Some(x) = take done else { return 1 }
-        match take x {
+        match (take ended).unwrap() {
             Ok(lines) => print_all(lines),
             Err(why) => result = Err(take why),
         }
@@ -577,82 +529,60 @@ pub fn one_action(
     // setup, its shaders' compiling and frames that only draw an unseen image.
     let cpu = png.is_none() && cpu_action(a.name.as_str()) && !built.floor
     var s = Box::new(start.start(built.clone(), w, h, cpu, take mask))
-    var started: Option<Result<Lens, String>> = None
+    var started = done(s.get_mut().resume())
     while started.is_none() {
-        match s.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(x) => started = Some(take x),
-        }
+        yield
+        started = done(s.get_mut().resume())
     }
-    let Some(x) = take started else { return Err(failed("no answer")) }
-    var lens = (take x)?
+    var lens = (take started).unwrap()?
     if cpu {
-        var c = drive::call(lens.b, a.name.as_str(), a.args.clone())
-        var called = c.poll()
-        while called.is_none() {
+        var i = Box::new(lens::invoke.start(a.name.clone(), a.args.clone()))
+        var ended = done(i.get_mut().resume(mut lens))
+        while ended.is_none() {
             yield
-            called = c.poll()
+            ended = done(i.get_mut().resume(mut lens))
         }
-        let Some(cp) = take called else { return Err(failed("no answer")) }
-        let ran = lens::tool(drive::read_ran(take cp))?
-        if let Some(t) = ran.trap.clone() {
-            return Err(take t.message)
-        }
+        let _ = (take ended).unwrap()?
     } else {
         for k in 0..a.literals.len() {
             let mut_args: Vec<Scalar> = Vec::from([a.literals[k]])
             var i = Box::new(lens::invoke.start(String::from("choose"), take mut_args))
-            var done: Option<Result<Vec<Scalar>, String>> = None
-            while done.is_none() {
-                match i.get_mut().resume(mut lens) {
-                    Step::Yielded => yield,
-                    Step::Done(x) => done = Some(take x),
-                }
+            var ended = done(i.get_mut().resume(mut lens))
+            while ended.is_none() {
+                yield
+                ended = done(i.get_mut().resume(mut lens))
             }
-            let Some(x) = take done else { return Err(failed("no answer")) }
-            let _ = (take x)?
+            let _ = (take ended).unwrap()?
         }
         var j = Box::new(call.start(a.name.clone(), a.args.clone(), deferred: false))
-        var done: Option<Result<(), String>> = None
-        while done.is_none() {
-            match j.get_mut().resume(mut lens) {
-                Step::Yielded => yield,
-                Step::Done(x) => done = Some(take x),
-            }
+        var ended = done(j.get_mut().resume(mut lens))
+        while ended.is_none() {
+            yield
+            ended = done(j.get_mut().resume(mut lens))
         }
-        let Some(x) = take done else { return Err(failed("no answer")) }
-        (take x)?
+        (take ended).unwrap()?
     }
     var l = Box::new(logs.start())
-    var lines: Option<Result<Vec<String>, String>> = None
+    var lines = done(l.get_mut().resume(mut lens))
     while lines.is_none() {
-        match l.get_mut().resume(mut lens) {
-            Step::Yielded => yield,
-            Step::Done(x) => lines = Some(take x),
-        }
+        yield
+        lines = done(l.get_mut().resume(mut lens))
     }
-    let Some(x) = take lines else { return Err(failed("no answer")) }
-    let printed = (take x)?
+    let printed = (take lines).unwrap()?
     if let Some(p) = take png {
         var sc = Box::new(screen.start())
-        var pixels: Option<Result<Vec<u8>, String>> = None
+        var pixels = done(sc.get_mut().resume(mut lens))
         while pixels.is_none() {
-            match sc.get_mut().resume(mut lens) {
-                Step::Yielded => yield,
-                Step::Done(x) => pixels = Some(take x),
-            }
+            yield
+            pixels = done(sc.get_mut().resume(mut lens))
         }
-        let Some(x) = take pixels else { return Err(failed("no answer")) }
-        var save = Box::new(save_png.start(take p, w, h, (take x)?))
-        var saved: Option<Result<(), String>> = None
+        var save = Box::new(save_png.start(take p, w, h, (take pixels).unwrap()?))
+        var saved = done(save.get_mut().resume())
         while saved.is_none() {
-            match save.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(x) => saved = Some(take x),
-            }
+            yield
+            saved = done(save.get_mut().resume())
         }
-        let Some(x) = take saved else { return Err(failed("no answer")) }
-        (take x)?
+        (take saved).unwrap()?
     }
     Ok(printed)
 }
@@ -669,31 +599,18 @@ pub fn session(
     mask: take Option<Vec<u8>>,
 ) -> Result<(), String> {
     let (w, h) = size
-    let base = match script.as_str().split("/").len() {
-        n => {
-            let parts = script.as_str().split("/")
-            let (from, _) = parts[n - 1]
-            String::from(script.as_str().slice(0, from))
-        },
-    }
+    let parts = script.as_str().split("/")
+    let (from, _) = parts[parts.len() - 1]
+    let base = String::from(script.as_str().slice(0, from))
     var s = Box::new(start.start(built.clone(), w, h, cpu: false, reference: take mask))
-    var started: Option<Result<Lens, String>> = None
+    var started = done(s.get_mut().resume())
     while started.is_none() {
-        match s.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(x) => started = Some(take x),
-        }
+        yield
+        started = done(s.get_mut().resume())
     }
-    let Some(x) = take started else { return Err(failed("no answer")) }
-    var lens = (take x)?
+    var lens = (take started).unwrap()?
     var d = Box::new(logs.start())
-    var dropped: Option<Result<Vec<String>, String>> = None
-    while dropped.is_none() {
-        match d.get_mut().resume(mut lens) {
-            Step::Yielded => yield,
-            Step::Done(x) => dropped = Some(take x),
-        }
-    }
+    while done(d.get_mut().resume(mut lens)).is_none() { yield }
     let ranges = text.as_str().lines()
     for k in 0..ranges.len() {
         let (from, to) = ranges[k]
@@ -704,67 +621,49 @@ pub fn session(
         if line.as_str().starts_with("png ") {
             let file = String::from(f"{base.as_str()}{line.as_str().slice(4, line.len()).trim()}")
             var f = Box::new(lens::frames.start(Script::frames()))
-            var stepped: Option<Result<(), String>> = None
+            var stepped = done(f.get_mut().resume(mut lens))
             while stepped.is_none() {
-                match f.get_mut().resume(mut lens) {
-                    Step::Yielded => yield,
-                    Step::Done(x) => stepped = Some(take x),
-                }
+                yield
+                stepped = done(f.get_mut().resume(mut lens))
             }
-            let Some(x) = take stepped else { return Err(failed("no answer")) }
-            (take x)?
+            (take stepped).unwrap()?
             var sc = Box::new(screen.start())
-            var pixels: Option<Result<Vec<u8>, String>> = None
+            var pixels = done(sc.get_mut().resume(mut lens))
             while pixels.is_none() {
-                match sc.get_mut().resume(mut lens) {
-                    Step::Yielded => yield,
-                    Step::Done(x) => pixels = Some(take x),
-                }
+                yield
+                pixels = done(sc.get_mut().resume(mut lens))
             }
-            let Some(px) = take pixels else { return Err(failed("no answer")) }
-            var save = Box::new(save_png.start(take file, w, h, (take px)?))
-            var saved: Option<Result<(), String>> = None
+            var save = Box::new(save_png.start(take file, w, h, (take pixels).unwrap()?))
+            var saved = done(save.get_mut().resume())
             while saved.is_none() {
-                match save.get_mut().resume() {
-                    Step::Yielded => yield,
-                    Step::Done(x) => saved = Some(take x),
-                }
+                yield
+                saved = done(save.get_mut().resume())
             }
-            let Some(sv) = take saved else { return Err(failed("no answer")) }
-            (take sv)?
+            (take saved).unwrap()?
             continue
         }
         let at = lens.frame
         var f = Box::new(lens::frames.start(typed(at, line.as_str())))
-        var stepped: Option<Result<(), String>> = None
+        var stepped = done(f.get_mut().resume(mut lens))
         while stepped.is_none() {
-            match f.get_mut().resume(mut lens) {
-                Step::Yielded => yield,
-                Step::Done(x) => stepped = Some(take x),
-            }
+            yield
+            stepped = done(f.get_mut().resume(mut lens))
         }
-        let Some(x) = take stepped else { return Err(failed("no answer")) }
-        (take x)?
+        (take stepped).unwrap()?
         var st = Box::new(lens::settle.start())
-        var settled: Option<Result<(), String>> = None
+        var settled = done(st.get_mut().resume(mut lens))
         while settled.is_none() {
-            match st.get_mut().resume(mut lens) {
-                Step::Yielded => yield,
-                Step::Done(x) => settled = Some(take x),
-            }
+            yield
+            settled = done(st.get_mut().resume(mut lens))
         }
-        let Some(sx) = take settled else { return Err(failed("no answer")) }
-        (take sx)?
+        (take settled).unwrap()?
         var l = Box::new(logs.start())
-        var lines: Option<Result<Vec<String>, String>> = None
+        var lines = done(l.get_mut().resume(mut lens))
         while lines.is_none() {
-            match l.get_mut().resume(mut lens) {
-                Step::Yielded => yield,
-                Step::Done(x) => lines = Some(take x),
-            }
+            yield
+            lines = done(l.get_mut().resume(mut lens))
         }
-        let Some(lx) = take lines else { return Err(failed("no answer")) }
-        print_all((take lx)?)
+        print_all((take lines).unwrap()?)
     }
     Ok(())
 }
@@ -785,46 +684,34 @@ pub fn look_cmd(
         return Err(String::from(f"`{png.as_str()}` isn't a path in the workspace"))
     }
     var s = Box::new(start.start(built.clone(), w, h, cpu: false, reference: None))
-    var started: Option<Result<Lens, String>> = None
+    var started = done(s.get_mut().resume())
     while started.is_none() {
-        match s.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(x) => started = Some(take x),
-        }
+        yield
+        started = done(s.get_mut().resume())
     }
-    let Some(x) = take started else { return Err(failed("no answer")) }
-    var lens = (take x)?
+    var lens = (take started).unwrap()?
     // The contact sheet, and the diagnosis's and the spec's answers (null if one isn't JSON).
     var v = Box::new(call.start(String::from("view"), Vec::from([Scalar::I32(4)]), deferred: false))
-    var viewed: Option<Result<(), String>> = None
+    var viewed = done(v.get_mut().resume(mut lens))
     while viewed.is_none() {
-        match v.get_mut().resume(mut lens) {
-            Step::Yielded => yield,
-            Step::Done(x) => viewed = Some(take x),
-        }
+        yield
+        viewed = done(v.get_mut().resume(mut lens))
     }
-    let Some(vx) = take viewed else { return Err(failed("no answer")) }
-    (take vx)?
+    (take viewed).unwrap()?
     var sc = Box::new(screen.start())
-    var pixels: Option<Result<Vec<u8>, String>> = None
+    var pixels = done(sc.get_mut().resume(mut lens))
     while pixels.is_none() {
-        match sc.get_mut().resume(mut lens) {
-            Step::Yielded => yield,
-            Step::Done(x) => pixels = Some(take x),
-        }
+        yield
+        pixels = done(sc.get_mut().resume(mut lens))
     }
-    let Some(px) = take pixels else { return Err(failed("no answer")) }
-    let now = (take px)?
+    let now = (take pixels).unwrap()?
     var save = Box::new(save_png.start(path.clone(), w, h, now.clone()))
-    var saved: Option<Result<(), String>> = None
+    var saved = done(save.get_mut().resume())
     while saved.is_none() {
-        match save.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(x) => saved = Some(take x),
-        }
+        yield
+        saved = done(save.get_mut().resume())
     }
-    let Some(sv) = take saved else { return Err(failed("no answer")) }
-    (take sv)?
+    (take saved).unwrap()?
     var answers: Vec<String> = Vec::new()
     for k in 0..2 {
         let name = if k == 0 { "diagnose" } else { "spec" }
@@ -832,25 +719,19 @@ pub fn look_cmd(
             Vec::from([Scalar::F32(0.0), Scalar::F32(0.0), Scalar::F32(0.0), Scalar::F32(0.0)])
         } else { Vec::new() }
         var j = Box::new(call.start(String::from(name), take args, deferred: false))
-        var done: Option<Result<(), String>> = None
-        while done.is_none() {
-            match j.get_mut().resume(mut lens) {
-                Step::Yielded => yield,
-                Step::Done(x) => done = Some(take x),
-            }
+        var ended = done(j.get_mut().resume(mut lens))
+        while ended.is_none() {
+            yield
+            ended = done(j.get_mut().resume(mut lens))
         }
-        let Some(dx) = take done else { return Err(failed("no answer")) }
-        (take dx)?
+        (take ended).unwrap()?
         var l = Box::new(logs.start())
-        var lines: Option<Result<Vec<String>, String>> = None
+        var lines = done(l.get_mut().resume(mut lens))
         while lines.is_none() {
-            match l.get_mut().resume(mut lens) {
-                Step::Yielded => yield,
-                Step::Done(x) => lines = Some(take x),
-            }
+            yield
+            lines = done(l.get_mut().resume(mut lens))
         }
-        let Some(lx) = take lines else { return Err(failed("no answer")) }
-        let got = (take lx)?
+        let got = (take lines).unwrap()?
         answers.push(match last_json(got) {
             Some(j) => take j,
             None => String::from("null"),
@@ -859,16 +740,13 @@ pub fn look_cmd(
     // What changed since the last look.
     let last = String::from(f"{out.as_str()}/last-look.png")
     var r = Box::new(read_png.start(last.clone()))
-    var before: Option<Result<Option<(u32, u32, Vec<u8>)>, String>> = None
+    var before = done(r.get_mut().resume())
     while before.is_none() {
-        match r.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(x) => before = Some(take x),
-        }
+        yield
+        before = done(r.get_mut().resume())
     }
-    let Some(bx) = take before else { return Err(failed("no answer")) }
     var changed_json = String::from("null")
-    if let Ok(Some(image)) = take bx {
+    if let Ok(Some(image)) = (take before).unwrap() {
         let (lw, lh, old) = image
         if lw == w && lh == h {
             let (marked, count) = changed(now, old)
@@ -879,15 +757,12 @@ pub fn look_cmd(
                 return Err(failed("no path"))
             }
             var m = Box::new(save_png.start(take marked_path, w, h, take marked))
-            var msaved: Option<Result<(), String>> = None
+            var msaved = done(m.get_mut().resume())
             while msaved.is_none() {
-                match m.get_mut().resume() {
-                    Step::Yielded => yield,
-                    Step::Done(x) => msaved = Some(take x),
-                }
+                yield
+                msaved = done(m.get_mut().resume())
             }
-            let Some(mx) = take msaved else { return Err(failed("no answer")) }
-            (take mx)?
+            (take msaved).unwrap()?
             changed_json = obj()
                 .int("pixels", count)
                 .text("png", marked_name.as_str())
@@ -896,13 +771,7 @@ pub fn look_cmd(
         }
     }
     var keep = Box::new(save_png.start(take last, w, h, take now))
-    var kept: Option<Result<(), String>> = None
-    while kept.is_none() {
-        match keep.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(x) => kept = Some(take x),
-        }
-    }
+    while done(keep.get_mut().resume()).is_none() { yield }
     Ok(look_answer(png.as_str(), changed_json.as_str(), answers[0].as_str(), answers[1].as_str()))
 }
 
@@ -955,36 +824,27 @@ pub fn compare(
     let (sw, sh) = c.size
     let n = min(sw, sh)
     var s = Box::new(start.start(built.clone(), n, n, cpu: false, reference: None))
-    var started: Option<Result<Lens, String>> = None
+    var started = done(s.get_mut().resume())
     while started.is_none() {
-        match s.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(x) => started = Some(take x),
-        }
+        yield
+        started = done(s.get_mut().resume())
     }
-    let Some(sx) = take started else { return Err(failed("no answer")) }
-    var lens = (take sx)?
+    var lens = (take started).unwrap()?
     // The side framing the lens gives the subject (its `view` answer's first framing).
     var v = Box::new(call.start(String::from("view"), Vec::from([Scalar::I32(0)]), deferred: true))
-    var viewed: Option<Result<(), String>> = None
+    var viewed = done(v.get_mut().resume(mut lens))
     while viewed.is_none() {
-        match v.get_mut().resume(mut lens) {
-            Step::Yielded => yield,
-            Step::Done(x) => viewed = Some(take x),
-        }
+        yield
+        viewed = done(v.get_mut().resume(mut lens))
     }
-    let Some(vx) = take viewed else { return Err(failed("no answer")) }
-    (take vx)?
+    (take viewed).unwrap()?
     var l = Box::new(logs.start())
-    var lines: Option<Result<Vec<String>, String>> = None
+    var lines = done(l.get_mut().resume(mut lens))
     while lines.is_none() {
-        match l.get_mut().resume(mut lens) {
-            Step::Yielded => yield,
-            Step::Done(x) => lines = Some(take x),
-        }
+        yield
+        lines = done(l.get_mut().resume(mut lens))
     }
-    let Some(lx) = take lines else { return Err(failed("no answer")) }
-    let view_answer = match last_json((take lx)?) {
+    let view_answer = match last_json((take lines).unwrap()?) {
         Some(j) => take j,
         None => String::new(),
     }
@@ -1010,16 +870,13 @@ pub fn compare(
             },
         }
         var p = Box::new(read_png.start(photo_path.clone()))
-        var read: Option<Result<Option<(u32, u32, Vec<u8>)>, String>> = None
+        var read = done(p.get_mut().resume())
         while read.is_none() {
-            match p.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(x) => read = Some(take x),
-            }
+            yield
+            read = done(p.get_mut().resume())
         }
-        let Some(px) = take read else { return Err(failed("no answer")) }
         let shown = plain[0].clone()
-        let image = match take px {
+        let image = match (take read).unwrap() {
             Ok(Some(img)) => take img,
             _ => return Err(
                 String::from(
@@ -1039,27 +896,21 @@ pub fn compare(
         calls.push(mode_call(0))
         calls.push(view_call(0))
         var sh = Box::new(shot.start(take calls))
-        var shaded_px: Option<Result<Vec<u8>, String>> = None
+        var shaded_px = done(sh.get_mut().resume(mut lens))
         while shaded_px.is_none() {
-            match sh.get_mut().resume(mut lens) {
-                Step::Yielded => yield,
-                Step::Done(x) => shaded_px = Some(take x),
-            }
+            yield
+            shaded_px = done(sh.get_mut().resume(mut lens))
         }
-        let Some(shx) = take shaded_px else { return Err(failed("no answer")) }
-        let shaded = (take shx)?
+        let shaded = (take shaded_px).unwrap()?
         var calls2: Vec<(String, Vec<Scalar>)> = Vec::new()
         calls2.push(mode_call(4))
         var si = Box::new(shot.start(take calls2))
-        var sil: Option<Result<Vec<u8>, String>> = None
+        var sil = done(si.get_mut().resume(mut lens))
         while sil.is_none() {
-            match si.get_mut().resume(mut lens) {
-                Step::Yielded => yield,
-                Step::Done(x) => sil = Some(take x),
-            }
+            yield
+            sil = done(si.get_mut().resume(mut lens))
         }
-        let Some(six) = take sil else { return Err(failed("no answer")) }
-        let silhouette = (take six)?
+        let silhouette = (take sil).unwrap()?
         let (left, over, covered, matched) = overlay(photo, f, n, silhouette)
         panels.push(take left)
         panels.push(take shaded)
@@ -1102,15 +953,12 @@ pub fn compare(
                 other.subject = take dir
                 other.out = take out
                 var b = Box::new(build.start(take other))
-                var got: Option<Result<Built, String>> = None
+                var got = done(b.get_mut().resume())
                 while got.is_none() {
-                    match b.get_mut().resume() {
-                        Step::Yielded => yield,
-                        Step::Done(x) => got = Some(take x),
-                    }
+                    yield
+                    got = done(b.get_mut().resume())
                 }
-                let Some(bx) = take got else { return Err(failed("no answer")) }
-                let next = (take bx)?
+                let next = (take got).unwrap()?
                 if !next.errors.is_empty() {
                     print(next.errors.as_str())
                     return Err(String::from(f"{dirs[k].as_str()} doesn't build"))
@@ -1118,15 +966,12 @@ pub fn compare(
                 var cl = drive::close(lens.b)
                 while cl.poll().is_none() { yield }
                 var s2 = Box::new(start.start(take next, n, n, cpu: false, reference: None))
-                var again: Option<Result<Lens, String>> = None
+                var again = done(s2.get_mut().resume())
                 while again.is_none() {
-                    match s2.get_mut().resume() {
-                        Step::Yielded => yield,
-                        Step::Done(x) => again = Some(take x),
-                    }
+                    yield
+                    again = done(s2.get_mut().resume())
                 }
-                let Some(ax) = take again else { return Err(failed("no answer")) }
-                lens = (take ax)?
+                lens = (take again).unwrap()?
             }
             var calls: Vec<(String, Vec<Scalar>)> = Vec::new()
             if facing == 0 {
@@ -1134,15 +979,12 @@ pub fn compare(
             }
             calls.push(view_call(facing))
             var sh = Box::new(shot.start(take calls))
-            var px: Option<Result<Vec<u8>, String>> = None
+            var px = done(sh.get_mut().resume(mut lens))
             while px.is_none() {
-                match sh.get_mut().resume(mut lens) {
-                    Step::Yielded => yield,
-                    Step::Done(x) => px = Some(take x),
-                }
+                yield
+                px = done(sh.get_mut().resume(mut lens))
             }
-            let Some(pxx) = take px else { return Err(failed("no answer")) }
-            panels.push((take pxx)?)
+            panels.push((take px).unwrap()?)
             if k > 0 {
                 legend.push_str(",")
             }
@@ -1180,15 +1022,12 @@ pub fn compare(
             }
             calls.push(view_call(facing))
             var sh = Box::new(shot.start(take calls))
-            var px: Option<Result<Vec<u8>, String>> = None
+            var px = done(sh.get_mut().resume(mut lens))
             while px.is_none() {
-                match sh.get_mut().resume(mut lens) {
-                    Step::Yielded => yield,
-                    Step::Done(x) => px = Some(take x),
-                }
+                yield
+                px = done(sh.get_mut().resume(mut lens))
             }
-            let Some(pxx) = take px else { return Err(failed("no answer")) }
-            panels.push((take pxx)?)
+            panels.push((take px).unwrap()?)
             if k > 0 {
                 legend.push_str(",")
             }
@@ -1210,15 +1049,12 @@ pub fn compare(
     }
     let (w, h, pixels) = sheet(panels, n)
     var save = Box::new(save_png.start(take png_path, w, h, take pixels))
-    var saved: Option<Result<(), String>> = None
+    var saved = done(save.get_mut().resume())
     while saved.is_none() {
-        match save.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(x) => saved = Some(take x),
-        }
+        yield
+        saved = done(save.get_mut().resume())
     }
-    let Some(sv) = take saved else { return Err(failed("no answer")) }
-    (take sv)?
+    (take saved).unwrap()?
     Ok((0, answer))
 }
 
@@ -1244,26 +1080,20 @@ pub fn shot(lens: mut Lens, calls: take Vec<(String, Vec<Scalar>)>) -> Result<Ve
     for k in 0..calls.len() {
         let (name, args) = calls[k].clone()
         var j = Box::new(call.start(take name, take args, k + 1 < calls.len()))
-        var done: Option<Result<(), String>> = None
-        while done.is_none() {
-            match j.get_mut().resume(mut lens) {
-                Step::Yielded => yield,
-                Step::Done(x) => done = Some(take x),
-            }
+        var ended = done(j.get_mut().resume(mut lens))
+        while ended.is_none() {
+            yield
+            ended = done(j.get_mut().resume(mut lens))
         }
-        let Some(x) = take done else { return Err(failed("no answer")) }
-        (take x)?
+        (take ended).unwrap()?
     }
     var sc = Box::new(screen.start())
-    var pixels: Option<Result<Vec<u8>, String>> = None
+    var pixels = done(sc.get_mut().resume(mut lens))
     while pixels.is_none() {
-        match sc.get_mut().resume(mut lens) {
-            Step::Yielded => yield,
-            Step::Done(x) => pixels = Some(take x),
-        }
+        yield
+        pixels = done(sc.get_mut().resume(mut lens))
     }
-    let Some(x) = take pixels else { return Err(failed("no answer")) }
-    take x
+    (take pixels).unwrap()
 }
 
 /// `beside`'s photo panel and overlay: the photo (turned to face as the side view does) under
@@ -1418,5 +1248,5 @@ fn the_command_line_reads_its_flags_and_paths_from_the_workspace() {
             [String::from("x"), String::from("look"), String::from("--artifacts-only")],
         ).is_none(),
     )
-    assert(parse_size("0x5").is_none() && parse_size("12").is_none())
+    assert(size_of("0x5").is_none() && size_of("12").is_none())
 }

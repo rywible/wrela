@@ -427,25 +427,35 @@ fn open_selected(s: mut Console) {
     s.need_open = false
 }
 
-fn failed(s: mut Console, message: str) {
-    s.message = message.to_string()
+// Drops what was asked of the session: a play, the step under way, a prepared save, an export.
+fn stop(s: mut Console) {
     s.play_intent = None
     s.step = Step::Idle
     s.prepared_slot = None
     s.exporting = None
 }
 
+fn failed(s: mut Console, message: str) {
+    s.message = message.to_string()
+    stop(mut s)
+}
+
 // A dropped request or a connection that fails is tried again after a pause: nothing to
 // read, nothing to press.
 fn quietly_retry(s: mut Console) {
-    s.play_intent = None
-    s.step = Step::Idle
-    s.prepared_slot = None
-    s.exporting = None
+    stop(mut s)
     if let Some(id) = s.handle { s.closing = Some(host::close(id)) }
     s.handle = None
     s.need_open = false
     s.retry_at = s.presentation + RETRY_SECONDS
+}
+
+// Closes the session, if one is open, so that the selection's opens: now, or once it has
+// closed.
+fn reopen(s: mut Console) {
+    s.need_open = s.handle.is_none()
+    if let Some(id) = s.handle { s.closing = Some(host::close(id)) }
+    s.handle = None
 }
 
 // A quiet retry reopens the session once its pause is over and the old one has closed.
@@ -554,9 +564,7 @@ fn answer(s: mut Console, bytes: take Vec<u8>) {
 
 fn catalog_result(bytes: Vec<u8>) -> Result<Vec<Card>, String> {
     if let Some(text) = String::from_utf8(bytes.clone()) {
-        if let Some(cards) = parse(text) {
-            return Ok(cards.clone())
-        } else { return Err(String::from("The game library could not be read.")) }
+        if let Some(cards) = parse(text) { return Ok(cards.clone()) }
     }
     Err(String::from("The game library could not be read."))
 }
@@ -767,9 +775,7 @@ fn act(s: mut Console, action: Action) {
             if s.step != Step::Idle {
                 s.stale = true
             } else if s.closing.is_none() {
-                s.need_open = s.handle.is_none()
-                if let Some(id) = s.handle { s.closing = Some(host::close(id)) }
-                s.handle = None
+                reopen(mut s)
             }
         },
         // Loading a save plays it.
@@ -814,13 +820,7 @@ fn act(s: mut Console, action: Action) {
                 s.step = Step::PickFile
             }
         },
-        Action::Retry => {
-            if s.step == Step::Idle && s.closing.is_none() {
-                s.need_open = s.handle.is_none()
-                if let Some(id) = s.handle { s.closing = Some(host::close(id)) }
-                s.handle = None
-            }
-        },
+        Action::Retry => { if s.step == Step::Idle && s.closing.is_none() { reopen(mut s) } },
     }
 }
 
@@ -1012,7 +1012,7 @@ fn glow(s: Console, action: Action) -> f32 {
 fn stroke(s: mut Console, a: vec2, b: vec2, width: f32) {
     let lo = min(a, b) - vec2(width * 0.5)
     let hi = max(a, b) + vec2(width * 0.5)
-    rect(mut s, Rect::new(lo.x, lo.y, hi.x - lo.x, hi.y - lo.y), INK, width * 0.5)
+    rect(mut s, Rect::spanning(lo, hi), INK, width * 0.5)
 }
 
 // Settings: a quiet square button holding two sliders, as Lucide draws its settings-2 icon
@@ -1700,16 +1700,13 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
     pass.present()
     s.shown = s.controls.clone()
     if let Some(action) = s.activate {
+        s.focus = action
+        act(mut s, action)
         match action {
-            Action::Game { index } => {
-                s.focus = action
-                act(mut s, action)
-                if index != s.selected { s.focus = Action::Game { index: s.selected } }
+            Action::Game { index } => if index != s.selected {
+                s.focus = Action::Game { index: s.selected }
             },
-            _ => {
-                s.focus = action
-                act(mut s, action)
-            },
+            _ => {},
         }
     }
     if s.clicked.is_some() { s.pressed = None }
@@ -1758,8 +1755,6 @@ fn without_fragment(address: Vec<u8>) -> Option<String> {
     None
 }
 
-// Whether the environment (`host::environment`) says this page load reloaded the tab. A host
-// that doesn't say gives a visit.
 // A traced layer's size: the screen divided by a whole number, so its thin bright lines are
 // not resampled into dashes, and about `budget` pixels.
 fn traced_size(width: u32, height: u32, budget: f32) -> (u32, u32) {
@@ -1773,11 +1768,7 @@ fn depth_order(placed: [Placed]) -> Vec<u32> {
     for i in 0..placed.len() { order.push(i) }
     for i in 0..order.len() {
         for j in i + 1..order.len() {
-            if placed[order[j]].card.centre.z < placed[order[i]].card.centre.z {
-                let t = order[i]
-                order[i] = order[j]
-                order[j] = t
-            }
+            if placed[order[j]].card.centre.z < placed[order[i]].card.centre.z { order.swap(i, j) }
         }
     }
     order

@@ -136,32 +136,39 @@ pub fn parse(text: str) -> Manifest {
 fn has_section(text: str, name: str) -> bool {
     for (a, b) in text.lines() {
         let line = text.slice(a, b).trim()
-        if line.starts_with("[") && line.find("]").is_some() {
-            let Some(end) = line.find("]") else { continue }
-            if line.slice(1, end).trim() == name {
-                return true
-            }
+        if !line.starts_with("[") {
+            continue
+        }
+        let Some(end) = line.find("]") else { continue }
+        if line.slice(1, end).trim() == name {
+            return true
         }
     }
     false
 }
 
-/// A member's name when its manifest names none: its directory's, with `-` read as `_`.
-pub fn default_name(dir: str) -> String {
+/// The last part of a path: what follows its last `/`.
+pub fn last_part(path: str) -> borrow str {
     var at = 0
-    for k in 0..dir.len() {
-        if dir.byte(k) == 47 {
+    for k in 0..path.len() {
+        if path.byte(k) == 47 {
             at = k + 1
         }
     }
+    path.slice(at, path.len())
+}
+
+/// A member's name when its manifest names none: its directory's, with `-` read as `_`.
+pub fn default_name(dir: str) -> String {
+    let base = last_part(dir)
     var out = String::new()
-    var k = at
-    while k < dir.len() {
-        if dir.byte(k) == 45 {
+    var k = 0
+    while k < base.len() {
+        if base.byte(k) == 45 {
             out.push_byte(95)
             k += 1
         } else {
-            k += pages::push_at(mut out, dir, k)
+            k += pages::push_at(mut out, base, k)
         }
     }
     out
