@@ -60,17 +60,28 @@ fn cover<C, K: Creature<C>>(c: K) -> Box3 {
         lo = min(lo, p)
         hi = max(hi, p)
     }
-    lo -= vec3(1.0)
-    hi += vec3(1.0)
-    for b in c.field().item_bounds() {
-        if b.radius < 1.0e29 {
-            lo = min(lo, b.centre - vec3(b.radius))
-            hi = max(hi, b.centre + vec3(b.radius))
-        }
-    }
+    let (lo, hi) = enclose(c.field().item_bounds(), lo - vec3(1.0), hi + vec3(1.0))
     let centre = 0.5 * (lo + hi)
     let half = max(max(hi.x - lo.x, hi.y - lo.y), hi.z - lo.z) * 0.5
     Box3 { lo: centre - half, hi: centre + half }
+}
+
+/// The box from `lo` to `hi` grown to hold each item bound in `bounds` that bounds something
+/// (a radius under 1e29).
+fn enclose(bounds: [Bound], lo: vec3, hi: vec3) -> (vec3, vec3) {
+    var out = (lo, hi)
+    for b in bounds {
+        if b.radius < 1.0e29 {
+            out = (min(out.0, b.centre - vec3(b.radius)), max(out.1, b.centre + vec3(b.radius)))
+        }
+    }
+    out
+}
+
+/// Child `j` (0 to 7, x then y then z) of octree cell `b`, `h` its half-edge.
+fn octant(b: Box3, h: f32, j: u32) -> Box3 {
+    let o = vec3(f32(j & 1), f32((j >> 1) & 1), f32((j >> 2) & 1)) * h
+    Box3 { lo: b.lo + o, hi: b.lo + o + h }
 }
 
 /// A box holding the creature's surface: the cells of an octree, five levels deep, that the
@@ -93,8 +104,7 @@ pub fn bounds<C, K: Creature<C>>(c: K) -> Box3 {
         }
         let h = 0.5 * (b.hi.x - b.lo.x)
         for j in 0..8 {
-            let o = vec3(f32(j & 1), f32((j >> 1) & 1), f32((j >> 2) & 1)) * h
-            stack.push((Box3 { lo: b.lo + o, hi: b.lo + o + h }, depth + 1))
+            stack.push((octant(b, h, j), depth + 1))
         }
     }
     Box3 { lo, hi }
@@ -164,9 +174,7 @@ pub fn integrate<C, K: Creature<C>>(c: K, density: fn(C) -> f32, per: Per, fines
             // Children pushed in reverse, so they're taken in order.
             let h = 0.5 * size
             for k in 0..8 {
-                let j = 7 - k
-                let o = vec3(f32(j & 1), f32((j >> 1) & 1), f32((j >> 2) & 1)) * h
-                stack.push(Box3 { lo: b.lo + o, hi: b.lo + o + h })
+                stack.push(octant(b, h, 7 - k))
             }
         }
     }
@@ -206,9 +214,7 @@ pub fn fit_capsules<C, K: Creature<C>>(c: K, per: Per, tolerance: f32) -> Vec<Ca
             }
             let h = 0.5 * size
             for k in 0..8 {
-                let j = 7 - k
-                let o = vec3(f32(j & 1), f32((j >> 1) & 1), f32((j >> 2) & 1)) * h
-                stack.push(Box3 { lo: b.lo + o, hi: b.lo + o + h })
+                stack.push(octant(b, h, 7 - k))
             }
             continue
         }
@@ -292,14 +298,7 @@ const CLASSIFY: f32 = 1.5
 /// The octree's root: a cube around the items' bounds (those that bound something), its centre
 /// and half-edge.
 fn root_cube(bounds: [Bound]) -> (vec3, f32) {
-    var lo = vec3(1.0e30)
-    var hi = vec3(-1.0e30)
-    for b in bounds {
-        if b.radius < 1.0e29 {
-            lo = min(lo, b.centre - vec3(b.radius))
-            hi = max(hi, b.centre + vec3(b.radius))
-        }
-    }
+    let (lo, hi) = enclose(bounds, vec3(1.0e30), vec3(-1.0e30))
     let e = hi - lo
     ((lo + hi) * 0.5, max(e.x, max(e.y, e.z)) * 0.5)
 }

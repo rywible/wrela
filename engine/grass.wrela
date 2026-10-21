@@ -1056,8 +1056,9 @@ fn under_plant(
     // Each kind's size: a fern's arching frond, bracken's taller and flatter, a herb's low leaf;
     // never narrower than a blade's spacing here, so the far ones still cover.
     // A herb's species, by its habitat and colony (`species_of`): its own shape and size.
-    let keyed_xz = p.xz + at.cam.keyed().xz
-    let sp = if kind == HERB { rosette_species(flora, keyed_xz, t.flora) } else { 0 }
+    let keyed = at.cam.keyed().xz
+    let w = p.xz + keyed
+    let sp = if kind == HERB { rosette_species(flora, w, t.flora) } else { 0 }
     let spec = flora.species[sp]
     let kind = if sp > 0 { spec.shape } else { kind }
     let (tall, wide, bend) = if sp > 0 {
@@ -1081,8 +1082,6 @@ fn under_plant(
     var facing = TAU * rand(p.seed, 6)
     if kind == FERN || kind == HERB || kind == STRAP {
         let crown_size = if kind == FERN { FERN_CROWN } else { HERB_ROSETTE }
-        let keyed = at.cam.keyed().xz
-        let w = p.xz + keyed
         let crown = rosette_crown(w, crown_size)
         let away = w - crown
         facing = atan2(away.y, away.x)
@@ -1098,7 +1097,7 @@ fn under_plant(
     let sky = sky_light(at.grid, probes, linear, grounds, at.light, root, t.normal, shade)
     let _ = blades.push(
         Blade {
-            root: vec3(xz.x, y - 0.02, xz.y),
+            root,
             tall: tall * p.shrink * grown,
             facing,
             bend,
@@ -1292,6 +1291,7 @@ impl Grass {
         self.flowers.clear()
         let half = atan(cam.tan_half * cam.aspect) + 0.15
         let ahead = cos(half + 0.35)
+        let flora = Flora { species: SPECIES }
         for k in 0..LEVELS {
             let (first, cols, rows) = cells(k, cam)
             if cols == 0 || rows == 0 {
@@ -1323,7 +1323,7 @@ impl Grass {
                     linear,
                     grounds,
                     stones,
-                    flora: Flora { species: SPECIES },
+                    flora: flora,
                     blades: mut blades,
                     flowers: mut self.flowers,
                 ),
@@ -1372,12 +1372,13 @@ fn blade_point(b: Blade, t: f32, side: f32, wind: Wind) -> vec3 {
     let dir = vec2(cos(b.facing), sin(b.facing))
     let across = vec2(-dir.y, dir.x)
     let (arch, _) = blade_arch(b.bend, t)
+    let colour = b.colour.decode()
     // A stable side bow breaks the flat fan without moving a root or changing with the eye.
-    let twist = (b.colour.decode().x - 0.5) * 0.65 * b.bend * t * t
+    let twist = (colour.x - 0.5) * 0.65 * b.bend * t * t
     let over = (dir * arch.x + across * twist) * b.tall
     let up = b.tall * arch.y
     // Tapering to a point; a frond or a leaf widest along its middle, from a narrow stalk.
-    let frond = b.colour.decode().w > 0.25
+    let frond = colour.w > 0.25
     let w = if frond { b.width * pow(sin(3.14159 * min(t * 1.08, 1.0)), 0.7) * 0.5 + 0.0005 } else {
         b.width * (1.0 - t * t) * 0.5 + 0.0005
     }
@@ -1537,7 +1538,7 @@ pub fn blade(
     let world = cloth_contact(point, b.root, t, contact)
     BladeVertex {
         clip: ClipPosition { position: cam.clip(world) },
-        uv: vec2(side, f32(i) / f32(tier.segments)),
+        uv: vec2(side, t),
         which: Flat { value: which },
     }
 }

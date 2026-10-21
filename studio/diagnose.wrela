@@ -6,7 +6,7 @@
 // differences between neighbouring cells. The same grid gives the same numbers as fieldview,
 // so the lens's report on a port can be checked against fieldview's on its original.
 
-use json::{List, list, obj}
+use json::{list, obj}
 use std::collections::Vec
 use std::derive::Box3
 use std::field::Surface

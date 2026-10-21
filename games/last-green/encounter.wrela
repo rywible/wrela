@@ -106,12 +106,13 @@ pub fn step_encounter<G: Terrain + engine::grow::Ground, O: Occluders>(
         return
     }
     let feet = p.at.world()
+    let stands = vec3(feet.x, p.y, feet.y)
     let off = length(feet - DISC)
     if !e.awake {
         if off > LEASH {
             return
         }
-        wait(mut e, presence(vec3(feet.x, p.y, feet.y), p.velocity), sight, dt)
+        wait(mut e, presence(stands, p.velocity), sight, dt)
         if !e.awake {
             return
         }
@@ -122,7 +123,7 @@ pub fn step_encounter<G: Terrain + engine::grow::Ground, O: Occluders>(
     }
     read(mut e.fight, records)
     let walked = Walked {
-        feet: vec3(feet.x, p.y, feet.y),
+        feet: stands,
         heading: p.heading,
         speed: length(p.velocity),
     }
@@ -227,9 +228,10 @@ const SWEPT: f32 = 0.15
 
 // ---- tests ---------------------------------------------------------------------------------------
 
-use behaviour::{DRY, Flat, Open}
+use behaviour::{DRY, Open}
 use engine::footing::{Obstacle, Thing}
 use engine::place::Place
+use engine::terrain::Flat
 use std::input::PadButton
 use std::io::print
 

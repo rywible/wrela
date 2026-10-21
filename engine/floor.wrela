@@ -226,9 +226,8 @@ impl Kept {
     /// held: replacement maps snap relative to this shifted centre.
     pub fn shift(mut self, d: vec3) {
         self.centre += d
-        self.next = match self.next {
-            Some(n) => Some(n + d),
-            None => None,
+        if let Some(n) = self.next {
+            self.next = Some(n + d)
         }
     }
 
@@ -244,12 +243,9 @@ impl Kept {
         if self.next.is_some() {
             return
         }
-        if length(at.xz - self.centre.xz) > moves {
-            self.next = Some(at)
-            self.strip = 0
-            self.stale = false
-        } else if self.stale {
-            self.next = Some(self.centre)
+        let moved = length(at.xz - self.centre.xz) > moves
+        if moved || self.stale {
+            self.next = Some(if moved { at } else { self.centre })
             self.strip = 0
             self.stale = false
         }
@@ -321,28 +317,12 @@ impl Kept {
         }
         if on && self.strip == 0 {
             for st in built {
-                draw(
-                    pass,
-                    stone_shadow.bind(verts: st.mesh.verts.items(), at: st.at, view: view),
-                    vegetation::nothing,
-                    indices: st.mesh.quads.items(),
-                    indirect: st.mesh.draw.items(),
-                    depth_bias: CASTER,
-                )
+                cast_stone(pass, st, st.at, view)
             }
             for p in instances.placements {
-                if p.prototype >= instances.prototypes.len() || !p.casts_into(view) {
-                    continue
+                if p.prototype < instances.prototypes.len() && p.casts_into(view) {
+                    cast_stone(pass, instances.prototypes[p.prototype], p.at, view)
                 }
-                borrow st = instances.prototypes[p.prototype]
-                draw(
-                    pass,
-                    stone_shadow.bind(verts: st.mesh.verts.items(), at: p.at, view: view),
-                    vegetation::nothing,
-                    indices: st.mesh.quads.items(),
-                    indirect: st.mesh.draw.items(),
-                    depth_bias: CASTER,
-                )
             }
             if let Some(r) = rocks {
                 r.cast(pass, view)
@@ -360,6 +340,18 @@ impl Kept {
             self.ready = true
         }
     }
+}
+
+/// Stone `st`'s mesh placed by `at` as a shadow caster into `pass`, seen from the sun by `view`.
+fn cast_stone<P: RenderPass>(pass: P, st: Realized, at: mat4, view: mat4) {
+    draw(
+        pass,
+        stone_shadow.bind(verts: st.mesh.verts.items(), at: at, view: view),
+        vegetation::nothing,
+        indices: st.mesh.quads.items(),
+        indirect: st.mesh.draw.items(),
+        depth_bias: CASTER,
+    )
 }
 
 fn cache_settled(ready: bool, drawing: bool, stale: bool) -> bool {

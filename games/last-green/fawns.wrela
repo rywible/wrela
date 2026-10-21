@@ -3,7 +3,7 @@
 // a young deer (`fawn::creature::wood_fawn`), realized over frames as the clearing realizes it,
 // once a shot that casts it is held, and drawn standing at rest where the shot puts it.
 
-use engine::creature::{Creature, MAX_BONES}
+use engine::creature::{Creature, MAX_BONES, Skeleton}
 use engine::look::{CreatureLook, Mesh}
 use engine::render::{Look, bone_matrix}
 use engine::character::placed
@@ -53,28 +53,32 @@ pub const SIZE: f32 = 0.6
 pub const NECK_LEAN: f32 = 0.35
 pub const HEAD_LIFT: f32 = 0.25
 
+/// Its skeleton, at the grazer's size (`at_rest` poses it).
+const REST: Skeleton = skeleton()
+
 /// Its palette standing at rest, its feet at `feet`, facing `heading` (radians from +z toward
 /// +x): `SIZE` times the grazer's size, its neck leaned forward and its head lifted, its right
 /// foreleg lifted and folded mid-step (a stance, not a statue's); every other bone at rest.
 pub fn at_rest(feet: vec3, heading: f32) -> [mat4; MAX_BONES] {
-    let s = skeleton()
+    let s = REST
     let world = placed(feet, heading) * scale(vec3(SIZE))
     var bones = [world; MAX_BONES]
+    let x = vec3(1.0, 0.0, 0.0)
     let base = s.rest(s.find("neck 0"))
-    let lean = bone_matrix(Quat::axis_angle(vec3(1.0, 0.0, 0.0), NECK_LEAN), base, base)
+    let lean = bone_matrix(Quat::axis_angle(x, NECK_LEAN), base, base)
     for name in ["neck 0", "neck 1", "neck 2", "neck 3"] {
         bones[s.find(name).index] = world * lean
     }
     let head = s.find("head")
     let poll = s.rest(head)
-    let lift = bone_matrix(Quat::axis_angle(vec3(1.0, 0.0, 0.0), -HEAD_LIFT), poll, poll)
+    let lift = bone_matrix(Quat::axis_angle(x, -HEAD_LIFT), poll, poll)
     bones[head.index] = world * lean * lift
-    let x = vec3(1.0, 0.0, 0.0)
-    let elbow = s.rest(s.find("elbow right"))
+    let elbow_bone = s.find("elbow right")
+    let elbow = s.rest(elbow_bone)
     let swing = bone_matrix(Quat::axis_angle(x, 0.35), elbow, elbow)
     let knee = s.rest(s.find("knee right"))
     let fold = bone_matrix(Quat::axis_angle(x, -0.9), knee, knee)
-    bones[s.find("elbow right").index] = world * swing
+    bones[elbow_bone.index] = world * swing
     for name in ["knee right", "fore fetlock right"] {
         bones[s.find(name).index] = world * swing * fold
     }

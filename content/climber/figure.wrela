@@ -137,9 +137,10 @@ fn the_sleeves_swing_back_as_it_sets_off_and_settle() {
     }
     let cuff = |f: Figure, at: vec3| {
         let s = cape::SLEEVE_SHEETS[0]
+        let points = f.points()
         var sum = vec3(0.0)
         for i in 0..s.around {
-            sum = sum + f.points()[s.at(i, s.down - 1)].xyz
+            sum = sum + points[s.at(i, s.down - 1)].xyz
         }
         sum / f32(s.around) - at
     }

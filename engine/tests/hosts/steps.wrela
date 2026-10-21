@@ -1,0 +1,171 @@
+// The steps the workspace's tool tests share: files read and written as text, source text
+// patched and counted, packages built, a driven build's commands and screen read back, and the
+// words of bytes a build read back.
+
+use both::bytes_of
+use std::collections::{Box, Vec}
+use std::job::Step
+use std::string::String
+use std::tool::answer
+use std::tool::drive
+use std::tool::files
+use std::tool::toolchain
+
+/// The text of the file at `path`, which must read and be UTF-8.
+@job
+pub fn text_of(path: take String) -> String {
+    var r = files::read(path.as_str())
+    var got = r.poll()
+    while got.is_none() {
+        yield
+        got = r.poll()
+    }
+    let Some(rp) = take got else { panic("no answer") }
+    let Ok(bytes) = answer(take rp) else { panic(f"{path.as_str()} reads") }
+    let Some(text) = String::from_utf8(take bytes) else { panic(f"{path.as_str()} isn't UTF-8") }
+    text
+}
+
+/// Writes `text` at `path`.
+@job
+pub fn written(path: take String, text: take String) {
+    var w = files::write(path.as_str(), text.as_bytes())
+    var got = w.poll()
+    while got.is_none() {
+        yield
+        got = w.poll()
+    }
+    let Some(wp) = take got else { panic("no answer") }
+    assert(answer(take wp).is_ok(), f"{path.as_str()} is written")
+}
+
+/// `text` with each `from` replaced by `to`, left to right.
+pub fn replaced(text: str, from: str, to: str) -> String {
+    var out: Vec<u8> = Vec::new()
+    var i = 0
+    while i < text.len() {
+        var hit = i + from.len() <= text.len()
+        if hit {
+            for j in 0..from.len() {
+                if text.byte(i + j) != from.byte(j) {
+                    hit = false
+                    break
+                }
+            }
+        }
+        if hit {
+            for j in 0..to.len() {
+                out.push(to.byte(j))
+            }
+            i += from.len()
+        } else {
+            out.push(text.byte(i))
+            i += 1
+        }
+    }
+    let Some(s) = String::from_utf8(take out) else { panic("a replacement keeps UTF-8") }
+    s
+}
+
+/// How many of `text`'s lines are `@test` alone: the tests it declares.
+pub fn declared(text: str) -> u32 {
+    var n = 0
+    var start = 0
+    for i in 0..text.len() + 1 {
+        if i == text.len() || text.byte(i) == 10 {
+            var a = start
+            var b = i
+            while a < b && (text.byte(a) == 32 || text.byte(a) == 9 || text.byte(a) == 13) {
+                a += 1
+            }
+            while b > a &&
+                (text.byte(b - 1) == 32 || text.byte(b - 1) == 9 || text.byte(b - 1) == 13) {
+                b -= 1
+            }
+            if text.slice(a, b) == "@test" {
+                n += 1
+            }
+            start = i + 1
+        }
+    }
+    n
+}
+
+/// The package at `pkg` built into `out` with `options`: the build must have no error, and must
+/// succeed, or the test fails with `what` (as "the mixer builds").
+@job
+pub fn built(
+    pkg: take String,
+    out: take String,
+    options: take toolchain::BuildOptions,
+    what: take String,
+) -> bool {
+    var b = toolchain::build(pkg.as_str(), out.as_str(), options)
+    var got = b.poll()
+    while got.is_none() {
+        yield
+        got = b.poll()
+    }
+    let Some(bp) = take got else { panic("no answer") }
+    let Ok(build) = toolchain::read_built(take bp) else { panic("the build's request") }
+    for d in build.diagnostics {
+        assert(!d.error, d.rendered.as_str())
+    }
+    assert(build.ok, what.as_str())
+    true
+}
+
+/// Every command `h` recorded since the last time, however many answers they take.
+@job
+pub fn recorded(h: take drive::Build) -> Vec<drive::Recorded> {
+    var out: Vec<drive::Recorded> = Vec::new()
+    loop {
+        var c = drive::commands(h)
+        var got = c.poll()
+        while got.is_none() {
+            yield
+            got = c.poll()
+        }
+        let Some(cp) = take got else { panic("no answer") }
+        let Ok(r) = drive::read_commands(take cp) else { panic("the commands") }
+        for k in 0..r.commands.len() {
+            out.push(r.commands[k].clone())
+        }
+        if r.waiting == 0 {
+            return out
+        }
+    }
+}
+
+/// `h`'s screen, RGBA8, rows top to bottom.
+@job
+pub fn screen(h: take drive::Build) -> Vec<u8> {
+    var c = drive::capture(h)
+    var captured = c.poll()
+    while captured.is_none() {
+        yield
+        captured = c.poll()
+    }
+    let Some(cp) = take captured else { panic("no answer") }
+    let Ok(shot) = drive::read_capture(take cp) else { panic("the capture") }
+    var b = Box::new(bytes_of.start(take shot.rgba))
+    loop {
+        match b.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(pixels) => return pixels,
+        }
+    }
+}
+
+/// The little-endian `u32` at byte `at` of `bytes`.
+pub fn word(bytes: [u8], at: u32) -> u32 {
+    u32(bytes[at]) |
+        (u32(bytes[at + 1]) << 8) |
+        (u32(bytes[at + 2]) << 16) |
+        (u32(bytes[at + 3]) << 24)
+}
+
+/// Sample `i` of `bytes`, little-endian `f32`s.
+pub fn sample(bytes: [u8], i: u32) -> f32 {
+    bitcast_f32(word(bytes, 4 * i))
+}

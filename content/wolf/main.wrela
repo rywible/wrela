@@ -1,91 +1,17 @@
 // The wolf as a program. It realizes the wolf's mesh once (sketch 02's extraction) and walks
 // it on the spot with sketch 01's cycle, skinned by the palette the gait's pose gives
-// (`engine::walk`). Its exports give the tests (subjects.rs) the wolf's distance and points
-// around it; the lens draws it too (`wrela tool studio -- content/wolf`).
+// (`engine::walk`). The lens draws it too (`wrela tool studio -- content/wolf`).
 
 use creature::{Coat, wolf}
-use engine::creature::Creature
 use engine::look::CreatureLook
 use engine::render::Shaded
 use engine::walk::{Walker, walker}
 use std::derive::Box3
-use std::field::{part_family, part_image, part_share}
-use std::lift::{Literal, count, gradient, literal, reads}
+use std::field::part_share
 use std::units::mm
 
-/// A box around the wolf, from the ground up: where its points are sampled.
-pub const AROUND: Box3 = Box3 { lo: vec3(-0.3, -0.02, -0.85), hi: vec3(0.3, 1.1, 0.85) }
-
-/// The wolf's distance at a point.
-pub fn distance(x: f32, y: f32, z: f32) -> f32 {
-    wolf().field().distance(vec3(x, y, z))
-}
-
-/// Point `i` of `AROUND`'s samples, seed `seed`.
-pub fn sample(seed: u32, i: u32) -> vec3 {
-    AROUND.sample(seed, i)
-}
-
-/// The wolf's gradient at a point.
-pub fn gradient_at(x: f32, y: f32, z: f32) -> vec3 {
-    wolf().field().gradient(vec3(x, y, z))
-}
-
-/// The part that decides the wolf's distance at a point, as its family (`part_family`): a part
-/// and its mirror image give the same number.
-pub fn part(x: f32, y: f32, z: f32) -> u32 {
-    let f = wolf().field()
-    part_family(f, f.part_at(vec3(x, y, z)).1)
-}
-
-/// Part `i`'s share in the distance at a point (`std::field::part_share`).
-pub fn part_share_at(x: f32, y: f32, z: f32, i: u32) -> f32 {
-    std::field::part_share(wolf().field(), vec3(x, y, z), i)
-}
-
-/// Part `i`'s mirror image (`part_image`: `i` if none).
-pub fn image_part(i: u32) -> u32 {
-    part_image(wolf().field(), i)
-}
-
-/// The part that decides the distance at a point (`Surface::part_at`'s index).
-pub fn part_index(x: f32, y: f32, z: f32) -> u32 {
-    wolf().field().part_at(vec3(x, y, z)).1
-}
-
-// ---- a lifted build's literals (`wrela build --lift wolf`), for the tests ------------------------
-
-/// How many literals the build lifted (0 in a build that isn't lifted).
-pub fn literals() -> u32 {
-    count()
-}
-
-pub fn value(i: u32) -> f32 {
-    if let Some(l) = literal(i) { l.value() } else { 0.0 }
-}
-
-pub fn set(i: u32, v: f32) {
-    if let Some(l) = literal(i) {
-        l.set(v)
-    }
-}
-
-/// The distance's derivative by literal `i` at a point.
-pub fn derivative(x: f32, y: f32, z: f32, i: u32) -> f32 {
-    let p = vec3(x, y, z)
-    let (_, d) = gradient(|| wolf().field().distance(p), [Literal { index: i }])
-    d[0]
-}
-
-/// How many literals the distance reads.
-pub fn reads_count() -> u32 {
-    reads(|| wolf().field().distance(vec3(0.0))).len()
-}
-
-/// The `k`th literal the distance reads, in index order.
-pub fn read_literal(k: u32) -> u32 {
-    reads(|| wolf().field().distance(vec3(0.0)))[k].index
-}
+/// A box around the wolf, from the ground up: where its test samples its points.
+const AROUND: Box3 = Box3 { lo: vec3(-0.3, -0.02, -0.85), hi: vec3(0.3, 1.1, 0.85) }
 
 impl Shaded for Coat {
     fn albedo(self) -> vec3 {

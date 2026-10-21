@@ -4,14 +4,13 @@
 // plays them beside a recorded piano. The program plays take 1 unless `choose` says otherwise
 // before the first frame. `describe` prints the take for the audio tool (studio/audio).
 
-use engine::perform::{Performance, deadpan, perform}
+use engine::perform::{Performance, deadpan, describe as describe_take, perform}
 use engine::piano::{Model, piano, play_piano}
 use engine::piano_grand::GRAND
 use engine::score::{Level, TICKS}
 use performance::{marks, taste}
 use score::GYMNOPEDIE
 use std::audio::play
-use std::io::print
 
 pub struct Game {
     which: u32,
@@ -52,32 +51,11 @@ pub fn seconds(game: Game) -> f32 {
     f32(take_of(game.which).length) + 4.0
 }
 
-/// The take as JSON lines: the piece, its voices, each note as played, the pedals, and when
-/// each beat fell.
+/// The take as JSON lines (engine::perform's `describe`): the piece, its voices, each note as
+/// played, the pedals, and when each beat fell.
 pub fn describe(game: Game) {
-    let p = take_of(game.which)
     let name = if game.which % 2 == 0 { "deadpan" } else { "performance" }
-    print(
-        f"{{\"title\":\"{GYMNOPEDIE.title}\",\"take\":\"{name}\",\"bars\":{GYMNOPEDIE.bars},\"beats_per_bar\":{GYMNOPEDIE.meter.beats},\"seconds\":{p.length}}}",
-    )
-    for i in 0..GYMNOPEDIE.voices.len() {
-        print(f"{{\"voice\":{i},\"name\":\"{GYMNOPEDIE.voices[i]}\"}}")
-    }
-    for n in p.notes {
-        let written = GYMNOPEDIE.notes[n.note]
-        print(
-            f"{{\"key\":{n.key},\"voice\":{n.voice},\"onset\":{n.onset},\"release\":{n.release},\"velocity\":{n.velocity},\"bar\":{GYMNOPEDIE.bar_of(written.start)}}}",
-        )
-    }
-    for s in p.sustain {
-        print(f"{{\"sustain\":{s.at},\"depth\":{s.depth}}}")
-    }
-    for s in p.soft {
-        print(f"{{\"soft\":{s.at},\"depth\":{s.depth}}}")
-    }
-    for b in p.beats {
-        print(f"{{\"beat\":{b}}}")
-    }
+    describe_take(GYMNOPEDIE, name, take_of(game.which))
 }
 
 @test

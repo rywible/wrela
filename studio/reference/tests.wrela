@@ -9,10 +9,10 @@
 // changes; the Rust command with this tool's math gives this tool's fit exactly. The rest are
 // the Rust command's tests, ported, and the tool's own failures.
 
-use deviation::{Deviation, Stats}
+use deviation::Deviation
 use main::{ReplicaArgs, make_replica, measure, write_package}
 use mesh::{Solid, len3, parse_stl}
-use references::manifest::{Landmark, Part, Parts, Point, Registration, Sculpt, Seam}
+use references::manifest::{Landmark, Part, Parts, Point, Registration, Sculpt}
 use replica::{
     Compression, Lofted, Reference, Sampled, Shape, compress, fill_held, fit_compact, ident,
     manifest, quoted_name, read, replica_source,

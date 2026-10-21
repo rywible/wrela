@@ -88,12 +88,14 @@ pub struct Knob: Copy {
 }
 
 /// The place under a block of code where the field it builds is drawn, and the block; the row
-/// over it where its views are chosen, and the room under it for what the view shows.
-pub struct Figure: Copy {
+/// over it where its views are chosen, and the room under it for what the view shows; and what
+/// the block builds, read at time 0.
+pub struct Figure: Clone {
     pub rect: Rect,
     pub block: u32,
     pub tabs: Rect,
     pub caption: Rect,
+    pub read: live::Read,
 }
 
 /// A heading with an anchor under the page's title: the anchor, where the heading is, how tall its
@@ -284,13 +286,14 @@ pub fn lay_out(
                     }
                 }
                 heading_line = vec3(y - line, right, line)
+                let label = plain(b.runs)
                 if b.level >= 2 && !b.anchor.is_empty() {
                     laid.titles.push(
                         Title {
                             anchor: b.anchor.clone(),
                             rect: Rect::new(0.0, start, measure, y - start),
                             line,
-                            label: plain(b.runs),
+                            label: label.clone(),
                         },
                     )
                 }
@@ -299,7 +302,7 @@ pub fn lay_out(
                         role: Role::Heading,
                         level: b.level,
                         rect: Rect::new(0.0, start, measure, y - start),
-                        label: plain(b.runs),
+                        label,
                         target: String::new(),
                     },
                 )
@@ -575,7 +578,7 @@ pub fn lay_out(
                     None => Vec::new(),
                 }
                 y = code(mut laid, p, fonts, b.code.as_str(), y, wide, u, knobs)
-                if read.is_some() { y = figure(mut laid, p, fonts, y, wide, u) }
+                if let Some(r) = take read { y = figure(mut laid, p, fonts, y, wide, u, take r) }
                 y += 18.0 * u
             },
             Kind::Table => {
@@ -815,20 +818,19 @@ fn cards(
 /// quieter: the number says where the section is, the words what it is.
 fn numbered(runs: [Run]) -> Vec<Run> {
     var out: Vec<Run> = Vec::new()
-    if runs.is_empty() || runs[0].style != 0 {
-        for r in runs { out.push(r.clone()) }
-        return out
+    // The runs after those split here.
+    var rest = 0
+    if !runs.is_empty() && runs[0].style == 0 {
+        let t = runs[0].text.as_str()
+        var k = 0
+        while k < t.len() && ((t.byte(k) >= 48 && t.byte(k) <= 57) || t.byte(k) == 46) { k += 1 }
+        if k > 0 && k < t.len() && t.byte(k) == 32 {
+            out.push(Run { text: t.slice(from: 0, to: k).to_string(), style: MUTED })
+            out.push(Run { text: t.slice(from: k, to: t.len()).to_string(), style: 0 })
+            rest = 1
+        }
     }
-    let t = runs[0].text.as_str()
-    var k = 0
-    while k < t.len() && ((t.byte(k) >= 48 && t.byte(k) <= 57) || t.byte(k) == 46) { k += 1 }
-    if k == 0 || k >= t.len() || t.byte(k) != 32 {
-        for r in runs { out.push(r.clone()) }
-        return out
-    }
-    out.push(Run { text: t.slice(from: 0, to: k).to_string(), style: MUTED })
-    out.push(Run { text: t.slice(from: k, to: t.len()).to_string(), style: 0 })
-    for i in 1..runs.len() { out.push(runs[i].clone()) }
+    for i in rest..runs.len() { out.push(runs[i].clone()) }
     out
 }
 
@@ -1167,7 +1169,7 @@ fn code(
             let whole = char_count(src, s, e)
             // Punctuation of a character or two stays at its line's end, past the edge into the
             // ground's margin, rather than starting a line of its own.
-            let short = whole <= 2 && !live::is_word(src.byte(s))
+            let short = whole <= 2 && !highlight::is_word(src.byte(s))
             let limit = if short { columns + 2 } else { columns }
             if col > 4 && col + whole > limit && whole <= columns - 4 && token != Token::Comment {
                 top += line
@@ -1285,10 +1287,18 @@ fn next_char(s: str, i: u32) -> u32 {
     j
 }
 
-/// The figure under a block of code that builds a field, `width` wide: the row of its views over
-/// it, its frame, and room under it for the longest of what its views show. The bottom of that
-/// room.
-fn figure(laid: mut Laid, p: Palette, fonts: Fonts, y: f32, width: f32, u: f32) -> f32 {
+/// The figure under a block of code that builds the field `read`, `width` wide: the row of its
+/// views over it, its frame, and room under it for the longest of what its views show. The bottom
+/// of that room.
+fn figure(
+    laid: mut Laid,
+    p: Palette,
+    fonts: Fonts,
+    y: f32,
+    width: f32,
+    u: f32,
+    read: take live::Read,
+) -> f32 {
     let phone = width < 560.0 * u
     let tabs = Rect::new(0.0, y + 14.0 * u, width, (if phone { 40.0 } else { 36.0 }) * u)
     let top = tabs.bottom() + 10.0 * u
@@ -1305,7 +1315,7 @@ fn figure(laid: mut Laid, p: Palette, fonts: Fonts, y: f32, width: f32, u: f32) 
         lines = max(lines, line_count(fonts, live::caption(mode).as_str(), size, width))
     }
     let caption = Rect::new(0.0, top + h + 12.0 * u, width, f32(lines) * size * 1.55)
-    laid.figures.push(Figure { rect, block: laid.block, tabs, caption })
+    laid.figures.push(Figure { rect, block: laid.block, tabs, caption, read })
     laid.parts.push(
         Part {
             role: Role::Text,

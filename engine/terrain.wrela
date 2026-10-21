@@ -20,7 +20,7 @@
 
 use light::Lit
 use sim::Hit
-use noise::{hash2, noise2_wrapped}
+use noise::{hash2, noise2_wrapped, wrapped}
 use std::gpu::{
     Address, ClipPosition, DrawIndexedArgs, FragCoord, GlobalId, GpuBuffer, GpuSpan, Oct32, Rgba8,
     RenderPass, Sampler, Slots, Texture, Unorm8x4, VertexIndex, begin_pass, buffer, buffer_of,
@@ -69,6 +69,34 @@ pub trait Terrain: Copy + GpuData {
         let dx = self.height(x - e, z) - self.height(x + e, z)
         let dz = self.height(x, z - e) - self.height(x, z + e)
         normalize(vec3(dx, 2.0 * e, dz))
+    }
+}
+
+/// Level ground at height 0, bare, with no edge and no rock: a terrain and a history's ground
+/// for tests.
+pub struct Flat: Copy + GpuData {}
+
+impl Terrain for Flat {
+    fn height(self, x: f32, z: f32) -> f32 {
+        0.0
+    }
+
+    fn cover(self, at: vec3, n: vec3) -> Cover {
+        Cover { albedo: vec3(0.0), grass: 0.0 }
+    }
+}
+
+impl grow::Ground for Flat {
+    fn height(self, x: f32, z: f32) -> f32 {
+        0.0
+    }
+
+    fn past_edge(self, p: vec2) -> f32 {
+        -1.0e9
+    }
+
+    fn rock(self, p: vec2) -> f32 {
+        0.0
     }
 }
 
@@ -170,11 +198,8 @@ pub fn fields_here(
         return vec4(-1.0)
     }
     let t = vec2i(floor(vec2(x, z) / at.tile))
-    let b = vec2i(
-        ((t.x % i32(at.blocks)) + i32(at.blocks)) % i32(at.blocks),
-        ((t.y % i32(at.blocks)) + i32(at.blocks)) % i32(at.blocks),
-    )
-    let held = tiles[u32(b.y) * at.blocks + u32(b.x)]
+    let b = block_of(at, t)
+    let held = tiles[b.y * at.blocks + b.x]
     if held.z == 0.0 || i32(held.x) != t.x || i32(held.y) != t.y {
         return vec4(-1.0)
     }
@@ -187,6 +212,12 @@ pub fn fields_here(
     )
     let uv = (vec2(b) * at.tile + local) / at.period
     fields.sample_level(s, uv)
+}
+
+/// The block tile `t` wraps to (`FieldsAt`).
+fn block_of(at: FieldsAt, t: vec2i) -> vec2u {
+    let n = i32(at.blocks)
+    vec2u(u32(wrapped(t.x, n)), u32(wrapped(t.y, n)))
 }
 
 /// A terrain's clipmap on the GPU, and where its levels are.
@@ -297,8 +328,7 @@ impl Clipmap {
         if at.on == 0 {
             return
         }
-        let n = i32(at.blocks)
-        let b = vec2u(u32(((t.x % n) + n) % n), u32(((t.y % n) + n) % n))
+        let b = block_of(at, t)
         let side = u32(round(at.tile / at.texel))
         let k = b.y * at.blocks + b.x
         let old = self.held[k]
@@ -317,8 +347,7 @@ impl Clipmap {
         if at.on == 0 {
             return
         }
-        let n = i32(at.blocks)
-        let b = vec2u(u32(((t.x % n) + n) % n), u32(((t.y % n) + n) % n))
+        let b = block_of(at, t)
         let k = b.y * at.blocks + b.x
         if self.held[k].z != 0.0 && i32(self.held[k].x) == t.x && i32(self.held[k].y) == t.y {
             self.held[k] = vec4(0.0)
@@ -984,7 +1013,7 @@ fn detail_full(v: VertexIndex) -> ClipPosition {
 
 /// Wrapped cell `(x, y)` of a grid `n` a side's hash, seeded.
 fn cell_hash(x: i32, y: i32, n: i32, seed: i32) -> f32 {
-    hash2(((x % n) + n) % n + seed * 131, ((y % n) + n) % n - seed * 71)
+    hash2(wrapped(x, n) + seed * 131, wrapped(y, n) - seed * 71)
 }
 
 /// A texel of detail tile `k`.
@@ -1168,25 +1197,14 @@ fn material_weights_follow_the_clipmap_morph() {
     }
 }
 
-struct RaycastPlain: Copy + GpuData {}
-
-impl Terrain for RaycastPlain {
-    fn height(self, x: f32, z: f32) -> f32 {
-        0.0
-    }
-    fn cover(self, at: vec3, n: vec3) -> Cover {
-        Cover { albedo: vec3(0.0), grass: 0.0 }
-    }
-}
-
 @test
 fn shallow_ground_rays_reach_their_hit() {
     let dir = normalize(vec3(1.0, -0.01, 0.0))
-    let hit = raycast(RaycastPlain {}, vec3(0.0, 1.0, 0.0), dir, reach: 200.0)
+    let hit = raycast(Flat {}, vec3(0.0, 1.0, 0.0), dir, reach: 200.0)
     assert(hit.hit, "a ray stopped before its ground intersection")
     assert(abs(hit.distance - 1.0 / -dir.y) < 0.01)
-    let short = raycast(RaycastPlain {}, vec3(0.0, 1.0, 0.0), dir, reach: 50.0)
+    let short = raycast(Flat {}, vec3(0.0, 1.0, 0.0), dir, reach: 50.0)
     assert(!short.hit, "a ray searched past its reach")
-    let end = raycast(RaycastPlain {}, vec3(0.0, 1.0, 0.0), vec3(0.0, -1.0, 0.0), reach: 1.0)
+    let end = raycast(Flat {}, vec3(0.0, 1.0, 0.0), vec3(0.0, -1.0, 0.0), reach: 1.0)
     assert(end.hit && end.distance == 1.0, "a hit exactly at the ray's reach was lost")
 }

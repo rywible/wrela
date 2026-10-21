@@ -5,13 +5,11 @@
 // Frames are drawn at the times the tests name (`drive::frame_at`), and the screen captured.
 
 use hosts::both::{Both, both_hosts, difference}
+use hosts::steps::{built, screen}
 use std::collections::{Box, Vec}
 use std::io::print
 use std::job::Step
 use std::string::String
-use std::tool::answer
-use std::tool::blob
-use std::tool::blob::Data
 use std::tool::drive
 use std::tool::drive::Scalar
 use std::tool::toolchain
@@ -25,26 +23,25 @@ const H: u32 = 360
 const EYE = vec3(-2.0, 0.9, -1.5)
 const AT = vec3(6.0, 0.3, 9.0)
 
-/// The most bytes a blob read gives at once.
-const CHUNK: u64 = 524288
-
 /// The example, built as a test build into `scratch/clusters`, loaded on the GPU, `init` run.
 @job
 fn opened() -> drive::Build {
     var options = toolchain::options()
     options.testing = true
-    var b = toolchain::build("repo/examples/clusters", "scratch/clusters", options)
-    var built = b.poll()
-    while built.is_none() {
-        yield
-        built = b.poll()
+    var b = Box::new(
+        built.start(
+            String::from("repo/examples/clusters"),
+            String::from("scratch/clusters"),
+            take options,
+            String::from("the clusters build"),
+        ),
+    )
+    loop {
+        match b.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
     }
-    let Some(bp) = take built else { panic("no answer") }
-    let Ok(build) = toolchain::read_built(take bp) else { panic("the build's request") }
-    for d in build.diagnostics {
-        assert(!d.error, d.rendered.as_str())
-    }
-    assert(build.ok, "the clusters build")
     var load = drive::gpu()
     load.width = W
     load.height = H
@@ -109,51 +106,6 @@ fn framed(h: take drive::Build, time: take f32) {
     }
 }
 
-/// The screen, RGBA8, rows top to bottom.
-@job
-fn screen(h: take drive::Build) -> Vec<u8> {
-    var c = drive::capture(h)
-    var captured = c.poll()
-    while captured.is_none() {
-        yield
-        captured = c.poll()
-    }
-    let Some(cp) = take captured else { panic("no answer") }
-    let Ok(shot) = drive::read_capture(take cp) else { panic("the capture") }
-    var pixels: Vec<u8> = Vec::new()
-    match take shot.rgba {
-        Data::Bytes(v) => pixels = take v,
-        Data::Blob(held) => {
-            var n = blob::len(held)
-            var counted = n.poll()
-            while counted.is_none() {
-                yield
-                counted = n.poll()
-            }
-            let Some(np) = take counted else { panic("no answer") }
-            let Ok(size) = blob::read_len(take np) else { panic("the blob's length") }
-            var at: u64 = 0
-            while at < size {
-                let len = u32(min(size - at, CHUNK))
-                var r = blob::read(held, at, len)
-                var read = r.poll()
-                while read.is_none() {
-                    yield
-                    read = r.poll()
-                }
-                let Some(rp) = take read else { panic("no answer") }
-                let Ok(chunk) = answer(take rp) else { panic("the blob's bytes") }
-                for j in 0..chunk.len() {
-                    pixels.push(chunk[j])
-                }
-                at += u64(len)
-            }
-        },
-    }
-    assert(pixels.len() == 4 * W * H, "every pixel came back")
-    pixels
-}
-
 /// The frame with the eye at `EYE` looking at `AT`, `pixels` of error, `side` × `side` copies:
 /// the third, and every one before it whole (the lists have room for every quad the copies
 /// could list, from the first frame).
@@ -186,31 +138,10 @@ fn view(h: take drive::Build, pixels: take f32, side: take u32) -> Vec<u8> {
     loop {
         match s.get_mut().resume() {
             Step::Yielded => yield,
-            Step::Done(v) => return v,
-        }
-    }
-}
-
-/// The export `name` with `args` called, its first result.
-@job
-fn number(h: take drive::Build, name: take String, args: take Vec<Scalar>) -> u32 {
-    var c = Box::new(called.start(h, take name, take args))
-    loop {
-        match c.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(v) => return v,
-        }
-    }
-}
-
-/// A frame at `time`, through `framed`.
-@job
-fn drawn(h: take drive::Build, time: take f32) {
-    var f = Box::new(framed.start(h, time))
-    loop {
-        match f.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => return,
+            Step::Done(pixels) => {
+                assert(pixels.len() == 4 * W * H, "every pixel came back")
+                return pixels
+            },
         }
     }
 }
@@ -219,7 +150,7 @@ fn drawn(h: take drive::Build, time: take f32) {
 /// room, and so do the quads its frame listed. How many levels listed some.
 @job
 fn levels_listed(h: take drive::Build) -> u32 {
-    var a = Box::new(number.start(h, String::from("ask_counts"), Vec::new()))
+    var a = Box::new(called.start(h, String::from("ask_counts"), Vec::new()))
     var asked = false
     while !asked {
         match a.get_mut().resume() {
@@ -230,7 +161,7 @@ fn levels_listed(h: take drive::Build) -> u32 {
     var n = 0
     var i = 0
     while i < 30 && n == 0 {
-        var f = Box::new(drawn.start(h, 1.0 + f32(i) / 60.0))
+        var f = Box::new(framed.start(h, 1.0 + f32(i) / 60.0))
         var done = false
         while !done {
             match f.get_mut().resume() {
@@ -238,7 +169,7 @@ fn levels_listed(h: take drive::Build) -> u32 {
                 Step::Done(_) => done = true,
             }
         }
-        var c = Box::new(number.start(h, String::from("counts"), Vec::new()))
+        var c = Box::new(called.start(h, String::from("counts"), Vec::new()))
         var counted = false
         while !counted {
             match c.get_mut().resume() {
@@ -256,7 +187,7 @@ fn levels_listed(h: take drive::Build) -> u32 {
     for k in 0..n {
         var args: Vec<Scalar> = Vec::new()
         args.push(Scalar::I32(i32(k)))
-        var c = Box::new(number.start(h, String::from("count"), take args))
+        var c = Box::new(called.start(h, String::from("count"), take args))
         var read = false
         while !read {
             match c.get_mut().resume() {
@@ -288,7 +219,7 @@ fn levels_listed(h: take drive::Build) -> u32 {
 fn settled_megabytes(h: take drive::Build) -> u32 {
     var last = 4294967295
     for i in 0..120 {
-        var f = Box::new(drawn.start(h, 2.0 + f32(i) / 60.0))
+        var f = Box::new(framed.start(h, 2.0 + f32(i) / 60.0))
         var done = false
         while !done {
             match f.get_mut().resume() {
@@ -296,7 +227,7 @@ fn settled_megabytes(h: take drive::Build) -> u32 {
                 Step::Done(_) => done = true,
             }
         }
-        var m = Box::new(number.start(h, String::from("megabytes"), Vec::new()))
+        var m = Box::new(called.start(h, String::from("megabytes"), Vec::new()))
         var mb = 0
         var read = false
         while !read {

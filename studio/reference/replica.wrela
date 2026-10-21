@@ -12,13 +12,18 @@
 // is a function of its own inputs, so the replica is the same with any number of helpers.
 
 use std::math
-use mesh::{Solid, cross3, dot3, keeps_handedness, len3, names_each_axis_once, parse, place, unit3}
+use mesh::{
+    Solid, cross3, dot3, is_space, keeps_handedness, len3, names_each_axis_once, parse, place,
+    unit3,
+}
 use references::manifest::{Parts, Point, Registration, Seam}
 use solve::{Banded, catmull_rom_weights, fourier, least_squares}
 use std::collections::Vec
 use std::par::{Task, spawn}
 use std::string::String
-use sweeps::{Fitted, Kind, Measured, Path, SLACK, inside_fitted, inside_measured, section_at}
+use sweeps::{
+    Fitted, Kind, Measured, Path, SLACK, inside_fitted, inside_measured, rem_euclid, section_at,
+}
 
 /// `f` of each of `inputs`, in order, each a task on the tool's helpers (`std::par::spawn`).
 /// They are joined from the last: the tool's own thread runs the tasks that no helper has
@@ -419,11 +424,6 @@ impl Loft {
     }
 }
 
-fn rem_euclid(a: f64, b: f64) -> f64 {
-    let r = a % b
-    if r < 0.0 { r + abs(b) } else { r }
-}
-
 /// Whether any loft but `k`'s holds `p`.
 fn inside_another(lofts: [Option<Loft>], k: u32, p: vec3d) -> bool {
     for l in 0..lofts.len() {
@@ -459,26 +459,7 @@ pub fn trimmed(solid: Solid, part: Part) -> Option<(Part, f64, f64)> {
     let steps = u32(max(ceil(len / 0.001), 1.0))
     let from = p.from
     let at = |k: u32| -> vec3d { from + axis * (f64(k) / f64(steps)) }
-    var first: Option<u32> = None
-    for k in 0..steps + 1 {
-        if solid.inside(at(k)) {
-            first = Some(k)
-            break
-        }
-    }
-    let f = first?
-    var last = f
-    var k = steps
-    while k > f {
-        if solid.inside(at(k)) {
-            last = k
-            break
-        }
-        k -= 1
-    }
-    if last == f {
-        return None
-    }
+    let (f, last) = solid.inside_span(steps, at)?
     var out = p.clone()
     out.from = at(f)
     out.to = at(last)
@@ -702,7 +683,8 @@ pub fn fit_sweeps(parts: [Part], measured: take Vec<Measure>) -> Vec<Sampled> {
     let count = swept.len()
     var kinds: Vec<Vec<Kind>> = Vec::with_capacity(count)
     for e in 0..count {
-        let (k, sm) = swept[e].clone()
+        let k = swept[e].0
+        borrow sm = swept[e].1
         var ks: Vec<Kind> = Vec::with_capacity(sm.measured.radii.len())
         for n in 0..sm.measured.radii.len() {
             if sm.measured.held[n] {
@@ -899,6 +881,11 @@ pub fn compress(sampled: [Sampled], c: Compression) -> (Vec<(Sampled, u32)>, u32
         asks.push(CompactFit { sampled: s.clone(), c, floor: Vec::new() })
     }
     var out = each_on_helpers(take asks, fit_compact_of)
+    // The measured tables, to find their radii's points in.
+    var measured: Vec<Option<Loft>> = Vec::with_capacity(sampled.len())
+    for s in sampled {
+        measured.push(Loft::of(s))
+    }
     var within = 10
     for _ in 0..FLOOR_ROUNDS {
         var lofts: Vec<Option<Loft>> = Vec::with_capacity(out.len())
@@ -908,7 +895,7 @@ pub fn compress(sampled: [Sampled], c: Compression) -> (Vec<(Sampled, u32)>, u32
         var refit: Vec<bool> = Vec::filled(sampled.len(), value: false)
         var further = false
         for k in 0..sampled.len() {
-            let Some(loft) = Loft::of(sampled[k]) else { continue }
+            let Some(loft) = measured[k] else { continue }
             let Shape::Loft(t) = sampled[k].shape else { continue }
             let Shape::Loft(fit) = out[k].0.shape else { continue }
             let a = sampled[k].part.angles
@@ -1064,7 +1051,7 @@ pub fn fit_compact(s: Sampled, c: Compression, floor: [bool]) -> (Sampled, u32) 
     // A little ridge on the harmonics, so a section measured over a narrow arc doesn't swing
     // wildly where it's free.
     let ridge = 0.001 * f64(measured) / f64(controls)
-    let radii = table.radii.clone()
+    borrow radii = table.radii
     var rows: Vec<Vec<(u32, f64)>> = Vec::with_capacity(radii.len())
     for n in 0..radii.len() {
         let i = n / a
@@ -1147,11 +1134,11 @@ pub fn comment(text: str) -> String {
     var line = String::from("//")
     var i = 0
     while i < text.len() {
-        while i < text.len() && is_blank(text.byte(i)) {
+        while i < text.len() && is_space(text.byte(i)) {
             i += 1
         }
         let start = i
-        while i < text.len() && !is_blank(text.byte(i)) {
+        while i < text.len() && !is_space(text.byte(i)) {
             i += 1
         }
         if i == start {
@@ -1169,10 +1156,6 @@ pub fn comment(text: str) -> String {
     out.push_str(line.as_str())
     out.push_str("\n")
     out
-}
-
-fn is_blank(b: u8) -> bool {
-    b == 32 || (b >= 9 && b <= 13)
 }
 
 /// A name as a wrela string literal, keeping its contents on one source line.

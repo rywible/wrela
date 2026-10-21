@@ -16,6 +16,7 @@ use std::json::{Doc, Kind, TOP, number_of, parse}
 use json::{f64_text, obj, quoted, round3}
 use references::manifest::{Facing, SideRegistration}
 use std::collections::Vec
+use std::math::is_finite
 use std::string::String
 
 /// A photo's registration: how its pixels map to the creature's side view (z, y), in metres.
@@ -86,7 +87,7 @@ pub fn parse_registration(text: str) -> Result<Registration, String> {
             )
         }
         let f = f32(x)
-        if !(abs(f) <= 340282346638528859811704183484516925440.0) {
+        if !is_finite(f) {
             return Err(String::from(f"`{text}`: {text.slice(a, b)} is too large for an f32"))
         }
         numbers[k] = f
@@ -185,19 +186,6 @@ pub fn own_framing(json: str) -> Result<Framing, String> {
         None => 1.0,
     }
     Ok(Framing { z: c(2), y: c(1), half })
-}
-
-/// `x` as JSON writes an `f32` (as Rust's `serde_json` does): its shortest text, `.0` when
-/// whole.
-pub fn f32_text(x: f32) -> String {
-    if !(abs(x) <= 340282346638528859811704183484516925440.0) {
-        return String::from("null")
-    }
-    var s = String::from(f"{x}")
-    if s.as_str().find(".").is_none() && s.as_str().find("e").is_none() {
-        s.push_str(".0")
-    }
-    s
 }
 
 /// The pixels from (`x`, `y`), `dw` across and `dh` down, of an image `w` pixels wide, set to
@@ -338,33 +326,22 @@ pub fn look_answer(png: str, changed: str, diagnose: str, spec: str) -> String {
         }
     }
     let at = |k: str| -> Option<u32> { d.get(TOP, k) }
+    // Axis `k` of the point `key` (0 if it isn't there).
+    let axis = |key: str, k: u32| -> f64 {
+        let Some(p) = d.get(TOP, key) else { return 0.0 }
+        let Some(v) = d.at(p, k) else { return 0.0 }
+        match d.num(v) {
+            Some(x) => x,
+            None => 0.0,
+        }
+    }
     // The bounds' size: each axis's `hi - lo`, to 3 decimals.
     var size = String::from("[")
     for k in 0..3 {
-        let lo = match at("lo") {
-            Some(l) => match d.at(l, k) {
-                Some(v) => match d.num(v) {
-                    Some(x) => x,
-                    None => 0.0,
-                },
-                None => 0.0,
-            },
-            None => 0.0,
-        }
-        let hi = match at("hi") {
-            Some(h) => match d.at(h, k) {
-                Some(v) => match d.num(v) {
-                    Some(x) => x,
-                    None => 0.0,
-                },
-                None => 0.0,
-            },
-            None => 0.0,
-        }
         if k > 0 {
             size.push_str(",")
         }
-        size.push_str(f64_text(round3(hi - lo)).as_str())
+        size.push_str(f64_text(round3(axis("hi", k) - axis("lo", k))).as_str())
     }
     size.push_str("]")
     var worst = String::from("[")

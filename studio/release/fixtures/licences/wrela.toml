@@ -1,4 +1,5 @@
-# A workspace whose console depends on a member by name, which depends on a package by its path.
+# A workspace whose console depends on a member by name, which depends on a package by its path
+# and back on the console by name: the workspace's members, found once, serve both.
 [workspace]
 members = [
     "console",

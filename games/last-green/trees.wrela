@@ -4,7 +4,7 @@
 // streams in: an instance of a kind for each tree the bake kept, scaled to its height, turned so
 // its crown leans the way the history leaned it.
 
-use engine::grow::{Cause, State, Tree, log_rot, rotate}
+use engine::grow::{Cause, State, Tree, rotate}
 use engine::interest::Drawn
 use engine::noise::{direction, hash2u, noise2, pick, rand}
 use engine::plant::{
@@ -13,9 +13,9 @@ use engine::plant::{
 }
 use std::field::Tube
 use engine::vegetation::Placed
-use great_tree::tree::great_tree
+use great_tree::tree::{far_tree, great_tree}
 use map::PRESENT
-use species::Species
+use species::{HABITS, Species}
 use std::math::{PI, TAU}
 
 // ---- the kinds ---------------------------------------------------------------------------------
@@ -615,21 +615,6 @@ fn log(s: u32, long: f32, girth: f32) -> Plant {
     p
 }
 
-/// A far tree, seed `s`: one crown of three clumps, no trunk to see.
-fn far_tree(s: u32) -> Plant {
-    var p = plant(leaves: Leaves { size: 2.4, cover: 1.2 }, bark: Bark {})
-    let tall = pick(s, 1, lo: 12.0, hi: 18.0)
-    for i in 0..3 {
-        let at = vec3(
-            pick(s, 10 + i, lo: -2.0, hi: 2.0),
-            tall * pick(s, 20 + i, lo: 0.55, hi: 0.8),
-            pick(s, 30 + i, lo: -2.0, hi: 2.0),
-        )
-        p.clump(at, radius: pick(s, 40 + i, lo: 2.6, hi: 3.6))
-    }
-    p
-}
-
 /// Kind `k`'s plant.
 pub fn kind_plant(k: u32) -> Plant {
     let oak_leaves = Leaves {
@@ -1075,16 +1060,68 @@ fn lowest(p: Plant) -> f32 {
     low
 }
 
-/// Each kind's lowest branch (`lowest`), as it's built (the great oak's isn't needed: it's kept).
-pub const LOWEST: [f32; KINDS] = lowest_of_kinds()
+/// What each kind's tables are read from (`LOWEST`, `TRUNKS`, `CROWN_R`, `CROWN_BASE`,
+/// `CROWN_TOP`, `FORK_Y`), its plant built once for all of them.
+struct Shapes {
+    lowest: [f32; KINDS],
+    trunks: [Tube<4>; KINDS],
+    crown_r: [f32; KINDS],
+    crown_base: [f32; KINDS],
+    crown_top: [f32; KINDS],
+    fork_y: [f32; KINDS],
+}
 
-fn lowest_of_kinds() -> [f32; KINDS] {
-    var out = [0.0; KINDS]
-    for k in 1..KINDS {
-        out[k] = lowest(kind_plant(k))
+const SHAPES: Shapes = shapes_of_kinds()
+
+fn shapes_of_kinds() -> Shapes {
+    var out = Shapes {
+        lowest: [0.0; KINDS],
+        trunks: [Tube { points: [vec3(0.0); 4], radii: [0.0; 4] }; KINDS],
+        crown_r: [0.0; KINDS],
+        crown_base: [0.0; KINDS],
+        crown_top: [0.0; KINDS],
+        fork_y: [0.0; KINDS],
+    }
+    for k in 0..KINDS {
+        let p = kind_plant(k)
+        let low = lowest(p)
+        // Its crown, as `CROWN_R`, `CROWN_BASE` and `CROWN_TOP` read it.
+        var reach = 0.0
+        var leaves = 1.0e9
+        var high = 0.0
+        for i in 0..p.clumps.len() {
+            let c = p.clumps[i]
+            reach = max(reach, length(c.centre.xz) + 0.5 * c.radius)
+            leaves = min(leaves, c.centre.y - 0.5 * c.radius * c.squash)
+            high = max(high, c.centre.y + 0.5 * c.radius * c.squash)
+        }
+        if p.clumps.len() > 0 {
+            out.crown_r[k] = reach
+            out.crown_base[k] = 0.5 * (leaves + low)
+            out.crown_top[k] = high
+        }
+        // The great oak's lowest branch, trunk and fork aren't needed: it's kept.
+        if k == GREAT {
+            continue
+        }
+        out.lowest[k] = low
+        if p.limbs.len() > 0 {
+            out.trunks[k] = p.limbs[0]
+        }
+        for i in 1..p.limbs.len() {
+            // Not a root (a limb into the ground).
+            if p.limbs[i].points[3].y < 0.0 {
+                continue
+            }
+            let y = p.limbs[i].points[0].y
+            out.fork_y[k] = if out.fork_y[k] == 0.0 { y } else { min(out.fork_y[k], y) }
+        }
     }
     out
 }
+
+/// Each kind's lowest branch (`lowest`), as it's built (the great oak's isn't needed: it's kept).
+pub const LOWEST: [f32; KINDS] = SHAPES.lowest
 
 /// The lowest branch of kind `k` placed `tall` high and forking `fork` higher (m).
 pub fn lowest_placed(k: u32, tall: f32, fork: f32) -> f32 {
@@ -1092,18 +1129,7 @@ pub fn lowest_placed(k: u32, tall: f32, fork: f32) -> f32 {
 }
 
 /// Each kind's trunk (its first limb), as it's built (the great oak's isn't needed: it's kept).
-const TRUNKS: [Tube<4>; KINDS] = trunks_of_kinds()
-
-fn trunks_of_kinds() -> [Tube<4>; KINDS] {
-    var out = [Tube { points: [vec3(0.0); 4], radii: [0.0; 4] }; KINDS]
-    for k in 1..KINDS {
-        let p = kind_plant(k)
-        if p.limbs.len() > 0 {
-            out[k] = p.limbs[0]
-        }
-    }
-    out
-}
+const TRUNKS: [Tube<4>; KINDS] = SHAPES.trunks
 
 /// The radius kind `k`'s trunk is drawn at `h` m over the ground, placed `tall` high and forking
 /// `fork` higher: between its trunk's points, scaled to the tree.
@@ -1128,29 +1154,9 @@ pub fn trunk_at(k: u32, tall: f32, h: f32, fork: f32) -> f32 {
 /// and the lowest middle less half a clump; and its top, the highest middle and half a clump (a
 /// clump's edge is leaves with gaps between, which the eye sees through: calibrated against the
 /// renderer's depth, #55 AC3).
-const CROWN_R: [f32; KINDS] = crowns_of_kinds(0)
-const CROWN_BASE: [f32; KINDS] = crowns_of_kinds(1)
-const CROWN_TOP: [f32; KINDS] = crowns_of_kinds(2)
-
-fn crowns_of_kinds(which: u32) -> [f32; KINDS] {
-    var out = [0.0; KINDS]
-    for k in 0..KINDS {
-        let p = kind_plant(k)
-        var reach = 0.0
-        var low = 1.0e9
-        var high = 0.0
-        for i in 0..p.clumps.len() {
-            let c = p.clumps[i]
-            reach = max(reach, length(c.centre.xz) + 0.5 * c.radius)
-            low = min(low, c.centre.y - 0.5 * c.radius * c.squash)
-            high = max(high, c.centre.y + 0.5 * c.radius * c.squash)
-        }
-        out[k] = if p.clumps.len() == 0 { 0.0 } else if which == 0 { reach } else if which == 1 {
-            0.5 * (low + lowest(p))
-        } else { high }
-    }
-    out
-}
+const CROWN_R: [f32; KINDS] = SHAPES.crown_r
+const CROWN_BASE: [f32; KINDS] = SHAPES.crown_base
+const CROWN_TOP: [f32; KINDS] = SHAPES.crown_top
 
 /// How tall a living tree of the history `tall` high is drawn as kind `k`: a thorn at least
 /// 1.5 m.
@@ -1214,23 +1220,7 @@ pub fn drawn_crowns(trees: [Tree]) -> Vec<Drawn> {
 
 /// Where each kind's trunk first forks, as it's built (m): its lowest limb's foot (its first
 /// limb is its trunk); 0 for a kind with no limbs.
-const FORK_Y: [f32; KINDS] = forks_of_kinds()
-
-fn forks_of_kinds() -> [f32; KINDS] {
-    var out = [0.0; KINDS]
-    for k in 1..KINDS {
-        let p = kind_plant(k)
-        for i in 1..p.limbs.len() {
-            // Not a root (a limb into the ground).
-            if p.limbs[i].points[3].y < 0.0 {
-                continue
-            }
-            let y = p.limbs[i].points[0].y
-            out[k] = if out[k] == 0.0 { y } else { min(out[k], y) }
-        }
-    }
-    out
-}
+const FORK_Y: [f32; KINDS] = SHAPES.fork_y
 
 /// How high a tree of kind `k`, placed `tall` high and forking `fork` higher than its kind,
 /// first forks (m over the ground).
@@ -1456,12 +1446,19 @@ pub fn as_drawn(trees: [Tree]) -> Vec<Tree> {
     var out: Vec<Tree> = Vec::with_capacity(trees.len())
     for t in trees {
         var d = t
-        if (t.state == State::Alive || t.state == State::Snag) && !t.pinned && t.tall > 2.0 {
-            d.girth = max(t.girth, trunk_at(kind_of(t), t.tall, 1.2, t.fork))
-        }
+        d.girth = drawn_girth(t)
         out.push(d)
     }
     out
+}
+
+/// Tree `t`'s girth as a player walks round it (`as_drawn`).
+pub fn drawn_girth(t: Tree) -> f32 {
+    if (t.state == State::Alive || t.state == State::Snag) && !t.pinned && t.tall > 2.0 {
+        max(t.girth, trunk_at(kind_of(t), t.tall, 1.2, t.fork))
+    } else {
+        t.girth
+    }
 }
 
 /// The scale an instance of kind `k` is placed at to stand `tall` high.
@@ -1524,7 +1521,7 @@ pub fn drawn_kind(t: Tree) -> u32 {
 /// Whether tree `t`'s neighbours crowd it: its crown narrower than its species' in the open at its
 /// height (`Habit::crown`) by more than `UNCROWDED`.
 pub fn crowded(t: Tree) -> bool {
-    t.reach < UNCROWDED * species::habits()[t.kind].crown * t.tall
+    t.reach < UNCROWDED * HABITS[t.kind].crown * t.tall
 }
 
 /// How wide a crown is, against its species' in the open at its height, that its neighbours
@@ -2264,7 +2261,15 @@ fn every_clump_of_leaves_has_its_wood_in_it() {
 fn veterans_are_drawn_as_their_own_species() {
     let habits = species::ancient()
     for (species, ancient) in [(OAK, OAK_ANCIENT), (BEECH, BEECH_ANCIENT)] {
-        var t = engine::grow::grown(vec2(0.0), species, 0, 600, 7, habits[species], open: true)
+        var t = engine::grow::grown(
+            vec2(0.0),
+            species,
+            born: 0,
+            year: 600,
+            seed: 7,
+            h: habits[species],
+            open: true,
+        )
         t.girth = VETERAN + 0.1
         assert(drawn_kind(t) == ancient, f"a veteran of species {species} drawn as {drawn_kind(t)}")
         t.girth = VETERAN - 0.1
@@ -2284,11 +2289,19 @@ fn veterans_are_drawn_as_their_own_species() {
 /// the great oak as it's kept.
 @test
 fn living_trees_turn_their_own_ways_and_logs_lie_as_they_fell() {
-    let habits = species::habits()
+    let habits = species::HABITS
     var lo = 9.0
     var hi = -9.0
     for seed in 0..64 {
-        var t = engine::grow::grown(vec2(0.0), OAK, 0, 150, seed, habits[OAK], open: true)
+        var t = engine::grow::grown(
+            vec2(0.0),
+            OAK,
+            born: 0,
+            year: 150,
+            seed: seed,
+            h: habits[OAK],
+            open: true,
+        )
         t.lean = vec2(1.0, 0.0)
         let p = placed([t], |q| 0.0)
         let off = p[0].at.yaw - atan2(1.0, 0.0)

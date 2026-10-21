@@ -156,21 +156,20 @@ pub fn pick(
             let t = trees[i]
             let c = crowns[i]
             let y = height(t.at)
-            var d = 1.0e9
-            if t.state == State::Log {
+            let d = if t.state == State::Log {
                 // A log: a cylinder along the ground from its foot, the way it fell.
                 let len = t.tall * 0.85
                 let a = vec3(t.at.x, y + t.girth, t.at.y)
                 let b = a + vec3(t.fall.x, 0.0, t.fall.y) * len
-                d = ray_capsule(eye, dir, a, b, max(t.girth, 0.15))
+                ray_capsule(eye, dir, a, b, max(t.girth, 0.15))
             } else {
                 let top = if c.top > 0.0 { c.top } else { t.tall }
-                d = ray_cylinder(eye, dir, t.at, y, y + top, max(c.trunk, 0.05))
+                let trunk = ray_cylinder(eye, dir, t.at, y, y + top, max(c.trunk, 0.05))
                 if c.reach > 0.0 {
                     let mid = vec3(t.at.x, y + 0.5 * (c.base + c.top), t.at.y)
                     let radii = vec3(c.reach, max(0.5 * (c.top - c.base), 0.3), c.reach)
-                    d = min(d, ray_ellipsoid(eye, dir, mid, radii))
-                }
+                    min(trunk, ray_ellipsoid(eye, dir, mid, radii))
+                } else { trunk }
             }
             if d < best {
                 best = d
@@ -243,12 +242,8 @@ fn ray_capsule(o: vec3, d: vec3, a: vec3, b: vec3, r: f32) -> f32 {
     let uu = dot(u, u)
     let ud = dot(u, d)
     let den = uu - ud * ud
-    var t = 0.0
-    var s = 0.0
-    if den > 1.0e-6 {
-        s = clamp((dot(u, w) - ud * dot(d, w)) / den, 0.0, 1.0)
-    }
-    t = max(dot(a + u * s - o, d), 0.0)
+    let s = if den > 1.0e-6 { clamp((dot(u, w) - ud * dot(d, w)) / den, 0.0, 1.0) } else { 0.0 }
+    let t = max(dot(a + u * s - o, d), 0.0)
     let gap = length(o + d * t - (a + u * s))
     if gap <= r { t } else { 1.0e9 }
 }

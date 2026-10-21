@@ -1,7 +1,6 @@
 use engine::construction::Ground
 use engine::history::{Calendar, Progress, run}
 use people::{FORESTS, OCEANS, Outcome, People, Task, simulate}
-use std::field::Surface
 use worlds::{Culture, Forest, Habitat, Ocean}
 
 fn verify<H: Habitat>(p: People<H>) {

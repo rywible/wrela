@@ -32,11 +32,7 @@ pub struct Tower: Clone + Serialize {
 
 impl Tower {
     pub fn new(worlds: u32) -> Tower {
-        var fates = Vec::new()
-        for _ in 0..worlds {
-            fates.push(Fate::Undecided)
-        }
-        Tower { fates }
+        Tower { fates: Vec::filled(worlds, Fate::Undecided) }
     }
 
     pub fn worlds(self) -> u32 {

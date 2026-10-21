@@ -22,6 +22,7 @@
 use std::io::{IoError, Pending}
 use std::job::Step
 use std::tool::{ToolError, answer}
+use std::tool::drive
 
 /// A request, and its answer once it has come.
 pub struct Wait {
@@ -110,6 +111,14 @@ pub fn said<T>(r: take Result<T, ToolError>) -> Result<T, String> {
     match take r {
         Ok(v) => Ok(take v),
         Err(e) => Err(String::from(e.message())),
+    }
+}
+
+/// The trap a driven run (`std::tool::drive`) ended with, said with `what`, or nothing.
+pub fn trapped(what: str, ran: drive::Ran) -> Result<(), String> {
+    match ran.trap {
+        Some(t) => Err(String::from(f"{what}: {t.message} {t.panic}")),
+        None => Ok(()),
     }
 }
 

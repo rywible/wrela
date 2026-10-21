@@ -47,19 +47,11 @@ use std::tool::drive
 use std::tool::files
 use std::tool::image
 use toolkit::page::run_page
-use toolkit::wait::{done, said, wait}
+use toolkit::wait::{done, said, trapped, wait}
 use toolkit::whole::{copy_file, read_file, write_file, write_png}
 
 /// How long a page's clip may take, in seconds.
 const CLIP_TIMEOUT: f64 = 600.0
-
-/// The trap a run of `b` ended with, said with `what`, or nothing.
-fn trapped(what: str, ran: drive::Ran) -> Result<(), String> {
-    match ran.trap {
-        Some(t) => Err(String::from(f"{what}: {t.message} {t.panic}")),
-        None => Ok(()),
-    }
-}
 
 /// Shot `i`'s still, `keys` its input, rendered at `width` × `height` from the build in `build`
 /// and written as a PNG at `png`: the frame `SETTLE_FRAMES` in, or with `capture` the frame that
@@ -273,7 +265,7 @@ pub fn lookbook(o: take Options) -> Result<(), String> {
             let i = picks[shown]
             let Some(png) = replace(mut finished[shown], None) else { panic("a still is done") }
             print(shown_path(png.as_str()))
-            if let Some(doc) = check.clone() {
+            if let Some(doc) = check {
                 if let Some(line) = check_line(doc, i) {
                     print(line.as_str())
                 }

@@ -1,8 +1,8 @@
 // The studio tool's own JSON answers (`look`, `beside`, `variants`, `sweep`), written as the
 // Rust command they replaced wrote them; `std::json` reads JSON.
 
-use std::collections::Vec
 use std::fmt::json_text
+use std::math::is_finite
 use std::string::String
 
 /// `x` as JSON writes an `f64` (as Rust's `serde_json` does, for the answers this tool's
@@ -12,7 +12,21 @@ pub fn f64_text(x: f64) -> String {
     if !(abs(x) <= 1.7976931348623157e308) {
         return String::from("null")
     }
-    var s = String::from(f"{x}")
+    whole_with_point(String::from(f"{x}"))
+}
+
+/// `x` as JSON writes an `f32` (as Rust's `serde_json` does): its shortest text, `.0` when
+/// whole; `null` if it isn't finite.
+pub fn f32_text(x: f32) -> String {
+    if !is_finite(x) {
+        return String::from("null")
+    }
+    whole_with_point(String::from(f"{x}"))
+}
+
+/// A number's shortest text `s`, with `.0` when it's whole.
+fn whole_with_point(s: take String) -> String {
+    var s = take s
     if s.as_str().find(".").is_none() && s.as_str().find("e").is_none() {
         s.push_str(".0")
     }
@@ -90,6 +104,7 @@ fn floats_are_written_as_the_answers_were() {
     assert(f64_text(0.125).as_str() == "0.125")
     assert(f64_text(2.0).as_str() == "2.0")
     assert(f64_text(-0.5).as_str() == "-0.5")
+    assert(f32_text(0.1).as_str() == "0.1" && f32_text(-1.0).as_str() == "-1.0")
     assert(round3(0.12345) == 0.123 && round3(0.6666) == 0.667)
     assert(
         obj().num("x", 1.0).int("n", 3).text("s", "a\"b").done().as_str() ==

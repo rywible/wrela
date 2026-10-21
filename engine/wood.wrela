@@ -20,13 +20,10 @@
 // The static shadows choose the same way, for the sun's view of a cascade: every instance in
 // its square, drawn whole.
 
-use impostor::{far_cut_flat, far_quad, far_shade, volume_cut, volume_shade, which_crown}
+use impostor::{far_cut_flat, far_quad, far_shade, volume_cut, volume_shade}
 use lit::Lighting
-use lod::{IMPOSTOR, Lod, VOLUME, anchor, packed, place, share, ways}
-use plant::{
-    CARD_LEVELS, CORNERS, Instance, Leaves, NO_INSTANCE, Wind, cook_outlines, corner_of,
-    level_cards,
-}
+use lod::{IMPOSTOR, Lod, VOLUME, ways}
+use plant::{CARD_LEVELS, Instance, Leaves, NO_INSTANCE, Wind, cook_outlines, level_cards}
 use shadow::{CASTER, Shadows}
 use std::gpu::{
     Atomics, DepthTexture, DrawArgs, DrawIndexedArgs, GlobalId, GpuBuffer, R32Uint, RenderPass,
@@ -34,7 +31,8 @@ use std::gpu::{
 }
 use vegetation::{
     CARD_INDICES, CardDraw, Kind, ListDraws, SHADOW_LEAVES, WAYS, ALL, bark_shade, card, card_draw,
-    card_indices, card_shadow, leaf_cut, leaf_shade, limb, limb_indices, limb_shadow, nothing,
+    card_indices, card_shadow, leaf_cut, leaf_shade, limb, limb_indices, limb_shadow, mark_of,
+    nothing, out_of_view, place_of,
 }
 use view::{Camera, NEAREST, PREPASSED}
 
@@ -115,20 +113,10 @@ pub fn choose(
         return
     }
     let l = lods[k]
-    let centre = inst.at + inst.turn(vec3(0.0, l.top * 0.5 * inst.scale, 0.0))
-    let r = inst.bound_radius(l.reach)
-    let v = centre - c.cam.eye
-    let d = length(v)
-    // Outside the view's cone by more than its own angular radius.
-    if d > r {
-        let off = acos(clamp(dot(v / d, c.cam.forward), -1.0, 1.0))
-        if off > c.corner + asin(min(r / d, 1.0)) + 0.02 {
-            return
-        }
+    if out_of_view(inst, c.cam, l.top, l.reach, c.corner) {
+        return
     }
-    var extent = l
-    extent.reach *= max(inst.wide, 1.0)
-    let (level, distant) = place(extent, c.cam, inst.at, inst.scale)
+    let (level, distant) = place_of(l, c.cam, inst)
     let visibility = bitcast_f32(metadata[c.instances + i / SLOT])
     let faint = 1.0 - (1.0 - distant) * visibility
     let (drawn, lower, upper) = ways(level, faint)
@@ -146,20 +134,13 @@ pub fn choose(
         if at < list.room {
             let to = list.first + at
             picked.store(to, i)
-            let keep = vec4(share(level, faint, way), anchor(c.cam, inst.at, l.top, inst.scale))
-            marks.store(2 * to, packed(keep))
-            marks.store(
-                2 * to + 1,
-                which_crown(inst.at + c.cam.keyed()) |
-                    (corner_of(inst, l.top * 0.5, c.cam.eye) << 8),
-            )
+            let m = mark_of(l, c.cam, inst, way, vec2(level, faint))
+            marks.store(2 * to, m.x)
+            marks.store(2 * to + 1, m.y)
         }
     }
 }
 
-/// The instances and marks the choosing put in each place, gathered: place `id` gets the
-/// instance whose index is there (a place past its list's count holds an old one, which no draw
-/// reads).
 /// Every instance moved by `d` (the render origin moved by `-d`); an empty one (`scale` 0)
 /// stays.
 @compute(64)
@@ -173,6 +154,9 @@ pub fn shift_instances(every: mut Slots<Instance>, d: vec3, n: u32, id: GlobalId
     }
 }
 
+/// The instances and marks the choosing put in each place, gathered: place `id` gets the
+/// instance whose index is there (a place past its list's count holds an old one, which no draw
+/// reads).
 @compute(64)
 pub fn gather(
     every: [Instance],
@@ -446,13 +430,13 @@ impl Chosen {
         var first = 0
         var templates: Vec<ListDraws> = Vec::new()
         for k in 0..(kinds.len() + far_kinds.len()) {
+            let n = per_kind[k]
+            borrow kd = kinds[if k < kinds.len() { k } else { far_kinds[k - kinds.len()] }]
             for way in 0..ways {
                 let how = if ways == 1 { 1 } else { way }
-                let n = per_kind[k]
                 self.lists.push(List { kind: k, how, first, room: n })
                 first += (n + 31) / 32 * 32
                 let near = how < CARD_LEVELS
-                borrow kd = kinds[if k < kinds.len() { k } else { far_kinds[k - kinds.len()] }]
                 let cards = if near { level_cards(kd.card_count, how) } else { 0 }
                 let limbs = if near { kd.limb_count } else { 0 }
                 let d = |indices: u32| DrawIndexedArgs {
@@ -485,10 +469,7 @@ impl Chosen {
         self.lists_gpu = buffer_of(self.lists, at_least: 1)
         self.templates = buffer_of(templates, at_least: 1)
         self.counts = buffer(room(self.lists.len()))
-        self.zero_counts.clear()
-        for _ in 0..room(self.lists.len()) {
-            self.zero_counts.push(0)
-        }
+        self.zero_counts = Vec::filled(room(self.lists.len()), 0)
         self.args = buffer(room(self.lists.len()))
         self.far = buffer(room(self.lists.len()))
     }
@@ -769,8 +750,9 @@ impl Wood {
     ) -> bool {
         var free = self.slots.len()
         for i in 0..self.slots.len() {
-            if self.slots[i].tile.is_none() && free == self.slots.len() {
+            if self.slots[i].tile.is_none() {
                 free = i
+                break
             }
         }
         if free == self.slots.len() {

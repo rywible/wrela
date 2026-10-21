@@ -604,8 +604,7 @@ fn icon(
             list.line(p(-2.0, -7.5), p(2.0, -7.5), ink, width: w)
             list.ring(box(-5.0, -4.0, 10.0, 12.0), ink, radius: 1.5 * u, width: w)
         },
-        Action::Color { .. } => {},
-        // The menu's rows have no icons.
+        // The swatches and the menu's rows have no icons.
         _ => {},
     }
 }

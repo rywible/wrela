@@ -2,11 +2,12 @@
 // drag to edit and fit to a reference, each an action an agent can call and a person can do.
 //
 // The lens keeps plain state. The program `wrela tool studio` writes around it (the glue) passes
-// four functions to the actions that need them, since a lens function can't keep a function
-// in a closure: `subject()`, which builds the subject's field from its literals (in a lifted
-// build an edit is a write to the table, and the next call sees it); `grad(p, which)`, the
-// distance at `p` and its derivatives by up to 16 literals (language.md §23); `reached()`, the
-// literals the distance reads; and `channels(p)`, the channels at `p` as JSON.
+// functions to the actions that need them, since a lens function can't keep a function in a
+// closure: `subject()`, which builds the subject's field from its literals (in a lifted build an
+// edit is a write to the table, and the next call sees it); `grad(p, which)` and `grad8`, the
+// distance at `p` and its derivatives by up to 16 or 8 literals (language.md §23); `reached()`
+// and `part_reads(p, part)`, the literals the distance (or a part's) reads; `channels(p)`, the
+// channels at `p` as JSON; `spec()`, the spec's report; and `outline(facing)`, the blueprint's.
 //
 // Each action prints its answer as one line of JSON (`std::io::print`). A person types the
 // same actions as commands (`probe 0 0.5 0.1`), or clicks: a click in a view is `click`.
@@ -17,8 +18,8 @@ use describe
 use fit
 use panel
 use paint::Colours
-use diagnose::{PIECES, Report, Sampling, grid, report, start}
-use json::{List, list, obj}
+use diagnose::{PIECES, Sampling, grid, report, start}
+use json::{list, obj}
 use std::collections::Vec
 use std::derive::Box3
 use std::field::{Surface, PartName}
@@ -1495,6 +1496,9 @@ fn draw_views<S: Colours>(lens: mut Lens, subject: fn() -> S) {
         return
     }
     let field = subject()
+    if !sized {
+        lens.canvas = Some(texture::<Rgba8>(width: width, height: height))
+    }
     // A silhouette in place of the views.
     if let Some(fv) = lens.mask {
         let n = fv.res * fv.res
@@ -1503,9 +1507,6 @@ fn draw_views<S: Colours>(lens: mut Lens, subject: fn() -> S) {
             lens.mask_other = buffer(n)
         }
         fit::trace_minima(field, fv, mut lens.mask_rays, mut lens.mask_other)
-        if !sized {
-            lens.canvas = Some(texture::<Rgba8>(width: width, height: height))
-        }
         match mut lens.canvas {
             Some(c) => {
                 let pass = begin_pass(mut c, clear: view::BACKGROUND)
@@ -1545,9 +1546,6 @@ fn draw_views<S: Colours>(lens: mut Lens, subject: fn() -> S) {
         lens.coarse_slack = 0.0
     }
     let count = width * height
-    if !sized {
-        lens.canvas = Some(texture::<Rgba8>(width: width, height: height))
-    }
     let room = max(count / 16, 64)
     if lens.rays.len() != count || lens.gathered.capacity() != room {
         lens.rays = buffer(count)

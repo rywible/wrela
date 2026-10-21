@@ -1,7 +1,8 @@
 // The lens's program (`wrela tool studio`'s): the lens (the `studio` package) on a subject. Each
-// action is an export, and a command the lens reads as typed text (the compiler's `ACTIONS`
-// lists them, for its headless runner). What the lens needs of the subject is
-// `subject.wrela`'s: `wrela tool studio -- <package>` writes one for the package's `subject()`.
+// action is an export, and a command the lens reads as typed text (the tool's `ACTIONS`, in
+// studio/tool/lens.wrela, lists them, for its headless runner). What the lens needs of the
+// subject is `subject.wrela`'s: `wrela tool studio -- <package>` writes one for the package's
+// `subject()`.
 
 use studio::lens::Lens
 use subject::{channels, grad, grad8, outline, painted, part_reads, reached, spec_report}

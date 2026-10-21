@@ -22,6 +22,7 @@
 use rng::{Rng, seed}
 use score::{ACCENT, FERMATA, Level, NO_SLUR, STACCATO, Score, TENUTO, TICKS}
 use std::collections::Vec
+use std::io::print
 use std::math::PI
 
 /// A note as played: its key, its voice, when its hammer strikes and when its key is let go
@@ -296,6 +297,33 @@ pub fn deadpan(score: Score, tempo: f32) -> Performance {
     perform(score, Taste { tempo }, [Mark::Hold { at: bar(1), by: 1.0 }; 0])
 }
 
+/// Prints `p`, the take `name` of `score`, as the JSON lines the audio tool (studio/audio) reads:
+/// the piece, its voices, each note as played with its written bar, the pedals, and when each
+/// beat fell.
+pub fn describe(score: Score, name: Text, p: Performance) {
+    print(
+        f"{{\"title\":\"{score.title}\",\"take\":\"{name}\",\"bars\":{score.bars},\"beats_per_bar\":{score.meter.beats},\"seconds\":{p.length}}}",
+    )
+    for i in 0..score.voices.len() {
+        print(f"{{\"voice\":{i},\"name\":\"{score.voices[i]}\"}}")
+    }
+    for n in p.notes {
+        let written = score.notes[n.note]
+        print(
+            f"{{\"key\":{n.key},\"voice\":{n.voice},\"onset\":{n.onset},\"release\":{n.release},\"velocity\":{n.velocity},\"bar\":{score.bar_of(written.start)}}}",
+        )
+    }
+    for s in p.sustain {
+        print(f"{{\"sustain\":{s.at},\"depth\":{s.depth}}}")
+    }
+    for s in p.soft {
+        print(f"{{\"soft\":{s.at},\"depth\":{s.depth}}}")
+    }
+    for b in p.beats {
+        print(f"{{\"beat\":{b}}}")
+    }
+}
+
 /// When each tick of the score is played: the tempo integrated over the score, plus the time
 /// breaths take.
 struct TimeMap {
@@ -419,34 +447,35 @@ fn phrase_voice(score: Score, lead: u32) -> u32 {
     if lead != NONE { lead } else { 0 }
 }
 
+/// How far through its phrase tick `c` is, from 0 to 1, if it's in one.
+fn phrase_at(score: Score, lead: u32, c: u32) -> Option<f32> {
+    let v = phrase_voice(score, lead)
+    for s in score.slurs {
+        if s.voice == v && c >= s.from && c < s.to {
+            return Some(f32(c - s.from) / f32(s.to - s.from))
+        }
+    }
+    None
+}
+
 /// The phrase arch at tick `c`: 0 at a phrase's ends, 1 at its peak, and 0 outside phrases.
 fn arch(score: Score, taste: Taste, lead: u32, c: u32) -> f32 {
     if taste.arch_tempo == 0.0 && taste.arch_loudness == 0.0 {
         return 0.0
     }
-    let v = phrase_voice(score, lead)
-    for s in score.slurs {
-        if s.voice == v && c >= s.from && c < s.to {
-            let u = f32(c - s.from) / f32(s.to - s.from)
-            // sin(π u^γ), with γ putting its peak where the taste says.
-            let p = clamp(taste.arch_peak, 0.05, 0.95)
-            let gamma = log(0.5) / log(p)
-            return sin_pi(pow(u, gamma))
-        }
-    }
-    0.0
+    let Some(u) = phrase_at(score, lead, c) else { return 0.0 }
+    // sin(π u^γ), with γ putting its peak where the taste says.
+    let p = clamp(taste.arch_peak, 0.05, 0.95)
+    let gamma = log(0.5) / log(p)
+    sin_pi(pow(u, gamma))
 }
 
 /// How far into a phrase's last quarter tick `c` is: from 0 to 1, smoothly.
 fn phrase_end(score: Score, lead: u32, c: u32) -> f32 {
-    let v = phrase_voice(score, lead)
-    for s in score.slurs {
-        if s.voice == v && c >= s.from && c < s.to {
-            let u = f32(c - s.from) / f32(s.to - s.from)
-            return smoothstep(0.75, 1.0, u)
-        }
+    match phrase_at(score, lead, c) {
+        Some(u) => smoothstep(0.75, 1.0, u),
+        None => 0.0,
     }
-    0.0
 }
 
 /// The velocity the written dynamics give at tick `t`, hairpins followed, before any voice's

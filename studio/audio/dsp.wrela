@@ -1,5 +1,5 @@
-// Sound as numbers: levels, rounding as the Rust command did, and a Hann-windowed Fourier
-// transform. A sheet and a note's measurement each transform hundreds of windows of one size,
+// Sound as numbers: levels, medians, rounding as the Rust command did, and a Hann-windowed
+// Fourier transform. A sheet and a note's measurement each transform hundreds of windows of one size,
 // so a `Plan` keeps the window, the bit-reversal swaps and the twiddles, which every transform
 // of that size reads (on any thread), and each transform writes only its own `Scratch`.
 //
@@ -58,6 +58,16 @@ pub fn rms(samples: [f32], from: u32, to: u32) -> f64 {
         sum += x * x
     }
     sqrt(sum / f64(to - from))
+}
+
+/// The median of `xs` (its middle element once sorted: the higher of two), or `None` for none.
+pub fn median(xs: take Vec<f64>) -> Option<f64> {
+    if xs.is_empty() {
+        return None
+    }
+    var v = take xs
+    v.sort_by(|a, b| a < b)
+    Some(v[v.len() / 2])
 }
 
 /// The largest magnitude among `samples`.

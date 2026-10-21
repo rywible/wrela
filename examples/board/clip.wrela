@@ -5,6 +5,7 @@
 // hasn't changed since, or onto the board.
 
 use board::{Board, Item, Kind}
+use edit::{Caret, insert}
 use paint::Typing
 use std::serialize::{LoadError, load, save}
 
@@ -121,12 +122,8 @@ pub fn destination(aim: Aim, typing: Option<Typing>, revision: u32, b: Board) ->
 
 /// `text` with `add` put in at byte `at`, and the byte after it.
 pub fn inserted(text: str, at: u32, add: str) -> (String, u32) {
-    let at = min(at, text.len())
-    var out = String::from(text.slice(0, at))
-    out.push_str(add)
-    let after = out.len()
-    out.push_str(text.slice(at, text.len()))
-    (out, after)
+    let (out, after) = insert(text, Caret::at(min(at, text.len())), add)
+    (out, after.at)
 }
 
 // ---- tests ------------------------------------------------------------------------------------

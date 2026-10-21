@@ -625,6 +625,20 @@ external programs for tools, helper threads for tools, the temporaries rule (E05
 Green's two water and sound questions. From here the toolchain's record continues in
 wrela-compiler's `docs/process.md`.
 
+## Whole-repo simplification sweep, 2026-10-20
+
+Ryan asked for a cleanup of the whole repository as it stood after the split, not of recent
+commits. Claude (Opus 5.5) split the 164k lines of Wrela into 13 slices with no shared files and
+gave each to a subagent. Each subagent reviewed its slice for reuse, simplification, efficiency
+and fixes at the wrong depth, made only behavior-preserving changes, and ran its packages'
+tests. A read-only scout looked for helpers copied across slices. A second wave of subagents then
+moved those helpers to one home: the console session program into `platform/session.wrela`, the
+tool tests' shared jobs into `engine/tests/hosts`, the studio tools' waiting and file helpers onto
+`studio/toolkit`, and engine fixtures and grid helpers into the engine. Pixel, audio and output
+checks (sample hashes, replica deviations, byte comparisons of tool output and WGSL) stood in for
+the lookbook where code moved but output must not change. Claude merged the results and ran
+`wrela suite`. No outside code, assets or references were used.
+
 ## The references
 
 ### The rules

@@ -29,7 +29,7 @@ pub fn preview() -> Preview {
     let h = simulate(
         ground::GROUND,
         m,
-        species::habits(),
+        species::HABITS,
         PREVIEW,
         lo,
         hi,
@@ -37,11 +37,11 @@ pub fn preview() -> Preview {
         history::past,
     )
     let streams = h.streams.clone()
-    let o = obstacles_of(h.trees, species::habits(), h.streams, st, stones::walls(m), lo, hi)
+    let o = obstacles_of(h.trees, species::HABITS, h.streams, st, stones::walls(m), lo, hi)
     var e = Evidence::of(h)
     e.crowns = trees::drawn_crowns(e.trees)
     e.solids = blockouts::solids(m)
-    Preview { checked: check(ground::GROUND, m, species::habits(), e, o, st, QUICK), streams }
+    Preview { checked: check(ground::GROUND, m, species::HABITS, e, o, st, QUICK), streams }
 }
 
 /// The floor's square as its making left it (`geology::square`), for the lens.

@@ -54,9 +54,12 @@ impl View {
         self.zoom = clamp(min(room.x / size.x, room.y / size.y) / self.unit, ZOOM_MIN, most)
         self.pan = r.center() - 0.5 * screen / self.scale()
     }
-}
 
-impl View {
+    /// The world rectangle a screen `screen` device pixels big shows.
+    pub fn seen(self, screen: vec2) -> Rect {
+        Rect::new(self.pan.x, self.pan.y, screen.x / self.scale(), screen.y / self.scale())
+    }
+
     /// The view `t` of the way (0 to 1) from this one to `goal`, on a screen `screen` big: the
     /// middle of the screen moves straight, and the zoom evenly in its logarithm, so each step
     /// feels the same in and out.

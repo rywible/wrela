@@ -65,6 +65,11 @@ pub fn get_u32(b: [u8], at: u32) -> u32 {
     u32(b[at]) | (u32(b[at + 1]) << 8) | (u32(b[at + 2]) << 16) | (u32(b[at + 3]) << 24)
 }
 
+/// A number in [0, 1] as a byte, rounded.
+fn unit_byte(x: f32) -> u8 {
+    u8(clamp(x, 0.0, 1.0) * 255.0 + 0.5)
+}
+
 /// A number in [0, TILE) as a `u16`, and back.
 fn q16(x: f32) -> u32 {
     u32(clamp(x / TILE * 65536.0, 0.0, 65535.0))
@@ -133,7 +138,7 @@ fn put_tree(out: mut Vec<u8>, tr: Tree, t: vec2i) {
     out.push(put_girth(tr.girth))
     out.push(q8s(tr.lean.x, 0.1))
     out.push(q8s(tr.lean.y, 0.1))
-    out.push(u8(clamp(tr.light, 0.0, 1.0) * 255.0 + 0.5))
+    out.push(unit_byte(tr.light))
     if tr.state == State::Log {
         let fall = atan2(tr.fall.y, tr.fall.x)
         out.push(u8(u32(round((fall / TAU + 1.0) * 256.0)) % 256))
@@ -254,31 +259,13 @@ fn skip_runs(b: [u8], at: u32, n: u32) -> u32 {
 /// Where a valid plane of exactly `n` run-coded bytes ends, or nothing when it is truncated,
 /// has a zero-length run, or a run past the plane's end.
 fn checked_skip_runs(b: [u8], at: u32, n: u32) -> Option<u32> {
-    var got = 0
-    var k = at
-    while got < n {
-        if k >= b.len() {
-            return None
-        }
-        if b[k] == 0 {
-            if b.len() - k < 3 {
-                return None
-            }
-            let run = get_u16(b, k + 1)
-            if run == 0 || run > n - got {
-                return None
-            }
-            got += run
-            k += 3
-        } else {
-            got += 1
-            k += 1
-        }
-    }
+    // Byte `n` is past every plane's end: none is kept.
+    let Some((_, k)) = checked_run_byte(b, at, n, n) else { return None }
     Some(k)
 }
 
-/// Byte `i` of a valid plane of exactly `n` run-coded bytes, and where the plane ends.
+/// Byte `i` of a valid plane of exactly `n` run-coded bytes (0 for `i` past it, or in a run),
+/// and where the plane ends.
 fn checked_run_byte(b: [u8], at: u32, n: u32, i: u32) -> Option<(u8, u32)> {
     var got = 0
     var k = at
@@ -328,21 +315,15 @@ pub struct Decisions {
 }
 
 impl Decisions {
-    /// The trails' wear at world point `p` in the tile, bilinear.
-    pub fn wear_at(self, p: vec2) -> f32 {
-        let g = Grid {
-            lo: vec2(self.tile) * TILE,
-            nx: WEAR_N,
-            nz: WEAR_N,
-            cell: TILE / f32(WEAR_N),
-        }
-        g.sample(self.wear, p)
-    }
-
+    /// The ground's wetness at world point `p` in the tile, bilinear.
     pub fn wet_at(self, p: vec2) -> f32 {
-        let g = Grid { lo: vec2(self.tile) * TILE, nx: WET_N, nz: WET_N, cell: TILE / f32(WET_N) }
-        g.sample(self.wet, p)
+        tile_grid(self.tile, WET_N).sample(self.wet, p)
     }
+}
+
+/// Tile `t`'s square as a grid `n` cells a side.
+fn tile_grid(t: vec2i, n: u32) -> Grid {
+    Grid { lo: vec2(t) * TILE, nx: n, nz: n, cell: TILE / f32(n) }
 }
 
 /// A memory as three bytes, each in a plane of its own (`encode_tile`): its mark and strength
@@ -421,7 +402,7 @@ pub fn encode_tile(h: History, t: vec2i) -> Vec<u8> {
         for i in 0..WEAR_N {
             let p = lo + (vec2(f32(i), f32(j)) + vec2(0.5)) * cell
             let w = if h.herd_grid.holds(p) { h.herd_grid.sample(h.wear, p) } else { 0.0 }
-            wear.push(u8(clamp(w, 0.0, 1.0) * 255.0 + 0.5))
+            wear.push(unit_byte(w))
         }
     }
     put_runs(mut out, wear)
@@ -433,7 +414,7 @@ pub fn encode_tile(h: History, t: vec2i) -> Vec<u8> {
         for i in 0..WET_N {
             let p = lo + (vec2(f32(i), f32(j)) + vec2(0.5)) * wc
             let w = if g.holds(p) { g.sample(h.land.wet, p) } else { 0.0 }
-            wet.push(u8(clamp(w, 0.0, 1.0) * 255.0 + 0.5))
+            wet.push(unit_byte(w))
         }
     }
     put_runs(mut out, wet)
@@ -735,8 +716,7 @@ pub fn memory_in_tile(b: [u8], p: vec2) -> Memory {
         return UNMARKED
     }
     let t = vec2i(i32(get_u32(b, 8)), i32(get_u32(b, 12)))
-    let g = Grid { lo: vec2(t) * TILE, nx: WET_N, nz: WET_N, cell: TILE / f32(WET_N) }
-    let c = g.cell_at(p)
+    let c = tile_grid(t, WET_N).cell_at(p)
     let n = WET_N * WET_N
     let count = get_u32(b, 16)
     if count > (b.len() - 20) / TREE_BYTES {
@@ -944,12 +924,10 @@ pub fn tile_fields(
             near.push(k)
         }
     }
-    let tg = Grid { lo: corner, nx: n, nz: n, cell }
-    let worn = tg.blur(d.wear, 4)
+    let worn = tile_grid(d.tile, n).blur(d.wear, 4)
     // The light's grid: the tile and 8 m round it, where crowns from beyond its edge shade it.
     let m = 8
-    let lo = vec2(d.tile) * TILE - vec2(f32(m) * cell)
-    let g = Grid { lo, nx: n + 2 * m, nz: n + 2 * m, cell }
+    let g = Grid { lo: corner - vec2(f32(m) * cell), nx: n + 2 * m, nz: n + 2 * m, cell }
     let nn = g.cells()
     var light: Vec<f32> = Vec::filled(nn, 1.0)
     var thorn: Vec<f32> = Vec::filled(nn, 0.0)
@@ -978,19 +956,19 @@ pub fn tile_fields(
         for i in 0..n {
             let q = (j + m) * g.nx + i + m
             let l = 0.65 * down[q] + 0.35 * side[q]
-            let p = vec2(d.tile) * TILE + (vec2(f32(i), f32(j)) + vec2(0.5)) * cell
-            out.push(u8(clamp(l, 0.0, 1.0) * 255.0 + 0.5))
+            let p = corner + (vec2(f32(i), f32(j)) + vec2(0.5)) * cell
+            out.push(unit_byte(l))
             let k = j * n + i
             let used = smoothstep(0.01, 0.05, worn[k])
             let trodden = max(
                 path_at(routes, near, p, used),
                 0.45 * smoothstep(0.03, 0.15, d.wear[k]),
             )
-            out.push(u8(clamp(trodden, 0.0, 1.0) * 255.0 + 0.5))
+            out.push(unit_byte(trodden))
             // Wet to 0.98 of the byte; its whole (`STREAM_BED`) a stream's bed.
             let wet = if in_stream(d.water, p) { 1.0 } else { min(d.wet_at(p), 0.98) }
-            out.push(u8(clamp(wet, 0.0, 1.0) * 255.0 + 0.5))
-            out.push(u8(clamp(thorn[q], 0.0, 1.0) * 255.0 + 0.5))
+            out.push(unit_byte(wet))
+            out.push(unit_byte(thorn[q]))
         }
     }
     out

@@ -41,13 +41,11 @@ pub fn frame(state: mut Scene, time: f32, width: u32, height: u32) {
     let screen = vec2(f32(width), f32(height))
     state.list.clear(screen)
     for f in 0..2 {
-        let face = if f == 0 { Face::Sans } else { Face::Mono }
         for i in 0..14 {
-            let text = if i % 2 == 0 { LATIN } else { MORE }
             let _ = state.list.text(
                 state.fonts,
-                face,
-                text,
+                face_of(f),
+                line_text(i),
                 SIZES[i / 2],
                 vec2(10.0, line_top(f, i)),
                 vec4(1.0, 1.0, 1.0, 1.0),
@@ -62,6 +60,11 @@ pub fn frame(state: mut Scene, time: f32, width: u32, height: u32) {
 
 fn face_of(face: u32) -> Face {
     if face == 0 { Face::Sans } else { Face::Mono }
+}
+
+/// Line `i`'s text: the Latin line, then the line past ASCII, in turn.
+fn line_text(i: u32) -> Text {
+    if i % 2 == 0 { LATIN } else { MORE }
 }
 
 /// The bytes of the face's fields.
@@ -91,8 +94,7 @@ fn layout_hash() -> u64 {
         let font = Font::of(face_of(f))
         h.write_u32(bitcast_u32(font.ascender))
         for i in 0..14 {
-            let text = if i % 2 == 0 { LATIN } else { MORE }
-            let _ = font.walk(text, SIZES[i / 2], 10.0, |_i, _g, x| {
+            let _ = font.walk(line_text(i), SIZES[i / 2], 10.0, |_i, _g, x| {
                 h.write_u32(bitcast_u32(x))
                 true
             })

@@ -6,9 +6,9 @@
 // AA anti-aliases them. `Look` holds the settings; `develop` is the last pass.
 // - The world: brush dabs anchored on its surfaces (`dabs`: space cut into cells in the
 //   surface's plane, each holding one stroke) move the paint's value and hue a little. They are
-//   stronger on broad areas (far ground, crowns, the sky, whose dabs are anchored to directions),
-//   so the painted feel shows at a glance. A paper's tooth is anchored in the world too: a grain
-//   anchored to the screen looks like a shower door in motion.
+//   stronger on broad areas (far ground, the sky, whose dabs are anchored to directions), so the
+//   painted feel shows at a glance; crowns take none. A paper's tooth is anchored in the world
+//   too: a grain anchored to the screen looks like a shower door in motion.
 // - Characters: their two bands are their shading's (`light::character`). Thin lines in a
 //   darker shade of their colour lie on their silhouettes and where their parts meet, from the
 //   depth and the tags. The world's dabs lie on them at half strength.
@@ -18,7 +18,7 @@
 // Every texture the look lays on is anchored in the world.
 
 use light::{LUMA, tone}
-use noise::{hash2, noise3}
+use noise::{hash2, noise3, octave_of}
 use std::gpu::{
     DepthTexture, FragCoord, GlobalId, LocalId, One, Rgba16Float, Sampler, Shared, Texture, barrier,
 }
@@ -84,10 +84,7 @@ const PHASE = vec2(3.0, 1.0)
 /// small turn moved them by metres where the world's coordinates are hundreds (a contour-like
 /// marbling on the far hills and crags).
 pub fn dabs(world: vec3, n: vec3, footprint: f32, px: f32) -> f32 {
-    let s = max(footprint * px, 1.0e-4)
-    let l = log2(s)
-    let f = fract(l)
-    let s0 = exp2(floor(l))
+    let (s0, f) = octave_of(max(footprint * px, 1.0e-4))
     let a = abs(n)
     let w8 = a * a * a * a * a * a * a * a
     let w = w8 / max(w8.x + w8.y + w8.z, 1.0e-6)
@@ -102,29 +99,11 @@ pub fn dabs(world: vec3, n: vec3, footprint: f32, px: f32) -> f32 {
     v
 }
 
-/// Brush dabs on a plane across `n` (a crown's: its dabs lie across the line of sight), anchored
-/// to a frame turned with it: a crown's levels of detail lie at different depths along the same
-/// line, and the world planes' blend (`dabs`) moved the dabs between them (4.4/255 at 1000 m
-/// in the levels test); across the line of sight, they stay.
-pub fn dabs_across(world: vec3, n: vec3, footprint: f32, px: f32) -> f32 {
-    let s = max(footprint * px, 1.0e-4)
-    let l = log2(s)
-    let f = fract(l)
-    let s0 = exp2(floor(l))
-    let t1 = normalize(cross(n, vec3(0.3, 0.2, 1.0)))
-    let t2 = cross(n, t1)
-    let q = vec2(dot(world, t1), dot(world, t2) + dot(world, n) * 0.5)
-    mix(strokes(q / s0), strokes(q / (2.0 * s0) + vec2(17.0, 5.0)), f)
-}
-
 /// Brush dabs anchored to directions (the sky's: `dir` a unit vector, a pixel's angle its
 /// `footprint`), on the plane across the direction: a direction's frame turns with it, but its
 /// coordinates are under 1, so a turn moves them little.
 pub fn sky_dabs(dir: vec3, footprint: f32, px: f32) -> f32 {
-    let s = max(footprint * px, 1.0e-4)
-    let l = log2(s)
-    let f = fract(l)
-    let s0 = exp2(floor(l))
+    let (s0, f) = octave_of(max(footprint * px, 1.0e-4))
     let n = -dir
     let t1 = normalize(cross(n, vec3(0.3, 0.2, 1.0)))
     let t2 = cross(n, t1)
@@ -135,10 +114,7 @@ pub fn sky_dabs(dir: vec3, footprint: f32, px: f32) -> f32 {
 /// The paper's tooth at `world`, `footprint` metres a pixel: a fine grain, a few pixels across
 /// wherever it's seen, anchored on the surface (two octaves blended by distance), about 0.
 fn tooth(world: vec3, footprint: f32) -> f32 {
-    let s = max(footprint * 2.5, 1.0e-4)
-    let l = log2(s)
-    let f = fract(l)
-    let s0 = exp2(floor(l))
+    let (s0, f) = octave_of(max(footprint * 2.5, 1.0e-4))
     mix(noise3(world / s0), noise3(world / (2.0 * s0) + vec3(9.0, 3.0, 5.0)), f) - 0.5
 }
 
@@ -489,17 +465,11 @@ pub fn dab_map(
             }
         }
     }
-    // A crown is a mass of leaves, each tilted its own way: its dabs lie across the line of
-    // sight, as a painter lays a crown's.
-    if class == class_of(LEAVES) {
-        n = normalize(cam.eye - world)
-    }
-    // Broad things take stronger dabs: the far ground, crowns; characters half.
-    let broad = if class == class_of(LEAVES) { 1.0 } else { smoothstep(30.0, 250.0, dist) }
+    // Broad things take stronger dabs: the far ground; characters half.
+    let broad = smoothstep(30.0, 250.0, dist)
     var strength = mix(look.dabs_near, look.dabs_far, broad)
-    // The far ground's dabs softer than a crown's: on the world's planes they lie flat on a
-    // slope or a rock face, and at the crowns' strength read as dots (the crag, the plateau's
-    // lip, the fall's cliff).
+    // The far ground's dabs softer: on the world's planes they lie flat on a slope or a rock
+    // face, and at full strength read as dots (the crag, the plateau's lip, the fall's cliff).
     if class == class_of(GROUND) {
         strength = mix(look.dabs_near, look.dabs_far * 0.6, broad)
     }
@@ -514,12 +484,6 @@ pub fn dab_map(
         grain = ground_grain(n.y, material)
     }
     strength *= grain
-    // No dabs on crowns: `dabs_across`'s plane takes the pixel's depth (`dot(world, n)`), and
-    // the leaf cards' depths differ pixel to pixel, so each pixel took another stroke along the
-    // plane's second axis: vertical streaks over the near canopy (08, 18).
-    if class == class_of(LEAVES) {
-        strength = 0.0
-    }
     if class == class_of(CREATURE) {
         strength *= 0.5
     }
@@ -529,9 +493,12 @@ pub fn dab_map(
     let facing = max(abs(dot(n, normalize(cam.eye - world))), 0.4)
     // Anchored to the world, not render space: they stay put when the render origin moves.
     let keyed = world + cam.keyed()
-    let dab = if class == class_of(LEAVES) {
-        dabs_across(keyed, n, footprint / facing, look.dab_px * per_out)
-    } else {
+    // No dabs on crowns. On the world's planes a crown's levels of detail, at different depths
+    // along the same line, moved the dabs between them (4.4/255 at 1000 m in the levels test);
+    // on a plane across the line of sight, which takes the pixel's depth, the leaf cards' depths
+    // differ pixel to pixel, so each pixel took another stroke: vertical streaks over the near
+    // canopy (08, 18).
+    let dab = if class == class_of(LEAVES) { 0.0 } else {
         dabs(keyed, n, footprint / facing, look.dab_px * per_out)
     }
     // The tooth's grain, a few output pixels: no finer than two of the scene's pixels at half

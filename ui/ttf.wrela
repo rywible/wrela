@@ -462,10 +462,7 @@ impl Pen {
     fn move_to(mut self, x: f32, y: f32) {
         let (px, py) = self.px(x, y)
         self.contours.starts.push(self.contours.xs.len())
-        self.contours.xs.push(px)
-        self.contours.ys.push(py)
-        self.at_x = px
-        self.at_y = py
+        self.add(px, py)
     }
 
     fn line_to(mut self, x: f32, y: f32) {
@@ -893,10 +890,10 @@ fn pair_advance(b: Bytes, s: u32, a: u32, c: u32) -> (bool, i32) {
         return (false, 0)
     }
     let (vf1, vf2) = (u16_at(b, s + 4), u16_at(b, s + 6))
-    let (size1, size2) = (2 * bits(vf1), 2 * bits(vf2))
+    let (size1, size2) = (2 * vf1.count_ones(), 2 * vf2.count_ones())
     // Where the first value's x advance is in it: after its x and y placements, if it has them.
     let x_advance = |record: u32| {
-        if (vf1 & 0x0004) != 0 { i16_at(b, record + 2 * bits(vf1 & 0x0003)) } else { 0 }
+        if (vf1 & 0x0004) != 0 { i16_at(b, record + 2 * (vf1 & 0x0003).count_ones()) } else { 0 }
     }
     if format == 1 {
         let set = s + u16_at(b, s + 10 + u32(coverage) * 2)
@@ -931,15 +928,6 @@ fn pair_advance(b: Bytes, s: u32, a: u32, c: u32) -> (bool, i32) {
         return (true, x_advance(at))
     }
     (false, 0)
-}
-
-/// How many bits of `v` are set.
-fn bits(v: u32) -> u32 {
-    var n = 0
-    for k in 0..16 {
-        n += (v >> k) & 1
-    }
-    n
 }
 
 /// Glyph `g`'s index in the coverage table at `at`, or -1.

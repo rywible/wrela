@@ -174,18 +174,6 @@ fn audio_args(dir: str, n: u32) -> Args {
     }
 }
 
-/// Writes `bytes` (in parts) as the file at `path` (a root path).
-@job
-fn written(path: take String, parts: take Vec<Vec<u8>>) -> Result<(), String> {
-    var j = Box::new(write_file.start(take path, take parts))
-    var r = done(j.get_mut().resume())
-    while r.is_none() {
-        yield
-        r = done(j.get_mut().resume())
-    }
-    (take r).unwrap()
-}
-
 /// A take of the piece in `dir` (built in `build`) by both pianos: wrela's render, written as a
 /// 32-bit float WAV at `wav`, its MIDI file at `mid`, sfizz's render of it at `ref`; and its
 /// beats and bars.
@@ -215,10 +203,10 @@ fn both(
     }
     let (voice, _) = (take vr).unwrap()?
     var parts: Vec<Vec<u8>> = Vec::from([wav::header(samples: voice.samples.len(), channels: 2)])
-    var bytes = voice.bytes.clone()
+    var bytes = take voice.bytes
     parts.append(mut bytes)
     let wav_at = String::from(f"{work}/wrela-{name}.wav")
-    var jw = Box::new(written.start(wav_at.clone(), take parts))
+    var jw = Box::new(write_file.start(wav_at.clone(), take parts))
     var wr = done(jw.get_mut().resume())
     while wr.is_none() {
         yield
@@ -233,7 +221,7 @@ fn both(
     }
     let t = (take tr).unwrap()?
     let mid = String::from(f"{work}/{name}.mid")
-    var jm = Box::new(written.start(mid.clone(), Vec::from([midi(t.clone())])))
+    var jm = Box::new(write_file.start(mid.clone(), Vec::from([midi(t.clone())])))
     var mr = done(jm.get_mut().resume())
     while mr.is_none() {
         yield
@@ -397,10 +385,10 @@ fn round_of_four(o: take Options) -> Result<(), String> {
     }
     let (room, _) = (take vr).unwrap()?
     var parts: Vec<Vec<u8>> = Vec::from([wav::header(samples: room.samples.len(), channels: 2)])
-    var bytes = room.bytes.clone()
+    var bytes = take room.bytes
     parts.append(mut bytes)
     var jw = Box::new(
-        written.start(String::from(f"{o.out}/wrela-performance-with-room.wav"), take parts),
+        write_file.start(String::from(f"{o.out}/wrela-performance-with-room.wav"), take parts),
     )
     var wr = done(jw.get_mut().resume())
     while wr.is_none() {
@@ -421,7 +409,7 @@ fn round_of_four(o: take Options) -> Result<(), String> {
     for k in 0..set.files.len() {
         let path = String::from(f"{o.out}/{set.files[k].0}.wav")
         names.push(text(shown(path.as_str())))
-        var jf = Box::new(written.start(take path, Vec::from([set.files[k].1.clone()])))
+        var jf = Box::new(write_file.start(take path, Vec::from([set.files[k].1.clone()])))
         var fr = done(jf.get_mut().resume())
         while fr.is_none() {
             yield
@@ -431,7 +419,7 @@ fn round_of_four(o: take Options) -> Result<(), String> {
     }
     let key = String::from(f"{o.out}/key-open-after-ranking.json")
     var jk = Box::new(
-        written.start(
+        write_file.start(
             key.clone(),
             Vec::from([Vec::from(String::from(f"{set.key.pretty_in_order()}\n").as_bytes())]),
         ),
@@ -502,7 +490,7 @@ fn gate(o: take Options) -> Result<(), String> {
         for side in 0..2 {
             let letter = if side == 0 { "A" } else { "B" }
             var jf = Box::new(
-                written.start(
+                write_file.start(
                     String::from(f"{pair}/{letter}.wav"),
                     Vec::from([sides[side].clone()]),
                 ),
@@ -537,7 +525,7 @@ fn gate(o: take Options) -> Result<(), String> {
     for f in 0..2 {
         let path = both_files[f].0.clone()
         let body = both_files[f].1.clone()
-        var jf = Box::new(written.start(take path, Vec::from([Vec::from(body.as_bytes())])))
+        var jf = Box::new(write_file.start(take path, Vec::from([Vec::from(body.as_bytes())])))
         var fr = done(jf.get_mut().resume())
         while fr.is_none() {
             yield

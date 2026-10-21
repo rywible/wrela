@@ -6,14 +6,11 @@
 // (blockouts: judged as composition).
 // Where each stands is the map's (`stones.wrela` gives what a player walks round: the same).
 
-use engine::character::colours
 use engine::creature::{Creature, Skeleton, creature}
 use engine::look::{CreatureLook, Mesh as Tolerance}
 use engine::noise::{noise3, rand}
 use engine::place::{Feature, Map, SiteKind}
-use engine::realize::realize_rigid
-use engine::render::ByChannels
-use engine::stone::{Bed, Realized, Rock, grain, realize_bed, realize_stone}
+use engine::stone::{Bed, Realized, Rock, grain, realize_bed, realize_rock, realize_stone}
 use engine::sweep::wrap
 use std::derive::Box3
 use std::field::{Surface, cuboid}
@@ -465,12 +462,20 @@ fn the_tower_changes_mesh_over_a_band_without_a_threshold_jump() {
 }
 
 fn realize_tower_within(at: vec3, tolerance: f32, largest: f32) -> Realized {
-    let t = tower()
-    let c = tower_creature(t)
-    let look = CreatureLook { surface: Tolerance { tolerance, largest } }
-    let mesh = realize_rigid(c, look)
-    let colours = colours(mesh, c.field(), ByChannels {}, cell: 4cm)
-    Realized { mesh, colours, at: translate(at), seed: 77 }
+    realized(tower_creature(tower()), tolerance, largest, cell: 4cm, at: translate(at), seed: 77)
+}
+
+/// Built thing `c` realized as one rigid mesh, its surface within `tolerance` (its cells at most
+/// `largest`), its colours cooked a `cell` apart, placed by `at`.
+fn realized<K: Creature<Rock>>(
+    c: K,
+    tolerance: f32,
+    largest: f32,
+    cell: f32,
+    at: mat4,
+    seed: u32,
+) -> Realized {
+    realize_rock(c, CreatureLook { surface: Tolerance { tolerance, largest } }, cell, at, seed)
 }
 
 // ---- rubble -------------------------------------------------------------------------------------
@@ -546,16 +551,14 @@ pub fn block_creature(b: Block) -> Creature<Rock> {
 /// A fallen block lying at `at` on the ground (sunk a third into it), turned by `turn`, realized.
 pub fn realize_block(at: vec3, half: vec3, seed: u32, turn: f32) -> Realized {
     let tilt = vec2(rand(seed, 6) - 0.5, rand(seed, 7) - 0.5) * 0.5
-    let c = block_creature(Block { half, tilt, seed })
-    let look = CreatureLook { surface: Tolerance { tolerance: 1cm, largest: 6cm } }
-    let mesh = realize_rigid(c, look)
-    let colours = colours(mesh, c.field(), ByChannels {}, cell: 2cm)
-    Realized {
-        mesh,
-        colours,
+    realized(
+        block_creature(Block { half, tilt, seed }),
+        tolerance: 1cm,
+        largest: 6cm,
+        cell: 2cm,
         at: translate(at + vec3(0.0, 0.6 * half.y, 0.0)) * rotate_y(turn),
-        seed,
-    }
+        seed: seed,
+    )
 }
 
 // ---- the waystone -------------------------------------------------------------------------------
@@ -634,11 +637,14 @@ pub fn waystone_creature(w: Waystone) -> Creature<Rock> {
 
 /// A waystone `tall` high standing at `at`, its road face turned by `turn`, realized.
 pub fn realize_waystone(at: vec3, tall: f32, seed: u32, turn: f32) -> Realized {
-    let c = waystone_creature(Waystone { tall, seed: f32(seed % 97) * 0.37 })
-    let look = CreatureLook { surface: Tolerance { tolerance: 5mm, largest: 3cm } }
-    let mesh = realize_rigid(c, look)
-    let colours = colours(mesh, c.field(), ByChannels {}, cell: 1cm)
-    Realized { mesh, colours, at: translate(at - vec3(0.0, 0.1, 0.0)) * rotate_y(turn), seed }
+    realized(
+        waystone_creature(Waystone { tall, seed: f32(seed % 97) * 0.37 }),
+        tolerance: 5mm,
+        largest: 3cm,
+        cell: 1cm,
+        at: translate(at - vec3(0.0, 0.1, 0.0)) * rotate_y(turn),
+        seed: seed,
+    )
 }
 
 // ---- standing stones ----------------------------------------------------------------------------
@@ -703,16 +709,14 @@ pub fn slab_creature(s: Slab) -> Creature<Rock> {
 /// A slab standing at `at` (its foot on the ground, sunk a little: a lying one less), turned by
 /// `turn`, realized.
 pub fn realize_slab(at: vec3, half: vec3, seed: u32, turn: f32) -> Realized {
-    let c = slab_creature(Slab { half, seed: f32(seed % 97) * 0.37 })
-    let look = CreatureLook { surface: Tolerance { tolerance: 8mm, largest: 4cm } }
-    let mesh = realize_rigid(c, look)
-    let colours = colours(mesh, c.field(), ByChannels {}, cell: 1cm)
-    Realized {
-        mesh,
-        colours,
+    realized(
+        slab_creature(Slab { half, seed: f32(seed % 97) * 0.37 }),
+        tolerance: 8mm,
+        largest: 4cm,
+        cell: 1cm,
         at: translate(at - vec3(0.0, min(0.25, 0.4 * half.y), 0.0)) * rotate_y(turn),
-        seed,
-    }
+        seed: seed,
+    )
 }
 
 // ---- walls ----------------------------------------------------------------------------------------
@@ -767,18 +771,16 @@ pub fn realize_wall(a: vec3, b: vec3, tall: f32, seed: u32) -> Realized {
     let along = b.xz - a.xz
     let len = length(along)
     let w = Wall { half: vec3(len * 0.5 + 0.4, tall * 0.5, 0.45) }
-    let c = wall_creature(w, tall)
-    let look = CreatureLook { surface: Tolerance { tolerance: 2cm, largest: 10cm } }
-    let mesh = realize_rigid(c, look)
-    let colours = colours(mesh, c.field(), ByChannels {}, cell: 4cm)
     let mid = (a + b) * 0.5
     let turn = -atan2(along.y, along.x)
-    Realized {
-        mesh,
-        colours,
+    realized(
+        wall_creature(w, tall),
+        tolerance: 2cm,
+        largest: 10cm,
+        cell: 4cm,
         at: translate(vec3(mid.x, min(a.y, b.y) - 0.15, mid.z)) * rotate_y(turn),
-        seed,
-    }
+        seed: seed,
+    )
 }
 
 // ---- what's built where --------------------------------------------------------------------------

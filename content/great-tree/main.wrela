@@ -1,7 +1,6 @@
-// The great tree as a program: its export gives the lens's tests (suite/studio.rs) its distance.
-// The lens draws it (`wrela tool studio -- content/great-tree`); the clearing grows it.
+// The great tree as a program: its export gives the lens's test (studio/tool/tests.wrela) its
+// distance. The lens draws it (`wrela tool studio -- content/great-tree`); the clearing grows it.
 
-use std::field::Surface
 use tree::great_tree
 
 /// The great tree's distance at a point.

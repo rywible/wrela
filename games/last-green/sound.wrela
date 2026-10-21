@@ -9,7 +9,7 @@
 
 use climber::moves::drift_rate
 use climber::sounds::{IMPACTS, WHOOSHES}
-use engine::place::{Map, Water}
+use engine::place::Water
 use engine::plant::{Wind, gust}
 use engine::sound::{Babble, Breath, Cue, Mixer, Palette, Surface, WATERS, mix, mixer}
 use ground::{CLOSED, Ground}
@@ -192,6 +192,12 @@ fn nearest_on(p: vec2, a: vec2, b: vec2) -> vec2 {
     a + t * d
 }
 
+/// The nearest point to `p` of the disc round `at` of radius `r`: `p` itself, within it.
+fn nearest_in(p: vec2, at: vec2, r: f32) -> vec2 {
+    let d = p - at
+    if length(d) > r { at + r * normalize(d) } else { p }
+}
+
 /// The water sources the ears at `ears` (in the world) hear best, at most `WATERS`: each of the
 /// streams and falls (`courses`, each a line of points x, z, width, depth) at its nearest point,
 /// the meres at their nearest shore, and the pools, ranked by how loud each is there. A stream's
@@ -232,11 +238,14 @@ pub fn heard(
     for c in 0..courses.len() {
         borrow pts = courses[c].points
         var near = vec2(1.0e9)
+        var nearest = length(near - p)
         var width = 1.0
         for i in 1..pts.len() {
             let q = nearest_on(p, pts[i - 1].xy, pts[i].xy)
-            if length(q - p) < length(near - p) {
+            let d = length(q - p)
+            if d < nearest {
                 near = q
+                nearest = d
                 width = pts[i].z
             }
         }
@@ -250,8 +259,7 @@ pub fn heard(
     for i in 0..2 {
         let m = w.meres[i]
         if m.z > 0.0 {
-            let d = p - m.xy
-            let shore = if length(d) > m.z { m.xy + m.z * normalize(d) } else { p }
+            let shore = nearest_in(p, m.xy, m.z)
             consider(
                 Heard {
                     id: first_mere + i,
@@ -264,8 +272,7 @@ pub fn heard(
     }
     for i in 0..pools.len() {
         let q = pools[i]
-        let d = p - q.xy
-        let edge = if length(d) > q.z { q.xy + q.z * normalize(d) } else { p }
+        let edge = nearest_in(p, q.xy, q.z)
         consider(
             Heard {
                 id: first_mere + 2 + i,
@@ -298,7 +305,7 @@ pub fn touch_every(speed: f32) -> f32 {
 /// the hem's last touch (in strides), and how loud the hem's hush is (0 to 1).
 pub struct Hearing {
     cues: RingWriter<Cue>,
-    pub(package) slots: [u32; 4],
+    pub(package) slots: [u32; WATERS],
     feet: vec3,
     time: f32,
     walked: f32,
@@ -319,7 +326,7 @@ pub fn listen(seed: u32 = 7) -> (Hearing, Mixer) {
     (
         Hearing {
             cues,
-            slots: [NOBODY; 4],
+            slots: [NOBODY; WATERS],
             feet: vec3(0.0),
             time: 0.0,
             walked: 0.0,
@@ -437,10 +444,10 @@ pub fn hear(h: mut Hearing, m: Moment, near: Bounded<Heard, WATERS>) {
     let g = gust(m.wind, m.eye.xz, m.time) * m.wind.strength / 0.035
     h.cues.push(Cue::Wind { gust: g, toward: m.wind.dir, leaves: canopy(m.fields) })
     // Each source keeps its slot while it's heard; a new one takes a slot let go.
-    var placed = [false; 4]
+    var placed = [false; WATERS]
     // A slot let go this frame isn't taken again until the next: its source's gain comes down
     // over this frame's first quantum, and the new one's rises from 0 over the next frame's.
-    var freed = [false; 4]
+    var freed = [false; WATERS]
     for slot in 0..WATERS {
         var kept = false
         for i in 0..near.len() {

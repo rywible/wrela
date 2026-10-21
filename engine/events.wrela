@@ -276,11 +276,10 @@ fn runs(land: Land, g: Grid, fuel: Fuel, at: vec2, reach: f32, lit: vec2, wind: 
         let hc = lg.sample(land.heights, p)
         let (i, j) = (i32(c % g.nx), i32(c / g.nx))
         for k in 0..8 {
-            let n = vec2i(i, j) + NEIGHBOURS[k]
-            if n.x < 0 || n.y < 0 || n.x >= i32(g.nx) || n.y >= i32(g.nz) {
+            let q = g.neighbour(i, j, k)
+            if q == NONE {
                 continue
             }
-            let q = u32(n.y) * g.nx + u32(n.x)
             let pq = g.centre(q)
             let dry_fuel = fuel.ground[q] * fuel.dry[q]
             let past = length(pq - at) + 18.0 * (noise2(pq * 0.03) - 0.5)
@@ -505,21 +504,22 @@ pub(package) fn events(trees: mut Vec<Tree>, cx: Cx, f: mut Fields, year: i32) {
                             for di in 0..3 {
                                 let bi = home.x + i32(di) - 1
                                 let bj = home.y + i32(dj) - 1
-                                if bi >= 0 && bj >= 0 && bi < i32(bx) && bj < i32(bz) {
-                                    let gp = gaps[u32(bj) * bx + u32(bi)]
-                                    if gp.z > 0.0 && t.state == State::Alive {
-                                        let d = length(t.at - gp.xy) +
-                                            8.0 * (noise2(t.at * 0.05) - 0.5)
-                                        if d < gp.z && rand(t.seed, 13) < 0.9 {
-                                            t.state = State::Log
-                                            t.died = year
-                                            t.fell = year
-                                            t.cause = Cause::Wind
-                                            let dir = rotate(cx.map.wind, (gp.w - 0.5) * 1.2)
-                                            t.fall = rotate(dir, (rand(t.seed, 3) - 0.5) * 0.5)
-                                            t.shaped = shaped(Shaper::Event, ei)
-                                        }
-                                    }
+                                if bi < 0 || bj < 0 || bi >= i32(bx) || bj >= i32(bz) {
+                                    continue
+                                }
+                                let gp = gaps[u32(bj) * bx + u32(bi)]
+                                if !(gp.z > 0.0 && t.state == State::Alive) {
+                                    continue
+                                }
+                                let d = length(t.at - gp.xy) + 8.0 * (noise2(t.at * 0.05) - 0.5)
+                                if d < gp.z && rand(t.seed, 13) < 0.9 {
+                                    t.state = State::Log
+                                    t.died = year
+                                    t.fell = year
+                                    t.cause = Cause::Wind
+                                    let dir = rotate(cx.map.wind, (gp.w - 0.5) * 1.2)
+                                    t.fall = rotate(dir, (rand(t.seed, 3) - 0.5) * 0.5)
+                                    t.shaped = shaped(Shaper::Event, ei)
                                 }
                             }
                         }

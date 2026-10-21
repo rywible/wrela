@@ -5,3 +5,6 @@
 # reads the lists' buffers back.
 [package]
 name = "wood_selection"
+
+[dependencies]
+hosts = { workspace = true }

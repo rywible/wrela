@@ -1,11 +1,10 @@
 // The floor's lookbook shots, chosen as a player chooses them, and the lookbook tool's command
 // line: what is pure of the tool, so its tests need no build.
 
-use std::collections::Vec
 use std::input::{Key, Script}
 use std::json::{Doc, Kind, TOP}
-use std::string::String
 use std::tool::files::rooted
+use toolkit::command::size_of
 
 /// The root the tool reads and writes the workspace in.
 pub const WS: Text = "ws"
@@ -39,7 +38,7 @@ pub const VIEWS: [(Text, u32, Text); 6] = [
 ]
 
 /// The digit key for `d`, from 0 to 9.
-pub fn digit(d: u32) -> Key {
+fn digit(d: u32) -> Key {
     match d {
         0 => Key::Digit0,
         1 => Key::Digit1,
@@ -54,14 +53,20 @@ pub fn digit(d: u32) -> Key {
     }
 }
 
-/// `s` with the keys that choose lookbook shot `i` at frame `at`: L, its number's digits, Enter.
-pub fn choose(given: take Script, at: u32, i: u32) -> Script {
-    var s = (take given).press(at, Key::L)
-    let digits = String::from(f"{i}")
+/// `s` with `key`, then `n`'s digits, then Enter pressed at frame `at`: a number typed after its
+/// key, as a player chooses a lookbook shot (L) or travels to a site (G).
+pub fn typed(given: take Script, at: u32, key: Key, n: u32) -> Script {
+    var s = (take given).press(at, key)
+    let digits = String::from(f"{n}")
     for k in 0..digits.len() {
         s = (take s).press(at, digit(u32(digits.as_str().byte(k)) - 48))
     }
     (take s).press(at, Key::Enter)
+}
+
+/// `s` with the keys that choose lookbook shot `i` at frame `at`: L, its number's digits, Enter.
+pub fn choose(given: take Script, at: u32, i: u32) -> Script {
+    typed(take given, at, Key::L, i)
 }
 
 /// The keys of shot `i`'s still or clip, all at frame 1: F7 in capture mode (it toggles it),
@@ -186,17 +191,6 @@ pub struct Options: Clone {
 }
 
 pub const USAGE: Text = "usage: wrela tool lookbook -- <out-dir> [--stills] [--capture] [--view clay|silhouette|bare|grown|specimens] [--size WxH] [--jobs N] [--workers N] [shot-number ...]"
-
-/// `WxH`'s width and height, each at least 1.
-pub fn size_of(s: str) -> Option<(u32, u32)> {
-    let x = s.find("x")?
-    let w = s.slice(0, x).parse_u32()?
-    let h = s.slice(x + 1, s.len()).parse_u32()?
-    if w == 0 || h == 0 {
-        return None
-    }
-    Some((w, h))
-}
 
 /// The options the command line gives, or what's wrong with it.
 pub fn parse_args(given: [String]) -> Result<Options, String> {

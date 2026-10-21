@@ -25,13 +25,9 @@
 // built again, its error, and the literal updates since `n`, which the script types into the
 // lens as its `set` command.
 
-use lens::{
-    Built, Place, blob_bytes, build, data_of, failed, parse_edits, read_text, text_of, tool,
-    write_text,
-}
+use lens::{Built, Place, build, data_of, failed, parse_edits, read_text, write_text}
 use std::json::{TOP, parse}
-use json::{f64_text, obj, quoted}
-use look::f32_text
+use json::{f32_text, obj, quoted}
 use std::collections::{Box, Vec, replace}
 use std::io::print
 use std::string::String
@@ -44,6 +40,8 @@ use std::tool::files::Kind
 use std::tool::serve
 use std::tool::time
 use std::tool::toolchain
+use toolkit::wait::{done, said, wait}
+use toolkit::whole::{data_bytes, joined}
 
 /// The script the page gets: it asks what's new (a post to `studio/state` beside the page, so
 /// the tool knows which build asks), goes to the build served once it isn't the page's own, and
@@ -96,14 +94,23 @@ pub fn seeded(built: [f32], now: Option<Vec<f32>>) -> (Vec<f32>, Vec<(u32, f32)>
     var values: Vec<f32> = Vec::from(built)
     var updates: Vec<(u32, f32)> = Vec::new()
     if let Some(v) = now {
-        for i in 0..min(v.len(), values.len()) {
-            if bitcast_u32(values[i]) != bitcast_u32(v[i]) {
-                updates.push((i, v[i]))
-                values[i] = v[i]
-            }
-        }
+        follow(mut values, v, mut updates)
     }
     (values, updates)
+}
+
+/// `values` brought to `now`'s, each literal whose bits differ an update pushed to `updates`:
+/// how many there were.
+fn follow(values: mut Vec<f32>, now: [f32], updates: mut Vec<(u32, f32)>) -> u32 {
+    var n = 0
+    for i in 0..min(now.len(), values.len()) {
+        if bitcast_u32(values[i]) != bitcast_u32(now[i]) {
+            updates.push((i, now[i]))
+            values[i] = now[i]
+            n += 1
+        }
+    }
+    n
 }
 
 /// A post's path read as the build it came from (the first part, a generation the server
@@ -205,14 +212,9 @@ pub fn scan(dir: take String) -> Result<Vec<(String, String)>, String> {
     while !todo.is_empty() {
         let (d, top) = todo[todo.len() - 1].clone()
         todo.truncate(todo.len() - 1)
-        var l = files::list(d.as_str())
-        var got = l.poll()
-        while got.is_none() {
-            yield
-            got = l.poll()
-        }
-        let Some(polled) = take got else { return Err(failed("no answer")) }
-        let entries = tool(files::read_list(take polled))?
+        var l = wait(files::list(d.as_str()))
+        while !l.ready() { yield }
+        let entries = said(files::read_list(l.polled()))?
         for k in 0..entries.len() {
             let e = entries[k].clone()
             let name = e.name.as_str()
@@ -226,22 +228,19 @@ pub fn scan(dir: take String) -> Result<Vec<(String, String)>, String> {
                 }
             } else if e.kind == Kind::File && (name.ends_with(".wrela") || name == "wrela.toml") {
                 var r = Box::new(read_source.start(path.clone(), e.size))
-                var read: Option<Result<Option<String>, String>> = None
+                var read = done(r.get_mut().resume())
                 while read.is_none() {
-                    match r.get_mut().resume() {
-                        Step::Yielded => yield,
-                        Step::Done(x) => read = Some(take x),
-                    }
+                    yield
+                    read = done(r.get_mut().resume())
                 }
-                let Some(rx) = take read else { return Err(failed("no answer")) }
                 // A file that went between the list and the read is a change, read next time.
-                if let Some(text) = (take rx)? {
+                if let Some(text) = (take read).unwrap()? {
                     out.push((take path, take text))
                 }
             }
         }
     }
-    sort_by_path(mut out)
+    out.sort_by(|a, b| a.0 < b.0)
     Ok(out)
 }
 
@@ -253,39 +252,24 @@ pub fn read_source(path: take String, size: take u64) -> Result<Option<String>, 
     var bytes: Option<Vec<u8>> = None
     var why = String::new()
     if size <= u64(MOST_BYTES) {
-        var r = files::read(path.as_str())
-        var got = r.poll()
-        while got.is_none() {
-            yield
-            got = r.poll()
-        }
-        let Some(rp) = take got else { return Err(failed("no answer")) }
-        match answer(take rp) {
+        var r = wait(files::read(path.as_str()))
+        while !r.ready() { yield }
+        match answer(r.polled()) {
             Ok(b) => bytes = Some(take b),
             Err(e) => why = String::from(e.message()),
         }
     } else {
-        var r = files::read_blob(path.as_str())
-        var got = r.poll()
-        while got.is_none() {
-            yield
-            got = r.poll()
-        }
-        let Some(rp) = take got else { return Err(failed("no answer")) }
-        match blob::read_handle(take rp) {
+        var r = wait(files::read_blob(path.as_str()))
+        while !r.ready() { yield }
+        match blob::read_handle(r.polled()) {
             Ok(b) => {
-                var j = Box::new(blob_bytes.start(b))
-                var read: Option<Result<Vec<u8>, String>> = None
+                var j = Box::new(data_bytes.start(Data::Blob(b)))
+                var read = done(j.get_mut().resume())
                 while read.is_none() {
-                    match j.get_mut().resume() {
-                        Step::Yielded => yield,
-                        Step::Done(x) => read = Some(take x),
-                    }
+                    yield
+                    read = done(j.get_mut().resume())
                 }
-                var rel = blob::release(b)
-                while rel.poll().is_none() { yield }
-                let Some(rx) = take read else { return Err(failed("no answer")) }
-                bytes = Some((take rx)?)
+                bytes = Some(joined((take read).unwrap()?))
             },
             Err(e) => why = String::from(e.message()),
         }
@@ -297,72 +281,21 @@ pub fn read_source(path: take String, size: take u64) -> Result<Option<String>, 
         }
     }
     // Gone since it was listed, or a failure to report.
-    var s = files::stat(path.as_str())
-    var stated = s.poll()
-    while stated.is_none() {
-        yield
-        stated = s.poll()
-    }
-    let Some(sp) = take stated else { return Err(failed("no answer")) }
-    if files::read_entry(take sp).is_err() {
+    var s = wait(files::stat(path.as_str()))
+    while !s.ready() { yield }
+    if files::read_entry(s.polled()).is_err() {
         return Ok(None)
     }
     Err(String::from(f"can't read {path.as_str()}: {why.as_str()}"))
-}
-
-fn sort_by_path(files: mut Vec<(String, String)>) {
-    for i in 1..files.len() {
-        var j = i
-        while j > 0 && files[j - 1].0 > files[j].0 {
-            let a = files[j - 1].clone()
-            files[j - 1] = files[j].clone()
-            files[j] = take a
-            j -= 1
-        }
-    }
-}
-
-/// The build's page, its `index.html` given the script that keeps it current.
-@job
-fn give_script(page: take String) -> Result<(), String> {
-    let index = String::from(f"{page.as_str()}/index.html")
-    var r = Box::new(read_text.start(index.clone()))
-    var got: Option<Result<Option<String>, String>> = None
-    while got.is_none() {
-        match r.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(x) => got = Some(take x),
-        }
-    }
-    let Some(x) = take got else { return Err(failed("no answer")) }
-    let Some(html) = (take x)? else {
-        return Err(String::from(f"the lens's build has no index.html"))
-    }
-    let with = glue::replace(html.as_str(), "</body>", f"{script().as_str()}</body>")
-    var w = Box::new(write_text.start(take index, take with))
-    var done: Option<Result<(), String>> = None
-    while done.is_none() {
-        match w.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(x) => done = Some(take x),
-        }
-    }
-    let Some(d) = take done else { return Err(failed("no answer")) }
-    take d
 }
 
 /// The lifted build's literals: its lifted files, their values as the build has them, and their
 /// values in the files now.
 @job
 fn literals_of(built: take Built) -> Result<(Vec<String>, Vec<f32>, Option<Vec<f32>>), String> {
-    var l = toolchain::literals(built.program.as_str(), built.page.as_str())
-    var got = l.poll()
-    while got.is_none() {
-        yield
-        got = l.poll()
-    }
-    let Some(polled) = take got else { return Err(failed("no answer")) }
-    let lit = tool(toolchain::read_literals(take polled))?
+    var l = wait(toolchain::literals(built.program.as_str(), built.page.as_str()))
+    while !l.ready() { yield }
+    let lit = said(toolchain::read_literals(l.polled()))?
     Ok((lit.files.clone(), lit.built.clone(), lit.values.clone()))
 }
 
@@ -446,58 +379,41 @@ pub fn run_server(
     var generation = 1
     var previous = String::new()
     var g = Box::new(publish.start(current.page.clone(), root.clone(), first.clone()))
-    var given: Option<Result<(), String>> = None
+    var given = done(g.get_mut().resume())
     while given.is_none() {
-        match g.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(x) => given = Some(take x),
-        }
+        yield
+        given = done(g.get_mut().resume())
     }
-    let Some(gx) = take given else { return Err(failed("no answer")) }
-    (take gx)?
+    (take given).unwrap()?
     // The fit's reference: one blob (or bytes) for every fit, given back when the server ends.
     var reference: Option<Data> = None
     if let Some(m) = take mask {
         var d = Box::new(data_of.start(take m))
-        var made: Option<Result<Data, String>> = None
+        var made = done(d.get_mut().resume())
         while made.is_none() {
-            match d.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(x) => made = Some(take x),
-            }
+            yield
+            made = done(d.get_mut().resume())
         }
-        let Some(mx) = take made else { return Err(failed("no answer")) }
-        reference = Some((take mx)?)
+        reference = Some((take made).unwrap()?)
     }
-    var st = serve::start(root.as_str(), port)
-    var started = st.poll()
-    while started.is_none() {
-        yield
-        started = st.poll()
-    }
-    let Some(sp) = take started else { return Err(failed("no answer")) }
-    let server = tool(serve::read_started(take sp))?
+    var st = wait(serve::start(root.as_str(), port))
+    while !st.ready() { yield }
+    let server = said(serve::read_started(st.polled()))?
     var lj = Box::new(literals_of.start(current.clone()))
-    var lit: Option<Result<(Vec<String>, Vec<f32>, Option<Vec<f32>>), String>> = None
+    var lit = done(lj.get_mut().resume())
     while lit.is_none() {
-        match lj.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(x) => lit = Some(take x),
-        }
+        yield
+        lit = done(lj.get_mut().resume())
     }
-    let Some(lx) = take lit else { return Err(failed("no answer")) }
-    let (lifted, compiled, now_values) = (take lx)?
+    let (lifted, compiled, now_values) = (take lit).unwrap()?
     let (values, updates) = seeded(compiled, take now_values)
     var sc = Box::new(scan.start(place.subject.clone()))
-    var scanned: Option<Result<Vec<(String, String)>, String>> = None
+    var scanned = done(sc.get_mut().resume())
     while scanned.is_none() {
-        match sc.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(x) => scanned = Some(take x),
-        }
+        yield
+        scanned = done(sc.get_mut().resume())
     }
-    let Some(sx) = take scanned else { return Err(failed("no answer")) }
-    let seen = (take sx)?
+    let seen = (take scanned).unwrap()?
     var live = Live {
         build: first.clone(),
         version: 1,
@@ -539,25 +455,15 @@ pub fn run_server(
                 // A body past 512 KiB comes as a blob: read, then given back.
                 var body: Vec<u8> = Vec::new()
                 var unread = String::new()
-                match p.body.clone() {
-                    Data::Bytes(b) => body = take b,
-                    Data::Blob(b) => {
-                        var j = Box::new(blob_bytes.start(b))
-                        var read: Option<Result<Vec<u8>, String>> = None
-                        while read.is_none() {
-                            match j.get_mut().resume() {
-                                Step::Yielded => yield,
-                                Step::Done(x) => read = Some(take x),
-                            }
-                        }
-                        var rel = blob::release(b)
-                        while rel.poll().is_none() { yield }
-                        match take read {
-                            Some(Ok(bytes)) => body = take bytes,
-                            Some(Err(why)) => unread = take why,
-                            None => unread = String::from("no answer"),
-                        }
-                    },
+                var j = Box::new(data_bytes.start(p.body.clone()))
+                var read = done(j.get_mut().resume())
+                while read.is_none() {
+                    yield
+                    read = done(j.get_mut().resume())
+                }
+                match (take read).unwrap() {
+                    Ok(chunks) => body = joined(take chunks),
+                    Err(why) => unread = take why,
                 }
                 var reply = Data::empty()
                 let (from, asked) = post_route(p.path.as_str())
@@ -593,19 +499,16 @@ pub fn run_server(
                                 body.clone(),
                             ),
                         )
-                        var done: Option<Result<String, String>> = None
-                        while done.is_none() {
-                            match e.get_mut().resume() {
-                                Step::Yielded => yield,
-                                Step::Done(x) => done = Some(take x),
-                            }
+                        var ended = done(e.get_mut().resume())
+                        while ended.is_none() {
+                            yield
+                            ended = done(e.get_mut().resume())
                         }
-                        let answer_text = match take done {
-                            Some(Ok(t)) => take t,
-                            Some(Err(why)) => String::from(
+                        let answer_text = match (take ended).unwrap() {
+                            Ok(t) => take t,
+                            Err(why) => String::from(
                                 f"{{\"why\":{quoted(why.as_str()).as_str()},\"written\":false}}",
                             ),
-                            None => String::from("{\"why\":\"no answer\",\"written\":false}"),
                         }
                         // The values are the lens's already, so they aren't updates for it.
                         if answer_text.as_str().find("\"written\":true").is_some() {
@@ -679,23 +582,19 @@ pub fn run_server(
                 var g2 = Box::new(
                     publish.start(next.page.clone(), root.clone(), next_build.clone()),
                 )
-                var ready: Option<Result<(), String>> = None
+                var ready = done(g2.get_mut().resume())
                 while ready.is_none() {
-                    match g2.get_mut().resume() {
-                        Step::Yielded => yield,
-                        Step::Done(x) => ready = Some(take x),
-                    }
+                    yield
+                    ready = done(g2.get_mut().resume())
                 }
                 var lj2 = Box::new(literals_of.start(next.clone()))
-                var lit2: Option<Result<(Vec<String>, Vec<f32>, Option<Vec<f32>>), String>> = None
+                var lit2 = done(lj2.get_mut().resume())
                 while lit2.is_none() {
-                    match lj2.get_mut().resume() {
-                        Step::Yielded => yield,
-                        Step::Done(x) => lit2 = Some(take x),
-                    }
+                    yield
+                    lit2 = done(lj2.get_mut().resume())
                 }
-                match (take ready, take lit2) {
-                    (Some(Ok(())), Some(Ok(found))) => {
+                match ((take ready).unwrap(), (take lit2).unwrap()) {
+                    (Ok(()), Ok(found)) => {
                         let (lifted2, compiled2, now2) = take found
                         let (values2, updates2) = seeded(compiled2, take now2)
                         // The generation before the last goes; the last stays for a page that
@@ -721,9 +620,8 @@ pub fn run_server(
                         control.error = String::new()
                         print(f"rebuilt the lens (version {live.version})")
                     },
-                    (Some(Err(why)), _) => outcome = Err(take why),
-                    (_, Some(Err(why))) => outcome = Err(take why),
-                    _ => outcome = Err(failed("no answer")),
+                    (Err(why), _) => outcome = Err(take why),
+                    (_, Err(why)) => outcome = Err(take why),
                 }
             }
             // A build that failed leaves the last good one served, and goes.
@@ -739,42 +637,32 @@ pub fn run_server(
         if timer.poll().is_some() {
             idle = false
             var s = Box::new(scan.start(place.subject.clone()))
-            var got: Option<Result<Vec<(String, String)>, String>> = None
+            var got = done(s.get_mut().resume())
             while got.is_none() {
-                match s.get_mut().resume() {
-                    Step::Yielded => yield,
-                    Step::Done(x) => got = Some(take x),
-                }
+                yield
+                got = done(s.get_mut().resume())
             }
-            match take got {
-                Some(Ok(now)) => {
+            match (take got).unwrap() {
+                Ok(now) => {
                     // Changes made while a build is under way are looked at once it's done.
                     if rebuild.is_none() && finished.is_none() && now != last {
                         var values: Option<Vec<f32>> = None
                         if only_lifted_changed(live.built, now, live.lifted) &&
                             live.error.is_none() {
                             var lj3 = Box::new(literals_of.start(current.clone()))
-                            var lit3: Option<Result<(Vec<String>, Vec<f32>, Option<Vec<f32>>), String>> = None
+                            var lit3 = done(lj3.get_mut().resume())
                             while lit3.is_none() {
-                                match lj3.get_mut().resume() {
-                                    Step::Yielded => yield,
-                                    Step::Done(x) => lit3 = Some(take x),
-                                }
+                                yield
+                                lit3 = done(lj3.get_mut().resume())
                             }
-                            if let Some(Ok(found)) = take lit3 {
+                            if let Ok(found) = (take lit3).unwrap() {
                                 let (_, _, v) = take found
                                 values = take v
                             }
                         }
                         match take values {
                             Some(v) => {
-                                for i in 0..min(v.len(), live.values.len()) {
-                                    if bitcast_u32(live.values[i]) != bitcast_u32(v[i]) {
-                                        live.updates.push((i, v[i]))
-                                        live.values[i] = v[i]
-                                        control.updates += 1
-                                    }
-                                }
+                                control.updates += follow(mut live.values, v, mut live.updates)
                             },
                             None => {
                                 next_build = String::from(f"{run.as_str()}-{generation + 1}")
@@ -788,8 +676,7 @@ pub fn run_server(
                         last = take now
                     }
                 },
-                Some(Err(why)) => print(f"error: {why.as_str()}"),
-                None => {},
+                Err(why) => print(f"error: {why.as_str()}"),
             }
             timer = time::after(0.2)
         }
@@ -812,44 +699,36 @@ fn last_dash(name: str) -> Option<u32> {
 }
 
 /// The build in `page` (generation `build` of the server's root `root`) made ready and served:
-/// its page given the script, then the root's page made its page.
+/// its page's `index.html` given the script that keeps it current, then the root's page made
+/// that page.
 @job
 fn publish(page: take String, root: take String, build: take String) -> Result<(), String> {
-    var g = Box::new(give_script.start(page.clone()))
-    var given: Option<Result<(), String>> = None
-    while given.is_none() {
-        match g.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(x) => given = Some(take x),
-        }
+    let index = String::from(f"{page.as_str()}/index.html")
+    var r = Box::new(read_text.start(index.clone()))
+    var got = done(r.get_mut().resume())
+    while got.is_none() {
+        yield
+        got = done(r.get_mut().resume())
     }
-    let Some(gx) = take given else { return Err(failed("no answer")) }
-    (take gx)?
-    var r = Box::new(read_text.start(String::from(f"{page.as_str()}/index.html")))
-    var html: Option<Result<Option<String>, String>> = None
-    while html.is_none() {
-        match r.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(x) => html = Some(take x),
-        }
+    let Some(html) = (take got).unwrap()? else {
+        return Err(String::from(f"the lens's build has no index.html"))
     }
-    let Some(hx) = take html else { return Err(failed("no answer")) }
-    let Some(text) = (take hx)? else { return Err(String::from("the build has no index.html")) }
-    var w = Box::new(
-        write_text.start(
-            String::from(f"{root.as_str()}/index.html"),
-            root_page(build.as_str(), text.as_str()),
-        ),
-    )
-    var done: Option<Result<(), String>> = None
-    while done.is_none() {
-        match w.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(x) => done = Some(take x),
+    let with = glue::replace(html.as_str(), "</body>", f"{script().as_str()}</body>")
+    let served = root_page(build.as_str(), with.as_str())
+    var writes: Vec<(String, String)> = Vec::new()
+    writes.push((take index, take with))
+    writes.push((String::from(f"{root.as_str()}/index.html"), take served))
+    for k in 0..writes.len() {
+        let (path, text) = writes[k].clone()
+        var w = Box::new(write_text.start(take path, take text))
+        var ended = done(w.get_mut().resume())
+        while ended.is_none() {
+            yield
+            ended = done(w.get_mut().resume())
         }
+        (take ended).unwrap()?
     }
-    let Some(d) = take done else { return Err(failed("no answer")) }
-    take d
+    Ok(())
 }
 
 /// `text`'s bytes as an answer's: themselves (a post's answer here is at most a few KiB, but

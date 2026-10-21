@@ -3,7 +3,7 @@
 // See solve.wrela for the problem solved at each step.
 
 use diagnose
-use json::{List, list, obj}
+use json::{list, obj}
 use lens::{derivatives, source_json}
 use solve::{
     K, W, W_ANCHOR, W_PATCH, add_row, cholesky, derive, derive16, residual, ring, set, snap, value,

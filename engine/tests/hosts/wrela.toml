@@ -1,5 +1,7 @@
-# What the workspace's tool tests share to run a build in both hosts: the native host on the
+# What the workspace's tool tests share: running a build in both hosts, the native host on the
 # hardware GPU and headless Chrome's test mode, each drawing the same frames (`both::both_hosts`),
-# and the difference between their frames. A library: it has no tests of its own.
+# and the difference between their frames; and the steps many tests take (`steps`): files read
+# and written as text, source text patched, packages built, a driven build's commands and screen
+# read back, and words of read-back bytes. A library: it has no tests of its own.
 [package]
 name = "hosts"

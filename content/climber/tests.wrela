@@ -1,6 +1,7 @@
 // The fight's tests: its frame data holds together, a player who swings hits the wolf, a blink
 // through a lunge isn't bitten, a blink goes where the stick points, the sword's cut sweeps the
-// space ahead, and a replay of the same presses comes out the same. A test bot plays: it reads the world and presses as a player would.
+// space ahead, and a replay of the same presses comes out the same. A test bot plays: it reads
+// the world and presses as a player would.
 
 use fight::{BITE, CROUCH, Level, Mood, Walked, World, blade_at, bout, on_screen, read, spawn, tick}
 use engine::run::TickInput

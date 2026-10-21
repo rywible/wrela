@@ -2,11 +2,10 @@
 // two baked fonts replaced by `EMPTY`, and `TESTS` after widgets.wrela; their tests run through
 // the toolchain, every one passing, as many as the files declare.
 
+use hosts::steps::{declared, replaced, text_of, written}
 use std::collections::{Box, Vec}
 use std::job::Step
 use std::string::String
-use std::tool::answer
-use std::tool::files
 use std::tool::toolchain
 
 /// ui's modules the package holds.
@@ -173,71 +172,6 @@ const TESTS: [Text; 140] = [
 /// exercises the caret regression when both letters fall back to it.
 const EMPTY: Text = "Baked { em: 32.0, spread: 4.0, ascender: 0.0, descender: 0.0, line_gap: 0.0, glyphs: Vec::from([ttf::BakedGlyph { codepoint: 63, advance: 1.0, left: 0.0, top: 0.0, width: 0, height: 0, offset: 0 }]), kerning: Vec::from([ttf::Kern { left: 0, right: 0, units: -4096 }]), fields: Vec::new() }"
 
-/// `text` with each `from` replaced by `to`, left to right.
-fn replaced(text: str, from: str, to: str) -> String {
-    var out: Vec<u8> = Vec::new()
-    var i = 0
-    while i < text.len() {
-        var hit = i + from.len() <= text.len()
-        if hit {
-            for j in 0..from.len() {
-                if text.byte(i + j) != from.byte(j) {
-                    hit = false
-                    break
-                }
-            }
-        }
-        if hit {
-            for j in 0..to.len() {
-                out.push(to.byte(j))
-            }
-            i += from.len()
-        } else {
-            out.push(text.byte(i))
-            i += 1
-        }
-    }
-    let Some(s) = String::from_utf8(take out) else { panic("a replacement keeps UTF-8") }
-    s
-}
-
-/// How many of `text`'s lines are `@test` alone: the tests it declares.
-fn declared(text: str) -> u32 {
-    var n = 0
-    var start = 0
-    for i in 0..text.len() + 1 {
-        if i == text.len() || text.byte(i) == 10 {
-            var a = start
-            var b = i
-            while a < b && (text.byte(a) == 32 || text.byte(a) == 9) {
-                a += 1
-            }
-            while b > a &&
-                (text.byte(b - 1) == 32 || text.byte(b - 1) == 9 || text.byte(b - 1) == 13) {
-                b -= 1
-            }
-            if text.slice(a, b) == "@test" {
-                n += 1
-            }
-            start = i + 1
-        }
-    }
-    n
-}
-
-/// Writes `text` at `path`.
-@job
-fn written(path: take String, text: take String) {
-    var w = files::write(path.as_str(), text.as_bytes())
-    var got = w.poll()
-    while got.is_none() {
-        yield
-        got = w.poll()
-    }
-    let Some(wp) = take got else { panic("no answer") }
-    assert(answer(take wp).is_ok(), f"{path.as_str()} is written")
-}
-
 /// The ui's frames keep their predecessors' labels and focus order without allocating once
 /// warm, an empty frame still replaces the one before, Tab and Shift+Tab keep their order, and
 /// typed runs and keys edit as the previous editor did, saving its repeated tail allocations;
@@ -248,16 +182,17 @@ fn perf_ui_frame_buffers_and_typing_preserve_behavior() {
     var tests = 0
     for k in 0..MODULES.len() {
         let file = MODULES[k]
-        var r = files::read(f"repo/ui/{file}".as_str())
-        var got = r.poll()
-        while got.is_none() {
-            yield
-            got = r.poll()
+        var r = Box::new(text_of.start(String::from(f"repo/ui/{file}")))
+        var text = String::new()
+        loop {
+            match r.get_mut().resume() {
+                Step::Yielded => yield,
+                Step::Done(v) => {
+                    text = take v
+                    break
+                },
+            }
         }
-        let Some(rp) = take got else { panic("no answer") }
-        let Ok(bytes) = answer(take rp) else { panic(f"ui/{file} reads") }
-        let Some(source) = String::from_utf8(take bytes) else { panic(f"ui/{file} is UTF-8") }
-        var text = take source
         if file == "text.wrela" {
             for b in BAKES {
                 assert(text.as_str().find(b).is_some(), f"text.wrela bakes {b}")

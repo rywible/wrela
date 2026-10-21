@@ -1,5 +1,3 @@
-use platform::presentation::Link
-use std::serialize::save
 // The stair: an endless spiral staircase in a void, with a door off it to each world (vision.md,
 // "The lore"). The lowest door opens; each above it opens once the world below is preserved or
 // freed, and a freed world's door is gone (engine::tower). Walking through an open door hands
@@ -9,6 +7,8 @@ use std::serialize::save
 // Keys: W or the up arrow climbs, S or the down arrow goes down, A and D look round, E goes
 // through the door the player is at.
 
+use platform::presentation::Link
+use std::serialize::save
 use engine::tower::{Fate, Journey, STAIR, Start}
 use engine::plant::full
 use std::derive::gradient

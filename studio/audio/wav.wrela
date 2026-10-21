@@ -5,18 +5,21 @@ use std::audio::SAMPLE_RATE
 use std::collections::Vec
 use std::string::String
 
-fn push_tag(out: mut Vec<u8>, tag: str) {
+/// Pushes `tag`'s bytes: a chunk's name.
+pub fn push_tag(out: mut Vec<u8>, tag: str) {
     for k in 0..tag.len() {
         out.push(tag.byte(k))
     }
 }
 
-fn push_u16(out: mut Vec<u8>, x: u32) {
+/// Pushes `x`'s low 16 bits, little-endian.
+pub fn push_u16(out: mut Vec<u8>, x: u32) {
     out.push(u8(x & 255))
     out.push(u8((x >> 8) & 255))
 }
 
-fn push_u32(out: mut Vec<u8>, x: u32) {
+/// Pushes `x`, little-endian.
+pub fn push_u32(out: mut Vec<u8>, x: u32) {
     for k in 0..4 {
         out.push(u8((x >> (8 * k)) & 255))
     }

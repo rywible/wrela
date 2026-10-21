@@ -6,17 +6,15 @@
 
 use dsp::{Plan, db, max_of, min_of, rms, round_away, sat_u32}
 use io::RATE
-use toolkit::whole::{blob_of, release}
 use piece::Take
 use std::collections::{Box, Vec}
-use std::job::Step
 use std::string::String
-use std::tool::{MOST_BYTES, ToolError, answer}
-use std::tool::blob
-use std::tool::blob::{Blob, Data}
-use std::tool::files
+use std::tool::MOST_BYTES
+use std::tool::blob::Data
 use std::tool::image
 use std::math
+use toolkit::wait::{done, said, wait}
+use toolkit::whole::{blob_of, release, write_data}
 
 const WIDTH: u32 = 1800
 const LEFT: u32 = 70
@@ -446,10 +444,6 @@ pub fn draw(t: Take, samples: [f32], bars: Option<(u32, u32)>) -> Result<Image, 
     Ok(img)
 }
 
-fn said(e: ToolError) -> String {
-    String::from(e.message())
-}
-
 /// Draws the sheet and writes it as a PNG at `path` (a root path; `shown` as the command line
 /// gave it).
 @job
@@ -462,68 +456,31 @@ pub fn write_sheet(
 ) -> Result<(), String> {
     let img = draw(t, samples, bars)?
     var bj = Box::new(blob_of.start(img.rgba_chunks()))
-    var made: Option<Result<Blob, String>> = None
+    var made = done(bj.get_mut().resume())
     while made.is_none() {
-        match bj.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => made = Some(take r),
-        }
-    }
-    let Some(m) = take made else { return Err(String::from("no answer")) }
-    let pixels = (take m)?
-    var e = image::encode_png(
-        image::Image { width: img.w, height: img.h, rgba: Data::Blob(pixels) },
-        timeout: 600.0,
-    )
-    var got = e.poll()
-    while got.is_none() {
         yield
-        got = e.poll()
+        made = done(bj.get_mut().resume())
     }
+    let pixels = (take made).unwrap()?
+    var e = wait(
+        image::encode_png(
+            image::Image { width: img.w, height: img.h, rgba: Data::Blob(pixels) },
+            timeout: 600.0,
+        ),
+    )
+    while !e.ready() { yield }
     var r = Box::new(release.start(pixels))
-    loop {
-        match r.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
+    while done(r.get_mut().resume()).is_none() { yield }
+    let png = said(image::read_encoded(e.polled()))?
+    var w = Box::new(write_data.start(take path, take png))
+    var written = done(w.get_mut().resume())
+    while written.is_none() {
+        yield
+        written = done(w.get_mut().resume())
     }
-    let Some(polled) = take got else { return Err(String::from("no answer")) }
-    let png = match image::read_encoded(take polled) {
-        Ok(d) => take d,
-        Err(e) => return Err(said(e)),
-    }
-    let written = match png {
-        Data::Bytes(bytes) => {
-            var w = files::write(path.as_str(), bytes)
-            var wg = w.poll()
-            while wg.is_none() {
-                yield
-                wg = w.poll()
-            }
-            let Some(wp) = take wg else { return Err(String::from("no answer")) }
-            answer(take wp)
-        },
-        Data::Blob(b) => {
-            var w = files::write_blob(path.as_str(), b)
-            var wg = w.poll()
-            while wg.is_none() {
-                yield
-                wg = w.poll()
-            }
-            var rel = Box::new(release.start(b))
-            loop {
-                match rel.get_mut().resume() {
-                    Step::Yielded => yield,
-                    Step::Done(_) => break,
-                }
-            }
-            let Some(wp) = take wg else { return Err(String::from("no answer")) }
-            answer(take wp)
-        },
-    }
-    match written {
+    match (take written).unwrap() {
         Ok(_) => Ok(()),
-        Err(e) => Err(String::from(f"can't write {shown}: {e.message()}")),
+        Err(why) => Err(String::from(f"can't write {shown}: {why}")),
     }
 }
 

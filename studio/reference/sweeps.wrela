@@ -7,7 +7,7 @@
 
 use std::math
 use mesh::{Solid, cross3, dot3, len3, unit3}
-use solve::{Banded, catmull_rom, least_squares}
+use solve::{Banded, catmull_rom, least_squares, spread}
 use std::collections::Vec
 
 /// The most vertices a sweep's path has (the engine's `VERTICES`).
@@ -476,26 +476,7 @@ pub fn trimmed(
     let path = Path::new(pts, up)
     let len = path.length()
     let steps = u32(max(ceil(len / 0.001), 1.0))
-    var first: Option<u32> = None
-    for k in 0..steps + 1 {
-        if solid.inside(path.plane(len * f64(k) / f64(steps)).0) {
-            first = Some(k)
-            break
-        }
-    }
-    let f = first?
-    var last = f
-    var k = steps
-    while k > f {
-        if solid.inside(path.plane(len * f64(k) / f64(steps)).0) {
-            last = k
-            break
-        }
-        k -= 1
-    }
-    if last == f {
-        return None
-    }
+    let (f, last) = solid.inside_span(steps, |k| path.plane(len * f64(k) / f64(steps)).0)?
     let step = len / f64(steps)
     pts[0] = path.plane(len * f64(f) / f64(steps)).0
     pts[n - 1] = path.plane(len * f64(last) / f64(steps)).0
@@ -543,7 +524,7 @@ pub fn measure(solid: Solid, path: Path, spacing: f64, angles: u32, r_max: f64) 
 }
 
 /// `a` modulo `b`, in [0, `b`).
-fn rem_euclid(a: f64, b: f64) -> f64 {
+pub fn rem_euclid(a: f64, b: f64) -> f64 {
     let r = a % b
     if r < 0.0 { r + abs(b) } else { r }
 }
@@ -708,21 +689,7 @@ fn curve_weights(places: [f64], f: f64) -> Vec<f64> {
     }
     let m = span(places, f)
     let x = clamp((f - places[m]) / (places[m + 1] - places[m]), 0.0, 1.0)
-    let w = catmull_rom(x)
-    for d in 0..4 {
-        let wd = w[d]
-        let c = i64(m) + i64(d) - 1
-        if c == -1 {
-            out[0] += 2.0 * wd
-            out[1] -= wd
-        } else if c > i64(k - 1) {
-            out[k - 1] += 2.0 * wd
-            out[k - 2] -= wd
-        } else {
-            out[u32(c)] += wd
-        }
-    }
-    out
+    spread(catmull_rom(x), m, k)
 }
 
 /// Fits `k` control sections (evenly along the path) with `bumps` bumps each to the measured

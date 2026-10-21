@@ -1,9 +1,10 @@
-// The toolkit's tests: bytes cut into a request's chunks and joined again, and a job's result
-// taken when it ends. Its requests are tested where the tools use them (studio/lookbook's
-// tool test).
+// The toolkit's tests: bytes cut into a request's chunks and joined again, a job's result taken
+// when it ends, and a size read from a command line. Its requests are tested where the tools use
+// them (studio/lookbook's tool test).
 
 use std::job::Step
 use std::tool::MOST_BYTES
+use command::size_of
 use wait::done
 use whole::{chunked, joined}
 
@@ -25,4 +26,12 @@ fn a_jobs_result_is_taken_when_it_ends() {
     let running: Step<u32> = Step::Yielded
     assert(done(take running).is_none())
     assert(done(Step::Done(7)) == Some(7))
+}
+
+@test
+fn a_size_is_a_width_and_a_height_of_at_least_one() {
+    assert(size_of("64x48") == Some((64, 48)) && size_of("1x1") == Some((1, 1)))
+    for bad in ["0x5", "5x0", "12", "x", "64x", "x48", "-1x5", "64x48x2"] {
+        assert(size_of(bad).is_none(), bad)
+    }
 }

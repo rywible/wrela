@@ -19,7 +19,9 @@ use impostor::{
 use light::Lit
 use lit::{Lighting, shown, sun_and_sky}
 use noise::{cell_size, hashed_threshold_of}
-use lod::{IMPOSTOR, Lod, VOLUME, anchor, by_card, keeps_packed, packed, place, share, ways}
+use lod::{
+    IMPOSTOR, Lod, VOLUME, anchor, by_card, keeps_packed, packed, place, share, unpacked, ways,
+}
 use plant::{
     Bark, CARD_LEVELS, Card, Instance, LEAF_PATTERNS, LIMB_POINTS, LIMB_VERTICES, Leaves, OUTLINE,
     Plant, Wind, CORNERS, LEAF_TEXELS, card_orders, card_tint, card_turn, cook_cards, cook_outlines,
@@ -395,25 +397,38 @@ pub const HIDDEN: u32 = 99
 /// corner's angle) or faded out. And where it is between its levels, its level and how far it
 /// has faded (`lod::place`), when it's in view.
 pub fn ways_for(k: Kind, at: Instance, cam: Camera, l: Lod, corner: f32) -> (vec2u, vec2) {
-    let centre = at.at + at.turn(vec3(0.0, k.top * 0.5 * at.scale, 0.0))
-    let r = at.bound_radius(k.reach)
-    let v = centre - cam.eye
-    let d = length(v)
-    // Outside the view's cone by more than its own angular radius.
-    if d > r {
-        let off = acos(clamp(dot(v / d, cam.forward), -1.0, 1.0))
-        if off > corner + asin(min(r / d, 1.0)) + 0.02 {
-            return (vec2u(HIDDEN), vec2(0.0))
-        }
+    if out_of_view(at, cam, k.top, k.reach, corner) {
+        return (vec2u(HIDDEN), vec2(0.0))
     }
-    var extent = l
-    extent.reach *= max(at.wide, 1.0)
-    let (level, faint) = place(extent, cam, at.at, at.scale)
+    let (level, faint) = place_of(l, cam, at)
     let (drawn, lower, upper) = ways(level, faint)
     if !drawn {
         return (vec2u(HIDDEN), vec2(level, faint))
     }
     (vec2u(lower, upper), vec2(level, faint))
+}
+
+/// Whether instance `at`, its plant `top` tall and `reach` round its middle, is outside `cam`'s
+/// view cone (`corner` its corner's angle) by more than its own angular radius: on the CPU
+/// (`ways_for`) and on the GPU (`wood::choose`) alike.
+pub fn out_of_view(at: Instance, cam: Camera, top: f32, reach: f32, corner: f32) -> bool {
+    let centre = at.at + at.turn(vec3(0.0, top * 0.5 * at.scale, 0.0))
+    let r = at.bound_radius(reach)
+    let v = centre - cam.eye
+    let d = length(v)
+    if d > r {
+        let off = acos(clamp(dot(v / d, cam.forward), -1.0, 1.0))
+        return off > corner + asin(min(r / d, 1.0)) + 0.02
+    }
+    false
+}
+
+/// Where instance `at` is between its levels (`lod::place`), its reach widened as its crown is
+/// (`Instance::wide`).
+pub fn place_of(l: Lod, cam: Camera, at: Instance) -> (f32, f32) {
+    var extent = l
+    extent.reach *= max(at.wide, 1.0)
+    place(extent, cam, at.at, at.scale)
 }
 
 // ---- cards -------------------------------------------------------------------------------------
@@ -537,7 +552,8 @@ pub fn card(
     let faded_keep = if fade > 0.0 { fade_packed(mark.x, fade) } else { mark.x }
     // Each card whole or gone by its own draw, and smaller near its share's ends
     // (`lod::by_card`).
-    let mixed = (seed_of(card, mark.y & 255) ^ (card.seed >> 15)) * 2246822519
+    let seed = seed_of(card, mark.y & 255)
+    let mixed = (seed ^ (card.seed >> 15)) * 2246822519
     let (keep, size) = by_card(faded_keep, f32(mixed >> 22) / 1024.0)
     let (world, uv, _, _) = card_corner(
         c,
@@ -557,7 +573,7 @@ pub fn card(
     LeafVertex {
         clip: ClipPosition { position: cam.clip(apart) },
         uv,
-        seed: Flat { value: seed_of(card, mark.y & 255) },
+        seed: Flat { value: seed },
         keep: Flat { value: keep },
         card: Flat { value: c },
         instance: Flat { value: i.index | ((mark.y & 255) << 24) },
@@ -567,8 +583,7 @@ pub fn card(
 /// A share packed by `lod::packed` with `fade` of it taken away (its end moved toward its
 /// start): all of it at 1.
 fn fade_packed(k: u32, fade: f32) -> u32 {
-    let start = f32(k & 16383) / 16383.0
-    let end = f32((k >> 14) & 16383) / 16383.0
+    let (start, end) = unpacked(k)
     let e = mix(end, start, fade)
     let s = u32(round(saturate(start) * 16383.0))
     let q = u32(round(saturate(e) * 16383.0))

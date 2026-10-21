@@ -346,21 +346,9 @@ pub fn frame(game: mut Game, time: f32, width: u32, height: u32) {
     pass.present()
 }
 
-// ---- for the tests (compiler/tests/tests/suite/herd.rs) ----------------------------------------
+// ---- tests (`wrela test examples/herd`) -----------------------------------------------------
 
-/// The grazer of seed `s`'s skin weights at `p`, under the items in the mask given, seen a
-/// footprint wide: its four bones (a byte each) and their weights (a byte each).
-pub fn skin_at(s: u32, p: vec3, lo: u32, hi: u32, fp: f32) -> (u32, u32) {
-    engine::creature::Parts::skin_at(
-        grazer(s).field(),
-        p,
-        engine::creature::PartMask { lo, hi },
-        fp,
-        FALLOFF,
-    )
-}
-
-/// Its mass (kg) by the spike's method, cells down to `finest`.
+/// Seed `s`'s mass (kg) by the spike's method, cells down to `finest`.
 pub fn mass(s: u32, finest: f32) -> f32 {
     f32(engine::physique::adaptive_mass(grazer(s).field(), grazer::density, finest).mass)
 }
@@ -414,52 +402,6 @@ fn physique_methods_differ(s: u32, finest: f32) -> f32 {
     }
     most
 }
-
-/// What realization has done: realizations, readbacks, holes and overflows found.
-pub fn realized(game: Game) -> (u32, u32, u32, u32) {
-    borrow r = game.realizer
-    (r.realizations, r.readbacks, r.holes, r.overflows)
-}
-
-/// The bytes of mesh memory allocated, in MiB.
-pub fn mesh_memory(game: Game) -> f32 {
-    f32(game.realizer.allocated()) / 1048576.0
-}
-
-/// A slab's MiB at level `level` (0 before the level is calibrated).
-pub fn slab_mib(game: Game, level: u32) -> f32 {
-    f32(game.realizer.slab_bytes(level)) / 1048576.0
-}
-
-/// The level each grazer draws (`NO_LEVEL` before it has a mesh) and should have.
-pub fn level(game: Game, s: u32) -> (u32, u32) {
-    (game.realizer.drawn(s - 1), game.realizer.target(s - 1))
-}
-
-/// Spike 01's evaluation benchmark (`bench_eval`) on seed `s`: `n` points from xorshift 12345
-/// in the box from `lo` to `hi`, the distance at each summed; with `pruned` 1, each sample
-/// leaves out the items that can't matter there.
-pub fn bench_eval(s: u32, n: u32, pruned: u32, lo: vec3, hi: vec3) -> f64 {
-    let field = grazer(s).field()
-    let bounds = engine::creature::Parts::item_bounds(field)
-    var r = terrain::XorShift { state: 12345 }
-    var sum: f64 = 0.0
-    for _ in 0..n {
-        let q = r.point(lo, hi)
-        let d = if pruned != 0 { engine::creature::Parts::sample_pruned(field, q, bounds).0 } else {
-            field.distance(q)
-        }
-        sum += f64(d)
-    }
-    sum
-}
-
-/// Spike 01's raycast benchmark on the sim's terrain: the steps `n` rays took, and how many hit.
-pub fn raycast(n: u32) -> (u32, u32) {
-    terrain::raycast_bench(terrain::Terrain::new(7), n)
-}
-
-// ---- tests (`wrela test examples/herd`) -----------------------------------------------------
 
 /// AC6's physique: seed 1's mass at a 2 cm finest cell within 0.05% of the spike's ground truth
 /// (1,119.26 kg, a uniform 1 cm grid of 25M samples; the spike's own: 1,118.94).

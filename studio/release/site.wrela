@@ -4,7 +4,7 @@
 
 use catalog::{Catalog, Console, Docs, Game, origin_of}
 use json::{Json, indented, member, text}
-use pages::{Page, escape, group_before, group_of, stem}
+use pages::{Page, escape, group_of, groups, stem}
 
 /// The Workers runtime each release's Workers run on.
 pub const COMPATIBILITY_DATE: Text = "2026-10-12"
@@ -222,20 +222,7 @@ pub fn docs_page(docs: Docs, pages: [Page], has: [String]) -> (String, String) {
         f"\n<style>html canvas#screen {{ touch-action: pinch-zoom; }} html, body {{ background: {PAGE_DARK}; }} @media (prefers-color-scheme: light) {{ html, body {{ background: {PAGE_LIGHT}; }} }}</style>",
     )
     // The groups: the language, then std, then the packages by name, as `llms.txt` has them.
-    var groups: Vec<String> = Vec::new()
-    for p in pages {
-        let g = group_of(p)
-        var known = false
-        for h in groups {
-            if h.as_str() == g.as_str() {
-                known = true
-            }
-        }
-        if !known {
-            groups.push(take g)
-        }
-    }
-    groups.sort_by(|a: String, b: String| group_before(a.as_str(), b.as_str()))
+    let groups = groups(pages)
     var files: Vec<(String, String)> = Vec::new()
     files.push(
         (

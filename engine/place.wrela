@@ -105,30 +105,31 @@ pub fn tile_of(p: vec2) -> vec2i {
 
 /// The land's big shapes, as fields over the plane that a floor's terrain composes (on the CPU,
 /// for the history and the sim, and on the GPU, as the clipmap cooks it: one field). Each list
-/// ends at its first entry whose size is 0.
+/// ends at its first entry whose size is 0; each field is zero by default, so `Land {}` is level
+/// land with no shapes.
 pub struct Land: Copy + GpuData {
     /// Hills: (x, z, radius, height): a broad top falling to nothing at the radius.
-    pub hills: [vec4; 8],
+    pub hills: [vec4; 8] = [vec4(0.0); 8],
     /// Hollows: (x, z, radius, depth).
-    pub hollows: [vec4; 8],
+    pub hollows: [vec4; 8] = [vec4(0.0); 8],
     /// Ridges: each a run of points (x, z, height, half-width), a point of half-width 0 ending a
     /// ridge; a bell across each segment, the highest of them.
-    pub ridges: [vec4; 24],
+    pub ridges: [vec4; 24] = [vec4(0.0); 24],
     /// Ravines: each a run of points (x, z, depth, half-width at the rim), ended as ridges are;
     /// a bed a third as wide, falling `fall` metres more toward its last point (`ravine_fall`).
-    pub ravines: [vec4; 16],
-    pub ravine_fall: f32,
+    pub ravines: [vec4; 16] = [vec4(0.0); 16],
+    pub ravine_fall: f32 = 0.0,
     /// Crags: (x, z, height, foot radius): steep-sided, flat-ish on top, rock. A ramp of scree
     /// climbs each from the direction `ramps[i]` (radians from +x toward +z), so its top can be
     /// reached on foot.
-    pub crags: [vec4; 4],
-    pub ramps: vec4,
+    pub crags: [vec4; 4] = [vec4(0.0); 4],
+    pub ramps: vec4 = vec4(0.0),
     /// Each crag's floor: the ground's height at its middle without it (m). Its tiers stand on it,
     /// so their tops are planes whatever the land under them does (`crag_slabs` cuts its rock to
     /// the same planes); the game sets them from its whole ground (`Land::settled`).
-    pub floors: vec4,
+    pub floors: vec4 = vec4(0.0),
     /// The plateau's tilt: rising `tilt.z` metres along (x, y), over `tilt.w` metres.
-    pub tilt: vec4,
+    pub tilt: vec4 = vec4(0.0),
 }
 
 /// How far apart a ravine's slumped walls are along it (m).
@@ -258,7 +259,6 @@ impl Land {
         var along = 0.0
         var cut = 0.0
         var walked = 0.0
-        var length_of = 0.0
         for i in 0..15 {
             let a = self.ravines[i]
             let b = self.ravines[i + 1]
@@ -268,29 +268,13 @@ impl Land {
                 if d < best {
                     best = d
                     along = walked + t * len
-                    // Its walls slumped to a slope a player can walk down for 20 m or so every
-                    // `SLUMP_EVERY`, where it's wider.
-                    let slump = smoothstep(
-                        0.7,
-                        0.9,
-                        0.5 + 0.5 * cos(along * 6.2831853 / SLUMP_EVERY),
-                    )
-                    let w = mix(a.w, b.w, t) * (1.0 + 3.5 * slump)
-                    let depth = mix(a.z, b.z, t)
-                    let dir = (b.xy - a.xy) / max(len, 1.0e-5)
-                    let offset = p - mix(a.xy, b.xy, t)
-                    let side = if dot(offset, vec2(-dir.y, dir.x)) < 0.0 { -1.0 } else { 1.0 }
-                    let section = ravine_section(side * d, w, self.ravine_bend(i, t))
-                    cut = depth * section.x
+                    let (_, section) = ravine_across(a, b, self.ravine_bend(i, t), p, d, t, along)
+                    cut = mix(a.z, b.z, t) * section.x
                 }
                 walked += len
             } else if a.w > 0.0 {
-                length_of = walked
                 walked = 0.0
             }
-        }
-        if length_of == 0.0 {
-            length_of = walked
         }
         vec3(cut, along, best)
     }
@@ -309,12 +293,7 @@ impl Land {
                 let (d, t) = to_segment(p, a.xy, b.xy)
                 let len = length(b.xy - a.xy)
                 let along = walked + t * len
-                let slump = smoothstep(0.7, 0.9, 0.5 + 0.5 * cos(along * 6.2831853 / SLUMP_EVERY))
-                let w = mix(a.w, b.w, t) * (1.0 + 3.5 * slump)
-                let dir = (b.xy - a.xy) / max(len, 1.0e-5)
-                let offset = p - mix(a.xy, b.xy, t)
-                let side = if dot(offset, vec2(-dir.y, dir.x)) < 0.0 { -1.0 } else { 1.0 }
-                let section = ravine_section(side * d, w, self.ravine_bend(i, t))
+                let (slump, section) = ravine_across(a, b, self.ravine_bend(i, t), p, d, t, along)
                 f = max(f, section.y * (1.0 - slump))
                 walked += len
             } else if a.w > 0.0 {
@@ -861,12 +840,12 @@ impl Route {
 
 /// The water the author places: meres (x, z, radius, level: the water's height), springs where
 /// streams rise, and the points where water falls off the land. The history's flow decides the
-/// streams' courses between.
+/// streams' courses between. Each field is zero by default, so `Water {}` is no water.
 pub struct Water: Copy {
-    pub meres: [vec4; 2],
-    pub springs: [vec2; 8],
-    pub spring_count: u32,
-    pub falls: [vec2; 2],
+    pub meres: [vec4; 2] = [vec4(0.0); 2],
+    pub springs: [vec2; 8] = [vec2(0.0); 8],
+    pub spring_count: u32 = 0,
+    pub falls: [vec2; 2] = [vec2(0.0); 2],
 }
 
 /// What happens in a year of the history.
@@ -982,24 +961,6 @@ impl Map {
             i += 1
         }
         best
-    }
-
-    /// The distance from `p` to the nearest route of `kind`, and that route's index.
-    pub fn to_route(self, p: vec2, kind: RouteKind) -> (f32, u32) {
-        var best = 1.0e9
-        var which = 0
-        var i = 0
-        for r in self.routes {
-            if r.kind == kind {
-                let d = r.distance(p).x
-                if d < best {
-                    best = d
-                    which = i
-                }
-            }
-            i += 1
-        }
-        (best, which)
     }
 
     /// Whether `p` is in the authored square.
@@ -1345,17 +1306,7 @@ fn a_crags_slabs_hold_its_cliffs_and_stand_on_its_top() {
 fn a_bedded_crags_slabs_and_no_outcrops_stand_over_the_ground() {
     let tall = vec4(0.0, 0.0, 45.0, 30.0)
     let low = vec4(300.0, 0.0, 4.0, 12.0)
-    let land = Land {
-        hills: [vec4(0.0); 8],
-        hollows: [vec4(0.0); 8],
-        ridges: [vec4(0.0); 24],
-        ravines: [vec4(0.0); 16],
-        ravine_fall: 0.0,
-        crags: [tall, low, vec4(0.0), vec4(0.0)],
-        ramps: vec4(0.0),
-        floors: vec4(0.0),
-        tilt: vec4(0.0),
-    }
+    let land = Land { crags: [tall, low, vec4(0.0), vec4(0.0)] }
     assert(land.crags_over(tall.xy, 0.0).y == 1.0, "no slab stands over a bedded crag's middle")
     let toe = tall.xy + vec2(1.2 * tall.w + cliff_width(tall) + talus_width(tall), 0.0)
     assert(land.crags_over(toe, 0.0).y == 0.0, "a slab stands over a crag's talus's toe")
@@ -1368,17 +1319,7 @@ fn a_bedded_crags_slabs_and_no_outcrops_stand_over_the_ground() {
 fn crag_substrate_keeps_earth_and_leaves_rock_to_the_slabs() {
     let tall = vec4(0.0, 0.0, 45.0, 30.0)
     let low = vec4(300.0, 0.0, 4.0, 12.0)
-    let land = Land {
-        hills: [vec4(0.0); 8],
-        hollows: [vec4(0.0); 8],
-        ridges: [vec4(0.0); 24],
-        ravines: [vec4(0.0); 16],
-        ravine_fall: 0.0,
-        crags: [tall, low, vec4(0.0), vec4(0.0)],
-        ramps: vec4(0.0),
-        floors: vec4(0.0),
-        tilt: vec4(0.0),
-    }
+    let land = Land { crags: [tall, low, vec4(0.0), vec4(0.0)] }
     var separated = 0
     var earth = 0
     for j in -12..13 {
@@ -1432,6 +1373,19 @@ fn a_crag_ramp_meets_the_tilted_top_across_its_full_width() {
             }
         }
     }
+}
+
+/// A ravine's segment from `a` to `b` across `p`, `d` from it and `t` along it, `along` metres
+/// from the ravine's first point, its bend there `bend` (`Land::ravine_bend`): how much its walls
+/// have slumped there (0 to 1) and its cross-section (`ravine_section`). Its walls slump to a
+/// slope a player can walk down for 20 m or so every `SLUMP_EVERY`, where it's wider.
+fn ravine_across(a: vec4, b: vec4, bend: f32, p: vec2, d: f32, t: f32, along: f32) -> (f32, vec2) {
+    let slump = smoothstep(0.7, 0.9, 0.5 + 0.5 * cos(along * 6.2831853 / SLUMP_EVERY))
+    let w = mix(a.w, b.w, t) * (1.0 + 3.5 * slump)
+    let dir = (b.xy - a.xy) / max(length(b.xy - a.xy), 1.0e-5)
+    let offset = p - mix(a.xy, b.xy, t)
+    let side = if dot(offset, vec2(-dir.y, dir.x)) < 0.0 { -1.0 } else { 1.0 }
+    (slump, ravine_section(side * d, w, bend))
 }
 
 /// Bed depth and exposed wall fraction across a stream valley. Inside a bend, deposited

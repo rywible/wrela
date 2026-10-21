@@ -1,7 +1,7 @@
 // The great tree (#28 §1, §9): a short, broad trunk on its rise, roots grown into it, five limbs
 // leaving it at their own heights, and a crown in masses at their ends. Limbs along curves and
 // clumps of leaves, as `engine::plant` grows a plant; its cards, impostor and volume are cooked
-// from this, as the clearing loads.
+// from this, as the clearing loads. And a far tree: a crown alone, for the woods beyond it.
 
 use engine::noise::{pick, rand}
 use engine::plant::{Bark, Leaves, Plant, limb_axis, limb_at_height, plant}
@@ -127,6 +127,21 @@ pub fn great_tree() -> Plant {
         let r = spread * sqrt(rand(41, i))
         let at = centre + vec3(r * cos(a), pick(45, i, lo: -1.0, hi: 1.5), r * sin(a))
         p.cushion(at, radius: pick(47, i, lo: 1.0, hi: 1.85), squash: pick(48, i, lo: 0.7, hi: 1.1))
+    }
+    p
+}
+
+/// A far tree, seed `s`: one crown of three clumps, no trunk to see.
+pub fn far_tree(s: u32) -> Plant {
+    var p = plant(leaves: Leaves { size: 2.4, cover: 1.2 }, bark: Bark {})
+    let tall = pick(s, 1, lo: 12.0, hi: 18.0)
+    for i in 0..3 {
+        let at = vec3(
+            pick(s, 10 + i, lo: -2.0, hi: 2.0),
+            tall * pick(s, 20 + i, lo: 0.55, hi: 0.8),
+            pick(s, 30 + i, lo: -2.0, hi: 2.0),
+        )
+        p.clump(at, radius: pick(s, 40 + i, lo: 2.6, hi: 3.6))
     }
     p
 }

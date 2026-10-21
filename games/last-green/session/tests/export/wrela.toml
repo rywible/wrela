@@ -5,3 +5,6 @@
 # commands.
 [package]
 name = "session_export"
+
+[dependencies]
+hosts = { workspace = true }

@@ -468,8 +468,23 @@ pub fn place_vertices<C, F: Parts<C>>(
 
 // ---- pass 3: a quad for every crossed edge -----------------------------------------------------
 
-/// The vertex of the cell at grid cell `c` (which may be outside the grid), through the block
-/// map and the cell map: none outside the grid, in a culled block, or past the vertices' room.
+/// The cell word at grid cell `c` (which may be outside the grid), through the block map and the
+/// cell map: `NO_VERTEX`'s word outside the grid or in a culled block.
+pub fn word_at(grid: Grid, block_map: [u32], cells: [u32], blocks: u32, c: vec3i) -> CellWord {
+    let (u, n) = (vec3u(c), grid.size * BLOCK)
+    let none = CellWord { vertex: NO_VERTEX, signs: 0 }
+    if c.x < 0 || c.y < 0 || c.z < 0 || u.x >= n.x || u.y >= n.y || u.z >= n.z {
+        return none
+    }
+    let s = block_map[grid.block_at(u / BLOCK)]
+    if s == 0 {
+        return none
+    }
+    CellWord::of_bits(cells[cell_key(s - 1, u % BLOCK, blocks)])
+}
+
+/// The vertex of the cell at grid cell `c` (`word_at`'s): none outside the grid, in a culled
+/// block, or past the vertices' room.
 pub fn vertex_at(
     grid: Grid,
     block_map: [u32],
@@ -478,15 +493,7 @@ pub fn vertex_at(
     room: u32,
     c: vec3i,
 ) -> u32 {
-    let (u, n) = (vec3u(c), grid.size * BLOCK)
-    if c.x < 0 || c.y < 0 || c.z < 0 || u.x >= n.x || u.y >= n.y || u.z >= n.z {
-        return NO_VERTEX
-    }
-    let s = block_map[grid.block_at(u / BLOCK)]
-    if s == 0 {
-        return NO_VERTEX
-    }
-    let v = CellWord::of_bits(cells[cell_key(s - 1, u % BLOCK, blocks)]).vertex
+    let v = word_at(grid, block_map, cells, blocks, c).vertex
     if v >= room { NO_VERTEX } else { v }
 }
 
@@ -850,7 +857,7 @@ fn place_blocks<C, F: Parts<C>>(
                 grid: grid,
                 first: 0,
                 blocks: scratch.live.items(),
-                block_map: scratch.block_map.span(0, scratch.block_map.len()),
+                block_map: scratch.block_map.items(),
                 probe: mut scratch.probe,
                 cells: mut scratch.cells,
                 verts: mut mesh.verts,
@@ -867,7 +874,7 @@ fn place_blocks<C, F: Parts<C>>(
                 grid: grid,
                 first: from + c * GROUPS_MOST,
                 blocks: scratch.live.items(),
-                block_map: scratch.block_map.span(0, scratch.block_map.len()),
+                block_map: scratch.block_map.items(),
                 probe: mut scratch.probe,
                 cells: mut scratch.cells,
                 verts: mut mesh.verts,
@@ -931,8 +938,8 @@ fn record_mesh(grid: Grid, scratch: mut Scratch, mesh: mut Mesh) {
                 room: room.vertices,
                 first: 0,
                 blocks: scratch.live.items(),
-                block_map: scratch.block_map.span(0, scratch.block_map.len()),
-                cells: scratch.cells.span(0, scratch.cells.len()),
+                block_map: scratch.block_map.items(),
+                cells: scratch.cells.items(),
                 quads: mut mesh.quads,
                 holes: mut mesh.holes,
             ),
@@ -947,8 +954,8 @@ fn record_mesh(grid: Grid, scratch: mut Scratch, mesh: mut Mesh) {
                     room: room.vertices,
                     first: c * GROUPS_MOST,
                     blocks: scratch.live.items(),
-                    block_map: scratch.block_map.span(0, scratch.block_map.len()),
-                    cells: scratch.cells.span(0, scratch.cells.len()),
+                    block_map: scratch.block_map.items(),
+                    cells: scratch.cells.items(),
                     quads: mut mesh.quads,
                     holes: mut mesh.holes,
                 ),

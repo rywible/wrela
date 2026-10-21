@@ -1,2 +1,6 @@
+# The platform: the console's protocols with its games and sessions. `protocol` is the messages
+# between the console and a session program, `session` is the session program's save policy,
+# which each game's session program gives its own parts, and `presentation` is the link between
+# a game and the console that embeds it.
 [package]
 name = "platform"

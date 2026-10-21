@@ -186,7 +186,7 @@ fn in_cell(b: Bake, i: u32, p: vec3) -> vec4 {
 @vertex
 pub fn bake_card(v: VertexIndex, i: InstanceIndex, b: Bake, cards: [Card]) -> BakeVertex {
     let card = cards[v.index / 6]
-    let (_, right, up) = view_basis(i.index)
+    let (d, right, up) = view_basis(i.index)
     let k = v.index % 6
     let qx = [-1.0, 1.0, 1.0, -1.0, 1.0, -1.0]
     let qy = [-1.0, -1.0, 1.0, -1.0, 1.0, 1.0]
@@ -194,7 +194,6 @@ pub fn bake_card(v: VertexIndex, i: InstanceIndex, b: Bake, cards: [Card]) -> Ba
     let t = card_turn(card, q)
     // The coarsest level's card (`BAKED`): the impostor holds what it takes over from.
     let world = card.centre + (right * t.x + up * t.y) * (card.size * card_scale(BAKED) * 0.5)
-    let (d, _, _) = view_basis(i.index)
     BakeVertex {
         clip: ClipPosition { position: in_cell(b, i.index, world) },
         uv: q,
@@ -446,7 +445,7 @@ pub struct FarVertex: Copy {
     pub cells: Flat<vec4u>,
     /// The part of a pixel's draws its instance keeps this way, packed (`Forest::marks`).
     pub keep: Flat<u32>,
-    /// Its own seed (`seed_of`), from where it stands in the world.
+    /// Its own seed (`seed_at`), from where it stands in the world.
     pub seed: Flat<u32>,
 }
 
@@ -713,18 +712,8 @@ pub fn far_cut(
 ) -> WithDepth<u32> {
     // The cells of a draw that holds still on the quad (hashed alpha), for its coverage.
     let size = cell_size(f.uv, cell)
-    // Its share of the pixel, where it's between two ways (`lod`).
-    if !keeps_packed(f.keep.value, pixel.position.xy) {
-        discard()
-    }
-    // The view this pixel shows this frame, and its coverage. Most of the quad is empty: left
-    // before its leaf's place is read.
-    let k = view_of(f, pixel.position.xy)
-    let (at, view) = view_at(f, k)
-    let c = sample_cell(colour, s, at, view).a
-    if c <= 0.0 || c < 1.0 && c < hashed_threshold_of(f.uv, seed_of(f), size) {
-        discard()
-    }
+    // Most of the quad is empty: left before its leaf's place is read.
+    let (at, view) = cut_view(f, pixel.position.xy, colour, s, size)
     let toward = normal_at(colour, normal, at, view).1.x * 2.0 - 1.0
     let at = leaf_place(f, cam, b, toward)
     WithDepth { color: f.id.value, depth: depth_of(cam, at) }
@@ -748,7 +737,7 @@ fn volume_normal(
     if length(v.yzw) <= 1.0e-4 * v.x || v.x <= 1.0e-5 {
         return otherwise
     }
-    normalize(oriented(yaw, pitch, vec3(v.y / wide, v.z, v.w / wide)))
+    world_normal(f, v.yzw)
 }
 
 /// `far_cut` at its quad's depth (the plane through the plant's middle, facing the eye), not
@@ -766,16 +755,41 @@ pub fn far_cut_flat(
     cell: f32,
 ) -> u32 {
     let size = cell_size(f.uv, cell)
-    if !keeps_packed(f.keep.value, pixel.position.xy) {
-        discard()
-    }
-    let k = view_of(f, pixel.position.xy)
-    let (at, view) = view_at(f, k)
-    let c = sample_cell(colour, s, at, view).a
-    if c <= 0.0 || c < 1.0 && c < hashed_threshold_of(f.uv, seed_of(f), size) {
-        discard()
-    }
+    let _ = cut_view(f, pixel.position.xy, colour, s, size)
     f.id.value
+}
+
+/// The view a far quad's pixel shows this frame (`view_of`) and the pixel's place in it, the
+/// pixel cut to its share, where it's between two ways (`lod::keeps_packed`), and to that view's
+/// coverage (`cut_dithered`): `far_cut`'s and `far_cut_flat`'s.
+fn cut_view(
+    f: FarVertex,
+    pixel: vec2,
+    colour: Texture<Rgba8>,
+    s: Sampler,
+    size: f32,
+) -> (vec2, u32) {
+    if !keeps_packed(f.keep.value, pixel) {
+        discard()
+    }
+    let (at, view) = view_at(f, view_of(f, pixel))
+    cut_dithered(f, sample_cell(colour, s, at, view).a, size)
+    (at, view)
+}
+
+/// A far quad's pixel cut where its coverage `c` is under a draw that holds still on the quad
+/// (hashed alpha, its cells `size` wide: `noise::cell_size`).
+fn cut_dithered(f: FarVertex, c: f32, size: f32) {
+    if c <= 0.0 || c < 1.0 && c < hashed_threshold_of(f.uv, f.seed.value, size) {
+        discard()
+    }
+}
+
+/// A normal `n` of a far instance's plant's frame (its crown as wide as it's drawn), in the
+/// world.
+fn world_normal(f: FarVertex, n: vec3) -> vec3 {
+    let wide = max(f.yaw_scale.value.w, 1.0e-4)
+    normalize(oriented(f.yaw_scale.value.x, f.yaw_scale.value.z, vec3(n.x / wide, n.y, n.z / wide)))
 }
 
 /// A far instance's pixel, where its prepass won (its id there): what its impostor shows
@@ -796,14 +810,7 @@ pub fn far_shade(
         discard()
     }
     let leaf = seen(f, view_of(f, pixel.position.xy), colour, normal, lt.s)
-    let wide = max(f.yaw_scale.value.w, 1.0e-4)
-    let n = normalize(
-        oriented(
-            f.yaw_scale.value.x,
-            f.yaw_scale.value.z,
-            vec3(leaf.normal.x / wide, leaf.normal.y, leaf.normal.z / wide),
-        ),
-    )
+    let n = world_normal(f, leaf.normal)
     let at = leaf_place(f, lt.cam, b, leaf.toward)
     let out = leaf_light(
         lt,
@@ -982,10 +989,6 @@ fn seed_at(at: vec3) -> u32 {
     hash2u(i32(floor(at.x * 8.0)), i32(floor(at.z * 8.0)), 0) >> 8
 }
 
-fn seed_of(f: FarVertex) -> u32 {
-    f.seed.value
-}
-
 /// A very far instance cut by its volume's opacity, dithered: temporal AA brings it to the
 /// crown's coverage, as it does an impostor's (the depth prepass's).
 @fragment
@@ -1004,10 +1007,7 @@ pub fn volume_cut(
         discard()
     }
     let met = march_volume(f, cam, b, grid, grid_depth, s)
-    let o = met.opacity
-    if o <= 0.0 || o < 1.0 && o < hashed_threshold_of(f.uv, seed_of(f), size) {
-        discard()
-    }
+    cut_dithered(f, met.opacity, size)
     WithDepth { color: f.id.value, depth: depth_of(cam, volume_place(f, b, met.at)) }
 }
 
@@ -1034,14 +1034,7 @@ pub fn volume_shade(
         discard()
     }
     let met = march_volume(f, lt.cam, b, grid, grid_depth, lt.s)
-    let wide = max(f.yaw_scale.value.w, 1.0e-4)
-    let crown_n = normalize(
-        oriented(
-            f.yaw_scale.value.x,
-            f.yaw_scale.value.z,
-            vec3(met.normal.x / wide, met.normal.y, met.normal.z / wide),
-        ),
-    )
+    let crown_n = world_normal(f, met.normal)
     // Lit where its leaves are, not on the quad (which lies in its own shadow); aged by the
     // normal the ray met (in the plant's frame: its y is the crown's).
     let out = leaf_light(

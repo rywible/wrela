@@ -1,9 +1,7 @@
 // The lookbook tool's tests: its command line, the keys that choose a shot, the shots' names
 // and files, and the interest check's line, on small fixtures.
 
-use shots::{
-    VIEWS, WS, check_line, keys, names_in, names_listed, parse_args, shown_path, size_of, stem,
-}
+use shots::{VIEWS, WS, check_line, keys, names_in, names_listed, parse_args, shown_path, stem}
 use std::json::parse
 use std::tool::blob::Data
 use std::tool::files
@@ -49,7 +47,6 @@ fn the_command_line_takes_a_directory_its_options_and_shots() {
     assert(parse_args(texts(["out", "--size", "1280"])).is_err(), "a size without its height")
     assert(parse_args(texts(["/tmp/out"])).is_err(), "a directory outside the workspace")
     assert(parse_args(texts([])).is_err(), "no directory")
-    assert(size_of("0x5").is_none() && size_of("64x48").is_some())
     assert(shown_path("ws/build/lb") == "build/lb" && WS == "ws")
 }
 

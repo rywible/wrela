@@ -5,7 +5,7 @@
 // the CPU.
 
 use diagnose::{Grid, report}
-use json::{List, list, obj}
+use json::{list, obj}
 use std::collections::Vec
 use std::field::Surface
 use std::gpu::{GlobalId, GpuBuffer, Slots, buffer, dispatch}

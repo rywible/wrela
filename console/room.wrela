@@ -1,10 +1,10 @@
 // The library's room: an endless dark. Each game is a cube in one row along the bottom of the
 // screen, standing still, its cover on its sides. The row turns like a carousel: the selection
 // takes the first place, at the left, tumbling forward to face the eye and widening into its
-// whole cover, and the rest follow it in order, the one it leaves tumbling back into a cube. The artifact, a four-dimensional cube, turns far behind them, up in the
-// middle. The CPU and the
-// GPU place and project everything with the same code, so what is drawn is exactly what the
-// pointer can hit.
+// whole cover, and the rest follow it in order, the one it leaves tumbling back into a cube.
+// The artifact, a four-dimensional cube, turns far behind them, up in the middle. The CPU and
+// the GPU place and project everything with the same code, so what is drawn is exactly what
+// the pointer can hit.
 
 // The camera: where it stands and looks, and the tangent of half its vertical view.
 pub struct Camera: Copy + GpuData {

@@ -43,7 +43,7 @@ use std::tool::drive
 use std::tool::files
 use std::tool::image
 use std::tool::run
-use toolkit::wait::{done, said, wait}
+use toolkit::wait::{done, said, trapped, wait}
 use toolkit::whole::{blob_of, data_bytes, joined, write_data, write_png}
 
 /// How many frames' PNGs are encoded and written at once, beside the frames rendering.
@@ -51,14 +51,6 @@ const SAVING: u32 = 4
 
 /// How long FFmpeg may take to make a clip, in seconds.
 const FFMPEG_TIMEOUT: f64 = 600.0
-
-/// The trap a run ended with, said with `what`, or nothing.
-fn trapped(what: str, ran: drive::Ran) -> Result<(), String> {
-    match ran.trap {
-        Some(t) => Err(String::from(f"{what}: {t.message} {t.panic}")),
-        None => Ok(()),
-    }
-}
 
 /// Runs FFmpeg in the workspace with `args`: what it said if it failed.
 @job

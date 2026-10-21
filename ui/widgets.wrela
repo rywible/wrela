@@ -96,6 +96,13 @@ fn hash(text: str, ids: [u32]) -> u32 {
     h | 1
 }
 
+/// `s` without its bytes from `from` to `to`.
+fn cut(s: mut String, from: u32, to: u32) {
+    let tail = s.as_str().slice(to, s.len()).to_string()
+    s.truncate(from)
+    s.push_str(tail.as_str())
+}
+
 pub struct Ui {
     pub theme: Theme,
     pub fonts: Fonts,
@@ -140,8 +147,7 @@ pub struct Ui {
     payload: Option<u32>,
     dropped: Option<u32>,
     dropped_at: vec2,
-    /// The last widget's id and rectangle.
-    last: u32,
+    /// The last widget's rectangle.
     last_rect: Rect,
     /// Each labelled widget this frame and last: its label's hash and rectangle (`find`).
     seen: Vec<(u32, Rect)>,
@@ -184,7 +190,6 @@ impl Ui {
             payload: None,
             dropped: None,
             dropped_at: vec2(-1.0),
-            last: 0,
             last_rect: Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 },
             seen: Vec::new(),
             last_seen: Vec::new(),
@@ -488,8 +493,7 @@ impl Ui {
     /// it, until `end_panel`.
     pub fn begin_panel(mut self, title: str, r: Rect) {
         let t = self.theme
-        let clip = self.draw.clip_rect()
-        if self.pressed && r.contains(self.press_at) && clip.contains(self.press_at) {
+        if self.pressed && self.hits(r, self.press_at) {
             // Forget a widget placed below the panel; one inside it may claim the press next.
             self.active = 0
             self.focus = 0
@@ -541,9 +545,7 @@ impl Ui {
         let div = if dir == Dir::Row { Rect::new(r.x + at - 3.0, r.y, 6.0, r.h) } else {
             Rect::new(r.x, r.y + at - 3.0, r.w, 6.0)
         }
-        if self.pressed &&
-            div.contains(self.press_at) &&
-            self.draw.clip_rect().contains(self.press_at) {
+        if self.pressed && self.hits(div, self.press_at) {
             self.active = id
         }
         if self.active == id && (self.down || self.released) {
@@ -596,9 +598,7 @@ impl Ui {
         let r = self.place(vec2(0.0, h))
         self.note(label, r)
         var y = self.scrolls.get(id).unwrap_or(0.0)
-        if r.contains(self.pointer) &&
-            self.draw.clip_rect().contains(self.pointer) &&
-            self.wheel.y != 0.0 {
+        if self.hits(r, self.pointer) && self.wheel.y != 0.0 {
             y += self.wheel.y
             self.wheel = vec2(0.0)
         }
@@ -625,9 +625,7 @@ impl Ui {
             let bar_h = min(max(r.h * r.h / height, 20.0), r.h)
             let track = Rect::new(r.right() - 6.0, r.y, 6.0, r.h)
             let bar_id = view.id ^ 2654435761
-            if self.pressed &&
-                track.contains(self.press_at) &&
-                self.draw.clip_rect().contains(self.press_at) {
+            if self.pressed && self.hits(track, self.press_at) {
                 self.active = bar_id
                 self.drag_start = self.press_at
                 self.drag_value = y
@@ -661,9 +659,8 @@ impl Ui {
         if focusable {
             self.focusable.push(id)
         }
-        let clip = self.draw.clip_rect()
-        let over = r.contains(self.pointer) && clip.contains(self.pointer)
-        if self.pressed && r.contains(self.press_at) && clip.contains(self.press_at) {
+        let over = self.hits(r, self.pointer)
+        if self.pressed && self.hits(r, self.press_at) {
             self.active = id
             self.drag_start = self.press_at
             self.dragged = false
@@ -674,14 +671,10 @@ impl Ui {
         if self.editing_id() == id && self.focus != id {
             self.end_editing()
         }
-        var clicked = self.released &&
-            self.active == id &&
-            r.contains(self.release_at) &&
-            clip.contains(self.release_at)
+        var clicked = self.released && self.active == id && self.hits(r, self.release_at)
         if focusable && self.focus == id && (self.key(Key::Enter) || self.key(Key::Space)) {
             clicked = true
         }
-        self.last = id
         (over, clicked)
     }
 
@@ -690,6 +683,11 @@ impl Ui {
     fn hidden(self, r: Rect) -> bool {
         let c = self.draw.clip_rect()
         r.bottom() + r.h <= c.y || r.y - r.h >= c.bottom()
+    }
+
+    /// Whether `p` is on `r` and inside the clipping rectangle: not on a part clipped away.
+    fn hits(self, r: Rect, p: vec2) -> bool {
+        r.contains(p) && self.draw.clip_rect().contains(p)
     }
 
     fn widget_color(self, id: u32, over: bool) -> vec4 {
@@ -708,7 +706,7 @@ impl Ui {
 
     /// Whether the pointer is on the last widget.
     pub fn hovered(self) -> bool {
-        self.last_rect.contains(self.pointer) && self.draw.clip_rect().contains(self.pointer)
+        self.hits(self.last_rect, self.pointer)
     }
 
     /// The last widget's rectangle.
@@ -1003,18 +1001,13 @@ impl Ui {
                 Key::Backspace => {
                     if cursor > 0 {
                         let from = previous_cluster(s.as_str(), cursor)
-                        let tail = s.as_str().slice(cursor, s.len()).to_string()
-                        s.truncate(from)
-                        s.push_str(tail.as_str())
+                        cut(mut s, from, cursor)
                         cursor = from
                     }
                 },
                 Key::Delete => {
                     if cursor < s.len() {
-                        let next = next_cluster(s.as_str(), cursor)
-                        let tail = s.as_str().slice(next, s.len()).to_string()
-                        s.truncate(cursor)
-                        s.push_str(tail.as_str())
+                        cut(mut s, cursor, next_cluster(s.as_str(), cursor))
                     }
                 },
                 Key::Left => {
@@ -1235,9 +1228,7 @@ impl Ui {
     /// Dragging starts at the last widget when the pointer goes down on it, carrying
     /// `payload`.
     pub fn drag_source(mut self, payload: u32) {
-        if self.pressed &&
-            self.last_rect.contains(self.press_at) &&
-            self.draw.clip_rect().contains(self.press_at) {
+        if self.pressed && self.hits(self.last_rect, self.press_at) {
             if self.released && !self.down {
                 self.dropped = Some(payload)
                 self.dropped_at = self.release_at
@@ -1250,8 +1241,7 @@ impl Ui {
 
     /// A payload dropped on the last widget this frame.
     pub fn dropped(mut self) -> Option<u32> {
-        if self.last_rect.contains(self.dropped_at) &&
-            self.draw.clip_rect().contains(self.dropped_at) {
+        if self.hits(self.last_rect, self.dropped_at) {
             if let Some(payload) = self.dropped {
                 self.dropped = None
                 return Some(payload)

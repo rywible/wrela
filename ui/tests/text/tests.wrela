@@ -4,11 +4,12 @@
 // the reference picture of the same glyphs at the same places, which ab_glyph 0.2 drew (it
 // computes each pixel's exact coverage from the outlines, white over the background).
 
+use hosts::both::bytes_of
+use hosts::steps::{built, screen, written}
 use std::collections::{Box, Vec}
 use std::io::print
 use std::job::Step
 use std::string::String
-use std::tool::answer
 use std::tool::blob
 use std::tool::blob::Data
 use std::tool::drive
@@ -21,9 +22,6 @@ use std::tool::toolchain::Override
 const W: u32 = 1280
 const H: u32 = 1400
 
-/// The most bytes a blob read gives at once.
-const CHUNK: u64 = 524288
-
 /// The lines' sizes, two lines each (main.wrela's).
 const SIZES: [f32; 7] = [10.0, 12.0, 16.0, 24.0, 32.0, 48.0, 72.0]
 
@@ -35,28 +33,6 @@ const GEOMETRY: [(Text, Text, Text, Text); 4] = [
     ("nan-spread", "32.0", "bitcast_f32(0x7fc00000)", "`spread`"),
 ]
 
-/// Writes `bytes` at `path`.
-@job
-fn written(path: take String, bytes: take Vec<u8>) {
-    var w = files::write(path.as_str(), bytes)
-    var got = w.poll()
-    while got.is_none() {
-        yield
-        got = w.poll()
-    }
-    let Some(wp) = take got else { panic("no answer") }
-    assert(answer(take wp).is_ok(), f"{path.as_str()} is written")
-}
-
-/// `text`'s bytes.
-fn utf8(text: str) -> Vec<u8> {
-    var out: Vec<u8> = Vec::new()
-    for i in 0..text.len() {
-        out.push(text.byte(i))
-    }
-    out
-}
-
 /// The baker rejects invalid sampling geometry before it tries to read the font: a build with
 /// an `em` or a `spread` that's zero, negative, infinite or not a number fails, naming it, and
 /// saying it must be a positive finite number.
@@ -66,28 +42,28 @@ fn font_baking_needs_positive_finite_geometry() {
     for k in 0..GEOMETRY.len() {
         let (name, em, spread, option) = GEOMETRY[k]
         let dir = String::from(f"scratch/{name}")
-        var files_of: Vec<(String, Vec<u8>)> = Vec::new()
+        var files_of: Vec<(String, String)> = Vec::new()
         files_of.push(
             (
                 String::from("wrela.toml"),
-                utf8(
+                String::from(
                     "[package]\nname = \"font_geometry\"\n\n[dependencies]\nui = { workspace = true }\n",
                 ),
             ),
         )
-        files_of.push((String::from("empty.ttf"), Vec::new()))
+        files_of.push((String::from("empty.ttf"), String::new()))
         files_of.push(
             (
                 String::from("main.wrela"),
-                utf8(
-                    f"use ui::ttf::{{Baked, bake}}\n\nconst FONT: Baked = bake(embed(\"empty.ttf\"), em: {em}, spread: {spread})\n\npub fn frame(time: f32, width: u32, height: u32) {{\n    let _ = FONT.fields.len()\n}}\n".as_str(),
+                String::from(
+                    f"use ui::ttf::{{Baked, bake}}\n\nconst FONT: Baked = bake(embed(\"empty.ttf\"), em: {em}, spread: {spread})\n\npub fn frame(time: f32, width: u32, height: u32) {{\n    let _ = FONT.fields.len()\n}}\n",
                 ),
             ),
         )
         for j in 0..files_of.len() {
-            let (file, bytes) = files_of[j].clone()
+            let (file, text) = files_of[j].clone()
             var w = Box::new(
-                written.start(String::from(f"{dir.as_str()}/{file.as_str()}"), take bytes),
+                written.start(String::from(f"{dir.as_str()}/{file.as_str()}"), take text),
             )
             loop {
                 match w.get_mut().resume() {
@@ -130,42 +106,6 @@ fn line_top(face: u32, i: u32) -> f32 {
     y
 }
 
-/// The bytes of `data`, read from its blob if it's one.
-@job
-fn bytes_of(data: take Data) -> Vec<u8> {
-    var out: Vec<u8> = Vec::new()
-    match take data {
-        Data::Bytes(v) => out = take v,
-        Data::Blob(held) => {
-            var n = blob::len(held)
-            var counted = n.poll()
-            while counted.is_none() {
-                yield
-                counted = n.poll()
-            }
-            let Some(np) = take counted else { panic("no answer") }
-            let Ok(size) = blob::read_len(take np) else { panic("the blob's length") }
-            var at: u64 = 0
-            while at < size {
-                let len = u32(min(size - at, CHUNK))
-                var r = blob::read(held, at, len)
-                var read = r.poll()
-                while read.is_none() {
-                    yield
-                    read = r.poll()
-                }
-                let Some(rp) = take read else { panic("no answer") }
-                let Ok(chunk) = answer(take rp) else { panic("the blob's bytes") }
-                for j in 0..chunk.len() {
-                    out.push(chunk[j])
-                }
-                at += u64(len)
-            }
-        },
-    }
-    out
-}
-
 /// The mean difference, in 255ths, between the GPU's frame and the reference over the line at
 /// `top`, `size` pixels per em, across the screen (both RGBA8).
 fn line_mean(frame: [u8], reference: [u8], top: f32, size: f32) -> f64 {
@@ -191,18 +131,20 @@ fn line_mean(frame: [u8], reference: [u8], top: f32, size: f32) -> f64 {
 @test(tool, read: [("repo", "../../..")], budget: 300)
 @job
 fn text_matches_a_reference_rasterizer() {
-    var b = toolchain::build("repo/ui/tests/text", "scratch/build", toolchain::options())
-    var built = b.poll()
-    while built.is_none() {
-        yield
-        built = b.poll()
+    var b = Box::new(
+        built.start(
+            String::from("repo/ui/tests/text"),
+            String::from("scratch/build"),
+            toolchain::options(),
+            String::from("the lines build"),
+        ),
+    )
+    loop {
+        match b.get_mut().resume() {
+            Step::Yielded => yield,
+            Step::Done(_) => break,
+        }
     }
-    let Some(bp) = take built else { panic("no answer") }
-    let Ok(build) = toolchain::read_built(take bp) else { panic("the build's request") }
-    for d in build.diagnostics {
-        assert(!d.error, d.rendered.as_str())
-    }
-    assert(build.ok, "the lines build")
     var load = drive::gpu()
     load.width = W
     load.height = H
@@ -233,15 +175,7 @@ fn text_matches_a_reference_rasterizer() {
     let Some(fp) = take framed else { panic("no answer") }
     let Ok(ran) = drive::read_ran(take fp) else { panic("the frame's request") }
     assert(ran.trap.is_none(), "the frame draws")
-    var c = drive::capture(h)
-    var captured = c.poll()
-    while captured.is_none() {
-        yield
-        captured = c.poll()
-    }
-    let Some(cp) = take captured else { panic("no answer") }
-    let Ok(shot) = drive::read_capture(take cp) else { panic("the capture") }
-    var sb = Box::new(bytes_of.start(take shot.rgba))
+    var sb = Box::new(screen.start(h))
     var frame: Vec<u8> = Vec::new()
     loop {
         match sb.get_mut().resume() {

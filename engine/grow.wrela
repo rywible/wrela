@@ -75,6 +75,21 @@ impl Grid {
         self.lo + (vec2(f32(c % self.nx), f32(c / self.nx)) + vec2(0.5)) * self.cell
     }
 
+    /// The grid's far corner: `lo` plus its cells' extent.
+    pub fn hi(self) -> vec2 {
+        self.lo + vec2(f32(self.nx), f32(self.nz)) * self.cell
+    }
+
+    /// Cell (i, j)'s `k`th neighbour (`NEIGHBOURS[k]`), or `NONE` where it's past the grid.
+    pub fn neighbour(self, i: i32, j: i32, k: u32) -> u32 {
+        let n = vec2i(i, j) + NEIGHBOURS[k]
+        if n.x >= 0 && n.y >= 0 && n.x < i32(self.nx) && n.y < i32(self.nz) {
+            u32(n.y) * self.nx + u32(n.x)
+        } else {
+            NONE
+        }
+    }
+
     /// Whether `p` is inside the grid.
     pub fn holds(self, p: vec2) -> bool {
         let q = (p - self.lo) / self.cell
@@ -191,32 +206,6 @@ impl Grid {
         }
         (b, bb)
     }
-
-    /// Each cell's least value of `g` within `r` cells each way.
-    pub fn reach_min(self, g: [f32], r: i32) -> Vec<f32> {
-        let (nx, nz) = (self.nx, self.nz)
-        var a: Vec<f32> = Vec::filled(nx * nz, 1.0e9)
-        for j in 0..nz {
-            for i in 0..nx {
-                var m = g[self.index(i32(i) - r, i32(j))]
-                for k in 1..(2 * r + 1) {
-                    m = min(m, g[self.index(i32(i) + k - r, i32(j))])
-                }
-                a[j * nx + i] = m
-            }
-        }
-        var b: Vec<f32> = Vec::filled(nx * nz, 1.0e9)
-        for j in 0..nz {
-            for i in 0..nx {
-                var m = a[self.index(i32(i), i32(j) - r)]
-                for k in 1..(2 * r + 1) {
-                    m = min(m, a[self.index(i32(i), i32(j) + k - r)])
-                }
-                b[j * nx + i] = m
-            }
-        }
-        b
-    }
 }
 
 /// A row or a column of a blur, which a helper works out.
@@ -272,10 +261,6 @@ fn blur_strip(l: mut Line, a: [f32], nx: u32, nz: u32, r: i32) {
         }
     }
 }
-
-/// The eight neighbours' offsets.
-pub const DI = [-1, 0, 1, -1, 1, -1, 0, 1]
-pub const DJ = [-1, -1, -1, 0, 0, 1, 1, 1]
 
 // ---- the ground ---------------------------------------------------------------------------------
 
@@ -681,16 +666,24 @@ fn water(g: Grid, heights: [f32]) -> (Vec<f32>, Vec<f32>) {
         let i = i32(c % g.nx)
         let j = i32(c / g.nx)
         let h = heights[c]
+        // Each lower neighbour and its share's weight (none where it isn't lower).
+        var to = [0; 8]
+        var weight = [0.0; 8]
         var total = 0.0
         var steepest = 0.0
         for k in 0..8 {
-            let ni = i + DI[k]
-            let nj = j + DJ[k]
-            if ni >= 0 && nj >= 0 && ni < i32(g.nx) && nj < i32(g.nz) {
-                let dist = if DI[k] != 0 && DJ[k] != 0 { 1.4142 * g.cell } else { g.cell }
-                let drop = (h - heights[u32(nj) * g.nx + u32(ni)]) / dist
+            let q = g.neighbour(i, j, k)
+            if q != NONE {
+                to[k] = q
+                let dist = if NEIGHBOURS[k].x != 0 && NEIGHBOURS[k].y != 0 {
+                    1.4142 * g.cell
+                } else {
+                    g.cell
+                }
+                let drop = (h - heights[to[k]]) / dist
                 if drop > 0.0 {
-                    total += pow(drop, 1.1)
+                    weight[k] = pow(drop, 1.1)
+                    total += weight[k]
                     steepest = max(steepest, drop)
                 }
             }
@@ -699,15 +692,8 @@ fn water(g: Grid, heights: [f32]) -> (Vec<f32>, Vec<f32>) {
         if total > 0.0 {
             let mine = acc[c]
             for k in 0..8 {
-                let ni = i + DI[k]
-                let nj = j + DJ[k]
-                if ni >= 0 && nj >= 0 && ni < i32(g.nx) && nj < i32(g.nz) {
-                    let o = u32(nj) * g.nx + u32(ni)
-                    let dist = if DI[k] != 0 && DJ[k] != 0 { 1.4142 * g.cell } else { g.cell }
-                    let drop = (h - heights[o]) / dist
-                    if drop > 0.0 {
-                        acc[o] += mine * pow(drop, 1.1) / total
-                    }
+                if weight[k] > 0.0 {
+                    acc[to[k]] += mine * weight[k] / total
                 }
             }
         }
@@ -1266,8 +1252,7 @@ const RECRUITS: f32 = 0.048
 /// the cells a row at a time, both in parallel.
 fn seed_rain(g: Grid, trees: [Tree], habits: [Habit], fields: mut Fields, year: i32) {
     let nn = g.cells()
-    let hi = g.lo + vec2(f32(g.nx), f32(g.nz)) * g.cell
-    let coarse = Grid::over(g.lo, hi, SEED_CELL)
+    let coarse = Grid::over(g.lo, g.hi(), SEED_CELL)
     var rains: Vec<Rain> = Vec::from_fn(
         habits.len(),
         |k| Rain { kind: k, spread: Vec::new(), gain: 0.0, wind: 0.0 },
@@ -1277,8 +1262,8 @@ fn seed_rain(g: Grid, trees: [Tree], habits: [Habit], fields: mut Fields, year: 
     borrow light = fields.light
     rows.par_each_mut(|l| rain_row(mut l, g, coarse, rains, habits, light))
     for l in rows {
+        let at = l.k * g.nx
         for r in 0..rains.len() {
-            let at = l.k * g.nx
             for i in 0..g.nx {
                 fields.seed[r * nn + at + i] = l.out[r * g.nx + i]
             }
@@ -1391,15 +1376,7 @@ fn recruit_row(row: mut Row, cx: Cx, b: Bins, f: Fields, year: i32) {
             continue
         }
         // The species whose share of the odds the draw falls in.
-        var pick = draw / min(total, 0.9) * total
-        var kind = 0
-        for k in 0..cx.habits.len() {
-            if pick < odds[k] {
-                kind = k
-                break
-            }
-            pick -= odds[k]
-        }
+        let kind = drawn(odds, cx.habits.len(), draw / min(total, 0.9) * total)
         let at = g.centre(c) +
             vec2(rand(n, u32(year) + 7001) - 0.5, rand(n, u32(year) + 9001) - 0.5) * g.cell
         if room(b, at, 1.1) {
@@ -1415,6 +1392,19 @@ fn recruit_row(row: mut Row, cx: Cx, b: Bins, f: Fields, year: i32) {
             )
         }
     }
+}
+
+/// The species, of the first `count`, whose share of `weights` (laid end to end, from 0 to their
+/// sum) holds `at`; the first species where `at` is past their sum.
+fn drawn(weights: [f32; 8], count: u32, at: f32) -> u32 {
+    var left = at
+    for k in 0..count {
+        if left < weights[k] {
+            return k
+        }
+        left -= weights[k]
+    }
+    0
 }
 
 /// What every step of the history reads: the map, its species, the land and the grain.
@@ -2359,15 +2349,7 @@ fn first_row(row: mut Row, cx: Cx, left: [u8], year: i32) {
             }
             total += weights[k]
         }
-        var pick = rand(n, 2) * total
-        var kind = 0
-        for k in 0..cx.habits.len() {
-            if pick < weights[k] {
-                kind = k
-                break
-            }
-            pick -= weights[k]
-        }
+        let kind = drawn(weights, cx.habits.len(), rand(n, 2) * total)
         let h = cx.habits[kind]
         let draw = rand(n, 1)
         let at = g.centre(c) + vec2(rand(n, 3) - 0.5, rand(n, 4) - 0.5) * g.cell
@@ -2619,11 +2601,12 @@ fn grid_minima_keep_values_above_a_billion_and_their_sources() {
     let g = Grid::over(vec2(0.0), vec2(2.0), 1.0)
     let values = [3.0e9, 2.0e9, 4.0e9, 5.0e9]
     let sources = [7, 8, 9, 10]
-    assert(g.reach_min(values, 0) == Vec::from(values), "zero radius preserves every value")
+    let (same, own) = g.reach_min_by(values, sources, 0)
+    assert(same == Vec::from(values), "zero radius preserves every value")
+    assert(own == Vec::from(sources), "zero radius keeps every source")
     let (least, by) = g.reach_min_by(values, sources, 1)
     assert(least == Vec::filled(4, 2.0e9), "the minimum comes from the field")
     assert(by == Vec::filled(n: 4, value: 8), "each minimum retains its source")
-    assert(g.reach_min(values, 1) == least)
 }
 
 /// A channel along z: a flat floor `floor` m each way of x = 0, walls rising steeply past it.
@@ -2704,27 +2687,12 @@ fn a_wood(lo: vec2, hi: vec2) -> Map {
         lo,
         hi,
         present: 0,
-        land: place::Land {
-            hills: [vec4(0.0); 8],
-            hollows: [vec4(0.0); 8],
-            ridges: [vec4(0.0); 24],
-            ravines: [vec4(0.0); 16],
-            ravine_fall: 0.0,
-            crags: [vec4(0.0); 4],
-            ramps: vec4(0.0),
-            floors: vec4(0.0),
-            tilt: vec4(0.0),
-        },
+        land: place::Land {},
         sites: Vec::new(),
         relations: Vec::new(),
         openings: Vec::new(),
         routes: Vec::new(),
-        water: place::Water {
-            meres: [vec4(0.0); 2],
-            springs: [vec2(0.0); 8],
-            spring_count: 0,
-            falls: [vec2(0.0); 2],
-        },
+        water: place::Water {},
         events: Vec::new(),
         wind: vec2(1.0, 0.0),
         kept: Vec::new(),

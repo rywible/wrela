@@ -5,42 +5,25 @@
 
 use piece::Take
 use std::collections::{Box, Vec}
-use std::io::{IoError, Pending}
-use std::job::Step
 use std::string::String
-use std::tool::{MOST_BYTES, ToolError, answer}
-use std::tool::blob
-use std::tool::blob::{Blob, Data}
 use std::tool::drive
 use std::tool::drive::Scalar
-use toolkit::whole::data_bytes
-use std::tool::files
 use std::tool::toolchain
+use toolkit::wait::{done, said, wait}
+use toolkit::whole::data_bytes
 
 /// The audio thread's rate and quantum.
 pub const RATE: f64 = 48000.0
 pub const QUANTUM: u32 = 128
-
-fn said(e: ToolError) -> String {
-    String::from(e.message())
-}
 
 /// Builds the piece at `pkg` (a root path) into its `build/audio`: that directory, or the
 /// build's errors.
 @job
 pub fn build_piece(pkg: take String) -> Result<String, String> {
     let out = String::from(f"{pkg}/build/audio")
-    var b = toolchain::build(pkg.as_str(), out.as_str(), toolchain::options())
-    var built = b.poll()
-    while built.is_none() {
-        yield
-        built = b.poll()
-    }
-    let Some(bp) = take built else { return Err(String::from("no answer")) }
-    let result = match toolchain::read_built(take bp) {
-        Ok(r) => take r,
-        Err(e) => return Err(said(e)),
-    }
+    var b = wait(toolchain::build(pkg.as_str(), out.as_str(), toolchain::options()))
+    while !b.ready() { yield }
+    let result = said(toolchain::read_built(b.polled()))?
     if !result.ok {
         var why = String::new()
         for d in result.diagnostics {
@@ -68,14 +51,9 @@ pub fn call(
     args: take Vec<Scalar>,
     what: take String,
 ) -> Result<drive::Ran, String> {
-    var c = drive::call(b, export.as_str(), args, timeout: 600.0)
-    var got = c.poll()
-    while got.is_none() {
-        yield
-        got = c.poll()
-    }
-    let Some(polled) = take got else { return Err(String::from("no answer")) }
-    match drive::read_ran(take polled) {
+    var c = wait(drive::call(b, export.as_str(), args, timeout: 600.0))
+    while !c.ready() { yield }
+    match drive::read_ran(c.polled()) {
         Ok(ran) => trapped(what.as_str(), take ran),
         Err(e) => Err(String::from(f"{what}: {e.message()}")),
     }
@@ -91,30 +69,12 @@ pub fn start_piece(
     var options = drive::cpu()
     options.width = 16
     options.height = 16
-    var l = drive::load(build.as_str(), options)
-    var lg = l.poll()
-    while lg.is_none() {
-        yield
-        lg = l.poll()
-    }
-    let Some(lp) = take lg else { return Err(String::from("no answer")) }
-    let b = match drive::read_loaded(take lp) {
-        Ok(it) => it.build,
-        Err(e) => return Err(said(e)),
-    }
-    var i = drive::init(b, timeout: 600.0)
-    var ig = i.poll()
-    while ig.is_none() {
-        yield
-        ig = i.poll()
-    }
-    let Some(ip) = take ig else { return Err(String::from("no answer")) }
-    match drive::read_ran(take ip) {
-        Ok(ran) => {
-            let _ = trapped("`init`", take ran)?
-        },
-        Err(e) => return Err(said(e)),
-    }
+    var l = wait(drive::load(build.as_str(), options))
+    while !l.ready() { yield }
+    let b = said(drive::read_loaded(l.polled()))?.build
+    var i = wait(drive::init(b, timeout: 600.0))
+    while !i.ready() { yield }
+    let _ = trapped("`init`", said(drive::read_ran(i.polled()))?)?
     let Some(t) = take chosen else { return Ok(b) }
     var args: Vec<Scalar> = Vec::new()
     var list = String::new()
@@ -128,15 +88,12 @@ pub fn start_piece(
     var c = Box::new(
         call.start(b, String::from("choose"), take args, String::from(f"`choose([{list}])`")),
     )
-    loop {
-        match c.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => {
-                let _ = (take r)?
-                break
-            },
-        }
+    var r = done(c.get_mut().resume())
+    while r.is_none() {
+        yield
+        r = done(c.get_mut().resume())
     }
+    let _ = (take r).unwrap()?
     Ok(b)
 }
 
@@ -146,28 +103,17 @@ pub fn describe_piece(b: take drive::Build) -> Result<Take, String> {
     var c = Box::new(
         call.start(b, String::from("describe"), Vec::new(), String::from("`describe()`")),
     )
-    loop {
-        match c.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => {
-                let _ = (take r)?
-                break
-            },
-        }
+    var r = done(c.get_mut().resume())
+    while r.is_none() {
+        yield
+        r = done(c.get_mut().resume())
     }
+    let _ = (take r).unwrap()?
     var lines: Vec<String> = Vec::new()
     loop {
-        var o = drive::logs(b)
-        var got = o.poll()
-        while got.is_none() {
-            yield
-            got = o.poll()
-        }
-        let Some(polled) = take got else { return Err(String::from("no answer")) }
-        let logs = match drive::read_logs(take polled) {
-            Ok(l) => take l,
-            Err(e) => return Err(said(e)),
-        }
+        var o = wait(drive::logs(b))
+        while !o.ready() { yield }
+        let logs = said(drive::read_logs(o.polled()))?
         for l in logs.lines {
             lines.push(l.clone())
         }
@@ -187,19 +133,16 @@ pub fn length_of(b: take drive::Build, given: take Option<f64>) -> Result<f64, S
     var c = Box::new(
         call.start(b, String::from("seconds"), Vec::new(), String::from("`seconds()`")),
     )
-    var ran: Option<Result<drive::Ran, String>> = None
-    while ran.is_none() {
-        match c.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => ran = Some(take r),
-        }
+    var r = done(c.get_mut().resume())
+    while r.is_none() {
+        yield
+        r = done(c.get_mut().resume())
     }
-    let Some(r) = take ran else { return Err(String::from("no answer")) }
-    let done = (take r)?
-    if done.results.is_empty() {
+    let ran = (take r).unwrap()?
+    if ran.results.is_empty() {
         return Err(String::from("`seconds()` returns no f32"))
     }
-    match done.results[0] {
+    match ran.results[0] {
         Scalar::F32(s) => Ok(f64(s)),
         Scalar::F64(s) => Ok(s),
         _ => Err(String::from("`seconds()` returns no f32")),
@@ -274,53 +217,34 @@ pub fn render_piece(
     timed: take bool,
 ) -> Result<Rendered, String> {
     let n = quanta(seconds)?
-    var f = drive::frames(b, 1, std::input::Script::frames(), timeout: 600.0)
-    var fg = f.poll()
-    while fg.is_none() {
-        yield
-        fg = f.poll()
-    }
-    let Some(fp) = take fg else { return Err(String::from("no answer")) }
-    match drive::read_ran(take fp) {
+    var f = wait(drive::frames(b, 1, std::input::Script::frames(), timeout: 600.0))
+    while !f.ready() { yield }
+    match drive::read_ran(f.polled()) {
         Ok(ran) => {
             let _ = trapped("the first frame", take ran)?
         },
         Err(e) => return Err(String::from(f"the first frame: {e.message()}")),
     }
-    var a = drive::audio(b, n, timed, timeout: 600.0)
-    var ag = a.poll()
-    while ag.is_none() {
-        yield
-        ag = a.poll()
-    }
-    let Some(ap) = take ag else { return Err(String::from("no answer")) }
-    let voice = match drive::read_audio(take ap) {
-        Ok(v) => take v,
-        Err(e) => return Err(said(e)),
-    }
+    var a = wait(drive::audio(b, n, timed, timeout: 600.0))
+    while !a.ready() { yield }
+    let voice = said(drive::read_audio(a.polled()))?
     var times: Vec<f64> = Vec::new()
     if let Some(t) = voice.times.clone() {
         var j = Box::new(data_bytes.start(take t))
-        var result: Option<Result<Vec<Vec<u8>>, String>> = None
-        while result.is_none() {
-            match j.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(r) => result = Some(take r),
-            }
+        var r = done(j.get_mut().resume())
+        while r.is_none() {
+            yield
+            r = done(j.get_mut().resume())
         }
-        let Some(r) = take result else { return Err(String::from("no answer")) }
-        times = f64s((take r)?)
+        times = f64s((take r).unwrap()?)
     }
     var j = Box::new(data_bytes.start(voice.samples.clone()))
-    var result: Option<Result<Vec<Vec<u8>>, String>> = None
-    while result.is_none() {
-        match j.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => result = Some(take r),
-        }
+    var r = done(j.get_mut().resume())
+    while r.is_none() {
+        yield
+        r = done(j.get_mut().resume())
     }
-    let Some(r) = take result else { return Err(String::from("no answer")) }
-    let bytes = (take r)?
+    let bytes = (take r).unwrap()?
     let samples = f32s(bytes)
     Ok(Rendered { bytes, samples, times })
 }
@@ -328,7 +252,7 @@ pub fn render_piece(
 /// Closes `b`.
 @job
 pub fn close(b: take drive::Build) -> u32 {
-    var c = drive::close(b)
-    while c.poll().is_none() { yield }
+    var c = wait(drive::close(b))
+    while !c.ready() { yield }
     0
 }

@@ -176,10 +176,10 @@ impl Obstacles {
         let nx = u32(ceil((hi.x - lo.x) / BIN))
         let nz = u32(ceil((hi.y - lo.y) / BIN))
         var count: Vec<u32> = Vec::filled(nx * nz + 1, 0)
-        var keep: Vec<bool> = Vec::with_capacity(all.len())
+        var bins: Vec<u32> = Vec::with_capacity(all.len())
         for o in all {
             let b = bin_of(lo, nx, nz, o.a)
-            keep.push(b < nx * nz)
+            bins.push(b)
             if b < nx * nz {
                 count[b + 1] += 1
             }
@@ -190,17 +190,15 @@ impl Obstacles {
         }
         var cursor = count.clone()
         var items: Vec<u32> = Vec::filled(2 * count[nx * nz], 0)
-        var i = 0
-        for o in all {
-            if keep[i] {
-                let b = bin_of(lo, nx, nz, o.a)
+        for i in 0..all.len() {
+            let b = bins[i]
+            if b < nx * nz {
                 let corner = lo + vec2(f32(b % nx), f32(b / nx)) * BIN
-                let (w0, w1) = pack(o, corner)
+                let (w0, w1) = pack(all[i], corner)
                 items[2 * cursor[b]] = w0
                 items[2 * cursor[b] + 1] = w1
                 cursor[b] += 1
             }
-            i += 1
         }
         Obstacles { lo, nx, nz, start: count, items }
     }
@@ -573,7 +571,7 @@ struct Row {
     ok: Vec<bool>,
 }
 
-/// A cell's eight neighbours, and the two it passes between on a diagonal (0 for none).
+/// A cell's eight neighbours: its four sides, then its four diagonals (`Walkable::step_from`).
 const STEPS = [
     vec2i(1, 0),
     vec2i(-1, 0),
@@ -630,6 +628,27 @@ impl Walkable {
         best
     }
 
+    /// The open cell a step `STEPS[k]` from cell `c` reaches, or `grow::NONE`: off the grid,
+    /// closed, or a diagonal that cuts the corner between two closed cells.
+    fn step_from(self, c: u32, k: u32) -> u32 {
+        let g = self.grid
+        let here = vec2i(i32(c % g.nx), i32(c / g.nx))
+        let q = here + STEPS[k]
+        if q.x < 0 || q.y < 0 || q.x >= i32(g.nx) || q.y >= i32(g.nz) {
+            return grow::NONE
+        }
+        let n = u32(q.y) * g.nx + u32(q.x)
+        if !self.ok[n] {
+            return grow::NONE
+        }
+        // A diagonal step only between two open cells.
+        if k >= 4 &&
+            (!self.ok[u32(here.y) * g.nx + u32(q.x)] || !self.ok[u32(q.y) * g.nx + u32(here.x)]) {
+            return grow::NONE
+        }
+        n
+    }
+
     /// The quickest way on the mask from `from` to `to` (A*: eight neighbours, no corner cut
     /// between two closed cells), as cell middles; empty if there's none.
     pub fn way(self, from: vec2, to: vec2) -> Vec<vec2> {
@@ -651,23 +670,10 @@ impl Walkable {
             if c == goal {
                 break
             }
-            let here = vec2i(i32(c % g.nx), i32(c / g.nx))
             for k in 0..8 {
-                let q = here + STEPS[k]
-                if q.x < 0 || q.y < 0 || q.x >= i32(g.nx) || q.y >= i32(g.nz) {
+                let n = self.step_from(c, k)
+                if n == grow::NONE {
                     continue
-                }
-                let n = u32(q.y) * g.nx + u32(q.x)
-                if !self.ok[n] {
-                    continue
-                }
-                // A diagonal step only between two open cells.
-                if k >= 4 {
-                    let a = u32(here.y) * g.nx + u32(q.x)
-                    let b = u32(q.y) * g.nx + u32(here.x)
-                    if !self.ok[a] || !self.ok[b] {
-                        continue
-                    }
                 }
                 let step = if k >= 4 { 1.41421 } else { 1.0 }
                 let c2 = cost[c] + step * g.cell
@@ -687,13 +693,11 @@ impl Walkable {
             c = came[c]
         }
         out.push(g.centre(start))
-        var back: Vec<vec2> = Vec::with_capacity(out.len())
-        var k = out.len()
-        while k > 0 {
-            k -= 1
-            back.push(out[k])
+        let n = out.len()
+        for k in 0..(n / 2) {
+            out.swap(k, n - 1 - k)
         }
-        back
+        out
     }
 
     /// The cells a player can walk to from `from` (as `way` steps: eight neighbours, no corner
@@ -709,22 +713,10 @@ impl Walkable {
         seen[start] = true
         while !todo.is_empty() {
             let c = todo.pop().unwrap()
-            let here = vec2i(i32(c % g.nx), i32(c / g.nx))
             for k in 0..8 {
-                let q = here + STEPS[k]
-                if q.x < 0 || q.y < 0 || q.x >= i32(g.nx) || q.y >= i32(g.nz) {
+                let n = self.step_from(c, k)
+                if n == grow::NONE || seen[n] {
                     continue
-                }
-                let n = u32(q.y) * g.nx + u32(q.x)
-                if seen[n] || !self.ok[n] {
-                    continue
-                }
-                if k >= 4 {
-                    let a = u32(here.y) * g.nx + u32(q.x)
-                    let b = u32(q.y) * g.nx + u32(here.x)
-                    if !self.ok[a] || !self.ok[b] {
-                        continue
-                    }
                 }
                 seen[n] = true
                 todo.push(n)
@@ -830,14 +822,8 @@ impl Ground for Band {
 
 /// No water, and nothing standing on the ground, over 20 m by 20 m.
 fn dry() -> (Water, Obstacles) {
-    let water = Water {
-        meres: [vec4(0.0), vec4(0.0)],
-        springs: [vec2(0.0), ..vec2(0.0)],
-        spring_count: 0,
-        falls: [vec2(0.0), vec2(0.0)],
-    }
     let nothing: Vec<Obstacle> = Vec::new()
-    (water, Obstacles::of(nothing, vec2(0.0), vec2(20.0)))
+    (Water {}, Obstacles::of(nothing, vec2(0.0), vec2(20.0)))
 }
 
 /// A band too steep to stand on that lies between two cells' middles closes the cells beside it,
@@ -894,7 +880,7 @@ fn a_mask_without_a_solid_closes_its_cells_as_its_own_obstacles_do() {
     }
 }
 
-/// A body on ground too steep to stand on steps off it, down, but not up it/// A body on ground too steep to stand on steps off it, down, but not up it (the floor's walk
+/// A body on ground too steep to stand on steps off it, down, but not up it (the floor's walk
 /// stopped for good on the crag's talus); one that stands is still held back from ground too
 /// steep.
 @test

@@ -62,9 +62,8 @@ use std::job::{Job, Step}
 use std::string::String
 use std::time::now
 use std::tool::{RUNNING, args}
-use std::tool::drive
-use std::string::parse_f64_at
 use std::tool::files::rooted
+use toolkit::wait::done
 use toolkit::whole::{read_file, write_file}
 
 /// The root the tool reads and writes the workspace in.
@@ -92,11 +91,6 @@ pub struct Args: Clone {
     pub out: Option<String>,
     pub against: Option<String>,
     pub notes: Option<String>,
-}
-
-fn number(s: str) -> Option<f64> {
-    let owned = String::from(s)
-    parse_f64_at(owned.as_bytes(), 0, s.len())
 }
 
 /// The command line's words as `Args`, or `None` for a usage error.
@@ -130,11 +124,11 @@ pub fn parse_args(given: [String]) -> Option<Args> {
             i += 2
         } else if x == "--seconds" {
             let Some(v) = take value else { return None }
-            a.seconds = Some(number(v.as_str())?)
+            a.seconds = Some(v.as_str().parse_f64()?)
             i += 2
         } else if x == "--from" {
             let Some(v) = take value else { return None }
-            a.from = number(v.as_str())?
+            a.from = v.as_str().parse_f64()?
             i += 2
         } else if x == "--key" {
             let Some(v) = take value else { return None }
@@ -292,107 +286,67 @@ fn run(a: take Args) -> Result<(), String> {
     }
 }
 
-/// The piece started: built, loaded and its take chosen.
-@job
-fn started(a: take Args, build: take String) -> Result<drive::Build, String> {
-    var s = Box::new(start_piece.start(take build, a.chosen.clone()))
-    loop {
-        match s.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => return take r,
-        }
-    }
-}
-
-/// The take an instance of the piece in `build` describes, the instance closed after.
+/// The take an instance of the piece in `build` (started with `a`'s take chosen) describes, the
+/// instance closed after.
 @job
 pub fn take_of(a: take Args, build: take String) -> Result<Take, String> {
-    var s = Box::new(started.start(take a, take build))
-    var made: Option<Result<drive::Build, String>> = None
+    var s = Box::new(start_piece.start(take build, a.chosen.clone()))
+    var made = done(s.get_mut().resume())
     while made.is_none() {
-        match s.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => made = Some(take r),
-        }
+        yield
+        made = done(s.get_mut().resume())
     }
-    let Some(m) = take made else { return Err(String::from("no answer")) }
-    let b = (take m)?
+    let b = (take made).unwrap()?
     var d = Box::new(describe_piece.start(b))
-    var result: Option<Result<Take, String>> = None
+    var result = done(d.get_mut().resume())
     while result.is_none() {
-        match d.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => result = Some(take r),
-        }
+        yield
+        result = done(d.get_mut().resume())
     }
     var c = Box::new(close.start(b))
-    loop {
-        match c.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
-    let Some(r) = take result else { return Err(String::from("no answer")) }
-    r
+    while done(c.get_mut().resume()).is_none() { yield }
+    (take result).unwrap()
 }
 
-/// The voice of an instance of the piece in `build` over its length, and that length, the
-/// instance closed after.
+/// The voice of an instance of the piece in `build` (started with `a`'s take chosen) over its
+/// length (`a`'s seconds, or the piece's), and that length, the instance closed after.
 @job
 pub fn voice_of(
     a: take Args,
     build: take String,
     timed: take bool,
 ) -> Result<(Rendered, f64), String> {
-    let given = a.seconds
-    var s = Box::new(started.start(take a, take build))
-    var made: Option<Result<drive::Build, String>> = None
+    var s = Box::new(start_piece.start(take build, a.chosen.clone()))
+    var made = done(s.get_mut().resume())
     while made.is_none() {
-        match s.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => made = Some(take r),
-        }
+        yield
+        made = done(s.get_mut().resume())
     }
-    let Some(m) = take made else { return Err(String::from("no answer")) }
-    let b = (take m)?
-    var l = Box::new(length_of.start(b, given))
-    var length: Option<Result<f64, String>> = None
+    let b = (take made).unwrap()?
+    var l = Box::new(length_of.start(b, a.seconds))
+    var length = done(l.get_mut().resume())
     while length.is_none() {
-        match l.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => length = Some(take r),
-        }
+        yield
+        length = done(l.get_mut().resume())
     }
-    var result: Option<Result<(Rendered, f64), String>> = None
-    let Some(len) = take length else { return Err(String::from("no answer")) }
-    match take len {
-        Err(why) => result = Some(Err(take why)),
+    let result = match (take length).unwrap() {
+        Err(why) => Err(take why),
         Ok(seconds) => {
             var r = Box::new(render_piece.start(b, seconds, timed))
-            while result.is_none() {
-                match r.get_mut().resume() {
-                    Step::Yielded => yield,
-                    Step::Done(done) => {
-                        result = Some(
-                            match take done {
-                                Ok(v) => Ok((take v, seconds)),
-                                Err(why) => Err(take why),
-                            },
-                        )
-                    },
-                }
+            var rendered = done(r.get_mut().resume())
+            while rendered.is_none() {
+                yield
+                rendered = done(r.get_mut().resume())
+            }
+            match (take rendered).unwrap() {
+                Ok(v) => Ok((take v, seconds)),
+                Err(why) => Err(take why),
             }
         },
     }
     var c = Box::new(close.start(b))
-    loop {
-        match c.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
-    let Some(r) = take result else { return Err(String::from("no answer")) }
-    r
+    while done(c.get_mut().resume()).is_none() { yield }
+    result
 }
 
 /// A piece's action: built once, then described, rendered, or both (on two instances: `describe`
@@ -424,15 +378,12 @@ pub fn piece_command(a: take Args) -> Result<(), String> {
     let started_at = now()
     let pkg = in_root(a.root.as_str(), a.dir.as_str())?
     var bj = Box::new(build_piece.start(take pkg))
-    var built: Option<Result<String, String>> = None
+    var built = done(bj.get_mut().resume())
     while built.is_none() {
-        match bj.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => built = Some(take r),
-        }
+        yield
+        built = done(bj.get_mut().resume())
     }
-    let Some(br) = take built else { return Err(String::from("no answer")) }
-    let build = (take br)?
+    let build = (take built).unwrap()?
     let wants_take = action.as_str() == "describe" ||
         action.as_str() == "numbers" ||
         action.as_str() == "midi" ||
@@ -622,15 +573,12 @@ pub fn partials_command(a: take Args) -> Result<(), String> {
     let shown = a.rest[0].clone()
     let path = in_root(a.root.as_str(), shown.as_str())?
     var r = Box::new(read_file.start(take path, shown.clone()))
-    var bytes: Option<Result<Vec<u8>, String>> = None
+    var bytes = done(r.get_mut().resume())
     while bytes.is_none() {
-        match r.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(b) => bytes = Some(take b),
-        }
+        yield
+        bytes = done(r.get_mut().resume())
     }
-    let Some(b) = take bytes else { return Err(String::from("no answer")) }
-    let w = wav::read((take b)?, shown.as_str())?
+    let w = wav::read((take bytes).unwrap()?, shown.as_str())?
     let mono = w.mono()
     let remaining = f64(mono.len()) / w.rate - a.from
     if remaining <= 0.0 {

@@ -158,9 +158,7 @@ impl Plant {
             points[i] = mix(a, b, vec3(t))
             radii[i] = mix(r_from, r_to, t)
         }
-        if !self.limbs.is_full() {
-            self.limbs.push(Tube { points, radii })
-        }
+        self.tube(points, radii)
     }
 
     /// A limb through four points, its radius at each given: a trunk that flares at its root
@@ -430,21 +428,8 @@ pub fn card_scale(level: u32) -> f32 {
     sqrt(f32(1 << level))
 }
 
-/// Card `id` of a plant's `n`: which level's own share it's in (the coarsest's first), and its
-/// place in that share as a fraction.
-fn card_share(id: u32, n: u32) -> (u32, f32) {
-    let n2 = level_cards(n, 2)
-    let n1 = level_cards(n, 1)
-    if id < n2 {
-        return (2, (f32(id) + 0.5) / f32(n2))
-    }
-    if id < n1 {
-        return (1, (f32(id - n2) + 0.5) / f32(n1 - n2))
-    }
-    (0, (f32(id - n1) + 0.5) / f32(n - n1))
-}
-
-/// The level share card `id` of a plant's `n` is in (`card_share`): its first card and its end.
+/// The level's own share card `id` of a plant's `n` is in (the coarsest's first): its first card
+/// and its end.
 fn share_range(id: u32, n: u32) -> vec2u {
     let n2 = level_cards(n, 2)
     let n1 = level_cards(n, 1)
@@ -509,7 +494,9 @@ pub fn card_orders(plant: Plant, n: u32, seed: u32) -> Vec<u32> {
 /// clumps by their areas), where it is (on its clump's surface or a little inside), and its
 /// draws' seed.
 fn card_place(plant: Plant, n: u32, seed: u32, id: u32) -> (u32, vec3, u32) {
-    let (_, f) = card_share(id, n)
+    // Its place in its level's own share, as a fraction.
+    let range = share_range(id, n)
+    let f = (f32(id - range.x) + 0.5) / f32(range.y - range.x)
     // The clump whose share of the total area holds `f`.
     var total = 0.0
     for i in 0..plant.clumps.len() {

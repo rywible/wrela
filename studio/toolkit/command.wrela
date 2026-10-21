@@ -1,0 +1,12 @@
+// A tool's command line: the values its flags take.
+
+/// `WxH`, as a tool's `--size` takes it: the width and the height, each at least 1.
+pub fn size_of(s: str) -> Option<(u32, u32)> {
+    let x = s.find("x")?
+    let w = s.slice(0, x).parse_u32()?
+    let h = s.slice(x + 1, s.len()).parse_u32()?
+    if w == 0 || h == 0 {
+        return None
+    }
+    Some((w, h))
+}

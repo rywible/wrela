@@ -138,8 +138,8 @@ pub fn facing(yaw: f32) -> vec2 {
     vec2(sin(yaw), cos(yaw))
 }
 
-/// The digit a key types, if it's one.
-fn digit(k: Key) -> Option<u32> {
+/// The digit a key types (0 to 9), if it's one of the digit keys.
+pub fn digit(k: Key) -> Option<u32> {
     match k {
         Key::Digit0 => Some(0),
         Key::Digit1 => Some(1),
@@ -477,7 +477,7 @@ fn framed(
     let to = focus.at.xz - feet.xz
     let w = if length(to) > 0.1 { clamp(focus.weight, 0.0, 1.0) } else { 0.0 }
     let ahead = facing(wrap(yaw + wrap(atan2(to.x, to.y) - yaw) * w))
-    let right = vec2(-ahead.y, ahead.x) * -1.0
+    let right = vec2(ahead.y, -ahead.x)
     let back = vec3(-ahead.x * cos(pitch), -sin(pitch), -ahead.y * cos(pitch))
     let side = vec3(right.x, 0.0, right.y) * mix(f.shoulder, f.focus_shoulder, w)
     let want = target + back * f.behind + side
@@ -819,25 +819,8 @@ impl Ground for Shelf {
 /// At yaw zero, +x is the camera's right: D asks for +x and A for -x.
 @test
 fn the_side_keys_move_the_way_they_are_named() {
-    var c = Controls {
-        forward: false,
-        back: false,
-        left: false,
-        right: true,
-        turn_left: false,
-        turn_right: false,
-        run_held: false,
-        walk_on: false,
-        run_on: false,
-        yaw: 0.0,
-        pitch: 0.0,
-        dragging: false,
-        pointer: vec2(0.0),
-        typing: false,
-        digits: 0,
-        travel: NONE,
-        glide: 0,
-    }
+    var c = spawn(Shelf { high: 0.0 }, Place::of(vec2(0.0)), 0.0).controls
+    c.right = true
     let (right, _) = wish(c)
     c.right = false
     c.left = true
@@ -853,12 +836,7 @@ fn movement_turns_toward_the_camera_relative_wish_without_snapping() {
     let ground = Shelf { high: 1.0 }
     let none: Vec<footing::Obstacle> = Vec::new()
     let o = Obstacles::of(none, vec2(-20.0), vec2(20.0))
-    let water = Water {
-        meres: [vec4(0.0), vec4(0.0)],
-        springs: [vec2(0.0), ..vec2(0.0)],
-        spring_count: 0,
-        falls: [vec2(0.0), vec2(0.0)],
-    }
+    let water = Water {}
     var p = spawn(ground, Place::of(vec2(0.0)), 0.0)
     p.velocity = vec2(0.0, 3.0)
     p.controls.yaw = PI - 0.01
@@ -886,12 +864,7 @@ fn travel_policy_has_distinct_walk_and_shift_sprint_speeds() {
     let ground = Shelf { high: 1.0 }
     let none: Vec<footing::Obstacle> = Vec::new()
     let o = Obstacles::of(none, vec2(-100.0), vec2(100.0))
-    let water = Water {
-        meres: [vec4(0.0), vec4(0.0)],
-        springs: [vec2(0.0), ..vec2(0.0)],
-        spring_count: 0,
-        falls: [vec2(0.0), vec2(0.0)],
-    }
+    let water = Water {}
     var p = spawn(ground, Place::of(vec2(0.0)), 0.0)
     let motion = Motion { walk: 3.0, run: 7.5 }
     p.controls.forward = true
@@ -915,12 +888,7 @@ fn an_eased_response_answers_starts_stops_and_reversals_quickly() {
     let ground = Shelf { high: 1.0 }
     let none: Vec<footing::Obstacle> = Vec::new()
     let o = Obstacles::of(none, vec2(-100.0), vec2(100.0))
-    let water = Water {
-        meres: [vec4(0.0), vec4(0.0)],
-        springs: [vec2(0.0), ..vec2(0.0)],
-        spring_count: 0,
-        falls: [vec2(0.0), vec2(0.0)],
-    }
+    let water = Water {}
     let motion = Motion { walk: 3.0, run: 7.5, turn: 10.0, response: 8.0 }
     var p = spawn(ground, Place::of(vec2(0.0)), 0.0)
     p.controls.forward = true

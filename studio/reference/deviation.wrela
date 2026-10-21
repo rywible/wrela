@@ -9,7 +9,6 @@
 // probe asks doesn't depend on which instance answers, so the report is the same however many
 // there are.
 
-use std::math
 use mesh::{Solid, cross3, dot3, len3, unit3}
 use std::collections::Vec
 use std::string::String
@@ -632,7 +631,7 @@ impl Deviation {
                 names.push(take name)
             }
         }
-        names.sort_by(|a, b| text_before(a.as_str(), b.as_str()))
+        names.sort_by(|a, b| a.as_str() < b.as_str())
         for name in names {
             var n = 0
             var at: Option<vec3d> = None
@@ -737,17 +736,6 @@ impl Deviation {
             String::from("null")
         }
     }
-}
-
-/// Whether text `a` sorts before `b`, byte by byte.
-fn text_before(a: str, b: str) -> bool {
-    let n = min(a.len(), b.len())
-    for i in 0..n {
-        if a.byte(i) != b.byte(i) {
-            return a.byte(i) < b.byte(i)
-        }
-    }
-    a.len() < b.len()
 }
 
 /// A finite number as JSON (`null` otherwise).

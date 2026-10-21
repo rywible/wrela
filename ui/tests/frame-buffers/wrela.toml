@@ -4,3 +4,6 @@
 # of ui's own regressions.
 [package]
 name = "ui_frame_buffers"
+
+[dependencies]
+hosts = { workspace = true }

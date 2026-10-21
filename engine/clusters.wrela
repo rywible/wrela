@@ -28,7 +28,7 @@
 use creature::{Creature, Parts}
 use realize::{
     BLOCK, CellWord, Grid, LiveBlock, Mesh, NO_VERTEX, Room, Scratch, SkinVertex, cell_key,
-    record_cull, record_vertices, vertex_at,
+    record_cull, record_vertices, vertex_at, word_at,
 }
 use std::collections::replace
 use std::derive::{Box3, gradient}
@@ -165,8 +165,8 @@ pub fn cook<C, F: Parts<C>>(field: F, bounds: Box3, cell: f32, levels: u32) -> C
                 grid: grid,
                 room: mesh.verts.capacity(),
                 blocks: scratch.live.items(),
-                block_map: scratch.block_map.span(0, scratch.block_map.len()),
-                cells: scratch.cells.span(0, scratch.cells.len()),
+                block_map: scratch.block_map.items(),
+                cells: scratch.cells.items(),
                 verts: mesh.verts.items(),
                 words: mut words,
                 spans: mut spans,
@@ -197,7 +197,7 @@ pub fn cook<C, F: Parts<C>>(field: F, bounds: Box3, cell: f32, levels: u32) -> C
                     live: scratch.live.count(),
                     blocks: scratch.live.items(),
                     spans: spans.items(),
-                    child_map: child.scratch.block_map.span(0, child.scratch.block_map.len()),
+                    child_map: child.scratch.block_map.items(),
                     child_errors: child.errors.items(),
                     errors: mut errors,
                 ),
@@ -206,7 +206,7 @@ pub fn cook<C, F: Parts<C>>(field: F, bounds: Box3, cell: f32, levels: u32) -> C
         }
         // The level below's pairs of errors, now that its parents' are known; and the coarsest
         // level's, which has none (its own buffers stand in for a parent's).
-        let map = scratch.block_map.span(0, scratch.block_map.len())
+        let map = scratch.block_map.items()
         for mut c in out {
             if c.grid.cell * 2.0 == grid.cell {
                 dispatch(
@@ -329,10 +329,9 @@ pub fn link_parents(
     if id.x >= live[0] {
         return
     }
-    let pb = grid.block_xyz(blocks[id.x].block) / 2
     var up = -1.0
-    if has_parent != 0 && pb.x < parent.size.x && pb.y < parent.size.y && pb.z < parent.size.z {
-        let s = parent_map[parent.block_at(pb)]
+    if has_parent != 0 {
+        let s = slot_at(parent, parent_map, grid.block_xyz(blocks[id.x].block) / 2)
         if s != 0 {
             up = parent_errors[s - 1]
         }
@@ -340,28 +339,27 @@ pub fn link_parents(
     pairs[id] = vec2(errors[id.x], up)
 }
 
-// ---- cooking -------------------------------------------------------------------------------------
-
-/// The cell word at grid cell `c` (which may be outside the grid): `NO_VERTEX`'s word outside
-/// the grid or in a culled block.
-fn word_at(grid: Grid, block_map: [u32], cells: [u32], blocks: u32, c: vec3i) -> CellWord {
-    let (u, n) = (vec3u(c), grid.size * BLOCK)
-    let none = CellWord { vertex: NO_VERTEX, signs: 0 }
-    if c.x < 0 || c.y < 0 || c.z < 0 || u.x >= n.x || u.y >= n.y || u.z >= n.z {
-        return none
+/// Block `b`'s entry in `grid`'s block map `map`: its live slot + 1, or 0 where it has no
+/// surface or is outside the grid.
+fn slot_at(grid: Grid, map: [u32], b: vec3u) -> u32 {
+    if b.x >= grid.size.x || b.y >= grid.size.y || b.z >= grid.size.z {
+        return 0
     }
-    let s = block_map[grid.block_at(u / BLOCK)]
-    if s == 0 {
-        return none
-    }
-    CellWord::of_bits(cells[cell_key(s - 1, u % BLOCK, blocks)])
+    map[grid.block_at(b)]
 }
+
+/// Child `i` (0 to 7) of block `b`, at the level below.
+fn child_of(b: vec3u, i: u32) -> vec3u {
+    b * 2 + vec3u(i & 1, (i >> 1) & 1, (i >> 2) & 1)
+}
+
+// ---- cooking -------------------------------------------------------------------------------------
 
 fn unit(a: u32) -> vec3i {
     vec3i(i32(a == 0), i32(a == 1), i32(a == 2))
 }
 
-/// Corner `j` of a cell's signs (bit 0 along x, 1 along y, 2 along z) at offsets `x`, `y`, `z`.
+/// A cell's sign at its corner `o` (each offset 0 or 1): bit `o.x + 2 o.y + 4 o.z` of `signs`.
 fn sign_at(signs: u32, o: vec3i) -> u32 {
     (signs >> u32(o.x + 2 * o.y + 4 * o.z)) & 1
 }
@@ -369,7 +367,7 @@ fn sign_at(signs: u32, o: vec3i) -> u32 {
 /// Whether the quad edge between cells `p` and `p - unit(b)` is on the boundary of block
 /// `owner`'s quads: another crossed grid edge of the face between them (`p`'s low face along
 /// `b`) has its quad owned by another block (an edge is owned by the cell whose low corner it
-/// leaves). `own` is the quad's own grid edge: along `a`, from cell `c`'s low corner.
+/// leaves). The quad's own grid edge is along `own_axis`, from cell `c`'s low corner.
 fn on_boundary(p: vec3i, b: u32, signs: u32, own_axis: u32, c: vec3i, owner: vec3i) -> bool {
     let x = (b + 1) % 3
     let y = (b + 2) % 3
@@ -622,11 +620,7 @@ pub fn inherit_errors(
     var e = max(bitcast_f32(spans[3 + 3 * id.x]), FLOOR * grid.cell)
     let b = grid.block_xyz(blocks[id.x].block)
     for i in 0..8 {
-        let c = b * 2 + vec3u(i & 1, (i >> 1) & 1, (i >> 2) & 1)
-        if c.x >= child_grid.size.x || c.y >= child_grid.size.y || c.z >= child_grid.size.z {
-            continue
-        }
-        let s = child_map[child_grid.block_at(c)]
+        let s = slot_at(child_grid, child_map, child_of(b, i))
         if s != 0 {
             e = max(e, child_errors[s - 1])
         }
@@ -759,13 +753,8 @@ pub fn select(
         return
     }
     // Too coarse here: its live children are tried a level down.
-    let child = cut.parent
     for i in 0..8 {
-        let c = b * 2 + vec3u(i & 1, (i >> 1) & 1, (i >> 2) & 1)
-        if c.x >= child.size.x || c.y >= child.size.y || c.z >= child.size.z {
-            continue
-        }
-        let s = child_map[child.block_at(c)]
+        let s = slot_at(cut.parent, child_map, child_of(b, i))
         if s != 0 {
             push_pair(mut next, instance, s - 1)
         }
@@ -990,15 +979,12 @@ impl Clusters {
         fit_list(mut self.here, most)
         fit_list(mut self.below, most)
         write(mut self.here, 0, [0])
-        // Each level's child grid and block map (the level below's; the finest's own, unused).
-        var grids: Vec<Grid> = Vec::new()
-        for k in 0..levels {
-            grids.push(self.levels[if k == 0 { 0 } else { k - 1 }].grid)
-        }
         for i in 0..levels {
             let k = levels - 1 - i
+            // Its child grid and block map: the level below's (the finest's own, unused).
             let child_k = if k == 0 { 0 } else { k - 1 }
-            let child_map = self.maps[child_k].span(0, self.maps[child_k].len())
+            let child_grid = self.levels[child_k].grid
+            let child_map = self.maps[child_k].items()
             write(mut self.below, 0, [0])
             match mut self.levels[k] {
                 l => {
@@ -1031,7 +1017,7 @@ impl Clusters {
                         pixels,
                         level: k,
                         grid: l.grid,
-                        parent: grids[k],
+                        parent: child_grid,
                     }
                     dispatch(
                         select.bind(

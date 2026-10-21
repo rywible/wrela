@@ -3,6 +3,7 @@
 // tests need no render.
 
 use audio_tool::json::{Value, obj, text}
+use audio_tool::wav::{push_tag, push_u16, push_u32}
 use engine::rng::Rng
 use std::collections::Vec
 use std::math
@@ -67,36 +68,25 @@ pub fn round_even(x: f64) -> f64 {
     if floor(r / 2.0) * 2.0 == r { r } else { r + 1.0 }
 }
 
-/// `x` rounded to `places` places, as Python's `round(x, places)` gives it.
+/// `x` rounded to `places` places (1, 2 or 4), as Python's `round(x, places)` gives it.
 pub fn rounded(x: f64, places: u32) -> f64 {
-    let s = if places == 1 { String::from(f"{x:.1}") } else { String::from(f"{x:.2}") }
-    s.as_str().parse_f64().unwrap_or(x)
-}
-
-fn push_u16(out: mut Vec<u8>, x: u32) {
-    out.push(u8(x & 255))
-    out.push(u8((x >> 8) & 255))
-}
-
-fn push_u32(out: mut Vec<u8>, x: u32) {
-    for k in 0..4 {
-        out.push(u8((x >> (8 * k)) & 255))
+    let s = if places == 1 {
+        String::from(f"{x:.1}")
+    } else if places == 2 {
+        String::from(f"{x:.2}")
+    } else {
+        String::from(f"{x:.4}")
     }
+    s.as_str().parse_f64().unwrap_or(x)
 }
 
 /// A 16-bit PCM WAV file of `samples` times `gain`, padded with silence to `len` samples, each
 /// `x * 32767`, rounded, as spike 14's round 3 was written.
 pub fn pcm16(samples: [f64], gain: f64, len: u32, channels: u32, rate: u32) -> Vec<u8> {
     var out: Vec<u8> = Vec::with_capacity(44 + 2 * len)
-    for t in ["RIFF"] {
-        for k in 0..4 {
-            out.push(t.byte(k))
-        }
-    }
+    push_tag(mut out, "RIFF")
     push_u32(mut out, 36 + 2 * len)
-    for k in 0..8 {
-        out.push("WAVEfmt ".byte(k))
-    }
+    push_tag(mut out, "WAVEfmt ")
     push_u32(mut out, 16)
     push_u16(mut out, 1)
     push_u16(mut out, channels)
@@ -104,9 +94,7 @@ pub fn pcm16(samples: [f64], gain: f64, len: u32, channels: u32, rate: u32) -> V
     push_u32(mut out, rate * 2 * channels)
     push_u16(mut out, 2 * channels)
     push_u16(mut out, 16)
-    for k in 0..4 {
-        out.push("data".byte(k))
-    }
+    push_tag(mut out, "data")
     push_u32(mut out, 2 * len)
     for i in 0..len {
         let x = if i < samples.len() { samples[i] * gain } else { 0.0 }
@@ -284,11 +272,7 @@ pub fn score(key: [Pair], answers: str) -> Result<Value, String> {
         obj()
             .with("wrela", Value::Int(i64(wrela)))
             .with("of", Value::Int(i64(key.len())))
-            .with("p", Value::Num(rounded4(binomial_p(wrela, key.len()))))
+            .with("p", Value::Num(rounded(binomial_p(wrela, key.len()), 4)))
             .with("passes", Value::Bool(wrela >= GATE_PASS)),
     )
-}
-
-fn rounded4(x: f64) -> f64 {
-    String::from(f"{x:.4}").as_str().parse_f64().unwrap_or(x)
 }

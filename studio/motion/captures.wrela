@@ -2,10 +2,9 @@
 // its contact sheet's layout: what is pure of the tool, so its tests need no build.
 
 use audio_tool::sheet::Image
-use lookbook_tool::shots::{SETTLE_FRAMES, WS, choose, size_of}
-use std::collections::Vec
+use lookbook_tool::shots::{SETTLE_FRAMES, WS, choose}
+use toolkit::command::size_of
 use std::input::{Key, Script}
-use std::string::String
 use std::tool::files::rooted
 
 /// A capture: its name, its script, and the first and last frames it keeps.

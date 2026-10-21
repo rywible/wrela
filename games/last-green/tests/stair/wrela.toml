@@ -6,3 +6,6 @@
 # `std::tool::toolchain` and drive the stair on the GPU, handing over between the builds.
 [package]
 name = "stair_tour"
+
+[dependencies]
+hosts = { workspace = true }

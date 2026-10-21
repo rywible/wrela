@@ -7,6 +7,7 @@
 use engine::bake::{Decisions, WEAR_N, WET_N}
 use engine::grow::{State, Tree}
 use species::Species
+use std::math::TAU
 
 /// The egg's place: 10 km from the gate, south-east over the plateau.
 pub const EGG = vec2(7070.0, -7070.0)
@@ -14,32 +15,31 @@ pub const EGG = vec2(7070.0, -7070.0)
 /// Where the egg's road leaves the floor: its south-east corner.
 const ROAD_FROM = vec2(1650.0, -1250.0)
 
+/// How long the straight line from the floor's corner to the egg's place is (m), and its way.
+const ROAD_LEN: f32 = length(EGG - ROAD_FROM)
+const ROAD_ALONG: vec2 = (EGG - ROAD_FROM) / ROAD_LEN
+
 /// The egg's road's line `t` m along the straight line from the floor's corner to the egg's
 /// place: bending slowly either side of it, the bend fading out at both ends, so the road meets
 /// the floor and the egg's place.
 fn road_at(t: f32) -> vec2 {
-    let d = EGG - ROAD_FROM
-    let len = length(d)
-    let along = d / len
-    let side = vec2(-along.y, along.x)
+    let side = vec2(-ROAD_ALONG.y, ROAD_ALONG.x)
     let bend = 120.0 * sin(t * 0.0011) + 40.0 * sin(t * 0.0037 + 1.0)
-    let fade = smoothstep(0.0, 300.0, t) * smoothstep(0.0, 300.0, len - t)
-    ROAD_FROM + along * t + side * bend * fade
+    let fade = smoothstep(0.0, 300.0, t) * smoothstep(0.0, 300.0, ROAD_LEN - t)
+    ROAD_FROM + ROAD_ALONG * t + side * bend * fade
 }
 
 /// How far `p` is from the egg's road (m).
 pub fn road_distance(p: vec2) -> f32 {
-    let d = EGG - ROAD_FROM
-    let t = clamp(dot(p - ROAD_FROM, d / length(d)), 0.0, length(d))
+    let t = clamp(dot(p - ROAD_FROM, ROAD_ALONG), 0.0, ROAD_LEN)
     length(p - road_at(t))
 }
 
 /// The egg's road from the floor's corner to the egg's place, a point every `every` m along it.
 pub fn road_points(every: f32) -> Vec<vec2> {
-    let len = length(EGG - ROAD_FROM)
     var out: Vec<vec2> = Vec::new()
     var t = 0.0
-    while t < len {
+    while t < ROAD_LEN {
         out.push(road_at(t))
         t += every
     }
@@ -71,9 +71,9 @@ pub fn is_wild(t: vec2i) -> bool {
 }
 
 /// Wild tile `t`'s decisions, as a baked tile's: its trees (`own`, or grown when it's empty), no
-/// trails, damp ground, no streams.
+/// trails, damp ground, no streams (`untrodden`).
 pub fn decisions(t: vec2i, own: take Vec<Tree>) -> Decisions {
-    decisions_with(t, take own, road_distance, kept_clear, species::habits())
+    decisions_with(t, take own, road_distance, kept_clear, species::HABITS)
 }
 
 /// `decisions`, its trees kept `clear` of what `ride` gives the distance to and of where `clear`
@@ -90,6 +90,11 @@ pub fn decisions_with(
     } else {
         take own
     }
+    untrodden(t, take trees)
+}
+
+/// Tile `t`'s decisions with `trees` and nothing else: no trails, damp ground, no streams.
+pub fn untrodden(t: vec2i, trees: take Vec<Tree>) -> Decisions {
     Decisions {
         tile: t,
         trees,
@@ -103,7 +108,7 @@ pub fn decisions_with(
 pub fn egg_stones() -> Vec<vec4> {
     var out: Vec<vec4> = Vec::new()
     for i in 0..11 {
-        let a = 6.2831853 * f32(i) / 11.0
+        let a = TAU * f32(i) / 11.0
         out.push(
             vec4(
                 EGG + vec2(cos(a), sin(a)) * 12.0,
@@ -137,8 +142,7 @@ pub fn trunks_round(p: vec2, reach: f32) -> Vec<vec4> {
             }
             for tr in candidates {
                 if wild && standing_trunk(tr.state, tr.tall) && length(tr.at - p) < reach {
-                    let drawn = trees::as_drawn([tr])[0]
-                    out.push(vec4(drawn.at, max(drawn.girth, 0.04), 0.0))
+                    out.push(vec4(tr.at, max(trees::drawn_girth(tr), 0.04), 0.0))
                 } else if tr.state == State::Log && length(tr.at - p) < reach + logs::REACH {
                     for log in logs::obstacles(
                         [tr],
@@ -310,7 +314,7 @@ fn dense_low_log_answers_coalesce_without_losing_clearance_or_solid_wood() {
     var at = vec2(-3.0, 0.0)
     for _ in 0..120 {
         let (moved, _) = engine::footing::step_over(
-            behaviour::Flat {},
+            engine::terrain::Flat {},
             behaviour::DRY,
             obstacles,
             at,

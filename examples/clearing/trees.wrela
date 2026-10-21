@@ -5,7 +5,7 @@
 
 use engine::noise::{noise2, pick, rand}
 use engine::plant::{Bark, Instance, Leaves, Plant, plant, tint_of}
-use great_tree::tree::great_tree
+use great_tree::tree::{far_tree, great_tree}
 use engine::vegetation::Placed
 use scene::{KNOLL, MEADOW, STAND, in_gap, on_ground, past_edge}
 use std::math::TAU
@@ -52,21 +52,6 @@ pub fn shrub(s: u32) -> Plant {
         let r = size * 1.2 * rand(s, 20 + i)
         let at = vec3(r * cos(a) * 1.4, size * pick(s, 30 + i, lo: 0.3, hi: 1.0), r * sin(a) * 1.4)
         p.clump(at, radius: size * pick(s, 40 + i, lo: 0.5, hi: 1.0))
-    }
-    p
-}
-
-/// A far tree, seed `s`: one crown of three clumps, no trunk to see.
-pub fn far_tree(s: u32) -> Plant {
-    var p = plant(leaves: Leaves { size: 2.4, cover: 1.2 }, bark: Bark {})
-    let tall = pick(s, 1, lo: 12.0, hi: 18.0)
-    for i in 0..3 {
-        let at = vec3(
-            pick(s, 10 + i, lo: -2.0, hi: 2.0),
-            tall * pick(s, 20 + i, lo: 0.55, hi: 0.8),
-            pick(s, 30 + i, lo: -2.0, hi: 2.0),
-        )
-        p.clump(at, radius: pick(s, 40 + i, lo: 2.6, hi: 3.6))
     }
     p
 }

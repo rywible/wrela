@@ -46,7 +46,7 @@ pub fn grown(grain: Grain) -> History {
     simulate(
         ground::GROUND,
         m,
-        species::habits(),
+        species::HABITS,
         grain,
         domain_lo(),
         domain_hi(),
@@ -68,7 +68,7 @@ pub fn past(land: Land, year: i32) -> Start {
             p.last[c] = u8(u32(Use::Wild))
         }
     }
-    let s = left_by(p, land, species::habits(), elves, year, world(m))
+    let s = left_by(p, land, species::HABITS, elves, year, world(m))
     print(told(p, s, land))
     s
 }
@@ -176,7 +176,7 @@ fn obstacles(u: engine::bake::Unbaked) -> Obstacles {
     let m = map::map()
     obstacles_of(
         trees::as_drawn(u.trees),
-        species::habits(),
+        species::HABITS,
         u.streams,
         stones::stones(m),
         stones::walls(m),
@@ -216,27 +216,23 @@ pub fn waters() -> Laid {
     Laid { courses: COURSES.courses.clone(), pools: COURSES.pools.clone(), mesh }
 }
 
-/// The interest check on the bake (#54 §4): its report (`report.json`) and its views
-/// (`views.bin`), shipped for the map lens and the floor's tests; and the map with the check
-/// (`map.bin`, `interest::map_image`), which the play harness shows (M).
 /// The play harness's map: metres a pixel.
 pub const MAP_PX: f32 = 4.0
 
 // The walk's mask tests steep cells at five points (`footing::walkable_of`).
+/// The interest check on the bake (#54 §4): its report (`report.json`) and its views
+/// (`views.bin`), shipped for the map lens and the floor's tests; and the map with the check
+/// (`map.bin`, `interest::map_image`), which the play harness shows (M).
 @fuel(2 ** 43)
 pub const CHECKED: Shipped = ship("check", checked())
 
 fn checked() -> Vec<(String, Vec<u8>)> {
     let u = decisions()
     let m = map::map()
-    let fields = Grid::over(
-        u.wear_grid.lo,
-        u.wear_grid.lo + vec2(f32(u.wear_grid.nx), f32(u.wear_grid.nz)) * u.wear_grid.cell,
-        2.0,
-    )
+    let fields = Grid::over(u.wear_grid.lo, u.wear_grid.hi(), 2.0)
     var e = Evidence::of_decisions(
         take u.trees,
-        species::habits(),
+        species::HABITS,
         map::PRESENT,
         fields,
         u.wet_grid,
@@ -247,7 +243,7 @@ fn checked() -> Vec<(String, Vec<u8>)> {
     // The crowns the renderer draws, and what's built (AC3's calibration).
     e.crowns = trees::drawn_crowns(e.trees)
     e.solids = blockouts::solids(m)
-    let c = check(ground::GROUND, m, species::habits(), e, OBSTACLES, stones::stones(m), FULL)
+    let c = check(ground::GROUND, m, species::HABITS, e, OBSTACLES, stones::stones(m), FULL)
     let text = report(ground::GROUND, m, c)
     // The floor's walk, on a walkable mask a metre a cell that knows the logs, walls and
     // thickets (the check's sight grid, 4 m a cell, doesn't), and the fallen wood a player
@@ -528,17 +524,18 @@ fn calibration(
             let across = vec2(-on.w, on.z)
             // The trodden line's middle across the route's there: the middle of where it's most
             // trodden (its tread).
+            var tread = [0.0; 81]
             var best = 0.0
             for i in 0..81 {
                 let q = on.xy + across * (f32(i) * 0.1 - 4.0)
-                best = max(best, engine::bake::path_at(m.routes, all, q, used: 1.0))
+                tread[i] = engine::bake::path_at(m.routes, all, q, used: 1.0)
+                best = max(best, tread[i])
             }
             var sum = vec2(0.0)
             var n = 0.0
             for i in 0..81 {
-                let q = on.xy + across * (f32(i) * 0.1 - 4.0)
-                if engine::bake::path_at(m.routes, all, q, used: 1.0) >= 0.95 * best {
-                    sum += q
+                if tread[i] >= 0.95 * best {
+                    sum += on.xy + across * (f32(i) * 0.1 - 4.0)
                     n += 1.0
                 }
             }

@@ -3,7 +3,7 @@
 // main.wrela turns input into these calls and paint.wrela draws it.
 
 use std::serialize::Serialize
-use ui::draw::Rect
+use ui::draw::{Rect, line_distance}
 
 pub enum Kind: Copy + Eq + Serialize {
     Note,
@@ -143,13 +143,13 @@ impl Item {
         self.at + 0.5 * self.size
     }
 
-    /// Where the line from its centre toward `toward` leaves its edge.
     /// A triangle's corners: its point, then its base's left and right.
     pub fn corners(self) -> (vec2, vec2, vec2) {
         let r = self.rect()
         (vec2(r.x + 0.5 * r.w, r.y), vec2(r.x, r.bottom()), vec2(r.right(), r.bottom()))
     }
 
+    /// Where the line from its centre toward `toward` leaves its edge.
     pub fn edge(self, toward: vec2) -> vec2 {
         let c = self.center()
         let d = toward - c
@@ -208,7 +208,7 @@ impl Item {
                 for i in 1..self.points.len() {
                     let a = self.at + self.points[i - 1]
                     let b = self.at + self.points[i]
-                    if distance_to_line(p, a, b) <= reach {
+                    if line_distance(p, a, b) <= reach {
                         return true
                     }
                 }
@@ -227,9 +227,9 @@ impl Item {
                 }
                 let inside = side(a, b) <= 0.0 && side(b, z) <= 0.0 && side(z, a) <= 0.0
                 inside ||
-                    distance_to_line(p, a, b) <= slack ||
-                    distance_to_line(p, b, z) <= slack ||
-                    distance_to_line(p, z, a) <= slack
+                    line_distance(p, a, b) <= slack ||
+                    line_distance(p, b, z) <= slack ||
+                    line_distance(p, z, a) <= slack
             },
             Kind::Pill => {
                 // Within half its height (or width) of the line along its middle.
@@ -239,7 +239,7 @@ impl Item {
                 let along = if r.w >= r.h { vec2(0.5 * r.w - h, 0.0) } else {
                     vec2(0.0, 0.5 * r.h - h)
                 }
-                distance_to_line(p, c - along, c + along) <= h + slack
+                line_distance(p, c - along, c + along) <= h + slack
             },
             _ => {
                 let r = self.rect()
@@ -252,22 +252,9 @@ impl Item {
     }
 }
 
-/// The distance from `p` to the line from `a` to `b`.
-pub fn distance_to_line(p: vec2, a: vec2, b: vec2) -> f32 {
-    let ab = b - a
-    let along = dot(ab, ab)
-    let t = if along > 0.0 { clamp(dot(p - a, ab) / along, 0.0, 1.0) } else { 0.0 }
-    length(p - a - ab * t)
-}
-
 /// A frame's title strip, above it.
 pub fn title_strip(f: Item) -> Rect {
     Rect::new(f.at.x, f.at.y - TITLE, f.size.x, TITLE)
-}
-
-/// Whether rectangles `a` and `b` overlap.
-fn overlaps(a: Rect, b: Rect) -> bool {
-    a.x <= b.right() && a.right() >= b.x && a.y <= b.bottom() && a.bottom() >= b.y
 }
 
 /// Whether the line from `a` to `b` passes through rectangle `r` (Liang and Barsky's clipping).
@@ -293,7 +280,6 @@ pub fn crosses(a: vec2, b: vec2, r: Rect) -> bool {
     lo <= hi
 }
 
-/// Whether `ids` holds `id`.
 /// Group `g`'s new number in `pairs` (old, new), or 0.
 fn renumbered(pairs: [(u32, u32)], g: u32) -> u32 {
     for p in pairs {
@@ -302,6 +288,7 @@ fn renumbered(pairs: [(u32, u32)], g: u32) -> u32 {
     0
 }
 
+/// Whether `ids` holds `id`.
 pub fn has(ids: [u32], id: u32) -> bool {
     for i in ids {
         if i == id {
@@ -400,9 +387,7 @@ impl Board {
                     hi = max(hi, p)
                 }
                 let h = vec2(0.5 * PEN_WIDTH)
-                lo = it.at + lo - h
-                hi = it.at + hi + h
-                Rect::new(lo.x, lo.y, hi.x - lo.x, hi.y - lo.y)
+                Rect::spanning(it.at + lo - h, it.at + hi + h)
             },
             Kind::Link => {
                 let route = self.route(it)
@@ -489,7 +474,7 @@ impl Board {
             }
             any = true
         }
-        if any { Some(Rect::new(lo.x, lo.y, hi.x - lo.x, hi.y - lo.y)) } else { None }
+        if any { Some(Rect::spanning(lo, hi)) } else { None }
     }
 
     /// The topmost item at world point `p`, within `slack` units: links lie over the rest.
@@ -504,7 +489,7 @@ impl Board {
                 }
                 let route = self.route(it)
                 for k in 1..route.len() {
-                    if distance_to_line(p, route[k - 1], route[k]) <= slack + LINK_WIDTH {
+                    if line_distance(p, route[k - 1], route[k]) <= slack + LINK_WIDTH {
                         return Some(it.id)
                     }
                 }
@@ -539,8 +524,7 @@ impl Board {
             if it.kind == Kind::Frame || it.kind == Kind::Link {
                 continue
             }
-            let b = self.bounds(i)
-            if b.x >= r.x && b.y >= r.y && b.right() <= r.right() && b.bottom() <= r.bottom() {
+            if r.encloses(self.bounds(i)) {
                 out.push(it.id)
             }
         }
@@ -571,7 +555,7 @@ impl Board {
         var out: Vec<u32> = Vec::new()
         for i in 0..self.items.len() {
             let b = self.bounds(i)
-            if !(b.x <= r.right() && b.right() >= r.x && b.y <= r.bottom() && b.bottom() >= r.y) {
+            if !b.overlaps(r) {
                 continue
             }
             // A connector or a stroke touches it where a line of it does, not its bounds; a
@@ -582,14 +566,13 @@ impl Board {
             }
             // A frame only when the rectangle holds it all: a drag inside one selects its
             // contents, not it.
-            if it.kind == Kind::Frame &&
-                !(b.x >= r.x && b.y >= r.y && b.right() <= r.right() && b.bottom() <= r.bottom()) {
+            if it.kind == Kind::Frame && !r.encloses(b) {
                 continue
             }
             let touches = match it.kind {
                 Kind::Link => {
                     let route = self.route(it)
-                    var any = it.size.x > 0.0 && overlaps(it.rect(), r)
+                    var any = it.size.x > 0.0 && it.rect().overlaps(r)
                     for k in 1..route.len() {
                         if crosses(route[k - 1], route[k], r) { any = true }
                     }
@@ -638,9 +621,7 @@ impl Board {
         for _ in 0..20 {
             var free = true
             for o in self.items {
-                if o.boxed() &&
-                    o.kind != Kind::Frame &&
-                    overlaps(o.rect().shrink(0.5), out.rect()) {
+                if o.boxed() && o.kind != Kind::Frame && o.rect().shrink(0.5).overlaps(out.rect()) {
                     free = false
                 }
             }
@@ -922,7 +903,7 @@ fn straight_connectors_meet_the_rounded_edges_of_pills() {
             let angle = f32(i) * std::math::TAU / 32.0
             let d = vec2(cos(angle), sin(angle))
             let edge = p.edge(p.center() + d * 500.0)
-            let radius = distance_to_line(edge, p.center() - along, p.center() + along)
+            let radius = line_distance(edge, p.center() - along, p.center() + along)
             assert(abs(radius - r) < 0.001, "the endpoint lies on the pill, not its box")
             let from = edge - p.center()
             assert(dot(from, d) > 0.0 && abs(from.x * d.y - from.y * d.x) < 0.001)

@@ -41,7 +41,7 @@ pub struct Drainage {
 /// to an outlet, across a pit by the way it would spill.
 pub fn drainage(g: Grid, heights: [f32], outlets: [bool]) -> Drainage {
     let nn = g.cells()
-    let (nx, nz) = (g.nx, g.nz)
+    let nx = g.nx
     var filled: Vec<f32> = Vec::filled(nn, 0.0)
     var done: Vec<bool> = Vec::filled(nn, value: false)
     var order: Vec<u32> = Vec::with_capacity(nn)
@@ -61,14 +61,11 @@ pub fn drainage(g: Grid, heights: [f32], outlets: [bool]) -> Drainage {
         order.push(c)
         let (i, j) = (i32(c % nx), i32(c / nx))
         for k in 0..8 {
-            let n = vec2i(i, j) + NEIGHBOURS[k]
-            if n.x >= 0 && n.y >= 0 && n.x < i32(nx) && n.y < i32(nz) {
-                let q = u32(n.y) * nx + u32(n.x)
-                if !done[q] {
-                    done[q] = true
-                    filled[q] = max(heights[q], h + RISE)
-                    heap.push(filled[q], q)
-                }
+            let q = g.neighbour(i, j, k)
+            if q != NONE && !done[q] {
+                done[q] = true
+                filled[q] = max(heights[q], h + RISE)
+                heap.push(filled[q], q)
             }
         }
     }
@@ -77,9 +74,8 @@ pub fn drainage(g: Grid, heights: [f32], outlets: [bool]) -> Drainage {
         let (i, j) = (i32(c % nx), i32(c / nx))
         var best = 0.0
         for k in 0..8 {
-            let n = vec2i(i, j) + NEIGHBOURS[k]
-            if n.x >= 0 && n.y >= 0 && n.x < i32(nx) && n.y < i32(nz) {
-                let q = u32(n.y) * nx + u32(n.x)
+            let q = g.neighbour(i, j, k)
+            if q != NONE {
                 let fall = (filled[c] - filled[q]) / length(vec2(NEIGHBOURS[k]))
                 if fall > best {
                     best = fall
@@ -160,7 +156,7 @@ pub fn evolve(
     s: Shaping,
 ) -> Landscape {
     let nn = g.cells()
-    var h: Vec<f32> = Vec::from_fn(nn, |c| start[c])
+    var h: Vec<f32> = Vec::from(start)
     var area: Vec<f32> = Vec::filled(nn, 0.0)
     var down: Vec<u32> = Vec::filled(nn, NONE)
     var k: Vec<f32> = Vec::filled(nn, 0.0)
@@ -210,9 +206,9 @@ pub fn evolve(
         heights: h,
         down,
         area,
-        uplift: Vec::from_fn(nn, |c| uplift[c]),
+        uplift: Vec::from(uplift),
         erodibility: k,
-        base: Vec::from_fn(nn, |c| base[c]),
+        base: Vec::from(base),
         lakes,
     }
 }
@@ -239,7 +235,7 @@ pub fn collapse(
     scatter: f32 = 0.0,
     step: u32 = 0,
 ) {
-    let (nx, nz) = (g.nx, g.nz)
+    let nx = g.nx
     var moved: Vec<f32> = Vec::filled(g.cells(), 0.0)
     for _ in 0..passes {
         for c in 0..g.cells() {
@@ -254,9 +250,8 @@ pub fn collapse(
             var to = NONE
             var run = 1.0
             for k in 0..8 {
-                let n = vec2i(i, j) + NEIGHBOURS[k]
-                if n.x >= 0 && n.y >= 0 && n.x < i32(nx) && n.y < i32(nz) {
-                    let q = u32(n.y) * nx + u32(n.x)
+                let q = g.neighbour(i, j, k)
+                if q != NONE {
                     let d = length(vec2(NEIGHBOURS[k])) * g.cell
                     let slope = (h[c] - h[q]) / d
                     if slope > best {
@@ -836,9 +831,9 @@ pub fn summary(
             if !outlets[c] {
                 var lower = false
                 for k in 0..8 {
-                    let q = vec2i(i32(i), i32(j)) + NEIGHBOURS[k]
-                    if q.x >= 0 && q.y >= 0 && q.x < i32(g.nx) && q.y < i32(g.nz) {
-                        lower = lower || h[g.index(q.x, q.y)] < h[c]
+                    let q = g.neighbour(i32(i), i32(j), k)
+                    if q != NONE {
+                        lower = lower || h[q] < h[c]
                     }
                 }
                 if !lower {
@@ -1056,13 +1051,10 @@ pub fn places(l: Landscape, surface: [f32], counted: [bool], f: Finding) -> Vec<
         var big = 0
         var least = 1.0e30
         for k in 0..8 {
-            let n = vec2i(i, j) + NEIGHBOURS[k]
-            if n.x >= 0 && n.y >= 0 && n.x < i32(nx) && n.y < i32(nz) {
-                let d = u32(n.y) * nx + u32(n.x)
-                if l.down[d] == c && l.area[d] >= f.channel {
-                    big += 1
-                    least = min(least, l.area[d])
-                }
+            let d = g.neighbour(i, j, k)
+            if d != NONE && l.down[d] == c && l.area[d] >= f.channel {
+                big += 1
+                least = min(least, l.area[d])
             }
         }
         if big == 0 {
@@ -1671,7 +1663,7 @@ fn still(g: Grid, h: [f32]) -> Landscape {
     gather(g, d.order, down, mut area)
     Landscape {
         grid: g,
-        heights: Vec::from_fn(g.cells(), |c| d.filled[c]),
+        heights: d.filled.clone(),
         down,
         area,
         uplift: Vec::filled(g.cells(), 0.0),

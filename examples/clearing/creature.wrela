@@ -4,10 +4,10 @@
 // on its neck and tail); and its look.
 
 use engine::creature::{Creature, Skeleton}
-use engine::gait::{Body, Path, body}
+use engine::gait::{Body, Path}
 use engine::look::{CreatureLook, Mesh}
 use engine::render::Look
-use fawn::creature::{Coat, fawn, skeleton}
+use fawn::creature::{Coat, fawn, skeleton, walker_body}
 
 /// The trail it follows, as points on the plane a Catmull-Rom curve passes through: from the
 /// second point to the last but one.
@@ -106,27 +106,7 @@ pub const SKELETON: Skeleton = skeleton()
 
 /// The creature, its body for walking: springs on its neck (to its head) and its tail. Found
 /// once, by the build.
-pub const WALKER_BODY: Body = walker_body()
-
-fn walker_body() -> Body {
-    let s = SKELETON
-    let head = [
-        s.find("neck 0"),
-        s.find("neck 1"),
-        s.find("neck 2"),
-        s.find("neck 3"),
-        s.find("head"),
-    ]
-    let tail = [
-        s.find("tail 0"),
-        s.find("tail 1"),
-        s.find("tail 2"),
-        s.find("tail 3"),
-        s.find("tail 4"),
-        s.find("tail 5"),
-    ]
-    body(s, head, tail, head_k: 70.0, tail_k: 28.0)
-}
+pub const WALKER_BODY: Body = walker_body(SKELETON, head_k: 70.0, tail_k: 28.0)
 
 /// The fawn, as the clearing keeps it while its mesh is realized (`engine::realize`).
 pub type Grown = Creature<Coat>

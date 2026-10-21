@@ -5,7 +5,7 @@
 // (the newest the program holds: the vertices' count and items, the quads' count and items, the
 // draw's and the skin pass's arguments, the holes and the tally).
 
-use engine::creature::{Creature, Skeleton, creature}
+use engine::creature::{Creature, Parts, Skeleton, creature}
 use engine::stone::Rock
 use engine::realize::{Grid, Mesh, Room, Scratch, record, record_cull, record_finish, record_slice}
 use herd::grazer::{FALLOFF, Grazer, grazer}
@@ -40,11 +40,9 @@ pub fn realize(game: mut Game, s: u32, cell: f32) {
     record(g.field(), grid, FALLOFF, mut game.scratch, mut game.mesh)
 }
 
-/// Realizes seed `s` at `cell` as a `Realizer` spreads a level change over frames, in `slices`
-/// slices of its live blocks, into a mesh of its own: the mesh's buffers are the newest.
-pub fn realize_sliced(game: mut Game, s: u32, cell: f32, slices: u32) {
-    let (g, grid) = prepare(mut game, s, cell)
-    let field = g.field()
+/// Records `field` on `grid` as a `Realizer` spreads a level change over frames: its live blocks
+/// culled, recorded in `slices` slices, then its mesh finished.
+fn record_sliced<C, F: Parts<C>>(field: F, grid: Grid, slices: u32, game: mut Game) {
     record_cull(field, grid, mut game.scratch, mut game.mesh)
     for k in 0..slices {
         record_slice(
@@ -57,6 +55,13 @@ pub fn realize_sliced(game: mut Game, s: u32, cell: f32, slices: u32) {
         )
     }
     record_finish(field, grid, FALLOFF, mut game.scratch, mut game.mesh)
+}
+
+/// Realizes seed `s` at `cell` as a `Realizer` spreads a level change over frames, in `slices`
+/// slices of its live blocks, into a mesh of its own: the mesh's buffers are the newest.
+pub fn realize_sliced(game: mut Game, s: u32, cell: f32, slices: u32) {
+    let (g, grid) = prepare(mut game, s, cell)
+    record_sliced(g.field(), grid, slices, mut game)
 }
 
 /// A slab 7.5 m square and 3 cm thick, a creature of one bone (at its centre).
@@ -82,20 +87,9 @@ pub fn realize_slab(game: mut Game, slices: u32) {
     let field = slab.field()
     if slices == 0 {
         record(field, grid, FALLOFF, mut game.scratch, mut game.mesh)
-        return
+    } else {
+        record_sliced(field, grid, slices, mut game)
     }
-    record_cull(field, grid, mut game.scratch, mut game.mesh)
-    for k in 0..slices {
-        record_slice(
-            field,
-            grid,
-            slice: k,
-            slices: slices,
-            scratch: mut game.scratch,
-            mesh: mut game.mesh,
-        )
-    }
-    record_finish(field, grid, FALLOFF, mut game.scratch, mut game.mesh)
 }
 
 pub fn frame(game: mut Game, time: f32, width: u32, height: u32) {}
