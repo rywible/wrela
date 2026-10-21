@@ -1,0 +1,645 @@
+// The listening tool (`wrela tool listening`): blind listening tests of wrela's piano (#48, #56),
+// renders matched in loudness, shuffled, and the key kept apart until the listener has answered.
+//
+// ```text
+// wrela tool listening -- round [out-dir] --sfz <file.sfz> [--sfizz-lib <dir>] [--seed n]
+// wrela tool listening -- gate [out-dir] --sfz <file.sfz> [--sfizz-lib <dir>] [--seed n]
+// wrela tool listening -- score <out-dir> <answers>
+// ```
+//
+// Spike 14's round: four renders of the first Gymnopédie, for a person to rank blind. They are
+// {wrela's piano, a sampled piano} x {the deadpan, the performance}. wrela's are the piece's dry
+// takes (examples/gymnopedie takes 2 and 3: no room, as the sampled piano has none); the sampled
+// piano plays each take's MIDI file: the Salamander Grand Piano V3 (Alexander Holm, CC BY 3.0),
+// the whole instrument (FreePats' retuned SFZ, with its velocity tracking, release samples and
+// pedal noise), played by sfizz. They're written as A.wav to D.wav; which is which goes in
+// key-open-after-ranking.json. With them, outside the test: the performance as the game plays
+// it, with the room (wrela-performance-with-room.wav).
+//
+// The piano gate (#56 AC4): 16 blind pairs, each one excerpt played by both pianos from the same
+// performance: the first Gymnopédie's (take 3, dry) and the test chords' (examples/chords, take
+// 2, dry). Each pair is `pair-NN/A.wav` and `pair-NN/B.wav`, in an order of its own; the listener
+// writes the letter they prefer for each pair in `answers.txt` (one line a pair: `01 A`), and
+// `score` counts the pairs where it's wrela's piano, against the key
+// (key-open-after-answering.json). The gate passes at 12 of 16 (p < 0.05 against a coin toss).
+//
+// Every render is scaled to the same RMS level (the loudest the set allows with no peak past
+// -1 dBFS), and padded with silence to the longest, so neither loudness nor length gives one
+// away (blind.wrela). The order is shuffled from `--seed`, or from the clock.
+//
+// Paths are from the workspace's directory (the root `ws`). wrela's piano renders through the
+// audio tool's code (studio/audio): the piece built through the toolchain and its voice rendered
+// on the native host's CPU. The sampled piano is sfizz's `sfizz_render`, which isn't vendored: it
+// must be on `PATH` (sfizz's releases, https://sfz.tools/sfizz/), with `--sfizz-lib` naming its
+// libraries' directory if it needs them found (set as `LD_LIBRARY_PATH` and `DYLD_LIBRARY_PATH`
+// for it alone). `--sfz` names FreePats' retuned Salamander SFZ
+// (`SalamanderGrandPianoRetuned-V3+20200602.sfz`), which sfizz reads where it is.
+
+use audio_tool::json::{Value, obj, text}
+use audio_tool::main::{Args, take_of, voice_of}
+use audio_tool::io::build_piece
+use audio_tool::piece::midi
+use audio_tool::wav
+use blind::{Pair, RING, Render, blind, cut, excerpt_times, level, matched, pcm16, score, shuffled}
+use engine::rng::{Rng, seed}
+use std::io::print
+use std::job::{Job, Step}
+use std::tool::{RUNNING, args}
+use std::tool::files
+use std::tool::files::rooted
+use std::tool::run
+use std::tool::time
+use toolkit::wait::{done, said, wait}
+use toolkit::whole::{data_bytes, joined, read_file, write_file}
+
+/// The root the tool reads and writes the workspace in.
+pub const WS: Text = "ws"
+
+/// The Gymnopédie, and the test chords.
+pub const PIECE: Text = "examples/gymnopedie"
+pub const CHORDS: Text = "examples/chords"
+
+/// How long sfizz may take to render a take, in seconds.
+const SFIZZ_TIMEOUT: f64 = 600.0
+
+/// The gate's excerpts: (piece, its dry take, first bar, last bar). Ten of the Gymnopédie (bars
+/// as played: the repeat written out, so 71 to 78 is the second ending), six of the test chords
+/// (soft, loud, low, high, high and loud, pedalled).
+pub const GATE: [(Text, u32, u32, u32); 16] = [
+    (PIECE, 3, 5, 8),
+    (PIECE, 3, 9, 12),
+    (PIECE, 3, 13, 16),
+    (PIECE, 3, 21, 24),
+    (PIECE, 3, 25, 28),
+    (PIECE, 3, 29, 31),
+    (PIECE, 3, 32, 35),
+    (PIECE, 3, 36, 39),
+    (PIECE, 3, 71, 74),
+    (PIECE, 3, 75, 78),
+    (CHORDS, 2, 1, 4),
+    (CHORDS, 2, 9, 12),
+    (CHORDS, 2, 17, 20),
+    (CHORDS, 2, 25, 28),
+    (CHORDS, 2, 29, 32),
+    (CHORDS, 2, 33, 38),
+]
+
+pub const USAGE: Text = "usage: wrela tool listening -- (round | gate) [out-dir] --sfz <file.sfz> [--sfizz-lib <dir>] [--seed n]\n       wrela tool listening -- score <out-dir> <answers>"
+
+/// What a run does: its action, its directory (a root path), the SFZ, sfizz's libraries'
+/// directory, the seed (none: the clock's), and for `score` the answers' file.
+pub struct Options: Clone {
+    pub action: String,
+    pub out: String,
+    pub sfz: String,
+    pub lib: String,
+    pub seed: Option<u32>,
+    pub answers: String,
+}
+
+/// The options the command line gives, or `None` for a usage error.
+pub fn parse_args(given: [String]) -> Option<Options> {
+    if given.is_empty() {
+        return None
+    }
+    var o = Options {
+        action: given[0].clone(),
+        out: String::new(),
+        sfz: String::new(),
+        lib: String::new(),
+        seed: None,
+        answers: String::new(),
+    }
+    var positional: Vec<String> = Vec::new()
+    var k = 1
+    while k < given.len() {
+        let a = given[k].as_str()
+        let value = if k + 1 < given.len() { given[k + 1].clone() } else { String::new() }
+        if a == "--sfz" && !value.is_empty() {
+            o.sfz = take value
+            k += 1
+        } else if a == "--sfizz-lib" && !value.is_empty() {
+            o.lib = take value
+            k += 1
+        } else if a == "--seed" {
+            o.seed = Some(value.as_str().parse_u32()?)
+            k += 1
+        } else {
+            positional.push(String::from(a))
+        }
+        k += 1
+    }
+    let action = o.action.clone()
+    if action.as_str() == "score" {
+        if positional.len() != 2 {
+            return None
+        }
+        o.out = rooted(WS, positional[0].as_str())?
+        o.answers = rooted(WS, positional[1].as_str())?
+        return Some(o)
+    }
+    if action.as_str() != "round" && action.as_str() != "gate" || positional.len() > 1 {
+        return None
+    }
+    let default = if action.as_str() == "round" { "build/listening" } else { "build/gate" }
+    let dir = if positional.is_empty() {
+        String::from(f"{PIECE}/{default}")
+    } else {
+        positional[0].clone()
+    }
+    o.out = rooted(WS, dir.as_str())?
+    Some(o)
+}
+
+/// A root path as the command line gives it.
+fn shown(path: str) -> borrow str {
+    if path.starts_with("ws/") { path.slice(3, path.len()) } else { path }
+}
+
+/// The audio tool's arguments for take `n` of the piece in `dir`.
+fn audio_args(dir: str, n: u32) -> Args {
+    Args {
+        root: String::from(WS),
+        dir: String::from(dir),
+        action: String::new(),
+        rest: Vec::new(),
+        chosen: Some(Vec::from([n])),
+        seconds: None,
+        bars: None,
+        key: None,
+        from: 0.0,
+        out: None,
+        against: None,
+        notes: None,
+    }
+}
+
+/// Writes `bytes` (in parts) as the file at `path` (a root path).
+@job
+fn written(path: take String, parts: take Vec<Vec<u8>>) -> Result<(), String> {
+    var j = Box::new(write_file.start(take path, take parts))
+    var r = done(j.get_mut().resume())
+    while r.is_none() {
+        yield
+        r = done(j.get_mut().resume())
+    }
+    (take r).unwrap()
+}
+
+/// A take of the piece in `dir` (built in `build`) by both pianos: wrela's render, written as a
+/// 32-bit float WAV at `wav`, its MIDI file at `mid`, sfizz's render of it at `ref`; and its
+/// beats and bars.
+pub struct Both: Clone {
+    pub wrela: Render,
+    pub sampled: Render,
+    pub beats: Vec<f64>,
+    pub bars: u32,
+}
+
+/// Take `n` of the piece in `dir`, built in `build`, by both pianos, as `o` says: its files in
+/// `work` with names from `name`.
+@job
+fn both(
+    o: take Options,
+    dir: take String,
+    build: take String,
+    n: take u32,
+    work: take String,
+    name: take String,
+) -> Result<Both, String> {
+    var jv = Box::new(voice_of.start(audio_args(dir.as_str(), n), build.clone(), timed: false))
+    var vr = done(jv.get_mut().resume())
+    while vr.is_none() {
+        yield
+        vr = done(jv.get_mut().resume())
+    }
+    let (voice, _) = (take vr).unwrap()?
+    var parts: Vec<Vec<u8>> = Vec::from([wav::header(samples: voice.samples.len(), channels: 2)])
+    var bytes = voice.bytes.clone()
+    parts.append(mut bytes)
+    let wav_at = String::from(f"{work}/wrela-{name}.wav")
+    var jw = Box::new(written.start(wav_at.clone(), take parts))
+    var wr = done(jw.get_mut().resume())
+    while wr.is_none() {
+        yield
+        wr = done(jw.get_mut().resume())
+    }
+    (take wr).unwrap()?
+    var jt = Box::new(take_of.start(audio_args(dir.as_str(), n), build.clone()))
+    var tr = done(jt.get_mut().resume())
+    while tr.is_none() {
+        yield
+        tr = done(jt.get_mut().resume())
+    }
+    let t = (take tr).unwrap()?
+    let mid = String::from(f"{work}/{name}.mid")
+    var jm = Box::new(written.start(mid.clone(), Vec::from([midi(t.clone())])))
+    var mr = done(jm.get_mut().resume())
+    while mr.is_none() {
+        yield
+        mr = done(jm.get_mut().resume())
+    }
+    (take mr).unwrap()?
+    let reference = String::from(f"{work}/sampled-{name}.wav")
+    var c = run::command("sfizz_render", WS)
+    c.args = Vec::from(
+        [
+            String::from("--sfz"),
+            o.sfz.clone(),
+            String::from("--midi"),
+            String::from(shown(mid.as_str())),
+            String::from("--wav"),
+            String::from(shown(reference.as_str())),
+            String::from("--samplerate"),
+            String::from("48000"),
+            String::from("--quality"),
+            String::from("3"),
+        ],
+    )
+    if !o.lib.is_empty() {
+        for var_name in ["LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH"] {
+            c.env.push(run::Var { name: String::from(var_name), value: o.lib.clone() })
+        }
+    }
+    c.timeout = SFIZZ_TIMEOUT
+    var rr = wait(run::run(c))
+    while !rr.ready() { yield }
+    let ran = said(run::read_ran(rr.polled()))?
+    if ran.status != 0 {
+        var je = Box::new(data_bytes.start(ran.stderr.clone()))
+        var er = done(je.get_mut().resume())
+        while er.is_none() {
+            yield
+            er = done(je.get_mut().resume())
+        }
+        let why = String::from_utf8(joined((take er).unwrap()?)).unwrap_or(String::new())
+        return Err(String::from(f"sfizz_render exited {ran.status}: {why.as_str().trim()}"))
+    }
+    var jr = Box::new(read_file.start(reference.clone(), String::from(shown(reference.as_str()))))
+    var rf = done(jr.get_mut().resume())
+    while rf.is_none() {
+        yield
+        rf = done(jr.get_mut().resume())
+    }
+    let sampled = wav::read((take rf).unwrap()?, shown(reference.as_str()))?
+    var ours: Vec<f64> = Vec::with_capacity(voice.samples.len())
+    for x in voice.samples {
+        ours.push(f64(x))
+    }
+    var theirs: Vec<f64> = Vec::with_capacity(sampled.samples.len())
+    for x in sampled.samples {
+        theirs.push(f64(x))
+    }
+    Ok(
+        Both {
+            wrela: Render { samples: ours, channels: 2, rate: 48000 },
+            sampled: Render {
+                samples: theirs,
+                channels: sampled.channels,
+                rate: u32(sampled.rate),
+            },
+            beats: t.beats.clone(),
+            bars: t.bars,
+        },
+    )
+}
+
+/// Bars `first` to `last` of `b` (and their ring) by both pianos, matched in loudness, as WAV
+/// files in the order `order` gives (0 is wrela's).
+fn excerpts(b: Both, first: u32, last: u32, order: [u32]) -> Vec<Vec<u8>> {
+    let (start, end) = excerpt_times(b.beats, b.bars, first, last)
+    let ours = cut(b.wrela.samples, b.wrela.channels, b.wrela.rate, start, end + RING)
+    let theirs = cut(b.sampled.samples, b.sampled.channels, b.sampled.rate, start, end + RING)
+    let gains = matched([level(ours, ours.len()), level(theirs, theirs.len())])
+    var out: Vec<Vec<u8>> = Vec::new()
+    for which in order {
+        out.push(
+            if which == 0 {
+                pcm16(ours, gains[0], ours.len(), b.wrela.channels, b.wrela.rate)
+            } else {
+                pcm16(theirs, gains[1], theirs.len(), b.wrela.channels, b.wrela.rate)
+            },
+        )
+    }
+    out
+}
+
+/// The piece in `dir` built: its build's directory.
+@job
+fn built(dir: take String) -> Result<String, String> {
+    let Some(pkg) = rooted(WS, dir.as_str()) else { return Err(String::from(f"{dir}")) }
+    var j = Box::new(build_piece.start(take pkg))
+    var r = done(j.get_mut().resume())
+    while r.is_none() {
+        yield
+        r = done(j.get_mut().resume())
+    }
+    (take r).unwrap()
+}
+
+/// The seed `o` gives, or one from the clock.
+@job
+fn seeded(o: take Options) -> Rng {
+    if let Some(s) = o.seed {
+        return Rng::new(seed(s))
+    }
+    var t = wait(time::utc_now())
+    while !t.ready() { yield }
+    let nanos = match time::read_utc(t.polled()) {
+        Ok(u) => u.nanos ^ u32(u.seconds & 4294967295),
+        Err(_) => 0,
+    }
+    Rng::new(seed(nanos))
+}
+
+/// Spike 14's round of four, into `o.out`.
+@job
+fn round_of_four(o: take Options) -> Result<(), String> {
+    let work = String::from(f"{o.out}/work")
+    var md = wait(files::make_dirs(work.as_str()))
+    while !md.ready() { yield }
+    let _ = md.bytes()?
+    var jb = Box::new(built.start(String::from(PIECE)))
+    var br = done(jb.get_mut().resume())
+    while br.is_none() {
+        yield
+        br = done(jb.get_mut().resume())
+    }
+    let build = (take br).unwrap()?
+    var renders: Vec<(String, Render)> = Vec::new()
+    for k in 0..2 {
+        let (n, name) = if k == 0 { (2, "deadpan") } else { (3, "performance") }
+        var j = Box::new(
+            both.start(
+                o.clone(),
+                String::from(PIECE),
+                build.clone(),
+                n,
+                work.clone(),
+                String::from(name),
+            ),
+        )
+        var r = done(j.get_mut().resume())
+        while r.is_none() {
+            yield
+            r = done(j.get_mut().resume())
+        }
+        let b = (take r).unwrap()?
+        renders.push((String::from(f"wrela piano, {name}"), b.wrela.clone()))
+        renders.push((String::from(f"sampled piano, {name}"), b.sampled.clone()))
+    }
+    // The performance as the game plays it, with the room: outside the test.
+    var jv = Box::new(voice_of.start(audio_args(PIECE, 1), build.clone(), timed: false))
+    var vr = done(jv.get_mut().resume())
+    while vr.is_none() {
+        yield
+        vr = done(jv.get_mut().resume())
+    }
+    let (room, _) = (take vr).unwrap()?
+    var parts: Vec<Vec<u8>> = Vec::from([wav::header(samples: room.samples.len(), channels: 2)])
+    var bytes = room.bytes.clone()
+    parts.append(mut bytes)
+    var jw = Box::new(
+        written.start(String::from(f"{o.out}/wrela-performance-with-room.wav"), take parts),
+    )
+    var wr = done(jw.get_mut().resume())
+    while wr.is_none() {
+        yield
+        wr = done(jw.get_mut().resume())
+    }
+    (take wr).unwrap()?
+    var js = Box::new(seeded.start(o.clone()))
+    var sr = done(js.get_mut().resume())
+    while sr.is_none() {
+        yield
+        sr = done(js.get_mut().resume())
+    }
+    var rng = (take sr).unwrap()
+    let order = shuffled(4, mut rng)
+    let set = blind(renders, "ABCD", order)
+    var names: Vec<Value> = Vec::new()
+    for k in 0..set.files.len() {
+        let path = String::from(f"{o.out}/{set.files[k].0}.wav")
+        names.push(text(shown(path.as_str())))
+        var jf = Box::new(written.start(take path, Vec::from([set.files[k].1.clone()])))
+        var fr = done(jf.get_mut().resume())
+        while fr.is_none() {
+            yield
+            fr = done(jf.get_mut().resume())
+        }
+        (take fr).unwrap()?
+    }
+    let key = String::from(f"{o.out}/key-open-after-ranking.json")
+    var jk = Box::new(
+        written.start(
+            key.clone(),
+            Vec::from([Vec::from(String::from(f"{set.key.pretty_in_order()}\n").as_bytes())]),
+        ),
+    )
+    var kr = done(jk.get_mut().resume())
+    while kr.is_none() {
+        yield
+        kr = done(jk.get_mut().resume())
+    }
+    (take kr).unwrap()?
+    print(
+        obj()
+            .with("files", Value::List(take names))
+            .with("key", text(shown(key.as_str())))
+            .pretty_in_order()
+            .as_str(),
+    )
+    Ok(())
+}
+
+/// The piano gate's pairs, into `o.out`.
+@job
+fn gate(o: take Options) -> Result<(), String> {
+    let work = String::from(f"{o.out}/work")
+    var md = wait(files::make_dirs(work.as_str()))
+    while !md.ready() { yield }
+    let _ = md.bytes()?
+    // Each piece's take by both pianos: the chords, then the Gymnopédie, as their paths sort.
+    var takes: Vec<(String, Both)> = Vec::new()
+    for k in 0..2 {
+        let (dir, n) = if k == 0 { (CHORDS, 2) } else { (PIECE, 3) }
+        var jb = Box::new(built.start(String::from(dir)))
+        var br = done(jb.get_mut().resume())
+        while br.is_none() {
+            yield
+            br = done(jb.get_mut().resume())
+        }
+        let build = (take br).unwrap()?
+        let name = String::from(dir.slice(9, dir.len()))
+        var j = Box::new(
+            both.start(o.clone(), String::from(dir), take build, n, work.clone(), take name),
+        )
+        var r = done(j.get_mut().resume())
+        while r.is_none() {
+            yield
+            r = done(j.get_mut().resume())
+        }
+        takes.push((String::from(dir), (take r).unwrap()?))
+    }
+    var js = Box::new(seeded.start(o.clone()))
+    var sr = done(js.get_mut().resume())
+    while sr.is_none() {
+        yield
+        sr = done(js.get_mut().resume())
+    }
+    var rng = (take sr).unwrap()
+    var key = obj()
+    var answers = String::new()
+    for k in 0..GATE.len() {
+        let (piece, _, first, last) = GATE[k]
+        let t = if takes[0].0.as_str() == piece { 0 } else { 1 }
+        // Shuffled as Python's `shuffle` of ["wrela", "reference"]: wrela's is A unless swapped.
+        let order = shuffled(2, mut rng)
+        let wrela_at = if order[0] == 0 { "A" } else { "B" }
+        let n = String::from(f"{k + 1:02}")
+        let pair = String::from(f"{o.out}/pair-{n}")
+        let sides = excerpts(takes[t].1, first, last, order)
+        for side in 0..2 {
+            let letter = if side == 0 { "A" } else { "B" }
+            var jf = Box::new(
+                written.start(
+                    String::from(f"{pair}/{letter}.wav"),
+                    Vec::from([sides[side].clone()]),
+                ),
+            )
+            var fr = done(jf.get_mut().resume())
+            while fr.is_none() {
+                yield
+                fr = done(jf.get_mut().resume())
+            }
+            (take fr).unwrap()?
+        }
+        key = (take key).with(
+            n.as_str(),
+            obj()
+                .with("wrela", text(wrela_at))
+                .with("piece", text(piece.slice(9, piece.len())))
+                .with(
+                    "bars",
+                    Value::List(Vec::from([Value::Int(i64(first)), Value::Int(i64(last))])),
+                ),
+        )
+        answers.push_str(f"{n} \n")
+    }
+    let key_at = String::from(f"{o.out}/key-open-after-answering.json")
+    let answers_at = String::from(f"{o.out}/answers.txt")
+    let both_files = Vec::from(
+        [
+            (key_at.clone(), String::from(f"{key.pretty_in_order()}\n")),
+            (answers_at.clone(), answers.clone()),
+        ],
+    )
+    for f in 0..2 {
+        let path = both_files[f].0.clone()
+        let body = both_files[f].1.clone()
+        var jf = Box::new(written.start(take path, Vec::from([Vec::from(body.as_bytes())])))
+        var fr = done(jf.get_mut().resume())
+        while fr.is_none() {
+            yield
+            fr = done(jf.get_mut().resume())
+        }
+        (take fr).unwrap()?
+    }
+    print(
+        obj()
+            .with("pairs", Value::Int(i64(GATE.len())))
+            .with("answers", text(shown(answers_at.as_str())))
+            .with("key", text(shown(key_at.as_str())))
+            .pretty_in_order()
+            .as_str(),
+    )
+    Ok(())
+}
+
+/// The gate's answers in `o.answers`, scored against the key in `o.out`.
+@job
+fn scored(o: take Options) -> Result<(), String> {
+    let key_at = String::from(f"{o.out}/key-open-after-answering.json")
+    var jk = Box::new(read_file.start(key_at.clone(), String::from(shown(key_at.as_str()))))
+    var kr = done(jk.get_mut().resume())
+    while kr.is_none() {
+        yield
+        kr = done(jk.get_mut().resume())
+    }
+    let key_text = String::from_utf8((take kr).unwrap()?).unwrap_or(String::new())
+    var ja = Box::new(read_file.start(o.answers.clone(), String::from(shown(o.answers.as_str()))))
+    var ar = done(ja.get_mut().resume())
+    while ar.is_none() {
+        yield
+        ar = done(ja.get_mut().resume())
+    }
+    let answers = String::from_utf8((take ar).unwrap()?).unwrap_or(String::new())
+    let Some(doc) = std::json::parse(key_text.as_str()) else {
+        return Err(String::from(f"{shown(key_at.as_str())} isn't JSON"))
+    }
+    var key: Vec<Pair> = Vec::new()
+    for (n, node) in doc.members(std::json::TOP) {
+        let Some(w) = doc.get(node, "wrela") else {
+            return Err(String::from(f"pair {n} has no key"))
+        }
+        key.push(Pair { n: n.clone(), wrela: doc.text(w).unwrap_or(String::new()) })
+    }
+    print(score(key, answers.as_str())?.pretty_in_order().as_str())
+    Ok(())
+}
+
+@job
+fn main(given: take Vec<String>) -> u32 {
+    let Some(o) = parse_args(given) else {
+        print(USAGE)
+        return 2
+    }
+    let action = o.action.clone()
+    if action.as_str() != "score" && o.sfz.is_empty() {
+        print(
+            "--sfz names the reference piano's SFZ: FreePats' SalamanderGrandPianoRetuned-V3+20200602.sfz (https://freepats.zenvoid.org/Piano/acoustic-grand-piano.html)",
+        )
+        return 2
+    }
+    var r: Option<Result<(), String>> = None
+    if action.as_str() == "round" {
+        var j = Box::new(round_of_four.start(take o))
+        r = done(j.get_mut().resume())
+        while r.is_none() {
+            yield
+            r = done(j.get_mut().resume())
+        }
+    } else if action.as_str() == "gate" {
+        var j = Box::new(gate.start(take o))
+        r = done(j.get_mut().resume())
+        while r.is_none() {
+            yield
+            r = done(j.get_mut().resume())
+        }
+    } else {
+        var j = Box::new(scored.start(take o))
+        r = done(j.get_mut().resume())
+        while r.is_none() {
+            yield
+            r = done(j.get_mut().resume())
+        }
+    }
+    match (take r).unwrap() {
+        Ok(_) => 0,
+        Err(e) => {
+            print(f"listening: {e}")
+            1
+        },
+    }
+}
+
+pub fn tool_init() -> Job<main> {
+    main.start(args())
+}
+
+pub fn tool(job: mut Job<main>) -> u32 {
+    match job.resume() {
+        Step::Yielded => RUNNING,
+        Step::Done(status) => status,
+    }
+}

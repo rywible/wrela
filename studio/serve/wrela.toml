@@ -1,0 +1,7 @@
+# The serve tool (`wrela tool serve`): a directory of the workspace served to a browser on this
+# machine (main.wrela says how).
+[package]
+name = "serve_tool"
+
+[dependencies]
+toolkit = { workspace = true }

@@ -1,0 +1,122 @@
+// A tool's requests and jobs, waited on (language.md §15.5, §16.3). A job yields only in its own
+// body, so a request is kept in a `Wait`, which polls it, and the job yields until it's ready:
+//
+// ```wrela
+// var w = wait(files::read("ws/notes.txt"))
+// while !w.ready() { yield }
+// let bytes = w.bytes()?
+// ```
+//
+// A job that another job starts is resumed the same way, through `done`:
+//
+// ```wrela
+// var j = Box::new(read_file.start(path, shown))
+// var r = done(j.get_mut().resume())
+// while r.is_none() {
+//     yield
+//     r = done(j.get_mut().resume())
+// }
+// let bytes = (take r).unwrap()?
+// ```
+
+use std::io::{IoError, Pending}
+use std::job::Step
+use std::tool::{ToolError, answer}
+
+/// A request, and its answer once it has come.
+pub struct Wait {
+    request: Pending<u8>,
+    got: Option<Result<Vec<u8>, IoError>>,
+}
+
+/// A wait on `request`.
+pub fn wait(request: take Pending<u8>) -> Wait {
+    Wait { request, got: None }
+}
+
+impl Wait {
+    /// Whether the answer has come. Until it has, each call polls the request once.
+    pub fn ready(mut self) -> bool {
+        if self.got.is_none() {
+            self.got = self.request.poll()
+        }
+        self.got.is_some()
+    }
+
+    /// The answer, as a service's reader takes it (`drive::read_ran`, `files::read_list`, ...):
+    /// once, after `ready`.
+    pub fn polled(mut self) -> Result<Vec<u8>, IoError> {
+        match replace(mut self.got, None) {
+            Some(r) => take r,
+            None => panic("a request's answer is taken once, after it's ready"),
+        }
+    }
+
+    /// The answer's bytes, or why the request failed.
+    pub fn bytes(mut self) -> Result<Vec<u8>, String> {
+        said(answer(self.polled()))
+    }
+}
+
+/// Several requests, ready when every one is.
+pub struct Waits {
+    waits: Vec<Wait>,
+}
+
+/// A wait on each of `requests`.
+pub fn wait_all(requests: take Vec<Pending<u8>>) -> Waits {
+    var given = take requests
+    var waits: Vec<Wait> = Vec::with_capacity(given.len())
+    while !given.is_empty() {
+        waits.push(wait(given.remove(0)))
+    }
+    Waits { waits }
+}
+
+impl Waits {
+    /// Whether every answer has come.
+    pub fn ready(mut self) -> bool {
+        var all = true
+        for k in 0..self.waits.len() {
+            if !self.waits[k].ready() {
+                all = false
+            }
+        }
+        all
+    }
+
+    /// How many requests there are.
+    pub fn len(self) -> u32 {
+        self.waits.len()
+    }
+
+    /// Request `k`'s answer, as `Wait::polled`.
+    pub fn polled(mut self, k: u32) -> Result<Vec<u8>, IoError> {
+        self.waits[k].polled()
+    }
+
+    /// Every answer's bytes, in order, or why the first that failed did.
+    pub fn bytes(mut self) -> Result<Vec<Vec<u8>>, String> {
+        var out: Vec<Vec<u8>> = Vec::with_capacity(self.waits.len())
+        for k in 0..self.waits.len() {
+            out.push(self.waits[k].bytes()?)
+        }
+        Ok(out)
+    }
+}
+
+/// `r`, with a failure said as text.
+pub fn said<T>(r: take Result<T, ToolError>) -> Result<T, String> {
+    match take r {
+        Ok(v) => Ok(take v),
+        Err(e) => Err(String::from(e.message())),
+    }
+}
+
+/// A job's result once it has ended: `None` while it's still running.
+pub fn done<R>(s: take Step<R>) -> Option<R> {
+    match take s {
+        Step::Yielded => None,
+        Step::Done(r) => Some(take r),
+    }
+}

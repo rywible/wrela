@@ -1,0 +1,9 @@
+# The listening tool (`wrela tool listening`): blind listening tests of wrela's piano against a
+# sampled one, which sfizz plays (main.wrela says how).
+[package]
+name = "listening_tool"
+
+[dependencies]
+audio_tool = { workspace = true }
+engine = { workspace = true }
+toolkit = { workspace = true }

@@ -5,7 +5,8 @@
 // columns are transformed on the tool's helpers.
 
 use dsp::{Plan, db, max_of, min_of, rms, round_away, sat_u32}
-use io::{RATE, release}
+use io::RATE
+use toolkit::whole::{blob_of, release}
 use piece::Take
 use std::collections::{Box, Vec}
 use std::job::Step
@@ -447,44 +448,6 @@ pub fn draw(t: Take, samples: [f32], bars: Option<(u32, u32)>) -> Result<Image, 
 
 fn said(e: ToolError) -> String {
     String::from(e.message())
-}
-
-/// A new blob of `parts`' bytes, one after another (each at most 512 KiB).
-@job
-pub fn blob_of(given: take Vec<Vec<u8>>) -> Result<Blob, String> {
-    var parts = take given
-    var n = blob::new()
-    var made = n.poll()
-    while made.is_none() {
-        yield
-        made = n.poll()
-    }
-    let Some(mp) = take made else { return Err(String::from("no answer")) }
-    let b = match blob::read_handle(take mp) {
-        Ok(b) => b,
-        Err(e) => return Err(said(e)),
-    }
-    for k in 0..parts.len() {
-        let part = replace(mut parts[k], Vec::new())
-        var a = blob::append(b, part)
-        var got = a.poll()
-        while got.is_none() {
-            yield
-            got = a.poll()
-        }
-        let Some(polled) = take got else { return Err(String::from("no answer")) }
-        if let Err(e) = answer(take polled) {
-            var r = Box::new(release.start(b))
-            loop {
-                match r.get_mut().resume() {
-                    Step::Yielded => yield,
-                    Step::Done(_) => break,
-                }
-            }
-            return Err(said(e))
-        }
-    }
-    Ok(b)
 }
 
 /// Draws the sheet and writes it as a PNG at `path` (a root path; `shown` as the command line

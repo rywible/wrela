@@ -1,0 +1,135 @@
+// The round tool's tests: its command line, its scripts of keys, and its summary, written as
+// Python's `json.dump(indent=1)` wrote the summary of the same frames and lines (tools/round.py,
+// which this tool replaced).
+
+use main::parse_args
+use std::json::parse
+use summary::{SNAP, quick_script, script, sites_in, summarize}
+
+fn contains(haystack: str, needle: str) -> bool {
+    haystack.find(needle).is_some()
+}
+
+fn texts(lines: [Text]) -> Vec<String> {
+    var out: Vec<String> = Vec::new()
+    for l in lines {
+        out.push(String::from(l))
+    }
+    out
+}
+
+@test
+fn the_command_line_takes_a_round_number_and_its_options() {
+    let Some(o) = parse_args(texts(["7", "--quick", "--every", "1", "--frames", "600"])) else {
+        panic("a quick round")
+    }
+    assert(o.n == 7 && o.quick && o.every == 1 && o.frames == 600 && o.lookbook)
+    let Some(long) = parse_args(texts(["8", "--minutes", "60", "--no-lookbook"])) else {
+        panic("an hour's round")
+    }
+    assert(long.minutes == 60 && !long.lookbook && !long.quick)
+    assert(parse_args(texts([])).is_none(), "no number")
+    assert(parse_args(texts(["x"])).is_none(), "not a number")
+    assert(parse_args(texts(["1", "--every"])).is_none(), "an option without its value")
+    assert(parse_args(texts(["1", "--bogus", "2"])).is_none(), "an unknown option")
+}
+
+@test
+fn the_scripts_run_their_frames_and_save_their_screens() {
+    assert(sites_in("sites.push(a)\nsites.push(b)\n// sites.push(c)") == 3)
+    let (keys, frames) = script(minutes: 30, shots: 23, sites: 59)
+    // The walk, 23 shots held 15 s, a second's Escape: past 30 minutes.
+    assert(frames == 1 + 25 * 3600 + 1800 + 23 * 900 + 60, f"{frames}")
+    assert(contains(keys.as_json(), "\"frame\": 1,"))
+    let (_, hour) = script(minutes: 60, shots: 23, sites: 59)
+    assert(hour == 1 + 2 * (25 * 3600 + 1800) + 23 * 900 + 60 + 300 + 36000 + 60 + 300, f"{hour}")
+    let (_, quick, snaps) = quick_script(every: 4, sites: 59)
+    // 15 sites' blocks of two, six shots' of three, and the Escape.
+    assert(quick == SNAP + 15 * 2 * SNAP + 6 * 3 * SNAP + 10, f"{quick}")
+    assert(snaps.len() == 49 && snaps[0] == SNAP && snaps[48] == 49 * SNAP)
+}
+
+@test
+fn a_hitch_is_where_the_nearest_report_puts_it_and_a_saved_screen_excuses_one() {
+    // tools/tests/test_performance.py's fixture: every interval is a hitch.
+    var began = String::from("{\"began_ms\": [")
+    for i in 0..18 {
+        began.push_str(if i == 0 { String::from("0") } else {
+            String::from(f", {40 * i}")
+        }.as_str())
+    }
+    began.push_str("], \"printed_in\": [8, 2, 8, 14]}")
+    let Some(frames) = parse(began.as_str()) else { panic("frames.json") }
+    var log: Vec<String> = Vec::new()
+    for name in ["first", "earlier", "duplicate", "last"] {
+        log.push(
+            String::from(
+                f"{{\"report\": true, \"region\": \"{name}\", \"site_m\": 10, \"site\": \"{name}\", \"at\": [0, 0], \"water\": 0}}",
+            ),
+        )
+    }
+    let Some(s) = summarize(frames, log, [3]) else { panic("a summary") }
+    let j = s.json.as_str()
+    // Frame 4 follows the screen saved at frame 3.
+    assert(!contains(j, "\"frame\": 4,"), j)
+    assert(
+        contains(
+            j,
+            "\"frame\": 3,\n   \"ms\": 40,\n   \"where\": \"earlier, 10 m from earlier (0, 0)\"",
+        ),
+        j,
+    )
+    // 5 is as near 2 as 8: the earlier report. 8 is printed twice: the first.
+    assert(
+        contains(
+            j,
+            "\"frame\": 5,\n   \"ms\": 40,\n   \"where\": \"first, 10 m from first (0, 0)\"",
+        ),
+        j,
+    )
+    assert(contains(j, "\"frame\": 11,\n   \"ms\": 40,\n   \"where\": \"first,"), j)
+    assert(contains(j, "\"frame\": 12,\n   \"ms\": 40,\n   \"where\": \"last,"), j)
+    assert(contains(j, "\"median\": 40,") && contains(j, "\"deepest_water\": 0,"), j)
+    assert(s.lines[2].as_str() == "16 frames over 33 ms after the last:", s.lines[2].as_str())
+}
+
+@test
+fn a_summary_is_written_as_python_wrote_it() {
+    let Some(frames) = parse(
+        "{\"began_ms\": [0.5, 17.25, 34.0, 80.125, 96.75, 150.0], \"printed_in\": [0, 1, 1, 2, 4]}",
+    ) else {
+        panic("frames.json")
+    }
+    let log = texts(
+        [
+            "playable at frame 2",
+            "{\"report\": 1, \"at\": [1.5, -2.5], \"region\": \"the wéald\", \"site\": \"the gate\", \"site_m\": 24.5, \"water\": 0.25}",
+            "late tile 3",
+            "the tile didn't come",
+            "{\"report\": 2, \"at\": [10.5, 3.5], \"region\": \"the pines\", \"site\": \"the gate\", \"site_m\": 30, \"water\": 1.5}",
+        ],
+    )
+    let Some(s) = summarize(frames, log, []) else { panic("a summary") }
+    let want = "{\n \"frames\": 6,\n \"minutes\": 0.0,\n \"playable_at\": 0,\n \"interval_ms\": {\n  \"median\": 16.75,\n  \"p99\": 53.25,\n  \"p999\": 53.25,\n  \"worst\": 53.25\n },\n \"hitches\": [\n  {\n   \"frame\": 3,\n   \"ms\": 46.1,\n   \"where\": \"the pines, 30 m from the gate (10, 4)\"\n  },\n  {\n   \"frame\": 5,\n   \"ms\": 53.2,\n   \"where\": \"the pines, 30 m from the gate (10, 4)\"\n  }\n ],\n \"late_tiles\": [\n  \"late tile 3\",\n  \"the tile didn't come\"\n ],\n \"regions\": [\n  \"the w\\u00e9ald\",\n  \"the pines\"\n ],\n \"regions_seen\": [\n  \"the pines\",\n  \"the w\\u00e9ald\"\n ],\n \"sites_passed\": [\n  \"the gate\"\n ],\n \"deepest_water\": 1.5,\n \"reports\": 2\n}"
+    assert(s.json.as_str() == want, s.json.as_str())
+    var printed = String::new()
+    for l in s.lines {
+        printed.push_str(l.as_str())
+        printed.push_str("\n")
+    }
+    let lines = "6 frames, 0.0 min; playable at frame 0\nframe intervals: median 16.8 ms, 99th 53.2, 99.9th 53.2, worst 53.2\n2 frames over 33 ms after the last:\n  frame 3: 46.1 ms, in the pines, 30 m from the gate (10, 4)\n  frame 5: 53.2 ms, in the pines, 30 m from the gate (10, 4)\n2 tiles late; regions: the pines, the wéald\n1 sites passed within 25 m; deepest water stood in 1.50 m\n"
+    assert(printed.as_str() == lines, printed.as_str())
+}
+
+@test
+fn a_round_with_no_frames_or_reports_summarizes_as_empty() {
+    let Some(frames) = parse("{\"began_ms\": [], \"printed_in\": []}") else { panic("frames.json") }
+    let Some(s) = summarize(frames, Vec::new(), []) else { panic("a summary") }
+    let want = "{\n \"frames\": 0,\n \"minutes\": 0,\n \"playable_at\": 0,\n \"interval_ms\": {\n  \"median\": 0,\n  \"p99\": 0,\n  \"p999\": 0,\n  \"worst\": 0\n },\n \"hitches\": [],\n \"late_tiles\": [],\n \"regions\": [],\n \"regions_seen\": [],\n \"sites_passed\": [],\n \"deepest_water\": 0,\n \"reports\": 0\n}"
+    assert(s.json.as_str() == want, s.json.as_str())
+    assert(s.lines[0].as_str() == "0 frames, 0 min; playable at frame 0", s.lines[0].as_str())
+    assert(
+        parse("{\"began_ms\": []}").is_some() &&
+            summarize(parse("{}").unwrap(), Vec::new(), []).is_none(),
+    )
+}

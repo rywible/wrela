@@ -1,0 +1,430 @@
+// A play round's script of keys and its summary: what is pure of the round tool, so its tests
+// need no build or browser.
+
+use lookbook_tool::shots::{choose, digit}
+use release_tool::json::quoted
+use std::collections::Vec
+use std::input::{Key, Script}
+use std::json::{Doc, Kind, TOP}
+use std::string::String
+
+pub const FPS: u32 = 60
+
+/// The floor's walk at a run (25.04 min), and slack.
+pub const WALK_FRAMES: u32 = 25 * 60 * FPS + 30 * FPS
+
+/// How long each lookbook shot is held, and the egg's road.
+pub const SHOT_FRAMES: u32 = 15 * FPS
+pub const ROAD_FRAMES: u32 = 10 * 60 * FPS
+
+/// The shots a quick round holds, and how many frames apart it saves the screen.
+pub const QUICK_SHOTS: [u32; 6] = [1, 2, 3, 5, 7, 12]
+pub const SNAP: u32 = 130
+
+/// A frame later than this after the last is a hitch, in ms.
+pub const HITCH_MS: f64 = 33.4
+
+/// How many sites the floor's map has (`map.wrela`'s `sites.push`es).
+pub fn sites_in(map: str) -> u32 {
+    var n = 0
+    var at = 0
+    loop {
+        let Some(k) = map.slice(at, map.len()).find("sites.push") else { break }
+        n += 1
+        at += k + 10
+    }
+    n
+}
+
+/// `s` with `keys` pressed at frame `at`.
+fn pressed(given: take Script, at: u32, keys: [Key]) -> Script {
+    var s = take given
+    for k in keys {
+        s = (take s).press(at, k)
+    }
+    s
+}
+
+/// `s` with travel to site `site` at frame `at`: G, its number's digits, Enter.
+fn travel(given: take Script, at: u32, site: u32) -> Script {
+    var s = (take given).press(at, Key::G)
+    let digits = String::from(f"{site}")
+    for k in 0..digits.len() {
+        s = (take s).press(at, digit(u32(digits.as_str().byte(k)) - 48))
+    }
+    (take s).press(at, Key::Enter)
+}
+
+/// The round's keys and how many frames it runs: the floor's walk (P), each of `shots`
+/// lookbook shots held, and with `minutes` 60, the egg's road (travel to the site after the
+/// map's `sites`, Y) for 10 minutes and the walk again.
+pub fn script(minutes: u32, shots: u32, sites: u32) -> (Script, u32) {
+    var s = Script::frames().press(1, Key::P)
+    var f = 1 + WALK_FRAMES
+    for i in 0..shots {
+        s = choose(take s, at: f, i: i)
+        f += SHOT_FRAMES
+    }
+    s = (take s).press(f, Key::Escape)
+    f += FPS
+    if minutes >= 60 {
+        s = travel(take s, at: f, site: sites + 1)
+        f += 5 * FPS
+        s = (take s).press(f, Key::Y)
+        f += ROAD_FRAMES
+        s = (take s).press(f, Key::Y)
+        f += FPS
+        s = travel(take s, at: f, site: 0)
+        f += 5 * FPS
+        s = (take s).press(f, Key::P)
+        f += WALK_FRAMES
+    }
+    (take s, max(f, minutes * 60 * FPS))
+}
+
+/// The quick round's keys, how many frames it runs, and the frames whose screens it saves
+/// (every `SNAP` frames: each site's block is two, each shot's three): a travel to every
+/// `every`th site, at each a run and a look round, then `QUICK_SHOTS` held.
+pub fn quick_script(every: u32, sites: u32) -> (Script, u32, Vec<u32>) {
+    var s = Script::frames()
+    var f = SNAP
+    var site = 0
+    while site < sites {
+        s = travel(take s, at: f + 5, site: site)
+        s = pressed(take s, f + SNAP + 5, [Key::T, Key::R])
+        s = pressed(take s, f + 2 * SNAP - 25, [Key::T, Key::R, Key::E, Key::E, Key::E])
+        f += 2 * SNAP
+        site += every
+    }
+    for shot in QUICK_SHOTS {
+        s = choose(take s, at: f + 5, i: shot)
+        f += 3 * SNAP
+    }
+    s = (take s).press(f + 5, Key::Escape)
+    let frames = f + 10
+    var snaps: Vec<u32> = Vec::new()
+    var at = SNAP
+    while at < frames {
+        snaps.push(at)
+        at += SNAP
+    }
+    (take s, frames, take snaps)
+}
+
+/// A number as JSON gave it: its value, and whether it was whole (written with no point or
+/// exponent), as Python reads and writes it again.
+pub struct Num: Copy {
+    pub v: f64,
+    pub int: bool,
+}
+
+/// Node `n` of `doc` as a `Num`.
+pub fn num_of(doc: Doc, n: u32) -> Option<Num> {
+    let v = doc.num(n)?
+    let written = doc.write(n)
+    let int = written.as_str().find(".").is_none() &&
+        written.as_str().find("e").is_none() &&
+        written.as_str().find("E").is_none()
+    Some(Num { v, int })
+}
+
+/// `x` as Python's `json.dump` writes it: a whole number as it is, a float in its shortest
+/// form, `.0` after it if it's whole.
+pub fn shown(x: Num) -> String {
+    if x.int {
+        return String::from(f"{x.v:.0}")
+    }
+    let s = String::from(f"{x.v}")
+    if s.as_str().find(".").is_none() {
+        return String::from(f"{s}.0")
+    }
+    s
+}
+
+/// `x` rounded to one place, as Python's `round(x, 1)` gives it.
+pub fn round1(x: Num) -> String {
+    if x.int {
+        return shown(x)
+    }
+    String::from(f"{x.v:.1}")
+}
+
+/// A report the floor printed (`{"report": ...}`): the frame it came in, and what the summary
+/// reads of it.
+pub struct Report: Clone {
+    pub frame: u32,
+    pub region: String,
+    pub site: String,
+    pub site_m: f64,
+    pub at: (f64, f64),
+    pub water: Num,
+}
+
+/// The report on `line`, printed in frame `frame`, if it is one.
+pub fn report_of(line: str, frame: u32) -> Option<Report> {
+    if !line.starts_with("{\"report\"") {
+        return None
+    }
+    let doc = std::json::parse(line)?
+    let at = doc.get(TOP, "at")?
+    Some(
+        Report {
+            frame,
+            region: doc.text(doc.get(TOP, "region")?)?,
+            site: doc.text(doc.get(TOP, "site")?)?,
+            site_m: doc.num(doc.get(TOP, "site_m")?)?,
+            at: (doc.num(doc.at(at, 0)?)?, doc.num(doc.at(at, 1)?)?),
+            water: num_of(doc, doc.get(TOP, "water")?)?,
+        },
+    )
+}
+
+/// Where the player was at `frame`: the report nearest it (the first printed of those at one
+/// frame, the earlier of two as near), or `?` if there's none.
+pub fn where_at(reports: [Report], frame: u32) -> String {
+    var best: Option<u32> = None
+    var best_d = 0
+    for k in 0..reports.len() {
+        let f = reports[k].frame
+        let d = if f > frame { f - frame } else { frame - f }
+        if best.is_none() || d < best_d {
+            best = Some(k)
+            best_d = d
+        }
+    }
+    let Some(k) = best else { return String::from("?") }
+    borrow r = reports[k]
+    String::from(
+        f"{r.region}, {r.site_m:.0} m from {r.site} ({r.at.0:.0}, {r.at.1:.0})",
+    )
+}
+
+/// The value at quantile `q` of `sorted`, as the round reads it (0 if there's none).
+fn pct(sorted: [Num], q: f64) -> Num {
+    if sorted.is_empty() {
+        return Num { v: 0.0, int: true }
+    }
+    let n = sorted.len()
+    sorted[min(n - 1, u32(q * f64(n)))]
+}
+
+/// A round's summary: its JSON (as `summary.json` holds it) and the lines the tool prints.
+pub struct Summary: Clone {
+    pub json: String,
+    pub lines: Vec<String>,
+}
+
+fn key(out: mut String, depth: u32, name: str, first: bool) {
+    if !first {
+        out.push_str(",")
+    }
+    out.push_str("\n")
+    for _ in 0..depth {
+        out.push_str(" ")
+    }
+    quoted(mut out, name)
+    out.push_str(": ")
+}
+
+fn texts(out: mut String, depth: u32, items: [String]) {
+    if items.is_empty() {
+        out.push_str("[]")
+        return
+    }
+    out.push_str("[")
+    for k in 0..items.len() {
+        if k > 0 {
+            out.push_str(",")
+        }
+        out.push_str("\n")
+        for _ in 0..depth + 1 {
+            out.push_str(" ")
+        }
+        quoted(mut out, items[k].as_str())
+    }
+    out.push_str("\n")
+    for _ in 0..depth {
+        out.push_str(" ")
+    }
+    out.push_str("]")
+}
+
+/// Summarizes a round from its `frames.json` (read as `frames`) and its `log.txt`'s lines: the
+/// frames' intervals (a frame later than `HITCH_MS` after the last is a hitch, unless the one
+/// before it saved its screen, one of `snaps`), each hitch with where the player was, the tiles
+/// late, the regions crossed and the sites passed, the deepest water stood in.
+pub fn summarize(frames: Doc, log: [String], snaps: [u32]) -> Option<Summary> {
+    let began_at = frames.get(TOP, "began_ms")?
+    let printed_at = frames.get(TOP, "printed_in")?
+    var began: Vec<Num> = Vec::new()
+    for k in 0..frames.count(began_at) {
+        began.push(num_of(frames, frames.at(began_at, k)?)?)
+    }
+    var printed: Vec<u32> = Vec::new()
+    for k in 0..frames.count(printed_at) {
+        printed.push(u32(frames.num(frames.at(printed_at, k)?)?))
+    }
+    var start: u32 = 0
+    for k in 0..log.len() {
+        if log[k].as_str().starts_with("playable") {
+            start = if k < printed.len() { printed[k] } else { 0 }
+            break
+        }
+    }
+    var reports: Vec<Report> = Vec::new()
+    for k in 0..log.len() {
+        let frame = if k < printed.len() { printed[k] } else { 0 }
+        if let Some(r) = report_of(log[k].as_str(), frame) {
+            reports.push(take r)
+        }
+    }
+    // Each frame's interval after the last, once the floor is playable.
+    var played: Vec<(u32, Num)> = Vec::new()
+    for i in 1..began.len() {
+        if i > start {
+            let gap = Num { v: began[i].v - began[i - 1].v, int: began[i].int && began[i - 1].int }
+            played.push((i, gap))
+        }
+    }
+    var hitches: Vec<(u32, Num)> = Vec::new()
+    for (i, ms) in played {
+        var after_snap = false
+        for s in snaps {
+            if s + 1 == i {
+                after_snap = true
+            }
+        }
+        if ms.v > HITCH_MS && !after_snap {
+            hitches.push((i, ms))
+        }
+    }
+    var sorted: Vec<Num> = Vec::new()
+    for (_, ms) in played {
+        sorted.push(ms)
+    }
+    sorted.sort_by(|a: Num, b: Num| a.v < b.v)
+    var regions: Vec<String> = Vec::new()
+    var passed: Vec<String> = Vec::new()
+    var deepest = Num { v: 0.0, int: true }
+    for k in 0..reports.len() {
+        borrow r = reports[k]
+        if regions.is_empty() || regions[regions.len() - 1].as_str() != r.region.as_str() {
+            regions.push(r.region.clone())
+        }
+        var seen = false
+        for p in passed {
+            if p.as_str() == r.site.as_str() {
+                seen = true
+            }
+        }
+        if r.site_m < 25.0 && !seen {
+            passed.push(r.site.clone())
+        }
+        if k == 0 || r.water.v > deepest.v {
+            deepest = r.water
+        }
+    }
+    var regions_seen: Vec<String> = Vec::new()
+    for r in regions {
+        var seen = false
+        for s in regions_seen {
+            if s.as_str() == r.as_str() {
+                seen = true
+            }
+        }
+        if !seen {
+            regions_seen.push(r.clone())
+        }
+    }
+    regions_seen.sort_by(|a: String, b: String| a.as_str() < b.as_str())
+    var late: Vec<String> = Vec::new()
+    for l in log {
+        if l.as_str().starts_with("late tile") || l.as_str().find("didn't come").is_some() {
+            late.push(l.clone())
+        }
+    }
+    let minutes = if began.is_empty() {
+        String::from("0")
+    } else {
+        String::from(f"{(began[began.len() - 1].v - began[0].v) / 60000.0:.1}")
+    }
+    let (median, p99, p999) = (pct(sorted, 0.5), pct(sorted, 0.99), pct(sorted, 0.999))
+    let worst = if sorted.is_empty() { Num { v: 0.0, int: true } } else { sorted[sorted.len() - 1] }
+    var wheres: Vec<String> = Vec::new()
+    for (i, _) in hitches {
+        wheres.push(where_at(reports, i))
+    }
+    // As Python's `json.dump(summary, f, indent=1)` writes it.
+    var out = String::from("{")
+    key(mut out, 1, "frames", first: true)
+    out.push_str(f"{began.len()}")
+    key(mut out, 1, "minutes", first: false)
+    out.push_str(minutes.as_str())
+    key(mut out, 1, "playable_at", first: false)
+    out.push_str(f"{start}")
+    key(mut out, 1, "interval_ms", first: false)
+    out.push_str("{")
+    let named = [("median", median), ("p99", p99), ("p999", p999), ("worst", worst)]
+    for k in 0..4 {
+        key(mut out, 2, named[k].0, first: k == 0)
+        out.push_str(shown(named[k].1).as_str())
+    }
+    out.push_str("\n },")
+    out.push_str("\n \"hitches\": ")
+    if hitches.is_empty() {
+        out.push_str("[]")
+    } else {
+        out.push_str("[")
+        for k in 0..hitches.len() {
+            out.push_str(if k == 0 { "\n  {" } else { ",\n  {" })
+            key(mut out, 3, "frame", first: true)
+            out.push_str(f"{hitches[k].0}")
+            key(mut out, 3, "ms", first: false)
+            out.push_str(round1(hitches[k].1).as_str())
+            key(mut out, 3, "where", first: false)
+            quoted(mut out, wheres[k].as_str())
+            out.push_str("\n  }")
+        }
+        out.push_str("\n ]")
+    }
+    key(mut out, 1, "late_tiles", first: false)
+    texts(mut out, 1, late)
+    key(mut out, 1, "regions", first: false)
+    texts(mut out, 1, regions)
+    key(mut out, 1, "regions_seen", first: false)
+    texts(mut out, 1, regions_seen)
+    key(mut out, 1, "sites_passed", first: false)
+    texts(mut out, 1, passed)
+    key(mut out, 1, "deepest_water", first: false)
+    out.push_str(shown(deepest).as_str())
+    key(mut out, 1, "reports", first: false)
+    out.push_str(f"{reports.len()}")
+    out.push_str("\n}")
+    var lines: Vec<String> = Vec::new()
+    lines.push(String::from(f"{began.len()} frames, {minutes} min; playable at frame {start}"))
+    lines.push(
+        String::from(
+            f"frame intervals: median {median.v:.1} ms, 99th {p99.v:.1}, 99.9th {p999.v:.1}, worst {worst.v:.1}",
+        ),
+    )
+    lines.push(String::from(f"{hitches.len()} frames over 33 ms after the last:"))
+    for k in 0..min(20, hitches.len()) {
+        lines.push(
+            String::from(f"  frame {hitches[k].0}: {round1(hitches[k].1)} ms, in {wheres[k]}"),
+        )
+    }
+    var seen_list = String::new()
+    for k in 0..regions_seen.len() {
+        if k > 0 {
+            seen_list.push_str(", ")
+        }
+        seen_list.push_str(regions_seen[k].as_str())
+    }
+    lines.push(String::from(f"{late.len()} tiles late; regions: {seen_list}"))
+    lines.push(
+        String::from(
+            f"{passed.len()} sites passed within 25 m; deepest water stood in {deepest.v:.2} m",
+        ),
+    )
+    Some(Summary { json: out, lines })
+}

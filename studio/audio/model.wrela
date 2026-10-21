@@ -19,7 +19,7 @@
 // as `wrela fmt` leaves it. The notes are measured on the tool's helpers, a note to each.
 
 use dsp::{Plan, clamp_of, max_of}
-use io::read_file
+use toolkit::whole::{read_file, write_file}
 use json::{Value, obj}
 use main::{Args, in_root}
 use measure::{Decay, Measured, N, Setup, assemble, frame_levels, line, setup, two_stage}
@@ -845,7 +845,7 @@ pub fn fit_model(a: take Args) -> Result<(), String> {
         bytes.push(text.as_str().byte(i))
     }
     parts.push(take bytes)
-    var w = Box::new(io::write_file.start(out.clone(), take parts))
+    var w = Box::new(write_file.start(out.clone(), take parts))
     loop {
         match w.get_mut().resume() {
             Step::Yielded => yield,

@@ -1,0 +1,189 @@
+// The motion tool's captures, each a script of the player's keys and the frames it keeps, and
+// its contact sheet's layout: what is pure of the tool, so its tests need no build.
+
+use audio_tool::sheet::Image
+use lookbook_tool::shots::{SETTLE_FRAMES, WS, choose, size_of}
+use std::collections::Vec
+use std::input::{Key, Script}
+use std::string::String
+use std::tool::files::rooted
+
+/// A capture: its name, its script, and the first and last frames it keeps.
+pub struct Capture: Clone {
+    pub name: Text,
+    pub keys: Script,
+    pub first: u32,
+    pub last: u32,
+}
+
+/// The captures' names, in the order the tool takes them when none is named.
+pub const NAMES: [Text; 8] = [
+    "walk",
+    "reversal",
+    "arrive-dark",
+    "arrive-sun",
+    "gust",
+    "canopy",
+    "water",
+    "occlusion",
+]
+
+/// The capture named `name`, if there is one. Lookbook shots are chosen as a player would (L,
+/// the shot's number, Enter); a shot's move starts `SETTLE_FRAMES` after it's chosen.
+pub fn capture(name: str) -> Option<Capture> {
+    let s = Script::frames()
+    let (keys, first, last) = if name == "walk" {
+        // The floor's walk at a run (P), from the gate, 4 s of it.
+        ((take s).press(1, Key::P), 240, 480)
+    } else if name == "reversal" {
+        // A run from the gate, the camera turned hard left then hard right.
+        let k = (take s)
+            .key_down(200, Key::W)
+            .key_down(200, Key::ShiftLeft)
+            .key_down(300, Key::Left)
+            .key_up(372, Key::Left)
+            .key_down(372, Key::Right)
+            .key_up(444, Key::Right)
+            .key_up(460, Key::W)
+            .key_up(460, Key::ShiftLeft)
+        (take k, 285, 460)
+    } else if name == "arrive-dark" {
+        // The clearing's shot held 5 s, then the beech wood's: its first 2.5 s.
+        (
+            choose(choose(take s, at: 1, i: 0), at: SETTLE_FRAMES, i: 2),
+            SETTLE_FRAMES,
+            SETTLE_FRAMES + 150,
+        )
+    } else if name == "arrive-sun" {
+        // The beech wood's shot held 5 s, then the clearing's.
+        (
+            choose(choose(take s, at: 1, i: 2), at: SETTLE_FRAMES, i: 0),
+            SETTLE_FRAMES,
+            SETTLE_FRAMES + 150,
+        )
+    } else if name == "gust" {
+        // The wood pasture's shot held, the wind in its crowns: 4 s, the view settled.
+        (choose(take s, at: 1, i: 1), 60, 300)
+    } else if name == "canopy" {
+        // The clearing's move, crowns against the sky: 2 s.
+        (choose(take s, at: 1, i: 0), SETTLE_FRAMES, SETTLE_FRAMES + 120)
+    } else if name == "water" {
+        // The mere's move: 2 s.
+        (choose(take s, at: 1, i: 7), SETTLE_FRAMES, SETTLE_FRAMES + 120)
+    } else if name == "occlusion" {
+        // The fawn under the beeches passing behind trunks and ferns: 2 s.
+        (choose(take s, at: 1, i: 17), SETTLE_FRAMES, SETTLE_FRAMES + 120)
+    } else {
+        return None
+    }
+    for n in NAMES {
+        if n == name {
+            return Some(Capture { name: n, keys, first, last })
+        }
+    }
+    None
+}
+
+/// The six frames a contact sheet shows: evenly spread from `first` to `last`.
+pub fn picks(first: u32, last: u32) -> [u32; 6] {
+    var out: [u32; 6] = [0; 6]
+    for k in 0..6 {
+        out[k] = first + (last - first) * k / 5
+    }
+    out
+}
+
+/// Where cell `k` of a sheet of cells `w` × `h` starts: three across, two down.
+pub fn cell(k: u32, w: u32, h: u32) -> (u32, u32) {
+    ((k % 3) * w, (k / 3) * h)
+}
+
+/// The scale of a label's 5×7 dots, and where it sits in its cell.
+pub const LABEL_SCALE: u32 = 3
+pub const LABEL_AT: u32 = 8
+
+/// The sheet: six frames of `w` × `h` (RGBA8, rows top to bottom) in a 3 × 2 grid, each labelled
+/// by its frame's number in white on a half-dark box at its top left.
+pub fn compose(frames: [Vec<u8>], numbers: [u32], w: u32, h: u32) -> Image {
+    var img = Image::new(3 * w, 2 * h)
+    for k in 0..frames.len() {
+        let (x0, y0) = cell(k, w, h)
+        borrow px = frames[k]
+        for y in 0..h {
+            for x in 0..w {
+                let from = 4 * (y * w + x)
+                let to = 3 * ((y0 + y) * img.w + x0 + x)
+                img.px[to] = px[from]
+                img.px[to + 1] = px[from + 1]
+                img.px[to + 2] = px[from + 2]
+            }
+        }
+        let label = String::from(f"{numbers[k]}")
+        // The box: the label's glyphs and the gaps between them.
+        let bw = label.len() * 6 * LABEL_SCALE - LABEL_SCALE
+        let bh = 7 * LABEL_SCALE
+        for y in y0 + LABEL_AT..min(y0 + LABEL_AT + bh, y0 + h) {
+            for x in x0 + LABEL_AT..min(x0 + LABEL_AT + bw, x0 + w) {
+                let i = 3 * (y * img.w + x)
+                for c in 0..3 {
+                    img.px[i + c] = img.px[i + c] / 2
+                }
+            }
+        }
+        img.text(x0 + LABEL_AT, y0 + LABEL_AT, label.as_str(), LABEL_SCALE, vec3u(255, 255, 255))
+    }
+    img
+}
+
+pub const USAGE: Text = "usage: wrela tool motion -- <out-dir> [--size WxH] [capture ...]"
+
+/// What a run makes: where (a root path), at what size, and which captures.
+pub struct Options: Clone {
+    pub out: String,
+    pub width: u32,
+    pub height: u32,
+    pub captures: Vec<Capture>,
+}
+
+/// The options the command line gives, or what's wrong with it.
+pub fn parse_args(given: [String]) -> Result<Options, String> {
+    var o = Options { out: String::new(), width: 1280, height: 720, captures: Vec::new() }
+    var out: Option<String> = None
+    var k = 0
+    while k < given.len() {
+        let a = given[k].as_str()
+        if a == "--size" {
+            let next = if k + 1 < given.len() { given[k + 1].clone() } else { String::new() }
+            let Some((w, h)) = size_of(next.as_str()) else {
+                return Err(String::from("--size takes WxH, as 1280x720"))
+            }
+            o.width = w
+            o.height = h
+            k += 1
+        } else if out.is_none() {
+            let Some(path) = rooted(WS, a) else {
+                return Err(String::from(f"{a} isn't a directory in the workspace"))
+            }
+            out = Some(take path)
+        } else {
+            let Some(c) = capture(a) else {
+                return Err(
+                    String::from(
+                        f"no capture {a}: the captures are walk, reversal, arrive-dark, arrive-sun, gust, canopy, water, occlusion",
+                    ),
+                )
+            }
+            o.captures.push(take c)
+        }
+        k += 1
+    }
+    let Some(path) = take out else { return Err(String::from(USAGE)) }
+    o.out = take path
+    if o.captures.is_empty() {
+        for n in NAMES {
+            let Some(c) = capture(n) else { panic("each name is a capture") }
+            o.captures.push(take c)
+        }
+    }
+    Ok(o)
+}

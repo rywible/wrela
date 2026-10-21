@@ -1,0 +1,339 @@
+// The lookbook tool (`wrela tool lookbook`): the floor's lookbook (#54 §9, #55 AC10), each shot
+// of games/last-green/lookbook.wrela rendered settled at 1080p, as a still on the native host and
+// as a 10 s clip in Chrome (its move), into a directory.
+//
+// ```text
+// wrela tool lookbook -- <out-dir> [--stills] [--capture]
+//     [--view clay|silhouette|bare|grown|specimens] [--size WxH] [--jobs N] [--workers N]
+//     [shot-number ...]
+// ```
+//
+// The floor must be built (`wrela build games/last-green`). Paths are from the workspace's
+// directory (the root `ws`). A shot is chosen as a player would (L, its number, Enter); the
+// still is the frame its move starts at (`lookbook::SETTLE` seconds in), when the tiles round it
+// have streamed in and its caches have settled. The build runs on the native host's GPU
+// (`std::tool::drive`), and its screen is encoded as a PNG (`std::tool::image`). The clip is its
+// move, from then for `lookbook::MOVE` seconds, paced as in play, recorded from Chrome's canvas
+// (test mode's `clip`: a WebM), with the build served on a free port (`std::tool::serve`) and
+// the page's jobs on `--workers` threads (8 unless given). `--stills` makes the stills alone.
+//
+// `--view` draws a debug view of form instead of the look (F8 in the floor): `clay`, the scene's
+// light on its forms all one matte grey, or `silhouette`, the sky white, the land light and the
+// solid forms dark, a step lighter for each band of distance; or `bare`, the world's land as its
+// geology made it, alone, whose shots are of the places found in it (the build's
+// `files/geology/shots.json`, numbered as there); or `grown`, the world's land as its water and
+// its forest left it, whose shots are of those places and of its wood (`files/growth/shots.json`);
+// or `specimens`, each species at a run of ages on level ground, a species a shot
+// (`files/specimens/shots.json`). `--size` renders the stills at another size than 1920x1080
+// (1280x720 while iterating). Stills render one at a time unless `--jobs` says how many at once,
+// with the same pixels. Each shot's numbers, the interest check's view at its eye (the build's
+// `files/check/shots.json`), are printed beside it and saved as `check.json`.
+//
+// `--capture` takes each still in capture mode (F7, `Floor::capture` in
+// games/last-green/main.wrela): the floor does its load in a few frames, and the still is the
+// frame it prints `still at frame N` on, a 16-frame resolve once the light round the eye is in,
+// not the frame 5 s in.
+
+use shots::{
+    BUILD, CAPTURE_FRAMES, LOOKBOOK, MOVE_FRAMES, Options, SETTLE_FRAMES, STILL, VIEWS, check_line,
+    keys, names_in, names_listed, parse_args, shown_path, stem,
+}
+use std::input::Script
+use std::io::print
+use std::job::{Job, Step}
+use std::json::Doc
+use std::tool::{RUNNING, args}
+use std::tool::drive
+use std::tool::files
+use std::tool::image
+use toolkit::page::run_page
+use toolkit::wait::{done, said, wait}
+use toolkit::whole::{copy_file, read_file, write_file, write_png}
+
+/// How long a page's clip may take, in seconds.
+const CLIP_TIMEOUT: f64 = 600.0
+
+/// The trap a run of `b` ended with, said with `what`, or nothing.
+fn trapped(what: str, ran: drive::Ran) -> Result<(), String> {
+    match ran.trap {
+        Some(t) => Err(String::from(f"{what}: {t.message} {t.panic}")),
+        None => Ok(()),
+    }
+}
+
+/// Shot `i`'s still, `keys` its input, rendered at `width` × `height` from the build in `build`
+/// and written as a PNG at `png`: the frame `SETTLE_FRAMES` in, or with `capture` the frame that
+/// prints `STILL`.
+@job
+pub fn still(
+    build: take String,
+    keys: take Script,
+    png: take String,
+    width: take u32,
+    height: take u32,
+    capture: take bool,
+) -> Result<String, String> {
+    var options = drive::gpu()
+    options.width = width
+    options.height = height
+    options.timeout = 600.0
+    var l = wait(drive::load(build.as_str(), options))
+    while !l.ready() { yield }
+    let b = said(drive::read_loaded(l.polled()))?.build
+    var i = wait(drive::init(b, timeout: 600.0))
+    while !i.ready() { yield }
+    trapped("init", said(drive::read_ran(i.polled()))?)?
+    if capture {
+        var seen = false
+        var n = 0
+        while !seen && n < CAPTURE_FRAMES {
+            var f = wait(drive::frames(b, 1, keys.clone(), timeout: 600.0))
+            while !f.ready() { yield }
+            trapped(f"frame {n}", said(drive::read_ran(f.polled()))?)?
+            var lg = wait(drive::logs(b))
+            while !lg.ready() { yield }
+            for line in said(drive::read_logs(lg.polled()))?.lines {
+                if line.as_str().find(STILL).is_some() {
+                    seen = true
+                }
+            }
+            n += 1
+        }
+        if !seen {
+            return Err(String::from(f"it didn't print \"{STILL}\" within {CAPTURE_FRAMES} frames"))
+        }
+    } else {
+        var f = wait(drive::frames(b, SETTLE_FRAMES + 1, keys.clone(), timeout: 600.0))
+        while !f.ready() { yield }
+        trapped("the frames", said(drive::read_ran(f.polled()))?)?
+    }
+    var c = wait(drive::capture(b, timeout: 600.0))
+    while !c.ready() { yield }
+    let screen = said(drive::read_capture(c.polled()))?
+    var shut = wait(drive::close(b))
+    while !shut.ready() { yield }
+    let img = image::Image { width: screen.width, height: screen.height, rgba: take screen.rgba }
+    var w = Box::new(write_png.start(take img, png.clone()))
+    var wr = done(w.get_mut().resume())
+    while wr.is_none() {
+        yield
+        wr = done(w.get_mut().resume())
+    }
+    (take wr).unwrap()?
+    Ok(png)
+}
+
+/// Shot `i`'s move as a clip in Chrome (1080p, paced, its jobs on `workers` threads), from the
+/// build in `BUILD`, copied to `webm`.
+@job
+pub fn clip(keys: take Script, webm: take String, workers: take u32) -> Result<String, String> {
+    let script = String::from(f"{BUILD}/lookbook-keys.json")
+    var w = wait(files::write(script.as_str(), String::from(keys.as_json()).as_bytes()))
+    while !w.ready() { yield }
+    let _ = w.bytes()?
+    let frames = SETTLE_FRAMES + MOVE_FRAMES + 30
+    let hash = String::from(
+        f"#test&frames={frames}&width=1920&height=1080&fps=60&workers={workers}&paced=1&nohash=1&input=lookbook-keys.json&clipfrom={SETTLE_FRAMES}&clip={MOVE_FRAMES}",
+    )
+    var j = Box::new(
+        run_page.start(
+            String::from(BUILD),
+            take hash,
+            width: 1920,
+            height: 1080,
+            timeout: CLIP_TIMEOUT,
+        ),
+    )
+    var r = done(j.get_mut().resume())
+    while r.is_none() {
+        yield
+        r = done(j.get_mut().resume())
+    }
+    var gone = wait(files::remove(script.as_str()))
+    while !gone.ready() { yield }
+    (take r).unwrap()?
+    var c = Box::new(copy_file.start(String::from(f"{BUILD}/results/clip.webm"), webm.clone()))
+    var cr = done(c.get_mut().resume())
+    while cr.is_none() {
+        yield
+        cr = done(c.get_mut().resume())
+    }
+    (take cr).unwrap()?
+    Ok(webm)
+}
+
+/// Makes the stills, then the clips, as `o` says.
+@job
+pub fn lookbook(o: take Options) -> Result<(), String> {
+    let (view, presses, listed) = VIEWS[o.view]
+    let names_at = if listed.is_empty() {
+        String::from(LOOKBOOK)
+    } else {
+        String::from(f"{BUILD}/files/{listed}/shots.json")
+    }
+    var rn = Box::new(read_file.start(names_at.clone(), names_at.clone()))
+    var nr = done(rn.get_mut().resume())
+    while nr.is_none() {
+        yield
+        nr = done(rn.get_mut().resume())
+    }
+    let source = String::from_utf8((take nr).unwrap()?).unwrap_or(String::new())
+    let shots = if listed.is_empty() {
+        names_in(source.as_str())
+    } else {
+        let Some(n) = names_listed(source.as_str()) else {
+            return Err(String::from(f"{names_at} isn't a list of names"))
+        }
+        take n
+    }
+    var picks = o.picks.clone()
+    if picks.is_empty() {
+        for i in 0..shots.len() {
+            picks.push(i)
+        }
+    }
+    for i in picks {
+        if i >= shots.len() {
+            return Err(String::from(f"no shot {i}: the {view} view has {shots.len()}"))
+        }
+    }
+    var md = wait(files::make_dirs(o.out.as_str()))
+    while !md.ready() { yield }
+    let _ = md.bytes()?
+    // The interest check's numbers, for the look and its debug views of form.
+    var check: Option<Doc> = None
+    if listed.is_empty() {
+        let numbers = String::from(f"{BUILD}/files/check/shots.json")
+        var rc = Box::new(read_file.start(numbers.clone(), numbers.clone()))
+        var cr = done(rc.get_mut().resume())
+        while cr.is_none() {
+            yield
+            cr = done(rc.get_mut().resume())
+        }
+        if let Ok(bytes) = (take cr).unwrap() {
+            check = std::json::parse(
+                String::from_utf8(bytes.clone()).unwrap_or(String::new()).as_str(),
+            )
+            var wc = Box::new(
+                write_file.start(String::from(f"{o.out}/check.json"), Vec::from([take bytes])),
+            )
+            var wr = done(wc.get_mut().resume())
+            while wr.is_none() {
+                yield
+                wr = done(wc.get_mut().resume())
+            }
+            (take wr).unwrap()?
+        }
+    }
+    // The stills, `jobs` at a time, each printed in order as it and those before it end.
+    var running: Vec<(u32, Box<Job<still>>)> = Vec::new()
+    var finished: Vec<Option<String>> = Vec::new()
+    for _ in picks {
+        finished.push(None)
+    }
+    var next = 0
+    var shown = 0
+    while shown < picks.len() {
+        while running.len() < o.jobs && next < picks.len() {
+            let i = picks[next]
+            let png = String::from(f"{o.out}/{stem(i, shots[i].as_str())}.png")
+            running.push(
+                (
+                    next,
+                    Box::new(
+                        still.start(
+                            String::from(BUILD),
+                            keys(i, presses, o.capture),
+                            take png,
+                            o.width,
+                            o.height,
+                            o.capture,
+                        ),
+                    ),
+                ),
+            )
+            next += 1
+        }
+        // A still that ends lets the next start before the tool waits again.
+        var ended = false
+        var k = 0
+        while k < running.len() {
+            match running[k].1.get_mut().resume() {
+                Step::Yielded => k += 1,
+                Step::Done(r) => {
+                    let at = running[k].0
+                    let png = (take r)?
+                    finished[at] = Some(take png)
+                    let _ = running.remove(k)
+                    ended = true
+                },
+            }
+        }
+        while shown < picks.len() && finished[shown].is_some() {
+            let i = picks[shown]
+            let Some(png) = replace(mut finished[shown], None) else { panic("a still is done") }
+            print(shown_path(png.as_str()))
+            if let Some(doc) = check.clone() {
+                if let Some(line) = check_line(doc, i) {
+                    print(line.as_str())
+                }
+            }
+            shown += 1
+        }
+        if shown < picks.len() && !ended {
+            yield
+        }
+    }
+    if !o.stills {
+        for i in picks {
+            let webm = String::from(f"{o.out}/{stem(i, shots[i].as_str())}.webm")
+            var c = Box::new(clip.start(keys(i, presses, capture: false), take webm, o.workers))
+            var cr = done(c.get_mut().resume())
+            while cr.is_none() {
+                yield
+                cr = done(c.get_mut().resume())
+            }
+            let made = (take cr).unwrap()
+            match take made {
+                Ok(path) => print(shown_path(path.as_str())),
+                Err(e) => return Err(String::from(f"shot {i} ({shots[i]})'s clip failed: {e}")),
+            }
+        }
+    }
+    Ok(())
+}
+
+@job
+fn main(given: take Vec<String>) -> u32 {
+    let o = match parse_args(given) {
+        Ok(o) => take o,
+        Err(e) => {
+            print(e.as_str())
+            return 2
+        },
+    }
+    var j = Box::new(lookbook.start(take o))
+    var r = done(j.get_mut().resume())
+    while r.is_none() {
+        yield
+        r = done(j.get_mut().resume())
+    }
+    match (take r).unwrap() {
+        Ok(_) => 0,
+        Err(e) => {
+            print(f"lookbook: {e}")
+            1
+        },
+    }
+}
+
+pub fn tool_init() -> Job<main> {
+    main.start(args())
+}
+
+pub fn tool(job: mut Job<main>) -> u32 {
+    match job.resume() {
+        Step::Yielded => RUNNING,
+        Step::Done(status) => status,
+    }
+}

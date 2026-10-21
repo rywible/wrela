@@ -1,0 +1,199 @@
+// The listening tool's tests: its command line, a blind set matched in loudness and length and
+// shuffled from a seed, excerpts faded in and out, and the gate's score, on small fixtures.
+
+use blind::{
+    FADE_IN, FADE_OUT, Pair, Render, binomial_p, blind, cut, excerpt_times, level, round_even,
+    score, shuffled,
+}
+use engine::rng::{Rng, seed}
+use main::parse_args
+use std::math
+
+fn texts(lines: [Text]) -> Vec<String> {
+    var out: Vec<String> = Vec::new()
+    for l in lines {
+        out.push(String::from(l))
+    }
+    out
+}
+
+@test
+fn the_command_line_takes_an_action_its_directory_and_the_reference() {
+    let Some(r) = parse_args(texts(["round", "--sfz", "/x/piano.sfz", "--seed", "7"])) else {
+        panic("a round")
+    }
+    assert(
+        r.out.as_str() == "ws/examples/gymnopedie/build/listening" &&
+            r.sfz.as_str() == "/x/piano.sfz",
+    )
+    assert(r.seed == Some(7))
+    let Some(g) = parse_args(texts(["gate", "build/g", "--sfizz-lib", "/x/lib"])) else {
+        panic("a gate")
+    }
+    assert(g.out.as_str() == "ws/build/g" && g.lib.as_str() == "/x/lib")
+    let Some(s) = parse_args(texts(["score", "build/g", "build/g/answers.txt"])) else {
+        panic("a score")
+    }
+    assert(s.answers.as_str() == "ws/build/g/answers.txt")
+    // Its files are in the workspace.
+    assert(parse_args(texts(["round", "/tmp/out"])).is_none())
+    assert(
+        parse_args(texts(["score", "build/g"])).is_none() && parse_args(texts(["play"])).is_none(),
+    )
+}
+
+fn tone(amp: f64, n: u32) -> Vec<f64> {
+    var out: Vec<f64> = Vec::new()
+    for i in 0..n {
+        let s = amp * math::sin_f64(2.0 * 3.141592653589793 * 440.0 * f64(i) / 48000.0)
+        out.push(s)
+        out.push(s)
+    }
+    out
+}
+
+fn sixteen(wav: [u8]) -> Vec<f64> {
+    var out: Vec<f64> = Vec::new()
+    var i = 44
+    while i + 1 < wav.len() {
+        let v = i32((u32(wav[i]) | (u32(wav[i + 1]) << 8)) << 16) >> 16
+        out.push(f64(v) / 32768.0)
+        i += 2
+    }
+    out
+}
+
+@test
+fn a_blind_set_gives_nothing_away_but_the_sound() {
+    // One loud and short, one quiet and long, one with a spike.
+    var spiky = tone(0.1, 9600)
+    spiky[100] = 1.0
+    let renders = Vec::from(
+        [
+            (String::from("loud"), Render { samples: tone(0.9, 4800), channels: 2, rate: 48000 }),
+            (String::from("quiet"), Render { samples: tone(0.05, 9600), channels: 2, rate: 48000 }),
+            (String::from("spiky"), Render { samples: spiky, channels: 2, rate: 48000 }),
+        ],
+    )
+    var rng = Rng::new(seed(7))
+    let order = shuffled(3, mut rng)
+    let set = blind(renders, "ABC", order)
+    var levels: Vec<f64> = Vec::new()
+    for k in 0..3 {
+        assert(set.files[k].0.as_str() == "ABC".slice(k, k + 1))
+        let samples = sixteen(set.files[k].1)
+        assert(samples.len() == 2 * 9600, f"{samples.len()}")
+        let (rms, peak) = level(samples, samples.len())
+        // No peak past -1 dBFS (and a 16-bit step for rounding).
+        assert(peak <= math::pow_f64(10.0, -1.0 / 20.0) + 1.0 / 32768.0)
+        levels.push(rms)
+    }
+    // One level for all, set by the spike's peak.
+    let (lo, hi) = (
+        min(min(levels[0], levels[1]), levels[2]),
+        max(max(levels[0], levels[1]), levels[2]),
+    )
+    assert(hi / lo < 1.001, f"{hi / lo}")
+    let key = set.key.pretty_in_order()
+    for name in ["\"loud\"", "\"quiet\"", "\"spiky\""] {
+        assert(key.as_str().find(name).is_some(), key.as_str())
+    }
+    assert(key.as_str().starts_with("{\n  \"A\": {\n    \"render\": "), key.as_str())
+    // The same seed shuffles the same way; each order is a permutation.
+    var again = Rng::new(seed(7))
+    let second = shuffled(3, mut again)
+    var seen = 0
+    for k in 0..3 {
+        assert(second[k] == order[k])
+        seen = seen | (1 << order[k])
+    }
+    assert(seen == 7)
+    assert(
+        round_even(2.5) == 2.0 &&
+            round_even(3.5) == 4.0 &&
+            round_even(-2.5) == -2.0 &&
+            round_even(1.4) == 1.0,
+    )
+}
+
+@test
+fn an_excerpt_is_its_bars_faded_in_and_out() {
+    let (start, end) = excerpt_times(
+        [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0],
+        bars: 2,
+        first: 2,
+        last: 2,
+    )
+    assert(start == 1.5 && end == 3.0)
+    let out = cut(
+        Vec::filled(2 * 4 * 1000, value: 1.0),
+        channels: 2,
+        rate: 1000,
+        start: 1.0,
+        end: 2.0,
+    )
+    assert(
+        out.len() == 2000 && out[0] == 0.0 && out[1] == 0.0 && out[1000] == 1.0 && out[1999] == 0.0,
+    )
+    // As each frame faded alone, at both rates and channel counts; short cuts overlap the
+    // fades, long ones have an untouched middle, and one past the end is empty.
+    for rate in [11025, 48000] {
+        for channels in [1, 2] {
+            var samples: Vec<f64> = Vec::new()
+            for i in 0..rate * channels {
+                samples.push(math::sin_f64(f64(i) * 0.01))
+            }
+            for (from, to) in [(0.0, 0.01), (0.1, 0.3), (0.0, 1.0), (0.9, 2.0), (2.0, 3.0)] {
+                let a = min(u32(from * f64(rate)) * channels, samples.len())
+                let b = max(a, min(u32(to * f64(rate)) * channels, samples.len()))
+                let got = cut(samples, channels, rate, from, to)
+                assert(got.len() == b - a)
+                let frames = (b - a) / channels
+                for i in 0..frames {
+                    let g = min(
+                        min(1.0, f64(i) / f64(rate) / FADE_IN),
+                        f64(frames - 1 - i) / f64(rate) / FADE_OUT,
+                    )
+                    for c in 0..channels {
+                        assert(got[i * channels + c] == samples[a + i * channels + c] * g)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@test
+fn the_gate_counts_wrelas_pairs_and_passes_at_12_of_16() {
+    var key: Vec<Pair> = Vec::new()
+    var right = String::new()
+    var four = String::new()
+    var five = String::new()
+    for n in 1..17 {
+        let w = if n % 3 != 0 { "A" } else { "B" }
+        let other = if w == "A" { "B" } else { "A" }
+        let id = String::from(f"{n:02}")
+        key.push(Pair { n: id.clone(), wrela: String::from(w) })
+        right.push_str(f"{id} {w}\n")
+        four.push_str(f"{n} {if n <= 4 { other } else { w }}\n")
+        five.push_str(f"{id} {if n <= 5 { other } else { w }}\n")
+    }
+    let Ok(all) = score(key, right.as_str()) else { panic("scored") }
+    assert(
+        all.pretty_in_order().as_str() ==
+            "{\n  \"wrela\": 16,\n  \"of\": 16,\n  \"p\": 0.0,\n  \"passes\": true\n}",
+        all.pretty_in_order().as_str(),
+    )
+    // Four wrong (and numbered without their zeros): 12 of 16, p = 0.0384.
+    let Ok(twelve) = score(key, four.as_str()) else { panic("scored") }
+    assert(
+        twelve.pretty_in_order().as_str() ==
+            "{\n  \"wrela\": 12,\n  \"of\": 16,\n  \"p\": 0.0384,\n  \"passes\": true\n}",
+        twelve.pretty_in_order().as_str(),
+    )
+    let Ok(eleven) = score(key, five.as_str()) else { panic("scored") }
+    assert(eleven.pretty_in_order().as_str().find("\"passes\": false").is_some())
+    let Err(why) = score(key, "01 A\n") else { panic("unanswered pairs") }
+    assert(why.as_str().starts_with("no answer for pairs 02, 03"), why.as_str())
+    assert(binomial_p(k: 0, n: 16) == 1.0)
+}
