@@ -91,7 +91,7 @@ The M4 Air has not been measured; its times are reported separately.
 | Mesa's lavapipe (Vulkan on the CPU), MIT, patched (`tools/cloud/`) | The GPU of a cloud machine, which has none (`tools/cloud.sh`) |
 | [FFmpeg](https://ffmpeg.org/) with x264, GPL | Makes the motion captures' clips from the frames the native host draws: the motion tool (`studio/motion`) runs it as a granted program (`run = ["ffmpeg"]`), found on `PATH`; it isn't vendored. The contact sheets are composed in Wrela. Not part of the game |
 | [Wrangler](https://developers.cloudflare.com/workers/wrangler/) (Cloudflare, MIT/Apache 2.0) and GitHub Actions | Deploy each release from `main` to Cloudflare Workers: the Wrela deploy tool (`studio/deploy`) runs Wrangler through `npx` (`.github/workflows/deploy.yml`) |
-| [Binaryen](https://github.com/WebAssembly/binaryen) (Apache 2.0), `wasm-opt` 133 or later | Shrinks a released build's WASM (`wrela build --optimize`, `-Oz`), carrying its trap locations through as a source map. Runs at build time; nothing of it ships |
+| [Binaryen](https://github.com/WebAssembly/binaryen) (Apache 2.0), `wasm-opt` 133 | Shrinks a released build's WASM (`wrela build --optimize`, `-Oz`), carrying its trap locations through as a source map. A toolchain release ships `wasm-opt` 133 with its licence (`tools/package.py`); a development build uses 133 or later from `PATH`. Runs at build time; nothing of it ships in a game |
 | strace, LGPL; Linux mount namespaces (`unshare`) | Historical gate pass caching, retired 2026-10-11: what each slow test reads, so a pass is reused only while all of it is unchanged, or, for a test that builds a program, while its builds make the same files. The ideas are build systems' (Bazel's action cache, ccache's manifests, tup's and fabricate's traced dependencies, Shake's and Bazel's early cutoff) |
 
 Not used, by decision: Suno or any music model (Ryan, 2026-10-06, #44), and any image, texture,
@@ -598,6 +598,17 @@ those handles. A failing tool test's printed lines were missing from its report.
 `/**` in an ignore rule hid files that a later `!` rule takes back. A checkout's own
 `.git/info/exclude` could hide a file. Each fault is fixed, with a regression that fails
 without the fix.
+
+The toolchain's releases let the `wrela` repository depend on a released toolchain alone
+(language.md §3.6, "The toolchain"): `tools/package.py` builds a release for one machine, the
+toolchain-release workflow publishes one for each `v*` tag, and a workspace pins one with
+`toolchain = "X.Y.Z"`, which `wrela` downloads, checks and runs. Ryan asked for it simple and
+working ("the only user of our stuff yet is us"); Claude (Opus 5.5) implemented it. A release
+ships Binaryen's `wasm-opt` 133 (Apache 2.0) from Binaryen's own GitHub release, checked against
+a pinned SHA-256, with its licence. Two outside Rust crates came in, used as libraries:
+[tar](https://github.com/alexcrichton/tar-rs) (MIT or Apache-2.0) unpacks a release, and
+[flate2](https://github.com/rust-lang/flate2-rs) (MIT or Apache-2.0), already in the build,
+ungzips it; ureq downloads it. No code was copied.
 
 ## The references
 
