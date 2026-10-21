@@ -104,8 +104,7 @@ pub fn blob_of(given: take Vec<Vec<u8>>) -> Result<Blob, String> {
     while !n.ready() { yield }
     let b = said(blob::read_handle(n.polled()))?
     for k in 0..parts.len() {
-        let part = replace(mut parts[k], Vec::new())
-        var a = wait(blob::append(b, part))
+        var a = wait(blob::append(b, replace(mut parts[k], Vec::new())))
         while !a.ready() { yield }
         if let Err(e) = a.bytes() {
             var g = wait(blob::release(b))
