@@ -1030,8 +1030,13 @@ fn front(index: Index) -> String {
         "- Each page is Markdown at its own address, such as `std/io.md`, and its Copy page button puts it on the clipboard. `index.json` lists every item with its signature and source line.\n",
     )
     if !index.repository.is_empty() {
+        let install = if index.toolchain_repository.is_empty() {
+            String::from("install `wrela`")
+        } else {
+            f"install `wrela` from [a toolchain release]({index.toolchain_repository.as_str()}/releases)"
+        }
         md.push_str(
-            f"- To run a program: in a clone of [the repository]({index.repository.as_str()}), `tools/wrela run examples/hello-field` builds the compiler and serves that program to your browser.\n",
+            f"- To run a program: {install.as_str()}; then, in a clone of [the repository]({index.repository.as_str()}), `wrela run examples/hello-field` serves that program to your browser. `wrela` runs the toolchain release the repository pins.\n",
         )
     }
     for g in groups_in(index) {

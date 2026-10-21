@@ -33,7 +33,7 @@ This repository holds only Wrela code. The language, its toolchain (compiler, st
 | Engine | `engine/` (Wrela); no game names, places or tuning |
 | Studio | `studio/` (the lens and the project's tools: release, deploy, lookbook, motion, round, listening, audio, reference, serve), `ui/`, `docsite/` (docs.wrela.dev) |
 | Platform | `platform/`: the console's protocols with its games and sessions |
-| Content | `content/`: creatures, plants and characters that games and examples build on; `references/` is their reference data |
+| Content | `content/`: creatures, plants, characters and clouds that games and examples build on; `references/` is their reference data |
 | Games | `games/<game>/`, with its cover; the release tool's catalog (`studio/release/catalog.wrela`) lists the released games and `console/` is the console. Games and `examples/` depend on engine and `content/`; only tests and studio fixtures depend on an example or a game |
 
 ## Quality and checks

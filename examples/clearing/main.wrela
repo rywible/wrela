@@ -50,7 +50,7 @@ use testing::{Capture, View}
 use std::reload::{keep, kept}
 use std::serialize::{Serialize, load, save}
 use trees::{KINDS, Woods, standing, woods}
-use clouds::{CLOUD_WIND, cloudscape, weather}
+use clouds::weather::{CLOUD_WIND, cloudscape, weather}
 use rocks::{BOULDERS, boulder, boulders, footprints}
 use path::{Shot, shot}
 use world::{World, present as snapshot, spawn, tick}
