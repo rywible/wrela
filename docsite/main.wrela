@@ -5034,12 +5034,10 @@ fn page_view(s: Docs, f: Frame) -> vec4 {
 /// docs by its fragment, a source file on the repository, or the address itself.
 fn href_of(s: Docs, target: str) -> String {
     if target.starts_with("source:") {
-        if s.index.repository.is_empty() || s.index.commit.is_empty() { return String::new() }
         let at = target.slice(from: 7, to: target.len())
         let k = at.find(":").unwrap_or(at.len())
-        let path = at.slice(from: 0, to: k)
         let line = at.slice(from: min(k + 1, at.len()), to: at.len())
-        return f"{s.index.repository.as_str()}/blob/{s.index.commit.as_str()}/{path}#L{line}"
+        return s.index.source_url(at.slice(from: 0, to: k), line)
     }
     if target.starts_with("nav:") {
         let page = target.slice(from: 4, to: target.len()).to_string()
