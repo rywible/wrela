@@ -210,23 +210,33 @@ fn leg(p: vec2, x: f32, f: vec2) -> f32 {
     )
 }
 
-/// The capybara's body and head, drawn to be cute: a round bean of a body, high at the rump, and a
-/// big head of soft corners with its blunt muzzle, a little nose down.
+/// How much bigger the capybara is drawn than its body's measures here, from its feet.
+const BIG: f32 = 1.3
+
+/// Where its feet are, which the drawing grows from (m).
+const FEET = vec2(0.0, -0.35)
+
+/// The middle of its head, and how far the head tips nose down (rad).
+const HEAD = vec2(0.44, 0.1)
+const TIP: f32 = -0.1
+
+/// The capybara's body and head: a round bean of a body, high at the rump, and the head that
+/// says capybara: one big, deep, nearly square block, as long as half the body, its snout blunt
+/// and flat in front, running straight into the body with no neck.
 fn capybara_body(p: vec2) -> f32 {
     var d = ellipse(p - vec2(-0.06, -0.01), vec2(0.4, 0.25))
     d = smin(d, ellipse(p - vec2(-0.24, 0.03), vec2(0.22, 0.23)), 0.12)
-    let head = turn(p - vec2(0.35, 0.12), -0.1)
-    let skull = rbox(head, vec2(0.18, 0.15), 0.12)
-    let muzzle = rbox(head - vec2(0.21, -0.035), vec2(0.15, 0.115), 0.1)
-    smin(d, smin(skull, muzzle, 0.06), 0.12)
+    let head = rbox(turn(p - HEAD, TIP), vec2(0.26, 0.2), 0.1)
+    smin(d, head, 0.12)
 }
 
-fn capybara(q: vec2, s: Sprite, px: f32) -> vec4 {
+fn capybara(q: vec2, s: Sprite, screen_px: f32) -> vec4 {
     let stride = s.pose.x
     let pace = s.pose.y
     let mode = s.pose.z
     let wet = s.more.x
-    let p = q / s.more.zw
+    let p = ((q - FEET) / BIG + FEET) / s.more.zw
+    let px = screen_px / BIG
     let darker = 1.0 - 0.15 * wet
     let fur = vec3(0.86, 0.63, 0.43) * darker
     let gloss = 0.3 * wet
@@ -246,41 +256,47 @@ fn capybara(q: vec2, s: Sprite, px: f32) -> vec4 {
     let (d, g, _) = value_gradient_with(|x: vec2| (capybara_body(x), 0.0), p)
     if d < px {
         var albedo = blend(fur, vec3(0.93, 0.78, 0.6) * darker, smoothstep(-0.08, -0.2, p.y) * 0.7)
-        albedo = blend(albedo, vec3(0.72, 0.5, 0.35) * darker, smoothstep(0.6, 0.7, p.x) * 0.7)
+        albedo = blend(albedo, vec3(0.72, 0.5, 0.35) * darker, smoothstep(0.58, 0.68, p.x) * 0.55)
         c = over(c, shade(d, g, p, Paint { albedo, gloss, thick: 0.4, glow: 0.0 }, px))
     }
-    // A small round ear on top, its inside darker.
-    let ear = |x: vec2| length(x - vec2(0.25, 0.27)) - 0.05
+    // A small round ear at the top of the back of the head, its inside darker.
+    let ear = |x: vec2| length(x - vec2(0.23, 0.29)) - 0.05
     c = layer(c, ear, p, Paint { albedo: fur, gloss: 0.0, thick: 0.05, glow: 0.0 }, px)
-    c = mark(c, length(p - vec2(0.255, 0.265)) - 0.022, vec3(0.62, 0.42, 0.32), px)
-    // A blush, a big shiny eye (blinking), its nose, and a little smile.
-    let blush = ellipse(p - vec2(0.49, 0.06), vec2(0.055, 0.03))
+    c = mark(c, length(p - vec2(0.235, 0.285)) - 0.022, vec3(0.62, 0.42, 0.32), px)
+    // The line of its cheek, curving down behind the jaw, and a blush in front of it.
+    let cheek = abs(length(p - vec2(0.43, 0.03)) - 0.13) - 0.006
+    c = mark(c, max(cheek, max(p.x - 0.38, p.y - 0.05)), vec3(0.55, 0.37, 0.26), px)
+    let blush = ellipse(p - vec2(0.52, 0.04), vec2(0.055, 0.03))
     c = over(c, vec4(vec3(0.97, 0.58, 0.54), saturate(-blush / 0.025) * 0.6 * c.w))
+    // A big shiny eye high on the head (blinking), the nostril on top of the snout's front, and
+    // the mouth tucked under it, smiling a little.
     let open = max(s.pose.w, 0.08)
-    c = mark(c, ellipse(p - vec2(0.43, 0.185), vec2(0.036, 0.042 * open)), vec3(0.1, 0.06, 0.05), px)
-    if open > 0.5 {
-        c = mark(c, length(p - vec2(0.443, 0.202)) - 0.013, vec3(1.0), px)
-    }
     c = mark(
         c,
-        ellipse(turn(p - vec2(0.7, 0.115), 0.4), vec2(0.03, 0.019)),
-        vec3(0.3, 0.18, 0.13),
+        ellipse(p - vec2(0.42, 0.205), vec2(0.036, 0.042 * open)),
+        vec3(0.1, 0.06, 0.05),
         px,
     )
-    let smile = abs(length(p - vec2(0.655, 0.025)) - 0.03) - 0.006
-    c = mark(c, max(smile, p.y - 0.025), vec3(0.3, 0.18, 0.13), px)
+    if open > 0.5 {
+        c = mark(c, length(p - vec2(0.433, 0.222)) - 0.013, vec3(1.0), px)
+    }
+    let nostril = ellipse(turn(p - vec2(0.675, 0.175), 0.7), vec2(0.03, 0.012))
+    c = mark(c, nostril, vec3(0.3, 0.18, 0.13), px)
+    let mouth = capsule(p, vec2(0.6, -0.035), vec2(0.69, -0.025), 0.006)
+    let smile = max(abs(length(p - vec2(0.585, -0.005)) - 0.03) - 0.006, p.y + 0.01)
+    c = mark(c, min(mouth, smile), vec3(0.3, 0.18, 0.13), px)
     // The yuzu on its head, as capybaras in hot springs wear them.
     if s.more.y > 0.5 {
         c = layer(
             c,
-            |x: vec2| length(x - vec2(0.36, 0.37)) - 0.1,
+            |x: vec2| length(x - vec2(0.36, 0.38)) - 0.1,
             p,
             Paint { albedo: vec3(1.0, 0.84, 0.2), gloss: 0.4, thick: 0.1, glow: 0.08 },
             px,
         )
         c = layer(
             c,
-            |x: vec2| ellipse(turn(x - vec2(0.41, 0.48), 0.6), vec2(0.05, 0.02)),
+            |x: vec2| ellipse(turn(x - vec2(0.41, 0.49), 0.6), vec2(0.05, 0.02)),
             p,
             Paint { albedo: vec3(0.3, 0.6, 0.2), gloss: 0.2, thick: 0.02, glow: 0.0 },
             px,

@@ -442,7 +442,7 @@ pub fn sprites(
                 pose: vec4(k.stride, pace, mode_f, blink),
                 more: vec4(wet, f32(s.yuzu), k.squash),
                 at: s.at + vec2(0.0, bob - sink),
-                half: vec2(0.9, 0.7),
+                half: vec2(1.2, 1.0),
                 angle: lean + flip * s.facing + pitch * s.facing,
                 facing: s.facing,
                 kind: CAPYBARA,
