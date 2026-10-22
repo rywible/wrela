@@ -7,7 +7,9 @@
 //
 // - The far hills (0.06): blue ranges and a tree line.
 // - The savanna (0.2): rises of straw-coloured grass, flat-topped acacias, giraffes eating.
-// - The zoo's path (0.42): round trees, lamp posts, a fence, elephants behind it.
+// - The zoo's path (0.42): its gate saying ZOO where the level starts, then a sight every 22 m
+//   (a flamingo pond, zebras, an ice cream kiosk, an aviary, an elephant by its rock), trees,
+//   lamps with bunting between some, and the fence.
 // - The bushes and the bamboo (0.68): bushes, a few flowers, a grove of bamboo here and there.
 //
 // A layer further back is drawn smaller, paler (its washes and its ink fade towards the mist's
@@ -320,7 +322,7 @@ pub fn savanna(pixel: FragCoord, v: View) -> Over {
     paint(d, albedo, q, px, haze: 0.45, line: 0.8)
 }
 
-// ---- the zoo's path: trees, lamps, the fence and elephants -------------------------------------
+// ---- the zoo's path: its gate, its sights, trees, lamps, bunting and the fence ------------------
 
 /// The path's ground at `x` (m).
 fn path_ground(x: f32) -> f32 {
@@ -346,75 +348,223 @@ fn round_tree(p: vec2, base: vec2, h: f32, seed: f32) -> (f32, f32) {
     (min(trunk, crown), if crown < trunk { 1.0 } else { 0.0 })
 }
 
-/// An elephant at `base` facing `dir`: a body, a head with its ear, a trunk swinging (`t`), legs.
-fn elephant(p: vec2, base: vec2, dir: f32, t: f32) -> f32 {
-    let q = (p - base) * vec2(dir, 1.0)
-    var d = ellipse(q - vec2(0.0, 1.55), vec2(1.45, 0.95))
+/// The nearer of two shapes, each a distance and a colour.
+fn nearer(a: (f32, vec3), b: (f32, vec3)) -> (f32, vec3) {
+    let (da, _) = a
+    let (db, _) = b
+    if db < da { b } else { a }
+}
+
+fn turn(p: vec2, a: f32) -> vec2 {
+    let (c, s) = (cos(a), sin(a))
+    vec2(p.x * c + p.y * s, -p.x * s + p.y * c)
+}
+
+/// An elephant facing `dir` (`q` from where it stands): a body, a head with its ear, a trunk
+/// swinging (`t`), legs; and the rock it stands by.
+fn elephant(q: vec2, dir: f32, t: f32) -> (f32, vec3) {
+    let l = q * vec2(dir, 1.0)
+    var d = ellipse(l - vec2(0.0, 1.55), vec2(1.45, 0.95))
     for x in [-0.95, -0.6, 0.55, 0.9] {
-        d = smin(d, rbox(q - vec2(x, 0.55), vec2(0.22, 0.6), 0.12), 0.1)
+        d = smin(d, rbox(l - vec2(x, 0.55), vec2(0.22, 0.6), 0.12), 0.1)
     }
     let head = vec2(1.45, 1.9)
-    d = smin(d, length(q - head) - 0.62, 0.3)
-    let swing = 0.25 * sin(t * 0.9 + base.x)
-    d = smin(d, capsule(q, head + vec2(0.45, -0.1), head + vec2(0.75 + swing, -1.1), 0.14), 0.12)
-    d = min(d, capsule(q, head + vec2(0.75 + swing, -1.1), head + vec2(0.95 + swing, -1.0), 0.1))
-    d = min(d, ellipse(q - head - vec2(-0.45, 0.0), vec2(0.4, 0.55)))
-    min(d, capsule(q, vec2(-1.4, 1.8), vec2(-1.65, 1.0), 0.04))
+    d = smin(d, length(l - head) - 0.62, 0.3)
+    let swing = 0.25 * sin(t * 0.9)
+    d = smin(d, capsule(l, head + vec2(0.45, -0.1), head + vec2(0.75 + swing, -1.1), 0.14), 0.12)
+    d = min(d, capsule(l, head + vec2(0.75 + swing, -1.1), head + vec2(0.95 + swing, -1.0), 0.1))
+    d = min(d, ellipse(l - head - vec2(-0.45, 0.0), vec2(0.4, 0.55)))
+    d = min(d, capsule(l, vec2(-1.4, 1.8), vec2(-1.65, 1.0), 0.04))
+    let grey = crowned(vec3(0.7, 0.71, 0.78), vec3(0.6, 0.6, 0.7), l, vec2(0.3, 1.6), 1.4)
+    let rock = ellipse(l - vec2(-2.6, 0.45), vec2(1.1, 0.75))
+    nearer((d, grey), (rock, vec3(0.74, 0.66, 0.56)))
 }
+
+/// A flamingo standing on one leg (`l` from its foot), facing +x: pink, its neck an S, its beak
+/// bent and dark at the tip.
+fn flamingo(l: vec2) -> (f32, vec3) {
+    let pink = vec3(0.98, 0.55, 0.62)
+    var d = capsule(l, vec2(0.0), vec2(0.0, 1.25), 0.03)
+    d = min(d, capsule(l, vec2(0.0, 0.85), vec2(-0.2, 1.0), 0.03))
+    d = min(d, capsule(l, vec2(-0.2, 1.0), vec2(0.0, 1.15), 0.03))
+    d = min(d, ellipse(turn(l - vec2(0.0, 1.45), 0.15), vec2(0.38, 0.2)))
+    d = min(d, capsule(l, vec2(0.25, 1.5), vec2(0.42, 1.95), 0.045))
+    d = min(d, capsule(l, vec2(0.42, 1.95), vec2(0.28, 2.35), 0.045))
+    d = min(d, length(l - vec2(0.33, 2.42)) - 0.09)
+    let beak = cone(l, vec2(0.4, 2.42), vec2(0.55, 2.27), ra: 0.045, rb: 0.018)
+    let tip = if l.x > 0.49 { vec3(0.2, 0.15, 0.15) } else { vec3(0.98, 0.9, 0.85) }
+    nearer((d, pink), (beak, tip))
+}
+
+/// The flamingo pond: a pool and three flamingos in it.
+fn flamingos(q: vec2) -> (f32, vec3) {
+    var best = (ellipse(q - vec2(0.0, 0.02), vec2(3.6, 0.26)), vec3(0.56, 0.8, 0.86))
+    for (x, dir) in [(-1.9, 1.0), (0.3, -1.0), (2.2, 1.0)] {
+        best = nearer(best, flamingo((q - vec2(x, 0.05)) * vec2(dir, 1.0)))
+    }
+    best
+}
+
+/// A zebra grazing (`l` from where it stands), facing +x, its stripes following its body.
+fn zebra(l: vec2, t: f32) -> (f32, vec3) {
+    let graze = 0.08 * sin(t * 0.8)
+    var d = ellipse(l - vec2(0.0, 1.15), vec2(0.8, 0.38))
+    for x in [-0.55, -0.38, 0.38, 0.55] {
+        d = min(d, capsule(l, vec2(x, 1.0), vec2(x, 0.03), 0.065))
+    }
+    d = smin(d, cone(l, vec2(0.55, 1.3), vec2(0.95, 1.85), ra: 0.2, rb: 0.14), 0.08)
+    d = smin(d, cone(l, vec2(0.95, 1.85), vec2(1.33, 1.5 - graze), ra: 0.16, rb: 0.1), 0.06)
+    d = min(d, capsule(l, vec2(0.9, 1.98), vec2(0.86, 2.18), 0.04))
+    d = min(d, capsule(l, vec2(-0.8, 1.3), vec2(-0.95, 0.75), 0.03))
+    let stripe = if l.y < 0.9 {
+        sin(l.y * 22.0)
+    } else {
+        sin(l.x * 13.0 + sin(l.y * 4.0) * 1.5)
+    }
+    let colour = if stripe > 0.2 { vec3(0.17, 0.16, 0.19) } else { vec3(0.98, 0.97, 0.93) }
+    (d, colour)
+}
+
+/// The zebras' paddock: two grazing, facing each other.
+fn zebras(q: vec2, t: f32) -> (f32, vec3) {
+    nearer(zebra(q - vec2(-1.7, 0.0), t), zebra((q - vec2(1.8, 0.0)) * vec2(-1.0, 1.0), t + 2.0))
+}
+
+/// An ice cream kiosk: cream walls with a dark serving hatch, a red and white striped awning,
+/// scalloped along its edge, and a round sign on top with a cone on it.
+fn kiosk(q: vec2) -> (f32, vec3) {
+    let walls = rbox(q - vec2(0.0, 1.0), vec2(1.3, 1.0), 0.05)
+    let hatch = rbox(q - vec2(0.0, 1.2), vec2(0.8, 0.38), 0.05)
+    var best = (walls, if hatch < 0.0 { vec3(0.42, 0.34, 0.36) } else { vec3(0.97, 0.91, 0.78) })
+    let scallop = 0.09 * abs(sin(q.x * 3.14159 / 0.3))
+    let awning = max(abs(q.x) - 1.5, max(q.y - 2.6, 2.05 - q.y + scallop))
+    let stripe = fract(q.x / 0.6 + 0.25) < 0.5
+    best = nearer(best, (awning, if stripe { vec3(0.92, 0.32, 0.32) } else {
+        vec3(0.99, 0.96, 0.9)
+    }))
+    let sign = length(q - vec2(0.0, 3.05)) - 0.42
+    let l = q - vec2(0.0, 3.05)
+    let cone_icon = max(abs(l.x) - (l.y + 0.25) * 0.4, max(-l.y - 0.25, l.y - 0.02))
+    let scoop = length(l - vec2(0.0, 0.08)) - 0.13
+    let icon = if scoop < 0.0 {
+        vec3(0.98, 0.6, 0.7)
+    } else if cone_icon < 0.0 {
+        vec3(0.88, 0.66, 0.36)
+    } else {
+        vec3(0.99, 0.96, 0.9)
+    }
+    nearer(best, (min(sign, capsule(q, vec2(0.0, 2.6), vec2(0.0, 2.7), 0.05)), icon))
+}
+
+/// An aviary: a glass dome on its ground, its frame a lattice of ribs and rings, a finial on top,
+/// and bright birds inside.
+fn aviary(q: vec2) -> (f32, vec3) {
+    let dome = max(length(q) - 3.0, -q.y)
+    let a = atan2(q.y, q.x)
+    let rib = abs(fract(a / 0.2618) - 0.5) * 0.2618 * length(q)
+    let ring = abs(fract(length(q) / 0.75) - 0.5) * 0.75
+    let frame = min(rib, ring) < 0.035
+    var colour = if frame { vec3(0.42, 0.5, 0.52) } else { vec3(0.82, 0.92, 0.93) }
+    for (x, y, c) in [
+        (-1.0, 1.2, vec3(0.92, 0.3, 0.28)),
+        (0.7, 1.8, vec3(0.3, 0.55, 0.9)),
+        (1.4, 0.9, vec3(0.98, 0.8, 0.25)),
+    ] {
+        if ellipse(q - vec2(x, y), vec2(0.18, 0.1)) < 0.0 {
+            colour = c
+        }
+    }
+    let finial = capsule(q, vec2(0.0, 2.9), vec2(0.0, 3.45), 0.06)
+    nearer((dome, colour), (finial, vec3(0.42, 0.5, 0.52)))
+}
+
+/// The zoo's gate, at the start of the level: two stone pillars, and between them over the way
+/// in, a green board saying ZOO.
+fn gate(q: vec2) -> (f32, vec3) {
+    let stone = vec3(0.9, 0.84, 0.72)
+    var best = (rbox(q - vec2(-2.7, 1.8), vec2(0.35, 1.8), 0.06), stone)
+    best = nearer(best, (rbox(q - vec2(2.7, 1.8), vec2(0.35, 1.8), 0.06), stone))
+    best = nearer(best, (rbox(q - vec2(-2.7, 3.7), vec2(0.45, 0.12), 0.04), stone))
+    best = nearer(best, (rbox(q - vec2(2.7, 3.7), vec2(0.45, 0.12), 0.04), stone))
+    let board = rbox(q - vec2(0.0, 4.25), vec2(3.2, 0.6), 0.28)
+    // The letters, cream on the green.
+    let l = (q - vec2(0.0, 4.25)) / 0.75
+    let z = l - vec2(-0.95, 0.0)
+    let zed = min(
+        min(
+            capsule(z, vec2(-0.28, 0.32), vec2(0.28, 0.32), 0.09),
+            capsule(z, vec2(0.28, 0.32), vec2(-0.28, -0.32), 0.09),
+        ),
+        capsule(z, vec2(-0.28, -0.32), vec2(0.28, -0.32), 0.09),
+    )
+    let o1 = abs(ellipse(l - vec2(0.05, 0.0), vec2(0.3, 0.38))) - 0.09
+    let o2 = abs(ellipse(l - vec2(0.95, 0.0), vec2(0.3, 0.38))) - 0.09
+    let letters = min(zed, min(o1, o2))
+    let face = if letters < 0.0 { vec3(0.99, 0.95, 0.82) } else { vec3(0.32, 0.58, 0.42) }
+    nearer(best, (board, face))
+}
+
+/// Where the gate stands on the path's layer: just ahead of where the level starts.
+const GATE: f32 = 4.0
+
+/// How far apart the path's sights are (m on its layer).
+const SIGHTS: f32 = 22.0
 
 @fragment
 pub fn path(pixel: FragCoord, v: View) -> Over {
     let q = on_layer(pixel, v, PATH)
     let px = pixel_on(v, PATH)
     let ground = path_ground(q.x)
-    let lawn = vec3(0.64, 0.76, 0.44)
+    let lawn = vec3(0.64, 0.78, 0.42)
     if q.y > ground + 7.9 {
         discard()
     }
     if q.y < ground - 0.3 {
         return under(lawn, q, ground, 0.15)
     }
-    var d = q.y - ground
-    var albedo = lawn
-    let cell = floor(q.x / 10.0)
+    var best = (q.y - ground, lawn)
+    if abs(q.x - GATE) < 3.9 {
+        best = nearer(best, gate(q - vec2(GATE, path_ground(GATE) - 0.1)))
+    }
+    // The sights, one in each stretch: a flamingo pond, zebras, an ice cream kiosk, an aviary,
+    // an elephant by its rock; and a tree at each stretch's end, now and then.
+    let cell = floor(q.x / SIGHTS)
     for k in -1..2 {
         let i = cell + f32(k)
+        let centre = (i + 0.5) * SIGHTS
+        let base = vec2(centre, path_ground(centre) - 0.1)
+        if abs(q.x - centre) < 4.6 && q.y < ground + 4.6 && abs(centre - GATE) > 8.0 {
+            let local = q - base
+            let kind = i32(hash2(i32(i), 37) * 5.0)
+            let sight = if kind == 0 {
+                flamingos(local)
+            } else if kind == 1 {
+                zebras(local, v.time)
+            } else if kind == 2 {
+                kiosk(local)
+            } else if kind == 3 {
+                aviary(local)
+            } else {
+                elephant(local, if hash2(i32(i), 38) < 0.5 { -1.0 } else { 1.0 }, v.time)
+            }
+            best = nearer(best, sight)
+        }
+        let x = i * SIGHTS
         let h = hash2(i32(i), 31)
-        let x = (i + 0.25 + 0.5 * hash2(i32(i), 32)) * 10.0
-        if h < 0.45 && abs(q.x - x) < 3.0 {
-            let base = vec2(x, path_ground(x) - 0.2)
+        if h < 0.6 && abs(q.x - x) < 3.0 {
+            let foot = vec2(x, path_ground(x) - 0.2)
             let tall = 3.6 + 2.0 * h
-            let (tree, leaves) = round_tree(q, base, tall, h)
-            if tree < d {
-                d = tree
-                albedo = if leaves > 0.5 {
-                    let lit = blend(
-                        vec3(0.46, 0.66, 0.36),
-                        vec3(0.56, 0.7, 0.36),
-                        hash2(i32(i), 33),
-                    )
-                    crowned(lit, lit * vec3(0.86, 0.89, 0.93), q, base + vec2(0.0, tall), 1.6)
-                } else {
-                    vec3(0.55, 0.4, 0.28)
-                }
+            let (tree, leaves) = round_tree(q, foot, tall, h)
+            let colour = if leaves > 0.5 {
+                let lit = blend(vec3(0.42, 0.68, 0.34), vec3(0.52, 0.72, 0.34), hash2(i32(i), 33))
+                crowned(lit, lit * vec3(0.86, 0.89, 0.93), q, foot + vec2(0.0, tall), 1.6)
+            } else {
+                vec3(0.58, 0.42, 0.28)
             }
+            best = nearer(best, (tree, colour))
         }
     }
-    let herd = floor(q.x / 34.0)
-    for k in -1..2 {
-        let i = herd + f32(k)
-        let x = (i + 0.3 + 0.4 * hash2(i32(i), 42)) * 34.0
-        if hash2(i32(i), 41) < 0.4 && abs(q.x - x) < 2.9 && q.y < ground + 3.4 {
-            let dir = if hash2(i32(i), 43) < 0.5 { -1.0 } else { 1.0 }
-            let base = vec2(x, path_ground(x) - 0.3)
-            let animal = elephant(q, base, dir, v.time)
-            if animal < d {
-                d = animal
-                let middle = base + vec2(0.3 * dir, 1.6)
-                albedo = crowned(vec3(0.72, 0.72, 0.76), vec3(0.6, 0.6, 0.67), q, middle, 1.4)
-            }
-        }
-    }
+    // The lamps every 30 m, bunting strung between some of them.
     let lx = (floor(q.x / 30.0) + 0.5) * 30.0
     if abs(q.x - lx) < 0.7 {
         let lb = vec2(lx, path_ground(lx) - 0.1)
@@ -423,10 +573,31 @@ pub fn path(pixel: FragCoord, v: View) -> Over {
             capsule(q, lb, lb + vec2(0.0, 3.2), 0.06),
             min(arm, length(q - lb - vec2(0.4, 3.2)) - 0.14),
         )
-        if post < d {
-            d = post
-            albedo = vec3(0.36, 0.44, 0.42)
-        }
+        best = nearer(best, (post, vec3(0.3, 0.42, 0.4)))
+    }
+    let a = floor((q.x - 15.0) / 30.0) * 30.0 + 15.0
+    if hash2(i32(a), 77) < 0.5 {
+        let t = (q.x - a) / 30.0
+        let ya = path_ground(a) + 3.0
+        let yb = path_ground(a + 30.0) + 3.0
+        let y = ya + (yb - ya) * t - 1.1 * 4.0 * t * (1.0 - t)
+        let string = abs(q.y - y) - 0.015
+        let n = floor((q.x - a) / 0.9)
+        let u = (q.x - a) - (n + 0.5) * 0.9
+        let flag = max(
+            abs(u) - 0.2 * saturate((q.y - (y - 0.38)) / 0.38),
+            max(q.y - y, y - 0.38 - q.y),
+        )
+        let colours = [
+            vec3(0.92, 0.35, 0.32),
+            vec3(0.98, 0.8, 0.3),
+            vec3(0.35, 0.6, 0.85),
+            vec3(0.45, 0.72, 0.4),
+        ]
+        let colour = colours[u32(abs(n)) % 4]
+        best = nearer(best, (min(string, flag), if flag < string { colour } else {
+            vec3(0.4, 0.34, 0.3)
+        }))
     }
     let fx = q.x - (floor(q.x / 2.2) + 0.5) * 2.2
     let fy = q.y - ground
@@ -434,11 +605,9 @@ pub fn path(pixel: FragCoord, v: View) -> Over {
     fence = min(fence, abs(fy - 0.95) - 0.05)
     fence = min(fence, abs(fy - 0.45) - 0.04)
     fence = max(fence, -fy - 0.1)
-    if fence < d {
-        d = fence
-        albedo = vec3(0.86, 0.66, 0.44)
-    }
-    paint(d, albedo, q, px, haze: 0.3, line: 1.0)
+    best = nearer(best, (fence, vec3(0.88, 0.66, 0.42)))
+    let (d, albedo) = best
+    paint(d, albedo, q, px, haze: 0.22, line: 1.0)
 }
 
 // ---- the bushes and the bamboo ----------------------------------------------------------------

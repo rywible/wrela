@@ -177,7 +177,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     draw(
         scene,
         earth_vertex.bind(verts: s.earths[i].items(), f: field),
-        earth.bind(f: field, tops: s.tops[i].items()),
+        earth.bind(f: field, tops: s.tops[i].items(), pools: s.pools.items()),
         vertices: if level { LEVEL_EARTH.len() / 2 } else { LAB_EARTH.len() / 2 },
     )
     draw(

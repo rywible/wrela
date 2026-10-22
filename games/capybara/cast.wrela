@@ -18,8 +18,11 @@ use std::math::TAU
 use waves::{Waves, disturb, step_waves, surface_at, waves}
 use world::Snap
 
-/// How far the capybara goes in one stride of its trot (m).
-const STRIDE: f32 = 0.9
+/// How far the capybara goes in one stride (m): longer the faster it goes, so at a run its legs
+/// cycle about five times a second, not ten (which shook it).
+fn stride_length(speed: f32) -> f32 {
+    0.7 + 0.11 * speed
+}
 
 /// The collider's radius (m): the capybara's feet are this far below its middle.
 const FEET: f32 = 0.35
@@ -242,7 +245,7 @@ pub fn react(k: mut Cast, s: Snap, c: Course, dt: f32) {
     if mode == Some(Mode::Swim) {
         k.stride += dt * 9.0
     } else if mode == Some(Mode::Walk) {
-        k.stride += speed * dt / STRIDE * TAU
+        k.stride += speed * dt / stride_length(speed) * TAU
     }
     k.stride = k.stride % TAU
     step_waves(mut k.waves, dt)
@@ -424,8 +427,9 @@ pub fn sprites(
         }
         let flip = if s.flip > 0 { -TAU * saturate(f32(s.flip) / f32(HZ / 2)) } else { 0.0 }
         let pace = if mode == Some(Mode::Walk) { saturate(abs(s.speed) / 6.0) } else { 0.0 }
-        let bob = 0.045 * pace * abs(sin(k.stride))
-        let pitch = 0.05 * pace * sin(2.0 * k.stride)
+        // Its body rises and falls once a stride, and rocks a little with it.
+        let bob = 0.03 * pace * (0.5 - 0.5 * cos(k.stride))
+        let pitch = 0.035 * pace * sin(k.stride)
         let wet = saturate(f32(s.wet) / (f32(FEEL.wet_ticks) * 0.5))
         let mode_f = match mode {
             Some(Mode::Crouch) => 1.0,
