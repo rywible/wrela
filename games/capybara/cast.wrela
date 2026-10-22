@@ -40,8 +40,10 @@ pub struct Cast {
     puffs: f32,
     breath: f32,
     drips: f32,
-    /// Seconds since it last came back from dying, for the page opening on it again.
+    /// Seconds since it last came back from dying, for the page opening on it again, and since it
+    /// reached the goal, for the seagull flying off (the clock stops at the goal).
     back: f32,
+    won: f32,
 }
 
 pub fn cast(c: Course) -> Cast {
@@ -56,6 +58,7 @@ pub fn cast(c: Course) -> Cast {
         breath: 0.0,
         drips: 0.0,
         back: 10.0,
+        won: 0.0,
     }
 }
 
@@ -231,6 +234,7 @@ pub fn react(k: mut Cast, s: Snap, c: Course, dt: f32) {
     }
     // Wet on land: it drips.
     k.back += dt
+    k.won = if s.finished > 0 { k.won + dt } else { 0.0 }
     k.drips -= dt
     if !wet_now && s.wet > 0 && k.drips <= 0.0 {
         let x = between(mut k.dust, vec2(-0.3, 0.3))
@@ -343,12 +347,12 @@ pub fn sprites(
         facing: 1.0,
         kind: FLAG,
     })
-    let gone = if s.finished > 0 { f32(s.ticks - s.finished) / f32(HZ) } else { 0.0 }
+    let gone = if s.finished > 0 { k.won } else { 0.0 }
     back.push(Sprite {
         pose: vec4(time * 14.0, if s.finished > 0 { 1.0 } else { 0.0 }, 0.0, 0.0),
         more: vec4(0.0),
         at: pole + vec2(0.0, 4.6) + vec2(3.0, 2.0) * gone + vec2(0.0, 0.5 * gone * gone),
-        half: vec2(0.7, 0.45),
+        half: vec2(0.85, 0.6),
         angle: if s.finished > 0 { 0.2 } else { 0.0 },
         facing: if s.finished > 0 { 1.0 } else { -1.0 },
         kind: SEAGULL,
@@ -406,12 +410,12 @@ pub fn sprites(
         let near = distance(f.xy, s.at)
         let (kind_f, half, pose) = if kind == 1 {
             let charge = if near < 3.5 && (s.at.x - f.x) * dir > 0.0 { 1.0 } else { 0.0 }
-            (GOOSE, vec2(0.75, 0.6), vec4(time * 11.0 + seed, charge, 0.0, 0.0))
+            (GOOSE, vec2(0.95, 0.9), vec4(time * 11.0 + seed, charge, 0.0, 0.0))
         } else if kind == 2 {
-            (PIGEON, vec2(0.6, 0.5), vec4(time * 20.0 + seed, 0.0, 0.0, 0.0))
+            (PIGEON, vec2(0.75, 0.65), vec4(time * 20.0 + seed, 0.0, 0.0, 0.0))
         } else {
             let gape = smoothstep(3.5, 1.5, near) + pow(max(sin(time * 0.9 + seed), 0.0), 12.0)
-            (CAIMAN, vec2(2.0, 0.55), vec4(time * 3.0 + seed, min(gape, 1.0), 0.0, 0.0))
+            (CAIMAN, vec2(2.3, 0.65), vec4(time * 3.0 + seed, min(gape, 1.0), 0.0, 0.0))
         }
         front.push(
             Sprite {
