@@ -1,12 +1,11 @@
 // The capybara game (a working title; design.md is its brief). For now it is the movement lab:
 // the sim ticks 120 times a second on the ticker's thread (`engine::run`), and each frame draws
 // the snapshots round its time as a blockout: the course's slab, the capybara and the goal as
-// boxes, the water over them, and a line of text with the preset, the clock and the speed.
+// boxes, the water over them, and a line of text with the clock and the speed.
 //
 // Keys: the arrows or W A S D to move (down slides or crouches; in water the eight directions
-// steer a stroke), Space, Z or K to jump and to stroke, Shift, X or J to run. Tab changes the
-// preset (momentum or snappy) and R restarts. A controller: the stick or pad, South or East to
-// jump, West or North to run, Select for the preset, Start to restart.
+// steer a stroke), Space, Z or K to jump (again in the air for the double jump) and to stroke, R
+// to restart. A controller: the stick or pad, South or East to jump, Start to restart.
 //
 // For an agent: `wrela-host <build> --frames n --input script.json --png out.png` draws frame n
 // on the GPU (scripts.wrela has scripts), and `capybara` exports the capybara's state for `wrela
@@ -17,7 +16,7 @@ use camera::{Camera, DISTANCE, FOVY, camera, follow}
 use course::LAB
 use engine::present::Snapshots
 use engine::run::run
-use feel::{HZ, feel}
+use feel::HZ
 use look::{LAB_GROUND, LAB_WATER, Eye, Part, cel, ground_vertex, part_vertex, water, water_vertex}
 use std::gpu::{
     Cull, DepthTexture, GpuBuffer, begin_screen_pass_with_depth, buffer, buffer_of, depth_texture,
@@ -48,7 +47,7 @@ pub struct Lab {
 }
 
 pub fn init() -> Lab {
-    let latest = run(world(c: 0, f: 0), hz: HZ, step: tick, present: present)
+    let latest = run(world(0), hz: HZ, step: tick, present: present)
     let fonts = Fonts::load()
     let renderer = Renderer::new(fonts)
     Lab {
@@ -105,8 +104,8 @@ fn capybara_parts(out: mut Vec<Part>, s: Snap) {
     } else {
         clamp(s.vel.y * 0.03, -0.4, 0.4) * s.facing
     }
-    // After a dolphin leap it flips once, nose up and over, in half a second.
-    let flip = if s.leap > 0 { -TAU * saturate(f32(s.leap) / f32(HZ / 2)) } else { 0.0 }
+    // After a dolphin leap or a double jump it flips once, nose up and over, in half a second.
+    let flip = if s.flip > 0 { -TAU * saturate(f32(s.flip) / f32(HZ / 2)) } else { 0.0 }
     let low = mode == Some(Mode::Crouch) || mode == Some(Mode::Slide) || (!grounded && s.tuck == 1)
     let squash = if low { vec3(1.12, 0.72, 1.0) } else { vec3(1.0) }
     let frame = translate(vec3(s.at, 0.0)) *
@@ -210,15 +209,7 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2) {
     let pad = size
     let ink = vec4(0.08, 0.1, 0.14, 1.0)
     let soft = vec4(0.08, 0.1, 0.14, 0.7)
-    let name = feel(snap.feel).name
-    let _ = s.list.text(
-        s.fonts,
-        Face::Sans,
-        f"{name}   Tab: preset   R: restart".as_str(),
-        size,
-        vec2(pad),
-        ink,
-    )
+    let _ = s.list.text(s.fonts, Face::Sans, "R: restart", size, vec2(pad), ink)
     let clock = seconds(if snap.finished > 0 { snap.finished } else { snap.ticks })
     let time = if snap.finished > 0 {
         f"GOAL  {clock} s  ({snap.finished} ticks)"

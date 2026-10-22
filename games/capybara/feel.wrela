@@ -1,36 +1,35 @@
-// How the capybara moves, in numbers: the two presets the lab compares (design.md, "Movement"),
-// and what they share (the slide and swimming). Metres, seconds, and ticks of the sim's step.
+// How the capybara moves, in numbers (design.md, "Movement"): one speed reached almost at once,
+// a light-gravity rise while jump is held, a double jump, the slide and swimming. Ryan chose this
+// feel (the lab's "snappy", with a touch more momentum and float) over a Mario-like one with a
+// run button. Metres, seconds, and ticks of the sim's step.
 
 /// The sim's step: 120 ticks a second (design.md, "Input").
 pub const HZ: u32 = 120
 pub const STEP: f32 = 1.0 / 120.0
 
 pub struct Feel: Copy {
-    pub name: Text,
-    /// Top speeds walking and running (m/s); with no run button, walking is the only one.
-    pub walk: f32,
-    pub run: f32,
-    pub run_button: bool,
+    /// The one top speed on the ground and in the air (m/s).
+    pub speed: f32 = 9.0,
     /// Ground acceleration towards the top speed, braking against the motion (a skid), braking
     /// with no input, and slowing from above the top speed (m/s²).
-    pub accel: f32,
-    pub turn: f32,
-    pub friction: f32,
-    pub over: f32,
-    /// How hard a slope pulls a walking capybara along it (m/s² at a vertical).
-    pub slope_pull: f32,
+    pub accel: f32 = 60.0,
+    pub turn: f32 = 90.0,
+    pub friction: f32 = 80.0,
+    pub over: f32 = 30.0,
     /// Acceleration in the air (m/s²).
-    pub air_accel: f32,
-    /// A jump's upward speed, and the extra at the run's top speed (m/s).
-    pub launch: f32,
-    pub run_launch: f32,
+    pub air_accel: f32 = 55.0,
+    /// A jump's upward speed, and a double jump's (m/s).
+    pub launch: f32 = 15.2,
+    pub air_launch: f32 = 13.0,
+    /// The jumps it has in the air, after its first: refreshed on landing and by a dolphin leap.
+    pub air_jumps: u32 = 1,
     /// Gravity rising with jump held, and otherwise (m/s²); the fastest fall (m/s).
-    pub rise: f32,
-    pub fall: f32,
-    pub terminal: f32,
+    pub rise: f32 = 40.0,
+    pub fall: f32 = 90.0,
+    pub terminal: f32 = 24.0,
     /// Ticks a jump still counts after the ground falls away, and a press waits for the ground.
-    pub coyote: u32,
-    pub buffer: u32,
+    pub coyote: u32 = 12,
+    pub buffer: u32 = 12,
     // The slide.
     /// The least speed that slides rather than crouches (m/s), the least slope that slides from
     /// rest (its sine), and the speed below which a slide on flatter ground stops (m/s).
@@ -66,51 +65,5 @@ pub struct Feel: Copy {
     pub leap: f32 = 14.0,
 }
 
-/// As Super Mario Bros.: a run button, acceleration and skids, a jump higher at a run.
-pub const MOMENTUM = Feel {
-    name: "MOMENTUM",
-    walk: 5.0,
-    run: 9.0,
-    run_button: true,
-    accel: 30.0,
-    turn: 60.0,
-    friction: 40.0,
-    over: 15.0,
-    slope_pull: 6.0,
-    air_accel: 25.0,
-    launch: 15.5,
-    run_launch: 1.5,
-    rise: 46.0,
-    fall: 95.0,
-    terminal: 24.0,
-    coyote: 10,
-    buffer: 12,
-}
-
-/// As Celeste: one speed reached at once, a tight turn and a strong hold in the air.
-pub const SNAPPY = Feel {
-    name: "SNAPPY",
-    walk: 9.0,
-    run: 9.0,
-    run_button: false,
-    accel: 90.0,
-    turn: 120.0,
-    friction: 120.0,
-    over: 30.0,
-    slope_pull: 0.0,
-    air_accel: 70.0,
-    launch: 15.5,
-    run_launch: 0.0,
-    rise: 46.0,
-    fall: 100.0,
-    terminal: 24.0,
-    coyote: 12,
-    buffer: 12,
-}
-
-pub const FEELS: u32 = 2
-
-/// Preset `i`.
-pub fn feel(i: u32) -> Feel {
-    if i == 0 { MOMENTUM } else { SNAPPY }
-}
+/// The capybara's feel.
+pub const FEEL = Feel {}

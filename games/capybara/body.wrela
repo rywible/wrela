@@ -12,7 +12,7 @@
 use course::{Contact, Course}
 use engine::sim::SimState
 use feel::{Feel, STEP}
-use pad::{DOWN, JUMP, Pad, RUN}
+use pad::{DOWN, JUMP, Pad}
 use std::hash::StateHash
 use std::serialize::Serialize
 
@@ -62,6 +62,11 @@ pub struct Body: Copy + Eq + StateHash + Serialize + SimState {
     /// Ticks since a dolphin leap left the water, counting from 1 while the body is in the air
     /// after it; 0 otherwise.
     pub leap: u32,
+    /// Jumps left in the air: a double jump while it's more than 0.
+    pub jumps: u32,
+    /// Ticks since a flip began (a dolphin leap's or a double jump's), counting from 1 in the air;
+    /// 0 otherwise. The view turns the capybara over by it.
+    pub flip: u32,
 }
 
 /// A body standing at `at` (its middle), facing right.
@@ -81,6 +86,8 @@ pub fn spawn(at: vec2) -> Body {
         cooldown: 0,
         queued: false,
         leap: 0,
+        jumps: 0,
+        flip: 0,
     }
 }
 
@@ -189,15 +196,16 @@ fn leave(b: mut Body, vel: vec2, f: Feel) {
     b.mode = Mode::Air
     b.coyote = f.coyote
     b.jumping = false
+    b.jumps = f.air_jumps
     b.ground = vec2(0.0, 1.0)
 }
 
 /// A jump from the ground whose tangent is `t`: the speed along the ground, and the launch up.
 fn jump(b: mut Body, t: vec2, f: Feel) {
-    let pace = saturate((abs(b.speed) - f.walk) / max(f.run - f.walk, 0.001))
-    b.vel = t * b.speed + vec2(0.0, f.launch + f.run_launch * pace)
+    b.vel = t * b.speed + vec2(0.0, f.launch)
     b.mode = Mode::Air
     b.jumping = true
+    b.jumps = f.air_jumps
     b.buffer = 0
     b.coyote = 0
     b.ground = vec2(0.0, 1.0)
@@ -235,7 +243,7 @@ fn ground(b: mut Body, pad: Pad, c: Course, f: Feel) {
     }
     let dir = pad.x()
     match b.mode {
-        Mode::Walk => walk(mut b, dir, pad.held(RUN), t, f),
+        Mode::Walk => walk(mut b, dir, f),
         Mode::Crouch => b.speed = approach(b.speed, 0.0, f.friction * STEP),
         Mode::Slide => {
             b.speed -= f.slide_gravity * t.y * STEP
@@ -256,21 +264,19 @@ fn ground(b: mut Body, pad: Pad, c: Course, f: Feel) {
 }
 
 /// A tick of the speed along the ground walking, `dir` held (-1, 0 or 1).
-fn walk(b: mut Body, dir: f32, run: bool, t: vec2, f: Feel) {
+fn walk(b: mut Body, dir: f32, f: Feel) {
     if dir == 0.0 {
         b.speed = approach(b.speed, 0.0, f.friction * STEP)
         return
     }
-    let top = if run && f.run_button { f.run } else { f.walk }
     let along = b.speed * dir
     if along < 0.0 {
         b.speed += dir * f.turn * STEP
-    } else if along < top {
-        b.speed = dir * min(along + f.accel * STEP, top)
+    } else if along < f.speed {
+        b.speed = dir * min(along + f.accel * STEP, f.speed)
     } else {
-        b.speed = dir * max(along - f.over * STEP, top)
+        b.speed = dir * max(along - f.over * STEP, f.speed)
     }
-    b.speed -= f.slope_pull * t.y * STEP
 }
 
 /// A tick along the ground from contact `k`: each substep moves along the tangent, finds the
@@ -320,19 +326,28 @@ fn glide(b: mut Body, c: Course, f: Feel, k: Contact) {
 // ---- in the air --------------------------------------------------------------------------------
 
 fn air(b: mut Body, pad: Pad, c: Course, f: Feel) {
-    if b.coyote > 0 {
-        b.coyote -= 1
-        if b.buffer > 0 {
-            b.vel.y = f.launch +
-                f.run_launch * saturate((abs(b.vel.x) - f.walk) / max(f.run - f.walk, 0.001))
-            b.jumping = true
-            b.buffer = 0
-            b.coyote = 0
-        }
-    }
     if b.leap > 0 {
         b.leap += 1
     }
+    if b.flip > 0 {
+        b.flip += 1
+    }
+    if b.coyote > 0 && b.buffer > 0 {
+        // Just off the ground: still the ground's jump.
+        b.vel.y = f.launch
+        b.jumping = true
+        b.buffer = 0
+        b.coyote = 0
+    } else if b.buffer > 0 && b.jumps > 0 {
+        // The double jump: up at its own speed, whatever the fall, with a flip.
+        b.vel.y = f.air_launch
+        b.jumping = true
+        b.buffer = 0
+        b.jumps -= 1
+        b.leap = 0
+        b.flip = 1
+    }
+    b.coyote = less(b.coyote)
     // A leap rises on the light gravity without jump held; a jump only while it's held.
     if (!pad.held(JUMP) && b.leap == 0) || b.vel.y <= 0.0 {
         b.jumping = false
@@ -344,10 +359,9 @@ fn air(b: mut Body, pad: Pad, c: Course, f: Feel) {
     let start = b.vel
     let dir = pad.x()
     if dir != 0.0 {
-        let top = if pad.held(RUN) && f.run_button { f.run } else { f.walk }
         let along = b.vel.x * dir
-        if along < top {
-            b.vel.x = dir * min(along + f.air_accel * STEP, top)
+        if along < f.speed {
+            b.vel.x = dir * min(along + f.air_accel * STEP, f.speed)
         }
         b.facing = dir
     }
@@ -380,6 +394,7 @@ fn air(b: mut Body, pad: Pad, c: Course, f: Feel) {
         if c.water_at(b.at).is_some() {
             b.mode = Mode::Swim
             b.leap = 0
+            b.flip = 0
             b.jumping = false
             b.queued = false
             return
@@ -399,6 +414,7 @@ fn land(b: mut Body, pad: Pad, k: Contact, before: vec2, f: Feel) {
     b.jumping = false
     b.coyote = 0
     b.leap = 0
+    b.flip = 0
     b.mode = if pad.held(DOWN) {
         if abs(b.speed) >= f.slide_min || abs(t.y) >= f.slide_slope { Mode::Slide } else {
             Mode::Crouch
@@ -470,6 +486,7 @@ fn swim(b: mut Body, pad: Pad, c: Course, f: Feel) {
             // The hop from floating: out at its own speed.
             b.mode = Mode::Air
             b.coyote = 0
+            b.jumps = f.air_jumps
             return
         }
         if b.vel.y >= f.leap_min {
@@ -480,6 +497,8 @@ fn swim(b: mut Body, pad: Pad, c: Course, f: Feel) {
             b.coyote = 0
             b.jumping = true
             b.leap = 1
+            b.flip = 1
+            b.jumps = f.air_jumps
             return
         }
         b.at.y = surface - 1.0e-4
@@ -488,5 +507,6 @@ fn swim(b: mut Body, pad: Pad, c: Course, f: Feel) {
     if b.at.x < w.lo.x || b.at.x > w.hi.x || b.at.y < w.lo.y {
         b.mode = Mode::Air
         b.jumping = false
+        b.jumps = f.air_jumps
     }
 }

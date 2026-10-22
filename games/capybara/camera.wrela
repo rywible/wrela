@@ -1,9 +1,12 @@
 // The camera: a fixed side view that scrolls both ways (design.md, "Movement", proposed). It
-// looks further ahead the faster the capybara goes. On the ground it moves up or down only when
+// looks a little ahead of the way the capybara faces, and further ahead only past the capybara's
+// running speed (a slide, a leap), so starting and stopping don't swing it (Ryan, 2026-10-21: the
+// rebound was too much when it led by the speed itself). On the ground it moves up or down only when
 // the capybara lands at a new height; while the capybara swims, or flies or falls out of a band
 // round the view's middle, it follows. It is presentation, stepped by the frame's time.
 
 use body::Mode
+use feel::FEEL
 use world::Snap
 
 /// How far the camera stands from the plane of play (m), and how wide it sees (rad): about 12.6 m
@@ -14,9 +17,11 @@ pub const FOVY: f32 = 0.75
 /// How far the camera's height may leave the height it keeps before it follows (m).
 const BAND: f32 = 2.5
 
-/// How far ahead the camera looks per m/s of speed (s), and the most (m).
-const LEAD: f32 = 0.35
-const LEAD_MAX: f32 = 4.0
+/// How far ahead of the way it faces the camera looks (m); how much further per m/s past the
+/// running speed (s), and the most of that (m).
+const FACING: f32 = 1.5
+const LEAD: f32 = 0.25
+const LEAD_MAX: f32 = 3.0
 
 /// The capybara sits this far below the view's middle, so more is seen above it (m).
 const ABOVE: f32 = 1.2
@@ -49,8 +54,9 @@ pub fn follow(c: mut Camera, s: Snap, dt: f32) {
     } else if mode == Some(Mode::Swim) || abs(s.at.y - c.level) > BAND {
         c.level += (s.at.y - c.level) * ease(6.0, dt)
     }
-    let lead = clamp(s.vel.x * LEAD, -LEAD_MAX, LEAD_MAX)
-    c.ahead += (lead - c.ahead) * ease(2.0, dt)
+    let past = max(abs(s.vel.x) - FEEL.speed, 0.0) * sign(s.vel.x)
+    let lead = s.facing * FACING + clamp(past * LEAD, -LEAD_MAX, LEAD_MAX)
+    c.ahead += (lead - c.ahead) * ease(1.5, dt)
     let want = vec2(s.at.x + c.ahead, c.level + ABOVE)
     c.at += (want - c.at) * vec2(ease(8.0, dt), ease(4.0, dt))
 }
@@ -66,14 +72,14 @@ pub fn half_view(aspect: f32) -> vec2 {
 use course::LAB
 use feel::STEP
 use pad::{Hold, pad_of}
-use proofs::{LAB_MOMENTUM, LAB_SNAPPY}
+use proofs::LAB_RUN
 use world::{present, step, world}
 
 /// Whether the camera keeps the capybara in view, a metre and a half inside a 16:9 screen's
-/// edges, through `run` with preset `f`.
-fn keeps_in_view(f: u32, run: [Hold]) -> bool {
+/// edges, through `run`.
+fn keeps_in_view(run: [Hold]) -> bool {
     let half = half_view(16.0 / 9.0) - vec2(1.5)
-    var w = world(c: 0, f: f)
+    var w = world(0)
     var c = camera(LAB.start)
     for h in run {
         for i in 0..h.ticks {
@@ -91,6 +97,20 @@ fn keeps_in_view(f: u32, run: [Hold]) -> bool {
 
 @test
 fn the_camera_keeps_the_capybara_in_view_through_the_whole_lab() {
-    assert(keeps_in_view(0, LAB_MOMENTUM), "with momentum")
-    assert(keeps_in_view(1, LAB_SNAPPY), "with snappy")
+    assert(keeps_in_view(LAB_RUN))
+}
+
+@test
+fn starting_and_stopping_barely_move_the_camera_past_the_capybara() {
+    // Run right from rest for a second, then stop: the view's lead over the capybara changes by
+    // the easing alone, never by more than half a metre past the facing lead.
+    var w = world(0)
+    var c = camera(LAB.start)
+    for i in 0..240 {
+        let bits = if i < 120 { pad::RIGHT } else { 0 }
+        step(mut w, pad::Pad { bits })
+        let s = present(w)
+        follow(mut c, s, STEP)
+        assert(c.ahead <= FACING + 0.5, "no swing ahead at the running speed")
+    }
 }

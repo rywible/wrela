@@ -1,13 +1,13 @@
-// The sim's world: the course and preset being played, the capybara, the controls, and the
-// attempt's clock in ticks (design.md, "Timing"). The ticker steps it from the host's records
-// (`tick`); tests and searches step it from pads (`step`). It holds no course: a course is a
-// constant, named by its number, so a world is a small value to clone, hash and compare.
+// The sim's world: the course being played, the capybara, the controls, and the attempt's clock
+// in ticks (design.md, "Timing"). The ticker steps it from the host's records (`tick`); tests and
+// searches step it from pads (`step`). It holds no course: a course is a constant, named by its
+// number, so a world is a small value to clone, hash and compare.
 
-use body::{Body, Mode, spawn}
+use body::{Body, spawn}
 use course::{COURSES, course}
 use engine::run::{Asks, TickInput}
 use engine::sim::{SimState, Tick}
-use feel::{FEELS, feel}
+use feel::FEEL
 use pad::{Controls, Hold, Pad, pad_of}
 use std::hash::StateHash
 use std::input::{Event, Key, PadButton}
@@ -15,7 +15,6 @@ use std::serialize::Serialize
 
 pub struct World: Copy + Eq + StateHash + Serialize + SimState {
     pub course: u32,
-    pub feel: u32,
     pub body: Body,
     pub controls: Controls,
     /// The attempt's clock: the level's ticks run, the first counted as 1.
@@ -24,16 +23,15 @@ pub struct World: Copy + Eq + StateHash + Serialize + SimState {
     pub finished: u32,
     /// Times it fell out of the course and came back to the start.
     pub falls: u32,
-    /// The attempts begun: each restart and change of preset in the lab begins one.
+    /// The attempts begun: each restart begins one.
     pub attempt: u32,
 }
 
-/// A new attempt at course `c` with preset `f`: the course's start state.
-pub fn world(c: u32, f: u32) -> World {
-    assert(c < COURSES && f < FEELS)
+/// A new attempt at course `c`: the course's start state.
+pub fn world(c: u32) -> World {
+    assert(c < COURSES)
     World {
         course: c,
-        feel: f,
         body: spawn(course(c).start),
         controls: Controls {},
         ticks: 0,
@@ -51,7 +49,7 @@ pub fn step(w: mut World, pad: Pad) {
     if w.finished == 0 {
         w.ticks += 1
     }
-    body::step(mut w.body, pad, c, feel(w.feel))
+    body::step(mut w.body, pad, c, FEEL)
     if w.body.at.y < c.floor {
         w.body = spawn(c.start)
         w.falls += 1
@@ -61,32 +59,28 @@ pub fn step(w: mut World, pad: Pad) {
     }
 }
 
-/// A new attempt in place of `w`, with preset `f`, keeping the controls as they're held.
-fn restart(w: mut World, f: u32) {
+/// A new attempt in place of `w`, keeping the controls as they're held.
+fn restart(w: mut World) {
     let (controls, attempt) = (w.controls, w.attempt)
-    w = world(w.course, f)
+    w = world(w.course)
     w.controls = controls
     w.attempt = attempt + 1
 }
 
-/// One tick from the host's records: the lab's commands (Tab or the controller's Select change
-/// the preset, R or Start restart), then the pad they leave.
+/// One tick from the host's records: the lab's restart (R, or the controller's Start), then the
+/// pad they leave.
 @deterministic
 pub fn tick(w: mut World, input: TickInput<World>) {
     for e in input.records {
         match e {
             Event::KeyDown { key, repeat, .. } => {
-                if !repeat && key == Key::Tab {
-                    restart(mut w, (w.feel + 1) % FEELS)
-                } else if !repeat && key == Key::R {
-                    restart(mut w, w.feel)
+                if !repeat && key == Key::R {
+                    restart(mut w)
                 }
             },
             Event::PadButton { pad, button, pressed, .. } => {
-                if pad == 0 && pressed && button == PadButton::Select {
-                    restart(mut w, (w.feel + 1) % FEELS)
-                } else if pad == 0 && pressed && button == PadButton::Start {
-                    restart(mut w, w.feel)
+                if pad == 0 && pressed && button == PadButton::Start {
+                    restart(mut w)
                 }
             },
             _ => {},
@@ -122,11 +116,10 @@ pub struct Snap: Copy + Plain {
     /// The body's mode (`Mode`'s discriminant), and 1 tucked.
     pub mode: u32,
     pub tuck: u32,
-    /// Ticks since a dolphin leap, while in the air after it (`Body::leap`).
-    pub leap: u32,
+    /// Ticks since a flip began, while in the air after it (`Body::flip`).
+    pub flip: u32,
     pub ticks: u32,
     pub finished: u32,
-    pub feel: u32,
     pub attempt: u32,
     pub falls: u32,
 }
@@ -142,27 +135,21 @@ pub fn present(w: World) -> Snap {
         facing: b.facing,
         mode: u32(b.mode),
         tuck: if b.tuck { 1 } else { 0 },
-        leap: b.leap,
+        flip: b.flip,
         ticks: w.ticks,
         finished: w.finished,
-        feel: w.feel,
         attempt: w.attempt,
         falls: w.falls,
     }
 }
 
-/// The world after playing `run` from a new attempt at course `c` with preset `f`.
-pub fn play(c: u32, f: u32, run: [Hold]) -> World {
-    var w = world(c, f)
+/// The world after playing `run` from a new attempt at course `c`.
+pub fn play(c: u32, run: [Hold]) -> World {
+    var w = world(c)
     for h in run {
         for i in 0..h.ticks {
             step(mut w, pad_of(h, i))
         }
     }
     w
-}
-
-/// Whether the body's mode is `m`.
-pub fn is(w: World, m: Mode) -> bool {
-    w.body.mode == m
 }

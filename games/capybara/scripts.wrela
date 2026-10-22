@@ -8,7 +8,6 @@ use std::input::{Key, Script}
 /// enough to see the runway, the crest, the gaps and the slide.
 pub const RUN: Script = Script::frames()
     .key_down(1, Key::D)
-    .key_down(1, Key::ShiftLeft)
     .key_down(281, Key::Space)
     .key_up(330, Key::Space)
     .key_down(350, Key::Space)

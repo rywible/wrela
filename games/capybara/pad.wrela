@@ -1,10 +1,10 @@
-// The pad: a tick's input (design.md, "Input"). It is bits: the directions, jump and run held at
-// the tick's end, and whether jump was pressed during the tick. The sim makes it from the host's
+// The pad: a tick's input (design.md, "Input"). It is bits: the directions and jump held at the
+// tick's end, and whether jump was pressed during the tick. The sim makes it from the host's
 // input events (`Controls`, which the tick log replays), and tests and searches step the sim
 // with pads directly (`Hold`).
 //
-// Keys: the arrows or W A S D to move, Space, Z or K to jump, Shift, X or J to run. A controller:
-// the left stick or the pad to move, South or East to jump, West or North (or a shoulder) to run.
+// Keys: the arrows or W A S D to move, Space, Z or K to jump. A controller: the left stick or the
+// pad to move, South or East to jump. There's no run button: the capybara has one speed.
 
 use engine::sim::SimState
 use std::hash::StateHash
@@ -16,7 +16,6 @@ pub const RIGHT: u32 = 2
 pub const UP: u32 = 4
 pub const DOWN: u32 = 8
 pub const JUMP: u32 = 16
-pub const RUN: u32 = 32
 /// Jump was pressed during the tick.
 pub const PRESS: u32 = 64
 
@@ -65,7 +64,6 @@ fn key_bits(k: Key) -> u32 {
         Key::Up | Key::W => UP,
         Key::Down | Key::S => DOWN,
         Key::Space | Key::Z | Key::K => JUMP,
-        Key::ShiftLeft | Key::ShiftRight | Key::X | Key::J => RUN,
         _ => 0,
     }
 }
@@ -77,7 +75,6 @@ fn button_bits(b: PadButton) -> u32 {
         PadButton::Up => UP,
         PadButton::Down => DOWN,
         PadButton::South | PadButton::East => JUMP,
-        PadButton::West | PadButton::North | PadButton::LeftShoulder | PadButton::RightShoulder => RUN,
         _ => 0,
     }
 }
@@ -148,7 +145,7 @@ impl Controls {
 
     /// The tick's pad, which uses up the press.
     pub fn pad(mut self) -> Pad {
-        let bits = (self.held() & (DIRECTIONS | JUMP | RUN)) | (if self.pressed { PRESS } else {
+        let bits = (self.held() & (DIRECTIONS | JUMP)) | (if self.pressed { PRESS } else {
             0
         })
         self.pressed = false

@@ -25,11 +25,12 @@ The game is set in a zoo, as a day out. The easter eggs are cute, small and kind
 
 ## Movement
 
-- **Run and jump.** Momentum (as in Mario: acceleration, skids, a run button) or snappy (as in Celeste) is open. The lab has both as presets, and Ryan picks by playing.
+- **Run and jump.** One fairly fast speed, reached almost at once, with no run button: Ryan played a Mario-like preset (a run button, slow acceleration) and a Celeste-like one, and chose the second with a touch more momentum and float and a slightly higher full jump (2026-10-21). Holding jump while rising makes a jump higher.
+- **The double jump:** one more jump in the air, refreshed on landing and by a dolphin leap, with a flip.
 - **The slide.** Hold down while landing and the capybara slides. Its speed along the ground is its landing velocity projected onto the ground's tangent: land tangent to a downslope and it keeps all its speed, land flat-footed on a steep slope and it loses most of it. While it slides, gravity pulls it along the slope and flat ground slowly takes its speed. It can jump out of a slide and keeps the speed. Holding down on a slope also starts a slide; on flat ground it is a crouch.
 - **Crests.** The capybara leaves the ground where the ground falls away faster than gravity would pull it down, so a fast run over a crest launches it along the tangent.
 - **Swimming, in water sections.** Tap to stroke, in the direction held. There is no breath limit (real capybaras hold their breath for minutes). Swimming up through the surface is a dolphin leap that keeps the speed (and flips), so a route can chain water, air and slide.
-- **The camera** scrolls both ways and looks further ahead the faster the capybara goes. On the ground it moves up or down only when the capybara lands at a new height; while the capybara swims, leaps or falls past a band round the view's middle, it follows. **Proposed.**
+- **The camera** scrolls both ways. It looks a little ahead of the way the capybara faces, and further only past the running speed (a slide, a leap), so starting and stopping don't swing it. On the ground it moves up or down only when the capybara lands at a new height; while the capybara swims, leaps or falls past a band round the view's middle, it follows. **Proposed.**
 
 ### Ground and contact (contract)
 
@@ -53,10 +54,11 @@ The game is set in a zoo, as a day out. The easter eggs are cute, small and kind
 | Walk | landing without down held; leaving a slide or a crouch | input accelerates the speed along the ground up to the walk or run speed; speed above it decays to it; no input brakes it to rest; slopes pull it a little | the ground falls away (Air); a jump (Air); down held (Slide or Crouch) |
 | Crouch | landing with down held, or down held on the ground, below the slide's least speed, on ground flatter than the slide's least slope | it stays; the collider doesn't change in the lab | down released (Walk); a jump (Air); the ground falling away (Air); the slope or speed reaching a slide's (Slide) |
 | Slide | landing with down held at or above the slide's least speed; down held on the ground at or above the slide's least speed or least slope | gravity's component along the tangent changes the speed (an uphill slide slows and runs back down); a small friction takes speed towards rest; input does not steer it; the speed is capped | down released (Walk, keeping the speed); a jump (Air); the ground falling away (Air); below the stopping speed on ground flatter than the least slope (Crouch) |
-| Air | a jump; the ground falling away; leaving water | gravity (less while a jump is held and the capybara rises); air control; down held tucks (the intent to slide on landing) | landing (Walk, Crouch or Slide); entering water (Swim) |
+| Air | a jump; the ground falling away; leaving water | gravity (less while a jump is held and the capybara rises); air control; a press the double jump, once; down held tucks (the intent to slide on landing) | landing (Walk, Crouch or Slide); entering water (Swim) |
 | Swim | the capybara's middle goes below a water surface | below, under Swimming | leaving the water (Air), below |
 
-- **A jump** adds a fixed world-up speed (more at a run) to the velocity along the ground, so a jump out of a slide keeps the slide's speed. A jump counts a short time after the ground falls away (coyote time) and a press counts a short time before landing (the buffer).
+- **A jump** adds a fixed world-up speed to the velocity along the ground, so a jump out of a slide keeps the slide's speed. A jump counts a short time after the ground falls away (coyote time) and a press counts a short time before landing (the buffer), unless the double jump takes it first.
+- **A double jump** sets the upward speed to its own (whatever the fall) and keeps the speed across. Every way out of the water gives it back.
 
 ### Swimming (contract)
 
@@ -88,12 +90,12 @@ The game is set in a zoo, as a day out. The easter eggs are cute, small and kind
 - **The sim ticks 120 times a second** on the engine's tick driver (`engine::run`), `@deterministic`, with the host's input events as each tick's records (language.md §16.2). The frame rate changes only what is drawn.
 - **A tick's input is a pad:** the directions, jump and run held at the tick's end, and whether jump was pressed during the tick. A press and its release within one tick still count as a press, and two presses within one tick (8 ms) count as one. The sim turns records into pads itself, so the host's tick log replays it.
 - **Opposite directions cancel.** A stick's axis counts as a direction at half its travel or more, on each axis apart, so the stick gives the same eight directions as the keys; the sim sees no analog values and a replay is bits. Keys and sticks held together combine (either holds a direction). Key repeats are ignored.
-- **A replay** is the pads of the level's ticks, run-length coded, with the build that made it (sim and content), the level, the preset, the tick rate and the first state's hash. The first state is the level's start, a constant of the build, so an offline run needs nothing from the server to start, and the server rebuilds it from the build to check it. Tests play the same records at different frame rates and check the same state hashes, and a tick log made in Chrome must replay on the native host (`wrela-host --replay`). Safari and Firefox get the same check when the project first tests them (vision.md: Chrome only so far).
+- **A replay** is the pads of the level's ticks, run-length coded, with the build that made it (sim and content), the level, the tick rate and the first state's hash. The first state is the level's start, a constant of the build, so an offline run needs nothing from the server to start, and the server rebuilds it from the build to check it. Tests play the same records at different frame rates and check the same state hashes, and a tick log made in Chrome must replay on the native host (`wrela-host --replay`). Safari and Firefox get the same check when the project first tests them (vision.md: Chrome only so far).
 - **No randomness in play** for now. If play ever needs it, it is a seeded stream in the sim, apart from the presentation's.
 
 ### Timing (contract)
 
-- **A level's time** is a whole number of ticks: from the first tick the player has control (counted as 1) to the tick on which the capybara first reaches the goal, inclusive. No float clock. Every attempt starts from the level's start state, with the chosen preset.
+- **A level's time** is a whole number of ticks: from the first tick the player has control (counted as 1) to the tick on which the capybara first reaches the goal, inclusive. No float clock. Every attempt starts from the level's start state.
 - **A death** returns the capybara to its checkpoint; the clock keeps running. **A restart** is a new attempt: the clock and the attempt's found snacks reset. The saved game keeps best times and found snacks apart from the attempt, so a 100% run counts only what its attempt found.
 - **Pause** is a recorded input; the level doesn't tick and the clock doesn't run while paused, so a replay's pads are only the level's ticks. The replay lists its pauses, each as the level tick it came after and how long it lasted in real time. A live stream sends a pause and a resume as chunks of their own, and its deadline doesn't run between them, up to a limit. Resuming has a short fixed delay. **Proposed.**
 - **Returning to the console** ends the attempt; it isn't a run.
@@ -132,18 +134,18 @@ The game is set in a zoo, as a day out. The easter eggs are cute, small and kind
 
 ## The agent loop
 
-The goal is that an agent can play the game, see it and check it without Ryan. Checks show behaviour, not good feel: Ryan's play of the lab picks the preset and judges the feel, and an agent tunes as far as measurement goes before that.
+The goal is that an agent can play the game, see it and check it without Ryan. Checks show behaviour, not good feel: Ryan's play of the lab judges the feel, and an agent tunes as far as measurement goes before that.
 
 - **The sim steps on a pad** (above). Tests, proofs and searches drive the sim with sequences of pads; the game's ticks make the same pads from the host's events.
 - **Proofs.** Each intended jump or route is a recorded run (pads and how many ticks each is held) that must reach its goal. A physics change that breaks one fails the suite.
-- **Feel metrics** in metres and ticks, each with an accepted range for each preset: jump heights, gap reach, slide exit speed by landing angle, time to top speed. Edge cases get bounded regressions: crests of different radii at many speeds, corners, ledges, the water's surface.
+- **Feel metrics** in metres and ticks, each with an accepted range: jump heights (held, tapped, double), gap reach, slide exit speed by landing angle, time to top speed. Edge cases get bounded regressions: crests of different radii at many speeds, corners, ledges, the water's surface.
 - **Traces and stills:** the game exports the capybara's state for `wrela trace`, and `wrela-host <build> --frames n --input script.json --png out.png` draws any frame. The toolchain's `trace` and `bisect` don't run a program's ticker yet, so until they do, traces come from tests that step the sim. The lab's view has a GPU frame test on the hardware GPU; its frame time, and the sim's time per tick, are profiled apart from the checks, against vision.md's budgets.
 - **The camera** has tests too: it keeps the capybara in view through the lab's pool and over its crests.
 - **Route search** (next): a bounded search (ticks, states and time) over the sim's states, which treats two states as one only when they are equal in everything that affects the future (a hash match, then a comparison), and finds the best known time per segment, from a segment's defined entry state, as a ghost. Proving a jump possible is a replay; proving one impossible needs an exhaustive bounded search and is harder.
 
 ## Plan
 
-1. The movement lab: the sim (run, jump, slide, swim) to the contracts above, a lab course with ramps, crests, gaps, ledges and a pool, a blockout 2.5D view, the proofs and the feel metrics. Then Ryan plays it and picks a preset.
+1. The movement lab: the sim (run, jump, slide, swim) to the contracts above, a lab course with ramps, crests, gaps, ledges and a pool, a blockout 2.5D view, the proofs and the feel metrics. Then Ryan plays it: done, and tuned from his notes.
 2. One vertical-slice level with a blockout capybara, a goose and a slide curve.
 3. The capybara in cel style, and Ryan's verdict on feel.
 4. The replay format is fixed in step 1; accounts and leaderboards after the slice.
@@ -152,5 +154,4 @@ The goal is that an agent can play the game, see it and check it without Ryan. C
 
 - The names: the game, the capybara, the seagull.
 - How many levels and worlds.
-- Momentum or snappy controls.
 - Music.
