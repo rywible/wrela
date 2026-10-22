@@ -21,7 +21,7 @@
 // one pass, nearest first (`backdrop`), each only while what's nearer leaves the pixel uncovered,
 // and none where the course's ground covers it.
 
-use earth::top_at
+use earth::surely_ground_below
 use engine::noise::{hash2, noise2}
 use ink::{INK, inked, paper, pooled, washed}
 use std::field::smin
@@ -703,7 +703,12 @@ pub fn backdrop(
     gs: Sampler,
 ) -> vec4 {
     let w = on_layer(pixel, v, 1.0)
-    if w.y < top_at(tops, w.x) - 0.05 {
+    // (Within a metre of a wall's face, the thicket there opens on what's behind: drawn.)
+    let ground = min(
+        surely_ground_below(tops, w.x),
+        min(surely_ground_below(tops, w.x - 1.0), surely_ground_below(tops, w.x + 1.0)),
+    )
+    if w.y < ground - 0.05 {
         discard()
     }
     var c = under_of(vec4(0.0), bamboo(pixel, v, g, gs))

@@ -9,6 +9,9 @@
 // back isn't at once: for `DYING` ticks it stays where it was hurt or fell, taking no input, while
 // the frames show it tumble away and the page close on it (Ryan, 2026-10-22: dying "just
 // immediately clips back").
+//
+// Paused (Esc, P, or a controller's Start), the world stands still and its clock with it; Space,
+// Enter, a click or a controller's A plays on. The game opens paused, on the controls.
 
 use body::{Body, Mode, RADIUS, bounce, spawn}
 use course::{COURSES, Course, course}
@@ -18,7 +21,7 @@ use feel::FEEL
 use foes::{Foe, MAX_FOES, NONE, Touch, foe, knock, step_foe, touch}
 use pad::{Controls, Hold, JUMP, Pad, pad_of}
 use std::hash::StateHash
-use std::input::{Event, Key, PadButton}
+use std::input::{Event, Key, Mods, PadButton}
 use std::serialize::Serialize
 
 /// The courses: the movement lab and the first level.
@@ -60,6 +63,9 @@ pub struct World: Copy + Eq + StateHash + Serialize + SimState {
     pub fell: bool,
     /// The attempts begun: each restart begins one.
     pub attempt: u32,
+    /// Paused: the world stands still, its clock too (a run's time is its play's). The game opens
+    /// paused, on the controls (Ryan, 2026-10-22).
+    pub paused: bool,
 }
 
 /// The course's foes as they start.
@@ -91,6 +97,7 @@ pub fn world(c: u32) -> World {
         dying: 0,
         fell: false,
         attempt: 0,
+        paused: true,
     }
 }
 
@@ -196,12 +203,20 @@ fn restart(w: mut World, c: u32) {
     w = world(c)
     w.controls = controls
     w.attempt = attempt + 1
+    w.paused = false
+}
+
+/// Whether `key` plays on from the pause: jump's keys and Enter.
+fn plays(key: Key) -> bool {
+    key == Key::Space || key == Key::Z || key == Key::K || key == Key::Enter
 }
 
 /// One tick from the host's records: restart (R, or the controller's Start), the other course (Tab,
 /// or Select: the lab or the level), then the pad they leave.
 @deterministic
 pub fn tick(w: mut World, input: TickInput<World>) {
+    // A tick that leaves the pause doesn't step, so the press that left it isn't also a jump.
+    var held = w.paused
     for e in input.records {
         match e {
             Event::KeyDown { key, repeat, .. } => {
@@ -209,20 +224,40 @@ pub fn tick(w: mut World, input: TickInput<World>) {
                     restart(mut w, w.course)
                 } else if !repeat && key == Key::Tab {
                     restart(mut w, (w.course + 1) % COURSES)
+                } else if !repeat && (key == Key::Escape || key == Key::P) {
+                    w.paused = !w.paused
+                    held = true
+                } else if !repeat && w.paused && plays(key) {
+                    w.paused = false
                 }
             },
             Event::PadButton { pad, button, pressed, .. } => {
-                if pad == 0 && pressed && button == PadButton::Start {
-                    restart(mut w, w.course)
-                } else if pad == 0 && pressed && button == PadButton::Select {
-                    restart(mut w, (w.course + 1) % COURSES)
+                if pad == 0 && pressed {
+                    if button == PadButton::Start {
+                        w.paused = !w.paused
+                        held = true
+                    } else if button == PadButton::Select {
+                        restart(mut w, w.course)
+                    } else if w.paused &&
+                        (button == PadButton::South || button == PadButton::East) {
+                        w.paused = false
+                    }
+                }
+            },
+            Event::PointerDown { .. } => {
+                if w.paused {
+                    w.paused = false
                 }
             },
             _ => {},
         }
         w.controls.update(e)
     }
+    // The pad is read every tick, paused or not, so a press made in the pause is spent.
     let pad = w.controls.pad()
+    if w.paused || held {
+        return
+    }
     step(mut w, pad)
 }
 
@@ -271,6 +306,8 @@ pub struct Snap: Copy + Plain {
     /// Ticks left while dying (0 otherwise), and 1 if it fell out.
     pub dying: u32,
     pub fell: u32,
+    /// 1 while paused.
+    pub paused: u32,
 }
 
 @deterministic
@@ -310,6 +347,7 @@ pub fn present(w: World) -> Snap {
         deaths: w.deaths,
         dying: w.dying,
         fell: if w.fell { 1 } else { 0 },
+        paused: if w.paused { 1 } else { 0 },
     }
 }
 
@@ -322,4 +360,70 @@ pub fn play(c: u32, run: [Hold]) -> World {
         }
     }
     w
+}
+
+// ---- the pause ---------------------------------------------------------------------------------
+
+/// One tick of `w` with these events, as the ticker runs it.
+fn tick_with(w: mut World, records: [Event]) {
+    var events: Vec<Event> = Vec::new()
+    for e in records {
+        events.push(e)
+    }
+    tick(mut w, TickInput { tick: w.ticks, dt: 1.0 / 120.0, records: events, answers: Vec::new() })
+}
+
+fn down(key: Key) -> Event {
+    Event::KeyDown { key, repeat: false, mods: Mods {} }
+}
+
+fn up(key: Key) -> Event {
+    Event::KeyUp { key, mods: Mods {} }
+}
+
+@test
+fn the_game_opens_paused_and_stands_still_its_clock_too() {
+    var w = world(LEVEL)
+    let at = w.body.at
+    for _ in 0..30 {
+        tick_with(mut w, [down(Key::D)])
+    }
+    assert(w.paused && w.ticks == 0 && w.body.at == at, "nothing moves while paused")
+}
+
+@test
+fn esc_plays_on_from_the_next_tick_and_pauses_again() {
+    var w = world(LEVEL)
+    tick_with(mut w, [down(Key::Escape), down(Key::D)])
+    assert(!w.paused && w.ticks == 0, "the tick that leaves the pause doesn't step")
+    tick_with(mut w, [up(Key::Escape)])
+    assert(w.ticks == 1, "then the world steps")
+    for _ in 0..20 {
+        tick_with(mut w, [])
+    }
+    let (ticks, at) = (w.ticks, w.body.at)
+    tick_with(mut w, [down(Key::P)])
+    for _ in 0..20 {
+        tick_with(mut w, [])
+    }
+    assert(w.paused && w.ticks == ticks && w.body.at == at, "paused again, the clock stopped")
+}
+
+@test
+fn the_press_that_plays_on_isnt_also_a_jump() {
+    var w = world(LEVEL)
+    tick_with(mut w, [down(Key::Space)])
+    assert(!w.paused, "Space plays on")
+    for _ in 0..30 {
+        tick_with(mut w, [])
+    }
+    assert(w.body.grounded(), "and the capybara didn't jump")
+}
+
+@test
+fn a_restart_plays_at_once() {
+    var w = world(LEVEL)
+    tick_with(mut w, [down(Key::R)])
+    tick_with(mut w, [up(Key::R)])
+    assert(!w.paused && w.ticks == 1 && w.attempt == 1)
 }

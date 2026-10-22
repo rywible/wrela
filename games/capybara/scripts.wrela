@@ -7,7 +7,9 @@ use std::input::{Key, Script}
 /// A run to the right from the start, at 60 frames a second (two ticks a frame), jumping the first
 /// gap, then sliding: enough to see the runway, the crest, the puddle and a gap.
 pub const RUN: Script = Script::frames()
+    .key_down(1, Key::Escape)
     .key_down(1, Key::D)
+    .key_up(2, Key::Escape)
     .key_down(281, Key::Space)
     .key_up(330, Key::Space)
     .key_down(350, Key::Space)
@@ -23,11 +25,12 @@ const KEYS: [(u32, Key); 5] = [
     (JUMP, Key::Space),
 ]
 
-/// A recorded run as a script of frames at 120 a second, one tick a frame: each hold's keys go
-/// down or up where its bits change, and a press of jump held on is a release and a press in its
-/// frame. Run it with `--fps 120`.
+/// A recorded run as a script of frames at 120 a second, one tick a frame: Esc on the first, to
+/// leave the pause the game opens on (a tick that doesn't step), then from the second each hold's
+/// keys go down or up where its bits change, and a press of jump held on is a release and a press
+/// in its frame. Run it with `--fps 120`.
 pub fn script_of(run: [Hold]) -> Script {
-    keys_of(Script::frames(), run, first: 1)
+    keys_of(Script::frames().key_down(1, Key::Escape).key_up(2, Key::Escape), run, first: 2)
 }
 
 /// `s` with the keys of `run` from frame `first` on.

@@ -16,7 +16,7 @@
 
 use engine::noise::noise2_wrapped
 use engine::plant::full
-use ink::{GRAIN_CELLS, INK}
+use ink::{GRAIN_CELLS, INK, PAPER}
 use std::gpu::{FragCoord, Rgba16Float, Sampler, Texture, begin_pass, draw, texture}
 
 /// The frame's targets, remade when the screen's size changes.
@@ -81,7 +81,8 @@ pub struct Page: Copy + GpuData {
     pub iris: vec2,
     pub screen: vec2,
     pub open: f32,
-    pub pad: f32 = 0.0,
+    /// How much the page is washed over, under the pause's card (0 to 1).
+    pub dim: f32 = 0.0,
 }
 
 /// The page: the scene, its colours a little more vivid, the corners darker, and the iris: outside
@@ -106,6 +107,8 @@ pub fn finish(pixel: FragCoord, scene: Texture<Rgba16Float>, s: Sampler, page: P
         c = blend(c, vec3(0.2, 0.14, 0.1), smoothstep(-px, px, d))
         c = blend(c, INK, saturate(1.0 - abs(d) / (px * 2.5)) * step(0.001, page.open))
     }
+    // Paused: a wash of the paper's cream over the page, the card on it.
+    c = blend(c, PAPER * 0.93, page.dim * 0.55)
     vec4(saturate(c), 1.0)
 }
 

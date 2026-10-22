@@ -6,7 +6,8 @@
 // and the HUD: the snacks found, the clock, the course and the keys. The music (music.wrela)
 // starts on the first frame.
 //
-// Keys: F3 shows the frame rate and the render scale. The arrows or W A S D to move (down slides or
+// The game opens paused, on a card of the controls (Esc or P pauses again). F3 shows the frame rate
+// and the render scale. Keys: the arrows or W A S D to move (down slides or
 // crouches; in water up and down swim, and in turn dolphin kick), Space, Z or K to jump (again in
 // the air for the double jump; in water, a kick), R to restart, Tab for the other course (the level
 // or the lab). A controller: the stick or pad, South or East to jump, Start to restart, Select for
@@ -36,7 +37,7 @@ use std::gpu::{
     buffer_of, draw, sampler, write,
 }
 use std::transform::{look_at, ortho}
-use ui::draw::{DrawList, Renderer}
+use ui::draw::{DrawList, Rect, Renderer}
 use std::input::{Event, Key, events}
 use ui::text::{Face, Fonts}
 use waves::{COLUMNS, LAB_WATER, LEVEL_WATER, Pond, water, water_vertex}
@@ -282,7 +283,14 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     wet.end()
     let out = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
     let (iris, open) = cast::iris(s.cast, snap, lag)
-    let page = Page { centre: s.camera.at, half, iris, screen, open }
+    let page = Page {
+        centre: s.camera.at,
+        half,
+        iris,
+        screen,
+        open,
+        dim: f32(snap.paused),
+    }
     draw(
         out,
         full.bind(z: 0.0),
@@ -308,9 +316,8 @@ fn say(s: mut Lab, face: Face, text: str, size: f32, at: vec2, colour: vec4) {
     let _ = s.list.text(s.fonts, face, text, size, at, colour)
 }
 
-/// The HUD: the snacks found and the times back at the top left, the clock at the top right; the
-/// course and the keys (how to swim, in water) small along the bottom; and with F3 the readout
-/// under the snacks.
+/// The HUD: the snacks found at the top left, the clock at the top right and under it how to
+/// pause; with F3 the readout under the snacks. Paused, the pause's card instead.
 fn hud(s: mut Lab, snap: Snap, screen: vec2) {
     s.list.clear(screen)
     let size = max(screen.y * 0.042, 14.0)
@@ -319,19 +326,19 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2) {
     let white = vec4(1.0, 0.98, 0.94, 1.0)
     let gold = vec4(1.0, 0.78, 0.3, 1.0)
     let soft = vec4(1.0, 0.98, 0.94, 0.75)
+    if snap.paused == 1 {
+        card(mut s, snap, screen)
+        return
+    }
     borrow c = course(snap.course)
     if c.snacks.len() > 0 {
         let found = (snap.snacks & ((1 << c.snacks.len()) - 1)).count_ones()
         let colour = if found == c.snacks.len() { gold } else { white }
         say(mut s, Face::Sans, f"SNACKS {found}/{c.snacks.len()}".as_str(), size, vec2(pad), colour)
-        let more = if snap.yuzu == 1 { f"back {snap.deaths}   yuzu!" } else {
-            f"back {snap.deaths}"
-        }
-        say(mut s, Face::Sans, more.as_str(), small * 1.3, vec2(pad, pad + size * 1.25), soft)
     }
     let clock = seconds(if snap.finished > 0 { snap.finished } else { snap.ticks })
     let time = if snap.finished > 0 { f"GOAL! {clock}" } else { take clock }
-    let width = f32(time.len()) * size * 0.62
+    let width = s.fonts.font(Face::Mono).measure(time.as_str(), size)
     say(
         mut s,
         Face::Mono,
@@ -340,14 +347,9 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2) {
         vec2(screen.x - pad - width, pad),
         if snap.finished > 0 { gold } else { white },
     )
-    let name = if snap.course == LEVEL { "The Capybara Wetlands" } else { "The lab" }
-    let hint = if Mode::from_u32(snap.mode) == Some(Mode::Swim) {
-        "jump to kick, up to swim up, up and down in turn to dolphin kick"
-    } else {
-        "R restart   Tab the other course"
-    }
-    let line = f"{name}   {hint}"
-    say(mut s, Face::Mono, line.as_str(), small, vec2(pad, screen.y - pad - small), soft)
+    let pause = "Esc  pause"
+    let pw = s.fonts.font(Face::Sans).measure(pause, small * 1.2)
+    say(mut s, Face::Sans, pause, small * 1.2, vec2(screen.x - pad - pw, pad + size * 1.3), soft)
     if s.readout {
         // The frame rate, the frame's time, and the size the scene is drawn at: native (the
         // screen's own) or the render scale's.
@@ -355,8 +357,79 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2) {
         let fps = if s.frame_time > 0.0 { 1.0 / s.frame_time } else { 0.0 }
         let at = if s.scale.value >= 1.0 { f"native" } else { f"{s.scale.value * 100.0:.0}%" }
         let readout = f"{fps:.0} fps  {ms:.1} ms  {at} {s.width}x{s.height}"
-        say(mut s, Face::Mono, readout.as_str(), small, vec2(pad, pad + size * 2.3), soft)
+        say(mut s, Face::Mono, readout.as_str(), small, vec2(pad, pad + size * 1.3), soft)
     }
+}
+
+/// The pause's card, on the page washed over: the course's name (or "Paused" once it's begun), the
+/// controls, and how to play on. A cream card with an ink border, as the book's.
+fn card(s: mut Lab, snap: Snap, screen: vec2) {
+    let size = max(screen.y * 0.03, 12.0)
+    let ink = vec4(0.24, 0.16, 0.11, 1.0)
+    let soft = vec4(0.24, 0.16, 0.11, 0.72)
+    let w = min(screen.x * 0.9, size * 32.0)
+    let h = size * 16.8
+    let at = vec2((screen.x - w) * 0.5, (screen.y - h) * 0.5)
+    s.list.rect(Rect::new(at.x - 3.0, at.y - 3.0, w + 6.0, h + 6.0), ink, radius: size * 0.9)
+    s.list.rect(Rect::new(at.x, at.y, w, h), vec4(0.98, 0.95, 0.88, 1.0), radius: size * 0.8)
+    let fresh = snap.ticks == 0 && snap.attempt == 0
+    let title = if !fresh {
+        "Paused"
+    } else if snap.course == LEVEL {
+        "The Capybara Wetlands"
+    } else { "The lab" }
+    let title_size = size * 1.6
+    let tw = s.fonts.font(Face::Sans).measure(title, title_size)
+    let _ = s.list.text(
+        s.fonts,
+        Face::Sans,
+        title,
+        title_size,
+        vec2(at.x + (w - tw) * 0.5, at.y + size * 1.1),
+        ink,
+    )
+    var y = at.y + size * 4.2
+    let left = at.x + size * 1.6
+    let keys = left + size * 6.4
+    // The controls, a row each: what, and the keys for it.
+    let rows = [
+        "Run",
+        "Left and right arrows, or A and D",
+        "Jump",
+        "Space, again in the air to jump again",
+        "Slide",
+        "Down arrow or S while running",
+        "Swim",
+        "Space kicks, up and down swim, both in turn: dolphin kick",
+        "Restart",
+        "R",
+        "Pause",
+        "Esc or P",
+        "Controller",
+        "Stick, A to jump, Start to pause, Select to restart",
+    ]
+    for i in 0..7 {
+        let _ = s.list.text(s.fonts, Face::Sans, rows[i * 2], size, vec2(left, y), ink)
+        let _ = s.list.text(
+            s.fonts,
+            Face::Sans,
+            rows[i * 2 + 1],
+            size * 0.85,
+            vec2(keys, y + size * 0.1),
+            soft,
+        )
+        y += size * 1.45
+    }
+    let go = if fresh { "Press Space to play" } else { "Press Space to play on" }
+    let gw = s.fonts.font(Face::Sans).measure(go, size * 1.1)
+    let _ = s.list.text(
+        s.fonts,
+        Face::Sans,
+        go,
+        size * 1.1,
+        vec2(at.x + (w - gw) * 0.5, at.y + h - size * 2.0),
+        ink,
+    )
 }
 
 /// The capybara's middle (x, y, m), its speed (m/s) and its mode, as the newest snapshot has them,
@@ -369,10 +442,13 @@ pub fn capybara(s: mut Lab) -> vec4 {
 // ---- tests -------------------------------------------------------------------------------------
 
 /// Three seconds of the run script on the hardware GPU: the level draws, with its foes and things,
-/// and the sim, ticking in lockstep, plays it.
+/// and the sim, ticking in lockstep, plays it, from the pause it opens on (the script's Esc).
 @test(frames: 180, gpu: true, input: scripts::RUN)
 fn the_level_draws_and_its_sim_runs(s: Lab) {
     let n = s.snaps.newest()
     assert(n.ticks >= 358, "the ticker runs two ticks a frame")
-    assert(n.snap.course == LEVEL && n.snap.ticks >= 358, "the level, its clock running")
+    assert(n.snap.course == LEVEL && n.snap.paused == 0, "the level, playing")
+    // Its clock is three ticks behind the ticks run: frame 0's two stood in the pause the game
+    // opens on, and the tick of the script's Esc (frame 1) left it without stepping.
+    assert(n.snap.ticks + 3 == n.ticks, "its clock running")
 }
