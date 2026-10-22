@@ -63,6 +63,8 @@ pub struct Lab {
     height: u32,
     camera: Camera,
     last: Option<f32>,
+    /// Whether the music has started (on the first frame).
+    playing: bool,
     fonts: Fonts,
     renderer: Renderer,
     list: DrawList,
@@ -91,6 +93,7 @@ pub fn init() -> Lab {
         height: 0,
         camera: camera(course(LEVEL).start),
         last: None,
+        playing: false,
         fonts,
         renderer,
         list: DrawList::new(),
@@ -115,6 +118,10 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         None => 0.0,
     }
     s.last = Some(time)
+    if !s.playing {
+        s.playing = true
+        music::start()
+    }
     s.snaps.update()
     let snap = drawn(s.snaps, time)
     borrow c = course(snap.course)

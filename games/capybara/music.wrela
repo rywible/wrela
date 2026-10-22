@@ -1,0 +1,305 @@
+// The game's music: "Snack Chase", an original piano piece by Claude for a sunny day at the zoo,
+// played by engine::piano. It is a stride tune in G major at 136 quarter notes a minute, in 4/4:
+// the left hand bounces between bass notes (beats 1 and 3) and short chords (beats 2 and 4) under
+// a syncopated melody.
+//
+// The piece is 50 bars, about 88 seconds: a two-bar vamp, then A (16 bars, G major), B (16 bars:
+// a sneaking E minor for the seagull, then the sun out in C major and back by D7), and A again.
+// The form is code (`looped`), so the vamp turns each pass round into the next, and the game
+// plays `PASSES` passes (about 8 minutes 50 seconds) and a last chord.
+//
+// The game's main calls `start` once, from `init` or a frame: it makes the performance and the
+// piano on the program's thread, and gives the piano the program's one voice
+// (`std::audio::play`). A program has one voice, so the piano has it alone: other sounds beside
+// it will need a mixer on that voice.
+
+use engine::perform::{Mark, Pedal, Performance, Taste, bar, bars, perform}
+use engine::piano::{piano, play_piano}
+use engine::piano_grand::GRAND
+use engine::score::{Level, Score, meter, score}
+use std::audio::{SAMPLE_RATE, play}
+use std::collections::Vec
+
+/// The vamp: two bars that start the piece and turn each pass round into the next.
+const VAMP = score("vamp", meter(beats: 4, unit: 4))
+    .voice("melody", ["r/2 !mf r/8 b4 c5 c#5 | d5/4 !accent r r/8 a4 b4 c5 |"])
+    .voice(
+        "chords",
+        [
+            "r/4 <b3 d4 g4> !staccato r <g#3 b3 d4> !staccato |",
+            "r <g3 c4 e4> !staccato r <a3 c4 f#4> !staccato |",
+        ],
+    )
+    .voice("bass", ["<g1 g2>/4 r e2 r | a2 r d3 r |"])
+
+/// A's first eight bars: the tune, ending on D7.
+const A1 = score("A, first half", meter(beats: 4, unit: 4))
+    .voice(
+        "melody",
+        [
+            "r/8 d5 !mf ( e5 g5 ~ g5/4 b4/8 d5 | e5/8 d5 b4 d5 ~ d5/2 |",
+            "r/8 e5 f#5 g5 ~ g5/4 e5/8 c5 | d5/4 b4/8 a4 g4/2 ) |",
+            "r/8 c#5 ( e5 a5 ~ a5/4 g5/8 e5 | f#5/8 e5 d5 c5 ~ c5/4 a4 |",
+            "b4/8 d5 g5 b4 d5 b4 g#4 b4 | a4/8 c5 e5 a5 ~ a5/8 g5 f#5/4 ) |",
+        ],
+    )
+    .voice(
+        "chords",
+        [
+            "r/4 <b3 d4 g4> !staccato r <b3 d4 g4> !staccato |",
+            "r <b3 d4 g4> !staccato r <b3 d4 g4> !staccato |",
+            "r <g3 c4 e4> !staccato r <g3 c4 e4> !staccato |",
+            "r <b3 d4 g4> !staccato r <b3 d4 g4> !staccato |",
+            "r <g3 c#4 e4> !staccato r <g3 c#4 e4> !staccato |",
+            "r <a3 c4 f#4> !staccato r <a3 c4 f#4> !staccato |",
+            "r <b3 d4 g4> !staccato r <g#3 b3 d4> !staccato |",
+            "r <a3 c4 e4> !staccato r <a3 c4 f#4> !staccato |",
+        ],
+    )
+    .voice(
+        "bass",
+        [
+            "g2/4 r d2 r | g2 r d2 r | c3 r g2 r | g2 r d2 r |",
+            "a2 r e2 r | d3 r a2 r | g2 r e2 r | a2 r d3 r |",
+        ],
+    )
+
+/// A's second eight bars: the tune again, a turn to C minor, and home to G.
+const A2 = score("A, second half", meter(beats: 4, unit: 4))
+    .voice(
+        "melody",
+        [
+            "g5/4 ( d5/8 e5 ~ e5 d5 b4 g4 | a4/8 b4 d5 g5 ~ g5/2 |",
+            "r/8 g5 a5 g5 e5 c5 e5 g5 | ab5/8 g5 eb5 c5 ~ c5/2 ) |",
+            "b4/8 !< ( d5 g5 b5 !f ~ b5/4 a5/8 g5 | g#5/8 a5 g#5 e5 ~ e5/4 d5 |",
+            "c#5/8 e5 g5 e5 c5 d5 f#5 a5 | g5/4 !accent d5/8 b4 g4/4 ) r |",
+        ],
+    )
+    .voice(
+        "chords",
+        [
+            "r/4 <b3 d4 g4> !staccato r <b3 d4 g4> !staccato |",
+            "r <b3 d4 g4> !staccato r <b3 d4 g4> !staccato |",
+            "r <g3 c4 e4> !staccato r <g3 c4 e4> !staccato |",
+            "r <g3 c4 eb4> !staccato r <g3 c4 eb4> !staccato |",
+            "r <b3 d4 g4> !staccato r <b3 d4 g4> !staccato |",
+            "r <g#3 b3 d4> !staccato r <g#3 b3 d4> !staccato |",
+            "r <g3 c#4 e4> !staccato r <a3 c4 f#4> !staccato |",
+            "r <b3 d4 g4> !staccato r <b3 d4 g4> !staccato |",
+        ],
+    )
+    .voice(
+        "bass",
+        [
+            "g2/4 r d2 r | g2 r d2 r | c3 r g2 r | c3 r g2 r |",
+            "d2 r g2 r | e2 r b2 r | a2 r d3 r | g2 r d2 r |",
+        ],
+    )
+
+/// B's first eight bars: the seagull, sneaking in E minor, with a squawk (the accented C6).
+const B1 = score("B, the seagull", meter(beats: 4, unit: 4))
+    .voice(
+        "melody",
+        [
+            "e5/8 !mp !staccato r b4 !staccato r e5 ( f#5 g5 f#5 | e5/8 d#5 e5 b4 ~ b4/2 ) |",
+            "a4/8 !staccato r e5 !staccato r a5 ( g5 f#5 e5 | g5/8 f#5 e5 b4 ~ b4/4 ) r |",
+            "c6/4 !mf !accent ( b5/8 a5 g5 e5 c5 e5 | d#5/8 f#5 a5 f#5 d#5 b4 a4 f#4 |",
+            "g4/8 b4 e5 g5 a5 g5 e5 c5 | b4/4 d#5/8 f#5 b5/4 !accent ) r |",
+        ],
+    )
+    .voice(
+        "chords",
+        [
+            "r/4 <g3 b3 e4> !staccato r <g3 b3 e4> !staccato |",
+            "r <g3 b3 e4> !staccato r <g3 b3 e4> !staccato |",
+            "r <a3 c4 e4> !staccato r <a3 c4 e4> !staccato |",
+            "r <g3 b3 e4> !staccato r <g3 b3 e4> !staccato |",
+            "r <g3 c4 e4> !staccato r <g3 c4 e4> !staccato |",
+            "r <a3 d#4 f#4> !staccato r <a3 d#4 f#4> !staccato |",
+            "r <g3 b3 e4> !staccato r <a3 c4 e4> !staccato |",
+            "r <a3 d#4 f#4> !staccato r <a3 d#4 f#4> !staccato |",
+        ],
+    )
+    .voice(
+        "bass",
+        [
+            "e2/4 r b1 r | e2 r b1 r | a2 r e2 r | e2 r b1 r |",
+            "c3 r g2 r | b1 r f#2 r | e2 r a2 r | b1 r f#2 r |",
+        ],
+    )
+
+/// B's second eight bars: the sun out in C major, climbing to E6, and back to G by D7.
+const B2 = score("B, the sun out", meter(beats: 4, unit: 4))
+    .voice(
+        "melody",
+        [
+            "e5/4 !mf ( g5/8 c6 ~ c6/4 b5/8 a5 | g5/8 a5 g5 d5 ~ d5/2 |",
+            "c5/8 d5 e5 g5 ~ g5/4 a5/8 g5 | f#5/8 g5 f#5 d5 ~ d5/4 c5 ) |",
+            "e5/4 !< ( g5/8 c6 ~ c6/4 d6/8 e6 | d#6/8 e6 d#6 b5 ~ b5/4 a5 |",
+            "g5/8 !f f#5 e5 b4 c#5 e5 g5 a5 | f#5/8 !accent r d5 !staccato r c5 b4 a4 c5 ) |",
+        ],
+    )
+    .voice(
+        "chords",
+        [
+            "r/4 <g3 c4 e4> !staccato r <g3 c4 e4> !staccato |",
+            "r <b3 d4 g4> !staccato r <b3 d4 g4> !staccato |",
+            "r <g3 c4 e4> !staccato r <g3 c4 e4> !staccato |",
+            "r <a3 c4 f#4> !staccato r <a3 c4 f#4> !staccato |",
+            "r <g3 c4 e4> !staccato r <g3 c4 e4> !staccato |",
+            "r <a3 d#4 f#4> !staccato r <a3 d#4 f#4> !staccato |",
+            "r <g3 b3 e4> !staccato r <g3 c#4 e4> !staccato |",
+            "r <a3 c4 f#4> !staccato r <a3 c4 f#4> !staccato |",
+        ],
+    )
+    .voice(
+        "bass",
+        [
+            "c3/4 r g2 r | b2 r d2 r | a2 r e2 r | d3 r a2 r |",
+            "c3 r g2 r | b1 r f#2 r | e2 r a2 r | d3 r a2 r |",
+        ],
+    )
+
+/// The last chord, after the last pass.
+const END = score("ending", meter(beats: 4, unit: 4))
+    .voice("melody", ["<g4 b4 d5 g5>/4 !mf r r/2 |"])
+    .voice("chords", ["r/1 |"])
+    .voice("bass", ["<g1 g2>/4 r r/2 |"])
+
+/// Bars in one pass of the piece.
+pub const BARS: u32 = 50
+
+/// One pass of the piece: the vamp, A, B and A again.
+pub const SNACK_CHASE: Score = score("Snack Chase", meter(beats: 4, unit: 4))
+    .with_tempo("Bouncy, with a grin")
+    .then(VAMP)
+    .then(A1)
+    .then(A2)
+    .then(B1)
+    .then(B2)
+    .then(A1)
+    .then(A2)
+
+/// How many passes the game plays: at least five minutes of music.
+pub const PASSES: u32 = 6
+
+/// `passes` passes of the piece, one after another, then the last chord.
+pub fn looped(passes: u32) -> Score {
+    var s = score("Snack Chase", meter(beats: 4, unit: 4)).with_tempo(SNACK_CHASE.tempo)
+    for _ in 0..passes {
+        s = take s.then(SNACK_CHASE)
+    }
+    take s.then(END)
+}
+
+/// The player's habits: a steady stride pulse (no rubato, no phrase arches in time), the melody
+/// over a lighter left hand, short chords, and a light pedal changed with each bass note.
+pub fn taste() -> Taste {
+    Taste {
+        tempo: 136.0,
+        lead: "melody",
+        voicing: 1.12,
+        under: 0.84,
+        melody_lead: 0.008,
+        bass: "bass",
+        bass_weight: 1.08,
+        arch_loudness: 0.08,
+        arch_peak: 0.6,
+        range: 0.8,
+        metre: 0.06,
+        accent: 0.3,
+        detache: 0.15,
+        pedal: Pedal::ByVoice { voice: "bass", catch: 0.06, depth: 0.4 },
+        ring: 2.0,
+        jitter_time: 0.004,
+        jitter_velocity: 0.04,
+        seed: 11,
+    }
+}
+
+/// This performance's marks for `passes` passes: each pass, the seagull's B a little quieter,
+/// its squawk leaned on, and the last A a little louder; the last chord rolled and held.
+pub fn marks(passes: u32) -> Vec<Mark> {
+    var m: Vec<Mark> = Vec::new()
+    for p in 0..passes {
+        let o = p * BARS
+        m.push(Mark::Swell { over: bars(o + 19, last: o + 26), by: 0.94 })
+        m.push(Mark::Lean { at: bar(o + 23), voice: "melody", by: 1.12 })
+        m.push(Mark::Swell { over: bars(o + 43, last: o + 50), by: 1.06 })
+    }
+    let last = passes * BARS + 1
+    m.push(Mark::Roll { at: bar(last), spread: 0.03 })
+    m.push(Mark::Hold { at: bar(last), by: 1.5 })
+    m
+}
+
+/// The piece as the game plays it: `passes` passes and the last chord, performed.
+pub fn performance(passes: u32) -> Performance {
+    let marks = marks(passes)
+    perform(looped(passes), taste(), marks)
+}
+
+/// Starts the music: `PASSES` passes of the piece on engine::piano's grand, on the program's
+/// voice. Call it once, from `init` or a frame; a second call traps, as the program has one
+/// voice.
+pub fn start() {
+    play(piano(GRAND, performance(PASSES)), play_piano)
+}
+
+@test
+fn the_music_is_fifty_bars_a_pass_in_three_voices() {
+    assert(SNACK_CHASE.bars == BARS)
+    assert(SNACK_CHASE.voices.len() == 3)
+    assert(SNACK_CHASE.sections.len() == 7)
+    // B starts at bar 19, in E minor, quietly: E5 on its first beat, mezzo-piano.
+    assert(SNACK_CHASE.sections[3].first_bar == 19)
+    let melody = SNACK_CHASE.voice_named("melody")
+    let b = SNACK_CHASE.bar_start(19)
+    var found = false
+    for n in SNACK_CHASE.notes {
+        if n.voice == melody && n.start == b {
+            assert(n.key == 76)
+            found = true
+        }
+    }
+    assert(found, "B's first note")
+    assert(SNACK_CHASE.level_at(b) == Level::MP)
+}
+
+@test
+fn the_music_lasts_about_nine_minutes() {
+    let p = performance(PASSES)
+    let s = looped(PASSES)
+    assert(s.bars == PASSES * BARS + 1)
+    assert(p.notes.len() == s.notes.len())
+    // A steady pulse: the last chord's bar starts after 300 bars of 4 beats at 136 a minute.
+    let beats = PASSES * BARS * 4
+    let expected = f64(beats) * 60.0 / 136.0
+    assert(abs(p.beats[beats] - expected) < 1e-6, f"{p.beats[beats]} s, not {expected}")
+    assert(p.length > 300.0, "at least five minutes")
+    assert(p.length < expected + 6.0, f"{p.length} s")
+}
+
+@test
+fn the_music_plays_on_the_piano_without_clipping() {
+    // The loudest music, on the CPU, as the voice plays it: B's second half and A's (both
+    // forte at their ends, a little louder than the game plays them), then the last chord to
+    // the end of its ring. Every sample is finite, and the loudest well under full scale. (A
+    // whole pass is past a test's budget.)
+    let loud = score("the loudest bars", meter(beats: 4, unit: 4)).then(B2).then(A2).then(END)
+    let p = perform(loud, taste(), [Mark::Swell { over: bars(1, last: 17), by: 1.06 }])
+    var voice = piano(GRAND, p)
+    var l = [0.0; 128]
+    var r = [0.0; 128]
+    var peak = 0.0
+    for _ in 0..u32(p.length * f64(SAMPLE_RATE) / 128.0) + 1 {
+        play_piano(mut voice, mut l, mut r)
+        for i in 0..128 {
+            // Neither infinite nor not a number: its exponent isn't all ones.
+            assert((bitcast_u32(l[i]) >> 23) & 255 != 255, "a finite sample")
+            assert((bitcast_u32(r[i]) >> 23) & 255 != 255, "a finite sample")
+            peak = max(peak, max(abs(l[i]), abs(r[i])))
+        }
+    }
+    assert(peak > 0.1 && peak < 0.9, f"peak {peak}")
+}
