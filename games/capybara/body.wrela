@@ -56,6 +56,11 @@ pub struct Body: Copy + Eq + StateHash + Serialize + SimState {
     pub buffer: u32,
     /// Rising from a jump (or out of water) with jump held: the lighter gravity.
     pub jumping: bool,
+    /// A jump's first ticks (`Feel::hop`): 1 + the ticks of them left, then 1 as they end, 0 after;
+    /// and the upward speed and the height it began at.
+    pub hop: u32,
+    pub lift: f32,
+    pub from: f32,
     /// Down held in the air: it means to slide on landing.
     pub tuck: bool,
     /// Ticks until the next kick in water.
@@ -90,6 +95,9 @@ pub fn spawn(at: vec2) -> Body {
         coyote: 0,
         buffer: 0,
         jumping: false,
+        hop: 0,
+        lift: 0.0,
+        from: 0.0,
         tuck: false,
         cooldown: 0,
         wet: 0,
@@ -227,11 +235,19 @@ pub fn bounce(b: mut Body, held: bool, f: Feel, under: bool) {
         b.mode = Mode::Air
     }
     b.jumping = held && !under
+    rise_from(mut b, f)
     b.jumps = f.air_jumps
     b.coyote = 0
     b.buffer = 0
     b.flip = 0
     b.breached = false
+}
+
+/// A jump begins at the upward speed it has now: its first ticks are the hop's (`Feel::hop`).
+fn rise_from(b: mut Body, f: Feel) {
+    b.hop = f.hop + 1
+    b.lift = b.vel.y
+    b.from = b.at.y
 }
 
 /// Whether a speed (m/s) is past the top: a slide's, a puddle's, a ramp's, not a run's.
@@ -252,6 +268,7 @@ fn jump(b: mut Body, t: vec2, f: Feel, under: bool) {
     b.vel = kept + vec2(0.0, if under { f.kick } else { f.launch })
     b.mode = Mode::Air
     b.jumping = true
+    rise_from(mut b, f)
     b.jumps = f.air_jumps
     b.buffer = 0
     b.coyote = 0
@@ -389,6 +406,7 @@ fn air(b: mut Body, pad: Pad, c: Course, f: Feel) {
         if !b.breached {
             b.vel.y = f.launch
             b.breached = true
+            rise_from(mut b, f)
         }
         b.jumping = true
         b.buffer = 0
@@ -398,12 +416,14 @@ fn air(b: mut Body, pad: Pad, c: Course, f: Feel) {
         let rise = if fast(b, f, b.vel.x) { max(b.vel.y, 0.0) } else { 0.0 }
         b.vel.y = f.launch + rise
         b.jumping = true
+        rise_from(mut b, f)
         b.buffer = 0
         b.coyote = 0
     } else if b.buffer > 0 && b.jumps > 0 {
         // The double jump: up at its own speed, whatever the fall, with a flip.
         b.vel.y = f.air_launch
         b.jumping = true
+        rise_from(mut b, f)
         b.buffer = 0
         b.jumps -= 1
         b.flip = 1
@@ -415,6 +435,20 @@ fn air(b: mut Body, pad: Pad, c: Course, f: Feel) {
     if !held || b.vel.y <= 0.0 {
         b.jumping = false
         b.breached = false
+    }
+    // A jump's first ticks rise on the fall's gravity, held or not, so a press let go in them is
+    // the lowest hop. Held through them, it's given the upward speed that takes it as high as a
+    // jump held from its start rises (the root of its launch speed squared less 2 × the light
+    // gravity × the height it has risen), and goes on on the light gravity: a held jump is as high
+    // as ever. The speed is given before the tick moves, so the tick moves at it.
+    var g = if b.jumping { f.rise } else { f.fall }
+    if b.jumping && b.hop > 1 {
+        b.hop -= 1
+        g = f.fall
+    } else if b.jumping && b.hop == 1 {
+        b.hop = 0
+        let risen = b.at.y - b.from
+        b.vel.y = max(b.vel.y, sqrt(max(b.lift * b.lift - 2.0 * f.rise * risen, 0.0)))
     }
     // The velocity before the tick's accelerations. Each substep takes its share of the tick's
     // change of velocity and moves by the mean of its velocities before and after, so an arc is
@@ -430,7 +464,6 @@ fn air(b: mut Body, pad: Pad, c: Course, f: Feel) {
         }
         b.facing = dir
     }
-    let g = if b.jumping { f.rise } else { f.fall }
     b.vel.y = max(b.vel.y - g * STEP, -f.terminal)
     let from = b.at
     let n = substeps(max(length(b.vel), length(start)))
@@ -590,6 +623,7 @@ fn swim(b: mut Body, pad: Pad, c: Course, f: Feel) {
             b.vel.y = f.launch
             b.jumping = true
             b.breached = true
+            rise_from(mut b, f)
         }
         return
     }
