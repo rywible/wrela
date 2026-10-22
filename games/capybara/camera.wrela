@@ -1,9 +1,19 @@
-// The camera: a fixed side view that scrolls both ways (design.md, "Movement", proposed). It
-// looks a little ahead of the way the capybara faces, and further ahead only past the capybara's
-// running speed (a slide, a dolphin kick), so starting and stopping don't swing it (Ryan, 2026-10-21: the
-// rebound was too much when it led by the speed itself). On the ground it moves up or down only when
-// the capybara lands at a new height; while the capybara swims, or flies or falls out of a band
-// round the view's middle, it follows. It is presentation, stepped by the frame's time.
+// The camera: a fixed side view that scrolls both ways, locked to the capybara (design.md,
+// "Movement", proposed). Ryan wanted it to feel perfect (2026-10-22: it "still drifts a little
+// too much"): a camera that eases after the capybara trails it by speed over its rate, so every
+// change of speed slid the capybara about the screen. Now it doesn't ease after the capybara:
+//
+// - Across, it sits exactly where the capybara is, plus a lead the way it faces (and further past
+//   the running speed: a slide, a dolphin kick). Only the lead eases, when it turns.
+// - Up and down, it keeps a height: the capybara's on the ground (rigidly, so a slope doesn't
+//   lag) and in water; in the air it holds still until the capybara leaves a band round it (more
+//   than a full jump), then keeps it at the band's edge, rigidly. A fall that drags it down makes
+//   it look down ahead of the fall, easing in and out.
+// - Where its height jumps (a landing at a new height, into or out of water), the camera stays
+//   where it was and eases over to the new height: the only easing up and down.
+// - A jump of the capybara itself (back to a checkpoint) snaps it.
+//
+// It is presentation, stepped by the frame's time.
 
 use body::Mode
 use feel::FEEL
@@ -13,62 +23,106 @@ use world::Snap
 /// straight on (orthographic: no perspective, so the edges are true).
 pub const HALF_HEIGHT: f32 = 6.3
 
-/// How far the camera's height may leave the height it keeps before it follows (m).
-const BAND: f32 = 2.5
+/// How far the capybara may be above or below the height the camera keeps, in the air, before the
+/// camera follows (m): more than a full jump, so a jump never moves it.
+const BAND: f32 = 3.0
 
 /// How far ahead of the way it faces the camera looks (m); how much further per m/s past the
-/// running speed (s), and the most of that (m).
+/// running speed (s), and the most of that (m); and how fast the lead turns (1/s).
 const FACING: f32 = 1.5
 const LEAD: f32 = 0.25
 const LEAD_MAX: f32 = 3.0
+const TURN: f32 = 2.5
 
 /// The capybara sits this far below the view's middle, so more is seen above it (m).
 const ABOVE: f32 = 1.2
 
-/// Falling fast, the camera looks down ahead of the fall: this far per m/s of fall (s), at most
-/// `FALL_MAX` (m).
+/// Falling far (the fall drags the camera's height down), the camera looks down ahead of the fall:
+/// this far per m/s of fall (s), at most `FALL_MAX` (m), easing in and out at `FALL_EASE` (1/s).
 const FALL_LEAD: f32 = 0.12
 const FALL_MAX: f32 = 2.5
+const FALL_EASE: f32 = 5.0
 
-/// How far off the view's height the capybara may be before the camera hurries after it (m).
-const HURRY: f32 = 2.5
+/// How fast a jump in the camera's height eases out (1/s).
+const SETTLE: f32 = 7.0
+
+/// A move of the capybara further than this in one frame is a jump back to a checkpoint (m).
+const TELEPORT: f32 = 4.0
+
+/// Where the capybara stands for the camera: on the ground, in the air, or in water.
+enum Footing: Copy + Eq {
+    Ground,
+    Air,
+    Water,
+}
 
 pub struct Camera: Copy {
     /// The point of the plane at the view's middle (m).
     pub at: vec2,
-    /// The height it keeps: the capybara's middle when it last stood (m).
+    /// The height it keeps (m).
     pub level: f32,
     /// How far ahead it looks now (m).
     pub ahead: f32,
+    /// What's left of a jump in its height, easing out (m), the height it last wanted, and the
+    /// footing it last saw.
+    settle: f32,
+    wanted: f32,
+    footing: Footing,
+    /// How far down it looks ahead of a fall now (m, negative).
+    fall: f32,
+    /// The capybara's middle when it last looked.
+    seen: vec2,
 }
 
+/// A camera on a capybara at `start`, facing right.
 pub fn camera(start: vec2) -> Camera {
-    Camera { at: start + vec2(0.0, ABOVE), level: start.y, ahead: 0.0 }
-}
-
-fn ease(rate: f32, dt: f32) -> f32 {
-    1.0 - exp(-rate * dt)
+    Camera {
+        at: start + vec2(FACING, ABOVE),
+        level: start.y,
+        ahead: FACING,
+        settle: 0.0,
+        wanted: start.y + ABOVE,
+        footing: Footing::Ground,
+        fall: 0.0,
+        seen: start,
+    }
 }
 
 /// The camera after `dt` seconds following snapshot `s`.
 pub fn follow(c: mut Camera, s: Snap, dt: f32) {
-    let mode = Mode::from_u32(s.mode)
-    let grounded = mode == Some(Mode::Walk) ||
-        mode == Some(Mode::Crouch) ||
-        mode == Some(Mode::Slide)
-    if grounded {
-        c.level = s.at.y
-    } else if mode == Some(Mode::Swim) || abs(s.at.y - c.level) > BAND {
-        c.level += (s.at.y - c.level) * ease(10.0, dt)
+    if distance(s.at, c.seen) > TELEPORT {
+        c = camera(s.at)
     }
+    c.seen = s.at
+    let mode = Mode::from_u32(s.mode)
+    let footing = if mode == Some(Mode::Air) {
+        Footing::Air
+    } else if mode == Some(Mode::Swim) {
+        Footing::Water
+    } else {
+        Footing::Ground
+    }
+    let kept = c.level
+    if footing == Footing::Air {
+        c.level = clamp(c.level, s.at.y - BAND, s.at.y + BAND)
+    } else {
+        c.level = s.at.y
+    }
+    let dragged = footing == Footing::Air && c.level < kept
+    let fall = if dragged { clamp(s.vel.y * FALL_LEAD, -FALL_MAX, 0.0) } else { 0.0 }
+    c.fall += (fall - c.fall) * (1.0 - exp(-FALL_EASE * dt))
+    let wanted = c.level + ABOVE
+    if footing != c.footing {
+        // Its height jumped: stay, and ease over.
+        c.settle += c.wanted - wanted
+    }
+    c.footing = footing
+    c.wanted = wanted
+    c.settle *= exp(-SETTLE * dt)
     let past = max(abs(s.vel.x) - FEEL.speed, 0.0) * sign(s.vel.x)
     let lead = s.facing * FACING + clamp(past * LEAD, -LEAD_MAX, LEAD_MAX)
-    c.ahead += (lead - c.ahead) * ease(1.5, dt)
-    let fall = if grounded { 0.0 } else { clamp(s.vel.y * FALL_LEAD, -FALL_MAX, 0.0) }
-    let want = vec2(s.at.x + c.ahead, c.level + ABOVE + fall)
-    // Calm on the ground; quick to catch a capybara far off the view's height.
-    let up = if abs(s.at.y + ABOVE - c.at.y) > HURRY { 10.0 } else { 4.0 }
-    c.at += (want - c.at) * vec2(ease(8.0, dt), ease(up, dt))
+    c.ahead += (lead - c.ahead) * (1.0 - exp(-TURN * dt))
+    c.at = vec2(s.at.x + c.ahead, wanted + c.settle + c.fall)
 }
 
 /// Half the view's size on the plane of play (m), for a screen `aspect` wide to its height.
@@ -123,5 +177,28 @@ fn starting_and_stopping_barely_move_the_camera_past_the_capybara() {
         let s = present(w)
         follow(mut c, s, STEP)
         assert(c.ahead <= FACING + 0.5, "no swing ahead at the running speed")
+    }
+}
+
+@test
+fn running_and_jumping_dont_move_the_capybara_on_the_screen() {
+    // From rest, speeding up and running for two seconds on the level's flat runway (its goose
+    // gone): the capybara stays exactly where it was on the screen. A full jump there doesn't move
+    // the camera at all.
+    var w = world(LEVEL)
+    w.foes = [foes::NONE; foes::MAX_FOES]
+    var c = camera(course(LEVEL).start)
+    let off = w.body.at - c.at
+    for _ in 0..240 {
+        step(mut w, pad::Pad { bits: pad::RIGHT })
+        follow(mut c, present(w), STEP)
+        assert(distance(w.body.at - c.at, off) < 1.0e-3, "fixed on the screen")
+    }
+    let still = c.at.y
+    step(mut w, pad::Pad { bits: pad::JUMP | pad::PRESS })
+    for _ in 0..120 {
+        step(mut w, pad::Pad { bits: pad::JUMP })
+        follow(mut c, present(w), STEP)
+        assert(abs(c.at.y - still) < 1.0e-3, "a jump doesn't move it")
     }
 }
