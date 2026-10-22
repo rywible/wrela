@@ -611,6 +611,19 @@ a pinned SHA-256, with its licence. Two outside Rust crates came in, used as lib
 [flate2](https://github.com/rust-lang/flate2-rs) (MIT or Apache-2.0), already in the build,
 ungzips it; ureq downloads it. No code was copied.
 
+## The capybara game's route search, 2026-10-22
+
+Ryan asked the route search to find the fastest any% and 100% runs of the capybara game's first
+level, to watch as ghosts. Claude (Opus 5.5), in a session another Claude session started,
+wrote it as a Wrela tool (`wrela tool route`, `games/capybara/route`): a beam search over the
+sim's states with exact merging of equal states, a per-cell bound for variety, and rounds that
+search again from each checkpoint of the best run with other settings, keeping what's faster.
+Its runs are `games/capybara/routes.wrela`, with tests that replay them: any% in 1,285 ticks and
+100% in 1,999, after about 17 minutes of search for each on an M-series Mac (8 helpers), against
+the autopilot's 3,449 and 3,572 (proofs.wrela). They beat it by far because the movement lets
+speed build without limit (speed is never lost in the air, and a landing on a down slope adds to
+it); Ryan judges whether that stays. Beam search is a published method (below); no code was taken.
+
 ## The split, done, 2026-10-21
 
 The repository split on 2026-10-21. `rywible/wrela-compiler` took the compiler, std, the hosts, the
@@ -686,6 +699,7 @@ the lookbook where code moved but output must not change. Claude merged the resu
 | Inter and JetBrains Mono fonts (`ui/fonts/`) | SIL Open Font License 1.1, licence texts beside them | The studio's interface text. |
 | [ab_glyph](https://github.com/alexheretic/ab-glyph) 0.2, a reference rasterizer | Apache-2.0; used as a library, no code copied | The ui's text is compared with it: it drew the test lines (`ui/tests/text`) once, each pixel's exact coverage from the outlines, into `ui/tests/text/goldens/reference.png` (2026-10-20), which the text's tool test compares with the GPU's frame; `the_reference_is_of_this_layout` pins the layout it was drawn at. To draw it again, run `text::text_matches_a_reference_rasterizer` (compiler/tests/tests/suite/text.rs at commit cc0be254, with `--ignored`), which writes `target/tmp/text/reference.png`. |
 | musl's libm; ARM's optimized-routines | MIT | `compiler/std/math.wrela` follows their algorithms and coefficients (credited in the file). std's f64 sine, cosine, arctangent, exponential and logarithms (`sin_f64` and the rest, in the same file), which the reference and audio tools use, follow musl's too, with Dekker's and Knuth's exact products and sums for its power and its base-10 and base-2 logarithms. |
+| Beam search: Bruce T. Lowerre, *The Harpy Speech Recognition System* (PhD thesis, Carnegie Mellon University, 1976) | A published method; no code taken | `games/capybara/route/search.wrela`: the route search keeps the best states of each layer of ticks and drops the rest. |
 | Steven Worley, "A Cellular Texture Basis Function" (SIGGRAPH 1996) | A published algorithm; no code taken | Bark's plates (`engine/plant.wrela`, `plates_at`): the nearest and second-nearest of jittered cell points, written from the paper's idea. |
 | Heini Hediger's flight distance (*Wild Animals in Captivity*, 1950), as field ethology uses it | A published idea; no code or data taken | The fawn's behaviour (`games/last-green/behaviour.wrela`): it notices a person first and watches, and flees when they come on within a distance; the distances are our own, tuned by test. |
 | Vadim Zavalishin, *The Art of VA Filter Design* (2012); George Marsaglia, "Xorshift RNGs" (2003) | Published algorithms; no code taken | The floor's sound (`engine/sound.wrela`): the state-variable filter that bands each source's noise, and the seeded noise itself. |

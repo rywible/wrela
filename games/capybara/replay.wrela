@@ -10,7 +10,7 @@
 
 use course::{COURSES, course}
 use pad::{Hold, pad_of}
-use proofs::{LAB_RUN, LEVEL_ANY, LEVEL_FULL}
+use proofs::LAB_RUN
 use std::collections::Vec
 use std::serialize::{LoadError, Serialize, load, save}
 use world::{LAB, LEVEL, Snap, World, step, world}
@@ -199,12 +199,14 @@ pub fn bytes(b: Board) -> Vec<u8> {
     save(b)
 }
 
-/// The tool-assisted runs of course `c`: the autopilot's recordings (proofs.wrela), as replays.
+/// The tool-assisted runs of course `c`, as replays: the level's any% and 100% from the route
+/// search (routes.wrela), which beat the autopilot's, and the lab's autopilot recording
+/// (proofs.wrela).
 pub fn tool_assisted(c: u32) -> Vec<Replay> {
     var out: Vec<Replay> = Vec::new()
     if c == LEVEL {
-        out.push(recorded(LEVEL, LEVEL_ANY))
-        out.push(recorded(LEVEL, LEVEL_FULL))
+        out.push(recorded(LEVEL, routes::ANY))
+        out.push(recorded(LEVEL, routes::FULL))
     } else if c == LAB {
         out.push(recorded(LAB, LAB_RUN))
     }

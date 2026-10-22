@@ -1,0 +1,277 @@
+// The route tool (`wrela tool route`): the route search's fastest any% and 100% runs of the
+// capybara game's first level, written as the game's routes.wrela, with its tests.
+//
+// ```text
+// wrela tool route -- [--seconds S]
+// ```
+//
+// For each category it starts from the run routes.wrela holds, if that still finishes as its
+// category asks (the sim may have changed since), and spends up to `S` seconds (300 unless
+// given) improving it. A round takes one of `TRIES` in turn and searches (search.wrela) from
+// each of the run's segment entries, the latest first: the state on the tick the run passes
+// each checkpoint, then the level's start. From an entry, the search's segment is the rest of
+// the level, so a faster end can't leave the next segment worse off; a run it finds that ends
+// sooner takes the best's place from the entry on. Without a run to start from, the first round
+// searches from the start alone. It writes routes.wrela again if either run is faster.
+
+use capybara::course::course
+use capybara::pad::{DOWN, Hold, JUMP, LEFT, PRESS, Pad, RIGHT, UP, pad_of}
+use capybara::routes::{ANY, FULL}
+use capybara::world::{LEVEL, World, play, step, world}
+use search::{Settings, holds, played, search, to_goal}
+use std::io::print
+use std::time::{now, since}
+use std::tool::args
+use std::tool::files::write
+
+pub const USAGE: Text = "usage: wrela tool route -- [--seconds S]"
+
+/// The seconds each category is searched unless `--seconds` gives another.
+pub const SECONDS: u32 = 300
+
+/// Where the runs are written, in the `game` root (games/capybara).
+const ROUTES: Text = "game/routes.wrela"
+
+/// The settings a round takes, in turn: the search's landscape is rough, so each finds other
+/// runs, and a run one misses another may find.
+pub const TRIES: [Settings; 8] = [
+    Settings {},
+    Settings { every: 4 },
+    Settings { every: 8 },
+    Settings { every: 5, cell: 0.5 },
+    Settings { every: 7, cell: 0.15 },
+    Settings { beam: 3000 },
+    Settings { every: 3, beam: 600 },
+    Settings { lookahead: 0.5, cell: 0.35 },
+]
+
+/// The seconds the command line gives, or `None` for a usage error.
+pub fn parse_args(given: [String]) -> Option<u32> {
+    if given.len() == 0 {
+        return Some(SECONDS)
+    }
+    if given.len() == 2 && given[0].as_str() == "--seconds" {
+        return given[1].as_str().parse_u32()
+    }
+    None
+}
+
+/// The snacks a 100% run finds: all of the level's.
+fn every_snack() -> u32 {
+    (1 << course(LEVEL).snacks.len()) - 1
+}
+
+/// Whether the world after a run finished it as a run that needs `snacks` must: at the goal, with
+/// no death, and with those snacks.
+fn finishes(w: World, snacks: u32) -> bool {
+    w.finished > 0 && w.deaths == 0 && w.snacks & snacks == snacks
+}
+
+/// A run's pads, tick by tick, up to its finish.
+fn pads_of(run: [Hold]) -> Vec<u32> {
+    var pads: Vec<u32> = Vec::new()
+    var w = world(LEVEL)
+    for h in run {
+        for i in 0..h.ticks {
+            if w.finished == 0 {
+                let p = pad_of(h, i)
+                pads.push(p.bits)
+                step(mut w, p)
+            }
+        }
+    }
+    pads
+}
+
+/// The ticks on which the run of `pads` first reaches each checkpoint's x, the latest first, then
+/// 0, the level's start: its segments' entries. A fast run may pass over a flag, so a segment
+/// begins where the run passes it, touched or not.
+fn entries(pads: [u32]) -> Vec<u32> {
+    borrow c = course(LEVEL)
+    var at: Vec<u32> = Vec::new()
+    var w = world(LEVEL)
+    var next = 0
+    for i in 0..pads.len() {
+        step(mut w, Pad { bits: pads[i] })
+        while next < c.checkpoints.len() && w.body.at.x >= c.checkpoints[next].x {
+            at.insert(0, i + 1)
+            next += 1
+        }
+    }
+    at.push(0)
+    at
+}
+
+/// The best run of a category: its pads, and its time (0 for none yet).
+struct Best: Clone {
+    pads: Vec<u32>,
+    time: u32,
+}
+
+/// The best run of the category whose runs find `snacks`, from `run` on, after up to `seconds`
+/// of search.
+fn improve(name: str, run: [Hold], snacks: u32, seconds: f32) -> Best {
+    let start = now()
+    let w = play(LEVEL, run)
+    var best = if finishes(w, snacks) {
+        Best { pads: pads_of(run), time: w.finished }
+    } else {
+        Best { pads: Vec::new(), time: 0 }
+    }
+    print(f"{name}: from {best.time} ticks")
+    var round = 0
+    while since(start) < seconds {
+        let tries = TRIES[round % TRIES.len()]
+        let from = if best.time == 0 { Vec::from([0]) } else { entries(best.pads) }
+        for e in from {
+            if since(start) >= seconds {
+                break
+            }
+            var prefix: Vec<u32> = Vec::new()
+            for i in 0..e {
+                prefix.push(best.pads[i])
+            }
+            let entry = played(world(LEVEL), prefix)
+            let limit = if best.time == 0 { tries.ticks } else { best.time - e - 1 }
+            let begun = now()
+            var s = search(entry, to_goal(snacks), Settings { ticks: limit, ..tries })
+            while !s.stopped && since(start) < seconds {
+                s.layer()
+            }
+            let took = since(begun)
+            let Some(f) = s.found else {
+                print(f"  round {round} from tick {e}: none ({s.states} states, {took} s)")
+                continue
+            }
+            let time = f.end.finished
+            if finishes(f.end, snacks) && (best.time == 0 || time < best.time) {
+                for p in f.pads {
+                    prefix.push(p)
+                }
+                best = Best { pads: prefix, time }
+                print(f"  round {round} from tick {e}: {time} ticks ({s.states} states, {took} s)")
+            } else {
+                print(
+                    f"  round {round} from tick {e}: {time} ticks, no faster ({s.states} states, {took} s)",
+                )
+            }
+        }
+        round += 1
+    }
+    print(f"{name}: {best.time} ticks after {since(start)} s")
+    best
+}
+
+/// A pad's bits as the pad module's names, joined by `|`.
+fn bits_text(bits: u32) -> String {
+    let names: [Text; 6] = ["RIGHT", "LEFT", "UP", "DOWN", "JUMP", "PRESS"]
+    let values = [RIGHT, LEFT, UP, DOWN, JUMP, PRESS]
+    var out = String::new()
+    for i in 0..names.len() {
+        if bits & values[i] != 0 {
+            if !out.is_empty() {
+                out.push_str(" | ")
+            }
+            out.push_str(names[i])
+        }
+    }
+    out
+}
+
+/// The bits any hold of `run` holds.
+fn used(run: [Hold]) -> u32 {
+    var bits = 0
+    for h in run {
+        bits = bits | h.bits
+    }
+    bits
+}
+
+/// A run as a constant of holds, after its doc comment.
+fn constant(text: mut String, name: str, doc: str, run: [Hold]) {
+    text.push_str(doc)
+    text.push_str(f"pub const {name}: [Hold; {run.len()}] = [\n")
+    for h in run {
+        if h.bits == 0 {
+            text.push_str(f"    hold(bits: 0, ticks: {h.ticks}),\n")
+        } else {
+            text.push_str(f"    hold({bits_text(h.bits)}, {h.ticks}),\n")
+        }
+    }
+    text.push_str("]\n")
+}
+
+/// routes.wrela with the runs `any` and `full`, which take `any_time` and `full_time` ticks.
+pub fn routes_text(any: [Hold], any_time: u32, full: [Hold], full_time: u32) -> String {
+    var text = String::from(
+        "// The route search's fastest runs of the first level, any% and 100% (design.md, \"The agent\n// loop\"): the tool-assisted runs. `wrela tool route` searches for faster ones and writes this\n// file again, with the tests' times; run it again when a change to the movement moves them.\n\n",
+    )
+    let bits = used(any) | used(full)
+    var names: Vec<Text> = Vec::new()
+    let order: [Text; 6] = ["DOWN", "JUMP", "LEFT", "PRESS", "RIGHT", "UP"]
+    let values = [DOWN, JUMP, LEFT, PRESS, RIGHT, UP]
+    for i in 0..order.len() {
+        if bits & values[i] != 0 {
+            names.push(order[i])
+        }
+        if i == 0 {
+            names.push("Hold")
+        }
+    }
+    names.push("hold")
+    text.push_str("use course::course\nuse pad::{")
+    for i in 0..names.len() {
+        if i > 0 {
+            text.push_str(", ")
+        }
+        text.push_str(names[i])
+    }
+    text.push_str("}\nuse world::{LEVEL, play}\n\n")
+    constant(
+        mut text,
+        "ANY",
+        f"/// The first level from start to goal (any%), in {any_time} ticks.\n",
+        any,
+    )
+    text.push_str("\n")
+    constant(
+        mut text,
+        "FULL",
+        f"/// The first level with every snack (100%), in {full_time} ticks.\n",
+        full,
+    )
+    text.push_str(
+        f"\n@test\nfn the_searched_runs_finish_in_their_times_without_a_death() {{\n    borrow c = course(LEVEL)\n    let any = play(LEVEL, ANY)\n    let full = play(LEVEL, FULL)\n    assert(any.finished == {any_time} && any.deaths == 0, \"the any% run's time moved\")\n    assert(full.finished == {full_time} && full.deaths == 0, \"the 100% run's time moved\")\n    assert(full.snacks == (1 << c.snacks.len()) - 1, \"every snack\")\n}}\n",
+    )
+    text
+}
+
+pub fn tool() -> u32 {
+    let Some(seconds) = parse_args(args()) else {
+        print(USAGE)
+        return 2
+    }
+    let any = improve("any%", ANY, 0, f32(seconds))
+    let full = improve("100%", FULL, every_snack(), f32(seconds))
+    if any.time == 0 || full.time == 0 {
+        print("route: no run of each category to write")
+        return 1
+    }
+    let was_any = play(LEVEL, ANY)
+    let was_full = play(LEVEL, FULL)
+    if any.time == was_any.finished && full.time == was_full.finished {
+        print("route: no faster run; routes.wrela stays")
+        return 0
+    }
+    let text = routes_text(holds(any.pads), any.time, holds(full.pads), full.time)
+    match write(ROUTES, text.as_bytes()).wait() {
+        Ok(_) => {
+            print("route: wrote games/capybara/routes.wrela")
+            0
+        },
+        Err(e) => {
+            print(f"route: {e.message()}")
+            1
+        },
+    }
+}
