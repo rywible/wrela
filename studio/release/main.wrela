@@ -30,17 +30,17 @@
 // in that order and each Worker's in the order of its paths' parts, framed by length (tree.wrela).
 // Each Worker serves its release under `releases/<id>/` with `files.json` (each file's SHA-256,
 // for a later deploy to keep), from an entry page that names that release (`<base>`), with
-// headers and redirects (site.wrela); `<worker>.wrangler.json` configures it, and `release.json`
-// says what the release holds.
+// headers and redirects (site.wrela); `<worker>.wrangler.json` configures it, `<worker>.worker.js`
+// serves its kept releases from R2, and `release.json` says what the release holds.
 
 use catalog::{CATALOG, Catalog, Game, check, origin_of, paths}
 use io::{copy_files, data_bytes, empty, read_files, release_blobs, walk, write_files}
 use manifest::{Manifest, default_name, joined, last_part, parent, parse}
 use pages::{FONTS, Page, file_of, in_order, page_html, render, stem}
 use site::{
-    CACHE_RULES, Report, Top, card, catalog_json, catalog_line, docs_headers, docs_page,
-    docs_redirects, fetch_order, headers, prefetch_list, release_json, replace_all, with_storage,
-    wrangler_config,
+    CACHE_RULES, Report, Top, archive_script, card, catalog_json, catalog_line, docs_headers,
+    docs_page, docs_redirects, fetch_order, headers, prefetch_list, release_json, replace_all,
+    with_storage, wrangler_config,
 }
 use std::hash::sha256::{Sha256, hex}
 use std::io::print
@@ -453,6 +453,7 @@ fn release(revision: str) -> Result<String, ToolError> {
     }
     let (docs_head, docs_body) = docs_page(c.docs, ordered, has)
     var finals: Vec<Project> = Vec::new()
+    var scripts: Vec<String> = Vec::new()
     for k in 0..projects.len() {
         borrow p = projects[k]
         var entry: Option<String> = None
@@ -519,12 +520,14 @@ fn release(revision: str) -> Result<String, ToolError> {
         f.tree.put_bytes("_headers", all_headers.as_bytes())
         f.tree.sort()
         check_files(f.tree.entries).map_err(own)?
+        scripts.push(archive_script(f.worker.as_str(), all_headers.as_str()))
         finals.push(take f)
     }
-    // Written: each Worker's files, its configuration, and what the release holds.
+    // Written: each Worker's files, its configuration and script, and what the release holds.
     var copies: Vec<(String, String)> = Vec::new()
     var writes: Vec<(String, Vec<u8>)> = Vec::new()
-    for p in finals {
+    for k in 0..finals.len() {
+        borrow p = finals[k]
         for e in p.tree.entries {
             let to = String::from(f"{OUT}/{p.worker.as_str()}/{e.path.as_str()}")
             match e.source {
@@ -535,7 +538,13 @@ fn release(revision: str) -> Result<String, ToolError> {
         writes.push(
             (
                 String::from(f"{OUT}/{p.worker.as_str()}.wrangler.json"),
-                Vec::from(wrangler_config(p.worker.as_str(), p.domain.as_str()).as_bytes()),
+                Vec::from(wrangler_config(p.worker.as_str(), p.domain.as_str(), r).as_bytes()),
+            ),
+        )
+        writes.push(
+            (
+                String::from(f"{OUT}/{p.worker.as_str()}.worker.js"),
+                Vec::from(scripts[k].as_bytes()),
             ),
         )
     }

@@ -1,9 +1,9 @@
 // What a release serves beside its builds: each Worker's headers and redirects, its Wrangler
-// configuration, the console's catalog, prefetch lists and card, the docs page's head and text,
-// and the storage namespace each bootstrap names.
+// configuration and its script for its kept releases, the console's catalog, prefetch lists and
+// card, the docs page's head and text, and the storage namespace each bootstrap names.
 
 use catalog::{Catalog, Console, Docs, Game, origin_of}
-use json::{Json, indented, member, text}
+use json::{Json, compact, indented, member, text}
 use pages::{Page, escape, group_of, groups, stem}
 
 /// The Workers runtime each release's Workers run on.
@@ -317,17 +317,142 @@ fn contains(names: [String], name: str) -> bool {
     false
 }
 
-/// A Worker's Wrangler configuration: its release's assets, on its custom domain only.
-pub fn wrangler_config(worker: str, domain: str) -> String {
+/// The R2 bucket that keeps the releases a Worker no longer has as its assets: each file once,
+/// by its SHA-256, at `blobs/<sha>`, and each release's `files.json` at
+/// `<worker>/<release>/files.json` (studio/deploy puts them there).
+pub const BUCKET: Text = "wrela-releases"
+
+/// The content type of a kept file, by its suffix; any other is `application/octet-stream`.
+pub const CONTENT_TYPES: [(Text, Text); 14] = [
+    ("html", "text/html; charset=utf-8"),
+    ("js", "text/javascript; charset=utf-8"),
+    ("json", "application/json; charset=utf-8"),
+    ("wasm", "application/wasm"),
+    ("wgsl", "text/plain; charset=utf-8"),
+    ("txt", "text/plain; charset=utf-8"),
+    ("md", "text/markdown; charset=utf-8"),
+    ("tsv", "text/tab-separated-values; charset=utf-8"),
+    ("css", "text/css; charset=utf-8"),
+    ("svg", "image/svg+xml"),
+    ("png", "image/png"),
+    ("webp", "image/webp"),
+    ("ttf", "font/ttf"),
+    ("otf", "font/otf"),
+]
+
+/// What a Worker's script does past its constants (`archive_script`), a line at a time: it
+/// serves a release that isn't the Worker's current one, which only the request for one runs
+/// (`run_worker_first`), from the bucket, with the headers its `_headers` gives (Cloudflare
+/// applies `_headers` to assets alone). Anything else is the assets' answer, a 404.
+pub const ARCHIVE: [Text; 65] = [
+    "// Each `_headers` rule: its pattern, where `*` matches any run, and its headers.",
+    "const RULES = [];",
+    "for (const line of HEADERS.split(\"\\n\")) {",
+    "  if (line.trim() === \"\") continue;",
+    "  if (line === line.trimStart()) {",
+    "    RULES.push({ pattern: line.trim(), headers: [] });",
+    "  } else if (RULES.length > 0) {",
+    "    const k = line.indexOf(\":\");",
+    "    RULES[RULES.length - 1].headers.push([line.slice(0, k).trim(), line.slice(k + 1).trim()]);",
+    "  }",
+    "}",
+    "function matches(pattern, path) {",
+    "  const parts = pattern.split(\"*\");",
+    "  if (!path.startsWith(parts[0])) return false;",
+    "  if (parts.length === 1) return path === parts[0];",
+    "  let at = parts[0].length;",
+    "  for (let k = 1; k < parts.length - 1; k++) {",
+    "    const i = path.indexOf(parts[k], at);",
+    "    if (i < 0) return false;",
+    "    at = i + parts[k].length;",
+    "  }",
+    "  const last = parts[parts.length - 1];",
+    "  return path.length - last.length >= at && path.endsWith(last);",
+    "}",
+    "function type(path) {",
+    "  const name = path.slice(path.lastIndexOf(\"/\") + 1);",
+    "  const dot = name.lastIndexOf(\".\");",
+    "  const suffix = dot > 0 ? name.slice(dot + 1) : \"\";",
+    "  return Object.hasOwn(TYPES, suffix) ? TYPES[suffix] : \"application/octet-stream\";",
+    "}",
+    "// Each release's listing, once read: its text and its files' SHA-256s by path.",
+    "const LISTINGS = new Map();",
+    "async function listing(env, release) {",
+    "  if (!LISTINGS.has(release)) {",
+    "    const o = await env.RELEASES.get(WORKER + \"/\" + release + \"/files.json\");",
+    "    if (o === null) return null;",
+    "    const text = await o.text();",
+    "    LISTINGS.set(release, { text: text, files: JSON.parse(text) });",
+    "  }",
+    "  return LISTINGS.get(release);",
+    "}",
+    "export default {",
+    "  async fetch(request, env) {",
+    "    const url = new URL(request.url);",
+    "    const rest = url.pathname.slice(\"/releases/\".length);",
+    "    const release = rest.slice(0, 20);",
+    "    const kept = url.pathname.startsWith(\"/releases/\") && /^[0-9a-f]{20}$/.test(release) && rest[20] === \"/\";",
+    "    if (!kept || (request.method !== \"GET\" && request.method !== \"HEAD\")) return env.ASSETS.fetch(request);",
+    "    let path;",
+    "    try { path = decodeURIComponent(rest.slice(21)); } catch { return env.ASSETS.fetch(request); }",
+    "    if (path === \"\" || path.endsWith(\"/\")) path += \"index.html\";",
+    "    const list = await listing(env, release);",
+    "    if (list === null) return env.ASSETS.fetch(request);",
+    "    let body = list.text;",
+    "    if (path !== \"files.json\") {",
+    "      const sha = Object.hasOwn(list.files, path) ? list.files[path] : null;",
+    "      const o = typeof sha === \"string\" ? await env.RELEASES.get(\"blobs/\" + sha) : null;",
+    "      if (o === null) return env.ASSETS.fetch(request);",
+    "      body = o.body;",
+    "    }",
+    "    const headers = new Headers({ \"Content-Type\": type(path) });",
+    "    for (const r of RULES) if (matches(r.pattern, url.pathname)) for (const [n, v] of r.headers) headers.set(n, v);",
+    "    return new Response(request.method === \"HEAD\" ? null : body, { headers: headers });",
+    "  },",
+    "};",
+]
+
+/// A Worker's script, `<worker>.worker.js`: its name, its `_headers` and `CONTENT_TYPES` as
+/// constants, then `ARCHIVE`.
+pub fn archive_script(worker: str, headers: str) -> String {
+    var types: Vec<(String, Json)> = Vec::new()
+    for (suffix, t) in CONTENT_TYPES {
+        types.push(member(suffix, text(t)))
+    }
+    var out = String::from(
+        "// A Worker's kept releases, from R2 (studio/release/site.wrela). Written by the release tool.\n",
+    )
+    out.push_str(f"const WORKER = {compact(text(worker)).as_str()};\n")
+    out.push_str(f"const HEADERS = {compact(text(headers)).as_str()};\n")
+    out.push_str(f"const TYPES = {compact(Json::Obj(take types)).as_str()};\n")
+    for line in ARCHIVE {
+        out.push_str(line)
+        out.push_str("\n")
+    }
+    out
+}
+
+/// A Worker's Wrangler configuration: `release` as its assets, its script (`archive_script`)
+/// for the requests of any other release, and the bucket, on its custom domain only.
+pub fn wrangler_config(worker: str, domain: str, release: str) -> String {
     var route: Vec<(String, Json)> = Vec::new()
     route.push(member("pattern", text(domain)))
     route.push(member("custom_domain", Json::Bool(true)))
     var assets: Vec<(String, Json)> = Vec::new()
     assets.push(member("directory", text(f"./{worker}")))
+    assets.push(member("binding", text("ASSETS")))
+    // Explicit routes: a navigation to a kept release's page runs the script too.
+    let first = Vec::from([text("/releases/*"), text(f"!/releases/{release}/*")])
+    assets.push(member("run_worker_first", Json::List(take first)))
+    var bucket: Vec<(String, Json)> = Vec::new()
+    bucket.push(member("binding", text("RELEASES")))
+    bucket.push(member("bucket_name", text(BUCKET)))
     var c: Vec<(String, Json)> = Vec::new()
     c.push(member("name", text(worker)))
     c.push(member("compatibility_date", text(COMPATIBILITY_DATE)))
+    c.push(member("main", text(f"./{worker}.worker.js")))
     c.push(member("assets", Json::Obj(take assets)))
+    c.push(member("r2_buckets", Json::List(Vec::from([Json::Obj(take bucket)]))))
     c.push(member("routes", Json::List(Vec::from([Json::Obj(take route)]))))
     c.push(member("workers_dev", Json::Bool(false)))
     c.push(member("preview_urls", Json::Bool(false)))

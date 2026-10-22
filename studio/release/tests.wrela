@@ -9,8 +9,9 @@ use main::{BUILD_TIMEOUT, build_options, export_conflict, licences, parse_args, 
 use manifest::{joined, parse}
 use pages::{Page, cells, in_order, page_html, render}
 use site::{
-    Top, card, catalog_line, code_of, docs_headers, docs_page, docs_redirects, fetch_order, headers,
-    prefetch_list, release_json, replace_all, suffix, with_storage, wrangler_config,
+    ARCHIVE, Top, archive_script, card, catalog_line, code_of, docs_headers, docs_page,
+    docs_redirects, fetch_order, headers, prefetch_list, release_json, replace_all, suffix,
+    with_storage, wrangler_config,
 }
 use std::hash::sha256::{Sha256, hex}
 use tree::{Entry, Source, Tree, before_by_parts, check_files, files_json, frame}
@@ -254,12 +255,24 @@ fn every_bootstrap_has_its_storage_namespace() {
 
 @test
 fn each_worker_serves_its_assets_on_its_domain_only() {
-    let w = wrangler_config("game-host", "game.example")
+    let w = wrangler_config("game-host", "game.example", "0123456789abcdef0123")
     assert(
         w.as_str() ==
-            "{\n  \"name\": \"game-host\",\n  \"compatibility_date\": \"2026-10-12\",\n  \"assets\": {\n    \"directory\": \"./game-host\"\n  },\n  \"routes\": [\n    {\n      \"pattern\": \"game.example\",\n      \"custom_domain\": true\n    }\n  ],\n  \"workers_dev\": false,\n  \"preview_urls\": false\n}\n",
+            "{\n  \"name\": \"game-host\",\n  \"compatibility_date\": \"2026-10-12\",\n  \"main\": \"./game-host.worker.js\",\n  \"assets\": {\n    \"directory\": \"./game-host\",\n    \"binding\": \"ASSETS\",\n    \"run_worker_first\": [\n      \"/releases/*\",\n      \"!/releases/0123456789abcdef0123/*\"\n    ]\n  },\n  \"r2_buckets\": [\n    {\n      \"binding\": \"RELEASES\",\n      \"bucket_name\": \"wrela-releases\"\n    }\n  ],\n  \"routes\": [\n    {\n      \"pattern\": \"game.example\",\n      \"custom_domain\": true\n    }\n  ],\n  \"workers_dev\": false,\n  \"preview_urls\": false\n}\n",
         w.as_str(),
     )
+    // Its script serves its kept releases with its own `_headers`, as JavaScript constants.
+    let s = archive_script("game-host", "/*\n  X-A: \"b\"\n")
+    let lines = [
+        "const WORKER = \"game-host\";\n",
+        "const HEADERS = \"/*\\n  X-A: \\\"b\\\"\\n\";\n",
+        "const TYPES = {\"css\": \"text/css; charset=utf-8\", ",
+        "\"wasm\": \"application/wasm\", ",
+    ]
+    for l in lines {
+        assert(contains(s.as_str(), l), l)
+    }
+    assert(s.as_str().ends_with("  },\n};\n") && contains(s.as_str(), ARCHIVE[0]))
     var reports: Vec<site::Report> = Vec::new()
     reports.push(
         site::Report {
