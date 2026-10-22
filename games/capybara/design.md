@@ -73,12 +73,23 @@ The game is set in a zoo, as a day out. The easter eggs are cute, small and kind
 
 ## Rules
 
-- **No lives.** Checkpoints and an instant restart.
+- **No lives.** Hurt or fallen out, the capybara goes back to its last checkpoint, the foes as they started, the clock running, with a moment in which it can't be hurt. R restarts the attempt.
 - **The yuzu:** a yuzu on the capybara's head is the power-up that takes one hit, as capybaras in Japanese hot springs wear them.
 - **No coins.** Each level hides a few snacks to find; finding them all is the 100% category.
-- **Enemies, proposed:** pests and grumps, not predators. The seagull's crew (pigeons and smaller gulls) that swoop and steal; geese as the basic walking enemy; caimans in the water, whose snouts can be bounced on.
+- **Foes:** pests and grumps, not predators (proposed; geese, pigeons and caimans built for the first level). Geese waddle the ground, pigeons fly a bobbing patrol, caimans patrol under water. From above while falling is a stomp: a goose or a pigeon is knocked out, and the capybara bounces as high as a jump with jump held (a little less without), its double jump back, so stomps chain. Sliding into a goose bowls it over, which suits speed. A caiman's snout only bounces (a strong kick under water). Any other touch hurts. Still to come: the seagull's crew that swoops and steals.
 - **Komodo dragons** look like the zoo's fiercest animals and are its sweetest. They are stomped on like enemies, but on one level, one that is approached gives the capybara a ride to the level's end.
 - **Easter eggs** can be speedrun tricks, but not all of them.
+
+## The first level
+
+*A working name: the zoo's entrance. About 330 m; a first clear in a minute or so, a speedrun in under 30 s. Its course and its reasons are in `course.wrela` (`LEVEL`).*
+
+- **The gates:** a goose to stomp or jump; a ledge only a double jump reaches; pits of 3 and 4.5 m; a puddle in a dip and a hill.
+- **The big slide:** steps under a pigeon, a yuzu, a long ramp into a puddled valley and a lip over a 12 m pit. A slide-jump clears it; one-way ledges in the pit are the slow way. Geese on the landing, to bowl over sliding.
+- **The lake:** 41 m across and 8.5 m deep, two caimans at two depths, a dolphin-kick line between them, a far wall 3 m above the water: out by a breach and a double jump.
+- **The gauntlet:** mesas over pits, geese, pigeons, a puddle's speed for an 8 m gap, a climb that needs the double jump saved.
+- **Five snacks**, each asking for one move done well: a double jump onto a ledge; a run off a pit's edge and a double jump out; a double jump at the top of the slide-jump's arc; a dive under a caiman to the lake's floor; a full jump and double jump high off the last mesa.
+- **Not impossible, by proof:** a recorded any% run (28.8 s) and a recorded 100% run (29.6 s) finish it without a death, from an autopilot that reacts to the foes; both are tests. **Challenging:** the autopilot's own first tries died where a player will (spending the double jump before the last climb), and the snacks' placements were moved until each needed its move, not until each was easy.
 
 ## Speedrunning
 
@@ -148,7 +159,7 @@ The goal is that an agent can play the game, see it and check it without Ryan. C
 ## Plan
 
 1. The movement lab: the sim (run, jump, slide, swim) to the contracts above, a lab course with ramps, crests, gaps, ledges and a pool, a blockout 2.5D view, the proofs and the feel metrics. Then Ryan plays it: done, and tuned from his notes.
-2. One vertical-slice level with a blockout capybara, a goose and a slide curve.
+2. One vertical-slice level, its core gameplay before its looks (Ryan, 2026-10-21: "really crush the core gameplay loop"): the first level, built (below). Then Ryan plays it.
 3. The capybara in cel style, and Ryan's verdict on feel.
 4. The replay format is fixed in step 1; accounts and leaderboards after the slice.
 

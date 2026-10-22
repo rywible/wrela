@@ -49,6 +49,7 @@ pub fn script_of(run: [Hold]) -> Script {
     s
 }
 
-/// The lab's recorded run (`proofs::LAB_RUN`) from start to goal, for stills and clips of every
-/// part of the lab: `wrela-host <build> --fps 120 --frames 1400 --input lab.json`.
-pub const LAB: Script = script_of(proofs::LAB_RUN)
+/// The level's recorded any% run (`proofs::LEVEL_ANY`) from start to goal, for stills and clips
+/// of every part of the level, which the game starts on: `wrela-host <build> --fps 120 --frames
+/// 3500 --input level.json`.
+pub const LEVEL: Script = script_of(proofs::LEVEL_ANY)
