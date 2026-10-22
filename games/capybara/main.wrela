@@ -167,13 +167,15 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         sliding,
     }
     let stage = Stage { view_proj, px, time, first: 0 }
-    // The scene: the sky and the zoo behind, back to front; the ground and its grass; the cast.
+    // The scene: the sky and the zoo behind (one pass, nearest first); the ground and its grass; the
+    // cast.
     let scene = begin_pass(mut s.targets.scene)
-    draw(scene, full.bind(z: 0.0), scenery::sky.bind(v: view), vertices: 3)
-    draw(scene, full.bind(z: 0.0), scenery::far_hills.bind(v: view), vertices: 3)
-    draw(scene, full.bind(z: 0.0), scenery::savanna.bind(v: view), vertices: 3)
-    draw(scene, full.bind(z: 0.0), scenery::path.bind(v: view), vertices: 3)
-    draw(scene, full.bind(z: 0.0), scenery::bamboo.bind(v: view), vertices: 3)
+    draw(
+        scene,
+        full.bind(z: 0.0),
+        scenery::backdrop.bind(v: view, tops: s.tops[i].items()),
+        vertices: 3,
+    )
     draw(
         scene,
         earth_vertex.bind(verts: s.earths[i].items(), f: field),
