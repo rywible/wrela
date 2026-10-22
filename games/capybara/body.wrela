@@ -68,6 +68,8 @@ pub struct Body: Copy + Eq + StateHash + Serialize + SimState {
     pub since: u32,
     /// Rising from a breach: up held keeps it rising as jump held does.
     pub breached: bool,
+    /// Ticks left after leaving the water in which a jump press is the breach's.
+    pub surfaced: u32,
     /// Jumps left in the air: a double jump while it's more than 0.
     pub jumps: u32,
     /// Ticks since a double jump's flip began, counting from 1 in the air;
@@ -94,6 +96,7 @@ pub fn spawn(at: vec2) -> Body {
         stroke: 0,
         since: 0,
         breached: false,
+        surfaced: 0,
         jumps: 0,
         flip: 0,
     }
@@ -358,7 +361,16 @@ fn air(b: mut Body, pad: Pad, c: Course, f: Feel) {
     if b.flip > 0 {
         b.flip += 1
     }
-    if b.coyote > 0 && b.buffer > 0 {
+    if b.surfaced > 0 && b.buffer > 0 {
+        // Just out of the water: the breach's jump, or, after a breach, part of it.
+        if !b.breached {
+            b.vel.y = f.launch
+            b.breached = true
+        }
+        b.jumping = true
+        b.buffer = 0
+        b.surfaced = 0
+    } else if b.coyote > 0 && b.buffer > 0 {
         // Just off the ground: still the ground's jump.
         b.vel.y = f.launch
         b.jumping = true
@@ -373,6 +385,7 @@ fn air(b: mut Body, pad: Pad, c: Course, f: Feel) {
         b.flip = 1
     }
     b.coyote = less(b.coyote)
+    b.surfaced = less(b.surfaced)
     // A jump rises on the light gravity only while it's held (or, out of a breach, up).
     let held = pad.held(JUMP) || (b.breached && pad.held(UP))
     if !held || b.vel.y <= 0.0 {
@@ -423,6 +436,7 @@ fn air(b: mut Body, pad: Pad, c: Course, f: Feel) {
             b.mode = Mode::Swim
             b.stroke = 0
             b.flip = 0
+            b.surfaced = 0
             b.jumping = false
             return
         }
@@ -440,6 +454,7 @@ fn land(b: mut Body, pad: Pad, k: Contact, before: vec2, f: Feel) {
     b.vel = t * b.speed
     b.jumping = false
     b.breached = false
+    b.surfaced = 0
     b.coyote = 0
     b.flip = 0
     b.mode = if pad.held(DOWN) {
@@ -466,7 +481,11 @@ fn swim(b: mut Body, pad: Pad, c: Course, f: Feel) {
     let w = c.waters[i]
     let surface = w.surface()
     b.cooldown = less(b.cooldown)
-    if b.buffer > 0 && b.cooldown == 0 {
+    if b.buffer > 0 && surface - b.at.y <= f.breach_margin {
+        // Just under the surface, a press jumps out.
+        b.vel.y = max(b.vel.y, f.launch)
+        b.buffer = 0
+    } else if b.buffer > 0 && b.cooldown == 0 {
         b.vel.y = max(b.vel.y, f.kick)
         b.buffer = 0
         b.cooldown = f.kick_cooldown
@@ -541,6 +560,7 @@ fn swim(b: mut Body, pad: Pad, c: Course, f: Feel) {
         b.mode = Mode::Air
         b.coyote = 0
         b.jumping = false
+        b.surfaced = f.breach_grace
         if b.vel.y >= f.breach {
             // A breach: out as a jump, at the jump's launch (Ryan, 2026-10-21).
             b.vel.y = f.launch

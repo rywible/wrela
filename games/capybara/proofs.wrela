@@ -81,7 +81,7 @@ pub const DOUBLE_JUMP: [Hold; 7] = [
 fn the_lab_is_finished_by_its_recorded_run_in_its_recorded_time() {
     let w = play(0, LAB_RUN)
     print(f"the lab: {w.finished} ticks")
-    assert(w.finished == 1376 && w.falls == 0, "the run's time moved")
+    assert(w.finished == 1374 && w.falls == 0, "the run's time moved")
 }
 
 /// Whether `run` ends standing on the 3.5 m ledge.
@@ -321,6 +321,47 @@ fn swimming_up_breaches_and_the_double_jump_clears_the_lakes_far_wall() {
         body::step(mut b, Pad { bits: RIGHT | JUMP }, LAB, FEEL)
     }
     assert(b.grounded() && b.at.y > 1.6, "over the wall, on the deck")
+}
+
+/// A body that swims up at `speed` from 1 m under the lake's surface, presses jump `at` ticks
+/// after crossing it (negative: before), and holds jump until it falls: whether it breached, the
+/// jumps it has left at its top, and how high its middle rose above the surface.
+fn press_at_surface(speed: f32, at: i32) -> (bool, u32, f32) {
+    var b = in_pool(vec2(110.0, -1.0), vec2(0.0, speed))
+    var crossed = -1000
+    var tick = 0
+    var top = b.at.y
+    var jumps = 0
+    for _ in 0..240 {
+        if crossed == -1000 && b.at.y >= 0.0 {
+            crossed = tick
+        }
+        // Before the crossing, count back from the tick it would cross at this speed.
+        let to_cross = i32(ceil(-b.at.y / (speed * STEP)))
+        let now = if crossed == -1000 { -to_cross } else { tick - crossed }
+        let bits = if now == at { JUMP | PRESS } else if now > at { JUMP } else { pad::UP }
+        body::step(mut b, Pad { bits }, LAB, FEEL)
+        if b.at.y > top {
+            top = b.at.y
+            jumps = b.jumps
+        }
+        tick += 1
+    }
+    (b.breached || top > 2.0, jumps, top)
+}
+
+@test
+fn a_jump_pressed_round_the_surface_is_the_breach_and_keeps_the_double_jump() {
+    let full = FEEL.launch * FEEL.launch / (2.0 * FEEL.rise)
+    // A breach at speed, jump pressed a few ticks before the crossing, at it, and a few after.
+    for at in [-3, 0, 3, 8] {
+        let (_, jumps, top) = press_at_surface(FEEL.swim_up_speed, at)
+        assert(jumps == FEEL.air_jumps, "the double jump kept")
+        assert(top > full - 0.3 && top < full + 0.3, "a full jump's height")
+    }
+    // Too slow to breach, jump pressed just after leaving the water: the breach's jump anyway.
+    let (breached, jumps, top) = press_at_surface(2.0, 3)
+    assert(breached && jumps == FEEL.air_jumps && top > full - 0.3, "a breach after all")
 }
 
 @test

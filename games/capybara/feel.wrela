@@ -72,6 +72,11 @@ pub struct Feel: Copy {
     /// The least upward speed through the surface that breaches (m/s): a breach leaves as a jump
     /// does, at the jump's launch.
     pub breach: f32 = 3.5,
+    /// The surface's margins for a jump press, so it's never lost there: within this depth under
+    /// the surface a press jumps out at the launch (m), and for this many ticks after leaving the
+    /// water a press is the breach's jump (or, after a breach, part of it), never the double jump.
+    pub breach_margin: f32 = 0.6,
+    pub breach_grace: u32 = 10,
     /// How long being wet lasts after the last touch of water (ticks): its first half at the wet
     /// speed, its second easing the top back down.
     pub wet_ticks: u32 = 180,
