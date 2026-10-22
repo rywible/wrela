@@ -202,8 +202,8 @@ pub fn surely_ground_below(tops: [f32], x: f32) -> f32 {
 // ---- drawing ----------------------------------------------------------------------------------
 
 /// What the ground's shaders are told: the camera's matrix, the size of a pixel (m), the time
-/// (s), and what bends the grass: the capybara's feet, its velocity, whether it slides (1) and how
-/// near the ground it is.
+/// (s), and what bends the grass: the capybara's feet, its velocity, how much it slides and how
+/// much it's on the ground (both eased).
 pub struct Field: Copy + GpuData {
     pub view_proj: mat4,
     pub feet: vec2,
@@ -211,7 +211,11 @@ pub struct Field: Copy + GpuData {
     pub px: f32,
     pub time: f32,
     pub sliding: f32,
-    pub pad: f32 = 0.0,
+    /// How much the capybara is on the ground (0 in the air, 1 on it), eased in and out over a
+    /// fraction of a second: the grass parts round it only as it settles, so a landing doesn't
+    /// snap every tuft aside in a frame or two (Ryan, 2026-10-22: landing made the ground "shake in
+    /// a glitchy way").
+    pub presence: f32 = 1.0,
 }
 
 pub struct Earthel: Copy {
@@ -379,7 +383,7 @@ pub fn grass(b: Blade, f: Field) -> Over {
     var d = h - (0.06 + 0.025 * abs(sin(x * 18.0)))
     var tip = 0.0
     var daisy = 1.0e3
-    let near = smoothstep(1.4, 0.4, abs(f.feet.y - (b.world.y - h)))
+    let near = smoothstep(1.4, 0.4, abs(f.feet.y - (b.world.y - h))) * f.presence
     let first = i32(floor(x / TUFT))
     for k in -2..3 {
         let i = first + k

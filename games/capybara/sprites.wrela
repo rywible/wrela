@@ -33,6 +33,7 @@ pub const FEATHER: f32 = 14.0
 pub const STREAK: f32 = 16.0
 pub const CONFETTI: f32 = 17.0
 pub const FRUIT: f32 = 18.0
+pub const KUSUDAMA: f32 = 19.0
 
 /// A sprite. `pose` and `more` by kind:
 /// - the capybara: `pose` its stride (rad), its pace (0 to 1), its mode, and a blink (1 open);
@@ -691,6 +692,110 @@ fn yuzu(q: vec2, s: Sprite, px: f32) -> vec4 {
     c
 }
 
+/// The goal: a kusudama, the ball that splits open at a celebration, hanging from a frame of
+/// bamboo. Closed, it's a big yuzu, its segments inked. Open (`pose.x`, 0 to 1), its halves swing
+/// apart on their hinge, a paper banner unrolls from it with a capybara's paw on it, and streamers
+/// of four colours tumble out, swaying (`pose.y`, the time). From its feet (m).
+fn kusudama(q: vec2, s: Sprite, px: f32) -> vec4 {
+    let open = s.pose.x
+    let time = s.pose.y
+    var c = vec4(0.0)
+    let cane = flat(vec3(0.62, 0.68, 0.38))
+    for x in [-2.0, 2.0] {
+        c = layer(c, |l: vec2| capsule(l, vec2(x, 0.0), vec2(x, 4.5), 0.08), q, cane, px)
+    }
+    c = layer(c, |l: vec2| capsule(l, vec2(-2.25, 4.45), vec2(2.25, 4.45), 0.075), q, cane, px)
+    // The canes' rings.
+    for x in [-2.0, 2.0] {
+        if abs(q.x - x) < 0.09 && abs(fract(q.y / 0.75) - 0.5) < 0.03 && q.y > 0.1 && q.y < 4.4 {
+            c = mark(c, -1.0, vec3(0.45, 0.5, 0.27), px)
+        }
+    }
+    let hinge = vec2(0.0, 3.95)
+    c = mark(c, capsule(q, vec2(0.0, 4.45), hinge, 0.012), vec3(0.3, 0.2, 0.14), px)
+    if open > 0.0 {
+        // The streamers: four ribbons tumbling from the hinge, swaying, as long as it's open.
+        let colours = [
+            vec3(0.95, 0.4, 0.38),
+            vec3(0.45, 0.72, 0.95),
+            vec3(0.5, 0.82, 0.45),
+            vec3(0.98, 0.62, 0.78),
+        ]
+        for k in 0..4 {
+            let side = f32(k) - 1.5
+            let long = open * (1.6 + 0.3 * f32(k % 2))
+            let down = hinge.y - q.y
+            if down > 0.0 && down < long {
+                let sway = 0.12 * sin(down * 4.0 - time * 3.0 + f32(k)) * down
+                let x = side * 0.32 + side * 0.15 * down + sway
+                c = over(c, inked(colours[k], abs(q.x - x) - 0.05, q * 3.0, px * 1.2, px, INK))
+            }
+        }
+        // The banner, unrolling.
+        let long = open * 2.4
+        let banner = rbox(q - vec2(0.0, hinge.y - 0.15 - long * 0.5), vec2(0.36, long * 0.5), 0.03)
+        if banner < px {
+            var paper = vec3(0.99, 0.96, 0.88)
+            let inner = rbox(
+                q - vec2(0.0, hinge.y - 0.15 - long * 0.5),
+                vec2(0.28, long * 0.5 - 0.08),
+                0.02,
+            )
+            if inner > 0.0 {
+                paper = vec3(0.9, 0.3, 0.28)
+            }
+            // A capybara's paw on it, once it's down.
+            let paw = q - vec2(0.0, hinge.y - 0.15 - long * 0.55)
+            var pd = ellipse(paw - vec2(0.0, -0.05), vec2(0.12, 0.1))
+            for (dx, dy) in [(-0.14, 0.08), (-0.05, 0.15), (0.05, 0.15), (0.14, 0.08)] {
+                pd = min(pd, length(paw - vec2(dx, dy)) - 0.045)
+            }
+            if open > 0.9 && pd < 0.0 {
+                paper = vec3(0.55, 0.36, 0.24)
+            }
+            c = over(c, inked(paper, banner, q * 3.0, px * 1.4, px, INK))
+        }
+    }
+    // The ball: two halves, swinging apart on the hinge as it opens.
+    let centre = vec2(0.0, 3.4)
+    let r = 0.6
+    let swing = open * 2.2
+    for side in [-1.0, 1.0] {
+        let l = turn(q - hinge, -side * swing) + hinge
+        let half = max(length(l - centre) - r, -side * (l.x - centre.x))
+        let inside = open > 0.0
+        let yuzu = vec3(1.0, 0.84, 0.25)
+        var paint = flat(if inside && side * (l.x - centre.x) < 0.08 { yuzu * 0.85 } else { yuzu })
+        paint.gloss = 0.3
+        paint.thick = 0.3
+        c = layer(
+            c,
+            |x: vec2| max(
+                length(turn(x - hinge, -side * swing) + hinge - centre) - r,
+                -side * (turn(x - hinge, -side * swing).x + hinge.x - centre.x),
+            ),
+            q,
+            paint,
+            px,
+        )
+        // Its segments, inked: curves from top to bottom.
+        if half < 0.0 {
+            let u = (l.x - centre.x) /
+                sqrt(max(r * r - (l.y - centre.y) * (l.y - centre.y), 1.0e-4))
+            let seg = abs(fract(asin(clamp(u, -1.0, 1.0)) / 0.45 + 0.5) - 0.5) * 0.45 * r
+            c = mark(c, seg - 0.008, vec3(0.75, 0.55, 0.15), px)
+        }
+    }
+    // Its leaf, on the hinge.
+    layer(
+        c,
+        |l: vec2| ellipse(turn(l - hinge - vec2(0.12, 0.06), 0.5), vec2(0.15, 0.06)),
+        q,
+        flat(vec3(0.4, 0.68, 0.3)),
+        px,
+    )
+}
+
 /// A checkpoint's flag: a pole, a ball on top, and a cloth that waves; grey ahead, green once
 /// reached.
 fn flag(q: vec2, s: Sprite, px: f32, time: f32) -> vec4 {
@@ -817,6 +922,8 @@ pub fn sprite(v: Spritel, sprites: [Sprite], st: Stage) -> Over {
         yuzu(q, s, st.px)
     } else if s.kind == FLAG {
         flag(q, s, st.px, st.time)
+    } else if s.kind == KUSUDAMA {
+        kusudama(q, s, st.px)
     } else {
         particle(q, s, st.px)
     }

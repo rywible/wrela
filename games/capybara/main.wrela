@@ -4,7 +4,7 @@
 // passes): the sky and the zoo behind (scenery.wrela), the ground and its grass (earth.wrela),
 // the cast and its particles (cast.wrela, sprites.wrela, dust.wrela), the water (waves.wrela),
 // and the HUD: the snacks found, the clock, the course and the keys. The music (music.wrela)
-// starts on the first frame.
+// and the game's sounds (sound.wrela) start on the first frame.
 //
 // The game opens paused, on a card of the controls (Esc or P pauses again). F3 shows the frame rate
 // and the render scale. Keys: the arrows or W A S D to move (down slides or
@@ -31,6 +31,8 @@ use engine::present::Snapshots
 use engine::run::run
 use feel::HZ
 use scenery::View
+use sound::Cue
+use std::audio::RingWriter
 use sprites::{Sprite, Stage, sprite, sprite_vertex}
 use std::gpu::{
     Address, GpuBuffer, Rgba16Float, Sampler, Texture, begin_pass, begin_screen_pass, buffer,
@@ -71,11 +73,16 @@ pub struct Lab {
     scale: Scale,
     camera: Camera,
     last: Option<f32>,
-    /// Whether the music has started (on the first frame).
+    /// Whether the voice has started (on the first frame), and the ring to it (sound.wrela):
+    /// none until it has.
     playing: bool,
+    voice: Vec<RingWriter<Cue>>,
     /// Whether the readout shows (F3): the frame rate, the frame's time and the render scale. The
     /// frames' time (s), smoothed, for it.
     readout: bool,
+    /// How much the capybara is on the ground and slides, eased (earth.wrela's `Field`).
+    presence: f32,
+    sliding: f32,
     frame_time: f32,
     fonts: Fonts,
     renderer: Renderer,
@@ -108,7 +115,10 @@ pub fn init() -> Lab {
         camera: camera(course(LEVEL).start),
         last: None,
         playing: false,
+        voice: Vec::new(),
         readout: false,
+        presence: 1.0,
+        sliding: 0.0,
         frame_time: 0.0,
         fonts,
         renderer,
@@ -154,7 +164,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     s.last = Some(time)
     if !s.playing {
         s.playing = true
-        music::start()
+        s.voice.push(sound::start(music::music()))
     }
     s.snaps.update()
     let (snap, lag) = drawn(s.snaps, time)
@@ -166,7 +176,6 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         s.shown = snap.course
     }
     follow(mut s.camera, snap, dt)
-    react(mut s.cast, snap, c, dt)
     // The scene is drawn at the render scale, the page and the HUD at the screen's size.
     pace(mut s.scale, dt)
     if dt > 0.0 && dt < 0.25 {
@@ -191,13 +200,23 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     let aspect = f32(width) / f32(max(height, 1))
     let half = half_view(aspect)
     let eye = framed(s.camera, half, c.ends)
+    react(mut s.cast, snap, c, dt, eye, half)
+    // What happened, to the voice.
+    for cue in s.cast.cues {
+        for i in 0..s.voice.len() {
+            let _ = s.voice[i].push(cue)
+        }
+    }
+    s.cast.cues.clear()
+    // Where the snacks' count is, on the plane of play: found carrots fly there.
+    let hud_at = eye + vec2(-half.x + 1.6, half.y - 0.9)
     let at = vec3(eye, 0.0)
     let view_proj = ortho(-half.x, half.x, -half.y, half.y, near: 1.0, far: 100.0) *
         look_at(at + vec3(0.0, 0.0, 50.0), at)
     let px = 2.0 * half.y / f32(rh)
     var back: Vec<Sprite> = Vec::new()
     var front: Vec<Sprite> = Vec::new()
-    sprites(s.cast, snap, c, time, lag, mut back, mut front)
+    sprites(s.cast, snap, c, time, lag, hud_at, mut back, mut front)
     let behind = back.len()
     for f in front {
         back.push(f)
@@ -210,14 +229,20 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     s.renderer.upload(s.list)
     let (i, level) = (snap.course, snap.course == LEVEL)
     let view = View { centre: eye, half, screen: vec2(f32(rw), f32(rh)), time }
-    let sliding = if Mode::from_u32(snap.mode) == Some(Mode::Slide) { 1.0 } else { 0.0 }
+    // How much the capybara slides and is on the ground, eased, for the grass.
+    let mode = Mode::from_u32(snap.mode)
+    let on = mode == Some(Mode::Walk) || mode == Some(Mode::Crouch) || mode == Some(Mode::Slide)
+    let ease = 1.0 - exp(-dt * 10.0)
+    s.presence += (if on { 1.0 } else { 0.0 } - s.presence) * ease
+    s.sliding += (if mode == Some(Mode::Slide) { 1.0 } else { 0.0 } - s.sliding) * ease
     let field = Field {
         view_proj,
         feet: snap.at - snap.ground * 0.35,
         vel: snap.vel,
         px,
         time,
-        sliding,
+        sliding: s.sliding,
+        presence: s.presence,
     }
     let stage = Stage { view_proj, px, time, first: 0 }
     // The scene: the sky and the zoo behind (one pass, nearest first); the ground and its grass; the
@@ -335,7 +360,10 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2) {
     if c.snacks.len() > 0 {
         let found = (snap.snacks & ((1 << c.snacks.len()) - 1)).count_ones()
         let colour = if found == c.snacks.len() { gold } else { white }
-        say(mut s, Face::Sans, f"SNACKS {found}/{c.snacks.len()}".as_str(), size, vec2(pad), colour)
+        // It pops as a found carrot arrives.
+        let pop = 1.0 + 0.3 * exp(-s.cast.arrived * 7.0)
+        let text = f"SNACKS {found}/{c.snacks.len()}"
+        say(mut s, Face::Sans, text.as_str(), size * pop, vec2(pad), colour)
     }
     let clock = seconds(if snap.finished > 0 { snap.finished } else { snap.ticks })
     let time = if snap.finished > 0 { f"GOAL! {clock}" } else { take clock }

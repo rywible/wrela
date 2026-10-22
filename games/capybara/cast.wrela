@@ -9,12 +9,18 @@
 use body::Mode
 use course::Course
 use dust::{
-    Dust, EARTH_DUST, between, bubbles, clippings, dust, dust_sprites, feathers, puff, confetti,
-    sparkles, splash, step_dust, streak,
+    Dust, EARTH_DUST, between, bubbles, burst, clippings, confetti, dust, dust_sprites, feathers,
+    puff, spark_trail, sparkles, splash, step_dust, streak,
+}
+use sound::{
+    BACK, BANG, CARROT as CRUNCH, CHECKPOINT, COO, Cue, DOUBLE, FALL, GOAL, HONK, HURT, JUMP, KICK,
+    LAND, LAUNCH, SLIDE, SPLASH, STEP, YUZU as POP,
 }
 use feel::{FEEL, HZ}
-use sprites::{CAIMAN, CAPYBARA, CARROT, FLAG, GOOSE, PIGEON, SEAGULL, SHADOW, Sprite, YUZU}
-use std::math::TAU
+use sprites::{
+    CAIMAN, CAPYBARA, CARROT, FLAG, GOOSE, KUSUDAMA, PIGEON, SEAGULL, SHADOW, Sprite, YUZU,
+}
+use std::math::{PI, TAU}
 use waves::{Waves, disturb, step_waves, surface_at, waves}
 use world::{DYING, Snap}
 
@@ -44,7 +50,34 @@ pub struct Cast {
     /// reached the goal, for the seagull flying off (the clock stops at the goal).
     back: f32,
     won: f32,
+    /// What the voice is to play, since the frame last took them (sound.wrela).
+    pub cues: Vec<Cue>,
+    /// The slide's hiss as last asked for.
+    hiss: f32,
+    /// The goal's fireworks: each rocket rising, and seconds to the next.
+    rockets: Vec<Rocket>,
+    next_rocket: f32,
+    /// The carrots flying from where they were found up to the snacks' count, each where it
+    /// started and how long it's flown (s); and seconds since the last arrived (the count pops).
+    flights: Vec<vec3>,
+    pub arrived: f32,
+    /// The capybara's tilt (rad), eased.
+    tilt: f32,
 }
+
+/// A firework rising: where, how fast, seconds till it bursts, and its colour.
+struct Rocket: Copy {
+    at: vec2,
+    vel: vec2,
+    fuse: f32,
+    colour: vec3,
+}
+
+/// How long a found carrot takes to fly up to the count (s).
+const FLIGHT: f32 = 0.7
+
+/// How long the fireworks go on after the goal (s).
+const FIREWORKS: f32 = 6.0
 
 pub fn cast(c: Course) -> Cast {
     Cast {
@@ -59,6 +92,13 @@ pub fn cast(c: Course) -> Cast {
         drips: 0.0,
         back: 10.0,
         won: 0.0,
+        cues: Vec::new(),
+        hiss: 0.0,
+        rockets: Vec::new(),
+        next_rocket: 0.0,
+        flights: Vec::new(),
+        arrived: 10.0,
+        tilt: 0.0,
     }
 }
 
@@ -66,21 +106,28 @@ fn grounded(m: Option<Mode>) -> bool {
     m == Some(Mode::Walk) || m == Some(Mode::Crouch) || m == Some(Mode::Slide)
 }
 
-/// The cast `dt` seconds on, at snapshot `s`: what happened since the last made into particles
-/// and waves; the particles, waves, squash and gait stepped.
-pub fn react(k: mut Cast, s: Snap, c: Course, dt: f32) {
+/// The cast `dt` seconds on, at snapshot `s`: what happened since the last made into particles,
+/// waves and the voice's cues (panned across the view: its middle `eye`, half its size `half`);
+/// the particles, waves, squash, gait, fireworks and flights stepped.
+pub fn react(k: mut Cast, s: Snap, c: Course, dt: f32, eye: vec2, half: vec2) {
+    let pan = |x: f32| clamp((x - eye.x) / max(half.x, 1.0), -1.0, 1.0) * 0.7
     let mode = Mode::from_u32(s.mode)
     let feet = s.at - s.ground * FEET
     let wet_now = c.water_at(s.at).is_some()
     match k.last {
         Some(before) => {
             let was = Mode::from_u32(before.mode)
+            if s.dying > 0 && before.dying == 0 && s.fell == 1 {
+                k.cues.push(Cue { kind: FALL, pan: pan(s.at.x) })
+            }
             if s.dying > 0 && before.dying == 0 && s.fell == 0 {
+                k.cues.push(Cue { kind: HURT, pan: pan(s.at.x) })
                 // Hurt: stars round its head, a puff.
                 sparkles(mut k.dust, s.at + vec2(0.0, 0.5), 10, vec3(1.0, 0.85, 0.3))
                 puff(mut k.dust, s.at, vec2(0.0), 8, 0.16)
             }
             if s.dying == 0 && before.dying > 0 {
+                k.cues.push(Cue { kind: BACK, pan: pan(s.at.x) })
                 k.back = 0.0
             }
             if distance(before.at, s.at) > 4.0 {
@@ -89,9 +136,13 @@ pub fn react(k: mut Cast, s: Snap, c: Course, dt: f32) {
                 sparkles(mut k.dust, s.at, 8, vec3(1.0, 0.95, 0.8))
             } else {
                 let wet_then = c.water_at(before.at).is_some()
+                if mode == Some(Mode::Swim) && s.vel.y - before.vel.y > 3.0 {
+                    k.cues.push(Cue { kind: KICK, pan: pan(s.at.x) })
+                }
                 // Landing: dust out both ways, harder the faster it fell; a squash.
                 if grounded(mode) && was == Some(Mode::Air) {
                     let fall = max(-before.vel.y, 0.0)
+                    k.cues.push(Cue { kind: LAND, amount: saturate(fall / 14.0), pan: pan(s.at.x) })
                     let n = u32(clamp(fall * 1.2, 3.0, 16.0))
                     puff(mut k.dust, feet, vec2(2.0, 0.2), n / 2, 0.12 + fall * 0.008)
                     puff(mut k.dust, feet, vec2(-2.0, 0.2), n / 2, 0.12 + fall * 0.008)
@@ -99,11 +150,13 @@ pub fn react(k: mut Cast, s: Snap, c: Course, dt: f32) {
                 }
                 // Jumping off the ground: a little dust, and a stretch.
                 if mode == Some(Mode::Air) && grounded(was) && s.vel.y > 2.0 {
+                    k.cues.push(Cue { kind: JUMP, pan: pan(s.at.x) })
                     puff(mut k.dust, feet, vec2(-s.vel.x * 0.15, 0.0), 5, 0.1)
                     k.give += vec2(-0.5, 1.0) * 5.0
                 }
                 // The double jump: a burst of confetti and tiny yuzus under it.
                 if s.flip > 0 && before.flip == 0 {
+                    k.cues.push(Cue { kind: DOUBLE, pan: pan(s.at.x) })
                     confetti(mut k.dust, feet, carry: s.vel * 0.6, n: 22)
                     k.give += vec2(-0.4, 0.8) * 5.0
                 }
@@ -114,6 +167,9 @@ pub fn react(k: mut Cast, s: Snap, c: Course, dt: f32) {
                         None => s.at.y,
                     }
                     let hit = abs(s.vel.y) + abs(s.vel.x) * 0.3
+                    k.cues.push(
+                        Cue { kind: SPLASH, amount: saturate(hit / 12.0), pan: pan(s.at.x) },
+                    )
                     let at = vec2(s.at.x, surface)
                     splash(
                         mut k.dust,
@@ -134,6 +190,7 @@ pub fn react(k: mut Cast, s: Snap, c: Course, dt: f32) {
                     let (f, g) = (s.foes[i], before.foes[i])
                     if f.z < 0.0 && g.z > 0.0 {
                         let kind = u32(-f.z + 0.5)
+                        k.cues.push(Cue { kind: if kind == 2 { COO } else { HONK }, pan: pan(f.x) })
                         let colour = if kind == 1 { vec3(0.95, 0.95, 0.92) } else {
                             vec3(0.6, 0.64, 0.72)
                         }
@@ -144,16 +201,22 @@ pub fn react(k: mut Cast, s: Snap, c: Course, dt: f32) {
                 // What it picked up: sparkles of its colour.
                 for i in 0..c.snacks.len() {
                     if s.snacks & (1 << i) != 0 && before.snacks & (1 << i) == 0 {
+                        k.cues.push(Cue { kind: CRUNCH, pan: pan(c.snacks[i].x) })
+                        k.flights.push(vec3(c.snacks[i], 0.0))
                         sparkles(mut k.dust, c.snacks[i], 18, vec3(1.0, 0.55, 0.15))
                         sparkles(mut k.dust, c.snacks[i], 8, vec3(1.0, 0.95, 0.7))
                     }
                 }
                 for i in 0..c.yuzus.len() {
                     if s.yuzus & (1 << i) != 0 && before.yuzus & (1 << i) == 0 {
+                        k.cues.push(Cue { kind: POP, pan: pan(c.yuzus[i].x) })
                         sparkles(mut k.dust, c.yuzus[i], 20, vec3(1.0, 0.85, 0.2))
                     }
                 }
                 if s.checkpoint > before.checkpoint {
+                    k.cues.push(
+                        Cue { kind: CHECKPOINT, pan: pan(c.checkpoints[s.checkpoint - 1].x) },
+                    )
                     let flag = c.checkpoints[s.checkpoint - 1] + vec2(0.4, 2.0)
                     sparkles(mut k.dust, flag, 16, vec3(0.45, 1.0, 0.5))
                     sparkles(mut k.dust, flag, 10, vec3(1.0, 0.9, 0.4))
@@ -163,6 +226,8 @@ pub fn react(k: mut Cast, s: Snap, c: Course, dt: f32) {
                     puff(mut k.dust, s.at, vec2(0.0), 8, 0.18)
                 }
                 if s.finished > 0 && before.finished == 0 {
+                    k.cues.push(Cue { kind: GOAL, pan: pan(goal_at(c).x) })
+                    k.next_rocket = 0.4
                     for j in 0..5 {
                         let colours = [
                             vec3(1.0, 0.4, 0.3),
@@ -257,12 +322,48 @@ pub fn react(k: mut Cast, s: Snap, c: Course, dt: f32) {
     let pull = (rest - k.squash) * 260.0 - k.give * 18.0
     k.give += pull * dt
     k.squash = clamp(k.squash + k.give * dt, vec2(0.6), vec2(1.5))
+    // A step each half stride while it runs.
+    let before_stride = k.stride
     if mode == Some(Mode::Swim) {
         k.stride += dt * 9.0
     } else if mode == Some(Mode::Walk) {
         k.stride += speed * dt / stride_length(speed) * TAU
     }
+    if mode == Some(Mode::Walk) && speed > 1.0 {
+        let half_strides = floor(k.stride / PI) - floor(before_stride / PI)
+        if half_strides > 0.0 {
+            k.cues.push(Cue { kind: STEP, amount: saturate(speed / FEEL.speed), pan: pan(s.at.x) })
+        }
+    }
     k.stride = k.stride % TAU
+    // The slide's hiss, as loud as it's fast.
+    let hiss = if mode == Some(Mode::Slide) { saturate(speed / 16.0) } else { 0.0 }
+    if abs(hiss - k.hiss) > 0.05 || (hiss == 0.0 && k.hiss != 0.0) {
+        k.hiss = hiss
+        k.cues.push(Cue { kind: SLIDE, amount: hiss })
+    }
+    fireworks(mut k, c, dt, eye, half)
+    var flying: Vec<vec3> = Vec::new()
+    for f in k.flights {
+        if f.z + dt < FLIGHT {
+            flying.push(vec3(f.xy, f.z + dt))
+        } else {
+            k.arrived = 0.0
+        }
+    }
+    k.flights = take flying
+    k.arrived += dt
+    // Its tilt: with the ground under it, or with its velocity off it, eased, so a landing or a
+    // take-off turns it over a few frames instead of snapping it level in one (Ryan, 2026-10-22:
+    // landing looked like a "glitchy" shake).
+    let tilt = if grounded(mode) {
+        atan2(-s.ground.x, s.ground.y)
+    } else if mode == Some(Mode::Swim) {
+        clamp(s.vel.y * 0.08, -0.6, 0.6) * s.facing
+    } else {
+        clamp(s.vel.y * 0.03, -0.4, 0.4) * s.facing
+    }
+    k.tilt += (tilt - k.tilt) * (1.0 - exp(-dt * 16.0))
     step_waves(mut k.waves, dt)
     step_dust(mut k.dust, dt, |p: vec2| surface_at(k.waves, p.x))
 }
@@ -276,6 +377,62 @@ fn under(k: Cast, c: Course, at: vec2) -> f32 {
         Some(y) => y,
         None => -1.0e4,
     }
+}
+
+/// The middle of the goal's floor (m): where the kusudama stands.
+fn goal_at(c: Course) -> vec2 {
+    vec2(0.5 * (c.goal_lo.x + c.goal_hi.x), c.goal_lo.y)
+}
+
+/// The fireworks, for `FIREWORKS` seconds after the goal: a rocket every third of a second or
+/// so from round the kusudama, rising and whistling, each bursting into a ball of stars of its
+/// colour with a bang.
+fn fireworks(k: mut Cast, c: Course, dt: f32, eye: vec2, half: vec2) {
+    let pan = |x: f32| clamp((x - eye.x) / max(half.x, 1.0), -1.0, 1.0) * 0.7
+    let colours = [
+        vec3(1.0, 0.45, 0.35),
+        vec3(1.0, 0.85, 0.25),
+        vec3(0.45, 0.9, 0.5),
+        vec3(0.45, 0.7, 1.0),
+        vec3(0.95, 0.55, 0.95),
+        vec3(1.0, 0.65, 0.2),
+    ]
+    if k.won > 0.0 && k.won < FIREWORKS {
+        k.next_rocket -= dt
+        if k.next_rocket <= 0.0 {
+            let at = goal_at(c) + vec2(between(mut k.dust, vec2(-7.0, 5.0)), 0.0)
+            let pick = u32(between(mut k.dust, vec2(0.0, 5.99)))
+            k.rockets.push(
+                Rocket {
+                    at,
+                    vel: vec2(
+                        between(mut k.dust, vec2(-1.5, 1.5)),
+                        between(mut k.dust, vec2(10.0, 12.5)),
+                    ),
+                    fuse: between(mut k.dust, vec2(0.6, 0.85)),
+                    colour: colours[pick],
+                },
+            )
+            k.cues.push(Cue { kind: LAUNCH, pan: pan(at.x) })
+            k.next_rocket = between(mut k.dust, vec2(0.25, 0.45))
+        }
+    }
+    var flying: Vec<Rocket> = Vec::new()
+    for r in k.rockets {
+        var n = r
+        n.vel.y -= 9.0 * dt
+        n.at += n.vel * dt
+        n.fuse -= dt
+        // Its trail: a few small sparks.
+        spark_trail(mut k.dust, n.at, n.colour)
+        if n.fuse > 0.0 {
+            flying.push(n)
+        } else {
+            burst(mut k.dust, n.at, n.colour)
+            k.cues.push(Cue { kind: BANG, pan: pan(n.at.x) })
+        }
+    }
+    k.rockets = take flying
 }
 
 /// A soft shadow on the ground under `at`, as wide as `width`, fainter the higher it is.
@@ -302,7 +459,8 @@ fn shadow(out: mut Vec<Sprite>, c: Course, at: vec2, width: f32) {
     }
 }
 
-/// The sprites of snapshot `s` at time `time` (s), `lag` ticks before the snapshot: those behind the water into `back` (the
+/// The sprites of snapshot `s` at time `time` (s), `lag` ticks before the snapshot, found carrots
+/// flying to `hud` (the snacks' count, on the plane of play): those behind the water into `back` (the
 /// shadows, the flags, and the dust behind, which the water bends and tints), those in front into
 /// `front` (the things, the foes and the capybara, each tinting itself where it's under water, so
 /// it stays clear; and the splashes and sparkles).
@@ -312,6 +470,7 @@ pub fn sprites(
     c: Course,
     time: f32,
     lag: f32,
+    hud: vec2,
     back: mut Vec<Sprite>,
     front: mut Vec<Sprite>,
 ) {
@@ -338,21 +497,23 @@ pub fn sprites(
             kind: FLAG,
         })
     }
-    let pole = vec2(c.goal_lo.x + 0.4, c.goal_lo.y)
+    // The kusudama at the goal: closed until the capybara gets there, then bursting open.
+    let base = goal_at(c)
     back.push(Sprite {
-        pose: vec4(if s.finished > 0 { 1.0 } else { 0.0 }, 0.0, 4.2, 0.0),
+        pose: vec4(smoothstep(0.0, 0.5, if s.finished > 0 { k.won } else { 0.0 }), time, 0.0, 0.0),
         more: vec4(0.0),
-        at: pole,
-        half: vec2(0.9, 4.5),
+        at: base,
+        half: vec2(2.6, 5.0),
         angle: 0.0,
         facing: 1.0,
-        kind: FLAG,
+        kind: KUSUDAMA,
     })
+    let pole = base + vec2(1.1, 0.0)
     let gone = if s.finished > 0 { k.won } else { 0.0 }
     back.push(Sprite {
         pose: vec4(time * 14.0, if s.finished > 0 { 1.0 } else { 0.0 }, 0.0, 0.0),
         more: vec4(0.0),
-        at: pole + vec2(0.0, 4.6) + vec2(3.0, 2.0) * gone + vec2(0.0, 0.5 * gone * gone),
+        at: pole + vec2(0.0, 4.95) + vec2(3.0, 2.0) * gone + vec2(0.0, 0.5 * gone * gone),
         half: vec2(0.85, 0.6),
         angle: if s.finished > 0 { 0.2 } else { 0.0 },
         facing: if s.finished > 0 { 1.0 } else { -1.0 },
@@ -454,14 +615,7 @@ pub fn sprites(
     }
     // The capybara: blinking while hurt and not to be hurt again.
     if s.dying == 0 && (s.grace == 0 || (s.grace / 6) % 2 == 0) {
-        let grounded = grounded(mode)
-        let lean = if grounded {
-            atan2(-s.ground.x, s.ground.y)
-        } else if mode == Some(Mode::Swim) {
-            clamp(s.vel.y * 0.08, -0.6, 0.6) * s.facing
-        } else {
-            clamp(s.vel.y * 0.03, -0.4, 0.4) * s.facing
-        }
+        let lean = k.tilt
         let flip = if s.flip > 0 {
             -TAU * saturate(max(f32(s.flip) - lag, 0.0) / f32(HZ / 2))
         } else { 0.0 }
@@ -494,6 +648,23 @@ pub fn sprites(
         )
     }
     dust_sprites(k.dust, mut back, mut front)
+    // Found carrots flying up to the count, spinning, shrinking as they go.
+    for f in k.flights {
+        let t = f.z / FLIGHT
+        let e = t * t * (3.0 - 2.0 * t)
+        let at = f.xy + (hud - f.xy) * e + vec2(0.0, 2.5 * t * (1.0 - t))
+        front.push(
+            Sprite {
+                pose: vec4(1.0),
+                more: vec4(0.0),
+                at,
+                half: vec2(0.3, 0.35) * (1.2 - 0.6 * t),
+                angle: t * 9.0,
+                facing: 1.0,
+                kind: CARROT,
+            },
+        )
+    }
 }
 
 /// Where the page's iris is (m on the plane of play) and how open (0 shut, 1 open): closing on the
@@ -507,4 +678,49 @@ pub fn iris(k: Cast, s: Snap, lag: f32) -> (vec2, f32) {
     } else {
         (s.at, smoothstep(0.0, 0.6, k.back))
     }
+}
+
+// ---- tests -------------------------------------------------------------------------------------
+
+use camera::half_view
+use course::course
+use feel::STEP as TICK
+use pad::{Pad, pad_of}
+use proofs::LEVEL_FULL
+use world::{LEVEL, World, present, step, world}
+
+/// One tick of `w` on `pad`, reacted to: the kinds of cue it sent, as bits.
+fn heard(w: mut World, k: mut Cast, c: Course, pad: Pad) -> u32 {
+    step(mut w, pad)
+    let s = present(w)
+    react(mut k, s, c, TICK, s.at, half_view(16.0 / 9.0))
+    var bits = 0
+    for cue in k.cues {
+        bits |= 1 << cue.kind
+        assert(cue.pan >= -1.0 && cue.pan <= 1.0, f"a pan of {cue.pan}")
+    }
+    k.cues.clear()
+    bits
+}
+
+@test
+fn the_level_played_through_sends_every_cue_and_ends_in_fireworks() {
+    // The 100% run, reacted to every tick, then six seconds at the goal.
+    borrow c = course(LEVEL)
+    var w = world(LEVEL)
+    var k = cast(c)
+    var bits = 0
+    for h in LEVEL_FULL {
+        for i in 0..h.ticks {
+            bits |= heard(mut w, mut k, c, pad_of(h, i))
+        }
+    }
+    for _ in 0..720 {
+        bits |= heard(mut w, mut k, c, Pad { bits: 0 })
+    }
+    for kind in [STEP, JUMP, DOUBLE, LAND, SLIDE, CRUNCH, CHECKPOINT, GOAL, LAUNCH, BANG] {
+        assert(bits & (1 << kind) != 0, f"no cue {kind}")
+    }
+    // A clean run isn't hurt and doesn't fall.
+    assert(bits & (1 << HURT) == 0 && bits & (1 << FALL) == 0, "a death in a clean run")
 }

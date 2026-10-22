@@ -316,3 +316,44 @@ pub fn clippings(d: mut Dust, at: vec2, vel: vec2, n: u32) {
         add(mut d, m)
     }
 }
+
+/// A rocket's trail at `at`: a couple of small sparks of its colour, falling away.
+pub fn spark_trail(d: mut Dust, at: vec2, colour: vec3) {
+    for _ in 0..2 {
+        var m = mote(
+            SPARK,
+            at,
+            vec2(between(mut d, vec2(-0.6, 0.6)), between(mut d, vec2(-1.5, 0.0))),
+            size: between(mut d, vec2(0.04, 0.07)),
+            end: 0.01,
+            life: between(mut d, vec2(0.25, 0.4)),
+            colour: vec4(colour * 0.6 + vec3(0.4), 1.0),
+        )
+        m.gravity = 2.0
+        m.front = true
+        add(mut d, m)
+    }
+}
+
+/// A firework's burst at `at`: a ball of stars of its colour flung out evenly, slowing, falling,
+/// twinkling out.
+pub fn burst(d: mut Dust, at: vec2, colour: vec3) {
+    let n = 36
+    for i in 0..n {
+        let a = f32(i) / f32(n) * 6.2832 + between(mut d, vec2(-0.08, 0.08))
+        var m = mote(
+            SPARK,
+            at,
+            vec2(cos(a), sin(a)) * between(mut d, vec2(4.5, 6.0)),
+            size: between(mut d, vec2(0.11, 0.17)),
+            end: 0.03,
+            life: between(mut d, vec2(0.9, 1.4)),
+            colour: vec4(if i % 3 == 0 { vec3(1.0, 0.97, 0.85) } else { colour }, 1.0),
+        )
+        m.drag = 1.6
+        m.gravity = 2.5
+        m.spin = between(mut d, vec2(-5.0, 5.0))
+        m.front = true
+        add(mut d, m)
+    }
+}
