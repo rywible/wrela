@@ -285,6 +285,32 @@ fn soil(p: vec2, depth: f32, px: f32) -> vec3 {
     c * (vec3(0.6, 0.62, 0.68) + SUN_COLOUR * 0.3) * deep * lip
 }
 
+/// Ground whose top is higher than this is an end wall of the course (m).
+const WALL: f32 = 8.0
+
+/// The zoo's wall: courses of sandstone blocks, each its own shade, bevelled and lit from the
+/// sun's side, in mortar, with moss creeping up from the bottom.
+fn stones(p: vec2) -> vec3 {
+    let size = vec2(0.9, 0.45)
+    let row = floor(p.y / size.y)
+    let shifted = vec2(p.x + 0.5 * size.x * (row - 2.0 * floor(row * 0.5)), p.y)
+    let cell = floor(shifted / size)
+    let local = (shifted - cell * size) / size - vec2(0.5)
+    let inside = min(0.5 * size.x - abs(local.x) * size.x, 0.5 * size.y - abs(local.y) * size.y)
+    let tint = hash2(i32(cell.x), i32(cell.y))
+    var c = blend(lin(vec3(0.72, 0.64, 0.5)), lin(vec3(0.62, 0.54, 0.44)), tint)
+    c *= 0.88 + 0.24 * noise2(p * 9.0) + 0.1 * noise2(p * 31.0)
+    // The bevel: lit along the edges that face the sun, dark along the others.
+    let bevel = smoothstep(0.06, 0.0, inside)
+    let side = dot(normalize(local * size + vec2(1.0e-4)), normalize(SUN.xy))
+    c *= 1.0 + bevel * side * 0.5
+    let mortar = smoothstep(0.012, 0.0, inside)
+    c = blend(c, lin(vec3(0.3, 0.27, 0.22)), mortar)
+    let moss = smoothstep(0.55, 0.75, noise2(p * 1.6) + 0.25 * noise2(p * 7.0)) * 0.8
+    c = blend(c, lin(vec3(0.3, 0.42, 0.16)), moss * (0.4 + mortar * 0.6))
+    c * (vec3(0.6, 0.62, 0.68) + SUN_COLOUR * 0.45)
+}
+
 /// The earth: soil, turf, a cliff's rim, or a ledge's planks.
 @fragment
 pub fn earth(e: Earthel, f: Field, tops: [f32]) -> vec4 {
@@ -302,6 +328,10 @@ pub fn earth(e: Earthel, f: Field, tops: [f32]) -> vec4 {
         let under = smoothstep(0.6, 1.0, e.band)
         c = c * (0.7 + SUN_COLOUR * 0.45 * (1.0 + top * 0.8)) * (1.0 - under * 0.55)
         return vec4(c, 1.0)
+    }
+    // The course's end walls (whose tops stand far above any ground): the zoo's stone wall.
+    if top_at(tops, p.x) > WALL && m != TURF {
+        return vec4(stones(p), 1.0)
     }
     let below = soil(p, depth, f.px)
     if m == SOIL {

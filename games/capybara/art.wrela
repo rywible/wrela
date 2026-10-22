@@ -66,6 +66,18 @@ pub fn stretch(pixel: FragCoord, src: Texture<Rgba16Float>, s: Sampler, size: ve
     src.sample_level(s, pixel.position.xy / size)
 }
 
+/// The light of `src` above `threshold`, over a target of `size` (px).
+@fragment
+pub fn bright(
+    pixel: FragCoord,
+    src: Texture<Rgba16Float>,
+    s: Sampler,
+    size: vec2,
+    threshold: f32,
+) -> vec4 {
+    vec4(max(src.sample_level(s, pixel.position.xy / size).rgb - vec3(threshold), vec3(0.0)), 1.0)
+}
+
 /// The sun's shafts: the glow's light smeared from each texel towards the sun (`sun`, as a
 /// fraction of the screen), fading along the way.
 @fragment
@@ -118,11 +130,25 @@ pub fn finish(
     vec4(tone(c * vignette, g.exposure), 1.0)
 }
 
-/// The glow's passes: the scene's light above the threshold at a quarter of its size, the sun's
-/// shafts from it, then the glow blurred across and down.
+/// The glow's passes: the sun's shafts from the sky's light at a quarter of the screen's size;
+/// the scene's light above the threshold at a quarter of its size, blurred across and down.
 pub fn glow(t: mut Targets, exposure: GpuBuffer<Exposure>, s: Sampler) {
     let aspect = f32(t.width) / f32(t.height)
     let sun = vec2(SUN_AT.x / aspect, SUN_AT.y)
+    // The shafts come from the sky behind alone (the backdrop's light), so a bright thing in
+    // front (a sparkle) doesn't streak.
+    let quarter = vec2(f32(t.width / 4), f32(t.height / 4))
+    let sky = begin_pass(mut t.across)
+    draw(
+        sky,
+        full.bind(z: 0.0),
+        bright.bind(src: t.backdrop, s: s, size: quarter, threshold: 1.1),
+        vertices: 3,
+    )
+    sky.end()
+    let rays = begin_pass(mut t.shafts)
+    draw(rays, full.bind(z: 0.0), shafts.bind(src: t.across, s: s, sun: sun), vertices: 3)
+    rays.end()
     let down = begin_pass(mut t.glow)
     draw(
         down,
@@ -131,9 +157,6 @@ pub fn glow(t: mut Targets, exposure: GpuBuffer<Exposure>, s: Sampler) {
         vertices: 3,
     )
     down.end()
-    let rays = begin_pass(mut t.shafts)
-    draw(rays, full.bind(z: 0.0), shafts.bind(src: t.glow, s: s, sun: sun), vertices: 3)
-    rays.end()
     let x = begin_pass(mut t.across)
     draw(
         x,

@@ -140,10 +140,13 @@ The game is set in a zoo, as a day out. The easter eggs are cute, small and kind
 
 ## Look and sound
 
-- **Cel style.**
-- **Motion has to read.** A body moving at a steady speed over flat colour, under an empty sky and with the camera following, reads as gliding in place (Ryan, 2026-10-21: top speed and slides "felt strange"). The eye takes speed from the character's gait and from texture streaming past: the capybara trots, bobbing by its speed, and splays its legs sliding; the ground is patterned so it streams by; hills behind move slower than it (parallax).
-- The cast is the biggest risk: agent-built creatures have been the weakest part of the project so far. A chunky, stylized capybara is easier than a realistic one.
-- **Music is open.** The engine has only a piano; a cheerful zoo game probably wants more instruments.
+- **A lit 2D zoo** (Ryan, 2026-10-22: "make it look AAA quality ... incredible lighting, incredible zoo background scenery, incredible 2D animals", ground, water and sliding). Everything is code, nothing a picture: shapes as distance fields, shaded as if they bulged towards the eye, lit by one warm afternoon sun and the sky, drawn in linear light, then the engine's glow and tone curve.
+- **Behind**: the sky with cumulus lit from the sun's side and shafts of its light; four parallax layers, each smaller and hazier the further it is (far hills; the savanna with acacias and giraffes; the zoo's path with trees, lamps, the fence and elephants; bushes with flowers and bamboo), at half resolution, so they're soft as far things are. In front: pollen in the light, fronds framing the bottom of the screen.
+- **The ground**: soil in layers with pebbles and roots, a turf lip, grass blades that sway, part round the capybara and lie flat where it slides; plank ledges; the course's end walls in sandstone.
+- **The water**: a wave equation over each pool's surface, which the capybara and the caimans stir (presentation only: the sim's water is flat). The water bends what's behind it, loses red with depth, and has light rays, caustics and foam. What's in it tints itself, more lightly, so it stays clear.
+- **The cast**: the capybara (trotting, splayed in a slide, tucked, paddling, flipping, squashing and stretching on landing and jumping, darker and glossier wet), geese (a brow when they charge), pigeons, caimans (their jaws open as the capybara nears), the seagull on the goal's pole with the stolen carrot, which flies off when the capybara arrives. Particles show what happens: dust, splashes, bubbles, feathers, sparkles, speed streaks and grass clippings.
+- **Motion has to read.** A body moving at a steady speed over flat colour, under an empty sky and with the camera following, reads as gliding in place (Ryan, 2026-10-21: top speed and slides "felt strange"). The eye takes speed from the character's gait and from texture streaming past: the trot, the soil and grass streaming by, and the layers behind moving slower than the ground.
+- **Music**: "Snack Chase", an original stride piano tune on the engine's piano (`music.wrela`), with a sneaking minor section for the seagull. A cheerful zoo game may want more instruments later.
 
 ## The agent loop
 
@@ -160,11 +163,10 @@ The goal is that an agent can play the game, see it and check it without Ryan. C
 
 1. The movement lab: the sim (run, jump, slide, swim) to the contracts above, a lab course with ramps, crests, gaps, ledges and a pool, a blockout view, the proofs and the feel metrics. Then Ryan plays it: done, and tuned from his notes.
 2. One vertical-slice level, its core gameplay before its looks (Ryan, 2026-10-21: "really crush the core gameplay loop"): the first level, built (below). Then Ryan plays it.
-3. The capybara in cel style, and Ryan's verdict on feel.
+3. The look and the music (above), and Ryan's verdict.
 4. The replay format is fixed in step 1; accounts and leaderboards after the slice.
 
 ## Open questions
 
 - The names: the game, the capybara, the seagull.
 - How many levels and worlds.
-- Music.

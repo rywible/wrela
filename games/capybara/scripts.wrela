@@ -27,9 +27,14 @@ const KEYS: [(u32, Key); 5] = [
 /// down or up where its bits change, and a press of jump held on is a release and a press in its
 /// frame. Run it with `--fps 120`.
 pub fn script_of(run: [Hold]) -> Script {
-    var s = Script::frames()
+    keys_of(Script::frames(), run, first: 1)
+}
+
+/// `s` with the keys of `run` from frame `first` on.
+fn keys_of(s: take Script, run: [Hold], first: u32) -> Script {
+    var s = take s
     var held = 0
-    var frame = 1
+    var frame = first
     for h in run {
         let bits = h.bits & !PRESS
         for (bit, key) in KEYS {
@@ -53,3 +58,11 @@ pub fn script_of(run: [Hold]) -> Script {
 /// of every part of the level, which the game starts on: `wrela-host <build> --fps 120 --frames
 /// 3500 --input level.json`.
 pub const LEVEL: Script = script_of(proofs::LEVEL_ANY)
+
+/// The lab's recorded run (`proofs::LAB_RUN`), after Tab switches to the lab: at 120 frames a
+/// second, as `LEVEL`.
+pub const LAB: Script = keys_of(
+    Script::frames().key_down(1, Key::Tab).key_up(2, Key::Tab),
+    proofs::LAB_RUN,
+    first: 4,
+)

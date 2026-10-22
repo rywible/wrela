@@ -1,15 +1,19 @@
-// What's behind the course: the sky, its clouds, and the zoo in four layers, back to front, each
-// moved by its own fraction of the camera's motion (parallax). Each is drawn per pixel over the
-// whole screen, as a field: its shapes' distances, unioned, the pixel inside where it's below 0.
-// Nothing here is a picture: shapes, hashes and noise, placed in cells along the layer.
+// What's behind the course, and the little in front of it: the sky and its clouds, the zoo in
+// four layers back to front, each moved by its own fraction of the camera's motion (parallax);
+// pollen and fronds in front. Each is drawn per pixel over the whole screen, as a field: its
+// shapes' distances, unioned, the pixel inside where it's below 0. Nothing here is a picture:
+// shapes, hashes and noise, placed in cells along the layer.
 //
 // - The far hills (0.06): blue ranges and a tree line, nearly the sky's colour.
 // - The savanna (0.2): grassy rises, flat-topped acacias, and giraffes eating from them.
 // - The zoo's path (0.42): round trees, lamp posts, a fence along the path, elephants behind it.
-// - The bamboo (0.68): stands of bamboo and a hedge, nearest and darkest.
+// - The bushes and the bamboo (0.68): flowering bushes and groves of bamboo, nearest and darkest.
 //
-// Each layer fades towards the sky's colour at its pixel by how far it is (aerial perspective),
-// and is lit by the sun: a brighter rim on the edges that face it, darker low down.
+// Each layer is drawn smaller the further it is, fades towards the sky's colour at its pixel
+// (aerial perspective), and darkens below its ground (what a pit looks down into). It's lit by
+// the sun: a brighter rim on the edges that face it, darker low down. The four are drawn at half
+// the screen's size (art.wrela), soft as far things are; each shape's gradient, which only its
+// rim needs, is found only near its edge.
 
 use art::{SUN, SUN_AT, SUN_COLOUR}
 use engine::noise::{hash2, noise2}
@@ -25,6 +29,11 @@ pub struct View: Copy + GpuData {
     pub screen: vec2,
     pub time: f32,
     pub pad: f32 = 0.0,
+}
+
+/// How soft a layer's edges are (m on the layer): a pixel and a half of the view it's drawn at.
+fn blur(v: View, parallax: f32) -> f32 {
+    3.0 * v.half.y / v.screen.y / (0.45 + 0.55 * parallax)
 }
 
 /// The layers' fractions of the camera's motion.
@@ -198,7 +207,7 @@ pub fn far_hills(pixel: FragCoord, v: View) -> Over {
     }
     let uv = pixel.position.xy / v.screen
     let sky = sky_colour(uv, v.screen.x / v.screen.y, v.centre.y)
-    shade(g, albedo, q, sky, d: d, ground: 0.0, haze: 0.55, soft: 0.03)
+    shade(g, albedo, q, sky, d: d, ground: 0.0, haze: 0.55, soft: max(0.03, blur(v, FAR)))
 }
 
 // ---- the savanna: acacias and giraffes -----------------------------------------------------------
@@ -293,7 +302,16 @@ pub fn savanna(pixel: FragCoord, v: View) -> Over {
         let c = abs(cell)
         a = blend(albedo, vec3(0.5, 0.28, 0.12), smoothstep(0.44, 0.38, max(c.x, c.y)))
     }
-    shade(g, a, q, sky, d: d, ground: savanna_ground(q.x), haze: 0.34, soft: 0.02)
+    shade(
+        g,
+        a,
+        q,
+        sky,
+        d: d,
+        ground: savanna_ground(q.x),
+        haze: 0.34,
+        soft: max(0.02, blur(v, SAVANNA)),
+    )
 }
 
 // ---- the zoo's path: trees, lamps, the fence and elephants ---------------------------------------
@@ -432,7 +450,7 @@ pub fn path(pixel: FragCoord, v: View) -> Over {
         d: d,
         ground: path_ground(q.x),
         haze: 0.17,
-        soft: 0.012,
+        soft: max(0.012, blur(v, PATH)),
     )
 }
 
@@ -502,11 +520,24 @@ fn near_field(q: vec2, time: f32) -> (f32, vec3) {
     for k in -2..3 {
         let i = lump + f32(k)
         let h = hash2(i32(i), 61)
-        let at = vec2((i + 0.5) * 1.3 + (h - 0.5) * 0.6, ground + 0.5 + 0.9 * h)
-        d = smin(d, length(q - at) - (0.7 + 0.7 * hash2(i32(i), 62)), 0.35)
+        let at = vec2((i + 0.5) * 1.3 + (h - 0.5) * 0.6, ground + 0.3 + 0.7 * h)
+        d = smin(d, length(q - at) - (0.6 + 0.6 * hash2(i32(i), 62)), 0.35)
     }
     d += 0.06 * noise2(q * 6.0) - 0.03
-    var albedo = vec3(0.12, 0.27, 0.08)
+    // Flowers in the bushes: hibiscus reds, pinks and yellows, here and there.
+    let cell_f = floor(q / 0.32)
+    let hf = hash2(i32(cell_f.x), i32(cell_f.y) + 500)
+    let petal = length(q - (cell_f + vec2(0.5)) * 0.32) - 0.07
+    let near_top = d < -0.08 && d > -0.7 && q.y > ground
+    let flower = if hf < 0.07 && near_top { smoothstep(0.02, -0.02, petal) } else { 0.0 }
+    let bloom = if hf < 0.035 {
+        vec3(0.95, 0.25, 0.3)
+    } else if hf < 0.05 {
+        vec3(0.98, 0.6, 0.75)
+    } else {
+        vec3(1.0, 0.85, 0.3)
+    }
+    var albedo = blend(vec3(0.12, 0.27, 0.08), bloom, flower)
     let cell = floor(q.x / 9.0)
     for k in -1..2 {
         let i = cell + f32(k)
@@ -548,8 +579,8 @@ pub fn bamboo(pixel: FragCoord, v: View) -> Over {
         sky,
         d: d,
         ground: near_ground(q.x),
-        haze: 0.07,
-        soft: 0.012,
+        haze: 0.12,
+        soft: max(0.012, blur(v, BAMBOO)),
     )
 }
 
