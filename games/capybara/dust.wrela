@@ -132,7 +132,7 @@ pub fn dust_sprites(d: Dust, back: mut Vec<Sprite>, front: mut Vec<Sprite>) {
 // ---- what makes them ----------------------------------------------------------------------------
 
 /// The colour of dust kicked off the ground.
-pub const EARTH_DUST = vec4(0.42, 0.34, 0.25, 0.55)
+pub const EARTH_DUST = vec4(0.94, 0.86, 0.72, 0.95)
 
 /// A puff of `n` motes of dust at `at`, thrown `along` with a spread, `big` their size.
 pub fn puff(d: mut Dust, at: vec2, along: vec2, n: u32, big: f32) {
@@ -167,7 +167,7 @@ pub fn splash(d: mut Dust, at: vec2, n: u32, speed: f32, spread: f32) {
             between(mut d, vec2(0.025, 0.05)),
             0.02,
             between(mut d, vec2(0.5, 0.9)),
-            vec4(0.62, 0.82, 0.95, 0.9),
+            vec4(0.75, 0.9, 0.96, 1.0),
         )
         m.gravity = 22.0
         m.drag = 0.3
@@ -186,7 +186,7 @@ pub fn bubbles(d: mut Dust, at: vec2, n: u32) {
             between(mut d, vec2(0.02, 0.055)),
             0.06,
             between(mut d, vec2(1.2, 2.5)),
-            vec4(0.7, 0.88, 1.0, 0.8),
+            vec4(0.85, 0.95, 1.0, 0.9),
         )
         m.gravity = -3.0
         m.drag = 2.5
@@ -243,7 +243,7 @@ pub fn ring(d: mut Dust, at: vec2) {
         size: 0.2,
         end: 0.9,
         life: 0.3,
-        colour: vec4(1.0, 1.0, 1.0, 0.7),
+        colour: vec4(0.24, 0.16, 0.11, 0.8),
     )
     m.front = true
     add(mut d, m)
@@ -259,7 +259,7 @@ pub fn streak(d: mut Dust, at: vec2, vel: vec2) {
         size: between(mut d, vec2(0.5, 1.1)),
         end: 0.3,
         life: 0.18,
-        colour: vec4(1.0, 0.97, 0.9, 0.55),
+        colour: vec4(0.24, 0.16, 0.11, 0.7),
     )
     m.drag = 4.0
     m.front = true
@@ -276,7 +276,7 @@ pub fn clippings(d: mut Dust, at: vec2, vel: vec2, n: u32) {
             size: between(mut d, vec2(0.03, 0.05)),
             end: 0.03,
             life: between(mut d, vec2(0.5, 0.9)),
-            colour: vec4(0.35, 0.6, 0.15, 1.0),
+            colour: vec4(0.55, 0.75, 0.35, 1.0),
         )
         m.gravity = 9.0
         m.drag = 1.5

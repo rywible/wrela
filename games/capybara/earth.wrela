@@ -1,25 +1,22 @@
-// The ground as it's drawn: its cross-section's earth, the turf along every walkable top and the
-// grass growing from it, a rocky rim along every cliff, and the ledges' planks.
+// The ground as it's drawn, as a picture book's cutaway (ink.wrela): its cross-section's soil,
+// the turf along every walkable top and the grass growing from it, an inked rim along every
+// cliff, the ledges' planks, and the course's end walls in sandstone.
 //
-// The earth is drawn per pixel from where the pixel is and how far below the top of the ground it
-// is (a profile of the ground's top, sampled every `STEP` m, made when a course is shown): layers
-// of soil that waver, pebbles lit as little domes, roots near the top, darker the deeper it is,
-// and a shadow under the turf's lip.
+// The soil is painted per pixel from where the pixel is and how far below the top of the ground
+// it is (a profile of the ground's top, sampled every `STEP` m, made when a course is shown):
+// ochre washes in wavering bands, darker and redder the deeper, roots inked near the top,
+// pebbles, and a painted shadow under the turf's lip.
 //
-// The grass is a band above each walkable top, cut per pixel into blades: each blade's place,
-// height and lean from a hash of its number, swaying in a wind that gusts along the ground, bent
-// away from the capybara and the geese as they pass, and pressed flat where the capybara slides.
+// The grass is a band above each walkable top: a scalloped lawn edge and tufts of pointed
+// blades, inked as one shape; each tuft's place and height from a hash of its number, leaning in
+// a wind that gusts along the ground, away from the capybara as it passes, and lying down where
+// it slides.
 
-use art::{SUN, SUN_COLOUR}
 use course::{Course, WALKABLE}
 use engine::noise::{hash2, noise2}
 use ground::{left, outline, triangulate}
+use ink::{INK, inked, wash}
 use std::gpu::{ClipPosition, Flat, Over, VertexIndex, discard}
-
-/// Display colours (sRGB, as a colour picker gives them) in linear light, near enough.
-pub fn lin(c: vec3) -> vec3 {
-    c * c
-}
 
 fn blend(a: vec3, b: vec3, t: f32) -> vec3 {
     a + (b - a) * t
@@ -39,7 +36,7 @@ const RIM_DEPTH: f32 = 0.18
 const PLANK_THICK: f32 = 0.25
 
 /// How tall the grass band above a walkable top is, and how far it reaches down into the turf (m).
-const GRASS_TALL: f32 = 0.55
+const GRASS_TALL: f32 = 0.5
 const GRASS_ROOT: f32 = 0.06
 
 /// A vertex of the ground: its point, its material and how far across its band it is (0 at the
@@ -229,68 +226,54 @@ pub fn earth_vertex(v: VertexIndex, verts: [vec4], f: Field) -> Earthel {
     }
 }
 
+/// The sun, from the side and above, as a direction on the page: what the two-tone shading of a
+/// pebble or a block takes as its light side.
+const SUN = vec2(0.57, 0.82)
+
 /// A pebble in the soil at `p`, if one is there: its colour and how much of the pixel it covers.
-/// One may sit in each cell 0.32 m square, lit as a little dome by the sun.
+/// One may sit in each cell 0.4 m square: an oval of stone, its lit half lighter, inked round.
 fn pebble(p: vec2, px: f32) -> vec4 {
-    let size = 0.32
+    let size = 0.4
     let cell = floor(p / size)
     let (cx, cy) = (i32(cell.x), i32(cell.y))
     let h = hash2(cx, cy)
-    if h > 0.22 {
+    if h > 0.1 {
         return vec4(0.0)
     }
-    let r = size * (0.12 + 0.22 * hash2(cx + 71, cy))
-    let centre = (cell +
-        vec2(0.5) +
-        (vec2(hash2(cx, cy + 13), hash2(cx + 5, cy)) - vec2(0.5)) * 0.3) *
-        size
-    let l = (p - centre) / vec2(r, r * 0.75)
-    let k = dot(l, l)
-    if k >= 1.0 {
-        return vec4(0.0)
-    }
-    let n = vec3(l, sqrt(1.0 - k))
-    let lit = (0.4 + 0.75 * max(dot(n, normalize(SUN)), 0.0)) * smoothstep(0.0, 0.45, n.z)
-    let stone = blend(
-        lin(vec3(0.62, 0.58, 0.52)),
-        lin(vec3(0.5, 0.44, 0.38)),
-        hash2(cx + 3, cy + 9),
-    )
-    let cover = saturate((1.0 - sqrt(k)) * r / px)
-    vec4(stone * lit, cover)
+    let r = size * (0.12 + 0.18 * hash2(cx + 71, cy))
+    let jitter = (vec2(hash2(cx, cy + 13), hash2(cx + 5, cy)) - vec2(0.5)) * 0.3
+    let centre = (cell + vec2(0.5) + jitter) * size
+    let l = p - centre
+    let d = (length(l / vec2(r, r * 0.72)) - 1.0) * r * 0.72
+    let stone = blend(vec3(0.9, 0.84, 0.74), vec3(0.8, 0.72, 0.64), hash2(cx + 3, cy + 9))
+    let lit = if dot(l, SUN) > -0.25 * r { stone } else { stone * 0.86 }
+    inked(lit, d, p, px * 1.5, px, INK)
 }
 
-/// The soil at `p`, `depth` m below the top of the ground: layers that waver, roots near the top,
-/// pebbles, darker the deeper it is.
+/// The soil at `p`, `depth` m below the top of the ground: washes of ochre in wavering bands,
+/// darker and redder the deeper, roots inked near the top, pebbles, and the turf's shadow under
+/// its lip.
 fn soil(p: vec2, depth: f32, px: f32) -> vec3 {
-    let warp = noise2(p * vec2(0.3, 0.7)) * 1.6 + noise2(p * 1.3) * 0.4
-    let layer = noise2(vec2(p.x * 0.1, p.y * 0.9 + warp))
-    var c = blend(lin(vec3(0.45, 0.33, 0.24)), lin(vec3(0.56, 0.42, 0.3)), layer)
-    // Patches of redder clay and of darker loam.
-    let clay = smoothstep(0.55, 0.75, noise2(p * vec2(0.25, 0.5) + vec2(31.0)))
-    c = blend(c, lin(vec3(0.58, 0.38, 0.26)), clay * 0.5)
-    let dark = smoothstep(0.6, 0.72, noise2(vec2(p.x * 0.06, p.y * 1.8 + warp * 0.6)))
-    c = blend(c, lin(vec3(0.36, 0.26, 0.19)), dark * 0.45)
-    let grain = noise2(p * 26.0) * 0.12 + noise2(p * 8.0) * 0.12 + noise2(p * 70.0) * 0.08
-    c *= 0.84 + grain
-    // Roots near the top.
-    let root = abs(noise2(vec2(p.x * 2.6, p.y * 0.9 + noise2(p * 3.0))) - 0.5)
-    let roots = smoothstep(0.03, 0.012, root) * smoothstep(1.2, 0.3, depth)
-    c = blend(c, lin(vec3(0.3, 0.2, 0.13)), roots * 0.8)
+    let band = noise2(vec2(p.x * 0.08, p.y * 0.7 + noise2(p * 0.3) * 1.2))
+    var c = blend(vec3(0.86, 0.68, 0.46), vec3(0.8, 0.6, 0.42), smoothstep(0.45, 0.55, band))
+    c = blend(c, vec3(0.6, 0.42, 0.33), smoothstep(0.5, 7.0, depth) * 0.7)
+    c = wash(c, p)
+    // A painted shadow under the turf's lip.
+    c *= 1.0 - 0.22 * smoothstep(TURF_DEPTH + 0.5, TURF_DEPTH, depth)
+    // Roots: wiggling inked lines, a contour of noise, near the top only.
+    let root = abs(noise2(p * vec2(1.4, 2.2)) - 0.5) / 1.2
+    let roots = smoothstep(px * 1.0, px * 0.2, root) * smoothstep(1.3, 0.5, depth)
+    c = blend(c, INK, roots * 0.45)
     let stone = pebble(p, px)
-    c = blend(c, stone.xyz, stone.w)
-    // Light on the face: the sky's, falling off with depth, and the turf's shadow under its lip.
-    let deep = mix(vec3(1.0), vec3(0.22, 0.24, 0.3), smoothstep(0.0, 8.0, depth))
-    let lip = mix(0.4, 1.0, smoothstep(TURF_DEPTH - 0.02, TURF_DEPTH + 0.55, depth))
-    c * (vec3(0.6, 0.62, 0.68) + SUN_COLOUR * 0.3) * deep * lip
+    blend(c, stone.xyz, stone.w)
 }
 
 /// Ground whose top is higher than this is an end wall of the course (m).
 const WALL: f32 = 8.0
 
-/// The zoo's wall: courses of sandstone blocks, each its own shade, bevelled and lit from the
-/// sun's side, in mortar, with moss creeping up from the bottom.
-fn stones(p: vec2) -> vec3 {
+/// The zoo's wall: courses of sandstone blocks, each its own wash, its lit edges lighter, inked
+/// in its joints, moss creeping up from the bottom.
+fn stones(p: vec2, px: f32) -> vec3 {
     let size = vec2(0.9, 0.45)
     let row = floor(p.y / size.y)
     let shifted = vec2(p.x + 0.5 * size.x * (row - 2.0 * floor(row * 0.5)), p.y)
@@ -298,66 +281,56 @@ fn stones(p: vec2) -> vec3 {
     let local = (shifted - cell * size) / size - vec2(0.5)
     let inside = min(0.5 * size.x - abs(local.x) * size.x, 0.5 * size.y - abs(local.y) * size.y)
     let tint = hash2(i32(cell.x), i32(cell.y))
-    var c = blend(lin(vec3(0.72, 0.64, 0.5)), lin(vec3(0.62, 0.54, 0.44)), tint)
-    c *= 0.88 + 0.24 * noise2(p * 9.0) + 0.1 * noise2(p * 31.0)
-    // The bevel: lit along the edges that face the sun, dark along the others.
-    let bevel = smoothstep(0.06, 0.0, inside)
-    let side = dot(normalize(local * size + vec2(1.0e-4)), normalize(SUN.xy))
-    c *= 1.0 + bevel * side * 0.5
-    let mortar = smoothstep(0.012, 0.0, inside)
-    c = blend(c, lin(vec3(0.3, 0.27, 0.22)), mortar)
-    let moss = smoothstep(0.55, 0.75, noise2(p * 1.6) + 0.25 * noise2(p * 7.0)) * 0.8
-    c = blend(c, lin(vec3(0.3, 0.42, 0.16)), moss * (0.4 + mortar * 0.6))
-    c * (vec3(0.6, 0.62, 0.68) + SUN_COLOUR * 0.45)
+    var c = wash(blend(vec3(0.92, 0.82, 0.64), vec3(0.86, 0.75, 0.6), tint), p)
+    let edge = smoothstep(0.07, 0.04, inside)
+    if dot(local * size, SUN) > 0.0 {
+        c = blend(c, vec3(0.98, 0.92, 0.78), edge * 0.6)
+    } else {
+        c *= 1.0 - edge * 0.15
+    }
+    let moss = smoothstep(0.72, 0.85, noise2(p * 1.6) + 0.25 * noise2(p * 7.0))
+    c = blend(c, vec3(0.5, 0.64, 0.36), moss * 0.7)
+    inked(c, -inside, p, px * 1.6, px, INK).xyz
 }
 
-/// The earth: soil, turf, a cliff's rim, or a ledge's planks.
+/// The earth: soil, turf, a cliff's rim, or a ledge's planks, each a wash, inked along the
+/// ground's edge.
 @fragment
 pub fn earth(e: Earthel, f: Field, tops: [f32]) -> vec4 {
     let p = e.world
+    let px = f.px
     let m = e.material.value
     let depth = max(top_at(tops, p.x) - p.y, 0.0)
     if m == PLANK {
-        // Planks a metre long, their grain along them; lit along the top, dark below.
-        let seam = abs(fract(p.x + 0.5 * floor(p.y * 2.0)) - 0.5)
-        let grain = noise2(vec2(p.x * 0.7, p.y * 30.0)) * 0.25 +
-            noise2(vec2(p.x * 3.0, p.y * 60.0)) * 0.1
-        var c = lin(vec3(0.72, 0.5, 0.3)) * (0.8 + grain)
-        c *= mix(1.0, 0.35, smoothstep(0.49, 0.5, seam))
-        let top = smoothstep(0.12, 0.0, e.band)
-        let under = smoothstep(0.6, 1.0, e.band)
-        c = c * (0.7 + SUN_COLOUR * 0.45 * (1.0 + top * 0.8)) * (1.0 - under * 0.55)
-        return vec4(c, 1.0)
+        // Planks a metre long, their grain inked along them, a lighter top edge.
+        let seam = abs(fract(p.x + 0.5 * floor(p.y * 2.0)) - 0.5) - 0.5
+        let grain = abs(noise2(vec2(p.x * 0.8, p.y * 26.0)) - 0.5)
+        var c = wash(vec3(0.86, 0.64, 0.42), p)
+        c = blend(c, vec3(0.94, 0.78, 0.56), smoothstep(0.3, 0.1, e.band))
+        c = blend(c, vec3(0.62, 0.42, 0.28), smoothstep(0.04, 0.0, grain) * 0.5)
+        let across = min(e.band, 1.0 - e.band) * PLANK_THICK
+        let joint = inked(c, max(-across, seam), p, px * 1.6, px, INK)
+        return vec4(joint.xyz, 1.0)
     }
-    // The course's end walls (whose tops stand far above any ground): the zoo's stone wall.
     if top_at(tops, p.x) > WALL && m != TURF {
-        return vec4(stones(p), 1.0)
+        return vec4(stones(p, px), 1.0)
     }
-    let below = soil(p, depth, f.px)
+    let below = soil(p, depth, px)
     if m == SOIL {
         return vec4(below, 1.0)
     }
     let across = e.band * if m == TURF { TURF_DEPTH } else { RIM_DEPTH }
     if m == TURF {
-        // The turf: dense green, ragged where it gives way to the soil, lit from above.
-        let edge = TURF_DEPTH * (0.55 + 0.35 * noise2(vec2(p.x * 5.0, 0.0))) +
-            0.04 * noise2(p * 18.0)
-        if across > edge {
-            return vec4(below, 1.0)
-        }
-        let t = across / edge
-        var c = blend(lin(vec3(0.42, 0.66, 0.2)), lin(vec3(0.2, 0.38, 0.1)), t)
-        c *= 0.85 + 0.3 * noise2(p * vec2(30.0, 12.0))
-        c *= vec3(0.55, 0.6, 0.62) + SUN_COLOUR * (0.55 - 0.3 * t)
-        return vec4(c, 1.0)
+        // The turf: green, lighter at the top, its bottom edge scalloped and inked.
+        let edge = TURF_DEPTH * (0.55 + 0.22 * abs(sin(p.x * 6.0 + noise2(vec2(p.x, 0.0)) * 2.0)))
+        let green = blend(vec3(0.62, 0.8, 0.4), vec3(0.47, 0.67, 0.33), saturate(across / edge))
+        let turf = inked(wash(green, p), across - edge, p, px * 1.8, px, INK)
+        return vec4(blend(below, turf.xyz, turf.w), 1.0)
     }
-    // A cliff's rim: darker soil, its edge lit where it faces the sun.
-    let side = e.side.value
-    let facing = max(dot(side, normalize(SUN.xy)), 0.0)
-    let edge = smoothstep(0.06, 0.0, across)
-    let c = below * (0.75 + 0.25 * smoothstep(0.0, RIM_DEPTH, across)) +
-        below * SUN_COLOUR * edge * facing * 0.8
-    vec4(c, 1.0)
+    // A cliff's rim: the soil, inked along the ground's edge, its lit side lighter.
+    let lit = if dot(e.side.value, SUN) > 0.0 { 0.08 } else { -0.06 }
+    let c = below * (1.0 + lit * smoothstep(RIM_DEPTH, 0.0, across))
+    vec4(inked(c, -across, p, px * 2.2, px, INK).xyz, 1.0)
 }
 
 pub struct Blade: Copy {
@@ -376,65 +349,70 @@ pub fn grass_vertex(v: VertexIndex, verts: [vec4], f: Field) -> Blade {
     }
 }
 
-/// How far apart the grass's blades grow (m).
-const SPACING: f32 = 0.032
+/// How far apart the grass's tufts grow (m).
+const TUFT: f32 = 0.24
 
-/// The grass: of the blades near the pixel, the front one that covers it, shaded from its dark
-/// root to its sunlit tip.
+/// The grass along a walkable top: a scalloped lawn edge and tufts of three pointed blades
+/// rising from it, now and then a daisy, all one inked shape. The tufts lean in the wind, away
+/// from the capybara as it passes, and lie down where it slides.
 @fragment
 pub fn grass(b: Blade, f: Field) -> Over {
     let x = b.world.x
     let h = b.height
+    let px = f.px
     if h < -GRASS_ROOT * 0.5 {
         discard()
     }
-    let first = i32(floor(x / SPACING))
-    var best = -1.0
-    var colour = vec3(0.0)
-    var cover = 0.0
-    // Where the capybara stands near the grass, it parts the blades and, sliding, presses them.
+    let q = vec2(x, h)
+    var d = h - (0.06 + 0.025 * abs(sin(x * 18.0)))
+    var tip = 0.0
+    var daisy = 1.0e3
     let near = smoothstep(1.4, 0.4, abs(f.feet.y - (b.world.y - h)))
-    for k in -4..5 {
+    let first = i32(floor(x / TUFT))
+    for k in -2..3 {
         let i = first + k
         let r1 = hash2(i, 1)
         let r2 = hash2(i, 2)
-        let r3 = hash2(i, 3)
-        let r4 = hash2(i, 4)
-        let base = (f32(i) + r1) * SPACING
-        let clump = 0.55 + 0.6 * noise2(vec2(base * 0.9, 5.0))
-        var tall = (0.12 + 0.3 * r2) * clump
-        let gust = noise2(vec2(base * 0.18 - f.time * 0.7, 2.0))
-        var lean = (gust - 0.45) * 0.7 + 0.12 * sin(f.time * 2.6 + base * 2.1 + r3 * 6.0)
+        let base = (f32(i) + 0.2 + 0.6 * r1) * TUFT
         let dx = base - f.feet.x
-        let touch = smoothstep(0.75, 0.0, abs(dx)) * near
-        lean += sign(dx) * touch * 1.6 + clamp(f.vel.x * 0.05, -0.6, 0.6) * touch
-        tall *= 1.0 - touch * (0.35 + 0.4 * f.sliding)
-        if h > tall {
-            continue
-        }
-        let t = max(h, 0.0) / tall
-        let centre = base + lean * t * t * tall
-        let width = (0.007 + 0.008 * r3) * (1.0 - t * 0.85)
-        let off = abs(x - centre)
-        let edge = saturate((width - off) / f.px + 0.5)
-        if edge > 0.0 && r4 > best {
-            best = r4
-            cover = edge
-            let root = lin(vec3(0.12, 0.26, 0.06))
-            let tip = blend(lin(vec3(0.55, 0.78, 0.22)), lin(vec3(0.78, 0.8, 0.32)), r1 * r2)
-            var c = blend(root, tip, pow(t, 0.8))
-            c *= 0.8 + 0.4 * r3
-            let light = vec3(0.5, 0.56, 0.6) + SUN_COLOUR * (0.4 + 0.6 * t)
-            colour = c * light + SUN_COLOUR * lin(vec3(0.5, 0.6, 0.2)) * t * t * 0.5
-            // Now and then a flower at the tip.
-            if r2 > 0.93 && t > 0.82 {
-                colour = blend(lin(vec3(1.0, 0.95, 0.85)), lin(vec3(1.0, 0.8, 0.3)), r1) *
-                    (0.6 + SUN_COLOUR * 0.6)
+        let touch = smoothstep(0.8, 0.0, abs(dx)) * near
+        let gust = noise2(vec2(base * 0.2 - f.time * 0.6, 2.0)) - 0.45
+        let lean = gust * 0.12 + 0.03 * sin(f.time * 2.4 + base * 2.0) + sign(dx) * touch * 0.22
+        let tall = (0.16 + 0.18 * r2) * (1.0 - touch * (0.3 + 0.45 * f.sliding))
+        for j in 0..3 {
+            let s = f32(j) - 1.0
+            let top = vec2(base + s * 0.06 + lean + s * 0.05, tall * (1.0 - 0.25 * abs(s)))
+            let blade = cone(q, vec2(base + s * 0.05, 0.0), top, ra: 0.04, rb: 0.0)
+            if blade < d {
+                tip = saturate(h / max(tall, 0.01))
             }
+            d = min(d, blade)
+        }
+        if hash2(i, 3) < 0.08 {
+            let head = vec2(base + lean * 1.4, tall + 0.1)
+            d = min(d, cone(q, vec2(base, 0.0), head, ra: 0.012, rb: 0.012))
+            daisy = min(daisy, length(q - head) - 0.05)
         }
     }
-    if cover <= 0.0 {
+    var fill = blend(vec3(0.5, 0.72, 0.34), vec3(0.74, 0.88, 0.48), tip)
+    fill = wash(fill, b.world)
+    var o = inked(fill, d, q, px * 1.4, px, vec3(0.2, 0.33, 0.15))
+    if daisy < px * 2.0 {
+        let centre = daisy + 0.03
+        let white = blend(vec3(1.0, 0.97, 0.9), vec3(1.0, 0.8, 0.3), smoothstep(px, -px, centre))
+        let petals = inked(white, daisy, q, px * 1.4, px, INK)
+        o = vec4(blend(o.xyz, petals.xyz, petals.w), max(o.w, petals.w))
+    }
+    if o.w <= 0.0 {
         discard()
     }
-    Over { color: vec4(colour, cover) }
+    Over { color: o }
+}
+
+/// A segment's distance from `a` to `b`, `ra` thick at `a` and `rb` at `b`.
+fn cone(p: vec2, a: vec2, b: vec2, ra: f32, rb: f32) -> f32 {
+    let pa = p - a
+    let ba = b - a
+    let h = saturate(dot(pa, ba) / dot(ba, ba))
+    length(pa - ba * h) - (ra + (rb - ra) * h)
 }

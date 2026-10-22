@@ -1,40 +1,24 @@
-// How a frame is made: the passes, from the sky to the screen.
+// How a frame is made, as a page of a picture book (ink.wrela):
 //
-// 1. The scene, in linear light on an HDR target (`Targets::scene`): the sky and the zoo behind
-//    (scenery.wrela), the ground, the shadows, the things, the creatures and the particles.
-// 2. A copy of it (`below`), which the water reads to bend what's under it.
-// 3. The water, over the scene, then the splashes in front of it.
-// 4. The glow: the scene's brightest light at a quarter of its size, blurred both ways (the
-//    engine's `glow_down` and `glow_blur`, as the clearing uses them); and the sun's shafts, that
-//    light smeared out from the sun, so the sun shines between the trees.
-// 5. The screen: the scene, its glow and the shafts, graded, through the engine's tone curve
-//    (`light::tone`: a filmic shoulder, then sRGB), vignetted; the HUD over it.
+// 1. The scene, on its own target (`Targets::scene`): the sky and the zoo behind
+//    (scenery.wrela), the ground and its grass (earth.wrela), the shadows, the things, the
+//    creatures and the particles. Every shape is a wash with an ink line, drawn crisp, at the
+//    screen's full size.
+// 2. A copy of it (`below`), which the water reads to bend what's under it a little.
+// 3. The water, over the scene, then what goes in front of it.
+// 4. The page: the scene on the paper, its tooth and fibres anchored on the plane of play, the
+//    corners a little darker as an old page's are.
+//
+// The colours are display colours, as the paint is: nothing here is a light simulation, so
+// there's no tone curve and no glow.
 
-use engine::light::tone
-use engine::paint::{Exposure, glow_blur, glow_down}
-use engine::plant::full
-use std::gpu::{
-    FragCoord, GpuBuffer, Rgba16Float, Sampler, Texture, begin_pass, buffer_of, draw, texture,
-}
-
-/// The light of the day: a warm afternoon sun, high to the right and a little towards the eye,
-/// and its colour.
-pub const SUN = vec3(0.5, 0.72, 0.48)
-pub const SUN_COLOUR = vec3(1.5, 1.36, 1.15)
-
-/// Where the sun stands on the screen: across, as a fraction of the screen's height from the
-/// left; down, as a fraction of its height from the top.
-pub const SUN_AT = vec2(0.8, 0.17)
+use ink::paper
+use std::gpu::{FragCoord, Rgba16Float, Sampler, Texture, texture}
 
 /// The frame's targets, remade when the screen's size changes.
 pub struct Targets {
-    /// The sky and the zoo behind, at half the screen's size: soft, as far things are.
-    pub backdrop: Texture<Rgba16Float>,
     pub scene: Texture<Rgba16Float>,
     pub below: Texture<Rgba16Float>,
-    pub glow: Texture<Rgba16Float>,
-    pub across: Texture<Rgba16Float>,
-    pub shafts: Texture<Rgba16Float>,
     pub width: u32,
     pub height: u32,
 }
@@ -42,12 +26,8 @@ pub struct Targets {
 pub fn targets(width: u32, height: u32) -> Targets {
     let (w, h) = (max(width, 4), max(height, 4))
     Targets {
-        backdrop: texture(width: w / 2, height: h / 2),
         scene: texture(width: w, height: h),
         below: texture(width: w, height: h),
-        glow: texture(width: w / 4, height: h / 4),
-        across: texture(width: w / 4, height: h / 4),
-        shafts: texture(width: w / 4, height: h / 4),
         width: w,
         height: h,
     }
@@ -60,122 +40,21 @@ pub fn copy(pixel: FragCoord, src: Texture<Rgba16Float>, s: Sampler) -> vec4 {
     src.sample_level(s, pixel.position.xy / size)
 }
 
-/// `src` stretched over a target of `size` (px).
-@fragment
-pub fn stretch(pixel: FragCoord, src: Texture<Rgba16Float>, s: Sampler, size: vec2) -> vec4 {
-    src.sample_level(s, pixel.position.xy / size)
+/// Where the page lies on the plane of play: the view's middle and half its size (m).
+pub struct Page: Copy + GpuData {
+    pub centre: vec2,
+    pub half: vec2,
 }
 
-/// The light of `src` above `threshold`, over a target of `size` (px).
+/// The page: the scene on the paper, the corners darker.
 @fragment
-pub fn bright(
-    pixel: FragCoord,
-    src: Texture<Rgba16Float>,
-    s: Sampler,
-    size: vec2,
-    threshold: f32,
-) -> vec4 {
-    vec4(max(src.sample_level(s, pixel.position.xy / size).rgb - vec3(threshold), vec3(0.0)), 1.0)
-}
-
-/// The sun's shafts: the glow's light smeared from each texel towards the sun (`sun`, as a
-/// fraction of the screen), fading along the way.
-@fragment
-pub fn shafts(pixel: FragCoord, src: Texture<Rgba16Float>, s: Sampler, sun: vec2) -> vec4 {
-    let size = vec2(f32(src.width()), f32(src.height()))
-    let uv = pixel.position.xy / size
-    let step = (sun - uv) / 32.0
-    var at = uv
-    var sum = vec3(0.0)
-    var weight = 1.0
-    for _ in 0..32 {
-        sum += src.sample_level(s, at).rgb * weight
-        weight *= 0.95
-        at += step
-    }
-    vec4(sum / 32.0, 1.0)
-}
-
-/// The grade: how strong the glow and the shafts are, the exposure, the saturation, and how dark
-/// the vignette makes the corners.
-pub struct Grade: Copy + GpuData {
-    pub glow: f32 = 0.5,
-    pub shafts: f32 = 1.6,
-    pub exposure: f32 = 0.95,
-    pub saturation: f32 = 1.1,
-    pub vignette: f32 = 0.3,
-}
-
-/// The screen: the scene, its glow and the sun's shafts, warmed a little, through the tone
-/// curve, vignetted.
-@fragment
-pub fn finish(
-    pixel: FragCoord,
-    scene: Texture<Rgba16Float>,
-    glow: Texture<Rgba16Float>,
-    sun: Texture<Rgba16Float>,
-    s: Sampler,
-    g: Grade,
-) -> vec4 {
+pub fn finish(pixel: FragCoord, scene: Texture<Rgba16Float>, s: Sampler, page: Page) -> vec4 {
     let size = vec2(f32(scene.width()), f32(scene.height()))
     let uv = pixel.position.xy / size
-    var c = scene.sample_level(s, uv).rgb +
-        glow.sample_level(s, uv).rgb * g.glow +
-        sun.sample_level(s, uv).rgb * vec3(1.0, 0.9, 0.7) * g.shafts
-    let luma = dot(c, vec3(0.2126, 0.7152, 0.0722))
-    c = vec3(luma) + (c - vec3(luma)) * g.saturation
-    c = c * vec3(1.03, 1.0, 0.95) + vec3(0.006, 0.004, 0.012)
+    let p = page.centre + vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0) * page.half
+    let px = 2.0 * page.half.y / size.y
+    let c = scene.sample_level(s, uv).rgb * paper(p, px)
     let edge = (uv - vec2(0.5)) * vec2(size.x / size.y, 1.0)
-    let vignette = 1.0 - g.vignette * smoothstep(0.3, 1.1, length(edge))
-    vec4(tone(c * vignette, g.exposure), 1.0)
-}
-
-/// The glow's passes: the sun's shafts from the sky's light at a quarter of the screen's size;
-/// the scene's light above the threshold at a quarter of its size, blurred across and down.
-pub fn glow(t: mut Targets, exposure: GpuBuffer<Exposure>, s: Sampler) {
-    let aspect = f32(t.width) / f32(t.height)
-    let sun = vec2(SUN_AT.x / aspect, SUN_AT.y)
-    // The shafts come from the sky behind alone (the backdrop's light), so a bright thing in
-    // front (a sparkle) doesn't streak.
-    let quarter = vec2(f32(t.width / 4), f32(t.height / 4))
-    let sky = begin_pass(mut t.across)
-    draw(
-        sky,
-        full.bind(z: 0.0),
-        bright.bind(src: t.backdrop, s: s, size: quarter, threshold: 1.1),
-        vertices: 3,
-    )
-    sky.end()
-    let rays = begin_pass(mut t.shafts)
-    draw(rays, full.bind(z: 0.0), shafts.bind(src: t.across, s: s, sun: sun), vertices: 3)
-    rays.end()
-    let down = begin_pass(mut t.glow)
-    draw(
-        down,
-        full.bind(z: 0.0),
-        glow_down.bind(image: t.scene, s: s, threshold: 0.9, base: 1.0, exposure: exposure),
-        vertices: 3,
-    )
-    down.end()
-    let x = begin_pass(mut t.across)
-    draw(
-        x,
-        full.bind(z: 0.0),
-        glow_blur.bind(src: t.glow, s: s, across: 0, spread: 2.0),
-        vertices: 3,
-    )
-    x.end()
-    let y = begin_pass(mut t.glow)
-    draw(
-        y,
-        full.bind(z: 0.0),
-        glow_blur.bind(src: t.across, s: s, across: 1, spread: 2.0),
-        vertices: 3,
-    )
-    y.end()
-}
-
-/// The exposure the glow's threshold is measured against: fixed (the game doesn't meter).
-pub fn exposure() -> GpuBuffer<Exposure> {
-    buffer_of([Exposure { value: 1.0, mean: 0.18 }])
+    let corner = 1.0 - 0.14 * smoothstep(0.45, 1.05, length(edge))
+    vec4(saturate(c * vec3(corner, corner, corner * 0.97)), 1.0)
 }

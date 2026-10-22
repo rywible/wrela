@@ -15,7 +15,7 @@
 // on the GPU (scripts.wrela has scripts), and `capybara` exports the capybara's state for `wrela
 // trace --watch capybara`, which needs a toolchain whose trace runs the ticker in lockstep.
 
-use art::{Grade, Targets, copy, finish, glow, stretch, targets}
+use art::{Page, Targets, copy, finish, targets}
 use body::Mode
 use camera::{Camera, camera, follow, half_view}
 use cast::{Cast, cast, react, sprites}
@@ -24,7 +24,6 @@ use earth::{
     LAB_EARTH, LAB_GRASS, LEVEL_EARTH, LEVEL_GRASS, Field, earth, earth_vertex, grass, grass_vertex,
     profile,
 }
-use engine::paint::Exposure
 use engine::plant::full
 use engine::present::Snapshots
 use engine::run::run
@@ -59,7 +58,6 @@ pub struct Lab {
     cast: Cast,
     targets: Targets,
     linear: Sampler,
-    exposure: GpuBuffer<Exposure>,
     width: u32,
     height: u32,
     camera: Camera,
@@ -89,7 +87,6 @@ pub fn init() -> Lab {
         cast: shown,
         targets: targets(width: 4, height: 4),
         linear: sampler(),
-        exposure: art::exposure(),
         width: 0,
         height: 0,
         camera: camera(course(LEVEL).start),
@@ -170,23 +167,13 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         sliding,
     }
     let stage = Stage { view_proj, px, time, first: 0 }
-    // The backdrop, at half size: the sky and the zoo behind, back to front.
-    let far = View { screen: screen * 0.5, ..view }
-    let backdrop = begin_pass(mut s.targets.backdrop)
-    draw(backdrop, full.bind(z: 0.0), scenery::sky.bind(v: far), vertices: 3)
-    draw(backdrop, full.bind(z: 0.0), scenery::far_hills.bind(v: far), vertices: 3)
-    draw(backdrop, full.bind(z: 0.0), scenery::savanna.bind(v: far), vertices: 3)
-    draw(backdrop, full.bind(z: 0.0), scenery::path.bind(v: far), vertices: 3)
-    draw(backdrop, full.bind(z: 0.0), scenery::bamboo.bind(v: far), vertices: 3)
-    backdrop.end()
-    // The scene: the backdrop, the ground and its grass, the cast.
+    // The scene: the sky and the zoo behind, back to front; the ground and its grass; the cast.
     let scene = begin_pass(mut s.targets.scene)
-    draw(
-        scene,
-        full.bind(z: 0.0),
-        stretch.bind(src: s.targets.backdrop, s: s.linear, size: screen),
-        vertices: 3,
-    )
+    draw(scene, full.bind(z: 0.0), scenery::sky.bind(v: view), vertices: 3)
+    draw(scene, full.bind(z: 0.0), scenery::far_hills.bind(v: view), vertices: 3)
+    draw(scene, full.bind(z: 0.0), scenery::savanna.bind(v: view), vertices: 3)
+    draw(scene, full.bind(z: 0.0), scenery::path.bind(v: view), vertices: 3)
+    draw(scene, full.bind(z: 0.0), scenery::bamboo.bind(v: view), vertices: 3)
     draw(
         scene,
         earth_vertex.bind(verts: s.earths[i].items(), f: field),
@@ -220,7 +207,6 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
             f: pond,
             pools: s.pools.items(),
             heights: s.heights.items(),
-            tops: s.tops[i].items(),
             below: s.targets.below,
             s: s.linear,
         ),
@@ -234,21 +220,14 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         vertices: 6,
         instances: back.len() - behind,
     )
-    draw(wet, full.bind(z: 0.0), scenery::pollen.bind(v: view), vertices: 3)
     draw(wet, full.bind(z: 0.0), scenery::fronds.bind(v: view), vertices: 3)
     wet.end()
-    glow(mut s.targets, s.exposure, s.linear)
     let out = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
+    let page = Page { centre: s.camera.at, half }
     draw(
         out,
         full.bind(z: 0.0),
-        finish.bind(
-            scene: s.targets.scene,
-            glow: s.targets.glow,
-            sun: s.targets.shafts,
-            s: s.linear,
-            g: Grade {},
-        ),
+        finish.bind(scene: s.targets.scene, s: s.linear, page: page),
         vertices: 3,
     )
     s.renderer.draw(out, screen)

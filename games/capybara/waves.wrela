@@ -3,17 +3,16 @@
 // damping), so a plunge sends rings out across the pool and they come back off the banks. This
 // is presentation: the sim's water is flat, and nothing here touches it.
 //
-// The water's shader draws each pool's shape (filled to the ground under it, as before) up to the
-// moving surface: the scene behind it (a copy of it), bent by the surface's slope and a slow
-// shimmer, losing its red then its green with depth, towards a deep blue-green; light rays from
-// the sun slanting down through it; caustics, the surface's light focused, rippling over the
-// floor; a bright line along the surface, white with foam where it moves fast, and glints where
-// it catches the sun.
+// The water's shader paints each pool's shape (filled to the ground under it) up to the moving
+// surface, as a picture book's water (ink.wrela): a wash of teal over what's behind it (a copy of
+// the scene, wobbling a little), deepening to blue; short white strokes of ripples drifting near
+// the top; a pale band under the surface and an inked line along it, with white foam where it
+// moves fast.
 
-use art::SUN_COLOUR
 use course::Course
-use earth::{ground_top, lin, solids, top_at}
-use engine::noise::noise2
+use earth::{ground_top, solids}
+use ink::{inked, wash}
+use engine::noise::{hash2, noise2}
 use ground::triangulate
 use std::gpu::{
     ClipPosition, FragCoord, Flat, Over, Rgba16Float, Sampler, Texture, VertexIndex, discard,
@@ -214,6 +213,26 @@ fn lift(pool: vec4, heights: [f32], x: f32, time: f32) -> vec2 {
     vec2(h + ripple, speed)
 }
 
+/// The ripples' strokes at `p`, `depth` m under the surface: in some cells 1.6 by 0.5 m, a short
+/// white stroke drifting slowly along, fewer the deeper. How much of the pixel they cover.
+fn ripples(p: vec2, depth: f32, time: f32, px: f32) -> f32 {
+    let q = vec2(p.x + time * 0.25, p.y)
+    let cell = floor(q / vec2(1.6, 0.5))
+    let (cx, cy) = (i32(cell.x), i32(cell.y))
+    if hash2(cx, cy + 900) > 0.5 - depth * 0.12 {
+        return 0.0
+    }
+    let centre = (cell +
+        vec2(0.5, 0.5) +
+        (vec2(hash2(cx, cy + 901), hash2(cx + 3, cy)) - vec2(0.5)) * vec2(0.5, 0.3)) *
+        vec2(1.6, 0.5)
+    let l = q - centre
+    let half = 0.2 + 0.25 * hash2(cx + 7, cy + 2)
+    let wave = l.y - 0.025 * sin(l.x * 12.0)
+    let d = length(vec2(max(abs(l.x) - half, 0.0), wave)) - 0.012
+    saturate(-d / px + 0.5) * 0.7
+}
+
 @fragment
 pub fn water(
     w: Wetl,
@@ -221,61 +240,35 @@ pub fn water(
     f: Pond,
     pools: [vec4],
     heights: [f32],
-    tops: [f32],
     below: Texture<Rgba16Float>,
     s: Sampler,
 ) -> Over {
     let p = w.world
     let pool = pools[w.pool.value]
     let here = lift(pool, heights, p.x, f.time)
-    let surface = pool.w + here.x
-    let depth = surface - p.y
-    if depth < -f.px {
+    let depth = pool.w + here.x - p.y
+    if depth < -f.px * 2.0 {
         discard()
     }
-    let ahead = lift(pool, heights, p.x + 0.05, f.time).x
-    let slope = (ahead - here.x) / 0.05
-    // The scene behind, bent: by the surface's slope near it, and a slow shimmer.
-    let shimmer = vec2(
-        noise2(vec2(p.x * 1.7 + f.time * 0.6, p.y * 1.7)) - 0.5,
-        noise2(vec2(p.x * 1.7, p.y * 1.7 - f.time * 0.5) + vec2(7.0)) - 0.5,
-    )
-    let bend = (vec2(slope * 0.25, 0.0) * exp(-depth * 1.5) + shimmer * 0.06) *
-        min(depth * 2.0, 1.0)
+    // What's behind, wobbling a little, under a wash of teal deepening to blue.
+    let wobble = vec2(noise2(vec2(p.x * 1.5 + f.time * 0.5, p.y * 1.5)) - 0.5, 0.0) *
+        0.05 *
+        min(depth, 1.0)
     let size = vec2(f32(below.width()), f32(below.height()))
-    let uv = pixel.position.xy / size + vec2(bend.x, -bend.y) / (f.half * 2.0)
-    var c = below.sample_level(s, uv).rgb
-    // Through the water: red goes first, then green, towards a deep blue-green lit from above.
-    let floor = top_at(tops, p.x)
-    let deep = lin(vec3(0.04, 0.26, 0.36)) * (0.3 + SUN_COLOUR * 0.32) * exp(-depth * 0.1)
-    let through = exp(-max(depth, 0.0) * vec3(0.75, 0.3, 0.2))
-    c = c * through + deep * (vec3(1.0) - through)
-    // Caustics, rippling over the floor and what's near it.
-    let q = p * 2.2
-    let a = noise2(q + vec2(f.time * 0.5, f.time * 0.3))
-    let b = noise2(q * 1.3 - vec2(f.time * 0.4, -f.time * 0.2) + vec2(4.0))
-    let net = smoothstep(0.12, 0.0, abs(a - b))
-    let near_floor = exp(-max(p.y - floor, 0.0) * 1.1)
-    c += SUN_COLOUR * net * near_floor * exp(-depth * 0.18) * 0.35 * c
-    // Light rays slanting down from the surface.
-    let ray = noise2(vec2((p.x - depth * 0.45) * 1.2 + f.time * 0.12, f.time * 0.15))
-    c += SUN_COLOUR *
-        lin(vec3(0.6, 0.85, 0.9)) *
-        smoothstep(0.55, 0.85, ray) *
-        exp(-depth * 0.35) *
-        0.18 *
-        smoothstep(0.0, 0.4, depth)
-    // Just under the surface, the sky's light; on it, a bright line, foamy where it moves, and
-    // glints where it catches the sun.
-    c = c + (lin(vec3(0.75, 0.9, 1.0)) * (0.6 + SUN_COLOUR * 0.4) - c) * 0.3 * exp(-depth * 5.0)
-    let line = smoothstep(f.px * 2.5, 0.0, abs(depth - f.px * 1.2))
-    let foam = saturate(here.y * 0.5 + 0.15)
-    c = c +
-        (lin(vec3(0.92, 0.97, 1.0)) * (0.7 + SUN_COLOUR * 0.5) * (1.0 + foam) - c) *
-            line *
-            (0.6 + 0.4 * foam)
-    let glint = smoothstep(0.92, 1.0, noise2(vec2(p.x * 9.0, f.time * 3.0))) *
-        smoothstep(f.px * 4.0, 0.0, depth)
-    c += SUN_COLOUR * glint * 4.0
-    Over { color: vec4(c, saturate(depth / f.px + 0.5)) }
+    let behind = below.sample_level(s, pixel.position.xy / size + wobble / (f.half * 2.0)).rgb
+    let teal = blend(vec3(0.56, 0.82, 0.84), vec3(0.3, 0.55, 0.7), smoothstep(0.0, 3.0, depth))
+    let tint = blend(teal, vec3(0.2, 0.36, 0.55), smoothstep(3.0, 9.0, depth))
+    var c = blend(behind, wash(tint, p), saturate(0.5 + depth * 0.09))
+    c = blend(c, vec3(0.97, 0.99, 0.97), ripples(p, depth, f.time, f.px))
+    // The pale band under the surface, white with foam where it moves, and the ink line on it.
+    let band = smoothstep(0.14 + here.y * 0.05, 0.0, depth)
+    c = blend(c, vec3(0.86, 0.95, 0.95), band * 0.7)
+    let foam = smoothstep(0.6, 1.6, here.y) * smoothstep(0.25, 0.0, depth)
+    c = blend(c, vec3(1.0), foam)
+    let o = inked(c, -depth, p, f.px * 2.0, f.px, vec3(0.2, 0.32, 0.46))
+    Over { color: o }
+}
+
+fn blend(a: vec3, b: vec3, t: f32) -> vec3 {
+    a + (b - a) * t
 }

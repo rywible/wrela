@@ -1,23 +1,23 @@
-// What's behind the course, and the little in front of it: the sky and its clouds, the zoo in
-// four layers back to front, each moved by its own fraction of the camera's motion (parallax);
-// pollen and fronds in front. Each is drawn per pixel over the whole screen, as a field: its
-// shapes' distances, unioned, the pixel inside where it's below 0. Nothing here is a picture:
-// shapes, hashes and noise, placed in cells along the layer.
+// What's behind the course, painted as a picture book's backdrop (ink.wrela): the sky with its
+// puffed clouds and the sun, and the zoo in four layers back to front, each moved by its own
+// fraction of the camera's motion (parallax); fronds in front. Each is drawn per pixel over the
+// screen as a field: its shapes' distances, unioned, the pixel inside where it's below 0, then a
+// wash with an ink line. Nothing here is a picture: shapes, hashes and noise in cells along the
+// layer.
 //
-// - The far hills (0.06): blue ranges and a tree line, nearly the sky's colour.
-// - The savanna (0.2): grassy rises, flat-topped acacias, and giraffes eating from them.
-// - The zoo's path (0.42): round trees, lamp posts, a fence along the path, elephants behind it.
-// - The bushes and the bamboo (0.68): flowering bushes and groves of bamboo, nearest and darkest.
+// - The far hills (0.06): blue ranges and a tree line.
+// - The savanna (0.2): rises of straw-coloured grass, flat-topped acacias, giraffes eating.
+// - The zoo's path (0.42): round trees, lamp posts, a fence, elephants behind it.
+// - The bushes and the bamboo (0.68): flowering bushes and groves of bamboo, nearest.
 //
-// Each layer is drawn smaller the further it is, fades towards the sky's colour at its pixel
-// (aerial perspective), and darkens below its ground (what a pit looks down into). It's lit by
-// the sun: a brighter rim on the edges that face it, darker low down. The four are drawn at half
-// the screen's size (art.wrela), soft as far things are; each shape's gradient, which only its
-// rim needs, is found only near its edge.
+// A layer further back is drawn smaller, paler (its washes and its ink fade towards the mist's
+// colour) and with a finer line. Shading is the painter's: a second, darker wash on the side of
+// a crown away from the sun, not light. Below its ground a layer darkens, so a pit looks down
+// into shade. Each layer skips its shapes where none can be (above its tallest, below its
+// ground), so it costs little where it shows only sky or fill.
 
-use art::{SUN, SUN_AT, SUN_COLOUR}
 use engine::noise::{hash2, noise2}
-use std::derive::value_gradient_with
+use ink::{INK, inked, pooled, wash}
 use std::field::smin
 use std::gpu::{FragCoord, Over, discard}
 
@@ -31,46 +31,57 @@ pub struct View: Copy + GpuData {
     pub pad: f32 = 0.0,
 }
 
-/// How soft a layer's edges are (m on the layer): a pixel and a half of the view it's drawn at.
-fn blur(v: View, parallax: f32) -> f32 {
-    3.0 * v.half.y / v.screen.y / (0.45 + 0.55 * parallax)
-}
-
 /// The layers' fractions of the camera's motion.
 pub const FAR: f32 = 0.06
 pub const SAVANNA: f32 = 0.2
 pub const PATH: f32 = 0.42
 pub const BAMBOO: f32 = 0.68
 
-/// The point a pixel shows on a layer that moves by `parallax` of the camera's motion. A layer
-/// further back is drawn smaller too, as it would look further off: its shapes at
-/// `0.45 + 0.55 * parallax` of their size.
+/// The mist the far layers fade into.
+const MIST = vec3(0.83, 0.88, 0.87)
+
+/// The sun, from the side and above, as a direction on the page.
+const SUN = vec2(0.57, 0.82)
+
+/// How much smaller a layer is drawn, for its parallax.
+fn zoom(parallax: f32) -> f32 {
+    0.45 + 0.55 * parallax
+}
+
+/// The point a pixel shows on a layer that moves by `parallax` of the camera's motion.
 fn on_layer(pixel: FragCoord, v: View, parallax: f32) -> vec2 {
     let uv = pixel.position.xy / v.screen
     let offset = vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0) * v.half
-    (v.centre * parallax + offset) / (0.45 + 0.55 * parallax)
+    (v.centre * parallax + offset) / zoom(parallax)
+}
+
+/// A pixel's size on a layer (m).
+fn pixel_on(v: View, parallax: f32) -> f32 {
+    2.0 * v.half.y / v.screen.y / zoom(parallax)
 }
 
 fn blend(a: vec3, b: vec3, t: f32) -> vec3 {
     a + (b - a) * t
 }
 
-// ---- the sky -----------------------------------------------------------------------------------
+/// A layer's shape painted: its wash, pooled at the edge, faded by `haze` into the mist, and
+/// inked with a line `line` px wide.
+fn paint(d: f32, albedo: vec3, q: vec2, px: f32, haze: f32, line: f32) -> Over {
+    var c = pooled(wash(albedo, q), d, 0.12)
+    c = blend(c, MIST, haze)
+    let ink = blend(INK, MIST, min(haze * 1.3, 0.85))
+    let o = inked(c, d, q, line * px, px, ink)
+    if o.w <= 0.0 {
+        discard()
+    }
+    Over { color: o }
+}
 
-/// The sky's colour at a pixel `uv` (0 to 1 across and down) for a camera at height `y`: deep blue
-/// overhead to a warm haze at the horizon, and the sun's halo round it. The layers fade to it.
-pub fn sky_colour(uv: vec2, aspect: f32, y: f32) -> vec3 {
-    let up = 1.0 - uv.y
-    let horizon = 0.3 - y * 0.008
-    let t = saturate((up - horizon) / (1.0 - horizon))
-    let zenith = vec3(0.05, 0.2, 0.62)
-    let middle = vec3(0.24, 0.48, 0.86)
-    let haze = vec3(0.8, 0.74, 0.62)
-    var c = blend(haze, middle, smoothstep(0.0, 0.4, t))
-    c = blend(c, zenith, smoothstep(0.4, 1.0, t))
-    c = blend(c, haze * vec3(0.92, 0.95, 1.0), smoothstep(0.0, -0.25, up - horizon))
-    let d = distance(vec2(uv.x * aspect, uv.y), vec2(SUN_AT.x * aspect, SUN_AT.y))
-    c + SUN_COLOUR * (exp(-d * 7.0) * 0.5 + exp(-d * 2.2) * 0.2)
+/// What a layer is under its ground: its fill washed and darkening downwards into shade.
+fn under(albedo: vec3, q: vec2, ground: f32, px: f32, haze: f32) -> Over {
+    let deep = smoothstep(0.0, 5.0, ground - q.y)
+    let c = blend(wash(albedo, q), vec3(0.2, 0.25, 0.2), deep * 0.75)
+    Over { color: vec4(blend(c, MIST, haze * (1.0 - deep)), 1.0) }
 }
 
 /// Fractal value noise: `octaves` of `noise2`, each twice as fine and half as strong, in 0 to 1.
@@ -88,73 +99,7 @@ fn fbm(p: vec2, octaves: u32) -> f32 {
     sum / total
 }
 
-/// How thick the clouds are at `q` (their layer's point, m): puffs in a band 4 to 11 m above the
-/// layer's zero, drifting with the wind.
-fn cloud_density(q: vec2, time: f32) -> f32 {
-    let p = q * vec2(0.11, 0.18) + vec2(time * 0.012, 0.0)
-    // Flat bottoms at 6 m, heaped tops thinning upwards.
-    let base = smoothstep(5.6, 6.4, q.y)
-    let n = fbm(p, 5) + 0.25 * noise2(vec2(q.x * 0.04 + time * 0.005, 1.0))
-    saturate((n - 0.52 - (q.y - 6.0) * 0.035) * 4.0) * base
-}
-
-/// The sky and its clouds, the sun's disc and halo: what every other layer is drawn over.
-@fragment
-pub fn sky(pixel: FragCoord, v: View) -> vec4 {
-    let uv = pixel.position.xy / v.screen
-    let aspect = v.screen.x / v.screen.y
-    var c = sky_colour(uv, aspect, v.centre.y)
-    let d = distance(vec2(uv.x * aspect, uv.y), vec2(SUN_AT.x * aspect, SUN_AT.y))
-    var cover = 0.0
-    // The clouds: lit from the sun's side, their own shade where more cloud lies towards it, a
-    // silver edge where they're thin before the sun.
-    let q = on_layer(pixel, v, 0.03)
-    let density = cloud_density(q, v.time)
-    if density > 0.001 {
-        let toward = normalize(vec2(SUN_AT.x * aspect, -SUN_AT.y) - vec2(uv.x * aspect, -uv.y))
-        let shade = cloud_density(q + toward * 0.8, v.time) +
-            cloud_density(q + toward * 1.8, v.time) * 0.6
-        let lit = exp(-shade * 1.6) * (0.55 + 0.45 * smoothstep(6.0, 9.0, q.y))
-        let base = blend(vec3(0.42, 0.48, 0.64), vec3(1.3, 1.22, 1.1), lit)
-        let silver = exp(-d * 6.0) * (1.0 - density) * 2.5
-        let cloud = base + SUN_COLOUR * silver
-        cover = smoothstep(0.0, 0.35, density) * 0.97
-        c = blend(c, cloud, cover)
-    }
-    // The sun's disc, shining through thin cloud.
-    c += SUN_COLOUR * smoothstep(0.04, 0.034, d) * 14.0 * (1.0 - 0.8 * cover)
-    vec4(c, 1.0)
-}
-
-// ---- shading a layer ---------------------------------------------------------------------------
-
-/// A layer's colour where its field `d` (m, below 0 inside) with gradient `g` has albedo `albedo`:
-/// lit by the sun and the sky, a bright rim along the edges that face the sun, darker towards the
-/// layer's ground at `ground` (m). Faded towards the sky's colour `sky` by `haze`; its cover
-/// smoothed over `soft` m.
-fn shade(
-    g: vec2,
-    albedo: vec3,
-    q: vec2,
-    sky: vec3,
-    d: f32,
-    ground: f32,
-    haze: f32,
-    soft: f32,
-) -> Over {
-    let edge = saturate(1.0 + d / 0.12)
-    let facing = saturate(dot(normalize(g + vec2(1.0e-5)), normalize(SUN.xy)))
-    let low = smoothstep(ground - 0.5, ground + 2.5, q.y)
-    let light = vec3(0.42, 0.48, 0.58) * (0.7 + 0.3 * low) + SUN_COLOUR * 0.55 * (0.6 + 0.4 * low)
-    // The albedos are written as a colour picker gives them; light works in linear light.
-    let a = albedo * albedo
-    var c = a * light + SUN_COLOUR * a * edge * facing * 0.9
-    // Below the layer's ground, into the dark: what a pit looks down into.
-    let under = smoothstep(0.0, 4.0, ground - q.y)
-    c *= 1.0 - 0.85 * under
-    c = blend(c, sky * (1.0 - 0.8 * under), haze * (1.0 - 0.7 * under))
-    Over { color: vec4(c, smoothstep(soft, -soft, d)) }
-}
+// ---- shapes ----------------------------------------------------------------------------------
 
 /// A box's distance (half-size `b`, corners rounded by `r`).
 fn rbox(p: vec2, b: vec2, r: f32) -> f32 {
@@ -162,72 +107,150 @@ fn rbox(p: vec2, b: vec2, r: f32) -> f32 {
     length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r
 }
 
-/// A segment's distance from `a` to `b`, `r` thick.
-fn capsule(p: vec2, a: vec2, b: vec2, r: f32) -> f32 {
+/// A segment's distance from `a` to `b`, `ra` thick at `a` and `rb` at `b`.
+fn cone(p: vec2, a: vec2, b: vec2, ra: f32, rb: f32) -> f32 {
     let pa = p - a
     let ba = b - a
     let h = saturate(dot(pa, ba) / dot(ba, ba))
-    length(pa - ba * h) - r
+    length(pa - ba * h) - (ra + (rb - ra) * h)
 }
 
-/// An ellipse's distance, approximately (exact on its axes; good enough for shapes this size).
+fn capsule(p: vec2, a: vec2, b: vec2, r: f32) -> f32 {
+    cone(p, a, b, ra: r, rb: r)
+}
+
+/// An ellipse's distance, approximately (exact on its axes).
 fn ellipse(p: vec2, r: vec2) -> f32 {
     let k0 = length(p / r)
     let k1 = length(p / (r * r))
     k0 * (k0 - 1.0) / max(k1, 1.0e-5)
 }
 
-// ---- the far hills ------------------------------------------------------------------------------
-
-fn far_field(q: vec2) -> (f32, vec3) {
-    let ridge = 2.5 + 4.0 * fbm(vec2(q.x * 0.03, 3.0), 4) - 1.0
-    let trees = 1.0 + 0.9 * fbm(vec2(q.x * 0.12, 9.0), 3) + 0.25 * noise2(vec2(q.x * 1.7, 2.0))
-    let a = q.y - ridge
-    let b = q.y - trees
-    if b < a {
-        (b, vec3(0.3, 0.42, 0.36))
-    } else {
-        (a, vec3(0.42, 0.5, 0.62))
-    }
+/// A crown's colour at `q`: its wash, and a darker one on the side away from the sun (`centre`
+/// its middle, `r` its size), with a soft painted edge between.
+fn crowned(lit: vec3, shade: vec3, q: vec2, centre: vec2, r: f32) -> vec3 {
+    let away = dot(q - centre, SUN) / r + 0.15 * noise2(q * 3.0)
+    blend(shade, lit, smoothstep(-0.35, -0.15, away))
 }
+
+// ---- the sky ---------------------------------------------------------------------------------
+
+/// Where the sun stands on the screen: across, as a fraction of the screen's height from the
+/// left; down, as a fraction of its height from the top.
+const SUN_AT = vec2(0.8, 0.17)
+
+/// A puffed cloud in its cell, at `q` on the cloud's layer: lumps on a flat bottom. Its
+/// distance, and the height of its bottom.
+fn cloud(q: vec2, time: f32) -> (f32, f32) {
+    let x = q.x - time * 0.05
+    let cell = floor(x / 16.0)
+    var d = 1.0e3
+    var base = 0.0
+    for k in -1..2 {
+        let i = cell + f32(k)
+        let h = hash2(i32(i), 81)
+        if h < 0.75 {
+            let at = vec2((i + 0.5) * 16.0 + (h - 0.4) * 6.0, 6.0 + 3.0 * hash2(i32(i), 82))
+            let size = 0.7 + 0.6 * hash2(i32(i), 83)
+            var c = 1.0e3
+            for j in 0..5 {
+                let fj = f32(j) - 2.0
+                let r = (1.3 - 0.22 * abs(fj)) * size * (0.85 + 0.3 * hash2(i32(i) * 7 + j, 84))
+                c = smin(c, length(vec2(x, q.y) - at - vec2(fj * 1.05 * size, r * 0.45)) - r, 0.3)
+            }
+            c = max(c, at.y - q.y)
+            if c < d {
+                d = c
+                base = at.y
+            }
+        }
+    }
+    (d, base)
+}
+
+/// The sky: a wash from soft blue overhead to cream at the horizon; the sun, a pale disc with
+/// painted rings round it; puffed clouds, cream, shaded blue-grey underneath, lightly inked.
+@fragment
+pub fn sky(pixel: FragCoord, v: View) -> vec4 {
+    let uv = pixel.position.xy / v.screen
+    let aspect = v.screen.x / v.screen.y
+    let up = 1.0 - uv.y + v.centre.y * 0.004
+    let p = on_layer(pixel, v, 0.03)
+    let px = pixel_on(v, 0.03)
+    var c = blend(vec3(0.97, 0.92, 0.8), vec3(0.6, 0.78, 0.89), smoothstep(0.28, 0.95, up))
+    c = wash(c, p * 0.5)
+    let d = distance(vec2(uv.x * aspect, uv.y), vec2(SUN_AT.x * aspect, SUN_AT.y))
+    let rings = smoothstep(0.17, 0.09, d) * 0.35 + smoothstep(0.1, 0.07, d) * 0.3
+    c = blend(c, vec3(1.0, 0.95, 0.72), rings)
+    let disc = inked(
+        vec3(1.0, 0.86, 0.45),
+        d - 0.045,
+        p,
+        width: 0.004,
+        px: 1.0 / v.screen.y,
+        ink: vec3(0.9, 0.55, 0.25),
+    )
+    c = blend(c, disc.xyz, disc.w)
+    let (cd, base) = cloud(p, v.time)
+    if cd < 0.2 {
+        let low = smoothstep(base + 0.7, base, p.y)
+        let fill = blend(vec3(1.0, 0.98, 0.93), vec3(0.83, 0.87, 0.93), low)
+        let o = inked(
+            pooled(wash(fill, p), cd, 0.25),
+            cd,
+            p,
+            width: px * 1.4,
+            px: px,
+            ink: vec3(0.55, 0.62, 0.74),
+        )
+        c = blend(c, o.xyz, o.w)
+    }
+    vec4(c, 1.0)
+}
+
+// ---- the far hills ---------------------------------------------------------------------------
 
 @fragment
 pub fn far_hills(pixel: FragCoord, v: View) -> Over {
     let q = on_layer(pixel, v, FAR)
-    let (d, albedo) = far_field(q)
-    // The gradient only near an edge: elsewhere the rim it lights is none.
-    let g = if abs(d) < 0.15 {
-        let (_, grad, _) = value_gradient_with(|p: vec2| far_field(p), q)
-        grad
-    } else {
-        vec2(0.0, 1.0)
-    }
-    if d > 0.3 {
+    let px = pixel_on(v, FAR)
+    if q.y > 7.0 {
         discard()
     }
-    let uv = pixel.position.xy / v.screen
-    let sky = sky_colour(uv, v.screen.x / v.screen.y, v.centre.y)
-    shade(g, albedo, q, sky, d: d, ground: 0.0, haze: 0.55, soft: max(0.03, blur(v, FAR)))
+    let ridge = 1.5 + 4.0 * fbm(vec2(q.x * 0.03, 3.0), 3)
+    let trees = 1.0 +
+        0.8 * fbm(vec2(q.x * 0.12, 9.0), 2) +
+        0.3 * abs(sin(q.x * 2.1)) * noise2(vec2(q.x * 0.5, 2.0))
+    let (a, b) = (q.y - ridge, q.y - trees)
+    if b < a {
+        paint(b, vec3(0.58, 0.72, 0.64), q, px, haze: 0.4, line: 0.8)
+    } else {
+        paint(a, vec3(0.66, 0.76, 0.84), q, px, haze: 0.45, line: 0.8)
+    }
 }
 
-// ---- the savanna: acacias and giraffes -----------------------------------------------------------
+// ---- the savanna: acacias and giraffes --------------------------------------------------------
 
 /// The savanna's ground at `x` (m).
 fn savanna_ground(x: f32) -> f32 {
-    0.4 + 0.7 * sin(x * 0.07) + 0.5 * fbm(vec2(x * 0.05, 4.0), 3)
+    0.4 + 0.7 * sin(x * 0.07) + 0.5 * noise2(vec2(x * 0.05, 4.0))
 }
 
-/// An acacia at `base`, `h` m tall: a thin trunk forking, and a flat, ragged crown.
-fn acacia(p: vec2, base: vec2, h: f32, seed: f32) -> f32 {
+/// An acacia at `base`, `h` m tall: a thin trunk forking, and a flat, ragged crown. Its
+/// distance, and 1 where it's crown.
+fn acacia(p: vec2, base: vec2, h: f32, seed: f32) -> (f32, f32) {
     let q = p - base
     let fork = vec2(0.15, h * 0.55)
-    var d = capsule(q, vec2(0.0), fork, 0.09)
-    d = min(d, capsule(q, fork, vec2(-0.7, h * 0.9), 0.06))
-    d = min(d, capsule(q, fork, vec2(0.9, h * 0.92), 0.06))
-    let crown = q - vec2(0.1, h)
-    let ragged = 0.18 * noise2(vec2(crown.x * 2.2 + seed * 10.0, 1.0)) - 0.06
-    d = min(d, ellipse(crown, vec2(2.3, 0.38 + ragged)))
-    min(d, ellipse(crown - vec2(-1.1, -0.15), vec2(1.0, 0.25)))
+    var trunk = capsule(q, vec2(0.0), fork, 0.09)
+    trunk = min(trunk, capsule(q, fork, vec2(-0.7, h * 0.9), 0.06))
+    trunk = min(trunk, capsule(q, fork, vec2(0.9, h * 0.92), 0.06))
+    let crown_at = q - vec2(0.1, h)
+    let ragged = 0.18 * noise2(vec2(crown_at.x * 2.2 + seed * 10.0, 1.0)) - 0.06
+    let crown = min(
+        ellipse(crown_at, vec2(2.3, 0.38 + ragged)),
+        ellipse(crown_at - vec2(-1.1, -0.15), vec2(1.0, 0.25)),
+    )
+    (min(trunk, crown), if crown < trunk { 1.0 } else { 0.0 })
 }
 
 /// A giraffe at `base` facing `dir`, its neck stretched up to eat (`t`, the time, sways it).
@@ -245,96 +268,81 @@ fn giraffe(p: vec2, base: vec2, dir: f32, t: f32) -> f32 {
     min(d, capsule(q, vec2(-0.8, 2.2), vec2(-1.05, 1.5), 0.03))
 }
 
-fn savanna_field(q: vec2, time: f32) -> (f32, vec3) {
+@fragment
+pub fn savanna(pixel: FragCoord, v: View) -> Over {
+    let q = on_layer(pixel, v, SAVANNA)
+    let px = pixel_on(v, SAVANNA)
     let ground = savanna_ground(q.x)
+    let grass = vec3(0.88, 0.8, 0.52)
+    if q.y > ground + 6.2 {
+        discard()
+    }
+    if q.y < ground - 0.3 {
+        return under(grass, q, ground, px, 0.3)
+    }
     var d = q.y - ground
-    var albedo = vec3(0.55, 0.6, 0.3)
+    var albedo = grass
     let cell = floor(q.x / 8.0)
     for k in -1..2 {
         let i = cell + f32(k)
         let h = hash2(i32(i), 11)
         let x = (i + 0.2 + 0.6 * hash2(i32(i), 12)) * 8.0
-        if h < 0.7 && abs(q.x - x) < 2.6 && q.y < ground + 6.0 {
-            let tree = acacia(q, vec2(x, savanna_ground(x) - 0.2), 3.2 + 1.4 * h, h)
+        if h < 0.7 && abs(q.x - x) < 2.6 {
+            let base = vec2(x, savanna_ground(x) - 0.2)
+            let (tree, leaves) = acacia(q, base, 3.2 + 1.4 * h, h)
             if tree < d {
                 d = tree
-                albedo = vec3(0.28, 0.42, 0.16)
+                albedo = if leaves > 0.5 {
+                    let top = base + vec2(0.1, 3.2 + 1.4 * h)
+                    crowned(vec3(0.56, 0.68, 0.38), vec3(0.42, 0.55, 0.33), q, top, 2.0)
+                } else {
+                    vec3(0.56, 0.43, 0.32)
+                }
             }
         }
     }
     let herd = floor(q.x / 27.0)
     for k in -1..2 {
         let i = herd + f32(k)
-        let h = hash2(i32(i), 21)
         let x = (i + 0.3 + 0.4 * hash2(i32(i), 22)) * 27.0
-        if h < 0.55 && abs(q.x - x) < 2.0 && q.y < ground + 5.0 {
+        if hash2(i32(i), 21) < 0.55 && abs(q.x - x) < 2.0 {
             let dir = if hash2(i32(i), 23) < 0.5 { -1.0 } else { 1.0 }
-            let animal = giraffe(q, vec2(x, savanna_ground(x) - 0.1), dir, time)
+            let animal = giraffe(q, vec2(x, savanna_ground(x) - 0.1), dir, v.time)
             if animal < d {
                 d = animal
-                albedo = vec3(0.85, 0.6, 0.3)
+                // Patches: a warped grid of brown, light lines between.
+                let patch = abs(fract(q * vec2(4.0, 4.5) + vec2(noise2(q * 6.0) * 0.4)) - vec2(0.5))
+                let dark = smoothstep(0.44, 0.39, max(patch.x, patch.y))
+                albedo = blend(vec3(0.97, 0.82, 0.5), vec3(0.78, 0.5, 0.28), dark)
             }
         }
     }
-    (d, albedo)
+    paint(d, albedo, q, px, haze: 0.3, line: 1.0)
 }
 
-@fragment
-pub fn savanna(pixel: FragCoord, v: View) -> Over {
-    let q = on_layer(pixel, v, SAVANNA)
-    let (d, albedo) = savanna_field(q, v.time)
-    // The gradient only near an edge: elsewhere the rim it lights is none.
-    let g = if abs(d) < 0.15 {
-        let (_, grad, _) = value_gradient_with(|p: vec2| savanna_field(p, v.time), q)
-        grad
-    } else {
-        vec2(0.0, 1.0)
-    }
-    if d > 0.3 {
-        discard()
-    }
-    let uv = pixel.position.xy / v.screen
-    let sky = sky_colour(uv, v.screen.x / v.screen.y, v.centre.y)
-    // A giraffe's patches: a cell pattern, dark between light.
-    var a = albedo
-    if albedo.x > 0.8 {
-        let cell = fract(q * vec2(4.0, 4.5) + vec2(noise2(q * 6.0) * 0.4)) - vec2(0.5)
-        let c = abs(cell)
-        a = blend(albedo, vec3(0.5, 0.28, 0.12), smoothstep(0.44, 0.38, max(c.x, c.y)))
-    }
-    shade(
-        g,
-        a,
-        q,
-        sky,
-        d: d,
-        ground: savanna_ground(q.x),
-        haze: 0.34,
-        soft: max(0.02, blur(v, SAVANNA)),
-    )
-}
-
-// ---- the zoo's path: trees, lamps, the fence and elephants ---------------------------------------
+// ---- the zoo's path: trees, lamps, the fence and elephants -------------------------------------
 
 /// The path's ground at `x` (m).
 fn path_ground(x: f32) -> f32 {
     -0.6 + 0.35 * sin(x * 0.11) + 0.2 * noise2(vec2(x * 0.3, 1.0))
 }
 
-/// A round tree at `base`, `h` m tall: a trunk and a crown of lumps.
+/// A round tree at `base`, `h` m tall: a trunk and a crown of lumps, scalloped at its edge.
+/// Its distance, and 1 where it's crown.
 fn round_tree(p: vec2, base: vec2, h: f32, seed: f32) -> (f32, f32) {
     let q = p - base
     let trunk = min(
-        capsule(q, vec2(0.0), vec2(0.05, h * 0.7), 0.16),
-        capsule(q, vec2(0.0, h * 0.45), vec2(0.6, h * 0.7), 0.08),
+        cone(q, vec2(0.0), vec2(0.05, h * 0.7), ra: 0.2, rb: 0.12),
+        capsule(q, vec2(0.0, h * 0.45), vec2(0.6, h * 0.7), 0.07),
     )
     var crown = 1.0e3
     for k in 0..5 {
         let a = f32(k) * 1.3 + seed * 6.0
         let at = vec2(0.0, h) + vec2(cos(a) * 1.1, sin(a) * 0.6)
-        crown = smin(crown, length(q - at) - (1.0 + 0.3 * sin(a * 2.7)), 0.4)
+        crown = smin(crown, length(q - at) - (1.0 + 0.3 * sin(a * 2.7)), 0.3)
     }
-    crown += 0.12 * noise2(q * 3.0 + vec2(seed * 40.0)) - 0.05
+    // Scallops round the edge, as a painter's leaves.
+    crown += 0.06 * abs(sin(atan2(q.y - h, q.x) * 9.0 + seed * 20.0))
     (min(trunk, crown), if crown < trunk { 1.0 } else { 0.0 })
 }
 
@@ -354,107 +362,86 @@ fn elephant(p: vec2, base: vec2, dir: f32, t: f32) -> f32 {
     min(d, capsule(q, vec2(-1.4, 1.8), vec2(-1.65, 1.0), 0.04))
 }
 
-fn path_field(q: vec2, time: f32) -> (f32, vec3) {
+@fragment
+pub fn path(pixel: FragCoord, v: View) -> Over {
+    let q = on_layer(pixel, v, PATH)
+    let px = pixel_on(v, PATH)
     let ground = path_ground(q.x)
+    let lawn = vec3(0.64, 0.76, 0.44)
+    if q.y > ground + 7.9 {
+        discard()
+    }
+    if q.y < ground - 0.3 {
+        return under(lawn, q, ground, px, 0.15)
+    }
     var d = q.y - ground
-    var albedo = vec3(0.42, 0.55, 0.24)
-    // The trees.
+    var albedo = lawn
     let cell = floor(q.x / 10.0)
     for k in -1..2 {
         let i = cell + f32(k)
         let h = hash2(i32(i), 31)
         let x = (i + 0.25 + 0.5 * hash2(i32(i), 32)) * 10.0
-        if h < 0.75 && abs(q.x - x) < 3.0 && q.y < ground + 7.8 {
-            let (tree, leaves) = round_tree(q, vec2(x, path_ground(x) - 0.2), 3.6 + 2.0 * h, h)
+        if h < 0.75 && abs(q.x - x) < 3.0 {
+            let base = vec2(x, path_ground(x) - 0.2)
+            let tall = 3.6 + 2.0 * h
+            let (tree, leaves) = round_tree(q, base, tall, h)
             if tree < d {
                 d = tree
                 albedo = if leaves > 0.5 {
-                    // A crown is lit like a ball: brighter towards the sun.
-                    let crown = vec2(x, path_ground(x) + 3.4 + 2.0 * h)
-                    let towards = dot(normalize(q - crown), normalize(SUN.xy))
-                    let ball = 0.7 + 0.45 * towards * saturate(length(q - crown) / 1.6)
-                    blend(vec3(0.2, 0.42, 0.14), vec3(0.32, 0.5, 0.16), hash2(i32(i), 33)) * ball
+                    let lit = blend(
+                        vec3(0.46, 0.66, 0.36),
+                        vec3(0.56, 0.7, 0.36),
+                        hash2(i32(i), 33),
+                    )
+                    crowned(lit, lit * vec3(0.78, 0.82, 0.88), q, base + vec2(0.0, tall), 1.6)
                 } else {
-                    vec3(0.3, 0.22, 0.15)
+                    vec3(0.55, 0.4, 0.28)
                 }
             }
         }
     }
-    // The elephants, behind the fence.
     let herd = floor(q.x / 34.0)
     for k in -1..2 {
         let i = herd + f32(k)
         let x = (i + 0.3 + 0.4 * hash2(i32(i), 42)) * 34.0
         if hash2(i32(i), 41) < 0.6 && abs(q.x - x) < 2.9 && q.y < ground + 3.4 {
             let dir = if hash2(i32(i), 43) < 0.5 { -1.0 } else { 1.0 }
-            let animal = elephant(q, vec2(x, path_ground(x) - 0.3), dir, time)
+            let base = vec2(x, path_ground(x) - 0.3)
+            let animal = elephant(q, base, dir, v.time)
             if animal < d {
                 d = animal
-                albedo = vec3(0.36, 0.35, 0.38)
+                let middle = base + vec2(0.3 * dir, 1.6)
+                albedo = crowned(vec3(0.72, 0.72, 0.76), vec3(0.6, 0.6, 0.67), q, middle, 1.4)
             }
         }
     }
-    // The lamp posts.
-    let lamp = floor(q.x / 15.0)
-    let lx = (lamp + 0.5) * 15.0
-    let lb = vec2(lx, path_ground(lx) - 0.1)
-    let post = if abs(q.x - lx) > 0.7 { 1.0e3 } else {
-        min(
+    let lx = (floor(q.x / 15.0) + 0.5) * 15.0
+    if abs(q.x - lx) < 0.7 {
+        let lb = vec2(lx, path_ground(lx) - 0.1)
+        let arm = capsule(q, lb + vec2(0.0, 3.2), lb + vec2(0.35, 3.35), 0.04)
+        let post = min(
             capsule(q, lb, lb + vec2(0.0, 3.2), 0.06),
-            min(
-                capsule(q, lb + vec2(0.0, 3.2), lb + vec2(0.35, 3.35), 0.04),
-                length(q - lb - vec2(0.4, 3.2)) - 0.14,
-            ),
+            min(arm, length(q - lb - vec2(0.4, 3.2)) - 0.14),
         )
+        if post < d {
+            d = post
+            albedo = vec3(0.36, 0.44, 0.42)
+        }
     }
-    if post < d {
-        d = post
-        albedo = vec3(0.16, 0.2, 0.18)
-    }
-    // The fence along the path: posts and two rails.
     let fx = q.x - (floor(q.x / 2.2) + 0.5) * 2.2
-    let fy = q.y - path_ground(q.x)
+    let fy = q.y - ground
     var fence = rbox(vec2(fx, fy - 0.55), vec2(0.07, 0.62), 0.03)
     fence = min(fence, abs(fy - 0.95) - 0.05)
     fence = min(fence, abs(fy - 0.45) - 0.04)
     fence = max(fence, -fy - 0.1)
     if fence < d {
         d = fence
-        albedo = vec3(0.55, 0.38, 0.22)
+        albedo = vec3(0.86, 0.66, 0.44)
     }
-    (d, albedo)
+    paint(d, albedo, q, px, haze: 0.15, line: 1.2)
 }
 
-@fragment
-pub fn path(pixel: FragCoord, v: View) -> Over {
-    let q = on_layer(pixel, v, PATH)
-    let (d, albedo) = path_field(q, v.time)
-    // The gradient only near an edge: elsewhere the rim it lights is none.
-    let g = if abs(d) < 0.15 {
-        let (_, grad, _) = value_gradient_with(|p: vec2| path_field(p, v.time), q)
-        grad
-    } else {
-        vec2(0.0, 1.0)
-    }
-    if d > 0.3 {
-        discard()
-    }
-    let uv = pixel.position.xy / v.screen
-    let sky = sky_colour(uv, v.screen.x / v.screen.y, v.centre.y)
-    let leafy = (noise2(q * 5.0) + noise2(q * 11.0 + vec2(3.0))) * 0.08
-    shade(
-        g,
-        albedo * (0.91 + leafy),
-        q,
-        sky,
-        d: d,
-        ground: path_ground(q.x),
-        haze: 0.17,
-        soft: max(0.012, blur(v, PATH)),
-    )
-}
-
-// ---- the bushes and the bamboo --------------------------------------------------------------------
+// ---- the bushes and the bamboo ----------------------------------------------------------------
 
 fn near_ground(x: f32) -> f32 {
     -1.7 + 0.25 * sin(x * 0.17) + 0.2 * noise2(vec2(x * 0.5, 7.0))
@@ -468,8 +455,8 @@ fn leaf(p: vec2, at: vec2, dir: vec2, l: f32) -> f32 {
     length(q - dir * t) - w
 }
 
-/// A grove of bamboo at `x0`: stalks with dark rings every 0.6 m, fans of leaves at the upper
-/// rings, swaying in the wind (`time`). Its distance, and 1 where it's leaf.
+/// A grove of bamboo at `x0`: stalks ringed every 0.6 m, fans of leaves near their tops,
+/// swaying in the wind (`time`). Its distance, and 1 where it's leaf.
 fn grove(q: vec2, x0: f32, ground: f32, cell: i32, time: f32) -> (f32, f32) {
     var d = 1.0e3
     var leafy = 0.0
@@ -493,10 +480,8 @@ fn grove(q: vec2, x0: f32, ground: f32, cell: i32, time: f32) -> (f32, f32) {
             let hl = hash2(cell * 31 + s * 7 + l, 54)
             let y = top * (0.55 + 0.45 * f32(l) / 4.0)
             let side = if (l + s) % 2 == 0 { -1.0 } else { 1.0 }
-            let base = vec2(
-                x + 0.12 * sin(time * 0.8 + x * 1.3) * (y / top) * (y / top),
-                ground + y,
-            )
+            let bend = 0.12 * sin(time * 0.8 + x * 1.3) * (y / top) * (y / top)
+            let base = vec2(x + bend, ground + y)
             let dir = normalize(vec2(side * cos(0.3 + 0.5 * hl), -sin(0.3 + 0.5 * hl) * 0.6 - 0.1))
             let leaf_d = min(
                 leaf(q, base, dir, 0.9 + 0.4 * hl),
@@ -511,112 +496,86 @@ fn grove(q: vec2, x0: f32, ground: f32, cell: i32, time: f32) -> (f32, f32) {
     (d, leafy)
 }
 
-/// The nearest layer: bushes along the ground, lit on top, and groves of bamboo.
-fn near_field(q: vec2, time: f32) -> (f32, vec3) {
-    let ground = near_ground(q.x)
-    // The bushes: mounds of round lumps, bigger and smaller.
-    var d = q.y - ground - 0.4
-    let lump = floor(q.x / 1.3)
-    for k in -2..3 {
-        let i = lump + f32(k)
-        let h = hash2(i32(i), 61)
-        let at = vec2((i + 0.5) * 1.3 + (h - 0.5) * 0.6, ground + 0.3 + 0.7 * h)
-        d = smin(d, length(q - at) - (0.6 + 0.6 * hash2(i32(i), 62)), 0.35)
-    }
-    d += 0.06 * noise2(q * 6.0) - 0.03
-    // Flowers in the bushes: hibiscus reds, pinks and yellows, here and there.
-    let cell_f = floor(q / 0.32)
-    let hf = hash2(i32(cell_f.x), i32(cell_f.y) + 500)
-    let petal = length(q - (cell_f + vec2(0.5)) * 0.32) - 0.07
-    let near_top = d < -0.08 && d > -0.7 && q.y > ground
-    let flower = if hf < 0.07 && near_top { smoothstep(0.02, -0.02, petal) } else { 0.0 }
-    let bloom = if hf < 0.035 {
-        vec3(0.95, 0.25, 0.3)
-    } else if hf < 0.05 {
-        vec3(0.98, 0.6, 0.75)
-    } else {
-        vec3(1.0, 0.85, 0.3)
-    }
-    var albedo = blend(vec3(0.12, 0.27, 0.08), bloom, flower)
-    let cell = floor(q.x / 9.0)
-    for k in -1..2 {
-        let i = cell + f32(k)
-        let x0 = (i + 0.2 + 0.4 * hash2(i32(i), 52)) * 9.0
-        let inside = q.x > x0 - 1.5 && q.x < x0 + 3.0 && q.y > ground + 0.2 && q.y < ground + 7.6
-        if hash2(i32(i), 51) < 0.6 && inside {
-            let (g, leafy) = grove(q, x0, near_ground(x0), i32(i), time)
-            if g < d {
-                d = g
-                albedo = if leafy > 0.5 { vec3(0.2, 0.42, 0.1) } else { vec3(0.36, 0.5, 0.16) }
-            }
+/// What the nearest layer is under its ground, down a pit: rows of leafy lumps, each row darker
+/// than the one above it, inked where one meets the next, into shade.
+fn thicket(q: vec2, ground: f32, px: f32) -> Over {
+    var c = vec3(0.12, 0.18, 0.13)
+    // From the deepest row up, so each nearer row covers the one below.
+    for row in 0..4 {
+        let r = 3.0 - f32(row)
+        let top = ground + 0.3 - r * 1.3
+        let cell = floor(q.x / 1.1 + r * 0.37)
+        var d = 1.0e3
+        for k in -1..2 {
+            let i = cell + f32(k)
+            let h = hash2(i32(i), 90 + row)
+            let at = vec2((i + 0.5 - r * 0.37) * 1.1, top - 0.2 + 0.4 * h)
+            d = smin(d, length(q - at) - (0.55 + 0.25 * h), 0.25)
         }
+        let shade = 1.0 - r * 0.2
+        let leaf = wash(vec3(0.34, 0.54, 0.3) * shade, q)
+        let o = inked(leaf, d, q, px * 1.4, px, INK)
+        c = blend(c, o.xyz, o.w)
     }
-    (d, albedo)
+    Over { color: vec4(c, 1.0) }
 }
 
 @fragment
 pub fn bamboo(pixel: FragCoord, v: View) -> Over {
     let q = on_layer(pixel, v, BAMBOO)
-    let (d, albedo) = near_field(q, v.time)
-    // The gradient only near an edge: elsewhere the rim it lights is none.
-    let g = if abs(d) < 0.15 {
-        let (_, grad, _) = value_gradient_with(|p: vec2| near_field(p, v.time), q)
-        grad
-    } else {
-        vec2(0.0, 1.0)
-    }
-    if d > 0.3 {
+    let px = pixel_on(v, BAMBOO)
+    let ground = near_ground(q.x)
+    let bush = vec3(0.38, 0.58, 0.32)
+    if q.y > ground + 7.6 {
         discard()
     }
-    let uv = pixel.position.xy / v.screen
-    let sky = sky_colour(uv, v.screen.x / v.screen.y, v.centre.y)
-    // Leaves over the bushes: a dapple of lighter and darker.
-    let dapple = 0.75 + 0.5 * noise2(q * 4.0) * noise2(q * 9.0 + vec2(3.0))
-    shade(
-        g,
-        albedo * dapple,
-        q,
-        sky,
-        d: d,
-        ground: near_ground(q.x),
-        haze: 0.12,
-        soft: max(0.012, blur(v, BAMBOO)),
-    )
-}
-
-// ---- in front: the pollen and the fronds ---------------------------------------------------------
-
-/// Pollen drifting in the sunlight, on the plane of play: a mote in some of the cells 0.9 m
-/// square, wandering round its cell's middle, twinkling.
-@fragment
-pub fn pollen(pixel: FragCoord, v: View) -> Over {
-    let q = on_layer(pixel, v, 1.0)
-    let cell = floor(q / 0.9)
-    let (cx, cy) = (i32(cell.x), i32(cell.y))
-    let h = hash2(cx, cy + 300)
-    if h > 0.07 {
-        discard()
+    if q.y < ground + 0.1 {
+        return thicket(q, ground, px)
     }
-    let t = v.time
-    let wander = vec2(sin(t * 0.31 + h * 20.0), cos(t * 0.23 + h * 13.0)) * 0.3
-    let centre = (cell + vec2(0.5) + wander) * 0.9
-    let r = 0.006 + 0.01 * hash2(cx + 9, cy)
-    let d = length(q - centre)
-    let twinkle = 0.35 + 0.65 * pow(sin(t * 1.7 + h * 40.0) * 0.5 + 0.5, 2.0)
-    let a = smoothstep(r * 3.0, 0.0, d) * twinkle
-    if a < 0.01 {
-        discard()
+    // The bushes: mounds of round lumps, shaded on the side away from the sun, with flowers.
+    var d = q.y - ground - 0.4
+    let lump = floor(q.x / 1.3)
+    var centre = vec2(q.x, ground)
+    for k in -2..3 {
+        let i = lump + f32(k)
+        let h = hash2(i32(i), 61)
+        let at = vec2((i + 0.5) * 1.3 + (h - 0.5) * 0.6, ground + 0.3 + 0.7 * h)
+        let l = length(q - at) - (0.6 + 0.6 * hash2(i32(i), 62))
+        if l < d {
+            centre = at
+        }
+        d = smin(d, l, 0.3)
     }
-    Over { color: vec4(SUN_COLOUR * vec3(1.3, 1.15, 0.8), a * 0.5) }
+    var albedo = crowned(bush, bush * vec3(0.76, 0.82, 0.86), q, centre, 1.0)
+    let cf = floor(q / 0.32)
+    let hf = hash2(i32(cf.x), i32(cf.y) + 500)
+    if hf < 0.07 && d < -0.08 && d > -0.7 {
+        let petal = length(q - (cf + vec2(0.5)) * 0.32) - 0.07
+        let bloom = if hf < 0.025 {
+            vec3(0.93, 0.33, 0.33)
+        } else if hf < 0.05 {
+            vec3(0.97, 0.66, 0.78)
+        } else {
+            vec3(1.0, 0.87, 0.4)
+        }
+        albedo = blend(albedo, bloom, smoothstep(px, -px, petal))
+    }
+    let cell = floor(q.x / 9.0)
+    for k in -1..2 {
+        let i = cell + f32(k)
+        let x0 = (i + 0.2 + 0.4 * hash2(i32(i), 52)) * 9.0
+        if hash2(i32(i), 51) < 0.6 && q.x > x0 - 1.5 && q.x < x0 + 3.0 {
+            let (g, leafy) = grove(q, x0, near_ground(x0), i32(i), v.time)
+            if g < d {
+                d = g
+                albedo = if leafy > 0.5 { vec3(0.44, 0.64, 0.32) } else { vec3(0.66, 0.74, 0.4) }
+            }
+        }
+    }
+    paint(d, albedo, q, px, haze: 0.05, line: 1.5)
 }
 
-/// A segment's distance from `a` to `b`, `ra` thick at `a` and `rb` at `b`.
-fn cone(p: vec2, a: vec2, b: vec2, ra: f32, rb: f32) -> f32 {
-    let pa = p - a
-    let ba = b - a
-    let h = saturate(dot(pa, ba) / dot(ba, ba))
-    length(pa - ba * h) - (ra + (rb - ra) * h)
-}
+// ---- in front: the fronds ----------------------------------------------------------------------
 
 /// A frond rising from `base`, `l` long, leaning `lean`: a tapering blade that bends over.
 fn frond(p: vec2, base: vec2, l: f32, lean: f32) -> f32 {
@@ -625,7 +584,18 @@ fn frond(p: vec2, base: vec2, l: f32, lean: f32) -> f32 {
     min(cone(p, base, mid, ra: 0.09, rb: 0.06), cone(p, mid, tip, ra: 0.06, rb: 0.005))
 }
 
-fn fronds_field(p: vec2, time: f32) -> (f32, vec3) {
+/// Fronds along the bottom of the screen, nearer than the play (they move 1.4 times as fast as
+/// the camera): deep green, inked, rising from below the screen's edge, a frame for the view
+/// that never covers more than its bottom eighth.
+@fragment
+pub fn fronds(pixel: FragCoord, v: View) -> Over {
+    let uv = pixel.position.xy / v.screen
+    let up = (1.0 - uv.y) * v.half.y * 2.0
+    if up > 1.7 {
+        discard()
+    }
+    let p = vec2(v.centre.x * 1.4 + (uv.x * 2.0 - 1.0) * v.half.x, up) / 1.3
+    let px = 2.0 * v.half.y / v.screen.y / 1.3
     var d = 1.0e3
     let cell = floor(p.x / 6.0)
     for k in -1..2 {
@@ -635,7 +605,7 @@ fn fronds_field(p: vec2, time: f32) -> (f32, vec3) {
             for b in 0..6 {
                 let hb = hash2(i32(i) * 11 + b, 73)
                 let side = f32(b) - 2.5
-                let sway = 0.08 * sin(time * 1.1 + x0 + f32(b))
+                let sway = 0.08 * sin(v.time * 1.1 + x0 + f32(b))
                 d = min(
                     d,
                     frond(p, vec2(x0 + side * 0.12, -0.25), 0.7 + 0.8 * hb, side * 0.22 + sway),
@@ -643,30 +613,8 @@ fn fronds_field(p: vec2, time: f32) -> (f32, vec3) {
             }
         }
     }
-    (d, vec3(0.1, 0.2, 0.08))
-}
-
-/// Fronds along the bottom of the screen, nearer than the play (they move 1.4 times as fast as
-/// the camera): dark and soft, rising from below the screen's edge, a frame for the view that
-/// never covers more than its bottom eighth.
-@fragment
-pub fn fronds(pixel: FragCoord, v: View) -> Over {
-    let uv = pixel.position.xy / v.screen
-    let up = (1.0 - uv.y) * v.half.y * 2.0
-    if up > 1.7 {
+    if d > px * 2.0 {
         discard()
     }
-    let p = vec2(v.centre.x * 1.4 + (uv.x * 2.0 - 1.0) * v.half.x, up) / 1.3
-    let (d, albedo) = fronds_field(p, v.time)
-    // The gradient only near an edge: elsewhere the rim it lights is none.
-    let g = if abs(d) < 0.15 {
-        let (_, grad, _) = value_gradient_with(|q: vec2| fronds_field(q, v.time), p)
-        grad
-    } else {
-        vec2(0.0, 1.0)
-    }
-    if d > 0.1 {
-        discard()
-    }
-    shade(g, albedo, p, vec3(0.0), d: d, ground: -10.0, haze: 0.0, soft: 0.04)
+    paint(d, vec3(0.24, 0.42, 0.24), p, px, haze: 0.0, line: 2.0)
 }

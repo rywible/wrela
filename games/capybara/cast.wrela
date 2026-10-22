@@ -270,7 +270,7 @@ fn shadow(out: mut Vec<Sprite>, c: Course, at: vec2, width: f32) {
                 out.push(
                     Sprite {
                         pose: vec4(0.0),
-                        more: vec4(0.05, 0.04, 0.03, 0.5 * fade),
+                        more: vec4(0.36, 0.34, 0.46, 0.4 * fade),
                         at: vec2(at.x, y + 0.02),
                         half: vec2(width * (0.7 + 0.3 * fade), 0.11),
                         angle: 0.0,
