@@ -220,7 +220,6 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         vertices: 6,
         instances: back.len() - behind,
     )
-    draw(wet, full.bind(z: 0.0), scenery::fronds.bind(v: view), vertices: 3)
     wet.end()
     let out = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
     let page = Page { centre: s.camera.at, half }
@@ -250,7 +249,7 @@ fn say(s: mut Lab, face: Face, text: str, size: f32, at: vec2, colour: vec4) {
 }
 
 /// The HUD: the snacks found and the times back at the top left, the clock at the top right; the
-/// course, the keys, and the capybara's mode and speed small along the bottom.
+/// course and the keys (how to swim, in water) small along the bottom.
 fn hud(s: mut Lab, snap: Snap, screen: vec2) {
     s.list.clear(screen)
     let size = max(screen.y * 0.042, 14.0)
@@ -281,20 +280,12 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2) {
         if snap.finished > 0 { gold } else { white },
     )
     let name = if snap.course == LEVEL { "The zoo's entrance" } else { "The lab" }
-    let mode = match Mode::from_u32(snap.mode) {
-        Some(Mode::Walk) => "walk",
-        Some(Mode::Crouch) => "crouch",
-        Some(Mode::Slide) => "slide",
-        Some(Mode::Air) => "air",
-        Some(Mode::Swim) => "swim",
-        None => "?",
+    let hint = if Mode::from_u32(snap.mode) == Some(Mode::Swim) {
+        "jump to kick, up to swim up, up and down in turn to dolphin kick"
+    } else {
+        "R restart   Tab the other course"
     }
-    let hint = if mode == "swim" {
-        "   jump to kick, up to swim up, up and down in turn to dolphin kick"
-    } else if snap.wet > 0 {
-        "   wet: faster"
-    } else { "" }
-    let line = f"{name}   R restart   Tab the other course      {mode} {length(snap.vel):.1} m/s{hint}"
+    let line = f"{name}   {hint}"
     say(mut s, Face::Mono, line.as_str(), small, vec2(pad, screen.y - pad - small), soft)
 }
 

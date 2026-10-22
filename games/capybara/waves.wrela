@@ -219,7 +219,7 @@ fn ripples(p: vec2, depth: f32, time: f32, px: f32) -> f32 {
     let q = vec2(p.x + time * 0.25, p.y)
     let cell = floor(q / vec2(1.6, 0.5))
     let (cx, cy) = (i32(cell.x), i32(cell.y))
-    if hash2(cx, cy + 900) > 0.5 - depth * 0.12 {
+    if hash2(cx, cy + 900) > 0.3 - depth * 0.1 {
         return 0.0
     }
     let centre = (cell +

@@ -150,7 +150,7 @@ fn shade(d: f32, g: vec2, p: vec2, paint: Paint, px: f32) -> vec4 {
     let n = normalize(vec3(normalize(g + vec2(1.0e-6)) * slope, 1.0))
     let lit = smoothstep(0.12, 0.3, dot(n, normalize(SUN)))
     let base = paint.albedo * (1.0 + paint.glow * 0.25)
-    var c = blend(base * vec3(0.74, 0.76, 0.88), base, lit)
+    var c = blend(base * vec3(0.84, 0.85, 0.93), base, lit)
     let shine = smoothstep(0.93, 0.97, dot(n, normalize(SUN + vec3(0.0, 0.0, 1.0))))
     c = blend(c, vec3(1.0, 0.99, 0.95), shine * paint.gloss)
     c = pooled(wash(c, p * 3.0), d, paint.thick * 0.25)
@@ -203,111 +203,86 @@ fn foot(x: f32, mode: f32, phase: f32, pace: f32) -> vec2 {
 }
 
 fn leg(p: vec2, x: f32, f: vec2) -> f32 {
-    let hip = vec2(x, -0.08)
-    min(cone(p, hip, f, ra: 0.09, rb: 0.055), ellipse(p - f - vec2(0.03, -0.01), vec2(0.07, 0.035)))
+    let hip = vec2(x, -0.1)
+    min(
+        cone(p, hip, f, ra: 0.085, rb: 0.065),
+        ellipse(p - f - vec2(0.025, -0.005), vec2(0.075, 0.04)),
+    )
 }
 
-/// The capybara's body and head: a loaf of a body with a high rump, a deep chest, and a big
-/// square head with its blunt muzzle, a little nose down.
+/// The capybara's body and head, drawn to be cute: a round bean of a body, high at the rump, and a
+/// big head of soft corners with its blunt muzzle, a little nose down.
 fn capybara_body(p: vec2) -> f32 {
-    var d = ellipse(p - vec2(-0.04, 0.0), vec2(0.44, 0.255))
-    d = smin(d, ellipse(p - vec2(-0.27, 0.04), vec2(0.24, 0.245)), 0.12)
-    d = smin(d, ellipse(p - vec2(0.2, 0.03), vec2(0.22, 0.22)), 0.1)
-    let head = turn(p - vec2(0.46, 0.12), -0.22)
-    let skull = rbox(head, vec2(0.16, 0.125), 0.1)
-    let muzzle = rbox(head - vec2(0.15, -0.035), vec2(0.1, 0.095), 0.085)
-    smin(d, smin(skull, muzzle, 0.07), 0.09)
+    var d = ellipse(p - vec2(-0.06, -0.01), vec2(0.4, 0.25))
+    d = smin(d, ellipse(p - vec2(-0.24, 0.03), vec2(0.22, 0.23)), 0.12)
+    let head = turn(p - vec2(0.35, 0.12), -0.1)
+    let skull = rbox(head, vec2(0.18, 0.15), 0.12)
+    let muzzle = rbox(head - vec2(0.21, -0.035), vec2(0.15, 0.115), 0.1)
+    smin(d, smin(skull, muzzle, 0.06), 0.12)
 }
 
-fn capybara(q: vec2, s: Sprite, px: f32, time: f32) -> vec4 {
+fn capybara(q: vec2, s: Sprite, px: f32) -> vec4 {
     let stride = s.pose.x
     let pace = s.pose.y
     let mode = s.pose.z
     let wet = s.more.x
     let p = q / s.more.zw
-    let fur = vec3(0.84, 0.6, 0.4) * (1.0 - 0.2 * wet)
-    let dark = vec3(0.66, 0.45, 0.31) * (1.0 - 0.2 * wet)
-    let gloss = 0.35 * wet
-    let legs = Paint { albedo: dark, gloss, thick: 0.06, glow: 0.0 }
+    let darker = 1.0 - 0.15 * wet
+    let fur = vec3(0.86, 0.63, 0.43) * darker
+    let gloss = 0.3 * wet
     var c = vec4(0.0)
-    // The far legs, in shade behind the body.
-    let far = Paint { albedo: dark * 0.6, gloss, thick: 0.06, glow: 0.0 }
-    let fb = foot(-0.25, mode, stride + 3.1416, pace)
-    let ff = foot(0.24, mode, stride, pace)
-    c = layer(c, |x: vec2| leg(x, -0.25 + 0.05, fb + vec2(0.05, 0.0)), p, far, px)
-    c = layer(c, |x: vec2| leg(x, 0.24 + 0.05, ff + vec2(0.05, 0.0)), p, far, px)
-    // The body: the fur lighter underneath, darker towards the nose, in fine strokes.
+    // The legs, all behind the body, so only their stubby ends show: the far ones in shade.
+    let far = Paint { albedo: vec3(0.6, 0.42, 0.29) * darker, gloss, thick: 0.06, glow: 0.0 }
+    let near = Paint { albedo: vec3(0.74, 0.53, 0.37) * darker, gloss, thick: 0.06, glow: 0.0 }
+    let fb = foot(-0.22, mode, stride + 3.1416, pace)
+    let ff = foot(0.2, mode, stride, pace)
+    c = layer(c, |x: vec2| leg(x, -0.17, fb + vec2(0.05, 0.0)), p, far, px)
+    c = layer(c, |x: vec2| leg(x, 0.25, ff + vec2(0.05, 0.0)), p, far, px)
+    let nb = foot(-0.22, mode, stride, pace)
+    let nf = foot(0.2, mode, stride + 3.1416, pace)
+    c = layer(c, |x: vec2| leg(x, -0.22, nb), p, near, px)
+    c = layer(c, |x: vec2| leg(x, 0.2, nf), p, near, px)
+    // The body and head in one line: a paler belly, a slightly darker muzzle.
     let (d, g, _) = value_gradient_with(|x: vec2| (capybara_body(x), 0.0), p)
     if d < px {
-        let strokes = noise2(vec2(p.x * 30.0 + p.y * 12.0, p.y * 80.0)) * 0.06
-        var albedo = fur * (0.97 + strokes)
-        albedo = blend(albedo, vec3(0.74, 0.56, 0.38), smoothstep(-0.05, -0.2, p.y) * 0.6)
-        albedo = blend(albedo, dark, smoothstep(0.48, 0.7, p.x) * 0.7)
-        c = over(c, shade(d, g, p, Paint { albedo, gloss, thick: 0.22, glow: 0.0 }, px))
+        var albedo = blend(fur, vec3(0.93, 0.78, 0.6) * darker, smoothstep(-0.08, -0.2, p.y) * 0.7)
+        albedo = blend(albedo, vec3(0.72, 0.5, 0.35) * darker, smoothstep(0.6, 0.7, p.x) * 0.7)
+        c = over(c, shade(d, g, p, Paint { albedo, gloss, thick: 0.4, glow: 0.0 }, px))
     }
-    // The near legs.
-    let nb = foot(-0.25, mode, stride, pace)
-    let nf = foot(0.24, mode, stride + 3.1416, pace)
-    c = layer(c, |x: vec2| leg(x, -0.25, nb), p, legs, px)
-    c = layer(c, |x: vec2| leg(x, 0.24, nf), p, legs, px)
-    // A blush on its cheek.
-    let blush = ellipse(p - vec2(0.53, 0.04), vec2(0.055, 0.032))
-    c = over(c, vec4(vec3(0.95, 0.55, 0.5), saturate(-blush / 0.03) * 0.55 * c.w))
-    // The ear, the eye (blinking), the nostril and the mouth.
-    c = layer(
-        c,
-        |x: vec2| ellipse(turn(x - vec2(0.35, 0.265), 0.3), vec2(0.045, 0.06)),
-        p,
-        Paint {
-            albedo: dark,
-            gloss: 0.1,
-            thick: 0.04,
-            glow: 0.0,
-        },
-        px,
-    )
+    // A small round ear on top, its inside darker.
+    let ear = |x: vec2| length(x - vec2(0.25, 0.27)) - 0.05
+    c = layer(c, ear, p, Paint { albedo: fur, gloss: 0.0, thick: 0.05, glow: 0.0 }, px)
+    c = mark(c, length(p - vec2(0.255, 0.265)) - 0.022, vec3(0.62, 0.42, 0.32), px)
+    // A blush, a big shiny eye (blinking), its nose, and a little smile.
+    let blush = ellipse(p - vec2(0.49, 0.06), vec2(0.055, 0.03))
+    c = over(c, vec4(vec3(0.97, 0.58, 0.54), saturate(-blush / 0.025) * 0.6 * c.w))
     let open = max(s.pose.w, 0.08)
-    let eye = ellipse(p - vec2(0.5, 0.175), vec2(0.032, 0.028 * open))
-    c = mark(c, eye, vec3(0.08, 0.05, 0.04), px)
+    c = mark(c, ellipse(p - vec2(0.43, 0.185), vec2(0.036, 0.042 * open)), vec3(0.1, 0.06, 0.05), px)
     if open > 0.5 {
-        c = mark(c, length(p - vec2(0.51, 0.186)) - 0.009, vec3(1.0), px)
+        c = mark(c, length(p - vec2(0.443, 0.202)) - 0.013, vec3(1.0), px)
     }
     c = mark(
         c,
-        ellipse(turn(p - vec2(0.675, 0.095), -0.5), vec2(0.022, 0.011)),
-        vec3(0.15, 0.09, 0.06),
+        ellipse(turn(p - vec2(0.7, 0.115), 0.4), vec2(0.03, 0.019)),
+        vec3(0.3, 0.18, 0.13),
         px,
     )
-    c = mark(
-        c,
-        capsule(p, vec2(0.6, -0.025), vec2(0.66, -0.012), 0.006),
-        vec3(0.2, 0.12, 0.08),
-        px,
-    )
+    let smile = abs(length(p - vec2(0.655, 0.025)) - 0.03) - 0.006
+    c = mark(c, max(smile, p.y - 0.025), vec3(0.3, 0.18, 0.13), px)
     // The yuzu on its head, as capybaras in hot springs wear them.
     if s.more.y > 0.5 {
         c = layer(
             c,
-            |x: vec2| length(x - vec2(0.4, 0.36)) - 0.1,
+            |x: vec2| length(x - vec2(0.36, 0.37)) - 0.1,
             p,
-            Paint {
-                albedo: vec3(1.0, 0.84, 0.2),
-                gloss: 0.4,
-                thick: 0.1,
-                glow: 0.08,
-            },
+            Paint { albedo: vec3(1.0, 0.84, 0.2), gloss: 0.4, thick: 0.1, glow: 0.08 },
             px,
         )
         c = layer(
             c,
-            |x: vec2| ellipse(turn(x - vec2(0.45, 0.47), 0.6), vec2(0.05, 0.02)),
+            |x: vec2| ellipse(turn(x - vec2(0.41, 0.48), 0.6), vec2(0.05, 0.02)),
             p,
-            Paint {
-                albedo: vec3(0.3, 0.6, 0.2),
-                gloss: 0.2,
-                thick: 0.02,
-                glow: 0.0,
-            },
+            Paint { albedo: vec3(0.3, 0.6, 0.2), gloss: 0.2, thick: 0.02, glow: 0.0 },
             px,
         )
     }
@@ -767,7 +742,7 @@ pub fn sprite(v: Spritel, sprites: [Sprite], st: Stage) -> Over {
     let s = sprites[v.index.value]
     let q = v.local
     var c = if s.kind == CAPYBARA {
-        capybara(q, s, st.px, st.time)
+        capybara(q, s, st.px)
     } else if s.kind == GOOSE {
         goose(q, s, st.px)
     } else if s.kind == PIGEON {

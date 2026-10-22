@@ -237,7 +237,7 @@ fn pebble(p: vec2, px: f32) -> vec4 {
     let cell = floor(p / size)
     let (cx, cy) = (i32(cell.x), i32(cell.y))
     let h = hash2(cx, cy)
-    if h > 0.1 {
+    if h > 0.045 {
         return vec4(0.0)
     }
     let r = size * (0.12 + 0.18 * hash2(cx + 71, cy))
@@ -262,8 +262,8 @@ fn soil(p: vec2, depth: f32, px: f32) -> vec3 {
     c *= 1.0 - 0.22 * smoothstep(TURF_DEPTH + 0.5, TURF_DEPTH, depth)
     // Roots: wiggling inked lines, a contour of noise, near the top only.
     let root = abs(noise2(p * vec2(1.4, 2.2)) - 0.5) / 1.2
-    let roots = smoothstep(px * 1.0, px * 0.2, root) * smoothstep(1.3, 0.5, depth)
-    c = blend(c, INK, roots * 0.45)
+    let roots = smoothstep(px * 1.0, px * 0.2, root) * smoothstep(0.9, 0.4, depth)
+    c = blend(c, INK, roots * 0.25)
     let stone = pebble(p, px)
     blend(c, stone.xyz, stone.w)
 }
@@ -388,7 +388,7 @@ pub fn grass(b: Blade, f: Field) -> Over {
             }
             d = min(d, blade)
         }
-        if hash2(i, 3) < 0.08 {
+        if hash2(i, 3) < 0.03 {
             let head = vec2(base + lean * 1.4, tall + 0.1)
             d = min(d, cone(q, vec2(base, 0.0), head, ra: 0.012, rb: 0.012))
             daisy = min(daisy, length(q - head) - 0.05)

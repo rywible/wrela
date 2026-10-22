@@ -53,5 +53,5 @@ pub fn paper(p: vec2, px: f32) -> f32 {
     let fibre = noise2(vec2(p.x * 0.6 + p.y * 3.0, p.y * 0.4 - p.x * 2.0) / max(px * 6.0, 1.0e-4)) -
         0.5
     let mottle = noise2(p * 0.35) - 0.5
-    1.0 + dab * 0.035 + tooth * 0.035 + fibre * 0.02 + mottle * 0.025
+    1.0 + dab * 0.02 + tooth * 0.03 + fibre * 0.015 + mottle * 0.02
 }

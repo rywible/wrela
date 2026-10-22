@@ -1,6 +1,6 @@
 // What's behind the course, painted as a picture book's backdrop (ink.wrela): the sky with its
 // puffed clouds and the sun, and the zoo in four layers back to front, each moved by its own
-// fraction of the camera's motion (parallax); fronds in front. Each is drawn per pixel over the
+// fraction of the camera's motion (parallax). Each is drawn per pixel over the
 // screen as a field: its shapes' distances, unioned, the pixel inside where it's below 0, then a
 // wash with an ink line. Nothing here is a picture: shapes, hashes and noise in cells along the
 // layer.
@@ -8,7 +8,7 @@
 // - The far hills (0.06): blue ranges and a tree line.
 // - The savanna (0.2): rises of straw-coloured grass, flat-topped acacias, giraffes eating.
 // - The zoo's path (0.42): round trees, lamp posts, a fence, elephants behind it.
-// - The bushes and the bamboo (0.68): flowering bushes and groves of bamboo, nearest.
+// - The bushes and the bamboo (0.68): bushes, a few flowers, a grove of bamboo here and there.
 //
 // A layer further back is drawn smaller, paler (its washes and its ink fade towards the mist's
 // colour) and with a finer line. Shading is the painter's: a second, darker wash on the side of
@@ -69,7 +69,7 @@ fn blend(a: vec3, b: vec3, t: f32) -> vec3 {
 fn paint(d: f32, albedo: vec3, q: vec2, px: f32, haze: f32, line: f32) -> Over {
     var c = pooled(wash(albedo, q), d, 0.12)
     c = blend(c, MIST, haze)
-    let ink = blend(INK, MIST, min(haze * 1.3, 0.85))
+    let ink = blend(INK, MIST, min(haze * 1.7, 0.9))
     let o = inked(c, d, q, line * px, px, ink)
     if o.w <= 0.0 {
         discard()
@@ -78,9 +78,9 @@ fn paint(d: f32, albedo: vec3, q: vec2, px: f32, haze: f32, line: f32) -> Over {
 }
 
 /// What a layer is under its ground: its fill washed and darkening downwards into shade.
-fn under(albedo: vec3, q: vec2, ground: f32, px: f32, haze: f32) -> Over {
-    let deep = smoothstep(0.0, 5.0, ground - q.y)
-    let c = blend(wash(albedo, q), vec3(0.2, 0.25, 0.2), deep * 0.75)
+fn under(albedo: vec3, q: vec2, ground: f32, haze: f32) -> Over {
+    let deep = smoothstep(0.0, 6.0, ground - q.y)
+    let c = blend(wash(albedo, q), vec3(0.3, 0.4, 0.36), deep * 0.8)
     Over { color: vec4(blend(c, MIST, haze * (1.0 - deep)), 1.0) }
 }
 
@@ -149,7 +149,7 @@ fn cloud(q: vec2, time: f32) -> (f32, f32) {
     for k in -1..2 {
         let i = cell + f32(k)
         let h = hash2(i32(i), 81)
-        if h < 0.75 {
+        if h < 0.45 {
             let at = vec2((i + 0.5) * 16.0 + (h - 0.4) * 6.0, 6.0 + 3.0 * hash2(i32(i), 82))
             let size = 0.7 + 0.6 * hash2(i32(i), 83)
             var c = 1.0e3
@@ -178,9 +178,9 @@ pub fn sky(pixel: FragCoord, v: View) -> vec4 {
     let p = on_layer(pixel, v, 0.03)
     let px = pixel_on(v, 0.03)
     var c = blend(vec3(0.97, 0.92, 0.8), vec3(0.6, 0.78, 0.89), smoothstep(0.28, 0.95, up))
-    c = wash(c, p * 0.5)
+    c = wash(c, p * 0.25)
     let d = distance(vec2(uv.x * aspect, uv.y), vec2(SUN_AT.x * aspect, SUN_AT.y))
-    let rings = smoothstep(0.17, 0.09, d) * 0.35 + smoothstep(0.1, 0.07, d) * 0.3
+    let rings = smoothstep(0.16, 0.08, d) * 0.25
     c = blend(c, vec3(1.0, 0.95, 0.72), rings)
     let disc = inked(
         vec3(1.0, 0.86, 0.45),
@@ -223,9 +223,9 @@ pub fn far_hills(pixel: FragCoord, v: View) -> Over {
         0.3 * abs(sin(q.x * 2.1)) * noise2(vec2(q.x * 0.5, 2.0))
     let (a, b) = (q.y - ridge, q.y - trees)
     if b < a {
-        paint(b, vec3(0.58, 0.72, 0.64), q, px, haze: 0.4, line: 0.8)
+        paint(b, vec3(0.58, 0.72, 0.64), q, px, haze: 0.55, line: 0.6)
     } else {
-        paint(a, vec3(0.66, 0.76, 0.84), q, px, haze: 0.45, line: 0.8)
+        paint(a, vec3(0.66, 0.76, 0.84), q, px, haze: 0.6, line: 0.6)
     }
 }
 
@@ -278,7 +278,7 @@ pub fn savanna(pixel: FragCoord, v: View) -> Over {
         discard()
     }
     if q.y < ground - 0.3 {
-        return under(grass, q, ground, px, 0.3)
+        return under(grass, q, ground, 0.3)
     }
     var d = q.y - ground
     var albedo = grass
@@ -287,14 +287,14 @@ pub fn savanna(pixel: FragCoord, v: View) -> Over {
         let i = cell + f32(k)
         let h = hash2(i32(i), 11)
         let x = (i + 0.2 + 0.6 * hash2(i32(i), 12)) * 8.0
-        if h < 0.7 && abs(q.x - x) < 2.6 {
+        if h < 0.4 && abs(q.x - x) < 2.6 {
             let base = vec2(x, savanna_ground(x) - 0.2)
             let (tree, leaves) = acacia(q, base, 3.2 + 1.4 * h, h)
             if tree < d {
                 d = tree
                 albedo = if leaves > 0.5 {
                     let top = base + vec2(0.1, 3.2 + 1.4 * h)
-                    crowned(vec3(0.56, 0.68, 0.38), vec3(0.42, 0.55, 0.33), q, top, 2.0)
+                    crowned(vec3(0.56, 0.68, 0.38), vec3(0.48, 0.61, 0.36), q, top, 2.0)
                 } else {
                     vec3(0.56, 0.43, 0.32)
                 }
@@ -305,7 +305,7 @@ pub fn savanna(pixel: FragCoord, v: View) -> Over {
     for k in -1..2 {
         let i = herd + f32(k)
         let x = (i + 0.3 + 0.4 * hash2(i32(i), 22)) * 27.0
-        if hash2(i32(i), 21) < 0.55 && abs(q.x - x) < 2.0 {
+        if hash2(i32(i), 21) < 0.4 && abs(q.x - x) < 2.0 {
             let dir = if hash2(i32(i), 23) < 0.5 { -1.0 } else { 1.0 }
             let animal = giraffe(q, vec2(x, savanna_ground(x) - 0.1), dir, v.time)
             if animal < d {
@@ -317,7 +317,7 @@ pub fn savanna(pixel: FragCoord, v: View) -> Over {
             }
         }
     }
-    paint(d, albedo, q, px, haze: 0.3, line: 1.0)
+    paint(d, albedo, q, px, haze: 0.45, line: 0.8)
 }
 
 // ---- the zoo's path: trees, lamps, the fence and elephants -------------------------------------
@@ -372,7 +372,7 @@ pub fn path(pixel: FragCoord, v: View) -> Over {
         discard()
     }
     if q.y < ground - 0.3 {
-        return under(lawn, q, ground, px, 0.15)
+        return under(lawn, q, ground, 0.15)
     }
     var d = q.y - ground
     var albedo = lawn
@@ -381,7 +381,7 @@ pub fn path(pixel: FragCoord, v: View) -> Over {
         let i = cell + f32(k)
         let h = hash2(i32(i), 31)
         let x = (i + 0.25 + 0.5 * hash2(i32(i), 32)) * 10.0
-        if h < 0.75 && abs(q.x - x) < 3.0 {
+        if h < 0.45 && abs(q.x - x) < 3.0 {
             let base = vec2(x, path_ground(x) - 0.2)
             let tall = 3.6 + 2.0 * h
             let (tree, leaves) = round_tree(q, base, tall, h)
@@ -393,7 +393,7 @@ pub fn path(pixel: FragCoord, v: View) -> Over {
                         vec3(0.56, 0.7, 0.36),
                         hash2(i32(i), 33),
                     )
-                    crowned(lit, lit * vec3(0.78, 0.82, 0.88), q, base + vec2(0.0, tall), 1.6)
+                    crowned(lit, lit * vec3(0.86, 0.89, 0.93), q, base + vec2(0.0, tall), 1.6)
                 } else {
                     vec3(0.55, 0.4, 0.28)
                 }
@@ -404,7 +404,7 @@ pub fn path(pixel: FragCoord, v: View) -> Over {
     for k in -1..2 {
         let i = herd + f32(k)
         let x = (i + 0.3 + 0.4 * hash2(i32(i), 42)) * 34.0
-        if hash2(i32(i), 41) < 0.6 && abs(q.x - x) < 2.9 && q.y < ground + 3.4 {
+        if hash2(i32(i), 41) < 0.4 && abs(q.x - x) < 2.9 && q.y < ground + 3.4 {
             let dir = if hash2(i32(i), 43) < 0.5 { -1.0 } else { 1.0 }
             let base = vec2(x, path_ground(x) - 0.3)
             let animal = elephant(q, base, dir, v.time)
@@ -415,7 +415,7 @@ pub fn path(pixel: FragCoord, v: View) -> Over {
             }
         }
     }
-    let lx = (floor(q.x / 15.0) + 0.5) * 15.0
+    let lx = (floor(q.x / 30.0) + 0.5) * 30.0
     if abs(q.x - lx) < 0.7 {
         let lb = vec2(lx, path_ground(lx) - 0.1)
         let arm = capsule(q, lb + vec2(0.0, 3.2), lb + vec2(0.35, 3.35), 0.04)
@@ -438,7 +438,7 @@ pub fn path(pixel: FragCoord, v: View) -> Over {
         d = fence
         albedo = vec3(0.86, 0.66, 0.44)
     }
-    paint(d, albedo, q, px, haze: 0.15, line: 1.2)
+    paint(d, albedo, q, px, haze: 0.3, line: 1.0)
 }
 
 // ---- the bushes and the bamboo ----------------------------------------------------------------
@@ -496,30 +496,6 @@ fn grove(q: vec2, x0: f32, ground: f32, cell: i32, time: f32) -> (f32, f32) {
     (d, leafy)
 }
 
-/// What the nearest layer is under its ground, down a pit: rows of leafy lumps, each row darker
-/// than the one above it, inked where one meets the next, into shade.
-fn thicket(q: vec2, ground: f32, px: f32) -> Over {
-    var c = vec3(0.12, 0.18, 0.13)
-    // From the deepest row up, so each nearer row covers the one below.
-    for row in 0..4 {
-        let r = 3.0 - f32(row)
-        let top = ground + 0.3 - r * 1.3
-        let cell = floor(q.x / 1.1 + r * 0.37)
-        var d = 1.0e3
-        for k in -1..2 {
-            let i = cell + f32(k)
-            let h = hash2(i32(i), 90 + row)
-            let at = vec2((i + 0.5 - r * 0.37) * 1.1, top - 0.2 + 0.4 * h)
-            d = smin(d, length(q - at) - (0.55 + 0.25 * h), 0.25)
-        }
-        let shade = 1.0 - r * 0.2
-        let leaf = wash(vec3(0.34, 0.54, 0.3) * shade, q)
-        let o = inked(leaf, d, q, px * 1.4, px, INK)
-        c = blend(c, o.xyz, o.w)
-    }
-    Over { color: vec4(c, 1.0) }
-}
-
 @fragment
 pub fn bamboo(pixel: FragCoord, v: View) -> Over {
     let q = on_layer(pixel, v, BAMBOO)
@@ -530,7 +506,7 @@ pub fn bamboo(pixel: FragCoord, v: View) -> Over {
         discard()
     }
     if q.y < ground + 0.1 {
-        return thicket(q, ground, px)
+        return under(bush, q, ground + 0.4, 0.14)
     }
     // The bushes: mounds of round lumps, shaded on the side away from the sun, with flowers.
     var d = q.y - ground - 0.4
@@ -546,10 +522,10 @@ pub fn bamboo(pixel: FragCoord, v: View) -> Over {
         }
         d = smin(d, l, 0.3)
     }
-    var albedo = crowned(bush, bush * vec3(0.76, 0.82, 0.86), q, centre, 1.0)
+    var albedo = crowned(bush, bush * vec3(0.86, 0.89, 0.92), q, centre, 1.0)
     let cf = floor(q / 0.32)
     let hf = hash2(i32(cf.x), i32(cf.y) + 500)
-    if hf < 0.07 && d < -0.08 && d > -0.7 {
+    if hf < 0.025 && d < -0.08 && d > -0.7 {
         let petal = length(q - (cf + vec2(0.5)) * 0.32) - 0.07
         let bloom = if hf < 0.025 {
             vec3(0.93, 0.33, 0.33)
@@ -564,7 +540,7 @@ pub fn bamboo(pixel: FragCoord, v: View) -> Over {
     for k in -1..2 {
         let i = cell + f32(k)
         let x0 = (i + 0.2 + 0.4 * hash2(i32(i), 52)) * 9.0
-        if hash2(i32(i), 51) < 0.6 && q.x > x0 - 1.5 && q.x < x0 + 3.0 {
+        if hash2(i32(i), 51) < 0.3 && q.x > x0 - 1.5 && q.x < x0 + 3.0 {
             let (g, leafy) = grove(q, x0, near_ground(x0), i32(i), v.time)
             if g < d {
                 d = g
@@ -572,49 +548,5 @@ pub fn bamboo(pixel: FragCoord, v: View) -> Over {
             }
         }
     }
-    paint(d, albedo, q, px, haze: 0.05, line: 1.5)
-}
-
-// ---- in front: the fronds ----------------------------------------------------------------------
-
-/// A frond rising from `base`, `l` long, leaning `lean`: a tapering blade that bends over.
-fn frond(p: vec2, base: vec2, l: f32, lean: f32) -> f32 {
-    let mid = base + vec2(lean * 0.35, l * 0.6)
-    let tip = base + vec2(lean, l)
-    min(cone(p, base, mid, ra: 0.09, rb: 0.06), cone(p, mid, tip, ra: 0.06, rb: 0.005))
-}
-
-/// Fronds along the bottom of the screen, nearer than the play (they move 1.4 times as fast as
-/// the camera): deep green, inked, rising from below the screen's edge, a frame for the view
-/// that never covers more than its bottom eighth.
-@fragment
-pub fn fronds(pixel: FragCoord, v: View) -> Over {
-    let uv = pixel.position.xy / v.screen
-    let up = (1.0 - uv.y) * v.half.y * 2.0
-    if up > 1.7 {
-        discard()
-    }
-    let p = vec2(v.centre.x * 1.4 + (uv.x * 2.0 - 1.0) * v.half.x, up) / 1.3
-    let px = 2.0 * v.half.y / v.screen.y / 1.3
-    var d = 1.0e3
-    let cell = floor(p.x / 6.0)
-    for k in -1..2 {
-        let i = cell + f32(k)
-        if hash2(i32(i), 71) < 0.5 {
-            let x0 = (i + 0.3 + 0.4 * hash2(i32(i), 72)) * 6.0
-            for b in 0..6 {
-                let hb = hash2(i32(i) * 11 + b, 73)
-                let side = f32(b) - 2.5
-                let sway = 0.08 * sin(v.time * 1.1 + x0 + f32(b))
-                d = min(
-                    d,
-                    frond(p, vec2(x0 + side * 0.12, -0.25), 0.7 + 0.8 * hb, side * 0.22 + sway),
-                )
-            }
-        }
-    }
-    if d > px * 2.0 {
-        discard()
-    }
-    paint(d, vec3(0.24, 0.42, 0.24), p, px, haze: 0.0, line: 2.0)
+    paint(d, albedo, q, px, haze: 0.14, line: 1.2)
 }
