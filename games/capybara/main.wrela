@@ -15,7 +15,7 @@
 // on the GPU (scripts.wrela has scripts), and `capybara` exports the capybara's state for `wrela
 // trace --watch capybara`, which needs a toolchain whose trace runs the ticker in lockstep.
 
-use art::{Page, Targets, copy, finish, targets}
+use art::{Page, Scale, Targets, copy, finish, pace, render_size, targets}
 use body::Mode
 use camera::{Camera, camera, follow, half_view}
 use cast::{Cast, cast, react, sprites}
@@ -58,8 +58,10 @@ pub struct Lab {
     cast: Cast,
     targets: Targets,
     linear: Sampler,
+    /// The scene's size (px) at the render scale, and the scale.
     width: u32,
     height: u32,
+    scale: Scale,
     camera: Camera,
     last: Option<f32>,
     /// Whether the music has started (on the first frame).
@@ -89,6 +91,7 @@ pub fn init() -> Lab {
         linear: sampler(),
         width: 0,
         height: 0,
+        scale: Scale {},
         camera: camera(course(LEVEL).start),
         last: None,
         playing: false,
@@ -149,17 +152,20 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     }
     follow(mut s.camera, snap, dt)
     react(mut s.cast, snap, c, dt)
-    if width != s.width || height != s.height {
-        s.targets = targets(width, height)
-        s.width = width
-        s.height = height
+    // The scene is drawn at the render scale, the page and the HUD at the screen's size.
+    pace(mut s.scale, dt)
+    let (rw, rh) = render_size(s.scale, width, height)
+    if rw != s.width || rh != s.height {
+        s.targets = targets(width: rw, height: rh)
+        s.width = rw
+        s.height = rh
     }
     let aspect = f32(width) / f32(max(height, 1))
     let half = half_view(aspect)
     let at = vec3(s.camera.at, 0.0)
     let view_proj = ortho(-half.x, half.x, -half.y, half.y, near: 1.0, far: 100.0) *
         look_at(at + vec3(0.0, 0.0, 50.0), at)
-    let px = 2.0 * half.y / f32(max(height, 1))
+    let px = 2.0 * half.y / f32(rh)
     var back: Vec<Sprite> = Vec::new()
     var front: Vec<Sprite> = Vec::new()
     sprites(s.cast, snap, c, time, lag, mut back, mut front)
@@ -174,7 +180,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     s.renderer.fetch(mut s.fonts, s.list)
     s.renderer.upload(s.list)
     let (i, level) = (snap.course, snap.course == LEVEL)
-    let view = View { centre: s.camera.at, half, screen, time }
+    let view = View { centre: s.camera.at, half, screen: vec2(f32(rw), f32(rh)), time }
     let sliding = if Mode::from_u32(snap.mode) == Some(Mode::Slide) { 1.0 } else { 0.0 }
     let field = Field {
         view_proj,
@@ -243,7 +249,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     wet.end()
     let out = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
     let (iris, open) = cast::iris(s.cast, snap, lag)
-    let page = Page { centre: s.camera.at, half, iris, open }
+    let page = Page { centre: s.camera.at, half, iris, screen, open }
     draw(
         out,
         full.bind(z: 0.0),
