@@ -17,8 +17,9 @@ use sound::{
     LAND, LAUNCH, SLIDE, SPLASH, STEP, YUZU as POP,
 }
 use feel::{FEEL, HZ}
+use replay::Pose
 use sprites::{
-    CAIMAN, CAPYBARA, CARROT, FLAG, GOOSE, KUSUDAMA, PIGEON, SEAGULL, SHADOW, Sprite, YUZU,
+    CAIMAN, CAPYBARA, CARROT, FLAG, GHOST, GOOSE, KUSUDAMA, PIGEON, SEAGULL, SHADOW, Sprite, YUZU,
 }
 use std::math::{PI, TAU}
 use waves::{Waves, disturb, step_waves, surface_at, waves}
@@ -665,6 +666,38 @@ pub fn sprites(
             },
         )
     }
+}
+
+/// A run's ghost between poses `a` and `b` (a tick apart), `lag` ticks before `b`: the capybara,
+/// pale and see-through, trotting as it moves (replay.wrela's `trail`). None while it's dying.
+pub fn ghost(a: Pose, b: Pose, lag: f32) -> Option<Sprite> {
+    if b.dying > 0 {
+        return None
+    }
+    let t = 1.0 - lag
+    let at = mix(a.at, b.at, vec2(t))
+    let speed = distance(a.at, b.at) * f32(HZ)
+    let walked = a.walked + (b.walked - a.walked) * t
+    let mode = Mode::from_u32(b.mode)
+    let pace = if mode == Some(Mode::Walk) { saturate(speed / 6.0) } else { 0.0 }
+    let mode_f = match mode {
+        Some(Mode::Crouch) => 1.0,
+        Some(Mode::Slide) => 2.0,
+        Some(Mode::Air) => 3.0,
+        Some(Mode::Swim) => 4.0,
+        _ => 0.0,
+    }
+    Some(
+        Sprite {
+            pose: vec4(walked / stride_length(speed) * TAU, pace, mode_f, 1.0),
+            more: vec4(0.0, 0.0, 1.0, 1.0),
+            at,
+            half: vec2(1.2, 1.0),
+            angle: 0.0,
+            facing: b.facing,
+            kind: GHOST,
+        },
+    )
 }
 
 /// Where the page's iris is (m on the plane of play) and how open (0 shut, 1 open): closing on the

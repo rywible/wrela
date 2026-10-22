@@ -34,6 +34,8 @@ pub const STREAK: f32 = 16.0
 pub const CONFETTI: f32 = 17.0
 pub const FRUIT: f32 = 18.0
 pub const KUSUDAMA: f32 = 19.0
+/// A run's ghost: the capybara, pale and see-through.
+pub const GHOST: f32 = 20.0
 
 /// A sprite. `pose` and `more` by kind:
 /// - the capybara: `pose` its stride (rad), its pace (0 to 1), its mode, and a blink (1 open);
@@ -908,6 +910,11 @@ pub fn sprite(v: Spritel, sprites: [Sprite], st: Stage) -> Over {
     let q = v.local
     var c = if s.kind == CAPYBARA {
         capybara(q, s, st.px)
+    } else if s.kind == GHOST {
+        // The capybara washed pale blue and see-through, so it reads as a ghost and never as the
+        // player.
+        let g = capybara(q, s, st.px)
+        vec4(blend(g.xyz, vec3(0.8, 0.9, 1.0), 0.5), g.w * 0.6)
     } else if s.kind == GOOSE {
         goose(q, s, st.px)
     } else if s.kind == PIGEON {

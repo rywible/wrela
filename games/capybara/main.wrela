@@ -13,6 +13,11 @@
 // or the lab). A controller: the stick or pad, South or East to jump, Start to restart, Select for
 // the other course.
 //
+// Runs (replay.wrela): each finished attempt is a replay, and the best few of each category are
+// kept in the game's storage. Paused, B opens them: the player's best and the autopilot's, any%
+// and 100%; a click on one watches it (watch.wrela), and G chooses the ghost that runs beside the
+// player: their best, the autopilot's, or none.
+//
 // For an agent: `wrela-host <build> --frames n --input script.json --png out.png` draws frame n
 // on the GPU (scripts.wrela has scripts), and `capybara` exports the capybara's state for `wrela
 // trace --watch capybara`, which needs a toolchain whose trace runs the ticker in lockstep.
@@ -20,7 +25,7 @@
 use art::{Page, Scale, Targets, copy, finish, grain_texture, pace, render_size, targets}
 use body::Mode
 use camera::{Camera, camera, follow, framed, half_view}
-use cast::{Cast, cast, react, sprites}
+use cast::{Cast, cast, ghost, react, sprites}
 use course::course
 use earth::{
     LAB_EARTH, LAB_GRASS, LEVEL_EARTH, LEVEL_GRASS, Field, earth, earth_vertex, grass, grass_vertex,
@@ -41,12 +46,26 @@ use std::gpu::{
 use std::transform::{look_at, ortho}
 use ui::draw::{DrawList, Rect, Renderer}
 use std::input::{Event, Key, events}
+use std::io::{Pending, load, store}
+use replay::{
+    ANY, AUTOPILOT, Board, FULL, KEPT, Pose, Replay, SAVED, YOU, board, bytes, counts, read, replay,
+    tool_assisted, trail, verify,
+}
+use watch::{SPEEDS, Watch, watch}
 use ui::text::{Face, Fonts}
 use waves::{COLUMNS, LAB_WATER, LEVEL_WATER, Pond, water, water_vertex}
-use world::{LAB, LEVEL, Snap, present, tick, world}
+use world::{LAB, LEVEL, Snap, live, present_live, tick_live}
 
 /// The most sprites drawn: the cast's and the particles'.
 const SPRITES: u32 = 1024
+
+/// The ghost that runs beside the player: none, their best any% run, or the autopilot's.
+const NO_GHOST: u32 = 0
+const BEST_GHOST: u32 = 1
+const AUTOPILOT_GHOST: u32 = 2
+
+/// How far a watched run seeks at a press (ticks): five seconds.
+const SEEK: u32 = 600
 
 pub struct Lab {
     snaps: Snapshots<Snap>,
@@ -87,10 +106,32 @@ pub struct Lab {
     fonts: Fonts,
     renderer: Renderer,
     list: DrawList,
+    /// The player's runs (replay.wrela), as they load from storage and are stored again, and
+    /// whether they changed while they couldn't be stored. The attempt whose finish was last kept
+    /// (its course and attempt), so each is kept once.
+    runs: Board,
+    loading: Option<Pending<u8>>,
+    saving: Option<Pending<u8>>,
+    unsaved: bool,
+    kept: u32,
+    /// The autopilot's runs of every course.
+    assisted: Vec<Replay>,
+    /// The ghost (`NO_GHOST`...), the trail it follows, and which run that is (`trail_key`).
+    ghost: u32,
+    trail: Vec<Pose>,
+    trail_of: u32,
+    /// The run being watched, whether the last frame drew one, and where the pointer is (px).
+    watching: Option<Watch>,
+    watched: bool,
+    pointer: vec2,
 }
 
 pub fn init() -> Lab {
-    let latest = run(world(LEVEL), hz: HZ, step: tick, present: present)
+    let latest = run(live(LEVEL), hz: HZ, step: tick_live, present: present_live)
+    var assisted = tool_assisted(LAB)
+    for r in tool_assisted(LEVEL) {
+        assisted.push(r.clone())
+    }
     let fonts = Fonts::load()
     let renderer = Renderer::new(fonts)
     let shown = cast(course(LEVEL))
@@ -123,6 +164,18 @@ pub fn init() -> Lab {
         fonts,
         renderer,
         list: DrawList::new(),
+        runs: board(),
+        loading: Some(load(SAVED)),
+        saving: None,
+        unsaved: false,
+        kept: 0xffffffff,
+        assisted,
+        ghost: BEST_GHOST,
+        trail: Vec::new(),
+        trail_of: 0,
+        watching: None,
+        watched: false,
+        pointer: vec2(-1.0),
     }
 }
 
@@ -134,24 +187,28 @@ pub fn init() -> Lab {
 /// capybara comes back), or changed whether it's knocked out, it isn't blended.
 fn drawn(s: Snapshots<Snap>, time: f32) -> (Snap, f32) {
     let b = s.at(s.sim_time(time))
-    let t = b.alpha
-    var snap = b.b
-    snap.at = mix(b.a.at, b.b.at, vec2(t))
-    snap.vel = mix(b.a.vel, b.b.vel, vec2(t))
-    snap.speed = mix(b.a.speed, b.b.speed, t)
-    let n = mix(b.a.ground, b.b.ground, vec2(t))
+    (mixed(b.a, b.b, b.alpha), if b.b.ticks > b.a.ticks { 1.0 - b.alpha } else { 0.0 })
+}
+
+/// Snapshot `b` with what moves drawn `t` of the way from `a` (as `drawn` says).
+fn mixed(a: Snap, b: Snap, t: f32) -> Snap {
+    var snap = b
+    snap.at = mix(a.at, b.at, vec2(t))
+    snap.vel = mix(a.vel, b.vel, vec2(t))
+    snap.speed = mix(a.speed, b.speed, t)
+    let n = mix(a.ground, b.ground, vec2(t))
     if length(n) > 1.0e-3 {
         snap.ground = normalize(n)
     }
     for i in 0..snap.foes.len() {
-        let (f, g) = (b.a.foes[i], b.b.foes[i])
+        let (f, g) = (a.foes[i], b.foes[i])
         if sign(f.z) == sign(g.z) && distance(f.xy, g.xy) < 1.0 {
             snap.foes[i] = vec4(mix(f.xy, g.xy, vec2(t)), g.z, if g.z < 0.0 {
                 mix(f.w, g.w, t)
             } else { g.w })
         }
     }
-    (snap, if b.b.ticks > b.a.ticks { 1.0 - t } else { 0.0 })
+    snap
 }
 
 // ---- the frame ---------------------------------------------------------------------------------
@@ -167,13 +224,45 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         s.voice.push(sound::start(music::music()))
     }
     s.snaps.update()
-    let (snap, lag) = drawn(s.snaps, time)
+    let screen = vec2(f32(width), f32(height))
+    let (live_snap, live_lag) = drawn(s.snaps, time)
+    store_runs(mut s)
+    keep_finished(mut s, live_snap)
+    // F3 shows the readout. The frames' keys are their own: the sim's ticks take theirs. With the
+    // runs open, the sim leaves the keys and clicks to the frames: the board's and the watch's.
+    for e in events() {
+        if let Event::KeyDown { key, repeat, .. } = e {
+            if key == Key::F3 && !repeat {
+                s.readout = !s.readout
+            }
+        }
+        if live_snap.browsing == 1 {
+            browse(mut s, e, live_snap.course, screen)
+        }
+    }
+    if live_snap.browsing == 0 {
+        s.watching = None
+    }
+    // A watched run, or play.
+    var snap = live_snap
+    var lag = live_lag
+    match mut s.watching {
+        Some(w) => {
+            w.advance(dt)
+            let (a, b, t) = w.between()
+            snap = mixed(a, b, t)
+            lag = if b.ticks > a.ticks { 1.0 - t } else { 0.0 }
+        },
+        None => {},
+    }
+    let watching = s.watching.is_some()
     borrow c = course(snap.course)
-    if snap.course != s.shown {
-        s.camera = camera(c.start)
+    if snap.course != s.shown || watching != s.watched {
+        s.camera = camera(if watching != s.watched { snap.at } else { c.start })
         s.cast = cast(c)
         s.pools = buffer_of(s.cast.waves.pools, at_least: 8)
         s.shown = snap.course
+        s.watched = watching
     }
     follow(mut s.camera, snap, dt)
     // The scene is drawn at the render scale, the page and the HUD at the screen's size.
@@ -181,14 +270,6 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     if dt > 0.0 && dt < 0.25 {
         s.frame_time = if s.frame_time == 0.0 { dt } else {
             s.frame_time + (dt - s.frame_time) * 0.05
-        }
-    }
-    // F3 shows the readout. The frames' keys are their own: the sim's ticks take theirs.
-    for e in events() {
-        if let Event::KeyDown { key, repeat, .. } = e {
-            if key == Key::F3 && !repeat {
-                s.readout = !s.readout
-            }
         }
     }
     let (rw, rh) = render_size(s.scale, width, height)
@@ -217,13 +298,24 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     var back: Vec<Sprite> = Vec::new()
     var front: Vec<Sprite> = Vec::new()
     sprites(s.cast, snap, c, time, lag, hud_at, mut back, mut front)
+    // The ghost, behind the cast, on the player's clock.
+    if !watching {
+        follow_ghost(mut s, snap.course)
+        if s.trail.len() > 0 {
+            let t = min(snap.ticks, s.trail.len() - 1)
+            if let Some(g) = ghost(s.trail[max(t, 1) - 1], s.trail[t], if t == 0 { 0.0 } else {
+                lag
+            }) {
+                back.push(g)
+            }
+        }
+    }
     let behind = back.len()
     for f in front {
         back.push(f)
     }
     write(mut s.sprites, 0, back)
     write(mut s.heights, 0, s.cast.waves.heights)
-    let screen = vec2(f32(width), f32(height))
     hud(mut s, snap, screen)
     s.renderer.fetch(mut s.fonts, s.list)
     s.renderer.upload(s.list)
@@ -352,6 +444,10 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2) {
     let white = vec4(1.0, 0.98, 0.94, 1.0)
     let gold = vec4(1.0, 0.78, 0.3, 1.0)
     let soft = vec4(1.0, 0.98, 0.94, 0.75)
+    if snap.browsing == 1 {
+        runs_card(mut s, snap.course, screen)
+        return
+    }
     if snap.paused == 1 {
         card(mut s, snap, screen)
         return
@@ -376,9 +472,20 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2) {
         vec2(screen.x - pad - width, pad),
         if snap.finished > 0 { gold } else { white },
     )
-    let pause = "Esc  pause"
-    let pw = s.fonts.font(Face::Sans).measure(pause, small * 1.2)
-    say(mut s, Face::Sans, pause, small * 1.2, vec2(screen.x - pad - pw, pad + size * 1.3), soft)
+    if s.watching.is_some() {
+        watch_bar(mut s, screen)
+    } else {
+        let pause = "Esc  pause"
+        let pw = s.fonts.font(Face::Sans).measure(pause, small * 1.2)
+        say(
+            mut s,
+            Face::Sans,
+            pause,
+            small * 1.2,
+            vec2(screen.x - pad - pw, pad + size * 1.3),
+            soft,
+        )
+    }
     if s.readout {
         // The frame rate, the frame's time, and the size the scene is drawn at: native (the
         // screen's own) or the render scale's.
@@ -397,7 +504,7 @@ fn card(s: mut Lab, snap: Snap, screen: vec2) {
     let ink = vec4(0.24, 0.16, 0.11, 1.0)
     let soft = vec4(0.24, 0.16, 0.11, 0.72)
     let w = min(screen.x * 0.9, size * 32.0)
-    let h = size * 16.8
+    let h = size * 18.3
     let at = vec2((screen.x - w) * 0.5, (screen.y - h) * 0.5)
     s.list.rect(Rect::new(at.x - 3.0, at.y - 3.0, w + 6.0, h + 6.0), ink, radius: size * 0.9)
     s.list.rect(Rect::new(at.x, at.y, w, h), vec4(0.98, 0.95, 0.88, 1.0), radius: size * 0.8)
@@ -434,10 +541,12 @@ fn card(s: mut Lab, snap: Snap, screen: vec2) {
         "R",
         "Pause",
         "Esc or P",
+        "Runs",
+        "B: your best runs and the autopilot's, to watch or race as a ghost",
         "Controller",
         "Stick, A to jump, Start to pause, Select to restart",
     ]
-    for i in 0..7 {
+    for i in 0..8 {
         let _ = s.list.text(s.fonts, Face::Sans, rows[i * 2], size, vec2(left, y), ink)
         let _ = s.list.text(
             s.fonts,
@@ -458,6 +567,342 @@ fn card(s: mut Lab, snap: Snap, screen: vec2) {
         size * 1.1,
         vec2(at.x + (w - gw) * 0.5, at.y + h - size * 2.0),
         ink,
+    )
+}
+
+// ---- runs ----------------------------------------------------------------------------------------
+
+/// Keeps the attempt in `snap` once it reaches the goal, if it's among the player's best, and
+/// stores the runs.
+fn keep_finished(s: mut Lab, snap: Snap) {
+    let key = snap.course << 16 | (snap.attempt & 0xffff)
+    if snap.finished == 0 || key == s.kept {
+        return
+    }
+    s.kept = key
+    if let Some(r) = replay(snap, YOU) {
+        if verify(r) && s.runs.add(r.clone()) {
+            s.unsaved = true
+        }
+    }
+}
+
+/// Reads the stored runs once they load, and stores them when they've changed, one store at a
+/// time and never before the stored ones are read (which would lose them).
+fn store_runs(s: mut Lab) {
+    var loaded = None
+    match mut s.loading {
+        Some(p) => loaded = p.poll(),
+        None => {},
+    }
+    if let Some(result) = loaded {
+        s.loading = None
+        if let Ok(b) = result {
+            let mine = s.runs.clone()
+            s.runs = read(b.clone())
+            for r in mine.runs {
+                let _ = s.runs.add(r.clone())
+            }
+        }
+    }
+    var stored = None
+    match mut s.saving {
+        Some(p) => stored = p.poll(),
+        None => {},
+    }
+    if stored.is_some() {
+        s.saving = None
+    }
+    if s.unsaved && s.loading.is_none() && s.saving.is_none() {
+        s.saving = Some(store(SAVED, bytes(s.runs)))
+        s.unsaved = false
+    }
+}
+
+/// The runs of course `c` that count for `category`, the player's and the autopilot's, fastest
+/// first.
+fn listed(s: Lab, c: u32, category: u32) -> Vec<Replay> {
+    var out = s.runs.ranked(c, category)
+    for r in s.assisted {
+        if r.course == c && counts(r, category) {
+            var at = out.len()
+            while at > 0 && out[at - 1].ticks > r.ticks {
+                at -= 1
+            }
+            out.insert(at, r.clone())
+        }
+    }
+    out
+}
+
+/// The ghost's run on course `c`: the player's best any% run, or the autopilot's fastest.
+fn ghost_run(s: Lab, c: u32) -> Option<Replay> {
+    if s.ghost == BEST_GHOST {
+        let best = s.runs.ranked(c, ANY)
+        if best.len() > 0 {
+            return Some(best[0].clone())
+        }
+    } else if s.ghost == AUTOPILOT_GHOST {
+        let all = listed(s, c, ANY)
+        for r in all {
+            if r.who == AUTOPILOT {
+                return Some(r.clone())
+            }
+        }
+    }
+    None
+}
+
+/// The trail of the ghost's run on course `c`, worked out again when that run changes.
+fn follow_ghost(s: mut Lab, c: u32) {
+    let run = ghost_run(s, c)
+    let key = match run {
+        Some(r) => (c + 1) << 28 | r.who << 24 | (r.ticks & 0xffffff),
+        None => 0,
+    }
+    if key != s.trail_of {
+        s.trail_of = key
+        s.trail = match run {
+            Some(r) => trail(r),
+            None => Vec::new(),
+        }
+    }
+}
+
+/// The ghost's name, for the board.
+fn ghost_name(g: u32) -> Text {
+    if g == NO_GHOST {
+        "none"
+    } else if g == BEST_GHOST { "your best" } else { "the autopilot" }
+}
+
+/// The runs card's size, for the screen: its rect and its text size.
+fn runs_frame(screen: vec2) -> (Rect, f32) {
+    let size = max(screen.y * 0.028, 12.0)
+    let w = min(screen.x * 0.92, size * 40.0)
+    let h = size * 21.0
+    (Rect::new((screen.x - w) * 0.5, (screen.y - h) * 0.5, w, h), size)
+}
+
+/// Where row `i` of a category's list is on the runs card.
+fn row_rect(screen: vec2, category: u32, i: u32) -> Rect {
+    let (r, size) = runs_frame(screen)
+    let w = (r.w - size * 3.0) * 0.5
+    let x = r.x + size * 1.2 + f32(category) * (w + size * 0.6)
+    Rect::new(x, r.y + size * 5.6 + f32(i) * size * 1.6, w, size * 1.4)
+}
+
+/// Where the ghost's line is on the runs card.
+fn ghost_rect(screen: vec2) -> Rect {
+    let (r, size) = runs_frame(screen)
+    Rect::new(r.x + size * 1.2, r.y + r.h - size * 4.6, r.w - size * 2.4, size * 1.4)
+}
+
+/// A key or click while the runs are open (the sim leaves them to the frames): on the board, a
+/// click on a run watches it and G (or a click on its line) changes the ghost; watching, Space
+/// pauses and plays, the arrows seek and change speed, R starts again, and Backspace goes back to
+/// the board.
+fn browse(s: mut Lab, e: Event, c: u32, screen: vec2) {
+    if let Event::PointerMove { at, .. } = e {
+        s.pointer = at
+    }
+    var watched = false
+    match mut s.watching {
+        Some(w) => {
+            watched = true
+            if let Event::KeyDown { key, repeat, .. } = e {
+                if key == Key::Space && !repeat {
+                    if !w.playing && w.tick >= w.end() {
+                        w.seek(0)
+                    }
+                    w.playing = !w.playing
+                } else if key == Key::Right {
+                    w.seek(w.tick + SEEK)
+                } else if key == Key::Left {
+                    w.seek(if w.tick > SEEK { w.tick - SEEK } else { 0 })
+                } else if key == Key::Up && !repeat {
+                    w.speed = min(w.speed + 1, SPEEDS.len() - 1)
+                } else if key == Key::Down && !repeat {
+                    w.speed = if w.speed > 0 { w.speed - 1 } else { 0 }
+                } else if key == Key::R && !repeat {
+                    w.seek(0)
+                    w.playing = true
+                }
+            }
+        },
+        None => {},
+    }
+    if watched {
+        if let Event::KeyDown { key, repeat, .. } = e {
+            if key == Key::Backspace && !repeat {
+                s.watching = None
+            }
+        }
+        return
+    }
+    match e {
+        Event::KeyDown { key, repeat, .. } => {
+            if key == Key::G && !repeat {
+                s.ghost = (s.ghost + 1) % 3
+            }
+        },
+        Event::PointerDown { at, .. } => {
+            s.pointer = at
+            if ghost_rect(screen).contains(at) {
+                s.ghost = (s.ghost + 1) % 3
+            }
+            for category in [ANY, FULL] {
+                let runs = listed(s, c, category)
+                for i in 0..runs.len() {
+                    if row_rect(screen, category, i).contains(at) {
+                        s.watching = Some(watch(runs[i].clone()))
+                    }
+                }
+            }
+        },
+        _ => {},
+    }
+}
+
+/// The runs card, over the paused page: each category's runs, fastest first, who made each and its
+/// time; the ghost; and how to use them.
+fn runs_card(s: mut Lab, c: u32, screen: vec2) {
+    let (r, size) = runs_frame(screen)
+    let ink = vec4(0.24, 0.16, 0.11, 1.0)
+    let soft = vec4(0.24, 0.16, 0.11, 0.72)
+    let gold = vec4(0.62, 0.42, 0.08, 1.0)
+    let paper = vec4(0.98, 0.95, 0.88, 1.0)
+    let lit = vec4(0.94, 0.86, 0.66, 1.0)
+    s.list.rect(Rect::new(r.x - 3.0, r.y - 3.0, r.w + 6.0, r.h + 6.0), ink, radius: size * 0.9)
+    s.list.rect(r, paper, radius: size * 0.8)
+    let title = if c == LEVEL { "Runs: The Capybara Wetlands" } else { "Runs: the lab" }
+    let tw = s.fonts.font(Face::Sans).measure(title, size * 1.5)
+    let _ = s.list.text(
+        s.fonts,
+        Face::Sans,
+        title,
+        size * 1.5,
+        vec2(r.x + (r.w - tw) * 0.5, r.y + size),
+        ink,
+    )
+    for category in [ANY, FULL] {
+        let head = row_rect(screen, category, 0)
+        let name = if category == ANY { "Any%" } else { "100%" }
+        let _ = s.list.text(
+            s.fonts,
+            Face::Sans,
+            name,
+            size * 1.1,
+            vec2(head.x, head.y - size * 2.0),
+            ink,
+        )
+        let runs = listed(s, c, category)
+        if runs.len() == 0 {
+            let _ = s.list.text(
+                s.fonts,
+                Face::Sans,
+                "None yet",
+                size * 0.9,
+                vec2(head.x, head.y),
+                soft,
+            )
+        }
+        for i in 0..runs.len() {
+            let row = row_rect(screen, category, i)
+            if row.contains(s.pointer) {
+                s.list.rect(row, lit, radius: size * 0.3)
+            }
+            borrow run = runs[i]
+            let who = if run.who == YOU { "You" } else { "Autopilot" }
+            let colour = if i == 0 { gold } else { ink }
+            let y = row.y + size * 0.2
+            let _ = s.list.text(
+                s.fonts,
+                Face::Mono,
+                f"{i + 1}".as_str(),
+                size,
+                vec2(row.x + size * 0.4, y),
+                soft,
+            )
+            let _ = s.list.text(s.fonts, Face::Sans, who, size, vec2(row.x + size * 1.8, y), colour)
+            let time = seconds(run.ticks)
+            let tw = s.fonts.font(Face::Mono).measure(time.as_str(), size)
+            let _ = s.list.text(
+                s.fonts,
+                Face::Mono,
+                time.as_str(),
+                size,
+                vec2(row.x + row.w - tw - size * 0.5, y),
+                colour,
+            )
+        }
+    }
+    let line = ghost_rect(screen)
+    if line.contains(s.pointer) {
+        s.list.rect(line, lit, radius: size * 0.3)
+    }
+    let ghost = f"Ghost: {ghost_name(s.ghost)}   (G to change)"
+    let _ = s.list.text(
+        s.fonts,
+        Face::Sans,
+        ghost.as_str(),
+        size,
+        vec2(line.x + size * 0.4, line.y + size * 0.2),
+        ink,
+    )
+    let foot = "Click a run to watch it.   Esc back"
+    let fw = s.fonts.font(Face::Sans).measure(foot, size * 0.9)
+    let _ = s.list.text(
+        s.fonts,
+        Face::Sans,
+        foot,
+        size * 0.9,
+        vec2(r.x + (r.w - fw) * 0.5, r.y + r.h - size * 2.0),
+        soft,
+    )
+}
+
+/// Watching: what's watched, and the keys, in a bar at the foot of the page.
+fn watch_bar(s: mut Lab, screen: vec2) {
+    let size = max(screen.y * 0.024, 11.0)
+    var label = f""
+    var keys = f""
+    match s.watching {
+        Some(w) => {
+            let who = if w.replay.who == YOU { "You" } else { "Autopilot" }
+            let category = if counts(w.replay, FULL) { "100%" } else { "any%" }
+            label = f"Watching  {who}  {category}  {seconds(w.replay.ticks)}"
+            let state = if w.playing { "pause" } else { "play" }
+            keys = f"Space {state}   Left/Right 5 s   Up/Down speed {SPEEDS[w.speed]}x   R again   Backspace runs   Esc back"
+        },
+        None => return,
+    }
+    let lw = s.fonts.font(Face::Sans).measure(label.as_str(), size * 1.1)
+    let kw = s.fonts.font(Face::Sans).measure(keys.as_str(), size * 0.85)
+    let w = max(lw, kw) + size * 2.4
+    let at = vec2((screen.x - w) * 0.5, screen.y - size * 4.6)
+    s.list.rect(
+        Rect::new(at.x, at.y, w, size * 3.6),
+        vec4(0.98, 0.95, 0.88, 0.92),
+        radius: size * 0.6,
+    )
+    let ink = vec4(0.24, 0.16, 0.11, 1.0)
+    let soft = vec4(0.24, 0.16, 0.11, 0.72)
+    let _ = s.list.text(
+        s.fonts,
+        Face::Sans,
+        label.as_str(),
+        size * 1.1,
+        vec2(at.x + (w - lw) * 0.5, at.y + size * 0.5),
+        ink,
+    )
+    let _ = s.list.text(
+        s.fonts,
+        Face::Sans,
+        keys.as_str(),
+        size * 0.85,
+        vec2(at.x + (w - kw) * 0.5, at.y + size * 2.1),
+        soft,
     )
 }
 

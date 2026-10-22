@@ -11,7 +11,12 @@
 // immediately clips back").
 //
 // Paused (Esc, P, or a controller's Start), the world stands still and its clock with it; Space,
-// Enter, a click or a controller's A plays on. The game opens paused, on the controls.
+// Enter, a click or a controller's A plays on. The game opens paused, on the controls. Paused, B
+// opens the runs (replay.wrela: the best runs, to watch or race as a ghost), and while they're
+// open the frames take the keys and clicks: only Esc, B or a controller's Start or B closes them.
+//
+// The ticker steps a `Live`: the world, and its attempt's run as it's played (pad.wrela's `Run`),
+// so a finished attempt is a replay.
 
 use body::{Body, Mode, RADIUS, bounce, spawn}
 use course::{COURSES, Course, course}
@@ -19,7 +24,7 @@ use engine::run::{Asks, TickInput}
 use engine::sim::{SimState, Tick}
 use feel::FEEL
 use foes::{Foe, MAX_FOES, NONE, Touch, foe, knock, step_foe, touch}
-use pad::{Controls, Hold, JUMP, Pad, pad_of}
+use pad::{Controls, Hold, JUMP, NO_RUN, Pad, Run, pad_of}
 use std::hash::StateHash
 use std::input::{Event, Key, Mods, PadButton}
 use std::serialize::Serialize
@@ -66,6 +71,8 @@ pub struct World: Copy + Eq + StateHash + Serialize + SimState {
     /// Paused: the world stands still, its clock too (a run's time is its play's). The game opens
     /// paused, on the controls (Ryan, 2026-10-22).
     pub paused: bool,
+    /// Paused, with the runs open: the frames take the keys.
+    pub browsing: bool,
 }
 
 /// The course's foes as they start.
@@ -98,6 +105,7 @@ pub fn world(c: u32) -> World {
         fell: false,
         attempt: 0,
         paused: true,
+        browsing: false,
     }
 }
 
@@ -215,12 +223,40 @@ fn plays(key: Key) -> bool {
 /// or Select: the lab or the level), then the pad they leave.
 @deterministic
 pub fn tick(w: mut World, input: TickInput<World>) {
+    let _ = ticked(mut w, input.records)
+}
+
+/// One tick from `records`, as `tick`: the pad the world was stepped with, or none if it wasn't.
+@deterministic
+fn ticked(w: mut World, records: [Event]) -> Option<Pad> {
     // A tick that leaves the pause doesn't step, so the press that left it isn't also a jump.
     var held = w.paused
-    for e in input.records {
+    for e in records {
+        if w.browsing {
+            // The runs are open: only closing them is the sim's.
+            match e {
+                Event::KeyDown { key, repeat, .. } => {
+                    if !repeat && (key == Key::Escape || key == Key::B) {
+                        w.browsing = false
+                    }
+                },
+                Event::PadButton { pad, button, pressed, .. } => {
+                    if pad == 0 &&
+                        pressed &&
+                        (button == PadButton::Start || button == PadButton::East) {
+                        w.browsing = false
+                    }
+                },
+                _ => {},
+            }
+            w.controls.update(e)
+            continue
+        }
         match e {
             Event::KeyDown { key, repeat, .. } => {
-                if !repeat && key == Key::R {
+                if !repeat && w.paused && key == Key::B {
+                    w.browsing = true
+                } else if !repeat && key == Key::R {
                     restart(mut w, w.course)
                 } else if !repeat && key == Key::Tab {
                     restart(mut w, (w.course + 1) % COURSES)
@@ -256,9 +292,63 @@ pub fn tick(w: mut World, input: TickInput<World>) {
     // The pad is read every tick, paused or not, so a press made in the pause is spent.
     let pad = w.controls.pad()
     if w.paused || held {
-        return
+        return None
     }
     step(mut w, pad)
+    Some(pad)
+}
+
+/// What the ticker steps: the world, and its attempt's run as it's played, kept apart from the
+/// world so that searches and tests step a small value.
+pub struct Live: Copy + Eq + StateHash + Serialize + SimState {
+    pub world: World,
+    pub run: Run,
+}
+
+/// A new game at course `c`.
+pub fn live(c: u32) -> Live {
+    Live { world: world(c), run: NO_RUN }
+}
+
+/// One tick of `l`, as `tick`, recording each pad the world steps with until it reaches the goal:
+/// a restart or another course starts a new run.
+@deterministic
+pub fn tick_live(l: mut Live, input: TickInput<Live>) {
+    let (attempt, course) = (l.world.attempt, l.world.course)
+    var done = l.world.finished > 0
+    let pad = ticked(mut l.world, input.records)
+    if l.world.attempt != attempt || l.world.course != course {
+        l.run = NO_RUN
+        done = false
+    }
+    if let Some(p) = pad {
+        if !done {
+            l.run.record(p)
+        }
+    }
+}
+
+/// What the frames draw of `l`: its world's snapshot, with its run.
+@deterministic
+pub fn present_live(l: Live) -> Snap {
+    var s = present(l.world)
+    s.run = l.run
+    s
+}
+
+impl Asks for Live {
+    type Ask = u32
+    type Answer = u32
+
+    @deterministic
+    fn asks(self, tick: Tick) -> Vec<(u32, Tick)> {
+        Vec::new()
+    }
+
+    @deterministic
+    fn work(ask: u32) -> u32 {
+        ask
+    }
 }
 
 impl Asks for World {
@@ -306,8 +396,11 @@ pub struct Snap: Copy + Plain {
     /// Ticks left while dying (0 otherwise), and 1 if it fell out.
     pub dying: u32,
     pub fell: u32,
-    /// 1 while paused.
+    /// 1 while paused, and 1 while the runs are open.
     pub paused: u32,
+    pub browsing: u32 = 0,
+    /// The attempt's run so far (`present_live`), or none.
+    pub run: Run = NO_RUN,
 }
 
 @deterministic
@@ -348,6 +441,7 @@ pub fn present(w: World) -> Snap {
         dying: w.dying,
         fell: if w.fell { 1 } else { 0 },
         paused: if w.paused { 1 } else { 0 },
+        browsing: if w.browsing { 1 } else { 0 },
     }
 }
 
@@ -426,4 +520,27 @@ fn a_restart_plays_at_once() {
     tick_with(mut w, [down(Key::R)])
     tick_with(mut w, [up(Key::R)])
     assert(!w.paused && w.ticks == 1 && w.attempt == 1)
+}
+
+@test
+fn paused_b_opens_the_runs_and_only_esc_or_b_closes_them() {
+    var w = world(LEVEL)
+    tick_with(mut w, [down(Key::B)])
+    assert(w.paused && w.browsing, "the runs open")
+    for key in [Key::Space, Key::Enter, Key::R, Key::Tab, Key::P] {
+        tick_with(mut w, [down(key)])
+        tick_with(mut w, [up(key)])
+    }
+    assert(
+        w.paused && w.browsing && w.attempt == 0 && w.course == LEVEL,
+        "the keys are the frames'",
+    )
+    tick_with(mut w, [down(Key::Escape)])
+    assert(w.paused && !w.browsing, "Esc closes them, still paused")
+    tick_with(mut w, [down(Key::B)])
+    tick_with(mut w, [down(Key::B)])
+    assert(w.paused && !w.browsing, "B closes them too")
+    tick_with(mut w, [down(Key::Space)])
+    tick_with(mut w, [down(Key::B)])
+    assert(!w.paused && !w.browsing, "playing, B does nothing")
 }

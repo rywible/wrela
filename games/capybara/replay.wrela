@@ -1,0 +1,410 @@
+// Replays: what a player did, as the pads of an attempt's ticks (design.md, "Input" and "Releases
+// and replays"). The ticker records each attempt as it's played (world.wrela's `Live`); a finished
+// one becomes a `Replay`, which plays exactly the same again on the sim (`world::play`), so it is
+// its own proof: `verify` plays it and checks its time and what it found, as the leaderboards'
+// server will. The game keeps the best few of each category in its own storage (`Board`), draws
+// one beside the player as a ghost (`trail`), and plays any of them back to watch (main.wrela).
+//
+// A board belongs to one version of play (`BOARD`): a change to the sim or the courses that
+// changes how a run plays starts a new one, and the runs of the old one are dropped.
+
+use course::{COURSES, course}
+use pad::{Hold, pad_of}
+use proofs::{LAB_RUN, LEVEL_ANY, LEVEL_FULL}
+use std::collections::Vec
+use std::serialize::{LoadError, Serialize, load, save}
+use world::{LAB, LEVEL, Snap, World, step, world}
+
+/// The version of play the runs are for.
+pub const BOARD: u32 = 1
+
+/// Where the game keeps its runs, in its own storage.
+pub const SAVED: Text = "capybara/runs"
+
+/// The categories (design.md, "Speedrunning"): any%, to the goal, and 100%, to the goal with
+/// every snack. A 100% run counts for any% too.
+pub const ANY: u32 = 0
+pub const FULL: u32 = 1
+
+/// Who made a run: the player, or the autopilot (tool-assisted: proofs.wrela's recorded runs, and
+/// the route search's when it finds faster).
+pub const YOU: u32 = 0
+pub const AUTOPILOT: u32 = 1
+
+/// How many runs a category keeps.
+pub const KEPT: u32 = 5
+
+/// A finished attempt: its course, who made it, its time (the clock's ticks on reaching the goal),
+/// the snacks it found (a bit each), its deaths, and its pads.
+pub struct Replay: Clone + Serialize {
+    pub course: u32,
+    pub who: u32,
+    pub ticks: u32,
+    pub snacks: u32,
+    pub deaths: u32,
+    pub holds: Vec<Hold>,
+}
+
+/// The replay of the attempt in snapshot `s` (world.wrela's `present_live`), once it has reached
+/// the goal: none before, or if its run outgrew its record.
+pub fn replay(s: Snap, who: u32) -> Option<Replay> {
+    if s.finished == 0 || s.run.over == 1 {
+        return None
+    }
+    Some(
+        Replay {
+            course: s.course,
+            who,
+            ticks: s.finished,
+            snacks: s.snacks,
+            deaths: s.deaths,
+            holds: s.run.holds(),
+        },
+    )
+}
+
+/// The world after the first `ticks` ticks of `r` (all of it, past its end).
+pub fn played(r: Replay, ticks: u32) -> World {
+    var w = world(r.course)
+    var t = 0
+    for h in r.holds {
+        for i in 0..h.ticks {
+            if t == ticks {
+                return w
+            }
+            step(mut w, pad_of(h, i))
+            t += 1
+        }
+    }
+    w
+}
+
+/// How many ticks `r`'s pads last.
+pub fn length(r: Replay) -> u32 {
+    var n = 0
+    for h in r.holds {
+        n += h.ticks
+    }
+    n
+}
+
+/// Whether `r` plays, on the sim, to the goal on the tick it says, with the snacks and the deaths
+/// it says: what it claims is what the rules make of its pads.
+pub fn verify(r: Replay) -> bool {
+    if r.course >= COURSES || r.who > AUTOPILOT || length(r) != r.ticks {
+        return false
+    }
+    let w = played(r, r.ticks)
+    w.finished == r.ticks && w.snacks == r.snacks && w.deaths == r.deaths
+}
+
+/// Whether `r` counts for `category`.
+pub fn counts(r: Replay, category: u32) -> bool {
+    let all = (1 << course(r.course).snacks.len()) - 1
+    category == ANY || (r.snacks & all) == all
+}
+
+/// The runs kept: the best few of each course and category.
+pub struct Board: Clone + Serialize {
+    pub version: u32,
+    pub runs: Vec<Replay>,
+}
+
+/// A board with no runs.
+pub fn board() -> Board {
+    Board { version: BOARD, runs: Vec::new() }
+}
+
+impl Board {
+    /// The best `KEPT` runs of course `c` that count for `category`, fastest first (the earlier
+    /// kept first among equal times).
+    pub fn ranked(self, c: u32, category: u32) -> Vec<Replay> {
+        var out: Vec<Replay> = Vec::new()
+        for r in self.runs {
+            if r.course == c && counts(r, category) {
+                var at = out.len()
+                while at > 0 && out[at - 1].ticks > r.ticks {
+                    at -= 1
+                }
+                out.insert(at, r.clone())
+            }
+        }
+        while out.len() > KEPT {
+            let _ = out.pop()
+        }
+        out
+    }
+
+    /// Keeps `r` if it is among the best `KEPT` of a category it counts for, and lets go of runs
+    /// that no longer are; whether it was kept.
+    pub fn add(mut self, r: take Replay) -> bool {
+        self.runs.push(take r)
+        var kept = false
+        var i = 0
+        while i < self.runs.len() {
+            if self.ranks(i) {
+                kept = kept || i == self.runs.len() - 1
+                i += 1
+            } else {
+                let _ = self.runs.remove(i)
+            }
+        }
+        kept
+    }
+
+    /// Whether run `i` is among the best `KEPT` of a category it counts for: fewer than `KEPT`
+    /// runs of its course and category are faster, or as fast and kept before it.
+    fn ranks(self, i: u32) -> bool {
+        borrow r = self.runs[i]
+        for category in [ANY, FULL] {
+            if counts(r, category) {
+                var ahead = 0
+                for j in 0..self.runs.len() {
+                    borrow o = self.runs[j]
+                    if j != i &&
+                        o.course == r.course &&
+                        counts(o, category) &&
+                        (o.ticks < r.ticks || (o.ticks == r.ticks && j < i)) {
+                        ahead += 1
+                    }
+                }
+                if ahead < KEPT {
+                    return true
+                }
+            }
+        }
+        false
+    }
+}
+
+/// The board in `bytes`: its runs that are of this version of play and that verify; an empty board
+/// for anything else.
+pub fn read(bytes: take Vec<u8>) -> Board {
+    let loaded: Result<Board, LoadError> = load(take bytes)
+    let Ok(b) = loaded else { return board() }
+    var out = board()
+    if b.version != BOARD {
+        return out
+    }
+    for r in b.runs {
+        if r.who == YOU && verify(r) {
+            let _ = out.add(r.clone())
+        }
+    }
+    out
+}
+
+/// `b` as bytes, to store.
+pub fn bytes(b: Board) -> Vec<u8> {
+    save(b)
+}
+
+/// The tool-assisted runs of course `c`: the autopilot's recordings (proofs.wrela), as replays.
+pub fn tool_assisted(c: u32) -> Vec<Replay> {
+    var out: Vec<Replay> = Vec::new()
+    if c == LEVEL {
+        out.push(recorded(LEVEL, LEVEL_ANY))
+        out.push(recorded(LEVEL, LEVEL_FULL))
+    } else if c == LAB {
+        out.push(recorded(LAB, LAB_RUN))
+    }
+    out
+}
+
+/// A recorded run as the autopilot's replay, cut at the goal.
+fn recorded(c: u32, run: [Hold]) -> Replay {
+    var holds: Vec<Hold> = Vec::new()
+    var w = world(c)
+    for h in run {
+        var kept = 0
+        for i in 0..h.ticks {
+            if w.finished == 0 {
+                step(mut w, pad_of(h, i))
+                kept += 1
+            }
+        }
+        if kept > 0 {
+            holds.push(Hold { bits: h.bits, ticks: kept })
+        }
+    }
+    Replay {
+        course: c,
+        who: AUTOPILOT,
+        ticks: w.finished,
+        snacks: w.snacks,
+        deaths: w.deaths,
+        holds,
+    }
+}
+
+// ---- the ghost ---------------------------------------------------------------------------------
+
+/// Where a ghost is after a tick of its run: the capybara's middle, the way it faces, its mode (as
+/// `Mode`'s discriminant), whether it's dying, and how far it has walked (m, for its stride).
+pub struct Pose: Copy {
+    pub at: vec2,
+    pub facing: f32,
+    pub mode: u32,
+    pub dying: u32,
+    pub walked: f32,
+}
+
+/// The poses of `r`: the first before its first tick, then one after each tick to its end.
+pub fn trail(r: Replay) -> Vec<Pose> {
+    var out: Vec<Pose> = Vec::new()
+    var w = world(r.course)
+    var walked = 0.0
+    out.push(pose(w, walked))
+    for h in r.holds {
+        for i in 0..h.ticks {
+            let before = w.body.at
+            step(mut w, pad_of(h, i))
+            walked += distance(before, w.body.at)
+            out.push(pose(w, walked))
+        }
+    }
+    out
+}
+
+fn pose(w: World, walked: f32) -> Pose {
+    Pose {
+        at: w.body.at,
+        facing: w.body.facing,
+        mode: u32(w.body.mode),
+        dying: w.dying,
+        walked,
+    }
+}
+
+// ---- tests -------------------------------------------------------------------------------------
+
+use std::input::{Event, Key, Mods}
+use engine::run::TickInput
+use pad::{DOWN, JUMP, LEFT, PRESS, RIGHT, UP}
+use world::{live, present_live, tick_live}
+
+/// A run of `who` at course `c` that claims `ticks` and these snacks, unchecked.
+fn claimed(c: u32, ticks: u32, snacks: u32) -> Replay {
+    Replay { course: c, who: YOU, ticks, snacks, deaths: 0, holds: Vec::new() }
+}
+
+@test
+fn the_autopilots_runs_verify_and_a_doctored_one_does_not() {
+    for c in [LAB, LEVEL] {
+        for r in tool_assisted(c) {
+            assert(verify(r), f"course {c}: {r.ticks} ticks")
+            var faster = r.clone()
+            faster.ticks -= 1
+            assert(!verify(faster), "a run claiming a tick less")
+            var more = r.clone()
+            more.snacks = more.snacks | 1 << 7
+            assert(!verify(more), "a run claiming a snack it didn't find")
+        }
+    }
+    let full = tool_assisted(LEVEL)[1].clone()
+    assert(counts(full, FULL) && counts(full, ANY))
+    assert(!counts(tool_assisted(LEVEL)[0], FULL), "the any% run misses snacks")
+}
+
+@test
+fn a_board_keeps_the_best_few_of_each_category_fastest_first() {
+    var b = board()
+    let all = (1 << course(LEVEL).snacks.len()) - 1
+    // Seven any% runs, slowest first, then a slow 100% run.
+    for k in 0..7 {
+        let _ = b.add(claimed(LEVEL, ticks: 4000 - k * 10, snacks: 0))
+    }
+    assert(b.add(claimed(LEVEL, ticks: 5000, snacks: all)), "the only 100% run is kept")
+    assert(!b.add(claimed(LEVEL, ticks: 4100, snacks: 0)), "a slow any% run isn't")
+    let any = b.ranked(LEVEL, ANY)
+    assert(any.len() == KEPT)
+    assert(any[0].ticks == 3940 && any[KEPT - 1].ticks == 3980, f"{any[0].ticks}")
+    let full = b.ranked(LEVEL, FULL)
+    assert(full.len() == 1 && full[0].ticks == 5000)
+    assert(b.ranked(LAB, ANY).len() == 0)
+}
+
+@test
+fn a_stored_board_reads_back_only_runs_that_verify_on_this_version() {
+    var b = board()
+    let any = tool_assisted(LEVEL)[0].clone()
+    var mine = any.clone()
+    mine.who = YOU
+    let _ = b.add(mine.clone())
+    var doctored = mine.clone()
+    doctored.ticks -= 60
+    let _ = b.add(take doctored)
+    let back = read(bytes(b))
+    assert(back.runs.len() == 1 && back.runs[0].ticks == any.ticks, f"{back.runs.len()} runs")
+    var old = board()
+    old.version = BOARD + 1
+    let _ = old.add(take mine)
+    assert(read(bytes(old)).runs.len() == 0, "another version's runs are dropped")
+    assert(read(Vec::from([1, 2, 3])).runs.len() == 0, "bytes that aren't a board")
+}
+
+/// The key events that take the controls from holding `from` to holding `to` (pad.wrela's bits).
+fn keys(from: u32, to: u32) -> Vec<Event> {
+    var out: Vec<Event> = Vec::new()
+    for (bit, key) in [
+        (LEFT, Key::Left),
+        (RIGHT, Key::Right),
+        (UP, Key::Up),
+        (DOWN, Key::Down),
+        (JUMP, Key::Space),
+    ] {
+        let (was, is) = (from & bit != 0, to & bit != 0)
+        if bit == JUMP && to & PRESS != 0 {
+            if was {
+                out.push(Event::KeyUp { key, mods: Mods {} })
+            }
+            out.push(Event::KeyDown { key, repeat: false, mods: Mods {} })
+        } else if was && !is {
+            out.push(Event::KeyUp { key, mods: Mods {} })
+        } else if is && !was {
+            out.push(Event::KeyDown { key, repeat: false, mods: Mods {} })
+        }
+    }
+    out
+}
+
+@test
+fn a_live_attempt_played_from_keys_is_recorded_as_a_replay_that_plays_it_again() {
+    // The lab's run, played as key presses through the ticker's step, from the pause it opens on.
+    var l = live(LAB)
+    var tick = 0
+    let go = Vec::from([Event::KeyDown { key: Key::Enter, repeat: false, mods: Mods {} }])
+    tick_live(mut l, TickInput { tick, dt: 1.0 / 120.0, records: go, answers: Vec::new() })
+    tick += 1
+    var bits = 0
+    for h in LAB_RUN {
+        for i in 0..h.ticks {
+            let pad = pad_of(h, i).bits
+            let records = keys(bits, pad)
+            bits = pad
+            tick_live(mut l, TickInput { tick, dt: 1.0 / 120.0, records, answers: Vec::new() })
+            tick += 1
+        }
+    }
+    assert(l.world.finished > 0, "the lab's run reaches its goal")
+    let Some(r) = replay(present_live(l), YOU) else { panic("a finished attempt has a replay") }
+    assert(r.ticks == l.world.finished && length(r) == r.ticks, f"{length(r)} ticks")
+    assert(verify(r), "it plays again to the same goal")
+    // Its pads are the run's, tick for tick, to the goal.
+    var given: Vec<u32> = Vec::new()
+    for h in LAB_RUN {
+        for i in 0..h.ticks {
+            given.push(pad_of(h, i).bits)
+        }
+    }
+    var t = 0
+    for h in r.holds {
+        for i in 0..h.ticks {
+            assert(pad_of(h, i).bits == given[t], f"tick {t}")
+            t += 1
+        }
+    }
+    let ghost = trail(r)
+    let w = played(r, r.ticks)
+    assert(ghost.len() == r.ticks + 1 && ghost[r.ticks].at == w.body.at, "the ghost's trail")
+}

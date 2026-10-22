@@ -69,3 +69,26 @@ pub const LAB: Script = keys_of(
     proofs::LAB_RUN,
     first: 4,
 )
+
+/// The runs, at 1280x720 and 60 frames a second: B opens them from the pause the game opens on,
+/// the pointer rests on the fastest any% run, then clicks it to watch it.
+pub const RUNS: Script = Script::frames()
+    .key_down(1, Key::B)
+    .key_up(2, Key::B)
+    .move_to(30, vec2(447.0, 275.0))
+    .down(60, vec2(447.0, 275.0))
+    .up(61, vec2(447.0, 275.0))
+
+/// The autopilot's ghost, at 60 frames a second: B opens the runs, G chooses the autopilot's ghost
+/// (after the player's best), Esc closes them, Space plays on, and the capybara runs right beside
+/// it.
+pub const GHOST: Script = Script::frames()
+    .key_down(1, Key::B)
+    .key_up(2, Key::B)
+    .key_down(3, Key::G)
+    .key_up(4, Key::G)
+    .key_down(7, Key::Escape)
+    .key_up(8, Key::Escape)
+    .key_down(9, Key::Space)
+    .key_up(10, Key::Space)
+    .key_down(12, Key::D)

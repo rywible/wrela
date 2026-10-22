@@ -155,9 +155,59 @@ impl Controls {
 
 /// A stretch of a run: a pad held for `ticks` ticks. With `PRESS`, jump is pressed on the first
 /// tick alone.
-pub struct Hold: Copy {
+pub struct Hold: Copy + Eq + Serialize {
     pub bits: u32,
     pub ticks: u32,
+}
+
+/// The most stretches a recorded run holds (`Run`): a player changes what they hold a few times a
+/// second, so this is minutes of play. A run past it isn't kept.
+pub const MOST_HOLDS: u32 = 1024
+
+/// An attempt's pads as the sim plays them, recorded in the ticker's state (world.wrela's `Live`)
+/// and handed to the frames in its snapshots: a stretch each, its bits over its ticks
+/// (`bits << 24 | ticks`). It is fixed in size, so it copies and hashes as plain data.
+pub struct Run: Copy + Eq + StateHash + Serialize + SimState + Plain {
+    pub stretches: [u32; MOST_HOLDS],
+    pub len: u32,
+    /// 1 once a stretch didn't fit: the run is no longer recorded.
+    pub over: u32,
+}
+
+/// A run with nothing in it.
+pub const NO_RUN: Run = Run { stretches: [0; MOST_HOLDS], len: 0, over: 0 }
+
+impl Run {
+    /// One more tick of `pad`: the last stretch a tick longer, or a new one. A press always starts
+    /// one, as `pad_of` presses only on a stretch's first tick.
+    pub fn record(mut self, pad: Pad) {
+        if self.over == 1 {
+            return
+        }
+        if self.len > 0 && !pad.pressed() {
+            let last = self.stretches[self.len - 1]
+            if (last >> 24) & !PRESS == pad.bits && last & 0xffffff < 0xffffff {
+                self.stretches[self.len - 1] = last + 1
+                return
+            }
+        }
+        if self.len == MOST_HOLDS {
+            self.over = 1
+            return
+        }
+        self.stretches[self.len] = (pad.bits << 24) | 1
+        self.len += 1
+    }
+
+    /// The run as holds, which `world::play` replays.
+    pub fn holds(self) -> Vec<Hold> {
+        var out: Vec<Hold> = Vec::new()
+        for i in 0..self.len {
+            let s = self.stretches[i]
+            out.push(Hold { bits: s >> 24, ticks: s & 0xffffff })
+        }
+        out
+    }
 }
 
 pub fn hold(bits: u32, ticks: u32) -> Hold {
@@ -170,6 +220,45 @@ pub fn pad_of(h: Hold, i: u32) -> Pad {
 }
 
 // ---- tests -------------------------------------------------------------------------------------
+
+@test
+fn a_run_records_stretches_and_gives_back_the_pads_it_was_given() {
+    // Held right, a press of jump held for three ticks, right again, two presses in a row.
+    let pads = [
+        RIGHT,
+        RIGHT,
+        RIGHT | JUMP | PRESS,
+        RIGHT | JUMP,
+        RIGHT | JUMP,
+        RIGHT,
+        JUMP | PRESS,
+        JUMP | PRESS,
+        0,
+    ]
+    var run = NO_RUN
+    for bits in pads {
+        run.record(Pad { bits })
+    }
+    let holds = run.holds()
+    assert(holds.len() == 6, f"{holds.len()} stretches")
+    var i = 0
+    for h in holds {
+        for k in 0..h.ticks {
+            assert(pad_of(h, k).bits == pads[i], f"tick {i}")
+            i += 1
+        }
+    }
+    assert(i == pads.len())
+}
+
+@test
+fn a_run_past_its_stretches_stops_recording() {
+    var run = NO_RUN
+    for i in 0..MOST_HOLDS + 10 {
+        run.record(Pad { bits: if i % 2 == 0 { RIGHT } else { LEFT } })
+    }
+    assert(run.over == 1 && run.len == MOST_HOLDS)
+}
 
 fn down(key: Key) -> Event {
     Event::KeyDown { key, repeat: false, mods: std::input::Mods {} }
