@@ -1,0 +1,819 @@
+// The creatures, the things and the particles, drawn as sprites: each a quad, and in it a shape
+// made of distances (ellipses, capsules, rounded boxes, unioned smoothly), seen side on. Nothing is
+// a picture. A shape is shaded as though it bulged towards the eye: how far inside its edge a
+// pixel is gives a dome's height there, and the dome's slope a normal, lit by the sun and the
+// sky, with a rim of sunlight on the edges that face the sun and a fine dark line round it. A
+// creature is a few such layers drawn back to front: its far legs, its body, its near legs, its
+// eye.
+//
+// Each sprite says its kind, where it is, its quad's half-size, its turn and the way it faces,
+// and two vec4s of pose, which mean what its kind says (`Sprite`).
+
+use art::{SUN, SUN_COLOUR}
+use earth::lin
+use engine::noise::noise2
+use std::derive::{value_and_gradient, value_gradient_with}
+use std::field::smin
+use std::gpu::{ClipPosition, Flat, InstanceIndex, Over, VertexIndex, discard}
+
+/// The kinds of sprite.
+pub const SHADOW: f32 = 0.0
+pub const CAPYBARA: f32 = 1.0
+pub const GOOSE: f32 = 2.0
+pub const PIGEON: f32 = 3.0
+pub const CAIMAN: f32 = 4.0
+pub const SEAGULL: f32 = 5.0
+pub const CARROT: f32 = 6.0
+pub const YUZU: f32 = 7.0
+pub const FLAG: f32 = 8.0
+pub const DUST: f32 = 10.0
+pub const DROP: f32 = 11.0
+pub const BUBBLE: f32 = 12.0
+pub const SPARK: f32 = 13.0
+pub const FEATHER: f32 = 14.0
+pub const RING: f32 = 15.0
+pub const STREAK: f32 = 16.0
+
+/// A sprite. `pose` and `more` by kind:
+/// - the capybara: `pose` its stride (rad), its pace (0 to 1), its mode, and a blink (1 open);
+///   `more` how wet it is (0 to 1), its yuzu (1), and its squash across and up.
+/// - a goose: `pose` its stride, whether it charges (1), and its wings' spread (0 to 1).
+/// - a pigeon, a seagull: `pose` its wings' beat (rad), and (the seagull) 1 while it flies.
+/// - a caiman: `pose` its tail's beat (rad), and its jaw's gape (0 to 1).
+/// - a carrot, a yuzu: `pose` its glow (0 to 1).
+/// - a flag: `pose` 1 once reached, the wind's phase, and its height (m).
+/// - a shadow, a particle: `more` its colour and opacity; `pose` its age (0 to 1).
+pub struct Sprite: Copy + GpuData {
+    pub pose: vec4,
+    pub more: vec4,
+    pub at: vec2,
+    pub half: vec2,
+    pub angle: f32,
+    pub facing: f32,
+    pub kind: f32,
+    /// The water's surface over it (m), or far below it where there's no water.
+    pub surface: f32 = -1.0e4,
+}
+
+/// What the sprites' shaders are told: the camera's matrix, a pixel's size (m), the time (s), and
+/// the first sprite of the draw.
+pub struct Stage: Copy + GpuData {
+    pub view_proj: mat4,
+    pub px: f32,
+    pub time: f32,
+    pub first: u32,
+    pub pad: f32 = 0.0,
+}
+
+pub struct Spritel: Copy {
+    pub clip: ClipPosition,
+    /// The point in the sprite's own frame: x the way it faces, y up (m).
+    pub local: vec2,
+    pub world: vec2,
+    pub index: Flat<u32>,
+}
+
+@vertex
+pub fn sprite_vertex(v: VertexIndex, i: InstanceIndex, sprites: [Sprite], st: Stage) -> Spritel {
+    let index = st.first + i.index
+    let s = sprites[index]
+    let xs = [-1.0, 1.0, 1.0, -1.0, 1.0, -1.0]
+    let ys = [-1.0, -1.0, 1.0, -1.0, 1.0, 1.0]
+    let local = vec2(xs[v.index], ys[v.index]) * s.half
+    let (c, n) = (cos(s.angle), sin(s.angle))
+    let world = s.at + vec2(local.x * c - local.y * n, local.x * n + local.y * c)
+    Spritel {
+        clip: ClipPosition { position: st.view_proj * vec4(world, 0.5, 1.0) },
+        local: local * vec2(s.facing, 1.0),
+        world,
+        index: Flat { value: index },
+    }
+}
+
+// ---- shapes ----------------------------------------------------------------------------------
+
+fn blend(a: vec3, b: vec3, t: f32) -> vec3 {
+    a + (b - a) * t
+}
+
+/// An ellipse's distance, approximately (exact on its axes).
+pub fn ellipse(p: vec2, r: vec2) -> f32 {
+    let k0 = length(p / r)
+    let k1 = length(p / (r * r))
+    k0 * (k0 - 1.0) / max(k1, 1.0e-5)
+}
+
+/// A segment's distance from `a` to `b`, `ra` thick at `a` and `rb` at `b`.
+pub fn cone(p: vec2, a: vec2, b: vec2, ra: f32, rb: f32) -> f32 {
+    let pa = p - a
+    let ba = b - a
+    let h = saturate(dot(pa, ba) / dot(ba, ba))
+    length(pa - ba * h) - (ra + (rb - ra) * h)
+}
+
+fn capsule(p: vec2, a: vec2, b: vec2, r: f32) -> f32 {
+    cone(p, a, b, ra: r, rb: r)
+}
+
+/// A rounded box's distance: half-size `b`, corners rounded by `r`.
+fn rbox(p: vec2, b: vec2, r: f32) -> f32 {
+    let q = abs(p) - b + vec2(r)
+    length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r
+}
+
+fn turn(p: vec2, a: f32) -> vec2 {
+    let (c, s) = (cos(a), sin(a))
+    vec2(p.x * c + p.y * s, -p.x * s + p.y * c)
+}
+
+// ---- shading ---------------------------------------------------------------------------------
+
+/// How a layer of a shape looks: its colour, how glossy, how thick its dome (m), how much it
+/// glows of itself.
+struct Paint: Copy {
+    albedo: vec3,
+    gloss: f32,
+    thick: f32,
+    glow: f32,
+}
+
+/// One layer of a shape, `d` its distance (m) and `g` its gradient, shaded: a dome over the
+/// shape, lit by the sun and the sky, with a rim and a fine dark line round it; and how much of
+/// the pixel it covers.
+fn shade(d: f32, g: vec2, paint: Paint, px: f32) -> vec4 {
+    let inside = max(-d, 0.0)
+    let s = min(inside / paint.thick, 1.0)
+    let h = sqrt(s * (2.0 - s))
+    let slope = (1.0 - s) / max(h, 0.12)
+    let out = normalize(g + vec2(1.0e-6))
+    let n = normalize(vec3(out * slope, 1.0))
+    let sun = normalize(SUN)
+    let wrap = saturate((dot(n, sun) + 0.3) / 1.3)
+    let sky = vec3(0.42, 0.52, 0.72) * (0.6 + 0.4 * n.y)
+    let bounce = lin(vec3(0.55, 0.45, 0.3)) * 0.35 * saturate(-n.y)
+    var c = paint.albedo * (sky * 0.8 + SUN_COLOUR * wrap * 0.85 + bounce)
+    let rim = pow(1.0 - n.z, 2.5) * saturate(dot(out, normalize(SUN.xy)) + 0.2)
+    c += SUN_COLOUR * rim * (paint.albedo * 0.8 + vec3(0.12))
+    let half_way = normalize(sun + vec3(0.0, 0.0, 1.0))
+    c += SUN_COLOUR * pow(max(dot(n, half_way), 0.0), 30.0) * paint.gloss
+    c += paint.albedo * paint.glow
+    let line = px * 1.4
+    let ink = paint.albedo * 0.16
+    c = blend(ink, c, smoothstep(line * 0.6, line, inside))
+    vec4(c, saturate(-d / px + 0.5))
+}
+
+/// `front` over `back`, each a colour and a cover.
+fn over(back: vec4, front: vec4) -> vec4 {
+    let a = front.w + back.w * (1.0 - front.w)
+    if a <= 0.0 {
+        return vec4(0.0)
+    }
+    vec4((front.xyz * front.w + back.xyz * back.w * (1.0 - front.w)) / a, a)
+}
+
+/// A shape's layer, from its distance function, shaded and laid over `back`.
+fn layer(back: vec4, f: fn(vec2) -> f32, q: vec2, paint: Paint, px: f32) -> vec4 {
+    let (d, g) = value_and_gradient(f, q)
+    if d > px {
+        return back
+    }
+    over(back, shade(d, g, paint, px))
+}
+
+/// A flat mark (an eye, a nostril, a line), its distance `d`, in colour `c`, over `back`.
+fn mark(back: vec4, d: f32, c: vec3, px: f32) -> vec4 {
+    over(back, vec4(c, saturate(-d / px + 0.5)))
+}
+
+// ---- the capybara ---------------------------------------------------------------------------
+
+/// A leg's foot, for a leg whose hip is at `x` across, in the capybara's mode, its stride's phase
+/// for this leg and its pace.
+fn foot(x: f32, mode: f32, phase: f32, pace: f32) -> vec2 {
+    let front = if x > 0.0 { 1.0 } else { -1.0 }
+    if mode == 2.0 {
+        // Sliding: legs splayed forward and back.
+        vec2(x + 0.17 * front, -0.27)
+    } else if mode == 3.0 {
+        // In the air: tucked.
+        vec2(x - 0.07 * front, -0.24)
+    } else if mode == 4.0 {
+        // Swimming: paddling.
+        vec2(x + 0.13 * sin(phase), -0.3 + 0.05 * cos(phase))
+    } else if mode == 1.0 {
+        vec2(x, -0.29)
+    } else {
+        vec2(x + 0.13 * pace * sin(phase), -0.34 + 0.08 * pace * max(cos(phase), 0.0))
+    }
+}
+
+fn leg(p: vec2, x: f32, f: vec2) -> f32 {
+    let hip = vec2(x, -0.08)
+    min(cone(p, hip, f, ra: 0.09, rb: 0.055), ellipse(p - f - vec2(0.03, -0.01), vec2(0.07, 0.035)))
+}
+
+/// The capybara's body and head: a loaf of a body with a high rump, a deep chest, and a big
+/// square head with its blunt muzzle, a little nose down.
+fn capybara_body(p: vec2) -> f32 {
+    var d = ellipse(p - vec2(-0.04, 0.0), vec2(0.44, 0.255))
+    d = smin(d, ellipse(p - vec2(-0.27, 0.04), vec2(0.24, 0.245)), 0.12)
+    d = smin(d, ellipse(p - vec2(0.2, 0.03), vec2(0.22, 0.22)), 0.1)
+    let head = turn(p - vec2(0.46, 0.12), -0.22)
+    let skull = rbox(head, vec2(0.16, 0.125), 0.1)
+    let muzzle = rbox(head - vec2(0.15, -0.035), vec2(0.1, 0.095), 0.085)
+    smin(d, smin(skull, muzzle, 0.07), 0.09)
+}
+
+fn capybara(q: vec2, s: Sprite, px: f32, time: f32) -> vec4 {
+    let stride = s.pose.x
+    let pace = s.pose.y
+    let mode = s.pose.z
+    let wet = s.more.x
+    let p = q / s.more.zw
+    let fur = lin(vec3(0.66, 0.44, 0.27)) * (1.0 - 0.38 * wet)
+    let dark = lin(vec3(0.46, 0.3, 0.18)) * (1.0 - 0.3 * wet)
+    let gloss = 0.08 + 0.55 * wet
+    let legs = Paint { albedo: dark, gloss, thick: 0.06, glow: 0.0 }
+    var c = vec4(0.0)
+    // The far legs, in shade behind the body.
+    let far = Paint { albedo: dark * 0.6, gloss, thick: 0.06, glow: 0.0 }
+    let fb = foot(-0.25, mode, stride + 3.1416, pace)
+    let ff = foot(0.24, mode, stride, pace)
+    c = layer(c, |x: vec2| leg(x, -0.25 + 0.05, fb + vec2(0.05, 0.0)), p, far, px)
+    c = layer(c, |x: vec2| leg(x, 0.24 + 0.05, ff + vec2(0.05, 0.0)), p, far, px)
+    // The body: the fur lighter underneath, darker towards the nose, in fine strokes.
+    let (d, g, _) = value_gradient_with(|x: vec2| (capybara_body(x), 0.0), p)
+    if d < px {
+        let strokes = noise2(vec2(p.x * 30.0 + p.y * 12.0, p.y * 80.0)) * 0.22 +
+            noise2(p * vec2(9.0, 14.0)) * 0.12
+        var albedo = fur * (0.88 + strokes)
+        albedo = blend(albedo, lin(vec3(0.74, 0.56, 0.38)), smoothstep(-0.05, -0.2, p.y) * 0.6)
+        albedo = blend(albedo, dark, smoothstep(0.48, 0.7, p.x) * 0.7)
+        c = over(c, shade(d, g, Paint { albedo, gloss, thick: 0.22, glow: 0.0 }, px))
+    }
+    // The near legs.
+    let nb = foot(-0.25, mode, stride, pace)
+    let nf = foot(0.24, mode, stride + 3.1416, pace)
+    c = layer(c, |x: vec2| leg(x, -0.25, nb), p, legs, px)
+    c = layer(c, |x: vec2| leg(x, 0.24, nf), p, legs, px)
+    // The ear, the eye (blinking), the nostril and the mouth.
+    c = layer(
+        c,
+        |x: vec2| ellipse(turn(x - vec2(0.35, 0.265), 0.3), vec2(0.045, 0.06)),
+        p,
+        Paint {
+            albedo: dark,
+            gloss: 0.1,
+            thick: 0.04,
+            glow: 0.0,
+        },
+        px,
+    )
+    let open = max(s.pose.w, 0.08)
+    let eye = ellipse(p - vec2(0.5, 0.175), vec2(0.032, 0.028 * open))
+    c = mark(c, eye, lin(vec3(0.08, 0.05, 0.04)), px)
+    if open > 0.5 {
+        c = mark(c, length(p - vec2(0.51, 0.186)) - 0.009, vec3(1.0), px)
+    }
+    c = mark(
+        c,
+        ellipse(turn(p - vec2(0.675, 0.095), -0.5), vec2(0.022, 0.011)),
+        lin(vec3(0.15, 0.09, 0.06)),
+        px,
+    )
+    c = mark(
+        c,
+        capsule(p, vec2(0.6, -0.025), vec2(0.66, -0.012), 0.006),
+        lin(vec3(0.2, 0.12, 0.08)),
+        px,
+    )
+    // The yuzu on its head, as capybaras in hot springs wear them.
+    if s.more.y > 0.5 {
+        c = layer(
+            c,
+            |x: vec2| length(x - vec2(0.4, 0.36)) - 0.1,
+            p,
+            Paint {
+                albedo: lin(vec3(1.0, 0.84, 0.2)),
+                gloss: 0.4,
+                thick: 0.1,
+                glow: 0.08,
+            },
+            px,
+        )
+        c = layer(
+            c,
+            |x: vec2| ellipse(turn(x - vec2(0.45, 0.47), 0.6), vec2(0.05, 0.02)),
+            p,
+            Paint {
+                albedo: lin(vec3(0.3, 0.6, 0.2)),
+                gloss: 0.2,
+                thick: 0.02,
+                glow: 0.0,
+            },
+            px,
+        )
+    }
+    c
+}
+
+// ---- the birds ------------------------------------------------------------------------------
+
+/// A goose: a white body, its tail up, a long neck (stretched forward and low when it charges),
+/// an orange beak and legs, walking at `stride`.
+fn goose(q: vec2, s: Sprite, px: f32) -> vec4 {
+    let stride = s.pose.x
+    let charge = s.pose.y
+    let white = lin(vec3(0.96, 0.95, 0.91))
+    let orange = lin(vec3(1.0, 0.55, 0.12))
+    let feet = Paint { albedo: orange, gloss: 0.2, thick: 0.03, glow: 0.0 }
+    var c = vec4(0.0)
+    for k in 0..2 {
+        let phase = stride + f32(k) * 3.1416
+        let x = -0.04 + 0.05 * f32(k)
+        let f = vec2(x + 0.1 * sin(phase), -0.43 + 0.05 * max(cos(phase), 0.0))
+        let paint = if k == 0 { Paint { albedo: orange * 0.6, ..feet } } else { feet }
+        c = layer(
+            c,
+            |p: vec2| min(
+                capsule(p, vec2(x, -0.15), f, 0.022),
+                ellipse(p - f - vec2(0.04, 0.0), vec2(0.07, 0.02)),
+            ),
+            q,
+            paint,
+            px,
+        )
+    }
+    let neck_top = blend(vec3(0.3, 0.36, 0.0), vec3(0.45, 0.16, 0.0), charge).xy
+    let head = neck_top + vec2(0.05, 0.04)
+    c = layer(c, |p: vec2| {
+        var d = ellipse(turn(p - vec2(-0.02, -0.03), 0.12), vec2(0.36, 0.2))
+        d = smin(d, ellipse(turn(p - vec2(-0.33, 0.06), 0.5), vec2(0.13, 0.06)), 0.06)
+        d = smin(d, cone(p, vec2(0.2, 0.02), neck_top, ra: 0.1, rb: 0.055), 0.06)
+        smin(d, ellipse(p - head, vec2(0.095, 0.075)), 0.04)
+    }, q, Paint { albedo: white, gloss: 0.15, thick: 0.18, glow: 0.0 }, px)
+    // The wing, folded, its feathers lined.
+    let wing = |p: vec2| ellipse(
+        turn(p - vec2(-0.08, 0.02), 0.15 + 0.5 * s.pose.z),
+        vec2(0.27, 0.12),
+    )
+    c = layer(
+        c,
+        wing,
+        q,
+        Paint { albedo: lin(vec3(0.88, 0.88, 0.86)), gloss: 0.1, thick: 0.08, glow: 0.0 },
+        px,
+    )
+    let quill = abs(fract((q.x + 0.3) * 14.0) - 0.5)
+    if wing(q) < 0.0 && q.y < 0.02 {
+        c = mark(c, (quill - 0.08) * 0.07, lin(vec3(0.7, 0.7, 0.7)), px)
+    }
+    c = layer(
+        c,
+        |p: vec2| cone(
+            p,
+            head + vec2(0.06, -0.01),
+            head + vec2(0.19, -0.035),
+            ra: 0.035,
+            rb: 0.016,
+        ),
+        q,
+        Paint {
+            albedo: orange,
+            gloss: 0.3,
+            thick: 0.03,
+            glow: 0.0,
+        },
+        px,
+    )
+    c = mark(c, length(q - head - vec2(0.02, 0.02)) - 0.018, lin(vec3(0.05, 0.05, 0.08)), px)
+    if charge > 0.5 {
+        // Cross: a brow.
+        c = mark(
+            c,
+            capsule(q, head + vec2(-0.02, 0.05), head + vec2(0.05, 0.035), 0.008),
+            lin(vec3(0.05, 0.05, 0.08)),
+            px,
+        )
+    }
+    c
+}
+
+/// A pigeon in flight: a plump grey body, a green and violet sheen on its neck, its wings
+/// beating at `pose.x`.
+fn pigeon(q: vec2, s: Sprite, px: f32) -> vec4 {
+    let beat = sin(s.pose.x)
+    let grey = lin(vec3(0.6, 0.64, 0.72))
+    var c = vec4(0.0)
+    let far = |p: vec2| ellipse(
+        turn(p - vec2(-0.02, 0.06) - vec2(cos(1.2 + beat), sin(1.2 + beat)) * 0.16, 1.2 + beat),
+        vec2(0.21, 0.06),
+    )
+    c = layer(c, far, q, Paint { albedo: grey * 0.6, gloss: 0.1, thick: 0.05, glow: 0.0 }, px)
+    c = layer(c, |p: vec2| {
+        var d = ellipse(turn(p, -0.1), vec2(0.23, 0.14))
+        d = smin(d, length(p - vec2(0.19, 0.1)) - 0.085, 0.07)
+        smin(d, ellipse(turn(p - vec2(-0.26, -0.02), 0.2), vec2(0.13, 0.045)), 0.04)
+    }, q, Paint { albedo: grey, gloss: 0.15, thick: 0.13, glow: 0.0 }, px)
+    // The sheen on its neck.
+    let neck = ellipse(q - vec2(0.15, 0.04), vec2(0.07, 0.06))
+    let sheen = blend(
+        lin(vec3(0.3, 0.7, 0.45)),
+        lin(vec3(0.6, 0.35, 0.75)),
+        0.5 + 0.5 * sin(q.y * 60.0),
+    )
+    c = over(c, vec4(sheen, saturate(-neck / 0.04) * 0.7))
+    let near = |p: vec2| ellipse(
+        turn(p - vec2(-0.02, 0.06) - vec2(cos(1.6 - beat), sin(1.6 - beat)) * 0.17, 1.6 - beat),
+        vec2(0.22, 0.065),
+    )
+    c = layer(c, near, q, Paint { albedo: grey * 1.05, gloss: 0.1, thick: 0.05, glow: 0.0 }, px)
+    c = layer(
+        c,
+        |p: vec2| cone(p, vec2(0.26, 0.1), vec2(0.33, 0.08), ra: 0.02, rb: 0.01),
+        q,
+        Paint {
+            albedo: lin(vec3(0.3, 0.25, 0.25)),
+            gloss: 0.2,
+            thick: 0.02,
+            glow: 0.0,
+        },
+        px,
+    )
+    c = mark(c, length(q - vec2(0.21, 0.125)) - 0.017, lin(vec3(0.9, 0.4, 0.1)), px)
+    mark(c, length(q - vec2(0.212, 0.125)) - 0.008, vec3(0.0), px)
+}
+
+/// The seagull that stole the snack: white, grey wings tipped black, a yellow beak with its red
+/// spot, holding a carrot. Perched, its wings are folded; flying (`pose.y`), they beat.
+fn seagull(q: vec2, s: Sprite, px: f32) -> vec4 {
+    let flying = s.pose.y
+    let beat = sin(s.pose.x) * flying
+    let white = lin(vec3(0.97, 0.97, 0.95))
+    let grey = lin(vec3(0.62, 0.66, 0.72))
+    var c = vec4(0.0)
+    if flying < 0.5 {
+        for x in [-0.05, 0.05] {
+            c = layer(
+                c,
+                |p: vec2| capsule(p, vec2(x, -0.15), vec2(x, -0.32), 0.018),
+                q,
+                Paint {
+                    albedo: lin(vec3(0.95, 0.6, 0.55)),
+                    gloss: 0.1,
+                    thick: 0.02,
+                    glow: 0.0,
+                },
+                px,
+            )
+        }
+    }
+    c = layer(c, |p: vec2| {
+        var d = ellipse(turn(p - vec2(-0.02, 0.0), 0.15), vec2(0.3, 0.16))
+        d = smin(d, length(p - vec2(0.24, 0.13)) - 0.1, 0.07)
+        smin(d, ellipse(turn(p - vec2(-0.3, 0.04), 0.35), vec2(0.12, 0.04)), 0.04)
+    }, q, Paint { albedo: white, gloss: 0.15, thick: 0.15, glow: 0.0 }, px)
+    let wing = |p: vec2| {
+        let w = turn(p - vec2(-0.05, 0.06), 0.2 - beat * 1.2)
+        ellipse(w - vec2(-0.12 + flying * 0.15, 0.0), vec2(0.28 + flying * 0.15, 0.07))
+    }
+    c = layer(c, wing, q, Paint { albedo: grey, gloss: 0.1, thick: 0.06, glow: 0.0 }, px)
+    let tip = turn(q - vec2(-0.05, 0.06), 0.2 - beat * 1.2)
+    if wing(q) < 0.0 && tip.x < -0.3 + flying * 0.05 {
+        c = mark(c, wing(q), lin(vec3(0.1, 0.1, 0.12)), px)
+    }
+    c = layer(
+        c,
+        |p: vec2| cone(p, vec2(0.32, 0.12), vec2(0.45, 0.1), ra: 0.03, rb: 0.018),
+        q,
+        Paint {
+            albedo: lin(vec3(1.0, 0.85, 0.2)),
+            gloss: 0.3,
+            thick: 0.03,
+            glow: 0.0,
+        },
+        px,
+    )
+    c = mark(c, length(q - vec2(0.41, 0.09)) - 0.012, lin(vec3(0.9, 0.15, 0.1)), px)
+    c = mark(c, length(q - vec2(0.27, 0.16)) - 0.016, lin(vec3(0.05, 0.05, 0.05)), px)
+    // The stolen carrot in its beak.
+    c = layer(
+        c,
+        |p: vec2| cone(p, vec2(0.42, 0.08), vec2(0.62, -0.02), ra: 0.04, rb: 0.01),
+        q,
+        Paint {
+            albedo: lin(vec3(1.0, 0.5, 0.1)),
+            gloss: 0.3,
+            thick: 0.04,
+            glow: 0.1,
+        },
+        px,
+    )
+    c
+}
+
+// ---- the caiman ------------------------------------------------------------------------------
+
+/// A caiman: long and low, its back ridged, a long snout, its eye high on its head, its tail
+/// sweeping at `pose.x`; its jaw open by `pose.y`.
+fn caiman(q: vec2, s: Sprite, px: f32) -> vec4 {
+    let beat = s.pose.x
+    let gape = s.pose.y
+    let olive = lin(vec3(0.42, 0.48, 0.26))
+    var c = vec4(0.0)
+    let legs = Paint { albedo: olive * 0.6, gloss: 0.2, thick: 0.05, glow: 0.0 }
+    for x in [-0.45, 0.5] {
+        c = layer(
+            c,
+            |p: vec2| capsule(
+                p,
+                vec2(x + 0.06, -0.08),
+                vec2(x - 0.04 + 0.08 * sin(beat + x), -0.25),
+                0.05,
+            ),
+            q,
+            legs,
+            px,
+        )
+    }
+    let tail = |x: f32| 0.07 * sin(beat - x * 2.5) * smoothstep(-0.5, -1.8, x)
+    let body = |p: vec2| {
+        var d = ellipse(p - vec2(0.0, 0.0), vec2(0.75, 0.2))
+        d = smin(
+            d,
+            cone(p, vec2(-0.55, tail(-0.55)), vec2(-1.85, tail(-1.85)), ra: 0.15, rb: 0.025),
+            0.1,
+        )
+        d = smin(d, ellipse(p - vec2(0.75, 0.02), vec2(0.22, 0.15)), 0.08)
+        d = smin(
+            d,
+            cone(
+                turn(p - vec2(0.85, 0.0), -gape * 0.35),
+                vec2(0.0),
+                vec2(0.62, -0.04),
+                ra: 0.11,
+                rb: 0.06,
+            ),
+            0.06,
+        )
+        d = smin(d, length(p - vec2(0.82, 0.15)) - 0.075, 0.05)
+        // The ridges along its back.
+        d - 0.03 * max(sin(p.x * 26.0), 0.0) * smoothstep(0.0, 0.12, p.y - 0.02)
+    }
+    let (d, g, _) = value_gradient_with(|p: vec2| (body(p), 0.0), q)
+    if d < px {
+        let belly = smoothstep(0.0, -0.14, q.y)
+        let bands = smoothstep(0.3, 0.6, sin(q.x * 7.0)) * 0.25
+        var albedo = blend(olive * (1.0 - bands), lin(vec3(0.76, 0.72, 0.52)), belly * 0.8)
+        albedo *= 0.9 + 0.2 * noise2(q * vec2(40.0, 30.0))
+        c = over(c, shade(d, g, Paint { albedo, gloss: 0.45, thick: 0.16, glow: 0.0 }, px))
+    }
+    for x in [-0.3, 0.2] {
+        c = layer(
+            c,
+            |p: vec2| capsule(
+                p,
+                vec2(x, -0.08),
+                vec2(x + 0.08 * sin(beat + x + 3.1), -0.26),
+                0.055,
+            ),
+            q,
+            Paint {
+                albedo: olive * 0.85,
+                gloss: 0.2,
+                thick: 0.05,
+                glow: 0.0,
+            },
+            px,
+        )
+    }
+    // Its jaw's line and teeth, and its eye: gold, a slit for a pupil.
+    let jaw = turn(q - vec2(0.85, 0.0), -gape * 0.35)
+    if jaw.x > 0.05 && jaw.x < 0.6 {
+        c = mark(c, abs(jaw.y + 0.01) - 0.008, lin(vec3(0.15, 0.12, 0.08)), px)
+        let tooth = abs(fract(jaw.x * 16.0) - 0.5) * 0.06 + (jaw.y + 0.01) * 0.6
+        c = mark(c, max(tooth - 0.012, -jaw.y - 0.035), lin(vec3(0.95, 0.93, 0.85)), px)
+    }
+    c = mark(c, length(q - vec2(0.83, 0.17)) - 0.04, lin(vec3(0.95, 0.75, 0.2)) * 1.4, px)
+    mark(c, ellipse(q - vec2(0.835, 0.17), vec2(0.008, 0.032)), vec3(0.0), px)
+}
+
+// ---- things ----------------------------------------------------------------------------------
+
+/// A carrot: orange, tapering, ringed with grooves, its leaves up; glowing a little.
+fn carrot(q: vec2, s: Sprite, px: f32) -> vec4 {
+    var c = vec4(0.0)
+    let leaves = Paint { albedo: lin(vec3(0.35, 0.7, 0.2)), gloss: 0.2, thick: 0.03, glow: 0.05 }
+    for (a, l) in [(-0.5, 0.17), (0.0, 0.22), (0.45, 0.16)] {
+        c = layer(
+            c,
+            |p: vec2| ellipse(
+                turn(p - vec2(0.0, 0.17) - vec2(sin(a), cos(a)) * l * 0.5, -a),
+                vec2(0.03, l * 0.5),
+            ),
+            q,
+            leaves,
+            px,
+        )
+    }
+    let body = |p: vec2| cone(p, vec2(0.0, 0.12), vec2(0.0, -0.24), ra: 0.085, rb: 0.012)
+    c = layer(
+        c,
+        body,
+        q,
+        Paint {
+            albedo: lin(vec3(1.0, 0.52, 0.12)),
+            gloss: 0.4,
+            thick: 0.08,
+            glow: 0.25 * s.pose.x,
+        },
+        px,
+    )
+    if body(q) < 0.0 {
+        let groove = abs(fract(q.y * 14.0 + 0.3 * q.x * 10.0) - 0.5)
+        c = mark(
+            c,
+            (0.04 - groove) * 0.05 + max(abs(q.x) - 0.05, 0.0),
+            lin(vec3(0.7, 0.3, 0.06)),
+            px,
+        )
+    }
+    c
+}
+
+/// A yuzu: a bumpy yellow citrus with a leaf.
+fn yuzu(q: vec2, s: Sprite, px: f32) -> vec4 {
+    var c = vec4(0.0)
+    let fruit = |p: vec2| length(p) - 0.17 + 0.006 * noise2(p * 60.0)
+    c = layer(
+        c,
+        fruit,
+        q,
+        Paint { albedo: lin(vec3(1.0, 0.84, 0.18)), gloss: 0.5, thick: 0.15, glow: 0.2 * s.pose.x },
+        px,
+    )
+    c = layer(
+        c,
+        |p: vec2| ellipse(turn(p - vec2(0.07, 0.2), 0.7), vec2(0.07, 0.03)),
+        q,
+        Paint {
+            albedo: lin(vec3(0.3, 0.62, 0.2)),
+            gloss: 0.3,
+            thick: 0.03,
+            glow: 0.0,
+        },
+        px,
+    )
+    c
+}
+
+/// A checkpoint's flag: a pole, a ball on top, and a cloth that waves; grey ahead, green once
+/// reached.
+fn flag(q: vec2, s: Sprite, px: f32, time: f32) -> vec4 {
+    let tall = s.pose.z
+    var c = vec4(0.0)
+    c = layer(
+        c,
+        |p: vec2| capsule(p, vec2(0.0, 0.0), vec2(0.0, tall), 0.04),
+        q,
+        Paint {
+            albedo: lin(vec3(0.8, 0.8, 0.82)),
+            gloss: 0.8,
+            thick: 0.04,
+            glow: 0.0,
+        },
+        px,
+    )
+    c = layer(
+        c,
+        |p: vec2| length(p - vec2(0.0, tall + 0.05)) - 0.07,
+        q,
+        Paint {
+            albedo: lin(vec3(1.0, 0.8, 0.3)),
+            gloss: 0.9,
+            thick: 0.07,
+            glow: 0.15 * s.pose.x,
+        },
+        px,
+    )
+    let x = q.x - 0.04
+    let wave = 0.06 * sin(x * 7.0 - time * 5.0 + s.pose.y) * saturate(x / 0.3)
+    let cloth = max(max(-x, x - 0.75), abs(q.y - (tall - 0.28) - wave) - 0.22 * (1.0 - x * 0.35))
+    let colour = if s.pose.x > 0.5 { lin(vec3(0.35, 0.8, 0.4)) } else {
+        lin(vec3(0.82, 0.84, 0.88))
+    }
+    let fold = 0.8 + 0.35 * cos(x * 7.0 - time * 5.0 + s.pose.y)
+    var cloth_c = colour * fold * (0.55 + SUN_COLOUR * 0.55)
+    if s.pose.x > 0.5 {
+        // A paw print on a reached flag.
+        let paw = q - vec2(0.38, tall - 0.28 + wave)
+        var d = ellipse(paw - vec2(0.0, -0.04), vec2(0.06, 0.05))
+        for (dx, dy) in [(-0.07, 0.04), (-0.025, 0.075), (0.025, 0.075), (0.07, 0.04)] {
+            d = min(d, length(paw - vec2(dx, dy)) - 0.022)
+        }
+        cloth_c = blend(cloth_c, vec3(1.0) * (0.55 + SUN_COLOUR * 0.55), saturate(-d / px + 0.5))
+    }
+    over(c, vec4(cloth_c, saturate(-cloth / px + 0.5)))
+}
+
+// ---- particles -------------------------------------------------------------------------------
+
+fn particle(q: vec2, s: Sprite, px: f32) -> vec4 {
+    let kind = s.kind
+    let age = s.pose.x
+    let r = q / s.half
+    let colour = s.more.xyz
+    let opacity = s.more.w
+    if kind == SHADOW {
+        let k = length(r)
+        return vec4(colour, opacity * smoothstep(1.0, 0.15, k))
+    }
+    if kind == DUST {
+        let k = length(r) + (noise2(r * 2.5 + vec2(s.pose.y * 10.0)) - 0.5) * 0.45
+        let lit = 0.75 + 0.4 * saturate(r.y + 0.3)
+        return vec4(colour * lit, opacity * smoothstep(1.0, 0.45, k) * (1.0 - age) * (1.0 - age))
+    }
+    if kind == DROP {
+        let k = length(r * vec2(1.0, 2.2))
+        let shine = smoothstep(0.5, 0.0, length(r - vec2(0.3, 0.15)))
+        return vec4(
+            colour + vec3(shine * 2.0),
+            opacity * smoothstep(1.0, 0.7, k) * (1.0 - age * age),
+        )
+    }
+    if kind == BUBBLE {
+        let k = length(r)
+        let ring = smoothstep(0.22, 0.0, abs(k - 0.78)) * 0.8 +
+            smoothstep(0.3, 0.0, length(r - vec2(-0.3, 0.35))) * 1.5
+        return vec4(
+            colour * (1.0 + ring),
+            opacity * saturate(ring + 0.12 * step(k, 0.8)) * (1.0 - age),
+        )
+    }
+    if kind == SPARK {
+        let a = abs(r)
+        let star = min(a.x * 5.0 + a.y, a.y * 5.0 + a.x)
+        let core = smoothstep(0.5, 0.0, length(r))
+        return vec4(
+            colour * (3.0 + core * 4.0),
+            opacity * saturate(smoothstep(1.0, 0.2, star) + core) * (1.0 - age),
+        )
+    }
+    if kind == FEATHER {
+        let k = ellipse(r, vec2(1.0, 0.35))
+        let quill = smoothstep(0.08, 0.0, abs(r.y)) * step(abs(r.x), 0.9)
+        return vec4(
+            colour * (1.0 - quill * 0.25) * (0.6 + SUN_COLOUR * 0.5),
+            opacity * saturate(-k * 6.0) * (1.0 - age * age),
+        )
+    }
+    if kind == STREAK {
+        // A streak of speed: a thin line along its way, brightest at its head.
+        let along = saturate(r.x * 0.5 + 0.5)
+        let line = smoothstep(1.0, 0.2, abs(r.y)) * along * along
+        return vec4(colour, opacity * line * (1.0 - age))
+    }
+    // A ring: a puff of air spreading.
+    let k = length(r)
+    vec4(colour, opacity * smoothstep(0.2, 0.0, abs(k - 0.8)) * (1.0 - age))
+}
+
+// ---- the shader ------------------------------------------------------------------------------
+
+@fragment
+pub fn sprite(v: Spritel, sprites: [Sprite], st: Stage) -> Over {
+    let s = sprites[v.index.value]
+    let q = v.local
+    var c = if s.kind == CAPYBARA {
+        capybara(q, s, st.px, st.time)
+    } else if s.kind == GOOSE {
+        goose(q, s, st.px)
+    } else if s.kind == PIGEON {
+        pigeon(q, s, st.px)
+    } else if s.kind == CAIMAN {
+        caiman(q, s, st.px)
+    } else if s.kind == SEAGULL {
+        seagull(q, s, st.px)
+    } else if s.kind == CARROT {
+        carrot(q, s, st.px)
+    } else if s.kind == YUZU {
+        yuzu(q, s, st.px)
+    } else if s.kind == FLAG {
+        flag(q, s, st.px, st.time)
+    } else {
+        particle(q, s, st.px)
+    }
+    // Under the water: tinted as the water tints what's in it, but less, so it stays clear.
+    let depth = s.surface - v.world.y
+    if depth > 0.0 {
+        let through = exp(-depth * vec3(0.3, 0.1, 0.07))
+        let water = lin(vec3(0.1, 0.4, 0.5)) * (0.3 + SUN_COLOUR * 0.3)
+        let tinted = c.xyz * through + water * (vec3(1.0) - through) * 0.6
+        c = vec4(tinted * (1.0 + 0.15 * smoothstep(0.3, 0.0, depth)), c.w)
+    }
+    if c.w <= 0.002 {
+        discard()
+    }
+    Over { color: c }
+}

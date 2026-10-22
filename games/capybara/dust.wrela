@@ -1,0 +1,286 @@
+// The particles: dust kicked up running, sliding and landing, the water's splashes and drips,
+// bubbles, sparkles round what's picked up, feathers off a stomped bird, a ring of air under a
+// double jump. Presentation only: they're stepped by the frame's time and drawn as sprites.
+
+use sprites::{BUBBLE, DROP, DUST, FEATHER, RING, SPARK, STREAK, Sprite}
+use std::collections::Vec
+
+/// The most particles alive at once; the oldest make way.
+pub const MOST: u32 = 600
+
+pub struct Mote: Copy {
+    pub kind: f32,
+    pub at: vec2,
+    pub vel: vec2,
+    /// Its age and how long it lives (s).
+    pub age: f32,
+    pub life: f32,
+    /// Its size at birth and at death (m).
+    pub size: vec2,
+    pub colour: vec4,
+    /// Pulled down by this much gravity (m/s², up negative for bubbles), slowed by `drag` (1/s).
+    pub gravity: f32,
+    pub drag: f32,
+    pub spin: f32,
+    pub angle: f32,
+    /// Drawn in front of the water.
+    pub front: bool,
+}
+
+pub struct Dust {
+    motes: Vec<Mote>,
+    seed: u32,
+}
+
+pub fn dust() -> Dust {
+    Dust { motes: Vec::new(), seed: 12345 }
+}
+
+/// A number from 0 to 1, the next of the dust's own sequence.
+pub fn rand(d: mut Dust) -> f32 {
+    d.seed = d.seed.wrapping_mul(1664525).wrapping_add(1013904223)
+    f32(d.seed >> 8) / 16777216.0
+}
+
+/// From `range.x` to `range.y`.
+pub fn between(d: mut Dust, range: vec2) -> f32 {
+    range.x + (range.y - range.x) * rand(mut d)
+}
+
+pub fn add(d: mut Dust, m: Mote) {
+    if d.motes.len() >= MOST {
+        d.motes.remove(0)
+    }
+    d.motes.push(m)
+}
+
+/// A mote of `kind` at `at` going `vel`, its size `size` growing to `end`, for `life` seconds.
+pub fn mote(kind: f32, at: vec2, vel: vec2, size: f32, end: f32, life: f32, colour: vec4) -> Mote {
+    Mote {
+        kind,
+        at,
+        vel,
+        age: 0.0,
+        life,
+        size: vec2(size, end),
+        colour,
+        gravity: 0.0,
+        drag: 0.0,
+        spin: 0.0,
+        angle: 0.0,
+        front: false,
+    }
+}
+
+/// The particles `dt` seconds on: moved, slowed, pulled, aged; the old ones gone. A bubble that
+/// reaches the water's surface (`surface`, at its x) bursts.
+pub fn step_dust(d: mut Dust, dt: f32, surface: fn(vec2) -> Option<f32>) {
+    var kept: Vec<Mote> = Vec::new()
+    for m in d.motes {
+        var n = m
+        n.age += dt
+        n.vel = n.vel * exp(-n.drag * dt) - vec2(0.0, n.gravity * dt)
+        n.at += n.vel * dt
+        n.angle += n.spin * dt
+        if n.kind == BUBBLE {
+            n.vel.x += sin(n.age * 9.0 + n.size.x * 100.0) * dt * 2.0
+            match surface(n.at) {
+                Some(y) => {
+                    if n.at.y > y - n.size.x {
+                        continue
+                    }
+                },
+                None => continue,
+            }
+        }
+        if n.age < n.life {
+            kept.push(n)
+        }
+    }
+    d.motes = take kept
+}
+
+/// The particles as sprites: those behind the water into `back`, those in front into `front`.
+pub fn dust_sprites(d: Dust, back: mut Vec<Sprite>, front: mut Vec<Sprite>) {
+    for m in d.motes {
+        let t = m.age / m.life
+        let r = m.size.x + (m.size.y - m.size.x) * t
+        let (half, angle) = if m.kind == STREAK {
+            (vec2(m.size.x, 0.025), atan2(m.vel.y, m.vel.x))
+        } else if m.kind == DROP {
+            // A drop is stretched along its way.
+            let speed = length(m.vel)
+            (vec2(r * (1.0 + min(speed * 0.06, 1.5)), r), atan2(m.vel.y, m.vel.x))
+        } else if m.kind == FEATHER {
+            (vec2(r, r), m.angle)
+        } else {
+            (vec2(r), m.angle)
+        }
+        let s = Sprite {
+            pose: vec4(t, m.size.x * 37.0, 0.0, 0.0),
+            more: m.colour,
+            at: m.at,
+            half,
+            angle,
+            facing: 1.0,
+            kind: m.kind,
+        }
+        if m.front { front.push(s) } else { back.push(s) }
+    }
+}
+
+// ---- what makes them ----------------------------------------------------------------------------
+
+/// The colour of dust kicked off the ground.
+pub const EARTH_DUST = vec4(0.42, 0.34, 0.25, 0.55)
+
+/// A puff of `n` motes of dust at `at`, thrown `along` with a spread, `big` their size.
+pub fn puff(d: mut Dust, at: vec2, along: vec2, n: u32, big: f32) {
+    for _ in 0..n {
+        let vel = along +
+            vec2(between(mut d, vec2(-1.0, 1.0)), between(mut d, vec2(0.1, 1.0))) *
+                (0.6 + length(along) * 0.3)
+        var m = mote(
+            DUST,
+            at + vec2(between(mut d, vec2(-0.15, 0.15)), between(mut d, vec2(0.0, 0.08))),
+            vel,
+            big * between(mut d, vec2(0.5, 1.0)),
+            big * between(mut d, vec2(1.5, 2.6)),
+            between(mut d, vec2(0.35, 0.7)),
+            EARTH_DUST,
+        )
+        m.drag = 3.0
+        m.gravity = -0.4
+        add(mut d, m)
+    }
+}
+
+/// A splash of `n` drops at `at`, thrown up and out with speed `speed` (m/s).
+pub fn splash(d: mut Dust, at: vec2, n: u32, speed: f32, spread: f32) {
+    for _ in 0..n {
+        let a = between(mut d, vec2(-spread, spread)) + 1.5708
+        let v = speed * between(mut d, vec2(0.45, 1.0))
+        var m = mote(
+            DROP,
+            at + vec2(between(mut d, vec2(-0.25, 0.25)), 0.0),
+            vec2(cos(a), sin(a)) * v,
+            between(mut d, vec2(0.025, 0.05)),
+            0.02,
+            between(mut d, vec2(0.5, 0.9)),
+            vec4(0.62, 0.82, 0.95, 0.9),
+        )
+        m.gravity = 22.0
+        m.drag = 0.3
+        m.front = true
+        add(mut d, m)
+    }
+}
+
+/// `n` bubbles at `at`.
+pub fn bubbles(d: mut Dust, at: vec2, n: u32) {
+    for _ in 0..n {
+        var m = mote(
+            BUBBLE,
+            at + vec2(between(mut d, vec2(-0.12, 0.12)), between(mut d, vec2(-0.1, 0.1))),
+            vec2(between(mut d, vec2(-0.4, 0.4)), between(mut d, vec2(0.3, 1.0))),
+            between(mut d, vec2(0.02, 0.055)),
+            0.06,
+            between(mut d, vec2(1.2, 2.5)),
+            vec4(0.7, 0.88, 1.0, 0.8),
+        )
+        m.gravity = -3.0
+        m.drag = 2.5
+        add(mut d, m)
+    }
+}
+
+/// A burst of `n` sparkles of colour `colour` at `at`.
+pub fn sparkles(d: mut Dust, at: vec2, n: u32, colour: vec3) {
+    for _ in 0..n {
+        let a = between(mut d, vec2(0.0, 6.2832))
+        var m = mote(
+            SPARK,
+            at,
+            vec2(cos(a), sin(a)) * between(mut d, vec2(1.0, 4.5)),
+            between(mut d, vec2(0.08, 0.17)),
+            0.02,
+            between(mut d, vec2(0.4, 0.8)),
+            vec4(colour, 1.0),
+        )
+        m.drag = 3.5
+        m.gravity = 2.0
+        m.spin = between(mut d, vec2(-4.0, 4.0))
+        m.front = true
+        add(mut d, m)
+    }
+}
+
+/// `n` feathers of colour `colour` from `at`, drifting down.
+pub fn feathers(d: mut Dust, at: vec2, n: u32, colour: vec3) {
+    for _ in 0..n {
+        var m = mote(
+            FEATHER,
+            at + vec2(between(mut d, vec2(-0.2, 0.2)), between(mut d, vec2(-0.1, 0.2))),
+            vec2(between(mut d, vec2(-2.0, 2.0)), between(mut d, vec2(1.0, 3.5))),
+            between(mut d, vec2(0.06, 0.1)),
+            0.07,
+            between(mut d, vec2(1.2, 2.0)),
+            vec4(colour, 1.0),
+        )
+        m.drag = 2.5
+        m.gravity = 2.5
+        m.spin = between(mut d, vec2(-6.0, 6.0))
+        add(mut d, m)
+    }
+}
+
+/// A ring of air spreading from `at`.
+pub fn ring(d: mut Dust, at: vec2) {
+    var m = mote(
+        RING,
+        at,
+        vec2(0.0),
+        size: 0.2,
+        end: 0.9,
+        life: 0.3,
+        colour: vec4(1.0, 1.0, 1.0, 0.7),
+    )
+    m.front = true
+    add(mut d, m)
+}
+
+/// A streak of speed behind `at`, going `vel`.
+pub fn streak(d: mut Dust, at: vec2, vel: vec2) {
+    let off = vec2(between(mut d, vec2(-0.2, 0.2)), between(mut d, vec2(-0.3, 0.35)))
+    var m = mote(
+        STREAK,
+        at + off,
+        vel * 0.6,
+        size: between(mut d, vec2(0.5, 1.1)),
+        end: 0.3,
+        life: 0.18,
+        colour: vec4(1.0, 0.97, 0.9, 0.55),
+    )
+    m.drag = 4.0
+    m.front = true
+    add(mut d, m)
+}
+
+/// `n` clippings of grass thrown up from `at`, back against `vel`.
+pub fn clippings(d: mut Dust, at: vec2, vel: vec2, n: u32) {
+    for _ in 0..n {
+        var m = mote(
+            FEATHER,
+            at,
+            vec2(-vel.x * between(mut d, vec2(0.1, 0.35)), between(mut d, vec2(1.5, 4.0))),
+            size: between(mut d, vec2(0.03, 0.05)),
+            end: 0.03,
+            life: between(mut d, vec2(0.5, 0.9)),
+            colour: vec4(0.35, 0.6, 0.15, 1.0),
+        )
+        m.gravity = 9.0
+        m.drag = 1.5
+        m.spin = between(mut d, vec2(-15.0, 15.0))
+        add(mut d, m)
+    }
+}

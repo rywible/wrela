@@ -14,47 +14,54 @@
 // on the GPU (scripts.wrela has scripts), and `capybara` exports the capybara's state for `wrela
 // trace --watch capybara`, which needs a toolchain whose trace runs the ticker in lockstep.
 
+use art::{Grade, Targets, copy, finish, glow, stretch, targets}
 use body::Mode
 use camera::{Camera, camera, follow, half_view}
-use course::{Course, course}
+use cast::{Cast, cast, react, sprites}
+use course::course
+use earth::{
+    LAB_EARTH, LAB_GRASS, LEVEL_EARTH, LEVEL_GRASS, Field, earth, earth_vertex, grass, grass_vertex,
+    profile,
+}
+use engine::paint::Exposure
+use engine::plant::full
 use engine::present::Snapshots
 use engine::run::run
 use feel::HZ
-use feel::FEEL
-use look::{
-    CLOUDS, CLOUD_PARALLAX, FAR_HILLS, FAR_PARALLAX, LAB_GROUND, LAB_WATER, LEVEL_GROUND,
-    LEVEL_WATER, NEAR_HILLS, NEAR_PARALLAX, PLAY_Z, Eye, Part, cel, ground_vertex, part_vertex,
-    water, water_vertex,
-}
+use scenery::View
+use sprites::{Sprite, Stage, sprite, sprite_vertex}
 use std::gpu::{
-    Cull, DepthTexture, GpuBuffer, begin_screen_pass_with_depth, buffer, buffer_of, depth_texture,
-    draw, write,
+    GpuBuffer, Sampler, begin_pass, begin_screen_pass, buffer, buffer_of, draw, sampler, write,
 }
-use std::math::{PI, TAU}
-use std::transform::{look_at, ortho, rotate_x, rotate_y, rotate_z, scale, translate}
+use std::transform::{look_at, ortho}
 use ui::draw::{DrawList, Renderer}
 use ui::text::{Face, Fonts}
-use world::{LEVEL, Snap, present, tick, world}
+use waves::{COLUMNS, LAB_WATER, LEVEL_WATER, Pond, water, water_vertex}
+use world::{LAB, LEVEL, Snap, present, tick, world}
 
-/// The most boxes drawn: the capybara's, the foes', the things' and the goal's.
-const PARTS: u32 = 256
+/// The most sprites drawn: the cast's and the particles'.
+const SPRITES: u32 = 1024
 
 pub struct Lab {
     snaps: Snapshots<Snap>,
-    /// Each course's ground and water (the lab's, the level's), and the hills behind both.
-    grounds: [GpuBuffer<vec4>; 2],
+    /// Each course's ground, grass, water and the top of its ground (the lab's, the level's).
+    earths: [GpuBuffer<vec4>; 2],
+    grasses: [GpuBuffer<vec4>; 2],
     waters: [GpuBuffer<vec4>; 2],
-    /// The parallax layers: the near hills, the far hills, the clouds.
-    layers: [GpuBuffer<vec4>; 3],
-    /// The course the camera was last following.
+    tops: [GpuBuffer<f32>; 2],
+    /// The shown course's pools and its waves' heights.
+    pools: GpuBuffer<vec4>,
+    heights: GpuBuffer<f32>,
+    sprites: GpuBuffer<Sprite>,
+    /// The course the camera was last following, and its cast.
     shown: u32,
-    parts: GpuBuffer<Part>,
-    depth: DepthTexture,
+    cast: Cast,
+    targets: Targets,
+    linear: Sampler,
+    exposure: GpuBuffer<Exposure>,
     width: u32,
     height: u32,
     camera: Camera,
-    /// The gait's phase (rad): a stride per `STRIDE` m on the ground, a steady paddle in water.
-    stride: f32,
     last: Option<f32>,
     fonts: Fonts,
     renderer: Renderer,
@@ -65,18 +72,24 @@ pub fn init() -> Lab {
     let latest = run(world(LEVEL), hz: HZ, step: tick, present: present)
     let fonts = Fonts::load()
     let renderer = Renderer::new(fonts)
+    let shown = cast(course(LEVEL))
     Lab {
         snaps: Snapshots::new(take latest, hz: HZ),
-        grounds: [buffer_of(LAB_GROUND), buffer_of(LEVEL_GROUND)],
+        earths: [buffer_of(LAB_EARTH), buffer_of(LEVEL_EARTH)],
+        grasses: [buffer_of(LAB_GRASS), buffer_of(LEVEL_GRASS)],
         waters: [buffer_of(LAB_WATER), buffer_of(LEVEL_WATER)],
-        layers: [buffer_of(NEAR_HILLS), buffer_of(FAR_HILLS), buffer_of(CLOUDS)],
+        tops: [buffer_of(profile(course(LAB))), buffer_of(profile(course(LEVEL)))],
+        pools: buffer_of(shown.waves.pools, at_least: 8),
+        heights: buffer(COLUMNS),
+        sprites: buffer(SPRITES),
         shown: LEVEL,
-        parts: buffer(PARTS),
-        depth: depth_texture(width: 1, height: 1),
+        cast: shown,
+        targets: targets(width: 4, height: 4),
+        linear: sampler(),
+        exposure: art::exposure(),
         width: 0,
         height: 0,
         camera: camera(course(LEVEL).start),
-        stride: 0.0,
         last: None,
         fonts,
         renderer,
@@ -94,186 +107,7 @@ fn drawn(s: Snapshots<Snap>, time: f32) -> Snap {
     snap
 }
 
-// ---- the capybara and the goal -----------------------------------------------------------------
-
-const FUR = vec4(0.45, 0.29, 0.16, 1.0)
-const DARK = vec4(0.1, 0.07, 0.05, 1.0)
-const SNOUT = vec4(0.33, 0.21, 0.12, 1.0)
-const POST = vec4(0.85, 0.82, 0.75, 1.0)
-const FLAG = vec4(0.95, 0.7, 0.2, 1.0)
-
-/// A box from `centre` with half-sizes `half`, in the frame `frame`.
-fn part(frame: mat4, centre: vec3, half: vec3, colour: vec4) -> Part {
-    Part { model: frame * translate(centre) * scale(half), colour }
-}
-
-/// How far the capybara goes in one stride of its trot (m).
-const STRIDE: f32 = 0.9
-
-/// The capybara's boxes: a loaf of a body, a square head and snout, ears, eyes and short legs, in
-/// its body's frame (x forward, y up, the collider's middle at the origin). It leans with the
-/// ground, or with its velocity off it; it squashes as it slides, crouches or tucks. Walking, it
-/// trots at the gait's phase `stride`: diagonal legs together, swinging and lifting, the body
-/// bobbing, all by how fast it goes; sliding, its legs splay; in the air they tuck; in water they
-/// paddle. Its fur darkens while it's wet.
-fn capybara_parts(out: mut Vec<Part>, s: Snap, stride: f32) {
-    let mode = Mode::from_u32(s.mode)
-    let grounded = mode == Some(Mode::Walk) ||
-        mode == Some(Mode::Crouch) ||
-        mode == Some(Mode::Slide)
-    let lean = if grounded {
-        atan2(-s.ground.x, s.ground.y)
-    } else if mode == Some(Mode::Swim) {
-        clamp(s.vel.y * 0.08, -0.6, 0.6) * s.facing
-    } else {
-        clamp(s.vel.y * 0.03, -0.4, 0.4) * s.facing
-    }
-    // After a double jump it flips once, nose up and over, in half a second.
-    let flip = if s.flip > 0 { -TAU * saturate(f32(s.flip) / f32(HZ / 2)) } else { 0.0 }
-    let low = mode == Some(Mode::Crouch) || mode == Some(Mode::Slide) || (!grounded && s.tuck == 1)
-    let squash = if low { vec3(1.12, 0.72, 1.0) } else { vec3(1.0) }
-    let trotting = mode == Some(Mode::Walk)
-    let pace = if trotting { saturate(abs(s.speed) / 6.0) } else { 0.0 }
-    let bob = 0.045 * pace * abs(sin(stride))
-    let pitch = 0.05 * pace * sin(2.0 * stride)
-    let frame = translate(vec3(s.at + vec2(0.0, bob), PLAY_Z)) *
-        rotate_z(lean + flip * s.facing + pitch * s.facing) *
-        scale(vec3(s.facing, 1.0, 1.0) * squash)
-    let wet = saturate(f32(s.wet) / (f32(FEEL.wet_ticks) * 0.5))
-    let fur = vec4(FUR.xyz * (1.0 - 0.3 * wet), 1.0)
-    out.push(part(frame, vec3(0.0, 0.0, 0.0), vec3(0.45, 0.24, 0.25), fur))
-    out.push(
-        part(
-            frame,
-            vec3(0.46, 0.1 + 0.02 * pace * sin(2.0 * stride + 1.0), 0.0),
-            vec3(0.19, 0.17, 0.18),
-            fur,
-        ),
-    )
-    out.push(part(frame, vec3(0.66, 0.04, 0.0), vec3(0.07, 0.11, 0.14), SNOUT))
-    if s.yuzu == 1 {
-        // The yuzu on its head, as capybaras in hot springs wear them.
-        out.push(part(frame, vec3(0.42, 0.38, 0.0), vec3(0.11, 0.11, 0.11), YUZU))
-    }
-    for z in [-0.11, 0.11] {
-        out.push(part(frame, vec3(0.38, 0.3, z), vec3(0.04, 0.04, 0.03), DARK))
-        out.push(part(frame, vec3(0.58, 0.16, z * 1.6), vec3(0.025, 0.025, 0.012), DARK))
-    }
-    for x in [-0.3, 0.3] {
-        for z in [-0.15, 0.15] {
-            // Diagonal legs move together.
-            let phase = stride + if (x > 0.0) == (z > 0.0) { 0.0 } else { PI }
-            let reach = if x > 0.0 { 1.0 } else { -1.0 }
-            let leg = if mode == Some(Mode::Slide) {
-                vec2(0.12 * reach, 0.07)
-            } else if mode == Some(Mode::Air) {
-                vec2(-0.08 * reach, 0.08)
-            } else if mode == Some(Mode::Swim) {
-                vec2(0.1 * sin(phase), 0.05 * cos(phase))
-            } else if mode == Some(Mode::Crouch) {
-                vec2(0.0, 0.05)
-            } else {
-                vec2(0.11 * pace * sin(phase), 0.08 * pace * max(cos(phase), 0.0))
-            }
-            out.push(part(frame, vec3(x + leg.x, -0.27 + leg.y, z), vec3(0.06, 0.08, 0.06), SNOUT))
-        }
-    }
-}
-
-/// The goal: a post and its flag, at the goal box's left side, standing on its floor.
-fn goal(out: mut Vec<Part>, c: Course) {
-    let base = vec3(c.goal_lo.x + 0.4, c.goal_lo.y, PLAY_Z)
-    let frame = translate(base)
-    out.push(part(frame, vec3(0.0, 1.6, 0.0), vec3(0.06, 1.6, 0.06), POST))
-    out.push(part(frame, vec3(0.45, 2.85, 0.0), vec3(0.4, 0.28, 0.03), FLAG))
-}
-
-const WHITE = vec4(0.92, 0.9, 0.86, 1.0)
-const BEAK = vec4(0.95, 0.55, 0.12, 1.0)
-const GREY = vec4(0.52, 0.55, 0.6, 1.0)
-const CAIMAN = vec4(0.25, 0.36, 0.2, 1.0)
-const SNACK = vec4(0.95, 0.5, 0.1, 1.0)
-const LEAF = vec4(0.3, 0.6, 0.2, 1.0)
-const YUZU = vec4(0.98, 0.84, 0.2, 1.0)
-const FLAG_DONE = vec4(0.35, 0.75, 0.35, 1.0)
-const FLAG_AHEAD = vec4(0.6, 0.6, 0.62, 1.0)
-
-/// The foes as boxes: a goose (a white body, a neck, a head and an orange beak), a pigeon (grey,
-/// its wings flapping), a caiman (long and green, its snout forward). Knocked out, one tumbles up
-/// and away for half a second.
-fn foes_parts(out: mut Vec<Part>, s: Snap, time: f32) {
-    for f in s.foes {
-        let kind = u32(abs(f.z) + 0.5)
-        if kind == 0 {
-            continue
-        }
-        let knocked = f.z < 0.0
-        let since = if knocked { f.w } else { 0.0 }
-        if knocked && since > 60.0 {
-            continue
-        }
-        let dir = if knocked { 1.0 } else { f.w }
-        let t = since / f32(HZ)
-        let tumble = translate(vec3(0.0, 6.0 * t - 20.0 * t * t, 0.0)) * rotate_z(since * 0.25)
-        let frame = translate(vec3(f.xy, PLAY_Z)) * tumble * scale(vec3(dir, 1.0, 1.0))
-        if kind == 1 {
-            out.push(part(frame, vec3(0.0, -0.08, 0.0), vec3(0.42, 0.24, 0.24), WHITE))
-            out.push(part(frame, vec3(0.27, 0.25, 0.0), vec3(0.07, 0.22, 0.07), WHITE))
-            out.push(part(frame, vec3(0.34, 0.47, 0.0), vec3(0.13, 0.09, 0.09), WHITE))
-            out.push(part(frame, vec3(0.5, 0.45, 0.0), vec3(0.08, 0.03, 0.05), BEAK))
-            let step = sin(time * 14.0) * 0.08
-            out.push(part(frame, vec3(-0.08 + step, -0.38, 0.1), vec3(0.03, 0.09, 0.03), BEAK))
-            out.push(part(frame, vec3(-0.08 - step, -0.38, -0.1), vec3(0.03, 0.09, 0.03), BEAK))
-        } else if kind == 2 {
-            out.push(part(frame, vec3(0.0, 0.0, 0.0), vec3(0.3, 0.17, 0.17), GREY))
-            out.push(part(frame, vec3(0.3, 0.1, 0.0), vec3(0.11, 0.1, 0.1), GREY))
-            out.push(part(frame, vec3(0.43, 0.08, 0.0), vec3(0.05, 0.03, 0.03), BEAK))
-            let flap = sin(time * 22.0) * 0.6
-            for z in [-1.0, 1.0] {
-                let wing = frame * translate(vec3(0.0, 0.1, 0.17 * z)) * rotate_x(flap * z)
-                out.push(part(wing, vec3(0.0, 0.0, 0.25 * z), vec3(0.18, 0.02, 0.25), GREY))
-            }
-        } else {
-            out.push(part(frame, vec3(0.0, 0.0, 0.0), vec3(0.9, 0.2, 0.3), CAIMAN))
-            out.push(part(frame, vec3(1.15, -0.05, 0.0), vec3(0.35, 0.09, 0.2), CAIMAN))
-            out.push(part(frame, vec3(-1.15, -0.05, 0.0), vec3(0.4, 0.08, 0.12), CAIMAN))
-            for z in [-0.15, 0.15] {
-                out.push(part(frame, vec3(0.8, 0.22, z), vec3(0.06, 0.05, 0.05), DARK))
-            }
-        }
-    }
-}
-
-/// The snacks still to find (little carrots, bobbing), the yuzus still to take, and each
-/// checkpoint's flag: green once reached, grey ahead.
-fn things_parts(out: mut Vec<Part>, s: Snap, c: Course, time: f32) {
-    let bob = vec3(0.0, 0.08 * sin(time * 3.0), 0.0)
-    for i in 0..c.snacks.len() {
-        if s.snacks & (1 << i) == 0 {
-            let frame = translate(vec3(c.snacks[i], PLAY_Z) + bob) * rotate_y(time * 2.0)
-            out.push(part(frame, vec3(0.0, 0.0, 0.0), vec3(0.09, 0.25, 0.09), SNACK))
-            out.push(part(frame, vec3(0.0, 0.3, 0.0), vec3(0.06, 0.08, 0.06), LEAF))
-        }
-    }
-    for i in 0..c.yuzus.len() {
-        if s.yuzus & (1 << i) == 0 {
-            let frame = translate(vec3(c.yuzus[i], PLAY_Z) + bob) * rotate_y(time)
-            out.push(part(frame, vec3(0.0, 0.0, 0.0), vec3(0.2, 0.2, 0.2), YUZU))
-            out.push(part(frame, vec3(0.0, 0.24, 0.0), vec3(0.06, 0.05, 0.03), LEAF))
-        }
-    }
-    for i in 0..c.checkpoints.len() {
-        let frame = translate(vec3(c.checkpoints[i], PLAY_Z))
-        let colour = if s.checkpoint > i { FLAG_DONE } else { FLAG_AHEAD }
-        out.push(part(frame, vec3(0.0, 1.2, 0.0), vec3(0.05, 1.2, 0.05), POST))
-        out.push(part(frame, vec3(0.35, 2.1, 0.0), vec3(0.3, 0.22, 0.03), colour))
-    }
-}
-
 // ---- the frame ---------------------------------------------------------------------------------
-
-const SUN = vec3(0.45, 0.8, 0.4)
-const SKY = vec4(0.6, 0.78, 0.92, 1.0)
 
 pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     let dt = match s.last {
@@ -286,88 +120,131 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     borrow c = course(snap.course)
     if snap.course != s.shown {
         s.camera = camera(c.start)
+        s.cast = cast(c)
+        s.pools = buffer_of(s.cast.waves.pools, at_least: 8)
         s.shown = snap.course
     }
     follow(mut s.camera, snap, dt)
-    let mode = Mode::from_u32(snap.mode)
-    if mode == Some(Mode::Swim) {
-        s.stride += dt * 9.0
-    } else if mode == Some(Mode::Walk) {
-        s.stride += abs(snap.speed) * dt / STRIDE * TAU
-    }
-    s.stride = s.stride % TAU
+    react(mut s.cast, snap, c, dt)
     if width != s.width || height != s.height {
-        s.depth = depth_texture(width, height)
+        s.targets = targets(width, height)
         s.width = width
         s.height = height
     }
     let aspect = f32(width) / f32(max(height, 1))
-    let at = vec3(s.camera.at, 0.0)
-    let from = at + vec3(0.0, 0.0, 50.0)
     let half = half_view(aspect)
-    let eye = Eye {
-        view_proj: ortho(-half.x, half.x, -half.y, half.y, near: 1.0, far: 100.0) *
-            look_at(from, at),
-        eye: from,
-        sun: normalize(SUN),
+    let at = vec3(s.camera.at, 0.0)
+    let view_proj = ortho(-half.x, half.x, -half.y, half.y, near: 1.0, far: 100.0) *
+        look_at(at + vec3(0.0, 0.0, 50.0), at)
+    let px = 2.0 * half.y / f32(max(height, 1))
+    var back: Vec<Sprite> = Vec::new()
+    var front: Vec<Sprite> = Vec::new()
+    sprites(s.cast, snap, c, time, mut back, mut front)
+    let behind = back.len()
+    for f in front {
+        back.push(f)
     }
-    var parts: Vec<Part> = Vec::new()
-    // Hurt and not to be hurt again for a moment, it blinks.
-    if snap.grace == 0 || (snap.grace / 6) % 2 == 0 {
-        capybara_parts(mut parts, snap, s.stride)
-    }
-    foes_parts(mut parts, snap, time)
-    things_parts(mut parts, snap, c, time)
-    goal(mut parts, c)
-    write(mut s.parts, 0, parts)
+    write(mut s.sprites, 0, back)
+    write(mut s.heights, 0, s.cast.waves.heights)
     let screen = vec2(f32(width), f32(height))
     hud(mut s, snap, screen)
     s.renderer.fetch(mut s.fonts, s.list)
     s.renderer.upload(s.list)
-    let pass = begin_screen_pass_with_depth(mut s.depth, clear: SKY)
-    // Behind, back to front: each layer moved by the part of the camera's motion it doesn't follow.
-    let layers = [
-        (2, CLOUD_PARALLAX, CLOUDS.len()),
-        (1, FAR_PARALLAX, FAR_HILLS.len()),
-        (0, NEAR_PARALLAX, NEAR_HILLS.len()),
-    ]
-    for (i, parallax, count) in layers {
-        draw(
-            pass,
-            ground_vertex.bind(
-                verts: s.layers[i].items(),
-                eye: eye,
-                shift: s.camera.at * (1.0 - parallax),
-            ),
-            cel.bind(eye: eye),
-            vertices: count / 2,
-            cull: Cull::None,
-        )
+    let (i, level) = (snap.course, snap.course == LEVEL)
+    let view = View { centre: s.camera.at, half, screen, time }
+    let sliding = if Mode::from_u32(snap.mode) == Some(Mode::Slide) { 1.0 } else { 0.0 }
+    let field = Field {
+        view_proj,
+        feet: snap.at - snap.ground * 0.35,
+        vel: snap.vel,
+        px,
+        time,
+        sliding,
     }
+    let stage = Stage { view_proj, px, time, first: 0 }
+    // The backdrop, at half size: the sky and the zoo behind, back to front.
+    let far = View { screen: screen * 0.5, ..view }
+    let backdrop = begin_pass(mut s.targets.backdrop)
+    draw(backdrop, full.bind(z: 0.0), scenery::sky.bind(v: far), vertices: 3)
+    draw(backdrop, full.bind(z: 0.0), scenery::far_hills.bind(v: far), vertices: 3)
+    draw(backdrop, full.bind(z: 0.0), scenery::savanna.bind(v: far), vertices: 3)
+    draw(backdrop, full.bind(z: 0.0), scenery::path.bind(v: far), vertices: 3)
+    draw(backdrop, full.bind(z: 0.0), scenery::bamboo.bind(v: far), vertices: 3)
+    backdrop.end()
+    // The scene: the backdrop, the ground and its grass, the cast.
+    let scene = begin_pass(mut s.targets.scene)
     draw(
-        pass,
-        ground_vertex.bind(verts: s.grounds[snap.course].items(), eye: eye, shift: vec2(0.0)),
-        cel.bind(eye: eye),
-        vertices: if snap.course == LEVEL { LEVEL_GROUND.len() / 2 } else { LAB_GROUND.len() / 2 },
-        cull: Cull::None,
+        scene,
+        full.bind(z: 0.0),
+        stretch.bind(src: s.targets.backdrop, s: s.linear, size: screen),
+        vertices: 3,
     )
     draw(
-        pass,
-        part_vertex.bind(parts: s.parts.items(), eye: eye),
-        cel.bind(eye: eye),
-        vertices: 36,
-        instances: parts.len(),
-        cull: Cull::None,
+        scene,
+        earth_vertex.bind(verts: s.earths[i].items(), f: field),
+        earth.bind(f: field, tops: s.tops[i].items()),
+        vertices: if level { LEVEL_EARTH.len() / 2 } else { LAB_EARTH.len() / 2 },
     )
     draw(
-        pass,
-        water_vertex.bind(verts: s.waters[snap.course].items(), eye: eye),
-        water,
-        vertices: if snap.course == LEVEL { LEVEL_WATER.len() } else { LAB_WATER.len() },
-        cull: Cull::None,
+        scene,
+        grass_vertex.bind(verts: s.grasses[i].items(), f: field),
+        grass.bind(f: field),
+        vertices: if level { LEVEL_GRASS.len() / 2 } else { LAB_GRASS.len() / 2 },
     )
-    s.renderer.draw(pass, screen)
-    pass.present()
+    draw(
+        scene,
+        sprite_vertex.bind(sprites: s.sprites.items(), st: stage),
+        sprite.bind(sprites: s.sprites.items(), st: stage),
+        vertices: 6,
+        instances: behind,
+    )
+    scene.end()
+    // The water reads a copy of the scene, bending what's behind it; the splashes go over it.
+    let copied = begin_pass(mut s.targets.below)
+    draw(copied, full.bind(z: 0.0), copy.bind(src: s.targets.scene, s: s.linear), vertices: 3)
+    copied.end()
+    let wet = begin_pass(mut s.targets.scene, keep: true)
+    let pond = Pond { view_proj, centre: s.camera.at, half, px, time }
+    draw(
+        wet,
+        water_vertex.bind(verts: s.waters[i].items(), f: pond),
+        water.bind(
+            f: pond,
+            pools: s.pools.items(),
+            heights: s.heights.items(),
+            tops: s.tops[i].items(),
+            below: s.targets.below,
+            s: s.linear,
+        ),
+        vertices: if level { LEVEL_WATER.len() } else { LAB_WATER.len() },
+    )
+    let ahead = Stage { first: behind, ..stage }
+    draw(
+        wet,
+        sprite_vertex.bind(sprites: s.sprites.items(), st: ahead),
+        sprite.bind(sprites: s.sprites.items(), st: ahead),
+        vertices: 6,
+        instances: back.len() - behind,
+    )
+    draw(wet, full.bind(z: 0.0), scenery::pollen.bind(v: view), vertices: 3)
+    draw(wet, full.bind(z: 0.0), scenery::fronds.bind(v: view), vertices: 3)
+    wet.end()
+    glow(mut s.targets, s.exposure, s.linear)
+    let out = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
+    draw(
+        out,
+        full.bind(z: 0.0),
+        finish.bind(
+            scene: s.targets.scene,
+            glow: s.targets.glow,
+            sun: s.targets.shafts,
+            s: s.linear,
+            g: Grade {},
+        ),
+        vertices: 3,
+    )
+    s.renderer.draw(out, screen)
+    out.present()
 }
 
 /// Ticks as seconds, to the hundredth.
@@ -378,35 +255,45 @@ fn seconds(ticks: u32) -> String {
     f"{hundredths / 100}.{pad}{tail}"
 }
 
+/// Text in `colour` with a soft dark shadow under it, so it reads over the sky and the ground.
+fn say(s: mut Lab, face: Face, text: str, size: f32, at: vec2, colour: vec4) {
+    let shadow = vec4(0.02, 0.03, 0.05, 0.55 * colour.w)
+    let _ = s.list.text(s.fonts, face, text, size, at + vec2(size * 0.07), shadow)
+    let _ = s.list.text(s.fonts, face, text, size, at, colour)
+}
+
+/// The HUD: the snacks found and the times back at the top left, the clock at the top right; the
+/// course, the keys, and the capybara's mode and speed small along the bottom.
 fn hud(s: mut Lab, snap: Snap, screen: vec2) {
     s.list.clear(screen)
-    let size = max(screen.y * 0.03, 12.0)
-    let pad = size
-    let ink = vec4(0.08, 0.1, 0.14, 1.0)
-    let soft = vec4(0.08, 0.1, 0.14, 0.7)
+    let size = max(screen.y * 0.042, 14.0)
+    let small = size * 0.5
+    let pad = size * 0.7
+    let white = vec4(1.0, 0.98, 0.94, 1.0)
+    let gold = vec4(1.0, 0.78, 0.3, 1.0)
+    let soft = vec4(1.0, 0.98, 0.94, 0.75)
     borrow c = course(snap.course)
-    let name = if snap.course == LEVEL { "THE ZOO'S ENTRANCE" } else { "THE LAB" }
-    let _ = s.list.text(
-        s.fonts,
-        Face::Sans,
-        f"{name}   R: restart   Tab: the other course".as_str(),
-        size,
-        vec2(pad),
-        ink,
-    )
     if c.snacks.len() > 0 {
         let found = (snap.snacks & ((1 << c.snacks.len()) - 1)).count_ones()
-        let yuzu = if snap.yuzu == 1 { "   YUZU" } else { "" }
-        let things = f"snacks {found}/{c.snacks.len()}   back {snap.deaths}{yuzu}"
-        let _ = s.list.text(s.fonts, Face::Mono, things.as_str(), size, vec2(pad, pad * 2.4), ink)
+        let colour = if found == c.snacks.len() { gold } else { white }
+        say(mut s, Face::Sans, f"SNACKS {found}/{c.snacks.len()}".as_str(), size, vec2(pad), colour)
+        let more = if snap.yuzu == 1 { f"back {snap.deaths}   yuzu!" } else {
+            f"back {snap.deaths}"
+        }
+        say(mut s, Face::Sans, more.as_str(), small * 1.3, vec2(pad, pad + size * 1.25), soft)
     }
     let clock = seconds(if snap.finished > 0 { snap.finished } else { snap.ticks })
-    let time = if snap.finished > 0 {
-        f"GOAL  {clock} s  ({snap.finished} ticks)"
-    } else {
-        f"{clock} s"
-    }
-    let _ = s.list.text(s.fonts, Face::Mono, time.as_str(), size, vec2(screen.x * 0.62, pad), ink)
+    let time = if snap.finished > 0 { f"GOAL! {clock}" } else { take clock }
+    let width = f32(time.len()) * size * 0.62
+    say(
+        mut s,
+        Face::Mono,
+        time.as_str(),
+        size,
+        vec2(screen.x - pad - width, pad),
+        if snap.finished > 0 { gold } else { white },
+    )
+    let name = if snap.course == LEVEL { "The zoo's entrance" } else { "The lab" }
     let mode = match Mode::from_u32(snap.mode) {
         Some(Mode::Walk) => "walk",
         Some(Mode::Crouch) => "crouch",
@@ -415,20 +302,13 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2) {
         Some(Mode::Swim) => "swim",
         None => "?",
     }
-    let speed = length(snap.vel)
     let hint = if mode == "swim" {
         "   jump to kick, up to swim up, up and down in turn to dolphin kick"
+    } else if snap.wet > 0 {
+        "   wet: faster"
     } else { "" }
-    let hint = if snap.wet > 0 && mode != "swim" { "   wet: faster" } else { hint }
-    let line = f"{mode}   {speed:.1} m/s{hint}"
-    let _ = s.list.text(
-        s.fonts,
-        Face::Mono,
-        line.as_str(),
-        size * 0.85,
-        vec2(pad, screen.y - pad * 2.2),
-        soft,
-    )
+    let line = f"{name}   R restart   Tab the other course      {mode} {length(snap.vel):.1} m/s{hint}"
+    say(mut s, Face::Mono, line.as_str(), small, vec2(pad, screen.y - pad - small), soft)
 }
 
 /// The capybara's middle (x, y, m), its speed (m/s) and its mode, as the newest snapshot has them,
