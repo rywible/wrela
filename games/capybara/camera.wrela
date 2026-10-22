@@ -1,0 +1,89 @@
+// The camera: a fixed side view that scrolls both ways (design.md, "Movement", proposed). It
+// looks further ahead the faster the capybara goes. On the ground it moves up or down only when
+// the capybara lands at a new height; while the capybara swims, or flies or falls out of a band
+// round the view's middle, it follows. It is presentation, stepped by the frame's time.
+
+use body::Mode
+use world::Snap
+
+/// How far the camera stands from the plane of play (m), and how wide it sees (rad): about 12.6 m
+/// of the plane from top to bottom.
+pub const DISTANCE: f32 = 16.0
+pub const FOVY: f32 = 0.75
+
+/// How far the camera's height may leave the height it keeps before it follows (m).
+const BAND: f32 = 2.5
+
+/// How far ahead the camera looks per m/s of speed (s), and the most (m).
+const LEAD: f32 = 0.35
+const LEAD_MAX: f32 = 4.0
+
+/// The capybara sits this far below the view's middle, so more is seen above it (m).
+const ABOVE: f32 = 1.2
+
+pub struct Camera: Copy {
+    /// The point of the plane at the view's middle (m).
+    pub at: vec2,
+    /// The height it keeps: the capybara's middle when it last stood (m).
+    pub level: f32,
+    /// How far ahead it looks now (m).
+    pub ahead: f32,
+}
+
+pub fn camera(start: vec2) -> Camera {
+    Camera { at: start + vec2(0.0, ABOVE), level: start.y, ahead: 0.0 }
+}
+
+fn ease(rate: f32, dt: f32) -> f32 {
+    1.0 - exp(-rate * dt)
+}
+
+/// The camera after `dt` seconds following snapshot `s`.
+pub fn follow(c: mut Camera, s: Snap, dt: f32) {
+    let mode = Mode::from_u32(s.mode)
+    let grounded = mode == Some(Mode::Walk) ||
+        mode == Some(Mode::Crouch) ||
+        mode == Some(Mode::Slide)
+    if grounded {
+        c.level = s.at.y
+    } else if mode == Some(Mode::Swim) || abs(s.at.y - c.level) > BAND {
+        c.level += (s.at.y - c.level) * ease(6.0, dt)
+    }
+    let lead = clamp(s.vel.x * LEAD, -LEAD_MAX, LEAD_MAX)
+    c.ahead += (lead - c.ahead) * ease(2.0, dt)
+    let want = vec2(s.at.x + c.ahead, c.level + ABOVE)
+    c.at += (want - c.at) * vec2(ease(8.0, dt), ease(4.0, dt))
+}
+
+/// Half the view's size on the plane of play (m), for a screen `aspect` wide to its height.
+pub fn half_view(aspect: f32) -> vec2 {
+    let h = DISTANCE * tan(FOVY * 0.5)
+    vec2(h * aspect, h)
+}
+
+// ---- tests -------------------------------------------------------------------------------------
+
+use course::LAB
+use feel::STEP
+use pad::pad_of
+use proofs::{LAB_MOMENTUM, LAB_SNAPPY}
+use world::{present, step, world}
+
+@test
+fn the_camera_keeps_the_capybara_in_view_through_the_whole_lab() {
+    // A 16:9 screen, with a margin of a metre and a half at every side.
+    let half = half_view(16.0 / 9.0) - vec2(1.5)
+    for (f, run) in [(0, LAB_MOMENTUM), (1, LAB_SNAPPY)] {
+        var w = world(c: 0, f: f)
+        var c = camera(LAB.start)
+        for h in run {
+            for i in 0..h.ticks {
+                step(mut w, pad_of(h, i))
+                let s = present(w)
+                follow(mut c, s, STEP)
+                let off = abs(s.at - c.at)
+                assert(off.x < half.x && off.y < half.y, "the capybara left the view")
+            }
+        }
+    }
+}

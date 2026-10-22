@@ -1,5 +1,262 @@
-pub fn init() -> u32 {
-    0
+// The capybara game (a working title; design.md is its brief). For now it is the movement lab:
+// the sim ticks 120 times a second on the ticker's thread (`engine::run`), and each frame draws
+// the snapshots round its time as a blockout: the course's slab, the capybara and the goal as
+// boxes, the water over them, and a line of text with the preset, the clock and the speed.
+//
+// Keys: the arrows or W A S D to move (down slides or crouches; in water the eight directions
+// steer a stroke), Space, Z or K to jump and to stroke, Shift, X or J to run. Tab changes the
+// preset (momentum or snappy) and R restarts. A controller: the stick or pad, South or East to
+// jump, West or North to run, Select for the preset, Start to restart.
+//
+// For an agent: `wrela-host <build> --frames n --input script.json --png out.png` draws frame n
+// on the GPU (scripts.wrela has scripts), and `capybara` exports the capybara's state for `wrela
+// trace --watch capybara`, which needs a toolchain whose trace runs the ticker in lockstep.
+
+use body::Mode
+use camera::{Camera, DISTANCE, FOVY, camera, follow}
+use course::LAB
+use engine::present::Snapshots
+use engine::run::run
+use feel::{HZ, feel}
+use look::{LAB_GROUND, LAB_WATER, Eye, Part, cel, ground_vertex, part_vertex, water, water_vertex}
+use std::gpu::{
+    Cull, DepthTexture, GpuBuffer, begin_screen_pass_with_depth, buffer, buffer_of, depth_texture,
+    draw, write,
+}
+use std::transform::{look_at, perspective, rotate_z, scale, translate}
+use ui::draw::{DrawList, Renderer}
+use ui::text::{Face, Fonts}
+use world::{Snap, present, tick, world}
+
+/// The most boxes drawn: the capybara's and the goal's.
+const PARTS: u32 = 24
+
+pub struct Lab {
+    snaps: Snapshots<Snap>,
+    ground: GpuBuffer<vec4>,
+    water: GpuBuffer<vec4>,
+    parts: GpuBuffer<Part>,
+    depth: DepthTexture,
+    width: u32,
+    height: u32,
+    camera: Camera,
+    last: Option<f32>,
+    fonts: Fonts,
+    renderer: Renderer,
+    list: DrawList,
 }
 
-pub fn frame(state: mut u32, time: f32, width: u32, height: u32) {}
+pub fn init() -> Lab {
+    let latest = run(world(c: 0, f: 0), hz: HZ, step: tick, present: present)
+    let fonts = Fonts::load()
+    let renderer = Renderer::new(fonts)
+    Lab {
+        snaps: Snapshots::new(take latest, hz: HZ),
+        ground: buffer_of(LAB_GROUND),
+        water: buffer_of(LAB_WATER),
+        parts: buffer(PARTS),
+        depth: depth_texture(width: 1, height: 1),
+        width: 0,
+        height: 0,
+        camera: camera(LAB.start),
+        last: None,
+        fonts,
+        renderer,
+        list: DrawList::new(),
+    }
+}
+
+/// The snapshot a frame draws: the two round its time, the capybara's middle and velocity
+/// between them, the rest the later one's.
+fn drawn(s: Snapshots<Snap>, time: f32) -> Snap {
+    let b = s.at(s.sim_time(time))
+    var snap = b.b
+    snap.at = mix(b.a.at, b.b.at, vec2(b.alpha))
+    snap.vel = mix(b.a.vel, b.b.vel, vec2(b.alpha))
+    snap
+}
+
+// ---- the capybara and the goal -----------------------------------------------------------------
+
+const FUR = vec4(0.45, 0.29, 0.16, 1.0)
+const DARK = vec4(0.1, 0.07, 0.05, 1.0)
+const SNOUT = vec4(0.33, 0.21, 0.12, 1.0)
+const POST = vec4(0.85, 0.82, 0.75, 1.0)
+const FLAG = vec4(0.95, 0.7, 0.2, 1.0)
+
+/// A box from `centre` with half-sizes `half`, in the frame `frame`.
+fn part(frame: mat4, centre: vec3, half: vec3, colour: vec4) -> Part {
+    Part { model: frame * translate(centre) * scale(half), colour }
+}
+
+/// The capybara's boxes: a loaf of a body, a square head and snout, ears, eyes and short legs, in
+/// its body's frame (x forward, y up, the collider's middle at the origin). It leans with the
+/// ground, or with its velocity off it; it squashes as it slides, crouches or tucks.
+fn capybara_parts(out: mut Vec<Part>, s: Snap) {
+    let mode = Mode::from_u32(s.mode)
+    let grounded = mode == Some(Mode::Walk) ||
+        mode == Some(Mode::Crouch) ||
+        mode == Some(Mode::Slide)
+    let lean = if grounded {
+        atan2(-s.ground.x, s.ground.y)
+    } else if mode == Some(Mode::Swim) {
+        clamp(s.vel.y * 0.08, -0.6, 0.6) * s.facing
+    } else {
+        clamp(s.vel.y * 0.03, -0.4, 0.4) * s.facing
+    }
+    let low = mode == Some(Mode::Crouch) || mode == Some(Mode::Slide) || (!grounded && s.tuck == 1)
+    let squash = if low { vec3(1.12, 0.72, 1.0) } else { vec3(1.0) }
+    let frame = translate(vec3(s.at, 0.0)) *
+        rotate_z(lean) *
+        scale(vec3(s.facing, 1.0, 1.0) * squash)
+    out.push(part(frame, vec3(0.0, 0.0, 0.0), vec3(0.45, 0.24, 0.25), FUR))
+    out.push(part(frame, vec3(0.46, 0.1, 0.0), vec3(0.19, 0.17, 0.18), FUR))
+    out.push(part(frame, vec3(0.66, 0.04, 0.0), vec3(0.07, 0.11, 0.14), SNOUT))
+    for z in [-0.11, 0.11] {
+        out.push(part(frame, vec3(0.38, 0.3, z), vec3(0.04, 0.04, 0.03), DARK))
+        out.push(part(frame, vec3(0.58, 0.16, z * 1.6), vec3(0.025, 0.025, 0.012), DARK))
+    }
+    for x in [-0.3, 0.3] {
+        for z in [-0.15, 0.15] {
+            out.push(part(frame, vec3(x, -0.27, z), vec3(0.06, 0.08, 0.06), SNOUT))
+        }
+    }
+}
+
+/// The goal: a post and its flag, at the goal box's left side, standing on its floor.
+fn goal(out: mut Vec<Part>) {
+    let base = vec3(LAB.goal_lo.x + 0.4, LAB.goal_lo.y, 0.0)
+    let frame = translate(base)
+    out.push(part(frame, vec3(0.0, 1.6, 0.0), vec3(0.06, 1.6, 0.06), POST))
+    out.push(part(frame, vec3(0.45, 2.85, 0.0), vec3(0.4, 0.28, 0.03), FLAG))
+}
+
+// ---- the frame ---------------------------------------------------------------------------------
+
+const SUN = vec3(0.45, 0.8, 0.4)
+const SKY = vec4(0.6, 0.78, 0.92, 1.0)
+
+pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
+    let dt = match s.last {
+        Some(before) => clamp(time - before, 0.0, 0.1),
+        None => 0.0,
+    }
+    s.last = Some(time)
+    s.snaps.update()
+    let snap = drawn(s.snaps, time)
+    follow(mut s.camera, snap, dt)
+    if width != s.width || height != s.height {
+        s.depth = depth_texture(width, height)
+        s.width = width
+        s.height = height
+    }
+    let aspect = f32(width) / f32(max(height, 1))
+    let at = vec3(s.camera.at, 0.0)
+    let from = at + vec3(0.0, 1.0, DISTANCE)
+    let eye = Eye {
+        view_proj: perspective(FOVY, aspect, near: 0.5, far: 200.0) * look_at(from, at),
+        eye: from,
+        sun: normalize(SUN),
+    }
+    var parts: Vec<Part> = Vec::new()
+    capybara_parts(mut parts, snap)
+    goal(mut parts)
+    write(mut s.parts, 0, parts)
+    let screen = vec2(f32(width), f32(height))
+    hud(mut s, snap, screen)
+    s.renderer.fetch(mut s.fonts, s.list)
+    s.renderer.upload(s.list)
+    let pass = begin_screen_pass_with_depth(mut s.depth, clear: SKY)
+    draw(
+        pass,
+        ground_vertex.bind(verts: s.ground.items(), eye: eye),
+        cel.bind(eye: eye),
+        vertices: LAB_GROUND.len() / 2,
+        cull: Cull::None,
+    )
+    draw(
+        pass,
+        part_vertex.bind(parts: s.parts.items(), eye: eye),
+        cel.bind(eye: eye),
+        vertices: 36,
+        instances: parts.len(),
+        cull: Cull::None,
+    )
+    draw(
+        pass,
+        water_vertex.bind(verts: s.water.items(), eye: eye),
+        water,
+        vertices: LAB_WATER.len(),
+        cull: Cull::None,
+    )
+    s.renderer.draw(pass, screen)
+    pass.present()
+}
+
+/// Ticks as seconds, to the hundredth.
+fn seconds(ticks: u32) -> String {
+    let hundredths = ticks * 100 / HZ
+    let tail = hundredths % 100
+    let pad = if tail < 10 { "0" } else { "" }
+    f"{hundredths / 100}.{pad}{tail}"
+}
+
+fn hud(s: mut Lab, snap: Snap, screen: vec2) {
+    s.list.clear(screen)
+    let size = max(screen.y * 0.03, 12.0)
+    let pad = size
+    let ink = vec4(0.08, 0.1, 0.14, 1.0)
+    let soft = vec4(0.08, 0.1, 0.14, 0.7)
+    let name = feel(snap.feel).name
+    let _ = s.list.text(
+        s.fonts,
+        Face::Sans,
+        f"{name}   Tab: preset   R: restart".as_str(),
+        size,
+        vec2(pad),
+        ink,
+    )
+    let clock = seconds(if snap.finished > 0 { snap.finished } else { snap.ticks })
+    let time = if snap.finished > 0 {
+        f"GOAL  {clock} s  ({snap.finished} ticks)"
+    } else {
+        f"{clock} s"
+    }
+    let _ = s.list.text(s.fonts, Face::Mono, time.as_str(), size, vec2(screen.x * 0.62, pad), ink)
+    let mode = match Mode::from_u32(snap.mode) {
+        Some(Mode::Walk) => "walk",
+        Some(Mode::Crouch) => "crouch",
+        Some(Mode::Slide) => "slide",
+        Some(Mode::Air) => "air",
+        Some(Mode::Swim) => "swim",
+        None => "?",
+    }
+    let speed = length(snap.vel)
+    let line = f"{mode}   {speed:.1} m/s   falls {snap.falls}"
+    let _ = s.list.text(
+        s.fonts,
+        Face::Mono,
+        line.as_str(),
+        size * 0.85,
+        vec2(pad, screen.y - pad * 2.2),
+        soft,
+    )
+}
+
+/// The capybara's middle (x, y, m), its speed (m/s) and its mode, as the newest snapshot has them,
+/// for `wrela trace --watch capybara`.
+pub fn capybara(s: mut Lab) -> vec4 {
+    let n = s.snaps.newest().snap
+    vec4(n.at, length(n.vel), f32(n.mode))
+}
+
+// ---- tests -------------------------------------------------------------------------------------
+
+/// Three seconds of the run script on the hardware GPU: the lab draws, and the sim, ticking in
+/// lockstep, has carried the capybara along the runway.
+@test(frames: 180, gpu: true, input: scripts::RUN)
+fn the_lab_draws_and_the_run_script_moves_the_capybara(s: Lab) {
+    let n = s.snaps.newest()
+    assert(n.ticks >= 358, "the ticker runs two ticks a frame")
+    assert(n.snap.at.x > 10.0 && n.snap.falls == 0, "the capybara ran right")
+}

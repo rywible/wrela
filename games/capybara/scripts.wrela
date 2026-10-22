@@ -1,0 +1,16 @@
+// Input scripts for running the lab without a person, as the native host and `wrela trace` take
+// them (`wrela script games/capybara scripts::RUN -o run.json`). Frames are at 60 a second; the
+// ticker runs two ticks a frame in lockstep.
+
+use std::input::{Key, Script}
+
+/// A run to the right from the start, jumping the first gap, then sliding down into the valley:
+/// enough to see the runway, the crest, the gaps and the slide.
+pub const RUN: Script = Script::frames()
+    .key_down(1, Key::D)
+    .key_down(1, Key::ShiftLeft)
+    .key_down(281, Key::Space)
+    .key_up(330, Key::Space)
+    .key_down(350, Key::Space)
+    .key_up(400, Key::Space)
+    .key_down(573, Key::S)

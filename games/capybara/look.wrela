@@ -1,0 +1,226 @@
+// How the lab looks: a blockout in two-tone (cel-like) light. The course's ground is a slab
+// 6 m deep, extruded from its pieces sampled (its front face filled by ear clipping, its sides
+// strips along the outline), built when the game is built. The capybara and the goal are boxes,
+// drawn in one instanced draw; the water is a see-through front and surface over everything.
+
+use course::{Course, WALKABLE}
+use ground::{left, outline, triangulate}
+use std::gpu::{ClipPosition, Flat, InstanceIndex, Over, VertexIndex}
+
+/// Half the slab's depth (m): the plane of play is z = 0, the camera on +z.
+pub const DEPTH: f32 = 3.0
+
+/// How thick a one-way ledge is drawn (m).
+const LEDGE_THICK: f32 = 0.25
+
+/// The materials: the slab's front, a walkable top, a cliff, a ledge.
+pub const FRONT: f32 = 0.0
+pub const TOP: f32 = 1.0
+pub const CLIFF: f32 = 2.0
+pub const LEDGE: f32 = 3.0
+
+/// What the shaders are told each frame: the camera's matrix and where it is, and the sun.
+pub struct Eye: Copy + GpuData {
+    pub view_proj: mat4,
+    pub eye: vec3,
+    pub sun: vec3,
+}
+
+/// A vertex of the ground: its point and material, then its normal (two vec4s).
+fn vertex(out: mut Vec<vec4>, p: vec2, z: f32, material: f32, n: vec3) {
+    out.push(vec4(p, z, material))
+    out.push(vec4(n, 0.0))
+}
+
+/// The slab of a polygon (clockwise): its front face, and a strip along each side, a walkable
+/// top or a cliff by its normal (or all ledge).
+fn slab(out: mut Vec<vec4>, polygon: [vec2], ledge: bool) {
+    let front = if ledge { LEDGE } else { FRONT }
+    for p in triangulate(polygon) {
+        vertex(mut out, p, DEPTH, front, vec3(0.0, 0.0, 1.0))
+    }
+    let n = polygon.len()
+    for i in 0..n {
+        let (a, b) = (polygon[i], polygon[(i + 1) % n])
+        let side = normalize(left(b - a))
+        let material = if ledge { LEDGE } else if side.y >= WALKABLE { TOP } else { CLIFF }
+        let normal = vec3(side, 0.0)
+        for (p, z) in [(a, DEPTH), (b, DEPTH), (b, -DEPTH), (a, DEPTH), (b, -DEPTH), (a, -DEPTH)] {
+            vertex(mut out, p, z, material, normal)
+        }
+    }
+}
+
+/// The ground's triangles: three vertices each, two vec4s a vertex.
+pub fn ground_mesh(c: Course) -> Vec<vec4> {
+    var out: Vec<vec4> = Vec::new()
+    for k in 0..c.chains.len() - 1 {
+        let (first, last) = (c.chains[k], c.chains[k + 1])
+        let ledge = c.pieces[first].ledge
+        var points = outline(c.pieces, first, last)
+        if ledge {
+            let end = c.pieces[last - 1]
+            points.push(end.point(end.length))
+            // Thickened downward, back along its underside.
+            let top = points.len()
+            for i in 0..top {
+                points.push(points[top - 1 - i] - vec2(0.0, LEDGE_THICK))
+            }
+        }
+        slab(mut out, points, ledge)
+    }
+    out
+}
+
+/// The lab's ground, built with the game.
+pub const LAB_GROUND: Vec<vec4> = ground_mesh(course::LAB)
+
+/// A surface's point, normal and colour, from vertex to fragment.
+pub struct Surfel: Copy {
+    pub clip: ClipPosition,
+    pub world: vec3,
+    pub normal: vec3,
+    pub colour: Flat<vec3>,
+}
+
+/// The colours of the ground's materials.
+fn material(m: f32) -> vec3 {
+    if m < 0.5 {
+        vec3(0.42, 0.3, 0.2)
+    } else if m < 1.5 {
+        vec3(0.36, 0.62, 0.26)
+    } else if m < 2.5 {
+        vec3(0.5, 0.44, 0.36)
+    } else {
+        vec3(0.62, 0.45, 0.28)
+    }
+}
+
+@vertex
+pub fn ground_vertex(v: VertexIndex, verts: [vec4], eye: Eye) -> Surfel {
+    let at = verts[v.index * 2]
+    let n = verts[v.index * 2 + 1].xyz
+    Surfel {
+        clip: ClipPosition { position: eye.view_proj * vec4(at.xyz, 1.0) },
+        world: at.xyz,
+        normal: n,
+        colour: Flat { value: material(at.w) },
+    }
+}
+
+/// A box of the capybara or the goal: the unit cube (each side from -1 to 1) moved by `model`,
+/// and its colour.
+pub struct Part: Copy + GpuData {
+    pub model: mat4,
+    pub colour: vec4,
+}
+
+@vertex
+pub fn part_vertex(v: VertexIndex, i: InstanceIndex, parts: [Part], eye: Eye) -> Surfel {
+    let part = parts[i.index]
+    let face = v.index / 6
+    let corner = v.index % 6
+    let normals = [
+        vec3(1.0, 0.0, 0.0),
+        vec3(-1.0, 0.0, 0.0),
+        vec3(0.0, 1.0, 0.0),
+        vec3(0.0, -1.0, 0.0),
+        vec3(0.0, 0.0, 1.0),
+        vec3(0.0, 0.0, -1.0),
+    ]
+    let us = [
+        vec3(0.0, 1.0, 0.0),
+        vec3(0.0, 0.0, 1.0),
+        vec3(0.0, 0.0, 1.0),
+        vec3(1.0, 0.0, 0.0),
+        vec3(1.0, 0.0, 0.0),
+        vec3(0.0, 1.0, 0.0),
+    ]
+    let cu = [-1.0, 1.0, -1.0, -1.0, 1.0, 1.0]
+    let cv = [-1.0, -1.0, 1.0, 1.0, -1.0, 1.0]
+    let n = normals[face]
+    let u = us[face]
+    let p = n + u * cu[corner] + cross(n, u) * cv[corner]
+    let world = (part.model * vec4(p, 1.0)).xyz
+    // The model's axes are square to each other, so a normal turns with them (then normalized).
+    let m = part.model
+    let turned = m[0].xyz * (n.x / dot(m[0].xyz, m[0].xyz)) +
+        m[1].xyz * (n.y / dot(m[1].xyz, m[1].xyz)) +
+        m[2].xyz * (n.z / dot(m[2].xyz, m[2].xyz))
+    Surfel {
+        clip: ClipPosition { position: eye.view_proj * vec4(world, 1.0) },
+        world,
+        normal: turned,
+        colour: Flat { value: part.colour.xyz },
+    }
+}
+
+/// Two tones of light: lit and shadowed, split sharply where the surface turns from the sun, and
+/// a little sky from above.
+@fragment
+pub fn cel(s: Surfel, eye: Eye) -> vec4 {
+    var n = normalize(s.normal)
+    if dot(n, eye.eye - s.world) < 0.0 {
+        n = -n
+    }
+    let lit = smoothstep(0.18, 0.24, dot(n, eye.sun))
+    let sky = 0.12 * saturate(n.y)
+    let shade = mix(0.58, 1.0, lit) + sky
+    vec4(s.colour.value * shade, 1.0)
+}
+
+/// The water: a see-through front face and surface, from two corners each, as triangles.
+pub fn water_mesh(c: Course) -> Vec<vec4> {
+    var out: Vec<vec4> = Vec::new()
+    for w in c.waters {
+        let (lo, hi) = (w.lo, w.hi)
+        // The front, at the slab's face.
+        for p in [
+            vec2(lo.x, lo.y),
+            vec2(hi.x, lo.y),
+            vec2(hi.x, hi.y),
+            vec2(lo.x, lo.y),
+            vec2(hi.x, hi.y),
+            vec2(lo.x, hi.y),
+        ] {
+            out.push(vec4(p, DEPTH - 0.01, 0.0))
+        }
+        // The surface, through the slab.
+        for (x, z) in [
+            (lo.x, DEPTH),
+            (hi.x, DEPTH),
+            (hi.x, -DEPTH),
+            (lo.x, DEPTH),
+            (hi.x, -DEPTH),
+            (lo.x, -DEPTH),
+        ] {
+            out.push(vec4(x, hi.y, z, 1.0))
+        }
+    }
+    out
+}
+
+pub const LAB_WATER: Vec<vec4> = water_mesh(course::LAB)
+
+pub struct Wet: Copy {
+    pub clip: ClipPosition,
+    pub surface: Flat<f32>,
+}
+
+@vertex
+pub fn water_vertex(v: VertexIndex, verts: [vec4], eye: Eye) -> Wet {
+    let p = verts[v.index]
+    Wet {
+        clip: ClipPosition { position: eye.view_proj * vec4(p.xyz, 1.0) },
+        surface: Flat { value: p.w },
+    }
+}
+
+@fragment
+pub fn water(w: Wet) -> Over {
+    if w.surface.value > 0.5 {
+        Over { color: vec4(0.55, 0.8, 0.95, 0.55) }
+    } else {
+        Over { color: vec4(0.2, 0.5, 0.75, 0.42) }
+    }
+}
