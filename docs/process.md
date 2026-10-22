@@ -2804,6 +2804,18 @@ before relying on it. References: Cloudflare's
 [Wrangler's R2 commands](https://developers.cloudflare.com/workers/wrangler/commands/r2/).
 These are implementation references; nothing was copied.
 
+## Capybara score auditions, 2026-10-22
+
+Ryan asked Codex to use subagents to write several scores so he could listen and choose a
+direction for the capybara game. Six Codex subagents composed original piano scores as Wrela
+notation (`games/capybara/scores`), each with its own hook, rhythm and form: Bounce, Skipping,
+Sprint, Pocket, Lift and Tiptoe. Codex supplied the common player and checked the scores and
+renders. The brief comes from Ryan's game design and his recorded request for a clear hook
+and groove. No outside score, recording or asset was used, and no generative media model made
+audio. Wrela's existing piano synthesizes each render from the score. The code is under this
+repository's MIT licence. The auditions leave the game's current music in place; Ryan's ears
+decide which direction to use.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new

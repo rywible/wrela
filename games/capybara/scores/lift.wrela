@@ -1,0 +1,164 @@
+// "Lift": an original piano audition in A major. A dotted-quarter call rises A, C-sharp, E;
+// its flowing answer reaches F-sharp. The hook arrives at once and returns in octaves over
+// short bass notes and offbeat chords. A small four-bar bridge makes room for its return.
+// The form is 4 + 8 + 8 + 4 + 8 + 4 bars: 60 seconds at 144 quarter notes a minute.
+
+use engine::score::{Score, meter, score}
+
+const OPEN = score("the hook", meter(beats: 4, unit: 4))
+    .voice(
+        "melody",
+        [
+            "a4/4. !mf !accent c#5/8 e5/4 c#5/8 b4 |",
+            "a4/8 b4 c#5 e5 f#5/4 e5/8 c#5 |",
+            "d5/4. !accent c#5/8 b4/4 a4/8 b4 |",
+            "c#5/8 e5 b4/4 a4/8 b4 e4/4 |",
+        ],
+    )
+    .voice(
+        "harmony",
+        [
+            "r/8 <e3 a3 c#4> r <e3 a3 c#4> r <e3 a3 c#4> r <e3 a3 c#4> |",
+            "r/8 <f#3 a3 c#4> r <f#3 a3 c#4> r <f#3 a3 c#4> r <f#3 a3 c#4> |",
+            "r/8 <f#3 a3 d4> r <f#3 a3 d4> r <f#3 a3 d4> r <f#3 a3 d4> |",
+            "r/8 <g#3 b3 e4> r <g#3 b3 e4> r <g#3 b3 e4> r <g#3 b3 e4> |",
+        ],
+    )
+    .voice(
+        "bass",
+        [
+            "a2/4 r/8 e3 a2/4 r/8 e3 | f#2/4 r/8 c#3 f#2/4 r/8 c#3 |",
+            "d2/4 r/8 a2 d2/4 r/8 a2 | e2/4 r/8 b2 e2/4 r/8 b2 |",
+        ],
+    )
+
+const VERSE = score("a lighter step", meter(beats: 4, unit: 4))
+    .voice(
+        "melody",
+        [
+            "a4/8 !mp r c#5 r e5/4 c#5/8 b4 | a4/4 c#5/8 e5 f#5/4 e5/8 c#5 |",
+            "d5/4 c#5/8 b4 a4/4 b4/8 d5 | c#5/4. b4/8 a4/4 r |",
+            "a4/8 c#5 e5/4 c#5/8 b4 a4/4 | a4/4 c#5/8 e5 f#5/4 a5/8 f#5 |",
+            "d5/8 c#5 b4/4 c#5/8 d5 f#5/4 | e5/4 b4/8 c#5 d5/4 e5 |",
+        ],
+    )
+    .voice(
+        "harmony",
+        [
+            "r/4 <e3 a3 c#4>/8 r r/4 <e3 a3 c#4>/8 r |",
+            "r/4 <f#3 a3 c#4>/8 r r/4 <f#3 a3 c#4>/8 r |",
+            "r/4 <f#3 a3 d4>/8 r r/4 <f#3 a3 d4>/8 r |",
+            "r/4 <g#3 b3 e4>/8 r r/4 <g#3 b3 e4>/8 r |",
+            "r/4 <e3 a3 c#4>/8 r r/4 <e3 a3 c#4>/8 r |",
+            "r/4 <f#3 a3 c#4>/8 r r/4 <f#3 a3 c#4>/8 r |",
+            "r/4 <f#3 b3 d4>/8 r r/4 <f#3 b3 d4>/8 r |",
+            "r/8 <g#3 b3 e4> r <g#3 b3 e4> r <g#3 b3 e4> r <g#3 b3 e4> |",
+        ],
+    )
+    .voice(
+        "bass",
+        [
+            "a2/4 r/8 e3 a2/4 r/8 e3 | f#2/4 r/8 c#3 f#2/4 r/8 c#3 |",
+            "d2/4 r/8 a2 d2/4 r/8 a2 | e2/4 r/8 b2 e2/4 r/8 b2 |",
+            "a2/4 r/8 e3 a2/4 r/8 e3 | f#2/4 r/8 c#3 f#2/4 r/8 c#3 |",
+            "b2/4 r/8 f#2 b2/4 r/8 f#2 | e2/4 b2 e3 b2 |",
+        ],
+    )
+
+const REFRAIN = score("the lift", meter(beats: 4, unit: 4))
+    .voice(
+        "melody",
+        [
+            "<a3 a4>/4. !f !accent <c#4 c#5>/8 <e4 e5>/4 <c#4 c#5>/8 <b3 b4> |",
+            "<a3 a4>/8 <b3 b4> <c#4 c#5> <e4 e5> <f#4 f#5>/4 <e4 e5>/8 <c#4 c#5> |",
+            "<d4 d5>/4. !accent <c#4 c#5>/8 <b3 b4>/4 <a3 a4>/8 <b3 b4> |",
+            "<c#4 c#5>/8 <e4 e5> <b3 b4>/4 <a3 a4>/8 <b3 b4> <e4 e5>/4 |",
+            "<a3 a4>/4. !accent <c#4 c#5>/8 <e4 e5>/4 <c#4 c#5>/8 <b3 b4> |",
+            "<a3 a4>/8 <b3 b4> <c#4 c#5> <e4 e5> <a4 a5>/4 <f#4 f#5>/8 <e4 e5> |",
+            "<d4 d5>/4 <c#4 c#5>/8 <b3 b4> <f#4 f#5>/4 <e4 e5>/8 <d4 d5> |",
+            "<c#4 c#5>/8 <b3 b4> <a3 a4>/4 <b3 b4>/8 <c#4 c#5> <b3 b4>/4 |",
+        ],
+    )
+    .voice(
+        "harmony",
+        [
+            "r/8 <e3 a3 c#4> r <e3 a3 c#4> r <e3 a3 c#4> r <e3 a3 c#4> |",
+            "r/8 <f#3 a3 c#4> r <f#3 a3 c#4> r <f#3 a3 c#4> r <f#3 a3 c#4> |",
+            "r/8 <f#3 a3 d4> r <f#3 a3 d4> r <f#3 a3 d4> r <f#3 a3 d4> |",
+            "r/8 <g#3 b3 e4> r <g#3 b3 e4> r <g#3 b3 e4> r <g#3 b3 e4> |",
+            "r/8 <e3 a3 c#4> r <e3 a3 c#4> r <e3 a3 c#4> r <e3 a3 c#4> |",
+            "r/8 <f#3 a3 c#4> r <f#3 a3 c#4> r <f#3 a3 c#4> r <f#3 a3 c#4> |",
+            "r/8 <f#3 b3 d4> r <f#3 b3 d4> r <f#3 b3 d4> r <f#3 b3 d4> |",
+            "r/8 <g#3 b3 e4> r <g#3 b3 e4> r <g#3 b3 e4> r <g#3 b3 e4> |",
+        ],
+    )
+    .voice(
+        "bass",
+        [
+            "a2/4 r/8 e3 a2/4 r/8 e3 | f#2/4 r/8 c#3 f#2/4 r/8 c#3 |",
+            "d2/4 r/8 a2 d2/4 r/8 a2 | e2/4 r/8 b2 e2/4 r/8 b2 |",
+            "a2/4 r/8 e3 a2/4 r/8 e3 | f#2/4 r/8 c#3 f#2/4 r/8 c#3 |",
+            "b2/4 r/8 f#2 b2/4 r/8 f#2 | e2/4 r/8 b2 e2/4 r/8 b2 |",
+        ],
+    )
+
+const BRIDGE = score("a small breath", meter(beats: 4, unit: 4))
+    .voice(
+        "melody",
+        [
+            "d5/4 !mp a4/8 f#4 a4/4 r | c#5/4 e5/8 c#5 b4/4 a4 |",
+            "b4/4 d5/8 f#5 e5/4 d5/8 c#5 | b4/8 c#5 d5 e5 f#5/4 e5/8 b4 |",
+        ],
+    )
+    .voice(
+        "harmony",
+        [
+            "r/4 <f#3 a3 d4> r <f#3 a3 d4> | r/4 <e3 a3 c#4> r <e3 a3 c#4> |",
+            "r/4 <f#3 b3 d4> r <f#3 b3 d4> |",
+            "r/8 <g#3 b3 e4> r <g#3 b3 e4> r <g#3 b3 e4> r <g#3 b3 e4> |",
+        ],
+    )
+    .voice(
+        "bass",
+        [
+            "d2/4 r a2 r | c#3/4 r e3 r | b2/4 r f#2 r | e2/4 b2 e3 b2 |",
+        ],
+    )
+
+const CLOSE = score("the hook comes home", meter(beats: 4, unit: 4))
+    .voice(
+        "melody",
+        [
+            "a4/4. !mf !accent c#5/8 e5/4 c#5/8 b4 |",
+            "a4/8 b4 c#5 e5 f#5/4 e5/8 c#5 |",
+            "b4/8 c#5 d5/4 b4/8 a4 g#4/4 | <a4 a5>/2 !f r/2 |",
+        ],
+    )
+    .voice(
+        "harmony",
+        [
+            "r/8 <e3 a3 c#4> r <e3 a3 c#4> r <e3 a3 c#4> r <e3 a3 c#4> |",
+            "r/8 <f#3 a3 c#4> r <f#3 a3 c#4> r <f#3 a3 c#4> r <f#3 a3 c#4> |",
+            "r/8 <g#3 b3 e4> r <g#3 b3 e4> r <g#3 b3 e4> r <g#3 b3 e4> |",
+            "<a3 c#4 e4>/2 r/2 |",
+        ],
+    )
+    .voice(
+        "bass",
+        [
+            "a2/4 r/8 e3 a2/4 r/8 e3 | f#2/4 r/8 c#3 f#2/4 r/8 c#3 |",
+            "e2/4 r/8 b2 e2/4 r/8 b2 | <a2 e3>/2 r/2 |",
+        ],
+    )
+
+/// A bright, hook-led audition with two octave refrains and a quiet bridge: 36 bars of 4/4.
+pub const SCORE: Score = score("05 - Lift", meter(beats: 4, unit: 4))
+    .then(OPEN)
+    .then(VERSE)
+    .then(REFRAIN)
+    .then(BRIDGE)
+    .then(REFRAIN)
+    .then(CLOSE)
+
+/// A quarter-note pulse of 144 beats a minute; the written score lasts one minute.
+pub const TEMPO: f32 = 144.0

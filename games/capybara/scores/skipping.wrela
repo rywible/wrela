@@ -1,0 +1,163 @@
+// "02 - Skipping": an original, lively 6/8 piano audition. A four-bar skip hook in G major
+// returns over bouncing chords and two bass accents per bar, with a quieter E-minor middle.
+
+use engine::score::{Score, meter, score}
+
+const HOOK = score("the skip hook", meter(beats: 6, unit: 8))
+    .voice(
+        "melody",
+        [
+            "b4/8 !mf !accent g4 a4 d5/4 !accent b4/8 |",
+            "a4/8 f#4 a4 c5/4 a4/8 |",
+            "g4/8 e4 g4 c5/4 e5/8 |",
+            "d5/4 b4/8 a4/8 b4 g4 |",
+            "c5/8 !accent a4 b4 e5/4 !accent c5/8 |",
+            "a4/8 f#4 a4 d5/4 c5/8 |",
+            "b4/4 g4/8 a4/8 b4 d5 |",
+            "c5/8 a4 f#4 d4/4 r/8 |",
+        ],
+    )
+    .voice(
+        "harmony",
+        [
+            "r/8 <d3 g3 b3>/8 !staccato <d3 g3 b3> !staccato r <d3 g3 b3> !staccato <d3 g3 b3> !staccato |",
+            "r/8 <c3 f#3 a3>/8 !staccato <c3 f#3 a3> !staccato r <c3 f#3 a3> !staccato <c3 f#3 a3> !staccato |",
+            "r/8 <e3 g3 c4>/8 !staccato <e3 g3 c4> !staccato r <e3 g3 c4> !staccato <e3 g3 c4> !staccato |",
+            "r/8 <d3 g3 b3>/8 !staccato <d3 g3 b3> !staccato r <d3 g3 b3> !staccato <d3 g3 b3> !staccato |",
+            "r/8 <e3 a3 c4>/8 !staccato <e3 a3 c4> !staccato r <e3 a3 c4> !staccato <e3 a3 c4> !staccato |",
+            "r/8 <c3 f#3 a3>/8 !staccato <c3 f#3 a3> !staccato r <c3 f#3 a3> !staccato <c3 f#3 a3> !staccato |",
+            "r/8 <d3 g3 b3>/8 !staccato <d3 g3 b3> !staccato r <d3 g3 b3> !staccato <d3 g3 b3> !staccato |",
+            "r/8 <c3 f#3 a3>/8 !staccato <c3 f#3 a3> !staccato r <c3 f#3 a3> !staccato <c3 f#3 a3> !staccato |",
+        ],
+    )
+    .voice(
+        "bass",
+        [
+            "g1/4. !accent d2/4. !accent | d2/4. !accent a2/4. !accent |",
+            "c2/4. !accent g2/4. !accent | b1/4. !accent d2/4. !accent |",
+            "a1/4. !accent e2/4. !accent | d2/4. !accent a2/4. !accent |",
+            "g1/4. !accent d2/4. !accent | d2/4. !accent a2/4. !accent |",
+        ],
+    )
+
+const MIDDLE = score("a quieter dance", meter(beats: 6, unit: 8))
+    .voice(
+        "melody",
+        [
+            "e4/4 !mp g4/8 b4/8 g4 e4 |",
+            "d#4/4 f#4/8 a4/8 f#4 d#4 |",
+            "e4/8 g4 c5 e5 d5 c5 |",
+            "b4/4 g4/8 d4/4 r/8 |",
+            "a4/8 c5 e5 c5 a4 c5 |",
+            "b4/4 g4/8 e4/8 d4 b3 |",
+            "a4/8 !< f#4 a4 c5 d5 e5 |",
+            "f#5/4 !f !accent d5/8 c5/8 a4 f#4 |",
+        ],
+    )
+    .voice(
+        "harmony",
+        [
+            "r/8 <e3 g3 b3>/8 !staccato r r <e3 g3 b3> !staccato r |",
+            "r/8 <d#3 f#3 a3>/8 !staccato r r <d#3 f#3 a3> !staccato r |",
+            "r/8 <e3 g3 c4>/8 !staccato r r <e3 g3 c4> !staccato r |",
+            "r/8 <d3 g3 b3>/8 !staccato r r <d3 g3 b3> !staccato r |",
+            "r/8 <e3 a3 c4>/8 !staccato r r <e3 a3 c4> !staccato r |",
+            "r/8 <e3 g3 b3>/8 !staccato r r <e3 g3 b3> !staccato r |",
+            "r/8 <c3 f#3 a3>/8 !staccato <c3 f#3 a3> !staccato r <c3 f#3 a3> !staccato <c3 f#3 a3> !staccato |",
+            "r/8 <c3 f#3 a3>/8 !staccato <c3 f#3 a3> !staccato r <c3 f#3 a3> !staccato <c3 f#3 a3> !staccato |",
+        ],
+    )
+    .voice(
+        "bass",
+        [
+            "e2/4. !accent b1/4. !accent | b1/4. !accent f#2/4. !accent |",
+            "c2/4. !accent g2/4. !accent | g1/4. !accent d2/4. !accent |",
+            "a1/4. !accent e2/4. !accent | e2/4. !accent b1/4. !accent |",
+            "d2/4. !accent a2/4. !accent | d2/4. !accent d2/8 e2 f#2 |",
+        ],
+    )
+
+const RETURN = score("the hook returns", meter(beats: 6, unit: 8))
+    .voice(
+        "melody",
+        [
+            "b4/8 !f !accent g4 a4 <g4 d5>/4 !accent b4/8 |",
+            "a4/8 f#4 a4 <f#4 c5>/4 a4/8 |",
+            "g4/8 e4 g4 <e4 c5>/4 e5/8 |",
+            "d5/4 b4/8 a4/8 b4 g4 |",
+            "c5/8 !accent a4 b4 <c5 e5>/4 !accent c5/8 |",
+            "a4/8 f#4 a4 d5/4 c5/8 |",
+            "e5/4 c5/8 d5/8 e5 g5 |",
+            "f#5/8 d5 c5 a4/4 f#4/8 |",
+        ],
+    )
+    .voice(
+        "harmony",
+        [
+            "r/8 <d3 g3 b3>/8 !staccato <d3 g3 b3> !staccato r <d3 g3 b3> !staccato <d3 g3 b3> !staccato |",
+            "r/8 <c3 f#3 a3>/8 !staccato <c3 f#3 a3> !staccato r <c3 f#3 a3> !staccato <c3 f#3 a3> !staccato |",
+            "r/8 <e3 g3 c4>/8 !staccato <e3 g3 c4> !staccato r <e3 g3 c4> !staccato <e3 g3 c4> !staccato |",
+            "r/8 <d3 g3 b3>/8 !staccato <d3 g3 b3> !staccato r <d3 g3 b3> !staccato <d3 g3 b3> !staccato |",
+            "r/8 <e3 a3 c4>/8 !staccato <e3 a3 c4> !staccato r <e3 a3 c4> !staccato <e3 a3 c4> !staccato |",
+            "r/8 <c3 f#3 a3>/8 !staccato <c3 f#3 a3> !staccato r <c3 f#3 a3> !staccato <c3 f#3 a3> !staccato |",
+            "r/8 <e3 g3 c4>/8 !staccato <e3 g3 c4> !staccato r <e3 g3 c4> !staccato <e3 g3 c4> !staccato |",
+            "r/8 <c3 f#3 a3>/8 !staccato <c3 f#3 a3> !staccato r <c3 f#3 a3> !staccato <c3 f#3 a3> !staccato |",
+        ],
+    )
+    .voice(
+        "bass",
+        [
+            "g1/4. !accent d2/4. !accent | d2/4. !accent a2/4. !accent |",
+            "c2/4. !accent g2/4. !accent | b1/4. !accent d2/4. !accent |",
+            "a1/4. !accent e2/4. !accent | d2/4. !accent a2/4. !accent |",
+            "c2/4. !accent g2/4. !accent | d2/4. !accent a2/4. !accent |",
+        ],
+    )
+
+const ENDING = score("one last skip", meter(beats: 6, unit: 8))
+    .voice(
+        "melody",
+        [
+            "b4/8 !mf !accent g4 a4 d5/4 !accent b4/8 |",
+            "c5/8 a4 g4 e4/4 g4/8 |",
+            "b4/4 g4/8 e4/4 d4/8 |",
+            "a4/8 c5 d5 f#5/4 e5/8 |",
+            "e5/8 d5 c5 g4/4 e4/8 |",
+            "d4/8 f#4 a4 c5/4 a4/8 |",
+            "b4/8 a4 g4 d4/4 f#4/8 |",
+            "g4/4. !accent r/4. |",
+        ],
+    )
+    .voice(
+        "harmony",
+        [
+            "r/8 <d3 g3 b3>/8 !staccato <d3 g3 b3> !staccato r <d3 g3 b3> !staccato <d3 g3 b3> !staccato |",
+            "r/8 <e3 g3 c4>/8 !staccato <e3 g3 c4> !staccato r <e3 g3 c4> !staccato <e3 g3 c4> !staccato |",
+            "r/8 <e3 g3 b3>/8 !staccato <e3 g3 b3> !staccato r <e3 g3 b3> !staccato <e3 g3 b3> !staccato |",
+            "r/8 <c3 f#3 a3>/8 !staccato <c3 f#3 a3> !staccato r <c3 f#3 a3> !staccato <c3 f#3 a3> !staccato |",
+            "r/8 <e3 g3 c4>/8 !staccato <e3 g3 c4> !staccato r <e3 g3 c4> !staccato <e3 g3 c4> !staccato |",
+            "r/8 <c3 f#3 a3>/8 !staccato <c3 f#3 a3> !staccato r <c3 f#3 a3> !staccato <c3 f#3 a3> !staccato |",
+            "r/8 <d3 g3 b3>/8 !staccato <d3 g3 b3> !staccato r <d3 g3 b3> !staccato <d3 g3 b3> !staccato |",
+            "<d3 g3 b3>/4. !accent r/4. |",
+        ],
+    )
+    .voice(
+        "bass",
+        [
+            "g1/4. !accent d2/4. !accent | c2/4. !accent g2/4. !accent |",
+            "e2/4. !accent b1/4. !accent | d2/4. !accent a2/4. !accent |",
+            "c2/4. !accent g2/4. !accent | d2/4. !accent a2/4. !accent |",
+            "g1/4. !accent d2/4. !accent | <g1 g2>/4. !accent r/4. |",
+        ],
+    )
+
+/// Thirty-two bars: the skip hook, a quieter dance, the hook's return and a closing tag.
+pub const SCORE: Score = score("02 - Skipping", meter(beats: 6, unit: 8))
+    .with_tempo("Lively, with a skip")
+    .then(HOOK)
+    .then(MIDDLE)
+    .then(RETURN)
+    .then(ENDING)
+
+/// Quarter notes per minute: about 50.5 seconds before the piano's ring.
+pub const TEMPO: f32 = 114.0
