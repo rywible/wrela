@@ -625,6 +625,19 @@ external programs for tools, helper threads for tools, the temporaries rule (E05
 Green's two water and sound questions. From here the toolchain's record continues in
 wrela-compiler's `docs/process.md`.
 
+## Direct-style tools, 2026-10-21
+
+The toolchain's tools stopped polling: a tool exports `tool() -> u32`, waits on each call, and runs
+sequences of calls as tasks, and a driven build runs a list of steps in one request. Ryan asked for
+every tool and tool test here to move to it. Claude (Opus 5.5) moved the shared toolkit, the tool
+tests' shared library, serve, lookbook, motion and round, and gave six subagents the rest, each a
+set of packages with no shared files and one written guide: release and deploy, audio and
+listening, reference, the studio tool, and the tool tests in two halves. Each ran its packages'
+tests; Claude reviewed the results, compared the tools' output with `main`'s (the release tree,
+a lookbook still) and ran `wrela suite`. Three small gaps went to wrela-compiler's
+`toolchain-gaps` branch: `ToolError::new`, `Result::map_err` and `take x.m()?`. No outside code,
+assets or references were used.
+
 ## Whole-repo simplification sweep, 2026-10-20
 
 Ryan asked for a cleanup of the whole repository as it stood after the split, not of recent

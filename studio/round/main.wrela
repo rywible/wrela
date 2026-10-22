@@ -34,12 +34,10 @@ use lookbook_tool::main::lookbook
 use lookbook_tool::shots::{BUILD, LOOKBOOK, names_in, shown_path}
 use lookbook_tool::shots::Options as Stills
 use std::io::print
-use std::job::{Job, Step}
-use std::tool::{RUNNING, args}
+use std::tool::{ToolError, args}
 use std::tool::files
 use summary::{FPS, SNAP, quick_script, script, sites_in, summarize}
 use toolkit::page::run_page
-use toolkit::wait::{done, wait}
 use toolkit::whole::{copy_file, read_file, write_file}
 
 /// The floor's map, whose sites the round travels to.
@@ -114,56 +112,32 @@ pub fn parse_args(given: [String]) -> Option<Options> {
 }
 
 /// The text of the file at `path` (a root path), or why it can't be read.
-@job
-fn text_of(path: take String) -> Result<String, String> {
-    var j = Box::new(read_file.start(path.clone(), path.clone()))
-    var r = done(j.get_mut().resume())
-    while r.is_none() {
-        yield
-        r = done(j.get_mut().resume())
-    }
-    match String::from_utf8((take r).unwrap()?) {
+fn text_of(path: str) -> Result<String, ToolError> {
+    match String::from_utf8(read_file(path, path)?) {
         Some(t) => Ok(t),
-        None => Err(String::from(f"{path} isn't UTF-8")),
+        None => Err(ToolError::new(f"{path} isn't UTF-8")),
     }
 }
 
 /// Plays the round `o` says: its exit status.
-@job
-pub fn round(o: take Options) -> u32 {
-    var jn = Box::new(text_of.start(String::from(LOOKBOOK)))
-    var nr = done(jn.get_mut().resume())
-    while nr.is_none() {
-        yield
-        nr = done(jn.get_mut().resume())
-    }
-    var jm = Box::new(text_of.start(String::from(MAP)))
-    var mr = done(jm.get_mut().resume())
-    while mr.is_none() {
-        yield
-        mr = done(jm.get_mut().resume())
-    }
-    let (lookbook_source, map) = match ((take nr).unwrap(), (take mr).unwrap()) {
+pub fn round(o: Options) -> u32 {
+    let (lookbook_source, map) = match (text_of(LOOKBOOK), text_of(MAP)) {
         (Ok(l), Ok(m)) => (take l, take m),
         (Err(e), _) => {
-            print(f"round: {e}")
+            print(f"round: {e.message()}")
             return 1
         },
         (_, Err(e)) => {
-            print(f"round: {e}")
+            print(f"round: {e.message()}")
             return 1
         },
     }
     let shots = names_in(lookbook_source.as_str()).len()
     let sites = sites_in(map.as_str())
     let out = String::from(f"ws/target/rounds/round-{o.n}")
-    var gone = wait(files::remove_all(out.as_str()))
-    while !gone.ready() { yield }
-    let _ = gone.bytes()
-    var made = wait(files::make_dirs(out.as_str()))
-    while !made.ready() { yield }
-    if let Err(e) = made.bytes() {
-        print(f"round: {e}")
+    let _ = files::remove_all(out.as_str()).wait()
+    if let Err(e) = files::make_dirs(out.as_str()).wait() {
+        print(f"round: {e.message()}")
         return 1
     }
     let whole = script(o.minutes, shots, sites)
@@ -180,10 +154,11 @@ pub fn round(o: take Options) -> u32 {
         frames = o.frames
     }
     let script_at = String::from(f"{BUILD}/round-keys.json")
-    var wk = wait(files::write(script_at.as_str(), String::from(keys.as_json()).as_bytes()))
-    while !wk.ready() { yield }
-    if let Err(e) = wk.bytes() {
-        print(f"round: {e}")
+    if let Err(e) = files::write(
+        script_at.as_str(),
+        String::from(keys.as_json()).as_bytes(),
+    ).wait() {
+        print(f"round: {e.message()}")
         return 1
     }
     let timeout = f64(frames / FPS * 2 + 600)
@@ -192,25 +167,15 @@ pub fn round(o: take Options) -> u32 {
         f"#test&frames={frames}&width=1920&height=1080&fps={FPS}&workers={o.workers}&paced=1&nohash=1&ticklog=1&inflight=2{snap}&input=round-keys.json",
     )
     print(f"round {o.n}: {frames} frames ({f64(frames) / f64(FPS) / 60.0:.1} min) in Chrome")
-    var jp = Box::new(
-        run_page.start(String::from(BUILD), take hash, width: 1920, height: 1080, timeout: timeout),
-    )
-    var pr = done(jp.get_mut().resume())
-    while pr.is_none() {
-        yield
-        pr = done(jp.get_mut().resume())
-    }
-    let played = (take pr).unwrap()
-    var rm = wait(files::remove(script_at.as_str()))
-    while !rm.ready() { yield }
+    let played = run_page(BUILD, hash.as_str(), width: 1920, height: 1080, timeout: timeout)
+    let _ = files::remove(script_at.as_str()).wait()
     // What the page saved, each file if it's there; the saved screens, numbered.
     var copies: Vec<(String, String)> = Vec::new()
     for name in KEPT {
         copies.push((String::from(f"{BUILD}/results/{name}"), String::from(f"{out}/{name}")))
     }
     if !snaps.is_empty() {
-        var ms = wait(files::make_dirs(f"{out}/snaps"))
-        while !ms.ready() { yield }
+        let _ = files::make_dirs(f"{out}/snaps").wait()
         for k in 0..snaps.len() {
             copies.push(
                 (
@@ -220,34 +185,17 @@ pub fn round(o: take Options) -> u32 {
             )
         }
     }
-    for k in 0..copies.len() {
-        var jc = Box::new(copy_file.start(copies[k].0.clone(), copies[k].1.clone()))
-        var cr = done(jc.get_mut().resume())
-        while cr.is_none() {
-            yield
-            cr = done(jc.get_mut().resume())
-        }
+    for (from, to) in copies {
+        let _ = copy_file(from.as_str(), to.as_str())
     }
     let shown = shown_path(out.as_str())
     var status: u32 = 0
     if let Err(e) = played {
-        print(e.as_str())
+        print(e.message())
         print(f"the round's run failed (see {shown}/console.log)")
         status = 1
     }
-    var jf = Box::new(text_of.start(String::from(f"{out}/frames.json")))
-    var fr = done(jf.get_mut().resume())
-    while fr.is_none() {
-        yield
-        fr = done(jf.get_mut().resume())
-    }
-    var jl = Box::new(text_of.start(String::from(f"{out}/log.txt")))
-    var lr = done(jl.get_mut().resume())
-    while lr.is_none() {
-        yield
-        lr = done(jl.get_mut().resume())
-    }
-    let (frames_json, log) = match ((take fr).unwrap(), (take lr).unwrap()) {
+    let (frames_json, log) = match (text_of(f"{out}/frames.json"), text_of(f"{out}/log.txt")) {
         (Ok(f), Ok(l)) => (take f, take l),
         _ => {
             print("the round produced no frames.json or log.txt")
@@ -266,19 +214,12 @@ pub fn round(o: take Options) -> u32 {
         print("the round's frames.json has no began_ms or printed_in")
         return max(status, 1)
     }
-    var ws = Box::new(
-        write_file.start(
-            String::from(f"{out}/summary.json"),
-            Vec::from([Vec::from(summary.json.as_bytes())]),
-        ),
-    )
-    var wr = done(ws.get_mut().resume())
-    while wr.is_none() {
-        yield
-        wr = done(ws.get_mut().resume())
-    }
-    if let Err(e) = (take wr).unwrap() {
-        print(f"round: {e}")
+    let summary_at = String::from(f"{out}/summary.json")
+    if let Err(e) = write_file(
+        summary_at.as_str(),
+        Vec::from([Vec::from(summary.json.as_bytes())]),
+    ) {
+        print(f"round: {e.message()}")
         return 1
     }
     for l in summary.lines {
@@ -296,42 +237,18 @@ pub fn round(o: take Options) -> u32 {
             workers: o.workers,
             picks: Vec::new(),
         }
-        var jb = Box::new(lookbook.start(take stills))
-        var br = done(jb.get_mut().resume())
-        while br.is_none() {
-            yield
-            br = done(jb.get_mut().resume())
-        }
-        if let Err(e) = (take br).unwrap() {
-            print(f"the lookbook failed: {e}")
+        if let Err(e) = lookbook(stills) {
+            print(f"the lookbook failed: {e.message()}")
             status = max(status, 1)
         }
     }
     status
 }
 
-@job
-fn main(given: take Vec<String>) -> u32 {
-    let Some(o) = parse_args(given) else {
+pub fn tool() -> u32 {
+    let Some(o) = parse_args(args()) else {
         print(USAGE)
         return 2
     }
-    var j = Box::new(round.start(take o))
-    var r = done(j.get_mut().resume())
-    while r.is_none() {
-        yield
-        r = done(j.get_mut().resume())
-    }
-    (take r).unwrap()
-}
-
-pub fn tool_init() -> Job<main> {
-    main.start(args())
-}
-
-pub fn tool(job: mut Job<main>) -> u32 {
-    match job.resume() {
-        Step::Yielded => RUNNING,
-        Step::Done(status) => status,
-    }
+    round(o)
 }

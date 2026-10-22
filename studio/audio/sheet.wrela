@@ -7,14 +7,14 @@
 use dsp::{Plan, db, max_of, min_of, rms, round_away, sat_u32}
 use io::RATE
 use piece::Take
-use std::collections::{Box, Vec}
+use std::collections::Vec
 use std::string::String
-use std::tool::MOST_BYTES
+use std::tool::{MOST_BYTES, ToolError}
+use std::tool::blob
 use std::tool::blob::Data
 use std::tool::image
 use std::math
-use toolkit::wait::{done, said, wait}
-use toolkit::whole::{blob_of, release, write_data}
+use toolkit::whole::{blob_of, write_data}
 
 const WIDTH: u32 = 1800
 const LEFT: u32 = 70
@@ -139,6 +139,13 @@ impl Image {
             out.push(take chunk)
         }
         out
+    }
+
+    /// The image as the tool's image service takes it (`std::tool::image`): RGBA8, its pixels
+    /// in a new blob, which the caller releases.
+    pub fn rgba(self) -> Result<image::Image, ToolError> {
+        let pixels = blob_of(self.rgba_chunks())?
+        Ok(image::Image { width: self.w, height: self.h, rgba: Data::Blob(pixels) })
     }
 }
 
@@ -446,42 +453,22 @@ pub fn draw(t: Take, samples: [f32], bars: Option<(u32, u32)>) -> Result<Image, 
 
 /// Draws the sheet and writes it as a PNG at `path` (a root path; `shown` as the command line
 /// gave it).
-@job
 pub fn write_sheet(
     t: take Take,
-    samples: take Vec<f32>,
-    bars: take Option<(u32, u32)>,
-    path: take String,
-    shown: take String,
-) -> Result<(), String> {
-    let img = draw(t, samples, bars)?
-    var bj = Box::new(blob_of.start(img.rgba_chunks()))
-    var made = done(bj.get_mut().resume())
-    while made.is_none() {
-        yield
-        made = done(bj.get_mut().resume())
+    samples: [f32],
+    bars: Option<(u32, u32)>,
+    path: str,
+    shown: str,
+) -> Result<(), ToolError> {
+    let img = draw(t, samples, bars).map_err(|why| ToolError::new(why.as_str()))?
+    let pixels = img.rgba()?
+    let png = image::encode_png(pixels.clone(), timeout: 600.0).wait()
+    if let Data::Blob(b) = pixels.rgba {
+        let _ = blob::release(b).wait()
     }
-    let pixels = (take made).unwrap()?
-    var e = wait(
-        image::encode_png(
-            image::Image { width: img.w, height: img.h, rgba: Data::Blob(pixels) },
-            timeout: 600.0,
-        ),
+    write_data(path, (take png)?).map_err(
+        |e| ToolError::new(f"can't write {shown}: {e.message()}"),
     )
-    while !e.ready() { yield }
-    var r = Box::new(release.start(pixels))
-    while done(r.get_mut().resume()).is_none() { yield }
-    let png = said(image::read_encoded(e.polled()))?
-    var w = Box::new(write_data.start(take path, take png))
-    var written = done(w.get_mut().resume())
-    while written.is_none() {
-        yield
-        written = done(w.get_mut().resume())
-    }
-    match (take written).unwrap() {
-        Ok(_) => Ok(()),
-        Err(why) => Err(String::from(f"can't write {shown}: {why}")),
-    }
 }
 
 /// A 5×7 font: each character's code point and its rows' five dots, the leftmost in bit 4.

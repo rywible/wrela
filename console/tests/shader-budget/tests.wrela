@@ -1,7 +1,6 @@
 // The tool test: the console built as it ships into `scratch/console`, each of its pipelines'
 // WGSL files measured.
 
-use std::tool::answer
 use std::tool::files
 use std::tool::toolchain
 
@@ -10,16 +9,9 @@ const MOST_WGSL: u64 = 256 * 1024
 
 /// The console builds as it ships, with shader pipelines, each within the shipped WGSL budget.
 @test(tool, read: [("repo", "../../..")], budget: 300)
-@job
 fn the_console_ships_within_its_shader_budget() {
-    var b = toolchain::build("repo/console", "scratch/console", toolchain::options())
-    var got = b.poll()
-    while got.is_none() {
-        yield
-        got = b.poll()
-    }
-    let Some(bp) = take got else { panic("no answer") }
-    let Ok(build) = toolchain::read_built(take bp) else { panic("the build's request") }
+    let built = toolchain::build("repo/console", "scratch/console", toolchain::options()).wait()
+    let Ok(build) = built else { panic("the build's request") }
     for d in build.diagnostics {
         assert(!d.error, d.rendered.as_str())
     }
@@ -31,14 +23,8 @@ fn the_console_ships_within_its_shader_budget() {
             continue
         }
         shaders += 1
-        var s = files::stat(f"scratch/console/{name.as_str()}".as_str())
-        var stat = s.poll()
-        while stat.is_none() {
-            yield
-            stat = s.poll()
-        }
-        let Some(sp) = take stat else { panic("no answer") }
-        let Ok(entry) = files::read_entry(take sp) else { panic(f"{name.as_str()} is there") }
+        let stat = files::stat(f"scratch/console/{name.as_str()}").wait()
+        let Ok(entry) = stat else { panic(f"{name.as_str()} is there") }
         assert(entry.size <= MOST_WGSL, f"{name.as_str()}: {entry.size} bytes over {MOST_WGSL}")
     }
     assert(shaders > 0, "the console has no shader pipelines")

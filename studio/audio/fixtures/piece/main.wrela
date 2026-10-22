@@ -1,7 +1,8 @@
 // A piece for the audio tool's tests: an A (440 Hz) at 0.5 in the left channel and 0.25 in the
 // right, started on the first frame, for a second (take 0) or half of one (take 1). It
 // describes two bars of two beats each: two voices, three notes, the sustain pedal down and up,
-// and the soft pedal held.
+// and the soft pedal held. Take 2 describes `MANY` notes, one a millisecond, a line each: more
+// lines than one answer of the drive service holds.
 
 use std::audio::play
 use std::io::print
@@ -23,6 +24,9 @@ fn sing(s: mut Sine, left: mut [f32], right: mut [f32]) {
         }
     }
 }
+
+/// How many notes take 2 describes.
+pub const MANY: u32 = 6000
 
 pub struct Piece {
     which: u32,
@@ -50,6 +54,17 @@ pub fn seconds(p: Piece) -> f32 {
 }
 
 pub fn describe(p: Piece) {
+    if p.which == 2 {
+        print("{\"title\":\"Études\",\"take\":\"many\",\"bars\":1,\"beats_per_bar\":6,\"seconds\":6}")
+        print("{\"name\":\"melody\"}")
+        for k in 0..MANY {
+            let onset = f32(k) * 0.001
+            print(
+                f"{{\"key\":{21 + k % 88},\"voice\":0,\"onset\":{onset},\"release\":{onset + 0.001},\"velocity\":0.5,\"bar\":1}}",
+            )
+        }
+        return
+    }
     let name = if p.which == 1 { "short" } else { "whole" }
     print(f"{{\"title\":\"Études\",\"take\":\"{name}\",\"bars\":2,\"beats_per_bar\":2,\"seconds\":1}}")
     print("{\"name\":\"melody\"}")

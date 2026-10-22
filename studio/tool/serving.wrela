@@ -1,133 +1,66 @@
-// The tool's tests of its server (`serve`): the server runs as the command line runs it, a job
-// the test resumes beside its own requests, and the test stops it (`Control::stop`). Pages are
-// the lens's own, in Chrome through the browser service, or a test's page beside the lens's
-// build that posts what a page may post. Each waits for what the host says (a title, a line the
-// lens printed, the server's version), never for a time.
+// The tool's tests of its server (`serve`): the server runs as the command line runs it, on the
+// test's thread, which answers its requests while it waits for its own (`Server::step`), and
+// the test stops it (`Server::stop`). Pages are the lens's own, in Chrome through the browser
+// service, or a test's page beside the lens's build that posts what a page may post. Each waits
+// for what the host says (a title, a line the lens printed, the server's version), never for a
+// time.
 
 use std::json::{TOP, parse}
-use lens::{Built, Lens, call, last_json, logs, read_text, start}
+use lens::{Built, call, last_json, logs, read_text, start}
 use main::{read_command, run}
-use server::{Control, control, run_server, serving_place}
+use server::{Server, serving_place}
 use tests::{BALL, lens_built, place}
-use std::collections::{Box, Vec}
+use std::collections::Vec
 use std::input::{Key, Mods, key_of}
-use std::io::{IoError, Pending}
-use std::job::{Job, Step}
 use std::string::String
-use std::tool::answer
+use std::tool::{Answer, Call, ToolError}
 use std::tool::browser
 use std::tool::browser::{Match, Script, Until}
 use std::tool::drive
-use std::tool::drive::Scalar
+use std::tool::drive::{Scalar, Step}
 use std::tool::files
-use toolkit::wait::{done, wait}
 use toolkit::whole::write_file
 
 /// Writes `text` as the file at `path`, of any size (through a blob past 512 KiB).
-@job
-fn put(path: take String, text: take String) {
-    var j = Box::new(write_file.start(path.clone(), Vec::from([Vec::from(text.as_bytes())])))
-    var wrote = done(j.get_mut().resume())
-    while wrote.is_none() {
-        yield
-        wrote = done(j.get_mut().resume())
-    }
-    assert((take wrote).unwrap().is_ok(), path.as_str())
+fn put(path: str, text: str) {
+    assert(write_file(path, Vec::from([Vec::from(String::from(text).as_bytes())])).is_ok(), path)
 }
 
 /// The package `scratch/<name>`: a manifest, an empty main, and its subject `subject`.
-@job
-fn subject_package(name: take String, subject: take String) {
-    var files: Vec<(String, String)> = Vec::new()
-    files.push(
-        (String::from("wrela.toml"), String::from(f"[package]\nname = \"{name.as_str()}\"\n")),
-    )
-    files.push(
-        (
-            String::from("main.wrela"),
-            String::from("pub fn frame(time: f32, width: u32, height: u32) {}\n"),
-        ),
-    )
-    files.push((String::from("subject.wrela"), take subject))
-    for k in 0..files.len() {
-        let (file, text) = files[k].clone()
-        var p = Box::new(
-            put.start(String::from(f"scratch/{name.as_str()}/{file.as_str()}"), take text),
-        )
-        while done(p.get_mut().resume()).is_none() { yield }
-    }
+fn subject_package(name: str, subject: str) {
+    put(f"scratch/{name}/wrela.toml", f"[package]\nname = \"{name}\"\n")
+    put(f"scratch/{name}/main.wrela", "pub fn frame(time: f32, width: u32, height: u32) {}\n")
+    put(f"scratch/{name}/subject.wrela", subject)
 }
 
 /// The text of the file at `path`.
-@job
-fn text_at(path: take String) -> String {
-    var r = Box::new(read_text.start(take path))
-    var ended = done(r.get_mut().resume())
-    while ended.is_none() {
-        yield
-        ended = done(r.get_mut().resume())
-    }
-    let Ok(Some(t)) = (take ended).unwrap() else { panic("a file") }
+fn text_at(path: str) -> String {
+    let Ok(Some(t)) = read_text(path) else { panic("a file") }
     t
 }
 
-/// The server's next steps until it listens.
-@job
-fn listening(srv: mut Box<Job<run_server>>, control: mut Control) {
-    while control.origin.is_empty() {
-        match srv.get_mut().resume(mut control) {
-            Step::Yielded => yield,
-            Step::Done(r) => {
-                let Err(why) = r else { panic("the server ended") }
-                panic(f"the server didn't start: {why.as_str()}")
-            },
-        }
+/// The server on the subject `name`, serving `built`, with the fit's reference `mask`.
+fn serving(name: str, built: Built, mask: take Option<Vec<u8>>) -> Server {
+    match server::start(place(name), built, 0, take mask, name) {
+        Ok(s) => s,
+        Err(why) => panic(f"the server didn't start: {why.message()}"),
     }
 }
 
-/// The answer to `p`, the server serving meanwhile.
-@job
-fn while_serving(
-    p: take Pending<u8>,
-    srv: mut Box<Job<run_server>>,
-    control: mut Control,
-) -> Result<Vec<u8>, IoError> {
-    var p = take p
-    loop {
-        if let Some(x) = p.poll() {
-            return x
-        }
-        match srv.get_mut().resume(mut control) {
-            Step::Yielded => {},
-            Step::Done(r) => {
-                let Err(why) = r else { panic("the server ended") }
-                panic(f"the server failed: {why.as_str()}")
-            },
-        }
-        yield
-    }
+/// The answer to `c`, the server serving meanwhile.
+fn while_serving<T: Answer>(c: take Call<T>, s: mut Server) -> Result<T, ToolError> {
+    while s.step([c.request()]).is_none() {}
+    (take c).wait()
 }
 
 /// The server serving until its version is at least `version` and it has sent at least
 /// `updates` literal updates, with no build under way.
-@job
-fn serving_until(
-    srv: mut Box<Job<run_server>>,
-    control: mut Control,
-    version: take u32,
-    updates: take u32,
-) {
-    while control.version < version || control.updates < updates || control.rebuilding {
-        if !control.error.is_empty() {
-            panic(f"the lens didn't build: {control.error.as_str()}")
+fn serving_until(s: mut Server, version: u32, updates: u32) {
+    while s.control.version < version || s.control.updates < updates || s.control.rebuilding {
+        if !s.control.error.is_empty() {
+            panic(f"the lens didn't build: {s.control.error.as_str()}")
         }
-        match srv.get_mut().resume(mut control) {
-            Step::Yielded => yield,
-            Step::Done(r) => {
-                let Err(why) = r else { panic("the server ended") }
-                panic(f"the server failed: {why.as_str()}")
-            },
-        }
+        let _ = s.step([])
     }
 }
 
@@ -138,424 +71,199 @@ const FAILED: u32 = 1
 const RECOVERED: u32 = 2
 
 /// The server serving until `what` holds.
-@job
-fn waiting(srv: mut Box<Job<run_server>>, control: mut Control, what: take u32) {
+fn waiting(s: mut Server, what: u32) {
     loop {
+        borrow c = s.control
         let done = if what == HELD {
-            control.held
+            c.held
         } else if what == FAILED {
-            !control.error.is_empty() && !control.rebuilding
+            !c.error.is_empty() && !c.rebuilding
         } else {
-            control.version >= 2 && control.error.is_empty() && !control.rebuilding
+            c.version >= 2 && c.error.is_empty() && !c.rebuilding
         }
         if done {
             return
         }
-        match srv.get_mut().resume(mut control) {
-            Step::Yielded => yield,
-            Step::Done(r) => {
-                let Err(why) = r else { panic("the server ended") }
-                panic(f"the server failed: {why.as_str()}")
-            },
-        }
+        let _ = s.step([])
     }
 }
 
 /// A browser opened at `url` while the server serves, `script` run on it (whether it held),
 /// then its title, and the browser closed.
-@job
-fn titled(
-    url: take String,
-    script: take Script,
-    srv: mut Box<Job<run_server>>,
-    control: mut Control,
-) -> (bool, String) {
-    var o = Box::new(opened.start(take url))
-    var page = done(o.get_mut().resume(mut srv, mut control))
-    while page.is_none() {
-        yield
-        page = done(o.get_mut().resume(mut srv, mut control))
-    }
-    let br = (take page).unwrap()
-    var ok = false
-    var r = Box::new(ran.start(br, take script))
-    var ended = done(r.get_mut().resume(mut srv, mut control))
-    while ended.is_none() {
-        yield
-        ended = done(r.get_mut().resume(mut srv, mut control))
-    }
-    ok = (take ended).unwrap()
-    var title = String::new()
-    var t = Box::new(title_of.start(br))
-    var ended = done(t.get_mut().resume(mut srv, mut control))
-    while ended.is_none() {
-        yield
-        ended = done(t.get_mut().resume(mut srv, mut control))
-    }
-    title = (take ended).unwrap()
-    var shut = browser::close(br)
-    while shut.poll().is_none() { yield }
+fn titled(url: str, script: take Script, s: mut Server) -> (bool, String) {
+    let br = opened(url, mut s)
+    let ok = ran(br, take script, mut s)
+    let title = title_of(br, mut s)
+    let _ = browser::close(br).wait()
     (ok, title)
 }
 
 /// The server started on the ball `name`, built as a served generation `t-1`, and listening:
-/// the build, and the server's job.
-@job
-fn ball_served(name: take String, control: mut Control) -> (Built, Box<Job<run_server>>) {
-    var sp = Box::new(subject_package.start(name.clone(), String::from(BALL)))
-    while done(sp.get_mut().resume()).is_none() { yield }
-    var b = Box::new(lens_built.start(serving_place(place(name.as_str()), "t")))
-    var built = done(b.get_mut().resume())
-    while built.is_none() {
-        yield
-        built = done(b.get_mut().resume())
-    }
-    let lb = (take built).unwrap()
-    var srv = Box::new(run_server.start(place(name.as_str()), lb.clone(), 0, None, name.clone()))
-    var l = Box::new(listening.start())
-    while done(l.get_mut().resume(mut srv, mut control)).is_none() { yield }
-    (lb, take srv)
+/// the build, and the server.
+fn ball_served(name: str) -> (Built, Server) {
+    subject_package(name, BALL)
+    let lb = lens_built(serving_place(place(name), "t"))
+    (lb.clone(), serving(name, lb, None))
 }
 
 /// An edit is bound to the build that made its page: a page held on the old build, across a
 /// rebuild that renumbers the literals, edits after a second page has loaded the new build, and
 /// the edit is refused, the source as it was.
-@job
 fn an_old_pages_edit_is_refused() {
-    var control = control()
-    var bs = Box::new(ball_served.start(String::from("stale")))
-    var served = done(bs.get_mut().resume(mut control))
-    while served.is_none() {
-        yield
-        served = done(bs.get_mut().resume(mut control))
-    }
-    let (lb, srv0) = (take served).unwrap()
-    var srv = take srv0
+    let (lb, srv) = ball_served("stale")
+    var s = take srv
     // The old page: it waits for a new build to be served, then for `go.txt`, then edits
     // literal 0, as its build numbers it.
-    var p = Box::new(
-        put.start(
-            String::from("scratch/out/stale/serve/t-1/old.html"),
-            String::from(
-                "<!doctype html><title>waiting</title><script>(async () => { const wait = (ms) => new Promise((go) => setTimeout(go, ms)); for (;;) { const s = await (await fetch('studio/state', { method: 'POST', body: JSON.stringify({ since: 0 }) })).json(); if (s.build !== 't-1') break; await wait(50); } for (;;) { const g = await fetch('go.txt', { cache: 'no-store' }); if (g.status === 200) break; await wait(50); } const e = await fetch('studio/edit', { method: 'POST', body: JSON.stringify({ edits: [[0, 0.9]] }) }); document.title = `edit ${await e.text()}`; })().catch((e) => { document.title = `failed ${e}`; });</script>",
-            ),
-        ),
+    put(
+        "scratch/out/stale/serve/t-1/old.html",
+        "<!doctype html><title>waiting</title><script>(async () => { const wait = (ms) => new Promise((go) => setTimeout(go, ms)); for (;;) { const s = await (await fetch('studio/state', { method: 'POST', body: JSON.stringify({ since: 0 }) })).json(); if (s.build !== 't-1') break; await wait(50); } for (;;) { const g = await fetch('go.txt', { cache: 'no-store' }); if (g.status === 200) break; await wait(50); } const e = await fetch('studio/edit', { method: 'POST', body: JSON.stringify({ edits: [[0, 0.9]] }) }); document.title = `edit ${await e.text()}`; })().catch((e) => { document.title = `failed ${e}`; });</script>",
     )
-    while done(p.get_mut().resume()).is_none() { yield }
-    var o = Box::new(opened.start(String::from(f"{control.origin.as_str()}/t-1/old.html")))
-    var page = done(o.get_mut().resume(mut srv, mut control))
-    while page.is_none() {
-        yield
-        page = done(o.get_mut().resume(mut srv, mut control))
-    }
-    let old = (take page).unwrap()
+    let old = opened(f"{s.control.origin.as_str()}/t-1/old.html", mut s)
     // A new literal ahead of the radius: literal 0 is another literal in the new build.
     let renumbered = glue::replace(BALL, "sphere(0.30)", "sphere(0.0 + 0.30)")
-    var q = Box::new(put.start(String::from("scratch/stale/subject.wrela"), renumbered.clone()))
-    while done(q.get_mut().resume()).is_none() { yield }
-    var v = Box::new(waiting.start(RECOVERED))
-    while done(v.get_mut().resume(mut srv, mut control)).is_none() { yield }
+    put("scratch/stale/subject.wrela", renumbered.as_str())
+    waiting(mut s, RECOVERED)
     // A second page loads the new build: it answers as the headless lens on it does.
-    var h = Box::new(headless.start(served_build(lb, control), Vec::from([probe_call()])))
-    var probed = String::new()
-    var ended = done(h.get_mut().resume())
-    while ended.is_none() {
-        yield
-        ended = done(h.get_mut().resume())
-    }
-    probed = (take ended).unwrap()
+    let probed = headless(served_build(lb, s.control.page.as_str()), [probe_call()])
     var agreed = false
     for _ in 0..6 {
         if agreed {
             break
         }
-        var t = Box::new(
-            titled.start(
-                String::from(f"{control.origin.as_str()}/"),
-                typed("probe 0 0.6 0").wait(Until::printed(probed.as_str()), timeout: 15.0),
-            ),
+        let (ok, _) = titled(
+            f"{s.control.origin.as_str()}/",
+            typed("probe 0 0.6 0").wait(Until::printed(probed.as_str()), timeout: 15.0),
+            mut s,
         )
-        var ended = done(t.get_mut().resume(mut srv, mut control))
-        while ended.is_none() {
-            yield
-            ended = done(t.get_mut().resume(mut srv, mut control))
-        }
-        let (ok, _) = (take ended).unwrap()
         agreed = ok
     }
     assert(agreed, "the second page has the new build")
     // Then the old page edits.
-    var go = Box::new(
-        put.start(String::from("scratch/out/stale/serve/t-1/go.txt"), String::from("go")),
+    put("scratch/out/stale/serve/t-1/go.txt", "go")
+    assert(
+        ran(old, Script::new().wait(Until::title(Match::starts("edit")), timeout: 60.0), mut s),
+        "the old page's edit is answered",
     )
-    while done(go.get_mut().resume()).is_none() { yield }
-    var r = Box::new(
-        ran.start(old, Script::new().wait(Until::title(Match::starts("edit")), timeout: 60.0)),
-    )
-    var ended = done(r.get_mut().resume(mut srv, mut control))
-    while ended.is_none() {
-        yield
-        ended = done(r.get_mut().resume(mut srv, mut control))
-    }
-    assert((take ended).unwrap(), "the old page's edit is answered")
-    var t = Box::new(title_of.start(old))
-    var ended = done(t.get_mut().resume(mut srv, mut control))
-    while ended.is_none() {
-        yield
-        ended = done(t.get_mut().resume(mut srv, mut control))
-    }
-    let title = (take ended).unwrap()
+    let title = title_of(old, mut s)
     assert(title.as_str().find("\"written\":false").is_some(), title.as_str())
     assert(title.as_str().find("another build").is_some(), title.as_str())
-    var shut = browser::close(old)
-    while shut.poll().is_none() { yield }
-    var src = Box::new(text_at.start(String::from("scratch/stale/subject.wrela")))
-    var ended = done(src.get_mut().resume())
-    while ended.is_none() {
-        yield
-        ended = done(src.get_mut().resume())
-    }
-    assert((take ended).unwrap() == renumbered, "the source is as it was")
-    var st = Box::new(stopped.start())
-    while done(st.get_mut().resume(mut srv, mut control)).is_none() { yield }
+    let _ = browser::close(old).wait()
+    assert(text_at("scratch/stale/subject.wrela") == renumbered, "the source is as it was")
+    stopped(take s)
 }
 
 /// A literal changed while the lens is built again reaches the page of the new build: the
 /// build is held once it's done, the radius changed, then the build is served, and Chrome's lens
 /// answers as the headless lens does with the new radius, with no other edit.
-@job
 fn a_literal_changed_during_a_rebuild_reaches_the_page() {
-    var control = control()
-    var bs = Box::new(ball_served.start(String::from("held")))
-    var served = done(bs.get_mut().resume(mut control))
-    while served.is_none() {
-        yield
-        served = done(bs.get_mut().resume(mut control))
-    }
-    let (lb, srv0) = (take served).unwrap()
-    var srv = take srv0
-    control.hold = true
+    let (lb, srv) = ball_served("held")
+    var s = take srv
+    s.control.hold = true
     let moved = glue::replace(
         BALL,
         "vec3(0.0, 0.30, 0.0))",
         "vec3(0.0, 0.30, 0.0)).translate(vec3(0.0))",
     )
-    var q = Box::new(put.start(String::from("scratch/held/subject.wrela"), moved.clone()))
-    while done(q.get_mut().resume()).is_none() { yield }
-    var w = Box::new(waiting.start(HELD))
-    while done(w.get_mut().resume(mut srv, mut control)).is_none() { yield }
+    put("scratch/held/subject.wrela", moved.as_str())
+    waiting(mut s, HELD)
     // The build has read its sources: the radius changes now.
-    var r = Box::new(
-        put.start(
-            String::from("scratch/held/subject.wrela"),
-            glue::replace(moved.as_str(), "sphere(0.30)", "sphere(0.20)"),
-        ),
+    put(
+        "scratch/held/subject.wrela",
+        glue::replace(moved.as_str(), "sphere(0.30)", "sphere(0.20)").as_str(),
     )
-    while done(r.get_mut().resume()).is_none() { yield }
-    control.hold = false
-    var v = Box::new(waiting.start(RECOVERED))
-    while done(v.get_mut().resume(mut srv, mut control)).is_none() { yield }
-    let now = served_build(lb, control)
-    var h1 = Box::new(
-        headless.start(
-            now.clone(),
-            Vec::from([(String::from("set"), Vec::from([Scalar::I32(0), Scalar::F32(0.2)]))]),
-        ),
-    )
-    var set_answer = String::new()
-    var ended = done(h1.get_mut().resume())
-    while ended.is_none() {
-        yield
-        ended = done(h1.get_mut().resume())
-    }
-    set_answer = (take ended).unwrap()
-    var h2 = Box::new(
-        headless.start(
-            now.clone(),
-            Vec::from(
-                [
-                    (String::from("set"), Vec::from([Scalar::I32(0), Scalar::F32(0.2)])),
-                    probe_call(),
-                ],
-            ),
-        ),
-    )
-    var probed = String::new()
-    var ended = done(h2.get_mut().resume())
-    while ended.is_none() {
-        yield
-        ended = done(h2.get_mut().resume())
-    }
-    probed = (take ended).unwrap()
+    s.control.hold = false
+    waiting(mut s, RECOVERED)
+    let now = served_build(lb, s.control.page.as_str())
+    let set = (String::from("set"), Vec::from([Scalar::I32(0), Scalar::F32(0.2)]))
+    let set_answer = headless(now, [set.clone()])
+    let probed = headless(now, [set.clone(), probe_call()])
     // The page of the new build sets the radius the source has, then probes as the headless lens.
     let waited = Script::new().wait(Until::printed(set_answer.as_str()), timeout: 30.0)
     let script = typed_after(take waited, "probe 0 0.6 0").wait(
         Until::printed(probed.as_str()),
         timeout: 30.0,
     )
-    var t = Box::new(titled.start(String::from(f"{control.origin.as_str()}/"), take script))
-    var ended = done(t.get_mut().resume(mut srv, mut control))
-    while ended.is_none() {
-        yield
-        ended = done(t.get_mut().resume(mut srv, mut control))
-    }
-    let (ok, _) = (take ended).unwrap()
+    let (ok, _) = titled(f"{s.control.origin.as_str()}/", take script, mut s)
     assert(
         ok,
         f"Chrome's lens has the radius changed during the build: {probed.as_str()}",
     )
-    var st = Box::new(stopped.start())
-    while done(st.get_mut().resume(mut srv, mut control)).is_none() { yield }
+    stopped(take s)
 }
 
 /// A build that fails leaves the last good one served: pages opened then load it, the state
 /// says why, and once the source is fixed, the lens is built and served again.
-@job
 fn a_failed_rebuild_keeps_the_last_good_build() {
-    var control = control()
-    var bs = Box::new(ball_served.start(String::from("broken")))
-    var served = done(bs.get_mut().resume(mut control))
-    while served.is_none() {
-        yield
-        served = done(bs.get_mut().resume(mut control))
-    }
-    let (lb, srv0) = (take served).unwrap()
-    var srv = take srv0
-    var p = Box::new(
-        put.start(
-            String::from("scratch/out/broken/serve/t-1/state.html"),
-            String::from(
-                "<!doctype html><title>waiting</title><script>(async () => { const s = await (await fetch('studio/state', { method: 'POST', body: JSON.stringify({ since: 0 }) })).json(); document.title = `state ${s.error === null ? 'none' : 'error'} ${s.build}`; })().catch((e) => { document.title = `failed ${e}`; });</script>",
-            ),
-        ),
+    let (lb, srv) = ball_served("broken")
+    var s = take srv
+    put(
+        "scratch/out/broken/serve/t-1/state.html",
+        "<!doctype html><title>waiting</title><script>(async () => { const s = await (await fetch('studio/state', { method: 'POST', body: JSON.stringify({ since: 0 }) })).json(); document.title = `state ${s.error === null ? 'none' : 'error'} ${s.build}`; })().catch((e) => { document.title = `failed ${e}`; });</script>",
     )
-    while done(p.get_mut().resume()).is_none() { yield }
-    var q = Box::new(
-        put.start(
-            String::from("scratch/broken/subject.wrela"),
-            glue::replace(BALL, "pub fn subject() -> Surface {", "pub fn subject( -> Surface {"),
-        ),
+    put(
+        "scratch/broken/subject.wrela",
+        glue::replace(
+            BALL,
+            "pub fn subject() -> Surface {",
+            "pub fn subject( -> Surface {",
+        ).as_str(),
     )
-    while done(q.get_mut().resume()).is_none() { yield }
-    var w = Box::new(waiting.start(FAILED))
-    while done(w.get_mut().resume(mut srv, mut control)).is_none() { yield }
-    assert(control.build.as_str() == "t-1" && control.version == 1, "the last good build is served")
+    waiting(mut s, FAILED)
+    assert(
+        s.control.build.as_str() == "t-1" && s.control.version == 1,
+        "the last good build is served",
+    )
     // A page opened now, twice, loads the last good build, and answers as it does.
-    var h = Box::new(headless.start(lb.clone(), Vec::from([probe_call()])))
-    var probed = String::new()
-    var ended = done(h.get_mut().resume())
-    while ended.is_none() {
-        yield
-        ended = done(h.get_mut().resume())
-    }
-    probed = (take ended).unwrap()
+    let probed = headless(lb, [probe_call()])
     for _ in 0..2 {
         var agreed = false
         for _ in 0..6 {
             if agreed {
                 break
             }
-            var t = Box::new(
-                titled.start(
-                    String::from(f"{control.origin.as_str()}/"),
-                    typed("probe 0 0.6 0").wait(Until::printed(probed.as_str()), timeout: 15.0),
-                ),
+            let (ok, _) = titled(
+                f"{s.control.origin.as_str()}/",
+                typed("probe 0 0.6 0").wait(Until::printed(probed.as_str()), timeout: 15.0),
+                mut s,
             )
-            var ended = done(t.get_mut().resume(mut srv, mut control))
-            while ended.is_none() {
-                yield
-                ended = done(t.get_mut().resume(mut srv, mut control))
-            }
-            let (ok, _) = (take ended).unwrap()
             agreed = ok
         }
         assert(agreed, "a page opened after the failed build has the last good one")
     }
-    var s1 = Box::new(
-        titled.start(
-            String::from(f"{control.origin.as_str()}/t-1/state.html"),
-            Script::new().wait(Until::title(Match::starts("state")), timeout: 30.0),
-        ),
+    let (_, title) = titled(
+        f"{s.control.origin.as_str()}/t-1/state.html",
+        Script::new().wait(Until::title(Match::starts("state")), timeout: 30.0),
+        mut s,
     )
-    var ended = done(s1.get_mut().resume(mut srv, mut control))
-    while ended.is_none() {
-        yield
-        ended = done(s1.get_mut().resume(mut srv, mut control))
-    }
-    let (_, title) = (take ended).unwrap()
     assert(title.as_str() == "state error t-1", title.as_str())
     // Fixed: built and served again.
-    var f = Box::new(put.start(String::from("scratch/broken/subject.wrela"), String::from(BALL)))
-    while done(f.get_mut().resume()).is_none() { yield }
-    var v = Box::new(waiting.start(RECOVERED))
-    while done(v.get_mut().resume(mut srv, mut control)).is_none() { yield }
-    assert(control.build.as_str() == "t-2", control.build.as_str())
-    var st = Box::new(stopped.start())
-    while done(st.get_mut().resume(mut srv, mut control)).is_none() { yield }
+    put("scratch/broken/subject.wrela", BALL)
+    waiting(mut s, RECOVERED)
+    assert(s.control.build.as_str() == "t-2", s.control.build.as_str())
+    stopped(take s)
 }
 
 /// The server stopped: its port closed, its reference given back.
-@job
-fn stopped(srv: mut Box<Job<run_server>>, control: mut Control) {
-    control.stop = true
-    var ended = done(srv.get_mut().resume(mut control))
-    while ended.is_none() {
-        yield
-        ended = done(srv.get_mut().resume(mut control))
-    }
-    assert((take ended).unwrap().is_ok(), "the server stops")
+fn stopped(s: take Server) {
+    assert((take s).stop().is_ok(), "the server stops")
 }
 
 /// A browser opened at `url`, the server serving meanwhile.
-@job
-fn opened(
-    url: take String,
-    srv: mut Box<Job<run_server>>,
-    control: mut Control,
-) -> browser::Browser {
-    var j = Box::new(while_serving.start(browser::open(url.as_str(), width: 640, height: 480)))
-    var ended = done(j.get_mut().resume(mut srv, mut control))
-    while ended.is_none() {
-        yield
-        ended = done(j.get_mut().resume(mut srv, mut control))
-    }
-    match browser::read_opened((take ended).unwrap()) {
-        Ok(b) => return b,
+fn opened(url: str, s: mut Server) -> browser::Browser {
+    match while_serving(browser::open(url, width: 640, height: 480), mut s) {
+        Ok(b) => b,
         Err(e) => panic(f"the page opens: {e.message()}"),
     }
 }
 
 /// `script` run on `b`, the server serving meanwhile: whether every step held.
-@job
-fn ran(
-    b: take browser::Browser,
-    script: take Script,
-    srv: mut Box<Job<run_server>>,
-    control: mut Control,
-) -> bool {
-    var j = Box::new(while_serving.start(browser::run(b, script, 120.0)))
-    var ended = done(j.get_mut().resume(mut srv, mut control))
-    while ended.is_none() {
-        yield
-        ended = done(j.get_mut().resume(mut srv, mut control))
-    }
-    answer((take ended).unwrap()).is_ok()
+fn ran(b: browser::Browser, script: take Script, s: mut Server) -> bool {
+    while_serving(browser::run(b, take script, 120.0), mut s).is_ok()
 }
 
 /// `b`'s title, the server serving meanwhile.
-@job
-fn title_of(
-    b: take browser::Browser,
-    srv: mut Box<Job<run_server>>,
-    control: mut Control,
-) -> String {
-    var j = Box::new(while_serving.start(browser::title(b)))
-    var ended = done(j.get_mut().resume(mut srv, mut control))
-    while ended.is_none() {
-        yield
-        ended = done(j.get_mut().resume(mut srv, mut control))
-    }
-    let Ok(t) = browser::read_text((take ended).unwrap()) else { panic("the title") }
+fn title_of(b: browser::Browser, s: mut Server) -> String {
+    let Ok(t) = while_serving(browser::title(b), mut s) else { panic("the title") }
     t
 }
 
@@ -591,41 +299,26 @@ fn typed_after(script: take Script, line: str) -> Script {
 
 /// The lens's answer, headless on the CPU, to `calls` on the build `built`: the last JSON line
 /// the last call printed.
-@job
-fn headless(built: take Built, calls: take Vec<(String, Vec<Scalar>)>) -> String {
-    var s = Box::new(start.start(take built, width: 64, height: 64, cpu: true, reference: None))
-    var started = done(s.get_mut().resume())
-    while started.is_none() {
-        yield
-        started = done(s.get_mut().resume())
+fn headless(built: Built, calls: [(String, Vec<Scalar>)]) -> String {
+    let Ok(l) = start(built, width: 64, height: 64, cpu: true, reference: None) else {
+        panic("the lens starts")
     }
-    let Ok(l) = (take started).unwrap() else { panic("the lens starts") }
     var lens = take l
     var line = String::new()
-    for k in 0..calls.len() {
-        let (name, args) = calls[k].clone()
-        var c = drive::call(lens.b, name.as_str(), args)
-        while c.poll().is_none() { yield }
-        var g = Box::new(logs.start())
-        var ended = done(g.get_mut().resume(mut lens))
-        while ended.is_none() {
-            yield
-            ended = done(g.get_mut().resume(mut lens))
-        }
-        let Ok(lines) = (take ended).unwrap() else { panic("lines") }
-        if let Some(j) = last_json(lines) {
+    for c in calls {
+        let _ = lens::steps(mut lens, [Step::Call(c.0.clone(), c.1.clone())])
+        if let Some(j) = last_json(logs(mut lens)) {
             line = take j
         }
     }
-    var cl = drive::close(lens.b)
-    while cl.poll().is_none() { yield }
+    let _ = drive::close(lens.b).wait()
     line
 }
 
-/// The build the server serves now: `built`'s program, in the page `control` names.
-fn served_build(built: Built, control: Control) -> Built {
+/// The build the server serves now: `built`'s program, in the page the server names (`page`).
+fn served_build(built: Built, page: str) -> Built {
     var b = built.clone()
-    b.page = control.page.clone()
+    b.page = String::from(page)
     b
 }
 
@@ -636,7 +329,6 @@ fn probe_call() -> (String, Vec<Scalar>) {
 /// A watched source past 512 KiB is read through a blob: a change to its literals goes to the
 /// lens as new values, and a change to its code builds the lens again.
 @test(tool, read: [("ws", "../..")], budget: 300)
-@job
 fn a_large_source_is_watched_through_both_paths() {
     // The ball, with 600 KiB of comment after it.
     var padding = String::new()
@@ -644,76 +336,40 @@ fn a_large_source_is_watched_through_both_paths() {
         padding.push_str("// sixty bytes of a comment that makes the file large: ......\n")
     }
     let big = String::from(f"{BALL}{padding.as_str()}")
-    var sp = Box::new(subject_package.start(String::from("big"), big.clone()))
-    while done(sp.get_mut().resume()).is_none() { yield }
-    var b = Box::new(lens_built.start(serving_place(place("big"), "t")))
-    var built = done(b.get_mut().resume())
-    while built.is_none() {
-        yield
-        built = done(b.get_mut().resume())
-    }
-    let lb = (take built).unwrap()
-    var control = control()
-    var srv = Box::new(run_server.start(place("big"), take lb, 0, None, String::from("big")))
-    var l = Box::new(listening.start())
-    while done(l.get_mut().resume(mut srv, mut control)).is_none() { yield }
+    subject_package("big", big.as_str())
+    var s = serving("big", lens_built(serving_place(place("big"), "t")), None)
     // A literal: a new value, with no build.
-    var p = Box::new(
-        put.start(
-            String::from("scratch/big/subject.wrela"),
-            glue::replace(big.as_str(), "sphere(0.30)", "sphere(0.25)"),
-        ),
+    put(
+        "scratch/big/subject.wrela",
+        glue::replace(big.as_str(), "sphere(0.30)", "sphere(0.25)").as_str(),
     )
-    while done(p.get_mut().resume()).is_none() { yield }
-    var u = Box::new(serving_until.start(version: 1, updates: 1))
-    while done(u.get_mut().resume(mut srv, mut control)).is_none() { yield }
-    assert(control.version == 1, "a literal's change isn't a build")
+    serving_until(mut s, version: 1, updates: 1)
+    assert(s.control.version == 1, "a literal's change isn't a build")
     // Code: a build.
-    var q = Box::new(
-        put.start(
-            String::from("scratch/big/subject.wrela"),
-            glue::replace(big.as_str(), "sphere(0.30)", "sphere(0.25).translate(vec3(0.0))"),
-        ),
+    put(
+        "scratch/big/subject.wrela",
+        glue::replace(big.as_str(), "sphere(0.30)", "sphere(0.25).translate(vec3(0.0))").as_str(),
     )
-    while done(q.get_mut().resume()).is_none() { yield }
-    var v = Box::new(serving_until.start(version: 2, updates: 1))
-    while done(v.get_mut().resume(mut srv, mut control)).is_none() { yield }
-    var s = Box::new(stopped.start())
-    while done(s.get_mut().resume(mut srv, mut control)).is_none() { yield }
+    serving_until(mut s, version: 2, updates: 1)
+    stopped(take s)
 }
 
 /// A PNG path outside the workspace's directory is refused before anything is built; one in
 /// it is where the screen is written.
 @test(tool, read: [("ws", "../..")], budget: 300)
-@job
 fn a_png_outside_the_workspace_is_refused_before_building() {
-    var sp = Box::new(subject_package.start(String::from("pictured"), String::from(BALL)))
-    while done(sp.get_mut().resume()).is_none() { yield }
+    subject_package("pictured", BALL)
     for png in ["/tmp/shot.png", "../shot.png", "shot.png"] {
         var words: Vec<String> = Vec::new()
         for w in ["pictured", "parts", "--png", png, "--size", "64x64"] {
             words.push(String::from(w))
         }
         let Some(c) = read_command(words) else { panic("a command") }
-        var r = Box::new(
-            run.start(place("pictured"), take c, String::from("parts"), String::from("pictured")),
-        )
-        var status = 0
-        var ended = done(r.get_mut().resume())
-        while ended.is_none() {
-            yield
-            ended = done(r.get_mut().resume())
-        }
-        let s = (take ended).unwrap()
-        status = s
-        var st = wait(files::stat("scratch/out"))
-        while !st.ready() { yield }
-        let built = files::read_entry(st.polled()).is_ok()
+        let status = run(place("pictured"), c, "parts", "pictured")
+        let built = files::stat("scratch/out").wait().is_ok()
         if png == "shot.png" {
             assert(status == 0 && built, "a PNG in the workspace")
-            var s = wait(files::stat("scratch/shot.png"))
-            while !s.ready() { yield }
-            let Ok(e) = files::read_entry(s.polled()) else { panic("the PNG is written") }
+            let Ok(e) = files::stat("scratch/shot.png").wait() else { panic("the PNG is written") }
             assert(e.size > 0, "an image")
         } else {
             assert(status == 2 && !built, png)
@@ -724,26 +380,13 @@ fn a_png_outside_the_workspace_is_refused_before_building() {
 /// A post of a body past 512 KiB (a blob to the tool) is answered, and the server goes on; and a
 /// fit's reference is one blob for every fit: a page asks for a 1024×1024 reference again and
 /// again within a blob budget of a few of them, and each answer is whole.
-@job
 fn large_posts_and_references_are_answered_within_the_blob_budget() {
-    var sp = Box::new(subject_package.start(String::from("fitted"), String::from(BALL)))
-    while done(sp.get_mut().resume()).is_none() { yield }
-    var b = Box::new(lens_built.start(serving_place(place("fitted"), "t")))
-    var built = done(b.get_mut().resume())
-    while built.is_none() {
-        yield
-        built = done(b.get_mut().resume())
-    }
-    let lb = (take built).unwrap()
-    var p = Box::new(
-        put.start(
-            String::from("scratch/out/fitted/serve/t-1/fits.html"),
-            String::from(
-                "<!doctype html><title>waiting</title><script>(async () => { const big = await fetch('studio/state', { method: 'POST', body: 'x'.repeat(524289) }); await big.text(); const s = await fetch('studio/state', { method: 'POST', body: JSON.stringify({ since: 0 }) }); const j = await s.json(); let whole = 0; for (let i = 0; i < 12; i++) { const r = await fetch('studio/reference', { method: 'POST', body: 'reference' }); const b = await r.arrayBuffer(); if (r.status === 200 && b.byteLength === 1048580) whole++; } document.title = `done ${big.status} ${s.status} ${j.version} ${whole}`; })().catch((e) => { document.title = `failed ${e}`; });</script>",
-            ),
-        ),
+    subject_package("fitted", BALL)
+    let lb = lens_built(serving_place(place("fitted"), "t"))
+    put(
+        "scratch/out/fitted/serve/t-1/fits.html",
+        "<!doctype html><title>waiting</title><script>(async () => { const big = await fetch('studio/state', { method: 'POST', body: 'x'.repeat(524289) }); await big.text(); const s = await fetch('studio/state', { method: 'POST', body: JSON.stringify({ since: 0 }) }); const j = await s.json(); let whole = 0; for (let i = 0; i < 12; i++) { const r = await fetch('studio/reference', { method: 'POST', body: 'reference' }); const b = await r.arrayBuffer(); if (r.status === 200 && b.byteLength === 1048580) whole++; } document.title = `done ${big.status} ${s.status} ${j.version} ${whole}`; })().catch((e) => { document.title = `failed ${e}`; });</script>",
     )
-    while done(p.get_mut().resume()).is_none() { yield }
     var mask: Vec<u8> = Vec::with_capacity(4 + 1024 * 1024)
     mask.push(0)
     mask.push(4)
@@ -752,41 +395,17 @@ fn large_posts_and_references_are_answered_within_the_blob_budget() {
     for i in 0..1024 * 1024 {
         mask.push(u8(i % 2))
     }
-    var control = control()
-    var srv = Box::new(
-        run_server.start(place("fitted"), take lb, 0, Some(take mask), String::from("fitted")),
+    var s = serving("fitted", lb, Some(take mask))
+    let br = opened(f"{s.control.origin.as_str()}/t-1/fits.html", mut s)
+    assert(
+        ran(br, Script::new().wait(Until::title(Match::starts("done")), timeout: 60.0), mut s),
+        "the page's fits were answered",
     )
-    var l = Box::new(listening.start())
-    while done(l.get_mut().resume(mut srv, mut control)).is_none() { yield }
-    var o = Box::new(opened.start(String::from(f"{control.origin.as_str()}/t-1/fits.html")))
-    var page = done(o.get_mut().resume(mut srv, mut control))
-    while page.is_none() {
-        yield
-        page = done(o.get_mut().resume(mut srv, mut control))
-    }
-    let br = (take page).unwrap()
-    var r = Box::new(
-        ran.start(br, Script::new().wait(Until::title(Match::starts("done")), timeout: 60.0)),
-    )
-    var ended = done(r.get_mut().resume(mut srv, mut control))
-    while ended.is_none() {
-        yield
-        ended = done(r.get_mut().resume(mut srv, mut control))
-    }
-    assert((take ended).unwrap(), "the page's fits were answered")
-    var t = Box::new(title_of.start(br))
-    var ended = done(t.get_mut().resume(mut srv, mut control))
-    while ended.is_none() {
-        yield
-        ended = done(t.get_mut().resume(mut srv, mut control))
-    }
-    let title = (take ended).unwrap()
+    let title = title_of(br, mut s)
     assert(title.as_str() == "done 200 200 1 12", title.as_str())
     // The browser closes first: one Chrome at a time.
-    var shut = browser::close(br)
-    while shut.poll().is_none() { yield }
-    var s = Box::new(stopped.start())
-    while done(s.get_mut().resume(mut srv, mut control)).is_none() { yield }
+    let _ = browser::close(br).wait()
+    stopped(take s)
 }
 
 /// A subject whose build computes a constant for a while: changing the constant's count builds
@@ -795,106 +414,48 @@ const SLOW: Text = "use std::field::{Surface, sphere}\n\nfn spin(n: u32) -> u32 
 
 /// While the lens is built again, the server answers its page: state says it's rebuilding, and an
 /// edit is refused, saying so, rather than written against literals of another build.
-@job
 fn the_server_answers_while_the_lens_is_built_again() {
-    var sp = Box::new(subject_package.start(String::from("slow"), String::from(SLOW)))
-    while done(sp.get_mut().resume()).is_none() { yield }
-    var b = Box::new(lens_built.start(serving_place(place("slow"), "t")))
-    var built = done(b.get_mut().resume())
-    while built.is_none() {
-        yield
-        built = done(b.get_mut().resume())
-    }
-    let lb = (take built).unwrap()
-    var p = Box::new(
-        put.start(
-            String::from("scratch/out/slow/serve/t-1/rebuild.html"),
-            String::from(
-                "<!doctype html><title>waiting</title><script>(async () => { for (;;) { const r = await fetch('studio/state', { method: 'POST', body: JSON.stringify({ since: 0, version: 1 }) }); const s = await r.json(); if (s.rebuilding) { const e = await fetch('studio/edit', { method: 'POST', body: JSON.stringify({ edits: [[0, 0.2]] }) }); document.title = `seen ${await e.text()}`; return; } await new Promise((go) => setTimeout(go, 20)); } })().catch((e) => { document.title = `failed ${e}`; });</script>",
-            ),
-        ),
+    subject_package("slow", SLOW)
+    let lb = lens_built(serving_place(place("slow"), "t"))
+    put(
+        "scratch/out/slow/serve/t-1/rebuild.html",
+        "<!doctype html><title>waiting</title><script>(async () => { for (;;) { const r = await fetch('studio/state', { method: 'POST', body: JSON.stringify({ since: 0, version: 1 }) }); const s = await r.json(); if (s.rebuilding) { const e = await fetch('studio/edit', { method: 'POST', body: JSON.stringify({ edits: [[0, 0.2]] }) }); document.title = `seen ${await e.text()}`; return; } await new Promise((go) => setTimeout(go, 20)); } })().catch((e) => { document.title = `failed ${e}`; });</script>",
     )
-    while done(p.get_mut().resume()).is_none() { yield }
-    var control = control()
-    var srv = Box::new(run_server.start(place("slow"), take lb, 0, None, String::from("slow")))
-    var l = Box::new(listening.start())
-    while done(l.get_mut().resume(mut srv, mut control)).is_none() { yield }
-    var o = Box::new(opened.start(String::from(f"{control.origin.as_str()}/t-1/rebuild.html")))
-    var page = done(o.get_mut().resume(mut srv, mut control))
-    while page.is_none() {
-        yield
-        page = done(o.get_mut().resume(mut srv, mut control))
-    }
-    let br = (take page).unwrap()
+    var s = serving("slow", lb, None)
+    let br = opened(f"{s.control.origin.as_str()}/t-1/rebuild.html", mut s)
     // The constant's count changes: a slow build.
-    var q = Box::new(
-        put.start(
-            String::from("scratch/slow/subject.wrela"),
-            glue::replace(SLOW, "spin(150000000)", "spin(150000001)"),
-        ),
+    put(
+        "scratch/slow/subject.wrela",
+        glue::replace(SLOW, "spin(150000000)", "spin(150000001)").as_str(),
     )
-    while done(q.get_mut().resume()).is_none() { yield }
-    var r = Box::new(
-        ran.start(br, Script::new().wait(Until::title(Match::starts("seen")), timeout: 110.0)),
+    assert(
+        ran(br, Script::new().wait(Until::title(Match::starts("seen")), timeout: 110.0), mut s),
+        "the state said it was rebuilding while it was",
     )
-    var ended = done(r.get_mut().resume(mut srv, mut control))
-    while ended.is_none() {
-        yield
-        ended = done(r.get_mut().resume(mut srv, mut control))
-    }
-    assert((take ended).unwrap(), "the state said it was rebuilding while it was")
-    var t = Box::new(title_of.start(br))
-    var ended = done(t.get_mut().resume(mut srv, mut control))
-    while ended.is_none() {
-        yield
-        ended = done(t.get_mut().resume(mut srv, mut control))
-    }
-    let title = (take ended).unwrap()
+    let title = title_of(br, mut s)
     assert(title.as_str().find("\"written\":false").is_some(), title.as_str())
     assert(title.as_str().find("built again").is_some(), title.as_str())
-    var source = Box::new(text_at.start(String::from("scratch/slow/subject.wrela")))
-    var ended = done(source.get_mut().resume())
-    while ended.is_none() {
-        yield
-        ended = done(source.get_mut().resume())
-    }
-    assert((take ended).unwrap().as_str().find("sphere(0.30 ").is_some(), "the edit wasn't written")
-    var v = Box::new(serving_until.start(version: 2, updates: 0))
-    while done(v.get_mut().resume(mut srv, mut control)).is_none() { yield }
+    assert(
+        text_at("scratch/slow/subject.wrela").as_str().find("sphere(0.30 ").is_some(),
+        "the edit wasn't written",
+    )
+    serving_until(mut s, version: 2, updates: 0)
     // The browser closes first: one Chrome at a time.
-    var shut = browser::close(br)
-    while shut.poll().is_none() { yield }
-    var s = Box::new(stopped.start())
-    while done(s.get_mut().resume(mut srv, mut control)).is_none() { yield }
+    let _ = browser::close(br).wait()
+    stopped(take s)
 }
 
 /// The lens in Chrome, served by the tool, as a person uses it: a typed action answers as the
 /// headless lens does; a typed `set` and `write` write the source as the headless lens writes
 /// it; another tool's change to a literal reaches the open lens; and a change to the code builds
 /// the lens again, and the page reloads with it.
-@job
 fn the_served_lens_in_chrome_answers_and_writes_as_the_headless_one() {
-    var sp = Box::new(subject_package.start(String::from("served"), String::from(BALL)))
-    while done(sp.get_mut().resume()).is_none() { yield }
-    var b = Box::new(lens_built.start(serving_place(place("served"), "t")))
-    var built = done(b.get_mut().resume())
-    while built.is_none() {
-        yield
-        built = done(b.get_mut().resume())
-    }
-    let lb = (take built).unwrap()
+    subject_package("served", BALL)
+    let lb = lens_built(serving_place(place("served"), "t"))
     // The headless answers: the probe as built, and after the radius is 0.35 (literal 0, the
     // ball's one radius... found by its text).
-    var h0 = Box::new(
-        headless.start(lb.clone(), Vec::from([(String::from("literals"), Vec::new())])),
-    )
+    let line = headless(lb, [(String::from("literals"), Vec::new())])
     var radius = 0
-    var ended = done(h0.get_mut().resume())
-    while ended.is_none() {
-        yield
-        ended = done(h0.get_mut().resume())
-    }
-    let line = (take ended).unwrap()
     let Some(d) = parse(line.as_str()) else { panic(line.as_str()) }
     let Some(list) = d.get(TOP, "literals") else { panic("literals") }
     for k in 0..d.count(list) {
@@ -907,83 +468,33 @@ fn the_served_lens_in_chrome_answers_and_writes_as_the_headless_one() {
             radius = u32(n)
         }
     }
-    var h1 = Box::new(headless.start(lb.clone(), Vec::from([probe_call()])))
-    var probed = String::new()
-    var ended = done(h1.get_mut().resume())
-    while ended.is_none() {
-        yield
-        ended = done(h1.get_mut().resume())
-    }
-    probed = (take ended).unwrap()
-    var h2 = Box::new(
-        headless.start(
-            lb.clone(),
-            Vec::from(
-                [
-                    (String::from("set"), Vec::from([Scalar::I32(i32(radius)), Scalar::F32(0.35)])),
-                    probe_call(),
-                ],
-            ),
-        ),
+    let probed = headless(lb, [probe_call()])
+    let probed_after = headless(
+        lb,
+        [
+            (String::from("set"), Vec::from([Scalar::I32(i32(radius)), Scalar::F32(0.35)])),
+            probe_call(),
+        ],
     )
-    var probed_after = String::new()
-    var ended = done(h2.get_mut().resume())
-    while ended.is_none() {
-        yield
-        ended = done(h2.get_mut().resume())
-    }
-    probed_after = (take ended).unwrap()
     // The headless write, on the same build and files, which are then put back as they were
     // built.
-    var hs = Box::new(start.start(lb.clone(), width: 64, height: 64, cpu: false, reference: None))
-    var hl = done(hs.get_mut().resume())
-    while hl.is_none() {
-        yield
-        hl = done(hs.get_mut().resume())
+    let Ok(l) = start(lb, width: 64, height: 64, cpu: false, reference: None) else {
+        panic("the headless lens")
     }
-    let Ok(l) = (take hl).unwrap() else { panic("the headless lens") }
     var hlens = take l
-    for k in 0..2 {
-        let (name, args) = if k == 0 {
-            (String::from("set"), Vec::from([Scalar::I32(i32(radius)), Scalar::F32(0.25)]))
-        } else {
-            (String::from("write"), Vec::new())
-        }
-        var c = Box::new(call.start(take name, take args, deferred: false))
-        var ended = done(c.get_mut().resume(mut hlens))
-        while ended.is_none() {
-            yield
-            ended = done(c.get_mut().resume(mut hlens))
-        }
-        assert((take ended).unwrap().is_ok(), "the headless write")
-    }
-    var hc = drive::close(hlens.b)
-    while hc.poll().is_none() { yield }
-    var hw = Box::new(text_at.start(String::from("scratch/served/subject.wrela")))
-    var headless_source = String::new()
-    var ended = done(hw.get_mut().resume())
-    while ended.is_none() {
-        yield
-        ended = done(hw.get_mut().resume())
-    }
-    headless_source = (take ended).unwrap()
-    assert(headless_source.as_str().find("sphere(0.25)").is_some(), headless_source.as_str())
-    var back = Box::new(put.start(String::from("scratch/served/subject.wrela"), String::from(BALL)))
-    while done(back.get_mut().resume()).is_none() { yield }
-    // Served, in Chrome.
-    var control = control()
-    var srv = Box::new(
-        run_server.start(place("served"), lb.clone(), 0, None, String::from("served")),
+    assert(
+        call(mut hlens, "set", [Scalar::I32(i32(radius)), Scalar::F32(0.25)], deferred: false)
+            .is_ok(),
+        "the headless write",
     )
-    var l = Box::new(listening.start())
-    while done(l.get_mut().resume(mut srv, mut control)).is_none() { yield }
-    var o = Box::new(opened.start(String::from(f"{control.origin.as_str()}/")))
-    var page = done(o.get_mut().resume(mut srv, mut control))
-    while page.is_none() {
-        yield
-        page = done(o.get_mut().resume(mut srv, mut control))
-    }
-    let br = (take page).unwrap()
+    assert(call(mut hlens, "write", [], deferred: false).is_ok(), "the headless write")
+    let _ = drive::close(hlens.b).wait()
+    let headless_source = text_at("scratch/served/subject.wrela")
+    assert(headless_source.as_str().find("sphere(0.25)").is_some(), headless_source.as_str())
+    put("scratch/served/subject.wrela", BALL)
+    // Served, in Chrome.
+    var s = serving("served", lb, None)
+    let br = opened(f"{s.control.origin.as_str()}/", mut s)
     // A typed probe answers as the headless one: typed again until the lens has started and
     // takes its keys.
     var agreed = false
@@ -992,90 +503,36 @@ fn the_served_lens_in_chrome_answers_and_writes_as_the_headless_one() {
             break
         }
         let script = typed("probe 0 0.6 0").wait(Until::printed(probed.as_str()), timeout: 15.0)
-        var r = Box::new(ran.start(br, take script))
-        var ended = done(r.get_mut().resume(mut srv, mut control))
-        while ended.is_none() {
-            yield
-            ended = done(r.get_mut().resume(mut srv, mut control))
-        }
-        agreed = (take ended).unwrap()
+        agreed = ran(br, take script, mut s)
     }
     assert(agreed, f"Chrome's probe answers {probed.as_str()}")
     // A typed write: the source as the headless write left it.
-    let set_line = String::from(f"set {radius} 0.25")
-    let script = typed(set_line.as_str())
-    var w = Box::new(ran.start(br, take script))
-    var ended = done(w.get_mut().resume(mut srv, mut control))
-    while ended.is_none() {
-        yield
-        ended = done(w.get_mut().resume(mut srv, mut control))
-    }
-    let ok = (take ended).unwrap()
-    assert(ok, "typed")
-    var w2 = Box::new(ran.start(br, typed("write")))
-    var ended = done(w2.get_mut().resume(mut srv, mut control))
-    while ended.is_none() {
-        yield
-        ended = done(w2.get_mut().resume(mut srv, mut control))
-    }
-    let ok = (take ended).unwrap()
-    assert(ok, "typed")
-    var written = false
-    while !written {
-        var t = Box::new(text_at.start(String::from("scratch/served/subject.wrela")))
-        var ended = done(t.get_mut().resume())
-        while ended.is_none() {
-            yield
-            ended = done(t.get_mut().resume())
-        }
-        written = (take ended).unwrap() == headless_source
-        if !written {
-            // Serve a step (the write's post) before looking again.
-            match srv.get_mut().resume(mut control) {
-                Step::Yielded => yield,
-                Step::Done(_) => panic("the server ended"),
-            }
-        }
+    assert(ran(br, typed(f"set {radius} 0.25"), mut s), "typed")
+    assert(ran(br, typed("write"), mut s), "typed")
+    // Served a request at a time (the write's post) until the source is written.
+    while text_at("scratch/served/subject.wrela") != headless_source {
+        let _ = s.step([])
     }
     // Another tool's change of the radius: the open lens gets it, and probes as the headless
     // lens does with it.
-    var x = Box::new(
-        put.start(
-            String::from("scratch/served/subject.wrela"),
-            glue::replace(headless_source.as_str(), "sphere(0.25)", "sphere(0.35)"),
-        ),
+    put(
+        "scratch/served/subject.wrela",
+        glue::replace(headless_source.as_str(), "sphere(0.25)", "sphere(0.35)").as_str(),
     )
-    while done(x.get_mut().resume()).is_none() { yield }
-    var u = Box::new(serving_until.start(version: 1, updates: 1))
-    while done(u.get_mut().resume(mut srv, mut control)).is_none() { yield }
+    serving_until(mut s, version: 1, updates: 1)
     // The page types the new value into the lens as `set`, as the headless lens answers it;
     // then a typed probe.
-    var hset = Box::new(
-        headless.start(
-            lb.clone(),
-            Vec::from(
-                [(String::from("set"), Vec::from([Scalar::I32(i32(radius)), Scalar::F32(0.35)]))],
-            ),
-        ),
+    let set_answer = headless(
+        lb,
+        [(String::from("set"), Vec::from([Scalar::I32(i32(radius)), Scalar::F32(0.35)]))],
     )
-    var set_answer = String::new()
-    var ended = done(hset.get_mut().resume())
-    while ended.is_none() {
-        yield
-        ended = done(hset.get_mut().resume())
-    }
-    set_answer = (take ended).unwrap()
     let waited = Script::new().wait(Until::printed(set_answer.as_str()), timeout: 30.0)
     let after = typed_after(take waited, "probe 0 0.6 0")
         .wait(Until::printed(probed_after.as_str()), timeout: 30.0)
-    var r2 = Box::new(ran.start(br, take after))
-    var ended = done(r2.get_mut().resume(mut srv, mut control))
-    while ended.is_none() {
-        yield
-        ended = done(r2.get_mut().resume(mut srv, mut control))
-    }
-    let ok = (take ended).unwrap()
-    assert(ok, f"after the change, Chrome's probe answers {probed_after.as_str()}")
+    assert(
+        ran(br, take after, mut s),
+        f"after the change, Chrome's probe answers {probed_after.as_str()}",
+    )
     // Code: a new build, and the page reloads with it, as a new headless build answers.
     let moved = glue::replace(headless_source.as_str(), "sphere(0.25)", "sphere(0.35)")
     let changed = glue::replace(
@@ -1083,19 +540,10 @@ fn the_served_lens_in_chrome_answers_and_writes_as_the_headless_one() {
         "vec3(0.0, 0.30, 0.0))",
         "vec3(0.0, 0.30, 0.0)).translate(vec3(0.0, 0.1, 0.0))",
     )
-    var y = Box::new(put.start(String::from("scratch/served/subject.wrela"), take changed))
-    while done(y.get_mut().resume()).is_none() { yield }
-    var v = Box::new(serving_until.start(version: 2, updates: 0))
-    while done(v.get_mut().resume(mut srv, mut control)).is_none() { yield }
+    put("scratch/served/subject.wrela", changed.as_str())
+    serving_until(mut s, version: 2, updates: 0)
     // The new build is the server's next generation: the headless lens loads it there.
-    var h3 = Box::new(headless.start(served_build(lb, control), Vec::from([probe_call()])))
-    var probed_rebuilt = String::new()
-    var ended = done(h3.get_mut().resume())
-    while ended.is_none() {
-        yield
-        ended = done(h3.get_mut().resume())
-    }
-    probed_rebuilt = (take ended).unwrap()
+    let probed_rebuilt = headless(served_build(lb, s.control.page.as_str()), [probe_call()])
     assert(probed_rebuilt != probed_after, "the new build answers otherwise")
     var reloaded = false
     for _ in 0..6 {
@@ -1106,38 +554,23 @@ fn the_served_lens_in_chrome_answers_and_writes_as_the_headless_one() {
             Until::printed(probed_rebuilt.as_str()),
             timeout: 15.0,
         )
-        var r3 = Box::new(ran.start(br, take script))
-        var ended = done(r3.get_mut().resume(mut srv, mut control))
-        while ended.is_none() {
-            yield
-            ended = done(r3.get_mut().resume(mut srv, mut control))
-        }
-        reloaded = (take ended).unwrap()
+        reloaded = ran(br, take script, mut s)
     }
     assert(reloaded, f"after the reload, Chrome's probe answers {probed_rebuilt.as_str()}")
     // The browser closes first: one Chrome at a time.
-    var shut = browser::close(br)
-    while shut.poll().is_none() { yield }
-    var s = Box::new(stopped.start())
-    while done(s.get_mut().resume(mut srv, mut control)).is_none() { yield }
+    let _ = browser::close(br).wait()
+    stopped(take s)
 }
 
 /// The server in Chrome, one browser at a time: large posts and a fit's references within a
 /// blob budget, the posts answered while the lens is built again, and the lens as a person uses
 /// it, beside the headless one.
 @test(tool, read: [("ws", "../..")], browser: true, budget: 600, blobs: "6M,64")
-@job
 fn the_server_serves_chrome() {
-    var a = Box::new(large_posts_and_references_are_answered_within_the_blob_budget.start())
-    while done(a.get_mut().resume()).is_none() { yield }
-    var b = Box::new(the_server_answers_while_the_lens_is_built_again.start())
-    while done(b.get_mut().resume()).is_none() { yield }
-    var c = Box::new(the_served_lens_in_chrome_answers_and_writes_as_the_headless_one.start())
-    while done(c.get_mut().resume()).is_none() { yield }
-    var d = Box::new(an_old_pages_edit_is_refused.start())
-    while done(d.get_mut().resume()).is_none() { yield }
-    var e = Box::new(a_literal_changed_during_a_rebuild_reaches_the_page.start())
-    while done(e.get_mut().resume()).is_none() { yield }
-    var g = Box::new(a_failed_rebuild_keeps_the_last_good_build.start())
-    while done(g.get_mut().resume()).is_none() { yield }
+    large_posts_and_references_are_answered_within_the_blob_budget()
+    the_server_answers_while_the_lens_is_built_again()
+    the_served_lens_in_chrome_answers_and_writes_as_the_headless_one()
+    an_old_pages_edit_is_refused()
+    a_literal_changed_during_a_rebuild_reaches_the_page()
+    a_failed_rebuild_keeps_the_last_good_build()
 }

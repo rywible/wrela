@@ -35,15 +35,15 @@ use audio_tool::sheet::Image
 use captures::{Capture, Options, compose, parse_args, picks}
 use lookbook_tool::shots::{BUILD, shown_path}
 use std::io::print
-use std::job::{Job, Step}
-use std::tool::{RUNNING, args}
+use std::tool::{Task, ToolError, args, spawn}
 use std::tool::blob
 use std::tool::blob::Data
 use std::tool::drive
+use std::tool::drive::Step
 use std::tool::files
 use std::tool::image
 use std::tool::run
-use toolkit::wait::{done, said, trapped, wait}
+use toolkit::driven::untrapped
 use toolkit::whole::{blob_of, data_bytes, joined, write_data, write_png}
 
 /// How many frames' PNGs are encoded and written at once, beside the frames rendering.
@@ -53,84 +53,51 @@ const SAVING: u32 = 4
 const FFMPEG_TIMEOUT: f64 = 600.0
 
 /// Runs FFmpeg in the workspace with `args`: what it said if it failed.
-@job
-pub fn ffmpeg(given: take Vec<String>) -> Result<(), String> {
+pub fn ffmpeg(given: take Vec<String>) -> Result<(), ToolError> {
     var c = run::command("ffmpeg", "ws")
     c.args = take given
     c.timeout = FFMPEG_TIMEOUT
-    var r = wait(run::run(c))
-    while !r.ready() { yield }
-    let ran = said(run::read_ran(r.polled()))?
+    let ran = run::run(c).wait()?
     if ran.status == 0 {
         return Ok(())
     }
-    var j = Box::new(data_bytes.start(ran.stderr.clone()))
-    var e = done(j.get_mut().resume())
-    while e.is_none() {
-        yield
-        e = done(j.get_mut().resume())
-    }
-    let err = String::from_utf8(joined((take e).unwrap()?)).unwrap_or(String::new())
-    Err(String::from(f"ffmpeg exited {ran.status}: {err.as_str().trim()}"))
+    let err = String::from_utf8(joined(data_bytes(ran.stderr.clone())?)).unwrap_or(String::new())
+    Err(ToolError::new(f"ffmpeg exited {ran.status}: {err.as_str().trim()}"))
+}
+
+/// A frame's image written as a PNG at its path: a task beside the frames rendering.
+fn save(frame: take (image::Image, String)) -> Result<(), ToolError> {
+    let (img, path) = take frame
+    write_png(take img, path.as_str())
 }
 
 /// Capture `c` at `width` × `height` into `out` (a root path): its frames, its clip and its
 /// sheet. The clip's path.
-@job
-pub fn shoot(
-    c: take Capture,
-    out: take String,
-    width: take u32,
-    height: take u32,
-) -> Result<String, String> {
+pub fn shoot(c: Capture, out: str, width: u32, height: u32) -> Result<String, ToolError> {
     let frames = String::from(f"{out}/{c.name}")
-    var gone = wait(files::remove_all(frames.as_str()))
-    while !gone.ready() { yield }
-    let _ = gone.bytes()
-    var made = wait(files::make_dirs(frames.as_str()))
-    while !made.ready() { yield }
-    let _ = made.bytes()?
+    let _ = files::remove_all(frames.as_str()).wait()
+    let _ = files::make_dirs(frames.as_str()).wait()?
     var options = drive::gpu()
     options.width = width
     options.height = height
     options.timeout = 600.0
-    var l = wait(drive::load(BUILD, options))
-    while !l.ready() { yield }
-    let b = said(drive::read_loaded(l.polled()))?.build
-    var i = wait(drive::init(b, timeout: 600.0))
-    while !i.ready() { yield }
-    trapped("init", said(drive::read_ran(i.polled()))?)?
+    let b = drive::load(BUILD, options).wait()?.build
+    let _ = untrapped("init", drive::steps(b, [Step::Init], timeout: 600.0).wait()?)?
     // The frames before the first kept one run alone, so the history is the same.
-    var pre = wait(drive::frames(b, c.first, c.keys.clone(), timeout: 600.0))
-    while !pre.ready() { yield }
-    trapped("the frames before", said(drive::read_ran(pre.polled()))?)?
+    let before = [Step::Frames(c.first, c.keys.clone())]
+    let _ = untrapped("the frames before", drive::steps(b, before, timeout: 600.0).wait()?)?
     let shown = picks(c.first, c.last)
     let half = image::Size { width: width / 2, height: height / 2 }
     var cells: Vec<Vec<u8>> = Vec::new()
     // Each frame's PNG is encoded and written while the next frames render, `SAVING` at most.
-    var saving: Vec<Box<Job<write_png>>> = Vec::new()
+    var saving: Vec<Task<Result<(), ToolError>>> = Vec::new()
     for n in c.first..c.last + 1 {
-        var k = 0
-        while k < saving.len() || saving.len() >= SAVING {
-            if k >= saving.len() {
-                yield
-                k = 0
-                continue
-            }
-            match saving[k].get_mut().resume() {
-                Step::Yielded => k += 1,
-                Step::Done(r) => {
-                    (take r)?
-                    let _ = saving.remove(k)
-                },
-            }
+        if saving.len() >= SAVING {
+            saving.remove(0).join()?
         }
-        var f = wait(drive::frames(b, 1, c.keys.clone(), timeout: 600.0))
-        while !f.ready() { yield }
-        trapped(f"frame {n}", said(drive::read_ran(f.polled()))?)?
-        var cap = wait(drive::capture(b, timeout: 600.0))
-        while !cap.ready() { yield }
-        let screen = said(drive::read_capture(cap.polled()))?
+        let frame = [Step::Frames(1, c.keys.clone()), Step::Capture]
+        var seen = untrapped(f"frame {n}", drive::steps(b, frame, timeout: 600.0).wait()?)?
+        let screen = seen.captures.remove(0)
         let img = image::Image {
             width: screen.width,
             height: screen.height,
@@ -144,158 +111,80 @@ pub fn shoot(
             }
         }
         if sheet_cell && cells.len() < 6 {
-            var rs = wait(image::resize(img.clone(), half, timeout: 600.0))
-            while !rs.ready() { yield }
-            let small = said(image::read_image(rs.polled()))?
-            var j = Box::new(data_bytes.start(take small.rgba))
-            var px = done(j.get_mut().resume())
-            while px.is_none() {
-                yield
-                px = done(j.get_mut().resume())
-            }
-            cells.push(joined((take px).unwrap()?))
+            let small = image::resize(img.clone(), half, timeout: 600.0).wait()?
+            cells.push(joined(data_bytes(take small.rgba)?))
         }
-        var w = Box::new(write_png.start(take img, String::from(f"{frames}/{n:05}.png")))
-        match w.get_mut().resume() {
-            Step::Yielded => saving.push(take w),
-            Step::Done(r) => (take r)?,
-        }
+        saving.push(spawn((take img, String::from(f"{frames}/{n:05}.png")), save))
     }
     while !saving.is_empty() {
-        var k = 0
-        while k < saving.len() {
-            match saving[k].get_mut().resume() {
-                Step::Yielded => k += 1,
-                Step::Done(r) => {
-                    (take r)?
-                    let _ = saving.remove(k)
-                },
-            }
-        }
-        if !saving.is_empty() {
-            yield
-        }
+        saving.remove(0).join()?
     }
-    var shut = wait(drive::close(b))
-    while !shut.ready() { yield }
+    let _ = drive::close(b).wait()
     let clip = String::from(f"{out}/{c.name}.mp4")
     let from = shown_path(frames.as_str())
-    var ff = Box::new(
-        ffmpeg.start(
-            Vec::from(
-                [
-                    String::from("-y"),
-                    String::from("-loglevel"),
-                    String::from("error"),
-                    String::from("-threads"),
-                    String::from("1"),
-                    String::from("-framerate"),
-                    String::from("60"),
-                    String::from("-start_number"),
-                    String::from(f"{c.first}"),
-                    String::from("-i"),
-                    String::from(f"{from}/%05d.png"),
-                    String::from("-c:v"),
-                    String::from("libx264"),
-                    String::from("-crf"),
-                    String::from("12"),
-                    String::from("-pix_fmt"),
-                    String::from("yuv420p"),
-                    String::from(shown_path(clip.as_str())),
-                ],
-            ),
+    ffmpeg(
+        Vec::from(
+            [
+                String::from("-y"),
+                String::from("-loglevel"),
+                String::from("error"),
+                String::from("-threads"),
+                String::from("1"),
+                String::from("-framerate"),
+                String::from("60"),
+                String::from("-start_number"),
+                String::from(f"{c.first}"),
+                String::from("-i"),
+                String::from(f"{from}/%05d.png"),
+                String::from("-c:v"),
+                String::from("libx264"),
+                String::from("-crf"),
+                String::from("12"),
+                String::from("-pix_fmt"),
+                String::from("yuv420p"),
+                String::from(shown_path(clip.as_str())),
+            ],
         ),
-    )
-    var fr = done(ff.get_mut().resume())
-    while fr.is_none() {
-        yield
-        fr = done(ff.get_mut().resume())
-    }
-    (take fr).unwrap()?
+    )?
     let sheet = compose(cells, shown, half.width, half.height)
-    var sj = Box::new(write_sheet.start(take sheet, String::from(f"{out}/{c.name}-sheet.webp")))
-    var sr = done(sj.get_mut().resume())
-    while sr.is_none() {
-        yield
-        sr = done(sj.get_mut().resume())
-    }
-    (take sr).unwrap()?
+    write_sheet(sheet, f"{out}/{c.name}-sheet.webp")?
     Ok(clip)
 }
 
 /// Writes `img` as a WebP at `path` (a root path in a write root).
-@job
-pub fn write_sheet(img: take Image, path: take String) -> Result<(), String> {
-    var bj = Box::new(blob_of.start(img.rgba_chunks()))
-    var made = done(bj.get_mut().resume())
-    while made.is_none() {
-        yield
-        made = done(bj.get_mut().resume())
-    }
-    let pixels = (take made).unwrap()?
-    var e = wait(
-        image::encode_webp(
-            image::Image { width: img.w, height: img.h, rgba: Data::Blob(pixels) },
-            quality: 90.0,
-            method: 4,
-            timeout: 600.0,
-        ),
+pub fn write_sheet(img: Image, path: str) -> Result<(), ToolError> {
+    let pixels = blob_of(img.rgba_chunks())?
+    let webp = image::encode_webp(
+        image::Image { width: img.w, height: img.h, rgba: Data::Blob(pixels) },
+        quality: 90.0,
+        method: 4,
+        timeout: 600.0,
     )
-    while !e.ready() { yield }
-    var g = wait(blob::release(pixels))
-    while !g.ready() { yield }
-    let webp = said(image::read_encoded(e.polled()))?
-    var w = Box::new(write_data.start(take path, take webp))
-    var wr = done(w.get_mut().resume())
-    while wr.is_none() {
-        yield
-        wr = done(w.get_mut().resume())
-    }
-    (take wr).unwrap()
+    let encoded = take webp.wait()
+    let _ = blob::release(pixels).wait()
+    write_data(path, (take encoded)?)
 }
 
-@job
-fn main(given: take Vec<String>) -> u32 {
-    let o = match parse_args(given) {
+pub fn tool() -> u32 {
+    let o = match parse_args(args()) {
         Ok(o) => take o,
         Err(e) => {
             print(e.as_str())
             return 2
         },
     }
-    var md = wait(files::make_dirs(o.out.as_str()))
-    while !md.ready() { yield }
-    if let Err(e) = md.bytes() {
-        print(f"motion: {e}")
+    if let Err(e) = files::make_dirs(o.out.as_str()).wait() {
+        print(f"motion: {e.message()}")
         return 1
     }
-    for k in 0..o.captures.len() {
-        let c = o.captures[k].clone()
-        let name = c.name
-        var j = Box::new(shoot.start(take c, o.out.clone(), o.width, o.height))
-        var r = done(j.get_mut().resume())
-        while r.is_none() {
-            yield
-            r = done(j.get_mut().resume())
-        }
-        match (take r).unwrap() {
-            Ok(clip) => print(f"{name} {shown_path(clip.as_str())}"),
+    for c in o.captures {
+        match shoot(c, o.out.as_str(), o.width, o.height) {
+            Ok(clip) => print(f"{c.name} {shown_path(clip.as_str())}"),
             Err(e) => {
-                print(f"capture {name} failed: {e}")
+                print(f"capture {c.name} failed: {e.message()}")
                 return 1
             },
         }
     }
     0
-}
-
-pub fn tool_init() -> Job<main> {
-    main.start(args())
-}
-
-pub fn tool(job: mut Job<main>) -> u32 {
-    match job.resume() {
-        Step::Yielded => RUNNING,
-        Step::Done(status) => status,
-    }
 }

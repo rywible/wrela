@@ -7,16 +7,12 @@
 // sorted.
 
 use hosts::steps::{built, word}
-use std::collections::{Box, Vec}
 use std::io::print
-use std::job::Step
-use std::string::String
 use std::tool::MOST_BYTES
-use std::tool::answer
 use std::tool::blob
 use std::tool::blob::Data
 use std::tool::drive
-use std::tool::drive::Scalar
+use std::tool::drive::{Scalar, Step}
 use std::tool::toolchain
 
 /// A mesh's buffers, in the order `Mesh::new` makes them.
@@ -58,55 +54,26 @@ struct Ours {
 }
 
 /// The package, built into `scratch/build`, loaded on the GPU, `init` run.
-@job
 fn opened() -> drive::Build {
-    var b = Box::new(
-        built.start(
-            String::from("repo/examples/herd/tests/realize"),
-            String::from("scratch/build"),
-            toolchain::options(),
-            String::from("the package builds"),
-        ),
+    built(
+        "repo/examples/herd/tests/realize",
+        "scratch/build",
+        toolchain::options(),
+        "the package builds",
     )
-    loop {
-        match b.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
+    let Ok(it) = drive::load("scratch/build", drive::gpu()).wait() else {
+        panic("the build loads on a hardware GPU")
     }
-    var l = drive::load("scratch/build", drive::gpu())
-    var loaded = l.poll()
-    while loaded.is_none() {
-        yield
-        loaded = l.poll()
-    }
-    let Some(lp) = take loaded else { panic("no answer") }
-    let Ok(it) = drive::read_loaded(take lp) else { panic("the build loads on a hardware GPU") }
-    var i = drive::init(it.build)
-    var inited = i.poll()
-    while inited.is_none() {
-        yield
-        inited = i.poll()
-    }
-    let Some(ip) = take inited else { panic("no answer") }
-    let Ok(init) = drive::read_ran(take ip) else { panic("init's request") }
-    if let Some(trap) = init.trap {
+    let Ok(seen) = drive::steps(it.build, [Step::Init]).wait() else { panic("init's request") }
+    if let Some(trap) = seen.trap {
         panic(trap.message.as_str())
     }
     it.build
 }
 
-/// The first `most` bytes (all, for 0) of buffer `handle`, read back.
-@job
-fn bytes_of(h: take drive::Build, handle: take u32, most: take u64) -> Vec<u8> {
-    var r = drive::read_buffer(h, handle)
-    var got = r.poll()
-    while got.is_none() {
-        yield
-        got = r.poll()
-    }
-    let Some(rp) = take got else { panic("no answer") }
-    let Ok(data) = drive::read_bytes(take rp) else { panic(f"buffer {handle}'s bytes") }
+/// The first `most` bytes (all, for 0) of a buffer's bytes, read from their blob, which is
+/// released.
+fn bytes_of(data: take Data, most: u64) -> Vec<u8> {
     var out: Vec<u8> = Vec::new()
     match take data {
         Data::Bytes(v) => {
@@ -116,35 +83,18 @@ fn bytes_of(h: take drive::Build, handle: take u32, most: take u64) -> Vec<u8> {
             }
         },
         Data::Blob(held) => {
-            var c = blob::len(held)
-            var counted = c.poll()
-            while counted.is_none() {
-                yield
-                counted = c.poll()
-            }
-            let Some(cp) = take counted else { panic("no answer") }
-            let Ok(size) = blob::read_len(take cp) else { panic("the blob's length") }
+            let Ok(size) = blob::len(held).wait() else { panic("the blob's length") }
             let want = if most == 0 { size } else { min(size, most) }
             var at: u64 = 0
             while at < want {
                 let len = u32(min(want - at, u64(MOST_BYTES)))
-                var p = blob::read(held, at, len)
-                var read = p.poll()
-                while read.is_none() {
-                    yield
-                    read = p.poll()
-                }
-                let Some(pp) = take read else { panic("no answer") }
-                let Ok(chunk) = answer(take pp) else { panic("the blob's bytes") }
+                let Ok(chunk) = blob::read(held, at, len).wait() else { panic("the blob's bytes") }
                 for j in 0..chunk.len() {
                     out.push(chunk[j])
                 }
                 at += u64(len)
             }
-            var gone = blob::release(held)
-            while gone.poll().is_none() {
-                yield
-            }
+            let _ = blob::release(held).wait()
         },
     }
     out
@@ -152,73 +102,33 @@ fn bytes_of(h: take drive::Build, handle: take u32, most: take u64) -> Vec<u8> {
 
 /// The export `name` called with `args`, which must not trap; then the mesh it realized, from
 /// the newest eight buffers.
-@job
-fn realized(h: take drive::Build, name: take String, args: take Vec<Scalar>) -> Ours {
-    var c = drive::call(h, name.as_str(), args)
-    var called = c.poll()
-    while called.is_none() {
-        yield
-        called = c.poll()
+fn realized(h: drive::Build, name: str, args: take Vec<Scalar>) -> Ours {
+    let Ok(called) = drive::steps(h, [Step::Call(String::from(name), take args), Step::Buffers])
+        .wait() else { panic(f"{name}'s request") }
+    if let Some(trap) = called.trap {
+        panic(f"{name}: {trap.message.as_str()}")
     }
-    let Some(cp) = take called else { panic("no answer") }
-    let Ok(ran) = drive::read_ran(take cp) else { panic(f"{name.as_str()}'s request") }
-    if let Some(trap) = ran.trap {
-        panic(f"{name.as_str()}: {trap.message.as_str()}")
-    }
-    var l = drive::buffers(h)
-    var listed = l.poll()
-    while listed.is_none() {
-        yield
-        listed = l.poll()
-    }
-    let Some(lp) = take listed else { panic("no answer") }
-    let Ok(held) = drive::read_buffers(take lp) else { panic("the buffers") }
+    borrow held = called.buffers[0]
     assert(held.len() >= MESH_BUFFERS, "the mesh's buffers")
     let first = held.len() - MESH_BUFFERS
-    var parts: Vec<Vec<u8>> = Vec::new()
-    // The draw's arguments and the tally first: they say how much of the others to read.
-    for j in 0..2 {
-        let k = PARTS[j]
-        var r = Box::new(bytes_of.start(h, held[first + k], 0))
-        loop {
-            match r.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(v) => {
-                    parts.push(take v)
-                    break
-                },
-            }
-        }
-    }
-    let draw = word(parts[0], 0)
-    let (nv, holes, flags, live) = (
-        word(parts[1], 0),
-        word(parts[1], 4),
-        word(parts[1], 8),
-        word(parts[1], 20),
-    )
-    var v = Box::new(bytes_of.start(h, held[first + 1], u64(nv) * u64(VERTEX_BYTES)))
-    var verts: Vec<u8> = Vec::new()
-    loop {
-        match v.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(x) => {
-                verts = take x
-                break
-            },
-        }
-    }
-    var q = Box::new(bytes_of.start(h, held[first + 3], u64(draw) * 4))
-    var quads: Vec<u8> = Vec::new()
-    loop {
-        match q.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(x) => {
-                quads = take x
-                break
-            },
-        }
-    }
+    // The draw's arguments, the tally, the vertices and the quads: the first two say how much
+    // of the others to read.
+    let Ok(read) = drive::steps(
+        h,
+        [
+            Step::ReadBuffer(held[first + PARTS[0]]),
+            Step::ReadBuffer(held[first + PARTS[1]]),
+            Step::ReadBuffer(held[first + 1]),
+            Step::ReadBuffer(held[first + 3]),
+        ],
+    ).wait() else { panic("the mesh's buffers' bytes") }
+    var bytes = take read.bytes
+    let args = bytes_of(bytes.remove(0), 0)
+    let tally = bytes_of(bytes.remove(0), 0)
+    let draw = word(args, 0)
+    let (nv, holes, flags, live) = (word(tally, 0), word(tally, 4), word(tally, 8), word(tally, 20))
+    let verts = bytes_of(bytes.remove(0), u64(nv) * u64(VERTEX_BYTES))
+    let quads = bytes_of(bytes.remove(0), u64(draw) * 4)
     var sorted: Vec<Tri> = Vec::with_capacity(draw / 3)
     for t in 0..draw / 3 {
         var corners = [[0; 3]; 3]
@@ -267,31 +177,14 @@ fn same_triangles(a: Ours, b: Ours) -> bool {
 /// mesh is the one a whole realization makes, triangle for triangle, at 3 and 1.5 cm, in 1, 5
 /// and 40 slices (40: most are past the live blocks' end, and empty).
 @test(tool, read: [("repo", "../../../..")], budget: 600)
-@job
 fn a_realization_in_slices_is_the_whole_ones() {
-    var o = Box::new(opened.start())
-    var h: Option<drive::Build> = None
-    while h.is_none() {
-        match o.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(b) => h = Some(b),
-        }
-    }
-    let Some(b) = h else { panic("opened") }
+    let b = opened()
     for c in 0..2 {
         let cell = CELLS[c]
         var args: Vec<Scalar> = Vec::new()
         args.push(Scalar::I32(1))
         args.push(Scalar::F32(cell))
-        var w = Box::new(realized.start(b, String::from("realize"), take args))
-        var whole: Option<Ours> = None
-        while whole.is_none() {
-            match w.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(m) => whole = Some(take m),
-            }
-        }
-        let Some(want) = take whole else { panic("the whole mesh") }
+        let want = realized(b, "realize", take args)
         assert(want.tris > 1000 && want.holes == 0 && want.flags == 0, f"{cell} m: whole")
         for n in 0..3 {
             let slices = SLICES[n]
@@ -299,15 +192,7 @@ fn a_realization_in_slices_is_the_whole_ones() {
             sargs.push(Scalar::I32(1))
             sargs.push(Scalar::F32(cell))
             sargs.push(Scalar::I32(i32(slices)))
-            var s = Box::new(realized.start(b, String::from("realize_sliced"), take sargs))
-            var got: Option<Ours> = None
-            while got.is_none() {
-                match s.get_mut().resume() {
-                    Step::Yielded => yield,
-                    Step::Done(m) => got = Some(take m),
-                }
-            }
-            let Some(sliced) = take got else { panic("the sliced mesh") }
+            let sliced = realized(b, "realize_sliced", take sargs)
             assert(
                 sliced.live == want.live &&
                     sliced.tris == want.tris &&
@@ -329,33 +214,14 @@ fn a_realization_in_slices_is_the_whole_ones() {
 /// each lattice edge its faces cross (2 × 750² + 4 × 750 × 3), no holes, and the same triangles
 /// in 2 slices (the second past 65,535 blocks on its own). It can't be smaller.
 @test(tool, read: [("repo", "../../../..")], budget: 600, blobs: "512M,64")
-@job
 fn a_realization_past_65535_live_blocks_is_whole() {
-    var o = Box::new(opened.start())
-    var h: Option<drive::Build> = None
-    while h.is_none() {
-        match o.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(b) => h = Some(b),
-        }
-    }
-    let Some(b) = h else { panic("opened") }
+    let b = opened()
     var meshes: Vec<Ours> = Vec::new()
     for n in 0..2 {
         let slices = SLAB_SLICES[n]
         var args: Vec<Scalar> = Vec::new()
         args.push(Scalar::I32(i32(slices)))
-        var r = Box::new(realized.start(b, String::from("realize_slab"), take args))
-        var done = false
-        while !done {
-            match r.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(m) => {
-                    meshes.push(take m)
-                    done = true
-                },
-            }
-        }
+        meshes.push(realized(b, "realize_slab", take args))
     }
     let Some(sliced) = meshes.pop() else { panic("the sliced mesh") }
     let Some(whole) = meshes.pop() else { panic("the whole mesh") }

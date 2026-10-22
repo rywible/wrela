@@ -1,0 +1,12 @@
+// A driven build's steps (`std::tool::drive`), checked for a trap.
+
+use std::tool::ToolError
+use std::tool::drive::Seen
+
+/// What `seen`'s steps saw, or the build's trap, said with `what`, as a failure.
+pub fn untrapped(what: str, seen: take Seen) -> Result<Seen, ToolError> {
+    match seen.trap {
+        Some(t) => Err(ToolError::new(f"{what}: {t.message} {t.panic}")),
+        None => Ok(take seen),
+    }
+}

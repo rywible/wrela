@@ -38,16 +38,15 @@ use policy::{
 use release_tool::io::{data_bytes, read_files, write_files}
 use release_tool::tree::hex_sha
 use std::io::print
-use std::job::{Job, Step}
 use std::json::parse as parse_json
-use std::tool::{RUNNING, args, secret}
+use std::tool::{Call, Done, ToolError, any, args, secret}
 use std::tool::files
 use std::tool::files::Kind
 use std::tool::http
-use std::tool::http::{Header, Request}
+use std::tool::Request
+use std::tool::http::Header
 use std::tool::run
 use std::tool::time
-use toolkit::wait::{done, wait}
 
 /// The root the release is in: `wrela tool release`'s output.
 pub const RELEASE: Text = "release"
@@ -110,37 +109,17 @@ pub fn parse_args(given: [String]) -> Option<Options> {
     Some(o)
 }
 
-@job
-fn main(given: take Vec<String>) -> u32 {
-    let Some(o) = parse_args(given) else {
+pub fn tool() -> u32 {
+    let Some(o) = parse_args(args()) else {
         print(USAGE)
         return 2
     }
-    var j = Box::new(deploy.start(take o))
-    loop {
-        match j.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => {
-                match take r {
-                    Ok(_) => return 0,
-                    Err(e) => {
-                        print(f"deploy: {e.as_str()}")
-                        return 1
-                    },
-                }
-            },
-        }
-    }
-}
-
-pub fn tool_init() -> Job<main> {
-    main.start(args())
-}
-
-pub fn tool(job: mut Job<main>) -> u32 {
-    match job.resume() {
-        Step::Yielded => RUNNING,
-        Step::Done(status) => status,
+    match deploy(o) {
+        Ok(_) => 0,
+        Err(e) => {
+            print(f"deploy: {e.message()}")
+            1
+        },
     }
 }
 
@@ -159,80 +138,78 @@ pub struct Failure: Clone {
     pub transport: bool,
 }
 
-fn failure(why: take String) -> Failure {
-    Failure { why, transport: false }
+fn failure(why: str) -> Failure {
+    Failure { why: String::from(why), transport: false }
+}
+
+/// A `GET` of `url` as the deploy asks it of a live site.
+fn request(url: str) -> http::Request {
+    var req = http::get(url)
+    req.headers.push(
+        Header { name: String::from("User-Agent"), value: String::from("wrela-deploy") },
+    )
+    req.timeout = FETCH_TIMEOUT
+    req
+}
+
+/// The most `GET`s of one try: the first and at most 5 redirects.
+const HOPS: u32 = 6
+
+/// What a `GET`'s answer leads to: a redirect to follow on its origin, or its result.
+enum Answered {
+    Redirect(String),
+    Result(Result<Got, Failure>),
+}
+
+/// The answer `r` to a `GET` of `url`. A request that fails is a `Failure`; a status isn't.
+fn answered(url: str, r: take Result<http::Response, ToolError>) -> Answered {
+    let response = match take r {
+        Ok(r) => take r,
+        Err(e) => {
+            return Answered::Result(
+                Err(
+                    Failure {
+                        why: String::from(f"GET {url}: {e.message()}"),
+                        transport: http::is_transport(e),
+                    },
+                ),
+            )
+        },
+    }
+    let status = response.status
+    if status == 301 || status == 302 || status == 303 || status == 307 || status == 308 {
+        let Some(location) = response.header("location") else {
+            return Answered::Result(Err(failure(f"GET {url}: a redirect with no location")))
+        }
+        return match redirected(url, location.as_str()) {
+            Some(next) => Answered::Redirect(take next),
+            None => Answered::Result(
+                Err(failure(f"GET {url}: a redirect off its origin, to {location.as_str()}")),
+            ),
+        }
+    }
+    match data_bytes(response.body.clone()) {
+        Ok(body) => Answered::Result(Ok(Got { status, body })),
+        Err(e) => Answered::Result(Err(failure(f"GET {url}: {e.message()}"))),
+    }
 }
 
 /// A `GET` of `url`, following a redirect that stays on its origin (at most 5), as a Worker's
 /// assets redirect `/x/index.html` to `/x/`. A request that fails is an error; a status isn't.
-@job
-pub fn get_once(given: take String) -> Result<Got, Failure> {
-    var url = take given
-    for _ in 0..6 {
-        var req = http::get(url.as_str())
-        req.headers.push(
-            Header { name: String::from("User-Agent"), value: String::from("wrela-deploy") },
-        )
-        req.timeout = FETCH_TIMEOUT
-        var f = wait(http::fetch(req))
-        while !f.ready() { yield }
-        let response = match http::read_response(f.polled()) {
-            Ok(r) => take r,
-            Err(e) => {
-                return Err(
-                    Failure {
-                        why: String::from(f"GET {url.as_str()}: {e.message()}"),
-                        transport: http::is_transport(e),
-                    },
-                )
-            },
-        }
-        let status = response.status
-        if status == 301 || status == 302 || status == 303 || status == 307 || status == 308 {
-            let Some(location) = response.header("location") else {
-                return Err(
-                    failure(String::from(f"GET {url.as_str()}: a redirect with no location")),
-                )
-            }
-            let Some(next) = redirected(url.as_str(), location.as_str()) else {
-                return Err(
-                    failure(
-                        String::from(
-                            f"GET {url.as_str()}: a redirect off its origin, to {location.as_str()}",
-                        ),
-                    ),
-                )
-            }
-            url = take next
-            continue
-        }
-        var jb = Box::new(data_bytes.start(response.body.clone()))
-        var b = done(jb.get_mut().resume())
-        while b.is_none() {
-            yield
-            b = done(jb.get_mut().resume())
-        }
-        return match (take b).unwrap() {
-            Ok(body) => Ok(Got { status, body }),
-            Err(e) => Err(failure(String::from(f"GET {url.as_str()}: {e.as_str()}"))),
+pub fn get_once(first: str) -> Result<Got, Failure> {
+    var url = String::from(first)
+    for _ in 0..HOPS {
+        match answered(url.as_str(), http::fetch(request(url.as_str())).wait()) {
+            Answered::Redirect(next) => url = take next,
+            Answered::Result(r) => return take r,
         }
     }
-    Err(failure(String::from(f"GET {url.as_str()}: too many redirects")))
+    Err(failure(f"GET {url.as_str()}: too many redirects"))
 }
 
-/// `get_once`, its failure said as text.
-@job
-pub fn get(given: take String) -> Result<Got, String> {
-    var j = Box::new(get_once.start(take given))
-    var r = done(j.get_mut().resume())
-    while r.is_none() {
-        yield
-        r = done(j.get_mut().resume())
-    }
-    match (take r).unwrap() {
-        Ok(g) => Ok(take g),
-        Err(f) => Err(f.why.clone()),
-    }
+/// `get_once`, its failure said as a `ToolError`.
+pub fn get(url: str) -> Result<Got, ToolError> {
+    get_once(url).map_err(|f| ToolError::new(f.why.as_str()))
 }
 
 /// Whether a `GET`'s result may mend if it's tried again: it failed in transport (no response
@@ -244,136 +221,164 @@ pub fn transient(r: Result<Got, Failure>) -> bool {
     }
 }
 
-/// A `GET` of `url`, tried again after each `BACKOFF` while its result is `transient`. Its last
-/// result, which says how many tries it took if it's still transient.
-@job
-pub fn get_retried(given: take String) -> Result<Got, String> {
-    let url = take given
-    var tries: u32 = 0
-    loop {
-        var j = Box::new(get_once.start(url.clone()))
-        var got = done(j.get_mut().resume())
-        while got.is_none() {
-            yield
-            got = done(j.get_mut().resume())
+/// One file of a batch (`get_all`): the URL asked for, the URL its try has reached (after its
+/// redirects) and how many `GET`s that try has made, how many tries ended, what it waits on (a
+/// `GET`'s answer or the backoff before its next try), and its result once it has one.
+struct Fetching {
+    first: String,
+    url: String,
+    hops: u32,
+    tries: u32,
+    fetch: Option<Call<http::Response>>,
+    backoff: Option<Call<Done>>,
+    result: Option<Result<Got, ToolError>>,
+}
+
+impl Fetching {
+    fn new(url: str) -> Fetching {
+        Fetching {
+            first: String::from(url),
+            url: String::from(url),
+            hops: 1,
+            tries: 0,
+            fetch: Some(http::fetch(request(url))),
+            backoff: None,
+            result: None,
         }
-        let r = (take got).unwrap()
-        tries += 1
+    }
+
+    /// What it waits on, if it waits.
+    fn waits_on(self) -> Option<Request> {
+        match self.fetch {
+            Some(c) => Some(c.request()),
+            None => match self.backoff {
+                Some(t) => Some(t.request()),
+                None => None,
+            },
+        }
+    }
+
+    /// Goes on from what it waited on, which has answered: a redirect followed, a try ended
+    /// (retried after its backoff while its result is `transient`, as at most `BACKOFF` says),
+    /// or the next try begun.
+    fn advance(mut self) {
+        if let Some(t) = replace(mut self.backoff, None) {
+            // The backoff ends however the timer answers.
+            let _ = (take t).wait()
+            self.url = self.first.clone()
+            self.hops = 1
+            self.fetch = Some(http::fetch(request(self.first.as_str())))
+            return
+        }
+        let Some(c) = replace(mut self.fetch, None) else { return }
+        let r = match answered(self.url.as_str(), (take c).wait()) {
+            Answered::Result(r) => take r,
+            Answered::Redirect(next) => {
+                self.url = take next
+                if self.hops < HOPS {
+                    self.hops += 1
+                    self.fetch = Some(http::fetch(request(self.url.as_str())))
+                    return
+                }
+                Err(failure(f"GET {self.url.as_str()}: too many redirects"))
+            },
+        }
+        self.tries += 1
+        let tries = self.tries
         if !transient(r) {
-            return match take r {
-                Ok(g) => Ok(take g),
-                Err(f) => Err(f.why.clone()),
-            }
+            self.result = Some((take r).map_err(|f| ToolError::new(f.why.as_str())))
+        } else if tries > BACKOFF.len() {
+            self.result = Some(
+                match take r {
+                    Ok(g) => Err(
+                        ToolError::new(
+                            f"GET {self.first.as_str()}: HTTP {g.status}, {tries} tries",
+                        ),
+                    ),
+                    Err(f) => Err(ToolError::new(f"{f.why.as_str()} ({tries} tries)")),
+                },
+            )
+        } else {
+            self.backoff = Some(time::after(BACKOFF[tries - 1]))
         }
-        if tries > BACKOFF.len() {
-            return match take r {
-                Ok(g) => Err(String::from(f"GET {url.as_str()}: HTTP {g.status}, {tries} tries")),
-                Err(f) => Err(String::from(f"{f.why.as_str()} ({tries} tries)")),
-            }
-        }
-        var t = wait(time::after(BACKOFF[tries - 1]))
-        while !t.ready() { yield }
     }
 }
 
-/// Each `GET` of `urls`, at once, each retried while it's transient (`get_retried`).
-@job
-pub fn get_all(given: take Vec<String>) -> Vec<Result<Got, String>> {
-    let urls = take given
-    var jobs: Vec<Job<get_retried>> = Vec::new()
-    var got: Vec<Option<Result<Got, String>>> = Vec::new()
+/// Each `GET` of `urls`, at once, each tried again after each `BACKOFF` while its result is
+/// `transient`: every file's request and every backoff is outstanding at once, on this thread,
+/// so the batch's retries wait together, whatever the helpers. Each result in `urls`' order; a
+/// result still transient after its last try says how many tries it took.
+pub fn get_all(urls: [String]) -> Vec<Result<Got, ToolError>> {
+    var batch: Vec<Fetching> = Vec::with_capacity(urls.len())
     for u in urls {
-        jobs.push(get_retried.start(u.clone()))
-        got.push(None)
+        batch.push(Fetching::new(u.as_str()))
     }
-    var left = urls.len()
-    while left > 0 {
-        for k in 0..jobs.len() {
-            if got[k].is_none() {
-                got[k] = done(jobs[k].resume())
-                if got[k].is_some() {
-                    left -= 1
-                }
+    loop {
+        var requests: Vec<Request> = Vec::new()
+        var whose: Vec<u32> = Vec::new()
+        for k in 0..batch.len() {
+            if let Some(r) = batch[k].waits_on() {
+                requests.push(r)
+                whose.push(k)
             }
         }
-        if left > 0 {
-            yield
+        if requests.is_empty() {
+            break
         }
+        batch[whose[any(requests)]].advance()
     }
-    var out: Vec<Result<Got, String>> = Vec::new()
-    for k in 0..got.len() {
-        let Some(r) = replace(mut got[k], None) else { panic("every request is answered") }
-        out.push(take r)
+    var out: Vec<Result<Got, ToolError>> = Vec::with_capacity(batch.len())
+    for k in 0..batch.len() {
+        match replace(mut batch[k].result, None) {
+            Some(r) => out.push(take r),
+            None => panic("a batch's file ended with no result"),
+        }
     }
     out
 }
 
 /// The body at `url`, which must answer 200.
-@job
-pub fn fetch_ok(given: take String) -> Result<Vec<u8>, String> {
-    let url = take given
-    var j = Box::new(get.start(url.clone()))
-    var r = done(j.get_mut().resume())
-    while r.is_none() {
-        yield
-        r = done(j.get_mut().resume())
-    }
-    let got = (take r).unwrap()?
+pub fn fetch_ok(url: str) -> Result<Vec<u8>, ToolError> {
+    let got = get(url)?
     if got.status != 200 {
-        return Err(String::from(f"GET {url.as_str()}: HTTP {got.status}"))
+        return Err(ToolError::new(f"GET {url}: HTTP {got.status}"))
     }
     Ok(got.body.clone())
 }
 
 /// The deploys the console at `domain` lists, oldest first.
-@job
-pub fn history(given: take String) -> Result<Vec<Deploy>, String> {
-    let domain = take given
-    var j = Box::new(fetch_ok.start(String::from(f"https://{domain.as_str()}/deploys.json")))
-    var r = done(j.get_mut().resume())
-    while r.is_none() {
-        yield
-        r = done(j.get_mut().resume())
-    }
-    let body = (take r).unwrap()?
+pub fn history(domain: str) -> Result<Vec<Deploy>, ToolError> {
+    let body = fetch_ok(f"https://{domain}/deploys.json")?
     let Some(text) = String::from_utf8(take body) else {
-        return Err(String::from(f"{domain.as_str()}'s deploys.json isn't UTF-8"))
+        return Err(ToolError::new(f"{domain}'s deploys.json isn't UTF-8"))
     }
-    read_history(text.as_str())
+    read_history(text.as_str()).map_err(own)
+}
+
+/// A failure of the deploy's own, said as `why`.
+fn own(why: take String) -> ToolError {
+    ToolError::new(why.as_str())
 }
 
 /// The whole of the file at `path`, a root path.
-@job
-pub fn read_one(given: take String) -> Result<Vec<u8>, String> {
-    let path = take given
-    var j = Box::new(read_files.start(Vec::from([path.clone()])))
-    var r = done(j.get_mut().resume())
-    while r.is_none() {
-        yield
-        r = done(j.get_mut().resume())
-    }
-    var all = (take r).unwrap()?
+pub fn read_one(path: str) -> Result<Vec<u8>, ToolError> {
+    var all = read_files(Vec::from([String::from(path)]))?
     Ok(replace(mut all[0], Vec::new()))
 }
 
 /// Every entry under the directory `dir` (a root path), each by its path there, with its kind
 /// and size: a link is listed, not followed.
-@job
-pub fn found(given: take String) -> Result<Vec<Found>, String> {
-    let dir = take given
+pub fn found(dir: str) -> Result<Vec<Found>, ToolError> {
     var out: Vec<Found> = Vec::new()
     var todo: Vec<String> = Vec::from([String::new()])
     while !todo.is_empty() {
         let rel = todo.drain_front(1)[0].clone()
-        let path = if rel.is_empty() { dir.clone() } else {
-            String::from(f"{dir.as_str()}/{rel.as_str()}")
+        let path = if rel.is_empty() { String::from(dir) } else {
+            String::from(f"{dir}/{rel.as_str()}")
         }
-        var l = wait(files::list(path.as_str()))
-        while !l.ready() { yield }
-        let entries = match files::read_list(l.polled()) {
-            Ok(e) => take e,
-            Err(e) => return Err(String::from(f"{path.as_str()}: {e.message()}")),
-        }
+        let entries = files::list(path.as_str())
+            .wait()
+            .map_err(|e| ToolError::new(f"{path.as_str()}: {e.message()}"))?
         for e in entries {
             let at = if rel.is_empty() { e.name.clone() } else {
                 String::from(f"{rel.as_str()}/{e.name.as_str()}")
@@ -392,49 +397,32 @@ pub fn found(given: take String) -> Result<Vec<Found>, String> {
 
 /// Fetches the kept `release` from the Worker `w` serves, by its `listing` (its `files.json`,
 /// as fetched), into the Worker's `releases/<release>` in `root`: each file checked against its
-/// SHA-256, and one already there must be the same. How many files it keeps.
-@job
-pub fn restore(
-    given_release: take String,
-    given_worker: take Worker,
-    given_listing: take Vec<u8>,
-    given_root: take String,
-) -> Result<u32, String> {
-    let release = take given_release
-    let w = take given_worker
-    let listing = take given_listing
-    let root = take given_root
-    let base = String::from(f"https://{w.domain.as_str()}/releases/{release.as_str()}/")
-    let destination = String::from(
-        f"{root.as_str()}/{w.worker.as_str()}/releases/{release.as_str()}",
-    )
-    let Some(text) = String::from_utf8(listing.clone()) else {
-        return Err(String::from(f"{release.as_str()}: its files.json isn't UTF-8"))
+/// SHA-256, and one already there must be the same. How many files it keeps. The files are
+/// fetched `AT_ONCE` at a time, each retried while it's transient (`get_all`).
+pub fn restore(release: str, w: Worker, listing: [u8], root: str) -> Result<u32, ToolError> {
+    let base = String::from(f"https://{w.domain.as_str()}/releases/{release}/")
+    let destination = String::from(f"{root}/{w.worker.as_str()}/releases/{release}")
+    let Some(text) = String::from_utf8(Vec::from(listing)) else {
+        return Err(ToolError::new(f"{release}: its files.json isn't UTF-8"))
     }
     let Some(doc) = parse_json(text.as_str()) else {
-        return Err(String::from(f"{release.as_str()}: its files.json isn't JSON"))
+        return Err(ToolError::new(f"{release}: its files.json isn't JSON"))
     }
     var wanted: Vec<(String, String)> = Vec::new()
     for (path, n) in doc.members(0) {
         let Some(digest) = doc.text(n) else {
-            return Err(String::from(f"{release.as_str()}: {path.as_str()} has no SHA-256"))
+            return Err(ToolError::new(f"{release}: {path.as_str()} has no SHA-256"))
         }
         if !is_inside(path.as_str()) {
-            return Err(String::from(f"{release.as_str()}: invalid path '{path.as_str()}'"))
+            return Err(ToolError::new(f"{release}: invalid path '{path.as_str()}'"))
         }
         wanted.push((path.clone(), take digest))
     }
     wanted.sort_by(|a: (String, String), b: (String, String)| a.0 < b.0)
     // What's there already: the release may have this release's files (a redeploy).
-    var jf = Box::new(found.start(destination.clone()))
-    var listed = done(jf.get_mut().resume())
-    while listed.is_none() {
-        yield
-        listed = done(jf.get_mut().resume())
-    }
     var there: Vec<String> = Vec::new()
     // No such directory: nothing is there.
-    if let Ok(list) = (take listed).unwrap() {
+    if let Ok(list) = found(destination.as_str()) {
         for f in list {
             there.push(f.path.clone())
         }
@@ -446,70 +434,46 @@ pub fn restore(
         for k in 0..n {
             urls.push(String::from(f"{base.as_str()}{quoted(wanted[at + k].0.as_str()).as_str()}"))
         }
-        var jg = Box::new(get_all.start(urls.clone()))
-        var fetched = done(jg.get_mut().resume())
-        while fetched.is_none() {
-            yield
-            fetched = done(jg.get_mut().resume())
-        }
-        var got = (take fetched).unwrap()
+        var got = get_all(urls)
         var items: Vec<(String, Vec<u8>)> = Vec::new()
         for k in 0..n {
-            let r = replace(mut got[k], Ok(Got { status: 0, body: Vec::new() }))
-            let g = (take r)?
+            let g = got.remove(0)?
             if g.status != 200 {
-                return Err(String::from(f"GET {urls[k].as_str()}: HTTP {g.status}"))
+                return Err(ToolError::new(f"GET {urls[k].as_str()}: HTTP {g.status}"))
             }
             let path = wanted[at + k].0.clone()
             let digest = wanted[at + k].1.clone()
             if hex_sha(g.body).as_str() != digest.as_str() {
                 return Err(
-                    String::from(
-                        f"{release.as_str()}/{path.as_str()} from {w.domain.as_str()} doesn't match its SHA-256",
+                    ToolError::new(
+                        f"{release}/{path.as_str()} from {w.domain.as_str()} doesn't match its SHA-256",
                     ),
                 )
             }
             items.push((path.clone(), g.body.clone()))
         }
-        var jk = Box::new(keep.start(take items, destination.clone(), there.clone()))
-        var kept = done(jk.get_mut().resume())
-        while kept.is_none() {
-            yield
-            kept = done(jk.get_mut().resume())
-        }
-        (take kept).unwrap()?
+        keep(take items, destination.as_str(), there)?
         at += n
     }
-    var jl = Box::new(
-        keep.start(
-            Vec::from([(String::from("files.json"), listing.clone())]),
-            destination.clone(),
-            there.clone(),
-        ),
-    )
-    var kept = done(jl.get_mut().resume())
-    while kept.is_none() {
-        yield
-        kept = done(jl.get_mut().resume())
-    }
-    (take kept).unwrap()?
+    keep(
+        Vec::from([(String::from("files.json"), Vec::from(listing))]),
+        destination.as_str(),
+        there,
+    )?
     Ok(wanted.len())
 }
 
 /// Writes each file of `items` (its path in `dir`, and its bytes) into `dir`, unless it's
 /// `there` already: then it must be the same, since a release's URLs are immutable.
-@job
 pub fn keep(
-    given_items: take Vec<(String, Vec<u8>)>,
-    given_dir: take String,
-    given_there: take Vec<String>,
-) -> Result<(), String> {
-    var items = take given_items
-    let dir = take given_dir
-    let there = take given_there
+    given: take Vec<(String, Vec<u8>)>,
+    dir: str,
+    there: [String],
+) -> Result<(), ToolError> {
+    var items = take given
     var new: Vec<(String, Vec<u8>)> = Vec::new()
     for k in 0..items.len() {
-        let path = String::from(f"{dir.as_str()}/{items[k].0.as_str()}")
+        let path = String::from(f"{dir}/{items[k].0.as_str()}")
         var known = false
         for t in there {
             if t.as_str() == items[k].0.as_str() {
@@ -520,75 +484,36 @@ pub fn keep(
             new.push((take path, replace(mut items[k].1, Vec::new())))
             continue
         }
-        var j = Box::new(read_one.start(path.clone()))
-        var r = done(j.get_mut().resume())
-        while r.is_none() {
-            yield
-            r = done(j.get_mut().resume())
-        }
-        let had = (take r).unwrap()?
+        let had = read_one(path.as_str())?
         if had != items[k].1 {
-            return Err(String::from(f"an immutable release cannot change: {path.as_str()}"))
+            return Err(ToolError::new(f"an immutable release cannot change: {path.as_str()}"))
         }
     }
-    var jw = Box::new(write_files.start(take new))
-    var r = done(jw.get_mut().resume())
-    while r.is_none() {
-        yield
-        r = done(jw.get_mut().resume())
-    }
-    (take r).unwrap()
+    write_files(take new)
 }
 
 // ---- The deploy --------------------------------------------------------------------------------
 
 /// The seconds since 1970, now.
-@job
-pub fn now() -> Result<i64, String> {
-    var w = wait(time::utc_now())
-    while !w.ready() { yield }
-    match time::read_utc(w.polled()) {
-        Ok(t) => Ok(i64(t.seconds)),
-        Err(e) => Err(String::from(e.message())),
-    }
+pub fn now() -> Result<i64, ToolError> {
+    let t = time::utc_now().wait()?
+    Ok(i64(t.seconds))
 }
 
 /// The deploy `o` says: the history it leaves.
-@job
-pub fn deploy(given: take Options) -> Result<Vec<Deploy>, String> {
-    let o = take given
-    let root = o.root.clone()
-    var jr = Box::new(read_one.start(String::from(f"{root.as_str()}/release.json")))
-    var read = done(jr.get_mut().resume())
-    while read.is_none() {
-        yield
-        read = done(jr.get_mut().resume())
+pub fn deploy(o: Options) -> Result<Vec<Deploy>, ToolError> {
+    let root = o.root.as_str()
+    let Some(text) = String::from_utf8(read_one(f"{root}/release.json")?) else {
+        return Err(ToolError::new("release.json isn't UTF-8"))
     }
-    let Some(text) = String::from_utf8((take read).unwrap()?) else {
-        return Err(String::from("release.json isn't UTF-8"))
-    }
-    let rel = read_release(text.as_str())?
+    let rel = read_release(text.as_str()).map_err(own)?
     let console = home(rel)
-    var jn = Box::new(now.start())
-    var clock = done(jn.get_mut().resume())
-    while clock.is_none() {
-        yield
-        clock = done(jn.get_mut().resume())
-    }
-    let at = (take clock).unwrap()?
-    var jh = Box::new(history.start(console.domain.clone()))
-    var listed = done(jh.get_mut().resume())
-    while listed.is_none() {
-        yield
-        listed = done(jh.get_mut().resume())
-    }
-    let deploys = (take listed).unwrap()?
+    let at = now()?
+    let deploys = history(console.domain.as_str())?
     print(f"deploying release {rel.release.as_str()} of {rel.source.as_str()}")
     let keeping = kept(deploys, at, rel.release.as_str())
-    for di in 0..keeping.len() {
-        let d = keeping[di].clone()
-        for wi in 0..rel.workers.len() {
-            let w = rel.workers[wi].clone()
+    for d in keeping {
+        for w in rel.workers {
             // A Worker the kept release didn't have (a game added since) has nothing to keep.
             var had = false
             for name in d.workers {
@@ -602,78 +527,44 @@ pub fn deploy(given: take Options) -> Result<Vec<Deploy>, String> {
             let url = String::from(
                 f"https://{w.domain.as_str()}/releases/{d.release.as_str()}/files.json",
             )
-            var jl = Box::new(get.start(url.clone()))
-            var got = done(jl.get_mut().resume())
-            while got.is_none() {
-                yield
-                got = done(jl.get_mut().resume())
-            }
-            let g = (take got).unwrap()?
+            let g = get(url.as_str())?
             if g.status == 404 && w.docs {
                 print(f"{w.worker.as_str()} never served {d.release.as_str()}: nothing to keep")
                 continue
             }
             if g.status != 200 {
-                return Err(String::from(f"GET {url.as_str()}: HTTP {g.status}"))
+                return Err(ToolError::new(f"GET {url.as_str()}: HTTP {g.status}"))
             }
             if g.body.is_empty() {
                 continue
             }
-            var jk = Box::new(
-                restore.start(d.release.clone(), w.clone(), g.body.clone(), root.clone()),
-            )
-            var restored = done(jk.get_mut().resume())
-            while restored.is_none() {
-                yield
-                restored = done(jk.get_mut().resume())
-            }
-            let n = (take restored).unwrap()?
+            let n = restore(d.release.as_str(), w, g.body, root)?
             print(
                 f"{w.worker.as_str()} keeps {d.release.as_str()}: {n} files from {w.domain.as_str()}",
             )
         }
     }
     var names: Vec<String> = Vec::new()
-    for wi in 0..rel.workers.len() {
-        let w = rel.workers[wi].clone()
+    for w in rel.workers {
         names.push(w.worker.clone())
     }
     let after = next_history(deploys, rel.release.as_str(), rel.source.as_str(), names, at)
-    let path = String::from(f"{root.as_str()}/{console.worker.as_str()}/deploys.json")
-    var jw = Box::new(
-        write_files.start(Vec::from([(take path, Vec::from(history_json(after).as_bytes()))])),
-    )
-    var wrote = done(jw.get_mut().resume())
-    while wrote.is_none() {
-        yield
-        wrote = done(jw.get_mut().resume())
-    }
-    (take wrote).unwrap()?
-    for wi in 0..rel.workers.len() {
-        let w = rel.workers[wi].clone()
-        var jf = Box::new(found.start(String::from(f"{root.as_str()}/{w.worker.as_str()}")))
-        var listed = done(jf.get_mut().resume())
-        while listed.is_none() {
-            yield
-            listed = done(jf.get_mut().resume())
-        }
-        let n = uploads((take listed).unwrap()?, o.limits)?
+    let path = String::from(f"{root}/{console.worker.as_str()}/deploys.json")
+    write_files(Vec::from([(take path, Vec::from(history_json(after).as_bytes()))]))?
+    for w in rel.workers {
+        let listed = found(f"{root}/{w.worker.as_str()}")?
+        let n = uploads(listed, o.limits).map_err(own)?
         print(f"{w.worker.as_str()} ({w.domain.as_str()}): {n} files")
     }
     if o.require_main_head {
         let url = String::from(f"{o.repository.as_str()}.git/info/refs?service=git-upload-pack")
-        var jm = Box::new(fetch_ok.start(url.clone()))
-        var refs = done(jm.get_mut().resume())
-        while refs.is_none() {
-            yield
-            refs = done(jm.get_mut().resume())
-        }
-        let Some(head) = main_head((take refs).unwrap()?) else {
-            return Err(String::from(f"{url.as_str()} names no head of main"))
+        let refs = fetch_ok(url.as_str())?
+        let Some(head) = main_head(refs) else {
+            return Err(ToolError::new(f"{url.as_str()} names no head of main"))
         }
         if head.as_str() != rel.source.as_str() {
             return Err(
-                String::from(
+                ToolError::new(
                     f"{rel.source.as_str()} is no longer the head of main ({head.as_str()} is); a newer push deploys",
                 ),
             )
@@ -684,9 +575,8 @@ pub fn deploy(given: take Options) -> Result<Vec<Deploy>, String> {
         return Ok(after)
     }
     let order = deploy_order(rel.workers)
-    for wi in 0..order.len() {
-        let w = order[wi].clone()
-        var c = run::command("npx", root.as_str())
+    for w in order {
+        var c = run::command("npx", root)
         c.args = Vec::from(
             [
                 String::from("--yes"),
@@ -703,23 +593,12 @@ pub fn deploy(given: take Options) -> Result<Vec<Deploy>, String> {
         }
         c.timeout = DEPLOY_TIMEOUT
         print(f"{w.worker.as_str()}: wrangler deploy")
-        var r = wait(run::run(c))
-        while !r.ready() { yield }
-        let ran = match run::read_ran(r.polled()) {
-            Ok(r) => take r,
-            Err(e) => return Err(
-                String::from(f"wrangler deploy of {w.worker.as_str()}: {e.message()}"),
-            ),
-        }
+        let ran = run::run(c)
+            .wait()
+            .map_err(|e| ToolError::new(f"wrangler deploy of {w.worker.as_str()}: {e.message()}"))?
         for stream in 0..2 {
             let data = if stream == 0 { ran.stdout.clone() } else { ran.stderr.clone() }
-            var jd = Box::new(data_bytes.start(take data))
-            var said = done(jd.get_mut().resume())
-            while said.is_none() {
-                yield
-                said = done(jd.get_mut().resume())
-            }
-            match String::from_utf8((take said).unwrap()?) {
+            match String::from_utf8(data_bytes(take data)?) {
                 Some(t) => {
                     let out = t.trim()
                     if !out.is_empty() {
@@ -730,49 +609,28 @@ pub fn deploy(given: take Options) -> Result<Vec<Deploy>, String> {
             }
         }
         if ran.status != 0 {
-            return Err(String::from(f"wrangler deploy of {w.worker.as_str()} exited {ran.status}"))
+            return Err(
+                ToolError::new(f"wrangler deploy of {w.worker.as_str()} exited {ran.status}"),
+            )
         }
     }
-    var jv = Box::new(verify.start(take rel, root.clone()))
-    var verified = done(jv.get_mut().resume())
-    while verified.is_none() {
-        yield
-        verified = done(jv.get_mut().resume())
-    }
-    (take verified).unwrap()?
+    verify(rel, root)?
     Ok(after)
 }
 
 /// Waits until each Worker of `rel` serves its release, byte for byte (its `files.json` as the
 /// release in `root` has it), and the console lists it as the one live release.
-@job
-pub fn verify(given: take Release, given_root: take String) -> Result<(), String> {
-    let rel = take given
-    let root = take given_root
-    for wi in 0..rel.workers.len() {
-        let w = rel.workers[wi].clone()
-        let local = String::from(
-            f"{root.as_str()}/{w.worker.as_str()}/releases/{rel.release.as_str()}/files.json",
-        )
-        var jr = Box::new(read_one.start(take local))
-        var read = done(jr.get_mut().resume())
-        while read.is_none() {
-            yield
-            read = done(jr.get_mut().resume())
-        }
-        let want = (take read).unwrap()?
+pub fn verify(rel: Release, root: str) -> Result<(), ToolError> {
+    for w in rel.workers {
+        let want = read_one(
+            f"{root}/{w.worker.as_str()}/releases/{rel.release.as_str()}/files.json",
+        )?
         let url = String::from(
             f"https://{w.domain.as_str()}/releases/{rel.release.as_str()}/files.json",
         )
         var tries = 0
         loop {
-            var jg = Box::new(get.start(url.clone()))
-            var got = done(jg.get_mut().resume())
-            while got.is_none() {
-                yield
-                got = done(jg.get_mut().resume())
-            }
-            let serves = match (take got).unwrap() {
+            let serves = match get(url.as_str()) {
                 Ok(g) => g.status == 200 && g.body == want,
                 Err(_) => false,
             }
@@ -782,24 +640,17 @@ pub fn verify(given: take Release, given_root: take String) -> Result<(), String
             tries += 1
             if tries == TRIES {
                 return Err(
-                    String::from(
+                    ToolError::new(
                         f"{w.domain.as_str()} doesn't serve release {rel.release.as_str()}",
                     ),
                 )
             }
-            var t = wait(time::after(BETWEEN_TRIES))
-            while !t.ready() { yield }
+            let _ = time::after(BETWEEN_TRIES).wait()?
         }
         print(f"{w.worker.as_str()} ({w.domain.as_str()}) serves release {rel.release.as_str()}")
     }
     let console = home(rel)
-    var jh = Box::new(history.start(console.domain.clone()))
-    var listed = done(jh.get_mut().resume())
-    while listed.is_none() {
-        yield
-        listed = done(jh.get_mut().resume())
-    }
-    let deploys = (take listed).unwrap()?
+    let deploys = history(console.domain.as_str())?
     var live = String::new()
     var count = 0
     var only = true
@@ -815,7 +666,7 @@ pub fn verify(given: take Release, given_root: take String) -> Result<(), String
     }
     if count != 1 || !only {
         return Err(
-            String::from(
+            ToolError::new(
                 f"{console.domain.as_str()} lists [{live.as_str()}] live, not {rel.release.as_str()}",
             ),
         )

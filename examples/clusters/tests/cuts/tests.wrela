@@ -2,16 +2,13 @@
 // hardware GPU (never a software renderer) with a 640 × 360 screen, runs `init`, and drives it
 // through its `@testing` exports: `view` sets the eye, the error and the copies, `ask_counts`,
 // `counts` and `count` read the last frame's counts back, and `megabytes` the clusters' size.
-// Frames are drawn at the times the tests name (`drive::frame_at`), and the screen captured.
+// Frames are drawn at the times the tests name (`drive::Step::FrameAt`), and the screen captured.
 
-use hosts::both::{Both, both_hosts, difference}
-use hosts::steps::{built, screen}
-use std::collections::{Box, Vec}
+use hosts::both::{both_hosts, bytes_of, difference}
+use hosts::steps::built
 use std::io::print
-use std::job::Step
-use std::string::String
 use std::tool::drive
-use std::tool::drive::Scalar
+use std::tool::drive::{Ran, Scalar, Seen, Step}
 use std::tool::toolchain
 
 /// The screen's size.
@@ -24,180 +21,90 @@ const EYE = vec3(-2.0, 0.9, -1.5)
 const AT = vec3(6.0, 0.3, 9.0)
 
 /// The example, built as a test build into `scratch/clusters`, loaded on the GPU, `init` run.
-@job
 fn opened() -> drive::Build {
     var options = toolchain::options()
     options.testing = true
-    var b = Box::new(
-        built.start(
-            String::from("repo/examples/clusters"),
-            String::from("scratch/clusters"),
-            take options,
-            String::from("the clusters build"),
-        ),
-    )
-    loop {
-        match b.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
+    built("repo/examples/clusters", "scratch/clusters", options, "the clusters build")
     var load = drive::gpu()
     load.width = W
     load.height = H
-    var l = drive::load("scratch/clusters", load)
-    var loaded = l.poll()
-    while loaded.is_none() {
-        yield
-        loaded = l.poll()
+    let Ok(it) = drive::load("scratch/clusters", load).wait() else {
+        panic("the build loads on a hardware GPU")
     }
-    let Some(lp) = take loaded else { panic("no answer") }
-    let Ok(it) = drive::read_loaded(take lp) else { panic("the build loads on a hardware GPU") }
-    var i = drive::init(it.build)
-    var inited = i.poll()
-    while inited.is_none() {
-        yield
-        inited = i.poll()
-    }
-    let Some(ip) = take inited else { panic("no answer") }
-    let Ok(init) = drive::read_ran(take ip) else { panic("init's request") }
-    if let Some(trap) = init.trap {
-        panic(trap.message.as_str())
-    }
+    stepped(it.build, [Step::Init], "init")
     it.build
 }
 
-/// The export `name` called with `args`: its first result, as a `u32` (0 if it has none).
-@job
-fn called(h: take drive::Build, name: take String, args: take Vec<Scalar>) -> u32 {
-    var c = drive::call(h, name.as_str(), args)
-    var got = c.poll()
-    while got.is_none() {
-        yield
-        got = c.poll()
+/// `list` run on `h`, none of it trapping (`what` names it in a trap's message): what it saw.
+fn stepped(h: drive::Build, list: [Step], what: str) -> Seen {
+    let Ok(seen) = drive::steps(h, list).wait() else { panic(f"{what}'s request") }
+    if let Some(trap) = seen.trap {
+        panic(f"{what}: {trap.message.as_str()}")
     }
-    let Some(cp) = take got else { panic("no answer") }
-    let Ok(ran) = drive::read_ran(take cp) else { panic(f"{name.as_str()}'s request") }
-    if let Some(trap) = ran.trap {
-        panic(f"{name.as_str()}: {trap.message.as_str()}")
-    }
+    seen
+}
+
+/// A call of the export `name` with `args`.
+fn call(name: str, args: take Vec<Scalar>) -> Step {
+    Step::Call(String::from(name), take args)
+}
+
+/// The first result of the call `name` that `ran` is, as a `u32` (0 if it has none).
+fn first(ran: Ran, name: str) -> u32 {
     if ran.results.len() == 0 {
         return 0
     }
     match ran.results[0] {
         Scalar::I32(x) => u32(x),
-        _ => panic(f"{name.as_str()} gives an integer"),
-    }
-}
-
-/// A frame at `time`.
-@job
-fn framed(h: take drive::Build, time: take f32) {
-    var f = drive::frame_at(h, time)
-    var got = f.poll()
-    while got.is_none() {
-        yield
-        got = f.poll()
-    }
-    let Some(fp) = take got else { panic("no answer") }
-    let Ok(ran) = drive::read_ran(take fp) else { panic("the frame's request") }
-    if let Some(trap) = ran.trap {
-        panic(trap.message.as_str())
+        _ => panic(f"{name} gives an integer"),
     }
 }
 
 /// The frame with the eye at `EYE` looking at `AT`, `pixels` of error, `side` × `side` copies:
 /// the third, and every one before it whole (the lists have room for every quad the copies
 /// could list, from the first frame).
-@job
-fn view(h: take drive::Build, pixels: take f32, side: take u32) -> Vec<u8> {
+fn view(h: drive::Build, pixels: f32, side: u32) -> Vec<u8> {
     var args: Vec<Scalar> = Vec::new()
     for x in [EYE.x, EYE.y, EYE.z, AT.x, AT.y, AT.z, pixels] {
         args.push(Scalar::F32(x))
     }
     args.push(Scalar::I32(i32(side)))
-    var c = Box::new(called.start(h, String::from("view"), take args))
-    var done = false
-    while !done {
-        match c.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => done = true,
-        }
-    }
+    var list: Vec<Step> = Vec::from([call("view", take args)])
     for i in 0..3 {
-        var f = Box::new(framed.start(h, f32(i) / 60.0))
-        var drawn = false
-        while !drawn {
-            match f.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(_) => drawn = true,
-            }
-        }
+        list.push(Step::FrameAt(f32(i) / 60.0))
     }
-    var s = Box::new(screen.start(h))
-    loop {
-        match s.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(pixels) => {
-                assert(pixels.len() == 4 * W * H, "every pixel came back")
-                return pixels
-            },
-        }
-    }
+    list.push(Step::Capture)
+    let seen = stepped(h, list, "the view and its frames")
+    let pixels = bytes_of(seen.captures[0].rgba.clone())
+    assert(pixels.len() == 4 * W * H, "every pixel came back")
+    pixels
 }
 
 /// The last frame's counts (`Clusters::counts`), checked: every level's clusters' quads fit its
 /// room, and so do the quads its frame listed. How many levels listed some.
-@job
-fn levels_listed(h: take drive::Build) -> u32 {
-    var a = Box::new(called.start(h, String::from("ask_counts"), Vec::new()))
-    var asked = false
-    while !asked {
-        match a.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => asked = true,
-        }
-    }
+fn levels_listed(h: drive::Build) -> u32 {
     var n = 0
     var i = 0
     while i < 30 && n == 0 {
-        var f = Box::new(framed.start(h, 1.0 + f32(i) / 60.0))
-        var done = false
-        while !done {
-            match f.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(_) => done = true,
-            }
+        var list: Vec<Step> = Vec::new()
+        if i == 0 {
+            list.push(call("ask_counts", Vec::new()))
         }
-        var c = Box::new(called.start(h, String::from("counts"), Vec::new()))
-        var counted = false
-        while !counted {
-            match c.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(v) => {
-                    n = v
-                    counted = true
-                },
-            }
-        }
+        list.push(Step::FrameAt(1.0 + f32(i) / 60.0))
+        list.push(call("counts", Vec::new()))
+        let seen = stepped(h, list, "a frame and its counts")
+        n = first(seen.ran[seen.ran.len() - 1], "counts")
         i += 1
     }
     assert(n > 0, "the counts never arrived")
+    var list: Vec<Step> = Vec::new()
+    for k in 0..n {
+        list.push(call("count", Vec::from([Scalar::I32(i32(k))])))
+    }
+    let seen = stepped(h, list, "count")
     var got: Vec<u32> = Vec::new()
     for k in 0..n {
-        var args: Vec<Scalar> = Vec::new()
-        args.push(Scalar::I32(i32(k)))
-        var c = Box::new(called.start(h, String::from("count"), take args))
-        var read = false
-        while !read {
-            match c.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(v) => {
-                    got.push(v)
-                    read = true
-                },
-            }
-        }
+        got.push(first(seen.ran[k], "count"))
     }
     var levels = 0
     for level in 0..n / 4 {
@@ -215,30 +122,15 @@ fn levels_listed(h: take drive::Build) -> u32 {
 
 /// The clusters' megabytes once cooking's quads and vertices are fitted to what it emitted (read
 /// back a few frames after cooking): frames until two running agree.
-@job
-fn settled_megabytes(h: take drive::Build) -> u32 {
+fn settled_megabytes(h: drive::Build) -> u32 {
     var last = 4294967295
     for i in 0..120 {
-        var f = Box::new(framed.start(h, 2.0 + f32(i) / 60.0))
-        var done = false
-        while !done {
-            match f.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(_) => done = true,
-            }
-        }
-        var m = Box::new(called.start(h, String::from("megabytes"), Vec::new()))
-        var mb = 0
-        var read = false
-        while !read {
-            match m.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(v) => {
-                    mb = v
-                    read = true
-                },
-            }
-        }
+        let seen = stepped(
+            h,
+            [Step::FrameAt(2.0 + f32(i) / 60.0), call("megabytes", Vec::new())],
+            "a frame and its megabytes",
+        )
+        let mb = first(seen.ran[1], "megabytes")
         if mb == last {
             return mb
         }
@@ -261,50 +153,12 @@ fn covered(frame: [u8]) -> Vec<bool> {
 /// copies takes at least three levels; its buffers, cooking's fitted to what it emitted and the
 /// frames' with room for every quad, take under 400 MB.
 @test(tool, read: [("repo", "../../../..")], budget: 300)
-@job
 fn a_cut_holds_every_quad_it_wants() {
-    var o = Box::new(opened.start())
-    var h: Option<drive::Build> = None
-    while h.is_none() {
-        match o.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(b) => h = Some(b),
-        }
-    }
-    let Some(b) = h else { panic("opened") }
-    var v = Box::new(view.start(b, 0.5, 8))
-    var viewed = false
-    while !viewed {
-        match v.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => viewed = true,
-        }
-    }
-    var l = Box::new(levels_listed.start(b))
-    var levels = 0
-    var listed = false
-    while !listed {
-        match l.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(n) => {
-                levels = n
-                listed = true
-            },
-        }
-    }
+    let b = opened()
+    view(b, 0.5, 8)
+    let levels = levels_listed(b)
     assert(levels >= 3, f"the cut took {levels} levels")
-    var m = Box::new(settled_megabytes.start(b))
-    var mb = 0
-    var settled = false
-    while !settled {
-        match m.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(n) => {
-                mb = n
-                settled = true
-            },
-        }
-    }
+    let mb = settled_megabytes(b)
     print(f"the clusters take {mb} MB")
     assert(mb < 400, f"the clusters take {mb} MB")
 }
@@ -315,54 +169,12 @@ fn a_cut_holds_every_quad_it_wants() {
 /// crack), and every pixel the two cover differently is beside the finest level's silhouette
 /// (within a pixel of it).
 @test(tool, read: [("repo", "../../../..")], budget: 300)
-@job
 fn a_cut_opens_no_crack_and_keeps_its_silhouettes() {
-    var o = Box::new(opened.start())
-    var h: Option<drive::Build> = None
-    while h.is_none() {
-        match o.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(b) => h = Some(b),
-        }
-    }
-    let Some(b) = h else { panic("opened") }
-    var cut_frame: Vec<u8> = Vec::new()
-    var v = Box::new(view.start(b, 0.5, 3))
-    var viewed = false
-    while !viewed {
-        match v.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(f) => {
-                cut_frame = take f
-                viewed = true
-            },
-        }
-    }
-    var l = Box::new(levels_listed.start(b))
-    var levels = 0
-    var listed = false
-    while !listed {
-        match l.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(n) => {
-                levels = n
-                listed = true
-            },
-        }
-    }
+    let b = opened()
+    let cut_frame = view(b, 0.5, 3)
+    let levels = levels_listed(b)
     assert(levels >= 3, f"the cut took {levels} levels")
-    var finest_frame: Vec<u8> = Vec::new()
-    var w = Box::new(view.start(b, 0.0, 3))
-    var finest_viewed = false
-    while !finest_viewed {
-        match w.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(f) => {
-                finest_frame = take f
-                finest_viewed = true
-            },
-        }
-    }
+    let finest_frame = view(b, 0.0, 3)
     let cut = covered(cut_frame)
     let finest = covered(finest_frame)
     var cracks = 0
@@ -410,26 +222,15 @@ fn a_cut_opens_no_crack_and_keeps_its_silhouettes() {
 /// cluster's quads together as wgpu's do). Not the same state hash: cooking's buffers are fitted
 /// once its counts are read back, at a frame each host chooses.
 @test(tool, read: [("repo", "../../../..")], browser: true, budget: 300)
-@job
 fn the_browser_draws_the_native_hosts_clusters() {
-    var j = Box::new(
-        both_hosts.start(
-            String::from("repo/examples/clusters"),
-            String::from("clusters-browser"),
-            W,
-            H,
-            frames: 30,
-            testing: true,
-        ),
+    let both = both_hosts(
+        "repo/examples/clusters",
+        "clusters-browser",
+        W,
+        H,
+        frames: 30,
+        testing: true,
     )
-    var drawn: Option<Both> = None
-    while drawn.is_none() {
-        match j.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(b) => drawn = Some(take b),
-        }
-    }
-    let Some(both) = take drawn else { panic("both hosts") }
     let (mean, most) = difference(both.chrome, both.native)
     print(f"Chrome against the native host: mean {mean}/255, max {most}/255")
     assert(mean <= 0.5, f"mean difference {mean}")

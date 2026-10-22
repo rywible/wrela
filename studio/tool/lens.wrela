@@ -12,20 +12,19 @@ use glue::{
 }
 use std::json::{Kind, TOP, parse}
 use json::quoted
-use std::collections::{Box, Vec}
+use std::collections::{Vec, replace}
 use std::input::{Key, Script}
 use std::math::is_finite
 use std::string::String
-use std::tool::{MOST_BYTES, ToolError}
+use std::tool::{Call, MOST_BYTES, Request, ToolError}
 use std::tool::blob
 use std::tool::blob::Data
 use std::tool::drive
-use std::tool::drive::Scalar
+use std::tool::drive::{Scalar, Seen, Step}
 use std::tool::files
 use std::tool::image
 use std::tool::toolchain
 use std::tool::toolchain::Override
-use toolkit::wait::{done, said, wait}
 use toolkit::whole::{blob_of, chunked, data_bytes, joined, write_data}
 
 /// The lens's exported actions: each one's name and arguments (`f`: an `f32`, `u`: a `u32`).
@@ -102,208 +101,202 @@ pub struct Built: Clone {
     pub warnings: u32,
 }
 
-/// Why a step failed, as the tool says it (`error: ...`).
-pub fn failed(why: str) -> String {
-    String::from(why)
-}
-
-/// A service's answer, its error in the host's words after `what`.
-pub fn tool_saying<T>(r: take Result<T, ToolError>, what: str) -> Result<T, String> {
-    match take r {
-        Ok(x) => Ok(x),
-        Err(e) => Err(String::from(f"{what}: {e.message()}")),
-    }
-}
-
 /// Reads the text file at `path`: `None` if it isn't there.
-@job
-pub fn read_text(path: take String) -> Result<Option<String>, String> {
-    var s = wait(files::stat(path.as_str()))
-    while !s.ready() { yield }
-    if files::read_entry(s.polled()).is_err() {
+pub fn read_text(path: str) -> Result<Option<String>, ToolError> {
+    if files::stat(path).wait().is_err() {
         return Ok(None)
     }
-    var r = wait(files::read(path.as_str()))
-    while !r.ready() { yield }
-    match String::from_utf8(r.bytes()?) {
+    match String::from_utf8(files::read(path).wait()?) {
         Some(s) => Ok(Some(s)),
-        None => Err(failed("a file isn't UTF-8")),
+        None => Err(ToolError::new("a file isn't UTF-8")),
     }
 }
 
 /// Writes `text` as the whole file at `path`, in a write root.
-@job
-pub fn write_text(path: take String, text: take String) -> Result<(), String> {
-    var w = wait(files::write(path.as_str(), text.as_bytes()))
-    while !w.ready() { yield }
-    w.bytes()?
+pub fn write_text(path: str, text: str) -> Result<(), ToolError> {
+    let _ = files::write(path, String::from(text).as_bytes()).wait()?
     Ok(())
 }
 
-/// Builds the lens on the subject at `place`: the glue written into `place.out`, then the
-/// program built lifted into `place.out/page`.
-@job
-pub fn build(place: take Place) -> Result<Built, String> {
-    let subject = place.subject.clone()
-    let out = place.out.clone()
-    let ws = place.ws.clone()
+/// A lens's build under way, a request at a time, so a caller can answer other requests
+/// meanwhile (the server's rebuild): the subject's name, whether it's a floor, the program's
+/// directory, its build's, the workspace's directory and the build's options, and the request
+/// it waits on: a field lens's probe query, then the build.
+pub struct Building {
+    name: String,
+    floor: bool,
+    program: String,
+    page: String,
+    ws: String,
+    options: toolchain::BuildOptions,
+    query: Option<Call<String>>,
+    build: Option<Call<toolchain::Built>>,
+}
+
+/// Starts building the lens on the subject at `place`: the glue written into `place.out`, and
+/// for a field lens the probe written and asked about, then (`Building::advance`) the program
+/// built lifted into `place.out/page`.
+pub fn begin(place: Place) -> Result<Building, ToolError> {
+    let subject = place.subject.as_str()
+    let out = place.out.as_str()
+    let ws = place.ws.as_str()
     // The subject's name, and whether it's a floor.
-    var j = Box::new(read_text.start(String::from(f"{subject.as_str()}/wrela.toml")))
-    var manifest_text = done(j.get_mut().resume())
-    while manifest_text.is_none() {
-        yield
-        manifest_text = done(j.get_mut().resume())
+    let Some(m) = read_text(f"{subject}/wrela.toml")? else {
+        return Err(ToolError::new(f"`{subject}` isn't a package: it has no wrela.toml"))
     }
-    let Some(m) = (take manifest_text).unwrap()? else {
-        return Err(failed(f"`{subject.as_str()}` isn't a package: it has no wrela.toml"))
-    }
-    let name = package_name(m.as_str(), subject.as_str())
-    var l = Box::new(read_text.start(String::from(f"{subject.as_str()}/lens.wrela")))
-    var lens_text = done(l.get_mut().resume())
-    while lens_text.is_none() {
-        yield
-        lens_text = done(l.get_mut().resume())
-    }
-    let lens_module = (take lens_text).unwrap()?
+    let name = package_name(m.as_str(), subject)
     var floor = false
     var geology = false
-    if let Some(t) = lens_module {
+    if let Some(t) = read_text(f"{subject}/lens.wrela")? {
         floor = is_floor(t.as_str())
         geology = has_geology(t.as_str())
     }
     // What the program is, and what's written for it.
-    var writes: Vec<(String, String)> = Vec::new()
     var overrides: Vec<Override> = place.overrides.clone()
-    overrides.push(Override { name: name.clone(), dir: subject.clone() })
-    overrides.push(
-        Override { name: String::from("studio"), dir: String::from(f"{ws.as_str()}/studio") },
-    )
+    overrides.push(Override { name: name.clone(), dir: String::from(subject) })
+    overrides.push(Override { name: String::from("studio"), dir: String::from(f"{ws}/studio") })
     var options = toolchain::options()
     options.debug = place.debug
-    var program = String::from(f"{out.as_str()}/lens")
+    let page = if place.page.is_empty() {
+        String::from(f"{out}/page")
+    } else {
+        place.page.clone()
+    }
+    var b = Building {
+        name: name.clone(),
+        floor,
+        program: String::from(f"{out}/lens"),
+        page,
+        ws: String::from(ws),
+        options: toolchain::options(),
+        query: None,
+        build: None,
+    }
     if floor {
-        program = String::from(f"{out.as_str()}/map")
-        let glue_dir = String::from(f"{ws.as_str()}/studio/maplens/glue")
+        b.program = String::from(f"{out}/map")
+        let glue_dir = String::from(f"{ws}/studio/maplens/glue")
+        var writes: Vec<(String, String)> = Vec::new()
         for f in ["main.wrela", "floor.wrela"] {
-            var t = Box::new(read_text.start(String::from(f"{glue_dir.as_str()}/{f}")))
-            var got = done(t.get_mut().resume())
-            while got.is_none() {
-                yield
-                got = done(t.get_mut().resume())
-            }
-            let Some(text) = (take got).unwrap()? else {
-                return Err(failed(f"there's no {glue_dir.as_str()}/{f}"))
+            let Some(text) = read_text(f"{glue_dir.as_str()}/{f}")? else {
+                return Err(ToolError::new(f"there's no {glue_dir.as_str()}/{f}"))
             }
             let written = if f == "floor.wrela" {
                 floor_text(text.as_str(), name.as_str(), geology)
             } else {
                 take text
             }
-            writes.push((String::from(f"{program.as_str()}/{f}"), take written))
+            writes.push((String::from(f"{b.program.as_str()}/{f}"), take written))
         }
         var deps: Vec<String> = Vec::new()
         deps.push(String::from("maplens"))
         deps.push(String::from("engine"))
         writes.push(
-            (String::from(f"{program.as_str()}/wrela.toml"), manifest("map", name.as_str(), deps)),
+            (
+                String::from(f"{b.program.as_str()}/wrela.toml"),
+                manifest("map", name.as_str(), deps),
+            ),
         )
         overrides.push(
-            Override {
-                name: String::from("maplens"),
-                dir: String::from(f"{ws.as_str()}/studio/maplens"),
-            },
+            Override { name: String::from("maplens"), dir: String::from(f"{ws}/studio/maplens") },
         )
-        overrides.push(
-            Override { name: String::from("engine"), dir: String::from(f"{ws.as_str()}/engine") },
-        )
+        overrides.push(Override { name: String::from("engine"), dir: String::from(f"{ws}/engine") })
         // The map's literals alone: what a drag moves. (The ground's, the species' and the rest
         // are built into the code, so the preview runs at the speed of the game's build.)
         options.lift.push(String::from(f"{name.as_str()}/map.wrela"))
+        for w in writes {
+            write_text(w.0.as_str(), w.1.as_str())?
+        }
+        options.overrides = take overrides
+        b.build = Some(toolchain::build(b.program.as_str(), b.page.as_str(), options.clone()))
     } else {
         // The probe: what the compiler says of the subject's channels, spec and blueprint.
-        let probe = String::from(f"{out.as_str()}/probe")
-        var probes: Vec<(String, String)> = Vec::new()
-        probes.push(
-            (
-                String::from(f"{probe.as_str()}/wrela.toml"),
-                manifest("probe", name.as_str(), Vec::new()),
-            ),
-        )
-        probes.push((String::from(f"{probe.as_str()}/main.wrela"), probe_main()))
-        probes.push((String::from(f"{probe.as_str()}/probe.wrela"), probe_text(name.as_str())))
-        for k in 0..probes.len() {
-            let (path, text) = probes[k].clone()
-            var w = Box::new(write_text.start(take path, take text))
-            var ended = done(w.get_mut().resume())
-            while ended.is_none() {
-                yield
-                ended = done(w.get_mut().resume())
+        let probe = String::from(f"{out}/probe")
+        write_text(f"{probe.as_str()}/wrela.toml", manifest("probe", name.as_str(), Vec::new()))?
+        write_text(f"{probe.as_str()}/main.wrela", probe_main())?
+        write_text(f"{probe.as_str()}/probe.wrela", probe_text(name.as_str()))?
+        b.query = Some(toolchain::query(probe.as_str(), probe_queries(name.as_str()), overrides))
+        options.overrides = take overrides
+    }
+    b.options = take options
+    Ok(b)
+}
+
+impl Building {
+    /// The request the build waits on now.
+    pub fn request(self) -> Request {
+        match self.query {
+            Some(q) => q.request(),
+            None => match self.build {
+                Some(c) => c.request(),
+                None => panic("a lens's build waits on nothing"),
+            },
+        }
+    }
+
+    /// Waits for the request the build waits on, and goes on from its answer: the lens built
+    /// once the build's answer has come, else `None` (a field lens's probe answered, and its
+    /// program written and being built).
+    pub fn advance(mut self) -> Result<Option<Built>, ToolError> {
+        if let Some(q) = replace(mut self.query, None) {
+            let json = (take q).wait()?
+            let s = read_probe(self.name.as_str(), json.as_str()).map_err(
+                |e| ToolError::new(e.as_str()),
+            )?
+            let ws = self.ws.as_str()
+            let Some(main) = read_text(f"{ws}/studio/glue/main.wrela")? else {
+                return Err(ToolError::new(f"there's no {ws}/studio/glue/main.wrela"))
             }
-            (take ended).unwrap()?
+            let program = self.program.as_str()
+            write_text(f"{program}/main.wrela", main.as_str())?
+            write_text(f"{program}/subject.wrela", glue_text(s).as_str())?
+            var deps: Vec<String> = Vec::new()
+            deps.push(String::from("studio"))
+            write_text(
+                f"{program}/wrela.toml",
+                manifest("lens", self.name.as_str(), deps).as_str(),
+            )?
+            self.options.lift.push(self.name.clone())
+            self.build = Some(toolchain::build(program, self.page.as_str(), self.options.clone()))
+            return Ok(None)
         }
-        var q = wait(
-            toolchain::query(
-                probe.as_str(),
-                probe_queries(name.as_str()),
-                overrides: overrides.clone(),
-            ),
-        )
-        while !q.ready() { yield }
-        let json = said(toolchain::read_queried(q.polled()))?
-        let s = read_probe(name.as_str(), json.as_str())?
-        var t = Box::new(read_text.start(String::from(f"{ws.as_str()}/studio/glue/main.wrela")))
-        var got = done(t.get_mut().resume())
-        while got.is_none() {
-            yield
-            got = done(t.get_mut().resume())
+        let Some(c) = replace(mut self.build, None) else {
+            return Err(ToolError::new("a lens's build waits on nothing"))
         }
-        let Some(main) = (take got).unwrap()? else {
-            return Err(failed(f"there's no {ws.as_str()}/studio/glue/main.wrela"))
-        }
-        writes.push((String::from(f"{program.as_str()}/main.wrela"), take main))
-        writes.push((String::from(f"{program.as_str()}/subject.wrela"), glue_text(s)))
-        var deps: Vec<String> = Vec::new()
-        deps.push(String::from("studio"))
-        writes.push(
-            (String::from(f"{program.as_str()}/wrela.toml"), manifest("lens", name.as_str(), deps)),
-        )
-        options.lift.push(name.clone())
-    }
-    for k in 0..writes.len() {
-        let (path, text) = writes[k].clone()
-        var w = Box::new(write_text.start(take path, take text))
-        var ended = done(w.get_mut().resume())
-        while ended.is_none() {
-            yield
-            ended = done(w.get_mut().resume())
-        }
-        (take ended).unwrap()?
-    }
-    options.overrides = take overrides
-    let page = if place.page.is_empty() {
-        String::from(f"{out.as_str()}/page")
-    } else {
-        place.page.clone()
-    }
-    var b = wait(toolchain::build(program.as_str(), page.as_str(), options))
-    while !b.ready() { yield }
-    let result = said(toolchain::read_built(b.polled()))?
-    if !result.ok {
-        var why = String::new()
-        for k in 0..result.diagnostics.len() {
-            if result.diagnostics[k].error {
-                why.push_str(result.diagnostics[k].rendered.as_str())
+        let result = (take c).wait()?
+        // A build that failed: its errors; one that built: how many warnings it had.
+        var errors = String::new()
+        var warnings = 0
+        for d in result.diagnostics {
+            if !result.ok && d.error {
+                errors.push_str(d.rendered.as_str())
+            } else if result.ok && !d.error {
+                warnings += 1
             }
         }
-        return Ok(Built { errors: why, name, floor, program, page, warnings: 0 })
+        Ok(
+            Some(
+                Built {
+                    errors,
+                    name: self.name.clone(),
+                    floor: self.floor,
+                    program: self.program.clone(),
+                    page: self.page.clone(),
+                    warnings,
+                },
+            ),
+        )
     }
-    var warnings = 0
-    for k in 0..result.diagnostics.len() {
-        if !result.diagnostics[k].error {
-            warnings += 1
+}
+
+/// Builds the lens on the subject at `place`: the glue written into `place.out`, then the
+/// program built lifted into `place.out/page`.
+pub fn build(place: Place) -> Result<Built, ToolError> {
+    var b = begin(place)?
+    loop {
+        if let Some(built) = b.advance()? {
+            return Ok(built)
         }
     }
-    Ok(Built { errors: String::new(), name, floor, program, page, warnings })
 }
 
 /// The lens's actions: the map lens's on a floor, else the field lens's.
@@ -357,8 +350,8 @@ pub fn settles(field: bool, name: str) -> bool {
 
 /// The lens running headless on the native host: its driven build, its screen's size, the next
 /// frame's number, whether it's the field lens, its program and its build (where its edits are
-/// written), the fit's reference, and the host's time after the last operation (seconds since
-/// the load).
+/// written), the fit's reference, the host's time after the last request (seconds since the
+/// load), and the lines the lens printed that haven't been read (`logs`).
 pub struct Lens: Clone {
     pub b: drive::Build,
     pub width: u32,
@@ -369,32 +362,42 @@ pub struct Lens: Clone {
     pub page: String,
     pub reference: Option<Vec<u8>>,
     pub now: f64,
+    pub lines: Vec<String>,
 }
 
-/// Whether `ran` trapped: its message, as the error.
-fn trapped(ran: take drive::Ran) -> Result<drive::Ran, String> {
-    match ran.trap.clone() {
-        Some(t) => Err(failed(t.message.as_str())),
-        None => Ok(ran),
+/// Runs `list` on the lens's build: what the steps saw, the lines it printed kept for `logs`.
+/// A trap is the error, in the host's words.
+pub fn steps(lens: mut Lens, list: [Step]) -> Result<Seen, ToolError> {
+    var seen = drive::steps(lens.b, list).wait()?
+    var printed = drive::lines(mut seen)?
+    lens.lines.append(mut printed)
+    if let Some(t) = seen.trap {
+        return Err(ToolError::new(t.message.as_str()))
     }
+    if !seen.ran.is_empty() {
+        let last = seen.ran.len() - 1
+        lens.now = seen.ran[last].started + seen.ran[last].elapsed
+    }
+    Ok(seen)
 }
 
 /// Loads the lens's build at `page` (with the GPU unless `cpu`, its screen `width` by `height`),
 /// runs its `init`, and with the GPU a first frame, so it knows the screen's size.
-@job
 pub fn start(
-    built: take Built,
-    width: take u32,
-    height: take u32,
-    cpu: take bool,
+    built: Built,
+    width: u32,
+    height: u32,
+    cpu: bool,
     reference: take Option<Vec<u8>>,
-) -> Result<Lens, String> {
+) -> Result<Lens, ToolError> {
     var options = if cpu { drive::cpu() } else { drive::gpu() }
     options.width = width
     options.height = height
-    var l = wait(drive::load(built.page.as_str(), options))
-    while !l.ready() { yield }
-    let it = tool_saying(drive::read_loaded(l.polled()), "can't run the lens")?
+    let it = drive::load(built.page.as_str(), options)
+        .wait()
+        .map_err(
+            |e| ToolError::new(f"can't run the lens: {e.message()}"),
+        )?
     var lens = Lens {
         b: it.build,
         width,
@@ -405,84 +408,53 @@ pub fn start(
         page: built.page.clone(),
         reference,
         now: 0.0,
+        lines: Vec::new(),
     }
-    var i = wait(drive::init(lens.b))
-    while !i.ready() { yield }
-    let ran = trapped(said(drive::read_ran(i.polled()))?)?
-    lens.now = ran.started + ran.elapsed
-    if !cpu {
-        var f = Box::new(frames.start(Script::frames()))
-        var ended = done(f.get_mut().resume(mut lens))
-        while ended.is_none() {
-            yield
-            ended = done(f.get_mut().resume(mut lens))
-        }
-        (take ended).unwrap()?
+    if cpu {
+        let _ = steps(mut lens, [Step::Init])?
+    } else {
+        let _ = steps(mut lens, [Step::Init, Step::Frames(1, Script::frames())])?
+        lens.frame += 1
+        answer_posts(mut lens)?
     }
     Ok(lens)
 }
 
 /// The lens's next frame, with `script`'s events, then its posts answered.
-@job
-pub fn frames(lens: mut Lens, script: take Script) -> Result<(), String> {
-    var f = wait(drive::frames(lens.b, 1, script))
-    while !f.ready() { yield }
-    let ran = trapped(said(drive::read_ran(f.polled()))?)?
-    lens.now = ran.started + ran.elapsed
+pub fn frames(lens: mut Lens, script: take Script) -> Result<(), ToolError> {
+    let _ = steps(mut lens, [Step::Frames(1, take script)])?
     lens.frame += 1
-    var p = Box::new(answer_posts.start())
-    var ended = done(p.get_mut().resume(mut lens))
-    while ended.is_none() {
-        yield
-        ended = done(p.get_mut().resume(mut lens))
-    }
-    (take ended).unwrap()
+    answer_posts(mut lens)
 }
 
 /// Export `name` called with `args`: its results. A trap is the error.
-@job
-pub fn invoke(
-    lens: mut Lens,
-    name: take String,
-    args: take Vec<Scalar>,
-) -> Result<Vec<Scalar>, String> {
-    var c = wait(drive::call(lens.b, name.as_str(), args))
-    while !c.ready() { yield }
-    let ran = trapped(said(drive::read_ran(c.polled()))?)?
-    lens.now = ran.started + ran.elapsed
-    Ok(ran.results.clone())
+pub fn invoke(lens: mut Lens, name: str, args: [Scalar]) -> Result<Vec<Scalar>, ToolError> {
+    var seen = steps(mut lens, [Step::Call(String::from(name), Vec::from(args))])?
+    Ok(seen.ran.remove(0).results)
 }
 
-/// Frames until the lens isn't waiting (at most `WAIT` seconds of the host's), then one more.
-@job
-pub fn settle(lens: mut Lens) -> Result<(), String> {
+/// Frames until the lens isn't waiting (at most `WAIT` seconds of the host's), then one more:
+/// each frame after a call of its `busy` export, in one request.
+pub fn settle(lens: mut Lens) -> Result<(), ToolError> {
     let began = lens.now
     loop {
-        var b = Box::new(invoke.start(String::from("busy"), Vec::new()))
-        var got = done(b.get_mut().resume(mut lens))
-        while got.is_none() {
-            yield
-            got = done(b.get_mut().resume(mut lens))
-        }
-        let results = (take got).unwrap()?
+        let seen = steps(
+            mut lens,
+            [Step::Call(String::from("busy"), Vec::new()), Step::Frames(1, Script::frames())],
+        )?
         var busy = false
-        if results.len() == 1 {
-            if let Scalar::I32(x) = results[0] {
+        if seen.ran[0].results.len() == 1 {
+            if let Scalar::I32(x) = seen.ran[0].results[0] {
                 busy = x != 0
             }
         }
-        var f = Box::new(frames.start(Script::frames()))
-        var ended = done(f.get_mut().resume(mut lens))
-        while ended.is_none() {
-            yield
-            ended = done(f.get_mut().resume(mut lens))
-        }
-        (take ended).unwrap()?
+        lens.frame += 1
+        answer_posts(mut lens)?
         if !busy {
             return Ok(())
         }
         if lens.now - began >= WAIT {
-            return Err(failed(f"the lens was still waiting after {u32(WAIT)} s"))
+            return Err(ToolError::new(f"the lens was still waiting after {u32(WAIT)} s"))
         }
     }
 }
@@ -491,83 +463,22 @@ pub fn settle(lens: mut Lens) -> Result<(), String> {
 /// until it settles (one frame, for an action that waits for nothing: `settles`); with
 /// `deferred`, a field lens's view control (`zoom`, `mode`, `view`) waits for the next call's
 /// frames instead: a comparison needs only the final image.
-@job
-pub fn call(
-    lens: mut Lens,
-    name: take String,
-    args: take Vec<Scalar>,
-    deferred: take bool,
-) -> Result<(), String> {
-    var d = Box::new(drop_logs.start())
-    var dropped = done(d.get_mut().resume(mut lens))
-    while dropped.is_none() {
-        yield
-        dropped = done(d.get_mut().resume(mut lens))
-    }
-    (take dropped).unwrap()?
-    var i = Box::new(invoke.start(name.clone(), take args))
-    var got = done(i.get_mut().resume(mut lens))
-    while got.is_none() {
-        yield
-        got = done(i.get_mut().resume(mut lens))
-    }
-    (take got).unwrap()?
-    let n = name.clone()
-    if deferred && lens.field && (n == "zoom" || n == "mode" || n == "view") {
+pub fn call(lens: mut Lens, name: str, args: [Scalar], deferred: bool) -> Result<(), ToolError> {
+    lens.lines.clear()
+    let _ = invoke(mut lens, name, args)?
+    if deferred && lens.field && (name == "zoom" || name == "mode" || name == "view") {
         return Ok(())
     }
-    var p = Box::new(answer_posts.start())
-    var answered = done(p.get_mut().resume(mut lens))
-    while answered.is_none() {
-        yield
-        answered = done(p.get_mut().resume(mut lens))
+    answer_posts(mut lens)?
+    if settles(lens.field, name) {
+        return settle(mut lens)
     }
-    (take answered).unwrap()?
-    if settles(lens.field, n.as_str()) {
-        var s = Box::new(settle.start())
-        var ended = done(s.get_mut().resume(mut lens))
-        while ended.is_none() {
-            yield
-            ended = done(s.get_mut().resume(mut lens))
-        }
-        return (take ended).unwrap()
-    }
-    var f = Box::new(frames.start(Script::frames()))
-    var ended = done(f.get_mut().resume(mut lens))
-    while ended.is_none() {
-        yield
-        ended = done(f.get_mut().resume(mut lens))
-    }
-    (take ended).unwrap()
+    frames(mut lens, Script::frames())
 }
 
 /// The lines the lens printed since the last time.
-@job
-pub fn logs(lens: mut Lens) -> Result<Vec<String>, String> {
-    var out: Vec<String> = Vec::new()
-    loop {
-        var g = wait(drive::logs(lens.b))
-        while !g.ready() { yield }
-        let l = said(drive::read_logs(g.polled()))?
-        for k in 0..l.lines.len() {
-            out.push(l.lines[k].clone())
-        }
-        if l.waiting == 0 {
-            return Ok(out)
-        }
-    }
-}
-
-@job
-fn drop_logs(lens: mut Lens) -> Result<(), String> {
-    loop {
-        var g = wait(drive::logs(lens.b))
-        while !g.ready() { yield }
-        let l = said(drive::read_logs(g.polled()))?
-        if l.waiting == 0 {
-            return Ok(())
-        }
-    }
+pub fn logs(lens: mut Lens) -> Vec<String> {
+    replace(mut lens.lines, Vec::new())
 }
 
 /// The last line of `lines` that is a JSON object: a lens's answer.
@@ -584,26 +495,16 @@ pub fn last_json(lines: [String]) -> Option<String> {
 
 /// Answers the posts the lens made: its edits through `wrela edit`'s code, its fit's request
 /// for the reference with the reference, and any other post fails, saying nothing answers it.
-@job
-pub fn answer_posts(lens: mut Lens) -> Result<(), String> {
-    var q = wait(drive::posts(lens.b))
-    while !q.ready() { yield }
-    let posts = said(drive::read_posts(q.polled()))?
-    for k in 0..posts.len() {
-        let post = posts[k].clone()
+pub fn answer_posts(lens: mut Lens) -> Result<(), ToolError> {
+    let posts = drive::posts(lens.b).wait()?
+    for post in posts {
         let url = post.url.as_str()
         var reply: Result<Vec<u8>, String> = Err(String::from(f"nothing answers `{url}` here"))
         if url == "studio/edit" {
             let Data::Bytes(body) = post.body.clone() else {
-                return Err(failed("a post's body is a blob"))
+                return Err(ToolError::new("a post's body is a blob"))
             }
-            var e = Box::new(edit.start(lens.program.clone(), lens.page.clone(), take body))
-            var ended = done(e.get_mut().resume())
-            while ended.is_none() {
-                yield
-                ended = done(e.get_mut().resume())
-            }
-            let text = (take ended).unwrap()?
+            let text = edit(lens.program.as_str(), lens.page.as_str(), take body)
             reply = Ok(Vec::from(text.as_bytes()))
         } else if url == "studio/reference" {
             reply = match lens.reference.clone() {
@@ -613,25 +514,15 @@ pub fn answer_posts(lens: mut Lens) -> Result<(), String> {
         }
         match take reply {
             Ok(bytes) => {
-                var d = Box::new(data_of.start(take bytes))
-                var made = done(d.get_mut().resume())
-                while made.is_none() {
-                    yield
-                    made = done(d.get_mut().resume())
-                }
-                let data = (take made).unwrap()?
-                var a = wait(drive::answer(lens.b, post.id, data.clone()))
-                while !a.ready() { yield }
-                a.bytes()?
+                let data = data_of(take bytes)?
+                let answered = drive::answer(lens.b, post.id, data.clone()).wait()
                 if let Data::Blob(bl) = data {
-                    var rel = blob::release(bl)
-                    while rel.poll().is_none() { yield }
+                    let _ = blob::release(bl).wait()
                 }
+                let _ = (take answered)?
             },
             Err(why) => {
-                var a = wait(drive::fail(lens.b, post.id, why.as_str()))
-                while !a.ready() { yield }
-                let _ = a.bytes()?
+                let _ = drive::fail(lens.b, post.id, why.as_str()).wait()?
             },
         }
     }
@@ -639,18 +530,11 @@ pub fn answer_posts(lens: mut Lens) -> Result<(), String> {
 }
 
 /// `bytes` as a request carries them: themselves, or a new blob of them past 512 KiB.
-@job
-pub fn data_of(bytes: take Vec<u8>) -> Result<Data, String> {
+pub fn data_of(bytes: take Vec<u8>) -> Result<Data, ToolError> {
     if bytes.len() <= MOST_BYTES {
         return Ok(Data::Bytes(take bytes))
     }
-    var j = Box::new(blob_of.start(chunked(take bytes)))
-    var made = done(j.get_mut().resume())
-    while made.is_none() {
-        yield
-        made = done(j.get_mut().resume())
-    }
-    Ok(Data::Blob((take made).unwrap()?))
+    Ok(Data::Blob(blob_of(chunked(take bytes))?))
 }
 
 /// The edits of a body `{"edits": [[literal, value], ...]}`, as the lens posts them: every
@@ -682,102 +566,52 @@ pub fn parse_edits(body: str) -> Option<Vec<(u32, f32)>> {
 
 /// Applies a body of the lens's edits to the subject's files through `toolchain::edit`: the
 /// JSON answer (`wrela edit --json`'s), or why they were refused, on one line.
-@job
-pub fn edit(program: take String, page: take String, body: take Vec<u8>) -> Result<String, String> {
+pub fn edit(program: str, page: str, body: take Vec<u8>) -> String {
     let text = match String::from_utf8(take body) {
         Some(t) => take t,
         None => String::new(),
     }
     let Some(edits) = parse_edits(text.as_str()) else {
-        return Ok(
-            String::from(
-                "{\"why\":\"the edits aren't [[literal, value], ...]\",\"written\":false}",
-            ),
+        return String::from(
+            "{\"why\":\"the edits aren't [[literal, value], ...]\",\"written\":false}",
         )
     }
-    var e = wait(toolchain::edit(program.as_str(), page.as_str(), edits))
-    while !e.ready() { yield }
-    match toolchain::read_edited(e.polled()) {
-        Ok(answer) => Ok(answer),
-        Err(e) => Ok(String::from(f"{{\"why\":{quoted(e.message()).as_str()},\"written\":false}}")),
+    match toolchain::edit(program, page, edits).wait() {
+        Ok(answer) => answer,
+        Err(e) => String::from(f"{{\"why\":{quoted(e.message()).as_str()},\"written\":false}}"),
     }
 }
 
 /// The lens's screen: its RGBA8 pixels.
-@job
-pub fn screen(lens: mut Lens) -> Result<Vec<u8>, String> {
-    var c = wait(drive::capture(lens.b))
-    while !c.ready() { yield }
-    let cap = said(drive::read_capture(c.polled()))?
-    let Data::Blob(b) = cap.rgba else { return Err(failed("the screen isn't a blob")) }
-    var j = Box::new(data_bytes.start(Data::Blob(b)))
-    var bytes = done(j.get_mut().resume())
-    while bytes.is_none() {
-        yield
-        bytes = done(j.get_mut().resume())
-    }
-    Ok(joined((take bytes).unwrap()?))
+pub fn screen(lens: mut Lens) -> Result<Vec<u8>, ToolError> {
+    var seen = steps(mut lens, [Step::Capture])?
+    Ok(joined(data_bytes(seen.captures.remove(0).rgba)?))
 }
 
 /// RGBA8 pixels, `width` by `height`, written as a PNG at `path`.
-@job
-pub fn save_png(
-    path: take String,
-    width: take u32,
-    height: take u32,
-    rgba: take Vec<u8>,
-) -> Result<(), String> {
-    var d = Box::new(data_of.start(take rgba))
-    var made = done(d.get_mut().resume())
-    while made.is_none() {
-        yield
-        made = done(d.get_mut().resume())
-    }
-    let pixels = (take made).unwrap()?
-    var e = wait(image::encode_png(image::Image { width, height, rgba: pixels.clone() }))
-    while !e.ready() { yield }
+pub fn save_png(path: str, width: u32, height: u32, rgba: take Vec<u8>) -> Result<(), ToolError> {
+    let pixels = data_of(take rgba)?
+    let encoded = image::encode_png(image::Image { width, height, rgba: pixels.clone() }).wait()
     if let Data::Blob(b) = pixels {
-        var rel = blob::release(b)
-        while rel.poll().is_none() { yield }
+        let _ = blob::release(b).wait()
     }
-    let png = said(image::read_encoded(e.polled()))?
-    var w = Box::new(write_data.start(path.clone(), take png))
-    var wrote = done(w.get_mut().resume())
-    while wrote.is_none() {
-        yield
-        wrote = done(w.get_mut().resume())
-    }
-    match (take wrote).unwrap() {
-        Ok(()) => Ok(()),
-        Err(why) => Err(String::from(f"can't write {path.as_str()}: {why.as_str()}")),
-    }
+    write_data(path, (take encoded)?).map_err(
+        |e| ToolError::new(f"can't write {path}: {e.message()}"),
+    )
 }
 
 /// The PNG (or JPEG, or WebP) at `path`, read: its size and its RGBA8 pixels; `None` if no file
 /// is there.
-@job
-pub fn read_png(path: take String) -> Result<Option<(u32, u32, Vec<u8>)>, String> {
-    var s = wait(files::stat(path.as_str()))
-    while !s.ready() { yield }
-    if files::read_entry(s.polled()).is_err() {
+pub fn read_png(path: str) -> Result<Option<(u32, u32, Vec<u8>)>, ToolError> {
+    if files::stat(path).wait().is_err() {
         return Ok(None)
     }
-    var r = wait(files::read_blob(path.as_str()))
-    while !r.ready() { yield }
-    let file = said(blob::read_handle(r.polled()))?
-    var d = wait(image::decode(Data::Blob(file)))
-    while !d.ready() { yield }
-    var rel = blob::release(file)
-    while rel.poll().is_none() { yield }
-    let img = tool_saying(image::read_image(d.polled()), path.as_str())?
-    let Data::Blob(pixels) = img.rgba else { return Err(failed("the pixels aren't a blob")) }
-    var j = Box::new(data_bytes.start(Data::Blob(pixels)))
-    var bytes = done(j.get_mut().resume())
-    while bytes.is_none() {
-        yield
-        bytes = done(j.get_mut().resume())
-    }
-    Ok(Some((img.width, img.height, joined((take bytes).unwrap()?))))
+    let file = files::read_blob(path).wait()?
+    let decoded = image::decode(Data::Blob(file)).wait()
+    let _ = blob::release(file).wait()
+    let img = (take decoded).map_err(|e| ToolError::new(f"{path}: {e.message()}"))?
+    let rgba = joined(data_bytes(img.rgba.clone())?)
+    Ok(Some((img.width, img.height, rgba)))
 }
 
 /// A reference image for the lens's fit (`fit`), as its post `studio/reference` takes it: the

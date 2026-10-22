@@ -3,8 +3,6 @@
 // mistake is; the bones fixture's tests run through the toolchain, and the second fails with
 // the limit named.
 
-use std::collections::Vec
-use std::string::String
 use std::tool::files
 use std::tool::toolchain
 use std::tool::toolchain::Override
@@ -42,7 +40,6 @@ const SCORES: [(Text, Text, Text); 9] = [
 /// A mistake in a score fails the build where it is: its E0704 names the score, the voice, the
 /// bar and the beat, and what is wrong.
 @test(tool, read: [("repo", "../../..")], budget: 300)
-@job
 fn a_mistake_in_a_score_fails_the_build_where_it_is() {
     for case in SCORES {
         let (name, voices, want) = case
@@ -53,27 +50,15 @@ fn a_mistake_in_a_score_fails_the_build_where_it_is() {
         texts.push((String::from("main.wrela"), take main))
         for k in 0..texts.len() {
             let (leaf, text) = texts[k].clone()
-            var w = files::write(f"scratch/{name}/{leaf.as_str()}", text.as_bytes())
-            var written = w.poll()
-            while written.is_none() {
-                yield
-                written = w.poll()
-            }
-            let Some(wp) = take written else { panic("no answer") }
-            assert(std::tool::answer(take wp).is_ok(), f"{name}: {leaf.as_str()} is written")
+            let written = files::write(f"scratch/{name}/{leaf.as_str()}", text.as_bytes()).wait()
+            assert(written.is_ok(), f"{name}: {leaf.as_str()} is written")
         }
         var options = toolchain::options()
         options.overrides.push(
             Override { name: String::from("engine"), dir: String::from("repo/engine") },
         )
-        var b = toolchain::build(f"scratch/{name}", f"scratch/out/{name}", options)
-        var built = b.poll()
-        while built.is_none() {
-            yield
-            built = b.poll()
-        }
-        let Some(bp) = take built else { panic("no answer") }
-        let Ok(build) = toolchain::read_built(take bp) else { panic("the build's request") }
+        let built = toolchain::build(f"scratch/{name}", f"scratch/out/{name}", options).wait()
+        let Ok(build) = built else { panic("the build's request") }
         assert(!build.ok, f"{name}: the build fails")
         var found = false
         for d in build.diagnostics {
@@ -90,16 +75,10 @@ fn a_mistake_in_a_score_fails_the_build_where_it_is() {
 /// jaw and shoulder blades (two round 4 authors dropped joints to fit 32); one more fails the
 /// test that grows it, with the limit named.
 @test(tool, read: [("repo", "../../..")], budget: 120)
-@job
 fn a_skeleton_holds_64_bones_and_says_so_past_them() {
-    var t = toolchain::test("repo/engine/tests/errors/bones", "")
-    var tested = t.poll()
-    while tested.is_none() {
-        yield
-        tested = t.poll()
+    let Ok(run) = toolchain::test("repo/engine/tests/errors/bones", "").wait() else {
+        panic("the test's request")
     }
-    let Some(tp) = take tested else { panic("no answer") }
-    let Ok(run) = toolchain::read_tested(take tp) else { panic("the test's request") }
     for d in run.diagnostics {
         assert(!d.error, d.rendered.as_str())
     }

@@ -1,11 +1,9 @@
-// The toolkit's tests: bytes cut into a request's chunks and joined again, a job's result taken
-// when it ends, and a size read from a command line. Its requests are tested where the tools use
-// them (studio/lookbook's tool test).
+// The toolkit's tests: bytes cut into a request's chunks and joined again, and a size read from
+// a command line. Its requests are tested where the tools use them (studio/lookbook's tool
+// test).
 
-use std::job::Step
 use std::tool::MOST_BYTES
 use command::size_of
-use wait::done
 use whole::{chunked, joined}
 
 @test
@@ -19,13 +17,6 @@ fn bytes_cut_into_chunks_join_again() {
     let whole = joined(take parts)
     assert(whole.len() == bytes.len() && whole[MOST_BYTES + 1] == bytes[MOST_BYTES + 1])
     assert(chunked(Vec::new()).len() == 1, "nothing is one empty chunk")
-}
-
-@test
-fn a_jobs_result_is_taken_when_it_ends() {
-    let running: Step<u32> = Step::Yielded
-    assert(done(take running).is_none())
-    assert(done(Step::Done(7)) == Some(7))
 }
 
 @test

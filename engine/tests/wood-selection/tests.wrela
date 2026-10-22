@@ -7,11 +7,8 @@
 
 use hosts::both::bytes_of
 use hosts::steps::{built, recorded, replaced, text_of, word, written}
-use std::collections::{Box, Vec}
-use std::job::Step
-use std::string::String
 use std::tool::drive
-use std::tool::drive::{Bound, Scalar}
+use std::tool::drive::{Bound, Scalar, Step}
 use std::tool::toolchain
 use std::tool::toolchain::Override
 
@@ -118,23 +115,13 @@ const FIXTURE: [Text; 84] = [
 ]
 
 /// The fixture package, written into `scratch/fixture`, built into `scratch/build`, loaded on
-/// the GPU (a 1 × 1 screen) recording its commands, `init` run and its commands taken.
-@job
-fn opened() -> drive::Build {
-    var r = Box::new(text_of.start(String::from("repo/engine/wood.wrela")))
-    var wood = String::new()
-    loop {
-        match r.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(v) => {
-                wood = take v
-                break
-            },
-        }
-    }
+/// the GPU (a 1 × 1 screen) recording its commands, `init` run and its commands taken: the
+/// build, and its capacity after `init`.
+fn opened() -> (drive::Build, u32) {
+    var wood = text_of("repo/engine/wood.wrela")
     for k in 0..MODULES.len() {
         let m = MODULES[k]
-        wood = replaced(wood.as_str(), f"{m}::".as_str(), f"engine::{m}::".as_str())
+        wood = replaced(wood.as_str(), f"{m}::", f"engine::{m}::")
     }
     var main = take wood
     main.push_str("\n")
@@ -142,111 +129,50 @@ fn opened() -> drive::Build {
         main.push_str(FIXTURE[k])
         main.push_str("\n")
     }
-    var m = Box::new(written.start(String::from("scratch/fixture/main.wrela"), take main))
-    loop {
-        match m.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
-    let manifest = String::from(
+    written("scratch/fixture/main.wrela", main.as_str())
+    written(
+        "scratch/fixture/wrela.toml",
         "[package]\nname = \"wood_selection_perf\"\n\n[dependencies]\nengine = { workspace = true }\n",
     )
-    var t = Box::new(written.start(String::from("scratch/fixture/wrela.toml"), take manifest))
-    loop {
-        match t.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
     var options = toolchain::options()
     options.overrides.push(
         Override { name: String::from("engine"), dir: String::from("repo/engine") },
     )
-    var b = Box::new(
-        built.start(
-            String::from("scratch/fixture"),
-            String::from("scratch/build"),
-            take options,
-            String::from("the fixture builds"),
-        ),
-    )
-    loop {
-        match b.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
+    built("scratch/fixture", "scratch/build", options, "the fixture builds")
     var load = drive::gpu()
     load.width = 1
     load.height = 1
     load.record = true
-    var l = drive::load("scratch/build", load)
-    var loaded = l.poll()
-    while loaded.is_none() {
-        yield
-        loaded = l.poll()
+    let Ok(it) = drive::load("scratch/build", load).wait() else {
+        panic("the fixture loads on a hardware GPU")
     }
-    let Some(lp) = take loaded else { panic("no answer") }
-    let Ok(it) = drive::read_loaded(take lp) else { panic("the fixture loads on a hardware GPU") }
-    var i = drive::init(it.build)
-    var inited = i.poll()
-    while inited.is_none() {
-        yield
-        inited = i.poll()
-    }
-    let Some(ip) = take inited else { panic("no answer") }
-    let Ok(init) = drive::read_ran(take ip) else { panic("init's request") }
-    if let Some(trap) = init.trap {
+    let h = it.build
+    let list = [Step::Init, Step::Commands, Step::Call(String::from("capacity"), Vec::new())]
+    let Ok(seen) = drive::steps(h, list).wait() else { panic("init's request") }
+    if let Some(trap) = seen.trap {
         panic(trap.message.as_str())
     }
-    var c = Box::new(recorded.start(it.build))
-    loop {
-        match c.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
-    it.build
+    let _ = all_commands(h, seen.commands[0])
+    (h, number(seen.ran[1], "capacity"))
 }
 
-/// The fixture's export `name`'s number.
-@job
-fn number(h: take drive::Build, name: take String) -> u32 {
-    var c = drive::call(h, name.as_str(), [])
-    var got = c.poll()
-    while got.is_none() {
-        yield
-        got = c.poll()
+/// The commands of a `Commands` step, and those still waiting after it, taken from `h`.
+fn all_commands(h: drive::Build, first: drive::Commands) -> Vec<drive::Recorded> {
+    var out = first.commands.clone()
+    if first.waiting > 0 {
+        let rest = recorded(h)
+        for k in 0..rest.len() {
+            out.push(rest[k].clone())
+        }
     }
-    let Some(cp) = take got else { panic("no answer") }
-    let Ok(ran) = drive::read_ran(take cp) else { panic(f"{name.as_str()}'s request") }
-    if let Some(trap) = ran.trap {
-        panic(trap.message.as_str())
-    }
+    out
+}
+
+/// The number the call of export `name` gave.
+fn number(ran: drive::Ran, name: str) -> u32 {
     match ran.results[0] {
         Scalar::I32(x) => u32(x),
-        _ => panic(f"{name.as_str()} gives a number"),
-    }
-}
-
-/// Buffer `handle`'s bytes, read back.
-@job
-fn buffer_bytes(h: take drive::Build, handle: take u32) -> Vec<u8> {
-    var r = drive::read_buffer(h, handle)
-    var got = r.poll()
-    while got.is_none() {
-        yield
-        got = r.poll()
-    }
-    let Some(rp) = take got else { panic("no answer") }
-    let Ok(data) = drive::read_bytes(take rp) else { panic(f"buffer {handle}'s bytes") }
-    var b = Box::new(bytes_of.start(take data))
-    loop {
-        match b.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(v) => return v,
-        }
+        _ => panic(f"{name} gives a number"),
     }
 }
 
@@ -268,82 +194,31 @@ fn last_part(name: str) -> String {
 /// and the instance buffer; each frame's lists hold exactly its instances, none hidden, and the
 /// draws' counts are its own; a shrink leaves the poisoned room outside its lists untouched.
 @test(tool, read: [("repo", "../../..")], budget: 300)
-@job
 fn wood_selection_dispatches_only_current_lists_after_shrink_and_regrowth() {
-    var o = Box::new(opened.start())
-    var opened_build: Option<drive::Build> = None
-    while opened_build.is_none() {
-        match o.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(b) => opened_build = Some(b),
-        }
-    }
-    let Some(h) = opened_build else { panic("opened") }
-    var ic = Box::new(number.start(h, String::from("capacity")))
-    var initial_capacity = 0
-    loop {
-        match ic.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(v) => {
-                initial_capacity = v
-                break
-            },
-        }
-    }
+    let (h, initial_capacity) = opened()
     var first_instances: Option<u32> = None
     for frame in 0..6 {
         let n = SELECTED[frame]
-        var f = drive::frame_at(h, f32(frame))
-        var framed = f.poll()
-        while framed.is_none() {
-            yield
-            framed = f.poll()
-        }
-        let Some(fp) = take framed else { panic("no answer") }
-        let Ok(ran) = drive::read_ran(take fp) else { panic("the frame's request") }
-        if let Some(trap) = ran.trap {
+        let list = [
+            Step::FrameAt(f32(frame)),
+            Step::Call(String::from("places"), Vec::new()),
+            Step::Call(String::from("capacity"), Vec::new()),
+            Step::Commands,
+        ]
+        let Ok(seen) = drive::steps(h, list).wait() else { panic("the frame's request") }
+        if let Some(trap) = seen.trap {
             panic(f"frame {frame}: {trap.message.as_str()}")
         }
         let active = max((n + 31) / 32 * 32 * 5, 1)
-        var p = Box::new(number.start(h, String::from("places")))
-        var places = 0
-        loop {
-            match p.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(v) => {
-                    places = v
-                    break
-                },
-            }
-        }
+        let places = number(seen.ran[1], "places")
         assert(places == active, f"frame {frame}'s active span: {places}, not {active}")
-        var c = Box::new(number.start(h, String::from("capacity")))
-        var capacity = 0
-        loop {
-            match c.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(v) => {
-                    capacity = v
-                    break
-                },
-            }
-        }
+        let capacity = number(seen.ran[2], "capacity")
         if frame < 5 {
             assert(capacity == initial_capacity, "shrinking or regrowth discarded room")
         } else {
             assert(capacity > initial_capacity, "larger regrowth did not gain room")
         }
-        var r = Box::new(recorded.start(h))
-        var commands: Vec<drive::Recorded> = Vec::new()
-        loop {
-            match r.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(v) => {
-                    commands = take v
-                    break
-                },
-            }
-        }
+        let commands = all_commands(h, seen.commands[0])
         var gathered: Option<Bound> = None
         var drawn: Option<Bound> = None
         var arguments: Option<Bound> = None
@@ -374,43 +249,19 @@ fn wood_selection_dispatches_only_current_lists_after_shrink_and_regrowth() {
         let Some(g) = gathered else { panic("gathered instances") }
         let Some(d) = drawn else { panic("drawn instances") }
         let Some(a) = arguments else { panic("draw arguments") }
-        var ab = Box::new(buffer_bytes.start(h, a.handle))
-        var args: Vec<u8> = Vec::new()
-        loop {
-            match ab.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(v) => {
-                    args = take v
-                    break
-                },
-            }
-        }
+        let reads = [
+            Step::ReadBuffer(a.handle),
+            Step::ReadBuffer(g.handle),
+            Step::ReadBuffer(d.handle),
+        ]
+        let Ok(back) = drive::steps(h, reads).wait() else { panic("the buffers' bytes") }
+        let args = bytes_of(back.bytes[0].clone())
+        let instances = bytes_of(back.bytes[1].clone())
+        let shown = bytes_of(back.bytes[2].clone())
         for list in 0..5 {
             let expected = if list == 0 { n } else { 0 }
             assert(word(args, list * 40 + 4) == expected, f"cards in list {list}")
             assert(word(args, list * 40 + 24) == expected, f"limbs in list {list}")
-        }
-        var ib = Box::new(buffer_bytes.start(h, g.handle))
-        var instances: Vec<u8> = Vec::new()
-        loop {
-            match ib.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(v) => {
-                    instances = take v
-                    break
-                },
-            }
-        }
-        var sb = Box::new(buffer_bytes.start(h, d.handle))
-        var shown: Vec<u8> = Vec::new()
-        loop {
-            match sb.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(v) => {
-                    shown = take v
-                    break
-                },
-            }
         }
         let stride = g.size / capacity
         var ids: Vec<u32> = Vec::new()

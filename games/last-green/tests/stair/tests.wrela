@@ -5,11 +5,8 @@
 // is, and its doors; `running` says which build runs.
 
 use hosts::steps::{replaced, text_of, written}
-use std::collections::{Box, Vec}
-use std::job::Step
-use std::string::String
 use std::tool::drive
-use std::tool::drive::Scalar
+use std::tool::drive::{Ran, Scalar, Seen, Step}
 use std::tool::files
 use std::tool::toolchain
 use std::tool::toolchain::Override
@@ -32,111 +29,78 @@ fn overrides() -> Vec<Override> {
 }
 
 /// The package at `pkg` built as a test build into `out`.
-@job
-fn built(pkg: take String, out: take String) -> bool {
+fn built(pkg: str, out: str) {
     var options = toolchain::options()
     options.testing = true
     options.overrides = overrides()
-    let what = String::from(f"{pkg.as_str()} builds")
-    var b = Box::new(hosts::steps::built.start(take pkg, take out, take options, take what))
-    loop {
-        match b.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(v) => return v,
-        }
-    }
+    hosts::steps::built(pkg, out, options, f"{pkg} builds")
 }
 
 /// The stair at `scratch/<tour>/stair`, loaded with its storage in `scratch/<tour>/store`, and
 /// `init` run.
-@job
-fn loaded(tour: take String) -> drive::Build {
-    var m = files::make_dirs(f"scratch/{tour.as_str()}/store".as_str())
-    while m.poll().is_none() {
-        yield
-    }
+fn loaded(tour: str) -> drive::Build {
+    let _ = files::make_dirs(f"scratch/{tour}/store").wait()
     var load = drive::gpu()
     load.width = SIZE
     load.height = SIZE
-    load.storage = String::from(f"scratch/{tour.as_str()}/store")
-    var l = drive::load(f"scratch/{tour.as_str()}/stair".as_str(), load)
-    var got = l.poll()
-    while got.is_none() {
-        yield
-        got = l.poll()
+    load.storage = String::from(f"scratch/{tour}/store")
+    let Ok(it) = drive::load(f"scratch/{tour}/stair", load).wait() else {
+        panic("the stair loads on a hardware GPU")
     }
-    let Some(lp) = take got else { panic("no answer") }
-    let Ok(it) = drive::read_loaded(take lp) else { panic("the stair loads on a hardware GPU") }
-    var i = drive::init(it.build)
-    var inited = i.poll()
-    while inited.is_none() {
-        yield
-        inited = i.poll()
-    }
-    let Some(ip) = take inited else { panic("no answer") }
-    let Ok(init) = drive::read_ran(take ip) else { panic("init's request") }
-    if let Some(trap) = init.trap {
-        panic(trap.message.as_str())
-    }
+    stepped(it.build, [Step::Init], "init")
     it.build
 }
 
-/// `n` frames, each at time 0; when the last ended, in seconds since the build loaded.
-@job
-fn frames(h: take drive::Build, n: take u32) -> f64 {
-    var at = 0.0
-    for _ in 0..n {
-        var f = drive::frame_at(h, 0.0)
-        var got = f.poll()
-        while got.is_none() {
-            yield
-            got = f.poll()
-        }
-        let Some(fp) = take got else { panic("no answer") }
-        let Ok(ran) = drive::read_ran(take fp) else { panic("the frame's request") }
-        if let Some(trap) = ran.trap {
-            panic(f"a frame: {trap.message.as_str()}")
-        }
-        at = ran.started + ran.elapsed
+/// `list` run on `h`, none of it trapping (`what` names it in a trap's message): what it saw.
+fn stepped(h: drive::Build, list: [Step], what: str) -> Seen {
+    let Ok(seen) = drive::steps(h, list).wait() else { panic(f"{what}'s request") }
+    if let Some(trap) = seen.trap {
+        panic(f"{what}: {trap.message.as_str()}")
     }
-    at
+    seen
 }
 
-/// The export `name` called with `args`: its results, as `f32`s.
-@job
-fn called(h: take drive::Build, name: take String, args: take Vec<Scalar>) -> Vec<f32> {
-    var c = drive::call(h, name.as_str(), args)
-    var got = c.poll()
-    while got.is_none() {
-        yield
-        got = c.poll()
+/// A call of the export `name` with `args`.
+fn call(name: str, args: take Vec<Scalar>) -> Step {
+    Step::Call(String::from(name), take args)
+}
+
+/// `before`, then `n` frames, each at time 0, then `after`.
+fn framed(before: take Vec<Step>, n: u32, after: take Vec<Step>) -> Vec<Step> {
+    var list = take before
+    for _ in 0..n {
+        list.push(Step::FrameAt(0.0))
     }
-    let Some(cp) = take got else { panic("no answer") }
-    let Ok(ran) = drive::read_ran(take cp) else { panic(f"{name.as_str()}'s request") }
-    if let Some(trap) = ran.trap {
-        panic(f"{name.as_str()}: {trap.message.as_str()}")
-    }
+    var after = take after
+    list.append(mut after)
+    list
+}
+
+/// A call of `report`.
+fn report() -> Step {
+    call("report", Vec::new())
+}
+
+/// The results of a call, as `f32`s.
+fn results(ran: Ran) -> Vec<f32> {
     var out: Vec<f32> = Vec::new()
-    for k in 0..ran.results.len() {
-        match ran.results[k] {
+    for r in ran.results {
+        match r {
             Scalar::F32(x) => out.push(x),
-            _ => panic(f"{name.as_str()} gives floats"),
+            _ => panic("a call gives floats"),
         }
     }
     out
 }
 
-/// The last part of the root path of the build that runs.
-@job
-fn running(h: take drive::Build) -> String {
-    var r = drive::running(h)
-    var got = r.poll()
-    while got.is_none() {
-        yield
-        got = r.poll()
-    }
-    let Some(rp) = take got else { panic("no answer") }
-    let Ok(at) = drive::read_running(take rp) else { panic("which build runs") }
+/// The results of the last call of `seen`'s steps, as `f32`s.
+fn last(seen: Seen) -> Vec<f32> {
+    results(seen.ran[seen.ran.len() - 1])
+}
+
+/// The last part of the root path of the build that runs, as `seen`'s `Running` step saw it.
+fn running(seen: Seen) -> String {
+    borrow at = seen.running[0]
     var start = 0
     for i in 0..at.len() {
         if at.byte(i) == 47 {
@@ -165,381 +129,111 @@ fn ints(xs: [i32]) -> Vec<Scalar> {
 }
 
 /// A tour's builds: the test floor's and the stair's, side by side.
-@job
-fn tower(tour: take String) -> bool {
-    var t = Box::new(
-        built.start(
-            String::from("repo/games/last-green/test-floor"),
-            String::from(f"scratch/{tour.as_str()}/test-floor"),
-        ),
-    )
-    loop {
-        match t.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
-    var s = Box::new(
-        built.start(
-            String::from("repo/games/last-green/stair"),
-            String::from(f"scratch/{tour.as_str()}/stair"),
-        ),
-    )
-    loop {
-        match s.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
-    true
-}
-
-/// The export `name` called with `args`, through `called`.
-@job
-fn call(h: take drive::Build, name: take String, args: take Vec<Scalar>) -> Vec<f32> {
-    var c = Box::new(called.start(h, take name, take args))
-    loop {
-        match c.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(v) => return v,
-        }
-    }
+fn tower(tour: str) {
+    built("repo/games/last-green/test-floor", f"scratch/{tour}/test-floor")
+    built("repo/games/last-green/stair", f"scratch/{tour}/stair")
 }
 
 /// Frames until `wanted` holds of the report's door `door` (equal to `value`, or unequal if
-/// not `equal`), for at most a minute of the build's time.
-@job
-fn frames_until(h: take drive::Build, door: take u32, value: take f32, equal: take bool) {
+/// not `equal`), for at most a minute of the build's time: the last report.
+fn frames_until(h: drive::Build, door: u32, value: f32, equal: bool) -> Vec<f32> {
+    var latest = last(stepped(h, [report()], "report"))
     var since = 0.0
     var first = true
-    loop {
-        var r = Box::new(call.start(h, String::from("report"), Vec::new()))
-        var report: Vec<f32> = Vec::new()
-        loop {
-            match r.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(v) => {
-                    report = take v
-                    break
-                },
-            }
-        }
-        if (report[door] == value) == equal {
-            return
-        }
-        var f = Box::new(frames.start(h, 1))
-        loop {
-            match f.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(at) => {
-                    if first {
-                        since = at
-                        first = false
-                    } else if at - since > 60.0 {
-                        return
-                    }
-                    break
-                },
-            }
+    while (latest[door] == value) != equal {
+        let seen = stepped(h, [Step::FrameAt(0.0), report()], "a frame")
+        latest = last(seen)
+        // When the frame ended, in seconds since the build loaded.
+        let at = seen.ran[0].started + seen.ran[0].elapsed
+        if first {
+            since = at
+            first = false
+        } else if at - since > 60.0 {
+            break
         }
     }
+    latest
 }
 
 /// Up to the second door, through it, the floor freed, and back out.
-@job
-fn walk_through_and_back(h: take drive::Build) {
-    var j0 = Box::new(frames.start(h, 2))
-    loop {
-        match j0.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
-    var steps: Vec<(String, Vec<Scalar>, u32)> = Vec::new()
-    var r = Box::new(call.start(h, String::from("report"), Vec::new()))
-    loop {
-        match r.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(v) => {
-                assert(v[2] == SHUT, "a new tower: the first door opens, the second doesn't")
-                break
-            },
-        }
-    }
-    steps.push((String::from("climb"), floats([32.0]), 0))
-    steps.push((String::from("go_in"), Vec::new(), 2))
-    for k in 0..steps.len() {
-        let (name, args, n) = steps[k].clone()
-        var c = Box::new(call.start(h, take name, take args))
-        loop {
-            match c.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(_) => break,
-            }
-        }
-        var f = Box::new(frames.start(h, n))
-        loop {
-            match f.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(_) => break,
-            }
-        }
-    }
-    var w = Box::new(running.start(h))
-    loop {
-        match w.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(name) => {
-                assert(name.as_str() == "stair", "the second door is shut")
-                break
-            },
-        }
-    }
-    var d = Box::new(call.start(h, String::from("test_decide"), ints([0, 1])))
-    loop {
-        match d.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
-    var f1 = Box::new(frames.start(h, 1))
-    loop {
-        match f1.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
-    var r1 = Box::new(call.start(h, String::from("report"), Vec::new()))
-    loop {
-        match r1.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(v) => {
-                assert(v[2] == BOTH_OPEN, "the first world preserved: the second door opens")
-                break
-            },
-        }
-    }
-    var u = Box::new(frames_until.start(h, door: 3, value: 1.0, equal: true))
-    loop {
-        match u.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
-    var r2 = Box::new(call.start(h, String::from("report"), Vec::new()))
-    loop {
-        match r2.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(v) => {
-                assert(v[3] == 1.0, "the test floor's build is ready")
-                break
-            },
-        }
-    }
-    var g = Box::new(call.start(h, String::from("go_in"), Vec::new()))
-    loop {
-        match g.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
-    var f2 = Box::new(frames.start(h, 2))
-    loop {
-        match f2.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
-    var w2 = Box::new(running.start(h))
-    loop {
-        match w2.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(name) => {
-                assert(name.as_str() == "test-floor", f"{name.as_str()} runs, not the test floor")
-                break
-            },
-        }
-    }
-    var r3 = Box::new(call.start(h, String::from("report"), Vec::new()))
-    loop {
-        match r3.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(v) => {
-                assert(v[2] == 1.0 && v[3] == 0.0, "arrived, the floor undecided")
-                break
-            },
-        }
-    }
-    var d2 = Box::new(call.start(h, String::from("test_decide"), ints([2])))
-    loop {
-        match d2.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
-    var o = Box::new(call.start(h, String::from("go_out"), Vec::new()))
-    loop {
-        match o.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
-    var f3 = Box::new(frames.start(h, 2))
-    loop {
-        match f3.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
-    var w3 = Box::new(running.start(h))
-    loop {
-        match w3.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(name) => {
-                assert(name.as_str() == "stair", f"{name.as_str()} runs, not the stair")
-                break
-            },
-        }
-    }
-    var r4 = Box::new(call.start(h, String::from("report"), Vec::new()))
-    loop {
-        match r4.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(v) => {
-                assert(
-                    v[0] == 32.0 && v[1] == 1.0 && v[2] == SECOND_GONE,
-                    "back at the second door, which is gone",
-                )
-                break
-            },
-        }
-    }
-    var g2 = Box::new(call.start(h, String::from("go_in"), Vec::new()))
-    loop {
-        match g2.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
-    var f4 = Box::new(frames.start(h, 2))
-    loop {
-        match f4.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
-    var w4 = Box::new(running.start(h))
-    loop {
-        match w4.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(name) => {
-                assert(name.as_str() == "stair", "a freed world can't be gone back to")
-                break
-            },
-        }
-    }
+fn walk_through_and_back(h: drive::Build) {
+    let first = last(stepped(h, framed(Vec::new(), 2, Vec::from([report()])), "report"))
+    assert(first[2] == SHUT, "a new tower: the first door opens, the second doesn't")
+    let climbed = stepped(
+        h,
+        framed(
+            Vec::from([call("climb", floats([32.0])), call("go_in", Vec::new())]),
+            2,
+            Vec::from([Step::Running]),
+        ),
+        "the climb",
+    )
+    assert(running(climbed).as_str() == "stair", "the second door is shut")
+    let decided = stepped(
+        h,
+        framed(Vec::from([call("test_decide", ints([0, 1]))]), 1, Vec::from([report()])),
+        "the decision",
+    )
+    assert(last(decided)[2] == BOTH_OPEN, "the first world preserved: the second door opens")
+    let ready = frames_until(h, door: 3, value: 1.0, equal: true)
+    assert(ready[3] == 1.0, "the test floor's build is ready")
+    let inside = stepped(
+        h,
+        framed(Vec::from([call("go_in", Vec::new())]), 2, Vec::from([Step::Running, report()])),
+        "going in",
+    )
+    let name = running(inside)
+    assert(name.as_str() == "test-floor", f"{name.as_str()} runs, not the test floor")
+    let arrived = last(inside)
+    assert(arrived[2] == 1.0 && arrived[3] == 0.0, "arrived, the floor undecided")
+    let out = stepped(
+        h,
+        framed(
+            Vec::from([call("test_decide", ints([2])), call("go_out", Vec::new())]),
+            2,
+            Vec::from([Step::Running, report()]),
+        ),
+        "going out",
+    )
+    let back = running(out)
+    assert(back.as_str() == "stair", f"{back.as_str()} runs, not the stair")
+    let v = last(out)
+    assert(
+        v[0] == 32.0 && v[1] == 1.0 && v[2] == SECOND_GONE,
+        "back at the second door, which is gone",
+    )
+    let again = stepped(
+        h,
+        framed(Vec::from([call("go_in", Vec::new())]), 2, Vec::from([Step::Running])),
+        "going in again",
+    )
+    assert(running(again).as_str() == "stair", "a freed world can't be gone back to")
 }
 
 /// The tour `tour` built and the stair loaded.
-@job
-fn toured(tour: take String) -> drive::Build {
-    var t = Box::new(tower.start(tour.clone()))
-    loop {
-        match t.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
-    var l = Box::new(loaded.start(take tour))
-    loop {
-        match l.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(h) => return h,
-        }
-    }
+fn toured(tour: str) -> drive::Build {
+    tower(tour)
+    loaded(tour)
 }
 
 /// The player climbs to the second door, which opens once the first world is decided, walks
 /// through to the test floor, frees it, and walks back out; the freed world's door is gone.
 @test(tool, read: [("repo", "../../../..")], budget: 300)
-@job
 fn the_player_walks_through_the_second_door_and_back() {
-    var o = Box::new(toured.start(String::from("tower-walk")))
-    var h: Option<drive::Build> = None
-    while h.is_none() {
-        match o.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(b) => h = Some(b),
-        }
-    }
-    let Some(b) = h else { panic("the stair") }
-    var w = Box::new(walk_through_and_back.start(b))
-    loop {
-        match w.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
+    walk_through_and_back(toured("tower-walk"))
 }
 
 /// The tower is saved: after the walk (and frames for the save, written in the background), the
 /// stair loaded again over the same storage stands at the last door, the world freed.
 @test(tool, read: [("repo", "../../../..")], budget: 300)
-@job
 fn the_tower_is_saved_over_a_reload() {
-    var o = Box::new(toured.start(String::from("tower-reload")))
-    var h: Option<drive::Build> = None
-    while h.is_none() {
-        match o.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(b) => h = Some(b),
-        }
-    }
-    let Some(b) = h else { panic("the stair") }
-    var w = Box::new(walk_through_and_back.start(b))
-    loop {
-        match w.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
-    var f = Box::new(frames.start(b, 4))
-    loop {
-        match f.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
-    var c = drive::close(b)
-    while c.poll().is_none() {
-        yield
-    }
-    var l = Box::new(loaded.start(String::from("tower-reload")))
-    var again: Option<drive::Build> = None
-    while again.is_none() {
-        match l.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(x) => again = Some(x),
-        }
-    }
-    let Some(a) = again else { panic("the stair again") }
-    var u = Box::new(frames_until.start(a, door: 2, value: SHUT, equal: false))
-    loop {
-        match u.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
-    var r = Box::new(call.start(a, String::from("report"), Vec::new()))
-    loop {
-        match r.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(v) => {
-                assert(v[0] == 32.0 && v[2] == SECOND_GONE, "at the last door, the world freed")
-                break
-            },
-        }
-    }
+    let b = toured("tower-reload")
+    walk_through_and_back(b)
+    stepped(b, framed(Vec::new(), 4, Vec::new()), "the save's frames")
+    let _ = drive::close(b).wait()
+    let a = loaded("tower-reload")
+    let v = frames_until(a, door: 2, value: SHUT, equal: false)
+    assert(v[0] == 32.0 && v[2] == SECOND_GONE, "at the last door, the world freed")
 }
 
 /// The line of `text` that starts with `start`.
@@ -562,7 +256,6 @@ fn line_starting(text: str, start: str) -> String {
 /// The first floor's real gate and door declarations and exit operation, on the small test
 /// floor: the stair's first landing and round trip, without baking the floor's world.
 @test(tool, read: [("repo", "../../../..")], budget: 300)
-@job
 fn the_first_floor_door_returns_to_its_stair_landing() {
     var texts: Vec<String> = Vec::new()
     for file in ["main.wrela", "world.wrela", "test-floor/main.wrela"] {
@@ -570,16 +263,7 @@ fn the_first_floor_door_returns_to_its_stair_landing() {
     }
     var read: Vec<String> = Vec::new()
     for k in 0..texts.len() {
-        var r = Box::new(text_of.start(texts[k].clone()))
-        loop {
-            match r.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(t) => {
-                    read.push(take t)
-                    break
-                },
-            }
-        }
+        read.push(text_of(texts[k].as_str()))
     }
     let gate = line_starting(read[1].as_str(), "pub const GATE =")
     let door = line_starting(read[0].as_str(), "const DOOR =")
@@ -597,141 +281,43 @@ fn the_first_floor_door_returns_to_its_stair_landing() {
     let main = String::from(
         f"{gate.as_str()}\n{source.as_str()}\n@testing\npub fn test_leave({leave.as_str()}\n}}\n",
     )
-    var m = Box::new(
-        written.start(String::from("scratch/first-floor-source/main.wrela"), take main),
-    )
-    loop {
-        match m.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
+    written("scratch/first-floor-source/main.wrela", main)
     let manifest = String::from(
         "[package]\nname = \"first_floor\"\n\n[dependencies]\nengine = { workspace = true }\nplatform = { workspace = true }\n",
     )
-    var w = Box::new(
-        written.start(String::from("scratch/first-floor-source/wrela.toml"), take manifest),
+    written("scratch/first-floor-source/wrela.toml", manifest)
+    built("scratch/first-floor-source", "scratch/first-floor-tour/last-green")
+    built("repo/games/last-green/stair", "scratch/first-floor-tour/stair")
+    let h = loaded("first-floor-tour")
+    let up = framed(
+        Vec::new(),
+        2,
+        Vec::from([call("climb", floats([16.0])), call("go_in", Vec::new())]),
     )
-    loop {
-        match w.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
-    var b = Box::new(
-        built.start(
-            String::from("scratch/first-floor-source"),
-            String::from("scratch/first-floor-tour/last-green"),
-        ),
-    )
-    loop {
-        match b.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
-    var s = Box::new(
-        built.start(
-            String::from("repo/games/last-green/stair"),
-            String::from("scratch/first-floor-tour/stair"),
-        ),
-    )
-    loop {
-        match s.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
-    var l = Box::new(loaded.start(String::from("first-floor-tour")))
-    var opened: Option<drive::Build> = None
-    while opened.is_none() {
-        match l.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(x) => opened = Some(x),
-        }
-    }
-    let Some(h) = opened else { panic("the stair") }
-    var f = Box::new(frames.start(h, 2))
-    loop {
-        match f.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
-    var c = Box::new(call.start(h, String::from("climb"), floats([16.0])))
-    loop {
-        match c.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
-    var g = Box::new(call.start(h, String::from("go_in"), Vec::new()))
-    loop {
-        match g.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
-    var f2 = Box::new(frames.start(h, 2))
-    loop {
-        match f2.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
-    var r = Box::new(running.start(h))
-    loop {
-        match r.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(name) => {
-                assert(name.as_str() == "last-green", f"{name.as_str()} runs, not the first floor")
-                break
-            },
-        }
-    }
+    let climbed = stepped(h, framed(take up, 2, Vec::from([Step::Running])), "the climb")
+    let name = running(climbed)
+    assert(name.as_str() == "last-green", f"{name.as_str()} runs, not the first floor")
     // The gate is at (-1.5, -2.0); the door 5 m behind it.
     let checks = [
         (-1.5, -2.0, 0.0, "the gate isn't the door"),
         (-1.5, -7.0, 1.0, "the door goes back down"),
     ]
+    var list: Vec<Step> = Vec::new()
     for k in 0..2 {
-        let (x, z, want, why) = checks[k]
-        var t = Box::new(call.start(h, String::from("test_leave"), floats([x, z])))
-        loop {
-            match t.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(v) => {
-                    assert(v[0] == want, why)
-                    break
-                },
-            }
-        }
+        let (x, z, _, _) = checks[k]
+        list.push(call("test_leave", floats([x, z])))
     }
-    var f3 = Box::new(frames.start(h, 2))
-    loop {
-        match f3.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
+    let left = stepped(
+        h,
+        framed(take list, 2, Vec::from([Step::Running, report()])),
+        "leaving",
+    )
+    for k in 0..2 {
+        let (_, _, want, why) = checks[k]
+        assert(results(left.ran[k])[0] == want, why)
     }
-    var r2 = Box::new(running.start(h))
-    loop {
-        match r2.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(name) => {
-                assert(name.as_str() == "stair", f"{name.as_str()} runs, not the stair")
-                break
-            },
-        }
-    }
-    var p = Box::new(call.start(h, String::from("report"), Vec::new()))
-    loop {
-        match p.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(v) => {
-                assert(v[0] == 16.0 && v[1] == 1.0, "arrived back at the first door")
-                break
-            },
-        }
-    }
+    let back = running(left)
+    assert(back.as_str() == "stair", f"{back.as_str()} runs, not the stair")
+    let v = last(left)
+    assert(v[0] == 16.0 && v[1] == 1.0, "arrived back at the first door")
 }

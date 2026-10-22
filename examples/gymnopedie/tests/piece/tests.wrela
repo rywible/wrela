@@ -4,34 +4,18 @@
 
 use hosts::both::bytes_of
 use hosts::steps::{sample, text_of}
-use std::collections::{Box, Vec}
-use std::job::Step
 use std::json::{Doc, TOP, parse}
-use std::string::String
 use std::tool::drive
+use std::tool::drive::Step
 use std::tool::toolchain
 
 /// The piece, built into `out` (lifting its own literals, if `lift`), with no errors.
-@job
-fn built(out: take String, lift: take bool) -> bool {
+fn built(out: str, lift: bool) {
     var options = toolchain::options()
     if lift {
         options.lift.push(String::from("gymnopedie"))
     }
-    var b = Box::new(
-        hosts::steps::built.start(
-            String::from("repo/examples/gymnopedie"),
-            take out,
-            take options,
-            String::from("the piece builds"),
-        ),
-    )
-    loop {
-        match b.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(v) => return v,
-        }
-    }
+    hosts::steps::built("repo/examples/gymnopedie", out, options, "the piece builds")
 }
 
 /// How many items of list `key` of the report name file `file`.
@@ -52,26 +36,9 @@ fn in_file(d: Doc, key: str, file: u32) -> u32 {
 /// plays (AC4): the report lists every float literal, lifted or not, so none left out is every
 /// one lifted.
 @test(tool, read: [("repo", "../../../..")], budget: 300)
-@job
 fn every_number_of_the_performance_is_lifted() {
-    var b = Box::new(built.start(String::from("scratch/lifted"), lift: true))
-    loop {
-        match b.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
-    var r = Box::new(text_of.start(String::from("scratch/lifted/lift.json")))
-    var text = String::new()
-    loop {
-        match r.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(v) => {
-                text = take v
-                break
-            },
-        }
-    }
+    built("scratch/lifted", lift: true)
+    let text = text_of("scratch/lifted/lift.json")
     let Some(d) = parse(text.as_str()) else { panic("lift.json is JSON") }
     let Some(files_list) = d.get(TOP, "files") else { panic("the report's files") }
     var file: Option<u32> = None
@@ -90,90 +57,31 @@ fn every_number_of_the_performance_is_lifted() {
 
 /// The piece's samples from the native host's offline run: `seconds` of take 1, from a new
 /// load on the CPU (one thread), after a frame (16 × 16) starts it.
-@job
-fn samples(seconds: take f64) -> Vec<u8> {
+fn samples(seconds: f64) -> Vec<u8> {
     var load = drive::cpu()
     load.workers = 1
     load.width = 16
     load.height = 16
-    var l = drive::load("scratch/piece", load)
-    var loaded = l.poll()
-    while loaded.is_none() {
-        yield
-        loaded = l.poll()
-    }
-    let Some(lp) = take loaded else { panic("no answer") }
-    let Ok(it) = drive::read_loaded(take lp) else { panic("the piece loads") }
-    let h = it.build
-    var i = drive::init(h)
-    var inited = i.poll()
-    while inited.is_none() {
-        yield
-        inited = i.poll()
-    }
-    let Some(ip) = take inited else { panic("no answer") }
-    let Ok(init) = drive::read_ran(take ip) else { panic("init's request") }
-    assert(init.trap.is_none(), "init runs")
-    var f = drive::frame_at(h, 0.0)
-    var framed = f.poll()
-    while framed.is_none() {
-        yield
-        framed = f.poll()
-    }
-    let Some(fp) = take framed else { panic("no answer") }
-    let Ok(ran) = drive::read_ran(take fp) else { panic("the frame's request") }
-    assert(ran.trap.is_none(), "the frame starts the piece")
     let quanta = u32(ceil(seconds * 48000.0 / 128.0))
-    var a = drive::audio(h, quanta)
-    var rendered = a.poll()
-    while rendered.is_none() {
-        yield
-        rendered = a.poll()
+    let Ok(seen) = drive::run(
+        "scratch/piece",
+        load,
+        [Step::Init, Step::FrameAt(0.0), Step::Audio(quanta, false)],
+    ).wait() else { panic("the piece loads and the voice renders") }
+    if let Some(trap) = seen.trap {
+        panic(f"init runs and the frame starts the piece: {trap.message.as_str()}")
     }
-    let Some(ap) = take rendered else { panic("no answer") }
-    let Ok(audio) = drive::read_audio(take ap) else { panic("the voice renders") }
-    var out: Vec<u8> = Vec::new()
-    var b = Box::new(bytes_of.start(take audio.samples))
-    loop {
-        match b.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(v) => {
-                out = take v
-                break
-            },
-        }
-    }
-    var c = drive::close(h)
-    while c.poll().is_none() {
-        yield
-    }
-    out
+    bytes_of(seen.audio[0].samples.clone())
 }
 
 /// The piece's first notes, rendered twice: the same samples. (The left hand's first chord is
 /// on beat 2 of bar 1; two seconds hold it.)
 @test(tool, read: [("repo", "../../../..")], budget: 300)
-@job
 fn the_piano_renders_the_same_samples_every_time() {
-    var b = Box::new(built.start(String::from("scratch/piece"), lift: false))
-    loop {
-        match b.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
+    built("scratch/piece", lift: false)
     var runs: Vec<Vec<u8>> = Vec::new()
     for _ in 0..2 {
-        var s = Box::new(samples.start(2.0))
-        loop {
-            match s.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(v) => {
-                    runs.push(take v)
-                    break
-                },
-            }
-        }
+        runs.push(samples(2.0))
     }
     let first = runs[0].clone()
     let n = first.len() / 4
