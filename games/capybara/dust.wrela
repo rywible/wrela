@@ -1,8 +1,8 @@
 // The particles: dust kicked up running, sliding and landing, the water's splashes and drips,
-// bubbles, sparkles round what's picked up, feathers off a stomped bird, a ring of air under a
-// double jump. Presentation only: they're stepped by the frame's time and drawn as sprites.
+// bubbles, sparkles round what's picked up, feathers off a stomped bird, confetti and tiny yuzus
+// under a double jump. Presentation only: they're stepped by the frame's time and drawn as sprites.
 
-use sprites::{BUBBLE, DROP, DUST, FEATHER, RING, SPARK, STREAK, Sprite}
+use sprites::{BUBBLE, CONFETTI, DROP, DUST, FEATHER, FRUIT, SPARK, STREAK, Sprite}
 use std::collections::Vec
 
 /// The most particles alive at once; the oldest make way.
@@ -234,19 +234,51 @@ pub fn feathers(d: mut Dust, at: vec2, n: u32, colour: vec3) {
     }
 }
 
-/// A ring of air spreading from `at`.
-pub fn ring(d: mut Dust, at: vec2) {
-    var m = mote(
-        RING,
-        at,
-        vec2(0.0),
-        size: 0.2,
-        end: 0.9,
-        life: 0.3,
-        colour: vec4(0.24, 0.16, 0.11, 0.8),
-    )
-    m.front = true
-    add(mut d, m)
+/// A burst of `n` scraps of confetti and a few tiny yuzus from `at`, thrown down and out, and
+/// carried along at `carry` (m/s), as the thing they burst from was going: the
+/// double jump's (Ryan, 2026-10-22: something "more fun ... maybe something capybara themed").
+pub fn confetti(d: mut Dust, at: vec2, carry: vec2, n: u32) {
+    let colours = [
+        vec3(1.0, 0.84, 0.25),
+        vec3(0.98, 0.6, 0.25),
+        vec3(0.5, 0.78, 0.36),
+        vec3(0.98, 0.62, 0.7),
+        vec3(1.0, 0.96, 0.86),
+    ]
+    for i in 0..n {
+        let a = between(mut d, vec2(3.4, 6.0))
+        var m = mote(
+            CONFETTI,
+            at,
+            carry + vec2(cos(a), sin(a)) * between(mut d, vec2(2.5, 6.5)),
+            size: between(mut d, vec2(0.08, 0.13)),
+            end: 0.08,
+            life: between(mut d, vec2(0.7, 1.1)),
+            colour: vec4(colours[i % 5], 1.0),
+        )
+        m.gravity = 6.0
+        m.drag = 3.0
+        m.spin = between(mut d, vec2(-10.0, 10.0))
+        m.front = true
+        add(mut d, m)
+    }
+    for _ in 0..3 {
+        let a = between(mut d, vec2(3.6, 5.8))
+        var m = mote(
+            FRUIT,
+            at,
+            carry + vec2(cos(a), sin(a)) * between(mut d, vec2(2.0, 4.0)),
+            size: 0.13,
+            end: 0.12,
+            life: 0.9,
+            colour: vec4(1.0, 0.84, 0.22, 1.0),
+        )
+        m.gravity = 14.0
+        m.drag = 1.0
+        m.spin = between(mut d, vec2(-6.0, 6.0))
+        m.front = true
+        add(mut d, m)
+    }
 }
 
 /// A streak of speed behind `at`, going `vel`.

@@ -301,18 +301,23 @@ fn stones(p: vec2, px: f32) -> vec3 {
 pub fn earth(e: Earthel, f: Field, tops: [f32], pools: [vec4]) -> vec4 {
     let c = earth_colour(e, f, tops)
     let p = e.world
+    let bed = top_at(tops, p.x)
     var under = 0.0
+    var tint = 0.0
     for i in 0..pools.len() {
         let pool = pools[i]
-        if p.x >= pool.x && p.x <= pool.x + pool.z * 0.1 && p.y < pool.w {
+        if p.x >= pool.x && p.x <= pool.x + pool.z * 0.1 && p.y < pool.w && bed < pool.w {
+            // Fading out below the bed, over a distance as deep as the pool (at most 4 m).
+            let reach = min(4.0, (pool.w - bed) * 2.0)
             under = max(under, pool.w - p.y)
+            tint = max(tint, 1.0 - smoothstep(0.0, reach, bed - p.y))
         }
     }
-    if under <= 0.0 {
+    if tint <= 0.0 {
         return c
     }
     let water = blend(vec3(0.42, 0.7, 0.78), vec3(0.2, 0.36, 0.55), smoothstep(0.0, 9.0, under))
-    vec4(blend(c.xyz, water, saturate(0.45 + under * 0.05)), 1.0)
+    vec4(blend(c.xyz, water, saturate(0.45 + under * 0.05) * tint), 1.0)
 }
 
 fn earth_colour(e: Earthel, f: Field, tops: [f32]) -> vec4 {

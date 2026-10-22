@@ -9,7 +9,7 @@
 use body::Mode
 use course::Course
 use dust::{
-    Dust, EARTH_DUST, between, bubbles, clippings, dust, dust_sprites, feathers, puff, ring,
+    Dust, EARTH_DUST, between, bubbles, clippings, dust, dust_sprites, feathers, puff, confetti,
     sparkles, splash, step_dust, streak,
 }
 use feel::{FEEL, HZ}
@@ -88,9 +88,9 @@ pub fn react(k: mut Cast, s: Snap, c: Course, dt: f32) {
                     puff(mut k.dust, feet, vec2(-s.vel.x * 0.15, 0.0), 5, 0.1)
                     k.give += vec2(-0.5, 1.0) * 5.0
                 }
-                // The double jump: a ring of air under it.
+                // The double jump: a burst of confetti and tiny yuzus under it.
                 if s.flip > 0 && before.flip == 0 {
-                    ring(mut k.dust, feet)
+                    confetti(mut k.dust, feet, carry: s.vel * 0.6, n: 22)
                     k.give += vec2(-0.4, 0.8) * 5.0
                 }
                 // Into the water, and out of it: a splash and rings, as hard as it hit.
@@ -115,7 +115,7 @@ pub fn react(k: mut Cast, s: Snap, c: Course, dt: f32) {
                         bubbles(mut k.dust, s.at, u32(clamp(hit, 4.0, 16.0)))
                     }
                 }
-                // Stomped and bowled birds: feathers, a ring.
+                // Stomped and bowled birds: feathers, sparkles.
                 for i in 0..s.foes.len() {
                     let (f, g) = (s.foes[i], before.foes[i])
                     if f.z < 0.0 && g.z > 0.0 {
@@ -124,7 +124,6 @@ pub fn react(k: mut Cast, s: Snap, c: Course, dt: f32) {
                             vec3(0.6, 0.64, 0.72)
                         }
                         feathers(mut k.dust, f.xy, 10, colour)
-                        ring(mut k.dust, f.xy)
                         sparkles(mut k.dust, f.xy, 6, vec3(1.0, 0.9, 0.6))
                     }
                 }
