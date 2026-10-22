@@ -294,8 +294,9 @@ fn ground(b: mut Body, pad: Pad, c: Course, f: Feel) {
         Mode::Crouch => b.speed = approach(b.speed, 0.0, f.friction * STEP),
         Mode::Slide => {
             b.speed -= f.slide_gravity * t.y * STEP
+            let brake = f.slide_brake * smoothstep(f.brake_from, f.brake_until, abs(b.speed))
             b.speed = clamp(
-                approach(b.speed, 0.0, f.slide_friction * STEP),
+                approach(b.speed, 0.0, (f.slide_friction + brake) * STEP),
                 -f.slide_max,
                 f.slide_max,
             )

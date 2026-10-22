@@ -51,7 +51,7 @@ pub const LAB_RUN: [Hold; 31] = [
     hold(RIGHT, 9),
     hold(RIGHT | JUMP | PRESS, 1),
     hold(RIGHT | JUMP, 39),
-    hold(RIGHT, 45),
+    hold(RIGHT, 60),
 ]
 
 /// Up through the 2 m one-way ledge from below, then a jump to the 3.5 m ledge.
@@ -82,7 +82,7 @@ pub const DOUBLE_JUMP: [Hold; 7] = [
 fn the_lab_is_finished_by_its_recorded_run_in_its_recorded_time() {
     let w = play(0, LAB_RUN)
     print(f"the lab: {w.finished} ticks")
-    assert(w.finished == 1374 && w.deaths == 0, "the run's time moved")
+    assert(w.finished == 1381 && w.deaths == 0, "the run's time moved")
 }
 
 /// Whether `run` ends standing on the 3.5 m ledge.
@@ -117,7 +117,7 @@ fn a_run_replays_to_the_same_state_hash() {
 /// The first level from start to goal (any%): the gates, the big slide's slide-jump, the lake by
 /// dolphin kicks, the gauntlet, without a death. Recorded from an autopilot that reacts to the
 /// foes; its fixed pads are the proof that the level can be finished.
-pub const LEVEL_ANY: [Hold; 71] = [
+pub const LEVEL_ANY: [Hold; 70] = [
     hold(RIGHT, 164),
     hold(RIGHT | JUMP | PRESS, 1),
     hold(RIGHT | JUMP, 45),
@@ -141,7 +141,7 @@ pub const LEVEL_ANY: [Hold; 71] = [
     hold(RIGHT | JUMP | PRESS, 1),
     hold(RIGHT | JUMP, 45),
     hold(RIGHT, 126),
-    hold(RIGHT | DOWN, 228),
+    hold(RIGHT | DOWN, 236),
     hold(RIGHT | DOWN | JUMP | PRESS, 1),
     hold(RIGHT | JUMP, 54),
     hold(RIGHT | JUMP | PRESS, 1),
@@ -150,29 +150,29 @@ pub const LEVEL_ANY: [Hold; 71] = [
     hold(RIGHT | JUMP | PRESS, 1),
     hold(RIGHT | JUMP, 45),
     hold(RIGHT, 121),
-    hold(RIGHT | DOWN, 14),
-    hold(RIGHT | UP, 10),
-    hold(RIGHT | DOWN, 7),
-    hold(RIGHT | UP, 53),
     hold(RIGHT | DOWN, 10),
-    hold(RIGHT | UP, 1),
-    hold(RIGHT | DOWN, 39),
+    hold(RIGHT | UP, 6),
+    hold(RIGHT | DOWN, 10),
+    hold(RIGHT | UP, 50),
+    hold(RIGHT | DOWN, 10),
+    hold(RIGHT | UP, 8),
+    hold(RIGHT | DOWN, 52),
     hold(RIGHT | UP, 10),
-    hold(RIGHT | DOWN, 5),
-    hold(RIGHT | UP, 39),
-    hold(RIGHT | DOWN, 6),
+    hold(RIGHT | DOWN, 4),
+    hold(RIGHT | UP, 37),
+    hold(RIGHT | DOWN, 9),
     hold(RIGHT | UP, 10),
-    hold(RIGHT | DOWN, 50),
-    hold(RIGHT | UP, 66),
-    hold(RIGHT, 26),
+    hold(RIGHT | DOWN, 32),
+    hold(RIGHT | UP, 41),
+    hold(RIGHT, 19),
     hold(RIGHT | JUMP | PRESS, 1),
-    hold(RIGHT | JUMP, 39),
-    hold(RIGHT, 145),
+    hold(RIGHT | JUMP, 51),
+    hold(RIGHT, 126),
     hold(RIGHT | JUMP | PRESS, 1),
     hold(RIGHT | JUMP, 42),
     hold(RIGHT | JUMP | PRESS, 1),
     hold(RIGHT | JUMP, 39),
-    hold(RIGHT, 50),
+    hold(RIGHT, 51),
     hold(RIGHT | JUMP | PRESS, 1),
     hold(RIGHT | JUMP, 42),
     hold(RIGHT | JUMP | PRESS, 1),
@@ -182,19 +182,18 @@ pub const LEVEL_ANY: [Hold; 71] = [
     hold(RIGHT | JUMP, 42),
     hold(RIGHT | JUMP | PRESS, 1),
     hold(RIGHT | JUMP, 39),
-    hold(RIGHT, 46),
+    hold(RIGHT, 107),
     hold(RIGHT | JUMP | PRESS, 1),
-    hold(RIGHT | JUMP, 45),
-    hold(RIGHT, 16),
+    hold(RIGHT | JUMP, 42),
     hold(RIGHT | JUMP | PRESS, 1),
     hold(RIGHT | JUMP, 39),
-    hold(RIGHT, 639),
+    hold(RIGHT, 631),
 ]
 
 /// The first level with every snack (100%): onto the ledge by a double jump, off the second pit's
 /// edge and out, a double jump at the top of the slide-jump's arc, down to the lake's floor under
 /// the caiman, and a jump and double jump high off the last mesa; without a death.
-pub const LEVEL_FULL: [Hold; 145] = [
+pub const LEVEL_FULL: [Hold; 153] = [
     hold(RIGHT, 97),
     hold(RIGHT | JUMP | PRESS, 1),
     hold(RIGHT | JUMP, 42),
@@ -218,7 +217,7 @@ pub const LEVEL_FULL: [Hold; 145] = [
     hold(RIGHT | JUMP | PRESS, 1),
     hold(RIGHT | JUMP, 45),
     hold(RIGHT, 126),
-    hold(RIGHT | DOWN, 228),
+    hold(RIGHT | DOWN, 236),
     hold(RIGHT | DOWN | JUMP | PRESS, 1),
     hold(RIGHT | JUMP, 54),
     hold(RIGHT | JUMP | PRESS, 1),
@@ -227,16 +226,14 @@ pub const LEVEL_FULL: [Hold; 145] = [
     hold(RIGHT | JUMP | PRESS, 1),
     hold(RIGHT | JUMP, 45),
     hold(RIGHT, 121),
-    hold(RIGHT | DOWN, 15),
-    hold(RIGHT | UP, 10),
-    hold(RIGHT | DOWN, 6),
-    hold(RIGHT | UP, 42),
-    hold(RIGHT | DOWN, 2),
-    hold(RIGHT | UP, 10),
-    hold(RIGHT | DOWN, 50),
-    hold(RIGHT | UP, 10),
-    hold(RIGHT | DOWN, 4),
-    hold(RIGHT | UP, 1),
+    hold(RIGHT | DOWN, 10),
+    hold(RIGHT | UP, 7),
+    hold(RIGHT | DOWN, 10),
+    hold(RIGHT | UP, 50),
+    hold(RIGHT | DOWN, 10),
+    hold(RIGHT | UP, 9),
+    hold(RIGHT | DOWN, 51),
+    hold(RIGHT | UP, 5),
     hold(LEFT | DOWN, 23),
     hold(RIGHT | DOWN, 1),
     hold(LEFT | DOWN, 1),
@@ -306,10 +303,20 @@ pub const LEVEL_FULL: [Hold; 145] = [
     hold(LEFT | DOWN, 1),
     hold(RIGHT | DOWN, 1),
     hold(LEFT | DOWN, 1),
-    hold(RIGHT, 80),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT, 79),
     hold(RIGHT | UP, 57),
     hold(RIGHT, 1),
-    hold(RIGHT | UP, 75),
+    hold(RIGHT | UP, 76),
     hold(RIGHT, 26),
     hold(RIGHT | JUMP | PRESS, 1),
     hold(RIGHT | JUMP, 39),
@@ -323,23 +330,23 @@ pub const LEVEL_FULL: [Hold; 145] = [
     hold(RIGHT | JUMP, 42),
     hold(RIGHT | JUMP | PRESS, 1),
     hold(RIGHT | JUMP, 39),
-    hold(RIGHT, 77),
+    hold(RIGHT, 76),
     hold(RIGHT | JUMP | PRESS, 1),
     hold(RIGHT | JUMP, 42),
     hold(RIGHT | JUMP | PRESS, 1),
     hold(RIGHT | JUMP, 39),
-    hold(RIGHT, 95),
+    hold(RIGHT, 97),
     hold(RIGHT | JUMP | PRESS, 1),
     hold(RIGHT | JUMP, 42),
     hold(RIGHT | JUMP | PRESS, 1),
     hold(RIGHT | JUMP, 39),
-    hold(RIGHT, 13),
-    hold(RIGHT | JUMP, 5),
+    hold(RIGHT, 14),
+    hold(RIGHT | JUMP, 4),
     hold(RIGHT | JUMP | PRESS, 1),
     hold(RIGHT | JUMP, 44),
     hold(RIGHT | JUMP | PRESS, 1),
-    hold(RIGHT | JUMP, 51),
-    hold(RIGHT, 449),
+    hold(RIGHT | JUMP, 53),
+    hold(RIGHT, 452),
 ]
 
 @test
@@ -348,8 +355,8 @@ fn the_level_is_finished_without_a_death_and_with_every_snack() {
     let any = play(LEVEL, LEVEL_ANY)
     let all = play(LEVEL, LEVEL_FULL)
     print(f"the level: any% {any.finished} ticks, 100% {all.finished} ticks")
-    assert(any.finished == 3451 && any.deaths == 0, "the any% run's time moved")
-    assert(all.finished == 3546 && all.deaths == 0, "the 100% run's time moved")
+    assert(any.finished == 3449 && any.deaths == 0, "the any% run's time moved")
+    assert(all.finished == 3572 && all.deaths == 0, "the 100% run's time moved")
     assert(all.snacks == (1 << c.snacks.len()) - 1, "every snack")
     assert(any.checkpoint == c.checkpoints.len() && all.checkpoint == c.checkpoints.len())
 }
@@ -1076,4 +1083,33 @@ fn the_feels_metrics_are_within_their_ranges() {
     assert(within(double, vec2(4.6, 5.4)), "the double jump's height")
     assert(within(f32(top), vec2(36.0, 52.0)), "the ticks to top speed, eased")
     assert(within(far, vec2(5.2, 6.4)), "the jump's reach at speed")
+}
+
+@test
+fn a_slide_from_a_run_on_the_flat_ends_soon_and_a_fast_one_keeps_its_speed() {
+    // On the lab's flat start, up to the running speed, then down: the slide ends (a crouch)
+    // within 1.6 s and 8 m (Ryan, 2026-10-22: it lasted too long).
+    var w = world(0)
+    for _ in 0..90 {
+        step(mut w, Pad { bits: RIGHT })
+    }
+    assert(abs(w.body.speed - FEEL.speed) < 1.0e-3, "at the running speed")
+    let from = w.body.at.x
+    var ticks = 0
+    while w.body.mode != Mode::Crouch && ticks < 600 {
+        step(mut w, Pad { bits: RIGHT | DOWN })
+        ticks += 1
+    }
+    print(f"a slide from a run: {f32(ticks) * STEP} s, {w.body.at.x - from} m")
+    assert(f32(ticks) * STEP < 1.6 && w.body.at.x - from < 8.0, "the slide ended soon")
+    // At 20 m/s on the flat, a slide loses no more than the base friction's 2.5 m/s a second.
+    var b = w.body
+    b.mode = Mode::Slide
+    b.speed = 20.0
+    b.vel = vec2(20.0, 0.0)
+    w.body = b
+    for _ in 0..30 {
+        step(mut w, Pad { bits: RIGHT | DOWN })
+    }
+    assert(w.body.speed > 20.0 - 2.5 * 0.25 - 1.0e-3, "a fast slide keeps its speed")
 }

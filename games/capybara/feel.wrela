@@ -49,6 +49,12 @@ pub struct Feel: Copy {
     /// Gravity along the slope while sliding, the friction that takes speed, and the cap.
     pub slide_gravity: f32 = 40.0,
     pub slide_friction: f32 = 2.5,
+    /// More friction at running speeds (m/s², all of it below `brake_until`, none above
+    /// `brake_from`), so a slide from a run ends soon while one off a ramp keeps its speed (Ryan,
+    /// 2026-10-22: from running, the slide "lasts too long").
+    pub slide_brake: f32 = 4.5,
+    pub brake_until: f32 = 10.0,
+    pub brake_from: f32 = 15.0,
     pub slide_max: f32 = 22.0,
     // Water.
     /// Gravity in water (m/s²), and the fastest it sinks (m/s).
