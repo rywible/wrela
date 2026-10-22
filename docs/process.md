@@ -618,7 +618,7 @@ level, to watch as ghosts. Claude (Opus 5.5), in a session another Claude sessio
 wrote it as a Wrela tool (`wrela tool route`, `games/capybara/route`): a beam search over the
 sim's states with exact merging of equal states, a per-cell bound for variety, and rounds that
 search again from each checkpoint of the best run with other settings, keeping what's faster.
-Its runs are `games/capybara/routes.wrela`, with tests that replay them: any% in 1,285 ticks and
+Its runs are `games/capybara/routes.wrela`, with tests that replay them: any% in 1,283 ticks and
 100% in 1,999, after about 17 minutes of search for each on an M-series Mac (8 helpers), against
 the autopilot's 3,449 and 3,572 (proofs.wrela). They beat it by far because the movement lets
 speed build without limit (speed is never lost in the air, and a landing on a down slope adds to
