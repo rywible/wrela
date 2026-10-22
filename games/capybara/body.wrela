@@ -59,6 +59,9 @@ pub struct Body: Copy + Eq + StateHash + Serialize + SimState {
     /// Ticks until the next stroke, and a press waiting for it.
     pub cooldown: u32,
     pub queued: bool,
+    /// Ticks since a dolphin leap left the water, counting from 1 while the body is in the air
+    /// after it; 0 otherwise.
+    pub leap: u32,
 }
 
 /// A body standing at `at` (its middle), facing right.
@@ -77,6 +80,7 @@ pub fn spawn(at: vec2) -> Body {
         tuck: false,
         cooldown: 0,
         queued: false,
+        leap: 0,
     }
 }
 
@@ -326,9 +330,18 @@ fn air(b: mut Body, pad: Pad, c: Course, f: Feel) {
             b.coyote = 0
         }
     }
-    if !pad.held(JUMP) || b.vel.y <= 0.0 {
+    if b.leap > 0 {
+        b.leap += 1
+    }
+    // A leap rises on the light gravity without jump held; a jump only while it's held.
+    if (!pad.held(JUMP) && b.leap == 0) || b.vel.y <= 0.0 {
         b.jumping = false
     }
+    // The velocity before the tick's accelerations. Each substep takes its share of the tick's
+    // change of velocity and moves by the mean of its velocities before and after, so an arc is
+    // exact at every substep (a fall of g h² / 2, not g h²), and a body that leaves a crest at v²
+    // / ρ just over g doesn't meet the crest again.
+    let start = b.vel
     let dir = pad.x()
     if dir != 0.0 {
         let top = if pad.held(RUN) && f.run_button { f.run } else { f.walk }
@@ -341,14 +354,19 @@ fn air(b: mut Body, pad: Pad, c: Course, f: Feel) {
     let g = if b.jumping { f.rise } else { f.fall }
     b.vel.y = max(b.vel.y - g * STEP, -f.terminal)
     let from = b.at
-    let n = substeps(length(b.vel))
+    let n = substeps(max(length(b.vel), length(start)))
     let h = STEP / f32(n)
+    let change = (b.vel - start) / f32(n)
+    b.vel = start
     for _ in 0..n {
-        let before = b.vel
-        b.at += before * h
+        let was = b.vel
+        let before = was + change
+        b.vel = before
+        let moved = (was + before) * (0.5 * h)
+        b.at += moved
         let pushed = push_out(c, mut b, from)
         if pushed.stuck {
-            b.at -= before * h
+            b.at -= moved
             b.vel = vec2(0.0)
             return
         }
@@ -361,6 +379,7 @@ fn air(b: mut Body, pad: Pad, c: Course, f: Feel) {
         }
         if c.water_at(b.at).is_some() {
             b.mode = Mode::Swim
+            b.leap = 0
             b.jumping = false
             b.queued = false
             return
@@ -379,6 +398,7 @@ fn land(b: mut Body, pad: Pad, k: Contact, before: vec2, f: Feel) {
     b.vel = t * b.speed
     b.jumping = false
     b.coyote = 0
+    b.leap = 0
     b.mode = if pad.held(DOWN) {
         if abs(b.speed) >= f.slide_min || abs(t.y) >= f.slide_slope { Mode::Slide } else {
             Mode::Crouch
@@ -446,12 +466,20 @@ fn swim(b: mut Body, pad: Pad, c: Course, f: Feel) {
         }
     }
     if b.at.y >= surface {
-        if b.vel.y >= f.leap_min {
-            // The dolphin leap: into the air with the velocity unchanged, rising as a jump does
-            // while jump is held.
+        if b.jumping {
+            // The hop from floating: out at its own speed.
             b.mode = Mode::Air
             b.coyote = 0
-            b.jumping = pad.held(JUMP)
+            return
+        }
+        if b.vel.y >= f.leap_min {
+            // The dolphin leap: into the air at least at the leap's speed, faster if the swim
+            // was, rising on the light gravity to its top.
+            b.vel.y = max(b.vel.y, f.leap)
+            b.mode = Mode::Air
+            b.coyote = 0
+            b.jumping = true
+            b.leap = 1
             return
         }
         b.at.y = surface - 1.0e-4

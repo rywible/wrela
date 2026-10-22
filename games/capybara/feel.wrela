@@ -38,17 +38,17 @@ pub struct Feel: Copy {
     pub slide_slope: f32 = 0.139,
     pub slide_stop: f32 = 0.5,
     /// Gravity along the slope while sliding, the friction that takes speed, and the cap.
-    pub slide_gravity: f32 = 26.0,
+    pub slide_gravity: f32 = 40.0,
     pub slide_friction: f32 = 2.5,
     pub slide_max: f32 = 22.0,
     // Swimming.
     /// A stroke's speed (m/s), the ticks between strokes, and the cap strokes reach (m/s).
-    pub stroke: f32 = 5.5,
-    pub stroke_cooldown: u32 = 18,
-    pub swim_max: f32 = 10.0,
+    pub stroke: f32 = 6.0,
+    pub stroke_cooldown: u32 = 12,
+    pub swim_max: f32 = 13.0,
     /// Paddling with a direction held: its top speed (m/s) and acceleration (m/s²).
-    pub paddle: f32 = 2.5,
-    pub paddle_accel: f32 = 6.0,
+    pub paddle: f32 = 3.5,
+    pub paddle_accel: f32 = 12.0,
     /// The middle floats this far under the surface; within `float_band` of the surface it's
     /// floating (m).
     pub float_depth: f32 = 0.15,
@@ -57,29 +57,32 @@ pub struct Feel: Copy {
     pub buoyancy: f32 = 8.0,
     pub buoyancy_max: f32 = 6.0,
     /// Water's drag (1/s).
-    pub drag: f32 = 1.6,
-    /// The jump out of the water from floating, and the least upward speed that leaps (m/s).
-    pub water_jump: f32 = 8.5,
-    pub leap_min: f32 = 5.0,
+    pub drag: f32 = 1.4,
+    /// The hop out of the water from floating (m/s).
+    pub water_jump: f32 = 10.0,
+    /// The least upward speed through the surface that leaps, and the least upward speed a leap
+    /// leaves with (m/s): any swim up through the surface is a leap that clears a wall 1.6 m up.
+    pub leap_min: f32 = 3.5,
+    pub leap: f32 = 14.0,
 }
 
 /// As Super Mario Bros.: a run button, acceleration and skids, a jump higher at a run.
 pub const MOMENTUM = Feel {
     name: "MOMENTUM",
-    walk: 4.5,
-    run: 8.0,
+    walk: 5.0,
+    run: 9.0,
     run_button: true,
-    accel: 10.0,
-    turn: 30.0,
-    friction: 16.0,
-    over: 8.0,
-    slope_pull: 4.0,
-    air_accel: 9.0,
-    launch: 11.0,
+    accel: 30.0,
+    turn: 60.0,
+    friction: 40.0,
+    over: 15.0,
+    slope_pull: 6.0,
+    air_accel: 25.0,
+    launch: 15.5,
     run_launch: 1.5,
-    rise: 22.0,
-    fall: 50.0,
-    terminal: 18.0,
+    rise: 46.0,
+    fall: 95.0,
+    terminal: 24.0,
     coyote: 10,
     buffer: 12,
 }
@@ -87,20 +90,20 @@ pub const MOMENTUM = Feel {
 /// As Celeste: one speed reached at once, a tight turn and a strong hold in the air.
 pub const SNAPPY = Feel {
     name: "SNAPPY",
-    walk: 8.0,
-    run: 8.0,
+    walk: 9.0,
+    run: 9.0,
     run_button: false,
-    accel: 70.0,
-    turn: 90.0,
-    friction: 80.0,
-    over: 20.0,
+    accel: 90.0,
+    turn: 120.0,
+    friction: 120.0,
+    over: 30.0,
     slope_pull: 0.0,
-    air_accel: 50.0,
-    launch: 11.0,
+    air_accel: 70.0,
+    launch: 15.5,
     run_launch: 0.0,
-    rise: 24.0,
-    fall: 55.0,
-    terminal: 18.0,
+    rise: 46.0,
+    fall: 100.0,
+    terminal: 24.0,
     coyote: 12,
     buffer: 12,
 }

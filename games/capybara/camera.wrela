@@ -65,25 +65,32 @@ pub fn half_view(aspect: f32) -> vec2 {
 
 use course::LAB
 use feel::STEP
-use pad::pad_of
+use pad::{Hold, pad_of}
 use proofs::{LAB_MOMENTUM, LAB_SNAPPY}
 use world::{present, step, world}
 
-@test
-fn the_camera_keeps_the_capybara_in_view_through_the_whole_lab() {
-    // A 16:9 screen, with a margin of a metre and a half at every side.
+/// Whether the camera keeps the capybara in view, a metre and a half inside a 16:9 screen's
+/// edges, through `run` with preset `f`.
+fn keeps_in_view(f: u32, run: [Hold]) -> bool {
     let half = half_view(16.0 / 9.0) - vec2(1.5)
-    for (f, run) in [(0, LAB_MOMENTUM), (1, LAB_SNAPPY)] {
-        var w = world(c: 0, f: f)
-        var c = camera(LAB.start)
-        for h in run {
-            for i in 0..h.ticks {
-                step(mut w, pad_of(h, i))
-                let s = present(w)
-                follow(mut c, s, STEP)
-                let off = abs(s.at - c.at)
-                assert(off.x < half.x && off.y < half.y, "the capybara left the view")
+    var w = world(c: 0, f: f)
+    var c = camera(LAB.start)
+    for h in run {
+        for i in 0..h.ticks {
+            step(mut w, pad_of(h, i))
+            let s = present(w)
+            follow(mut c, s, STEP)
+            let off = abs(s.at - c.at)
+            if off.x >= half.x || off.y >= half.y {
+                return false
             }
         }
     }
+    true
+}
+
+@test
+fn the_camera_keeps_the_capybara_in_view_through_the_whole_lab() {
+    assert(keeps_in_view(0, LAB_MOMENTUM), "with momentum")
+    assert(keeps_in_view(1, LAB_SNAPPY), "with snappy")
 }

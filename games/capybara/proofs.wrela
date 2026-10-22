@@ -17,112 +17,94 @@ use world::{play, step, world}
 
 /// The lab from its start to its goal with the momentum preset: over the crest, both gaps and both
 /// steps at a run, down the slide and off its lip, into the pool, a dive, and a dolphin leap up
-/// the far wall. Recorded from the first lab's autopilot.
-pub const LAB_MOMENTUM: [Hold; 37] = [
-    hold(RIGHT | RUN, 575),
+/// the far wall. Recorded from an autopilot, after Ryan's first play (less floaty, quicker).
+pub const LAB_MOMENTUM: [Hold; 27] = [
+    hold(RIGHT | RUN, 486),
     hold(RIGHT | JUMP | RUN | PRESS, 1),
-    hold(RIGHT | JUMP | RUN, 134),
+    hold(RIGHT | JUMP | RUN, 44),
+    hold(RIGHT | RUN, 75),
     hold(RIGHT | JUMP | RUN | PRESS, 1),
-    hold(RIGHT | JUMP | RUN, 158),
+    hold(RIGHT | JUMP | RUN, 44),
+    hold(RIGHT | RUN, 99),
     hold(RIGHT | JUMP | RUN | PRESS, 1),
-    hold(RIGHT | JUMP | RUN, 102),
+    hold(RIGHT | JUMP | RUN, 44),
+    hold(RIGHT | RUN, 35),
     hold(RIGHT | JUMP | RUN | PRESS, 1),
-    hold(RIGHT | JUMP | RUN, 174),
-    hold(RIGHT | DOWN | JUMP | RUN, 225),
-    hold(RIGHT | JUMP | RUN, 180),
-    hold(RIGHT, 39),
-    hold(RIGHT | DOWN | JUMP | PRESS, 1),
-    hold(RIGHT | DOWN, 18),
-    hold(RIGHT | DOWN | JUMP | PRESS, 1),
-    hold(RIGHT | DOWN, 18),
-    hold(RIGHT | DOWN | JUMP | PRESS, 1),
-    hold(RIGHT | DOWN, 183),
-    hold(UP | JUMP | PRESS, 1),
-    hold(UP | JUMP, 18),
-    hold(UP | JUMP | PRESS, 1),
-    hold(UP | JUMP, 18),
-    hold(UP | JUMP | PRESS, 1),
-    hold(UP | JUMP, 18),
-    hold(UP | JUMP | PRESS, 1),
-    hold(UP | JUMP, 1),
-    hold(RIGHT | JUMP | RUN, 88),
-    hold(UP | JUMP, 17),
-    hold(UP | JUMP | PRESS, 1),
-    hold(UP | JUMP, 18),
-    hold(UP | JUMP | PRESS, 1),
-    hold(UP | JUMP, 18),
-    hold(UP | JUMP | PRESS, 1),
-    hold(UP | JUMP, 18),
-    hold(UP | JUMP | PRESS, 1),
-    hold(UP | JUMP, 5),
-    hold(RIGHT | JUMP | RUN, 194),
+    hold(RIGHT | JUMP | RUN, 44),
+    hold(RIGHT | RUN, 64),
+    hold(RIGHT | DOWN | RUN, 153),
+    hold(RIGHT | RUN, 183),
+    hold(RIGHT | DOWN, 232),
+    hold(RIGHT | UP | JUMP | PRESS, 1),
+    hold(RIGHT | UP, 12),
+    hold(RIGHT | UP | JUMP | PRESS, 1),
+    hold(RIGHT | UP, 12),
+    hold(RIGHT | UP | JUMP | PRESS, 1),
+    hold(RIGHT | UP, 12),
+    hold(RIGHT | UP | JUMP | PRESS, 1),
+    hold(RIGHT | UP, 12),
+    hold(RIGHT | UP | JUMP | PRESS, 1),
+    hold(RIGHT | UP, 12),
+    hold(RIGHT | RUN, 97),
 ]
 
 /// The same route with the snappy preset.
-pub const LAB_SNAPPY: [Hold; 37] = [
-    hold(RIGHT | RUN, 533),
+pub const LAB_SNAPPY: [Hold; 29] = [
+    hold(RIGHT | RUN, 474),
     hold(RIGHT | JUMP | RUN | PRESS, 1),
-    hold(RIGHT | JUMP | RUN, 134),
+    hold(RIGHT | JUMP | RUN, 40),
+    hold(RIGHT | RUN, 80),
     hold(RIGHT | JUMP | RUN | PRESS, 1),
-    hold(RIGHT | JUMP | RUN, 158),
+    hold(RIGHT | JUMP | RUN, 40),
+    hold(RIGHT | RUN, 103),
     hold(RIGHT | JUMP | RUN | PRESS, 1),
-    hold(RIGHT | JUMP | RUN, 94),
+    hold(RIGHT | JUMP | RUN, 42),
+    hold(RIGHT | RUN, 38),
     hold(RIGHT | JUMP | RUN | PRESS, 1),
-    hold(RIGHT | JUMP | RUN, 132),
-    hold(RIGHT | DOWN | JUMP | RUN, 222),
-    hold(RIGHT | JUMP | RUN, 179),
-    hold(RIGHT, 41),
-    hold(RIGHT | DOWN | JUMP | PRESS, 1),
-    hold(RIGHT | DOWN, 18),
-    hold(RIGHT | DOWN | JUMP | PRESS, 1),
-    hold(RIGHT | DOWN, 18),
-    hold(RIGHT | DOWN | JUMP | PRESS, 1),
-    hold(RIGHT | DOWN, 184),
-    hold(UP | JUMP | PRESS, 1),
-    hold(UP | JUMP, 18),
-    hold(UP | JUMP | PRESS, 1),
-    hold(UP | JUMP, 18),
-    hold(UP | JUMP | PRESS, 1),
-    hold(UP | JUMP, 18),
-    hold(UP | JUMP | PRESS, 1),
-    hold(UP | JUMP, 4),
-    hold(RIGHT | JUMP | RUN, 78),
-    hold(UP | JUMP, 14),
-    hold(UP | JUMP | PRESS, 1),
-    hold(UP | JUMP, 18),
-    hold(UP | JUMP | PRESS, 1),
-    hold(UP | JUMP, 18),
-    hold(UP | JUMP | PRESS, 1),
-    hold(UP | JUMP, 18),
-    hold(UP | JUMP | PRESS, 1),
-    hold(UP | JUMP, 4),
-    hold(RIGHT | JUMP | RUN, 109),
+    hold(RIGHT | JUMP | RUN, 44),
+    hold(RIGHT | RUN, 68),
+    hold(RIGHT | DOWN | RUN, 152),
+    hold(RIGHT | RUN, 184),
+    hold(RIGHT | DOWN, 233),
+    hold(RIGHT | UP | JUMP | PRESS, 1),
+    hold(RIGHT | UP, 12),
+    hold(RIGHT | UP | JUMP | PRESS, 1),
+    hold(RIGHT | UP, 12),
+    hold(RIGHT | UP | JUMP | PRESS, 1),
+    hold(RIGHT | UP, 12),
+    hold(RIGHT | UP | JUMP | PRESS, 1),
+    hold(RIGHT | UP, 12),
+    hold(RIGHT | UP | JUMP | PRESS, 1),
+    hold(RIGHT | UP, 12),
+    hold(RIGHT | UP | JUMP | PRESS, 1),
+    hold(RIGHT | UP, 2),
+    hold(RIGHT | RUN, 84),
 ]
 
 /// Up through the 2 m one-way ledge from below, then a running jump to the 3.5 m ledge, with the
 /// momentum preset.
 pub const LEDGES_MOMENTUM: [Hold; 9] = [
-    hold(RIGHT, 135),
+    hold(RIGHT, 125),
     hold(bits: 0, ticks: 30),
     hold(JUMP | PRESS, 1),
-    hold(JUMP, 50),
+    hold(JUMP, 40),
     hold(bits: 0, ticks: 20),
-    hold(RIGHT | RUN, 45),
+    hold(RIGHT | RUN, 25),
     hold(RIGHT | RUN | JUMP | PRESS, 1),
-    hold(RIGHT | RUN | JUMP, 50),
+    hold(RIGHT | RUN | JUMP, 40),
     hold(bits: 0, ticks: 60),
 ]
 
 /// The same with the snappy preset, which needs no run-up.
 pub const LEDGES_SNAPPY: [Hold; 9] = [
-    hold(RIGHT, 100),
+    hold(RIGHT, 70),
     hold(bits: 0, ticks: 30),
     hold(JUMP | PRESS, 1),
-    hold(JUMP, 50),
+    hold(JUMP, 40),
     hold(bits: 0, ticks: 20),
     hold(RIGHT, 10),
     hold(RIGHT | JUMP | PRESS, 1),
-    hold(RIGHT | JUMP, 50),
+    hold(RIGHT | JUMP, 40),
     hold(bits: 0, ticks: 60),
 ]
 
@@ -131,8 +113,8 @@ fn the_lab_is_finished_by_its_recorded_runs_in_their_recorded_times() {
     let m = play(c: 0, f: 0, run: LAB_MOMENTUM)
     let s = play(c: 0, f: 1, run: LAB_SNAPPY)
     print(f"the lab: momentum {m.finished} ticks, snappy {s.finished} ticks")
-    assert(m.finished == 2234 && m.falls == 0, "the momentum run's time moved")
-    assert(s.finished == 2045 && s.falls == 0, "the snappy run's time moved")
+    assert(m.finished == 1669 && m.falls == 0, "the momentum run's time moved")
+    assert(s.finished == 1654 && s.falls == 0, "the snappy run's time moved")
 }
 
 @test
@@ -204,7 +186,7 @@ fn walking_off_a_sharp_edge_leaves_at_the_edge_and_falls() {
     w.body = spawn(vec2(35.6, RADIUS))
     var left = 0.0
     var lowest = RADIUS
-    for _ in 0..90 {
+    for _ in 0..50 {
         step(mut w, Pad { bits: RIGHT })
         if w.body.mode == Mode::Air && left == 0.0 {
             left = w.body.at.x
@@ -265,7 +247,11 @@ fn at_the_surface_a_press_jumps_out_at_one_speed_whatever_is_held() {
     for held in [0, DOWN, UP | RIGHT] {
         var b = in_pool(vec2(108.0, -0.15), vec2(0.0))
         body::step(mut b, Pad { bits: held | JUMP | PRESS }, LAB, MOMENTUM)
-        assert(abs(b.vel.y - MOMENTUM.water_jump) < 0.2)
+        assert(abs(b.vel.y - MOMENTUM.water_jump) < 0.3, "the hop's speed, less a tick of drag")
+        while b.mode == Mode::Swim {
+            body::step(mut b, Pad { bits: held | JUMP }, LAB, MOMENTUM)
+        }
+        assert(b.vel.y < MOMENTUM.water_jump && b.leap == 0, "a hop, not a leap")
     }
 }
 
@@ -308,7 +294,8 @@ fn leaving_the_water_fast_leaps_with_the_velocity_and_slowly_floats() {
     var fast = in_pool(vec2(108.0, -0.02), vec2(3.0, 9.0))
     body::step(mut fast, Pad { bits: JUMP }, LAB, f)
     assert(fast.mode == Mode::Air && fast.vel.y > 8.5 && fast.vel.x > 2.9, "a dolphin leap")
-    var slow = in_pool(vec2(108.0, -0.02), vec2(0.0, 4.0))
+    assert(fast.vel.y >= f.leap, "at least the leap's speed")
+    var slow = in_pool(vec2(108.0, -0.005), vec2(0.0, 2.0))
     body::step(mut slow, Pad { bits: 0 }, LAB, f)
     assert(
         slow.mode == Mode::Swim && slow.at.y < 0.0 && slow.vel.y == 0.0,
@@ -328,6 +315,17 @@ fn jump_height(f: u32, held: u32) -> f32 {
         top = max(top, w.body.at.y - RADIUS)
     }
     top
+}
+
+@test
+fn a_held_jumps_arc_is_exact_whatever_the_ticks() {
+    // A tick moves the body by the mean of its velocities, so the peak is launch² / (2 rise) up
+    // to where the peak falls between ticks (under v dt² g / 8, a few millimetres).
+    for f in 0..FEELS {
+        let feel = feel(f)
+        let exact = feel.launch * feel.launch / (2.0 * feel.rise)
+        assert(abs(jump_height(f, 240) - exact) < 0.005)
+    }
 }
 
 /// Ticks from rest to the top running speed.
@@ -375,12 +373,12 @@ struct Spec: Copy {
 
 const SPECS: [Spec; 2] = [
     Spec {
-        held: vec2(2.5, 3.0),
-        tap: vec2(0.9, 1.5),
-        top: vec2(80.0, 110.0),
-        reach: vec2(6.5, 8.5),
+        held: vec2(2.4, 2.8),
+        tap: vec2(1.0, 1.5),
+        top: vec2(25.0, 45.0),
+        reach: vec2(5.0, 6.5),
     },
-    Spec { held: vec2(2.3, 2.7), tap: vec2(0.9, 1.5), top: vec2(8.0, 20.0), reach: vec2(5.0, 6.5) },
+    Spec { held: vec2(2.4, 2.8), tap: vec2(1.0, 1.5), top: vec2(8.0, 16.0), reach: vec2(4.6, 6.0) },
 ]
 
 fn within(x: f32, range: vec2) -> bool {

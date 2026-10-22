@@ -122,6 +122,8 @@ pub struct Snap: Copy + Plain {
     /// The body's mode (`Mode`'s discriminant), and 1 tucked.
     pub mode: u32,
     pub tuck: u32,
+    /// Ticks since a dolphin leap, while in the air after it (`Body::leap`).
+    pub leap: u32,
     pub ticks: u32,
     pub finished: u32,
     pub feel: u32,
@@ -140,6 +142,7 @@ pub fn present(w: World) -> Snap {
         facing: b.facing,
         mode: u32(b.mode),
         tuck: if b.tuck { 1 } else { 0 },
+        leap: b.leap,
         ticks: w.ticks,
         finished: w.finished,
         feel: w.feel,

@@ -28,7 +28,7 @@ The game is set in a zoo, as a day out. The easter eggs are cute, small and kind
 - **Run and jump.** Momentum (as in Mario: acceleration, skids, a run button) or snappy (as in Celeste) is open. The lab has both as presets, and Ryan picks by playing.
 - **The slide.** Hold down while landing and the capybara slides. Its speed along the ground is its landing velocity projected onto the ground's tangent: land tangent to a downslope and it keeps all its speed, land flat-footed on a steep slope and it loses most of it. While it slides, gravity pulls it along the slope and flat ground slowly takes its speed. It can jump out of a slide and keeps the speed. Holding down on a slope also starts a slide; on flat ground it is a crouch.
 - **Crests.** The capybara leaves the ground where the ground falls away faster than gravity would pull it down, so a fast run over a crest launches it along the tangent.
-- **Swimming, in water sections.** Tap to stroke, in the direction held. There is no breath limit (real capybaras hold their breath for minutes). Leaving the water upwards fast enough is a dolphin leap that keeps the speed, so a route can chain water, air and slide.
+- **Swimming, in water sections.** Tap to stroke, in the direction held. There is no breath limit (real capybaras hold their breath for minutes). Swimming up through the surface is a dolphin leap that keeps the speed (and flips), so a route can chain water, air and slide.
 - **The camera** scrolls both ways and looks further ahead the faster the capybara goes. On the ground it moves up or down only when the capybara lands at a new height; while the capybara swims, leaps or falls past a band round the view's middle, it follows. **Proposed.**
 
 ### Ground and contact (contract)
@@ -66,7 +66,7 @@ The game is set in a zoo, as a day out. The easter eggs are cute, small and kind
 - **Holding a direction without stroking** paddles slowly.
 - **Floating at the surface** (the middle within a small band under it), a jump press is not a stroke: it jumps out of the water at a fixed upward speed, whatever the direction held. So the surface can't be used for repeated boosts: every exit from it has the same speed, and the next waits for gravity to bring the capybara back.
 - **Entering water** keeps the velocity; the drag then slows it.
-- **Leaving the water:** when the middle crosses the surface upward with an upward speed at least the leap's least speed, the capybara is in the air with its velocity unchanged: the dolphin leap. Slower, it stops at the surface and floats.
+- **Leaving the water:** a swim up through the surface (the middle crossing it upward at the leap's least speed or more) is the dolphin leap. It leaves with its velocity, and at least the leap's own upward speed, which clears a wall well above the water. It rises on a jump's light gravity to its top without jump held, and the capybara flips once in the air. Slower, it stops at the surface and floats. The hop from floating leaves at its own speed and isn't a leap. (Changed after Ryan's first play, 2026-10-21: he couldn't find the leap, which then needed a fast enough swim and jump held.)
 
 ## Rules
 
