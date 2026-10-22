@@ -1,28 +1,60 @@
-// A fake `npx` for the deploy tool's tests: `npx --yes wrangler@4.151.0 deploy --config
-// <worker>.wrangler.json`, run in the write root `scratch`, "deploys" the Worker as Wrangler
-// would: it copies each file of the configuration's assets directory to the fake site of its
-// route, `scratch/sites/<domain>/`, adds the Worker's name to `scratch/npx.log` (a line each, in
-// the order they ran) and prints what it uploaded. Any other command exits 2.
+// A fake `npx` for the deploy tool's tests: `npx --yes wrangler@4.151.0 <command>`, run in the
+// write root `scratch`, does as Wrangler would to a fake bucket, `scratch/bucket/`, and fake
+// sites, `scratch/sites/<domain>/`:
+// - `r2 object put wrela-releases/<key> --file <path> --remote` copies `<path>` to the bucket's
+//   `<key>`;
+// - `r2 object delete wrela-releases/<key> --remote` removes the bucket's `<key>`;
+// - `deploy --config <worker>.wrangler.json` "deploys" the Worker: its site becomes the
+//   configuration's assets directory, and each release the bucket holds a listing of for the
+//   Worker, as its script serves them (release_tool::site::ARCHIVE). It adds the Worker's name to
+//   `scratch/npx.log` (a line each, in the order they ran) and prints what it uploaded.
+// Any other command exits 2.
 
 use release_tool::io::{copy_files, read_files, walk, write_files}
+use release_tool::site::BUCKET
 use std::io::print
 use std::json::{TOP, parse}
 use std::tool::args
+use std::tool::files
 
 /// The write root the deploy runs it in.
 const ROOT: Text = "scratch"
 
 pub fn tool() -> u32 {
     let a = args()
-    let pinned = a.len() == 5 &&
-        a[0].as_str() == "--yes" &&
-        a[1].as_str() == "wrangler@4.151.0" &&
+    if a.len() < 3 || a[0].as_str() != "--yes" || a[1].as_str() != "wrangler@4.151.0" {
+        return usage()
+    }
+    let put = a.len() == 9 &&
+        a[2].as_str() == "r2" &&
+        a[3].as_str() == "object" &&
+        a[4].as_str() == "put" &&
+        a[6].as_str() == "--file" &&
+        a[8].as_str() == "--remote"
+    let delete = a.len() == 7 &&
+        a[2].as_str() == "r2" &&
+        a[3].as_str() == "object" &&
+        a[4].as_str() == "delete" &&
+        a[6].as_str() == "--remote"
+    if put || delete {
+        let prefix = String::from(f"{BUCKET}/")
+        if !a[5].as_str().starts_with(prefix.as_str()) {
+            return usage()
+        }
+        let key = a[5].as_str().slice(prefix.len(), a[5].len())
+        let to = String::from(f"{ROOT}/bucket/{key}")
+        if put {
+            let from = String::from(f"{ROOT}/{a[7].as_str()}")
+            return if copy_files(Vec::from([(take from, take to)])).is_ok() { 0 } else { 3 }
+        }
+        return if files::remove(to.as_str()).wait().is_ok() { 0 } else { 3 }
+    }
+    let deploy = a.len() == 5 &&
         a[2].as_str() == "deploy" &&
         a[3].as_str() == "--config" &&
         a[4].as_str().ends_with(".wrangler.json")
-    if !pinned {
-        print("usage: npx --yes wrangler@4.151.0 deploy --config <worker>.wrangler.json")
-        return 2
+    if !deploy {
+        return usage()
     }
     let Ok(all) = read_files(Vec::from([String::from(f"{ROOT}/{a[4].as_str()}")])) else {
         return 3
@@ -41,6 +73,9 @@ pub fn tool() -> u32 {
     if directory.as_str() != f"./{worker.as_str()}" {
         return 4
     }
+    // The site is the assets alone, then what the bucket holds of the Worker's releases.
+    let site = String::from(f"{ROOT}/sites/{domain.as_str()}")
+    let _ = files::remove_all(site.as_str()).wait()
     let from = String::from(f"{ROOT}/{worker.as_str()}")
     let Ok(paths) = walk(from.as_str()) else { return 5 }
     var pairs: Vec<(String, String)> = Vec::new()
@@ -48,9 +83,49 @@ pub fn tool() -> u32 {
         pairs.push(
             (
                 String::from(f"{from.as_str()}/{p.as_str()}"),
-                String::from(f"{ROOT}/sites/{domain.as_str()}/{p.as_str()}"),
+                String::from(f"{site.as_str()}/{p.as_str()}"),
             ),
         )
+    }
+    let kept = String::from(f"{ROOT}/bucket/{worker.as_str()}")
+    // No listing in the bucket: nothing kept.
+    if let Ok(listings) = walk(kept.as_str()) {
+        for l in listings {
+            let release = l.as_str().slice(from: 0, to: 20)
+            // The assets' release is the assets' answer, not the script's.
+            var current = false
+            for p in paths {
+                if p.as_str().starts_with(f"releases/{release}/") {
+                    current = true
+                }
+            }
+            if current {
+                continue
+            }
+            let to = String::from(f"{site.as_str()}/releases/{release}")
+            let Ok(body) = read_files(
+                Vec::from([String::from(f"{kept.as_str()}/{l.as_str()}")]),
+            ) else {
+                return 5
+            }
+            let Some(text) = String::from_utf8(body[0].clone()) else { return 5 }
+            let Some(doc) = parse(text.as_str()) else { return 5 }
+            for (path, n) in doc.members(TOP) {
+                let Some(sha) = doc.text(n) else { return 5 }
+                pairs.push(
+                    (
+                        String::from(f"{ROOT}/bucket/blobs/{sha.as_str()}"),
+                        String::from(f"{to.as_str()}/{path.as_str()}"),
+                    ),
+                )
+            }
+            pairs.push(
+                (
+                    String::from(f"{kept.as_str()}/{l.as_str()}"),
+                    String::from(f"{to.as_str()}/files.json"),
+                ),
+            )
+        }
     }
     if copy_files(pairs).is_err() {
         return 6
@@ -70,4 +145,11 @@ pub fn tool() -> u32 {
     }
     print(f"Uploaded {paths.len()} files of {worker.as_str()} to {domain.as_str()}")
     0
+}
+
+fn usage() -> u32 {
+    print(
+        "usage: npx --yes wrangler@4.151.0 (deploy --config <worker>.wrangler.json | r2 object (put <bucket>/<key> --file <path> | delete <bucket>/<key>) --remote)",
+    )
+    2
 }

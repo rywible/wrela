@@ -1,7 +1,8 @@
 // What a deploy decides, as plain functions: the deploy history the console serves
-// (`deploys.json`) and the releases it keeps, the dates it records, the files a Worker may
-// upload, the order the Workers deploy in, the head of `main` as GitHub's git service advertises
-// it, and where a live site's redirect leads. main.wrela does the requests.
+// (`deploys.json`) and the releases it keeps and lets go, the dates it records, what the bucket
+// holds (each release's listing and its files by SHA-256) and what it may delete, the files a
+// Worker may upload, the order the Workers deploy in, the head of `main` as GitHub's git service
+// advertises it, and where a live site's redirect leads. main.wrela does the requests.
 
 use release_tool::json::{Json, indented, member, text}
 use release_tool::tree::{MAX_FILE, MAX_FILES, check_path}
@@ -12,14 +13,16 @@ use std::tool::files::Kind
 /// can still play. 14 days.
 pub const KEEP: i64 = 14 * 24 * 3600
 
-/// A deploy the history lists: its release, the commit it was built from, its Workers, and when
-/// it went live and stopped being live (`None` while it's live), each in seconds since 1970.
+/// A deploy the history lists: its release, the commit it was built from, its Workers, when it
+/// went live and stopped being live (`None` while it's live), each in seconds since 1970, and
+/// whether the bucket holds it. A history written before the bucket says nothing of it: false.
 pub struct Deploy: Clone {
     pub release: String,
     pub source: String,
     pub workers: Vec<String>,
     pub live_from: i64,
     pub live_until: Option<i64>,
+    pub stored: bool = false,
 }
 
 /// Whether `id` is a release's id: 20 lowercase hexadecimal digits.
@@ -88,31 +91,48 @@ pub fn read_history(json: str) -> Result<Vec<Deploy>, String> {
             }
             live_until = Some(t)
         }
-        out.push(Deploy { release, source, workers, live_from, live_until })
+        let stored = match d.get(n, "stored") {
+            Some(s) => d.is_true(s),
+            None => false,
+        }
+        out.push(Deploy { release, source, workers, live_from, live_until, stored })
     }
     Ok(out)
+}
+
+fn keeps(d: Deploy, now: i64) -> bool {
+    match d.live_until {
+        None => true,
+        Some(until) => now - until <= KEEP,
+    }
 }
 
 /// The releases a deploy of `release` at `now` keeps: those live, or live within `KEEP`.
 pub fn kept(deploys: [Deploy], now: i64, release: str) -> Vec<Deploy> {
     var out: Vec<Deploy> = Vec::new()
     for d in deploys {
-        if d.release.as_str() == release {
-            continue
-        }
-        let keep = match d.live_until {
-            None => true,
-            Some(until) => now - until <= KEEP,
-        }
-        if keep {
+        if d.release.as_str() != release && keeps(d, now) {
             out.push(d.clone())
         }
     }
     out
 }
 
-/// The history after `release` goes live at `now`: the live one ends, the expired ones go, and
-/// a redeploy of a release takes the place of its earlier entry.
+/// The releases a deploy of `release` at `now` lets go from the bucket: those it holds that
+/// `kept` doesn't keep.
+pub fn dropped(deploys: [Deploy], now: i64, release: str) -> Vec<Deploy> {
+    var out: Vec<Deploy> = Vec::new()
+    for d in deploys {
+        if d.release.as_str() != release && d.stored && !keeps(d, now) {
+            out.push(d.clone())
+        }
+    }
+    out
+}
+
+/// The history after `release` goes live at `now`: the live one ends, the expired ones go, a
+/// redeploy of a release takes the place of its earlier entry, and the bucket holds each that
+/// stays, since the deploy stores each kept release it doesn't have.
 pub fn next_history(
     deploys: [Deploy],
     release: str,
@@ -131,6 +151,7 @@ pub fn next_history(
             Some(u) => u,
         }
         e.live_until = Some(until)
+        e.stored = true
         if now - until <= KEEP {
             out.push(take e)
         }
@@ -142,6 +163,7 @@ pub fn next_history(
             workers: Vec::from(workers),
             live_from: now,
             live_until: None,
+            stored: true,
         },
     )
     out
@@ -169,6 +191,7 @@ pub fn history_json(deploys: [Deploy]) -> String {
                 },
             ),
         )
+        m.push(member("stored", Json::Bool(d.stored)))
         list.push(Json::Obj(take m))
     }
     var top: Vec<(String, Json)> = Vec::new()
@@ -272,6 +295,105 @@ pub fn parse_stamp(s: str) -> Option<i64> {
         return None
     }
     Some(days_from_civil(y, m, d) * 86400 + h * 3600 + mi * 60 + sec - offset)
+}
+
+// ---- The bucket --------------------------------------------------------------------------------
+
+/// A file's object in the bucket: one for its bytes, whatever releases and Workers list it.
+pub fn blob_key(sha: str) -> String {
+    String::from(f"blobs/{sha}")
+}
+
+/// The object of a release's listing (its `files.json`) on `worker`, as the Worker's script
+/// reads it (release_tool::site::ARCHIVE).
+pub fn listing_key(worker: str, release: str) -> String {
+    String::from(f"{worker}/{release}/files.json")
+}
+
+/// Whether `s` is a SHA-256 as `files.json` writes it: 64 lowercase hexadecimal digits.
+pub fn is_sha(s: str) -> bool {
+    if s.len() != 64 {
+        return false
+    }
+    for i in 0..s.len() {
+        let b = s.byte(i)
+        if !((b >= 48 && b <= 57) || (b >= 97 && b <= 102)) {
+            return false
+        }
+    }
+    true
+}
+
+/// The files the `files.json` of `release` lists, each its path and SHA-256, by path, or why it
+/// isn't one: each path stays in its release (`is_inside`), and each digest is a SHA-256's.
+pub fn read_listing(release: str, json: str) -> Result<Vec<(String, String)>, String> {
+    let Some(doc) = parse_json(json) else {
+        return Err(String::from(f"{release}: its files.json isn't JSON"))
+    }
+    if doc.kind(TOP) != JsonKind::Obj {
+        return Err(String::from(f"{release}: its files.json isn't an object"))
+    }
+    var out: Vec<(String, String)> = Vec::new()
+    for (path, n) in doc.members(TOP) {
+        if !is_inside(path.as_str()) {
+            return Err(String::from(f"{release}: invalid path '{path.as_str()}'"))
+        }
+        let Some(digest) = doc.text(n) else {
+            return Err(String::from(f"{release}: {path.as_str()} has no SHA-256"))
+        }
+        if !is_sha(digest.as_str()) {
+            return Err(String::from(f"{release}: {path.as_str()} has no SHA-256"))
+        }
+        out.push((path.clone(), take digest))
+    }
+    out.sort_by(|a: (String, String), b: (String, String)| a.0 < b.0)
+    Ok(out)
+}
+
+/// Where `s` is in the sorted `set`, or where it would go.
+fn place(set: [String], s: str) -> u32 {
+    var lo: u32 = 0
+    var hi = set.len()
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2
+        if set[mid].as_str() < s {
+            lo = mid + 1
+        } else {
+            hi = mid
+        }
+    }
+    lo
+}
+
+/// Whether the sorted `set` has `s`.
+pub fn has(set: [String], s: str) -> bool {
+    let k = place(set, s)
+    k < set.len() && set[k].as_str() == s
+}
+
+/// Puts `s` in the sorted `set`, which holds each once: whether it wasn't there.
+pub fn insert(set: mut Vec<String>, s: str) -> bool {
+    let k = place(set, s)
+    if k < set.len() && set[k].as_str() == s {
+        return false
+    }
+    set.insert(k, String::from(s))
+    true
+}
+
+/// The files the bucket may delete once the releases whose listings are `gone` go: each SHA-256
+/// they list that no release the bucket still holds lists (`still`, a sorted set), sorted, each
+/// once.
+pub fn unreferenced(gone: [Vec<(String, String)>], still: [String]) -> Vec<String> {
+    var out: Vec<String> = Vec::new()
+    for files in gone {
+        for (_, sha) in files {
+            if !has(still, sha.as_str()) {
+                let _ = insert(mut out, sha.as_str())
+            }
+        }
+    }
+    out
 }
 
 // ---- Uploads -----------------------------------------------------------------------------------

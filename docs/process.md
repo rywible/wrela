@@ -90,7 +90,7 @@ The M4 Air has not been measured; its times are reported separately.
 | [sfizz](https://sfz.tools/sfizz/) (BSD 2-clause), `sfizz_render` | Plays the reference piano's samples from a take's MIDI file, for the listening tests: the listening tool (`studio/listening`) runs it as a granted program (`run = ["sfizz_render"]`), found on `PATH`; it isn't vendored. Not part of the game |
 | Mesa's lavapipe (Vulkan on the CPU), MIT, patched (`tools/cloud/`) | The GPU of a cloud machine, which has none (`tools/cloud.sh`) |
 | [FFmpeg](https://ffmpeg.org/) with x264, GPL | Makes the motion captures' clips from the frames the native host draws: the motion tool (`studio/motion`) runs it as a granted program (`run = ["ffmpeg"]`), found on `PATH`; it isn't vendored. The contact sheets are composed in Wrela. Not part of the game |
-| [Wrangler](https://developers.cloudflare.com/workers/wrangler/) (Cloudflare, MIT/Apache 2.0) and GitHub Actions | Deploy each release from `main` to Cloudflare Workers: the Wrela deploy tool (`studio/deploy`) runs Wrangler through `npx` (`.github/workflows/deploy.yml`) |
+| [Wrangler](https://developers.cloudflare.com/workers/wrangler/) (Cloudflare, MIT/Apache 2.0) and GitHub Actions | Deploy each release from `main` to Cloudflare Workers, and keep earlier releases in an R2 bucket: the Wrela deploy tool (`studio/deploy`) runs Wrangler through `npx` (`.github/workflows/deploy.yml`). Each Worker's script for its kept releases is JavaScript that the release tool writes (`studio/release/site.wrela`) |
 | [Binaryen](https://github.com/WebAssembly/binaryen) (Apache 2.0), `wasm-opt` 133 | Shrinks a released build's WASM (`wrela build --optimize`, `-Oz`), carrying its trap locations through as a source map. A toolchain release ships `wasm-opt` 133 with its licence (`tools/package.py`); a development build uses 133 or later from `PATH`. Runs at build time; nothing of it ships in a game |
 | strace, LGPL; Linux mount namespaces (`unshare`) | Historical gate pass caching, retired 2026-10-11: what each slow test reads, so a pass is reused only while all of it is unchanged, or, for a test that builds a program, while its builds make the same files. The ideas are build systems' (Bazel's action cache, ccache's manifests, tup's and fabricate's traced dependencies, Shake's and Bazel's early cutoff) |
 
@@ -2776,6 +2776,31 @@ The CPU times include GPU waits; these are not Chrome frame rates. Reports remai
 not a whole-sweep comparison against main. This small scene does not measure large command
 batches, initialization, or the separate field, ray and culling costs. No M4 Air was available,
 and no paired gate-time baseline was recorded.
+
+## Kept releases in R2, 2026-10-21
+
+Ryan asked why the deploy tool does more than run Wrangler. Claude explained the kept releases:
+a tab keeps the console it loaded, which pins each game's release, and a deploy replaces a
+Worker's assets. The live site was the archive, so each deploy copied every release of the last
+14 days into each Worker again. On 2026-10-21, The Last Green's Worker held 14,882 files of the
+free plan's 20,000. Claude proposed R2, with Cloudflare's published prices, and Ryan enabled it.
+
+A public bucket on its own domain would have changed each game's origin (its saves and its
+cross-origin isolation headers), so each Worker keeps its current release as its assets and a
+script that the release tool writes serves only the requests for other releases, from the bucket
+(`run_worker_first`). The bucket holds each file once by its SHA-256 and each release's listing.
+A deploy stores the new release's new files before any Worker changes, stores once each kept
+release from before the bucket (fetched from the live site and checked), and deletes what only
+releases past their window list. The docs keep only what the bucket holds: each docs page names
+its commit, so their 42 kept releases were 8,619 distinct files, and storing them would have made
+the first deploy put about 10,000 objects instead of about 1,650. Claude ran the script in `wrangler dev` (workerd, local R2)
+before relying on it. References: Cloudflare's
+[R2 pricing](https://developers.cloudflare.com/r2/pricing/),
+[Workers static assets routing](https://developers.cloudflare.com/workers/static-assets/routing/worker-script/),
+[`_headers`](https://developers.cloudflare.com/workers/static-assets/headers/),
+[R2 Workers API](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/) and
+[Wrangler's R2 commands](https://developers.cloudflare.com/workers/wrangler/commands/r2/).
+These are implementation references; nothing was copied.
 
 ## Keeping this record
 
