@@ -81,7 +81,7 @@ pub const DOUBLE_JUMP: [Hold; 7] = [
 fn the_lab_is_finished_by_its_recorded_run_in_its_recorded_time() {
     let w = play(0, LAB_RUN)
     print(f"the lab: {w.finished} ticks")
-    assert(w.finished == 1378 && w.falls == 0, "the run's time moved")
+    assert(w.finished == 1376 && w.falls == 0, "the run's time moved")
 }
 
 /// Whether `run` ends standing on the 3.5 m ledge.
@@ -307,19 +307,38 @@ fn a_dive_slows_to_the_sinking_speed() {
 }
 
 @test
-fn up_swims_up_and_out_as_it_moves_and_the_double_jump_clears_the_lakes_far_wall() {
+fn swimming_up_breaches_and_the_double_jump_clears_the_lakes_far_wall() {
     // Swimming up beside the far wall (its top 1.6 m above the water), then a double jump.
     var b = in_pool(vec2(127.0, -4.0), vec2(0.0))
     while b.mode == Mode::Swim {
         body::step(mut b, Pad { bits: pad::UP }, LAB, FEEL)
     }
-    assert(b.mode == Mode::Air && abs(b.vel.y - FEEL.swim_up_speed) < 0.5, "out as it moved")
-    assert(b.jumps == FEEL.air_jumps && b.flip == 0, "no leap: its double jump kept")
+    assert(b.mode == Mode::Air && b.breached, "a breach")
+    assert(abs(b.vel.y - FEEL.launch) < 1.0e-3, "at the jump's launch")
+    assert(b.jumps == FEEL.air_jumps, "its double jump kept")
     body::step(mut b, Pad { bits: RIGHT | JUMP | PRESS }, LAB, FEEL)
     for _ in 0..120 {
         body::step(mut b, Pad { bits: RIGHT | JUMP }, LAB, FEEL)
     }
     assert(b.grounded() && b.at.y > 1.6, "over the wall, on the deck")
+}
+
+@test
+fn a_breach_rises_as_a_full_jump_with_up_held_and_a_slow_exit_is_no_breach() {
+    // Up held throughout: out at the launch, and up to a held jump's height above the surface.
+    var b = in_pool(vec2(110.0, -3.0), vec2(0.0))
+    var top = b.at.y
+    for _ in 0..240 {
+        body::step(mut b, Pad { bits: pad::UP }, LAB, FEEL)
+        top = max(top, b.at.y)
+    }
+    let full = FEEL.launch * FEEL.launch / (2.0 * FEEL.rise)
+    assert(abs(top - full) < 0.05, "a full jump's height above the surface")
+    // Slower than a breach: out as it moved, on ordinary gravity.
+    var slow = in_pool(vec2(108.0, -0.005), vec2(0.0, 2.0))
+    body::step(mut slow, Pad { bits: 0 }, LAB, FEEL)
+    assert(slow.mode == Mode::Air && !slow.breached && slow.vel.y < FEEL.breach, "no breach")
+    assert(slow.jumps == FEEL.air_jumps, "its double jump kept")
 }
 
 @test

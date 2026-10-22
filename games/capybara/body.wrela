@@ -14,7 +14,7 @@
 use course::{Contact, Course}
 use engine::sim::SimState
 use feel::{Feel, STEP}
-use pad::{DOWN, JUMP, Pad}
+use pad::{DOWN, JUMP, Pad, UP}
 use std::hash::StateHash
 use std::serialize::Serialize
 
@@ -66,6 +66,8 @@ pub struct Body: Copy + Eq + StateHash + Serialize + SimState {
     /// the last dolphin kick.
     pub stroke: i32,
     pub since: u32,
+    /// Rising from a breach: up held keeps it rising as jump held does.
+    pub breached: bool,
     /// Jumps left in the air: a double jump while it's more than 0.
     pub jumps: u32,
     /// Ticks since a double jump's flip began, counting from 1 in the air;
@@ -91,6 +93,7 @@ pub fn spawn(at: vec2) -> Body {
         wet: 0,
         stroke: 0,
         since: 0,
+        breached: false,
         jumps: 0,
         flip: 0,
     }
@@ -370,9 +373,11 @@ fn air(b: mut Body, pad: Pad, c: Course, f: Feel) {
         b.flip = 1
     }
     b.coyote = less(b.coyote)
-    // A jump rises on the light gravity only while it's held.
-    if !pad.held(JUMP) || b.vel.y <= 0.0 {
+    // A jump rises on the light gravity only while it's held (or, out of a breach, up).
+    let held = pad.held(JUMP) || (b.breached && pad.held(UP))
+    if !held || b.vel.y <= 0.0 {
         b.jumping = false
+        b.breached = false
     }
     // The velocity before the tick's accelerations. Each substep takes its share of the tick's
     // change of velocity and moves by the mean of its velocities before and after, so an arc is
@@ -434,6 +439,7 @@ fn land(b: mut Body, pad: Pad, k: Contact, before: vec2, f: Feel) {
     b.at = k.point + k.normal * RADIUS
     b.vel = t * b.speed
     b.jumping = false
+    b.breached = false
     b.coyote = 0
     b.flip = 0
     b.mode = if pad.held(DOWN) {
@@ -449,8 +455,8 @@ fn land(b: mut Body, pad: Pad, k: Contact, before: vec2, f: Feel) {
 
 /// A tick in water, off the ground: the air's movement on a light gravity (up or down held swims
 /// up or down instead), a kick for each jump press, and the wet speed across; up and
-/// down in turn are dolphin kicks, past it. On the bottom it walks, wet. It leaves the water as it
-/// moves, into the air, its double jump kept (Ryan, 2026-10-21).
+/// down in turn are dolphin kicks, past it. On the bottom it walks, wet. Through the surface fast
+/// enough it breaches, as a jump; slower it leaves as it moves. Either way its double jump is kept.
 fn swim(b: mut Body, pad: Pad, c: Course, f: Feel) {
     let Some(i) = c.water_at(b.at) else {
         b.mode = Mode::Air
@@ -535,6 +541,12 @@ fn swim(b: mut Body, pad: Pad, c: Course, f: Feel) {
         b.mode = Mode::Air
         b.coyote = 0
         b.jumping = false
+        if b.vel.y >= f.breach {
+            // A breach: out as a jump, at the jump's launch (Ryan, 2026-10-21).
+            b.vel.y = f.launch
+            b.jumping = true
+            b.breached = true
+        }
         return
     }
     if b.at.x < w.lo.x || b.at.x > w.hi.x || b.at.y < w.lo.y {
