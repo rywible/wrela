@@ -483,6 +483,54 @@ fn the_big_pit_can_be_crossed_without_sliding() {
     assert(w.checkpoint == 2 && w.deaths == 0 && !slid, "to the second checkpoint, never sliding")
 }
 
+/// From the deck before the big slide at the top speed: slide (down held) from the ramp's top, let
+/// go of down at `release` (m), press jump at `press` (m; past 128 is after the lip), hold it, then
+/// double jump at the arc's top. Whether it cleared the pit, and whether it got the carrot.
+fn slide_jump(release: f32, press: f32) -> (bool, bool) {
+    var w = world(LEVEL)
+    w.checkpoint = 1
+    w.body = spawn(vec2(92.0, 3.0 + RADIUS))
+    w.body.speed = FEEL.speed
+    var pressed = false
+    var doubled = false
+    for _ in 0..600 {
+        let x = w.body.at.x
+        var bits = RIGHT
+        if x > 95.5 && x < release {
+            bits = bits | DOWN
+        }
+        if pressed {
+            bits = bits | JUMP
+            if !doubled && w.body.mode == Mode::Air && w.body.vel.y < 0.5 {
+                bits = bits | PRESS
+                doubled = true
+            }
+        } else if x >= press {
+            bits = bits | JUMP | PRESS
+            pressed = true
+        }
+        step(mut w, Pad { bits })
+        if w.deaths > 0 || x > 142.0 {
+            break
+        }
+    }
+    (w.deaths == 0 && w.body.at.x > 140.0, w.snacks & (1 << 2) != 0)
+}
+
+@test
+fn the_slide_jumps_carrot_is_reached_from_the_ramps_last_two_metres_down_held_or_not() {
+    // Ryan couldn't get it (2026-10-21): letting go of down to press jump, or pressing at the lip,
+    // lost the ramp's rise. Pressed anywhere from 126 m to just past the lip, down held to the
+    // jump or let go up to 2 m before it, the slide-jump and a double jump reach the carrot.
+    for press in [126.0, 127.0, 127.9, 128.4] {
+        assert(slide_jump(release: 200.0, press: press) == (true, true), "down held")
+        assert(slide_jump(release: press - 2.0, press: press) == (true, true), "down let go")
+    }
+    // Earlier on the ramp it still clears the pit, lower.
+    let (cleared, _) = slide_jump(release: 200.0, press: 122.0)
+    assert(cleared)
+}
+
 /// A world on the level with the capybara at `at`, moving at `vel`, in the air.
 fn aloft(at: vec2, vel: vec2) -> World {
     var w = world(LEVEL)

@@ -234,13 +234,20 @@ pub fn bounce(b: mut Body, held: bool, f: Feel, under: bool) {
     b.breached = false
 }
 
+/// Whether a speed (m/s) is past the top: a slide's, a puddle's, a ramp's, not a run's.
+fn fast(b: Body, f: Feel, speed: f32) -> bool {
+    abs(speed) > top(b, f) + 0.5
+}
+
 /// A jump from the ground whose tangent is `t`: the launch up, with the speed along the ground
-/// across. Out of a slide it keeps all the slide's velocity, up a ramp too; running, only its part
-/// across, so a running jump is the same height on any slope (Ryan, 2026-10-21: jumps up a slope
-/// came out higher and read as random).
+/// across. Fast (sliding, or past the top speed) it keeps all its velocity, up a ramp too, so a
+/// ramp launches; at a run's speed, only its part across, so a running jump is the same height on
+/// any slope (Ryan, 2026-10-21: jumps up a slope came out higher and read as random). Fast and not
+/// sliding counts too: letting go of down to press jump mustn't lose the launch.
 fn jump(b: mut Body, t: vec2, f: Feel, under: bool) {
     let along = t * b.speed
-    let kept = if b.mode == Mode::Slide { along } else { vec2(along.x, 0.0) }
+    let launches = b.mode == Mode::Slide || fast(b, f, b.speed)
+    let kept = if launches { along } else { vec2(along.x, 0.0) }
     // Under water, a jump off the bottom is a kick, not a launch.
     b.vel = kept + vec2(0.0, if under { f.kick } else { f.launch })
     b.mode = Mode::Air
@@ -386,8 +393,9 @@ fn air(b: mut Body, pad: Pad, c: Course, f: Feel) {
         b.buffer = 0
         b.surfaced = 0
     } else if b.coyote > 0 && b.buffer > 0 {
-        // Just off the ground: still the ground's jump.
-        b.vel.y = f.launch
+        // Just off the ground: still the ground's jump, fast off a ramp's lip keeping its rise.
+        let rise = if fast(b, f, b.vel.x) { max(b.vel.y, 0.0) } else { 0.0 }
+        b.vel.y = f.launch + rise
         b.jumping = true
         b.buffer = 0
         b.coyote = 0
