@@ -1,0 +1,113 @@
+// How the capybara moves, in numbers: the two presets the lab compares (design.md, "Movement"),
+// and what they share (the slide and swimming). Metres, seconds, and ticks of the sim's step.
+
+/// The sim's step: 120 ticks a second (design.md, "Input").
+pub const HZ: u32 = 120
+pub const STEP: f32 = 1.0 / 120.0
+
+pub struct Feel: Copy {
+    pub name: Text,
+    /// Top speeds walking and running (m/s); with no run button, walking is the only one.
+    pub walk: f32,
+    pub run: f32,
+    pub run_button: bool,
+    /// Ground acceleration towards the top speed, braking against the motion (a skid), braking
+    /// with no input, and slowing from above the top speed (m/s²).
+    pub accel: f32,
+    pub turn: f32,
+    pub friction: f32,
+    pub over: f32,
+    /// How hard a slope pulls a walking capybara along it (m/s² at a vertical).
+    pub slope_pull: f32,
+    /// Acceleration in the air (m/s²).
+    pub air_accel: f32,
+    /// A jump's upward speed, and the extra at the run's top speed (m/s).
+    pub launch: f32,
+    pub run_launch: f32,
+    /// Gravity rising with jump held, and otherwise (m/s²); the fastest fall (m/s).
+    pub rise: f32,
+    pub fall: f32,
+    pub terminal: f32,
+    /// Ticks a jump still counts after the ground falls away, and a press waits for the ground.
+    pub coyote: u32,
+    pub buffer: u32,
+    // The slide.
+    /// The least speed that slides rather than crouches (m/s), the least slope that slides from
+    /// rest (its sine), and the speed below which a slide on flatter ground stops (m/s).
+    pub slide_min: f32 = 1.5,
+    pub slide_slope: f32 = 0.139,
+    pub slide_stop: f32 = 0.5,
+    /// Gravity along the slope while sliding, the friction that takes speed, and the cap.
+    pub slide_gravity: f32 = 26.0,
+    pub slide_friction: f32 = 2.5,
+    pub slide_max: f32 = 22.0,
+    // Swimming.
+    /// A stroke's speed (m/s), the ticks between strokes, and the cap strokes reach (m/s).
+    pub stroke: f32 = 5.5,
+    pub stroke_cooldown: u32 = 18,
+    pub swim_max: f32 = 10.0,
+    /// Paddling with a direction held: its top speed (m/s) and acceleration (m/s²).
+    pub paddle: f32 = 2.5,
+    pub paddle_accel: f32 = 6.0,
+    /// The middle floats this far under the surface; within `float_band` of the surface it's
+    /// floating (m).
+    pub float_depth: f32 = 0.15,
+    pub float_band: f32 = 0.45,
+    /// Buoyancy: acceleration per metre from the floating height, and its most (m/s²).
+    pub buoyancy: f32 = 8.0,
+    pub buoyancy_max: f32 = 6.0,
+    /// Water's drag (1/s).
+    pub drag: f32 = 1.6,
+    /// The jump out of the water from floating, and the least upward speed that leaps (m/s).
+    pub water_jump: f32 = 8.5,
+    pub leap_min: f32 = 5.0,
+}
+
+/// As Super Mario Bros.: a run button, acceleration and skids, a jump higher at a run.
+pub const MOMENTUM = Feel {
+    name: "MOMENTUM",
+    walk: 4.5,
+    run: 8.0,
+    run_button: true,
+    accel: 10.0,
+    turn: 30.0,
+    friction: 16.0,
+    over: 8.0,
+    slope_pull: 4.0,
+    air_accel: 9.0,
+    launch: 11.0,
+    run_launch: 1.5,
+    rise: 22.0,
+    fall: 50.0,
+    terminal: 18.0,
+    coyote: 10,
+    buffer: 12,
+}
+
+/// As Celeste: one speed reached at once, a tight turn and a strong hold in the air.
+pub const SNAPPY = Feel {
+    name: "SNAPPY",
+    walk: 8.0,
+    run: 8.0,
+    run_button: false,
+    accel: 70.0,
+    turn: 90.0,
+    friction: 80.0,
+    over: 20.0,
+    slope_pull: 0.0,
+    air_accel: 50.0,
+    launch: 11.0,
+    run_launch: 0.0,
+    rise: 24.0,
+    fall: 55.0,
+    terminal: 18.0,
+    coyote: 12,
+    buffer: 12,
+}
+
+pub const FEELS: u32 = 2
+
+/// Preset `i`.
+pub fn feel(i: u32) -> Feel {
+    if i == 0 { MOMENTUM } else { SNAPPY }
+}

@@ -1,0 +1,408 @@
+// The proofs and the feel's metrics (design.md, "The agent loop"). A proof is a recorded run:
+// pads and how long each is held, from a course's start state. Each must keep reaching its goal
+// in exactly the ticks it took when it was recorded, so a change to the movement that breaks a
+// route, or moves its time, fails here; re-record a proof only when the change is meant. The
+// metrics measure the movement in metres and ticks, against the ranges each preset is held to.
+// The contract tests check the rules of design.md's contracts one at a time.
+
+use body::{Body, Mode, RADIUS, spawn}
+use course::LAB
+use feel::{FEELS, MOMENTUM, STEP, feel}
+use pad::{DOWN, Hold, JUMP, PRESS, Pad, RIGHT, RUN, UP, hold}
+use std::hash::state_hash
+use std::io::print
+use world::{play, step, world}
+
+// ---- proofs ------------------------------------------------------------------------------------
+
+/// The lab from its start to its goal with the momentum preset: over the crest, both gaps and both
+/// steps at a run, down the slide and off its lip, into the pool, a dive, and a dolphin leap up
+/// the far wall. Recorded from the first lab's autopilot.
+pub const LAB_MOMENTUM: [Hold; 37] = [
+    hold(RIGHT | RUN, 575),
+    hold(RIGHT | JUMP | RUN | PRESS, 1),
+    hold(RIGHT | JUMP | RUN, 134),
+    hold(RIGHT | JUMP | RUN | PRESS, 1),
+    hold(RIGHT | JUMP | RUN, 158),
+    hold(RIGHT | JUMP | RUN | PRESS, 1),
+    hold(RIGHT | JUMP | RUN, 102),
+    hold(RIGHT | JUMP | RUN | PRESS, 1),
+    hold(RIGHT | JUMP | RUN, 174),
+    hold(RIGHT | DOWN | JUMP | RUN, 225),
+    hold(RIGHT | JUMP | RUN, 180),
+    hold(RIGHT, 39),
+    hold(RIGHT | DOWN | JUMP | PRESS, 1),
+    hold(RIGHT | DOWN, 18),
+    hold(RIGHT | DOWN | JUMP | PRESS, 1),
+    hold(RIGHT | DOWN, 18),
+    hold(RIGHT | DOWN | JUMP | PRESS, 1),
+    hold(RIGHT | DOWN, 183),
+    hold(UP | JUMP | PRESS, 1),
+    hold(UP | JUMP, 18),
+    hold(UP | JUMP | PRESS, 1),
+    hold(UP | JUMP, 18),
+    hold(UP | JUMP | PRESS, 1),
+    hold(UP | JUMP, 18),
+    hold(UP | JUMP | PRESS, 1),
+    hold(UP | JUMP, 1),
+    hold(RIGHT | JUMP | RUN, 88),
+    hold(UP | JUMP, 17),
+    hold(UP | JUMP | PRESS, 1),
+    hold(UP | JUMP, 18),
+    hold(UP | JUMP | PRESS, 1),
+    hold(UP | JUMP, 18),
+    hold(UP | JUMP | PRESS, 1),
+    hold(UP | JUMP, 18),
+    hold(UP | JUMP | PRESS, 1),
+    hold(UP | JUMP, 5),
+    hold(RIGHT | JUMP | RUN, 194),
+]
+
+/// The same route with the snappy preset.
+pub const LAB_SNAPPY: [Hold; 37] = [
+    hold(RIGHT | RUN, 533),
+    hold(RIGHT | JUMP | RUN | PRESS, 1),
+    hold(RIGHT | JUMP | RUN, 134),
+    hold(RIGHT | JUMP | RUN | PRESS, 1),
+    hold(RIGHT | JUMP | RUN, 158),
+    hold(RIGHT | JUMP | RUN | PRESS, 1),
+    hold(RIGHT | JUMP | RUN, 94),
+    hold(RIGHT | JUMP | RUN | PRESS, 1),
+    hold(RIGHT | JUMP | RUN, 132),
+    hold(RIGHT | DOWN | JUMP | RUN, 222),
+    hold(RIGHT | JUMP | RUN, 179),
+    hold(RIGHT, 41),
+    hold(RIGHT | DOWN | JUMP | PRESS, 1),
+    hold(RIGHT | DOWN, 18),
+    hold(RIGHT | DOWN | JUMP | PRESS, 1),
+    hold(RIGHT | DOWN, 18),
+    hold(RIGHT | DOWN | JUMP | PRESS, 1),
+    hold(RIGHT | DOWN, 184),
+    hold(UP | JUMP | PRESS, 1),
+    hold(UP | JUMP, 18),
+    hold(UP | JUMP | PRESS, 1),
+    hold(UP | JUMP, 18),
+    hold(UP | JUMP | PRESS, 1),
+    hold(UP | JUMP, 18),
+    hold(UP | JUMP | PRESS, 1),
+    hold(UP | JUMP, 4),
+    hold(RIGHT | JUMP | RUN, 78),
+    hold(UP | JUMP, 14),
+    hold(UP | JUMP | PRESS, 1),
+    hold(UP | JUMP, 18),
+    hold(UP | JUMP | PRESS, 1),
+    hold(UP | JUMP, 18),
+    hold(UP | JUMP | PRESS, 1),
+    hold(UP | JUMP, 18),
+    hold(UP | JUMP | PRESS, 1),
+    hold(UP | JUMP, 4),
+    hold(RIGHT | JUMP | RUN, 109),
+]
+
+/// Up through the 2 m one-way ledge from below, then a running jump to the 3.5 m ledge, with the
+/// momentum preset.
+pub const LEDGES_MOMENTUM: [Hold; 9] = [
+    hold(RIGHT, 135),
+    hold(bits: 0, ticks: 30),
+    hold(JUMP | PRESS, 1),
+    hold(JUMP, 50),
+    hold(bits: 0, ticks: 20),
+    hold(RIGHT | RUN, 45),
+    hold(RIGHT | RUN | JUMP | PRESS, 1),
+    hold(RIGHT | RUN | JUMP, 50),
+    hold(bits: 0, ticks: 60),
+]
+
+/// The same with the snappy preset, which needs no run-up.
+pub const LEDGES_SNAPPY: [Hold; 9] = [
+    hold(RIGHT, 100),
+    hold(bits: 0, ticks: 30),
+    hold(JUMP | PRESS, 1),
+    hold(JUMP, 50),
+    hold(bits: 0, ticks: 20),
+    hold(RIGHT, 10),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 50),
+    hold(bits: 0, ticks: 60),
+]
+
+@test
+fn the_lab_is_finished_by_its_recorded_runs_in_their_recorded_times() {
+    let m = play(c: 0, f: 0, run: LAB_MOMENTUM)
+    let s = play(c: 0, f: 1, run: LAB_SNAPPY)
+    print(f"the lab: momentum {m.finished} ticks, snappy {s.finished} ticks")
+    assert(m.finished == 2234 && m.falls == 0, "the momentum run's time moved")
+    assert(s.finished == 2045 && s.falls == 0, "the snappy run's time moved")
+}
+
+@test
+fn the_one_way_ledge_is_jumped_through_and_the_higher_one_reached() {
+    for (f, run) in [(0, LEDGES_MOMENTUM), (1, LEDGES_SNAPPY)] {
+        let w = play(c: 0, f: f, run: run)
+        assert(
+            w.body.grounded() && abs(w.body.at.y - (3.5 + RADIUS)) < 1.0e-4,
+            "on the 3.5 m ledge",
+        )
+        assert(w.body.at.x > 11.0 && w.body.at.x < 14.0)
+    }
+}
+
+@test
+fn a_run_replays_to_the_same_state_hash() {
+    let a = play(c: 0, f: 0, run: LAB_MOMENTUM)
+    let b = play(c: 0, f: 0, run: LAB_MOMENTUM)
+    assert(state_hash(a) == state_hash(b) && a == b)
+}
+
+// ---- contracts ---------------------------------------------------------------------------------
+
+/// The lab's broad crest: the arc that rounds the corner at (23, 3).
+fn crest() -> u32 {
+    for i in 0..LAB.pieces.len() {
+        let p = LAB.pieces[i]
+        if p.convex() && p.a.x > 20.0 && p.b.x < 26.0 {
+            return i
+        }
+    }
+    panic("the lab has no crest")
+}
+
+/// A body sliding at `speed` over the top of the crest.
+fn on_crest(speed: f32) -> Body {
+    let i = crest()
+    let p = LAB.pieces[i]
+    var b = spawn(p.centre + vec2(0.0, p.radius + RADIUS))
+    b.mode = Mode::Slide
+    b.speed = speed
+    b.piece = i
+    b
+}
+
+@test
+fn a_crest_is_followed_below_its_launch_speed_and_left_above_it() {
+    let p = LAB.pieces[crest()]
+    for f in 0..FEELS {
+        let feel = feel(f)
+        // At the top the slope is 0: it leaves when v² / (r + R) > g.
+        let launch = sqrt(feel.fall * (p.radius + RADIUS))
+        for k in [0.5, 0.9, 0.98] {
+            var b = on_crest(launch * k)
+            body::step(mut b, Pad { bits: DOWN }, LAB, feel)
+            assert(b.grounded(), "below the launch speed it follows the crest")
+        }
+        for k in [1.02, 1.1, 1.5] {
+            var b = on_crest(launch * k)
+            body::step(mut b, Pad { bits: DOWN }, LAB, feel)
+            assert(b.mode == Mode::Air, "above, it leaves along the tangent")
+        }
+    }
+}
+
+@test
+fn walking_off_a_sharp_edge_leaves_at_the_edge_and_falls() {
+    var w = world(c: 0, f: 0)
+    w.body = spawn(vec2(35.6, RADIUS))
+    var left = 0.0
+    var lowest = RADIUS
+    for _ in 0..90 {
+        step(mut w, Pad { bits: RIGHT })
+        if w.body.mode == Mode::Air && left == 0.0 {
+            left = w.body.at.x
+        }
+        lowest = min(lowest, w.body.at.y)
+    }
+    assert(left >= 36.0 && left < 36.0 + 0.05, "it leaves where its middle passes the edge")
+    assert(lowest < -1.0 && w.falls == 0, "and rolls off the corner into the pit")
+}
+
+/// The lab's 29° slope, at x 74: its point, tangent (down to the right) and normal.
+fn slope() -> (vec2, vec2, vec2) {
+    let t = normalize(vec2(9.0, -5.0))
+    let point = vec2(74.0, 3.0 - 4.0 * 5.0 / 9.0)
+    (point, t, vec2(-t.y, t.x))
+}
+
+@test
+fn a_landing_keeps_the_velocitys_part_along_the_ground() {
+    let (point, t, n) = slope()
+    let f = MOMENTUM
+    for angle in [15.0, 30.0, 45.0, 60.0, 75.0, 90.0] {
+        let a = angle * std::math::PI / 180.0
+        let v = (t * cos(a) - n * sin(a)) * 12.0
+        var b = spawn(point + n * (RADIUS + 0.001))
+        b.mode = Mode::Air
+        b.vel = v
+        body::step(mut b, Pad { bits: DOWN }, LAB, f)
+        // Gravity acts for the tick before the body moves.
+        let expected = dot(v - vec2(0.0, f.fall * STEP), t)
+        assert(b.grounded(), "it lands")
+        assert(abs(b.speed - expected) < 1.0e-3, "the speed is the velocity along the tangent")
+        assert(b.mode == Mode::Slide, "down held on a slope slides")
+    }
+}
+
+@test
+fn a_jump_out_of_a_slide_keeps_the_slides_speed() {
+    let (point, t, n) = slope()
+    var b = spawn(point + n * RADIUS)
+    b.mode = Mode::Slide
+    b.speed = 15.0
+    body::step(mut b, Pad { bits: DOWN | JUMP | PRESS }, LAB, MOMENTUM)
+    assert(b.mode == Mode::Air)
+    assert(abs(b.vel.x - t.x * 15.0) < 1.0e-3, "the slide's speed carries into the jump")
+}
+
+/// A body swimming in the lab's pool at `at`, moving at `vel`.
+fn in_pool(at: vec2, vel: vec2) -> Body {
+    var b = spawn(at)
+    b.mode = Mode::Swim
+    b.vel = vel
+    b
+}
+
+@test
+fn at_the_surface_a_press_jumps_out_at_one_speed_whatever_is_held() {
+    for held in [0, DOWN, UP | RIGHT] {
+        var b = in_pool(vec2(108.0, -0.15), vec2(0.0))
+        body::step(mut b, Pad { bits: held | JUMP | PRESS }, LAB, MOMENTUM)
+        assert(abs(b.vel.y - MOMENTUM.water_jump) < 0.2)
+    }
+}
+
+@test
+fn a_stroke_reaches_the_cap_but_never_slows_a_dive() {
+    let f = MOMENTUM
+    var dive = in_pool(vec2(108.0, -2.0), vec2(0.0, -15.0))
+    body::step(mut dive, Pad { bits: DOWN | JUMP | PRESS }, LAB, f)
+    assert(length(dive.vel) <= 15.0 && length(dive.vel) > 14.0, "a dive keeps its speed")
+    var slow = in_pool(vec2(108.0, -3.0), vec2(0.0))
+    for i in 0..60 {
+        let press = if i % 18 == 0 { PRESS } else { 0 }
+        body::step(mut slow, Pad { bits: RIGHT | JUMP | press }, LAB, f)
+        assert(length(slow.vel) <= f.swim_max + 1.0e-3, "strokes stop at the cap")
+    }
+}
+
+@test
+fn a_press_during_the_cooldown_strokes_when_it_ends() {
+    let f = MOMENTUM
+    var b = in_pool(vec2(108.0, -3.0), vec2(0.0))
+    body::step(mut b, Pad { bits: RIGHT | JUMP | PRESS }, LAB, f)
+    assert(b.cooldown == f.stroke_cooldown)
+    body::step(mut b, Pad { bits: RIGHT | JUMP | PRESS }, LAB, f)
+    assert(b.queued)
+    var stroked = 0
+    for i in 0..f.stroke_cooldown {
+        let before = b.vel.x
+        body::step(mut b, Pad { bits: RIGHT | JUMP }, LAB, f)
+        if b.vel.x > before + 1.0 {
+            stroked = i + 2
+        }
+    }
+    assert(stroked == f.stroke_cooldown, "the kept press strokes on the tick the cooldown ends")
+}
+
+@test
+fn leaving_the_water_fast_leaps_with_the_velocity_and_slowly_floats() {
+    let f = MOMENTUM
+    var fast = in_pool(vec2(108.0, -0.02), vec2(3.0, 9.0))
+    body::step(mut fast, Pad { bits: JUMP }, LAB, f)
+    assert(fast.mode == Mode::Air && fast.vel.y > 8.5 && fast.vel.x > 2.9, "a dolphin leap")
+    var slow = in_pool(vec2(108.0, -0.02), vec2(0.0, 4.0))
+    body::step(mut slow, Pad { bits: 0 }, LAB, f)
+    assert(
+        slow.mode == Mode::Swim && slow.at.y < 0.0 && slow.vel.y == 0.0,
+        "it stops at the surface",
+    )
+}
+
+// ---- metrics -----------------------------------------------------------------------------------
+
+/// How high the body's bottom rises from flat ground with jump held for `held` ticks.
+fn jump_height(f: u32, held: u32) -> f32 {
+    var w = world(c: 0, f: f)
+    step(mut w, Pad { bits: JUMP | PRESS })
+    var top = 0.0
+    for i in 0..240 {
+        step(mut w, Pad { bits: if i < held { JUMP } else { 0 } })
+        top = max(top, w.body.at.y - RADIUS)
+    }
+    top
+}
+
+/// Ticks from rest to the top running speed.
+fn ticks_to_top(f: u32) -> u32 {
+    let top = feel(f).run
+    var w = world(c: 0, f: f)
+    var t = 0
+    while w.body.speed < top - 1.0e-3 {
+        step(mut w, Pad { bits: RIGHT | RUN })
+        t += 1
+        assert(t < 1000)
+    }
+    t
+}
+
+/// How far a running jump from flat ground carries the body before it is back at the same height,
+/// jump held throughout (m): from the flat past the crest at the top running speed, over the
+/// first gap.
+fn reach(f: u32) -> f32 {
+    var w = world(c: 0, f: f)
+    w.body = spawn(vec2(29.0, RADIUS))
+    w.body.speed = feel(f).run
+    let from = w.body.at
+    step(mut w, Pad { bits: RIGHT | RUN | JUMP | PRESS })
+    var x = from.x
+    for _ in 0..240 {
+        let before = w.body.at
+        step(mut w, Pad { bits: RIGHT | RUN | JUMP })
+        if w.body.at.y <= from.y && before.y > from.y {
+            x = mix(before.x, w.body.at.x, (before.y - from.y) / (before.y - w.body.at.y))
+            break
+        }
+    }
+    x - from.x
+}
+
+/// The ranges each preset's metrics are held to: the held jump and the tapped jump (m), the ticks
+/// to top speed, and the running jump's reach (m).
+struct Spec: Copy {
+    held: vec2,
+    tap: vec2,
+    top: vec2,
+    reach: vec2,
+}
+
+const SPECS: [Spec; 2] = [
+    Spec {
+        held: vec2(2.5, 3.0),
+        tap: vec2(0.9, 1.5),
+        top: vec2(80.0, 110.0),
+        reach: vec2(6.5, 8.5),
+    },
+    Spec { held: vec2(2.3, 2.7), tap: vec2(0.9, 1.5), top: vec2(8.0, 20.0), reach: vec2(5.0, 6.5) },
+]
+
+fn within(x: f32, range: vec2) -> bool {
+    x >= range.x && x <= range.y
+}
+
+@test
+fn each_presets_metrics_are_within_their_ranges() {
+    for f in 0..FEELS {
+        let s = SPECS[f]
+        let (held, tap, top, far) = (
+            jump_height(f, 240),
+            jump_height(f, 0),
+            ticks_to_top(f),
+            reach(f),
+        )
+        print(
+            f"{feel(f).name}: held jump {held} m, tapped {tap} m, top speed in {top} ticks, running jump {far} m",
+        )
+        assert(within(held, s.held), "the held jump's height")
+        assert(within(tap, s.tap), "the tapped jump's height")
+        assert(within(f32(top), s.top), "the ticks to top speed")
+        assert(within(far, s.reach), "the running jump's reach")
+    }
+}

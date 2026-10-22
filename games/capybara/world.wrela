@@ -1,0 +1,165 @@
+// The sim's world: the course and preset being played, the capybara, the controls, and the
+// attempt's clock in ticks (design.md, "Timing"). The ticker steps it from the host's records
+// (`tick`); tests and searches step it from pads (`step`). It holds no course: a course is a
+// constant, named by its number, so a world is a small value to clone, hash and compare.
+
+use body::{Body, Mode, spawn}
+use course::{COURSES, course}
+use engine::run::{Asks, TickInput}
+use engine::sim::{SimState, Tick}
+use feel::{FEELS, feel}
+use pad::{Controls, Hold, Pad, pad_of}
+use std::hash::StateHash
+use std::input::{Event, Key, PadButton}
+use std::serialize::Serialize
+
+pub struct World: Copy + Eq + StateHash + Serialize + SimState {
+    pub course: u32,
+    pub feel: u32,
+    pub body: Body,
+    pub controls: Controls,
+    /// The attempt's clock: the level's ticks run, the first counted as 1.
+    pub ticks: u32,
+    /// The clock on the tick the capybara reached the goal; 0 until it has.
+    pub finished: u32,
+    /// Times it fell out of the course and came back to the start.
+    pub falls: u32,
+    /// The attempts begun: each restart and change of preset in the lab begins one.
+    pub attempt: u32,
+}
+
+/// A new attempt at course `c` with preset `f`: the course's start state.
+pub fn world(c: u32, f: u32) -> World {
+    assert(c < COURSES && f < FEELS)
+    World {
+        course: c,
+        feel: f,
+        body: spawn(course(c).start),
+        controls: Controls {},
+        ticks: 0,
+        finished: 0,
+        falls: 0,
+        attempt: 0,
+    }
+}
+
+/// One tick of the level from `pad`. After the goal, the capybara still moves but the clock
+/// stays.
+@deterministic
+pub fn step(w: mut World, pad: Pad) {
+    borrow c = course(w.course)
+    if w.finished == 0 {
+        w.ticks += 1
+    }
+    body::step(mut w.body, pad, c, feel(w.feel))
+    if w.body.at.y < c.floor {
+        w.body = spawn(c.start)
+        w.falls += 1
+    }
+    if w.finished == 0 && c.at_goal(w.body.at) {
+        w.finished = w.ticks
+    }
+}
+
+/// A new attempt in place of `w`, with preset `f`, keeping the controls as they're held.
+fn restart(w: mut World, f: u32) {
+    let (controls, attempt) = (w.controls, w.attempt)
+    w = world(w.course, f)
+    w.controls = controls
+    w.attempt = attempt + 1
+}
+
+/// One tick from the host's records: the lab's commands (Tab or the controller's Select change
+/// the preset, R or Start restart), then the pad they leave.
+@deterministic
+pub fn tick(w: mut World, input: TickInput<World>) {
+    for e in input.records {
+        match e {
+            Event::KeyDown { key, repeat, .. } => {
+                if !repeat && key == Key::Tab {
+                    restart(mut w, (w.feel + 1) % FEELS)
+                } else if !repeat && key == Key::R {
+                    restart(mut w, w.feel)
+                }
+            },
+            Event::PadButton { pad, button, pressed, .. } => {
+                if pad == 0 && pressed && button == PadButton::Select {
+                    restart(mut w, (w.feel + 1) % FEELS)
+                } else if pad == 0 && pressed && button == PadButton::Start {
+                    restart(mut w, w.feel)
+                }
+            },
+            _ => {},
+        }
+        w.controls.update(e)
+    }
+    let pad = w.controls.pad()
+    step(mut w, pad)
+}
+
+impl Asks for World {
+    type Ask = u32
+    type Answer = u32
+
+    @deterministic
+    fn asks(self, tick: Tick) -> Vec<(u32, Tick)> {
+        Vec::new()
+    }
+
+    @deterministic
+    fn work(ask: u32) -> u32 {
+        ask
+    }
+}
+
+/// What the frames draw of a world: plain data, through the hand-off.
+pub struct Snap: Copy + Plain {
+    pub at: vec2,
+    pub vel: vec2,
+    pub ground: vec2,
+    pub speed: f32,
+    pub facing: f32,
+    /// The body's mode (`Mode`'s discriminant), and 1 tucked.
+    pub mode: u32,
+    pub tuck: u32,
+    pub ticks: u32,
+    pub finished: u32,
+    pub feel: u32,
+    pub attempt: u32,
+    pub falls: u32,
+}
+
+@deterministic
+pub fn present(w: World) -> Snap {
+    let b = w.body
+    Snap {
+        at: b.at,
+        vel: b.vel,
+        ground: b.ground,
+        speed: b.speed,
+        facing: b.facing,
+        mode: u32(b.mode),
+        tuck: if b.tuck { 1 } else { 0 },
+        ticks: w.ticks,
+        finished: w.finished,
+        feel: w.feel,
+        attempt: w.attempt,
+        falls: w.falls,
+    }
+}
+
+/// The world after playing `run` from a new attempt at course `c` with preset `f`.
+pub fn play(c: u32, f: u32, run: [Hold]) -> World {
+    var w = world(c, f)
+    for h in run {
+        for i in 0..h.ticks {
+            step(mut w, pad_of(h, i))
+        }
+    }
+    w
+}
+
+/// Whether the body's mode is `m`.
+pub fn is(w: World, m: Mode) -> bool {
+    w.body.mode == m
+}
