@@ -281,8 +281,8 @@ fn capybara(q: vec2, s: Sprite, screen_px: f32) -> vec4 {
     // by the nose, reads as a frown.)
     let dx = saturate(abs(p.x - eye_at.x) / 0.04)
     let open = (1.0 - dx * dx) * (0.25 + 0.75 * s.pose.w)
-    let lid = eye_at.y + 0.003 + 0.021 * open
-    let low = eye_at.y + 0.003 - 0.017 * open
+    let lid = eye_at.y + 0.003 + 0.0185 * open
+    let low = eye_at.y + 0.003 - 0.015 * open
     let slit = max(abs(p.x - eye_at.x) - 0.04, max(p.y - lid, low - p.y))
     c = mark(c, slit, vec3(0.1, 0.06, 0.05), px)
     c = mark(c, max(length(p - vec2(0.424, lid - 0.008)) - 0.006, slit), vec3(1.0), px)
