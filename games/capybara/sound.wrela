@@ -62,6 +62,8 @@ pub struct Cue: Copy {
 const SINE: u32 = 0
 const FM: u32 = 1
 const BAND: u32 = 2
+/// Noise under a frequency, falling away steeply (18 dB an octave) above it: a far-off rumble.
+const LOW: u32 = 3
 
 /// A voice: from `from` to `to` Hz over `glide` seconds, swelling in over `attack` and falling
 /// 60 dB in `t60`, at `gain`, panned by `pan`; `age` seconds old (negative: not yet).
@@ -80,9 +82,10 @@ struct Tone: Copy {
     age: f32,
     phase: f32,
     mod_phase: f32,
-    // A band's filter state.
+    // A band's filter state, and a low's last smoothing.
     low: f32,
     band: f32,
+    smooth: f32,
 }
 
 const SILENT = Tone {
@@ -102,6 +105,7 @@ const SILENT = Tone {
     mod_phase: 0.0,
     low: 0.0,
     band: 0.0,
+    smooth: 0.0,
 }
 
 /// The voices that sound at once; the oldest makes way.
@@ -206,6 +210,47 @@ fn hiss(hz: f32, to: f32, q: f32, t60: f32, gain: f32, pan: f32, delay: f32) -> 
     }
 }
 
+/// A jump's "whup": a sine sliding up and a breath of air, `up` times the first jump's pitch and
+/// that much quicker.
+@audio
+fn whup(v: mut Voice, up: f32, pan: f32, delay: f32) {
+    let quick = 1.0 / up
+    tone(
+        mut v,
+        sine(
+            300.0 * up,
+            to: 560.0 * up,
+            glide: 0.12 * quick,
+            t60: 0.16 * quick,
+            gain: 0.13,
+            pan: pan,
+            delay: delay,
+        ),
+    )
+    tone(
+        mut v,
+        hiss(
+            1400.0 * up,
+            to: 2600.0 * up,
+            q: 0.8,
+            t60: 0.08 * quick,
+            gain: 0.04,
+            pan: pan,
+            delay: delay,
+        ),
+    )
+}
+
+/// A far-off rumble: noise under `hz`, sliding to `to`.
+@audio
+fn rumble(hz: f32, to: f32, t60: f32, gain: f32, pan: f32, delay: f32) -> Tone {
+    Tone {
+        kind: LOW,
+        q: 0.7,
+        ..hiss(hz, to: to, q: 0.7, t60: t60, gain: gain, pan: pan, delay: delay),
+    }
+}
+
 /// A bubble: a short sine whose pitch leaps up as it closes.
 @audio
 fn blip(v: mut Voice, gain: f32, pan: f32, delay: f32) {
@@ -223,14 +268,15 @@ fn cue(v: mut Voice, c: Cue) {
         tone(mut v, hiss(hz, to: hz * 0.8, q: 1.3, t60: 0.07, gain: 0.05 * a, pan: p, delay: d))
         tone(mut v, sine(140.0, to: 90.0, glide: 0.04, t60: 0.05, gain: 0.05 * a, pan: p, delay: d))
     } else if c.kind == JUMP {
-        tone(mut v, sine(300.0, to: 560.0, glide: 0.12, t60: 0.16, gain: 0.13, pan: p, delay: d))
-        tone(mut v, hiss(1400.0, to: 2600.0, q: 0.8, t60: 0.08, gain: 0.04, pan: p, delay: d))
+        whup(mut v, up: 1.0, pan: p, delay: d)
     } else if c.kind == DOUBLE {
-        // Two bells, a fifth apart, and a shimmer.
-        tone(mut v, bell(note(84.0), t60: 0.6, gain: 0.06, pan: p, delay: d))
-        tone(mut v, bell(note(91.0), t60: 0.7, gain: 0.05, pan: p, delay: d + 0.06))
-        tone(mut v, hiss(6000.0, to: 9000.0, q: 1.0, t60: 0.2, gain: 0.025, pan: p, delay: d))
-        tone(mut v, sine(420.0, to: 760.0, glide: 0.1, t60: 0.14, gain: 0.08, pan: p, delay: d))
+        // The jump again, a fifth up and a little quicker, with a wisp of air as it flips (Ryan,
+        // 2026-10-22: "a variation on the first jump, not an entirely different sound").
+        whup(mut v, up: 1.5, pan: p, delay: d)
+        tone(
+            mut v,
+            hiss(3000.0, to: 6000.0, q: 1.0, t60: 0.14, gain: 0.02, pan: p, delay: d + 0.04),
+        )
     } else if c.kind == LAND {
         tone(mut v, sine(120.0, to: 55.0, glide: 0.08, t60: 0.14, gain: 0.22 * a, pan: p, delay: d))
         tone(mut v, hiss(500.0, to: 300.0, q: 0.9, t60: 0.09, gain: 0.1 * a, pan: p, delay: d))
@@ -305,12 +351,43 @@ fn cue(v: mut Voice, c: Cue) {
         tone(mut v, bell(note(88.0), t60: 0.9, gain: 0.06, pan: p, delay: d + 0.04))
         tone(mut v, bell(note(93.0), t60: 1.0, gain: 0.045, pan: p, delay: d + 0.1))
     } else if c.kind == CHECKPOINT {
-        // Wind chimes: a few notes of D major's pentatonic, each its own moment.
-        let chimes = [86.0, 88.0, 90.0, 93.0, 95.0, 98.0]
+        // The music's hook, "G G A C", as a jingle two octaves up, bright plucks over bells, the
+        // last note ringing (Ryan: hitting a flag "should have a more fun sound"); and the flag
+        // flapping up its pole, a whoosh broken into flutters.
+        let hook = [91.0, 91.0, 93.0, 96.0]
+        for k in 0..4 {
+            let late = d + 0.085 * f32(k)
+            let ring = if k == 3 { 1.2 } else { 0.35 }
+            let hz = note(hook[k])
+            tone(
+                mut v,
+                sine(
+                    hz * 1.02,
+                    to: hz,
+                    glide: 0.01,
+                    t60: ring * 0.5,
+                    gain: 0.07,
+                    pan: p,
+                    delay: late,
+                ),
+            )
+            tone(mut v, bell(hz, t60: ring, gain: 0.04, pan: p, delay: late))
+        }
+        tone(mut v, bell(note(103.0), t60: 0.8, gain: 0.02, pan: p, delay: d + 0.3))
         for k in 0..5 {
-            let m = chimes[u32(rand(mut v) * 5.99)]
-            let late = 0.07 * f32(k) + 0.05 * rand(mut v)
-            tone(mut v, bell(note(m), t60: 1.6, gain: 0.04, pan: p, delay: d + late))
+            let hz = 900.0 + 400.0 * f32(k)
+            tone(
+                mut v,
+                hiss(
+                    hz,
+                    to: hz * 1.3,
+                    q: 1.2,
+                    t60: 0.06,
+                    gain: 0.05,
+                    pan: p,
+                    delay: d + 0.045 * f32(k),
+                ),
+            )
         }
     } else if c.kind == HURT || c.kind == FALL {
         // A slide whistle falling, its pitch wavering; a bonk when hurt.
@@ -355,17 +432,22 @@ fn cue(v: mut Voice, c: Cue) {
             )
         }
     } else if c.kind == LAUNCH {
-        // A rocket's whistle, rising.
-        tone(mut v, hiss(500.0, to: 2600.0, q: 4.0, t60: 0.9, gain: 0.05, pan: p, delay: d))
+        // A rocket's whistle, rising, thin with distance.
+        tone(mut v, hiss(400.0, to: 1600.0, q: 5.0, t60: 0.8, gain: 0.03, pan: p, delay: d))
     } else if c.kind == BANG {
-        // A firework: a low bang and a crackle falling away.
-        tone(mut v, sine(90.0, to: 45.0, glide: 0.1, t60: 0.35, gain: 0.2, pan: p, delay: d))
-        tone(mut v, hiss(1800.0, to: 900.0, q: 0.5, t60: 0.25, gain: 0.12, pan: p, delay: d))
-        for k in 0..6 {
-            let hz = 3000.0 + 3000.0 * rand(mut v)
-            let side = p + 0.3 * (rand(mut v) - 0.5)
-            let late = 0.1 + 0.08 * f32(k) * rand(mut v)
-            tone(mut v, hiss(hz, to: hz, q: 2.0, t60: 0.03, gain: 0.05, pan: side, delay: d + late))
+        // A firework far off (Ryan: they "should sound a bit more like distant explosions"): it
+        // arrives a moment after its flash, the air has taken its highs, so it's a dull boom
+        // that rolls on, an echo of it off the hills, and a faint crackle.
+        let far = d + 0.18 + 0.1 * rand(mut v)
+        tone(mut v, sine(70.0, to: 38.0, glide: 0.25, t60: 0.9, gain: 0.22, pan: p, delay: far))
+        tone(mut v, rumble(180.0, to: 70.0, t60: 1.6, gain: 3.2, pan: p, delay: far))
+        tone(mut v, rumble(600.0, to: 250.0, t60: 0.4, gain: 1.2, pan: p, delay: far))
+        tone(mut v, rumble(150.0, to: 60.0, t60: 1.2, gain: 1.5, pan: -p, delay: far + 0.45))
+        for k in 0..5 {
+            let hz = 1400.0 + 1200.0 * rand(mut v)
+            let side = p + 0.4 * (rand(mut v) - 0.5)
+            let late = far + 0.25 + 0.5 * rand(mut v) + 0.05 * f32(k)
+            tone(mut v, rumble(hz, to: hz, t60: 0.04, gain: 0.15, pan: side, delay: late))
         }
     }
 }
@@ -424,6 +506,10 @@ fn sample(v: mut Voice, k: u32, dt: f32) -> f32 {
         let high = white - t.low - t.band / t.q
         t.band += g * high
         s = t.band
+        if t.kind == LOW {
+            t.smooth += (t.low - t.smooth) * min(TAU * f / RATE, 1.0)
+            s = t.smooth
+        }
     }
     let attack = saturate(t.age / t.attack)
     let fade = exp(-6.9 * t.age / t.t60)
@@ -490,10 +576,12 @@ fn render(v: mut Voice, left: mut [f32], right: mut [f32]) {
 use engine::perform::{PedalPoint, Performance}
 use engine::piano_grand::GRAND
 use engine::piano::piano
+use std::io::print
 
-/// A voice with no music, sent `cues`, played for `seconds`: the energy of its mean, and its
-/// loudest sample. Every sample is finite.
-fn heard(cues: [Cue], seconds: f32) -> vec2 {
+/// A voice with no music, sent `cues`, played for `seconds`: the energy of its mean, its loudest
+/// sample, and the energy of its sample-to-sample differences (its highs). Every sample is
+/// finite.
+fn heard(cues: [Cue], seconds: f32) -> vec3 {
     let none = Vec::from([PedalPoint { at: 0.0, depth: 0.0 }])
     let quiet = Performance {
         notes: Vec::new(),
@@ -512,6 +600,8 @@ fn heard(cues: [Cue], seconds: f32) -> vec2 {
     var r = [0.0; QUANTUM]
     var energy = 0.0
     var peak = 0.0
+    var highs = 0.0
+    var last = 0.0
     for _ in 0..u32(seconds * RATE) / QUANTUM {
         for i in 0..QUANTUM {
             l[i] = 0.0
@@ -524,10 +614,12 @@ fn heard(cues: [Cue], seconds: f32) -> vec2 {
             assert((bitcast_u32(r[i]) >> 23) & 255 != 255, "a finite sample")
             let x = 0.5 * (l[i] + r[i])
             energy += x * x
+            highs += (x - last) * (x - last)
+            last = x
             peak = max(peak, max(abs(l[i]), abs(r[i])))
         }
     }
-    vec2(energy, peak)
+    vec3(energy, peak, highs)
 }
 
 @test
@@ -552,4 +644,22 @@ fn the_goal_and_its_fireworks_together_stay_under_full_scale() {
     }
     let peak = heard(cues, seconds: 1.5).y
     assert(peak > 0.05 && peak < 0.95, f"peak {peak}")
+}
+
+@test
+fn a_firework_sounds_far_off() {
+    // A bang, heard far off: dull, the centre of its sound (over the wind's) low, under a
+    // landing's thud; a jump's is far higher.
+    let bed = heard([], seconds: 1.5)
+    let bang = centre(heard([Cue { kind: BANG }], seconds: 1.5) - bed)
+    let land = centre(heard([Cue { kind: LAND }], seconds: 1.5) - bed)
+    let jump = centre(heard([Cue { kind: JUMP }], seconds: 1.5) - bed)
+    print(f"centres: the bang {bang} Hz, a landing {land} Hz, the jump {jump} Hz")
+    assert(bang < 250.0 && bang < land && jump > 2.0 * bang, f"the bang's centre: {bang} Hz")
+}
+
+/// Where a sound's energy is centred (Hz), from `heard`'s energy and highs: a sine at f has
+/// highs (2π f / RATE)² times its energy.
+fn centre(h: vec3) -> f32 {
+    sqrt(max(h.z, 0.0) / max(h.x, 1.0e-12)) * RATE / TAU
 }
