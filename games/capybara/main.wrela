@@ -1,6 +1,7 @@
 // The capybara game (a working title; design.md is its brief): the first level, and the movement
 // lab beside it. The sim ticks 120 times a second on the ticker's thread (`engine::run`), and each
-// frame draws the snapshots round its time as a blockout: the course's slab, the capybara, its
+// frame draws the snapshots round its time as a flat 2D blockout, seen straight on: the clouds
+// and two ranges of hills behind at their own parallax, the course's ground, the capybara, its
 // foes, the snacks, yuzus, checkpoints and goal as boxes, the water over them, and a line of text
 // with the clock, the snacks and the speed.
 //
@@ -14,22 +15,23 @@
 // trace --watch capybara`, which needs a toolchain whose trace runs the ticker in lockstep.
 
 use body::Mode
-use camera::{Camera, DISTANCE, FOVY, camera, follow}
+use camera::{Camera, camera, follow, half_view}
 use course::{Course, course}
 use engine::present::Snapshots
 use engine::run::run
 use feel::HZ
 use feel::FEEL
 use look::{
-    LAB_GROUND, LAB_HILLS, LAB_WATER, LEVEL_GROUND, LEVEL_WATER, Eye, Part, cel, ground_vertex,
-    part_vertex, water, water_vertex,
+    CLOUDS, CLOUD_PARALLAX, FAR_HILLS, FAR_PARALLAX, LAB_GROUND, LAB_WATER, LEVEL_GROUND,
+    LEVEL_WATER, NEAR_HILLS, NEAR_PARALLAX, PLAY_Z, Eye, Part, cel, ground_vertex, part_vertex,
+    water, water_vertex,
 }
 use std::gpu::{
     Cull, DepthTexture, GpuBuffer, begin_screen_pass_with_depth, buffer, buffer_of, depth_texture,
     draw, write,
 }
 use std::math::{PI, TAU}
-use std::transform::{look_at, perspective, rotate_x, rotate_y, rotate_z, scale, translate}
+use std::transform::{look_at, ortho, rotate_x, rotate_y, rotate_z, scale, translate}
 use ui::draw::{DrawList, Renderer}
 use ui::text::{Face, Fonts}
 use world::{LEVEL, Snap, present, tick, world}
@@ -42,7 +44,8 @@ pub struct Lab {
     /// Each course's ground and water (the lab's, the level's), and the hills behind both.
     grounds: [GpuBuffer<vec4>; 2],
     waters: [GpuBuffer<vec4>; 2],
-    hills: GpuBuffer<vec4>,
+    /// The parallax layers: the near hills, the far hills, the clouds.
+    layers: [GpuBuffer<vec4>; 3],
     /// The course the camera was last following.
     shown: u32,
     parts: GpuBuffer<Part>,
@@ -66,7 +69,7 @@ pub fn init() -> Lab {
         snaps: Snapshots::new(take latest, hz: HZ),
         grounds: [buffer_of(LAB_GROUND), buffer_of(LEVEL_GROUND)],
         waters: [buffer_of(LAB_WATER), buffer_of(LEVEL_WATER)],
-        hills: buffer_of(LAB_HILLS),
+        layers: [buffer_of(NEAR_HILLS), buffer_of(FAR_HILLS), buffer_of(CLOUDS)],
         shown: LEVEL,
         parts: buffer(PARTS),
         depth: depth_texture(width: 1, height: 1),
@@ -133,7 +136,7 @@ fn capybara_parts(out: mut Vec<Part>, s: Snap, stride: f32) {
     let pace = if trotting { saturate(abs(s.speed) / 6.0) } else { 0.0 }
     let bob = 0.045 * pace * abs(sin(stride))
     let pitch = 0.05 * pace * sin(2.0 * stride)
-    let frame = translate(vec3(s.at + vec2(0.0, bob), 0.0)) *
+    let frame = translate(vec3(s.at + vec2(0.0, bob), PLAY_Z)) *
         rotate_z(lean + flip * s.facing + pitch * s.facing) *
         scale(vec3(s.facing, 1.0, 1.0) * squash)
     let wet = saturate(f32(s.wet) / (f32(FEEL.wet_ticks) * 0.5))
@@ -179,7 +182,7 @@ fn capybara_parts(out: mut Vec<Part>, s: Snap, stride: f32) {
 
 /// The goal: a post and its flag, at the goal box's left side, standing on its floor.
 fn goal(out: mut Vec<Part>, c: Course) {
-    let base = vec3(c.goal_lo.x + 0.4, c.goal_lo.y, 0.0)
+    let base = vec3(c.goal_lo.x + 0.4, c.goal_lo.y, PLAY_Z)
     let frame = translate(base)
     out.push(part(frame, vec3(0.0, 1.6, 0.0), vec3(0.06, 1.6, 0.06), POST))
     out.push(part(frame, vec3(0.45, 2.85, 0.0), vec3(0.4, 0.28, 0.03), FLAG))
@@ -212,7 +215,7 @@ fn foes_parts(out: mut Vec<Part>, s: Snap, time: f32) {
         let dir = if knocked { 1.0 } else { f.w }
         let t = since / f32(HZ)
         let tumble = translate(vec3(0.0, 6.0 * t - 20.0 * t * t, 0.0)) * rotate_z(since * 0.25)
-        let frame = translate(vec3(f.xy, 0.0)) * tumble * scale(vec3(dir, 1.0, 1.0))
+        let frame = translate(vec3(f.xy, PLAY_Z)) * tumble * scale(vec3(dir, 1.0, 1.0))
         if kind == 1 {
             out.push(part(frame, vec3(0.0, -0.08, 0.0), vec3(0.42, 0.24, 0.24), WHITE))
             out.push(part(frame, vec3(0.27, 0.25, 0.0), vec3(0.07, 0.22, 0.07), WHITE))
@@ -247,20 +250,20 @@ fn things_parts(out: mut Vec<Part>, s: Snap, c: Course, time: f32) {
     let bob = vec3(0.0, 0.08 * sin(time * 3.0), 0.0)
     for i in 0..c.snacks.len() {
         if s.snacks & (1 << i) == 0 {
-            let frame = translate(vec3(c.snacks[i], 0.0) + bob) * rotate_y(time * 2.0)
+            let frame = translate(vec3(c.snacks[i], PLAY_Z) + bob) * rotate_y(time * 2.0)
             out.push(part(frame, vec3(0.0, 0.0, 0.0), vec3(0.09, 0.25, 0.09), SNACK))
             out.push(part(frame, vec3(0.0, 0.3, 0.0), vec3(0.06, 0.08, 0.06), LEAF))
         }
     }
     for i in 0..c.yuzus.len() {
         if s.yuzus & (1 << i) == 0 {
-            let frame = translate(vec3(c.yuzus[i], 0.0) + bob) * rotate_y(time)
+            let frame = translate(vec3(c.yuzus[i], PLAY_Z) + bob) * rotate_y(time)
             out.push(part(frame, vec3(0.0, 0.0, 0.0), vec3(0.2, 0.2, 0.2), YUZU))
             out.push(part(frame, vec3(0.0, 0.24, 0.0), vec3(0.06, 0.05, 0.03), LEAF))
         }
     }
     for i in 0..c.checkpoints.len() {
-        let frame = translate(vec3(c.checkpoints[i], 0.0))
+        let frame = translate(vec3(c.checkpoints[i], PLAY_Z))
         let colour = if s.checkpoint > i { FLAG_DONE } else { FLAG_AHEAD }
         out.push(part(frame, vec3(0.0, 1.2, 0.0), vec3(0.05, 1.2, 0.05), POST))
         out.push(part(frame, vec3(0.35, 2.1, 0.0), vec3(0.3, 0.22, 0.03), colour))
@@ -300,9 +303,11 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     }
     let aspect = f32(width) / f32(max(height, 1))
     let at = vec3(s.camera.at, 0.0)
-    let from = at + vec3(0.0, 1.0, DISTANCE)
+    let from = at + vec3(0.0, 0.0, 50.0)
+    let half = half_view(aspect)
     let eye = Eye {
-        view_proj: perspective(FOVY, aspect, near: 0.5, far: 200.0) * look_at(from, at),
+        view_proj: ortho(-half.x, half.x, -half.y, half.y, near: 1.0, far: 100.0) *
+            look_at(from, at),
         eye: from,
         sun: normalize(SUN),
     }
@@ -320,16 +325,28 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     s.renderer.fetch(mut s.fonts, s.list)
     s.renderer.upload(s.list)
     let pass = begin_screen_pass_with_depth(mut s.depth, clear: SKY)
+    // Behind, back to front: each layer moved by the part of the camera's motion it doesn't follow.
+    let layers = [
+        (2, CLOUD_PARALLAX, CLOUDS.len()),
+        (1, FAR_PARALLAX, FAR_HILLS.len()),
+        (0, NEAR_PARALLAX, NEAR_HILLS.len()),
+    ]
+    for (i, parallax, count) in layers {
+        draw(
+            pass,
+            ground_vertex.bind(
+                verts: s.layers[i].items(),
+                eye: eye,
+                shift: s.camera.at * (1.0 - parallax),
+            ),
+            cel.bind(eye: eye),
+            vertices: count / 2,
+            cull: Cull::None,
+        )
+    }
     draw(
         pass,
-        ground_vertex.bind(verts: s.hills.items(), eye: eye),
-        cel.bind(eye: eye),
-        vertices: LAB_HILLS.len() / 2,
-        cull: Cull::None,
-    )
-    draw(
-        pass,
-        ground_vertex.bind(verts: s.grounds[snap.course].items(), eye: eye),
+        ground_vertex.bind(verts: s.grounds[snap.course].items(), eye: eye, shift: vec2(0.0)),
         cel.bind(eye: eye),
         vertices: if snap.course == LEVEL { LEVEL_GROUND.len() / 2 } else { LAB_GROUND.len() / 2 },
         cull: Cull::None,

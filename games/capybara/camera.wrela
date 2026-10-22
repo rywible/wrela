@@ -9,10 +9,9 @@ use body::Mode
 use feel::FEEL
 use world::Snap
 
-/// How far the camera stands from the plane of play (m), and how wide it sees (rad): about 12.6 m
-/// of the plane from top to bottom.
-pub const DISTANCE: f32 = 16.0
-pub const FOVY: f32 = 0.75
+/// Half the height of the plane of play the view shows (m): 12.6 m from top to bottom, seen
+/// straight on (orthographic: no perspective, so the edges are true).
+pub const HALF_HEIGHT: f32 = 6.3
 
 /// How far the camera's height may leave the height it keeps before it follows (m).
 const BAND: f32 = 2.5
@@ -74,8 +73,7 @@ pub fn follow(c: mut Camera, s: Snap, dt: f32) {
 
 /// Half the view's size on the plane of play (m), for a screen `aspect` wide to its height.
 pub fn half_view(aspect: f32) -> vec2 {
-    let h = DISTANCE * tan(FOVY * 0.5)
-    vec2(h * aspect, h)
+    vec2(HALF_HEIGHT * aspect, HALF_HEIGHT)
 }
 
 // ---- tests -------------------------------------------------------------------------------------

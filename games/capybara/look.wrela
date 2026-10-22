@@ -1,30 +1,47 @@
-// How the lab looks: a blockout in two-tone (cel-like) light. The course's ground is a slab
-// 6 m deep, extruded from its pieces sampled (its front face filled by ear clipping, its sides
-// strips along the outline), built when the game is built. The capybara and the goal are boxes,
-// drawn in one instanced draw; the water is a see-through front and surface over everything.
+// How the game looks: flat 2D, seen straight on, with parallax behind (Ryan, 2026-10-22: the game
+// is 2D; perspective skewed the edges a platformer is read by). A blockout, in flat colour. The
+// course's ground is its cross-section, its pieces sampled and filled by ear clipping, with a
+// grass band along every walkable top and a darker edge along every cliff, built when the game is
+// built. The capybara, its foes and things are boxes seen face on, drawn in front of the ground;
+// the water is see-through, over everything.
 //
 // Motion has to read without a person's say: the grass is striped every metre and the earth banded,
-// so the ground streams by as the camera follows, and two ranges of hills behind, at their own
-// depths, move slower than it (parallax). (Ryan, 2026-10-21: moving at top speed "felt strange"
-// on flat colour under an empty sky.)
+// so the ground streams by as the camera follows, and behind it two ranges of hills and the clouds
+// move slower than it, each layer at its own fraction of the camera's motion (parallax). (Ryan,
+// 2026-10-21: moving at top speed "felt strange" on flat colour under an empty sky.)
 
 use course::{Course, WALKABLE}
 use ground::{left, outline, triangulate}
 use std::gpu::{ClipPosition, Flat, InstanceIndex, Over, VertexIndex}
 
-/// Half the slab's depth (m): the plane of play is z = 0, the camera on +z.
+/// The layers' depths, nearest first (the camera on +z, looking straight at them): the water, the
+/// play (the capybara, its foes and things), the ground, and the parallax layers behind.
+pub const WATER_Z: f32 = 4.0
+pub const PLAY_Z: f32 = 3.5
 pub const DEPTH: f32 = 3.0
+
+/// How wide the grass band along a walkable top is, and the darker edge along a cliff (m).
+const GRASS: f32 = 0.35
+const EDGE: f32 = 0.12
 
 /// How thick a one-way ledge is drawn (m).
 const LEDGE_THICK: f32 = 0.25
 
-/// The materials: the slab's front, a walkable top, a cliff, a ledge, and the hills near and far.
+/// The materials: the ground's face, a walkable top's grass, a cliff's edge, a ledge, the hills
+/// near and far, and a cloud.
 pub const FRONT: f32 = 0.0
 pub const TOP: f32 = 1.0
 pub const CLIFF: f32 = 2.0
 pub const LEDGE: f32 = 3.0
 pub const HILL_NEAR: f32 = 4.0
 pub const HILL_FAR: f32 = 5.0
+pub const CLOUD: f32 = 6.0
+
+/// Each parallax layer's fraction of the camera's motion: the near hills, the far hills, the
+/// clouds. The ground and the play move with it (1).
+pub const NEAR_PARALLAX: f32 = 0.5
+pub const FAR_PARALLAX: f32 = 0.25
+pub const CLOUD_PARALLAX: f32 = 0.1
 
 /// What the shaders are told each frame: the camera's matrix and where it is, and the sun.
 pub struct Eye: Copy + GpuData {
@@ -39,21 +56,28 @@ fn vertex(out: mut Vec<vec4>, p: vec2, z: f32, material: f32, n: vec3) {
     out.push(vec4(n, 0.0))
 }
 
-/// The slab of a polygon (clockwise): its front face, and a strip along each side, a walkable
-/// top or a cliff by its normal (or all ledge).
+/// The face of a polygon (clockwise), filled, and a band inside each side: grass along a
+/// walkable top, a darker edge along a cliff (a ledge is all ledge).
 fn slab(out: mut Vec<vec4>, polygon: [vec2], ledge: bool) {
+    let face = vec3(0.0, 0.0, 1.0)
     let front = if ledge { LEDGE } else { FRONT }
     for p in triangulate(polygon) {
-        vertex(mut out, p, DEPTH, front, vec3(0.0, 0.0, 1.0))
+        vertex(mut out, p, DEPTH, front, face)
+    }
+    if ledge {
+        return
     }
     let n = polygon.len()
     for i in 0..n {
         let (a, b) = (polygon[i], polygon[(i + 1) % n])
         let side = normalize(left(b - a))
-        let material = if ledge { LEDGE } else if side.y >= WALKABLE { TOP } else { CLIFF }
-        let normal = vec3(side, 0.0)
-        for (p, z) in [(a, DEPTH), (b, DEPTH), (b, -DEPTH), (a, DEPTH), (b, -DEPTH), (a, -DEPTH)] {
-            vertex(mut out, p, z, material, normal)
+        let walkable = side.y >= WALKABLE
+        let (material, width) = if walkable { (TOP, GRASS) } else { (CLIFF, EDGE) }
+        let inward = side * width
+        // Just in front of the face; a grass band in front of a cliff's edge where they meet.
+        let z = DEPTH + if walkable { 0.02 } else { 0.01 }
+        for p in [a, b, b - inward, a, b - inward, a - inward] {
+            vertex(mut out, p, z, material, face)
         }
     }
 }
@@ -102,13 +126,15 @@ fn material(m: f32) -> vec3 {
     } else if m < 1.5 {
         vec3(0.36, 0.62, 0.26)
     } else if m < 2.5 {
-        vec3(0.5, 0.44, 0.36)
+        vec3(0.3, 0.21, 0.14)
     } else if m < 3.5 {
         vec3(0.62, 0.45, 0.28)
     } else if m < 4.5 {
         vec3(0.45, 0.6, 0.5)
-    } else {
+    } else if m < 5.5 {
         vec3(0.63, 0.74, 0.8)
+    } else {
+        vec3(0.97, 0.98, 1.0)
     }
 }
 
@@ -129,48 +155,101 @@ fn pattern(kind: f32, p: vec3) -> f32 {
     }
 }
 
-/// The hills behind the course: two ranges, nearer and lower, farther and higher, each a
-/// silhouette of two waves, filled down below the view, facing the camera. Three vertices a
+/// A range of hills behind the course: a silhouette of two waves (`base` m up, `amp` m either way,
+/// `freq` rad a metre), filled far down, at depth `z`, from `from` to `to`. Three vertices a
 /// triangle, two vec4s a vertex.
-pub fn hills_mesh(from: f32, to: f32) -> Vec<vec4> {
+fn hills_mesh(
+    from: f32,
+    to: f32,
+    base: f32,
+    amp: f32,
+    freq: f32,
+    material: f32,
+    z: f32,
+) -> Vec<vec4> {
     var out: Vec<vec4> = Vec::new()
-    let ranges = [
-        (-22.0, 1.0, 3.0, 0.11, HILL_NEAR),
-        (-60.0, 4.0, 8.0, 0.045, HILL_FAR),
-    ]
     let n = vec3(0.0, 0.0, 1.0)
-    for (z, base, amp, freq, material) in ranges {
-        var x = from
-        while x < to {
-            let x1 = x + 2.0
-            let h0 = base + amp * (0.6 * sin(x * freq) + 0.4 * sin(x * freq * 2.3 + 1.7))
-            let h1 = base + amp * (0.6 * sin(x1 * freq) + 0.4 * sin(x1 * freq * 2.3 + 1.7))
-            for p in [
-                vec2(x, -40.0),
-                vec2(x1, -40.0),
-                vec2(x1, h1),
-                vec2(x, -40.0),
-                vec2(x1, h1),
-                vec2(x, h0),
-            ] {
-                vertex(mut out, p, z, material, n)
-            }
-            x = x1
+    var x = from
+    while x < to {
+        let x1 = x + 2.0
+        let h0 = base + amp * (0.6 * sin(x * freq) + 0.4 * sin(x * freq * 2.3 + 1.7))
+        let h1 = base + amp * (0.6 * sin(x1 * freq) + 0.4 * sin(x1 * freq * 2.3 + 1.7))
+        for p in [
+            vec2(x, -60.0),
+            vec2(x1, -60.0),
+            vec2(x1, h1),
+            vec2(x, -60.0),
+            vec2(x1, h1),
+            vec2(x, h0),
+        ] {
+            vertex(mut out, p, z, material, n)
         }
+        x = x1
     }
     out
 }
 
-/// The hills, from well left of a course's start to well right of the level's goal.
-pub const LAB_HILLS: Vec<vec4> = hills_mesh(from: -120.0, to: 460.0)
+/// The near hills and the far, from well left of a course's start to well right of the level's
+/// goal (parallax moves them less than the camera, so less of them is ever seen).
+pub const NEAR_HILLS: Vec<vec4> = hills_mesh(
+    from: -120.0,
+    to: 460.0,
+    base: -1.0,
+    amp: 2.0,
+    freq: 0.11,
+    material: HILL_NEAR,
+    z: -10.0,
+)
+pub const FAR_HILLS: Vec<vec4> = hills_mesh(
+    from: -120.0,
+    to: 460.0,
+    base: 1.0,
+    amp: 2.5,
+    freq: 0.045,
+    material: HILL_FAR,
+    z: -20.0,
+)
 
+/// The clouds: a puff of three overlapping boxes every 18 m or so, at heights and sizes that vary
+/// by a hash of their number.
+fn clouds_mesh(from: f32, to: f32) -> Vec<vec4> {
+    var out: Vec<vec4> = Vec::new()
+    let n = vec3(0.0, 0.0, 1.0)
+    var i = 0
+    var x = from
+    while x < to {
+        let h = fract(sin(f32(i) * 12.9898) * 43758.547)
+        let at = vec2(x + 6.0 * h, 3.5 + 2.0 * fract(h * 7.0))
+        let size = 0.45 + 0.35 * h
+        for (dx, dy, w, t) in [
+            (0.0, 0.0, 2.2, 0.7),
+            (-1.1, -0.25, 1.3, 0.5),
+            (1.2, -0.2, 1.4, 0.55),
+        ] {
+            let c = at + vec2(dx, dy) * size
+            let (lo, hi) = (c - vec2(w, t) * size, c + vec2(w, t) * size)
+            for p in [lo, vec2(hi.x, lo.y), hi, lo, hi, vec2(lo.x, hi.y)] {
+                vertex(mut out, p, -30.0, CLOUD, n)
+            }
+        }
+        x += 18.0
+        i += 1
+    }
+    out
+}
+
+pub const CLOUDS: Vec<vec4> = clouds_mesh(from: -60.0, to: 200.0)
+
+/// A vertex of the ground or of a parallax layer, the layer moved by `shift` (the part of the
+/// camera's motion it doesn't follow).
 @vertex
-pub fn ground_vertex(v: VertexIndex, verts: [vec4], eye: Eye) -> Surfel {
+pub fn ground_vertex(v: VertexIndex, verts: [vec4], eye: Eye, shift: vec2) -> Surfel {
     let at = verts[v.index * 2]
     let n = verts[v.index * 2 + 1].xyz
+    let p = at.xyz + vec3(shift, 0.0)
     Surfel {
-        clip: ClipPosition { position: eye.view_proj * vec4(at.xyz, 1.0) },
-        world: at.xyz,
+        clip: ClipPosition { position: eye.view_proj * vec4(p, 1.0) },
+        world: p,
         normal: n,
         colour: Flat { value: material(at.w) },
         kind: Flat { value: at.w + 1.0 },
@@ -258,8 +337,8 @@ fn ground_top(outlines: [Vec<vec2>], x: f32) -> f32 {
 /// How far apart the water's outline samples the ground beneath it (m).
 const WATER_STEP: f32 = 0.2
 
-/// The water: a see-through front face shaped by the ground under it (its surface along the top,
-/// the ground's own outline below), and its surface through the slab, as triangles. Where the
+/// The water: a see-through face shaped by the ground under it (its surface along the top, the
+/// ground's own outline below), and a bright band along its surface, as triangles. Where the
 /// ground stands above the surface there's no water; so a lake fills its banks and a puddle its
 /// dip, and neither is a box.
 pub fn water_mesh(c: Course) -> Vec<vec4> {
@@ -296,17 +375,18 @@ pub fn water_mesh(c: Course) -> Vec<vec4> {
             polygon.push(floor[i])
         }
         for p in triangulate(polygon) {
-            out.push(vec4(p, DEPTH - 0.01, 0.0))
+            out.push(vec4(p, WATER_Z, 0.0))
         }
-        for (x, z) in [
-            (left, DEPTH),
-            (right, DEPTH),
-            (right, -DEPTH),
-            (left, DEPTH),
-            (right, -DEPTH),
-            (left, -DEPTH),
+        // The surface: a bright band along its top.
+        for p in [
+            vec2(left, surface - 0.1),
+            vec2(right, surface - 0.1),
+            vec2(right, surface),
+            vec2(left, surface - 0.1),
+            vec2(right, surface),
+            vec2(left, surface),
         ] {
-            out.push(vec4(x, surface, z, 1.0))
+            out.push(vec4(p, WATER_Z + 0.01, 1.0))
         }
     }
     out

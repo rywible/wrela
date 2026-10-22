@@ -19,7 +19,7 @@ The game is set in a zoo, as a day out. The easter eggs are cute, small and kind
 
 ## Shape
 
-- **2.5D:** a 3D world on a fixed side view. Play is in one plane.
+- **2D, with parallax:** play is in one plane, drawn flat and seen straight on, with layers behind (hills, clouds) that move slower than the camera. Ryan first asked for 2.5D (a 3D world on a fixed side view, as Ori), then chose 2D (2026-10-22): perspective skewed the edges a precision platformer is read by, and clean 2D forms suit the cast better than agent-built 3D creatures have so far.
 - **The ground is curves,** not tiles: chains of points with rounded corners, so slopes are continuous.
 - **One level first.** The number of levels and worlds is open until that level plays well. **Proposed:** the zoo's areas as the worlds (entrance and gardens, savanna, reptile house, aquarium, aviary, rainforest, a hot-spring area), with the food court as the seagull's last "castle".
 
@@ -158,7 +158,7 @@ The goal is that an agent can play the game, see it and check it without Ryan. C
 
 ## Plan
 
-1. The movement lab: the sim (run, jump, slide, swim) to the contracts above, a lab course with ramps, crests, gaps, ledges and a pool, a blockout 2.5D view, the proofs and the feel metrics. Then Ryan plays it: done, and tuned from his notes.
+1. The movement lab: the sim (run, jump, slide, swim) to the contracts above, a lab course with ramps, crests, gaps, ledges and a pool, a blockout view, the proofs and the feel metrics. Then Ryan plays it: done, and tuned from his notes.
 2. One vertical-slice level, its core gameplay before its looks (Ryan, 2026-10-21: "really crush the core gameplay loop"): the first level, built (below). Then Ryan plays it.
 3. The capybara in cel style, and Ryan's verdict on feel.
 4. The replay format is fixed in step 1; accounts and leaderboards after the slice.
