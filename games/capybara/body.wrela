@@ -14,7 +14,7 @@
 use course::{Contact, Course}
 use engine::sim::SimState
 use feel::{Feel, STEP}
-use pad::{DOWN, JUMP, Pad}
+use pad::{DOWN, JUMP, Pad, UP}
 use std::hash::StateHash
 use std::serialize::Serialize
 
@@ -211,9 +211,14 @@ fn leave(b: mut Body, vel: vec2, f: Feel) {
     b.ground = vec2(0.0, 1.0)
 }
 
-/// A jump from the ground whose tangent is `t`: the speed along the ground, and the launch up.
+/// A jump from the ground whose tangent is `t`: the launch up, with the speed along the ground
+/// across. Out of a slide it keeps all the slide's velocity, up a ramp too; running, only its part
+/// across, so a running jump is the same height on any slope (Ryan, 2026-10-21: jumps up a slope
+/// came out higher and read as random).
 fn jump(b: mut Body, t: vec2, f: Feel) {
-    b.vel = t * b.speed + vec2(0.0, f.launch)
+    let along = t * b.speed
+    let kept = if b.mode == Mode::Slide { along } else { vec2(along.x, 0.0) }
+    b.vel = kept + vec2(0.0, f.launch)
     b.mode = Mode::Air
     b.jumping = true
     b.jumps = f.air_jumps
@@ -445,7 +450,7 @@ fn land(b: mut Body, pad: Pad, k: Contact, before: vec2, f: Feel) {
 // ---- in water ----------------------------------------------------------------------------------
 
 /// A tick in water, off the ground: the air's movement on a light gravity (more with down held, to
-/// dive), a kick for each jump press, and the wet speed across. On the bottom it walks, wet.
+/// dive; up held swims up instead), a kick for each jump press, and the wet speed across. On the bottom it walks, wet.
 /// Breaking the surface upward is a dolphin leap, or, slower, a plain way out.
 fn swim(b: mut Body, pad: Pad, c: Course, f: Feel) {
     let Some(i) = c.water_at(b.at) else {
@@ -471,7 +476,12 @@ fn swim(b: mut Body, pad: Pad, c: Course, f: Feel) {
         b.facing = dir
     }
     let g = if pad.held(DOWN) { f.water_sink } else { f.water_gravity }
-    if b.vel.y > -f.water_terminal {
+    if pad.held(UP) && !pad.held(DOWN) {
+        // Swimming up: towards the upward speed it holds, never slowing a faster rise.
+        if b.vel.y < f.swim_up_speed {
+            b.vel.y = min(b.vel.y + f.swim_up * STEP, f.swim_up_speed)
+        }
+    } else if b.vel.y > -f.water_terminal {
         b.vel.y = max(b.vel.y - g * STEP, -f.water_terminal)
     } else {
         // A dive slows to the sinking speed.

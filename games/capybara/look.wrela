@@ -236,32 +236,74 @@ pub fn cel(s: Surfel, eye: Eye) -> vec4 {
     vec4(s.colour.value * shade, 1.0)
 }
 
-/// The water: a see-through front face and surface, from two corners each, as triangles.
+/// The top of the ground at `x` among `outlines` (each a closed chain's points, sampled): the
+/// highest point where a side crosses the vertical through `x`.
+fn ground_top(outlines: [Vec<vec2>], x: f32) -> f32 {
+    var top = -1.0e9
+    for points in outlines {
+        let n = points.len()
+        for i in 0..n {
+            let (a, b) = (points[i], points[(i + 1) % n])
+            if (a.x <= x && x < b.x) || (b.x <= x && x < a.x) {
+                top = max(top, a.y + (b.y - a.y) * (x - a.x) / (b.x - a.x))
+            }
+        }
+    }
+    top
+}
+
+/// How far apart the water's outline samples the ground beneath it (m).
+const WATER_STEP: f32 = 0.2
+
+/// The water: a see-through front face shaped by the ground under it (its surface along the top,
+/// the ground's own outline below), and its surface through the slab, as triangles. Where the
+/// ground stands above the surface there's no water; so a lake fills its banks and a puddle its
+/// dip, and neither is a box.
 pub fn water_mesh(c: Course) -> Vec<vec4> {
+    var outlines: Vec<Vec<vec2>> = Vec::new()
+    for k in 0..c.chains.len() - 1 {
+        if !c.pieces[c.chains[k]].ledge {
+            outlines.push(outline(c.pieces, c.chains[k], c.chains[k + 1]))
+        }
+    }
     var out: Vec<vec4> = Vec::new()
     for w in c.waters {
-        let (lo, hi) = (w.lo, w.hi)
-        // The front, at the slab's face.
-        for p in [
-            vec2(lo.x, lo.y),
-            vec2(hi.x, lo.y),
-            vec2(hi.x, hi.y),
-            vec2(lo.x, lo.y),
-            vec2(hi.x, hi.y),
-            vec2(lo.x, hi.y),
-        ] {
+        let surface = w.surface()
+        // The ground under the water, left to right, where it's below the surface.
+        var floor: Vec<vec2> = Vec::new()
+        var x = w.lo.x
+        while x <= w.hi.x {
+            let y = ground_top(outlines, x)
+            if y < surface - 1.0e-3 {
+                floor.push(vec2(x, max(y, w.lo.y)))
+            }
+            x += WATER_STEP
+        }
+        if floor.len() < 2 {
+            continue
+        }
+        let (left, right) = (floor[0].x, floor[floor.len() - 1].x)
+        // Clockwise: along the surface to the right, then back along the floor.
+        var polygon: Vec<vec2> = Vec::new()
+        polygon.push(vec2(left, surface))
+        polygon.push(vec2(right, surface))
+        var i = floor.len()
+        while i > 0 {
+            i -= 1
+            polygon.push(floor[i])
+        }
+        for p in triangulate(polygon) {
             out.push(vec4(p, DEPTH - 0.01, 0.0))
         }
-        // The surface, through the slab.
         for (x, z) in [
-            (lo.x, DEPTH),
-            (hi.x, DEPTH),
-            (hi.x, -DEPTH),
-            (lo.x, DEPTH),
-            (hi.x, -DEPTH),
-            (lo.x, -DEPTH),
+            (left, DEPTH),
+            (right, DEPTH),
+            (right, -DEPTH),
+            (left, DEPTH),
+            (right, -DEPTH),
+            (left, -DEPTH),
         ] {
-            out.push(vec4(x, hi.y, z, 1.0))
+            out.push(vec4(x, surface, z, 1.0))
         }
     }
     out
@@ -288,6 +330,6 @@ pub fn water(w: Wet) -> Over {
     if w.surface.value > 0.5 {
         Over { color: vec4(0.55, 0.8, 0.95, 0.55) }
     } else {
-        Over { color: vec4(0.2, 0.5, 0.75, 0.42) }
+        Over { color: vec4(0.17, 0.45, 0.66, 0.68) }
     }
 }

@@ -17,15 +17,15 @@ use world::{play, step, world}
 
 /// The lab from its start to its goal: over the crest, through the puddle (wet, so fast), both
 /// gaps and both steps, down the slide through the valley's puddle and off its lip, across the
-/// pool fast, and a kick into a dolphin leap up the far wall. Recorded from an autopilot.
-pub const LAB_RUN: [Hold; 35] = [
-    hold(RIGHT, 462),
+/// lake fast, and a swim up into a dolphin leap over its far wall. Recorded from an autopilot.
+pub const LAB_RUN: [Hold; 19] = [
+    hold(RIGHT, 466),
     hold(RIGHT | JUMP | PRESS, 1),
     hold(RIGHT | JUMP, 45),
     hold(RIGHT, 34),
     hold(RIGHT | JUMP | PRESS, 1),
     hold(RIGHT | JUMP, 45),
-    hold(RIGHT, 55),
+    hold(RIGHT, 52),
     hold(RIGHT | JUMP | PRESS, 1),
     hold(RIGHT | JUMP, 45),
     hold(RIGHT, 43),
@@ -33,27 +33,11 @@ pub const LAB_RUN: [Hold; 35] = [
     hold(RIGHT | JUMP, 49),
     hold(RIGHT, 64),
     hold(RIGHT | DOWN, 153),
-    hold(RIGHT, 226),
-    hold(RIGHT | UP | JUMP | PRESS, 1),
-    hold(RIGHT, 8),
-    hold(RIGHT | UP | JUMP | PRESS, 1),
-    hold(RIGHT, 8),
-    hold(RIGHT | UP | JUMP | PRESS, 1),
-    hold(RIGHT, 8),
-    hold(RIGHT | UP | JUMP | PRESS, 1),
-    hold(RIGHT, 8),
-    hold(RIGHT | UP | JUMP | PRESS, 1),
-    hold(RIGHT, 8),
-    hold(RIGHT | UP | JUMP | PRESS, 1),
-    hold(RIGHT, 8),
-    hold(RIGHT | UP | JUMP | PRESS, 1),
-    hold(RIGHT, 8),
-    hold(RIGHT | UP | JUMP | PRESS, 1),
-    hold(RIGHT, 8),
-    hold(RIGHT | UP | JUMP | PRESS, 1),
-    hold(RIGHT, 8),
-    hold(RIGHT | UP | JUMP | PRESS, 1),
-    hold(RIGHT, 71),
+    hold(RIGHT, 318),
+    hold(RIGHT | UP, 60),
+    hold(RIGHT, 1),
+    hold(RIGHT | UP, 35),
+    hold(RIGHT, 54),
 ]
 
 /// Up through the 2 m one-way ledge from below, then a jump to the 3.5 m ledge.
@@ -84,7 +68,7 @@ pub const DOUBLE_JUMP: [Hold; 7] = [
 fn the_lab_is_finished_by_its_recorded_run_in_its_recorded_time() {
     let w = play(0, LAB_RUN)
     print(f"the lab: {w.finished} ticks")
-    assert(w.finished == 1378 && w.falls == 0, "the run's time moved")
+    assert(w.finished == 1468 && w.falls == 0, "the run's time moved")
 }
 
 /// Whether `run` ends standing on the 3.5 m ledge.
@@ -207,6 +191,36 @@ fn a_jump_out_of_a_slide_keeps_the_slides_speed() {
     body::step(mut b, Pad { bits: DOWN | JUMP | PRESS }, LAB, FEEL)
     assert(b.mode == Mode::Air)
     assert(abs(b.vel.x - t.x * 15.0) < 1.0e-3, "the slide's speed carries into the jump")
+    // All of it: down the slope, the jump starts lower than a running one.
+    assert(abs(b.vel.y - (t.y * 15.0 + FEEL.launch - FEEL.rise * STEP)) < 1.0e-3)
+}
+
+/// How high a running jump at the top speed rises above where it left the ground, from the body
+/// at `at` on the ground there, its jump held.
+fn running_jump(at: vec2) -> f32 {
+    var w = world(0)
+    w.body = spawn(at)
+    w.body.speed = FEEL.speed
+    step(mut w, Pad { bits: RIGHT })
+    let from = w.body.at.y
+    step(mut w, Pad { bits: RIGHT | JUMP | PRESS })
+    var top = from
+    for _ in 0..60 {
+        step(mut w, Pad { bits: RIGHT | JUMP })
+        top = max(top, w.body.at.y)
+    }
+    top - from
+}
+
+@test
+fn a_running_jump_is_as_high_up_a_slope_as_on_the_flat() {
+    // On the runway, and on the crest's 31° upslope: the slope's speed doesn't lift a running
+    // jump (Ryan, 2026-10-21: jumps there came out higher and read as random).
+    let flat = running_jump(vec2(2.0, RADIUS))
+    let up = vec2(5.0, 3.0) / length(vec2(5.0, 3.0))
+    let on_slope = vec2(18.0, 0.0) + up * 2.5 + vec2(-up.y, up.x) * RADIUS
+    let sloped = running_jump(on_slope)
+    assert(abs(flat - sloped) < 0.05, "the same height")
 }
 
 /// A body swimming in the lab's pool at `at`, moving at `vel`.
@@ -229,11 +243,13 @@ fn in_water_the_capybara_is_faster_and_a_puddle_wets_it_for_a_while() {
     w.body = spawn(vec2(27.0, RADIUS))
     w.body.speed = FEEL.speed
     var fastest = 0.0
-    while w.body.at.x < 33.0 {
+    var soaked = false
+    while w.body.at.x < 34.4 {
         step(mut w, Pad { bits: RIGHT })
         fastest = max(fastest, w.body.speed)
+        soaked = soaked || w.body.wet == FEEL.wet_ticks
     }
-    assert(fastest > FEEL.speed + 2.0 && w.body.wet == FEEL.wet_ticks, "wet in the puddle")
+    assert(soaked && fastest > FEEL.speed + 2.0, "wet in the puddle, and faster")
     // Out of the water, the boost lasts half the wet time, then eases back to the dry speed, and
     // the speed follows it down without a jolt: on the runway, wet, at the wet speed.
     var dry = world(0)
@@ -275,6 +291,17 @@ fn a_dive_slows_to_the_sinking_speed() {
         body::step(mut b, Pad { bits: 0 }, LAB, FEEL)
     }
     assert(b.mode == Mode::Swim && abs(b.vel.y + FEEL.water_terminal) < 0.5)
+}
+
+@test
+fn holding_up_swims_up_and_out_in_a_leap() {
+    var b = in_pool(vec2(110.0, -5.0), vec2(0.0))
+    var fastest = 0.0
+    while b.mode == Mode::Swim {
+        body::step(mut b, Pad { bits: pad::UP }, LAB, FEEL)
+        fastest = max(fastest, b.vel.y)
+    }
+    assert(abs(fastest - FEEL.leap) < 1.0e-3 && b.flip == 1, "up to the surface, and a leap")
 }
 
 @test

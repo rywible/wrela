@@ -191,18 +191,18 @@ pub fn course(i: u32) -> borrow Course {
 }
 
 /// The movement lab: from the left, a runway with two one-way ledges above it (2 m and 3.5 m
-/// up), a broad crest, a puddle, gaps of 3 m and 4 m, steps 1.5 m up and 1.5 m more, a deck that
-/// drops down a 29° slope into a valley with a puddle at its bottom and up a 45° slope to a sharp
-/// lip 1 m up, a pool 5 m deep whose far wall stands 1.6 m above the water, and the goal on the
-/// deck past it. Pits fall out below 8 m down. Water is the fast element: a puddle wets the
+/// up), a broad crest, a puddle in a shallow dip, gaps of 3 m and 4 m, steps 1.5 m up and 1.5 m
+/// more, a deck that drops down a 29° slope into a valley with a puddle at its bottom and up a 45°
+/// slope to a sharp lip 1 m up, a lake 37 m across and 6.5 m deep down a rounded bank, whose steep
+/// far wall stands 1.6 m above the water, and the goal on the deck past it. Pits fall out below 8 m down. Water is the fast element: a puddle wets the
 /// capybara for its speed, and the pool is a fast swim to a leap.
 pub const LAB: Course = lab()
 
 fn lab() -> Course {
     Course::new(
         start: vec2(1.0, 0.35),
-        goal_lo: vec2(120.0, 1.6),
-        goal_hi: vec2(122.0, 6.0),
+        goal_lo: vec2(136.0, 1.6),
+        goal_hi: vec2(138.0, 6.0),
         floor: -8.0,
     )
         .solid(
@@ -215,6 +215,11 @@ fn lab() -> Course {
                 corner(vec2(18.0, 0.0), 3.0),
                 corner(vec2(23.0, 3.0), 4.0),
                 corner(vec2(28.0, 0.0), 3.0),
+                // The puddle: a shallow rounded dip.
+                corner(vec2(29.5, 0.0), 1.5),
+                corner(vec2(31.0, -0.3), 1.5),
+                corner(vec2(33.0, -0.3), 1.5),
+                corner(vec2(34.5, 0.0), 1.5),
                 // The gaps.
                 corner(vec2(36.0, 0.0)),
                 corner(vec2(36.0, -12.0)),
@@ -234,25 +239,23 @@ fn lab() -> Course {
                 corner(vec2(79.0, -2.0), 5.0),
                 corner(vec2(85.0, -2.0), 5.0),
                 corner(vec2(88.0, 1.0)),
-                corner(vec2(95.0, 1.0)),
-                // The pool.
-                corner(vec2(95.0, 0.0)),
-                corner(vec2(100.0, 0.0)),
-                corner(vec2(100.0, -5.0), 1.0),
-                corner(vec2(116.0, -5.0), 1.0),
-                corner(vec2(116.0, 1.6)),
+                // The lake: a rounded bank down, a long floor, and a steep rounded far wall.
+                corner(vec2(95.0, 1.0), 2.0),
+                corner(vec2(102.0, -6.5), 6.0),
+                corner(vec2(128.0, -6.5), 5.0),
+                corner(vec2(131.5, 1.6), 1.5),
                 // The goal's deck and the wall at the end.
-                corner(vec2(124.0, 1.6)),
-                corner(vec2(124.0, 12.0)),
-                corner(vec2(126.0, 12.0)),
-                corner(vec2(126.0, -20.0)),
+                corner(vec2(140.0, 1.6)),
+                corner(vec2(140.0, 12.0)),
+                corner(vec2(142.0, 12.0)),
+                corner(vec2(142.0, -20.0)),
             ],
         )
         .ledge([corner(vec2(6.0, 2.0)), corner(vec2(9.0, 2.0))])
         .ledge([corner(vec2(11.0, 3.5)), corner(vec2(14.0, 3.5))])
-        .water(vec2(100.0, -5.0), vec2(116.0, 0.0))
-        .water(vec2(29.0, 0.0), vec2(33.0, 0.2))
-        .water(vec2(80.4, -2.0), vec2(82.8, -1.8))
+        .water(vec2(94.0, -6.5), vec2(133.0, 0.0))
+        .water(vec2(29.5, -0.3), vec2(34.5, -0.05))
+        .water(vec2(78.5, -2.0), vec2(84.5, -1.8))
 }
 
 // ---- tests -------------------------------------------------------------------------------------
@@ -302,7 +305,7 @@ fn the_pool_holds_water_up_to_its_surface() {
     assert(c.water_at(vec2(108.0, 0.1)).is_none())
     assert(c.waters[0].surface() == 0.0)
     // A puddle 20 cm deep: the capybara standing in it touches it, but isn't in it.
-    let standing = vec2(31.0, 0.35)
+    let standing = vec2(32.0, -0.3 + 0.35)
     assert(c.touches_water(standing, 0.35) && c.water_at(standing).is_none())
     assert(!c.touches_water(vec2(27.0, 0.35), 0.35))
 }

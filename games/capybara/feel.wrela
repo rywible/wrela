@@ -59,6 +59,10 @@ pub struct Feel: Copy {
     pub kick_cooldown: u32 = 8,
     /// Acceleration across in water (m/s²).
     pub water_accel: f32 = 60.0,
+    /// Swimming up with up held: its acceleration (m/s²) and the upward speed it holds (m/s),
+    /// enough that reaching the surface is a leap.
+    pub swim_up: f32 = 40.0,
+    pub swim_up_speed: f32 = 8.0,
     /// The least upward speed through the surface that leaps, and the least upward speed a leap
     /// leaves with (m/s): any swim up through the surface is a leap that clears a wall 1.6 m up.
     pub leap_min: f32 = 3.5,
