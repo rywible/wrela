@@ -280,7 +280,7 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2) {
         vec2(screen.x - pad - width, pad),
         if snap.finished > 0 { gold } else { white },
     )
-    let name = if snap.course == LEVEL { "The zoo's entrance" } else { "The lab" }
+    let name = if snap.course == LEVEL { "The Capybara Wetlands" } else { "The lab" }
     let hint = if Mode::from_u32(snap.mode) == Some(Mode::Swim) {
         "jump to kick, up to swim up, up and down in turn to dolphin kick"
     } else {
