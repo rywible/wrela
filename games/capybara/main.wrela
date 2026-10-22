@@ -98,14 +98,32 @@ pub fn init() -> Lab {
     }
 }
 
-/// The snapshot a frame draws: the two round its time, the capybara's middle and velocity
-/// between them, the rest the later one's.
-fn drawn(s: Snapshots<Snap>, time: f32) -> Snap {
+/// The snapshot a frame draws, from the two round its time. Everything that moves is drawn between them, so motion is continuous at any refresh rate,
+/// whatever the sim's: the capybara's middle, velocity, speed and the ground's normal under it, and
+/// each foe's middle (and how long since it was knocked out). Its counters (a flip's ticks, a
+/// death's) are the later snapshot's, and `lag` says how far before it the frame falls (ticks, 0
+/// to 1), so they can be drawn between too. Where a foe has jumped (back to its start when the
+/// capybara comes back), or changed whether it's knocked out, it isn't blended.
+fn drawn(s: Snapshots<Snap>, time: f32) -> (Snap, f32) {
     let b = s.at(s.sim_time(time))
+    let t = b.alpha
     var snap = b.b
-    snap.at = mix(b.a.at, b.b.at, vec2(b.alpha))
-    snap.vel = mix(b.a.vel, b.b.vel, vec2(b.alpha))
-    snap
+    snap.at = mix(b.a.at, b.b.at, vec2(t))
+    snap.vel = mix(b.a.vel, b.b.vel, vec2(t))
+    snap.speed = mix(b.a.speed, b.b.speed, t)
+    let n = mix(b.a.ground, b.b.ground, vec2(t))
+    if length(n) > 1.0e-3 {
+        snap.ground = normalize(n)
+    }
+    for i in 0..snap.foes.len() {
+        let (f, g) = (b.a.foes[i], b.b.foes[i])
+        if sign(f.z) == sign(g.z) && distance(f.xy, g.xy) < 1.0 {
+            snap.foes[i] = vec4(mix(f.xy, g.xy, vec2(t)), g.z, if g.z < 0.0 {
+                mix(f.w, g.w, t)
+            } else { g.w })
+        }
+    }
+    (snap, if b.b.ticks > b.a.ticks { 1.0 - t } else { 0.0 })
 }
 
 // ---- the frame ---------------------------------------------------------------------------------
@@ -121,7 +139,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         music::start()
     }
     s.snaps.update()
-    let snap = drawn(s.snaps, time)
+    let (snap, lag) = drawn(s.snaps, time)
     borrow c = course(snap.course)
     if snap.course != s.shown {
         s.camera = camera(c.start)
@@ -144,7 +162,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     let px = 2.0 * half.y / f32(max(height, 1))
     var back: Vec<Sprite> = Vec::new()
     var front: Vec<Sprite> = Vec::new()
-    sprites(s.cast, snap, c, time, mut back, mut front)
+    sprites(s.cast, snap, c, time, lag, mut back, mut front)
     let behind = back.len()
     for f in front {
         back.push(f)
@@ -224,7 +242,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     )
     wet.end()
     let out = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
-    let (iris, open) = cast::iris(s.cast, snap)
+    let (iris, open) = cast::iris(s.cast, snap, lag)
     let page = Page { centre: s.camera.at, half, iris, open }
     draw(
         out,
