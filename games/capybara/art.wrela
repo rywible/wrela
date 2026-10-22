@@ -14,8 +14,10 @@
 // The colours are display colours, as the paint is: nothing here is a light simulation, so
 // there's no tone curve and no glow.
 
-use ink::INK
-use std::gpu::{FragCoord, Rgba16Float, Sampler, Texture, texture}
+use engine::noise::noise2_wrapped
+use engine::plant::full
+use ink::{GRAIN_CELLS, INK}
+use std::gpu::{FragCoord, Rgba16Float, Sampler, Texture, begin_pass, draw, texture}
 
 /// The frame's targets, remade when the screen's size changes.
 pub struct Targets {
@@ -40,6 +42,34 @@ pub fn targets(width: u32, height: u32) -> Targets {
 pub fn copy(pixel: FragCoord, src: Texture<Rgba16Float>, s: Sampler) -> vec4 {
     let size = vec2(f32(src.width()), f32(src.height()))
     src.sample_level(s, pixel.position.xy / size)
+}
+
+/// The grain's texels a cell (`ink::GRAIN`): enough that reading between them is the noise's own
+/// smooth blend, near enough.
+pub const GRAIN_TEXELS: u32 = 4
+
+/// A texel of the grain: four of the engine's value noises at its middle, each its own pattern,
+/// repeating every `GRAIN_CELLS` cells, so the tile wraps without a seam.
+@fragment
+pub fn bake_grain(pixel: FragCoord) -> vec4 {
+    let p = pixel.position.xy / f32(GRAIN_TEXELS)
+    let n = vec2i(i32(GRAIN_CELLS), i32(GRAIN_CELLS))
+    vec4(
+        noise2_wrapped(p, n),
+        noise2_wrapped(p + vec2(17.0, 31.0), n),
+        noise2_wrapped(p + vec2(41.0, 7.0), n),
+        noise2_wrapped(p + vec2(23.0, 53.0), n),
+    )
+}
+
+/// The grain, baked: a texture to draw into once, and the sampler that repeats it.
+pub fn grain_texture() -> Texture<Rgba16Float> {
+    let side = u32(GRAIN_CELLS) * GRAIN_TEXELS
+    var t = texture(width: side, height: side)
+    let p = begin_pass(mut t)
+    draw(p, full.bind(z: 0.0), bake_grain, vertices: 3)
+    p.end()
+    t
 }
 
 /// Where the page lies on the plane of play: the view's middle and half its size (m); the

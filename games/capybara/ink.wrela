@@ -12,6 +12,7 @@
 // Colours are written as they show on the screen (display colours): no light is simulated.
 
 use engine::noise::noise2
+use std::gpu::{Rgba16Float, Sampler, Texture}
 
 /// The ink: a warm sepia.
 pub const INK = vec3(0.24, 0.16, 0.11)
@@ -20,7 +21,7 @@ pub const INK = vec3(0.24, 0.16, 0.11)
 pub const PAPER = vec3(0.97, 0.94, 0.86)
 
 /// A wash of colour `c` at `p` (m, on the shape's own plane): blotched where the pigment
-/// settled thicker or thinner.
+/// settled thicker or thinner. (`washed` is the same from the baked grain.)
 pub fn wash(c: vec3, p: vec2) -> vec3 {
     let blotch = noise2(p * 0.6) * 0.6 + noise2(p * 1.9 + vec2(7.0)) * 0.4 - 0.5
     c * (1.0 + blotch * 0.09)
@@ -36,18 +37,41 @@ pub fn pooled(c: vec3, d: f32, width: f32) -> vec3 {
 /// the line `width` m wide (wobbling by a third along it), `px` m a pixel. The colour, and how
 /// much of the pixel the shape (its line included) covers.
 pub fn inked(fill: vec3, d: f32, p: vec2, width: f32, px: f32, ink: vec3) -> vec4 {
+    // Away from the line (it's at most 1.3 times `width` wide), it can't show: no need to wobble
+    // it.
+    if abs(d) > max(width * 0.65, px * 0.4) + px {
+        return vec4(fill, if d < 0.0 { 1.0 } else { 0.0 })
+    }
     let w = max(width * (0.7 + 0.6 * noise2(p * 2.7)), px * 0.8)
     let line = saturate((w * 0.5 - abs(d)) / px + 0.5)
     let cover = saturate((w * 0.5 - d) / px + 0.5)
     vec4(fill + (ink - fill) * line, cover)
 }
 
+/// The grain: four channels of the engine's value noise (`noise2`), each its own pattern, a cell a
+/// unit, baked once into a tile `GRAIN_CELLS` cells square (`art::bake_grain`) that repeats. One
+/// texture read stands for a noise's four hashes and its blend, for the shaders that cover most of
+/// the screen (the backdrop and the ground): the same washes and paper, for less work a pixel
+/// (Ryan, 2026-10-22: "less heat and great battery").
+pub const GRAIN_CELLS: f32 = 64.0
+
+/// The grain's four noises at `p` (cells).
+pub fn grain(g: Texture<Rgba16Float>, gs: Sampler, p: vec2) -> vec4 {
+    g.sample_level(gs, p / GRAIN_CELLS)
+}
+
+/// `wash`, from the grain.
+pub fn washed(c: vec3, p: vec2, g: Texture<Rgba16Float>, gs: Sampler) -> vec3 {
+    let blotch = grain(g, gs, p * 0.6).x * 0.6 + grain(g, gs, p * 1.9 + vec2(7.0)).y * 0.4 - 0.5
+    c * (1.0 + blotch * 0.09)
+}
+
 /// The paper's texture at `p` (m on the sky's layer), `px` m a pixel: its tooth and fibres, and a
 /// mottle; about 1, a little either way.
-pub fn paper(p: vec2, px: f32) -> f32 {
-    let tooth = noise2(p / max(px * 1.6, 1.0e-4)) - 0.5
-    let fibre = noise2(vec2(p.x * 0.6 + p.y * 3.0, p.y * 0.4 - p.x * 2.0) / max(px * 6.0, 1.0e-4)) -
-        0.5
-    let mottle = noise2(p * 0.35) - 0.5
+pub fn paper(p: vec2, px: f32, g: Texture<Rgba16Float>, gs: Sampler) -> f32 {
+    let tooth = grain(g, gs, p / max(px * 1.6, 1.0e-4)).z - 0.5
+    let along = vec2(p.x * 0.6 + p.y * 3.0, p.y * 0.4 - p.x * 2.0)
+    let fibre = grain(g, gs, along / max(px * 6.0, 1.0e-4)).w - 0.5
+    let mottle = grain(g, gs, p * 0.35).x - 0.5
     1.0 + tooth * 0.03 + fibre * 0.015 + mottle * 0.02
 }

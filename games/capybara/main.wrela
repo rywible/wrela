@@ -6,16 +6,17 @@
 // and the HUD: the snacks found, the clock, the course and the keys. The music (music.wrela)
 // starts on the first frame.
 //
-// Keys: the arrows or W A S D to move (down slides or crouches; in water up and down swim, and
-// in turn dolphin kick), Space, Z or K to jump (again in the air for the double jump; in water,
-// a kick), R to restart, Tab for the other course (the level or the lab). A controller: the
-// stick or pad, South or East to jump, Start to restart, Select for the other course.
+// Keys: F3 shows the frame rate and the render scale. The arrows or W A S D to move (down slides or
+// crouches; in water up and down swim, and in turn dolphin kick), Space, Z or K to jump (again in
+// the air for the double jump; in water, a kick), R to restart, Tab for the other course (the level
+// or the lab). A controller: the stick or pad, South or East to jump, Start to restart, Select for
+// the other course.
 //
 // For an agent: `wrela-host <build> --frames n --input script.json --png out.png` draws frame n
 // on the GPU (scripts.wrela has scripts), and `capybara` exports the capybara's state for `wrela
 // trace --watch capybara`, which needs a toolchain whose trace runs the ticker in lockstep.
 
-use art::{Page, Scale, Targets, copy, finish, pace, render_size, targets}
+use art::{Page, Scale, Targets, copy, finish, grain_texture, pace, render_size, targets}
 use body::Mode
 use camera::{Camera, camera, follow, half_view}
 use cast::{Cast, cast, react, sprites}
@@ -31,10 +32,12 @@ use feel::HZ
 use scenery::View
 use sprites::{Sprite, Stage, sprite, sprite_vertex}
 use std::gpu::{
-    GpuBuffer, Sampler, begin_pass, begin_screen_pass, buffer, buffer_of, draw, sampler, write,
+    Address, GpuBuffer, Rgba16Float, Sampler, Texture, begin_pass, begin_screen_pass, buffer,
+    buffer_of, draw, sampler, write,
 }
 use std::transform::{look_at, ortho}
 use ui::draw::{DrawList, Renderer}
+use std::input::{Event, Key, events}
 use ui::text::{Face, Fonts}
 use waves::{COLUMNS, LAB_WATER, LEVEL_WATER, Pond, water, water_vertex}
 use world::{LAB, LEVEL, Snap, present, tick, world}
@@ -58,6 +61,9 @@ pub struct Lab {
     cast: Cast,
     targets: Targets,
     linear: Sampler,
+    /// The baked grain (ink.wrela) and the sampler that repeats it.
+    grain: Texture<Rgba16Float>,
+    repeat: Sampler,
     /// The scene's size (px) at the render scale, and the scale.
     width: u32,
     height: u32,
@@ -66,6 +72,10 @@ pub struct Lab {
     last: Option<f32>,
     /// Whether the music has started (on the first frame).
     playing: bool,
+    /// Whether the readout shows (F3): the frame rate, the frame's time and the render scale. The
+    /// frames' time (s), smoothed, for it.
+    readout: bool,
+    frame_time: f32,
     fonts: Fonts,
     renderer: Renderer,
     list: DrawList,
@@ -89,12 +99,16 @@ pub fn init() -> Lab {
         cast: shown,
         targets: targets(width: 4, height: 4),
         linear: sampler(),
+        grain: grain_texture(),
+        repeat: sampler(address: Address::Repeat),
         width: 0,
         height: 0,
         scale: Scale {},
         camera: camera(course(LEVEL).start),
         last: None,
         playing: false,
+        readout: false,
+        frame_time: 0.0,
         fonts,
         renderer,
         list: DrawList::new(),
@@ -154,6 +168,19 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     react(mut s.cast, snap, c, dt)
     // The scene is drawn at the render scale, the page and the HUD at the screen's size.
     pace(mut s.scale, dt)
+    if dt > 0.0 && dt < 0.25 {
+        s.frame_time = if s.frame_time == 0.0 { dt } else {
+            s.frame_time + (dt - s.frame_time) * 0.05
+        }
+    }
+    // F3 shows the readout. The frames' keys are their own: the sim's ticks take theirs.
+    for e in events() {
+        if let Event::KeyDown { key, repeat, .. } = e {
+            if key == Key::F3 && !repeat {
+                s.readout = !s.readout
+            }
+        }
+    }
     let (rw, rh) = render_size(s.scale, width, height)
     if rw != s.width || rh != s.height {
         s.targets = targets(width: rw, height: rh)
@@ -197,13 +224,19 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     draw(
         scene,
         full.bind(z: 0.0),
-        scenery::backdrop.bind(v: view, tops: s.tops[i].items()),
+        scenery::backdrop.bind(v: view, tops: s.tops[i].items(), g: s.grain, gs: s.repeat),
         vertices: 3,
     )
     draw(
         scene,
         earth_vertex.bind(verts: s.earths[i].items(), f: field),
-        earth.bind(f: field, tops: s.tops[i].items(), pools: s.pools.items()),
+        earth.bind(
+            f: field,
+            tops: s.tops[i].items(),
+            pools: s.pools.items(),
+            g: s.grain,
+            gs: s.repeat,
+        ),
         vertices: if level { LEVEL_EARTH.len() / 2 } else { LAB_EARTH.len() / 2 },
     )
     draw(
@@ -276,7 +309,8 @@ fn say(s: mut Lab, face: Face, text: str, size: f32, at: vec2, colour: vec4) {
 }
 
 /// The HUD: the snacks found and the times back at the top left, the clock at the top right; the
-/// course and the keys (how to swim, in water) small along the bottom.
+/// course and the keys (how to swim, in water) small along the bottom; and with F3 the readout
+/// under the snacks.
 fn hud(s: mut Lab, snap: Snap, screen: vec2) {
     s.list.clear(screen)
     let size = max(screen.y * 0.042, 14.0)
@@ -314,6 +348,15 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2) {
     }
     let line = f"{name}   {hint}"
     say(mut s, Face::Mono, line.as_str(), small, vec2(pad, screen.y - pad - small), soft)
+    if s.readout {
+        // The frame rate, the frame's time, and the size the scene is drawn at: native (the
+        // screen's own) or the render scale's.
+        let ms = s.frame_time * 1000.0
+        let fps = if s.frame_time > 0.0 { 1.0 / s.frame_time } else { 0.0 }
+        let at = if s.scale.value >= 1.0 { f"native" } else { f"{s.scale.value * 100.0:.0}%" }
+        let readout = f"{fps:.0} fps  {ms:.1} ms  {at} {s.width}x{s.height}"
+        say(mut s, Face::Mono, readout.as_str(), small, vec2(pad, pad + size * 2.3), soft)
+    }
 }
 
 /// The capybara's middle (x, y, m), its speed (m/s) and its mode, as the newest snapshot has them,

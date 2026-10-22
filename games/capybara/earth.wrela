@@ -15,8 +15,8 @@
 use course::{Course, WALKABLE}
 use engine::noise::{hash2, noise2}
 use ground::{left, outline, triangulate}
-use ink::{INK, inked, wash}
-use std::gpu::{ClipPosition, Flat, Over, VertexIndex, discard}
+use ink::{INK, grain, inked, wash, washed}
+use std::gpu::{ClipPosition, Flat, Over, Rgba16Float, Sampler, Texture, VertexIndex, discard}
 
 fn blend(a: vec3, b: vec3, t: f32) -> vec3 {
     a + (b - a) * t
@@ -253,11 +253,11 @@ fn pebble(p: vec2, px: f32) -> vec4 {
 /// The soil at `p`, `depth` m below the top of the ground: washes of ochre in wavering bands,
 /// darker and redder the deeper, roots inked near the top, pebbles, and the turf's shadow under
 /// its lip.
-fn soil(p: vec2, depth: f32, px: f32) -> vec3 {
-    let band = noise2(vec2(p.x * 0.08, p.y * 0.7 + noise2(p * 0.3) * 1.2))
+fn soil(p: vec2, depth: f32, px: f32, g: Texture<Rgba16Float>, gs: Sampler) -> vec3 {
+    let band = grain(g, gs, vec2(p.x * 0.08, p.y * 0.7 + grain(g, gs, p * 0.3).z * 1.2)).w
     var c = blend(vec3(0.86, 0.68, 0.46), vec3(0.8, 0.6, 0.42), smoothstep(0.45, 0.55, band))
     c = blend(c, vec3(0.6, 0.42, 0.33), smoothstep(0.5, 7.0, depth) * 0.7)
-    c = wash(c, p)
+    c = washed(c, p, g, gs)
     // A painted shadow under the turf's lip.
     c *= 1.0 - 0.22 * smoothstep(TURF_DEPTH + 0.5, TURF_DEPTH, depth)
     // Roots: wiggling inked lines, a contour of noise, near the top only.
@@ -273,7 +273,7 @@ const WALL: f32 = 8.0
 
 /// The zoo's wall: courses of sandstone blocks, each its own wash, its lit edges lighter, inked
 /// in its joints, moss creeping up from the bottom.
-fn stones(p: vec2, px: f32) -> vec3 {
+fn stones(p: vec2, px: f32, g: Texture<Rgba16Float>, gs: Sampler) -> vec3 {
     let size = vec2(0.9, 0.45)
     let row = floor(p.y / size.y)
     let shifted = vec2(p.x + 0.5 * size.x * (row - 2.0 * floor(row * 0.5)), p.y)
@@ -298,8 +298,15 @@ fn stones(p: vec2, px: f32) -> vec3 {
 /// columns and surface) takes the water's blue, deeper the further down, so the bed of a lake
 /// looks under water.
 @fragment
-pub fn earth(e: Earthel, f: Field, tops: [f32], pools: [vec4]) -> vec4 {
-    let c = earth_colour(e, f, tops)
+pub fn earth(
+    e: Earthel,
+    f: Field,
+    tops: [f32],
+    pools: [vec4],
+    g: Texture<Rgba16Float>,
+    gs: Sampler,
+) -> vec4 {
+    let c = earth_colour(e, f, tops, g, gs)
     let p = e.world
     let bed = top_at(tops, p.x)
     var under = 0.0
@@ -320,7 +327,7 @@ pub fn earth(e: Earthel, f: Field, tops: [f32], pools: [vec4]) -> vec4 {
     vec4(blend(c.xyz, water, saturate(0.45 + under * 0.05) * tint), 1.0)
 }
 
-fn earth_colour(e: Earthel, f: Field, tops: [f32]) -> vec4 {
+fn earth_colour(e: Earthel, f: Field, tops: [f32], g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
     let p = e.world
     let px = f.px
     let m = e.material.value
@@ -329,7 +336,7 @@ fn earth_colour(e: Earthel, f: Field, tops: [f32]) -> vec4 {
         // Planks a metre long, their grain inked along them, a lighter top edge.
         let seam = abs(fract(p.x + 0.5 * floor(p.y * 2.0)) - 0.5) - 0.5
         let grain = abs(noise2(vec2(p.x * 0.8, p.y * 26.0)) - 0.5)
-        var c = wash(vec3(0.86, 0.64, 0.42), p)
+        var c = washed(vec3(0.86, 0.64, 0.42), p, g, gs)
         c = blend(c, vec3(0.94, 0.78, 0.56), smoothstep(0.3, 0.1, e.band))
         c = blend(c, vec3(0.62, 0.42, 0.28), smoothstep(0.04, 0.0, grain) * 0.5)
         let across = min(e.band, 1.0 - e.band) * PLANK_THICK
@@ -337,9 +344,9 @@ fn earth_colour(e: Earthel, f: Field, tops: [f32]) -> vec4 {
         return vec4(joint.xyz, 1.0)
     }
     if top_at(tops, p.x) > WALL && m != TURF {
-        return vec4(stones(p, px), 1.0)
+        return vec4(stones(p, px, g, gs), 1.0)
     }
-    let below = soil(p, depth, px)
+    let below = soil(p, depth, px, g, gs)
     if m == SOIL {
         return vec4(below, 1.0)
     }
@@ -348,7 +355,7 @@ fn earth_colour(e: Earthel, f: Field, tops: [f32]) -> vec4 {
         // The turf: green, lighter at the top, its bottom edge scalloped and inked.
         let edge = TURF_DEPTH * (0.55 + 0.22 * abs(sin(p.x * 6.0 + noise2(vec2(p.x, 0.0)) * 2.0)))
         let green = blend(vec3(0.62, 0.8, 0.4), vec3(0.47, 0.67, 0.33), saturate(across / edge))
-        let turf = inked(wash(green, p), across - edge, p, px * 1.8, px, INK)
+        let turf = inked(washed(green, p, g, gs), across - edge, p, px * 1.8, px, INK)
         return vec4(blend(below, turf.xyz, turf.w), 1.0)
     }
     // A cliff's rim: the soil, inked along the ground's edge, its lit side lighter.

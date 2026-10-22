@@ -23,9 +23,9 @@
 
 use earth::top_at
 use engine::noise::{hash2, noise2}
-use ink::{INK, inked, paper, pooled, wash}
+use ink::{INK, inked, paper, pooled, washed}
 use std::field::smin
-use std::gpu::{FragCoord, discard}
+use std::gpu::{FragCoord, Rgba16Float, Sampler, Texture, discard}
 
 /// What each of the screen's layers is told: the camera's point on the plane of play (m), half
 /// the view's size (m), the screen's size (px) and the time (s).
@@ -72,8 +72,21 @@ fn blend(a: vec3, b: vec3, t: f32) -> vec3 {
 
 /// A layer's shape painted: its wash, pooled at the edge, faded by `haze` into the mist, and
 /// inked with a line `line` px wide.
-fn paint(d: f32, albedo: vec3, q: vec2, px: f32, haze: f32, line: f32) -> vec4 {
-    var c = pooled(wash(albedo, q), d, 0.12)
+fn paint(
+    g: Texture<Rgba16Float>,
+    gs: Sampler,
+    d: f32,
+    albedo: vec3,
+    q: vec2,
+    px: f32,
+    haze: f32,
+    line: f32,
+) -> vec4 {
+    // Outside the shape and its line, nothing: no need to paint it.
+    if d > max(line * px * 0.65, px * 0.4) + px {
+        return vec4(0.0)
+    }
+    var c = pooled(washed(albedo, q, g, gs), d, 0.12)
     c = blend(c, MIST, haze)
     let ink = blend(INK, MIST, min(haze * 1.7, 0.9))
     let o = inked(c, d, q, line * px, px, ink)
@@ -81,9 +94,16 @@ fn paint(d: f32, albedo: vec3, q: vec2, px: f32, haze: f32, line: f32) -> vec4 {
 }
 
 /// What a layer is under its ground: its fill washed and darkening downwards into shade.
-fn under(albedo: vec3, q: vec2, ground: f32, haze: f32) -> vec4 {
+fn under(
+    g: Texture<Rgba16Float>,
+    gs: Sampler,
+    albedo: vec3,
+    q: vec2,
+    ground: f32,
+    haze: f32,
+) -> vec4 {
     let deep = smoothstep(0.0, 6.0, ground - q.y)
-    let c = blend(wash(albedo, q), vec3(0.3, 0.4, 0.36), deep * 0.8)
+    let c = blend(washed(albedo, q, g, gs), vec3(0.3, 0.4, 0.36), deep * 0.8)
     vec4(blend(c, MIST, haze * (1.0 - deep)), 1.0)
 }
 
@@ -173,14 +193,14 @@ fn cloud(q: vec2, time: f32) -> (f32, f32) {
 
 /// The sky: a wash from soft blue overhead to cream at the horizon; the sun, a pale disc with
 /// painted rings round it; puffed clouds, cream, shaded blue-grey underneath, lightly inked.
-fn sky(pixel: FragCoord, v: View) -> vec4 {
+fn sky(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
     let uv = pixel.position.xy / v.screen
     let aspect = v.screen.x / v.screen.y
     let up = 1.0 - uv.y + v.centre.y * 0.004
     let p = on_layer(pixel, v, 0.03)
     let px = pixel_on(v, 0.03)
     var c = blend(vec3(0.97, 0.92, 0.8), vec3(0.6, 0.78, 0.89), smoothstep(0.28, 0.95, up))
-    c = wash(c, p * 0.25)
+    c = washed(c, p * 0.25, g, gs)
     let d = distance(vec2(uv.x * aspect, uv.y), vec2(SUN_AT.x * aspect, SUN_AT.y))
     let rings = smoothstep(0.16, 0.08, d) * 0.25
     c = blend(c, vec3(1.0, 0.95, 0.72), rings)
@@ -198,7 +218,7 @@ fn sky(pixel: FragCoord, v: View) -> vec4 {
         let low = smoothstep(base + 0.7, base, p.y)
         let fill = blend(vec3(1.0, 0.98, 0.93), vec3(0.83, 0.87, 0.93), low)
         let o = inked(
-            pooled(wash(fill, p), cd, 0.25),
+            pooled(washed(fill, p, g, gs), cd, 0.25),
             cd,
             p,
             width: px * 1.4,
@@ -208,12 +228,12 @@ fn sky(pixel: FragCoord, v: View) -> vec4 {
         c = blend(c, o.xyz, o.w)
     }
     // The paper the page is painted on, behind everything: its tooth and fibres, here.
-    vec4(c * paper(p, px), 1.0)
+    vec4(c * paper(p, px, g, gs), 1.0)
 }
 
 // ---- the far hills ---------------------------------------------------------------------------
 
-fn far_hills(pixel: FragCoord, v: View) -> vec4 {
+fn far_hills(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
     let q = on_layer(pixel, v, FAR)
     let px = pixel_on(v, FAR)
     if q.y > 7.0 {
@@ -233,12 +253,12 @@ fn far_hills(pixel: FragCoord, v: View) -> vec4 {
         let glass = if min(rib, ring) < 0.05 { vec3(0.55, 0.62, 0.66) } else {
             vec3(0.82, 0.9, 0.93)
         }
-        return paint(dome, glass, q, px, haze: 0.5, line: 0.6)
+        return paint(g, gs, dome, glass, q, px, haze: 0.5, line: 0.6)
     }
     if b < a {
-        paint(b, vec3(0.58, 0.72, 0.64), q, px, haze: 0.55, line: 0.6)
+        paint(g, gs, b, vec3(0.58, 0.72, 0.64), q, px, haze: 0.55, line: 0.6)
     } else {
-        paint(a, vec3(0.66, 0.76, 0.84), q, px, haze: 0.6, line: 0.6)
+        paint(g, gs, a, vec3(0.66, 0.76, 0.84), q, px, haze: 0.6, line: 0.6)
     }
 }
 
@@ -281,7 +301,7 @@ fn giraffe(p: vec2, base: vec2, dir: f32, t: f32) -> f32 {
     min(d, capsule(q, vec2(-0.8, 2.2), vec2(-1.05, 1.5), 0.03))
 }
 
-fn savanna(pixel: FragCoord, v: View) -> vec4 {
+fn savanna(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
     let q = on_layer(pixel, v, SAVANNA)
     let px = pixel_on(v, SAVANNA)
     let ground = savanna_ground(q.x)
@@ -290,12 +310,12 @@ fn savanna(pixel: FragCoord, v: View) -> vec4 {
         return vec4(0.0)
     }
     if q.y < ground - 0.3 {
-        return under(vec3(0.84, 0.74, 0.6), q, ground, 0.45)
+        return under(g, gs, vec3(0.84, 0.74, 0.6), q, ground, 0.45)
     }
     // Well below the wall's top, only the wall shows: what's behind it isn't worked out.
     let wall = q.y - (ground + 1.0)
     if wall < -px * 3.0 {
-        return savanna_wall(q, wall, px)
+        return savanna_wall(g, gs, q, wall, px)
     }
     var d = q.y - ground
     var albedo = grass
@@ -335,20 +355,20 @@ fn savanna(pixel: FragCoord, v: View) -> vec4 {
         }
     }
     if wall < 0.0 || wall < d {
-        return savanna_wall(q, wall, px)
+        return savanna_wall(g, gs, q, wall, px)
     }
-    paint(d, albedo, q, px, haze: 0.45, line: 0.8)
+    paint(g, gs, d, albedo, q, px, haze: 0.45, line: 0.8)
 }
 
 /// The wall between the wetlands and the Savanna, `wall` m above its top (below 0 on it): what
 /// shows over it is the Savanna.
-fn savanna_wall(q: vec2, wall: f32, px: f32) -> vec4 {
+fn savanna_wall(g: Texture<Rgba16Float>, gs: Sampler, q: vec2, wall: f32, px: f32) -> vec4 {
     let row = floor(q.y / 0.5)
     let block = abs(fract(q.x / 1.2 + row * 0.5) - 0.5) * 1.2
     let joint = min(block, abs(fract(q.y / 0.5) - 0.5) * 0.5)
     let stone = if joint > 0.03 { vec3(0.86, 0.72, 0.54) } else { vec3(0.66, 0.54, 0.42) }
     let coping = if wall > -0.12 { vec3(0.8, 0.72, 0.6) } else { stone }
-    paint(wall, coping, q, px, haze: 0.45, line: 0.8)
+    paint(g, gs, wall, coping, q, px, haze: 0.45, line: 0.8)
 }
 
 // ---- the wetlands: its residents, the hot spring, trees, the boardwalk ---------------------------
@@ -510,7 +530,7 @@ fn anteater(l: vec2) -> (f32, vec3) {
 /// How far apart the wetland's sights are (m on its layer).
 const SIGHTS: f32 = 22.0
 
-fn path(pixel: FragCoord, v: View) -> vec4 {
+fn path(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
     let q = on_layer(pixel, v, PATH)
     let px = pixel_on(v, PATH)
     let ground = path_ground(q.x)
@@ -519,7 +539,7 @@ fn path(pixel: FragCoord, v: View) -> vec4 {
         return vec4(0.0)
     }
     if q.y < ground - 0.3 {
-        return under(marsh, q, ground, 0.15)
+        return under(g, gs, marsh, q, ground, 0.15)
     }
     var best = (q.y - ground, marsh)
     // The sights, one in each stretch: the capybaras' hot spring, the flamingos' lagoon, a tapir,
@@ -572,7 +592,7 @@ fn path(pixel: FragCoord, v: View) -> vec4 {
     best = nearer(best, (min(deck, post), vec3(0.74, 0.56, 0.38)))
     best = nearer(best, (rope, vec3(0.9, 0.8, 0.6)))
     let (d, albedo) = best
-    paint(d, albedo, q, px, haze: 0.22, line: 1.0)
+    paint(g, gs, d, albedo, q, px, haze: 0.22, line: 1.0)
 }
 
 // ---- the marsh, nearest -------------------------------------------------------------------------
@@ -583,7 +603,7 @@ fn near_ground(x: f32) -> f32 {
 
 /// The marsh at the water's edge, nearest: clumps of spiky marsh grass, stands of cattails, and
 /// now and then a spray of papyrus, swaying in the wind (`time`).
-fn bamboo(pixel: FragCoord, v: View) -> vec4 {
+fn bamboo(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
     let q = on_layer(pixel, v, BAMBOO)
     let px = pixel_on(v, BAMBOO)
     let ground = near_ground(q.x)
@@ -592,7 +612,7 @@ fn bamboo(pixel: FragCoord, v: View) -> vec4 {
         return vec4(0.0)
     }
     if q.y < ground + 0.1 {
-        return under(grass * 0.9, q, ground + 0.3, 0.14)
+        return under(g, gs, grass * 0.9, q, ground + 0.3, 0.14)
     }
     let up = q.y - ground
     let sway = 0.1 * sin(v.time * 0.9 + q.x * 0.4) * up / 3.0
@@ -658,7 +678,7 @@ fn bamboo(pixel: FragCoord, v: View) -> vec4 {
         }
     }
     let (d, albedo) = best
-    paint(d, albedo, q, px, haze: 0.14, line: 1.2)
+    paint(g, gs, d, albedo, q, px, haze: 0.14, line: 1.2)
 }
 
 // ---- the backdrop's pass ---------------------------------------------------------------------
@@ -675,23 +695,29 @@ fn under_of(front: vec4, back: vec4) -> vec4 {
 /// 2026-10-22: "make it way more performant"): drawn in five passes, back to front, every layer
 /// worked out every pixel.
 @fragment
-pub fn backdrop(pixel: FragCoord, v: View, tops: [f32]) -> vec4 {
+pub fn backdrop(
+    pixel: FragCoord,
+    v: View,
+    tops: [f32],
+    g: Texture<Rgba16Float>,
+    gs: Sampler,
+) -> vec4 {
     let w = on_layer(pixel, v, 1.0)
     if w.y < top_at(tops, w.x) - 0.05 {
         discard()
     }
-    var c = under_of(vec4(0.0), bamboo(pixel, v))
+    var c = under_of(vec4(0.0), bamboo(pixel, v, g, gs))
     if c.w < 0.999 {
-        c = under_of(c, path(pixel, v))
+        c = under_of(c, path(pixel, v, g, gs))
     }
     if c.w < 0.999 {
-        c = under_of(c, savanna(pixel, v))
+        c = under_of(c, savanna(pixel, v, g, gs))
     }
     if c.w < 0.999 {
-        c = under_of(c, far_hills(pixel, v))
+        c = under_of(c, far_hills(pixel, v, g, gs))
     }
     if c.w < 0.999 {
-        c = under_of(c, sky(pixel, v))
+        c = under_of(c, sky(pixel, v, g, gs))
     }
     vec4(c.xyz, 1.0)
 }
