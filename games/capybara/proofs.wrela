@@ -15,69 +15,55 @@ use world::{play, step, world}
 
 // ---- proofs ------------------------------------------------------------------------------------
 
-/// The lab from its start to its goal: over the crest, both gaps and both steps, down the slide
-/// and off its lip, into the pool, a dive, and a dolphin leap up the far wall. Recorded from an
-/// autopilot.
-pub const LAB_RUN: [Hold; 49] = [
-    hold(RIGHT, 477),
+/// The lab from its start to its goal: over the crest, through the puddle (wet, so fast), both
+/// gaps and both steps, down the slide through the valley's puddle and off its lip, across the
+/// pool fast, and a kick into a dolphin leap up the far wall. Recorded from an autopilot.
+pub const LAB_RUN: [Hold; 35] = [
+    hold(RIGHT, 462),
     hold(RIGHT | JUMP | PRESS, 1),
     hold(RIGHT | JUMP, 45),
-    hold(RIGHT, 75),
+    hold(RIGHT, 34),
     hold(RIGHT | JUMP | PRESS, 1),
     hold(RIGHT | JUMP, 45),
-    hold(RIGHT, 98),
+    hold(RIGHT, 55),
     hold(RIGHT | JUMP | PRESS, 1),
-    hold(RIGHT | JUMP, 48),
-    hold(RIGHT, 32),
+    hold(RIGHT | JUMP, 45),
+    hold(RIGHT, 43),
     hold(RIGHT | JUMP | PRESS, 1),
     hold(RIGHT | JUMP, 49),
     hold(RIGHT, 64),
-    hold(RIGHT | DOWN, 152),
-    hold(RIGHT, 184),
-    hold(RIGHT | DOWN, 230),
+    hold(RIGHT | DOWN, 153),
+    hold(RIGHT, 226),
     hold(RIGHT | UP | JUMP | PRESS, 1),
-    hold(RIGHT | UP, 12),
+    hold(RIGHT, 8),
     hold(RIGHT | UP | JUMP | PRESS, 1),
-    hold(RIGHT | UP, 12),
+    hold(RIGHT, 8),
     hold(RIGHT | UP | JUMP | PRESS, 1),
-    hold(RIGHT | UP, 12),
+    hold(RIGHT, 8),
     hold(RIGHT | UP | JUMP | PRESS, 1),
-    hold(RIGHT | UP, 12),
+    hold(RIGHT, 8),
     hold(RIGHT | UP | JUMP | PRESS, 1),
-    hold(RIGHT | UP, 8),
-    hold(RIGHT, 35),
-    hold(RIGHT | UP, 4),
+    hold(RIGHT, 8),
     hold(RIGHT | UP | JUMP | PRESS, 1),
-    hold(RIGHT | UP, 12),
+    hold(RIGHT, 8),
     hold(RIGHT | UP | JUMP | PRESS, 1),
-    hold(RIGHT | UP, 12),
+    hold(RIGHT, 8),
     hold(RIGHT | UP | JUMP | PRESS, 1),
-    hold(RIGHT | UP, 12),
+    hold(RIGHT, 8),
     hold(RIGHT | UP | JUMP | PRESS, 1),
-    hold(RIGHT | UP, 10),
-    hold(RIGHT, 36),
-    hold(RIGHT | UP, 2),
+    hold(RIGHT, 8),
     hold(RIGHT | UP | JUMP | PRESS, 1),
-    hold(RIGHT | UP, 12),
-    hold(RIGHT | UP | JUMP | PRESS, 1),
-    hold(RIGHT | UP, 12),
-    hold(RIGHT | UP | JUMP | PRESS, 1),
-    hold(RIGHT | UP, 12),
-    hold(RIGHT | UP | JUMP | PRESS, 1),
-    hold(RIGHT | UP, 12),
-    hold(RIGHT | UP | JUMP | PRESS, 1),
-    hold(RIGHT | JUMP, 40),
-    hold(RIGHT, 47),
+    hold(RIGHT, 71),
 ]
 
 /// Up through the 2 m one-way ledge from below, then a jump to the 3.5 m ledge.
 pub const LEDGES: [Hold; 9] = [
-    hold(RIGHT, 70),
+    hold(RIGHT, 80),
     hold(bits: 0, ticks: 30),
     hold(JUMP | PRESS, 1),
     hold(JUMP, 40),
     hold(bits: 0, ticks: 20),
-    hold(RIGHT, 10),
+    hold(RIGHT, 15),
     hold(RIGHT | JUMP | PRESS, 1),
     hold(RIGHT | JUMP, 40),
     hold(bits: 0, ticks: 60),
@@ -85,7 +71,7 @@ pub const LEDGES: [Hold; 9] = [
 
 /// From the ground to the 3.5 m ledge with a double jump, out of reach of one jump.
 pub const DOUBLE_JUMP: [Hold; 7] = [
-    hold(RIGHT, 140),
+    hold(RIGHT, 145),
     hold(bits: 0, ticks: 30),
     hold(JUMP | PRESS, 1),
     hold(JUMP, 15),
@@ -98,7 +84,7 @@ pub const DOUBLE_JUMP: [Hold; 7] = [
 fn the_lab_is_finished_by_its_recorded_run_in_its_recorded_time() {
     let w = play(0, LAB_RUN)
     print(f"the lab: {w.finished} ticks")
-    assert(w.finished == 1831 && w.falls == 0, "the run's time moved")
+    assert(w.finished == 1378 && w.falls == 0, "the run's time moved")
 }
 
 /// Whether `run` ends standing on the 3.5 m ledge.
@@ -232,65 +218,74 @@ fn in_pool(at: vec2, vel: vec2) -> Body {
 }
 
 @test
-fn at_the_surface_a_press_jumps_out_at_one_speed_whatever_is_held() {
-    for held in [0, DOWN, UP | RIGHT] {
-        var b = in_pool(vec2(108.0, -0.15), vec2(0.0))
-        body::step(mut b, Pad { bits: held | JUMP | PRESS }, LAB, FEEL)
-        assert(abs(b.vel.y - FEEL.water_jump) < 0.3, "the hop's speed, less a tick of drag")
-        while b.mode == Mode::Swim {
-            body::step(mut b, Pad { bits: held | JUMP }, LAB, FEEL)
+fn in_water_the_capybara_is_faster_and_a_puddle_wets_it_for_a_while() {
+    var swim = in_pool(vec2(104.0, -2.0), vec2(0.0))
+    for _ in 0..60 {
+        body::step(mut swim, Pad { bits: RIGHT }, LAB, FEEL)
+    }
+    assert(abs(swim.vel.x - FEEL.wet_speed) < 1.0e-3, "the wet speed in the pool")
+    // Through the puddle after the crest at the dry top speed: wet, it speeds up past it.
+    var w = world(0)
+    w.body = spawn(vec2(27.0, RADIUS))
+    w.body.speed = FEEL.speed
+    var fastest = 0.0
+    while w.body.at.x < 33.0 {
+        step(mut w, Pad { bits: RIGHT })
+        fastest = max(fastest, w.body.speed)
+    }
+    assert(fastest > FEEL.speed + 2.0 && w.body.wet == FEEL.wet_ticks, "wet in the puddle")
+    // Out of the water, the boost lasts half the wet time, then eases back to the dry speed, and
+    // the speed follows it down without a jolt: on the runway, wet, at the wet speed.
+    var dry = world(0)
+    dry.body = spawn(vec2(1.0, RADIUS))
+    dry.body.wet = FEEL.wet_ticks
+    dry.body.speed = FEEL.wet_speed
+    for i in 0..FEEL.wet_ticks {
+        let before = dry.body.speed
+        step(mut dry, Pad { bits: RIGHT })
+        if i < FEEL.wet_ticks / 2 - 1 {
+            assert(abs(body::top(dry.body, FEEL) - FEEL.wet_speed) < 1.0e-3, "still the wet speed")
         }
-        assert(b.vel.y < FEEL.water_jump && b.leap == 0, "a hop, not a leap")
-        assert(b.jumps == FEEL.air_jumps, "with its double jump")
+        assert(before - dry.body.speed <= FEEL.over * STEP + 1.0e-4, "no jolt")
     }
+    assert(dry.body.wet == 0 && abs(dry.body.speed - FEEL.speed) < 0.1, "dry again")
 }
 
 @test
-fn a_stroke_reaches_the_cap_but_never_slows_a_dive() {
-    let f = FEEL
-    var dive = in_pool(vec2(108.0, -2.0), vec2(0.0, -15.0))
-    body::step(mut dive, Pad { bits: DOWN | JUMP | PRESS }, LAB, f)
-    assert(length(dive.vel) <= 15.0 && length(dive.vel) > 14.0, "a dive keeps its speed")
-    var slow = in_pool(vec2(108.0, -3.0), vec2(0.0))
-    for i in 0..60 {
-        let press = if i % 18 == 0 { PRESS } else { 0 }
-        body::step(mut slow, Pad { bits: RIGHT | JUMP | press }, LAB, f)
-        assert(length(slow.vel) <= f.swim_max + 1.0e-3, "strokes stop at the cap")
-    }
-}
-
-@test
-fn a_press_during_the_cooldown_strokes_when_it_ends() {
-    let f = FEEL
-    var b = in_pool(vec2(108.0, -3.0), vec2(0.0))
-    body::step(mut b, Pad { bits: RIGHT | JUMP | PRESS }, LAB, f)
-    assert(b.cooldown == f.stroke_cooldown)
-    body::step(mut b, Pad { bits: RIGHT | JUMP | PRESS }, LAB, f)
-    assert(b.queued)
-    var stroked = 0
-    for i in 0..f.stroke_cooldown {
-        let before = b.vel.x
-        body::step(mut b, Pad { bits: RIGHT | JUMP }, LAB, f)
-        if b.vel.x > before + 1.0 {
-            stroked = i + 2
+fn a_jump_press_in_water_kicks_and_a_press_too_soon_waits_its_turn() {
+    var b = in_pool(vec2(108.0, -3.0), vec2(0.0, -2.0))
+    body::step(mut b, Pad { bits: JUMP | PRESS }, LAB, FEEL)
+    assert(b.vel.y > FEEL.kick - 1.0 && b.cooldown == FEEL.kick_cooldown, "a kick")
+    body::step(mut b, Pad { bits: JUMP | PRESS }, LAB, FEEL)
+    assert(b.cooldown == FEEL.kick_cooldown - 1 && b.buffer > 0, "too soon: it waits")
+    var kicked = 0
+    for i in 0..FEEL.kick_cooldown {
+        body::step(mut b, Pad { bits: JUMP }, LAB, FEEL)
+        if b.cooldown == FEEL.kick_cooldown && kicked == 0 {
+            kicked = i + 2
         }
     }
-    assert(stroked == f.stroke_cooldown, "the kept press strokes on the tick the cooldown ends")
+    assert(kicked == FEEL.kick_cooldown, "and kicks on the tick the cooldown ends")
 }
 
 @test
-fn leaving_the_water_fast_leaps_with_the_velocity_and_slowly_floats() {
-    let f = FEEL
+fn a_dive_slows_to_the_sinking_speed() {
+    var b = in_pool(vec2(108.0, -0.5), vec2(0.0, -20.0))
+    for _ in 0..24 {
+        body::step(mut b, Pad { bits: 0 }, LAB, FEEL)
+    }
+    assert(b.mode == Mode::Swim && abs(b.vel.y + FEEL.water_terminal) < 0.5)
+}
+
+@test
+fn breaking_the_surface_fast_is_a_leap_and_slow_is_a_way_out() {
     var fast = in_pool(vec2(108.0, -0.02), vec2(3.0, 9.0))
-    body::step(mut fast, Pad { bits: JUMP }, LAB, f)
-    assert(fast.mode == Mode::Air && fast.vel.y > 8.5 && fast.vel.x > 2.9, "a dolphin leap")
-    assert(fast.vel.y >= f.leap, "at least the leap's speed")
+    body::step(mut fast, Pad { bits: 0 }, LAB, FEEL)
+    assert(fast.mode == Mode::Air && fast.vel.y >= FEEL.leap && fast.vel.x > 2.9, "a dolphin leap")
+    assert(fast.flip == 1 && fast.jumps == FEEL.air_jumps, "with a flip, and the double jump back")
     var slow = in_pool(vec2(108.0, -0.005), vec2(0.0, 2.0))
-    body::step(mut slow, Pad { bits: 0 }, LAB, f)
-    assert(
-        slow.mode == Mode::Swim && slow.at.y < 0.0 && slow.vel.y == 0.0,
-        "it stops at the surface",
-    )
+    body::step(mut slow, Pad { bits: 0 }, LAB, FEEL)
+    assert(slow.mode == Mode::Air && slow.vel.y < FEEL.leap_min && slow.leap == 0, "a way out")
 }
 
 @test
@@ -374,10 +369,10 @@ fn ticks_to_top() -> u32 {
 }
 
 /// How far a jump at the top speed from flat ground carries the body before it is back at the
-/// same height, jump held throughout (m): from the flat past the crest, over the first gap.
+/// same height, jump held throughout (m): from the flat between the gaps, dry, over the second.
 fn reach() -> f32 {
     var w = world(0)
-    w.body = spawn(vec2(29.0, RADIUS))
+    w.body = spawn(vec2(39.4, RADIUS))
     w.body.speed = FEEL.speed
     let from = w.body.at
     step(mut w, Pad { bits: RIGHT | JUMP | PRESS })
@@ -413,6 +408,6 @@ fn the_feels_metrics_are_within_their_ranges() {
     assert(within(held, vec2(2.7, 3.1)), "the held jump's height")
     assert(within(tap, vec2(1.0, 1.5)), "the tapped jump's height")
     assert(within(double, vec2(4.6, 5.4)), "the double jump's height")
-    assert(within(f32(top), vec2(12.0, 24.0)), "the ticks to top speed")
+    assert(within(f32(top), vec2(36.0, 52.0)), "the ticks to top speed, eased")
     assert(within(far, vec2(5.2, 6.4)), "the jump's reach at speed")
 }
