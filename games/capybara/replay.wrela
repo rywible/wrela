@@ -355,10 +355,14 @@ fn keys(from: u32, to: u32) -> Vec<Event> {
     ] {
         let (was, is) = (from & bit != 0, to & bit != 0)
         if bit == JUMP && to & PRESS != 0 {
+            // A press: down again, and up again in the same tick if it isn't held (a tap).
             if was {
                 out.push(Event::KeyUp { key, mods: Mods {} })
             }
             out.push(Event::KeyDown { key, repeat: false, mods: Mods {} })
+            if !is {
+                out.push(Event::KeyUp { key, mods: Mods {} })
+            }
         } else if was && !is {
             out.push(Event::KeyUp { key, mods: Mods {} })
         } else if is && !was {
