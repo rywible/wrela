@@ -5,11 +5,8 @@
 // directions; and from the largest height. Each ray's hit keeps its bits and its march count.
 
 use hosts::steps::built
-use std::collections::{Box, Vec}
-use std::job::Step
-use std::string::String
 use std::tool::drive
-use std::tool::drive::Scalar
+use std::tool::drive::{Scalar, Step}
 use std::tool::toolchain
 
 /// `bits` as a float: the values that a test can't compute without a NaN check failing it.
@@ -60,64 +57,41 @@ fn word(s: Scalar) -> u32 {
 }
 
 @test(tool, read: [("repo", "../../../..")], budget: 120)
-@job
 fn terrain_rays_keep_their_hits_and_steps() {
-    var b = Box::new(
-        built.start(
-            String::from("repo/examples/herd/tests/raycasts"),
-            String::from("scratch/build"),
-            toolchain::options(),
-            String::from("the package builds"),
-        ),
+    built(
+        "repo/examples/herd/tests/raycasts",
+        "scratch/build",
+        toolchain::options(),
+        "the package builds",
     )
-    loop {
-        match b.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
-    var l = drive::load("scratch/build", drive::cpu())
-    var loaded = l.poll()
-    while loaded.is_none() {
-        yield
-        loaded = l.poll()
-    }
-    let Some(lp) = take loaded else { panic("no answer") }
-    let Ok(it) = drive::read_loaded(take lp) else { panic("the build loads") }
-    let h = it.build
-    var i = drive::init(h)
-    var inited = i.poll()
-    while inited.is_none() {
-        yield
-        inited = i.poll()
-    }
-    let Some(ip) = take inited else { panic("no answer") }
-    let Ok(init) = drive::read_ran(take ip) else { panic("init's request") }
-    assert(init.trap.is_none(), "init runs")
     let all = rays()
     assert(all.len() == 321, "every ray")
+    var list: Vec<Step> = Vec::from([Step::Init])
     for ray in all {
         let (from, dir, limit) = ray
-        let args = [
-            Scalar::F32(from.x),
-            Scalar::F32(from.y),
-            Scalar::F32(from.z),
-            Scalar::F32(dir.x),
-            Scalar::F32(dir.y),
-            Scalar::F32(dir.z),
-            Scalar::F32(limit),
-        ]
-        var c = drive::call(h, "compare", args)
-        var called = c.poll()
-        while called.is_none() {
-            yield
-            called = c.poll()
-        }
-        let Some(cp) = take called else { panic("no answer") }
-        let Ok(ran) = drive::read_ran(take cp) else { panic("the call's request") }
-        if let Some(trap) = ran.trap {
-            panic(trap.message.as_str())
-        }
+        let args = Vec::from(
+            [
+                Scalar::F32(from.x),
+                Scalar::F32(from.y),
+                Scalar::F32(from.z),
+                Scalar::F32(dir.x),
+                Scalar::F32(dir.y),
+                Scalar::F32(dir.z),
+                Scalar::F32(limit),
+            ],
+        )
+        list.push(Step::Call(String::from("compare"), take args))
+    }
+    let Ok(seen) = drive::run("scratch/build", drive::cpu(), list).wait() else {
+        panic("the build runs")
+    }
+    if let Some(trap) = seen.trap {
+        panic(trap.message.as_str())
+    }
+    assert(seen.ran.len() == 1 + all.len(), "init runs and every call")
+    for k in 0..all.len() {
+        let (from, dir, limit) = all[k]
+        borrow ran = seen.ran[k + 1]
         assert(ran.results.len() == 4, "`compare` gives four words")
         let (a, sa) = (word(ran.results[0]), word(ran.results[1]))
         let (r, sr) = (word(ran.results[2]), word(ran.results[3]))

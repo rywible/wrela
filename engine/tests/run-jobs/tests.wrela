@@ -7,6 +7,7 @@
 
 use std::input::Script
 use std::tool::drive
+use std::tool::drive::{Stage, Step}
 use std::tool::toolchain
 
 /// Each run: how many threads run jobs (the program's own among them), and how long each job's
@@ -14,147 +15,81 @@ use std::tool::toolchain
 const RUNS: [(u32, u32); 6] = [(1, 0), (2, 0), (8, 0), (1, 100000), (2, 100000), (8, 100000)]
 
 @test(tool, read: [("repo", "../../..")], budget: 120)
-@job
 fn a_trapping_job_traps_at_the_tick_that_takes_it() {
-    var b = toolchain::build("repo/engine/tests/run-jobs", "scratch/build", toolchain::options())
-    var built = b.poll()
-    while built.is_none() {
-        yield
-        built = b.poll()
-    }
-    let Some(polled) = take built else { panic("no answer") }
-    let Ok(build) = toolchain::read_built(take polled) else { panic("the build's request") }
-    for d in build.diagnostics {
-        assert(!d.error, d.rendered.as_str())
-    }
-    assert(build.ok, "the package builds")
+    built()
     for run in RUNS {
         let (workers, hold) = run
         var options = drive::cpu()
         options.workers = workers
         options.hold = hold
-        var l = drive::load("scratch/build", options)
-        var loaded = l.poll()
-        while loaded.is_none() {
-            yield
-            loaded = l.poll()
+        // `init`, then 21 ticks, each a step of its own: step `k + 1` is tick `k`.
+        var list: Vec<Step> = Vec::from([Step::Init])
+        for _ in 0..21 {
+            list.push(Step::Ticks(1, Script::ticks()))
         }
-        let Some(lp) = take loaded else { panic("no answer") }
-        let Ok(it) = drive::read_loaded(take lp) else { panic("the build loads") }
-        let h = it.build
-        var i = drive::init(h)
-        var inited = i.poll()
-        while inited.is_none() {
-            yield
-            inited = i.poll()
+        let Ok(seen) = drive::run("scratch/build", options, list).wait() else {
+            panic("the build loads and runs")
         }
-        let Some(ip) = take inited else { panic("no answer") }
-        let Ok(init) = drive::read_ran(take ip) else { panic("init's request") }
-        assert(init.trap.is_none(), "init runs")
-        var asked = 0.0
-        for k in 0..21 {
-            var t = drive::ticks(h, 1, Script::ticks())
-            var ticked = t.poll()
-            while ticked.is_none() {
-                yield
-                ticked = t.poll()
-            }
-            let Some(tp) = take ticked else { panic("no answer") }
-            let Ok(ran) = drive::read_ran(take tp) else { panic("the tick's request") }
-            if k < 20 {
-                if let Some(trap) = ran.trap {
-                    panic(f"{workers} threads, held {hold}: tick {k}: {trap.message.as_str()}")
-                }
-                let step = ran.steps[0]
-                if k == 2 {
-                    asked = step.start
-                }
-                if k == 10 && hold > 0 {
-                    let since = (step.end - asked) * 1000.0
-                    assert(
-                        since >= 95.0,
-                        f"{workers} threads: tick 10 ended {since} ms after the ask",
-                    )
-                }
-            } else {
-                // Tick 20 takes the trapping job.
-                let Some(trap) = ran.trap else {
-                    panic(f"{workers} threads, held {hold}: tick 20 runs")
-                }
-                let m = trap.message.as_str()
-                assert(
-                    m.find("in tick 20").is_some() && m.find("a job's input was 13").is_some(),
-                    f"{workers} threads, held {hold}: {m}",
-                )
-                assert(trap.stage == drive::Stage::Tick && trap.number == 20)
-                assert(ran.steps.len() == 0, "tick 20 didn't end")
-            }
+        // Tick 20 takes the trapping job: `init` and the ticks before it run.
+        let Some(trap) = seen.trap else { panic(f"{workers} threads, held {hold}: tick 20 runs") }
+        let m = trap.message.as_str()
+        assert(trap.step == 21, f"{workers} threads, held {hold}: step {trap.step}: {m}")
+        assert(
+            m.find("in tick 20").is_some() && m.find("a job's input was 13").is_some(),
+            f"{workers} threads, held {hold}: {m}",
+        )
+        assert(trap.stage == Stage::Tick && trap.number == 20)
+        assert(seen.ran.len() == 22, "init and each tick ran")
+        for k in 0..20 {
+            assert(seen.ran[k + 1].spans.len() == 1, f"tick {k} ended")
         }
-        var c = drive::close(h)
-        while c.poll().is_none() { yield }
+        assert(seen.ran[21].spans.len() == 0, "tick 20 didn't end")
+        if hold > 0 {
+            let asked = seen.ran[3].spans[0].start
+            let since = (seen.ran[11].spans[0].end - asked) * 1000.0
+            assert(since >= 95.0, f"{workers} threads: tick 10 ended {since} ms after the ask")
+        }
     }
 }
 
 /// A trap's stage and number are the host's: tick 20's trap, reached by frames then ticks, or
 /// by frames alone, is in tick 20, as its message says.
 @test(tool, read: [("repo", "../../..")], budget: 120)
-@job
 fn a_trap_is_numbered_by_the_tick_the_host_ran() {
-    var b = toolchain::build("repo/engine/tests/run-jobs", "scratch/build", toolchain::options())
-    var built = b.poll()
-    while built.is_none() {
-        yield
-        built = b.poll()
-    }
-    let Some(polled) = take built else { panic("no answer") }
-    let Ok(build) = toolchain::read_built(take polled) else { panic("the build's request") }
-    assert(build.ok, "the package builds")
+    built()
     // Frames then ticks, and frames alone: either way the trap is in tick 20, which a lockstep
     // frame runs as much as `ticks` does.
     for ticks_after in [true, false] {
         var options = drive::cpu()
         options.workers = 2
-        var l = drive::load("scratch/build", options)
-        var loaded = l.poll()
-        while loaded.is_none() {
-            yield
-            loaded = l.poll()
-        }
-        let Some(lp) = take loaded else { panic("no answer") }
-        let Ok(it) = drive::read_loaded(take lp) else { panic("the build loads") }
-        let h = it.build
-        var i = drive::init(h)
-        while i.poll().is_none() { yield }
-        var f = drive::frames(h, if ticks_after { 10 } else { 40 }, Script::frames())
-        var framed = f.poll()
-        while framed.is_none() {
-            yield
-            framed = f.poll()
-        }
-        let Some(fp) = take framed else { panic("no answer") }
-        let Ok(frames) = drive::read_ran(take fp) else { panic("the frames' request") }
-        var trapped = take frames.trap
+        var list: Vec<Step> = Vec::from([Step::Init])
+        list.push(Step::Frames(if ticks_after { 10 } else { 40 }, Script::frames()))
         if ticks_after {
-            assert(trapped.is_none(), "ten frames run ticks before 20")
-            var t = drive::ticks(h, 20, Script::ticks())
-            var ticked = t.poll()
-            while ticked.is_none() {
-                yield
-                ticked = t.poll()
-            }
-            let Some(tp) = take ticked else { panic("no answer") }
-            let Ok(ticks) = drive::read_ran(take tp) else { panic("the ticks' request") }
-            trapped = take ticks.trap
+            list.push(Step::Ticks(20, Script::ticks()))
         }
-        let Some(trap) = trapped else { panic("tick 20 traps") }
+        let Ok(seen) = drive::run("scratch/build", options, list).wait() else {
+            panic("the build loads and runs")
+        }
+        let Some(trap) = seen.trap else { panic("tick 20 traps") }
         let m = trap.message.as_str()
+        // Ten frames run the ticks before 20: the ticks after them trap.
+        assert(trap.step == if ticks_after { 2 } else { 1 }, f"step {trap.step}: {m}")
         assert(m.find("in tick 20").is_some(), m)
         assert(
-            trap.stage == drive::Stage::Tick && trap.number == 20,
+            trap.stage == Stage::Tick && trap.number == 20,
             f"stage, number {trap.number}: {m}",
         )
         assert(trap.panic.as_str() == "a job's input was 13", trap.panic.as_str())
-        var c = drive::close(h)
-        while c.poll().is_none() { yield }
     }
+}
+
+/// This package built into `scratch/build`, with no error.
+fn built() {
+    let options = toolchain::options()
+    let made = toolchain::build("repo/engine/tests/run-jobs", "scratch/build", options).wait()
+    let Ok(build) = made else { panic("the build's request") }
+    for d in build.diagnostics {
+        assert(!d.error, d.rendered.as_str())
+    }
+    assert(build.ok, "the package builds")
 }

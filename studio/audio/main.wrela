@@ -51,19 +51,19 @@
 
 use clicks::clicks_report
 use dsp::{db, peak_of, rms, round}
-use io::{RATE, Rendered, build_piece, close, describe_piece, length_of, render_piece, start_piece}
+use io::{RATE, Rendered, Steps, build_piece}
 use json::{Value, obj, text}
 use measure::report
 use model::fit_model
 use piece::{Take, described, midi, numbers}
-use std::collections::{Box, Vec}
+use std::collections::Vec
 use std::io::print
-use std::job::{Job, Step}
 use std::string::String
 use std::time::now
-use std::tool::{RUNNING, args}
+use std::tool::{ToolError, args}
+use std::tool::drive
+use std::tool::drive::Step
 use std::tool::files::rooted
-use toolkit::wait::done
 use toolkit::whole::{read_file, write_file}
 
 /// The root the tool reads and writes the workspace in.
@@ -181,16 +181,20 @@ pub fn parse_args(given: [String]) -> Option<Args> {
 }
 
 /// `path`, from the workspace's directory, as a path in the root `root` (the workspace's).
-pub fn in_root(root: str, path: str) -> Result<String, String> {
+pub fn in_root(root: str, path: str) -> Result<String, ToolError> {
     match rooted(root, path) {
         Some(p) => Ok(p),
-        None => Err(String::from(f"`{path}` isn't a path in the workspace")),
+        None => Err(ToolError::new(f"`{path}` isn't a path in the workspace")),
     }
 }
 
-@job
-fn main(given: take Vec<String>) -> u32 {
-    let Some(a) = parse_args(given) else { return usage() }
+/// `why`, a failure said as text (a pure function's), as the tool's.
+pub fn failed(why: take String) -> ToolError {
+    ToolError::new(why.as_str())
+}
+
+pub fn tool() -> u32 {
+    let Some(a) = parse_args(args()) else { return usage() }
     let action = a.action.clone()
     let known = [
         "wav",
@@ -218,141 +222,65 @@ fn main(given: take Vec<String>) -> u32 {
     if action.as_str() == "clicks" && a.rest.is_empty() {
         return usage()
     }
-    var j = Box::new(run.start(take a))
-    loop {
-        match j.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => {
-                match take r {
-                    Ok(()) => return 0,
-                    Err(why) => {
-                        print(f"error: {why}")
-                        return 2
-                    },
-                }
-            },
-        }
-    }
-}
-
-pub fn tool_init() -> Job<main> {
-    main.start(args())
-}
-
-pub fn tool(job: mut Job<main>) -> u32 {
-    match job.resume() {
-        Step::Yielded => RUNNING,
-        Step::Done(status) => status,
+    match run(a) {
+        Ok(()) => 0,
+        Err(e) => {
+            print(f"error: {e.message()}")
+            2
+        },
     }
 }
 
 /// Carries out the command.
-@job
-fn run(a: take Args) -> Result<(), String> {
-    let action = a.action.clone()
-    if action.as_str() == "partials" {
-        var j = Box::new(partials_command.start(take a))
-        loop {
-            match j.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(r) => return take r,
-            }
-        }
+fn run(a: Args) -> Result<(), ToolError> {
+    let action = a.action.as_str()
+    if action == "partials" {
+        return partials_command(a)
     }
-    if action.as_str() == "clicks" {
-        var j = Box::new(clicks_report.start(take a))
-        loop {
-            match j.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(r) => return take r,
-            }
-        }
+    if action == "clicks" {
+        return clicks_report(a)
     }
-    if action.as_str() == "model" {
-        var j = Box::new(fit_model.start(take a))
-        loop {
-            match j.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(r) => return take r,
-            }
-        }
+    if action == "model" {
+        return fit_model(a)
     }
-    var j = Box::new(piece_command.start(take a))
-    loop {
-        match j.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => return take r,
-        }
-    }
+    piece_command(a)
 }
 
-/// The take an instance of the piece in `build` (started with `a`'s take chosen) describes, the
-/// instance closed after.
-@job
-pub fn take_of(a: take Args, build: take String) -> Result<Take, String> {
-    var s = Box::new(start_piece.start(take build, a.chosen.clone()))
-    var made = done(s.get_mut().resume())
-    while made.is_none() {
-        yield
-        made = done(s.get_mut().resume())
-    }
-    let b = (take made).unwrap()?
-    var d = Box::new(describe_piece.start(b))
-    var result = done(d.get_mut().resume())
-    while result.is_none() {
-        yield
-        result = done(d.get_mut().resume())
-    }
-    var c = Box::new(close.start(b))
-    while done(c.get_mut().resume()).is_none() { yield }
-    (take result).unwrap()
+/// The take an instance of the piece in `build` (started with `a`'s take chosen) describes: the
+/// instance loaded, started, described and closed in one request.
+pub fn take_of(a: Args, build: str) -> Result<Take, ToolError> {
+    var s = Steps::started(a.chosen.clone())
+    s.then(Step::Call(String::from("describe"), Vec::new()), "`describe()`")
+    io::described(s.run(build)?)
 }
 
 /// The voice of an instance of the piece in `build` (started with `a`'s take chosen) over its
 /// length (`a`'s seconds, or the piece's), and that length, the instance closed after.
-@job
-pub fn voice_of(
-    a: take Args,
-    build: take String,
-    timed: take bool,
-) -> Result<(Rendered, f64), String> {
-    var s = Box::new(start_piece.start(take build, a.chosen.clone()))
-    var made = done(s.get_mut().resume())
-    while made.is_none() {
-        yield
-        made = done(s.get_mut().resume())
+pub fn voice_of(a: Args, build: str, timed: bool) -> Result<(Rendered, f64), ToolError> {
+    var s = Steps::started(a.chosen.clone())
+    if let Some(seconds) = a.seconds {
+        s.render(seconds, timed)?
+        return Ok((io::rendered(s.run(build)?)?, seconds))
     }
-    let b = (take made).unwrap()?
-    var l = Box::new(length_of.start(b, a.seconds))
-    var length = done(l.get_mut().resume())
-    while length.is_none() {
-        yield
-        length = done(l.get_mut().resume())
-    }
-    let result = match (take length).unwrap() {
-        Err(why) => Err(take why),
-        Ok(seconds) => {
-            var r = Box::new(render_piece.start(b, seconds, timed))
-            var rendered = done(r.get_mut().resume())
-            while rendered.is_none() {
-                yield
-                rendered = done(r.get_mut().resume())
-            }
-            match (take rendered).unwrap() {
-                Ok(v) => Ok((take v, seconds)),
-                Err(why) => Err(take why),
-            }
-        },
-    }
-    var c = Box::new(close.start(b))
-    while done(c.get_mut().resume()).is_none() { yield }
-    result
+    // The piece's length is asked first, then its voice rendered over it.
+    s.then(Step::Call(String::from("seconds"), Vec::new()), "`seconds()`")
+    let b = drive::load(build, io::load()).wait()?.build
+    let voiced = voice_on(b, take s, timed)
+    let _ = drive::close(b).wait()
+    voiced
+}
+
+/// The voice of the piece loaded as `b`, over the length its `seconds()` returns after `s`.
+fn voice_on(b: drive::Build, s: take Steps, timed: bool) -> Result<(Rendered, f64), ToolError> {
+    var s = take s
+    let seconds = io::length(s.on(b)?)?
+    s.render(seconds, timed)?
+    Ok((io::rendered(s.on(b)?)?, seconds))
 }
 
 /// A piece's action: built once, then described, rendered, or both (on two instances: `describe`
 /// is the program's export and can change its state).
-@job
-pub fn piece_command(a: take Args) -> Result<(), String> {
+pub fn piece_command(a: Args) -> Result<(), ToolError> {
     let action = a.action.clone()
     let out_arg: Option<String> = if a.rest.is_empty() { None } else { Some(a.rest[0].clone()) }
     let needs_file = action.as_str() == "wav" ||
@@ -360,7 +288,7 @@ pub fn piece_command(a: take Args) -> Result<(), String> {
         action.as_str() == "sheet"
     if needs_file && out_arg.is_none() {
         return Err(
-            String::from(
+            ToolError::new(
                 if action.as_str() == "wav" {
                     "wav needs a file to write"
                 } else if action.as_str() == "midi" {
@@ -377,13 +305,7 @@ pub fn piece_command(a: take Args) -> Result<(), String> {
     }
     let started_at = now()
     let pkg = in_root(a.root.as_str(), a.dir.as_str())?
-    var bj = Box::new(build_piece.start(take pkg))
-    var built = done(bj.get_mut().resume())
-    while built.is_none() {
-        yield
-        built = done(bj.get_mut().resume())
-    }
-    let build = (take built).unwrap()?
+    let build = build_piece(pkg.as_str())?
     let wants_take = action.as_str() == "describe" ||
         action.as_str() == "numbers" ||
         action.as_str() == "midi" ||
@@ -394,59 +316,32 @@ pub fn piece_command(a: take Args) -> Result<(), String> {
         action.as_str() == "speed"
     var t: Option<Take> = None
     if wants_take {
-        var tj = Box::new(take_of.start(a.clone(), build.clone()))
-        loop {
-            match tj.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(r) => {
-                    t = Some((take r)?)
-                    break
-                },
-            }
-        }
+        t = Some(take_of(a, build.as_str())?)
     }
     var voice: Option<(Rendered, f64)> = None
     if wants_voice {
-        var vj = Box::new(voice_of.start(a.clone(), build.clone(), action.as_str() == "speed"))
-        loop {
-            match vj.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(r) => {
-                    voice = Some((take r)?)
-                    break
-                },
-            }
-        }
+        voice = Some(voice_of(a, build.as_str(), action.as_str() == "speed")?)
     }
     let shown = if a.rest.is_empty() { String::new() } else { a.rest[0].clone() }
     if action.as_str() == "describe" {
-        let Some(tk) = take t else { return Err(String::from("no take")) }
+        let Some(tk) = take t else { return Err(ToolError::new("no take")) }
         print(described(tk).pretty().as_str())
         return Ok(())
     }
     if action.as_str() == "numbers" {
-        let Some(tk) = take t else { return Err(String::from("no take")) }
-        let Some((v, _)) = take voice else { return Err(String::from("no voice")) }
-        print(numbers(tk, v.samples)?.pretty().as_str())
+        let Some(tk) = take t else { return Err(ToolError::new("no take")) }
+        let Some((v, _)) = take voice else { return Err(ToolError::new("no voice")) }
+        print(numbers(tk, v.samples).map_err(failed)?.pretty().as_str())
         return Ok(())
     }
     if action.as_str() == "midi" {
-        let Some(tk) = take t else { return Err(String::from("no take")) }
-        let Some(path) = take out else { return Err(String::from("midi needs a file to write")) }
-        var parts: Vec<Vec<u8>> = Vec::new()
-        parts.push(midi(tk))
-        var w = Box::new(write_file.start(take path, take parts))
-        loop {
-            match w.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(r) => {
-                    if let Err(why) = take r {
-                        return Err(String::from(f"can't write {shown}: {why}"))
-                    }
-                    break
-                },
-            }
+        let Some(tk) = take t else { return Err(ToolError::new("no take")) }
+        let Some(path) = take out else {
+            return Err(ToolError::new("midi needs a file to write"))
         }
+        write_file(path.as_str(), Vec::from([midi(tk)])).map_err(
+            |e| ToolError::new(f"can't write {shown}: {e.message()}"),
+        )?
         print(
             obj()
                 .with("midi", text(shown.as_str()))
@@ -457,25 +352,16 @@ pub fn piece_command(a: take Args) -> Result<(), String> {
         return Ok(())
     }
     if action.as_str() == "wav" {
-        let Some(path) = take out else { return Err(String::from("wav needs a file to write")) }
-        let Some((v, seconds)) = take voice else { return Err(String::from("no voice")) }
+        let Some(path) = take out else { return Err(ToolError::new("wav needs a file to write")) }
+        let Some((v, seconds)) = take voice else { return Err(ToolError::new("no voice")) }
         let took = now() - started_at
         var parts: Vec<Vec<u8>> = Vec::new()
         parts.push(wav::header(samples: v.samples.len(), channels: 2))
         var bytes = take v.bytes
         parts.append(mut bytes)
-        var w = Box::new(write_file.start(take path, take parts))
-        loop {
-            match w.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(r) => {
-                    if let Err(why) = take r {
-                        return Err(String::from(f"can't write {shown}: {why}"))
-                    }
-                    break
-                },
-            }
-        }
+        write_file(path.as_str(), take parts).map_err(
+            |e| ToolError::new(f"can't write {shown}: {e.message()}"),
+        )?
         var clipped = 0
         for x in v.samples {
             if abs(x) > 1.0 {
@@ -496,30 +382,21 @@ pub fn piece_command(a: take Args) -> Result<(), String> {
         return Ok(())
     }
     if action.as_str() == "speed" {
-        let Some((v, seconds)) = take voice else { return Err(String::from("no voice")) }
+        let Some((v, seconds)) = take voice else { return Err(ToolError::new("no voice")) }
         print(speed(v.times, seconds).pretty().as_str())
         return Ok(())
     }
     if action.as_str() == "sheet" {
-        let Some(tk) = take t else { return Err(String::from("no take")) }
-        let Some((v, _)) = take voice else { return Err(String::from("no voice")) }
-        let Some(path) = take out else { return Err(String::from("sheet needs a PNG to write")) }
-        var s = Box::new(
-            sheet::write_sheet.start(take tk, v.samples.clone(), a.bars, take path, shown.clone()),
-        )
-        loop {
-            match s.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(r) => {
-                    (take r)?
-                    break
-                },
-            }
+        let Some(tk) = take t else { return Err(ToolError::new("no take")) }
+        let Some((v, _)) = take voice else { return Err(ToolError::new("no voice")) }
+        let Some(path) = take out else {
+            return Err(ToolError::new("sheet needs a PNG to write"))
         }
+        sheet::write_sheet(take tk, v.samples, a.bars, path.as_str(), shown.as_str())?
         print(obj().with("sheet", text(shown.as_str())).compact().as_str())
         return Ok(())
     }
-    Err(String::from(f"no action `{action}`"))
+    Err(ToolError::new(f"no action `{action}`"))
 }
 
 /// Where `speed`'s times come from, as its answer says.
@@ -552,37 +429,30 @@ pub fn speed(times: [f64], seconds: f64) -> Value {
 }
 
 /// `partials`: a note's partials in a WAV file.
-@job
-pub fn partials_command(a: take Args) -> Result<(), String> {
+pub fn partials_command(a: Args) -> Result<(), ToolError> {
     if a.rest.is_empty() {
-        return Err(String::from("partials needs a WAV file"))
+        return Err(ToolError::new("partials needs a WAV file"))
     }
     let Some(key) = a.key else {
-        return Err(String::from("partials needs --key, the note's MIDI key"))
+        return Err(ToolError::new("partials needs --key, the note's MIDI key"))
     }
     if key > 127 {
-        return Err(String::from("partials needs a MIDI key from 0 to 127"))
+        return Err(ToolError::new("partials needs a MIDI key from 0 to 127"))
     }
     if !(a.from >= 0.0 && a.from <= 1.7976931348623157e308) {
-        return Err(String::from("partials needs a finite, non-negative --from time"))
+        return Err(ToolError::new("partials needs a finite, non-negative --from time"))
     }
     let seconds = a.seconds.unwrap_or(8.0)
     if !(seconds > 0.0 && seconds <= 1.7976931348623157e308) {
-        return Err(String::from("partials needs a positive, finite --seconds length"))
+        return Err(ToolError::new("partials needs a positive, finite --seconds length"))
     }
-    let shown = a.rest[0].clone()
-    let path = in_root(a.root.as_str(), shown.as_str())?
-    var r = Box::new(read_file.start(take path, shown.clone()))
-    var bytes = done(r.get_mut().resume())
-    while bytes.is_none() {
-        yield
-        bytes = done(r.get_mut().resume())
-    }
-    let w = wav::read((take bytes).unwrap()?, shown.as_str())?
+    let shown = a.rest[0].as_str()
+    let path = in_root(a.root.as_str(), shown)?
+    let w = wav::read(read_file(path.as_str(), shown)?, shown).map_err(failed)?
     let mono = w.mono()
     let remaining = f64(mono.len()) / w.rate - a.from
     if remaining <= 0.0 {
-        return Err(String::from("partials needs a --from time before the end of the recording"))
+        return Err(ToolError::new("partials needs a --from time before the end of the recording"))
     }
     let length = if seconds < remaining { seconds } else { remaining }
     print(report(mono, w.rate, key, a.from, length).pretty().as_str())

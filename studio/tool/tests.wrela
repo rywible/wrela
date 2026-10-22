@@ -15,16 +15,13 @@ use lens::{
     save_png, screen, start, write_text,
 }
 use main::{compare, read_command, run}
-use std::collections::{Box, Vec}
-use std::job::Step
+use std::collections::Vec
 use std::string::String
-use std::tool::answer
 use std::tool::drive
-use std::tool::drive::Scalar
+use std::tool::drive::{Scalar, Step}
 use std::tool::files
 use std::tool::toolchain
 use std::tool::toolchain::Override
-use toolkit::wait::{done, wait}
 use toolkit::whole::read_file
 
 /// Where a test builds the lens on the package `scratch/<name>`.
@@ -69,94 +66,58 @@ const SPHERE: Text = "use std::field::{Surface, sphere}\n\npub fn subject() -> S
 
 /// Writes the package `scratch/<name>`: its manifest, an empty main, and `files` (each a name
 /// and its text).
-@job
-fn write_package(name: take String, files: take Vec<(String, String)>) {
+fn write_package(name: str, files: [(String, String)]) {
     var all: Vec<(String, String)> = Vec::new()
-    all.push((String::from("wrela.toml"), String::from(f"[package]\nname = \"{name.as_str()}\"\n")))
+    all.push((String::from("wrela.toml"), String::from(f"[package]\nname = \"{name}\"\n")))
     all.push((String::from("main.wrela"), String::from(FRAME)))
     for k in 0..files.len() {
         all.push(files[k].clone())
     }
-    for k in 0..all.len() {
-        let (file, text) = all[k].clone()
-        var w = Box::new(
-            write_text.start(String::from(f"scratch/{name.as_str()}/{file.as_str()}"), take text),
+    for f in all {
+        assert(
+            write_text(f"scratch/{name}/{f.0.as_str()}", f.1.as_str()).is_ok(),
+            "the package's files are written",
         )
-        var ended = done(w.get_mut().resume())
-        while ended.is_none() {
-            yield
-            ended = done(w.get_mut().resume())
-        }
-        assert((take ended).unwrap().is_ok(), "the package's files are written")
     }
 }
 
 /// The lens built at `at`, which must build.
-@job
 pub fn lens_built(at: take Place) -> Built {
-    var b = Box::new(build.start(take at))
-    var ended = done(b.get_mut().resume())
-    while ended.is_none() {
-        yield
-        ended = done(b.get_mut().resume())
-    }
-    let Ok(built) = (take ended).unwrap() else { panic("the lens's program is written and built") }
+    let Ok(built) = build(take at) else { panic("the lens's program is written and built") }
     assert(built.errors.is_empty(), built.errors.as_str())
     built
 }
 
 /// The lens `built`, loaded and started, its screen `n` pixels square (on the CPU alone with
 /// `cpu`), its fit's reference `reference`.
-@job
-fn opened(built: take Built, n: take u32, cpu: take bool, reference: take Option<Vec<u8>>) -> Lens {
-    var s = Box::new(start.start(take built, n, n, cpu, take reference))
-    var ended = done(s.get_mut().resume())
-    while ended.is_none() {
-        yield
-        ended = done(s.get_mut().resume())
+fn opened(built: Built, n: u32, cpu: bool, reference: take Option<Vec<u8>>) -> Lens {
+    let Ok(lens) = start(built, n, n, cpu, take reference) else {
+        panic("the lens loads and starts")
     }
-    let Ok(lens) = (take ended).unwrap() else { panic("the lens loads and starts") }
     lens
 }
 
 /// An action: its export called, frames until the lens isn't busy, and its answer (the last
 /// JSON line it printed).
-@job
-fn act(lens: mut Lens, name: take String, args: take Vec<Scalar>) -> Doc {
-    var c = Box::new(call.start(name.clone(), take args, deferred: false))
-    var ended = done(c.get_mut().resume(mut lens))
-    while ended.is_none() {
-        yield
-        ended = done(c.get_mut().resume(mut lens))
+fn act(lens: mut Lens, name: str, args: [Scalar]) -> Doc {
+    if let Err(why) = call(mut lens, name, args, deferred: false) {
+        panic(f"{name}: {why.message()}")
     }
-    if let Err(why) = (take ended).unwrap() {
-        panic(f"{name.as_str()}: {why.as_str()}")
-    }
-    var l = Box::new(logs.start())
-    var ended = done(l.get_mut().resume(mut lens))
-    while ended.is_none() {
-        yield
-        ended = done(l.get_mut().resume(mut lens))
-    }
-    let Ok(lines) = (take ended).unwrap() else { panic("the lens's lines") }
-    let Some(line) = last_json(lines) else { panic(f"{name.as_str()}: no answer") }
-    let Some(d) = parse(line.as_str()) else {
-        panic(f"{name.as_str()}: {line.as_str()}")
-    }
+    let Some(line) = last_json(logs(mut lens)) else { panic(f"{name}: no answer") }
+    let Some(d) = parse(line.as_str()) else { panic(f"{name}: {line.as_str()}") }
     d
 }
 
 /// The lens's screen.
-@job
 fn pixels(lens: mut Lens) -> Vec<u8> {
-    var s = Box::new(screen.start())
-    var ended = done(s.get_mut().resume(mut lens))
-    while ended.is_none() {
-        yield
-        ended = done(s.get_mut().resume(mut lens))
-    }
-    let Ok(px) = (take ended).unwrap() else { panic("the screen") }
+    let Ok(px) = screen(mut lens) else { panic("the screen") }
     px
+}
+
+/// Export `name` called with `args` on the lens, its lines kept for `logs`: whether the call
+/// was answered, with no trap.
+fn called(lens: mut Lens, name: str, args: [Scalar]) -> bool {
+    lens::steps(mut lens, [Step::Call(String::from(name), Vec::from(args))]).is_ok()
 }
 
 fn f(x: f32) -> Scalar {
@@ -222,19 +183,12 @@ fn literal_at(d: Doc, file: str, text_of: str, column: u32) -> u32 {
 /// studio/glue, the lens's program, checks alone (on its sphere), and exports each action of
 /// `ACTIONS`, with the state and then its arguments, which the headless runner passes.
 @test(tool, read: [("ws", "../..")], budget: 120)
-@job
 fn the_lens_program_exports_each_action() {
-    var c = wait(toolchain::check("ws/studio/glue"))
-    while !c.ready() { yield }
-    let Ok(ch) = toolchain::read_checked(c.polled()) else { panic("the check's request") }
+    let Ok(ch) = toolchain::check("ws/studio/glue").wait() else { panic("the check's request") }
     assert(ch.ok, "studio/glue checks alone")
-    var r = Box::new(read_text.start(String::from("ws/studio/glue/main.wrela")))
-    var ended = done(r.get_mut().resume())
-    while ended.is_none() {
-        yield
-        ended = done(r.get_mut().resume())
+    let Ok(Some(t)) = read_text("ws/studio/glue/main.wrela") else {
+        panic("studio/glue/main.wrela")
     }
-    let Ok(Some(t)) = (take ended).unwrap() else { panic("studio/glue/main.wrela") }
     let text = t.as_str()
     for a in ACTIONS {
         let (name, args) = a
@@ -270,7 +224,6 @@ fn the_lens_program_exports_each_action() {
 /// A drag rounds a literal to its source's unit and exponent: `15cm` to centimetres,
 /// `1.0e-3` to its mantissa's decimals, through `studio::drag::to_decimals` in a lifted build.
 @test(tool, read: [("ws", "../..")], budget: 300)
-@job
 fn literal_rounding_uses_the_source_unit_and_exponent() {
     var files: Vec<(String, String)> = Vec::new()
     files.push(
@@ -289,32 +242,30 @@ fn literal_rounding_uses_the_source_unit_and_exponent() {
             ),
         ),
     )
-    var w = Box::new(write_package.start(String::from("rounding"), take files))
-    while done(w.get_mut().resume()).is_none() { yield }
+    write_package("rounding", files)
     var options = toolchain::options()
     options.lift.push(String::from("rounding"))
     options.overrides.push(
         Override { name: String::from("studio"), dir: String::from("ws/studio") },
     )
-    var b = wait(toolchain::build("scratch/rounding", "scratch/rounding-build", options))
-    while !b.ready() { yield }
-    let Ok(result) = toolchain::read_built(b.polled()) else { panic("the build's request") }
+    let Ok(result) = toolchain::build(
+        "scratch/rounding",
+        "scratch/rounding-build",
+        options,
+    ).wait() else {
+        panic("the build's request")
+    }
     assert(result.ok, "the package builds lifted")
-    var r = wait(files::read("scratch/rounding-build/lift.json"))
-    while !r.ready() { yield }
-    let Ok(bytes) = answer(r.polled()) else { panic("lift.json") }
+    let Ok(bytes) = files::read("scratch/rounding-build/lift.json").wait() else {
+        panic("lift.json")
+    }
     let Some(report_text) = String::from_utf8(take bytes) else { panic("UTF-8") }
     let Some(report) = parse(report_text.as_str()) else { panic("lift.json is JSON") }
     let Some(literals) = report.get(TOP, "literals") else { panic("literals") }
-    var options = drive::cpu()
-    options.workers = 1
-    var l = wait(drive::load("scratch/rounding-build", options))
-    while !l.ready() { yield }
-    let Ok(it) = drive::read_loaded(l.polled()) else { panic("the build loads") }
-    var i = drive::init(it.build)
-    while i.poll().is_none() { yield }
+    // Each case's call, after `init`, in one run of the build.
+    var steps: Vec<Step> = Vec::from([Step::Init])
     for case in 0..4 {
-        let (written, value, expected) = ROUNDINGS[case]
+        let (written, value, _) = ROUNDINGS[case]
         let literal = written.to_string()
         var index = 4294967295
         for k in 0..report.count(literals) {
@@ -324,34 +275,34 @@ fn literal_rounding_uses_the_source_unit_and_exponent() {
             }
         }
         assert(index != 4294967295, f"the lifted literal {literal.as_str()}")
-        var c = wait(drive::call(it.build, "rounded", [u(index), f(value)]))
-        while !c.ready() { yield }
-        let Ok(ran) = drive::read_ran(c.polled()) else { panic("the call") }
-        let Scalar::F32(rounded) = ran.results[0] else { panic("an f32") }
-        assert(
-            rounded == expected,
-            f"rounding {value} in the style of {literal.as_str()}: {rounded}",
-        )
+        steps.push(Step::Call(String::from("rounded"), Vec::from([u(index), f(value)])))
+    }
+    var options = drive::cpu()
+    options.workers = 1
+    let Ok(seen) = drive::run("scratch/rounding-build", options, steps).wait() else {
+        panic("the build loads and runs")
+    }
+    for case in 0..4 {
+        let (written, value, expected) = ROUNDINGS[case]
+        let Scalar::F32(rounded) = seen.ran[case + 1].results[0] else { panic("an f32") }
+        assert(rounded == expected, f"rounding {value} in the style of {written}: {rounded}")
     }
 }
 
 /// Nothing of the studio is in a game's build: the wolf's (its own program, which the lens is
 /// built around) holds none of the lens's code, kernels or strings.
 @test(tool, read: [("ws", "../..")], budget: 300)
-@job
 fn nothing_of_the_studio_is_in_a_games_build() {
-    var b = wait(toolchain::build("ws/content/wolf", "scratch/wolf", toolchain::options()))
-    while !b.ready() { yield }
-    let Ok(result) = toolchain::read_built(b.polled()) else { panic("the build's request") }
+    let Ok(result) = toolchain::build(
+        "ws/content/wolf",
+        "scratch/wolf",
+        toolchain::options(),
+    ).wait() else {
+        panic("the build's request")
+    }
     assert(result.ok, "the wolf builds")
     for file in ["scratch/wolf/manifest.json", "scratch/wolf/game.wasm"] {
-        var j = Box::new(read_file.start(String::from(file), String::from(file)))
-        var read = done(j.get_mut().resume())
-        while read.is_none() {
-            yield
-            read = done(j.get_mut().resume())
-        }
-        let Ok(bytes) = (take read).unwrap() else { panic(file) }
+        let Ok(bytes) = read_file(file, file) else { panic(file) }
         let needles = if file.ends_with("manifest.json") {
             ["start_rays", "step_rays", "sample_grid", "snap_points", "show_canvas", "step_minima"]
         } else {
@@ -368,13 +319,9 @@ fn nothing_of_the_studio_is_in_a_games_build() {
             assert(!holds(bytes, needle), f"the game's build has {needle}")
         }
     }
-    var t = Box::new(read_text.start(String::from("ws/content/wolf/wrela.toml")))
-    var ended = done(t.get_mut().resume())
-    while ended.is_none() {
-        yield
-        ended = done(t.get_mut().resume())
+    let Ok(Some(toml)) = read_text("ws/content/wolf/wrela.toml") else {
+        panic("the wolf's manifest")
     }
-    let Ok(Some(toml)) = (take ended).unwrap() else { panic("the wolf's manifest") }
     assert(toml.as_str().find("studio").is_none(), "the wolf depends on the studio")
 }
 
@@ -403,7 +350,6 @@ fn holds(bytes: [u8], needle: str) -> bool {
 /// frame: the literals the lens lifts, and its synchronous queries; and with a PNG, on the GPU,
 /// they answer the same.
 @test(tool, read: [("ws", "../..")], budget: 300)
-@job
 fn synchronous_answers_need_no_gpu_or_rendered_frame() {
     for name in ["literals", "parts", "probe", "ray", "measure", "spec", "view"] {
         assert(cpu_action(name), name)
@@ -414,24 +360,11 @@ fn synchronous_answers_need_no_gpu_or_rendered_frame() {
     var files: Vec<(String, String)> = Vec::new()
     files.push((String::from("subject.wrela"), String::from(SPHERE)))
     files.push((String::from("wrela.toml"), String::from("[package]\nname = \"lens_subject\"\n")))
-    var w = Box::new(write_package.start(String::from("lens_subject"), take files))
-    while done(w.get_mut().resume()).is_none() { yield }
-    var b = Box::new(lens_built.start(place("lens_subject")))
-    var built = done(b.get_mut().resume())
-    while built.is_none() {
-        yield
-        built = done(b.get_mut().resume())
-    }
-    let lb = (take built).unwrap()
-    var o = Box::new(opened.start(lb.clone(), 896, cpu: true, reference: None))
-    var opened_lens = done(o.get_mut().resume())
-    while opened_lens.is_none() {
-        yield
-        opened_lens = done(o.get_mut().resume())
-    }
-    var lens = (take opened_lens).unwrap()
+    write_package("lens_subject", files)
+    let lb = lens_built(place("lens_subject"))
+    var lens = opened(lb, 896, cpu: true, reference: None)
     for which in 0..7 {
-        let name = SYNCHRONOUS[which].to_string()
+        let name = SYNCHRONOUS[which]
         var args: Vec<Scalar> = Vec::new()
         if which == 2 {
             args = Vec::from([f(1.0), f(0.0), f(0.0)])
@@ -443,20 +376,10 @@ fn synchronous_answers_need_no_gpu_or_rendered_frame() {
             args = Vec::from([u(0)])
         }
         // On the CPU, as the command line runs these: the export called, no frame.
-        var cl = wait(drive::call(lens.b, name.as_str(), take args))
-        while !cl.ready() { yield }
-        let Ok(ran) = drive::read_ran(cl.polled()) else { panic(name.as_str()) }
-        assert(ran.trap.is_none(), name.as_str())
-        var l = Box::new(logs.start())
-        var logged = done(l.get_mut().resume(mut lens))
-        while logged.is_none() {
-            yield
-            logged = done(l.get_mut().resume(mut lens))
-        }
-        let Ok(lines) = (take logged).unwrap() else { panic("lines") }
-        let Some(at) = last_json(lines) else { panic(f"{name.as_str()}: no answer") }
+        assert(called(mut lens, name, args), name)
+        let Some(at) = last_json(logs(mut lens)) else { panic(f"{name}: no answer") }
         let Some(d) = parse(at.as_str()) else { panic(at.as_str()) }
-        assert(text(d, TOP, "action") == name || which == 3 || which == 4, at.as_str())
+        assert(text(d, TOP, "action").as_str() == name || which == 3 || which == 4, at.as_str())
         if which == 0 {
             // The sphere's radius, its one literal, as the build lifted it.
             assert(num(d, TOP, "count") == 1.0, at.as_str())
@@ -493,14 +416,14 @@ fn synchronous_answers_need_no_gpu_or_rendered_frame() {
         }
     }
     // The lens's build is the browser's: no compiled code is kept beside it.
-    var lst = wait(files::list("scratch/out/lens_subject/page"))
-    while !lst.ready() { yield }
-    let Ok(entries) = files::read_list(lst.polled()) else { panic("the page lists") }
+    let Ok(entries) = files::list("scratch/out/lens_subject/page").wait() else {
+        panic("the page lists")
+    }
     var wasm = false
     var manifest = false
     var shaders = 0
-    for k in 0..entries.len() {
-        let n = entries[k].name.as_str()
+    for e in entries {
+        let n = e.name.as_str()
         wasm = wasm || n == "game.wasm"
         manifest = manifest || n == "manifest.json"
         if n.ends_with(".wgsl") {
@@ -510,19 +433,16 @@ fn synchronous_answers_need_no_gpu_or_rendered_frame() {
     }
     assert(wasm && manifest && shaders > 0, "the browser's artifacts")
     // With a PNG, the same answers, from the GPU's lens, which draws.
-    var png = Box::new(literals_with_a_png_keeps_the_same_answer_and_draws.start(take lb))
-    while done(png.get_mut().resume()).is_none() { yield }
+    literals_with_a_png_keeps_the_same_answer_and_draws(lb)
 }
 
 /// An action named wrong, or with arguments that aren't its own, or a flag the tool doesn't
 /// take, is refused before the lens is built (status 2), and nothing is written.
 @test(tool, read: [("ws", "../..")], budget: 300)
-@job
 fn invalid_actions_are_rejected_before_building() {
     var files: Vec<(String, String)> = Vec::new()
     files.push((String::from("subject.wrela"), String::from(SPHERE)))
-    var w = Box::new(write_package.start(String::from("invalid"), take files))
-    while done(w.get_mut().resume()).is_none() { yield }
+    write_package("invalid", files)
     let cases = [
         ("no-such-action", "", "", ""),
         ("probe", "", "", ""),
@@ -540,72 +460,35 @@ fn invalid_actions_are_rejected_before_building() {
             }
         }
         let Some(c) = read_command(given) else { panic("a command") }
-        var r = Box::new(
-            run.start(place("invalid"), c.clone(), String::from(a), String::from("invalid")),
-        )
-        var ended = done(r.get_mut().resume())
-        while ended.is_none() {
-            yield
-            ended = done(r.get_mut().resume())
-        }
-        assert((take ended).unwrap() == 2, f"{a} {x}")
+        assert(run(place("invalid"), c, a, "invalid") == 2, f"{a} {x}")
     }
     for flag in ["literals", "look", "serve"] {
         let words = [String::from("invalid"), String::from(flag), String::from("--artifacts-only")]
         assert(read_command(words).is_none(), "a flag the tool doesn't take")
     }
-    var s = wait(files::stat("scratch/out"))
-    while !s.ready() { yield }
-    assert(files::read_entry(s.polled()).is_err(), "an invalid action must not start a build")
+    assert(files::stat("scratch/out").wait().is_err(), "an invalid action must not start a build")
 }
 
 /// With a PNG, an action that answers on the CPU runs on the GPU instead: the same answer, and
 /// the lens drew the subject.
-@job
-fn literals_with_a_png_keeps_the_same_answer_and_draws(lb: take Built) {
+fn literals_with_a_png_keeps_the_same_answer_and_draws(lb: Built) {
     var answers: Vec<String> = Vec::new()
     for gpu in [false, true] {
-        var o = Box::new(opened.start(lb.clone(), 64, !gpu, None))
-        var opened_lens = done(o.get_mut().resume())
-        while opened_lens.is_none() {
-            yield
-            opened_lens = done(o.get_mut().resume())
-        }
-        var lens = (take opened_lens).unwrap()
+        var lens = opened(lb, 64, !gpu, None)
         for which in 0..2 {
             let name = if which == 0 { "literals" } else { "probe" }
             let args = if which == 0 { Vec::new() } else { Vec::from([f(1.0), f(0.0), f(0.0)]) }
             if gpu {
-                var a = Box::new(act.start(String::from(name), take args))
-                var ended = done(a.get_mut().resume(mut lens))
-                while ended.is_none() {
-                    yield
-                    ended = done(a.get_mut().resume(mut lens))
-                }
-                answers.push((take ended).unwrap().write(TOP))
+                answers.push(act(mut lens, name, args).write(TOP))
             } else {
-                var cl = drive::call(lens.b, name, take args)
-                while cl.poll().is_none() { yield }
-                var l = Box::new(logs.start())
-                var ended = done(l.get_mut().resume(mut lens))
-                while ended.is_none() {
-                    yield
-                    ended = done(l.get_mut().resume(mut lens))
-                }
-                let Ok(lines) = (take ended).unwrap() else { panic("lines") }
-                let Some(j) = last_json(lines) else { panic("an answer") }
+                let _ = called(mut lens, name, args)
+                let Some(j) = last_json(logs(mut lens)) else { panic("an answer") }
                 let Some(d) = parse(j.as_str()) else { panic("JSON") }
                 answers.push(d.write(TOP))
             }
         }
         if gpu {
-            var p = Box::new(pixels.start())
-            var ended = done(p.get_mut().resume(mut lens))
-            while ended.is_none() {
-                yield
-                ended = done(p.get_mut().resume(mut lens))
-            }
-            let px = (take ended).unwrap()
+            let px = pixels(mut lens)
             assert(px.len() == 64 * 64 * 4, "the screen's size")
             var differs = false
             for i in 0..64 * 64 {
@@ -617,8 +500,7 @@ fn literals_with_a_png_keeps_the_same_answer_and_draws(lb: take Built) {
             }
             assert(differs, "the lens drew no subject")
         }
-        var cl = drive::close(lens.b)
-        while cl.poll().is_none() { yield }
+        let _ = drive::close(lens.b).wait()
     }
     assert(answers[0] == answers[2], "the literals' answer with a PNG")
     assert(answers[1] == answers[3], "a CPU field query must match the rendered lens")
@@ -629,27 +511,13 @@ fn literals_with_a_png_keeps_the_same_answer_and_draws(lb: take Built) {
 /// fits a literal to it; `zoom` frames a close-up and the colour mode draws (clay, for a
 /// subject without channels).
 @test(tool, read: [("ws", "../..")], budget: 600)
-@job
 fn specs_blueprints_and_close_ups_answer_on_a_ball() {
     var files: Vec<(String, String)> = Vec::new()
     files.push((String::from("subject.wrela"), String::from(BALL)))
     files.push((String::from("spec.wrela"), String::from(BALL_SPEC)))
     files.push((String::from("blueprint.wrela"), String::from(BALL_BLUEPRINT)))
-    var w = Box::new(write_package.start(String::from("ball"), take files))
-    while done(w.get_mut().resume()).is_none() { yield }
-    var b = Box::new(lens_built.start(place("ball")))
-    var built = done(b.get_mut().resume())
-    while built.is_none() {
-        yield
-        built = done(b.get_mut().resume())
-    }
-    var o = Box::new(opened.start((take built).unwrap(), 512, cpu: false, reference: None))
-    var opened_lens = done(o.get_mut().resume())
-    while opened_lens.is_none() {
-        yield
-        opened_lens = done(o.get_mut().resume())
-    }
-    var lens = (take opened_lens).unwrap()
+    write_package("ball", files)
+    var lens = opened(lens_built(place("ball")), 512, cpu: false, reference: None)
     // Each action in turn, its answer checked.
     let steps = [
         "spec",
@@ -688,13 +556,7 @@ fn specs_blueprints_and_close_ups_answer_on_a_ball() {
         } else if step == "view" {
             args = Vec::from([u(0)])
         }
-        var a = Box::new(act.start(take name, take args))
-        var answered = done(a.get_mut().resume(mut lens))
-        while answered.is_none() {
-            yield
-            answered = done(a.get_mut().resume(mut lens))
-        }
-        let d = (take answered).unwrap()
+        let d = act(mut lens, name.as_str(), args)
         let all = d.write(TOP)
         let s = all.as_str()
         if step == "spec" {
@@ -732,13 +594,7 @@ fn specs_blueprints_and_close_ups_answer_on_a_ball() {
         } else if step == "view" {
             // Zoomed on the top of the ball: clay fills the lower half of the view (and the
             // views' grid is the fitted ball's: a stale one culls bands of it).
-            var p = Box::new(pixels.start())
-            var ended = done(p.get_mut().resume(mut lens))
-            while ended.is_none() {
-                yield
-                ended = done(p.get_mut().resume(mut lens))
-            }
-            let px = (take ended).unwrap()
+            let px = pixels(mut lens)
             let i = ((512 * 3 / 4) * 512 + 256) * 4
             assert(px[i] > 150 && px[i + 1] > 150 && px[i + 2] > 150, "clay")
         } else if step == "zoom off" {
@@ -754,45 +610,15 @@ fn specs_blueprints_and_close_ups_answer_on_a_ball() {
 /// through `wrela edit`'s code to a copy, which is rebuilt (a normal build) and measured on the
 /// CPU: the dragged point lands within 1 mm of its target.
 @test(tool, read: [("ws", "../..")], budget: 600)
-@job
 fn the_lens_draws_probes_and_drags_the_great_tree() {
     // The copy, its dependency on the engine read from the workspace.
-    var copied: Vec<(String, String)> = Vec::new()
     for file in ["main.wrela", "subject.wrela", "tree.wrela", "wrela.toml"] {
-        var r = Box::new(read_text.start(String::from(f"ws/content/great-tree/{file}")))
-        var ended = done(r.get_mut().resume())
-        while ended.is_none() {
-            yield
-            ended = done(r.get_mut().resume())
-        }
-        let Ok(Some(t)) = (take ended).unwrap() else { panic(file) }
-        copied.push((String::from(file), take t))
-    }
-    for k in 0..copied.len() {
-        let (file, t) = copied[k].clone()
-        var w = Box::new(write_text.start(String::from(f"scratch/tree/{file.as_str()}"), take t))
-        var ended = done(w.get_mut().resume())
-        while ended.is_none() {
-            yield
-            ended = done(w.get_mut().resume())
-        }
-        assert((take ended).unwrap().is_ok(), "the copy")
+        let Ok(Some(t)) = read_text(f"ws/content/great-tree/{file}") else { panic(file) }
+        assert(write_text(f"scratch/tree/{file}", t.as_str()).is_ok(), "the copy")
     }
     var at = place("tree")
     at.overrides.push(Override { name: String::from("engine"), dir: String::from("ws/engine") })
-    var b = Box::new(lens_built.start(at.clone()))
-    var built = done(b.get_mut().resume())
-    while built.is_none() {
-        yield
-        built = done(b.get_mut().resume())
-    }
-    var o = Box::new(opened.start((take built).unwrap(), 512, cpu: false, reference: None))
-    var opened_lens = done(o.get_mut().resume())
-    while opened_lens.is_none() {
-        yield
-        opened_lens = done(o.get_mut().resume())
-    }
-    var lens = (take opened_lens).unwrap()
+    var lens = opened(lens_built(at.clone()), 512, cpu: false, reference: None)
     // Drawn: the whole tree, its crown 16 m up, framed in the side view.
     var steps: Vec<(String, Vec<Scalar>)> = Vec::new()
     steps.push((String::from("describe"), Vec::new()))
@@ -804,14 +630,7 @@ fn the_lens_draws_probes_and_drags_the_great_tree() {
     steps.push((String::from("probe"), Vec::from([f(0.0), f(0.5), f(0.0)])))
     var crown = vec3(0.0)
     for k in 0..steps.len() {
-        let (name, args) = steps[k].clone()
-        var a = Box::new(act.start(take name, take args))
-        var answered = done(a.get_mut().resume(mut lens))
-        while answered.is_none() {
-            yield
-            answered = done(a.get_mut().resume(mut lens))
-        }
-        let d = (take answered).unwrap()
+        let d = act(mut lens, steps[k].0.as_str(), steps[k].1)
         let all = d.write(TOP)
         let s = all.as_str()
         if k == 0 {
@@ -821,13 +640,7 @@ fn the_lens_draws_probes_and_drags_the_great_tree() {
             let h = point(d, hi)
             assert(h.y > 15.0 && h.x - l.x > 18.0, f"the tree's bounds: {s}")
         } else if k == 1 {
-            var p = Box::new(pixels.start())
-            var ended = done(p.get_mut().resume(mut lens))
-            while ended.is_none() {
-                yield
-                ended = done(p.get_mut().resume(mut lens))
-            }
-            let px = (take ended).unwrap()
+            let px = pixels(mut lens)
             var drawn = 0
             for i in 0..512 * 512 {
                 var differs = false
@@ -859,31 +672,14 @@ fn the_lens_draws_probes_and_drags_the_great_tree() {
     }
     // Dragged: a point on the crown's side 25 cm out, written through `wrela edit`.
     let to = crown + vec3(0.25, 0.0, 0.0)
-    var m = Box::new(
-        act.start(
-            String::from("move"),
-            Vec::from([f(crown.x), f(crown.y), f(crown.z), f(to.x), f(to.y), f(to.z)]),
-        ),
-    )
-    var moved = done(m.get_mut().resume(mut lens))
-    while moved.is_none() {
-        yield
-        moved = done(m.get_mut().resume(mut lens))
-    }
-    let md = (take moved).unwrap()
+    let md = act(mut lens, "move", [f(crown.x), f(crown.y), f(crown.z), f(to.x), f(to.y), f(to.z)])
     let mall = md.write(TOP)
     let Some(changed) = md.get(TOP, "literals") else { panic(mall.as_str()) }
     assert(md.count(changed) >= 1 && md.count(changed) <= 8, mall.as_str())
     assert(num(md, TOP, "error_mm") <= 1.0, mall.as_str())
     let Some(target) = md.get(TOP, "to") else { panic(mall.as_str()) }
     let landing = point(md, target)
-    var wr = Box::new(act.start(String::from("write"), Vec::new()))
-    var wrote = done(wr.get_mut().resume(mut lens))
-    while wrote.is_none() {
-        yield
-        wrote = done(wr.get_mut().resume(mut lens))
-    }
-    let wd = (take wrote).unwrap()
+    let wd = act(mut lens, "write", [])
     let wall = wd.write(TOP)
     let Some(a) = wd.get(TOP, "answer") else { panic(wall.as_str()) }
     let Some(ok) = wd.get(a, "written") else { panic(wall.as_str()) }
@@ -893,59 +689,48 @@ fn the_lens_draws_probes_and_drags_the_great_tree() {
     options.overrides.push(
         Override { name: String::from("engine"), dir: String::from("ws/engine") },
     )
-    var rb = wait(toolchain::build("scratch/tree", "scratch/tree-rebuilt", options))
-    while !rb.ready() { yield }
-    let Ok(result) = toolchain::read_built(rb.polled()) else { panic("the rebuild's request") }
+    let Ok(result) = toolchain::build("scratch/tree", "scratch/tree-rebuilt", options).wait() else {
+        panic("the rebuild's request")
+    }
     assert(result.ok, "the written tree builds")
-    var l = wait(drive::load("scratch/tree-rebuilt", drive::cpu()))
-    while !l.ready() { yield }
-    let Ok(it) = drive::read_loaded(l.polled()) else { panic("the rebuilt tree loads") }
-    var i = drive::init(it.build)
-    while i.poll().is_none() { yield }
-    var c = wait(drive::call(it.build, "distance", [f(landing.x), f(landing.y), f(landing.z)]))
-    while !c.ready() { yield }
-    let Ok(ran) = drive::read_ran(c.polled()) else { panic("distance") }
-    let Scalar::F32(d) = ran.results[0] else { panic("an f32") }
+    let distance = Step::Call(
+        String::from("distance"),
+        Vec::from([f(landing.x), f(landing.y), f(landing.z)]),
+    )
+    let Ok(seen) = drive::run(
+        "scratch/tree-rebuilt",
+        drive::cpu(),
+        [Step::Init, take distance],
+    ).wait() else {
+        panic("the rebuilt tree loads")
+    }
+    let Scalar::F32(d) = seen.ran[1].results[0] else { panic("an f32") }
     assert(abs(d) <= 0.001, f"the rebuilt tree is {abs(d) * 1000.0} mm from the target")
 }
 
 /// The ball, then its copies for a comparison.
-@job
-fn ball(name: take String, subject: take String) {
+fn ball(name: str, subject: str) {
     var files: Vec<(String, String)> = Vec::new()
-    files.push((String::from("subject.wrela"), take subject))
-    var w = Box::new(write_package.start(take name, take files))
-    while done(w.get_mut().resume()).is_none() { yield }
+    files.push((String::from("subject.wrela"), String::from(subject)))
+    write_package(name, files)
 }
 
 /// A comparison's answer: `words` as the command line gives them (the subject first), on the
 /// lens `shared` built on the subject, or one built for it now.
-@job
-fn compared(words: take Vec<String>, shared: take Option<Built>) -> Doc {
-    let Some(c) = read_command(words.clone()) else { panic("a command") }
-    let subject = words[0].clone()
-    var b = Box::new(lens_built.start(place(subject.as_str())))
-    var built: Option<Built> = take shared
-    while built.is_none() {
-        match b.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(x) => built = Some(take x),
-        }
+fn compared(words: [String], shared: take Option<Built>) -> Doc {
+    let Some(c) = read_command(words) else { panic("a command") }
+    let subject = words[0].as_str()
+    let lb = match take shared {
+        Some(b) => take b,
+        None => lens_built(place(subject)),
     }
-    let lb = (take built).unwrap()
     var rest: Vec<String> = Vec::new()
     for k in 2..c.rest.len() {
         rest.push(c.rest[k].clone())
     }
-    var j = Box::new(
-        compare.start(place(subject.as_str()), take lb, c.rest[1].clone(), take rest, c.clone()),
-    )
-    var ended = done(j.get_mut().resume())
-    while ended.is_none() {
-        yield
-        ended = done(j.get_mut().resume())
+    let Ok(answered) = compare(place(subject), lb, c.rest[1].as_str(), rest, c) else {
+        panic("the comparison")
     }
-    let Ok(answered) = (take ended).unwrap() else { panic("the comparison") }
     let (status, answer) = take answered
     assert(status == 0, "the comparison's words")
     let Some(d) = parse(answer.as_str()) else { panic(answer.as_str()) }
@@ -953,23 +738,15 @@ fn compared(words: take Vec<String>, shared: take Option<Built>) -> Doc {
 }
 
 /// The size of the PNG at `path`.
-@job
-fn png_size(path: take String) -> (u32, u32) {
-    var r = Box::new(read_png.start(take path))
-    var ended = done(r.get_mut().resume())
-    while ended.is_none() {
-        yield
-        ended = done(r.get_mut().resume())
-    }
-    let Ok(Some(image)) = (take ended).unwrap() else { panic("a PNG") }
+fn png_size(path: str) -> (u32, u32) {
+    let Ok(Some(image)) = read_png(path) else { panic("a PNG") }
     let (w, h, _) = take image
-    return (w, h)
+    (w, h)
 }
 
 /// `beside`: a ball beside a photo of itself (a dark disc drawn where the ball is, registered)
 /// covers it; moved 10 cm, it covers less.
-@job
-fn a_ball_beside_its_own_photo_covers_it(ball_built: take Built) {
+fn a_ball_beside_its_own_photo_covers_it(ball_built: Built) {
     // The photo: 400×300 pixels, 2 mm a pixel, the ground on row 280, z = 0 on column 200; a
     // dark disc where the ball is (0.30 m across its radius, its centre 0.30 m up).
     var rgba: Vec<u8> = Vec::with_capacity(400 * 300 * 4)
@@ -984,22 +761,11 @@ fn a_ball_beside_its_own_photo_covers_it(ball_built: take Built) {
             rgba.push(if v == 40 { 255 } else { 240 })
         }
     }
-    var s = Box::new(
-        save_png.start(String::from("scratch/photo.png"), width: 400, height: 300, rgba: take rgba),
+    assert(
+        save_png("scratch/photo.png", width: 400, height: 300, rgba: take rgba).is_ok(),
+        "the photo",
     )
-    var ended = done(s.get_mut().resume())
-    while ended.is_none() {
-        yield
-        ended = done(s.get_mut().resume())
-    }
-    assert((take ended).unwrap().is_ok(), "the photo")
-    var moved = Box::new(
-        ball.start(
-            String::from("beside_moved"),
-            replace(BALL, "vec3(0.0, 0.30, 0.0)", "vec3(0.0, 0.30, 0.10)"),
-        ),
-    )
-    while done(moved.get_mut().resume()).is_none() { yield }
+    ball("beside_moved", replace(BALL, "vec3(0.0, 0.30, 0.0)", "vec3(0.0, 0.30, 0.10)").as_str())
     for k in 0..2 {
         let name = if k == 0 { "ball" } else { "beside_moved" }
         var words: Vec<String> = Vec::new()
@@ -1015,26 +781,13 @@ fn a_ball_beside_its_own_photo_covers_it(ball_built: take Built) {
             words.push(String::from(word))
         }
         let shared = if k == 0 { Some(ball_built.clone()) } else { None }
-        var cmp = Box::new(compared.start(take words, take shared))
-        var answered = done(cmp.get_mut().resume())
-        while answered.is_none() {
-            yield
-            answered = done(cmp.get_mut().resume())
-        }
-        let d = (take answered).unwrap()
+        let d = compared(words, take shared)
         let all = d.write(TOP)
         let share = num(d, TOP, "silhouette_on_dark_photo_pixels")
         if k == 0 {
             // Pixels on the disc's edge blend it with the background.
             assert(share > 0.95, all.as_str())
-            var p = Box::new(png_size.start(String::from("scratch/beside.png")))
-            var ended = done(p.get_mut().resume())
-            while ended.is_none() {
-                yield
-                ended = done(p.get_mut().resume())
-            }
-            let size = (take ended).unwrap()
-            assert(size == (3 * 448, 448), "three panels at half size")
+            assert(png_size("scratch/beside.png") == (3 * 448, 448), "three panels at half size")
         } else {
             assert(share < 0.9, all.as_str())
         }
@@ -1043,56 +796,24 @@ fn a_ball_beside_its_own_photo_covers_it(ball_built: take Built) {
 
 /// `variants` and `sweep`: two balls side by side, and one literal swept, each a numbered
 /// panel.
-@job
-fn variants_and_sweeps_are_numbered_panels(ball_built: take Built) {
-    var bl = Box::new(
-        ball.start(String::from("variant_b"), replace(BALL, "sphere(0.30)", "sphere(0.20)")),
-    )
-    while done(bl.get_mut().resume()).is_none() { yield }
+fn variants_and_sweeps_are_numbered_panels(ball_built: Built) {
+    ball("variant_b", replace(BALL, "sphere(0.30)", "sphere(0.20)").as_str())
     var words: Vec<String> = Vec::new()
     for word in ["ball", "variants", "variant_b", "--png", "variants.png"] {
         words.push(String::from(word))
     }
-    var cmp = Box::new(compared.start(take words, Some(ball_built.clone())))
-    var answered = done(cmp.get_mut().resume())
-    while answered.is_none() {
-        yield
-        answered = done(cmp.get_mut().resume())
-    }
-    let v = (take answered).unwrap()
+    let v = compared(words, Some(ball_built.clone()))
     let Some(panels) = v.get(TOP, "panels") else { panic("panels") }
     assert(v.count(panels) == 2, v.write(TOP).as_str())
-    var p = Box::new(png_size.start(String::from("scratch/variants.png")))
-    var ended = done(p.get_mut().resume())
-    while ended.is_none() {
-        yield
-        ended = done(p.get_mut().resume())
-    }
-    let (w, _) = (take ended).unwrap()
+    let (w, _) = png_size("scratch/variants.png")
     assert(w == 2 * 448, "two panels")
     // The radius: the literal `0.30` at column 12 of subject.wrela.
-    var o = Box::new(opened.start(ball_built.clone(), 64, cpu: true, reference: None))
-    var opened_lens = done(o.get_mut().resume())
-    while opened_lens.is_none() {
-        yield
-        opened_lens = done(o.get_mut().resume())
-    }
-    var lens = (take opened_lens).unwrap()
-    var cl = drive::call(lens.b, "literals", [])
-    while cl.poll().is_none() { yield }
-    var l = Box::new(logs.start())
-    var radius = 0
-    var ended = done(l.get_mut().resume(mut lens))
-    while ended.is_none() {
-        yield
-        ended = done(l.get_mut().resume(mut lens))
-    }
-    let Ok(lines) = (take ended).unwrap() else { panic("lines") }
-    let Some(j) = last_json(lines) else { panic("literals") }
+    var lens = opened(ball_built, 64, cpu: true, reference: None)
+    let _ = called(mut lens, "literals", [])
+    let Some(j) = last_json(logs(mut lens)) else { panic("literals") }
     let Some(d) = parse(j.as_str()) else { panic("JSON") }
-    radius = literal_at(d, "subject.wrela", "0.30", 12)
-    var cls = drive::close(lens.b)
-    while cls.poll().is_none() { yield }
+    let radius = literal_at(d, "subject.wrela", "0.30", 12)
+    let _ = drive::close(lens.b).wait()
     var sweep: Vec<String> = Vec::new()
     sweep.push(String::from("ball"))
     sweep.push(String::from("sweep"))
@@ -1100,13 +821,7 @@ fn variants_and_sweeps_are_numbered_panels(ball_built: take Built) {
     for word in ["0.1", "0.2", "0.3", "--png", "sweep.png"] {
         sweep.push(String::from(word))
     }
-    var sw = Box::new(compared.start(take sweep, Some(ball_built.clone())))
-    var swept = done(sw.get_mut().resume())
-    while swept.is_none() {
-        yield
-        swept = done(sw.get_mut().resume())
-    }
-    let s = (take swept).unwrap()
+    let s = compared(sweep, Some(ball_built.clone()))
     let Some(sp) = s.get(TOP, "panels") else { panic("panels") }
     assert(s.count(sp) == 3, s.write(TOP).as_str())
     let expected = [0.1, 0.2, 0.3]
@@ -1119,39 +834,16 @@ fn variants_and_sweeps_are_numbered_panels(ball_built: take Built) {
 /// A comparison draws only the final image of consecutive view controls: the pixels are those
 /// of each control drawn in turn, also after a literal changed (the field reaches the GPU before
 /// the image).
-@job
-fn deferred_view_controls_keep_the_same_pixels_after_literal_changes(lb: take Built) {
+fn deferred_view_controls_keep_the_same_pixels_after_literal_changes(lb: Built) {
     for set in [false, true] {
         var images: Vec<Vec<u8>> = Vec::new()
         var framings: Vec<String> = Vec::new()
         for batched in [false, true] {
             // A fresh lens each time.
-            var o = Box::new(opened.start(lb.clone(), 64, cpu: false, reference: None))
-            var opened_lens = done(o.get_mut().resume())
-            while opened_lens.is_none() {
-                yield
-                opened_lens = done(o.get_mut().resume())
-            }
-            var lens = (take opened_lens).unwrap()
-            var v = Box::new(call.start(String::from("view"), Vec::from([u(0)]), batched))
-            var ended = done(v.get_mut().resume(mut lens))
-            while ended.is_none() {
-                yield
-                ended = done(v.get_mut().resume(mut lens))
-            }
-            let x = (take ended).unwrap()
-            assert(x.is_ok(), "view")
-            var l = Box::new(logs.start())
-            var framing = look::Framing { z: 0.0, y: 0.0, half: 0.0 }
-            var ended = done(l.get_mut().resume(mut lens))
-            while ended.is_none() {
-                yield
-                ended = done(l.get_mut().resume(mut lens))
-            }
-            let Ok(lines) = (take ended).unwrap() else { panic("lines") }
-            let Some(j) = last_json(lines) else { panic("the view's answer") }
-            let Ok(fr) = look::own_framing(j.as_str()) else { panic("a framing") }
-            framing = fr
+            var lens = opened(lb, 64, cpu: false, reference: None)
+            assert(call(mut lens, "view", [u(0)], batched).is_ok(), "view")
+            let Some(j) = last_json(logs(mut lens)) else { panic("the view's answer") }
+            let Ok(framing) = look::own_framing(j.as_str()) else { panic("a framing") }
             framings.push(String::from(f"{framing.z} {framing.y} {framing.half}"))
             var calls: Vec<(String, Vec<Scalar>)> = Vec::new()
             if set {
@@ -1166,35 +858,20 @@ fn deferred_view_controls_keep_the_same_pixels_after_literal_changes(lb: take Bu
             calls.push((String::from("mode"), Vec::from([u(2), u(0)])))
             calls.push((String::from("view"), Vec::from([u(0)])))
             if batched {
-                var s = Box::new(main::shot.start(take calls))
-                var ended = done(s.get_mut().resume(mut lens))
-                while ended.is_none() {
-                    yield
-                    ended = done(s.get_mut().resume(mut lens))
+                let Ok(px) = main::shot(mut lens, calls) else {
+                    panic("one image after view controls")
                 }
-                let Ok(px) = (take ended).unwrap() else { panic("one image after view controls") }
                 images.push(take px)
             } else {
-                for k in 0..calls.len() {
-                    let (name, args) = calls[k].clone()
-                    var c = Box::new(call.start(take name, take args, deferred: false))
-                    var ended = done(c.get_mut().resume(mut lens))
-                    while ended.is_none() {
-                        yield
-                        ended = done(c.get_mut().resume(mut lens))
-                    }
-                    assert((take ended).unwrap().is_ok(), "render each control separately")
+                for c in calls {
+                    assert(
+                        call(mut lens, c.0.as_str(), c.1, deferred: false).is_ok(),
+                        "render each control separately",
+                    )
                 }
-                var p = Box::new(pixels.start())
-                var ended = done(p.get_mut().resume(mut lens))
-                while ended.is_none() {
-                    yield
-                    ended = done(p.get_mut().resume(mut lens))
-                }
-                images.push((take ended).unwrap())
+                images.push(pixels(mut lens))
             }
-            var cl = drive::close(lens.b)
-            while cl.poll().is_none() { yield }
+            let _ = drive::close(lens.b).wait()
         }
         assert(framings[0] == framings[1], "the framing without an extra image")
         assert(images[0] == images[1], if set { "after a literal changed" } else { "as built" })
@@ -1204,23 +881,10 @@ fn deferred_view_controls_keep_the_same_pixels_after_literal_changes(lb: take Bu
 /// The comparisons and the view controls they batch, on one build of the ball: `beside`,
 /// `variants` and `sweep`, and the pixels of deferred view controls.
 @test(tool, read: [("ws", "../..")], budget: 600)
-@job
 fn the_ball_compares_by_eye() {
-    var bl = Box::new(ball.start(String::from("ball"), String::from(BALL)))
-    while done(bl.get_mut().resume()).is_none() { yield }
-    var b = Box::new(lens_built.start(place("ball")))
-    var built = done(b.get_mut().resume())
-    while built.is_none() {
-        yield
-        built = done(b.get_mut().resume())
-    }
-    let lb = (take built).unwrap()
-    var a = Box::new(a_ball_beside_its_own_photo_covers_it.start(lb.clone()))
-    while done(a.get_mut().resume()).is_none() { yield }
-    var v = Box::new(variants_and_sweeps_are_numbered_panels.start(lb.clone()))
-    while done(v.get_mut().resume()).is_none() { yield }
-    var d = Box::new(
-        deferred_view_controls_keep_the_same_pixels_after_literal_changes.start(take lb),
-    )
-    while done(d.get_mut().resume()).is_none() { yield }
+    ball("ball", BALL)
+    let lb = lens_built(place("ball"))
+    a_ball_beside_its_own_photo_covers_it(lb)
+    variants_and_sweeps_are_numbered_panels(lb)
+    deferred_view_controls_keep_the_same_pixels_after_literal_changes(lb)
 }

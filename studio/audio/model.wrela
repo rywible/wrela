@@ -20,16 +20,16 @@
 
 use dsp::{Plan, clamp_of, max_of, median}
 use json::{Value, obj}
-use main::{Args, in_root}
+use main::{Args, failed, in_root}
 use measure::{Decay, Measured, N, Setup, assemble, frame_levels, line, setup, two_stage}
-use std::collections::{Box, Vec}
+use std::collections::Vec
 use std::io::print
 use std::string::String
+use std::tool::ToolError
 use std::tool::files
 use std::tool::files::Kind
 use std::tool::toolchain
 use std::math
-use toolkit::wait::{done, said, wait}
 use toolkit::whole::{read_file, write_file}
 
 /// The bands' count. Their centres run from 25 Hz to 12 kHz, evenly in log frequency, as
@@ -272,14 +272,10 @@ fn list_text(xs: [u32]) -> String {
 }
 
 /// The notes in `dir` (a root path; `shown` as given), read and measured.
-@job
-fn read_notes(dir: take String, shown: take String) -> Result<Notes, String> {
-    var l = wait(files::list(dir.as_str()))
-    while !l.ready() { yield }
-    let entries = match files::read_list(l.polled()) {
-        Ok(e) => take e,
-        Err(e) => return Err(String::from(f"can't read {shown}: {e.message()}")),
-    }
+fn read_notes(dir: str, shown: str) -> Result<Notes, ToolError> {
+    let entries = files::list(dir)
+        .wait()
+        .map_err(|e| ToolError::new(f"can't read {shown}: {e.message()}"))?
     var named: Vec<(u32, u32, String)> = Vec::new()
     for e in entries {
         if e.kind == Kind::Dir {
@@ -291,7 +287,7 @@ fn read_notes(dir: take String, shown: take String) -> Result<Notes, String> {
     }
     named.sort_by(|a, b| a.0 < b.0 || (a.0 == b.0 && a.1 < b.1))
     if named.is_empty() {
-        return Err(String::from(f"{shown} has no notes"))
+        return Err(ToolError::new(f"{shown} has no notes"))
     }
     // The keys, and the first key's velocities: every key has to have the same.
     var keys: Vec<u32> = Vec::new()
@@ -315,7 +311,7 @@ fn read_notes(dir: take String, shown: take String) -> Result<Notes, String> {
     }
     if keys.len() != KEYS || velocities.len() != VELOCITIES || !same {
         return Err(
-            String::from(
+            ToolError::new(
                 f"the model needs {KEYS} keys, each at the same {VELOCITIES} velocities; {shown} has {keys.len()} keys at {list_text(velocities)}",
             ),
         )
@@ -325,13 +321,7 @@ fn read_notes(dir: take String, shown: take String) -> Result<Notes, String> {
         let (k, v, name) = named[i].clone()
         let path = String::from(f"{dir}/{name}")
         let file = String::from(f"{shown}/{name}")
-        var r = Box::new(read_file.start(take path, file.clone()))
-        var bytes = done(r.get_mut().resume())
-        while bytes.is_none() {
-            yield
-            bytes = done(r.get_mut().resume())
-        }
-        let w = wav::read((take bytes).unwrap()?, file.as_str())?
+        let w = wav::read(read_file(path.as_str(), file.as_str())?, file.as_str()).map_err(failed)?
         let mono = w.mono()
         let length = f64(mono.len()) / w.rate - 0.5
         by.push(
@@ -728,56 +718,31 @@ fn source(t: Tables, keys: [u32], velocities: [u32], shown: str) -> String {
 }
 
 /// The notes in `dir` (as given), read and measured.
-@job
-fn notes_in(root: take String, shown: take String) -> Result<Notes, String> {
-    let dir = in_root(root.as_str(), shown.as_str())?
-    var r = Box::new(read_notes.start(take dir, take shown))
-    var n = done(r.get_mut().resume())
-    while n.is_none() {
-        yield
-        n = done(r.get_mut().resume())
-    }
-    (take n).unwrap()
+fn notes_in(root: str, shown: str) -> Result<Notes, ToolError> {
+    read_notes(in_root(root, shown)?.as_str(), shown)
 }
 
 /// `model`: the fit, written to `--out` and formatted, and what it measured of each key.
-@job
-pub fn fit_model(a: take Args) -> Result<(), String> {
+pub fn fit_model(a: Args) -> Result<(), ToolError> {
     let shown = a.rest[0].clone()
-    let Some(out_shown) = a.out.clone() else { return Err(String::from("model needs --out")) }
+    let Some(out_shown) = a.out.clone() else { return Err(ToolError::new("model needs --out")) }
     let out = in_root(a.root.as_str(), out_shown.as_str())?
-    var rj = Box::new(notes_in.start(a.root.clone(), shown.clone()))
-    var got = done(rj.get_mut().resume())
-    while got.is_none() {
-        yield
-        got = done(rj.get_mut().resume())
-    }
-    let reference = (take got).unwrap()?
+    let reference = notes_in(a.root.as_str(), shown.as_str())?
     let (made, report) = tables(reference, None)
     var t = take made
     if let Some(played) = a.against.clone() {
         // The model now, and how its notes measure: each number moves by what separates its
         // notes' measurement from the recording's.
-        var sr = Box::new(read_file.start(out.clone(), String::from(f"the model now, {out_shown}")))
-        var text = done(sr.get_mut().resume())
-        while text.is_none() {
-            yield
-            text = done(sr.get_mut().resume())
+        let Some(now) = String::from_utf8(
+            read_file(out.as_str(), f"the model now, {out_shown}")?,
+        ) else {
+            return Err(ToolError::new(f"the model now, {out_shown}, isn't UTF-8"))
         }
-        let Some(now) = String::from_utf8((take text).unwrap()?) else {
-            return Err(String::from(f"the model now, {out_shown}, isn't UTF-8"))
-        }
-        let levels = array_exact(now.as_str(), "levels", t.levels.len())?
-        let prompt = array_exact(now.as_str(), "prompt", t.prompt.len())?
-        let after = array_exact(now.as_str(), "after", t.after.len())?
-        let after_db = array_exact(now.as_str(), "after_db", t.after_db.len())?
-        var pj = Box::new(notes_in.start(a.root.clone(), take played))
-        var pg = done(pj.get_mut().resume())
-        while pg.is_none() {
-            yield
-            pg = done(pj.get_mut().resume())
-        }
-        let (m, _) = tables((take pg).unwrap()?, Some(t.strike.clone()))
+        let levels = array_exact(now.as_str(), "levels", t.levels.len()).map_err(failed)?
+        let prompt = array_exact(now.as_str(), "prompt", t.prompt.len()).map_err(failed)?
+        let after = array_exact(now.as_str(), "after", t.after.len()).map_err(failed)?
+        let after_db = array_exact(now.as_str(), "after_db", t.after_db.len()).map_err(failed)?
+        let (m, _) = tables(notes_in(a.root.as_str(), played.as_str())?, Some(t.strike.clone()))
         var nl: Vec<f64> = Vec::new()
         for i in 0..levels.len() {
             nl.push(levels[i] + clamp_of(t.levels[i] - m.levels[i], lo: -12.0, hi: 12.0))
@@ -806,20 +771,12 @@ pub fn fit_model(a: take Args) -> Result<(), String> {
         t.after_db = take nd
     }
     let text = source(t, reference.keys, reference.velocities, shown.as_str())
-    var w = Box::new(write_file.start(out.clone(), Vec::from([Vec::from(text.as_bytes())])))
-    var written = done(w.get_mut().resume())
-    while written.is_none() {
-        yield
-        written = done(w.get_mut().resume())
-    }
-    if let Err(why) = (take written).unwrap() {
-        return Err(String::from(f"can't write {out_shown}: {why}"))
-    }
+    write_file(out.as_str(), Vec::from([Vec::from(text.as_bytes())])).map_err(
+        |e| ToolError::new(f"can't write {out_shown}: {e.message()}"),
+    )?
     // As `wrela fmt` leaves it, so the file is formatted as every other is.
-    var f = wait(toolchain::fmt(Vec::from([out.clone()]), check: false))
-    while !f.ready() { yield }
-    if !said(toolchain::read_formatted(f.polled()))?.failed.is_empty() {
-        return Err(String::from("the model's source doesn't parse"))
+    if !toolchain::fmt(Vec::from([out.clone()]), check: false).wait()?.failed.is_empty() {
+        return Err(ToolError::new("the model's source doesn't parse"))
     }
     print(
         obj()

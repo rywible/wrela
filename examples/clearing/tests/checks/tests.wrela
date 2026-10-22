@@ -6,13 +6,10 @@
 // same; the static shadows' test counts the draws its recorded commands make.
 
 use hosts::steps::{recorded, text_of}
-use std::collections::{Box, Vec}
 use std::input::Script
-use std::job::Step
 use std::json::{Doc, TOP, parse}
-use std::string::String
 use std::tool::drive
-use std::tool::drive::{Recorded, Scalar}
+use std::tool::drive::{Recorded, Scalar, Seen, Stage, Step}
 use std::tool::toolchain
 
 /// The output's size.
@@ -78,24 +75,15 @@ struct Pipeline: Clone {
 }
 
 /// The clearing, built as a test build into `scratch/clearing`.
-@job
-fn built() -> bool {
+fn built() {
     var options = toolchain::options()
     options.testing = true
-    var b = Box::new(
-        hosts::steps::built.start(
-            String::from("repo/examples/clearing"),
-            String::from("scratch/clearing"),
-            take options,
-            String::from("the clearing builds"),
-        ),
+    hosts::steps::built(
+        "repo/examples/clearing",
+        "scratch/clearing",
+        options,
+        "the clearing builds",
     )
-    loop {
-        match b.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(v) => return v,
-        }
-    }
 }
 
 /// The text of `key` of object `n`, or empty.
@@ -110,26 +98,9 @@ fn text_at(d: Doc, n: u32, key: str) -> String {
 }
 
 /// The clearing's pipelines, from its build's manifest and WGSL.
-@job
 fn pipelines() -> Vec<Pipeline> {
-    var b = Box::new(built.start())
-    loop {
-        match b.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
-    var m = Box::new(text_of.start(String::from("scratch/clearing/manifest.json")))
-    var manifest = String::new()
-    loop {
-        match m.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(t) => {
-                manifest = take t
-                break
-            },
-        }
-    }
+    built()
+    let manifest = text_of("scratch/clearing/manifest.json")
     let Some(d) = parse(manifest.as_str()) else { panic("the manifest is JSON") }
     let Some(list) = d.get(TOP, "pipelines") else { panic("the manifest's pipelines") }
     var out: Vec<Pipeline> = Vec::new()
@@ -147,17 +118,7 @@ fn pipelines() -> Vec<Pipeline> {
             depth_compare = text_at(d, depth, "compare")
         }
         let shader = text_at(d, p, "shader")
-        var w = Box::new(text_of.start(String::from(f"scratch/clearing/{shader.as_str()}")))
-        var wgsl = String::new()
-        loop {
-            match w.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(t) => {
-                    wgsl = take t
-                    break
-                },
-            }
-        }
+        let wgsl = text_of(f"scratch/clearing/{shader.as_str()}")
         out.push(
             Pipeline {
                 name: text_at(d, p, "name"),
@@ -186,16 +147,10 @@ fn wgsl_function(wgsl: str, name: str) -> String {
 }
 
 /// The answers to `queries` on the clearing, in one run: one check of the package.
-@job
-fn queried(queries: take Vec<String>) -> Doc {
-    var q = toolchain::query("repo/examples/clearing", queries, [])
-    var got = q.poll()
-    while got.is_none() {
-        yield
-        got = q.poll()
+fn queried(queries: [String]) -> Doc {
+    let Ok(json) = toolchain::query("repo/examples/clearing", queries, []).wait() else {
+        panic("the queries' request")
     }
-    let Some(qp) = take got else { panic("no answer") }
-    let Ok(json) = toolchain::read_queried(take qp) else { panic("the queries' request") }
     let Some(d) = parse(json.as_str()) else { panic("the queries' answer is JSON") }
     d
 }
@@ -263,10 +218,9 @@ impl Callees {
 
 /// The call graph from `roots` (and the grass's placing, with the first level), walked a level
 /// at a time, each level's `callees` queries in one run.
-@job
-fn walked(roots: take Vec<String>) -> Callees {
+fn walked(roots: [String]) -> Callees {
     var known = Callees { of: Vec::new(), calls: Vec::new() }
-    var level = roots.clone()
+    var level = Vec::from(roots)
     var seen: Vec<String> = Vec::new()
     var also = true
     while level.len() > 0 {
@@ -285,15 +239,7 @@ fn walked(roots: take Vec<String>) -> Callees {
             for f in asked {
                 texts.push(String::from(f"callees {f.as_str()}"))
             }
-            var q = Box::new(queried.start(take texts))
-            var d: Option<Doc> = None
-            while d.is_none() {
-                match q.get_mut().resume() {
-                    Step::Yielded => yield,
-                    Step::Done(x) => d = Some(take x),
-                }
-            }
-            let Some(answers) = take d else { panic("the answers") }
+            let answers = queried(texts)
             for k in 0..asked.len() {
                 known.of.push(asked[k].clone())
                 known.calls.push(names(answers, k, "callees", "callee"))
@@ -335,32 +281,16 @@ fn roots() -> Vec<String> {
 }
 
 /// The call graph the source checks read.
-@job
 fn calls() -> Callees {
-    var w = Box::new(walked.start(roots()))
-    loop {
-        match w.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(c) => return c,
-        }
-    }
+    walked(roots())
 }
 
 /// AC3: the terrain's vertex shader reads the clipmap and never evaluates the terrain field:
 /// nothing it calls is the field's (`Terrain::height`, the scene's height, its noise), and its
 /// WGSL holds none of the noise's hashes.
 @test(tool, read: [("repo", "../../../..")], budget: 300)
-@job
 fn the_terrain_vertex_shader_reads_the_clipmap_not_the_field() {
-    var c = Box::new(calls.start())
-    var graph: Option<Callees> = None
-    while graph.is_none() {
-        match c.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(x) => graph = Some(take x),
-        }
-    }
-    let Some(g) = take graph else { panic("the call graph") }
+    let g = calls()
     let reached = g.closure("engine::terrain::ground")
     assert(holds(reached, "engine::terrain::level_height"), "it reads the clipmap")
     for f in reached {
@@ -373,17 +303,7 @@ fn the_terrain_vertex_shader_reads_the_clipmap_not_the_field() {
         )
         assert(!has(name, "Terrain::") && !has(name, "Ground::"), f"it calls {name}")
     }
-    var p = Box::new(pipelines.start())
-    var ps: Vec<Pipeline> = Vec::new()
-    loop {
-        match p.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(x) => {
-                ps = take x
-                break
-            },
-        }
-    }
+    let ps = pipelines()
     var ground: Option<Pipeline> = None
     var cook: Option<Pipeline> = None
     for k in 0..ps.len() {
@@ -418,28 +338,9 @@ fn the_terrain_vertex_shader_reads_the_clipmap_not_the_field() {
 /// noise's hashes (the plants' shaders hash a card's seed for its tint, so theirs is checked by
 /// what they call).
 @test(tool, read: [("repo", "../../../..")], budget: 300)
-@job
 fn no_field_is_evaluated_per_vertex_or_per_pixel() {
-    var p = Box::new(pipelines.start())
-    var ps: Vec<Pipeline> = Vec::new()
-    loop {
-        match p.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(x) => {
-                ps = take x
-                break
-            },
-        }
-    }
-    var c = Box::new(calls.start())
-    var graph: Option<Callees> = None
-    while graph.is_none() {
-        match c.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(x) => graph = Some(take x),
-        }
-    }
-    let Some(g) = take graph else { panic("the call graph") }
+    let ps = pipelines()
+    let g = calls()
     for k in 0..DRAWN.len() {
         let (v, f) = DRAWN[k]
         var found: Option<Pipeline> = None
@@ -480,17 +381,8 @@ fn no_field_is_evaluated_per_vertex_or_per_pixel() {
 /// rough as a leaf's size on the screen makes it (`impostor::leaf_rough`). No level gains or
 /// loses the gloss alone.
 @test(tool, read: [("repo", "../../../..")], budget: 300)
-@job
 fn a_crowns_levels_light_their_leaves_by_one_light_with_gloss() {
-    var c = Box::new(calls.start())
-    var graph: Option<Callees> = None
-    while graph.is_none() {
-        match c.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(x) => graph = Some(take x),
-        }
-    }
-    let Some(g) = take graph else { panic("the call graph") }
+    let g = calls()
     for f in ["leaf_shade", "far_shade", "volume_shade"] {
         let reached = g.closure(ps_path(f).as_str())
         for want in [
@@ -506,19 +398,8 @@ fn a_crowns_levels_light_their_leaves_by_one_light_with_gloss() {
 /// AC6: the sky's pass reads the clouds' dome and marches nothing (its WGSL, with the functions
 /// it calls, has no loop), where the dome's kernel marches.
 @test(tool, read: [("repo", "../../../..")], budget: 300)
-@job
 fn the_sky_pass_reads_the_cooked_clouds_and_marches_nothing() {
-    var p = Box::new(pipelines.start())
-    var ps: Vec<Pipeline> = Vec::new()
-    loop {
-        match p.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(x) => {
-                ps = take x
-                break
-            },
-        }
-    }
+    let ps = pipelines()
     var sky: Option<Pipeline> = None
     var march: Option<Pipeline> = None
     for k in 0..ps.len() {
@@ -541,19 +422,8 @@ fn the_sky_pass_reads_the_cooked_clouds_and_marches_nothing() {
 /// where it left the depth (equal, no writes), and placed with the grass (the grass's placing
 /// kernel appends them).
 @test(tool, read: [("repo", "../../../..")], budget: 300)
-@job
 fn flowers_are_cut_cards_in_the_prepass_placed_with_the_grass() {
-    var p = Box::new(pipelines.start())
-    var ps: Vec<Pipeline> = Vec::new()
-    loop {
-        match p.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(x) => {
-                ps = take x
-                break
-            },
-        }
-    }
+    let ps = pipelines()
     var cut: Option<Pipeline> = None
     var shade: Option<Pipeline> = None
     for k in 0..ps.len() {
@@ -573,64 +443,44 @@ fn flowers_are_cut_cards_in_the_prepass_placed_with_the_grass() {
         !s.depth_write && s.depth_compare.as_str() == "equal",
         f"the shading isn't at equal depth without writes: {s.depth_compare.as_str()}, write {s.depth_write}",
     )
-    var g = Box::new(text_of.start(String::from("repo/engine/grass.wrela")))
-    var grass = String::new()
-    loop {
-        match g.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(t) => {
-                grass = take t
-                break
-            },
-        }
-    }
+    let grass = text_of("repo/engine/grass.wrela")
     assert(has(grass.as_str(), "flowers.push("), "the grass's placing appends no flowers")
-    var w = Box::new(calls.start())
-    var graph: Option<Callees> = None
-    while graph.is_none() {
-        match w.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(x) => graph = Some(take x),
-        }
-    }
-    let Some(gr) = take graph else { panic("the call graph") }
+    let gr = calls()
     assert(gr.direct(PLACE).len() > 0, "the grass's placing calls nothing")
 }
 
 /// The clearing, built, loaded on the CPU (recording its commands if `record`), `init` run.
-@job
-fn driven(record: take bool) -> drive::Build {
-    var b = Box::new(built.start())
-    loop {
-        match b.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
+fn driven(record: bool) -> drive::Build {
+    built()
     var load = drive::cpu()
     load.width = W
     load.height = H
     load.record = record
-    var l = drive::load("scratch/clearing", load)
-    var loaded = l.poll()
-    while loaded.is_none() {
-        yield
-        loaded = l.poll()
-    }
-    let Some(lp) = take loaded else { panic("no answer") }
-    let Ok(it) = drive::read_loaded(take lp) else { panic("the clearing loads") }
-    var i = drive::init(it.build)
-    var inited = i.poll()
-    while inited.is_none() {
-        yield
-        inited = i.poll()
-    }
-    let Some(ip) = take inited else { panic("no answer") }
-    let Ok(init) = drive::read_ran(take ip) else { panic("init's request") }
-    if let Some(trap) = init.trap {
-        panic(trap.message.as_str())
-    }
+    let Ok(it) = drive::load("scratch/clearing", load).wait() else { panic("the clearing loads") }
+    stepped(it.build, [Step::Init], "init")
     it.build
+}
+
+/// `list` run on `h`, none of it trapping (`what` names it in a trap's message): what it saw.
+fn stepped(h: drive::Build, list: [Step], what: str) -> Seen {
+    let Ok(seen) = drive::steps(h, list).wait() else { panic(f"{what}'s request") }
+    if let Some(trap) = seen.trap {
+        if trap.stage == Stage::Frame {
+            panic(f"{what}: frame {trap.number}: {trap.message.as_str()}")
+        }
+        panic(f"{what}: {trap.message.as_str()}")
+    }
+    seen
+}
+
+/// A call of the export `name` with `args`.
+fn call(name: str, args: take Vec<Scalar>) -> Step {
+    Step::Call(String::from(name), take args)
+}
+
+/// The next `n` frames, in lockstep.
+fn lockstep(n: u32) -> Step {
+    Step::Frames(n, Script::frames())
 }
 
 /// A scalar as a number.
@@ -643,41 +493,18 @@ fn number(s: Scalar) -> f64 {
     }
 }
 
-/// The export `name` called with `args`: its results, as numbers.
-@job
-fn called(h: take drive::Build, name: take String, args: take Vec<Scalar>) -> Vec<f64> {
-    var c = drive::call(h, name.as_str(), args)
-    var got = c.poll()
-    while got.is_none() {
-        yield
-        got = c.poll()
-    }
-    let Some(cp) = take got else { panic("no answer") }
-    let Ok(ran) = drive::read_ran(take cp) else { panic(f"{name.as_str()}'s request") }
-    if let Some(trap) = ran.trap {
-        panic(f"{name.as_str()}: {trap.message.as_str()}")
-    }
+/// The results of the code step `k` of `seen`, as numbers.
+fn results(seen: Seen, k: u32) -> Vec<f64> {
     var out: Vec<f64> = Vec::new()
-    for k in 0..ran.results.len() {
-        out.push(number(ran.results[k]))
+    for r in seen.ran[k].results {
+        out.push(number(r))
     }
     out
 }
 
-/// The next `n` frames, in lockstep, which must not trap.
-@job
-fn steps(h: take drive::Build, n: take u32) {
-    var f = drive::frames(h, n, Script::frames())
-    var got = f.poll()
-    while got.is_none() {
-        yield
-        got = f.poll()
-    }
-    let Some(fp) = take got else { panic("no answer") }
-    let Ok(ran) = drive::read_ran(take fp) else { panic("the frames' request") }
-    if let Some(trap) = ran.trap {
-        panic(f"frame {trap.number}: {trap.message.as_str()}")
-    }
+/// The results of the export `name` called with `args`, as numbers.
+fn called(h: drive::Build, name: str, args: take Vec<Scalar>) -> Vec<f64> {
+    results(stepped(h, [call(name, take args)], name), 0)
 }
 
 /// How many draws each batch of `commands` makes after the label `name` (to the next label).
@@ -709,55 +536,35 @@ fn sum(xs: [u32]) -> u32 {
     s
 }
 
-/// The draws into the static cascades in each batch since the last time.
-@job
-fn statics(h: take drive::Build) -> Vec<u32> {
-    var r = Box::new(recorded.start(h))
-    loop {
-        match r.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(c) => return draws_after(c, "shadows static"),
-        }
+/// `list` run on `h`, then the draws into the static cascades since the last time: how many.
+fn statics_after(h: drive::Build, list: take Vec<Step>) -> u32 {
+    var list = take list
+    list.push(Step::Commands)
+    let seen = stepped(h, list, "the frames")
+    borrow first = seen.commands[0]
+    var commands = first.commands.clone()
+    if first.waiting > 0 {
+        var rest = recorded(h)
+        commands.append(mut rest)
     }
+    sum(draws_after(commands, "shadows static"))
 }
 
 /// Frames until the clearing is ready (`test_ready`), then `settle` more; it's ready within
 /// 600 frames. How many frames ran.
-@job
-fn until_ready(h: take drive::Build, frame: take u32, settle: take u32) -> u32 {
+fn until_ready(h: drive::Build, frame: u32, settle: u32) -> u32 {
     var at = frame
+    var list: Vec<Step> = Vec::from([call("test_ready", Vec::new())])
     loop {
-        var c = Box::new(called.start(h, String::from("test_ready"), Vec::new()))
-        var ready = 0.0
-        loop {
-            match c.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(v) => {
-                    ready = v[0]
-                    break
-                },
-            }
-        }
-        if ready >= 0.5 {
+        let seen = stepped(h, list, "the frames until it's ready")
+        if results(seen, seen.ran.len() - 1)[0] >= 0.5 {
             break
         }
         assert(at < 600, f"the clearing isn't ready after {at} frames")
-        var s = Box::new(steps.start(h, 1))
-        loop {
-            match s.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(_) => break,
-            }
-        }
+        list = Vec::from([lockstep(1), call("test_ready", Vec::new())])
         at += 1
     }
-    var s = Box::new(steps.start(h, settle))
-    loop {
-        match s.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
+    stepped(h, [lockstep(settle)], "the settling frames")
     at + settle
 }
 
@@ -765,21 +572,12 @@ fn until_ready(h: take drive::Build, frame: take u32, settle: take u32) -> u32 {
 /// none) and takes the wind (its direction, strength and time) and a place; the same time and
 /// place sway the same, and a different time or place differently.
 @test(tool, read: [("repo", "../../../..")], budget: 300)
-@job
 fn the_wind_is_a_function_of_time_and_place() {
     var texts: Vec<String> = Vec::new()
     texts.push(String::from("effects engine::plant::sway"))
     texts.push(String::from("callers engine::plant::sway"))
     texts.push(String::from("callers engine::grass::flower_head"))
-    var q = Box::new(queried.start(take texts))
-    var answers: Option<Doc> = None
-    while answers.is_none() {
-        match q.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(d) => answers = Some(take d),
-        }
-    }
-    let Some(d) = take answers else { panic("the answers") }
+    let d = queried(texts)
     let Some(first) = d.at(TOP, 0) else { panic("the effects' answer") }
     let Some(effects) = d.get(first, "effects") else { panic("sway's effects") }
     assert(d.count(effects) == 0, "sway has effects")
@@ -796,38 +594,26 @@ fn the_wind_is_a_function_of_time_and_place() {
         holds(heads, "engine::grass::flower"),
         "the flower vertex no longer uses the shared moving stem tip",
     )
-    var o = Box::new(driven.start(false))
-    var opened: Option<drive::Build> = None
-    while opened.is_none() {
-        match o.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(b) => opened = Some(b),
-        }
-    }
-    let Some(h) = opened else { panic("the clearing") }
+    let h = driven(false)
     let cases = [
         (3.5, vec3(2.0, 1.0, 20.0)),
         (3.5, vec3(2.0, 1.0, 20.0)),
         (3.6, vec3(2.0, 1.0, 20.0)),
         (3.5, vec3(5.0, 1.0, 20.0)),
     ]
-    var sways: Vec<Vec<f64>> = Vec::new()
+    var list: Vec<Step> = Vec::new()
     for k in 0..4 {
         let (t, p) = cases[k]
         var args: Vec<Scalar> = Vec::new()
         for x in [t, p.x, p.y, p.z, 1.5] {
             args.push(Scalar::F32(x))
         }
-        var c = Box::new(called.start(h, String::from("test_sway"), take args))
-        loop {
-            match c.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(v) => {
-                    sways.push(take v)
-                    break
-                },
-            }
-        }
+        list.push(call("test_sway", take args))
+    }
+    let seen = stepped(h, list, "test_sway")
+    var sways: Vec<Vec<f64>> = Vec::new()
+    for k in 0..4 {
+        sways.push(results(seen, k))
     }
     let same = |a: [f64], b: [f64]| a.len() == b.len() &&
         a[0] == b[0] &&
@@ -844,36 +630,11 @@ fn the_wind_is_a_function_of_time_and_place() {
 /// frame, at load), one frame draws them into the static cascades, a steady frame draws nothing
 /// into them, and moving the sun draws them again (counted in the frames' command streams).
 @test(tool, read: [("repo", "../../../..")], budget: 600)
-@job
 fn static_shadows_are_drawn_once_and_again_when_the_sun_moves() {
-    var o = Box::new(driven.start(true))
-    var opened: Option<drive::Build> = None
-    while opened.is_none() {
-        match o.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(b) => opened = Some(b),
-        }
-    }
-    let Some(h) = opened else { panic("the clearing") }
+    let h = driven(true)
     var drawn: Vec<u32> = Vec::new()
     for _ in 0..30 {
-        var s = Box::new(steps.start(h, 1))
-        loop {
-            match s.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(_) => break,
-            }
-        }
-        var st = Box::new(statics.start(h))
-        loop {
-            match st.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(v) => {
-                    drawn.push(sum(v))
-                    break
-                },
-            }
-        }
+        drawn.push(statics_after(h, Vec::from([lockstep(1)])))
     }
     var frames = 0
     var first = 0
@@ -885,71 +646,18 @@ fn static_shadows_are_drawn_once_and_again_when_the_sun_moves() {
     }
     assert(frames == 1, f"{frames} frames drew static shadows at load")
     assert(first > 10, f"the load drew {first} times into the static cascades")
-    var u = Box::new(until_ready.start(h, frame: 30, settle: 2))
-    loop {
-        match u.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
-    var drop = Box::new(recorded.start(h))
-    loop {
-        match drop.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
-    var s = Box::new(steps.start(h, 30))
-    loop {
-        match s.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
-    var st = Box::new(statics.start(h))
-    var steady: Vec<u32> = Vec::new()
-    loop {
-        match st.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(v) => {
-                steady = take v
-                break
-            },
-        }
-    }
-    assert(sum(steady) == 0, "steady frames draw static shadows")
+    until_ready(h, frame: 30, settle: 2)
+    // The commands until now, dropped.
+    recorded(h)
+    let steady = statics_after(h, Vec::from([lockstep(30)]))
+    assert(steady == 0, "steady frames draw static shadows")
     var args: Vec<Scalar> = Vec::new()
     for x in [0.85, 0.45, -0.25, 1.0] {
         args.push(Scalar::F32(x))
     }
-    var c = Box::new(called.start(h, String::from("test_sun"), take args))
-    loop {
-        match c.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
     var counts: Vec<u32> = Vec::new()
-    for k in 0..2 {
-        let n = if k == 0 { 1 } else { 5 }
-        var s2 = Box::new(steps.start(h, n))
-        loop {
-            match s2.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(_) => break,
-            }
-        }
-        var st2 = Box::new(statics.start(h))
-        loop {
-            match st2.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(v) => {
-                    counts.push(sum(v))
-                    break
-                },
-            }
-        }
-    }
+    counts.push(statics_after(h, Vec::from([call("test_sun", take args), lockstep(1)])))
+    counts.push(statics_after(h, Vec::from([lockstep(5)])))
     assert(counts[0] == first, f"moving the sun drew {counts[0]} times, the first frame {first}")
     assert(counts[1] == 0, "frames after the sun moved still draw static shadows")
 }
@@ -960,51 +668,18 @@ fn static_shadows_are_drawn_once_and_again_when_the_sun_moves() {
 /// `engine::lod::packed` convert an infinite pixel to an integer, which trapped
 /// (`lod.wrela:125`).
 @test(tool, read: [("repo", "../../../..")], budget: 600)
-@job
 fn the_camera_inside_a_crown_draws_its_frames() {
-    var o = Box::new(driven.start(true))
-    var opened: Option<drive::Build> = None
-    while opened.is_none() {
-        match o.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(b) => opened = Some(b),
-        }
-    }
-    let Some(h) = opened else { panic("the clearing") }
-    var u = Box::new(until_ready.start(h, frame: 0, settle: 1))
-    loop {
-        match u.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
-    var t = Box::new(called.start(h, String::from("test_trees"), Vec::new()))
-    loop {
-        match t.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(v) => {
-                assert(v[0] > 0.0, "the forest is drawn")
-                break
-            },
-        }
-    }
+    let h = driven(true)
+    until_ready(h, frame: 0, settle: 1)
+    let trees = called(h, "test_trees", Vec::new())
+    assert(trees[0] > 0.0, "the forest is drawn")
     let plants = [0, 1, 7, 40]
     let offsets = [vec2(0.0, 0.0), vec2(0.05, 0.0), vec2(0.0, -0.05)]
     let looks = [vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(-1.0, 0.0), vec2(0.0, -1.0)]
     for k in 0..4 {
         var margs: Vec<Scalar> = Vec::new()
         margs.push(Scalar::I32(plants[k]))
-        var m = Box::new(called.start(h, String::from("test_middle"), take margs))
-        var middle: Vec<f64> = Vec::new()
-        loop {
-            match m.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(v) => {
-                    middle = take v
-                    break
-                },
-            }
-        }
+        let middle = called(h, "test_middle", take margs)
         let mid = vec3(f32(middle[0]), f32(middle[1]), f32(middle[2]))
         var shots: Vec<(vec3, vec3)> = Vec::new()
         for j in 0..3 {
@@ -1016,26 +691,17 @@ fn the_camera_inside_a_crown_draws_its_frames() {
         // Inside its trunk, a metre up, looking along the ground.
         let foot = vec3(f32(middle[0]), f32(middle[1]) - f32(middle[3]) * 0.5 + 1.0, f32(middle[2]))
         shots.push((foot, vec3(foot.x + 3.0, foot.y, foot.z + 1.0)))
+        // Each shot held for two frames.
+        var list: Vec<Step> = Vec::new()
         for s in 0..shots.len() {
             let (eye, at) = shots[s]
             var args: Vec<Scalar> = Vec::new()
             for x in [eye.x, eye.y, eye.z, at.x, at.y, at.z] {
                 args.push(Scalar::F32(x))
             }
-            var hold = Box::new(called.start(h, String::from("test_hold"), take args))
-            loop {
-                match hold.get_mut().resume() {
-                    Step::Yielded => yield,
-                    Step::Done(_) => break,
-                }
-            }
-            var st = Box::new(steps.start(h, 2))
-            loop {
-                match st.get_mut().resume() {
-                    Step::Yielded => yield,
-                    Step::Done(_) => break,
-                }
-            }
+            list.push(call("test_hold", take args))
+            list.push(lockstep(2))
         }
+        let _ = stepped(h, list, f"the shots of plant {plants[k]}")
     }
 }

@@ -58,7 +58,7 @@ pub fn init() -> Game {
 
 pub fn frame(game: mut Game, time: f32, width: u32, height: u32) {}
 
-/// The package's tool, which does nothing: its tool test runs its own job (tests.wrela).
+/// The package's tool, which does nothing: its tool tests (tests.wrela) drive the program.
 pub fn tool() -> u32 {
     0
 }

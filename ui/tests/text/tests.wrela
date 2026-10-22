@@ -5,14 +5,11 @@
 // computes each pixel's exact coverage from the outlines, white over the background).
 
 use hosts::both::bytes_of
-use hosts::steps::{built, screen, written}
-use std::collections::{Box, Vec}
+use hosts::steps::{built, written}
 use std::io::print
-use std::job::Step
-use std::string::String
-use std::tool::blob
 use std::tool::blob::Data
 use std::tool::drive
+use std::tool::drive::Step
 use std::tool::files
 use std::tool::image
 use std::tool::toolchain
@@ -37,7 +34,6 @@ const GEOMETRY: [(Text, Text, Text, Text); 4] = [
 /// an `em` or a `spread` that's zero, negative, infinite or not a number fails, naming it, and
 /// saying it must be a positive finite number.
 @test(tool, read: [("repo", "../../..")], budget: 300)
-@job
 fn font_baking_needs_positive_finite_geometry() {
     for k in 0..GEOMETRY.len() {
         let (name, em, spread, option) = GEOMETRY[k]
@@ -62,26 +58,12 @@ fn font_baking_needs_positive_finite_geometry() {
         )
         for j in 0..files_of.len() {
             let (file, text) = files_of[j].clone()
-            var w = Box::new(
-                written.start(String::from(f"{dir.as_str()}/{file.as_str()}"), take text),
-            )
-            loop {
-                match w.get_mut().resume() {
-                    Step::Yielded => yield,
-                    Step::Done(_) => break,
-                }
-            }
+            written(f"{dir.as_str()}/{file.as_str()}", text.as_str())
         }
         var options = toolchain::options()
         options.overrides.push(Override { name: String::from("ui"), dir: String::from("repo/ui") })
-        var b = toolchain::build(dir.as_str(), f"scratch/{name}-build".as_str(), options)
-        var got = b.poll()
-        while got.is_none() {
-            yield
-            got = b.poll()
-        }
-        let Some(bp) = take got else { panic("no answer") }
-        let Ok(build) = toolchain::read_built(take bp) else { panic("the build's request") }
+        let made = toolchain::build(dir.as_str(), f"scratch/{name}-build", options).wait()
+        let Ok(build) = made else { panic("the build's request") }
         var rendered = String::new()
         for d in build.diagnostics {
             rendered.push_str(d.rendered.as_str())
@@ -129,91 +111,24 @@ fn line_mean(frame: [u8], reference: [u8], top: f32, size: f32) -> f64 {
 /// Test strings at 16, 24 and 48 px match the same font drawn by a reference rasterizer within
 /// a mean of 4/255; the other sizes, 12 px among them, are measured and printed.
 @test(tool, read: [("repo", "../../..")], budget: 300)
-@job
 fn text_matches_a_reference_rasterizer() {
-    var b = Box::new(
-        built.start(
-            String::from("repo/ui/tests/text"),
-            String::from("scratch/build"),
-            toolchain::options(),
-            String::from("the lines build"),
-        ),
-    )
-    loop {
-        match b.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
+    built("repo/ui/tests/text", "scratch/build", toolchain::options(), "the lines build")
     var load = drive::gpu()
     load.width = W
     load.height = H
-    var l = drive::load("scratch/build", load)
-    var loaded = l.poll()
-    while loaded.is_none() {
-        yield
-        loaded = l.poll()
+    let list = [Step::Init, Step::FrameAt(0.0), Step::Capture]
+    let Ok(seen) = drive::run("scratch/build", load, list).wait() else {
+        panic("the lines load and draw on a hardware GPU")
     }
-    let Some(lp) = take loaded else { panic("no answer") }
-    let Ok(it) = drive::read_loaded(take lp) else { panic("the lines load on a hardware GPU") }
-    let h = it.build
-    var i = drive::init(h)
-    var inited = i.poll()
-    while inited.is_none() {
-        yield
-        inited = i.poll()
+    if let Some(t) = seen.trap {
+        panic(f"init runs and the frame draws: {t.message.as_str()}")
     }
-    let Some(ip) = take inited else { panic("no answer") }
-    let Ok(init) = drive::read_ran(take ip) else { panic("init's request") }
-    assert(init.trap.is_none(), "init runs")
-    var f = drive::frame_at(h, 0.0)
-    var framed = f.poll()
-    while framed.is_none() {
-        yield
-        framed = f.poll()
-    }
-    let Some(fp) = take framed else { panic("no answer") }
-    let Ok(ran) = drive::read_ran(take fp) else { panic("the frame's request") }
-    assert(ran.trap.is_none(), "the frame draws")
-    var sb = Box::new(screen.start(h))
-    var frame: Vec<u8> = Vec::new()
-    loop {
-        match sb.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(v) => {
-                frame = take v
-                break
-            },
-        }
-    }
-    var g = files::read_blob("repo/ui/tests/text/goldens/reference.png")
-    var golden = g.poll()
-    while golden.is_none() {
-        yield
-        golden = g.poll()
-    }
-    let Some(gp) = take golden else { panic("no answer") }
-    let Ok(png) = blob::read_handle(take gp) else { panic("the reference reads") }
-    var d = image::decode(Data::Blob(png))
-    var decoded = d.poll()
-    while decoded.is_none() {
-        yield
-        decoded = d.poll()
-    }
-    let Some(dp) = take decoded else { panic("no answer") }
-    let Ok(picture) = image::read_image(take dp) else { panic("the reference decodes") }
+    let frame = bytes_of(seen.captures[0].rgba.clone())
+    let read = files::read_blob("repo/ui/tests/text/goldens/reference.png").wait()
+    let Ok(png) = read else { panic("the reference reads") }
+    let Ok(picture) = image::decode(Data::Blob(png)).wait() else { panic("the reference decodes") }
     assert(picture.width == W && picture.height == H, "the reference is the screen's size")
-    var rb = Box::new(bytes_of.start(take picture.rgba))
-    var reference: Vec<u8> = Vec::new()
-    loop {
-        match rb.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(v) => {
-                reference = take v
-                break
-            },
-        }
-    }
+    let reference = bytes_of(take picture.rgba)
     assert(frame.len() == reference.len(), "both are RGBA8 of the screen")
     var worst = 0.0
     for face in 0..2 {

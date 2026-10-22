@@ -8,13 +8,13 @@
 
 use dsp::{median, round, round_away}
 use json::{Value, obj, opt, text}
-use main::{Args, in_root}
-use std::collections::{Box, Vec}
+use main::{Args, failed, in_root}
+use std::collections::Vec
 use std::io::print
 use std::string::String
 use std::json::{Kind, TOP, parse}
 use std::math
-use toolkit::wait::done
+use std::tool::ToolError
 use toolkit::whole::read_file
 
 const DB_OVER: f64 = 12.0
@@ -107,17 +107,10 @@ pub fn kind_of(c: Click, have_notes: bool, onsets: [f64], releases: [f64]) -> Te
 }
 
 /// `clicks`' answer.
-@job
-pub fn clicks_report(a: take Args) -> Result<(), String> {
-    let shown = a.rest[0].clone()
-    let path = in_root(a.root.as_str(), shown.as_str())?
-    var r = Box::new(read_file.start(take path, shown.clone()))
-    var bytes = done(r.get_mut().resume())
-    while bytes.is_none() {
-        yield
-        bytes = done(r.get_mut().resume())
-    }
-    let w = wav::read((take bytes).unwrap()?, shown.as_str())?
+pub fn clicks_report(a: Args) -> Result<(), ToolError> {
+    let shown = a.rest[0].as_str()
+    let path = in_root(a.root.as_str(), shown)?
+    let w = wav::read(read_file(path.as_str(), shown)?, shown).map_err(failed)?
     let mono = w.mono()
     let found = clicks(mono, w.rate)
     let seconds = f64(mono.len()) / w.rate
@@ -127,25 +120,19 @@ pub fn clicks_report(a: take Args) -> Result<(), String> {
     let have_notes = a.notes.is_some()
     if let Some(notes) = a.notes.clone() {
         let notes_path = in_root(a.root.as_str(), notes.as_str())?
-        var nr = Box::new(read_file.start(take notes_path, notes.clone()))
-        var got = done(nr.get_mut().resume())
-        while got.is_none() {
-            yield
-            got = done(nr.get_mut().resume())
-        }
-        let raw = (take got).unwrap()?
+        let raw = read_file(notes_path.as_str(), notes.as_str())?
         let Some(text_of) = String::from_utf8(take raw) else {
-            return Err(String::from(f"{notes}: it isn't UTF-8"))
+            return Err(ToolError::new(f"{notes}: it isn't UTF-8"))
         }
         let Some(d) = parse(text_of.as_str()) else {
-            return Err(String::from(f"{notes}: it isn't JSON"))
+            return Err(ToolError::new(f"{notes}: it isn't JSON"))
         }
         let listed = match d.get(TOP, "notes") {
             Some(n) => n,
-            None => return Err(String::from("the take has no notes")),
+            None => return Err(ToolError::new("the take has no notes")),
         }
         if d.kind(listed) != Kind::List {
-            return Err(String::from("the take has no notes"))
+            return Err(ToolError::new("the take has no notes"))
         }
         let num = |n: Option<u32>| match n {
             Some(k) => d.num(k).unwrap_or(0.0),
@@ -235,7 +222,7 @@ pub fn clicks_report(a: take Args) -> Result<(), String> {
     }
     print(
         obj()
-            .with("file", text(shown.as_str()))
+            .with("file", text(shown))
             .with("seconds", Value::Num(round(seconds, 1)))
             .with("clicks", Value::Int(i64(found.len())))
             .with("per_minute", Value::Num(round(f64(found.len()) / seconds * 60.0, 1)))

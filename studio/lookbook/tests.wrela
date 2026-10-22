@@ -6,7 +6,6 @@ use std::json::parse
 use std::tool::blob::Data
 use std::tool::files
 use std::tool::image
-use toolkit::wait::{done, said, wait}
 use toolkit::whole::{copy_file, data_bytes, joined, read_file, write_file, write_png}
 
 fn texts(lines: [Text]) -> Vec<String> {
@@ -117,35 +116,14 @@ fn the_checks_line_says_its_state_and_strongest_draws() {
 /// The toolkit's whole files, as the stills and clips use them: a file past a request's 512 KiB
 /// written and read back through a blob, copied, and pixels written as a PNG that decodes to them.
 @test(tool, budget: 60)
-@job
 fn files_and_pngs_go_whole_through_the_toolkit() {
     var big: Vec<u8> = Vec::new()
     for i in 0..600000 {
         big.push(u8(i % 251))
     }
-    var w = Box::new(write_file.start(String::from("scratch/a/big.bin"), Vec::from([big.clone()])))
-    var wr = done(w.get_mut().resume())
-    while wr.is_none() {
-        yield
-        wr = done(w.get_mut().resume())
-    }
-    assert((take wr).unwrap().is_ok(), "written")
-    var c = Box::new(
-        copy_file.start(String::from("scratch/a/big.bin"), String::from("scratch/b.bin")),
-    )
-    var cr = done(c.get_mut().resume())
-    while cr.is_none() {
-        yield
-        cr = done(c.get_mut().resume())
-    }
-    assert((take cr).unwrap().is_ok(), "copied")
-    var r = Box::new(read_file.start(String::from("scratch/b.bin"), String::from("b.bin")))
-    var rr = done(r.get_mut().resume())
-    while rr.is_none() {
-        yield
-        rr = done(r.get_mut().resume())
-    }
-    let Ok(back) = (take rr).unwrap() else { panic("read") }
+    assert(write_file("scratch/a/big.bin", Vec::from([big.clone()])).is_ok(), "written")
+    assert(copy_file("scratch/a/big.bin", "scratch/b.bin").is_ok(), "copied")
+    let Ok(back) = read_file("scratch/b.bin", "b.bin") else { panic("read") }
     assert(back.len() == big.len() && back[599999] == big[599999] && back[524288] == big[524288])
     // A 3 × 2 image, its pixels distinct, as a PNG that decodes to them.
     var px: Vec<u8> = Vec::new()
@@ -153,26 +131,10 @@ fn files_and_pngs_go_whole_through_the_toolkit() {
         px.push(u8(10 * i))
     }
     let img = image::Image { width: 3, height: 2, rgba: Data::Bytes(px.clone()) }
-    var p = Box::new(write_png.start(take img, String::from("scratch/s.png")))
-    var pr = done(p.get_mut().resume())
-    while pr.is_none() {
-        yield
-        pr = done(p.get_mut().resume())
-    }
-    assert((take pr).unwrap().is_ok(), "the PNG")
-    var f = wait(files::read("scratch/s.png"))
-    while !f.ready() { yield }
-    let Ok(png) = f.bytes() else { panic("the PNG's bytes") }
-    var d = wait(image::decode(Data::Bytes(take png)))
-    while !d.ready() { yield }
-    let Ok(decoded) = said(image::read_image(d.polled())) else { panic("decoded") }
-    var j = Box::new(data_bytes.start(decoded.rgba.clone()))
-    var jr = done(j.get_mut().resume())
-    while jr.is_none() {
-        yield
-        jr = done(j.get_mut().resume())
-    }
-    let Ok(chunks) = (take jr).unwrap() else { panic("its pixels") }
+    assert(write_png(take img, "scratch/s.png").is_ok(), "the PNG")
+    let Ok(png) = files::read("scratch/s.png").wait() else { panic("the PNG's bytes") }
+    let Ok(decoded) = image::decode(Data::Bytes(take png)).wait() else { panic("decoded") }
+    let Ok(chunks) = data_bytes(decoded.rgba.clone()) else { panic("its pixels") }
     let got = joined(take chunks)
     assert(decoded.width == 3 && decoded.height == 2 && got.len() == 24 && got[23] == 230)
 }

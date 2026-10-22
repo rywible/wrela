@@ -6,17 +6,14 @@
 
 use release_tool::io::{copy_files, read_files, walk, write_files}
 use std::io::print
-use std::job::{Job, Step}
 use std::json::{TOP, parse}
-use std::tool::{RUNNING, args}
-use toolkit::wait::done
+use std::tool::args
 
 /// The write root the deploy runs it in.
 const ROOT: Text = "scratch"
 
-@job
-fn main(given: take Vec<String>) -> u32 {
-    let a = take given
+pub fn tool() -> u32 {
+    let a = args()
     let pinned = a.len() == 5 &&
         a[0].as_str() == "--yes" &&
         a[1].as_str() == "wrangler@4.151.0" &&
@@ -27,13 +24,9 @@ fn main(given: take Vec<String>) -> u32 {
         print("usage: npx --yes wrangler@4.151.0 deploy --config <worker>.wrangler.json")
         return 2
     }
-    var jc = Box::new(read_files.start(Vec::from([String::from(f"{ROOT}/{a[4].as_str()}")])))
-    var read = done(jc.get_mut().resume())
-    while read.is_none() {
-        yield
-        read = done(jc.get_mut().resume())
+    let Ok(all) = read_files(Vec::from([String::from(f"{ROOT}/{a[4].as_str()}")])) else {
+        return 3
     }
-    let Ok(all) = (take read).unwrap() else { return 3 }
     let Some(config) = String::from_utf8(all[0].clone()) else { return 3 }
     let Some(d) = parse(config.as_str()) else { return 4 }
     let Some(name) = d.get(TOP, "name") else { return 4 }
@@ -49,13 +42,7 @@ fn main(given: take Vec<String>) -> u32 {
         return 4
     }
     let from = String::from(f"{ROOT}/{worker.as_str()}")
-    var jw = Box::new(walk.start(from.clone()))
-    var walked = done(jw.get_mut().resume())
-    while walked.is_none() {
-        yield
-        walked = done(jw.get_mut().resume())
-    }
-    let Ok(paths) = (take walked).unwrap() else { return 5 }
+    let Ok(paths) = walk(from.as_str()) else { return 5 }
     var pairs: Vec<(String, String)> = Vec::new()
     for p in paths {
         pairs.push(
@@ -65,51 +52,22 @@ fn main(given: take Vec<String>) -> u32 {
             ),
         )
     }
-    var jp = Box::new(copy_files.start(take pairs))
-    var copied = done(jp.get_mut().resume())
-    while copied.is_none() {
-        yield
-        copied = done(jp.get_mut().resume())
-    }
-    if (take copied).unwrap().is_err() {
+    if copy_files(pairs).is_err() {
         return 6
     }
     // The log, a line added: it isn't there before the first run.
     let log = String::from(f"{ROOT}/npx.log")
-    var jl = Box::new(read_files.start(Vec::from([log.clone()])))
-    var had = done(jl.get_mut().resume())
-    while had.is_none() {
-        yield
-        had = done(jl.get_mut().resume())
-    }
     var lines: Vec<u8> = Vec::new()
-    if let Ok(all) = (take had).unwrap() {
+    if let Ok(all) = read_files(Vec::from([log.clone()])) {
         lines = all[0].clone()
     }
     for b in worker.as_bytes() {
         lines.push(b)
     }
     lines.push(10)
-    var jo = Box::new(write_files.start(Vec::from([(take log, take lines)])))
-    var wrote = done(jo.get_mut().resume())
-    while wrote.is_none() {
-        yield
-        wrote = done(jo.get_mut().resume())
-    }
-    if (take wrote).unwrap().is_err() {
+    if write_files(Vec::from([(take log, take lines)])).is_err() {
         return 7
     }
     print(f"Uploaded {paths.len()} files of {worker.as_str()} to {domain.as_str()}")
     0
-}
-
-pub fn tool_init() -> Job<main> {
-    main.start(args())
-}
-
-pub fn tool(job: mut Job<main>) -> u32 {
-    match job.resume() {
-        Step::Yielded => RUNNING,
-        Step::Done(status) => status,
-    }
 }

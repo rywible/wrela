@@ -77,28 +77,26 @@
 // pages. It writes the lens's edits (a post to `studio/edit`) through `toolchain::edit` and gives
 // a fit its reference (`studio/reference`). It watches the subject's files: a change to
 // literals only goes to the open lens as new values; any other change rebuilds the lens, and the
-// page reloads (serve.wrela). Nothing of the studio is in a game's build.
+// page reloads (server.wrela). Nothing of the studio is in a game's build.
 
 use lens::{
-    Built, Lens, Place, actions, build, call, cpu_action, failed, last_json, logs, read_png,
+    Built, Lens, Place, actions, build, call, cpu_action, invoke, last_json, logs, read_png,
     read_text, reference_mask, save_png, screen, start, typed,
 }
 use look::{Framing, Photo, changed, look_answer, own_framing, parse_registration, registered, sheet}
 use json::{f32_text, obj, round3}
-use std::collections::{Box, Vec}
+use std::collections::Vec
 use std::input::Script
 use std::io::print
-use std::job::{Job, Step}
 use std::math::is_finite
 use std::string::String
-use std::tool::{RUNNING, args}
+use std::tool::{ToolError, args}
 use std::tool::drive
 use std::tool::drive::Scalar
 use std::tool::files
 use std::tool::time
 use std::tool::files::rooted
 use toolkit::command::size_of
-use toolkit::wait::{done, wait}
 
 /// The root the tool reads the workspace in, and the root its output goes in.
 pub const WS: Text = "ws"
@@ -245,9 +243,8 @@ pub fn parse_action(
 }
 
 /// The tool: reads the command line, builds the lens, and does what it says.
-@job
-fn main(given: take Vec<String>) -> u32 {
-    let Some(c) = read_command(given) else {
+pub fn tool() -> u32 {
+    let Some(c) = read_command(args()) else {
         print(USAGE)
         return 2
     }
@@ -270,22 +267,12 @@ fn main(given: take Vec<String>) -> u32 {
         overrides: Vec::new(),
         debug: c.debug,
     }
-    var w = Box::new(
-        run.start(take place, c.clone(), take action, String::from(c.rest[0].as_str())),
-    )
-    var ended = done(w.get_mut().resume())
-    while ended.is_none() {
-        yield
-        ended = done(w.get_mut().resume())
-    }
-    (take ended).unwrap()
+    run(take place, c, action.as_str(), c.rest[0].as_str())
 }
 
 /// What a command line (`c`) asks of the lens on the subject at `place` (named `shown` on the
 /// command line): an exit status, after printing why if it failed.
-@job
-pub fn run(place: take Place, c: take Command, action: take String, shown: take String) -> u32 {
-    let a = action.clone()
+pub fn run(place: take Place, c: Command, a: str, shown: str) -> u32 {
     // The words after the action: its arguments.
     var rest: Vec<String> = Vec::new()
     for k in 2..c.rest.len() {
@@ -294,7 +281,7 @@ pub fn run(place: take Place, c: take Command, action: take String, shown: take 
     let commands = ["serve", "build", "look", "beside", "variants", "sweep", "run"]
     var command = false
     for k in commands {
-        if a.as_str() == k {
+        if a == k {
             command = true
         }
     }
@@ -312,17 +299,11 @@ pub fn run(place: take Place, c: take Command, action: take String, shown: take 
     // numeric argument mustn't cost a full build.
     var requested: Option<Action> = None
     if !command {
-        var l = Box::new(read_text.start(String::from(f"{place.subject.as_str()}/lens.wrela")))
-        var got = done(l.get_mut().resume())
-        while got.is_none() {
-            yield
-            got = done(l.get_mut().resume())
-        }
         var floor = false
-        if let Ok(Some(t)) = (take got).unwrap() {
+        if let Ok(Some(t)) = read_text(f"{place.subject.as_str()}/lens.wrela") {
             floor = glue::is_floor(t.as_str())
         }
-        match parse_action(actions(floor), a.as_str(), rest) {
+        match parse_action(actions(floor), a, rest) {
             Ok(p) => requested = Some(take p),
             Err(why) => {
                 print(f"error: {why.as_str()}")
@@ -336,13 +317,7 @@ pub fn run(place: take Place, c: take Command, action: take String, shown: take 
             print(USAGE)
             return 2
         }
-        var p = Box::new(read_png.start(take path))
-        var got = done(p.get_mut().resume())
-        while got.is_none() {
-            yield
-            got = done(p.get_mut().resume())
-        }
-        match (take got).unwrap() {
+        match read_png(path.as_str()) {
             Ok(Some(image)) => {
                 let (iw, ih, rgba) = image
                 match reference_mask(iw, ih, rgba) {
@@ -358,7 +333,7 @@ pub fn run(place: take Place, c: take Command, action: take String, shown: take 
                 return 2
             },
             Err(why) => {
-                print(f"error: can't read the reference {r.as_str()}: {why.as_str()}")
+                print(f"error: can't read the reference {r.as_str()}: {why.message()}")
                 return 2
             },
         }
@@ -367,23 +342,14 @@ pub fn run(place: take Place, c: take Command, action: take String, shown: take 
     // run's go first.
     var at = place.clone()
     if a == "serve" {
-        var u = wait(time::utc_now())
-        while !u.ready() { yield }
-        let Ok(date) = time::read_utc(u.polled()) else { return 1 }
-        var rm = files::remove_all(f"{place.out.as_str()}/serve")
-        while rm.poll().is_none() { yield }
+        let Ok(date) = time::utc_now().wait() else { return 1 }
+        let _ = files::remove_all(f"{place.out.as_str()}/serve").wait()
         at = server::serving_place(take at, f"{date.seconds}{date.nanos}")
     }
-    var b = Box::new(build.start(take at))
-    var got = done(b.get_mut().resume())
-    while got.is_none() {
-        yield
-        got = done(b.get_mut().resume())
-    }
-    let built = match (take got).unwrap() {
+    let built = match build(take at) {
         Ok(x) => take x,
         Err(why) => {
-            print(f"error: {why.as_str()}")
+            print(f"error: {why.message()}")
             return 1
         },
     }
@@ -396,55 +362,24 @@ pub fn run(place: take Place, c: take Command, action: take String, shown: take 
     if built.warnings > 0 {
         let s = if built.warnings == 1 { "" } else { "s" }
         let them = if built.warnings == 1 { "it" } else { "them" }
-        print(f"{built.warnings} warning{s}: `wrela check {shown.as_str()}` shows {them}")
+        print(f"{built.warnings} warning{s}: `wrela check {shown}` shows {them}")
     }
-    var result: Result<(), String> = Ok(())
+    var result: Result<(), ToolError> = Ok(())
     if a == "build" {
-        print(f"built the lens on `{shown.as_str()}` in {built.page.as_str()}")
+        print(f"built the lens on `{shown}` in {built.page.as_str()}")
     } else if a == "serve" {
-        var s = Box::new(
-            server::run_server.start(
-                place.clone(),
-                built.clone(),
-                c.port,
-                take mask,
-                shown.clone(),
-            ),
-        )
-        var control = server::control()
-        var ended = done(s.get_mut().resume(mut control))
-        while ended.is_none() {
-            yield
-            ended = done(s.get_mut().resume(mut control))
-        }
-        result = (take ended).unwrap()
+        result = server::run_server(place.clone(), built, c.port, take mask, shown)
     } else if a == "look" {
         let png = match c.png.clone() {
             Some(p) => take p,
             None => String::from("look.png"),
         }
-        var l = Box::new(
-            look_cmd.start(built.clone(), place.out.clone(), place.files.clone(), take png, c.size),
-        )
-        var ended = done(l.get_mut().resume())
-        while ended.is_none() {
-            yield
-            ended = done(l.get_mut().resume())
-        }
-        match (take ended).unwrap() {
+        match look_cmd(built, place.out.as_str(), place.files.as_str(), png.as_str(), c.size) {
             Ok(answer) => print(answer.as_str()),
             Err(why) => result = Err(take why),
         }
     } else if a == "beside" || a == "variants" || a == "sweep" {
-        var j = Box::new(
-            compare.start(place.clone(), built.clone(), action.clone(), take rest, c.clone()),
-        )
-        var ended = done(j.get_mut().resume())
-        while ended.is_none() {
-            yield
-            ended = done(j.get_mut().resume())
-        }
-        match (take ended).unwrap() {
+        match compare(place, built, a, rest, c) {
             Ok(answered) => {
                 let (status, answer) = take answered
                 if status != 0 {
@@ -464,36 +399,18 @@ pub fn run(place: take Place, c: take Command, action: take String, shown: take 
             print(USAGE)
             return 2
         }
-        var t = Box::new(read_text.start(script.clone()))
-        var text = done(t.get_mut().resume())
-        while text.is_none() {
-            yield
-            text = done(t.get_mut().resume())
-        }
-        let Ok(Some(lines)) = (take text).unwrap() else {
+        let Ok(Some(lines)) = read_text(script.as_str()) else {
             print(f"error: can't read {c.rest[2].as_str()}")
             return 2
         }
-        var s = Box::new(session.start(built.clone(), take script, take lines, c.size, take mask))
-        var ended = done(s.get_mut().resume())
-        while ended.is_none() {
-            yield
-            ended = done(s.get_mut().resume())
-        }
-        result = (take ended).unwrap()
+        result = session(built, script.as_str(), lines.as_str(), c.size, take mask)
     } else {
         let Some(act) = take requested else { return 2 }
         let png = match c.png.clone() {
             Some(p) => rooted(place.files.as_str(), p.as_str()),
             None => None,
         }
-        var o = Box::new(one_action.start(built.clone(), take act, c.size, take png, take mask))
-        var ended = done(o.get_mut().resume())
-        while ended.is_none() {
-            yield
-            ended = done(o.get_mut().resume())
-        }
-        match (take ended).unwrap() {
+        match one_action(built, act, c.size, take png, take mask) {
             Ok(lines) => print_all(lines),
             Err(why) => result = Err(take why),
         }
@@ -501,7 +418,7 @@ pub fn run(place: take Place, c: take Command, action: take String, shown: take 
     match take result {
         Ok(()) => 0,
         Err(why) => {
-            print(f"error: {why.as_str()}")
+            print(f"error: {why.message()}")
             1
         },
     }
@@ -514,75 +431,36 @@ fn print_all(lines: [String]) {
     }
 }
 
+/// `r`'s failure, a pure step's (`look`'s), as the tool's.
+fn own<T>(r: take Result<T, String>) -> Result<T, ToolError> {
+    (take r).map_err(|e| ToolError::new(e.as_str()))
+}
+
 /// One action: its literals chosen, its export called, the answer printed, and with `png` (a
 /// root path), the screen after saved.
-@job
 pub fn one_action(
-    built: take Built,
-    a: take Action,
-    size: take (u32, u32),
+    built: Built,
+    a: Action,
+    size: (u32, u32),
     png: take Option<String>,
     mask: take Option<Vec<u8>>,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, ToolError> {
     let (w, h) = size
     // These exports print their answer at once: the program's own action, without the GPU's
     // setup, its shaders' compiling and frames that only draw an unseen image.
     let cpu = png.is_none() && cpu_action(a.name.as_str()) && !built.floor
-    var s = Box::new(start.start(built.clone(), w, h, cpu, take mask))
-    var started = done(s.get_mut().resume())
-    while started.is_none() {
-        yield
-        started = done(s.get_mut().resume())
-    }
-    var lens = (take started).unwrap()?
+    var lens = start(built, w, h, cpu, take mask)?
     if cpu {
-        var i = Box::new(lens::invoke.start(a.name.clone(), a.args.clone()))
-        var ended = done(i.get_mut().resume(mut lens))
-        while ended.is_none() {
-            yield
-            ended = done(i.get_mut().resume(mut lens))
-        }
-        let _ = (take ended).unwrap()?
+        let _ = invoke(mut lens, a.name.as_str(), a.args)?
     } else {
         for k in 0..a.literals.len() {
-            let mut_args: Vec<Scalar> = Vec::from([a.literals[k]])
-            var i = Box::new(lens::invoke.start(String::from("choose"), take mut_args))
-            var ended = done(i.get_mut().resume(mut lens))
-            while ended.is_none() {
-                yield
-                ended = done(i.get_mut().resume(mut lens))
-            }
-            let _ = (take ended).unwrap()?
+            let _ = invoke(mut lens, "choose", [a.literals[k]])?
         }
-        var j = Box::new(call.start(a.name.clone(), a.args.clone(), deferred: false))
-        var ended = done(j.get_mut().resume(mut lens))
-        while ended.is_none() {
-            yield
-            ended = done(j.get_mut().resume(mut lens))
-        }
-        (take ended).unwrap()?
+        call(mut lens, a.name.as_str(), a.args, deferred: false)?
     }
-    var l = Box::new(logs.start())
-    var lines = done(l.get_mut().resume(mut lens))
-    while lines.is_none() {
-        yield
-        lines = done(l.get_mut().resume(mut lens))
-    }
-    let printed = (take lines).unwrap()?
+    let printed = logs(mut lens)
     if let Some(p) = take png {
-        var sc = Box::new(screen.start())
-        var pixels = done(sc.get_mut().resume(mut lens))
-        while pixels.is_none() {
-            yield
-            pixels = done(sc.get_mut().resume(mut lens))
-        }
-        var save = Box::new(save_png.start(take p, w, h, (take pixels).unwrap()?))
-        var saved = done(save.get_mut().resume())
-        while saved.is_none() {
-            yield
-            saved = done(save.get_mut().resume())
-        }
-        (take saved).unwrap()?
+        save_png(p.as_str(), w, h, screen(mut lens)?)?
     }
     Ok(printed)
 }
@@ -590,80 +468,36 @@ pub fn one_action(
 /// A session: each line of `text` (the script at `script`, a root path) a command typed into the
 /// lens (then Enter), or `png FILE` (the screen, saved, its path relative to the script's
 /// directory), or `#` a comment.
-@job
 pub fn session(
-    built: take Built,
-    script: take String,
-    text: take String,
-    size: take (u32, u32),
+    built: Built,
+    script: str,
+    text: str,
+    size: (u32, u32),
     mask: take Option<Vec<u8>>,
-) -> Result<(), String> {
+) -> Result<(), ToolError> {
     let (w, h) = size
-    let parts = script.as_str().split("/")
+    let parts = script.split("/")
     let (from, _) = parts[parts.len() - 1]
-    let base = String::from(script.as_str().slice(0, from))
-    var s = Box::new(start.start(built.clone(), w, h, cpu: false, reference: take mask))
-    var started = done(s.get_mut().resume())
-    while started.is_none() {
-        yield
-        started = done(s.get_mut().resume())
-    }
-    var lens = (take started).unwrap()?
-    var d = Box::new(logs.start())
-    while done(d.get_mut().resume(mut lens)).is_none() { yield }
-    let ranges = text.as_str().lines()
+    let base = String::from(script.slice(0, from))
+    var lens = start(built, w, h, cpu: false, reference: take mask)?
+    let _ = logs(mut lens)
+    let ranges = text.lines()
     for k in 0..ranges.len() {
         let (from, to) = ranges[k]
-        let line = String::from(text.as_str().slice(from, to).trim())
+        let line = String::from(text.slice(from, to).trim())
         if line.is_empty() || line.as_str().starts_with("#") {
             continue
         }
         if line.as_str().starts_with("png ") {
             let file = String::from(f"{base.as_str()}{line.as_str().slice(4, line.len()).trim()}")
-            var f = Box::new(lens::frames.start(Script::frames()))
-            var stepped = done(f.get_mut().resume(mut lens))
-            while stepped.is_none() {
-                yield
-                stepped = done(f.get_mut().resume(mut lens))
-            }
-            (take stepped).unwrap()?
-            var sc = Box::new(screen.start())
-            var pixels = done(sc.get_mut().resume(mut lens))
-            while pixels.is_none() {
-                yield
-                pixels = done(sc.get_mut().resume(mut lens))
-            }
-            var save = Box::new(save_png.start(take file, w, h, (take pixels).unwrap()?))
-            var saved = done(save.get_mut().resume())
-            while saved.is_none() {
-                yield
-                saved = done(save.get_mut().resume())
-            }
-            (take saved).unwrap()?
+            lens::frames(mut lens, Script::frames())?
+            save_png(file.as_str(), w, h, screen(mut lens)?)?
             continue
         }
         let at = lens.frame
-        var f = Box::new(lens::frames.start(typed(at, line.as_str())))
-        var stepped = done(f.get_mut().resume(mut lens))
-        while stepped.is_none() {
-            yield
-            stepped = done(f.get_mut().resume(mut lens))
-        }
-        (take stepped).unwrap()?
-        var st = Box::new(lens::settle.start())
-        var settled = done(st.get_mut().resume(mut lens))
-        while settled.is_none() {
-            yield
-            settled = done(st.get_mut().resume(mut lens))
-        }
-        (take settled).unwrap()?
-        var l = Box::new(logs.start())
-        var lines = done(l.get_mut().resume(mut lens))
-        while lines.is_none() {
-            yield
-            lines = done(l.get_mut().resume(mut lens))
-        }
-        print_all((take lines).unwrap()?)
+        lens::frames(mut lens, typed(at, line.as_str()))?
+        lens::settle(mut lens)?
+        print_all(logs(mut lens))
     }
     Ok(())
 }
@@ -671,98 +505,48 @@ pub fn session(
 /// `look`: the contact sheet saved (to `png`, from the workspace's directory), what changed
 /// since the last look marked on a copy (`<png>-changed.png`), and the diagnosis and the spec,
 /// in brief: one answer for the loop an author goes round.
-@job
 pub fn look_cmd(
-    built: take Built,
-    out: take String,
-    files: take String,
-    png: take String,
-    size: take (u32, u32),
-) -> Result<String, String> {
+    built: Built,
+    out: str,
+    files: str,
+    png: str,
+    size: (u32, u32),
+) -> Result<String, ToolError> {
     let (w, h) = size
-    let Some(path) = rooted(files.as_str(), png.as_str()) else {
-        return Err(String::from(f"`{png.as_str()}` isn't a path in the workspace"))
+    let Some(path) = rooted(files, png) else {
+        return Err(ToolError::new(f"`{png}` isn't a path in the workspace"))
     }
-    var s = Box::new(start.start(built.clone(), w, h, cpu: false, reference: None))
-    var started = done(s.get_mut().resume())
-    while started.is_none() {
-        yield
-        started = done(s.get_mut().resume())
-    }
-    var lens = (take started).unwrap()?
+    var lens = start(built, w, h, cpu: false, reference: None)?
     // The contact sheet, and the diagnosis's and the spec's answers (null if one isn't JSON).
-    var v = Box::new(call.start(String::from("view"), Vec::from([Scalar::I32(4)]), deferred: false))
-    var viewed = done(v.get_mut().resume(mut lens))
-    while viewed.is_none() {
-        yield
-        viewed = done(v.get_mut().resume(mut lens))
-    }
-    (take viewed).unwrap()?
-    var sc = Box::new(screen.start())
-    var pixels = done(sc.get_mut().resume(mut lens))
-    while pixels.is_none() {
-        yield
-        pixels = done(sc.get_mut().resume(mut lens))
-    }
-    let now = (take pixels).unwrap()?
-    var save = Box::new(save_png.start(path.clone(), w, h, now.clone()))
-    var saved = done(save.get_mut().resume())
-    while saved.is_none() {
-        yield
-        saved = done(save.get_mut().resume())
-    }
-    (take saved).unwrap()?
+    call(mut lens, "view", [Scalar::I32(4)], deferred: false)?
+    let now = screen(mut lens)?
+    save_png(path.as_str(), w, h, now.clone())?
     var answers: Vec<String> = Vec::new()
     for k in 0..2 {
         let name = if k == 0 { "diagnose" } else { "spec" }
         let args = if k == 0 {
             Vec::from([Scalar::F32(0.0), Scalar::F32(0.0), Scalar::F32(0.0), Scalar::F32(0.0)])
         } else { Vec::new() }
-        var j = Box::new(call.start(String::from(name), take args, deferred: false))
-        var ended = done(j.get_mut().resume(mut lens))
-        while ended.is_none() {
-            yield
-            ended = done(j.get_mut().resume(mut lens))
-        }
-        (take ended).unwrap()?
-        var l = Box::new(logs.start())
-        var lines = done(l.get_mut().resume(mut lens))
-        while lines.is_none() {
-            yield
-            lines = done(l.get_mut().resume(mut lens))
-        }
-        let got = (take lines).unwrap()?
-        answers.push(match last_json(got) {
+        call(mut lens, name, args, deferred: false)?
+        answers.push(match last_json(logs(mut lens)) {
             Some(j) => take j,
             None => String::from("null"),
         })
     }
     // What changed since the last look.
-    let last = String::from(f"{out.as_str()}/last-look.png")
-    var r = Box::new(read_png.start(last.clone()))
-    var before = done(r.get_mut().resume())
-    while before.is_none() {
-        yield
-        before = done(r.get_mut().resume())
-    }
+    let last = String::from(f"{out}/last-look.png")
     var changed_json = String::from("null")
-    if let Ok(Some(image)) = (take before).unwrap() {
+    if let Ok(Some(image)) = read_png(last.as_str()) {
         let (lw, lh, old) = image
         if lw == w && lh == h {
             let (marked, count) = changed(now, old)
-            let end = if png.as_str().ends_with(".png") { png.len() - 4 } else { png.len() }
-            let stem = png.as_str().slice(0, end)
+            let end = if png.ends_with(".png") { png.len() - 4 } else { png.len() }
+            let stem = png.slice(0, end)
             let marked_name = String::from(f"{stem}-changed.png")
-            let Some(marked_path) = rooted(files.as_str(), marked_name.as_str()) else {
-                return Err(failed("no path"))
+            let Some(marked_path) = rooted(files, marked_name.as_str()) else {
+                return Err(ToolError::new("no path"))
             }
-            var m = Box::new(save_png.start(take marked_path, w, h, take marked))
-            var msaved = done(m.get_mut().resume())
-            while msaved.is_none() {
-                yield
-                msaved = done(m.get_mut().resume())
-            }
-            (take msaved).unwrap()?
+            save_png(marked_path.as_str(), w, h, take marked)?
             changed_json = obj()
                 .int("pixels", count)
                 .text("png", marked_name.as_str())
@@ -770,29 +554,27 @@ pub fn look_cmd(
                 .done()
         }
     }
-    var keep = Box::new(save_png.start(take last, w, h, take now))
-    while done(keep.get_mut().resume()).is_none() { yield }
-    Ok(look_answer(png.as_str(), changed_json.as_str(), answers[0].as_str(), answers[1].as_str()))
+    let _ = save_png(last.as_str(), w, h, take now)
+    Ok(look_answer(png, changed_json.as_str(), answers[0].as_str(), answers[1].as_str()))
 }
 
 /// `beside <photo> [--registration g,m,z,faces]`, `variants <package>...` and `sweep <literal>
 /// <value>...`, each with `[--view f]` and its PNG (`--png`, or `<action>.png`): 0, or 2 for a
 /// usage error.
-@job
 pub fn compare(
-    place: take Place,
-    built: take Built,
-    action: take String,
-    args: take Vec<String>,
-    c: take Command,
-) -> Result<(u32, String), String> {
+    place: Place,
+    built: Built,
+    action: str,
+    args: [String],
+    c: Command,
+) -> Result<(u32, String), ToolError> {
     var facing = 0
     var plain: Vec<String> = Vec::new()
     var given_registration: Option<String> = None
     var i = 0
     while i < args.len() {
         if args[i].as_str() == "--registration" {
-            if i + 1 >= args.len() || action.as_str() != "beside" {
+            if i + 1 >= args.len() || action != "beside" {
                 return Ok((2, String::new()))
             }
             given_registration = Some(args[i + 1].clone())
@@ -815,7 +597,7 @@ pub fn compare(
     }
     let png = match c.png.clone() {
         Some(p) => take p,
-        None => String::from(f"{action.as_str()}.png"),
+        None => String::from(f"{action}.png"),
     }
     let Some(png_path) = rooted(place.files.as_str(), png.as_str()) else {
         return Ok((2, String::new()))
@@ -823,35 +605,17 @@ pub fn compare(
     // Each panel is square: the screen's shorter side.
     let (sw, sh) = c.size
     let n = min(sw, sh)
-    var s = Box::new(start.start(built.clone(), n, n, cpu: false, reference: None))
-    var started = done(s.get_mut().resume())
-    while started.is_none() {
-        yield
-        started = done(s.get_mut().resume())
-    }
-    var lens = (take started).unwrap()?
+    var lens = start(built, n, n, cpu: false, reference: None)?
     // The side framing the lens gives the subject (its `view` answer's first framing).
-    var v = Box::new(call.start(String::from("view"), Vec::from([Scalar::I32(0)]), deferred: true))
-    var viewed = done(v.get_mut().resume(mut lens))
-    while viewed.is_none() {
-        yield
-        viewed = done(v.get_mut().resume(mut lens))
-    }
-    (take viewed).unwrap()?
-    var l = Box::new(logs.start())
-    var lines = done(l.get_mut().resume(mut lens))
-    while lines.is_none() {
-        yield
-        lines = done(l.get_mut().resume(mut lens))
-    }
-    let view_answer = match last_json((take lines).unwrap()?) {
+    call(mut lens, "view", [Scalar::I32(0)], deferred: true)?
+    let view_answer = match last_json(logs(mut lens)) {
         Some(j) => take j,
         None => String::new(),
     }
-    let own = own_framing(view_answer.as_str())?
+    let own_frame = own(own_framing(view_answer.as_str()))?
     var panels: Vec<Vec<u8>> = Vec::new()
     var answer = String::new()
-    if action.as_str() == "beside" {
+    if action == "beside" {
         if plain.len() != 1 {
             return Ok((2, String::new()))
         }
@@ -859,27 +623,21 @@ pub fn compare(
             return Ok((2, String::new()))
         }
         let reg = match given_registration {
-            Some(text) => parse_registration(text.as_str())?,
+            Some(text) => own(parse_registration(text.as_str()))?,
             None => match registered(plain[0].as_str()) {
                 Some(r) => r,
                 None => return Err(
-                    String::from(
+                    ToolError::new(
                         f"{plain[0].as_str()} has no registration: the references package registers its side photos (`references/<dir>/<name>.png` takes `<dir>/<name>.jpg`'s); give another photo's with `--registration ground_px,metres_per_px,z0_px,right|left`",
                     ),
                 ),
             },
         }
-        var p = Box::new(read_png.start(photo_path.clone()))
-        var read = done(p.get_mut().resume())
-        while read.is_none() {
-            yield
-            read = done(p.get_mut().resume())
-        }
         let shown = plain[0].clone()
-        let image = match (take read).unwrap() {
+        let image = match read_png(photo_path.as_str()) {
             Ok(Some(img)) => take img,
             _ => return Err(
-                String::from(
+                ToolError::new(
                     f"can't read the photo {shown.as_str()}: a photo is read as PNG (`sips -s format png photo.jpg --out {shown.as_str()}`)",
                 ),
             ),
@@ -889,28 +647,10 @@ pub fn compare(
         // Frame the subject and the photo's animal both: the subject's own framing's size, or
         // most of the photo's shorter side, whichever is larger.
         let photo_m = f32(min(pw, ph)) * reg.metres_per_px
-        let half = max(own.half, 0.45 * photo_m)
+        let half = max(own_frame.half, 0.45 * photo_m)
         let f = Framing { z: 0.0, y: half * 0.88, half }
-        var calls: Vec<(String, Vec<Scalar>)> = Vec::new()
-        calls.push(zoom_call(f))
-        calls.push(mode_call(0))
-        calls.push(view_call(0))
-        var sh = Box::new(shot.start(take calls))
-        var shaded_px = done(sh.get_mut().resume(mut lens))
-        while shaded_px.is_none() {
-            yield
-            shaded_px = done(sh.get_mut().resume(mut lens))
-        }
-        let shaded = (take shaded_px).unwrap()?
-        var calls2: Vec<(String, Vec<Scalar>)> = Vec::new()
-        calls2.push(mode_call(4))
-        var si = Box::new(shot.start(take calls2))
-        var sil = done(si.get_mut().resume(mut lens))
-        while sil.is_none() {
-            yield
-            sil = done(si.get_mut().resume(mut lens))
-        }
-        let silhouette = (take sil).unwrap()?
+        let shaded = shot(mut lens, [zoom_call(f), mode_call(0), view_call(0)])?
+        let silhouette = shot(mut lens, [mode_call(4)])?
         let (left, over, covered, matched) = overlay(photo, f, n, silhouette)
         panels.push(take left)
         panels.push(take shaded)
@@ -932,7 +672,7 @@ pub fn compare(
             .text("png", png.as_str())
             .num("silhouette_on_dark_photo_pixels", share)
             .done()
-    } else if action.as_str() == "variants" {
+    } else if action == "variants" {
         var legend = String::from("[")
         var dirs: Vec<String> = Vec::new()
         dirs.push(c.rest[0].clone())
@@ -952,39 +692,20 @@ pub fn compare(
                 var other = place.clone()
                 other.subject = take dir
                 other.out = take out
-                var b = Box::new(build.start(take other))
-                var got = done(b.get_mut().resume())
-                while got.is_none() {
-                    yield
-                    got = done(b.get_mut().resume())
-                }
-                let next = (take got).unwrap()?
+                let next = build(take other)?
                 if !next.errors.is_empty() {
                     print(next.errors.as_str())
-                    return Err(String::from(f"{dirs[k].as_str()} doesn't build"))
+                    return Err(ToolError::new(f"{dirs[k].as_str()} doesn't build"))
                 }
-                var cl = drive::close(lens.b)
-                while cl.poll().is_none() { yield }
-                var s2 = Box::new(start.start(take next, n, n, cpu: false, reference: None))
-                var again = done(s2.get_mut().resume())
-                while again.is_none() {
-                    yield
-                    again = done(s2.get_mut().resume())
-                }
-                lens = (take again).unwrap()?
+                let _ = drive::close(lens.b).wait()
+                lens = start(next, n, n, cpu: false, reference: None)?
             }
             var calls: Vec<(String, Vec<Scalar>)> = Vec::new()
             if facing == 0 {
-                calls.push(zoom_call(own))
+                calls.push(zoom_call(own_frame))
             }
             calls.push(view_call(facing))
-            var sh = Box::new(shot.start(take calls))
-            var px = done(sh.get_mut().resume(mut lens))
-            while px.is_none() {
-                yield
-                px = done(sh.get_mut().resume(mut lens))
-            }
-            panels.push((take px).unwrap()?)
+            panels.push(shot(mut lens, calls)?)
             if k > 0 {
                 legend.push_str(",")
             }
@@ -1018,16 +739,10 @@ pub fn compare(
                 (String::from("set"), Vec::from([Scalar::I32(literal), Scalar::F32(values[k])])),
             )
             if facing == 0 {
-                calls.push(zoom_call(own))
+                calls.push(zoom_call(own_frame))
             }
             calls.push(view_call(facing))
-            var sh = Box::new(shot.start(take calls))
-            var px = done(sh.get_mut().resume(mut lens))
-            while px.is_none() {
-                yield
-                px = done(sh.get_mut().resume(mut lens))
-            }
-            panels.push((take px).unwrap()?)
+            panels.push(shot(mut lens, calls)?)
             if k > 0 {
                 legend.push_str(",")
             }
@@ -1048,13 +763,7 @@ pub fn compare(
             .done()
     }
     let (w, h, pixels) = sheet(panels, n)
-    var save = Box::new(save_png.start(take png_path, w, h, take pixels))
-    var saved = done(save.get_mut().resume())
-    while saved.is_none() {
-        yield
-        saved = done(save.get_mut().resume())
-    }
-    (take saved).unwrap()?
+    save_png(png_path.as_str(), w, h, take pixels)?
     Ok((0, answer))
 }
 
@@ -1075,25 +784,12 @@ fn mode_call(mode: u32) -> (String, Vec<Scalar>) {
 
 /// Runs `calls` and gives their final screen: consecutive field view controls need one image
 /// after their last call; changes to the field and the actions that wait still settle.
-@job
-pub fn shot(lens: mut Lens, calls: take Vec<(String, Vec<Scalar>)>) -> Result<Vec<u8>, String> {
+pub fn shot(lens: mut Lens, calls: [(String, Vec<Scalar>)]) -> Result<Vec<u8>, ToolError> {
     for k in 0..calls.len() {
-        let (name, args) = calls[k].clone()
-        var j = Box::new(call.start(take name, take args, k + 1 < calls.len()))
-        var ended = done(j.get_mut().resume(mut lens))
-        while ended.is_none() {
-            yield
-            ended = done(j.get_mut().resume(mut lens))
-        }
-        (take ended).unwrap()?
+        borrow c = calls[k]
+        call(mut lens, c.0.as_str(), c.1, k + 1 < calls.len())?
     }
-    var sc = Box::new(screen.start())
-    var pixels = done(sc.get_mut().resume(mut lens))
-    while pixels.is_none() {
-        yield
-        pixels = done(sc.get_mut().resume(mut lens))
-    }
-    (take pixels).unwrap()
+    screen(mut lens)
 }
 
 /// `beside`'s photo panel and overlay: the photo (turned to face as the side view does) under
@@ -1155,17 +851,6 @@ pub fn overlay(photo: Photo, f: Framing, n: u32, sil: [u8]) -> (Vec<u8>, Vec<u8>
         }
     }
     (left, over, covered, matched)
-}
-
-pub fn tool_init() -> Job<main> {
-    main.start(args())
-}
-
-pub fn tool(job: mut Job<main>) -> u32 {
-    match job.resume() {
-        Step::Yielded => RUNNING,
-        Step::Done(status) => status,
-    }
 }
 
 @test

@@ -1,15 +1,14 @@
 // The tool's requests: a piece built through the toolchain, and its build driven on the CPU
 // (`std::tool::drive`): started with its take chosen, described, and its voice rendered offline.
-// Each is a job that waits for its answers. Files are read and written whole through the
-// toolkit's jobs (`toolkit::whole`).
+// Files are read and written whole through the toolkit (`toolkit::whole`).
 
 use piece::Take
-use std::collections::{Box, Vec}
+use std::collections::Vec
 use std::string::String
+use std::tool::ToolError
 use std::tool::drive
-use std::tool::drive::Scalar
+use std::tool::drive::{Scalar, Seen, Step}
 use std::tool::toolchain
-use toolkit::wait::{done, said, wait}
 use toolkit::whole::data_bytes
 
 /// The audio thread's rate and quantum.
@@ -18,12 +17,9 @@ pub const QUANTUM: u32 = 128
 
 /// Builds the piece at `pkg` (a root path) into its `build/audio`: that directory, or the
 /// build's errors.
-@job
-pub fn build_piece(pkg: take String) -> Result<String, String> {
+pub fn build_piece(pkg: str) -> Result<String, ToolError> {
     let out = String::from(f"{pkg}/build/audio")
-    var b = wait(toolchain::build(pkg.as_str(), out.as_str(), toolchain::options()))
-    while !b.ready() { yield }
-    let result = said(toolchain::read_built(b.polled()))?
+    let result = toolchain::build(pkg, out.as_str(), toolchain::options()).wait()?
     if !result.ok {
         var why = String::new()
         for d in result.diagnostics {
@@ -31,121 +27,116 @@ pub fn build_piece(pkg: take String) -> Result<String, String> {
                 why.push_str(d.rendered.as_str())
             }
         }
-        return Err(take why)
+        return Err(ToolError::new(why.as_str()))
     }
     Ok(out)
 }
 
-fn trapped(what: str, ran: take drive::Ran) -> Result<drive::Ran, String> {
-    match ran.trap {
-        Some(t) => Err(String::from(f"{what}: {t.message}")),
-        None => Ok(ran),
-    }
-}
-
-/// Calls `export` with `args` on `b`: what it ran, or why it failed (`what` names it).
-@job
-pub fn call(
-    b: take drive::Build,
-    export: take String,
-    args: take Vec<Scalar>,
-    what: take String,
-) -> Result<drive::Ran, String> {
-    var c = wait(drive::call(b, export.as_str(), args, timeout: 600.0))
-    while !c.ready() { yield }
-    match drive::read_ran(c.polled()) {
-        Ok(ran) => trapped(what.as_str(), take ran),
-        Err(e) => Err(String::from(f"{what}: {e.message()}")),
-    }
-}
-
-/// The piece built in `build`, loaded on the CPU and started (`init`), with `chosen` its take
-/// (`choose(...)`, if given).
-@job
-pub fn start_piece(
-    build: take String,
-    chosen: take Option<Vec<u32>>,
-) -> Result<drive::Build, String> {
+/// How a piece's build is loaded: on the CPU, its screen as small as it goes.
+pub fn load() -> drive::Load {
     var options = drive::cpu()
     options.width = 16
     options.height = 16
-    var l = wait(drive::load(build.as_str(), options))
-    while !l.ready() { yield }
-    let b = said(drive::read_loaded(l.polled()))?.build
-    var i = wait(drive::init(b, timeout: 600.0))
-    while !i.ready() { yield }
-    let _ = trapped("`init`", said(drive::read_ran(i.polled()))?)?
-    let Some(t) = take chosen else { return Ok(b) }
-    var args: Vec<Scalar> = Vec::new()
-    var list = String::new()
-    for n in t {
-        args.push(Scalar::I32(i32(n)))
-        if !list.is_empty() {
-            list.push_str(", ")
-        }
-        list.push_str(f"{n}")
-    }
-    var c = Box::new(
-        call.start(b, String::from("choose"), take args, String::from(f"`choose([{list}])`")),
-    )
-    var r = done(c.get_mut().resume())
-    while r.is_none() {
-        yield
-        r = done(c.get_mut().resume())
-    }
-    let _ = (take r).unwrap()?
-    Ok(b)
+    options
 }
 
-/// The take that `b`'s `describe()` prints.
-@job
-pub fn describe_piece(b: take drive::Build) -> Result<Take, String> {
-    var c = Box::new(
-        call.start(b, String::from("describe"), Vec::new(), String::from("`describe()`")),
-    )
-    var r = done(c.get_mut().resume())
-    while r.is_none() {
-        yield
-        r = done(c.get_mut().resume())
-    }
-    let _ = (take r).unwrap()?
-    var lines: Vec<String> = Vec::new()
-    loop {
-        var o = wait(drive::logs(b))
-        while !o.ready() { yield }
-        let logs = said(drive::read_logs(o.polled()))?
-        for l in logs.lines {
-            lines.push(l.clone())
-        }
-        if logs.waiting == 0 {
-            break
-        }
-    }
-    piece::read(lines)
+/// Steps to run on a piece's build, each with the name a trap in it is said with.
+pub struct Steps: Clone {
+    list: Vec<Step>,
+    names: Vec<String>,
 }
 
-/// How many seconds `b`'s take sounds: `given`, or the piece's `seconds()`.
-@job
-pub fn length_of(b: take drive::Build, given: take Option<f64>) -> Result<f64, String> {
-    if let Some(s) = given {
-        return Ok(s)
+impl Steps {
+    /// The piece started (`init`), with `chosen` its take (`choose(...)`, if given).
+    pub fn started(chosen: Option<Vec<u32>>) -> Steps {
+        var s = Steps { list: Vec::from([Step::Init]), names: Vec::from([String::from("`init`")]) }
+        let Some(t) = chosen else { return s }
+        var args: Vec<Scalar> = Vec::new()
+        var list = String::new()
+        for n in t {
+            args.push(Scalar::I32(i32(n)))
+            if !list.is_empty() {
+                list.push_str(", ")
+            }
+            list.push_str(f"{n}")
+        }
+        s.then(Step::Call(String::from("choose"), take args), f"`choose([{list}])`")
+        s
     }
-    var c = Box::new(
-        call.start(b, String::from("seconds"), Vec::new(), String::from("`seconds()`")),
-    )
-    var r = done(c.get_mut().resume())
-    while r.is_none() {
-        yield
-        r = done(c.get_mut().resume())
+
+    /// `step` after these, named `name`.
+    pub fn then(mut self, step: take Step, name: str) {
+        self.list.push(take step)
+        self.names.push(String::from(name))
     }
-    let ran = (take r).unwrap()?
-    if ran.results.is_empty() {
-        return Err(String::from("`seconds()` returns no f32"))
+
+    /// The first frame (when a piece starts its voice), then the voice over `seconds`, each
+    /// quantum timed alone if `timed`, after these.
+    pub fn render(mut self, seconds: f64, timed: bool) -> Result<(), ToolError> {
+        let n = quanta(seconds).map_err(|why| ToolError::new(why.as_str()))?
+        self.then(Step::Frames(1, std::input::Script::frames()), "the first frame")
+        self.then(Step::Audio(n, timed), "the voice")
+        Ok(())
     }
-    match ran.results[0] {
+
+    /// What `seen` saw, or the trap it ended with, said with its step's name.
+    fn checked(self, seen: take Seen) -> Result<Seen, ToolError> {
+        let Some(t) = seen.trap.clone() else { return Ok(take seen) }
+        let what = if t.step < self.names.len() {
+            self.names[t.step].clone()
+        } else {
+            String::from("a step")
+        }
+        Err(ToolError::new(f"{what}: {t.message}"))
+    }
+
+    /// These steps run on `b`, in one request, and cleared: what they saw.
+    pub fn on(mut self, b: drive::Build) -> Result<Seen, ToolError> {
+        let seen = drive::steps(b, self.list, timeout: 600.0).wait()?
+        let checked = self.checked(take seen)
+        self.list = Vec::new()
+        self.names = Vec::new()
+        checked
+    }
+
+    /// The piece built in `build` loaded, these steps run on it, and closed, in one request:
+    /// what they saw.
+    pub fn run(self, build: str) -> Result<Seen, ToolError> {
+        self.checked(drive::run(build, load(), self.list, timeout: 600.0).wait()?)
+    }
+}
+
+/// Whether the drive service kept every line `describe()` printed in what `seen` saw: it drops
+/// those past 256 MiB.
+pub fn all_kept(seen: Seen) -> Result<(), ToolError> {
+    if seen.dropped_lines > 0 {
+        return Err(
+            ToolError::new(
+                f"`describe()` printed more than the drive service keeps: {seen.dropped_lines} lines dropped",
+            ),
+        )
+    }
+    Ok(())
+}
+
+/// The take a piece's `describe()` printed, in what `seen` saw: every line, in the answer or
+/// in its blob (`drive::lines`).
+pub fn described(seen: take Seen) -> Result<Take, ToolError> {
+    all_kept(seen)?
+    var all = take seen
+    piece::read(drive::lines(mut all)?).map_err(|why| ToolError::new(why.as_str()))
+}
+
+/// What a piece's `seconds()` returned, the last step that ran code in what `seen` saw.
+pub fn length(seen: Seen) -> Result<f64, ToolError> {
+    let none = ToolError::new("`seconds()` returns no f32")
+    if seen.ran.is_empty() || seen.ran[seen.ran.len() - 1].results.is_empty() {
+        return Err(none)
+    }
+    match seen.ran[seen.ran.len() - 1].results[0] {
         Scalar::F32(s) => Ok(f64(s)),
         Scalar::F64(s) => Ok(s),
-        _ => Err(String::from("`seconds()` returns no f32")),
+        _ => Err(none),
     }
 }
 
@@ -208,51 +199,53 @@ fn f64s(chunks: [Vec<u8>]) -> Vec<f64> {
     out
 }
 
-/// `b`'s voice over `seconds`, after its first frame (when a piece starts it): each quantum
-/// timed alone if `timed`.
-@job
-pub fn render_piece(
-    b: take drive::Build,
-    seconds: take f64,
-    timed: take bool,
-) -> Result<Rendered, String> {
-    let n = quanta(seconds)?
-    var f = wait(drive::frames(b, 1, std::input::Script::frames(), timeout: 600.0))
-    while !f.ready() { yield }
-    match drive::read_ran(f.polled()) {
-        Ok(ran) => {
-            let _ = trapped("the first frame", take ran)?
-        },
-        Err(e) => return Err(String::from(f"the first frame: {e.message()}")),
-    }
-    var a = wait(drive::audio(b, n, timed, timeout: 600.0))
-    while !a.ready() { yield }
-    let voice = said(drive::read_audio(a.polled()))?
+/// The voice that `seen`'s `Audio` step rendered: its samples, and each quantum's seconds if
+/// timed, read from their blobs (which are released).
+pub fn rendered(seen: take Seen) -> Result<Rendered, ToolError> {
+    var seen = take seen
+    let voice = seen.audio.remove(0)
     var times: Vec<f64> = Vec::new()
     if let Some(t) = voice.times.clone() {
-        var j = Box::new(data_bytes.start(take t))
-        var r = done(j.get_mut().resume())
-        while r.is_none() {
-            yield
-            r = done(j.get_mut().resume())
-        }
-        times = f64s((take r).unwrap()?)
+        times = f64s(data_bytes(take t)?)
     }
-    var j = Box::new(data_bytes.start(voice.samples.clone()))
-    var r = done(j.get_mut().resume())
-    while r.is_none() {
-        yield
-        r = done(j.get_mut().resume())
-    }
-    let bytes = (take r).unwrap()?
+    let bytes = data_bytes(voice.samples.clone())?
     let samples = f32s(bytes)
     Ok(Rendered { bytes, samples, times })
 }
 
-/// Closes `b`.
-@job
-pub fn close(b: take drive::Build) -> u32 {
-    var c = wait(drive::close(b))
-    while !c.ready() { yield }
-    0
+/// What steps that saw nothing saw, with `trap`, and `dropped` lines dropped.
+fn seen(trap: take Option<drive::Trap>, dropped: u32) -> Seen {
+    Seen {
+        ran: Vec::new(),
+        captures: Vec::new(),
+        hashes: Vec::new(),
+        phases: Vec::new(),
+        audio: Vec::new(),
+        buffers: Vec::new(),
+        bytes: Vec::new(),
+        commands: Vec::new(),
+        running: Vec::new(),
+        lines: Vec::new(),
+        log: None,
+        dropped_lines: dropped,
+        trap,
+    }
+}
+
+@test
+fn a_trap_is_said_with_its_steps_name_and_dropped_lines_fail() {
+    let s = Steps::started(Some(Vec::from([2, 5])))
+    let trap = drive::Trap {
+        message: String::from("trapped in a call"),
+        panic: String::from("no"),
+        at: String::new(),
+        stage: drive::Stage::Call,
+        number: 0,
+        step: 1,
+    }
+    let Err(e) = s.checked(seen(Some(take trap), 0)) else { panic("a trap fails") }
+    assert(e.message() == "`choose([2, 5])`: trapped in a call", e.message())
+    assert(s.checked(seen(None, 0)).is_ok())
+    let Err(dropped) = all_kept(seen(None, 3)) else { panic("dropped lines fail") }
+    assert(dropped.message().find("3 lines dropped").is_some(), dropped.message())
 }

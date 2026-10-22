@@ -4,20 +4,17 @@
 // writes the page's last frame (`results/frame.rgba`) and its state hash (`results/hash.txt`)
 // into the served directory; the native host's are its capture and its hash.
 
-use std::collections::{Box, Vec}
-use std::job::Step
-use std::string::String
 use std::tool::MOST_BYTES
-use std::tool::answer
 use std::tool::blob
 use std::tool::blob::Data
 use std::tool::browser
 use std::tool::browser::{Script, Until}
 use std::tool::drive
+use std::tool::drive::Step
 use std::tool::files
 use std::tool::serve
 use std::tool::toolchain
-use steps::{built, screen}
+use steps::built
 
 /// What both hosts drew: each one's state hash (16 hex digits) and last frame (RGBA8).
 pub struct Both: Clone {
@@ -28,59 +25,29 @@ pub struct Both: Clone {
 }
 
 /// The bytes of `data`, read from its blob if it's one.
-@job
 pub fn bytes_of(data: take Data) -> Vec<u8> {
+    let held = match take data {
+        Data::Bytes(v) => return v,
+        Data::Blob(held) => held,
+    }
+    let Ok(size) = blob::len(held).wait() else { panic("the blob's length") }
     var out: Vec<u8> = Vec::new()
-    match take data {
-        Data::Bytes(v) => out = take v,
-        Data::Blob(held) => {
-            var n = blob::len(held)
-            var counted = n.poll()
-            while counted.is_none() {
-                yield
-                counted = n.poll()
-            }
-            let Some(np) = take counted else { panic("no answer") }
-            let Ok(size) = blob::read_len(take np) else { panic("the blob's length") }
-            var at: u64 = 0
-            while at < size {
-                let len = u32(min(size - at, u64(MOST_BYTES)))
-                var r = blob::read(held, at, len)
-                var read = r.poll()
-                while read.is_none() {
-                    yield
-                    read = r.poll()
-                }
-                let Some(rp) = take read else { panic("no answer") }
-                let Ok(chunk) = answer(take rp) else { panic("the blob's bytes") }
-                for j in 0..chunk.len() {
-                    out.push(chunk[j])
-                }
-                at += u64(len)
-            }
-        },
+    var at: u64 = 0
+    while at < size {
+        let len = u32(min(size - at, u64(MOST_BYTES)))
+        let Ok(chunk) = blob::read(held, at, len).wait() else { panic("the blob's bytes") }
+        for j in 0..chunk.len() {
+            out.push(chunk[j])
+        }
+        at += u64(len)
     }
     out
 }
 
 /// The bytes of the file at `path`.
-@job
-pub fn file_bytes(path: take String) -> Vec<u8> {
-    var r = files::read_blob(path.as_str())
-    var got = r.poll()
-    while got.is_none() {
-        yield
-        got = r.poll()
-    }
-    let Some(rp) = take got else { panic("no answer") }
-    let Ok(held) = blob::read_handle(take rp) else { panic(f"{path.as_str()} reads") }
-    var b = Box::new(bytes_of.start(Data::Blob(held)))
-    loop {
-        match b.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(v) => return v,
-        }
-    }
+pub fn file_bytes(path: str) -> Vec<u8> {
+    let Ok(held) = files::read_blob(path).wait() else { panic(f"{path} reads") }
+    bytes_of(Data::Blob(held))
 }
 
 /// `bytes` as text, its spaces and newlines trimmed.
@@ -100,172 +67,58 @@ fn trimmed(bytes: take Vec<u8>) -> String {
 /// The build in `out` (a write root's directory: its page writes its results there) run in
 /// headless Chrome's test mode with the URL fragment `fragment` (`#test&frames=...`), to its end,
 /// which must be `ok`: its results are in `out/results/`.
-@job
-pub fn in_chrome(out: take String, fragment: take String) -> bool {
-    var s = serve::start(out.as_str())
-    var started = s.poll()
-    while started.is_none() {
-        yield
-        started = s.poll()
-    }
-    let Some(sp) = take started else { panic("no answer") }
-    let Ok(srv) = serve::read_started(take sp) else { panic("the page's server starts") }
-    let url = f"{srv.origin.as_str()}/{fragment.as_str()}"
-    var o = browser::open(url.as_str())
-    var opened = o.poll()
-    while opened.is_none() {
-        yield
-        opened = o.poll()
-    }
-    let Some(op) = take opened else { panic("no answer") }
-    let Ok(page) = browser::read_opened(take op) else { panic("Chrome opens the page") }
-    var r = browser::run(page, Script::new().wait(Until::done(), timeout: 120.0), 150.0)
-    var ran = r.poll()
-    while ran.is_none() {
-        yield
-        ran = r.poll()
-    }
-    let Some(rp) = take ran else { panic("no answer") }
-    if let Err(e) = answer(take rp) {
+pub fn in_chrome(out: str, fragment: str) {
+    let Ok(srv) = serve::start(out).wait() else { panic("the page's server starts") }
+    let url = f"{srv.origin.as_str()}/{fragment}"
+    let Ok(page) = browser::open(url.as_str()).wait() else { panic("Chrome opens the page") }
+    let script = Script::new().wait(Until::done(), timeout: 120.0)
+    if let Err(e) = browser::run(page, script, 150.0).wait() {
         panic(f"the page's run: {e.message()}")
     }
-    var d = browser::results(page)
-    var done = d.poll()
-    while done.is_none() {
-        yield
-        done = d.poll()
-    }
-    let Some(dp) = take done else { panic("no answer") }
-    let Ok(result) = browser::read_attribute(take dp) else { panic("the page's result") }
+    let Ok(result) = browser::results(page).wait() else { panic("the page's result") }
     let Some(said) = result else { panic("the page wrote no result") }
     assert(said.as_str() == "ok", f"the browser run failed: {said.as_str()}")
-    var shut = browser::close(page)
-    while shut.poll().is_none() {
-        yield
-    }
-    var stop = serve::close(srv.server)
-    while stop.poll().is_none() {
-        yield
-    }
-    true
+    let _ = browser::close(page).wait()
+    let _ = serve::close(srv.server).wait()
 }
 
 /// The package at `pkg` (a root path), built into `scratch/<name>` (its page too; a test build,
 /// with its `@testing` exports, if `testing`), drawn by both hosts: `frames` frames, `width` ×
 /// `height`.
-@job
 pub fn both_hosts(
-    pkg: take String,
-    name: take String,
-    width: take u32,
-    height: take u32,
-    frames: take u32,
-    testing: take bool,
+    pkg: str,
+    name: str,
+    width: u32,
+    height: u32,
+    frames: u32,
+    testing: bool,
 ) -> Both {
-    let out = String::from(f"scratch/{name.as_str()}")
+    let out = String::from(f"scratch/{name}")
     var options = toolchain::options()
     options.testing = testing
-    var b = Box::new(
-        built.start(take pkg, out.clone(), take options, String::from(f"{name.as_str()} builds")),
-    )
-    loop {
-        match b.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
+    built(pkg, out.as_str(), options, f"{name} builds")
     // The native host: its frames at their times, then its screen and its hash.
     var load = drive::gpu()
     load.width = width
     load.height = height
-    var l = drive::load(out.as_str(), load)
-    var loaded = l.poll()
-    while loaded.is_none() {
-        yield
-        loaded = l.poll()
-    }
-    let Some(lp) = take loaded else { panic("no answer") }
-    let Ok(it) = drive::read_loaded(take lp) else { panic("the build loads on a hardware GPU") }
-    let h = it.build
-    var i = drive::init(h)
-    var inited = i.poll()
-    while inited.is_none() {
-        yield
-        inited = i.poll()
-    }
-    let Some(ip) = take inited else { panic("no answer") }
-    let Ok(init) = drive::read_ran(take ip) else { panic("init's request") }
-    assert(init.trap.is_none(), "init runs")
+    var list: Vec<Step> = Vec::from([Step::Init])
     for k in 0..frames {
-        var f = drive::frame_at(h, f32(k) / 60.0)
-        var framed = f.poll()
-        while framed.is_none() {
-            yield
-            framed = f.poll()
-        }
-        let Some(fp) = take framed else { panic("no answer") }
-        let Ok(ran) = drive::read_ran(take fp) else { panic("the frame's request") }
-        assert(ran.trap.is_none(), "the native frame draws")
+        list.push(Step::FrameAt(f32(k) / 60.0))
     }
-    var nb = Box::new(screen.start(h))
-    var native: Vec<u8> = Vec::new()
-    loop {
-        match nb.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(v) => {
-                native = take v
-                break
-            },
-        }
+    list.push(Step::Capture)
+    list.push(Step::Hash)
+    let Ok(seen) = drive::run(out.as_str(), load, list).wait() else {
+        panic("the build runs on a hardware GPU")
     }
-    var hq = drive::hash(h)
-    var hashed = hq.poll()
-    while hashed.is_none() {
-        yield
-        hashed = hq.poll()
+    if let Some(t) = seen.trap {
+        panic(f"init runs and the native frames draw: {t.message.as_str()}")
     }
-    let Some(hp) = take hashed else { panic("no answer") }
-    let Ok(hash) = drive::read_hash(take hp) else { panic("the hash") }
-    var closing = drive::close(h)
-    while closing.poll().is_none() {
-        yield
-    }
+    let native = bytes_of(seen.captures[0].rgba.clone())
     // Chrome: the page served from the build's directory, in test mode.
-    var c2 = Box::new(
-        in_chrome.start(
-            out.clone(),
-            String::from(f"#test&frames={frames}&width={width}&height={height}&fps=60&workers=1"),
-        ),
-    )
-    loop {
-        match c2.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
-    var fb = Box::new(file_bytes.start(String::from(f"{out.as_str()}/results/frame.rgba")))
-    var chrome: Vec<u8> = Vec::new()
-    loop {
-        match fb.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(v) => {
-                chrome = take v
-                break
-            },
-        }
-    }
-    var hb = Box::new(file_bytes.start(String::from(f"{out.as_str()}/results/hash.txt")))
-    var chrome_hash = String::new()
-    loop {
-        match hb.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(v) => {
-                chrome_hash = trimmed(take v)
-                break
-            },
-        }
-    }
-    Both { chrome_hash, chrome, native_hash: String::from(f"{hash:016x}"), native }
+    in_chrome(out.as_str(), f"#test&frames={frames}&width={width}&height={height}&fps=60&workers=1")
+    let chrome = file_bytes(f"{out}/results/frame.rgba")
+    let chrome_hash = trimmed(file_bytes(f"{out}/results/hash.txt"))
+    Both { chrome_hash, chrome, native_hash: String::from(f"{seen.hashes[0]:016x}"), native }
 }
 
 /// The mean of the two frames' channels' differences, in 8-bit steps, and the largest.

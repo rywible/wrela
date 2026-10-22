@@ -13,7 +13,6 @@ use site::{
     prefetch_list, release_json, replace_all, suffix, with_storage, wrangler_config,
 }
 use std::hash::sha256::{Sha256, hex}
-use toolkit::wait::done
 use tree::{Entry, Source, Tree, before_by_parts, check_files, files_json, frame}
 
 fn contains(haystack: str, needle: str) -> bool {
@@ -617,17 +616,10 @@ fn a_manifest_names_its_dependencies_and_members() {
 /// depends on: through a dependency of a dependency, one a member of the workspace found by its
 /// name and one found by its path.
 @test(tool, read: [("fx", "fixtures/licences")], budget: 30)
-@job
 fn releases_ship_the_font_licences_of_every_package_they_build() {
-    var j = Box::new(licences.start(String::from("fx/console")))
-    var r = done(j.get_mut().resume())
-    while r.is_none() {
-        yield
-        r = done(j.get_mut().resume())
-    }
-    let found = match (take r).unwrap() {
+    let found = match licences("fx/console") {
         Ok(f) => take f,
-        Err(e) => panic(e.as_str()),
+        Err(e) => panic(e.message()),
     }
     var names = String::new()
     for (name, path) in found {
@@ -642,44 +634,26 @@ fn releases_ship_the_font_licences_of_every_package_they_build() {
 
 /// A workspace dependency is the nearest workspace's member, by its name or its directory's.
 @test(tool, read: [("fx", "fixtures/nearest"), ("twice", "fixtures/twice")], budget: 30)
-@job
 fn workspace_members_are_the_nearest_workspaces() {
-    var j = Box::new(workspace_of.start(String::from("fx/inner/great-tree")))
-    var r = done(j.get_mut().resume())
-    while r.is_none() {
-        yield
-        r = done(j.get_mut().resume())
-    }
-    let (root, members) = match (take r).unwrap() {
+    let (root, members) = match workspace_of("fx/inner/great-tree") {
         Ok(f) => take f,
-        Err(e) => panic(e.as_str()),
+        Err(e) => panic(e.message()),
     }
     assert(root.as_str() == "fx/inner", root.as_str())
     assert(members.len() == 2, "the inner workspace's members")
     assert(members[0].0.as_str() == "app" && members[0].1.as_str() == "fx/inner")
     assert(members[1].0.as_str() == "great_tree" && members[1].1.as_str() == "fx/inner/great-tree")
     // Two members of one name are refused.
-    var k = Box::new(workspace_of.start(String::from("twice")))
-    var again = done(k.get_mut().resume())
-    while again.is_none() {
-        yield
-        again = done(k.get_mut().resume())
-    }
-    assert((take again).unwrap().is_err(), "two members named great_tree")
+    assert(workspace_of("twice").is_err(), "two members named great_tree")
 }
 
 /// A build's deadline fits the run's budget, with 5 minutes left for the covers and the
 /// writing: the deadline counts a build's wait behind the others, so it's most of the budget.
 @test(tool, read: [("ws", "../..")], budget: 30)
-@job
 fn the_builds_deadline_fits_the_runs_budget() {
-    var j = Box::new(read_files.start(Vec::from([String::from("ws/wrela.toml")])))
-    var r = done(j.get_mut().resume())
-    while r.is_none() {
-        yield
-        r = done(j.get_mut().resume())
+    let Ok(all) = read_files(Vec::from([String::from("ws/wrela.toml")])) else {
+        panic("no wrela.toml")
     }
-    let Ok(all) = (take r).unwrap() else { panic("no wrela.toml") }
     let Some(manifest) = String::from_utf8(all[0].clone()) else { panic("not UTF-8") }
     let Some(at) = manifest.find("[tools.release]") else { panic("no [tools.release]") }
     let section = manifest.slice(at, manifest.len())

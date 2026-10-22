@@ -43,13 +43,11 @@ use audio_tool::wav
 use blind::{Pair, RING, Render, blind, cut, excerpt_times, level, matched, pcm16, score, shuffled}
 use engine::rng::{Rng, seed}
 use std::io::print
-use std::job::{Job, Step}
-use std::tool::{RUNNING, args}
+use std::tool::{ToolError, args}
 use std::tool::files
 use std::tool::files::rooted
 use std::tool::run
 use std::tool::time
-use toolkit::wait::{done, said, wait}
 use toolkit::whole::{data_bytes, joined, read_file, write_file}
 
 /// The root the tool reads and writes the workspace in.
@@ -184,50 +182,22 @@ pub struct Both: Clone {
     pub bars: u32,
 }
 
+/// `why`, a failure said as text (a pure function's), as the tool's.
+fn failed(why: take String) -> ToolError {
+    ToolError::new(why.as_str())
+}
+
 /// Take `n` of the piece in `dir`, built in `build`, by both pianos, as `o` says: its files in
 /// `work` with names from `name`.
-@job
-fn both(
-    o: take Options,
-    dir: take String,
-    build: take String,
-    n: take u32,
-    work: take String,
-    name: take String,
-) -> Result<Both, String> {
-    var jv = Box::new(voice_of.start(audio_args(dir.as_str(), n), build.clone(), timed: false))
-    var vr = done(jv.get_mut().resume())
-    while vr.is_none() {
-        yield
-        vr = done(jv.get_mut().resume())
-    }
-    let (voice, _) = (take vr).unwrap()?
+fn both(o: Options, dir: str, build: str, n: u32, work: str, name: str) -> Result<Both, ToolError> {
+    let (voice, _) = voice_of(audio_args(dir, n), build, timed: false)?
     var parts: Vec<Vec<u8>> = Vec::from([wav::header(samples: voice.samples.len(), channels: 2)])
     var bytes = take voice.bytes
     parts.append(mut bytes)
-    let wav_at = String::from(f"{work}/wrela-{name}.wav")
-    var jw = Box::new(write_file.start(wav_at.clone(), take parts))
-    var wr = done(jw.get_mut().resume())
-    while wr.is_none() {
-        yield
-        wr = done(jw.get_mut().resume())
-    }
-    (take wr).unwrap()?
-    var jt = Box::new(take_of.start(audio_args(dir.as_str(), n), build.clone()))
-    var tr = done(jt.get_mut().resume())
-    while tr.is_none() {
-        yield
-        tr = done(jt.get_mut().resume())
-    }
-    let t = (take tr).unwrap()?
+    write_file(f"{work}/wrela-{name}.wav", take parts)?
+    let t = take_of(audio_args(dir, n), build)?
     let mid = String::from(f"{work}/{name}.mid")
-    var jm = Box::new(write_file.start(mid.clone(), Vec::from([midi(t.clone())])))
-    var mr = done(jm.get_mut().resume())
-    while mr.is_none() {
-        yield
-        mr = done(jm.get_mut().resume())
-    }
-    (take mr).unwrap()?
+    write_file(mid.as_str(), Vec::from([midi(t.clone())]))?
     let reference = String::from(f"{work}/sampled-{name}.wav")
     var c = run::command("sfizz_render", WS)
     c.args = Vec::from(
@@ -250,26 +220,17 @@ fn both(
         }
     }
     c.timeout = SFIZZ_TIMEOUT
-    var rr = wait(run::run(c))
-    while !rr.ready() { yield }
-    let ran = said(run::read_ran(rr.polled()))?
+    let ran = run::run(c).wait()?
     if ran.status != 0 {
-        var je = Box::new(data_bytes.start(ran.stderr.clone()))
-        var er = done(je.get_mut().resume())
-        while er.is_none() {
-            yield
-            er = done(je.get_mut().resume())
-        }
-        let why = String::from_utf8(joined((take er).unwrap()?)).unwrap_or(String::new())
-        return Err(String::from(f"sfizz_render exited {ran.status}: {why.as_str().trim()}"))
+        let why = String::from_utf8(joined(data_bytes(ran.stderr.clone())?)).unwrap_or(
+            String::new(),
+        )
+        return Err(ToolError::new(f"sfizz_render exited {ran.status}: {why.as_str().trim()}"))
     }
-    var jr = Box::new(read_file.start(reference.clone(), String::from(shown(reference.as_str()))))
-    var rf = done(jr.get_mut().resume())
-    while rf.is_none() {
-        yield
-        rf = done(jr.get_mut().resume())
-    }
-    let sampled = wav::read((take rf).unwrap()?, shown(reference.as_str()))?
+    let sampled = wav::read(
+        read_file(reference.as_str(), shown(reference.as_str()))?,
+        shown(reference.as_str()),
+    ).map_err(failed)?
     var ours: Vec<f64> = Vec::with_capacity(voice.samples.len())
     for x in voice.samples {
         ours.push(f64(x))
@@ -313,27 +274,17 @@ fn excerpts(b: Both, first: u32, last: u32, order: [u32]) -> Vec<Vec<u8>> {
 }
 
 /// The piece in `dir` built: its build's directory.
-@job
-fn built(dir: take String) -> Result<String, String> {
-    let Some(pkg) = rooted(WS, dir.as_str()) else { return Err(String::from(f"{dir}")) }
-    var j = Box::new(build_piece.start(take pkg))
-    var r = done(j.get_mut().resume())
-    while r.is_none() {
-        yield
-        r = done(j.get_mut().resume())
-    }
-    (take r).unwrap()
+fn built(dir: str) -> Result<String, ToolError> {
+    let Some(pkg) = rooted(WS, dir) else { return Err(ToolError::new(dir)) }
+    build_piece(pkg.as_str())
 }
 
 /// The seed `o` gives, or one from the clock.
-@job
-fn seeded(o: take Options) -> Rng {
+fn seeded(o: Options) -> Rng {
     if let Some(s) = o.seed {
         return Rng::new(seed(s))
     }
-    var t = wait(time::utc_now())
-    while !t.ready() { yield }
-    let nanos = match time::read_utc(t.polled()) {
+    let nanos = match time::utc_now().wait() {
         Ok(u) => u.nanos ^ u32(u.seconds & 4294967295),
         Err(_) => 0,
     }
@@ -341,95 +292,37 @@ fn seeded(o: take Options) -> Rng {
 }
 
 /// Spike 14's round of four, into `o.out`.
-@job
-fn round_of_four(o: take Options) -> Result<(), String> {
+fn round_of_four(o: Options) -> Result<(), ToolError> {
     let work = String::from(f"{o.out}/work")
-    var md = wait(files::make_dirs(work.as_str()))
-    while !md.ready() { yield }
-    let _ = md.bytes()?
-    var jb = Box::new(built.start(String::from(PIECE)))
-    var br = done(jb.get_mut().resume())
-    while br.is_none() {
-        yield
-        br = done(jb.get_mut().resume())
-    }
-    let build = (take br).unwrap()?
+    let _ = files::make_dirs(work.as_str()).wait()?
+    let build = built(PIECE)?
     var renders: Vec<(String, Render)> = Vec::new()
     for k in 0..2 {
         let (n, name) = if k == 0 { (2, "deadpan") } else { (3, "performance") }
-        var j = Box::new(
-            both.start(
-                o.clone(),
-                String::from(PIECE),
-                build.clone(),
-                n,
-                work.clone(),
-                String::from(name),
-            ),
-        )
-        var r = done(j.get_mut().resume())
-        while r.is_none() {
-            yield
-            r = done(j.get_mut().resume())
-        }
-        let b = (take r).unwrap()?
+        let b = both(o, PIECE, build.as_str(), n, work.as_str(), name)?
         renders.push((String::from(f"wrela piano, {name}"), b.wrela.clone()))
         renders.push((String::from(f"sampled piano, {name}"), b.sampled.clone()))
     }
     // The performance as the game plays it, with the room: outside the test.
-    var jv = Box::new(voice_of.start(audio_args(PIECE, 1), build.clone(), timed: false))
-    var vr = done(jv.get_mut().resume())
-    while vr.is_none() {
-        yield
-        vr = done(jv.get_mut().resume())
-    }
-    let (room, _) = (take vr).unwrap()?
+    let (room, _) = voice_of(audio_args(PIECE, 1), build.as_str(), timed: false)?
     var parts: Vec<Vec<u8>> = Vec::from([wav::header(samples: room.samples.len(), channels: 2)])
     var bytes = take room.bytes
     parts.append(mut bytes)
-    var jw = Box::new(
-        write_file.start(String::from(f"{o.out}/wrela-performance-with-room.wav"), take parts),
-    )
-    var wr = done(jw.get_mut().resume())
-    while wr.is_none() {
-        yield
-        wr = done(jw.get_mut().resume())
-    }
-    (take wr).unwrap()?
-    var js = Box::new(seeded.start(o.clone()))
-    var sr = done(js.get_mut().resume())
-    while sr.is_none() {
-        yield
-        sr = done(js.get_mut().resume())
-    }
-    var rng = (take sr).unwrap()
+    write_file(f"{o.out}/wrela-performance-with-room.wav", take parts)?
+    var rng = seeded(o)
     let order = shuffled(4, mut rng)
     let set = blind(renders, "ABCD", order)
     var names: Vec<Value> = Vec::new()
     for k in 0..set.files.len() {
         let path = String::from(f"{o.out}/{set.files[k].0}.wav")
         names.push(text(shown(path.as_str())))
-        var jf = Box::new(write_file.start(take path, Vec::from([set.files[k].1.clone()])))
-        var fr = done(jf.get_mut().resume())
-        while fr.is_none() {
-            yield
-            fr = done(jf.get_mut().resume())
-        }
-        (take fr).unwrap()?
+        write_file(path.as_str(), Vec::from([set.files[k].1.clone()]))?
     }
     let key = String::from(f"{o.out}/key-open-after-ranking.json")
-    var jk = Box::new(
-        write_file.start(
-            key.clone(),
-            Vec::from([Vec::from(String::from(f"{set.key.pretty_in_order()}\n").as_bytes())]),
-        ),
-    )
-    var kr = done(jk.get_mut().resume())
-    while kr.is_none() {
-        yield
-        kr = done(jk.get_mut().resume())
-    }
-    (take kr).unwrap()?
+    write_file(
+        key.as_str(),
+        Vec::from([Vec::from(String::from(f"{set.key.pretty_in_order()}\n").as_bytes())]),
+    )?
     print(
         obj()
             .with("files", Value::List(take names))
@@ -441,41 +334,18 @@ fn round_of_four(o: take Options) -> Result<(), String> {
 }
 
 /// The piano gate's pairs, into `o.out`.
-@job
-fn gate(o: take Options) -> Result<(), String> {
+fn gate(o: Options) -> Result<(), ToolError> {
     let work = String::from(f"{o.out}/work")
-    var md = wait(files::make_dirs(work.as_str()))
-    while !md.ready() { yield }
-    let _ = md.bytes()?
+    let _ = files::make_dirs(work.as_str()).wait()?
     // Each piece's take by both pianos: the chords, then the Gymnopédie, as their paths sort.
     var takes: Vec<(String, Both)> = Vec::new()
     for k in 0..2 {
         let (dir, n) = if k == 0 { (CHORDS, 2) } else { (PIECE, 3) }
-        var jb = Box::new(built.start(String::from(dir)))
-        var br = done(jb.get_mut().resume())
-        while br.is_none() {
-            yield
-            br = done(jb.get_mut().resume())
-        }
-        let build = (take br).unwrap()?
-        let name = String::from(dir.slice(9, dir.len()))
-        var j = Box::new(
-            both.start(o.clone(), String::from(dir), take build, n, work.clone(), take name),
-        )
-        var r = done(j.get_mut().resume())
-        while r.is_none() {
-            yield
-            r = done(j.get_mut().resume())
-        }
-        takes.push((String::from(dir), (take r).unwrap()?))
+        let build = built(dir)?
+        let name = dir.slice(9, dir.len())
+        takes.push((String::from(dir), both(o, dir, build.as_str(), n, work.as_str(), name)?))
     }
-    var js = Box::new(seeded.start(o.clone()))
-    var sr = done(js.get_mut().resume())
-    while sr.is_none() {
-        yield
-        sr = done(js.get_mut().resume())
-    }
-    var rng = (take sr).unwrap()
+    var rng = seeded(o)
     var key = obj()
     var answers = String::new()
     for k in 0..GATE.len() {
@@ -489,18 +359,7 @@ fn gate(o: take Options) -> Result<(), String> {
         let sides = excerpts(takes[t].1, first, last, order)
         for side in 0..2 {
             let letter = if side == 0 { "A" } else { "B" }
-            var jf = Box::new(
-                write_file.start(
-                    String::from(f"{pair}/{letter}.wav"),
-                    Vec::from([sides[side].clone()]),
-                ),
-            )
-            var fr = done(jf.get_mut().resume())
-            while fr.is_none() {
-                yield
-                fr = done(jf.get_mut().resume())
-            }
-            (take fr).unwrap()?
+            write_file(f"{pair}/{letter}.wav", Vec::from([sides[side].clone()]))?
         }
         key = (take key).with(
             n.as_str(),
@@ -516,23 +375,9 @@ fn gate(o: take Options) -> Result<(), String> {
     }
     let key_at = String::from(f"{o.out}/key-open-after-answering.json")
     let answers_at = String::from(f"{o.out}/answers.txt")
-    let both_files = Vec::from(
-        [
-            (key_at.clone(), String::from(f"{key.pretty_in_order()}\n")),
-            (answers_at.clone(), answers.clone()),
-        ],
-    )
-    for f in 0..2 {
-        let path = both_files[f].0.clone()
-        let body = both_files[f].1.clone()
-        var jf = Box::new(write_file.start(take path, Vec::from([Vec::from(body.as_bytes())])))
-        var fr = done(jf.get_mut().resume())
-        while fr.is_none() {
-            yield
-            fr = done(jf.get_mut().resume())
-        }
-        (take fr).unwrap()?
-    }
+    let key_text = String::from(f"{key.pretty_in_order()}\n")
+    write_file(key_at.as_str(), Vec::from([Vec::from(key_text.as_bytes())]))?
+    write_file(answers_at.as_str(), Vec::from([Vec::from(answers.as_bytes())]))?
     print(
         obj()
             .with("pairs", Value::Int(i64(GATE.len())))
@@ -545,89 +390,52 @@ fn gate(o: take Options) -> Result<(), String> {
 }
 
 /// The gate's answers in `o.answers`, scored against the key in `o.out`.
-@job
-fn scored(o: take Options) -> Result<(), String> {
+fn scored(o: Options) -> Result<(), ToolError> {
     let key_at = String::from(f"{o.out}/key-open-after-answering.json")
-    var jk = Box::new(read_file.start(key_at.clone(), String::from(shown(key_at.as_str()))))
-    var kr = done(jk.get_mut().resume())
-    while kr.is_none() {
-        yield
-        kr = done(jk.get_mut().resume())
-    }
-    let key_text = String::from_utf8((take kr).unwrap()?).unwrap_or(String::new())
-    var ja = Box::new(read_file.start(o.answers.clone(), String::from(shown(o.answers.as_str()))))
-    var ar = done(ja.get_mut().resume())
-    while ar.is_none() {
-        yield
-        ar = done(ja.get_mut().resume())
-    }
-    let answers = String::from_utf8((take ar).unwrap()?).unwrap_or(String::new())
+    let key_text = String::from_utf8(read_file(key_at.as_str(), shown(key_at.as_str()))?).unwrap_or(
+        String::new(),
+    )
+    let answers = String::from_utf8(
+        read_file(o.answers.as_str(), shown(o.answers.as_str()))?,
+    ).unwrap_or(String::new())
     let Some(doc) = std::json::parse(key_text.as_str()) else {
-        return Err(String::from(f"{shown(key_at.as_str())} isn't JSON"))
+        return Err(ToolError::new(f"{shown(key_at.as_str())} isn't JSON"))
     }
     var key: Vec<Pair> = Vec::new()
     for (n, node) in doc.members(std::json::TOP) {
         let Some(w) = doc.get(node, "wrela") else {
-            return Err(String::from(f"pair {n} has no key"))
+            return Err(ToolError::new(f"pair {n} has no key"))
         }
         key.push(Pair { n: n.clone(), wrela: doc.text(w).unwrap_or(String::new()) })
     }
-    print(score(key, answers.as_str())?.pretty_in_order().as_str())
+    print(score(key, answers.as_str()).map_err(failed)?.pretty_in_order().as_str())
     Ok(())
 }
 
-@job
-fn main(given: take Vec<String>) -> u32 {
-    let Some(o) = parse_args(given) else {
+pub fn tool() -> u32 {
+    let Some(o) = parse_args(args()) else {
         print(USAGE)
         return 2
     }
-    let action = o.action.clone()
-    if action.as_str() != "score" && o.sfz.is_empty() {
+    let action = o.action.as_str()
+    if action != "score" && o.sfz.is_empty() {
         print(
             "--sfz names the reference piano's SFZ: FreePats' SalamanderGrandPianoRetuned-V3+20200602.sfz (https://freepats.zenvoid.org/Piano/acoustic-grand-piano.html)",
         )
         return 2
     }
-    var r: Option<Result<(), String>> = None
-    if action.as_str() == "round" {
-        var j = Box::new(round_of_four.start(take o))
-        r = done(j.get_mut().resume())
-        while r.is_none() {
-            yield
-            r = done(j.get_mut().resume())
-        }
-    } else if action.as_str() == "gate" {
-        var j = Box::new(gate.start(take o))
-        r = done(j.get_mut().resume())
-        while r.is_none() {
-            yield
-            r = done(j.get_mut().resume())
-        }
+    let r = if action == "round" {
+        round_of_four(o)
+    } else if action == "gate" {
+        gate(o)
     } else {
-        var j = Box::new(scored.start(take o))
-        r = done(j.get_mut().resume())
-        while r.is_none() {
-            yield
-            r = done(j.get_mut().resume())
-        }
+        scored(o)
     }
-    match (take r).unwrap() {
+    match r {
         Ok(_) => 0,
         Err(e) => {
-            print(f"listening: {e}")
+            print(f"listening: {e.message()}")
             1
         },
-    }
-}
-
-pub fn tool_init() -> Job<main> {
-    main.start(args())
-}
-
-pub fn tool(job: mut Job<main>) -> u32 {
-    match job.resume() {
-        Step::Yielded => RUNNING,
-        Step::Done(status) => status,
     }
 }

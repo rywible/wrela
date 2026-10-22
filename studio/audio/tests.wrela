@@ -1,4 +1,4 @@
-// The audio tool's tests: a piece (fixtures/piece: a sine, and two takes it describes) built,
+// The audio tool's tests: a piece (fixtures/piece: a sine, and three takes it describes) built,
 // described and rendered through the toolchain and the drive service, its numbers pinned and its
 // files written; and the measuring tools on sounds made here whose numbers are known: struck
 // strings (their partials stretched by a known B, struck at a known point, each decaying in two
@@ -7,37 +7,27 @@
 
 use clicks::{Click, clicks}
 use dsp::rms
-use io::{Rendered, build_piece, quanta}
+use io::{build_piece, quanta}
 use toolkit::whole::{read_file, write_file}
 use main::{Args, parse_args, piece_command, partials_command, speed, take_of, voice_of}
 use measure::{measure, onset_noise, two_stage, typical_b}
 use model::strike
-use piece::{Take, numbers}
-use std::collections::{Box, Vec}
-use std::job::Step
+use piece::numbers
+use std::collections::Vec
 use std::string::String
-use std::tool::{answer}
 use std::tool::files
 use std::math
 
 const RATE: f64 = 48000.0
 
 /// The piece's files, copied from `fx` into `scratch/piece`, where its build can go.
-@job
-fn copy_piece() -> u32 {
+fn copy_piece() {
     for name in ["wrela.toml", "main.wrela"] {
-        var r = files::read(f"fx/piece/{name}")
-        var got = r.poll()
-        while got.is_none() {
-            yield
-            got = r.poll()
+        let Ok(bytes) = files::read(f"fx/piece/{name}").wait() else {
+            panic(f"the fixture's {name}")
         }
-        let Some(polled) = take got else { panic("no answer") }
-        let Ok(bytes) = answer(take polled) else { panic(f"the fixture's {name}") }
-        var w = files::write(f"scratch/piece/{name}", bytes)
-        while w.poll().is_none() { yield }
+        let _ = files::write(f"scratch/piece/{name}", bytes).wait()
     }
-    0
 }
 
 fn args(words: [Text]) -> Args {
@@ -51,31 +41,10 @@ fn args(words: [Text]) -> Args {
     out
 }
 
-/// What `piece_command` gives for `words`.
-@job
-fn command(words: take Vec<Text>) -> Result<(), String> {
-    var j = Box::new(piece_command.start(args(words)))
-    loop {
-        match j.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => return take r,
-        }
-    }
-}
-
 /// The bytes of `scratch/<path>`.
-@job
-fn read_back(path: take Text) -> Vec<u8> {
-    var j = Box::new(read_file.start(String::from(f"scratch/{path}"), String::from(path)))
-    loop {
-        match j.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => {
-                let Ok(bytes) = take r else { panic(f"{path} was written") }
-                return bytes
-            },
-        }
-    }
+fn read_back(path: str) -> Vec<u8> {
+    let Ok(bytes) = read_file(f"scratch/{path}", path) else { panic(f"{path} was written") }
+    bytes
 }
 
 fn near(a: f64, b: f64, within: f64) -> bool {
@@ -83,51 +52,22 @@ fn near(a: f64, b: f64, within: f64) -> bool {
 }
 
 @test(tool, read: [("fx", "fixtures")], budget: 180)
-@job
 fn a_piece_is_described_rendered_and_written() {
-    var c = Box::new(copy_piece.start())
-    loop {
-        match c.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
-    var b = Box::new(build_piece.start(String::from("scratch/piece")))
-    var built: Option<Result<String, String>> = None
-    while built.is_none() {
-        match b.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => built = Some(take r),
-        }
-    }
-    let Some(Ok(build)) = take built else { panic("the piece builds") }
+    copy_piece()
+    let Ok(build) = build_piece("scratch/piece") else { panic("the piece builds") }
     assert(build.as_str() == "scratch/piece/build/audio")
 
     // The take, as the piece describes it.
     let a = args(["piece", "describe"])
-    var t = Box::new(take_of.start(a.clone(), build.clone()))
-    var described: Option<Result<Take, String>> = None
-    while described.is_none() {
-        match t.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => described = Some(take r),
-        }
-    }
-    let Some(Ok(take_)) = take described else { panic("the take is described") }
+    let Ok(take_) = take_of(a, build.as_str()) else { panic("the take is described") }
     assert(take_.title.as_str() == "Études" && take_.name.as_str() == "whole")
     assert(take_.voices.len() == 2 && take_.notes.len() == 3 && take_.beats.len() == 5)
     assert(take_.sustain.len() == 2 && take_.soft.len() == 1 && take_.bars == 2)
 
     // Its voice: a second, 375 quanta, the two channels interleaved.
-    var v = Box::new(voice_of.start(a.clone(), build.clone(), timed: false))
-    var voiced: Option<Result<(Rendered, f64), String>> = None
-    while voiced.is_none() {
-        match v.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => voiced = Some(take r),
-        }
+    let Ok((voice, seconds)) = voice_of(a, build.as_str(), timed: false) else {
+        panic("the voice renders")
     }
-    let Some(Ok((voice, seconds))) = take voiced else { panic("the voice renders") }
     assert(seconds == 1.0 && voice.samples.len() == 2 * 48000 && voice.times.is_empty())
     assert(voice.samples[0] == 0.0 && voice.samples[1] == 0.0)
     // A sine's RMS is its amplitude over √2: (0.5² + 0.25²) / 4, both channels together.
@@ -147,15 +87,9 @@ fn a_piece_is_described_rendered_and_written() {
     }
 
     // Each quantum timed: as many times as quanta.
-    var s = Box::new(voice_of.start(a.clone(), build.clone(), timed: true))
-    var timed: Option<Result<(Rendered, f64), String>> = None
-    while timed.is_none() {
-        match s.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => timed = Some(take r),
-        }
+    let Ok((fast, _)) = voice_of(a, build.as_str(), timed: true) else {
+        panic("the timed voice renders")
     }
-    let Some(Ok((fast, _))) = take timed else { panic("the timed voice renders") }
     assert(fast.times.len() == 375 && fast.samples.len() == voice.samples.len())
     let sp = speed(fast.times, 1.0).compact()
     assert(
@@ -171,15 +105,9 @@ fn a_piece_is_described_rendered_and_written() {
 
     // Take 1 sounds half a second: 188 quanta.
     let short = args(["piece", "describe", "--take", "1"])
-    var h = Box::new(voice_of.start(take short, build.clone(), timed: false))
-    var half: Option<Result<(Rendered, f64), String>> = None
-    while half.is_none() {
-        match h.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => half = Some(take r),
-        }
+    let Ok((brief, brief_seconds)) = voice_of(short, build.as_str(), timed: false) else {
+        panic("take 1 renders")
     }
-    let Some(Ok((brief, brief_seconds))) = take half else { panic("take 1 renders") }
     assert(brief_seconds == 0.5 && brief.samples.len() == 188 * 128 * 2)
 
     // The files: the WAV holds the samples rendered, the MIDI file the notes, the sheet a PNG
@@ -190,44 +118,14 @@ fn a_piece_is_described_rendered_and_written() {
         ["piece", "sheet", "out/a.png"],
     ]
     for k in 0..3 {
-        var j = Box::new(command.start(Vec::from(commands[k])))
-        loop {
-            match j.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(r) => {
-                    assert(r.is_ok(), "the command writes its file")
-                    break
-                },
-            }
-        }
+        assert(piece_command(args(commands[k])).is_ok(), "the command writes its file")
     }
-    var w = Box::new(read_back.start("out/a.wav"))
-    var wav_bytes: Vec<u8> = Vec::new()
-    loop {
-        match w.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => {
-                wav_bytes = take r
-                break
-            },
-        }
-    }
-    let Ok(read) = wav::read(wav_bytes, "a.wav") else { panic("a WAV") }
+    let Ok(read) = wav::read(read_back("out/a.wav"), "a.wav") else { panic("a WAV") }
     assert(read.channels == 2 && read.rate == 48000.0 && read.samples.len() == voice.samples.len())
     for i in 0..read.samples.len() {
         assert(bitcast_u32(read.samples[i]) == bitcast_u32(voice.samples[i]), f"sample {i}")
     }
-    var m = Box::new(read_back.start("out/a.mid"))
-    var mid: Vec<u8> = Vec::new()
-    loop {
-        match m.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => {
-                mid = take r
-                break
-            },
-        }
-    }
+    let mid = read_back("out/a.mid")
     assert(mid[0] == 77 && mid[1] == 84 && mid[2] == 104 && mid[3] == 100, "MThd")
     // The first note on: key 69 at velocity 95 (0.75 × 127, rounded).
     var on = false
@@ -237,45 +135,54 @@ fn a_piece_is_described_rendered_and_written() {
         }
     }
     assert(on, "the note on")
-    var p = Box::new(read_back.start("out/a.png"))
-    var png: Vec<u8> = Vec::new()
-    loop {
-        match p.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => {
-                png = take r
-                break
-            },
-        }
-    }
+    let png = read_back("out/a.png")
     assert(png[1] == 80 && png[2] == 78 && png[3] == 71, "a PNG")
     let width = (u32(png[16]) << 24) | (u32(png[17]) << 16) | (u32(png[18]) << 8) | u32(png[19])
     let height = (u32(png[20]) << 24) | (u32(png[21]) << 16) | (u32(png[22]) << 8) | u32(png[23])
     assert(width == 1800 && height == 1260, f"{width}x{height}")
 
     // A file to write is asked for, and the piece's bars are kept to.
-    var e = Box::new(command.start(Vec::from(["piece", "wav"])))
-    loop {
-        match e.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => {
-                let Err(why) = take r else { panic("wav needs a file") }
-                assert(why.as_str() == "wav needs a file to write")
-                break
-            },
+    let Err(why) = piece_command(args(["piece", "wav"])) else { panic("wav needs a file") }
+    assert(why.message() == "wav needs a file to write")
+    let Err(past) = piece_command(args(["piece", "sheet", "out/b.png", "--bars", "2-3"])) else {
+        panic("bars past the take")
+    }
+    assert(past.message() == "bars 2-3 must be within 1-2 and in order", past.message())
+}
+
+/// A take that describes more lines than one answer holds (take 2: 6000 notes) keeps every
+/// one, in order, and exports as MIDI.
+@test(tool, read: [("fx", "fixtures")], budget: 180)
+fn a_take_of_many_lines_keeps_every_one() {
+    copy_piece()
+    let Ok(build) = build_piece("scratch/piece") else { panic("the piece builds") }
+    let a = args(["piece", "describe", "--take", "2"])
+    let take_ = match take_of(a, build.as_str()) {
+        Ok(t) => take t,
+        Err(e) => panic(e.message()),
+    }
+    assert(take_.name.as_str() == "many" && take_.voices.len() == 1)
+    assert(take_.notes.len() == 6000, f"{take_.notes.len()} notes")
+    for k in 0..take_.notes.len() {
+        let n = take_.notes[k]
+        assert(
+            n.key == 21 + k % 88 && near(n.onset, b: f64(k) * 0.001, within: 0.0001),
+            f"note {k}",
+        )
+    }
+    if let Err(e) = piece_command(args(["piece", "midi", "out/many.mid", "--take", "2"])) {
+        panic(e.message())
+    }
+    let mid = read_back("out/many.mid")
+    assert(mid[0] == 77 && mid[1] == 84 && mid[2] == 104 && mid[3] == 100, "MThd")
+    // Every note's on: one a note, at velocity 64 (0.5 × 127, rounded).
+    var ons = 0
+    for i in 0..mid.len() - 2 {
+        if mid[i] == 144 && mid[i + 2] == 64 {
+            ons += 1
         }
     }
-    var f = Box::new(command.start(Vec::from(["piece", "sheet", "out/b.png", "--bars", "2-3"])))
-    loop {
-        match f.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => {
-                let Err(why) = take r else { panic("bars past the take") }
-                assert(why.as_str() == "bars 2-3 must be within 1-2 and in order", why.as_str())
-                break
-            },
-        }
-    }
+    assert(ons >= 6000, f"{ons} notes on")
 }
 
 /// What a made note's string is: its key, its inharmonicity, where the hammer strikes (a
@@ -331,7 +238,6 @@ fn string(m: Made, seconds: f64) -> Vec<f32> {
 }
 
 @test(tool, budget: 120)
-@job
 fn partials_find_a_strings_tuning_stretch_and_strike() {
     let made = Made { key: 48, b: 0.0003, x0: 0.12, velocity: 0.8 }
     let samples = string(made, 3.0)
@@ -462,24 +368,12 @@ fn audio_lengths_that_cannot_render_are_errors() {
 }
 
 @test(tool, budget: 60)
-@job
 fn partials_refuses_keys_and_ranges_it_cannot_measure() {
     var bytes = wav::header(samples: 100, channels: 1)
     for _ in 0..400 {
         bytes.push(0)
     }
-    var parts: Vec<Vec<u8>> = Vec::new()
-    parts.push(take bytes)
-    var w = Box::new(write_file.start(String::from("scratch/x.wav"), take parts))
-    loop {
-        match w.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => {
-                assert(r.is_ok(), "the WAV is written")
-                break
-            },
-        }
-    }
+    assert(write_file("scratch/x.wav", Vec::from([take bytes])).is_ok(), "the WAV is written")
     let cases: [(Text, Text); 10] = [
         ("--from", "inf"),
         ("--from", "NaN"),
@@ -501,15 +395,6 @@ fn partials_refuses_keys_and_ranges_it_cannot_measure() {
         let Some(parsed) = parse_args(given) else { continue }
         var a = take parsed
         a.root = String::from("scratch")
-        var j = Box::new(partials_command.start(take a))
-        loop {
-            match j.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(r) => {
-                    assert(r.is_err(), f"accepted {flag} {value}")
-                    break
-                },
-            }
-        }
+        assert(partials_command(a).is_err(), f"accepted {flag} {value}")
     }
 }

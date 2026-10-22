@@ -43,18 +43,15 @@ use site::{
     wrangler_config,
 }
 use std::hash::sha256::{Sha256, hex}
-use std::io::{Pending, print}
-use std::job::{Job, Step}
+use std::io::print
 use std::json::{TOP, parse as parse_json}
-use std::tool::{RUNNING, args}
-use std::tool::blob
+use std::tool::{Call, ToolError, all, args}
 use std::tool::blob::{Blob, Data}
 use std::tool::files
-use std::tool::files::Kind
+use std::tool::files::{Entry, Kind}
 use std::tool::image
 use std::tool::image::{Image, Size}
 use std::tool::toolchain
-use toolkit::wait::{done, wait, wait_all}
 use tree::{Source, Tree, check_files, files_json, frame, hex_sha}
 
 /// The roots: the workspace, read; the builds' stage; the release.
@@ -102,41 +99,26 @@ pub fn parse_args(given: [String]) -> Option<String> {
     Some(String::from(r))
 }
 
-@job
-fn main(given: take Vec<String>) -> u32 {
-    let Some(revision) = parse_args(given) else {
+pub fn tool() -> u32 {
+    let Some(revision) = parse_args(args()) else {
         print(USAGE)
         return 2
     }
-    var j = Box::new(release.start(take revision))
-    loop {
-        match j.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => {
-                match r {
-                    Ok(report) => {
-                        print(report.as_str())
-                        return 0
-                    },
-                    Err(e) => {
-                        print(f"release: {e.as_str()}")
-                        return 1
-                    },
-                }
-            },
-        }
+    match release(revision.as_str()) {
+        Ok(report) => {
+            print(report.as_str())
+            0
+        },
+        Err(e) => {
+            print(f"release: {e.message()}")
+            1
+        },
     }
 }
 
-pub fn tool_init() -> Job<main> {
-    main.start(args())
-}
-
-pub fn tool(job: mut Job<main>) -> u32 {
-    match job.resume() {
-        Step::Yielded => RUNNING,
-        Step::Done(status) => status,
-    }
+/// A failure of the release's own, said as `why`.
+fn own(why: take String) -> ToolError {
+    ToolError::new(why.as_str())
 }
 
 /// What a Worker of the release is.
@@ -189,45 +171,30 @@ pub fn projects_of(c: Catalog) -> Vec<Project> {
 }
 
 /// The release, made: what `release.json` says. Each step's failure ends it.
-@job
-fn release(given: take String) -> Result<String, String> {
-    let revision = take given
+fn release(revision: str) -> Result<String, ToolError> {
     let c = CATALOG.clone()
-    check(c)?
+    check(c).map_err(own)?
     // The output is empty, and the stage is emptied.
-    var l = wait(files::list(OUT))
-    while !l.ready() { yield }
-    let out_list = match files::read_list(l.polled()) {
-        Ok(l) => take l,
-        Err(e) => return Err(String::from(e.message())),
-    }
+    let out_list = files::list(OUT).wait()?
     if !out_list.is_empty() {
-        return Err(String::from("release output must be empty; choose a new directory"))
+        return Err(ToolError::new("release output must be empty; choose a new directory"))
     }
-    var j1 = Box::new(empty.start(String::from(WORK)))
-    var emptied = done(j1.get_mut().resume())
-    while emptied.is_none() {
-        yield
-        emptied = done(j1.get_mut().resume())
-    }
-    (take emptied).unwrap()?
+    empty(WORK)?
     // What the catalog names is in the workspace.
     let wanted = paths(c)
-    var stats: Vec<Pending<u8>> = Vec::new()
+    var stats: Vec<Call<Entry>> = Vec::new()
     for (path, why) in wanted {
-        let Some(p) = files::rooted(WS, path.as_str()) else { return Err(why.clone()) }
+        let Some(p) = files::rooted(WS, path.as_str()) else { return Err(own(why.clone())) }
         stats.push(files::stat(p.as_str()))
     }
-    var stated = wait_all(take stats)
-    while !stated.ready() { yield }
     for k in 0..wanted.len() {
-        match files::read_entry(stated.polled(k)) {
+        match stats.remove(0).wait() {
             Ok(e) => {
                 if e.kind != Kind::File {
-                    return Err(wanted[k].1.clone())
+                    return Err(own(wanted[k].1.clone()))
                 }
             },
-            Err(_) => return Err(wanted[k].1.clone()),
+            Err(_) => return Err(own(wanted[k].1.clone())),
         }
     }
     var projects = projects_of(c)
@@ -244,50 +211,47 @@ fn release(given: take String) -> Result<String, String> {
             )
         }
     }
-    let options = build_options()
-    var builds: Vec<Pending<u8>> = Vec::new()
+    var builds: Vec<Call<toolchain::Built>> = Vec::new()
     for p in plan {
-        builds.push(toolchain::build(p.dir.as_str(), p.out.as_str(), options))
+        builds.push(toolchain::build(p.dir.as_str(), p.out.as_str(), build_options()))
     }
     var exported: Vec<String> = Vec::new()
     for p in c.docs.packages {
         exported.push(rooted(p))
     }
     let corpus = String::from(f"{WORK}/export")
-    builds.push(
-        toolchain::doc_export(
-            exported,
-            corpus.as_str(),
-            REPOSITORY,
-            revision.as_str(),
-            timeout: BUILD_TIMEOUT,
-        ),
+    let export = toolchain::doc_export(
+        exported,
+        corpus.as_str(),
+        REPOSITORY,
+        revision,
+        timeout: BUILD_TIMEOUT,
     )
-    var built = wait_all(take builds)
-    while !built.ready() { yield }
     var outputs: Vec<Vec<String>> = Vec::new()
     for k in 0..plan.len() {
-        let b = match toolchain::read_built(built.polled(k)) {
-            Ok(b) => take b,
-            Err(e) => return Err(String::from(f"{plan[k].dir.as_str()}: {e.message()}")),
-        }
+        let b = builds
+            .remove(0)
+            .wait()
+            .map_err(
+                |e| ToolError::new(f"{plan[k].dir.as_str()}: {e.message()}"),
+            )?
         for d in b.diagnostics {
             if d.error {
                 print(d.rendered.as_str())
             }
         }
         if !b.ok {
-            return Err(String::from(f"{plan[k].dir.as_str()} doesn't build"))
+            return Err(ToolError::new(f"{plan[k].dir.as_str()} doesn't build"))
         }
         print(
             f"built {plan[k].out.as_str()} ({b.files.len()} files; constants: {b.computed} computed, {b.cached} from the cache)",
         )
         outputs.push(b.files.clone())
     }
-    match toolchain::read_exported(built.polled(plan.len())) {
-        Ok(n) => print(f"exported {n} files of the docs to {corpus.as_str()}"),
-        Err(e) => return Err(String::from(f"the docs' export: {e.message()}")),
-    }
+    let n = (take export)
+        .wait()
+        .map_err(|e| ToolError::new(f"the docs' export: {e.message()}"))?
+    print(f"exported {n} files of the docs to {corpus.as_str()}")
     // The builds' files, in their projects.
     var at = 0
     for k in 0..2 {
@@ -319,13 +283,7 @@ fn release(given: take String) -> Result<String, String> {
     // The licences of the console's and the docs' packages and their dependencies.
     for k in 0..2 {
         let dir = if k == 0 { rooted(c.console.dir) } else { rooted(c.docs.dir) }
-        var jl = Box::new(licences.start(take dir))
-        var found = done(jl.get_mut().resume())
-        while found.is_none() {
-            yield
-            found = done(jl.get_mut().resume())
-        }
-        let ls = (take found).unwrap()?
+        let ls = licences(dir.as_str())?
         projects[k].tree.put("LICENSE", Source::File(rooted("LICENSE")))
         for (name, path) in ls {
             projects[k].tree.put(name.as_str(), Source::File(path.clone()))
@@ -333,16 +291,10 @@ fn release(given: take String) -> Result<String, String> {
     }
     // The docs' export beside their program: no file of the export in the place of one of the
     // program's.
-    var jw = Box::new(walk.start(corpus.clone()))
-    var walked = done(jw.get_mut().resume())
-    while walked.is_none() {
-        yield
-        walked = done(jw.get_mut().resume())
-    }
-    var export = (take walked).unwrap()?
+    var export = walk(corpus.as_str())?
     export.sort_by(|a: String, b: String| tree::before_by_parts(a.as_str(), b.as_str()))
     if let Some(name) = export_conflict(projects[1].tree.tops(), export) {
-        return Err(String::from(f"the docs' export and program both have {name.as_str()}"))
+        return Err(ToolError::new(f"the docs' export and program both have {name.as_str()}"))
     }
     for f in export {
         projects[1].tree.put(
@@ -351,14 +303,8 @@ fn release(given: take String) -> Result<String, String> {
         )
     }
     // The docs as plain pages.
-    var ji = Box::new(read_files.start(Vec::from([String::from(f"{corpus.as_str()}/index.json")])))
-    var index_read = done(ji.get_mut().resume())
-    while index_read.is_none() {
-        yield
-        index_read = done(ji.get_mut().resume())
-    }
-    var index_bytes = (take index_read).unwrap()?
-    let pages = pages_of(replace(mut index_bytes[0], Vec::new()))?
+    var index_bytes = read_files(Vec::from([String::from(f"{corpus.as_str()}/index.json")]))?
+    let pages = pages_of(replace(mut index_bytes[0], Vec::new())).map_err(own)?
     let ordered = in_order(pages)
     var sources: Vec<String> = Vec::new()
     var rendered: Vec<u32> = Vec::new()
@@ -373,17 +319,11 @@ fn release(given: take String) -> Result<String, String> {
             }
         }
     }
-    var jp = Box::new(read_files.start(take sources))
-    var md_read = done(jp.get_mut().resume())
-    while md_read.is_none() {
-        yield
-        md_read = done(jp.get_mut().resume())
-    }
-    var mds = (take md_read).unwrap()?
+    var mds = read_files(sources)?
     for i in 0..rendered.len() {
         let k = rendered[i]
         let Some(text) = String::from_utf8(replace(mut mds[i], Vec::new())) else {
-            return Err(String::from(f"{ordered[k].path.as_str()} isn't UTF-8"))
+            return Err(ToolError::new(f"{ordered[k].path.as_str()} isn't UTF-8"))
         }
         let body = render(text.as_str())
         let before = if k > 0 { Some(ordered[k - 1].clone()) } else { None }
@@ -396,16 +336,15 @@ fn release(given: take String) -> Result<String, String> {
     for font in FONTS {
         projects[1].tree.put(last_part(font), Source::File(rooted(font)))
     }
-    // The covers.
+    // The covers, each made by a task of its own.
+    var art_paths: Vec<String> = Vec::new()
+    for g in c.games {
+        art_paths.push(rooted(g.cover))
+    }
+    var made = all(take art_paths, cover)
     var covers: Vec<(String, u32, u32)> = Vec::new()
-    for g in 0..c.games.len() {
-        var jc = Box::new(cover.start(rooted(c.games[g].cover)))
-        var made = done(jc.get_mut().resume())
-        while made.is_none() {
-            yield
-            made = done(jc.get_mut().resume())
-        }
-        let (art, width, height) = (take made).unwrap()?
+    for _ in 0..c.games.len() {
+        let (art, width, height) = made.remove(0)?
         let name = String::from(f"cover-{hex_sha(art).as_str().slice(from: 0, to: 16)}.webp")
         projects[0].tree.put_bytes(name.as_str(), art)
         covers.push((take name, width, height))
@@ -441,17 +380,11 @@ fn release(given: take String) -> Result<String, String> {
             }
         }
     }
-    var jb = Box::new(read_files.start(take page_paths))
-    var boot = done(jb.get_mut().resume())
-    while boot.is_none() {
-        yield
-        boot = done(jb.get_mut().resume())
-    }
-    var boots = (take boot).unwrap()?
+    var boots = read_files(page_paths)?
     for i in 0..pages_at.len() {
         let (k, e) = pages_at[i]
         let Some(text) = String::from_utf8(replace(mut boots[i], Vec::new())) else {
-            return Err(String::from("a bootstrap page isn't UTF-8"))
+            return Err(ToolError::new("a bootstrap page isn't UTF-8"))
         }
         let path = projects[k].tree.entries[e].path.clone()
         let page = with_storage(text.as_str(), projects[k].namespace.as_str())
@@ -461,7 +394,7 @@ fn release(given: take String) -> Result<String, String> {
     for (k, e) in made_at {
         let Source::Bytes(b) = projects[k].tree.entries[e].source else { panic("bytes") }
         let Some(text) = String::from_utf8(b.clone()) else {
-            return Err(String::from("a page isn't UTF-8"))
+            return Err(ToolError::new("a page isn't UTF-8"))
         }
         let path = projects[k].tree.entries[e].path.clone()
         let page = with_storage(text.as_str(), projects[k].namespace.as_str())
@@ -471,14 +404,7 @@ fn release(given: take String) -> Result<String, String> {
     for k in 0..projects.len() {
         projects[k].tree.sort()
     }
-    var jf = Box::new(fingerprint.start(take projects))
-    var printed = done(jf.get_mut().resume())
-    while printed.is_none() {
-        yield
-        printed = done(jf.get_mut().resume())
-    }
-    let (hashed, release) = (take printed).unwrap()?
-    var projects = take hashed
+    let release = fingerprint(mut projects)?
     let r = release.as_str()
     // The console's catalog and prefetch lists, and the headers and redirects that name them.
     var catalog_text = String::new()
@@ -532,13 +458,13 @@ fn release(given: take String) -> Result<String, String> {
         var entry: Option<String> = None
         if p.role == Role::Console || p.role == Role::Docs {
             let Some(e) = p.tree.find("index.html") else {
-                return Err(String::from(f"{p.worker.as_str()} has no index.html"))
+                return Err(ToolError::new(f"{p.worker.as_str()} has no index.html"))
             }
             let Source::Bytes(b) = p.tree.entries[e].source else {
-                return Err(String::from("index.html"))
+                return Err(ToolError::new("index.html"))
             }
             let Some(text) = String::from_utf8(b.clone()) else {
-                return Err(String::from("index.html isn't UTF-8"))
+                return Err(ToolError::new("index.html isn't UTF-8"))
             }
             let base = String::from(f"<head>\n<base href=\"/releases/{r}/\">")
             if p.role == Role::Console {
@@ -581,18 +507,18 @@ fn release(given: take String) -> Result<String, String> {
             f.tree.put_bytes("index.html", text.as_bytes())
         }
         f.tree.put_bytes(f"releases/{r}/files.json", files_json(versioned.entries).as_bytes())
-        let Some(h) = f.tree.find("_headers") else { return Err(String::from("no _headers")) }
+        let Some(h) = f.tree.find("_headers") else { return Err(ToolError::new("no _headers")) }
         let Source::Bytes(old) = f.tree.entries[h].source else {
-            return Err(String::from("_headers"))
+            return Err(ToolError::new("_headers"))
         }
         let Some(given) = String::from_utf8(old.clone()) else {
-            return Err(String::from("_headers"))
+            return Err(ToolError::new("_headers"))
         }
         var all_headers = given.clone()
         all_headers.push_str(CACHE_RULES)
         f.tree.put_bytes("_headers", all_headers.as_bytes())
         f.tree.sort()
-        check_files(f.tree.entries)?
+        check_files(f.tree.entries).map_err(own)?
         finals.push(take f)
     }
     // Written: each Worker's files, its configuration, and what the release holds.
@@ -638,32 +564,14 @@ fn release(given: take String) -> Result<String, String> {
             )
         }
     }
-    let report = release_json(revision.as_str(), r, reports)
+    let report = release_json(revision, r, reports)
     var report_file = report.clone()
     report_file.push_str("\n")
     writes.push((String::from(f"{OUT}/release.json"), Vec::from(report_file.as_bytes())))
-    var jcopy = Box::new(copy_files.start(take copies))
-    var copied = done(jcopy.get_mut().resume())
-    while copied.is_none() {
-        yield
-        copied = done(jcopy.get_mut().resume())
-    }
-    (take copied).unwrap()?
-    var jwrite = Box::new(write_files.start(take writes))
-    var wrote = done(jwrite.get_mut().resume())
-    while wrote.is_none() {
-        yield
-        wrote = done(jwrite.get_mut().resume())
-    }
-    (take wrote).unwrap()?
+    copy_files(copies)?
+    write_files(take writes)?
     // The stage, emptied.
-    var jclear = Box::new(empty.start(String::from(WORK)))
-    var cleared = done(jclear.get_mut().resume())
-    while cleared.is_none() {
-        yield
-        cleared = done(jclear.get_mut().resume())
-    }
-    (take cleared).unwrap()?
+    empty(WORK)?
     Ok(report)
 }
 
@@ -746,65 +654,45 @@ pub fn pages_of(bytes: take Vec<u8>) -> Result<Vec<Page>, String> {
     Ok(out)
 }
 
-/// A game's cover, from its PNG at `path`: fitted within `COVER_BOX` with Lanczos, encoded as
-/// WebP, and its size.
-@job
-fn cover(given: take String) -> Result<(Vec<u8>, u32, u32), String> {
-    let path = take given
-    var f = wait(files::read_blob(path.as_str()))
-    while !f.ready() { yield }
-    let file = match blob::read_handle(f.polled()) {
-        Ok(b) => b,
-        Err(e) => return Err(String::from(f"{path.as_str()}: {e.message()}")),
-    }
-    // Decoded, resized if it doesn't fit, and encoded: each answer read by `image`'s readers,
-    // and each blob given back after.
-    var blobs: Vec<Blob> = Vec::from([file])
-    var d = wait(image::decode(Data::Blob(file), timeout: LONGEST))
-    while !d.ready() { yield }
-    var img = match image::read_image(d.polled()) {
-        Ok(i) => take i,
-        Err(e) => return Err(String::from(f"{path.as_str()}: {e.message()}")),
-    }
+/// A game's cover, from its PNG at `path` (a root path): fitted within `COVER_BOX` with Lanczos,
+/// encoded as WebP, and its size.
+fn cover(path: take String) -> Result<(Vec<u8>, u32, u32), ToolError> {
+    // Decoded, resized if it doesn't fit, and encoded, each blob given back after.
+    var blobs: Vec<Blob> = Vec::new()
+    let made = encoded(path.as_str(), mut blobs)
+    release_blobs(blobs)
+    let (art, width, height) = (take made).map_err(
+        |e| ToolError::new(f"{path.as_str()}: {e.message()}"),
+    )?
+    Ok((data_bytes(take art)?, width, height))
+}
+
+/// The PNG at `path` as `cover` makes it, and its size: the WebP's data, which `blobs` doesn't
+/// hold, and each blob made for it before in `blobs`.
+fn encoded(path: str, blobs: mut Vec<Blob>) -> Result<(Data, u32, u32), ToolError> {
+    let file = files::read_blob(path).wait()?
+    blobs.push(file)
+    var img = image::decode(Data::Blob(file), timeout: LONGEST).wait()?
     if let Data::Blob(b) = img.rgba {
         blobs.push(b)
     }
     let to = image::fit(img.size(), COVER_BOX)
     if to != img.size() {
-        var r = wait(image::resize(img, to, timeout: LONGEST))
-        while !r.ready() { yield }
-        img = match image::read_image(r.polled()) {
-            Ok(i) => take i,
-            Err(e) => return Err(String::from(f"{path.as_str()}: {e.message()}")),
-        }
+        img = image::resize(img, to, timeout: LONGEST).wait()?
         if let Data::Blob(b) = img.rgba {
             blobs.push(b)
         }
     }
-    var e = wait(image::encode_webp(img, COVER_QUALITY, COVER_METHOD, timeout: LONGEST))
-    while !e.ready() { yield }
-    let art = match image::read_encoded(e.polled()) {
-        Ok(d) => take d,
-        Err(e) => return Err(String::from(f"{path.as_str()}: {e.message()}")),
-    }
-    var jr = Box::new(release_blobs.start(take blobs))
-    while done(jr.get_mut().resume()).is_none() { yield }
-    var jd = Box::new(data_bytes.start(take art))
-    var bytes = done(jd.get_mut().resume())
-    while bytes.is_none() {
-        yield
-        bytes = done(jd.get_mut().resume())
-    }
-    Ok(((take bytes).unwrap()?, img.width, img.height))
+    let art = image::encode_webp(img, COVER_QUALITY, COVER_METHOD, timeout: LONGEST).wait()?
+    Ok((art, img.width, img.height))
 }
 
 /// The font licences to ship with the package at `dir` (a root path): each `fonts/OFL-*.txt` of
 /// it and of every package it depends on, by name (a later one in the walk in place of an
 /// earlier one of the same name) and path.
-@job
-pub fn licences(given: take String) -> Result<Vec<(String, String)>, String> {
+pub fn licences(dir: str) -> Result<Vec<(String, String)>, ToolError> {
     var seen: Vec<String> = Vec::new()
-    var stack: Vec<String> = Vec::from([take given])
+    var stack: Vec<String> = Vec::from([String::from(dir)])
     // The members of the workspace the last workspace dependency was found in, and its
     // directory: each package of one workspace finds the same.
     var members: Vec<(String, String)> = Vec::new()
@@ -821,13 +709,7 @@ pub fn licences(given: take String) -> Result<Vec<(String, String)>, String> {
             continue
         }
         seen.push(dir.clone())
-        var jm = Box::new(manifest_at.start(dir.clone()))
-        var read = done(jm.get_mut().resume())
-        while read.is_none() {
-            yield
-            read = done(jm.get_mut().resume())
-        }
-        let Some(m) = (take read).unwrap()? else { continue }
+        let Some(m) = manifest_at(dir.as_str())? else { continue }
         let deps = m.dependencies.clone()
         for di in 0..deps.len() {
             let d = deps[di].clone()
@@ -835,7 +717,7 @@ pub fn licences(given: take String) -> Result<Vec<(String, String)>, String> {
                 Some(rel) => {
                     let Some(to) = joined(dir.as_str(), rel.as_str()) else {
                         return Err(
-                            String::from(
+                            ToolError::new(
                                 f"{dir.as_str()}: {d.name.as_str()} is outside the workspace",
                             ),
                         )
@@ -844,21 +726,9 @@ pub fn licences(given: take String) -> Result<Vec<(String, String)>, String> {
                 },
                 None => {
                     // The members of the nearest workspace at or above `dir`.
-                    var jn = Box::new(nearest_workspace.start(dir.clone()))
-                    var near = done(jn.get_mut().resume())
-                    while near.is_none() {
-                        yield
-                        near = done(jn.get_mut().resume())
-                    }
-                    let (root, entries) = (take near).unwrap()?
+                    let (root, entries) = nearest_workspace(dir.as_str())?
                     if root.as_str() != members_of.as_str() {
-                        var jw = Box::new(members_at.start(root.clone(), take entries))
-                        var found = done(jw.get_mut().resume())
-                        while found.is_none() {
-                            yield
-                            found = done(jw.get_mut().resume())
-                        }
-                        members = (take found).unwrap()?
+                        members = members_at(root.as_str(), entries)?
                         members_of = take root
                     }
                     var to: Option<String> = None
@@ -869,7 +739,9 @@ pub fn licences(given: take String) -> Result<Vec<(String, String)>, String> {
                     }
                     let Some(t) = take to else {
                         return Err(
-                            String::from(f"no member of the workspace is named {d.name.as_str()}"),
+                            ToolError::new(
+                                f"no member of the workspace is named {d.name.as_str()}",
+                            ),
                         )
                     }
                     stack.push(take t)
@@ -878,15 +750,13 @@ pub fn licences(given: take String) -> Result<Vec<(String, String)>, String> {
         }
     }
     // Each directory's `fonts/OFL-*.txt`, in the walk's order.
-    var ps: Vec<Pending<u8>> = Vec::new()
+    var lists: Vec<Call<Vec<Entry>>> = Vec::new()
     for s in seen {
-        ps.push(files::list(f"{s.as_str()}/fonts"))
+        lists.push(files::list(f"{s.as_str()}/fonts"))
     }
-    var got = wait_all(take ps)
-    while !got.ready() { yield }
     var out: Vec<(String, String)> = Vec::new()
     for k in 0..seen.len() {
-        let Ok(entries) = files::read_list(got.polled(k)) else { continue }
+        let Ok(entries) = lists.remove(0).wait() else { continue }
         for e in entries {
             let n = e.name.as_str()
             if e.kind == Kind::File && n.starts_with("OFL-") && n.ends_with(".txt") {
@@ -908,12 +778,9 @@ pub fn licences(given: take String) -> Result<Vec<(String, String)>, String> {
 }
 
 /// The manifest of the package at `dir` (a root path), or `None` if it has none.
-@job
-pub fn manifest_at(given: take String) -> Result<Option<Manifest>, String> {
-    let path = String::from(f"{given.as_str()}/wrela.toml")
-    var st = wait(files::stat(path.as_str()))
-    while !st.ready() { yield }
-    match files::read_entry(st.polled()) {
+pub fn manifest_at(dir: str) -> Result<Option<Manifest>, ToolError> {
+    let path = String::from(f"{dir}/wrela.toml")
+    match files::stat(path.as_str()).wait() {
         Ok(e) => {
             if e.kind != Kind::File {
                 return Ok(None)
@@ -921,55 +788,30 @@ pub fn manifest_at(given: take String) -> Result<Option<Manifest>, String> {
         },
         Err(_) => return Ok(None),
     }
-    var jr = Box::new(read_files.start(Vec::from([path.clone()])))
-    var read = done(jr.get_mut().resume())
-    while read.is_none() {
-        yield
-        read = done(jr.get_mut().resume())
-    }
-    var bytes = (take read).unwrap()?
+    var bytes = read_files(Vec::from([path.clone()]))?
     let Some(text) = String::from_utf8(replace(mut bytes[0], Vec::new())) else {
-        return Err(String::from(f"{path.as_str()} isn't UTF-8"))
+        return Err(ToolError::new(f"{path.as_str()} isn't UTF-8"))
     }
     Ok(Some(parse(text.as_str())))
 }
 
 /// The nearest workspace at or above the package at `dir` (a root path): its directory, and its
 /// members, each by name and directory (`members_at`).
-@job
-pub fn workspace_of(given: take String) -> Result<(String, Vec<(String, String)>), String> {
-    var jn = Box::new(nearest_workspace.start(take given))
-    var near = done(jn.get_mut().resume())
-    while near.is_none() {
-        yield
-        near = done(jn.get_mut().resume())
-    }
-    let (root, entries) = (take near).unwrap()?
-    var jm = Box::new(members_at.start(root.clone(), take entries))
-    var found = done(jm.get_mut().resume())
-    while found.is_none() {
-        yield
-        found = done(jm.get_mut().resume())
-    }
-    Ok((root, (take found).unwrap()?))
+pub fn workspace_of(dir: str) -> Result<(String, Vec<(String, String)>), ToolError> {
+    let (root, entries) = nearest_workspace(dir)?
+    let members = members_at(root.as_str(), entries)?
+    Ok((root, members))
 }
 
 /// The nearest workspace at or above the package at `dir` (a root path): its directory, and its
 /// manifest's `members`.
-@job
-fn nearest_workspace(given: take String) -> Result<(String, Vec<String>), String> {
-    var at: Option<String> = Some(take given)
+fn nearest_workspace(dir: str) -> Result<(String, Vec<String>), ToolError> {
+    var at: Option<String> = Some(String::from(dir))
     loop {
         let Some(dir) = take at else {
-            return Err(String::from("a workspace dependency, but no workspace"))
+            return Err(ToolError::new("a workspace dependency, but no workspace"))
         }
-        var jm = Box::new(manifest_at.start(dir.clone()))
-        var read = done(jm.get_mut().resume())
-        while read.is_none() {
-            yield
-            read = done(jm.get_mut().resume())
-        }
-        if let Some(m) = (take read).unwrap()? {
+        if let Some(m) = manifest_at(dir.as_str())? {
             if let Some(list) = m.members {
                 return Ok((dir.clone(), list.clone()))
             }
@@ -981,13 +823,7 @@ fn nearest_workspace(given: take String) -> Result<(String, Vec<String>), String
 /// The members of the workspace at `root` whose manifest lists `entries`, each by name and
 /// directory. A member's name is its manifest's, else its directory's with `-` read as `_`; two
 /// members of one name are refused.
-@job
-fn members_at(
-    given_root: take String,
-    given_entries: take Vec<String>,
-) -> Result<Vec<(String, String)>, String> {
-    let root = take given_root
-    let entries = take given_entries
+fn members_at(root: str, entries: [String]) -> Result<Vec<(String, String)>, ToolError> {
     // Each entry's directories: itself, or each directory with a manifest in it for `x/*`.
     var dirs: Vec<String> = Vec::new()
     var globs: Vec<String> = Vec::new()
@@ -995,29 +831,27 @@ fn members_at(
         let s = e.as_str()
         if s == "*" || s.ends_with("/*") {
             let base = s.slice(0, s.len() - 1)
-            let Some(d) = joined(root.as_str(), base) else {
-                return Err(String::from(f"a member outside the workspace: {s}"))
+            let Some(d) = joined(root, base) else {
+                return Err(ToolError::new(f"a member outside the workspace: {s}"))
             }
             globs.push(take d)
         } else {
-            let Some(d) = joined(root.as_str(), s) else {
-                return Err(String::from(f"a member outside the workspace: {s}"))
+            let Some(d) = joined(root, s) else {
+                return Err(ToolError::new(f"a member outside the workspace: {s}"))
             }
             dirs.push(take d)
         }
     }
-    var ls: Vec<Pending<u8>> = Vec::new()
+    var lists: Vec<Call<Vec<Entry>>> = Vec::new()
     for g in globs {
-        ls.push(files::list(g.as_str()))
+        lists.push(files::list(g.as_str()))
     }
-    var listed = wait_all(take ls)
-    while !listed.ready() { yield }
     // The candidates of each glob, kept if they have a manifest.
     for k in 0..globs.len() {
-        let list = match files::read_list(listed.polled(k)) {
-            Ok(l) => take l,
-            Err(e) => return Err(String::from(f"{globs[k].as_str()}: {e.message()}")),
-        }
+        let list = lists
+            .remove(0)
+            .wait()
+            .map_err(|e| ToolError::new(f"{globs[k].as_str()}: {e.message()}"))?
         for e in list {
             if e.kind == Kind::Dir && !e.name.as_str().starts_with(".") {
                 dirs.push(String::from(f"{globs[k].as_str()}/{e.name.as_str()}"))
@@ -1027,20 +861,16 @@ fn members_at(
     var members: Vec<(String, String)> = Vec::new()
     for di in 0..dirs.len() {
         let d = dirs[di].clone()
-        var jm = Box::new(manifest_at.start(d.clone()))
-        var read = done(jm.get_mut().resume())
-        while read.is_none() {
-            yield
-            read = done(jm.get_mut().resume())
-        }
-        let Some(m) = (take read).unwrap()? else { continue }
+        let Some(m) = manifest_at(d.as_str())? else { continue }
         let name = match m.name {
             Some(n) => n.clone(),
             None => default_name(d.as_str()),
         }
         for (other, at_dir) in members {
             if other.as_str() == name.as_str() && at_dir.as_str() != d.as_str() {
-                return Err(String::from(f"two members of the workspace are named {name.as_str()}"))
+                return Err(
+                    ToolError::new(f"two members of the workspace are named {name.as_str()}"),
+                )
             }
         }
         members.push((take name, d.clone()))
@@ -1048,11 +878,9 @@ fn members_at(
     Ok(members)
 }
 
-/// The release's fingerprint over `given`'s files (each tree sorted by parts), with each file's
-/// size and SHA-256 filled in: the projects, and the release's id.
-@job
-fn fingerprint(given: take Vec<Project>) -> Result<(Vec<Project>, String), String> {
-    var projects = take given
+/// The release's fingerprint over `projects`' files (each tree sorted by parts), with each
+/// file's size and SHA-256 filled in: the release's id.
+fn fingerprint(projects: mut Vec<Project>) -> Result<String, ToolError> {
     var digest = Sha256::new()
     digest.update(json::compact(catalog_json(CATALOG)).as_bytes())
     for k in 0..projects.len() {
@@ -1066,13 +894,7 @@ fn fingerprint(given: take Vec<Project>) -> Result<(Vec<Project>, String), Strin
                     wanted.push(path.clone())
                 }
             }
-            var j = Box::new(read_files.start(take wanted))
-            var read = done(j.get_mut().resume())
-            while read.is_none() {
-                yield
-                read = done(j.get_mut().resume())
-            }
-            var bodies = (take read).unwrap()?
+            var bodies = read_files(wanted)?
             var b = 0
             for i in at..at + n {
                 let path = String::from(
@@ -1101,5 +923,5 @@ fn fingerprint(given: take Vec<Project>) -> Result<(Vec<Project>, String), Strin
         }
     }
     let id = hex(digest.finish())
-    Ok((projects, String::from(id.as_str().slice(from: 0, to: 20))))
+    Ok(String::from(id.as_str().slice(from: 0, to: 20)))
 }

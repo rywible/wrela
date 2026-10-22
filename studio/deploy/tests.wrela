@@ -15,13 +15,13 @@ use release_tool::io::{read_files, write_files}
 use release_tool::json::{Json, compact, member, text}
 use release_tool::site::{Report, release_json, wrangler_config}
 use release_tool::tree::hex_sha
+use std::tool::ToolError
 use std::tool::files
 use std::tool::files::Kind
 use std::tool::testing
 use std::tool::testing::Fake
 use std::tool::time
 use std::tool::time::Utc
-use toolkit::wait::{done, wait}
 
 fn contains(haystack: str, needle: str) -> bool {
     haystack.find(needle).is_some()
@@ -431,70 +431,33 @@ fn options(dry_run: bool) -> Options {
 const REFS: Text = "https://github.com/rywible/wrela.git/info/refs?service=git-upload-pack"
 
 /// Writes `files`, and sets the fake clock to the tests' now.
-@job
-fn set_up(given: take Vec<(String, Vec<u8>)>) -> u32 {
-    var w = Box::new(write_files.start(take given))
-    var r = done(w.get_mut().resume())
-    while r.is_none() {
-        yield
-        r = done(w.get_mut().resume())
+fn set_up(files: take Vec<(String, Vec<u8>)>) {
+    if let Err(e) = write_files(take files) {
+        panic(e.message())
     }
-    if let Err(e) = (take r).unwrap() {
-        panic(e.as_str())
-    }
-    var c = wait(testing::set_utc(Utc { seconds: u64(now()), nanos: 0 }))
-    while !c.ready() { yield }
-    assert(c.bytes().is_ok(), "the fake clock")
-    0
+    assert(testing::set_utc(Utc { seconds: u64(now()), nanos: 0 }).wait().is_ok(), "the fake clock")
 }
 
 /// Sets `fake` for `url` on the fake sites.
-@job
-fn faked(given: take String, given_fake: take Fake) -> u32 {
-    let url = take given
-    var f = wait(testing::fake(url.as_str(), take given_fake))
-    while !f.ready() { yield }
-    assert(f.bytes().is_ok(), url.as_str())
-    0
-}
-
-/// The deploy `o` says, run to its end.
-@job
-fn deployed(given: take Options) -> Result<Vec<Deploy>, String> {
-    var j = Box::new(deploy.start(take given))
-    var r = done(j.get_mut().resume())
-    while r.is_none() {
-        yield
-        r = done(j.get_mut().resume())
-    }
-    (take r).unwrap()
+fn faked(url: str, fake: take Fake) {
+    assert(testing::fake(url, take fake).wait().is_ok(), url)
 }
 
 /// The file at `path` (a root path), or `None` if it isn't there.
-@job
-fn read(given: take String) -> Option<String> {
-    var j = Box::new(read_files.start(Vec::from([take given])))
-    var r = done(j.get_mut().resume())
-    while r.is_none() {
-        yield
-        r = done(j.get_mut().resume())
-    }
-    let Ok(all) = (take r).unwrap() else { return None }
+fn read(path: str) -> Option<String> {
+    let Ok(all) = read_files(Vec::from([String::from(path)])) else { return None }
     String::from_utf8(all[0].clone())
 }
 
 /// Whether anything is at `path` (a root path).
-@job
-fn there(given: take String) -> bool {
-    var s = wait(files::stat(take given))
-    while !s.ready() { yield }
-    files::read_entry(s.polled()).is_ok()
+fn there(path: str) -> bool {
+    files::stat(path).wait().is_ok()
 }
 
-fn failed(r: Result<Vec<Deploy>, String>, why: str) {
+fn failed(r: Result<Vec<Deploy>, ToolError>, why: str) {
     match r {
         Ok(_) => panic(f"deployed, but should fail with `{why}`"),
-        Err(e) => assert(contains(e.as_str(), why), e.as_str()),
+        Err(e) => assert(contains(e.message(), why), e.message()),
     }
 }
 
@@ -503,19 +466,11 @@ fn failed(r: Result<Vec<Deploy>, String>, why: str) {
 /// A dry run restores the kept releases from the live site, each file checked, and writes the
 /// history it would serve; a release past its window isn't kept.
 @test(tool, net: ["console.example", "game.example"], budget: 60)
-@job
 fn kept_releases_come_back_from_the_live_site_checked() {
-    var s = Box::new(set_up.start(site(docs: false, docs_first: false)))
-    while done(s.get_mut().resume()).is_none() { yield }
-    var j = Box::new(deployed.start(options(dry_run: true)))
-    var r = done(j.get_mut().resume())
-    while r.is_none() {
-        yield
-        r = done(j.get_mut().resume())
-    }
-    let after = match (take r).unwrap() {
+    set_up(site(docs: false, docs_first: false))
+    let after = match deploy(options(dry_run: true)) {
         Ok(a) => take a,
-        Err(e) => panic(e.as_str()),
+        Err(e) => panic(e.message()),
     }
     var checks: Vec<(String, String)> = Vec::new()
     for release in [B, C] {
@@ -538,143 +493,59 @@ fn kept_releases_come_back_from_the_live_site_checked() {
             ),
         )
     }
-    for k in 0..checks.len() {
-        var r = Box::new(read.start(checks[k].0.clone()))
-        var got = done(r.get_mut().resume())
-        while got.is_none() {
-            yield
-            got = done(r.get_mut().resume())
-        }
-        let got = (take got).unwrap()
-        let Some(t) = take got else { panic(checks[k].0.as_str()) }
-        assert(t.as_str() == checks[k].1.as_str(), checks[k].0.as_str())
+    for (path, want) in checks {
+        let Some(t) = read(path.as_str()) else { panic(path.as_str()) }
+        assert(t.as_str() == want.as_str(), path.as_str())
     }
-    let paths = Vec::from(
-        [
-            String::from(f"scratch/game-host/releases/{C}/files.json"),
-            String::from(f"scratch/game-host/releases/{A}"),
-        ],
-    )
-    for k in 0..paths.len() {
-        var t = Box::new(there.start(paths[k].clone()))
-        var is = done(t.get_mut().resume())
-        while is.is_none() {
-            yield
-            is = done(t.get_mut().resume())
-        }
-        let is = (take is).unwrap()
-        assert(is == (k == 0), paths[k].as_str())
-    }
-    var r = Box::new(read.start(String::from("scratch/console-host/deploys.json")))
-    var got = done(r.get_mut().resume())
-    while got.is_none() {
-        yield
-        got = done(r.get_mut().resume())
-    }
-    let got = (take got).unwrap()
-    let Some(t) = take got else { panic("no deploys.json") }
+    assert(there(f"scratch/game-host/releases/{C}/files.json"), "C's files.json")
+    assert(!there(f"scratch/game-host/releases/{A}"), "A, past its window")
+    let Some(t) = read("scratch/console-host/deploys.json") else { panic("no deploys.json") }
     assert(t.as_str() == history_json(after).as_str(), t.as_str())
     assert(releases(after).as_str() == "bcd")
 }
 
 /// The fake clock's seconds now.
-@job
 fn clock() -> u64 {
-    var c = wait(time::utc_now())
-    while !c.ready() { yield }
-    let Ok(t) = time::read_utc(c.polled()) else { panic("the fake clock") }
+    let Ok(t) = time::utc_now().wait() else { panic("the fake clock") }
     t.seconds
 }
 
 /// A kept file that doesn't match, doesn't arrive or leaves its release stops the deploy, and
 /// no history is written: how many seconds of the fake clock the deploy took (its retries'
 /// waits).
-@job
-fn spoiled(
-    given: take String,
-    given_fake: take Option<Fake>,
-    given_files: take Vec<(String, Vec<u8>)>,
-) -> u64 {
-    let why = take given
-    var s = Box::new(set_up.start(site(docs: false, docs_first: false)))
-    while done(s.get_mut().resume()).is_none() { yield }
-    let url = String::from(f"https://game.example/releases/{C}/session/game.wasm")
-    if let Some(f) = take given_fake {
-        var j = Box::new(faked.start(take url, take f))
-        while done(j.get_mut().resume()).is_none() { yield }
+fn spoiled(why: str, fake: take Option<Fake>, files: take Vec<(String, Vec<u8>)>) -> u64 {
+    set_up(site(docs: false, docs_first: false))
+    if let Some(f) = take fake {
+        faked(f"https://game.example/releases/{C}/session/game.wasm", take f)
     }
-    var w = Box::new(set_up.start(take given_files))
-    while done(w.get_mut().resume()).is_none() { yield }
-    var c0 = Box::new(clock.start())
-    var t0 = done(c0.get_mut().resume())
-    while t0.is_none() {
-        yield
-        t0 = done(c0.get_mut().resume())
-    }
-    let started = (take t0).unwrap()
-    var j = Box::new(deployed.start(options(dry_run: true)))
-    var r = done(j.get_mut().resume())
-    while r.is_none() {
-        yield
-        r = done(j.get_mut().resume())
-    }
-    let r = (take r).unwrap()
-    failed(take r, why.as_str())
-    var t = Box::new(there.start(String::from("scratch/console-host/deploys.json")))
-    var is = done(t.get_mut().resume())
-    while is.is_none() {
-        yield
-        is = done(t.get_mut().resume())
-    }
-    let is = (take is).unwrap()
-    assert(!is, "a deploys.json was written")
-    var c1 = Box::new(clock.start())
-    var t1 = done(c1.get_mut().resume())
-    while t1.is_none() {
-        yield
-        t1 = done(c1.get_mut().resume())
-    }
-    (take t1).unwrap() - started
+    set_up(take files)
+    let started = clock()
+    failed(deploy(options(dry_run: true)), why)
+    assert(!there("scratch/console-host/deploys.json"), "a deploys.json was written")
+    clock() - started
 }
 
 /// A mismatch is a definite answer: the deploy stops at once, with no retry.
 @test(tool, net: ["console.example", "game.example"], budget: 60)
-@job
 fn a_file_that_does_not_match_stops_the_deploy() {
-    var j = Box::new(
-        spoiled.start(
-            String::from("doesn't match its SHA-256"),
-            Some(Fake::Bytes(Vec::from(String::from("tampered").as_bytes()))),
-            Vec::new(),
-        ),
+    let waited = spoiled(
+        "doesn't match its SHA-256",
+        Some(Fake::Bytes(Vec::from(String::from("tampered").as_bytes()))),
+        Vec::new(),
     )
-    var waited = done(j.get_mut().resume())
-    while waited.is_none() {
-        yield
-        waited = done(j.get_mut().resume())
-    }
-    let waited = (take waited).unwrap()
     assert(waited == 0, "a mismatch is not retried")
 }
 
 /// A 404 is a definite answer too: no retry.
 @test(tool, net: ["console.example", "game.example"], budget: 60)
-@job
 fn a_file_that_does_not_arrive_stops_the_deploy() {
-    var j = Box::new(spoiled.start(String::from("HTTP 404"), Some(Fake::Missing), Vec::new()))
-    var waited = done(j.get_mut().resume())
-    while waited.is_none() {
-        yield
-        waited = done(j.get_mut().resume())
-    }
-    let waited = (take waited).unwrap()
+    let waited = spoiled("HTTP 404", Some(Fake::Missing), Vec::new())
     assert(waited == 0, "a 404 is not retried")
 }
 
 /// A file whose fetch keeps failing in transport, or whose origin keeps answering 503, is tried
 /// 5 times, the waits between 15 s in all, and then stops the deploy, saying so.
 @test(tool, net: ["console.example", "game.example"], budget: 60)
-@job
 fn a_file_that_keeps_failing_stops_the_deploy_after_its_retries() {
     for k in 0..2 {
         // The 503 first: a fake's failures in transport come before its status.
@@ -683,49 +554,106 @@ fn a_file_that_keeps_failing_stops_the_deploy_after_its_retries() {
         } else {
             ("connection reset (a fake site's failure) (5 tries)", Fake::Fail(100))
         }
-        var j = Box::new(spoiled.start(String::from(why), Some(take fake), Vec::new()))
-        var waited = done(j.get_mut().resume())
-        while waited.is_none() {
-            yield
-            waited = done(j.get_mut().resume())
-        }
-        let waited = (take waited).unwrap()
+        let waited = spoiled(why, Some(take fake), Vec::new())
         assert(waited == 15, why)
     }
 }
 
 /// A file whose fetch fails in transport twice, then answers, is kept: the deploy goes on.
 @test(tool, net: ["console.example", "game.example"], budget: 60)
-@job
 fn a_file_that_fails_in_transport_then_answers_is_kept() {
-    var s = Box::new(set_up.start(site(docs: false, docs_first: false)))
-    while done(s.get_mut().resume()).is_none() { yield }
-    let url = String::from(f"https://game.example/releases/{C}/session/game.wasm")
-    var f = Box::new(faked.start(take url, Fake::Fail(2)))
-    while done(f.get_mut().resume()).is_none() { yield }
-    var j = Box::new(deployed.start(options(dry_run: true)))
-    var r = done(j.get_mut().resume())
-    while r.is_none() {
-        yield
-        r = done(j.get_mut().resume())
+    set_up(site(docs: false, docs_first: false))
+    faked(f"https://game.example/releases/{C}/session/game.wasm", Fake::Fail(2))
+    if let Err(e) = deploy(options(dry_run: true)) {
+        panic(e.message())
     }
-    let r = (take r).unwrap()
-    if let Err(e) = take r {
-        panic(e.as_str())
+    let Some(t) = read(f"scratch/game-host/releases/{C}/session/game.wasm") else {
+        panic("the kept file")
     }
-    var r = Box::new(read.start(String::from(f"scratch/game-host/releases/{C}/session/game.wasm")))
-    var got = done(r.get_mut().resume())
-    while got.is_none() {
-        yield
-        got = done(r.get_mut().resume())
-    }
-    let got = (take got).unwrap()
-    let Some(t) = take got else { panic("the kept file") }
     assert(t.as_str() == C, t.as_str())
 }
 
+/// The 16 files of a batch (`AT_ONCE`), as kept release C serves them on the game's site.
+const BATCH: [Text; 16] = [
+    "f00.bin",
+    "f01.bin",
+    "f02.bin",
+    "f03.bin",
+    "f04.bin",
+    "f05.bin",
+    "f06.bin",
+    "f07.bin",
+    "f08.bin",
+    "f09.bin",
+    "f10.bin",
+    "f11.bin",
+    "f12.bin",
+    "f13.bin",
+    "f14.bin",
+    "f15.bin",
+]
+
+/// A batch whose 16 files each fail in transport 1 to 4 times, and with `lasting` two of them
+/// (f05 and f09) answering 503 for good: the retries of every file wait together, whatever the
+/// helpers, so the deploy waits one schedule (1 + 2 + 4 + 8 s), not one a file or a wave. With
+/// no lasting 503 the deploy keeps every file; with them it stops at the first in the batch's
+/// order, after its 5 tries. The fake clock's seconds the deploy took.
+fn batch_retried(lasting: bool) -> u64 {
+    var files = site(docs: false, docs_first: false)
+    var served: Vec<(Text, String)> = Vec::new()
+    for name in BATCH {
+        served.push((name, String::from(f"body of {name}")))
+    }
+    serve(mut files, "game.example", C, served)
+    // What an earlier deploy of this test wrote.
+    let _ = files::remove_all("scratch/console-host").wait()
+    let _ = files::remove_all("scratch/game-host").wait()
+    set_up(take files)
+    for k in 0..BATCH.len() {
+        let url = String::from(f"https://game.example/releases/{C}/{BATCH[k]}")
+        if lasting && (k == 5 || k == 9) {
+            faked(url.as_str(), Fake::Status(503))
+        } else {
+            faked(url.as_str(), Fake::Fail(1 + k % 4))
+        }
+    }
+    let started = clock()
+    let r = deploy(options(dry_run: true))
+    let waited = clock() - started
+    if lasting {
+        failed(r, f"GET https://game.example/releases/{C}/f05.bin: HTTP 503, 5 tries")
+        assert(!there("scratch/console-host/deploys.json"), "a deploys.json was written")
+    } else {
+        if let Err(e) = r {
+            panic(e.message())
+        }
+        for name in BATCH {
+            let Some(t) = read(f"scratch/game-host/releases/{C}/{name}") else { panic(name) }
+            assert(t.as_str() == String::from(f"body of {name}").as_str(), name)
+        }
+    }
+    waited
+}
+
+/// With no helpers, a batch's retries still wait together: one schedule.
+@test(tool, net: ["console.example", "game.example"], budget: 60, workers: 0)
+fn a_batch_s_retries_wait_together_with_no_helpers() {
+    for lasting in [false, true] {
+        let waited = batch_retried(lasting)
+        assert(waited == 15, f"{waited} s")
+    }
+}
+
+/// With three helpers (a 4-core runner's), the same: one schedule, not waves.
+@test(tool, net: ["console.example", "game.example"], budget: 60, workers: 3)
+fn a_batch_s_retries_wait_together_with_three_helpers() {
+    for lasting in [false, true] {
+        let waited = batch_retried(lasting)
+        assert(waited == 15, f"{waited} s")
+    }
+}
+
 @test(tool, net: ["console.example", "game.example"], budget: 60)
-@job
 fn a_file_that_leaves_its_release_stops_the_deploy() {
     var escape: Vec<(String, Vec<u8>)> = Vec::new()
     // Its listing alone: no file can be at a path that leaves the site.
@@ -733,135 +661,65 @@ fn a_file_that_leaves_its_release_stops_the_deploy() {
         Vec::from([member("../../escape", text(hex_sha(String::from("x").as_bytes()).as_str()))]),
     )
     put(mut escape, f"sites/game.example/releases/{C}/files.json", compact(listing).as_str())
-    var j = Box::new(spoiled.start(String::from("invalid path"), None, take escape))
-    while done(j.get_mut().resume()).is_none() { yield }
+    let _ = spoiled("invalid path", None, take escape)
 }
 
 /// A kept release that's in the release already must be the same: its URLs are immutable.
 @test(tool, net: ["console.example", "game.example"], budget: 60)
-@job
 fn a_kept_release_cannot_change_under_its_immutable_urls() {
     var files = site(docs: false, docs_first: false)
     put(mut files, f"game-host/releases/{C}/session/game.wasm", "different")
-    var s = Box::new(set_up.start(take files))
-    while done(s.get_mut().resume()).is_none() { yield }
-    var j = Box::new(deployed.start(options(dry_run: true)))
-    var r = done(j.get_mut().resume())
-    while r.is_none() {
-        yield
-        r = done(j.get_mut().resume())
-    }
-    let r = (take r).unwrap()
-    failed(take r, "immutable")
+    set_up(take files)
+    failed(deploy(options(dry_run: true)), "immutable")
 }
 
 /// The docs keep no release they never served (404), but a game's missing release still stops
 /// the deploy, and so does a docs failure that isn't one.
 @test(tool, net: ["console.example", "game.example", "docs.example"], budget: 60)
-@job
 fn a_kept_release_the_docs_never_served_is_skipped_but_a_game_s_is_not() {
     var files = site(docs: true, docs_first: false)
     // The docs served C, and never B.
     serve(mut files, "docs.example", C, [("index.html", String::from("docs"))])
-    var s = Box::new(set_up.start(take files))
-    while done(s.get_mut().resume()).is_none() { yield }
-    var j = Box::new(deployed.start(options(dry_run: true)))
-    var r = done(j.get_mut().resume())
-    while r.is_none() {
-        yield
-        r = done(j.get_mut().resume())
-    }
-    let r = (take r).unwrap()
-    if let Err(e) = take r {
-        panic(e.as_str())
+    set_up(take files)
+    if let Err(e) = deploy(options(dry_run: true)) {
+        panic(e.message())
     }
     let checks = [
         (String::from(f"scratch/docs-host/releases/{B}"), false),
         (String::from(f"scratch/docs-host/releases/{C}/index.html"), true),
         (String::from(f"scratch/game-host/releases/{B}/session/game.wasm"), true),
     ]
-    for k in 0..3 {
-        var t = Box::new(there.start(checks[k].0.clone()))
-        var is = done(t.get_mut().resume())
-        while is.is_none() {
-            yield
-            is = done(t.get_mut().resume())
-        }
-        let is = (take is).unwrap()
-        assert(is == checks[k].1, checks[k].0.as_str())
+    for (path, is) in checks {
+        assert(there(path.as_str()) == is, path.as_str())
     }
     // A docs failure that isn't a 404 stops it.
-    var f = Box::new(
-        faked.start(
-            String::from(f"https://docs.example/releases/{B}/files.json"),
-            Fake::Status(503),
-        ),
-    )
-    while done(f.get_mut().resume()).is_none() { yield }
-    var j2 = Box::new(deployed.start(options(dry_run: true)))
-    var r = done(j2.get_mut().resume())
-    while r.is_none() {
-        yield
-        r = done(j2.get_mut().resume())
-    }
-    let r = (take r).unwrap()
-    failed(take r, "HTTP 503")
+    faked(f"https://docs.example/releases/{B}/files.json", Fake::Status(503))
+    failed(deploy(options(dry_run: true)), "HTTP 503")
     // A game's missing release stops it.
-    var c = Box::new(
-        faked.start(String::from(f"https://docs.example/releases/{B}/files.json"), Fake::Clear),
-    )
-    while done(c.get_mut().resume()).is_none() { yield }
-    var m = Box::new(
-        faked.start(String::from(f"https://game.example/releases/{B}/files.json"), Fake::Missing),
-    )
-    while done(m.get_mut().resume()).is_none() { yield }
-    var j3 = Box::new(deployed.start(options(dry_run: true)))
-    var r = done(j3.get_mut().resume())
-    while r.is_none() {
-        yield
-        r = done(j3.get_mut().resume())
-    }
-    let r = (take r).unwrap()
-    failed(take r, "HTTP 404")
+    faked(f"https://docs.example/releases/{B}/files.json", Fake::Clear)
+    faked(f"https://game.example/releases/{B}/files.json", Fake::Missing)
+    failed(deploy(options(dry_run: true)), "HTTP 404")
 }
 
 /// A Worker over its file limit fails the deploy rather than drop a release; the limit counts
 /// the history the console serves.
 @test(tool, net: ["console.example", "game.example"], budget: 60)
-@job
 fn a_worker_over_its_file_limit_fails_rather_than_drops_a_release() {
-    var s = Box::new(set_up.start(site(docs: false, docs_first: false)))
-    while done(s.get_mut().resume()).is_none() { yield }
+    set_up(site(docs: false, docs_first: false))
     var o = options(dry_run: true)
     o.limits = Limits { most_files: 3, largest: CLOUDFLARE.largest }
-    var j = Box::new(deployed.start(take o))
-    var r = done(j.get_mut().resume())
-    while r.is_none() {
-        yield
-        r = done(j.get_mut().resume())
-    }
-    let r = (take r).unwrap()
-    failed(take r, "file-count")
+    failed(deploy(o), "file-count")
 }
 
 @test(tool, net: ["console.example", "game.example"], budget: 60)
-@job
 fn the_file_limit_includes_the_deploy_history() {
     var files = site(docs: false, docs_first: false)
     put(mut files, "sites/console.example/deploys.json", "{\"deploys\": []}")
-    var s = Box::new(set_up.start(take files))
-    while done(s.get_mut().resume()).is_none() { yield }
+    set_up(take files)
     // The console has one asset before deploys.json is written, and two after.
     var o = options(dry_run: true)
     o.limits = Limits { most_files: 1, largest: CLOUDFLARE.largest }
-    var j = Box::new(deployed.start(take o))
-    var r = done(j.get_mut().resume())
-    while r.is_none() {
-        yield
-        r = done(j.get_mut().resume())
-    }
-    let r = (take r).unwrap()
-    failed(take r, "file-count")
+    failed(deploy(o), "file-count")
 }
 
 /// A deploy whose commit is no longer main's head runs no Wrangler.
@@ -871,33 +729,11 @@ fn the_file_limit_includes_the_deploy_history() {
     run: [("npx", "fakes/npx")],
     budget: 120,
 )
-@job
 fn a_deploy_no_longer_at_main_s_head_changes_nothing() {
-    var s = Box::new(set_up.start(site(docs: false, docs_first: false)))
-    while done(s.get_mut().resume()).is_none() { yield }
-    var f = Box::new(
-        faked.start(
-            String::from(REFS),
-            Fake::Bytes(advertised("1111111111111111111111111111111111111111")),
-        ),
-    )
-    while done(f.get_mut().resume()).is_none() { yield }
-    var j = Box::new(deployed.start(options(dry_run: false)))
-    var r = done(j.get_mut().resume())
-    while r.is_none() {
-        yield
-        r = done(j.get_mut().resume())
-    }
-    let r = (take r).unwrap()
-    failed(take r, "no longer the head of main")
-    var t = Box::new(there.start(String::from("scratch/npx.log")))
-    var is = done(t.get_mut().resume())
-    while is.is_none() {
-        yield
-        is = done(t.get_mut().resume())
-    }
-    let is = (take is).unwrap()
-    assert(!is, "wrangler ran")
+    set_up(site(docs: false, docs_first: false))
+    faked(REFS, Fake::Bytes(advertised("1111111111111111111111111111111111111111")))
+    failed(deploy(options(dry_run: false)), "no longer the head of main")
+    assert(!there("scratch/npx.log"), "wrangler ran")
 }
 
 /// The games deploy before the console and the docs after it, through the pinned Wrangler, and
@@ -908,7 +744,6 @@ fn a_deploy_no_longer_at_main_s_head_changes_nothing() {
     run: [("npx", "fakes/npx")],
     budget: 300,
 )
-@job
 fn the_games_deploy_before_the_console_the_docs_after_and_each_serves_the_release() {
     // The docs, listed first, still go last: a failure there leaves the console live.
     var files = site(docs: true, docs_first: true)
@@ -920,40 +755,22 @@ fn the_games_deploy_before_the_console_the_docs_after_and_each_serves_the_releas
         )
         put(mut files, f"{w}/releases/{D}/files.json", compact(listing).as_str())
     }
-    var s = Box::new(set_up.start(take files))
-    while done(s.get_mut().resume()).is_none() { yield }
-    var f = Box::new(faked.start(String::from(REFS), Fake::Bytes(advertised(SOURCE))))
-    while done(f.get_mut().resume()).is_none() { yield }
-    var j = Box::new(deployed.start(options(dry_run: false)))
-    var r = done(j.get_mut().resume())
-    while r.is_none() {
-        yield
-        r = done(j.get_mut().resume())
+    set_up(take files)
+    faked(REFS, Fake::Bytes(advertised(SOURCE)))
+    if let Err(e) = deploy(options(dry_run: false)) {
+        panic(e.message())
     }
-    let r = (take r).unwrap()
-    if let Err(e) = take r {
-        panic(e.as_str())
-    }
-    var r = Box::new(read.start(String::from("scratch/npx.log")))
-    var got = done(r.get_mut().resume())
-    while got.is_none() {
-        yield
-        got = done(r.get_mut().resume())
-    }
-    let got = (take got).unwrap()
-    let Some(log) = take got else { panic("wrangler never ran") }
+    let Some(log) = read("scratch/npx.log") else { panic("wrangler never ran") }
     assert(log.as_str() == "game-host\nconsole-host\ndocs-host\n", log.as_str())
 }
 
 /// A Worker that doesn't serve the release, once deployed, fails the deploy.
 @test(tool, net: ["console.example", "game.example"], budget: 60)
-@job
 fn a_worker_that_does_not_serve_the_release_fails_the_deploy() {
     var files = site(docs: false, docs_first: false)
     put(mut files, f"console-host/releases/{D}/files.json", "{}")
     put(mut files, f"game-host/releases/{D}/files.json", "{}")
-    var s = Box::new(set_up.start(take files))
-    while done(s.get_mut().resume()).is_none() { yield }
+    set_up(take files)
     let rel = Release {
         source: String::from("head"),
         release: String::from(D),
@@ -964,31 +781,17 @@ fn a_worker_that_does_not_serve_the_release_fails_the_deploy() {
             ],
         ),
     }
-    var j = Box::new(verify.start(take rel, String::from("scratch")))
-    var r = done(j.get_mut().resume())
-    while r.is_none() {
-        yield
-        r = done(j.get_mut().resume())
-    }
-    let r = (take r).unwrap()
-    match take r {
+    match verify(rel, "scratch") {
         Ok(_) => panic("verified"),
-        Err(e) => assert(contains(e.as_str(), "doesn't serve"), e.as_str()),
+        Err(e) => assert(contains(e.message(), "doesn't serve"), e.message()),
     }
 }
 
 /// The workspace grants the deploy tool the catalog's domains and GitHub alone, the pinned
 /// `npx`, and Cloudflare's secrets: a domain that the catalog gains is a grant to add.
 @test(tool, read: [("ws", "../..")], budget: 30)
-@job
 fn the_deploy_tool_is_granted_the_catalogs_domains() {
-    var r = Box::new(read.start(String::from("ws/wrela.toml")))
-    var got = done(r.get_mut().resume())
-    while got.is_none() {
-        yield
-        got = done(r.get_mut().resume())
-    }
-    let Some(manifest) = (take got).unwrap() else { panic("no wrela.toml") }
+    let Some(manifest) = read("ws/wrela.toml") else { panic("no wrela.toml") }
     let Some(at) = manifest.find("[tools.deploy]") else { panic("no [tools.deploy]") }
     let section = manifest.slice(at, manifest.len())
     let Some(net_at) = section.find("\nnet = [") else { panic("no net") }

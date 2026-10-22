@@ -3,9 +3,6 @@
 // the toolchain, every one passing, as many as the files declare.
 
 use hosts::steps::{declared, replaced, text_of, written}
-use std::collections::{Box, Vec}
-use std::job::Step
-use std::string::String
 use std::tool::toolchain
 
 /// ui's modules the package holds.
@@ -177,22 +174,11 @@ const EMPTY: Text = "Baked { em: 32.0, spread: 4.0, ascender: 0.0, descender: 0.
 /// typed runs and keys edit as the previous editor did, saving its repeated tail allocations;
 /// and ui's own regressions pass beside them.
 @test(tool, read: [("repo", "../../..")], budget: 300)
-@job
 fn perf_ui_frame_buffers_and_typing_preserve_behavior() {
     var tests = 0
     for k in 0..MODULES.len() {
         let file = MODULES[k]
-        var r = Box::new(text_of.start(String::from(f"repo/ui/{file}")))
-        var text = String::new()
-        loop {
-            match r.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(v) => {
-                    text = take v
-                    break
-                },
-            }
-        }
+        var text = text_of(f"repo/ui/{file}")
         if file == "text.wrela" {
             for b in BAKES {
                 assert(text.as_str().find(b).is_some(), f"text.wrela bakes {b}")
@@ -207,34 +193,12 @@ fn perf_ui_frame_buffers_and_typing_preserve_behavior() {
             }
             tests += 2
         }
-        var w = Box::new(written.start(String::from(f"scratch/ui/{file}"), take text))
-        loop {
-            match w.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(_) => break,
-            }
-        }
+        written(f"scratch/ui/{file}", text.as_str())
     }
-    var m = Box::new(
-        written.start(
-            String::from("scratch/ui/main.wrela"),
-            String::from("pub fn frame(time: f32, width: u32, height: u32) {}\n"),
-        ),
-    )
-    loop {
-        match m.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
+    written("scratch/ui/main.wrela", "pub fn frame(time: f32, width: u32, height: u32) {}\n")
+    let Ok(run) = toolchain::test("scratch/ui", "", 300.0).wait() else {
+        panic("the tests' request")
     }
-    var t = toolchain::test("scratch/ui", "", 300.0)
-    var got = t.poll()
-    while got.is_none() {
-        yield
-        got = t.poll()
-    }
-    let Some(tp) = take got else { panic("no answer") }
-    let Ok(run) = toolchain::read_tested(take tp) else { panic("the tests' request") }
     for d in run.diagnostics {
         assert(!d.error, d.rendered.as_str())
     }

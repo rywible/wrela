@@ -17,11 +17,10 @@ use replica::{
     Compression, Lofted, Reference, Sampled, Shape, compress, fill_held, fit_compact, ident,
     manifest, quoted_name, read, replica_source,
 }
-use std::collections::{Box, Vec}
-use std::job::Step
+use std::collections::Vec
 use std::string::String
 use std::tool::drive
-use std::tool::drive::Scalar
+use std::tool::drive::{Scalar, Step}
 use std::tool::toolchain::Override
 use std::math
 
@@ -167,7 +166,6 @@ fn the_ball_s_lofts_compress_as_the_rust_command_compressed_them() {
 }
 
 @test(tool, budget: 120)
-@job
 fn the_pear_s_sweep_fits_within_the_rust_command_s_own_envelope() {
     let (_, sampled, _, _) = replica_of(SWEEP.clone(), args(None, None))
     let Shape::Sweep(sw) = sampled[0].shape else { panic("a sweep part is fitted as one") }
@@ -189,73 +187,44 @@ fn the_pear_s_sweep_fits_within_the_rust_command_s_own_envelope() {
 
 /// A replica of `parts` as `a` asks, written into `scratch/<name>` and measured against the
 /// ball at 2000 points.
-@job
-fn deviation_of(parts: take Parts, a: take ReplicaArgs, name: take String) -> Deviation {
+fn deviation_of(parts: Parts, a: ReplicaArgs, name: str) -> Deviation {
     let (file, sampled, _, _) = replica_of(parts, a)
     let dir = String::from(f"scratch/{name}")
-    var w = Box::new(
-        write_package.start(
-            dir.clone(),
-            dir.clone(),
-            manifest(file, ident(name.as_str()).as_str()),
-            replica_source(file, sampled),
-        ),
+    let written = write_package(
+        dir.as_str(),
+        dir.as_str(),
+        manifest(file, ident(name).as_str()),
+        replica_source(file, sampled),
     )
-    var written = false
-    while !written {
-        match w.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => {
-                if let Err(why) = r {
-                    panic(f"the package is written: {why}")
-                }
-                written = true
-            },
-        }
+    if let Err(e) = written {
+        panic(f"the package is written: {e.message()}")
     }
     let Ok(solid) = file.solid() else { panic("the mesh reads") }
     var names: Vec<String> = Vec::new()
     for p in LOFTS.parts {
         names.push(String::from(p.name))
     }
-    var m = Box::new(
-        measure.start(
-            dir.clone(),
-            take dir,
-            String::from(f"scratch/build/{name}"),
-            take names,
-            2000,
-            // The replica's engine is the workspace's, and its scratch isn't in the workspace.
-            Vec::from([Override { name: String::from("engine"), dir: String::from("ws/engine") }]),
-        ),
+    let measured = measure(
+        dir.as_str(),
+        dir.as_str(),
+        f"scratch/build/{name}",
+        take names,
+        2000,
+        // The replica's engine is the workspace's, and its scratch isn't in the workspace.
+        Vec::from([Override { name: String::from("engine"), dir: String::from("ws/engine") }]),
+        solid,
     )
-    loop {
-        match m.get_mut().resume(solid) {
-            Step::Yielded => yield,
-            Step::Done(r) => {
-                match r {
-                    Ok(d) => return d.clone(),
-                    Err(why) => panic(f"the replica is measured: {why}"),
-                }
-            },
-        }
+    match take measured {
+        Ok(d) => take d,
+        Err(e) => panic(f"the replica is measured: {e.message()}"),
     }
 }
 
 /// The replicas built and measured, each against the Rust command's report of the same
 /// replica of the same ball: the surface's mean, the volumes and the see-through rays.
 @test(tool, read: [("ws", "../..")], budget: 600)
-@job
 fn the_ball_s_replicas_deviate_as_the_rust_command_found() {
-    var j = Box::new(deviation_of.start(LOFTS.clone(), args(None, None), String::from("lofts")))
-    var lofts: Option<Deviation> = None
-    while lofts.is_none() {
-        match j.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(d) => lofts = Some(d.clone()),
-        }
-    }
-    let Some(d) = take lofts else { panic("a report") }
+    let d = deviation_of(LOFTS.clone(), args(None, None), "lofts")
     let all = d.stats(None)
     assert(all.n == 2000 && d.hidden == 0)
     assert(all.mean == 0.00014788640660923135, f"mean {all.mean}")
@@ -274,17 +243,7 @@ fn the_ball_s_replicas_deviate_as_the_rust_command_found() {
     }
     assert(inside == 0 && d.see_through.len() == 207, f"{inside} {d.see_through.len()}")
     // Compressed: a mean of 0.36 mm, 89% within 2 mm, nothing to see through.
-    var c = Box::new(
-        deviation_of.start(LOFTS.clone(), args(Some(2), Some(0.02)), String::from("compact")),
-    )
-    var compact: Option<Deviation> = None
-    while compact.is_none() {
-        match c.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(d) => compact = Some(d.clone()),
-        }
-    }
-    let Some(e) = take compact else { panic("a report") }
+    let e = deviation_of(LOFTS.clone(), args(Some(2), Some(0.02)), "compact")
     let st = e.stats(None)
     assert(
         st.mean == 0.00035779823290518303 && st.within_2mm == 0.8865,
@@ -294,15 +253,7 @@ fn the_ball_s_replicas_deviate_as_the_rust_command_found() {
     // The pear's sweep, against the Rust command's report of the same replica (the Rust
     // command with this tool's f64 math made it, bit for bit): a mean of 2.8 mm, 54% within
     // 2 mm, 90% of the volume shared, 3 rays seen through inside the outline.
-    var s = Box::new(deviation_of.start(SWEEP.clone(), args(None, None), String::from("sweep")))
-    var swept: Option<Deviation> = None
-    while swept.is_none() {
-        match s.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(d) => swept = Some(d.clone()),
-        }
-    }
-    let Some(f) = take swept else { panic("a report") }
+    let f = deviation_of(SWEEP.clone(), args(None, None), "sweep")
     let sf = f.stats(None)
     assert(sf.mean == 0.002797239838788932 && sf.within_2mm == 0.5395, f"{sf.mean} {sf.within_2mm}")
     assert(f.iou() == 0.9002976190476191 && f.furthest_past == 0.018538264069506885, f"{f.iou()}")
@@ -515,33 +466,24 @@ fn parts_name_their_parents_before_them() {
 
 /// The report on the probe package `fixtures/probes/<name>` against the ball, at `points`
 /// points: its error, if it fails.
-@job
-fn probe_failure(name: take String, points: take u32) -> String {
+fn probe_failure(name: str, points: u32) -> String {
     let Ok(file) = read(LOFTS.clone()) else { panic("the parts read") }
     let Ok(solid) = file.solid() else { panic("the mesh reads") }
     var names: Vec<String> = Vec::new()
     names.push(String::from("ball"))
     let dir = String::from(f"ws/studio/reference/fixtures/probes/{name}")
-    var m = Box::new(
-        measure.start(
-            dir.clone(),
-            take dir,
-            String::from(f"scratch/build/{name}"),
-            take names,
-            points,
-            Vec::new(),
-        ),
+    let measured = measure(
+        dir.as_str(),
+        dir.as_str(),
+        f"scratch/build/{name}",
+        take names,
+        points,
+        Vec::new(),
+        solid,
     )
-    loop {
-        match m.get_mut().resume(solid) {
-            Step::Yielded => yield,
-            Step::Done(r) => {
-                match r {
-                    Ok(_) => panic(f"the probe package `{name}` was measured"),
-                    Err(why) => return why.clone(),
-                }
-            },
-        }
+    match measured {
+        Ok(_) => panic(f"the probe package `{name}` was measured"),
+        Err(e) => String::from(e.message()),
     }
 }
 
@@ -549,7 +491,6 @@ fn probe_failure(name: take String, points: take u32) -> String {
 /// report promptly with the trap, and an export that isn't there, or gives the wrong type,
 /// ends it with what the package gave: never a hang, and never a number read as another.
 @test(tool, read: [("ws", "../..")], budget: 120)
-@job
 fn a_package_s_failing_or_mistyped_exports_end_the_report() {
     let cases = [
         ("traps", "the package's `distance` trapped"),
@@ -559,76 +500,39 @@ fn a_package_s_failing_or_mistyped_exports_end_the_report() {
     ]
     for k in 0..4 {
         let (name, want) = cases[k]
-        var j = Box::new(probe_failure.start(String::from(name), 400))
-        var why: Option<String> = None
-        while why.is_none() {
-            match j.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(w) => why = Some(w.clone()),
-            }
-        }
-        let Some(w) = take why else { panic("an error") }
+        let w = probe_failure(name, 400)
         assert(w.as_str().find(want).is_some(), f"{name}: {w}")
     }
+}
+
+/// The step that calls `export` at `p`.
+fn call(export: str, p: vec3d) -> Step {
+    let at = Vec::from([Scalar::F32(f32(p.x)), Scalar::F32(f32(p.y)), Scalar::F32(f32(p.z))])
+    Step::Call(String::from(export), take at)
 }
 
 /// After a failed question, every instance is idle and can be closed: each closed instance's
 /// handle names nothing afterwards.
 @test(tool, read: [("ws", "../..")], budget: 120)
-@job
 fn instances_close_after_a_failed_question() {
     let Ok(file) = read(LOFTS.clone()) else { panic("the parts read") }
     let Ok(solid) = file.solid() else { panic("the mesh reads") }
-    var l = Box::new(
-        main::load_package.start(
-            String::from("ws/studio/reference/fixtures/probes/traps"),
-            String::from("traps"),
-            String::from("scratch/build/traps"),
-            Vec::new(),
-            4,
-        ),
+    let loaded = main::load_package(
+        "ws/studio/reference/fixtures/probes/traps",
+        "traps",
+        "scratch/build/traps",
+        Vec::new(),
+        4,
     )
-    var loaded: Option<Vec<drive::Build>> = None
-    while loaded.is_none() {
-        match l.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => {
-                let Ok(b) = r else { panic("the probe package loads") }
-                loaded = Some(b.clone())
-            },
-        }
-    }
-    let Some(builds) = take loaded else { panic("builds") }
+    let Ok(builds) = loaded else { panic("the probe package loads") }
     var rng = deviation::Rng { state: 7 }
     let (drawn, _) = deviation::draw_volume(solid, 200, mut rng)
-    var a = Box::new(main::ask_all.start(builds.clone(), take drawn))
-    var failed = false
-    while !failed {
-        match a.get_mut().resume(solid) {
-            Step::Yielded => yield,
-            Step::Done(r) => {
-                assert(r.is_err(), "a point past x = 0.05 traps")
-                failed = true
-            },
-        }
-    }
-    var c = Box::new(main::close_all.start(builds.clone()))
-    var closed = false
-    while !closed {
-        match c.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => closed = true,
-        }
-    }
+    let asked = main::ask_all(builds, take drawn, solid)
+    assert(asked.is_err(), "a point past x = 0.05 traps")
+    main::close_all(builds)
     for b in builds {
-        var p = drive::call(b, "distance", [Scalar::F32(0.0), Scalar::F32(0.2), Scalar::F32(0.0)])
-        var got = p.poll()
-        while got.is_none() {
-            yield
-            got = p.poll()
-        }
-        let Some(polled) = take got else { panic("an answer") }
-        assert(drive::read_ran(take polled).is_err(), "a closed instance's handle names nothing")
+        let after = drive::steps(b, [call("distance", vec3d(0.0, 0.2, 0.0))]).wait()
+        assert(after.is_err(), "a closed instance's handle names nothing")
     }
 }
 
@@ -658,7 +562,6 @@ const SPOKES: [Text; 17] = [
 /// 17 deep. Its distance is inside at the centre, and a point on spoke `a`'s axis, past the
 /// ball's inner parts, is nearest one of its parts.
 @test(tool, read: [("ws", "../..")], budget: 120)
-@job
 fn a_replica_of_many_parts_builds_and_runs() {
     var parts = LOFTS.clone()
     parts.parts.truncate(1)
@@ -677,75 +580,47 @@ fn a_replica_of_many_parts_builds_and_runs() {
     }
     let (file, sampled, _, _) = replica_of(parts, args(None, None))
     assert(sampled.len() == 18, f"{sampled.len()} parts")
-    let dir = String::from("scratch/many")
-    var w = Box::new(
-        write_package.start(
-            dir.clone(),
-            dir.clone(),
-            manifest(file, "many"),
-            replica_source(file, sampled),
-        ),
+    let written = write_package(
+        "scratch/many",
+        "scratch/many",
+        manifest(file, "many"),
+        replica_source(file, sampled),
     )
-    var written = false
-    while !written {
-        match w.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => {
-                if let Err(why) = r {
-                    panic(f"the package is written: {why}")
-                }
-                written = true
-            },
-        }
+    if let Err(e) = written {
+        panic(f"the package is written: {e.message()}")
     }
-    var l = Box::new(
-        main::load_package.start(
-            dir.clone(),
-            take dir,
-            String::from("scratch/build/many"),
-            Vec::from([Override { name: String::from("engine"), dir: String::from("ws/engine") }]),
-            1,
-        ),
+    let built = main::build_package(
+        "scratch/many",
+        "scratch/many",
+        "scratch/build/many",
+        Vec::from([Override { name: String::from("engine"), dir: String::from("ws/engine") }]),
     )
-    var loaded: Option<Vec<drive::Build>> = None
-    while loaded.is_none() {
-        match l.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(r) => {
-                match r {
-                    Ok(b) => loaded = Some(b.clone()),
-                    Err(why) => panic(f"the replica builds and loads: {why}"),
-                }
-            },
-        }
+    if let Err(e) = built {
+        panic(f"the replica builds and loads: {e.message()}")
     }
-    let Some(builds) = take loaded else { panic("builds") }
-    let asks = [
-        ("distance", [Scalar::F32(0.0013), Scalar::F32(0.2), Scalar::F32(0.0008)]),
-        ("part", [Scalar::F32(0.07), Scalar::F32(0.2), Scalar::F32(0.0)]),
-    ]
-    for (export, at) in asks {
-        var p = drive::call(builds[0], export, at)
-        var got = p.poll()
-        while got.is_none() {
-            yield
-            got = p.poll()
-        }
-        let Some(polled) = take got else { panic("an answer") }
-        let Ok(ran) = drive::read_ran(take polled) else { panic(f"`{export}` runs") }
-        assert(ran.trap.is_none() && ran.results.len() == 1, f"`{export}` gives one value")
-        match ran.results[0] {
+    let ran = drive::run(
+        "scratch/build/many",
+        main::instance(),
+        [
+            Step::Init,
+            call("distance", vec3d(0.0013, 0.2, 0.0008)),
+            call("part", vec3d(0.07, 0.2, 0.0)),
+        ],
+    )
+    let seen = match take ran.wait() {
+        Ok(s) => take s,
+        Err(e) => panic(f"the replica builds and loads: {e.message()}"),
+    }
+    assert(seen.trap.is_none() && seen.ran.len() == 3, "init and both exports run")
+    let exports = ["distance", "part"]
+    for k in 0..2 {
+        let export = exports[k]
+        borrow results = seen.ran[k + 1].results
+        assert(results.len() == 1, f"`{export}` gives one value")
+        match results[0] {
             Scalar::F32(d) => assert(export == "distance" && d < -0.05, f"distance {d}"),
             Scalar::I32(i) => assert(export == "part" && i >= 0 && i < 18, f"part {i}"),
             _ => panic(f"`{export}` gave another type"),
-        }
-    }
-    var c = Box::new(main::close_all.start(builds.clone()))
-    var closed = false
-    while !closed {
-        match c.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => closed = true,
         }
     }
 }

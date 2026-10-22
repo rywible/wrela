@@ -4,11 +4,8 @@
 // goes to and whether its reply succeeds.
 
 use hosts::steps::{recorded, text_of, written}
-use std::collections::{Box, Vec}
-use std::job::Step
-use std::string::String
 use std::tool::drive
-use std::tool::drive::{Recorded, Scalar}
+use std::tool::drive::{Scalar, Seen, Step}
 use std::tool::toolchain
 use std::tool::toolchain::Override
 
@@ -97,50 +94,16 @@ const FIXTURE: [Text; 73] = [
 ]
 
 /// The fixture package, written into `scratch/session` and built into `scratch/build`.
-@job
-fn built() -> bool {
-    var r = Box::new(text_of.start(String::from("repo/games/last-green/session/main.wrela")))
-    var main = String::new()
-    loop {
-        match r.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(v) => {
-                main = take v
-                break
-            },
-        }
-    }
+fn built() {
+    var main = text_of("repo/games/last-green/session/main.wrela")
     for k in 0..FIXTURE.len() {
         if k > 0 {
             main.push_str("\n")
         }
         main.push_str(FIXTURE[k])
     }
-    var m = Box::new(written.start(String::from("scratch/session/main.wrela"), take main))
-    loop {
-        match m.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
-    var t = Box::new(text_of.start(String::from("repo/games/last-green/session/wrela.toml")))
-    var manifest = String::new()
-    loop {
-        match t.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(v) => {
-                manifest = take v
-                break
-            },
-        }
-    }
-    var w = Box::new(written.start(String::from("scratch/session/wrela.toml"), take manifest))
-    loop {
-        match w.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
+    written("scratch/session/main.wrela", main)
+    written("scratch/session/wrela.toml", text_of("repo/games/last-green/session/wrela.toml"))
     var options = toolchain::options()
     options.overrides.push(
         Override { name: String::from("engine"), dir: String::from("repo/engine") },
@@ -148,142 +111,54 @@ fn built() -> bool {
     options.overrides.push(
         Override { name: String::from("platform"), dir: String::from("repo/platform") },
     )
-    var b = Box::new(
-        hosts::steps::built.start(
-            String::from("scratch/session"),
-            String::from("scratch/build"),
-            take options,
-            String::from("the session fixture builds"),
-        ),
-    )
-    loop {
-        match b.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(v) => return v,
-        }
-    }
+    hosts::steps::built("scratch/session", "scratch/build", options, "the session fixture builds")
 }
 
-/// The build, loaded on the CPU recording its commands, `init` run.
-@job
-fn started() -> drive::Build {
-    var load = drive::cpu()
-    load.record = true
-    var l = drive::load("scratch/build", load)
-    var loaded = l.poll()
-    while loaded.is_none() {
-        yield
-        loaded = l.poll()
+/// `list` run on `h`, none of it trapping: what it saw.
+fn stepped(h: drive::Build, list: [Step]) -> Seen {
+    let Ok(seen) = drive::steps(h, list).wait() else { panic("the steps' request") }
+    if let Some(trap) = seen.trap {
+        panic(f"{trap.message.as_str()} {trap.panic.as_str()}")
     }
-    let Some(lp) = take loaded else { panic("no answer") }
-    let Ok(it) = drive::read_loaded(take lp) else { panic("the session loads") }
-    var i = drive::init(it.build)
-    var inited = i.poll()
-    while inited.is_none() {
-        yield
-        inited = i.poll()
-    }
-    let Some(ip) = take inited else { panic("no answer") }
-    let Ok(init) = drive::read_ran(take ip) else { panic("init's request") }
-    if let Some(trap) = init.trap {
-        panic(trap.message.as_str())
-    }
-    it.build
+    seen
 }
 
-/// The export `name` called with `args`, which must not trap: its results.
-@job
-fn called(h: take drive::Build, name: take String, args: take Vec<Scalar>) -> Vec<Scalar> {
-    var c = drive::call(h, name.as_str(), args)
-    var got = c.poll()
-    while got.is_none() {
-        yield
-        got = c.poll()
-    }
-    let Some(cp) = take got else { panic("no answer") }
-    let Ok(ran) = drive::read_ran(take cp) else { panic(f"{name.as_str()}'s request") }
-    if let Some(trap) = ran.trap {
-        panic(f"{name.as_str()}: {trap.message.as_str()}")
-    }
-    take ran.results
+/// A call of the export `name` with `args`.
+fn call(name: str, args: take Vec<Scalar>) -> Step {
+    Step::Call(String::from(name), take args)
 }
 
 /// Console policy is Wrela: exporting a recovered save acknowledges only a successful reply,
 /// to either slot, and only an export of the recovery to `continue` that succeeds makes the next
 /// new game back it up first; that backup is the current recovered continuation.
 @test(tool, read: [("repo", "../../../../..")], budget: 300)
-@job
 fn exporting_a_recovered_save_acknowledges_only_a_successful_reply() {
-    var b = Box::new(built.start())
-    loop {
-        match b.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
+    built()
     for k in 0..CASES.len() {
         let (other_slot, succeeded) = CASES[k]
-        var s = Box::new(started.start())
-        var opened: Option<drive::Build> = None
-        while opened.is_none() {
-            match s.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(x) => opened = Some(x),
-            }
-        }
-        let Some(h) = opened else { panic("the session") }
-        var eargs: Vec<Scalar> = Vec::new()
-        eargs.push(Scalar::I32(i32(other_slot)))
-        var e = Box::new(called.start(h, String::from("fixture_export"), take eargs))
-        loop {
-            match e.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(_) => break,
-            }
-        }
-        var rargs: Vec<Scalar> = Vec::new()
-        rargs.push(Scalar::I32(i32(succeeded)))
-        var r = Box::new(called.start(h, String::from("fixture_reply"), take rargs))
-        var replied = 0
-        loop {
-            match r.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(v) => {
-                    replied = match v[0] {
-                        Scalar::I32(x) => u32(x),
-                        _ => panic("fixture_reply gives a number"),
-                    }
-                    break
-                },
-            }
+        // The build, loaded on the CPU recording its commands: `init`, the export, its reply.
+        var load = drive::cpu()
+        load.record = true
+        let Ok(it) = drive::load("scratch/build", load).wait() else { panic("the session loads") }
+        let h = it.build
+        let seen = stepped(
+            h,
+            [
+                Step::Init,
+                call("fixture_export", Vec::from([Scalar::I32(i32(other_slot))])),
+                call("fixture_reply", Vec::from([Scalar::I32(i32(succeeded))])),
+            ],
+        )
+        let replied = match seen.ran[2].results[0] {
+            Scalar::I32(x) => u32(x),
+            _ => panic("fixture_reply gives a number"),
         }
         assert(replied == 1, f"other slot={other_slot}, successful reply={succeeded}")
         if other_slot == 0 && succeeded == 1 {
-            var d = Box::new(recorded.start(h))
-            loop {
-                match d.get_mut().resume() {
-                    Step::Yielded => yield,
-                    Step::Done(_) => break,
-                }
-            }
-            var u = Box::new(called.start(h, String::from("fixture_backup"), Vec::new()))
-            loop {
-                match u.get_mut().resume() {
-                    Step::Yielded => yield,
-                    Step::Done(_) => break,
-                }
-            }
-            var c = Box::new(recorded.start(h))
-            var commands: Vec<Recorded> = Vec::new()
-            loop {
-                match c.get_mut().resume() {
-                    Step::Yielded => yield,
-                    Step::Done(v) => {
-                        commands = take v
-                        break
-                    },
-                }
-            }
+            // The commands until now, dropped; then the backup's.
+            recorded(h)
+            stepped(h, [call("fixture_backup", Vec::new())])
+            let commands = recorded(h)
             var backup: Vec<Vec<u8>> = Vec::new()
             var expected: Vec<Vec<u8>> = Vec::new()
             for j in 0..commands.len() {

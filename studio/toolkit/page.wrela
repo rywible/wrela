@@ -6,95 +6,78 @@
 
 use std::io::print
 use std::time::now
+use std::tool::ToolError
 use std::tool::browser
+use std::tool::browser::{Browser, Script, Until}
 use std::tool::files
 use std::tool::serve
-use std::tool::time::after
-use wait::{done, said, wait}
 use whole::{chunked, write_file}
 
-/// How often the page's result is looked for, in seconds.
-const LOOK: f64 = 1.0
+/// The longest one wait for the page's result is (a request's most), in seconds.
+const SLICE: f64 = 600.0
 
 /// Runs the page in `dir` (a root path in a write root) at `width` × `height`, with `hash` (as
 /// `#test&frames=...`), until it writes `results/DONE` or `timeout` seconds pass: whether it
 /// wrote `ok`, or why not. The console's last 20 lines are printed, as is how long it took.
-@job
 pub fn run_page(
-    dir: take String,
-    hash: take String,
-    width: take u32,
-    height: take u32,
-    timeout: take f64,
-) -> Result<(), String> {
+    dir: str,
+    hash: str,
+    width: u32,
+    height: u32,
+    timeout: f64,
+) -> Result<(), ToolError> {
     let results = String::from(f"{dir}/results")
     // What an earlier run left, a stale DONE above all, isn't this run's.
-    var gone = wait(files::remove_all(results.as_str()))
-    while !gone.ready() { yield }
-    let _ = gone.bytes()
-    var made = wait(files::make_dirs(results.as_str()))
-    while !made.ready() { yield }
-    let _ = made.bytes()?
-    var st = wait(serve::start(dir.as_str()))
-    while !st.ready() { yield }
-    let started = said(serve::read_started(st.polled()))?
+    let _ = files::remove_all(results.as_str()).wait()
+    let _ = files::make_dirs(results.as_str()).wait()?
+    let started = serve::start(dir).wait()?
     let start = now()
-    var op = wait(browser::open(f"{started.origin}/{hash}", width, height, timeout: 120.0))
-    while !op.ready() { yield }
-    let b = said(browser::read_opened(op.polled()))?
-    var result: Result<(), String> = Err(String::from(f"timed out after {timeout:.0}s"))
-    while now() - start < timeout {
-        var t = wait(after(LOOK))
-        while !t.ready() { yield }
-        var r = wait(browser::results(b))
-        while !r.ready() { yield }
-        match said(browser::read_attribute(r.polled())) {
-            Ok(Some(body)) => {
-                let text = body.as_str().trim()
-                result = if text == "ok" {
-                    Ok(())
-                } else {
-                    Err(String::from(f"page failed: {text}"))
-                }
-                break
-            },
-            Ok(None) => {},
-            Err(e) => {
-                result = Err(take e)
-                break
-            },
-        }
-    }
-    var c = wait(browser::console(b))
-    while !c.ready() { yield }
-    let lines = match said(browser::read_texts(c.polled())) {
+    let b = browser::open(f"{started.origin}/{hash}", width, height, timeout: 120.0).wait()?
+    let result = finished(b, start, timeout)
+    let lines = match browser::console(b).wait() {
         Ok(l) => take l,
-        Err(e) => Vec::from([String::from(f"(the console couldn't be read: {e})")]),
+        Err(e) => Vec::from([String::from(f"(the console couldn't be read: {e.message()})")]),
     }
     var log = String::new()
     for l in lines {
         log.push_str(l.as_str())
         log.push_str("\n")
     }
-    var j = Box::new(
-        write_file.start(
-            String::from(f"{results}/console.log"),
-            chunked(Vec::from(log.as_bytes())),
-        ),
-    )
-    var w = done(j.get_mut().resume())
-    while w.is_none() {
-        yield
-        w = done(j.get_mut().resume())
-    }
-    var shut = wait(browser::close(b))
-    while !shut.ready() { yield }
-    var down = wait(serve::close(started.server))
-    while !down.ready() { yield }
+    let _ = write_file(f"{results}/console.log", chunked(Vec::from(log.as_bytes())))
+    let _ = browser::close(b).wait()
+    let _ = serve::close(started.server).wait()
     print(f"elapsed {now() - start:.1}s; console: {results}/console.log")
     let from = if lines.len() > 20 { lines.len() - 20 } else { 0 }
     for k in from..lines.len() {
         print(f"  {lines[k]}")
     }
     result
+}
+
+/// Waits until `b`'s page has written `results/DONE`, or `timeout` seconds from `start` pass:
+/// whether it wrote `ok`, or why not. A request waits at most `SLICE`, so a longer timeout is
+/// waited in slices; a wait that fails before its slice ends fails for another reason.
+fn finished(b: Browser, start: f64, timeout: f64) -> Result<(), ToolError> {
+    loop {
+        let left = timeout - (now() - start)
+        if left <= 0.0 {
+            return Err(ToolError::new(f"timed out after {timeout:.0}s"))
+        }
+        let slice = min(left, SLICE)
+        let from = now()
+        let script = Script::new().wait(Until::done(), timeout: slice)
+        match browser::run(b, script, timeout: SLICE).wait() {
+            Ok(_) => break,
+            Err(e) => {
+                if now() - from < slice {
+                    return Err(take e)
+                }
+            },
+        }
+    }
+    let Some(body) = browser::results(b).wait()? else {
+        return Err(ToolError::new("the page's result isn't there"))
+    }
+    let text = body.as_str().trim()
+    if text == "ok" { Ok(()) } else { Err(ToolError::new(f"page failed: {text}")) }
 }

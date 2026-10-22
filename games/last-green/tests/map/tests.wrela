@@ -4,9 +4,6 @@
 // the content it names read from the workspace.
 
 use hosts::steps::{declared, text_of, written}
-use std::collections::{Box, Vec}
-use std::job::Step
-use std::string::String
 use std::tool::toolchain
 use std::tool::toolchain::Override
 
@@ -282,8 +279,7 @@ fn map_package(name: str, main: take String) -> Package {
 }
 
 /// The package written into `scratch/<name>`: how many tests its files declare.
-@job
-fn wrote(p: take Package) -> u32 {
+fn wrote(p: Package) -> u32 {
     var tests = 0
     var copied: Vec<String> = Vec::new()
     for k in 0..MAP_FILES.len() {
@@ -292,44 +288,17 @@ fn wrote(p: take Package) -> u32 {
     for k in 0..p.copied.len() {
         copied.push(p.copied[k].clone())
     }
-    for k in 0..copied.len() {
-        let file = copied[k].clone()
-        var r = Box::new(text_of.start(String::from(f"repo/games/last-green/{file.as_str()}")))
-        var text = String::new()
-        loop {
-            match r.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(t) => {
-                    text = take t
-                    break
-                },
-            }
-        }
+    for file in copied {
+        let text = text_of(f"repo/games/last-green/{file.as_str()}")
         tests += declared(text.as_str())
-        var w = Box::new(
-            written.start(String::from(f"scratch/{p.name.as_str()}/{file.as_str()}"), take text),
-        )
-        loop {
-            match w.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(_) => break,
-            }
-        }
+        written(f"scratch/{p.name.as_str()}/{file.as_str()}", text)
     }
     for k in 0..p.texts.len() {
         let (file, text) = p.texts[k].clone()
         if file.as_str() == "main.wrela" {
             tests += declared(text.as_str())
         }
-        var w = Box::new(
-            written.start(String::from(f"scratch/{p.name.as_str()}/{file.as_str()}"), take text),
-        )
-        loop {
-            match w.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(_) => break,
-            }
-        }
+        written(f"scratch/{p.name.as_str()}/{file.as_str()}", text)
     }
     var manifest = String::from(
         "[package]\nname = \"floor_map\"\n\n[dependencies]\nengine = { workspace = true }\n",
@@ -338,15 +307,7 @@ fn wrote(p: take Package) -> u32 {
         let (dep, _) = p.content[k].clone()
         manifest.push_str(f"{dep.as_str()} = {{ workspace = true }}\n")
     }
-    var w = Box::new(
-        written.start(String::from(f"scratch/{p.name.as_str()}/wrela.toml"), take manifest),
-    )
-    loop {
-        match w.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
+    written(f"scratch/{p.name.as_str()}/wrela.toml", manifest)
     tests
 }
 
@@ -363,27 +324,10 @@ fn overrides(p: Package) -> Vec<Override> {
 
 /// The package written and its tests run: every one passes, and as many run as its files
 /// declare.
-@job
-fn passes(p: take Package) {
-    var w = Box::new(wrote.start(p.clone()))
-    var declared_tests = 0
-    loop {
-        match w.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(n) => {
-                declared_tests = n
-                break
-            },
-        }
-    }
-    var t = toolchain::test_with(f"scratch/{p.name.as_str()}".as_str(), "", overrides(p), 600.0)
-    var got = t.poll()
-    while got.is_none() {
-        yield
-        got = t.poll()
-    }
-    let Some(tp) = take got else { panic("no answer") }
-    let Ok(run) = toolchain::read_tested(take tp) else { panic("the tests' request") }
+fn passes(p: Package) {
+    let declared_tests = wrote(p)
+    let Ok(run) = toolchain::test_with(f"scratch/{p.name.as_str()}", "", overrides(p), 600.0)
+        .wait() else { panic("the tests' request") }
     for d in run.diagnostics {
         assert(!d.error, d.rendered.as_str())
     }
@@ -400,42 +344,27 @@ fn passes(p: take Package) {
 /// draws), its own tests run beside the map's: the square is cut as deep as the region round it,
 /// and each shot of a place sees it. Its making runs once, in this package's build.
 @test(tool, read: [("repo", "../../../..")], budget: 600)
-@job
 fn the_worlds_geology_is_made_and_its_places_seen() {
     var p = map_package("geology", String::from(FRAME))
     p.copied.push(String::from("geology.wrela"))
     p.copied.push(String::from("lookbook.wrela"))
-    var j = Box::new(passes.start(take p))
-    loop {
-        match j.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
+    passes(p)
 }
 
 /// Terrain, trees and masonry use bounded fields and small seeded fixtures. Copy only their
 /// modules, so discovering their tests cannot prepare the full game's history constants.
 @test(tool, read: [("repo", "../../../..")], budget: 600)
-@job
 fn the_environments_bounded_art_and_collision_regressions_pass() {
     var p = map_package("environment-art", String::from(FRAME))
     p.copied.push(String::from("trees.wrela"))
     p.copied.push(String::from("blockouts.wrela"))
     p.content.push((String::from("great_tree"), String::from("great-tree")))
-    var j = Box::new(passes.start(take p))
-    loop {
-        match j.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
+    passes(p)
 }
 
 /// Run the production simulation and encounter on the map, with a short tour and no baked
 /// wood. The tick's movement and control regressions need no full-scene history or growth.
 @test(tool, read: [("repo", "../../../..")], budget: 600)
-@job
 fn the_worlds_bounded_simulation_regressions_pass() {
     var p = map_package("world", String::from(FRAME))
     for file in ["world.wrela", "encounter.wrela", "behaviour.wrela", "fawns.wrela"] {
@@ -445,13 +374,7 @@ fn the_worlds_bounded_simulation_regressions_pass() {
     p.texts.push((String::from("wildwood.wrela"), joined(WILDWOOD)))
     p.content.push((String::from("climber"), String::from("climber")))
     p.content.push((String::from("fawn"), String::from("fawn")))
-    var j = Box::new(passes.start(take p))
-    loop {
-        match j.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
+    passes(p)
 }
 
 /// AC1: the floor's map is wrela source written with the engine's types, and holds #44's
@@ -459,47 +382,28 @@ fn the_worlds_bounded_simulation_regressions_pass() {
 /// echoes' sites and views; its area is 3 km² within 10% (Q1); and the engine's own refusals
 /// (`place::refusals`) find nothing to refuse in it.
 @test(tool, read: [("repo", "../../../..")], budget: 600)
-@job
 fn the_floors_map_has_its_anatomy_and_area() {
     let p = map_package("anatomy", joined(ANATOMY))
-    var j = Box::new(passes.start(take p))
-    loop {
-        match j.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
+    passes(p)
 }
 
 /// The build of a map the history refuses, changed by `edit`, fails with E0704 alone, naming
 /// the opening and why, before the history runs.
-@job
-fn refused(name: take String, edit: take String, opening: take String, why: take String) {
+fn refused(name: str, edit: str, opening: str, why: str) {
     var main = joined(GROWN_HEAD)
-    main.push_str(edit.as_str())
+    main.push_str(edit)
     main.push_str(joined(GROWN_TAIL).as_str())
-    let p = map_package(name.as_str(), take main)
-    var w = Box::new(wrote.start(p.clone()))
-    loop {
-        match w.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
+    let p = map_package(name, take main)
+    wrote(p)
     var options = toolchain::options()
     options.overrides = overrides(p)
-    var b = toolchain::build(
-        f"scratch/{name.as_str()}".as_str(),
-        f"scratch/{name.as_str()}-build".as_str(),
+    let Ok(build) = toolchain::build(
+        f"scratch/{name}",
+        f"scratch/{name}-build",
         options,
-    )
-    var got = b.poll()
-    while got.is_none() {
-        yield
-        got = b.poll()
+    ).wait() else {
+        panic("the build's request")
     }
-    let Some(bp) = take got else { panic("no answer") }
-    let Ok(build) = toolchain::read_built(take bp) else { panic("the build's request") }
     var text = String::new()
     for d in build.diagnostics {
         text.push_str(d.rendered.as_str())
@@ -510,54 +414,33 @@ fn refused(name: take String, edit: take String, opening: take String, why: take
     )
     assert(text.as_str().find("the map can't be grown").is_some(), text.as_str())
     assert(
-        text.as_str().find(opening.as_str()).is_some() &&
-            text.as_str().find(why.as_str()).is_some(),
-        f"the refusal names `{opening.as_str()}`: {text.as_str()}",
+        text.as_str().find(opening).is_some() && text.as_str().find(why).is_some(),
+        f"the refusal names `{opening}`: {text.as_str()}",
     )
 }
 
 /// AC1, keepers: a map with an opening that has no keeper is refused before the history runs,
 /// the opening named.
 @test(tool, read: [("repo", "../../../..")], budget: 600)
-@job
 fn an_opening_with_no_keeper_is_refused_by_name() {
-    var j = Box::new(
-        refused.start(
-            String::from("no-keeper"),
-            String::from("m.openings[0].keeper = engine::place::Keeper::Nothing"),
-            String::from("the clearing's meadow"),
-            String::from("no keeper"),
-        ),
+    refused(
+        "no-keeper",
+        "m.openings[0].keeper = engine::place::Keeper::Nothing",
+        "the clearing's meadow",
+        "no keeper",
     )
-    loop {
-        match j.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
 }
 
 /// AC1, keepers: a map with an opening whose keeper stops before the present (people who left)
 /// is refused before the history runs, the opening named.
 @test(tool, read: [("repo", "../../../..")], budget: 600)
-@job
 fn an_opening_whose_keeper_stops_before_the_present_is_refused_by_name() {
-    var j = Box::new(
-        refused.start(
-            String::from("keeper-gone"),
-            String::from(
-                "m.openings[0].keeper = engine::place::Keeper::People { from: 300, to: map::PRESENT - 100 }",
-            ),
-            String::from("the clearing's meadow"),
-            String::from("left"),
-        ),
+    refused(
+        "keeper-gone",
+        "m.openings[0].keeper = engine::place::Keeper::People { from: 300, to: map::PRESENT - 100 }",
+        "the clearing's meadow",
+        "left",
     )
-    loop {
-        match j.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
 }
 
 /// The elves (peoples.wrela) on a small land of good soil by a river: the two tribes come to the
@@ -565,30 +448,16 @@ fn an_opening_whose_keeper_stops_before_the_present_is_refused_by_name() {
 /// leaves the land as it last used it, with old trees standing only in the pasture, about one in
 /// each `veteran` of it; land they left long before the plague has gone back to the wood.
 @test(tool, read: [("repo", "../../../..")], budget: 600)
-@job
 fn the_elves_settle_the_best_land_and_leave_it_as_they_used_it() {
     var p = map_package("elves", joined(ELVES))
     p.copied.push(String::from("peoples.wrela"))
-    var j = Box::new(passes.start(take p))
-    loop {
-        match j.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
+    passes(p)
 }
 
 /// A world's seed (`Map::seed`): the same map grown with another seed is another world, and with
 /// the same seed, the same world. On a corner of the floor at the preview's grain.
 @test(tool, read: [("repo", "../../../..")], budget: 600)
-@job
 fn a_seed_grows_another_world_and_the_same_seed_the_same() {
     let p = map_package("seeds", joined(SEEDS))
-    var j = Box::new(passes.start(take p))
-    loop {
-        match j.get_mut().resume() {
-            Step::Yielded => yield,
-            Step::Done(_) => break,
-        }
-    }
+    passes(p)
 }

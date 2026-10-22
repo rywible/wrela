@@ -13,12 +13,10 @@
 // from its pages is answered empty.
 
 use std::io::print
-use std::job::{Job, Step}
-use std::tool::{RUNNING, args}
+use std::tool::{ToolError, args}
 use std::tool::blob::Data
 use std::tool::files::rooted
 use std::tool::serve
-use toolkit::wait::{said, wait}
 
 pub const USAGE: Text = "usage: wrela tool serve -- [dir] [--port N]"
 
@@ -49,43 +47,29 @@ pub fn parse_args(given: [String]) -> Option<(String, u16)> {
     Some(((take dir).unwrap_or(String::from("ws")), port))
 }
 
-@job
-fn main(given: take Vec<String>) -> u32 {
-    let Some((dir, port)) = parse_args(given) else {
+pub fn tool() -> u32 {
+    let Some((dir, port)) = parse_args(args()) else {
         print(USAGE)
         return 2
     }
-    var st = wait(serve::start(dir.as_str(), port))
-    while !st.ready() { yield }
-    let started = match said(serve::read_started(st.polled())) {
-        Ok(s) => take s,
+    match serving(dir.as_str(), port) {
+        Ok(_) => 0,
         Err(e) => {
-            print(f"serve: {e}")
-            return 1
+            print(f"serve: {e.message()}")
+            1
         },
     }
-    let shown = if dir.as_str() == "ws" { String::from(".") } else {
-        String::from(dir.as_str().slice(3, dir.len()))
-    }
+}
+
+/// Serves `dir` (a root path) on `port` until the tool is stopped, answering each post empty.
+fn serving(dir: str, port: u16) -> Result<(), ToolError> {
+    let started = serve::start(dir, port).wait()?
+    let shown = if dir == "ws" { String::from(".") } else { String::from(dir.slice(3, dir.len())) }
     print(f"serving {shown} at {started.origin}/")
     loop {
-        var p = wait(serve::next_post(started.server, 600.0))
-        while !p.ready() { yield }
-        if let Ok(post) = serve::read_post(p.polled()) {
-            var a = wait(serve::answer(started.server, post.id, Data::empty()))
-            while !a.ready() { yield }
+        if let Ok(post) = serve::next_post(started.server, 600.0).wait() {
+            let _ = serve::answer(started.server, post.id, Data::empty()).wait()
         }
     }
-    0
-}
-
-pub fn tool_init() -> Job<main> {
-    main.start(args())
-}
-
-pub fn tool(job: mut Job<main>) -> u32 {
-    match job.resume() {
-        Step::Yielded => RUNNING,
-        Step::Done(status) => status,
-    }
+    Ok(())
 }

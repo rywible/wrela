@@ -3,9 +3,6 @@
 // package (whose code names what it looks for), and reads each source.
 
 use hosts::steps::text_of
-use std::collections::{Box, Vec}
-use std::job::Step
-use std::string::String
 use std::tool::files
 use std::tool::files::Kind
 
@@ -18,21 +15,13 @@ fn output(name: str) -> bool {
 }
 
 /// Every file under `root` (a root path), outputs left out.
-@job
-fn files_under(root: take String) -> Vec<String> {
+fn files_under(root: str) -> Vec<String> {
     var out: Vec<String> = Vec::new()
     var todo: Vec<String> = Vec::new()
-    todo.push(take root)
+    todo.push(String::from(root))
     while todo.len() > 0 {
         let Some(dir) = todo.pop() else { break }
-        var l = files::list(dir.as_str())
-        var listed = l.poll()
-        while listed.is_none() {
-            yield
-            listed = l.poll()
-        }
-        let Some(lp) = take listed else { panic("no answer") }
-        let Ok(entries) = files::read_list(take lp) else { panic(f"{dir.as_str()} lists") }
+        let Ok(entries) = files::list(dir.as_str()).wait() else { panic(f"{dir.as_str()} lists") }
         for e in entries {
             let path = String::from(f"{dir.as_str()}/{e.name.as_str()}")
             match e.kind {
@@ -76,22 +65,10 @@ fn code_of(text: str) -> String {
 /// met by hand": the engine and the herd are wrela sources and their manifests alone, with no
 /// WGSL or JS of their own.
 @test(tool, read: [("repo", "../../../..")], budget: 120)
-@job
 fn the_engine_and_the_herd_keep_their_layers() {
     for d in 0..2 {
         let root = if d == 0 { "repo/engine" } else { "repo/examples/herd" }
-        var w = Box::new(files_under.start(String::from(root)))
-        var found: Vec<String> = Vec::new()
-        var walked = false
-        while !walked {
-            match w.get_mut().resume() {
-                Step::Yielded => yield,
-                Step::Done(v) => {
-                    found = take v
-                    walked = true
-                },
-            }
-        }
+        let found = files_under(root)
         assert(found.len() > 10, f"{root} has its files")
         for k in 0..found.len() {
             let path = found[k].clone()
@@ -103,18 +80,7 @@ fn the_engine_and_the_herd_keep_their_layers() {
             if !wrela && path.as_str() != "repo/engine/wrela.toml" {
                 continue
             }
-            var t = Box::new(text_of.start(path.clone()))
-            var text = String::new()
-            var read = false
-            while !read {
-                match t.get_mut().resume() {
-                    Step::Yielded => yield,
-                    Step::Done(x) => {
-                        text = take x
-                        read = true
-                    },
-                }
-            }
+            let text = text_of(path.as_str())
             if !wrela {
                 assert(
                     text.as_str().find("herd").is_none(),
