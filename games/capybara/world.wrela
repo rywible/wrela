@@ -118,6 +118,8 @@ pub struct Snap: Copy + Plain {
     pub tuck: u32,
     /// Ticks since a flip began, while in the air after it (`Body::flip`).
     pub flip: u32,
+    /// Ticks of being wet left (`Body::wet`).
+    pub wet: u32,
     pub ticks: u32,
     pub finished: u32,
     pub attempt: u32,
@@ -136,6 +138,7 @@ pub fn present(w: World) -> Snap {
         mode: u32(b.mode),
         tuck: if b.tuck { 1 } else { 0 },
         flip: b.flip,
+        wet: b.wet,
         ticks: w.ticks,
         finished: w.finished,
         attempt: w.attempt,

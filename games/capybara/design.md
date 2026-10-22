@@ -25,11 +25,12 @@ The game is set in a zoo, as a day out. The easter eggs are cute, small and kind
 
 ## Movement
 
-- **Run and jump.** One fairly fast speed, reached almost at once, with no run button: Ryan played a Mario-like preset (a run button, slow acceleration) and a Celeste-like one, and chose the second with a touch more momentum and float and a slightly higher full jump (2026-10-21). Holding jump while rising makes a jump higher.
+- **Run and jump.** One fairly fast speed with no run button: Ryan played a Mario-like preset (a run button, slow acceleration) and a Celeste-like one, and chose the second with a touch more momentum and float and a slightly higher full jump, then asked for a gentler start (2026-10-21). From rest the speed follows an eased curve: gentle at first, strongest a third of the way, easing into the top in about a third of a second. Holding jump while rising makes a jump higher.
+- **Speed is the fun.** Ryan, after three plays: the game is most fun sliding and moving fast; hitting speed is the coolest part. The mechanics serve it.
 - **The double jump:** one more jump in the air, refreshed on landing and by a dolphin leap, with a flip.
 - **The slide.** Hold down while landing and the capybara slides. Its speed along the ground is its landing velocity projected onto the ground's tangent: land tangent to a downslope and it keeps all its speed, land flat-footed on a steep slope and it loses most of it. While it slides, gravity pulls it along the slope and flat ground slowly takes its speed. It can jump out of a slide and keeps the speed. Holding down on a slope also starts a slide; on flat ground it is a crouch.
 - **Crests.** The capybara leaves the ground where the ground falls away faster than gravity would pull it down, so a fast run over a crest launches it along the tangent.
-- **Swimming, in water sections.** Tap to stroke, in the direction held. There is no breath limit (real capybaras hold their breath for minutes). Swimming up through the surface is a dolphin leap that keeps the speed (and flips), so a route can chain water, air and slide.
+- **Water is speed.** Not a different way to play: the same movement, faster. In water the capybara runs along the bottom and moves through the water at a higher top speed, on a light gravity, and each jump press is a kick upward. Being wet is a power-up: any touch of water, a puddle too, keeps the higher speed for a while after. Swimming up through the surface is a dolphin leap that keeps the speed (and flips), so a route chains water, air and slide. There is no breath limit (real capybaras hold their breath for minutes). (Ryan, 2026-10-21, after strokes and floating didn't work for him: "maybe water can be like a speed power up rather than different gameplay ... or physics works the same way underwater but the underwater sections are faster." Both are in.)
 - **The camera** scrolls both ways. It looks a little ahead of the way the capybara faces, and further only past the running speed (a slide, a leap), so starting and stopping don't swing it. On the ground it moves up or down only when the capybara lands at a new height; while the capybara swims, leaps or falls past a band round the view's middle, it follows. **Proposed.**
 
 ### Ground and contact (contract)
@@ -55,20 +56,18 @@ The game is set in a zoo, as a day out. The easter eggs are cute, small and kind
 | Crouch | landing with down held, or down held on the ground, below the slide's least speed, on ground flatter than the slide's least slope | it stays; the collider doesn't change in the lab | down released (Walk); a jump (Air); the ground falling away (Air); the slope or speed reaching a slide's (Slide) |
 | Slide | landing with down held at or above the slide's least speed; down held on the ground at or above the slide's least speed or least slope | gravity's component along the tangent changes the speed (an uphill slide slows and runs back down); a small friction takes speed towards rest; input does not steer it; the speed is capped | down released (Walk, keeping the speed); a jump (Air); the ground falling away (Air); below the stopping speed on ground flatter than the least slope (Crouch) |
 | Air | a jump; the ground falling away; leaving water | gravity (less while a jump is held and the capybara rises); air control; a press the double jump, once; down held tucks (the intent to slide on landing) | landing (Walk, Crouch or Slide); entering water (Swim) |
-| Swim | the capybara's middle goes below a water surface | below, under Swimming | leaving the water (Air), below |
+| Swim | the capybara's middle goes below a water surface, off the ground | below, under Water | leaving the water (Air); the bottom (Walk, Crouch or Slide, wet) |
 
 - **A jump** adds a fixed world-up speed to the velocity along the ground, so a jump out of a slide keeps the slide's speed. A jump counts a short time after the ground falls away (coyote time) and a press counts a short time before landing (the buffer), unless the double jump takes it first.
 - **A double jump** sets the upward speed to its own (whatever the fall) and keeps the speed across. Every way out of the water gives it back.
 
-### Swimming (contract)
+### Water (contract)
 
-- **Water is a rectangle with a flat surface,** set inside solid ground that makes its sides and bottom. The capybara swims while its middle is inside the rectangle. Leaving through a side or the bottom (where a level leaves one open) puts it in the air with its velocity.
-- **In water:** linear drag slows the velocity; buoyancy lifts the capybara towards floating with its head out, a little below the surface.
-- **A stroke** is a jump press while under water. It adds a fixed speed along the direction held, as a unit vector (a diagonal is 1/√2 on each axis): eight directions, opposite directions cancel, and no direction means up. Strokes have a short cooldown; one press during it is kept, and strokes on the tick the cooldown ends, in the direction held then. A stroke can't raise the speed above the swimming cap, and doesn't lower a faster speed (from a dive).
-- **Holding a direction without stroking** paddles slowly.
-- **Floating at the surface** (the middle within a small band under it), a jump press is not a stroke: it jumps out of the water at a fixed upward speed, whatever the direction held. So the surface can't be used for repeated boosts: every exit from it has the same speed, and the next waits for gravity to bring the capybara back.
-- **Entering water** keeps the velocity; the drag then slows it.
-- **Leaving the water:** a swim up through the surface (the middle crossing it upward at the leap's least speed or more) is the dolphin leap. It leaves with its velocity, and at least the leap's own upward speed, which clears a wall well above the water. It rises on a jump's light gravity to its top without jump held, and the capybara flips once in the air. Slower, it stops at the surface and floats. The hop from floating leaves at its own speed and isn't a leap. (Changed after Ryan's first play, 2026-10-21: he couldn't find the leap, which then needed a fast enough swim and jump held.)
+- **Water is a rectangle with a flat surface,** set inside solid ground that makes its sides and bottom, or lying on the ground as a puddle. The capybara is in water while its middle is inside the rectangle; it touches water while its circle overlaps it.
+- **Wet:** touching water makes the capybara wet for a while (1.5 s after the last touch). For the first half the top speed is the wet speed (1.5 times the dry); over the second it eases back to the dry speed, and a faster capybara slows with it, never by a jolt.
+- **In water, off the ground:** the air's movement, at the wet speed across, on a light gravity (heavier with down held, to dive), sinking no faster than a sinking speed: a dive slows to it. A jump press is a kick: the upward speed becomes at least the kick's. Kicks are a short time apart; a press too soon waits for its turn (the buffer).
+- **On the bottom:** the ground's movement, wet. A jump is a jump, on into the water.
+- **Leaving the water:** a swim up through the surface (the middle crossing it upward at the leap's least speed or more) is the dolphin leap. It leaves with its velocity, and at least the leap's own upward speed, which clears a wall well above the water. It rises on a jump's light gravity to its top without jump held, the capybara flips once, and the double jump comes back. Slower, it simply leaves, into the air. Leaving through a side or the bottom (where a level leaves one open) puts it in the air with its velocity.
 
 ## Rules
 
@@ -129,6 +128,7 @@ The game is set in a zoo, as a day out. The easter eggs are cute, small and kind
 ## Look and sound
 
 - **Cel style.**
+- **Motion has to read.** A body moving at a steady speed over flat colour, under an empty sky and with the camera following, reads as gliding in place (Ryan, 2026-10-21: top speed and slides "felt strange"). The eye takes speed from the character's gait and from texture streaming past: the capybara trots, bobbing by its speed, and splays its legs sliding; the ground is patterned so it streams by; hills behind move slower than it (parallax).
 - The cast is the biggest risk: agent-built creatures have been the weakest part of the project so far. A chunky, stylized capybara is easier than a realistic one.
 - **Music is open.** The engine has only a piano; a cheerful zoo game probably wants more instruments.
 

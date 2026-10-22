@@ -17,12 +17,16 @@ use course::LAB
 use engine::present::Snapshots
 use engine::run::run
 use feel::HZ
-use look::{LAB_GROUND, LAB_WATER, Eye, Part, cel, ground_vertex, part_vertex, water, water_vertex}
+use feel::FEEL
+use look::{
+    LAB_GROUND, LAB_HILLS, LAB_WATER, Eye, Part, cel, ground_vertex, part_vertex, water,
+    water_vertex,
+}
 use std::gpu::{
     Cull, DepthTexture, GpuBuffer, begin_screen_pass_with_depth, buffer, buffer_of, depth_texture,
     draw, write,
 }
-use std::math::TAU
+use std::math::{PI, TAU}
 use std::transform::{look_at, perspective, rotate_z, scale, translate}
 use ui::draw::{DrawList, Renderer}
 use ui::text::{Face, Fonts}
@@ -34,12 +38,15 @@ const PARTS: u32 = 24
 pub struct Lab {
     snaps: Snapshots<Snap>,
     ground: GpuBuffer<vec4>,
+    hills: GpuBuffer<vec4>,
     water: GpuBuffer<vec4>,
     parts: GpuBuffer<Part>,
     depth: DepthTexture,
     width: u32,
     height: u32,
     camera: Camera,
+    /// The gait's phase (rad): a stride per `STRIDE` m on the ground, a steady paddle in water.
+    stride: f32,
     last: Option<f32>,
     fonts: Fonts,
     renderer: Renderer,
@@ -53,12 +60,14 @@ pub fn init() -> Lab {
     Lab {
         snaps: Snapshots::new(take latest, hz: HZ),
         ground: buffer_of(LAB_GROUND),
+        hills: buffer_of(LAB_HILLS),
         water: buffer_of(LAB_WATER),
         parts: buffer(PARTS),
         depth: depth_texture(width: 1, height: 1),
         width: 0,
         height: 0,
         camera: camera(LAB.start),
+        stride: 0.0,
         last: None,
         fonts,
         renderer,
@@ -89,10 +98,16 @@ fn part(frame: mat4, centre: vec3, half: vec3, colour: vec4) -> Part {
     Part { model: frame * translate(centre) * scale(half), colour }
 }
 
+/// How far the capybara goes in one stride of its trot (m).
+const STRIDE: f32 = 0.9
+
 /// The capybara's boxes: a loaf of a body, a square head and snout, ears, eyes and short legs, in
 /// its body's frame (x forward, y up, the collider's middle at the origin). It leans with the
-/// ground, or with its velocity off it; it squashes as it slides, crouches or tucks.
-fn capybara_parts(out: mut Vec<Part>, s: Snap) {
+/// ground, or with its velocity off it; it squashes as it slides, crouches or tucks. Walking, it
+/// trots at the gait's phase `stride`: diagonal legs together, swinging and lifting, the body
+/// bobbing, all by how fast it goes; sliding, its legs splay; in the air they tuck; in water they
+/// paddle. Its fur darkens while it's wet.
+fn capybara_parts(out: mut Vec<Part>, s: Snap, stride: f32) {
     let mode = Mode::from_u32(s.mode)
     let grounded = mode == Some(Mode::Walk) ||
         mode == Some(Mode::Crouch) ||
@@ -108,11 +123,24 @@ fn capybara_parts(out: mut Vec<Part>, s: Snap) {
     let flip = if s.flip > 0 { -TAU * saturate(f32(s.flip) / f32(HZ / 2)) } else { 0.0 }
     let low = mode == Some(Mode::Crouch) || mode == Some(Mode::Slide) || (!grounded && s.tuck == 1)
     let squash = if low { vec3(1.12, 0.72, 1.0) } else { vec3(1.0) }
-    let frame = translate(vec3(s.at, 0.0)) *
-        rotate_z(lean + flip * s.facing) *
+    let trotting = mode == Some(Mode::Walk)
+    let pace = if trotting { saturate(abs(s.speed) / 6.0) } else { 0.0 }
+    let bob = 0.045 * pace * abs(sin(stride))
+    let pitch = 0.05 * pace * sin(2.0 * stride)
+    let frame = translate(vec3(s.at + vec2(0.0, bob), 0.0)) *
+        rotate_z(lean + flip * s.facing + pitch * s.facing) *
         scale(vec3(s.facing, 1.0, 1.0) * squash)
-    out.push(part(frame, vec3(0.0, 0.0, 0.0), vec3(0.45, 0.24, 0.25), FUR))
-    out.push(part(frame, vec3(0.46, 0.1, 0.0), vec3(0.19, 0.17, 0.18), FUR))
+    let wet = saturate(f32(s.wet) / (f32(FEEL.wet_ticks) * 0.5))
+    let fur = vec4(FUR.xyz * (1.0 - 0.3 * wet), 1.0)
+    out.push(part(frame, vec3(0.0, 0.0, 0.0), vec3(0.45, 0.24, 0.25), fur))
+    out.push(
+        part(
+            frame,
+            vec3(0.46, 0.1 + 0.02 * pace * sin(2.0 * stride + 1.0), 0.0),
+            vec3(0.19, 0.17, 0.18),
+            fur,
+        ),
+    )
     out.push(part(frame, vec3(0.66, 0.04, 0.0), vec3(0.07, 0.11, 0.14), SNOUT))
     for z in [-0.11, 0.11] {
         out.push(part(frame, vec3(0.38, 0.3, z), vec3(0.04, 0.04, 0.03), DARK))
@@ -120,7 +148,21 @@ fn capybara_parts(out: mut Vec<Part>, s: Snap) {
     }
     for x in [-0.3, 0.3] {
         for z in [-0.15, 0.15] {
-            out.push(part(frame, vec3(x, -0.27, z), vec3(0.06, 0.08, 0.06), SNOUT))
+            // Diagonal legs move together.
+            let phase = stride + if (x > 0.0) == (z > 0.0) { 0.0 } else { PI }
+            let reach = if x > 0.0 { 1.0 } else { -1.0 }
+            let leg = if mode == Some(Mode::Slide) {
+                vec2(0.12 * reach, 0.07)
+            } else if mode == Some(Mode::Air) {
+                vec2(-0.08 * reach, 0.08)
+            } else if mode == Some(Mode::Swim) {
+                vec2(0.1 * sin(phase), 0.05 * cos(phase))
+            } else if mode == Some(Mode::Crouch) {
+                vec2(0.0, 0.05)
+            } else {
+                vec2(0.11 * pace * sin(phase), 0.08 * pace * max(cos(phase), 0.0))
+            }
+            out.push(part(frame, vec3(x + leg.x, -0.27 + leg.y, z), vec3(0.06, 0.08, 0.06), SNOUT))
         }
     }
 }
@@ -147,6 +189,13 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     s.snaps.update()
     let snap = drawn(s.snaps, time)
     follow(mut s.camera, snap, dt)
+    let mode = Mode::from_u32(snap.mode)
+    if mode == Some(Mode::Swim) {
+        s.stride += dt * 9.0
+    } else if mode == Some(Mode::Walk) {
+        s.stride += abs(snap.speed) * dt / STRIDE * TAU
+    }
+    s.stride = s.stride % TAU
     if width != s.width || height != s.height {
         s.depth = depth_texture(width, height)
         s.width = width
@@ -161,7 +210,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         sun: normalize(SUN),
     }
     var parts: Vec<Part> = Vec::new()
-    capybara_parts(mut parts, snap)
+    capybara_parts(mut parts, snap, s.stride)
     goal(mut parts)
     write(mut s.parts, 0, parts)
     let screen = vec2(f32(width), f32(height))
@@ -169,6 +218,13 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     s.renderer.fetch(mut s.fonts, s.list)
     s.renderer.upload(s.list)
     let pass = begin_screen_pass_with_depth(mut s.depth, clear: SKY)
+    draw(
+        pass,
+        ground_vertex.bind(verts: s.hills.items(), eye: eye),
+        cel.bind(eye: eye),
+        vertices: LAB_HILLS.len() / 2,
+        cull: Cull::None,
+    )
     draw(
         pass,
         ground_vertex.bind(verts: s.ground.items(), eye: eye),
@@ -226,7 +282,8 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2) {
         None => "?",
     }
     let speed = length(snap.vel)
-    let hint = if mode == "swim" { "   tap jump to stroke: dive, then swim up to leap" } else { "" }
+    let hint = if mode == "swim" { "   jump to kick: break the surface fast to leap" } else { "" }
+    let hint = if snap.wet > 0 && mode != "swim" { "   wet: faster" } else { hint }
     let line = f"{mode}   {speed:.1} m/s   falls {snap.falls}{hint}"
     let _ = s.list.text(
         s.fonts,

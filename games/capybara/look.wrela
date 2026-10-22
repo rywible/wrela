@@ -2,6 +2,11 @@
 // 6 m deep, extruded from its pieces sampled (its front face filled by ear clipping, its sides
 // strips along the outline), built when the game is built. The capybara and the goal are boxes,
 // drawn in one instanced draw; the water is a see-through front and surface over everything.
+//
+// Motion has to read without a person's say: the grass is striped every metre and the earth banded,
+// so the ground streams by as the camera follows, and two ranges of hills behind, at their own
+// depths, move slower than it (parallax). (Ryan, 2026-10-21: moving at top speed "felt strange"
+// on flat colour under an empty sky.)
 
 use course::{Course, WALKABLE}
 use ground::{left, outline, triangulate}
@@ -13,11 +18,13 @@ pub const DEPTH: f32 = 3.0
 /// How thick a one-way ledge is drawn (m).
 const LEDGE_THICK: f32 = 0.25
 
-/// The materials: the slab's front, a walkable top, a cliff, a ledge.
+/// The materials: the slab's front, a walkable top, a cliff, a ledge, and the hills near and far.
 pub const FRONT: f32 = 0.0
 pub const TOP: f32 = 1.0
 pub const CLIFF: f32 = 2.0
 pub const LEDGE: f32 = 3.0
+pub const HILL_NEAR: f32 = 4.0
+pub const HILL_FAR: f32 = 5.0
 
 /// What the shaders are told each frame: the camera's matrix and where it is, and the sun.
 pub struct Eye: Copy + GpuData {
@@ -75,12 +82,14 @@ pub fn ground_mesh(c: Course) -> Vec<vec4> {
 /// The lab's ground, built with the game.
 pub const LAB_GROUND: Vec<vec4> = ground_mesh(course::LAB)
 
-/// A surface's point, normal and colour, from vertex to fragment.
+/// A surface's point, normal and colour, from vertex to fragment, and its pattern: 0 for none
+/// (a box), else its material + 1.
 pub struct Surfel: Copy {
     pub clip: ClipPosition,
     pub world: vec3,
     pub normal: vec3,
     pub colour: Flat<vec3>,
+    pub kind: Flat<f32>,
 }
 
 /// The colours of the ground's materials.
@@ -91,10 +100,66 @@ fn material(m: f32) -> vec3 {
         vec3(0.36, 0.62, 0.26)
     } else if m < 2.5 {
         vec3(0.5, 0.44, 0.36)
-    } else {
+    } else if m < 3.5 {
         vec3(0.62, 0.45, 0.28)
+    } else if m < 4.5 {
+        vec3(0.45, 0.6, 0.5)
+    } else {
+        vec3(0.63, 0.74, 0.8)
     }
 }
+
+/// How a material's pattern shades point `p`: the grass in stripes a metre wide, the earth in
+/// bands with a darker post every 2 m, a cliff in bands; boxes and hills plain.
+fn pattern(kind: f32, p: vec3) -> f32 {
+    let m = kind - 1.0
+    if kind < 0.5 || m > 3.5 {
+        1.0
+    } else if m < 0.5 {
+        1.0 - 0.06 * step(0.5, fract(p.y / 0.8)) - 0.08 * step(0.9, fract(p.x / 2.0))
+    } else if m < 1.5 {
+        1.0 - 0.1 * step(0.5, fract(p.x * 0.5))
+    } else if m < 2.5 {
+        1.0 - 0.07 * step(0.5, fract(p.y / 0.6))
+    } else {
+        1.0
+    }
+}
+
+/// The hills behind the course: two ranges, nearer and lower, farther and higher, each a
+/// silhouette of two waves, filled down below the view, facing the camera. Three vertices a
+/// triangle, two vec4s a vertex.
+pub fn hills_mesh(from: f32, to: f32) -> Vec<vec4> {
+    var out: Vec<vec4> = Vec::new()
+    let ranges = [
+        (-22.0, 1.0, 3.0, 0.11, HILL_NEAR),
+        (-60.0, 4.0, 8.0, 0.045, HILL_FAR),
+    ]
+    let n = vec3(0.0, 0.0, 1.0)
+    for (z, base, amp, freq, material) in ranges {
+        var x = from
+        while x < to {
+            let x1 = x + 2.0
+            let h0 = base + amp * (0.6 * sin(x * freq) + 0.4 * sin(x * freq * 2.3 + 1.7))
+            let h1 = base + amp * (0.6 * sin(x1 * freq) + 0.4 * sin(x1 * freq * 2.3 + 1.7))
+            for p in [
+                vec2(x, -40.0),
+                vec2(x1, -40.0),
+                vec2(x1, h1),
+                vec2(x, -40.0),
+                vec2(x1, h1),
+                vec2(x, h0),
+            ] {
+                vertex(mut out, p, z, material, n)
+            }
+            x = x1
+        }
+    }
+    out
+}
+
+/// The lab's hills, from well left of its start to well right of its goal.
+pub const LAB_HILLS: Vec<vec4> = hills_mesh(from: -120.0, to: 260.0)
 
 @vertex
 pub fn ground_vertex(v: VertexIndex, verts: [vec4], eye: Eye) -> Surfel {
@@ -105,6 +170,7 @@ pub fn ground_vertex(v: VertexIndex, verts: [vec4], eye: Eye) -> Surfel {
         world: at.xyz,
         normal: n,
         colour: Flat { value: material(at.w) },
+        kind: Flat { value: at.w + 1.0 },
     }
 }
 
@@ -152,6 +218,7 @@ pub fn part_vertex(v: VertexIndex, i: InstanceIndex, parts: [Part], eye: Eye) ->
         world,
         normal: turned,
         colour: Flat { value: part.colour.xyz },
+        kind: Flat { value: 0.0 },
     }
 }
 
@@ -165,7 +232,7 @@ pub fn cel(s: Surfel, eye: Eye) -> vec4 {
     }
     let lit = smoothstep(0.18, 0.24, dot(n, eye.sun))
     let sky = 0.12 * saturate(n.y)
-    let shade = mix(0.58, 1.0, lit) + sky
+    let shade = (mix(0.58, 1.0, lit) + sky) * pattern(s.kind.value, s.world)
     vec4(s.colour.value * shade, 1.0)
 }
 

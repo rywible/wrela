@@ -1,11 +1,11 @@
 // Input scripts for running the lab without a person, as the native host and `wrela trace` take
-// them (`wrela script games/capybara scripts::RUN -o run.json`). Frames are at 60 a second; the
-// ticker runs two ticks a frame in lockstep.
+// them (`wrela script games/capybara scripts::RUN -o run.json`).
 
+use pad::{DOWN, Hold, JUMP, LEFT, PRESS, RIGHT, UP}
 use std::input::{Key, Script}
 
-/// A run to the right from the start, jumping the first gap, then sliding down into the valley:
-/// enough to see the runway, the crest, the gaps and the slide.
+/// A run to the right from the start, at 60 frames a second (two ticks a frame), jumping the first
+/// gap, then sliding: enough to see the runway, the crest, the puddle and a gap.
 pub const RUN: Script = Script::frames()
     .key_down(1, Key::D)
     .key_down(281, Key::Space)
@@ -13,3 +13,42 @@ pub const RUN: Script = Script::frames()
     .key_down(350, Key::Space)
     .key_up(400, Key::Space)
     .key_down(573, Key::S)
+
+/// The keys for a pad's bits.
+const KEYS: [(u32, Key); 5] = [
+    (LEFT, Key::A),
+    (RIGHT, Key::D),
+    (UP, Key::W),
+    (DOWN, Key::S),
+    (JUMP, Key::Space),
+]
+
+/// A recorded run as a script of frames at 120 a second, one tick a frame: each hold's keys go
+/// down or up where its bits change, and a press of jump held on is a release and a press in its
+/// frame. Run it with `--fps 120`.
+pub fn script_of(run: [Hold]) -> Script {
+    var s = Script::frames()
+    var held = 0
+    var frame = 1
+    for h in run {
+        let bits = h.bits & !PRESS
+        for (bit, key) in KEYS {
+            let was = held & bit != 0
+            let now = bits & bit != 0
+            let again = bit == JUMP && h.bits & PRESS != 0
+            if was && (!now || again) {
+                s = take s.key_up(frame, key)
+            }
+            if now && (!was || again) {
+                s = take s.key_down(frame, key)
+            }
+        }
+        held = bits
+        frame += h.ticks
+    }
+    s
+}
+
+/// The lab's recorded run (`proofs::LAB_RUN`) from start to goal, for stills and clips of every
+/// part of the lab: `wrela-host <build> --fps 120 --frames 1400 --input lab.json`.
+pub const LAB: Script = script_of(proofs::LAB_RUN)
