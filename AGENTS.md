@@ -46,6 +46,6 @@ This repository holds only Wrela code. The language, its toolchain (compiler, st
 
 ## Records
 
-- `AGENTS.md` is the sole repo instruction file. Add no prose docs beyond `docs/vision.md` and `docs/process.md`: reference docs come from source through `wrela doc --export`; remove any temporary task notes before committing. Run checks locally. CI only builds and deploys releases from `main` (`.github/workflows/deploy.yml`, with the pinned toolchain); add no checks to it.
+- `AGENTS.md` is the sole repo instruction file. Add no prose docs beyond `docs/vision.md`, `docs/process.md` and each game's `design.md` (its brief: what Ryan decided, what is proposed and what is open): reference docs come from source through `wrela doc --export`; remove any temporary task notes before committing. Run checks locally. CI only builds and deploys releases from `main` (`.github/workflows/deploy.yml`, with the pinned toolchain); add no checks to it.
 - Update `docs/process.md` for new references, outside assets/algorithms, AI tools/models or kinds of AI work: source, rights, what it teaches and how used. Keep style references outside the repo. Never trace/sample/recreate specific reference shots, characters or designs; never create assets with generative image/audio/music/voice/video models.
 - Use clear, concrete English, roughly 80% ASD-STE100.
