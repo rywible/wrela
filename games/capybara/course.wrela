@@ -195,7 +195,7 @@ pub fn course(i: u32) -> borrow Course {
 /// more, a deck that drops down a 29° slope into a valley with a puddle at its bottom and up a 45°
 /// slope to a sharp lip 1 m up, a lake 37 m across and 6.5 m deep down a rounded bank, whose steep
 /// far wall stands 1.6 m above the water, and the goal on the deck past it. Pits fall out below 8 m down. Water is the fast element: a puddle wets the
-/// capybara for its speed, and the pool is a fast swim to a leap.
+/// capybara for its speed, and the lake is a fast swim.
 pub const LAB: Course = lab()
 
 fn lab() -> Course {

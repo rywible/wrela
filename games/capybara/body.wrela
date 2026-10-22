@@ -14,7 +14,7 @@
 use course::{Contact, Course}
 use engine::sim::SimState
 use feel::{Feel, STEP}
-use pad::{DOWN, JUMP, Pad, UP}
+use pad::{DOWN, JUMP, Pad}
 use std::hash::StateHash
 use std::serialize::Serialize
 
@@ -62,12 +62,13 @@ pub struct Body: Copy + Eq + StateHash + Serialize + SimState {
     pub cooldown: u32,
     /// Ticks of being wet left: the wet speed while it lasts (`top`).
     pub wet: u32,
-    /// Ticks since a dolphin leap left the water, counting from 1 while the body is in the air
-    /// after it; 0 otherwise.
-    pub leap: u32,
+    /// In water: the last way up or down held (1 up, -1 down, 0 neither yet), and the ticks since
+    /// the last dolphin kick.
+    pub stroke: i32,
+    pub since: u32,
     /// Jumps left in the air: a double jump while it's more than 0.
     pub jumps: u32,
-    /// Ticks since a flip began (a dolphin leap's or a double jump's), counting from 1 in the air;
+    /// Ticks since a double jump's flip began, counting from 1 in the air;
     /// 0 otherwise. The view turns the capybara over by it.
     pub flip: u32,
 }
@@ -88,7 +89,8 @@ pub fn spawn(at: vec2) -> Body {
         tuck: false,
         cooldown: 0,
         wet: 0,
-        leap: 0,
+        stroke: 0,
+        since: 0,
         jumps: 0,
         flip: 0,
     }
@@ -215,10 +217,11 @@ fn leave(b: mut Body, vel: vec2, f: Feel) {
 /// across. Out of a slide it keeps all the slide's velocity, up a ramp too; running, only its part
 /// across, so a running jump is the same height on any slope (Ryan, 2026-10-21: jumps up a slope
 /// came out higher and read as random).
-fn jump(b: mut Body, t: vec2, f: Feel) {
+fn jump(b: mut Body, t: vec2, f: Feel, under: bool) {
     let along = t * b.speed
     let kept = if b.mode == Mode::Slide { along } else { vec2(along.x, 0.0) }
-    b.vel = kept + vec2(0.0, f.launch)
+    // Under water, a jump off the bottom is a kick, not a launch.
+    b.vel = kept + vec2(0.0, if under { f.kick } else { f.launch })
     b.mode = Mode::Air
     b.jumping = true
     b.jumps = f.air_jumps
@@ -242,7 +245,7 @@ fn ground(b: mut Body, pad: Pad, c: Course, f: Feel) {
         return
     }
     if b.buffer > 0 {
-        jump(mut b, t, f)
+        jump(mut b, t, f, under: c.water_at(b.at).is_some())
         air(mut b, pad, c, f)
         return
     }
@@ -349,9 +352,6 @@ fn glide(b: mut Body, c: Course, f: Feel, k: Contact) {
 // ---- in the air --------------------------------------------------------------------------------
 
 fn air(b: mut Body, pad: Pad, c: Course, f: Feel) {
-    if b.leap > 0 {
-        b.leap += 1
-    }
     if b.flip > 0 {
         b.flip += 1
     }
@@ -367,12 +367,11 @@ fn air(b: mut Body, pad: Pad, c: Course, f: Feel) {
         b.jumping = true
         b.buffer = 0
         b.jumps -= 1
-        b.leap = 0
         b.flip = 1
     }
     b.coyote = less(b.coyote)
-    // A leap rises on the light gravity without jump held; a jump only while it's held.
-    if (!pad.held(JUMP) && b.leap == 0) || b.vel.y <= 0.0 {
+    // A jump rises on the light gravity only while it's held.
+    if !pad.held(JUMP) || b.vel.y <= 0.0 {
         b.jumping = false
     }
     // The velocity before the tick's accelerations. Each substep takes its share of the tick's
@@ -417,7 +416,7 @@ fn air(b: mut Body, pad: Pad, c: Course, f: Feel) {
         }
         if c.water_at(b.at).is_some() {
             b.mode = Mode::Swim
-            b.leap = 0
+            b.stroke = 0
             b.flip = 0
             b.jumping = false
             return
@@ -436,7 +435,6 @@ fn land(b: mut Body, pad: Pad, k: Contact, before: vec2, f: Feel) {
     b.vel = t * b.speed
     b.jumping = false
     b.coyote = 0
-    b.leap = 0
     b.flip = 0
     b.mode = if pad.held(DOWN) {
         if abs(b.speed) >= f.slide_min || abs(t.y) >= f.slide_slope { Mode::Slide } else {
@@ -449,9 +447,10 @@ fn land(b: mut Body, pad: Pad, k: Contact, before: vec2, f: Feel) {
 
 // ---- in water ----------------------------------------------------------------------------------
 
-/// A tick in water, off the ground: the air's movement on a light gravity (more with down held, to
-/// dive; up held swims up instead), a kick for each jump press, and the wet speed across. On the bottom it walks, wet.
-/// Breaking the surface upward is a dolphin leap, or, slower, a plain way out.
+/// A tick in water, off the ground: the air's movement on a light gravity (up or down held swims
+/// up or down instead), a kick for each jump press, and the wet speed across; up and
+/// down in turn are dolphin kicks, past it. On the bottom it walks, wet. It leaves the water as it
+/// moves, into the air, its double jump kept (Ryan, 2026-10-21).
 fn swim(b: mut Body, pad: Pad, c: Course, f: Feel) {
     let Some(i) = c.water_at(b.at) else {
         b.mode = Mode::Air
@@ -475,14 +474,33 @@ fn swim(b: mut Body, pad: Pad, c: Course, f: Feel) {
         }
         b.facing = dir
     }
-    let g = if pad.held(DOWN) { f.water_sink } else { f.water_gravity }
-    if pad.held(UP) && !pad.held(DOWN) {
-        // Swimming up: towards the upward speed it holds, never slowing a faster rise.
-        if b.vel.y < f.swim_up_speed {
-            b.vel.y = min(b.vel.y + f.swim_up * STEP, f.swim_up_speed)
+    // The dolphin kick: each change between up and down, in rhythm, drives it forward.
+    b.since = min(b.since + 1, 1000)
+    let way = i32(pad.y())
+    if way != 0 && b.stroke != 0 && way != b.stroke && b.since >= f.dolphin_gap {
+        let along = b.vel.x * b.facing
+        b.vel.x = b.facing * min(along + f.dolphin, max(along, f.dolphin_max))
+        b.since = 0
+    }
+    if way != 0 {
+        b.stroke = way
+    }
+    // Past the wet speed, the water takes the speed back.
+    if abs(b.vel.x) > f.wet_speed {
+        b.vel.x = sign(b.vel.x) * max(abs(b.vel.x) - f.water_over * STEP, f.wet_speed)
+    }
+    let held = pad.y()
+    if held != 0.0 {
+        // Swimming up or down: towards the speed it holds that way; faster that way, the water
+        // slows it to it.
+        let target = held * f.swim_up_speed
+        if (b.vel.y - target) * held < 0.0 {
+            b.vel.y = approach(b.vel.y, target, f.swim_up * STEP)
+        } else {
+            b.vel.y = target + (b.vel.y - target) * exp(-20.0 * STEP)
         }
     } else if b.vel.y > -f.water_terminal {
-        b.vel.y = max(b.vel.y - g * STEP, -f.water_terminal)
+        b.vel.y = max(b.vel.y - f.water_gravity * STEP, -f.water_terminal)
     } else {
         // A dive slows to the sinking speed.
         b.vel.y = -f.water_terminal + (b.vel.y + f.water_terminal) * exp(-20.0 * STEP)
@@ -516,14 +534,7 @@ fn swim(b: mut Body, pad: Pad, c: Course, f: Feel) {
     if b.at.y >= surface {
         b.mode = Mode::Air
         b.coyote = 0
-        if b.vel.y >= f.leap_min {
-            // The dolphin leap: into the air at least at the leap's speed, faster if the swim
-            // was, rising on the light gravity to its top.
-            b.vel.y = max(b.vel.y, f.leap)
-            b.jumping = true
-            b.leap = 1
-            b.flip = 1
-        }
+        b.jumping = false
         return
     }
     if b.at.x < w.lo.x || b.at.x > w.hi.x || b.at.y < w.lo.y {

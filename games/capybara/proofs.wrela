@@ -17,8 +17,9 @@ use world::{play, step, world}
 
 /// The lab from its start to its goal: over the crest, through the puddle (wet, so fast), both
 /// gaps and both steps, down the slide through the valley's puddle and off its lip, across the
-/// lake fast, and a swim up into a dolphin leap over its far wall. Recorded from an autopilot.
-pub const LAB_RUN: [Hold; 19] = [
+/// lake by dolphin kicks (up and down in rhythm, at 17 m/s), a swim up and out, and a double
+/// jump over its far wall. Recorded from an autopilot.
+pub const LAB_RUN: [Hold; 31] = [
     hold(RIGHT, 466),
     hold(RIGHT | JUMP | PRESS, 1),
     hold(RIGHT | JUMP, 45),
@@ -33,11 +34,23 @@ pub const LAB_RUN: [Hold; 19] = [
     hold(RIGHT | JUMP, 49),
     hold(RIGHT, 64),
     hold(RIGHT | DOWN, 153),
-    hold(RIGHT, 318),
-    hold(RIGHT | UP, 60),
-    hold(RIGHT, 1),
-    hold(RIGHT | UP, 35),
-    hold(RIGHT, 54),
+    hold(RIGHT, 113),
+    hold(RIGHT | DOWN, 7),
+    hold(RIGHT | UP, 10),
+    hold(RIGHT | DOWN, 10),
+    hold(RIGHT | UP, 10),
+    hold(RIGHT | DOWN, 10),
+    hold(RIGHT | UP, 50),
+    hold(RIGHT | DOWN, 10),
+    hold(RIGHT | UP, 10),
+    hold(RIGHT | DOWN, 10),
+    hold(RIGHT | UP, 10),
+    hold(RIGHT | DOWN, 10),
+    hold(RIGHT | UP, 24),
+    hold(RIGHT, 9),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 39),
+    hold(RIGHT, 45),
 ]
 
 /// Up through the 2 m one-way ledge from below, then a jump to the 3.5 m ledge.
@@ -68,7 +81,7 @@ pub const DOUBLE_JUMP: [Hold; 7] = [
 fn the_lab_is_finished_by_its_recorded_run_in_its_recorded_time() {
     let w = play(0, LAB_RUN)
     print(f"the lab: {w.finished} ticks")
-    assert(w.finished == 1468 && w.falls == 0, "the run's time moved")
+    assert(w.finished == 1378 && w.falls == 0, "the run's time moved")
 }
 
 /// Whether `run` ends standing on the 3.5 m ledge.
@@ -294,25 +307,70 @@ fn a_dive_slows_to_the_sinking_speed() {
 }
 
 @test
-fn holding_up_swims_up_and_out_in_a_leap() {
-    var b = in_pool(vec2(110.0, -5.0), vec2(0.0))
-    var fastest = 0.0
+fn up_swims_up_and_out_as_it_moves_and_the_double_jump_clears_the_lakes_far_wall() {
+    // Swimming up beside the far wall (its top 1.6 m above the water), then a double jump.
+    var b = in_pool(vec2(127.0, -4.0), vec2(0.0))
     while b.mode == Mode::Swim {
         body::step(mut b, Pad { bits: pad::UP }, LAB, FEEL)
-        fastest = max(fastest, b.vel.y)
     }
-    assert(abs(fastest - FEEL.leap) < 1.0e-3 && b.flip == 1, "up to the surface, and a leap")
+    assert(b.mode == Mode::Air && abs(b.vel.y - FEEL.swim_up_speed) < 0.5, "out as it moved")
+    assert(b.jumps == FEEL.air_jumps && b.flip == 0, "no leap: its double jump kept")
+    body::step(mut b, Pad { bits: RIGHT | JUMP | PRESS }, LAB, FEEL)
+    for _ in 0..120 {
+        body::step(mut b, Pad { bits: RIGHT | JUMP }, LAB, FEEL)
+    }
+    assert(b.grounded() && b.at.y > 1.6, "over the wall, on the deck")
 }
 
 @test
-fn breaking_the_surface_fast_is_a_leap_and_slow_is_a_way_out() {
-    var fast = in_pool(vec2(108.0, -0.02), vec2(3.0, 9.0))
-    body::step(mut fast, Pad { bits: 0 }, LAB, FEEL)
-    assert(fast.mode == Mode::Air && fast.vel.y >= FEEL.leap && fast.vel.x > 2.9, "a dolphin leap")
-    assert(fast.flip == 1 && fast.jumps == FEEL.air_jumps, "with a flip, and the double jump back")
-    var slow = in_pool(vec2(108.0, -0.005), vec2(0.0, 2.0))
-    body::step(mut slow, Pad { bits: 0 }, LAB, FEEL)
-    assert(slow.mode == Mode::Air && slow.vel.y < FEEL.leap_min && slow.leap == 0, "a way out")
+fn a_jump_off_the_bottom_of_water_is_a_kick_not_a_launch() {
+    // On the lake's floor (6.5 m down): one jump rises about a kick's height, kick² / 2g.
+    var w = world(0)
+    w.body = spawn(vec2(112.0, -6.5 + RADIUS))
+    w.body.wet = FEEL.wet_ticks
+    step(mut w, Pad { bits: 0 })
+    assert(w.body.grounded())
+    let from = w.body.at.y
+    step(mut w, Pad { bits: JUMP | PRESS })
+    var top = from
+    for _ in 0..120 {
+        step(mut w, Pad { bits: JUMP })
+        top = max(top, w.body.at.y)
+    }
+    let kick = FEEL.kick * FEEL.kick / (2.0 * FEEL.water_gravity)
+    assert(top - from < kick + 0.1, "no higher than a kick")
+}
+
+@test
+fn up_and_down_in_rhythm_is_a_dolphin_kick_past_the_wet_speed() {
+    // Up and down in turn, a change every `dolphin_gap` ticks, right held: past the wet speed,
+    // never past the dolphin's most.
+    var b = in_pool(vec2(104.0, -3.5), vec2(FEEL.wet_speed, 0.0))
+    var fastest = 0.0
+    for i in 0..120 {
+        let way = if (i / FEEL.dolphin_gap) % 2 == 0 { pad::UP } else { DOWN }
+        body::step(mut b, Pad { bits: RIGHT | way }, LAB, FEEL)
+        fastest = max(fastest, b.vel.x)
+    }
+    assert(fastest > FEEL.wet_speed + 3.0 && fastest <= FEEL.dolphin_max + 1.0e-3, "faster")
+    // Twice as fast a rhythm kicks no more often.
+    var mashed = in_pool(vec2(104.0, -3.5), vec2(FEEL.wet_speed, 0.0))
+    var kicks = 0
+    for i in 0..120 {
+        let way = if (i / (FEEL.dolphin_gap / 2)) % 2 == 0 { pad::UP } else { DOWN }
+        body::step(mut mashed, Pad { bits: RIGHT | way }, LAB, FEEL)
+        if mashed.since == 0 {
+            kicks += 1
+        }
+    }
+    assert(kicks <= 120 / FEEL.dolphin_gap, "mashing doesn't kick more")
+    // Without kicks the water takes the extra speed back, at its own rate.
+    let before = b.vel.x
+    for _ in 0..30 {
+        body::step(mut b, Pad { bits: RIGHT }, LAB, FEEL)
+    }
+    let expected = max(before - FEEL.water_over * 30.0 * STEP, FEEL.wet_speed)
+    assert(b.mode == Mode::Swim && abs(b.vel.x - expected) < 1.0e-3, "the water takes it back")
 }
 
 @test

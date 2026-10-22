@@ -119,7 +119,7 @@ fn capybara_parts(out: mut Vec<Part>, s: Snap, stride: f32) {
     } else {
         clamp(s.vel.y * 0.03, -0.4, 0.4) * s.facing
     }
-    // After a dolphin leap or a double jump it flips once, nose up and over, in half a second.
+    // After a double jump it flips once, nose up and over, in half a second.
     let flip = if s.flip > 0 { -TAU * saturate(f32(s.flip) / f32(HZ / 2)) } else { 0.0 }
     let low = mode == Some(Mode::Crouch) || mode == Some(Mode::Slide) || (!grounded && s.tuck == 1)
     let squash = if low { vec3(1.12, 0.72, 1.0) } else { vec3(1.0) }
@@ -282,7 +282,9 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2) {
         None => "?",
     }
     let speed = length(snap.vel)
-    let hint = if mode == "swim" { "   jump to kick: break the surface fast to leap" } else { "" }
+    let hint = if mode == "swim" {
+        "   jump to kick, up to swim up, up and down in turn to dolphin kick"
+    } else { "" }
     let hint = if snap.wet > 0 && mode != "swim" { "   wet: faster" } else { hint }
     let line = f"{mode}   {speed:.1} m/s   falls {snap.falls}{hint}"
     let _ = s.list.text(

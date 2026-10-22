@@ -1,6 +1,6 @@
 // The camera: a fixed side view that scrolls both ways (design.md, "Movement", proposed). It
 // looks a little ahead of the way the capybara faces, and further ahead only past the capybara's
-// running speed (a slide, a leap), so starting and stopping don't swing it (Ryan, 2026-10-21: the
+// running speed (a slide, a dolphin kick), so starting and stopping don't swing it (Ryan, 2026-10-21: the
 // rebound was too much when it led by the speed itself). On the ground it moves up or down only when
 // the capybara lands at a new height; while the capybara swims, or flies or falls out of a band
 // round the view's middle, it follows. It is presentation, stepped by the frame's time.

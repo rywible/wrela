@@ -29,7 +29,7 @@ pub struct Feel: Copy {
     /// A jump's upward speed, and a double jump's (m/s).
     pub launch: f32 = 15.2,
     pub air_launch: f32 = 13.0,
-    /// The jumps it has in the air, after its first: refreshed on landing and by a dolphin leap.
+    /// The jumps it has in the air, after its first: refreshed on landing and on leaving water.
     pub air_jumps: u32 = 1,
     /// Gravity rising with jump held, and otherwise (m/s²); the fastest fall (m/s).
     pub rise: f32 = 40.0,
@@ -49,24 +49,26 @@ pub struct Feel: Copy {
     pub slide_friction: f32 = 2.5,
     pub slide_max: f32 = 22.0,
     // Water.
-    /// Gravity in water (m/s²), with down held, and the fastest sink (m/s).
+    /// Gravity in water (m/s²), and the fastest it sinks (m/s).
     pub water_gravity: f32 = 10.0,
-    pub water_sink: f32 = 30.0,
     pub water_terminal: f32 = 6.0,
-    /// A kick: a jump press in water sets the upward speed to at least this (m/s); kicks are this
-    /// many ticks apart at least.
-    pub kick: f32 = 7.0,
-    pub kick_cooldown: u32 = 8,
+    /// A kick: a jump press in water (from its bottom too) sets the upward speed to at least this
+    /// (m/s); kicks are this many ticks apart at least.
+    pub kick: f32 = 5.0,
+    pub kick_cooldown: u32 = 12,
     /// Acceleration across in water (m/s²).
     pub water_accel: f32 = 60.0,
-    /// Swimming up with up held: its acceleration (m/s²) and the upward speed it holds (m/s),
-    /// enough that reaching the surface is a leap.
+    /// Swimming up or down with up or down held: its acceleration (m/s²) and the speed it holds
+    /// (m/s). The same both ways, so up and down in turn keep their depth.
     pub swim_up: f32 = 40.0,
     pub swim_up_speed: f32 = 8.0,
-    /// The least upward speed through the surface that leaps, and the least upward speed a leap
-    /// leaves with (m/s): any swim up through the surface is a leap that clears a wall 1.6 m up.
-    pub leap_min: f32 = 3.5,
-    pub leap: f32 = 14.0,
+    /// The dolphin kick: up and down held in turn, each change at least `dolphin_gap` ticks after
+    /// the last, adds `dolphin` m/s forward, to at most `dolphin_max`. Above the wet speed, water
+    /// takes speed back at `water_over` (m/s²), so it lasts only while kicked.
+    pub dolphin: f32 = 2.0,
+    pub dolphin_gap: u32 = 10,
+    pub dolphin_max: f32 = 18.0,
+    pub water_over: f32 = 5.0,
     /// How long being wet lasts after the last touch of water (ticks): its first half at the wet
     /// speed, its second easing the top back down.
     pub wet_ticks: u32 = 180,
