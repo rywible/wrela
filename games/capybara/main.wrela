@@ -14,9 +14,10 @@
 // the other course.
 //
 // Runs (replay.wrela): each finished attempt is a replay, and the best few of each category are
-// kept in the game's storage. Paused, B opens them: the player's best and the autopilot's, any%
-// and 100%; a click on one watches it (watch.wrela), and G chooses the ghost that runs beside the
-// player: their best, the autopilot's, or none.
+// kept in the game's storage. Paused, B opens them: two boards, the player's runs and the
+// tool-assisted runs (the route search's, made by a program, never ranked with a player's; T or a
+// click switches), each any% and 100%. A click on a run watches it (watch.wrela), and G chooses the
+// ghost that runs beside the player: their best, the tool-assisted run, or none.
 //
 // For an agent: `wrela-host <build> --frames n --input script.json --png out.png` draws frame n
 // on the GPU (scripts.wrela has scripts), and `capybara` exports the capybara's state for `wrela
@@ -63,6 +64,11 @@ const SPRITES: u32 = 1024
 const NO_GHOST: u32 = 0
 const BEST_GHOST: u32 = 1
 const AUTOPILOT_GHOST: u32 = 2
+
+/// The boards: the player's runs, and the tool-assisted runs (design.md: "a separate
+/// tool-assisted board").
+const PLAYERS: u32 = 0
+const ASSISTED: u32 = 1
 
 /// How far a watched run seeks at a press (ticks): five seconds.
 const SEEK: u32 = 600
@@ -114,8 +120,9 @@ pub struct Lab {
     saving: Option<Pending<u8>>,
     unsaved: bool,
     kept: u32,
-    /// The autopilot's runs of every course.
+    /// The tool-assisted runs of every course, and the board shown (`PLAYERS` or `ASSISTED`).
     assisted: Vec<Replay>,
+    board: u32,
     /// The ghost (`NO_GHOST`...), the trail it follows, and which run that is (`trail_key`).
     ghost: u32,
     trail: Vec<Pose>,
@@ -170,6 +177,7 @@ pub fn init() -> Lab {
         unsaved: false,
         kept: 0xffffffff,
         assisted,
+        board: PLAYERS,
         ghost: BEST_GHOST,
         trail: Vec::new(),
         trail_of: 0,
@@ -622,7 +630,15 @@ fn store_runs(s: mut Lab) {
 /// The runs of course `c` that count for `category`, the player's and the autopilot's, fastest
 /// first.
 fn listed(s: Lab, c: u32, category: u32) -> Vec<Replay> {
-    var out = s.runs.ranked(c, category)
+    if s.board == PLAYERS {
+        return s.runs.ranked(c, category)
+    }
+    assisted(s, c, category)
+}
+
+/// The tool-assisted runs of course `c` that count for `category`, fastest first.
+fn assisted(s: Lab, c: u32, category: u32) -> Vec<Replay> {
+    var out: Vec<Replay> = Vec::new()
     for r in s.assisted {
         if r.course == c && counts(r, category) {
             var at = out.len()
@@ -635,7 +651,7 @@ fn listed(s: Lab, c: u32, category: u32) -> Vec<Replay> {
     out
 }
 
-/// The ghost's run on course `c`: the player's best any% run, or the autopilot's fastest.
+/// The ghost's run on course `c`: the player's best any% run, or the fastest tool-assisted one.
 fn ghost_run(s: Lab, c: u32) -> Option<Replay> {
     if s.ghost == BEST_GHOST {
         let best = s.runs.ranked(c, ANY)
@@ -643,11 +659,9 @@ fn ghost_run(s: Lab, c: u32) -> Option<Replay> {
             return Some(best[0].clone())
         }
     } else if s.ghost == AUTOPILOT_GHOST {
-        let all = listed(s, c, ANY)
-        for r in all {
-            if r.who == AUTOPILOT {
-                return Some(r.clone())
-            }
+        let fastest = assisted(s, c, ANY)
+        if fastest.len() > 0 {
+            return Some(fastest[0].clone())
         }
     }
     None
@@ -673,15 +687,23 @@ fn follow_ghost(s: mut Lab, c: u32) {
 fn ghost_name(g: u32) -> Text {
     if g == NO_GHOST {
         "none"
-    } else if g == BEST_GHOST { "your best" } else { "the autopilot" }
+    } else if g == BEST_GHOST { "your best" } else { "tool-assisted" }
 }
 
 /// The runs card's size, for the screen: its rect and its text size.
 fn runs_frame(screen: vec2) -> (Rect, f32) {
     let size = max(screen.y * 0.028, 12.0)
     let w = min(screen.x * 0.92, size * 40.0)
-    let h = size * 21.0
+    let h = size * 22.5
     (Rect::new((screen.x - w) * 0.5, (screen.y - h) * 0.5, w, h), size)
+}
+
+/// Where board `b`'s name is on the runs card, which a click chooses.
+fn board_rect(screen: vec2, b: u32) -> Rect {
+    let (r, size) = runs_frame(screen)
+    let w = size * 8.0
+    let x = r.x + r.w * 0.5 - w - size * 0.3 + f32(b) * (w + size * 0.6)
+    Rect::new(x, r.y + size * 3.0, w, size * 1.5)
 }
 
 /// Where row `i` of a category's list is on the runs card.
@@ -689,7 +711,7 @@ fn row_rect(screen: vec2, category: u32, i: u32) -> Rect {
     let (r, size) = runs_frame(screen)
     let w = (r.w - size * 3.0) * 0.5
     let x = r.x + size * 1.2 + f32(category) * (w + size * 0.6)
-    Rect::new(x, r.y + size * 5.6 + f32(i) * size * 1.6, w, size * 1.4)
+    Rect::new(x, r.y + size * 7.2 + f32(i) * size * 1.6, w, size * 1.4)
 }
 
 /// Where the ghost's line is on the runs card.
@@ -699,7 +721,8 @@ fn ghost_rect(screen: vec2) -> Rect {
 }
 
 /// A key or click while the runs are open (the sim leaves them to the frames): on the board, a
-/// click on a run watches it and G (or a click on its line) changes the ghost; watching, Space
+/// click on a run watches it, T (or a click on a board's name) switches boards, and G (or a click
+/// on its line) changes the ghost; watching, Space
 /// pauses and plays, the arrows seek and change speed, R starts again, and Backspace goes back to
 /// the board.
 fn browse(s: mut Lab, e: Event, c: u32, screen: vec2) {
@@ -744,12 +767,19 @@ fn browse(s: mut Lab, e: Event, c: u32, screen: vec2) {
         Event::KeyDown { key, repeat, .. } => {
             if key == Key::G && !repeat {
                 s.ghost = (s.ghost + 1) % 3
+            } else if key == Key::T && !repeat {
+                s.board = 1 - s.board
             }
         },
         Event::PointerDown { at, .. } => {
             s.pointer = at
             if ghost_rect(screen).contains(at) {
                 s.ghost = (s.ghost + 1) % 3
+            }
+            for b in [PLAYERS, ASSISTED] {
+                if board_rect(screen, b).contains(at) {
+                    s.board = b
+                }
             }
             for category in [ANY, FULL] {
                 let runs = listed(s, c, category)
@@ -785,6 +815,25 @@ fn runs_card(s: mut Lab, c: u32, screen: vec2) {
         vec2(r.x + (r.w - tw) * 0.5, r.y + size),
         ink,
     )
+    // The boards' names: the one shown filled in, the other lit under the pointer.
+    for b in [PLAYERS, ASSISTED] {
+        let tab = board_rect(screen, b)
+        let name = if b == PLAYERS { "Players" } else { "Tool-assisted" }
+        if b == s.board {
+            s.list.rect(tab, ink, radius: size * 0.75)
+        } else if tab.contains(s.pointer) {
+            s.list.rect(tab, lit, radius: size * 0.75)
+        }
+        let nw = s.fonts.font(Face::Sans).measure(name, size)
+        let _ = s.list.text(
+            s.fonts,
+            Face::Sans,
+            name,
+            size,
+            vec2(tab.x + (tab.w - nw) * 0.5, tab.y + size * 0.25),
+            if b == s.board { paper } else { ink },
+        )
+    }
     for category in [ANY, FULL] {
         let head = row_rect(screen, category, 0)
         let name = if category == ANY { "Any%" } else { "100%" }
@@ -801,7 +850,7 @@ fn runs_card(s: mut Lab, c: u32, screen: vec2) {
             let _ = s.list.text(
                 s.fonts,
                 Face::Sans,
-                "None yet",
+                if s.board == PLAYERS { "None yet: reach the goal" } else { "None" },
                 size * 0.9,
                 vec2(head.x, head.y),
                 soft,
@@ -850,7 +899,7 @@ fn runs_card(s: mut Lab, c: u32, screen: vec2) {
         vec2(line.x + size * 0.4, line.y + size * 0.2),
         ink,
     )
-    let foot = "Click a run to watch it.   Esc back"
+    let foot = "Click a run to watch it.   T switches boards.   Esc back"
     let fw = s.fonts.font(Face::Sans).measure(foot, size * 0.9)
     let _ = s.list.text(
         s.fonts,
@@ -869,7 +918,7 @@ fn watch_bar(s: mut Lab, screen: vec2) {
     var keys = f""
     match s.watching {
         Some(w) => {
-            let who = if w.replay.who == YOU { "You" } else { "Autopilot" }
+            let who = if w.replay.who == YOU { "You" } else { "Tool-assisted" }
             let category = if counts(w.replay, FULL) { "100%" } else { "any%" }
             label = f"Watching  {who}  {category}  {seconds(w.replay.ticks)}"
             let state = if w.playing { "pause" } else { "play" }
