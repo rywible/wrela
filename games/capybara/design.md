@@ -89,7 +89,7 @@ The game is set in a zoo, as a day out. The easter eggs are cute, small and kind
 - **The lake:** 41 m across and 8.5 m deep, two caimans at two depths, a dolphin-kick line between them, a far wall 3 m above the water: out by a breach and a double jump.
 - **The gauntlet:** mesas over pits, geese, pigeons, a puddle's speed for an 8 m gap, a climb that needs the double jump saved.
 - **Five snacks**, each asking for one move done well: a double jump onto a ledge; a run off a pit's edge and a double jump out; a double jump at the top of the slide-jump's arc; a dive under a caiman to the lake's floor; a full jump and double jump high off the last mesa.
-- **Not impossible, by proof:** a recorded any% run (28.8 s) and a recorded 100% run (29.6 s) finish it without a death, from an autopilot that reacts to the foes; both are tests. **Challenging:** the autopilot's own first tries died where a player will (spending the double jump before the last climb), and the snacks' placements were moved until each needed its move, not until each was easy.
+- **Not impossible, by proof:** a recorded any% run (28.8 s) and a recorded 100% run (29.6 s) finish it without a death, from an autopilot that reacts to the foes; and a recorded run crosses the big pit without sliding, by the stones (the first moved against the lip's wall, so walking off it lands there). All are tests. **Challenging:** the autopilot's own first tries died where a player will (spending the double jump before the last climb), and the snacks' placements were moved until each needed its move, not until each was easy.
 
 ## Speedrunning
 
