@@ -8,10 +8,11 @@
 use body::{Body, Mode, RADIUS, spawn}
 use course::LAB
 use feel::{FEEL, STEP}
-use pad::{DOWN, Hold, JUMP, PRESS, Pad, RIGHT, UP, hold}
+use pad::{DOWN, Hold, JUMP, LEFT, PRESS, Pad, RIGHT, UP, hold}
 use std::hash::state_hash
 use std::io::print
-use world::{play, step, world}
+use course::course
+use world::{LEVEL, World, play, step, world}
 
 // ---- proofs ------------------------------------------------------------------------------------
 
@@ -81,7 +82,7 @@ pub const DOUBLE_JUMP: [Hold; 7] = [
 fn the_lab_is_finished_by_its_recorded_run_in_its_recorded_time() {
     let w = play(0, LAB_RUN)
     print(f"the lab: {w.finished} ticks")
-    assert(w.finished == 1374 && w.falls == 0, "the run's time moved")
+    assert(w.finished == 1374 && w.deaths == 0, "the run's time moved")
 }
 
 /// Whether `run` ends standing on the 3.5 m ledge.
@@ -109,6 +110,349 @@ fn a_run_replays_to_the_same_state_hash() {
     let a = play(0, LAB_RUN)
     let b = play(0, LAB_RUN)
     assert(state_hash(a) == state_hash(b) && a == b)
+}
+
+// ---- the level ------------------------------------------------------------------------------
+
+/// The first level from start to goal (any%): the gates, the big slide's slide-jump, the lake by
+/// dolphin kicks, the gauntlet, without a death. Recorded from an autopilot that reacts to the
+/// foes; its fixed pads are the proof that the level can be finished.
+pub const LEVEL_ANY: [Hold; 71] = [
+    hold(RIGHT, 164),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 45),
+    hold(RIGHT, 136),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 42),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 39),
+    hold(RIGHT, 244),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 45),
+    hold(RIGHT, 59),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 42),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 39),
+    hold(RIGHT, 103),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 45),
+    hold(RIGHT, 21),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 45),
+    hold(RIGHT, 126),
+    hold(RIGHT | DOWN, 228),
+    hold(RIGHT | DOWN | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 54),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 39),
+    hold(RIGHT, 53),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 45),
+    hold(RIGHT, 121),
+    hold(RIGHT | DOWN, 14),
+    hold(RIGHT | UP, 10),
+    hold(RIGHT | DOWN, 7),
+    hold(RIGHT | UP, 53),
+    hold(RIGHT | DOWN, 10),
+    hold(RIGHT | UP, 1),
+    hold(RIGHT | DOWN, 39),
+    hold(RIGHT | UP, 10),
+    hold(RIGHT | DOWN, 5),
+    hold(RIGHT | UP, 39),
+    hold(RIGHT | DOWN, 6),
+    hold(RIGHT | UP, 10),
+    hold(RIGHT | DOWN, 50),
+    hold(RIGHT | UP, 66),
+    hold(RIGHT, 26),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 39),
+    hold(RIGHT, 145),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 42),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 39),
+    hold(RIGHT, 50),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 42),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 39),
+    hold(RIGHT, 88),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 42),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 39),
+    hold(RIGHT, 46),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 45),
+    hold(RIGHT, 16),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 39),
+    hold(RIGHT, 639),
+]
+
+/// The first level with every snack (100%): onto the ledge by a double jump, off the second pit's
+/// edge and out, a double jump at the top of the slide-jump's arc, down to the lake's floor under
+/// the caiman, and a jump and double jump high off the last mesa; without a death.
+pub const LEVEL_FULL: [Hold; 145] = [
+    hold(RIGHT, 97),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 42),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 39),
+    hold(RIGHT, 165),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 42),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 39),
+    hold(RIGHT, 244),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 45),
+    hold(RIGHT, 97),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 39),
+    hold(RIGHT, 108),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 45),
+    hold(RIGHT, 21),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 45),
+    hold(RIGHT, 126),
+    hold(RIGHT | DOWN, 228),
+    hold(RIGHT | DOWN | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 54),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 39),
+    hold(RIGHT, 53),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 45),
+    hold(RIGHT, 121),
+    hold(RIGHT | DOWN, 15),
+    hold(RIGHT | UP, 10),
+    hold(RIGHT | DOWN, 6),
+    hold(RIGHT | UP, 42),
+    hold(RIGHT | DOWN, 2),
+    hold(RIGHT | UP, 10),
+    hold(RIGHT | DOWN, 50),
+    hold(RIGHT | UP, 10),
+    hold(RIGHT | DOWN, 4),
+    hold(RIGHT | UP, 1),
+    hold(LEFT | DOWN, 23),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT, 80),
+    hold(RIGHT | UP, 57),
+    hold(RIGHT, 1),
+    hold(RIGHT | UP, 75),
+    hold(RIGHT, 26),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 39),
+    hold(RIGHT, 145),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 42),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 39),
+    hold(RIGHT, 68),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 42),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 39),
+    hold(RIGHT, 77),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 42),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 39),
+    hold(RIGHT, 95),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 42),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 39),
+    hold(RIGHT, 13),
+    hold(RIGHT | JUMP, 5),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 44),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 51),
+    hold(RIGHT, 449),
+]
+
+@test
+fn the_level_is_finished_without_a_death_and_with_every_snack() {
+    borrow c = course(LEVEL)
+    let any = play(LEVEL, LEVEL_ANY)
+    let all = play(LEVEL, LEVEL_FULL)
+    print(f"the level: any% {any.finished} ticks, 100% {all.finished} ticks")
+    assert(any.finished == 3451 && any.deaths == 0, "the any% run's time moved")
+    assert(all.finished == 3546 && all.deaths == 0, "the 100% run's time moved")
+    assert(all.snacks == (1 << c.snacks.len()) - 1, "every snack")
+    assert(any.checkpoint == c.checkpoints.len() && all.checkpoint == c.checkpoints.len())
+}
+
+/// A world on the level with the capybara at `at`, moving at `vel`, in the air.
+fn aloft(at: vec2, vel: vec2) -> World {
+    var w = world(LEVEL)
+    w.body = spawn(at)
+    w.body.mode = Mode::Air
+    w.body.vel = vel
+    w
+}
+
+@test
+fn stomping_a_goose_knocks_it_out_bounces_and_gives_the_double_jump_back() {
+    // The first goose starts at (20, 0.45): fall onto its back, its double jump spent.
+    var w = aloft(vec2(19.95, 1.27), vec2(0.0, -6.0))
+    w.body.jumps = 0
+    step(mut w, Pad { bits: JUMP })
+    assert(!w.foes[0].alive && w.deaths == 0, "knocked out")
+    assert(
+        w.body.vel.y > FEEL.launch - 1.0 && w.body.jumps == FEEL.air_jumps,
+        "a bounce, as a jump",
+    )
+    var tap = aloft(vec2(19.95, 1.27), vec2(0.0, -6.0))
+    step(mut tap, Pad { bits: 0 })
+    assert(abs(tap.body.vel.y - FEEL.stomp) < 1.0e-3, "lower without jump held")
+}
+
+@test
+fn sliding_into_a_goose_bowls_it_over_and_running_into_one_sends_you_back() {
+    var slide = world(LEVEL)
+    slide.body = spawn(vec2(18.5, RADIUS))
+    slide.body.mode = Mode::Slide
+    slide.body.speed = 9.0
+    for _ in 0..30 {
+        step(mut slide, Pad { bits: DOWN })
+    }
+    assert(!slide.foes[0].alive && slide.deaths == 0, "bowled over")
+    var run = world(LEVEL)
+    run.body = spawn(vec2(18.5, RADIUS))
+    run.body.speed = 9.0
+    for _ in 0..30 {
+        step(mut run, Pad { bits: RIGHT })
+    }
+    assert(
+        run.deaths == 1 && run.foes[0].alive && run.grace > 0,
+        "back to the start, the goose too",
+    )
+    assert(run.body.at.x < 4.0)
+}
+
+@test
+fn a_yuzu_takes_one_hit_and_the_next_sends_you_back() {
+    var w = world(LEVEL)
+    w.yuzu = true
+    w.body = spawn(vec2(18.5, RADIUS))
+    w.body.speed = 9.0
+    step(mut w, Pad { bits: RIGHT })
+    for _ in 0..10 {
+        step(mut w, Pad { bits: RIGHT })
+    }
+    assert(!w.yuzu && w.deaths == 0 && w.grace > 0, "the yuzu took it")
+    // Once the grace is over, the next hit counts.
+    w.grace = 0
+    w.foes[0].at = w.body.at + vec2(0.3, 0.1)
+    step(mut w, Pad { bits: 0 })
+    assert(w.deaths == 1)
+}
+
+@test
+fn a_checkpoint_reached_is_where_a_fall_comes_back_to() {
+    borrow c = course(LEVEL)
+    var w = world(LEVEL)
+    // At the first checkpoint's flag, then over the edge of the steps into nothing.
+    w.body = spawn(c.checkpoints[0] + vec2(0.0, RADIUS))
+    step(mut w, Pad { bits: 0 })
+    assert(w.checkpoint == 1)
+    w.body = spawn(vec2(130.0, -10.0))
+    w.body.mode = Mode::Air
+    for _ in 0..60 {
+        step(mut w, Pad { bits: 0 })
+    }
+    assert(w.deaths == 1 && distance(w.body.at, c.checkpoints[0] + vec2(0.0, RADIUS)) < 0.5)
+}
+
+@test
+fn a_caimans_snout_bounces_and_its_side_hurts() {
+    // The first caiman starts at (180, -5), 2 m long: onto its back from above, then into its side.
+    var w = world(LEVEL)
+    w.body = spawn(vec2(180.0, -4.4))
+    w.body.mode = Mode::Swim
+    w.body.vel = vec2(0.0, -4.0)
+    step(mut w, Pad { bits: 0 })
+    assert(w.deaths == 0 && w.foes[5].alive && w.body.vel.y > 0.0, "a bounce off its back")
+    var side = world(LEVEL)
+    side.body = spawn(vec2(178.4, -5.0))
+    side.body.mode = Mode::Swim
+    side.body.vel = vec2(6.0, 0.0)
+    for _ in 0..10 {
+        step(mut side, Pad { bits: RIGHT })
+    }
+    assert(side.deaths == 1, "its side hurts")
 }
 
 // ---- contracts ---------------------------------------------------------------------------------
@@ -166,7 +510,7 @@ fn walking_off_a_sharp_edge_leaves_at_the_edge_and_falls() {
         lowest = min(lowest, w.body.at.y)
     }
     assert(left >= 36.0 && left < 36.0 + 0.05, "it leaves where its middle passes the edge")
-    assert(lowest < -1.0 && w.falls == 0, "and rolls off the corner into the pit")
+    assert(lowest < -1.0 && w.deaths == 0, "and rolls off the corner into the pit")
 }
 
 /// The lab's 29° slope, at x 74: its point, tangent (down to the right) and normal.

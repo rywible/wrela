@@ -82,6 +82,9 @@ pub fn ground_mesh(c: Course) -> Vec<vec4> {
 /// The lab's ground, built with the game.
 pub const LAB_GROUND: Vec<vec4> = ground_mesh(course::LAB)
 
+/// The first level's ground, built with the game.
+pub const LEVEL_GROUND: Vec<vec4> = ground_mesh(course::LEVEL)
+
 /// A surface's point, normal and colour, from vertex to fragment, and its pattern: 0 for none
 /// (a box), else its material + 1.
 pub struct Surfel: Copy {
@@ -158,8 +161,8 @@ pub fn hills_mesh(from: f32, to: f32) -> Vec<vec4> {
     out
 }
 
-/// The lab's hills, from well left of its start to well right of its goal.
-pub const LAB_HILLS: Vec<vec4> = hills_mesh(from: -120.0, to: 260.0)
+/// The hills, from well left of a course's start to well right of the level's goal.
+pub const LAB_HILLS: Vec<vec4> = hills_mesh(from: -120.0, to: 460.0)
 
 @vertex
 pub fn ground_vertex(v: VertexIndex, verts: [vec4], eye: Eye) -> Surfel {
@@ -310,6 +313,8 @@ pub fn water_mesh(c: Course) -> Vec<vec4> {
 }
 
 pub const LAB_WATER: Vec<vec4> = water_mesh(course::LAB)
+
+pub const LEVEL_WATER: Vec<vec4> = water_mesh(course::LEVEL)
 
 pub struct Wet: Copy {
     pub clip: ClipPosition,

@@ -1,6 +1,8 @@
-// A course: its ground's pieces, its water, where the capybara starts and where the goal is, and
-// the contacts a circle makes with its ground. The lab's course is the only one so far.
+// A course: its ground's pieces, its water, where the capybara starts and where the goal is, its
+// foes, snacks, yuzus and checkpoints, and the contacts a circle makes with its ground. Two
+// courses: the movement lab (course 0, the movement's test bed) and the first level (course 1).
 
+use foes::{Kind, MAX_FOES, Spawn}
 use ground::{Corner, Piece, build_chain, corner}
 
 /// A body of water: a rectangle whose top is its flat surface, set inside solid ground that makes
@@ -33,6 +35,12 @@ pub struct Course: Clone {
     pub goal_hi: vec2,
     /// Below this height the capybara has fallen out of the course (m).
     pub floor: f32,
+    /// The foes, where they start; the snacks and the yuzus, where they sit; and the
+    /// checkpoints, each a flag's foot on the ground, in the order they're reached.
+    pub foes: Vec<Spawn>,
+    pub snacks: Vec<vec2>,
+    pub yuzus: Vec<vec2>,
+    pub checkpoints: Vec<vec2>,
 }
 
 /// A circle's contact with the ground: the piece, its nearest point, the unit normal from that
@@ -76,7 +84,80 @@ impl Course {
             goal_lo,
             goal_hi,
             floor,
+            foes: Vec::new(),
+            snacks: Vec::new(),
+            yuzus: Vec::new(),
+            checkpoints: Vec::new(),
         }
+    }
+
+    /// Adds a foe of kind `kind` at `at`, patrolling `range` either side.
+    pub fn foe(take self, kind: Kind, at: vec2, range: f32) -> Course {
+        var c = take self
+        c.foes.push(Spawn { kind, at, range })
+        assert(c.foes.len() <= MAX_FOES, "too many foes")
+        c
+    }
+
+    /// Adds a snack at `at`.
+    pub fn snack(take self, at: vec2) -> Course {
+        var c = take self
+        c.snacks.push(at)
+        assert(c.snacks.len() <= 32, "too many snacks")
+        c
+    }
+
+    /// Adds a yuzu at `at`.
+    pub fn yuzu(take self, at: vec2) -> Course {
+        var c = take self
+        c.yuzus.push(at)
+        assert(c.yuzus.len() <= 32, "too many yuzus")
+        c
+    }
+
+    /// Adds a checkpoint: its flag's foot at `at`.
+    pub fn checkpoint(take self, at: vec2) -> Course {
+        var c = take self
+        c.checkpoints.push(at)
+        c
+    }
+
+    /// The top of the ground under the vertical through `x`, at or below `below` (and a little
+    /// above it): the highest point there of any piece, exactly. None if there's none.
+    pub fn ground_at(self, x: f32, below: f32) -> Option<f32> {
+        var best: Option<f32> = None
+        let limit = below + 0.25
+        for p in self.pieces {
+            if x < p.lo.x || x > p.hi.x {
+                continue
+            }
+            var ys: [f32; 2] = [-1.0e9, -1.0e9]
+            if p.is_arc() {
+                let dx = x - p.centre.x
+                if abs(dx) <= p.radius {
+                    let dy = sqrt(p.radius * p.radius - dx * dx)
+                    ys = [p.centre.y + dy, p.centre.y - dy]
+                }
+            } else if p.b.x != p.a.x {
+                ys[0] = p.a.y + (p.b.y - p.a.y) * (x - p.a.x) / (p.b.x - p.a.x)
+            }
+            for y in ys {
+                if y < -1.0e8 || y > limit {
+                    continue
+                }
+                // On the piece itself, not its circle's other side, and facing up.
+                let q = vec2(x, y)
+                let near = p.nearest(q)
+                if distance(p.point(near.u), q) > 1.0e-3 || p.normal(near.u).y <= 0.0 {
+                    continue
+                }
+                best = match best {
+                    Some(b) => Some(max(b, y)),
+                    None => Some(y),
+                }
+            }
+        }
+        best
     }
 
     fn chain(take self, corners: [Corner], closed: bool) -> Course {
@@ -182,12 +263,12 @@ impl Course {
 // ---- the lab -----------------------------------------------------------------------------------
 
 /// The courses, by number.
-pub const COURSES: u32 = 1
+pub const COURSES: u32 = 2
 
-/// Course `i`.
+/// Course `i`: 0 the lab, 1 the first level.
 pub fn course(i: u32) -> borrow Course {
     assert(i < COURSES, "a course that doesn't exist")
-    LAB
+    if i == 0 { LAB } else { LEVEL }
 }
 
 /// The movement lab: from the left, a runway with two one-way ledges above it (2 m and 3.5 m
@@ -256,6 +337,143 @@ fn lab() -> Course {
         .water(vec2(94.0, -6.5), vec2(133.0, 0.0))
         .water(vec2(29.5, -0.3), vec2(34.5, -0.05))
         .water(vec2(78.5, -2.0), vec2(84.5, -1.8))
+}
+
+// ---- the first level -----------------------------------------------------------------------------
+
+/// The first level (a working name: the zoo's entrance), built round the movement: speed is the
+/// fun (design.md), so its hazards ask for speed and its shortcuts reward it. Four sections, a
+/// checkpoint after each of the first three:
+///
+/// 1. The gates (0 to 75 m): a goose on the runway to stomp or jump; a ledge 3.2 m up that only
+///    a double jump reaches, a snack on it; a 3 m pit; a puddle in a dip; a hill, a goose past
+///    it; a 4.5 m pit, a snack hanging inside it for the bold.
+/// 2. The big slide (80 to 160 m): steps under a pigeon; a deck with a yuzu; a 30° ramp down into
+///    a valley with a puddle and up to a lip over a 12 m pit. A slide-jump off the lip clears it,
+///    past a snack high over its middle; two one-way ledges in the pit are the slow way. Two geese
+///    on the landing, to bowl over sliding.
+/// 3. The lake (160 to 225 m): down a bank into water 41 m across and 8.5 m deep, a caiman at
+///    mid-depth and one by the floor guarding a snack; its far wall stands 3 m above the water,
+///    so out is a breach and a double jump; a low pigeon on the deck past it.
+/// 4. The gauntlet (225 to 330 m): mesas over pits, a goose on the first, a puddle on the second
+///    for the speed to clear an 8 m gap, two geese on the third, a pigeon over the climb to a
+///    tall fourth with a snack high above it, then a last hill to the goal.
+pub const LEVEL: Course = level()
+
+fn level() -> Course {
+    Course::new(
+        start: vec2(2.0, 0.35),
+        goal_lo: vec2(322.0, 1.0),
+        goal_hi: vec2(324.0, 6.0),
+        floor: -12.0,
+    )
+        .solid(
+            [
+                corner(vec2(-6.0, -20.0)),
+                corner(vec2(-6.0, 10.0)),
+                corner(vec2(-4.0, 10.0)),
+                corner(vec2(-4.0, 0.0), 0.5),
+                // 1. The gates: the runway, the first pit.
+                corner(vec2(28.0, 0.0)),
+                corner(vec2(28.0, -16.0)),
+                corner(vec2(31.0, -16.0)),
+                corner(vec2(31.0, 0.0)),
+                // The puddle's dip.
+                corner(vec2(34.0, 0.0), 1.5),
+                corner(vec2(35.5, -0.3), 1.5),
+                corner(vec2(38.5, -0.3), 1.5),
+                corner(vec2(40.0, 0.0), 1.5),
+                // The hill.
+                corner(vec2(44.0, 0.0), 4.0),
+                corner(vec2(51.0, 3.0), 5.0),
+                corner(vec2(58.0, 0.0), 4.0),
+                // The second pit.
+                corner(vec2(66.0, 0.0)),
+                corner(vec2(66.0, -16.0)),
+                corner(vec2(70.5, -16.0)),
+                corner(vec2(70.5, 0.0)),
+                // 2. The steps and the deck.
+                corner(vec2(80.0, 0.0)),
+                corner(vec2(80.0, 1.5)),
+                corner(vec2(84.0, 1.5)),
+                corner(vec2(84.0, 3.0)),
+                // The big slide: down into the valley, up to the lip.
+                corner(vec2(96.0, 3.0), 2.0),
+                corner(vec2(110.0, -5.0), 7.0),
+                corner(vec2(120.0, -5.0), 6.0),
+                corner(vec2(128.0, -3.0)),
+                // The big pit, and the landing.
+                corner(vec2(128.0, -16.0)),
+                corner(vec2(140.0, -16.0)),
+                corner(vec2(140.0, -4.0)),
+                corner(vec2(160.0, -4.0), 2.0),
+                // 3. Up to the lake's bank, down into it, across, and up its far wall.
+                corner(vec2(164.0, -1.0), 2.0),
+                corner(vec2(172.0, -10.0), 7.0),
+                corner(vec2(205.0, -10.0), 6.0),
+                corner(vec2(209.0, 1.5), 1.5),
+                // 4. The gauntlet: the deck's end, then mesas over pits.
+                corner(vec2(226.0, 1.5)),
+                corner(vec2(226.0, -16.0)),
+                corner(vec2(230.0, -16.0)),
+                corner(vec2(230.0, 2.5)),
+                corner(vec2(236.0, 2.5)),
+                corner(vec2(236.0, -16.0)),
+                corner(vec2(241.0, -16.0)),
+                corner(vec2(241.0, 1.0)),
+                corner(vec2(242.0, 1.0), 1.0),
+                corner(vec2(243.0, 0.7), 1.0),
+                corner(vec2(247.0, 0.7), 1.0),
+                corner(vec2(248.0, 1.0), 1.0),
+                corner(vec2(250.0, 1.0)),
+                corner(vec2(250.0, -16.0)),
+                corner(vec2(258.0, -16.0)),
+                corner(vec2(258.0, 0.0)),
+                corner(vec2(270.0, 0.0)),
+                corner(vec2(270.0, -16.0)),
+                corner(vec2(275.0, -16.0)),
+                corner(vec2(275.0, 4.0)),
+                corner(vec2(283.0, 4.0), 3.0),
+                corner(vec2(290.0, 1.0), 4.0),
+                corner(vec2(300.0, 1.0), 4.0),
+                corner(vec2(306.0, 4.0), 4.0),
+                corner(vec2(312.0, 1.0), 4.0),
+                // The goal's deck and the wall at the end.
+                corner(vec2(328.0, 1.0)),
+                corner(vec2(328.0, 14.0)),
+                corner(vec2(330.0, 14.0)),
+                corner(vec2(330.0, -20.0)),
+            ],
+        )
+        .ledge([corner(vec2(10.0, 3.2)), corner(vec2(14.0, 3.2))])
+        .ledge([corner(vec2(130.5, -5.0)), corner(vec2(132.5, -5.0))])
+        .ledge([corner(vec2(134.5, -5.0)), corner(vec2(136.5, -5.0))])
+        .water(vec2(34.0, -0.3), vec2(40.0, -0.05))
+        .water(vec2(109.0, -5.0), vec2(121.0, -4.75))
+        .water(vec2(164.0, -10.0), vec2(210.0, -1.5))
+        .water(vec2(242.0, 0.7), vec2(248.0, 0.95))
+        .foe(Kind::Goose, vec2(20.0, 0.45), 4.0)
+        .foe(Kind::Goose, vec2(61.0, 0.45), 2.5)
+        .foe(Kind::Pigeon, vec2(82.0, 5.0), 2.5)
+        .foe(Kind::Goose, vec2(146.0, -3.55), 3.0)
+        .foe(Kind::Goose, vec2(152.0, -3.55), 3.0)
+        .foe(Kind::Caiman, vec2(180.0, -5.0), 6.0)
+        .foe(Kind::Caiman, vec2(195.0, -8.0), 7.0)
+        .foe(Kind::Pigeon, vec2(217.0, 3.0), 4.0)
+        .foe(Kind::Goose, vec2(233.0, 2.95), 2.0)
+        .foe(Kind::Goose, vec2(262.0, 0.45), 2.5)
+        .foe(Kind::Goose, vec2(267.0, 0.45), 2.0)
+        .foe(Kind::Pigeon, vec2(272.5, 5.5), 2.0)
+        .snack(vec2(12.0, 3.9))
+        .snack(vec2(67.6, -1.0))
+        .snack(vec2(137.0, 3.3))
+        .snack(vec2(200.0, -9.3))
+        .snack(vec2(285.5, 9.0))
+        .yuzu(vec2(90.0, 3.6))
+        .yuzu(vec2(222.0, 2.2))
+        .checkpoint(vec2(74.0, 0.0))
+        .checkpoint(vec2(158.0, -4.0))
+        .checkpoint(vec2(224.0, 1.5))
 }
 
 // ---- tests -------------------------------------------------------------------------------------

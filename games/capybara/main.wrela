@@ -1,11 +1,13 @@
-// The capybara game (a working title; design.md is its brief). For now it is the movement lab:
-// the sim ticks 120 times a second on the ticker's thread (`engine::run`), and each frame draws
-// the snapshots round its time as a blockout: the course's slab, the capybara and the goal as
-// boxes, the water over them, and a line of text with the clock and the speed.
+// The capybara game (a working title; design.md is its brief): the first level, and the movement
+// lab beside it. The sim ticks 120 times a second on the ticker's thread (`engine::run`), and each
+// frame draws the snapshots round its time as a blockout: the course's slab, the capybara, its
+// foes, the snacks, yuzus, checkpoints and goal as boxes, the water over them, and a line of text
+// with the clock, the snacks and the speed.
 //
-// Keys: the arrows or W A S D to move (down slides or crouches; in water the eight directions
-// steer a stroke), Space, Z or K to jump (again in the air for the double jump) and to stroke, R
-// to restart. A controller: the stick or pad, South or East to jump, Start to restart.
+// Keys: the arrows or W A S D to move (down slides or crouches; in water up and down swim, and
+// in turn dolphin kick), Space, Z or K to jump (again in the air for the double jump; in water,
+// a kick), R to restart, Tab for the other course (the level or the lab). A controller: the
+// stick or pad, South or East to jump, Start to restart, Select for the other course.
 //
 // For an agent: `wrela-host <build> --frames n --input script.json --png out.png` draws frame n
 // on the GPU (scripts.wrela has scripts), and `capybara` exports the capybara's state for `wrela
@@ -13,33 +15,36 @@
 
 use body::Mode
 use camera::{Camera, DISTANCE, FOVY, camera, follow}
-use course::LAB
+use course::{Course, course}
 use engine::present::Snapshots
 use engine::run::run
 use feel::HZ
 use feel::FEEL
 use look::{
-    LAB_GROUND, LAB_HILLS, LAB_WATER, Eye, Part, cel, ground_vertex, part_vertex, water,
-    water_vertex,
+    LAB_GROUND, LAB_HILLS, LAB_WATER, LEVEL_GROUND, LEVEL_WATER, Eye, Part, cel, ground_vertex,
+    part_vertex, water, water_vertex,
 }
 use std::gpu::{
     Cull, DepthTexture, GpuBuffer, begin_screen_pass_with_depth, buffer, buffer_of, depth_texture,
     draw, write,
 }
 use std::math::{PI, TAU}
-use std::transform::{look_at, perspective, rotate_z, scale, translate}
+use std::transform::{look_at, perspective, rotate_x, rotate_y, rotate_z, scale, translate}
 use ui::draw::{DrawList, Renderer}
 use ui::text::{Face, Fonts}
-use world::{Snap, present, tick, world}
+use world::{LEVEL, Snap, present, tick, world}
 
-/// The most boxes drawn: the capybara's and the goal's.
-const PARTS: u32 = 24
+/// The most boxes drawn: the capybara's, the foes', the things' and the goal's.
+const PARTS: u32 = 256
 
 pub struct Lab {
     snaps: Snapshots<Snap>,
-    ground: GpuBuffer<vec4>,
+    /// Each course's ground and water (the lab's, the level's), and the hills behind both.
+    grounds: [GpuBuffer<vec4>; 2],
+    waters: [GpuBuffer<vec4>; 2],
     hills: GpuBuffer<vec4>,
-    water: GpuBuffer<vec4>,
+    /// The course the camera was last following.
+    shown: u32,
     parts: GpuBuffer<Part>,
     depth: DepthTexture,
     width: u32,
@@ -54,19 +59,20 @@ pub struct Lab {
 }
 
 pub fn init() -> Lab {
-    let latest = run(world(0), hz: HZ, step: tick, present: present)
+    let latest = run(world(LEVEL), hz: HZ, step: tick, present: present)
     let fonts = Fonts::load()
     let renderer = Renderer::new(fonts)
     Lab {
         snaps: Snapshots::new(take latest, hz: HZ),
-        ground: buffer_of(LAB_GROUND),
+        grounds: [buffer_of(LAB_GROUND), buffer_of(LEVEL_GROUND)],
+        waters: [buffer_of(LAB_WATER), buffer_of(LEVEL_WATER)],
         hills: buffer_of(LAB_HILLS),
-        water: buffer_of(LAB_WATER),
+        shown: LEVEL,
         parts: buffer(PARTS),
         depth: depth_texture(width: 1, height: 1),
         width: 0,
         height: 0,
-        camera: camera(LAB.start),
+        camera: camera(course(LEVEL).start),
         stride: 0.0,
         last: None,
         fonts,
@@ -142,6 +148,10 @@ fn capybara_parts(out: mut Vec<Part>, s: Snap, stride: f32) {
         ),
     )
     out.push(part(frame, vec3(0.66, 0.04, 0.0), vec3(0.07, 0.11, 0.14), SNOUT))
+    if s.yuzu == 1 {
+        // The yuzu on its head, as capybaras in hot springs wear them.
+        out.push(part(frame, vec3(0.42, 0.38, 0.0), vec3(0.11, 0.11, 0.11), YUZU))
+    }
     for z in [-0.11, 0.11] {
         out.push(part(frame, vec3(0.38, 0.3, z), vec3(0.04, 0.04, 0.03), DARK))
         out.push(part(frame, vec3(0.58, 0.16, z * 1.6), vec3(0.025, 0.025, 0.012), DARK))
@@ -168,11 +178,93 @@ fn capybara_parts(out: mut Vec<Part>, s: Snap, stride: f32) {
 }
 
 /// The goal: a post and its flag, at the goal box's left side, standing on its floor.
-fn goal(out: mut Vec<Part>) {
-    let base = vec3(LAB.goal_lo.x + 0.4, LAB.goal_lo.y, 0.0)
+fn goal(out: mut Vec<Part>, c: Course) {
+    let base = vec3(c.goal_lo.x + 0.4, c.goal_lo.y, 0.0)
     let frame = translate(base)
     out.push(part(frame, vec3(0.0, 1.6, 0.0), vec3(0.06, 1.6, 0.06), POST))
     out.push(part(frame, vec3(0.45, 2.85, 0.0), vec3(0.4, 0.28, 0.03), FLAG))
+}
+
+const WHITE = vec4(0.92, 0.9, 0.86, 1.0)
+const BEAK = vec4(0.95, 0.55, 0.12, 1.0)
+const GREY = vec4(0.52, 0.55, 0.6, 1.0)
+const CAIMAN = vec4(0.25, 0.36, 0.2, 1.0)
+const SNACK = vec4(0.95, 0.5, 0.1, 1.0)
+const LEAF = vec4(0.3, 0.6, 0.2, 1.0)
+const YUZU = vec4(0.98, 0.84, 0.2, 1.0)
+const FLAG_DONE = vec4(0.35, 0.75, 0.35, 1.0)
+const FLAG_AHEAD = vec4(0.6, 0.6, 0.62, 1.0)
+
+/// The foes as boxes: a goose (a white body, a neck, a head and an orange beak), a pigeon (grey,
+/// its wings flapping), a caiman (long and green, its snout forward). Knocked out, one tumbles up
+/// and away for half a second.
+fn foes_parts(out: mut Vec<Part>, s: Snap, time: f32) {
+    for f in s.foes {
+        let kind = u32(abs(f.z) + 0.5)
+        if kind == 0 {
+            continue
+        }
+        let knocked = f.z < 0.0
+        let since = if knocked { f.w } else { 0.0 }
+        if knocked && since > 60.0 {
+            continue
+        }
+        let dir = if knocked { 1.0 } else { f.w }
+        let t = since / f32(HZ)
+        let tumble = translate(vec3(0.0, 6.0 * t - 20.0 * t * t, 0.0)) * rotate_z(since * 0.25)
+        let frame = translate(vec3(f.xy, 0.0)) * tumble * scale(vec3(dir, 1.0, 1.0))
+        if kind == 1 {
+            out.push(part(frame, vec3(0.0, -0.08, 0.0), vec3(0.42, 0.24, 0.24), WHITE))
+            out.push(part(frame, vec3(0.27, 0.25, 0.0), vec3(0.07, 0.22, 0.07), WHITE))
+            out.push(part(frame, vec3(0.34, 0.47, 0.0), vec3(0.13, 0.09, 0.09), WHITE))
+            out.push(part(frame, vec3(0.5, 0.45, 0.0), vec3(0.08, 0.03, 0.05), BEAK))
+            let step = sin(time * 14.0) * 0.08
+            out.push(part(frame, vec3(-0.08 + step, -0.38, 0.1), vec3(0.03, 0.09, 0.03), BEAK))
+            out.push(part(frame, vec3(-0.08 - step, -0.38, -0.1), vec3(0.03, 0.09, 0.03), BEAK))
+        } else if kind == 2 {
+            out.push(part(frame, vec3(0.0, 0.0, 0.0), vec3(0.3, 0.17, 0.17), GREY))
+            out.push(part(frame, vec3(0.3, 0.1, 0.0), vec3(0.11, 0.1, 0.1), GREY))
+            out.push(part(frame, vec3(0.43, 0.08, 0.0), vec3(0.05, 0.03, 0.03), BEAK))
+            let flap = sin(time * 22.0) * 0.6
+            for z in [-1.0, 1.0] {
+                let wing = frame * translate(vec3(0.0, 0.1, 0.17 * z)) * rotate_x(flap * z)
+                out.push(part(wing, vec3(0.0, 0.0, 0.25 * z), vec3(0.18, 0.02, 0.25), GREY))
+            }
+        } else {
+            out.push(part(frame, vec3(0.0, 0.0, 0.0), vec3(0.9, 0.2, 0.3), CAIMAN))
+            out.push(part(frame, vec3(1.15, -0.05, 0.0), vec3(0.35, 0.09, 0.2), CAIMAN))
+            out.push(part(frame, vec3(-1.15, -0.05, 0.0), vec3(0.4, 0.08, 0.12), CAIMAN))
+            for z in [-0.15, 0.15] {
+                out.push(part(frame, vec3(0.8, 0.22, z), vec3(0.06, 0.05, 0.05), DARK))
+            }
+        }
+    }
+}
+
+/// The snacks still to find (little carrots, bobbing), the yuzus still to take, and each
+/// checkpoint's flag: green once reached, grey ahead.
+fn things_parts(out: mut Vec<Part>, s: Snap, c: Course, time: f32) {
+    let bob = vec3(0.0, 0.08 * sin(time * 3.0), 0.0)
+    for i in 0..c.snacks.len() {
+        if s.snacks & (1 << i) == 0 {
+            let frame = translate(vec3(c.snacks[i], 0.0) + bob) * rotate_y(time * 2.0)
+            out.push(part(frame, vec3(0.0, 0.0, 0.0), vec3(0.09, 0.25, 0.09), SNACK))
+            out.push(part(frame, vec3(0.0, 0.3, 0.0), vec3(0.06, 0.08, 0.06), LEAF))
+        }
+    }
+    for i in 0..c.yuzus.len() {
+        if s.yuzus & (1 << i) == 0 {
+            let frame = translate(vec3(c.yuzus[i], 0.0) + bob) * rotate_y(time)
+            out.push(part(frame, vec3(0.0, 0.0, 0.0), vec3(0.2, 0.2, 0.2), YUZU))
+            out.push(part(frame, vec3(0.0, 0.24, 0.0), vec3(0.06, 0.05, 0.03), LEAF))
+        }
+    }
+    for i in 0..c.checkpoints.len() {
+        let frame = translate(vec3(c.checkpoints[i], 0.0))
+        let colour = if s.checkpoint > i { FLAG_DONE } else { FLAG_AHEAD }
+        out.push(part(frame, vec3(0.0, 1.2, 0.0), vec3(0.05, 1.2, 0.05), POST))
+        out.push(part(frame, vec3(0.35, 2.1, 0.0), vec3(0.3, 0.22, 0.03), colour))
+    }
 }
 
 // ---- the frame ---------------------------------------------------------------------------------
@@ -188,6 +280,11 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     s.last = Some(time)
     s.snaps.update()
     let snap = drawn(s.snaps, time)
+    borrow c = course(snap.course)
+    if snap.course != s.shown {
+        s.camera = camera(c.start)
+        s.shown = snap.course
+    }
     follow(mut s.camera, snap, dt)
     let mode = Mode::from_u32(snap.mode)
     if mode == Some(Mode::Swim) {
@@ -210,8 +307,13 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         sun: normalize(SUN),
     }
     var parts: Vec<Part> = Vec::new()
-    capybara_parts(mut parts, snap, s.stride)
-    goal(mut parts)
+    // Hurt and not to be hurt again for a moment, it blinks.
+    if snap.grace == 0 || (snap.grace / 6) % 2 == 0 {
+        capybara_parts(mut parts, snap, s.stride)
+    }
+    foes_parts(mut parts, snap, time)
+    things_parts(mut parts, snap, c, time)
+    goal(mut parts, c)
     write(mut s.parts, 0, parts)
     let screen = vec2(f32(width), f32(height))
     hud(mut s, snap, screen)
@@ -227,9 +329,9 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     )
     draw(
         pass,
-        ground_vertex.bind(verts: s.ground.items(), eye: eye),
+        ground_vertex.bind(verts: s.grounds[snap.course].items(), eye: eye),
         cel.bind(eye: eye),
-        vertices: LAB_GROUND.len() / 2,
+        vertices: if snap.course == LEVEL { LEVEL_GROUND.len() / 2 } else { LAB_GROUND.len() / 2 },
         cull: Cull::None,
     )
     draw(
@@ -242,9 +344,9 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     )
     draw(
         pass,
-        water_vertex.bind(verts: s.water.items(), eye: eye),
+        water_vertex.bind(verts: s.waters[snap.course].items(), eye: eye),
         water,
-        vertices: LAB_WATER.len(),
+        vertices: if snap.course == LEVEL { LEVEL_WATER.len() } else { LAB_WATER.len() },
         cull: Cull::None,
     )
     s.renderer.draw(pass, screen)
@@ -265,7 +367,22 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2) {
     let pad = size
     let ink = vec4(0.08, 0.1, 0.14, 1.0)
     let soft = vec4(0.08, 0.1, 0.14, 0.7)
-    let _ = s.list.text(s.fonts, Face::Sans, "R: restart", size, vec2(pad), ink)
+    borrow c = course(snap.course)
+    let name = if snap.course == LEVEL { "THE ZOO'S ENTRANCE" } else { "THE LAB" }
+    let _ = s.list.text(
+        s.fonts,
+        Face::Sans,
+        f"{name}   R: restart   Tab: the other course".as_str(),
+        size,
+        vec2(pad),
+        ink,
+    )
+    if c.snacks.len() > 0 {
+        let found = (snap.snacks & ((1 << c.snacks.len()) - 1)).count_ones()
+        let yuzu = if snap.yuzu == 1 { "   YUZU" } else { "" }
+        let things = f"snacks {found}/{c.snacks.len()}   back {snap.deaths}{yuzu}"
+        let _ = s.list.text(s.fonts, Face::Mono, things.as_str(), size, vec2(pad, pad * 2.4), ink)
+    }
     let clock = seconds(if snap.finished > 0 { snap.finished } else { snap.ticks })
     let time = if snap.finished > 0 {
         f"GOAL  {clock} s  ({snap.finished} ticks)"
@@ -286,7 +403,7 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2) {
         "   jump to kick, up to swim up, up and down in turn to dolphin kick"
     } else { "" }
     let hint = if snap.wet > 0 && mode != "swim" { "   wet: faster" } else { hint }
-    let line = f"{mode}   {speed:.1} m/s   falls {snap.falls}{hint}"
+    let line = f"{mode}   {speed:.1} m/s{hint}"
     let _ = s.list.text(
         s.fonts,
         Face::Mono,
@@ -306,11 +423,11 @@ pub fn capybara(s: mut Lab) -> vec4 {
 
 // ---- tests -------------------------------------------------------------------------------------
 
-/// Three seconds of the run script on the hardware GPU: the lab draws, and the sim, ticking in
-/// lockstep, has carried the capybara along the runway.
+/// Three seconds of the run script on the hardware GPU: the level draws, with its foes and things,
+/// and the sim, ticking in lockstep, plays it.
 @test(frames: 180, gpu: true, input: scripts::RUN)
-fn the_lab_draws_and_the_run_script_moves_the_capybara(s: Lab) {
+fn the_level_draws_and_its_sim_runs(s: Lab) {
     let n = s.snaps.newest()
     assert(n.ticks >= 358, "the ticker runs two ticks a frame")
-    assert(n.snap.at.x > 10.0 && n.snap.falls == 0, "the capybara ran right")
+    assert(n.snap.course == LEVEL && n.snap.ticks >= 358, "the level, its clock running")
 }

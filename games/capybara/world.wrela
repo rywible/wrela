@@ -1,48 +1,103 @@
-// The sim's world: the course being played, the capybara, the controls, and the attempt's clock
-// in ticks (design.md, "Timing"). The ticker steps it from the host's records (`tick`); tests and
-// searches step it from pads (`step`). It holds no course: a course is a constant, named by its
-// number, so a world is a small value to clone, hash and compare.
+// The sim's world: the course being played, the capybara, its foes, what it has found, the
+// controls, and the attempt's clock in ticks (design.md, "Timing"). The ticker steps it from the
+// host's records (`tick`); tests and searches step it from pads (`step`). It holds no course: a
+// course is a constant, named by its number, so a world is a small value to clone, hash and
+// compare.
+//
+// No lives (design.md, "Rules"): hurt or fallen out, the capybara goes back to its last
+// checkpoint, the foes as they started, the clock running. A yuzu takes one hit instead.
 
-use body::{Body, spawn}
-use course::{COURSES, course}
+use body::{Body, Mode, RADIUS, bounce, spawn}
+use course::{COURSES, Course, course}
 use engine::run::{Asks, TickInput}
 use engine::sim::{SimState, Tick}
 use feel::FEEL
-use pad::{Controls, Hold, Pad, pad_of}
+use foes::{Foe, MAX_FOES, NONE, Touch, foe, knock, step_foe, touch}
+use pad::{Controls, Hold, JUMP, Pad, pad_of}
 use std::hash::StateHash
 use std::input::{Event, Key, PadButton}
 use std::serialize::Serialize
 
+/// The courses: the movement lab and the first level.
+pub const LAB: u32 = 0
+pub const LEVEL: u32 = 1
+
+/// Ticks the capybara can't be hurt after coming back, and after a yuzu takes a hit.
+const SPAWN_GRACE: u32 = 60
+const YUZU_GRACE: u32 = 120
+
+/// How near the capybara's middle must come to a snack or a yuzu to take it (m).
+const REACH: f32 = 0.8
+
 pub struct World: Copy + Eq + StateHash + Serialize + SimState {
     pub course: u32,
     pub body: Body,
+    pub foes: [Foe; MAX_FOES],
     pub controls: Controls,
     /// The attempt's clock: the level's ticks run, the first counted as 1.
     pub ticks: u32,
     /// The clock on the tick the capybara reached the goal; 0 until it has.
     pub finished: u32,
-    /// Times it fell out of the course and came back to the start.
-    pub falls: u32,
+    /// The snacks found and the yuzus taken this attempt, a bit each, and whether it wears one.
+    pub snacks: u32,
+    pub yuzus: u32,
+    pub yuzu: bool,
+    /// The checkpoint it comes back to: 0 the start, `i + 1` the course's checkpoint `i`.
+    pub checkpoint: u32,
+    /// Ticks it can't be hurt.
+    pub grace: u32,
+    /// Times it was sent back to a checkpoint: hurt, or fallen out.
+    pub deaths: u32,
     /// The attempts begun: each restart begins one.
     pub attempt: u32,
+}
+
+/// The course's foes as they start.
+fn foes_of(c: Course) -> [Foe; MAX_FOES] {
+    var foes = [NONE; MAX_FOES]
+    for i in 0..c.foes.len() {
+        foes[i] = foe(c.foes[i])
+    }
+    foes
 }
 
 /// A new attempt at course `c`: the course's start state.
 pub fn world(c: u32) -> World {
     assert(c < COURSES)
+    borrow at = course(c)
     World {
         course: c,
-        body: spawn(course(c).start),
+        body: spawn(at.start),
+        foes: foes_of(at),
         controls: Controls {},
         ticks: 0,
         finished: 0,
-        falls: 0,
+        snacks: 0,
+        yuzus: 0,
+        yuzu: false,
+        checkpoint: 0,
+        grace: 0,
+        deaths: 0,
         attempt: 0,
     }
 }
 
-/// One tick of the level from `pad`. After the goal, the capybara still moves but the clock
-/// stays.
+/// Where the capybara comes back to: the start, or a checkpoint's flag.
+fn comeback(w: World, c: Course) -> vec2 {
+    if w.checkpoint == 0 { c.start } else { c.checkpoints[w.checkpoint - 1] + vec2(0.0, RADIUS) }
+}
+
+/// Back to the last checkpoint, the foes as they started, its yuzu lost.
+fn die(w: mut World, c: Course) {
+    w.body = spawn(comeback(w, c))
+    w.foes = foes_of(c)
+    w.yuzu = false
+    w.grace = SPAWN_GRACE
+    w.deaths += 1
+}
+
+/// One tick of the level from `pad`: the capybara, its foes and what touching them does, then
+/// what it finds and where it is. After the goal, the capybara still moves but the clock stays.
 @deterministic
 pub fn step(w: mut World, pad: Pad) {
     borrow c = course(w.course)
@@ -50,37 +105,85 @@ pub fn step(w: mut World, pad: Pad) {
         w.ticks += 1
     }
     body::step(mut w.body, pad, c, FEEL)
+    for i in 0..c.foes.len() {
+        step_foe(mut w.foes[i], c)
+    }
+    w.grace = if w.grace > 0 { w.grace - 1 } else { 0 }
+    let slide = if w.body.mode == Mode::Slide { w.body.speed } else { 0.0 }
+    var hurt = false
+    for i in 0..c.foes.len() {
+        match touch(w.foes[i], w.body.at, w.body.vel, RADIUS, slide) {
+            Touch::Stomp => {
+                knock(mut w.foes[i])
+                let under = c.water_at(w.body.at).is_some()
+                bounce(mut w.body, pad.held(JUMP), FEEL, under)
+            },
+            Touch::Bowl => knock(mut w.foes[i]),
+            Touch::Hurt => hurt = true,
+            Touch::None => {},
+        }
+    }
+    if hurt && w.grace == 0 {
+        if w.yuzu {
+            w.yuzu = false
+            w.grace = YUZU_GRACE
+        } else {
+            die(mut w, c)
+        }
+    }
     if w.body.at.y < c.floor {
-        w.body = spawn(c.start)
-        w.falls += 1
+        die(mut w, c)
+    }
+    for i in 0..c.snacks.len() {
+        if distance(w.body.at, c.snacks[i]) < REACH {
+            w.snacks = w.snacks | (1 << i)
+        }
+    }
+    for i in 0..c.yuzus.len() {
+        if w.yuzus & (1 << i) == 0 && !w.yuzu && distance(w.body.at, c.yuzus[i]) < REACH {
+            w.yuzus = w.yuzus | (1 << i)
+            w.yuzu = true
+        }
+    }
+    for i in w.checkpoint..c.checkpoints.len() {
+        let flag = c.checkpoints[i]
+        if abs(w.body.at.x - flag.x) < 1.0 &&
+            w.body.at.y > flag.y - 1.0 &&
+            w.body.at.y < flag.y + 4.0 {
+            w.checkpoint = i + 1
+        }
     }
     if w.finished == 0 && c.at_goal(w.body.at) {
         w.finished = w.ticks
     }
 }
 
-/// A new attempt in place of `w`, keeping the controls as they're held.
-fn restart(w: mut World) {
+/// A new attempt at course `c` in place of `w`, keeping the controls as they're held.
+fn restart(w: mut World, c: u32) {
     let (controls, attempt) = (w.controls, w.attempt)
-    w = world(w.course)
+    w = world(c)
     w.controls = controls
     w.attempt = attempt + 1
 }
 
-/// One tick from the host's records: the lab's restart (R, or the controller's Start), then the
-/// pad they leave.
+/// One tick from the host's records: restart (R, or the controller's Start), the other course (Tab,
+/// or Select: the lab or the level), then the pad they leave.
 @deterministic
 pub fn tick(w: mut World, input: TickInput<World>) {
     for e in input.records {
         match e {
             Event::KeyDown { key, repeat, .. } => {
                 if !repeat && key == Key::R {
-                    restart(mut w)
+                    restart(mut w, w.course)
+                } else if !repeat && key == Key::Tab {
+                    restart(mut w, (w.course + 1) % COURSES)
                 }
             },
             Event::PadButton { pad, button, pressed, .. } => {
                 if pad == 0 && pressed && button == PadButton::Start {
-                    restart(mut w)
+                    restart(mut w, w.course)
+                } else if pad == 0 && pressed && button == PadButton::Select {
+                    restart(mut w, (w.course + 1) % COURSES)
                 }
             },
             _ => {},
@@ -108,6 +211,7 @@ impl Asks for World {
 
 /// What the frames draw of a world: plain data, through the hand-off.
 pub struct Snap: Copy + Plain {
+    pub course: u32,
     pub at: vec2,
     pub vel: vec2,
     pub ground: vec2,
@@ -120,16 +224,36 @@ pub struct Snap: Copy + Plain {
     pub flip: u32,
     /// Ticks of being wet left (`Body::wet`).
     pub wet: u32,
+    /// Each foe: its middle, its kind's discriminant + 1 (negated once knocked out; 0 for an
+    /// empty slot), and its way (or, knocked out, the ticks since).
+    pub foes: [vec4; MAX_FOES],
+    pub snacks: u32,
+    pub yuzus: u32,
+    pub yuzu: u32,
+    pub grace: u32,
+    pub checkpoint: u32,
     pub ticks: u32,
     pub finished: u32,
     pub attempt: u32,
-    pub falls: u32,
+    pub deaths: u32,
 }
 
 @deterministic
 pub fn present(w: World) -> Snap {
     let b = w.body
+    var foes = [vec4(0.0); MAX_FOES]
+    borrow c = course(w.course)
+    for i in 0..c.foes.len() {
+        let f = w.foes[i]
+        let kind = f32(u32(f.kind) + 1)
+        foes[i] = if f.alive {
+            vec4(f.at, kind, f.dir)
+        } else {
+            vec4(f.at, -kind, f32(f.since))
+        }
+    }
     Snap {
+        course: w.course,
         at: b.at,
         vel: b.vel,
         ground: b.ground,
@@ -139,10 +263,16 @@ pub fn present(w: World) -> Snap {
         tuck: if b.tuck { 1 } else { 0 },
         flip: b.flip,
         wet: b.wet,
+        foes,
+        snacks: w.snacks,
+        yuzus: w.yuzus,
+        yuzu: if w.yuzu { 1 } else { 0 },
+        grace: w.grace,
+        checkpoint: w.checkpoint,
         ticks: w.ticks,
         finished: w.finished,
         attempt: w.attempt,
-        falls: w.falls,
+        deaths: w.deaths,
     }
 }
 

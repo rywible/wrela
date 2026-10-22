@@ -219,6 +219,21 @@ fn leave(b: mut Body, vel: vec2, f: Feel) {
     b.ground = vec2(0.0, 1.0)
 }
 
+/// A bounce off a foe stomped on: up as a jump (as high as one with jump held, a little less
+/// without), or under water as a strong kick; the double jump comes back.
+pub fn bounce(b: mut Body, held: bool, f: Feel, under: bool) {
+    b.vel.y = if under { f.kick * 1.6 } else if held { f.launch } else { f.stomp }
+    if !under {
+        b.mode = Mode::Air
+    }
+    b.jumping = held && !under
+    b.jumps = f.air_jumps
+    b.coyote = 0
+    b.buffer = 0
+    b.flip = 0
+    b.breached = false
+}
+
 /// A jump from the ground whose tangent is `t`: the launch up, with the speed along the ground
 /// across. Out of a slide it keeps all the slide's velocity, up a ramp too; running, only its part
 /// across, so a running jump is the same height on any slope (Ryan, 2026-10-21: jumps up a slope

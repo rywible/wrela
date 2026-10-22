@@ -1,0 +1,196 @@
+// The things to dodge or stomp (design.md, "Rules"): geese that waddle along the ground, pigeons
+// that fly a bobbing patrol, and caimans that patrol under water. Each patrols back and forth
+// within its range of where it starts, deterministically, a tick at a time.
+//
+// Touching one: from above while falling is a stomp (a goose or a pigeon is knocked out, a
+// caiman's snout only bounces), sliding into a goose bowls it over, and anything else hurts.
+
+use course::Course
+use engine::sim::SimState
+use feel::STEP
+use std::hash::StateHash
+use std::math::TAU
+use std::serialize::Serialize
+
+pub enum Kind: Copy + Eq + StateHash + Serialize + SimState + Fieldless {
+    Goose,
+    Pigeon,
+    Caiman,
+}
+
+/// Where a foe starts and how far either side of it it patrols (m), as a course places it.
+pub struct Spawn: Copy {
+    pub kind: Kind,
+    pub at: vec2,
+    pub range: f32,
+}
+
+/// The most foes a course has.
+pub const MAX_FOES: u32 = 24
+
+pub struct Foe: Copy + Eq + StateHash + Serialize + SimState {
+    pub kind: Kind,
+    /// Its middle (m), the middle of its patrol, and how far either side it goes.
+    pub at: vec2,
+    pub home: vec2,
+    pub range: f32,
+    /// 1 going right, -1 left.
+    pub dir: f32,
+    /// A pigeon's bob (rad).
+    pub phase: f32,
+    pub alive: bool,
+    /// Ticks since it was knocked out (it tumbles away), or until a bounced caiman can hurt again.
+    pub since: u32,
+}
+
+/// The foe that a course's spawn starts.
+pub fn foe(s: Spawn) -> Foe {
+    Foe {
+        kind: s.kind,
+        at: s.at,
+        home: s.at,
+        range: s.range,
+        dir: -1.0,
+        phase: 0.0,
+        alive: true,
+        since: 0,
+    }
+}
+
+/// An empty slot.
+pub const NONE: Foe = Foe {
+    kind: Kind::Goose,
+    at: vec2(0.0),
+    home: vec2(0.0),
+    range: 0.0,
+    dir: 0.0,
+    phase: 0.0,
+    alive: false,
+    since: 0,
+}
+
+/// Half a foe's box (m): its size to touch.
+pub fn half(k: Kind) -> vec2 {
+    match k {
+        Kind::Goose => vec2(0.4, 0.45),
+        Kind::Pigeon => vec2(0.35, 0.25),
+        Kind::Caiman => vec2(1.0, 0.3),
+    }
+}
+
+/// How fast it patrols (m/s).
+fn pace(k: Kind) -> f32 {
+    match k {
+        Kind::Goose => 2.5,
+        Kind::Pigeon => 3.0,
+        Kind::Caiman => 3.5,
+    }
+}
+
+/// A pigeon's bob: how far up and down (m), and how often (Hz).
+const BOB: f32 = 0.5
+const BOB_HZ: f32 = 0.7
+
+/// One tick of a foe: along its patrol, turning at its ends; a goose walks on the ground under it
+/// and turns where there's none.
+@deterministic
+pub fn step_foe(f: mut Foe, c: Course) {
+    if !f.alive {
+        f.since = min(f.since + 1, 10000)
+        return
+    }
+    f.since = if f.since > 0 { f.since - 1 } else { 0 }
+    let x = f.at.x + f.dir * pace(f.kind) * STEP
+    let turn = abs(x - f.home.x) > f.range
+    match f.kind {
+        Kind::Goose => {
+            match c.ground_at(x, f.at.y) {
+                Some(y) => {
+                    if turn {
+                        f.dir = -f.dir
+                    } else {
+                        f.at = vec2(x, y + half(f.kind).y)
+                    }
+                },
+                None => f.dir = -f.dir,
+            }
+        },
+        Kind::Pigeon => {
+            if turn { f.dir = -f.dir } else { f.at.x = x }
+            f.phase = (f.phase + TAU * BOB_HZ * STEP) % TAU
+            f.at.y = f.home.y + BOB * sin(f.phase)
+        },
+        Kind::Caiman => {
+            if turn { f.dir = -f.dir } else { f.at.x = x }
+        },
+    }
+}
+
+/// What touching a foe does to the capybara.
+pub enum Touch: Copy + Eq {
+    None,
+    /// From above: it bounces (and a goose or a pigeon is knocked out).
+    Stomp,
+    /// Sliding into a goose: it's bowled over, and the slide goes on.
+    Bowl,
+    Hurt,
+}
+
+/// How far into a box a circle's bottom may be and still count as from above (m).
+const FROM_ABOVE: f32 = 0.5
+
+/// What a capybara (a circle of radius `r` at `at`, moving at `vel`, sliding at `slide` m/s or
+/// 0) touching foe `f` does, if it touches it.
+pub fn touch(f: Foe, at: vec2, vel: vec2, r: f32, slide: f32) -> Touch {
+    if !f.alive {
+        return Touch::None
+    }
+    let h = half(f.kind)
+    let nearest = clamp(at, f.at - h, f.at + h)
+    if distance(at, nearest) >= r {
+        return Touch::None
+    }
+    let top = f.at.y + h.y
+    if vel.y <= 0.0 && at.y - r >= top - FROM_ABOVE {
+        return Touch::Stomp
+    }
+    if f.kind == Kind::Goose && abs(slide) >= 3.0 {
+        return Touch::Bowl
+    }
+    if f.kind == Kind::Caiman && f.since > 0 {
+        return Touch::None
+    }
+    Touch::Hurt
+}
+
+/// The foe knocked out (a stomp or a bowl), or a caiman bounced on (harmless for a moment).
+pub fn knock(f: mut Foe) {
+    if f.kind == Kind::Caiman {
+        f.since = 30
+    } else {
+        f.alive = false
+        f.since = 0
+    }
+}
+
+// ---- tests -------------------------------------------------------------------------------------
+
+@test
+fn touching_from_above_falling_is_a_stomp_sliding_into_a_goose_bowls_and_the_rest_hurts() {
+    let goose = foe(Spawn { kind: Kind::Goose, at: vec2(10.0, 0.45), range: 2.0 })
+    // Falling onto its back.
+    assert(touch(goose, vec2(10.0, 1.15), vec2(0.0, -5.0), 0.35, slide: 0.0) == Touch::Stomp)
+    // Rising into it from below, or running into its side: hurt.
+    assert(touch(goose, vec2(10.0, 1.15), vec2(0.0, 5.0), 0.35, slide: 0.0) == Touch::Hurt)
+    assert(touch(goose, vec2(9.4, 0.35), vec2(9.0, 0.0), 0.35, slide: 0.0) == Touch::Hurt)
+    // Sliding into it.
+    assert(touch(goose, vec2(9.4, 0.35), vec2(9.0, 0.0), 0.35, slide: 9.0) == Touch::Bowl)
+    // Out of reach.
+    assert(touch(goose, vec2(8.0, 0.35), vec2(9.0, 0.0), 0.35, slide: 0.0) == Touch::None)
+    // A caiman bounced on can't hurt for a moment.
+    var caiman = foe(Spawn { kind: Kind::Caiman, at: vec2(10.0, -3.0), range: 4.0 })
+    knock(mut caiman)
+    assert(
+        caiman.alive && touch(caiman, vec2(10.0, -3.0), vec2(0.0), 0.35, slide: 0.0) == Touch::None,
+    )
+}

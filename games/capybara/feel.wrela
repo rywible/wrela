@@ -29,6 +29,8 @@ pub struct Feel: Copy {
     /// A jump's upward speed, and a double jump's (m/s).
     pub launch: f32 = 15.2,
     pub air_launch: f32 = 13.0,
+    /// The bounce off a stomped foe without jump held (m/s); with it held, the launch.
+    pub stomp: f32 = 11.0,
     /// The jumps it has in the air, after its first: refreshed on landing and on leaving water.
     pub air_jumps: u32 = 1,
     /// Gravity rising with jump held, and otherwise (m/s²); the fastest fall (m/s).
