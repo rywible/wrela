@@ -703,12 +703,7 @@ pub fn backdrop(
     gs: Sampler,
 ) -> vec4 {
     let w = on_layer(pixel, v, 1.0)
-    // (Within a metre of a wall's face, the thicket there opens on what's behind: drawn.)
-    let ground = min(
-        surely_ground_below(tops, w.x),
-        min(surely_ground_below(tops, w.x - 1.0), surely_ground_below(tops, w.x + 1.0)),
-    )
-    if w.y < ground - 0.05 {
+    if w.y < surely_ground_below(tops, w.x) - 0.05 {
         discard()
     }
     var c = under_of(vec4(0.0), bamboo(pixel, v, g, gs))

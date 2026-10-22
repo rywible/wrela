@@ -1,6 +1,6 @@
 // The ground as it's drawn, as a picture book's cutaway (ink.wrela): its cross-section's soil,
 // the turf along every walkable top and the grass growing from it, an inked rim along every
-// cliff, the ledges' planks, and the course's ends, a thicket of reeds and bamboo.
+// cliff, and the ledges' planks.
 //
 // The soil is painted per pixel from where the pixel is and how far below the top of the ground
 // it is (a profile of the ground's top, sampled every `STEP` m, made when a course is shown):
@@ -14,7 +14,6 @@
 
 use course::{Course, WALKABLE}
 use engine::noise::{hash2, noise2}
-use std::field::smin
 use ground::{left, outline, triangulate}
 use ink::{INK, grain, inked, wash, washed}
 use std::gpu::{ClipPosition, Flat, Over, Rgba16Float, Sampler, Texture, VertexIndex, discard}
@@ -191,45 +190,6 @@ pub fn top_at(tops: [f32], x: f32) -> f32 {
     tops[i] + (tops[i + 1] - tops[i]) * t
 }
 
-/// The highest the ground's top could be at `x`: the greater of the two samples round it. A wall
-/// is sure to be a wall all the way to its face.
-pub fn top_highest(tops: [f32], x: f32) -> f32 {
-    let f = clamp((x - FROM) / STEP, 0.0, f32(SAMPLES - 2))
-    let i = u32(f)
-    max(tops[i], tops[i + 1])
-}
-
-/// Beside an end wall at `x`: the ground on the course's side of it (m), and how far `x` is from
-/// the wall's face (m, sampled every 0.06 m out to 0.6 m: far, 1000, past that).
-fn beside_wall(tops: [f32], x: f32) -> (f32, f32) {
-    var ground = 0.0
-    var face = 1.0e3
-    for k in 1..11 {
-        let d = f32(k) * 0.06
-        let left = top_at(tops, x - d)
-        let right = top_at(tops, x + d)
-        if face > 1.0 && (left < WALL || right < WALL) {
-            face = d
-        }
-    }
-    // The ground: the first sample that isn't a wall, looking out up to 60 m either way (the
-    // samples themselves: read between two, a wall's face is partway up it).
-    let i = i32(clamp((x - FROM) / STEP, 0.0, f32(SAMPLES - 1)))
-    for k in 1..240 {
-        let left = tops[u32(max(i - k, 0))]
-        if left < WALL && left > -100.0 {
-            ground = left
-            break
-        }
-        let right = tops[u32(min(i + k, i32(SAMPLES) - 1))]
-        if right < WALL && right > -100.0 {
-            ground = right
-            break
-        }
-    }
-    (ground, face)
-}
-
 /// The lowest the ground's top could be near `x`: the least of the samples round it. Between two
 /// samples either side of a wall's face, `top_at` is partway up the wall where the wall isn't:
 /// what's sure to be ground is below this.
@@ -317,70 +277,6 @@ fn soil(p: vec2, depth: f32, px: f32, g: Texture<Rgba16Float>, gs: Sampler) -> v
     blend(c, stone.xyz, stone.w)
 }
 
-/// Ground whose top is higher than this is an end wall of the course (m).
-const WALL: f32 = 8.0
-
-/// The course's ends: a thicket too dense to pass, drawn as the near bushes are: round leafy lumps
-/// heaped on each other, each lit on the sun's side and inked round, deep shade between them, and
-/// a few stalks of bamboo standing out (Ryan, 2026-10-22: brick walls at the ends "don't feel
-/// right"). Above the ground beside it (`ground`, m). How far in from the shape's edge the pixel is
-/// (m, above 0 between the lumps), and its colour.
-fn thicket(p: vec2, ground: f32, px: f32, g: Texture<Rgba16Float>, gs: Sampler) -> (f32, vec3) {
-    let size = 1.3
-    let cell = floor(p / size)
-    // Deep shade, and over it each lump near the pixel, the higher rows first, so the lower ones
-    // lie in front, each lit on the sun's side and inked round.
-    var colour = vec3(0.13, 0.22, 0.14)
-    var d = 1.0e3
-    for row in 0..3 {
-        let j = 1 - row
-        for i in -1..2 {
-            let k = cell + vec2(f32(i), f32(j))
-            let (cx, cy) = (i32(k.x), i32(k.y))
-            let jitter = vec2(hash2(cx, cy + 3), hash2(cx + 7, cy)) - vec2(0.5)
-            let at = (k + vec2(0.5) + jitter * 0.6) * size
-            let r = size * (0.5 + 0.16 * hash2(cx + 1, cy + 5))
-            let rim = 0.05 * abs(sin(atan2(p.y - at.y, p.x - at.x) * 8.0 + at.x * 3.0))
-            let l = length(p - at) - r + rim
-            if l < px * 2.0 {
-                let towards = dot(normalize(p - at + vec2(1.0e-4)), normalize(SUN))
-                let lit = towards * saturate(length(p - at) / r)
-                let shade = 0.85 + 0.3 * hash2(cx + 2, cy + 9)
-                let leaf = blend(
-                    vec3(0.3, 0.5, 0.26),
-                    vec3(0.46, 0.66, 0.34),
-                    smoothstep(-0.35, 0.25, lit),
-                )
-                let lump = inked(
-                    washed(leaf * shade, p, g, gs),
-                    l,
-                    p,
-                    px * 1.4,
-                    px,
-                    vec3(0.16, 0.24, 0.13),
-                )
-                colour = blend(colour, lump.xyz, lump.w)
-            }
-            d = min(d, l)
-        }
-    }
-    // A few stalks of bamboo, standing out of the shade.
-    let s = p.x / 2.3
-    let n = floor(s)
-    let x = (fract(s) - 0.5 - (hash2(i32(n), 9) - 0.5) * 0.5) * 2.3
-    let stalk = abs(x) - 0.05
-    if hash2(i32(n), 10) < 0.6 && stalk < px {
-        let ring = abs(fract((p.y + hash2(i32(n), 11)) / 0.7) - 0.5) < 0.035
-        let cane = if ring { vec3(0.46, 0.52, 0.27) } else { vec3(0.62, 0.68, 0.38) }
-        let o = inked(cane, stalk, p, px * 1.1, px, vec3(0.18, 0.26, 0.14))
-        colour = blend(colour, o.xyz, o.w)
-        d = min(d, stalk)
-    }
-    // Darker low down, where the thicket is densest.
-    let up = p.y - ground
-    (d, colour * (0.75 + 0.25 * smoothstep(0.0, 3.0, up)))
-}
-
 /// The earth: soil, turf, a cliff's rim, or a ledge's planks, each a wash, inked along the
 /// ground's edge. Ground under a pool's surface (`pools`: each one's left edge, first column,
 /// columns and surface) takes the water's blue, deeper the further down, so the bed of a lake
@@ -430,21 +326,6 @@ fn earth_colour(e: Earthel, f: Field, tops: [f32], g: Texture<Rgba16Float>, gs: 
         let across = min(e.band, 1.0 - e.band) * PLANK_THICK
         let joint = inked(c, max(-across, seam), p, px * 1.6, px, INK)
         return vec4(joint.xyz, 1.0)
-    }
-    if top_highest(tops, p.x) > WALL {
-        // An end of the course: the ground on the course's side of it, and how far the pixel is
-        // from its face (the nearest place it isn't a wall), sampled out to 0.6 m.
-        let (ground, face) = beside_wall(tops, p.x)
-        if p.y < ground - 0.02 {
-            return vec4(soil(p, ground - p.y, px, g, gs), 1.0)
-        }
-        // Near its face, the gaps between the lumps open on the scene behind, so the thicket's
-        // edge is the lumps' own. (The face it stops the capybara at is straight.)
-        let (d, c) = thicket(p, ground, px, g, gs)
-        if face < 0.6 && d > 0.0 {
-            discard()
-        }
-        return vec4(c, 1.0)
     }
     let below = soil(p, depth, px, g, gs)
     if m == SOIL {

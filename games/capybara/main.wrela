@@ -19,7 +19,7 @@
 
 use art::{Page, Scale, Targets, copy, finish, grain_texture, pace, render_size, targets}
 use body::Mode
-use camera::{Camera, camera, follow, half_view}
+use camera::{Camera, camera, follow, framed, half_view}
 use cast::{Cast, cast, react, sprites}
 use course::course
 use earth::{
@@ -190,7 +190,8 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     }
     let aspect = f32(width) / f32(max(height, 1))
     let half = half_view(aspect)
-    let at = vec3(s.camera.at, 0.0)
+    let eye = framed(s.camera, half, c.ends)
+    let at = vec3(eye, 0.0)
     let view_proj = ortho(-half.x, half.x, -half.y, half.y, near: 1.0, far: 100.0) *
         look_at(at + vec3(0.0, 0.0, 50.0), at)
     let px = 2.0 * half.y / f32(rh)
@@ -208,7 +209,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     s.renderer.fetch(mut s.fonts, s.list)
     s.renderer.upload(s.list)
     let (i, level) = (snap.course, snap.course == LEVEL)
-    let view = View { centre: s.camera.at, half, screen: vec2(f32(rw), f32(rh)), time }
+    let view = View { centre: eye, half, screen: vec2(f32(rw), f32(rh)), time }
     let sliding = if Mode::from_u32(snap.mode) == Some(Mode::Slide) { 1.0 } else { 0.0 }
     let field = Field {
         view_proj,
@@ -259,7 +260,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     draw(copied, full.bind(z: 0.0), copy.bind(src: s.targets.scene, s: s.linear), vertices: 3)
     copied.end()
     let wet = begin_pass(mut s.targets.scene, keep: true)
-    let pond = Pond { view_proj, centre: s.camera.at, half, px, time }
+    let pond = Pond { view_proj, centre: eye, half, px, time }
     draw(
         wet,
         water_vertex.bind(verts: s.waters[i].items(), f: pond),
@@ -284,7 +285,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     let out = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
     let (iris, open) = cast::iris(s.cast, snap, lag)
     let page = Page {
-        centre: s.camera.at,
+        centre: eye,
         half,
         iris,
         screen,

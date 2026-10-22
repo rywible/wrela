@@ -202,3 +202,27 @@ fn running_and_jumping_dont_move_the_capybara_on_the_screen() {
         assert(abs(c.at.y - still) < 1.0e-3, "a jump doesn't move it")
     }
 }
+
+/// The view's middle for camera `c` with half its size `half` (m), framed so it never shows past
+/// the course's ends (`ends`, its faces left and right): the screen's edge is the course's (Ryan,
+/// 2026-10-22: the walls at the ends looked "shockingly bad"). A course narrower than the view is
+/// centred.
+pub fn framed(c: Camera, half: vec2, ends: vec2) -> vec2 {
+    let (lo, hi) = (ends.x + half.x, ends.y - half.x)
+    let x = if lo > hi { 0.5 * (ends.x + ends.y) } else { clamp(c.at.x, lo, hi) }
+    vec2(x, c.at.y)
+}
+
+@test
+fn the_view_stops_at_the_courses_ends() {
+    borrow c = course(LEVEL)
+    let half = half_view(16.0 / 9.0)
+    let at_start = framed(camera(c.start), half, c.ends)
+    assert(abs(at_start.x - half.x - c.ends.x) < 1.0e-4, "the screen's left edge is the left end")
+    var near_goal = camera(vec2(326.0, 1.35))
+    near_goal.at.x = 327.0
+    let end = framed(near_goal, half, c.ends)
+    assert(abs(end.x + half.x - c.ends.y) < 1.0e-4, "its right edge is the right end")
+    let middle = camera(vec2(150.0, 0.0))
+    assert(framed(middle, half, c.ends) == middle.at, "between them, the camera's own")
+}
