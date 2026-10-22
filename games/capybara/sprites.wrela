@@ -275,16 +275,20 @@ fn capybara(q: vec2, s: Sprite, screen_px: f32) -> vec4 {
     // relaxed lid (lower as it blinks), a nostril on the top of the snout's front, and the mouth a
     // short flat line tucked under it.
     let eye_at = vec2(0.415, 0.19)
-    let r = vec2(0.034, 0.038)
-    // The lid's edge follows the round of the eyeball (higher in the middle), relaxed, not a
-    // straight brow; drawn fine and in the fur's dark, not ink.
-    let dx = saturate(abs(p.x - eye_at.x) / r.x)
-    let lid = eye_at.y + 0.006 + 0.01 * (1.0 - dx * dx) - 0.045 * (1.0 - s.pose.w)
-    let eye = ellipse(p - eye_at, r)
-    c = mark(c, max(eye, p.y - lid), vec3(0.1, 0.06, 0.05), px)
-    c = mark(c, max(length(p - vec2(0.424, lid - 0.013)) - 0.009, p.y - lid), vec3(1.0), px)
-    let edge = max(abs(p.y - lid) - 0.0035, abs(p.x - eye_at.x) - r.x * 1.05)
-    c = mark(c, max(edge, eye - 0.004), vec3(0.42, 0.27, 0.19), px)
+    // The eye scrunched from above and below, as a capybara's is: an almond, its upper lid and
+    // its lower lid each curving out from the corners, where they meet, so what shows is a narrow,
+    // content slit. The lids are drawn fine and in the fur's dark, not ink. (One lid alone, low
+    // by the nose, reads as a frown.)
+    let dx = saturate(abs(p.x - eye_at.x) / 0.04)
+    let open = (1.0 - dx * dx) * (0.25 + 0.75 * s.pose.w)
+    let lid = eye_at.y + 0.003 + 0.016 * open
+    let low = eye_at.y + 0.003 - 0.013 * open
+    let slit = max(abs(p.x - eye_at.x) - 0.04, max(p.y - lid, low - p.y))
+    c = mark(c, slit, vec3(0.1, 0.06, 0.05), px)
+    c = mark(c, max(length(p - vec2(0.424, lid - 0.008)) - 0.006, slit), vec3(1.0), px)
+    let inside = abs(p.x - eye_at.x) - 0.042
+    c = mark(c, max(abs(p.y - lid) - 0.0035, inside), vec3(0.4, 0.26, 0.18), px)
+    c = mark(c, max(abs(p.y - low) - 0.0025, inside), vec3(0.52, 0.35, 0.24), px)
     let nostril = ellipse(turn(p - vec2(0.665, 0.16), 0.7), vec2(0.028, 0.011))
     c = mark(c, nostril, vec3(0.3, 0.18, 0.13), px)
     let mouth = capsule(p, vec2(0.6, -0.008), vec2(0.66, -0.005), 0.005)
