@@ -276,6 +276,19 @@ fn capybara(q: vec2, s: Sprite, screen_px: f32) -> vec4 {
     // relaxed lid (lower as it blinks), a nostril on the top of the snout's front, and the mouth a
     // short flat line tucked under it.
     let eye_at = vec2(0.415, 0.19)
+    if s.pose.w < 0.0 {
+        // Dizzy: its eye a little cross.
+        let e = p - eye_at
+        let cross = min(
+            capsule(e, vec2(-0.03), vec2(0.03), 0.009),
+            capsule(e, vec2(-0.03, 0.03), vec2(0.03, -0.03), 0.009),
+        )
+        c = mark(c, cross, vec3(0.1, 0.06, 0.05), px)
+        let nostril = ellipse(turn(p - vec2(0.665, 0.16), 0.7), vec2(0.028, 0.011))
+        c = mark(c, nostril, vec3(0.3, 0.18, 0.13), px)
+        let mouth = abs(length(p - vec2(0.63, -0.04)) - 0.03) - 0.006
+        return mark(c, max(mouth, -(p.y + 0.02)), vec3(0.36, 0.22, 0.16), px)
+    }
     // The eye scrunched from above and below, as a capybara's is: an almond, its upper lid and
     // its lower lid each curving out from the corners, where they meet, so what shows is a narrow,
     // content slit. The lids are drawn fine and in the fur's dark, not ink. (One lid alone, low

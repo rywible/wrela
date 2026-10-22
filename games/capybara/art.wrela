@@ -6,13 +6,14 @@
 //    screen's full size.
 // 2. A copy of it (`below`), which the water reads to bend what's under it a little.
 // 3. The water, over the scene, then what goes in front of it.
-// 4. The page: the scene on the paper, its tooth and fibres anchored on the plane of play, the
-//    corners a little darker as an old page's are.
+// 4. The page: the scene, its colours lifted a little, the corners darker as an old page's are;
+//    and an iris that closes on the capybara when it dies and opens where it comes back. The paper
+//    the page is painted on is the sky's (scenery.wrela): it lies behind the scene, not over it.
 //
 // The colours are display colours, as the paint is: nothing here is a light simulation, so
 // there's no tone curve and no glow.
 
-use ink::paper
+use ink::INK
 use std::gpu::{FragCoord, Rgba16Float, Sampler, Texture, texture}
 
 /// The frame's targets, remade when the screen's size changes.
@@ -40,25 +41,41 @@ pub fn copy(pixel: FragCoord, src: Texture<Rgba16Float>, s: Sampler) -> vec4 {
     src.sample_level(s, pixel.position.xy / size)
 }
 
-/// Where the page lies on the plane of play: the view's middle and half its size (m).
+/// Where the page lies on the plane of play: the view's middle and half its size (m); and the
+/// iris: its middle (m on the plane of play) and how open (0 shut, 1 open).
 pub struct Page: Copy + GpuData {
     pub centre: vec2,
     pub half: vec2,
+    pub iris: vec2,
+    pub open: f32,
+    pub pad: f32 = 0.0,
 }
 
-/// The page: the scene on the paper, its colours a little more vivid, the corners darker.
+/// The page: the scene, its colours a little more vivid, the corners darker, and the iris: outside
+/// it, the page dark as ink, a ring of ink round its edge.
 @fragment
 pub fn finish(pixel: FragCoord, scene: Texture<Rgba16Float>, s: Sampler, page: Page) -> vec4 {
     let size = vec2(f32(scene.width()), f32(scene.height()))
     let uv = pixel.position.xy / size
-    let p = page.centre + vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0) * page.half
-    let px = 2.0 * page.half.y / size.y
-    var c = scene.sample_level(s, uv).rgb * paper(p, px)
+    var c = scene.sample_level(s, uv).rgb
     // The paint a little more vivid, and a touch more contrast.
     let luma = dot(c, vec3(0.299, 0.587, 0.114))
     c = vec3(luma) + (c - vec3(luma)) * 1.3
     c = (c - vec3(0.5)) * 1.06 + vec3(0.5)
     let edge = (uv - vec2(0.5)) * vec2(size.x / size.y, 1.0)
     let corner = 1.0 - 0.14 * smoothstep(0.45, 1.05, length(edge))
-    vec4(saturate(c * vec3(corner, corner, corner * 0.97)), 1.0)
+    c = c * vec3(corner, corner, corner * 0.97)
+    if page.open < 1.0 {
+        let p = page.centre + vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0) * page.half
+        let px = 2.0 * page.half.y / size.y
+        let r = page.open * 2.2 * 2.0 * page.half.y
+        let d = length(p - page.iris) - r
+        c = blend(c, vec3(0.2, 0.14, 0.1), smoothstep(-px, px, d))
+        c = blend(c, INK, saturate(1.0 - abs(d) / (px * 2.5)) * step(0.001, page.open))
+    }
+    vec4(saturate(c), 1.0)
+}
+
+fn blend(a: vec3, b: vec3, t: f32) -> vec3 {
+    a + (b - a) * t
 }

@@ -16,7 +16,7 @@ use feel::{FEEL, HZ}
 use sprites::{CAIMAN, CAPYBARA, CARROT, FLAG, GOOSE, PIGEON, SEAGULL, SHADOW, Sprite, YUZU}
 use std::math::TAU
 use waves::{Waves, disturb, step_waves, surface_at, waves}
-use world::Snap
+use world::{DYING, Snap}
 
 /// How far the capybara goes in one stride (m): longer the faster it goes, so at a run its legs
 /// cycle about five times a second, not ten (which shook it).
@@ -40,6 +40,8 @@ pub struct Cast {
     puffs: f32,
     breath: f32,
     drips: f32,
+    /// Seconds since it last came back from dying, for the page opening on it again.
+    back: f32,
 }
 
 pub fn cast(c: Course) -> Cast {
@@ -53,6 +55,7 @@ pub fn cast(c: Course) -> Cast {
         puffs: 0.0,
         breath: 0.0,
         drips: 0.0,
+        back: 10.0,
     }
 }
 
@@ -69,6 +72,14 @@ pub fn react(k: mut Cast, s: Snap, c: Course, dt: f32) {
     match k.last {
         Some(before) => {
             let was = Mode::from_u32(before.mode)
+            if s.dying > 0 && before.dying == 0 && s.fell == 0 {
+                // Hurt: stars round its head, a puff.
+                sparkles(mut k.dust, s.at + vec2(0.0, 0.5), 10, vec3(1.0, 0.85, 0.3))
+                puff(mut k.dust, s.at, vec2(0.0), 8, 0.16)
+            }
+            if s.dying == 0 && before.dying > 0 {
+                k.back = 0.0
+            }
             if distance(before.at, s.at) > 4.0 {
                 // Back to a checkpoint: a poof where it lands.
                 puff(mut k.dust, s.at, vec2(0.0), 14, 0.22)
@@ -219,6 +230,7 @@ pub fn react(k: mut Cast, s: Snap, c: Course, dt: f32) {
         }
     }
     // Wet on land: it drips.
+    k.back += dt
     k.drips -= dt
     if !wet_now && s.wet > 0 && k.drips <= 0.0 {
         let x = between(mut k.dust, vec2(-0.3, 0.3))
@@ -414,8 +426,29 @@ pub fn sprites(
             },
         )
     }
+    // The capybara, dying: hurt, it pops up dizzy, flips over and tumbles off the bottom of the
+    // page; fallen out, it drops on down the hole.
+    if s.dying > 0 {
+        let t = f32(DYING - s.dying) / f32(HZ)
+        let (rise, spin) = if s.fell == 1 { (-9.0 * t * t, 0.0) } else {
+            (5.0 * t - 16.0 * t * t, t * 7.0)
+        }
+        let at = s.at + vec2(-s.facing * t * 0.8, rise)
+        front.push(
+            Sprite {
+                pose: vec4(0.0, 0.0, 3.0, -1.0),
+                more: vec4(0.0, 0.0, 1.0, 1.0),
+                at,
+                half: vec2(1.2, 1.0),
+                angle: spin * s.facing,
+                facing: s.facing,
+                kind: CAPYBARA,
+                surface: under(k, c, at),
+            },
+        )
+    }
     // The capybara: blinking while hurt and not to be hurt again.
-    if s.grace == 0 || (s.grace / 6) % 2 == 0 {
+    if s.dying == 0 && (s.grace == 0 || (s.grace / 6) % 2 == 0) {
         let grounded = grounded(mode)
         let lean = if grounded {
             atan2(-s.ground.x, s.ground.y)
@@ -454,4 +487,16 @@ pub fn sprites(
         )
     }
     dust_sprites(k.dust, mut back, mut front)
+}
+
+/// Where the page's iris is (m on the plane of play) and how open (0 shut, 1 open): closing on the
+/// capybara as it dies, opening on it again where it comes back.
+pub fn iris(k: Cast, s: Snap) -> (vec2, f32) {
+    if s.dying > 0 {
+        let t = f32(DYING - s.dying) / f32(DYING)
+        let at = if s.fell == 1 { s.at } else { s.at + vec2(0.0, 0.5) }
+        (at, 1.0 - smoothstep(0.35, 0.92, t))
+    } else {
+        (s.at, smoothstep(0.0, 0.6, k.back))
+    }
 }

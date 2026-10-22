@@ -12,7 +12,7 @@ use pad::{DOWN, Hold, JUMP, LEFT, PRESS, Pad, RIGHT, UP, hold, pad_of}
 use std::hash::state_hash
 use std::io::print
 use course::course
-use world::{LEVEL, World, play, step, world}
+use world::{DYING, LEVEL, World, play, step, world}
 
 // ---- proofs ------------------------------------------------------------------------------------
 
@@ -576,7 +576,7 @@ fn sliding_into_a_goose_bowls_it_over_and_running_into_one_sends_you_back() {
     var run = world(LEVEL)
     run.body = spawn(vec2(18.5, RADIUS))
     run.body.speed = 9.0
-    for _ in 0..30 {
+    for _ in 0..30 + DYING {
         step(mut run, Pad { bits: RIGHT })
     }
     assert(
@@ -617,7 +617,12 @@ fn a_checkpoint_reached_is_where_a_fall_comes_back_to() {
     for _ in 0..60 {
         step(mut w, Pad { bits: 0 })
     }
-    assert(w.deaths == 1 && distance(w.body.at, c.checkpoints[0] + vec2(0.0, RADIUS)) < 0.5)
+    // Fallen out, it stays where it fell for a while, then comes back to the flag.
+    assert(w.deaths == 1 && w.dying > 0 && w.fell && w.body.at.y < c.floor, "dying where it fell")
+    for _ in 0..DYING {
+        step(mut w, Pad { bits: 0 })
+    }
+    assert(w.dying == 0 && distance(w.body.at, c.checkpoints[0] + vec2(0.0, RADIUS)) < 0.5)
 }
 
 @test

@@ -222,7 +222,8 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     )
     wet.end()
     let out = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
-    let page = Page { centre: s.camera.at, half }
+    let (iris, open) = cast::iris(s.cast, snap)
+    let page = Page { centre: s.camera.at, half, iris, open }
     draw(
         out,
         full.bind(z: 0.0),

@@ -7,7 +7,7 @@
 //
 // - The far hills (0.06): blue ranges and a tree line.
 // - The savanna (0.2): rises of straw-coloured grass, flat-topped acacias, giraffes eating.
-// - The zoo's path (0.42): its gate saying ZOO where the level starts, then a sight every 22 m
+// - The zoo's path (0.42): a sight every 22 m
 //   (a flamingo pond, zebras, an ice cream kiosk, an aviary, an elephant by its rock), trees,
 //   lamps with bunting between some, and the fence.
 // - The bushes and the bamboo (0.68): bushes, a few flowers, a grove of bamboo here and there.
@@ -19,7 +19,7 @@
 // ground), so it costs little where it shows only sky or fill.
 
 use engine::noise::{hash2, noise2}
-use ink::{INK, inked, pooled, wash}
+use ink::{INK, inked, paper, pooled, wash}
 use std::field::smin
 use std::gpu::{FragCoord, Over, discard}
 
@@ -207,7 +207,8 @@ pub fn sky(pixel: FragCoord, v: View) -> vec4 {
         )
         c = blend(c, o.xyz, o.w)
     }
-    vec4(c, 1.0)
+    // The paper the page is painted on, behind everything: its tooth and fibres, here.
+    vec4(c * paper(p, px), 1.0)
 }
 
 // ---- the far hills ---------------------------------------------------------------------------
@@ -322,7 +323,7 @@ pub fn savanna(pixel: FragCoord, v: View) -> Over {
     paint(d, albedo, q, px, haze: 0.45, line: 0.8)
 }
 
-// ---- the zoo's path: its gate, its sights, trees, lamps, bunting and the fence ------------------
+// ---- the zoo's path: its sights, trees, lamps, bunting and the fence ------------------
 
 /// The path's ground at `x` (m).
 fn path_ground(x: f32) -> f32 {
@@ -478,35 +479,6 @@ fn aviary(q: vec2) -> (f32, vec3) {
     nearer((dome, colour), (finial, vec3(0.42, 0.5, 0.52)))
 }
 
-/// The zoo's gate, at the start of the level: two stone pillars, and between them over the way
-/// in, a green board saying ZOO.
-fn gate(q: vec2) -> (f32, vec3) {
-    let stone = vec3(0.9, 0.84, 0.72)
-    var best = (rbox(q - vec2(-2.7, 1.8), vec2(0.35, 1.8), 0.06), stone)
-    best = nearer(best, (rbox(q - vec2(2.7, 1.8), vec2(0.35, 1.8), 0.06), stone))
-    best = nearer(best, (rbox(q - vec2(-2.7, 3.7), vec2(0.45, 0.12), 0.04), stone))
-    best = nearer(best, (rbox(q - vec2(2.7, 3.7), vec2(0.45, 0.12), 0.04), stone))
-    let board = rbox(q - vec2(0.0, 4.25), vec2(3.2, 0.6), 0.28)
-    // The letters, cream on the green.
-    let l = (q - vec2(0.0, 4.25)) / 0.75
-    let z = l - vec2(-0.95, 0.0)
-    let zed = min(
-        min(
-            capsule(z, vec2(-0.28, 0.32), vec2(0.28, 0.32), 0.09),
-            capsule(z, vec2(0.28, 0.32), vec2(-0.28, -0.32), 0.09),
-        ),
-        capsule(z, vec2(-0.28, -0.32), vec2(0.28, -0.32), 0.09),
-    )
-    let o1 = abs(ellipse(l - vec2(0.05, 0.0), vec2(0.3, 0.38))) - 0.09
-    let o2 = abs(ellipse(l - vec2(0.95, 0.0), vec2(0.3, 0.38))) - 0.09
-    let letters = min(zed, min(o1, o2))
-    let face = if letters < 0.0 { vec3(0.99, 0.95, 0.82) } else { vec3(0.32, 0.58, 0.42) }
-    nearer(best, (board, face))
-}
-
-/// Where the gate stands on the path's layer: just ahead of where the level starts.
-const GATE: f32 = 4.0
-
 /// How far apart the path's sights are (m on its layer).
 const SIGHTS: f32 = 22.0
 
@@ -523,9 +495,6 @@ pub fn path(pixel: FragCoord, v: View) -> Over {
         return under(lawn, q, ground, 0.15)
     }
     var best = (q.y - ground, lawn)
-    if abs(q.x - GATE) < 3.9 {
-        best = nearer(best, gate(q - vec2(GATE, path_ground(GATE) - 0.1)))
-    }
     // The sights, one in each stretch: a flamingo pond, zebras, an ice cream kiosk, an aviary,
     // an elephant by its rock; and a tree at each stretch's end, now and then.
     let cell = floor(q.x / SIGHTS)
@@ -533,7 +502,7 @@ pub fn path(pixel: FragCoord, v: View) -> Over {
         let i = cell + f32(k)
         let centre = (i + 0.5) * SIGHTS
         let base = vec2(centre, path_ground(centre) - 0.1)
-        if abs(q.x - centre) < 4.6 && q.y < ground + 4.6 && abs(centre - GATE) > 8.0 {
+        if abs(q.x - centre) < 4.6 && q.y < ground + 4.6 {
             let local = q - base
             let kind = i32(hash2(i32(i), 37) * 5.0)
             let sight = if kind == 0 {

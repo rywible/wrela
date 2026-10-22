@@ -5,7 +5,10 @@
 // compare.
 //
 // No lives (design.md, "Rules"): hurt or fallen out, the capybara goes back to its last
-// checkpoint, the foes as they started, the clock running. A yuzu takes one hit instead.
+// checkpoint, the foes as they started, the clock running. A yuzu takes one hit instead. Going
+// back isn't at once: for `DYING` ticks it stays where it was hurt or fell, taking no input, while
+// the frames show it tumble away and the page close on it (Ryan, 2026-10-22: dying "just
+// immediately clips back").
 
 use body::{Body, Mode, RADIUS, bounce, spawn}
 use course::{COURSES, Course, course}
@@ -21,6 +24,9 @@ use std::serialize::Serialize
 /// The courses: the movement lab and the first level.
 pub const LAB: u32 = 0
 pub const LEVEL: u32 = 1
+
+/// Ticks between being hurt or falling out and coming back (1.1 s): the clock runs through them.
+pub const DYING: u32 = 132
 
 /// Ticks the capybara can't be hurt after coming back, and after a yuzu takes a hit.
 const SPAWN_GRACE: u32 = 60
@@ -48,6 +54,10 @@ pub struct World: Copy + Eq + StateHash + Serialize + SimState {
     pub grace: u32,
     /// Times it was sent back to a checkpoint: hurt, or fallen out.
     pub deaths: u32,
+    /// Ticks left until it comes back, while it's dying (0 otherwise), and whether it fell out
+    /// (else it was hurt).
+    pub dying: u32,
+    pub fell: bool,
     /// The attempts begun: each restart begins one.
     pub attempt: u32,
 }
@@ -78,6 +88,8 @@ pub fn world(c: u32) -> World {
         checkpoint: 0,
         grace: 0,
         deaths: 0,
+        dying: 0,
+        fell: false,
         attempt: 0,
     }
 }
@@ -87,13 +99,20 @@ fn comeback(w: World, c: Course) -> vec2 {
     if w.checkpoint == 0 { c.start } else { c.checkpoints[w.checkpoint - 1] + vec2(0.0, RADIUS) }
 }
 
+/// Hurt, or fallen out (`fell`): counted, and dying from now on.
+fn die(w: mut World, fell: bool) {
+    w.deaths += 1
+    w.dying = DYING
+    w.fell = fell
+    w.body.vel = vec2(0.0)
+}
+
 /// Back to the last checkpoint, the foes as they started, its yuzu lost.
-fn die(w: mut World, c: Course) {
+fn come_back(w: mut World, c: Course) {
     w.body = spawn(comeback(w, c))
     w.foes = foes_of(c)
     w.yuzu = false
     w.grace = SPAWN_GRACE
-    w.deaths += 1
 }
 
 /// One tick of the level from `pad`: the capybara, its foes and what touching them does, then
@@ -103,6 +122,17 @@ pub fn step(w: mut World, pad: Pad) {
     borrow c = course(w.course)
     if w.finished == 0 {
         w.ticks += 1
+    }
+    if w.dying > 0 {
+        // Dying: the foes go on; the capybara stays, then comes back.
+        for i in 0..c.foes.len() {
+            step_foe(mut w.foes[i], c)
+        }
+        w.dying -= 1
+        if w.dying == 0 {
+            come_back(mut w, c)
+        }
+        return
     }
     body::step(mut w.body, pad, c, FEEL)
     for i in 0..c.foes.len() {
@@ -128,11 +158,13 @@ pub fn step(w: mut World, pad: Pad) {
             w.yuzu = false
             w.grace = YUZU_GRACE
         } else {
-            die(mut w, c)
+            die(mut w, fell: false)
+            return
         }
     }
     if w.body.at.y < c.floor {
-        die(mut w, c)
+        die(mut w, fell: true)
+        return
     }
     for i in 0..c.snacks.len() {
         if distance(w.body.at, c.snacks[i]) < REACH {
@@ -236,6 +268,9 @@ pub struct Snap: Copy + Plain {
     pub finished: u32,
     pub attempt: u32,
     pub deaths: u32,
+    /// Ticks left while dying (0 otherwise), and 1 if it fell out.
+    pub dying: u32,
+    pub fell: u32,
 }
 
 @deterministic
@@ -273,6 +308,8 @@ pub fn present(w: World) -> Snap {
         finished: w.finished,
         attempt: w.attempt,
         deaths: w.deaths,
+        dying: w.dying,
+        fell: if w.fell { 1 } else { 0 },
     }
 }
 

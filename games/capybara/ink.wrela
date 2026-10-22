@@ -7,8 +7,8 @@
 // - Pigment pooled at its edge: a little darker just inside, as a wash dries.
 // - An ink line round it, sepia, its width wobbling along it as a pen's does.
 //
-// - The page: the engine's brush dabs (`paint::dabs`) and the paper's tooth and fibres over
-//   everything, anchored on the plane of play.
+// - The paper: the engine's brush dabs (`paint::dabs`), its tooth and fibres, on the sky, behind
+//   the scene (Ryan, 2026-10-22: over everything, it read "like a film over the scene").
 //
 // Colours are written as they show on the screen (display colours): no light is simulated.
 
@@ -22,8 +22,7 @@ pub const INK = vec3(0.24, 0.16, 0.11)
 pub const PAPER = vec3(0.97, 0.94, 0.86)
 
 /// A wash of colour `c` at `p` (m, on the shape's own plane): blotched where the pigment
-/// settled thicker or thinner. (The brush's dabs and the paper's grain go on the whole page at
-/// once, in `paper`.)
+/// settled thicker or thinner.
 pub fn wash(c: vec3, p: vec2) -> vec3 {
     let blotch = noise2(p * 0.6) * 0.6 + noise2(p * 1.9 + vec2(7.0)) * 0.4 - 0.5
     c * (1.0 + blotch * 0.09)
@@ -45,8 +44,8 @@ pub fn inked(fill: vec3, d: f32, p: vec2, width: f32, px: f32, ink: vec3) -> vec
     vec4(fill + (ink - fill) * line, cover)
 }
 
-/// The page's texture at `p` (m on the plane of play), `px` m a pixel: the brush's dabs, the
-/// paper's tooth and fibres, and a mottle; about 1, a little either way.
+/// The paper's texture at `p` (m on the sky's layer), `px` m a pixel: the brush's dabs, its tooth
+/// and fibres, and a mottle; about 1, a little either way.
 pub fn paper(p: vec2, px: f32) -> f32 {
     let dab = dabs(vec3(p, 0.0), vec3(0.0, 0.0, 1.0), px, 16.0)
     let tooth = noise2(p / max(px * 1.6, 1.0e-4)) - 0.5
