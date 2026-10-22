@@ -260,7 +260,7 @@ fn capybara(q: vec2, s: Sprite, screen_px: f32) -> vec4 {
     if d < px {
         var albedo = blend(fur, vec3(0.93, 0.78, 0.6) * darker, smoothstep(-0.08, -0.2, p.y) * 0.7)
         albedo = blend(albedo, vec3(0.72, 0.5, 0.35) * darker, smoothstep(0.58, 0.68, p.x) * 0.55)
-        c = over(c, shade(d, g, p, Paint { albedo, gloss, thick: 0.4, glow: 0.0 }, px))
+        c = over(c, shade(d, g, p, Paint { albedo, gloss, thick: 0.07, glow: 0.0 }, px))
     }
     // A small round ear at the top of the back of the head, its inside darker.
     let ear = |x: vec2| length(x - vec2(0.23, 0.29)) - 0.05
@@ -271,21 +271,24 @@ fn capybara(q: vec2, s: Sprite, screen_px: f32) -> vec4 {
     c = mark(c, max(cheek, max(p.x - 0.38, p.y - 0.05)), vec3(0.55, 0.37, 0.26), px)
     let blush = ellipse(p - vec2(0.52, 0.04), vec2(0.055, 0.03))
     c = over(c, vec4(vec3(0.97, 0.58, 0.54), saturate(-blush / 0.025) * 0.6 * c.w))
-    // The face that says capybara: unbothered. An eye high on the head, half under a heavy lid
-    // (lower still as it blinks), a nostril on the top of the snout's front, and the mouth a
+    // The face that says capybara: unimpressed. An eye high on the head, its top under a
+    // relaxed lid (lower as it blinks), a nostril on the top of the snout's front, and the mouth a
     // short flat line tucked under it.
-    let eye_at = vec2(0.42, 0.2)
-    let lid = eye_at.y + 0.002 - 0.045 * (1.0 - s.pose.w)
-    let eye = ellipse(p - eye_at, vec2(0.036, 0.04))
+    let eye_at = vec2(0.415, 0.19)
+    let r = vec2(0.034, 0.038)
+    // The lid's edge follows the round of the eyeball (higher in the middle), relaxed, not a
+    // straight brow; drawn fine and in the fur's dark, not ink.
+    let dx = saturate(abs(p.x - eye_at.x) / r.x)
+    let lid = eye_at.y + 0.006 + 0.01 * (1.0 - dx * dx) - 0.045 * (1.0 - s.pose.w)
+    let eye = ellipse(p - eye_at, r)
     c = mark(c, max(eye, p.y - lid), vec3(0.1, 0.06, 0.05), px)
-    c = mark(c, max(length(p - vec2(0.43, lid - 0.012)) - 0.009, p.y - lid), vec3(1.0), px)
-    let reach = sqrt(max(1.0 - pow((lid - eye_at.y) / 0.04, 2.0), 0.0)) * 0.036 + 0.004
-    let lid_line = capsule(p, vec2(eye_at.x - reach, lid), vec2(eye_at.x + reach, lid), 0.0055)
-    c = mark(c, lid_line, vec3(0.3, 0.18, 0.13), px)
+    c = mark(c, max(length(p - vec2(0.424, lid - 0.013)) - 0.009, p.y - lid), vec3(1.0), px)
+    let edge = max(abs(p.y - lid) - 0.0035, abs(p.x - eye_at.x) - r.x * 1.05)
+    c = mark(c, max(edge, eye - 0.004), vec3(0.42, 0.27, 0.19), px)
     let nostril = ellipse(turn(p - vec2(0.665, 0.16), 0.7), vec2(0.028, 0.011))
     c = mark(c, nostril, vec3(0.3, 0.18, 0.13), px)
-    let mouth = capsule(p, vec2(0.59, -0.008), vec2(0.665, -0.004), 0.006)
-    c = mark(c, mouth, vec3(0.3, 0.18, 0.13), px)
+    let mouth = capsule(p, vec2(0.6, -0.008), vec2(0.66, -0.005), 0.005)
+    c = mark(c, mouth, vec3(0.36, 0.22, 0.16), px)
     // The yuzu on its head, as capybaras in hot springs wear them.
     if s.more.y > 0.5 {
         c = layer(
