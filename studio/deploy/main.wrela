@@ -671,12 +671,14 @@ fn said(ran: run::Ran) -> Result<String, ToolError> {
     Ok(out)
 }
 
-/// Runs Wrangler with each of `runs` (what it does, and its arguments) in `root`, `RUNS_AT_ONCE`
-/// at a time: each must exit 0, or the first that doesn't stops it, with what Wrangler said.
+/// Runs Wrangler with each of `runs` (what it does, and its arguments) in `root`: the first
+/// alone, since `npx` installs Wrangler on its first run and runs at once would race to install
+/// it into the same cache, then the rest `RUNS_AT_ONCE` at a time. Each must exit 0, or the
+/// first that doesn't stops it, with what Wrangler said.
 pub fn run_all(runs: [(String, Vec<String>)], root: str) -> Result<(), ToolError> {
     var at = 0
     while at < runs.len() {
-        let n = min(RUNS_AT_ONCE, runs.len() - at)
+        let n = if at == 0 { 1 } else { min(RUNS_AT_ONCE, runs.len() - at) }
         var calls: Vec<Call<run::Ran>> = Vec::new()
         for k in 0..n {
             calls.push(run::run(wrangler(runs[at + k].1, root)))
