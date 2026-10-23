@@ -1,0 +1,673 @@
+// The keys (`wrela tool keys`): the capybara game's piano, played from the computer's keyboard
+// over the music's accompaniment, for Ryan to find a melody, and the takes he keeps written into
+// takes.wrela, where the audio tool and an agent read them (Ryan, 2026-10-22: "i want like a midi
+// i can play with our audio tools that then you can get the diagnostics on").
+//
+// The tool builds this package's page, serves it on this machine and prints its address. Each take
+// kept on the page is posted back to the tool, which checks it and adds it to takes.wrela.
+//
+// On the page:
+// - The keyboard is a piano, in two rows as music programs lay it out: A S D F G H J K L ; ' are
+//   white keys from C, W E T Y U O P the black keys between them. Z and X move an octave down and
+//   up, C and V play softer and harder, and Space holds the sustain pedal.
+// - B turns the accompaniment (the game's music without its melody) on and off, and M the click.
+// - R starts recording and stops it. Q plays the last take back from the next bar, Enter keeps it
+//   (the tool writes it into takes.wrela) and Backspace drops it.
+//
+// As a piece for the audio tool, take `n` plays back over the accompaniment from the music's start
+// (`wrela tool audio -- games/capybara/keys wav out.wav --take n`), and `describe` gives its notes
+// with their bars and beats.
+
+use capybara::music::{BARS, TEMPO, backing}
+use engine::perform::{PedalPoint, Performance, Played}
+use engine::piano::piano
+use engine::piano_grand::GRAND
+use std::audio::RingWriter
+use std::audio::RingReader
+use std::gpu::{begin_screen_pass}
+use std::input::{Event, Key, events}
+use std::io::{Pending, post, print}
+use std::tool::blob::Data
+use std::tool::{files, serve, toolchain}
+use struck::{PEDAL, Struck, read_take, text_of, with_take}
+use ui::draw::{DrawList, Rect, Renderer}
+use ui::text::{Face, Fonts}
+use voice::{Act, BACKING, CLICK, Heard, NOTHING, PRESS, RELEASE, start}
+
+/// The keys of the computer's keyboard that are piano keys, and their semitones above the octave's C.
+const NOTE_KEYS: [(Key, u32); 18] = [
+    (Key::A, 0),
+    (Key::W, 1),
+    (Key::S, 2),
+    (Key::E, 3),
+    (Key::D, 4),
+    (Key::F, 5),
+    (Key::T, 6),
+    (Key::G, 7),
+    (Key::Y, 8),
+    (Key::H, 9),
+    (Key::U, 10),
+    (Key::J, 11),
+    (Key::K, 12),
+    (Key::O, 13),
+    (Key::L, 14),
+    (Key::P, 15),
+    (Key::Semicolon, 16),
+    (Key::Quote, 17),
+]
+
+/// The C the keyboard's lowest key plays at octave 0 (middle C), and the octaves it moves.
+const MIDDLE_C: i32 = 60
+const MOST_OCTAVES: i32 = 3
+
+/// How many passes of the music the accompaniment plays.
+const PASSES: u32 = 8
+
+/// The port the tool serves the page on.
+const PORT: u16 = 8418
+
+/// A playing back: the take, the beat its first note's bar is moved to, the next note to press,
+/// and the notes down, each with the beat it's let go.
+struct Back {
+    notes: Vec<Struck>,
+    shift: f32,
+    next: u32,
+    down: Vec<(u32, f32)>,
+}
+
+pub struct Keys {
+    /// The take the audio tool chose to play (0: the page, played live).
+    chosen: u32,
+    started: bool,
+    acts: Vec<RingWriter<Act>>,
+    heard: Vec<RingReader<Heard>>,
+    /// The octave from middle C, how hard keys are played, and the accompaniment and the click.
+    octave: i32,
+    velocity: f32,
+    backing_on: bool,
+    click_on: bool,
+    /// The piano key each of `NOTE_KEYS` is holding down (0: none), and the pedal.
+    down: [u32; 18],
+    pedal: bool,
+    /// The accompaniment's beat as last heard, and the frames' time then (s).
+    beat: f32,
+    beat_time: f32,
+    /// Recording: the beat each piano key went down and how hard (-1 if up), the pedal's beat, and
+    /// the notes so far; and the last take recorded.
+    recording: bool,
+    opened: [f32; 109],
+    hardness: [f32; 109],
+    pedal_from: f32,
+    take_notes: Vec<Struck>,
+    last: Vec<Struck>,
+    back: Option<Back>,
+    /// A take being kept, and what the page says.
+    keeping: Option<Pending<u8>>,
+    status: String,
+    synced: f32,
+    fonts: Fonts,
+    renderer: Renderer,
+    list: DrawList,
+}
+
+pub fn init() -> Keys {
+    let fonts = Fonts::load()
+    let renderer = Renderer::new(fonts)
+    Keys {
+        chosen: 0,
+        started: false,
+        acts: Vec::new(),
+        heard: Vec::new(),
+        octave: 0,
+        velocity: 0.7,
+        backing_on: true,
+        click_on: false,
+        down: [0; 18],
+        pedal: false,
+        beat: 0.0,
+        beat_time: 0.0,
+        recording: false,
+        opened: [-1.0; 109],
+        hardness: [0.0; 109],
+        pedal_from: -1.0,
+        take_notes: Vec::new(),
+        last: Vec::new(),
+        back: None,
+        keeping: None,
+        status: String::from("Play: the keys are A to ' (black keys W E T Y U O P). R records."),
+        synced: -10.0,
+        fonts,
+        renderer,
+        list: DrawList::new(),
+    }
+}
+
+// ---- as a piece for the audio tool ---------------------------------------------------------------
+
+/// The take the audio tool asks for (`--take n`).
+pub fn choose(k: mut Keys, which: u32) {
+    k.chosen = which
+}
+
+/// How long the chosen take sounds, from the music's start (s).
+pub fn seconds(k: Keys) -> f32 {
+    var end = 0.0
+    for n in takes::notes_of(k.chosen) {
+        end = max(end, n.at + n.held)
+    }
+    end * 60.0 / TEMPO + 2.0
+}
+
+/// The chosen take as engine::perform's `describe` gives a piece (the audio tool reads it): its
+/// notes in seconds from the music's start, with the bar of the music (1 to `BARS`, in its pass)
+/// each fell in, its pedal, and the music's beats over it.
+pub fn describe(k: Keys) {
+    let notes = takes::notes_of(k.chosen)
+    let p = performance_of(notes)
+    print(
+        f"{{\"title\":\"Keys\",\"take\":\"{k.chosen}\",\"bars\":{BARS},\"beats_per_bar\":4,\"seconds\":{p.length}}}",
+    )
+    print("{\"voice\":0,\"name\":\"keys\"}")
+    for n in notes {
+        if n.key != PEDAL {
+            let (on, off) = (n.at * 60.0 / TEMPO, (n.at + n.held) * 60.0 / TEMPO)
+            let bar = u32(n.at / 4.0) % BARS + 1
+            print(
+                f"{{\"key\":{n.key},\"voice\":0,\"onset\":{on},\"release\":{off},\"velocity\":{n.velocity},\"bar\":{bar}}}",
+            )
+        }
+    }
+    for s in p.sustain {
+        print(f"{{\"sustain\":{s.at},\"depth\":{s.depth}}}")
+    }
+    var beat = 0.0
+    while f64(beat * 60.0 / TEMPO) <= p.length {
+        print(f"{{\"beat\":{beat * 60.0 / TEMPO}}}")
+        beat += 1.0
+    }
+}
+
+/// A take as a performance for the piano, from the music's start.
+fn performance_of(notes: [Struck]) -> Performance {
+    let seconds = |beats: f32| f64(beats * 60.0 / TEMPO)
+    var played: Vec<Played> = Vec::new()
+    var sustain = Vec::from([PedalPoint { at: 0.0, depth: 0.0 }])
+    var length = 0.0
+    for n in notes {
+        let (on, off) = (seconds(n.at), seconds(n.at + n.held))
+        length = max(length, off)
+        if n.key == PEDAL {
+            sustain.push(PedalPoint { at: on, depth: 1.0 })
+            sustain.push(PedalPoint { at: off, depth: 0.0 })
+        } else {
+            played.push(
+                Played {
+                    key: n.key,
+                    voice: 0,
+                    onset: on,
+                    release: off,
+                    velocity: n.velocity,
+                    note: 0,
+                },
+            )
+        }
+    }
+    played.sort_by(|a: Played, b: Played| a.onset < b.onset)
+    sustain.sort_by(|a: PedalPoint, b: PedalPoint| a.at < b.at)
+    Performance {
+        notes: played,
+        sustain,
+        soft: Vec::from([PedalPoint { at: 0.0, depth: 0.0 }]),
+        beats: Vec::from([0.0]),
+        length,
+    }
+}
+
+// ---- the page ----------------------------------------------------------------------------------
+
+pub fn frame(k: mut Keys, time: f32, width: u32, height: u32) {
+    if !k.started {
+        k.started = true
+        let live = piano(GRAND, performance_of(takes::notes_of(k.chosen)))
+        let (acts, heard) = start(take live, piano(GRAND, backing(PASSES)))
+        k.acts.push(take acts)
+        k.heard.push(take heard)
+    }
+    hear(mut k, time)
+    for e in events() {
+        act_on(mut k, e, time)
+    }
+    if time - k.synced > 0.5 {
+        // Ask the voice the beat now and then, so the page's beat doesn't drift from it.
+        send(mut k, Act { kind: NOTHING })
+        k.synced = time
+    }
+    play_back(mut k, time)
+    keep_answer(mut k)
+    let screen = vec2(f32(width), f32(height))
+    draw_page(mut k, time, screen)
+    k.renderer.fetch(mut k.fonts, k.list)
+    k.renderer.upload(k.list)
+    let out = begin_screen_pass(clear: vec4(0.98, 0.95, 0.88, 1.0))
+    k.renderer.draw(out, screen)
+    out.present()
+}
+
+fn send(k: mut Keys, a: Act) {
+    for i in 0..k.acts.len() {
+        let _ = k.acts[i].push(a)
+    }
+}
+
+/// The accompaniment's beat at frame time `time`, from the beat last heard.
+fn beat_now(k: Keys, time: f32) -> f32 {
+    k.beat + (time - k.beat_time) * TEMPO / 60.0
+}
+
+/// What the voice did, with the beat it fell on: the page's beat, and while recording, the notes.
+fn hear(k: mut Keys, time: f32) {
+    for i in 0..k.heard.len() {
+        var more = true
+        while more {
+            match k.heard[i].pop() {
+                Some(h) => {
+                    k.beat = h.beat
+                    k.beat_time = time
+                    if k.recording {
+                        record(mut k, h)
+                    }
+                },
+                None => more = false,
+            }
+        }
+    }
+}
+
+/// A heard act into the take: a key's or the pedal's note once it's let go.
+fn record(k: mut Keys, h: Heard) {
+    let a = h.act
+    if a.kind == PRESS && a.key <= 108 {
+        k.opened[a.key] = h.beat
+        k.hardness[a.key] = a.amount
+    } else if a.kind == RELEASE && a.key <= 108 && k.opened[a.key] >= 0.0 {
+        let from = k.opened[a.key]
+        k.take_notes.push(
+            Struck { key: a.key, at: from, held: h.beat - from, velocity: k.hardness[a.key] },
+        )
+        k.opened[a.key] = -1.0
+    } else if a.kind == voice::PEDAL {
+        if a.amount > 0.5 {
+            k.pedal_from = h.beat
+        } else if k.pedal_from >= 0.0 {
+            k.take_notes.push(
+                Struck { key: PEDAL, at: k.pedal_from, held: h.beat - k.pedal_from, velocity: 1.0 },
+            )
+            k.pedal_from = -1.0
+        }
+    }
+}
+
+/// Ends the recording: what's still down is let go at `beat`, and the notes, in order, are the
+/// last take.
+fn stop_recording(k: mut Keys, beat: f32) {
+    for key in 0..109 {
+        if k.opened[key] >= 0.0 {
+            let from = k.opened[key]
+            k.take_notes.push(
+                Struck { key, at: from, held: beat - from, velocity: k.hardness[key] },
+            )
+            k.opened[key] = -1.0
+        }
+    }
+    if k.pedal_from >= 0.0 {
+        k.take_notes.push(
+            Struck { key: PEDAL, at: k.pedal_from, held: beat - k.pedal_from, velocity: 1.0 },
+        )
+        k.pedal_from = -1.0
+    }
+    k.recording = false
+    k.take_notes.sort_by(|a: Struck, b: Struck| a.at < b.at)
+    k.last = replace(mut k.take_notes, Vec::new())
+    var played = 0
+    for n in k.last {
+        if n.key != PEDAL {
+            played += 1
+        }
+    }
+    k.status = if played == 0 {
+        String::from("Nothing played in that take.")
+    } else {
+        let first = u32(k.last[0].at / 4.0) % BARS + 1
+        f"Take: {played} notes from bar {first}. Q plays it back, Enter keeps it, Backspace drops it."
+    }
+}
+
+/// A key or the pointer on the page.
+fn act_on(k: mut Keys, e: Event, time: f32) {
+    match e {
+        Event::KeyDown { key, repeat, .. } => {
+            if repeat {
+                return
+            }
+            for i in 0..NOTE_KEYS.len() {
+                let (note_key, semis) = NOTE_KEYS[i]
+                if key == note_key && k.down[i] == 0 {
+                    let note = u32(MIDDLE_C + 12 * k.octave + i32(semis))
+                    k.down[i] = note
+                    send(mut k, Act { kind: PRESS, key: note, amount: k.velocity })
+                    return
+                }
+            }
+            if key == Key::Space && !k.pedal {
+                k.pedal = true
+                send(mut k, Act { kind: voice::PEDAL, amount: 1.0 })
+            } else if key == Key::Z {
+                k.octave = max(k.octave - 1, -MOST_OCTAVES)
+            } else if key == Key::X {
+                k.octave = min(k.octave + 1, MOST_OCTAVES)
+            } else if key == Key::C {
+                k.velocity = max(k.velocity - 0.1, 0.1)
+            } else if key == Key::V {
+                k.velocity = min(k.velocity + 0.1, 1.0)
+            } else if key == Key::B {
+                k.backing_on = !k.backing_on
+                send(mut k, Act { kind: BACKING, amount: if k.backing_on { 1.0 } else { 0.0 } })
+            } else if key == Key::M {
+                k.click_on = !k.click_on
+                send(mut k, Act { kind: CLICK, amount: if k.click_on { 1.0 } else { 0.0 } })
+            } else if key == Key::R {
+                if k.recording {
+                    stop_recording(mut k, beat_now(k, time))
+                } else if k.back.is_none() {
+                    k.recording = true
+                    k.take_notes = Vec::new()
+                    k.status = String::from("Recording: play, then R to stop.")
+                }
+            } else if key == Key::Q && !k.recording && k.last.len() > 0 {
+                start_back(mut k, time)
+            } else if key == Key::Enter && !k.recording && k.last.len() > 0 && k.keeping.is_none() {
+                k.keeping = Some(post("take", text_of(k.last).as_bytes()))
+                k.status = String::from("Keeping the take...")
+            } else if key == Key::Backspace && !k.recording {
+                k.last = Vec::new()
+                k.status = String::from("Dropped. R records another.")
+            }
+        },
+        Event::KeyUp { key, .. } => {
+            for i in 0..NOTE_KEYS.len() {
+                if key == NOTE_KEYS[i].0 && k.down[i] != 0 {
+                    send(mut k, Act { kind: RELEASE, key: k.down[i] })
+                    k.down[i] = 0
+                }
+            }
+            if key == Key::Space && k.pedal {
+                k.pedal = false
+                send(mut k, Act { kind: voice::PEDAL, amount: 0.0 })
+            }
+        },
+        _ => {},
+    }
+}
+
+/// Plays the last take back, its first note's bar moved to the next bar but one.
+fn start_back(k: mut Keys, time: f32) {
+    let first_bar = floor(k.last[0].at / 4.0) * 4.0
+    let next_bar = (floor(beat_now(k, time) / 4.0) + 2.0) * 4.0
+    k.back = Some(
+        Back { notes: k.last.clone(), shift: next_bar - first_bar, next: 0, down: Vec::new() },
+    )
+    k.status = String::from("Playing it back from the next bar...")
+}
+
+/// The playing back's notes due by now: pressed, and let go.
+fn play_back(k: mut Keys, time: f32) {
+    let now = beat_now(k, time)
+    var acts: Vec<Act> = Vec::new()
+    var done = false
+    match mut k.back {
+        Some(b) => {
+            while b.next < b.notes.len() && b.notes[b.next].at + b.shift <= now {
+                let n = b.notes[b.next]
+                if n.key == PEDAL {
+                    acts.push(Act { kind: voice::PEDAL, amount: 1.0 })
+                    b.down.push((PEDAL, n.at + n.held + b.shift))
+                } else {
+                    acts.push(Act { kind: PRESS, key: n.key, amount: n.velocity })
+                    b.down.push((n.key, n.at + n.held + b.shift))
+                }
+                b.next += 1
+            }
+            var i = 0
+            while i < b.down.len() {
+                let (key, end) = b.down[i]
+                if end <= now {
+                    acts.push(if key == PEDAL { Act { kind: voice::PEDAL, amount: 0.0 } } else {
+                        Act { kind: RELEASE, key }
+                    })
+                    let _ = b.down.remove(i)
+                } else {
+                    i += 1
+                }
+            }
+            done = b.next == b.notes.len() && b.down.len() == 0
+        },
+        None => {},
+    }
+    for a in acts {
+        send(mut k, a)
+    }
+    if done {
+        k.back = None
+        k.status = String::from(
+            "Played back. Enter keeps it, Backspace drops it, R records another.",
+        )
+    }
+}
+
+/// The tool's answer to a take being kept.
+fn keep_answer(k: mut Keys) {
+    var answered = None
+    match mut k.keeping {
+        Some(p) => answered = p.poll(),
+        None => {},
+    }
+    if let Some(result) = answered {
+        k.keeping = None
+        k.status = match result {
+            Ok(bytes) => match String::from_utf8(bytes.clone()) {
+                Some(said) => take said,
+                None => String::from("Kept."),
+            },
+            Err(_) => String::from(
+                "Not kept: open this page from `wrela tool keys`, which keeps takes.",
+            ),
+        }
+    }
+}
+
+// ---- drawing -----------------------------------------------------------------------------------
+
+/// The note names, from C.
+const NAMES: [Text; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+
+fn draw_page(k: mut Keys, time: f32, screen: vec2) {
+    k.list.clear(screen)
+    let size = max(screen.y * 0.032, 13.0)
+    let ink = vec4(0.24, 0.16, 0.11, 1.0)
+    let soft = vec4(0.24, 0.16, 0.11, 0.7)
+    let red = vec4(0.8, 0.2, 0.15, 1.0)
+    let left = size * 1.5
+    var y = size * 1.2
+    say(mut k.list, k.fonts, "Keys: play a melody over Snack Quest", vec2(left, y), size * 1.4, ink)
+    y += size * 2.4
+    let beat = beat_now(k, time)
+    let bar = u32(beat / 4.0) % BARS + 1
+    let in_bar = u32(beat - floor(beat / 4.0) * 4.0) + 1
+    let octave = 4 + k.octave
+    let line = f"Bar {bar}  beat {in_bar}     Octave C{octave}     Velocity {k.velocity:.1}     Accompaniment {if k.backing_on { "on" } else { "off" }}     Click {if k.click_on { "on" } else { "off" }}"
+    say(mut k.list, k.fonts, line.as_str(), vec2(left, y), size, ink)
+    y += size * 1.8
+    if k.recording {
+        k.list.rect(
+            Rect::new(left, y + size * 0.2, size * 0.8, size * 0.8),
+            red,
+            radius: size * 0.4,
+        )
+        let rec = f"Recording  {k.take_notes.len()} notes"
+        say(mut k.list, k.fonts, rec.as_str(), vec2(left + size * 1.3, y), size, red)
+    } else {
+        say(mut k.list, k.fonts, k.status.as_str(), vec2(left, y), size, ink)
+    }
+    y += size * 2.4
+    // The keyboard: the two octaves and a third the computer's keys play, held keys filled.
+    let white = [0, 2, 4, 5, 7, 9, 11, 12, 14, 16, 17]
+    let letters = ["A", "S", "D", "F", "G", "H", "J", "K", "L", ";", "'"]
+    let kw = min((screen.x - left * 2.0) / f32(white.len()), size * 4.0)
+    let kh = kw * 3.2
+    for i in 0..white.len() {
+        let semis = white[i]
+        let lit = held(k, semis)
+        let r = Rect::new(left + f32(i) * kw, y, kw - 2.0, kh)
+        k.list.rect(r, ink, radius: 4.0)
+        k.list.rect(Rect::new(r.x + 2.0, r.y + 2.0, r.w - 4.0, r.h - 4.0), if lit {
+            vec4(1.0, 0.8, 0.3, 1.0)
+        } else { vec4(1.0, 0.99, 0.96, 1.0) }, radius: 3.0)
+        say(
+            mut k.list,
+            k.fonts,
+            letters[i],
+            vec2(r.x + kw * 0.38, y + kh - size * 1.6),
+            size * 0.9,
+            soft,
+        )
+        let note = MIDDLE_C + 12 * k.octave + i32(semis)
+        let name = f"{NAMES[u32(note) % 12]}{note / 12 - 1}"
+        say(
+            mut k.list,
+            k.fonts,
+            name.as_str(),
+            vec2(r.x + kw * 0.3, y + kh - size * 3.0),
+            size * 0.7,
+            soft,
+        )
+    }
+    let blacks = [
+        (1, 0, "W"),
+        (3, 1, "E"),
+        (6, 3, "T"),
+        (8, 4, "Y"),
+        (10, 5, "U"),
+        (13, 7, "O"),
+        (15, 8, "P"),
+    ]
+    for (semis, after, letter) in blacks {
+        let lit = held(k, semis)
+        let r = Rect::new(left + (f32(after) + 0.68) * kw, y, kw * 0.62, kh * 0.6)
+        k.list.rect(r, if lit { vec4(0.9, 0.55, 0.1, 1.0) } else { ink }, radius: 3.0)
+        say(
+            mut k.list,
+            k.fonts,
+            letter,
+            vec2(r.x + r.w * 0.3, y + kh * 0.6 - size * 1.4),
+            size * 0.8,
+            vec4(1.0, 0.97, 0.9, 1.0),
+        )
+    }
+    y += kh + size * 1.6
+    let help = [
+        "Z X  octave down, up     C V  softer, harder     Space  sustain pedal",
+        "B  accompaniment on, off     M  click on, off",
+        "R  record, stop     Q  play the take back     Enter  keep it     Backspace  drop it",
+    ]
+    for h in help {
+        say(mut k.list, k.fonts, h, vec2(left, y), size * 0.85, soft)
+        y += size * 1.4
+    }
+}
+
+/// `text` at `at`, `s` high.
+fn say(list: mut DrawList, fonts: Fonts, text: str, at: vec2, s: f32, colour: vec4) {
+    let _ = list.text(fonts, Face::Sans, text, s, at, colour)
+}
+
+/// Whether the computer's key for `semis` above the octave's C is down.
+fn held(k: Keys, semis: u32) -> bool {
+    for i in 0..NOTE_KEYS.len() {
+        if NOTE_KEYS[i].1 == semis && k.down[i] != 0 {
+            return true
+        }
+    }
+    false
+}
+
+// ---- the tool ----------------------------------------------------------------------------------
+
+/// Builds the page, serves it on this machine, and keeps each take posted to it.
+pub fn tool() -> u32 {
+    print("keys: building the page...")
+    let built = match toolchain::build(
+        "ws/games/capybara/keys",
+        "keys/build",
+        toolchain::options(),
+    ).wait() {
+        Ok(b) => take b,
+        Err(e) => {
+            print(f"keys: {e.message()}")
+            return 1
+        },
+    }
+    if !built.ok {
+        for d in built.diagnostics {
+            print(d.message.as_str())
+        }
+        return 1
+    }
+    let started = match serve::start("keys/build", PORT).wait() {
+        Ok(s) => take s,
+        Err(e) => {
+            print(f"keys: {e.message()}")
+            return 1
+        },
+    }
+    print(f"keys: open {started.origin}/ in Chrome to play. Ctrl-C here stops it.")
+    loop {
+        if let Ok(p) = serve::next_post(started.server, 600.0).wait() {
+            let said = if p.path.as_str() == "/take" { keep(p.body) } else { String::from("") }
+            print(f"keys: {said}")
+            let _ = serve::answer(
+                started.server,
+                p.id,
+                Data::Bytes(Vec::from(said.as_bytes())),
+            ).wait()
+        }
+    }
+    0
+}
+
+/// Adds the take in `body` to takes.wrela: what the page says of it.
+fn keep(body: Data) -> String {
+    let Data::Bytes(bytes) = body else { return String::from("Not kept: a take too big to keep.") }
+    let Some(text) = String::from_utf8(bytes.clone()) else {
+        return String::from("Not kept: not text.")
+    }
+    let Some(notes) = read_take(text.as_str()) else { return String::from("Not kept: not a take.") }
+    let Ok(old) = files::read("keys/takes.wrela").wait() else {
+        return String::from("Not kept: takes.wrela can't be read.")
+    }
+    let Some(source) = String::from_utf8(take old) else {
+        return String::from("Not kept: takes.wrela isn't text.")
+    }
+    let Some(new) = with_take(source.as_str(), notes) else {
+        return String::from("Not kept: takes.wrela has no marker.")
+    }
+    let Ok(_) = files::write("keys/takes.wrela", new.as_bytes()).wait() else {
+        return String::from("Not kept: takes.wrela can't be written.")
+    }
+    var count = 0
+    var from = 0
+    while let Some(i) = new.as_str().slice(from, new.len()).find("pub const TAKE_") {
+        count += 1
+        from += i + 1
+    }
+    f"Kept as take {count}, in games/capybara/keys/takes.wrela. R records another."
+}

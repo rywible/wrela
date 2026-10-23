@@ -1,0 +1,141 @@
+// A take: what Ryan played on the keys, as notes on the music's beat. The page posts a take to the
+// keys tool as text, a note a line; the tool reads it back, checks it, and adds it to takes.wrela
+// as a constant, so a kept take is source that the page, the audio tool and an agent all read.
+
+use std::collections::Vec
+use std::string::String
+
+/// A note played: its key (MIDI's number, 21 to 108; 0 is the sustain pedal), when it went down
+/// and how long it was held (in beats of the music, from its first bar's first beat), and how hard
+/// (0 to 1; the pedal's is 1).
+pub struct Struck: Copy {
+    pub key: u32,
+    pub at: f32,
+    pub held: f32,
+    pub velocity: f32,
+}
+
+/// The sustain pedal's key in a take.
+pub const PEDAL: u32 = 0
+
+/// The most notes a take holds.
+pub const MOST: u32 = 4096
+
+/// Where the keys tool adds a take in takes.wrela: each above this line, the index below it.
+pub const MARKER: Text = "// ---- the takes: the keys tool adds each above this line ----"
+
+/// `notes` as a take's text: a note a line, its key, beat, length and velocity.
+pub fn text_of(notes: [Struck]) -> String {
+    var out = String::new()
+    for n in notes {
+        out.push_str(f"{n.key} {n.at:.4} {n.held:.4} {n.velocity:.3}\n".as_str())
+    }
+    out
+}
+
+/// A take's text read back: none if a line isn't a note (a key 0 or 21 to 108, a beat from 0 and
+/// under a day's, a length from 0 to 10 minutes' and a velocity from 0 to 1), or there are more
+/// than `MOST`.
+pub fn read_take(text: str) -> Option<Vec<Struck>> {
+    var out: Vec<Struck> = Vec::new()
+    for (from, to) in text.lines() {
+        let line = text.slice(from, to).trim()
+        if line.len() == 0 {
+            continue
+        }
+        let parts = line.split(" ")
+        if parts.len() != 4 || out.len() == MOST {
+            return None
+        }
+        let key = line.slice(parts[0].0, parts[0].1).parse_u32()?
+        let at = line.slice(parts[1].0, parts[1].1).parse_f32()?
+        let held = line.slice(parts[2].0, parts[2].1).parse_f32()?
+        let velocity = line.slice(parts[3].0, parts[3].1).parse_f32()?
+        let keyed = key == PEDAL || (key >= 21 && key <= 108)
+        if !keyed || !(at >= 0.0 && at < 216000.0) || !(held >= 0.0 && held <= 1500.0) {
+            return None
+        }
+        if !(velocity >= 0.0 && velocity <= 1.0) {
+            return None
+        }
+        out.push(Struck { key, at, held, velocity })
+    }
+    Some(out)
+}
+
+/// The source of takes.wrela with `notes` added as its next take: its constant above the marker,
+/// and the index below it written again. None if the source has no marker.
+pub fn with_take(source: str, notes: [Struck]) -> Option<String> {
+    let at = source.find(MARKER)?
+    var count = 0
+    var from = 0
+    while let Some(i) = source.slice(from, at).find("pub const TAKE_") {
+        count += 1
+        from += i + 1
+    }
+    let n = count + 1
+    var out = String::from(source.slice(0, at))
+    out.push_str(f"/// Take {n}: {notes.len()} notes.\n".as_str())
+    out.push_str(f"pub const TAKE_{n}: [Struck; {notes.len()}] = [\n".as_str())
+    for s in notes {
+        out.push_str(
+            f"    Struck {{ key: {s.key}, at: {s.at:.4}, held: {s.held:.4}, velocity: {s.velocity:.3} }},\n"
+                .as_str(),
+        )
+    }
+    out.push_str("]\n\n")
+    out.push_str(index(n).as_str())
+    Some(out)
+}
+
+/// The marker and the index below it, for `count` takes.
+fn index(count: u32) -> String {
+    var out = String::from(MARKER)
+    out.push_str("\n\n/// How many takes there are.\n")
+    out.push_str(f"pub const COUNT: u32 = {count}\n\n".as_str())
+    out.push_str("/// Take `n`'s notes (from 1), or none past `COUNT`.\n")
+    out.push_str("pub fn notes_of(n: u32) -> Vec<Struck> {\n")
+    for k in 1..count + 1 {
+        out.push_str(f"    if n == {k} {{\n        return Vec::from(TAKE_{k})\n    }}\n".as_str())
+    }
+    out.push_str("    let _ = n\n    Vec::new()\n}\n")
+    out
+}
+
+// ---- tests -------------------------------------------------------------------------------------
+
+@test
+fn a_takes_text_reads_back_and_a_wrong_line_does_not() {
+    let notes = [
+        Struck { key: 72, at: 1.5, held: 0.25, velocity: 0.7 },
+        Struck { key: PEDAL, at: 2.0, held: 4.0, velocity: 1.0 },
+    ]
+    let Some(back) = read_take(text_of(notes).as_str()) else { panic("a take reads back") }
+    assert(back.len() == 2 && back[0].key == 72 && back[0].at == 1.5 && back[1].held == 4.0)
+    assert(read_take("72 1.5 0.25").is_none(), "a line short")
+    assert(read_take("12 1.5 0.25 0.7").is_none(), "a key off the keyboard")
+    assert(read_take("60 -1 0.25 0.7").is_none(), "a beat before the music")
+    assert(read_take("60 1 0.25 2.0").is_none(), "a velocity over 1")
+    assert(read_take("60 1 0.25 x").is_none(), "not a number")
+    assert(read_take("").expect("no notes").len() == 0)
+}
+
+@test
+fn a_take_goes_above_the_marker_and_the_index_counts_it() {
+    let start = f"// takes\n\nuse struck::Struck\n\n{index(0)}"
+    let one = [Struck { key: 60, at: 0.0, held: 1.0, velocity: 0.5 }]
+    let Some(first) = with_take(start.as_str(), one) else { panic("a marker") }
+    let Some(second) = with_take(first.as_str(), one) else { panic("still a marker") }
+    let s = second.as_str()
+    assert(
+        s.find("pub const TAKE_1: [Struck; 1]").is_some() && s.find("pub const TAKE_2").is_some(),
+    )
+    assert(
+        s.find("pub const COUNT: u32 = 2").is_some() &&
+            s.find("return Vec::from(TAKE_2)").is_some(),
+    )
+    let Some(marker) = s.find(MARKER) else { panic("the marker stays") }
+    let Some(two) = s.find("TAKE_2") else { panic("take 2") }
+    assert(two < marker, "the takes above the marker")
+    assert(with_take("no marker", one).is_none())
+}

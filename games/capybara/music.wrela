@@ -27,7 +27,7 @@
 // The game's main makes the music's piano once (`music`), on the program's thread, and gives it to
 // the game's voice (sound.wrela), which plays it with the game's sounds over it.
 
-use engine::perform::{Mark, Pedal, Performance, Taste, bar, bars, perform}
+use engine::perform::{Mark, Pedal, Performance, Played, Taste, bar, bars, perform}
 use engine::piano::{Piano, piano, play_piano}
 use engine::piano_grand::GRAND
 use engine::score::{Level, Score, meter, score}
@@ -286,7 +286,7 @@ pub fn looped(passes: u32) -> Score {
 /// light pedal, changed with each bass note.
 pub fn taste() -> Taste {
     Taste {
-        tempo: 150.0,
+        tempo: TEMPO,
         lead: "melody",
         voicing: 1.1,
         under: 0.92,
@@ -321,6 +321,25 @@ pub fn performance(passes: u32) -> Performance {
     let marks = marks(passes)
     perform(looped(passes), taste(), marks)
 }
+
+/// The piece's accompaniment, its melody left out, for a person to play a melody over (keys/):
+/// `passes` passes, as the game plays them, at `TEMPO`.
+pub fn backing(passes: u32) -> Performance {
+    let s = looped(passes)
+    var p = perform(s, taste(), marks(passes))
+    let melody = s.voice_named("melody")
+    var kept: Vec<Played> = Vec::new()
+    for n in p.notes {
+        if n.voice != melody {
+            kept.push(n)
+        }
+    }
+    p.notes = take kept
+    p
+}
+
+/// Quarter notes a minute, as `taste` plays them.
+pub const TEMPO: f32 = 150.0
 
 /// The music: `PASSES` passes of the piece on engine::piano's grand, made on the program's thread,
 /// for the game's voice to play (sound.wrela).

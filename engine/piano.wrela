@@ -504,6 +504,8 @@ pub struct Piano {
     next: u32,
     sustain: Vec<Point>,
     soft: Vec<Point>,
+    /// The sustain pedal as a person holds it now (`hold_pedal`), over the performance's.
+    live_pedal: f32,
     sample: u32,
     // Each key: its resonators (`groups` vec4s from `first`), and its state.
     first: [u32; 88],
@@ -599,6 +601,7 @@ pub fn piano(model: Model, performance: Performance) -> Piano {
         events: events(performance),
         next: 0,
         sustain: points(performance.sustain),
+        live_pedal: 0.0,
         soft: points(performance.soft),
         sample: 0,
         first: [0; 88],
@@ -1399,10 +1402,45 @@ pub fn play_piano(p: mut Piano, left: mut [f32], right: mut [f32]) {
         }
         from = until
     }
-    let pedal = depth_at(p.sustain, p.sample)
+    let pedal = max(depth_at(p.sustain, p.sample), p.live_pedal)
     p.settle(pedal)
     p.body(pedal, mut left, mut right)
     p.sample += 128
+}
+
+// ---- a person playing ---------------------------------------------------------------------------
+
+/// Strikes `key` (MIDI's number: 60 is middle C) at `velocity` (0 to 1), as a person plays it, at
+/// the start of the next quantum `play_piano` plays, over whatever the performance plays. A key
+/// off the keyboard does nothing. Call it on the audio thread, from the voice that plays `p`.
+@audio
+pub fn press(p: mut Piano, key: u32, velocity: f32) {
+    if key < LOWEST || key >= LOWEST + KEYS {
+        return
+    }
+    p.strike(key - LOWEST, clamp(velocity, 0.001, 1.0), 0)
+}
+
+/// Lets go of `key`, as a person does, at the start of the next quantum: its damper falls unless
+/// the pedal holds it, or the key is still down for another note.
+@audio
+pub fn release(p: mut Piano, key: u32) {
+    if key < LOWEST || key >= LOWEST + KEYS {
+        return
+    }
+    let k = key - LOWEST
+    if p.held[k] > 0 {
+        p.held[k] -= 1
+        if p.held[k] == 0 {
+            p.let_go(k, 0)
+        }
+    }
+}
+
+/// Holds the sustain pedal to `depth` (0 up, 1 down), as a person does, from the next quantum.
+@audio
+pub fn hold_pedal(p: mut Piano, depth: f32) {
+    p.live_pedal = clamp(depth, 0.0, 1.0)
 }
 
 /// One note, `key` struck at `velocity` and let go after `held` seconds, no pedal.
@@ -1633,4 +1671,52 @@ fn a_blow_comes_in_over_the_board() {
         f"the first 4 ms are {db_of(full / early)} dB under the full sound",
     )
     assert(db_of(full / later) < 1.0)
+}
+
+/// A performance of nothing, for a piano played live.
+fn nothing() -> Performance {
+    let none = Vec::from([PedalPoint { at: 0.0, depth: 0.0 }])
+    Performance {
+        notes: Vec::new(),
+        sustain: none.clone(),
+        soft: none,
+        beats: Vec::from([0.0]),
+        length: 0.0,
+    }
+}
+
+/// The energy of the next `quanta` quanta of `p`, both channels.
+fn loudness(p: mut Piano, quanta: u32) -> f32 {
+    var l = [0.0; 128]
+    var r = [0.0; 128]
+    var e = 0.0
+    for _ in 0..quanta {
+        play_piano(mut p, mut l, mut r)
+        for i in 0..128 {
+            e += l[i] * l[i] + r[i] * r[i]
+        }
+    }
+    e
+}
+
+@test
+fn a_key_a_person_presses_sounds_and_its_damper_stops_it_when_let_go() {
+    // A piano with nothing to play, played live: middle C pressed rings, and once let go its
+    // damper takes it down far faster than it rings held.
+    var held = piano(piano_grand::GRAND, nothing())
+    var let_go = piano(piano_grand::GRAND, nothing())
+    press(mut held, 60, 0.7)
+    press(mut let_go, 60, 0.7)
+    let start = loudness(mut held, 20)
+    let _ = loudness(mut let_go, 20)
+    assert(start > 1.0e-3, f"the key sounds: {start}")
+    release(mut let_go, 60)
+    // A second later.
+    let _ = loudness(mut held, 375)
+    let _ = loudness(mut let_go, 375)
+    let (h, l) = (loudness(mut held, 20), loudness(mut let_go, 20))
+    assert(l < h * 0.01, f"let go: {l}, held: {h}")
+    // Off the keyboard: nothing, and no trap.
+    press(mut held, 10, 0.5)
+    release(mut held, 120)
 }

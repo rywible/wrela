@@ -1,0 +1,15 @@
+// The takes Ryan kept on the keys: `wrela tool keys` writes this file as he keeps each one, so
+// don't edit it by hand. Each is the notes he played, on the music's beat (struck.wrela's `Struck`).
+
+use struck::Struck
+
+// ---- the takes: the keys tool adds each above this line ----
+
+/// How many takes there are.
+pub const COUNT: u32 = 0
+
+/// Take `n`'s notes (from 1), or none past `COUNT`.
+pub fn notes_of(n: u32) -> Vec<Struck> {
+    let _ = n
+    Vec::new()
+}
