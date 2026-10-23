@@ -927,6 +927,36 @@ fn a_jump_off_the_bottom_of_water_is_a_kick_not_a_launch() {
 }
 
 @test
+fn a_kick_off_the_bottom_of_water_waits_its_turn_too() {
+    // Off the lake's floor, then a press at once: it waits the kicks' cooldown, then kicks.
+    var w = world(0)
+    w.body = spawn(vec2(112.0, -6.5 + RADIUS))
+    w.body.wet = FEEL.wet_ticks
+    step(mut w, Pad { bits: 0 })
+    step(mut w, Pad { bits: JUMP | PRESS })
+    assert(w.body.cooldown == FEEL.kick_cooldown, "the kick's cooldown")
+    step(mut w, Pad { bits: JUMP | PRESS })
+    assert(w.body.buffer > 0, "too soon: it waits")
+    var kicked = 0
+    for i in 0..FEEL.kick_cooldown {
+        step(mut w, Pad { bits: JUMP })
+        if w.body.cooldown == FEEL.kick_cooldown && kicked == 0 {
+            kicked = i + 2
+        }
+    }
+    assert(kicked == FEEL.kick_cooldown, f"kicked {kicked} ticks after")
+    // Back on the floor before the cooldown ends, a press waits there too, and then jumps.
+    var b = spawn(vec2(112.0, -6.5 + RADIUS))
+    b.wet = FEEL.wet_ticks
+    b.cooldown = 3
+    body::step(mut b, Pad { bits: 0 }, LAB, FEEL)
+    body::step(mut b, Pad { bits: JUMP | PRESS }, LAB, FEEL)
+    assert(b.grounded() && b.buffer > 0, "it waits on the floor")
+    body::step(mut b, Pad { bits: JUMP }, LAB, FEEL)
+    assert(!b.grounded() && b.cooldown == FEEL.kick_cooldown, "then kicks off it")
+}
+
+@test
 fn up_and_down_in_rhythm_is_a_dolphin_kick_past_the_wet_speed() {
     // Up and down in turn, a change every `dolphin_gap` ticks, right held: past the wet speed,
     // never past the dolphin's most.

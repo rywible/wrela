@@ -255,13 +255,13 @@ fn pad_in(action: u32, last: u32, i: u32, s: Settings) -> Pad {
     Pad { bits: if i == 0 { pressed(action, last) } else { action } }
 }
 
-/// Holds `k`'s action from its state for up to a layer's ticks, stopping where the segment ends
-/// or the state can't make it.
+/// Holds `k`'s action from its state for up to `most` ticks (a layer's, or the fewer left to the
+/// search), stopping where the segment ends or the state can't make it.
 @deterministic
-fn act(k: mut Kid, goal: Goal, s: Settings) {
+fn act(k: mut Kid, goal: Goal, s: Settings, most: u32) {
     let from = k.last
     k.last = k.action & !PRESS
-    for i in 0..s.every {
+    for i in 0..most {
         step(mut k.w, pad_in(k.action, from, i, s))
         if !alive(k.w, goal) {
             return
@@ -373,9 +373,10 @@ pub fn search(entry: World, last: u32, goal: Goal, settings: Settings) -> Search
 }
 
 impl Search {
-    /// The ticks searched: a layer's for each layer so far.
+    /// The ticks searched: a layer's for each layer so far, the last only to the most the segment
+    /// may take.
     pub fn ticks(self) -> u32 {
-        self.links.len() * self.settings.every
+        min(self.links.len() * self.settings.every, self.settings.ticks)
     }
 
     /// The states the layer keeps.
@@ -391,6 +392,12 @@ impl Search {
         }
         let goal = self.goal
         let settings = self.settings
+        // A layer goes no further than the segment may take.
+        let most = min(settings.every, settings.ticks - self.ticks())
+        if most == 0 {
+            self.stopped = true
+            return
+        }
         // Every action held from each state: node `i`'s kid of action `a` is `kids[i * n + a]`.
         let n = count(settings)
         var kids: Vec<Kid> = Vec::with_capacity(self.nodes.len() * n)
@@ -399,7 +406,7 @@ impl Search {
                 kids.push(kid(node, action(settings, a)))
             }
         }
-        kids.par_each_mut(|k| act(mut k, goal, settings))
+        kids.par_each_mut(|k| act(mut k, goal, settings, most))
         self.states += kids.len()
         // The kids that ended: the earliest tick, then the best pick.
         var best: Option<Pick> = None

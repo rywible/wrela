@@ -9,14 +9,16 @@
 // changes how a run plays starts a new one, and the runs of the old one are dropped.
 
 use course::{COURSES, course}
+use feel::HZ
 use pad::{Hold, pad_of}
 use proofs::LAB_RUN
 use std::collections::Vec
 use std::serialize::{LoadError, Serialize, load, save}
 use world::{LAB, LEVEL, Snap, World, step, world}
 
-/// The version of play the runs are for: 2 since a short press became the lowest hop.
-pub const BOARD: u32 = 2
+/// The version of play the runs are for: 3 since a kick off the bottom of water waits the kicks'
+/// cooldown.
+pub const BOARD: u32 = 3
 
 /// Where the game keeps its runs, in its own storage.
 pub const SAVED: Text = "capybara/runs"
@@ -37,6 +39,13 @@ pub const HUMAN: u32 = 2
 /// How many runs a category keeps.
 pub const KEPT: u32 = 5
 
+/// The longest attempt a replay may be: half an hour of ticks. A longer one isn't kept, so
+/// verifying a stored run never plays more than this.
+pub const MOST_TICKS: u32 = 30 * 60 * HZ
+
+/// The most runs a board holds: the best `KEPT` of each course's two categories.
+const MOST_RUNS: u32 = COURSES * 2 * KEPT
+
 /// A finished attempt: its course, who made it, its time (the clock's ticks on reaching the goal),
 /// the snacks it found (a bit each), its deaths, and its pads.
 pub struct Replay: Clone + Serialize {
@@ -49,9 +58,9 @@ pub struct Replay: Clone + Serialize {
 }
 
 /// The replay of the attempt in snapshot `s` (world.wrela's `present_live`), once it has reached
-/// the goal: none before, or if its run outgrew its record.
+/// the goal: none before, if its run outgrew its record, or if it took longer than `MOST_TICKS`.
 pub fn replay(s: Snap, who: u32) -> Option<Replay> {
-    if s.finished == 0 || s.run.over == 1 {
+    if s.finished == 0 || s.finished > MOST_TICKS || s.run.over == 1 {
         return None
     }
     Some(
@@ -82,19 +91,23 @@ pub fn played(r: Replay, ticks: u32) -> World {
     w
 }
 
-/// How many ticks `r`'s pads last.
-pub fn length(r: Replay) -> u32 {
+/// How many ticks `r`'s pads last: none past `MOST_TICKS`.
+pub fn length(r: Replay) -> Option<u32> {
     var n = 0
     for h in r.holds {
+        if h.ticks > MOST_TICKS - n {
+            return None
+        }
         n += h.ticks
     }
-    n
+    Some(n)
 }
 
 /// Whether `r` plays, on the sim, to the goal on the tick it says, with the snacks and the deaths
-/// it says: what it claims is what the rules make of its pads.
+/// it says: what it claims is what the rules make of its pads. A run of no ticks, or longer than
+/// `MOST_TICKS`, doesn't, and isn't played.
 pub fn verify(r: Replay) -> bool {
-    if r.course >= COURSES || r.who > HUMAN || length(r) != r.ticks {
+    if r.course >= COURSES || r.who > HUMAN || r.ticks == 0 || length(r) != Some(r.ticks) {
         return false
     }
     let w = played(r, r.ticks)
@@ -178,12 +191,12 @@ impl Board {
 }
 
 /// The board in `bytes`: its runs that are of this version of play and that verify; an empty board
-/// for anything else.
+/// for anything else, and for more runs than a board holds (each verified is played).
 pub fn read(bytes: take Vec<u8>) -> Board {
     let loaded: Result<Board, LoadError> = load(take bytes)
     let Ok(b) = loaded else { return board() }
     var out = board()
-    if b.version != BOARD {
+    if b.version != BOARD || b.runs.len() > MOST_RUNS {
         return out
     }
     for r in b.runs {
@@ -285,7 +298,7 @@ fn pose(w: World, walked: f32) -> Pose {
 use std::input::{Event, Key, Mods}
 use engine::run::TickInput
 use feel::STEP
-use pad::{DOWN, JUMP, LEFT, PRESS, RIGHT, UP}
+use pad::{DOWN, JUMP, LEFT, PRESS, RIGHT, UP, hold}
 use world::{live, present_live, tick_live}
 
 /// A run of `who` at course `c` that claims `ticks` and these snacks, unchecked.
@@ -348,6 +361,27 @@ fn a_stored_board_reads_back_only_runs_that_verify_on_this_version() {
     assert(read(Vec::from([1, 2, 3])).runs.len() == 0, "bytes that aren't a board")
 }
 
+@test
+fn a_stored_run_of_no_ticks_too_many_or_too_long_isnt_played() {
+    assert(!verify(claimed(LAB, ticks: 0, snacks: 0)), "an empty run")
+    var over = claimed(LAB, ticks: 1, snacks: 0)
+    over.holds = Vec::from([hold(bits: 0, ticks: 0xffffffff), hold(bits: 0, ticks: 1)])
+    assert(!verify(over), "holds whose ticks overflow")
+    var long = claimed(LAB, ticks: MOST_TICKS + 1, snacks: 0)
+    long.holds = Vec::from([hold(bits: 0, ticks: MOST_TICKS), hold(bits: 0, ticks: 1)])
+    assert(!verify(long), "a run past the longest kept")
+    var b = board()
+    b.runs.push(claimed(LAB, ticks: 0, snacks: 0))
+    assert(read(bytes(b)).runs.len() == 0, "an empty run isn't read")
+    var mine = tool_assisted(LAB)[0].clone()
+    mine.who = YOU
+    var many = board()
+    for _ in 0..MOST_RUNS + 1 {
+        many.runs.push(mine.clone())
+    }
+    assert(read(bytes(many)).runs.len() == 0, "more runs than a board holds")
+}
+
 /// The key events that take the controls from holding `from` to holding `to` (pad.wrela's bits).
 fn keys(from: u32, to: u32) -> Vec<Event> {
     var out: Vec<Event> = Vec::new()
@@ -397,7 +431,7 @@ fn a_live_attempt_played_from_keys_is_recorded_as_a_replay_that_plays_it_again()
     }
     assert(l.world.finished > 0, "the lab's run reaches its goal")
     let Some(r) = replay(present_live(l), YOU) else { panic("a finished attempt has a replay") }
-    assert(r.ticks == l.world.finished && length(r) == r.ticks, f"{length(r)} ticks")
+    assert(r.ticks == l.world.finished && length(r) == Some(r.ticks), f"{r.ticks} ticks")
     assert(verify(r), "it plays again to the same goal")
     // Its pads are the run's, tick for tick, to the goal.
     var given: Vec<u32> = Vec::new()

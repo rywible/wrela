@@ -29,11 +29,11 @@ use std::gpu::{begin_screen_pass}
 use std::input::{Event, Key, events}
 use std::io::{Pending, post, print}
 use std::tool::blob::Data
-use std::tool::{files, serve, toolchain}
+use std::tool::{MOST_BYTES, files, serve, toolchain}
 use struck::{PEDAL, Struck, read_take, text_of, with_take}
 use ui::draw::{DrawList, Rect, Renderer}
 use ui::text::{Face, Fonts}
-use voice::{Act, BACKING, CLICK, Heard, NOTHING, PRESS, RELEASE, start}
+use voice::{Act, BACKING, CLICK, Heard, NOTHING, PRESS, RELEASE, STOP, start}
 
 /// The keys of the computer's keyboard that are piano keys, and their semitones above the octave's C.
 const NOTE_KEYS: [(Key, u32); 18] = [
@@ -93,17 +93,16 @@ pub struct Keys {
     /// The accompaniment's beat as last heard, and the frames' time then (s).
     beat: f32,
     beat_time: f32,
-    /// Recording: the beat each piano key went down and how hard (-1 if up), the pedal's beat, and
-    /// the notes so far; and the last take recorded.
-    recording: bool,
-    opened: [f32; 109],
-    hardness: [f32; 109],
-    pedal_from: f32,
-    take_notes: Vec<Struck>,
+    /// The recording, if one is going; the last take recorded, and how many have been.
+    recording: Option<Taking>,
     last: Vec<Struck>,
+    taken: u32,
     back: Option<Back>,
-    /// A take being kept, and what the page says.
+    /// A take being kept and which (by `taken`), the last take kept (0: none), and what the page
+    /// says.
     keeping: Option<Pending<u8>>,
+    keeping_of: u32,
+    kept: u32,
     status: String,
     synced: f32,
     fonts: Fonts,
@@ -127,14 +126,13 @@ pub fn init() -> Keys {
         pedal: false,
         beat: 0.0,
         beat_time: 0.0,
-        recording: false,
-        opened: [-1.0; 109],
-        hardness: [0.0; 109],
-        pedal_from: -1.0,
-        take_notes: Vec::new(),
+        recording: None,
         last: Vec::new(),
+        taken: 0,
         back: None,
         keeping: None,
+        keeping_of: 0,
+        kept: 0,
         status: String::from("Play: the keys are A to ' (black keys W E T Y U O P). R records."),
         synced: -10.0,
         fonts,
@@ -192,14 +190,13 @@ pub fn describe(k: Keys) {
 fn performance_of(notes: [Struck]) -> Performance {
     let seconds = |beats: f32| f64(beats * 60.0 / TEMPO)
     var played: Vec<Played> = Vec::new()
-    var sustain = Vec::from([PedalPoint { at: 0.0, depth: 0.0 }])
+    var pedals: Vec<(f64, f64)> = Vec::new()
     var length = 0.0
     for n in notes {
         let (on, off) = (seconds(n.at), seconds(n.at + n.held))
         length = max(length, off)
         if n.key == PEDAL {
-            sustain.push(PedalPoint { at: on, depth: 1.0 })
-            sustain.push(PedalPoint { at: off, depth: 0.0 })
+            pedals.push((on, off))
         } else {
             played.push(
                 Played {
@@ -214,7 +211,16 @@ fn performance_of(notes: [Struck]) -> Performance {
         }
     }
     played.sort_by(|a: Played, b: Played| a.onset < b.onset)
-    sustain.sort_by(|a: PedalPoint, b: PedalPoint| a.at < b.at)
+    // The piano eases between a pedal's points, and the pedal was held at once (`hold_pedal`): two
+    // points at each change, so it's down from the beat it went down to the beat it came up.
+    pedals.sort_by(|a: (f64, f64), b: (f64, f64)| a.0 < b.0)
+    var sustain = Vec::from([PedalPoint { at: 0.0, depth: 0.0 }])
+    for (on, off) in pedals {
+        sustain.push(PedalPoint { at: on, depth: 0.0 })
+        sustain.push(PedalPoint { at: on, depth: 1.0 })
+        sustain.push(PedalPoint { at: off, depth: 1.0 })
+        sustain.push(PedalPoint { at: off, depth: 0.0 })
+    }
     Performance {
         notes: played,
         sustain,
@@ -265,7 +271,8 @@ fn beat_now(k: Keys, time: f32) -> f32 {
     k.beat + (time - k.beat_time) * TEMPO / 60.0
 }
 
-/// What the voice did, with the beat it fell on: the page's beat, and while recording, the notes.
+/// What the voice did, with the beat it fell on: the page's beat, and while recording, the notes,
+/// to the end of the take once its stop is heard.
 fn hear(k: mut Keys, time: f32) {
     for i in 0..k.heard.len() {
         var more = true
@@ -274,8 +281,16 @@ fn hear(k: mut Keys, time: f32) {
                 Some(h) => {
                     k.beat = h.beat
                     k.beat_time = time
-                    if k.recording {
-                        record(mut k, h)
+                    var ended = None
+                    match mut k.recording {
+                        Some(t) => ended = t.heard(h),
+                        None => {},
+                    }
+                    if let Some(notes) = ended {
+                        k.recording = None
+                        k.last = notes.clone()
+                        k.taken += 1
+                        k.status = said(k.last)
                     }
                 },
                 None => more = false,
@@ -284,52 +299,75 @@ fn hear(k: mut Keys, time: f32) {
     }
 }
 
-/// A heard act into the take: a key's or the pedal's note once it's let go.
-fn record(k: mut Keys, h: Heard) {
-    let a = h.act
-    if a.kind == PRESS && a.key <= 108 {
-        k.opened[a.key] = h.beat
-        k.hardness[a.key] = a.amount
-    } else if a.kind == RELEASE && a.key <= 108 && k.opened[a.key] >= 0.0 {
-        let from = k.opened[a.key]
-        k.take_notes.push(
-            Struck { key: a.key, at: from, held: h.beat - from, velocity: k.hardness[a.key] },
-        )
-        k.opened[a.key] = -1.0
-    } else if a.kind == voice::PEDAL {
-        if a.amount > 0.5 {
-            k.pedal_from = h.beat
-        } else if k.pedal_from >= 0.0 {
-            k.take_notes.push(
-                Struck { key: PEDAL, at: k.pedal_from, held: h.beat - k.pedal_from, velocity: 1.0 },
-            )
-            k.pedal_from = -1.0
-        }
+/// A recording, as the voice hears it: the beat each piano key went down and how hard (-1 if up),
+/// the pedal's beat, the notes so far, and whether its stop has been sent (once: a second could
+/// end the next recording).
+struct Taking {
+    opened: [f32; 109],
+    hardness: [f32; 109],
+    pedal_from: f32,
+    notes: Vec<Struck>,
+    stopping: bool,
+}
+
+fn taking() -> Taking {
+    Taking {
+        opened: [-1.0; 109],
+        hardness: [0.0; 109],
+        pedal_from: -1.0,
+        notes: Vec::new(),
+        stopping: false,
     }
 }
 
-/// Ends the recording: what's still down is let go at `beat`, and the notes, in order, are the
-/// last take.
-fn stop_recording(k: mut Keys, beat: f32) {
-    for key in 0..109 {
-        if k.opened[key] >= 0.0 {
-            let from = k.opened[key]
-            k.take_notes.push(
-                Struck { key, at: from, held: beat - from, velocity: k.hardness[key] },
+impl Taking {
+    /// A heard act into the take: a key's or the pedal's note once it's let go. The stop ends it:
+    /// what's still down is let go then, and the notes, in order, are the take.
+    fn heard(mut self, h: Heard) -> Option<Vec<Struck>> {
+        let a = h.act
+        if a.kind == PRESS && a.key <= 108 {
+            self.opened[a.key] = h.beat
+            self.hardness[a.key] = a.amount
+        } else if a.kind == RELEASE && a.key <= 108 && self.opened[a.key] >= 0.0 {
+            self.let_go(a.key, h.beat)
+        } else if a.kind == voice::PEDAL {
+            if a.amount > 0.5 {
+                self.pedal_from = h.beat
+            } else {
+                self.lift(h.beat)
+            }
+        } else if a.kind == STOP {
+            for key in 0..109 {
+                if self.opened[key] >= 0.0 {
+                    self.let_go(key, h.beat)
+                }
+            }
+            self.lift(h.beat)
+            self.notes.sort_by(|a: Struck, b: Struck| a.at < b.at)
+            return Some(replace(mut self.notes, Vec::new()))
+        }
+        None
+    }
+
+    fn let_go(mut self, key: u32, beat: f32) {
+        let from = self.opened[key]
+        self.notes.push(Struck { key, at: from, held: beat - from, velocity: self.hardness[key] })
+        self.opened[key] = -1.0
+    }
+
+    fn lift(mut self, beat: f32) {
+        if self.pedal_from >= 0.0 {
+            self.notes.push(
+                Struck {
+                    key: PEDAL,
+                    at: self.pedal_from,
+                    held: beat - self.pedal_from,
+                    velocity: 1.0,
+                },
             )
-            k.opened[key] = -1.0
+            self.pedal_from = -1.0
         }
     }
-    if k.pedal_from >= 0.0 {
-        k.take_notes.push(
-            Struck { key: PEDAL, at: k.pedal_from, held: beat - k.pedal_from, velocity: 1.0 },
-        )
-        k.pedal_from = -1.0
-    }
-    k.recording = false
-    k.take_notes.sort_by(|a: Struck, b: Struck| a.at < b.at)
-    k.last = replace(mut k.take_notes, Vec::new())
-    k.status = said(k.last)
 }
 
 /// What the page says of take `notes` (in order) once it's recorded: how many notes, and the bar
@@ -385,19 +423,35 @@ fn act_on(k: mut Keys, e: Event, time: f32) {
                 k.click_on = !k.click_on
                 send(mut k, Act { kind: CLICK, amount: if k.click_on { 1.0 } else { 0.0 } })
             } else if key == Key::R {
-                if k.recording {
-                    stop_recording(mut k, beat_now(k, time))
-                } else if k.back.is_none() {
-                    k.recording = true
-                    k.take_notes = Vec::new()
+                // The take ends once the voice has done what was sent before (`hear`).
+                var stops = false
+                match mut k.recording {
+                    Some(t) => {
+                        stops = !t.stopping
+                        t.stopping = true
+                    },
+                    None => {},
+                }
+                if stops {
+                    send(mut k, Act { kind: STOP })
+                } else if k.recording.is_none() && k.back.is_none() {
+                    k.recording = Some(taking())
                     k.status = String::from("Recording: play, then R to stop.")
                 }
-            } else if key == Key::Q && !k.recording && k.last.len() > 0 && k.back.is_none() {
+            } else if key == Key::Q &&
+                k.recording.is_none() &&
+                k.last.len() > 0 &&
+                k.back.is_none() {
                 start_back(mut k, time)
-            } else if key == Key::Enter && !k.recording && k.last.len() > 0 && k.keeping.is_none() {
-                k.keeping = Some(post("take", text_of(k.last).as_bytes()))
-                k.status = String::from("Keeping the take...")
-            } else if key == Key::Backspace && !k.recording {
+            } else if key == Key::Enter && k.recording.is_none() && k.last.len() > 0 {
+                if k.kept == k.taken {
+                    k.status = String::from("That take is kept. R records another.")
+                } else if k.keeping.is_none() {
+                    k.keeping = Some(post("take", text_of(k.last).as_bytes()))
+                    k.keeping_of = k.taken
+                    k.status = String::from("Keeping the take...")
+                }
+            } else if key == Key::Backspace && k.recording.is_none() {
                 k.last = Vec::new()
                 k.status = String::from("Dropped. R records another.")
             }
@@ -484,7 +538,10 @@ fn keep_answer(k: mut Keys) {
         k.keeping = None
         k.status = match result {
             Ok(bytes) => match String::from_utf8(bytes.clone()) {
-                Some(said) => take said,
+                Some(said) => {
+                    k.kept = kept_after(k.kept, k.keeping_of, said.as_str())
+                    take said
+                },
                 None => String::from("Kept."),
             },
             Err(_) => String::from(
@@ -492,6 +549,12 @@ fn keep_answer(k: mut Keys) {
             ),
         }
     }
+}
+
+/// The last take kept (by `Keys::taken`), after the tool says `said` of keeping take `of`: `of`
+/// if it was kept, though another may have been recorded since.
+fn kept_after(kept: u32, of: u32, said: str) -> u32 {
+    if said.starts_with(KEPT) { of } else { kept }
 }
 
 // ---- drawing -----------------------------------------------------------------------------------
@@ -516,13 +579,18 @@ fn draw_page(k: mut Keys, time: f32, screen: vec2) {
     let line = f"Bar {bar}  beat {in_bar}     Octave C{octave}     Velocity {k.velocity:.1}     Accompaniment {if k.backing_on { "on" } else { "off" }}     Click {if k.click_on { "on" } else { "off" }}"
     say(mut k.list, k.fonts, line.as_str(), vec2(left, y), size, ink)
     y += size * 1.8
-    if k.recording {
+    var notes = None
+    match k.recording {
+        Some(t) => notes = Some(t.notes.len()),
+        None => {},
+    }
+    if let Some(n) = notes {
         k.list.rect(
             Rect::new(left, y + size * 0.2, size * 0.8, size * 0.8),
             red,
             radius: size * 0.4,
         )
-        let rec = f"Recording  {k.take_notes.len()} notes"
+        let rec = f"Recording  {n} notes"
         say(mut k.list, k.fonts, rec.as_str(), vec2(left + size * 1.3, y), size, red)
     } else {
         say(mut k.list, k.fonts, k.status.as_str(), vec2(left, y), size, ink)
@@ -669,6 +737,11 @@ fn keep(body: Data) -> String {
     let Some(new) = with_take(source.as_str(), notes) else {
         return String::from("Not kept: takes.wrela has no marker.")
     }
+    if new.len() > MOST_BYTES {
+        return String::from(
+            "Not kept: takes.wrela would be too big to write (512 KiB). Move takes out of it.",
+        )
+    }
     let Ok(_) = files::write("keys/takes.wrela", new.as_bytes()).wait() else {
         return String::from("Not kept: takes.wrela can't be written.")
     }
@@ -678,8 +751,11 @@ fn keep(body: Data) -> String {
         count += 1
         from += i + 1
     }
-    f"Kept as take {count}, in games/capybara/keys/takes.wrela. R records another."
+    f"{KEPT} {count}, in games/capybara/keys/takes.wrela. R records another."
 }
+
+/// How the tool's answer begins when it has kept a take.
+const KEPT: Text = "Kept as take"
 
 // ---- tests -------------------------------------------------------------------------------------
 
@@ -692,4 +768,83 @@ fn a_take_is_said_to_begin_at_its_first_notes_bar_not_its_pedals() {
     let s = said(notes)
     assert(s.as_str().find("1 notes from bar 5").is_some(), s.as_str())
     assert(said([notes[0]]).as_str() == "Nothing played in that take.")
+}
+
+/// The voice's answer to act `a`, on `beat`.
+fn at(a: Act, beat: f32) -> Heard {
+    Heard { act: a, beat }
+}
+
+@test
+fn a_note_pressed_just_before_the_stop_is_in_the_take() {
+    // R right after a key, before the voice has heard it: the stop comes back after the key.
+    var t = taking()
+    assert(t.heard(at(Act { kind: PRESS, key: 60, amount: 0.6 }, 1.0)).is_none())
+    assert(t.heard(at(Act { kind: RELEASE, key: 60 }, 2.0)).is_none())
+    assert(t.heard(at(Act { kind: voice::PEDAL, amount: 1.0 }, 2.5)).is_none())
+    assert(t.heard(at(Act { kind: PRESS, key: 64, amount: 0.8 }, 3.0)).is_none())
+    let Some(notes) = t.heard(at(Act { kind: STOP }, 3.25)) else { panic("the stop ends it") }
+    assert(notes.len() == 3, f"{notes.len()} notes")
+    assert(notes[0].key == 60 && notes[0].held == 1.0, "the first, let go")
+    assert(notes[1].key == PEDAL && notes[1].held == 0.75, "the pedal, lifted at the stop")
+    assert(notes[2].key == 64 && notes[2].at == 3.0 && notes[2].held == 0.25, "the last, held")
+    assert(notes[2].velocity == 0.8)
+}
+
+/// The pedal's depth at `at` (s) of `points`, eased between them as the piano does.
+fn depth(points: [PedalPoint], at: f64) -> f32 {
+    var d = 0.0
+    for i in 0..points.len() {
+        let p = points[i]
+        if p.at > at {
+            if i == 0 {
+                return p.depth
+            }
+            let q = points[i - 1]
+            return q.depth + (p.depth - q.depth) * f32((at - q.at) / (p.at - q.at))
+        }
+        d = p.depth
+    }
+    d
+}
+
+@test
+fn a_takes_pedal_is_down_just_while_it_was_held() {
+    // Down from beat 4 to beat 8, and from the music's start for a beat.
+    let notes = [
+        Struck { key: PEDAL, at: 0.0, held: 1.0, velocity: 1.0 },
+        Struck { key: PEDAL, at: 4.0, held: 4.0, velocity: 1.0 },
+    ]
+    let p = performance_of(notes)
+    // In seconds as `performance_of` makes them.
+    let s = |beat: f32| f64(beat * 60.0 / TEMPO)
+    for (beat, down) in [
+        (0.0, 1.0),
+        (0.5, 1.0),
+        (2.0, 0.0),
+        (3.99, 0.0),
+        (4.0, 1.0),
+        (6.0, 1.0),
+        (7.99, 1.0),
+        (8.0, 0.0),
+        (9.0, 0.0),
+    ] {
+        let d = depth(p.sustain, s(beat))
+        assert(d == down, f"beat {beat}: {d}")
+    }
+}
+
+@test
+fn a_take_kept_is_marked_kept_and_one_recorded_since_is_not() {
+    // Take 1 is posted; take 2 is recorded before the tool answers that 1 was kept.
+    let kept = kept_after(
+        kept: 0,
+        of: 1,
+        said: "Kept as take 4, in games/capybara/keys/takes.wrela.",
+    )
+    assert(kept == 1 && kept != 2, "take 2 can still be kept")
+    assert(
+        kept_after(kept: 1, of: 2, said: "Not kept: takes.wrela can't be written.") == 1,
+        "a take not kept",
+    )
 }

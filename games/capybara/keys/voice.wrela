@@ -13,7 +13,8 @@ use std::audio::{QUANTUM, RingReader, RingWriter, SAMPLE_RATE, play, ring}
 use std::math::TAU
 
 /// What the person does: press or let go of a key, hold the pedal (`amount` its depth), turn the
-/// accompaniment or the click on or off (`amount` 1 or 0), or nothing (to learn the beat).
+/// accompaniment or the click on or off (`amount` 1 or 0), nothing (to learn the beat), or stop
+/// recording (nothing too: heard back after every act sent before it, so a take ends with them).
 pub struct Act: Copy {
     pub kind: u32,
     pub key: u32 = 0,
@@ -26,6 +27,7 @@ pub const PEDAL: u32 = 2
 pub const BACKING: u32 = 3
 pub const CLICK: u32 = 4
 pub const NOTHING: u32 = 5
+pub const STOP: u32 = 6
 
 /// An act as the voice did it: on which beat of the accompaniment (from its first bar's first).
 pub struct Heard: Copy {

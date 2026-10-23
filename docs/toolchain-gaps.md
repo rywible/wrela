@@ -6,6 +6,14 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 
 ## Open
 
+### A tool's write empties the file before it writes it
+
+- **Needed:** the keys tool (`games/capybara/keys`) writes takes.wrela again, every take Ryan has kept, each time he keeps one; the route tool writes routes.wrela again. A write that fails must leave the file as it was.
+- **What happens:** toolchain 0.3.1's `files::write` (and `write_blob`) empties the file, then writes into it (`runtime/native/src/tool/caps.rs`, `open_file` then `write_with`). A write that fails part way, on a full disk say, leaves it empty or half written, and the page says only "Not kept": the takes kept since the last commit are lost.
+- **Found:** 2026-10-22, in a council review of the capybara branch, from toolchain 0.3.0's source.
+- **Meanwhile:** nothing; commit takes.wrela after keeping takes.
+- **Status:** fixed in rywible/wrela-compiler#21 (to be released as 0.3.2): a write goes to a new file beside the old, which then takes its place. The pin moves to 0.3.2 once it's released.
+
 ### `wrela trace` and `wrela bisect` don't run a program's ticker
 
 - **Needed:** an agent watching a ticked game's state frame by frame (`wrela trace <package> --watch <export> --input script.json`), and finding the first frame a condition holds (`wrela bisect`).

@@ -104,6 +104,25 @@ fn a_search_stops_at_its_tick_bound_or_when_every_state_dies() {
 }
 
 @test
+fn a_search_never_goes_past_its_tick_bound_mid_layer() {
+    let none = run_through(world(LEVEL), STRETCH, Settings { beam: 20, ticks: 0 })
+    assert(none.stopped && none.states == 0 && none.ticks() == 0, "no ticks, no layer")
+    let odd = run_through(world(LEVEL), STRETCH, Settings { beam: 20, ticks: 61 })
+    assert(odd.stopped && odd.ticks() == 61, f"{odd.ticks()} ticks")
+    // Past the first ledge with a tick less than it takes, in layers of 6: nothing found (it
+    // would be found on the bound's layer, past the bound), or something as fast.
+    let past = Goal { until: 16.0, snacks: 0 }
+    let Some(quick) = run_through(world(LEVEL), past, Settings { beam: 50 }).found else {
+        panic("no run past the ledge")
+    }
+    let bound = quick.end.ticks - 1
+    let tight = run_through(world(LEVEL), past, Settings { beam: 50, ticks: bound })
+    if let Some(f) = tight.found {
+        assert(f.pads.len() <= bound && played(world(LEVEL), f.pads) == f.end, f"{f.pads.len()}")
+    }
+}
+
+@test
 fn pads_are_held_in_the_longest_stretches_that_give_them_back() {
     let pads = [
         RIGHT,

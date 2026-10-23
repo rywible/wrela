@@ -50,7 +50,8 @@ pub struct Cast {
     won: f32,
     /// What the voice is to play, since the frame last took them (sound.wrela).
     pub cues: Vec<Cue>,
-    /// The slide's hiss as last asked for.
+    /// The slide's hiss as last asked for: -1 before a cast asks, so its first frame asks, as the
+    /// voice may still hiss for a cast before it (a course or a watched run left mid-slide).
     hiss: f32,
     /// The goal's fireworks: each rocket rising, and seconds to the next.
     rockets: Vec<Rocket>,
@@ -93,7 +94,7 @@ pub fn cast(c: Course, from: Option<Snap> = None) -> Cast {
         back: 10.0,
         won: 0.0,
         cues: Vec::new(),
-        hiss: 0.0,
+        hiss: -1.0,
         rockets: Vec::new(),
         next_rocket: 0.0,
         flights: Vec::new(),
@@ -865,6 +866,28 @@ fn a_run_watched_at_four_times_is_heard_as_it_was_played() {
     assert(n == counts(v.tally), f"{n[0]} landings heard of {v.tally.landings}")
     assert(n[0] >= played[0] && n[1] == played[1], "the run's own, and any after its goal")
     assert(v.tally.cuts == 0, "no cut in a run without a death")
+}
+
+@test
+fn a_new_cast_stops_the_hiss_of_a_slide_it_didnt_see() {
+    // The voice hisses for a slide in a cast before (Tab to the other course mid-slide): the new
+    // cast's first frame, standing, asks for none.
+    borrow c = course(LEVEL)
+    let s = present(world(LEVEL))
+    var k = cast(c, from: Some(s))
+    react(mut k, s, c, TICK, s.at, half_view(16.0 / 9.0))
+    var slide = -1.0
+    for cue in k.cues {
+        if cue.kind == SLIDE {
+            slide = cue.amount
+        }
+    }
+    assert(slide == 0.0, f"the slide asked for {slide}")
+    k.cues.clear()
+    react(mut k, s, c, TICK, s.at, half_view(16.0 / 9.0))
+    for cue in k.cues {
+        assert(cue.kind != SLIDE, "asked once")
+    }
 }
 
 @test

@@ -140,6 +140,7 @@ fn substeps(speed: f32) -> u32 {
 @deterministic
 pub fn step(b: mut Body, pad: Pad, c: Course, f: Feel) {
     b.buffer = if pad.pressed() { f.buffer } else { less(b.buffer) }
+    b.cooldown = less(b.cooldown)
     b.tuck = pad.held(DOWN)
     b.wet = if c.touches_water(b.at, RADIUS) { f.wet_ticks } else { less(b.wet) }
     if b.mode == Mode::Swim {
@@ -264,8 +265,11 @@ fn jump(b: mut Body, t: vec2, f: Feel, under: bool) {
     let along = t * b.speed
     let launches = b.mode == Mode::Slide || fast(b, f, b.speed)
     let kept = if launches { along } else { vec2(along.x, 0.0) }
-    // Under water, a jump off the bottom is a kick, not a launch.
+    // Under water, a jump off the bottom is a kick, not a launch, and the kicks' cooldown starts.
     b.vel = kept + vec2(0.0, if under { f.kick } else { f.launch })
+    if under {
+        b.cooldown = f.kick_cooldown
+    }
     b.mode = Mode::Air
     b.jumping = true
     rise_from(mut b, f)
@@ -289,8 +293,10 @@ fn ground(b: mut Body, pad: Pad, c: Course, f: Feel) {
         air(mut b, pad, c, f)
         return
     }
-    if b.buffer > 0 {
-        jump(mut b, t, f, under: c.water_at(b.at).is_some())
+    // Under water, a press waits for the kicks' cooldown, as one swimming does.
+    let under = c.water_at(b.at).is_some()
+    if b.buffer > 0 && (!under || b.cooldown == 0) {
+        jump(mut b, t, f, under)
         air(mut b, pad, c, f)
         return
     }
@@ -537,7 +543,6 @@ fn swim(b: mut Body, pad: Pad, c: Course, f: Feel) {
     }
     let w = c.waters[i]
     let surface = w.surface()
-    b.cooldown = less(b.cooldown)
     if b.buffer > 0 && surface - b.at.y <= f.breach_margin {
         // Just under the surface, a press jumps out.
         b.vel.y = max(b.vel.y, f.launch)

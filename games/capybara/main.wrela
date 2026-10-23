@@ -119,16 +119,13 @@ pub struct Lab {
     fonts: Fonts,
     renderer: Renderer,
     list: DrawList,
-    /// The player's runs (replay.wrela), as they load from storage and are stored again; whether
-    /// the stored ones have been read (or there were none), seconds until a load that failed is
-    /// made again, and whether the runs changed while they couldn't be stored. The attempt whose
-    /// finish was last kept (its course and attempt), so each is kept once.
+    /// The player's runs (replay.wrela), as they load from storage and are stored again, and when
+    /// (`Storing`). The attempt whose finish was last kept (its course and attempt), so each is
+    /// kept once.
     runs: Board,
     loading: Option<Pending<u8>>,
     saving: Option<Pending<u8>>,
-    read: bool,
-    retry: f32,
-    unsaved: bool,
+    storing: Storing,
     kept: u32,
     /// The tool-assisted runs of every course, and the board shown (`PLAYERS` or `ASSISTED`).
     assisted: Vec<Replay>,
@@ -184,9 +181,7 @@ pub fn init() -> Lab {
         runs: board(),
         loading: Some(load(SAVED)),
         saving: None,
-        read: false,
-        retry: 0.0,
-        unsaved: false,
+        storing: Storing {},
         kept: 0xffffffff,
         assisted,
         board: PLAYERS,
@@ -612,19 +607,62 @@ fn keep_finished(s: mut Lab, snap: Snap) {
     s.kept = key
     if let Some(r) = replay(snap, YOU) {
         if verify(r) && s.runs.add(r.clone()) {
-            s.unsaved = true
+            s.storing.unsaved = true
             s.trail_of = 0
         }
     }
 }
 
-/// How long a load of the stored runs that failed waits before it's made again (s).
+/// How long a load or a store of the runs that failed waits before it's made again (s).
 const RETRY: f32 = 2.0
 
+/// When the runs load and are stored: whether the stored ones have been read (or there were
+/// none), seconds until a request that failed is made again, and whether the runs changed since
+/// they were last stored.
+struct Storing: Copy {
+    read: bool = false,
+    retry: f32 = 0.0,
+    unsaved: bool = false,
+}
+
+impl Storing {
+    /// After a load: of the stored runs, or of nothing stored, they're `read`; a load that failed
+    /// otherwise is made again after `RETRY`.
+    fn loaded(mut self, read: bool) {
+        if read {
+            self.read = true
+        } else {
+            self.retry = RETRY
+        }
+    }
+
+    /// After a store: one that failed is made again after `RETRY`, of the runs as they are then.
+    fn stored(mut self, ok: bool) {
+        if !ok {
+            self.unsaved = true
+            self.retry = RETRY
+        }
+    }
+
+    /// `dt` seconds on, with a load or a store still waiting or not: whether to load the runs now,
+    /// and whether to store them now (they're then no longer unsaved). Never a store before the
+    /// stored runs are read: storing over runs that couldn't be read would lose them.
+    fn due(mut self, dt: f32, loading: bool, saving: bool) -> (bool, bool) {
+        self.retry = max(self.retry - dt, 0.0)
+        if self.retry > 0.0 {
+            return (false, false)
+        }
+        let stores = self.read && self.unsaved && !saving
+        if stores {
+            self.unsaved = false
+        }
+        (!self.read && !loading, stores)
+    }
+}
+
 /// Reads the stored runs once they load, `dt` seconds after the last frame, and stores them when
-/// they've changed, one store at a time, and never before the stored ones are read or are known
-/// to be none (`IoError::missing`): storing over runs that couldn't be read would lose them. A
-/// load that failed otherwise is made again after `RETRY`.
+/// they've changed, one store at a time, and only once the stored ones are read or are known to
+/// be none (`IoError::missing`). A load or a store that failed is made again (`Storing`).
 fn store_runs(s: mut Lab, dt: f32) {
     var loaded = None
     match mut s.loading {
@@ -641,21 +679,9 @@ fn store_runs(s: mut Lab, dt: f32) {
                     let _ = s.runs.add(r.clone())
                 }
                 s.trail_of = 0
-                s.read = true
+                s.storing.loaded(read: true)
             },
-            Err(e) => {
-                if e.missing() {
-                    s.read = true
-                } else {
-                    s.retry = RETRY
-                }
-            },
-        }
-    }
-    if !s.read && s.loading.is_none() {
-        s.retry -= dt
-        if s.retry <= 0.0 {
-            s.loading = Some(load(SAVED))
+            Err(e) => s.storing.loaded(read: e.missing()),
         }
     }
     var stored = None
@@ -663,12 +689,20 @@ fn store_runs(s: mut Lab, dt: f32) {
         Some(p) => stored = p.poll(),
         None => {},
     }
-    if stored.is_some() {
+    if let Some(result) = stored {
         s.saving = None
+        s.storing.stored(ok: result.is_ok())
     }
-    if s.unsaved && s.read && s.saving.is_none() {
+    let (loads, stores) = s.storing.due(
+        dt,
+        loading: s.loading.is_some(),
+        saving: s.saving.is_some(),
+    )
+    if loads {
+        s.loading = Some(load(SAVED))
+    }
+    if stores {
         s.saving = Some(store(SAVED, bytes(s.runs)))
-        s.unsaved = false
     }
 }
 
@@ -1024,7 +1058,34 @@ fn the_level_draws_and_its_sim_runs(s: Lab) {
     // opens on, and the tick of the script's Esc (frame 1) left it without stepping.
     assert(n.snap.ticks + 3 == n.ticks, "its clock running")
     // The test's storage is empty: the stored runs are read as none, so new ones may be stored.
-    assert(s.read && s.loading.is_none() && s.runs.runs.len() == 0, "nothing stored is no runs")
+    assert(
+        s.storing.read && s.loading.is_none() && s.runs.runs.len() == 0,
+        "nothing stored is no runs",
+    )
+}
+
+@test
+fn a_load_or_a_store_that_failed_is_made_again_after_a_wait() {
+    var st = Storing {}
+    assert(st.due(0.016, loading: true, saving: false) == (false, false), "the first load waits")
+    st.loaded(read: false)
+    assert(st.due(1.0, loading: false, saving: false) == (false, false), "a failed load waits")
+    assert(st.due(1.0, loading: false, saving: false) == (true, false), "then loads again")
+    // A run kept before the stored ones are read isn't stored over them.
+    st.unsaved = true
+    assert(st.due(0.016, loading: true, saving: false) == (false, false))
+    st.loaded(read: true)
+    assert(st.due(0.016, loading: false, saving: false) == (false, true), "stored once read")
+    assert(!st.unsaved)
+    // Another run kept while that store waits is stored after it, and a failed store again.
+    st.unsaved = true
+    assert(st.due(0.016, loading: false, saving: true) == (false, false), "one store at a time")
+    st.stored(ok: true)
+    assert(st.due(0.016, loading: false, saving: false) == (false, true), "the newer runs")
+    st.stored(ok: false)
+    assert(st.unsaved, "a failed store's runs are unsaved again")
+    assert(st.due(1.0, loading: false, saving: false) == (false, false), "and wait")
+    assert(st.due(1.0, loading: false, saving: false) == (false, true), "then are stored again")
 }
 
 use world::{present, world}
