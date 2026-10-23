@@ -9,10 +9,10 @@
 // types. What the lens needs of the floor comes as functions (the program `wrela tool studio`
 // writes round it passes them): the map, the ground's height, and the preview.
 
-use engine::grow::Grid
-use engine::interest::{FAINT, Preview, Walk, views_grid}
-use engine::landform::{Landform, PlaceKind, Survey, landform}
-use engine::place::Map
+use land::grow::Grid
+use land::interest::{FAINT, Preview, Walk, views_grid}
+use land::landform::{Landform, PlaceKind, Survey, landform}
+use land::place::Map
 use std::gpu::{Rgba8, Texture, begin_screen_pass, draw, texture}
 use std::input::{Button, Event, Key, events}
 use std::io::print
@@ -302,7 +302,7 @@ fn check_json(m: Map, p: Preview) -> String {
     }
     var shut = list()
     for i in 0..c.openings.len() {
-        if c.openings[i] > engine::interest::OPEN {
+        if c.openings[i] > land::interest::OPEN {
             let o = obj().text("opening", m.openings[i].name).num("cover", c.openings[i]).done()
             shut.add(o.as_str())
         }
@@ -746,7 +746,7 @@ fn stratum_colour(s: Survey, layer: u32, q: vec2, range: vec2) -> vec3 {
         let a = saturate(log(s.made.area[c] / (g.cell * g.cell)) / log(1.0e4))
         mix(vec3(0.06, 0.06, 0.08), vec3(0.55, 0.85, 1.0), vec3(a * a))
     } else if layer == 5 {
-        let slope = engine::landform::shape(g, s.surface, ij.x, ij.y).x
+        let slope = land::landform::shape(g, s.surface, ij.x, ij.y).x
         let bands = [
             vec3(0.2, 0.45, 0.2),
             vec3(0.55, 0.7, 0.3),
@@ -804,7 +804,7 @@ fn draw_image(lens: mut MapLens, m: Map) {
     } else if let Some(p) = lens.preview {
         borrow s = p.checked.sight
         let g = s.grid
-        let vg = views_grid(m, engine::interest::QUICK)
+        let vg = views_grid(m, land::interest::QUICK)
         for y in 0..h {
             for x in 0..w {
                 let q = lens.world(vec2(f32(x) + 0.5, f32(y) + 0.5))

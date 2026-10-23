@@ -37,6 +37,18 @@ They're hypotheses. Each line says where the evidence stands.
 
 **The layering rule:** the compiler knows nothing about the engine. The test for any language feature: would it make sense in a wrela program that isn't a game?
 
+### The engine's shape
+
+Built 2026-10-23, at the owner's request, as one re-architecture.
+
+- **The engine owns the frame.** A lit 3D game implements `engine::frame::Scene` for its own scene: what it draws, casts, cooks and streams. It holds a `Frame`, which owns the rest: the camera, the air and the sky, the static and moving shadows, the probes, the clipmap, the targets, temporal AA (`Gathered` or `Shared`, a type), the look, and when frames are shown (`Readiness`). A jump or a load is covered until the light round the eye has been drawn and has gathered. Optional stages are the scene's methods, so a scene that has none of them reaches none of their pipelines.
+- **One planner decides what a frame cooks.** Each kind of work (the air's tables, the clouds, a strip of a cascade or of the probes, a level of the ground, a slice of a creature's mesh) has a cost, measured or estimated and labelled as such, and a frame keeps to one budget, larger while it loads (`engine::cook`). The ground is cooked first, and rules keep the moving caches consistent.
+- **What changes says so.** `Frame::changed` (the ground, the casters, the occluders, the weather) draws again exactly what depends on it. Caches are keyed by their inputs, so a replacement baked from older inputs is dropped.
+- **A flat game pays for none of that.** `engine::sheet` and `engine::sprite` are a 2D game's frame: a scene at a paced render scale, a copy for what bends it, and instanced quads drawn by the game's own shader.
+- **Realization is general.** Solids (`realize::solid`) and creatures are realized the same way. A mesh's accuracy is a distance kept on a bend no tighter than a radius, and what a realization met is measured (`realize::measured_error`).
+- **Layers by dependency.** `engine` names no game. `land` is a landscape round a player (its map, landforms, growth, water laid from them, footing, the player and streaming), for any game that has one. `content/kit` holds the bases an author starts from. A game's own rules are its own packages (the Last Green's `tower`).
+- **Any program can have a lookbook:** `engine::shot` holds its shots and the keys that choose them, and `wrela tool lookbook --package` renders them.
+
 ### Two repositories
 
 Decided by the owner on 2026-10-18; done on 2026-10-21. The toolchain lives in [rywible/wrela-compiler](https://github.com/rywible/wrela-compiler).
@@ -46,7 +58,7 @@ Decided by the owner on 2026-10-18; done on 2026-10-21. The toolchain lives in [
 | `wrela-compiler` | Layers 0 and 1: the compiler, std, the three hosts, the spec, and the toolchain's own checks. It releases versioned toolchains. |
 | `wrela` | Layers 2 to 4, and only wrela code: the engine, reusable content, examples, the studio, the UI, the docs site, the console and the games. It pins one toolchain release. |
 
-- **`wrela` holds only wrela code.** Sources are `.wrela`; besides them it has package manifests, assets with their licences, prose (this file, `process.md`, `AGENTS.md`) and one CI file that installs the pinned toolchain and runs it. A tool the project needs is a wrela program, so a missing capability is built into the toolchain, not worked around in another language.
+- **`wrela` holds only wrela code.** Sources are `.wrela`; besides them it has package manifests, assets with their licences, prose (this file, `citations.md`, `AGENTS.md`) and one CI file that installs the pinned toolchain and runs it. A tool the project needs is a wrela program, so a missing capability is built into the toolchain, not worked around in another language.
 - **Tools are programs too.** A third role, the tool, runs on the native host with services that it is granted on the command line: files under named roots, named secrets, HTTP to named hosts, builds of packages, driving a build frame by frame, a headless browser, images, a local server, and the external programs it names (such as Cloudflare's Wrangler). The host has the mechanisms; the tools in `wrela` have the policy.
 - **std owns every host contract.** Each host service's bindings are std code, so one toolchain release ships both sides of every contract. Protocols between wrela programs, such as the console's with its games, stay in their packages.
 - **A change across both** is released in `wrela-compiler` first, then `wrela` moves its pin.

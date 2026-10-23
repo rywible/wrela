@@ -1,0 +1,61 @@
+// Sprites: quads in a flat scene, each the game's own shape drawn by the game's fragment shader in
+// the quad's own frame (a capybara, a goose, a splash), many in one instanced draw.
+//
+// A game's sprite type says where its quad is (`Quad`: its middle, half its size, its turn, the
+// way it faces); `quad_vertex` places each instance's six corners and hands the game's fragment
+// shader the point in the sprite's frame (`QuadPoint`), the world point and which sprite it is.
+// A draw takes a run of the sprites (`Stage::first`, then `instances`), so one buffer feeds the
+// draws behind something (the water) and those in front of it.
+
+use std::gpu::{ClipPosition, Flat, InstanceIndex, VertexIndex}
+
+/// Where a sprite's quad is: its middle and half its size (m, on the plane), its turn (radians)
+/// and the way it faces (1 or -1: its frame's x the way it faces).
+pub trait Quad: Copy + GpuData {
+    fn at(self) -> vec2
+    fn half(self) -> vec2
+    fn angle(self) -> f32
+    fn facing(self) -> f32
+}
+
+/// What a sprite draw is told: the camera's matrix (`view::flat_camera`), a pixel's size (m),
+/// the time (s), and the draw's first sprite.
+pub struct Stage: Copy + GpuData {
+    pub view_proj: mat4,
+    pub px: f32,
+    pub time: f32,
+    pub first: u32,
+    pub pad: f32 = 0.0,
+}
+
+/// What a sprite's corner passes on: the point in the sprite's own frame (x the way it faces, y
+/// up: m), the world point, and which sprite.
+pub struct QuadPoint: Copy {
+    pub clip: ClipPosition,
+    pub local: vec2,
+    pub world: vec2,
+    pub index: Flat<u32>,
+}
+
+/// Sprite `st.first + i`'s corner `v` (six: two triangles).
+@vertex
+pub fn quad_vertex<S: Quad>(
+    v: VertexIndex,
+    i: InstanceIndex,
+    sprites: [S],
+    st: Stage,
+) -> QuadPoint {
+    let index = st.first + i.index
+    let s = sprites[index]
+    let xs = [-1.0, 1.0, 1.0, -1.0, 1.0, -1.0]
+    let ys = [-1.0, -1.0, 1.0, -1.0, 1.0, 1.0]
+    let local = vec2(xs[v.index], ys[v.index]) * s.half()
+    let (c, n) = (cos(s.angle()), sin(s.angle()))
+    let world = s.at() + vec2(local.x * c - local.y * n, local.x * n + local.y * c)
+    QuadPoint {
+        clip: ClipPosition { position: st.view_proj * vec4(world, 0.5, 1.0) },
+        local: local * vec2(s.facing(), 1.0),
+        world,
+        index: Flat { value: index },
+    }
+}

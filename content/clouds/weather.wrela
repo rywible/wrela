@@ -3,7 +3,7 @@
 // them (spike 15's cloudscape), drifting with the wind (`engine::sky`).
 
 use engine::noise::pick
-use engine::sky::{Cumulus, Gap}
+use engine::sky::{Cumulus, Gap, Weather}
 
 /// How much of the sky beyond the cloudscape's cumulus fair-weather clouds cover (`fair` of
 /// `engine::sky::cook_weather`).
@@ -40,13 +40,8 @@ pub fn cloudscape() -> Vec<Cumulus> {
 }
 
 /// The weather the sky is cooked with (`engine::sky::Sky::cook_weather`): the cloudscape, the
-/// share of the sky beyond it fair-weather clouds cover, and the gap kept toward the sun.
-pub struct Weather {
-    pub clouds: Vec<Cumulus>,
-    pub fair: f32,
-    pub gap: Gap,
-}
-
+/// share of the sky beyond it fair-weather clouds cover, the gap kept toward the sun, and the
+/// clouds' drift.
 pub fn weather() -> Weather {
-    Weather { clouds: cloudscape(), fair: FAIR, gap: SUN_GAP }
+    Weather { clouds: cloudscape(), fair: FAIR, gap: SUN_GAP, wind: CLOUD_WIND }
 }

@@ -1,0 +1,251 @@
+// Five frames of one scene (flat ground, a clear sky, and one tree-sized occluder beside the eye,
+// which the probes see through), all looking from the same place in the world. One starts at the
+// render origin `ORIGIN`; three start at the world's origin and are recentred to `ORIGIN` at
+// different moments: before their probes' occluders cook, between the probes' two strips, and
+// after the bake. The fifth starts at `ORIGIN` with no occluder, to show the occluder changes
+// the probes. Once all are baked, each one's probes are read back.
+
+use engine::cook::Budget
+use engine::frame::{Aim, Frame, Gathered, Quality, Scene, ShadowQuality}
+use engine::light::{Light, SUN_TOP, sunlight}
+use engine::air::hazy
+use engine::plant::Wind
+use engine::probes::{Occluder, Probe, ProbeGrid, Trace, grid}
+use engine::shadow::Cascade
+use engine::sky::{Gap, Weather}
+use engine::terrain::{Clipmap, Flat}
+use engine::view::{Camera, first_camera}
+use std::gpu::{GlobalId, GpuBuffer, Slots, buffer, dispatch, read}
+use std::io::Pending
+
+/// The sun, the eye and what it looks at, and the occluder's ends (the world's, m).
+const SUN = vec3(0.900, 0.407, -0.159)
+const EYE = vec3(300.0, 1.6, -480.0)
+const AHEAD = vec3(0.0, 0.0, 30.0)
+const TREE_A = vec3(306.0, 0.0, -476.0)
+const TREE_B = vec3(306.0, 9.0, -476.0)
+
+/// The render origin the frames end at.
+pub const ORIGIN = vec3(256.0, 0.0, -512.0)
+
+/// The probes' grid round `at` (render space): 33 columns a side, more than a strip bakes.
+fn probes_round(at: vec2) -> ProbeGrid {
+    grid(at, cols: 33, spacing: 2.0, low: -8.0, high: 24.0, voxel: 1.0)
+}
+
+/// The scene: flat ground, a clear sky, and the occluder (unless `open`).
+pub struct Stand {
+    open: bool,
+}
+
+impl Scene for Stand {
+    fn wind(self, cam: Camera, time: f32) -> Wind {
+        Wind { time, dir: vec2(1.0, 0.0), strength: 0.0 }
+    }
+
+    fn weather(self) -> Weather {
+        Weather {
+            clouds: Vec::new(),
+            fair: 0.0,
+            gap: Gap { a: vec2(0.0), b: vec2(1.0, 0.0), radius: 1.0 },
+            wind: vec2(0.0),
+        }
+    }
+
+    fn trace(self, light: Light, grid: ProbeGrid) -> Trace {
+        Trace {
+            light,
+            grid,
+            foliage: vec3(0.035, 0.07, 0.02),
+            reach: 24.0,
+            leaf: vec3(0.10, 0.18, 0.04),
+            bounced: 0,
+        }
+    }
+
+    fn probe_grid(self, at: vec2, origin: vec3) -> ProbeGrid {
+        probes_round(at)
+    }
+
+    fn occluders(self, at: vec2, origin: vec3) -> Option<Vec<Occluder>> {
+        if self.open {
+            return Some(Vec::new())
+        }
+        Some(
+            Vec::from(
+                [Occluder { a: TREE_A - origin, radius: 3.0, b: TREE_B - origin, solid: 1.0 }],
+            ),
+        )
+    }
+
+    fn height_at(self, world: vec2) -> f32 {
+        0.0
+    }
+
+    fn cook_ground(mut self, clipmap: mut Clipmap, eye: vec3, again: bool) -> u32 {
+        clipmap.follow(Flat {}, eye, again)
+    }
+}
+
+/// When a frame is recentred to `ORIGIN`.
+pub enum When: Copy + Eq {
+    /// Before its first frame: a frame that starts there.
+    Start,
+    /// Before its probes' occluders cook.
+    BeforeCook,
+    /// Between its probes' strips.
+    BetweenStrips,
+    /// Once its probes are baked.
+    AfterBake,
+}
+
+pub struct Run {
+    frame: Frame<Gathered>,
+    scene: Stand,
+    when: When,
+    /// The frame it was recentred in, if it has been; and its probes, read back.
+    pub recentred: Option<u32>,
+    asked: Option<Pending<vec4>>,
+    pub probes: Vec<vec4>,
+}
+
+pub struct State {
+    pub runs: Vec<Run>,
+    frame: u32,
+}
+
+/// A frame of small cascades (they hold nothing: the ground doesn't cast), recentred `when`.
+fn run(when: When, open: bool) -> Run {
+    let air = hazy(SUN, SUN_TOP, eye: EYE.y)
+    let small = Cascade { centre: vec3(0.0), span: 144.0, reach: 250.0, side: 256 }
+    let shadows = ShadowQuality {
+        near: small,
+        near_strips: 2,
+        far: Cascade { span: 2400.0, reach: 2600.0, ..small },
+        far_strips: 2,
+        moving_side: 128,
+    }
+    let frame: Frame<Gathered> = Frame::new(
+        Quality { shadows, budget: Budget { playing_us: 1.0e6, loading_us: 1.0e6 } },
+        sunlight(air),
+        air,
+        Clipmap::new(levels: 4, finest: 0.5),
+        first_camera(EYE, EYE + AHEAD, 0.82, width: 64, height: 48),
+        probes_round(EYE.xz),
+        EYE.xz,
+    )
+    Run { frame, scene: Stand { open }, when, recentred: None, asked: None, probes: Vec::new() }
+}
+
+/// The five runs.
+fn runs() -> Vec<Run> {
+    var out: Vec<Run> = Vec::new()
+    out.push(run(When::Start, open: false))
+    out.push(run(When::BeforeCook, open: false))
+    out.push(run(When::BetweenStrips, open: false))
+    out.push(run(When::AfterBake, open: false))
+    out.push(run(When::Start, open: true))
+    out
+}
+
+pub fn init() -> State {
+    State {
+        runs: runs(),
+        frame: 0,
+    }
+}
+
+/// Whether run `r` is recentred before this frame.
+fn due(r: Run, frame: u32) -> bool {
+    borrow p = r.frame.probes
+    r.recentred.is_none() && match r.when {
+        When::Start => frame == 0,
+        When::BeforeCook => frame == 1 && !p.cooked,
+        When::BetweenStrips => p.cooked && p.using.baked > 0 && !p.done(),
+        When::AfterBake => p.done() && frame > 30,
+    }
+}
+
+/// Probes' parts as `vec4`s: each probe's r, g and b.
+@compute(64)
+fn flatten(probes: [Probe], out: mut Slots<vec4>, id: GlobalId) {
+    let i = id.x / 3
+    if i < probes.len() {
+        let p = probes[i]
+        let k = id.x % 3
+        out[id] = if k == 0 { p.r } else if k == 1 { p.g } else { p.b }
+    }
+}
+
+/// The frame all are read back on.
+pub const READ_AT: u32 = 360
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    for i in 0..s.runs.len() {
+        mut r = s.runs[i]
+        if due(r, s.frame) {
+            r.frame.recentre(mut r.scene, ORIGIN)
+            r.recentred = Some(s.frame)
+        }
+        let eye = EYE - r.frame.origin
+        let aim = Aim { eye, at: eye + AHEAD, fovy: 0.82, moving_at: eye }
+        let _ = r.frame.begin(mut r.scene, aim, time, width, height)
+        r.frame.draw(mut r.scene, aim)
+        if s.frame == READ_AT {
+            let n = 3 * r.frame.probes.using.grid.probes()
+            var out: GpuBuffer<vec4> = buffer(n)
+            dispatch(flatten.bind(r.frame.probes.using.probes.items(), mut out), over: n)
+            r.asked = Some(read(out.items()))
+        }
+        match mut r.asked {
+            Some(p) => if let Some(Ok(v)) = p.poll() {
+                r.probes = take v
+            },
+            None => {},
+        }
+    }
+    s.frame += 1
+}
+
+/// The largest difference between two runs' probes, over the larger of their magnitudes there.
+fn apart(a: [vec4], b: [vec4]) -> f32 {
+    var most = 0.0
+    for i in 0..a.len() {
+        let d = abs(a[i] - b[i])
+        let m = max(abs(a[i]), abs(b[i]))
+        for k in 0..4 {
+            most = max(most, d[k] / max(m[k], 1.0e-3))
+        }
+    }
+    most
+}
+
+/// Recentred before its occluders cook, between its strips, or after its bake, a frame's
+/// probes are where a frame started at that origin has them, in the world, and the same within
+/// a GPU's rounding; and the occluder they're all baked round does change probes.
+@test(frames: 380, gpu: true)
+fn a_recentred_frame_publishes_the_probes_of_one_started_there(s: State) {
+    let names = [
+        "started there",
+        "before its occluders cook",
+        "between its strips",
+        "after its bake",
+    ]
+    borrow reference = s.runs[0]
+    assert(reference.probes.len() > 0, "the reference's probes didn't come back")
+    let world = reference.frame.probes.using.grid.corner + ORIGIN.xz
+    for i in 0..5 {
+        borrow r = s.runs[i]
+        assert(r.recentred.is_some() && r.frame.origin == ORIGIN, "a frame wasn't recentred")
+        assert(r.frame.probes.done(), "a frame's probes weren't baked")
+        let at = r.frame.probes.using.grid.corner + r.frame.origin.xz
+        assert(length(at - world) < 1.0e-3, f"probes at {at}, not {world}")
+        assert(r.probes.len() == reference.probes.len(), "a frame's probes didn't come back")
+    }
+    for i in 1..4 {
+        let d = apart(s.runs[i].probes, reference.probes)
+        assert(d < 0.02, f"recentred {names[i]}: its probes are {d} apart from the reference's")
+    }
+    let open = apart(s.runs[4].probes, reference.probes)
+    assert(open > 0.1, f"the occluder changes the probes only {open}: the test can't see it")
+}

@@ -24,8 +24,6 @@ pub enum View: Copy + Eq + Fieldless + Serialize {
 ///   its motion (a `vec4`);
 /// - `Output`, temporal AA's output (a `vec4` a pixel, at the output's size: linear colour, and
 ///   the nearest sample's tag in `w`);
-/// - `Shaded` and `Covering`, the cards' shading count and the cards covering each pixel (a
-///   `u32` each, from a `test_count` frame);
 /// - `Texels`, the clipmap's texels (a `engine::terrain::Texel` each, `STRIDE` a level);
 /// - `Tags`, temporal AA's output's tags alone (its `w`: an `f32` a pixel, at the output's size).
 pub enum Capture: Copy + Eq + Fieldless {
@@ -33,8 +31,6 @@ pub enum Capture: Copy + Eq + Fieldless {
     Depth,
     Motion,
     Output,
-    Shaded,
-    Covering,
     Texels,
     Tags,
 }

@@ -14,7 +14,8 @@ use ink::{INK, inked, pooled, wash}
 use shapes::{blend, capsule, cone, ellipse, rbox, turn}
 use std::derive::{value_and_gradient, value_gradient_with}
 use std::field::smin
-use std::gpu::{ClipPosition, Flat, InstanceIndex, Over, VertexIndex, discard}
+use engine::sprite::{Quad, QuadPoint, Stage}
+use std::gpu::{Over, discard}
 
 /// The kinds of sprite.
 pub const SHADOW: f32 = 0.0
@@ -62,38 +63,21 @@ pub struct Sprite: Copy + GpuData {
     pub surface: f32 = -1.0e4,
 }
 
-/// What the sprites' shaders are told: the camera's matrix, a pixel's size (m), the time (s), and
-/// the first sprite of the draw.
-pub struct Stage: Copy + GpuData {
-    pub view_proj: mat4,
-    pub px: f32,
-    pub time: f32,
-    pub first: u32,
-    pub pad: f32 = 0.0,
-}
+impl Quad for Sprite {
+    fn at(self) -> vec2 {
+        self.at
+    }
 
-pub struct Spritel: Copy {
-    pub clip: ClipPosition,
-    /// The point in the sprite's own frame: x the way it faces, y up (m).
-    pub local: vec2,
-    pub world: vec2,
-    pub index: Flat<u32>,
-}
+    fn half(self) -> vec2 {
+        self.half
+    }
 
-@vertex
-pub fn sprite_vertex(v: VertexIndex, i: InstanceIndex, sprites: [Sprite], st: Stage) -> Spritel {
-    let index = st.first + i.index
-    let s = sprites[index]
-    let xs = [-1.0, 1.0, 1.0, -1.0, 1.0, -1.0]
-    let ys = [-1.0, -1.0, 1.0, -1.0, 1.0, 1.0]
-    let local = vec2(xs[v.index], ys[v.index]) * s.half
-    let (c, n) = (cos(s.angle), sin(s.angle))
-    let world = s.at + vec2(local.x * c - local.y * n, local.x * n + local.y * c)
-    Spritel {
-        clip: ClipPosition { position: st.view_proj * vec4(world, 0.5, 1.0) },
-        local: local * vec2(s.facing, 1.0),
-        world,
-        index: Flat { value: index },
+    fn angle(self) -> f32 {
+        self.angle
+    }
+
+    fn facing(self) -> f32 {
+        self.facing
     }
 }
 
@@ -885,7 +869,7 @@ fn particle(q: vec2, s: Sprite, px: f32) -> vec4 {
 // ---- the shader ------------------------------------------------------------------------------
 
 @fragment
-pub fn sprite(v: Spritel, sprites: [Sprite], st: Stage) -> Over {
+pub fn sprite(v: QuadPoint, sprites: [Sprite], st: Stage) -> Over {
     let s = sprites[v.index.value]
     let q = v.local
     var c = if s.kind == CAPYBARA {

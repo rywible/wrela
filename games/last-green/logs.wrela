@@ -1,8 +1,8 @@
 // Collision for fallen wood uses the same fitted trunk and root plate as the renderer.
 // Small capsules retain local height over uneven ground; standing trees use ordinary footing.
 
-use engine::footing::{BODY, MAX_LOG_HEIGHT, Obstacle, Thing}
-use engine::grow::{State, Tree}
+use land::footing::{BODY, MAX_LOG_HEIGHT, Obstacle, Thing}
+use land::grow::{State, Tree}
 use engine::plant::{RINGS, limb_axis}
 use engine::vegetation::Placed
 use std::field::Tube
@@ -197,7 +197,7 @@ fn fitted_log_collision_covers_rendered_wood_and_keeps_high_sections_solid() {
             let height = |p: vec2| 0.1 * p.x
             let records = shapes(placed, height)
             assert(records.len() > 6 && records.len() <= MOST, "missing wood or unbounded records")
-            let packed = engine::footing::Obstacles::of(records, vec2(-64.0), vec2(64.0))
+            let packed = land::footing::Obstacles::of(records, vec2(-64.0), vec2(64.0))
             for limb in trees::fallen_limbs(placed) {
                 for i in 0..25 {
                     let (axis, _, radius) = limb_axis(limb, f32(i) / 24.0)
@@ -236,12 +236,12 @@ fn a_low_rendered_log_is_crossed_with_continuous_lift() {
     inst.scale = 1.0
     let placed = Placed { kind: trees::LOG_SHORT, at: inst }
     let records = shapes(placed, |p: vec2| 0.0)
-    let o = engine::footing::Obstacles::of(records, vec2(-16.0), vec2(32.0))
+    let o = land::footing::Obstacles::of(records, vec2(-16.0), vec2(32.0))
     var at = vec2(-3.0, 6.0)
     var previous = 0.0
     var high = 0.0
     for _ in 0..120 {
-        let (moved, _) = engine::footing::step_over(
+        let (moved, _) = land::footing::step_over(
             engine::terrain::Flat {},
             behaviour::DRY,
             o,
@@ -337,7 +337,7 @@ fn an_off_lattice_hollow_keeps_exact_clearance_under_the_rendered_log() {
         }
     }
     assert(exact, "fixture did not find its rendered capsule")
-    let o = engine::footing::Obstacles::of(records, vec2(-16.0), vec2(32.0))
+    let o = land::footing::Obstacles::of(records, vec2(-16.0), vec2(32.0))
     assert(
         height(centre) + o.lift(centre, BODY, 1.2) >= top,
         "the hollow lowered the floating body into rendered wood",

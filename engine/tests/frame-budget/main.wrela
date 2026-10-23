@@ -1,0 +1,44 @@
+// The bare scene (engine/tests/frame) drawn with a budget smaller than its steps: 1000 µs of
+// optional work a frame, loading and playing. Every kind must still make progress, the first
+// probes too, though the clouds' dome is marched every frame before them.
+
+use engine::cook::Budget
+use engine::frame::{Aim, Frame, Gathered, Quality}
+use engine::probes::grid
+use engine::light::sunlight
+use engine::terrain::Clipmap
+use engine::view::first_camera
+use frame_transitions::bare::{AHEAD, Bare, START, SUN, air_of, bare}
+
+pub struct State {
+    frame: Frame<Gathered>,
+    scene: Bare,
+}
+
+pub fn init() -> State {
+    let air = air_of(SUN)
+    let small = Budget { playing_us: 1000.0, loading_us: 1000.0 }
+    let frame: Frame<Gathered> = Frame::new(
+        Quality { budget: small },
+        sunlight(air),
+        air,
+        Clipmap::new(levels: 6, finest: 0.5),
+        first_camera(START, START + AHEAD, 0.82, width: 320, height: 180),
+        grid(START.xz, cols: 17, spacing: 4.0, low: -8.0, high: 24.0, voxel: 2.0),
+        START.xz,
+    )
+    State { frame, scene: bare() }
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    let aim = Aim { eye: START, at: START + AHEAD, fovy: 0.82, moving_at: START }
+    let _ = s.frame.begin(mut s.scene, aim, time, width, height)
+    s.frame.draw(mut s.scene, aim)
+}
+
+/// A budget smaller than a step still loads: the first full frame comes, and the arrival ends.
+@test(frames: 600, gpu: true)
+fn a_small_budget_still_loads(s: State) {
+    assert(s.frame.ready.playable_at.is_some(), "the scene never became playable")
+    assert(!s.frame.ready.arriving, "the arrival never ended")
+}

@@ -3,7 +3,7 @@
 // sphere edits, which the grazers' feet raycast. The two differ by metres; M5 replaces both with
 // one (#28).
 
-use engine::render::View
+use engine::plain::View
 use engine::sim::{Sim, SimState}
 use std::field::{smin, value_noise}
 use std::gpu::{ClipPosition, VertexIndex}

@@ -1,0 +1,103 @@
+# Citations
+
+*The outside works wrela uses: what each is, its rights, how we use it and why. Add a row in the change that starts to use one. Standard specs and vendor documentation that code follows are not listed.*
+
+## The rules
+
+- **Learn, don't copy.** A reference teaches light, colour, form, scale or composition. We don't trace it, sample it, or rebuild a specific shot, character or design from it.
+- **No generative image, sound, music, voice or video model makes anything in wrela.** Every image and sound comes from wrela code. Ryan directs; Claude and Codex agents write the code.
+- **Ship only what a licence allows, with its credit.** A reference file in the repo has its source, author and licence in the `references` package beside it. Work adapted from a CC BY source carries its credit into the game.
+- **Style references stay private.** Images used only to judge the look are kept outside the repo.
+
+## Assets and data in the repo
+
+| Source | Rights | How and why |
+|---|---|---|
+| Six photos of bison and wolves (`references/grazer/`, `references/wolf/`) | US NPS, FWS and ARS photos on Wikimedia Commons; public domain. URLs and authors in `references/*.wrela` | Shown beside an authored creature to check its proportion and silhouette. Nothing of a photo goes into a creature. |
+| Drew Vaughan (3ddrew), "Fantasy wolf miniature", [Thingiverse 680145](https://www.thingiverse.com/thing:680145) (`references/wolf/sculpt-standing.obj`) | CC BY 4.0; credit in `references/wolf.wrela` (`SCULPT`) | Measured and rebuilt as lofts and sweeps (`wrela tool reference`), to learn whether wrela's forms can hold a great shape. A game that ships it credits him. |
+| Salamander Grand Piano V3 (a Yamaha C5), recorded by Alexander Holm; FreePats' retuned SFZ | CC BY 3.0; credit in `engine/piano_grand.wrela` | `engine::piano` is fitted to measurements of these recordings. The fitted numbers ship, not the recordings. The listening tests play the recordings beside wrela's piano, from a copy outside the repo. |
+| Satie, Gymnopédie No. 1 (1888), the Mutopia Project's edition (Mutopia-2014/12/14-37) | Public domain | Transcribed into `examples/gymnopedie/score.wrela`, for wrela's piano to play. |
+| Inter and JetBrains Mono (`ui/fonts/`); Manrope (`ui/brand/fonts/`, set at weight 500 with fontTools) | SIL OFL 1.1, licences beside them | The interface's text. |
+| [ab_glyph](https://github.com/alexheretic/ab-glyph) 0.2 | Apache-2.0; used as a library | Drew `ui/tests/text/goldens/reference.png` once, from exact outline coverage, so the GPU's text can be compared with it. To draw it again, run `text::text_matches_a_reference_rasterizer` with `--ignored` (wrela-compiler, `compiler/tests/tests/suite/text.rs` at commit cc0be254). |
+
+## Methods the code follows
+
+Each is our own Wrela code written from the published idea. No code was copied.
+
+| Source | Where | What it gives |
+|---|---|---|
+| A. Chaigne and A. Askenfelt, "Numerical simulations of piano strings" (JASA 1994); B. Bank and others, "Physics-based sound synthesis of the piano" (2000); P. J. Huber, robust regression (1964) | `engine::piano` | Each partial's frequency-dependent decay, fitted to each key by Huber-weighted least squares |
+| G. Weinreich on coupled strings; H. Conklin on phantom partials | `engine::piano` | A unison's aftersound; partials from the string's stretch |
+| J.-M. Jot and A. Chaigne, feedback delay networks (1991); J. Abel and P. Huang, echo density (2006); modal synthesis | `engine::piano` | The room (16-line FDN, Hadamard mix), its test's echo density measure, the soundboard's knock |
+| A. Friberg, R. Bresin and J. Sundberg, the KTH performance rules; N. Todd's phrase arch (1992); Friberg and Sundberg's final ritardando (1999); P. Desain and H. Honing, "Tempo curves considered harmful" | `engine::perform` | Expressive playing of a score |
+| V. Zavalishin, *The Art of VA Filter Design* (2012); G. Marsaglia, "Xorshift RNGs" (2003) | `engine::sound` | The state-variable filter and the seeded noise |
+| S. Hillaire, ["A Scalable and Production Ready Sky and Atmosphere Rendering Technique"](https://sebh.github.io/publications/egsr2020.pdf) (EGSR 2020) | `engine::air` | The sky and aerial perspective from precomputed tables; Earth's Rayleigh and ozone values |
+| J. Jimenez, interleaved gradient noise | `engine::sky` | The cloud march's per-pixel jitter |
+| B. Karis, the analytic environment BRDF and the bright-sample squash before a temporal resolve; S. Lagarde, specular occlusion | `engine::light`, `engine::temporal` | Specular scale and bias; a history that bright samples don't dominate; how much sky light a surface keeps |
+| P. Bénard and others, dynamic solid textures (2009) | `engine::paint` | Octaves blended by distance, so painted marks keep their size on screen |
+| S. Worley, "A Cellular Texture Basis Function" (SIGGRAPH 1996) | `engine::plant` | Bark's plates |
+| M. Mikkelsen, ["Bump Mapping Unparametrized Surfaces on the GPU"](https://mmikk.github.io/papers3d/mm_sfgrad_bump.pdf) (2010) | `engine::plant` | Bark relief from height derivatives |
+| The British National Vegetation Classification (W14, W10, W16, W8, W7, MG5, U4, M23) | `engine::grass` | Which plants grow together in a wood's floor and a meadow |
+| B. Karis and others, "Nanite: A Deep Dive" (SIGGRAPH 2021); T. Ulrich, "Rendering Massive Terrains using Chunked Level of Detail Control" (SIGGRAPH 2002) | `examples/clusters`, `engine::terrain` | Clusters cut by projected error; skirts that close the gaps between levels |
+| Heimsath, Dietrich, Nishiizumi and Finkel, "The soil production function and landscape equilibrium" (*Nature* 1997) | `land::soil` | Rock weathers fastest under thin soil, so crests are thin and hollows deep |
+| J. Braun and S. D. Willett, an O(n) implicit stream power solver (*Geomorphology* 2013) | `land::landform` | Channels cut at K A^m S, stable for any step |
+| R. Barnes, C. Lehman and D. Mulla, "Priority-flood" (*Computers & Geosciences* 2014), the epsilon variant | `land::landform` | Every cell drains |
+| F. K. Musgrave, C. E. Kolb and R. S. Mace, eroded fractal terrains (SIGGRAPH 1989) | `land::landform` | Slopes past their rock's threshold shed downhill, so hard caps stand in cliffs |
+| P. Davy and D. Lague, erosion and deposition (*JGR* 2009) | `land::landform` | What water cuts it lays down where its load is heavy, so valleys fill and fans spread |
+| J. J. Roering, J. W. Kirchner and W. E. Dietrich, nonlinear hillslope creep (*WRR* 1999) | `land::landform` | Hillsides run straight from rounded crests |
+| D. R. Montgomery and W. E. Dietrich, "Where do channels begin?" (*Nature* 1988) | `land::landform` | Water cuts only where enough gathers |
+| G. Cordonnier and others, terrain from tectonic uplift and fluvial erosion (*CGF* 2016) | `games/last-green/geology.wrela` | The world is authored through its causes (rock, old land, base level), not by drawing valleys |
+| G. Chaikin, corner cutting (1974) | `games/last-green/geology.wrela` | A stream's course, smoothed |
+| K. Beven and M. Kirkby, the topographic wetness index (1979) | `games/last-green/geology.wrela` | How wet the land is; the wood grows by it |
+| J. H. von Thünen's land-use rings (1826); settlement siting from human geography | `games/last-green/peoples.wrela` | Where the elves settle, farm, graze and cut wood, and when they found a new settlement |
+| H. Hediger's flight distance (1950) | `games/last-green/behaviour.wrela` | The fawn watches, then flees inside a distance. The distances are ours. |
+| C. Ericson, *Real-Time Collision Detection* (2005), §5.1.9 | `content/climber/fight.wrela` | Closest points of two segments, for the sword and the bite |
+| M. Müller and others, "Position Based Dynamics" (2007); T.-Y. Kim, N. Chentanez and M. Müller-Fischer, long-range attachments (2012) | `content/climber/cape.wrela` | The cape that can't stretch |
+| B. T. Lowerre, beam search (*The Harpy Speech Recognition System*, 1976) | `games/capybara/route/search.wrela` | The fastest-route search |
+| Inigo Quilez's articles: [intersectors](https://iquilezles.org/articles/intersectors/), [2D distance functions](https://iquilezles.org/articles/distfunctions2d/), [ellipse distance](https://iquilezles.org/articles/ellipsedist/), [smooth minimum](https://iquilezles.org/articles/smin/), [soft shadows](https://iquilezles.org/articles/rmshadows/), [occlusion](https://iquilezles.org/articles/nvscene2008/) (MIT) | `console/`, `ui/draw.wrela`, `docsite/` | Ray–capsule and ray–round-cone tests, the ellipse, diamond and triangle distances, smooth joins, soft shadows and ambient occlusion |
+| K. Narkowicz's fit of the ACES filmic curve; quaternion slerp; separable Gaussian bloom | `console/` | The opening's tone, rotation and glow |
+| P. Felzenszwalb and D. Huttenlocher, ["Distance Transforms of Sampled Functions"](https://theoryofcomputing.org/articles/v008a019/) (2012) | `ui/raster.wrela` | A system glyph's distance field |
+| Y.-D. Liang and B. A. Barsky, line clipping (*ACM TOG* 1984) | `examples/board` | A connector's route tested against items |
+| [ttf-parser](https://github.com/RazrFalcon/ttf-parser) (MIT or Apache-2.0) | `ui::ttf` | How TrueType's tables are read, and their fallbacks |
+| Lucide's settings-2 icon (ISC) | `console/` | Recreated from its 24-unit geometry |
+| [Tailwind CSS's zinc palette](https://tailwindcss.com/docs/colors) (MIT) | `docsite/` | The docs' neutral greys |
+
+## Read for principles
+
+These taught what natural forms and good renderers do. Nothing was copied, and none is implemented whole.
+
+| Source | What it taught |
+|---|---|
+| Runions, Lane and Prusinkiewicz, [space colonization](https://algorithmicbotany.org/papers/colonization.egwnp2007.html) (2007); Palubicki and others, [self-organizing trees](https://algorithmicbotany.org/papers/selforg.sig2009.html) (2009) | Branch taper, the pipe model, competition for light: uneven crowns with gaps |
+| Kharlamov, Cantlay and Stepanenko, [GPU Gems 3, ch. 4: SpeedTree rendering](https://developer.nvidia.com/gpugems/gpugems3/part-i-geometry/chapter-4-next-generation-speedtree-rendering) (2007) | Trunk silhouettes, leaf transmission, and why cutouts shimmer |
+| USDA Forest Service FEIS (Arizona fescue), PNW-GTR-817 (oxeye daisy) and Kew's Digitalis account | Basal foliage apart from a thin flowering stem; grass leaf sizes |
+| USDA NRCS stream restoration guide (2012) and Stream Visual Assessment Protocol 2 (2009) | Pools, riffles, bars and uneven banks |
+| WMO International Cloud Atlas and NOAA's glossary on cumulus; A. Schneider, [Nubis](https://www.guerrilla-games.com/read/nubis-authoring-real-time-volumetric-cloudscapes-with-the-decima-engine) (SIGGRAPH 2017) | Flat grey bases and lit relief; density profiles apart from edge erosion |
+| M. McGuire and M. Mara, [screen-space ray tracing](https://jcgt.org/published/0003/04/04/) (JCGT 2014) | A depth buffer holds few layers; reflection samples must match their depth |
+| US National Park Service on weathering and monuments | How rock splits and masonry weathers |
+
+## Programs the tools run
+
+None is vendored or in a game. Each is a granted program in `wrela.toml`, found on `PATH`.
+
+| Program | Rights | Use |
+|---|---|---|
+| [sfizz](https://sfz.tools/sfizz/) `sfizz_render` | BSD 2-clause | Plays the reference piano for the listening tests |
+| [FFmpeg](https://ffmpeg.org/) with x264 | GPL | Makes the motion tool's clips from frames |
+| [Wrangler](https://developers.cloudflare.com/workers/wrangler/), through `npx` | MIT or Apache-2.0 | Deploys releases to Cloudflare |
+
+## Style references
+
+Named in words; no image is copied from them.
+
+| Influence | What it stands for |
+|---|---|
+| E. H. Shepard's drawings for Winnie-the-Pooh | Storybook softness and texture |
+| Anime | Shapes, characters, stylized faces |
+| *The Legend of Zelda: Breath of the Wild* (Nintendo) | Landform, distance, haze |
+| Studio Ghibli's films, Kazuo Oga's backgrounds | Painted light and colour in forests and fields |
+| *Clair Obscur: Expedition 33* (Sandfall Interactive) | Ryan's comparison for the lore: a world as a dying, preserved piece of itself |
+| A grim reaper; the mood of a dementor | Ryan's words for the climber, an original character |
+| Miro and Lucid; shadcn/ui's documentation | Interaction conventions for the board; the polish the docs aim past |
+
+The lookdev rubric's "hero" anchor is a private set of 83 images, not in the repo: 23 public-domain paintings from The Met's Open Access (CC0), 52 official Studio Ghibli stills ([free to use](https://www.ghibli.jp/info/013344/) "within the bounds of common sense"), and 8 Nintendo store screenshots (private study only). An agent looks at them beside a render to judge light, colour, value and depth.

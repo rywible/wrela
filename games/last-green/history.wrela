@@ -1,16 +1,16 @@
-// The floor's history (#54 §3): the map grown by `engine::grow`, at the bake's grain (2 m cells,
-// 2-year steps), over the authored square and a margin; baked as a file a tile (`engine::bake`),
+// The floor's history (#54 §3): the map grown by `land::grow`, at the bake's grain (2 m cells,
+// 2-year steps), over the authored square and a margin; baked as a file a tile (`land::bake`),
 // shipped beside the program, and cached by the build while the map and the code it runs are
 // unchanged (language.md §10). And the preview, the same history at the preview's grain (4 m
 // cells, 10-year steps), for the map lens after each edit.
 
-use engine::bake::{bake, unbake}
-use engine::footing::{Obstacles, obstacles_of, walkable_of}
-use engine::grow::{BAKE, Grain, Grid, History, Land, PREVIEW, Start, simulate, world}
+use land::bake::{bake, unbake}
+use land::footing::{Obstacles, obstacles_of, walkable_of}
+use land::grow::{BAKE, Grain, Grid, History, Land, PREVIEW, Start, simulate, world}
 use peoples::{Culture, Use, left_by, settle, told}
-use engine::interest::{Evidence, FULL, Sight, check, nearest_first, report, views_bytes, walk_bytes}
-use engine::place::{Kind, Map, TILE, tile_of}
-use engine::water::Laid
+use land::interest::{Evidence, FULL, Sight, check, nearest_first, report, views_bytes, walk_bytes}
+use land::place::{Kind, Map, TILE, tile_of}
+use land::water::Laid
 use std::io::{Shipped, print, ship}
 use std::string::String
 
@@ -88,7 +88,7 @@ pub fn forked(h: take History) -> History {
 }
 
 /// The bake read back: the floor's decisions.
-pub fn decisions() -> engine::bake::Unbaked {
+pub fn decisions() -> land::bake::Unbaked {
     unbake(BAKED, tiles_lo(), tiles_hi())
 }
 
@@ -97,16 +97,16 @@ pub fn decisions() -> engine::bake::Unbaked {
 struct FallenTiles {
     lo: vec2i,
     n: vec2u,
-    trees: Vec<Vec<engine::grow::Tree>>,
+    trees: Vec<Vec<land::grow::Tree>>,
 }
 
 const FALLEN: FallenTiles = fallen_tiles(decisions().trees, tiles_lo(), tiles_hi())
 
-fn fallen_tiles(trees: [engine::grow::Tree], lo: vec2i, hi: vec2i) -> FallenTiles {
+fn fallen_tiles(trees: [land::grow::Tree], lo: vec2i, hi: vec2i) -> FallenTiles {
     let n = vec2u(hi - lo + vec2i(1))
-    var by_tile: Vec<Vec<engine::grow::Tree>> = Vec::from_fn(n.x * n.y, |_| Vec::new())
+    var by_tile: Vec<Vec<land::grow::Tree>> = Vec::from_fn(n.x * n.y, |_| Vec::new())
     for tree in trees {
-        if tree.state == engine::grow::State::Log {
+        if tree.state == land::grow::State::Log {
             let at = tile_of(tree.at) - lo
             if at.x >= 0 && at.y >= 0 && at.x < i32(n.x) && at.y < i32(n.y) {
                 by_tile[u32(at.y) * n.x + u32(at.x)].push(tree)
@@ -117,7 +117,7 @@ fn fallen_tiles(trees: [engine::grow::Tree], lo: vec2i, hi: vec2i) -> FallenTile
 }
 
 impl FallenTiles {
-    fn at(self, tile: vec2i) -> Vec<engine::grow::Tree> {
+    fn at(self, tile: vec2i) -> Vec<land::grow::Tree> {
         let at = tile - self.lo
         if at.x < 0 || at.y < 0 || at.x >= i32(self.n.x) || at.y >= i32(self.n.y) {
             return Vec::new()
@@ -126,13 +126,13 @@ impl FallenTiles {
     }
 }
 
-pub fn fallen_in(tile: vec2i) -> Vec<engine::grow::Tree> {
+pub fn fallen_in(tile: vec2i) -> Vec<land::grow::Tree> {
     FALLEN.at(tile)
 }
 
 @test
 fn authored_raw_logs_are_retained_in_their_runtime_tiles() {
-    let log = engine::grow::Tree {
+    let log = land::grow::Tree {
         at: vec2(1.0),
         kind: 0,
         born: 0,
@@ -142,19 +142,19 @@ fn authored_raw_logs_are_retained_in_their_runtime_tiles() {
         girth: 0.4,
         light: 1.0,
         vigour: 1.0,
-        state: engine::grow::State::Log,
+        state: land::grow::State::Log,
         died: 10,
         fell: 11,
         fall: vec2(0.0, 1.0),
-        cause: engine::grow::Cause::Wind,
+        cause: land::grow::Cause::Wind,
         pinned: false,
         shaped: 0,
         lift: 0.0,
         fork: 0.0,
         seed: 1,
     }
-    let next = engine::grow::Tree { at: vec2(TILE + 1.0, 1.0), seed: 2, ..log }
-    let standing = engine::grow::Tree { state: engine::grow::State::Alive, ..log }
+    let next = land::grow::Tree { at: vec2(TILE + 1.0, 1.0), seed: 2, ..log }
+    let standing = land::grow::Tree { state: land::grow::State::Alive, ..log }
     let indexed = fallen_tiles([log, next, standing], vec2i(0), vec2i(1, 0))
     assert(
         indexed.at(vec2i(0)).len() == 1 && indexed.at(vec2i(0))[0].seed == 1,
@@ -172,7 +172,7 @@ fn authored_raw_logs_are_retained_in_their_runtime_tiles() {
 /// every replay, wherever the tiles have streamed to).
 pub const OBSTACLES: Obstacles = obstacles(decisions())
 
-fn obstacles(u: engine::bake::Unbaked) -> Obstacles {
+fn obstacles(u: land::bake::Unbaked) -> Obstacles {
     let m = map::map()
     obstacles_of(
         trees::as_drawn(u.trees),
@@ -190,24 +190,24 @@ fn obstacles(u: engine::bake::Unbaked) -> Obstacles {
 @fuel(2 ** 36)
 pub const COURSES: Courses = courses_of(decisions())
 
-/// The water's courses and pools (`engine::water::courses`): small, so the program holds them;
+/// The water's courses and pools (`land::water::courses`): small, so the program holds them;
 /// its mesh is laid from them when the program starts (`waters`), not shipped in it.
 pub struct Courses: Clone {
-    pub courses: Vec<engine::water::Course>,
+    pub courses: Vec<land::water::Course>,
     pub pools: Vec<vec4>,
 }
 
-fn courses_of(u: engine::bake::Unbaked) -> Courses {
-    let (courses, pools) = engine::water::courses(ground::GROUND, map::map().water, u.streams)
+fn courses_of(u: land::bake::Unbaked) -> Courses {
+    let (courses, pools) = land::water::courses(ground::GROUND, map::map().water, u.streams)
     Courses { courses, pools }
 }
 
-/// Where the falls' mist hangs (`engine::water::mists`).
-pub const MISTS: Vec<vec4> = engine::water::mists(ground::GROUND, COURSES.courses)
+/// Where the falls' mist hangs (`land::water::mists`).
+pub const MISTS: Vec<vec4> = land::water::mists(ground::GROUND, COURSES.courses)
 
 /// The water laid (`engine::water`): its courses and pools, and its mesh, laid over the ground.
 pub fn waters() -> Laid {
-    let mesh = engine::water::lay(
+    let mesh = land::water::lay(
         ground::GROUND,
         map::map().water,
         COURSES.courses,
@@ -257,12 +257,12 @@ fn checked() -> Vec<(String, Vec<u8>)> {
     }
     // What a player can walk to from the gate on the fine mask: each critical site (within its
     // reach) and each relation's viewpoint (within its reach).
-    let gate = engine::interest::gate_of(m)
+    let gate = land::interest::gate_of(m)
     let reached = mask.reached_from(gate)
     var reach = String::from("{\n  \"sites\": [\n")
     var first = true
     for k in m.sites {
-        if engine::interest::critical(k) {
+        if land::interest::critical(k) {
             let ok = mask.reaches(reached, k.at, k.reach + 2.0)
             let sep = if first { "" } else { ",\n" }
             reach.push_str(f"{sep}    {{\"name\": \"{k.name}\", \"reached\": {ok}}}")
@@ -283,11 +283,11 @@ fn checked() -> Vec<(String, Vec<u8>)> {
     var shots = String::from("[\n")
     for i in 0..lookbook::SHOTS.len() {
         let shot = lookbook::SHOTS[i]
-        let v = engine::interest::view_at(c.sight, m, FULL, shot.eye.xz)
+        let v = land::interest::view_at(c.sight, m, FULL, shot.eye.xz)
         let (seen, clear) = shot_valid(c.sight, shot)
         let sep = if i == 0 { "" } else { ",\n" }
         shots.push_str(
-            f"{sep}  {{\"shot\": \"{shot.name}\", \"seen\": {seen}, \"clear\": {clear}, \"view\": {engine::interest::view_json(m, v)}}}",
+            f"{sep}  {{\"shot\": \"{shot.name}\", \"seen\": {seen}, \"clear\": {clear}, \"view\": {land::interest::view_json(m, v)}}}",
         )
         if seen < SHOT_SEEN || clear < SHOT_CLEAR {
             print(
@@ -300,14 +300,14 @@ fn checked() -> Vec<(String, Vec<u8>)> {
     shots.push_str("\n]\n")
     var tour_bytes: Vec<u8> = Vec::new()
     for p in walk {
-        engine::bake::put_u32(mut tour_bytes, bitcast_u32(p.x))
-        engine::bake::put_u32(mut tour_bytes, bitcast_u32(p.y))
+        land::bake::put_u32(mut tour_bytes, bitcast_u32(p.x))
+        land::bake::put_u32(mut tour_bytes, bitcast_u32(p.y))
     }
     Vec::from(
         [
             (String::from("report.json"), Vec::from(text.as_bytes())),
             (String::from("views.bin"), views_bytes(m, c, FULL)),
-            (String::from("map.bin"), engine::interest::map_image(m, c, FULL, MAP_PX)),
+            (String::from("map.bin"), land::interest::map_image(m, c, FULL, MAP_PX)),
             (String::from("walk.bin"), walk_bytes(c)),
             (String::from("tour.bin"), take tour_bytes),
             (String::from("reach.json"), Vec::from(reach.as_bytes())),
@@ -321,10 +321,10 @@ fn checked() -> Vec<(String, Vec<u8>)> {
 /// player (`logs::obstacles`), as it meets them (`solid_colliders`). `OBSTACLES` holds only the
 /// thicker logs, and coarsely: a way planned without these led the floor's walk into a log on a
 /// slope it can't go round.
-fn solid_wood(trees: [engine::grow::Tree]) -> Obstacles {
+fn solid_wood(trees: [land::grow::Tree]) -> Obstacles {
     var parts: Vec<WoodPart> = Vec::new()
     for t in trees {
-        if t.state == engine::grow::State::Log {
+        if t.state == land::grow::State::Log {
             if parts.is_empty() || parts[parts.len() - 1].logs.len() == 256 {
                 parts.push(WoodPart { logs: Vec::new(), solid: Vec::new() })
             }
@@ -334,10 +334,10 @@ fn solid_wood(trees: [engine::grow::Tree]) -> Obstacles {
     parts.par_each_mut(|part| {
         borrow g = ground::GROUND
         part.solid = solid_colliders(
-            logs::obstacles(part.logs, |at: vec2| engine::grow::Ground::height(g, at.x, at.y)),
+            logs::obstacles(part.logs, |at: vec2| engine::terrain::Ground::height(g, at.x, at.y)),
         )
     })
-    var all: Vec<engine::footing::Obstacle> = Vec::new()
+    var all: Vec<land::footing::Obstacle> = Vec::new()
     for mut part in parts {
         all.append(mut part.solid)
     }
@@ -347,8 +347,8 @@ fn solid_wood(trees: [engine::grow::Tree]) -> Obstacles {
 /// The colliders a player meets for fitted log capsules `capsules`, as the sim makes them: each
 /// a local answer's circle round it (`wildwood::log_circle`, `world::answered`), those the
 /// travel can't cross (higher than its clearance).
-fn solid_colliders(capsules: [engine::footing::Obstacle]) -> Vec<engine::footing::Obstacle> {
-    var out: Vec<engine::footing::Obstacle> = Vec::new()
+fn solid_colliders(capsules: [land::footing::Obstacle]) -> Vec<land::footing::Obstacle> {
+    var out: Vec<land::footing::Obstacle> = Vec::new()
     for o in capsules {
         let c = world::answered(wildwood::log_circle(o))
         if !c.cleared(world::TRAVEL.clearance) {
@@ -360,27 +360,27 @@ fn solid_colliders(capsules: [engine::footing::Obstacle]) -> Vec<engine::footing
 
 /// Fallen trees, and the solid wood of theirs that `solid_wood` finds, a helper's share.
 struct WoodPart {
-    logs: Vec<engine::grow::Tree>,
-    solid: Vec<engine::footing::Obstacle>,
+    logs: Vec<land::grow::Tree>,
+    solid: Vec<land::footing::Obstacle>,
 }
 
 /// A shot's least share of its subject seen (`interest::transmit` from its eye to what it looks
 /// at, through the crowns and trunks as drawn) and its eye's least clearance from a trunk (m), at
 /// its move's start, middle and end. (The town's eye stood inside a trunk: the lookdev reviews.)
-pub fn shot_valid(s: Sight, shot: lookbook::Shot) -> (f32, f32) {
+pub fn shot_valid(s: Sight, shot: engine::shot::Shot) -> (f32, f32) {
     eye_valid(s, shot, shot.eye.xz)
 }
 
 /// `shot_valid` for `shot` with its eye moved to `from` (its move the same).
-fn eye_valid(s: Sight, shot: lookbook::Shot, from: vec2) -> (f32, f32) {
+fn eye_valid(s: Sight, shot: engine::shot::Shot, from: vec2) -> (f32, f32) {
     var seen = 1.0
     var clear = 99.0
     for k in 0..3 {
         let e = from + shot.moves * (f32(k) * 0.5)
-        let eye = vec3(e.x, engine::interest::ground_at(s, e) + shot.eye.y, e.y)
-        let at = vec3(shot.at.x, engine::interest::ground_at(s, shot.at.xz) + shot.at.y, shot.at.z)
-        seen = min(seen, engine::interest::transmit(s, eye, at, shot.reach))
-        clear = min(clear, engine::interest::trunk_clearance(s, e))
+        let eye = vec3(e.x, land::interest::ground_at(s, e) + shot.eye.y, e.y)
+        let at = vec3(shot.at.x, land::interest::ground_at(s, shot.at.xz) + shot.at.y, shot.at.z)
+        seen = min(seen, land::interest::transmit(s, eye, at, shot.reach))
+        clear = min(clear, land::interest::trunk_clearance(s, e))
     }
     (seen, clear)
 }
@@ -391,7 +391,7 @@ pub const SHOT_CLEAR: f32 = 1.0
 
 /// The eye for `shot` that sees its subject best through its move, at 0.6 to 1.4 times its
 /// distance from it, all round, clear of trunks by 2.5 m; nearer its own distance on a tie.
-fn clearest_eye(s: Sight, shot: lookbook::Shot) -> (vec2, f32) {
+fn clearest_eye(s: Sight, shot: engine::shot::Shot) -> (vec2, f32) {
     let at = shot.at.xz
     let dist = max(length(shot.eye.xz - at), 8.0)
     var best = vec2(0.0)
@@ -434,9 +434,9 @@ const CAL_VIEWS: u32 = 6
 /// judged from (`interest::relation_view`), its draw there, and its site (a crag's, its rock as
 /// wide as its foot).
 fn calibration(
-    c: engine::interest::Checked,
-    m: engine::place::Map,
-    mask: engine::footing::Walkable,
+    c: land::interest::Checked,
+    m: land::place::Map,
+    mask: land::footing::Walkable,
 ) -> String {
     borrow g = ground::GROUND
     var out = String::from(
@@ -449,7 +449,7 @@ fn calibration(
             (map::HI - map::LO) * (vec2(f32(k % 6), f32(k / 6)) + vec2(0.5)) / vec2(6.0, 4.0)
         var cell = mask.nearest(q)
         var tries = 0
-        while (cell == engine::grow::NONE || !m.inside(mask.grid.centre(cell))) && tries < 8 {
+        while (cell == land::grow::NONE || !m.inside(mask.grid.centre(cell))) && tries < 8 {
             q = mix(q, 0.5 * (map::LO + map::HI), vec2(0.25))
             cell = mask.nearest(q)
             tries += 1
@@ -461,10 +461,10 @@ fn calibration(
         var seen = 0.0
         for v in 0..CAL_VIEWS {
             let a = yaw + 2.0 * half * f32(v)
-            seen += engine::interest::seen_beyond(c.sight, p, a, half, CAL_DIST, FULL.eye)
+            seen += land::interest::seen_beyond(c.sight, p, a, half, CAL_DIST, FULL.eye)
         }
         seen = seen / f32(CAL_VIEWS)
-        let y = engine::grow::Ground::height(g, p.x, p.y)
+        let y = engine::terrain::Ground::height(g, p.x, p.y)
         let sep = if found == 0 { "" } else { ",\n" }
         out.push_str(
             f"{sep}    {{\"at\": [{p.x}, {p.y}], \"ground\": {y}, \"yaw\": {yaw}, \"seen\": {seen}}}",
@@ -475,18 +475,18 @@ fn calibration(
     var first = true
     for r in m.relations {
         let landmark = match r {
-            engine::place::Relation::Seen { landmark, .. } => landmark,
+            land::place::Relation::Seen { landmark, .. } => landmark,
             _ => false,
         }
         if !landmark {
             continue
         }
-        let (eye, draw) = engine::interest::relation_view(c.sight, m, FULL, r)
+        let (eye, draw) = land::interest::relation_view(c.sight, m, FULL, r)
         let k = m.sites[r.to()]
-        let e = vec3(eye.x, engine::grow::Ground::height(g, eye.x, eye.z) + FULL.eye, eye.z)
-        let base = engine::grow::Ground::height(g, k.at.x, k.at.y)
+        let e = vec3(eye.x, engine::terrain::Ground::height(g, eye.x, eye.z) + FULL.eye, eye.z)
+        let base = engine::terrain::Ground::height(g, k.at.x, k.at.y)
         // Where the eye looks: a crag's top (its relief is the ground's), another's middle.
-        let aim = if k.feature == engine::place::Feature::Crag { base + 1.0 } else {
+        let aim = if k.feature == land::place::Feature::Crag { base + 1.0 } else {
             base + 0.6 * k.tall
         }
         // A crag's rock reaches as wide as its foot: the land's crag there.
@@ -513,7 +513,7 @@ fn calibration(
     }
     for k in 0..m.routes.len() {
         borrow r = m.routes[k]
-        if r.kind == engine::place::RouteKind::Herd {
+        if r.kind == land::place::RouteKind::Herd {
             continue
         }
         let len = r.length()
@@ -528,7 +528,7 @@ fn calibration(
             var best = 0.0
             for i in 0..81 {
                 let q = on.xy + across * (f32(i) * 0.1 - 4.0)
-                tread[i] = engine::bake::path_at(m.routes, all, q, used: 1.0)
+                tread[i] = land::bake::path_at(m.routes, all, q, used: 1.0)
                 best = max(best, tread[i])
             }
             var sum = vec2(0.0)
@@ -562,9 +562,9 @@ const TRAIL_EVERY: f32 = 80.0
 /// lookbook place.
 fn tour_stops() -> Vec<vec2> {
     let m = map::map()
-    var out: Vec<vec2> = Vec::from([engine::interest::gate_of(m)])
+    var out: Vec<vec2> = Vec::from([land::interest::gate_of(m)])
     for k in m.sites {
-        if engine::interest::critical(k) {
+        if land::interest::critical(k) {
             out.push(k.at)
         }
     }
@@ -589,7 +589,7 @@ fn tour_stops() -> Vec<vec2> {
 /// The check's views (`views.bin`): each place's strongest draw, a byte (0 to 1 as 0 to 254;
 /// 255 where a player can't stand), over `VIEWS_GRID`, for the play harness's report.
 pub const VIEWS: Vec<u8> = views_of(CHECKED)
-pub const VIEWS_GRID: Grid = engine::interest::views_grid(map::map(), FULL)
+pub const VIEWS_GRID: Grid = land::interest::views_grid(map::map(), FULL)
 
 fn views_of(files: Shipped) -> Vec<u8> {
     borrow b = files.bytes(files.find("views.bin").unwrap())
@@ -621,8 +621,8 @@ fn tour_of(files: Shipped) -> Vec<vec2> {
     while k + 8 <= b.len() {
         out.push(
             vec2(
-                bitcast_f32(engine::bake::get_u32(b, k)),
-                bitcast_f32(engine::bake::get_u32(b, k + 4)),
+                bitcast_f32(land::bake::get_u32(b, k)),
+                bitcast_f32(land::bake::get_u32(b, k + 4)),
             ),
         )
         k += 8
@@ -636,12 +636,12 @@ fn tour_of(files: Shipped) -> Vec<vec2> {
 /// of the colliders the sim makes of them round a player (`world::player_obstacles`).
 @test
 fn the_walks_mask_keeps_out_of_the_wood_a_player_meets() {
-    var capsules: Vec<engine::footing::Obstacle> = Vec::new()
-    let solid = |at: vec2, a: f32| engine::footing::Obstacle {
+    var capsules: Vec<land::footing::Obstacle> = Vec::new()
+    let solid = |at: vec2, a: f32| land::footing::Obstacle {
         a: at - vec2(cos(a), sin(a)) * 0.25,
         b: at + vec2(cos(a), sin(a)) * 0.25,
         r: 0.1,
-        thing: engine::footing::Thing::Log,
+        thing: land::footing::Thing::Log,
         depth: 1.0 / 0.0,
     }
     capsules.push(solid(vec2(5.5, 6.15), 0.0))
@@ -652,21 +652,21 @@ fn the_walks_mask_keeps_out_of_the_wood_a_player_meets() {
     }
     let (lo, hi) = (vec2(0.0), vec2(16.0))
     let grid = Grid::over(lo, hi, 1.0)
-    var mask = engine::footing::Walkable { grid, ok: Vec::filled(grid.cells(), value: true) }
+    var mask = land::footing::Walkable { grid, ok: Vec::filled(grid.cells(), value: true) }
     mask.without(Obstacles::of(solid_colliders(capsules), lo, hi))
     var wild = world::spawn_world().wild
     for i in 0..capsules.len() {
         wild.trunks[i] = wildwood::log_circle(capsules[i])
     }
     wild.count = capsules.len()
-    let nothing: Vec<engine::footing::Obstacle> = Vec::new()
+    let nothing: Vec<land::footing::Obstacle> = Vec::new()
     var open = 0
     for c in 0..grid.cells() {
         if mask.ok[c] {
             let p = grid.centre(c)
             let met = world::player_obstacles(wild, p, Obstacles::of(nothing, lo, hi))
             assert(
-                !met.blocked_over(p, engine::footing::BODY, world::TRAVEL.clearance),
+                !met.blocked_over(p, land::footing::BODY, world::TRAVEL.clearance),
                 f"the mask is open at {p}, where a player meets solid wood",
             )
             open += 1

@@ -1,15 +1,16 @@
 // The floor's built things (#54 §1, §9): a simple form at each site, a field realized at load as
-// the stones are (`engine::stone`'s way, each a creature of one bone): the tower's ruin on the
+// the stones are (`engine::stone`'s way, each a solid: `engine::realize::solid`): the tower's ruin on the
 // Watch (developed: dressed granite in courses that vary, a door, one deep break that shows the
 // wall's thickness, moss, blocks fallen below the break), the ring's and the Warden's arena's
 // standing stones, waystones, rests' seats and the echoes' small stones, and the ruins' walls
 // (blockouts: judged as composition).
 // Where each stands is the map's (`stones.wrela` gives what a player walks round: the same).
 
-use engine::creature::{Creature, Skeleton, creature}
-use engine::look::{CreatureLook, Mesh as Tolerance}
+use engine::creature::Creature
+use engine::look::Mesh as Tolerance
+use engine::realize::solid
 use engine::noise::{noise3, rand}
-use engine::place::{Feature, Map, SiteKind}
+use land::place::{Feature, Map, SiteKind}
 use engine::stone::{Bed, Realized, Rock, grain, realize_bed, realize_rock, realize_stone}
 use engine::sweep::wrap
 use std::derive::Box3
@@ -416,15 +417,15 @@ pub fn tower() -> Tower {
     Tower { radius: stones::TOWER_RADIUS, wall: 1.65, tall: stones::TOWER_TALL }
 }
 
-/// The tower as a creature of one bone.
+/// The tower, a solid to realize (`engine::realize::solid`).
 pub fn tower_creature(t: Tower) -> Creature<Rock> {
-    var s = Skeleton::new()
-    let root = s.root("tower", vec3(0.0))
     let c = Masonry { tower: t }
     let m = stones::TOWER_FOOT + 0.2
-    creature(s)
-        .part(root, t.with_at(|p| c.at(p)))
-        .bounded(Box3 { lo: vec3(-m, -3.2, -m), hi: vec3(m, t.tall + 0.5, m) })
+    solid(
+        t.with_at(|p| c.at(p)),
+        Box3 { lo: vec3(-m, -3.2, -m), hi: vec3(m, t.tall + 0.5, m) },
+        name: "tower",
+    )
 }
 
 /// The tower, realized at `at` (its foot on the ground).
@@ -475,7 +476,7 @@ fn realized<K: Creature<Rock>>(
     at: mat4,
     seed: u32,
 ) -> Realized {
-    realize_rock(c, CreatureLook { surface: Tolerance { tolerance, largest } }, cell, at, seed)
+    realize_rock(c, Tolerance { tolerance, largest }, cell, at, seed)
 }
 
 // ---- rubble -------------------------------------------------------------------------------------
@@ -538,14 +539,10 @@ impl Surface for Block {
     }
 }
 
-/// A fallen block as a creature of one bone.
+/// A fallen block, a solid to realize (`engine::realize::solid`).
 pub fn block_creature(b: Block) -> Creature<Rock> {
-    var s = Skeleton::new()
-    let root = s.root("block", vec3(0.0))
     let m = length(b.half) + 0.1
-    creature(s)
-        .part(root, b.with_at(|p| b.colour(p)))
-        .bounded(Box3 { lo: vec3(-m), hi: vec3(m) })
+    solid(b.with_at(|p| b.colour(p)), Box3 { lo: vec3(-m), hi: vec3(m) }, name: "block")
 }
 
 /// A fallen block lying at `at` on the ground (sunk a third into it), turned by `turn`, realized.
@@ -626,13 +623,13 @@ impl Surface for Waystone {
     }
 }
 
-/// A waystone as a creature of one bone.
+/// A waystone, a solid to realize (`engine::realize::solid`).
 pub fn waystone_creature(w: Waystone) -> Creature<Rock> {
-    var s = Skeleton::new()
-    let root = s.root("waystone", vec3(0.0))
-    creature(s)
-        .part(root, w.with_at(|p| w.colour(p)))
-        .bounded(Box3 { lo: vec3(-0.5, -0.4, -0.5), hi: vec3(0.5, w.tall + 0.4, 0.5) })
+    solid(
+        w.with_at(|p| w.colour(p)),
+        Box3 { lo: vec3(-0.5, -0.4, -0.5), hi: vec3(0.5, w.tall + 0.4, 0.5) },
+        name: "waystone",
+    )
 }
 
 /// A waystone `tall` high standing at `at`, its road face turned by `turn`, realized.
@@ -696,14 +693,14 @@ fn weathered(p: vec3, s: Slab) -> Rock {
     Rock { albedo: mix(c, MOSS, vec3(moss * 0.7)) }
 }
 
-/// A slab as a creature of one bone.
+/// A slab, a solid to realize (`engine::realize::solid`).
 pub fn slab_creature(s: Slab) -> Creature<Rock> {
-    var sk = Skeleton::new()
-    let root = sk.root("slab", vec3(0.0))
     let m = max(s.half.x, s.half.z) + 0.3
-    creature(sk)
-        .part(root, s.with_at(|p| weathered(p, s)))
-        .bounded(Box3 { lo: vec3(-m, -0.6, -m), hi: vec3(m, 2.0 * s.half.y + 0.3, m) })
+    solid(
+        s.with_at(|p| weathered(p, s)),
+        Box3 { lo: vec3(-m, -0.6, -m), hi: vec3(m, 2.0 * s.half.y + 0.3, m) },
+        name: "slab",
+    )
 }
 
 /// A slab standing at `at` (its foot on the ground, sunk a little: a lying one less), turned by
@@ -750,19 +747,14 @@ impl Surface for Wall {
     }
 }
 
-/// A wall's stretch as a creature of one bone.
+/// A wall's stretch, a solid to realize (`engine::realize::solid`).
 pub fn wall_creature(w: Wall, tall: f32) -> Creature<Rock> {
-    var s = Skeleton::new()
-    let root = s.root("wall", vec3(0.0))
     let c = Courses { top: tall, course: 0.3 }
-    creature(s)
-        .part(root, w.with_at(|p| c.at(p)))
-        .bounded(
-            Box3 {
-                lo: vec3(-w.half.x - 0.2, -0.2, -0.7),
-                hi: vec3(w.half.x + 0.2, tall + 0.3, 0.7),
-            },
-        )
+    solid(
+        w.with_at(|p| c.at(p)),
+        Box3 { lo: vec3(-w.half.x - 0.2, -0.2, -0.7), hi: vec3(w.half.x + 0.2, tall + 0.3, 0.7) },
+        name: "wall",
+    )
 }
 
 /// A wall from `a` to `b` on the ground (x, z; `ya` and `yb` its ends' ground), `tall` high,
@@ -897,7 +889,7 @@ pub fn built(m: Map) -> Vec<Built> {
 pub const BANK_STONE_LIMIT: u32 = 384
 const BANK_PATCH_STONES: u32 = 3
 
-pub fn bank_stones(courses: [engine::water::Course]) -> Vec<Built> {
+pub fn bank_stones(courses: [land::water::Course]) -> Vec<Built> {
     var total = 0.0
     for c in courses {
         if c.falls || c.points.len() < 2 {
@@ -971,12 +963,12 @@ pub fn bank_prototype(index: u32) -> Realized {
         seed: 12000 + index * 19,
         at: vec3(0.0),
         turn: 0.0,
-        look: CreatureLook { surface: Tolerance { tolerance: 2cm, largest: 8cm } },
+        surface: Tolerance { tolerance: 2cm, largest: 8cm },
     )
 }
 
 pub fn bank_instances(
-    courses: [engine::water::Course],
+    courses: [land::water::Course],
     height: fn(vec2) -> f32,
 ) -> engine::stone::Instances {
     var placements: Vec<engine::stone::Placement> = Vec::new()
@@ -1014,7 +1006,7 @@ pub fn bank_instances(
 
 @test
 fn bank_instances_share_three_prototypes_and_enclose_their_scaled_bounds() {
-    let c = engine::water::Course {
+    let c = land::water::Course {
         points: Vec::from([vec4(0.0, 0.0, 4.0, 0.4), vec4(0.0, 80.0, 4.0, 0.4)]),
         falls: false,
     }
@@ -1047,7 +1039,7 @@ fn bank_instances_share_three_prototypes_and_enclose_their_scaled_bounds() {
 
 @test
 fn stream_bank_stones_follow_both_margins_with_a_fixed_bound() {
-    let course = engine::water::Course {
+    let course = land::water::Course {
         points: Vec::from([vec4(0.0, 0.0, 4.0, 0.4), vec4(0.0, 80.0, 4.0, 0.4)]),
         falls: false,
     }
@@ -1065,7 +1057,7 @@ fn stream_bank_stones_follow_both_margins_with_a_fixed_bound() {
         if p.x < 0.0 { left += 1 } else { right += 1 }
     }
     assert(left > 0 && right > 0, "only one creek bank received stones")
-    let long = engine::water::Course {
+    let long = land::water::Course {
         points: Vec::from([vec4(0.0, 0.0, 4.0, 0.4), vec4(0.0, 100000.0, 4.0, 0.4)]),
         falls: false,
     }
@@ -1073,7 +1065,7 @@ fn stream_bank_stones_follow_both_margins_with_a_fixed_bound() {
         bank_stones([take long]).len() <= BANK_STONE_LIMIT,
         "long water exceeded its geometry budget",
     )
-    let fall = engine::water::Course { falls: true, ..course }
+    let fall = land::water::Course { falls: true, ..course }
     assert(bank_stones([take fall]).is_empty(), "bank stones float beside a waterfall")
 }
 
@@ -1201,7 +1193,7 @@ pub fn realize(b: Built, height: fn(vec2) -> f32) -> Realized {
 
 @test
 fn bank_stones_settle_on_shelves_and_not_cut_faces() {
-    let c = engine::water::Course {
+    let c = land::water::Course {
         points: Vec::from([vec4(0.0, 0.0, 4.0, 0.4), vec4(0.0, 80.0, 4.0, 0.4)]),
         falls: false,
     }

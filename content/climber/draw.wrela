@@ -24,7 +24,7 @@ use engine::look::{CreatureLook, Mesh as Tolerance}
 use engine::noise::fbm2
 use engine::probes::open_light
 use engine::realize::realize_rigid
-use engine::render::{ByChannels, Look}
+use engine::character::{ByChannels, Look}
 use engine::shadow::CASTER
 use engine::vegetation::nothing
 use engine::view::{CREATURE, Camera, NEAREST, SEEN, VEIL}
@@ -43,11 +43,10 @@ use std::transform::translate
 const GARMENT_PART: u32 = 1
 const SWORD_PART: u32 = 3
 
-/// A creature of one bone realized: its mesh and colours (cells for a 3 mm tolerance, and no
-/// wider than `largest`).
+/// A solid realized (`engine::realize::solid`): its mesh and colours (cells for a 3 mm tolerance,
+/// and no wider than `largest`).
 fn realized<K: Creature<Paint>>(c: K, largest: f32) -> Realized {
-    let look = CreatureLook { surface: Tolerance { tolerance: 3mm, largest } }
-    let mesh = realize_rigid(c, look)
+    let mesh = realize_rigid(c, Tolerance { tolerance: 3mm, largest })
     let materials = materials(mesh, c.field(), ByChannels {}, cell: min(largest, 1cm))
     Realized { mesh, materials }
 }

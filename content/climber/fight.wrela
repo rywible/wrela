@@ -357,18 +357,7 @@ pub struct Wolf: Copy + Eq + Plain + StateHash + Serialize + SimState {
 
 /// The wolf's skeleton, and its body for walking: springs on its neck and tail. Found once.
 pub const WOLF_SKELETON: Skeleton = wolf::creature::skeleton()
-pub const WOLF_BODY: Body = wolf_body()
-
-fn wolf_body() -> Body {
-    let s = WOLF_SKELETON
-    body(
-        s,
-        [s.find("neck"), s.find("head")],
-        [s.find("tail 0"), s.find("tail 1"), s.find("tail 2"), s.find("tail 3")],
-        head_k: 90.0,
-        tail_k: 30.0,
-    )
-}
+pub const WOLF_BODY: Body = wolf::creature::walker_body()
 
 /// How it walks when it prowls, when it turns where it stands, and how it bounds when it lunges.
 const PROWL = Walk { speed: 1.3, steer: 2.2, look_ahead: 1.2 }

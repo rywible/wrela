@@ -3,7 +3,7 @@
 // length and the surface's distance, over walls thick enough that no surface is thin
 // between the threes' reads: each column a wall at its own distance, from 0.3 m to 120 m, so the
 // rays meet them at every one of the march's steps, and each row a ray tilted a little more.
-use engine::floor::fullscreen
+use engine::frame::fullscreen
 use engine::view::{Camera, first_camera}
 use engine::water::{Met, reflection_march}
 use std::gpu::{FragCoord, Rgba16Float, Texture, begin_pass, begin_screen_pass, texture}

@@ -1,6 +1,6 @@
 // The game's small session program: save policy before its renderer is loaded. The policy is
 // platform's (`platform::session`); this program gives it the game's tower snapshot.
-use engine::tower::{Carry, STAIR}
+use tower::rule::{Carry, STAIR}
 use platform::protocol::{Request, SaveFile}
 use platform::session
 // `begin` and `answered` are for the export tool test's fixtures (tests/export).
@@ -78,8 +78,8 @@ fn carry_at_rest(bytes: Vec<u8>) -> Option<Carry> {
     // Its tower decision is durable, but the next playable destination is the stair.
     if carry.tower.worlds() == 2 &&
         carry.at < 2 &&
-        carry.tower.fate(carry.at) == engine::tower::Fate::Freed {
-        if carry.at != 0 && carry.tower.fate(carry.at - 1) == engine::tower::Fate::Undecided {
+        carry.tower.fate(carry.at) == tower::rule::Fate::Freed {
+        if carry.at != 0 && carry.tower.fate(carry.at - 1) == tower::rule::Fate::Undecided {
             return None
         }
         carry.at = STAIR
@@ -102,7 +102,7 @@ fn foreign_or_truncated_saves_are_rejected_before_writing() {
 }
 
 // A serialization fixture can name fields that game callers cannot construct directly.
-struct CarryFixture: Serialize { tower: engine::tower::Tower, at: u32, door: u32, going: u32 }
+struct CarryFixture: Serialize { tower: tower::rule::Tower, at: u32, door: u32, going: u32 }
 
 @test
 fn imports_reject_locked_worlds_and_invalid_doors() {
@@ -112,7 +112,7 @@ fn imports_reject_locked_worlds_and_invalid_doors() {
             version: 1,
             saved: 0,
             body: save(
-                CarryFixture { tower: engine::tower::Tower::new(2), at, door, going: 0xFFFFFFFE },
+                CarryFixture { tower: tower::rule::Tower::new(2), at, door, going: 0xFFFFFFFE },
             ),
         },
     )
@@ -148,7 +148,7 @@ fn failed_recovery_fixture() -> Session {
         recovery_exported: false,
         recovered: save(
             CarryFixture {
-                tower: engine::tower::Tower::new(2),
+                tower: tower::rule::Tower::new(2),
                 at: STAIR,
                 door: 0,
                 going: 0xFFFFFFFE,
@@ -160,7 +160,7 @@ fn failed_recovery_fixture() -> Session {
 @test
 fn recovery_failure_preserves_exports_of_other_slots() {
     let body = save(
-        CarryFixture { tower: engine::tower::Tower::new(2), at: 0, door: STAIR, going: 0xFFFFFFFE },
+        CarryFixture { tower: tower::rule::Tower::new(2), at: 0, door: STAIR, going: 0xFFFFFFFE },
     )
     let file = SaveFile { game: String::from(GAME), version: 1, saved: 17, body: body.clone() }
     var s = failed_recovery_fixture()
@@ -208,9 +208,9 @@ fn recovery_failure_preserves_exports_of_other_slots() {
 
 @test
 fn a_freed_current_world_resumes_on_the_stair() {
-    var tower = engine::tower::Tower::new(2)
-    assert(tower.decide(0, engine::tower::Fate::Preserved))
-    assert(tower.decide(1, engine::tower::Fate::Freed))
+    var tower = tower::rule::Tower::new(2)
+    assert(tower.decide(0, tower::rule::Fate::Preserved))
+    assert(tower.decide(1, tower::rule::Fate::Freed))
     let body = save(CarryFixture { tower, at: 1, door: 1, going: 0xFFFFFFFE })
     let file = SaveFile { game: String::from(GAME), version: 1, saved: 17, body }
     let Some(file) = checked(LastGreen {}, save(file)) else {
@@ -221,12 +221,12 @@ fn a_freed_current_world_resumes_on_the_stair() {
     match carry {
         Ok(c) => {
             assert(c.at == STAIR && c.door == 1)
-            assert(c.tower.fate(1) == engine::tower::Fate::Freed)
+            assert(c.tower.fate(1) == tower::rule::Fate::Freed)
         },
         Err(_) => assert(false, "the normalized carry remains readable"),
     }
-    var locked = engine::tower::Tower::new(2)
-    assert(locked.decide(1, engine::tower::Fate::Freed))
+    var locked = tower::rule::Tower::new(2)
+    assert(locked.decide(1, tower::rule::Fate::Freed))
     let body = save(CarryFixture { tower: locked, at: 1, door: 1, going: 0xFFFFFFFE })
     let file = SaveFile { game: String::from(GAME), version: 1, saved: 17, body }
     assert(checked(LastGreen {}, save(file)).is_none(), "a locked world remains invalid")

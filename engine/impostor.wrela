@@ -443,7 +443,7 @@ pub struct FarVertex: Copy {
     pub views2: vec4,
     pub weights: Flat<vec4>,
     pub cells: Flat<vec4u>,
-    /// The part of a pixel's draws its instance keeps this way, packed (`Forest::marks`).
+    /// The part of a pixel's draws its instance keeps this way, packed (`wood::Wood`'s marks).
     pub keep: Flat<u32>,
     /// Its own seed (`seed_at`), from where it stands in the world.
     pub seed: Flat<u32>,

@@ -1,0 +1,156 @@
+// Digits: toes, fingers or a hoof's halves for a creature's field, set side by side, each a
+// short sweep from its base through its knuckle to a domed tip.
+//
+// Call `digits` with a few numbers an artist reads off a paw: how far apart the outermost are,
+// how long and thick the middle ones are, how much the toes fan out, how far they curl down at
+// the knuckle, and how much smaller the outer ones are. Each digit is a part of its own, so the
+// clefts between them show and the pads under them keep their form.
+
+use std::derive::Box3
+use std::field::Surface
+use engine::sweep::{Sweep, section, sweep}
+
+/// `N` digits (`digits`), each a sweep of three sections.
+pub struct Digits<const N: u32>: Copy + GpuData {
+    pub toes: [Sweep<3>; N],
+}
+
+/// `N` digits whose bases sit across `spread` (from the first's to the last's, along the left
+/// of `forward` and `up`) centred at `at`, pointing along `forward`, their tops toward `up`. A
+/// middle one is `length` from base to tip and `thick` across at its knuckle (a half-width);
+/// the outermost are `outer` times that. They fan out by `splay` radians (between the outermost)
+/// and each arches over its knuckle (45% of the way along) to point down by `curl` radians at
+/// its tip.
+pub fn digits<const N: u32>(
+    at: vec3,
+    forward: vec3,
+    up: vec3,
+    spread: f32,
+    length: f32,
+    thick: f32,
+    splay: f32 = 0.15,
+    curl: f32 = 0.3,
+    outer: f32 = 0.85,
+) -> Digits<N> {
+    assert(N >= 1, "digits are at least one")
+    let f = normalize(forward)
+    let u = normalize(up - f * dot(up, f))
+    let left = cross(u, f)
+    let nth = |i: u32| {
+        // From -0.5 (the first, on the right) to 0.5 (the last).
+        let x = if N == 1 { 0.0 } else { f32(i) / f32(N - 1) - 0.5 }
+        // The middle third full size, the outermost `outer` times it, linear between.
+        let size = mix(1.0, outer, saturate((2.0 * abs(x) - 1.0 / 3.0) * 1.5))
+        let angle = splay * x
+        let d = f * cos(angle) + left * sin(angle)
+        toe(at + left * (spread * x), d, u, length * size, thick * size, curl)
+    }
+    var toes = [nth(0); N]
+    for i in 1..N {
+        toes[i] = nth(i)
+    }
+    Digits { toes }
+}
+
+/// One digit from `base`, pointing along `d` (its top toward `u`), `length` long and `thick`
+/// at its knuckle: an arc that leaves its base rising a little (0.15 radians) and arrives at its
+/// tip pointing down by `curl` (a curve through base, knuckle and tip alone bent all its turn at
+/// the knuckle, sharper than the toe was thick). A little wider and flatter at its base, its
+/// tip narrower, with a flat pad under it, domed.
+fn toe(base: vec3, d: vec3, u: vec3, length: f32, thick: f32, curl: f32) -> Sweep<3> {
+    let rise = 0.15
+    let turn = max(rise + curl, 0.001)
+    let r = length / turn
+    var points = [vec3(); 5]
+    for i in 0..5 {
+        let a = rise - turn * f32(i) / 4.0
+        points[i] = base + d * (r * (sin(rise) - sin(a))) + u * (r * (cos(a) - cos(rise)))
+    }
+    sweep(
+        points,
+        up: u,
+        sections: [
+            section(up: 0.9 * thick, down: 0.8 * thick, left: 1.1 * thick, right: 1.1 * thick),
+            section(up: thick, down: 0.9 * thick, left: thick, right: thick, square: 2.2),
+            section(
+                up: 0.7 * thick,
+                down: 0.55 * thick,
+                left: 0.75 * thick,
+                right: 0.75 * thick,
+                square: 2.4,
+            ),
+        ],
+        places: [0.0, 0.45, 1.0],
+        ends: vec2(0.0, 0.6 * thick),
+    )
+}
+
+impl<const N: u32> Surface for Digits<N> {
+    /// The nearest digit's distance. A digit's distance is never less than the distance to its
+    /// path less its reach (`Sweep::distance`), so where that's no nearer, it's skipped.
+    fn distance(self, p: vec3) -> f32 {
+        var d = self.toes[0].distance(p)
+        for i in 1..N {
+            let least = self.toes[i].to_path(p) - self.toes[i].reach
+            if least < d {
+                d = min(d, max(self.toes[i].near(p), least))
+            }
+        }
+        d
+    }
+
+    /// The largest of its digits'.
+    fn lipschitz(self, near: f32) -> f32 {
+        var most = 0.0
+        for i in 0..N {
+            most = max(most, self.toes[i].lipschitz(near))
+        }
+        most
+    }
+}
+
+// ---- tests --------------------------------------------------------------------------------------
+
+// Digits are toes apart from each other, their tips where they're placed, their gradient near 1.
+
+/// A wolf's fore paw's four toes: 4 cm across, 3.5 cm long, 9 mm thick, pointing along +z.
+fn paw() -> Digits<4> {
+    digits(
+        vec3(0.0, 0.02, 0.0),
+        forward: vec3(z: 1.0),
+        up: vec3(y: 1.0),
+        spread: 0.04,
+        length: 0.035,
+        thick: 0.009,
+    )
+}
+
+@test
+fn digits_are_toes_apart() {
+    let p = paw()
+    // Each toe's path, halfway, is inside it, and the gap between two toes' tips, at their
+    // height, is outside every toe.
+    for i in 0..4 {
+        assert(p.distance(p.toes[i].at[p.toes[i].vertices / 2]) < -0.005)
+    }
+    let a = p.toes[1].at[p.toes[1].vertices - 1]
+    let b = p.toes[2].at[p.toes[2].vertices - 1]
+    assert(p.distance(0.5 * (a + b)) > 0.0, f"between the tips: {p.distance(0.5 * (a + b))}")
+    // The outer toes are shorter: their tips are behind the middle ones'.
+    let outer = p.toes[0].at[p.toes[0].vertices - 1]
+    assert(outer.z < a.z - 0.002, f"tips {outer.z} {a.z}")
+    // Near its surface, its gradient is near 1: down to 0.6 at a tip's dome, whose distance
+    // (an ellipse's, scaled by its shorter half-axis) never overstates.
+    let around = Box3 { lo: vec3(-0.04, 0.0, -0.01), hi: vec3(0.04, 0.04, 0.05) }
+    var n = 0
+    for i in 0..40000 {
+        let q = around.sample(10, i)
+        if abs(p.distance(q)) < 0.0005 {
+            let (_d, g) = p.sample(q)
+            assert(length(g) > 0.6 && length(g) < 1.2, f"gradient {length(g)}")
+            n += 1
+        }
+    }
+    assert(n > 100, f"{n} near")
+    assert(p.lipschitz(0.001) < 1.0e30, f"bound {p.lipschitz(0.001)}")
+}

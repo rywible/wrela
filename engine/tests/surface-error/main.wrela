@@ -1,0 +1,63 @@
+// A smooth solid (an oval, bending no tighter than its tolerance's radius) and a tight one (a
+// sphere 3 cm round, bending tighter), each realized to a 2 mm tolerance on the GPU and
+// measured against its own field (`engine::realize::measured_error`), read back.
+
+use engine::creature::Creature
+use engine::look::Mesh as Tolerance
+use engine::realize::{measured_error, realize_rigid, solid}
+use std::derive::Box3
+use std::field::{Surface, oval, sphere}
+use std::io::Pending
+
+/// The tolerance both are realized to: 2 mm, kept where the surface bends no tighter than 5 cm.
+const TOLERANCE = Tolerance { tolerance: 2.0e-3, largest: 2.0e-2 }
+
+pub struct State {
+    smooth: Pending<u32>,
+    thin: Pending<u32>,
+    /// What came back (micrometres), once it has.
+    pub smooth_um: Option<u32>,
+    pub thin_um: Option<u32>,
+}
+
+/// The smooth solid: an oval, its least radius of curvature 15 cm.
+fn smooth() -> Creature<f32> {
+    solid(oval(vec3(0.4, 0.3, 0.25)).with(1.0), Box3 { lo: vec3(-0.45), hi: vec3(0.45) })
+}
+
+/// The tight solid: a sphere 3 cm round.
+fn thin() -> Creature<f32> {
+    solid(sphere(0.03).with(1.0), Box3 { lo: vec3(-0.05), hi: vec3(0.05) })
+}
+
+pub fn init() -> State {
+    let (o, t) = (smooth(), thin())
+    let mo = realize_rigid(o, TOLERANCE)
+    let mt = realize_rigid(t, TOLERANCE)
+    State {
+        smooth: measured_error(mo, o.field()),
+        thin: measured_error(mt, t.field()),
+        smooth_um: None,
+        thin_um: None,
+    }
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    if let Some(Ok(v)) = s.smooth.poll() {
+        s.smooth_um = Some(v[0])
+    }
+    if let Some(Ok(v)) = s.thin.poll() {
+        s.thin_um = Some(v[0])
+    }
+}
+
+/// The smooth oval's mesh is within its 2 mm tolerance; the tight sphere's strays past it (a cell
+/// for a 2 mm tolerance on a 5 cm bend is 2.8 cm wide, and on a 3 cm sphere its chords sag more
+/// than 2 mm: the bound doesn't hold there, and the measure says so).
+@test(frames: 4, gpu: true)
+fn the_measure_finds_where_the_tolerance_holds(s: State) {
+    let Some(smooth) = s.smooth_um else { panic("the smooth solid's measure didn't come back") }
+    let Some(thin) = s.thin_um else { panic("the thin solid's measure didn't come back") }
+    assert(smooth <= 2000, f"the smooth oval strays {smooth} µm from its field, past 2 mm")
+    assert(thin > 2000, f"the tight sphere strays only {thin} µm: it bends tighter than 5 cm")
+}

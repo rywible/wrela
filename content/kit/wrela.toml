@@ -1,0 +1,9 @@
+# The content kit: bases a creature's author starts from, built on the engine's creatures and
+# forms: an anatomy kit (muscles, bones, a canid's skull, ears and paws, colour across a part,
+# and a canine built from them), a four-legged body from a few proportions, and digits (toes,
+# fingers, a hoof's halves).
+[package]
+name = "kit"
+
+[dependencies]
+engine = { workspace = true }

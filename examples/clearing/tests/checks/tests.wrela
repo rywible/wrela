@@ -547,7 +547,7 @@ fn statics_after(h: drive::Build, list: take Vec<Step>) -> u32 {
         var rest = recorded(h)
         commands.append(mut rest)
     }
-    sum(draws_after(commands, "shadows static"))
+    sum(draws_after(commands, "shadows near")) + sum(draws_after(commands, "shadows far"))
 }
 
 /// Frames until the clearing is ready (`test_ready`), then `settle` more; it's ready within
@@ -627,8 +627,9 @@ fn the_wind_is_a_function_of_time_and_place() {
 }
 
 /// AC5: static shadows are cached: once the forest and the boulders are cooked (a few at a
-/// frame, at load), one frame draws them into the static cascades, a steady frame draws nothing
-/// into them, and moving the sun draws them again (counted in the frames' command streams).
+/// frame, at load), they're drawn into the static cascades (each whole in a frame: the near one,
+/// then the far, one moving cache a frame), a steady frame draws nothing into them, and moving
+/// the sun draws them again, as many draws (counted in the frames' command streams).
 @test(tool, read: [("repo", "../../../..")], budget: 600)
 fn static_shadows_are_drawn_once_and_again_when_the_sun_moves() {
     let h = driven(true)
@@ -641,10 +642,10 @@ fn static_shadows_are_drawn_once_and_again_when_the_sun_moves() {
     for k in 0..drawn.len() {
         if drawn[k] > 0 {
             frames += 1
-            first = drawn[k]
+            first += drawn[k]
         }
     }
-    assert(frames == 1, f"{frames} frames drew static shadows at load")
+    assert(frames == 2, f"{frames} frames drew static shadows at load (one a cascade)")
     assert(first > 10, f"the load drew {first} times into the static cascades")
     until_ready(h, frame: 30, settle: 2)
     // The commands until now, dropped.
@@ -656,9 +657,9 @@ fn static_shadows_are_drawn_once_and_again_when_the_sun_moves() {
         args.push(Scalar::F32(x))
     }
     var counts: Vec<u32> = Vec::new()
-    counts.push(statics_after(h, Vec::from([call("test_sun", take args), lockstep(1)])))
+    counts.push(statics_after(h, Vec::from([call("test_sun", take args), lockstep(2)])))
     counts.push(statics_after(h, Vec::from([lockstep(5)])))
-    assert(counts[0] == first, f"moving the sun drew {counts[0]} times, the first frame {first}")
+    assert(counts[0] == first, f"moving the sun drew {counts[0]} times, the load {first}")
     assert(counts[1] == 0, "frames after the sun moved still draw static shadows")
 }
 

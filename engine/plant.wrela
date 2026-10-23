@@ -26,6 +26,7 @@ use std::gpu::{
     begin_pass, draw, texture,
 }
 use std::math::{PI, TAU}
+use frame::full
 
 /// A clump of leaves on a limb: a sphere of them `radius` across, or, `squash` below 1, a
 /// cushion: as wide, `squash` as tall, so a broad lit top over a flat shaded underside.
@@ -1327,14 +1328,6 @@ fn band_at(p: vec2, rows: i32) -> f32 {
     let across = smoothstep(0.0, 0.01, x) * (1.0 - smoothstep(wide - 0.01, wide, x))
     let thick = smoothstep(0.25, 0.4, f) * (1.0 - smoothstep(0.6, 0.75, f))
     1.0 - across * thick
-}
-
-/// A triangle that covers the target, at depth `z`.
-@vertex
-pub fn full(v: VertexIndex, z: f32) -> ClipPosition {
-    let x = f32((v.index << 1) & 2) * 2.0 - 1.0
-    let y = f32(v.index & 2) * 2.0 - 1.0
-    ClipPosition { position: vec4(x, y, z, 1.0) }
 }
 
 // ---- tests -----------------------------------------------------------------------------------------

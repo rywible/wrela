@@ -14,10 +14,12 @@ use climber::fight::{World, present, spawn, sword_at, tick}
 use engine::gait::between
 use engine::present::{Snapshots, short_way}
 use engine::realize::{Mesh, realize_once}
-use engine::render::{Lights, MAX_BONES, View, shade, skin, unlit_shadow, view}
+use engine::character::colours
+use engine::creature::MAX_BONES
+use engine::plain::{Lights, View, coloured, skin_coloured, unlit_shadow, view}
 use engine::run::run
 use std::gpu::{
-    ClipPosition, ComparisonSampler, Cull, DepthTexture, GpuBuffer, VertexIndex,
+    ClipPosition, ComparisonSampler, Cull, DepthTexture, GpuBuffer, Unorm8x4, VertexIndex,
     begin_screen_pass_with_depth, buffer, comparison_sampler, depth_texture, draw, write,
 }
 use std::io::print
@@ -35,6 +37,8 @@ pub struct Lab {
     cpu: f32,
     frames: u32,
     wolf: Mesh,
+    /// The wolf's colours, cooked from its field as its mesh is realized.
+    wolf_colours: GpuBuffer<Unorm8x4>,
     palette: GpuBuffer<mat4>,
     /// Where the camera is, eased.
     follow: vec3,
@@ -52,6 +56,8 @@ const WOLF_REALIZED = engine::look::CreatureLook {
 
 pub fn init() -> Lab {
     let latest = run(spawn(), hz: 60, step: tick, present: present)
+    let wolf = realize_once(wolf::creature::wolf(), WOLF_REALIZED)
+    let wolf_colours = colours(wolf, wolf::creature::wolf().field(), WolfCoat {}, cell: 1.0e-2)
     Lab {
         snaps: Snapshots::new(take latest, hz: 60),
         figure: figure(),
@@ -59,7 +65,8 @@ pub fn init() -> Lab {
         points: buffer(POINTS),
         cpu: 0.0,
         frames: 0,
-        wolf: realize_once(wolf::creature::wolf(), WOLF_REALIZED),
+        wolf,
+        wolf_colours,
         palette: buffer(MAX_BONES),
         follow: vec3(0.0),
         depth: depth_texture(width: 1, height: 1),
@@ -252,15 +259,14 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     )
     draw(
         pass,
-        skin.bind(verts: s.wolf.verts.items(), palettes: s.palette.items(), first: 0, view: v),
-        shade.bind(
-            field: wolf::creature::wolf().field(),
-            look: WolfCoat {},
+        skin_coloured.bind(
+            verts: s.wolf.verts.items(),
+            colours: s.wolf_colours.items(),
+            palettes: s.palette.items(),
+            first: 0,
             view: v,
-            lights: LIGHTS,
-            shadow: s.shadow,
-            shadow_sampler: s.shadow_sampler,
         ),
+        coloured.bind(view: v, lights: LIGHTS, shadow: s.shadow, shadow_sampler: s.shadow_sampler),
         indices: s.wolf.quads.items(),
         indirect: s.wolf.draw.items(),
         cull: Cull::Back,

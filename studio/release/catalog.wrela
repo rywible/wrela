@@ -64,7 +64,7 @@ pub const CATALOG: Catalog = Catalog {
         worker: "wrela-docs",
         domain: "docs.wrela.dev",
         description: "The reference for Wrela: the language, its standard library, the engine, ui and platform packages, and the studio's tool.",
-        packages: Vec::from(["engine", "ui", "platform", "studio/tool"]),
+        packages: Vec::from(["engine", "land", "ui", "platform", "studio/tool"]),
     },
     games: Vec::from(
         [

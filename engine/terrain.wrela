@@ -86,7 +86,19 @@ impl Terrain for Flat {
     }
 }
 
-impl grow::Ground for Flat {
+/// A ground as what stands on it reads it: its height, where it ends (past its edge the land falls
+/// away, and nothing grows) and how much of it is bare rock. The same field the terrain draws.
+pub trait Ground: Copy {
+    fn height(self, x: f32, z: f32) -> f32
+
+    /// How far past the floor's edge `p` is (m; negative on the floor).
+    fn past_edge(self, p: vec2) -> f32
+
+    /// How much of `p` is bare rock (0 to 1), where no tree stands.
+    fn rock(self, p: vec2) -> f32
+}
+
+impl Ground for Flat {
     fn height(self, x: f32, z: f32) -> f32 {
         0.0
     }

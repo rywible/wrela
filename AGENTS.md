@@ -24,18 +24,20 @@ This repository holds only Wrela code. The language, its toolchain (compiler, st
 
 - The language spec: `spec/language.md` in wrela-compiler, and on docs.wrela.dev. Read the relevant sections.
 - `docs/vision.md`: goals and architecture. Read "The lore" before story work; add no lore Ryan has not stated.
-- `docs/process.md`: public record of human/AI work and outside sources.
+- `docs/citations.md`: the outside works we use, their rights, and how and why we use them.
+- [`docs/toolchain.md`](docs/toolchain.md): how to use the toolchain here: the working loop, lookups, running, measuring, tests, the workspace's tools and common mistakes. Read it before your first Wrela change. Keep it true when a toolchain release changes a command.
 - `docs/toolchain-gaps.md`: what this repository needed from the toolchain and found missing or broken, and what was done about it.
 - Prefer `wrela context <item> <package>`, `wrela query`, `wrela doc` and `wrela primer <area>` for Wrela. Fall back to `rg`; report tool gaps as studio findings, and toolchain gaps in `docs/toolchain-gaps.md`.
 - `wrela doc --export <dir> <package-dir>...` writes the reference docs: the spec by section and a page per module, in Markdown, with `index.json` (every item and spec section, with its page, anchor and source) and `llms.txt`. Doc comments and each file's opening comment are that reference; keep them true when you change an item.
 
 | Layer | Location and constraint |
 |---|---|
-| Engine | `engine/` (Wrela); no game names, places or tuning |
+| Engine | `engine/` (Wrela): the frame a game's scene draws through (`frame`, `cook`), the 2D sheet and sprites, lighting, creatures, realization, audio; no game names, places or tuning |
+| Land | `land/`: a landscape round a player, on the engine (its map, landforms, growth, water laid from them, footing, the player, streaming); no floor's own map or numbers |
 | Studio | `studio/` (the lens and the project's tools: release, deploy, lookbook, motion, round, listening, audio, reference, serve), `ui/`, `docsite/` (docs.wrela.dev) |
 | Platform | `platform/`: the console's protocols with its games and sessions |
-| Content | `content/`: creatures, plants, characters and clouds that games and examples build on; `references/` is their reference data |
-| Games | `games/<game>/`, with its cover; the release tool's catalog (`studio/release/catalog.wrela`) lists the released games and `console/` is the console. Games and `examples/` depend on engine and `content/`; only tests and studio fixtures depend on an example or a game |
+| Content | `content/`: creatures, plants, characters and clouds that games and examples build on, and `content/kit`, the bases an author starts from; `references/` is their reference data |
+| Games | `games/<game>/`, with its cover and its own packages (the Last Green's `tower`: its rule and its doors); the release tool's catalog (`studio/release/catalog.wrela`) lists the released games and `console/` is the console. Games and `examples/` depend on engine, `land` and `content/`; only tests and studio fixtures depend on an example or a game |
 
 ## Quality and checks
 
@@ -47,6 +49,6 @@ This repository holds only Wrela code. The language, its toolchain (compiler, st
 
 ## Records
 
-- `AGENTS.md` is the sole repo instruction file. Add no prose docs beyond `docs/vision.md`, `docs/process.md`, `docs/toolchain-gaps.md` and each game's `design.md` (its brief: what Ryan decided, what is proposed and what is open): reference docs come from source through `wrela doc --export`; remove any temporary task notes before committing. Run checks locally. CI only builds and deploys releases from `main` (`.github/workflows/deploy.yml`, with the pinned toolchain); add no checks to it.
-- Update `docs/process.md` for new references, outside assets/algorithms, AI tools/models or kinds of AI work: source, rights, what it teaches and how used. Keep style references outside the repo. Never trace/sample/recreate specific reference shots, characters or designs; never create assets with generative image/audio/music/voice/video models.
+- `AGENTS.md` is the sole repo instruction file. Add no prose docs beyond `docs/vision.md`, `docs/citations.md`, `docs/toolchain.md`, `docs/toolchain-gaps.md` and each game's `design.md` (its brief: what Ryan decided, what is proposed and what is open): reference docs come from source through `wrela doc --export`; remove any temporary task notes before committing. Run checks locally. CI only builds and deploys releases from `main` (`.github/workflows/deploy.yml`, with the pinned toolchain); add no checks to it.
+- Add a row to `docs/citations.md` in the change that starts to use an outside reference, asset, algorithm or program: its source, rights, how and why we use it. Keep style references outside the repo. Never trace/sample/recreate specific reference shots, characters or designs; never create assets with generative image/audio/music/voice/video models.
 - Use clear, concrete English, roughly 80% ASD-STE100.

@@ -1,8 +1,8 @@
 // A small diagonal shadow edge, sampled by the production filter without temporal AA.
 // Move the receiver across the screen and the dynamic cascade through the world while
 // preserving the static receiver points. Their light must not depend on either movement.
-use engine::floor::fullscreen
-use engine::plant::full
+use engine::frame::fullscreen
+use engine::frame::full
 use engine::shadow::{Cascade, Shadows, shadows, sunlit}
 use std::gpu::{
     Compare, ComparisonSampler, Depth, DepthTexture, FragCoord, WithDepth, begin_depth_pass,

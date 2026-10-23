@@ -1,5 +1,5 @@
 // Production far quads and volume depth at three widths, from level and raised cameras.
-use engine::floor::fullscreen
+use engine::frame::fullscreen
 use engine::impostor::{Bake, VIEWS, far_quad, volume_cut}
 use engine::plant::{Bark, Instance, Leaves, Wind, tint_of}
 use engine::view::{Camera, first_camera}

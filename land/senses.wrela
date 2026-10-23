@@ -1,0 +1,462 @@
+// The senses: what a creature makes of a body near it, by sight and by hearing, and how aware of
+// it that leaves the creature.
+//
+// `sense` gives a `Stimulus` from a creature's `Senses`, the body's `Presence` and what stands
+// between them; `Awareness::update` turns stimuli into awareness over time. One layer serves
+// every creature: a grazer that lifts its head and flees, and a predator that stalks the player.
+// What a creature does about it (graze, watch, flee, stalk) is the game's, read from
+// `Awareness`.
+//
+// Sight: a body is seen inside the creature's field (keen ahead, weaker to the side, blind
+// behind), less the farther it is, and much less when it's still; what stands between them
+// (the ground, a trunk, a stone, a thicket) hides it (`Occluders`). Hearing: a body is heard by
+// how loud it moves, less the farther it is, through anything. Awareness rises with the
+// stronger of the two and falls when the creature senses nothing.
+//
+// All of it is sim: deterministic, from sim state alone. `Awareness` is the only state.
+
+use footing::{BIN, Obstacle, Obstacles, Thing}
+use engine::terrain::Ground
+use engine::sim::{SimState, Transform}
+use engine::terrain::Flat
+use std::hash::StateHash
+use std::serialize::Serialize
+
+/// What a creature senses with: its eye's height over its feet (m); how far it sees a body that
+/// moves, in the open (m); its field, keen within `fov` of the way it looks and `side` as keen
+/// out to `around` (half-angles, radians), blind past that; and how far it hears a body as loud
+/// as a run (m).
+pub struct Senses: Copy {
+    pub eye: f32,
+    pub sight: f32,
+    pub fov: f32,
+    pub around: f32,
+    pub side: f32,
+    pub hearing: f32,
+}
+
+/// What a body gives off: where its feet are, how fast it moves on the plane (m/s), how tall it
+/// stands (m), and how loud it moves (0 silent, 1 a run).
+pub struct Presence: Copy {
+    pub at: vec3,
+    pub velocity: vec2,
+    pub height: f32,
+    pub loud: f32,
+}
+
+/// What a creature made of a body this time: how strongly it saw it and heard it (0 to 1 each),
+/// and where it was.
+pub struct Stimulus: Copy {
+    pub seen: f32,
+    pub heard: f32,
+    pub at: vec2,
+}
+
+/// What hides one place from another.
+pub trait Occluders {
+    /// How much of the sightline from `from` to `to` gets through: 1 clear, 0 hidden.
+    @deterministic
+    fn clear(self, from: vec3, to: vec3) -> f32
+}
+
+/// How keen sight is on a still body, against one that moves: its range's share.
+pub const STILL: f32 = 0.35
+
+/// How fast a body moves (m/s) to be seen as moving fully: a walk.
+pub const MOVING: f32 = 1.4
+
+/// How wide the field's edges blur (radians), so a body crossing one is seen a little at a time.
+const BAND: f32 = 0.1
+
+/// What creature `me` (looking the way it heads) with senses `s` makes of body `it`, with `o`
+/// between them. Sight is judged to the body's chest (0.6 of its height); hearing isn't hidden.
+@deterministic
+pub fn sense<O: Occluders>(s: Senses, me: Transform, it: Presence, o: O) -> Stimulus {
+    let d = it.at.xz - me.pos.xz
+    let dist = length(d)
+    let heard = if s.hearing > 0.0 {
+        it.loud * clamp(1.0 - dist / s.hearing, 0.0, 1.0)
+    } else {
+        0.0
+    }
+    let moving = clamp(length(it.velocity) / MOVING, 0.0, 1.0)
+    let range = s.sight * mix(STILL, 1.0, moving)
+    var seen = 0.0
+    if dist < range {
+        let c = if dist > 1.0e-3 { dot(me.forward().xz, d / dist) } else { 1.0 }
+        let keen = smoothstep(cos(s.fov + BAND), cos(s.fov - BAND), c)
+        let any = smoothstep(cos(s.around + BAND), cos(s.around - BAND), c)
+        let field = max(keen, s.side * any)
+        if field > 0.0 {
+            let eye = me.pos + vec3(0.0, s.eye, 0.0)
+            let chest = it.at + vec3(0.0, 0.6 * it.height, 0.0)
+            seen = field * (1.0 - dist / range) * o.clear(eye, chest)
+        }
+    }
+    Stimulus { seen, heard, at: it.at.xz }
+}
+
+/// How aware a creature is of a body: from 0 (it hasn't noticed) to 1 (it's sure), where it
+/// last sensed it, and how long it has sensed nothing since (s).
+pub struct Awareness: Copy + Eq + Plain + StateHash + Serialize + SimState {
+    pub level: f32,
+    pub last: vec2,
+    pub quiet: f32,
+}
+
+/// The least a sense counts for: fainter, and the creature senses nothing.
+pub const FAINT: f32 = 0.02
+
+impl Awareness {
+    /// Nothing noticed.
+    pub fn new() -> Awareness {
+        Awareness { level: 0.0, last: vec2(0.0), quiet: 1.0e3 }
+    }
+
+    /// `dt` seconds of sensing `st`: up by the stronger sense times `rise` a second; with
+    /// nothing sensed, down by `fall` a second.
+    @deterministic
+    pub fn update(mut self, st: Stimulus, rise: f32, fall: f32, dt: f32) {
+        let strongest = max(st.seen, st.heard)
+        if strongest > FAINT {
+            self.level = min(self.level + strongest * rise * dt, 1.0)
+            self.last = st.at
+            self.quiet = 0.0
+        } else {
+            self.level = max(self.level - fall * dt, 0.0)
+            self.quiet += dt
+        }
+    }
+}
+
+// ---- what hides a floor's places ----------------------------------------------------------------
+
+/// How far apart the ground is read along a sightline (m).
+const GROUND_STEP: f32 = 2.0
+
+/// How much of a sightline a thicket lets through.
+pub const THICKET: f32 = 0.35
+
+/// How near either end of a sightline an obstacle can stand and not hide it (m): the bodies'
+/// own room (a player against a trunk is still seen past it).
+const ENDS: f32 = 0.6
+
+/// How much of the sightline from `from` to `to` gets through over `ground` with `o` standing
+/// on it: nothing where the ground rises into it, or a trunk, a stone or a wall stands across
+/// it, or a log lies across it below its top; a thicket across it lets `THICKET` through.
+/// Streams hide nothing. (`footing`'s obstacles: what a floor's sim already holds.)
+@deterministic
+pub fn clear_over<G: Ground>(ground: G, o: Obstacles, from: vec3, to: vec3) -> f32 {
+    let d = to - from
+    let run = length(d.xz)
+    if run < 2.0 * ENDS {
+        return 1.0
+    }
+    let steps = u32(ceil(run / GROUND_STEP))
+    for k in 1..steps {
+        let p = from + d * (f32(k) / f32(steps))
+        if p.y < ground.height(p.x, p.z) {
+            return 0.0
+        }
+    }
+    // The obstacles round points half a bin apart along it: each within reach of one of them.
+    var through = 1.0
+    let points = u32(ceil(run / (0.5 * BIN))) + 1
+    for k in 0..points {
+        let q = from.xz + d.xz * min(f32(k) * 0.5 * BIN / run, 1.0)
+        o.near(q, |ob| {
+            through = min(through, past(ground, ob, from, to, run))
+        })
+        if through == 0.0 {
+            return 0.0
+        }
+    }
+    through
+}
+
+/// How much of the sightline from `from` to `to` (`run` m across the plane) gets past `ob`.
+fn past<G: Ground>(ground: G, ob: Obstacle, from: vec3, to: vec3, run: f32) -> f32 {
+    if ob.thing == Thing::Stream {
+        return 1.0
+    }
+    // Exclude the bodies' room from the sightline itself. An obstacle can start beside a
+    // body and still extend across the line beyond that room.
+    let inset = ENDS / run
+    let start = mix(from.xz, to.xz, vec2(inset))
+    let end = mix(from.xz, to.xz, vec2(1.0 - inset))
+    let (apart, along) = segments_apart(start, end, ob.a, ob.b)
+    if apart >= ob.r {
+        return 1.0
+    }
+    if ob.thing == Thing::Shrub {
+        return THICKET
+    }
+    if ob.thing == Thing::Log {
+        let t = inset + along * (1.0 - 2.0 * inset)
+        let p = mix(from, to, vec3(t))
+        // Packing grows the horizontal radius; the recorded height keeps the actual top.
+        return if p.y - ground.height(p.x, p.z) > ob.depth { 1.0 } else { 0.0 }
+    }
+    0.0
+}
+
+fn cross2(a: vec2, b: vec2) -> f32 {
+    a.x * b.y - a.y * b.x
+}
+
+/// The distance from `p` to the segment `a`-`b`, and how far along it the nearest point is.
+fn to_segment(p: vec2, a: vec2, b: vec2) -> (f32, f32) {
+    let ab = b - a
+    let t = clamp(dot(p - a, ab) / max(dot(ab, ab), 1.0e-8), 0.0, 1.0)
+    (length(p - (a + ab * t)), t)
+}
+
+/// How near the segments `p0`-`p1` and `a`-`b` come, and where along the first (0 to 1).
+fn segments_apart(p0: vec2, p1: vec2, a: vec2, b: vec2) -> (f32, f32) {
+    let r = p1 - p0
+    let s = b - a
+    let denom = cross2(r, s)
+    if abs(denom) > 1.0e-9 {
+        let t = cross2(a - p0, s) / denom
+        let u = cross2(a - p0, r) / denom
+        if t >= 0.0 && t <= 1.0 && u >= 0.0 && u <= 1.0 {
+            return (0.0, t)
+        }
+    }
+    let (da, ta) = to_segment(a, p0, p1)
+    let (db, tb) = to_segment(b, p0, p1)
+    let (d0, _) = to_segment(p0, a, b)
+    let (d1, _) = to_segment(p1, a, b)
+    var best = (da, ta)
+    if db < best.0 {
+        best = (db, tb)
+    }
+    if d0 < best.0 {
+        best = (d0, 0.0)
+    }
+    if d1 < best.0 {
+        best = (d1, 1.0)
+    }
+    best
+}
+
+// ---- tests ---------------------------------------------------------------------------------------
+
+/// Nothing hides anything.
+struct Open: Copy {}
+
+impl Occluders for Open {
+    @deterministic
+    fn clear(self, from: vec3, to: vec3) -> f32 {
+        1.0
+    }
+}
+
+/// A floor's obstacles, over level ground.
+struct Standing {
+    obstacles: Obstacles,
+}
+
+/// Obstacles `all`, standing round the origin.
+fn o(all: [Obstacle]) -> Standing {
+    Standing { obstacles: Obstacles::of(all, vec2(-64.0), vec2(64.0)) }
+}
+
+impl Occluders for Standing {
+    @deterministic
+    fn clear(self, from: vec3, to: vec3) -> f32 {
+        clear_over(Flat {}, self.obstacles, from, to)
+    }
+}
+
+const TEST_SENSES = Senses {
+    eye: 1.0,
+    sight: 60.0,
+    fov: 0.87,
+    around: 2.6,
+    side: 0.35,
+    hearing: 35.0,
+}
+
+/// A creature at the origin looking along +z.
+const LOOKING = Transform { pos: vec3(0.0), heading: 0.0 }
+
+/// A body at `at` on the plane, walking.
+fn walker_at(at: vec2) -> Presence {
+    Presence { at: vec3(at.x, 0.0, at.y), velocity: vec2(1.4, 0.0), height: 1.7, loud: 0.3 }
+}
+
+/// The field: a walking body 20 m away is seen well ahead, as `side` of that to the side, and not
+/// at all behind; a still one is seen at `STILL` of the range, so not at 30 m of 60.
+@test
+fn sight_is_keen_ahead_weak_to_the_side_and_blind_behind() {
+    let ahead = sense(TEST_SENSES, LOOKING, walker_at(vec2(0.0, 20.0)), Open {}).seen
+    let side = sense(TEST_SENSES, LOOKING, walker_at(vec2(20.0, 0.0)), Open {}).seen
+    let behind = sense(TEST_SENSES, LOOKING, walker_at(vec2(0.0, -20.0)), Open {}).seen
+    assert(abs(ahead - 2.0 / 3.0) < 1.0e-5, f"seen ahead at 20 m of 60: {ahead}")
+    assert(abs(side - 0.35 * ahead) < 1.0e-5, f"seen to the side: {side}, ahead {ahead}")
+    assert(behind == 0.0, f"seen behind: {behind}")
+    var still = walker_at(vec2(0.0, 30.0))
+    still.velocity = vec2(0.0)
+    let s = sense(TEST_SENSES, LOOKING, still, Open {}).seen
+    let m = sense(TEST_SENSES, LOOKING, walker_at(vec2(0.0, 30.0)), Open {}).seen
+    assert(s == 0.0 && m > 0.4, f"at 30 m: still {s}, walking {m}")
+}
+
+/// A hearing range of zero disables hearing, including for a body at the same point: it does
+/// not form the indeterminate distance 0 over range 0.
+@test
+fn zero_hearing_is_silent() {
+    var senses = TEST_SENSES
+    senses.hearing = 0.0
+    let heard = sense(senses, LOOKING, walker_at(vec2(0.0)), Open {}).heard
+    assert(heard == 0.0, f"zero hearing heard {heard}")
+}
+
+/// What stands between: a trunk across the sightline hides the body; one beside it, or at the
+/// body's feet, doesn't; a thicket lets `THICKET` through; a log hides a body lying low behind it
+/// but not a sightline over it; and rising ground hides it.
+@test
+fn trunks_thickets_logs_and_the_ground_hide_a_body() {
+    let thing = |a: vec2, b: vec2, r: f32, thing: Thing| Obstacle {
+        a,
+        b,
+        r,
+        thing,
+        depth: if thing == Thing::Log { 2.0 * r } else { 0.0 },
+    }
+    let body = walker_at(vec2(0.0, 30.0))
+    let open = sense(TEST_SENSES, LOOKING, body, Open {}).seen
+    let trunk = o([thing(vec2(0.1, 15.0), vec2(0.1, 15.0), 0.4, Thing::Trunk)])
+    let beside = o([thing(vec2(2.0, 15.0), vec2(2.0, 15.0), 0.4, Thing::Trunk)])
+    let at_feet = o([thing(vec2(0.3, 29.8), vec2(0.3, 29.8), 0.4, Thing::Trunk)])
+    let thicket = o([thing(vec2(0.0, 15.0), vec2(0.0, 15.0), 1.5, Thing::Shrub)])
+    let log = o([thing(vec2(-3.0, 28.0), vec2(3.0, 28.0), 0.3, Thing::Log)])
+    assert(sense(TEST_SENSES, LOOKING, body, trunk).seen == 0.0, "seen through a trunk")
+    assert(
+        sense(TEST_SENSES, LOOKING, body, beside).seen == open,
+        "hidden by a trunk beside the line",
+    )
+    assert(sense(TEST_SENSES, LOOKING, body, at_feet).seen == open, "hidden by a trunk at its feet")
+    let thick = sense(TEST_SENSES, LOOKING, body, thicket).seen
+    assert(abs(thick - THICKET * open) < 1.0e-5, f"through a thicket: {thick}, open {open}")
+    // A log 0.6 m high: the sightline to a standing body passes over it, to one lying low not.
+    assert(sense(TEST_SENSES, LOOKING, body, log).seen == open, "a log hides a standing body")
+    var low = body
+    low.height = 0.4
+    var grazing = TEST_SENSES
+    grazing.eye = 0.3
+    let low_seen = sense(grazing, LOOKING, low, log).seen
+    assert(low_seen == 0.0, f"a log hides nothing low behind it: {low_seen}")
+    // A rise between: the line from an eye 1 m up to a chest 1 m up passes under 2 m of ground.
+    let none: Vec<Obstacle> = Vec::new()
+    let bare = Obstacles::of(none, vec2(-64.0), vec2(64.0))
+    let hill = clear_over(Rise {}, bare, vec3(0.0, 1.0, 0.0), vec3(0.0, 1.0, 30.0))
+    assert(hill == 0.0, f"seen through a rise: {hill}")
+}
+
+/// A rise 2 m high across z = 15.
+struct Rise: Copy {}
+
+impl Ground for Rise {
+    fn height(self, x: f32, z: f32) -> f32 {
+        2.0 * max(1.0 - abs(z - 15.0) / 3.0, 0.0)
+    }
+
+    fn past_edge(self, p: vec2) -> f32 {
+        -1.0e9
+    }
+
+    fn rock(self, p: vec2) -> f32 {
+        0.0
+    }
+}
+
+/// Packed logs keep a vertical extent independent of the capsule's horizontal radius.
+@test
+fn a_logs_recorded_height_controls_what_it_hides() {
+    let log = |radius: f32, height: f32| Obstacle {
+        a: vec2(-3.0, 15.0),
+        b: vec2(3.0, 15.0),
+        r: radius,
+        thing: Thing::Log,
+        depth: height,
+    }
+    let from = vec3(0.0, 0.7, 0.0)
+    let to = vec3(0.0, 0.7, 30.0)
+    assert(
+        clear_over(Flat {}, o([log(0.1, 1.2)]).obstacles, from, to) == 0.0,
+        "a narrow tall log hides the sightline below its top",
+    )
+    assert(
+        clear_over(Flat {}, o([log(1.0, 0.2)]).obstacles, from, to) == 1.0,
+        "a wide low log leaves the sightline above its top clear",
+    )
+}
+
+/// A long obstacle can reach past the body's room even when its nearest end is beside it.
+@test
+fn a_wall_along_the_sightline_is_not_hidden_by_the_endpoint_exclusion() {
+    let from = vec3(0.0, 1.0, 0.0)
+    let to = vec3(0.0, 1.0, 10.0)
+    for start in [0.0, 5.0] {
+        let wall = Obstacle {
+            a: vec2(0.0, start),
+            b: vec2(0.0, start + 5.0),
+            r: 0.4,
+            thing: Thing::Wall,
+            depth: 0.0,
+        }
+        assert(
+            clear_over(Flat {}, o([wall]).obstacles, from, to) == 0.0,
+            "a wall extending along the sightline was transparent",
+        )
+    }
+}
+
+/// Hearing: a run is heard to `hearing` and fades with distance, through anything and from
+/// behind; a silent body isn't heard.
+@test
+fn hearing_fades_with_distance_and_loudness() {
+    var run = walker_at(vec2(0.0, -10.0))
+    run.loud = 1.0
+    let near = sense(TEST_SENSES, LOOKING, run, Open {}).heard
+    run.at = vec3(0.0, 0.0, -28.0)
+    let far = sense(TEST_SENSES, LOOKING, run, Open {}).heard
+    run.at = vec3(0.0, 0.0, -40.0)
+    let past = sense(TEST_SENSES, LOOKING, run, Open {}).heard
+    assert(abs(near - 25.0 / 35.0) < 1.0e-5 && abs(far - 0.2) < 1.0e-5, f"heard: {near}, {far}")
+    assert(past == 0.0, f"heard past its hearing: {past}")
+    var quiet = walker_at(vec2(0.0, -10.0))
+    quiet.loud = 0.0
+    assert(sense(TEST_SENSES, LOOKING, quiet, Open {}).heard == 0.0, "a silent body heard")
+}
+
+/// Awareness rises with what's sensed at `rise` a second, to 1 at most, keeping where; it falls
+/// at `fall` a second once nothing is, to 0 at least, counting the quiet.
+@test
+fn awareness_rises_while_sensed_and_falls_after() {
+    var a = Awareness::new()
+    let st = Stimulus { seen: 0.5, heard: 0.2, at: vec2(3.0, 4.0) }
+    for _ in 0..10 {
+        a.update(st, rise: 1.0, fall: 0.25, dt: 0.1)
+    }
+    assert(
+        abs(a.level - 0.5) < 1.0e-5 && a.last == vec2(3.0, 4.0) && a.quiet == 0.0,
+        f"after 1 s: {a.level}",
+    )
+    for _ in 0..30 {
+        a.update(st, rise: 1.0, fall: 0.25, dt: 0.1)
+    }
+    assert(a.level == 1.0, f"capped: {a.level}")
+    let none = Stimulus { seen: 0.01, heard: 0.0, at: vec2(9.0) }
+    for _ in 0..20 {
+        a.update(none, rise: 1.0, fall: 0.25, dt: 0.1)
+    }
+    assert(abs(a.level - 0.5) < 1.0e-5 && a.last == vec2(3.0, 4.0), f"after 2 s quiet: {a.level}")
+    assert(abs(a.quiet - 2.0) < 1.0e-4, f"quiet for {a.quiet} s")
+    for _ in 0..40 {
+        a.update(none, rise: 1.0, fall: 0.25, dt: 0.1)
+    }
+    assert(a.level == 0.0, f"floored: {a.level}")
+}

@@ -12,11 +12,11 @@
 // (`Culture`). On a coarse grid (`CELL`) over the history's land. The rules are this floor's: a
 // piece goes to the engine when a second world needs it.
 
-use engine::grow::{Grid, Habit, Heap, Land, Left, NEVER, NONE, Start, Tree, grown}
+use land::grow::{Grid, Habit, Heap, Land, Left, NEVER, NONE, Start, Tree, grown}
 use species::Species
 use std::string::String
 use engine::noise::{hash2u, rand}
-use engine::soil::SoilKind
+use land::soil::SoilKind
 
 /// The peoples' grid's cell (m).
 pub const CELL: f32 = 8.0

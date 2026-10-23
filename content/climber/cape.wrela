@@ -857,7 +857,7 @@ fn a_forward_tap_does_not_bounce_the_pooled_hem() {
     var speed = 0.0
     for tick in 0..120 {
         // A tap of a key: the glide eases toward a walk's pace and back to a stand as the
-        // floor's player does (`engine::player::Motion::response`, 7 a second).
+        // floor's player does (`land::player::Motion::response`, 7 a second).
         let want = if tick < 6 { 3.0 } else { 0.0 }
         speed += (want - speed) * (1.0 - exp(-7.0 / 60.0))
         at.z += speed / 60.0

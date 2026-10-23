@@ -14,15 +14,6 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Meanwhile:** the capybara game publishes each page's items as links to anchors of the page (`#1-0`), which a pointer presses; and it numbers each item's node anew after every choice (`world::node`), so the host lets go of the pressed node and the keys come back to the game. A screen reader hears the items as links, not menu items.
 - **Status:** open. Fix: let a pointer press a button's and a menu item's node (a hit class for every role that is activated, not only links), and give the canvas back the keyboard's focus after a pointer press on a node; then the game's items become `MenuItem`s, numbered once.
 
-### `wrela trace` and `wrela bisect` don't run a program's ticker
-
-- **Needed:** an agent watching a ticked game's state frame by frame (`wrela trace <package> --watch <export> --input script.json`), and finding the first frame a condition holds (`wrela bisect`).
-- **What happens:** the ticker never ticks. Exports that read the sim's snapshots stay at the first world's values for every frame.
-- **Found:** 2026-10-21, building the capybara movement lab (`games/capybara`). With the run script, `wrela trace games/capybara --watch capybara,clock` printed tick count 0 for 120 frames, with or without `--no-gpu` and `--workers 2`. The same build, under `wrela-host --frames N --input`, and as a frame test (`@test(frames: 180, gpu: true, input: ...)`), ticks two ticks a frame in lockstep.
-- **Cause, from the source:** `compiler/cli/src/trace.rs` steps each frame with the host's `frame()`; the native host's lockstep path (`lockstep_frame` in `runtime/native/src/program.rs`) is what runs the ticks due before a frame.
-- **Meanwhile:** traces of the capybara's movement come from tests that step the sim directly; stills come from `wrela-host`.
-- **Status:** open. Fix: trace and bisect run frames on the lockstep schedule when the program starts a ticker, as `wrela-host` and frame tests do, with a test in the toolchain's `trace` suite.
-
 ### A ticked program doesn't start in the Claude desktop app's browser pane
 
 - **Needed:** an agent playing a ticked game in the browser pane beside the session (and anyone in an embedded Chrome).
@@ -33,6 +24,50 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Status:** open; the cause needs confirming before a fix. If nested workers are the cause, a fix is for the page to start the ticker's worker and hand its port to the render worker.
 
 ## Fixed
+
+### `wrela trace` and `wrela bisect` don't run a program's ticker
+
+- **Needed:** an agent watching a ticked game's state frame by frame (`wrela trace <package> --watch <export> --input script.json`), and finding the first frame a condition holds (`wrela bisect`).
+- **What happened:** the ticker never ticks. Exports that read the sim's snapshots stay at the first world's values for every frame.
+- **Found:** 2026-10-21, building the capybara movement lab (`games/capybara`). With the run script, `wrela trace games/capybara --watch capybara,clock` printed tick count 0 for 120 frames, with or without `--no-gpu` and `--workers 2`. The same build, under `wrela-host --frames N --input`, and as a frame test (`@test(frames: 180, gpu: true, input: ...)`), ticks two ticks a frame in lockstep.
+- **Cause, from the source:** `compiler/cli/src/trace.rs` steps each frame with the host's `frame()`; the native host's lockstep path (`lockstep_frame` in `runtime/native/src/program.rs`) is what runs the ticks due before a frame.
+- **Meanwhile:** traces of the capybara's movement come from tests that step the sim directly; stills come from `wrela-host`.
+- **Status:** fixed in toolchain 0.4.1 (rywible/wrela-compiler#27): each frame of a trace or a bisect runs in lockstep with the ticker, as `wrela-host` and frame tests run frames. The toolchain's `trace` suite checks a 60 Hz ticker's tick is `i` at frame `i`.
+
+### A program can't read its own GPU pass timings
+
+- **Needed:** the frame's planner (`engine::cook`) plans each kind of work by its cost on the device it runs on.
+- **What happened:** the hosts timed each `label` for `wrela profile`, but std had no timestamp query a program could read. The planner's costs were the Chrome measurements the code carries, and most were estimates (`Evidence::Estimated`).
+- **Found:** 2026-10-23, building the planner for the engine's re-architecture.
+- **Status:** fixed in toolchain 0.4.0: `std::gpu::timed(label) -> Pending<f32>`, the GPU time of a label's work in microseconds, on both hosts (command stream v11). A frame with `Quality::measured` times the kinds it plans after each frame that ran one step of them, and the planner plans with the device's costs (`Planner::measure`; engine/tests/frame `the_planner_measures_this_devices_costs`). It's off by default, since measured budgets make a frame's order differ from run to run.
+
+### A golden can't be of a pass's target, and a failed one shows nothing
+
+- **Needed:** an engine change that must not change an image, checked by a test against a blessed PNG: the screen, or a target named by its pass's `label`.
+- **What happened:** toolchain 0.3.3 compared a GPU frame test's screen with a golden (`golden:`, `within:`, `wrela test --bless`), but not a pass's target, and a failure said only how far the screen was. (The re-architecture's plan first logged this as no golden test kind at all; that was wrong.)
+- **Found:** 2026-10-23, gating the re-architecture's commits frame by frame.
+- **Status:** fixed in toolchain 0.4.0: `pass: "label"` compares that pass's target (floats clamped, depth grey), and a failure under `wrela test` writes what it saw and each pixel's difference under the package's `build/goldens/`. engine/tests/frame has a golden of the bare scene and of the near cascade.
+
+### A test can't hold a request until it releases it
+
+- **Needed:** the frame's transitions tested where a fetch or a storage read comes late.
+- **What happened:** a test could only wait frames, and whether a request had answered by a frame depended on the host.
+- **Found:** 2026-10-23, writing `engine/tests/frame`.
+- **Status:** fixed in toolchain 0.4.0: `@test(frames: n, hold: [("path", k)])` holds a path's fetches and storage reads until frame `k`, and `std::tool::drive` has `Step::Hold(path)` and `Step::Release(path)`. No engine test uses it yet: the Last Green polls its far layer only once its wood is built, past what a short GPU test of it runs, and the frame's fixture fetches nothing.
+
+### A test can't read the build's pipelines
+
+- **Needed:** tests that say what a build reaches ("no pipeline it didn't reach before").
+- **What happened:** the pipeline counts came from `wrela pipelines` run by hand. (The recorded commands were there already, through `std::tool::drive`'s `Commands`, which the clearing's checks read.)
+- **Found:** 2026-10-23, checking that the re-architecture adds no pipeline.
+- **Status:** fixed in toolchain 0.4.0: `toolchain::check` answers with the pipelines (`Checked::pipelines`, each a `Pipeline`). engine/tests/frame-pipelines checks that a bare scene reaches only the frame's own 28.
+
+### A frame test can't run on both hosts
+
+- **Needed:** the frame's tests run on the native host and in Chrome, their state hashes and last frames compared.
+- **What happened:** `engine/tests/hosts` compared the hosts by hand, a test at a time.
+- **Found:** 2026-10-23, with the frame's transition fixture.
+- **Status:** fixed in toolchain 0.4.0: `@test(frames: n, gpu: true, hosts: both)`. engine/tests/frame's `both_hosts_draw_the_same_frames` runs the bare scene's load, jump and weather in both: the same state hash, and the same frame within a GPU's differences.
 
 ### The browser's canvas isn't in the device's preferred format
 

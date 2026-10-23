@@ -1,0 +1,56 @@
+// The tool test: the frame fixture (engine/tests/frame, a bare scene with no effects, no
+// characters, no prepass and no motion of its own) checked through the toolchain, with the
+// engine read from the workspace, and the pipelines its build makes read from the answer.
+
+use std::io::print
+use std::tool::toolchain
+use std::tool::toolchain::Override
+
+/// How many pipelines a bare scene's frame makes.
+const FRAME_PIPELINES: u32 = 28
+
+/// The fixture's pipelines: each one's entry points, `+` between them.
+fn pipelines() -> Vec<String> {
+    let overrides = [Override { name: String::from("engine"), dir: String::from("repo/engine") }]
+    let Ok(checked) = toolchain::check_with(
+        "repo/engine/tests/frame",
+        overrides,
+        300.0,
+    ).wait() else {
+        panic("the check's request")
+    }
+    for d in checked.diagnostics {
+        assert(!d.error, d.rendered.as_str())
+    }
+    var out: Vec<String> = Vec::new()
+    for p in checked.pipelines {
+        var names = String::new()
+        for e in p.entries {
+            if !names.is_empty() {
+                names.push_str(" + ")
+            }
+            names.push_str(e.as_str())
+        }
+        out.push(take names)
+    }
+    out
+}
+
+/// No pipeline of a stage the scene leaves out (no water, no characters, no vegetation, no
+/// effects of a scene's own), and no more pipelines than the frame's own.
+@test(tool, read: [("repo", "../../..")], budget: 300)
+fn a_bare_scene_reaches_only_the_frames_own_pipelines() {
+    let ps = pipelines()
+    // The frame's own (the look, temporal AA, the sky, the ground and its shadow, the probes,
+    // the air and the clouds), 2026-10-23: a frame that reaches another says so here.
+    assert(
+        ps.len() == FRAME_PIPELINES,
+        f"the bare scene makes {ps.len()} pipelines, not {FRAME_PIPELINES}",
+    )
+    for p in ps {
+        print(p.as_str())
+        for absent in ["water", "skin", "creature", "vegetation", "grass", "card", "mist"] {
+            assert(p.as_str().find(absent).is_none(), f"the bare scene reaches `{p.as_str()}`")
+        }
+    }
+}

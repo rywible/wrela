@@ -3,7 +3,7 @@
 // them, for its headless runner). What the lens needs of the floor is `floor.wrela`'s:
 // `wrela tool studio -- <floor>` writes one for the floor's `lens` module.
 
-use engine::interest::Preview
+use land::interest::Preview
 use floor::{geology as survey, map, preview}
 use maplens::lens::MapLens
 use std::par::Task

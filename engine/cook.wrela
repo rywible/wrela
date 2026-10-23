@@ -1,0 +1,353 @@
+// The cook planner: one place that decides how much amortized GPU work a frame does, of every
+// kind (the air's tables, the clouds, the static shadow cascades, the probes, and a scene's own
+// load: its plant kinds, its built things, its tiles, its characters' meshes).
+//
+// The frame asks the planner before each step (`Planner::may`), in priority order: what the first
+// full frame needs first. A cook that's a frame of its own whatever the plan (the air's tables,
+// the clouds' noise and weather: each tens of milliseconds, at load) is counted, not asked
+// (`Planner::note`). The planner says yes or no by three rules:
+//
+// - **Moving caches.** While the scene is playable a frame cooks one of the moving caches: the
+//   ground's levels (mandatory: discovered and cooked by `terrain::Clipmap::follow`, counted
+//   here, never refused), a strip of a static cascade, a strip of the probes. A frame that
+//   cooked two or more ground levels marches no tile of the clouds' dome either. (The floor's
+//   walk: a ground level's cook and a strip together passed 16.7 ms.)
+// - **The budget.** Each kind's step has a cost (`Cost`: microseconds of GPU time, measured or
+//   estimated, and said which), and a frame spends at most the budget's (`Budget`), more while
+//   loading: the ground's levels and the noted cooks count against it first. A step past the
+//   budget waits a frame, unless nothing optional has run this frame: then it runs, so a frame
+//   makes progress (one optional step at least), however large its step.
+// - **Filling.** A capture (a still) fills every cache at once: each kind may step
+//   `Budget::filling_steps` times a frame, with no budget.
+//
+// What a step's prerequisites are (whether a kind may step at all: the probes wait for the near
+// cascade, the air and the clouds' dome) is the frame's to check before it asks; the planner
+// orders and limits what's eligible. `Planner::spent` and `ran` say what a frame did (the debug
+// readout prints them).
+
+/// A kind of amortized GPU work.
+pub enum Work: Copy + Eq + Fieldless {
+    /// The air's tables, cooked for its sun (and the probes' open sky from them).
+    AirTables,
+    /// The clouds' noises, once.
+    SkyNoise,
+    /// The clouds' weather map and their shadow map.
+    SkyWeather,
+    /// One phase of the clouds' dome marched.
+    SkyPhase,
+    /// A level of the ground's clipmap cooked (mandatory: counted, never refused).
+    TerrainLevel,
+    /// A strip of the near or the far static cascade.
+    NearStrip,
+    FarStrip,
+    /// The probes' occluders cooked (the first bake's or a replacement's), a strip of columns
+    /// baked, or baked again.
+    ProbeOccluders,
+    ProbeStrip,
+    /// A scene's plant kind cooked (its leaf cards).
+    Kind,
+    /// A scene's built thing realized (a mesh at load).
+    Built,
+    /// A scene's streamed tile placed.
+    Tile,
+    /// A slice of a character's mesh realized.
+    Realize,
+}
+
+/// How many kinds of work there are.
+pub const WORKS: u32 = 13
+
+/// What a step of a kind costs, in microseconds of GPU time, and whether that was measured on
+/// the reference device or is an estimate.
+pub struct Cost: Copy {
+    pub us: f32,
+    pub evidence: Evidence,
+}
+
+pub enum Evidence: Copy + Eq {
+    Measured,
+    Estimated,
+}
+
+/// The costs a frame plans with at first. The measured ones are the code's own records (the
+/// realizer's levels, the far cascade's strips in Chrome); the rest are estimates. A frame that
+/// measures its work (`frame::Quality::measured`) replaces each with what this device takes
+/// (`Planner::measure`).
+pub fn costs() -> [Cost; WORKS] {
+    let e = |us: f32| Cost { us, evidence: Evidence::Estimated }
+    let m = |us: f32| Cost { us, evidence: Evidence::Measured }
+    [
+        // The air's tables and the clouds' weather: tens of milliseconds each, at load (a frame
+        // that cooked the air and the clouds together took 137 ms: they're a frame each).
+        e(20000.0),
+        e(20000.0),
+        e(20000.0),
+        e(800.0),
+        e(1200.0),
+        // A near strip (12 strips of 2048²: 6 cost 1.3 to 1.5 ms each); a far strip (48 strips:
+        // 11 ms each at 12, in Chrome).
+        m(1400.0),
+        m(2800.0),
+        e(1500.0),
+        e(1500.0),
+        e(4000.0),
+        e(2000.0),
+        e(300.0),
+        // A slice of a creature's mesh: the realizer's levels, measured in Chrome, about 0.3 µs a
+        // block, 384 blocks a slice.
+        m(120.0),
+    ]
+}
+
+/// What a frame may spend cooking: estimated GPU microseconds while the scene is playable, and
+/// while it loads (before its first full frame); and how many steps of each kind a capture
+/// takes a frame while it fills its caches.
+pub struct Budget: Copy {
+    pub playing_us: f32 = 8000.0,
+    pub loading_us: f32 = 60000.0,
+    pub filling_steps: u32 = 64,
+}
+
+/// A frame's plan: what it cooked so far, what it spent, and the rules' inputs.
+pub struct Planner {
+    budget: Budget,
+    costs: [Cost; WORKS],
+    /// This frame: the steps of each kind run, the estimated microseconds spent (the ground's
+    /// levels and the noted cooks too), whether an optional step has run, the ground levels
+    /// cooked, and whether a strip was drawn.
+    ran: [u32; WORKS],
+    spent: f32,
+    optional: bool,
+    levels: u32,
+    strip: bool,
+    playable: bool,
+    near_ready: bool,
+    filling: bool,
+    /// The frames whose optional work the budget cut short, since the planner was made.
+    pub cut: u32,
+}
+
+impl Planner {
+    pub fn new(budget: Budget) -> Planner {
+        Planner {
+            budget,
+            costs: costs(),
+            ran: [0; WORKS],
+            spent: 0.0,
+            optional: false,
+            levels: 0,
+            strip: false,
+            playable: false,
+            near_ready: false,
+            filling: false,
+            cut: 0,
+        }
+    }
+
+    /// A new frame's plan: `levels` ground levels cooked already this frame (mandatory), whether
+    /// the scene is playable and the near cascade drawn, and whether a capture fills its caches.
+    pub fn begin(mut self, levels: u32, playable: bool, near_ready: bool, filling: bool) {
+        self.ran = [0; WORKS]
+        self.ran[Work::TerrainLevel.index()] = levels
+        self.spent = f32(levels) * self.costs[Work::TerrainLevel.index()].us
+        self.optional = false
+        self.levels = levels
+        self.strip = false
+        self.playable = playable
+        self.near_ready = near_ready
+        self.filling = filling
+    }
+
+    /// How many steps of a kind a frame may take at most: many while a capture fills its
+    /// caches, else one.
+    pub fn steps(self, filling: bool) -> u32 {
+        if self.filling && filling { self.budget.filling_steps } else { 1 }
+    }
+
+    /// Whether a step of `w` may run now (and if so, it's counted as run).
+    pub fn may(mut self, w: Work) -> bool {
+        if !self.allowed(w) {
+            return false
+        }
+        if !self.filling {
+            let limit = if self.playable { self.budget.playing_us } else { self.budget.loading_us }
+            let cost = self.costs[w.index()].us
+            if self.optional && self.spent + cost > limit {
+                self.cut += 1
+                return false
+            }
+            self.spent += cost
+        }
+        self.optional = true
+        self.ran[w.index()] += 1
+        if w == Work::NearStrip || w == Work::FarStrip {
+            self.strip = true
+        }
+        true
+    }
+
+    /// A step of `w` that runs whatever the plan (a cook that's a frame of its own: the air's
+    /// tables, the clouds' noise and weather), counted.
+    pub fn note(mut self, w: Work) {
+        self.ran[w.index()] += 1
+        self.spent += self.costs[w.index()].us
+    }
+
+    /// Whether the moving-cache rules let a step of `w` run now (the budget aside): nothing is
+    /// counted.
+    pub fn would(self, w: Work) -> bool {
+        self.allowed(w)
+    }
+
+    /// The moving-cache rules (the module's comment).
+    fn allowed(self, w: Work) -> bool {
+        match w {
+            Work::NearStrip | Work::FarStrip => !(self.levels > 0 && self.near_ready),
+            Work::ProbeOccluders | Work::ProbeStrip => {
+                !(self.playable && (self.levels > 0 || self.strip))
+            },
+            Work::SkyPhase => !(self.playable && self.levels >= 2),
+            _ => true,
+        }
+    }
+
+    /// How many steps of `w` this frame ran.
+    pub fn ran(self, w: Work) -> u32 {
+        self.ran[w.index()]
+    }
+
+    /// The estimated microseconds this frame's work cost: the ground's levels, the noted cooks
+    /// and the optional steps.
+    pub fn spent(self) -> f32 {
+        self.spent
+    }
+
+    /// Whether this frame drew a strip of a static cascade.
+    pub fn drew_strip(self) -> bool {
+        self.strip
+    }
+
+    /// What a step of `w` costs, as the planner plans with it.
+    pub fn cost(self, w: Work) -> Cost {
+        self.costs[w.index()]
+    }
+
+    /// A step of `w` measured on this device at `us` microseconds of GPU time: the first
+    /// measurement replaces the estimate, and later ones move the cost a quarter of the way to
+    /// each, so one slow frame doesn't starve the work.
+    pub fn measure(mut self, w: Work, us: f32) {
+        let c = self.costs[w.index()]
+        let measured = if c.evidence == Evidence::Measured { c.us + (us - c.us) * 0.25 } else { us }
+        self.costs[w.index()] = Cost { us: measured, evidence: Evidence::Measured }
+    }
+}
+
+impl Work {
+    fn index(self) -> u32 {
+        match self {
+            Work::AirTables => 0,
+            Work::SkyNoise => 1,
+            Work::SkyWeather => 2,
+            Work::SkyPhase => 3,
+            Work::TerrainLevel => 4,
+            Work::NearStrip => 5,
+            Work::FarStrip => 6,
+            Work::ProbeOccluders => 7,
+            Work::ProbeStrip => 8,
+            Work::Kind => 9,
+            Work::Built => 10,
+            Work::Tile => 11,
+            Work::Realize => 12,
+        }
+    }
+}
+
+// ---- tests ---------------------------------------------------------------------------------
+
+/// A frame that cooked the ground draws no strip once the near cascade is drawn, and bakes no
+/// probes while playable; a frame that drew a strip bakes no probes while playable; before the
+/// scene is playable, both run.
+@test
+fn one_moving_cache_a_frame_while_playable() {
+    var p = Planner::new(Budget {})
+    p.begin(levels: 1, playable: true, near_ready: true, filling: false)
+    assert(!p.may(Work::NearStrip), "a strip beside a ground cook")
+    assert(!p.may(Work::ProbeStrip), "probes beside a ground cook")
+    p.begin(levels: 0, playable: true, near_ready: true, filling: false)
+    assert(p.may(Work::NearStrip), "no strip in a quiet frame")
+    assert(!p.may(Work::ProbeStrip), "probes beside a strip")
+    p.begin(levels: 1, playable: false, near_ready: false, filling: false)
+    assert(p.may(Work::NearStrip), "the first near map waits for the ground")
+    assert(p.may(Work::ProbeStrip), "the load's probes wait for the ground")
+    p.begin(levels: 2, playable: true, near_ready: true, filling: false)
+    assert(!p.may(Work::SkyPhase), "a dome tile beside two ground levels")
+    p.begin(levels: 1, playable: true, near_ready: true, filling: false)
+    assert(p.may(Work::SkyPhase), "no dome tile beside one ground level")
+}
+
+/// The budget cuts optional work short, but the first step of a frame always runs, however
+/// large: every kind makes progress.
+@test
+fn the_budget_cuts_but_never_stalls() {
+    var p = Planner::new(Budget { playing_us: 1000.0, loading_us: 1000.0 })
+    p.begin(levels: 0, playable: true, near_ready: true, filling: false)
+    assert(p.may(Work::Kind), "the first step waited")
+    assert(!p.may(Work::Built), "a step past the budget ran")
+    assert(p.cut == 1, "the cut wasn't counted")
+    p.begin(levels: 0, playable: true, near_ready: true, filling: false)
+    assert(p.may(Work::AirTables), "a step larger than the budget never runs")
+    assert(p.ran(Work::AirTables) == 1 && p.ran(Work::Kind) == 0, "the frame's count carried over")
+}
+
+/// A capture fills: many steps of a kind a frame, none refused by the budget.
+@test
+fn a_capture_fills_its_caches() {
+    var p = Planner::new(Budget { playing_us: 1.0, loading_us: 1.0 })
+    p.begin(levels: 0, playable: true, near_ready: true, filling: true)
+    assert(p.steps(filling: true) == 64, "a capture took one step")
+    assert(p.steps(filling: false) == 1, "a whole cache stepped more than play's")
+    for _ in 0..10 {
+        assert(p.may(Work::Kind), "the budget refused a capture's step")
+    }
+    p.begin(levels: 0, playable: true, near_ready: true, filling: false)
+    assert(p.steps(filling: true) == 1, "play took a capture's steps")
+}
+
+/// A measured step replaces the estimate at once, and later measurements move the cost a quarter
+/// of the way: what the budget then admits follows the device.
+@test
+fn a_measured_cost_replaces_the_estimate_and_follows_the_device() {
+    var p = Planner::new(Budget { playing_us: 2500.0 })
+    assert(p.cost(Work::NearStrip).evidence == Evidence::Measured, "the near strips' record")
+    assert(p.cost(Work::ProbeStrip).evidence == Evidence::Estimated)
+    p.measure(Work::ProbeStrip, 400.0)
+    let c = p.cost(Work::ProbeStrip)
+    assert(c.evidence == Evidence::Measured && c.us == 400.0, f"{c.us}")
+    p.measure(Work::ProbeStrip, 800.0)
+    assert(p.cost(Work::ProbeStrip).us == 500.0, f"{p.cost(Work::ProbeStrip).us}")
+    // The near strips' record (1400) moves a quarter of the way to a measured 2000: 1550. A dome
+    // phase (800) fits a budget of 2500 beside it, and a tile (300) more doesn't.
+    p.measure(Work::NearStrip, 2000.0)
+    assert(p.cost(Work::NearStrip).us == 1550.0, f"{p.cost(Work::NearStrip).us}")
+    p.begin(levels: 0, playable: true, near_ready: false, filling: false)
+    assert(p.may(Work::NearStrip), "the first step runs")
+    assert(p.may(Work::SkyPhase), "800 more fits")
+    assert(!p.may(Work::Tile), "300 more doesn't")
+}
+
+/// The ground's levels and the noted cooks count against the budget: optional work beside them
+/// gets what's left, and the first optional step of a frame still runs.
+@test
+fn mandatory_work_counts_against_the_budget() {
+    var p = Planner::new(Budget { playing_us: 3000.0, loading_us: 3000.0 })
+    // Two levels (2400 of 3000): one dome phase (800) is over the budget, but it's the frame's
+    // first optional step; a tile more isn't.
+    p.begin(levels: 2, playable: false, near_ready: false, filling: false)
+    assert(p.spent() == 2400.0, f"{p.spent()}")
+    assert(p.may(Work::SkyPhase), "a frame's first optional step waited")
+    assert(!p.may(Work::Tile), "a step past what the ground left ran")
+    // A noted cook (the air's tables) takes the frame's budget the same way.
+    p.begin(levels: 0, playable: true, near_ready: false, filling: false)
+    p.note(Work::AirTables)
+    assert(p.may(Work::Tile) && !p.may(Work::Tile), "after a noted cook, more than one step ran")
+}

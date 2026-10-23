@@ -1,0 +1,119 @@
+// A sphere cast as a character (`engine::character::cast`), realized, then recoloured from red to
+// blue (`Cast::recolour`): its first vertex's material is read back before and after, and its mesh
+// (the vertices' buffer and its count) is the one it had.
+
+use engine::character::{ByChannels, Cast, Material, Shaded, cast}
+use engine::creature::{Body, Placed, Skeleton, creature}
+use engine::look::{CreatureLook, Mesh as Tolerance}
+use std::field::{Blend, Sphere, Surface, With, sphere}
+use std::gpu::{GlobalId, GpuBuffer, Slots, Unorm8x4, buffer, dispatch, read}
+use std::io::Pending
+
+/// A colour, as a channel says its own albedo and roughness.
+pub struct Paint: Copy + Blend + GpuData {
+    pub albedo: vec3,
+}
+
+impl Shaded for Paint {
+    fn albedo(self) -> vec3 {
+        self.albedo
+    }
+
+    fn roughness(self) -> f32 {
+        0.5
+    }
+}
+
+/// The ball's type: a sphere with its paint, on one bone.
+type Ball = Body<Placed<With<Sphere, Paint>>>
+
+fn ball(albedo: vec3) -> Ball {
+    var s = Skeleton::new()
+    let root = s.root("ball", vec3(0.0))
+    creature(s).part(root, sphere(0.2).with(Paint { albedo }))
+}
+
+const HOW = CreatureLook { surface: Tolerance { tolerance: 2.0e-3 } }
+
+/// The first material's colour's bits, into `out`.
+@compute(1)
+fn first_colour(materials: [Material], out: mut Slots<u32>, id: GlobalId) {
+    out[id] = materials[0].colour.bits
+}
+
+/// The first vertex's colour of `materials`, read back.
+fn colour_of(materials: GpuBuffer<Material>) -> Pending<u32> {
+    var out: GpuBuffer<u32> = buffer(1)
+    dispatch(first_colour.bind(materials.items(), mut out), over: 1)
+    read(out.items())
+}
+
+pub struct State {
+    ball: Cast<Paint, Ball, ByChannels>,
+    before: Option<Pending<u32>>,
+    after: Option<Pending<u32>>,
+    pub red: Option<vec4>,
+    pub blue: Option<vec4>,
+    /// The mesh's vertices' room before and after (the same buffer: not realized again).
+    pub room: (u32, u32),
+    frames: u32,
+}
+
+pub fn init() -> State {
+    State {
+        ball: cast(ball(vec3(1.0, 0.0, 0.0)), ByChannels {}, HOW, slices: 64),
+        before: None,
+        after: None,
+        red: None,
+        blue: None,
+        room: (0, 0),
+        frames: 0,
+    }
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    s.frames += 1
+    s.ball.pose(
+        [std::transform::identity(); engine::creature::MAX_BONES],
+        shadowed: false,
+        moved: false,
+    )
+    if s.ball.realizing() {
+        s.ball.realize()
+        return
+    }
+    if s.before.is_none() {
+        if let Some(r) = s.ball.realized {
+            s.room.0 = r.mesh.room().vertices
+            s.before = Some(colour_of(r.materials))
+        }
+        s.ball.recolour(ball(vec3(0.0, 0.0, 1.0)))
+        if let Some(r) = s.ball.realized {
+            s.room.1 = r.mesh.room().vertices
+            s.after = Some(colour_of(r.materials))
+        }
+    }
+    match mut s.before {
+        Some(p) => if let Some(Ok(m)) = p.poll() { s.red = Some(Unorm8x4 { bits: m[0] }.decode()) },
+        None => {},
+    }
+    match mut s.after {
+        Some(p) => if let Some(Ok(m)) = p.poll() {
+            s.blue = Some(Unorm8x4 { bits: m[0] }.decode())
+        },
+        None => {},
+    }
+}
+
+/// The ball's first vertex is red as realized and blue once recoloured, and its mesh is the one it
+/// had: its room the same, and nothing realized again (it isn't realizing).
+@test(frames: 30, gpu: true)
+fn a_recolour_keeps_the_mesh_and_cooks_new_materials(s: State) {
+    let Some(red) = s.red else { panic("the realized ball's material didn't come back") }
+    let Some(blue) = s.blue else { panic("the recoloured ball's material didn't come back") }
+    let (r, b) = (red, blue)
+    assert(r.r > 0.9 && r.b < 0.1, f"the realized ball isn't red: {r.r}, {r.g}, {r.b}")
+    assert(b.b > 0.9 && b.r < 0.1, f"the recoloured ball isn't blue: {b.r}, {b.g}, {b.b}")
+    assert(s.room.0 > 0 && s.room.0 == s.room.1, f"the mesh changed: {s.room.0} to {s.room.1}")
+    assert(!s.ball.realizing(), "the recolour realized the ball again")
+}

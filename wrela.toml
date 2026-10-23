@@ -5,7 +5,7 @@
 [workspace]
 # The toolchain release the workspace runs: a `wrela` of another release runs this one instead,
 # downloading it to ~/.wrela/toolchains (`wrela toolchain` says which runs and why).
-toolchain = "0.3.3"
+toolchain = "0.4.1"
 members = [
     "console",
     "console/tests/shader-budget",
@@ -31,7 +31,10 @@ members = [
     "games/last-green/test-floor",
     "games/last-green/tests/map",
     "games/last-green/tests/stair",
+    "games/last-green/tower",
     "games/leapling/session",
+    "land",
+    "land/tests/*",
     "platform",
     "references",
     "studio",
@@ -74,7 +77,8 @@ allow = [
     "AGENTS.md",
     "README.md",
     "docs/vision.md",
-    "docs/process.md",
+    "docs/citations.md",
+    "docs/toolchain.md",
     "docs/toolchain-gaps.md",
     "games/*/design.md",
     ".gitignore",

@@ -1,16 +1,22 @@
 // How a creature is drawn: its mesh's accuracy, levels of detail, skinning and shadows, as
 // ordinary engine data (`CreatureLook`).
 //
-// Every field has a default, so game code gives only what it changes, and the engine's quality
-// profiles change fields per device. Nothing here is known to the compiler.
+// Every field has a default, so game code gives only what it changes. Nothing here is known to
+// the compiler.
 
 use std::units::{cm, mm}
 
-/// Mesh extraction's error bound: the extracted surface stays within `tolerance` of the field.
+/// Mesh extraction's accuracy: the extracted surface stays within `tolerance` of the field where
+/// the field's surface bends no tighter than `radius`: the grid's cell is the chord whose sagitta
+/// is the tolerance on a circle that wide (`cell_size`), at most `largest`. Where the surface bends
+/// tighter (a crease, a corner, a thin part) the bound doesn't hold; what a realization met is
+/// measured (`realize::measured_error`).
 pub struct Mesh: Copy {
     pub tolerance: f32,
     /// The largest cell the grid has, however gently the surface bends.
     pub largest: f32 = 2cm,
+    /// The tightest bend the tolerance is kept on (m).
+    pub radius: f32 = 5cm,
 }
 
 /// Skin weights from each part's own distance, falling off over `falloff`.

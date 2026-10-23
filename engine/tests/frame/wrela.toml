@@ -1,0 +1,8 @@
+# engine::frame's transitions on a bare scene (flat ground, open sky, nobody), drawn through the
+# real frame on the GPU: the first load, a jump, a weather change, a sun change and a held screen,
+# each against the planner's rules and the arrival's.
+[package]
+name = "frame_transitions"
+
+[dependencies]
+engine = { workspace = true }
