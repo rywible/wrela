@@ -119,12 +119,15 @@ pub struct Lab {
     fonts: Fonts,
     renderer: Renderer,
     list: DrawList,
-    /// The player's runs (replay.wrela), as they load from storage and are stored again, and
-    /// whether they changed while they couldn't be stored. The attempt whose finish was last kept
-    /// (its course and attempt), so each is kept once.
+    /// The player's runs (replay.wrela), as they load from storage and are stored again; whether
+    /// the stored ones have been read (or there were none), seconds until a load that failed is
+    /// made again, and whether the runs changed while they couldn't be stored. The attempt whose
+    /// finish was last kept (its course and attempt), so each is kept once.
     runs: Board,
     loading: Option<Pending<u8>>,
     saving: Option<Pending<u8>>,
+    read: bool,
+    retry: f32,
     unsaved: bool,
     kept: u32,
     /// The tool-assisted runs of every course, and the board shown (`PLAYERS` or `ASSISTED`).
@@ -181,6 +184,8 @@ pub fn init() -> Lab {
         runs: board(),
         loading: Some(load(SAVED)),
         saving: None,
+        read: false,
+        retry: 0.0,
         unsaved: false,
         kept: 0xffffffff,
         assisted,
@@ -244,7 +249,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     s.snaps.update()
     let screen = vec2(f32(width), f32(height))
     let (live_snap, live_lag) = drawn(s.snaps, time)
-    store_runs(mut s)
+    store_runs(mut s, dt)
     keep_finished(mut s, live_snap)
     // F3 shows the readout. The frames' keys are their own: the sim's ticks take theirs. With the
     // runs open, the sim leaves the keys and clicks to the frames: the board's and the watch's.
@@ -613,9 +618,14 @@ fn keep_finished(s: mut Lab, snap: Snap) {
     }
 }
 
-/// Reads the stored runs once they load, and stores them when they've changed, one store at a
-/// time and never before the stored ones are read (which would lose them).
-fn store_runs(s: mut Lab) {
+/// How long a load of the stored runs that failed waits before it's made again (s).
+const RETRY: f32 = 2.0
+
+/// Reads the stored runs once they load, `dt` seconds after the last frame, and stores them when
+/// they've changed, one store at a time, and never before the stored ones are read or are known
+/// to be none (`IoError::missing`): storing over runs that couldn't be read would lose them. A
+/// load that failed otherwise is made again after `RETRY`.
+fn store_runs(s: mut Lab, dt: f32) {
     var loaded = None
     match mut s.loading {
         Some(p) => loaded = p.poll(),
@@ -623,13 +633,29 @@ fn store_runs(s: mut Lab) {
     }
     if let Some(result) = loaded {
         s.loading = None
-        if let Ok(b) = result {
-            let mine = s.runs.clone()
-            s.runs = read(b.clone())
-            for r in mine.runs {
-                let _ = s.runs.add(r.clone())
-            }
-            s.trail_of = 0
+        match result {
+            Ok(b) => {
+                let mine = s.runs.clone()
+                s.runs = read(b.clone())
+                for r in mine.runs {
+                    let _ = s.runs.add(r.clone())
+                }
+                s.trail_of = 0
+                s.read = true
+            },
+            Err(e) => {
+                if e.missing() {
+                    s.read = true
+                } else {
+                    s.retry = RETRY
+                }
+            },
+        }
+    }
+    if !s.read && s.loading.is_none() {
+        s.retry -= dt
+        if s.retry <= 0.0 {
+            s.loading = Some(load(SAVED))
         }
     }
     var stored = None
@@ -640,7 +666,7 @@ fn store_runs(s: mut Lab) {
     if stored.is_some() {
         s.saving = None
     }
-    if s.unsaved && s.loading.is_none() && s.saving.is_none() {
+    if s.unsaved && s.read && s.saving.is_none() {
         s.saving = Some(store(SAVED, bytes(s.runs)))
         s.unsaved = false
     }
@@ -997,6 +1023,8 @@ fn the_level_draws_and_its_sim_runs(s: Lab) {
     // Its clock is three ticks behind the ticks run: frame 0's two stood in the pause the game
     // opens on, and the tick of the script's Esc (frame 1) left it without stepping.
     assert(n.snap.ticks + 3 == n.ticks, "its clock running")
+    // The test's storage is empty: the stored runs are read as none, so new ones may be stored.
+    assert(s.read && s.loading.is_none() && s.runs.runs.len() == 0, "nothing stored is no runs")
 }
 
 use world::{present, world}

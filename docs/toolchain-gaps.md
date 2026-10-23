@@ -26,6 +26,14 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 
 ## Fixed
 
+### A failed load can't be told from nothing stored
+
+- **Needed:** the capybara game keeps the player's best runs in its storage (`games/capybara/main.wrela`, `store_runs`). It must store a new run over the stored ones only once it has read them, or knows there are none: storing after a load that merely failed loses every run stored before.
+- **What happens:** a `load` of a path nothing was stored at and a `load` that failed (the storage couldn't be read) give the same `IoError`, with one fixed message and no kind. So the game took every failed load as "no runs yet" and stored over them.
+- **Found:** 2026-10-22, in a review of the capybara branch, from toolchain 0.3.0's source (`std::io`, the hosts' `request_status`).
+- **Meanwhile:** nothing; the game's next finished run could store over runs it couldn't read.
+- **Status:** fixed in toolchain 0.3.1 (rywible/wrela-compiler#20): a storage read of a path that holds nothing is answered `REQUEST_MISSING` by both hosts, and `IoError::missing` says so. The game stores its runs only after it has read them or the load was `missing`, and makes a load that failed otherwise again after 2 s.
+
 ### No passkeys: no credential API, signature checks or secure random
 
 - **Needed:** passkey accounts for the console (`games/capybara/design.md`, "Accounts and leaderboards"): a page asks the browser for a credential (`navigator.credentials.create` and `get`, WebAuthn), and the server checks each assertion's signature with the platform's crypto through std (the design forbids crypto written here), against a challenge it made from secure random bytes.
