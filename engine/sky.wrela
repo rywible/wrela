@@ -272,6 +272,7 @@ fn detail_texel(id: GlobalId) -> vec4 {
 @compute(8, 8)
 pub fn cook_weather(
     cumuli: [Cumulus],
+    count: u32,
     fair: f32,
     gap: Gap,
     out: mut Texels<Rgba16Float>,
@@ -280,7 +281,7 @@ pub fn cook_weather(
     let xz = ((vec2(f32(id.x), f32(id.y)) + vec2(0.5)) / f32(WEATHER_SIDE) - vec2(0.5)) * SPAN
     var cover = 0.0
     var tall = 0.0
-    for k in 0..cumuli.len() {
+    for k in 0..count {
         let c = cumuli[k]
         var d = xz - c.at
         d -= vec2(SPAN) * round(d / SPAN)
@@ -757,7 +758,8 @@ impl Sky {
         let list = buffer_of(w.clouds, at_least: 1)
         dispatch(
             cook_weather.bind(
-                cumuli: list.span(start: 0, count: w.clouds.len()),
+                cumuli: list.span(start: 0, count: max(w.clouds.len(), 1)),
+                count: w.clouds.len(),
                 fair: w.fair,
                 gap: w.gap,
                 out: mut self.weather,

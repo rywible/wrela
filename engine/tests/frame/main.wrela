@@ -1,0 +1,354 @@
+// A bare scene (flat ground, open land, the sky's own clouds) drawn through `engine::frame` on the
+// GPU, and a script of what a game does to a frame: it loads; 30 frames after its first full frame
+// the eye jumps 500 m; once that arrival is shown, the weather changes; 90 frames later the sun
+// moves; once its cascades are drawn again, the screen is held for 8 frames. Each frame's plan
+// (`engine::cook::Planner`) and readiness are recorded, and the tests read the record.
+
+use engine::air::{Air, hazy}
+use engine::cook::Work
+use engine::frame::{Aim, Change, Frame, Gathered, Quality, Scene}
+use engine::light::{Light, SUN_TOP, sunlight}
+use engine::plant::Wind
+use engine::probes::{Occluder, ProbeGrid, Trace, grid}
+use engine::sky::{Gap, Weather}
+use engine::terrain::{Clipmap, Flat}
+use engine::view::{Camera, first_camera}
+
+/// The sun at the start, and where it moves to.
+const SUN = vec3(0.900, 0.407, -0.159)
+const LATER_SUN = vec3(0.6, 0.6, 0.53)
+
+/// Where the eye starts and where it jumps to (the world's, m), and how far it looks ahead.
+const START = vec3(0.0, 1.6, 0.0)
+const JUMPED = vec3(500.0, 1.6, 0.0)
+const AHEAD = vec3(0.0, 0.0, 40.0)
+
+/// The scene: flat ground, nothing standing on it (the probes see open land), and its weather.
+pub struct Bare {
+    weather: Weather,
+}
+
+impl Scene for Bare {
+    fn wind(self, cam: Camera, time: f32) -> Wind {
+        Wind { time, dir: vec2(1.0, 0.0), strength: 0.3 }
+    }
+
+    fn weather(self) -> Weather {
+        self.weather.clone()
+    }
+
+    fn trace(self, light: Light, grid: ProbeGrid) -> Trace {
+        Trace {
+            light,
+            grid,
+            foliage: vec3(0.0),
+            reach: 24.0,
+            leaf: vec3(0.0),
+            bounced: 0,
+        }
+    }
+
+    fn probe_grid(self, at: vec2, origin: vec3) -> ProbeGrid {
+        grid(at, cols: 17, spacing: 4.0, low: -8.0, high: 24.0, voxel: 2.0)
+    }
+
+    fn occluders(self, at: vec2, origin: vec3) -> Option<Vec<Occluder>> {
+        Some(Vec::new())
+    }
+
+    fn height_at(self, world: vec2) -> f32 {
+        0.0
+    }
+
+    fn cook_ground(mut self, clipmap: mut Clipmap, eye: vec3, again: bool) -> u32 {
+        clipmap.follow(Flat {}, eye, again)
+    }
+}
+
+/// A frame's record: frames run and drawn, the plan (each kind's steps, the estimated
+/// microseconds spent, the ground levels cooked) and the readiness after it.
+pub struct Record: Copy {
+    pub ran: u32,
+    pub drawn: u32,
+    pub levels: u32,
+    pub near: u32,
+    pub far: u32,
+    pub weather: u32,
+    pub phase: u32,
+    pub probes: u32,
+    pub spent: f32,
+    pub playable: bool,
+    pub near_ready: bool,
+    pub arriving: bool,
+    pub gathered: u32,
+    pub jumped: bool,
+    pub sky_frames: u32,
+}
+
+/// The script's steps, in order.
+pub enum Step: Copy + Eq {
+    Load,
+    Jump,
+    Weather,
+    Sun,
+    Hold,
+    Done,
+}
+
+pub struct State {
+    pub frame: Frame<Gathered>,
+    pub scene: Bare,
+    pub step: Step,
+    /// The frame each step began at (`Record::ran`), in `Step`'s order.
+    pub began: Vec<u32>,
+    pub records: Vec<Record>,
+    eye: vec3,
+}
+
+fn air_of(sun: vec3) -> Air {
+    hazy(sun, SUN_TOP, eye: START.y)
+}
+
+pub fn init() -> State {
+    let air = air_of(SUN)
+    let frame: Frame<Gathered> = Frame::new(
+        Quality {},
+        sunlight(air),
+        air,
+        Clipmap::new(levels: 6, finest: 0.5),
+        first_camera(START, START + AHEAD, 0.82, width: 320, height: 180),
+        grid(START.xz, cols: 17, spacing: 4.0, low: -8.0, high: 24.0, voxel: 2.0),
+        START.xz,
+    )
+    State {
+        frame,
+        scene: Bare {
+            weather: Weather {
+                clouds: Vec::new(),
+                fair: 0.3,
+                gap: Gap { a: vec2(3300.0, -590.0), b: vec2(12200.0, -2150.0), radius: 2500.0 },
+                wind: vec2(-5.5, 3.0),
+            },
+        },
+        step: Step::Load,
+        began: Vec::from([0]),
+        records: Vec::new(),
+        eye: START,
+    }
+}
+
+/// The next step, begun at frame `at`.
+fn next(s: mut State, step: Step) {
+    s.step = step
+    s.began.push(s.frame.ran)
+}
+
+/// The script: what the game does before this frame.
+fn script(s: mut State) {
+    let ran = s.frame.ran
+    let since = ran - s.began[s.began.len() - 1]
+    match s.step {
+        Step::Load => if let Some(at) = s.frame.ready.playable_at {
+            if s.frame.frames >= at + 30 {
+                next(mut s, Step::Jump)
+                s.eye = JUMPED
+            }
+        },
+        Step::Jump => if !s.frame.ready.arriving && since > 1 && since >= 30 {
+            next(mut s, Step::Weather)
+            s.frame.changed(Change::Weather)
+        },
+        Step::Weather => if since >= 90 {
+            next(mut s, Step::Sun)
+            s.frame.air = air_of(LATER_SUN)
+            s.frame.light = sunlight(s.frame.air)
+        },
+        Step::Sun => if since >= 30 && s.frame.near.settled() && s.frame.far.settled() {
+            next(mut s, Step::Hold)
+            s.frame.hold = true
+        },
+        Step::Hold => if since >= 8 {
+            next(mut s, Step::Done)
+            s.frame.hold = false
+        },
+        Step::Done => {},
+    }
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    script(mut s)
+    let aim = Aim { eye: s.eye, at: s.eye + AHEAD, fovy: 0.82, moving_at: s.eye }
+    let _ = s.frame.begin(mut s.scene, aim, time, width, height)
+    s.frame.draw(mut s.scene, aim)
+    borrow p = s.frame.cooks.planner
+    s.records.push(
+        Record {
+            ran: s.frame.ran,
+            drawn: s.frame.frames,
+            levels: p.ran(Work::TerrainLevel),
+            near: p.ran(Work::NearStrip),
+            far: p.ran(Work::FarStrip),
+            weather: p.ran(Work::SkyWeather),
+            phase: p.ran(Work::SkyPhase),
+            probes: p.ran(Work::ProbeStrip),
+            spent: p.spent(),
+            playable: s.frame.ready.playable_at.is_some(),
+            near_ready: s.frame.near.ready,
+            arriving: s.frame.ready.arriving,
+            gathered: s.frame.ready.gathered,
+            jumped: s.frame.jumped,
+            sky_frames: s.frame.sky.frames,
+        },
+    )
+}
+
+/// The frames of step `k` (`Step`'s order): from the frame it began at to the next one's.
+fn window(s: State, k: u32) -> (u32, u32) {
+    let from = s.began[k]
+    let to = if k + 1 < s.began.len() { s.began[k + 1] } else { s.records.len() }
+    (from, to)
+}
+
+/// The steps the script reached, failing a test that needs one it didn't.
+fn reached(s: State, step: Step) {
+    let names = ["load", "jump", "weather", "sun", "hold", "done"]
+    var k = 0
+    for st in [Step::Load, Step::Jump, Step::Weather, Step::Sun, Step::Hold, Step::Done] {
+        if st == step {
+            assert(s.began.len() > k, f"the script didn't reach its {names[k]} by its last frame")
+        }
+        k += 1
+    }
+}
+
+/// The planner's rules hold on every frame, the jump's included: a frame that cooked ground
+/// levels draws no strip of a cascade once the near one is ready; a playable frame that cooked the
+/// ground or drew a strip bakes no probes; one that cooked two levels marches no sky; and the
+/// optional work keeps to the budget, but for a frame's first step.
+@test(frames: 900, gpu: true)
+fn the_planners_rules_hold_on_every_frame(s: State) {
+    reached(s, Step::Done)
+    let budget = engine::cook::Budget {}
+    for r in s.records {
+        if r.levels > 0 && r.near_ready {
+            assert(r.near == 0 && r.far == 0, f"frame {r.ran} drew a strip as the ground moved")
+        }
+        if r.playable && (r.levels > 0 || r.near + r.far > 0) {
+            assert(r.probes == 0, f"frame {r.ran} baked probes beside a cooked ground or strip")
+        }
+        if r.playable && r.levels >= 2 {
+            assert(r.phase == 0, f"frame {r.ran} marched the sky as the ground moved")
+        }
+        let limit = if r.playable { budget.playing_us } else { budget.loading_us }
+        let steps = r.near + r.far + r.probes + r.phase
+        assert(r.spent <= limit || steps <= 1, f"frame {r.ran} spent {r.spent} us of {limit}")
+    }
+}
+
+/// A jump is covered from its frame until the light round the new eye has been drawn, then for
+/// as many consecutive lit frames as an arrival gathers, and it ends then; nothing is gathered
+/// while the light isn't drawn.
+@test(frames: 900, gpu: true)
+fn a_jump_is_covered_until_its_light_has_gathered(s: State) {
+    reached(s, Step::Weather)
+    let gather = engine::frame::Arrival {}.gather
+    let (from, to) = window(s, 1)
+    var jumped_at: Option<u32> = None
+    for i in from..to {
+        if s.records[i].jumped {
+            jumped_at = Some(i)
+        }
+    }
+    let Some(j) = jumped_at else { panic("the eye's 500 m move wasn't taken as a jump") }
+    var last = 0
+    var ended: Option<u32> = None
+    for i in j..to {
+        let r = s.records[i]
+        if !r.arriving {
+            ended = Some(i)
+            break
+        }
+        assert(r.gathered == 0 || r.gathered == last + 1, f"frame {r.ran}: gathered {r.gathered}")
+        last = r.gathered
+    }
+    let Some(e) = ended else { panic("the jump's arrival didn't end") }
+    assert(s.records[e].gathered >= gather || last + 1 >= gather, "it ended before it gathered")
+    assert(e - j >= gather, f"it was covered {e - j} frames, fewer than the {gather} it gathers")
+    var near = 0
+    var probes = 0
+    for i in j..e {
+        near += s.records[i].near
+        probes += s.records[i].probes
+    }
+    assert(near > 0 && probes > 0, "the cascade and the probes weren't drawn round the new eye")
+}
+
+/// A weather change cooks the clouds' weather again and starts the dome's march again, and
+/// draws no cascade and bakes no probes.
+@test(frames: 900, gpu: true)
+fn a_weather_change_redraws_the_clouds_alone(s: State) {
+    reached(s, Step::Sun)
+    let (from, to) = window(s, 2)
+    var weather = 0
+    var near = 0
+    var probes = 0
+    for i in from..to {
+        weather += s.records[i].weather
+        near += s.records[i].near + s.records[i].far
+        probes += s.records[i].probes
+    }
+    assert(weather >= 1, "the clouds' weather wasn't cooked again")
+    assert(s.records[from].sky_frames <= 1, "the dome's march didn't start again")
+    assert(near == 0, f"the weather drew {near} strips of the cascades")
+    assert(probes == 0, f"the weather baked {probes} strips of probes")
+}
+
+/// A sun change draws both cascades again and cooks the clouds' weather again (it's lit from the
+/// sun); the probes are baked again under it once the dome has been marched again (they bake its
+/// light), which is after the cascades.
+@test(frames: 900, gpu: true)
+fn a_sun_change_redraws_the_cascades_the_clouds_and_then_the_probes(s: State) {
+    reached(s, Step::Done)
+    let (from, to) = window(s, 3)
+    var near = 0
+    var far = 0
+    var weather = 0
+    for i in from..to {
+        near += s.records[i].near
+        far += s.records[i].far
+        weather += s.records[i].weather
+    }
+    assert(near > 0 && far > 0, f"the cascades drew {near} and {far} strips")
+    assert(weather >= 1, "the clouds weren't cooked again")
+    var baked: Option<u32> = None
+    var marched = 0
+    for i in from..s.records.len() {
+        let r = s.records[i]
+        if r.probes > 0 && baked.is_none() {
+            baked = Some(i)
+        }
+        if baked.is_none() {
+            marched += r.phase
+        }
+    }
+    let Some(b) = baked else { panic("the probes weren't baked again under the new sun") }
+    assert(
+        marched >= engine::sky::PHASES,
+        f"the probes were baked after {marched} of the dome's {engine::sky::PHASES} phases",
+    )
+    assert(b > from, "the probes were baked in the sun's own frame")
+}
+
+/// A held screen runs frames (it cooks) and draws none; drawing resumes when it's let go.
+@test(frames: 900, gpu: true)
+fn a_held_screen_runs_frames_and_draws_none(s: State) {
+    reached(s, Step::Done)
+    let (from, to) = window(s, 4)
+    let drawn = s.records[from].drawn
+    for i in from..to {
+        assert(s.records[i].drawn == drawn, f"frame {s.records[i].ran} drew while held")
+    }
+    assert(to - from == 8, f"it was held {to - from} frames")
+    let last = s.records[s.records.len() - 1]
+    assert(last.drawn > drawn, "drawing didn't resume once it was let go")
+}
