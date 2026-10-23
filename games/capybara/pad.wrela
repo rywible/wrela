@@ -184,9 +184,9 @@ impl Run {
         if self.over == 1 {
             return
         }
-        if self.len > 0 && !pad.pressed() {
+        if self.len > 0 {
             let last = self.stretches[self.len - 1]
-            if (last >> 24) & !PRESS == pad.bits && last & 0xffffff < 0xffffff {
+            if extends(last >> 24, pad.bits) && last & 0xffffff < 0xffffff {
                 self.stretches[self.len - 1] = last + 1
                 return
             }
@@ -217,6 +217,26 @@ pub fn hold(bits: u32, ticks: u32) -> Hold {
 /// The pad on tick `i` of hold `h`.
 pub fn pad_of(h: Hold, i: u32) -> Pad {
     Pad { bits: if i == 0 { h.bits } else { h.bits & !PRESS } }
+}
+
+/// Whether a tick of pad `bits` goes on a hold of `held`: past its first tick, a hold gives its
+/// bits without the press (`pad_of`), so a press always starts one.
+pub fn extends(held: u32, bits: u32) -> bool {
+    bits & PRESS == 0 && held & !PRESS == bits
+}
+
+/// Pads, tick by tick, as holds: each the longest stretch that `pad_of` gives back.
+pub fn holds_of(pads: [u32]) -> Vec<Hold> {
+    var run: Vec<Hold> = Vec::new()
+    for p in pads {
+        let n = run.len()
+        if n > 0 && extends(run[n - 1].bits, p) {
+            run[n - 1].ticks += 1
+        } else {
+            run.push(hold(p, 1))
+        }
+    }
+    run
 }
 
 // ---- tests -------------------------------------------------------------------------------------

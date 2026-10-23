@@ -15,12 +15,9 @@
 use course::{Course, WALKABLE}
 use engine::noise::{hash2, noise2}
 use ground::{left, outline, triangulate}
-use ink::{INK, grain, inked, wash, washed}
+use ink::{INK, SUN, grain, inked, wash, washed}
+use shapes::{blend, cone}
 use std::gpu::{ClipPosition, Flat, Over, Rgba16Float, Sampler, Texture, VertexIndex, discard}
-
-fn blend(a: vec3, b: vec3, t: f32) -> vec3 {
-    a + (b - a) * t
-}
 
 /// The materials of the ground's faces.
 const SOIL: f32 = 0.0
@@ -182,6 +179,9 @@ pub fn profile(c: Course) -> Vec<f32> {
     out
 }
 
+pub const LAB_TOPS: Vec<f32> = profile(course::LAB)
+pub const LEVEL_TOPS: Vec<f32> = profile(course::LEVEL)
+
 /// The profile's top at `x`, between its samples.
 pub fn top_at(tops: [f32], x: f32) -> f32 {
     let f = clamp((x - FROM) / STEP, 0.0, f32(SAMPLES - 2))
@@ -239,10 +239,6 @@ pub fn earth_vertex(v: VertexIndex, verts: [vec4], f: Field) -> Earthel {
     }
 }
 
-/// The sun, from the side and above, as a direction on the page: what the two-tone shading of a
-/// pebble or a block takes as its light side.
-const SUN = vec2(0.57, 0.82)
-
 /// A pebble in the soil at `p`, if one is there: its colour and how much of the pixel it covers.
 /// One may sit in each cell 0.4 m square: an oval of stone, its lit half lighter, inked round.
 fn pebble(p: vec2, px: f32) -> vec4 {
@@ -274,9 +270,11 @@ fn soil(p: vec2, depth: f32, px: f32, g: Texture<Rgba16Float>, gs: Sampler) -> v
     // A painted shadow under the turf's lip.
     c *= 1.0 - 0.22 * smoothstep(TURF_DEPTH + 0.5, TURF_DEPTH, depth)
     // Roots: wiggling inked lines, a contour of noise, near the top only.
-    let root = abs(noise2(p * vec2(1.4, 2.2)) - 0.5) / 1.2
-    let roots = smoothstep(px * 1.0, px * 0.2, root) * smoothstep(0.9, 0.4, depth)
-    c = blend(c, INK, roots * 0.25)
+    if depth < 0.9 {
+        let root = abs(noise2(p * vec2(1.4, 2.2)) - 0.5) / 1.2
+        let roots = smoothstep(px * 1.0, px * 0.2, root) * smoothstep(0.9, 0.4, depth)
+        c = blend(c, INK, roots * 0.25)
+    }
     let stone = pebble(p, px)
     blend(c, stone.xyz, stone.w)
 }
@@ -294,9 +292,9 @@ pub fn earth(
     g: Texture<Rgba16Float>,
     gs: Sampler,
 ) -> vec4 {
-    let c = earth_colour(e, f, tops, g, gs)
     let p = e.world
     let bed = top_at(tops, p.x)
+    let c = earth_colour(e, f, bed, g, gs)
     var under = 0.0
     var tint = 0.0
     for i in 0..pools.len() {
@@ -315,11 +313,12 @@ pub fn earth(
     vec4(blend(c.xyz, water, saturate(0.45 + under * 0.05) * tint), 1.0)
 }
 
-fn earth_colour(e: Earthel, f: Field, tops: [f32], g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+/// The earth's own colour, under no water: `top` is the top of the ground above it (m).
+fn earth_colour(e: Earthel, f: Field, top: f32, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
     let p = e.world
     let px = f.px
     let m = e.material.value
-    let depth = max(top_at(tops, p.x) - p.y, 0.0)
+    let depth = max(top - p.y, 0.0)
     if m == PLANK {
         // Planks a metre long, their grain inked along them, a lighter top edge.
         let seam = abs(fract(p.x + 0.5 * floor(p.y * 2.0)) - 0.5) - 0.5
@@ -423,12 +422,4 @@ pub fn grass(b: Blade, f: Field) -> Over {
         discard()
     }
     Over { color: o }
-}
-
-/// A segment's distance from `a` to `b`, `ra` thick at `a` and `rb` at `b`.
-fn cone(p: vec2, a: vec2, b: vec2, ra: f32, rb: f32) -> f32 {
-    let pa = p - a
-    let ba = b - a
-    let h = saturate(dot(pa, ba) / dot(ba, ba))
-    length(pa - ba * h) - (ra + (rb - ra) * h)
 }

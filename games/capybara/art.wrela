@@ -17,6 +17,7 @@
 use engine::noise::noise2_wrapped
 use engine::plant::full
 use ink::{GRAIN_CELLS, INK, PAPER}
+use shapes::blend
 use std::gpu::{FragCoord, Rgba16Float, Sampler, Texture, begin_pass, draw, texture}
 
 /// The frame's targets, remade when the screen's size changes.
@@ -110,10 +111,6 @@ pub fn finish(pixel: FragCoord, scene: Texture<Rgba16Float>, s: Sampler, page: P
     // Paused: a wash of the paper's cream over the page, the card on it.
     c = blend(c, PAPER * 0.93, page.dim * 0.55)
     vec4(saturate(c), 1.0)
-}
-
-fn blend(a: vec3, b: vec3, t: f32) -> vec3 {
-    a + (b - a) * t
 }
 
 // ---- the render scale ---------------------------------------------------------------------------

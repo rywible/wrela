@@ -6,7 +6,7 @@
 //
 // The capybara squashes and stretches on a spring: low as it lands, tall as it jumps.
 
-use body::Mode
+use body::{Mode, RADIUS}
 use course::Course
 use dust::{
     Dust, EARTH_DUST, between, bubbles, burst, clippings, confetti, dust, dust_sprites, feathers,
@@ -30,9 +30,6 @@ use world::{DYING, Snap}
 fn stride_length(speed: f32) -> f32 {
     0.7 + 0.11 * speed
 }
-
-/// The collider's radius (m): the capybara's feet are this far below its middle.
-const FEET: f32 = 0.35
 
 pub struct Cast {
     pub dust: Dust,
@@ -103,7 +100,8 @@ pub fn cast(c: Course) -> Cast {
     }
 }
 
-fn grounded(m: Option<Mode>) -> bool {
+/// Whether mode `m` is on the ground.
+pub fn grounded(m: Option<Mode>) -> bool {
     m == Some(Mode::Walk) || m == Some(Mode::Crouch) || m == Some(Mode::Slide)
 }
 
@@ -113,7 +111,7 @@ fn grounded(m: Option<Mode>) -> bool {
 pub fn react(k: mut Cast, s: Snap, c: Course, dt: f32, eye: vec2, half: vec2) {
     let pan = |x: f32| clamp((x - eye.x) / max(half.x, 1.0), -1.0, 1.0) * 0.7
     let mode = Mode::from_u32(s.mode)
-    let feet = s.at - s.ground * FEET
+    let feet = s.at - s.ground * RADIUS
     let wet_now = c.water_at(s.at).is_some()
     match k.last {
         Some(before) => {

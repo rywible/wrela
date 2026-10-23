@@ -19,10 +19,10 @@
 // from the start alone. It writes routes.wrela again if a run is better, keeping the other mode's.
 
 use capybara::course::course
-use capybara::pad::{DOWN, Hold, JUMP, LEFT, PRESS, Pad, RIGHT, UP}
+use capybara::pad::{DOWN, Hold, JUMP, LEFT, PRESS, Pad, RIGHT, UP, holds_of}
 use capybara::routes::{ANY, FULL, HUMAN_ANY, HUMAN_FULL}
 use capybara::world::{LEVEL, step, world}
-use search::{Settings, holds, played, search, to_goal}
+use search::{Settings, played, search, to_goal}
 use slack::{EARLY, LATE, LONGER, RECOVER, Slack, WHOLE, finishes, forgiving, moved, pads_of, slack}
 use std::io::print
 use std::time::{now, since}
@@ -48,18 +48,6 @@ pub const TRIES: [Settings; 8] = [
     Settings { beam: 3000 },
     Settings { every: 3, beam: 600 },
     Settings { lookahead: 0.5, cell: 0.35 },
-]
-
-/// The same, with the human limits.
-pub const HUMAN_TRIES: [Settings; 8] = [
-    Settings { human: true },
-    Settings { every: 4, human: true },
-    Settings { every: 8, human: true },
-    Settings { every: 5, cell: 0.5, human: true },
-    Settings { every: 7, cell: 0.15, human: true },
-    Settings { beam: 3000, human: true },
-    Settings { every: 3, beam: 600, human: true },
-    Settings { lookahead: 0.5, cell: 0.35, human: true },
 ]
 
 /// What a change that isn't firm costs a human run, in ticks of its time.
@@ -91,11 +79,6 @@ pub fn parse_args(given: [String]) -> Option<Ask> {
         k += 1
     }
     Some(ask)
-}
-
-/// The snacks a 100% run finds: all of the level's.
-fn every_snack() -> u32 {
-    (1 << course(LEVEL).snacks.len()) - 1
 }
 
 /// The ticks on which the run of `pads` first reaches each checkpoint's x: a fast run may pass
@@ -227,15 +210,11 @@ fn steadied(b: take Best, snacks: u32, start: f64, seconds: f32) -> Best {
         }
         let (at, missed) = (best.slack.fragile[i], best.slack.missed[i])
         from = at + 1
-        let ways: [i32; 2] = if missed & EARLY == 0 { [-1, -2] } else if missed & LATE == 0 {
-            [1, 2]
-        } else {
-            [0, 0]
+        if missed & EARLY != 0 && missed & LATE != 0 {
+            continue
         }
+        let ways: [i32; 2] = if missed & EARLY == 0 { [-1, -2] } else { [1, 2] }
         for by in ways {
-            if by == 0 {
-                continue
-            }
             let Some(c) = best_of(moved(best.pads, at, by), snacks, human: true) else {
                 continue
             }
@@ -246,19 +225,17 @@ fn steadied(b: take Best, snacks: u32, start: f64, seconds: f32) -> Best {
             }
         }
     }
-    best
 }
 
-/// The best run of the category whose runs find `snacks`, from `run` on, after up to `seconds`
+/// The best run of the category whose runs find `snacks`, from `from` on, after up to `seconds`
 /// of search.
-fn improve(name: str, run: [Hold], snacks: u32, human: bool, seconds: f32) -> Best {
+fn improve(name: str, from: take Best, snacks: u32, human: bool, seconds: f32) -> Best {
     let start = now()
-    let tries = if human { HUMAN_TRIES } else { TRIES }
-    var best = kept(run, snacks, human)
+    var best = take from
     print(f"{name}: from {told(best, human)}")
     var round = 0
     while since(start) < seconds {
-        let settings = tries[round % tries.len()]
+        let settings = Settings { human, ..TRIES[round % TRIES.len()] }
         let from = if best.time == 0 { Vec::from([0]) } else { entries(best, human) }
         for e in from {
             if since(start) >= seconds {
@@ -385,7 +362,7 @@ pub fn routes_text(routes: [Route; 4]) -> String {
         routes[3].time,
     )
     text.push_str(
-        f"\n@test\nfn the_searched_runs_finish_in_their_times_without_a_death() {{\n    borrow c = course(LEVEL)\n    let every = (1 << c.snacks.len()) - 1\n    let any = play(LEVEL, ANY)\n    let full = play(LEVEL, FULL)\n    assert(any.finished == {any} && any.deaths == 0, \"the any% run's time moved\")\n    assert(full.finished == {full} && full.deaths == 0 && full.snacks == every)\n    let human_any = play(LEVEL, HUMAN_ANY)\n    let human_full = play(LEVEL, HUMAN_FULL)\n    assert(human_any.finished == {human_any} && human_any.deaths == 0)\n    assert(human_full.finished == {human_full} && human_full.deaths == 0)\n    assert(human_full.snacks == every)\n}}\n",
+        f"\n@test\nfn the_searched_runs_finish_in_their_times_without_a_death() {{\n    let every = course(LEVEL).every_snack()\n    let any = play(LEVEL, ANY)\n    let full = play(LEVEL, FULL)\n    assert(any.finished == {any} && any.deaths == 0, \"the any% run's time moved\")\n    assert(full.finished == {full} && full.deaths == 0 && full.snacks == every)\n    let human_any = play(LEVEL, HUMAN_ANY)\n    let human_full = play(LEVEL, HUMAN_FULL)\n    assert(human_any.finished == {human_any} && human_any.deaths == 0)\n    assert(human_full.finished == {human_full} && human_full.deaths == 0)\n    assert(human_full.snacks == every)\n}}\n",
     )
     text
 }
@@ -400,7 +377,7 @@ fn route(b: Best, what: str, snacks: u32, human: bool) -> Route {
     } else {
         f"/// {what}, tool-assisted, in {b.time} ticks.\n"
     }
-    Route { run: holds(b.pads), time: b.time, doc }
+    Route { run: holds_of(b.pads), time: b.time, doc }
 }
 
 pub fn tool() -> u32 {
@@ -413,10 +390,11 @@ pub fn tool() -> u32 {
     } else {
         (Vec::from(ANY), Vec::from(FULL))
     }
+    let all = course(LEVEL).every_snack()
     let was_any = kept(any_run, 0, ask.human)
-    let was_full = kept(full_run, every_snack(), ask.human)
-    let any = improve("any%", any_run, 0, ask.human, f32(ask.seconds))
-    let full = improve("100%", full_run, every_snack(), ask.human, f32(ask.seconds))
+    let was_full = kept(full_run, all, ask.human)
+    let any = improve("any%", was_any.clone(), 0, ask.human, f32(ask.seconds))
+    let full = improve("100%", was_full.clone(), all, ask.human, f32(ask.seconds))
     if any.time == 0 || full.time == 0 {
         print("route: no run of each category to write")
         return 1
@@ -432,21 +410,18 @@ pub fn tool() -> u32 {
     }
     let first = "The first level from start to goal (any%)"
     let every = "The first level with every snack (100%)"
-    let routes = if ask.human {
-        [
-            route(kept(ANY, 0, human: false), first, 0, human: false),
-            route(kept(FULL, every_snack(), human: false), every, every_snack(), human: false),
-            route(any, first, 0, human: true),
-            route(full, every, every_snack(), human: true),
-        ]
+    // The other mode's runs stay as routes.wrela holds them.
+    let (assisted_any, assisted_full, human_any, human_full) = if ask.human {
+        (kept(ANY, 0, human: false), kept(FULL, all, human: false), take any, take full)
     } else {
-        [
-            route(any, first, 0, human: false),
-            route(full, every, every_snack(), human: false),
-            route(kept(HUMAN_ANY, 0, human: true), first, 0, human: true),
-            route(kept(HUMAN_FULL, every_snack(), human: true), every, every_snack(), human: true),
-        ]
+        (take any, take full, kept(HUMAN_ANY, 0, human: true), kept(HUMAN_FULL, all, human: true))
     }
+    let routes = [
+        route(assisted_any, first, 0, human: false),
+        route(assisted_full, every, all, human: false),
+        route(human_any, first, 0, human: true),
+        route(human_full, every, all, human: true),
+    ]
     let text = routes_text(routes)
     match write(ROUTES, text.as_bytes()).wait() {
         Ok(_) => {

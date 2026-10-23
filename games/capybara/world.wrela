@@ -22,7 +22,7 @@ use body::{Body, Mode, RADIUS, bounce, spawn}
 use course::{COURSES, Course, course}
 use engine::run::{Asks, TickInput}
 use engine::sim::{SimState, Tick}
-use feel::FEEL
+use feel::{FEEL, STEP}
 use foes::{Foe, MAX_FOES, NONE, Touch, foe, knock, step_foe, touch}
 use pad::{Controls, Hold, JUMP, NO_RUN, Pad, Run, pad_of}
 use std::hash::StateHash
@@ -464,7 +464,7 @@ fn tick_with(w: mut World, records: [Event]) {
     for e in records {
         events.push(e)
     }
-    tick(mut w, TickInput { tick: w.ticks, dt: 1.0 / 120.0, records: events, answers: Vec::new() })
+    tick(mut w, TickInput { tick: w.ticks, dt: STEP, records: events, answers: Vec::new() })
 }
 
 fn down(key: Key) -> Event {

@@ -959,8 +959,7 @@ pub const HUMAN_FULL: [Hold; 285] = [
 
 @test
 fn the_searched_runs_finish_in_their_times_without_a_death() {
-    borrow c = course(LEVEL)
-    let every = (1 << c.snacks.len()) - 1
+    let every = course(LEVEL).every_snack()
     let any = play(LEVEL, ANY)
     let full = play(LEVEL, FULL)
     assert(any.finished == 1311 && any.deaths == 0, "the any% run's time moved")

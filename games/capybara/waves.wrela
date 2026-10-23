@@ -12,6 +12,7 @@
 use course::Course
 use earth::{ground_top, solids}
 use ink::{inked, wash}
+use shapes::blend
 use engine::noise::{hash2, noise2}
 use ground::triangulate
 use std::gpu::{
@@ -267,8 +268,4 @@ pub fn water(
     c = blend(c, vec3(1.0), foam)
     let o = inked(c, -depth, p, f.px * 2.0, f.px, vec3(0.2, 0.32, 0.46))
     Over { color: o }
-}
-
-fn blend(a: vec3, b: vec3, t: f32) -> vec3 {
-    a + (b - a) * t
 }

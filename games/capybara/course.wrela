@@ -95,6 +95,11 @@ impl Course {
         }
     }
 
+    /// Every snack's bit (`World::snacks`): what a 100% run finds.
+    pub fn every_snack(self) -> u32 {
+        (1 << self.snacks.len()) - 1
+    }
+
     /// The course with its ends' faces at `ends` (left and right, m).
     pub fn ended(take self, ends: vec2) -> Course {
         var c = take self

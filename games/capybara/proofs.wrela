@@ -348,7 +348,7 @@ fn the_level_is_finished_without_a_death_and_with_every_snack() {
     print(f"the level: any% {any.finished} ticks, 100% {all.finished} ticks")
     assert(any.finished == 3410 && any.deaths == 0, "the any% run's time moved")
     assert(all.finished == 3528 && all.deaths == 0, "the 100% run's time moved")
-    assert(all.snacks == (1 << c.snacks.len()) - 1, "every snack")
+    assert(all.snacks == c.every_snack(), "every snack")
     assert(any.checkpoint == c.checkpoints.len() && all.checkpoint == c.checkpoints.len())
 }
 

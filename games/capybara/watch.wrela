@@ -1,10 +1,10 @@
 // Watching a run: a replay played back on the frames' side (main.wrela), apart from the ticker,
 // which stands paused with the runs open meanwhile. It steps its own world with the replay's pads
 // at the sim's rate, slower or faster, goes on a few seconds past the goal for the fireworks, and
-// seeks by playing again from the start, as the sim has no way back. The frames draw it as they
-// draw play, between its last two snapshots.
+// seeks forward by playing on and back by playing again from the start, as the sim has no way
+// back. The frames draw it as they draw play, between its last two snapshots.
 
-use feel::HZ
+use feel::{HZ, STEP}
 use pad::{IDLE, pad_of}
 use replay::Replay
 use world::{Snap, World, present, step, world}
@@ -77,14 +77,16 @@ impl Watch {
         }
     }
 
-    /// To tick `t` (at most its end), played again from the start.
+    /// To tick `t` (at most its end): played on to it, or again from the start to one before.
     pub fn seek(mut self, t: u32) {
         let target = min(t, self.end())
-        self.world = started(self.replay.course)
-        self.before = present(self.world)
-        self.tick = 0
-        self.hold = 0
-        self.within = 0
+        if target < self.tick {
+            self.world = started(self.replay.course)
+            self.before = present(self.world)
+            self.tick = 0
+            self.hold = 0
+            self.within = 0
+        }
         self.part = 0.0
         while self.tick < target {
             self.step_once()
@@ -147,9 +149,11 @@ fn seeking_lands_where_playing_does() {
     assert(w.world == started_at(played(r, 200)), "and back")
     // Played on from there, a tick at a time, it's where the replay is.
     for _ in 0..120 {
-        w.advance(1.0 / 120.0)
+        w.advance(STEP)
     }
     assert(w.world == started_at(played(r, 320)), f"at {w.tick}")
+    w.seek(1500)
+    assert(w.tick == 1500 && w.world == started_at(there), "forward again, playing on from there")
 }
 
 /// `w` as the watch's world, which isn't paused.

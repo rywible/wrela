@@ -23,7 +23,8 @@
 
 use earth::surely_ground_below
 use engine::noise::{hash2, noise2}
-use ink::{INK, inked, paper, pooled, washed}
+use ink::{INK, SUN, inked, paper, pooled, washed}
+use shapes::{blend, capsule, cone, ellipse, rbox, turn}
 use std::field::smin
 use std::gpu::{FragCoord, Rgba16Float, Sampler, Texture, discard}
 
@@ -46,9 +47,6 @@ pub const BAMBOO: f32 = 0.68
 /// The mist the far layers fade into.
 const MIST = vec3(0.83, 0.88, 0.87)
 
-/// The sun, from the side and above, as a direction on the page.
-const SUN = vec2(0.57, 0.82)
-
 /// How much smaller a layer is drawn, for its parallax.
 fn zoom(parallax: f32) -> f32 {
     0.45 + 0.55 * parallax
@@ -64,10 +62,6 @@ fn on_layer(pixel: FragCoord, v: View, parallax: f32) -> vec2 {
 /// A pixel's size on a layer (m).
 fn pixel_on(v: View, parallax: f32) -> f32 {
     2.0 * v.half.y / v.screen.y / zoom(parallax)
-}
-
-fn blend(a: vec3, b: vec3, t: f32) -> vec3 {
-    a + (b - a) * t
 }
 
 /// A layer's shape painted: its wash, pooled at the edge, faded by `haze` into the mist, and
@@ -123,31 +117,6 @@ fn fbm(p: vec2, octaves: u32) -> f32 {
 }
 
 // ---- shapes ----------------------------------------------------------------------------------
-
-/// A box's distance (half-size `b`, corners rounded by `r`).
-fn rbox(p: vec2, b: vec2, r: f32) -> f32 {
-    let q = abs(p) - b + vec2(r)
-    length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r
-}
-
-/// A segment's distance from `a` to `b`, `ra` thick at `a` and `rb` at `b`.
-fn cone(p: vec2, a: vec2, b: vec2, ra: f32, rb: f32) -> f32 {
-    let pa = p - a
-    let ba = b - a
-    let h = saturate(dot(pa, ba) / dot(ba, ba))
-    length(pa - ba * h) - (ra + (rb - ra) * h)
-}
-
-fn capsule(p: vec2, a: vec2, b: vec2, r: f32) -> f32 {
-    cone(p, a, b, ra: r, rb: r)
-}
-
-/// An ellipse's distance, approximately (exact on its axes).
-fn ellipse(p: vec2, r: vec2) -> f32 {
-    let k0 = length(p / r)
-    let k1 = length(p / (r * r))
-    k0 * (k0 - 1.0) / max(k1, 1.0e-5)
-}
 
 /// A crown's colour at `q`: its wash, and a darker one on the side away from the sun (`centre`
 /// its middle, `r` its size), with a soft painted edge between.
@@ -402,11 +371,6 @@ fn nearer(a: (f32, vec3), b: (f32, vec3)) -> (f32, vec3) {
     let (da, _) = a
     let (db, _) = b
     if db < da { b } else { a }
-}
-
-fn turn(p: vec2, a: f32) -> vec2 {
-    let (c, s) = (cos(a), sin(a))
-    vec2(p.x * c + p.y * s, -p.x * s + p.y * c)
 }
 
 /// The capybaras' hot spring: a pool in a ring of stones, steam curling up off it, three

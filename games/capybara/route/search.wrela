@@ -26,7 +26,7 @@
 //   say whether jump can be pressed, so two states are one only if those are equal too.
 
 use capybara::course::course
-use capybara::pad::{DOWN, Hold, JUMP, LEFT, PRESS, Pad, RIGHT, UP, hold, pad_of}
+use capybara::pad::{DOWN, JUMP, LEFT, PRESS, Pad, RIGHT, UP, hold, pad_of}
 use capybara::world::{World, step}
 use slack::{STRETCH, pressed}
 use std::hash::{Hasher, StateHash, state_hash}
@@ -107,18 +107,19 @@ pub struct Settings: Copy {
 /// How far past a snack the capybara may be without it before the state is dropped (m).
 const SLACK: f32 = 1.5
 
-/// A state of a layer, with what holding each action for the layer's ticks made of it.
+/// A state of a layer, and the buttons held into it.
 struct Node: Copy {
     w: World,
     last: u32,
-    kids: [Kid; 13],
 }
 
-/// A state one action makes, and the buttons that action held: whether it lives (it didn't die,
-/// nor pass a snack it needs), the tick within the action on which it reached the segment's end
-/// (0 if it didn't), and, living, its score, its hash, and its cell and the cell's hash.
+/// A state one action makes from a node: the action, the buttons it held (before it is held, the
+/// node's), whether it lives (it didn't die, nor pass a snack it needs), the tick within the
+/// action on which it reached the segment's end (0 if it didn't), and, living, its score, its
+/// hash, and its cell and the cell's hash.
 struct Kid: Copy {
     w: World,
+    action: u32,
     last: u32,
     live: bool,
     done: u32,
@@ -231,13 +232,19 @@ fn cell_hash(k: [i32; 10]) -> u64 {
     h.finish()
 }
 
-/// A kid not yet living.
-fn kid(w: World) -> Kid {
-    Kid { w, last: 0, live: false, done: 0, score: 0.0, hash: 0, cell: [0; 10], cell_hash: 0 }
-}
-
-fn node(w: World, last: u32) -> Node {
-    Node { w, last, kids: [kid(w); 13] }
+/// The kid of `n` that holds `action`, not yet held.
+fn kid(n: Node, action: u32) -> Kid {
+    Kid {
+        w: n.w,
+        action,
+        last: n.last,
+        live: false,
+        done: 0,
+        score: 0.0,
+        hash: 0,
+        cell: [0; 10],
+        cell_hash: 0,
+    }
 }
 
 /// The pad of tick `i` of a layer that holds `action` after the buttons `last`.
@@ -248,15 +255,16 @@ fn pad_in(action: u32, last: u32, i: u32, s: Settings) -> Pad {
     Pad { bits: if i == 0 { pressed(action, last) } else { action } }
 }
 
-/// Holds `action` from `w` for up to a layer's ticks, stopping where the segment ends or the
-/// state can't make it.
-fn act(n: Node, action: u32, goal: Goal, s: Settings) -> Kid {
-    var k = kid(n.w)
-    k.last = action & !PRESS
+/// Holds `k`'s action from its state for up to a layer's ticks, stopping where the segment ends
+/// or the state can't make it.
+@deterministic
+fn act(k: mut Kid, goal: Goal, s: Settings) {
+    let from = k.last
+    k.last = k.action & !PRESS
     for i in 0..s.every {
-        step(mut k.w, pad_in(action, n.last, i, s))
+        step(mut k.w, pad_in(k.action, from, i, s))
         if !alive(k.w, goal) {
-            return k
+            return
         }
         if ended(k.w, goal) {
             k.done = i + 1
@@ -273,15 +281,6 @@ fn act(n: Node, action: u32, goal: Goal, s: Settings) -> Kid {
     k.hash = h.finish()
     k.cell = cell(k.w, s.cell, k.last, s.human)
     k.cell_hash = cell_hash(k.cell)
-    k
-}
-
-/// Every action held from `n`'s state.
-@deterministic
-fn expand(n: mut Node, goal: Goal, s: Settings) {
-    for a in 0..count(s) {
-        n.kids[a] = act(n, action(s, a), goal, s)
-    }
 }
 
 /// Whether pick `a` goes before `b`: the higher score, then the lower hash.
@@ -359,7 +358,7 @@ pub struct Search {
 pub fn search(entry: World, last: u32, goal: Goal, settings: Settings) -> Search {
     assert(!settings.human || settings.every >= STRETCH, "a human holds buttons longer")
     var nodes: Vec<Node> = Vec::new()
-    nodes.push(node(entry, last))
+    nodes.push(Node { w: entry, last })
     let now = ended(entry, goal)
     Search {
         goal,
@@ -392,15 +391,23 @@ impl Search {
         }
         let goal = self.goal
         let settings = self.settings
-        self.nodes.par_each_mut(|n| expand(mut n, goal, settings))
-        self.states += self.nodes.len() * count(settings)
+        // Every action held from each state: node `i`'s kid of action `a` is `kids[i * n + a]`.
+        let n = count(settings)
+        var kids: Vec<Kid> = Vec::with_capacity(self.nodes.len() * n)
+        for node in self.nodes {
+            for a in 0..n {
+                kids.push(kid(node, action(settings, a)))
+            }
+        }
+        kids.par_each_mut(|k| act(mut k, goal, settings))
+        self.states += kids.len()
         // The kids that ended: the earliest tick, then the best pick.
         var best: Option<Pick> = None
         var best_tick: u32 = 0
         var picks: Vec<Pick> = Vec::new()
         for i in 0..self.nodes.len() {
-            for a in 0..count(settings) {
-                borrow k = self.nodes[i].kids[a]
+            for a in 0..n {
+                borrow k = kids[i * n + a]
                 if !k.live {
                     continue
                 }
@@ -420,7 +427,7 @@ impl Search {
             }
         }
         if let Some(b) = best {
-            self.finish(b)
+            self.finish(kids[b.node * n + b.action], b)
             return
         }
         // Equal states: a hash match, then equality. The first, in the kids' order, stays.
@@ -429,7 +436,8 @@ impl Search {
             |i| picks[i].hash,
             |i, j| {
                 let (p, q) = (picks[i], picks[j])
-                let (a, b) = (self.nodes[p.node].kids[p.action], self.nodes[q.node].kids[q.action])
+                borrow a = kids[p.node * n + p.action]
+                borrow b = kids[q.node * n + q.action]
                 a.w == b.w && (!settings.human || a.last == b.last)
             },
         )
@@ -441,10 +449,10 @@ impl Search {
         unique.sort_by(before)
         let cells = firsts(
             unique.len(),
-            |i| self.nodes[unique[i].node].kids[unique[i].action].cell_hash,
+            |i| kids[unique[i].node * n + unique[i].action].cell_hash,
             |i, j| {
                 let (p, q) = (unique[i], unique[j])
-                self.nodes[p.node].kids[p.action].cell == self.nodes[q.node].kids[q.action].cell
+                kids[p.node * n + p.action].cell == kids[q.node * n + q.action].cell
             },
         )
         var kept: Vec<Pick> = Vec::new()
@@ -456,8 +464,8 @@ impl Search {
         var next: Vec<Node> = Vec::with_capacity(kept.len())
         var links: Vec<Link> = Vec::with_capacity(kept.len())
         for p in kept {
-            let k = self.nodes[p.node].kids[p.action]
-            next.push(node(k.w, k.last))
+            borrow k = kids[p.node * n + p.action]
+            next.push(Node { w: k.w, last: k.last })
             links.push(Link { parent: p.node, action: p.action })
         }
         self.nodes = take next
@@ -469,8 +477,7 @@ impl Search {
 
     /// The run to kid `p`, which ended: the actions back through the layers, each held for a
     /// layer's ticks, the last until it ended.
-    fn finish(mut self, p: Pick) {
-        let k = self.nodes[p.node].kids[p.action]
+    fn finish(mut self, k: Kid, p: Pick) {
         var taken: Vec<u32> = Vec::new()
         taken.push(action(self.settings, p.action))
         var at = p.node
@@ -504,20 +511,6 @@ pub fn run_through(entry: World, goal: Goal, settings: Settings) -> Search {
         s.layer()
     }
     s
-}
-
-/// Pads, tick by tick, as holds: each the longest stretch that `pad_of` gives back.
-pub fn holds(pads: [u32]) -> Vec<Hold> {
-    var run: Vec<Hold> = Vec::new()
-    for p in pads {
-        let n = run.len()
-        if n > 0 && p & PRESS == 0 && run[n - 1].bits & !PRESS == p {
-            run[n - 1].ticks += 1
-        } else {
-            run.push(hold(p, 1))
-        }
-    }
-    run
 }
 
 /// The world after the pads `pads` from `w`.

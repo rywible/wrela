@@ -20,6 +20,10 @@ pub const INK = vec3(0.24, 0.16, 0.11)
 /// The paper: a warm cream.
 pub const PAPER = vec3(0.97, 0.94, 0.86)
 
+/// The sun, from the side and above, as a direction on the page: what the two-tone shading of the
+/// backdrop's crowns and the ground's pebbles and blocks takes as its light side.
+pub const SUN = vec2(0.57, 0.82)
+
 /// A wash of colour `c` at `p` (m, on the shape's own plane): blotched where the pigment
 /// settled thicker or thinner. (`washed` is the same from the baked grain.)
 pub fn wash(c: vec3, p: vec2) -> vec3 {

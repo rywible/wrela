@@ -103,7 +103,7 @@ pub fn verify(r: Replay) -> bool {
 
 /// Whether `r` counts for `category`.
 pub fn counts(r: Replay, category: u32) -> bool {
-    let all = (1 << course(r.course).snacks.len()) - 1
+    let all = course(r.course).every_snack()
     category == ANY || (r.snacks & all) == all
 }
 
@@ -125,13 +125,10 @@ impl Board {
         var out: Vec<Replay> = Vec::new()
         for r in self.runs {
             if r.course == c && counts(r, category) {
-                var at = out.len()
-                while at > 0 && out[at - 1].ticks > r.ticks {
-                    at -= 1
-                }
-                out.insert(at, r.clone())
+                out.push(r.clone())
             }
         }
+        out.sort_by(|a, b| a.ticks < b.ticks)
         while out.len() > KEPT {
             let _ = out.pop()
         }
@@ -287,6 +284,7 @@ fn pose(w: World, walked: f32) -> Pose {
 
 use std::input::{Event, Key, Mods}
 use engine::run::TickInput
+use feel::STEP
 use pad::{DOWN, JUMP, LEFT, PRESS, RIGHT, UP}
 use world::{live, present_live, tick_live}
 
@@ -316,7 +314,7 @@ fn the_autopilots_runs_verify_and_a_doctored_one_does_not() {
 @test
 fn a_board_keeps_the_best_few_of_each_category_fastest_first() {
     var b = board()
-    let all = (1 << course(LEVEL).snacks.len()) - 1
+    let all = course(LEVEL).every_snack()
     // Seven any% runs, slowest first, then a slow 100% run.
     for k in 0..7 {
         let _ = b.add(claimed(LEVEL, ticks: 4000 - k * 10, snacks: 0))
@@ -385,7 +383,7 @@ fn a_live_attempt_played_from_keys_is_recorded_as_a_replay_that_plays_it_again()
     var l = live(LAB)
     var tick = 0
     let go = Vec::from([Event::KeyDown { key: Key::Enter, repeat: false, mods: Mods {} }])
-    tick_live(mut l, TickInput { tick, dt: 1.0 / 120.0, records: go, answers: Vec::new() })
+    tick_live(mut l, TickInput { tick, dt: STEP, records: go, answers: Vec::new() })
     tick += 1
     var bits = 0
     for h in LAB_RUN {
@@ -393,7 +391,7 @@ fn a_live_attempt_played_from_keys_is_recorded_as_a_replay_that_plays_it_again()
             let pad = pad_of(h, i).bits
             let records = keys(bits, pad)
             bits = pad
-            tick_live(mut l, TickInput { tick, dt: 1.0 / 120.0, records, answers: Vec::new() })
+            tick_live(mut l, TickInput { tick, dt: STEP, records, answers: Vec::new() })
             tick += 1
         }
     }

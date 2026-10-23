@@ -11,6 +11,7 @@
 
 use engine::noise::noise2
 use ink::{INK, inked, pooled, wash}
+use shapes::{blend, capsule, cone, ellipse, rbox, turn}
 use std::derive::{value_and_gradient, value_gradient_with}
 use std::field::smin
 use std::gpu::{ClipPosition, Flat, InstanceIndex, Over, VertexIndex, discard}
@@ -93,42 +94,6 @@ pub fn sprite_vertex(v: VertexIndex, i: InstanceIndex, sprites: [Sprite], st: St
     }
 }
 
-// ---- shapes ----------------------------------------------------------------------------------
-
-fn blend(a: vec3, b: vec3, t: f32) -> vec3 {
-    a + (b - a) * t
-}
-
-/// An ellipse's distance, approximately (exact on its axes).
-pub fn ellipse(p: vec2, r: vec2) -> f32 {
-    let k0 = length(p / r)
-    let k1 = length(p / (r * r))
-    k0 * (k0 - 1.0) / max(k1, 1.0e-5)
-}
-
-/// A segment's distance from `a` to `b`, `ra` thick at `a` and `rb` at `b`.
-pub fn cone(p: vec2, a: vec2, b: vec2, ra: f32, rb: f32) -> f32 {
-    let pa = p - a
-    let ba = b - a
-    let h = saturate(dot(pa, ba) / dot(ba, ba))
-    length(pa - ba * h) - (ra + (rb - ra) * h)
-}
-
-fn capsule(p: vec2, a: vec2, b: vec2, r: f32) -> f32 {
-    cone(p, a, b, ra: r, rb: r)
-}
-
-/// A rounded box's distance: half-size `b`, corners rounded by `r`.
-fn rbox(p: vec2, b: vec2, r: f32) -> f32 {
-    let q = abs(p) - b + vec2(r)
-    length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r
-}
-
-fn turn(p: vec2, a: f32) -> vec2 {
-    let (c, s) = (cos(a), sin(a))
-    vec2(p.x * c + p.y * s, -p.x * s + p.y * c)
-}
-
 // ---- shading ---------------------------------------------------------------------------------
 
 /// The light's side, for the shading: from the side and above, a little towards the eye.
@@ -170,12 +135,13 @@ fn over(back: vec4, front: vec4) -> vec4 {
     vec4((front.xyz * front.w + back.xyz * back.w * (1.0 - front.w)) / a, a)
 }
 
-/// A shape's layer, from its distance function, shaded and laid over `back`.
+/// A shape's layer, from its distance function, shaded and laid over `back`. Its gradient is
+/// taken only where it covers the pixel.
 fn layer(back: vec4, f: fn(vec2) -> f32, q: vec2, paint: Paint, px: f32) -> vec4 {
-    let (d, g) = value_and_gradient(f, q)
-    if d > px {
+    if f(q) > px {
         return back
     }
+    let (d, g) = value_and_gradient(f, q)
     over(back, shade(d, g, q, paint, px))
 }
 
@@ -260,8 +226,8 @@ fn capybara(q: vec2, s: Sprite, screen_px: f32) -> vec4 {
     c = layer(c, |x: vec2| leg(x, -0.22, nb), p, near, px)
     c = layer(c, |x: vec2| leg(x, 0.2, nf), p, near, px)
     // The body and head in one line: a paler belly, a slightly darker muzzle.
-    let (d, g, _) = value_gradient_with(|x: vec2| (capybara_body(x), 0.0), p)
-    if d < px {
+    if capybara_body(p) < px {
+        let (d, g, _) = value_gradient_with(|x: vec2| (capybara_body(x), 0.0), p)
         var albedo = blend(fur, vec3(0.93, 0.78, 0.6) * darker, smoothstep(-0.08, -0.2, p.y) * 0.7)
         albedo = blend(albedo, vec3(0.72, 0.5, 0.35) * darker, smoothstep(0.58, 0.68, p.x) * 0.55)
         c = over(c, shade(d, g, p, Paint { albedo, gloss, thick: 0.07, glow: 0.0 }, px))
@@ -503,8 +469,8 @@ fn seagull(q: vec2, s: Sprite, screen_px: f32) -> vec4 {
     let a = if flying > 0.5 { 2.4 - beat * 1.0 } else { 3.0 }
     let tip = shoulder + vec2(cos(a), sin(a)) * (0.38 + 0.1 * flying)
     let wing = |l: vec2| cone(l, shoulder, tip, ra: 0.11, rb: 0.035)
-    let (wd, wg, _) = value_gradient_with(|l: vec2| (wing(l), 0.0), p)
-    if wd < px {
+    if wing(p) < px {
+        let (wd, wg, _) = value_gradient_with(|l: vec2| (wing(l), 0.0), p)
         let near_tip = dot(p - shoulder, normalize(tip - shoulder)) > length(tip - shoulder) * 0.72
         let colour = if near_tip { vec3(0.15, 0.15, 0.18) } else { grey }
         c = over(c, shade(wd, wg, p, flat(colour), px))
@@ -593,8 +559,8 @@ fn caiman(q: vec2, s: Sprite, screen_px: f32) -> vec4 {
         // The scutes along its back.
         d - 0.025 * max(sin(l.x * 24.0), 0.0) * smoothstep(0.02, 0.12, l.y)
     }
-    let (d, g, _) = value_gradient_with(|l: vec2| (body(l), 0.0), p)
-    if d < px {
+    if body(p) < px {
+        let (d, g, _) = value_gradient_with(|l: vec2| (body(l), 0.0), p)
         let belly = smoothstep(-0.04, -0.12, p.y)
         let band = smoothstep(0.2, 0.5, sin(p.x * 8.0)) * 0.2
         let albedo = blend(olive * (1.0 - band), vec3(0.9, 0.86, 0.64), belly * 0.85)

@@ -115,6 +115,8 @@ pub struct Voice {
     cues: RingReader<Cue>,
     music: Piano,
     tones: [Tone; TONES],
+    /// Each tone's gains, left and right: equal power across the view, from its pan.
+    gains: [vec2; TONES],
     next: u32,
     noise: u32,
     /// The slide's hiss: its level now and wanted, and its filter.
@@ -142,6 +144,7 @@ fn voice(cues: take RingReader<Cue>, music: take Piano) -> Voice {
         cues,
         music,
         tones: [SILENT; TONES],
+        gains: [vec2(0.0); TONES],
         next: 0,
         noise: 0x9e3779b9,
         slide: 0.0,
@@ -170,6 +173,8 @@ fn rand(v: mut Voice) -> f32 {
 @audio
 fn tone(v: mut Voice, t: Tone) {
     v.tones[v.next] = t
+    let a = (clamp(t.pan, -1.0, 1.0) + 1.0) * 0.25 * PI
+    v.gains[v.next] = vec2(cos(a), sin(a))
     v.next = (v.next + 1) % TONES
 }
 
@@ -521,10 +526,8 @@ fn render(v: mut Voice, left: mut [f32], right: mut [f32]) {
         for k in 0..TONES {
             let s = sample(mut v, k, dt)
             if s != 0.0 {
-                // Equal power across the view.
-                let a = (clamp(v.tones[k].pan, -1.0, 1.0) + 1.0) * 0.25 * PI
-                l += s * cos(a)
-                r += s * sin(a)
+                l += s * v.gains[k].x
+                r += s * v.gains[k].y
             }
         }
         // The slide's hiss, its level eased towards what's wanted.
@@ -558,6 +561,7 @@ use engine::perform::{PedalPoint, Performance}
 use engine::piano_grand::GRAND
 use engine::piano::piano
 use std::io::print
+use std::math::is_finite
 
 /// A voice with no music, sent `cues`, played for `seconds`: the energy of its mean, its loudest
 /// sample, and the energy of its sample-to-sample differences (its highs). Every sample is
@@ -590,9 +594,7 @@ fn heard(cues: [Cue], seconds: f32) -> vec3 {
         }
         render(mut v, mut l, mut r)
         for i in 0..QUANTUM {
-            // Neither infinite nor not a number: its exponent isn't all ones.
-            assert((bitcast_u32(l[i]) >> 23) & 255 != 255, "a finite sample")
-            assert((bitcast_u32(r[i]) >> 23) & 255 != 255, "a finite sample")
+            assert(is_finite(l[i]) && is_finite(r[i]), "a finite sample")
             let x = 0.5 * (l[i] + r[i])
             energy += x * x
             highs += (x - last) * (x - last)
