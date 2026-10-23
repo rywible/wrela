@@ -29,6 +29,7 @@ use paint::{Develop, Exposure, Look, Metering, dab_map, develop, glow_blur, glow
 use plant::Wind
 use probes::{Baked, Occluder, ProbeGrid, Trace}
 use shadow::{Cascade, Kept, Shadows, shadows}
+use sheet::{Scale, pace}
 use sky::{Clouds, Sky, Weather, new_sky, sky_shade}
 use temporal::{Resolve, held, neighbourhoods, resolve, resolve_gathered}
 use terrain::{Clipmap, Texel, ground, ground_shade}
@@ -433,6 +434,10 @@ impl Resolver for Shared {
 pub struct Quality: Copy {
     /// The scene's size over the output's (temporal AA brings it up). `Gathered` needs 1.
     pub scale: f32 = 1.0,
+    /// Whether the scale is paced by the frames as well (`sheet::pace`: smaller while frames come
+    /// late, back up once they don't): the valve when the frame's work doesn't fit the display's
+    /// interval. Needs `Shared`.
+    pub pace: bool = false,
     pub shadows: ShadowQuality = ShadowQuality {},
     pub probes: ProbeQuality = ProbeQuality {},
     pub arrival: Arrival = Arrival {},
@@ -584,6 +589,8 @@ pub struct Frame<R: Resolver> {
     pub linear: Sampler,
     pub repeat: Sampler,
     pub cooks: Cooks,
+    /// The paced scale (`Quality::pace`).
+    pub pacer: Scale,
     pub ready: Readiness,
     /// Frames drawn since the last resize, and frames run (a held screen runs frames it doesn't
     /// draw).
@@ -632,9 +639,9 @@ pub enum Change: Copy + Eq + Fieldless {
 }
 
 impl<R: Resolver> Frame<R> {
-    /// A frame of `quality`, lit by `light` through `air`, its ground in `clipmap`, its first camera
-    /// `first` (its own last), its probes' first grid `grid` round `at` (render space; baked once
-    /// what stands round them is in).
+    /// A frame of `quality`, lit by `light` through `air`, its ground in `clipmap`, its first
+    /// camera `first` (its own last), its probes' first grid `grid` round `at` (render space;
+    /// baked once what stands round them is in).
     pub fn new(
         quality: Quality,
         light: Light,
@@ -720,6 +727,7 @@ impl<R: Resolver> Frame<R> {
                 near_changed: false,
                 far_changed: false,
             },
+            pacer: Scale {},
             ready: Readiness {
                 playable: false,
                 arriving: quality.arrival.on,
@@ -857,7 +865,15 @@ impl<R: Resolver> Frame<R> {
         width: u32,
         height: u32,
     ) -> Camera {
-        let scale = if self.debug.plain { 1.0 } else { self.quality.scale }
+        let dt = match self.last_time {
+            Some(t) => clamp(time - t, 0.0, 0.1),
+            None => 0.0,
+        }
+        if self.quality.pace {
+            pace(mut self.pacer, dt)
+        }
+        let paced = if self.quality.pace { self.pacer.value } else { 1.0 }
+        let scale = if self.debug.plain { 1.0 } else { self.quality.scale * paced }
         let (w, h) = (max(u32(f32(width) * scale), 1), max(u32(f32(height) * scale), 1))
         if width != self.width || height != self.height || f32(w) != self.cam.screen.x {
             self.targets = targets_for(width, height, w, h, scene.has_effects())
@@ -868,10 +884,7 @@ impl<R: Resolver> Frame<R> {
             self.frames = 0
             self.settled = 0
         }
-        self.cooks.dt = match self.last_time {
-            Some(t) => clamp(time - t, 0.0, 0.1),
-            None => 0.0,
-        }
+        self.cooks.dt = dt
         self.last_time = Some(time)
         self.time = time
         self.cam = camera(

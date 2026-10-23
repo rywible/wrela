@@ -12,7 +12,7 @@
 // hills 10 km away don't fight. Passes clear depth to 0 and keep the greater.
 
 use std::gpu::{Compare, Depth}
-use std::transform::{identity, translate}
+use std::transform::{identity, look_at, ortho, translate}
 
 /// The draw state of a pass that keeps the nearest fragment, in reversed depth.
 pub const NEAREST = Depth { compare: Compare::Greater, write: true }
@@ -253,6 +253,16 @@ impl Camera {
         let ndc = c.xy / c.w
         vec2((ndc.x * 0.5 + 0.5) * self.screen.x, (0.5 - ndc.y * 0.5) * self.screen.y)
     }
+}
+
+// ---- a flat camera ------------------------------------------------------------------------
+
+/// A flat scene's camera (a 2D game's): the plane z = 0 seen straight on, `centre` at the view's
+/// middle, `half` its half size (m), with no perspective, so its edges are true.
+pub fn flat_camera(centre: vec2, half: vec2) -> mat4 {
+    let at = vec3(centre, 0.0)
+    ortho(-half.x, half.x, -half.y, half.y, near: 1.0, far: 100.0) *
+        look_at(at + vec3(0.0, 0.0, 50.0), at)
 }
 
 // ---- tags ----------------------------------------------------------------------------------
