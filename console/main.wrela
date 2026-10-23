@@ -9,7 +9,7 @@ use paint::{
     quad, stage,
 }
 use room::{Camera, MARGIN, artifact_spot, bounds, camera, place, row, row_place}
-use tesseract::{Artifact, artifact, corners}
+use tesseract::{Artifact, EDGES, FACES, PANE_WORDS, STRUT_WORDS, artifact, corners, shapes}
 use brand::facet
 use brand::facet::MarkRun
 use brand::manrope::MANROPE
@@ -27,10 +27,6 @@ use ui::text::{Face, Fonts, previous}
 
 @fuel(2 ** 34)
 const MARK_RUNS: Vec<MarkRun> = facet::mark_runs()
-@fuel(2 ** 30)
-const TESSERACT_EDGES: Vec<vec4> = tesseract::edges()
-@fuel(2 ** 30)
-const TESSERACT_FACES: Vec<vec4> = tesseract::faces()
 // Colours and shapes after shadcn/ui's dark theme: near-white ink, muted grey text, quiet
 // filled controls behind hairline borders, small radii, no glow.
 const INK = vec4(0.98, 0.98, 0.98, 1.0)
@@ -52,6 +48,20 @@ const HEADER_CAP: f32 = 15.0
 // The room and its artifact are traced at the screen's size divided by a whole number, to
 // about this many pixels: at least one sample a CSS pixel on a 2x display.
 const TRACED_PIXELS: f32 = 1600000.0
+// While only the tesseract's slow turn and the camera's breath move, the screen is drawn this
+// many times a second; when nothing moves, not at all. Anything else that changes draws at once.
+const IDLE_HZ: f32 = 30.0
+// The most times a second the tesseract is traced again: the opening's, close to the eye, and
+// the room's, far off and dim.
+const OPENING_TRACE_HZ: f32 = 60.0
+const ROOM_TRACE_HZ: f32 = 30.0
+// Frames come a little early or late: a draw due at a rate is taken this many seconds early.
+const SLACK: f32 = 0.004
+// A device whose frames come slower than this, on average over `STRAIN_FRAMES` frames, traces
+// the tesseract a step coarser (`trace_plan`), up to `COARSEST` steps.
+const SLOW_FRAME: f32 = 1.0 / 24.0
+const STRAIN_FRAMES: u32 = 90
+const COARSEST: u32 = 3
 // A dropped request or connection is tried again after this pause, without a word.
 const RETRY_SECONDS: f32 = 3.0
 // Glyphs in the display face; the body face carries sentences.
@@ -141,10 +151,14 @@ pub struct Console {
     linear: Sampler,
     blank: Texture<Rgba8>,
     room: Texture<Rgba16Float>,
-    // The tesseract: its corners as the room sees it, and its struts and faces.
-    room_corners: GpuBuffer<vec4>,
-    edges: GpuBuffer<vec4>,
-    faces: GpuBuffer<vec4>,
+    // The tesseract's struts and panes as the tracer reads them (`tesseract::shapes`), and what
+    // the room holds: its turn and look when it was traced, and when (host seconds).
+    struts: GpuBuffer<vec4>,
+    panes: GpuBuffer<vec4>,
+    traced: Option<(f32, Artifact)>,
+    traced_at: f32,
+    // The room shows an older tracing than the tesseract has turned to: one is due.
+    behind: bool,
     mark: GpuBuffer<MarkRun>,
     covers: Vec<Cover>,
     placed: Vec<Placed>,
@@ -215,10 +229,10 @@ pub struct Console {
     reloaded: Option<bool>,
     decided: bool,
     waited: f32,
-    // The games' files, fetched ahead of time once the library has settled
-    // (`prefetch_games`): how many games are done, counting from which, and what is pending.
-    prefetched: u32,
-    prefetch_from: Option<u32>,
+    // The games' files, fetched ahead of time once the console has what it shows
+    // (`prefetch_games`): which games are done, the one under way, and what is pending.
+    prefetched: Vec<bool>,
+    prefetch_game: u32,
     prefetch_list: Option<Pending<u8>>,
     prefetching: Option<Pending<u8>>,
     // The room's light: the colour of the selected game's art, and how far it takes it.
@@ -229,6 +243,18 @@ pub struct Console {
     zoom: f32,
     time: Option<f32>,
     presentation: f32,
+    // When the screen was last drawn (host seconds) and at what size; whether something has
+    // changed since, and whether all that eases had settled when it was drawn (`due`).
+    drawn_at: Option<f32>,
+    drawn_presentation: f32,
+    drawn_size: (u32, u32),
+    dirty: bool,
+    settled: bool,
+    // How many steps coarser the tesseract is traced, and the frames counted toward the next
+    // step and the seconds between them (`strained`).
+    coarser: u32,
+    counted: u32,
+    spent: f32,
 }
 
 // Asks the host to show the console's icons in the page's tab, bookmarks and home screen. A
@@ -256,9 +282,11 @@ pub fn init() -> Console {
         linear: sampler(),
         blank: texture(width: 1, height: 1),
         room: texture(width: 1, height: 1),
-        room_corners: buffer(16),
-        edges: buffer_of(TESSERACT_EDGES),
-        faces: buffer_of(TESSERACT_FACES),
+        struts: buffer(EDGES * STRUT_WORDS),
+        panes: buffer(FACES * PANE_WORDS),
+        traced: None,
+        traced_at: 0.0,
+        behind: false,
         mark: buffer_of(MARK_RUNS),
         covers: Vec::new(),
         placed: Vec::new(),
@@ -323,8 +351,8 @@ pub fn init() -> Console {
         reloaded: None,
         decided: false,
         waited: 0.0,
-        prefetched: 0,
-        prefetch_from: None,
+        prefetched: Vec::new(),
+        prefetch_game: 0,
         prefetch_list: None,
         prefetching: None,
         tint: vec4(1.0, 1.0, 1.0, 0.0),
@@ -333,6 +361,14 @@ pub fn init() -> Console {
         zoom: 1.0,
         time: None,
         presentation: 0.0,
+        drawn_at: None,
+        drawn_presentation: 0.0,
+        drawn_size: (0, 0),
+        dirty: true,
+        settled: false,
+        coarser: 0,
+        counted: 0,
+        spent: 0.0,
     }
 }
 
@@ -422,6 +458,9 @@ fn open_selected(s: mut Console) {
     s.profile.game = s.cards[s.selected].id.clone()
     let bytes = save(s.profile)
     s.profile_write = Some(store("console/profile", bytes))
+    // Opening takes the network from what is fetched ahead (the host stops it): the game under
+    // way isn't done, and is fetched again, mostly from the browser's cache.
+    s.prefetching = None
     s.pending = Some(host::open(s.cards[s.selected].session))
     s.step = Step::Open
     s.need_open = false
@@ -605,6 +644,7 @@ fn update(s: mut Console) {
         }
     }
     if let Some(result) = poll(mut s.environment) {
+        s.dirty = true
         s.reloaded = Some(false)
         if let Ok(bytes) = result {
             let env = host::read_environment(bytes)
@@ -614,6 +654,7 @@ fn update(s: mut Console) {
         }
     }
     if let Some(result) = poll(mut s.profile_load) {
+        s.dirty = true
         s.profile_ready = true
         if let Ok(bytes) = result {
             let profile: Result<Profile, LoadError> = load(bytes.clone())
@@ -625,10 +666,12 @@ fn update(s: mut Console) {
         }
     }
     if let Some(result) = poll(mut s.catalog_load) {
+        s.dirty = true
         match result {
             Ok(bytes) => match catalog_result(bytes) {
                 Ok(cards) => {
                     s.cards = cards.clone()
+                    s.prefetched = Vec::filled(cards.len(), value: false)
                     for _ in 0..cards.len() {
                         s.covers.push(
                             Cover {
@@ -674,6 +717,7 @@ fn update(s: mut Console) {
             }
         }
         if let Some(result) = poll(mut s.covers[i].decode) {
+            s.dirty = true
             if let Ok(bytes) = result {
                 let card = s.cards[i].clone()
                 // The host decodes only art of the size the catalog says.
@@ -688,10 +732,12 @@ fn update(s: mut Console) {
     }
     if let Some(result) = poll(mut s.profile_write) {
         if result.is_err() {
+            s.dirty = true
             s.message = String::from("Your profile could not be saved on this device.")
         }
     }
     if let Some(result) = poll(mut s.pending) {
+        s.dirty = true
         match result {
             Ok(bytes) => answer(mut s, bytes.clone()),
             Err(_) => if s.stale {
@@ -701,6 +747,7 @@ fn update(s: mut Console) {
         }
     }
     if poll(mut s.closing).is_some() {
+        s.dirty = true
         // A game that was starting or playing has closed; a session closed only to change the
         // selection keeps a play already asked of the new one.
         if s.step != Step::Idle { s.play_intent = None }
@@ -709,6 +756,7 @@ fn update(s: mut Console) {
         s.need_open = s.retry_at == 0.0
     }
     if retry_due(s.retry_at, s.presentation, s.closing.is_some()) {
+        s.dirty = true
         s.retry_at = 0.0
         s.need_open = true
     }
@@ -1159,6 +1207,7 @@ fn library(s: mut Console, w: f32, h: f32, cam: Camera, rest: Camera, margin: f3
         s.title_shown = s.selected
         s.title_in = 1.0
     }
+    if s.title_in < 1.0 { s.settled = false }
     let fade = smoothstep(0.0, 1.0, s.title_in)
     let lift = (1.0 - fade) * 8.0
     let card = s.cards[s.title_shown].clone()
@@ -1362,6 +1411,14 @@ fn focus_ring(s: mut Console) {
         },
         None => s.ring_alpha = mix(s.ring_alpha, 0.0, k),
     }
+    let moving = match target {
+        Some(r) => {
+            let off = abs(vec4(s.ring.x - r.x, s.ring.y - r.y, s.ring.w - r.w, s.ring.h - r.h))
+            s.ring_alpha < 0.99 || off.x + off.y + off.z + off.w > 0.1
+        },
+        None => s.ring_alpha >= 0.01,
+    }
+    if moving { s.settled = false }
     if s.ring_alpha < 0.01 { return }
     let r = s.ring.shrink(-3.0)
     ring(mut s, r, vec4(1.0, 1.0, 1.0, 0.9 * s.ring_alpha), RADIUS + 3.0, 2.0)
@@ -1373,13 +1430,18 @@ fn header(s: mut Console, w: f32, margin: f32) {
 
 pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
     let dt = presentation_step(s.time, time)
+    if let Some(before) = s.time {
+        let (coarser, counted, spent) = strained(s.coarser, s.counted, s.spent, time - before)
+        s.coarser = coarser
+        s.counted = counted
+        s.spent = spent
+    }
     s.time = Some(time)
     update(mut s)
     if !s.decided {
         s.waited += dt
         if s.reloaded.is_some() || s.waited > 0.5 { decide_opening(mut s) }
     } else { s.presentation += dt }
-    s.dt = dt
     s.zoom = s.pixel_ratio * clamp(f32(height) / s.pixel_ratio / 720.0, 0.7, 1.0)
     let w = f32(width) / s.zoom
     let h = f32(height) / s.zoom
@@ -1390,6 +1452,7 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
     s.clicked = None
     s.activate = None
     for event in events() {
+        s.dirty = true
         match event {
             Event::PointerMove { at, .. } => {
                 s.pointer = Some(at / s.zoom)
@@ -1477,18 +1540,19 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
     s.glow = if s.reduced { 1.0 } else { min(s.glow + dt / 0.25, 1.0) }
     let intro = motion && s.presentation < s.intro_until
     let phase = moment(s.presentation, intro)
-    // Nothing is fetched ahead of time until the opening is over and the library has come up,
-    // so it never slows the console's own start.
-    if phase.settled && phase.library >= 1.0 { prefetch_games(mut s) }
+    prefetch_games(mut s)
     s.reveal = phase.library
     let ease = |rate: f32| -> f32 { if motion { 1.0 - exp(-dt * rate) } else { 1.0 } }
     // Each game eases to its place in the row: slow enough to see the chosen block tumble
     // forward and the one it leaves tumble back. Until the library shows, they stand there.
     let count = s.cards.len()
     if s.slots.len() != count { s.slots = Vec::filled(count, 0.0) }
+    // Whether all that eases before drawing has come to rest.
+    var eased = s.glow >= 1.0 || s.glowing.is_none()
     for i in 0..count {
         let target = f32(row_place(i, s.selected, count))
         s.slots[i] = if phase.library == 0.0 { target } else { mix(s.slots[i], target, ease(5.0)) }
+        if abs(s.slots[i] - target) > 0.0005 { eased = false }
     }
     // Focus on the album row follows the selection, wherever the selection came from.
     match s.focus {
@@ -1497,7 +1561,9 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
         },
         _ => {},
     }
-    s.sheet = mix(s.sheet, if s.pane == Pane::Games { 0.0 } else { 1.0 }, ease(14.0))
+    let sheet = if s.pane == Pane::Games { 0.0 } else { 1.0 }
+    s.sheet = mix(s.sheet, sheet, ease(14.0))
+    if abs(s.sheet - sheet) > 0.001 { eased = false }
     // The camera leans a little toward the pointer, and breathes when nothing moves it. It
     // holds still through the opening's title, and takes up its lean in the dark after it.
     let toward = match s.pointer {
@@ -1511,6 +1577,29 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
     } else {
         mix(s.sway, lean, ease(2.0))
     }
+    // The room's light takes the colour of the selected game's art as the library comes up,
+    // and eases to the next as the selection changes. The opening stays white.
+    let wanted = if !s.cards.is_empty() && s.covers[s.selected].image.is_some() {
+        vec4(s.covers[s.selected].tint, phase.library)
+    } else { vec4(s.tint.xyz, 0.0) }
+    s.tint = if s.tint.w == 0.0 { vec4(wanted.xyz, 0.0) } else { s.tint }
+    s.tint = mix(s.tint, wanted, ease(2.5))
+    // Drawn only when it shows something new (`due`): what eases is drawn as it eases, and
+    // the slow turn and the camera's breath at the idle rate. The canvas keeps the last frame.
+    let busy = s.dirty || !s.settled || !eased || intro || (width, height) != s.drawn_size
+    let editing = s.pane == Pane::Settings && s.focus == Action::Name
+    let since = match s.drawn_at {
+        Some(at) => Some(time - at),
+        None => None,
+    }
+    if !due(since, busy, moving: motion || editing || s.behind) { return }
+    s.dirty = false
+    s.settled = true
+    s.drawn_at = Some(time)
+    s.drawn_size = (width, height)
+    // What eases as it is drawn eases by the time since the last drawing.
+    s.dt = min(s.presentation - s.drawn_presentation, 1.0 / 30.0)
+    s.drawn_presentation = s.presentation
     let screen = vec2(f32(width), f32(height))
     let cam = camera(screen, s.sway)
     // The layout is fitted to the camera at rest, so the sway moves the cards against the
@@ -1552,47 +1641,52 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
     s.renderer.upload(s.draw)
     // The artifact, where the opening or the room has it, traced for the room's camera.
     let place = artifact_place(phase, artifact_spot(rest))
-    let size = traced_size(width, height, TRACED_PIXELS)
+    let (coarser, rays) = trace_plan(s.coarser)
+    let size = traced_size(width, height, TRACED_PIXELS, coarser)
     if s.room.width() != size.0 || s.room.height() != size.1 {
         s.room = texture(width: size.0, height: size.1)
+        s.traced = None
     }
     let target = vec2(f32(size.0), f32(size.1))
     let turn = if motion { turn_at(s.presentation, opening: intro) } else { 2.0 }
-    let verts = corners(turn, place.xyz, place.w)
-    // The room's light takes the colour of the selected game's art as the library comes up,
-    // and eases to the next as the selection changes. The opening stays white.
-    let wanted = if !s.cards.is_empty() && s.covers[s.selected].image.is_some() {
-        vec4(s.covers[s.selected].tint, phase.library)
-    } else { vec4(s.tint.xyz, 0.0) }
-    s.tint = if s.tint.w == 0.0 { vec4(wanted.xyz, 0.0) } else { s.tint }
-    s.tint = mix(s.tint, wanted, ease(2.5))
-    write(mut s.room_corners, 0, verts)
-    let space = begin_pass(mut s.room, clear: vec4(0.0, 0.0, 0.0, 1.0))
-    draw(
-        space,
-        quad.bind(target, rect: vec4(0.0, 0.0, target)),
-        artifact.bind(
-            verts: s.room_corners,
-            edges: s.edges,
-            faces: s.faces,
-            look: Artifact {
-                screen: target,
-                lens: cam.screen.z,
-                eye: cam.eye,
-                target: cam.target,
-                place,
-                // The tesseract at rest in the opening is still: no light or ripple moves on it.
-                time: if motion { clock_at(s.presentation, opening: intro) } else {
-                    s.presentation
-                },
-                // Dimmer in the library, as far off as it stands, so the games come first.
-                light: if phase.settled { 0.72 } else { 1.0 },
-                tint: s.tint,
-            },
-        ),
-        vertices: 6,
-    )
-    space.end()
+    let look = Artifact {
+        screen: target,
+        lens: cam.screen.z,
+        eye: cam.eye,
+        target: cam.target,
+        place,
+        // The tesseract at rest in the opening is still: no light or ripple moves on it. Without
+        // motion, nothing moves on it at all.
+        time: if motion { clock_at(s.presentation, opening: intro) } else { 7.0 },
+        // Dimmer in the library, as far off as it stands, so the games come first.
+        light: if phase.settled { 0.72 } else { 1.0 },
+        // A tint that takes the light nowhere: its colour changes nothing.
+        tint: if s.tint.w > 0.0 { s.tint } else { vec4(0.0) },
+        rays,
+    }
+    // Traced again only when it would look different, and at most at its rate: the room keeps
+    // the last tracing meanwhile.
+    let changed = match s.traced {
+        Some((t, l)) => t != turn || !same_look(l, look),
+        None => true,
+    }
+    let hz = if phase.settled { ROOM_TRACE_HZ } else { OPENING_TRACE_HZ }
+    s.behind = changed && s.traced.is_some() && time - s.traced_at < 1.0 / hz - SLACK
+    if changed && !s.behind {
+        let shapes = shapes(corners(turn, place.xyz, place.w), place.w)
+        write(mut s.struts, 0, shapes.struts)
+        write(mut s.panes, 0, shapes.panes)
+        let space = begin_pass(mut s.room, clear: vec4(0.0, 0.0, 0.0, 1.0))
+        draw(
+            space,
+            quad.bind(target, rect: vec4(0.0, 0.0, target)),
+            artifact.bind(struts: s.struts, panes: s.panes, look: look),
+            vertices: 6,
+        )
+        space.end()
+        s.traced = Some((turn, look))
+        s.traced_at = time
+    }
     let pass = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
     draw(
         pass,
@@ -1712,30 +1806,39 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
     if s.clicked.is_some() { s.pressed = None }
 }
 
-// Fetches the games' files ahead of time, while the library waits: one game at a time, the
-// selection first, then the rest in order, and never while a game is starting (the host
-// stops it when a game opens). Each game's list is beside the catalog
+// Fetches the games' files ahead of time, at the browser's low priority, once the console
+// has the covers it shows, so it never slows them: one game at a time, each once, the
+// selection first, and whichever is chosen next before the rest. While the library is
+// browsed, not while a game starts. Each game's list is beside the catalog
 // (studio/release/site.wrela's `prefetch_list`).
 fn prefetch_games(s: mut Console) {
-    if let Some(_) = poll(mut s.prefetching) { s.prefetched += 1 }
+    if let Some(_) = poll(mut s.prefetching) { s.prefetched[s.prefetch_game] = true }
     if let Some(result) = poll(mut s.prefetch_list) {
         match result {
             Ok(bytes) => s.prefetching = Some(host::prefetch(bytes)),
-            Err(_) => s.prefetched += 1,
+            Err(_) => s.prefetched[s.prefetch_game] = true,
         }
     }
-    let n = s.cards.len()
-    if s.step != Step::Idle || s.prefetched >= n { return }
-    if s.prefetch_list.is_some() || s.prefetching.is_some() { return }
-    if s.prefetch_from.is_none() { s.prefetch_from = Some(s.selected) }
-    let from = s.prefetch_from.unwrap_or(0)
-    let id = s.cards[prefetch_order(from, s.prefetched, n)].id.clone()
-    s.prefetch_list = Some(fetch(f"prefetch-{id}.txt"))
+    if !browsing(s.step) || s.prefetch_list.is_some() || s.prefetching.is_some() { return }
+    for i in 0..s.covers.len() {
+        borrow c = s.covers[i]
+        if near_cover(i, s.selected) && (!c.requested || c.load.is_some() || c.decode.is_some()) {
+            return
+        }
+    }
+    let Some(next) = next_prefetch(s.prefetched, s.selected) else { return }
+    s.prefetch_game = next
+    s.prefetch_list = Some(fetch(f"prefetch-{s.cards[next].id}.txt"))
 }
 
-// The `done`-th game to fetch ahead of time of `n`, starting from the selection, `from`.
-fn prefetch_order(from: u32, done: u32, n: u32) -> u32 {
-    (from + done) % n
+// The next game to fetch ahead of time: the selection, or the first after it not yet done.
+fn next_prefetch(done: [bool], selected: u32) -> Option<u32> {
+    let n = done.len()
+    for k in 0..n {
+        let i = (selected + k) % n
+        if !done[i] { return Some(i) }
+    }
+    None
 }
 
 // Whether this page load plays the opening: every visit does, and a reload of the tab starts
@@ -1756,10 +1859,53 @@ fn without_fragment(address: Vec<u8>) -> Option<String> {
 }
 
 // A traced layer's size: the screen divided by a whole number, so its thin bright lines are
-// not resampled into dashes, and about `budget` pixels.
-fn traced_size(width: u32, height: u32, budget: f32) -> (u32, u32) {
-    let divisor = max(u32(round(sqrt(f32(width) * f32(height) / budget))), 1)
+// not resampled into dashes, and about `budget` pixels; `coarser` divides it by that much more.
+fn traced_size(width: u32, height: u32, budget: f32, coarser: u32) -> (u32, u32) {
+    let divisor = max(u32(round(sqrt(f32(width) * f32(height) / budget))), 1) + coarser
     (max(width / divisor, 4), max(height / divisor, 4))
+}
+
+// How the tesseract is traced `steps` steps below its full detail: how much coarser than the
+// screen allows (`traced_size`), and the most rays a pixel. The first step gives up the four
+// rays, which cost the room's far tesseract most; the rest coarsen it.
+fn trace_plan(steps: u32) -> (u32, u32) {
+    if steps == 0 { (0, 4) } else { (steps - 1, 1) }
+}
+
+// The steps below full detail, and the frames counted and the seconds they took, after a
+// frame `interval` seconds after the last. A browser holds frames back while the GPU is behind,
+// unevenly, so a device whose frames come slower than `SLOW_FRAME` on average over
+// `STRAIN_FRAMES` takes a step down; it never steps back up, so it doesn't waver. A stall (a
+// hidden tab, a pipeline being built) says nothing of the device.
+fn strained(steps: u32, counted: u32, spent: f32, interval: f32) -> (u32, u32, f32) {
+    if interval <= 0.0 || interval > 0.25 || steps >= COARSEST { return (steps, counted, spent) }
+    let counted = counted + 1
+    let spent = spent + interval
+    if counted < STRAIN_FRAMES { return (steps, counted, spent) }
+    if spent > SLOW_FRAME * f32(counted) { (steps + 1, 0, 0.0) } else { (steps, 0, 0.0) }
+}
+
+// Whether a frame is drawn, `since` seconds after the last one (None: never drawn): at once
+// when something has changed or still eases (`busy`), and when only the slow turn and the
+// camera's breath move, at `IDLE_HZ`. A still screen isn't drawn again.
+fn due(since: Option<f32>, busy: bool, moving: bool) -> bool {
+    match since {
+        Some(t) => busy || (moving && t >= 1.0 / IDLE_HZ - SLACK),
+        None => true,
+    }
+}
+
+// Whether two tracings of the tesseract at one turn look the same.
+fn same_look(a: Artifact, b: Artifact) -> bool {
+    a.screen == b.screen &&
+        a.lens == b.lens &&
+        a.eye == b.eye &&
+        a.target == b.target &&
+        a.place == b.place &&
+        a.time == b.time &&
+        a.light == b.light &&
+        a.tint == b.tint &&
+        a.rays == b.rays
 }
 
 // The placed cards' order from farthest to nearest.
@@ -1801,10 +1947,14 @@ fn a_title_offers_new_alone_until_it_has_saves() {
 
 @test
 fn traced_layers_divide_the_screen_by_a_whole_number() {
-    assert(traced_size(width: 1280, height: 720, budget: TRACED_PIXELS) == (1280, 720))
-    assert(traced_size(width: 2560, height: 1440, budget: TRACED_PIXELS) == (1280, 720))
-    assert(traced_size(width: 2880, height: 1800, budget: TRACED_PIXELS) == (1440, 900))
-    assert(traced_size(width: 390, height: 844, budget: TRACED_PIXELS) == (390, 844))
+    let size = |w: u32, h: u32, coarser: u32| -> (u32, u32) {
+        traced_size(w, h, TRACED_PIXELS, coarser)
+    }
+    assert(size(1280, 720, 0) == (1280, 720))
+    assert(size(2560, 1440, 0) == (1280, 720))
+    assert(size(2880, 1800, 0) == (1440, 900))
+    assert(size(390, 844, 0) == (390, 844))
+    assert(size(2560, 1440, 1) == (853, 480), "a step coarser divides by one more")
 }
 
 @test
@@ -1942,9 +2092,55 @@ fn a_new_title_waits_for_the_old_one_to_ease_out() {
 
 @test
 fn games_are_fetched_ahead_from_the_selection_round_to_the_rest() {
+    var done = [false; 4]
     var order: Vec<u32> = Vec::new()
-    for done in 0..4 { order.push(prefetch_order(2, done, 4)) }
-    assert(order[0] == 2 && order[1] == 3 && order[2] == 0 && order[3] == 1)
+    while let Some(next) = next_prefetch(done, 2) {
+        order.push(next)
+        done[next] = true
+    }
+    assert(order.len() == 4 && order[0] == 2 && order[1] == 3 && order[2] == 0 && order[3] == 1)
+    // A game chosen meanwhile is fetched next, and one done isn't fetched again.
+    let some = [true, false, false, true]
+    assert(next_prefetch(some, 3) == Some(1) && next_prefetch(some, 2) == Some(2))
+    assert(next_prefetch([true, true], 0).is_none())
+}
+
+@test
+fn the_screen_is_drawn_when_it_changes_and_at_the_idle_rate_while_the_tesseract_turns() {
+    assert(due(None, busy: false, moving: false), "the first frame")
+    assert(due(Some(0.008), busy: true, moving: false), "a change, at once")
+    assert(!due(Some(0.017), busy: false, moving: true), "not faster than the idle rate")
+    assert(due(Some(0.0333), busy: false, moving: true), "two frames of 60 Hz")
+    assert(due(Some(0.0333), busy: false, moving: true), "four of 120 Hz")
+    assert(!due(Some(60.0), busy: false, moving: false), "a still screen, never again")
+}
+
+@test
+fn a_device_that_cant_keep_up_traces_coarser_and_never_wavers() {
+    // Steady 60 Hz frames, and 30 Hz ones (a browser saving power): no change.
+    var state = (0, 0, 0.0)
+    for i in 0..1000 {
+        let interval = if i < 500 { 1.0 / 60.0 } else { 1.0 / 30.0 }
+        state = strained(state.0, state.1, state.2, interval)
+    }
+    assert(state.0 == 0)
+    // Slow frames, held back unevenly, step it down once a window, to the coarsest.
+    for i in 0..STRAIN_FRAMES {
+        let interval = if i % 3 == 0 { 0.12 } else { 0.017 }
+        state = strained(state.0, state.1, state.2, interval)
+    }
+    assert(state.0 == 1)
+    for _ in 0..STRAIN_FRAMES * 10 { state = strained(state.0, state.1, state.2, 0.07) }
+    assert(state.0 == COARSEST)
+    // A few slow frames are not enough, and stalls count for nothing.
+    var mixed = (0, 0, 0.0)
+    for i in 0..900 {
+        let interval = if i % 10 == 0 { 0.07 } else if i % 7 == 0 { 3.0 } else { 1.0 / 60.0 }
+        mixed = strained(mixed.0, mixed.1, mixed.2, interval)
+    }
+    assert(mixed.0 == 0)
+    // The first step gives up the four rays a pixel; the next ones coarsen the tracing.
+    assert(trace_plan(0) == (0, 4) && trace_plan(1) == (0, 1) && trace_plan(3) == (2, 1))
 }
 
 // `t`'s UTF-8 bytes, as a host gives an address.
