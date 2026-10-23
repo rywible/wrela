@@ -3,11 +3,14 @@
 // run every time.
 
 use capybara::body::Mode
-use capybara::pad::{JUMP, PRESS, Pad, RIGHT, pad_of}
+use capybara::pad::{Hold, JUMP, PRESS, Pad, RIGHT, pad_of}
 use capybara::proofs::LAB_RUN
-use capybara::world::{LAB, LEVEL, World, step, world}
-use main::{SECONDS, parse_args}
-use search::{ACTIONS, Goal, Settings, firsts, holds, played, run_through}
+use capybara::course::course
+use capybara::routes::{HUMAN_ANY, HUMAN_FULL}
+use capybara::world::{LAB, LEVEL, World, play, step, world}
+use main::{Ask, SECONDS, parse_args}
+use search::{ACTIONS, Goal, Settings, firsts, holds, played, run_through, to_goal}
+use slack::{FIRM, finishes, forgiving, human, pads_of, slack}
 use std::hash::state_hash
 use std::io::print
 
@@ -125,8 +128,76 @@ fn pads_are_held_in_the_longest_stretches_that_give_them_back() {
 }
 
 @test
-fn the_command_line_takes_the_seconds() {
-    assert(parse_args([]) == Some(SECONDS))
-    assert(parse_args([String::from("--seconds"), String::from("60")]) == Some(60))
-    assert(parse_args([String::from("60")]).is_none())
+fn the_command_line_takes_the_seconds_and_the_human_mode() {
+    let s = |x: Text| String::from(x)
+    assert(parse_args([]) == Some(Ask { seconds: SECONDS, human: false }))
+    assert(parse_args([s("--seconds"), s("60")]) == Some(Ask { seconds: 60, human: false }))
+    assert(
+        parse_args([s("--human"), s("--seconds"), s("9")]) == Some(Ask { seconds: 9, human: true }),
+    )
+    assert(parse_args([s("60")]).is_none() && parse_args([s("--human"), s("--human")]).is_none())
+}
+
+@test
+fn a_human_holds_buttons_three_ticks_and_presses_jump_only_as_it_goes_down() {
+    let (r, j, p) = (RIGHT, RIGHT | JUMP, RIGHT | JUMP | PRESS)
+    assert(human([r, r, r, p, j, j, r, r]), "a held jump, a short last stretch")
+    assert(!human([r, r, r, RIGHT | PRESS, r, r, r]), "a tap: pressed and let go in a tick")
+    assert(!human([r, r, r, p, j, j, p, j, j]), "a press while it's held")
+    assert(!human([r, r, r, j, j, j]), "jump going down unpressed")
+    assert(!human([r, r, r, p, j, r, r, r]), "a stretch of two ticks")
+}
+
+@test
+fn a_human_search_keeps_to_the_limits() {
+    let human_run = run_through(world(LAB), STRETCH, Settings { beam: 50, human: true })
+    let Some(h) = human_run.found else { panic("no human run found") }
+    let Some(t) = run_through(world(LAB), STRETCH, Settings { beam: 50 }).found else {
+        panic("no run found")
+    }
+    print(
+        f"the lab's first 35 m with a human's limits: {h.end.ticks} ticks, tool-assisted {t.end.ticks}",
+    )
+    assert(human(h.pads) && played(world(LAB), h.pads) == h.end && h.end.body.at.x >= 35.0)
+    assert(!human(t.pads), "the tool-assisted run taps")
+}
+
+/// Running on from the lab's start for `ticks` ticks, then letting go: braking to a stop on its
+/// runway.
+fn run_and_stop(ticks: u32) -> Vec<u32> {
+    var pads: Vec<u32> = Vec::new()
+    for i in 0..ticks + 60 {
+        pads.push(if i < ticks { RIGHT } else { 0 })
+    }
+    pads
+}
+
+@test
+fn a_change_is_firm_only_if_two_ticks_either_way_still_reach_the_end() {
+    let pads = run_and_stop(90)
+    let stop = played(world(LAB), pads).body.at.x
+    assert(human(pads) && stop < 15.0, "stopped on the runway")
+    // An end a metre short of the stop: letting go 2 ticks early or late still reaches it.
+    let firm = slack(LAB, pads, Goal { until: stop - 1.0, snacks: 0 })
+    assert(firm.changes == 1 && firm.firm == 1 && forgiving(firm))
+    // An end just short of the stop: letting go a tick early stops short of it.
+    let fragile = slack(LAB, pads, Goal { until: stop - 0.01, snacks: 0 })
+    assert(fragile.changes == 1 && fragile.firm == 0 && fragile.fragile[0] == 90)
+    assert(!forgiving(fragile))
+}
+
+/// Whether the human run `run`, which finds `snacks`, finishes, keeps to the limits and is
+/// forgiving.
+fn humanly(run: [Hold], snacks: u32) -> bool {
+    let pads = pads_of(LEVEL, run)
+    let s = slack(LEVEL, pads, to_goal(snacks))
+    print(f"a human route: {pads.len()} ticks, {s.firm} of {s.changes} changes firm")
+    finishes(play(LEVEL, run), snacks) && human(pads) && forgiving(s)
+}
+
+@test
+fn the_human_routes_keep_to_the_limits_and_are_forgiving() {
+    let every = (1 << course(LEVEL).snacks.len()) - 1
+    assert(humanly(HUMAN_ANY, 0), f"any%: at least {FIRM}% of its changes firm")
+    assert(humanly(HUMAN_FULL, every), f"100%: at least {FIRM}% of its changes firm")
 }
