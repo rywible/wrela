@@ -3,13 +3,35 @@
 
 use struck::Struck
 
+/// Take 1: 15 notes.
+pub const TAKE_1: [Struck; 15] = [
+    Struck { key: 74, at: 865.2133, held: 0.7067, velocity: 0.700 },
+    Struck { key: 72, at: 865.8000, held: 1.4933, velocity: 0.700 },
+    Struck { key: 67, at: 866.5466, held: 1.5867, velocity: 0.700 },
+    Struck { key: 76, at: 868.0466, held: 2.0867, velocity: 0.700 },
+    Struck { key: 74, at: 870.7599, held: 0.5734, velocity: 0.700 },
+    Struck { key: 72, at: 871.2534, held: 1.1200, velocity: 0.700 },
+    Struck { key: 67, at: 872.0467, held: 3.0867, velocity: 0.700 },
+    Struck { key: 71, at: 875.0933, held: 1.5734, velocity: 0.700 },
+    Struck { key: 74, at: 877.6667, held: 0.6666, velocity: 0.700 },
+    Struck { key: 72, at: 878.2533, held: 1.0800, velocity: 0.700 },
+    Struck { key: 67, at: 878.9600, held: 3.6266, velocity: 0.700 },
+    Struck { key: 77, at: 881.7600, held: 1.0400, velocity: 0.700 },
+    Struck { key: 77, at: 883.7600, held: 0.8267, velocity: 0.700 },
+    Struck { key: 76, at: 884.5067, held: 1.4933, velocity: 0.700 },
+    Struck { key: 74, at: 885.8400, held: 3.2934, velocity: 0.700 },
+]
+
 // ---- the takes: the keys tool adds each above this line ----
 
 /// How many takes there are.
-pub const COUNT: u32 = 0
+pub const COUNT: u32 = 1
 
 /// Take `n`'s notes (from 1), or none past `COUNT`.
 pub fn notes_of(n: u32) -> Vec<Struck> {
+    if n == 1 {
+        return Vec::from(TAKE_1)
+    }
     let _ = n
     Vec::new()
 }
