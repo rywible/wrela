@@ -18,9 +18,9 @@
 //
 // Names are `Text` in the map's tables, which only CPU code reads (the GPU reads a site's place).
 
-use noise::{fbm2, hash2, noise2}
-use sim::SimState
-use stone::Bed
+use engine::noise::{fbm2, hash2, noise2}
+use engine::sim::SimState
+use engine::stone::Bed
 use std::hash::StateHash
 use std::serialize::Serialize
 
@@ -93,8 +93,6 @@ impl Place {
         )
     }
 }
-
-impl SimState for vec2i {}
 
 /// The tile that holds world point `p`.
 pub fn tile_of(p: vec2) -> vec2i {
@@ -503,8 +501,8 @@ pub fn crag_shape(p: vec2, c: vec4, i: u32) -> (f32, f32, f32) {
     (talus, body, face)
 }
 
-/// A bed of a crag's rock as a solid (`stone::Bed`), and where its frame's origin is in the world:
-/// the crag's middle, at its floor.
+/// A bed of a crag's rock as a solid (`engine::stone::Bed`), and where its frame's origin is in the
+/// world: the crag's middle, at its floor.
 pub struct CragBed: Copy {
     pub at: vec3,
     pub bed: Bed,

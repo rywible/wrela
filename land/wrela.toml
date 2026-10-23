@@ -1,0 +1,9 @@
+# A landscape round a player, built on the engine: the map (`place`), its
+# landforms and soil, its growth over a history and the events in it, the wildwood, the bake, the
+# interest check, footing, the player, water laid from the map and the flow, construction, the
+# senses that read them, and which tiles to stream round the player.
+[package]
+name = "land"
+
+[dependencies]
+engine = { workspace = true }

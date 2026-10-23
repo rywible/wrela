@@ -6,10 +6,10 @@
 // the fawn, the wolf), and the play harness's map over the frame.
 
 use climber::draw::{CastWolf, Drawn, cast_wolf}
-use engine::bake::{Far, decode_far, decode_tile, tile_name}
+use land::bake::{Far, decode_far, decode_tile, tile_name}
 use engine::character::{Cast, PartOf, cast}
 use engine::cook::Work
-use engine::floor::{near_tile_radius, tile_distance, tile_radius}
+use land::stream::{near_tile_radius, tile_distance, tile_radius}
 use tower::door::Doorway
 use world::GATE
 use engine::frame::{Cooks, Effects, Scene, Targets, fullscreen}
@@ -17,7 +17,7 @@ use engine::grass::{Blooms, Contact, Grass, GrassLook}
 use engine::light::{Light, SUN_TOP, sunlight}
 use engine::lit::Lighting
 use engine::paint::{Exposure, Look}
-use engine::place::TILE
+use land::place::TILE
 use engine::plant::{Plant, Wind}
 use engine::probes::{Occluder, ProbeGrid, Trace, grid}
 use engine::shadow::Shadows
@@ -883,8 +883,8 @@ pub struct TileInput {
     source: u32,
     bytes: Vec<u8>,
     wild: bool,
-    own: Vec<engine::grow::Tree>,
-    others: Vec<engine::grow::Tree>,
+    own: Vec<land::grow::Tree>,
+    others: Vec<land::grow::Tree>,
     fields_only: bool,
     far_only: bool,
 }
@@ -893,7 +893,7 @@ pub struct TileInput {
 /// layer, fine and coarse (a baked tile's is the bake's `far.bin`).
 pub struct Cooked {
     tile: vec2i,
-    trees: Vec<engine::grow::Tree>,
+    trees: Vec<land::grow::Tree>,
     placed: Vec<Placed>,
     fields: Vec<u8>,
     far: Vec<Placed>,
@@ -902,7 +902,7 @@ pub struct Cooked {
 
 /// A tile cooked on a helper (#54 §6: "round the player, as jobs on the helpers"): decoded (or a
 /// wild tile grown: `wildwood::decisions`, or the grown land's `growth::wild_decisions`, or the
-/// specimens'), its trees placed, its ground's fields worked out (`engine::bake::tile_fields`).
+/// specimens'), its trees placed, its ground's fields worked out (`land::bake::tile_fields`).
 @deterministic
 pub fn cook_tile(input: take TileInput) -> Cooked {
     let t = input.tile
@@ -915,7 +915,7 @@ pub fn cook_tile(input: take TileInput) -> Cooked {
         wildwood::decisions(t, take input.own)
     }
     let (far, far_coarse) = if input.wild && !input.fields_only {
-        let f = engine::bake::far_of(d.trees, t, t)
+        let f = land::bake::far_of(d.trees, t, t)
         (far_on(src, f, t, step: 1), far_on(src, f, t, step: 2))
     } else {
         (Vec::new(), Vec::new())
@@ -933,7 +933,7 @@ pub fn cook_tile(input: take TileInput) -> Cooked {
     // (The floor's routes from its map as the build made it, not the map made again a tile.)
     let grown = if src == FLOOR { Vec::new() } else { growth::growth_map().routes }
     borrow routes = if src == FLOOR { world::MAP.routes } else { grown }
-    let fields = engine::bake::tile_fields(d, input.others, species::HABITS, routes, map::PRESENT)
+    let fields = land::bake::tile_fields(d, input.others, species::HABITS, routes, map::PRESENT)
     if input.fields_only {
         return Cooked { tile: t, trees: Vec::new(), placed: Vec::new(), fields, far, far_coarse }
     }
@@ -1034,13 +1034,13 @@ pub fn older_field_jobs_cannot_replace_newer_neighbour_shading() {
 
 /// The trees of the cooked tiles round tile `t` whose crowns may reach over its edge, and which
 /// of its neighbours they're from.
-pub fn others_round(grounds: [NearTile], t: vec2i) -> (Vec<engine::grow::Tree>, u32) {
-    var others: Vec<engine::grow::Tree> = Vec::new()
+pub fn others_round(grounds: [NearTile], t: vec2i) -> (Vec<land::grow::Tree>, u32) {
+    var others: Vec<land::grow::Tree> = Vec::new()
     var with: u32 = 0
     for g in grounds {
-        let bit = engine::bake::neighbour_bit(t, g.tile)
+        let bit = land::bake::neighbour_bit(t, g.tile)
         if bit != 0 {
-            engine::bake::reaching(t, g.trees, mut others)
+            land::bake::reaching(t, g.trees, mut others)
             with |= bit
         }
     }
@@ -1053,9 +1053,9 @@ pub fn field_refresh(
     grounds: [NearTile],
     i: u32,
     arrived: vec2i,
-) -> Option<(Vec<engine::grow::Tree>, u32)> {
+) -> Option<(Vec<land::grow::Tree>, u32)> {
     let tile = grounds[i].tile
-    if tile != arrived && engine::bake::neighbour_bit(tile, arrived) == 0 {
+    if tile != arrived && land::bake::neighbour_bit(tile, arrived) == 0 {
         return None
     }
     let (others, with) = others_round(grounds, tile)
@@ -1094,7 +1094,7 @@ pub fn a_delayed_tile_refreshes_neighbours_that_finished_during_its_job() {
         let (_, with) = field_refresh(grounds, i, delayed).unwrap()
         let other = if i == 0 { delayed } else { neighbour }
         assert(
-            with == engine::bake::neighbour_bit(grounds[i].tile, other),
+            with == land::bake::neighbour_bit(grounds[i].tile, other),
             "arrival did not request the complete neighbour set",
         )
         grounds[i].with = with
@@ -1235,7 +1235,7 @@ pub fn land_at(source: u32, p: vec2) -> f32 {
 }
 
 /// `trees` placed on `source`'s land (`trees::placed`).
-pub fn placed_on(source: u32, trees: [engine::grow::Tree]) -> Vec<engine::vegetation::Placed> {
+pub fn placed_on(source: u32, trees: [land::grow::Tree]) -> Vec<engine::vegetation::Placed> {
     if source == GROWN_LAND { trees::placed(trees, grown_at) } else if source == SPECIMEN_LAND {
         trees::placed(trees, level_at)
     } else {
@@ -1353,7 +1353,7 @@ pub fn streamed(s: Stage, eye: vec2) -> bool {
     if !s.to_build.is_empty() || s.banks.prototypes.len() < blockouts::BANK_PROTOTYPES {
         return false
     }
-    let at = engine::place::tile_of(eye)
+    let at = land::place::tile_of(eye)
     for j in (at.y - 1)..(at.y + 2) {
         for i in (at.x - 1)..(at.x + 2) {
             let t = vec2i(i, j)
@@ -1503,7 +1503,7 @@ pub fn far_requests_cover_the_fade_band_within_the_slot_budget() {
     for z in 0..17 {
         for x in 0..17 {
             let eye = vec2(f32(x), f32(z)) * (TILE / 16.0)
-            let at = engine::place::tile_of(eye)
+            let at = land::place::tile_of(eye)
             var requested = 0
             var band = 0
             for j in (at.y - r)..(at.y + r + 1) {
@@ -1633,7 +1633,7 @@ pub fn stream(s: mut Stage, c: mut Cooks, clipmap: mut Clipmap, eye: vec2) {
         }
     }
     // The nearest wanted tile not yet known: a baked one fetched, a wild one grown.
-    let at = engine::place::tile_of(eye)
+    let at = land::place::tile_of(eye)
     let in_flight = if c.capture { CAPTURE_IN_FLIGHT } else { IN_FLIGHT }
     if s.fetching.len() + near_cooking(s) < in_flight {
         // A tile farther away on either axis cannot be within WANT of the eye. Keep the
@@ -1933,7 +1933,7 @@ pub fn loaded_probe_occluders(
     origin: vec2,
 ) -> Option<Vec<engine::probes::Occluder>> {
     let world = eye + origin
-    let at = engine::place::tile_of(world)
+    let at = land::place::tile_of(world)
     let r = tile_radius(PROBE_TREES)
     for j in (at.y - r)..(at.y + r + 1) {
         for i in (at.x - r)..(at.x + r + 1) {
@@ -1974,7 +1974,7 @@ pub fn first_probe_bake_waits_for_loaded_tree_occluders() {
         loaded_probe_occluders(own, plants, eye, origin).is_none(),
         "missing trees were baked as empty",
     )
-    let at = engine::place::tile_of(world)
+    let at = land::place::tile_of(world)
     let r = tile_radius(PROBE_TREES)
     for j in (at.y - r)..(at.y + r + 1) {
         for i in (at.x - r)..(at.x + r + 1) {

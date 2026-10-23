@@ -2,10 +2,10 @@
 // the ring and the Warden's arena, the waystones, the rests' seats and the small stones of the
 // echoes' sites as stones (x, z, radius); the tower as a stone of its own breadth; the ruins'
 // walls (each two points: a wall's line). From the map's sites, so each is where the map puts it:
-// the renderer draws the same ones (`engine::footing`'s obstacles, the check's walking).
+// the renderer draws the same ones (`land::footing`'s obstacles, the check's walking).
 
 use engine::noise::rand
-use engine::place::{Feature, Map, Site, SiteKind}
+use land::place::{Feature, Map, Site, SiteKind}
 use std::math::TAU
 
 /// The tower's radius over its battered foot (m), and how far the batter stands out past it.

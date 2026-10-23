@@ -27,7 +27,7 @@ use grow::{
     crown_shade,
 }
 use std::io::Shipped
-use noise::noise2
+use engine::noise::noise2
 use place::{Route, RouteKind, TILE, tile_of}
 use std::math::TAU
 
@@ -181,7 +181,7 @@ pub fn get_tree(b: [u8], at: u32, t: vec2i) -> Tree {
         fork: if state == State::Log { 0.0 } else { unq8s(b[at + 13], FORK_STEP) },
         // Its own draws' seed, from where it stands (a stored seed is random bytes, which don't
         // compress: 12% of the bake).
-        seed: noise::hash2u(
+        seed: engine::noise::hash2u(
             i32(get_u16(b, at)) ^ (t.x << 16),
             i32(get_u16(b, at + 2)) ^ (t.y << 16),
             1103,
@@ -890,14 +890,13 @@ fn in_stream(water: [vec4], p: vec2) -> bool {
 /// The wet field's value on a stream's bed (`tile_fields`): any wetter than 0.98 is one.
 pub const STREAM_BED: f32 = 0.99
 
-/// The fields a tile's ground is covered by (`terrain::Terrain::cover_with`), each 2 m: the light
-/// at the ground (the history's: its crowns' shade, `grow::canopy`'s rule), how trodden it is,
-/// its wetness and its thorn, worked out again where the tile streams in from its decisions: its
-/// own trees and those of its neighbours whose crowns reach over its edge (`others`). Trodden is
-/// the routes' paths (`routes`), as walked as the history's wear round them says, and the
-/// broader ground the herd wears (up to 0.45); wet is a stream's bed over `STREAM_BED`. Four
-/// bytes a texel (light, trodden, wet, thorn),
-/// `WEAR_N` a side, rows from the tile's corner.
+/// The fields a tile's ground is covered by (`engine::terrain::Terrain::cover_with`), each 2 m: the
+/// light at the ground (the history's: its crowns' shade, `grow::canopy`'s rule), how trodden it
+/// is, its wetness and its thorn, worked out again where the tile streams in from its decisions:
+/// its own trees and those of its neighbours whose crowns reach over its edge (`others`). Trodden
+/// is the routes' paths (`routes`), as walked as the history's wear round them says, and the
+/// broader ground the herd wears (up to 0.45); wet is a stream's bed over `STREAM_BED`. Four bytes
+/// a texel (light, trodden, wet, thorn), `WEAR_N` a side, rows from the tile's corner.
 pub fn tile_fields(
     d: Decisions,
     others: [Tree],

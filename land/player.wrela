@@ -20,9 +20,9 @@
 //     G, digits, Enter      travel to a site by its number (the floor's sim moves the player)
 
 use footing::{BODY, Obstacles, stands}
-use grow::Ground
+use engine::terrain::Ground
 use place::{Place, Water}
-use sim::SimState
+use engine::sim::SimState
 use std::hash::StateHash
 use std::input::{Button, Event, Key}
 use std::math::{PI, TAU}
@@ -32,24 +32,23 @@ use std::serialize::Serialize
 pub const WALK: f32 = 1.4
 pub const RUN: f32 = 5.0
 
-/// A body's travel policy, supplied by the game. `clearance` is the tallest low log it can
-/// rise over; zero keeps a grounded walker. Turning is bounded in radians per second.
-/// `response` is how its velocity closes on what's asked: 0 takes it up and down at a steady
-/// `ACCELERATION`; above 0, it closes that share of the gap a second, eased (it answers a start,
-/// a stop or a reversal at once and settles softly, the gap halving every 0.69 / `response` s).
+/// A body's travel policy, supplied by the game. `clearance` is the tallest low log it can rise
+/// over; zero keeps a grounded walker. Turning is bounded in radians per second. `response` is how
+/// its velocity closes on what's asked: 0 takes it up and down at a steady `acceleration` (m/s²);
+/// above 0, it closes that share of the gap a second, eased (it answers a start, a stop or a
+/// reversal at once and settles softly, the gap halving every 0.69 / `response` s).
 pub struct Motion: Copy {
     pub walk: f32 = WALK,
     pub run: f32 = RUN,
     pub clearance: f32 = 0.0,
     pub turn: f32 = 6.0,
     pub response: f32 = 0.0,
+    pub acceleration: f32 = 10.0,
 }
 
 /// How much faster each glide goes: 2, 4, 8 and 16 times a run, over what's on the ground. Each
 /// press of H selects the next glide; the play harness and the streaming tests use them.
 pub const GLIDES = [1.0, 2.0, 4.0, 8.0, 16.0]
-/// How quickly the player gets up to its pace, and stops (m/s²).
-pub const ACCELERATION: f32 = 10.0
 /// A tap's turn of the look (radians: 20°), and a step of its pitch.
 pub const TURN_STEP: f32 = 0.34906585
 pub const PITCH_STEP: f32 = 0.12
@@ -260,7 +259,7 @@ pub fn turn_to(from: f32, to: f32, most: f32) -> f32 {
 
 /// An angle in (-π, π].
 fn wrap(a: f32) -> f32 {
-    let x = present::short_way(a, TAU)
+    let x = engine::present::short_way(a, TAU)
     if x <= -PI { x + TAU } else { x }
 }
 
@@ -332,7 +331,7 @@ pub fn step_with<G: Ground>(
             p.velocity = target
         }
     } else {
-        let most = ACCELERATION * dt
+        let most = motion.acceleration * dt
         p.velocity += if length(dv) > most { dv * (most / length(dv)) } else { dv }
     }
     let d = p.velocity * dt

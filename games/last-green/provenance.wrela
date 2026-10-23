@@ -7,18 +7,18 @@
 // tiles' records, which the program keeps as they stream (`NearTile`): no GPU readback, so the
 // answer is the click's frame.
 
-use engine::bake::WEAR_N
-use engine::grow::{Cause, Mark, NONE, Shaper, State, Tree, shaper}
-use engine::interest::Drawn
-use engine::place::TILE
+use land::bake::WEAR_N
+use land::grow::{Cause, Mark, NONE, Shaper, State, Tree, shaper}
+use land::interest::Drawn
+use land::place::TILE
 use engine::terrain::raycast
 use engine::view::Camera
 use std::string::String
 
 /// A tile cooked and kept while it's near: its bytes as they came and its trees (the history's
 /// records: for its neighbours' fields, and provenance), its ground's fields as last worked out
-/// (`engine::bake::tile_fields`: light, trodden, wet, thorn, a byte each, `WEAR_N` a side), and
-/// which of its neighbours' trees they were worked out with (`engine::bake::neighbour_bit`).
+/// (`land::bake::tile_fields`: light, trodden, wet, thorn, a byte each, `WEAR_N` a side), and
+/// which of its neighbours' trees they were worked out with (`land::bake::neighbour_bit`).
 pub struct NearTile {
     pub tile: vec2i,
     pub bytes: Vec<u8>,
@@ -277,7 +277,7 @@ fn cause_name(c: Cause) -> Text {
 
 /// The part of the map that shaped a tree (`grow::shaped`), as JSON: what it is and its name;
 /// null for none.
-fn shaped_json(m: engine::place::Map, code: u32) -> String {
+fn shaped_json(m: land::place::Map, code: u32) -> String {
     match shaper(code) {
         Some((by, i)) => {
             let (what, name) = match by {
@@ -321,7 +321,7 @@ pub fn tree_json(t: Tree, drawn_kind: u32, distance: f32, ms: f64) -> String {
 /// The history's fields at world point `p` from the near tile that holds it (light, trodden, wet,
 /// thorn, each 0 to 1), or -1 in each where none does.
 pub fn fields_at(tiles: [NearTile], p: vec2) -> vec4 {
-    let t = engine::place::tile_of(p)
+    let t = land::place::tile_of(p)
     for nt in tiles {
         if nt.tile == t && nt.fields.len() == 4 * WEAR_N * WEAR_N {
             let cell = TILE / f32(WEAR_N)
@@ -347,7 +347,7 @@ pub fn cover_name(point: vec3, normal: vec3, f: vec4) -> String {
     borrow g = ground::GROUND
     let c = engine::terrain::Terrain::cover_with(g, point, normal, f)
     let rock = g.rocky(point.xz, normal)
-    var name = if f.z > engine::bake::STREAM_BED {
+    var name = if f.z > land::bake::STREAM_BED {
         String::from("a stream's bed: gravel and wet stones")
     } else if rock > 0.5 {
         String::from("rock")
@@ -367,7 +367,7 @@ pub fn cover_name(point: vec3, normal: vec3, f: vec4) -> String {
     if f.w > 0.3 {
         name.push_str(", under thorn")
     }
-    if f.z > 0.6 && f.z <= engine::bake::STREAM_BED {
+    if f.z > 0.6 && f.z <= land::bake::STREAM_BED {
         name.push_str(", wet")
     }
     name
@@ -389,25 +389,25 @@ pub fn ground_json(tiles: [NearTile], point: vec3, normal: vec3, distance: f32, 
     f"{{\"provenance\": \"ground\", \"at\": [{p.x}, {p.y}], \"y\": {point.y}, \"distance\": {distance}, \"region\": \"{region}\", \"cover\": \"{cover}\", \"fields\": {fields}, \"soil\": {soil}, \"remembers\": {remembers}, \"ms\": {ms}}}"
 }
 
-/// The soil at `p` (`engine::soil::soil`, with the ground's wetness `wet` there), as JSON: its
+/// The soil at `p` (`land::soil::soil`, with the ground's wetness `wet` there), as JSON: its
 /// kind, its depth (m) and how well crops would do in it.
 fn soil_json(p: vec2, wet: f32) -> String {
-    let s = engine::soil::soil_of(ground::GROUND, p, wet)
+    let s = land::soil::soil_of(ground::GROUND, p, wet)
     let kind = SOIL_NAMES[u32(s.kind)]
     f"{{\"kind\": \"{kind}\", \"depth\": {s.depth}, \"fertile\": {s.fertile}}}"
 }
 
-/// `engine::soil::SoilKind`'s names, by kind.
+/// `land::soil::SoilKind`'s names, by kind.
 const SOIL_NAMES = ["rock", "thin", "loam", "colluvium", "alluvium", "gley", "peat"]
 
-/// What the ground remembers at `p` (`engine::bake::memory_in_tile`, from the near tile that
+/// What the ground remembers at `p` (`land::bake::memory_in_tile`, from the near tile that
 /// holds it), as JSON: the last fire or gale there, its year and how hard; null for nothing, or
 /// where no near tile holds it.
 fn memory_json(tiles: [NearTile], p: vec2) -> String {
-    let t = engine::place::tile_of(p)
+    let t = land::place::tile_of(p)
     for nt in tiles {
         if nt.tile == t && !nt.bytes.is_empty() {
-            let m = engine::bake::memory_in_tile(nt.bytes, p)
+            let m = land::bake::memory_in_tile(nt.bytes, p)
             let what = match m.mark {
                 Mark::Fire => "fire",
                 Mark::Wind => "wind",

@@ -14,7 +14,8 @@
 // fast a player goes at a point, and `walkable_of` gives a grid of the places a player can
 // stand.
 
-use grow::{Grid, Ground, Habit, Heap, LOG_LENGTH, State, Stream, Tree}
+use grow::{Grid, Habit, Heap, LOG_LENGTH, State, Stream, Tree}
+use engine::terrain::Ground
 use place::{Map, Water}
 use std::math::TAU
 

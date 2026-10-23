@@ -25,7 +25,8 @@
 // (`BAKE`), 4 m cells and 10-year steps for the preview an editor shows after each edit
 // (`PREVIEW`).
 
-use noise::{noise2, rand}
+use engine::terrain::Ground
+use engine::noise::{noise2, rand}
 use place::{Event, EventKind, Keeper, Map, Relation, RouteKind, to_segment}
 use events::events
 use soil::{Soil, soil_from}
@@ -262,20 +263,6 @@ fn blur_strip(l: mut Line, a: [f32], nx: u32, nz: u32, r: i32) {
     }
 }
 
-// ---- the ground ---------------------------------------------------------------------------------
-
-/// The floor's ground as the history reads it: its height, and where the floor ends (past its
-/// edge the land falls away, and nothing of the history grows). The same field the terrain draws.
-pub trait Ground: Copy {
-    fn height(self, x: f32, z: f32) -> f32
-
-    /// How far past the floor's edge `p` is (m; negative on the floor).
-    fn past_edge(self, p: vec2) -> f32
-
-    /// How much of `p` is bare rock (0 to 1), where no tree stands.
-    fn rock(self, p: vec2) -> f32
-}
-
 // ---- species ------------------------------------------------------------------------------------
 
 /// How a species lives: the floor's data.
@@ -380,8 +367,8 @@ pub struct Tree: Copy {
     pub shaped: u32,
     /// The lowest a branch of it comes (m): browsing keeps a line below which few grow.
     pub lift: f32,
-    /// How much higher (below 0, lower) its trunk forks than its kind's, as a share of the
-    /// height there (`plant::bend`): chosen among its neighbours once it's grown (a floor's own
+    /// How much higher (below 0, lower) its trunk forks than its kind's, as a share of the height
+    /// there (`engine::plant::bend`): chosen among its neighbours once it's grown (a floor's own
     /// choice), 0 until then.
     pub fork: f32,
     pub seed: u32,

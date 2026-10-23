@@ -2,14 +2,14 @@
 // (#44's anatomy: a gate, a town's site, four anchors, a Warden's arena, rest points, waystones,
 // echoes' sites, views), what each must do for a player, the openings and what keeps each open in
 // the present, the water, the routes, the events by year, and the regions with the character of
-// their forest. Nothing else: the history grows the forest round it (`engine::grow`), and the
-// interest check measures it (`engine::interest`). A literal here is what the map lens drags.
+// their forest. Nothing else: the history grows the forest round it (`land::grow`), and the
+// interest check measures it (`land::interest`). A literal here is what the map lens drags.
 //
 // Metres; +y up. The clearing (M5's) is at the origin; the plateau's edge cuts the square's
 // north-west corner off, past which the land falls to the valley.
 
 use species::Species
-use engine::place::{
+use land::place::{
     Character, Event, EventKind, Feature, Herd, Keeper, Kept, Kind, Land, Map, Opening, Region,
     Relation, Route, RouteKind, Site, SiteKind, Water,
 }
@@ -1502,8 +1502,8 @@ fn woodland_openings_form_moderate_groups() {
 
     // Exercise the production growth predicate on a 48 m patch crossing an opening edge.
     // This never loads the authored history or cooks a whole wildwood tile.
-    let from = vec2i(floor((boundary - vec2(16.0)) / engine::wild::WCELL))
-    let cells = engine::wild::grow_wild(
+    let from = vec2i(floor((boundary - vec2(16.0)) / land::wild::WCELL))
+    let cells = land::wild::grow_wild(
         from.x,
         from.y,
         n: 12,
@@ -1515,12 +1515,12 @@ fn woodland_openings_form_moderate_groups() {
     var trees = 0
     for j in 0..12 {
         for i in 0..12 {
-            let p = (vec2(from) + vec2(f32(i), f32(j)) + vec2(0.5)) * engine::wild::WCELL
+            let p = (vec2(from) + vec2(f32(i), f32(j)) + vec2(0.5)) * land::wild::WCELL
             let c = cells[j * 12 + i]
             if woodland_open(p) {
                 clear_cells += 1
-                assert(c.kind == engine::wild::NOTHING, "growth filled a persistent opening")
-            } else if c.kind != engine::wild::NOTHING {
+                assert(c.kind == land::wild::NOTHING, "growth filled a persistent opening")
+            } else if c.kind != land::wild::NOTHING {
                 trees += 1
             }
         }
@@ -1562,7 +1562,7 @@ fn woodland_establishment_varies_stands_and_retains_real_far_gaps() {
     // Actual growth over only 64 m: its 4 m cells must retain empty 8 m crown groups.
     // This is the same predicate supplied by wildwood, without a history or whole-tile bake.
     let from = vec2i(1024, -1024)
-    let cells = engine::wild::grow_wild(
+    let cells = land::wild::grow_wild(
         from.x,
         from.y,
         n: 16,
@@ -1574,15 +1574,15 @@ fn woodland_establishment_varies_stands_and_retains_real_far_gaps() {
     var excluded = 0
     for j in 0..8 {
         for i in 0..8 {
-            let p = vec2(from) * engine::wild::WCELL + vec2(f32(i), f32(j)) * 8.0
+            let p = vec2(from) * land::wild::WCELL + vec2(f32(i), f32(j)) * 8.0
             var crowns = 0
             for dz in 0..2 {
                 for dx in 0..2 {
                     let c = cells[(j * 2 + dz) * 16 + i * 2 + dx]
-                    if c.kind != engine::wild::NOTHING && c.tall >= 3.0 { crowns += 1 }
+                    if c.kind != land::wild::NOTHING && c.tall >= 3.0 { crowns += 1 }
                     if !woodland_established(p + vec2(2.0)) {
                         assert(
-                            c.kind == engine::wild::NOTHING,
+                            c.kind == land::wild::NOTHING,
                             "growth refilled an excluded establishment group",
                         )
                     }

@@ -5,7 +5,7 @@
 // falls about 95 m to the valley, with hills beyond and the far mountain.
 
 use engine::noise::{fbm2, fbm2_seen, noise2, noise2_seen, ridged2}
-use engine::place::Land
+use land::place::Land
 use engine::terrain::{Cover, Terrain}
 use std::field::smin
 
@@ -404,7 +404,7 @@ fn tree_line(xz: vec2, y: f32, w: f32) -> f32 {
     y + 70.0 * (fbm2_seen(xz * 0.004 + vec2(2.0, 8.0), 3, w * 0.004) - 0.5)
 }
 
-/// The light at the ground (the history's, `engine::bake::tile_fields`) under which the canopy is
+/// The light at the ground (the history's, `land::bake::tile_fields`) under which the canopy is
 /// closed: no meadow grass grows, and the floor is litter and moss.
 pub const CLOSED: f32 = 0.45
 
@@ -418,7 +418,7 @@ impl Terrain for Ground {
         // Outside a solid crag the complete ground is already the substrate.
         var solid = false
         for c in self.land.crags {
-            if engine::place::bedded(c) && length(p - c.xy) < engine::place::crag_reach(c) {
+            if land::place::bedded(c) && length(p - c.xy) < land::place::crag_reach(c) {
                 solid = true
             }
         }
@@ -466,7 +466,7 @@ impl Ground {
             let a = self.land.ravines[i]
             let b = self.land.ravines[i + 1]
             if a.w > 0.0 && b.w > 0.0 {
-                let (d, t) = engine::place::to_segment(p, a: a.xy, b: b.xy)
+                let (d, t) = land::place::to_segment(p, a: a.xy, b: b.xy)
                 if d < distance {
                     distance = d
                     nearest = mix(a.xy, b.xy, vec2(t))
@@ -576,7 +576,7 @@ impl Ground {
         }
     }
 
-    /// The cover over the history's fields (#54 §9, `engine::bake::tile_fields`): where the
+    /// The cover over the history's fields (#54 §9, `land::bake::tile_fields`): where the
     /// canopy closes, no meadow grass but the wood's floor (leaf litter, moss in patches); where
     /// the herd's trails wear it, bare earth and worn grass; darker where it's wet. As a sample
     /// `footprint` metres across sees it (`cover_at`).
@@ -600,7 +600,7 @@ impl Ground {
     }
 }
 
-/// The wood's floor over the history's fields (#54 §9, `engine::bake::tile_fields`: their light,
+/// The wood's floor over the history's fields (#54 §9, `land::bake::tile_fields`: their light,
 /// wear, wet and thorn), on a cover `c` as a sample `w` metres across sees it: where the canopy
 /// closes, no meadow grass but leaf litter, moss in patches and the wood's floor's plants; where
 /// trails wear it (`trodden`), bare earth and worn grass; darker where it's wet, and a stream's
@@ -750,7 +750,7 @@ pub fn wood_floor(
     c
 }
 
-impl engine::grow::Ground for Ground {
+impl engine::terrain::Ground for Ground {
     fn height(self, x: f32, z: f32) -> f32 {
         self.at(x, z)
     }
@@ -858,7 +858,7 @@ pub fn rock_albedo(at: vec3, n: vec3, w: f32) -> vec3 {
 /// A valley segment: endpoints hold x/z, half-width and depth. Its joined branches
 /// share endpoint widths and depths; the outside ground is exactly unchanged.
 fn drainage_segment(p: vec2, a: vec4, b: vec4) -> f32 {
-    let (distance, t) = engine::place::to_segment(p, a.xy, b.xy)
+    let (distance, t) = land::place::to_segment(p, a.xy, b.xy)
     let section = mix(a.zw, b.zw, vec2(t))
     section.y * (1.0 - smoothstep(0.0, section.x, distance))
 }
@@ -1211,9 +1211,9 @@ fn creek_bank_viewpoint_stays_connected_to_its_outer_rim() {
     let hi = vec2(-42.0, -260.0)
     let m = map::map()
     borrow g = GROUND
-    let no_trees: Vec<engine::grow::Tree> = Vec::new()
-    let no_streams: Vec<engine::grow::Stream> = Vec::new()
-    let obstacles = engine::footing::obstacles_of(
+    let no_trees: Vec<land::grow::Tree> = Vec::new()
+    let no_streams: Vec<land::grow::Stream> = Vec::new()
+    let obstacles = land::footing::obstacles_of(
         no_trees,
         species::HABITS,
         no_streams,
@@ -1231,11 +1231,11 @@ fn creek_bank_viewpoint_stays_connected_to_its_outer_rim() {
         vec2(0.0, -0.35),
     ] {
         assert(
-            engine::footing::stands(g, m.water, obstacles, viewpoint + offset) > 0.0,
+            land::footing::stands(g, m.water, obstacles, viewpoint + offset) > 0.0,
             "the creek viewpoint itself lost its standable outer bank",
         )
     }
-    let mask = engine::footing::walkable_of(g, m.water, take obstacles, lo, hi, cell: 1.0)
+    let mask = land::footing::walkable_of(g, m.water, take obstacles, lo, hi, cell: 1.0)
     let rim = vec2(-66.0, -290.0)
     let way = mask.way(from: rim, to: viewpoint)
     assert(
@@ -1243,7 +1243,7 @@ fn creek_bank_viewpoint_stays_connected_to_its_outer_rim() {
         "the creek viewpoint snapped to a shelf disconnected from its outer bank",
     )
     let nearest = mask.nearest(viewpoint)
-    assert(nearest != engine::grow::NONE, "the creek viewpoint has no standable bank")
+    assert(nearest != land::grow::NONE, "the creek viewpoint has no standable bank")
     assert(
         length(mask.grid.centre(nearest) - viewpoint) < 5.0,
         "the creek bank moved too far from its viewpoint",

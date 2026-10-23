@@ -13,10 +13,10 @@ use climber::figure::{Figure, figure}
 use climber::moves::{drift_rate, locomotion}
 use climber::sounds::{Heard, cues, heard}
 use engine::frame::{Aim, Change, Frame, Gathered, Off, Quality, ShadowQuality, shot_clock}
-use engine::floor::tile_distance
+use land::stream::tile_distance
 use tower::door::Exit
 use engine::grass::Contact
-use engine::player::{Arm, Focus, Framing, digit, follow}
+use land::player::{Arm, Focus, Framing, digit, follow}
 use engine::present::Snapshots
 use engine::run::run
 use engine::shadow::Cascade
@@ -84,7 +84,7 @@ pub struct Floor {
     captured: GpuBuffer<f32>,
     captured_exposure: GpuBuffer<engine::paint::Exposure>,
     framing: Framing,
-    /// The camera's arm as it was last frame (`engine::player::follow`).
+    /// The camera's arm as it was last frame (`land::player::follow`).
     arm: Arm,
     /// How much the camera turns to the fight's wolf (`encounter::focus`, eased), and where the
     /// wolf is (world space).
@@ -217,7 +217,7 @@ fn recentre(s: mut Floor, to: vec2i) {
         return
     }
     s.stage.origin = to
-    let o = vec2(to) * engine::place::TILE
+    let o = vec2(to) * land::place::TILE
     s.frame.recentre(mut s.stage, vec3(o.x, 0.0, o.y))
     print(f"the render origin moved to tile {to.x}, {to.y}")
 }
@@ -363,10 +363,10 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     let pb = b.b.player
     // The render origin follows the player (or a test's held camera), in whole blocks of tiles.
     let near_tile = match s.held {
-        Some(h) => engine::place::tile_of(h.0.xz),
+        Some(h) => land::place::tile_of(h.0.xz),
         None => pa.at.tile,
     }
-    let from = vec2(near_tile - s.stage.origin) * engine::place::TILE
+    let from = vec2(near_tile - s.stage.origin) * land::place::TILE
     let before = s.stage.origin
     let o_was = origin_of(s.stage)
     if max(abs(from.x), abs(from.y)) > RECENTRE {
@@ -431,7 +431,7 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     // How fast the glide speeds up along the way it faces, and turns, eased over a tenth of a
     // second so a tick's step doesn't jolt the body's lean.
     if s.dt > 1.0e-4 && !moved {
-        let ahead = engine::player::facing(facing)
+        let ahead = land::player::facing(facing)
         let change = vec2(
             dot(velocity - s.glide_velocity, ahead) / s.dt,
             engine::present::lerp_angle(0.0, facing - s.glide_heading, 1.0) / s.dt,
@@ -709,7 +709,7 @@ fn held_cast(shot: Option<u32>) -> Option<lookbook::Cast> {
 /// Prints each tile within `CARDS_TO` of the eye whose own trees aren't placed: late (once).
 fn late_tiles(s: mut Floor, eye: vec2) {
     let Some(w) = s.stage.wood else { return }
-    let at = engine::place::tile_of(eye)
+    let at = land::place::tile_of(eye)
     for j in (at.y - 1)..(at.y + 2) {
         for i in (at.x - 1)..(at.x + 2) {
             let t = vec2i(i, j)

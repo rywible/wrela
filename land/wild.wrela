@@ -11,7 +11,7 @@
 // tile (`seam_error`).
 
 use grow::{Cause, Habit, NONE as NO_PIN, State, Tree}
-use noise::{fbm2, rand, wrapped}
+use engine::noise::{fbm2, rand, wrapped}
 use place::TILE
 
 /// The wildwood's cell (m), a tile's side in cells, the margin grown round a tile (cells), and

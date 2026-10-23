@@ -4,8 +4,8 @@
 // streams in: an instance of a kind for each tree the bake kept, scaled to its height, turned so
 // its crown leans the way the history leaned it.
 
-use engine::grow::{Cause, State, Tree, rotate}
-use engine::interest::Drawn
+use land::grow::{Cause, State, Tree, rotate}
+use land::interest::Drawn
 use engine::noise::{direction, hash2u, noise2, pick, rand}
 use engine::plant::{
     Bark, Instance, Leaves, Plant, RINGS, SIDES, bend, limb_axis, limb_at_height, limb_corner,
@@ -1237,7 +1237,7 @@ const FORKS = [
 pub const FORK_APART: f32 = 0.05
 
 /// The forks a browsed tree may take as well (`choose_fork`): between the high ones, to the
-/// highest the bake keeps (`engine::bake`'s ±0.508).
+/// highest the bake keeps (`land::bake`'s ±0.508).
 const LIFTED_FORKS = [0.27, 0.33, 0.39, 0.45, 0.508]
 
 /// Whether two trees are neighbours: their crowns touch (their trunks are nearer than their
@@ -1280,7 +1280,7 @@ pub fn forked(trees: take Vec<Tree>) -> Vec<Tree> {
     var kept = take trees
     var out: Vec<Tree> = Vec::with_capacity(kept.len())
     for t in kept {
-        out.push(engine::bake::as_baked(t))
+        out.push(land::bake::as_baked(t))
     }
     let n = out.len()
     if n == 0 {
@@ -1292,7 +1292,7 @@ pub fn forked(trees: take Vec<Tree>) -> Vec<Tree> {
         lo = min(lo, t.at)
         hi = max(hi, t.at)
     }
-    let g = engine::grow::Grid::over(lo, hi + vec2(0.01), NEIGHBOURS_WITHIN)
+    let g = land::grow::Grid::over(lo, hi + vec2(0.01), NEIGHBOURS_WITHIN)
     // The trees' indices sorted by cell: cell `c`'s from `start[c]` to `start[c + 1]`.
     let cells = g.cells()
     var start: Vec<u32> = Vec::filled(cells + 1, 0)
@@ -1340,7 +1340,7 @@ pub fn forked(trees: take Vec<Tree>) -> Vec<Tree> {
 
 /// The trees' places sorted by cell, for finding a tree's neighbours.
 struct Near {
-    g: engine::grow::Grid,
+    g: land::grow::Grid,
     start: Vec<u32>,
     sorted: Vec<u32>,
 }
@@ -1728,18 +1728,18 @@ pub fn far_kinds() -> Vec<u32> {
     Vec::from([OAK_FOREST, BEECH_FOREST, BIRCH_FOREST, HAWTHORN, SLOE, PINE_FOREST, ALDER_A])
 }
 
-/// The far layer's instances in tile `t` (`engine::bake::Far`): each cell's tallest crown (of
+/// The far layer's instances in tile `t` (`land::bake::Far`): each cell's tallest crown (of
 /// each `step` by `step` cells, a coarser layer for afar). A coarse group retains its tallest
 /// fine crown's position, height and turn; its width represents only occupied members. Empty
 /// cells do not move or inflate surviving crowns. World-cell seeds agree across bake extents.
 pub fn far_placed(
-    far: engine::bake::Far,
+    far: land::bake::Far,
     t: vec2i,
     height: fn(vec2) -> f32,
     step: u32,
 ) -> Vec<Placed> {
     var out: Vec<Placed> = Vec::new()
-    let cells = u32(engine::place::TILE / engine::bake::FAR_CELL)
+    let cells = u32(land::place::TILE / land::bake::FAR_CELL)
     let at = vec2u(t - far.lo) * cells
     let kinds = far_kinds()
     var j = 0
@@ -1775,7 +1775,7 @@ pub fn far_placed(
             let cell = far.lo * i32(cells) + vec2i(i32(k % far.nx), i32(k / far.nx))
             let s = hash2u(cell.x, cell.y, 731)
             let p = (vec2(cell) + vec2(0.05 + 0.9 * rand(s, 1), 0.05 + 0.9 * rand(s, 2))) *
-                engine::bake::FAR_CELL
+                land::bake::FAR_CELL
             let kind = kinds[species]
             // Crowns in groups: larger together in some places, smaller in others, over about
             // `GROUP` m (even in size, the far crowns read as an orchard: round 1).
@@ -2081,7 +2081,7 @@ fn dead_trunks_and_branches_close_over_short_breaks() {
 
 @test
 fn far_groups_widen_without_changing_grown_height() {
-    let far = engine::bake::Far {
+    let far = land::bake::Far {
         lo: vec2i(0),
         nx: 2,
         nz: 2,
@@ -2103,7 +2103,7 @@ fn far_groups_widen_without_changing_grown_height() {
 
 @test
 fn far_groups_retain_fine_anchors_and_do_not_fill_empty_cells() {
-    var far = engine::bake::Far {
+    var far = land::bake::Far {
         lo: vec2i(-2, 3),
         nx: 4,
         nz: 4,
@@ -2119,7 +2119,7 @@ fn far_groups_retain_fine_anchors_and_do_not_fill_empty_cells() {
     let coarse = far_placed(far, far.lo, |_p: vec2| 0.0, step: 2)
     assert(fine.len() == 5 && coarse.len() == 2, "empty groups gained crowns")
     // The same world cells packaged inside a wider bake retain their seeded anchors.
-    var wider = engine::bake::Far {
+    var wider = land::bake::Far {
         lo: vec2i(-3, 3),
         nx: 36,
         nz: 4,
@@ -2261,7 +2261,7 @@ fn every_clump_of_leaves_has_its_wood_in_it() {
 fn veterans_are_drawn_as_their_own_species() {
     let habits = species::ancient()
     for (species, ancient) in [(OAK, OAK_ANCIENT), (BEECH, BEECH_ANCIENT)] {
-        var t = engine::grow::grown(
+        var t = land::grow::grown(
             vec2(0.0),
             species,
             born: 0,
@@ -2293,7 +2293,7 @@ fn living_trees_turn_their_own_ways_and_logs_lie_as_they_fell() {
     var lo = 9.0
     var hi = -9.0
     for seed in 0..64 {
-        var t = engine::grow::grown(
+        var t = land::grow::grown(
             vec2(0.0),
             OAK,
             born: 0,

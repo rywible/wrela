@@ -33,8 +33,9 @@
 
 use bake::put_u32
 use footing::{Obstacles, Thing, pace}
-use grow::{Grid, Ground, Habit, Heap, History, State, Tree, canopy}
-use noise::rand
+use grow::{Grid, Habit, Heap, History, State, Tree, canopy}
+use engine::terrain::Ground
+use engine::noise::rand
 use place::{Feature, Map, Relation, Site, SiteKind}
 use std::collections::replace
 use std::math::TAU
@@ -2319,7 +2320,7 @@ fn interest_report_escapes_all_authored_names() {
         reach: Vec::filled(g.cells(), value: true),
         openings: Vec::from([0.0]),
     }
-    let json = report(terrain::Flat {}, m, checked)
+    let json = report(engine::terrain::Flat {}, m, checked)
     for name in ["region", "site", "relation", "opening"] {
         assert(
             json.find(f"\"name\": \"{name}\\\"\\\\\\nδ\"").is_some(),

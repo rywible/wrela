@@ -16,9 +16,9 @@
 // All of it is sim: deterministic, from sim state alone. `Awareness` is the only state.
 
 use footing::{BIN, Obstacle, Obstacles, Thing}
-use grow::Ground
-use sim::{SimState, Transform}
-use terrain::Flat
+use engine::terrain::Ground
+use engine::sim::{SimState, Transform}
+use engine::terrain::Flat
 use std::hash::StateHash
 use std::serialize::Serialize
 

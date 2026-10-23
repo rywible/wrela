@@ -8,7 +8,7 @@ use grow::{
     Cause, Cx, Fields, Grid, Habit, Heap, Land, Mark, Memories, NEIGHBOURS, NEVER, NONE, Shaper,
     State, Tree, UNBROWSED, grazed_bare, mark, rotate, sapling, shaped, tear, world,
 }
-use noise::{noise2, rand}
+use engine::noise::{noise2, rand}
 use place::{Event, EventKind}
 use soil::soil
 

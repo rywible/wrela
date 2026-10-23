@@ -1,8 +1,8 @@
 // The fight at the ring's glade (route.md §9): the climber's fight (`climber::fight`) against
 // the wolf, in the floor's sim. The wolf waits at the ring's edge, turning to what it senses
-// (`engine::senses`, as the fawn does); once it's sure of the player (`WAKES_AT`) it wakes and
+// (`land::senses`, as the fawn does); once it's sure of the player (`WAKES_AT`) it wakes and
 // comes to fight, and it can't miss a player within `CLOSE`. The player stays the floor's
-// (`engine::player`): it walks as it walks everywhere, round trunks and stones. In a move (a
+// (`land::player`): it walks as it walks everywhere, round trunks and stones. In a move (a
 // swing, a blink, a fall) the fight owns the body: the player doesn't walk, and the move carries
 // it as footing lets it, so a blink stops at a stone. Far from the disc (`LEASH`), the fight is
 // over and the wolf is back in its place. Once the wolf is down (`BEATEN`), the fight is won: the
@@ -11,11 +11,11 @@
 use behaviour::presence
 use climber::fight::{Mood, Walked, World, bout, read, slink, spawn_on}
 use climber::moves::Act
-use engine::footing::{BODY, Obstacles}
-use engine::place::Water
+use land::footing::{BODY, Obstacles}
+use land::place::Water
 use engine::present::short_way
-use engine::senses::{Awareness, Occluders, Presence, Senses, sense}
-use engine::player::{Player, place_at}
+use land::senses::{Awareness, Occluders, Presence, Senses, sense}
+use land::player::{Player, place_at}
 use engine::sim::SimState
 use engine::terrain::Terrain
 use std::hash::StateHash
@@ -88,7 +88,7 @@ pub fn holds(e: Encounter) -> bool {
 /// tap of Space or East to blink) and steps round the player as it stands; then the player is
 /// moved where the fight put the climber, round what's in its way.
 @deterministic
-pub fn step_encounter<G: Terrain + engine::grow::Ground, O: Occluders>(
+pub fn step_encounter<G: Terrain + engine::terrain::Ground, O: Occluders>(
     e: mut Encounter,
     p: mut Player,
     ground: G,
@@ -170,7 +170,7 @@ fn wait<O: Occluders>(e: mut Encounter, me: Presence, sight: O, dt: f32) {
 pub const FOCUS_FULL: f32 = 7.0
 pub const FOCUS_NONE: f32 = 25.0
 
-/// What the camera turns to in the fight (`engine::player::Focus`, world space) and how much it
+/// What the camera turns to in the fight (`land::player::Focus`, world space) and how much it
 /// wants to, for a player at `feet`: the wolf's shoulders, fully within `FOCUS_FULL`, not at all
 /// past `FOCUS_NONE`, nor while the wolf is down or the fight is off. (The frame eases toward it.)
 pub fn focus(e: Encounter, feet: vec2) -> (vec3, f32) {
@@ -201,12 +201,18 @@ pub fn report(e: Encounter) -> String {
 
 /// How far a body at `from` gets on its way `d` (m), as footing lets it: in steps no longer
 /// than `SWEPT`, so a blink's metre in a tick doesn't jump a stone, up to the first that's blocked.
-fn carried<G: engine::grow::Ground>(g: G, water: Water, o: Obstacles, from: vec2, d: vec2) -> vec2 {
+fn carried<G: engine::terrain::Ground>(
+    g: G,
+    water: Water,
+    o: Obstacles,
+    from: vec2,
+    d: vec2,
+) -> vec2 {
     let n = max(u32(ceil(length(d) / SWEPT)), 1)
     let piece = d / f32(n)
     var at = from
     for _ in 0..n {
-        let (moved, _) = engine::footing::step_over(
+        let (moved, _) = land::footing::step_over(
             g,
             water,
             o,
@@ -229,8 +235,8 @@ const SWEPT: f32 = 0.15
 // ---- tests ---------------------------------------------------------------------------------------
 
 use behaviour::{DRY, Open}
-use engine::footing::{Obstacle, Thing}
-use engine::place::Place
+use land::footing::{Obstacle, Thing}
+use land::place::Place
 use engine::terrain::Flat
 use std::input::PadButton
 use std::io::print
@@ -246,7 +252,7 @@ fn stones(stone: Option<vec2>) -> Obstacles {
 
 /// A player standing at `at`, facing +z.
 fn standing(at: vec2) -> Player {
-    engine::player::spawn(Flat {}, Place::of(at), 0.0)
+    land::player::spawn(Flat {}, Place::of(at), 0.0)
 }
 
 /// A tick of the encounter, pad 0's East pressed or let go (`east`: 1 down, 0 up, else neither).

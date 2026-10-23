@@ -266,7 +266,7 @@ pub fn collapse(
             }
             let mid = 0.5 * (g.centre(c) + g.centre(to))
             let r = rock(vec3(mid.x, 0.5 * (h[c] + h[to]), mid.y))
-            let spread = 1.0 + scatter * (noise::hash2(i32(c), i32(step)) - 0.5)
+            let spread = 1.0 + scatter * (engine::noise::hash2(i32(c), i32(step)) - 0.5)
             let excess = (best - r.standing * spread) * run
             if excess > 0.0 {
                 let falls = min(0.5 * excess, r.weathering * years / f32(passes))

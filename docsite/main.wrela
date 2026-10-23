@@ -993,6 +993,11 @@ fn group_summary(index: Index, g: str) -> String {
             "Rendering and light, creatures, plants, terrain, simulation and sound.",
         )
     }
+    if g == "land" {
+        return String::from(
+            "A landscape round a player: its map, landforms, growth, water, footing and streaming.",
+        )
+    }
     if g == "ui" {
         return String::from("Quads, text drawn from signed distance fields, and widgets.")
     }
@@ -1124,17 +1129,16 @@ fn page_of(index: Index, h: Hit) -> String {
 /// How many topics the engine's modules are listed under on the front page, so a reader finds the
 /// renderer's modules, or the sim's, among the engine's many; then each topic's title and its
 /// modules. A module not named in one is listed under "More", the topic after them.
-const TOPICS: u32 = 7
+const TOPICS: u32 = 6
 
 fn topic_title(t: u32) -> String {
     String::from(match t {
         0 => "Rendering and light",
         1 => "Creatures",
         2 => "Forms and plants",
-        3 => "The world",
-        4 => "Histories",
-        5 => "Simulation",
-        6 => "Sound and music",
+        3 => "The ground and water",
+        4 => "Simulation",
+        5 => "Sound and music",
         _ => "More",
     })
 }
@@ -1142,12 +1146,11 @@ fn topic_title(t: u32) -> String {
 fn topic_modules(t: u32) -> String {
     String::from(match t {
         0 => "air cook frame light lit lod impostor paint plain probes shadow shafts sheet sky sprite temporal view",
-        1 => "character creature gait look physique realize senses",
+        1 => "character creature gait look physique realize",
         2 => "grass loft plant stone sweep vegetation",
-        3 => "construction floor footing landform place soil terrain water wild wood",
-        4 => "bake events grow history interest",
-        5 => "noise player present rng run sim spatial timeline",
-        6 => "perform piano piano_grand score sound",
+        3 => "terrain water wood",
+        4 => "history noise present rng run sim spatial timeline",
+        5 => "perform piano piano_grand score sound",
         _ => "",
     })
 }
@@ -1187,6 +1190,8 @@ fn group_title(g: str) -> (String, String) {
         "Standard library"
     } else if g == "engine" {
         "Engine"
+    } else if g == "land" {
+        "Landscapes"
     } else if g == "ui" { "Drawing and widgets" } else if g == "platform" {
         "Host services"
     } else if g == "studio_tool" {
@@ -5169,7 +5174,7 @@ fn the_front_page_lists_each_group_and_the_engine_by_topic() {
     assert(
         at("### More") < at("- [novel]") && at("- [piano]") < at("### More"),
     )
-    assert(engine_topic("piano_grand") == 6 && engine_topic("novel") == TOPICS)
+    assert(engine_topic("piano_grand") == 5 && engine_topic("novel") == TOPICS)
 }
 
 @test

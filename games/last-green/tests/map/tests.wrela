@@ -16,7 +16,7 @@ const FRAME: Text = "pub fn frame(time: f32, width: u32, height: u32) {}\n"
 /// The bounded history the simulation's package has in place of the game's: no baked wood, a short tour.
 const HISTORY: [Text; 10] = [
     "",
-    "use engine::footing::Obstacles",
+    "use land::footing::Obstacles",
     "",
     "pub const OBSTACLES: Obstacles = Obstacles::of(Vec::new(), vec2(-128.0), vec2(128.0))",
     "pub const TOUR: Vec<vec2> = Vec::from([vec2(0.0, 16.0), vec2(16.0, 16.0)])",
@@ -47,8 +47,8 @@ const WILDWOOD: [Text; 13] = [
 /// The map's anatomy and area, as tests.
 const ANATOMY: [Text; 32] = [
     "",
-    "use engine::interest::floor_area",
-    "use engine::place::{SiteKind, refusals}",
+    "use land::interest::floor_area",
+    "use land::place::{SiteKind, refusals}",
     "",
     "@test",
     "fn anatomy() {",
@@ -83,7 +83,7 @@ const ANATOMY: [Text; 32] = [
 /// A program that grows the floor's map, changed by an edit (`m`, mutable), at the preview's grain, in a constant: before the edit.
 const GROWN_HEAD: [Text; 8] = [
     "",
-    "use engine::grow::{History, PREVIEW, Start, simulate}",
+    "use land::grow::{History, PREVIEW, Start, simulate}",
     "",
     "const GROWN: u32 = grown()",
     "",
@@ -108,8 +108,8 @@ const GROWN_TAIL: [Text; 9] = [
 /// The elves' tests, on a small land of good soil by a river.
 const ELVES: [Text; 107] = [
     "",
-    "use engine::grow::{Grid, Land, Left, NEVER, NONE, UNBROWSED}",
-    "use engine::soil::soil",
+    "use land::grow::{Grid, Land, Left, NEVER, NONE, UNBROWSED}",
+    "use land::soil::soil",
     "use peoples::{Culture, RECLAIMED, Use, left_by, settle}",
     "",
     "/// A level land 1200 m by 800 m of deep loam, a river along its south edge.",
@@ -219,7 +219,7 @@ const ELVES: [Text; 107] = [
 /// A world's seed, as a test.
 const SEEDS: [Text; 30] = [
     "",
-    "use engine::grow::{PREVIEW, Start, Tree, simulate}",
+    "use land::grow::{PREVIEW, Start, Tree, simulate}",
     "",
     "fn grown(seed: u32) -> Vec<Tree> {",
     "    var m = map::map()",
@@ -301,7 +301,7 @@ fn wrote(p: Package) -> u32 {
         written(f"scratch/{p.name.as_str()}/{file.as_str()}", text)
     }
     var manifest = String::from(
-        "[package]\nname = \"floor_map\"\n\n[dependencies]\nengine = { workspace = true }\n",
+        "[package]\nname = \"floor_map\"\n\n[dependencies]\nengine = { workspace = true }\nland = { workspace = true }\n",
     )
     for k in 0..p.content.len() {
         let (dep, _) = p.content[k].clone()
@@ -311,10 +311,11 @@ fn wrote(p: Package) -> u32 {
     tests
 }
 
-/// The overrides for `p`'s dependencies: the workspace's engine and content.
+/// The overrides for `p`'s dependencies: the workspace's engine, land and content.
 fn overrides(p: Package) -> Vec<Override> {
     var out: Vec<Override> = Vec::new()
     out.push(Override { name: String::from("engine"), dir: String::from("repo/engine") })
+    out.push(Override { name: String::from("land"), dir: String::from("repo/land") })
     for k in 0..p.content.len() {
         let (dep, dir) = p.content[k].clone()
         out.push(Override { name: dep, dir: String::from(f"repo/content/{dir.as_str()}") })
@@ -425,7 +426,7 @@ fn refused(name: str, edit: str, opening: str, why: str) {
 fn an_opening_with_no_keeper_is_refused_by_name() {
     refused(
         "no-keeper",
-        "m.openings[0].keeper = engine::place::Keeper::Nothing",
+        "m.openings[0].keeper = land::place::Keeper::Nothing",
         "the clearing's meadow",
         "no keeper",
     )
@@ -437,7 +438,7 @@ fn an_opening_with_no_keeper_is_refused_by_name() {
 fn an_opening_whose_keeper_stops_before_the_present_is_refused_by_name() {
     refused(
         "keeper-gone",
-        "m.openings[0].keeper = engine::place::Keeper::People { from: 300, to: map::PRESENT - 100 }",
+        "m.openings[0].keeper = land::place::Keeper::People { from: 300, to: map::PRESENT - 100 }",
         "the clearing's meadow",
         "left",
     )

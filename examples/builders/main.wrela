@@ -3,7 +3,7 @@
 // cuboid fields; no authored field is evaluated per screen pixel. The look is a construction
 // blockout, not a finished floor's art direction.
 
-use engine::construction::Built
+use land::construction::Built
 use engine::plain::{View, view}
 use people::{FORESTS, OCEANS, Study}
 use std::gpu::{

@@ -4,7 +4,7 @@
 // The history's survey keeps the soil per cell (`grow::Land::soil`); `soil_of` gives it at any
 // point. Its depth comes from the soil production function: weathering against creep.
 
-use grow::Ground
+use engine::terrain::Ground
 
 /// What a place's soil is. Rock: bare, or a skin over it. Thin: stony, on crests and steep
 /// slopes. Loam: the brown earth of the gentle slopes. Colluvium: deep, crept down into the

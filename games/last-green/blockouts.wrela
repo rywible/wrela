@@ -10,7 +10,7 @@ use engine::creature::Creature
 use engine::look::Mesh as Tolerance
 use engine::realize::solid
 use engine::noise::{noise3, rand}
-use engine::place::{Feature, Map, SiteKind}
+use land::place::{Feature, Map, SiteKind}
 use engine::stone::{Bed, Realized, Rock, grain, realize_bed, realize_rock, realize_stone}
 use engine::sweep::wrap
 use std::derive::Box3
@@ -889,7 +889,7 @@ pub fn built(m: Map) -> Vec<Built> {
 pub const BANK_STONE_LIMIT: u32 = 384
 const BANK_PATCH_STONES: u32 = 3
 
-pub fn bank_stones(courses: [engine::water::Course]) -> Vec<Built> {
+pub fn bank_stones(courses: [land::water::Course]) -> Vec<Built> {
     var total = 0.0
     for c in courses {
         if c.falls || c.points.len() < 2 {
@@ -968,7 +968,7 @@ pub fn bank_prototype(index: u32) -> Realized {
 }
 
 pub fn bank_instances(
-    courses: [engine::water::Course],
+    courses: [land::water::Course],
     height: fn(vec2) -> f32,
 ) -> engine::stone::Instances {
     var placements: Vec<engine::stone::Placement> = Vec::new()
@@ -1006,7 +1006,7 @@ pub fn bank_instances(
 
 @test
 fn bank_instances_share_three_prototypes_and_enclose_their_scaled_bounds() {
-    let c = engine::water::Course {
+    let c = land::water::Course {
         points: Vec::from([vec4(0.0, 0.0, 4.0, 0.4), vec4(0.0, 80.0, 4.0, 0.4)]),
         falls: false,
     }
@@ -1039,7 +1039,7 @@ fn bank_instances_share_three_prototypes_and_enclose_their_scaled_bounds() {
 
 @test
 fn stream_bank_stones_follow_both_margins_with_a_fixed_bound() {
-    let course = engine::water::Course {
+    let course = land::water::Course {
         points: Vec::from([vec4(0.0, 0.0, 4.0, 0.4), vec4(0.0, 80.0, 4.0, 0.4)]),
         falls: false,
     }
@@ -1057,7 +1057,7 @@ fn stream_bank_stones_follow_both_margins_with_a_fixed_bound() {
         if p.x < 0.0 { left += 1 } else { right += 1 }
     }
     assert(left > 0 && right > 0, "only one creek bank received stones")
-    let long = engine::water::Course {
+    let long = land::water::Course {
         points: Vec::from([vec4(0.0, 0.0, 4.0, 0.4), vec4(0.0, 100000.0, 4.0, 0.4)]),
         falls: false,
     }
@@ -1065,7 +1065,7 @@ fn stream_bank_stones_follow_both_margins_with_a_fixed_bound() {
         bank_stones([take long]).len() <= BANK_STONE_LIMIT,
         "long water exceeded its geometry budget",
     )
-    let fall = engine::water::Course { falls: true, ..course }
+    let fall = land::water::Course { falls: true, ..course }
     assert(bank_stones([take fall]).is_empty(), "bank stones float beside a waterfall")
 }
 
@@ -1193,7 +1193,7 @@ pub fn realize(b: Built, height: fn(vec2) -> f32) -> Realized {
 
 @test
 fn bank_stones_settle_on_shelves_and_not_cut_faces() {
-    let c = engine::water::Course {
+    let c = land::water::Course {
         points: Vec::from([vec4(0.0, 0.0, 4.0, 0.4), vec4(0.0, 80.0, 4.0, 0.4)]),
         falls: false,
     }

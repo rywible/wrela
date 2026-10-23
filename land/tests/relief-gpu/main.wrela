@@ -4,8 +4,8 @@
 // each cell's packed rise decoded exactly, its wetness within a float's rounding. So the drawn
 // ground and the sim's feet agree.
 
-use engine::grow::Grid
-use engine::landform::{Relief, pack}
+use land::grow::Grid
+use land::landform::{Relief, pack}
 use std::gpu::{GlobalId, GpuBuffer, Slots, buffer, dispatch, read, write}
 use std::io::Pending
 
