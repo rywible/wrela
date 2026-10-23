@@ -1,0 +1,231 @@
+// The route search's tests, on short stretches: the lab's first 35 m, the level's first ledge.
+// Each search is bounded by a small beam and few ticks, and deterministic, so each finds the same
+// run every time.
+
+use capybara::body::Mode
+use capybara::pad::{Hold, JUMP, PRESS, Pad, RIGHT, pad_of}
+use capybara::proofs::LAB_RUN
+use capybara::course::course
+use capybara::routes::{HUMAN_ANY, HUMAN_FULL}
+use capybara::world::{LAB, LEVEL, World, play, step, world}
+use main::{Ask, SECONDS, parse_args}
+use search::{ACTIONS, Goal, Settings, firsts, holds, played, run_through, to_goal}
+use slack::{FIRM, LATE, RECOVER, WHOLE, finishes, forgiving, human, pads_of, slack}
+use std::hash::state_hash
+use std::io::print
+
+/// The lab's first stretch: over the crest and through the puddle, to the first gap's edge.
+const STRETCH: Goal = Goal { until: 35.0, snacks: 0 }
+
+/// The tick on which the lab's proof (proofs.wrela) first reaches `x`.
+fn proof_reaches(x: f32) -> u32 {
+    var w = world(LAB)
+    for h in LAB_RUN {
+        for i in 0..h.ticks {
+            step(mut w, pad_of(h, i))
+            if w.body.at.x >= x {
+                return w.ticks
+            }
+        }
+    }
+    0
+}
+
+@test
+fn a_searched_run_replays_to_its_end_in_its_time_faster_than_the_proof() {
+    let s = run_through(world(LAB), STRETCH, Settings { beam: 50 })
+    let Some(f) = s.found else { panic("no run found") }
+    let w = played(world(LAB), f.pads)
+    print(f"the lab's first 35 m: {w.ticks} ticks, the proof's {proof_reaches(35.0)}")
+    assert(w == f.end && w.ticks == f.pads.len() && w.deaths == 0, "it replays as found")
+    assert(w.body.at.x >= 35.0, "to its end")
+    var before = world(LAB)
+    for i in 0..f.pads.len() - 1 {
+        step(mut before, Pad { bits: f.pads[i] })
+    }
+    assert(before.body.at.x < 35.0, "and not a tick before")
+    assert(w.ticks < proof_reaches(35.0), "faster than the proof")
+    let Some(again) = run_through(world(LAB), STRETCH, Settings { beam: 50 }).found else {
+        panic("no run found again")
+    }
+    assert(again.pads == f.pads, "the same run every time")
+}
+
+@test
+fn equal_states_are_one_and_a_hash_match_alone_isnt_equal() {
+    // The first tick from the lab's start, for each action: running on with jump held or not is
+    // the same state, and the first of the two stays.
+    var w: Vec<World> = Vec::new()
+    for a in ACTIONS {
+        var v = world(LAB)
+        step(mut v, Pad { bits: a })
+        w.push(v)
+    }
+    let stay = firsts(w.len(), |i| state_hash(w[i]), |i, j| w[i] == w[j])
+    assert(w[0] == w[2] && stay.len() < w.len() && stay[0] == 0 && stay[1] == 1)
+    for i in 0..w.len() {
+        var kept = false
+        for j in stay {
+            kept = kept || w[j] == w[i]
+        }
+        assert(kept, "every state has one that stays")
+    }
+    // Every hash the same: still only equal states are one.
+    let same = firsts(w.len(), |i| 7, |i, j| w[i] == w[j])
+    assert(same == stay)
+}
+
+@test
+fn a_snack_the_segment_needs_is_found() {
+    // The level's first snack, on the ledge 3.2 m up that only a double jump reaches.
+    let past = Goal { until: 16.0, snacks: 0 }
+    let fetch = Goal { until: 16.0, snacks: 1 }
+    let Some(quick) = run_through(world(LEVEL), past, Settings { beam: 50 }).found else {
+        panic("no run past the ledge")
+    }
+    let Some(snack) = run_through(world(LEVEL), fetch, Settings { beam: 50 }).found else {
+        panic("no run by the snack")
+    }
+    print(f"past the first ledge: {quick.end.ticks} ticks, by its snack {snack.end.ticks}")
+    assert(snack.end.snacks & 1 != 0 && played(world(LEVEL), snack.pads) == snack.end)
+}
+
+@test
+fn a_search_stops_at_its_tick_bound_or_when_every_state_dies() {
+    let bounded = run_through(world(LEVEL), STRETCH, Settings { beam: 20, ticks: 60 })
+    assert(bounded.stopped && bounded.found.is_none() && bounded.ticks() == 60)
+    // Falling into the first pit, too deep to come out: every state dies, and none is kept.
+    var falling = world(LEVEL)
+    falling.body.at = vec2(29.5, -9.0)
+    falling.body.vel = vec2(0.0, -20.0)
+    falling.body.mode = Mode::Air
+    let lost = run_through(falling, STRETCH, Settings { beam: 20 })
+    assert(lost.stopped && lost.found.is_none() && lost.kept() == 0)
+}
+
+@test
+fn pads_are_held_in_the_longest_stretches_that_give_them_back() {
+    let pads = [
+        RIGHT,
+        RIGHT,
+        RIGHT | JUMP | PRESS,
+        RIGHT | JUMP,
+        RIGHT | JUMP,
+        RIGHT | PRESS,
+        RIGHT | PRESS,
+        0,
+    ]
+    let run = holds(pads)
+    assert(run.len() == 5 && run[0].ticks == 2 && run[1].ticks == 3 && run[4].bits == 0)
+    var back: Vec<u32> = Vec::new()
+    for h in run {
+        for i in 0..h.ticks {
+            back.push(pad_of(h, i).bits)
+        }
+    }
+    assert(back == Vec::from(pads))
+}
+
+@test
+fn the_command_line_takes_the_seconds_and_the_human_mode() {
+    let s = |x: Text| String::from(x)
+    assert(parse_args([]) == Some(Ask { seconds: SECONDS, human: false }))
+    assert(parse_args([s("--seconds"), s("60")]) == Some(Ask { seconds: 60, human: false }))
+    assert(
+        parse_args([s("--human"), s("--seconds"), s("9")]) == Some(Ask { seconds: 9, human: true }),
+    )
+    assert(parse_args([s("60")]).is_none() && parse_args([s("--human"), s("--human")]).is_none())
+}
+
+@test
+fn a_human_holds_buttons_three_ticks_and_presses_jump_only_as_it_goes_down() {
+    let (r, j, p) = (RIGHT, RIGHT | JUMP, RIGHT | JUMP | PRESS)
+    assert(human([r, r, r, p, j, j, r, r]), "a held jump, a short last stretch")
+    assert(!human([r, r, r, RIGHT | PRESS, r, r, r]), "a tap: pressed and let go in a tick")
+    assert(!human([r, r, r, p, j, j, p, j, j]), "a press while it's held")
+    assert(!human([r, r, r, j, j, j]), "jump going down unpressed")
+    assert(!human([r, r, r, p, j, r, r, r]), "a stretch of two ticks")
+}
+
+@test
+fn a_human_search_keeps_to_the_limits() {
+    let human_run = run_through(world(LAB), STRETCH, Settings { beam: 50, human: true })
+    let Some(h) = human_run.found else { panic("no human run found") }
+    let Some(t) = run_through(world(LAB), STRETCH, Settings { beam: 50 }).found else {
+        panic("no run found")
+    }
+    print(
+        f"the lab's first 35 m with a human's limits: {h.end.ticks} ticks, tool-assisted {t.end.ticks}",
+    )
+    assert(human(h.pads) && played(world(LAB), h.pads) == h.end && h.end.body.at.x >= 35.0)
+    assert(!human(t.pads), "the tool-assisted run taps")
+}
+
+/// Running on from the lab's start for `ticks` ticks, then letting go to brake to a stop, and
+/// standing.
+fn run_and_stop(ticks: u32) -> Vec<u32> {
+    var pads: Vec<u32> = Vec::new()
+    for i in 0..ticks + 200 {
+        pads.push(if i < ticks { RIGHT } else { 0 })
+    }
+    pads
+}
+
+/// Whether the run of `pads` on the lab has no death.
+fn lives(pads: [u32]) -> bool {
+    let w = played(world(LAB), pads)
+    w.deaths == 0 && w.dying == 0
+}
+
+@test
+fn a_change_is_firm_over_the_whole_run_only_if_two_ticks_either_way_still_reach_the_end() {
+    let pads = run_and_stop(90)
+    let stop = played(world(LAB), pads).body.at.x
+    assert(human(pads) && stop < 15.0, "stopped on the runway")
+    // An end a metre short of the stop: letting go 2 ticks early or late still reaches it.
+    let firm = slack(LAB, pads, Goal { until: stop - 1.0, snacks: 0 }, WHOLE)
+    assert(firm.changes == 1 && firm.firm == 1)
+    // An end just short of the stop: letting go a tick early stops short of it.
+    let short = Goal { until: stop - 0.01, snacks: 0 }
+    let fragile = slack(LAB, pads, short, WHOLE)
+    assert(fragile.changes == 1 && fragile.firm == 0 && fragile.fragile[0] == 90)
+    // Within a second, stopping short is no slip: the capybara lives, and goes on after.
+    assert(forgiving(slack(LAB, pads, short, RECOVER)))
+}
+
+@test
+fn a_change_is_firm_within_a_second_only_if_two_ticks_either_way_live_through_it() {
+    // Letting go as late as it can and still stop before the first gap: a tick later, it falls in.
+    var ticks = 600
+    while !lives(run_and_stop(ticks)) {
+        ticks -= 1
+    }
+    let pads = run_and_stop(ticks)
+    let goal = Goal { until: 100.0, snacks: 0 }
+    let edge = slack(LAB, pads, goal, RECOVER)
+    assert(edge.changes == 1 && edge.firm == 0 && edge.missed[0] & LATE != 0 && !forgiving(edge))
+    // Letting go a metre and more sooner: 2 ticks either way, it stops short of the gap.
+    let soon = slack(LAB, run_and_stop(ticks - 20), goal, RECOVER)
+    assert(soon.changes == 1 && soon.firm == 1 && forgiving(soon))
+}
+
+/// Whether the human run `run`, which finds `snacks`, finishes, keeps to the limits and is
+/// forgiving.
+fn humanly(run: [Hold], snacks: u32) -> bool {
+    let pads = pads_of(LEVEL, run)
+    let s = slack(LEVEL, pads, to_goal(snacks), RECOVER)
+    print(
+        f"a human route: {pads.len()} ticks, {s.firm} of {s.changes} changes firm within a second",
+    )
+    finishes(play(LEVEL, run), snacks) && human(pads) && forgiving(s)
+}
+
+@test
+fn the_human_routes_keep_to_the_limits_and_are_forgiving() {
+    let every = (1 << course(LEVEL).snacks.len()) - 1
+    assert(humanly(HUMAN_ANY, 0), f"any%: at least {FIRM}% of its changes firm within a second")
+    assert(
+        humanly(HUMAN_FULL, every),
+        f"100%: at least {FIRM}% of its changes firm within a second",
+    )
+}
