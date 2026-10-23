@@ -540,6 +540,51 @@ pub fn arrival_gathered(previous: u32, lit: bool) -> u32 {
     if lit { previous + 1 } else { 0 }
 }
 
+/// Whether a probe step of `w` may run now (`Planner::may`); a step the rules allow and the
+/// budget refuses is noted in `waited`, so the next frame's dome gives way to it.
+fn probe_step(planner: mut Planner, waited: mut bool, w: Work) -> bool {
+    let allowed = planner.would(w)
+    let ran = planner.may(w)
+    waited = allowed && !ran
+    ran
+}
+
+/// Whether two shadow qualities make the same cascades and the same moving map (what `requality`
+/// keeps).
+fn same_shadows(a: ShadowQuality, b: ShadowQuality) -> bool {
+    let same = |x: Cascade, y: Cascade| {
+        x.centre == y.centre && x.span == y.span && x.reach == y.reach && x.side == y.side
+    }
+    same(a.near, b.near) &&
+        same(a.far, b.far) &&
+        a.near_strips == b.near_strips &&
+        a.far_strips == b.far_strips &&
+        a.near_moves == b.near_moves &&
+        a.reach_in == b.reach_in &&
+        a.moving_side == b.moving_side &&
+        a.moving_span == b.moving_span
+}
+
+/// Each setting of the cascades and the moving map tells two shadow qualities apart.
+@test
+fn every_shadow_setting_tells_qualities_apart() {
+    let a = ShadowQuality {}
+    assert(same_shadows(a, a))
+    let c = Cascade { centre: vec3(1.0, 0.0, 0.0), span: 144.0, reach: 250.0, side: 2048 }
+    for b in [
+        ShadowQuality { near: c },
+        ShadowQuality { far: Cascade { side: 1024, ..a.far } },
+        ShadowQuality { near_strips: 6 },
+        ShadowQuality { far_strips: 24 },
+        ShadowQuality { near_moves: 20.0 },
+        ShadowQuality { reach_in: 30.0 },
+        ShadowQuality { moving_side: 512 },
+        ShadowQuality { moving_span: 3.0 },
+    ] {
+        assert(!same_shadows(a, b), "a changed setting kept the old cascades")
+    }
+}
+
 // ---- The probes ------------------------------------------------------------------------------
 
 /// The probes in use (`using`) round `at` (render space), and the next being baked beside them
@@ -560,8 +605,9 @@ pub struct Probes {
 }
 
 /// What probes are baked from: the version of what occludes them and of the ground
-/// (`Frame::changed`), and the sun's direction and light.
-type ProbeKey = (u32, vec3, vec3)
+/// (`Frame::changed`), the version of the sky they bake the light of (the air's tables and the
+/// clouds' weather, counted as each is cooked again), and the sun's direction and light.
+type ProbeKey = (u32, u32, vec3, vec3)
 
 impl Probes {
     /// Whether the probes in use are baked whole.
@@ -639,12 +685,18 @@ pub struct Frame<R: Resolver> {
     ground_again: bool,
     weather_v: u32,
     probes_v: u32,
+    /// Each cook of the air's tables or the clouds' weather: the sky the probes bake (`ProbeKey`).
+    sky_v: u32,
+    /// Whether the last frame's probe step was eligible and the budget refused it (`cook_sky`
+    /// gives way to it).
+    probes_waited: bool,
 }
 
 /// What changed of a scene, outside the frame's own state (the light and the air the frame
 /// compares itself): its ground (every level cooked again, the cascades and the probes too), its
 /// static casters (the cascades drawn again), what occludes the probes (baked again beside those
-/// in use), or the clouds' weather (cooked again, the dome marched afresh).
+/// in use), or the clouds' weather (cooked again, the dome marched afresh, then the probes baked
+/// again under it).
 pub enum Change: Copy + Eq + Fieldless {
     Ground,
     Casters,
@@ -721,8 +773,8 @@ impl<R: Resolver> Frame<R> {
                 next_at: at,
                 next_cooked: false,
                 cooked: false,
-                using_k: (0, vec3(0.0), vec3(0.0)),
-                next_k: (0, vec3(0.0), vec3(0.0)),
+                using_k: (0, 0, vec3(0.0), vec3(0.0)),
+                next_k: (0, 0, vec3(0.0), vec3(0.0)),
             },
             clipmap,
             targets: no_targets(),
@@ -770,6 +822,8 @@ impl<R: Resolver> Frame<R> {
             ground_again: false,
             weather_v: 0,
             probes_v: 0,
+            sky_v: 0,
+            probes_waited: false,
         }
     }
 
@@ -779,13 +833,47 @@ impl<R: Resolver> Frame<R> {
     }
 
     /// The quality changed to `q`: what depends on what changed is made again (the targets at
-    /// the next frame for the scale; temporal AA's history afresh).
+    /// the next frame for the scale, temporal AA's history afresh; other cascades or another
+    /// moving map, drawn again while frames are covered; probes of other rays, baked again; the
+    /// planner, with the new budget).
     pub fn requality(mut self, q: Quality) {
         if q.scale != self.quality.scale {
             self.width = 0
         }
+        // Other cascades or another moving map: made again (and drawn again, covered).
+        let sh = q.shadows
+        let remade = !same_shadows(sh, self.quality.shadows)
+        if remade {
+            let near_at = if sh.near_moves >= 1.0e8 { sh.near.centre - self.origin } else {
+                self.cam.eye
+            }
+            self.near = Kept::new(
+                near_at,
+                sh.near.span,
+                reach: sh.near.reach,
+                reach_in: sh.reach_in,
+                side: sh.near.side,
+                strips: sh.near_strips,
+            )
+            self.far = Kept::new(
+                sh.far.centre - self.origin,
+                sh.far.span,
+                reach: sh.far.reach,
+                reach_in: sh.reach_in,
+                side: sh.far.side,
+                strips: sh.far_strips,
+            )
+            self.moving = depth_texture(width: sh.moving_side, height: sh.moving_side)
+        }
+        // Probes of other rays: baked again beside those in use.
+        if q.probes.rays != self.quality.probes.rays {
+            self.probes_v += 1
+        }
         self.quality = q
         self.cooks.planner = Planner::new(q.budget)
+        if remade {
+            self.arrive()
+        }
     }
 
     /// `c` changed (`Change`).
@@ -1172,6 +1260,7 @@ impl<R: Resolver> Frame<R> {
                 self.tables.cook(self.air, self.linear)
                 self.probes.using.open(self.light, self.air.ground, self.tables.view, self.linear)
                 self.air_cooked.cooked(air_key)
+                self.sky_v += 1
             } else if !self.noise_cooked {
                 self.cooks.planner.note(Work::SkyNoise)
                 self.sky.cook_noise()
@@ -1182,6 +1271,7 @@ impl<R: Resolver> Frame<R> {
                 self.cloud_wind = w.wind
                 self.sky.cook_weather(w, self.light.sun, self.repeat, shadows: cloud_shadows)
                 self.weather_cooked.cooked(weather_key)
+                self.sky_v += 1
                 self.cloud_shadow.cooked((cloud_shadows, self.weather_cooked.version()))
             }
         }
@@ -1191,7 +1281,10 @@ impl<R: Resolver> Frame<R> {
             self.sky.cook_shadow(self.light.sun, self.repeat, shadows: cloud_shadows)
             self.cloud_shadow.cooked(shadow_key)
         }
-        if fresh && self.cooks.planner.may(Work::SkyPhase) {
+        // A dome that's whole is marched again only while the probes' steps aren't waiting on
+        // the budget: the first full frame needs them, and the dome's light is already there.
+        let yield_to_probes = self.probes_waited && self.sky.done()
+        if fresh && !yield_to_probes && self.cooks.planner.may(Work::SkyPhase) {
             self.clouds = self.sky.march(
                 self.air,
                 self.light,
@@ -1232,13 +1325,13 @@ impl<R: Resolver> Frame<R> {
             !(scene.casters_complete() && self.near.settled() && self.far.settled()) {
             return
         }
-        let key = (self.probes_v, self.light.sun, self.light.sun_colour)
+        let key = (self.probes_v, self.sky_v, self.light.sun, self.light.sun_colour)
         let trace = scene.trace(self.light, self.probes.using.grid)
         let texels = self.clipmap.texels()
         let levels = self.clipmap.levels()
         if !self.probes.cooked {
             let Some(occluders) = scene.occluders(eye, self.origin) else { return }
-            if !self.cooks.planner.may(Work::ProbeOccluders) {
+            if !probe_step(mut self.cooks.planner, mut self.probes_waited, Work::ProbeOccluders) {
                 return
             }
             var b = Baked::new(scene.probe_grid(eye, self.origin), occluders)
@@ -1252,7 +1345,7 @@ impl<R: Resolver> Frame<R> {
             return
         }
         if !self.probes.done() {
-            if self.cooks.planner.may(Work::ProbeStrip) {
+            if probe_step(mut self.cooks.planner, mut self.probes_waited, Work::ProbeStrip) {
                 self.probes.using.bake_strip(
                     scene.trace(self.light, self.probes.using.grid),
                     sh,
@@ -1286,13 +1379,21 @@ impl<R: Resolver> Frame<R> {
         match mut self.probes.next {
             Some(next) => {
                 if !self.probes.next_cooked {
-                    if self.cooks.planner.may(Work::ProbeOccluders) {
+                    if probe_step(
+                        mut self.cooks.planner,
+                        mut self.probes_waited,
+                        Work::ProbeOccluders,
+                    ) {
                         next.cook()
                         next.open(self.light, self.air.ground, self.tables.view, self.linear)
                         self.probes.next_cooked = true
                     }
                 } else if !next.done() {
-                    if self.cooks.planner.may(Work::ProbeStrip) {
+                    if probe_step(
+                        mut self.cooks.planner,
+                        mut self.probes_waited,
+                        Work::ProbeStrip,
+                    ) {
                         next.bake_strip(
                             Trace { grid: next.grid, ..trace },
                             sh,

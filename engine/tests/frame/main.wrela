@@ -1,77 +1,23 @@
-// A bare scene (flat ground, which casts into the cascades, open land, the sky's own clouds) drawn through `engine::frame` on the
-// GPU, and a script of what a game does to a frame: it loads; 30 frames after its first full frame
-// the eye jumps 500 m; once that arrival is shown, the weather changes; 90 frames later the sun
-// moves; once its cascades are drawn again, the screen is held for 8 frames; then the frame
-// measures its work on this device (`Quality::measured`), and its cascades and probes are drawn
-// again to be measured. Each frame's plan (`engine::cook::Planner`) and readiness are recorded,
-// and the tests read the record. Until it measures, a frame's order is the same on every run and
-// in both hosts.
+// A bare scene (flat ground, which casts into the cascades, open land, the sky's own clouds) drawn
+// through `engine::frame` on the GPU, and a script of what a game does to a frame: it loads; 30
+// frames after its first full frame the eye jumps 500 m; once that arrival is shown, the weather
+// changes; 90 frames later the sun moves; once its cascades are drawn again, the screen is held for
+// 8 frames; then the frame measures its work on this device (`Quality::measured`), and its cascades
+// and probes are drawn again to be measured. Each frame's plan (`engine::cook::Planner`) and
+// readiness are recorded, and the tests read the record. Until it measures, a frame's order is the
+// same on every run and in both hosts.
 
-use engine::air::{Air, hazy}
 use engine::cook::{Evidence, Work}
-use engine::frame::{Aim, Change, Frame, Gathered, Quality, Scene}
-use engine::light::{Light, SUN_TOP, sunlight}
-use engine::plant::Wind
-use engine::probes::{Occluder, ProbeGrid, Trace, grid}
-use engine::sky::{Gap, Weather}
-use engine::terrain::{Clipmap, Flat}
-use engine::view::{Camera, first_camera}
+use engine::frame::{Aim, Change, Frame, Gathered, Quality}
+use engine::light::sunlight
+use engine::probes::grid
+use engine::terrain::Clipmap
+use engine::view::first_camera
+use bare::{AHEAD, Bare, START, SUN, air_of, bare}
 
-/// The sun at the start, and where it moves to.
-const SUN = vec3(0.900, 0.407, -0.159)
+/// Where the sun moves to, and where the eye jumps to (the world's, m).
 const LATER_SUN = vec3(0.6, 0.6, 0.53)
-
-/// Where the eye starts and where it jumps to (the world's, m), and how far it looks ahead.
-const START = vec3(0.0, 1.6, 0.0)
 const JUMPED = vec3(500.0, 1.6, 0.0)
-const AHEAD = vec3(0.0, 0.0, 40.0)
-
-/// The scene: flat ground, nothing standing on it (the probes see open land), and its weather.
-pub struct Bare {
-    weather: Weather,
-}
-
-impl Scene for Bare {
-    fn wind(self, cam: Camera, time: f32) -> Wind {
-        Wind { time, dir: vec2(1.0, 0.0), strength: 0.3 }
-    }
-
-    fn weather(self) -> Weather {
-        self.weather.clone()
-    }
-
-    fn trace(self, light: Light, grid: ProbeGrid) -> Trace {
-        Trace {
-            light,
-            grid,
-            foliage: vec3(0.0),
-            reach: 24.0,
-            leaf: vec3(0.0),
-            bounced: 0,
-        }
-    }
-
-    fn probe_grid(self, at: vec2, origin: vec3) -> ProbeGrid {
-        grid(at, cols: 17, spacing: 4.0, low: -8.0, high: 24.0, voxel: 2.0)
-    }
-
-    fn occluders(self, at: vec2, origin: vec3) -> Option<Vec<Occluder>> {
-        Some(Vec::new())
-    }
-
-    fn height_at(self, world: vec2) -> f32 {
-        0.0
-    }
-
-    fn cook_ground(mut self, clipmap: mut Clipmap, eye: vec3, again: bool) -> u32 {
-        clipmap.follow(Flat {}, eye, again)
-    }
-
-    /// The ground casts into the static cascades: their depth is its plane seen from the sun.
-    fn ground_casts(self) -> bool {
-        true
-    }
-}
 
 /// A frame's record: frames run and drawn, the plan (each kind's steps, the estimated
 /// microseconds spent, the ground levels cooked) and the readiness after it.
@@ -113,10 +59,6 @@ pub struct State {
     eye: vec3,
 }
 
-fn air_of(sun: vec3) -> Air {
-    hazy(sun, SUN_TOP, eye: START.y)
-}
-
 pub fn init() -> State {
     let air = air_of(SUN)
     let frame: Frame<Gathered> = Frame::new(
@@ -130,14 +72,7 @@ pub fn init() -> State {
     )
     State {
         frame,
-        scene: Bare {
-            weather: Weather {
-                clouds: Vec::new(),
-                fair: 0.3,
-                gap: Gap { a: vec2(3300.0, -590.0), b: vec2(12200.0, -2150.0), radius: 2500.0 },
-                wind: vec2(-5.5, 3.0),
-            },
-        },
+        scene: bare(),
         step: Step::Load,
         began: Vec::from([0]),
         records: Vec::new(),
@@ -294,24 +229,35 @@ fn a_jump_is_covered_until_its_light_has_gathered(s: State) {
     assert(near > 0 && probes > 0, "the cascade and the probes weren't drawn round the new eye")
 }
 
-/// A weather change cooks the clouds' weather again and starts the dome's march again, and
-/// draws no cascade and bakes no probes.
+/// A weather change cooks the clouds' weather again and starts the dome's march again, draws no
+/// cascade, and bakes the probes again once the dome is marched (they bake its light).
 @test(frames: 900, gpu: true)
-fn a_weather_change_redraws_the_clouds_alone(s: State) {
+fn a_weather_change_redraws_the_clouds_and_then_the_probes(s: State) {
     reached(s, Step::Sun)
     let (from, to) = window(s, 2)
     var weather = 0
     var near = 0
     var probes = 0
+    var marched = 0
+    var baked_after = 0
     for i in from..to {
         weather += s.records[i].weather
         near += s.records[i].near + s.records[i].far
         probes += s.records[i].probes
+        if probes == 0 {
+            marched += s.records[i].phase
+        } else if baked_after == 0 {
+            baked_after = marched
+        }
     }
     assert(weather >= 1, "the clouds' weather wasn't cooked again")
     assert(s.records[from].sky_frames <= 1, "the dome's march didn't start again")
     assert(near == 0, f"the weather drew {near} strips of the cascades")
-    assert(probes == 0, f"the weather baked {probes} strips of probes")
+    assert(probes > 0, "the probes weren't baked again under the new weather")
+    assert(
+        baked_after >= engine::sky::PHASES,
+        f"the probes were baked after {baked_after} of the dome's {engine::sky::PHASES} phases",
+    )
 }
 
 /// A sun change draws both cascades again and cooks the clouds' weather again (it's lit from the

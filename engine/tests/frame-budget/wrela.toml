@@ -1,0 +1,8 @@
+# engine::frame on a small budget: the bare scene of engine/tests/frame, its frames planned with
+# 1000 µs of optional work, loads and becomes playable all the same.
+[package]
+name = "frame_budget"
+
+[dependencies]
+engine = { workspace = true }
+frame_transitions = { path = "../frame" }

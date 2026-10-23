@@ -14,9 +14,9 @@
 //   walk: a ground level's cook and a strip together passed 16.7 ms.)
 // - **The budget.** Each kind's step has a cost (`Cost`: microseconds of GPU time, measured or
 //   estimated, and said which), and a frame spends at most the budget's (`Budget`), more while
-//   loading. A step past the budget waits a frame, unless nothing optional has run this frame:
-//   then it runs, so every kind makes progress (one step a frame at least), however large its
-//   step.
+//   loading: the ground's levels and the noted cooks count against it first. A step past the
+//   budget waits a frame, unless nothing optional has run this frame: then it runs, so a frame
+//   makes progress (one optional step at least), however large its step.
 // - **Filling.** A capture (a still) fills every cache at once: each kind may step
 //   `Budget::filling_steps` times a frame, with no budget.
 //
@@ -112,10 +112,12 @@ pub struct Budget: Copy {
 pub struct Planner {
     budget: Budget,
     costs: [Cost; WORKS],
-    /// This frame: the steps of each kind run, the estimated microseconds spent on optional
-    /// work, the ground levels cooked, and whether a strip was drawn.
+    /// This frame: the steps of each kind run, the estimated microseconds spent (the ground's
+    /// levels and the noted cooks too), whether an optional step has run, the ground levels
+    /// cooked, and whether a strip was drawn.
     ran: [u32; WORKS],
     spent: f32,
+    optional: bool,
     levels: u32,
     strip: bool,
     playable: bool,
@@ -132,6 +134,7 @@ impl Planner {
             costs: costs(),
             ran: [0; WORKS],
             spent: 0.0,
+            optional: false,
             levels: 0,
             strip: false,
             playable: false,
@@ -146,7 +149,8 @@ impl Planner {
     pub fn begin(mut self, levels: u32, playable: bool, near_ready: bool, filling: bool) {
         self.ran = [0; WORKS]
         self.ran[Work::TerrainLevel.index()] = levels
-        self.spent = 0.0
+        self.spent = f32(levels) * self.costs[Work::TerrainLevel.index()].us
+        self.optional = false
         self.levels = levels
         self.strip = false
         self.playable = playable
@@ -168,13 +172,13 @@ impl Planner {
         if !self.filling {
             let limit = if self.playable { self.budget.playing_us } else { self.budget.loading_us }
             let cost = self.costs[w.index()].us
-            let anything = self.spent > 0.0
-            if anything && self.spent + cost > limit {
+            if self.optional && self.spent + cost > limit {
                 self.cut += 1
                 return false
             }
             self.spent += cost
         }
+        self.optional = true
         self.ran[w.index()] += 1
         if w == Work::NearStrip || w == Work::FarStrip {
             self.strip = true
@@ -186,6 +190,7 @@ impl Planner {
     /// tables, the clouds' noise and weather), counted.
     pub fn note(mut self, w: Work) {
         self.ran[w.index()] += 1
+        self.spent += self.costs[w.index()].us
     }
 
     /// Whether the moving-cache rules let a step of `w` run now (the budget aside): nothing is
@@ -211,7 +216,8 @@ impl Planner {
         self.ran[w.index()]
     }
 
-    /// The estimated microseconds this frame's optional work cost.
+    /// The estimated microseconds this frame's work cost: the ground's levels, the noted cooks
+    /// and the optional steps.
     pub fn spent(self) -> f32 {
         self.spent
     }
@@ -327,4 +333,21 @@ fn a_measured_cost_replaces_the_estimate_and_follows_the_device() {
     assert(p.may(Work::NearStrip), "the first step runs")
     assert(p.may(Work::SkyPhase), "800 more fits")
     assert(!p.may(Work::Tile), "300 more doesn't")
+}
+
+/// The ground's levels and the noted cooks count against the budget: optional work beside them
+/// gets what's left, and the first optional step of a frame still runs.
+@test
+fn mandatory_work_counts_against_the_budget() {
+    var p = Planner::new(Budget { playing_us: 3000.0, loading_us: 3000.0 })
+    // Two levels (2400 of 3000): one dome phase (800) is over the budget, but it's the frame's
+    // first optional step; a tile more isn't.
+    p.begin(levels: 2, playable: false, near_ready: false, filling: false)
+    assert(p.spent() == 2400.0, f"{p.spent()}")
+    assert(p.may(Work::SkyPhase), "a frame's first optional step waited")
+    assert(!p.may(Work::Tile), "a step past what the ground left ran")
+    // A noted cook (the air's tables) takes the frame's budget the same way.
+    p.begin(levels: 0, playable: true, near_ready: false, filling: false)
+    p.note(Work::AirTables)
+    assert(p.may(Work::Tile) && !p.may(Work::Tile), "after a noted cook, more than one step ran")
 }
