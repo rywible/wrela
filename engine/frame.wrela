@@ -1,0 +1,1575 @@
+// The frame: what a lit 3D program's frame is made of, in order, from the scene a game gives.
+//
+// A game keeps a `Frame` beside its scene (sibling fields of its state, so both can be `mut` at
+// once) and each frame calls `begin` with where the camera is (`Aim`), then `draw` with its
+// scene. The frame owns what every lit scene needs and its order: the targets and their sizes;
+// the camera, jittered for temporal AA; the air's tables, the clouds, the static shadow cascades
+// round the eye and the moving map, and the sky-light probes, each cooked a step a frame within
+// one plan (`engine::cook`) and replaced only when what replaces it is whole; when the first full
+// frame is shown, and an arrival after a jump; the passes, from the vegetation's depth prepass
+// to the look's develop. The scene (`Scene`) says what it draws, casts and cooks.
+//
+//     begin   size, camera (and the render origin, `recentre`)
+//     draw    the ground cooked (the scene's), the scene's load, the static cascades a strip,
+//             the moving map, the sky a phase, the probes a strip; then the scene's passes:
+//             choose, prepass, shade, ground, characters, sky, effects, motion; then the lines,
+//             temporal AA, metering, the arrival's cover, the dabs, the glow, the develop, the
+//             scene's overlay
+//
+// Every pipeline the frame itself draws with is one every lit program needs (the ground, the
+// sky, the lines, the resolve, the meter, the dabs, the glow, the develop): what's optional (the
+// water, mists, sun shafts, a test's views) is drawn only from the scene's own methods, whose
+// defaults draw nothing, so a program builds only the pipelines it reaches.
+
+use air::{Air, Tables, tables}
+use cook::{Budget, Planner, Work}
+use light::Light
+use lit::Lighting
+use paint::{Develop, Exposure, Look, Metering, dab_map, develop, glow_blur, glow_down, lines, meter}
+use plant::Wind
+use probes::{Baked, Occluder, ProbeGrid, Trace}
+use shadow::{Cascade, Kept, Shadows, shadows}
+use sky::{Clouds, Sky, Weather, new_sky, sky_shade}
+use temporal::{Resolve, held, neighbourhoods, resolve, resolve_gathered}
+use terrain::{Clipmap, Texel, ground, ground_shade}
+use view::{BEHIND, Camera, NEAREST, camera, jitter_of}
+use std::cache::Stale
+use std::collections::{Flags, replace, swap}
+use std::gpu::{
+    Address, ClipPosition, ComparisonSampler, DepthTexture, FragmentShader, GpuBuffer, GpuSpan,
+    R32Uint, RenderPass, Rgba16Float, Sampler, ScreenPass, Texture, VertexIndex, begin_depth_pass,
+    begin_pass, begin_pass_with_depth, begin_screen_pass, buffer, comparison_sampler, depth_texture,
+    dispatch, draw, label, sampler, texture, writable_texture,
+}
+use std::io::print
+
+/// A triangle that covers the target, at depth `z`.
+@vertex
+pub fn full(v: VertexIndex, z: f32) -> ClipPosition {
+    let x = f32((v.index << 1) & 2) * 2.0 - 1.0
+    let y = f32(v.index & 2) * 2.0 - 1.0
+    ClipPosition { position: vec4(x, y, z, 1.0) }
+}
+
+/// Any fragment shader over the whole target (`full`'s triangle): a pass that draws each pixel
+/// once.
+pub fn fullscreen<P: RenderPass, F: FragmentShader<ClipPosition>>(pass: P, fs: F) {
+    draw(pass, full.bind(z: 0.5), fs, vertices: 3)
+}
+
+// ---- What a game gives -------------------------------------------------------------------------
+
+/// What a frame draws: implemented by the game's own scene type. The frame calls each method at
+/// its stage, with the passes, the camera and the lighting bound; the defaults draw and cook
+/// nothing.
+pub trait Scene {
+    /// The wind this frame, for the camera `cam` (its render origin keys the wind's waves to the
+    /// world: `Camera::keyed`).
+    fn wind(self, cam: Camera, time: f32) -> Wind
+
+    /// The weather the clouds are cooked with.
+    fn weather(self) -> Weather
+
+    /// How the probes trace, lit by `light`, over `grid`.
+    fn trace(self, light: Light, grid: ProbeGrid) -> Trace
+
+    /// The probes' grid round `at` (render space, the render origin `origin` taken off).
+    fn probe_grid(self, at: vec2, origin: vec3) -> ProbeGrid
+
+    /// What occludes the probes round `at` (render space), or none while what stands there is
+    /// still coming (an empty list is open land; none waits).
+    fn occluders(self, at: vec2, origin: vec3) -> Option<Vec<Occluder>>
+
+    /// The ground's height at a point of the world (x, z): where the near cascade follows the
+    /// eye to.
+    fn height_at(self, world: vec2) -> f32
+
+    /// The ground cooked into the clipmap round `eye` with whichever terrain the scene draws
+    /// (`Clipmap::follow`; `again`: every level, the ground having changed). How many levels it
+    /// cooked.
+    fn cook_ground(mut self, clipmap: mut Clipmap, eye: vec3, again: bool) -> u32
+
+    /// The scene's own load this frame: what it streams, cooks and realizes, each step asked of
+    /// the plan (`c.planner.may`). It may write the ground's fields into `clipmap`.
+    fn cook(mut self, c: mut Cooks, clipmap: mut Clipmap, linear: Sampler) {}
+
+    /// Whether what a full frame round the eye needs (`eye`, the world's) has come in: its
+    /// tiles placed, its built things realized.
+    fn streamed(self, eye: vec2) -> bool {
+        true
+    }
+
+    /// Whether the scene is still loading what's round the eye (a capture's probes wait for it).
+    fn loading(self) -> bool {
+        false
+    }
+
+    /// Whether every static caster is in (the first probes see the light an arrival reveals).
+    fn casters_complete(self) -> bool {
+        true
+    }
+
+    /// Whether a static cascade (the far one, `far`, or the near) may be drawn yet: its casters
+    /// come at load, and a map drawn before them would be drawn whole again as each came.
+    fn casters_ready(self, far: bool) -> bool {
+        true
+    }
+
+    /// Whether the probes light the scene (a view of bare land, which they weren't baked over,
+    /// is lit by the open sky).
+    fn probes_lit(self) -> bool {
+        true
+    }
+
+    /// Whether the ground itself casts into the static cascades (land with relief to shade).
+    fn ground_casts(self) -> bool {
+        false
+    }
+
+    /// The static casters of a cascade's strip (`lo` to `hi`, x and z) chosen, before its pass.
+    fn choose_casters(mut self, cam: Camera, lo: vec2, hi: vec2) {}
+
+    /// Static casters into a strip of a cascade seen from the sun by `view` (`first`: its first
+    /// strip, which draws what casts once: solids). The wind is at rest: a map drawn over many
+    /// frames can't follow it.
+    fn cast<P: RenderPass>(
+        self,
+        pass: P,
+        view: mat4,
+        sh: Shadows,
+        wind: Wind,
+        s: Sampler,
+        first: bool,
+    ) {}
+
+    /// What moves into the moving map, seen from the sun by `view`.
+    fn cast_moving<P: RenderPass>(self, pass: P, view: mat4) {}
+
+    /// What the GPU chooses before any pass: grass placed round the eye, a wood's instances,
+    /// lit by `lt`, on the clipmap's `texels`.
+    fn choose(mut self, lt: Lighting, texels: GpuSpan<Texel>) {}
+
+    /// The depth prepass (into the ids and the depth): cut cards, grass.
+    fn prepass<P: RenderPass>(self, pass: P, cam: Camera, wind: Wind, s: Sampler) {}
+
+    /// After the prepass: what its depth puts out, and passes that keep it (far crowns).
+    fn after_prepass(mut self, t: mut Targets, cam: Camera, wind: Wind, s: Sampler) {}
+
+    /// The lit scene, before the ground: vegetation, stones, built things.
+    fn shade<P: RenderPass>(self, pass: P, lt: Lighting, wind: Wind, ids: Texture<R32Uint>) {}
+
+    /// The characters, after the ground (their pass joins it).
+    fn characters<P: RenderPass>(self, pass: P, lt: Lighting) {}
+
+    /// Something in place of the sky (a test's key colour): whether it drew it.
+    fn sky_instead<P: RenderPass>(self, pass: P) -> bool {
+        false
+    }
+
+    /// Whether the scene draws effects over the lit scene (`effects`), which take targets of
+    /// their own (the scene under water, the shafts).
+    fn has_effects(self) -> bool {
+        false
+    }
+
+    /// What goes over the lit scene before motion and temporal AA: water over a copy of the
+    /// scene, veils, sun shafts, drawn into `t` with what the frame holds (`fx`).
+    fn effects(mut self, t: mut Targets, fx: Effects) {}
+
+    /// What moved since the last frame, into the motion target (over the scene's depth).
+    fn motion<P: RenderPass>(mut self, pass: P, cam: Camera, wind: Wind) {}
+
+    /// Where on the output (`out` pixels) anything that moves can be, now or last frame: a
+    /// rectangle (temporal AA checks last frame's motion there). The whole output by default.
+    fn moves_in(self, cam: Camera, out: vec2) -> vec4 {
+        vec4(0.0, 0.0, out)
+    }
+
+    /// Whether the frame is shown another way than the look (a test's view), by `show_instead`.
+    fn shows_instead(self) -> bool {
+        false
+    }
+
+    /// The frame shown another way than the look, into the screen's pass.
+    fn show_instead(self, pass: ScreenPass, t: Targets, exposure: GpuSpan<Exposure>) {}
+
+    /// What the game draws over the developed frame (a map), `out` pixels.
+    fn overlay(self, pass: ScreenPass, out: vec2) {}
+
+    /// The scene's targets are `w` × `h` now (the output's at the render scale).
+    fn resized(mut self, w: u32, h: u32) {}
+
+    /// The render origin moved: what the scene keeps in render space moves by `d` with it.
+    fn shift(mut self, d: vec3) {}
+}
+
+/// Where the camera is this frame: its eye and what it looks at (render space), its field of
+/// view (radians), the render origin (the world point render space's origin stands for: whole
+/// tiles), and where the moving map goes round (what moves: the player's feet).
+pub struct Aim: Copy {
+    pub eye: vec3,
+    pub at: vec3,
+    pub fovy: f32,
+    pub moving_at: vec3,
+}
+
+/// The frame's targets. The scene's (`w` × `h`: the output's at the render scale): its colour
+/// and tags, a second it ping-pongs with (the lines, mists, shafts), its depth and the last
+/// frame's, the far crowns' ids, motion and the last frame's, the scene under the water and the
+/// shafts (when the scene has effects), the dabs; the output's: temporal AA's history and the
+/// last frame's; a quarter of the output's: the glow's chain.
+pub struct Targets {
+    pub scene: Texture<Rgba16Float>,
+    pub scene_b: Texture<Rgba16Float>,
+    pub depth: DepthTexture,
+    pub last_depth: DepthTexture,
+    pub ids: Texture<R32Uint>,
+    pub motion: Texture<Rgba16Float>,
+    pub last_motion: Texture<Rgba16Float>,
+    pub below: Texture<Rgba16Float>,
+    pub shafts: Texture<Rgba16Float>,
+    pub dabs: Texture<Rgba16Float>,
+    pub history: Texture<Rgba16Float>,
+    pub last_history: Texture<Rgba16Float>,
+    pub glow_a: Texture<Rgba16Float>,
+    pub glow_b: Texture<Rgba16Float>,
+}
+
+/// Targets of a texel each, before the first frame sizes them.
+fn no_targets() -> Targets {
+    Targets {
+        scene: texture::<Rgba16Float>(width: 1, height: 1),
+        scene_b: texture::<Rgba16Float>(width: 1, height: 1),
+        depth: depth_texture(width: 1, height: 1),
+        last_depth: depth_texture(width: 1, height: 1),
+        ids: texture::<R32Uint>(width: 1, height: 1),
+        motion: texture::<Rgba16Float>(width: 1, height: 1),
+        last_motion: texture::<Rgba16Float>(width: 1, height: 1),
+        below: texture::<Rgba16Float>(width: 1, height: 1),
+        shafts: writable_texture::<Rgba16Float>(width: 1, height: 1),
+        dabs: texture::<Rgba16Float>(width: 1, height: 1),
+        history: texture::<Rgba16Float>(width: 1, height: 1),
+        last_history: texture::<Rgba16Float>(width: 1, height: 1),
+        glow_a: texture::<Rgba16Float>(width: 1, height: 1),
+        glow_b: texture::<Rgba16Float>(width: 1, height: 1),
+    }
+}
+
+/// Targets for an output of `width` × `height`, the scene's `w` × `h`; the scene under the
+/// water and the shafts only if the scene has `effects`.
+fn targets_for(width: u32, height: u32, w: u32, h: u32, effects: bool) -> Targets {
+    let (ew, eh) = if effects { (w, h) } else { (1, 1) }
+    let (qw, qh) = (max(width / 4, 1), max(height / 4, 1))
+    Targets {
+        scene: texture::<Rgba16Float>(width: w, height: h),
+        scene_b: texture::<Rgba16Float>(width: w, height: h),
+        depth: depth_texture(width: w, height: h),
+        last_depth: depth_texture(width: w, height: h),
+        ids: texture::<R32Uint>(width: w, height: h),
+        motion: texture::<Rgba16Float>(width: w, height: h),
+        last_motion: texture::<Rgba16Float>(width: w, height: h),
+        below: texture::<Rgba16Float>(width: ew, height: eh),
+        shafts: writable_texture::<Rgba16Float>(width: max(ew / 2, 1), height: max(eh / 2, 1)),
+        dabs: texture::<Rgba16Float>(width: w, height: h),
+        history: texture::<Rgba16Float>(width: width, height: height),
+        last_history: texture::<Rgba16Float>(width: width, height: height),
+        glow_a: texture::<Rgba16Float>(width: qw, height: qh),
+        glow_b: texture::<Rgba16Float>(width: qw, height: qh),
+    }
+}
+
+/// What an effect reads from the frame: everything a shading pass reads (`lt`), the air's sky
+/// table and the clouds' dome (what water reflects), the sun's shadows, the wind and the time.
+pub borrow struct Effects {
+    pub lt: Lighting,
+    pub view: borrow Texture<Rgba16Float>,
+    pub dome: borrow Texture<Rgba16Float>,
+    pub sh: Shadows,
+    pub wind: Wind,
+    pub time: f32,
+}
+
+/// What a scene's load is given (`Scene::cook`): the plan to ask before each step, whether a
+/// capture fills its caches and whether an arrival is covered (what comes in under the cover is
+/// whole at once), the frame's length (s, at most 0.1), the eye (the world's, x and z), the render
+/// origin and the frame's number. The scene sets `near_changed` or `far_changed` when what casts
+/// into a static cascade changed.
+pub struct Cooks {
+    pub planner: Planner,
+    pub capture: bool,
+    pub arriving: bool,
+    pub dt: f32,
+    pub eye: vec2,
+    pub origin: vec3,
+    pub frames: u32,
+    pub near_changed: bool,
+    pub far_changed: bool,
+}
+
+// ---- Temporal AA's resolve -------------------------------------------------------------------
+
+/// How temporal AA brings the scene up to the output: a type, so a program holds one resolve's
+/// pipelines.
+pub trait Resolver {
+    fn made() -> Self
+
+    /// The scene is `w` × `h` now.
+    fn resize(mut self, w: u32, h: u32)
+
+    /// The history `into` resolved from the last (`t.last_history`) with this frame's scene.
+    fn resolve(
+        mut self,
+        into: mut Texture<Rgba16Float>,
+        r: Resolve,
+        scene: Texture<Rgba16Float>,
+        depth: DepthTexture,
+        last_depth: DepthTexture,
+        motion: Texture<Rgba16Float>,
+        last_motion: Texture<Rgba16Float>,
+        last_history: Texture<Rgba16Float>,
+        s: Sampler,
+    )
+}
+
+/// The scene drawn at the output's size: each output pixel gathers its own sample's
+/// neighbourhood (`temporal::resolve_gathered`). A frame with it keeps the render scale at 1.
+pub struct Gathered {}
+
+impl Resolver for Gathered {
+    fn made() -> Gathered {
+        Gathered {}
+    }
+
+    fn resize(mut self, w: u32, h: u32) {}
+
+    fn resolve(
+        mut self,
+        into: mut Texture<Rgba16Float>,
+        r: Resolve,
+        scene: Texture<Rgba16Float>,
+        depth: DepthTexture,
+        last_depth: DepthTexture,
+        motion: Texture<Rgba16Float>,
+        last_motion: Texture<Rgba16Float>,
+        last_history: Texture<Rgba16Float>,
+        s: Sampler,
+    ) {
+        let p = begin_pass(mut into)
+        fullscreen(
+            p,
+            resolve_gathered.bind(
+                r,
+                scene,
+                depth,
+                last_depth,
+                motion,
+                last_motion,
+                last_history,
+                s,
+            ),
+        )
+        p.end()
+    }
+}
+
+/// The scene drawn at any scale: each scene pixel's neighbourhood found once
+/// (`temporal::neighbourhoods`), and the output's pixels read their nearest's.
+pub struct Shared {
+    means: Texture<Rgba16Float>,
+    spreads: Texture<Rgba16Float>,
+}
+
+impl Resolver for Shared {
+    fn made() -> Shared {
+        Shared {
+            means: writable_texture::<Rgba16Float>(width: 1, height: 1),
+            spreads: writable_texture::<Rgba16Float>(width: 1, height: 1),
+        }
+    }
+
+    fn resize(mut self, w: u32, h: u32) {
+        self.means = writable_texture::<Rgba16Float>(width: w, height: h)
+        self.spreads = writable_texture::<Rgba16Float>(width: w, height: h)
+    }
+
+    fn resolve(
+        mut self,
+        into: mut Texture<Rgba16Float>,
+        r: Resolve,
+        scene: Texture<Rgba16Float>,
+        depth: DepthTexture,
+        last_depth: DepthTexture,
+        motion: Texture<Rgba16Float>,
+        last_motion: Texture<Rgba16Float>,
+        last_history: Texture<Rgba16Float>,
+        s: Sampler,
+    ) {
+        dispatch(neighbourhoods.bind(scene, mut self.means, mut self.spreads), over: scene)
+        let p = begin_pass(mut into)
+        fullscreen(
+            p,
+            resolve.bind(
+                r,
+                scene,
+                depth,
+                last_depth,
+                motion,
+                last_motion,
+                last_history,
+                self.means,
+                self.spreads,
+                s,
+            ),
+        )
+        p.end()
+    }
+}
+
+// ---- Quality ---------------------------------------------------------------------------------
+
+/// What a game may tune, once, given to `frame` and changed only through `Frame::requality`. The
+/// defaults are the Last Green's approved values, where they aren't the floor's own (its far
+/// cascade's place).
+pub struct Quality: Copy {
+    /// The scene's size over the output's (temporal AA brings it up). `Gathered` needs 1.
+    pub scale: f32 = 1.0,
+    pub shadows: ShadowQuality = ShadowQuality {},
+    pub probes: ProbeQuality = ProbeQuality {},
+    pub arrival: Arrival = Arrival {},
+    /// How much of this frame a pixel takes where a sample falls on it (temporal AA).
+    pub blend: f32 = 0.12,
+    pub budget: Budget = Budget {},
+}
+
+/// The static cascades: the near one (its square's `centre` is where it starts, and where it
+/// stays if it doesn't follow the eye), in how many strips it's drawn, and how far the eye goes
+/// from its middle before it's drawn again round it (at least 1e8: it stays); the far one (its
+/// middle stays in the world) and its strips; how far past a cascade's square a tree's shadow can
+/// reach into it (m: a 25 m tree's at a sun 24° up is 56 m long); and the moving map, its texels a
+/// side and how wide it is round what moves (m).
+pub struct ShadowQuality: Copy {
+    pub near: Cascade = Cascade { centre: vec3(0.0), span: 144.0, reach: 250.0, side: 2048 },
+    pub near_strips: u32 = 12,
+    pub near_moves: f32 = 40.0,
+    pub far: Cascade = Cascade { centre: vec3(0.0), span: 2400.0, reach: 2600.0, side: 2048 },
+    pub far_strips: u32 = 48,
+    pub reach_in: f32 = 60.0,
+    pub moving_side: u32 = 1024,
+    pub moving_span: f32 = 6.0,
+}
+
+/// The probes: how far the eye goes from their middle before the next are baked round it (m);
+/// the rays a probe is first baked with (of `probes::RAYS`); and whether, once baked, a strip is
+/// baked again each frame as the clouds drift (`probes::AGAIN_COLUMNS`).
+pub struct ProbeQuality: Copy {
+    pub moves: f32 = 30.0,
+    pub rays: u32 = 32,
+    pub again: bool = false,
+}
+
+/// An arrival: whether the frames stay covered until the light round the eye is drawn (at the
+/// start, and after a jump), how far the eye moves in a frame for a jump (m), and for how many
+/// frames under that light temporal AA gathers before the cover goes (a still's: `still_frames`).
+pub struct Arrival: Copy {
+    pub on: bool = true,
+    pub jump: f32 = 30.0,
+    pub gather: u32 = 12,
+    pub still_frames: u32 = 16,
+}
+
+/// The systems a frame can leave out (a test's or a key's): the static shadows' casters, the
+/// ground, temporal AA's history (each frame its own), the clouds' shadows.
+pub enum Off: Copy + Eq + Fieldless {
+    Shadows,
+    Terrain,
+    History,
+    CloudShadows,
+}
+
+/// How a frame is drawn for looking at it, not for play: systems left out; the develop's view
+/// (0 the look, 1 clay, 2 silhouettes: `paint::Develop`); plain rendering (the scene at the
+/// output's size, no jitter, history or look: the flicker test's reference); stills (each
+/// frame's jitter on a still's grid, and a capture fills its caches at once); and the wind
+/// still (the clouds' march keeps its jitter, the probes keep what they baked).
+pub struct Debug: Copy {
+    pub off: Flags<Off>,
+    pub view: u32 = 0,
+    pub plain: bool = false,
+    pub capture: bool = false,
+    pub still: bool = false,
+}
+
+// ---- Readiness ---------------------------------------------------------------------------------
+
+/// When frames are shown. `playable`: a full frame round the eye (the near cascade drawn, the
+/// probes in use baked whole, the scene streamed round the eye: `Scene::streamed`). `arriving`:
+/// since the frame began or the eye jumped (`Arrival`), frames are covered (black) until the
+/// light round the eye is drawn (`lit`), then for `gathered` consecutive lit frames (reset by any
+/// frame that isn't: no timeout), and temporal AA's history starts afresh on the first. A held
+/// shot's clock waits while it's covered.
+pub struct Readiness: Copy {
+    pub playable: bool,
+    pub arriving: bool,
+    pub gathered: u32,
+    pub playable_at: Option<u32>,
+}
+
+/// Arrival's count of consecutive lit frames: a frame that isn't lit starts it again.
+pub fn arrival_gathered(previous: u32, lit: bool) -> u32 {
+    if lit { previous + 1 } else { 0 }
+}
+
+/// A shot's clock while an arrival covers it: it stays at its start (`start`) until the cover
+/// goes, so its hold and move begin when its view can be shown.
+pub fn shot_clock(start: f32, time: f32, covered: bool) -> f32 {
+    if covered { time } else { start }
+}
+
+// ---- The probes ------------------------------------------------------------------------------
+
+/// The probes in use (`using`) round `at` (render space), and the next being baked beside them
+/// round `next_at` (once the eye has moved `ProbeQuality::moves`, or what they're baked from
+/// changed: the sun, its light, what occludes them, the ground), which take over when they're
+/// baked. Each remembers what it was started from: a replacement started from older inputs is
+/// dropped.
+pub struct Probes {
+    pub using: Baked,
+    pub at: vec2,
+    pub next: Option<Baked>,
+    pub next_at: vec2,
+    next_cooked: bool,
+    /// Whether the probes in use have their occluders (the first bake begins with them).
+    pub cooked: bool,
+    using_k: ProbeKey,
+    next_k: ProbeKey,
+}
+
+/// What probes are baked from: the version of what occludes them and of the ground
+/// (`Frame::changed`), and the sun's direction and light.
+type ProbeKey = (u32, vec3, vec3)
+
+impl Probes {
+    /// Whether the probes in use are baked whole.
+    pub fn done(self) -> bool {
+        self.using.done()
+    }
+}
+
+// ---- The frame -------------------------------------------------------------------------------
+
+/// A lit 3D program's frame (the module's comment): its quality, its debug state, the camera,
+/// the light and the air, the air's tables, the clouds, the static cascades and the moving map,
+/// the probes, the ground's clipmap, the targets, temporal AA's resolve, the metered exposure,
+/// the samplers, the plan, readiness, and what it was last cooked from.
+pub struct Frame<R: Resolver> {
+    quality: Quality,
+    pub debug: Debug,
+    pub look: Look,
+    pub metering: Metering,
+    pub cam: Camera,
+    pub light: Light,
+    pub air: Air,
+    pub tables: Tables,
+    pub sky: Sky,
+    pub clouds: Clouds,
+    pub near: Kept,
+    pub far: Kept,
+    pub moving: DepthTexture,
+    pub cmp: ComparisonSampler,
+    pub probes: Probes,
+    pub clipmap: Clipmap,
+    pub targets: Targets,
+    resolver: R,
+    pub exposure: GpuBuffer<Exposure>,
+    pub linear: Sampler,
+    pub repeat: Sampler,
+    pub cooks: Cooks,
+    pub ready: Readiness,
+    /// Frames drawn since the last resize, and frames run (a held screen runs frames it doesn't
+    /// draw).
+    pub frames: u32,
+    pub ran: u32,
+    /// Frames the camera has held still (`temporal::held`).
+    settled: u32,
+    width: u32,
+    height: u32,
+    /// The render origin (the world point, whole tiles, y 0).
+    pub origin: vec3,
+    /// Where the eye was last frame (the world's), whether it jumped this frame, the frame's
+    /// time and the last.
+    last_eye: vec2,
+    pub jumped: bool,
+    time: f32,
+    last_time: Option<f32>,
+    /// Whether a build that took over from another (hot reload) holds the screen it left: frames
+    /// cook, and present nothing.
+    pub hold: bool,
+    /// What's cooked from what: the air's tables and the probes' open sky (the air, the sun and
+    /// its light), the clouds' noise, their
+    /// weather (the sun, the weather's version), their shadow (whether it's on, the weather's
+    /// version), the static casters (the sun, whether they're on), and the versions of what
+    /// changed (`changed`).
+    air_cooked: Stale<(Air, vec3, vec3)>,
+    noise_cooked: bool,
+    weather_cooked: Stale<(vec3, u32)>,
+    cloud_shadow: Stale<(bool, u32)>,
+    casting: Stale<(vec3, bool)>,
+    cloud_wind: vec2,
+    ground_again: bool,
+    weather_v: u32,
+    probes_v: u32,
+}
+
+/// What changed of a scene, outside the frame's own state (the light and the air the frame
+/// compares itself): its ground (every level cooked again, the cascades and the probes too), its
+/// static casters (the cascades drawn again), what occludes the probes (baked again beside those
+/// in use), or the clouds' weather (cooked again, the dome marched afresh).
+pub enum Change: Copy + Eq + Fieldless {
+    Ground,
+    Casters,
+    Occluders,
+    Weather,
+}
+
+impl<R: Resolver> Frame<R> {
+    /// A frame of `quality`, lit by `light` through `air`, its ground in `clipmap`, its first camera
+    /// `first` (its own last), its probes' first grid `grid` round `at` (render space; baked once
+    /// what stands round them is in).
+    pub fn new(
+        quality: Quality,
+        light: Light,
+        air: Air,
+        clipmap: take Clipmap,
+        first: Camera,
+        grid: ProbeGrid,
+        at: vec2,
+    ) -> Frame<R> {
+        let sh = quality.shadows
+        let near_at = if sh.near_moves >= 1.0e8 { sh.near.centre } else { first.eye }
+        var probes = Baked::new(grid, Vec::new())
+        probes.strip_rays = quality.probes.rays
+        Frame {
+            quality,
+            debug: Debug { off: Flags::none() },
+            look: Look {},
+            metering: Metering {
+                base: 0.62,
+                reference: 0.136,
+                strength: 0.85,
+                lo: 0.15,
+                hi: 4.0,
+                rate: 0.05,
+                flash: 1.25,
+                fresh: 0,
+            },
+            cam: first,
+            light,
+            air,
+            tables: tables(),
+            sky: new_sky(),
+            clouds: Clouds {
+                eye: vec3(0.0),
+                phase: 0,
+                sun: light.sun,
+                blend: 1.0,
+                drift: vec2(0.0),
+                seed: 0,
+            },
+            near: Kept::new(
+                near_at,
+                sh.near.span,
+                reach: sh.near.reach,
+                reach_in: sh.reach_in,
+                side: sh.near.side,
+                strips: sh.near_strips,
+            ),
+            far: Kept::new(
+                sh.far.centre,
+                sh.far.span,
+                reach: sh.far.reach,
+                reach_in: sh.reach_in,
+                side: sh.far.side,
+                strips: sh.far_strips,
+            ),
+            moving: depth_texture(width: sh.moving_side, height: sh.moving_side),
+            cmp: comparison_sampler(),
+            probes: Probes {
+                using: probes,
+                at,
+                next: None,
+                next_at: at,
+                next_cooked: false,
+                cooked: false,
+                using_k: (0, vec3(0.0), vec3(0.0)),
+                next_k: (0, vec3(0.0), vec3(0.0)),
+            },
+            clipmap,
+            targets: no_targets(),
+            resolver: R::made(),
+            exposure: buffer(1),
+            linear: sampler(),
+            repeat: sampler(address: Address::Repeat),
+            cooks: Cooks {
+                planner: Planner::new(quality.budget),
+                capture: false,
+                arriving: quality.arrival.on,
+                dt: 0.0,
+                eye: vec2(0.0),
+                origin: vec3(0.0),
+                frames: 0,
+                near_changed: false,
+                far_changed: false,
+            },
+            ready: Readiness {
+                playable: false,
+                arriving: quality.arrival.on,
+                gathered: 0,
+                playable_at: None,
+            },
+            frames: 0,
+            ran: 0,
+            settled: 0,
+            width: 0,
+            height: 0,
+            origin: vec3(0.0),
+            last_eye: vec2(0.0),
+            jumped: false,
+            time: 0.0,
+            last_time: None,
+            hold: false,
+            air_cooked: Stale::new(),
+            noise_cooked: false,
+            weather_cooked: Stale::new(),
+            cloud_shadow: Stale::new(),
+            casting: Stale::new(),
+            cloud_wind: vec2(0.0),
+            ground_again: false,
+            weather_v: 0,
+            probes_v: 0,
+        }
+    }
+
+    /// The frame's quality.
+    pub fn quality(self) -> Quality {
+        self.quality
+    }
+
+    /// The quality changed to `q`: what depends on what changed is made again (the targets at
+    /// the next frame for the scale; temporal AA's history afresh).
+    pub fn requality(mut self, q: Quality) {
+        if q.scale != self.quality.scale {
+            self.width = 0
+        }
+        self.quality = q
+        self.cooks.planner = Planner::new(q.budget)
+    }
+
+    /// `c` changed (`Change`).
+    pub fn changed(mut self, c: Change) {
+        match c {
+            Change::Ground => {
+                self.ground_again = true
+                self.near.changed()
+                self.far.changed()
+                self.probes_v += 1
+            },
+            Change::Casters => {
+                self.near.changed()
+                self.far.changed()
+            },
+            Change::Occluders => self.probes_v += 1,
+            Change::Weather => self.weather_v += 1,
+        }
+    }
+
+    /// A system left out (or back, `on`): what it changes is drawn again.
+    pub fn set(mut self, off: Off, on: bool) {
+        if on == !self.debug.off.has(off) {
+            return
+        }
+        self.debug.off = self.debug.off.toggled(off)
+    }
+
+    /// Whether system `off` is drawn.
+    pub fn on(self, off: Off) -> bool {
+        !self.debug.off.has(off)
+    }
+
+    /// An arrival begins (a lookbook shot, a capture, a jump the eye didn't make): frames are
+    /// covered until the light round the eye is drawn and gathered. A capture's dome is marched
+    /// afresh round the new eye too.
+    pub fn arrive(mut self) {
+        if !self.quality.arrival.on {
+            return
+        }
+        self.ready.arriving = true
+        self.ready.gathered = 0
+        if self.debug.capture {
+            self.sky.frames = 0
+        }
+    }
+
+    /// The probes start again from nothing round where they are (what they were baked over went):
+    /// baked once what stands round them is in.
+    pub fn restart_probes<S: Scene>(mut self, scene: S) {
+        var b = Baked::new(scene.probe_grid(self.probes.at, self.origin), Vec::new())
+        b.strip_rays = self.quality.probes.rays
+        self.probes.using = take b
+        self.probes.cooked = false
+        self.probes.next = None
+    }
+
+    /// The air is `air` now: its tables cooked again, and the clouds' dome marched afresh.
+    pub fn set_air(mut self, air: Air) {
+        self.air = air
+        self.sky.frames = 0
+    }
+
+    /// The render origin moved to `origin` (whole tiles): everything kept in render space moves
+    /// by the old origin less the new, keeping what it cooked (the clipmap's levels, the probes
+    /// in use, the cascades, and the scene's own); probes being baked for a new place are
+    /// dropped (their occluders were cooked from the old render space: baked again round the
+    /// eye).
+    pub fn recentre<S: Scene>(mut self, scene: mut S, origin: vec3) {
+        if origin == self.origin {
+            return
+        }
+        let d = self.origin - origin
+        self.origin = origin
+        scene.shift(d)
+        self.clipmap.set_origin(origin.xz)
+        self.probes.using.shift(d.xz)
+        self.probes.at += d.xz
+        self.probes.next = None
+        self.near.shift(d)
+        self.far.shift(d)
+    }
+
+    /// The frame's size and camera: the output is `width` × `height`; the scene's at the render
+    /// scale (or the output's, drawn plain); the camera at `aim`, jittered unless plain, on a
+    /// still's grid when capturing. What a game does with the camera before `draw` (its sound, a
+    /// click's provenance) reads `cam`.
+    pub fn begin<S: Scene>(
+        mut self,
+        scene: mut S,
+        aim: Aim,
+        time: f32,
+        width: u32,
+        height: u32,
+    ) -> Camera {
+        let scale = if self.debug.plain { 1.0 } else { self.quality.scale }
+        let (w, h) = (max(u32(f32(width) * scale), 1), max(u32(f32(height) * scale), 1))
+        if width != self.width || height != self.height || f32(w) != self.cam.screen.x {
+            self.targets = targets_for(width, height, w, h, scene.has_effects())
+            self.resolver.resize(w, h)
+            scene.resized(w, h)
+            self.width = width
+            self.height = height
+            self.frames = 0
+            self.settled = 0
+        }
+        self.cooks.dt = match self.last_time {
+            Some(t) => clamp(time - t, 0.0, 0.1),
+            None => 0.0,
+        }
+        self.last_time = Some(time)
+        self.time = time
+        self.cam = camera(
+            aim.eye,
+            aim.at,
+            aim.fovy,
+            width: w,
+            height: h,
+            frame: self.frames,
+            time: time,
+            last: self.cam,
+            still: self.debug.plain,
+            origin: self.origin,
+            grid: self.debug.capture,
+        )
+        self.cam
+    }
+
+    /// This frame cooked and drawn (the module's comment), the camera `begin` made at `aim`.
+    pub fn draw<S: Scene>(mut self, scene: mut S, aim: Aim) {
+        let cam = self.cam
+        let eye = cam.eye
+        let eye_w = eye.xz + self.origin.xz
+        let wind = scene.wind(cam, self.time)
+        // The ground: mandatory, cooked first (`engine::cook`).
+        let again = self.ground_again
+        self.ground_again = false
+        let levels = scene.cook_ground(mut self.clipmap, eye, again)
+        let filling = self.debug.capture
+        // (The moving-cache rules hold from the first full frame on, through later arrivals.)
+        self.cooks.planner.begin(levels, self.ready.playable_at.is_some(), self.near.ready, filling)
+        self.cooks.capture = filling
+        self.cooks.arriving = self.ready.arriving
+        self.cooks.eye = eye_w
+        self.cooks.origin = self.origin
+        self.cooks.frames = self.frames
+        let steps = self.cooks.planner.steps(filling: true)
+        for _ in 0..steps {
+            scene.cook(mut self.cooks, mut self.clipmap, self.linear)
+        }
+        if self.cooks.near_changed {
+            self.near.changed()
+        }
+        if self.cooks.far_changed {
+            self.far.changed()
+        }
+        self.cooks.near_changed = false
+        self.cooks.far_changed = false
+        // The static cascades: drawn again when the sun or the casting moved; the near round
+        // where the eye is (a little ahead), the far round its place in the world.
+        let cast_key = (self.light.sun, self.on(Off::Shadows))
+        if self.casting.stale(cast_key) {
+            if self.casting.ready() {
+                self.near.changed()
+                self.far.changed()
+            }
+            self.casting.cooked(cast_key)
+        }
+        let q = self.quality.shadows
+        if q.near_moves < 1.0e8 {
+            self.near.follow(vec3(eye.x, scene.height_at(eye_w), eye.z), q.near_moves)
+        } else {
+            self.near.follow(q.near.centre - self.origin, 1.0e9)
+        }
+        self.far.follow(q.far.centre - self.origin, 1.0e9)
+        let moving_at = aim.moving_at + vec3(0.0, 1.0, 0.0)
+        var sh = shadows(
+            self.light.sun,
+            self.near.cascade(),
+            self.far.cascade(),
+            moving_at: moving_at,
+            moving_span: q.moving_span,
+            moving_side: q.moving_side,
+        )
+        for _ in 0..steps {
+            self.static_strip(mut scene, sh, wind)
+        }
+        // A completed strip set swaps its depth map and cascade together: shading uses the new
+        // cascade this frame, the moving map and the probes' bake too.
+        sh = shadows(
+            self.light.sun,
+            self.near.cascade(),
+            self.far.cascade(),
+            moving_at: moving_at,
+            moving_span: q.moving_span,
+            moving_side: q.moving_side,
+        )
+        label("shadow moving")
+        let mv = begin_depth_pass(mut self.moving, clear_depth: 1.0)
+        scene.cast_moving(mv, sh.moving)
+        mv.end()
+        // The sky a phase a frame (all of it while a capture fills the dome).
+        for k in 0..self.cooks.planner.steps(filling: !self.sky.done()) {
+            if k > 0 && self.sky.done() {
+                break
+            }
+            self.cook_sky(scene, eye, wind)
+        }
+        // The probes a strip a frame (many while a capture's bake is under way).
+        for _ in 0..steps {
+            let baking = !self.probes.done() || self.probes.next.is_some()
+            self.bake_probes(scene, sh, eye.xz)
+            if !baking {
+                break
+            }
+        }
+        // A jump: frames are covered while the light round the new eye is drawn.
+        self.jumped = self.frames > 0 && length(eye_w - self.last_eye) > self.quality.arrival.jump
+        if self.jumped {
+            self.arrive()
+        }
+        self.last_eye = eye_w
+        if self.ready.arriving {
+            self.ready.gathered = arrival_gathered(
+                self.ready.gathered,
+                self.lit(scene, eye.xz, eye_w),
+            )
+        }
+        self.ready.playable = self.playable(scene, eye_w)
+        if self.ready.playable && self.ready.playable_at.is_none() {
+            self.ready.playable_at = Some(self.frames)
+            print(f"playable at frame {self.frames}")
+        }
+        if self.hold {
+            self.ran += 1
+            return
+        }
+        swap(mut self.targets.depth, mut self.targets.last_depth)
+        self.draw_scene(mut scene, sh, wind)
+        self.finish(scene)
+        self.frames += 1
+        self.ran += 1
+    }
+
+    /// Whether a frame from `eye_w` (the world's) is full: the near cascade drawn, the probes in
+    /// use baked whole, and the scene streamed round it.
+    pub fn playable<S: Scene>(self, scene: S, eye_w: vec2) -> bool {
+        self.near.ready && self.probes.done() && scene.streamed(eye_w)
+    }
+
+    /// Whether the light round the eye (`eye` in render space, `eye_w` in the world) is drawn: a
+    /// full frame there, both cascades settled, the near one and the probes in use round it (not
+    /// round where the eye was).
+    pub fn lit<S: Scene>(self, scene: S, eye: vec2, eye_w: vec2) -> bool {
+        self.near.settled() &&
+            self.far.settled() &&
+            length(eye - self.near.centre.xz) <= self.quality.shadows.near_moves &&
+            self.probes.next.is_none() &&
+            length(eye - self.probes.at) <= self.quality.probes.moves &&
+            self.playable(scene, eye_w)
+    }
+
+    /// A strip of whichever static cascade is being drawn (the near first, the far once its
+    /// casters are in), as the plan allows.
+    fn static_strip<S: Scene>(mut self, scene: mut S, sh: Shadows, wind: Wind) {
+        let on = self.on(Off::Shadows)
+        let still = Wind { strength: 0.0, ..wind }
+        if self.near.drawing() && scene.casters_ready(far: false) {
+            if !self.cooks.planner.may(Work::NearStrip) {
+                return
+            }
+            label("shadows near")
+            strip_of(
+                mut self.near,
+                mut scene,
+                self.clipmap,
+                self.light.sun,
+                sh,
+                still,
+                self.linear,
+                self.cam,
+                on,
+            )
+            return
+        }
+        if self.far.drawing() && scene.casters_ready(far: true) {
+            if !self.cooks.planner.may(Work::FarStrip) {
+                return
+            }
+            label("shadows far")
+            strip_of(
+                mut self.far,
+                mut scene,
+                self.clipmap,
+                self.light.sun,
+                sh,
+                still,
+                self.linear,
+                self.cam,
+                on,
+            )
+        }
+    }
+
+    /// The sky, cooked a step a frame: the air's tables (again when the air or the light
+    /// changed) and the probes' open sky from them, after the first frame (which is full); the
+    /// clouds' noises; their weather and shadow maps (again when the sun or the weather
+    /// changed), each in a frame of its own (each is tens of milliseconds: together with the
+    /// load's other work, a frame took 137 ms); then a phase of the dome marched a frame, from
+    /// `eye`, the field drifted with the wind.
+    fn cook_sky<S: Scene>(mut self, scene: S, eye: vec3, wind: Wind) {
+        let air_key = (self.air, self.light.sun, self.light.sun_colour)
+        let weather_key = (self.light.sun, self.weather_v)
+        let cloud_shadows = self.on(Off::CloudShadows)
+        if self.ran > 0 {
+            if self.air_cooked.stale(air_key) {
+                self.cooks.planner.note(Work::AirTables)
+                self.tables.cook(self.air, self.linear)
+                self.probes.using.open(self.light, self.air.ground, self.tables.view, self.linear)
+                self.air_cooked.cooked(air_key)
+            } else if !self.noise_cooked {
+                self.cooks.planner.note(Work::SkyNoise)
+                self.sky.cook_noise()
+                self.noise_cooked = true
+            } else if self.weather_cooked.stale(weather_key) {
+                self.cooks.planner.note(Work::SkyWeather)
+                let w = scene.weather()
+                self.cloud_wind = w.wind
+                self.sky.cook_weather(w, self.light.sun, self.repeat, shadows: cloud_shadows)
+                self.weather_cooked.cooked(weather_key)
+                self.cloud_shadow.cooked((cloud_shadows, self.weather_cooked.version()))
+            }
+        }
+        let fresh = !self.weather_cooked.stale(weather_key)
+        let shadow_key = (cloud_shadows, self.weather_cooked.version())
+        if fresh && self.cloud_shadow.stale(shadow_key) {
+            self.sky.cook_shadow(self.light.sun, self.repeat, shadows: cloud_shadows)
+            self.cloud_shadow.cooked(shadow_key)
+        }
+        if fresh && self.cooks.planner.may(Work::SkyPhase) {
+            self.clouds = self.sky.march(
+                self.air,
+                self.light,
+                self.tables,
+                eye,
+                // The field's drift, less the render origin (`Clouds::drift`).
+                drift: self.cloud_wind * wind.time - self.cam.keyed().xz,
+                rep: self.repeat,
+                s: self.linear,
+                still: self.debug.still,
+                forward: self.cam.forward,
+                view: self.cam.corner_angle(),
+            )
+        }
+    }
+
+    /// The probes, lit by `sh`: the first baked round the eye once the near cascade, the air's
+    /// tables and the clouds' dome are drawn (the dome's light is what they bake: a dome half
+    /// marched left the light in shade greener and dimmer) and every static caster is in with
+    /// both cascades settled (the first probes see the light an arrival reveals), their occluders
+    /// cooked first, then a strip of columns a frame; then the next round the eye once it has
+    /// moved `ProbeQuality::moves` or what they're baked from changed, baked beside them and
+    /// swapped in when whole. While playable, not in a frame that cooked the ground or drew a
+    /// strip (one moving cache a frame).
+    fn bake_probes<S: Scene>(mut self, scene: S, sh: Shadows, eye: vec2) {
+        let air_key = (self.air, self.light.sun, self.light.sun_colour)
+        if !self.near.ready || self.air_cooked.stale(air_key) || !self.sky.done() {
+            return
+        }
+        if !self.cooks.planner.would(Work::ProbeStrip) {
+            return
+        }
+        // A still's probes wait for what's round the eye too: their occluders.
+        if self.debug.capture && scene.loading() {
+            return
+        }
+        if !self.probes.cooked &&
+            !(scene.casters_complete() && self.near.settled() && self.far.settled()) {
+            return
+        }
+        let key = (self.probes_v, self.light.sun, self.light.sun_colour)
+        let trace = scene.trace(self.light, self.probes.using.grid)
+        let texels = self.clipmap.texels()
+        let levels = self.clipmap.levels()
+        if !self.probes.cooked {
+            let Some(occluders) = scene.occluders(eye, self.origin) else { return }
+            if !self.cooks.planner.may(Work::ProbeOccluders) {
+                return
+            }
+            var b = Baked::new(scene.probe_grid(eye, self.origin), occluders)
+            b.strip_rays = self.quality.probes.rays
+            self.probes.using = take b
+            self.probes.at = eye
+            self.probes.using.open(self.light, self.air.ground, self.tables.view, self.linear)
+            self.probes.using.cook()
+            self.probes.cooked = true
+            self.probes.using_k = key
+            return
+        }
+        if !self.probes.done() {
+            if self.cooks.planner.may(Work::ProbeStrip) {
+                self.probes.using.bake_strip(
+                    scene.trace(self.light, self.probes.using.grid),
+                    sh,
+                    levels,
+                    texels,
+                    self.near.front,
+                    self.far.front,
+                    self.cmp,
+                    self.tables.view,
+                    self.sky.dome,
+                    self.linear,
+                )
+            }
+            return
+        }
+        // A replacement started from older inputs is dropped.
+        if self.probes.next.is_some() && self.probes.next_k != key {
+            self.probes.next = None
+        }
+        let moved = length(eye - self.probes.at) > self.quality.probes.moves
+        if self.probes.next.is_none() && (moved || self.probes.using_k != key) {
+            let Some(occluders) = scene.occluders(eye, self.origin) else { return }
+            var b = Baked::new(scene.probe_grid(eye, self.origin), occluders)
+            b.strip_rays = self.quality.probes.rays
+            self.probes.next = Some(take b)
+            self.probes.next_at = eye
+            self.probes.next_cooked = false
+            self.probes.next_k = key
+        }
+        var swap_now = false
+        match mut self.probes.next {
+            Some(next) => {
+                if !self.probes.next_cooked {
+                    if self.cooks.planner.may(Work::ProbeOccluders) {
+                        next.cook()
+                        next.open(self.light, self.air.ground, self.tables.view, self.linear)
+                        self.probes.next_cooked = true
+                    }
+                } else if !next.done() {
+                    if self.cooks.planner.may(Work::ProbeStrip) {
+                        next.bake_strip(
+                            Trace { grid: next.grid, ..trace },
+                            sh,
+                            levels,
+                            texels,
+                            self.near.front,
+                            self.far.front,
+                            self.cmp,
+                            self.tables.view,
+                            self.sky.dome,
+                            self.linear,
+                        )
+                    }
+                } else {
+                    swap_now = true
+                }
+            },
+            None => {
+                // Once baked, a strip baked again a frame as the clouds drift.
+                if self.quality.probes.again &&
+                    !self.debug.still &&
+                    self.cooks.planner.may(Work::ProbeStrip) {
+                    self.probes.using.bake_strip(
+                        trace,
+                        sh,
+                        levels,
+                        texels,
+                        self.near.front,
+                        self.far.front,
+                        self.cmp,
+                        self.tables.view,
+                        self.sky.dome,
+                        self.linear,
+                    )
+                }
+            },
+        }
+        if swap_now {
+            self.probes.using = replace(mut self.probes.next, None).unwrap()
+            self.probes.at = self.probes.next_at
+            self.probes.using_k = self.probes.next_k
+        }
+    }
+
+    /// The scene's passes, lit by `sh`, the probes and the clouds: what the GPU chooses, the
+    /// depth prepass, the lit scene, the ground, the characters and the sky, the effects, and
+    /// what moved.
+    fn draw_scene<S: Scene>(mut self, scene: mut S, sh: Shadows, wind: Wind) {
+        let cam = self.cam
+        var grid = self.probes.using.grid
+        // Until the probes are baked (or where they don't light the scene), the open sky lights
+        // everything.
+        if !self.probes.done() || !scene.probes_lit() {
+            grid.cols = 0
+        }
+        borrow maps = self.probes.using.maps
+        let texels = self.clipmap.texels()
+        let grounds = self.probes.using.grounds.span(
+            start: 0,
+            count: self.probes.using.grid.probes(),
+        )
+        let lt = Lighting {
+            cam,
+            light: self.light,
+            shadows: sh,
+            grid,
+            clouds: self.clouds,
+            levels: self.clipmap.levels(),
+            near: self.near.front,
+            far: self.far.front,
+            moving: self.moving,
+            cmp: self.cmp,
+            probes: maps,
+            grounds,
+            cloud: self.sky.shadow,
+            air: self.tables.aerial,
+            s: self.linear,
+        }
+        label("vegetation choose")
+        scene.choose(lt, texels)
+        label("vegetation prepass")
+        let pre = begin_pass_with_depth(
+            mut self.targets.ids,
+            mut self.targets.depth,
+            clear: vec4(0.0),
+            clear_depth: 0.0,
+        )
+        scene.prepass(pre, cam, wind, self.linear)
+        pre.end()
+        scene.after_prepass(mut self.targets, cam, wind, self.linear)
+        label("vegetation")
+        let veg = begin_pass_with_depth(
+            mut self.targets.scene,
+            mut self.targets.depth,
+            clear: vec4(0.0),
+            keep_depth: true,
+        )
+        scene.shade(veg, lt, wind, self.targets.ids)
+        veg.end()
+        let terrain = self.on(Off::Terrain)
+        label("terrain")
+        let ter = begin_pass_with_depth(
+            mut self.targets.scene,
+            mut self.targets.depth,
+            keep: true,
+            keep_depth: true,
+        )
+        if terrain {
+            for l in 0..lt.levels.count {
+                draw(
+                    ter,
+                    ground.bind(cam, lt.levels, texels),
+                    ground_shade.bind(
+                        lt,
+                        texels,
+                        litter: self.clipmap.details.litter,
+                        soil: self.clipmap.details.soil,
+                        rock: self.clipmap.details.rock,
+                        moss: self.clipmap.details.moss,
+                        ds: self.clipmap.details.s,
+                    ),
+                    indices: self.clipmap.indices(),
+                    indirect: self.clipmap.draw_args(l),
+                    depth: NEAREST,
+                )
+            }
+        }
+        ter.end()
+        label("creature")
+        let cr = begin_pass_with_depth(
+            mut self.targets.scene,
+            mut self.targets.depth,
+            keep: true,
+            keep_depth: true,
+            join: true,
+        )
+        scene.characters(cr, lt)
+        cr.end()
+        label("sky")
+        let sky = begin_pass_with_depth(
+            mut self.targets.scene,
+            mut self.targets.depth,
+            keep: true,
+            keep_depth: true,
+            join: true,
+        )
+        if !scene.sky_instead(sky) {
+            draw(
+                sky,
+                full.bind(z: 0.0),
+                sky_shade.bind(
+                    cam,
+                    self.light,
+                    view: self.tables.view,
+                    dome: self.sky.dome,
+                    s: self.linear,
+                ),
+                vertices: 3,
+                depth: BEHIND,
+            )
+        }
+        sky.end()
+        let fx = Effects {
+            lt,
+            view: self.tables.view,
+            dome: self.sky.dome,
+            sh,
+            wind,
+            time: self.time,
+        }
+        scene.effects(mut self.targets, fx)
+        // What moved, over the older motion target: the last frame's is kept.
+        label("motion")
+        swap(mut self.targets.motion, mut self.targets.last_motion)
+        let mo = begin_pass_with_depth(
+            mut self.targets.motion,
+            mut self.targets.depth,
+            clear: vec4(0.0),
+            keep_depth: true,
+        )
+        scene.motion(mo, cam, wind)
+        mo.end()
+    }
+
+    /// Temporal AA up to the output, then the look's passes to the screen (or an arrival's
+    /// cover, plain rendering, or a scene's own view).
+    fn finish<S: Scene>(mut self, scene: S) {
+        let cam = self.cam
+        let out = vec2(f32(self.width), f32(self.height))
+        // An arrival's first frame under the new eye's light: temporal AA's history starts again.
+        let again = self.ready.arriving && self.ready.gathered == 1
+        let fresh = self.frames == 0 || self.debug.plain || again || !self.on(Off::History)
+        let r = Resolve {
+            cam,
+            out,
+            blend: self.quality.blend,
+            fresh: if fresh { 1 } else { 0 },
+            jitter: jitter_of(cam.frame, cam.grid != 0),
+            last_jitter: jitter_of(max(cam.frame, 1) - 1, cam.grid != 0),
+            moving: scene.moves_in(cam, out),
+            settled: if again { 0.0 } else { f32(self.settled) },
+        }
+        self.settled = if !held(cam) { 0 } else if again { 1 } else { self.settled + 1 }
+        let instead = scene.shows_instead()
+        // The lines, on the scene's own samples, so temporal AA anti-aliases them (none in the
+        // debug views of form).
+        if !self.debug.plain && self.debug.view == 0 && !instead {
+            label("lines")
+            let d = Develop { cam, look: self.look, out, view: 0 }
+            let lp = begin_pass(mut self.targets.scene_b)
+            fullscreen(lp, lines.bind(d, self.targets.scene, self.targets.depth))
+            lp.end()
+            swap(mut self.targets.scene, mut self.targets.scene_b)
+        }
+        label("temporal")
+        swap(mut self.targets.history, mut self.targets.last_history)
+        self.resolver.resolve(
+            mut self.targets.history,
+            r,
+            self.targets.scene,
+            self.targets.depth,
+            self.targets.last_depth,
+            self.targets.motion,
+            self.targets.last_motion,
+            self.targets.last_history,
+            self.linear,
+        )
+        label("look")
+        // (While arriving, the exposure is metered afresh each frame: the eye arrives adapted.)
+        let m = Metering { fresh: if self.frames == 0 || self.ready.arriving { 1 } else {
+            0
+        }, ..self.metering }
+        dispatch(meter.bind(self.targets.scene, m, exposure: mut self.exposure), groups: 1)
+        if self.ready.arriving {
+            let a = self.quality.arrival
+            let gather = if self.debug.capture { a.still_frames - 1 } else { a.gather }
+            if self.ready.gathered > gather {
+                self.ready.arriving = false
+                if self.debug.capture {
+                    print(f"still at frame {self.frames}")
+                }
+            } else {
+                let black = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
+                black.present()
+                return
+            }
+        }
+        let e = self.exposure.items()
+        if instead || self.debug.plain {
+            let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
+            scene.show_instead(screen, self.targets, e)
+            screen.present()
+            return
+        }
+        let d = Develop { cam, look: self.look, out, view: self.debug.view }
+        let dp = begin_pass(mut self.targets.dabs)
+        fullscreen(
+            dp,
+            dab_map.bind(
+                cam,
+                look: d.look,
+                out: d.out,
+                levels: self.clipmap.levels(),
+                texels: self.clipmap.texels(),
+                scene: self.targets.scene,
+                depth: self.targets.depth,
+            ),
+        )
+        dp.end()
+        let down = begin_pass(mut self.targets.glow_a)
+        fullscreen(
+            down,
+            glow_down.bind(
+                self.targets.history,
+                s: self.linear,
+                threshold: 1.1,
+                base: self.metering.base,
+                exposure: e,
+            ),
+        )
+        down.end()
+        let x = begin_pass(mut self.targets.glow_b)
+        fullscreen(
+            x,
+            glow_blur.bind(src: self.targets.glow_a, s: self.linear, across: 0, spread: 2.0),
+        )
+        x.end()
+        let y = begin_pass(mut self.targets.glow_a)
+        fullscreen(
+            y,
+            glow_blur.bind(src: self.targets.glow_b, s: self.linear, across: 1, spread: 2.0),
+        )
+        y.end()
+        let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
+        fullscreen(
+            screen,
+            develop.bind(
+                d,
+                self.targets.history,
+                self.targets.depth,
+                glow: self.targets.glow_a,
+                dabs: self.targets.dabs,
+                s: self.linear,
+                exposure: e,
+            ),
+        )
+        scene.overlay(screen, out)
+        screen.present()
+    }
+}
+
+/// A strip of `kept` drawn: the scene's casters in its part of the square (chosen first), and on
+/// its first strip the ground where it casts; after the last, the maps swap.
+fn strip_of<S: Scene>(
+    kept: mut Kept,
+    scene: mut S,
+    clipmap: Clipmap,
+    sun: vec3,
+    sh: Shadows,
+    wind: Wind,
+    s: Sampler,
+    cam: Camera,
+    on: bool,
+) {
+    let Some(strip) = kept.strip(sun) else { return }
+    if on {
+        scene.choose_casters(cam, strip.lo, strip.hi)
+    }
+    let pass = begin_depth_pass(mut kept.back, clear_depth: 1.0, keep_depth: !strip.first)
+    if on {
+        scene.cast(pass, strip.view, sh, wind, s, strip.first)
+        if strip.first && scene.ground_casts() {
+            clipmap.cast(pass, strip.view)
+        }
+    }
+    pass.end()
+    kept.drawn()
+}
+
+// ---- tests ---------------------------------------------------------------------------------
+
+/// Arrival resolves only consecutive lit frames: no timeout makes an unlit arrival visible, and a
+/// frame that isn't lit (a late tile, a cache replaced) starts the count again.
+@test
+fn an_arrival_waits_for_complete_frames_without_a_timeout() {
+    var gathered = 0
+    for _ in 0..600 {
+        gathered = arrival_gathered(gathered, lit: false)
+        assert(gathered == 0, "an unready arrival was forced visible by elapsed frames")
+    }
+    let gather = Arrival {}.gather
+    for _ in 0..gather {
+        gathered = arrival_gathered(gathered, lit: true)
+    }
+    assert(gathered == gather, "lit frames did not gather")
+    gathered = arrival_gathered(gathered, lit: false)
+    assert(gathered == 0, "a later cache update retained an earlier lit count")
+}
+
+/// A shot's clock holds at its start while covered, and runs once the cover goes.
+@test
+fn a_shot_waits_while_covered() {
+    var started = 0.0
+    for i in 0..601 {
+        started = shot_clock(started, f32(i) / 60.0, covered: true)
+        assert(started == f32(i) / 60.0, "the shot's clock ran while covered")
+    }
+    let held = shot_clock(started, 20.0, covered: false)
+    assert(held == started, "the shot's clock jumped when the cover went")
+}

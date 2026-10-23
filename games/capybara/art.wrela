@@ -15,7 +15,7 @@
 // there's no tone curve and no glow.
 
 use engine::noise::noise2_wrapped
-use engine::plant::full
+use engine::frame::full
 use ink::{GRAIN_CELLS, INK, PAPER}
 use shapes::blend
 use std::gpu::{FragCoord, Rgba16Float, Sampler, Texture, begin_pass, draw, texture}

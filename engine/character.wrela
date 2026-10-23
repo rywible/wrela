@@ -21,6 +21,7 @@ use std::gpu::{
     ClipPosition, Cull, Flat, FragCoord, GlobalId, GpuBuffer, RenderPass, Slots, Unorm8x4,
     VertexIndex, buffer, copy, discard, dispatch, draw, write,
 }
+use std::derive::Box3
 use std::job::{Job, Step}
 use std::transform::{rotate_y, translate}
 use temporal::motion_of
@@ -307,6 +308,8 @@ pub struct Cast<C, K: creature::Creature<C>, L: Look<C>> {
     slices: u32,
     job: Option<Job<realize::realizing<C, K>>>,
     pub realized: Option<Realized>,
+    /// The box its mesh lies in at rest, once it's realized.
+    pub bounds: Box3,
     palette: GpuBuffer<mat4>,
     last: GpuBuffer<mat4>,
     /// Whether it's drawn this frame, and whether it falls in the moving shadow map.
@@ -328,6 +331,7 @@ pub fn cast<C, K: creature::Creature<C>, L: Look<C>>(
         slices,
         job: None,
         realized: None,
+        bounds: Box3 { lo: vec3(0.0), hi: vec3(0.0) },
         palette: buffer(creature::MAX_BONES),
         last: buffer(creature::MAX_BONES),
         on: false,
@@ -350,6 +354,7 @@ impl<C, K: creature::Creature<C>, L: Look<C>> Cast<C, K, L> {
                 Step::Yielded => {},
                 Step::Done(whole) => {
                     let c = materials(whole.mesh, self.creature.field(), self.look, cell: 1cm)
+                    self.bounds = whole.bounds
                     self.realized = Some(Realized { mesh: take whole.mesh, materials: c })
                     self.job = None
                 },
@@ -360,7 +365,7 @@ impl<C, K: creature::Creature<C>, L: Look<C>> Cast<C, K, L> {
 
     /// This frame's palette, `bones`; and whether it's in the moving shadow map. Where it wasn't
     /// drawn last frame, or the render space moved (`moved`), the last palette is this one: no
-    /// place to move from.
+    /// place to move from. Its mesh is realized as the plan allows (`realize`, a slice a frame).
     pub fn pose(mut self, bones: [mat4; creature::MAX_BONES], shadowed: bool, moved: bool) {
         copy(from: self.palette.items(), to: self.last.items_mut())
         write(mut self.palette, 0, bones)
@@ -369,7 +374,11 @@ impl<C, K: creature::Creature<C>, L: Look<C>> Cast<C, K, L> {
         }
         self.on = true
         self.shadowed = shadowed
-        self.realize()
+    }
+
+    /// Whether it's wanted (posed this frame) and not yet realized: a slice of its mesh is due.
+    pub fn realizing(self) -> bool {
+        self.on && self.realized.is_none()
     }
 
     /// Not drawn this frame.

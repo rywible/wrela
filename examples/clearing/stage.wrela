@@ -1,0 +1,450 @@
+// What the clearing draws, casts and cooks (`engine::frame::Scene`): its ground, its wood (the
+// woods' kinds cooked two a frame at load, then one tile of the engine's streamed wood), its
+// boulders, its grass and flowers, and the walking fawn.
+
+use creature::{Fawn, Grown, REALIZED, SKELETON, grown}
+use fawn::creature::Coat
+use engine::character::{Cast, PartOf, cast, parts_of}
+use engine::cook::Work
+use engine::frame::{Cooks, Scene, Targets, full}
+use engine::gait::{Walker, posed_bounds}
+use engine::grass::{Blooms, Grass, GrassLook}
+use engine::light::Light
+use engine::lit::Lighting
+use engine::paint::Exposure
+use engine::plant::Wind
+use engine::probes::{Occluder, ProbeGrid, Trace, grid}
+use engine::shadow::Shadows
+use engine::sky::Weather
+use engine::stone::{Realized, stone_shade, stone_shadow, stone_vertex}
+use engine::temporal::seen_box
+use engine::terrain::{Clipmap, Terrain, Texel}
+use engine::vegetation::{Kind, kind, nothing}
+use engine::view::{BEHIND, Camera, NEAREST}
+use engine::wood::Wood
+use rocks::{BOULDERS, boulder, footprints}
+use scene::{Ground, MEADOW}
+use std::collections::{Flags, replace}
+use std::gpu::{
+    Cull, GpuBuffer, GpuSpan, R32Uint, RenderPass, Rgba8, Sampler, ScreenPass, Texture, buffer_of,
+    draw, texture,
+}
+use std::mem::test_build
+use testing::View
+use trees::{KINDS, Woods, woods}
+
+/// The forest's card width for its levels, in the scene's pixels (`Lod::card_px`): the levels
+/// are chosen as the game draws them, at the game's scale (`SCALE`), so a scene drawn at another
+/// scale (a test's native frame) draws the same levels and fades, the same content.
+pub fn card_px(scale: u32) -> f32 {
+    engine::lod::CARD_PX * f32(SCALE) / f32(scale)
+}
+
+/// The scene's size against the output's: half each way (Q3 of #51).
+pub const SCALE: u32 = 2
+
+/// Where the forest's levels hand over: its cards to impostors, and impostors to volumes (m).
+pub const CARDS_TO: f32 = 150.0
+pub const IMPOSTORS_TO: f32 = 1000.0
+
+/// The forest's kinds cooked a frame at load (a short submission each: the GPU safety rule,
+/// AC6), and the creature's slices of its mesh a frame.
+const KINDS_PER_FRAME: u32 = 2
+const CREATURE_SLICES: u32 = 1
+
+/// The tile the clearing's wood is in: the whole of it, in one slot.
+const TILE = vec2i(0)
+
+/// Which part of the creature each of its bones is in, for its lines (`parts_of`).
+const PARTS: PartOf = parts_of(SKELETON)
+
+/// The systems a frame can leave out: the keys toggle the first four, and tests the rest
+/// (`test_off`): the creature, the stones, the sky (a key colour where nothing was drawn), the
+/// wind (held at time 0), temporal AA's history (each frame its own) and the clouds' shadows. A
+/// system's bit in `off` is its discriminant's, which the tests' `off` numbers too.
+pub enum System: Copy + Eq + Fieldless {
+    Trees,
+    Grass,
+    Shadows,
+    Terrain,
+    Creature,
+    Stones,
+    Sky,
+    Wind,
+    History,
+    CloudShadows,
+}
+
+pub fn on(off: Flags<System>, system: System) -> bool {
+    !off.has(system)
+}
+
+/// The clearing's scene: what its woods are made from and their kinds cooked so far with their
+/// leaves' atlas, then the wood; the boulders and where the grass keeps out of them; the grass;
+/// the fawn, its walker and the box its pose reaches; the systems left out; how a frame is shown
+/// (a test's view), the scene's scale and the light (for a test's view).
+pub struct Stage {
+    pub woods: Woods,
+    pub kinds: Vec<Kind>,
+    atlas: Texture<Rgba8>,
+    pub wood: Option<Wood>,
+    pub stones: Vec<Realized>,
+    pub footprints: GpuBuffer<vec4>,
+    pub grass: Grass,
+    pub fawn: Cast<Coat, Grown, Fawn>,
+    pub walker: Walker,
+    pub off: Flags<System>,
+    pub view: View,
+    pub scale: u32,
+    pub light: Light,
+    /// What the stage was last made at (the scene's size), for the wood's levels.
+    pub card_px: f32,
+}
+
+/// The clearing's scene, uncooked: its kinds cooked from the first frame.
+pub fn stage(walker: Walker, light: Light) -> Stage {
+    Stage {
+        woods: woods(),
+        kinds: Vec::new(),
+        atlas: engine::plant::leaf_atlas(6),
+        wood: None,
+        stones: Vec::new(),
+        footprints: buffer_of(footprints(), at_least: 1),
+        grass: Grass::new(),
+        fawn: cast(grown(), Fawn {}, REALIZED, CREATURE_SLICES),
+        walker,
+        off: Flags::none(),
+        view: View::Look,
+        scale: SCALE,
+        light,
+        card_px: card_px(SCALE),
+    }
+}
+
+/// The clearing's wind at `time`.
+pub fn wind(time: f32) -> Wind {
+    Wind { dir: normalize(vec2(-0.55, 0.3)), strength: 0.035, time }
+}
+
+impl Stage {
+    /// The wood's levels chosen, and its cuts' cells sized, for a scene drawn at `scale`.
+    pub fn fit(mut self) {
+        let scale = self.scale
+        match mut self.wood {
+            Some(w) => {
+                w.card_px = card_px(scale)
+                w.cell = 1.0 / f32(scale)
+                w.write_lods()
+            },
+            None => {},
+        }
+    }
+
+    /// The woods made again (an edit of their literals): their kinds cooked at once, with the
+    /// leaves' atlas the wood was cooked with, and the wood loaded with them.
+    pub fn remake_woods(mut self, linear: Sampler) {
+        self.woods = woods()
+        let Some(w) = replace(mut self.wood, None) else { return }
+        var kinds: Vec<Kind> = Vec::new()
+        for k in 0..KINDS {
+            kinds.push(kind(self.woods.plants[k], seed: k + 1, atlas: w.atlas, s: linear))
+        }
+        self.wood = Some(self.made(take kinds, take w.atlas))
+    }
+
+    /// A wood of `kinds` (cooked with `atlas`), the woods' instances loaded into its one tile.
+    fn made(self, kinds: take Vec<Kind>, atlas: take Texture<Rgba8>) -> Wood {
+        let no_far: Vec<u32> = Vec::new()
+        var w = Wood::new(
+            take kinds,
+            take no_far,
+            take atlas,
+            slots: 1,
+            cards_to: CARDS_TO,
+            impostors_to: IMPOSTORS_TO,
+        )
+        w.card_px = card_px(self.scale)
+        w.cell = 1.0 / f32(self.scale)
+        w.write_lods()
+        let _ = w.load(TILE, self.woods.placed)
+        w
+    }
+
+    /// Whether the creature is drawn this frame.
+    fn creature_on(self) -> bool {
+        on(self.off, System::Creature) && self.fawn.on
+    }
+}
+
+impl Scene for Stage {
+    fn wind(self, cam: Camera, time: f32) -> Wind {
+        wind(if on(self.off, System::Wind) { time } else { 0.0 })
+    }
+
+    fn weather(self) -> Weather {
+        clouds::weather::weather()
+    }
+
+    /// The probes trace through the occluders, the crowns' dim green (and, bounced, their
+    /// leaves' albedo), 48 m.
+    fn trace(self, light: Light, grid: ProbeGrid) -> Trace {
+        Trace {
+            light,
+            grid,
+            foliage: vec3(0.035, 0.07, 0.02),
+            reach: 48.0,
+            leaf: vec3(0.10, 0.18, 0.04),
+            bounced: 0,
+        }
+    }
+
+    /// The probes over the meadow, wherever the eye is.
+    fn probe_grid(self, at: vec2, origin: vec3) -> ProbeGrid {
+        grid(MEADOW, cols: 81, spacing: 2.0, low: -12.0, high: 40.0, voxel: 1.0)
+    }
+
+    /// What occludes the probes: the woods' trees and the boulders.
+    fn occluders(self, at: vec2, origin: vec3) -> Option<Vec<Occluder>> {
+        let g = self.probe_grid(at, origin)
+        var occ = trees::occluders(
+            self.woods.placed,
+            self.woods.plants,
+            lo: g.corner,
+            hi: g.corner + vec2(160.0),
+        )
+        var stones = rocks::occluders()
+        occ.append(mut stones)
+        Some(take occ)
+    }
+
+    fn height_at(self, world: vec2) -> f32 {
+        Ground {}.height(world.x, world.y)
+    }
+
+    fn cook_ground(mut self, clipmap: mut Clipmap, eye: vec3, again: bool) -> u32 {
+        clipmap.follow(Ground {}, eye, again)
+    }
+
+    /// The load's work this frame: the forest's kinds, a few a frame, and the wood once they're
+    /// all cooked; a boulder; and a slice of the creature's mesh, until it's whole.
+    fn cook(mut self, c: mut Cooks, clipmap: mut Clipmap, linear: Sampler) {
+        if self.wood.is_none() {
+            for _ in 0..KINDS_PER_FRAME {
+                let k = self.kinds.len()
+                if k < KINDS && c.planner.may(Work::Kind) {
+                    self.kinds.push(
+                        kind(self.woods.plants[k], seed: k + 1, atlas: self.atlas, s: linear),
+                    )
+                }
+            }
+            if self.kinds.len() == KINDS {
+                let kinds = replace(mut self.kinds, Vec::new())
+                let atlas = replace(mut self.atlas, texture::<Rgba8>(width: 1, height: 1))
+                self.wood = Some(self.made(take kinds, take atlas))
+            }
+        }
+        if self.stones.len() < BOULDERS && c.planner.may(Work::Built) {
+            self.stones.push(boulder(self.stones.len()))
+        }
+        if self.fawn.realizing() && c.planner.may(Work::Realize) {
+            self.fawn.realize()
+        }
+    }
+
+    fn streamed(self, eye: vec2) -> bool {
+        self.wood.is_some() && self.stones.len() == BOULDERS
+    }
+
+    fn casters_complete(self) -> bool {
+        self.wood.is_some() && self.stones.len() == BOULDERS
+    }
+
+    /// The static cascades wait for the whole forest and every boulder: drawn before, they'd be
+    /// drawn again as each came.
+    fn casters_ready(self, far: bool) -> bool {
+        self.wood.is_some() && self.stones.len() == BOULDERS
+    }
+
+    fn choose_casters(mut self, cam: Camera, lo: vec2, hi: vec2) {
+        if on(self.off, System::Trees) {
+            match mut self.wood {
+                Some(w) => w.select_shadow(cam, lo, hi),
+                None => {},
+            }
+        }
+    }
+
+    /// The forest, cut to its leaves, into each cascade, and the boulders.
+    fn cast<P: RenderPass>(
+        self,
+        pass: P,
+        view: mat4,
+        sh: Shadows,
+        wind: Wind,
+        s: Sampler,
+        first: bool,
+    ) {
+        if on(self.off, System::Trees) {
+            if let Some(w) = self.wood {
+                w.shadow(pass, view, sh, wind, s)
+            }
+        }
+        if first {
+            for st in self.stones {
+                draw(
+                    pass,
+                    stone_shadow.bind(verts: st.mesh.verts.items(), at: st.at, view: view),
+                    nothing,
+                    indices: st.mesh.quads.items(),
+                    indirect: st.mesh.draw.items(),
+                    depth_bias: engine::shadow::CASTER,
+                )
+            }
+        }
+    }
+
+    /// The moving map: the creature, if it's drawn.
+    fn cast_moving<P: RenderPass>(self, pass: P, view: mat4) {
+        if self.creature_on() {
+            self.fawn.shadow(pass, view)
+        }
+    }
+
+    fn choose(mut self, lt: Lighting, texels: GpuSpan<Texel>) {
+        self.grass.place(
+            lt.cam,
+            lt.light,
+            lt.grid,
+            lt.levels,
+            texels,
+            lt.probes,
+            lt.clouds,
+            lt.cloud,
+            lt.s,
+            lt.grounds,
+            stones: self.footprints.items(),
+        )
+        if on(self.off, System::Trees) {
+            match mut self.wood {
+                Some(w) => w.select(lt.cam),
+                None => {},
+            }
+        }
+    }
+
+    /// The depth prepass: the near cut cards and the grass's flowers.
+    fn prepass<P: RenderPass>(self, pass: P, cam: Camera, wind: Wind, s: Sampler) {
+        if on(self.off, System::Trees) {
+            if let Some(w) = self.wood {
+                w.prepass_cards(pass, cam, wind, s)
+            }
+        }
+        if on(self.off, System::Grass) {
+            self.grass.prepass(pass, cam, wind)
+        }
+    }
+
+    /// The far crowns behind the near ones put out, and the rest drawn into the prepass.
+    fn after_prepass(mut self, t: mut Targets, cam: Camera, wind: Wind, s: Sampler) {
+        if !on(self.off, System::Trees) {
+            return
+        }
+        match mut self.wood {
+            Some(w) => {
+                std::gpu::label("vegetation occlusion")
+                w.occlude(cam, t.depth)
+                std::gpu::label("vegetation far")
+                let far = std::gpu::begin_pass_with_depth(
+                    mut t.ids,
+                    mut t.depth,
+                    keep: true,
+                    keep_depth: true,
+                )
+                w.prepass_far(far, cam, wind, s)
+                far.end()
+            },
+            None => {},
+        }
+    }
+
+    /// The vegetation: the grass and the boulders, then the trees where the prepass left them.
+    fn shade<P: RenderPass>(self, pass: P, lt: Lighting, wind: Wind, ids: Texture<R32Uint>) {
+        if on(self.off, System::Grass) {
+            self.grass.shade(pass, lt, wind, GrassLook {}, Blooms {})
+        }
+        if on(self.off, System::Stones) {
+            for st in self.stones {
+                draw(
+                    pass,
+                    stone_vertex.bind(
+                        verts: st.mesh.verts.items(),
+                        colours: st.colours.items(),
+                        at: st.at,
+                        seed: st.seed,
+                        cam: lt.cam,
+                    ),
+                    stone_shade.bind(lt),
+                    indices: st.mesh.quads.items(),
+                    indirect: st.mesh.draw.items(),
+                    cull: Cull::Back,
+                    depth: NEAREST,
+                )
+            }
+        }
+        if on(self.off, System::Trees) {
+            if let Some(w) = self.wood {
+                w.shade(pass, lt, wind, ids)
+            }
+        }
+    }
+
+    fn characters<P: RenderPass>(self, pass: P, lt: Lighting) {
+        if self.creature_on() {
+            self.fawn.draw(pass, lt, lt.cam, PARTS)
+        }
+    }
+
+    /// A test's key colour in place of the sky (`test_off`), in a test build only.
+    fn sky_instead<P: RenderPass>(self, pass: P) -> bool {
+        if !test_build() || on(self.off, System::Sky) {
+            return false
+        }
+        draw(pass, full.bind(z: 0.0), testing::key, vertices: 3, depth: BEHIND)
+        true
+    }
+
+    /// The creature's motion: its palette against its last.
+    fn motion<P: RenderPass>(mut self, pass: P, cam: Camera, wind: Wind) {
+        if self.creature_on() {
+            self.fawn.motion(pass, cam)
+        }
+    }
+
+    /// Where what moves can be on the output, now or last frame: the creature's box as the
+    /// camera sees it each time (its mesh's at rest, posed, 15 cm wider for what its pose reaches
+    /// past that and for where it was last frame), a few pixels wider.
+    fn moves_in(self, cam: Camera, out: vec2) -> vec4 {
+        if !self.creature_on() || self.fawn.realized.is_none() {
+            return vec4(0.0, 0.0, -1.0, -1.0)
+        }
+        let body = posed_bounds(self.walker, self.fawn.bounds, slack: 0.15)
+        seen_box(cam, out, body.lo, body.hi, margin: 6.0)
+    }
+
+    /// A test's views of the scene and the history (`test_view`), in a test build only.
+    fn shows_instead(self) -> bool {
+        test_build() && self.view != View::Look
+    }
+
+    fn show_instead(self, pass: ScreenPass, t: Targets, exposure: GpuSpan<Exposure>) {
+        if self.view == View::Scene {
+            engine::frame::fullscreen(pass, testing::scene_view.bind(t.scene, self.scale))
+        } else {
+            engine::frame::fullscreen(pass, testing::temporal_view.bind(t.history, self.light))
+        }
+    }
+
+    fn resized(mut self, w: u32, h: u32) {
+        self.fit()
+    }
+}

@@ -1,7 +1,8 @@
 // Five panels check the production plant field on hardware: the clump's centre, a distant
 // crown, a hard blend deep inside, and part offsets at those same distant and deep points.
 // The deep panel also checks the derived gradient at a symmetric pair of tied clumps.
-use engine::plant::{Bark, Leaves, Plant, full, plant}
+use engine::plant::{Bark, Leaves, Plant, plant}
+use engine::frame::full
 use std::field::Surface
 use std::gpu::{FragCoord, GpuBuffer, begin_screen_pass, buffer_of, draw}
 

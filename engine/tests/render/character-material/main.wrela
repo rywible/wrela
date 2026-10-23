@@ -12,7 +12,7 @@ use engine::shadow::{Cascade, shadows}
 use engine::sky::Clouds
 use engine::terrain::{Levels, MAX_LEVELS}
 use engine::view::first_camera
-use engine::floor::fullscreen
+use engine::frame::fullscreen
 use std::gpu::{
     DrawArgs, FragCoord, GlobalId, GpuBuffer, Rgba16Float, Texels, Texels3d, Texture,
     begin_depth_pass, begin_pass, begin_screen_pass, buffer, buffer_of, comparison_sampler,

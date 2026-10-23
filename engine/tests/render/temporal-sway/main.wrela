@@ -3,9 +3,9 @@
 // (`deforming_of`'s, 0.5 in z) and without it (all 0). After `FRAMES` frames the screen shows
 // each resolve beside a fresh one of the last frame (no history): left with motion, middle
 // without, right fresh.
-use engine::floor::fullscreen
+use engine::frame::fullscreen
 use std::collections::swap
-use engine::plant::full
+use engine::frame::full
 use engine::temporal::{Resolve, resolve_gathered}
 use engine::view::{GRASS, GROUND, first_camera}
 use std::gpu::{

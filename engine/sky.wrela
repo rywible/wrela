@@ -93,6 +93,16 @@ pub struct Gap: Copy + GpuData {
     pub radius: f32,
 }
 
+/// The weather a sky is cooked with (`Sky::cook_weather`): its great cumulus, the share of the
+/// sky beyond them fair-weather clouds cover, the stretch kept clear toward the sun, and how the
+/// clouds drift (m/s, along x and z).
+pub struct Weather: Clone {
+    pub clouds: Vec<Cumulus>,
+    pub fair: f32,
+    pub gap: Gap,
+    pub wind: vec2,
+}
+
 /// What the dome's march and the clouds' shadows read: where the eye is, which of the dome's
 /// tiles the frame marches (`phase`: those whose number is it, modulo `PHASES`), toward the sun,
 /// how much of a texel the march replaces (`blend`: 1 on the first, less after), how far the
@@ -739,25 +749,17 @@ impl Sky {
         dispatch(cook_noise.bind(detail: true, out: mut self.detail), over: self.detail)
     }
 
-    /// The weather map cooked from `cumuli`, `fair` (the fair-weather clouds' share) and `gap`,
-    /// and the shadow map from it for the sun toward `sun` (or none: `shadows` false). The dome
-    /// marches afresh.
-    pub fn cook_weather(
-        mut self,
-        cumuli: [Cumulus],
-        fair: f32,
-        gap: Gap,
-        sun: vec3,
-        rep: Sampler,
-        shadows: bool,
-    ) {
+    /// The weather map cooked from `w` (its cumulus, the fair-weather clouds' share and its
+    /// gap), and the shadow map from it for the sun toward `sun` (or none: `shadows` false). The
+    /// dome marches afresh.
+    pub fn cook_weather(mut self, w: Weather, sun: vec3, rep: Sampler, shadows: bool) {
         label("clouds weather")
-        let list = buffer_of(cumuli, at_least: 1)
+        let list = buffer_of(w.clouds, at_least: 1)
         dispatch(
             cook_weather.bind(
-                cumuli: list.span(start: 0, count: cumuli.len()),
-                fair: fair,
-                gap: gap,
+                cumuli: list.span(start: 0, count: w.clouds.len()),
+                fair: w.fair,
+                gap: w.gap,
                 out: mut self.weather,
             ),
             over: self.weather,

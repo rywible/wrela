@@ -1,7 +1,7 @@
 // Three eight-pixel blocks: opaque, one uncovered pixel, and empty. Even the single gap
 // must leave the block open so a distant crown behind it is not removed.
-use engine::floor::fullscreen
-use engine::plant::full
+use engine::frame::fullscreen
+use engine::frame::full
 use engine::wood::occluders
 use std::gpu::{
     Compare, Depth, FragCoord, WithDepth, begin_depth_pass, begin_screen_pass, buffer,

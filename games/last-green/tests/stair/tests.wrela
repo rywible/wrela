@@ -258,7 +258,7 @@ fn line_starting(text: str, start: str) -> String {
 @test(tool, read: [("repo", "../../../..")], budget: 300)
 fn the_first_floor_door_returns_to_its_stair_landing() {
     var texts: Vec<String> = Vec::new()
-    for file in ["main.wrela", "world.wrela", "test-floor/main.wrela"] {
+    for file in ["main.wrela", "world.wrela", "test-floor/main.wrela", "stage.wrela"] {
         texts.push(String::from(f"repo/games/last-green/{file}"))
     }
     var read: Vec<String> = Vec::new()
@@ -266,7 +266,7 @@ fn the_first_floor_door_returns_to_its_stair_landing() {
         read.push(text_of(texts[k].as_str()))
     }
     let gate = line_starting(read[1].as_str(), "pub const GATE =")
-    let door = line_starting(read[0].as_str(), "const DOOR =")
+    let door = line_starting(read[3].as_str(), "pub const DOOR =")
     let floor = read[0].as_str()
     let Some(at) = floor.find("pub fn test_leave(") else { panic("the floor's test_leave") }
     let after = floor.slice(at + 18, floor.len())
