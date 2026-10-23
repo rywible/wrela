@@ -6,8 +6,8 @@
 
 use platform::presentation::Link
 use std::serialize::save
-use engine::floor::{Doorway, Exit}
-use engine::tower::{Fate, Start}
+use tower::door::{Doorway, Exit}
+use tower::rule::{Fate, Start}
 use engine::frame::full
 use std::derive::gradient
 use std::field::{Surface, cuboid}

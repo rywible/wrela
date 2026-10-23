@@ -1,6 +1,6 @@
 // The stair: an endless spiral staircase in a void, with a door off it to each world (vision.md,
 // "The lore"). The lowest door opens; each above it opens once the world below is preserved or
-// freed, and a freed world's door is gone (engine::tower). Walking through an open door hands
+// freed, and a freed world's door is gone (tower::rule). Walking through an open door hands
 // this build's place to the world's own build; coming back down, the player stands at its door.
 // The next open door's build is got ready while the player climbs.
 //
@@ -9,7 +9,7 @@
 
 use platform::presentation::Link
 use std::serialize::save
-use engine::tower::{Fate, Journey, STAIR, Start}
+use tower::rule::{Fate, Journey, STAIR, Start}
 use engine::frame::full
 use std::derive::gradient
 use std::field::{Surface, cuboid}

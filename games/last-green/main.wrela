@@ -13,7 +13,8 @@ use climber::figure::{Figure, figure}
 use climber::moves::{drift_rate, locomotion}
 use climber::sounds::{Heard, cues, heard}
 use engine::frame::{Aim, Change, Frame, Gathered, Off, Quality, ShadowQuality, shot_clock}
-use engine::floor::{Exit, tile_distance}
+use engine::floor::tile_distance
+use tower::door::Exit
 use engine::grass::Contact
 use engine::player::{Arm, Focus, Framing, digit, follow}
 use engine::present::Snapshots
@@ -46,7 +47,7 @@ const FAWN_DRAWN: f32 = 150.0
 /// How long the camera takes to turn fully to the fight's wolf, or back from it (s).
 const FOCUS_EASE: f32 = 0.6
 
-/// The floor's world in the tower (engine::tower), the stair's build beside it, and the save.
+/// The floor's world in the tower (tower::rule), the stair's build beside it, and the save.
 const WORLD: u32 = 0
 const WORLDS: u32 = 2
 const STAIR_BUILD: Text = "../stair"
