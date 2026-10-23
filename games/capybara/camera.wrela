@@ -1,0 +1,245 @@
+// The camera: a fixed side view that scrolls both ways, locked to the capybara (design.md,
+// "Movement", proposed). Ryan wanted it to feel perfect (2026-10-22: it "still drifts a little
+// too much"): a camera that eases after the capybara trails it by speed over its rate, so every
+// change of speed slid the capybara about the screen. Now it doesn't ease after the capybara:
+//
+// - Across, it sits exactly where the capybara is, plus a lead the way it faces (and further past
+//   the running speed: a slide, a dolphin kick). Only the lead eases, when it turns.
+// - Up and down, it keeps a height: the capybara's on the ground (rigidly, so a slope doesn't
+//   lag) and in water; in the air it holds still until the capybara leaves a band round it (more
+//   than a full jump), then keeps it at the band's edge, rigidly. A fall that drags it down makes
+//   it look down ahead of the fall, easing in and out.
+// - Where its height jumps (a landing at a new height, into or out of water), the camera stays
+//   where it was and eases over to the new height: the only easing up and down.
+// - A jump of the capybara itself (back to a checkpoint) snaps it.
+//
+// It is presentation, stepped by the frame's time.
+
+use body::Mode
+use feel::FEEL
+use world::Snap
+
+/// Half the height of the plane of play the view shows (m): 12.6 m from top to bottom, seen
+/// straight on (orthographic: no perspective, so the edges are true).
+pub const HALF_HEIGHT: f32 = 6.3
+
+/// How far the capybara may be above or below the height the camera keeps, in the air, before the
+/// camera follows (m): more than a full jump, so a jump never moves it.
+const BAND: f32 = 3.0
+
+/// How far ahead of the way it faces the camera looks (m); how much further per m/s past the
+/// running speed (s), and the most of that (m); and how fast the lead turns (1/s).
+const FACING: f32 = 1.5
+const LEAD: f32 = 0.25
+const LEAD_MAX: f32 = 3.0
+const TURN: f32 = 2.5
+
+/// The capybara sits this far below the view's middle, so more is seen above it (m).
+const ABOVE: f32 = 1.2
+
+/// Falling far (the fall drags the camera's height down), the camera looks down ahead of the fall:
+/// this far per m/s of fall (s), at most `FALL_MAX` (m), easing in and out at `FALL_EASE` (1/s).
+const FALL_LEAD: f32 = 0.12
+const FALL_MAX: f32 = 2.5
+const FALL_EASE: f32 = 5.0
+
+/// How fast a jump in the camera's height eases out (1/s).
+const SETTLE: f32 = 7.0
+
+/// Where the capybara stands for the camera: on the ground, in the air, or in water.
+enum Footing: Copy + Eq {
+    Ground,
+    Air,
+    Water,
+}
+
+pub struct Camera: Copy {
+    /// The point of the plane at the view's middle (m).
+    pub at: vec2,
+    /// The height it keeps (m).
+    pub level: f32,
+    /// How far ahead it looks now (m).
+    pub ahead: f32,
+    /// What's left of a jump in its height, easing out (m), the height it last wanted, and the
+    /// footing it last saw.
+    settle: f32,
+    wanted: f32,
+    footing: Footing,
+    /// How far down it looks ahead of a fall now (m, negative).
+    fall: f32,
+    /// The capybara's cuts when it last looked (world.wrela's `Tally`): at a new one, the capybara
+    /// was put somewhere at once, and the camera starts again there.
+    cuts: u32,
+}
+
+/// A camera on a capybara at `start`, facing right.
+pub fn camera(start: vec2) -> Camera {
+    Camera {
+        at: start + vec2(FACING, ABOVE),
+        level: start.y,
+        ahead: FACING,
+        settle: 0.0,
+        wanted: start.y + ABOVE,
+        footing: Footing::Ground,
+        fall: 0.0,
+        cuts: 0,
+    }
+}
+
+/// The camera after `dt` seconds following snapshot `s`.
+pub fn follow(c: mut Camera, s: Snap, dt: f32) {
+    if s.tally.cuts != c.cuts {
+        c = camera(s.at)
+        c.cuts = s.tally.cuts
+    }
+    let mode = Mode::from_u32(s.mode)
+    let footing = if mode == Some(Mode::Air) {
+        Footing::Air
+    } else if mode == Some(Mode::Swim) {
+        Footing::Water
+    } else {
+        Footing::Ground
+    }
+    let kept = c.level
+    if footing == Footing::Air {
+        c.level = clamp(c.level, s.at.y - BAND, s.at.y + BAND)
+    } else {
+        c.level = s.at.y
+    }
+    let dragged = footing == Footing::Air && c.level < kept
+    let fall = if dragged { clamp(s.vel.y * FALL_LEAD, -FALL_MAX, 0.0) } else { 0.0 }
+    c.fall += (fall - c.fall) * (1.0 - exp(-FALL_EASE * dt))
+    let wanted = c.level + ABOVE
+    if footing != c.footing {
+        // Its height jumped: stay, and ease over.
+        c.settle += c.wanted - wanted
+    }
+    c.footing = footing
+    c.wanted = wanted
+    c.settle *= exp(-SETTLE * dt)
+    let past = max(abs(s.vel.x) - FEEL.speed, 0.0) * sign(s.vel.x)
+    let lead = s.facing * FACING + clamp(past * LEAD, -LEAD_MAX, LEAD_MAX)
+    c.ahead += (lead - c.ahead) * (1.0 - exp(-TURN * dt))
+    c.at = vec2(s.at.x + c.ahead, wanted + c.settle + c.fall)
+}
+
+/// Half the view's size on the plane of play (m), for a screen `aspect` wide to its height.
+pub fn half_view(aspect: f32) -> vec2 {
+    vec2(HALF_HEIGHT * aspect, HALF_HEIGHT)
+}
+
+// ---- tests -------------------------------------------------------------------------------------
+
+use course::course
+use feel::STEP
+use pad::{Hold, pad_of}
+use proofs::{LAB_RUN, LEVEL_ANY, LEVEL_FULL}
+use world::{LAB, LEVEL, present, step, world}
+
+/// Whether the camera keeps the capybara in view, a metre and a half inside a 16:9 screen's
+/// edges, through `run` on course `at`.
+fn keeps_in_view(at: u32, run: [Hold]) -> bool {
+    let half = half_view(16.0 / 9.0) - vec2(1.5)
+    var w = world(at)
+    var c = camera(course(at).start)
+    for h in run {
+        for i in 0..h.ticks {
+            step(mut w, pad_of(h, i))
+            let s = present(w)
+            follow(mut c, s, STEP)
+            let off = abs(s.at - c.at)
+            if off.x >= half.x || off.y >= half.y {
+                return false
+            }
+        }
+    }
+    true
+}
+
+@test
+fn the_camera_keeps_the_capybara_in_view_through_the_lab_and_the_level() {
+    assert(keeps_in_view(LAB, LAB_RUN), "the lab")
+    assert(keeps_in_view(LEVEL, LEVEL_ANY), "the level, any%")
+    assert(keeps_in_view(LEVEL, LEVEL_FULL), "the level, 100%")
+}
+
+@test
+fn starting_and_stopping_barely_move_the_camera_past_the_capybara() {
+    // Run right from rest for a second, then stop: the view's lead over the capybara changes by
+    // the easing alone, never by more than half a metre past the facing lead.
+    var w = world(LAB)
+    var c = camera(course(LAB).start)
+    for i in 0..240 {
+        let bits = if i < 120 { pad::RIGHT } else { 0 }
+        step(mut w, pad::Pad { bits })
+        let s = present(w)
+        follow(mut c, s, STEP)
+        assert(c.ahead <= FACING + 0.5, "no swing ahead at the running speed")
+    }
+}
+
+@test
+fn running_and_jumping_dont_move_the_capybara_on_the_screen() {
+    // From rest, speeding up and running for two seconds on the level's flat runway (its goose
+    // gone): the capybara stays exactly where it was on the screen. A full jump there doesn't move
+    // the camera at all.
+    var w = world(LEVEL)
+    w.foes = [foes::NONE; foes::MAX_FOES]
+    var c = camera(course(LEVEL).start)
+    let off = w.body.at - c.at
+    for _ in 0..240 {
+        step(mut w, pad::Pad { bits: pad::RIGHT })
+        follow(mut c, present(w), STEP)
+        assert(distance(w.body.at - c.at, off) < 1.0e-3, "fixed on the screen")
+    }
+    let still = c.at.y
+    step(mut w, pad::Pad { bits: pad::JUMP | pad::PRESS })
+    for _ in 0..120 {
+        step(mut w, pad::Pad { bits: pad::JUMP })
+        follow(mut c, present(w), STEP)
+        assert(abs(c.at.y - still) < 1.0e-3, "a jump doesn't move it")
+    }
+}
+
+@test
+fn the_camera_starts_again_at_a_cut_and_only_at_one() {
+    // Ten metres on and three up, in the air, between two frames: followed on, the camera keeps
+    // the height it had; at a cut (a new attempt, a checkpoint), it starts again on the capybara.
+    let start = course(LEVEL).start
+    var s = present(world(LEVEL))
+    s.at = start + vec2(10.0, 3.0)
+    s.mode = u32(Mode::Air)
+    var on = camera(start)
+    follow(mut on, s, STEP)
+    var fresh = camera(s.at)
+    follow(mut fresh, s, STEP)
+    s.tally.cuts = 1
+    var cut = camera(start)
+    follow(mut cut, s, STEP)
+    assert(cut.at == fresh.at, "a cut starts the camera again")
+    assert(abs(on.at.y - fresh.at.y) > 1.0, "a fast move doesn't")
+}
+
+/// The view's middle for camera `c` with half its size `half` (m), framed so it never shows past
+/// the course's ends (`ends`, its faces left and right): the screen's edge is the course's (Ryan,
+/// 2026-10-22: the walls at the ends looked "shockingly bad"). A course narrower than the view is
+/// centred.
+pub fn framed(c: Camera, half: vec2, ends: vec2) -> vec2 {
+    let (lo, hi) = (ends.x + half.x, ends.y - half.x)
+    let x = if lo > hi { 0.5 * (ends.x + ends.y) } else { clamp(c.at.x, lo, hi) }
+    vec2(x, c.at.y)
+}
+
+@test
+fn the_view_stops_at_the_courses_ends() {
+    borrow c = course(LEVEL)
+    let half = half_view(16.0 / 9.0)
+    let at_start = framed(camera(c.start), half, c.ends)
+    assert(abs(at_start.x - half.x - c.ends.x) < 1.0e-4, "the screen's left edge is the left end")
+    var near_goal = camera(vec2(326.0, 1.35))
+    near_goal.at.x = 327.0
+    let end = framed(near_goal, half, c.ends)
+    assert(abs(end.x + half.x - c.ends.y) < 1.0e-4, "its right edge is the right end")
+    let middle = camera(vec2(150.0, 0.0))
+    assert(framed(middle, half, c.ends) == middle.at, "between them, the camera's own")
+}

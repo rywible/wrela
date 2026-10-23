@@ -1,0 +1,134 @@
+// Six original piano auditions for the capybara game, one per composer subagent. Each has its
+// own hook and groove. The same piano and playing rules let Ryan compare the compositions.
+// They do not change the game's selected music. Choose 1 to 6 before the first frame:
+//
+// wrela tool audio -- games/capybara/scores wav build/capybara-scores/01-bounce.wav --take 1
+//
+// Takes: 1 Bounce, 2 Skipping, 3 Sprint, 4 Pocket, 5 Lift, 6 Tiptoe. The audio tool also gives
+// their notes, numbers, MIDI and sheet. Each render includes six seconds after the performance
+// for the piano's dampers and room to settle.
+
+use engine::perform::{Performance, Taste, describe as describe_take, perform}
+use engine::piano::{piano, play_piano}
+use engine::piano_grand::GRAND
+use engine::score::Score
+use std::audio::play
+
+/// How many independent compositions the audition contains.
+pub const COUNT: u32 = 6
+
+pub struct Audition {
+    which: u32,
+    started: bool,
+}
+
+pub fn init() -> Audition {
+    Audition { which: 1, started: false }
+}
+
+/// Selects a composition, numbered 1 to 6, before its voice starts.
+pub fn choose(a: mut Audition, which: u32) {
+    assert(!a.started, "choose a score before its first frame")
+    assert(which >= 1 && which <= COUNT, "score numbers run from 1 to 6")
+    a.which = which
+}
+
+/// The selected composition; all notes and musical marks stay in its source module.
+fn selected(which: u32) -> borrow Score {
+    match which {
+        1 => bounce::SCORE,
+        2 => skipping::SCORE,
+        3 => sprint::SCORE,
+        4 => pocket::SCORE,
+        5 => lift::SCORE,
+        6 => tiptoe::SCORE,
+        _ => panic("score numbers run from 1 to 6"),
+    }
+}
+
+/// Quarter notes a minute; the 6/8 score also uses quarters as the tempo unit.
+fn tempo(which: u32) -> f32 {
+    match which {
+        1 => bounce::TEMPO,
+        2 => skipping::TEMPO,
+        3 => sprint::TEMPO,
+        4 => pocket::TEMPO,
+        5 => lift::TEMPO,
+        6 => tiptoe::TEMPO,
+        _ => panic("score numbers run from 1 to 6"),
+    }
+}
+
+/// The same tight playing for every score: a clear lead, short unconnected notes and no
+/// rubato or timing jitter. Written slurs, articulations and pedals still apply.
+fn played(which: u32) -> Performance {
+    perform(
+        selected(which),
+        Taste {
+            tempo: tempo(which),
+            lead: "melody",
+            voicing: 1.1,
+            under: 0.88,
+            bass: "bass",
+            range: 0.75,
+            metre: 0.08,
+            high_loud: -0.05,
+            accent: 0.25,
+            detache: 0.3,
+            ring: 1.5,
+        },
+        [],
+    )
+}
+
+pub fn frame(a: mut Audition, time: f32, width: u32, height: u32) {
+    if !a.started {
+        a.started = true
+        play(piano(GRAND, played(a.which)), play_piano)
+    }
+}
+
+/// The performance's length and six seconds for the dampers and room, for the offline audio tool.
+pub fn seconds(a: Audition) -> f32 {
+    f32(played(a.which).length) + 6.0
+}
+
+/// Notes, pedals and beat times for the audio tool's MIDI, sheet and measurements.
+pub fn describe(a: Audition) {
+    describe_take(selected(a.which), "audition", played(a.which))
+}
+
+@test
+fn every_choice_has_its_own_score_and_a_complete_bounded_performance() {
+    for which in 1..COUNT + 1 {
+        var a = init()
+        choose(mut a, which)
+        borrow s = selected(a.which)
+        let p = played(a.which)
+        assert(s.voices.len() == 3)
+        assert(s.voice_named("melody") != s.voice_named("bass"))
+        assert(s.notes.len() > 100)
+        assert(p.notes.len() == s.notes.len())
+        assert(seconds(a) >= 45.0 && seconds(a) <= 80.0, f"{s.title}: {seconds(a)} s")
+        var previous = 0.0
+        for n in p.notes {
+            assert(n.onset >= previous && n.release > n.onset)
+            assert(n.release <= p.length)
+            assert(n.velocity > 0.0 && n.velocity <= 1.0)
+            previous = n.onset
+        }
+        for other in 1..which {
+            assert(s.title != selected(other).title)
+        }
+    }
+}
+
+@test
+fn the_six_eight_tempo_uses_quarter_notes() {
+    borrow s = selected(2)
+    assert(s.meter.beats == 6 && s.meter.unit == 8)
+    let p = played(2)
+    // Six eighth notes take three quarters, rather than six quarters.
+    let expected = f64(s.bars * 3) * 60.0 / f64(tempo(2))
+    assert(abs(p.beats[p.beats.len() - 1] - expected) < 1e-5)
+}

@@ -1,0 +1,396 @@
+// The pad: a tick's input (design.md, "Input"). It is bits: the directions and jump held at the
+// tick's end, and whether jump was pressed during the tick. The sim makes it from the host's
+// input events (`Controls`, which the tick log replays), and tests and searches step the sim
+// with pads directly (`Hold`).
+//
+// Keys: the arrows or W A S D to move, Space, Z or K to jump. A controller: the left stick or the
+// pad to move, South or East to jump. There's no run button: the capybara has one speed.
+
+use engine::sim::SimState
+use std::hash::StateHash
+use std::input::{Event, Key, PadAxis, PadButton}
+use std::serialize::Serialize
+
+pub const LEFT: u32 = 1
+pub const RIGHT: u32 = 2
+pub const UP: u32 = 4
+pub const DOWN: u32 = 8
+pub const JUMP: u32 = 16
+/// Jump was pressed during the tick.
+pub const PRESS: u32 = 64
+
+const DIRECTIONS: u32 = LEFT | RIGHT | UP | DOWN
+
+/// How far a stick's axis moves before it holds a direction: half its travel.
+const STICK: f32 = 0.5
+
+pub struct Pad: Copy + Eq + StateHash + Serialize + SimState {
+    pub bits: u32,
+}
+
+impl Pad {
+    pub fn held(self, bit: u32) -> bool {
+        self.bits & bit != 0
+    }
+
+    pub fn pressed(self) -> bool {
+        self.held(PRESS)
+    }
+
+    /// Left and right as -1, 0 or 1: held together, they cancel.
+    pub fn x(self) -> f32 {
+        (if self.held(RIGHT) { 1.0 } else { 0.0 }) - (if self.held(LEFT) { 1.0 } else { 0.0 })
+    }
+
+    /// Down and up as -1, 0 or 1.
+    pub fn y(self) -> f32 {
+        (if self.held(UP) { 1.0 } else { 0.0 }) - (if self.held(DOWN) { 1.0 } else { 0.0 })
+    }
+
+    /// The direction held as a unit vector (a diagonal is 1/√2 on each axis), or zero.
+    pub fn direction(self) -> vec2 {
+        let d = vec2(self.x(), self.y())
+        if d == vec2(0.0) { d } else { normalize(d) }
+    }
+}
+
+/// The pad no button holds.
+pub const IDLE: Pad = Pad { bits: 0 }
+
+/// The keys that hold the pad's bits, and the bit each holds. `Controls::keys` has a bit for each
+/// key down (its place here), so a key let go leaves its pad bit held while another key holds it.
+const KEYS: [(Key, u32); 11] = [
+    (Key::Left, LEFT),
+    (Key::A, LEFT),
+    (Key::Right, RIGHT),
+    (Key::D, RIGHT),
+    (Key::Up, UP),
+    (Key::W, UP),
+    (Key::Down, DOWN),
+    (Key::S, DOWN),
+    (Key::Space, JUMP),
+    (Key::Z, JUMP),
+    (Key::K, JUMP),
+]
+
+/// The first controller's buttons that hold the pad's bits, as `KEYS` for `Controls::buttons`.
+const BUTTONS: [(PadButton, u32); 6] = [
+    (PadButton::Left, LEFT),
+    (PadButton::Right, RIGHT),
+    (PadButton::Up, UP),
+    (PadButton::Down, DOWN),
+    (PadButton::South, JUMP),
+    (PadButton::East, JUMP),
+]
+
+/// `k`'s place in `KEYS` as a bit, or 0 for a key that holds nothing.
+fn key_slot(k: Key) -> u32 {
+    for i in 0..KEYS.len() {
+        if KEYS[i].0 == k {
+            return 1 << i
+        }
+    }
+    0
+}
+
+/// `b`'s place in `BUTTONS` as a bit, or 0.
+fn button_slot(b: PadButton) -> u32 {
+    for i in 0..BUTTONS.len() {
+        if BUTTONS[i].0 == b {
+            return 1 << i
+        }
+    }
+    0
+}
+
+/// The pad's bits that the keys down in `slots` hold.
+fn keys_held(slots: u32) -> u32 {
+    var bits = 0
+    for i in 0..KEYS.len() {
+        if slots & (1 << i) != 0 {
+            bits = bits | KEYS[i].1
+        }
+    }
+    bits
+}
+
+/// The pad's bits that the buttons down in `slots` hold.
+fn buttons_held(slots: u32) -> u32 {
+    var bits = 0
+    for i in 0..BUTTONS.len() {
+        if slots & (1 << i) != 0 {
+            bits = bits | BUTTONS[i].1
+        }
+    }
+    bits
+}
+
+/// What the player holds, as the records so far left it: the keys and the first controller's
+/// buttons down (a bit each, `KEYS` and `BUTTONS`), the bits its left stick holds, and whether
+/// jump was pressed since the last pad.
+pub struct Controls: Copy + Eq + StateHash + Serialize + SimState {
+    pub keys: u32 = 0,
+    pub buttons: u32 = 0,
+    pub stick: u32 = 0,
+    pub pressed: bool = false,
+}
+
+impl Controls {
+    fn held(self) -> u32 {
+        keys_held(self.keys) | buttons_held(self.buttons) | self.stick
+    }
+
+    /// After event `e`. A key's repeats are ignored.
+    pub fn update(mut self, e: Event) {
+        match e {
+            Event::KeyDown { key, repeat, .. } => {
+                if !repeat {
+                    let slot = key_slot(key)
+                    if keys_held(slot) & JUMP != 0 && self.held() & JUMP == 0 {
+                        self.pressed = true
+                    }
+                    self.keys = self.keys | slot
+                }
+            },
+            Event::KeyUp { key, .. } => self.keys = self.keys & !key_slot(key),
+            Event::PadButton { pad, button, pressed, .. } => {
+                if pad == 0 {
+                    let slot = button_slot(button)
+                    if pressed {
+                        if buttons_held(slot) & JUMP != 0 && self.held() & JUMP == 0 {
+                            self.pressed = true
+                        }
+                        self.buttons = self.buttons | slot
+                    } else {
+                        self.buttons = self.buttons & !slot
+                    }
+                }
+            },
+            Event::PadAxis { pad, axis, value } => {
+                if pad == 0 {
+                    // A stick's y is down positive.
+                    match axis {
+                        PadAxis::LeftX => {
+                            let bits = if value <= -STICK { LEFT } else if value >= STICK {
+                                RIGHT
+                            } else { 0 }
+                            self.stick = (self.stick & !(LEFT | RIGHT)) | bits
+                        },
+                        PadAxis::LeftY => {
+                            let bits = if value <= -STICK { UP } else if value >= STICK {
+                                DOWN
+                            } else { 0 }
+                            self.stick = (self.stick & !(UP | DOWN)) | bits
+                        },
+                        _ => {},
+                    }
+                }
+            },
+            _ => {},
+        }
+    }
+
+    /// The tick's pad, which uses up the press.
+    pub fn pad(mut self) -> Pad {
+        let bits = (self.held() & (DIRECTIONS | JUMP)) | (if self.pressed { PRESS } else {
+            0
+        })
+        self.pressed = false
+        Pad { bits }
+    }
+}
+
+/// A stretch of a run: a pad held for `ticks` ticks. With `PRESS`, jump is pressed on the first
+/// tick alone.
+pub struct Hold: Copy + Eq + Serialize {
+    pub bits: u32,
+    pub ticks: u32,
+}
+
+/// The most stretches a recorded run holds (`Run`): a player changes what they hold a few times a
+/// second, so this is minutes of play. A run past it isn't kept.
+pub const MOST_HOLDS: u32 = 1024
+
+/// An attempt's pads as the sim plays them, recorded in the ticker's state (world.wrela's `Live`)
+/// and handed to the frames in its snapshots: a stretch each, its bits over its ticks
+/// (`bits << 24 | ticks`). It is fixed in size, so it copies and hashes as plain data.
+pub struct Run: Copy + Eq + StateHash + Serialize + SimState + Plain {
+    pub stretches: [u32; MOST_HOLDS],
+    pub len: u32,
+    /// 1 once a stretch didn't fit: the run is no longer recorded.
+    pub over: u32,
+}
+
+/// A run with nothing in it.
+pub const NO_RUN: Run = Run { stretches: [0; MOST_HOLDS], len: 0, over: 0 }
+
+impl Run {
+    /// One more tick of `pad`: the last stretch a tick longer, or a new one. A press always starts
+    /// one, as `pad_of` presses only on a stretch's first tick.
+    pub fn record(mut self, pad: Pad) {
+        if self.over == 1 {
+            return
+        }
+        if self.len > 0 {
+            let last = self.stretches[self.len - 1]
+            if extends(last >> 24, pad.bits) && last & 0xffffff < 0xffffff {
+                self.stretches[self.len - 1] = last + 1
+                return
+            }
+        }
+        if self.len == MOST_HOLDS {
+            self.over = 1
+            return
+        }
+        self.stretches[self.len] = (pad.bits << 24) | 1
+        self.len += 1
+    }
+
+    /// The run as holds, which `world::play` replays.
+    pub fn holds(self) -> Vec<Hold> {
+        var out: Vec<Hold> = Vec::new()
+        for i in 0..self.len {
+            let s = self.stretches[i]
+            out.push(Hold { bits: s >> 24, ticks: s & 0xffffff })
+        }
+        out
+    }
+}
+
+pub fn hold(bits: u32, ticks: u32) -> Hold {
+    Hold { bits, ticks }
+}
+
+/// The pad on tick `i` of hold `h`.
+pub fn pad_of(h: Hold, i: u32) -> Pad {
+    Pad { bits: if i == 0 { h.bits } else { h.bits & !PRESS } }
+}
+
+/// Whether a tick of pad `bits` goes on a hold of `held`: past its first tick, a hold gives its
+/// bits without the press (`pad_of`), so a press always starts one.
+pub fn extends(held: u32, bits: u32) -> bool {
+    bits & PRESS == 0 && held & !PRESS == bits
+}
+
+/// Pads, tick by tick, as holds: each the longest stretch that `pad_of` gives back.
+pub fn holds_of(pads: [u32]) -> Vec<Hold> {
+    var run: Vec<Hold> = Vec::new()
+    for p in pads {
+        let n = run.len()
+        if n > 0 && extends(run[n - 1].bits, p) {
+            run[n - 1].ticks += 1
+        } else {
+            run.push(hold(p, 1))
+        }
+    }
+    run
+}
+
+// ---- tests -------------------------------------------------------------------------------------
+
+@test
+fn a_run_records_stretches_and_gives_back_the_pads_it_was_given() {
+    // Held right, a press of jump held for three ticks, right again, two presses in a row.
+    let pads = [
+        RIGHT,
+        RIGHT,
+        RIGHT | JUMP | PRESS,
+        RIGHT | JUMP,
+        RIGHT | JUMP,
+        RIGHT,
+        JUMP | PRESS,
+        JUMP | PRESS,
+        0,
+    ]
+    var run = NO_RUN
+    for bits in pads {
+        run.record(Pad { bits })
+    }
+    let holds = run.holds()
+    assert(holds.len() == 6, f"{holds.len()} stretches")
+    var i = 0
+    for h in holds {
+        for k in 0..h.ticks {
+            assert(pad_of(h, k).bits == pads[i], f"tick {i}")
+            i += 1
+        }
+    }
+    assert(i == pads.len())
+}
+
+@test
+fn a_run_past_its_stretches_stops_recording() {
+    var run = NO_RUN
+    for i in 0..MOST_HOLDS + 10 {
+        run.record(Pad { bits: if i % 2 == 0 { RIGHT } else { LEFT } })
+    }
+    assert(run.over == 1 && run.len == MOST_HOLDS)
+}
+
+fn down(key: Key) -> Event {
+    Event::KeyDown { key, repeat: false, mods: std::input::Mods {} }
+}
+
+fn up(key: Key) -> Event {
+    Event::KeyUp { key, mods: std::input::Mods {} }
+}
+
+@test
+fn a_press_and_its_release_within_one_tick_still_count_as_a_press() {
+    var c = Controls {}
+    c.update(down(Key::Space))
+    c.update(up(Key::Space))
+    let p = c.pad()
+    assert(p.pressed() && !p.held(JUMP))
+    assert(!c.pad().pressed(), "the press is used up")
+}
+
+@test
+fn holding_a_second_jump_key_presses_nothing_and_repeats_are_ignored() {
+    var c = Controls {}
+    c.update(down(Key::Space))
+    let _ = c.pad()
+    c.update(down(Key::Z))
+    c.update(Event::KeyDown { key: Key::Space, repeat: true, mods: std::input::Mods {} })
+    let p = c.pad()
+    assert(p.held(JUMP) && !p.pressed())
+}
+
+@test
+fn letting_go_of_one_of_two_keys_that_hold_a_bit_keeps_it_held() {
+    // The Right arrow held and D tapped; Space held through a jump and Z tapped; a controller's
+    // South held and East tapped.
+    var c = Controls {}
+    c.update(down(Key::Right))
+    c.update(down(Key::D))
+    c.update(up(Key::D))
+    c.update(down(Key::Space))
+    c.update(down(Key::Z))
+    c.update(up(Key::Z))
+    let p = c.pad()
+    assert(p.held(RIGHT) && p.held(JUMP), "still running, still jumping")
+    c.update(up(Key::Right))
+    c.update(up(Key::Space))
+    assert(c.pad().bits == 0, "and let go of")
+    var b = Controls {}
+    b.update(Event::PadButton { pad: 0, button: PadButton::South, pressed: true, value: 1.0 })
+    b.update(Event::PadButton { pad: 0, button: PadButton::East, pressed: true, value: 1.0 })
+    b.update(Event::PadButton { pad: 0, button: PadButton::East, pressed: false, value: 0.0 })
+    assert(b.pad().held(JUMP), "a button too")
+}
+
+@test
+fn opposite_directions_cancel_and_a_stick_gives_the_keys_eight_directions() {
+    var c = Controls {}
+    c.update(down(Key::Left))
+    c.update(down(Key::D))
+    assert(c.pad().x() == 0.0)
+    var s = Controls {}
+    s.update(Event::PadAxis { pad: 0, axis: PadAxis::LeftX, value: 0.7 })
+    s.update(Event::PadAxis { pad: 0, axis: PadAxis::LeftY, value: 0.6 })
+    let p = s.pad()
+    assert(p.held(RIGHT) && p.held(DOWN))
+    assert(abs(length(p.direction()) - 1.0) < 1.0e-6 && p.direction().x > 0.7)
+    s.update(Event::PadAxis { pad: 0, axis: PadAxis::LeftX, value: 0.3 })
+    assert(!s.pad().held(RIGHT), "inside half its travel, the stick holds nothing")
+}

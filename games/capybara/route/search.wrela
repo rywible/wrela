@@ -1,0 +1,530 @@
+// The route search (design.md, "The agent loop"): the fastest run it can find through a segment
+// of a course, from the segment's entry state to its end. It is a beam search over the sim's
+// states, in layers of `Settings::every` ticks: each layer holds every state of the layer before
+// for each of a few pads (`ACTIONS`), and keeps the `Settings::beam` best.
+//
+// - Two states are one only when they are equal: their hashes match (`std::hash::state_hash`),
+//   then the states compare equal, field by field. Every state of a layer is at the same tick,
+//   so the one kept stands for both exactly.
+// - The beam keeps variety: of the states in one cell (`cell`: near in place and velocity, the
+//   same mode, wetness and double jump, and the same things found and knocked out), it keeps the
+//   best alone, then the best cells. This is a bound, not a merge: the states it drops are lost
+//   to the search, so its time is the best known, never a lower bound.
+// - A state's score is how near it is to the segment's end: the distance still to go, through
+//   the snacks the segment must find in the order of their x, less a little for its speed that
+//   way.
+// - The timing contract (design.md, "Timing"): the clock counts every tick from the attempt's
+//   start, so a segment's entry state carries its clock and the run's time is the clock at the
+//   end. A death keeps the clock running and only loses time (it goes back to a checkpoint
+//   already passed), so the search drops a state that dies. A snack counts only if this attempt
+//   found it: the entry state's, and the run's own.
+// - Bounded in ticks (`Settings::ticks`) and in states (the beam). A tool bounds it in time
+//   too, between layers: `Search::layer` is one step of it.
+// - With `Settings::human`, its runs keep to a human's limits (slack.wrela): its pads are held
+//   buttons alone (`HUMAN_ACTIONS`), each for a layer of `STRETCH` ticks or more, and jump is
+//   pressed only as it goes down. A state then carries the buttons it was last held with, which
+//   say whether jump can be pressed, so two states are one only if those are equal too.
+
+use capybara::course::course
+use capybara::pad::{DOWN, JUMP, LEFT, PRESS, Pad, RIGHT, UP, hold, pad_of}
+use capybara::world::{World, step}
+use slack::{STRETCH, pressed}
+use std::hash::{Hasher, StateHash, state_hash}
+
+/// The pads the search holds, each for a layer's ticks, `PRESS` on the first alone: run on,
+/// press jump and hold it, hold it, tap it, slide (or tuck, or dive), jump out of a slide, slide
+/// with jump held, swim up, swim up with a jump, let go, back, back down, and jump on the spot.
+pub const ACTIONS: [u32; 13] = [
+    RIGHT,
+    RIGHT | JUMP | PRESS,
+    RIGHT | JUMP,
+    RIGHT | PRESS,
+    RIGHT | DOWN,
+    RIGHT | DOWN | JUMP | PRESS,
+    RIGHT | DOWN | JUMP,
+    RIGHT | UP,
+    RIGHT | UP | JUMP | PRESS,
+    0,
+    LEFT,
+    LEFT | DOWN,
+    JUMP | PRESS,
+]
+
+/// The buttons the search holds with the human limits, each for a layer's ticks: run on, jump (a
+/// press as it goes down), slide (or tuck, or dive), slide with jump, swim up, swim up with jump,
+/// let go, back, back down, and jump on the spot.
+pub const HUMAN_ACTIONS: [u32; 10] = [
+    RIGHT,
+    RIGHT | JUMP,
+    RIGHT | DOWN,
+    RIGHT | DOWN | JUMP,
+    RIGHT | UP,
+    RIGHT | UP | JUMP,
+    0,
+    LEFT,
+    LEFT | DOWN,
+    JUMP,
+]
+
+/// How many actions a search with `s` takes, and its action `a`.
+fn count(s: Settings) -> u32 {
+    if s.human { HUMAN_ACTIONS.len() } else { ACTIONS.len() }
+}
+
+fn action(s: Settings, a: u32) -> u32 {
+    if s.human { HUMAN_ACTIONS[a] } else { ACTIONS[a] }
+}
+
+/// Where a segment ends, and the snacks a run must have found by then (a bit each).
+pub struct Goal: Copy {
+    /// The segment ends once the capybara's middle is at or past `until` (m), short of the
+    /// course's goal; at or past the goal's box, the segment ends at the course's goal.
+    pub until: f32,
+    pub snacks: u32,
+}
+
+/// The goal of a whole run: the course's goal, with the snacks `snacks`.
+pub fn to_goal(snacks: u32) -> Goal {
+    Goal { until: 1.0e9, snacks }
+}
+
+/// How the search runs: its bounds, and how it weighs states.
+pub struct Settings: Copy {
+    /// Ticks a pad is held between choices.
+    pub every: u32 = 6,
+    /// The most states a layer keeps.
+    pub beam: u32 = 1000,
+    /// The most ticks the segment may take.
+    pub ticks: u32 = 6000,
+    /// The seconds of a state's speed towards the end that its score counts as distance gone.
+    pub lookahead: f32 = 0.25,
+    /// A cell's size in place (m), and in velocity (twice it, m/s).
+    pub cell: f32 = 0.25,
+    /// Whether its runs keep to a human's limits; `every` is then `STRETCH` or more.
+    pub human: bool = false,
+}
+
+/// How far past a snack the capybara may be without it before the state is dropped (m).
+const SLACK: f32 = 1.5
+
+/// A state of a layer, and the buttons held into it.
+struct Node: Copy {
+    w: World,
+    last: u32,
+}
+
+/// A state one action makes from a node: the action, the buttons it held (before it is held, the
+/// node's), whether it lives (it didn't die, nor pass a snack it needs), the tick within the
+/// action on which it reached the segment's end (0 if it didn't), and, living, its score, its
+/// hash, and its cell and the cell's hash.
+struct Kid: Copy {
+    w: World,
+    action: u32,
+    last: u32,
+    live: bool,
+    done: u32,
+    score: f32,
+    hash: u64,
+    cell: [i32; 10],
+    cell_hash: u64,
+}
+
+/// How a kept state was reached: its state in the layer before, and the action.
+struct Link: Copy {
+    parent: u32,
+    action: u32,
+}
+
+/// A kid the selection weighs: its node and action, its score and its hash.
+struct Pick: Copy {
+    node: u32,
+    action: u32,
+    score: f32,
+    hash: u64,
+}
+
+/// Whether the segment of `goal` has ended for `w`.
+pub fn ended(w: World, goal: Goal) -> bool {
+    w.finished > 0 || (goal.until < course(w.course).goal_lo.x && w.body.at.x >= goal.until)
+}
+
+/// Whether `w` can still make its segment: not dying, and not past a snack it needs.
+pub fn alive(w: World, goal: Goal) -> bool {
+    if w.dying > 0 {
+        return false
+    }
+    borrow c = course(w.course)
+    for i in 0..c.snacks.len() {
+        let bit = 1 << i
+        if goal.snacks & bit != 0 && w.snacks & bit == 0 && w.body.at.x > c.snacks[i].x + SLACK {
+            return false
+        }
+    }
+    true
+}
+
+/// How near `w` is to its segment's end, higher nearer: less the distance to go (through each
+/// snack it still needs in the order of their x, then to the end: along x to `until`, or to the
+/// goal's box), plus `lookahead` seconds of its speed towards the next of them.
+pub fn score(w: World, goal: Goal, lookahead: f32) -> f32 {
+    borrow c = course(w.course)
+    var at = w.body.at
+    var to_go = 0.0
+    var towards = vec2(1.0, 0.0)
+    var taken = w.snacks | !goal.snacks
+    loop {
+        var next = c.snacks.len()
+        for i in 0..c.snacks.len() {
+            if taken & (1 << i) == 0 &&
+                (next == c.snacks.len() || c.snacks[i].x < c.snacks[next].x) {
+                next = i
+            }
+        }
+        if next == c.snacks.len() {
+            break
+        }
+        let s = c.snacks[next]
+        if at == w.body.at && distance(s, at) > 1.0e-3 {
+            towards = normalize(s - at)
+        }
+        to_go += distance(s, at)
+        at = s
+        taken = taken | (1 << next)
+    }
+    to_go += if goal.until < c.goal_lo.x {
+        max(goal.until - at.x, 0.0)
+    } else {
+        distance(at, clamp(at, c.goal_lo, c.goal_hi))
+    }
+    -to_go + lookahead * dot(w.body.vel, towards)
+}
+
+/// The cell `w` falls in: its place in cells of `size` metres and its velocity in cells of twice
+/// that in m/s, its mode (and, for `human`, whether jump is held), double jump and a quarter of
+/// its wetness, and what it has found and knocked out.
+fn cell(w: World, size: f32, held: u32, human: bool) -> [i32; 10] {
+    let b = w.body
+    var knocked = 0
+    for i in 0..w.foes.len() {
+        if !w.foes[i].alive {
+            knocked = knocked | (1 << i)
+        }
+    }
+    [
+        i32(floor(b.at.x / size)),
+        i32(floor(b.at.y / size)),
+        i32(floor(b.vel.x / (2.0 * size))),
+        i32(floor(b.vel.y / (2.0 * size))),
+        i32(u32(b.mode)) + (if human && held & JUMP != 0 { 8 } else { 0 }),
+        i32(b.jumps),
+        i32(b.wet / 45),
+        i32(w.snacks),
+        i32(w.yuzus) + (if w.yuzu { 1 << 16 } else { 0 }),
+        knocked,
+    ]
+}
+
+fn cell_hash(k: [i32; 10]) -> u64 {
+    var h = Hasher::new()
+    for x in k {
+        h.write_u32(u32(x))
+    }
+    h.finish()
+}
+
+/// The kid of `n` that holds `action`, not yet held.
+fn kid(n: Node, action: u32) -> Kid {
+    Kid {
+        w: n.w,
+        action,
+        last: n.last,
+        live: false,
+        done: 0,
+        score: 0.0,
+        hash: 0,
+        cell: [0; 10],
+        cell_hash: 0,
+    }
+}
+
+/// The pad of tick `i` of a layer that holds `action` after the buttons `last`.
+fn pad_in(action: u32, last: u32, i: u32, s: Settings) -> Pad {
+    if !s.human {
+        return pad_of(hold(action, s.every), i)
+    }
+    Pad { bits: if i == 0 { pressed(action, last) } else { action } }
+}
+
+/// Holds `k`'s action from its state for up to `most` ticks (a layer's, or the fewer left to the
+/// search), stopping where the segment ends or the state can't make it.
+@deterministic
+fn act(k: mut Kid, goal: Goal, s: Settings, most: u32) {
+    let from = k.last
+    k.last = k.action & !PRESS
+    for i in 0..most {
+        step(mut k.w, pad_in(k.action, from, i, s))
+        if !alive(k.w, goal) {
+            return
+        }
+        if ended(k.w, goal) {
+            k.done = i + 1
+            break
+        }
+    }
+    k.live = true
+    k.score = score(k.w, goal, s.lookahead)
+    var h = Hasher::new()
+    k.w.state_hash(mut h)
+    if s.human {
+        h.write_u32(k.last)
+    }
+    k.hash = h.finish()
+    k.cell = cell(k.w, s.cell, k.last, s.human)
+    k.cell_hash = cell_hash(k.cell)
+}
+
+/// Whether pick `a` goes before `b`: the higher score, then the lower hash.
+fn before(a: Pick, b: Pick) -> bool {
+    a.score > b.score || (a.score == b.score && a.hash < b.hash)
+}
+
+/// An open-addressed table's empty slot. A table's slots hold indices into a list, probed in
+/// turn from a hash; its size is a power of two at least twice the entries'.
+const EMPTY: u32 = 0xffffffff
+
+fn table(entries: u32) -> Vec<u32> {
+    var size: u32 = 16
+    while size < entries * 2 {
+        size *= 2
+    }
+    var t: Vec<u32> = Vec::with_capacity(size)
+    for _ in 0..size {
+        t.push(EMPTY)
+    }
+    t
+}
+
+/// Of `n` items, the indices of those that stay, in order: the first of each set of equal ones.
+/// Items are found equal by a hash match (`hash`), then by `equal`; items whose hashes match but
+/// that aren't equal all stay.
+pub fn firsts(n: u32, hash: fn(u32) -> u64, equal: fn(u32, u32) -> bool) -> Vec<u32> {
+    var seen = table(n)
+    let mask = seen.len() - 1
+    var stay: Vec<u32> = Vec::new()
+    for i in 0..n {
+        let h = hash(i)
+        var slot = u32(h) & mask
+        var found = false
+        while seen[slot] != EMPTY {
+            let j = seen[slot]
+            if hash(j) == h && equal(i, j) {
+                found = true
+                break
+            }
+            slot = (slot + 1) & mask
+        }
+        if !found {
+            seen[slot] = i
+            stay.push(i)
+        }
+    }
+    stay
+}
+
+/// A run the search found: its pads, tick by tick, and the state it ends in.
+pub struct Found: Clone {
+    pub pads: Vec<u32>,
+    pub end: World,
+}
+
+/// A search in progress through one segment.
+pub struct Search {
+    goal: Goal,
+    settings: Settings,
+    /// The buttons held before the entry.
+    last: u32,
+    /// The layer's states, and how each layer's were reached from the layer's before.
+    nodes: Vec<Node>,
+    links: Vec<Vec<Link>>,
+    /// The states held from so far: each layer's kids, summed.
+    pub states: u32,
+    /// The run found, once it has.
+    pub found: Option<Found>,
+    /// Whether it has stopped: it found a run, ran out of ticks, or dropped every state.
+    pub stopped: bool,
+}
+
+/// A search through a segment from `entry`, which was held with the buttons `last`.
+pub fn search(entry: World, last: u32, goal: Goal, settings: Settings) -> Search {
+    assert(!settings.human || settings.every >= STRETCH, "a human holds buttons longer")
+    var nodes: Vec<Node> = Vec::new()
+    nodes.push(Node { w: entry, last })
+    let now = ended(entry, goal)
+    Search {
+        goal,
+        settings,
+        last,
+        nodes,
+        links: Vec::new(),
+        states: 0,
+        found: if now { Some(Found { pads: Vec::new(), end: entry }) } else { None },
+        stopped: now,
+    }
+}
+
+impl Search {
+    /// The ticks searched: a layer's for each layer so far, the last only to the most the segment
+    /// may take.
+    pub fn ticks(self) -> u32 {
+        min(self.links.len() * self.settings.every, self.settings.ticks)
+    }
+
+    /// The states the layer keeps.
+    pub fn kept(self) -> u32 {
+        self.nodes.len()
+    }
+
+    /// One layer: every kept state held for each action; then, if any reached the end, the
+    /// earliest of them; else the rest merged where equal and the best of them kept.
+    pub fn layer(mut self) {
+        if self.stopped {
+            return
+        }
+        let goal = self.goal
+        let settings = self.settings
+        // A layer goes no further than the segment may take.
+        let most = min(settings.every, settings.ticks - self.ticks())
+        if most == 0 {
+            self.stopped = true
+            return
+        }
+        // Every action held from each state: node `i`'s kid of action `a` is `kids[i * n + a]`.
+        let n = count(settings)
+        var kids: Vec<Kid> = Vec::with_capacity(self.nodes.len() * n)
+        for node in self.nodes {
+            for a in 0..n {
+                kids.push(kid(node, action(settings, a)))
+            }
+        }
+        kids.par_each_mut(|k| act(mut k, goal, settings, most))
+        self.states += kids.len()
+        // The kids that ended: the earliest tick, then the best pick.
+        var best: Option<Pick> = None
+        var best_tick: u32 = 0
+        var picks: Vec<Pick> = Vec::new()
+        for i in 0..self.nodes.len() {
+            for a in 0..n {
+                borrow k = kids[i * n + a]
+                if !k.live {
+                    continue
+                }
+                let p = Pick { node: i, action: a, score: k.score, hash: k.hash }
+                if k.done == 0 {
+                    picks.push(p)
+                    continue
+                }
+                let better = match best {
+                    None => true,
+                    Some(b) => k.w.ticks < best_tick || (k.w.ticks == best_tick && before(p, b)),
+                }
+                if better {
+                    best = Some(p)
+                    best_tick = k.w.ticks
+                }
+            }
+        }
+        if let Some(b) = best {
+            self.finish(kids[b.node * n + b.action], b)
+            return
+        }
+        // Equal states: a hash match, then equality. The first, in the kids' order, stays.
+        let stay = firsts(
+            picks.len(),
+            |i| picks[i].hash,
+            |i, j| {
+                let (p, q) = (picks[i], picks[j])
+                borrow a = kids[p.node * n + p.action]
+                borrow b = kids[q.node * n + q.action]
+                a.w == b.w && (!settings.human || a.last == b.last)
+            },
+        )
+        var unique: Vec<Pick> = Vec::with_capacity(stay.len())
+        for i in stay {
+            unique.push(picks[i])
+        }
+        // The best first, then the first of each cell: the best of each, the best cells first.
+        unique.sort_by(before)
+        let cells = firsts(
+            unique.len(),
+            |i| kids[unique[i].node * n + unique[i].action].cell_hash,
+            |i, j| {
+                let (p, q) = (unique[i], unique[j])
+                kids[p.node * n + p.action].cell == kids[q.node * n + q.action].cell
+            },
+        )
+        var kept: Vec<Pick> = Vec::new()
+        for i in cells {
+            if kept.len() < self.settings.beam {
+                kept.push(unique[i])
+            }
+        }
+        var next: Vec<Node> = Vec::with_capacity(kept.len())
+        var links: Vec<Link> = Vec::with_capacity(kept.len())
+        for p in kept {
+            borrow k = kids[p.node * n + p.action]
+            next.push(Node { w: k.w, last: k.last })
+            links.push(Link { parent: p.node, action: p.action })
+        }
+        self.nodes = take next
+        self.links.push(take links)
+        if self.nodes.is_empty() || self.ticks() >= self.settings.ticks {
+            self.stopped = true
+        }
+    }
+
+    /// The run to kid `p`, which ended: the actions back through the layers, each held for a
+    /// layer's ticks, the last until it ended.
+    fn finish(mut self, k: Kid, p: Pick) {
+        var taken: Vec<u32> = Vec::new()
+        taken.push(action(self.settings, p.action))
+        var at = p.node
+        var l = self.links.len()
+        while l > 0 {
+            l -= 1
+            let link = self.links[l][at]
+            taken.push(action(self.settings, link.action))
+            at = link.parent
+        }
+        var pads: Vec<u32> = Vec::new()
+        var last = self.last
+        var i = taken.len()
+        while i > 0 {
+            i -= 1
+            let ticks = if i == 0 { k.done } else { self.settings.every }
+            for t in 0..ticks {
+                pads.push(pad_in(taken[i], last, t, self.settings).bits)
+            }
+            last = taken[i] & !PRESS
+        }
+        self.found = Some(Found { pads, end: k.w })
+        self.stopped = true
+    }
+}
+
+/// Searches a segment from `entry` (held with nothing) until it stops, with no clock.
+pub fn run_through(entry: World, goal: Goal, settings: Settings) -> Search {
+    var s = search(entry, 0, goal, settings)
+    while !s.stopped {
+        s.layer()
+    }
+    s
+}
+
+/// The world after the pads `pads` from `w`.
+pub fn played(w: World, pads: [u32]) -> World {
+    var v = w
+    for p in pads {
+        step(mut v, Pad { bits: p })
+    }
+    v
+}

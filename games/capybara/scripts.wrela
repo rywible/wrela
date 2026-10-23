@@ -1,0 +1,101 @@
+// Input scripts for running the lab without a person, as the native host and `wrela trace` take
+// them (`wrela script games/capybara scripts::RUN -o run.json`).
+
+use pad::{DOWN, Hold, JUMP, LEFT, PRESS, RIGHT, UP}
+use std::input::{Key, Script}
+
+/// A run to the right from the start, at 60 frames a second (two ticks a frame), jumping the first
+/// gap, then sliding: enough to see the runway, the crest, the puddle and a gap.
+pub const RUN: Script = Script::frames()
+    .key_down(1, Key::Escape)
+    .key_down(1, Key::D)
+    .key_up(2, Key::Escape)
+    .key_down(281, Key::Space)
+    .key_up(330, Key::Space)
+    .key_down(350, Key::Space)
+    .key_up(400, Key::Space)
+    .key_down(573, Key::S)
+
+/// The keys for a pad's bits.
+const KEYS: [(u32, Key); 5] = [
+    (LEFT, Key::A),
+    (RIGHT, Key::D),
+    (UP, Key::W),
+    (DOWN, Key::S),
+    (JUMP, Key::Space),
+]
+
+/// A recorded run as a script of frames at 120 a second, one tick a frame: Esc on the first, to
+/// leave the pause the game opens on (a tick that doesn't step), then from the second each hold's
+/// keys go down or up where its bits change. A press of jump held on is a release and a press in
+/// its frame, and a press not held on is a tap: down and up in its frame. Run it with `--fps 120`.
+pub fn script_of(run: [Hold]) -> Script {
+    keys_of(Script::frames().key_down(1, Key::Escape).key_up(2, Key::Escape), run, first: 2)
+}
+
+/// `s` with the keys of `run` from frame `first` on.
+fn keys_of(s: take Script, run: [Hold], first: u32) -> Script {
+    var s = take s
+    var held = 0
+    var frame = first
+    for h in run {
+        let bits = h.bits & !PRESS
+        for (bit, key) in KEYS {
+            let was = held & bit != 0
+            let now = bits & bit != 0
+            let again = bit == JUMP && h.bits & PRESS != 0
+            if was && (!now || again) {
+                s = take s.key_up(frame, key)
+            }
+            if now && (!was || again) {
+                s = take s.key_down(frame, key)
+            }
+            if again && !now {
+                s = take s.key_down(frame, key)
+                s = take s.key_up(frame, key)
+            }
+        }
+        held = bits
+        frame += h.ticks
+    }
+    s
+}
+
+/// The level's recorded any% run (`proofs::LEVEL_ANY`) from start to goal, for stills and clips
+/// of every part of the level, which the game starts on: `wrela-host <build> --fps 120 --frames
+/// 3500 --input level.json`.
+pub const LEVEL: Script = script_of(proofs::LEVEL_ANY)
+
+/// The lab's recorded run (`proofs::LAB_RUN`), after Tab switches to the lab: at 120 frames a
+/// second, as `LEVEL`.
+pub const LAB: Script = keys_of(
+    Script::frames().key_down(1, Key::Tab).key_up(2, Key::Tab),
+    proofs::LAB_RUN,
+    first: 4,
+)
+
+/// The runs, at 1280x720 and 60 frames a second: B opens them from the pause the game opens on, T
+/// switches to the tool-assisted board, the pointer rests on its fastest any% run, then clicks it to
+/// watch it.
+pub const RUNS: Script = Script::frames()
+    .key_down(1, Key::B)
+    .key_up(2, Key::B)
+    .key_down(10, Key::T)
+    .key_up(11, Key::T)
+    .move_to(30, vec2(447.0, 306.0))
+    .down(60, vec2(447.0, 306.0))
+    .up(61, vec2(447.0, 306.0))
+
+/// The autopilot's ghost, at 60 frames a second: B opens the runs, G chooses the autopilot's ghost
+/// (after the player's best), Esc closes them, Space plays on, and the capybara runs right beside
+/// it.
+pub const GHOST: Script = Script::frames()
+    .key_down(1, Key::B)
+    .key_up(2, Key::B)
+    .key_down(3, Key::G)
+    .key_up(4, Key::G)
+    .key_down(7, Key::Escape)
+    .key_up(8, Key::Escape)
+    .key_down(9, Key::Space)
+    .key_up(10, Key::Space)
+    .key_down(12, Key::D)

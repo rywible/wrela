@@ -1,0 +1,443 @@
+// The game's music: a piano song built on Ryan's melody, played by engine::piano. Ryan played the
+// melody on the keys (2026-10-22: keys/takes.wrela's take 1) and asked for "a whole new song around
+// my melody and the tempo i set", the earlier song ripped out.
+//
+// The melody: a falling "re, do, sol" (D, C, G) answered by a held E; again, answered by a B tied
+// over the bar; again a beat late; and "fa, fa, mi, re", the D ringing on. His notes fit a grid of
+// 109 quarter notes a minute to within a few hundredths of a beat, so that is the tempo, and his
+// four bars are the theme as he played them, every note in his order. He liked "the core vibe" and
+// asked for more ("some jazz or harmonics are cool"), so Claude wrote the rest round them as
+// Japanese city pop does, jazz harmony over a straight, laid-back groove:
+// - the chords: C major 9, A minor 9, D minor 9, G13 under his bars, so his "fa, fa, mi, re" is
+//   G13's seventh, thirteenth and fifth; then E minor 7, A7 (his C over it the blue sharp nine),
+//   D minor 9 to G13, and home to C major 9. They're voiced without their roots, the third,
+//   seventh and ninth in the left hand, and the bass plays the root;
+// - a four-bar answer that turns the motif over and comes home ("sol, si, la" sliding up into the
+//   A7; "do, ti, sol, mi; fa, mi, re, la, ti; do");
+// - a bridge built from his "fa, fa, mi, re" in a sequence (F major 9, E minor 7, E7, A minor 9;
+//   D minor 9, G13, F major 9, G9 suspended);
+// - the shimmer: a fourth voice, high arpeggios of the chords' ninths and thirteenths at a phrase's
+//   end, like bells;
+// - the grooves.
+//
+// One pass is 38 bars, 84 seconds:
+// - the intro (4 bars): the motif twice, high and sparse, and his "fa, fa, mi, re", over the
+//   theme's first four chords, the shimmer answering;
+// - the theme (8 bars): his four bars and the answer, mezzo-forte, the bass on 1, the "and" of 2
+//   and 3, and the chords on 2 and the "and" of 4, laid back;
+// - the bridge (8 bars): his figure on A, B, E, then F, G, A, rising to forte, the bass in long
+//   notes and then pumping eighths;
+// - the chorus (8 bars, twice): the theme an octave up in octaves, forte, over a syncopated bass in
+//   octaves and chords on the off-beats;
+// - the turn (2 bars): the motif twice over D minor 9 and G13, back to the intro.
+// The form is code (`looped`): the game plays `PASSES` passes (10 minutes), then the motif and a
+// C major hit.
+//
+// The playing is tight and on the beat: the pushes accented, everything not tied short and
+// bouncing, a light pedal.
+//
+// The game's main makes the music's piano once (`music`), on the program's thread, and gives it to
+// the game's voice (sound.wrela), which plays it with the game's sounds over it.
+
+use engine::perform::{Mark, Pedal, Performance, Played, Taste, bar, perform}
+use engine::piano::{Piano, piano, play_piano}
+use engine::piano_grand::GRAND
+use engine::score::{Level, Score, meter, score}
+use std::audio::SAMPLE_RATE
+use std::collections::Vec
+
+/// The intro: the motif twice, high and sparse, and his "fa, fa, mi, re", over the theme's first
+/// chords, the shimmer answering.
+const INTRO = score("intro", meter(beats: 4, unit: 4))
+    .voice(
+        "melody",
+        [
+            "r/2 d6/8 !mp c6 g5/4 | r/1 |",
+            "r/2 d6/8 c6 g5/4 | f5/4. f5/8 e5/4 d5/4 |",
+        ],
+    )
+    .voice(
+        "chords",
+        [
+            "r/4 <e3 g3 b3 d4>/4 r/4 r/8 <e3 g3 b3 d4>/8 |",
+            "r/4 <c3 e3 g3 b3>/4 r/4 r/8 <c3 e3 g3 b3>/8 |",
+            "r/4 <f3 a3 c4 e4>/4 r/4 r/8 <f3 a3 c4 e4>/8 |",
+            "r/4 <f3 b3 e4>/4 r/4 r/8 <f3 b3 e4>/8 |",
+        ],
+    )
+    .voice(
+        "bass",
+        [
+            "c2/4 r/8 c2/8 g2/4 r/4 | a1/4 r/8 a1/8 e2/4 r/4 |",
+            "d2/4 r/8 d2/8 a2/4 r/4 | g1/4 r/8 g1/8 d2/4 r/4 |",
+        ],
+    )
+    .voice(
+        "shimmer",
+        [
+            "r/1 | r/2 r/4 b6/16 d7 e7 g7 |",
+            "r/1 | r/2 r/4 e7/16 d7 b6 f6 |",
+        ],
+    )
+
+/// The theme: Ryan's four bars as he played them (D, C, G and a held E; D, C, G and a B tied over;
+/// D, C, G a beat late; F, F, E, D), and the answer, which slides up into the A7 and comes home.
+const THEME = score("theme", meter(beats: 4, unit: 4))
+    .voice(
+        "melody",
+        [
+            "d5/8 !mf c5 g4/4 e5/2 | d5/8 c5 g4/4 r/4 b4/4 !accent ~ |",
+            "b4/4 d5/8 c5 g4/2 | f5/4. f5/8 e5/4 d5/4 !accent ~ |",
+            "d5/2 r/8 g4/8 g#4 a4 | c5/8 b4 g4/4 e4/2 |",
+            "f4/8 e4 d4/4 a4/4 b4/4 | c5/2. r/4 |",
+        ],
+    )
+    .voice(
+        "chords",
+        [
+            "r/4 <e3 g3 b3 d4>/4 r/4 r/8 <e3 g3 b3 d4>/8 |",
+            "r/4 <c3 e3 g3 b3>/4 r/4 r/8 <c3 e3 g3 b3>/8 |",
+            "r/4 <f3 a3 c4 e4>/4 r/4 r/8 <f3 a3 c4 e4>/8 |",
+            "r/4 <f3 b3 e4>/4 r/4 r/8 <f3 b3 e4>/8 |",
+            "r/4 <d3 g3 b3>/4 r/4 r/8 <d3 g3 b3>/8 |",
+            "r/4 <g3 c#4 e4>/4 r/4 r/8 <g3 c#4 e4>/8 |",
+            "r/4 <f3 a3 c4 e4>/4 r/4 r/8 <f3 b3 e4>/8 |",
+            "r/4 <e3 g3 b3 d4>/4 r/4 r/8 <e3 g3 b3 d4>/8 |",
+        ],
+    )
+    .voice(
+        "bass",
+        [
+            "c2/4 r/8 c2/8 g2/4 r/4 | a1/4 r/8 a1/8 e2/4 r/4 |",
+            "d2/4 r/8 d2/8 a2/4 r/4 | g1/4 r/8 g1/8 d2/4 r/4 |",
+            "e2/4 r/8 e2/8 b1/4 r/4 | a1/4 r/8 a1/8 e2/4 r/4 |",
+            "d2/4 r/8 a1/8 g1/4 r/4 | c2/4 r/8 c2/8 g2/4 r/4 |",
+        ],
+    )
+    .voice("shimmer", ["r/1 | r/1 | r/1 | r/1 | r/1 | r/1 | r/1 | r/2 r/4 d7/16 b6 g6 e6 |"])
+
+/// The bridge: Ryan's "fa, fa, mi, re" on A, B and E, a breath on C, then on F, G and A, rising to
+/// forte on G (F major 9, E minor 7, E7, A minor 9; D minor 9, G13, F major 9, G9 suspended); the
+/// bass in long notes, then pumping eighths into the chorus.
+const BRIDGE = score("bridge", meter(beats: 4, unit: 4))
+    .voice(
+        "melody",
+        [
+            "a4/4. !mp a4/8 g4/4 f4/4 | b4/4. b4/8 a4/4 g4/4 |",
+            "e5/4. e5/8 d5/4 b4/4 | c5/2. r/4 |",
+            "f5/4. !< f5/8 e5/4 d5/4 | g5/4. g5/8 f5/4 e5/4 |",
+            "a5/4. a5/8 g5/4 f5/4 | g5/2. !! r/4 |",
+        ],
+    )
+    .voice(
+        "chords",
+        [
+            "<a3 c4 e4 g4>/4 <a3 c4 e4 g4> <a3 c4 e4 g4> <a3 c4 e4 g4> |",
+            "<d3 g3 b3>/4 <d3 g3 b3> <d3 g3 b3> <d3 g3 b3> |",
+            "<d3 g#3 b3>/4 <d3 g#3 b3> <d3 g#3 b3> <d3 g#3 b3> |",
+            "<c3 e3 g3 b3>/4 <c3 e3 g3 b3> <c3 e3 g3 b3> <c3 e3 g3 b3> |",
+            "r/8 <f3 a3 c4 e4> r <f3 a3 c4 e4> r <f3 a3 c4 e4> r <f3 a3 c4 e4> |",
+            "r/8 <f3 b3 e4> r <f3 b3 e4> r <f3 b3 e4> r <f3 b3 e4> |",
+            "r/8 <a3 c4 e4 g4> r <a3 c4 e4 g4> r <a3 c4 e4 g4> r <a3 c4 e4 g4> |",
+            "r/8 <f3 a3 c4> r <f3 a3 c4> r <f3 a3 c4> r <f3 a3 c4> |",
+        ],
+    )
+    .voice(
+        "bass",
+        [
+            "f1/2 c2/2 | e2/2 b1/2 | e2/2 g#1/2 | a1/2 e2/2 |",
+            "d2/8 d3 d2 d3 d2 d3 d2 d3 | g1 g2 g1 g2 g1 g2 g1 g2 |",
+            "f1 f2 f1 f2 f1 f2 f1 f2 | g1 g2 g1 g2 g1 g2 g1 g2 |",
+        ],
+    )
+    .voice("shimmer", ["r/1 | r/1 | r/1 | r/1 | r/1 | r/1 | r/1 | r/1 |"])
+
+/// The chorus: the theme an octave up, in octaves, forte, over a syncopated bass in octaves (on 1,
+/// the "and" of 2, the "and" of 3 and 4) and the chords on the off-beats, the shimmer answering
+/// its phrases.
+const CHORUS = score("chorus", meter(beats: 4, unit: 4))
+    .voice(
+        "melody",
+        [
+            "<d5 d6>/8 !f <c5 c6> <g4 g5>/4 <e5 e6>/2 |",
+            "<d5 d6>/8 <c5 c6> <g4 g5>/4 r/4 <b4 b5>/4 !accent ~ |",
+            "<b4 b5>/4 <d5 d6>/8 <c5 c6> <g4 g5>/2 |",
+            "<f5 f6>/4. <f5 f6>/8 <e5 e6>/4 <d5 d6>/4 !accent ~ |",
+            "<d5 d6>/2 r/8 <g4 g5>/8 <g#4 g#5> <a4 a5> |",
+            "<c5 c6>/8 <b4 b5> <g4 g5>/4 <e4 e5>/2 |",
+            "<f4 f5>/8 <e4 e5> <d4 d5>/4 <a4 a5>/4 <b4 b5>/4 |",
+            "<c5 c6>/2. r/4 |",
+        ],
+    )
+    .voice(
+        "chords",
+        [
+            "r/8 <e3 g3 b3 d4> r <e3 g3 b3 d4> r <e3 g3 b3 d4> r <e3 g3 b3 d4> |",
+            "r/8 <c3 e3 g3 b3> r <c3 e3 g3 b3> r <c3 e3 g3 b3> r <c3 e3 g3 b3> |",
+            "r/8 <f3 a3 c4 e4> r <f3 a3 c4 e4> r <f3 a3 c4 e4> r <f3 a3 c4 e4> |",
+            "r/8 <f3 b3 e4> r <f3 b3 e4> r <f3 b3 e4> r <f3 b3 e4> |",
+            "r/8 <d3 g3 b3> r <d3 g3 b3> r <d3 g3 b3> r <d3 g3 b3> |",
+            "r/8 <g3 c#4 e4> r <g3 c#4 e4> r <g3 c#4 e4> r <g3 c#4 e4> |",
+            "r/8 <f3 a3 c4 e4> r <f3 a3 c4 e4> r <f3 b3 e4> r <f3 b3 e4> |",
+            "<e3 g3 b3 d4>/4 r r/2 |",
+        ],
+    )
+    .voice(
+        "bass",
+        [
+            "<c2 c3>/4. <c2 c3>/8 r/8 <g1 g2>/8 <c2 c3>/4 |",
+            "<a1 a2>/4. <a1 a2>/8 r/8 <e2 e3>/8 <a1 a2>/4 |",
+            "<d2 d3>/4. <d2 d3>/8 r/8 <a1 a2>/8 <d2 d3>/4 |",
+            "<g1 g2>/4. <g1 g2>/8 r/8 <d2 d3>/8 <g1 g2>/4 |",
+            "<e2 e3>/4. <e2 e3>/8 r/8 <b1 b2>/8 <e2 e3>/4 |",
+            "<a1 a2>/4. <a1 a2>/8 r/8 <e2 e3>/8 <a1 a2>/4 |",
+            "<d2 d3>/4. <d2 d3>/8 r/8 <g1 g2>/8 <g1 g2>/4 |",
+            "<c2 c3>/4 r r/2 |",
+        ],
+    )
+    .voice(
+        "shimmer",
+        [
+            "r/1 | r/2 r/4 b6/16 d7 e7 g7 | r/1 | r/2 r/4 e7/16 d7 b6 f6 |",
+            "r/1 | r/2 r/4 c#7/16 e7 g7 a7 | r/1 | r/2 r/4 d7/16 b6 g6 e6 |",
+        ],
+    )
+
+/// The turn: the motif twice over D minor 9 and G13, back to the intro.
+const TURN = score("turn", meter(beats: 4, unit: 4))
+    .voice("melody", ["d5/8 !mf c5 g4/4 r/2 | d5/8 c5 g4/4 b4/4 d5/4 |"])
+    .voice(
+        "chords",
+        [
+            "r/4 <f3 a3 c4 e4>/4 r/4 r/8 <f3 a3 c4 e4>/8 |",
+            "r/4 <f3 b3 e4>/4 r/4 r/8 <f3 b3 e4>/8 |",
+        ],
+    )
+    .voice("bass", ["d2/4 r/8 d2/8 a2/4 r/4 | g1/4 r/8 g1/8 b1/4 d2/4 |"])
+    .voice("shimmer", ["r/1 | r/1 |"])
+
+/// The ending, after the last pass: the motif and a C major 9 hit.
+const END = score("ending", meter(beats: 4, unit: 4))
+    .voice("melody", ["d5/8 !f c5 g4/4 <e5 g5 c6>/4 !accent r | <c5 e5 g5 c6>/4 !accent r r/2 |"])
+    .voice("chords", ["r/2 <e3 g3 b3 d4>/4 r | <e3 g3 b3 d4>/4 r r/2 |"])
+    .voice("bass", ["r/2 <c2 c3>/4 r | <c2 c3>/4 r r/2 |"])
+    .voice("shimmer", ["r/2 r/4 r/8 d7/8 | r/1 |"])
+
+/// Bars in one pass of the piece.
+pub const BARS: u32 = 38
+
+/// Bars in the ending.
+const END_BARS: u32 = 2
+
+/// The first bars of the theme, the bridge and the chorus, in a pass.
+const THEME_BAR: u32 = 5
+const BRIDGE_BAR: u32 = 13
+const CHORUS_BAR: u32 = 21
+
+/// One pass of the piece: the intro, the theme, the bridge, the chorus twice and the turn.
+pub const SONG: Score = score("The capybara's song", meter(beats: 4, unit: 4))
+    .with_tempo("Laid back, with a bounce")
+    .then(INTRO)
+    .then(THEME)
+    .then(BRIDGE)
+    .then(CHORUS)
+    .then(CHORUS)
+    .then(TURN)
+
+/// How many passes the game plays: 10 minutes of music.
+pub const PASSES: u32 = 7
+
+/// Quarter notes a minute: Ryan's, as he played the melody.
+pub const TEMPO: f32 = 109.0
+
+/// `passes` passes of the piece, one after another, then the ending.
+pub fn looped(passes: u32) -> Score {
+    var s = score("The capybara's song", meter(beats: 4, unit: 4)).with_tempo(SONG.tempo)
+    for _ in 0..passes {
+        s = take s.then(SONG)
+    }
+    take s.then(END)
+}
+
+/// The player's habits: tight and on the beat (no rubato, no phrase arches in time, the melody
+/// with the rest), a little weight on each bar's first beat and on the accented pushes; the
+/// melody over the accompaniment; every note not tied or slurred played at about two thirds of
+/// its length, so the groove bounces; high notes a little softer, so they are not hard; and a
+/// light pedal, changed with each bass note.
+pub fn taste() -> Taste {
+    Taste {
+        tempo: TEMPO,
+        lead: "melody",
+        voicing: 1.1,
+        under: 0.92,
+        bass: "bass",
+        bass_weight: 1.05,
+        range: 0.75,
+        metre: 0.1,
+        high_loud: -0.05,
+        accent: 0.3,
+        legato: 0.02,
+        detache: 0.35,
+        pedal: Pedal::ByVoice { voice: "bass", catch: 0.04, depth: 0.25 },
+        ring: 1.5,
+        jitter_time: 0.002,
+        jitter_velocity: 0.04,
+        seed: 3,
+    }
+}
+
+/// This performance's marks for `passes` passes: the last flourish's chords rolled a little,
+/// and the last hit held.
+pub fn marks(passes: u32) -> Vec<Mark> {
+    var m: Vec<Mark> = Vec::new()
+    let last = passes * BARS + END_BARS
+    m.push(Mark::Roll { at: bar(last), spread: 0.02 })
+    m.push(Mark::Hold { at: bar(last), by: 1.3 })
+    m
+}
+
+/// The piece as the game plays it: `passes` passes and the ending, performed.
+pub fn performance(passes: u32) -> Performance {
+    let marks = marks(passes)
+    perform(looped(passes), taste(), marks)
+}
+
+/// The piece's accompaniment, its melody left out, for a person to play a melody over (keys/):
+/// `passes` passes, as the game plays them, at `TEMPO`.
+pub fn backing(passes: u32) -> Performance {
+    let s = looped(passes)
+    var p = perform(s, taste(), marks(passes))
+    let melody = s.voice_named("melody")
+    var kept: Vec<Played> = Vec::new()
+    for n in p.notes {
+        if n.voice != melody {
+            kept.push(n)
+        }
+    }
+    p.notes = take kept
+    p
+}
+
+/// The music: `PASSES` passes of the piece on engine::piano's grand, made on the program's thread,
+/// for the game's voice to play (sound.wrela).
+pub fn music() -> Piano {
+    piano(GRAND, performance(PASSES))
+}
+
+@test
+fn the_song_is_thirty_eight_bars_a_pass_in_four_voices() {
+    assert(SONG.bars == BARS)
+    assert(SONG.voices.len() == 4)
+    assert(SONG.sections.len() == 6)
+    assert(SONG.sections[1].first_bar == THEME_BAR)
+    assert(SONG.sections[2].first_bar == BRIDGE_BAR)
+    assert(SONG.sections[3].first_bar == CHORUS_BAR)
+    assert(SONG.sections[5].first_bar + SONG.sections[5].bars - 1 == BARS)
+    // Each starts on its downbeat: the theme on D5, mezzo-forte; the bridge on A4, quietly; the
+    // chorus on D6, forte.
+    let melody = SONG.voice_named("melody")
+    for (at, key, level) in [
+        (THEME_BAR, 74, Level::MF),
+        (BRIDGE_BAR, 69, Level::MP),
+        (CHORUS_BAR, 86, Level::F),
+    ] {
+        let t = SONG.bar_start(at)
+        var first = SONG.length()
+        var top = 0
+        for n in SONG.notes {
+            if n.voice == melody && n.start >= t && n.start <= first {
+                first = n.start
+                top = max(top, n.key)
+            }
+        }
+        assert(first == t, f"bar {at}: the first note at {first - t}")
+        assert(top == key, f"bar {at}: {top}")
+        assert(SONG.level_at(first) == level)
+    }
+}
+
+@test
+fn the_theme_begins_with_ryans_notes_in_his_order() {
+    // His take's fifteen notes (keys/takes.wrela, take 1): D C G E, D C G B, D C G, F F E D.
+    let his = [74, 72, 67, 76, 74, 72, 67, 71, 74, 72, 67, 77, 77, 76, 74]
+    let melody = THEME.voice_named("melody")
+    var i = 0
+    for n in THEME.notes {
+        if n.voice == melody && i < his.len() {
+            assert(n.key == his[i], f"note {i}: {n.key}, his {his[i]}")
+            i += 1
+        }
+    }
+    assert(i == his.len())
+}
+
+@test
+fn the_chorus_is_the_theme_an_octave_up_in_octaves() {
+    assert(doubled(THEME, CHORUS) == 28)
+}
+
+/// How many notes of `theme`'s melody `chorus` plays at the same time and for as long, an octave
+/// up and in octaves; asserts that it plays them all.
+fn doubled(theme: Score, chorus: Score) -> u32 {
+    let melody = theme.voice_named("melody")
+    var found = 0
+    for n in theme.notes {
+        if n.voice != melody {
+            continue
+        }
+        var high = false
+        var low = false
+        for m in chorus.notes {
+            if m.start == n.start && m.length == n.length {
+                high = high || m.key == n.key + 12
+                low = low || m.key == n.key
+            }
+        }
+        assert(high && low, f"the chorus's note at {n.start}")
+        found += 1
+    }
+    found
+}
+
+@test
+fn the_music_lasts_ten_minutes_on_a_steady_pulse() {
+    let p = performance(PASSES)
+    let s = looped(PASSES)
+    assert(s.bars == PASSES * BARS + END_BARS)
+    assert(p.notes.len() == s.notes.len())
+    // A steady pulse: every beat up to the last bar falls at Ryan's tempo.
+    let beats = (PASSES * BARS + END_BARS - 1) * 4
+    for b in 0..beats + 1 {
+        let expected = f64(b) * 60.0 / f64(TEMPO)
+        assert(abs(p.beats[b] - expected) < 1e-6, f"beat {b}: {p.beats[b]} s, not {expected}")
+    }
+    assert(p.length > 580.0, "ten minutes")
+    assert(p.length < p.beats[beats] + 8.0, f"{p.length} s")
+}
+
+@test
+fn the_music_plays_on_the_piano_without_clipping() {
+    // The loudest music, on the CPU, as the voice plays it: the chorus (forte, in octaves, a
+    // little louder than the game plays it), to the end of its ring. Every sample is finite, and
+    // the loudest well under full scale.
+    let loud = score("the loudest bars", meter(beats: 4, unit: 4)).then(CHORUS)
+    let p = perform(
+        loud,
+        taste(),
+        [Mark::Swell { over: engine::perform::bars(1, last: 8), by: 1.06 }],
+    )
+    var voice = piano(GRAND, p)
+    var l = [0.0; 128]
+    var r = [0.0; 128]
+    var peak = 0.0
+    for _ in 0..u32(p.length * f64(SAMPLE_RATE) / 128.0) + 1 {
+        play_piano(mut voice, mut l, mut r)
+        for i in 0..128 {
+            // Neither infinite nor not a number: its exponent isn't all ones.
+            assert((bitcast_u32(l[i]) >> 23) & 255 != 255, "a finite sample")
+            assert((bitcast_u32(r[i]) >> 23) & 255 != 255, "a finite sample")
+            peak = max(peak, max(abs(l[i]), abs(r[i])))
+        }
+    }
+    assert(peak > 0.1 && peak < 0.9, f"peak {peak}")
+}

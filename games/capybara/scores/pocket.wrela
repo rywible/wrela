@@ -1,0 +1,180 @@
+// "04 - Pocket": a dry, straight-eighth piano groove in E-flat major. A two-bar hook
+// drops a fourth, steps up, jumps a fifth, then answers higher. Short offbeat chords fit between
+// bass attacks; a quieter bridge borrows A-flat minor before the hook returns. 32 bars.
+
+use engine::score::{Score, meter, score}
+
+const HOOK = score("the pocket", meter(beats: 4, unit: 4))
+    .voice(
+        "melody",
+        [
+            "eb5/8 !mf !accent r bb4 c5 g5/4 f5/8 eb5 |",
+            "r/8 g5 bb5/4 g5/8 f5 eb5/4 |",
+            "ab5/8 !accent r eb5 f5 c6/4 bb5/8 ab5 |",
+            "r/8 f5 ab5/4 f5/8 d5 bb4/4 |",
+            "eb5/8 !accent r bb4 c5 g5/4 f5/8 eb5 |",
+            "r/8 g5 bb5/4 g5/8 f5 eb5/4 |",
+            "f5/8 r c5 d5 ab5/4 g5/8 f5 |",
+            "d5/4 eb5/8 f5 r/8 bb4 c5 d5 |",
+        ],
+    )
+    .voice(
+        "harmony",
+        [
+            "r/8 <g3 c4 f4>/8 !staccato r/4 r/8 <g3 c4 f4>/8 !staccato r/4 |",
+            "r/8 <g3 bb3 eb4>/8 !staccato r/4 r/8 <g3 bb3 eb4>/8 !staccato r/4 |",
+            "r/8 <g3 bb3 c4 eb4>/8 !staccato r/4 r/8 <g3 bb3 c4 eb4>/8 !staccato r/4 |",
+            "r/8 <ab3 c4 d4 g4>/8 !staccato r/4 r/8 <ab3 c4 d4 g4>/8 !staccato r/4 |",
+            "r/8 <g3 c4 f4>/8 !staccato r/4 r/8 <g3 c4 f4>/8 !staccato r/4 |",
+            "r/8 <g3 bb3 eb4>/8 !staccato r/4 r/8 <g3 bb3 eb4>/8 !staccato r/4 |",
+            "r/8 <ab3 c4 eb4 g4>/8 !staccato r/4 r/8 <ab3 c4 eb4 g4>/8 !staccato r/4 |",
+            "r/8 <ab3 c4 d4 g4>/8 !staccato r/4 r/8 <ab3 c4 d4 g4>/8 !staccato r/8 <ab3 d4 g4>/8 !staccato |",
+        ],
+    )
+    .voice(
+        "bass",
+        [
+            "eb2/8 r bb2 eb3 r/4 d3/8 eb3 |",
+            "c3/8 r g2 c3 r/4 bb2/8 g2 |",
+            "ab2/8 r eb3 ab2 r/4 g2/8 ab2 |",
+            "bb2/8 r f3 bb2 r/4 f2/8 d3 |",
+            "eb2/8 r bb2 eb3 r/4 d3/8 eb3 |",
+            "c3/8 r g2 c3 r/4 bb2/8 g2 |",
+            "f2/8 r c3 f3 r/4 c3/8 a2 |",
+            "bb2/8 r f3 bb2 r/8 bb2 ab2 g2 |",
+        ],
+    )
+
+const ANSWER = score("the long answer", meter(beats: 4, unit: 4))
+    .voice(
+        "melody",
+        [
+            "ab5/4 g5/8 f5 c5/8 r f5 ab5 |",
+            "bb5/4 ab5/8 f5 d5/4 f5/8 ab5 |",
+            "g5/8 r d5 f5 bb5/4 ab5/8 g5 |",
+            "e5/4 g5/8 bb5 c6/4 bb5/8 g5 |",
+            "ab5/4 g5/8 f5 c5/8 r f5 ab5 |",
+            "bb5/8 !accent r ab5 f5 d5/4 f5/8 d5 |",
+            "eb5/8 r bb4 c5 g5/4 f5/8 eb5 |",
+            "d5/4 f5/8 ab5 g5/8 f5 eb5 d5 |",
+        ],
+    )
+    .voice(
+        "harmony",
+        [
+            "r/8 <ab3 c4 eb4 g4>/8 !staccato r/4 r/8 <ab3 c4 eb4 g4>/8 !staccato r/8 <ab3 c4 eb4>/8 !staccato |",
+            "r/8 <ab3 c4 d4 g4>/8 !staccato r/4 r/8 <ab3 c4 d4 g4>/8 !staccato r/8 <ab3 d4 g4>/8 !staccato |",
+            "r/8 <g3 c4 f4>/8 !staccato r/4 r/8 <g3 c4 f4>/8 !staccato r/8 <g3 c4 f4>/8 !staccato |",
+            "r/8 <bb3 e4 g4>/8 !staccato r/4 r/8 <bb3 e4 g4>/8 !staccato r/8 <bb3 e4 g4>/8 !staccato |",
+            "r/8 <ab3 c4 eb4 g4>/8 !staccato r/4 r/8 <ab3 c4 eb4 g4>/8 !staccato r/8 <ab3 c4 eb4>/8 !staccato |",
+            "r/8 <ab3 c4 d4 g4>/8 !staccato r/4 r/8 <ab3 c4 d4 g4>/8 !staccato r/8 <ab3 d4 g4>/8 !staccato |",
+            "r/8 <g3 c4 f4>/8 !staccato r/4 r/8 <g3 c4 f4>/8 !staccato r/4 |",
+            "r/8 <ab3 c4 d4 g4>/8 !staccato r/4 r/8 <ab3 c4 d4 g4>/8 !staccato r/4 |",
+        ],
+    )
+    .voice(
+        "bass",
+        [
+            "f2/8 r c3 f3 r/4 c3/8 a2 |",
+            "bb2/8 r f3 bb2 r/4 f2/8 d3 |",
+            "eb2/8 r bb2 eb3 r/4 d3/8 b2 |",
+            "c3/8 r g2 c3 r/4 eb3/8 e3 |",
+            "f2/8 r c3 f3 r/4 c3/8 a2 |",
+            "bb2/8 r f3 bb2 r/4 f2/8 d3 |",
+            "eb2/8 r bb2 eb3 r/4 d3/8 eb3 |",
+            "bb2/8 r f3 bb2 r/8 d3 db3 b2 |",
+        ],
+    )
+
+const BRIDGE = score("a different corner", meter(beats: 4, unit: 4))
+    .voice(
+        "melody",
+        [
+            "g5/2 !mp eb5/4 d5/8 c5 |",
+            "a4/4 c5/8 eb5 r/8 g5 f5/4 |",
+            "eb5/2 c5/4 bb4/8 ab4 |",
+            "cb5/4 bb4/8 ab4 r/8 f5 eb5/4 |",
+            "g5/4 eb5/8 f5 bb5/4 g5/8 f5 |",
+            "e5/4 g5/8 bb5 c6/4 bb5/8 g5 |",
+            "ab5/8 !mf r g5 f5 eb5/4 c5/8 ab4 |",
+            "d5/8 f5 ab5 g5 f5/4 d5/8 bb4 |",
+        ],
+    )
+    .voice(
+        "harmony",
+        [
+            "r/4 <bb3 eb4 g4>/2 r/4 |",
+            "r/4 <a3 c4 eb4 g4>/2 r/4 |",
+            "r/4 <g3 bb3 c4 eb4>/2 r/4 |",
+            "r/4 <cb4 eb4 f4>/2 r/4 |",
+            "r/4 <bb3 eb4 f4>/2 r/4 |",
+            "r/4 <bb3 e4 g4>/2 r/4 |",
+            "r/8 <ab3 c4 eb4 g4>/8 !staccato r/4 r/8 <ab3 c4 eb4 g4>/8 !staccato r/4 |",
+            "r/8 <ab3 c4 d4 g4>/8 !staccato r/4 r/8 <ab3 c4 d4 g4>/8 !staccato r/8 <ab3 d4 g4>/8 !staccato |",
+        ],
+    )
+    .voice(
+        "bass",
+        [
+            "c3/4 r/4 g2/4 bb2/8 c3 |",
+            "f2/4 r/4 c3/4 eb3/8 f3 |",
+            "ab2/4 r/4 eb3/4 g2/8 ab2 |",
+            "ab2/4 r/4 eb3/4 f3/8 ab2 |",
+            "g2/4 r/4 bb2/4 d3/8 eb3 |",
+            "c3/4 r/4 g2/4 eb3/8 e3 |",
+            "f2/8 r c3 f3 r/4 c3/8 a2 |",
+            "bb2/8 r f3 bb2 r/8 ab2 f2 d3 |",
+        ],
+    )
+
+const RETURN = score("back in the pocket", meter(beats: 4, unit: 4))
+    .voice(
+        "melody",
+        [
+            "eb5/8 !mf !accent r bb4 c5 g5/4 f5/8 eb5 |",
+            "r/8 g5 bb5/4 g5/8 f5 eb5/4 |",
+            "ab5/8 !accent r eb5 f5 c6/4 bb5/8 ab5 |",
+            "r/8 f5 ab5/4 f5/8 d5 bb4/4 |",
+            "eb5/8 !f !accent r bb4 c5 g5/4 f5/8 eb5 |",
+            "r/8 g5 c6/4 bb5/8 g5 f5/4 |",
+            "ab5/8 g5 f5 eb5 d5/4 f5/8 d5 |",
+            "eb5/4 !accent r/4 <g4 bb4 eb5>/2 !tenuto |",
+        ],
+    )
+    .voice(
+        "harmony",
+        [
+            "r/8 <g3 c4 f4>/8 !staccato r/4 r/8 <g3 c4 f4>/8 !staccato r/4 |",
+            "r/8 <g3 bb3 eb4>/8 !staccato r/4 r/8 <g3 bb3 eb4>/8 !staccato r/4 |",
+            "r/8 <g3 bb3 c4 eb4>/8 !staccato r/4 r/8 <g3 bb3 c4 eb4>/8 !staccato r/4 |",
+            "r/8 <ab3 c4 d4 g4>/8 !staccato r/4 r/8 <ab3 c4 d4 g4>/8 !staccato r/8 <ab3 d4 g4>/8 !staccato |",
+            "r/8 <g3 c4 f4>/8 !staccato r/4 r/8 <g3 c4 f4>/8 !staccato r/4 |",
+            "r/8 <ab3 c4 eb4 g4>/8 !staccato r/4 r/8 <ab3 c4 eb4 g4>/8 !staccato r/8 <ab3 c4 eb4>/8 !staccato |",
+            "r/8 <ab3 c4 d4 g4>/8 !staccato r/4 r/8 <ab3 c4 d4 g4>/8 !staccato r/8 <ab3 d4 g4>/8 !staccato |",
+            "<g3 c4 eb4>/4 !staccato r/4 <g3 bb3 eb4>/2 !tenuto |",
+        ],
+    )
+    .voice(
+        "bass",
+        [
+            "eb2/8 r bb2 eb3 r/4 d3/8 eb3 |",
+            "c3/8 r g2 c3 r/4 bb2/8 g2 |",
+            "ab2/8 r eb3 ab2 r/4 g2/8 ab2 |",
+            "bb2/8 r f3 bb2 r/4 f2/8 d3 |",
+            "eb2/8 r bb2 eb3 r/4 d3/8 e3 |",
+            "f2/8 r c3 f3 r/4 c3/8 a2 |",
+            "bb2/8 r f3 bb2 r/8 ab2 f2 d3 |",
+            "eb2/4 r/4 eb3/2 !tenuto |",
+        ],
+    )
+
+/// A piano audition with a two-bar hook, an answer, a quieter bridge and a final return.
+pub const SCORE: Score = score("04 - Pocket", meter(beats: 4, unit: 4))
+    .with_tempo("Straight eighths, with a light backbeat")
+    .then(HOOK)
+    .then(ANSWER)
+    .then(BRIDGE)
+    .then(RETURN)
+
+/// Quarter notes per minute; 32 bars take about 66.2 seconds before the release tail.
+pub const TEMPO: f32 = 116.0

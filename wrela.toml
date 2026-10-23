@@ -5,7 +5,7 @@
 [workspace]
 # The toolchain release the workspace runs: a `wrela` of another release runs this one instead,
 # downloading it to ~/.wrela/toolchains (`wrela toolchain` says which runs and why).
-toolchain = "0.2.2"
+toolchain = "0.3.3"
 members = [
     "console",
     "console/tests/shader-budget",
@@ -22,6 +22,9 @@ members = [
     "examples/herd/tests/raycasts",
     "examples/herd/tests/realize",
     "games/*",
+    "games/capybara/scores",
+    "games/capybara/route",
+    "games/capybara/keys",
     "games/last-green/session",
     "games/last-green/session/tests/export",
     "games/last-green/stair",
@@ -72,6 +75,8 @@ allow = [
     "README.md",
     "docs/vision.md",
     "docs/process.md",
+    "docs/toolchain-gaps.md",
+    "games/*/design.md",
     ".gitignore",
     ".github/workflows/deploy.yml",
 ]
@@ -136,6 +141,19 @@ browser = true
 [tools.serve]
 package = "studio/serve"
 write = ["ws=."]
+
+# The route tool (games/capybara/route): the route search's fastest runs of the capybara game's
+# first level. It writes them as the game's routes.wrela, in games/capybara.
+[tools.route]
+package = "games/capybara/route"
+write = ["game=games/capybara"]
+
+# The keys (games/capybara/keys): a page on which Ryan plays the game's piano from the computer's
+# keyboard over the music's accompaniment, and keeps the takes he likes in its takes.wrela.
+[tools.keys]
+package = "games/capybara/keys"
+read = ["ws=."]
+write = ["keys=games/capybara/keys"]
 
 # The release tool (studio/release): a release of the console, its games and the docs for
 # Cloudflare Workers, which the deploy tool deploys. It reads the workspace, stages its builds in

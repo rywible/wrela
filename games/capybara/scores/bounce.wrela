@@ -1,0 +1,164 @@
+// "01 - Bounce": a brisk piano tune built round a leaping two-bar hook. Short offbeat
+// chords and a root-and-fifth bass keep the pulse clear. The middle turns to E minor;
+// the hook returns brighter, then lands on a clean D-major ending. No sustain pedal.
+
+use engine::score::{Score, meter, score}
+
+const HOOK = score("the hook", meter(beats: 4, unit: 4))
+    .voice(
+        "melody",
+        [
+            "d5/8 !mf !accent a4 d5/4 f#5/8 e5 d5/4 | b4/8 d5 b4/4 a4/8 f#4 a4/4 |",
+            "g4/8 b4 e5/4 d5/8 b4 g4/4 | a4/8 c#5 e5/4 d5/8 c#5 a4/4 |",
+            "d5/8 !accent a4 d5/4 f#5/8 e5 d5/4 | b4/8 d5 f#5/4 e5/8 d5 b4/4 |",
+            "g5/4 f#5/8 e5 d5/4 b4/8 g4 | a4/8 c#5 e5 g5 f#5/4 e5/8 c#5 |",
+        ],
+    )
+    .voice(
+        "harmony",
+        [
+            "r/8 <a3 d4 f#4> !staccato r <a3 d4 f#4> !staccato r <a3 d4 f#4> !staccato r <a3 d4 f#4> !staccato |",
+            "r/8 <b3 d4 f#4> !staccato r <b3 d4 f#4> !staccato r <b3 d4 f#4> !staccato r <b3 d4 f#4> !staccato |",
+            "r/8 <g3 b3 e4> !staccato r <g3 b3 e4> !staccato r <g3 b3 e4> !staccato r <g3 b3 e4> !staccato |",
+            "r/8 <a3 c#4 e4> !staccato r <a3 c#4 e4> !staccato r <a3 c#4 e4> !staccato r <a3 c#4 e4> !staccato |",
+            "r/8 <a3 d4 f#4> !staccato r <a3 d4 f#4> !staccato r <a3 d4 f#4> !staccato r <a3 d4 f#4> !staccato |",
+            "r/8 <b3 d4 f#4> !staccato r <b3 d4 f#4> !staccato r <b3 d4 f#4> !staccato r <b3 d4 f#4> !staccato |",
+            "r/8 <g3 b3 d4> !staccato r <g3 b3 d4> !staccato r <g3 b3 d4> !staccato r <g3 b3 d4> !staccato |",
+            "r/8 <a3 c#4 e4> !staccato r <a3 c#4 e4> !staccato r <a3 c#4 e4> !staccato r <a3 c#4 e4> !staccato |",
+        ],
+    )
+    .voice(
+        "bass",
+        [
+            "d3/4 !staccato a2/8 !staccato r d3/4 !staccato f#3/8 !staccato a2 !staccato |",
+            "b2/4 !staccato f#2/8 !staccato r b2/4 !staccato d3/8 !staccato f#2 !staccato |",
+            "e3/4 !staccato b2/8 !staccato r e3/4 !staccato g3/8 !staccato b2 !staccato |",
+            "a2/4 !staccato e3/8 !staccato r a2/4 !staccato b2/8 !staccato c#3 !staccato |",
+            "d3/4 !staccato a2/8 !staccato r d3/4 !staccato f#3/8 !staccato a2 !staccato |",
+            "b2/4 !staccato f#2/8 !staccato r b2/4 !staccato d3/8 !staccato f#2 !staccato |",
+            "g2/4 !staccato d3/8 !staccato r g2/4 !staccato b2/8 !staccato d3 !staccato |",
+            "a2/4 !staccato e3/8 !staccato r a2/4 !staccato b2/8 !staccato c#3 !staccato |",
+        ],
+    )
+
+const ANSWER = score("the hook opens out", meter(beats: 4, unit: 4))
+    .voice(
+        "melody",
+        [
+            "d5/8 !mf !accent a4 d5/4 f#5/8 e5 d5/4 | b4/8 d5 b4/4 a4/8 f#4 a4/4 |",
+            "g4/8 b4 e5/4 d5/8 b4 g4/4 | e5/8 c#5 a4/4 c#5/8 e5 a5/4 |",
+            "d5/8 !accent a4 d5/4 f#5/8 a5 f#5/4 | b4/8 d5 b4/4 d5/8 f#5 b5/4 |",
+            "g5/8 d5 b4/4 a4/8 b4 d5/4 | e5/8 g5 f#5 e5 c#5/4 r/4 |",
+        ],
+    )
+    .voice(
+        "harmony",
+        [
+            "r/8 <a3 d4 f#4> !staccato r <a3 d4 f#4> !staccato r <a3 d4 f#4> !staccato r <a3 d4 f#4> !staccato |",
+            "r/8 <b3 d4 f#4> !staccato r <b3 d4 f#4> !staccato r <b3 d4 f#4> !staccato r <b3 d4 f#4> !staccato |",
+            "r/8 <g3 b3 e4> !staccato r <g3 b3 e4> !staccato r <g3 b3 e4> !staccato r <g3 b3 e4> !staccato |",
+            "r/8 <a3 c#4 e4> !staccato r <a3 c#4 e4> !staccato r <a3 c#4 e4> !staccato r <a3 c#4 e4> !staccato |",
+            "r/8 <a3 d4 f#4> !staccato r <a3 d4 f#4> !staccato r <a3 d4 f#4> !staccato r <a3 d4 f#4> !staccato |",
+            "r/8 <b3 d4 f#4> !staccato r <b3 d4 f#4> !staccato r <b3 d4 f#4> !staccato r <b3 d4 f#4> !staccato |",
+            "r/8 <g3 b3 d4> !staccato r <g3 b3 d4> !staccato r <g3 b3 d4> !staccato r <g3 b3 d4> !staccato |",
+            "r/8 <a3 c#4 e4> !staccato r <a3 c#4 e4> !staccato r <a3 c#4 e4> !staccato r/4 |",
+        ],
+    )
+    .voice(
+        "bass",
+        [
+            "d3/4 !staccato a2/8 !staccato r d3/4 !staccato f#3/8 !staccato a2 !staccato |",
+            "b2/4 !staccato f#2/8 !staccato r b2/4 !staccato d3/8 !staccato f#2 !staccato |",
+            "e3/4 !staccato b2/8 !staccato r e3/4 !staccato g3/8 !staccato b2 !staccato |",
+            "a2/4 !staccato e3/8 !staccato r a2/4 !staccato c#3/8 !staccato e3 !staccato |",
+            "d3/4 !staccato a2/8 !staccato r d3/4 !staccato f#3/8 !staccato a2 !staccato |",
+            "b2/4 !staccato f#2/8 !staccato r b2/4 !staccato d3/8 !staccato f#2 !staccato |",
+            "g2/4 !staccato d3/8 !staccato r g2/4 !staccato b2/8 !staccato d3 !staccato |",
+            "a2/4 !staccato e3/8 !staccato r a2/4 !staccato r/4 |",
+        ],
+    )
+
+const BRIDGE = score("a lighter step", meter(beats: 4, unit: 4))
+    .voice(
+        "melody",
+        [
+            "e5/4 !mp g5/8 f#5 e5/4 b4/4 | d#5/4 f#5/8 e5 d#5/4 b4/8 a4 |",
+            "e5/4 g5/8 b5 a5/4 g5/8 e5 | e5/8 d5 c5/4 g4/8 c5 e5/4 |",
+            "c#5/8 e5 a5/4 g5/8 e5 c#5/4 | d5/8 f#5 a5/4 f#5/8 e5 d5/4 |",
+            "b4/8 f#5 d5/4 b4/8 a4 f#4/4 | a4/8 !mf b4 c#5 d5 e5/4 r/4 |",
+        ],
+    )
+    .voice(
+        "harmony",
+        [
+            "r/4 <g3 b3 e4> !staccato r <g3 b3 e4> !staccato |",
+            "r/4 <a3 d#4 f#4> !staccato r <a3 d#4 f#4> !staccato |",
+            "r/4 <g3 b3 e4> !staccato r <g3 b3 e4> !staccato |",
+            "r/4 <g3 c4 e4> !staccato r <g3 c4 e4> !staccato |",
+            "r/4 <g3 c#4 e4> !staccato r <g3 c#4 e4> !staccato |",
+            "r/4 <a3 d4 f#4> !staccato r <a3 d4 f#4> !staccato |",
+            "r/4 <b3 d4 f#4> !staccato r <b3 d4 f#4> !staccato |",
+            "r/8 <a3 c#4 e4> !staccato r <a3 c#4 e4> !staccato r <a3 c#4 e4> !staccato r/4 |",
+        ],
+    )
+    .voice(
+        "bass",
+        [
+            "e3/4 !staccato b2 !staccato e3 !staccato g3 !staccato |",
+            "b2/4 !staccato f#2 !staccato b2 !staccato d#3 !staccato |",
+            "e3/4 !staccato b2 !staccato e3 !staccato g3 !staccato |",
+            "c3/4 !staccato g2 !staccato c3 !staccato e3 !staccato |",
+            "a2/4 !staccato e3 !staccato g3 !staccato c#3 !staccato |",
+            "d3/4 !staccato a2 !staccato d3 !staccato f#3 !staccato |",
+            "b2/4 !staccato f#2 !staccato b2 !staccato d3 !staccato |",
+            "a2/4 !staccato e3/8 !staccato r a2/4 !staccato r/4 |",
+        ],
+    )
+
+const RETURN = score("the hook returns", meter(beats: 4, unit: 4))
+    .voice(
+        "melody",
+        [
+            "d5/8 !f !accent a4 d5/4 f#5/8 e5 d5/4 | b4/8 d5 b4/4 a4/8 f#4 a4/4 |",
+            "g4/8 b4 e5/4 g5/8 f#5 e5/4 | a4/8 c#5 e5/4 a5/8 g5 e5/4 |",
+            "d5/8 !accent a4 d5/4 f#5/8 e5 d5/4 | b4/8 d5 f#5/4 e5/8 d5 b4/4 |",
+            "g5/8 f#5 e5 d5 c#5 e5 a5/4 | d5/2 !mf !tenuto r/2 |",
+        ],
+    )
+    .voice(
+        "harmony",
+        [
+            "r/8 <a3 d4 f#4> !staccato r <a3 d4 f#4> !staccato r <a3 d4 f#4> !staccato r <a3 d4 f#4> !staccato |",
+            "r/8 <b3 d4 f#4> !staccato r <b3 d4 f#4> !staccato r <b3 d4 f#4> !staccato r <b3 d4 f#4> !staccato |",
+            "r/8 <g3 b3 e4> !staccato r <g3 b3 e4> !staccato r <g3 b3 e4> !staccato r <g3 b3 e4> !staccato |",
+            "r/8 <a3 c#4 e4> !staccato r <a3 c#4 e4> !staccato r <a3 c#4 e4> !staccato r <a3 c#4 e4> !staccato |",
+            "r/8 <a3 d4 f#4> !staccato r <a3 d4 f#4> !staccato r <a3 d4 f#4> !staccato r <a3 d4 f#4> !staccato |",
+            "r/8 <b3 d4 f#4> !staccato r <b3 d4 f#4> !staccato r <b3 d4 f#4> !staccato r <b3 d4 f#4> !staccato |",
+            "r/8 <g3 c#4 e4> !staccato r <g3 c#4 e4> !staccato r <g3 c#4 e4> !staccato r <g3 c#4 e4> !staccato |",
+            "<d4 f#4 a4>/2 !tenuto r/2 |",
+        ],
+    )
+    .voice(
+        "bass",
+        [
+            "d3/4 !staccato a2/8 !staccato r d3/4 !staccato f#3/8 !staccato a2 !staccato |",
+            "b2/4 !staccato f#2/8 !staccato r b2/4 !staccato d3/8 !staccato f#2 !staccato |",
+            "e3/4 !staccato b2/8 !staccato r e3/4 !staccato g3/8 !staccato b2 !staccato |",
+            "a2/4 !staccato e3/8 !staccato r a2/4 !staccato c#3/8 !staccato e3 !staccato |",
+            "d3/4 !staccato a2/8 !staccato r d3/4 !staccato f#3/8 !staccato a2 !staccato |",
+            "b2/4 !staccato f#2/8 !staccato r b2/4 !staccato d3/8 !staccato f#2 !staccato |",
+            "a2/4 !staccato e3/4 !staccato g3/8 !staccato e3 !staccato c#3/4 !staccato |",
+            "d3/2 !tenuto r/2 |",
+        ],
+    )
+
+/// Thirty-two bars: the hook, its answer, a contrasting middle and a changed return.
+pub const SCORE: Score = score("01 - Bounce", meter(beats: 4, unit: 4))
+    .with_tempo("Bright and springy")
+    .then(HOOK)
+    .then(ANSWER)
+    .then(BRIDGE)
+    .then(RETURN)
+
+/// Quarter notes per minute; the written bars span about 58.2 seconds.
+pub const TEMPO: f32 = 132.0

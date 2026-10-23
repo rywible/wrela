@@ -1,0 +1,370 @@
+// The ground: chains of corner points, each corner rounded by a radius, built into exact pieces
+// (lines and circular arcs). The sim collides with the pieces exactly; the view draws them
+// sampled (design.md, "Ground and contact").
+//
+// A closed chain goes clockwise round solid ground, so the air is on the left of each piece's
+// direction: a piece's normal is its tangent turned a quarter to the left, and a top surface runs
+// left to right. An open chain is a one-way ledge, which runs left to right too.
+
+use std::math::{PI, TAU}
+
+/// A corner of a chain: where it is (m) and the radius that rounds it (m; 0 keeps it sharp).
+pub struct Corner: Copy {
+    pub at: vec2,
+    pub round: f32 = 0.0,
+}
+
+/// A corner at `at`, rounded by `round`.
+pub fn corner(at: vec2, round: f32 = 0.0) -> Corner {
+    Corner { at, round }
+}
+
+/// A piece of ground: a line from `a` to `b`, or (with a radius) an arc round `centre` from the
+/// angle `start` through the signed angle `sweep` (counter-clockwise positive).
+pub struct Piece: Copy {
+    pub a: vec2,
+    pub b: vec2,
+    pub centre: vec2 = vec2(0.0),
+    pub radius: f32 = 0.0,
+    pub start: f32 = 0.0,
+    pub sweep: f32 = 0.0,
+    /// Its length along the ground (m).
+    pub length: f32,
+    /// The chain it's in, and whether that chain is a one-way ledge.
+    pub chain: u32,
+    pub ledge: bool,
+    /// A box round it, to skip it quickly.
+    pub lo: vec2,
+    pub hi: vec2,
+}
+
+/// The point of a piece nearest a point: how far along the piece it is (m, from `a`), and how far
+/// along it would be if the piece had no ends. Past an end, the nearest point is a corner.
+pub struct Near: Copy {
+    pub u: f32,
+    pub free: f32,
+}
+
+impl Piece {
+    pub fn is_arc(self) -> bool {
+        self.radius > 0.0
+    }
+
+    /// Whether it's an arc that bulges into the air (a crest): it turns clockwise.
+    pub fn convex(self) -> bool {
+        self.is_arc() && self.sweep < 0.0
+    }
+
+    fn angle(self, u: f32) -> f32 {
+        self.start + self.sweep * (u / self.length)
+    }
+
+    /// The point `u` along it (m from `a`).
+    pub fn point(self, u: f32) -> vec2 {
+        if self.is_arc() {
+            let phi = self.angle(u)
+            self.centre + vec2(cos(phi), sin(phi)) * self.radius
+        } else {
+            self.a + (self.b - self.a) * (u / self.length)
+        }
+    }
+
+    /// The unit tangent at `u`, in the piece's direction.
+    pub fn tangent(self, u: f32) -> vec2 {
+        if self.is_arc() {
+            let phi = self.angle(u)
+            vec2(-sin(phi), cos(phi)) * sign(self.sweep)
+        } else {
+            (self.b - self.a) / self.length
+        }
+    }
+
+    /// The unit normal at `u`, into the air.
+    pub fn normal(self, u: f32) -> vec2 {
+        left(self.tangent(u))
+    }
+
+    /// The piece's point nearest `p`.
+    pub fn nearest(self, p: vec2) -> Near {
+        if self.is_arc() {
+            let d = p - self.centre
+            let width = abs(self.sweep)
+            // The angle from the start, in the sweep's direction, taken in the turn round the
+            // arc's middle, so a point opposite the arc is past its nearer end.
+            let rel = wrap(sign(self.sweep) * (atan2(d.y, d.x) - self.start), width * 0.5)
+            let free = rel / width * self.length
+            Near { u: clamp(free, 0.0, self.length), free }
+        } else {
+            let t = (self.b - self.a) / self.length
+            let free = dot(p - self.a, t)
+            Near { u: clamp(free, 0.0, self.length), free }
+        }
+    }
+}
+
+/// `v` turned a quarter turn to the left.
+pub fn left(v: vec2) -> vec2 {
+    vec2(-v.y, v.x)
+}
+
+/// The z component of the cross product of `a` and `b`.
+pub fn cross2(a: vec2, b: vec2) -> f32 {
+    a.x * b.y - a.y * b.x
+}
+
+/// `x` moved by whole turns into the turn centred on `middle`.
+fn wrap(x: f32, middle: f32) -> f32 {
+    x - TAU * floor((x - (middle - PI)) / TAU)
+}
+
+/// A corner's rounding: where its arc starts and ends, and the arc (or none, for a sharp corner).
+struct Fillet: Copy {
+    a: vec2,
+    b: vec2,
+    arc: Option<Piece>,
+}
+
+/// The rounding of the corner at `p`, between the sides from `before` and to `after`.
+fn fillet(before: vec2, p: Corner, after: vec2, chain: u32, ledge: bool) -> Fillet {
+    let d1 = normalize(p.at - before)
+    let d2 = normalize(after - p.at)
+    let turn = atan2(cross2(d1, d2), dot(d1, d2))
+    if p.round <= 0.0 || abs(turn) < 1.0e-6 {
+        return Fillet { a: p.at, b: p.at, arc: None }
+    }
+    let t = p.round * tan(abs(turn) * 0.5)
+    let a = p.at - d1 * t
+    let b = p.at + d2 * t
+    let centre = a + left(d1) * (p.round * sign(turn))
+    let from = a - centre
+    let arc = Piece {
+        a,
+        b,
+        centre,
+        radius: p.round,
+        start: atan2(from.y, from.x),
+        sweep: turn,
+        length: p.round * abs(turn),
+        chain,
+        ledge,
+        lo: centre - vec2(p.round),
+        hi: centre + vec2(p.round),
+    }
+    Fillet { a, b, arc: Some(arc) }
+}
+
+fn line(a: vec2, b: vec2, chain: u32, ledge: bool) -> Piece {
+    Piece { a, b, length: distance(a, b), chain, ledge, lo: min(a, b), hi: max(a, b) }
+}
+
+/// Adds the pieces of a chain of `corners` to `out`: closed round solid ground, or open (a
+/// one-way ledge, whose first and last corners stay sharp). Each corner's rounding must fit the
+/// sides it joins: one that doesn't fails the build, naming the chain and the corner.
+pub fn build_chain(out: mut Vec<Piece>, corners: [Corner], closed: bool, chain: u32) {
+    let n = corners.len()
+    assert(n >= 2, "a chain has two corners or more")
+    let ledge = !closed
+    var fillets: Vec<Fillet> = Vec::new()
+    for i in 0..n {
+        let ends = !closed && (i == 0 || i == n - 1)
+        if ends {
+            let p = corners[i].at
+            fillets.push(Fillet { a: p, b: p, arc: None })
+        } else {
+            let before = corners[(i + n - 1) % n].at
+            let after = corners[(i + 1) % n].at
+            fillets.push(fillet(before, corners[i], after, chain, ledge))
+        }
+    }
+    let sides = if closed { n } else { n - 1 }
+    for i in 0..sides {
+        let j = (i + 1) % n
+        let from = fillets[i].b
+        let to = fillets[j].a
+        let side = corners[j].at - corners[i].at
+        // The two roundings must not overlap along the side.
+        if dot(to - from, side) < -1.0e-4 {
+            panic(f"chain {chain}: the roundings of corners {i} and {j} don't fit their side")
+        }
+        if distance(from, to) > 1.0e-5 {
+            out.push(line(from, to, chain, ledge))
+        }
+        match fillets[j].arc {
+            Some(arc) => {
+                if closed || j != 0 {
+                    out.push(arc)
+                }
+            },
+            None => {},
+        }
+    }
+}
+
+// ---- drawing -------------------------------------------------------------------------------------
+
+/// The longest turn an arc's sampled segment makes, for drawing (rad).
+const SAMPLE_TURN: f32 = 0.08
+
+/// The points of `pieces` from `first` up to `last` (not included), sampled for drawing: each
+/// piece's start, and an arc's points between, its turn cut into steps of at most `SAMPLE_TURN`.
+pub fn outline(pieces: [Piece], first: u32, last: u32) -> Vec<vec2> {
+    var points: Vec<vec2> = Vec::new()
+    for i in first..last {
+        let p = pieces[i]
+        let steps = if p.is_arc() { u32(ceil(abs(p.sweep) / SAMPLE_TURN)) } else { 1 }
+        for k in 0..steps {
+            points.push(p.point(p.length * f32(k) / f32(steps)))
+        }
+    }
+    points
+}
+
+/// The triangles that fill a simple polygon wound clockwise, by ear clipping: three corners each.
+/// A polygon that isn't simple fails the build.
+pub fn triangulate(polygon: [vec2]) -> Vec<vec2> {
+    var left_: Vec<vec2> = Vec::new()
+    // Drop corners that repeat their neighbour or lie on the line through both neighbours.
+    for i in 0..polygon.len() {
+        let n = polygon.len()
+        let (a, b, c) = (polygon[(i + n - 1) % n], polygon[i], polygon[(i + 1) % n])
+        if distance(a, b) > 1.0e-6 && abs(cross2(b - a, c - b)) > 1.0e-9 {
+            left_.push(b)
+        }
+    }
+    var out: Vec<vec2> = Vec::new()
+    var guard = 0
+    while left_.len() > 3 {
+        let n = left_.len()
+        var clipped = false
+        for i in 0..n {
+            let (a, b, c) = (left_[(i + n - 1) % n], left_[i], left_[(i + 1) % n])
+            // Clockwise, so an ear's corner turns right.
+            if cross2(b - a, c - b) >= 0.0 {
+                continue
+            }
+            var empty = true
+            for k in 0..n {
+                let q = left_[k]
+                if q == a || q == b || q == c {
+                    continue
+                }
+                if inside(q, a, b, c) {
+                    empty = false
+                    break
+                }
+            }
+            if empty {
+                out.push(a)
+                out.push(b)
+                out.push(c)
+                left_.remove(i)
+                clipped = true
+                break
+            }
+        }
+        guard += 1
+        assert(clipped && guard < 100000, "a polygon to fill isn't simple")
+    }
+    if left_.len() == 3 {
+        out.push(left_[0])
+        out.push(left_[1])
+        out.push(left_[2])
+    }
+    out
+}
+
+/// Whether `q` is inside (or on) the clockwise triangle `a`, `b`, `c`.
+fn inside(q: vec2, a: vec2, b: vec2, c: vec2) -> bool {
+    cross2(b - a, q - a) <= 0.0 && cross2(c - b, q - b) <= 0.0 && cross2(a - c, q - c) <= 0.0
+}
+
+// ---- tests -------------------------------------------------------------------------------------
+
+fn square(round: f32) -> Vec<Piece> {
+    var out: Vec<Piece> = Vec::new()
+    let corners = [
+        corner(vec2(0.0, 0.0), round),
+        corner(vec2(0.0, 4.0), round),
+        corner(vec2(4.0, 4.0), round),
+        corner(vec2(4.0, 0.0), round),
+    ]
+    build_chain(mut out, corners, closed: true, chain: 0)
+    out
+}
+
+@test
+fn a_rounded_square_is_four_sides_and_four_quarter_arcs_joined_smoothly() {
+    let pieces = square(1.0)
+    assert(pieces.len() == 8)
+    var total = 0.0
+    for i in 0..pieces.len() {
+        let p = pieces[i]
+        let next = pieces[(i + 1) % pieces.len()]
+        total += p.length
+        assert(distance(p.point(p.length), next.point(0.0)) < 1.0e-5, "pieces meet")
+        assert(dot(p.tangent(p.length), next.tangent(0.0)) > 0.9999, "and turn smoothly")
+        if p.is_arc() {
+            assert(p.convex(), "a solid's rounded corners bulge out")
+            assert(abs(p.length - 0.5 * PI) < 1.0e-5)
+        }
+    }
+    assert(abs(total - (4.0 * 2.0 + 2.0 * PI)) < 1.0e-4)
+}
+
+@test
+fn the_air_is_on_the_left_so_a_top_surface_runs_left_to_right_with_its_normal_up() {
+    let pieces = square(0.0)
+    assert(pieces.len() == 4)
+    // The second side is the top: from (0, 4) to (4, 4).
+    let top = pieces[1]
+    assert(top.tangent(1.0) == vec2(1.0, 0.0) && top.normal(1.0) == vec2(0.0, 1.0))
+    let rounded = square(1.0)
+    for p in rounded {
+        let mid = p.point(p.length * 0.5)
+        let out = mid + p.normal(p.length * 0.5) * 0.1
+        // The rounded square is the points within 1 m of the square from (1, 1) to (3, 3).
+        assert(distance(out, clamp(out, vec2(1.0), vec2(3.0))) > 1.0, "the normal leaves the solid")
+    }
+}
+
+@test
+fn the_nearest_point_of_an_arc_clamps_to_its_ends_and_says_how_far_past() {
+    let pieces = square(1.0)
+    // The arc at the top-right corner: centre (3, 3), from straight up round to the right.
+    var arc = pieces[0]
+    for p in pieces {
+        if p.is_arc() && p.centre == vec2(3.0, 3.0) {
+            arc = p
+        }
+    }
+    let on = arc.nearest(vec2(5.0, 5.0))
+    assert(abs(on.u - arc.length * 0.5) < 1.0e-5 && abs(on.free - on.u) < 1.0e-6)
+    let past = arc.nearest(vec2(1.0, 4.5))
+    assert(past.u == 0.0 && past.free < 0.0, "before the start, the start, and a corner")
+    let opposite = arc.nearest(vec2(2.0, 2.0))
+    assert(opposite.u == 0.0 || opposite.u == arc.length)
+}
+
+@test
+fn ear_clipping_fills_a_shape_with_a_notch_without_covering_the_notch() {
+    // A clockwise U: the notch from x 1 to 3 down to y 1.
+    let u = [
+        vec2(0.0, 0.0),
+        vec2(0.0, 3.0),
+        vec2(1.0, 3.0),
+        vec2(1.0, 1.0),
+        vec2(3.0, 1.0),
+        vec2(3.0, 3.0),
+        vec2(4.0, 3.0),
+        vec2(4.0, 0.0),
+    ]
+    let tris = triangulate(u)
+    assert(tris.len() == 6 * 3, "n - 2 triangles")
+    var area = 0.0
+    for i in 0..tris.len() / 3 {
+        let (a, b, c) = (tris[i * 3], tris[i * 3 + 1], tris[i * 3 + 2])
+        area += -0.5 * cross2(b - a, c - a)
+        assert(!inside(vec2(2.0, 2.0), a, b, c), "the notch stays empty")
+    }
+    assert(abs(area - (12.0 - 4.0)) < 1.0e-5)
+}

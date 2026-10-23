@@ -1,0 +1,639 @@
+// The capybara's body and how it moves: one tick at a time, on a course, from a pad, by a feel.
+// It is the contracts of design.md ("Ground and contact", "Movement states", "Swimming"):
+//
+// - The collider is a circle. On the ground the body follows the ground it stands on with a
+//   signed speed along the tangent; it leaves a crest when v²/ρ > g cos θ (ρ the radius its
+//   middle turns on), at once off a sharp corner, and where the ground stops being walkable.
+// - Passing to another piece keeps the speed across a smooth joint, and otherwise takes the
+//   speed along the new tangent of the velocity before (a landing too).
+// - In the air and in water the circle sweeps in substeps of at most half its radius, resolving
+//   its nearest contacts first, at most four.
+// - Water is the same movement, faster: a light gravity, kicks for jumps, and the wet speed, which
+//   any touch of water (a puddle too) gives for a while after.
+
+use course::{Contact, Course}
+use engine::sim::SimState
+use feel::{Feel, STEP}
+use pad::{DOWN, JUMP, Pad, UP}
+use std::hash::StateHash
+use std::serialize::Serialize
+
+/// The collider's radius (m): the capybara is about twice as long as this circle is wide.
+pub const RADIUS: f32 = 0.35
+
+/// How far below the body the ground it stands on is looked for (m).
+const SNAP: f32 = 0.05
+
+/// How close to the radius a contact counts as touching (m).
+const TOUCH: f32 = 1.0e-4
+
+/// The most contacts a substep resolves.
+const CONTACTS: u32 = 4
+
+pub enum Mode: Copy + Eq + StateHash + Serialize + SimState + Fieldless {
+    Walk,
+    Crouch,
+    Slide,
+    Air,
+    Swim,
+}
+
+pub struct Body: Copy + Eq + StateHash + Serialize + SimState {
+    /// The circle's middle (m) and its velocity (m/s).
+    pub at: vec2,
+    pub vel: vec2,
+    pub mode: Mode,
+    /// On the ground: the piece it stands on, and its speed along that ground's tangent (m/s,
+    /// positive to the right).
+    pub piece: u32,
+    pub speed: f32,
+    /// The ground's normal under it, for the view; straight up off the ground.
+    pub ground: vec2,
+    /// 1 facing right, -1 left.
+    pub facing: f32,
+    /// Ticks in which a jump still counts after the ground fell away, and in which a press waits.
+    pub coyote: u32,
+    pub buffer: u32,
+    /// Rising from a jump (or out of water) with jump held: the lighter gravity.
+    pub jumping: bool,
+    /// A jump's first ticks (`Feel::hop`): 1 + the ticks of them left, then 1 as they end, 0 after;
+    /// and the upward speed and the height it began at.
+    pub hop: u32,
+    pub lift: f32,
+    pub from: f32,
+    /// Down held in the air: it means to slide on landing.
+    pub tuck: bool,
+    /// Ticks until the next kick in water.
+    pub cooldown: u32,
+    /// Ticks of being wet left: the wet speed while it lasts (`top`).
+    pub wet: u32,
+    /// In water: the last way up or down held (1 up, -1 down, 0 neither yet), and the ticks since
+    /// the last dolphin kick.
+    pub stroke: i32,
+    pub since: u32,
+    /// Rising from a breach: up held keeps it rising as jump held does.
+    pub breached: bool,
+    /// Ticks left after leaving the water in which a jump press is the breach's.
+    pub surfaced: u32,
+    /// Jumps left in the air: a double jump while it's more than 0.
+    pub jumps: u32,
+    /// Ticks since a double jump's flip began, counting from 1 in the air;
+    /// 0 otherwise. The view turns the capybara over by it.
+    pub flip: u32,
+}
+
+/// A body standing at `at` (its middle), facing right.
+pub fn spawn(at: vec2) -> Body {
+    Body {
+        at,
+        vel: vec2(0.0),
+        mode: Mode::Walk,
+        piece: 0,
+        speed: 0.0,
+        ground: vec2(0.0, 1.0),
+        facing: 1.0,
+        coyote: 0,
+        buffer: 0,
+        jumping: false,
+        hop: 0,
+        lift: 0.0,
+        from: 0.0,
+        tuck: false,
+        cooldown: 0,
+        wet: 0,
+        stroke: 0,
+        since: 0,
+        breached: false,
+        surfaced: 0,
+        jumps: 0,
+        flip: 0,
+    }
+}
+
+impl Body {
+    pub fn grounded(self) -> bool {
+        self.mode == Mode::Walk || self.mode == Mode::Crouch || self.mode == Mode::Slide
+    }
+}
+
+/// The top speed now: the wet speed for the first half of being wet, easing back to the dry speed
+/// over the second.
+pub fn top(b: Body, f: Feel) -> f32 {
+    let k = saturate(f32(b.wet) / (f32(f.wet_ticks) * 0.5))
+    f.speed + (f.wet_speed - f.speed) * k
+}
+
+fn approach(x: f32, target: f32, by: f32) -> f32 {
+    if x < target { min(x + by, target) } else { max(x - by, target) }
+}
+
+fn less(n: u32) -> u32 {
+    if n > 0 { n - 1 } else { 0 }
+}
+
+/// How many substeps a tick at `speed` (m/s) takes: each moves at most half the radius.
+fn substeps(speed: f32) -> u32 {
+    max(u32(ceil(speed * STEP / (RADIUS * 0.5))), 1)
+}
+
+/// One tick of the body.
+@deterministic
+pub fn step(b: mut Body, pad: Pad, c: Course, f: Feel) {
+    b.buffer = if pad.pressed() { f.buffer } else { less(b.buffer) }
+    b.cooldown = less(b.cooldown)
+    b.tuck = pad.held(DOWN)
+    b.wet = if c.touches_water(b.at, RADIUS) { f.wet_ticks } else { less(b.wet) }
+    if b.mode == Mode::Swim {
+        swim(mut b, pad, c, f)
+    } else if b.mode == Mode::Air {
+        air(mut b, pad, c, f)
+    } else {
+        ground(mut b, pad, c, f)
+    }
+}
+
+// ---- contacts ----------------------------------------------------------------------------------
+
+/// The ground the body at `at` stands on: walkable, not a corner, within a little of its radius.
+fn support(c: Course, at: vec2, from: vec2) -> Option<Contact> {
+    c.contact(at, RADIUS + SNAP, from, RADIUS, ground: true)
+}
+
+/// What resolving a substep's contacts did: whether a contact took velocity, the walkable
+/// contact the body moved into (a landing), and whether it is still inside the ground.
+struct Pushed: Copy {
+    touched: bool,
+    landed: Option<Contact>,
+    stuck: bool,
+}
+
+/// Pushes the body out of the ground, the nearest contact first, at most `CONTACTS`: each moves
+/// the middle out along its normal and takes the velocity's part into it.
+fn push_out(c: Course, b: mut Body, from: vec2) -> Pushed {
+    var touched = false
+    var landed: Option<Contact> = None
+    for _ in 0..CONTACTS {
+        let Some(k) = c.contact(b.at, RADIUS - TOUCH, from, RADIUS, ground: false) else {
+            return Pushed { touched, landed, stuck: false }
+        }
+        b.at = k.point + k.normal * RADIUS
+        let into = dot(b.vel, k.normal)
+        if into < 0.0 {
+            if k.ground() {
+                landed = Some(k)
+            }
+            b.vel -= k.normal * into
+            touched = true
+        }
+    }
+    let stuck = c.contact(b.at, RADIUS - TOUCH, from, RADIUS, ground: false).is_some()
+    Pushed { touched, landed, stuck }
+}
+
+/// Whether the joint after piece `a` into piece `b` is smooth: the same chain, neighbours, and
+/// the same tangent where they meet.
+fn smooth(c: Course, a: u32, b: u32) -> bool {
+    if a == b {
+        return true
+    }
+    let (p, q) = (c.pieces[a], c.pieces[b])
+    if p.chain != q.chain {
+        return false
+    }
+    if b == a + 1 {
+        return dot(p.tangent(p.length), q.tangent(0.0)) > 0.9999
+    }
+    if a == b + 1 {
+        return dot(q.tangent(q.length), p.tangent(0.0)) > 0.9999
+    }
+    // The last piece of a closed chain and its first.
+    let first = c.chains[p.chain]
+    let last = c.chains[p.chain + 1] - 1
+    if (a == last && b == first) || (a == first && b == last) {
+        let (end, start) = if a == last { (p, q) } else { (q, p) }
+        return dot(end.tangent(end.length), start.tangent(0.0)) > 0.9999
+    }
+    false
+}
+
+// ---- on the ground -----------------------------------------------------------------------------
+
+/// The air from the ground: the coyote time starts.
+fn leave(b: mut Body, vel: vec2, f: Feel) {
+    b.vel = vel
+    b.mode = Mode::Air
+    b.coyote = f.coyote
+    b.jumping = false
+    b.jumps = f.air_jumps
+    b.ground = vec2(0.0, 1.0)
+}
+
+/// A bounce off a foe stomped on: up as a jump (as high as one with jump held, a little less
+/// without), or under water as a strong kick; the double jump comes back.
+pub fn bounce(b: mut Body, held: bool, f: Feel, under: bool) {
+    b.vel.y = if under { f.kick * 1.6 } else if held { f.launch } else { f.stomp }
+    if !under {
+        b.mode = Mode::Air
+    }
+    b.jumping = held && !under
+    rise_from(mut b, f)
+    b.jumps = f.air_jumps
+    b.coyote = 0
+    b.buffer = 0
+    b.flip = 0
+    b.breached = false
+}
+
+/// A jump begins at the upward speed it has now: its first ticks are the hop's (`Feel::hop`).
+fn rise_from(b: mut Body, f: Feel) {
+    b.hop = f.hop + 1
+    b.lift = b.vel.y
+    b.from = b.at.y
+}
+
+/// Whether a speed (m/s) is past the top: a slide's, a puddle's, a ramp's, not a run's.
+fn fast(b: Body, f: Feel, speed: f32) -> bool {
+    abs(speed) > top(b, f) + 0.5
+}
+
+/// A jump from the ground whose tangent is `t`: the launch up, with the speed along the ground
+/// across. Fast (sliding, or past the top speed) it keeps all its velocity, up a ramp too, so a
+/// ramp launches; at a run's speed, only its part across, so a running jump is the same height on
+/// any slope (Ryan, 2026-10-21: jumps up a slope came out higher and read as random). Fast and not
+/// sliding counts too: letting go of down to press jump mustn't lose the launch.
+fn jump(b: mut Body, t: vec2, f: Feel, under: bool) {
+    let along = t * b.speed
+    let launches = b.mode == Mode::Slide || fast(b, f, b.speed)
+    let kept = if launches { along } else { vec2(along.x, 0.0) }
+    // Under water, a jump off the bottom is a kick, not a launch, and the kicks' cooldown starts.
+    b.vel = kept + vec2(0.0, if under { f.kick } else { f.launch })
+    if under {
+        b.cooldown = f.kick_cooldown
+    }
+    b.mode = Mode::Air
+    b.jumping = true
+    rise_from(mut b, f)
+    b.jumps = f.air_jumps
+    b.buffer = 0
+    b.coyote = 0
+    b.ground = vec2(0.0, 1.0)
+}
+
+fn ground(b: mut Body, pad: Pad, c: Course, f: Feel) {
+    let Some(k) = support(c, b.at, b.at) else {
+        leave(mut b, b.vel, f)
+        air(mut b, pad, c, f)
+        return
+    }
+    let p = c.pieces[k.piece]
+    let t = k.tangent()
+    // A crest too fast to follow: it leaves along the tangent.
+    if p.convex() && b.speed * b.speed / (p.radius + RADIUS) > f.fall * k.normal.y {
+        leave(mut b, t * b.speed, f)
+        air(mut b, pad, c, f)
+        return
+    }
+    // Under water, a press waits for the kicks' cooldown, as one swimming does.
+    let under = c.water_at(b.at).is_some()
+    if b.buffer > 0 && (!under || b.cooldown == 0) {
+        jump(mut b, t, f, under)
+        air(mut b, pad, c, f)
+        return
+    }
+    let steep = abs(t.y) >= f.slide_slope
+    if pad.held(DOWN) {
+        let slides = abs(b.speed) >= f.slide_min || steep
+        if b.mode != Mode::Slide {
+            b.mode = if slides { Mode::Slide } else { Mode::Crouch }
+        } else if abs(b.speed) < f.slide_stop && !steep {
+            b.mode = Mode::Crouch
+        }
+    } else {
+        b.mode = Mode::Walk
+    }
+    let dir = pad.x()
+    match b.mode {
+        Mode::Walk => walk(mut b, dir, f),
+        Mode::Crouch => b.speed = approach(b.speed, 0.0, f.friction * STEP),
+        Mode::Slide => {
+            b.speed -= f.slide_gravity * t.y * STEP
+            let brake = f.slide_brake * smoothstep(f.brake_from, f.brake_until, abs(b.speed))
+            b.speed = clamp(
+                approach(b.speed, 0.0, (f.slide_friction + brake) * STEP),
+                -f.slide_max,
+                f.slide_max,
+            )
+        },
+        _ => {},
+    }
+    if b.mode == Mode::Slide && b.speed != 0.0 {
+        b.facing = sign(b.speed)
+    } else if dir != 0.0 {
+        b.facing = dir
+    }
+    glide(mut b, c, f, k)
+}
+
+/// A tick of the speed along the ground walking, `dir` held (-1, 0 or 1).
+fn walk(b: mut Body, dir: f32, f: Feel) {
+    if dir == 0.0 {
+        b.speed = approach(b.speed, 0.0, f.friction * STEP)
+        return
+    }
+    let top = top(b, f)
+    let along = b.speed * dir
+    if along < 0.0 {
+        b.speed += dir * f.turn * STEP
+    } else if along < top {
+        // The eased curve: gentle from rest, strongest a third of the way, easing into the top.
+        let u = along / top
+        var next = along + f.accel * (f.start + u) * (1.0 - u) * top * STEP
+        if next >= top * (1.0 - f.snap) {
+            next = top
+        }
+        b.speed = dir * next
+    } else {
+        b.speed = dir * max(along - f.over * STEP, top)
+    }
+}
+
+/// A tick along the ground from contact `k`: each substep moves along the tangent, finds the
+/// ground again and stands on it, then meets walls and ceilings.
+fn glide(b: mut Body, c: Course, f: Feel, k: Contact) {
+    let from = b.at
+    var t = k.tangent()
+    var piece = k.piece
+    let n = substeps(abs(b.speed))
+    let h = STEP / f32(n)
+    for _ in 0..n {
+        let before = t * b.speed
+        b.at += before * h
+        let Some(g) = support(c, b.at, from) else {
+            leave(mut b, before, f)
+            return
+        }
+        let tg = g.tangent()
+        if !smooth(c, piece, g.piece) {
+            b.speed = dot(before, tg)
+        }
+        b.at = g.point + g.normal * RADIUS
+        t = tg
+        piece = g.piece
+        b.piece = piece
+        b.ground = g.normal
+        b.vel = t * b.speed
+        let pushed = push_out(c, mut b, from)
+        if pushed.stuck {
+            b.at -= before * h
+            b.vel = vec2(0.0)
+            b.speed = 0.0
+            return
+        }
+        if pushed.touched {
+            // A wall takes the speed into it; a steep slope met at a corner turns the body up it.
+            if dot(b.vel, g.normal) > 1.0e-4 {
+                leave(mut b, b.vel, f)
+                return
+            }
+            b.speed = dot(b.vel, t)
+        }
+    }
+    b.vel = t * b.speed
+}
+
+// ---- in the air --------------------------------------------------------------------------------
+
+fn air(b: mut Body, pad: Pad, c: Course, f: Feel) {
+    if b.flip > 0 {
+        b.flip += 1
+    }
+    if b.surfaced > 0 && b.buffer > 0 {
+        // Just out of the water: the breach's jump, or, after a breach, part of it.
+        if !b.breached {
+            b.vel.y = f.launch
+            b.breached = true
+            rise_from(mut b, f)
+        }
+        b.jumping = true
+        b.buffer = 0
+        b.surfaced = 0
+    } else if b.coyote > 0 && b.buffer > 0 {
+        // Just off the ground: still the ground's jump, fast off a ramp's lip keeping its rise.
+        let rise = if fast(b, f, b.vel.x) { max(b.vel.y, 0.0) } else { 0.0 }
+        b.vel.y = f.launch + rise
+        b.jumping = true
+        rise_from(mut b, f)
+        b.buffer = 0
+        b.coyote = 0
+    } else if b.buffer > 0 && b.jumps > 0 {
+        // The double jump: up at its own speed, whatever the fall, with a flip.
+        b.vel.y = f.air_launch
+        b.jumping = true
+        rise_from(mut b, f)
+        b.buffer = 0
+        b.jumps -= 1
+        b.flip = 1
+    }
+    b.coyote = less(b.coyote)
+    b.surfaced = less(b.surfaced)
+    // A jump rises on the light gravity only while it's held (or, out of a breach, up).
+    let held = pad.held(JUMP) || (b.breached && pad.held(UP))
+    if !held || b.vel.y <= 0.0 {
+        b.jumping = false
+        b.breached = false
+    }
+    // A jump's first ticks rise on the fall's gravity, held or not, so a press let go in them is
+    // the lowest hop. Held through them, it's given the upward speed that takes it as high as a
+    // jump held from its start rises (the root of its launch speed squared less 2 × the light
+    // gravity × the height it has risen), and goes on on the light gravity: a held jump is as high
+    // as ever. The speed is given before the tick moves, so the tick moves at it.
+    var g = if b.jumping { f.rise } else { f.fall }
+    if b.jumping && b.hop > 1 {
+        b.hop -= 1
+        g = f.fall
+    } else if b.jumping && b.hop == 1 {
+        b.hop = 0
+        let risen = b.at.y - b.from
+        b.vel.y = max(b.vel.y, sqrt(max(b.lift * b.lift - 2.0 * f.rise * risen, 0.0)))
+    }
+    // The velocity before the tick's accelerations. Each substep takes its share of the tick's
+    // change of velocity and moves by the mean of its velocities before and after, so an arc is
+    // exact at every substep (a fall of g h² / 2, not g h²), and a body that leaves a crest at v²
+    // / ρ just over g doesn't meet the crest again.
+    let start = b.vel
+    let dir = pad.x()
+    if dir != 0.0 {
+        let top = top(b, f)
+        let along = b.vel.x * dir
+        if along < top {
+            b.vel.x = dir * min(along + f.air_accel * STEP, top)
+        }
+        b.facing = dir
+    }
+    b.vel.y = max(b.vel.y - g * STEP, -f.terminal)
+    let from = b.at
+    let n = substeps(max(length(b.vel), length(start)))
+    let h = STEP / f32(n)
+    let change = (b.vel - start) / f32(n)
+    b.vel = start
+    for _ in 0..n {
+        let was = b.vel
+        let before = was + change
+        b.vel = before
+        let moved = (was + before) * (0.5 * h)
+        b.at += moved
+        let pushed = push_out(c, mut b, from)
+        if pushed.stuck {
+            b.at -= moved
+            b.vel = vec2(0.0)
+            return
+        }
+        match pushed.landed {
+            Some(k) => {
+                land(mut b, pad, k, before, f)
+                return
+            },
+            None => {},
+        }
+        if c.water_at(b.at).is_some() {
+            b.mode = Mode::Swim
+            b.stroke = 0
+            b.flip = 0
+            b.surfaced = 0
+            b.jumping = false
+            return
+        }
+    }
+}
+
+/// A landing on contact `k`, the velocity `before` it: the speed along the ground is the
+/// velocity's along the tangent, and down held slides or crouches.
+fn land(b: mut Body, pad: Pad, k: Contact, before: vec2, f: Feel) {
+    let t = k.tangent()
+    b.speed = dot(before, t)
+    b.piece = k.piece
+    b.ground = k.normal
+    b.at = k.point + k.normal * RADIUS
+    b.vel = t * b.speed
+    b.jumping = false
+    b.breached = false
+    b.surfaced = 0
+    b.coyote = 0
+    b.flip = 0
+    b.mode = if pad.held(DOWN) {
+        if abs(b.speed) >= f.slide_min || abs(t.y) >= f.slide_slope { Mode::Slide } else {
+            Mode::Crouch
+        }
+    } else {
+        Mode::Walk
+    }
+}
+
+// ---- in water ----------------------------------------------------------------------------------
+
+/// A tick in water, off the ground: the air's movement on a light gravity (up or down held swims
+/// up or down instead), a kick for each jump press, and the wet speed across; up and
+/// down in turn are dolphin kicks, past it. On the bottom it walks, wet. Through the surface fast
+/// enough it breaches, as a jump; slower it leaves as it moves. Either way its double jump is kept.
+fn swim(b: mut Body, pad: Pad, c: Course, f: Feel) {
+    let Some(i) = c.water_at(b.at) else {
+        b.mode = Mode::Air
+        air(mut b, pad, c, f)
+        return
+    }
+    let w = c.waters[i]
+    let surface = w.surface()
+    if b.buffer > 0 && surface - b.at.y <= f.breach_margin {
+        // Just under the surface, a press jumps out.
+        b.vel.y = max(b.vel.y, f.launch)
+        b.buffer = 0
+    } else if b.buffer > 0 && b.cooldown == 0 {
+        b.vel.y = max(b.vel.y, f.kick)
+        b.buffer = 0
+        b.cooldown = f.kick_cooldown
+    }
+    let start = b.vel
+    let dir = pad.x()
+    if dir != 0.0 {
+        let along = b.vel.x * dir
+        if along < f.wet_speed {
+            b.vel.x = dir * min(along + f.water_accel * STEP, f.wet_speed)
+        }
+        b.facing = dir
+    }
+    // The dolphin kick: each change between up and down, in rhythm, drives it forward.
+    b.since = min(b.since + 1, 1000)
+    let way = i32(pad.y())
+    if way != 0 && b.stroke != 0 && way != b.stroke && b.since >= f.dolphin_gap {
+        let along = b.vel.x * b.facing
+        b.vel.x = b.facing * min(along + f.dolphin, max(along, f.dolphin_max))
+        b.since = 0
+    }
+    if way != 0 {
+        b.stroke = way
+    }
+    // Past the wet speed, the water takes the speed back.
+    if abs(b.vel.x) > f.wet_speed {
+        b.vel.x = sign(b.vel.x) * max(abs(b.vel.x) - f.water_over * STEP, f.wet_speed)
+    }
+    let held = pad.y()
+    if held != 0.0 {
+        // Swimming up or down: towards the speed it holds that way; faster that way, the water
+        // slows it to it.
+        let target = held * f.swim_up_speed
+        if (b.vel.y - target) * held < 0.0 {
+            b.vel.y = approach(b.vel.y, target, f.swim_up * STEP)
+        } else {
+            b.vel.y = target + (b.vel.y - target) * exp(-20.0 * STEP)
+        }
+    } else if b.vel.y > -f.water_terminal {
+        b.vel.y = max(b.vel.y - f.water_gravity * STEP, -f.water_terminal)
+    } else {
+        // A dive slows to the sinking speed.
+        b.vel.y = -f.water_terminal + (b.vel.y + f.water_terminal) * exp(-20.0 * STEP)
+    }
+    let from = b.at
+    let n = substeps(max(length(b.vel), length(start)))
+    let h = STEP / f32(n)
+    let change = (b.vel - start) / f32(n)
+    b.vel = start
+    for _ in 0..n {
+        let was = b.vel
+        let before = was + change
+        b.vel = before
+        let moved = (was + before) * (0.5 * h)
+        b.at += moved
+        let pushed = push_out(c, mut b, from)
+        if pushed.stuck {
+            b.at -= moved
+            b.vel = vec2(0.0)
+            return
+        }
+        match pushed.landed {
+            Some(k) => {
+                land(mut b, pad, k, before, f)
+                return
+            },
+            None => {},
+        }
+    }
+    b.jumps = f.air_jumps
+    if b.at.y >= surface {
+        b.mode = Mode::Air
+        b.coyote = 0
+        b.jumping = false
+        b.surfaced = f.breach_grace
+        if b.vel.y >= f.breach {
+            // A breach: out as a jump, at the jump's launch (Ryan, 2026-10-21).
+            b.vel.y = f.launch
+            b.jumping = true
+            b.breached = true
+            rise_from(mut b, f)
+        }
+        return
+    }
+    if b.at.x < w.lo.x || b.at.x > w.hi.x || b.at.y < w.lo.y {
+        b.mode = Mode::Air
+        b.jumping = false
+    }
+}

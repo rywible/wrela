@@ -1,0 +1,132 @@
+// The keys' voice: the game's piano played live (engine::piano's `press`, `release` and
+// `hold_pedal`), over the music's accompaniment on a second piano, with a click on each beat. The
+// frames send what the person does through a ring (`Act`); the voice does it at the start of its
+// next quantum and sends it back stamped with the beat of the accompaniment it fell on (`Heard`),
+// so a take is timed against the music the person heard, to a quantum (2.7 ms).
+//
+// The accompaniment plays from the voice's start to its end, whether it's heard or not, so the
+// beat always counts from its first bar.
+
+use capybara::music::TEMPO
+use engine::piano::{Piano, hold_pedal, play_piano, press, release}
+use std::audio::{QUANTUM, RingReader, RingWriter, SAMPLE_RATE, play, ring}
+use std::math::TAU
+
+/// What the person does: press or let go of a key, hold the pedal (`amount` its depth), turn the
+/// accompaniment or the click on or off (`amount` 1 or 0), nothing (to learn the beat), or stop
+/// recording (nothing too: heard back after every act sent before it, so a take ends with them).
+pub struct Act: Copy {
+    pub kind: u32,
+    pub key: u32 = 0,
+    pub amount: f32 = 0.0,
+}
+
+pub const PRESS: u32 = 0
+pub const RELEASE: u32 = 1
+pub const PEDAL: u32 = 2
+pub const BACKING: u32 = 3
+pub const CLICK: u32 = 4
+pub const NOTHING: u32 = 5
+pub const STOP: u32 = 6
+
+/// An act as the voice did it: on which beat of the accompaniment (from its first bar's first).
+pub struct Heard: Copy {
+    pub act: Act,
+    pub beat: f32,
+}
+
+const RATE: f32 = f32(SAMPLE_RATE)
+
+/// The accompaniment's level under the live piano, and the click's.
+const UNDER: f32 = 0.75
+const TICK: f32 = 0.12
+
+pub struct Voice {
+    acts: RingReader<Act>,
+    heard: RingWriter<Heard>,
+    live: Piano,
+    backing: Piano,
+    backing_on: bool,
+    click_on: bool,
+    /// Samples played, and how long the click has sounded (samples) and at what pitch.
+    sample: u32,
+    clicked: u32,
+    pitch: f32,
+    /// The accompaniment's quantum, before it's mixed in.
+    left: [f32; QUANTUM],
+    right: [f32; QUANTUM],
+}
+
+/// Starts the voice: `live` (a piano with nothing to play, or a take to play back) over
+/// `backing`. Gives the ring the frames act through, and the ring the voice answers on.
+pub fn start(live: take Piano, backing: take Piano) -> (RingWriter<Act>, RingReader<Heard>) {
+    let (acts, reading) = ring::<Act>(256)
+    let (hearing, heard) = ring::<Heard>(1024)
+    let v = Voice {
+        acts: reading,
+        heard: hearing,
+        live,
+        backing,
+        backing_on: true,
+        click_on: false,
+        sample: 0,
+        clicked: 1000000,
+        pitch: 0.0,
+        left: [0.0; QUANTUM],
+        right: [0.0; QUANTUM],
+    }
+    play(take v, render)
+    (acts, heard)
+}
+
+/// The beat of the accompaniment at sample `s`.
+fn beat_at(s: u32) -> f32 {
+    f32(s) / RATE * TEMPO / 60.0
+}
+
+@audio
+fn render(v: mut Voice, left: mut [f32], right: mut [f32]) {
+    var more = true
+    while more {
+        match v.acts.pop() {
+            Some(a) => {
+                if a.kind == PRESS {
+                    press(mut v.live, a.key, a.amount)
+                } else if a.kind == RELEASE {
+                    release(mut v.live, a.key)
+                } else if a.kind == PEDAL {
+                    hold_pedal(mut v.live, a.amount)
+                } else if a.kind == BACKING {
+                    v.backing_on = a.amount > 0.5
+                } else if a.kind == CLICK {
+                    v.click_on = a.amount > 0.5
+                }
+                let _ = v.heard.push(Heard { act: a, beat: beat_at(v.sample) })
+            },
+            None => more = false,
+        }
+    }
+    play_piano(mut v.live, mut left, mut right)
+    play_piano(mut v.backing, mut v.left, mut v.right)
+    let under = if v.backing_on { UNDER } else { 0.0 }
+    let per_beat = RATE * 60.0 / TEMPO
+    for i in 0..QUANTUM {
+        let s = v.sample + i
+        // A click as each beat begins: higher on a bar's first.
+        let beat = f32(s) / per_beat
+        if floor(beat) != floor(f32(s - min(s, 1)) / per_beat) {
+            v.clicked = 0
+            v.pitch = if u32(floor(beat)) % 4 == 0 { 1760.0 } else { 1320.0 }
+        }
+        var tick = 0.0
+        if v.click_on && v.clicked < 2400 {
+            let t = f32(v.clicked) / RATE
+            tick = TICK * sin(TAU * v.pitch * t) * exp(-t * 90.0)
+        }
+        v.clicked += 1
+        let (l, r) = (left[i] + v.left[i] * under + tick, right[i] + v.right[i] * under + tick)
+        left[i] = l / (1.0 + abs(l) * 0.3)
+        right[i] = r / (1.0 + abs(r) * 0.3)
+    }
+    v.sample += QUANTUM
+}

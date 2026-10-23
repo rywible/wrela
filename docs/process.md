@@ -82,7 +82,8 @@ The M4 Air has not been measured; its times are reported separately.
 | [Claude Code](https://claude.com/claude-code) (Anthropic), mostly Claude Opus 5.5 | Writes the code, tests and docs, on Ryan's MacBook Air and in cloud sessions |
 | [OpenAI Codex](https://openai.com/codex/) | Reviews performance across the codebase, implements optimizations and regression tests, and measures their effects in a cloud session |
 | Claude Opus 5.5, Sonnet 5.5 and Fable 5.1 | The authors in the blind authoring rounds that test thesis 1 (vision.md); Opus also in the first round |
-| [GPT-6.1-Sol and GPT-6-Astra](https://openai.com/) (OpenAI), as T3 Code child tasks or `codex exec` runs | Since 2026-10-14, reviewers in a council on an implementation plan: each reads the brief and the checkout, returns findings, and rebuts the leader's answers; they don't edit. Since 2026-10-18 also run read-only through the Codex CLI (`codex exec -s read-only`), on the plan for the two-repository split and on its pull requests |
+| [GPT-6.1-Sol and GPT-6-Astra](https://openai.com/) (OpenAI), as T3 Code child tasks or `codex exec` runs | Since 2026-10-14, reviewers in a council on an implementation plan: each reads the brief and the checkout, returns findings, and rebuts the leader's answers; they don't edit. Since 2026-10-18 also run read-only through the Codex CLI (`codex exec -s read-only`), on the plan for the two-repository split and on its pull requests. Since 2026-10-21 also on a game's design brief (`games/capybara/design.md`, three passes, at Ryan's request), before its code. Since 2026-10-22 also a bug review of a branch against `main` (the capybara game's, at Ryan's request): two rounds, each finding checked in the source by Claude, which then fixed them |
+| Claude Opus 5.5 in Claude Code, and a subagent | Since 2026-10-22, at Ryan's request, the capybara game's look and music, as code: its sky, zoo, ground, water and animals as fields and shaders painted as ink and watercolour (a storybook style, at Ryan's direction), judged from GPU stills of the level's replay; and the game's music (`games/capybara/music.wrela`: a song on a melody Ryan played on the keys, which Claude kept note for note, at his tempo, and harmonized and arranged) and the game's synthesized sounds (`games/capybara/sound.wrela`) for the engine's piano, judged by renders of it and checked for clipping by a test |
 | Claude subagents with no context | Blind raters in the lookdev loop: they see only the before and after stills and the anchors |
 | Plan councils: Claude leads; OpenAI Codex GPT-6.1-Sol and GPT-6-Astra review | Since 2026-10-14, two Codex models review a measured plan independently, read-only, and then rebut the leader's answers. Claude decides, implements and verifies. First used for the faster check |
 | Claude projects (claude.ai) | Run several agent threads at once (lookdev items, fixes, rendering setup), with one coordinator |
@@ -610,6 +611,29 @@ a pinned SHA-256, with its licence. Two outside Rust crates came in, used as lib
 [flate2](https://github.com/rust-lang/flate2-rs) (MIT or Apache-2.0), already in the build,
 ungzips it; ureq downloads it. No code was copied.
 
+## The capybara game's route search, 2026-10-22
+
+Ryan asked the route search to find the fastest any% and 100% runs of the capybara game's first
+level, to watch as ghosts, and then for human-possible runs beside them ("do both of these").
+Claude (Opus 5.5), in a session another Claude session started, wrote it as a Wrela tool (`wrela
+tool route`, `games/capybara/route`): a beam search over the sim's states with exact merging of
+equal states, a per-cell bound for variety, and rounds that search again from each checkpoint of
+the best run with other settings, keeping what's better. Its runs are
+`games/capybara/routes.wrela`, with tests that replay them. On the physics with the short hop's
+least height, after 10 minutes of search for each on an M-series Mac (8 helpers): tool-assisted,
+any% in 1,311 ticks and 100% in 1,820, against the autopilot's 3,410 and 3,528 (proofs.wrela).
+They beat it by far because the movement lets speed build without limit (speed is never lost in
+the air, and a landing on a down slope adds to it); Ryan judges whether that stays.
+
+With `--human` it searches with a human's limits: every stretch of buttons held 3 ticks or more,
+and jump pressed only after it was let go. A human run must be forgiving: at least 95% of its
+changes of buttons, each moved 1 or 2 ticks early or late, live through the second after (the
+parent session and Claude chose a second: a player corrects a slip within it, while with every
+later button fixed a slip of 2 ticks spoils a jump seconds later). Human-possible runs: any% in
+1,320 ticks (97% of changes firm within a second, 92% within two, 82% over the whole run) and 100%
+in 1,962 (98%, 92%, 77%). Human-possible means each input has slack and a slip is recoverable;
+no person was tested on these runs. Beam search is a published method (below); no code was taken.
+
 ## The split, done, 2026-10-21
 
 The repository split on 2026-10-21. `rywible/wrela-compiler` took the compiler, std, the hosts, the
@@ -685,6 +709,7 @@ the lookbook where code moved but output must not change. Claude merged the resu
 | Inter and JetBrains Mono fonts (`ui/fonts/`) | SIL Open Font License 1.1, licence texts beside them | The studio's interface text. |
 | [ab_glyph](https://github.com/alexheretic/ab-glyph) 0.2, a reference rasterizer | Apache-2.0; used as a library, no code copied | The ui's text is compared with it: it drew the test lines (`ui/tests/text`) once, each pixel's exact coverage from the outlines, into `ui/tests/text/goldens/reference.png` (2026-10-20), which the text's tool test compares with the GPU's frame; `the_reference_is_of_this_layout` pins the layout it was drawn at. To draw it again, run `text::text_matches_a_reference_rasterizer` (compiler/tests/tests/suite/text.rs at commit cc0be254, with `--ignored`), which writes `target/tmp/text/reference.png`. |
 | musl's libm; ARM's optimized-routines | MIT | `compiler/std/math.wrela` follows their algorithms and coefficients (credited in the file). std's f64 sine, cosine, arctangent, exponential and logarithms (`sin_f64` and the rest, in the same file), which the reference and audio tools use, follow musl's too, with Dekker's and Knuth's exact products and sums for its power and its base-10 and base-2 logarithms. |
+| Beam search: Bruce T. Lowerre, *The Harpy Speech Recognition System* (PhD thesis, Carnegie Mellon University, 1976) | A published method; no code taken | `games/capybara/route/search.wrela`: the route search keeps the best states of each layer of ticks and drops the rest. |
 | Steven Worley, "A Cellular Texture Basis Function" (SIGGRAPH 1996) | A published algorithm; no code taken | Bark's plates (`engine/plant.wrela`, `plates_at`): the nearest and second-nearest of jittered cell points, written from the paper's idea. |
 | Heini Hediger's flight distance (*Wild Animals in Captivity*, 1950), as field ethology uses it | A published idea; no code or data taken | The fawn's behaviour (`games/last-green/behaviour.wrela`): it notices a person first and watches, and flees when they come on within a distance; the distances are our own, tuned by test. |
 | Vadim Zavalishin, *The Art of VA Filter Design* (2012); George Marsaglia, "Xorshift RNGs" (2003) | Published algorithms; no code taken | The floor's sound (`engine/sound.wrela`): the state-variable filter that bands each source's noise, and the seeded noise itself. |
@@ -2399,6 +2424,7 @@ in the docs. Each was a reference only: the code is Wrela's own, and none was co
 | Sébastien Lagarde's fit of specular occlusion | How much of its sky light a surface keeps, from its ambient occlusion and roughness | `engine::light` |
 | Anders Friberg, Roberto Bresin and Johan Sundberg's KTH performance rules (Director Musices); Neil Todd's phrase arch (1992); Friberg and Sundberg's final ritardando (1999); Peter Desain and Henkjan Honing, "Tempo curves considered harmful" | Rules for playing a score with expression: phrase arches, the final slowing, ornaments that keep their time | `engine::perform` |
 | Gabriel Weinreich on coupled piano strings; Harold Conklin on phantom partials | A unison's aftersound; partials from the string's stretching, louder for a harder blow | `engine::piano` |
+| J.-M. Jot and A. Chaigne, feedback delay networks (1991); J. Abel and P. Huang, echo density (2006); modal synthesis of a soundboard's knock | Published methods; no code taken | `engine::piano`'s room is a 16-line feedback delay network mixed by a Hadamard matrix; its test measures the tail's echo density by Abel and Huang's measure; the board's knock is a force pulse through 32 modal resonators |
 | Pierre Bénard and others (2009), dynamic solid textures | Texture octaves a power of two apart, blended by distance, so marks keep their size on screen | `engine::paint` |
 | The British National Vegetation Classification (W14, W10, W16, W8, W7, MG5, U4, M23) | Which plants grow together in a woodland's floor and an open meadow | `engine::grass`'s species |
 | Matthew Keeter's interval pruning | Removing the operations of a field's tape that can't change its value over a box | `std::stage`'s `Tape::prune` |
@@ -2801,6 +2827,18 @@ before relying on it. References: Cloudflare's
 [R2 Workers API](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/) and
 [Wrangler's R2 commands](https://developers.cloudflare.com/workers/wrangler/commands/r2/).
 These are implementation references; nothing was copied.
+
+## Capybara score auditions, 2026-10-22
+
+Ryan asked Codex to use subagents to write several scores so he could listen and choose a
+direction for the capybara game. Six Codex subagents composed original piano scores as Wrela
+notation (`games/capybara/scores`), each with its own hook, rhythm and form: Bounce, Skipping,
+Sprint, Pocket, Lift and Tiptoe. Codex supplied the common player and checked the scores and
+renders. The brief comes from Ryan's game design and his recorded request for a clear hook
+and groove. No outside score, recording or asset was used, and no generative media model made
+audio. Wrela's existing piano synthesizes each render from the score. The code is under this
+repository's MIT licence. The auditions leave the game's current music in place; Ryan's ears
+decide which direction to use.
 
 ## Keeping this record
 

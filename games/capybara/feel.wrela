@@ -1,0 +1,99 @@
+// How the capybara moves, in numbers (design.md, "Movement"): one speed reached on an eased curve,
+// a light-gravity rise while jump is held, a double jump, the slide, and water, which makes it
+// fast. Ryan chose this feel (the lab's "snappy", with a touch more momentum and float, then a
+// gentler start) over a Mario-like one with a run button. Metres, seconds, and ticks of the sim's
+// step.
+
+/// The sim's step: 120 ticks a second (design.md, "Input").
+pub const HZ: u32 = 120
+pub const STEP: f32 = 1.0 / 120.0
+
+pub struct Feel: Copy {
+    /// The top speed on the ground and in the air (m/s), and while wet (in water, and for a while
+    /// after).
+    pub speed: f32 = 9.0,
+    pub wet_speed: f32 = 13.5,
+    /// Speeding up towards the top: at a fraction u of it, the acceleration is `accel` × (`start`
+    /// + u) × (1 − u) × the top speed (m/s², an eased curve: gentle from rest, strongest a third
+    /// of the way, easing into the top). Within `snap` of the top it is the top.
+    pub accel: f32 = 14.0,
+    pub start: f32 = 0.15,
+    pub snap: f32 = 0.02,
+    /// Braking against the motion (a skid), braking with no input, and slowing from above the top
+    /// speed (m/s²).
+    pub turn: f32 = 90.0,
+    pub friction: f32 = 80.0,
+    pub over: f32 = 12.0,
+    /// Acceleration in the air (m/s²).
+    pub air_accel: f32 = 55.0,
+    /// A jump's upward speed, and a double jump's (m/s).
+    pub launch: f32 = 15.2,
+    pub air_launch: f32 = 13.0,
+    /// The bounce off a stomped foe without jump held (m/s); with it held, the launch.
+    pub stomp: f32 = 11.0,
+    /// The jumps it has in the air, after its first: refreshed on landing and on leaving water.
+    pub air_jumps: u32 = 1,
+    /// Gravity rising with jump held, and otherwise (m/s²); the fastest fall (m/s).
+    pub rise: f32 = 40.0,
+    pub fall: f32 = 90.0,
+    pub terminal: f32 = 24.0,
+    /// A jump's first ticks, in which it rises on the fall's gravity whether jump is held or not:
+    /// a press let go within them is the lowest hop, however short the press (Ryan, 2026-10-22: a
+    /// one-tick tap was the lowest hop, which only a program could press). 6 ticks is 50 ms, the
+    /// quickest tap a person makes.
+    pub hop: u32 = 6,
+    /// Ticks a jump still counts after the ground falls away, and a press waits for the ground.
+    pub coyote: u32 = 12,
+    pub buffer: u32 = 12,
+    // The slide.
+    /// The least speed that slides rather than crouches (m/s), the least slope that slides from
+    /// rest (its sine), and the speed below which a slide on flatter ground stops (m/s).
+    pub slide_min: f32 = 1.5,
+    pub slide_slope: f32 = 0.139,
+    pub slide_stop: f32 = 0.5,
+    /// Gravity along the slope while sliding, the friction that takes speed, and the cap.
+    pub slide_gravity: f32 = 40.0,
+    pub slide_friction: f32 = 2.5,
+    /// More friction at running speeds (m/s², all of it below `brake_until`, none above
+    /// `brake_from`), so a slide from a run ends soon while one off a ramp keeps its speed (Ryan,
+    /// 2026-10-22: from running, the slide "lasts too long").
+    pub slide_brake: f32 = 4.5,
+    pub brake_until: f32 = 10.0,
+    pub brake_from: f32 = 15.0,
+    pub slide_max: f32 = 22.0,
+    // Water.
+    /// Gravity in water (m/s²), and the fastest it sinks (m/s).
+    pub water_gravity: f32 = 10.0,
+    pub water_terminal: f32 = 6.0,
+    /// A kick: a jump press in water (from its bottom too) sets the upward speed to at least this
+    /// (m/s); kicks are this many ticks apart at least.
+    pub kick: f32 = 5.0,
+    pub kick_cooldown: u32 = 12,
+    /// Acceleration across in water (m/s²).
+    pub water_accel: f32 = 60.0,
+    /// Swimming up or down with up or down held: its acceleration (m/s²) and the speed it holds
+    /// (m/s). The same both ways, so up and down in turn keep their depth.
+    pub swim_up: f32 = 40.0,
+    pub swim_up_speed: f32 = 8.0,
+    /// The dolphin kick: up and down held in turn, each change at least `dolphin_gap` ticks after
+    /// the last, adds `dolphin` m/s forward, to at most `dolphin_max`. Above the wet speed, water
+    /// takes speed back at `water_over` (m/s²), so it lasts only while kicked.
+    pub dolphin: f32 = 2.0,
+    pub dolphin_gap: u32 = 10,
+    pub dolphin_max: f32 = 18.0,
+    pub water_over: f32 = 5.0,
+    /// The least upward speed through the surface that breaches (m/s): a breach leaves as a jump
+    /// does, at the jump's launch.
+    pub breach: f32 = 3.5,
+    /// The surface's margins for a jump press, so it's never lost there: within this depth under
+    /// the surface a press jumps out at the launch (m), and for this many ticks after leaving the
+    /// water a press is the breach's jump (or, after a breach, part of it), never the double jump.
+    pub breach_margin: f32 = 0.6,
+    pub breach_grace: u32 = 10,
+    /// How long being wet lasts after the last touch of water (ticks): its first half at the wet
+    /// speed, its second easing the top back down.
+    pub wet_ticks: u32 = 180,
+}
+
+/// The capybara's feel.
+pub const FEEL = Feel {}

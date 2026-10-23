@@ -1,0 +1,39 @@
+// The 2D shapes the sprites, the backdrop and the ground are made of, as distances (m, below 0
+// inside), and `blend` for their colours.
+
+/// `a` towards `b` by `t` (0 to 1).
+pub fn blend(a: vec3, b: vec3, t: f32) -> vec3 {
+    a + (b - a) * t
+}
+
+/// An ellipse's distance, approximately (exact on its axes).
+pub fn ellipse(p: vec2, r: vec2) -> f32 {
+    let k0 = length(p / r)
+    let k1 = length(p / (r * r))
+    k0 * (k0 - 1.0) / max(k1, 1.0e-5)
+}
+
+/// A segment's distance from `a` to `b`, `ra` thick at `a` and `rb` at `b`.
+pub fn cone(p: vec2, a: vec2, b: vec2, ra: f32, rb: f32) -> f32 {
+    let pa = p - a
+    let ba = b - a
+    let h = saturate(dot(pa, ba) / dot(ba, ba))
+    length(pa - ba * h) - (ra + (rb - ra) * h)
+}
+
+/// A segment's distance from `a` to `b`, `r` thick.
+pub fn capsule(p: vec2, a: vec2, b: vec2, r: f32) -> f32 {
+    cone(p, a, b, ra: r, rb: r)
+}
+
+/// A rounded box's distance: half-size `b`, corners rounded by `r`.
+pub fn rbox(p: vec2, b: vec2, r: f32) -> f32 {
+    let q = abs(p) - b + vec2(r)
+    length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r
+}
+
+/// `p` turned by `-a` (rad): a point in the frame of a shape turned by `a`.
+pub fn turn(p: vec2, a: f32) -> vec2 {
+    let (c, s) = (cos(a), sin(a))
+    vec2(p.x * c + p.y * s, -p.x * s + p.y * c)
+}

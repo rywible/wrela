@@ -1,0 +1,271 @@
+// The water as it's drawn: each pool's surface a row of columns 0.1 m wide, each with its height
+// and its speed, pulled by its neighbours (a wave equation, with a little spring back to rest and
+// damping), so a plunge sends rings out across the pool and they come back off the banks. This
+// is presentation: the sim's water is flat, and nothing here touches it.
+//
+// The water's shader paints each pool's shape (filled to the ground under it) up to the moving
+// surface, as a picture book's water (ink.wrela): a wash of teal over what's behind it (a copy of
+// the scene, wobbling a little), deepening to blue; short white strokes of ripples drifting near
+// the top; a pale band under the surface and an inked line along it, with white foam where it
+// moves fast.
+
+use course::Course
+use earth::{ground_top, solids}
+use ink::{inked, wash}
+use shapes::blend
+use engine::noise::{hash2, noise2}
+use ground::triangulate
+use std::gpu::{
+    ClipPosition, FragCoord, Flat, Over, Rgba16Float, Sampler, Texture, VertexIndex, discard,
+}
+
+/// A column's width (m).
+pub const COLUMN: f32 = 0.1
+
+/// The most columns of all a course's pools.
+pub const COLUMNS: u32 = 1024
+
+/// How fast a wave runs (m/s), how fast a column springs back to rest (1/s²), and how fast its
+/// motion dies away (1/s).
+const SPEED: f32 = 3.2
+const REST: f32 = 4.0
+const DAMP: f32 = 1.1
+
+/// The step the waves are stepped by (s).
+const DT: f32 = 1.0 / 240.0
+
+/// A course's pools: each one's left edge (m), first column, number of columns and surface (m),
+/// and every column's height (m) and speed (m/s).
+pub struct Waves {
+    pub pools: Vec<vec4>,
+    pub heights: Vec<f32>,
+    speeds: Vec<f32>,
+    /// What's left of the frame's time to step (s).
+    owed: f32,
+}
+
+pub fn waves(c: Course) -> Waves {
+    var pools: Vec<vec4> = Vec::new()
+    var n = 0
+    for w in c.waters {
+        let count = u32(ceil((w.hi.x - w.lo.x) / COLUMN)) + 1
+        pools.push(vec4(w.lo.x, f32(n), f32(count), w.surface()))
+        n += count
+    }
+    assert(n <= COLUMNS, "the course's pools fit the columns")
+    var heights: Vec<f32> = Vec::new()
+    for _ in 0..n {
+        heights.push(0.0)
+    }
+    Waves { pools, heights: heights.clone(), speeds: heights, owed: 0.0 }
+}
+
+/// The waves `dt` seconds on.
+pub fn step_waves(w: mut Waves, dt: f32) {
+    w.owed = min(w.owed + dt, 0.1)
+    let k = SPEED * SPEED / (COLUMN * COLUMN)
+    while w.owed >= DT {
+        w.owed -= DT
+        for pool in w.pools {
+            let (first, count) = (u32(pool.y), u32(pool.z))
+            for i in first..first + count {
+                // The banks reflect: a missing neighbour is the column itself.
+                let l = if i > first { w.heights[i - 1] } else { w.heights[i] }
+                let r = if i + 1 < first + count { w.heights[i + 1] } else { w.heights[i] }
+                let h = w.heights[i]
+                let a = k * (l + r - 2.0 * h) - REST * h - DAMP * w.speeds[i]
+                w.speeds[i] += a * DT
+            }
+            for i in first..first + count {
+                w.heights[i] = clamp(w.heights[i] + w.speeds[i] * DT, -0.6, 0.6)
+            }
+        }
+    }
+}
+
+/// The pool whose surface spans `x`, if one does: its index.
+fn pool_at(w: Waves, x: f32) -> Option<u32> {
+    for i in 0..w.pools.len() {
+        let p = w.pools[i]
+        if x >= p.x && x <= p.x + p.z * COLUMN {
+            return Some(i)
+        }
+    }
+    None
+}
+
+/// Pushes the surface `width` m either side of `x` with speed `kick` (m/s, up positive), most at
+/// `x`, tapering to nothing at the edges.
+pub fn disturb(w: mut Waves, x: f32, width: f32, kick: f32) {
+    match pool_at(w, x) {
+        Some(i) => {
+            let p = w.pools[i]
+            let (first, count) = (u32(p.y), u32(p.z))
+            for j in first..first + count {
+                let d = abs(p.x + f32(j - first) * COLUMN - x)
+                if d < width {
+                    w.speeds[j] += kick * 0.5 * (1.0 + cos(3.14159 * d / width))
+                }
+            }
+        },
+        None => {},
+    }
+}
+
+/// The surface's height at `x` (m), if a pool spans it.
+pub fn surface_at(w: Waves, x: f32) -> Option<f32> {
+    match pool_at(w, x) {
+        Some(i) => {
+            let p = w.pools[i]
+            let f = clamp((x - p.x) / COLUMN, 0.0, p.z - 1.001)
+            let j = u32(p.y) + u32(f)
+            let t = fract(f)
+            Some(p.w + w.heights[j] * (1.0 - t) + w.heights[j + 1] * t)
+        },
+        None => None,
+    }
+}
+
+// ---- the mesh -----------------------------------------------------------------------------------
+
+/// How far apart the outline samples the ground under the water (m), and how far above the surface
+/// the shape reaches, for the crests (m).
+const OUTLINE_STEP: f32 = 0.2
+const CREST: f32 = 0.7
+
+/// Each pool's shape, filled to the ground under it, its top `CREST` above the surface: three
+/// vertices a triangle, each its point and its pool's index.
+pub fn water_mesh(c: Course) -> Vec<vec4> {
+    let outlines = solids(c)
+    var out: Vec<vec4> = Vec::new()
+    for k in 0..c.waters.len() {
+        let w = c.waters[k]
+        let surface = w.surface()
+        var floor: Vec<vec2> = Vec::new()
+        var x = w.lo.x
+        while x <= w.hi.x {
+            let y = ground_top(outlines, x)
+            if y < surface - 1.0e-3 {
+                floor.push(vec2(x, max(y, w.lo.y) - 0.05))
+            }
+            x += OUTLINE_STEP
+        }
+        if floor.len() < 2 {
+            continue
+        }
+        let (left, right) = (floor[0].x - OUTLINE_STEP, floor[floor.len() - 1].x + OUTLINE_STEP)
+        var polygon: Vec<vec2> = Vec::new()
+        polygon.push(vec2(left, surface + CREST))
+        polygon.push(vec2(right, surface + CREST))
+        var i = floor.len()
+        while i > 0 {
+            i -= 1
+            polygon.push(floor[i])
+        }
+        for p in triangulate(polygon) {
+            out.push(vec4(p, f32(k), 0.0))
+        }
+    }
+    out
+}
+
+pub const LAB_WATER: Vec<vec4> = water_mesh(course::LAB)
+pub const LEVEL_WATER: Vec<vec4> = water_mesh(course::LEVEL)
+
+// ---- the shader ---------------------------------------------------------------------------------
+
+/// What the water's shader is told: the camera's matrix, the view's middle and half-size (m), a
+/// pixel's size (m) and the time (s).
+pub struct Pond: Copy + GpuData {
+    pub view_proj: mat4,
+    pub centre: vec2,
+    pub half: vec2,
+    pub px: f32,
+    pub time: f32,
+    pub pad: vec2 = vec2(0.0),
+}
+
+pub struct Wetl: Copy {
+    pub clip: ClipPosition,
+    pub world: vec2,
+    pub pool: Flat<u32>,
+}
+
+@vertex
+pub fn water_vertex(v: VertexIndex, verts: [vec4], f: Pond) -> Wetl {
+    let p = verts[v.index]
+    Wetl {
+        clip: ClipPosition { position: f.view_proj * vec4(p.xy, 0.5, 1.0) },
+        world: p.xy,
+        pool: Flat { value: u32(p.z) },
+    }
+}
+
+/// A pool's surface offset at `x` (m): its columns', and a small ripple the wind keeps up.
+fn lift(pool: vec4, heights: [f32], x: f32, time: f32) -> vec2 {
+    let f = clamp((x - pool.x) / COLUMN, 0.0, pool.z - 1.001)
+    let j = u32(pool.y) + u32(f)
+    let t = fract(f)
+    let h = heights[j] * (1.0 - t) + heights[j + 1] * t
+    let ripple = 0.025 * sin(x * 2.3 + time * 2.1) +
+        0.015 * sin(x * 4.1 - time * 2.9) +
+        0.01 * sin(x * 7.3 + time * 4.3)
+    let speed = abs(heights[j + 1] - heights[j]) / COLUMN
+    vec2(h + ripple, speed)
+}
+
+/// The ripples' strokes at `p`, `depth` m under the surface: in some cells 1.6 by 0.5 m, a short
+/// white stroke drifting slowly along, fewer the deeper. How much of the pixel they cover.
+fn ripples(p: vec2, depth: f32, time: f32, px: f32) -> f32 {
+    let q = vec2(p.x + time * 0.25, p.y)
+    let cell = floor(q / vec2(1.6, 0.5))
+    let (cx, cy) = (i32(cell.x), i32(cell.y))
+    if hash2(cx, cy + 900) > 0.3 - depth * 0.1 {
+        return 0.0
+    }
+    let centre = (cell +
+        vec2(0.5, 0.5) +
+        (vec2(hash2(cx, cy + 901), hash2(cx + 3, cy)) - vec2(0.5)) * vec2(0.5, 0.3)) *
+        vec2(1.6, 0.5)
+    let l = q - centre
+    let half = 0.2 + 0.25 * hash2(cx + 7, cy + 2)
+    let wave = l.y - 0.025 * sin(l.x * 12.0)
+    let d = length(vec2(max(abs(l.x) - half, 0.0), wave)) - 0.012
+    saturate(-d / px + 0.5) * 0.7
+}
+
+@fragment
+pub fn water(
+    w: Wetl,
+    pixel: FragCoord,
+    f: Pond,
+    pools: [vec4],
+    heights: [f32],
+    below: Texture<Rgba16Float>,
+    s: Sampler,
+) -> Over {
+    let p = w.world
+    let pool = pools[w.pool.value]
+    let here = lift(pool, heights, p.x, f.time)
+    let depth = pool.w + here.x - p.y
+    if depth < -f.px * 2.0 {
+        discard()
+    }
+    // What's behind, wobbling a little, under a wash of teal deepening to blue.
+    let wobble = vec2(noise2(vec2(p.x * 1.5 + f.time * 0.5, p.y * 1.5)) - 0.5, 0.0) *
+        0.05 *
+        min(depth, 1.0)
+    let size = vec2(f32(below.width()), f32(below.height()))
+    let behind = below.sample_level(s, pixel.position.xy / size + wobble / (f.half * 2.0)).rgb
+    let teal = blend(vec3(0.56, 0.82, 0.84), vec3(0.3, 0.55, 0.7), smoothstep(0.0, 3.0, depth))
+    let tint = blend(teal, vec3(0.2, 0.36, 0.55), smoothstep(3.0, 9.0, depth))
+    var c = blend(behind, wash(tint, p), saturate(0.5 + depth * 0.09))
+    c = blend(c, vec3(0.97, 0.99, 0.97), ripples(p, depth, f.time, f.px))
+    // The pale band under the surface, white with foam where it moves, and the ink line on it.
+    let band = smoothstep(0.14 + here.y * 0.05, 0.0, depth)
+    c = blend(c, vec3(0.86, 0.95, 0.95), band * 0.7)
+    let foam = smoothstep(0.6, 1.6, here.y) * smoothstep(0.25, 0.0, depth)
+    c = blend(c, vec3(1.0), foam)
+    let o = inked(c, -depth, p, f.px * 2.0, f.px, vec3(0.2, 0.32, 0.46))
+    Over { color: o }
+}

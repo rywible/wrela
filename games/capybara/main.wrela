@@ -1,0 +1,1105 @@
+// The capybara game (a working title; design.md is its brief): the first level, and the movement
+// lab beside it. The sim ticks 120 times a second on the ticker's thread (`engine::run`), and each
+// frame draws the snapshots round its time in flat 2D, seen straight on (art.wrela has the
+// passes): the sky and the zoo behind (scenery.wrela), the ground and its grass (earth.wrela),
+// the cast and its particles (cast.wrela, sprites.wrela, dust.wrela), the water (waves.wrela),
+// and the HUD: the snacks found, the clock, the course and the keys. The music (music.wrela)
+// and the game's sounds (sound.wrela) start on the first frame.
+//
+// The game opens paused, on a card of the controls (Esc or P pauses again). F3 shows the frame rate
+// and the render scale. Keys: the arrows or W A S D to move (down slides or
+// crouches; in water up and down swim, and in turn dolphin kick), Space, Z or K to jump (again in
+// the air for the double jump; in water, a kick), R to restart, Tab for the other course (the level
+// or the lab). A controller: the stick or pad, South or East to jump, Start to restart, Select for
+// the other course.
+//
+// Runs (replay.wrela): each finished attempt is a replay, and the best few of each category are
+// kept in the game's storage. Paused, B opens them: two boards, the player's runs and the
+// tool-assisted runs (the route search's, made by a program, never ranked with a player's; T or a
+// click switches), each any% and 100%. A click on a run watches it (watch.wrela), and G chooses the
+// ghost that runs beside the player: their best, the tool-assisted run, or none.
+//
+// For an agent: `wrela-host <build> --frames n --input script.json --png out.png` draws frame n
+// on the GPU (scripts.wrela has scripts), and `capybara` exports the capybara's state for `wrela
+// trace --watch capybara`, which needs a toolchain whose trace runs the ticker in lockstep.
+
+use art::{Page, Scale, Targets, copy, finish, grain_texture, pace, render_size, targets}
+use body::{Mode, RADIUS}
+use camera::{Camera, camera, follow, framed, half_view}
+use cast::{Cast, cast, ghost, grounded, react, sprites}
+use course::course
+use earth::{
+    LAB_EARTH, LAB_GRASS, LAB_TOPS, LEVEL_EARTH, LEVEL_GRASS, LEVEL_TOPS, Field, earth,
+    earth_vertex, grass, grass_vertex,
+}
+use engine::plant::full
+use engine::present::Snapshots
+use engine::run::run
+use feel::HZ
+use ink::INK
+use scenery::View
+use sound::Cue
+use std::audio::RingWriter
+use sprites::{Sprite, Stage, sprite, sprite_vertex}
+use std::gpu::{
+    Address, GpuBuffer, Rgba16Float, Sampler, Texture, begin_pass, begin_screen_pass, buffer,
+    buffer_of, draw, sampler, write,
+}
+use std::transform::{look_at, ortho}
+use ui::draw::{DrawList, Rect, Renderer}
+use std::input::{Event, Key, events}
+use std::io::{Pending, load, store}
+use replay::{
+    ANY, AUTOPILOT, Board, FULL, HUMAN, KEPT, Pose, Replay, SAVED, YOU, board, bytes, counts, read,
+    replay, tool_assisted, trail, verify,
+}
+use watch::{SPEEDS, Watch, watch}
+use ui::text::{Face, Fonts}
+use waves::{COLUMNS, LAB_WATER, LEVEL_WATER, Pond, water, water_vertex}
+use world::{LAB, LEVEL, Snap, live, present_live, tick_live}
+
+/// The most sprites drawn: the cast's and the particles'.
+const SPRITES: u32 = 1024
+
+/// The ghost that runs beside the player: none, their best any% run, the robot's (the route
+/// search's fastest) or the human line's.
+const NO_GHOST: u32 = 0
+const BEST_GHOST: u32 = 1
+const AUTOPILOT_GHOST: u32 = 2
+const HUMAN_GHOST: u32 = 3
+const GHOSTS: u32 = 4
+
+/// The boards: the player's runs, and the tool-assisted runs (design.md: "a separate
+/// tool-assisted board").
+const PLAYERS: u32 = 0
+const ASSISTED: u32 = 1
+
+/// How far a watched run seeks at a press (ticks): five seconds.
+const SEEK: u32 = 600
+
+/// The cards' colours: their ink, the ink of what's said softly, and their cream.
+const INKED = vec4(INK, 1.0)
+const SOFT = vec4(INK, 0.72)
+const CARD = vec4(0.98, 0.95, 0.88, 1.0)
+
+pub struct Lab {
+    snaps: Snapshots<Snap>,
+    /// Each course's ground, grass, water and the top of its ground (the lab's, the level's).
+    earths: [GpuBuffer<vec4>; 2],
+    grasses: [GpuBuffer<vec4>; 2],
+    waters: [GpuBuffer<vec4>; 2],
+    tops: [GpuBuffer<f32>; 2],
+    /// The shown course's pools and its waves' heights.
+    pools: GpuBuffer<vec4>,
+    heights: GpuBuffer<f32>,
+    sprites: GpuBuffer<Sprite>,
+    /// The course the camera was last following, and its cast.
+    shown: u32,
+    cast: Cast,
+    targets: Targets,
+    linear: Sampler,
+    /// The baked grain (ink.wrela) and the sampler that repeats it.
+    grain: Texture<Rgba16Float>,
+    repeat: Sampler,
+    /// The scene's size (px) at the render scale, and the scale.
+    width: u32,
+    height: u32,
+    scale: Scale,
+    camera: Camera,
+    last: Option<f32>,
+    /// The ring to the voice (sound.wrela): none until it starts, on the first frame.
+    voice: Option<RingWriter<Cue>>,
+    /// Whether the readout shows (F3): the frame rate, the frame's time and the render scale. The
+    /// frames' time (s), smoothed, for it.
+    readout: bool,
+    /// How much the capybara is on the ground and slides, eased (earth.wrela's `Field`).
+    presence: f32,
+    sliding: f32,
+    frame_time: f32,
+    fonts: Fonts,
+    renderer: Renderer,
+    list: DrawList,
+    /// The player's runs (replay.wrela), as they load from storage and are stored again, and when
+    /// (`Storing`). The attempt whose finish was last kept (its course and attempt), so each is
+    /// kept once.
+    runs: Board,
+    loading: Option<Pending<u8>>,
+    saving: Option<Pending<u8>>,
+    storing: Storing,
+    kept: u32,
+    /// The tool-assisted runs of every course, and the board shown (`PLAYERS` or `ASSISTED`).
+    assisted: Vec<Replay>,
+    board: u32,
+    /// The ghost (`NO_GHOST`...), the trail it follows, and the course and ghost that trail is
+    /// for (`follow_ghost`; 0 once the player's runs change, as their best may have).
+    ghost: u32,
+    trail: Vec<Pose>,
+    trail_of: u32,
+    /// The run being watched, whether the last frame drew one, and where the pointer is (px).
+    watching: Option<Watch>,
+    watched: bool,
+    pointer: vec2,
+}
+
+pub fn init() -> Lab {
+    let latest = run(live(LEVEL), hz: HZ, step: tick_live, present: present_live)
+    var assisted = tool_assisted(LAB)
+    for r in tool_assisted(LEVEL) {
+        assisted.push(r.clone())
+    }
+    let fonts = Fonts::load()
+    let renderer = Renderer::new(fonts)
+    let shown = cast(course(LEVEL))
+    Lab {
+        snaps: Snapshots::new(take latest, hz: HZ),
+        earths: [buffer_of(LAB_EARTH), buffer_of(LEVEL_EARTH)],
+        grasses: [buffer_of(LAB_GRASS), buffer_of(LEVEL_GRASS)],
+        waters: [buffer_of(LAB_WATER), buffer_of(LEVEL_WATER)],
+        tops: [buffer_of(LAB_TOPS), buffer_of(LEVEL_TOPS)],
+        pools: buffer_of(shown.waves.pools, at_least: 8),
+        heights: buffer(COLUMNS),
+        sprites: buffer(SPRITES),
+        shown: LEVEL,
+        cast: shown,
+        targets: targets(width: 4, height: 4),
+        linear: sampler(),
+        grain: grain_texture(),
+        repeat: sampler(address: Address::Repeat),
+        width: 0,
+        height: 0,
+        scale: Scale {},
+        camera: camera(course(LEVEL).start),
+        last: None,
+        voice: None,
+        readout: false,
+        presence: 1.0,
+        sliding: 0.0,
+        frame_time: 0.0,
+        fonts,
+        renderer,
+        list: DrawList::new(),
+        runs: board(),
+        loading: Some(load(SAVED)),
+        saving: None,
+        storing: Storing {},
+        kept: 0xffffffff,
+        assisted,
+        board: PLAYERS,
+        ghost: BEST_GHOST,
+        trail: Vec::new(),
+        trail_of: 0,
+        watching: None,
+        watched: false,
+        pointer: vec2(-1.0),
+    }
+}
+
+/// The snapshot a frame draws, from the two round its time. Everything that moves is drawn between them, so motion is continuous at any refresh rate,
+/// whatever the sim's: the capybara's middle, velocity, speed and the ground's normal under it, and
+/// each foe's middle (and how long since it was knocked out). Its counters (a flip's ticks, a
+/// death's) are the later snapshot's, and `lag` says how far before it the frame falls (ticks, 0
+/// to 1), so they can be drawn between too. Where a foe has jumped (back to its start when the
+/// capybara comes back), or changed whether it's knocked out, it isn't blended; nor is anything
+/// across a cut (world.wrela's `Tally`), where the capybara was put somewhere at once.
+fn drawn(s: Snapshots<Snap>, time: f32) -> (Snap, f32) {
+    let b = s.at(s.sim_time(time))
+    (mixed(b.a, b.b, b.alpha), if b.b.ticks > b.a.ticks { 1.0 - b.alpha } else { 0.0 })
+}
+
+/// Snapshot `b` with what moves drawn `t` of the way from `a` (as `drawn` says).
+fn mixed(a: Snap, b: Snap, t: f32) -> Snap {
+    var snap = b
+    if a.tally.cuts != b.tally.cuts {
+        return snap
+    }
+    snap.at = mix(a.at, b.at, vec2(t))
+    snap.vel = mix(a.vel, b.vel, vec2(t))
+    snap.speed = mix(a.speed, b.speed, t)
+    let n = mix(a.ground, b.ground, vec2(t))
+    if length(n) > 1.0e-3 {
+        snap.ground = normalize(n)
+    }
+    for i in 0..snap.foes.len() {
+        let (f, g) = (a.foes[i], b.foes[i])
+        if sign(f.z) == sign(g.z) && distance(f.xy, g.xy) < 1.0 {
+            snap.foes[i] = vec4(mix(f.xy, g.xy, vec2(t)), g.z, if g.z < 0.0 {
+                mix(f.w, g.w, t)
+            } else { g.w })
+        }
+    }
+    snap
+}
+
+// ---- the frame ---------------------------------------------------------------------------------
+
+pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
+    let dt = match s.last {
+        Some(before) => clamp(time - before, 0.0, 0.1),
+        None => 0.0,
+    }
+    s.last = Some(time)
+    if s.voice.is_none() {
+        s.voice = Some(sound::start(music::music()))
+    }
+    s.snaps.update()
+    let screen = vec2(f32(width), f32(height))
+    let (live_snap, live_lag) = drawn(s.snaps, time)
+    store_runs(mut s, dt)
+    keep_finished(mut s, live_snap)
+    // F3 shows the readout. The frames' keys are their own: the sim's ticks take theirs. With the
+    // runs open, the sim leaves the keys and clicks to the frames: the board's and the watch's.
+    for e in events() {
+        if let Event::KeyDown { key, repeat, .. } = e {
+            if key == Key::F3 && !repeat {
+                s.readout = !s.readout
+            }
+        }
+        if live_snap.browsing == 1 {
+            browse(mut s, e, live_snap.course, screen)
+        }
+    }
+    if live_snap.browsing == 0 {
+        s.watching = None
+    }
+    // A watched run, or play.
+    var snap = live_snap
+    var lag = live_lag
+    var opening: Option<Snap> = None
+    match mut s.watching {
+        Some(w) => {
+            if !s.watched {
+                // A run just opened to watch: its cast hears it from its first tick.
+                let (_, first, _) = w.between()
+                opening = Some(first)
+            }
+            w.advance(dt)
+            let (a, b, t) = w.between()
+            snap = mixed(a, b, t)
+            lag = if b.ticks > a.ticks { 1.0 - t } else { 0.0 }
+        },
+        None => {},
+    }
+    let watching = s.watching.is_some()
+    borrow c = course(snap.course)
+    if snap.course != s.shown || watching != s.watched {
+        s.camera = camera(snap.at)
+        s.cast = cast(c, from: opening)
+        s.pools = buffer_of(s.cast.waves.pools, at_least: 8)
+        s.shown = snap.course
+        s.watched = watching
+    }
+    follow(mut s.camera, snap, dt)
+    // The scene is drawn at the render scale, the page and the HUD at the screen's size.
+    pace(mut s.scale, dt)
+    if dt > 0.0 && dt < 0.25 {
+        s.frame_time = if s.frame_time == 0.0 { dt } else {
+            s.frame_time + (dt - s.frame_time) * 0.05
+        }
+    }
+    let (rw, rh) = render_size(s.scale, width, height)
+    if rw != s.width || rh != s.height {
+        s.targets = targets(width: rw, height: rh)
+        s.width = rw
+        s.height = rh
+    }
+    let aspect = f32(width) / f32(max(height, 1))
+    let half = half_view(aspect)
+    let eye = framed(s.camera, half, c.ends)
+    react(mut s.cast, snap, c, dt, eye, half)
+    // What happened, to the voice.
+    match mut s.voice {
+        Some(v) => {
+            for cue in s.cast.cues {
+                let _ = v.push(cue)
+            }
+        },
+        None => {},
+    }
+    s.cast.cues.clear()
+    // Where the snacks' count is, on the plane of play: found carrots fly there.
+    let hud_at = eye + vec2(-half.x + 1.6, half.y - 0.9)
+    let at = vec3(eye, 0.0)
+    let view_proj = ortho(-half.x, half.x, -half.y, half.y, near: 1.0, far: 100.0) *
+        look_at(at + vec3(0.0, 0.0, 50.0), at)
+    let px = 2.0 * half.y / f32(rh)
+    var back: Vec<Sprite> = Vec::new()
+    var front: Vec<Sprite> = Vec::new()
+    sprites(s.cast, snap, c, time, lag, hud_at, mut back, mut front)
+    // The ghost, behind the cast, on the player's clock.
+    if !watching {
+        follow_ghost(mut s, snap.course)
+        if s.trail.len() > 0 {
+            let t = min(snap.ticks, s.trail.len() - 1)
+            if let Some(g) = ghost(s.trail[max(t, 1) - 1], s.trail[t], if t == 0 { 0.0 } else {
+                lag
+            }) {
+                back.push(g)
+            }
+        }
+    }
+    let behind = back.len()
+    for f in front {
+        back.push(f)
+    }
+    write(mut s.sprites, 0, back)
+    write(mut s.heights, 0, s.cast.waves.heights)
+    hud(mut s, snap, screen)
+    s.renderer.fetch(mut s.fonts, s.list)
+    s.renderer.upload(s.list)
+    let (i, level) = (snap.course, snap.course == LEVEL)
+    let view = View { centre: eye, half, screen: vec2(f32(rw), f32(rh)), time }
+    // How much the capybara slides and is on the ground, eased, for the grass.
+    let mode = Mode::from_u32(snap.mode)
+    let on = grounded(mode)
+    let ease = 1.0 - exp(-dt * 10.0)
+    s.presence += (if on { 1.0 } else { 0.0 } - s.presence) * ease
+    s.sliding += (if mode == Some(Mode::Slide) { 1.0 } else { 0.0 } - s.sliding) * ease
+    let field = Field {
+        view_proj,
+        feet: snap.at - snap.ground * RADIUS,
+        vel: snap.vel,
+        px,
+        time,
+        sliding: s.sliding,
+        presence: s.presence,
+    }
+    let stage = Stage { view_proj, px, time, first: 0 }
+    // The scene: the sky and the zoo behind (one pass, nearest first); the ground and its grass; the
+    // cast.
+    let scene = begin_pass(mut s.targets.scene)
+    draw(
+        scene,
+        full.bind(z: 0.0),
+        scenery::backdrop.bind(v: view, tops: s.tops[i].items(), g: s.grain, gs: s.repeat),
+        vertices: 3,
+    )
+    draw(
+        scene,
+        earth_vertex.bind(verts: s.earths[i].items(), f: field),
+        earth.bind(
+            f: field,
+            tops: s.tops[i].items(),
+            pools: s.pools.items(),
+            g: s.grain,
+            gs: s.repeat,
+        ),
+        vertices: if level { LEVEL_EARTH.len() / 2 } else { LAB_EARTH.len() / 2 },
+    )
+    draw(
+        scene,
+        grass_vertex.bind(verts: s.grasses[i].items(), f: field),
+        grass.bind(f: field),
+        vertices: if level { LEVEL_GRASS.len() / 2 } else { LAB_GRASS.len() / 2 },
+    )
+    draw(
+        scene,
+        sprite_vertex.bind(sprites: s.sprites.items(), st: stage),
+        sprite.bind(sprites: s.sprites.items(), st: stage),
+        vertices: 6,
+        instances: behind,
+    )
+    scene.end()
+    // The water reads a copy of the scene, bending what's behind it; the splashes go over it.
+    let copied = begin_pass(mut s.targets.below)
+    draw(copied, full.bind(z: 0.0), copy.bind(src: s.targets.scene, s: s.linear), vertices: 3)
+    copied.end()
+    let wet = begin_pass(mut s.targets.scene, keep: true)
+    let pond = Pond { view_proj, centre: eye, half, px, time }
+    draw(
+        wet,
+        water_vertex.bind(verts: s.waters[i].items(), f: pond),
+        water.bind(
+            f: pond,
+            pools: s.pools.items(),
+            heights: s.heights.items(),
+            below: s.targets.below,
+            s: s.linear,
+        ),
+        vertices: if level { LEVEL_WATER.len() } else { LAB_WATER.len() },
+    )
+    let ahead = Stage { first: behind, ..stage }
+    draw(
+        wet,
+        sprite_vertex.bind(sprites: s.sprites.items(), st: ahead),
+        sprite.bind(sprites: s.sprites.items(), st: ahead),
+        vertices: 6,
+        instances: back.len() - behind,
+    )
+    wet.end()
+    let out = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
+    let (iris, open) = cast::iris(s.cast, snap, lag)
+    let page = Page {
+        centre: eye,
+        half,
+        iris,
+        screen,
+        open,
+        dim: f32(snap.paused),
+    }
+    draw(
+        out,
+        full.bind(z: 0.0),
+        finish.bind(scene: s.targets.scene, s: s.linear, page: page),
+        vertices: 3,
+    )
+    s.renderer.draw(out, screen)
+    out.present()
+}
+
+/// Ticks as seconds, to the hundredth.
+fn seconds(ticks: u32) -> String {
+    let hundredths = ticks * 100 / HZ
+    let tail = hundredths % 100
+    let pad = if tail < 10 { "0" } else { "" }
+    f"{hundredths / 100}.{pad}{tail}"
+}
+
+/// Text in `colour` with a soft dark shadow under it, so it reads over the sky and the ground.
+fn say(s: mut Lab, face: Face, text: str, size: f32, at: vec2, colour: vec4) {
+    let shadow = vec4(0.02, 0.03, 0.05, 0.55 * colour.w)
+    let _ = s.list.text(s.fonts, face, text, size, at + vec2(size * 0.07), shadow)
+    let _ = s.list.text(s.fonts, face, text, size, at, colour)
+}
+
+/// The HUD: the snacks found at the top left, the clock at the top right and under it how to
+/// pause; with F3 the readout under the snacks. Paused, the pause's card instead.
+fn hud(s: mut Lab, snap: Snap, screen: vec2) {
+    s.list.clear(screen)
+    let size = max(screen.y * 0.042, 14.0)
+    let small = size * 0.5
+    let pad = size * 0.7
+    let white = vec4(1.0, 0.98, 0.94, 1.0)
+    let gold = vec4(1.0, 0.78, 0.3, 1.0)
+    let soft = vec4(1.0, 0.98, 0.94, 0.75)
+    if snap.browsing == 1 {
+        runs_card(mut s, snap.course, screen)
+        return
+    }
+    if snap.paused == 1 {
+        card(mut s, snap, screen)
+        return
+    }
+    borrow c = course(snap.course)
+    if c.snacks.len() > 0 {
+        let found = (snap.snacks & c.every_snack()).count_ones()
+        let colour = if found == c.snacks.len() { gold } else { white }
+        // It pops as a found carrot arrives.
+        let pop = 1.0 + 0.3 * exp(-s.cast.arrived * 7.0)
+        let text = f"SNACKS {found}/{c.snacks.len()}"
+        say(mut s, Face::Sans, text.as_str(), size * pop, vec2(pad), colour)
+    }
+    let clock = seconds(if snap.finished > 0 { snap.finished } else { snap.ticks })
+    let time = if snap.finished > 0 { f"GOAL! {clock}" } else { take clock }
+    let width = s.fonts.font(Face::Mono).measure(time.as_str(), size)
+    say(
+        mut s,
+        Face::Mono,
+        time.as_str(),
+        size,
+        vec2(screen.x - pad - width, pad),
+        if snap.finished > 0 { gold } else { white },
+    )
+    if s.watching.is_some() {
+        watch_bar(mut s, screen)
+    } else {
+        let pause = "Esc  pause"
+        let pw = s.fonts.font(Face::Sans).measure(pause, small * 1.2)
+        say(
+            mut s,
+            Face::Sans,
+            pause,
+            small * 1.2,
+            vec2(screen.x - pad - pw, pad + size * 1.3),
+            soft,
+        )
+    }
+    if s.readout {
+        // The frame rate, the frame's time, and the size the scene is drawn at: native (the
+        // screen's own) or the render scale's.
+        let ms = s.frame_time * 1000.0
+        let fps = if s.frame_time > 0.0 { 1.0 / s.frame_time } else { 0.0 }
+        let at = if s.scale.value >= 1.0 { f"native" } else { f"{s.scale.value * 100.0:.0}%" }
+        let readout = f"{fps:.0} fps  {ms:.1} ms  {at} {s.width}x{s.height}"
+        say(mut s, Face::Mono, readout.as_str(), small, vec2(pad, pad + size * 1.3), soft)
+    }
+}
+
+/// The pause's card, on the page washed over: the course's name (or "Paused" once it's begun), the
+/// controls, and how to play on. A cream card with an ink border, as the book's.
+fn card(s: mut Lab, snap: Snap, screen: vec2) {
+    let size = max(screen.y * 0.03, 12.0)
+    let w = min(screen.x * 0.9, size * 32.0)
+    let h = size * 18.3
+    let at = vec2((screen.x - w) * 0.5, (screen.y - h) * 0.5)
+    s.list.rect(Rect::new(at.x - 3.0, at.y - 3.0, w + 6.0, h + 6.0), INKED, radius: size * 0.9)
+    s.list.rect(Rect::new(at.x, at.y, w, h), CARD, radius: size * 0.8)
+    let fresh = snap.ticks == 0 && snap.attempt == 0
+    let title = if !fresh {
+        "Paused"
+    } else if snap.course == LEVEL {
+        "The Capybara Wetlands"
+    } else { "The lab" }
+    let title_size = size * 1.6
+    let tw = s.fonts.font(Face::Sans).measure(title, title_size)
+    let _ = s.list.text(
+        s.fonts,
+        Face::Sans,
+        title,
+        title_size,
+        vec2(at.x + (w - tw) * 0.5, at.y + size * 1.1),
+        INKED,
+    )
+    var y = at.y + size * 4.2
+    let left = at.x + size * 1.6
+    let keys = left + size * 6.4
+    // The controls, a row each: what, and the keys for it.
+    let rows = [
+        "Run",
+        "Left and right arrows, or A and D",
+        "Jump",
+        "Space, again in the air to jump again",
+        "Slide",
+        "Down arrow or S while running",
+        "Swim",
+        "Space kicks, up and down swim, both in turn: dolphin kick",
+        "Restart",
+        "R",
+        "Pause",
+        "Esc or P",
+        "Runs",
+        "B: your best runs and the tool-assisted ones, to watch or race as a ghost",
+        "Controller",
+        "Stick, A to jump, Start to pause, Select to restart",
+    ]
+    for i in 0..8 {
+        let _ = s.list.text(s.fonts, Face::Sans, rows[i * 2], size, vec2(left, y), INKED)
+        let _ = s.list.text(
+            s.fonts,
+            Face::Sans,
+            rows[i * 2 + 1],
+            size * 0.85,
+            vec2(keys, y + size * 0.1),
+            SOFT,
+        )
+        y += size * 1.45
+    }
+    let go = if fresh { "Press Space to play" } else { "Press Space to play on" }
+    let gw = s.fonts.font(Face::Sans).measure(go, size * 1.1)
+    let _ = s.list.text(
+        s.fonts,
+        Face::Sans,
+        go,
+        size * 1.1,
+        vec2(at.x + (w - gw) * 0.5, at.y + h - size * 2.0),
+        INKED,
+    )
+}
+
+// ---- runs ----------------------------------------------------------------------------------------
+
+/// Keeps the attempt in `snap` once it reaches the goal, if it's among the player's best, and
+/// stores the runs.
+fn keep_finished(s: mut Lab, snap: Snap) {
+    let key = snap.course << 16 | (snap.attempt & 0xffff)
+    if snap.finished == 0 || key == s.kept {
+        return
+    }
+    s.kept = key
+    if let Some(r) = replay(snap, YOU) {
+        if verify(r) && s.runs.add(r.clone()) {
+            s.storing.unsaved = true
+            s.trail_of = 0
+        }
+    }
+}
+
+/// How long a load or a store of the runs that failed waits before it's made again (s).
+const RETRY: f32 = 2.0
+
+/// When the runs load and are stored: whether the stored ones have been read (or there were
+/// none), seconds until a request that failed is made again, and whether the runs changed since
+/// they were last stored.
+struct Storing: Copy {
+    read: bool = false,
+    retry: f32 = 0.0,
+    unsaved: bool = false,
+}
+
+impl Storing {
+    /// After a load: of the stored runs, or of nothing stored, they're `read`; a load that failed
+    /// otherwise is made again after `RETRY`.
+    fn loaded(mut self, read: bool) {
+        if read {
+            self.read = true
+        } else {
+            self.retry = RETRY
+        }
+    }
+
+    /// After a store: one that failed is made again after `RETRY`, of the runs as they are then.
+    fn stored(mut self, ok: bool) {
+        if !ok {
+            self.unsaved = true
+            self.retry = RETRY
+        }
+    }
+
+    /// `dt` seconds on, with a load or a store still waiting or not: whether to load the runs now,
+    /// and whether to store them now (they're then no longer unsaved). Never a store before the
+    /// stored runs are read: storing over runs that couldn't be read would lose them.
+    fn due(mut self, dt: f32, loading: bool, saving: bool) -> (bool, bool) {
+        self.retry = max(self.retry - dt, 0.0)
+        if self.retry > 0.0 {
+            return (false, false)
+        }
+        let stores = self.read && self.unsaved && !saving
+        if stores {
+            self.unsaved = false
+        }
+        (!self.read && !loading, stores)
+    }
+}
+
+/// Reads the stored runs once they load, `dt` seconds after the last frame, and stores them when
+/// they've changed, one store at a time, and only once the stored ones are read or are known to
+/// be none (`IoError::missing`). A load or a store that failed is made again (`Storing`).
+fn store_runs(s: mut Lab, dt: f32) {
+    var loaded = None
+    match mut s.loading {
+        Some(p) => loaded = p.poll(),
+        None => {},
+    }
+    if let Some(result) = loaded {
+        s.loading = None
+        match result {
+            Ok(b) => {
+                let mine = s.runs.clone()
+                s.runs = read(b.clone())
+                for r in mine.runs {
+                    let _ = s.runs.add(r.clone())
+                }
+                s.trail_of = 0
+                s.storing.loaded(read: true)
+            },
+            Err(e) => s.storing.loaded(read: e.missing()),
+        }
+    }
+    var stored = None
+    match mut s.saving {
+        Some(p) => stored = p.poll(),
+        None => {},
+    }
+    if let Some(result) = stored {
+        s.saving = None
+        s.storing.stored(ok: result.is_ok())
+    }
+    let (loads, stores) = s.storing.due(
+        dt,
+        loading: s.loading.is_some(),
+        saving: s.saving.is_some(),
+    )
+    if loads {
+        s.loading = Some(load(SAVED))
+    }
+    if stores {
+        s.saving = Some(store(SAVED, bytes(s.runs)))
+    }
+}
+
+/// The runs of course `c` that count for `category` on the board shown (the player's or the
+/// tool-assisted ones), fastest first.
+fn listed(s: Lab, c: u32, category: u32) -> Vec<Replay> {
+    if s.board == PLAYERS {
+        return s.runs.ranked(c, category)
+    }
+    assisted(s, c, category)
+}
+
+/// The tool-assisted runs of course `c` made for `category`, fastest first.
+fn assisted(s: Lab, c: u32, category: u32) -> Vec<Replay> {
+    var out: Vec<Replay> = Vec::new()
+    for r in s.assisted {
+        // Each searched run is for one category: a 100% run isn't listed again under any%.
+        let own = category == FULL || !counts(r, FULL)
+        if r.course == c && counts(r, category) && own {
+            out.push(r.clone())
+        }
+    }
+    out.sort_by(|a, b| a.ticks < b.ticks)
+    out
+}
+
+/// The ghost's run on course `c`: the player's best any% run, or the fastest any% run of the
+/// robot or of the human line.
+fn ghost_run(s: Lab, c: u32) -> Option<Replay> {
+    if s.ghost == BEST_GHOST {
+        let best = s.runs.ranked(c, ANY)
+        if best.len() > 0 {
+            return Some(best[0].clone())
+        }
+    } else if s.ghost == AUTOPILOT_GHOST || s.ghost == HUMAN_GHOST {
+        let who = if s.ghost == HUMAN_GHOST { HUMAN } else { AUTOPILOT }
+        for r in assisted(s, c, ANY) {
+            if r.who == who {
+                return Some(r.clone())
+            }
+        }
+    }
+    None
+}
+
+/// Who made a run, as the board and the watch name them.
+fn who_name(who: u32) -> Text {
+    if who == YOU {
+        "You"
+    } else if who == HUMAN { "Human line" } else { "Robot" }
+}
+
+/// The trail of the ghost's run on course `c`, worked out again when the course, the ghost or
+/// the player's runs change.
+fn follow_ghost(s: mut Lab, c: u32) {
+    let key = (c + 1) << 8 | s.ghost
+    if key == s.trail_of {
+        return
+    }
+    s.trail_of = key
+    s.trail = match ghost_run(s, c) {
+        Some(r) => trail(r),
+        None => Vec::new(),
+    }
+}
+
+/// The ghost's name, for the board.
+fn ghost_name(g: u32) -> Text {
+    if g == NO_GHOST {
+        "none"
+    } else if g == BEST_GHOST {
+        "your best"
+    } else if g == HUMAN_GHOST { "the human line" } else { "the robot" }
+}
+
+/// The runs card's size, for the screen: its rect and its text size.
+fn runs_frame(screen: vec2) -> (Rect, f32) {
+    let size = max(screen.y * 0.028, 12.0)
+    let w = min(screen.x * 0.92, size * 40.0)
+    let h = size * 22.5
+    (Rect::new((screen.x - w) * 0.5, (screen.y - h) * 0.5, w, h), size)
+}
+
+/// Where board `b`'s name is on the runs card, which a click chooses.
+fn board_rect(screen: vec2, b: u32) -> Rect {
+    let (r, size) = runs_frame(screen)
+    let w = size * 8.0
+    let x = r.x + r.w * 0.5 - w - size * 0.3 + f32(b) * (w + size * 0.6)
+    Rect::new(x, r.y + size * 3.0, w, size * 1.5)
+}
+
+/// Where row `i` of a category's list is on the runs card.
+fn row_rect(screen: vec2, category: u32, i: u32) -> Rect {
+    let (r, size) = runs_frame(screen)
+    let w = (r.w - size * 3.0) * 0.5
+    let x = r.x + size * 1.2 + f32(category) * (w + size * 0.6)
+    Rect::new(x, r.y + size * 7.2 + f32(i) * size * 1.6, w, size * 1.4)
+}
+
+/// Where the ghost's line is on the runs card.
+fn ghost_rect(screen: vec2) -> Rect {
+    let (r, size) = runs_frame(screen)
+    Rect::new(r.x + size * 1.2, r.y + r.h - size * 4.6, r.w - size * 2.4, size * 1.4)
+}
+
+/// A key or click while the runs are open (the sim leaves them to the frames): on the board, a
+/// click on a run watches it, T (or a click on a board's name) switches boards, and G (or a click
+/// on its line) changes the ghost; watching, Space
+/// pauses and plays, the arrows seek and change speed, R starts again, and Backspace goes back to
+/// the board.
+fn browse(s: mut Lab, e: Event, c: u32, screen: vec2) {
+    if let Event::PointerMove { at, .. } = e {
+        s.pointer = at
+    }
+    var watched = false
+    match mut s.watching {
+        Some(w) => {
+            watched = true
+            if let Event::KeyDown { key, repeat, .. } = e {
+                if key == Key::Space && !repeat {
+                    if !w.playing && w.tick >= w.end() {
+                        w.seek(0)
+                    }
+                    w.playing = !w.playing
+                } else if key == Key::Right {
+                    w.seek(w.tick + SEEK)
+                } else if key == Key::Left {
+                    w.seek(if w.tick > SEEK { w.tick - SEEK } else { 0 })
+                } else if key == Key::Up && !repeat {
+                    w.speed = min(w.speed + 1, SPEEDS.len() - 1)
+                } else if key == Key::Down && !repeat {
+                    w.speed = if w.speed > 0 { w.speed - 1 } else { 0 }
+                } else if key == Key::R && !repeat {
+                    w.seek(0)
+                    w.playing = true
+                }
+            }
+        },
+        None => {},
+    }
+    if watched {
+        if let Event::KeyDown { key, repeat, .. } = e {
+            if key == Key::Backspace && !repeat {
+                s.watching = None
+            }
+        }
+        return
+    }
+    match e {
+        Event::KeyDown { key, repeat, .. } => {
+            if key == Key::G && !repeat {
+                s.ghost = (s.ghost + 1) % GHOSTS
+            } else if key == Key::T && !repeat {
+                s.board = 1 - s.board
+            }
+        },
+        Event::PointerDown { at, .. } => {
+            s.pointer = at
+            if ghost_rect(screen).contains(at) {
+                s.ghost = (s.ghost + 1) % GHOSTS
+            }
+            for b in [PLAYERS, ASSISTED] {
+                if board_rect(screen, b).contains(at) {
+                    s.board = b
+                }
+            }
+            for category in [ANY, FULL] {
+                let runs = listed(s, c, category)
+                for i in 0..runs.len() {
+                    if row_rect(screen, category, i).contains(at) {
+                        s.watching = Some(watch(runs[i].clone()))
+                    }
+                }
+            }
+        },
+        _ => {},
+    }
+}
+
+/// The runs card, over the paused page: each category's runs, fastest first, who made each and its
+/// time; the ghost; and how to use them.
+fn runs_card(s: mut Lab, c: u32, screen: vec2) {
+    let (r, size) = runs_frame(screen)
+    let gold = vec4(0.62, 0.42, 0.08, 1.0)
+    let lit = vec4(0.94, 0.86, 0.66, 1.0)
+    s.list.rect(Rect::new(r.x - 3.0, r.y - 3.0, r.w + 6.0, r.h + 6.0), INKED, radius: size * 0.9)
+    s.list.rect(r, CARD, radius: size * 0.8)
+    let title = if c == LEVEL { "Runs: The Capybara Wetlands" } else { "Runs: the lab" }
+    let tw = s.fonts.font(Face::Sans).measure(title, size * 1.5)
+    let _ = s.list.text(
+        s.fonts,
+        Face::Sans,
+        title,
+        size * 1.5,
+        vec2(r.x + (r.w - tw) * 0.5, r.y + size),
+        INKED,
+    )
+    // The boards' names: the one shown filled in, the other lit under the pointer.
+    for b in [PLAYERS, ASSISTED] {
+        let tab = board_rect(screen, b)
+        let name = if b == PLAYERS { "Players" } else { "Tool-assisted" }
+        if b == s.board {
+            s.list.rect(tab, INKED, radius: size * 0.75)
+        } else if tab.contains(s.pointer) {
+            s.list.rect(tab, lit, radius: size * 0.75)
+        }
+        let nw = s.fonts.font(Face::Sans).measure(name, size)
+        let _ = s.list.text(
+            s.fonts,
+            Face::Sans,
+            name,
+            size,
+            vec2(tab.x + (tab.w - nw) * 0.5, tab.y + size * 0.25),
+            if b == s.board { CARD } else { INKED },
+        )
+    }
+    for category in [ANY, FULL] {
+        let head = row_rect(screen, category, 0)
+        let name = if category == ANY { "Any%" } else { "100%" }
+        let _ = s.list.text(
+            s.fonts,
+            Face::Sans,
+            name,
+            size * 1.1,
+            vec2(head.x, head.y - size * 2.0),
+            INKED,
+        )
+        let runs = listed(s, c, category)
+        if runs.len() == 0 {
+            let _ = s.list.text(
+                s.fonts,
+                Face::Sans,
+                if s.board == PLAYERS { "None yet: reach the goal" } else { "None" },
+                size * 0.9,
+                vec2(head.x, head.y),
+                SOFT,
+            )
+        }
+        for i in 0..runs.len() {
+            let row = row_rect(screen, category, i)
+            if row.contains(s.pointer) {
+                s.list.rect(row, lit, radius: size * 0.3)
+            }
+            borrow run = runs[i]
+            let who = who_name(run.who)
+            let colour = if i == 0 { gold } else { INKED }
+            let y = row.y + size * 0.2
+            let _ = s.list.text(
+                s.fonts,
+                Face::Mono,
+                f"{i + 1}".as_str(),
+                size,
+                vec2(row.x + size * 0.4, y),
+                SOFT,
+            )
+            let _ = s.list.text(s.fonts, Face::Sans, who, size, vec2(row.x + size * 1.8, y), colour)
+            let time = seconds(run.ticks)
+            let tw = s.fonts.font(Face::Mono).measure(time.as_str(), size)
+            let _ = s.list.text(
+                s.fonts,
+                Face::Mono,
+                time.as_str(),
+                size,
+                vec2(row.x + row.w - tw - size * 0.5, y),
+                colour,
+            )
+        }
+    }
+    let line = ghost_rect(screen)
+    if line.contains(s.pointer) {
+        s.list.rect(line, lit, radius: size * 0.3)
+    }
+    let ghost = f"Ghost: {ghost_name(s.ghost)}   (G to change)"
+    let _ = s.list.text(
+        s.fonts,
+        Face::Sans,
+        ghost.as_str(),
+        size,
+        vec2(line.x + size * 0.4, line.y + size * 0.2),
+        INKED,
+    )
+    let foot = "Click a run to watch it.   T switches boards.   Esc back"
+    let fw = s.fonts.font(Face::Sans).measure(foot, size * 0.9)
+    let _ = s.list.text(
+        s.fonts,
+        Face::Sans,
+        foot,
+        size * 0.9,
+        vec2(r.x + (r.w - fw) * 0.5, r.y + r.h - size * 2.0),
+        SOFT,
+    )
+}
+
+/// Watching: what's watched, and the keys, in a bar at the foot of the page.
+fn watch_bar(s: mut Lab, screen: vec2) {
+    let size = max(screen.y * 0.024, 11.0)
+    var label = f""
+    var keys = f""
+    match s.watching {
+        Some(w) => {
+            let who = who_name(w.replay.who)
+            let category = if counts(w.replay, FULL) { "100%" } else { "any%" }
+            label = f"Watching  {who}  {category}  {seconds(w.replay.ticks)}"
+            let state = if w.playing { "pause" } else { "play" }
+            keys = f"Space {state}   Left/Right 5 s   Up/Down speed {SPEEDS[w.speed]}x   R again   Backspace runs   Esc back"
+        },
+        None => return,
+    }
+    let lw = s.fonts.font(Face::Sans).measure(label.as_str(), size * 1.1)
+    let kw = s.fonts.font(Face::Sans).measure(keys.as_str(), size * 0.85)
+    let w = max(lw, kw) + size * 2.4
+    let at = vec2((screen.x - w) * 0.5, screen.y - size * 4.6)
+    s.list.rect(
+        Rect::new(at.x, at.y, w, size * 3.6),
+        vec4(0.98, 0.95, 0.88, 0.92),
+        radius: size * 0.6,
+    )
+    let _ = s.list.text(
+        s.fonts,
+        Face::Sans,
+        label.as_str(),
+        size * 1.1,
+        vec2(at.x + (w - lw) * 0.5, at.y + size * 0.5),
+        INKED,
+    )
+    let _ = s.list.text(
+        s.fonts,
+        Face::Sans,
+        keys.as_str(),
+        size * 0.85,
+        vec2(at.x + (w - kw) * 0.5, at.y + size * 2.1),
+        SOFT,
+    )
+}
+
+/// The capybara's middle (x, y, m), its speed (m/s) and its mode, as the newest snapshot has them,
+/// for `wrela trace --watch capybara`.
+pub fn capybara(s: mut Lab) -> vec4 {
+    let n = s.snaps.newest().snap
+    vec4(n.at, length(n.vel), f32(n.mode))
+}
+
+// ---- tests -------------------------------------------------------------------------------------
+
+/// Three seconds of the run script on the hardware GPU: the level draws, with its foes and things,
+/// and the sim, ticking in lockstep, plays it, from the pause it opens on (the script's Esc).
+@test(frames: 180, gpu: true, input: scripts::RUN)
+fn the_level_draws_and_its_sim_runs(s: Lab) {
+    let n = s.snaps.newest()
+    assert(n.ticks >= 358, "the ticker runs two ticks a frame")
+    assert(n.snap.course == LEVEL && n.snap.paused == 0, "the level, playing")
+    // Its clock is three ticks behind the ticks run: frame 0's two stood in the pause the game
+    // opens on, and the tick of the script's Esc (frame 1) left it without stepping.
+    assert(n.snap.ticks + 3 == n.ticks, "its clock running")
+    // The test's storage is empty: the stored runs are read as none, so new ones may be stored.
+    assert(
+        s.storing.read && s.loading.is_none() && s.runs.runs.len() == 0,
+        "nothing stored is no runs",
+    )
+}
+
+@test
+fn a_load_or_a_store_that_failed_is_made_again_after_a_wait() {
+    var st = Storing {}
+    assert(st.due(0.016, loading: true, saving: false) == (false, false), "the first load waits")
+    st.loaded(read: false)
+    assert(st.due(1.0, loading: false, saving: false) == (false, false), "a failed load waits")
+    assert(st.due(1.0, loading: false, saving: false) == (true, false), "then loads again")
+    // A run kept before the stored ones are read isn't stored over them.
+    st.unsaved = true
+    assert(st.due(0.016, loading: true, saving: false) == (false, false))
+    st.loaded(read: true)
+    assert(st.due(0.016, loading: false, saving: false) == (false, true), "stored once read")
+    assert(!st.unsaved)
+    // Another run kept while that store waits is stored after it, and a failed store again.
+    st.unsaved = true
+    assert(st.due(0.016, loading: false, saving: true) == (false, false), "one store at a time")
+    st.stored(ok: true)
+    assert(st.due(0.016, loading: false, saving: false) == (false, true), "the newer runs")
+    st.stored(ok: false)
+    assert(st.unsaved, "a failed store's runs are unsaved again")
+    assert(st.due(1.0, loading: false, saving: false) == (false, false), "and wait")
+    assert(st.due(1.0, loading: false, saving: false) == (false, true), "then are stored again")
+}
+
+use world::{present, world}
+
+@test
+fn a_frame_isnt_drawn_between_two_places_across_a_cut() {
+    // Thirty metres on, then back at the start: a frame halfway between draws the capybara at the
+    // start if a cut came between (a restart, a comeback), and halfway if none did.
+    let start = course(LEVEL).start
+    var a = present(world(LEVEL))
+    a.at = start + vec2(30.0, 0.0)
+    var b = present(world(LEVEL))
+    b.tally.cuts = 1
+    assert(mixed(a, b, 0.5).at == start, "across a cut")
+    b.tally.cuts = 0
+    assert(mixed(a, b, 0.5).at == start + vec2(15.0, 0.0), "without one")
+}

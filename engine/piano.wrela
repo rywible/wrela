@@ -16,8 +16,11 @@
 //   quiet, and whose blow is louder and brighter when it is faster: each partial's level comes
 //   from the model's table for its key, its velocity and its frequency;
 // - the blow's onset: the hammer stays on the string for 1 to 4 ms (longer in the bass, and
-//   for a softer blow), and the new sound swells in over that time; each partial reaches the
-//   listener at its own phase, as the board and the air between turn each differently;
+//   for a softer blow), and 40% of the new sound swells in over that time; the rest comes in
+//   over 4 to 25 ms (15 at middle C, shorter for higher notes), as it spreads over the board
+//   and comes back from the lid and the case (from 10% to 90% in 11 ms, the median of 16 notes
+//   from C2 to C6; the recorded piano's, 14 ms). Each partial reaches the listener at its own
+//   phase, as the board and the air between turn each differently;
 // - in the bass, "phantom" partials at the sums of two partials' frequencies, from the
 //   string's stretching, louder for a harder blow;
 // - dampers that stop a string when its key is up, unless the sustain pedal lifts them: off the
@@ -26,13 +29,29 @@
 // - with the pedal down, every string free to ring in sympathy with what is played;
 // - the soft pedal, which moves the hammers onto fewer strings: softer, darker, and more of
 //   the aftersound.
-// Then the strings' sound goes through a soundboard (broad resonances) and a room (a reverb),
-// across two channels: the low strings to the player's left, and each partial a little apart
-// from the others, as a pair of microphones over a soundboard hears them.
+// Then the strings' sound goes through a soundboard (broad resonances) and a room, across two
+// channels: the low strings to the player's left, and each partial a little apart from the
+// others, as a pair of microphones over a soundboard hears them.
+//
+// The board knocks too. A blow's force passes through the string to the bridge as a pulse, a
+// half sine over the hammer's contact, and rings the board's own modes (32, from 40 Hz to
+// 2.5 kHz), most of them below the string's partials, which the strings' sound can't ring. As
+// the strings' sound does, the knock comes in part at once and in part later, from the lid and
+// the case. A key let go knocks again, softly, as it and its hammer fall back. The knock is a
+// smooth pulse through resonators, never noise, so it adds no click (the audio tool's
+// `clicks`).
+//
+// The room is 16 delay lines, mixed by a Hadamard matrix (orthogonal, so it loses only what each
+// line's filter takes) and fed from each channel with signs that make the two channels' tails
+// differ. Each line's filter makes every mode fall 60 dB in `Model::room_time`, and the highs
+// faster. Each line's length sways slowly, by 6 samples, so no mode of the room rings on.
 //
 // The model's numbers are measured (engine::piano_grand: a recorded piano, fitted by `wrela
 // audio model`). Notes recorded one at a time, without the pedal, cannot show the dampers, the
-// sympathy, the soft pedal, the board or the room, so those are not measured.
+// sympathy, the soft pedal, the board's resonances or the room, so those are not measured. The
+// knock is, below a note's first partial, where nothing else sounds: beside its note, it is as
+// loud as the recording's knock beside its notes at C7, and up to 10 dB quieter at C5; and a
+// key's return is about as loud as the recording's.
 //
 // From `Model::physics_from` up, the piano reads the measured tables through the physics they
 // come from: there the recording's notes are short and the fits fail. So the decays follow a
@@ -41,9 +60,10 @@
 // measured tables are used as they are. A fit by the audio tool's `model` against renders of the
 // piano measures the top through these.
 //
-// There is no noise of the strike (a keybed's thump, a hammer's click): the strings' own attack
-// comes within 2.7 dB of the recorded piano's sharpness, and filtered noise added to close that
-// gap clicked (the audio tool's `clicks`).
+// There is no noise of the strike (a hammer's click): with the knock, a note's first 30 ms come
+// within 1.3 dB of the recorded piano's crest (their peak over their RMS, the median of 16 notes
+// from C2 to C6), and filtered noise once added to sharpen the attack clicked (the audio tool's
+// `clicks`).
 //
 // The resonators are kept four to a `vec4`, so the bank's arithmetic is SIMD (language.md §11).
 // Everything the audio thread does is f32 arithmetic in a fixed order, so both hosts give the
@@ -111,6 +131,12 @@ pub struct Model: Copy {
     pub contact_low: f32 = 4.0,
     pub contact_mid: f32 = 2.5,
     pub contact_high: f32 = 0.8,
+    /// A blow's sound reaches the listener over some ms, as it spreads over the board and comes
+    /// back from the lid and the case: the share of it heard by the end of the hammer's contact,
+    /// and the ms the rest takes to come in at middle C (a note at f₁, √(262 Hz / f₁) times it,
+    /// from 4 to 25 ms).
+    pub direct: f32 = 0.4,
+    pub bloom: f32 = 15.0,
     /// Phantom partials: their level beside the partial they're near, at the hardest blow (dB),
     /// and the first key without them.
     pub phantom_db: f32 = -24.0,
@@ -124,11 +150,20 @@ pub struct Model: Copy {
     pub sympathy: f32 = 0.02,
     /// How far apart the channels put the low and the high strings (0: none, 1: fully).
     pub width: f32 = 0.5,
-    /// The soundboard's share of the sound, and the room's.
+    /// The soundboard's share of the sound (its resonances' and its knock's), and the room's.
     pub board: f32 = 0.1,
     pub room: f32 = 0.18,
     /// Seconds the room takes to fall 60 dB.
     pub room_time: f32 = 1.6,
+    /// The board's knock: a blow's force pulse, which the string passes to the bridge, rings
+    /// the board's own modes, most of them below the string's partials. The pulse's area, in
+    /// the board's units, for each unit of the blow's sound in the strings (the root of its
+    /// partials' power); and the seconds the board's modes at 100 Hz take to fall 60 dB.
+    pub knock: f32 = 1000.0,
+    pub knock_time: f32 = 0.7,
+    /// A key let go knocks too, as it and its hammer fall back: the pulse's area, in the
+    /// board's units, for a key struck at full velocity (it grows as the velocity).
+    pub key_return: f32 = 1.8,
     /// The soft pedal fully down: how much softer (dB), how much darker at 12 kHz (dB), and
     /// how much more aftersound (dB).
     pub soft_db: f32 = -4.0,
@@ -413,10 +448,44 @@ struct Resonance: Copy {
     y2: f32,
 }
 
-/// The room's delay lines, their lengths in samples (primes), and their total.
-const LINES: u32 = 8
-const ROOM_LENGTHS: [u32; 8] = [1123, 1361, 1559, 1747, 1949, 2131, 2357, 2551]
-const ROOM_SAMPLES: u32 = 14778
+/// The room: 16 delay lines (four vec4s of four), each `ROOM_SPAN` samples of memory, their
+/// longest lengths in samples (primes, 4.8 to 42 ms), and how far each length sways either way
+/// round its mean, `ROOM_SWAY` under its longest.
+const ROOM_GROUPS: u32 = 4
+const ROOM_SPAN: u32 = 2048
+const ROOM_LENGTHS: [f32; 16] = [
+    229.0, 337.0, 449.0, 571.0, 683.0, 797.0, 919.0, 1031.0, 1153.0, 1279.0, 1399.0, 1523.0, 1657.0,
+    1777.0, 1879.0, 1997.0,
+]
+const ROOM_SWAY: f32 = 6.0
+/// Which way round each line takes its channel's sound (the even lines the left's, the odd the
+/// right's), and gives its sound to each channel: the two channels' patterns are orthogonal, so
+/// their tails differ.
+const ROOM_IN: [f32; 16] = [
+    1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, 1.0, -1.0, -1.0,
+]
+const ROOM_LEFT: [f32; 16] = [
+    1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0,
+]
+const ROOM_RIGHT: [f32; 16] = [
+    1.0, 1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0,
+]
+/// The room's highs: at the top of hearing they fall 60 dB in this share of `Model::room_time`.
+const ROOM_HIGHS: f32 = 0.25
+/// How much of its channel's sound each line takes, and how much of each line the channels
+/// hear: with `Model::room` at 0.18, the room is 12 dB under the strings over the Gymnopédie.
+const ROOM_FEED: f32 = 0.35
+const ROOM_OUT: f32 = 0.44
+
+/// The board's knock: 32 modes (eight vec4s), from 40 Hz to 2.5 kHz evenly in log frequency, and
+/// the ring of force pulses that drives them (by sample, a power of two).
+const KNOCK_GROUPS: u32 = 8
+const BLOWS: u32 = 4096
+/// A blow's knock comes back from the lid and the case about this many ms after it.
+const KNOCK_ECHOES: [f32; 3] = [5.0, 12.0, 22.0]
+/// A key let go knocks as it and its hammer fall back: 50 ms after, for 2 ms (in samples).
+const RETURN_AFTER: u32 = 2400
+const RETURN_SAMPLES: u32 = 96
 
 /// The soundboard's resonances: frequency (Hz) and Q. Broad, as a ribbed board's are; the
 /// measured levels already carry the recorded board's colour, so these only add body.
@@ -436,6 +505,8 @@ pub struct Piano {
     next: u32,
     sustain: Vec<Point>,
     soft: Vec<Point>,
+    /// The sustain pedal as a person holds it now (`hold_pedal`), over the performance's.
+    live_pedal: f32,
     sample: u32,
     // Each key: its resonators (`groups` vec4s from `first`), and its state.
     first: [u32; 88],
@@ -449,9 +520,11 @@ pub struct Piano {
     damp: [f32; 88],
     /// The quanta since a key's energy was last measured.
     quiet: [u32; 88],
-    /// A blow swelling in: its length in samples (0: none), and how far into it the key is.
+    /// A blow swelling in: its length in samples (0: none), how far into it the key is, and the
+    /// hammer's contact (samples), by whose end its direct share is in.
     swell: [u32; 88],
     swelled: [u32; 88],
+    contact: [u32; 88],
     // Each resonator, four to a vec4: its state, and the state of a blow still swelling in; its
     // rotation per sample (decay included), and the cosine and sine of its angle per sample;
     // its free decay per sample, and how much faster its damper makes it; its level (dB) when
@@ -493,10 +566,30 @@ pub struct Piano {
     sym_y1: [vec4; 44],
     sym_y2: [vec4; 44],
     board: [Resonance; 12],
-    lines: [f32; 14778],
-    line_at: [u32; 8],
-    line_low: [f32; 8],
-    room_gain: f32,
+    // The board's knock: its modes, y = a1 y₁ + a2 y₂ + g x, driven by the force pulses in
+    // `blows` (a ring by sample), and each mode's gain into each channel.
+    knock_a1: [vec4; 8],
+    knock_a2: [vec4; 8],
+    knock_g: [vec4; 8],
+    knock_y1: [vec4; 8],
+    knock_y2: [vec4; 8],
+    knock_left: [vec4; 8],
+    knock_right: [vec4; 8],
+    blows: [f32; 4096],
+    /// Each key's last blow's velocity.
+    struck: [f32; 88],
+    // The room: its lines (line i's samples from `i * ROOM_SPAN`), the sample being written,
+    // each line's darkened output and its filter (low = a y + b low), and each line's length
+    // (samples) at this quantum's start, its change per sample, and the phase of its sway.
+    room: [f32; 32768],
+    room_at: u32,
+    room_low: [vec4; 4],
+    room_a: [vec4; 4],
+    room_b: [vec4; 4],
+    room_delay: [f32; 16],
+    room_step: [f32; 16],
+    room_phase: [f32; 16],
+    room_rate: [f32; 16],
 }
 
 /// A piano with `model`, to play `performance`. Builds its tables, so call it on the program's
@@ -509,6 +602,7 @@ pub fn piano(model: Model, performance: Performance) -> Piano {
         events: events(performance),
         next: 0,
         sustain: points(performance.sustain),
+        live_pedal: 0.0,
         soft: points(performance.soft),
         sample: 0,
         first: [0; 88],
@@ -520,6 +614,7 @@ pub fn piano(model: Model, performance: Performance) -> Piano {
         quiet: [0; 88],
         swell: [0; 88],
         swelled: [0; 88],
+        contact: [0; 88],
         re: Vec::new(),
         im: Vec::new(),
         new_re: Vec::new(),
@@ -552,10 +647,24 @@ pub fn piano(model: Model, performance: Performance) -> Piano {
         sym_y1: [vec4(0.0); 44],
         sym_y2: [vec4(0.0); 44],
         board: [Resonance { a1: 0.0, a2: 0.0, gain: 0.0, y1: 0.0, y2: 0.0 }; 12],
-        lines: [0.0; 14778],
-        line_at: [0; 8],
-        line_low: [0.0; 8],
-        room_gain: 0.0,
+        knock_a1: [vec4(0.0); 8],
+        knock_a2: [vec4(0.0); 8],
+        knock_g: [vec4(0.0); 8],
+        knock_y1: [vec4(0.0); 8],
+        knock_y2: [vec4(0.0); 8],
+        knock_left: [vec4(0.0); 8],
+        knock_right: [vec4(0.0); 8],
+        blows: [0.0; 4096],
+        struck: [0.0; 88],
+        room: [0.0; 32768],
+        room_at: 0,
+        room_low: [vec4(0.0); 4],
+        room_a: [vec4(0.0); 4],
+        room_b: [vec4(0.0); 4],
+        room_delay: [0.0; 16],
+        room_step: [0.0; 16],
+        room_phase: [0.0; 16],
+        room_rate: [0.0; 16],
     }
     for k in 0..KEYS {
         p.build_key(k)
@@ -574,9 +683,39 @@ pub fn piano(model: Model, performance: Performance) -> Piano {
             y2: 0.0,
         }
     }
-    // The feedback that makes the room fall 60 dB in `room_time`, over a mean line.
-    let mean = f32(ROOM_SAMPLES) / f32(LINES) / RATE
-    p.room_gain = pow(10.0, -3.0 * mean / model.room_time)
+    for i in 0..4 * KNOCK_GROUPS {
+        let (g, lane) = (i / 4, i % 4)
+        let hz = 40.0 *
+            pow(2500.0 / 40.0, f32(i) / 31.0) *
+            (1.0 + 0.08 * (scatter(i, b: 0, c: 8) - 0.5))
+        // Lower modes ring longer: a mode at f, √(100 / f) times `knock_time`.
+        let r = exp(-decay_rate(clamp(model.knock_time * sqrt(100.0 / hz), 0.05, 1.0)))
+        let w = TAU * hz / RATE
+        p.knock_a1[g][lane] = 2.0 * r * cos(w)
+        p.knock_a2[g][lane] = -r * r
+        // Each mode's gain at its frequency is 1 (as the board's resonances'), and it's louder
+        // in one channel than the other, as the two microphones hear the board.
+        p.knock_g[g][lane] = (1.0 - r) * 2.0 * sin(w)
+        let side = if scatter(i, b: 0, c: 9) < 0.5 { 0.5 } else { -0.5 }
+        p.knock_left[g][lane] = 1.0 + side
+        p.knock_right[g][lane] = 1.0 - side
+    }
+    for i in 0..4 * ROOM_GROUPS {
+        let (g, lane) = (i / 4, i % 4)
+        // Each line's filter falls 60 dB in `room_time` at the lowest frequencies and in
+        // `ROOM_HIGHS` of it at the highest, over its mean length: low = a y + b low, its gain
+        // g₀ at 0 Hz and gπ at the top.
+        let length = ROOM_LENGTHS[i] - ROOM_SWAY
+        let g0 = pow(10.0, -3.0 * length / RATE / model.room_time)
+        let gp = pow(10.0, -3.0 * length / RATE / (model.room_time * ROOM_HIGHS))
+        let b = (g0 - gp) / (g0 + gp)
+        p.room_a[g][lane] = g0 * (1.0 - b)
+        p.room_b[g][lane] = b
+        // Each line's length sways slowly (0.15 to 0.6 Hz), so no mode of the room rings on.
+        p.room_rate[i] = TAU * (0.15 + 0.45 * scatter(i, b: 0, c: 10)) * 128.0 / RATE
+        p.room_phase[i] = TAU * scatter(i, b: 0, c: 11)
+    }
+    p.sway()
     p
 }
 
@@ -877,9 +1016,28 @@ impl Piano {
         self.swell[k] = 0
     }
 
-    /// Strikes key `k` at `velocity`.
+    /// A force pulse on the board from sample `at` of this quantum: a half sine over `length`
+    /// samples, of area `area`.
     @audio
-    fn strike(mut self, k: u32, velocity: f32) {
+    fn press(mut self, at: u32, length: u32, area: f32) {
+        // The half sine's samples sum to 1 / sin(π / 2n).
+        let height = area * sin(0.5 * PI / f32(length))
+        for t in 0..length {
+            let i = (self.sample + at + t) & (BLOWS - 1)
+            self.blows[i] += height * sin(PI * (f32(t) + 0.5) / f32(length))
+        }
+    }
+
+    /// Key `k` let go at sample `at` of this quantum: the key and its hammer fall back.
+    @audio
+    fn let_go(mut self, k: u32, at: u32) {
+        let area = self.model.key_return * self.struck[k]
+        self.press(at + RETURN_AFTER, RETURN_SAMPLES, area)
+    }
+
+    /// Strikes key `k` at `velocity`, at sample `at` of this quantum.
+    @audio
+    fn strike(mut self, k: u32, velocity: f32, at: u32) {
         if self.swell[k] > 0 {
             self.join(k)
         }
@@ -891,6 +1049,8 @@ impl Piano {
         let louder = soft * m.soft_db
         // Phantom partials grow as the blow does: 20 dB softer for a tenth of the velocity.
         let phantom_db = 20.0 * log(max(velocity, 0.05)) / log(10.0)
+        // The blow's sound in the strings, all partials together (the root of their power).
+        var power = vec4(0.0)
         for g in self.first[k]..self.first[k] + self.groups[k] {
             let lo = self.levels[g * MODEL_VELOCITIES + v]
             let hi = self.levels[g * MODEL_VELOCITIES + v + 1]
@@ -900,6 +1060,7 @@ impl Piano {
                 soft * (m.soft_dark_db * self.height[g] + m.soft_after_db * self.after[g]) +
                 phantom_db * self.phantom[g]
             let a = exp(db * to_amplitude) * self.share[g]
+            power += a * a
             self.new_re[g] = a * self.phase_c[g]
             self.new_im[g] = a * self.phase_s[g]
         }
@@ -910,8 +1071,22 @@ impl Piano {
         } else {
             m.contact_mid * pow(m.contact_high / m.contact_mid, f32(key - 60) / 48.0)
         }
-        self.swell[k] = max(u32(ms * (1.0 - 0.67 * clamp(velocity, 0.0, 1.0)) * RATE / 1000.0), 8)
+        let contact = max(u32(ms * (1.0 - 0.67 * clamp(velocity, 0.0, 1.0)) * RATE / 1000.0), 8)
+        let bloom = m.bloom * clamp(sqrt(261.6 / fundamental(m, key)), 0.27, 1.67)
+        self.contact[k] = contact
+        self.swell[k] = max(u32(bloom * RATE / 1000.0), contact)
         self.swelled[k] = 0
+        // The blow's force on the board, over the same contact, in step with the sound it gives
+        // the strings: its direct share at once, and the rest as it comes back from the lid and
+        // the case, at three times within 25 ms (a little apart for each key).
+        let area = m.knock * sqrt((power.x + power.y) + (power.z + power.w))
+        let (now, late) = (m.direct * area, (1.0 - m.direct) / 3.0 * area)
+        self.struck[k] = clamp(velocity, 0.0, 1.0)
+        self.press(at, contact, now)
+        for i in 0..3 {
+            let after = KNOCK_ECHOES[i] * (0.8 + 0.4 * scatter(key, i, 12)) * RATE / 1000.0
+            self.press(at + u32(after), contact, late)
+        }
         self.sounding[k] = true
         self.held[k] += 1
         self.quiet[k] = 0
@@ -939,13 +1114,20 @@ impl Piano {
             }
             let length = self.swell[k]
             if length > 0 {
-                // A blow swelling in: its new sound rises from nothing over `length` samples,
-                // as a raised cosine, beside the string's old sound.
+                // A blow swelling in, beside the string's old sound: its direct share rises from
+                // nothing over the hammer's contact, the rest over `length` samples, each as a
+                // raised cosine.
+                let contact = self.contact[k]
+                let direct = self.model.direct
                 for s in from..to {
                     let t = self.swelled[k] + (s - from)
-                    self.swelling[s] = if t < length {
+                    let first = if t < contact {
+                        0.5 - 0.5 * cos(PI * f32(t) / f32(contact))
+                    } else { 1.0 }
+                    let rest = if t < length {
                         0.5 - 0.5 * cos(PI * f32(t) / f32(length))
                     } else { 1.0 }
+                    self.swelling[s] = direct * first + (1.0 - direct) * rest
                 }
                 for g in self.first[k]..self.first[k] + self.groups[k] {
                     var re = self.re[g]
@@ -1050,7 +1232,7 @@ impl Piano {
         if abs(lifted - self.sym_lifted) > 0.001 {
             self.set_sympathy(lifted)
         }
-        borrow m = self.model
+        let (board_share, room, gain) = (self.model.board, self.model.room, self.model.gain)
         for s in 0..128 {
             let x = self.strings[s] * lifted
             var sum = vec4(0.0)
@@ -1072,37 +1254,97 @@ impl Piano {
                 self.board[i].y1 = y
                 board += y
             }
-            let l = left[s] + 0.5 * ringing + m.board * board
-            let rr = right[s] + 0.5 * ringing + m.board * board
-            // The room: eight delay lines, mixed by a Householder matrix, each darkened.
-            var outs = [0.0; 8]
-            var total = 0.0
-            var base = 0
-            for i in 0..LINES {
-                let at = self.line_at[i]
-                let y = self.lines[base + at]
-                self.line_low[i] = y + 0.3 * (self.line_low[i] - y)
-                outs[i] = self.line_low[i]
-                total += outs[i]
-                base += ROOM_LENGTHS[i]
+            // The board's knock: its modes, rung by the blows' force.
+            let slot = (self.sample + s) & (BLOWS - 1)
+            let force = self.blows[slot]
+            self.blows[slot] = 0.0
+            var knock_l = vec4(0.0)
+            var knock_r = vec4(0.0)
+            for g in 0..KNOCK_GROUPS {
+                let y = self.knock_a1[g] * self.knock_y1[g] +
+                    self.knock_a2[g] * self.knock_y2[g] +
+                    self.knock_g[g] * force
+                self.knock_y2[g] = self.knock_y1[g]
+                self.knock_y1[g] = y
+                knock_l = knock_l + y * self.knock_left[g]
+                knock_r = knock_r + y * self.knock_right[g]
             }
-            base = 0
-            var wet_l = 0.0
-            var wet_r = 0.0
-            for i in 0..LINES {
-                let len = ROOM_LENGTHS[i]
-                let at = self.line_at[i]
-                let mixed = outs[i] - 0.25 * total
-                let input = if i % 2 == 0 { l } else { rr }
-                self.lines[base + at] = self.room_gain * mixed + 0.35 * input
-                self.line_at[i] = if at + 1 == len { 0 } else { at + 1 }
-                if i % 2 == 0 { wet_l += outs[i] } else { wet_r += outs[i] }
-                base += len
-            }
-            left[s] = m.gain * (l + m.room * wet_l)
-            right[s] = m.gain * (rr + m.room * wet_r)
+            let kl = (knock_l.x + knock_l.y) + (knock_l.z + knock_l.w)
+            let kr = (knock_r.x + knock_r.y) + (knock_r.z + knock_r.w)
+            let l = left[s] + 0.5 * ringing + board_share * (board + kl)
+            let rr = right[s] + 0.5 * ringing + board_share * (board + kr)
+            let wet = self.reverberate(s, l, rr)
+            left[s] = gain * (l + room * wet.x)
+            right[s] = gain * (rr + room * wet.y)
             self.strings[s] = 0.0
         }
+        self.sway()
+    }
+
+    /// Each room line's length over the next quantum: it sways `ROOM_SWAY` samples either way
+    /// round its mean (`ROOM_SWAY` under its `ROOM_LENGTHS`), and moves evenly from sample to
+    /// sample.
+    @audio
+    fn sway(mut self) {
+        for i in 0..4 * ROOM_GROUPS {
+            let now = ROOM_LENGTHS[i] - ROOM_SWAY * (1.0 + sin(self.room_phase[i]))
+            var phase = self.room_phase[i] + self.room_rate[i]
+            if phase > TAU {
+                phase -= TAU
+            }
+            self.room_phase[i] = phase
+            let next = ROOM_LENGTHS[i] - ROOM_SWAY * (1.0 + sin(phase))
+            self.room_delay[i] = now
+            self.room_step[i] = (next - now) / 128.0
+        }
+    }
+
+    /// The room's sound at sample `s` of this quantum, for the two channels' sound `l` and `r`:
+    /// 16 delay lines, each darkened, mixed by a Hadamard matrix (orthogonal, so the room loses
+    /// only what the lines' filters take), with the channels' sound fed to each line and each
+    /// line heard in both channels, with signs that make the channels' tails differ.
+    @audio
+    fn reverberate(mut self, s: u32, l: f32, r: f32) -> vec2 {
+        let at = self.room_at
+        var y = [vec4(0.0); 4]
+        for i in 0..4 * ROOM_GROUPS {
+            let d = self.room_delay[i] + self.room_step[i] * f32(s)
+            let whole = u32(d)
+            let part = d - f32(whole)
+            let base = i * ROOM_SPAN
+            let a = self.room[base + ((at + ROOM_SPAN - whole) & (ROOM_SPAN - 1))]
+            let b = self.room[base + ((at + ROOM_SPAN - whole - 1) & (ROOM_SPAN - 1))]
+            y[i / 4][i % 4] = a + (b - a) * part
+        }
+        // Each line darkened; then mixed, four by four within each vec4 and across them.
+        var h = [vec4(0.0); 4]
+        var wet = vec2(0.0)
+        for g in 0..ROOM_GROUPS {
+            let low = self.room_a[g] * y[g] + self.room_b[g] * self.room_low[g]
+            self.room_low[g] = low
+            h[g] = vec4(
+                (low.x + low.y) + (low.z + low.w),
+                (low.x - low.y) + (low.z - low.w),
+                (low.x + low.y) - (low.z + low.w),
+                (low.x - low.y) - (low.z - low.w),
+            )
+            for lane in 0..4 {
+                let i = 4 * g + lane
+                wet += low[lane] * vec2(ROOM_LEFT[i], ROOM_RIGHT[i])
+            }
+        }
+        let mixed = [
+            0.25 * ((h[0] + h[1]) + (h[2] + h[3])),
+            0.25 * ((h[0] - h[1]) + (h[2] - h[3])),
+            0.25 * ((h[0] + h[1]) - (h[2] + h[3])),
+            0.25 * ((h[0] - h[1]) - (h[2] - h[3])),
+        ]
+        for i in 0..4 * ROOM_GROUPS {
+            let input = ROOM_IN[i] * (if i % 2 == 0 { l } else { r })
+            self.room[i * ROOM_SPAN + at] = mixed[i / 4][i % 4] + ROOM_FEED * input
+        }
+        self.room_at = (at + 1) & (ROOM_SPAN - 1)
+        ROOM_OUT * wet
     }
 }
 
@@ -1153,43 +1395,103 @@ pub fn play_piano(p: mut Piano, left: mut [f32], right: mut [f32]) {
         let e = p.events[p.next]
         p.next += 1
         if e.velocity > 0.0 {
-            p.strike(e.key, e.velocity)
+            p.strike(e.key, e.velocity, until)
         } else if p.held[e.key] > 0 {
             p.held[e.key] -= 1
+            if p.held[e.key] == 0 {
+                p.let_go(e.key, until)
+            }
         }
         from = until
     }
-    let pedal = depth_at(p.sustain, p.sample)
+    let pedal = max(depth_at(p.sustain, p.sample), p.live_pedal)
     p.settle(pedal)
     p.body(pedal, mut left, mut right)
     p.sample += 128
 }
 
-/// One note, `key` struck at `velocity` and held, no pedal.
-fn one_note(key: u32, velocity: f32) -> Performance {
-    let notes = Vec::from(
-        [perform::Played { key, voice: 0, onset: 0.0, release: 10.0, velocity, note: 0 }],
-    )
-    let none = Vec::from([PedalPoint { at: 0.0, depth: 0.0 }])
-    Performance { notes, sustain: none.clone(), soft: none, beats: Vec::from([0.0]), length: 10.0 }
+// ---- a person playing ---------------------------------------------------------------------------
+
+/// Strikes `key` (MIDI's number: 60 is middle C) at `velocity` (0 to 1), as a person plays it, at
+/// the start of the next quantum `play_piano` plays, over whatever the performance plays. A key
+/// off the keyboard does nothing. Call it on the audio thread, from the voice that plays `p`.
+@audio
+pub fn press(p: mut Piano, key: u32, velocity: f32) {
+    if key < LOWEST || key >= LOWEST + KEYS {
+        return
+    }
+    p.strike(key - LOWEST, clamp(velocity, 0.001, 1.0), 0)
 }
 
-/// The next `quanta` quanta of `p`'s voice: the energy of the channels' mean, and of its sample
-/// to sample differences (the highs).
-fn heard(p: mut Piano, quanta: u32) -> vec2 {
+/// Lets go of `key`, as a person does, at the start of the next quantum: its damper falls unless
+/// the pedal holds it, or the key is still down for another note.
+@audio
+pub fn release(p: mut Piano, key: u32) {
+    if key < LOWEST || key >= LOWEST + KEYS {
+        return
+    }
+    let k = key - LOWEST
+    if p.held[k] > 0 {
+        p.held[k] -= 1
+        if p.held[k] == 0 {
+            p.let_go(k, 0)
+        }
+    }
+}
+
+/// Holds the sustain pedal to `depth` (0 up, 1 down), as a person does, from the next quantum.
+@audio
+pub fn hold_pedal(p: mut Piano, depth: f32) {
+    p.live_pedal = clamp(depth, 0.0, 1.0)
+}
+
+/// One note, `key` struck at `velocity` and let go after `held` seconds, no pedal.
+fn one_note(key: u32, velocity: f32, held: f64) -> Performance {
+    let notes = Vec::from(
+        [perform::Played { key, voice: 0, onset: 0.0, release: held, velocity, note: 0 }],
+    )
+    let none = Vec::from([PedalPoint { at: 0.0, depth: 0.0 }])
+    Performance { notes, sustain: none.clone(), soft: none, beats: Vec::from([0.0]), length: held }
+}
+
+/// The first `quanta` quanta of a piano's voice, with `model`, playing `performance`: the
+/// channels' mean, sample by sample.
+fn played(model: Model, performance: Performance, quanta: u32) -> Vec<f32> {
+    var p = piano(model, performance)
     var l = [0.0; 128]
     var r = [0.0; 128]
-    var e = vec2(0.0)
-    var last = 0.0
+    var out: Vec<f32> = Vec::with_capacity(128 * quanta)
     for _ in 0..quanta {
         play_piano(mut p, mut l, mut r)
         for i in 0..128 {
-            let x = 0.5 * (l[i] + r[i])
-            e += vec2(x * x, (x - last) * (x - last))
-            last = x
+            out.push(0.5 * (l[i] + r[i]))
         }
     }
+    out
+}
+
+/// `a - b`, sample by sample.
+fn difference(a: [f32], b: [f32]) -> Vec<f32> {
+    var out: Vec<f32> = Vec::with_capacity(a.len())
+    for i in 0..a.len() {
+        out.push(a[i] - b[i])
+    }
+    out
+}
+
+/// The energy of `x` from sample `from` to `to`, and of its sample to sample differences (the
+/// highs).
+fn energy(x: [f32], from: u32, to: u32) -> vec2 {
+    var e = vec2(0.0)
+    for i in max(from, 1)..to {
+        e += vec2(x[i] * x[i], (x[i] - x[i - 1]) * (x[i] - x[i - 1]))
+    }
     e
+}
+
+/// `x` in decibels of power.
+fn db_of(x: f32) -> f32 {
+    10.0 * log(x) / log(10.0)
 }
 
 @test
@@ -1268,9 +1570,155 @@ fn a_hard_blow_keeps_its_overtones() {
 fn a_loud_high_note_mellows_as_it_rings() {
     // The fitted decays let a loud C6's overtones outlast its first partial: it thinned to a
     // whistle as it rang. Now its highs fall faster than it does.
-    var p = piano(piano_grand::GRAND, one_note(84, 0.95))
-    let start = heard(mut p, 38)
-    let _ = heard(mut p, 300)
-    let later = heard(mut p, 188)
+    let x = played(piano_grand::GRAND, one_note(84, 0.95, 10.0), 526)
+    let start = energy(x, from: 0, to: 38 * 128)
+    let later = energy(x, from: 338 * 128, to: 526 * 128)
     assert(later.y / later.x < start.y / start.x)
+}
+
+@test
+fn a_blow_knocks_the_board_smoothly() {
+    // The knock alone: a loud C6, dry, with it and without it.
+    let dry = Model { room: 0.0, ..piano_grand::GRAND }
+    let without = played(Model { knock: 0.0, ..dry }, one_note(84, 0.9, 10.0), 200)
+    let knock = difference(played(dry, one_note(84, 0.9, 10.0), 200), without)
+    // Over its first 0.1 s (4800 samples), well under its note.
+    let note = energy(without, from: 0, to: 4800)
+    let first = energy(knock, from: 0, to: 4800)
+    let under = db_of(note.x / first.x)
+    assert(under > 10.0 && under < 30.0, f"the knock is {under} dB under its note")
+    // Darker than its note, so it adds no click; and it dies away.
+    assert(first.y / first.x < 0.2 * note.y / note.x)
+    assert(db_of(first.x / energy(knock, from: 19200, to: 24000).x) > 15.0)
+}
+
+@test
+fn a_key_let_go_knocks_softly() {
+    // A C5 let go at 0.5 s, dry, with its return and without it.
+    let dry = Model { room: 0.0, ..piano_grand::GRAND }
+    let without = played(Model { key_return: 0.0, ..dry }, one_note(72, 0.8, 0.5), 300)
+    let knock = difference(played(dry, one_note(72, 0.8, 0.5), 300), without)
+    // Nothing before it's let go; after, a knock well under the note's first 0.1 s.
+    assert(energy(knock, from: 0, to: 24000).x == 0.0)
+    let note = energy(without, from: 0, to: 4800).x
+    let after = energy(knock, from: 24000, to: 38400).x
+    assert(after > 0.0 && db_of(note / after) > 30.0)
+}
+
+@test
+fn the_rooms_tail_is_dense_falls_evenly_and_differs_in_each_channel() {
+    // The room's answer to one sample, in both channels, over 1.2 s.
+    var p = piano(piano_grand::GRAND, one_note(60, 0.5, 1.0))
+    var l: Vec<f32> = Vec::new()
+    var r: Vec<f32> = Vec::new()
+    for q in 0..450 {
+        for s in 0..128 {
+            let x = if q == 0 && s == 0 { 1.0 } else { 0.0 }
+            let wet = p.reverberate(s, x, x)
+            l.push(wet.x)
+            r.push(wet.y)
+        }
+        p.sway()
+    }
+    // Every 0.1 s from 0.2 s falls about as the room's time says (60 dB in 1.6 s: 3.75 dB).
+    let window = 4800
+    var last = energy(l, from: 2 * window, to: 3 * window).x
+    for w in 3..11 {
+        let now = energy(l, from: w * window, to: (w + 1) * window).x
+        let fall = db_of(last / now)
+        assert(fall > 2.5 && fall < 6.0, f"at {w * 100} ms, the room falls {fall} dB")
+        last = now
+    }
+    // Dense from 80 ms: in each 20 ms, as many samples stand out from the window's RMS as in
+    // noise (Abel and Huang's echo density, 1 for noise), at least 0.7 of it.
+    for w in 0..46 {
+        let (from, to) = (3840 + w * 960, 3840 + (w + 1) * 960)
+        let rms = sqrt(energy(l, from, to).x / f32(to - from))
+        var out = 0
+        for i in from..to {
+            if abs(l[i]) > rms {
+                out += 1
+            }
+        }
+        let density = f32(out) / f32(to - from) / 0.3173
+        assert(density > 0.7, f"the room's echo density at {from} samples is {density}")
+    }
+    // The channels' tails differ: their correlation over 0.2 to 1 s.
+    var lr = 0.0
+    var ll = 0.0
+    var rr = 0.0
+    for i in 9600..48000 {
+        lr += l[i] * r[i]
+        ll += l[i] * l[i]
+        rr += r[i] * r[i]
+    }
+    assert(abs(lr / sqrt(ll * rr)) < 0.3)
+}
+
+@test
+fn a_blow_comes_in_over_the_board() {
+    // A C5's strings alone: 40% of its sound in by the end of the hammer's contact, all of it
+    // by 20 ms, as a recorded note's.
+    let x = played(
+        Model { knock: 0.0, board: 0.0, room: 0.0, ..piano_grand::GRAND },
+        one_note(72, 0.6, 1.0),
+        10,
+    )
+    let ms = 48
+    let early = energy(x, from: 0, to: 4 * ms).x
+    let full = energy(x, from: 16 * ms, to: 20 * ms).x
+    let later = energy(x, from: 20 * ms, to: 24 * ms).x
+    assert(
+        db_of(full / early) > 4.0,
+        f"the first 4 ms are {db_of(full / early)} dB under the full sound",
+    )
+    assert(db_of(full / later) < 1.0)
+}
+
+/// A performance of nothing, for a piano played live.
+fn nothing() -> Performance {
+    let none = Vec::from([PedalPoint { at: 0.0, depth: 0.0 }])
+    Performance {
+        notes: Vec::new(),
+        sustain: none.clone(),
+        soft: none,
+        beats: Vec::from([0.0]),
+        length: 0.0,
+    }
+}
+
+/// The energy of the next `quanta` quanta of `p`, both channels.
+fn loudness(p: mut Piano, quanta: u32) -> f32 {
+    var l = [0.0; 128]
+    var r = [0.0; 128]
+    var e = 0.0
+    for _ in 0..quanta {
+        play_piano(mut p, mut l, mut r)
+        for i in 0..128 {
+            e += l[i] * l[i] + r[i] * r[i]
+        }
+    }
+    e
+}
+
+@test
+fn a_key_a_person_presses_sounds_and_its_damper_stops_it_when_let_go() {
+    // A piano with nothing to play, played live: middle C pressed rings, and once let go its
+    // damper takes it down far faster than it rings held.
+    var held = piano(piano_grand::GRAND, nothing())
+    var let_go = piano(piano_grand::GRAND, nothing())
+    press(mut held, 60, 0.7)
+    press(mut let_go, 60, 0.7)
+    let start = loudness(mut held, 20)
+    let _ = loudness(mut let_go, 20)
+    assert(start > 1.0e-3, f"the key sounds: {start}")
+    release(mut let_go, 60)
+    // A second later.
+    let _ = loudness(mut held, 375)
+    let _ = loudness(mut let_go, 375)
+    let (h, l) = (loudness(mut held, 20), loudness(mut let_go, 20))
+    assert(l < h * 0.01, f"let go: {l}, held: {h}")
+    // Off the keyboard: nothing, and no trap.
+    press(mut held, 10, 0.5)
+    release(mut held, 120)
 }

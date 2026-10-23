@@ -1,0 +1,1169 @@
+// The proofs and the feel's metrics (design.md, "The agent loop"). A proof is a recorded run:
+// pads and how long each is held, from a course's start state. Each must keep reaching its goal
+// in exactly the ticks it took when it was recorded, so a change to the movement that breaks a
+// route, or moves its time, fails here; re-record a proof only when the change is meant. The
+// metrics measure the movement in metres and ticks, against the ranges the feel is held to. The
+// contract tests check the rules of design.md's contracts one at a time.
+
+use body::{Body, Mode, RADIUS, spawn}
+use course::LAB
+use feel::{FEEL, STEP}
+use pad::{DOWN, Hold, JUMP, LEFT, PRESS, Pad, RIGHT, UP, hold, pad_of}
+use std::hash::state_hash
+use std::io::print
+use course::course
+use world::{DYING, LEVEL, World, play, step, world}
+
+// ---- proofs ------------------------------------------------------------------------------------
+
+/// The lab from its start to its goal: over the crest, through the puddle (wet, so fast), both
+/// gaps and both steps, down the slide through the valley's puddle and off its lip, across the
+/// lake by dolphin kicks (up and down in rhythm, at 17 m/s), a swim up and out, and a double
+/// jump over its far wall. Recorded from an autopilot.
+pub const LAB_RUN: [Hold; 31] = [
+    hold(RIGHT, 466),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 45),
+    hold(RIGHT, 34),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 45),
+    hold(RIGHT, 52),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 45),
+    hold(RIGHT, 43),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 49),
+    hold(RIGHT, 64),
+    hold(RIGHT | DOWN, 153),
+    hold(RIGHT, 113),
+    hold(RIGHT | DOWN, 7),
+    hold(RIGHT | UP, 10),
+    hold(RIGHT | DOWN, 10),
+    hold(RIGHT | UP, 10),
+    hold(RIGHT | DOWN, 10),
+    hold(RIGHT | UP, 50),
+    hold(RIGHT | DOWN, 10),
+    hold(RIGHT | UP, 10),
+    hold(RIGHT | DOWN, 10),
+    hold(RIGHT | UP, 10),
+    hold(RIGHT | DOWN, 10),
+    hold(RIGHT | UP, 24),
+    hold(RIGHT, 9),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 39),
+    hold(RIGHT, 60),
+]
+
+/// Up through the 2 m one-way ledge from below, then a jump to the 3.5 m ledge.
+pub const LEDGES: [Hold; 9] = [
+    hold(RIGHT, 80),
+    hold(bits: 0, ticks: 30),
+    hold(JUMP | PRESS, 1),
+    hold(JUMP, 40),
+    hold(bits: 0, ticks: 20),
+    hold(RIGHT, 15),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 40),
+    hold(bits: 0, ticks: 60),
+]
+
+/// From the ground to the 3.5 m ledge with a double jump, out of reach of one jump.
+pub const DOUBLE_JUMP: [Hold; 7] = [
+    hold(RIGHT, 145),
+    hold(bits: 0, ticks: 30),
+    hold(JUMP | PRESS, 1),
+    hold(JUMP, 15),
+    hold(JUMP | PRESS, 1),
+    hold(JUMP, 40),
+    hold(bits: 0, ticks: 60),
+]
+
+@test
+fn the_lab_is_finished_by_its_recorded_run_in_its_recorded_time() {
+    let w = play(0, LAB_RUN)
+    print(f"the lab: {w.finished} ticks")
+    assert(w.finished == 1384 && w.deaths == 0, "the run's time moved")
+}
+
+/// Whether `run` ends standing on the 3.5 m ledge.
+fn on_high_ledge(run: [Hold]) -> bool {
+    let w = play(0, run)
+    w.body.grounded() &&
+        abs(w.body.at.y - (3.5 + RADIUS)) < 1.0e-4 &&
+        w.body.at.x > 11.0 &&
+        w.body.at.x < 14.0
+}
+
+@test
+fn the_one_way_ledge_is_jumped_through_and_the_higher_one_reached() {
+    assert(on_high_ledge(LEDGES))
+}
+
+@test
+fn a_double_jump_reaches_the_ledge_one_jump_cant() {
+    assert(3.5 > FEEL.launch * FEEL.launch / (2.0 * FEEL.rise), "one jump falls short")
+    assert(on_high_ledge(DOUBLE_JUMP))
+}
+
+@test
+fn a_run_replays_to_the_same_state_hash() {
+    let a = play(0, LAB_RUN)
+    let b = play(0, LAB_RUN)
+    assert(state_hash(a) == state_hash(b) && a == b)
+}
+
+// ---- the level ------------------------------------------------------------------------------
+
+/// The first level from start to goal (any%): the gates, the big slide's slide-jump, the lake by
+/// dolphin kicks, the gauntlet, without a death. Recorded from an autopilot that reacts to the
+/// foes; its fixed pads are the proof that the level can be finished.
+pub const LEVEL_ANY: [Hold; 67] = [
+    hold(RIGHT, 164),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 46),
+    hold(RIGHT, 135),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 43),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 39),
+    hold(RIGHT, 244),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 46),
+    hold(RIGHT, 57),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 43),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 39),
+    hold(RIGHT, 103),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 46),
+    hold(RIGHT, 21),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 46),
+    hold(RIGHT, 125),
+    hold(RIGHT | DOWN, 236),
+    hold(RIGHT | DOWN | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 55),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 39),
+    hold(RIGHT, 53),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 46),
+    hold(RIGHT, 118),
+    hold(RIGHT | DOWN, 9),
+    hold(RIGHT | UP, 6),
+    hold(RIGHT | DOWN, 10),
+    hold(RIGHT | UP, 50),
+    hold(RIGHT | DOWN, 10),
+    hold(RIGHT | UP, 8),
+    hold(RIGHT | DOWN, 52),
+    hold(RIGHT | UP, 10),
+    hold(RIGHT | DOWN, 4),
+    hold(RIGHT | UP, 37),
+    hold(RIGHT | DOWN, 9),
+    hold(RIGHT | UP, 10),
+    hold(RIGHT | DOWN, 31),
+    hold(RIGHT | UP, 40),
+    hold(RIGHT, 19),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 53),
+    hold(RIGHT, 125),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 43),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 39),
+    hold(RIGHT, 50),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 43),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 39),
+    hold(RIGHT, 88),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 43),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 145),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 39),
+    hold(RIGHT, 635),
+]
+
+/// The first level with every snack (100%): onto the ledge by a double jump, off the second pit's
+/// edge and out, a double jump at the top of the slide-jump's arc, down to the lake's floor under
+/// the caiman, and a jump and double jump high off the last mesa; without a death.
+pub const LEVEL_FULL: [Hold; 147] = [
+    hold(RIGHT, 97),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 43),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 39),
+    hold(RIGHT, 164),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 43),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 39),
+    hold(RIGHT, 244),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 46),
+    hold(RIGHT, 96),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 39),
+    hold(RIGHT, 108),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 46),
+    hold(RIGHT, 21),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 46),
+    hold(RIGHT, 125),
+    hold(RIGHT | DOWN, 236),
+    hold(RIGHT | DOWN | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 55),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 39),
+    hold(RIGHT, 53),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 46),
+    hold(RIGHT, 118),
+    hold(RIGHT | DOWN, 9),
+    hold(RIGHT | UP, 7),
+    hold(RIGHT | DOWN, 10),
+    hold(RIGHT | UP, 50),
+    hold(RIGHT | DOWN, 10),
+    hold(RIGHT | UP, 9),
+    hold(RIGHT | DOWN, 51),
+    hold(RIGHT | UP, 5),
+    hold(LEFT | DOWN, 23),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT | DOWN, 1),
+    hold(LEFT | DOWN, 1),
+    hold(RIGHT, 80),
+    hold(RIGHT | UP, 57),
+    hold(RIGHT, 1),
+    hold(RIGHT | UP, 75),
+    hold(RIGHT, 26),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 39),
+    hold(RIGHT, 145),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 43),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 39),
+    hold(RIGHT, 68),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 39),
+    hold(RIGHT, 104),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 43),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 144),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 39),
+    hold(RIGHT, 28),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 44),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 54),
+    hold(RIGHT, 445),
+]
+
+@test
+fn the_level_is_finished_without_a_death_and_with_every_snack() {
+    borrow c = course(LEVEL)
+    let any = play(LEVEL, LEVEL_ANY)
+    let all = play(LEVEL, LEVEL_FULL)
+    print(f"the level: any% {any.finished} ticks, 100% {all.finished} ticks")
+    assert(any.finished == 3410 && any.deaths == 0, "the any% run's time moved")
+    assert(all.finished == 3528 && all.deaths == 0, "the 100% run's time moved")
+    assert(all.snacks == c.every_snack(), "every snack")
+    assert(any.checkpoint == c.checkpoints.len() && all.checkpoint == c.checkpoints.len())
+}
+
+/// The big pit the slow way, for a player who doesn't slide: from the first checkpoint, walking
+/// down the ramp, braking, off the lip onto the first stone, and a jump and a double jump to the
+/// landing.
+pub const SLOW_PIT: [Hold; 107] = [
+    hold(RIGHT, 79),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 45),
+    hold(RIGHT, 21),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 45),
+    hold(RIGHT, 481),
+    hold(bits: 0, ticks: 16),
+    hold(RIGHT, 1),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 1),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 2),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 1),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 2),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 2),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 1),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 2),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 1),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 2),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 1),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 2),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 1),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 2),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 1),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 2),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 1),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 2),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 1),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 2),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 1),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 2),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 1),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 2),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 1),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 2),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 1),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 2),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 2),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 1),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 2),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 2),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 1),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 2),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 2),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 1),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 2),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 2),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 1),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 2),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 2),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 2),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 2),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 1),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 2),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 2),
+    hold(bits: 0, ticks: 1),
+    hold(RIGHT, 39),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 45),
+    hold(RIGHT, 16),
+    hold(RIGHT | JUMP | PRESS, 1),
+    hold(RIGHT | JUMP, 39),
+    hold(RIGHT, 320),
+]
+
+@test
+fn the_big_pit_can_be_crossed_without_sliding() {
+    borrow c = course(LEVEL)
+    var w = world(LEVEL)
+    w.checkpoint = 1
+    w.body = spawn(c.checkpoints[0] + vec2(0.0, RADIUS))
+    var slid = false
+    for h in SLOW_PIT {
+        for i in 0..h.ticks {
+            step(mut w, pad_of(h, i))
+            slid = slid || w.body.mode == Mode::Slide
+        }
+    }
+    assert(w.checkpoint == 2 && w.deaths == 0 && !slid, "to the second checkpoint, never sliding")
+}
+
+/// From the deck before the big slide at the top speed: slide (down held) from the ramp's top, let
+/// go of down at `release` (m), press jump at `press` (m; past 128 is after the lip), hold it, then
+/// double jump at the arc's top. Whether it cleared the pit, and whether it got the carrot.
+fn slide_jump(release: f32, press: f32) -> (bool, bool) {
+    var w = world(LEVEL)
+    w.checkpoint = 1
+    w.body = spawn(vec2(92.0, 3.0 + RADIUS))
+    w.body.speed = FEEL.speed
+    var pressed = false
+    var doubled = false
+    for _ in 0..600 {
+        let x = w.body.at.x
+        var bits = RIGHT
+        if x > 95.5 && x < release {
+            bits = bits | DOWN
+        }
+        if pressed {
+            bits = bits | JUMP
+            if !doubled && w.body.mode == Mode::Air && w.body.vel.y < 0.5 {
+                bits = bits | PRESS
+                doubled = true
+            }
+        } else if x >= press {
+            bits = bits | JUMP | PRESS
+            pressed = true
+        }
+        step(mut w, Pad { bits })
+        if w.deaths > 0 || x > 142.0 {
+            break
+        }
+    }
+    (w.deaths == 0 && w.body.at.x > 140.0, w.snacks & (1 << 2) != 0)
+}
+
+@test
+fn the_slide_jumps_carrot_is_reached_from_the_ramps_last_two_metres_down_held_or_not() {
+    // Ryan couldn't get it (2026-10-21): letting go of down to press jump, or pressing at the lip,
+    // lost the ramp's rise. Pressed anywhere from 126 m to just past the lip, down held to the
+    // jump or let go up to 2 m before it, the slide-jump and a double jump reach the carrot.
+    for press in [126.0, 127.0, 127.9, 128.4] {
+        assert(slide_jump(release: 200.0, press: press) == (true, true), "down held")
+        assert(slide_jump(release: press - 2.0, press: press) == (true, true), "down let go")
+    }
+    // Earlier on the ramp it still clears the pit, lower.
+    let (cleared, _) = slide_jump(release: 200.0, press: 122.0)
+    assert(cleared)
+}
+
+/// A world on the level with the capybara at `at`, moving at `vel`, in the air.
+fn aloft(at: vec2, vel: vec2) -> World {
+    var w = world(LEVEL)
+    w.body = spawn(at)
+    w.body.mode = Mode::Air
+    w.body.vel = vel
+    w
+}
+
+@test
+fn stomping_a_goose_knocks_it_out_bounces_and_gives_the_double_jump_back() {
+    // The first goose starts at (20, 0.45): fall onto its back, its double jump spent.
+    var w = aloft(vec2(19.95, 1.27), vec2(0.0, -6.0))
+    w.body.jumps = 0
+    step(mut w, Pad { bits: JUMP })
+    assert(!w.foes[0].alive && w.deaths == 0, "knocked out")
+    assert(
+        w.body.vel.y > FEEL.launch - 1.0 && w.body.jumps == FEEL.air_jumps,
+        "a bounce, as a jump",
+    )
+    var tap = aloft(vec2(19.95, 1.27), vec2(0.0, -6.0))
+    step(mut tap, Pad { bits: 0 })
+    assert(abs(tap.body.vel.y - FEEL.stomp) < 1.0e-3, "lower without jump held")
+}
+
+@test
+fn sliding_into_a_goose_bowls_it_over_and_running_into_one_sends_you_back() {
+    var slide = world(LEVEL)
+    slide.body = spawn(vec2(18.5, RADIUS))
+    slide.body.mode = Mode::Slide
+    slide.body.speed = 9.0
+    for _ in 0..30 {
+        step(mut slide, Pad { bits: DOWN })
+    }
+    assert(!slide.foes[0].alive && slide.deaths == 0, "bowled over")
+    var run = world(LEVEL)
+    run.body = spawn(vec2(18.5, RADIUS))
+    run.body.speed = 9.0
+    for _ in 0..30 + DYING {
+        step(mut run, Pad { bits: RIGHT })
+    }
+    assert(
+        run.deaths == 1 && run.foes[0].alive && run.grace > 0,
+        "back to the start, the goose too",
+    )
+    assert(run.body.at.x < 4.0)
+}
+
+@test
+fn a_yuzu_takes_one_hit_and_the_next_sends_you_back() {
+    var w = world(LEVEL)
+    w.yuzu = true
+    w.body = spawn(vec2(18.5, RADIUS))
+    w.body.speed = 9.0
+    step(mut w, Pad { bits: RIGHT })
+    for _ in 0..10 {
+        step(mut w, Pad { bits: RIGHT })
+    }
+    assert(!w.yuzu && w.deaths == 0 && w.grace > 0, "the yuzu took it")
+    // Once the grace is over, the next hit counts.
+    w.grace = 0
+    w.foes[0].at = w.body.at + vec2(0.3, 0.1)
+    step(mut w, Pad { bits: 0 })
+    assert(w.deaths == 1)
+}
+
+@test
+fn a_checkpoint_reached_is_where_a_fall_comes_back_to() {
+    borrow c = course(LEVEL)
+    var w = world(LEVEL)
+    // At the first checkpoint's flag, then over the edge of the steps into nothing.
+    w.body = spawn(c.checkpoints[0] + vec2(0.0, RADIUS))
+    step(mut w, Pad { bits: 0 })
+    assert(w.checkpoint == 1)
+    w.body = spawn(vec2(130.0, -10.0))
+    w.body.mode = Mode::Air
+    for _ in 0..60 {
+        step(mut w, Pad { bits: 0 })
+    }
+    // Fallen out, it stays where it fell for a while, then comes back to the flag.
+    assert(w.deaths == 1 && w.dying > 0 && w.fell && w.body.at.y < c.floor, "dying where it fell")
+    for _ in 0..DYING {
+        step(mut w, Pad { bits: 0 })
+    }
+    assert(w.dying == 0 && distance(w.body.at, c.checkpoints[0] + vec2(0.0, RADIUS)) < 0.5)
+}
+
+@test
+fn a_caimans_snout_bounces_and_its_side_hurts() {
+    // The first caiman starts at (180, -5), 2 m long: onto its back from above, then into its side.
+    var w = world(LEVEL)
+    w.body = spawn(vec2(180.0, -4.4))
+    w.body.mode = Mode::Swim
+    w.body.vel = vec2(0.0, -4.0)
+    step(mut w, Pad { bits: 0 })
+    assert(w.deaths == 0 && w.foes[5].alive && w.body.vel.y > 0.0, "a bounce off its back")
+    var side = world(LEVEL)
+    side.body = spawn(vec2(178.4, -5.0))
+    side.body.mode = Mode::Swim
+    side.body.vel = vec2(6.0, 0.0)
+    for _ in 0..10 {
+        step(mut side, Pad { bits: RIGHT })
+    }
+    assert(side.deaths == 1, "its side hurts")
+}
+
+// ---- contracts ---------------------------------------------------------------------------------
+
+/// The lab's broad crest: the arc that rounds the corner at (23, 3).
+fn crest() -> u32 {
+    for i in 0..LAB.pieces.len() {
+        let p = LAB.pieces[i]
+        if p.convex() && p.a.x > 20.0 && p.b.x < 26.0 {
+            return i
+        }
+    }
+    panic("the lab has no crest")
+}
+
+/// A body sliding at `speed` over the top of the crest.
+fn on_crest(speed: f32) -> Body {
+    let i = crest()
+    let p = LAB.pieces[i]
+    var b = spawn(p.centre + vec2(0.0, p.radius + RADIUS))
+    b.mode = Mode::Slide
+    b.speed = speed
+    b.piece = i
+    b
+}
+
+@test
+fn a_crest_is_followed_below_its_launch_speed_and_left_above_it() {
+    let p = LAB.pieces[crest()]
+    // At the top the slope is 0: it leaves when v² / (r + R) > g.
+    let launch = sqrt(FEEL.fall * (p.radius + RADIUS))
+    for k in [0.5, 0.9, 0.98] {
+        var b = on_crest(launch * k)
+        body::step(mut b, Pad { bits: DOWN }, LAB, FEEL)
+        assert(b.grounded(), "below the launch speed it follows the crest")
+    }
+    for k in [1.02, 1.1, 1.5] {
+        var b = on_crest(launch * k)
+        body::step(mut b, Pad { bits: DOWN }, LAB, FEEL)
+        assert(b.mode == Mode::Air, "above, it leaves along the tangent")
+    }
+}
+
+@test
+fn walking_off_a_sharp_edge_leaves_at_the_edge_and_falls() {
+    var w = world(0)
+    w.body = spawn(vec2(35.6, RADIUS))
+    var left = 0.0
+    var lowest = RADIUS
+    for _ in 0..50 {
+        step(mut w, Pad { bits: RIGHT })
+        if w.body.mode == Mode::Air && left == 0.0 {
+            left = w.body.at.x
+        }
+        lowest = min(lowest, w.body.at.y)
+    }
+    assert(left >= 36.0 && left < 36.0 + 0.05, "it leaves where its middle passes the edge")
+    assert(lowest < -1.0 && w.deaths == 0, "and rolls off the corner into the pit")
+}
+
+/// The lab's 29° slope, at x 74: its point, tangent (down to the right) and normal.
+fn slope() -> (vec2, vec2, vec2) {
+    let t = normalize(vec2(9.0, -5.0))
+    let point = vec2(74.0, 3.0 - 4.0 * 5.0 / 9.0)
+    (point, t, vec2(-t.y, t.x))
+}
+
+@test
+fn a_landing_keeps_the_velocitys_part_along_the_ground() {
+    let (point, t, n) = slope()
+    let f = FEEL
+    for angle in [15.0, 30.0, 45.0, 60.0, 75.0, 90.0] {
+        let a = angle * std::math::PI / 180.0
+        let v = (t * cos(a) - n * sin(a)) * 12.0
+        var b = spawn(point + n * (RADIUS + 0.001))
+        b.mode = Mode::Air
+        b.vel = v
+        body::step(mut b, Pad { bits: DOWN }, LAB, f)
+        // Gravity acts for the tick before the body moves.
+        let expected = dot(v - vec2(0.0, f.fall * STEP), t)
+        assert(b.grounded(), "it lands")
+        assert(abs(b.speed - expected) < 1.0e-3, "the speed is the velocity along the tangent")
+        assert(b.mode == Mode::Slide, "down held on a slope slides")
+    }
+}
+
+@test
+fn a_jump_out_of_a_slide_keeps_the_slides_speed() {
+    let (point, t, n) = slope()
+    var b = spawn(point + n * RADIUS)
+    b.mode = Mode::Slide
+    b.speed = 15.0
+    body::step(mut b, Pad { bits: DOWN | JUMP | PRESS }, LAB, FEEL)
+    assert(b.mode == Mode::Air)
+    assert(abs(b.vel.x - t.x * 15.0) < 1.0e-3, "the slide's speed carries into the jump")
+    // All of it: down the slope, the jump starts lower than a running one.
+    // Its first tick rises on the fall's gravity, as a jump's first ticks do (`Feel::hop`).
+    assert(abs(b.vel.y - (t.y * 15.0 + FEEL.launch - FEEL.fall * STEP)) < 1.0e-3)
+}
+
+/// How high a running jump at the top speed rises above where it left the ground, from the body
+/// at `at` on the ground there, its jump held.
+fn running_jump(at: vec2) -> f32 {
+    var w = world(0)
+    w.body = spawn(at)
+    w.body.speed = FEEL.speed
+    step(mut w, Pad { bits: RIGHT })
+    let from = w.body.at.y
+    step(mut w, Pad { bits: RIGHT | JUMP | PRESS })
+    var top = from
+    for _ in 0..60 {
+        step(mut w, Pad { bits: RIGHT | JUMP })
+        top = max(top, w.body.at.y)
+    }
+    top - from
+}
+
+@test
+fn a_running_jump_is_as_high_up_a_slope_as_on_the_flat() {
+    // On the runway, and on the crest's 31° upslope: the slope's speed doesn't lift a running
+    // jump (Ryan, 2026-10-21: jumps there came out higher and read as random).
+    let flat = running_jump(vec2(2.0, RADIUS))
+    let up = vec2(5.0, 3.0) / length(vec2(5.0, 3.0))
+    let on_slope = vec2(18.0, 0.0) + up * 2.5 + vec2(-up.y, up.x) * RADIUS
+    let sloped = running_jump(on_slope)
+    assert(abs(flat - sloped) < 0.05, "the same height")
+}
+
+/// A body swimming in the lab's pool at `at`, moving at `vel`.
+fn in_pool(at: vec2, vel: vec2) -> Body {
+    var b = spawn(at)
+    b.mode = Mode::Swim
+    b.vel = vel
+    b
+}
+
+@test
+fn in_water_the_capybara_is_faster_and_a_puddle_wets_it_for_a_while() {
+    var swim = in_pool(vec2(104.0, -2.0), vec2(0.0))
+    for _ in 0..60 {
+        body::step(mut swim, Pad { bits: RIGHT }, LAB, FEEL)
+    }
+    assert(abs(swim.vel.x - FEEL.wet_speed) < 1.0e-3, "the wet speed in the pool")
+    // Through the puddle after the crest at the dry top speed: wet, it speeds up past it.
+    var w = world(0)
+    w.body = spawn(vec2(27.0, RADIUS))
+    w.body.speed = FEEL.speed
+    var fastest = 0.0
+    var soaked = false
+    while w.body.at.x < 34.4 {
+        step(mut w, Pad { bits: RIGHT })
+        fastest = max(fastest, w.body.speed)
+        soaked = soaked || w.body.wet == FEEL.wet_ticks
+    }
+    assert(soaked && fastest > FEEL.speed + 2.0, "wet in the puddle, and faster")
+    // Out of the water, the boost lasts half the wet time, then eases back to the dry speed, and
+    // the speed follows it down without a jolt: on the runway, wet, at the wet speed.
+    var dry = world(0)
+    dry.body = spawn(vec2(1.0, RADIUS))
+    dry.body.wet = FEEL.wet_ticks
+    dry.body.speed = FEEL.wet_speed
+    for i in 0..FEEL.wet_ticks {
+        let before = dry.body.speed
+        step(mut dry, Pad { bits: RIGHT })
+        if i < FEEL.wet_ticks / 2 - 1 {
+            assert(abs(body::top(dry.body, FEEL) - FEEL.wet_speed) < 1.0e-3, "still the wet speed")
+        }
+        assert(before - dry.body.speed <= FEEL.over * STEP + 1.0e-4, "no jolt")
+    }
+    assert(dry.body.wet == 0 && abs(dry.body.speed - FEEL.speed) < 0.1, "dry again")
+}
+
+@test
+fn a_jump_press_in_water_kicks_and_a_press_too_soon_waits_its_turn() {
+    var b = in_pool(vec2(108.0, -3.0), vec2(0.0, -2.0))
+    body::step(mut b, Pad { bits: JUMP | PRESS }, LAB, FEEL)
+    assert(b.vel.y > FEEL.kick - 1.0 && b.cooldown == FEEL.kick_cooldown, "a kick")
+    body::step(mut b, Pad { bits: JUMP | PRESS }, LAB, FEEL)
+    assert(b.cooldown == FEEL.kick_cooldown - 1 && b.buffer > 0, "too soon: it waits")
+    var kicked = 0
+    for i in 0..FEEL.kick_cooldown {
+        body::step(mut b, Pad { bits: JUMP }, LAB, FEEL)
+        if b.cooldown == FEEL.kick_cooldown && kicked == 0 {
+            kicked = i + 2
+        }
+    }
+    assert(kicked == FEEL.kick_cooldown, "and kicks on the tick the cooldown ends")
+}
+
+@test
+fn a_dive_slows_to_the_sinking_speed() {
+    var b = in_pool(vec2(108.0, -0.5), vec2(0.0, -20.0))
+    for _ in 0..24 {
+        body::step(mut b, Pad { bits: 0 }, LAB, FEEL)
+    }
+    assert(b.mode == Mode::Swim && abs(b.vel.y + FEEL.water_terminal) < 0.5)
+}
+
+@test
+fn swimming_up_breaches_and_the_double_jump_clears_the_lakes_far_wall() {
+    // Swimming up beside the far wall (its top 1.6 m above the water), then a double jump.
+    var b = in_pool(vec2(127.0, -4.0), vec2(0.0))
+    while b.mode == Mode::Swim {
+        body::step(mut b, Pad { bits: pad::UP }, LAB, FEEL)
+    }
+    assert(b.mode == Mode::Air && b.breached, "a breach")
+    assert(abs(b.vel.y - FEEL.launch) < 1.0e-3, "at the jump's launch")
+    assert(b.jumps == FEEL.air_jumps, "its double jump kept")
+    body::step(mut b, Pad { bits: RIGHT | JUMP | PRESS }, LAB, FEEL)
+    for _ in 0..120 {
+        body::step(mut b, Pad { bits: RIGHT | JUMP }, LAB, FEEL)
+    }
+    assert(b.grounded() && b.at.y > 1.6, "over the wall, on the deck")
+}
+
+/// A body that swims up at `speed` from 1 m under the lake's surface, presses jump `at` ticks
+/// after crossing it (negative: before), and holds jump until it falls: whether it breached, the
+/// jumps it has left at its top, and how high its middle rose above the surface.
+fn press_at_surface(speed: f32, at: i32) -> (bool, u32, f32) {
+    var b = in_pool(vec2(110.0, -1.0), vec2(0.0, speed))
+    var crossed = -1000
+    var tick = 0
+    var top = b.at.y
+    var jumps = 0
+    for _ in 0..240 {
+        if crossed == -1000 && b.at.y >= 0.0 {
+            crossed = tick
+        }
+        // Before the crossing, count back from the tick it would cross at this speed.
+        let to_cross = i32(ceil(-b.at.y / (speed * STEP)))
+        let now = if crossed == -1000 { -to_cross } else { tick - crossed }
+        let bits = if now == at { JUMP | PRESS } else if now > at { JUMP } else { pad::UP }
+        body::step(mut b, Pad { bits }, LAB, FEEL)
+        if b.at.y > top {
+            top = b.at.y
+            jumps = b.jumps
+        }
+        tick += 1
+    }
+    (b.breached || top > 2.0, jumps, top)
+}
+
+@test
+fn a_jump_pressed_round_the_surface_is_the_breach_and_keeps_the_double_jump() {
+    let full = FEEL.launch * FEEL.launch / (2.0 * FEEL.rise)
+    // A breach at speed, jump pressed a few ticks before the crossing, at it, and a few after.
+    for at in [-3, 0, 3, 8] {
+        let (_, jumps, top) = press_at_surface(FEEL.swim_up_speed, at)
+        assert(jumps == FEEL.air_jumps, "the double jump kept")
+        assert(top > full - 0.3 && top < full + 0.3, "a full jump's height")
+    }
+    // Too slow to breach, jump pressed just after leaving the water: the breach's jump anyway.
+    let (breached, jumps, top) = press_at_surface(2.0, 3)
+    assert(breached && jumps == FEEL.air_jumps && top > full - 0.3, "a breach after all")
+}
+
+@test
+fn a_breach_rises_as_a_full_jump_with_up_held_and_a_slow_exit_is_no_breach() {
+    // Up held throughout: out at the launch, and up to a held jump's height above the surface.
+    var b = in_pool(vec2(110.0, -3.0), vec2(0.0))
+    var top = b.at.y
+    for _ in 0..240 {
+        body::step(mut b, Pad { bits: pad::UP }, LAB, FEEL)
+        top = max(top, b.at.y)
+    }
+    let full = FEEL.launch * FEEL.launch / (2.0 * FEEL.rise)
+    assert(abs(top - full) < 0.05, "a full jump's height above the surface")
+    // Slower than a breach: out as it moved, on ordinary gravity.
+    var slow = in_pool(vec2(108.0, -0.005), vec2(0.0, 2.0))
+    body::step(mut slow, Pad { bits: 0 }, LAB, FEEL)
+    assert(slow.mode == Mode::Air && !slow.breached && slow.vel.y < FEEL.breach, "no breach")
+    assert(slow.jumps == FEEL.air_jumps, "its double jump kept")
+}
+
+@test
+fn a_jump_off_the_bottom_of_water_is_a_kick_not_a_launch() {
+    // On the lake's floor (6.5 m down): one jump rises about a kick's height, kick² / 2g.
+    var w = world(0)
+    w.body = spawn(vec2(112.0, -6.5 + RADIUS))
+    w.body.wet = FEEL.wet_ticks
+    step(mut w, Pad { bits: 0 })
+    assert(w.body.grounded())
+    let from = w.body.at.y
+    step(mut w, Pad { bits: JUMP | PRESS })
+    var top = from
+    for _ in 0..120 {
+        step(mut w, Pad { bits: JUMP })
+        top = max(top, w.body.at.y)
+    }
+    let kick = FEEL.kick * FEEL.kick / (2.0 * FEEL.water_gravity)
+    assert(top - from < kick + 0.1, "no higher than a kick")
+}
+
+@test
+fn a_kick_off_the_bottom_of_water_waits_its_turn_too() {
+    // Off the lake's floor, then a press at once: it waits the kicks' cooldown, then kicks.
+    var w = world(0)
+    w.body = spawn(vec2(112.0, -6.5 + RADIUS))
+    w.body.wet = FEEL.wet_ticks
+    step(mut w, Pad { bits: 0 })
+    step(mut w, Pad { bits: JUMP | PRESS })
+    assert(w.body.cooldown == FEEL.kick_cooldown, "the kick's cooldown")
+    step(mut w, Pad { bits: JUMP | PRESS })
+    assert(w.body.buffer > 0, "too soon: it waits")
+    var kicked = 0
+    for i in 0..FEEL.kick_cooldown {
+        step(mut w, Pad { bits: JUMP })
+        if w.body.cooldown == FEEL.kick_cooldown && kicked == 0 {
+            kicked = i + 2
+        }
+    }
+    assert(kicked == FEEL.kick_cooldown, f"kicked {kicked} ticks after")
+    // Back on the floor before the cooldown ends, a press waits there too, and then jumps.
+    var b = spawn(vec2(112.0, -6.5 + RADIUS))
+    b.wet = FEEL.wet_ticks
+    b.cooldown = 3
+    body::step(mut b, Pad { bits: 0 }, LAB, FEEL)
+    body::step(mut b, Pad { bits: JUMP | PRESS }, LAB, FEEL)
+    assert(b.grounded() && b.buffer > 0, "it waits on the floor")
+    body::step(mut b, Pad { bits: JUMP }, LAB, FEEL)
+    assert(!b.grounded() && b.cooldown == FEEL.kick_cooldown, "then kicks off it")
+}
+
+@test
+fn up_and_down_in_rhythm_is_a_dolphin_kick_past_the_wet_speed() {
+    // Up and down in turn, a change every `dolphin_gap` ticks, right held: past the wet speed,
+    // never past the dolphin's most.
+    var b = in_pool(vec2(104.0, -3.5), vec2(FEEL.wet_speed, 0.0))
+    var fastest = 0.0
+    for i in 0..120 {
+        let way = if (i / FEEL.dolphin_gap) % 2 == 0 { pad::UP } else { DOWN }
+        body::step(mut b, Pad { bits: RIGHT | way }, LAB, FEEL)
+        fastest = max(fastest, b.vel.x)
+    }
+    assert(fastest > FEEL.wet_speed + 3.0 && fastest <= FEEL.dolphin_max + 1.0e-3, "faster")
+    // Twice as fast a rhythm kicks no more often.
+    var mashed = in_pool(vec2(104.0, -3.5), vec2(FEEL.wet_speed, 0.0))
+    var kicks = 0
+    for i in 0..120 {
+        let way = if (i / (FEEL.dolphin_gap / 2)) % 2 == 0 { pad::UP } else { DOWN }
+        body::step(mut mashed, Pad { bits: RIGHT | way }, LAB, FEEL)
+        if mashed.since == 0 {
+            kicks += 1
+        }
+    }
+    assert(kicks <= 120 / FEEL.dolphin_gap, "mashing doesn't kick more")
+    // Without kicks the water takes the extra speed back, at its own rate.
+    let before = b.vel.x
+    for _ in 0..30 {
+        body::step(mut b, Pad { bits: RIGHT }, LAB, FEEL)
+    }
+    let expected = max(before - FEEL.water_over * 30.0 * STEP, FEEL.wet_speed)
+    assert(b.mode == Mode::Swim && abs(b.vel.x - expected) < 1.0e-3, "the water takes it back")
+}
+
+@test
+fn the_double_jump_is_once_in_the_air_and_comes_back_on_landing() {
+    var w = world(0)
+    step(mut w, Pad { bits: JUMP | PRESS })
+    for _ in 0..20 {
+        step(mut w, Pad { bits: JUMP })
+    }
+    assert(w.body.mode == Mode::Air && w.body.jumps == 1)
+    step(mut w, Pad { bits: JUMP | PRESS })
+    assert(w.body.jumps == 0 && w.body.flip == 1, "a double jump, with a flip")
+    assert(abs(w.body.vel.y - (FEEL.air_launch - FEEL.fall * STEP)) < 1.0e-3, "at its own speed")
+    for _ in 0..10 {
+        step(mut w, Pad { bits: JUMP })
+    }
+    let before = w.body.vel.y
+    step(mut w, Pad { bits: JUMP | PRESS })
+    assert(w.body.vel.y < before, "no third jump")
+    for _ in 0..240 {
+        step(mut w, Pad { bits: 0 })
+    }
+    assert(w.body.grounded())
+    step(mut w, Pad { bits: JUMP | PRESS })
+    assert(w.body.mode == Mode::Air && w.body.jumps == FEEL.air_jumps, "back on landing")
+}
+
+@test
+fn walking_off_an_edge_keeps_the_double_jump_for_after_the_coyote_time() {
+    var w = world(0)
+    w.body = spawn(vec2(35.6, RADIUS))
+    while w.body.mode != Mode::Air {
+        step(mut w, Pad { bits: RIGHT })
+    }
+    for _ in 0..FEEL.coyote + 2 {
+        step(mut w, Pad { bits: RIGHT })
+    }
+    step(mut w, Pad { bits: RIGHT | JUMP | PRESS })
+    assert(w.body.jumps == 0 && w.body.vel.y > 0.0, "past the coyote time, the double jump")
+}
+
+// ---- metrics -----------------------------------------------------------------------------------
+
+/// How high the body's bottom rises from flat ground with jump held for `held` ticks, and with a
+/// double jump at the top of the first if `double`.
+fn jump_height(held: u32, double: bool) -> f32 {
+    var w = world(0)
+    step(mut w, Pad { bits: JUMP | PRESS })
+    var top = 0.0
+    var doubled = false
+    for i in 0..300 {
+        var bits = if i < held { JUMP } else { 0 }
+        if double && !doubled && w.body.vel.y <= 0.0 {
+            bits = JUMP | PRESS
+            doubled = true
+        }
+        step(mut w, Pad { bits: bits })
+        top = max(top, w.body.at.y - RADIUS)
+    }
+    top
+}
+
+/// The top of a hop from a tap: jump pressed and let go within the press's tick.
+fn tap_height() -> f32 {
+    var w = world(0)
+    step(mut w, Pad { bits: PRESS })
+    var top = 0.0
+    for _ in 0..300 {
+        step(mut w, Pad { bits: 0 })
+        top = max(top, w.body.at.y - RADIUS)
+    }
+    top
+}
+
+@test
+fn any_press_let_go_within_the_hops_ticks_is_the_lowest_hop() {
+    // A tap in one tick, and presses held up to the hop's ticks, rise exactly alike (Ryan,
+    // 2026-10-22: the lowest hop took a one-tick tap, which only a program could press); held
+    // longer, a jump goes higher.
+    // (`jump_height`'s `held` is the ticks held after the press's own.)
+    let tap = tap_height()
+    for held in 0..FEEL.hop {
+        let h = jump_height(held, double: false)
+        assert(h == tap, f"pressed {held + 1} ticks: {h} m, a tap {tap} m")
+    }
+    assert(jump_height(FEEL.hop, double: false) > tap + 0.01, "held past them, higher")
+    assert(jump_height(FEEL.hop + 4, double: false) > jump_height(FEEL.hop, double: false))
+}
+
+@test
+fn a_held_jumps_arc_is_exact_whatever_the_ticks() {
+    // A tick moves the body by the mean of its velocities, so the peak is launch² / (2 rise) up
+    // to where the peak falls between ticks (a few millimetres).
+    let exact = FEEL.launch * FEEL.launch / (2.0 * FEEL.rise)
+    assert(abs(jump_height(300, double: false) - exact) < 0.005)
+}
+
+/// Ticks from rest to the top speed.
+fn ticks_to_top() -> u32 {
+    var w = world(0)
+    var t = 0
+    while w.body.speed < FEEL.speed - 1.0e-3 {
+        step(mut w, Pad { bits: RIGHT })
+        t += 1
+        assert(t < 1000)
+    }
+    t
+}
+
+/// How far a jump at the top speed from flat ground carries the body before it is back at the
+/// same height, jump held throughout (m): from the flat between the gaps, dry, over the second.
+fn reach() -> f32 {
+    var w = world(0)
+    w.body = spawn(vec2(39.4, RADIUS))
+    w.body.speed = FEEL.speed
+    let from = w.body.at
+    step(mut w, Pad { bits: RIGHT | JUMP | PRESS })
+    var x = from.x
+    for _ in 0..240 {
+        let before = w.body.at
+        step(mut w, Pad { bits: RIGHT | JUMP })
+        if w.body.at.y <= from.y && before.y > from.y {
+            x = mix(before.x, w.body.at.x, (before.y - from.y) / (before.y - w.body.at.y))
+            break
+        }
+    }
+    x - from.x
+}
+
+fn within(x: f32, range: vec2) -> bool {
+    x >= range.x && x <= range.y
+}
+
+/// The ranges the feel is held to: Ryan's "snappy, a touch more momentum and float, the full jump a
+/// touch higher" (2026-10-21).
+@test
+fn the_feels_metrics_are_within_their_ranges() {
+    let (held, tap, double) = (
+        jump_height(300, double: false),
+        jump_height(0, double: false),
+        jump_height(300, double: true),
+    )
+    let (top, far) = (ticks_to_top(), reach())
+    print(
+        f"held jump {held} m, tapped {tap} m, double {double} m, top speed in {top} ticks, jump at speed {far} m",
+    )
+    assert(within(held, vec2(2.7, 3.1)), "the held jump's height")
+    assert(within(tap, vec2(1.0, 1.5)), "the tapped jump's height")
+    assert(within(double, vec2(4.6, 5.4)), "the double jump's height")
+    assert(within(f32(top), vec2(36.0, 52.0)), "the ticks to top speed, eased")
+    assert(within(far, vec2(5.2, 6.4)), "the jump's reach at speed")
+}
+
+@test
+fn a_slide_from_a_run_on_the_flat_ends_soon_and_a_fast_one_keeps_its_speed() {
+    // On the lab's flat start, up to the running speed, then down: the slide ends (a crouch)
+    // within 1.6 s and 8 m (Ryan, 2026-10-22: it lasted too long).
+    var w = world(0)
+    for _ in 0..90 {
+        step(mut w, Pad { bits: RIGHT })
+    }
+    assert(abs(w.body.speed - FEEL.speed) < 1.0e-3, "at the running speed")
+    let from = w.body.at.x
+    var ticks = 0
+    while w.body.mode != Mode::Crouch && ticks < 600 {
+        step(mut w, Pad { bits: RIGHT | DOWN })
+        ticks += 1
+    }
+    print(f"a slide from a run: {f32(ticks) * STEP} s, {w.body.at.x - from} m")
+    assert(f32(ticks) * STEP < 1.6 && w.body.at.x - from < 8.0, "the slide ended soon")
+    // At 20 m/s on the flat, a slide loses no more than the base friction's 2.5 m/s a second.
+    var b = w.body
+    b.mode = Mode::Slide
+    b.speed = 20.0
+    b.vel = vec2(20.0, 0.0)
+    w.body = b
+    for _ in 0..30 {
+        step(mut w, Pad { bits: RIGHT | DOWN })
+    }
+    assert(w.body.speed > 20.0 - 2.5 * 0.25 - 1.0e-3, "a fast slide keeps its speed")
+}

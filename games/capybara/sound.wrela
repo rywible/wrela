@@ -1,0 +1,648 @@
+// The game's sound: the music's piano and, over it, what the capybara does, synthesized as it
+// plays (Ryan, 2026-10-22: "we don't have any fun sound effects ... that make you feel
+// immersed"). Nothing is recorded and nothing is made by a model: each sound is a few voices of
+// sine, a frequency-modulated sine (a bell, a honk, a bird) or noise in a band, each sliding from
+// one pitch to another and fading away, panned by where the thing is across the view.
+//
+// The program has one voice, so the piano plays inside it (`play_piano` into the same quantum),
+// and the effects are added over it, under a soft limit. The frames push cues (`Cue`) through a
+// ring, a few a frame; the voice turns each into its voices.
+//
+// - The capybara: a soft step of grass each half stride as it runs, a "whup" as it jumps, a
+//   sparkle of two bells for the double jump, a thud as it lands (harder the faster it fell), a
+//   hiss as it slides (louder the faster), splashes and bubbles in water.
+// - Its foes: a stomped goose honks (a pigeon coos), and the bounce boings.
+// - What it finds: a carrot crunches and a happy jingle climbs; a yuzu pops; a checkpoint's wind
+//   chimes ring.
+// - Hurt or fallen, a slide whistle falls; back at a checkpoint, a soft pop.
+// - The goal: the kusudama bursts open with bells, and the fireworks whistle up and bang.
+// - Under it all, the wetlands: a breath of wind, and now and then a bird.
+//
+// Everything on the audio thread is f32 arithmetic in a fixed order, and its noise is seeded, so
+// both hosts give the same samples.
+
+use engine::piano::{Piano, play_piano}
+use std::audio::{QUANTUM, RingReader, RingWriter, SAMPLE_RATE, play, ring}
+use std::math::{PI, TAU}
+
+/// The audio thread's rate.
+const RATE: f32 = f32(SAMPLE_RATE)
+
+/// What a cue asks for.
+pub const STEP: u32 = 0
+pub const JUMP: u32 = 1
+pub const DOUBLE: u32 = 2
+pub const LAND: u32 = 3
+pub const SLIDE: u32 = 4
+pub const SPLASH: u32 = 5
+pub const KICK: u32 = 6
+pub const HONK: u32 = 7
+pub const COO: u32 = 8
+pub const CARROT: u32 = 9
+pub const YUZU: u32 = 10
+pub const CHECKPOINT: u32 = 11
+pub const HURT: u32 = 12
+pub const FALL: u32 = 13
+pub const BACK: u32 = 14
+pub const GOAL: u32 = 15
+pub const LAUNCH: u32 = 16
+pub const BANG: u32 = 17
+
+/// A cue: what (`kind`), how much (0 to 1: a landing's force, a slide's speed), where across the
+/// view (-1 left to 1 right), and how long from now (s).
+pub struct Cue: Copy {
+    pub kind: u32,
+    pub amount: f32 = 1.0,
+    pub pan: f32 = 0.0,
+    pub delay: f32 = 0.0,
+}
+
+/// How a voice sounds: a sine, a frequency-modulated sine (`ratio` the modulator's frequency over
+/// the carrier's, `index` how deep), or noise in a band round the frequency (`q` how narrow).
+const SINE: u32 = 0
+const FM: u32 = 1
+const BAND: u32 = 2
+/// Noise under a frequency, falling away steeply (18 dB an octave) above it: a far-off rumble.
+const LOW: u32 = 3
+
+/// A voice: from `from` to `to` Hz over `glide` seconds, swelling in over `attack` and falling
+/// 60 dB in `t60`, at `gain`, panned by `pan`; `age` seconds old (negative: not yet).
+struct Tone: Copy {
+    kind: u32,
+    from: f32,
+    to: f32,
+    glide: f32,
+    attack: f32,
+    t60: f32,
+    gain: f32,
+    pan: f32,
+    ratio: f32,
+    index: f32,
+    q: f32,
+    age: f32,
+    phase: f32,
+    mod_phase: f32,
+    // A band's filter state, and a low's last smoothing.
+    low: f32,
+    band: f32,
+    smooth: f32,
+}
+
+const SILENT = Tone {
+    kind: SINE,
+    from: 0.0,
+    to: 0.0,
+    glide: 1.0,
+    attack: 0.001,
+    t60: 0.0,
+    gain: 0.0,
+    pan: 0.0,
+    ratio: 1.0,
+    index: 0.0,
+    q: 1.0,
+    age: 1.0e3,
+    phase: 0.0,
+    mod_phase: 0.0,
+    low: 0.0,
+    band: 0.0,
+    smooth: 0.0,
+}
+
+/// The voices that sound at once; the oldest makes way.
+const TONES: u32 = 40
+
+pub struct Voice {
+    cues: RingReader<Cue>,
+    music: Piano,
+    tones: [Tone; TONES],
+    /// Each tone's gains, left and right: equal power across the view, from its pan.
+    gains: [vec2; TONES],
+    next: u32,
+    noise: u32,
+    /// The slide's hiss: its level now and wanted, and its filter.
+    slide: f32,
+    slide_to: f32,
+    hiss_low: f32,
+    hiss_band: f32,
+    /// The wind: its filter state and its slow swell's phase.
+    wind: f32,
+    wind_phase: f32,
+    /// Seconds to the next bird.
+    bird: f32,
+}
+
+/// Starts the game's voice with the music's piano in it: the writer is how the frames send cues.
+pub fn start(music: take Piano) -> RingWriter<Cue> {
+    let (writer, reader) = ring::<Cue>(128)
+    play(voice(take reader, take music), render)
+    writer
+}
+
+/// A voice that plays `music` and the cues it reads from `cues`.
+fn voice(cues: take RingReader<Cue>, music: take Piano) -> Voice {
+    Voice {
+        cues,
+        music,
+        tones: [SILENT; TONES],
+        gains: [vec2(0.0); TONES],
+        next: 0,
+        noise: 0x9e3779b9,
+        slide: 0.0,
+        slide_to: 0.0,
+        hiss_low: 0.0,
+        hiss_band: 0.0,
+        wind: 0.0,
+        wind_phase: 0.0,
+        bird: 3.0,
+    }
+}
+
+@audio
+fn note(midi: f32) -> f32 {
+    440.0 * pow(2.0, (midi - 69.0) / 12.0)
+}
+
+/// A number from 0 to 1, the next of the voice's own.
+@audio
+fn rand(v: mut Voice) -> f32 {
+    v.noise = v.noise.wrapping_mul(1664525).wrapping_add(1013904223)
+    f32(v.noise >> 8) / 16777216.0
+}
+
+/// A new voice.
+@audio
+fn tone(v: mut Voice, t: Tone) {
+    v.tones[v.next] = t
+    let a = (clamp(t.pan, -1.0, 1.0) + 1.0) * 0.25 * PI
+    v.gains[v.next] = vec2(cos(a), sin(a))
+    v.next = (v.next + 1) % TONES
+}
+
+@audio
+fn sine(from: f32, to: f32, glide: f32, t60: f32, gain: f32, pan: f32, delay: f32) -> Tone {
+    Tone { kind: SINE, from, to, glide, t60, gain, pan, age: -delay, ..SILENT }
+}
+
+@audio
+fn bell(hz: f32, t60: f32, gain: f32, pan: f32, delay: f32) -> Tone {
+    Tone {
+        kind: FM,
+        from: hz,
+        to: hz,
+        t60,
+        gain,
+        pan,
+        ratio: 3.5,
+        index: 1.2,
+        age: -delay,
+        ..SILENT,
+    }
+}
+
+@audio
+fn hiss(hz: f32, to: f32, q: f32, t60: f32, gain: f32, pan: f32, delay: f32) -> Tone {
+    Tone {
+        kind: BAND,
+        from: hz,
+        to,
+        glide: max(t60, 0.01),
+        q,
+        t60,
+        gain,
+        pan,
+        age: -delay,
+        ..SILENT,
+    }
+}
+
+/// A jump's "whup": a sine sliding up and a breath of air, `up` times the first jump's pitch and
+/// that much quicker.
+@audio
+fn whup(v: mut Voice, up: f32, pan: f32, delay: f32) {
+    let quick = 1.0 / up
+    tone(
+        mut v,
+        sine(
+            300.0 * up,
+            to: 560.0 * up,
+            glide: 0.12 * quick,
+            t60: 0.16 * quick,
+            gain: 0.13,
+            pan: pan,
+            delay: delay,
+        ),
+    )
+    tone(
+        mut v,
+        hiss(
+            1400.0 * up,
+            to: 2600.0 * up,
+            q: 0.8,
+            t60: 0.08 * quick,
+            gain: 0.04,
+            pan: pan,
+            delay: delay,
+        ),
+    )
+}
+
+/// A far-off rumble: noise under `hz`, sliding to `to`.
+@audio
+fn rumble(hz: f32, to: f32, t60: f32, gain: f32, pan: f32, delay: f32) -> Tone {
+    Tone {
+        kind: LOW,
+        q: 0.7,
+        ..hiss(hz, to: to, q: 0.7, t60: t60, gain: gain, pan: pan, delay: delay),
+    }
+}
+
+/// A bubble: a short sine whose pitch leaps up as it closes.
+@audio
+fn blip(v: mut Voice, gain: f32, pan: f32, delay: f32) {
+    let hz = 500.0 + 700.0 * rand(mut v)
+    tone(mut v, sine(hz, to: hz * 1.8, glide: 0.04, t60: 0.06, gain: gain, pan: pan, delay: delay))
+}
+
+/// What a cue sounds like: its voices.
+@audio
+fn cue(v: mut Voice, c: Cue) {
+    let (a, p, d) = (c.amount, c.pan, c.delay)
+    if c.kind == STEP {
+        // A foot in the grass: a brush of noise, a little different each time, and a soft knock.
+        let hz = 2200.0 + 1200.0 * rand(mut v)
+        tone(mut v, hiss(hz, to: hz * 0.8, q: 1.3, t60: 0.07, gain: 0.05 * a, pan: p, delay: d))
+        tone(mut v, sine(140.0, to: 90.0, glide: 0.04, t60: 0.05, gain: 0.05 * a, pan: p, delay: d))
+    } else if c.kind == JUMP {
+        whup(mut v, up: 1.0, pan: p, delay: d)
+    } else if c.kind == DOUBLE {
+        // The jump again, a fifth up and a little quicker, with a wisp of air as it flips (Ryan,
+        // 2026-10-22: "a variation on the first jump, not an entirely different sound").
+        whup(mut v, up: 1.5, pan: p, delay: d)
+        tone(
+            mut v,
+            hiss(3000.0, to: 6000.0, q: 1.0, t60: 0.14, gain: 0.02, pan: p, delay: d + 0.04),
+        )
+    } else if c.kind == LAND {
+        tone(mut v, sine(120.0, to: 55.0, glide: 0.08, t60: 0.14, gain: 0.22 * a, pan: p, delay: d))
+        tone(mut v, hiss(500.0, to: 300.0, q: 0.9, t60: 0.09, gain: 0.1 * a, pan: p, delay: d))
+    } else if c.kind == SLIDE {
+        v.slide_to = a
+    } else if c.kind == SPLASH {
+        tone(mut v, hiss(1100.0, to: 600.0, q: 0.6, t60: 0.4, gain: 0.2 * a, pan: p, delay: d))
+        tone(mut v, sine(160.0, to: 70.0, glide: 0.1, t60: 0.15, gain: 0.12 * a, pan: p, delay: d))
+        for k in 0..4 {
+            let late = 0.05 * f32(k) * (0.6 + rand(mut v))
+            blip(mut v, gain: 0.05 * a, pan: p, delay: d + 0.04 + late)
+        }
+    } else if c.kind == KICK {
+        blip(mut v, gain: 0.04, pan: p, delay: d)
+        blip(mut v, gain: 0.03, pan: p, delay: d + 0.05)
+    } else if c.kind == HONK || c.kind == COO {
+        // A comic honk (a coo: lower, softer), and the bounce's boing.
+        let (hz, gain, index) = if c.kind == HONK { (370.0, 0.1, 3.0) } else { (250.0, 0.07, 1.4) }
+        tone(
+            mut v,
+            Tone {
+                kind: FM,
+                from: hz,
+                to: hz * 0.78,
+                glide: 0.2,
+                attack: 0.01,
+                t60: 0.3,
+                gain,
+                pan: p,
+                ratio: 1.0,
+                index,
+                age: -d,
+                ..SILENT,
+            },
+        )
+        tone(
+            mut v,
+            sine(170.0, to: 420.0, glide: 0.16, t60: 0.22, gain: 0.12, pan: p, delay: d + 0.04),
+        )
+    } else if c.kind == CARROT {
+        // A crunch, three bites, and a jingle climbing D major's arpeggio.
+        for k in 0..3 {
+            let hz = 3200.0 + 900.0 * rand(mut v)
+            tone(
+                mut v,
+                hiss(
+                    hz,
+                    to: hz * 0.7,
+                    q: 0.6,
+                    t60: 0.045,
+                    gain: 0.1,
+                    pan: p,
+                    delay: d + 0.06 * f32(k),
+                ),
+            )
+        }
+        let jingle = [74.0, 78.0, 81.0, 86.0, 90.0]
+        for k in 0..5 {
+            tone(
+                mut v,
+                bell(
+                    note(jingle[k]),
+                    t60: 0.45,
+                    gain: 0.055,
+                    pan: p,
+                    delay: d + 0.12 + 0.055 * f32(k),
+                ),
+            )
+        }
+    } else if c.kind == YUZU {
+        // A pop, and two bells a fourth apart (E6, A6).
+        tone(mut v, sine(700.0, to: 1500.0, glide: 0.03, t60: 0.08, gain: 0.12, pan: p, delay: d))
+        tone(mut v, bell(note(88.0), t60: 0.9, gain: 0.06, pan: p, delay: d + 0.04))
+        tone(mut v, bell(note(93.0), t60: 1.0, gain: 0.045, pan: p, delay: d + 0.1))
+    } else if c.kind == CHECKPOINT {
+        // The yuzu's pop and bells, carried on up A major's chord to the octave, the last ringing
+        // longest (Ryan, 2026-10-22: "picking up a yuzu is perfect. can it be a variation on
+        // that?").
+        tone(mut v, sine(700.0, to: 1500.0, glide: 0.03, t60: 0.08, gain: 0.12, pan: p, delay: d))
+        let peal = [88.0, 93.0, 97.0, 100.0, 105.0]
+        for k in 0..5 {
+            let last = k == 4
+            tone(
+                mut v,
+                bell(
+                    note(peal[k]),
+                    t60: if last { 1.5 } else { 0.9 + 0.1 * f32(k) },
+                    gain: if k == 0 { 0.06 } else if last { 0.04 } else { 0.045 },
+                    pan: p,
+                    delay: d + 0.04 + 0.065 * f32(k),
+                ),
+            )
+        }
+    } else if c.kind == HURT || c.kind == FALL {
+        // A slide whistle falling, its pitch wavering; a bonk when hurt.
+        let (from, to, glide) = if c.kind == HURT { (950.0, 320.0, 0.55) } else {
+            (1100.0, 180.0, 0.95)
+        }
+        tone(
+            mut v,
+            Tone {
+                kind: FM,
+                from,
+                to,
+                glide,
+                attack: 0.02,
+                t60: glide * 1.6,
+                gain: 0.07,
+                pan: p,
+                ratio: 0.012,
+                index: 0.6,
+                age: -d,
+                ..SILENT,
+            },
+        )
+        if c.kind == HURT {
+            tone(
+                mut v,
+                sine(220.0, to: 110.0, glide: 0.05, t60: 0.12, gain: 0.18, pan: p, delay: d),
+            )
+        }
+    } else if c.kind == BACK {
+        tone(mut v, sine(400.0, to: 900.0, glide: 0.06, t60: 0.1, gain: 0.08, pan: p, delay: d))
+        tone(mut v, hiss(5000.0, to: 7000.0, q: 1.0, t60: 0.25, gain: 0.02, pan: p, delay: d))
+    } else if c.kind == GOAL {
+        // The kusudama bursts: a pop, and a peal of bells down and up again.
+        tone(mut v, hiss(900.0, to: 400.0, q: 0.5, t60: 0.2, gain: 0.16, pan: p, delay: d))
+        tone(mut v, sine(180.0, to: 80.0, glide: 0.08, t60: 0.2, gain: 0.18, pan: p, delay: d))
+        let peal = [86.0, 90.0, 93.0, 98.0, 93.0, 98.0, 102.0]
+        for k in 0..7 {
+            tone(
+                mut v,
+                bell(note(peal[k]), t60: 1.2, gain: 0.05, pan: p, delay: d + 0.08 + 0.1 * f32(k)),
+            )
+        }
+    } else if c.kind == LAUNCH {
+        // A rocket's whistle, rising, thin with distance.
+        tone(mut v, hiss(400.0, to: 1600.0, q: 5.0, t60: 0.8, gain: 0.03, pan: p, delay: d))
+    } else if c.kind == BANG {
+        // A firework far off (Ryan: they "should sound a bit more like distant explosions"): it
+        // arrives a moment after its flash, the air has taken its highs, so it's a dull boom
+        // that rolls on, an echo of it off the hills, and a faint crackle.
+        let far = d + 0.18 + 0.1 * rand(mut v)
+        tone(mut v, sine(70.0, to: 38.0, glide: 0.25, t60: 0.9, gain: 0.22, pan: p, delay: far))
+        tone(mut v, rumble(180.0, to: 70.0, t60: 1.6, gain: 3.2, pan: p, delay: far))
+        tone(mut v, rumble(600.0, to: 250.0, t60: 0.4, gain: 1.2, pan: p, delay: far))
+        tone(mut v, rumble(150.0, to: 60.0, t60: 1.2, gain: 1.5, pan: -p, delay: far + 0.45))
+        for k in 0..5 {
+            let hz = 1400.0 + 1200.0 * rand(mut v)
+            let side = p + 0.4 * (rand(mut v) - 0.5)
+            let late = far + 0.25 + 0.5 * rand(mut v) + 0.05 * f32(k)
+            tone(mut v, rumble(hz, to: hz, t60: 0.04, gain: 0.15, pan: side, delay: late))
+        }
+    }
+}
+
+/// A bird of the wetlands: a few quick chirps, sliding up, somewhere across the view.
+@audio
+fn chirp(v: mut Voice) {
+    let pan = rand(mut v) * 1.6 - 0.8
+    let hz = 2400.0 + 1600.0 * rand(mut v)
+    let n = 2 + u32(rand(mut v) * 3.0)
+    for k in 0..n {
+        tone(
+            mut v,
+            Tone {
+                kind: FM,
+                from: hz,
+                to: hz * 1.35,
+                glide: 0.06,
+                attack: 0.005,
+                t60: 0.08,
+                gain: 0.012,
+                pan,
+                ratio: 0.5,
+                index: 0.4,
+                age: -0.11 * f32(k),
+                ..SILENT,
+            },
+        )
+    }
+}
+
+/// One sample of a voice, and the voice a sample on.
+@audio
+fn sample(v: mut Voice, k: u32, dt: f32) -> f32 {
+    var t = v.tones[k]
+    t.age += dt
+    if t.age < 0.0 || t.age > t.t60 {
+        v.tones[k] = t
+        return 0.0
+    }
+    let f = t.from * pow(t.to / t.from, min(t.age / t.glide, 1.0))
+    t.phase = fract(t.phase + f * dt)
+    var s = 0.0
+    if t.kind == SINE {
+        s = sin(TAU * t.phase)
+    } else if t.kind == FM {
+        t.mod_phase = fract(t.mod_phase + f * t.ratio * dt)
+        // The modulation fades faster than the tone: a bell's strike, then its hum.
+        let depth = t.index * (1.0 - 0.7 * min(t.age / max(t.t60 * 0.3, 1.0e-3), 1.0))
+        s = sin(TAU * t.phase + depth * sin(TAU * t.mod_phase))
+    } else {
+        // Noise through a state-variable band-pass round `f`.
+        let white = rand(mut v) * 2.0 - 1.0
+        let g = 2.0 * sin(PI * min(f, RATE * 0.2) / RATE)
+        t.low += g * t.band
+        let high = white - t.low - t.band / t.q
+        t.band += g * high
+        s = t.band
+        if t.kind == LOW {
+            t.smooth += (t.low - t.smooth) * min(TAU * f / RATE, 1.0)
+            s = t.smooth
+        }
+    }
+    let attack = saturate(t.age / t.attack)
+    let fade = exp(-6.9 * t.age / t.t60)
+    v.tones[k] = t
+    s * t.gain * attack * fade
+}
+
+@audio
+fn render(v: mut Voice, left: mut [f32], right: mut [f32]) {
+    var more = true
+    while more {
+        match v.cues.pop() {
+            Some(c) => cue(mut v, c),
+            None => more = false,
+        }
+    }
+    // The music first, into the quantum.
+    play_piano(mut v.music, mut left, mut right)
+    let dt = 1.0 / RATE
+    v.bird -= f32(QUANTUM) * dt
+    if v.bird <= 0.0 {
+        chirp(mut v)
+        v.bird = 4.0 + 8.0 * rand(mut v)
+    }
+    for i in 0..QUANTUM {
+        var l = 0.0
+        var r = 0.0
+        for k in 0..TONES {
+            let s = sample(mut v, k, dt)
+            if s != 0.0 {
+                l += s * v.gains[k].x
+                r += s * v.gains[k].y
+            }
+        }
+        // The slide's hiss, its level eased towards what's wanted.
+        v.slide += (v.slide_to - v.slide) * 0.002
+        if v.slide > 1.0e-4 {
+            let white = rand(mut v) * 2.0 - 1.0
+            let g = 2.0 * sin(PI * 1700.0 / RATE)
+            v.hiss_low += g * v.hiss_band
+            v.hiss_band += g * (white - v.hiss_low - v.hiss_band / 0.7)
+            let h = v.hiss_band * 0.05 * v.slide
+            l += h * 0.7
+            r += h * 0.7
+        }
+        // The wind: low noise, swelling slowly.
+        v.wind_phase = fract(v.wind_phase + dt / 9.0)
+        let white = rand(mut v) * 2.0 - 1.0
+        v.wind += (white - v.wind) * 0.02
+        let breeze = v.wind * 0.03 * (0.6 + 0.4 * sin(TAU * v.wind_phase))
+        l += breeze
+        r += breeze * 0.9
+        // The effects over the music, under a soft limit.
+        let (ml, mr) = (left[i] + l, right[i] + r)
+        left[i] = ml / (1.0 + abs(ml) * 0.3)
+        right[i] = mr / (1.0 + abs(mr) * 0.3)
+    }
+}
+
+// ---- tests -------------------------------------------------------------------------------------
+
+use engine::perform::{PedalPoint, Performance}
+use engine::piano_grand::GRAND
+use engine::piano::piano
+use std::io::print
+use std::math::is_finite
+
+/// A voice with no music, sent `cues`, played for `seconds`: the energy of its mean, its loudest
+/// sample, and the energy of its sample-to-sample differences (its highs). Every sample is
+/// finite.
+fn heard(cues: [Cue], seconds: f32) -> vec3 {
+    let none = Vec::from([PedalPoint { at: 0.0, depth: 0.0 }])
+    let quiet = Performance {
+        notes: Vec::new(),
+        sustain: none.clone(),
+        soft: none,
+        beats: Vec::from([0.0]),
+        length: 0.0,
+    }
+    let (writer, reader) = ring::<Cue>(128)
+    var w = take writer
+    for c in cues {
+        let _ = w.push(c)
+    }
+    var v = voice(take reader, piano(GRAND, quiet))
+    var l = [0.0; QUANTUM]
+    var r = [0.0; QUANTUM]
+    var energy = 0.0
+    var peak = 0.0
+    var highs = 0.0
+    var last = 0.0
+    for _ in 0..u32(seconds * RATE) / QUANTUM {
+        for i in 0..QUANTUM {
+            l[i] = 0.0
+            r[i] = 0.0
+        }
+        render(mut v, mut l, mut r)
+        for i in 0..QUANTUM {
+            assert(is_finite(l[i]) && is_finite(r[i]), "a finite sample")
+            let x = 0.5 * (l[i] + r[i])
+            energy += x * x
+            highs += (x - last) * (x - last)
+            last = x
+            peak = max(peak, max(abs(l[i]), abs(r[i])))
+        }
+    }
+    vec3(energy, peak, highs)
+}
+
+@test
+fn every_cue_sounds_over_the_wind() {
+    // Each cue, alone, is many times the energy of the wind and birds it plays over.
+    let bed = heard([], seconds: 0.4).x
+    for kind in STEP..BANG + 1 {
+        let e = heard([Cue { kind, amount: 0.8 }], seconds: 0.4).x
+        assert(e > 4.0 * bed, f"cue {kind}: {e} over a bed of {bed}")
+    }
+}
+
+@test
+fn the_goal_and_its_fireworks_together_stay_under_full_scale() {
+    // The busiest moment: the goal, a hard landing, and three rockets and their bangs at once,
+    // panned to one side.
+    var cues = [Cue { kind: GOAL, pan: 0.7 }; 8]
+    cues[1] = Cue { kind: LAND, amount: 1.0, pan: 0.7 }
+    for i in 0..3 {
+        cues[2 + i] = Cue { kind: LAUNCH, pan: 0.7 }
+        cues[5 + i] = Cue { kind: BANG, pan: 0.7 }
+    }
+    let peak = heard(cues, seconds: 1.5).y
+    assert(peak > 0.05 && peak < 0.95, f"peak {peak}")
+}
+
+@test
+fn a_firework_sounds_far_off() {
+    // A bang, heard far off: dull, the centre of its sound (over the wind's) low, under a
+    // landing's thud; a jump's is far higher.
+    let bed = heard([], seconds: 1.5)
+    let bang = centre(heard([Cue { kind: BANG }], seconds: 1.5) - bed)
+    let land = centre(heard([Cue { kind: LAND }], seconds: 1.5) - bed)
+    let jump = centre(heard([Cue { kind: JUMP }], seconds: 1.5) - bed)
+    print(f"centres: the bang {bang} Hz, a landing {land} Hz, the jump {jump} Hz")
+    assert(bang < 250.0 && bang < land && jump > 2.0 * bang, f"the bang's centre: {bang} Hz")
+}
+
+/// Where a sound's energy is centred (Hz), from `heard`'s energy and highs: a sine at f has
+/// highs (2π f / RATE)² times its energy.
+fn centre(h: vec3) -> f32 {
+    sqrt(max(h.z, 0.0) / max(h.x, 1.0e-12)) * RATE / TAU
+}

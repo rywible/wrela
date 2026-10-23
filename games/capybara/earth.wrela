@@ -1,0 +1,425 @@
+// The ground as it's drawn, as a picture book's cutaway (ink.wrela): its cross-section's soil,
+// the turf along every walkable top and the grass growing from it, an inked rim along every
+// cliff, and the ledges' planks.
+//
+// The soil is painted per pixel from where the pixel is and how far below the top of the ground
+// it is (a profile of the ground's top, sampled every `STEP` m, made when a course is shown):
+// ochre washes in wavering bands, darker and redder the deeper, roots inked near the top,
+// pebbles, and a painted shadow under the turf's lip.
+//
+// The grass is a band above each walkable top: a scalloped lawn edge and tufts of pointed
+// blades, inked as one shape; each tuft's place and height from a hash of its number, leaning in
+// a wind that gusts along the ground, away from the capybara as it passes, and lying down where
+// it slides.
+
+use course::{Course, WALKABLE}
+use engine::noise::{hash2, noise2}
+use ground::{left, outline, triangulate}
+use ink::{INK, SUN, grain, inked, wash, washed}
+use shapes::{blend, cone}
+use std::gpu::{ClipPosition, Flat, Over, Rgba16Float, Sampler, Texture, VertexIndex, discard}
+
+/// The materials of the ground's faces.
+const SOIL: f32 = 0.0
+const TURF: f32 = 1.0
+const RIM: f32 = 2.0
+const PLANK: f32 = 3.0
+
+/// How deep the turf is under a walkable top, and the rim inside a cliff (m).
+const TURF_DEPTH: f32 = 0.3
+const RIM_DEPTH: f32 = 0.18
+
+/// How thick a ledge's planks are (m).
+const PLANK_THICK: f32 = 0.25
+
+/// How tall the grass band above a walkable top is, and how far it reaches down into the turf (m).
+const GRASS_TALL: f32 = 0.5
+const GRASS_ROOT: f32 = 0.06
+
+/// A vertex of the ground: its point, its material and how far across its band it is (0 at the
+/// band's outer edge, 1 at its inner), then its side's outward normal (two vec4s).
+fn vertex(out: mut Vec<vec4>, p: vec2, material: f32, band: f32, side: vec2) {
+    out.push(vec4(p, material, band))
+    out.push(vec4(side, 0.0, 0.0))
+}
+
+/// The ground's faces: each solid's cross-section filled with soil, a band of turf inside each
+/// walkable side and of rim inside each cliff; each ledge's planks. Three vertices a triangle.
+pub fn earth_mesh(c: Course) -> Vec<vec4> {
+    var out: Vec<vec4> = Vec::new()
+    for k in 0..c.chains.len() - 1 {
+        let (first, last) = (c.chains[k], c.chains[k + 1])
+        var points = outline(c.pieces, first, last)
+        if c.pieces[first].ledge {
+            let end = c.pieces[last - 1]
+            points.push(end.point(end.length))
+            for i in 0..points.len() - 1 {
+                let (a, b) = (points[i], points[i + 1])
+                let down = vec2(0.0, -PLANK_THICK)
+                let side = normalize(left(b - a))
+                for (p, band) in [
+                    (a, 0.0),
+                    (b, 0.0),
+                    (b + down, 1.0),
+                    (a, 0.0),
+                    (b + down, 1.0),
+                    (a + down, 1.0),
+                ] {
+                    vertex(mut out, p, material: PLANK, band: band, side: side)
+                }
+            }
+            continue
+        }
+        for p in triangulate(points) {
+            vertex(mut out, p, material: SOIL, band: 1.0, side: vec2(0.0, 1.0))
+        }
+        let n = points.len()
+        for i in 0..n {
+            let (a, b) = (points[i], points[(i + 1) % n])
+            let side = normalize(left(b - a))
+            let walkable = side.y >= WALKABLE
+            let (material, depth) = if walkable { (TURF, TURF_DEPTH) } else { (RIM, RIM_DEPTH) }
+            let inward = side * depth
+            for (p, band) in [
+                (a, 0.0),
+                (b, 0.0),
+                (b - inward, 1.0),
+                (a, 0.0),
+                (b - inward, 1.0),
+                (a - inward, 1.0),
+            ] {
+                vertex(mut out, p, material: material, band: band, side: side)
+            }
+        }
+    }
+    out
+}
+
+/// The grass: a band above each walkable side of each solid, from a little below the side to
+/// `GRASS_TALL` above it, each vertex its point and its height above the side (m), then the side's
+/// outward normal. Three vertices a triangle.
+pub fn grass_mesh(c: Course) -> Vec<vec4> {
+    var out: Vec<vec4> = Vec::new()
+    for k in 0..c.chains.len() - 1 {
+        let (first, last) = (c.chains[k], c.chains[k + 1])
+        if c.pieces[first].ledge {
+            continue
+        }
+        let points = outline(c.pieces, first, last)
+        let n = points.len()
+        for i in 0..n {
+            let (a, b) = (points[i], points[(i + 1) % n])
+            let side = normalize(left(b - a))
+            if side.y < WALKABLE {
+                continue
+            }
+            let (up, down) = (side * GRASS_TALL, side * GRASS_ROOT)
+            for (p, h) in [
+                (a - down, -GRASS_ROOT),
+                (b - down, -GRASS_ROOT),
+                (b + up, GRASS_TALL),
+                (a - down, -GRASS_ROOT),
+                (b + up, GRASS_TALL),
+                (a + up, GRASS_TALL),
+            ] {
+                out.push(vec4(p, h, 0.0))
+                out.push(vec4(side, 0.0, 0.0))
+            }
+        }
+    }
+    out
+}
+
+pub const LAB_EARTH: Vec<vec4> = earth_mesh(course::LAB)
+pub const LEVEL_EARTH: Vec<vec4> = earth_mesh(course::LEVEL)
+pub const LAB_GRASS: Vec<vec4> = grass_mesh(course::LAB)
+pub const LEVEL_GRASS: Vec<vec4> = grass_mesh(course::LEVEL)
+
+// ---- the ground's top, sampled ----------------------------------------------------------------
+
+/// The profile's first x and its spacing (m), and how many samples it has.
+pub const FROM: f32 = -40.0
+pub const STEP: f32 = 0.25
+pub const SAMPLES: u32 = 1800
+
+/// The top of the solid ground at `x` among `outlines` (each a solid's points): the highest point
+/// where a side crosses the vertical through `x`, or far below where none does.
+pub fn ground_top(outlines: [Vec<vec2>], x: f32) -> f32 {
+    var top = -1.0e3
+    for points in outlines {
+        let n = points.len()
+        for i in 0..n {
+            let (a, b) = (points[i], points[(i + 1) % n])
+            if (a.x <= x && x < b.x) || (b.x <= x && x < a.x) {
+                top = max(top, a.y + (b.y - a.y) * (x - a.x) / (b.x - a.x))
+            }
+        }
+    }
+    top
+}
+
+/// Each solid's outline (not the ledges').
+pub fn solids(c: Course) -> Vec<Vec<vec2>> {
+    var out: Vec<Vec<vec2>> = Vec::new()
+    for k in 0..c.chains.len() - 1 {
+        if !c.pieces[c.chains[k]].ledge {
+            out.push(outline(c.pieces, c.chains[k], c.chains[k + 1]))
+        }
+    }
+    out
+}
+
+/// The top of the course's solid ground every `STEP` m from `FROM`.
+pub fn profile(c: Course) -> Vec<f32> {
+    let outlines = solids(c)
+    var out: Vec<f32> = Vec::new()
+    for i in 0..SAMPLES {
+        out.push(ground_top(outlines, FROM + f32(i) * STEP))
+    }
+    out
+}
+
+pub const LAB_TOPS: Vec<f32> = profile(course::LAB)
+pub const LEVEL_TOPS: Vec<f32> = profile(course::LEVEL)
+
+/// The profile's top at `x`, between its samples.
+pub fn top_at(tops: [f32], x: f32) -> f32 {
+    let f = clamp((x - FROM) / STEP, 0.0, f32(SAMPLES - 2))
+    let i = u32(f)
+    let t = f - f32(i)
+    tops[i] + (tops[i + 1] - tops[i]) * t
+}
+
+/// The lowest the ground's top could be near `x`: the least of the samples round it. Between two
+/// samples either side of a wall's face, `top_at` is partway up the wall where the wall isn't:
+/// what's sure to be ground is below this.
+pub fn surely_ground_below(tops: [f32], x: f32) -> f32 {
+    let f = clamp((x - FROM) / STEP, 1.0, f32(SAMPLES - 3))
+    let i = u32(f)
+    min(min(tops[i - 1], tops[i]), min(tops[i + 1], tops[i + 2]))
+}
+
+// ---- drawing ----------------------------------------------------------------------------------
+
+/// What the ground's shaders are told: the camera's matrix, the size of a pixel (m), the time
+/// (s), and what bends the grass: the capybara's feet, its velocity, how much it slides and how
+/// much it's on the ground (both eased).
+pub struct Field: Copy + GpuData {
+    pub view_proj: mat4,
+    pub feet: vec2,
+    pub vel: vec2,
+    pub px: f32,
+    pub time: f32,
+    pub sliding: f32,
+    /// How much the capybara is on the ground (0 in the air, 1 on it), eased in and out over a
+    /// fraction of a second: the grass parts round it only as it settles, so a landing doesn't
+    /// snap every tuft aside in a frame or two (Ryan, 2026-10-22: landing made the ground "shake in
+    /// a glitchy way").
+    pub presence: f32 = 1.0,
+}
+
+pub struct Earthel: Copy {
+    pub clip: ClipPosition,
+    pub world: vec2,
+    pub band: f32,
+    pub material: Flat<f32>,
+    pub side: Flat<vec2>,
+}
+
+@vertex
+pub fn earth_vertex(v: VertexIndex, verts: [vec4], f: Field) -> Earthel {
+    let a = verts[v.index * 2]
+    let b = verts[v.index * 2 + 1]
+    Earthel {
+        clip: ClipPosition { position: f.view_proj * vec4(a.xy, 0.5, 1.0) },
+        world: a.xy,
+        band: a.w,
+        material: Flat { value: a.z },
+        side: Flat { value: b.xy },
+    }
+}
+
+/// A pebble in the soil at `p`, if one is there: its colour and how much of the pixel it covers.
+/// One may sit in each cell 0.4 m square: an oval of stone, its lit half lighter, inked round.
+fn pebble(p: vec2, px: f32) -> vec4 {
+    let size = 0.4
+    let cell = floor(p / size)
+    let (cx, cy) = (i32(cell.x), i32(cell.y))
+    let h = hash2(cx, cy)
+    if h > 0.045 {
+        return vec4(0.0)
+    }
+    let r = size * (0.12 + 0.18 * hash2(cx + 71, cy))
+    let jitter = (vec2(hash2(cx, cy + 13), hash2(cx + 5, cy)) - vec2(0.5)) * 0.3
+    let centre = (cell + vec2(0.5) + jitter) * size
+    let l = p - centre
+    let d = (length(l / vec2(r, r * 0.72)) - 1.0) * r * 0.72
+    let stone = blend(vec3(0.9, 0.84, 0.74), vec3(0.8, 0.72, 0.64), hash2(cx + 3, cy + 9))
+    let lit = if dot(l, SUN) > -0.25 * r { stone } else { stone * 0.86 }
+    inked(lit, d, p, px * 1.5, px, INK)
+}
+
+/// The soil at `p`, `depth` m below the top of the ground: washes of ochre in wavering bands,
+/// darker and redder the deeper, roots inked near the top, pebbles, and the turf's shadow under
+/// its lip.
+fn soil(p: vec2, depth: f32, px: f32, g: Texture<Rgba16Float>, gs: Sampler) -> vec3 {
+    let band = grain(g, gs, vec2(p.x * 0.08, p.y * 0.7 + grain(g, gs, p * 0.3).z * 1.2)).w
+    var c = blend(vec3(0.86, 0.68, 0.46), vec3(0.8, 0.6, 0.42), smoothstep(0.45, 0.55, band))
+    c = blend(c, vec3(0.6, 0.42, 0.33), smoothstep(0.5, 7.0, depth) * 0.7)
+    c = washed(c, p, g, gs)
+    // A painted shadow under the turf's lip.
+    c *= 1.0 - 0.22 * smoothstep(TURF_DEPTH + 0.5, TURF_DEPTH, depth)
+    // Roots: wiggling inked lines, a contour of noise, near the top only.
+    if depth < 0.9 {
+        let root = abs(noise2(p * vec2(1.4, 2.2)) - 0.5) / 1.2
+        let roots = smoothstep(px * 1.0, px * 0.2, root) * smoothstep(0.9, 0.4, depth)
+        c = blend(c, INK, roots * 0.25)
+    }
+    let stone = pebble(p, px)
+    blend(c, stone.xyz, stone.w)
+}
+
+/// The earth: soil, turf, a cliff's rim, or a ledge's planks, each a wash, inked along the
+/// ground's edge. Ground under a pool's surface (`pools`: each one's left edge, first column,
+/// columns and surface) takes the water's blue, deeper the further down, so the bed of a lake
+/// looks under water.
+@fragment
+pub fn earth(
+    e: Earthel,
+    f: Field,
+    tops: [f32],
+    pools: [vec4],
+    g: Texture<Rgba16Float>,
+    gs: Sampler,
+) -> vec4 {
+    let p = e.world
+    let bed = top_at(tops, p.x)
+    let c = earth_colour(e, f, bed, g, gs)
+    var under = 0.0
+    var tint = 0.0
+    for i in 0..pools.len() {
+        let pool = pools[i]
+        if p.x >= pool.x && p.x <= pool.x + pool.z * 0.1 && p.y < pool.w && bed < pool.w {
+            // Fading out below the bed, over a distance as deep as the pool (at most 4 m).
+            let reach = min(4.0, (pool.w - bed) * 2.0)
+            under = max(under, pool.w - p.y)
+            tint = max(tint, 1.0 - smoothstep(0.0, reach, bed - p.y))
+        }
+    }
+    if tint <= 0.0 {
+        return c
+    }
+    let water = blend(vec3(0.42, 0.7, 0.78), vec3(0.2, 0.36, 0.55), smoothstep(0.0, 9.0, under))
+    vec4(blend(c.xyz, water, saturate(0.45 + under * 0.05) * tint), 1.0)
+}
+
+/// The earth's own colour, under no water: `top` is the top of the ground above it (m).
+fn earth_colour(e: Earthel, f: Field, top: f32, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+    let p = e.world
+    let px = f.px
+    let m = e.material.value
+    let depth = max(top - p.y, 0.0)
+    if m == PLANK {
+        // Planks a metre long, their grain inked along them, a lighter top edge.
+        let seam = abs(fract(p.x + 0.5 * floor(p.y * 2.0)) - 0.5) - 0.5
+        let grain = abs(noise2(vec2(p.x * 0.8, p.y * 26.0)) - 0.5)
+        var c = washed(vec3(0.86, 0.64, 0.42), p, g, gs)
+        c = blend(c, vec3(0.94, 0.78, 0.56), smoothstep(0.3, 0.1, e.band))
+        c = blend(c, vec3(0.62, 0.42, 0.28), smoothstep(0.04, 0.0, grain) * 0.5)
+        let across = min(e.band, 1.0 - e.band) * PLANK_THICK
+        let joint = inked(c, max(-across, seam), p, px * 1.6, px, INK)
+        return vec4(joint.xyz, 1.0)
+    }
+    let below = soil(p, depth, px, g, gs)
+    if m == SOIL {
+        return vec4(below, 1.0)
+    }
+    let across = e.band * if m == TURF { TURF_DEPTH } else { RIM_DEPTH }
+    if m == TURF {
+        // The turf: green, lighter at the top, its bottom edge scalloped and inked.
+        let edge = TURF_DEPTH * (0.55 + 0.22 * abs(sin(p.x * 6.0 + noise2(vec2(p.x, 0.0)) * 2.0)))
+        let green = blend(vec3(0.62, 0.8, 0.4), vec3(0.47, 0.67, 0.33), saturate(across / edge))
+        let turf = inked(washed(green, p, g, gs), across - edge, p, px * 1.8, px, INK)
+        return vec4(blend(below, turf.xyz, turf.w), 1.0)
+    }
+    // A cliff's rim: the soil, inked along the ground's edge, its lit side lighter.
+    let lit = if dot(e.side.value, SUN) > 0.0 { 0.08 } else { -0.06 }
+    let c = below * (1.0 + lit * smoothstep(RIM_DEPTH, 0.0, across))
+    vec4(inked(c, -across, p, px * 2.2, px, INK).xyz, 1.0)
+}
+
+pub struct Blade: Copy {
+    pub clip: ClipPosition,
+    pub world: vec2,
+    pub height: f32,
+}
+
+@vertex
+pub fn grass_vertex(v: VertexIndex, verts: [vec4], f: Field) -> Blade {
+    let a = verts[v.index * 2]
+    Blade {
+        clip: ClipPosition { position: f.view_proj * vec4(a.xy, 0.5, 1.0) },
+        world: a.xy,
+        height: a.z,
+    }
+}
+
+/// How far apart the grass's tufts grow (m).
+const TUFT: f32 = 0.24
+
+/// The grass along a walkable top: a scalloped lawn edge and tufts of three pointed blades
+/// rising from it, now and then a daisy, all one inked shape. The tufts lean in the wind, away
+/// from the capybara as it passes, and lie down where it slides.
+@fragment
+pub fn grass(b: Blade, f: Field) -> Over {
+    let x = b.world.x
+    let h = b.height
+    let px = f.px
+    if h < -GRASS_ROOT * 0.5 {
+        discard()
+    }
+    let q = vec2(x, h)
+    var d = h - (0.06 + 0.025 * abs(sin(x * 18.0)))
+    var tip = 0.0
+    var daisy = 1.0e3
+    let near = smoothstep(1.4, 0.4, abs(f.feet.y - (b.world.y - h))) * f.presence
+    let first = i32(floor(x / TUFT))
+    for k in -2..3 {
+        let i = first + k
+        let r1 = hash2(i, 1)
+        let r2 = hash2(i, 2)
+        let base = (f32(i) + 0.2 + 0.6 * r1) * TUFT
+        let dx = base - f.feet.x
+        let touch = smoothstep(0.8, 0.0, abs(dx)) * near
+        let gust = noise2(vec2(base * 0.2 - f.time * 0.6, 2.0)) - 0.45
+        let lean = gust * 0.12 + 0.03 * sin(f.time * 2.4 + base * 2.0) + sign(dx) * touch * 0.22
+        let tall = (0.16 + 0.18 * r2) * (1.0 - touch * (0.3 + 0.45 * f.sliding))
+        for j in 0..3 {
+            let s = f32(j) - 1.0
+            let top = vec2(base + s * 0.06 + lean + s * 0.05, tall * (1.0 - 0.25 * abs(s)))
+            let blade = cone(q, vec2(base + s * 0.05, 0.0), top, ra: 0.04, rb: 0.0)
+            if blade < d {
+                tip = saturate(h / max(tall, 0.01))
+            }
+            d = min(d, blade)
+        }
+        if hash2(i, 3) < 0.03 {
+            let head = vec2(base + lean * 1.4, tall + 0.1)
+            d = min(d, cone(q, vec2(base, 0.0), head, ra: 0.012, rb: 0.012))
+            daisy = min(daisy, length(q - head) - 0.05)
+        }
+    }
+    var fill = blend(vec3(0.5, 0.72, 0.34), vec3(0.74, 0.88, 0.48), tip)
+    fill = wash(fill, b.world)
+    var o = inked(fill, d, q, px * 1.4, px, vec3(0.2, 0.33, 0.15))
+    if daisy < px * 2.0 {
+        let centre = daisy + 0.03
+        let white = blend(vec3(1.0, 0.97, 0.9), vec3(1.0, 0.8, 0.3), smoothstep(px, -px, centre))
+        let petals = inked(white, daisy, q, px * 1.4, px, INK)
+        o = vec4(blend(o.xyz, petals.xyz, petals.w), max(o.w, petals.w))
+    }
+    if o.w <= 0.0 {
+        discard()
+    }
+    Over { color: o }
+}

@@ -1,0 +1,181 @@
+// "06 - Tiptoe": a brisk, comic chase in D minor. The hook says D, stop, F-E-D,
+// then answers with a small downward curl. A bouncing bass and short offbeat chords
+// keep it moving; gaps let the joke land. The middle turns to sunny F major before
+// the minor hook returns. Four eight-bar sections, 32 bars at 132 BPM, with no pedal.
+
+use engine::score::{Score, meter, score}
+
+const HOOK = score("tiptoe, the hook", meter(beats: 4, unit: 4))
+    .voice(
+        "melody",
+        [
+            "d5/8 !mf !staccato r f5 !staccato e5 !staccato d5/4 !accent a4/8 !staccato r |",
+            "bb4/8 !staccato a4 !staccato r g4 !staccato a4/4 !accent r/4 |",
+            "d5/8 !staccato r f5 !staccato e5 !staccato d5/4 !accent f5/8 a5 |",
+            "g5/8 !staccato f5 !staccato d5/4 !accent r/2 |",
+            "bb4/8 !staccato r d5 !staccato c5 !staccato bb4/4 !accent f5/8 r |",
+            "e5/8 !staccato d5 !staccato r c#5 !staccato a4/4 !accent r/4 |",
+            "d5/8 !staccato r f5 !staccato e5 !staccato d5/4 a4/8 d5 |",
+            "c#5/8 !staccato a4/8 !staccato r/2 a4/8 c#5/8 |",
+        ],
+    )
+    .voice(
+        "harmony",
+        [
+            "r/8 <f3 a3 d4>/8 !staccato r/4 r/8 <f3 a3 d4>/8 !staccato r/4 |",
+            "r/8 <e3 g3 c#4>/8 !staccato r/4 r/8 <e3 g3 c#4>/8 !staccato r/4 |",
+            "r/8 <f3 a3 d4>/8 !staccato r/4 r/8 <f3 a3 d4>/8 !staccato r/4 |",
+            "r/8 <g3 bb3 d4>/8 !staccato r/4 r/2 |",
+            "r/8 <f3 bb3 d4>/8 !staccato r/4 r/8 <f3 bb3 d4>/8 !staccato r/4 |",
+            "r/8 <e3 g3 c#4>/8 !staccato r/4 r/8 <e3 g3 c#4>/8 !staccato r/4 |",
+            "r/8 <f3 a3 d4>/8 !staccato r/4 r/8 <f3 a3 d4>/8 !staccato r/4 |",
+            "<e3 g3 c#4>/8 !staccato r/8 r/2 r/4 |",
+        ],
+    )
+    .voice(
+        "bass",
+        [
+            "d2/4 !staccato r/8 a2/8 !staccato d3/4 !staccato a2/8 !staccato r/8 |",
+            "a2/4 !staccato r/8 e3/8 !staccato a2/4 !staccato e3/8 !staccato r/8 |",
+            "d2/4 !staccato r/8 a2/8 !staccato d3/4 !staccato a2/8 !staccato r/8 |",
+            "g2/4 !staccato d3/4 !staccato r/2 |",
+            "bb2/4 !staccato r/8 f3/8 !staccato bb2/4 !staccato f3/8 !staccato r/8 |",
+            "a2/4 !staccato r/8 e3/8 !staccato a2/4 !staccato e3/8 !staccato r/8 |",
+            "d2/4 !staccato r/8 a2/8 !staccato d3/4 !staccato a2/8 !staccato r/8 |",
+            "a2/8 !staccato r/8 r/2 e3/8 !staccato a2/8 !staccato |",
+        ],
+    )
+
+const PURSUIT = score("tiptoe, round the corner", meter(beats: 4, unit: 4))
+    .voice(
+        "melody",
+        [
+            "a4/8 !mp !staccato r d5 !staccato c5 !staccato a4/4 f4/8 a4 |",
+            "g4/8 !staccato c5 !staccato r e5 !staccato g5/4 !accent e5/8 c5 |",
+            "d5/8 !staccato r f5 !staccato e5 !staccato d5/4 bb4/8 d5 |",
+            "c#5/8 !staccato d5 !staccato e5 !staccato c#5 !staccato a4/4 r/4 |",
+            "bb4/8 !mf !staccato r d5 !staccato c5 !staccato bb4/4 g4/8 bb4 |",
+            "a4/8 !staccato r d5 !staccato c5 !staccato a4/4 f5/8 e5 |",
+            "g5/8 !staccato f5 !staccato e5 !staccato d5 !staccato bb4/4 g4/8 bb4 |",
+            "a4/8 !staccato c#5 !staccato e5/4 !accent r/4 c5/8 e5 |",
+        ],
+    )
+    .voice(
+        "harmony",
+        [
+            "r/8 <f3 a3 d4>/8 !staccato r/4 r/8 <f3 a3 d4>/8 !staccato r/4 |",
+            "r/8 <e3 g3 c4>/8 !staccato r/4 r/8 <e3 g3 c4>/8 !staccato r/4 |",
+            "r/8 <f3 bb3 d4>/8 !staccato r/4 r/8 <f3 bb3 d4>/8 !staccato r/4 |",
+            "r/8 <e3 g3 c#4>/8 !staccato r/4 r/8 <e3 g3 c#4>/8 !staccato r/4 |",
+            "r/8 <g3 bb3 d4>/8 !staccato r/4 r/8 <g3 bb3 d4>/8 !staccato r/4 |",
+            "r/8 <f3 a3 d4>/8 !staccato r/4 r/8 <f3 a3 d4>/8 !staccato r/4 |",
+            "r/8 <g3 bb3 e4>/8 !staccato r/4 r/8 <g3 bb3 e4>/8 !staccato r/4 |",
+            "r/8 <g3 a3 c#4>/8 !staccato r/4 r/2 |",
+        ],
+    )
+    .voice(
+        "bass",
+        [
+            "d2/4 !staccato r/8 a2/8 !staccato d3/4 !staccato a2/8 !staccato r/8 |",
+            "c3/4 !staccato r/8 g2/8 !staccato c3/4 !staccato g2/8 !staccato r/8 |",
+            "bb2/4 !staccato r/8 f3/8 !staccato bb2/4 !staccato f3/8 !staccato r/8 |",
+            "a2/4 !staccato r/8 e3/8 !staccato a2/4 !staccato e3/8 !staccato r/8 |",
+            "g2/4 !staccato r/8 d3/8 !staccato g2/4 !staccato d3/8 !staccato r/8 |",
+            "a2/4 !staccato r/8 d3/8 !staccato a2/4 !staccato d3/8 !staccato r/8 |",
+            "e2/4 !staccato r/8 bb2/8 !staccato e3/4 !staccato bb2/8 !staccato r/8 |",
+            "a2/4 !staccato e3/4 !staccato r/4 c3/8 !staccato e3/8 !staccato |",
+        ],
+    )
+
+const SUNSHINE = score("tiptoe, into the sunshine", meter(beats: 4, unit: 4))
+    .voice(
+        "melody",
+        [
+            "f5/8 !mp !staccato r a5 !staccato g5 !staccato f5/4 !accent c5/8 r |",
+            "d5/8 !staccato c5 !staccato r bb4 !staccato c5/4 !accent r/4 |",
+            "f5/8 !staccato r a5 !staccato g5 !staccato f5/4 a5/8 g5 |",
+            "f5/8 !staccato d5 !staccato r bb4 !staccato d5/4 r/4 |",
+            "g5/8 !mf !staccato f5 !staccato r d5 !staccato bb4/4 d5/8 f5 |",
+            "e5/8 f5 g5 e5 c5/4 !accent r/8 e5/8 |",
+            "f5/4 !accent c5/8 f5 a5/4 g5/8 f5 |",
+            "e5/8 !staccato d5 !staccato c#5 !staccato a4 !staccato r/4 a4/8 c#5 |",
+        ],
+    )
+    .voice(
+        "harmony",
+        [
+            "r/8 <f3 a3 c4>/8 !staccato r/4 r/8 <f3 a3 c4>/8 !staccato r/4 |",
+            "r/8 <e3 bb3 c4>/8 !staccato r/4 r/8 <e3 bb3 c4>/8 !staccato r/4 |",
+            "r/8 <f3 a3 c4>/8 !staccato r/4 r/8 <f3 a3 c4>/8 !staccato r/4 |",
+            "r/8 <f3 bb3 d4>/8 !staccato r/4 r/8 <f3 bb3 d4>/8 !staccato r/4 |",
+            "r/8 <g3 bb3 d4>/8 !staccato r/4 r/8 <g3 bb3 d4>/8 !staccato r/4 |",
+            "r/8 <e3 bb3 c4>/8 !staccato r/4 r/8 <e3 bb3 c4>/8 !staccato r/4 |",
+            "r/8 <f3 a3 c4>/8 !staccato r/4 r/8 <f3 a3 c4>/8 !staccato r/4 |",
+            "<e3 g3 c#4>/8 !staccato r/8 r/2 r/4 |",
+        ],
+    )
+    .voice(
+        "bass",
+        [
+            "f2/4 !staccato r/8 c3/8 !staccato f3/4 !staccato c3/8 !staccato r/8 |",
+            "c3/4 !staccato r/8 g2/8 !staccato c3/4 !staccato g2/8 !staccato r/8 |",
+            "f2/4 !staccato r/8 c3/8 !staccato f3/4 !staccato c3/8 !staccato r/8 |",
+            "bb2/4 !staccato r/8 f3/8 !staccato bb2/4 !staccato f3/8 !staccato r/8 |",
+            "g2/4 !staccato r/8 d3/8 !staccato g2/4 !staccato d3/8 !staccato r/8 |",
+            "c3/4 !staccato r/8 g2/8 !staccato c3/4 !staccato g2/8 !staccato r/8 |",
+            "f2/4 !staccato r/8 c3/8 !staccato f3/4 !staccato c3/8 !staccato r/8 |",
+            "a2/8 !staccato r/8 r/2 e3/8 !staccato a2/8 !staccato |",
+        ],
+    )
+
+const RETURN = score("tiptoe, caught you", meter(beats: 4, unit: 4))
+    .voice(
+        "melody",
+        [
+            "d5/8 !f !staccato r f5 !staccato e5 !staccato d5/4 !accent a4/8 !staccato r |",
+            "bb4/8 !staccato a4 !staccato r g4 !staccato a4/4 !accent r/4 |",
+            "<d5 f5>/8 !staccato r f5 !staccato e5 !staccato d5/4 !accent f5/8 a5 |",
+            "g5/8 !staccato f5 !staccato e5 !staccato d5 !staccato c#5/4 !accent r/4 |",
+            "bb4/8 !staccato r d5 !staccato c5 !staccato bb4/4 !accent f5/8 e5 |",
+            "e5/8 !staccato r g5 !staccato f5 !staccato e5/4 !accent c#5/8 r |",
+            "d5/8 !staccato r f5 !staccato e5 !staccato d5/4 c#5/8 a4 |",
+            "<d4 a4 d5>/4 !mf !accent r/4 r/2 |",
+        ],
+    )
+    .voice(
+        "harmony",
+        [
+            "r/8 <f3 a3 d4>/8 !staccato r/4 r/8 <f3 a3 d4>/8 !staccato r/4 |",
+            "r/8 <e3 g3 c#4>/8 !staccato r/4 r/8 <e3 g3 c#4>/8 !staccato r/4 |",
+            "r/8 <f3 a3 d4>/8 !staccato r/4 r/8 <f3 a3 d4>/8 !staccato r/4 |",
+            "r/8 <e3 g3 c#4>/8 !staccato r/4 r/8 <e3 g3 c#4>/8 !staccato r/4 |",
+            "r/8 <f3 bb3 d4>/8 !staccato r/4 r/8 <f3 bb3 d4>/8 !staccato r/4 |",
+            "r/8 <e3 g3 c#4>/8 !staccato r/4 r/8 <e3 g3 c#4>/8 !staccato r/4 |",
+            "r/8 <f3 a3 d4>/8 !staccato r/4 r/8 <e3 g3 c#4>/8 !staccato r/4 |",
+            "<f3 a3 d4>/4 !accent r/4 r/2 |",
+        ],
+    )
+    .voice(
+        "bass",
+        [
+            "d2/4 !staccato r/8 a2/8 !staccato d3/4 !staccato a2/8 !staccato r/8 |",
+            "a2/4 !staccato r/8 e3/8 !staccato a2/4 !staccato e3/8 !staccato r/8 |",
+            "d2/4 !staccato r/8 a2/8 !staccato d3/4 !staccato a2/8 !staccato r/8 |",
+            "a2/4 !staccato r/8 e3/8 !staccato a2/4 !staccato e3/8 !staccato r/8 |",
+            "bb2/4 !staccato r/8 f3/8 !staccato bb2/4 !staccato f3/8 !staccato r/8 |",
+            "a2/4 !staccato r/8 e3/8 !staccato a2/4 !staccato e3/8 !staccato r/8 |",
+            "d2/4 !staccato r/8 a2/8 !staccato a2/4 !staccato e3/8 !staccato r/8 |",
+            "d2/4 !accent r/4 r/2 |",
+        ],
+    )
+
+/// The original 32-bar piano audition, with the same hook in minor and major.
+pub const SCORE: Score = score("06 - Tiptoe", meter(beats: 4, unit: 4))
+    .then(HOOK)
+    .then(PURSUIT)
+    .then(SUNSHINE)
+    .then(RETURN)
+    .with_tempo("Brisk, light and on tiptoe")
+
+/// Quarter notes per minute: about 58 seconds before the piano's tail.
+pub const TEMPO: f32 = 132.0
