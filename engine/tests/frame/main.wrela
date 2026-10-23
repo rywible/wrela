@@ -1,11 +1,14 @@
-// A bare scene (flat ground, open land, the sky's own clouds) drawn through `engine::frame` on the
+// A bare scene (flat ground, which casts into the cascades, open land, the sky's own clouds) drawn through `engine::frame` on the
 // GPU, and a script of what a game does to a frame: it loads; 30 frames after its first full frame
 // the eye jumps 500 m; once that arrival is shown, the weather changes; 90 frames later the sun
-// moves; once its cascades are drawn again, the screen is held for 8 frames. Each frame's plan
-// (`engine::cook::Planner`) and readiness are recorded, and the tests read the record.
+// moves; once its cascades are drawn again, the screen is held for 8 frames; then the frame
+// measures its work on this device (`Quality::measured`), and its cascades and probes are drawn
+// again to be measured. Each frame's plan (`engine::cook::Planner`) and readiness are recorded,
+// and the tests read the record. Until it measures, a frame's order is the same on every run and
+// in both hosts.
 
 use engine::air::{Air, hazy}
-use engine::cook::Work
+use engine::cook::{Evidence, Work}
 use engine::frame::{Aim, Change, Frame, Gathered, Quality, Scene}
 use engine::light::{Light, SUN_TOP, sunlight}
 use engine::plant::Wind
@@ -62,6 +65,11 @@ impl Scene for Bare {
 
     fn cook_ground(mut self, clipmap: mut Clipmap, eye: vec3, again: bool) -> u32 {
         clipmap.follow(Flat {}, eye, again)
+    }
+
+    /// The ground casts into the static cascades: their depth is its plane seen from the sun.
+    fn ground_casts(self) -> bool {
+        true
     }
 }
 
@@ -170,6 +178,9 @@ fn script(s: mut State) {
         Step::Hold => if since >= 8 {
             next(mut s, Step::Done)
             s.frame.hold = false
+            s.frame.requality(Quality { measured: true })
+            s.frame.changed(Change::Casters)
+            s.frame.changed(Change::Occluders)
         },
         Step::Done => {},
     }
@@ -352,3 +363,39 @@ fn a_held_screen_runs_frames_and_draws_none(s: State) {
     let last = s.records[s.records.len() - 1]
     assert(last.drawn > drawn, "drawing didn't resume once it was let go")
 }
+
+/// A measuring frame plans with what this device takes: each kind it times, once it has run a
+/// step alone, is measured (the records of the cascades' strips moved to this device's), and a
+/// time is more than nothing. No test says how small.
+@test(frames: 900, gpu: true)
+fn the_planner_measures_this_devices_costs(s: State) {
+    reached(s, Step::Done)
+    borrow p = s.frame.cooks.planner
+    let fresh = engine::cook::Planner::new(engine::cook::Budget {})
+    for w in [
+        Work::SkyPhase,
+        Work::NearStrip,
+        Work::FarStrip,
+        Work::ProbeOccluders,
+        Work::ProbeStrip,
+    ] {
+        let c = p.cost(w)
+        assert(c.evidence == Evidence::Measured && c.us > 0.0, f"a step wasn't measured: {c.us} us")
+        assert(c.us != fresh.cost(w).us, f"a step kept the code's cost: {c.us} us")
+    }
+}
+
+/// The settled bare scene after its jump and its weather is its golden on this machine's GPU,
+/// within a GPU's differences.
+@test(frames: 200, gpu: true, golden: "goldens/bare.png", within: 1.0)
+fn the_bare_scene_is_its_golden(s: State) {}
+
+/// The near cascade, as its last strip's pass left it, is its golden: a strip drawn wrong or
+/// into the wrong place shows in its depth.
+@test(frames: 200, gpu: true, golden: "goldens/near-cascade.png", pass: "shadows near")
+fn the_near_cascade_is_its_golden(s: State) {}
+
+/// Both hosts draw the same frames: Chrome's state hash after the load, the jump and the weather
+/// is the native host's, and its last frame is the native host's within a GPU's differences.
+@test(frames: 200, gpu: true, hosts: both)
+fn both_hosts_draw_the_same_frames(s: State) {}

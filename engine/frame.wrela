@@ -41,9 +41,9 @@ use std::gpu::{
     Address, ClipPosition, ComparisonSampler, DepthTexture, FragmentShader, GpuBuffer, GpuSpan,
     R32Uint, RenderPass, Rgba16Float, Sampler, ScreenPass, Texture, VertexIndex, begin_depth_pass,
     begin_pass, begin_pass_with_depth, begin_screen_pass, buffer, comparison_sampler, depth_texture,
-    dispatch, draw, label, sampler, texture, writable_texture,
+    dispatch, draw, label, sampler, texture, timed, writable_texture,
 }
-use std::io::print
+use std::io::{Pending, print}
 
 /// A triangle that covers the target, at depth `z`.
 @vertex
@@ -445,7 +445,22 @@ pub struct Quality: Copy {
     /// How much of this frame a pixel takes where a sample falls on it (temporal AA).
     pub blend: f32 = 0.12,
     pub budget: Budget = Budget {},
+    /// Whether the planner learns this device's costs: after a frame that ran one step of a
+    /// kind it plans, the frame asks for that step's GPU time (`std::gpu::timed`), and the
+    /// planner plans with it from then on (`Planner::measure`). Off, it plans with the code's
+    /// estimates and records, and a frame's order is the same on every run.
+    pub measured: bool = false,
 }
+
+/// The kinds of work a measuring frame times (`Quality::measured`), each by the label its pass or
+/// dispatch carries.
+const MEASURED: [(Work, Text); 5] = [
+    (Work::SkyPhase, "clouds"),
+    (Work::NearStrip, "shadows near"),
+    (Work::FarStrip, "shadows far"),
+    (Work::ProbeOccluders, "probes occluders"),
+    (Work::ProbeStrip, "probes bake"),
+]
 
 /// The static cascades: the near one (its square's `centre` is where it starts, and where it
 /// stays if it doesn't follow the eye), in how many strips it's drawn, and how far the eye goes
@@ -584,6 +599,10 @@ pub struct Frame<R: Resolver> {
     pub linear: Sampler,
     pub repeat: Sampler,
     pub cooks: Cooks,
+    /// The steps whose GPU time a measuring frame asked for and hasn't had (`Quality::measured`),
+    /// and whether the host can't time them (it stops asking).
+    measuring: Vec<(Work, Pending<f32>)>,
+    untimed: bool,
     /// The paced scale (`Quality::pace`).
     pub pacer: Scale,
     pub ready: Readiness,
@@ -722,6 +741,8 @@ impl<R: Resolver> Frame<R> {
                 near_changed: false,
                 far_changed: false,
             },
+            measuring: Vec::new(),
+            untimed: false,
             pacer: Scale {},
             ready: Readiness {
                 playable: false,
@@ -1028,6 +1049,9 @@ impl<R: Resolver> Frame<R> {
             self.ready.playable_at = Some(self.frames)
             print(f"playable at frame {self.frames}")
         }
+        if self.quality.measured {
+            self.measure()
+        }
         if self.hold {
             self.ran += 1
             return
@@ -1037,6 +1061,39 @@ impl<R: Resolver> Frame<R> {
         self.finish(scene)
         self.frames += 1
         self.ran += 1
+    }
+
+    /// A measuring frame's times (`Quality::measured`): each that's come is the planner's, and
+    /// each kind that ran one step this frame, and isn't being timed, is asked for (its answer is
+    /// this frame's step's, which ran before the ask).
+    fn measure(mut self) {
+        var k = 0
+        while k < self.measuring.len() {
+            let w = self.measuring[k].0
+            match self.measuring[k].1.poll() {
+                Some(Ok(us)) => {
+                    self.cooks.planner.measure(w, us[0])
+                    let _ = self.measuring.remove(k)
+                },
+                Some(Err(_)) => {
+                    self.untimed = true
+                    let _ = self.measuring.remove(k)
+                },
+                None => k += 1,
+            }
+        }
+        if self.untimed {
+            return
+        }
+        for (w, name) in MEASURED {
+            var asked = false
+            for m in self.measuring {
+                asked = asked || m.0 == w
+            }
+            if !asked && self.cooks.planner.ran(w) == 1 {
+                self.measuring.push((w, timed(name)))
+            }
+        }
     }
 
     /// Whether a frame from `eye_w` (the world's) is full: the near cascade drawn, the probes in

@@ -69,9 +69,10 @@ pub enum Evidence: Copy + Eq {
     Estimated,
 }
 
-/// The costs a frame plans with. The measured ones are the code's own records (the realizer's
-/// levels, the far cascade's strips in Chrome); the rest are estimates until a program can read
-/// its own GPU timings (docs/toolchain-gaps.md).
+/// The costs a frame plans with at first. The measured ones are the code's own records (the
+/// realizer's levels, the far cascade's strips in Chrome); the rest are estimates. A frame that
+/// measures its work (`frame::Quality::measured`) replaces each with what this device takes
+/// (`Planner::measure`).
 pub fn costs() -> [Cost; WORKS] {
     let e = |us: f32| Cost { us, evidence: Evidence::Estimated }
     let m = |us: f32| Cost { us, evidence: Evidence::Measured }
@@ -224,6 +225,15 @@ impl Planner {
     pub fn cost(self, w: Work) -> Cost {
         self.costs[w.index()]
     }
+
+    /// A step of `w` measured on this device at `us` microseconds of GPU time: the first
+    /// measurement replaces the estimate, and later ones move the cost a quarter of the way to
+    /// each, so one slow frame doesn't starve the work.
+    pub fn measure(mut self, w: Work, us: f32) {
+        let c = self.costs[w.index()]
+        let measured = if c.evidence == Evidence::Measured { c.us + (us - c.us) * 0.25 } else { us }
+        self.costs[w.index()] = Cost { us: measured, evidence: Evidence::Measured }
+    }
 }
 
 impl Work {
@@ -295,4 +305,26 @@ fn a_capture_fills_its_caches() {
     }
     p.begin(levels: 0, playable: true, near_ready: true, filling: false)
     assert(p.steps(filling: true) == 1, "play took a capture's steps")
+}
+
+/// A measured step replaces the estimate at once, and later measurements move the cost a quarter
+/// of the way: what the budget then admits follows the device.
+@test
+fn a_measured_cost_replaces_the_estimate_and_follows_the_device() {
+    var p = Planner::new(Budget { playing_us: 2500.0 })
+    assert(p.cost(Work::NearStrip).evidence == Evidence::Measured, "the near strips' record")
+    assert(p.cost(Work::ProbeStrip).evidence == Evidence::Estimated)
+    p.measure(Work::ProbeStrip, 400.0)
+    let c = p.cost(Work::ProbeStrip)
+    assert(c.evidence == Evidence::Measured && c.us == 400.0, f"{c.us}")
+    p.measure(Work::ProbeStrip, 800.0)
+    assert(p.cost(Work::ProbeStrip).us == 500.0, f"{p.cost(Work::ProbeStrip).us}")
+    // The near strips' record (1400) moves a quarter of the way to a measured 2000: 1550. A dome
+    // phase (800) fits a budget of 2500 beside it, and a tile (300) more doesn't.
+    p.measure(Work::NearStrip, 2000.0)
+    assert(p.cost(Work::NearStrip).us == 1550.0, f"{p.cost(Work::NearStrip).us}")
+    p.begin(levels: 0, playable: true, near_ready: false, filling: false)
+    assert(p.may(Work::NearStrip), "the first step runs")
+    assert(p.may(Work::SkyPhase), "800 more fits")
+    assert(!p.may(Work::Tile), "300 more doesn't")
 }
