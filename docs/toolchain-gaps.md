@@ -6,22 +6,6 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 
 ## Open
 
-### The browser's canvas isn't in the device's preferred format
-
-- **Needed:** the console's opening and library cost as little as they can a frame, on any device, so the page stays cool and saves battery while it is left open.
-- **What happens:** toolchain 0.3.1's browser runtime configures the screen's canvas as `rgba8unorm` (`SCREEN_FORMAT`, `runtime/browser/src/abi.gen.ts`). Chrome on a Mac prefers `bgra8unorm` (`navigator.gpu.getPreferredCanvasFormat()`) and warns: "WebGPU canvas configured with a different format than is preferred by this device ("bgra8unorm"). This requires an extra copy, which may impact performance." Every frame a program presents pays a copy of the whole screen.
-- **Found:** 2026-10-22, optimizing the console, in the Claude desktop app's browser pane (Chrome 152) on an M4 MacBook Air.
-- **Meanwhile:** the console presents fewer frames (it draws only what changes, at most 30 a second while idle), which pays the copy less often.
-- **Status:** open. Fix: the runtime configures the canvas in the preferred format and draws the screen's passes into it (the screen's pipelines built for that format), with a test that the canvas uses `getPreferredCanvasFormat()`.
-
-### A tool's write empties the file before it writes it
-
-- **Needed:** the keys tool (`games/capybara/keys`) writes takes.wrela again, every take Ryan has kept, each time he keeps one; the route tool writes routes.wrela again. A write that fails must leave the file as it was.
-- **What happens:** toolchain 0.3.1's `files::write` (and `write_blob`) empties the file, then writes into it (`runtime/native/src/tool/caps.rs`, `open_file` then `write_with`). A write that fails part way, on a full disk say, leaves it empty or half written, and the page says only "Not kept": the takes kept since the last commit are lost.
-- **Found:** 2026-10-22, in a council review of the capybara branch, from toolchain 0.3.0's source.
-- **Meanwhile:** nothing; commit takes.wrela after keeping takes.
-- **Status:** fixed in rywible/wrela-compiler#21 (to be released as 0.3.2): a write goes to a new file beside the old, which then takes its place. The pin moves to 0.3.2 once it's released.
-
 ### `wrela trace` and `wrela bisect` don't run a program's ticker
 
 - **Needed:** an agent watching a ticked game's state frame by frame (`wrela trace <package> --watch <export> --input script.json`), and finding the first frame a condition holds (`wrela bisect`).
@@ -41,6 +25,22 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Status:** open; the cause needs confirming before a fix. If nested workers are the cause, a fix is for the page to start the ticker's worker and hand its port to the render worker.
 
 ## Fixed
+
+### The browser's canvas isn't in the device's preferred format
+
+- **Needed:** the console's opening and library cost as little as they can a frame, on any device, so the page stays cool and saves battery while it is left open.
+- **What happens:** toolchain 0.3.1's browser runtime configures the screen's canvas as `rgba8unorm` (`SCREEN_FORMAT`, `runtime/browser/src/abi.gen.ts`). Chrome on a Mac prefers `bgra8unorm` (`navigator.gpu.getPreferredCanvasFormat()`) and warns: "WebGPU canvas configured with a different format than is preferred by this device ("bgra8unorm"). This requires an extra copy, which may impact performance." Every frame a program presents pays a copy of the whole screen.
+- **Found:** 2026-10-22, optimizing the console, in the Claude desktop app's browser pane (Chrome 152) on an M4 MacBook Air.
+- **Meanwhile:** the console presents fewer frames (it draws only what changes, at most 30 a second while idle), which pays the copy less often.
+- **Status:** fixed in 0.3.3 (rywible/wrela-compiler#22): the manifest marks the screen's targets (`"screen": true`, manifest version 9), and a normal run configures the canvas in `getPreferredCanvasFormat()` and builds the screen's pipelines in it; test mode keeps `rgba8unorm`, which it reads back. Checked in Chrome on the M4 Air: no warning.
+
+### A tool's write empties the file before it writes it
+
+- **Needed:** the keys tool (`games/capybara/keys`) writes takes.wrela again, every take Ryan has kept, each time he keeps one; the route tool writes routes.wrela again. A write that fails must leave the file as it was.
+- **What happens:** toolchain 0.3.1's `files::write` (and `write_blob`) empties the file, then writes into it (`runtime/native/src/tool/caps.rs`, `open_file` then `write_with`). A write that fails part way, on a full disk say, leaves it empty or half written, and the page says only "Not kept": the takes kept since the last commit are lost.
+- **Found:** 2026-10-22, in a council review of the capybara branch, from toolchain 0.3.0's source.
+- **Meanwhile:** nothing; commit takes.wrela after keeping takes.
+- **Status:** fixed in 0.3.2 (rywible/wrela-compiler#21): a write goes to a new file beside the old, which then takes its place. The pin is 0.3.3, which holds it.
 
 ### A failed load can't be told from nothing stored
 
