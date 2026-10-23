@@ -32,19 +32,22 @@ use slack::{STRETCH, pressed}
 use std::hash::{Hasher, StateHash, state_hash}
 
 /// The pads the search holds, each for a layer's ticks, `PRESS` on the first alone: run on,
-/// press jump and hold it, hold it, tap it, slide (or tuck, or dive), jump out of a slide, swim
-/// up, let go, back, and back down.
-pub const ACTIONS: [u32; 10] = [
+/// press jump and hold it, hold it, tap it, slide (or tuck, or dive), jump out of a slide, slide
+/// with jump held, swim up, swim up with a jump, let go, back, back down, and jump on the spot.
+pub const ACTIONS: [u32; 13] = [
     RIGHT,
     RIGHT | JUMP | PRESS,
     RIGHT | JUMP,
     RIGHT | PRESS,
     RIGHT | DOWN,
     RIGHT | DOWN | JUMP | PRESS,
+    RIGHT | DOWN | JUMP,
     RIGHT | UP,
+    RIGHT | UP | JUMP | PRESS,
     0,
     LEFT,
     LEFT | DOWN,
+    JUMP | PRESS,
 ]
 
 /// The buttons the search holds with the human limits, each for a layer's ticks: run on, jump (a
@@ -63,9 +66,13 @@ pub const HUMAN_ACTIONS: [u32; 10] = [
     JUMP,
 ]
 
-/// The actions a search with `s` takes.
-fn actions(s: Settings) -> [u32; 10] {
-    if s.human { HUMAN_ACTIONS } else { ACTIONS }
+/// How many actions a search with `s` takes, and its action `a`.
+fn count(s: Settings) -> u32 {
+    if s.human { HUMAN_ACTIONS.len() } else { ACTIONS.len() }
+}
+
+fn action(s: Settings, a: u32) -> u32 {
+    if s.human { HUMAN_ACTIONS[a] } else { ACTIONS[a] }
 }
 
 /// Where a segment ends, and the snacks a run must have found by then (a bit each).
@@ -104,7 +111,7 @@ const SLACK: f32 = 1.5
 struct Node: Copy {
     w: World,
     last: u32,
-    kids: [Kid; 10],
+    kids: [Kid; 13],
 }
 
 /// A state one action makes, and the buttons that action held: whether it lives (it didn't die,
@@ -141,7 +148,7 @@ pub fn ended(w: World, goal: Goal) -> bool {
 }
 
 /// Whether `w` can still make its segment: not dying, and not past a snack it needs.
-fn alive(w: World, goal: Goal) -> bool {
+pub fn alive(w: World, goal: Goal) -> bool {
     if w.dying > 0 {
         return false
     }
@@ -230,7 +237,7 @@ fn kid(w: World) -> Kid {
 }
 
 fn node(w: World, last: u32) -> Node {
-    Node { w, last, kids: [kid(w); 10] }
+    Node { w, last, kids: [kid(w); 13] }
 }
 
 /// The pad of tick `i` of a layer that holds `action` after the buttons `last`.
@@ -272,9 +279,8 @@ fn act(n: Node, action: u32, goal: Goal, s: Settings) -> Kid {
 /// Every action held from `n`'s state.
 @deterministic
 fn expand(n: mut Node, goal: Goal, s: Settings) {
-    let acts = actions(s)
-    for a in 0..acts.len() {
-        n.kids[a] = act(n, acts[a], goal, s)
+    for a in 0..count(s) {
+        n.kids[a] = act(n, action(s, a), goal, s)
     }
 }
 
@@ -387,13 +393,13 @@ impl Search {
         let goal = self.goal
         let settings = self.settings
         self.nodes.par_each_mut(|n| expand(mut n, goal, settings))
-        self.states += self.nodes.len() * 10
+        self.states += self.nodes.len() * count(settings)
         // The kids that ended: the earliest tick, then the best pick.
         var best: Option<Pick> = None
         var best_tick: u32 = 0
         var picks: Vec<Pick> = Vec::new()
         for i in 0..self.nodes.len() {
-            for a in 0..ACTIONS.len() {
+            for a in 0..count(settings) {
                 borrow k = self.nodes[i].kids[a]
                 if !k.live {
                     continue
@@ -465,15 +471,14 @@ impl Search {
     /// layer's ticks, the last until it ended.
     fn finish(mut self, p: Pick) {
         let k = self.nodes[p.node].kids[p.action]
-        let acts = actions(self.settings)
         var taken: Vec<u32> = Vec::new()
-        taken.push(acts[p.action])
+        taken.push(action(self.settings, p.action))
         var at = p.node
         var l = self.links.len()
         while l > 0 {
             l -= 1
             let link = self.links[l][at]
-            taken.push(acts[link.action])
+            taken.push(action(self.settings, link.action))
             at = link.parent
         }
         var pads: Vec<u32> = Vec::new()

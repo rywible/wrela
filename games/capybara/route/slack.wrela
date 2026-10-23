@@ -5,19 +5,31 @@
 //   pressed only as it goes down, after it was let go (so no press and release within one tick,
 //   and no press while it's held). The run's last stretch may be shorter: the goal ends it.
 // - Slack: each change of the held buttons, moved 1 and 2 ticks early or late, one at a time (the
-//   old buttons held on, or the new ones pressed sooner), and played to the end. A change is firm
-//   if all four still reach the run's end as its goal asks, with no death; a forgiving run's
-//   changes nearly all are.
+//   old buttons held on, or the new ones pressed sooner), then played on with the run's buttons.
+//   A change is firm within a window of ticks if all four live through the window (or reach the
+//   run's end as its goal asks first), with no death. A forgiving run's changes nearly all are
+//   firm within `RECOVER` ticks: a player who slips sees where they are and corrects within a
+//   second, which fixed buttons after a slip don't. Over the whole run, with every later button
+//   fixed, a slip of 2 ticks moves the capybara a little, and that spoils a jump seconds later,
+//   so far fewer are firm there (`WHOLE`).
+// - So a human run here means: every change has slack, and a slip is recoverable within a
+//   second. No person has played these runs.
 
 use capybara::pad::{Hold, JUMP, PRESS, Pad, pad_of}
 use capybara::world::{World, step, world}
-use search::{Goal, ended}
+use search::{Goal, alive, ended}
 
 /// The fewest ticks a human holds the same buttons.
 pub const STRETCH: u32 = 3
 
-/// The share of a human run's changes that must be firm, in percent.
+/// The share of a human run's changes that must be firm within `RECOVER` ticks, in percent.
 pub const FIRM: u32 = 95
+
+/// The window a slip must be lived through: a second. Wider windows, for the record: two
+/// seconds, and the whole run.
+pub const RECOVER: u32 = 120
+pub const LONGER: u32 = 240
+pub const WHOLE: u32 = 0
 
 /// How far a change is moved, either way (ticks).
 const SHIFTS: [i32; 4] = [-2, -1, 1, 2]
@@ -82,6 +94,7 @@ pub const LATE: u32 = 12
 /// it, and whether the shifted run finished.
 struct Shift: Copy {
     at: u32,
+    within: u32,
     by: i32,
     from: World,
     ok: bool,
@@ -135,6 +148,10 @@ fn shifted(s: mut Shift, held: [u32], goal: Goal) {
     var w = s.from
     var last = if s.at >= 3 { held[s.at - 3] } else { 0 }
     for t in s.at - 2..held.len() {
+        if s.within != WHOLE && t >= s.at + s.within {
+            s.ok = alive(w, goal) && w.deaths == 0
+            return
+        }
         let h = held_at(held, t, s.at, s.by)
         step(mut w, Pad { bits: pressed(h, last) })
         last = h
@@ -153,8 +170,9 @@ fn shifted(s: mut Shift, held: [u32], goal: Goal) {
 }
 
 /// How forgiving the run of `pads` on course `c` to the end of `goal` is, a run that keeps to the
-/// human limits. A change in the first 2 ticks can't be moved early, so it isn't counted.
-pub fn slack(c: u32, pads: [u32], goal: Goal) -> Slack {
+/// human limits: its changes firm `within` ticks (or over the whole run, `WHOLE`). A change in the
+/// first 2 ticks can't be moved early, so it isn't counted.
+pub fn slack(c: u32, pads: [u32], goal: Goal, within: u32) -> Slack {
     var held: Vec<u32> = Vec::with_capacity(pads.len())
     for p in pads {
         held.push(p & !PRESS)
@@ -165,7 +183,7 @@ pub fn slack(c: u32, pads: [u32], goal: Goal) -> Slack {
     for t in 0..held.len() {
         if t + 2 < held.len() && held[t + 2] != held[t + 1] {
             for by in SHIFTS {
-                shifts.push(Shift { at: t + 2, by, from: w, ok: false })
+                shifts.push(Shift { at: t + 2, within, by, from: w, ok: false })
             }
         }
         step(mut w, Pad { bits: pressed(held[t], last) })
@@ -193,7 +211,8 @@ pub fn slack(c: u32, pads: [u32], goal: Goal) -> Slack {
     s
 }
 
-/// Whether a run's slack is a forgiving run's: at least `FIRM` percent of its changes firm.
+/// Whether a run's slack within `RECOVER` ticks is a forgiving run's: at least `FIRM` percent of
+/// its changes firm.
 pub fn forgiving(s: Slack) -> bool {
     s.firm * 100 >= s.changes * FIRM
 }

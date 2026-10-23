@@ -614,15 +614,25 @@ ungzips it; ureq downloads it. No code was copied.
 ## The capybara game's route search, 2026-10-22
 
 Ryan asked the route search to find the fastest any% and 100% runs of the capybara game's first
-level, to watch as ghosts. Claude (Opus 5.5), in a session another Claude session started,
-wrote it as a Wrela tool (`wrela tool route`, `games/capybara/route`): a beam search over the
-sim's states with exact merging of equal states, a per-cell bound for variety, and rounds that
-search again from each checkpoint of the best run with other settings, keeping what's faster.
-Its runs are `games/capybara/routes.wrela`, with tests that replay them: any% in 1,283 ticks and
-100% in 1,999, after about 17 minutes of search for each on an M-series Mac (8 helpers), against
-the autopilot's 3,449 and 3,572 (proofs.wrela). They beat it by far because the movement lets
-speed build without limit (speed is never lost in the air, and a landing on a down slope adds to
-it); Ryan judges whether that stays. Beam search is a published method (below); no code was taken.
+level, to watch as ghosts, and then for human-possible runs beside them ("do both of these").
+Claude (Opus 5.5), in a session another Claude session started, wrote it as a Wrela tool (`wrela
+tool route`, `games/capybara/route`): a beam search over the sim's states with exact merging of
+equal states, a per-cell bound for variety, and rounds that search again from each checkpoint of
+the best run with other settings, keeping what's better. Its runs are
+`games/capybara/routes.wrela`, with tests that replay them. On the physics with the short hop's
+least height, after 10 minutes of search for each on an M-series Mac (8 helpers): tool-assisted,
+any% in 1,311 ticks and 100% in 1,820, against the autopilot's 3,410 and 3,528 (proofs.wrela).
+They beat it by far because the movement lets speed build without limit (speed is never lost in
+the air, and a landing on a down slope adds to it); Ryan judges whether that stays.
+
+With `--human` it searches with a human's limits: every stretch of buttons held 3 ticks or more,
+and jump pressed only after it was let go. A human run must be forgiving: at least 95% of its
+changes of buttons, each moved 1 or 2 ticks early or late, live through the second after (the
+parent session and Claude chose a second: a player corrects a slip within it, while with every
+later button fixed a slip of 2 ticks spoils a jump seconds later). Human-possible runs: any% in
+1,320 ticks (97% of changes firm within a second, 92% within two, 82% over the whole run) and 100%
+in 1,962 (98%, 92%, 77%). Human-possible means each input has slack and a slip is recoverable;
+no person was tested on these runs. Beam search is a published method (below); no code was taken.
 
 ## The split, done, 2026-10-21
 

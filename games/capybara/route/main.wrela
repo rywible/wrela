@@ -15,7 +15,7 @@
 // each of its first changes that aren't firm. From an entry the search's segment is the rest of
 // the level, so a faster end can't leave the next segment worse off; the run it finds takes the
 // best's place from the entry on if it costs less: its time, and for a human run `FRAGILE` ticks
-// more for each change that isn't firm. Without a run to start from, the first round searches
+// more for each change that isn't firm past the 5% a forgiving run may have. Without a run to start from, the first round searches
 // from the start alone. It writes routes.wrela again if a run is better, keeping the other mode's.
 
 use capybara::course::course
@@ -23,7 +23,7 @@ use capybara::pad::{DOWN, Hold, JUMP, LEFT, PRESS, Pad, RIGHT, UP}
 use capybara::routes::{ANY, FULL, HUMAN_ANY, HUMAN_FULL}
 use capybara::world::{LEVEL, step, world}
 use search::{Settings, holds, played, search, to_goal}
-use slack::{EARLY, LATE, Slack, finishes, forgiving, moved, pads_of, slack}
+use slack::{EARLY, LATE, LONGER, RECOVER, Slack, WHOLE, finishes, forgiving, moved, pads_of, slack}
 use std::io::print
 use std::time::{now, since}
 use std::tool::args
@@ -167,9 +167,15 @@ fn entries(best: Best, human: bool) -> Vec<u32> {
     once
 }
 
-/// What `b` costs: its time, and for a human run `FRAGILE` more for each change that isn't firm.
+/// What `b` costs: its time, and for a human run `FRAGILE` more for each change that isn't firm
+/// past the share a forgiving run may have (`slack::FIRM`): once forgiving, faster is better.
 fn cost(b: Best, human: bool) -> u32 {
-    if human { b.time + FRAGILE * (b.slack.changes - b.slack.firm) } else { b.time }
+    if !human {
+        return b.time
+    }
+    let fragile = b.slack.changes - b.slack.firm
+    let allowed = b.slack.changes * (100 - slack::FIRM) / 100
+    b.time + FRAGILE * (if fragile > allowed { fragile - allowed } else { 0 })
 }
 
 /// `pads` as a category's best, if they finish as it asks (and, for a human run, keep to the
@@ -182,7 +188,7 @@ fn best_of(pads: take Vec<u32>, snacks: u32, human: bool) -> Option<Best> {
     var b = none()
     b.time = w.finished
     if human {
-        b.slack = slack(LEVEL, pads, to_goal(snacks))
+        b.slack = slack(LEVEL, pads, to_goal(snacks), RECOVER)
     }
     b.pads = take pads
     Some(b)
@@ -339,7 +345,7 @@ fn constant(text: mut String, name: str, r: Route) {
 /// routes.wrela with the runs `routes`: any% and 100%, tool-assisted, then with the human limits.
 pub fn routes_text(routes: [Route; 4]) -> String {
     var text = String::from(
-        "// The route search's fastest runs of the first level (design.md, \"The agent loop\"): any% and\n// 100%, tool-assisted, and the same with a human's limits, forgiving of a tick or two early or\n// late (route/slack.wrela; route/tests.wrela checks them for it). `wrela tool route` searches\n// for better ones and writes this file again, with the tests' times; run it again when a change\n// to the movement moves them.\n\n",
+        "// The route search's fastest runs of the first level (design.md, \"The agent loop\"): any% and\n// 100%, tool-assisted, and the same human-possible: each input has slack, and a slip of a tick\n// or two is recoverable within a second (route/slack.wrela; route/tests.wrela checks them for\n// it). No person has played them. `wrela tool route` searches for better ones and writes this\n// file again, with the tests' times; run it again when a change to the movement moves them.\n\n",
     )
     var bits = 0
     for r in routes {
@@ -385,9 +391,12 @@ pub fn routes_text(routes: [Route; 4]) -> String {
 }
 
 /// A category's run for routes.wrela: its best, with its doc comment.
-fn route(b: Best, what: str, human: bool) -> Route {
+fn route(b: Best, what: str, snacks: u32, human: bool) -> Route {
     let doc = if human {
-        f"/// {what}, with a human's limits, in {b.time} ticks: {b.slack.firm} of its {b.slack.changes}\n/// changes of buttons still finish moved 1 or 2 ticks early or late.\n"
+        let longer = slack(LEVEL, b.pads, to_goal(snacks), LONGER)
+        let whole = slack(LEVEL, b.pads, to_goal(snacks), WHOLE)
+        let n = b.slack.changes
+        f"/// {what}, human-possible, in {b.time} ticks.\n/// Every stretch of buttons is held 3 ticks or more, and jump is pressed only after it was let\n/// go. Of its {n} changes of buttons, each moved 1 or 2 ticks early or late, {b.slack.firm} live\n/// through the second after, {longer.firm} through two seconds, and {whole.firm} through the whole\n/// run with every later button as it was. Human-possible means each input has slack and a slip\n/// is recoverable within a second, not that a person was tested on it.\n"
     } else {
         f"/// {what}, tool-assisted, in {b.time} ticks.\n"
     }
@@ -417,23 +426,25 @@ pub fn tool() -> u32 {
         return 0
     }
     if ask.human && (!forgiving(any.slack) || !forgiving(full.slack)) {
-        print(f"route: a human run has fewer than {slack::FIRM}% of its changes firm")
+        print(
+            f"route: a human run has fewer than {slack::FIRM}% of its changes firm within a second",
+        )
     }
     let first = "The first level from start to goal (any%)"
     let every = "The first level with every snack (100%)"
     let routes = if ask.human {
         [
-            route(kept(ANY, 0, human: false), first, human: false),
-            route(kept(FULL, every_snack(), human: false), every, human: false),
-            route(any, first, human: true),
-            route(full, every, human: true),
+            route(kept(ANY, 0, human: false), first, 0, human: false),
+            route(kept(FULL, every_snack(), human: false), every, every_snack(), human: false),
+            route(any, first, 0, human: true),
+            route(full, every, every_snack(), human: true),
         ]
     } else {
         [
-            route(any, first, human: false),
-            route(full, every, human: false),
-            route(kept(HUMAN_ANY, 0, human: true), first, human: true),
-            route(kept(HUMAN_FULL, every_snack(), human: true), every, human: true),
+            route(any, first, 0, human: false),
+            route(full, every, every_snack(), human: false),
+            route(kept(HUMAN_ANY, 0, human: true), first, 0, human: true),
+            route(kept(HUMAN_FULL, every_snack(), human: true), every, every_snack(), human: true),
         ]
     }
     let text = routes_text(routes)
