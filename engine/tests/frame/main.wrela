@@ -1,15 +1,16 @@
 // A bare scene (flat ground, which casts into the cascades, open land, the sky's own clouds) drawn
 // through `engine::frame` on the GPU, and a script of what a game does to a frame: it loads; 30
 // frames after its first full frame the eye jumps 500 m; once that arrival is shown, the weather
-// changes; 90 frames later the sun moves; once its cascades are drawn again, the screen is held for
-// 8 frames; then the frame measures its work on this device (`Quality::measured`), and its cascades
-// and probes are drawn again to be measured. Each frame's plan (`engine::cook::Planner`) and
-// readiness are recorded, and the tests read the record. Until it measures, a frame's order is the
-// same on every run and in both hosts.
+// changes; 90 frames later the air does, and 90 after that the sun moves; once its cascades are
+// drawn again, the screen is held for 8 frames; then the frame measures its work on this device
+// (`Quality::measured`), and its cascades and probes are drawn again to be measured. Each frame's
+// plan (`engine::cook::Planner`) and readiness are recorded, and the tests read the record. Until
+// it measures, a frame's order is the same on every run and in both hosts.
 
 use engine::cook::{Evidence, Work}
 use engine::frame::{Aim, Change, Frame, Gathered, Quality}
-use engine::light::sunlight
+use engine::air::hazy
+use engine::light::{SUN_TOP, sunlight}
 use engine::probes::grid
 use engine::terrain::Clipmap
 use engine::view::first_camera
@@ -44,6 +45,7 @@ pub enum Step: Copy + Eq {
     Load,
     Jump,
     Weather,
+    Air,
     Sun,
     Hold,
     Done,
@@ -102,6 +104,11 @@ fn script(s: mut State) {
             s.frame.changed(Change::Weather)
         },
         Step::Weather => if since >= 90 {
+            next(mut s, Step::Air)
+            // Hazier air for an eye higher up, the sun where it was.
+            s.frame.air = hazy(SUN, SUN_TOP, eye: 40.0)
+        },
+        Step::Air => if since >= 90 {
             next(mut s, Step::Sun)
             s.frame.air = air_of(LATER_SUN)
             s.frame.light = sunlight(s.frame.air)
@@ -157,9 +164,17 @@ fn window(s: State, k: u32) -> (u32, u32) {
 
 /// The steps the script reached, failing a test that needs one it didn't.
 fn reached(s: State, step: Step) {
-    let names = ["load", "jump", "weather", "sun", "hold", "done"]
+    let names = ["load", "jump", "weather", "air", "sun", "hold", "done"]
     var k = 0
-    for st in [Step::Load, Step::Jump, Step::Weather, Step::Sun, Step::Hold, Step::Done] {
+    for st in [
+        Step::Load,
+        Step::Jump,
+        Step::Weather,
+        Step::Air,
+        Step::Sun,
+        Step::Hold,
+        Step::Done,
+    ] {
         if st == step {
             assert(s.began.len() > k, f"the script didn't reach its {names[k]} by its last frame")
         }
@@ -233,7 +248,7 @@ fn a_jump_is_covered_until_its_light_has_gathered(s: State) {
 /// cascade, and bakes the probes again once the dome is marched (they bake its light).
 @test(frames: 900, gpu: true)
 fn a_weather_change_redraws_the_clouds_and_then_the_probes(s: State) {
-    reached(s, Step::Sun)
+    reached(s, Step::Air)
     let (from, to) = window(s, 2)
     var weather = 0
     var near = 0
@@ -260,13 +275,40 @@ fn a_weather_change_redraws_the_clouds_and_then_the_probes(s: State) {
     )
 }
 
+/// An air change with the sun where it was cooks the air's tables again, marches the dome again
+/// through the new air, and bakes the probes again under that dome; it draws no cascade.
+@test(frames: 900, gpu: true)
+fn an_air_change_redraws_the_dome_and_then_the_probes(s: State) {
+    reached(s, Step::Sun)
+    let (from, to) = window(s, 3)
+    var near = 0
+    var probes = 0
+    var marched = 0
+    var baked_after = 0
+    for i in from..to {
+        near += s.records[i].near + s.records[i].far
+        probes += s.records[i].probes
+        if probes == 0 {
+            marched += s.records[i].phase
+        } else if baked_after == 0 {
+            baked_after = marched
+        }
+    }
+    assert(near == 0, f"the air drew {near} strips of the cascades")
+    assert(probes > 0, "the probes weren't baked again under the new air")
+    assert(
+        baked_after >= engine::sky::PHASES,
+        f"the probes were baked after {baked_after} of the dome's {engine::sky::PHASES} phases",
+    )
+}
+
 /// A sun change draws both cascades again and cooks the clouds' weather again (it's lit from the
 /// sun); the probes are baked again under it once the dome has been marched again (they bake its
 /// light), which is after the cascades.
 @test(frames: 900, gpu: true)
 fn a_sun_change_redraws_the_cascades_the_clouds_and_then_the_probes(s: State) {
     reached(s, Step::Done)
-    let (from, to) = window(s, 3)
+    let (from, to) = window(s, 4)
     var near = 0
     var far = 0
     var weather = 0
@@ -300,7 +342,7 @@ fn a_sun_change_redraws_the_cascades_the_clouds_and_then_the_probes(s: State) {
 @test(frames: 900, gpu: true)
 fn a_held_screen_runs_frames_and_draws_none(s: State) {
     reached(s, Step::Done)
-    let (from, to) = window(s, 4)
+    let (from, to) = window(s, 5)
     let drawn = s.records[from].drawn
     for i in from..to {
         assert(s.records[i].drawn == drawn, f"frame {s.records[i].ran} drew while held")

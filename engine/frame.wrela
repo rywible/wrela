@@ -1261,6 +1261,8 @@ impl<R: Resolver> Frame<R> {
                 self.probes.using.open(self.light, self.air.ground, self.tables.view, self.linear)
                 self.air_cooked.cooked(air_key)
                 self.sky_v += 1
+                // The dome is marched again through the new air (the probes wait for it).
+                self.sky.frames = 0
             } else if !self.noise_cooked {
                 self.cooks.planner.note(Work::SkyNoise)
                 self.sky.cook_noise()
