@@ -18,6 +18,9 @@
 // - The goal: the kusudama bursts open with bells, and the fireworks whistle up and bang.
 // - Under it all, the wetlands: a breath of wind, and now and then a bird.
 //
+// The player can turn the music off and on (`MUSIC`); it fades out and in again, playing on in
+// time while it's off, and the effects and the wetlands sound as before.
+//
 // Everything on the audio thread is f32 arithmetic in a fixed order, and its noise is seeded, so
 // both hosts give the same samples.
 
@@ -47,6 +50,8 @@ pub const BACK: u32 = 14
 pub const GOAL: u32 = 15
 pub const LAUNCH: u32 = 16
 pub const BANG: u32 = 17
+/// Not a sound: the music on (`amount` 1) or off (0).
+pub const MUSIC: u32 = 18
 
 /// A cue: what (`kind`), how much (0 to 1: a landing's force, a slide's speed), where across the
 /// view (-1 left to 1 right), and how long from now (s).
@@ -129,6 +134,9 @@ pub struct Voice {
     wind_phase: f32,
     /// Seconds to the next bird.
     bird: f32,
+    /// The music's level now and wanted (0 off, 1 on).
+    music_level: f32,
+    music_to: f32,
 }
 
 /// Starts the game's voice with the music's piano in it: the writer is how the frames send cues.
@@ -154,6 +162,8 @@ fn voice(cues: take RingReader<Cue>, music: take Piano) -> Voice {
         wind: 0.0,
         wind_phase: 0.0,
         bird: 3.0,
+        music_level: 1.0,
+        music_to: 1.0,
     }
 }
 
@@ -287,6 +297,8 @@ fn cue(v: mut Voice, c: Cue) {
         tone(mut v, hiss(500.0, to: 300.0, q: 0.9, t60: 0.09, gain: 0.1 * a, pan: p, delay: d))
     } else if c.kind == SLIDE {
         v.slide_to = a
+    } else if c.kind == MUSIC {
+        v.music_to = saturate(a)
     } else if c.kind == SPLASH {
         tone(mut v, hiss(1100.0, to: 600.0, q: 0.6, t60: 0.4, gain: 0.2 * a, pan: p, delay: d))
         tone(mut v, sine(160.0, to: 70.0, glide: 0.1, t60: 0.15, gain: 0.12 * a, pan: p, delay: d))
@@ -548,8 +560,9 @@ fn render(v: mut Voice, left: mut [f32], right: mut [f32]) {
         let breeze = v.wind * 0.03 * (0.6 + 0.4 * sin(TAU * v.wind_phase))
         l += breeze
         r += breeze * 0.9
-        // The effects over the music, under a soft limit.
-        let (ml, mr) = (left[i] + l, right[i] + r)
+        // The effects over the music, its level eased towards what's wanted, under a soft limit.
+        v.music_level += (v.music_to - v.music_level) * 0.002
+        let (ml, mr) = (left[i] * v.music_level + l, right[i] * v.music_level + r)
         left[i] = ml / (1.0 + abs(ml) * 0.3)
         right[i] = mr / (1.0 + abs(mr) * 0.3)
     }
@@ -575,12 +588,17 @@ fn heard(cues: [Cue], seconds: f32) -> vec3 {
         beats: Vec::from([0.0]),
         length: 0.0,
     }
+    heard_over(piano(GRAND, quiet), cues, seconds)
+}
+
+/// As `heard`, over `music`.
+fn heard_over(music: take Piano, cues: [Cue], seconds: f32) -> vec3 {
     let (writer, reader) = ring::<Cue>(128)
     var w = take writer
     for c in cues {
         let _ = w.push(c)
     }
-    var v = voice(take reader, piano(GRAND, quiet))
+    var v = voice(take reader, take music)
     var l = [0.0; QUANTUM]
     var r = [0.0; QUANTUM]
     var energy = 0.0
@@ -639,6 +657,27 @@ fn a_firework_sounds_far_off() {
     let jump = centre(heard([Cue { kind: JUMP }], seconds: 1.5) - bed)
     print(f"centres: the bang {bang} Hz, a landing {land} Hz, the jump {jump} Hz")
     assert(bang < 250.0 && bang < land && jump > 2.0 * bang, f"the bang's centre: {bang} Hz")
+}
+
+@test
+fn the_music_turns_off_and_the_effects_play_on() {
+    // The song's first seconds, and the same with the music turned off at once: over the wind and
+    // the birds, all that's left is its fade (a hundredth of a second) at least 25 dB under the
+    // song, and a carrot over them sounds as it does alone.
+    let song = heard_over(music::music(), [], seconds: 2.0).x
+    let bed = heard([], seconds: 2.0).x
+    let off = heard_over(music::music(), [Cue { kind: MUSIC, amount: 0.0 }], seconds: 2.0).x
+    print(f"energy: the song {song}, off {off}, the bed {bed}")
+    assert(song > 20.0 * bed, f"the song {song} over a bed of {bed}")
+    assert(off - bed < 0.003 * song, f"off: {off} over a bed of {bed}, the song {song}")
+    let carrot = Cue { kind: CARROT }
+    let alone = heard([carrot], seconds: 2.0).x
+    let over = heard_over(
+        music::music(),
+        [Cue { kind: MUSIC, amount: 0.0 }, carrot],
+        seconds: 2.0,
+    ).x
+    assert(abs(over - alone) < 0.1 * alone, f"a carrot over no music {over}, alone {alone}")
 }
 
 /// Where a sound's energy is centred (Hz), from `heard`'s energy and highs: a sine at f has
