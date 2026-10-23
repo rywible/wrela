@@ -50,7 +50,7 @@ pub fn watch(r: take Replay) -> Watch {
     }
 }
 
-/// Course `c`'s start, playing: a new world opens paused on the controls.
+/// Course `c`'s start, playing: a new world opens paused on the level's title.
 fn started(c: u32) -> World {
     var w = world(c)
     w.paused = false

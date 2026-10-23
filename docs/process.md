@@ -611,6 +611,26 @@ a pinned SHA-256, with its licence. Two outside Rust crates came in, used as lib
 [flate2](https://github.com/rust-lang/flate2-rs) (MIT or Apache-2.0), already in the build,
 ungzips it; ureq downloads it. No code was copied.
 
+## The capybara game's screens, 2026-10-23
+
+Ryan asked how to make the capybara game's UI "world class": it was hard to tell what was going
+on, and the pause had become a tutorial. Claude (Opus 5.5) proposed the principles the best games
+share, by name, and Ryan asked for all of it, with the clock off at first. What each teaches, in
+words only (no image, layout or asset was taken from any):
+
+| Game | What it teaches |
+|---|---|
+| *Super Mario Bros.* (Nintendo, 1985), world 1-1 | A level teaches its moves by its shape, with no text |
+| *Celeste* (Maddy Makes Games, 2018) | No tutorial screen: the prologue shows a move where it's needed; Madeline's hair says a dash is ready; a speedrun timer the player turns on |
+| *Ori and the Blind Forest* (Moon Studios, 2015) | Prompts in the world, beside the obstacle, gone once the move is made |
+| *Hollow Knight* (Team Cherry, 2017) | Lessons on things in the world; a small HUD; an area's name as it's entered |
+| *Trackmania* (Nadeo) | A checkpoint's split against the best run, for a moment |
+| *Neon White* (Angel Matrix, 2022) | A speedrun game's target times, shown before and after a level |
+
+Claude wrote the code (`games/capybara/screens.wrela`, `signs.wrela`, `settings.wrela`,
+`engine/menu.wrela`, `ui/glyphs.wrela`) and judged its stills from `wrela-host`. Ryan plays it
+before the look and the words are settled; the brief marks them proposed.
+
 ## The capybara game's route search, 2026-10-22
 
 Ryan asked the route search to find the fastest any% and 100% runs of the capybara game's first

@@ -1,0 +1,111 @@
+// The player's settings, kept in the game's storage apart from the runs: the music on or off, the
+// clock shown or not (off at first: Ryan, 2026-10-23, the clock is "stressful for normal
+// players"), the ghost that runs beside the player, and the moves the zoo's signs have seen the
+// player make (signs.wrela), so their prompts don't come back each visit.
+//
+// The options are changed in the pause's menus, which are the sim's (world.wrela): the sim counts
+// the steps taken on each, and the frames apply the steps they haven't yet (`turned`).
+
+/// Where the settings are stored.
+pub const SETTINGS: Text = "capybara/settings"
+
+/// The stored settings' version: a store of another reads as the settings at first.
+const VERSION: u8 = 1
+
+/// The ghost that runs beside the player: none, their best any% run, the robot's (the route
+/// search's fastest) or the human line's.
+pub const NO_GHOST: u32 = 0
+pub const BEST_GHOST: u32 = 1
+pub const AUTOPILOT_GHOST: u32 = 2
+pub const HUMAN_GHOST: u32 = 3
+pub const GHOSTS: u32 = 4
+
+pub struct Settings: Copy + Eq {
+    pub music: bool = true,
+    pub clock: bool = false,
+    pub ghost: u32 = BEST_GHOST,
+    /// The moves the signs have seen made, a bit each (signs.wrela's `RUN_AND_JUMP`...).
+    pub learned: u32 = 0,
+}
+
+/// The settings as stored.
+pub fn encode(s: Settings) -> Vec<u8> {
+    var out: Vec<u8> = Vec::new()
+    out.push(VERSION)
+    out.push(if s.music { 1 } else { 0 })
+    out.push(if s.clock { 1 } else { 0 })
+    out.push(u8(s.ghost))
+    for i in 0..4 {
+        out.push(u8((s.learned >> (8 * i)) & 0xff))
+    }
+    out
+}
+
+/// The settings stored as `b`, or the settings at first if `b` isn't settings of this version.
+pub fn decode(b: [u8]) -> Settings {
+    if b.len() != 8 || b[0] != VERSION {
+        return Settings {}
+    }
+    var learned = 0
+    for i in 0..4 {
+        learned = learned | (u32(b[4 + i]) << (8 * i))
+    }
+    Settings { music: b[1] == 1, clock: b[2] == 1, ghost: min(u32(b[3]), GHOSTS - 1), learned }
+}
+
+/// `s` after the steps taken on the options from `before` to `now` (world.wrela's `turns`: the
+/// music's, the clock's and the ghost's): each step flips the music or the clock, and moves the
+/// ghost on (or back) one. Whether anything changed.
+pub fn turned(s: mut Settings, before: [i32; 3], now: [i32; 3]) -> bool {
+    let was = s
+    if (now[0] - before[0]) % 2 != 0 {
+        s.music = !s.music
+    }
+    if (now[1] - before[1]) % 2 != 0 {
+        s.clock = !s.clock
+    }
+    let n = i32(GHOSTS)
+    let steps = ((now[2] - before[2]) % n + n) % n
+    s.ghost = (s.ghost + u32(steps)) % GHOSTS
+    s != was
+}
+
+/// The ghost's name, as the options show it.
+pub fn ghost_name(g: u32) -> Text {
+    if g == NO_GHOST {
+        "None"
+    } else if g == BEST_GHOST {
+        "Your best"
+    } else if g == HUMAN_GHOST { "The human line" } else { "The robot" }
+}
+
+// ---- tests -------------------------------------------------------------------------------------
+
+@test
+fn the_clock_is_off_and_the_music_on_at_first() {
+    let s = Settings {}
+    assert(!s.clock && s.music && s.ghost == BEST_GHOST && s.learned == 0)
+}
+
+@test
+fn settings_are_stored_and_read_back_and_anything_else_reads_as_the_first() {
+    let s = Settings { music: false, clock: true, ghost: HUMAN_GHOST, learned: 0x80000005 }
+    assert(decode(encode(s)) == s)
+    assert(decode([]) == Settings {}, "nothing stored")
+    var other = encode(s)
+    other[0] = 9
+    assert(decode(other) == Settings {}, "another version")
+}
+
+@test
+fn steps_on_the_options_flip_and_move_them() {
+    var s = Settings {}
+    assert(turned(mut s, [0, 0, 0], [1, 2, -1]), "changed")
+    assert(
+        !s.music && !s.clock && s.ghost == NO_GHOST,
+        "music off, the clock twice, the ghost back",
+    )
+    assert(turned(mut s, [1, 2, -1], [1, 3, 2]))
+    assert(s.clock && s.ghost == HUMAN_GHOST, "three on from none")
+    assert(!turned(mut s, [1, 3, 2], [1, 3, 2]), "no steps")
+}

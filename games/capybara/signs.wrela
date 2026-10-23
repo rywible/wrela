@@ -1,0 +1,228 @@
+// The zoo's signs: the level teaches its moves where they're first needed, on signs a zoo would
+// have, not on a card before play (Celeste's, Ori's and Hollow Knight's way, and Super Mario
+// Bros.' 1-1 before them). Each stands on a post at the back of the play, its board high enough
+// that the capybara runs under it, and says a move with the keys or the controller's buttons the
+// player last used (screens.wrela's prompts). Once the player has made a move, its sign's prompt
+// fades (`learned`; the game keeps what it has seen made, settings.wrela), and the sign stays,
+// as the zoo's. Presentation only: the sim knows nothing of them.
+//
+// The words are proposed (design.md).
+
+use body::Mode
+use screens::{Act, CARD, INKED, Prompt, SOFT, act, act_width}
+use sprites::{SIGN, Sprite}
+use ui::draw::{DrawList, Rect}
+use ui::glyphs::Device
+use ui::text::{Face, Fonts}
+use world::{LEVEL, Snap}
+
+/// The moves a sign teaches, a bit each.
+pub const RUN_AND_JUMP: u32 = 1
+pub const DOUBLE_JUMP: u32 = 2
+pub const SPLASH: u32 = 4
+pub const SLIDE: u32 = 8
+pub const SWIM: u32 = 16
+
+/// Where a sign's board is on its post: its middle above the post's foot, and its half-size (m).
+pub const BOARD = vec2(0.0, 3.0)
+pub const BOARD_HALF = vec2(1.35, 0.8)
+
+/// A sign: its post's foot, what it's headed, its prompts (none: only `line`), a line under
+/// them, and the move it teaches.
+pub struct Sign: Copy {
+    pub at: vec2,
+    pub heading: Text,
+    pub first: Act,
+    pub second: Act,
+    pub prompts: u32,
+    pub line: Text,
+    pub teaches: u32,
+}
+
+/// The first level's signs, left to right: run and jump at the start, the double jump under the
+/// first ledge it reaches, water's speed before the first puddle, the slide on the deck before the
+/// big slide, and swimming before the lake.
+const LEVEL_SIGNS: [Sign; 5] = [
+    Sign {
+        at: vec2(4.0, 0.0),
+        heading: "Run and jump",
+        first: Act::Run,
+        second: Act::Jump,
+        prompts: 2,
+        line: "",
+        teaches: RUN_AND_JUMP,
+    },
+    Sign {
+        at: vec2(8.0, 0.0),
+        heading: "Double jump",
+        first: Act::Jump,
+        second: Act::Jump,
+        prompts: 2,
+        line: "Again in the air",
+        teaches: DOUBLE_JUMP,
+    },
+    Sign {
+        at: vec2(32.4, 0.0),
+        heading: "Water is speed",
+        first: Act::Run,
+        second: Act::Run,
+        prompts: 0,
+        line: "A splash makes you faster",
+        teaches: SPLASH,
+    },
+    Sign {
+        at: vec2(92.5, 3.0),
+        heading: "Slide down slopes",
+        first: Act::Slide,
+        second: Act::Slide,
+        prompts: 1,
+        line: "Hold it while you run",
+        teaches: SLIDE,
+    },
+    Sign {
+        at: vec2(156.3, -4.0),
+        heading: "Swim fast",
+        first: Act::Jump,
+        second: Act::Swim,
+        prompts: 2,
+        line: "Up and down in turn: the dolphin kick",
+        teaches: SWIM,
+    },
+]
+
+/// Course `c`'s signs: the level's; the lab has none.
+pub fn signs(c: u32) -> Vec<Sign> {
+    if c == LEVEL { Vec::from(LEVEL_SIGNS) } else { Vec::new() }
+}
+
+/// The moves snapshot `s` shows made: a jump, a double jump, a splash, a slide, a kick.
+pub fn learned(s: Snap) -> u32 {
+    var out = 0
+    if s.tally.jumps > 0 {
+        out = out | RUN_AND_JUMP
+    }
+    if s.tally.doubles > 0 {
+        out = out | DOUBLE_JUMP
+    }
+    if s.wet > 0 {
+        out = out | SPLASH
+    }
+    if Mode::from_u32(s.mode) == Some(Mode::Slide) {
+        out = out | SLIDE
+    }
+    if s.tally.kicks > 0 {
+        out = out | SWIM
+    }
+    out
+}
+
+/// Course `c`'s signs as sprites: a post, and the board the frames write on.
+pub fn sign_sprites(c: u32, out: mut Vec<Sprite>) {
+    for s in signs(c) {
+        out.push(
+            Sprite {
+                pose: vec4(0.0),
+                more: vec4(0.0),
+                at: s.at + vec2(0.0, 1.9),
+                half: vec2(1.45, 1.95),
+                angle: 0.0,
+                facing: 1.0,
+                kind: SIGN,
+            },
+        )
+    }
+}
+
+/// Course `c`'s signs' words and prompts, drawn on their boards into `list`, for the scene: its
+/// middle at `eye` and half its size `half` (m), `screen` pixels. A sign whose move is in
+/// `learned` says its prompts faintly.
+pub fn sign_words(
+    list: mut DrawList,
+    fonts: Fonts,
+    c: u32,
+    learned: u32,
+    device: Device,
+    eye: vec2,
+    half: vec2,
+    screen: vec2,
+) {
+    let m = screen.y / (2.0 * half.y)
+    for s in signs(c) {
+        let mid = s.at + BOARD
+        if abs(mid.x - eye.x) > half.x + BOARD_HALF.x {
+            continue
+        }
+        let at = vec2((mid.x - eye.x) * m + screen.x * 0.5, (eye.y - mid.y) * m + screen.y * 0.5)
+        let w = BOARD_HALF.x * 2.0 * m
+        let board = Rect::new(at.x - w * 0.5, at.y - BOARD_HALF.y * m, w, BOARD_HALF.y * 2.0 * m)
+        let size = 0.28 * m
+        let glyph = 0.38 * m
+        let note = 0.2 * m
+        borrow font = fonts.font(Face::Sans)
+        let lines = if s.line.len() > 0 { font.wrap(s.line, note, board.w - 0.3 * m) } else {
+            Vec::new()
+        }
+        let gap = 0.1 * m
+        let rows = (if s.prompts > 0 { glyph + gap } else {
+            0.0
+        }) + f32(lines.len()) * font.line_height(note)
+        var y = board.y + (board.h - font.line_height(size) - gap - rows) * 0.5
+        let hw = font.measure(s.heading, size)
+        let _ = list.text(fonts, Face::Sans, s.heading, size, vec2(at.x - hw * 0.5, y), INKED)
+        y += font.line_height(size) + gap
+        let faint = if learned & s.teaches != 0 { 0.35 } else { 1.0 }
+        if s.prompts > 0 {
+            let a = act_width(fonts, s.first, device, glyph)
+            let b = if s.prompts > 1 { act_width(fonts, s.second, device, glyph) } else { 0.0 }
+            let space = if s.prompts > 1 { 0.16 * m } else { 0.0 }
+            var x = at.x - (a + b + space) * 0.5
+            x += act(mut list, fonts, s.first, device, vec2(x, y), glyph, faint) + space
+            if s.prompts > 1 {
+                let _ = act(mut list, fonts, s.second, device, vec2(x, y), glyph, faint)
+            }
+            y += glyph + gap
+        }
+        for (a, b) in lines {
+            let part = s.line.slice(a, b)
+            let lw = font.measure(part, note)
+            let _ = list.text(fonts, Face::Sans, part, note, vec2(at.x - lw * 0.5, y), SOFT)
+            y += font.line_height(note)
+        }
+    }
+}
+
+// ---- tests -------------------------------------------------------------------------------------
+
+@test
+fn each_of_the_levels_moves_has_a_sign_left_to_right_and_none_in_the_lab() {
+    let all = signs(LEVEL)
+    var taught = 0
+    for i in 0..all.len() {
+        taught = taught | all[i].teaches
+        if i > 0 {
+            assert(all[i].at.x - all[i - 1].at.x >= 2.0 * BOARD_HALF.x + 1.0, "boards apart")
+        }
+    }
+    assert(taught == RUN_AND_JUMP | DOUBLE_JUMP | SPLASH | SLIDE | SWIM)
+    assert(signs(world::LAB).len() == 0)
+}
+
+@test
+fn a_signs_board_stands_clear_of_the_capybara_running_under_it() {
+    // The capybara stands about 1.3 m tall as drawn: the board's foot is well above it.
+    assert(BOARD.y - BOARD_HALF.y > 2.0)
+}
+
+@test
+fn playing_the_level_through_makes_every_move_a_sign_teaches() {
+    var seen = 0
+    var l = world::live(LEVEL)
+    l.world.paused = false
+    for h in routes::HUMAN_FULL {
+        for i in 0..h.ticks {
+            world::step_counted(mut l.world, mut l.tally, pad::pad_of(h, i))
+            seen = seen | learned(world::present_live(l))
+        }
+    }
+    assert(seen == RUN_AND_JUMP | DOUBLE_JUMP | SPLASH | SLIDE | SWIM, f"{seen}")
+}

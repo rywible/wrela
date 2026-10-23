@@ -257,13 +257,27 @@ fn recorded(c: u32, run: [Hold], who: u32) -> Replay {
 // ---- the ghost ---------------------------------------------------------------------------------
 
 /// Where a ghost is after a tick of its run: the capybara's middle, the way it faces, its mode (as
-/// `Mode`'s discriminant), whether it's dying, and how far it has walked (m, for its stride).
+/// `Mode`'s discriminant), whether it's dying, how far it has walked (m, for its stride), and the
+/// checkpoint it would come back to (for the splits).
 pub struct Pose: Copy {
     pub at: vec2,
     pub facing: f32,
     pub mode: u32,
     pub dying: u32,
     pub walked: f32,
+    pub checkpoint: u32,
+}
+
+/// The clock when the run whose poses are `trail` first reached each of its course's checkpoints,
+/// in order, up to the last it reached: what a player's splits are compared with.
+pub fn splits(trail: [Pose]) -> Vec<u32> {
+    var out: Vec<u32> = Vec::new()
+    for t in 0..trail.len() {
+        while trail[t].checkpoint > out.len() {
+            out.push(t)
+        }
+    }
+    out
 }
 
 /// The poses of `r`: the first before its first tick, then one after each tick to its end.
@@ -290,6 +304,7 @@ fn pose(w: World, walked: f32) -> Pose {
         mode: u32(w.body.mode),
         dying: w.dying,
         walked,
+        checkpoint: w.checkpoint,
     }
 }
 
@@ -450,4 +465,18 @@ fn a_live_attempt_played_from_keys_is_recorded_as_a_replay_that_plays_it_again()
     let ghost = trail(r)
     let w = played(r, r.ticks)
     assert(ghost.len() == r.ticks + 1 && ghost[r.ticks].at == w.body.at, "the ghost's trail")
+}
+
+@test
+fn a_runs_splits_are_the_ticks_it_first_reached_each_checkpoint() {
+    let r = tool_assisted(LEVEL)[0].clone()
+    let poses = trail(r)
+    let at = splits(poses)
+    assert(at.len() == course(LEVEL).checkpoints.len(), f"{at.len()} splits")
+    for i in 0..at.len() {
+        assert(poses[at[i]].checkpoint == i + 1 && poses[at[i] - 1].checkpoint <= i, f"split {i}")
+        if i > 0 {
+            assert(at[i] > at[i - 1], "in order")
+        }
+    }
 }
