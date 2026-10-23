@@ -29,9 +29,10 @@
 // No count is read back in this path. Meshes live in pools, one per creature type and level,
 // cut into slabs; the queue realizes as many as a frame's budget allows.
 
-use creature::{Creature, NONE, PartMask, Parts}
+use creature::{Body, Creature, NONE, PartMask, Parts, Placed, Skeleton, creature}
 use look::{CreatureLook, Detail}
 use std::derive::{Box3, gradient}
+use std::field::Surface
 use std::collections::replace
 use std::gpu::{
     Append, AppendBuffer, Atomics, DispatchArgs, DrawIndexedArgs, GlobalId, GpuBuffer, LocalId, One,
@@ -716,32 +717,40 @@ pub fn record<C, F: Parts<C>>(
     record_finish(field, grid, falloff, mut scratch, mut mesh)
 }
 
-/// `creature`'s mesh, realized once as `realize_once` does it, but with no skin weights: for a
-/// rigid one of one bone (a stone), whose vertices `place_vertices` gives to that bone whole,
-/// as the skin pass would. A pass less at load, and a pipeline less in the scene's 64.
-pub fn realize_rigid<C, K: Creature<C>>(creature: K, look: CreatureLook) -> Mesh {
-    var p = prepare(creature, look)
-    let field = creature.field()
+/// A field with bounds, to realize once as a rigid mesh (`realize_rigid`): a stone, a built
+/// thing. The realizer reads a field through a creature's parts (`creature::Parts`: each block's
+/// mask, its interval, its skin), so a solid is one part named `name` on one bone at the origin,
+/// bounded by `bounds`: made here, so an author writes only the field and its box.
+pub fn solid<F: Surface>(field: F, bounds: Box3, name: Text = "solid") -> Body<Placed<F>> {
+    var s = Skeleton::new()
+    let root = s.root(name, vec3(0.0))
+    creature(s).part(root, field).bounded(bounds)
+}
+
+/// `solid`'s mesh (`solid`, or any creature at rest), realized once to `surface` with no skin
+/// weights: its vertices `place_vertices` gives to its one bone whole, as the skin pass would. A
+/// pass less at load, and a pipeline less in the scene.
+pub fn realize_rigid<C, K: Creature<C>>(solid: K, surface: look::Mesh) -> Mesh {
+    var p = prepare(solid.bounds(), surface)
+    let field = solid.field()
     record_cull(field, p.grid, mut p.scratch, mut p.mesh)
     record_vertices(field, p.grid, mut p.scratch, mut p.mesh)
     record_mesh(p.grid, mut p.scratch, mut p.mesh)
     take p.mesh
 }
 
-/// What realizing `creature` once as `look` says starts from: the grid round its bounds grown
-/// by the look's tolerance, its cells for a surface that bends no tighter than 5 cm; a mesh with
-/// room for what the grid's blocks can hold; and their scratch.
+/// What realizing a field inside `bounds` once to `surface` starts from: the grid round the
+/// bounds grown by the tolerance, its cells for a surface that bends no tighter than the
+/// surface's radius (`look::Mesh::cell_size`); a mesh with room for what the grid's blocks can
+/// hold; and their scratch.
 struct Prepared {
     grid: Grid,
     mesh: Mesh,
     scratch: Scratch,
 }
 
-fn prepare<C, K: Creature<C>>(creature: K, look: CreatureLook) -> Prepared {
-    let grid = Grid::around(
-        grow(creature.bounds(), look.surface.tolerance),
-        look.surface.cell_size(5cm),
-    )
+fn prepare(bounds: Box3, surface: look::Mesh) -> Prepared {
+    let grid = Grid::around(grow(bounds, surface.tolerance), surface.cell_size(surface.radius))
     Prepared {
         grid,
         mesh: Mesh::new(Room { vertices: grid.blocks * 8, quads: grid.blocks * 16 }),
@@ -758,11 +767,11 @@ fn slices_for(grid: Grid) -> u32 {
     clamp(u32(ceil(expected / f32(SLICE_BLOCKS))), 1, MAX_SLICES)
 }
 
-/// `creature`'s mesh, realized once as `look` says, for a program that keeps one (`plain::Viewer`): on
-/// the grid around its bounds grown by the look's tolerance, its cells for a
-/// surface that bends no tighter than 5 cm.
+/// `creature`'s mesh, realized once as `look` says, for a program that keeps one
+/// (`plain::Viewer`): on the grid around its bounds grown by the look's tolerance, its cells for a
+/// surface that bends no tighter than the look's radius.
 pub fn realize_once<C, K: Creature<C>>(creature: K, look: CreatureLook) -> Mesh {
-    var p = prepare(creature, look)
+    var p = prepare(creature.bounds(), look.surface)
     record(creature.field(), p.grid, look.deform.weights.falloff, mut p.scratch, mut p.mesh)
     take p.mesh
 }
@@ -780,7 +789,7 @@ pub struct Whole {
 /// then the last finishes the mesh. Its result is the whole mesh; its scratch goes with it.
 @job
 pub fn realizing<C, K: Creature<C>>(look: take CreatureLook, creature: K, per_frame: u32) -> Whole {
-    var p = prepare(creature, look)
+    var p = prepare(creature.bounds(), look.surface)
     record_cull(creature.field(), p.grid, mut p.scratch, mut p.mesh)
     let slices = slices_for(p.grid)
     let falloff = look.deform.weights.falloff
@@ -1598,4 +1607,58 @@ impl<C, F: Parts<C>> Realizer<F> {
             }
         }
     }
+}
+
+// ---- how near a mesh is to its field ------------------------------------------------------------
+
+/// The largest distance from `field`'s surface of a realized mesh's vertices and of its quads'
+/// first triangles' middles, in micrometres, by an atomic max into `out[0]`.
+@compute(64)
+pub fn surface_error<C, F: Parts<C>>(
+    field: F,
+    tally: [Tally],
+    verts: [SkinVertex],
+    quads: [Quad],
+    vertices: u32,
+    out: mut Atomics<u32>,
+    id: GlobalId,
+) {
+    let t = tally[0]
+    let n = min(t.vertices, vertices)
+    if id.x < n {
+        let d = abs(field.distance(verts[id.x].pos))
+        let _ = out.max(0, u32(min(d * 1.0e6, 4.0e9)))
+    }
+    if id.x < min(t.pushed_quads, quads.len()) {
+        let q = quads[id.x]
+        if q.a < n && q.b < n && q.c < n {
+            let m = (verts[q.a].pos + verts[q.b].pos + verts[q.c].pos) / 3.0
+            let d = abs(field.distance(m))
+            let _ = out.max(0, u32(min(d * 1.0e6, 4.0e9)))
+        }
+    }
+}
+
+/// How far `mesh` (realized from `field`) strays from the field's surface, measured: the largest
+/// distance of its vertices and its quads' middles (micrometres), read back. The measured leg of a
+/// mesh's evidence: `look::Mesh`'s tolerance holds only where the surface bends no tighter than
+/// its radius, and this says what a realization met. It measures the mesh against the field, not
+/// the field against the mesh: a part thinner than a cell, which no grid corner falls inside, has
+/// no mesh at all, and nothing to measure. A readback that never feeds the sim.
+pub fn measured_error<C, F: Parts<C>>(mesh: Mesh, field: F) -> Pending<u32> {
+    var out: GpuBuffer<u32> = buffer(1)
+    write(mut out, 0, [0])
+    let room = mesh.room()
+    dispatch(
+        surface_error.bind(
+            field,
+            tally: mesh.tally.items(),
+            verts: mesh.verts.items(),
+            quads: mesh.quads.items(),
+            vertices: room.vertices,
+            out: mut out,
+        ),
+        groups: (max(room.vertices, room.quads) + 63) / 64,
+    )
+    read(out.items())
 }

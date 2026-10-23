@@ -21,7 +21,7 @@ use engine::landform::{
 }
 use engine::noise::{fbm2, fbm2_seen, rand}
 use engine::soil::{SoilKind, soil}
-use engine::look::{CreatureLook, Mesh as Tolerance}
+use engine::look::Mesh as Tolerance
 use engine::stone::{Placement, Realized, block, normal_matrix, realize_block}
 use engine::terrain::{Cover, Terrain}
 use ground::{joints, rock_albedo}
@@ -1038,11 +1038,11 @@ const BEDDED: u32 = 2 * 9 * VARIANTS
 pub const CORESTONES: u32 = 3 * 9 * VARIANTS
 const CORE = vec3(1.0, 0.65, 0.85)
 
-/// The prototypes (`CORESTONES`), each realized to `look`'s tolerance, its colours a cell `cell`
+/// The prototypes (`CORESTONES`), each realized to `surface`'s tolerance, its colours a cell `cell`
 /// across. The bedded rock's colours are a little greyer than the land's (weathered, it reads
 /// olive in the sun), from its weathered crust to its fresh breaks; the granite's blocks are
 /// worn rounder along its joints.
-pub fn rock_prototypes(look: CreatureLook, cell: f32) -> Vec<Realized> {
+pub fn rock_prototypes(surface: Tolerance, cell: f32) -> Vec<Realized> {
     var out: Vec<Realized> = Vec::new()
     for r in 0..3 {
         let own = COLOUR[SOLID[r]]
@@ -1069,7 +1069,7 @@ pub fn rock_prototypes(look: CreatureLook, cell: f32) -> Vec<Realized> {
                     realize_block(
                         b,
                         rough: if granite { 0.08 } else { 0.09 },
-                        look: look,
+                        surface: surface,
                         cell: cell,
                         steps: if granite { 0.0 } else { 0.05 },
                     ),
@@ -1082,7 +1082,7 @@ pub fn rock_prototypes(look: CreatureLook, cell: f32) -> Vec<Realized> {
     for k in 0..4 {
         var b = block(seed: 800 + k * 13, half: CORE, dark: granite * 0.45, light: granite * 0.75)
         b.round = 0.3
-        out.push(realize_block(b, rough: 0.08, look: look, cell: cell, steps: 0.0))
+        out.push(realize_block(b, rough: 0.08, surface: surface, cell: cell, steps: 0.0))
     }
     out
 }
@@ -1110,8 +1110,8 @@ pub fn rock_grain() -> Vec<vec4> {
 
 /// The rocks' near prototypes, for those close to the eye: fine enough to show their laminae and
 /// chips a few metres off; and their far ones.
-pub const NEAR_LOOK = CreatureLook { surface: Tolerance { tolerance: 1cm, largest: 3cm } }
-pub const FAR_LOOK = CreatureLook { surface: Tolerance { tolerance: 6cm, largest: 18cm } }
+pub const NEAR_LOOK = Tolerance { tolerance: 1cm, largest: 3cm }
+pub const FAR_LOOK = Tolerance { tolerance: 6cm, largest: 18cm }
 
 /// The prototype for a block of stratum `s` (a solid one) half `half` (along its turn, up,
 /// across), seed `seed`, worn round if `worn`: its index, how much further it's turned (a quarter, if that fits it

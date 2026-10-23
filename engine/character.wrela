@@ -21,7 +21,9 @@ use std::gpu::{
     VertexIndex, WorkgroupId, buffer, copy, discard, dispatch, draw, write,
 }
 use std::derive::Box3
+use std::io::{Pending, print}
 use std::job::{Job, Step}
+use std::mem::debug_build
 use std::transform::{rotate_y, translate}
 use temporal::motion_of
 use view::{CREATURE, Camera}
@@ -441,6 +443,8 @@ pub struct Cast<C, K: creature::Creature<C>, L: Look<C>> {
     pub realized: Option<Realized>,
     /// The box its mesh lies in at rest, once it's realized.
     pub bounds: Box3,
+    /// A debug build's measure of how far its mesh strays from its field, on its way.
+    check: Option<Pending<u32>>,
     palette: GpuBuffer<mat4>,
     last: GpuBuffer<mat4>,
     /// Whether it's drawn this frame, and whether it falls in the moving shadow map.
@@ -463,6 +467,7 @@ pub fn cast<C, K: creature::Creature<C>, L: Look<C>>(
         job: None,
         realized: None,
         bounds: Box3 { lo: vec3(0.0), hi: vec3(0.0) },
+        check: None,
         palette: buffer(creature::MAX_BONES),
         last: buffer(creature::MAX_BONES),
         on: false,
@@ -486,6 +491,11 @@ impl<C, K: creature::Creature<C>, L: Look<C>> Cast<C, K, L> {
                 Step::Done(whole) => {
                     let c = materials(whole.mesh, self.creature.field(), self.look, cell: 1cm)
                     self.bounds = whole.bounds
+                    if debug_build() {
+                        self.check = Some(
+                            realize::measured_error(whole.mesh, self.creature.field()),
+                        )
+                    }
                     self.realized = Some(Realized { mesh: take whole.mesh, materials: c })
                     self.job = None
                 },
@@ -505,6 +515,23 @@ impl<C, K: creature::Creature<C>, L: Look<C>> Cast<C, K, L> {
         }
         self.on = true
         self.shadowed = shadowed
+        let measured = match mut self.check {
+            Some(p) => match p.poll() {
+                Some(Ok(e)) => {
+                    let asked = self.how.surface.tolerance * 1000.0
+                    print(
+                        f"a character's mesh strays {f32(e[0]) / 1000.0:.2} mm from its field ({asked:.2} mm asked, kept where it bends no tighter than {self.how.surface.radius * 100.0:.0} cm)",
+                    )
+                    true
+                },
+                Some(Err(_)) => true,
+                None => false,
+            },
+            None => false,
+        }
+        if measured {
+            self.check = None
+        }
     }
 
     /// Whether it's wanted (posed this frame) and not yet realized: a slice of its mesh is due.

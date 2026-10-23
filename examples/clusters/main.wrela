@@ -4,7 +4,7 @@
 // block. The scene: a field of copies on a plane, the eye moving between them; a test sets its
 // own eye and level of error (`view`).
 use clusters::{ClusterLook, Clusters, Placed, cook_creature}
-use engine::creature::{Creature, Skeleton, creature}
+use engine::creature::Creature
 use engine::view::{Camera, first_camera}
 use std::derive::Box3
 use std::field::{Surface, ellipsoid, round_cone, sphere}
@@ -36,9 +36,7 @@ fn smooth_creature() -> Surface {
 
 /// It as a creature of one part (channels it has none of: a number), in its box.
 fn body() -> Creature<f32> {
-    var sk = Skeleton::new()
-    let root = sk.root("body", vec3(0.0))
-    creature(sk).part(root, smooth_creature().with(1.0)).bounded(BOUNDS)
+    engine::realize::solid(smooth_creature().with(1.0), BOUNDS, name: "body")
 }
 
 /// The box that holds it.

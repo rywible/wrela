@@ -1,0 +1,7 @@
+# engine::realize's measured error: a smooth solid's mesh keeps within its tolerance, and a thin
+# one's strays past it where its surface bends tighter than the tolerance's radius, on the GPU.
+[package]
+name = "surface_error"
+
+[dependencies]
+engine = { workspace = true }

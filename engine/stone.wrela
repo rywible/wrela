@@ -1,19 +1,19 @@
 // Stones and rocks: fields realized to meshes at load, then drawn each frame from the meshes.
 //
 // A stone is a displaced, faceted oval (`stone`); a bed (`Bed`) and a block (`Block`) are
-// jointed rock. Each is a creature of one bone, so the engine's realization makes its mesh at
+// jointed rock. Each is a solid (`realize::solid`), so the engine's realization makes its mesh at
 // load, as it does a creature's, with its normals and colours cooked in (`realize_stone`,
 // `realize_bed`, `realize_block`). Each frame draws from the meshes, so no field is evaluated per
 // vertex or per pixel. `Rocks` draws many placements of a few prototypes, one instanced draw for
 // each kind and level.
 
 use character::{ByChannels, Shaded, colours}
-use creature::{Creature, Skeleton, creature}
-use light::{Lit}
+use creature::Creature
+use light::Lit
 use lit::{Lighting, shown, sun_and_gloss}
-use look::{CreatureLook, Mesh as Tolerance}
+use look::Mesh as Tolerance
 use noise::{hash3, noise3, rand}
-use realize::{Mesh, SkinVertex, realize_rigid}
+use realize::{Mesh, SkinVertex, realize_rigid, solid}
 use std::derive::Box3
 use std::derive::Interval
 use std::field::{Blend, Fbm, Noise, Surface, VALUE_NOISE_LIPSCHITZ, fbm, oval, value_noise}
@@ -122,15 +122,11 @@ pub fn stone_field(radius: f32, squash: vec3, seed: u32) -> StoneField {
         .with_at(|p| stain.at(p))
 }
 
-/// A stone as a creature of one bone (at its centre), to realize.
-pub type Stone = Creature<Rock>
-
-pub fn stone(radius: f32, squash: vec3, seed: u32) -> Stone {
-    var s = Skeleton::new()
-    let root = s.root("stone", vec3(0.0))
+/// A stone, a solid to realize (`realize::solid`).
+pub fn stone(radius: f32, squash: vec3, seed: u32) -> Creature<Rock> {
     // Its box: the oval's, grown by the lumps' reach (its facets bound nothing of their own).
     let half = squash * radius * 1.2 + vec3(0.02)
-    creature(s).part(root, stone_field(radius, squash, seed)).bounded(Box3 { lo: -half, hi: half })
+    solid(stone_field(radius, squash, seed), Box3 { lo: -half, hi: half }, name: "stone")
 }
 
 /// A stone realized: its mesh, its colours, and where it is (its rest space to the world).
@@ -235,7 +231,7 @@ pub fn realize_stone(radius: f32, squash: vec3, seed: u32, at: vec3, turn: f32) 
         seed,
         at,
         turn,
-        CreatureLook { surface: Tolerance { tolerance: 8mm, largest: 4cm } },
+        Tolerance { tolerance: 8mm, largest: 4cm },
     )
 }
 
@@ -246,21 +242,22 @@ pub fn realize_stone_within(
     seed: u32,
     at: vec3,
     turn: f32,
-    look: CreatureLook,
+    surface: Tolerance,
 ) -> Realized {
-    realize_rock(stone(radius, squash, seed), look, 1cm, translate(at) * rotate_y(turn), seed)
+    realize_rock(stone(radius, squash, seed), surface, 1cm, translate(at) * rotate_y(turn), seed)
 }
 
-/// Rock `c` realized as one rigid mesh as `look` says, its colours cooked a cell `cell` across,
-/// placed by `at`, its tone's seed `seed`: a stone, a bed, or a game's built thing of rock.
+/// Rock `c` (a `realize::solid`) realized as one rigid mesh to `surface`'s tolerance, its colours
+/// cooked a cell `cell` across, placed by `at`, its tone's seed `seed`: a stone, a bed, or a game's
+/// built thing of rock.
 pub fn realize_rock(
     c: Creature<Rock>,
-    look: CreatureLook,
+    surface: Tolerance,
     cell: f32,
     at: mat4,
     seed: u32,
 ) -> Realized {
-    let mesh = realize_rigid(c, look)
+    let mesh = realize_rigid(c, surface)
     let colours = colours(mesh, c.field(), ByChannels {}, cell)
     Realized { mesh, colours, at, seed }
 }
@@ -437,18 +434,15 @@ pub fn bed_colour(b: Bed, p: vec3) -> Rock {
     Rock { albedo: c }
 }
 
-/// A bed as a creature of one bone, to realize.
+/// A bed, a solid to realize (`realize::solid`).
 pub fn bed(b: Bed) -> Creature<Rock> {
-    var s = Skeleton::new()
-    let root = s.root("bed", vec3(0.0))
-    creature(s).part(root, b.with_at(|p| bed_colour(b, p))).bounded(Box3 { lo: b.lo, hi: b.hi })
+    solid(b.with_at(|p| bed_colour(b, p)), Box3 { lo: b.lo, hi: b.hi }, name: "bed")
 }
 
 /// Bed `b` realized at `at` (its frame's origin in the world): cells of about 45 cm (its faces
 /// are planes; an edge rounds by about a cell), its colours a cell 25 cm.
 pub fn realize_bed(b: Bed, at: vec3) -> Realized {
-    let look = CreatureLook { surface: Tolerance { tolerance: 50cm, largest: 45cm } }
-    realize_rock(bed(b), look, 25cm, translate(at), b.seed)
+    realize_rock(bed(b), Tolerance { tolerance: 50cm, largest: 45cm }, 25cm, translate(at), b.seed)
 }
 
 // ---- rocks: many solids from a few ----------------------------------------------------------------
@@ -676,7 +670,7 @@ pub fn block_colour(b: Block, p: vec3) -> Rock {
 }
 
 /// Block `b` weathered by `rough` (`Wear`, of its own size), its laminae's steps `steps` deep (a
-/// rock laid down in none, as granite, has none), as a creature of one bone to realize.
+/// rock laid down in none, as granite, has none), a solid to realize (`realize::solid`).
 pub fn worn(b: Block, rough: f32, steps: f32 = 0.05) -> Creature<Rock> {
     let wear = Wear {
         laminae: b.laminae,
@@ -686,24 +680,24 @@ pub fn worn(b: Block, rough: f32, steps: f32 = 0.05) -> Creature<Rock> {
         weights: vec4(0.18, steps, 0.07, 0.6),
     }
     let grow = b.half * 0.05 + vec3(rough * 2.0)
-    var s = Skeleton::new()
-    let root = s.root("block", vec3(0.0))
-    creature(s)
-        .part(root, b.displace(wear, amp: rough).with_at(|p| block_colour(b, p)))
-        .bounded(Box3 { lo: -b.half - grow, hi: b.half + grow })
+    solid(
+        b.displace(wear, amp: rough).with_at(|p| block_colour(b, p)),
+        Box3 { lo: -b.half - grow, hi: b.half + grow },
+        name: "block",
+    )
 }
 
 /// Block `b` worn by `rough`, its laminae's steps `steps` deep (`worn`), and realized as a
-/// prototype (at the origin) to `look`'s tolerance, its colours a cell `cell` across: a rock's
+/// prototype (at the origin) to `surface`'s tolerance, its colours a cell `cell` across: a rock's
 /// (`Rocks`), which its placements scale.
 pub fn realize_block(
     b: Block,
     rough: f32,
-    look: CreatureLook,
+    surface: Tolerance,
     cell: f32,
     steps: f32 = 0.05,
 ) -> Realized {
-    realize_rock(worn(b, rough, steps: steps), look, cell, translate(vec3(0.0)), b.seed)
+    realize_rock(worn(b, rough, steps: steps), surface, cell, translate(vec3(0.0)), b.seed)
 }
 
 /// A rock's placement as the GPU reads it: where its prototype goes (its transform, and that
