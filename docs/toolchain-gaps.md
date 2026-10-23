@@ -14,15 +14,6 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Meanwhile:** the capybara game publishes each page's items as links to anchors of the page (`#1-0`), which a pointer presses; and it numbers each item's node anew after every choice (`world::node`), so the host lets go of the pressed node and the keys come back to the game. A screen reader hears the items as links, not menu items.
 - **Status:** open. Fix: let a pointer press a button's and a menu item's node (a hit class for every role that is activated, not only links), and give the canvas back the keyboard's focus after a pointer press on a node; then the game's items become `MenuItem`s, numbered once.
 
-### `wrela trace` and `wrela bisect` don't run a program's ticker
-
-- **Needed:** an agent watching a ticked game's state frame by frame (`wrela trace <package> --watch <export> --input script.json`), and finding the first frame a condition holds (`wrela bisect`).
-- **What happens:** the ticker never ticks. Exports that read the sim's snapshots stay at the first world's values for every frame.
-- **Found:** 2026-10-21, building the capybara movement lab (`games/capybara`). With the run script, `wrela trace games/capybara --watch capybara,clock` printed tick count 0 for 120 frames, with or without `--no-gpu` and `--workers 2`. The same build, under `wrela-host --frames N --input`, and as a frame test (`@test(frames: 180, gpu: true, input: ...)`), ticks two ticks a frame in lockstep.
-- **Cause, from the source:** `compiler/cli/src/trace.rs` steps each frame with the host's `frame()`; the native host's lockstep path (`lockstep_frame` in `runtime/native/src/program.rs`) is what runs the ticks due before a frame.
-- **Meanwhile:** traces of the capybara's movement come from tests that step the sim directly; stills come from `wrela-host`.
-- **Status:** open. Fix: trace and bisect run frames on the lockstep schedule when the program starts a ticker, as `wrela-host` and frame tests do, with a test in the toolchain's `trace` suite.
-
 ### A ticked program doesn't start in the Claude desktop app's browser pane
 
 - **Needed:** an agent playing a ticked game in the browser pane beside the session (and anyone in an embedded Chrome).
@@ -33,6 +24,15 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Status:** open; the cause needs confirming before a fix. If nested workers are the cause, a fix is for the page to start the ticker's worker and hand its port to the render worker.
 
 ## Fixed
+
+### `wrela trace` and `wrela bisect` don't run a program's ticker
+
+- **Needed:** an agent watching a ticked game's state frame by frame (`wrela trace <package> --watch <export> --input script.json`), and finding the first frame a condition holds (`wrela bisect`).
+- **What happened:** the ticker never ticks. Exports that read the sim's snapshots stay at the first world's values for every frame.
+- **Found:** 2026-10-21, building the capybara movement lab (`games/capybara`). With the run script, `wrela trace games/capybara --watch capybara,clock` printed tick count 0 for 120 frames, with or without `--no-gpu` and `--workers 2`. The same build, under `wrela-host --frames N --input`, and as a frame test (`@test(frames: 180, gpu: true, input: ...)`), ticks two ticks a frame in lockstep.
+- **Cause, from the source:** `compiler/cli/src/trace.rs` steps each frame with the host's `frame()`; the native host's lockstep path (`lockstep_frame` in `runtime/native/src/program.rs`) is what runs the ticks due before a frame.
+- **Meanwhile:** traces of the capybara's movement come from tests that step the sim directly; stills come from `wrela-host`.
+- **Status:** fixed in toolchain 0.4.1 (rywible/wrela-compiler#27): each frame of a trace or a bisect runs in lockstep with the ticker, as `wrela-host` and frame tests run frames. The toolchain's `trace` suite checks a 60 Hz ticker's tick is `i` at frame `i`.
 
 ### A program can't read its own GPU pass timings
 
