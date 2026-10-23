@@ -690,6 +690,8 @@ pub struct Frame<R: Resolver> {
     /// Whether the last frame's probe step was eligible and the budget refused it (`cook_sky`
     /// gives way to it).
     probes_waited: bool,
+    /// The sky's cook this frame's plan counted before its optional steps (`sky_cook`).
+    sky_noted: Option<Work>,
 }
 
 /// What changed of a scene, outside the frame's own state (the light and the air the frame
@@ -824,6 +826,7 @@ impl<R: Resolver> Frame<R> {
             probes_v: 0,
             sky_v: 0,
             probes_waited: false,
+            sky_noted: None,
         }
     }
 
@@ -1045,6 +1048,11 @@ impl<R: Resolver> Frame<R> {
         let filling = self.debug.capture
         // (The moving-cache rules hold from the first full frame on, through later arrivals.)
         self.cooks.planner.begin(levels, self.ready.playable_at.is_some(), self.near.ready, filling)
+        // A cook of the sky that's a frame of its own counts before any optional step.
+        self.sky_noted = self.sky_cook()
+        if let Some(w) = self.sky_noted {
+            self.cooks.planner.note(w)
+        }
         self.cooks.capture = filling
         self.cooks.arriving = self.ready.arriving
         self.cooks.eye = eye_w
@@ -1244,6 +1252,25 @@ impl<R: Resolver> Frame<R> {
         }
     }
 
+    /// The cook of the sky that's a frame of its own this frame, if one is (what `cook_sky`
+    /// cooks first: the air's tables, then the clouds' noise, then their weather), so the plan
+    /// counts it before the frame's optional steps.
+    fn sky_cook(self) -> Option<Work> {
+        let air_key = (self.air, self.light.sun, self.light.sun_colour)
+        let weather_key = (self.light.sun, self.weather_v)
+        if self.ran == 0 {
+            None
+        } else if self.air_cooked.stale(air_key) {
+            Some(Work::AirTables)
+        } else if !self.noise_cooked {
+            Some(Work::SkyNoise)
+        } else if self.weather_cooked.stale(weather_key) {
+            Some(Work::SkyWeather)
+        } else {
+            None
+        }
+    }
+
     /// The sky, cooked a step a frame: the air's tables (again when the air or the light
     /// changed) and the probes' open sky from them, after the first frame (which is full); the
     /// clouds' noises; their weather and shadow maps (again when the sun or the weather
@@ -1254,28 +1281,37 @@ impl<R: Resolver> Frame<R> {
         let air_key = (self.air, self.light.sun, self.light.sun_colour)
         let weather_key = (self.light.sun, self.weather_v)
         let cloud_shadows = self.on(Off::CloudShadows)
-        if self.ran > 0 {
-            if self.air_cooked.stale(air_key) {
-                self.cooks.planner.note(Work::AirTables)
+        let cooking = self.sky_cook()
+        // Counted once: the cook `draw` counted before the optional steps isn't counted again.
+        if let Some(w) = cooking {
+            if self.sky_noted == Some(w) {
+                self.sky_noted = None
+            } else {
+                self.cooks.planner.note(w)
+            }
+        }
+        match cooking {
+            Some(Work::AirTables) => {
                 self.tables.cook(self.air, self.linear)
                 self.probes.using.open(self.light, self.air.ground, self.tables.view, self.linear)
                 self.air_cooked.cooked(air_key)
                 self.sky_v += 1
                 // The dome is marched again through the new air (the probes wait for it).
                 self.sky.frames = 0
-            } else if !self.noise_cooked {
-                self.cooks.planner.note(Work::SkyNoise)
+            },
+            Some(Work::SkyNoise) => {
                 self.sky.cook_noise()
                 self.noise_cooked = true
-            } else if self.weather_cooked.stale(weather_key) {
-                self.cooks.planner.note(Work::SkyWeather)
+            },
+            Some(Work::SkyWeather) => {
                 let w = scene.weather()
                 self.cloud_wind = w.wind
                 self.sky.cook_weather(w, self.light.sun, self.repeat, shadows: cloud_shadows)
                 self.weather_cooked.cooked(weather_key)
                 self.sky_v += 1
                 self.cloud_shadow.cooked((cloud_shadows, self.weather_cooked.version()))
-            }
+            },
+            _ => {},
         }
         let fresh = !self.weather_cooked.stale(weather_key)
         let shadow_key = (cloud_shadows, self.weather_cooked.version())
