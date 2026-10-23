@@ -49,8 +49,8 @@ use ui::draw::{DrawList, Rect, Renderer}
 use std::input::{Event, Key, events}
 use std::io::{Pending, load, store}
 use replay::{
-    ANY, AUTOPILOT, Board, FULL, KEPT, Pose, Replay, SAVED, YOU, board, bytes, counts, read, replay,
-    tool_assisted, trail, verify,
+    ANY, AUTOPILOT, Board, FULL, HUMAN, KEPT, Pose, Replay, SAVED, YOU, board, bytes, counts, read,
+    replay, tool_assisted, trail, verify,
 }
 use watch::{SPEEDS, Watch, watch}
 use ui::text::{Face, Fonts}
@@ -64,6 +64,8 @@ const SPRITES: u32 = 1024
 const NO_GHOST: u32 = 0
 const BEST_GHOST: u32 = 1
 const AUTOPILOT_GHOST: u32 = 2
+const HUMAN_GHOST: u32 = 3
+const GHOSTS: u32 = 4
 
 /// The boards: the player's runs, and the tool-assisted runs (design.md: "a separate
 /// tool-assisted board").
@@ -636,11 +638,13 @@ fn listed(s: Lab, c: u32, category: u32) -> Vec<Replay> {
     assisted(s, c, category)
 }
 
-/// The tool-assisted runs of course `c` that count for `category`, fastest first.
+/// The tool-assisted runs of course `c` made for `category`, fastest first.
 fn assisted(s: Lab, c: u32, category: u32) -> Vec<Replay> {
     var out: Vec<Replay> = Vec::new()
     for r in s.assisted {
-        if r.course == c && counts(r, category) {
+        // Each searched run is for one category: a 100% run isn't listed again under any%.
+        let own = category == FULL || !counts(r, FULL)
+        if r.course == c && counts(r, category) && own {
             var at = out.len()
             while at > 0 && out[at - 1].ticks > r.ticks {
                 at -= 1
@@ -651,20 +655,30 @@ fn assisted(s: Lab, c: u32, category: u32) -> Vec<Replay> {
     out
 }
 
-/// The ghost's run on course `c`: the player's best any% run, or the fastest tool-assisted one.
+/// The ghost's run on course `c`: the player's best any% run, or the fastest any% run of the
+/// robot or of the human line.
 fn ghost_run(s: Lab, c: u32) -> Option<Replay> {
     if s.ghost == BEST_GHOST {
         let best = s.runs.ranked(c, ANY)
         if best.len() > 0 {
             return Some(best[0].clone())
         }
-    } else if s.ghost == AUTOPILOT_GHOST {
-        let fastest = assisted(s, c, ANY)
-        if fastest.len() > 0 {
-            return Some(fastest[0].clone())
+    } else if s.ghost == AUTOPILOT_GHOST || s.ghost == HUMAN_GHOST {
+        let who = if s.ghost == HUMAN_GHOST { HUMAN } else { AUTOPILOT }
+        for r in assisted(s, c, ANY) {
+            if r.who == who {
+                return Some(r.clone())
+            }
         }
     }
     None
+}
+
+/// Who made a run, as the board and the watch name them.
+fn who_name(who: u32) -> Text {
+    if who == YOU {
+        "You"
+    } else if who == HUMAN { "Human line" } else { "Robot" }
 }
 
 /// The trail of the ghost's run on course `c`, worked out again when that run changes.
@@ -687,7 +701,9 @@ fn follow_ghost(s: mut Lab, c: u32) {
 fn ghost_name(g: u32) -> Text {
     if g == NO_GHOST {
         "none"
-    } else if g == BEST_GHOST { "your best" } else { "tool-assisted" }
+    } else if g == BEST_GHOST {
+        "your best"
+    } else if g == HUMAN_GHOST { "the human line" } else { "the robot" }
 }
 
 /// The runs card's size, for the screen: its rect and its text size.
@@ -766,7 +782,7 @@ fn browse(s: mut Lab, e: Event, c: u32, screen: vec2) {
     match e {
         Event::KeyDown { key, repeat, .. } => {
             if key == Key::G && !repeat {
-                s.ghost = (s.ghost + 1) % 3
+                s.ghost = (s.ghost + 1) % GHOSTS
             } else if key == Key::T && !repeat {
                 s.board = 1 - s.board
             }
@@ -774,7 +790,7 @@ fn browse(s: mut Lab, e: Event, c: u32, screen: vec2) {
         Event::PointerDown { at, .. } => {
             s.pointer = at
             if ghost_rect(screen).contains(at) {
-                s.ghost = (s.ghost + 1) % 3
+                s.ghost = (s.ghost + 1) % GHOSTS
             }
             for b in [PLAYERS, ASSISTED] {
                 if board_rect(screen, b).contains(at) {
@@ -862,7 +878,7 @@ fn runs_card(s: mut Lab, c: u32, screen: vec2) {
                 s.list.rect(row, lit, radius: size * 0.3)
             }
             borrow run = runs[i]
-            let who = if run.who == YOU { "You" } else { "Autopilot" }
+            let who = who_name(run.who)
             let colour = if i == 0 { gold } else { ink }
             let y = row.y + size * 0.2
             let _ = s.list.text(
@@ -918,7 +934,7 @@ fn watch_bar(s: mut Lab, screen: vec2) {
     var keys = f""
     match s.watching {
         Some(w) => {
-            let who = if w.replay.who == YOU { "You" } else { "Tool-assisted" }
+            let who = who_name(w.replay.who)
             let category = if counts(w.replay, FULL) { "100%" } else { "any%" }
             label = f"Watching  {who}  {category}  {seconds(w.replay.ticks)}"
             let state = if w.playing { "pause" } else { "play" }
