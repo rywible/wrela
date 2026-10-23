@@ -2860,6 +2860,22 @@ audio. Wrela's existing piano synthesizes each render from the score. The code i
 repository's MIT licence. The auditions leave the game's current music in place; Ryan's ears
 decide which direction to use.
 
+## The engine's re-architecture, 2026-10-23
+
+Ryan asked for the engine to be more cohesive and performant by default for 3D games made of
+fields, still supporting 2D games, and for the whole refactor to land as one pull request. Claude
+(Fable 5.1) surveyed the engine and wrote the plan in a temporary file; a council (GPT-6.1-Sol and
+GPT-6-Astra through the Codex CLI, read-only) reviewed it in two rounds, and Claude revised it.
+Ryan also asked what testing could do for engine work, and then for the plan's answers that need
+the toolchain to be built too: Claude built them in wrela-compiler (toolchain 0.4.0: a program's
+own GPU timings, goldens of a pass's target, held requests, a build's pipelines in a check, and
+frame tests on both hosts), and the engine's tests use them (toolchain-gaps.md). Claude (Opus 5.5) then implemented the plan on one branch, commit by
+commit, each gated by its packages' tests and by frames drawn on the native host and compared
+pixel for pixel with the commit before; the same council reviewed the finished branch, and Claude
+checked each finding in the source and fixed those that held. What the plan decided is in
+vision.md ("The engine's shape") and AGENTS.md's layers. No outside reference, asset, data or
+algorithm was used.
+
 ## Keeping this record
 
 AGENTS.md tells every agent to update this file in the same change when it uses a new

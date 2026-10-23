@@ -31,11 +31,12 @@ This repository holds only Wrela code. The language, its toolchain (compiler, st
 
 | Layer | Location and constraint |
 |---|---|
-| Engine | `engine/` (Wrela); no game names, places or tuning |
+| Engine | `engine/` (Wrela): the frame a game's scene draws through (`frame`, `cook`), the 2D sheet and sprites, lighting, creatures, realization, audio; no game names, places or tuning |
+| Land | `land/`: a landscape round a player, on the engine (its map, landforms, growth, water laid from them, footing, the player, streaming); no floor's own map or numbers |
 | Studio | `studio/` (the lens and the project's tools: release, deploy, lookbook, motion, round, listening, audio, reference, serve), `ui/`, `docsite/` (docs.wrela.dev) |
 | Platform | `platform/`: the console's protocols with its games and sessions |
-| Content | `content/`: creatures, plants, characters and clouds that games and examples build on; `references/` is their reference data |
-| Games | `games/<game>/`, with its cover; the release tool's catalog (`studio/release/catalog.wrela`) lists the released games and `console/` is the console. Games and `examples/` depend on engine and `content/`; only tests and studio fixtures depend on an example or a game |
+| Content | `content/`: creatures, plants, characters and clouds that games and examples build on, and `content/kit`, the bases an author starts from; `references/` is their reference data |
+| Games | `games/<game>/`, with its cover and its own packages (the Last Green's `tower`: its rule and its doors); the release tool's catalog (`studio/release/catalog.wrela`) lists the released games and `console/` is the console. Games and `examples/` depend on engine, `land` and `content/`; only tests and studio fixtures depend on an example or a game |
 
 ## Quality and checks
 

@@ -34,6 +34,41 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 
 ## Fixed
 
+### A program can't read its own GPU pass timings
+
+- **Needed:** the frame's planner (`engine::cook`) plans each kind of work by its cost on the device it runs on.
+- **What happened:** the hosts timed each `label` for `wrela profile`, but std had no timestamp query a program could read. The planner's costs were the Chrome measurements the code carries, and most were estimates (`Evidence::Estimated`).
+- **Found:** 2026-10-23, building the planner for the engine's re-architecture.
+- **Status:** fixed in toolchain 0.4.0: `std::gpu::timed(label) -> Pending<f32>`, the GPU time of a label's work in microseconds, on both hosts (command stream v11). A frame with `Quality::measured` times the kinds it plans after each frame that ran one step of them, and the planner plans with the device's costs (`Planner::measure`; engine/tests/frame `the_planner_measures_this_devices_costs`). It's off by default, since measured budgets make a frame's order differ from run to run.
+
+### A golden can't be of a pass's target, and a failed one shows nothing
+
+- **Needed:** an engine change that must not change an image, checked by a test against a blessed PNG: the screen, or a target named by its pass's `label`.
+- **What happened:** toolchain 0.3.3 compared a GPU frame test's screen with a golden (`golden:`, `within:`, `wrela test --bless`), but not a pass's target, and a failure said only how far the screen was. (The re-architecture's plan first logged this as no golden test kind at all; that was wrong.)
+- **Found:** 2026-10-23, gating the re-architecture's commits frame by frame.
+- **Status:** fixed in toolchain 0.4.0: `pass: "label"` compares that pass's target (floats clamped, depth grey), and a failure under `wrela test` writes what it saw and each pixel's difference under the package's `build/goldens/`. engine/tests/frame has a golden of the bare scene and of the near cascade.
+
+### A test can't hold a request until it releases it
+
+- **Needed:** the frame's transitions tested where a fetch or a storage read comes late.
+- **What happened:** a test could only wait frames, and whether a request had answered by a frame depended on the host.
+- **Found:** 2026-10-23, writing `engine/tests/frame`.
+- **Status:** fixed in toolchain 0.4.0: `@test(frames: n, hold: [("path", k)])` holds a path's fetches and storage reads until frame `k`, and `std::tool::drive` has `Step::Hold(path)` and `Step::Release(path)`. No engine test uses it yet: the Last Green polls its far layer only once its wood is built, past what a short GPU test of it runs, and the frame's fixture fetches nothing.
+
+### A test can't read the build's pipelines
+
+- **Needed:** tests that say what a build reaches ("no pipeline it didn't reach before").
+- **What happened:** the pipeline counts came from `wrela pipelines` run by hand. (The recorded commands were there already, through `std::tool::drive`'s `Commands`, which the clearing's checks read.)
+- **Found:** 2026-10-23, checking that the re-architecture adds no pipeline.
+- **Status:** fixed in toolchain 0.4.0: `toolchain::check` answers with the pipelines (`Checked::pipelines`, each a `Pipeline`). engine/tests/frame-pipelines checks that a bare scene reaches only the frame's own 28.
+
+### A frame test can't run on both hosts
+
+- **Needed:** the frame's tests run on the native host and in Chrome, their state hashes and last frames compared.
+- **What happened:** `engine/tests/hosts` compared the hosts by hand, a test at a time.
+- **Found:** 2026-10-23, with the frame's transition fixture.
+- **Status:** fixed in toolchain 0.4.0: `@test(frames: n, gpu: true, hosts: both)`. engine/tests/frame's `both_hosts_draw_the_same_frames` runs the bare scene's load, jump and weather in both: the same state hash, and the same frame within a GPU's differences.
+
 ### The browser's canvas isn't in the device's preferred format
 
 - **Needed:** the console's opening and library cost as little as they can a frame, on any device, so the page stays cool and saves battery while it is left open.
