@@ -6,7 +6,7 @@
 // - Levels: level k's cells are 2^k times level 0's, on grids from one origin, so a block of
 //   level k + 1 covers eight of level k's exactly (its children).
 // - A cluster is a block's quads: those of the edges leaving its cells' low corners, as
-//   `realize::emit_quads` makes them, kept together. Its error is measured from the field: the
+//   `engine::realize::emit_quads` makes them, kept together. Its error is measured from the field: the
 //   largest distance of its quads' corners and middles from the surface, raised to at least its
 //   children's (so an ancestor's is never less than a descendant's), and to a quarter of a cell.
 // - The cut: a cluster is drawn where its error, as large as it looks from the eye (from its
@@ -25,8 +25,8 @@
 // - A list (candidates, picks, listed quads) is a buffer of `u32`s: how many were pushed, then
 //   two a pushed item; one past its room is counted and kept nowhere (`push_pair`).
 
-use creature::{Creature, Parts}
-use realize::{
+use engine::creature::{Creature, Parts}
+use engine::realize::{
     BLOCK, CellWord, Grid, LiveBlock, Mesh, NO_VERTEX, Room, Scratch, SkinVertex, cell_key,
     record_cull, record_vertices, vertex_at, word_at,
 }
@@ -38,7 +38,7 @@ use std::gpu::{
     barrier, buffer, copy, dispatch, draw, read, write,
 }
 use std::io::Pending
-use view::Camera
+use engine::view::Camera
 
 /// The most levels a cluster set has.
 pub const MOST_LEVELS: u32 = 8
@@ -1077,7 +1077,7 @@ impl Clusters {
                 cluster_shade.bind(look),
                 indirect: l.draw_args.items(),
                 cull: Cull::None,
-                depth: view::NEAREST,
+                depth: engine::view::NEAREST,
             )
         }
     }

@@ -1,9 +1,9 @@
 // The virtual geometry spike (S1a of the rendering moonshots): spike 13's smooth creature
-// (`compiler/tests/spike13`, its bark left off) cooked as clusters (`engine::clusters`) and
+// (`compiler/tests/spike13`, its bark left off) cooked as clusters (clusters.wrela) and
 // drawn at the coarsest level whose error is at most `PIXELS` from where the eye is, block by
 // block. The scene: a field of copies on a plane, the eye moving between them; a test sets its
 // own eye and level of error (`view`).
-use engine::clusters::{ClusterLook, Clusters, Placed, cook_creature}
+use clusters::{ClusterLook, Clusters, Placed, cook_creature}
 use engine::creature::{Creature, Skeleton, creature}
 use engine::view::{Camera, first_camera}
 use std::derive::Box3

@@ -8,7 +8,7 @@
 
 use std::derive::Box3
 use std::field::Surface
-use sweep::{Sweep, section, sweep}
+use engine::sweep::{Sweep, section, sweep}
 
 /// `N` digits (`digits`), each a sweep of three sections.
 pub struct Digits<const N: u32>: Copy + GpuData {
