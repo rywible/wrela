@@ -25,6 +25,7 @@ use std::io::{Pending, print}
 use std::job::{Job, Step}
 use std::mem::debug_build
 use std::transform::{rotate_y, translate}
+use std::units::cm
 use temporal::motion_of
 use view::{CREATURE, Camera}
 
@@ -542,6 +543,25 @@ impl<C, K: creature::Creature<C>, L: Look<C>> Cast<C, K, L> {
     /// Not drawn this frame.
     pub fn hide(mut self) {
         self.on = false
+    }
+
+    /// Its colours changed and not its shape (an edit of its look's or its channels' literals):
+    /// `creature` replaces it, and its mesh keeps its geometry while its materials are cooked
+    /// again from the new channels. Nothing is realized again.
+    pub fn recolour(mut self, creature: take K) {
+        self.creature = take creature
+        match mut self.realized {
+            Some(r) => r.materials = materials(r.mesh, self.creature.field(), self.look, cell: 1cm),
+            None => {},
+        }
+    }
+
+    /// Its shape changed: `creature` replaces it, and it's realized again from the next frame it's
+    /// wanted (it draws nothing until then).
+    pub fn remake(mut self, creature: take K) {
+        self.creature = take creature
+        self.realized = None
+        self.job = None
     }
 
     /// Its depth into the moving shadow map (`view`), where it's on and shadowed.

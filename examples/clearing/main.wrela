@@ -4,7 +4,7 @@
 // clearing draws, casts and cooks is its stage (stage.wrela); this is its sim, its camera's path,
 // what a hot reload carries, its keys and its tests' exports.
 
-use creature::{SKELETON, WALKER_BODY}
+use creature::{SKELETON, WALKER_BODY, grown}
 use engine::air::{Air, hazy}
 use engine::frame::{Aim, Arrival, Change, Frame, Off, ProbeQuality, Quality, ShadowQuality, Shared}
 use engine::gait::{between, palette}
@@ -101,6 +101,8 @@ struct Watches {
     stones: Watch,
     clouds: Watch,
     ground: Watch,
+    fawn_shape: Watch,
+    fawn_coat: Watch,
 }
 
 impl Watches {
@@ -111,6 +113,8 @@ impl Watches {
             stones: Watch::new(reads(boulders)),
             clouds: Watch::new(reads(clouds::weather::weather)),
             ground: Watch::new(reads(ground_source)),
+            fawn_shape: Watch::new(reads(fawn_shape)),
+            fawn_coat: Watch::new(reads(fawn_coat)),
         }
     }
 }
@@ -130,6 +134,17 @@ fn sun_light() -> Light {
 fn ground_source() -> f32 {
     let g = Ground {}
     g.height(x: 0.0, z: 0.0) + g.cover(at: vec3(0.0), n: vec3(0.0, 1.0, 0.0)).grass
+}
+
+/// The fawn's form: its field's distance, which `reads` follows to the literals that shape it.
+fn fawn_shape() -> f32 {
+    grown().field().distance(vec3(0.0, 0.8, 0.3))
+}
+
+/// The fawn's colours: its channels, which `reads` follows to the literals that colour it.
+fn fawn_coat() -> f32 {
+    let c = grown().field().channels(vec3(0.0, 0.8, 0.3))
+    c.albedo.r + c.albedo.g + c.albedo.b
 }
 
 pub struct Clearing {
@@ -227,7 +242,7 @@ pub fn init() -> Clearing {
 
 /// What's cooked from a literal an edit changed (hot reload), cooked again: the light and the
 /// air (the frame cooks their tables again, and the cascades and the probes they light), the
-/// forest, the boulders, the clouds, the ground.
+/// forest, the boulders, the clouds, the ground, and the fawn (its mesh, or only its colours).
 fn cook_again(s: mut Clearing) {
     if s.watches.light.changed() {
         s.frame.light = sun_light()
@@ -250,6 +265,15 @@ fn cook_again(s: mut Clearing) {
     }
     if s.watches.ground.changed() {
         s.frame.changed(Change::Ground)
+    }
+    // The fawn: realized again if its shape changed; its materials cooked again, its mesh kept, if
+    // only its colours did.
+    let reshaped = s.watches.fawn_shape.changed()
+    let recoloured = s.watches.fawn_coat.changed()
+    if reshaped {
+        s.stage.fawn.remake(grown())
+    } else if recoloured {
+        s.stage.fawn.recolour(grown())
     }
 }
 
