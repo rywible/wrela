@@ -37,6 +37,11 @@ pub struct Feel: Copy {
     pub rise: f32 = 40.0,
     pub fall: f32 = 90.0,
     pub terminal: f32 = 24.0,
+    /// A jump's first ticks, in which it rises on the fall's gravity whether jump is held or not:
+    /// a press let go within them is the lowest hop, however short the press (Ryan, 2026-10-22: a
+    /// one-tick tap was the lowest hop, which only a program could press). 6 ticks is 50 ms, the
+    /// quickest tap a person makes.
+    pub hop: u32 = 6,
     /// Ticks a jump still counts after the ground falls away, and a press waits for the ground.
     pub coyote: u32 = 12,
     pub buffer: u32 = 12,

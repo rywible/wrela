@@ -15,8 +15,8 @@ use std::collections::Vec
 use std::serialize::{LoadError, Serialize, load, save}
 use world::{LAB, LEVEL, Snap, World, step, world}
 
-/// The version of play the runs are for.
-pub const BOARD: u32 = 1
+/// The version of play the runs are for: 2 since a short press became the lowest hop.
+pub const BOARD: u32 = 2
 
 /// Where the game keeps its runs, in its own storage.
 pub const SAVED: Text = "capybara/runs"
