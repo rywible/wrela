@@ -10,10 +10,16 @@
 // the frames show it tumble away and the page close on it (Ryan, 2026-10-22: dying "just
 // immediately clips back").
 //
-// Paused (Esc, P, or a controller's Start), the world stands still and its clock with it; Space,
-// Enter, a click or a controller's A plays on. The game opens paused, on the controls. Paused, B
-// opens the runs (replay.wrela: the best runs, to watch or race as a ghost), and while they're
-// open the frames take the keys and clicks: only Esc, B or a controller's Start or B closes them.
+// Paused, the world stands still and its clock with it. The game opens paused on the level's title
+// (`TITLE`): a jump's key, Enter, a click or a controller's A plays. Esc, P or a controller's Start
+// pauses, on the pause's menu (`MENU`): resume, restart, the runs, the options and the controls.
+// The menus are the sim's (engine::menu), so a restart chosen in one replays from the tick log:
+// the arrows, the d-pad or the stick move the focus, a jump's key, Enter or A chooses, and Esc,
+// Backspace or B backs out. A press on a menu's node (the frames publish each page's items as a
+// semantic tree) chooses it too, by its number (`node`). The options (the music, the clock, the
+// ghost) are the frames', kept in the game's storage: the sim counts the steps a player takes on
+// each (`World::turns`), and the frames take them. On the runs' page the frames take the keys and
+// clicks (replay.wrela's runs, to watch or race as a ghost), and the sim only closes it.
 //
 // The ticker steps a `Live`: the world, its attempt's run as it's played (pad.wrela's `Run`), so
 // a finished attempt is a replay, and what happened, counted tick by tick for the frames (`Tally`).
@@ -24,9 +30,10 @@ use engine::run::{Asks, TickInput}
 use engine::sim::{SimState, Tick}
 use feel::{FEEL, STEP}
 use foes::{Foe, MAX_FOES, NONE, Touch, foe, knock, step_foe, touch}
+use engine::menu::{Nav, Stick, moved}
 use pad::{Controls, Hold, JUMP, NO_RUN, Pad, Run, pad_of}
 use std::hash::StateHash
-use std::input::{Event, Key, Mods, PadButton}
+use std::input::{Assist, Event, Key, Mods, PadButton}
 use std::serialize::Serialize
 
 /// The courses: the movement lab and the first level.
@@ -39,6 +46,46 @@ pub const DYING: u32 = 132
 /// Ticks the capybara can't be hurt after coming back, and after a yuzu takes a hit.
 const SPAWN_GRACE: u32 = 60
 const YUZU_GRACE: u32 = 120
+
+/// The pages the pause shows (`World::page`): the level's title, which the game opens on; the
+/// pause's menu; and the pages the menu opens.
+pub const TITLE: u32 = 0
+pub const MENU: u32 = 1
+pub const RUNS: u32 = 2
+pub const OPTIONS: u32 = 3
+pub const CONTROLS: u32 = 4
+
+/// The menu's items, top to bottom.
+pub const RESUME: u32 = 0
+pub const RESTART: u32 = 1
+pub const SEE_RUNS: u32 = 2
+pub const SEE_OPTIONS: u32 = 3
+pub const SEE_CONTROLS: u32 = 4
+pub const MENU_ITEMS: u32 = 5
+
+/// The options' items, top to bottom: the three the frames keep (`World::turns`), and back.
+pub const MUSIC: u32 = 0
+pub const CLOCK: u32 = 1
+pub const GHOST: u32 = 2
+pub const DONE: u32 = 3
+pub const OPTION_ITEMS: u32 = 4
+
+/// A page's own node, round its items, and how many node numbers each choice in the menus uses.
+pub const PAGE_NODE: u32 = 15
+const NODES: u32 = 128
+
+/// The semantic node of item `item` (or `PAGE_NODE`) of page `page`, after `chosen` choices. It
+/// is a new number after each choice, so the host lets go of a node that was pressed and the keys
+/// come back to the game.
+pub fn node(chosen: u32, page: u32, item: u32) -> u32 {
+    1 + (chosen % 1024) * NODES + page * 16 + item
+}
+
+/// The page and the item of node `n` (`node`).
+pub fn item_of(n: u32) -> (u32, u32) {
+    let k = (n - 1) % NODES
+    (k / 16, k % 16)
+}
 
 /// How near the capybara's middle must come to a snack or a yuzu to take it (m).
 const REACH: f32 = 0.8
@@ -69,10 +116,17 @@ pub struct World: Copy + Eq + StateHash + Serialize + SimState {
     /// The attempts begun: each restart begins one.
     pub attempt: u32,
     /// Paused: the world stands still, its clock too (a run's time is its play's). The game opens
-    /// paused, on the controls (Ryan, 2026-10-22).
+    /// paused, on the level's title.
     pub paused: bool,
-    /// Paused, with the runs open: the frames take the keys.
-    pub browsing: bool,
+    /// Paused, the page shown (`TITLE`...), the item with the focus on the menu or the options,
+    /// and the stick as the menus read it.
+    pub page: u32,
+    pub focus: u32,
+    pub stick: Stick,
+    /// The steps taken on the options the frames keep (`MUSIC`, `CLOCK`, `GHOST`): +1 on, -1
+    /// back. And the choices made in the menus, which number their nodes (`node`).
+    pub turns: [i32; 3],
+    pub chosen: u32,
 }
 
 /// The course's foes as they start.
@@ -105,7 +159,11 @@ pub fn world(c: u32) -> World {
         fell: false,
         attempt: 0,
         paused: true,
-        browsing: false,
+        page: TITLE,
+        focus: RESUME,
+        stick: Stick {},
+        turns: [0; 3],
+        chosen: 0,
     }
 }
 
@@ -205,22 +263,164 @@ pub fn step(w: mut World, pad: Pad) {
     }
 }
 
-/// A new attempt at course `c` in place of `w`, keeping the controls as they're held.
+/// A new attempt at course `c` in place of `w`, playing at once, keeping the controls as they're
+/// held and what the menus keep.
 fn restart(w: mut World, c: u32) {
-    let (controls, attempt) = (w.controls, w.attempt)
+    let (controls, attempt, stick, turns, chosen) = (
+        w.controls,
+        w.attempt,
+        w.stick,
+        w.turns,
+        w.chosen,
+    )
     w = world(c)
     w.controls = controls
     w.attempt = attempt + 1
+    w.stick = stick
+    w.turns = turns
+    w.chosen = chosen
     w.paused = false
 }
 
-/// Whether `key` plays on from the pause: jump's keys and Enter.
-fn plays(key: Key) -> bool {
-    key == Key::Space || key == Key::Z || key == Key::K || key == Key::Enter
+/// What event `e` does in the menus: the engine's (engine::menu), and the game's own keys besides:
+/// a jump's other keys (Z, K) choose, and P pauses as Esc does.
+fn nav_of(w: mut World, e: Event) -> Option<Nav> {
+    let nav = w.stick.nav(e)
+    if let Event::KeyDown { key, repeat, .. } = e {
+        if !repeat && (key == Key::Z || key == Key::K) {
+            return Some(Nav::Choose)
+        } else if !repeat && key == Key::P {
+            return Some(Nav::Pause)
+        }
+    }
+    nav
 }
 
-/// One tick from the host's records: restart (R, or the controller's Start), the other course (Tab,
-/// or Select: the lab or the level), then the pad they leave.
+/// Pauses `w`, on the menu.
+fn pause(w: mut World) {
+    w.paused = true
+    w.page = MENU
+    w.focus = RESUME
+}
+
+/// The menu's item `item` chosen.
+fn choose(w: mut World, item: u32) {
+    w.chosen += 1
+    if item == RESUME {
+        w.paused = false
+    } else if item == RESTART {
+        restart(mut w, w.course)
+    } else if item == SEE_RUNS {
+        w.page = RUNS
+    } else if item == SEE_OPTIONS {
+        w.page = OPTIONS
+        w.focus = MUSIC
+    } else if item == SEE_CONTROLS {
+        w.page = CONTROLS
+    }
+}
+
+/// Back from a page to the menu, the focus on `item`, the page's.
+fn back(w: mut World, item: u32) {
+    w.chosen += 1
+    w.page = MENU
+    w.focus = item
+}
+
+/// A step `by` (+1 or -1) on option `item`, or back from the options.
+fn turn(w: mut World, item: u32, by: i32) {
+    if item == DONE {
+        back(mut w, SEE_OPTIONS)
+        return
+    }
+    w.chosen += 1
+    w.turns[item] += by
+}
+
+/// Paused, event `e` (`nav` in the menus) on the page shown.
+fn paused(w: mut World, e: Event, nav: Option<Nav>) {
+    // R and Tab work as they do in play, but on the runs, whose keys are the frames'.
+    if w.page != RUNS {
+        if let Event::KeyDown { key, repeat, .. } = e {
+            if !repeat && key == Key::R {
+                restart(mut w, w.course)
+                return
+            } else if !repeat && key == Key::Tab {
+                restart(mut w, (w.course + 1) % COURSES)
+                return
+            }
+        }
+        if let Event::PadButton { pad, button, pressed, .. } = e {
+            if pad == 0 && pressed && button == PadButton::Select {
+                restart(mut w, w.course)
+                return
+            }
+        }
+    }
+    // A press on one of the page's nodes, or a dismissal of the page.
+    var pressed: Option<u32> = None
+    var dismissed = false
+    if let Event::Assist { node, action } = e {
+        let (page, item) = item_of(node)
+        if page != w.page || node == 0 {
+            return
+        }
+        if action == Assist::Activate && item != PAGE_NODE {
+            pressed = Some(item)
+        } else if action == Assist::Focus && item != PAGE_NODE {
+            w.focus = item
+        } else if action == Assist::Dismiss {
+            dismissed = true
+        }
+    }
+    let back_out = dismissed || nav == Some(Nav::Back) || nav == Some(Nav::Pause)
+    if w.page == TITLE {
+        if let Event::PointerDown { .. } = e {
+            w.paused = false
+        } else if pressed.is_some() || nav == Some(Nav::Choose) {
+            w.paused = false
+        } else if nav == Some(Nav::Pause) {
+            pause(mut w)
+        }
+    } else if w.page == MENU {
+        if let Some(item) = pressed {
+            choose(mut w, item)
+        } else if back_out {
+            choose(mut w, RESUME)
+        } else if nav == Some(Nav::Choose) {
+            choose(mut w, w.focus)
+        } else if let Some(n) = nav {
+            w.focus = moved(n, focus: w.focus, count: MENU_ITEMS)
+        }
+    } else if w.page == OPTIONS {
+        if let Some(item) = pressed {
+            turn(mut w, item, by: 1)
+        } else if back_out {
+            back(mut w, SEE_OPTIONS)
+        } else if nav == Some(Nav::Choose) || nav == Some(Nav::Right) {
+            turn(mut w, w.focus, by: 1)
+        } else if nav == Some(Nav::Left) {
+            if w.focus != DONE {
+                turn(mut w, w.focus, by: -1)
+            }
+        } else if let Some(n) = nav {
+            w.focus = moved(n, focus: w.focus, count: OPTION_ITEMS)
+        }
+    } else if w.page == CONTROLS {
+        if back_out || pressed.is_some() || nav == Some(Nav::Choose) {
+            back(mut w, SEE_CONTROLS)
+        }
+    } else if w.page == RUNS {
+        // The runs' keys are the frames'; only backing out is the sim's.
+        if back_out || pressed.is_some() {
+            back(mut w, SEE_RUNS)
+        }
+    }
+}
+
+/// One tick from the host's records: playing, restart (R, or the controller's Select), the other
+/// course (Tab: the lab or the level) and the pause; paused, the menus (`paused`); then the pad
+/// they leave.
 @deterministic
 pub fn tick(w: mut World, input: TickInput<World>) {
     let _ = ticked(mut w, input.records)
@@ -232,60 +432,22 @@ fn ticked(w: mut World, records: [Event]) -> Option<Pad> {
     // A tick that leaves the pause doesn't step, so the press that left it isn't also a jump.
     var held = w.paused
     for e in records {
-        if w.browsing {
-            // The runs are open: only closing them is the sim's.
-            match e {
-                Event::KeyDown { key, repeat, .. } => {
-                    if !repeat && (key == Key::Escape || key == Key::B) {
-                        w.browsing = false
-                    }
-                },
-                Event::PadButton { pad, button, pressed, .. } => {
-                    if pad == 0 &&
-                        pressed &&
-                        (button == PadButton::Start || button == PadButton::East) {
-                        w.browsing = false
-                    }
-                },
-                _ => {},
+        let nav = nav_of(mut w, e)
+        if w.paused {
+            paused(mut w, e, nav)
+        } else if nav == Some(Nav::Pause) {
+            pause(mut w)
+            held = true
+        } else if let Event::KeyDown { key, repeat, .. } = e {
+            if !repeat && key == Key::R {
+                restart(mut w, w.course)
+            } else if !repeat && key == Key::Tab {
+                restart(mut w, (w.course + 1) % COURSES)
             }
-            w.controls.update(e)
-            continue
-        }
-        match e {
-            Event::KeyDown { key, repeat, .. } => {
-                if !repeat && w.paused && key == Key::B {
-                    w.browsing = true
-                } else if !repeat && key == Key::R {
-                    restart(mut w, w.course)
-                } else if !repeat && key == Key::Tab {
-                    restart(mut w, (w.course + 1) % COURSES)
-                } else if !repeat && (key == Key::Escape || key == Key::P) {
-                    w.paused = !w.paused
-                    held = true
-                } else if !repeat && w.paused && plays(key) {
-                    w.paused = false
-                }
-            },
-            Event::PadButton { pad, button, pressed, .. } => {
-                if pad == 0 && pressed {
-                    if button == PadButton::Start {
-                        w.paused = !w.paused
-                        held = true
-                    } else if button == PadButton::Select {
-                        restart(mut w, w.course)
-                    } else if w.paused &&
-                        (button == PadButton::South || button == PadButton::East) {
-                        w.paused = false
-                    }
-                }
-            },
-            Event::PointerDown { .. } => {
-                if w.paused {
-                    w.paused = false
-                }
-            },
-            _ => {},
+        } else if let Event::PadButton { pad, button, pressed, .. } = e {
+            if pad == 0 && pressed && button == PadButton::Select {
+                restart(mut w, w.course)
+            }
         }
         w.controls.update(e)
     }
@@ -470,9 +632,15 @@ pub struct Snap: Copy + Plain {
     /// Ticks left while dying (0 otherwise), and 1 if it fell out.
     pub dying: u32,
     pub fell: u32,
-    /// 1 while paused, and 1 while the runs are open.
+    /// 1 while paused; the page shown and the item with the focus (`World`'s); the options' steps;
+    /// and the choices made in the menus.
     pub paused: u32,
-    pub browsing: u32 = 0,
+    pub page: u32 = TITLE,
+    pub focus: u32 = 0,
+    pub turns: [i32; 3] = [0; 3],
+    pub chosen: u32 = 0,
+    /// Jumps left in the air (`Body::jumps`): a double jump while it's more than 0.
+    pub jumps: u32 = 0,
     /// The attempt's run so far (`present_live`), or none.
     pub run: Run = NO_RUN,
     /// What happened, counted (`present_live`, or a watched run's), or nothing.
@@ -517,7 +685,11 @@ pub fn present(w: World) -> Snap {
         dying: w.dying,
         fell: if w.fell { 1 } else { 0 },
         paused: if w.paused { 1 } else { 0 },
-        browsing: if w.browsing { 1 } else { 0 },
+        page: w.page,
+        focus: w.focus,
+        turns: w.turns,
+        chosen: w.chosen,
+        jumps: b.jumps,
     }
 }
 
@@ -551,22 +723,38 @@ fn up(key: Key) -> Event {
     Event::KeyUp { key, mods: Mods {} }
 }
 
+fn press(b: PadButton) -> Event {
+    Event::PadButton { pad: 0, button: b, value: 1.0, pressed: true }
+}
+
+fn assist(n: u32, action: Assist) -> Event {
+    Event::Assist { node: n, action }
+}
+
+/// `w` playing, from its title.
+fn started(c: u32) -> World {
+    var w = world(c)
+    tick_with(mut w, [down(Key::Enter)])
+    tick_with(mut w, [up(Key::Enter)])
+    w
+}
+
 @test
-fn the_game_opens_paused_and_stands_still_its_clock_too() {
+fn the_game_opens_paused_on_its_title_and_stands_still_its_clock_too() {
     var w = world(LEVEL)
     let at = w.body.at
     for _ in 0..30 {
         tick_with(mut w, [down(Key::D)])
     }
-    assert(w.paused && w.ticks == 0 && w.body.at == at, "nothing moves while paused")
+    assert(w.paused && w.page == TITLE && w.ticks == 0 && w.body.at == at, "nothing moves")
 }
 
 @test
-fn esc_plays_on_from_the_next_tick_and_pauses_again() {
+fn the_title_plays_from_the_next_tick_and_esc_pauses_on_the_menu() {
     var w = world(LEVEL)
-    tick_with(mut w, [down(Key::Escape), down(Key::D)])
-    assert(!w.paused && w.ticks == 0, "the tick that leaves the pause doesn't step")
-    tick_with(mut w, [up(Key::Escape)])
+    tick_with(mut w, [down(Key::Enter), down(Key::D)])
+    assert(!w.paused && w.ticks == 0, "the tick that leaves the title doesn't step")
+    tick_with(mut w, [up(Key::Enter)])
     assert(w.ticks == 1, "then the world steps")
     for _ in 0..20 {
         tick_with(mut w, [])
@@ -576,18 +764,33 @@ fn esc_plays_on_from_the_next_tick_and_pauses_again() {
     for _ in 0..20 {
         tick_with(mut w, [])
     }
-    assert(w.paused && w.ticks == ticks && w.body.at == at, "paused again, the clock stopped")
+    assert(w.paused && w.page == MENU && w.focus == RESUME, "paused, on the menu")
+    assert(w.ticks == ticks && w.body.at == at, "the clock stopped")
 }
 
 @test
-fn the_press_that_plays_on_isnt_also_a_jump() {
-    var w = world(LEVEL)
-    tick_with(mut w, [down(Key::Space)])
-    assert(!w.paused, "Space plays on")
-    for _ in 0..30 {
-        tick_with(mut w, [])
+fn the_press_that_plays_isnt_also_a_jump() {
+    for key in [Key::Space, Key::Z] {
+        var w = world(LEVEL)
+        tick_with(mut w, [down(key)])
+        assert(!w.paused, "a jump's key plays")
+        for _ in 0..30 {
+            tick_with(mut w, [])
+        }
+        assert(w.body.grounded(), "and the capybara didn't jump")
     }
-    assert(w.body.grounded(), "and the capybara didn't jump")
+    var w = world(LEVEL)
+    tick_with(mut w, [press(PadButton::South)])
+    assert(!w.paused, "and so does a controller's A")
+}
+
+@test
+fn esc_on_the_title_opens_the_menu_before_playing() {
+    var w = world(LEVEL)
+    tick_with(mut w, [down(Key::Escape)])
+    assert(w.paused && w.page == MENU && w.ticks == 0)
+    tick_with(mut w, [down(Key::Escape)])
+    assert(!w.paused, "Esc again plays")
 }
 
 @test
@@ -599,26 +802,96 @@ fn a_restart_plays_at_once() {
 }
 
 @test
-fn paused_b_opens_the_runs_and_only_esc_or_b_closes_them() {
-    var w = world(LEVEL)
-    tick_with(mut w, [down(Key::B)])
-    assert(w.paused && w.browsing, "the runs open")
-    for key in [Key::Space, Key::Enter, Key::R, Key::Tab, Key::P] {
+fn the_menu_moves_its_focus_and_chooses_a_restart() {
+    var w = started(LEVEL)
+    for _ in 0..60 {
+        tick_with(mut w, [down(Key::D)])
+    }
+    tick_with(mut w, [down(Key::Escape)])
+    tick_with(mut w, [down(Key::Down)])
+    assert(w.focus == RESTART, "down a row")
+    tick_with(mut w, [down(Key::Up)])
+    tick_with(mut w, [down(Key::Up)])
+    assert(w.focus == SEE_CONTROLS, "and round from the top")
+    tick_with(mut w, [down(Key::Down)])
+    tick_with(mut w, [down(Key::Down)])
+    tick_with(mut w, [down(Key::Space)])
+    assert(!w.paused && w.attempt == 1 && w.ticks == 0, "restarted, playing")
+    assert(w.chosen == 1, "a choice")
+}
+
+@test
+fn a_controller_and_its_stick_work_the_menu() {
+    var w = started(LEVEL)
+    tick_with(mut w, [press(PadButton::Start)])
+    assert(w.paused && w.page == MENU)
+    let stick = |v: f32| Event::PadAxis { pad: 0, axis: std::input::PadAxis::LeftY, value: v }
+    tick_with(mut w, [stick(0.9)])
+    tick_with(mut w, [stick(1.0)])
+    assert(w.focus == RESTART, "a push moves once")
+    tick_with(mut w, [stick(0.0), press(PadButton::Down)])
+    tick_with(mut w, [press(PadButton::Down)])
+    assert(w.focus == SEE_OPTIONS)
+    tick_with(mut w, [press(PadButton::South)])
+    assert(w.page == OPTIONS && w.focus == MUSIC)
+    tick_with(mut w, [press(PadButton::East)])
+    assert(w.page == MENU && w.focus == SEE_OPTIONS, "B backs out, to the item it came from")
+    tick_with(mut w, [press(PadButton::East)])
+    assert(!w.paused, "and from the menu, plays")
+}
+
+@test
+fn the_options_count_their_steps_for_the_frames() {
+    var w = started(LEVEL)
+    tick_with(mut w, [down(Key::Escape)])
+    choose(mut w, SEE_OPTIONS)
+    tick_with(mut w, [down(Key::Enter)])
+    tick_with(mut w, [down(Key::Down)])
+    tick_with(mut w, [down(Key::Right)])
+    tick_with(mut w, [down(Key::Down)])
+    tick_with(mut w, [down(Key::Left)])
+    tick_with(mut w, [down(Key::Left)])
+    assert(w.turns == [1, 1, -2], f"{w.turns[0]} {w.turns[1]} {w.turns[2]}")
+    tick_with(mut w, [down(Key::Down), down(Key::Enter)])
+    assert(w.page == MENU && w.focus == SEE_OPTIONS, "back from the options")
+    tick_with(mut w, [down(Key::R)])
+    assert(w.turns == [1, 1, -2], "a restart keeps them")
+}
+
+@test
+fn a_press_on_a_node_chooses_it_and_an_old_page_s_node_does_nothing() {
+    var w = started(LEVEL)
+    tick_with(mut w, [down(Key::Escape)])
+    let options = node(w.chosen, MENU, SEE_OPTIONS)
+    tick_with(mut w, [assist(node(w.chosen, OPTIONS, MUSIC), Assist::Activate)])
+    assert(w.page == MENU && w.turns[0] == 0, "not the page shown")
+    tick_with(mut w, [assist(options, Assist::Activate)])
+    assert(w.page == OPTIONS, "pressed")
+    tick_with(mut w, [assist(node(w.chosen, OPTIONS, CLOCK), Assist::Focus)])
+    assert(w.focus == CLOCK, "a node focused")
+    tick_with(mut w, [assist(node(w.chosen, OPTIONS, PAGE_NODE), Assist::Dismiss)])
+    assert(w.page == MENU, "the page dismissed")
+    assert(item_of(node(chosen: 3000, page: CONTROLS, item: PAGE_NODE)) == (CONTROLS, PAGE_NODE))
+}
+
+@test
+fn on_the_runs_only_backing_out_is_the_sims() {
+    var w = started(LEVEL)
+    tick_with(mut w, [down(Key::Escape)])
+    choose(mut w, SEE_RUNS)
+    for key in [Key::Space, Key::Enter, Key::R, Key::Tab, Key::Up, Key::Down] {
         tick_with(mut w, [down(key)])
         tick_with(mut w, [up(key)])
     }
     assert(
-        w.paused && w.browsing && w.attempt == 0 && w.course == LEVEL,
+        w.paused && w.page == RUNS && w.attempt == 0 && w.course == LEVEL,
         "the keys are the frames'",
     )
+    tick_with(mut w, [down(Key::Backspace)])
+    assert(w.paused && w.page == MENU && w.focus == SEE_RUNS, "Backspace backs out")
+    choose(mut w, SEE_RUNS)
     tick_with(mut w, [down(Key::Escape)])
-    assert(w.paused && !w.browsing, "Esc closes them, still paused")
-    tick_with(mut w, [down(Key::B)])
-    tick_with(mut w, [down(Key::B)])
-    assert(w.paused && !w.browsing, "B closes them too")
-    tick_with(mut w, [down(Key::Space)])
-    tick_with(mut w, [down(Key::B)])
-    assert(!w.paused && !w.browsing, "playing, B does nothing")
+    assert(w.page == MENU, "and Esc")
 }
 
 @test

@@ -1,0 +1,193 @@
+// Menus a game's sim keeps: which way a player moves through one, and when they choose, back out
+// or pause, from the keys, a controller's d-pad and face buttons, and its left stick. A menu kept
+// in the sim is part of its deterministic state, so a choice in it (a restart) replays from the
+// tick log as the play does.
+//
+// The stick moves once each time it is pushed past half its travel, and again only after it comes
+// back under a third (`Stick`), so a stick held over doesn't run down a menu. A key held down
+// repeats a move, as a menu's keys do, but never a choice.
+
+use sim::SimState
+use std::hash::StateHash
+use std::input::{Event, Key, Mods, PadAxis, PadButton}
+use std::serialize::Serialize
+
+/// What a player does in a menu.
+pub enum Nav: Copy + Eq {
+    Up,
+    Down,
+    Left,
+    Right,
+    /// Choose the item with the focus: Space or Enter, or a controller's South.
+    Choose,
+    /// Back out of a page: Backspace, or a controller's East.
+    Back,
+    /// The pause key: Esc, or a controller's Start.
+    Pause,
+}
+
+/// How far the stick moves along an axis before it moves the focus, and how far back it must come
+/// before it can again.
+const PUSHED: f32 = 0.5
+const RELEASED: f32 = 0.3
+
+/// The first controller's left stick, as a menu reads it: the way each axis was last pushed (-1,
+/// 0 or 1; y is down positive, as the host's).
+pub struct Stick: Copy + Eq + StateHash + Serialize + SimState {
+    pub x: i32 = 0,
+    pub y: i32 = 0,
+}
+
+impl Stick {
+    /// What event `e` does in a menu, if anything.
+    pub fn nav(mut self, e: Event) -> Option<Nav> {
+        match e {
+            Event::KeyDown { key, repeat, .. } => key_nav(key, repeat),
+            Event::PadButton { pad, button, pressed, .. } => {
+                if pad == 0 && pressed { button_nav(button) } else { None }
+            },
+            Event::PadAxis { pad, axis, value } => {
+                if pad != 0 {
+                    return None
+                }
+                if axis == PadAxis::LeftX {
+                    let way = push(mut self.x, value)
+                    if way < 0 { Some(Nav::Left) } else if way > 0 { Some(Nav::Right) } else {
+                        None
+                    }
+                } else if axis == PadAxis::LeftY {
+                    let way = push(mut self.y, value)
+                    if way < 0 { Some(Nav::Up) } else if way > 0 { Some(Nav::Down) } else { None }
+                } else { None }
+            },
+            _ => None,
+        }
+    }
+}
+
+/// An axis now at `value`, last pushed `way`, which it updates: the way of a new push (-1 or 1),
+/// or 0.
+fn push(way: mut i32, value: f32) -> i32 {
+    let now = if value >= PUSHED { 1 } else if value <= -PUSHED { -1 } else if abs(value) <
+        RELEASED {
+        0
+    } else { way }
+    let new = if now != 0 && now != way { now } else { 0 }
+    way = now
+    new
+}
+
+/// What key `key` does in a menu: a repeat only moves.
+fn key_nav(key: Key, repeat: bool) -> Option<Nav> {
+    let moved = if key == Key::Up || key == Key::W {
+        Some(Nav::Up)
+    } else if key == Key::Down || key == Key::S {
+        Some(Nav::Down)
+    } else if key == Key::Left || key == Key::A {
+        Some(Nav::Left)
+    } else if key == Key::Right || key == Key::D { Some(Nav::Right) } else { None }
+    if moved.is_some() || repeat {
+        return moved
+    }
+    if key == Key::Space || key == Key::Enter {
+        Some(Nav::Choose)
+    } else if key == Key::Backspace {
+        Some(Nav::Back)
+    } else if key == Key::Escape { Some(Nav::Pause) } else { None }
+}
+
+/// What a controller's button does in a menu.
+fn button_nav(b: PadButton) -> Option<Nav> {
+    if b == PadButton::Up {
+        Some(Nav::Up)
+    } else if b == PadButton::Down {
+        Some(Nav::Down)
+    } else if b == PadButton::Left {
+        Some(Nav::Left)
+    } else if b == PadButton::Right {
+        Some(Nav::Right)
+    } else if b == PadButton::South {
+        Some(Nav::Choose)
+    } else if b == PadButton::East {
+        Some(Nav::Back)
+    } else if b == PadButton::Start { Some(Nav::Pause) } else { None }
+}
+
+/// The focus of a menu of `count` items after `nav`: up and down move it, wrapping round.
+pub fn moved(nav: Nav, focus: u32, count: u32) -> u32 {
+    if count == 0 {
+        return 0
+    }
+    if nav == Nav::Up {
+        (focus + count - 1) % count
+    } else if nav == Nav::Down { (focus + 1) % count } else { focus }
+}
+
+// ---- tests -------------------------------------------------------------------------------------
+
+fn key(k: Key, repeat: bool = false) -> Event {
+    Event::KeyDown { key: k, repeat, mods: Mods {} }
+}
+
+fn axis(a: PadAxis, value: f32) -> Event {
+    Event::PadAxis { pad: 0, axis: a, value }
+}
+
+@test
+fn keys_move_choose_back_and_pause_and_a_repeat_only_moves() {
+    var s = Stick {}
+    assert(s.nav(key(Key::Down)) == Some(Nav::Down) && s.nav(key(Key::W)) == Some(Nav::Up))
+    assert(s.nav(key(Key::Down, repeat: true)) == Some(Nav::Down), "a held arrow repeats")
+    assert(
+        s.nav(key(Key::Enter)) == Some(Nav::Choose) && s.nav(key(Key::Space)) == Some(Nav::Choose),
+    )
+    assert(s.nav(key(Key::Enter, repeat: true)).is_none(), "a held Enter chooses once")
+    assert(
+        s.nav(key(Key::Backspace)) == Some(Nav::Back) &&
+            s.nav(key(Key::Escape)) == Some(Nav::Pause),
+    )
+    assert(s.nav(key(Key::Q)).is_none())
+}
+
+@test
+fn a_controllers_buttons_and_only_the_first_controllers() {
+    var s = Stick {}
+    let press = |b: PadButton, pad: u32| Event::PadButton {
+        pad,
+        button: b,
+        value: 1.0,
+        pressed: true,
+    }
+    assert(s.nav(press(PadButton::South, 0)) == Some(Nav::Choose))
+    assert(s.nav(press(PadButton::East, 0)) == Some(Nav::Back))
+    assert(s.nav(press(PadButton::Start, 0)) == Some(Nav::Pause))
+    assert(s.nav(press(PadButton::Down, 0)) == Some(Nav::Down))
+    assert(s.nav(press(PadButton::South, 1)).is_none(), "another controller's")
+    let release = Event::PadButton { pad: 0, button: PadButton::South, value: 0.0, pressed: false }
+    assert(s.nav(release).is_none(), "a release")
+}
+
+@test
+fn the_stick_moves_once_a_push_until_it_comes_back() {
+    var s = Stick {}
+    assert(s.nav(axis(PadAxis::LeftY, 0.4)).is_none(), "under half its travel")
+    assert(s.nav(axis(PadAxis::LeftY, 0.6)) == Some(Nav::Down), "y is down positive")
+    assert(s.nav(axis(PadAxis::LeftY, 0.9)).is_none(), "held over: once")
+    assert(s.nav(axis(PadAxis::LeftY, 0.4)).is_none(), "not yet back")
+    assert(s.nav(axis(PadAxis::LeftY, 0.7)).is_none(), "so not again")
+    assert(s.nav(axis(PadAxis::LeftY, 0.1)).is_none(), "back")
+    assert(s.nav(axis(PadAxis::LeftY, 0.6)) == Some(Nav::Down), "and again")
+    assert(s.nav(axis(PadAxis::LeftY, -0.8)) == Some(Nav::Up), "straight over to the other way")
+    assert(s.nav(axis(PadAxis::LeftX, 0.8)) == Some(Nav::Right) && s.y == -1, "the axes apart")
+    assert(s.nav(axis(PadAxis::RightX, 0.9)).is_none(), "the right stick")
+}
+
+@test
+fn the_focus_wraps_round() {
+    assert(
+        moved(Nav::Up, focus: 0, count: 5) == 4 &&
+            moved(Nav::Down, focus: 4, count: 5) == 0 &&
+            moved(Nav::Down, focus: 2, count: 5) == 3,
+    )
+    assert(moved(Nav::Left, focus: 2, count: 5) == 2 && moved(Nav::Down, focus: 0, count: 0) == 0)
+}

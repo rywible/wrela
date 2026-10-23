@@ -37,6 +37,8 @@ pub const FRUIT: f32 = 18.0
 pub const KUSUDAMA: f32 = 19.0
 /// A run's ghost: the capybara, pale and see-through.
 pub const GHOST: f32 = 20.0
+/// A zoo's sign (signs.wrela).
+pub const SIGN: f32 = 21.0
 
 /// A sprite. `pose` and `more` by kind:
 /// - the capybara: `pose` its stride (rad), its pace (0 to 1), its mode, and a blink (1 open);
@@ -44,7 +46,8 @@ pub const GHOST: f32 = 20.0
 /// - a goose: `pose` its stride, whether it charges (1), and its wings' spread (0 to 1).
 /// - a pigeon, a seagull: `pose` its wings' beat (rad), and (the seagull) 1 while it flies.
 /// - a caiman: `pose` its tail's beat (rad), and its jaw's gape (0 to 1).
-/// - a carrot, a yuzu: `pose` its glow (0 to 1).
+/// - a carrot, a yuzu: `pose` its glow (0 to 1); a carrot's `more` how pale it is (0 to 1: the
+///   snacks' count's carrots still to find).
 /// - a flag: `pose` 1 once reached, the wind's phase, and its height (m).
 /// - a shadow, a particle: `more` its colour and opacity; `pose` its age (0 to 1).
 pub struct Sprite: Copy + GpuData {
@@ -634,6 +637,17 @@ fn carrot(q: vec2, s: Sprite, px: f32) -> vec4 {
     c
 }
 
+/// A zoo's sign, from its middle: a wooden post, and on it a board, a cream panel in a wooden
+/// frame, its middle 1.1 m above the sprite's, which the frames write on (signs.wrela).
+fn sign(q: vec2, px: f32) -> vec4 {
+    var c = vec4(0.0)
+    let wood = Paint { albedo: vec3(0.6, 0.44, 0.3), gloss: 0.0, thick: 0.05, glow: 0.0 }
+    c = layer(c, |p: vec2| rbox(p - vec2(0.0, -0.85), vec2(0.07, 1.12), 0.03), q, wood, px)
+    c = layer(c, |p: vec2| rbox(p - vec2(0.0, 1.1), vec2(1.35, 0.8), 0.1), q, wood, px)
+    let panel = Paint { albedo: vec3(0.97, 0.94, 0.85), gloss: 0.0, thick: 0.02, glow: 0.0 }
+    layer(c, |p: vec2| rbox(p - vec2(0.0, 1.1), vec2(1.24, 0.69), 0.06), q, panel, px)
+}
+
 /// A yuzu: a bumpy yellow citrus with a leaf.
 fn yuzu(q: vec2, s: Sprite, px: f32) -> vec4 {
     var c = vec4(0.0)
@@ -890,7 +904,11 @@ pub fn sprite(v: Spritel, sprites: [Sprite], st: Stage) -> Over {
     } else if s.kind == SEAGULL {
         seagull(q, s, st.px)
     } else if s.kind == CARROT {
-        carrot(q, s, st.px)
+        // Pale, a carrot still to find in the snacks' count: washed to the paper, see-through.
+        let c = carrot(q, s, st.px)
+        vec4(blend(c.xyz, vec3(0.97, 0.94, 0.86), s.more.x * 0.55), c.w * (1.0 - 0.3 * s.more.x))
+    } else if s.kind == SIGN {
+        sign(q, st.px)
     } else if s.kind == YUZU {
         yuzu(q, s, st.px)
     } else if s.kind == FLAG {

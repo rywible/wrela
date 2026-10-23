@@ -19,7 +19,8 @@ use sound::{
 use feel::{FEEL, HZ}
 use replay::Pose
 use sprites::{
-    CAIMAN, CAPYBARA, CARROT, FLAG, GHOST, GOOSE, KUSUDAMA, PIGEON, SEAGULL, SHADOW, Sprite, YUZU,
+    CAIMAN, CAPYBARA, CARROT, FLAG, GHOST, GOOSE, KUSUDAMA, PIGEON, SEAGULL, SHADOW, SPARK, Sprite,
+    YUZU,
 }
 use std::math::{PI, TAU}
 use waves::{Waves, disturb, step_waves, surface_at, waves}
@@ -57,9 +58,11 @@ pub struct Cast {
     rockets: Vec<Rocket>,
     next_rocket: f32,
     /// The carrots flying from where they were found up to the snacks' count, each where it
-    /// started and how long it's flown (s); and seconds since the last arrived (the count pops).
-    flights: Vec<vec3>,
-    pub arrived: f32,
+    /// started, how long it's flown (s) and the snack it is (its place in the count); and seconds
+    /// since the last arrived, and which that was (its place in the count pops).
+    flights: Vec<vec4>,
+    arrived: f32,
+    landed: u32,
     /// The capybara's tilt (rad), eased.
     tilt: f32,
 }
@@ -99,6 +102,7 @@ pub fn cast(c: Course, from: Option<Snap> = None) -> Cast {
         next_rocket: 0.0,
         flights: Vec::new(),
         arrived: 10.0,
+        landed: 0,
         tilt: 0.0,
     }
 }
@@ -209,7 +213,7 @@ pub fn react(k: mut Cast, s: Snap, c: Course, dt: f32, eye: vec2, half: vec2) {
                 for i in 0..c.snacks.len() {
                     if s.snacks & (1 << i) != 0 && before.snacks & (1 << i) == 0 {
                         k.cues.push(Cue { kind: CRUNCH, pan: pan(c.snacks[i].x) })
-                        k.flights.push(vec3(c.snacks[i], 0.0))
+                        k.flights.push(vec4(c.snacks[i], 0.0, f32(i)))
                         sparkles(mut k.dust, c.snacks[i], 18, vec3(1.0, 0.55, 0.15))
                         sparkles(mut k.dust, c.snacks[i], 8, vec3(1.0, 0.95, 0.7))
                     }
@@ -350,12 +354,13 @@ pub fn react(k: mut Cast, s: Snap, c: Course, dt: f32, eye: vec2, half: vec2) {
         k.cues.push(Cue { kind: SLIDE, amount: hiss })
     }
     fireworks(mut k, c, dt, eye, half)
-    var flying: Vec<vec3> = Vec::new()
+    var flying: Vec<vec4> = Vec::new()
     for f in k.flights {
         if f.z + dt < FLIGHT {
-            flying.push(vec3(f.xy, f.z + dt))
+            flying.push(vec4(f.xy, f.z + dt, f.w))
         } else {
             k.arrived = 0.0
+            k.landed = u32(f.w)
         }
     }
     k.flights = take flying
@@ -467,10 +472,11 @@ fn shadow(out: mut Vec<Sprite>, c: Course, at: vec2, width: f32) {
 }
 
 /// The sprites of snapshot `s` at time `time` (s), `lag` ticks before the snapshot, found carrots
-/// flying to `hud` (the snacks' count, on the plane of play): those behind the water into `back` (the
-/// shadows, the flags, and the dust behind, which the water bends and tints), those in front into
-/// `front` (the things, the foes and the capybara, each tinting itself where it's under water, so
-/// it stays clear; and the splashes and sparkles).
+/// flying to their places in the snacks' count, which starts at `hud` (on the plane of play), and
+/// with `count` the count itself: those behind the water into `back` (the shadows, the flags, the
+/// zoo's signs and the dust behind, which the water bends and tints), those in front into `front`
+/// (the things, the foes and the capybara, each tinting itself where it's under water, so it stays
+/// clear; and the splashes and sparkles).
 pub fn sprites(
     k: Cast,
     s: Snap,
@@ -478,10 +484,13 @@ pub fn sprites(
     time: f32,
     lag: f32,
     hud: vec2,
+    count: bool,
     back: mut Vec<Sprite>,
     front: mut Vec<Sprite>,
 ) {
     let mode = Mode::from_u32(s.mode)
+    // The zoo's signs, behind it all.
+    signs::sign_sprites(s.course, mut back)
     // The shadows.
     if grounded(mode) || mode == Some(Mode::Air) {
         shadow(mut back, c, s.at, 0.5)
@@ -654,12 +663,51 @@ pub fn sprites(
             },
         )
     }
+    // A double jump still to come in the air: a yuzu-yellow star over its back (as Celeste's hair
+    // says a dash is ready), gone once it's spent.
+    if s.dying == 0 && mode == Some(Mode::Air) && s.jumps > 0 {
+        front.push(
+            Sprite {
+                pose: vec4(0.0, time * 2.0, 0.0, 0.0),
+                more: vec4(1.0, 0.84, 0.25, 0.95),
+                at: s.at + vec2(-0.2 * s.facing, 1.0 + 0.04 * sin(time * 7.0)),
+                half: vec2(0.17),
+                angle: 0.0,
+                facing: 1.0,
+                kind: SPARK,
+            },
+        )
+    }
     dust_sprites(k.dust, mut back, mut front)
-    // Found carrots flying up to the count, spinning, shrinking as they go.
+    // The snacks' count: a carrot for each of the course's snacks, pale until it's found and its
+    // carrot has flown in; the one that just came pops.
+    if count {
+        for i in 0..c.snacks.len() {
+            var flying = false
+            for f in k.flights {
+                flying = flying || u32(f.w) == i
+            }
+            let found = s.snacks & (1 << i) != 0 && !flying
+            let pop = if found && k.landed == i { 1.0 + 0.6 * exp(-k.arrived * 7.0) } else { 1.0 }
+            front.push(
+                Sprite {
+                    pose: vec4(if found { 0.4 } else { 0.0 }),
+                    more: vec4(if found { 0.0 } else { 1.0 }, 0.0, 0.0, 0.0),
+                    at: slot(hud, i),
+                    half: vec2(0.3, 0.35) * 1.15 * pop,
+                    angle: 0.25,
+                    facing: 1.0,
+                    kind: CARROT,
+                },
+            )
+        }
+    }
+    // Found carrots flying up to their places in the count, spinning, shrinking as they go.
     for f in k.flights {
         let t = f.z / FLIGHT
         let e = t * t * (3.0 - 2.0 * t)
-        let at = f.xy + (hud - f.xy) * e + vec2(0.0, 2.5 * t * (1.0 - t))
+        let to = slot(hud, u32(f.w))
+        let at = f.xy + (to - f.xy) * e + vec2(0.0, 2.5 * t * (1.0 - t))
         front.push(
             Sprite {
                 pose: vec4(1.0),
@@ -672,6 +720,11 @@ pub fn sprites(
             },
         )
     }
+}
+
+/// Where snack `i`'s place in the count is, the count starting at `hud`.
+fn slot(hud: vec2, i: u32) -> vec2 {
+    hud + vec2(f32(i) * 0.72, 0.0)
 }
 
 /// A run's ghost between poses `a` and `b` (a tick apart), `lag` ticks before `b`: the capybara,
