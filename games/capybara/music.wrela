@@ -1,25 +1,27 @@
-// The game's music: "Snack Quest", an original piano piece by Claude for a capybara on a quest to
-// get its snack back, played by engine::piano. It is an upbeat, groove-driven tune in C major at
-// 150 quarter notes a minute, in 4/4, in the style of anime openings and Japanese game themes
-// (Ryan, 2026-10-22: the last take had "no rhythm or groove ... generic elevator music"; "it needs
-// a discernable rhythm and a real hook ... a central melody that the piece revolves around").
+// The game's music: "Snack Quest", a piano piece for a capybara on a quest to get its snack back,
+// played by engine::piano: an upbeat, groove-driven tune in C major at 150 quarter notes a minute,
+// in 4/4, in the style of anime openings and Japanese game themes (Ryan, 2026-10-22: an earlier
+// take had "no rhythm or groove"; "it needs a discernable rhythm and a real hook").
 //
-// The piece revolves around one hook, two bars long: a rest on the downbeat, "G G A" up to a high
-// C, and a push tied over the bar line onto the next chord. Its chords are the "royal road"
-// (IV, V, iii, vi), the progression of anime and J-pop choruses. The groove under it is the same
-// all through: the bass plays 3 + 3 + 2 eighths (the tresillo), and the chords stab between the
-// bass's notes (on 2, the "and" of 3 and the "and" of 4), so the hands lock into a bounce.
+// Its hook is Ryan's (2026-10-22, played on the keys: keys/takes.wrela's take 1): a falling "re,
+// do, sol" (D, C, G) answered by a held note, E and then B, and closed by "fa, fa, mi, re". Claude
+// put it on the beat, gave it a fourth phrase that runs the motif back up and lands home ("sol, la,
+// do, re, mi; mi, re, do"), chose its chords (C, A minor, F, G; A minor 7, D minor 7, F over G,
+// C), and built the piece round it. The groove under it is the same all through: the bass plays
+// 3 + 3 + 2 eighths (the tresillo), and the chords stab between the bass's notes (on 2, the "and"
+// of 3 and the "and" of 4), so the hands lock into a bounce.
 //
 // One pass is 42 bars, 67 seconds:
-// - the intro (4 bars): the hook, twice, plain;
-// - the verse (8 bars): the hook's head ("rest, E E G") in a lower voice, asking and answering;
+// - the intro (4 bars): the theme's first half, plain;
+// - the verse (8 bars): the theme lower and softer, nearly as Ryan played it, on to D minor 7 and
+//   G7;
 // - the pre-chorus (4 bars): a rising sequence of pushes over a pumping bass, to three hits;
-// - the chorus (8 bars): the hook four times, in octaves, forte, to a stop on C;
-// - the seagull (8 bars): the hook's rhythm in A minor, quiet and on tiptoe, then a run up;
+// - the chorus (8 bars): the whole theme in octaves, forte, to a stop on C;
+// - the seagull (8 bars): the motif in A minor (B, A, E), quiet and on tiptoe, then a run up;
 // - the lift (8 bars): the chorus a whole step up, in D major;
-// - the turn (2 bars): the hook's head over G7, back to the intro.
-// The form is code (`looped`): the game plays `PASSES` passes (9 minutes), then the hook's head
-// and a C major hit.
+// - the turn (2 bars): the motif twice over G7, back to the intro.
+// The form is code (`looped`): the game plays `PASSES` passes (9 minutes), then the motif and a
+// C major hit.
 //
 // The playing is tight and on the beat: the pushes accented, everything not tied short and
 // bouncing, a light pedal.
@@ -34,42 +36,42 @@ use engine::score::{Level, Score, meter, score}
 use std::audio::SAMPLE_RATE
 use std::collections::Vec
 
-/// The intro: the hook twice (over F major 7, G, E minor, A minor 7), plain.
-const INTRO = score("intro, the hook", meter(beats: 4, unit: 4))
+/// The intro: the theme's first half (C, A minor, F, G), plain.
+const INTRO = score("intro, the theme", meter(beats: 4, unit: 4))
     .voice(
         "melody",
         [
-            "r/8 g5 !mf g5 a5 c6/4 a5/8 c6 !accent ~ | c6/8 d6 !accent ~ d6 b5 g5/4 r |",
-            "r/8 g5 g5 a5 b5/4 g5/8 b5 !accent ~ | b5/8 c6 !accent ~ c6 a5 e5/4 r |",
+            "d6/8 !mf c6 g5/4 r/4 r/8 e6/8 !accent ~ | e6/2 r/4 g5/8 a5 |",
+            "d6/8 c6 g5/4 r/4 r/8 b5/8 !accent ~ | b5/2 r/2 |",
         ],
     )
     .voice(
         "chords",
         [
-            "r/4 <a3 c4 e4>/8 r r <a3 c4 e4> !accent r <a3 c4 e4> |",
-            "r/4 <b3 d4 g4>/8 r r <b3 d4 g4> !accent r <b3 d4 g4> |",
-            "r/4 <g3 b3 e4>/8 r r <g3 b3 e4> !accent r <g3 b3 e4> |",
             "r/4 <g3 c4 e4>/8 r r <g3 c4 e4> !accent r <g3 c4 e4> |",
+            "r/4 <a3 c4 e4>/8 r r <a3 c4 e4> !accent r <a3 c4 e4> |",
+            "r/4 <a3 c4 f4>/8 r r <a3 c4 f4> !accent r <a3 c4 f4> |",
+            "r/4 <b3 d4 g4>/8 r r <b3 d4 g4> !accent r <b3 d4 g4> |",
         ],
     )
     .voice(
         "bass",
         [
+            "<c2 c3>/4. <c2 c3> <g1 g2>/4 | <a1 a2>/4. <a1 a2> <e2 e3>/4 |",
             "<f1 f2>/4. <f1 f2> <c2 c3>/4 | <g1 g2>/4. <g1 g2> <d2 d3>/4 |",
-            "<e1 e2>/4. <e1 e2> <b1 b2>/4 | <a1 a2>/4. <a1 a2> <e2 e3>/4 |",
         ],
     )
 
-/// The verse: the hook's head, lower, asking (C, A minor) and answering (F, G), twice, the second
-/// time on to D minor 7 and G7 and a little run up.
+/// The verse: the theme lower and softer, nearly as Ryan played it (re, do, sol and a held E; and
+/// a held B; then fa, fa, mi, re), on to D minor 7 and G7 and a little run up.
 const VERSE = score("verse", meter(beats: 4, unit: 4))
     .voice(
         "melody",
         [
-            "r/8 e5 e5 g5 c5/4 r | r/8 e5 e5 g5 a5 g5 e5/4 |",
-            "r/8 f5 f5 a5 c6/4 a5/8 f5 | g5/4. d5/8 !accent ~ d5/4 r |",
-            "r/8 e5 e5 g5 c5/4 r | r/8 e5 e5 g5 a5 c6 !accent ~ c6/4 |",
-            "r/8 d6 c6 a5 f5/4 a5/8 c6 !accent ~ | c6/8 b5 !accent ~ b5/4 r/4 g4/16 a4 b4 d5 |",
+            "d5/8 !mf c5 g4/4 r/4 r/8 e5/8 !accent ~ | e5/4 r/4 r/2 |",
+            "d5/8 c5 g4/4 r/4 r/8 b4/8 !accent ~ | b4/4 r/4 r/2 |",
+            "d5/8 c5 g4/4 r/4 f5/8 f5 | e5/4. d5/8 ~ d5/4 r/4 |",
+            "a4/8 c5 d5 f5 !accent ~ f5/4 e5/8 d5 | b4/4 d5/8 f5 !accent ~ f5/4 g4/16 a4 b4 d5 |",
         ],
     )
     .voice(
@@ -116,54 +118,55 @@ const PRE = score("pre-chorus", meter(beats: 4, unit: 4))
         ],
     )
 
-/// The chorus: the hook four times, in octaves, forte, over the royal road (F major 7, G,
-/// E minor, A minor 7, twice), the last time climbing to F6 on G7 and down to a stop on C.
+/// The chorus: the whole theme in octaves, forte: re, do, sol answered by E, then by B, then by
+/// fa, fa, mi, re, and the run back up home (C, A minor, F, G, A minor 7, D minor 7, F over G, C),
+/// to a stop on C.
 const CHORUS = score("chorus", meter(beats: 4, unit: 4))
     .voice(
         "melody",
         [
-            "r/8 <g4 g5> !f <g4 g5> <a4 a5> <c5 c6>/4 <a4 a5>/8 <c5 c6> !accent ~ |",
-            "<c5 c6>/8 <d5 d6> !accent ~ <d5 d6> <b4 b5> <g4 g5>/4 r |",
-            "r/8 <g4 g5> <g4 g5> <a4 a5> <b4 b5>/4 <g4 g5>/8 <b4 b5> !accent ~ |",
-            "<b4 b5>/8 <c5 c6> !accent ~ <c5 c6> <a4 a5> <e4 e5>/4 r |",
-            "r/8 <g4 g5> <g4 g5> <a4 a5> <c5 c6>/4 <a4 a5>/8 <c5 c6> !accent ~ |",
-            "<c5 c6>/8 <d5 d6> !accent ~ <d5 d6> <e5 e6> <f5 f6>/4 <d5 d6> |",
-            "<e5 e6>/4. !accent <d5 d6>/8 <c5 c6>/4 <g4 g5>/8 <c5 c6> !accent ~ |",
-            "<c5 c6>/4 r r/2 |",
+            "<d5 d6>/8 !f <c5 c6> <g4 g5>/4 r/4 r/8 <e5 e6>/8 !accent ~ |",
+            "<e5 e6>/2 r/4 <g4 g5>/8 <a4 a5> |",
+            "<d5 d6>/8 <c5 c6> <g4 g5>/4 r/4 r/8 <b4 b5>/8 !accent ~ |",
+            "<b4 b5>/2 r/4 <g4 g5>/8 <a4 a5> |",
+            "<d5 d6>/8 <c5 c6> <g4 g5>/4 r/4 <f5 f6>/8 !accent <f5 f6> |",
+            "<e5 e6>/4. <d5 d6>/8 !accent ~ <d5 d6>/2 |",
+            "<d5 d6>/8 <c5 c6> <g4 g5>/4 <a4 a5>/8 <c5 c6> <d5 d6> <e5 e6> !accent ~ |",
+            "<e5 e6>/8 <d5 d6> <c5 c6>/2. |",
         ],
     )
     .voice(
         "chords",
         [
+            "r/4 <g3 c4 e4>/8 r r <g3 c4 e4> !accent r <g3 c4 e4> |",
             "r/4 <a3 c4 e4>/8 r r <a3 c4 e4> !accent r <a3 c4 e4> |",
+            "r/4 <a3 c4 f4>/8 r r <a3 c4 f4> !accent r <a3 c4 f4> |",
             "r/4 <b3 d4 g4>/8 r r <b3 d4 g4> !accent r <b3 d4 g4> |",
-            "r/4 <g3 b3 e4>/8 r r <g3 b3 e4> !accent r <g3 b3 e4> |",
             "r/4 <g3 c4 e4>/8 r r <g3 c4 e4> !accent r <g3 c4 e4> |",
-            "r/4 <a3 c4 e4>/8 r r <a3 c4 e4> !accent r <a3 c4 e4> |",
-            "r/4 <b3 d4 f4>/8 r r <b3 d4 f4> !accent r <b3 d4 f4> |",
-            "r/4 <g3 c4 e4>/8 r r <g3 c4 e4> !accent r <g3 c4 e4> |",
+            "r/4 <a3 c4 f4>/8 r r <a3 c4 f4> !accent r <a3 c4 f4> |",
+            "r/4 <a3 c4 f4>/8 r r <a3 c4 f4> !accent r <a3 c4 f4> |",
             "<g3 c4 e4>/4 r r/2 |",
         ],
     )
     .voice(
         "bass",
         [
+            "<c2 c3>/4. <c2 c3> <g1 g2>/4 | <a1 a2>/4. <a1 a2> <e2 e3>/4 |",
             "<f1 f2>/4. <f1 f2> <c2 c3>/4 | <g1 g2>/4. <g1 g2> <d2 d3>/4 |",
-            "<e1 e2>/4. <e1 e2> <b1 b2>/4 | <a1 a2>/4. <a1 a2> <e2 e3>/4 |",
-            "<f1 f2>/4. <f1 f2> <c2 c3>/4 | <g1 g2>/4. <g1 g2> <d2 d3>/4 |",
-            "<c2 c3>/4. <c2 c3> <g1 g2>/4 | <c2 c3>/4 r r/2 |",
+            "<a1 a2>/4. <a1 a2> <e2 e3>/4 | <d2 d3>/4. <d2 d3> <a1 a2>/4 |",
+            "<g1 g2>/4. <g1 g2> <d2 d3>/4 | <c2 c3>/4 r r/2 |",
         ],
     )
 
-/// The seagull: the hook's rhythm in A minor, quiet and on tiptoe (A minor, E7, F), the bass
+/// The seagull: the motif in A minor (B, A, E), quiet and on tiptoe (A minor, E7, F), the bass
 /// plucked on 1 and 3, then a run up on A7 into the lift.
 const SEAGULL = score("the seagull", meter(beats: 4, unit: 4))
     .voice(
         "melody",
         [
-            "r/8 a4 !mp a4 b4 c5 r a4 r | r g#4 g#4 a4 b4 r e4 r |",
-            "r a4 a4 b4 c5 e5 a5 r | g#5 r e5 r d5 r b4 r |",
-            "r c5 c5 d5 f5 r c5 r | r b4 b4 c5 d5 r b4 r |",
+            "b4/8 !mp a4 e4 r e4 r g#4 r | b4 a4 e4 r g#4 r b4 r |",
+            "b4 a4 e4 r a4 b4 c5 r | d5 r b4 r g#4 r e4 r |",
+            "c5 b4 f4 r f4 r a4 r | b4 a4 e4 r g#4 r b4 r |",
             "c5 b4 a4 g#4 a4 r e5 r | r/4 a4/16 !< b4 c#5 d5 e5 f#5 g5 a5 b5 c#6 d6 e6 !! |",
         ],
     )
@@ -193,42 +196,42 @@ const LIFT = score("the lift", meter(beats: 4, unit: 4))
     .voice(
         "melody",
         [
-            "r/8 <a4 a5> !f <a4 a5> <b4 b5> <d5 d6>/4 <b4 b5>/8 <d5 d6> !accent ~ |",
-            "<d5 d6>/8 <e5 e6> !accent ~ <e5 e6> <c#5 c#6> <a4 a5>/4 r |",
-            "r/8 <a4 a5> <a4 a5> <b4 b5> <c#5 c#6>/4 <a4 a5>/8 <c#5 c#6> !accent ~ |",
-            "<c#5 c#6>/8 <d5 d6> !accent ~ <d5 d6> <b4 b5> <f#4 f#5>/4 r |",
-            "r/8 <a4 a5> <a4 a5> <b4 b5> <d5 d6>/4 <b4 b5>/8 <d5 d6> !accent ~ |",
-            "<d5 d6>/8 <e5 e6> !accent ~ <e5 e6> <f#5 f#6> <g5 g6>/4 <e5 e6> |",
-            "<f#5 f#6>/4. !accent <e5 e6>/8 <d5 d6>/4 <a4 a5>/8 <d5 d6> !accent ~ |",
-            "<d5 d6>/4 r r/2 |",
+            "<e5 e6>/8 !f <d5 d6> <a4 a5>/4 r/4 r/8 <f#5 f#6>/8 !accent ~ |",
+            "<f#5 f#6>/2 r/4 <a4 a5>/8 <b4 b5> |",
+            "<e5 e6>/8 <d5 d6> <a4 a5>/4 r/4 r/8 <c#5 c#6>/8 !accent ~ |",
+            "<c#5 c#6>/2 r/4 <a4 a5>/8 <b4 b5> |",
+            "<e5 e6>/8 <d5 d6> <a4 a5>/4 r/4 <g5 g6>/8 !accent <g5 g6> |",
+            "<f#5 f#6>/4. <e5 e6>/8 !accent ~ <e5 e6>/2 |",
+            "<e5 e6>/8 <d5 d6> <a4 a5>/4 <b4 b5>/8 <d5 d6> <e5 e6> <f#5 f#6> !accent ~ |",
+            "<f#5 f#6>/8 <e5 e6> <d5 d6>/2. |",
         ],
     )
     .voice(
         "chords",
         [
+            "r/4 <a3 d4 f#4>/8 r r <a3 d4 f#4> !accent r <a3 d4 f#4> |",
             "r/4 <b3 d4 f#4>/8 r r <b3 d4 f#4> !accent r <b3 d4 f#4> |",
+            "r/4 <b3 d4 g4>/8 r r <b3 d4 g4> !accent r <b3 d4 g4> |",
             "r/4 <c#4 e4 a4>/8 r r <c#4 e4 a4> !accent r <c#4 e4 a4> |",
-            "r/4 <a3 c#4 f#4>/8 r r <a3 c#4 f#4> !accent r <a3 c#4 f#4> |",
             "r/4 <a3 d4 f#4>/8 r r <a3 d4 f#4> !accent r <a3 d4 f#4> |",
-            "r/4 <b3 d4 f#4>/8 r r <b3 d4 f#4> !accent r <b3 d4 f#4> |",
-            "r/4 <c#4 e4 g4>/8 r r <c#4 e4 g4> !accent r <c#4 e4 g4> |",
-            "r/4 <a3 d4 f#4>/8 r r <a3 d4 f#4> !accent r <a3 d4 f#4> |",
+            "r/4 <b3 d4 g4>/8 r r <b3 d4 g4> !accent r <b3 d4 g4> |",
+            "r/4 <b3 d4 g4>/8 r r <b3 d4 g4> !accent r <b3 d4 g4> |",
             "<a3 d4 f#4>/4 r r/2 |",
         ],
     )
     .voice(
         "bass",
         [
+            "<d2 d3>/4. <d2 d3> <a1 a2>/4 | <b1 b2>/4. <b1 b2> <f#2 f#3>/4 |",
             "<g1 g2>/4. <g1 g2> <d2 d3>/4 | <a1 a2>/4. <a1 a2> <e2 e3>/4 |",
-            "<f#1 f#2>/4. <f#1 f#2> <c#2 c#3>/4 | <b1 b2>/4. <b1 b2> <f#2 f#3>/4 |",
-            "<g1 g2>/4. <g1 g2> <d2 d3>/4 | <a1 a2>/4. <a1 a2> <e2 e3>/4 |",
-            "<d2 d3>/4. <d2 d3> <a1 a2>/4 | <d2 d3>/4 r r/2 |",
+            "<b1 b2>/4. <b1 b2> <f#2 f#3>/4 | <e2 e3>/4. <e2 e3> <b1 b2>/4 |",
+            "<a1 a2>/4. <a1 a2> <e2 e3>/4 | <d2 d3>/4 r r/2 |",
         ],
     )
 
-/// The turn: the hook's head twice over G7, the bass pumping, back to the intro's C major.
+/// The turn: the motif twice over G7, the bass pumping, back to the intro's C major.
 const TURN = score("the turn", meter(beats: 4, unit: 4))
-    .voice("melody", ["r/8 g5 !mf g5 a5 b5/4 g5 | r/8 g5 g5 a5 d6/4 f6 |"])
+    .voice("melody", ["d6/8 !mf c6 g5/4 r/4 g5/8 a5 | d6/8 c6 g5/4 b5/8 d6 f6/4 |"])
     .voice(
         "chords",
         [
@@ -238,9 +241,9 @@ const TURN = score("the turn", meter(beats: 4, unit: 4))
     )
     .voice("bass", ["g1/8 g2 g1 g2 g1 g2 g1 g2 | g1 g2 g1 g2 b1 d2 f2 g2 |"])
 
-/// The ending, after the last pass: the hook's head and a C major hit.
+/// The ending, after the last pass: the motif and a C major hit.
 const END = score("ending", meter(beats: 4, unit: 4))
-    .voice("melody", ["r/8 g5 !f g5 a5 <e5 g5 c6>/4 !accent r | <c5 e5 g5 c6>/4 !accent r r/2 |"])
+    .voice("melody", ["d6/8 !f c6 g5/4 <e5 g5 c6>/4 !accent r | <c5 e5 g5 c6>/4 !accent r r/2 |"])
     .voice("chords", ["r/2 <g3 c4 e4>/4 r | <g3 c4 e4>/4 r r/2 |"])
     .voice("bass", ["r/2 <c2 c3>/4 r | <c2 c3>/4 r r/2 |"])
 
@@ -356,14 +359,13 @@ fn the_music_is_forty_two_bars_a_pass_in_three_voices() {
     assert(SNACK_QUEST.sections[4].first_bar == SEAGULL_BAR)
     assert(SNACK_QUEST.sections[5].first_bar == LIFT_BAR)
     assert(SNACK_QUEST.sections[6].first_bar + SNACK_QUEST.sections[6].bars - 1 == BARS)
-    // Each starts with a rest, and its first note an eighth in: the chorus forte on G, the
-    // seagull quiet on A, the lift forte on A.
+    // Each starts on its downbeat with the motif: the chorus forte on D6, the seagull quiet on
+    // B4, the lift forte on E6.
     let melody = SNACK_QUEST.voice_named("melody")
-    let eighth = SNACK_QUEST.meter.beat() / 2
     for (at, key, level) in [
-        (CHORUS_BAR, 79, Level::F),
-        (SEAGULL_BAR, 69, Level::MP),
-        (LIFT_BAR, 81, Level::F),
+        (CHORUS_BAR, 86, Level::F),
+        (SEAGULL_BAR, 71, Level::MP),
+        (LIFT_BAR, 88, Level::F),
     ] {
         let t = SNACK_QUEST.bar_start(at)
         var first = SNACK_QUEST.length()
@@ -374,7 +376,7 @@ fn the_music_is_forty_two_bars_a_pass_in_three_voices() {
                 top = max(top, n.key)
             }
         }
-        assert(first == t + eighth, f"bar {at}: the first note at {first - t}")
+        assert(first == t, f"bar {at}: the first note at {first - t}")
         assert(top == key, f"bar {at}: {top}")
         assert(SNACK_QUEST.level_at(first) == level)
     }
@@ -384,8 +386,8 @@ fn the_music_is_forty_two_bars_a_pass_in_three_voices() {
 fn the_hook_opens_the_piece_and_is_its_chorus() {
     // Every note of the intro's melody is the chorus's, at the same time and for as long, in
     // octaves; and the lift's, a whole step up.
-    assert(hooked(INTRO, CHORUS, up: 0) == 18)
-    assert(hooked(INTRO, LIFT, up: 2) == 18)
+    assert(hooked(INTRO, CHORUS, up: 0) == 10)
+    assert(hooked(INTRO, LIFT, up: 2) == 10)
 }
 
 /// How many notes of `hook`'s melody `passage` plays at the same time and for as long, `up`
