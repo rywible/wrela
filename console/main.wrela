@@ -5,11 +5,13 @@ use opening::{
     presentation_step, stage_light, turn_at,
 }
 use paint::{
-    Edges, Emblem, Pool, Stage, block_corner, block_edge, block_face, block_line, emblem, pool,
-    quad, stage,
+    Edges, Emblem, Ink, Pool, Stage, block_corner, block_edge, block_face, block_line, emblem,
+    mark_ink, pool, quad, stage,
 }
 use room::{Camera, MARGIN, artifact_spot, bounds, camera, place, row, row_place}
-use tesseract::{Artifact, EDGES, FACES, PANE_WORDS, STRUT_WORDS, artifact, corners, shapes}
+use tesseract::{
+    Artifact, EDGES, FACES, PANE_WORDS, STRUT_WORDS, artifact, corners, shapes, tile_grid, tiles,
+}
 use brand::facet
 use brand::facet::MarkRun
 use brand::manrope::MANROPE
@@ -155,11 +157,17 @@ pub struct Console {
     // the room holds: its turn and look when it was traced, and when (host seconds).
     struts: GpuBuffer<vec4>,
     panes: GpuBuffer<vec4>,
+    // Which of them each tile of the room can see (`tesseract::tiles`).
+    tiles: GpuBuffer<vec4u>,
     traced: Option<(f32, Artifact)>,
     traced_at: f32,
     // The room shows an older tracing than the tesseract has turned to: one is due.
     behind: bool,
     mark: GpuBuffer<MarkRun>,
+    // The marks' ink, the opening's and the header's (`ink`), and the centre and size each was
+    // inked for (a size of 0: none).
+    inks: Vec<Texture<Rgba8>>,
+    inked: Vec<vec4>,
     covers: Vec<Cover>,
     placed: Vec<Placed>,
     // The save last chosen in the Load sheet: what Export writes.
@@ -284,10 +292,13 @@ pub fn init() -> Console {
         room: texture(width: 1, height: 1),
         struts: buffer(EDGES * STRUT_WORDS),
         panes: buffer(FACES * PANE_WORDS),
+        tiles: buffer(1),
         traced: None,
         traced_at: 0.0,
         behind: false,
         mark: buffer_of(MARK_RUNS),
+        inks: Vec::from_fn(2, |_| texture::<Rgba8>(width: 1, height: 1)),
+        inked: Vec::filled(2, value: vec4(0.0)),
         covers: Vec::new(),
         placed: Vec::new(),
         marked: 0,
@@ -1643,8 +1654,10 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
     let place = artifact_place(phase, artifact_spot(rest))
     let (coarser, rays) = trace_plan(s.coarser)
     let size = traced_size(width, height, TRACED_PIXELS, coarser)
+    let grid = tile_grid(width: size.0, height: size.1)
     if s.room.width() != size.0 || s.room.height() != size.1 {
         s.room = texture(width: size.0, height: size.1)
+        s.tiles = buffer(grid.0 * grid.1)
         s.traced = None
     }
     let target = vec2(f32(size.0), f32(size.1))
@@ -1663,6 +1676,7 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
         // A tint that takes the light nowhere: its colour changes nothing.
         tint: if s.tint.w > 0.0 { s.tint } else { vec4(0.0) },
         rays,
+        columns: grid.0,
     }
     // Traced again only when it would look different, and at most at its rate: the room keeps
     // the last tracing meanwhile.
@@ -1673,19 +1687,44 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
     let hz = if phase.settled { ROOM_TRACE_HZ } else { OPENING_TRACE_HZ }
     s.behind = changed && s.traced.is_some() && time - s.traced_at < 1.0 / hz - SLACK
     if changed && !s.behind {
-        let shapes = shapes(corners(turn, place.xyz, place.w), place.w)
+        let verts = corners(turn, place.xyz, place.w)
+        let shapes = shapes(verts, place.w)
         write(mut s.struts, 0, shapes.struts)
         write(mut s.panes, 0, shapes.panes)
+        write(mut s.tiles, 0, tiles(look, verts, shapes.struts, shapes.panes))
         let space = begin_pass(mut s.room, clear: vec4(0.0, 0.0, 0.0, 1.0))
         draw(
             space,
             quad.bind(target, rect: vec4(0.0, 0.0, target)),
-            artifact.bind(struts: s.struts, panes: s.panes, look: look),
+            artifact.bind(struts: s.struts, panes: s.panes, tiles: s.tiles, look: look),
             vertices: 6,
         )
         space.end()
         s.traced = Some((turn, look))
         s.traced_at = time
+    }
+    // The mark: large beneath the tesseract, a light passing along it as the tesseract comes
+    // up, then going down into the dark with it; small in the header with the library.
+    let marks = [
+        (mark_place(w, h), phase.title, phase.reveal),
+        (
+            vec3(
+                margin + MARK_WIDTH * HEADER_CAP / facet::CAP * 0.5,
+                42.0,
+                HEADER_CAP / facet::CAP,
+            ),
+            phase.library,
+            1.0,
+        ),
+    ]
+    for k in 0..2 {
+        if marks[k].1 > 0.0 {
+            ink(mut s, k, marks[k].0)
+        } else if phase.settled && s.inked[k].z > 0.0 {
+            // Gone for good: the opening's mark is not shown again.
+            s.inks[k] = texture(width: 1, height: 1)
+            s.inked[k] = vec4(0.0)
+        }
     }
     let pass = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
     draw(
@@ -1757,35 +1796,16 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
             )
         }
     }
-    // The mark: large beneath the tesseract, a light passing along it as the tesseract comes
-    // up, then going down into the dark with it; small in the header with the library.
-    let big = mark_place(w, h)
-    let header = vec3(
-        margin + MARK_WIDTH * HEADER_CAP / facet::CAP * 0.5,
-        42.0,
-        HEADER_CAP / facet::CAP,
-    )
-    for (at, alpha, reveal) in [
-        (big, phase.title, phase.reveal),
-        (header, phase.library, 1.0),
-    ] {
+    for k in 0..2 {
+        let (at, alpha, reveal) = marks[k]
         if alpha <= 0.0 { continue }
-        let ems = at.z * s.zoom
-        let centre = at.xy * s.zoom
-        let extent = vec2(MARK_WIDTH * ems + 16.0, ems * 1.6)
+        let (centre, ems, origin, size) = mark_frame(at, s.zoom)
         draw(
             pass,
-            quad.bind(screen, rect: vec4(centre - extent * 0.5, extent)),
+            quad.bind(screen, rect: vec4(origin, size)),
             emblem.bind(
-                runs: s.mark,
-                look: Emblem {
-                    centre,
-                    ems,
-                    alpha,
-                    count: MARK_RUNS.len(),
-                    reveal,
-                    width: MARK_WIDTH,
-                },
+                ink: s.inks[k],
+                look: Emblem { centre, origin, ems, alpha, reveal, width: MARK_WIDTH },
             ),
             vertices: 6,
         )
@@ -1804,6 +1824,37 @@ pub fn frame(s: mut Console, time: f32, width: u32, height: u32) {
         }
     }
     if s.clicked.is_some() { s.pressed = None }
+}
+
+// Where mark `at` (its centre and pixels per em, logical) is on a screen at `zoom`: its centre
+// and pixels per em, and the whole screen pixels its layer covers, from and across.
+fn mark_frame(at: vec3, zoom: f32) -> (vec2, f32, vec2, vec2) {
+    let ems = at.z * zoom
+    let centre = at.xy * zoom
+    let extent = vec2(MARK_WIDTH * ems + 16.0, ems * 1.6)
+    let origin = floor(centre - extent * 0.5)
+    (centre, ems, origin, ceil(centre + extent * 0.5) - origin)
+}
+
+// Inks mark `k` at `at` into its layer, unless it holds it at that size already: once a size,
+// since the mark's field is all of its cost.
+fn ink(s: mut Console, k: u32, at: vec3) {
+    let (centre, ems, origin, size) = mark_frame(at, s.zoom)
+    let key = vec4(centre, ems, size.x)
+    if s.inked[k] == key { return }
+    s.inked[k] = key
+    s.inks[k] = texture(width: u32(size.x), height: u32(size.y))
+    let space = begin_pass(mut s.inks[k], clear: vec4(0.0))
+    draw(
+        space,
+        quad.bind(size, rect: vec4(vec2(0.0), size)),
+        mark_ink.bind(
+            runs: s.mark,
+            look: Ink { centre, origin, ems, count: MARK_RUNS.len() },
+        ),
+        vertices: 6,
+    )
+    space.end()
 }
 
 // Fetches the games' files ahead of time, at the browser's low priority, once the console

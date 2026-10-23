@@ -233,15 +233,31 @@ pub fn pool(v: Vertex, look: Pool) -> Over {
     Over { color: vec4(look.color.xyz, light) }
 }
 
-pub struct Emblem: Copy + GpuData {
-    // The mark's centre in pixels, and pixels per em.
+// The mark's ink: how much of each pixel the mark covers, drawn once a size into a layer
+// (`mark_ink`), which the screen then shows each frame (`emblem`).
+pub struct Ink: Copy + GpuData {
+    // The mark's centre on the screen, the screen pixel the layer starts at, and pixels per em.
     pub centre: vec2,
+    pub origin: vec2,
+    pub ems: f32,
+    pub count: u32,
+}
+
+pub struct Emblem: Copy + GpuData {
+    // The mark's centre on the screen, the screen pixel its ink's layer starts at, and pixels per
+    // em.
+    pub centre: vec2,
+    pub origin: vec2,
     pub ems: f32,
     pub alpha: f32,
-    pub count: u32,
     // The light passing along it: 0 before the mark, 1 once it has crossed.
     pub reveal: f32,
     pub width: f32,
+}
+
+// Where screen pixel `pixel` is on the mark: ems from its middle, its baseline at 0.
+fn on_mark(pixel: vec2, centre: vec2, ems: f32) -> vec2 {
+    vec2(pixel.x - centre.x, centre.y - pixel.y) / ems + vec2(0.0, CAP * 0.5)
 }
 
 // How far (ems) past the box round a run's centreline its ink can reach: its half stroke, out
@@ -263,13 +279,20 @@ pub fn mark_field(p: vec2, runs: [MarkRun], count: u32, edge: f32) -> f32 {
     d
 }
 
-// The flat mark. As the light passes, each part of it comes up softly behind a broad glint.
+// The mark's ink in its layer, whose pixel `v.pixel` is the screen's `v.pixel + origin`.
 @fragment
-pub fn emblem(v: Vertex, runs: [MarkRun], look: Emblem) -> Over {
-    let p = vec2(v.pixel.x - look.centre.x, look.centre.y - v.pixel.y) / look.ems +
-        vec2(0.0, CAP * 0.5)
-    let d = mark_field(p, runs, look.count, 0.5 / look.ems)
-    let coverage = saturate(0.5 - d * look.ems)
+pub fn mark_ink(v: Vertex, runs: [MarkRun], look: Ink) -> vec4 {
+    let p = on_mark(v.pixel + look.origin, look.centre, look.ems)
+    vec4(saturate(0.5 - mark_field(p, runs, look.count, 0.5 / look.ems) * look.ems), 0.0, 0.0, 1.0)
+}
+
+// The flat mark, its ink read from its layer. As the light passes, each part of it comes up
+// softly behind a broad glint.
+@fragment
+pub fn emblem(v: Vertex, ink: Texture<Rgba8>, look: Emblem) -> Over {
+    let p = on_mark(v.pixel, look.centre, look.ems)
+    let texel = vec2u(v.pixel - look.origin)
+    let coverage = ink.load(texel.x, texel.y).x
     let across = p.x / look.width + 0.5
     let front = look.reveal * 1.45 - 0.15
     let shown = saturate((front - across) / 0.25)

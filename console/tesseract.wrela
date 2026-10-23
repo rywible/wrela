@@ -6,8 +6,8 @@
 // edges stay sharp. Where the glass mirrors the studio, each colour sees it a little
 // shifted along the glass's folds, so its edges fringe into a spectrum, and nothing else does.
 // The glass bends only the studio it mirrors: struts seen through it or in it stay straight.
-// So a pixel's rays run along one line through every pane they cross, and the pixel finds the
-// struts and panes near that line once (`near`); its rays and their bounces test only those.
+// So a pixel's rays run along one line through every pane they cross: each tile of pixels
+// tests only the struts and panes whose image touches it (`tiles`), on every bounce.
 use std::gpu::{FragCoord}
 
 pub const EDGES: u32 = 32
@@ -49,6 +49,8 @@ pub struct Artifact: Copy + GpuData {
     pub light: f32,
     // The most rays a pixel: 4, or 1 on a device that can't keep up (`samples`).
     pub rays: u32,
+    // How many tiles across the traced layer is (`tiles`).
+    pub columns: u32,
 }
 
 fn corner(i: u32) -> vec4 {
@@ -169,6 +171,144 @@ pub fn shapes(verts: [vec4], size: f32) -> Shapes {
         panes.push(vec4((c[0] + c[2]) * 0.5, length(c[2] - c[0]) * 0.5))
     }
     Shapes { struts, panes }
+}
+
+// The traced layer is cut into tiles this many pixels square (`tiles`), and what a tile's
+// pixels can see is what can be seen within this many pixels of its middle: its half diagonal,
+// and a few pixels for a ray's footprint.
+pub const TILE: u32 = 16
+const GROW: f32 = 16.0 * 0.71 + 3.0
+
+// The tiles across and down a traced layer of `width` by `height` pixels.
+pub fn tile_grid(width: u32, height: u32) -> (u32, u32) {
+    ((width + TILE - 1) / TILE, (height + TILE - 1) / TILE)
+}
+
+// Where the traced layer sees world point `p`: its pixel, and its depth along the view, as
+// `direction` aims its rays.
+fn seen(look: Artifact, p: vec3) -> vec3 {
+    let forward = normalize(look.target.xyz - look.eye.xyz)
+    let side = normalize(cross(forward, vec3(0.0, 1.0, 0.0)))
+    let up = cross(side, forward)
+    let d = p - look.eye.xyz
+    let depth = dot(d, forward)
+    let aspect = look.screen.x / look.screen.y
+    let ndc = vec2(dot(d, side) / (depth * look.lens * aspect), -dot(d, up) / (depth * look.lens))
+    vec3((ndc + vec2(1.0)) * 0.5 * look.screen, depth)
+}
+
+// The distance from `p` to the segment from `a` to `b`.
+fn segment_distance(p: vec2, a: vec2, b: vec2) -> f32 {
+    let ab = b - a
+    let h = saturate(dot(p - a, ab) / max(dot(ab, ab), 0.000001))
+    length(p - a - ab * h)
+}
+
+// For each tile of the traced layer, row by row, masks of what its pixels' rays can meet: the
+// struts, the panes, and the struts they can see mirrored in a pane. A pixel's rays, and their
+// bounces, run along its line, so they can meet only what its image touches. A strut's image
+// lies within its centreline's, widened by the most its ends' spheres are seen across, and
+// more toward the layer's edges; a pane's within the quad of its corners' (a flat square seen
+// in perspective). Each is grown by a tile's half diagonal and a few pixels for a ray's
+// footprint. A ray that a pane mirrors runs on as the pixel's line runs into the strut's mirror
+// image across the pane's plane, so a strut is seen mirrored where that image is seen, within
+// the pane.
+pub fn tiles(look: Artifact, verts: [vec4], struts: [vec4], panes: [vec4]) -> Vec<vec4u> {
+    let (columns, rows) = tile_grid(u32(look.screen.x), u32(look.screen.y))
+    var out = Vec::filled(columns * rows, value: vec4u(0, 0, 0, 0))
+    let grow = GROW
+    // The tiles round the pixels from `lo` to `hi`, held to the layer, or all of them.
+    let span = |lo: vec2, hi: vec2, all: bool| -> vec4 {
+        if all { return vec4(0.0, 0.0, f32(columns - 1), f32(rows - 1)) }
+        let a = clamp(floor(lo / f32(TILE)), vec2(0.0), vec2(f32(columns - 1), f32(rows - 1)))
+        let b = clamp(floor(hi / f32(TILE)), vec2(-1.0), vec2(f32(columns - 1), f32(rows - 1)))
+        vec4(a, b)
+    }
+    let everywhere = vec4(0.0, 0.0, f32(columns - 1), f32(rows - 1))
+    for e in 0..EDGES {
+        let (a, b) = (struts[e * STRUT_WORDS], struts[e * STRUT_WORDS + 1])
+        mark(mut out, columns, look, a, b, everywhere, vec4u(u32(1) << e, 0, 0, 0))
+    }
+    for f in 0..FACES {
+        let q = PANE_CORNERS[f]
+        let c = [
+            seen(look, verts[u32(q.x)].xyz),
+            seen(look, verts[u32(q.y)].xyz),
+            seen(look, verts[u32(q.z)].xyz),
+            seen(look, verts[u32(q.w)].xyz),
+        ]
+        let all = min(min(c[0].z, c[1].z), min(c[2].z, c[3].z)) <= 0.001
+        let lo = min(min(c[0].xy, c[1].xy), min(c[2].xy, c[3].xy)) - vec2(grow)
+        let hi = max(max(c[0].xy, c[1].xy), max(c[2].xy, c[3].xy)) + vec2(grow)
+        let r = span(lo, hi, all)
+        let bit = u32(1) << f
+        for y in u32(r.y)..u32(r.w + 1.0) {
+            for x in u32(r.x)..u32(r.z + 1.0) {
+                let p = (vec2(f32(x), f32(y)) + vec2(0.5)) * f32(TILE)
+                // Each edge's signed distance to the tile's middle, either way round.
+                var least = 1.0e9
+                var most = -1.0e9
+                for k in 0..4 {
+                    let e = c[(k + 1) % 4].xy - c[k].xy
+                    let to = p - c[k].xy
+                    let d = (e.x * to.y - e.y * to.x) / max(length(e), 0.000001)
+                    least = min(least, d)
+                    most = max(most, d)
+                }
+                if all || least >= -grow || most <= grow {
+                    let i = y * columns + x
+                    out[i] = out[i] | vec4u(0, bit, 0, 0)
+                }
+            }
+        }
+        // The struts this pane can mirror: those on the eye's side of it, seen where their
+        // mirror images are, within the pane's tiles.
+        let plane = panes[f * PANE_WORDS]
+        let eye = dot(plane.xyz, look.eye.xyz) - plane.w
+        for e in 0..EDGES {
+            let (a, b) = (struts[e * STRUT_WORDS], struts[e * STRUT_WORDS + 1])
+            let (da, db) = (dot(plane.xyz, a.xyz) - plane.w, dot(plane.xyz, b.xyz) - plane.w)
+            if da * sign(eye) < -a.w && db * sign(eye) < -b.w { continue }
+            let ma = vec4(a.xyz - plane.xyz * (2.0 * da), a.w)
+            let mb = vec4(b.xyz - plane.xyz * (2.0 * db), b.w)
+            mark(mut out, columns, look, ma, mb, r, vec4u(0, 0, u32(1) << e, 0))
+        }
+    }
+    out
+}
+
+// Sets `bit` in each tile of `within` (tiles, first and last, inclusive) that the image of the
+// strut from `a` to `b` (each a centre and radius) can touch.
+fn mark(
+    out: mut Vec<vec4u>,
+    columns: u32,
+    look: Artifact,
+    a: vec4,
+    b: vec4,
+    within: vec4,
+    bit: vec4u,
+) {
+    let focal = look.screen.y * 0.5 / look.lens
+    let pa = seen(look, a.xyz)
+    let pb = seen(look, b.xyz)
+    let all = min(pa.z - a.w, pb.z - b.w) <= 0.001
+    let reach = max(a.w / (pa.z - a.w), b.w / (pb.z - b.w)) * focal * 1.5 + GROW
+    var lo = within.xy
+    var hi = within.zw
+    if !all {
+        lo = max(lo, floor((min(pa.xy, pb.xy) - vec2(reach)) / f32(TILE)))
+        hi = min(hi, floor((max(pa.xy, pb.xy) + vec2(reach)) / f32(TILE)))
+    }
+    if hi.x < lo.x || hi.y < lo.y { return }
+    for y in u32(lo.y)..u32(hi.y + 1.0) {
+        for x in u32(lo.x)..u32(hi.x + 1.0) {
+            let centre = (vec2(f32(x), f32(y)) + vec2(0.5)) * f32(TILE)
+            if all || segment_distance(centre, pa.xy, pb.xy) <= reach {
+                let i = y * columns + x
+                out[i] = out[i] | bit
+            }
+        }
+    }
 }
 
 // ---- exact ray tests -----------------------------------------------------------------------
@@ -332,49 +472,6 @@ fn face_hit(ro: vec3, rd: vec3, skip: f32, panes: [vec4], inset: f32, mask: u32)
     vec2(best, which)
 }
 
-// The struts and the panes that a pixel's rays, from `ro` along about `rd`, can come near:
-// the struts whose centrelines the line passes within their radius and `margin`, and the
-// panes it crosses within `margin` of their edges (all it runs nearly along). Each of the
-// pixel's rays runs along that line, past each pane it crosses, so it needs test no others.
-fn near(ro: vec3, rd: vec3, struts: [vec4], panes: [vec4], margin: f32) -> vec2u {
-    var metal: u32 = 0
-    for e in 0..EDGES {
-        let a = struts[e * STRUT_WORDS]
-        let b = struts[e * STRUT_WORDS + 1]
-        // The squared distance from the line to the centreline's point `h` along it is
-        // quadratic in `h`: least at `h`, held to the strut.
-        let ba = b.xyz - a.xyz
-        let w = a.xyz - ro
-        let bard = dot(ba, rd)
-        let wrd = dot(w, rd)
-        let k2 = dot(ba, ba) - bard * bard
-        let k1 = dot(w, ba) - wrd * bard
-        let h = if k2 > 0.000001 { saturate(-k1 / k2) } else { 0.5 }
-        let gap = dot(w, w) - wrd * wrd + h * (2.0 * k1 + h * k2)
-        let reach = max(a.w, b.w) + margin
-        if gap <= reach * reach { metal = metal | (u32(1) << e) }
-    }
-    var glass: u32 = 0
-    for f in 0..FACES {
-        let at = f * PANE_WORDS
-        let plane = panes[at]
-        let denom = dot(rd, plane.xyz)
-        var crossed = abs(denom) < 0.05
-        if !crossed {
-            let p = ro + rd * ((plane.w - dot(ro, plane.xyz)) / denom)
-            // A ray that leaves the line by `margin` meets the plane this far off, at most.
-            let off = margin / abs(denom)
-            let s1 = dot(p, panes[at + 1].xyz) - panes[at + 1].w
-            let s2 = dot(p, panes[at + 2].xyz) - panes[at + 2].w
-            let s3 = dot(p, panes[at + 3].xyz) - panes[at + 3].w
-            let s4 = dot(p, panes[at + 4].xyz) - panes[at + 4].w
-            crossed = min(min(s1, s2), min(s3, s4)) >= -off || max(max(s1, s2), max(s3, s4)) <= off
-        }
-        if crossed { glass = glass | (u32(1) << f) }
-    }
-    vec2u(metal, glass)
-}
-
 // ---- light ---------------------------------------------------------------------------------
 
 fn panel(d: vec3, axis: vec3, size: vec2, soft: f32) -> f32 {
@@ -505,19 +602,20 @@ fn ripple(p: vec3, n: vec3, time: f32, size: f32) -> vec3 {
     normalize(n + (w - n * dot(w, n)) * 0.16)
 }
 
-// One path of light from the eye: its colour.
+// One path of light from the eye: its colour, and 1 if it met a strut, or saw one in the glass.
 fn trace(
     start: vec3,
     dir: vec3,
     struts: [vec4],
     panes: [vec4],
-    nearby: vec2u,
+    nearby: vec4u,
     look: Artifact,
     spread: f32,
     rough: f32,
-) -> vec3 {
+) -> vec4 {
     var ro = start
     let rd = dir
+    var metal = 0.0
     var gathered = vec3(0.0)
     var through = vec3(1.0)
     var skip = -1.0
@@ -530,9 +628,10 @@ fn trace(
         let m = metal_hit(ro, rd, struts, cone, past, nearby.x)
         let f = face_hit(ro, rd, skip, panes, radius * thickness(-1.0), nearby.y)
         if m.at < f.x {
+            metal = 1.0
             let shine = polished(m.depth, m.normal, rd, look.time, rough, look.tint)
             gathered += through * shine * m.cover
-            if m.cover >= 1.0 { return gathered }
+            if m.cover >= 1.0 { return vec4(gathered, metal) }
             // A strut's rim covers part of the pixel; the rest sees on past it.
             through *= 1.0 - m.cover
             past = m.strut
@@ -561,11 +660,12 @@ fn trace(
             // glass, so they stay straight.
             let flat = rd - n * (2.0 * dot(rd, n))
             let seen = if skip < 0.0 {
-                metal_hit(p + flat * 0.001, flat, struts, at_glass, -1.0, ALL)
+                metal_hit(p + flat * 0.001, flat, struts, at_glass, -1.0, nearby.z)
             } else {
                 Hit { at: 1.0e9, normal: vec3(0.0), depth: 0.0, cover: 0.0, strut: -1.0 }
             }
             if seen.at < 1.0e8 {
+                metal = 1.0
                 let strut_seen = polished(
                     seen.depth,
                     seen.normal,
@@ -585,9 +685,9 @@ fn trace(
             skip = f.y
             continue
         }
-        return gathered + through * (darkness(rd, look.tint) + beam(ro, rd, look))
+        return vec4(gathered + through * (darkness(rd, look.tint) + beam(ro, rd, look)), metal)
     }
-    gathered
+    vec4(gathered, metal)
 }
 
 // The ray through a pixel of this camera.
@@ -600,7 +700,13 @@ fn direction(look: Artifact, at: vec2) -> vec3 {
 }
 
 @fragment
-pub fn artifact(pixel: FragCoord, struts: [vec4], panes: [vec4], look: Artifact) -> vec4 {
+pub fn artifact(
+    pixel: FragCoord,
+    struts: [vec4],
+    panes: [vec4],
+    tiles: [vec4u],
+    look: Artifact,
+) -> vec4 {
     let ro = look.eye.xyz
     // Rays that pass clear of it see only the dark.
     let reach = look.place.w * (REACH + STRUT * THICKEST)
@@ -616,19 +722,18 @@ pub fn artifact(pixel: FragCoord, struts: [vec4], panes: [vec4], look: Artifact)
     let across = STRUT * look.place.w / (spread * length(o))
     let n = samples(across, look.rays)
     let rough = roughness(across)
-    // A ray's footprint is never wider than a pixel's, and the four rays leave the pixel's
-    // middle by less than half a pixel, each no farther from the eye than across the sphere and
-    // back: a pixel's line, widened by half again that much, passes near all that they can.
-    let nearby = near(ro, rd, struts, panes, spread * (length(o) + reach * 2.0) * 1.5)
-    if n == 1 {
-        return vec4(trace(ro, rd, struts, panes, nearby, look, spread, rough) * look.light, 1.0)
-    }
+    let at = vec2u(pixel.position.xy) / TILE
+    let nearby = tiles[at.y * look.columns + at.x]
+    // One ray through the pixel's middle. Four share the sweep of a thin strut's reflection,
+    // where it meets one or sees one in the glass; elsewhere one sees all there is.
+    let first = trace(ro, rd, struts, panes, nearby, look, spread, rough)
+    if n == 1 || first.w == 0.0 { return vec4(first.xyz * look.light, 1.0) }
     let offsets = [vec2(0.25, -0.25), vec2(-0.25, 0.25), vec2(0.25, 0.25), vec2(-0.25, -0.25)]
     var c = vec3(0.0)
     for k in 0..n {
         // Each of the four rays covers half a pixel each way.
         let d = direction(look, pixel.position.xy + offsets[k])
-        c += trace(ro, d, struts, panes, nearby, look, spread * 0.5, rough)
+        c += trace(ro, d, struts, panes, nearby, look, spread * 0.5, rough).xyz
     }
     vec4(c / f32(n) * look.light, 1.0)
 }
@@ -762,46 +867,60 @@ fn a_pane_is_met_inside_its_edges_and_missed_outside_them() {
 }
 
 @test
-fn a_pixel_traces_the_same_with_only_the_struts_and_panes_near_its_line() {
-    // The opening's close tesseract and the room's far one, seen across the sphere round it.
-    for (eye, centre, size, turn) in [
-        (vec3(0.0, 1.75, 6.4), vec3(0.0, 1.95, 1.4), 0.66, 0.0),
-        (vec3(0.3, 1.7, 6.4), vec3(4.0, 9.0, -32.0), 2.8, 3.1),
+fn a_pixel_traces_the_same_with_only_the_struts_and_panes_its_tile_can_see() {
+    // The opening's close tesseract, looked at; and the room's, far off toward a corner of the
+    // view, where perspective widens what it sees.
+    for (eye, target, centre, size, turn) in [
+        (vec3(0.0, 1.75, 6.4), vec3(0.0, 1.95, 1.4), vec3(0.0, 1.95, 1.4), 0.66, 0.0),
+        (vec3(0.3, 1.7, 6.4), vec3(4.0, 9.0, -32.0), vec3(4.0, 9.0, -32.0), 2.8, 3.1),
+        (vec3(0.0, 1.75, 6.4), vec3(0.0, 1.45, 0.0), vec3(5.0, 6.5, -20.0), 2.0, 1.7),
     ] {
-        let s = shapes(corners(turn, centre, size), size)
+        let verts = corners(turn, centre, size)
+        let s = shapes(verts, size)
         let screen = vec2(160.0, 90.0)
         let look = Artifact {
             screen,
             lens: 0.36,
             eye: vec4(eye, 0.0),
-            target: vec4(centre, 0.0),
+            target: vec4(target, 0.0),
             place: vec4(centre, size),
             time: 1.3,
             light: 1.0,
             tint: vec4(0.4, 0.8, 1.0, 0.7),
             rays: 4,
+            columns: tile_grid(width: 160, height: 90).0,
         }
+        let masks = tiles(look, verts, s.struts, s.panes)
         let spread = 2.0 * look.lens / screen.y
-        let reach = size * (REACH + STRUT * THICKEST)
-        let margin = spread * (length(eye - centre) + reach * 2.0) * 1.5
+        let all = vec4u(ALL, (u32(1) << FACES) - 1, ALL, 0)
+        var seen = 0
         var tested = 0
         for y in 0..90 {
             for x in 0..160 {
                 let at = vec2(f32(x), f32(y)) + vec2(0.5)
-                let rd = direction(look, at)
-                let nearby = near(eye, rd, s.struts, s.panes, margin)
-                // A pixel's single ray, and one of its four.
-                let d = direction(look, at + vec2(0.25, -0.25))
-                for (ray, cone) in [(rd, spread), (d, spread * 0.5)] {
-                    let all = vec2u(ALL, (u32(1) << FACES) - 1)
+                let nearby = masks[(u32(y) / TILE) * look.columns + u32(x) / TILE]
+                // The pixel's single ray, and its four.
+                var rays: Vec<(vec3, f32)> = Vec::new()
+                rays.push((direction(look, at), spread))
+                for o in [
+                    vec2(0.25, -0.25),
+                    vec2(-0.25, 0.25),
+                    vec2(0.25, 0.25),
+                    vec2(-0.25, -0.25),
+                ] {
+                    rays.push((direction(look, at + o), spread * 0.5))
+                }
+                for (ray, cone) in rays {
                     let whole = trace(eye, ray, s.struts, s.panes, all, look, cone, 0.5)
                     let culled = trace(eye, ray, s.struts, s.panes, nearby, look, cone, 0.5)
                     assert(whole == culled, f"pixel {x}, {y}")
+                    if whole.w > 0.0 { seen += 1 }
                 }
-                if nearby.x != 0 { tested += 1 }
+                tested += nearby.x.count_ones() + nearby.y.count_ones() + nearby.z.count_ones()
             }
         }
-        assert(tested > 200, "the rays cross the tesseract")
+        assert(seen > 200, "the rays meet the tesseract")
+        assert(tested < 160 * 90 * (EDGES * 2 + FACES) / 4, "a tile tests few of them")
     }
 }
 
