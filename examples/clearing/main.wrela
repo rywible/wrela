@@ -13,6 +13,7 @@ use engine::paint::Metering
 use engine::present::{Snapshots, lerp_angle}
 use engine::probes::{Reference, Sampling, grid, reference}
 use engine::run::run
+use engine::shot::{Shots, place}
 use engine::shadow::Cascade
 use engine::terrain::{Clipmap, Terrain}
 use engine::view::first_camera
@@ -91,6 +92,8 @@ struct Carried: Copy + Serialize {
     view: View,
     scale: u32,
     held: Option<Shot>,
+    /// The develop's view of form (`Frame::form`: 0 the look, 1 clay, 2 silhouettes).
+    form: u32,
 }
 
 /// What's cooked at load from the clearing's own literals, each watched by the literals its
@@ -151,6 +154,8 @@ pub struct Clearing {
     /// The sim's snapshots.
     snaps: Snapshots<World>,
     frame: Frame<Shared>,
+    /// The lookbook's shot the camera's held on (lookbook.wrela), if one is.
+    shots: Shots,
     stage: Stage,
     /// What's carried across a hot reload, and what's cooked from literals.
     carried: Carried,
@@ -168,19 +173,31 @@ pub struct Clearing {
     references: GpuBuffer<Reference>,
 }
 
-/// The keys: Space starts the camera's path; T, G, H and L leave out the trees, the grass, the
-/// shadows and the terrain.
-fn keys(s: mut Clearing) {
+/// The keys: Space starts the camera's path; T, G, H and F4 leave out the trees, the grass, the
+/// shadows and the terrain; L, a number and Enter hold the camera on a lookbook shot, and Escape
+/// lets it go; F7 stills and V plain rendering (the frame's), and F8 the next view of form (clay,
+/// silhouettes, the look).
+fn keys(s: mut Clearing, time: f32) {
     for e in events() {
         if let Event::KeyDown { key, .. } = e {
+            let chose = s.shots.key(key, lookbook::SHOTS.len(), time)
+            if chose.chosen {
+                s.frame.arrive()
+            }
+            if chose.taken || s.frame.key(key) {
+                continue
+            }
             if key == Key::Space {
                 s.carried.asked = true
+            }
+            if key == Key::F8 {
+                s.carried.form = (s.carried.form + 1) % 3
             }
             let system = match key {
                 Key::T => Some(System::Trees),
                 Key::G => Some(System::Grass),
                 Key::H => Some(System::Shadows),
-                Key::L => Some(System::Terrain),
+                Key::F4 => Some(System::Terrain),
                 _ => None,
             }
             if let Some(system) = system {
@@ -212,6 +229,7 @@ pub fn init() -> Clearing {
     var s = Clearing {
         snaps: Snapshots::new(take latest, hz: 60),
         frame: f,
+        shots: Shots {},
         stage: st,
         carried: Carried {
             path_from: -1.0,
@@ -223,6 +241,7 @@ pub fn init() -> Clearing {
             view: View::Look,
             scale: stage::SCALE,
             held: None,
+            form: 0,
         },
         watches: Watches::new(),
         restored: false,
@@ -283,7 +302,7 @@ fn keep_carried(s: Clearing) {
 }
 
 pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
-    keys(mut s)
+    keys(mut s, time)
     let off = s.carried.off
     // The systems the frame itself leaves out, and the scale the scene is drawn at.
     s.frame.set(Off::Shadows, on: on(off, System::Shadows))
@@ -293,6 +312,7 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     s.frame.debug.still = !on(off, System::Wind)
     s.stage.off = off
     s.stage.view = s.carried.view
+    s.frame.form(s.carried.form)
     if s.carried.scale != s.stage.scale {
         s.stage.scale = s.carried.scale
         s.frame.requality(quality(s.carried.scale))
@@ -320,8 +340,20 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     s.carried.follow = mix(s.carried.follow, walker.root.pos, vec3(ease))
     s.carried.follow_heading = lerp_angle(s.carried.follow_heading, walker.root.heading, ease)
     let t = if s.carried.path_from < 0.0 { 0.0 } else { time - s.carried.path_from }
-    let held = s.carried.held.unwrap_or(shot(t, s.carried.follow, s.carried.follow_heading))
-    let aim = Aim { eye: held.eye, at: held.at, fovy: FOVY, moving_at: walker.root.pos }
+    s.shots.clock(time, covered: s.frame.ready.arriving)
+    let (eye, at, fovy) = match (s.carried.held, s.shots.held) {
+        (Some(h), _) => (h.eye, h.at, FOVY),
+        (None, Some(i)) => {
+            let sh = lookbook::SHOTS[i]
+            let (e, a) = place(sh, s.shots.since(time), |p: vec2| on_ground(p).y)
+            (e, a, sh.fovy)
+        },
+        (None, None) => {
+            let p = shot(t, s.carried.follow, s.carried.follow_heading)
+            (p.eye, p.at, FOVY)
+        },
+    }
+    let aim = Aim { eye, at, fovy, moving_at: walker.root.pos }
     cook_again(mut s)
     // A build that took over from another (hot reload) shows nothing until it's cooked
     // everything: the screen keeps the old build's last frame meanwhile.

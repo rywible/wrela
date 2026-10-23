@@ -25,7 +25,7 @@ use engine::look::Mesh as Tolerance
 use engine::stone::{Placement, Realized, block, normal_matrix, realize_block}
 use engine::terrain::{Cover, Terrain}
 use ground::{joints, rock_albedo}
-use lookbook::Shot
+use engine::shot::Shot
 use std::io::{Shipped, ship}
 use std::math::TAU
 use std::string::String

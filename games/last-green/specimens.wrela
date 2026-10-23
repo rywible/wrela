@@ -7,7 +7,7 @@ use land::bake::Decisions
 use land::grow::{Tree, grown}
 use land::place::TILE
 use engine::terrain::{Cover, Terrain}
-use lookbook::Shot
+use engine::shot::Shot
 use species::Species
 
 /// The ages each species is shown at (years), a column each.

@@ -20,6 +20,7 @@
 //     G, digits, Enter      travel to a site by its number (the floor's sim moves the player)
 
 use footing::{BODY, Obstacles, stands}
+use engine::shot::digit
 use engine::terrain::Ground
 use place::{Place, Water}
 use engine::sim::SimState
@@ -135,23 +136,6 @@ pub fn spawn<G: Ground>(ground: G, at: Place, yaw: f32) -> Player {
 /// The direction a yaw faces on the plane (from +z toward +x).
 pub fn facing(yaw: f32) -> vec2 {
     vec2(sin(yaw), cos(yaw))
-}
-
-/// The digit a key types (0 to 9), if it's one of the digit keys.
-pub fn digit(k: Key) -> Option<u32> {
-    match k {
-        Key::Digit0 => Some(0),
-        Key::Digit1 => Some(1),
-        Key::Digit2 => Some(2),
-        Key::Digit3 => Some(3),
-        Key::Digit4 => Some(4),
-        Key::Digit5 => Some(5),
-        Key::Digit6 => Some(6),
-        Key::Digit7 => Some(7),
-        Key::Digit8 => Some(8),
-        Key::Digit9 => Some(9),
-        _ => None,
-    }
 }
 
 /// Changes one key in an action's pair without releasing the other key.

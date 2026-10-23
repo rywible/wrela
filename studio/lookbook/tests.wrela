@@ -1,7 +1,10 @@
 // The lookbook tool's tests: its command line, the keys that choose a shot, the shots' names
 // and files, and the interest check's line, on small fixtures.
 
-use shots::{VIEWS, WS, check_line, keys, names_in, names_listed, parse_args, shown_path, stem}
+use shots::{
+    PROGRAM, VIEWS, WS, build_of, check_line, keys, lookbook_of, names_in, names_listed, parse_args,
+    shown_path, stem,
+}
 use std::json::parse
 use std::tool::blob::Data
 use std::tool::files
@@ -47,6 +50,22 @@ fn the_command_line_takes_a_directory_its_options_and_shots() {
     assert(parse_args(texts(["/tmp/out"])).is_err(), "a directory outside the workspace")
     assert(parse_args(texts([])).is_err(), "no directory")
     assert(shown_path("ws/build/lb") == "build/lb" && WS == "ws")
+}
+
+/// The floor's lookbook unless `--package` names another program's, whose build and shots are
+/// beside its source.
+@test
+fn the_package_is_the_floors_unless_another_is_named() {
+    let Ok(floor) = parse_args(texts(["out"])) else { panic("defaults") }
+    assert(floor.program.as_str() == PROGRAM && PROGRAM == "ws/games/last-green")
+    let Ok(o) = parse_args(texts(["out", "--package", "examples/clearing", "1"])) else {
+        panic("a package")
+    }
+    assert(o.program.as_str() == "ws/examples/clearing", o.program.as_str())
+    assert(build_of(o.program.as_str()).as_str() == "ws/examples/clearing/build")
+    assert(lookbook_of(o.program.as_str()).as_str() == "ws/examples/clearing/lookbook.wrela")
+    assert(o.picks.len() == 1 && o.picks[0] == 1, "the shot after it")
+    assert(parse_args(texts(["out", "--package", "/elsewhere"])).is_err(), "outside the workspace")
 }
 
 @test

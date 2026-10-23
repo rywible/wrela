@@ -367,12 +367,12 @@ struct WoodPart {
 /// A shot's least share of its subject seen (`interest::transmit` from its eye to what it looks
 /// at, through the crowns and trunks as drawn) and its eye's least clearance from a trunk (m), at
 /// its move's start, middle and end. (The town's eye stood inside a trunk: the lookdev reviews.)
-pub fn shot_valid(s: Sight, shot: lookbook::Shot) -> (f32, f32) {
+pub fn shot_valid(s: Sight, shot: engine::shot::Shot) -> (f32, f32) {
     eye_valid(s, shot, shot.eye.xz)
 }
 
 /// `shot_valid` for `shot` with its eye moved to `from` (its move the same).
-fn eye_valid(s: Sight, shot: lookbook::Shot, from: vec2) -> (f32, f32) {
+fn eye_valid(s: Sight, shot: engine::shot::Shot, from: vec2) -> (f32, f32) {
     var seen = 1.0
     var clear = 99.0
     for k in 0..3 {
@@ -391,7 +391,7 @@ pub const SHOT_CLEAR: f32 = 1.0
 
 /// The eye for `shot` that sees its subject best through its move, at 0.6 to 1.4 times its
 /// distance from it, all round, clear of trunks by 2.5 m; nearer its own distance on a tie.
-fn clearest_eye(s: Sight, shot: lookbook::Shot) -> (vec2, f32) {
+fn clearest_eye(s: Sight, shot: engine::shot::Shot) -> (vec2, f32) {
     let at = shot.at.xz
     let dist = max(length(shot.eye.xz - at), 8.0)
     var best = vec2(0.0)

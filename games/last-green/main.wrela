@@ -12,11 +12,12 @@ use climber::draw::{drawn, wolf_bones}
 use climber::figure::{Figure, figure}
 use climber::moves::{drift_rate, locomotion}
 use climber::sounds::{Heard, cues, heard}
-use engine::frame::{Aim, Change, Frame, Gathered, Off, Quality, ShadowQuality, shot_clock}
+use engine::frame::{Aim, Change, Frame, Gathered, Off, Quality, ShadowQuality}
+use engine::shot::{MOVE, NO_CAST, SETTLE, Shots, place, shot_clock}
 use land::stream::tile_distance
 use tower::door::Exit
 use engine::grass::Contact
-use land::player::{Arm, Focus, Framing, digit, follow}
+use land::player::{Arm, Focus, Framing, follow}
 use engine::present::Snapshots
 use engine::run::run
 use engine::shadow::Cascade
@@ -92,12 +93,9 @@ pub struct Floor {
     focus_at: vec3,
     /// The lookbook's shot the camera's held on (none: the player's), since when, and one being
     /// typed (`keys`).
-    shot: Option<u32>,
+    shots: Shots,
     /// The camera a test holds (eye, what it looks at), if one does.
     held: Option<(vec3, vec3)>,
-    shot_from: f32,
-    typing_shot: bool,
-    shot_digits: u32,
     /// The climber, the player: its figure (its garment, whose hem burns) stepped each
     /// frame, and drawn (`climber::draw`, the stage's: its sword realized at the first frame); the
     /// frame's time it was last stepped to, and that step (s); its float's phase out of the
@@ -164,11 +162,8 @@ pub fn init() -> Floor {
         arm: Arm {},
         focus: 0.0,
         focus_at: vec3(0.0),
-        shot: None,
+        shots: Shots {},
         held: None,
-        shot_from: 0.0,
-        typing_shot: false,
-        shot_digits: 0,
         climber: figure(),
         stepped: 0.0,
         dt: 0.0,
@@ -247,27 +242,14 @@ fn keys(s: mut Floor, time: f32) {
             _ => {},
         }
         if let Event::KeyDown { key, .. } = e {
-            if s.typing_shot {
-                if let Some(d) = digit(key) {
-                    s.shot_digits = s.shot_digits * 10 + d
-                    continue
-                }
-                if key == Key::Enter && s.shot_digits < shot_count(s.stage.view) {
-                    s.shot = Some(s.shot_digits)
-                    s.shot_from = time
-                    // Every shot waits for its own view to load before its movement clock
-                    // begins. Captured stills also rebuild the dome round that eye.
-                    s.frame.arrive()
-                }
-                s.typing_shot = false
+            let chose = s.shots.key(key, shot_count(s.stage.view), time)
+            if chose.chosen {
+                // Every shot waits for its own view to load before its movement clock begins.
+                // Captured stills also rebuild the dome round that eye.
+                s.frame.arrive()
+            }
+            if chose.taken {
                 continue
-            }
-            if key == Key::L {
-                s.typing_shot = true
-                s.shot_digits = 0
-            }
-            if key == Key::Escape {
-                s.shot = None
             }
             if key == Key::M {
                 s.stage.map.toggle()
@@ -284,21 +266,17 @@ fn keys(s: mut Floor, time: f32) {
             if key == Key::B {
                 s.stage.shafts_on = !s.stage.shafts_on
             }
-            // V: the frame as plain rendering (no look), to tell the look's work from the scene's.
-            if key == Key::V {
-                s.frame.debug.plain = !s.frame.debug.plain
-            }
-            if key == Key::F7 {
-                s.frame.debug.capture = !s.frame.debug.capture
-                s.frame.ready.arriving = s.frame.debug.capture
-                s.frame.ready.gathered = 0
+            // F7 stills and V plain rendering (no look, to tell the look's work from the
+            // scene's): the frame's own keys.
+            if s.frame.key(key) {
+                continue
             }
             // F8: the next debug view of form (clay, silhouettes, the look), to judge the
             // forms alone.
             if key == Key::F8 {
                 s.stage.view = (s.stage.view + 1) % VIEWS
                 s.frame.light.clay = if s.stage.view == 1 { 1 } else { 0 }
-                s.shot = None
+                s.shots.held = None
                 // The world's views cast other shadows (their land's): the cascades are drawn
                 // again; and the grown view's trees, fields, far layer and water are its own.
                 s.frame.changed(Change::Casters)
@@ -396,7 +374,7 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     let heading = engine::present::lerp_angle(pa.heading, pb.heading, b.alpha)
     // A shot that casts the characters stands them where it says (in render space), and the
     // moving shadow map goes round them.
-    let cast = if of_world(s.stage.view) { None } else { held_cast(s.shot) }
+    let cast = if of_world(s.stage.view) { None } else { held_cast(s.shots.held) }
     let on_ground = |c: vec3| vec3(c.x, height_at(c.xy), c.y) - o
     let (stood, facing) = match cast {
         Some(c) => (on_ground(c.player), c.player.z),
@@ -478,7 +456,7 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
         None => {
             let f = behaviour::between(b.a.fawn, b.b.fawn, b.alpha)
             let apart = length(f.walker.root.pos - (feet + o))
-            if s.shot.is_none() && apart < FAWN_DRAWN {
+            if s.shots.held.is_none() && apart < FAWN_DRAWN {
                 s.stage.fawn.pose(
                     behaviour::palette(f, o),
                     shadowed: apart < s.frame.quality().shadows.moving_span,
@@ -491,7 +469,7 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     }
     let (wa, wb) = (b.a.fight.fight.wolf, b.b.fight.fight.wolf)
     let wolf_apart = length(wb.pos() - (feet + o).xz)
-    if cast.is_none() && s.shot.is_none() && !b.b.fight.gone && wolf_apart < FAWN_DRAWN {
+    if cast.is_none() && s.shots.held.is_none() && !b.b.fight.gone && wolf_apart < FAWN_DRAWN {
         let bones = wolf_bones(wa, wb, b.alpha, origin: o)
         s.stage.wolf.pose(
             bones,
@@ -530,27 +508,28 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     s.focus_at = mix(fa, fb, vec3(b.alpha))
     s.focus += clamp(wanted - s.focus, -s.dt / FOCUS_EASE, s.dt / FOCUS_EASE)
     let ground_r = |p: vec2| height_at(p + o2)
-    s.shot_from = shot_clock(s.shot_from, time, s.frame.ready.arriving)
+    s.shots.clock(time, covered: s.frame.ready.arriving)
     let view = s.stage.view
-    let (eye, at, fovy) = match s.shot {
+    let shot_t = s.shots.since(time)
+    let (eye, at, fovy) = match s.shots.held {
         Some(i) if view == BARE => {
             let shot = geology::SHOTS[i]
-            let (e, a) = lookbook::place(shot, time - s.shot_from, bare_at)
+            let (e, a) = place(shot, shot_t, bare_at)
             (e - o, a - o, shot.fovy)
         },
         Some(i) if view == GROWN => {
             let shot = growth::SHOTS.shots[i]
-            let (e, a) = lookbook::place(shot, time - s.shot_from, grown_at)
+            let (e, a) = place(shot, shot_t, grown_at)
             (e - o, a - o, shot.fovy)
         },
         Some(i) if view == SPECIMENS => {
             let shot = specimens::shots()[i]
-            let (e, a) = lookbook::place(shot, time - s.shot_from, level_at)
+            let (e, a) = place(shot, shot_t, level_at)
             (e - o, a - o, shot.fovy)
         },
         Some(i) => {
             let shot = lookbook::SHOTS[i]
-            let (e, a) = lookbook::place(shot, time - s.shot_from, height_at)
+            let (e, a) = place(shot, shot_t, height_at)
             (e - o, a - o, shot.fovy)
         },
         None => {
@@ -609,7 +588,7 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     // ---- (the floor's sound ends)
     // The leaves between the camera and the player fade (#54 §5); on a shot, those along the first
     // 6 m of its view (a shot's eye is authored, and may stand in a bush).
-    let (clear_to, clear_r) = if s.shot.is_some() { (eye + cam.forward * 3.0, 3.2) } else {
+    let (clear_to, clear_r) = if s.shots.held.is_some() { (eye + cam.forward * 3.0, 3.2) } else {
         (feet + vec3(0.0, s.framing.target, 0.0), 1.1)
     }
     match mut s.stage.wood {
@@ -699,8 +678,8 @@ fn hash_bake(s: mut Floor) {
 /// The cast of the lookbook's shot the camera's held on (`shot`), if it casts the characters.
 fn held_cast(shot: Option<u32>) -> Option<lookbook::Cast> {
     match shot {
-        Some(i) if i < lookbook::SHOTS.len() && lookbook::SHOTS[i].cast.on => Some(
-            lookbook::SHOTS[i].cast,
+        Some(i) if i < lookbook::SHOTS.len() && lookbook::SHOTS[i].cast != NO_CAST => Some(
+            lookbook::CASTS[lookbook::SHOTS[i].cast],
         ),
         _ => None,
     }
@@ -732,17 +711,17 @@ fn a_lookbook_move_waits_for_its_loaded_view() {
     let shot = lookbook::SHOTS[0]
     var started = 0.0
     let flat = |_: vec2| 0.0
-    let (first, _) = lookbook::place(shot, 0.0, flat)
+    let (first, _) = place(shot, 0.0, flat)
     // A long load exceeds the old fixed five-second preroll but must not advance the shot.
     for i in 0..601 {
         let time = f32(i) / 60.0
         started = shot_clock(started, time, covered: true)
-        let (eye, _) = lookbook::place(shot, time - started, flat)
+        let (eye, _) = place(shot, time - started, flat)
         assert(eye == first, "the shot moved before its arrival was ready")
     }
-    let time = started + lookbook::SETTLE + lookbook::MOVE * 0.5
+    let time = started + SETTLE + MOVE * 0.5
     started = shot_clock(started, time, covered: false)
-    let (eye, _) = lookbook::place(shot, time - started, flat)
+    let (eye, _) = place(shot, time - started, flat)
     assert(
         length(eye.xz - first.xz - shot.moves * 0.5) < 0.0001,
         "the shot did not resume its authored motion after readiness",

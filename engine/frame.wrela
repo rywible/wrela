@@ -34,6 +34,7 @@ use sky::{Clouds, Sky, Weather, new_sky, sky_shade}
 use temporal::{Resolve, held, neighbourhoods, resolve, resolve_gathered}
 use terrain::{Clipmap, Texel, ground, ground_shade}
 use view::{BEHIND, Camera, NEAREST, camera, jitter_of}
+use std::input::Key
 use std::cache::Stale
 use std::collections::{Flags, replace, swap}
 use std::gpu::{
@@ -524,12 +525,6 @@ pub fn arrival_gathered(previous: u32, lit: bool) -> u32 {
     if lit { previous + 1 } else { 0 }
 }
 
-/// A shot's clock while an arrival covers it: it stays at its start (`start`) until the cover
-/// goes, so its hold and move begin when its view can be shown.
-pub fn shot_clock(start: f32, time: f32, covered: bool) -> f32 {
-    if covered { time } else { start }
-}
-
 // ---- The probes ------------------------------------------------------------------------------
 
 /// The probes in use (`using`) round `at` (render space), and the next being baked beside them
@@ -801,6 +796,31 @@ impl<R: Resolver> Frame<R> {
     /// Whether system `off` is drawn.
     pub fn on(self, off: Off) -> bool {
         !self.debug.off.has(off)
+    }
+
+    /// The frame's own keys for looking at it, not for play: F7 stills (capture mode: each
+    /// frame's jitter on a still's grid, and the frames covered until the light round the eye has
+    /// gathered; `still at frame N` is printed on the still) and V plain rendering. Whether `key`
+    /// was one of them.
+    pub fn key(mut self, key: Key) -> bool {
+        if key == Key::F7 {
+            self.debug.capture = !self.debug.capture
+            self.ready.arriving = self.debug.capture
+            self.ready.gathered = 0
+            return true
+        }
+        if key == Key::V {
+            self.debug.plain = !self.debug.plain
+            return true
+        }
+        false
+    }
+
+    /// The develop's view of form (`Debug::view`): 0 the look, 1 clay (the scene's light on its
+    /// forms all one matte grey), 2 silhouettes.
+    pub fn form(mut self, view: u32) {
+        self.debug.view = view
+        self.light.clay = if view == 1 { 1 } else { 0 }
     }
 
     /// An arrival begins (a lookbook shot, a capture, a jump the eye didn't make): frames are
@@ -1573,16 +1593,4 @@ fn an_arrival_waits_for_complete_frames_without_a_timeout() {
     assert(gathered == gather, "lit frames did not gather")
     gathered = arrival_gathered(gathered, lit: false)
     assert(gathered == 0, "a later cache update retained an earlier lit count")
-}
-
-/// A shot's clock holds at its start while covered, and runs once the cover goes.
-@test
-fn a_shot_waits_while_covered() {
-    var started = 0.0
-    for i in 0..601 {
-        started = shot_clock(started, f32(i) / 60.0, covered: true)
-        assert(started == f32(i) / 60.0, "the shot's clock ran while covered")
-    }
-    let held = shot_clock(started, 20.0, covered: false)
-    assert(held == started, "the shot's clock jumped when the cover went")
 }

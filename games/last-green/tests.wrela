@@ -1182,7 +1182,7 @@ fn bed_db(l: Listener, from: u32, to: u32) -> f32 {
 }
 
 /// The lookbook's shot named `name`.
-fn shot(name: Text) -> lookbook::Shot {
+fn shot(name: Text) -> engine::shot::Shot {
     for s in lookbook::SHOTS {
         if s.name == name {
             return s

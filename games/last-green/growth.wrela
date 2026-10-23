@@ -12,7 +12,7 @@ use land::place::{Character, Herd, Kind, Map, Region, TILE, tile_of}
 use land::soil::SoilKind
 use engine::terrain::{Cover, Terrain}
 use geology::{Bare, SQUARE, SQUARE_COLLAR, SQUARE_N, SQUARE_SOIL, WATER, WORLD}
-use lookbook::Shot
+use engine::shot::Shot
 use std::io::{Shipped, ship}
 use std::math::TAU
 
