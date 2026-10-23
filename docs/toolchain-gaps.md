@@ -24,13 +24,15 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Meanwhile:** play in Chrome itself. In-Chrome play of the capybara lab is still to be checked: a headless Chrome run in test mode ended before writing results, so it says nothing either way.
 - **Status:** open; the cause needs confirming before a fix. If nested workers are the cause, a fix is for the page to start the ticker's worker and hand its port to the render worker.
 
+## Fixed
+
 ### No passkeys: no credential API, signature checks or secure random
 
 - **Needed:** passkey accounts for the console (`games/capybara/design.md`, "Accounts and leaderboards"): a page asks the browser for a credential (`navigator.credentials.create` and `get`, WebAuthn), and the server checks each assertion's signature with the platform's crypto through std (the design forbids crypto written here), against a challenge it made from secure random bytes.
 - **What happens:** std has none of it. The browser host has no credential service (language.md §17), std has SHA-256 (`std::hash::sha256`) but no signature verification (ECDSA P-256, Ed25519 or RSA, the algorithms authenticators use), and no source of secure random bytes. A room knows a peer only by a 64-bit token the peer chooses (`std::net`, `Hello { token }`; language.md §19.1), so the server can't tell who a player is.
 - **Found:** 2026-10-22, planning the capybara's leaderboards and accounts, from toolchain 0.2.2's reference (`wrela doc --export`).
 - **Meanwhile:** nothing here depends on accounts yet; replays, ghosts, the watch mode and the route search are local.
-- **Status:** open. Needs: a browser host service for WebAuthn's two ceremonies, signature verification and secure random in std (each on the platform's implementation), and a way for a server to bind a room's peer to an account (a verified session in the hello, not a chosen token).
+- **Status:** fixed in toolchain 0.3.0 (rywible/wrela-compiler#19): the browser host's passkey ceremonies (`std::host::create_passkey`, `use_passkey`), a server's randomness and signature checks (`std::crypto`: ES256, Ed25519 and RS256, by the RustCrypto and dalek crates), and the WebAuthn checks of an authenticator's answer (`std::webauthn`). Binding a connection to an account is the server program's: a connection's first message carries a session token the accounts server issued, and the server checks it against its store.
 
 ### A server has no store of its own that outlives its build
 
@@ -38,8 +40,4 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **What happens:** a server's only durable state is a room (language.md §19). A room's state is every peer's: each peer applies the whole log, and a peer far behind is sent the state in one 64 KiB frame, so a board of replays would go to every player and soon past the frame. And a room's journal is read only by the server build that wrote it (`<data>/<build hash>/`, §19.3), so each server deploy would start every board empty.
 - **Found:** 2026-10-22, with the gap above.
 - **Meanwhile:** the boards are local: a player's best runs and the route search's, kept in the game's own storage.
-- **Status:** open; a design question for Ryan before any fix. Options: a server-only durable store in the server host (keyed records, kept across builds, with a migration rule), requests and answers beside rooms (a client asks for a board or a replay without joining its log), or a room per board whose state is only the ranking, with replays in a separate store.
-
-## Fixed
-
-None yet.
+- **Status:** fixed in toolchain 0.3.0 (rywible/wrela-compiler#19), after Ryan chose persistent storage (SQLite on the server, backed up to a bucket): `std::store`, keys and values in key order in one SQLite file beside the rooms' journals, which every room and every server build shares. Reads are requests; writes commit when a call returns, before its records are kept and its sends go. A client asks a server for a board or a replay as a message on its connection, which the server program answers from the store; a room's log is only for what its peers share.
