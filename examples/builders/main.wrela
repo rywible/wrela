@@ -4,7 +4,7 @@
 // blockout, not a finished floor's art direction.
 
 use engine::construction::Built
-use engine::render::{View, view}
+use engine::plain::{View, view}
 use people::{FORESTS, OCEANS, Study}
 use std::gpu::{
     ClipPosition, Cull, DepthTexture, GlobalId, GpuBuffer, Slots, VertexIndex,

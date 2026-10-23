@@ -5,7 +5,8 @@
 
 use engine::creature::{Creature, MAX_BONES, Skeleton}
 use engine::look::{CreatureLook, Mesh}
-use engine::render::{Look, bone_matrix}
+use engine::character::Look
+use engine::gait::bone_matrix
 use engine::character::placed
 use fawn::creature::{Coat, skeleton, wood_fawn}
 use std::quat::Quat

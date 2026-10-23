@@ -12,20 +12,151 @@
 // - It is drawn a second time into the motion target, from this frame's palette and the last,
 //   so temporal AA reprojects it by its own motion.
 
-use creature::Parts
+use creature::{Bone, MAX_BONES, Parts, Skeleton}
 use light::{Light, Lit, clay_or, gloss}
 use lit::{Lighting, sun_and_gloss, through_air}
 use realize::{Mesh, SkinVertex, Tally}
-use render::{Look, skin_matrix}
 use std::gpu::{
-    ClipPosition, Cull, Flat, FragCoord, GlobalId, GpuBuffer, RenderPass, Slots, Unorm8x4,
-    VertexIndex, buffer, copy, discard, dispatch, draw, write,
+    ClipPosition, Cull, Flat, FragCoord, GlobalId, GpuBuffer, LocalId, RenderPass, Slots, Unorm8x4,
+    VertexIndex, WorkgroupId, buffer, copy, discard, dispatch, draw, write,
 }
 use std::derive::Box3
 use std::job::{Job, Step}
 use std::transform::{rotate_y, translate}
 use temporal::motion_of
 use view::{CREATURE, Camera}
+
+// ---- how a creature looks, and posing on the GPU ---------------------------------------
+
+/// How a creature type's surface looks: from its field's channels at a rest-space point, seen
+/// `fp` wide, an albedo (linear) and a roughness. Written by the game, run once per vertex when a
+/// mesh is realized (`colours`, `materials`).
+pub trait Look<C>: Copy + GpuData {
+    fn surface(self, c: C, rest: vec3, fp: f32) -> (vec3, f32)
+
+    /// The conducting share baked by `materials`; its albedo then gives its coloured
+    /// reflectance. Plain light (`engine::plain`) is dielectric.
+    fn metallic(self, c: C, rest: vec3, fp: f32) -> f32 {
+        0.0
+    }
+}
+
+/// Channels that say their own albedo, roughness and conducting share.
+pub trait Shaded {
+    fn albedo(self) -> vec3
+    fn roughness(self) -> f32
+
+    fn metallic(self) -> f32 {
+        0.0
+    }
+}
+
+/// A look that takes the albedo and roughness straight from the channels (`Shaded`).
+pub struct ByChannels: Copy + GpuData {}
+
+impl<C: Shaded> Look<C> for ByChannels {
+    fn surface(self, c: C, rest: vec3, fp: f32) -> (vec3, f32) {
+        (c.albedo(), c.roughness())
+    }
+
+    fn metallic(self, c: C, rest: vec3, fp: f32) -> f32 {
+        c.metallic()
+    }
+}
+
+/// How a creature type poses its skeleton on the GPU: each bone's turn, and where the root goes,
+/// from an instance's pose parameters (the type's: a gait phase, how its head is held). Written
+/// in wrela, run in one compute pass for every visible instance.
+pub trait Poser: Copy + GpuData {
+    /// Bone `bone`'s turn about its own rest position, for an instance whose pose is `pose`.
+    fn local(self, bone: u32, pose: vec4) -> mat4
+
+    /// Where the skeleton goes: from an instance's root position `at` and `heading`, and its
+    /// pose.
+    fn root(self, at: vec3, heading: f32, pose: vec4) -> mat4
+}
+
+/// An instance to pose: where its root is, which way it faces, its pose parameters, and which
+/// rest skeleton it has (in the skeletons buffer). Its palette is its place in the instances
+/// buffer, `MAX_BONES` matrices each.
+pub struct Instance: Copy + GpuData {
+    pub at: vec3,
+    pub heading: f32,
+    pub pose: vec4,
+    pub skeleton: u32,
+}
+
+/// A skeleton at rest, as the posing pass reads it: each bone's rest position (in `xyz`) and
+/// parent (in `w`, its own number for a root).
+pub struct RestSkeleton: Copy + GpuData {
+    pub bones: Bounded<vec4, MAX_BONES>,
+}
+
+impl RestSkeleton {
+    pub fn of(s: Skeleton) -> RestSkeleton {
+        var out = RestSkeleton { bones: Bounded::new() }
+        for i in 0..s.len() {
+            let b = Bone { index: i }
+            out.bones.push(vec4(s.rest(b), f32(s.parent(b).index)))
+        }
+        out
+    }
+}
+
+/// Each instance's palette (a workgroup each, an invocation per bone): bone i's matrix, rest
+/// space to world, is world_parent · T(J_i − J_parent) · local_i, with the root's from the root's
+/// transform, times T(−J_i). Each invocation walks its bone's chain from the root.
+@compute(64)
+pub fn pose_instances<P: Poser>(
+    poser: P,
+    instances: [Instance],
+    skeletons: [RestSkeleton],
+    palettes: mut Slots<mat4>,
+    group: WorkgroupId,
+    lid: LocalId,
+    id: GlobalId,
+) {
+    let inst = instances[group.x]
+    let sk = skeletons[inst.skeleton]
+    let bone = lid.x
+    if bone >= sk.bones.len() {
+        return
+    }
+    // The chain from `bone` up to its root.
+    var chain = [0; MAX_BONES]
+    var n = 0
+    var b = bone
+    loop {
+        chain[n] = b
+        n += 1
+        let parent = u32(sk.bones[b].w)
+        if parent == b || n == MAX_BONES {
+            break
+        }
+        b = parent
+    }
+    let root = chain[n - 1]
+    var world = poser.root(inst.at, inst.heading, inst.pose) *
+        translate(sk.bones[root].xyz) *
+        poser.local(root, inst.pose)
+    for k in 1..n {
+        let i = chain[n - 1 - k]
+        let p = chain[n - k]
+        world = world * translate(sk.bones[i].xyz - sk.bones[p].xyz) * poser.local(i, inst.pose)
+    }
+    palettes[id] = world * translate(-sk.bones[bone].xyz)
+}
+
+/// A vertex's skinning matrix: its four bones' matrices in the palette starting at `first`,
+/// blended by its weights.
+pub fn skin_matrix(v: SkinVertex, palettes: [mat4], first: u32) -> mat4 {
+    let b = v.bones
+    let w = Unorm8x4 { bits: v.weights }.decode()
+    palettes[first + (b & 255)] * w.x +
+        palettes[first + ((b >> 8) & 255)] * w.y +
+        palettes[first + ((b >> 16) & 255)] * w.z +
+        palettes[first + (b >> 24)] * w.w
+}
 
 /// Each vertex's colour, from the field's channels at it (under its mask, seen a cell wide),
 /// as the creature's look turns them into an albedo: cooked once, after the mesh is realized.

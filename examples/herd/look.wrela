@@ -6,7 +6,8 @@
 // raised to 1/2.2. M5 replaces all of it with the look the owner picks (#28).
 
 use engine::light::srgb
-use engine::render::{Lights, Look, View}
+use engine::character::Look
+use engine::plain::{Coloured, Lights, View}
 use grazer::Tissue
 use std::field::value_noise
 use std::gpu::{ComparisonSampler, DepthTexture}
@@ -75,10 +76,20 @@ impl Look<Tissue> for GrazerLook {
         }
         (mix(hide, HOOF, vec3(c.hoof)), mix(0.7, 0.35, c.hoof))
     }
+}
 
-    fn output(self, colour: vec3) -> vec4 {
-        vec4(transfer(colour), 1.0)
-    }
+/// A grazer's pixel: its cooked colour in the herd's light, through the spike's transfer.
+@fragment
+pub fn grazer_shade(
+    c: Coloured,
+    view: View,
+    lights: Lights,
+    shadow: DepthTexture,
+    shadow_sampler: ComparisonSampler,
+) -> vec4 {
+    let n = normalize(c.normal)
+    let lit = lights.shadow(view, c.world, n, shadow, shadow_sampler)
+    vec4(transfer(lights.light(c.albedo, c.rough, n, c.world, view, lit)), 1.0)
 }
 
 /// The terrain's colour: two greens mixed by noise, lit as the grazers are.

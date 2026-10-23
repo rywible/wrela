@@ -6,7 +6,7 @@
 
 use body::{BLADE_THICK, BLADE_WIDTH, GUARD_AT, POINT_AT}
 use engine::creature::{Creature, Skeleton, creature, smooth}
-use engine::render::Shaded
+use engine::character::Shaded
 use std::derive::Box3
 use std::field::{Blend, HalfSpace, cuboid, ellipsoid, half_space, round_cone, top, width}
 use std::io::print

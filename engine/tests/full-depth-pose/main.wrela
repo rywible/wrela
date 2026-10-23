@@ -1,8 +1,8 @@
 // Every supported skeleton depth keeps its real root's transform in the GPU palette:
-// engine::render's pose_instances, on a chain of `MAX_BONES` bones whose root turns, read back.
+// engine::character's pose_instances, on a chain of `MAX_BONES` bones whose root turns, read back.
 
 use engine::creature::{MAX_BONES, Skeleton}
-use engine::render::{Instance, Poser, RestSkeleton, pose_instances}
+use engine::character::{Instance, Poser, RestSkeleton, pose_instances}
 use std::gpu::{GpuBuffer, buffer, buffer_of, dispatch, read}
 use std::io::Pending
 use std::transform::{identity, rotate_z, translate}

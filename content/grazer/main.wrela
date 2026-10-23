@@ -1,11 +1,11 @@
-// The grazer as a program. It realizes the grazer's mesh once (sketch 02's extraction) and walks
-// it on the spot with sketch 01's cycle, skinned by the palette the gait's pose gives
-// (`engine::walk`). The lens draws it too (`wrela tool studio -- content/grazer`).
+// The grazer as a program. It realizes the grazer's mesh once and walks it round a circle on flat
+// ground by the engine's gait, in plain light (`engine::plain::Viewer`). The lens draws it too
+// (`wrela tool studio -- content/grazer`).
 
-use creature::{Coat, grazer}
+use creature::{Coat, grazer, skeleton, walker_body}
 use engine::look::CreatureLook
-use engine::render::Shaded
-use engine::walk::{Walker, walker}
+use engine::character::Shaded
+use engine::plain::{Viewer, viewer}
 use std::units::mm
 
 impl Shaded for Coat {
@@ -21,25 +21,22 @@ impl Shaded for Coat {
 /// The grazer's mesh: cells of 2 cm.
 const LOOK = CreatureLook { surface: engine::look::Mesh { tolerance: 1mm } }
 
-pub fn init() -> Walker {
-    walker(grazer(), LOOK)
+pub fn init() -> Viewer {
+    viewer(grazer(), LOOK, walker_body(skeleton(), head_k: 70.0, tail_k: 28.0))
 }
 
-pub fn frame(state: mut Walker, time: f32, width: u32, height: u32) {
-    state.frame(grazer(), width, height, eye: vec3(7.0, 2.6, 3.4), at: vec3(0.0, 1.1, 0.7))
+pub fn frame(state: mut Viewer, time: f32, width: u32, height: u32) {
+    state.frame(grazer(), width, height, eye: vec3(10.0, 3.6, 5.0), at: vec3(0.0, 1.0, 0.0))
 }
 
-/// Sketch 01's cycle for 120 frames: the legs keep their bones' lengths, each foot is where
-/// the gait puts it within 1 mm (or as near as its leg reaches: the gait's stride overreaches
-/// at its ends), the feet come down where they rest and lift, and every bone's matrix is finite.
+/// The engine's gait for 120 frames: the legs keep their bones' lengths, the soles come down on
+/// the ground (on the ground, the soles come down within 1 mm of it) and lift, and every bone's matrix is finite.
 @test(frames: 120)
-fn walks_with_sketch_01s_cycle(state: Walker) {
+fn walks_by_the_engines_gait(state: Viewer) {
     let w = state.walked
     assert(w.frames == 120)
     assert(w.finite, "a bone's matrix isn't finite")
-    assert(w.length_error < 1.0e-4, f"a bone's length changed by {w.length_error} m")
-    assert(w.foot_error < 1mm, f"a foot is {w.foot_error} m from the gait's place, past its reach")
-    assert(w.overreached * 2 < 4 * w.frames, f"{w.overreached} feet were beyond their legs' reach")
-    assert(abs(w.lowest) < 1mm, f"the lowest a foot went is {w.lowest} m from its rest")
-    assert(w.highest > 2.0e-2, f"the highest a foot went is {w.highest} m above its rest")
+    assert(w.length_error < 1.0e-5, f"a bone's length changed by {w.length_error} m")
+    assert(abs(w.lowest) < 1mm, f"the lowest a sole went is {w.lowest} m from the ground")
+    assert(w.highest > 2.0e-2, f"the highest a sole went is {w.highest} m above the ground")
 }

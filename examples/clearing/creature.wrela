@@ -6,7 +6,7 @@
 use engine::creature::{Creature, Skeleton}
 use engine::gait::{Body, Path}
 use engine::look::{CreatureLook, Mesh}
-use engine::render::Look
+use engine::character::Look
 use fawn::creature::{Coat, fawn, skeleton, walker_body}
 
 /// The trail it follows, as points on the plane a Catmull-Rom curve passes through: from the

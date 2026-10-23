@@ -24,7 +24,7 @@ use engine::look::{CreatureLook, Mesh as Tolerance}
 use engine::noise::fbm2
 use engine::probes::open_light
 use engine::realize::realize_rigid
-use engine::render::{ByChannels, Look}
+use engine::character::{ByChannels, Look}
 use engine::shadow::CASTER
 use engine::vegetation::nothing
 use engine::view::{CREATURE, Camera, NEAREST, SEEN, VEIL}

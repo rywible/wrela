@@ -1,0 +1,400 @@
+// Plain light, for labs and examples that judge a motion or a form, not a scene: a sun with a
+// shadow map, a hemisphere's ambient light, normalized Blinn-Phong specular and an ACES fit
+// (`Lights`), seen by a plain camera (`View`, `view`); meshes realized from a creature's field are
+// drawn with the colours cooked into them when they were realized (`character::colours`), posed
+// by a palette (`skin_coloured`, `coloured`), and cast into the sun's map (`skin_shadow`). No
+// air, no probes, no look: a game draws through `engine::frame`. A content package's program
+// shows its creature walking by the engine's gait (`Viewer`).
+
+use character::{ByChannels, Shaded, colours, skin_matrix}
+use creature::{Creature, MAX_BONES, Skeleton}
+use gait::{Body, Palette, Path, Walk, Walker, stand, step}
+use light::aces
+use look::CreatureLook
+use realize::{Mesh, SkinVertex, realize_once}
+use std::gpu::{
+    ClipPosition, ComparisonSampler, Cull, DepthBias, DepthTexture, GpuBuffer, Unorm8x4,
+    VertexIndex, begin_depth_pass, begin_screen_pass_with_depth, buffer, comparison_sampler,
+    depth_texture, draw, write,
+}
+use std::math::PI
+use std::transform::{look_at, ortho, perspective}
+use terrain::Flat
+
+/// Normalized Blinn-Phong's denominator: a lobe of power p is scaled by (p + 8) / 8π, so a
+/// broad highlight is as bright overall as a sharp one, but dimmer.
+pub const EIGHT_PI: f32 = 8.0 * PI
+
+/// A camera and the sun: the camera's view-projection, the sun's (its shadow map's), the eye,
+/// and the direction toward the sun.
+pub struct View: Copy + GpuData {
+    pub view_proj: mat4,
+    pub light: mat4,
+    pub eye: vec3,
+    pub sun: vec3,
+}
+
+/// The lights: a sun with a shadow map, a hemisphere's ambient light, normalized Blinn-Phong
+/// specular, and an ACES fit. The numbers are the game's.
+pub struct Lights: Copy + GpuData {
+    pub sun_colour: vec3,
+    /// The hemisphere's colour straight up and straight down.
+    pub sky: vec3,
+    pub ground: vec3,
+    /// How much of the hemisphere's light reaches a surface.
+    pub ambient: f32,
+    /// What the colour is scaled by before the ACES fit.
+    pub exposure: f32,
+    /// The specular reflectance at normal incidence.
+    pub f0: f32,
+    /// The shadow lookup's offset along the normal, and its comparison's bias.
+    pub normal_offset: f32,
+    pub compare_bias: f32,
+}
+
+impl Lights {
+    /// The ACES fit (`light::aces`) of `exposure` times `x`.
+    pub fn tonemap(self, x: vec3) -> vec3 {
+        aces(x * self.exposure)
+    }
+
+    /// A surface of `albedo` and roughness `rough`, its normal `n`, at `world`, seen from `view`'s
+    /// eye and lit by its sun to `lit` (1 in the sun, 0 in shadow): tonemapped.
+    pub fn light(
+        self,
+        albedo: vec3,
+        rough: f32,
+        n: vec3,
+        world: vec3,
+        view: View,
+        lit: f32,
+    ) -> vec3 {
+        let l = view.sun
+        let v = normalize(view.eye - world)
+        let ndl = max(dot(n, l), 0.0)
+        let a = max(rough * rough, 0.02)
+        let sp = 2.0 / (a * a) - 2.0
+        let half = l + v
+        let spec = if dot(half, half) > 1.0e-12 {
+            let h = normalize(half)
+            pow(max(dot(n, h), 0.0), sp) * (sp + 8.0) / EIGHT_PI * self.f0
+        } else {
+            0.0
+        }
+        let hemi = mix(self.ground, self.sky, 0.5 + 0.5 * n.y)
+        let sun = self.sun_colour * (ndl * lit)
+        self.tonemap(albedo * (hemi * self.ambient + sun) + sun * spec)
+    }
+
+    /// How lit `world` is, whose normal is `n` (1 in the sun, 0 in shadow): the point moved
+    /// `normal_offset` along the normal, looked up in the sun's shadow map through a comparison
+    /// sampler that blends the four nearest texels (2×2 PCF), `compare_bias` nearer the sun.
+    pub fn shadow(
+        self,
+        view: View,
+        world: vec3,
+        n: vec3,
+        map: DepthTexture,
+        s: ComparisonSampler,
+    ) -> f32 {
+        let lp = view.light * vec4(world + n * self.normal_offset, 1.0)
+        let uv = vec2(lp.x * 0.5 + 0.5, lp.y * -0.5 + 0.5)
+        map.sample_compare_level(s, uv, lp.z - self.compare_bias)
+    }
+}
+
+/// A view: a camera at `eye` looking at `at`, `fovy` high on a screen `aspect` wide, near 0.1 m
+/// and far 400 m; and the sun, toward `sun`, its shadow map `extent` either side of the point on
+/// the ground below `at`, 60 m away along the sun's direction.
+pub fn view(eye: vec3, at: vec3, fovy: f32, aspect: f32, sun: vec3, extent: f32) -> View {
+    let s = normalize(sun)
+    let centre = vec3(at.x, 0.0, at.z)
+    let box = ortho(-extent, extent, -extent, extent, near: 1.0, far: 140.0)
+    let light = box * look_at(centre + s * 60.0, centre)
+    let proj = perspective(fovy, aspect, near: 0.1, far: 400.0)
+    View { view_proj: proj * look_at(eye, at), light, eye, sun: s }
+}
+
+/// What a coloured mesh's vertex passes on: its clip position, its world point and normal, and
+/// the albedo and roughness cooked into it.
+pub struct Coloured: Copy {
+    pub clip: ClipPosition,
+    pub world: vec3,
+    pub normal: vec3,
+    pub albedo: vec3,
+    pub rough: f32,
+}
+
+/// A mesh's vertex, skinned by the palette from `first`, seen from `view`'s camera, with its
+/// cooked colour (`character::colours`: the albedo's square root and the roughness).
+@vertex
+pub fn skin_coloured(
+    v: VertexIndex,
+    verts: [SkinVertex],
+    colours: [Unorm8x4],
+    palettes: [mat4],
+    first: u32,
+    view: View,
+) -> Coloured {
+    let sv = verts[v.index]
+    let m = skin_matrix(sv, palettes, first)
+    let world = (m * vec4(sv.pos, 1.0)).xyz
+    let c = colours[v.index].decode()
+    Coloured {
+        clip: ClipPosition { position: view.view_proj * vec4(world, 1.0) },
+        world,
+        normal: mat3(m[0].xyz, m[1].xyz, m[2].xyz) * sv.normal,
+        albedo: c.rgb * c.rgb,
+        rough: c.a,
+    }
+}
+
+/// A coloured mesh's pixel, in plain light: lit by the sun through `shadow`, and by the
+/// hemisphere.
+@fragment
+pub fn coloured(
+    c: Coloured,
+    view: View,
+    lights: Lights,
+    shadow: DepthTexture,
+    shadow_sampler: ComparisonSampler,
+) -> vec4 {
+    let n = normalize(c.normal)
+    let lit = lights.shadow(view, c.world, n, shadow, shadow_sampler)
+    vec4(lights.light(c.albedo, c.rough, n, c.world, view, lit), 1.0)
+}
+
+/// A mesh's vertex, skinned, seen from the sun: for the shadow map.
+@vertex
+pub fn skin_shadow(
+    v: VertexIndex,
+    verts: [SkinVertex],
+    palettes: [mat4],
+    first: u32,
+    view: View,
+) -> ClipPosition {
+    let sv = verts[v.index]
+    ClipPosition { position: view.light * (skin_matrix(sv, palettes, first) * vec4(sv.pos, 1.0)) }
+}
+
+/// A depth-only pass's fragment: its colour goes nowhere.
+@fragment
+pub fn depth_only() -> vec4 {
+    vec4(0.0)
+}
+
+/// A shadow map of one texel, all lit: for creatures drawn without shadows.
+pub fn unlit_shadow() -> DepthTexture {
+    var shadow = depth_texture(width: 1, height: 1)
+    begin_depth_pass(mut shadow, clear_depth: 1.0).end()
+    shadow
+}
+
+@test
+fn basic_lighting_remains_finite_when_the_view_opposes_the_sun() {
+    let lights = Lights {
+        sun_colour: vec3(1.0),
+        sky: vec3(0.5),
+        ground: vec3(0.2),
+        ambient: 1.0,
+        exposure: 1.0,
+        f0: 0.04,
+        normal_offset: 0.0,
+        compare_bias: 0.0,
+    }
+    let view = View {
+        view_proj: std::transform::identity(),
+        light: std::transform::identity(),
+        eye: vec3(0.0, -1.0, 0.0),
+        sun: vec3(0.0, 1.0, 0.0),
+    }
+    let colour = lights.light(vec3(1.0), 0.5, vec3(0.0, 1.0, 0.0), vec3(0.0), view, 1.0)
+    assert(colour == colour && dot(colour, colour) < 4.0)
+    assert(
+        length(colour - lights.tonemap(vec3(1.5))) < 1.0e-5,
+        "opposite light and view leave diffuse and ambient light without a glint",
+    )
+}
+
+// ---- a creature walking, to look at -----------------------------------------------------------
+
+/// What a walk has done: the largest error in a leg bone's length; the lowest a sole has been
+/// from the ground and the highest; how many frames; and whether every bone's matrix was finite.
+pub struct Walked: Copy {
+    pub length_error: f32,
+    pub lowest: f32,
+    pub highest: f32,
+    pub frames: u32,
+    pub finite: bool,
+}
+
+/// A creature walking a circle on flat ground by the engine's gait (`gait::step`), its mesh
+/// realized once with its colours cooked from its channels (`character::ByChannels`), drawn in
+/// plain light with its shadow: a content package's program (the lens draws the creature too).
+pub struct Viewer {
+    mesh: Mesh,
+    colours: GpuBuffer<Unorm8x4>,
+    body: Body,
+    walker: Walker,
+    palettes: GpuBuffer<mat4>,
+    pub walked: Walked,
+    depth: DepthTexture,
+    shadow: DepthTexture,
+    shadow_sampler: ComparisonSampler,
+    width: u32,
+    height: u32,
+}
+
+/// The circle a viewer's creature walks: 3 m round the origin.
+struct Circle: Copy {}
+
+impl Path for Circle {
+    fn at(self, s: f32) -> vec2 {
+        let a = s / 3.0
+        vec2(3.0 * sin(a), 3.0 * cos(a))
+    }
+}
+
+/// How a viewer's creature walks, and the frame's step (a viewer is stepped once a frame, as at
+/// 60 frames a second).
+const WALK = Walk { speed: 0.9 }
+const FRAME_STEP: f32 = 1.0 / 60.0
+
+/// The examples' lights: a warm sun and a cool sky.
+pub const LIGHTS = Lights {
+    sun_colour: vec3(1.6, 1.5, 1.35),
+    sky: vec3(0.55, 0.65, 0.8),
+    ground: vec3(0.3, 0.27, 0.22),
+    ambient: 0.6,
+    exposure: 0.9,
+    f0: 0.04,
+    normal_offset: 3.0e-2,
+    compare_bias: 0.002,
+}
+
+/// `creature`, its mesh realized as `look` says, ready to walk with `body` (`gait::body`).
+pub fn viewer<C: Shaded, K: Creature<C>>(creature: K, look: CreatureLook, body: Body) -> Viewer {
+    let mesh = realize_once(creature, look)
+    let colours = colours(mesh, creature.field(), ByChannels {}, cell: 1.0e-2)
+    let start = Circle {}.at(0.0)
+    Viewer {
+        mesh,
+        colours,
+        body,
+        walker: stand(Flat {}, body, start, heading: PI / 2.0),
+        palettes: buffer(MAX_BONES),
+        walked: Walked {
+            length_error: 0.0,
+            lowest: 1.0e9,
+            highest: -1.0e9,
+            frames: 0,
+            finite: true,
+        },
+        depth: depth_texture(width: 1, height: 1),
+        shadow: depth_texture(width: 2048, height: 2048),
+        shadow_sampler: comparison_sampler(),
+        width: 1,
+        height: 1,
+    }
+}
+
+impl Viewer {
+    /// A frame on a screen `width` by `height`: the walk a step on, `creature` posed by it (and
+    /// the walk recorded), cast into the sun's map and drawn, by a camera at `eye` looking at
+    /// `at`.
+    pub fn frame<C, K: Creature<C>>(
+        mut self,
+        creature: K,
+        width: u32,
+        height: u32,
+        eye: vec3,
+        at: vec3,
+    ) {
+        step(mut self.walker, Flat {}, Circle {}, self.body, WALK, go: true, dt: FRAME_STEP)
+        let s = creature.skeleton()
+        let posed = gait::palette(s, self.body, self.walker)
+        self.record(s, posed)
+        write(mut self.palettes, 0, posed.bones)
+        if width != self.width || height != self.height {
+            self.depth = depth_texture(width, height)
+            self.width = width
+            self.height = height
+        }
+        let v = view(
+            eye,
+            at,
+            fovy: 0.7853982,
+            aspect: f32(width) / f32(height),
+            sun: vec3(0.4, 1.0, 0.3),
+            extent: 5.0,
+        )
+        let cast = begin_depth_pass(mut self.shadow, clear_depth: 1.0)
+        draw(
+            cast,
+            skin_shadow.bind(
+                verts: self.mesh.verts.items(),
+                palettes: self.palettes.items(),
+                first: 0,
+                view: v,
+            ),
+            depth_only,
+            indices: self.mesh.quads.items(),
+            indirect: self.mesh.draw.items(),
+            depth_bias: DepthBias { constant: 4, slope: 2.0, clamp: 0.0 },
+        )
+        cast.end()
+        let pass = begin_screen_pass_with_depth(mut self.depth, clear: vec4(0.55, 0.7, 0.85, 1.0))
+        draw(
+            pass,
+            skin_coloured.bind(
+                verts: self.mesh.verts.items(),
+                colours: self.colours.items(),
+                palettes: self.palettes.items(),
+                first: 0,
+                view: v,
+            ),
+            coloured.bind(
+                view: v,
+                lights: LIGHTS,
+                shadow: self.shadow,
+                shadow_sampler: self.shadow_sampler,
+            ),
+            indices: self.mesh.quads.items(),
+            indirect: self.mesh.draw.items(),
+            cull: Cull::Back,
+        )
+        pass.present()
+    }
+
+    /// Records a frame's palette `p` posing `s`: each leg's bones should keep their lengths, and
+    /// each sole stay on the ground or above it.
+    fn record(mut self, s: Skeleton, p: Palette) {
+        let legs = s.legs()
+        let at = |m: mat4, v: vec3| (m * vec4(v, 1.0)).xyz
+        for i in 0..s.leg_count() {
+            let j = legs[i].joints
+            let (h, k, a) = (s.rest(j[0]), s.rest(j[1]), s.rest(j[2]))
+            let hip = at(p.bones[j[0].index], h)
+            let knee = at(p.bones[j[1].index], k)
+            let ankle = at(p.bones[j[2].index], a)
+            self.walked.length_error = max(
+                self.walked.length_error,
+                abs(length(knee - hip) - length(k - h)),
+            )
+            self.walked.length_error = max(
+                self.walked.length_error,
+                abs(length(ankle - knee) - length(a - k)),
+            )
+            let sole = at(p.bones[j[3].index], s.rest(j[3])).y - self.body.foot_height[i]
+            self.walked.lowest = min(self.walked.lowest, sole)
+            self.walked.highest = max(self.walked.highest, sole)
+        }
+        for b in 0..s.len() {
+            for c in 0..4 {
+                let col = p.bones[b][c]
+                self.walked.finite = self.walked.finite && col == col && dot(col, col) < 1.0e30
+            }
+        }
+        self.walked.frames += 1
+    }
+}

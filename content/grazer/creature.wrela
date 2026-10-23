@@ -867,3 +867,24 @@ pub fn grazer() -> Creature<Coat> {
         )
         .then(ground())
 }
+
+/// The grazer's body for walking on `s` (its `skeleton`, at any size): springs on its neck (to
+/// its head), `head_k` stiff, and on its tail, `tail_k` stiff (`engine::gait::body`).
+pub fn walker_body(s: Skeleton, head_k: f32, tail_k: f32) -> engine::gait::Body {
+    let head = [
+        s.find("neck 0"),
+        s.find("neck 1"),
+        s.find("neck 2"),
+        s.find("neck 3"),
+        s.find("head"),
+    ]
+    let tail = [
+        s.find("tail 0"),
+        s.find("tail 1"),
+        s.find("tail 2"),
+        s.find("tail 3"),
+        s.find("tail 4"),
+        s.find("tail 5"),
+    ]
+    engine::gait::body(s, head, tail, head_k, tail_k)
+}

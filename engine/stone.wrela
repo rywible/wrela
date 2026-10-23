@@ -7,14 +7,13 @@
 // vertex or per pixel. `Rocks` draws many placements of a few prototypes, one instanced draw for
 // each kind and level.
 
-use character::colours
+use character::{ByChannels, Shaded, colours}
 use creature::{Creature, Skeleton, creature}
 use light::{Lit}
 use lit::{Lighting, shown, sun_and_gloss}
 use look::{CreatureLook, Mesh as Tolerance}
 use noise::{hash3, noise3, rand}
 use realize::{Mesh, SkinVertex, realize_rigid}
-use render::{ByChannels, Shaded}
 use std::derive::Box3
 use std::derive::Interval
 use std::field::{Blend, Fbm, Noise, Surface, VALUE_NOISE_LIPSCHITZ, fbm, oval, value_noise}

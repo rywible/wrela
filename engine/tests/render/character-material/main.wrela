@@ -5,7 +5,7 @@ use engine::creature::{PartMask, Skeleton, creature}
 use engine::light::Light
 use engine::lit::Lighting
 use engine::realize::{SkinVertex, Tally}
-use engine::render::{ByChannels, Shaded}
+use engine::character::{ByChannels, Shaded}
 use std::field::{Blend, sphere}
 use std::transform::translate
 use engine::shadow::{Cascade, shadows}

@@ -1,8 +1,9 @@
 // The herd (#43 §12, #42 AC1): spike 01's 40 grazers, seeds 1 to 40, on its terrain, simulated
 // on the ticker's thread (`engine::run`, herd.wrela) and drawn from their fields: realized at
-// levels of detail as their size on screen asks (`engine::realize`), posed on the GPU by the
-// walk cycle, cast into a 2048² shadow map, and shaded per pixel. No JS and no WGSL is written by
-// hand for it.
+// levels of detail as their size on screen asks (`engine::realize`), each mesh's colours cooked
+// from its grazer's field as it's realized, posed on the GPU by the walk cycle, cast into a 2048²
+// shadow map, and shaded in plain light (`engine::plain`). No JS and no WGSL is written by hand
+// for it.
 //
 // Keys choose what a frame draws (a test's script presses them): H the herd's camera (the
 // default), C the close-up's (seed 1 alone, at the origin, as the spike draws it); L the live herd
@@ -16,15 +17,15 @@
 use engine::present::Snapshots
 use engine::look::{ByPart, CreatureLook, Detail, Shadow, Skin}
 use engine::realize::{Eye, NO_LEVEL, Placement, Realizer}
-use engine::render::{
-    Instance, MAX_BONES, RestSkeleton, depth_only, pose_instances, shade, skin, skin_shadow, view,
-}
+use engine::character::{Instance, RestSkeleton, colours, pose_instances}
+use engine::creature::MAX_BONES
+use engine::plain::{depth_only, skin_coloured, skin_shadow, view}
 use engine::run::run
 use grazer::{FALLOFF, GrazerField, field_of, grazer, params}
 use herd::{HERD, Seen, Snap, between, snapshot, spawn, step}
-use look::{GrazerLook, LIGHTS, SKY, SUN, ground_shade, transfer}
+use look::{GrazerLook, LIGHTS, SKY, SUN, grazer_shade, ground_shade, transfer}
 use std::gpu::{
-    ComparisonSampler, Cull, DepthBias, DepthTexture, GpuBuffer, begin_depth_pass,
+    ComparisonSampler, Cull, DepthBias, DepthTexture, GpuBuffer, Unorm8x4, begin_depth_pass,
     begin_screen_pass_with_depth, buffer, comparison_sampler, depth_texture, dispatch, draw, write,
 }
 use std::input::{Event, Key, events}
@@ -80,6 +81,8 @@ pub struct Game {
     placed: Snap,
     realizer: Realizer<GrazerField>,
     looks: Vec<GrazerLook>,
+    /// Each grazer's colours at each level, cooked from its field when its mesh is realized.
+    colours: Vec<Vec<Option<GpuBuffer<Unorm8x4>>>>,
     skeletons: GpuBuffer<RestSkeleton>,
     instances: GpuBuffer<Instance>,
     palettes: GpuBuffer<mat4>,
@@ -122,6 +125,7 @@ pub fn init() -> Game {
     Game {
         snaps: Snapshots::new(take latest, hz: 60),
         placed,
+        colours: Vec::from_fn(HERD, |_| Vec::from_fn(realizer.detail.levels.len(), |_| None)),
         realizer,
         looks,
         skeletons,
@@ -249,6 +253,16 @@ pub fn frame(game: mut Game, time: f32, width: u32, height: u32) {
         }
     }
 
+    // The colours of every mesh realized this frame, cooked from its grazer's field.
+    for (i, level) in game.realizer.placed() {
+        if game.realizer.drawn(i) == level {
+            let cell = game.realizer.detail.levels[level].cell
+            game.colours[i][level] = Some(
+                colours(game.realizer.mesh(i), game.realizer.field(i), game.looks[i], cell),
+            )
+        }
+    }
+
     // Posing: one pass for every grazer drawn.
     var instances: Vec<Instance> = Vec::new()
     for g in grazers {
@@ -304,7 +318,7 @@ pub fn frame(game: mut Game, time: f32, width: u32, height: u32) {
     }
     shadow_pass.end()
 
-    // The terrain, then the grazers, shaded per pixel.
+    // The terrain, then the grazers, in their cooked colours.
     let pass = begin_screen_pass_with_depth(mut game.depth, clear: vec4(transfer(SKY), 1.0))
     if game.terrain {
         draw(
@@ -322,17 +336,17 @@ pub fn frame(game: mut Game, time: f32, width: u32, height: u32) {
     for k in 0..n {
         let i = instances[k].skeleton
         borrow mesh = game.realizer.mesh(i)
+        let Some(c) = game.colours[i][game.realizer.drawn(i)] else { continue }
         draw(
             pass,
-            skin.bind(
+            skin_coloured.bind(
                 verts: mesh.verts.items(),
+                colours: c.items(),
                 palettes: palettes,
                 first: k * MAX_BONES,
                 view: v,
             ),
-            shade.bind(
-                field: game.realizer.field(i),
-                look: game.looks[i],
+            grazer_shade.bind(
                 view: v,
                 lights: LIGHTS,
                 shadow: game.shadow,

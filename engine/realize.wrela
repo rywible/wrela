@@ -758,7 +758,7 @@ fn slices_for(grid: Grid) -> u32 {
     clamp(u32(ceil(expected / f32(SLICE_BLOCKS))), 1, MAX_SLICES)
 }
 
-/// `creature`'s mesh, realized once as `look` says, for a program that keeps one (`walk`): on
+/// `creature`'s mesh, realized once as `look` says, for a program that keeps one (`plain::Viewer`): on
 /// the grid around its bounds grown by the look's tolerance, its cells for a
 /// surface that bends no tighter than 5 cm.
 pub fn realize_once<C, K: Creature<C>>(creature: K, look: CreatureLook) -> Mesh {
@@ -1090,6 +1090,9 @@ pub struct Realizer<F> {
     /// The level change being realized a step a frame, and its own scratch.
     slicing: Option<Slicing>,
     slow: Scratch,
+    /// The meshes placed since the last `frame` (or `realize_all`): each instance and level, so a
+    /// program cooks what it draws from them (`character::colours`).
+    placed: Vec<(u32, u32)>,
     /// How many readbacks it made, how many realizations, and how many holes and overflows the
     /// readbacks found.
     pub readbacks: u32,
@@ -1116,6 +1119,7 @@ impl<F> Realizer<F> {
             overflows: 0,
             slicing: None,
             slow: Scratch::new(1),
+            placed: Vec::new(),
         }
     }
 
@@ -1241,6 +1245,7 @@ impl<C, F: Parts<C>> Realizer<F> {
     /// This frame: the readbacks that have arrived; each instance's
     /// target level, from how large its cells look; then the queue, realized within the budget.
     pub fn frame(mut self, eye: Eye, placed: [Placement]) {
+        self.placed.clear()
         self.answer()
         let n = min(self.held.len(), placed.len())
         let top = self.detail.levels.len() - 1
@@ -1286,6 +1291,7 @@ impl<C, F: Parts<C>> Realizer<F> {
     /// first, which takes a readback, answered from a later frame. Whether every instance draws
     /// `level` now.
     pub fn realize_all(mut self, level: u32) -> bool {
+        self.placed.clear()
         self.answer()
         // A level change in progress is dropped (a calibration's, so its level calibrates again).
         if let Some(s) = replace(mut self.slicing, None) {
@@ -1543,6 +1549,12 @@ impl<C, F: Parts<C>> Realizer<F> {
         }
         self.held[i].drawn = level
         self.held[i].stale = stale
+        self.placed.push((i, level))
+    }
+
+    /// The meshes placed since the last `frame` (or `realize_all`): each its instance and level.
+    pub fn placed(self) -> [(u32, u32)] {
+        self.placed
     }
 
     fn release(mut self, level: u32, mesh: take Mesh) {

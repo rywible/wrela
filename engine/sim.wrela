@@ -1,5 +1,5 @@
-// The simulation's vocabulary: the traits that mark sim state, and the sim's values for a
-// creature (its place, gait and pose, and a ray's hit on the ground it stands on).
+// The simulation's vocabulary: the traits that mark sim state, a tick's number, where a body is
+// (`Transform`), and a ray's hit on the ground.
 //
 // Sim state is ordinary values, rolled back by cloning and checked by the derived `StateHash`
 // (language.md §6.11). `SimState` is a declared trait with a structural check: every field of a
@@ -11,7 +11,6 @@ use rng::{Rng, Seed}
 use std::arena::{Arena, Handle, SortedMap}
 use std::hash::StateHash
 use std::serialize::Serialize
-use std::units::{cm, m}
 
 /// Data the simulation rolls back and hashes: the same on every client.
 @diagnostic(
@@ -88,64 +87,6 @@ impl Transform {
     }
 }
 
-pub enum Mode: SimValue {
-    Graze,
-    Walk,
-    Flee,
-}
-
-/// A gait: where in its stride, how fast (m/s), and in which mode.
-pub struct GaitState: SimValue {
-    pub phase: f32,
-    pub speed: f32,
-    pub turn: f32,
-    pub mode: Mode,
-}
-
-/// What a creature wants this tick: which way to turn (radians), how fast to go, and whether
-/// to flee.
-pub struct Intent: Copy + Eq + StateHash + Serialize {
-    pub turn: f32,
-    pub speed: f32,
-    pub flee: bool,
-}
-
-/// A stride's length, per metre of speed.
-const STRIDE: f32 = 1.4m
-
-impl GaitState {
-    /// A tick's motion, `dt` seconds long: forward by speed, turned by `turn`
-    /// (Transform::advance's frame).
-    pub fn root_motion(self, dt: f32) -> vec3 {
-        vec3(0, self.turn * dt, self.speed * dt)
-    }
-
-    /// The gait `dt` seconds later with no controller: the stride's phase advances as
-    /// `GaitNet::eval` advances it before its corrections.
-    pub fn advance(self, dt: f32) -> GaitState {
-        GaitState { phase: (self.phase + dt * (0.5 + self.speed / STRIDE)) % 1.0, ..self }
-    }
-
-    /// The pose the gait gives, on flat ground: each leg's foot swings with the stride.
-    pub fn pose(self) -> Pose {
-        var legs = [LegPose { hip: vec3(), foot: vec3() }; 4]
-        for i in 0..4 {
-            // Diagonal pairs move together: a walk.
-            let offset = if i == 0 || i == 3 { 0.0 } else { 0.5 }
-            let t = (self.phase + offset) % 1.0
-            let side = if i % 2 == 0 { 25cm } else { -25cm }
-            let along = if i < 2 { 1.25m } else { 0.05m }
-            let swing = (t - 0.5) * STRIDE * min(self.speed, 2.0) * 0.5
-            let lift = if t > 0.5 { 8cm * sin((t - 0.5) * 6.2831855) } else { 0.0 }
-            legs[i] = LegPose {
-                hip: vec3(side, 1.2m, along),
-                foot: vec3(side, lift, along + swing),
-            }
-        }
-        Pose { legs }
-    }
-}
-
 /// A ray's hit: where, the surface's normal there, and how far along the ray. `hit` is false
 /// when nothing was found within reach.
 pub struct Hit: Copy + StateHash {
@@ -153,92 +94,4 @@ pub struct Hit: Copy + StateHash {
     pub normal: vec3,
     pub distance: f32,
     pub hit: bool,
-}
-
-/// One leg's pose: its hip and foot (rest-space metres).
-pub struct LegPose: SimValue {
-    pub hip: vec3,
-    pub foot: vec3,
-}
-
-/// A creature's pose: its legs (a run, so a loop can change each).
-pub struct Pose: Clone + Eq + StateHash + Serialize + SimState {
-    pub legs: [LegPose; 4],
-}
-
-/// A damped spring: where it is, and how fast it's moving. A walker's (`gait::Walker`) are its
-/// sim's state.
-pub struct Spring: Copy + Eq + Plain + StateHash + Serialize + SimState {
-    pub pos: vec3,
-    pub vel: vec3,
-}
-
-impl Spring {
-    /// One step towards `target`, critically damped-ish.
-    pub fn follow(mut self, target: vec3, stiffness: f32, dt: f32) {
-        let a = (target - self.pos) * stiffness - self.vel * (2.0 * sqrt(stiffness))
-        self.vel += a * dt
-        self.pos += self.vel * dt
-    }
-}
-
-/// A small learned controller, trained offline: a multilayer perceptron whose weights
-/// are embedded bytes, read in place (little-endian f32s: 8 inputs to 8 hidden units, tanh,
-/// to 4 outputs, each layer's weights row by row then its biases).
-pub struct GaitNet: Copy {
-    pub weights: Bytes,
-}
-
-const INPUTS: u32 = 8
-const HIDDEN: u32 = 8
-const OUTPUTS: u32 = 4
-
-impl GaitNet {
-    fn weight(self, i: u32) -> f32 {
-        self.weights.f32_le(4 * i)
-    }
-
-    /// The gait a tick (`dt` seconds) later, from this one, what the creature wants, and the
-    /// ground's slope.
-    @deterministic
-    pub fn eval(self, gait: GaitState, intent: Intent, slope: f32, dt: f32) -> GaitState {
-        let x = [
-            sin(gait.phase * 6.2831855),
-            cos(gait.phase * 6.2831855),
-            gait.speed,
-            intent.speed,
-            intent.turn,
-            if intent.flee { 1.0 } else { 0.0 },
-            slope,
-            1.0,
-        ]
-        var h = [0.0; 8]
-        for j in 0..HIDDEN {
-            var sum = self.weight(INPUTS * HIDDEN + j)
-            for i in 0..INPUTS {
-                sum += self.weight(j * INPUTS + i) * x[i]
-            }
-            h[j] = tanh(sum)
-        }
-        let base = INPUTS * HIDDEN + HIDDEN
-        var y = [0.0; 4]
-        for k in 0..OUTPUTS {
-            var sum = self.weight(base + HIDDEN * OUTPUTS + k)
-            for j in 0..HIDDEN {
-                sum += self.weight(base + k * HIDDEN + j) * h[j]
-            }
-            y[k] = sum
-        }
-        // Outputs: the stride's step, a speed correction, a turn correction, and fear.
-        let speed = max(0.0, mix(gait.speed, intent.speed, 0.1) + 0.05 * y[1])
-        let mode = if intent.flee || y[3] > 2.0 { Mode::Flee } else if speed > 0.2 {
-            Mode::Walk
-        } else { Mode::Graze }
-        GaitState {
-            phase: (gait.phase + dt * (0.5 + speed / STRIDE) * (1.0 + 0.05 * y[0])) % 1.0,
-            speed,
-            turn: mix(gait.turn, intent.turn, 0.2) + 0.01 * y[2],
-            mode,
-        }
-    }
 }

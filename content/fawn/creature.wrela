@@ -12,7 +12,6 @@
 // these colours as they are, and so does the lens.
 
 use engine::creature::{Creature, Modifier, Skeleton, creature, cut, frame, ground, smooth}
-use engine::gait::{Body, body}
 use grazer::creature::{
     CHEST, Cape, EAR_BASE, ELBOW, EYE_AT, Ear, FFETLOCK, HEAD, HEAD_PITCH, HFETLOCK, HIP, HOCK,
     HORN0, Hoof, KNEE, Muscle, NECK0, NECK1, NECK2, NECK3, PELVIS, SCAPULA, SHOULDER, STIFLE, TAIL0,
@@ -48,26 +47,8 @@ pub fn skeleton() -> Skeleton {
     grazer::creature::skeleton()
 }
 
-/// The fawn's body for walking on `s` (its `skeleton`, at any size): springs on its neck (to its
-/// head), `head_k` stiff, and on its tail, `tail_k` stiff (`engine::gait::body`).
-pub fn walker_body(s: Skeleton, head_k: f32, tail_k: f32) -> Body {
-    let head = [
-        s.find("neck 0"),
-        s.find("neck 1"),
-        s.find("neck 2"),
-        s.find("neck 3"),
-        s.find("head"),
-    ]
-    let tail = [
-        s.find("tail 0"),
-        s.find("tail 1"),
-        s.find("tail 2"),
-        s.find("tail 3"),
-        s.find("tail 4"),
-        s.find("tail 5"),
-    ]
-    body(s, head, tail, head_k, tail_k)
-}
+/// The fawn's body for walking: the grazer's (its skeleton's).
+pub use grazer::creature::walker_body
 
 /// A tail segment from `a` to `c`, on the bone at `a`.
 fn tail_cone(a: vec3, c: vec3, r1: f32, r2: f32) -> std::field::With<std::field::RoundCone, Coat> {

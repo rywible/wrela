@@ -13,7 +13,7 @@ use engine::gait::{Body, Path, Walk, Walker, stand, step}
 use engine::noise::rand
 use engine::place::Water
 use engine::present::short_way
-use engine::render::bone_matrix
+use engine::gait::bone_matrix
 use engine::senses::{Awareness, Occluders, Presence, Senses, sense}
 use engine::sim::{SimState, Transform}
 use engine::terrain::{Flat, Terrain}
