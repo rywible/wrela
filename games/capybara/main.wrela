@@ -7,7 +7,7 @@
 // and the game's sounds (sound.wrela) start on the first frame.
 //
 // The game opens paused, on a card of the controls (Esc or P pauses again). F3 shows the frame rate
-// and the render scale. Keys: the arrows or W A S D to move (down slides or
+// and the render scale; M turns the music off and on, the sounds playing on. Keys: the arrows or W A S D to move (down slides or
 // crouches; in water up and down swim, and in turn dolphin kick), Space, Z or K to jump (again in
 // the air for the double jump; in water, a kick), R to restart, Tab for the other course (the level
 // or the lab). A controller: the stick or pad, South or East to jump, Start to restart, Select for
@@ -109,6 +109,8 @@ pub struct Lab {
     last: Option<f32>,
     /// The ring to the voice (sound.wrela): none until it starts, on the first frame.
     voice: Option<RingWriter<Cue>>,
+    /// Whether the music plays (M).
+    music: bool,
     /// Whether the readout shows (F3): the frame rate, the frame's time and the render scale. The
     /// frames' time (s), smoothed, for it.
     readout: bool,
@@ -171,6 +173,7 @@ pub fn init() -> Lab {
         camera: camera(course(LEVEL).start),
         last: None,
         voice: None,
+        music: true,
         readout: false,
         presence: 1.0,
         sliding: 0.0,
@@ -246,12 +249,22 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     let (live_snap, live_lag) = drawn(s.snaps, time)
     store_runs(mut s, dt)
     keep_finished(mut s, live_snap)
-    // F3 shows the readout. The frames' keys are their own: the sim's ticks take theirs. With the
-    // runs open, the sim leaves the keys and clicks to the frames: the board's and the watch's.
+    // F3 shows the readout, and M turns the music off and on. The frames' keys are their own: the
+    // sim's ticks take theirs. With the runs open, the sim leaves the keys and clicks to the
+    // frames: the board's and the watch's.
     for e in events() {
         if let Event::KeyDown { key, repeat, .. } = e {
             if key == Key::F3 && !repeat {
                 s.readout = !s.readout
+            } else if key == Key::M && !repeat {
+                s.music = !s.music
+                let music = Cue { kind: sound::MUSIC, amount: if s.music { 1.0 } else { 0.0 } }
+                match mut s.voice {
+                    Some(v) => {
+                        let _ = v.push(music)
+                    },
+                    None => {},
+                }
             }
         }
         if live_snap.browsing == 1 {
@@ -528,8 +541,8 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2) {
 /// controls, and how to play on. A cream card with an ink border, as the book's.
 fn card(s: mut Lab, snap: Snap, screen: vec2) {
     let size = max(screen.y * 0.03, 12.0)
-    let w = min(screen.x * 0.9, size * 32.0)
-    let h = size * 18.3
+    let w = min(screen.x * 0.9, size * 40.0)
+    let h = size * 19.75
     let at = vec2((screen.x - w) * 0.5, (screen.y - h) * 0.5)
     s.list.rect(Rect::new(at.x - 3.0, at.y - 3.0, w + 6.0, h + 6.0), INKED, radius: size * 0.9)
     s.list.rect(Rect::new(at.x, at.y, w, h), CARD, radius: size * 0.8)
@@ -566,12 +579,14 @@ fn card(s: mut Lab, snap: Snap, screen: vec2) {
         "R",
         "Pause",
         "Esc or P",
+        "Music",
+        if s.music { "M turns it off" } else { "M turns it on" },
         "Runs",
         "B: your best runs and the tool-assisted ones, to watch or race as a ghost",
         "Controller",
         "Stick, A to jump, Start to pause, Select to restart",
     ]
-    for i in 0..8 {
+    for i in 0..9 {
         let _ = s.list.text(s.fonts, Face::Sans, rows[i * 2], size, vec2(left, y), INKED)
         let _ = s.list.text(
             s.fonts,
