@@ -15,8 +15,8 @@
 // opens the runs (replay.wrela: the best runs, to watch or race as a ghost), and while they're
 // open the frames take the keys and clicks: only Esc, B or a controller's Start or B closes them.
 //
-// The ticker steps a `Live`: the world, and its attempt's run as it's played (pad.wrela's `Run`),
-// so a finished attempt is a replay.
+// The ticker steps a `Live`: the world, its attempt's run as it's played (pad.wrela's `Run`), so
+// a finished attempt is a replay, and what happened, counted tick by tick for the frames (`Tally`).
 
 use body::{Body, Mode, RADIUS, bounce, spawn}
 use course::{COURSES, Course, course}
@@ -298,26 +298,99 @@ fn ticked(w: mut World, records: [Event]) -> Option<Pad> {
     Some(pad)
 }
 
-/// What the ticker steps: the world, and its attempt's run as it's played, kept apart from the
-/// world so that searches and tests step a small value.
+/// What happened in a world, counted tick by tick (`count`), for the frames. A frame sees a
+/// snapshot only every tick or few (at 60 frames a second, every second tick; a run watched at
+/// 4x, every eighth), so it reacts to a count that went up, not to a change between two
+/// snapshots, which misses what lasts a tick: a jump pressed before landing is on the ground for
+/// one. The ticker counts in `Live` and a watched run in its `Watch`, not in the world, so a world
+/// stays the same value to the searches and the replays.
+pub struct Tally: Copy + Eq + StateHash + Serialize + SimState + Plain {
+    /// Landings from the air, and the latest one's feet and how fast it fell (m/s).
+    pub landings: u32,
+    pub landed: vec2,
+    pub fall: f32,
+    /// Jumps off the ground (in the air from it, rising faster than 2 m/s), and the latest one's
+    /// feet.
+    pub jumps: u32,
+    pub left: vec2,
+    /// Double jumps, and kicks in water (a rise of more than 3 m/s in a tick).
+    pub doubles: u32,
+    pub kicks: u32,
+    /// Times the capybara was put somewhere at once: back at a checkpoint, a new attempt, the other
+    /// course, or (a watched run) a seek.
+    pub cuts: u32,
+}
+
+/// Nothing counted.
+pub const NO_TALLY: Tally = Tally {
+    landings: 0,
+    landed: vec2(0.0),
+    fall: 0.0,
+    jumps: 0,
+    left: vec2(0.0),
+    doubles: 0,
+    kicks: 0,
+    cuts: 0,
+}
+
+impl Tally {
+    /// The tick from `before` to `after`, counted.
+    pub fn count(mut self, before: World, after: World) {
+        if after.attempt != before.attempt ||
+            after.course != before.course ||
+            (before.dying > 0 && after.dying == 0) {
+            self.cuts += 1
+            return
+        }
+        let (was, now) = (before.body, after.body)
+        let feet = now.at - now.ground * RADIUS
+        if now.grounded() && was.mode == Mode::Air {
+            self.landings += 1
+            self.landed = feet
+            self.fall = max(-was.vel.y, 0.0)
+        }
+        if now.mode == Mode::Air && was.grounded() && now.vel.y > 2.0 {
+            self.jumps += 1
+            self.left = feet
+        }
+        if now.flip > 0 && was.flip == 0 {
+            self.doubles += 1
+        }
+        if now.mode == Mode::Swim && now.vel.y - was.vel.y > 3.0 {
+            self.kicks += 1
+        }
+    }
+}
+
+/// One tick of `w` from `pad`, as `step`, counted in `t`.
+pub fn step_counted(w: mut World, t: mut Tally, pad: Pad) {
+    let before = w
+    step(mut w, pad)
+    t.count(before, w)
+}
+
+/// What the ticker steps: the world, its attempt's run as it's played, and what happened, kept
+/// apart from the world so that searches and tests step a small value.
 pub struct Live: Copy + Eq + StateHash + Serialize + SimState {
     pub world: World,
     pub run: Run,
+    pub tally: Tally,
 }
 
 /// A new game at course `c`.
 pub fn live(c: u32) -> Live {
-    Live { world: world(c), run: NO_RUN }
+    Live { world: world(c), run: NO_RUN, tally: NO_TALLY }
 }
 
 /// One tick of `l`, as `tick`, recording each pad the world steps with until it reaches the goal:
 /// a restart or another course starts a new run.
 @deterministic
 pub fn tick_live(l: mut Live, input: TickInput<Live>) {
-    let (attempt, course) = (l.world.attempt, l.world.course)
-    var done = l.world.finished > 0
+    let before = l.world
+    var done = before.finished > 0
     let pad = ticked(mut l.world, input.records)
-    if l.world.attempt != attempt || l.world.course != course {
+    l.tally.count(before, l.world)
+    if l.world.attempt != before.attempt || l.world.course != before.course {
         l.run = NO_RUN
         done = false
     }
@@ -328,11 +401,12 @@ pub fn tick_live(l: mut Live, input: TickInput<Live>) {
     }
 }
 
-/// What the frames draw of `l`: its world's snapshot, with its run.
+/// What the frames draw of `l`: its world's snapshot, with its run and its tally.
 @deterministic
 pub fn present_live(l: Live) -> Snap {
     var s = present(l.world)
     s.run = l.run
+    s.tally = l.tally
     s
 }
 
@@ -401,6 +475,8 @@ pub struct Snap: Copy + Plain {
     pub browsing: u32 = 0,
     /// The attempt's run so far (`present_live`), or none.
     pub run: Run = NO_RUN,
+    /// What happened, counted (`present_live`, or a watched run's), or nothing.
+    pub tally: Tally = NO_TALLY,
 }
 
 @deterministic
@@ -543,4 +619,18 @@ fn paused_b_opens_the_runs_and_only_esc_or_b_closes_them() {
     tick_with(mut w, [down(Key::Space)])
     tick_with(mut w, [down(Key::B)])
     assert(!w.paused && !w.browsing, "playing, B does nothing")
+}
+
+@test
+fn the_ticker_counts_a_comeback_and_a_restart_as_cuts() {
+    var l = live(LEVEL)
+    l.world.paused = false
+    // The last tick of dying: it comes back.
+    l.world.dying = 1
+    tick_live(mut l, TickInput { tick: 0, dt: STEP, records: Vec::new(), answers: Vec::new() })
+    assert(l.world.dying == 0 && l.tally.cuts == 1, "coming back is a cut")
+    let r = Vec::from([down(Key::R)])
+    tick_live(mut l, TickInput { tick: 1, dt: STEP, records: r, answers: Vec::new() })
+    assert(l.world.attempt == 1 && l.tally.cuts == 2, "and so is a restart")
+    assert(present_live(l).tally == l.tally, "the frames see it")
 }

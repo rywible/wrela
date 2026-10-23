@@ -77,11 +77,13 @@ const FLIGHT: f32 = 0.7
 /// How long the fireworks go on after the goal (s).
 const FIREWORKS: f32 = 6.0
 
-pub fn cast(c: Course) -> Cast {
+/// The cast of course `c`, reacting to what happened since snapshot `from` (or, without one, since
+/// the first snapshot it's given).
+pub fn cast(c: Course, from: Option<Snap> = None) -> Cast {
     Cast {
         dust: dust(),
         waves: waves(c),
-        last: None,
+        last: from,
         squash: vec2(1.0),
         give: vec2(0.0),
         stride: 0.0,
@@ -107,7 +109,11 @@ pub fn grounded(m: Option<Mode>) -> bool {
 
 /// The cast `dt` seconds on, at snapshot `s`: what happened since the last made into particles,
 /// waves and the voice's cues (panned across the view: its middle `eye`, half its size `half`);
-/// the particles, waves, squash, gait, fireworks and flights stepped.
+/// the particles, waves, squash, gait, fireworks and flights stepped. What lasts a tick (a landing,
+/// a jump, a kick, a cut) comes from the snapshots' counts (world.wrela's `Tally`), so none is
+/// missed between frames; what stays (a death, a snack, a checkpoint) from the snapshots
+/// themselves, except across a cut, where the capybara was put somewhere at once (a seek into a
+/// death isn't a hurt).
 pub fn react(k: mut Cast, s: Snap, c: Course, dt: f32, eye: vec2, half: vec2) {
     let pan = |x: f32| clamp((x - eye.x) / max(half.x, 1.0), -1.0, 1.0) * 0.7
     let mode = Mode::from_u32(s.mode)
@@ -115,46 +121,47 @@ pub fn react(k: mut Cast, s: Snap, c: Course, dt: f32, eye: vec2, half: vec2) {
     let wet_now = c.water_at(s.at).is_some()
     match k.last {
         Some(before) => {
-            let was = Mode::from_u32(before.mode)
-            if s.dying > 0 && before.dying == 0 && s.fell == 1 {
-                k.cues.push(Cue { kind: FALL, pan: pan(s.at.x) })
-            }
-            if s.dying > 0 && before.dying == 0 && s.fell == 0 {
-                k.cues.push(Cue { kind: HURT, pan: pan(s.at.x) })
-                // Hurt: stars round its head, a puff.
-                sparkles(mut k.dust, s.at + vec2(0.0, 0.5), 10, vec3(1.0, 0.85, 0.3))
-                puff(mut k.dust, s.at, vec2(0.0), 8, 0.16)
-            }
             if s.dying == 0 && before.dying > 0 {
                 k.cues.push(Cue { kind: BACK, pan: pan(s.at.x) })
                 k.back = 0.0
             }
-            if distance(before.at, s.at) > 4.0 {
-                // Back to a checkpoint: a poof where it lands.
+            let (now, then) = (s.tally, before.tally)
+            if now.cuts > then.cuts {
+                // Back to a checkpoint, a new attempt, or a seek: a poof where it lands.
                 puff(mut k.dust, s.at, vec2(0.0), 14, 0.22)
                 sparkles(mut k.dust, s.at, 8, vec3(1.0, 0.95, 0.8))
             } else {
+                if s.dying > 0 && before.dying == 0 && s.fell == 1 {
+                    k.cues.push(Cue { kind: FALL, pan: pan(s.at.x) })
+                }
+                if s.dying > 0 && before.dying == 0 && s.fell == 0 {
+                    k.cues.push(Cue { kind: HURT, pan: pan(s.at.x) })
+                    // Hurt: stars round its head, a puff.
+                    sparkles(mut k.dust, s.at + vec2(0.0, 0.5), 10, vec3(1.0, 0.85, 0.3))
+                    puff(mut k.dust, s.at, vec2(0.0), 8, 0.16)
+                }
                 let wet_then = c.water_at(before.at).is_some()
-                if mode == Some(Mode::Swim) && s.vel.y - before.vel.y > 3.0 {
+                if now.kicks > then.kicks {
                     k.cues.push(Cue { kind: KICK, pan: pan(s.at.x) })
                 }
                 // Landing: dust out both ways, harder the faster it fell; a squash.
-                if grounded(mode) && was == Some(Mode::Air) {
-                    let fall = max(-before.vel.y, 0.0)
-                    k.cues.push(Cue { kind: LAND, amount: saturate(fall / 14.0), pan: pan(s.at.x) })
+                if now.landings > then.landings {
+                    let fall = now.fall
+                    let at = now.landed
+                    k.cues.push(Cue { kind: LAND, amount: saturate(fall / 14.0), pan: pan(at.x) })
                     let n = u32(clamp(fall * 1.2, 3.0, 16.0))
-                    puff(mut k.dust, feet, vec2(2.0, 0.2), n / 2, 0.12 + fall * 0.008)
-                    puff(mut k.dust, feet, vec2(-2.0, 0.2), n / 2, 0.12 + fall * 0.008)
+                    puff(mut k.dust, at, vec2(2.0, 0.2), n / 2, 0.12 + fall * 0.008)
+                    puff(mut k.dust, at, vec2(-2.0, 0.2), n / 2, 0.12 + fall * 0.008)
                     k.give += vec2(0.6, -1.2) * min(fall / 10.0, 1.2) * 6.0
                 }
                 // Jumping off the ground: a little dust, and a stretch.
-                if mode == Some(Mode::Air) && grounded(was) && s.vel.y > 2.0 {
-                    k.cues.push(Cue { kind: JUMP, pan: pan(s.at.x) })
-                    puff(mut k.dust, feet, vec2(-s.vel.x * 0.15, 0.0), 5, 0.1)
+                if now.jumps > then.jumps {
+                    k.cues.push(Cue { kind: JUMP, pan: pan(now.left.x) })
+                    puff(mut k.dust, now.left, vec2(-s.vel.x * 0.15, 0.0), 5, 0.1)
                     k.give += vec2(-0.5, 1.0) * 5.0
                 }
                 // The double jump: a burst of confetti and tiny yuzus under it.
-                if s.flip > 0 && before.flip == 0 {
+                if now.doubles > then.doubles {
                     k.cues.push(Cue { kind: DOUBLE, pan: pan(s.at.x) })
                     confetti(mut k.dust, feet, carry: s.vel * 0.6, n: 22)
                     k.give += vec2(-0.4, 0.8) * 5.0
@@ -716,14 +723,17 @@ pub fn iris(k: Cast, s: Snap, lag: f32) -> (vec2, f32) {
 use camera::half_view
 use course::course
 use feel::STEP as TICK
-use pad::{Pad, pad_of}
+use pad::{Hold, Pad, pad_of}
 use proofs::LEVEL_FULL
-use world::{LEVEL, World, present, step, world}
+use replay::tool_assisted
+use watch::watch
+use world::{LEVEL, NO_TALLY, Tally, World, present, step, step_counted, world}
 
-/// One tick of `w` on `pad`, reacted to: the kinds of cue it sent, as bits.
-fn heard(w: mut World, k: mut Cast, c: Course, pad: Pad) -> u32 {
-    step(mut w, pad)
-    let s = present(w)
+/// One tick of `w` on `pad`, counted in `t` and reacted to: the kinds of cue it sent, as bits.
+fn heard(w: mut World, t: mut Tally, k: mut Cast, c: Course, pad: Pad) -> u32 {
+    step_counted(mut w, mut t, pad)
+    var s = present(w)
+    s.tally = t
     react(mut k, s, c, TICK, s.at, half_view(16.0 / 9.0))
     var bits = 0
     for cue in k.cues {
@@ -739,19 +749,140 @@ fn the_level_played_through_sends_every_cue_and_ends_in_fireworks() {
     // The 100% run, reacted to every tick, then six seconds at the goal.
     borrow c = course(LEVEL)
     var w = world(LEVEL)
+    var t = NO_TALLY
     var k = cast(c)
     var bits = 0
     for h in LEVEL_FULL {
         for i in 0..h.ticks {
-            bits |= heard(mut w, mut k, c, pad_of(h, i))
+            bits |= heard(mut w, mut t, mut k, c, pad_of(h, i))
         }
     }
     for _ in 0..720 {
-        bits |= heard(mut w, mut k, c, Pad { bits: 0 })
+        bits |= heard(mut w, mut t, mut k, c, Pad { bits: 0 })
     }
     for kind in [STEP, JUMP, DOUBLE, LAND, SLIDE, CRUNCH, CHECKPOINT, GOAL, LAUNCH, BANG] {
         assert(bits & (1 << kind) != 0, f"no cue {kind}")
     }
     // A clean run isn't hurt and doesn't fall.
     assert(bits & (1 << HURT) == 0 && bits & (1 << FALL) == 0, "a death in a clean run")
+}
+
+/// The cues of the kinds a tick's events send (landings, jumps, double jumps, kicks) in `k`,
+/// counted into `n`, and let go.
+fn tally_cues(k: mut Cast, n: mut [u32; 4]) {
+    let kinds = [LAND, JUMP, DOUBLE, KICK]
+    for cue in k.cues {
+        for i in 0..kinds.len() {
+            if cue.kind == kinds[i] {
+                n[i] += 1
+            }
+        }
+    }
+    k.cues.clear()
+}
+
+/// The landings, jumps, double jumps and kicks of `t`.
+fn counts(t: Tally) -> [u32; 4] {
+    [t.landings, t.jumps, t.doubles, t.kicks]
+}
+
+/// `run` on the level, its frames seeing every `every`th tick from tick `phase`: the cues of each
+/// kind (`tally_cues`) they send, and what the run's ticks counted.
+fn framed_cues(run: [Hold], every: u32, phase: u32) -> ([u32; 4], Tally) {
+    borrow c = course(LEVEL)
+    var w = world(LEVEL)
+    var t = NO_TALLY
+    var k = cast(c, from: Some(present(w)))
+    var n = [0; 4]
+    var tick = 0
+    for h in run {
+        for i in 0..h.ticks {
+            step_counted(mut w, mut t, pad_of(h, i))
+            tick += 1
+            if tick % every == phase {
+                var s = present(w)
+                s.tally = t
+                react(mut k, s, c, TICK * f32(every), s.at, half_view(16.0 / 9.0))
+                tally_cues(mut k, mut n)
+            }
+        }
+    }
+    (n, t)
+}
+
+@test
+fn at_sixty_frames_a_second_every_landing_and_jump_is_heard() {
+    // The level's fastest 100% run lands on a jump pressed before landing: on the ground for one
+    // tick, which a frame at 60 a second (every second tick of 120) sees only half the time.
+    var w = world(LEVEL)
+    var one_tick = 0
+    var on = 0
+    for h in routes::FULL {
+        for i in 0..h.ticks {
+            step(mut w, pad_of(h, i))
+            if w.body.grounded() {
+                on += 1
+            } else {
+                if on == 1 {
+                    one_tick += 1
+                }
+                on = 0
+            }
+        }
+    }
+    assert(one_tick > 0, "the run has a landing that lasts a tick")
+    let (every_tick, t) = framed_cues(routes::FULL, every: 1, phase: 0)
+    let m = counts(t)
+    assert(
+        every_tick == m,
+        f"heard {every_tick[0]} {every_tick[1]} {every_tick[2]} {every_tick[3]}, counted {m[0]} {m[1]} {m[2]} {m[3]}",
+    )
+    assert(t.landings > one_tick && t.jumps > 0 && t.doubles > 0, f"{t.landings} landings")
+    for phase in [0, 1] {
+        let (framed, _) = framed_cues(routes::FULL, every: 2, phase: phase)
+        assert(framed == every_tick, f"every second tick from {phase}: {framed[0]} landings")
+    }
+}
+
+@test
+fn a_run_watched_at_four_times_is_heard_as_it_was_played() {
+    // Frames at 60 a second, four times as fast: eight ticks a frame, through the run and the
+    // fireworks after it.
+    borrow c = course(LEVEL)
+    let r = tool_assisted(LEVEL)[1].clone()
+    let (played, _) = framed_cues(r.holds, every: 1, phase: 0)
+    var v = watch(r.clone())
+    v.speed = 4
+    let (_, first, _) = v.between()
+    var k = cast(c, from: Some(first))
+    var n = [0; 4]
+    while v.playing {
+        v.advance(1.0 / 60.0)
+        let (_, s, _) = v.between()
+        react(mut k, s, c, 1.0 / 60.0, s.at, half_view(16.0 / 9.0))
+        tally_cues(mut k, mut n)
+    }
+    assert(n == counts(v.tally), f"{n[0]} landings heard of {v.tally.landings}")
+    assert(n[0] >= played[0] && n[1] == played[1], "the run's own, and any after its goal")
+    assert(v.tally.cuts == 0, "no cut in a run without a death")
+}
+
+@test
+fn a_seek_into_a_death_isnt_heard_as_a_hurt() {
+    // Halfway through dying after a frame that wasn't: hurt, played on to it; not, seeked to it.
+    borrow c = course(LEVEL)
+    let before = present(world(LEVEL))
+    var dying = before
+    dying.dying = DYING / 2
+    var seeked = dying
+    seeked.tally.cuts = 1
+    for (s, hurts) in [(dying, true), (seeked, false)] {
+        var k = cast(c, from: Some(before))
+        react(mut k, s, c, TICK, s.at, half_view(16.0 / 9.0))
+        var hurt = false
+        for cue in k.cues {
+            hurt = hurt || cue.kind == HURT
+        }
+        assert(hurt == hurts, f"a cut: {s.tally.cuts}")
+    }
 }

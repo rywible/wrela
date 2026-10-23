@@ -57,30 +57,77 @@ impl Pad {
 /// The pad no button holds.
 pub const IDLE: Pad = Pad { bits: 0 }
 
-fn key_bits(k: Key) -> u32 {
-    match k {
-        Key::Left | Key::A => LEFT,
-        Key::Right | Key::D => RIGHT,
-        Key::Up | Key::W => UP,
-        Key::Down | Key::S => DOWN,
-        Key::Space | Key::Z | Key::K => JUMP,
-        _ => 0,
+/// The keys that hold the pad's bits, and the bit each holds. `Controls::keys` has a bit for each
+/// key down (its place here), so a key let go leaves its pad bit held while another key holds it.
+const KEYS: [(Key, u32); 11] = [
+    (Key::Left, LEFT),
+    (Key::A, LEFT),
+    (Key::Right, RIGHT),
+    (Key::D, RIGHT),
+    (Key::Up, UP),
+    (Key::W, UP),
+    (Key::Down, DOWN),
+    (Key::S, DOWN),
+    (Key::Space, JUMP),
+    (Key::Z, JUMP),
+    (Key::K, JUMP),
+]
+
+/// The first controller's buttons that hold the pad's bits, as `KEYS` for `Controls::buttons`.
+const BUTTONS: [(PadButton, u32); 6] = [
+    (PadButton::Left, LEFT),
+    (PadButton::Right, RIGHT),
+    (PadButton::Up, UP),
+    (PadButton::Down, DOWN),
+    (PadButton::South, JUMP),
+    (PadButton::East, JUMP),
+]
+
+/// `k`'s place in `KEYS` as a bit, or 0 for a key that holds nothing.
+fn key_slot(k: Key) -> u32 {
+    for i in 0..KEYS.len() {
+        if KEYS[i].0 == k {
+            return 1 << i
+        }
     }
+    0
 }
 
-fn button_bits(b: PadButton) -> u32 {
-    match b {
-        PadButton::Left => LEFT,
-        PadButton::Right => RIGHT,
-        PadButton::Up => UP,
-        PadButton::Down => DOWN,
-        PadButton::South | PadButton::East => JUMP,
-        _ => 0,
+/// `b`'s place in `BUTTONS` as a bit, or 0.
+fn button_slot(b: PadButton) -> u32 {
+    for i in 0..BUTTONS.len() {
+        if BUTTONS[i].0 == b {
+            return 1 << i
+        }
     }
+    0
 }
 
-/// What the player holds, as the records so far left it: the bits the keyboard, the first
-/// controller's buttons and its left stick hold, and whether jump was pressed since the last pad.
+/// The pad's bits that the keys down in `slots` hold.
+fn keys_held(slots: u32) -> u32 {
+    var bits = 0
+    for i in 0..KEYS.len() {
+        if slots & (1 << i) != 0 {
+            bits = bits | KEYS[i].1
+        }
+    }
+    bits
+}
+
+/// The pad's bits that the buttons down in `slots` hold.
+fn buttons_held(slots: u32) -> u32 {
+    var bits = 0
+    for i in 0..BUTTONS.len() {
+        if slots & (1 << i) != 0 {
+            bits = bits | BUTTONS[i].1
+        }
+    }
+    bits
+}
+
+/// What the player holds, as the records so far left it: the keys and the first controller's
+/// buttons down (a bit each, `KEYS` and `BUTTONS`), the bits its left stick holds, and whether
+/// jump was pressed since the last pad.
 pub struct Controls: Copy + Eq + StateHash + Serialize + SimState {
     pub keys: u32 = 0,
     pub buttons: u32 = 0,
@@ -90,7 +137,7 @@ pub struct Controls: Copy + Eq + StateHash + Serialize + SimState {
 
 impl Controls {
     fn held(self) -> u32 {
-        self.keys | self.buttons | self.stick
+        keys_held(self.keys) | buttons_held(self.buttons) | self.stick
     }
 
     /// After event `e`. A key's repeats are ignored.
@@ -98,24 +145,24 @@ impl Controls {
         match e {
             Event::KeyDown { key, repeat, .. } => {
                 if !repeat {
-                    let bits = key_bits(key)
-                    if bits & JUMP != 0 && self.held() & JUMP == 0 {
+                    let slot = key_slot(key)
+                    if keys_held(slot) & JUMP != 0 && self.held() & JUMP == 0 {
                         self.pressed = true
                     }
-                    self.keys = self.keys | bits
+                    self.keys = self.keys | slot
                 }
             },
-            Event::KeyUp { key, .. } => self.keys = self.keys & !key_bits(key),
+            Event::KeyUp { key, .. } => self.keys = self.keys & !key_slot(key),
             Event::PadButton { pad, button, pressed, .. } => {
                 if pad == 0 {
-                    let bits = button_bits(button)
+                    let slot = button_slot(button)
                     if pressed {
-                        if bits & JUMP != 0 && self.held() & JUMP == 0 {
+                        if buttons_held(slot) & JUMP != 0 && self.held() & JUMP == 0 {
                             self.pressed = true
                         }
-                        self.buttons = self.buttons | bits
+                        self.buttons = self.buttons | slot
                     } else {
-                        self.buttons = self.buttons & !bits
+                        self.buttons = self.buttons & !slot
                     }
                 }
             },
@@ -307,6 +354,29 @@ fn holding_a_second_jump_key_presses_nothing_and_repeats_are_ignored() {
     c.update(Event::KeyDown { key: Key::Space, repeat: true, mods: std::input::Mods {} })
     let p = c.pad()
     assert(p.held(JUMP) && !p.pressed())
+}
+
+@test
+fn letting_go_of_one_of_two_keys_that_hold_a_bit_keeps_it_held() {
+    // The Right arrow held and D tapped; Space held through a jump and Z tapped; a controller's
+    // South held and East tapped.
+    var c = Controls {}
+    c.update(down(Key::Right))
+    c.update(down(Key::D))
+    c.update(up(Key::D))
+    c.update(down(Key::Space))
+    c.update(down(Key::Z))
+    c.update(up(Key::Z))
+    let p = c.pad()
+    assert(p.held(RIGHT) && p.held(JUMP), "still running, still jumping")
+    c.update(up(Key::Right))
+    c.update(up(Key::Space))
+    assert(c.pad().bits == 0, "and let go of")
+    var b = Controls {}
+    b.update(Event::PadButton { pad: 0, button: PadButton::South, pressed: true, value: 1.0 })
+    b.update(Event::PadButton { pad: 0, button: PadButton::East, pressed: true, value: 1.0 })
+    b.update(Event::PadButton { pad: 0, button: PadButton::East, pressed: false, value: 0.0 })
+    assert(b.pad().held(JUMP), "a button too")
 }
 
 @test

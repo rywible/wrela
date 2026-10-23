@@ -449,7 +449,8 @@ struct Resonance: Copy {
 }
 
 /// The room: 16 delay lines (four vec4s of four), each `ROOM_SPAN` samples of memory, their
-/// mean lengths in samples (primes, 4.8 to 42 ms), and how far each length sways either way.
+/// longest lengths in samples (primes, 4.8 to 42 ms), and how far each length sways either way
+/// round its mean, `ROOM_SWAY` under its longest.
 const ROOM_GROUPS: u32 = 4
 const ROOM_SPAN: u32 = 2048
 const ROOM_LENGTHS: [f32; 16] = [
@@ -1280,8 +1281,9 @@ impl Piano {
         self.sway()
     }
 
-    /// Each room line's length over the next quantum: it sways around its mean by
-    /// `ROOM_SWAY` samples, and moves evenly from sample to sample.
+    /// Each room line's length over the next quantum: it sways `ROOM_SWAY` samples either way
+    /// round its mean (`ROOM_SWAY` under its `ROOM_LENGTHS`), and moves evenly from sample to
+    /// sample.
     @audio
     fn sway(mut self) {
         for i in 0..4 * ROOM_GROUPS {

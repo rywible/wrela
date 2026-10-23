@@ -95,9 +95,9 @@ impl Course {
         }
     }
 
-    /// Every snack's bit (`World::snacks`): what a 100% run finds.
+    /// Every snack's bit (`World::snacks`): what a 100% run finds. With 32 snacks, every bit.
     pub fn every_snack(self) -> u32 {
-        (1 << self.snacks.len()) - 1
+        if self.snacks.len() == 32 { 0xffffffff } else { (1 << self.snacks.len()) - 1 }
     }
 
     /// The course with its ends' faces at `ends` (left and right, m).
@@ -544,4 +544,14 @@ fn the_pool_holds_water_up_to_its_surface() {
     let standing = vec2(32.0, -0.3 + 0.35)
     assert(c.touches_water(standing, 0.35) && c.water_at(standing).is_none())
     assert(!c.touches_water(vec2(27.0, 0.35), 0.35))
+}
+
+@test
+fn every_snack_of_a_course_with_the_most_is_every_bit() {
+    var c = Course::new(start: vec2(0.0), goal_lo: vec2(0.0), goal_hi: vec2(1.0), floor: -10.0)
+    for i in 0..32 {
+        c = take c.snack(vec2(f32(i), 0.0))
+        let all = c.every_snack()
+        assert(all.count_ones() == i + 1 && all & (1 << i) != 0, f"{i + 1} snacks")
+    }
 }

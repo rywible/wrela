@@ -46,9 +46,6 @@ const FALL_EASE: f32 = 5.0
 /// How fast a jump in the camera's height eases out (1/s).
 const SETTLE: f32 = 7.0
 
-/// A move of the capybara further than this in one frame is a jump back to a checkpoint (m).
-const TELEPORT: f32 = 4.0
-
 /// Where the capybara stands for the camera: on the ground, in the air, or in water.
 enum Footing: Copy + Eq {
     Ground,
@@ -70,8 +67,9 @@ pub struct Camera: Copy {
     footing: Footing,
     /// How far down it looks ahead of a fall now (m, negative).
     fall: f32,
-    /// The capybara's middle when it last looked.
-    seen: vec2,
+    /// The capybara's cuts when it last looked (world.wrela's `Tally`): at a new one, the capybara
+    /// was put somewhere at once, and the camera starts again there.
+    cuts: u32,
 }
 
 /// A camera on a capybara at `start`, facing right.
@@ -84,16 +82,16 @@ pub fn camera(start: vec2) -> Camera {
         wanted: start.y + ABOVE,
         footing: Footing::Ground,
         fall: 0.0,
-        seen: start,
+        cuts: 0,
     }
 }
 
 /// The camera after `dt` seconds following snapshot `s`.
 pub fn follow(c: mut Camera, s: Snap, dt: f32) {
-    if distance(s.at, c.seen) > TELEPORT {
+    if s.tally.cuts != c.cuts {
         c = camera(s.at)
+        c.cuts = s.tally.cuts
     }
-    c.seen = s.at
     let mode = Mode::from_u32(s.mode)
     let footing = if mode == Some(Mode::Air) {
         Footing::Air
@@ -201,6 +199,25 @@ fn running_and_jumping_dont_move_the_capybara_on_the_screen() {
         follow(mut c, present(w), STEP)
         assert(abs(c.at.y - still) < 1.0e-3, "a jump doesn't move it")
     }
+}
+
+@test
+fn the_camera_starts_again_at_a_cut_and_only_at_one() {
+    // Ten metres on and three up, in the air, between two frames: followed on, the camera keeps
+    // the height it had; at a cut (a new attempt, a checkpoint), it starts again on the capybara.
+    let start = course(LEVEL).start
+    var s = present(world(LEVEL))
+    s.at = start + vec2(10.0, 3.0)
+    s.mode = u32(Mode::Air)
+    var on = camera(start)
+    follow(mut on, s, STEP)
+    var fresh = camera(s.at)
+    follow(mut fresh, s, STEP)
+    s.tally.cuts = 1
+    var cut = camera(start)
+    follow(mut cut, s, STEP)
+    assert(cut.at == fresh.at, "a cut starts the camera again")
+    assert(abs(on.at.y - fresh.at.y) > 1.0, "a fast move doesn't")
 }
 
 /// The view's middle for camera `c` with half its size `half` (m), framed so it never shows past

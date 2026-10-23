@@ -2,12 +2,13 @@
 // which stands paused with the runs open meanwhile. It steps its own world with the replay's pads
 // at the sim's rate, slower or faster, goes on a few seconds past the goal for the fireworks, and
 // seeks forward by playing on and back by playing again from the start, as the sim has no way
-// back. The frames draw it as they draw play, between its last two snapshots.
+// back. It counts what happens as the ticker does (world.wrela's `Tally`), a seek as a cut. The
+// frames draw it as they draw play, between its last two snapshots.
 
 use feel::{HZ, STEP}
 use pad::{IDLE, pad_of}
 use replay::Replay
-use world::{Snap, World, present, step, world}
+use world::{NO_TALLY, Snap, Tally, World, present, step_counted, world}
 
 /// How long a watched run goes on past its goal (ticks): the fireworks.
 const AFTER: u32 = 6 * HZ
@@ -16,12 +17,13 @@ const AFTER: u32 = 6 * HZ
 pub const SPEEDS: [f32; 5] = [0.25, 0.5, 1.0, 2.0, 4.0]
 const NORMAL: u32 = 2
 
-/// A run being watched: its replay, the world it has reached and the snapshot before that, the
-/// ticks played, the hold and the tick in it that come next, how far into the next tick the frames
-/// are (0 to 1), its speed (in `SPEEDS`) and whether it plays.
+/// A run being watched: its replay, the world it has reached, what happened in it and the
+/// snapshot before that, the ticks played, the hold and the tick in it that come next, how far
+/// into the next tick the frames are (0 to 1), its speed (in `SPEEDS`) and whether it plays.
 pub struct Watch {
     pub replay: Replay,
     pub world: World,
+    pub tally: Tally,
     before: Snap,
     pub tick: u32,
     hold: u32,
@@ -37,6 +39,7 @@ pub fn watch(r: take Replay) -> Watch {
     Watch {
         replay: r,
         world: w,
+        tally: NO_TALLY,
         before: present(w),
         tick: 0,
         hold: 0,
@@ -77,9 +80,11 @@ impl Watch {
         }
     }
 
-    /// To tick `t` (at most its end): played on to it, or again from the start to one before.
+    /// To tick `t` (at most its end): played on to it, or again from the start to one before. What
+    /// it passes isn't counted: the seek is a cut.
     pub fn seek(mut self, t: u32) {
         let target = min(t, self.end())
+        let (from, kept) = (self.tick, self.tally)
         if target < self.tick {
             self.world = started(self.replay.course)
             self.before = present(self.world)
@@ -91,21 +96,29 @@ impl Watch {
         while self.tick < target {
             self.step_once()
         }
+        self.tally = kept
+        if self.tick != from {
+            self.tally.cuts += 1
+        }
+        self.before.tally = self.tally
     }
 
     /// The snapshots before and after the frame, and how far between them it falls (0 to 1).
     pub fn between(self) -> (Snap, Snap, f32) {
-        (self.before, present(self.world), self.part)
+        var now = present(self.world)
+        now.tally = self.tally
+        (self.before, now, self.part)
     }
 
     /// One tick: the replay's pad, or none past its end.
     fn step_once(mut self) {
         self.before = present(self.world)
+        self.before.tally = self.tally
         let holds = self.replay.holds.len()
         let pad = if self.hold < holds {
             pad_of(self.replay.holds[self.hold], self.within)
         } else { IDLE }
-        step(mut self.world, pad)
+        step_counted(mut self.world, mut self.tally, pad)
         self.tick += 1
         if self.hold < holds {
             self.within += 1

@@ -199,7 +199,8 @@ pub fn init() -> Lab {
 /// each foe's middle (and how long since it was knocked out). Its counters (a flip's ticks, a
 /// death's) are the later snapshot's, and `lag` says how far before it the frame falls (ticks, 0
 /// to 1), so they can be drawn between too. Where a foe has jumped (back to its start when the
-/// capybara comes back), or changed whether it's knocked out, it isn't blended.
+/// capybara comes back), or changed whether it's knocked out, it isn't blended; nor is anything
+/// across a cut (world.wrela's `Tally`), where the capybara was put somewhere at once.
 fn drawn(s: Snapshots<Snap>, time: f32) -> (Snap, f32) {
     let b = s.at(s.sim_time(time))
     (mixed(b.a, b.b, b.alpha), if b.b.ticks > b.a.ticks { 1.0 - b.alpha } else { 0.0 })
@@ -208,6 +209,9 @@ fn drawn(s: Snapshots<Snap>, time: f32) -> (Snap, f32) {
 /// Snapshot `b` with what moves drawn `t` of the way from `a` (as `drawn` says).
 fn mixed(a: Snap, b: Snap, t: f32) -> Snap {
     var snap = b
+    if a.tally.cuts != b.tally.cuts {
+        return snap
+    }
     snap.at = mix(a.at, b.at, vec2(t))
     snap.vel = mix(a.vel, b.vel, vec2(t))
     snap.speed = mix(a.speed, b.speed, t)
@@ -260,8 +264,14 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     // A watched run, or play.
     var snap = live_snap
     var lag = live_lag
+    var opening: Option<Snap> = None
     match mut s.watching {
         Some(w) => {
+            if !s.watched {
+                // A run just opened to watch: its cast hears it from its first tick.
+                let (_, first, _) = w.between()
+                opening = Some(first)
+            }
             w.advance(dt)
             let (a, b, t) = w.between()
             snap = mixed(a, b, t)
@@ -272,8 +282,8 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     let watching = s.watching.is_some()
     borrow c = course(snap.course)
     if snap.course != s.shown || watching != s.watched {
-        s.camera = camera(if watching != s.watched { snap.at } else { c.start })
-        s.cast = cast(c)
+        s.camera = camera(snap.at)
+        s.cast = cast(c, from: opening)
         s.pools = buffer_of(s.cast.waves.pools, at_least: 8)
         s.shown = snap.course
         s.watched = watching
@@ -987,4 +997,20 @@ fn the_level_draws_and_its_sim_runs(s: Lab) {
     // Its clock is three ticks behind the ticks run: frame 0's two stood in the pause the game
     // opens on, and the tick of the script's Esc (frame 1) left it without stepping.
     assert(n.snap.ticks + 3 == n.ticks, "its clock running")
+}
+
+use world::{present, world}
+
+@test
+fn a_frame_isnt_drawn_between_two_places_across_a_cut() {
+    // Thirty metres on, then back at the start: a frame halfway between draws the capybara at the
+    // start if a cut came between (a restart, a comeback), and halfway if none did.
+    let start = course(LEVEL).start
+    var a = present(world(LEVEL))
+    a.at = start + vec2(30.0, 0.0)
+    var b = present(world(LEVEL))
+    b.tally.cuts = 1
+    assert(mixed(a, b, 0.5).at == start, "across a cut")
+    b.tally.cuts = 0
+    assert(mixed(a, b, 0.5).at == start + vec2(15.0, 0.0), "without one")
 }

@@ -16,7 +16,9 @@
 // the level, so a faster end can't leave the next segment worse off; the run it finds takes the
 // best's place from the entry on if it costs less: its time, and for a human run `FRAGILE` ticks
 // more for each change that isn't firm past the 5% a forgiving run may have. Without a run to start from, the first round searches
-// from the start alone. It writes routes.wrela again if a run is better, keeping the other mode's.
+// from the start alone. It writes routes.wrela again if a run is better, keeping the other mode's
+// while they still finish: a human run stands for a tool-assisted one that doesn't, and while a
+// human run doesn't, it writes nothing until `--human` has found new ones.
 
 use capybara::course::course
 use capybara::pad::{DOWN, Hold, JUMP, LEFT, PRESS, Pad, RIGHT, UP, holds_of}
@@ -367,6 +369,37 @@ pub fn routes_text(routes: [Route; 4]) -> String {
     text
 }
 
+/// The other mode's run of a category to write beside this mode's `mine` (`human`: this mode's
+/// are the human runs): `other` as routes.wrela holds it (`kept`), if it still finishes. A human
+/// run is a tool-assisted one too, so `mine` stands for a tool-assisted run that no longer
+/// finishes; none for a human run that no longer finishes, which must be searched again first.
+fn standing(other: take Best, mine: Best, human: bool) -> Option<Best> {
+    if other.time > 0 {
+        return Some(take other)
+    }
+    if human { Some(mine.clone()) } else { None }
+}
+
+@test
+fn a_run_that_no_longer_finishes_isnt_written() {
+    var found = none()
+    found.time = 1300
+    var still = none()
+    still.time = 1400
+    assert(
+        standing(take still, found, human: false).expect("it stays").time == 1400,
+        "a run that finishes",
+    )
+    assert(
+        standing(none(), found, human: true).expect("it stands in").time == 1300,
+        "a human run stands for a tool-assisted one that doesn't",
+    )
+    assert(
+        standing(none(), found, human: false).is_none(),
+        "a human run that doesn't isn't written",
+    )
+}
+
 /// A category's run for routes.wrela: its best, with its doc comment.
 fn route(b: Best, what: str, snacks: u32, human: bool) -> Route {
     let doc = if human {
@@ -410,11 +443,25 @@ pub fn tool() -> u32 {
     }
     let first = "The first level from start to goal (any%)"
     let every = "The first level with every snack (100%)"
-    // The other mode's runs stay as routes.wrela holds them.
-    let (assisted_any, assisted_full, human_any, human_full) = if ask.human {
-        (kept(ANY, 0, human: false), kept(FULL, all, human: false), take any, take full)
+    // The other mode's runs stay as routes.wrela holds them, while they still finish.
+    let (other_any, other_full) = if ask.human {
+        (kept(ANY, 0, human: false), kept(FULL, all, human: false))
     } else {
-        (take any, take full, kept(HUMAN_ANY, 0, human: true), kept(HUMAN_FULL, all, human: true))
+        (kept(HUMAN_ANY, 0, human: true), kept(HUMAN_FULL, all, human: true))
+    }
+    let again = "route: the human runs no longer finish: search them first (--human)"
+    let Some(stays_any) = standing(take other_any, any, ask.human) else {
+        print(again)
+        return 1
+    }
+    let Some(stays_full) = standing(take other_full, full, ask.human) else {
+        print(again)
+        return 1
+    }
+    let (assisted_any, assisted_full, human_any, human_full) = if ask.human {
+        (take stays_any, take stays_full, take any, take full)
+    } else {
+        (take any, take full, take stays_any, take stays_full)
     }
     let routes = [
         route(assisted_any, first, 0, human: false),

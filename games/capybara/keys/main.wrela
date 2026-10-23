@@ -11,8 +11,9 @@
 //   white keys from C, W E T Y U O P the black keys between them. Z and X move an octave down and
 //   up, C and V play softer and harder, and Space holds the sustain pedal.
 // - B turns the accompaniment (the game's music without its melody) on and off, and M the click.
-// - R starts recording and stops it. Q plays the last take back from the next bar, Enter keeps it
-//   (the tool writes it into takes.wrela) and Backspace drops it.
+// - R starts recording and stops it. Q plays the last take back from the next bar (once it has
+//   played back, again), Enter keeps it (the tool writes it into takes.wrela) and Backspace drops
+//   it.
 //
 // As a piece for the audio tool, take `n` plays back over the accompaniment from the music's start
 // (`wrela tool audio -- games/capybara/keys wav out.wav --take n`), and `describe` gives its notes
@@ -328,18 +329,26 @@ fn stop_recording(k: mut Keys, beat: f32) {
     k.recording = false
     k.take_notes.sort_by(|a: Struck, b: Struck| a.at < b.at)
     k.last = replace(mut k.take_notes, Vec::new())
+    k.status = said(k.last)
+}
+
+/// What the page says of take `notes` (in order) once it's recorded: how many notes, and the bar
+/// of the first (not the pedal's, which may go down before it).
+fn said(notes: [Struck]) -> String {
     var played = 0
-    for n in k.last {
+    var first = 0
+    for n in notes {
         if n.key != PEDAL {
+            if played == 0 {
+                first = u32(n.at / 4.0) % BARS + 1
+            }
             played += 1
         }
     }
-    k.status = if played == 0 {
-        String::from("Nothing played in that take.")
-    } else {
-        let first = u32(k.last[0].at / 4.0) % BARS + 1
-        f"Take: {played} notes from bar {first}. Q plays it back, Enter keeps it, Backspace drops it."
+    if played == 0 {
+        return String::from("Nothing played in that take.")
     }
+    f"Take: {played} notes from bar {first}. Q plays it back, Enter keeps it, Backspace drops it."
 }
 
 /// A key or the pointer on the page.
@@ -383,7 +392,7 @@ fn act_on(k: mut Keys, e: Event, time: f32) {
                     k.take_notes = Vec::new()
                     k.status = String::from("Recording: play, then R to stop.")
                 }
-            } else if key == Key::Q && !k.recording && k.last.len() > 0 {
+            } else if key == Key::Q && !k.recording && k.last.len() > 0 && k.back.is_none() {
                 start_back(mut k, time)
             } else if key == Key::Enter && !k.recording && k.last.len() > 0 && k.keeping.is_none() {
                 k.keeping = Some(post("take", text_of(k.last).as_bytes()))
@@ -670,4 +679,17 @@ fn keep(body: Data) -> String {
         from += i + 1
     }
     f"Kept as take {count}, in games/capybara/keys/takes.wrela. R records another."
+}
+
+// ---- tests -------------------------------------------------------------------------------------
+
+@test
+fn a_take_is_said_to_begin_at_its_first_notes_bar_not_its_pedals() {
+    let notes = [
+        Struck { key: PEDAL, at: 8.0, held: 12.0, velocity: 1.0 },
+        Struck { key: 64, at: 17.0, held: 1.0, velocity: 0.7 },
+    ]
+    let s = said(notes)
+    assert(s.as_str().find("1 notes from bar 5").is_some(), s.as_str())
+    assert(said([notes[0]]).as_str() == "Nothing played in that take.")
 }
