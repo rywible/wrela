@@ -1,7 +1,3 @@
-# Using the wrela toolchain
-
-*A companion to AGENTS.md: the commands an agent uses most, and what trips them up. The spec (`spec/language.md` in wrela-compiler, docs.wrela.dev) is the reference; `wrela --help` lists every command.*
-
 ## Which toolchain runs
 
 - The root `wrela.toml` pins a release (`toolchain = "X.Y.Z"`). Any installed `wrela` runs that one, downloading it to `~/.wrela/toolchains` first.
@@ -24,16 +20,16 @@ wrela suite                               # everything, before a PR: fmt, allow,
 
 ## Finding your way
 
-| Command | Gives |
-|---|---|
-| `wrela context <item> <pkg> [--budget n]` | An item's source, with its doc comment, and what it needs nearby |
-| `wrela doc <item> [<pkg>]` | An item's signature and docs (`wrela doc std::gpu::timed`) |
-| `wrela query <pkg> "callers F"` | Call graph, types, impls, effects, borrows, instantiations: `callers`, `callees`, `type file:line:col`, `fields`, `impls`, `effects`, `borrows file:line`, `instantiations`, `search <signature>` |
-| `wrela primer [area]` | The language's rules by area (`mem`, `gpu`, `eff`, `trait`, ...) |
-| `wrela explain E0513` | What an error code means, and the usual fix |
-| `wrela pipelines <pkg>` | Each GPU entry point, its instantiations and where CPU code reaches it |
-| `wrela refactor <pkg> rename\|move\|add-param\|change-mode ... --dry-run` | A checked edit across the package, as a diff first |
-| `wrela fix <pkg>` | The compiler's suggested fixes, applied |
+| Command                                                                   | Gives                                                                                                                                                                                             |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `wrela context <item> <pkg> [--budget n]`                                 | An item's source, with its doc comment, and what it needs nearby                                                                                                                                  |
+| `wrela doc <item> [<pkg>]`                                                | An item's signature and docs (`wrela doc std::gpu::timed`)                                                                                                                                        |
+| `wrela query <pkg> "callers F"`                                           | Call graph, types, impls, effects, borrows, instantiations: `callers`, `callees`, `type file:line:col`, `fields`, `impls`, `effects`, `borrows file:line`, `instantiations`, `search <signature>` |
+| `wrela primer [area]`                                                     | The language's rules by area (`mem`, `gpu`, `eff`, `trait`, ...)                                                                                                                                  |
+| `wrela explain E0513`                                                     | What an error code means, and the usual fix                                                                                                                                                       |
+| `wrela pipelines <pkg>`                                                   | Each GPU entry point, its instantiations and where CPU code reaches it                                                                                                                            |
+| `wrela refactor <pkg> rename\|move\|add-param\|change-mode ... --dry-run` | A checked edit across the package, as a diff first                                                                                                                                                |
+| `wrela fix <pkg>`                                                         | The compiler's suggested fixes, applied                                                                                                                                                           |
 
 `query` answers within one package: a caller in another package isn't listed. Check what a `refactor` misses there too. Fall back to `rg` or `git grep`.
 
@@ -68,18 +64,18 @@ wrela profile games/last-green --size 1920x1080 --workers 4 --compare build/base
 
 ## Tests
 
-| Attribute | Runs |
-|---|---|
-| `@test` | Code, as the build runs constants. It can't make GPU resources (a texture is `nondet`): test the pure rule in a function of its own |
-| `@test(frames: n)` | `init`, `n` frames on the CPU host (640×480, 60 a second), then the test with the state |
-| `@test(frames: n, gpu: true)` | The same on the hardware GPU; readbacks are answered before the next frame |
-| `input: SCRIPT` | A `std::input::Script` constant's events, by frame |
-| `golden: "goldens/x.png", within: 0.5` | The screen after the frames against a PNG; `wrela test --bless` writes it |
-| `pass: "label"` (with a golden) | That pass's target instead of the screen (floats clamped, depth grey) |
-| `hold: [("files/x.bin", 120)]` | That path's fetches and storage reads wait until frame 120 |
-| `hosts: both` | The frames in Chrome too: the same state hash and frame, or it fails |
-| `@test(ticks: n)` | A ticked program's ticks alone, with no frames |
-| `@test(tool, read: [...], budget: s)` | A tool test, on the tool host, with fake sites and programs |
+| Attribute                              | Runs                                                                                                                                |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `@test`                                | Code, as the build runs constants. It can't make GPU resources (a texture is `nondet`): test the pure rule in a function of its own |
+| `@test(frames: n)`                     | `init`, `n` frames on the CPU host (640×480, 60 a second), then the test with the state                                             |
+| `@test(frames: n, gpu: true)`          | The same on the hardware GPU; readbacks are answered before the next frame                                                          |
+| `input: SCRIPT`                        | A `std::input::Script` constant's events, by frame                                                                                  |
+| `golden: "goldens/x.png", within: 0.5` | The screen after the frames against a PNG; `wrela test --bless` writes it                                                           |
+| `pass: "label"` (with a golden)        | That pass's target instead of the screen (floats clamped, depth grey)                                                               |
+| `hold: [("files/x.bin", 120)]`         | That path's fetches and storage reads wait until frame 120                                                                          |
+| `hosts: both`                          | The frames in Chrome too: the same state hash and frame, or it fails                                                                |
+| `@test(ticks: n)`                      | A ticked program's ticks alone, with no frames                                                                                      |
+| `@test(tool, read: [...], budget: s)`  | A tool test, on the tool host, with fake sites and programs                                                                         |
 
 - A failed golden under `wrela test` writes what it saw and how far each pixel is under the package's `build/goldens/`.
 - A tool test can build, check and drive other packages: `std::tool::toolchain` (`build`, `test`, `check` with the build's pipelines), and `std::tool::drive` (frames, captures, hashes, recorded commands, `Hold` and `Release` of a path).
@@ -90,16 +86,16 @@ wrela profile games/last-green --size 1920x1080 --workers 4 --compare build/base
 
 `wrela tool <name> -- <args>` runs a tool declared in `wrela.toml`, with the grants it declares.
 
-| Tool | Does |
-|---|---|
-| `lookbook` | A program's lookbook shots as stills and clips (`--package examples/clearing`, `--stills`, `--view clay`) |
-| `motion`, `round` | The Last Green in motion; a play round in Chrome |
-| `studio` | The lens on a subject |
-| `serve` | A directory served to a browser |
-| `audio`, `listening` | A piece's take and measurements; blind listening tests |
-| `reference` | Replicas of reference meshes, and how far a surface is from one |
-| `route`, `keys` | The capybara's fastest runs; its piano keys page |
-| `release`, `deploy` | A release, and its deploy (CI does these from `main`) |
+| Tool                 | Does                                                                                                      |
+| -------------------- | --------------------------------------------------------------------------------------------------------- |
+| `lookbook`           | A program's lookbook shots as stills and clips (`--package examples/clearing`, `--stills`, `--view clay`) |
+| `motion`, `round`    | The Last Green in motion; a play round in Chrome                                                          |
+| `studio`             | The lens on a subject                                                                                     |
+| `serve`              | A directory served to a browser                                                                           |
+| `audio`, `listening` | A piece's take and measurements; blind listening tests                                                    |
+| `reference`          | Replicas of reference meshes, and how far a surface is from one                                           |
+| `route`, `keys`      | The capybara's fastest runs; its piano keys page                                                          |
+| `release`, `deploy`  | A release, and its deploy (CI does these from `main`)                                                     |
 
 ## What trips agents up
 
@@ -111,4 +107,3 @@ wrela profile games/last-green --size 1920x1080 --workers 4 --compare build/base
 - **`package` is a keyword**, so it can't name a variable. The keywords, reserved ones too, are in `spec/lexical.md`.
 - **A tool test builds its fixtures through overrides.** When a package gains a dependency, the tests that write its manifest or list its overrides need it too.
 - **A test of code runs as a constant does:** no GPU, no clock, no randomness.
-- **Run the exact tests of what you change before each commit, and `wrela suite` before a PR.** One studio test, `the_server_serves_chrome`, fails on `main` too.
