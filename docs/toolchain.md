@@ -39,7 +39,7 @@ wrela suite                               # everything, before a PR: fmt, allow,
 
 ```bash
 wrela build games/capybara -o build/cand/capybara
-~/.wrela/toolchains/0.5.0/bin/wrela-host build/cand/capybara --frames 600 --size 640x360 \
+~/.wrela/toolchains/0.5.2/bin/wrela-host build/cand/capybara --frames 600 --size 640x360 \
     --workers 1 --rgba out.rgba                        # prints the state hash last
 wrela run games/capybara                               # serve it to a browser
 ```

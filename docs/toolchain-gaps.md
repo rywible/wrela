@@ -6,13 +6,17 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 
 ## Open
 
+None.
+
+## Fixed
+
 ### A pointer can't press a semantic tree's button, and a tick can't find what the frames drew
 
 - **Needed:** a ticked game's pause menu that a mouse works as the keys and a controller do. The menu must be the sim's, so a restart chosen in it replays from the tick log; then a click on an item has to reach the sim as which item it was.
 - **What happens:** a tick's records hold a pointer press in screen pixels, but not the screen's size or anything the frames drew, so the sim can't tell which item is under it. The semantic tree (`std::semantics`, `std::host::publish`) would say so, as `Event::Assist` on the item's node, but toolchain 0.3.3's browser host lets a pointer press only a link with an `href` (`.wrela-semantics a.wrela-node.wrela-hit { pointer-events: auto }`, `runtime/browser/src/semantics.ts`). A `Button` or a `MenuItem` is under the canvas's pointer events: the keyboard's Tab and a screen reader press it, a mouse can't. And a link pressed keeps the keyboard's focus in the overlay, where key presses don't reach the program.
 - **Found:** 2026-10-23, building the capybara game's menus (`games/capybara/world.wrela`, `screens.wrela`).
 - **Meanwhile:** the capybara game publishes each page's items as links to anchors of the page (`#1-0`), which a pointer presses; and it numbers each item's node anew after every choice (`world::node`), so the host lets go of the pressed node and the keys come back to the game. A screen reader hears the items as links, not menu items.
-- **Status:** open. Fix: let a pointer press a button's and a menu item's node (a hit class for every role that is activated, not only links), and give the canvas back the keyboard's focus after a pointer press on a node; then the game's items become `MenuItem`s, numbered once.
+- **Status:** fixed in toolchain 0.5.2 (rywible/wrela-compiler#29, #30): a pointer presses every node a press activates (a button, a checkbox, a switch, a menu item, a link with an address) where it's drawn, a mouse press doesn't take the keyboard's focus, and a pointer's click hands it back to the canvas. Over an option or a tab the pointer is the program's, as before: 0.5.1 gave it to those too, and the docs' search results stopped opening on a click. Checked in the Claude app's browser pane: a mouse press on the capybara's `Start` starts the game, and the keys move it after. The capybara game's items are `MenuItem`s. They're still numbered anew after each choice: the count is in the sim's state, which recorded runs hash.
 
 ### A ticked program doesn't start in the Claude desktop app's browser pane
 
@@ -21,9 +25,7 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Found:** 2026-10-21, with `games/capybara` and `examples/climber-lab`, under `wrela run` and as a static build (`wrela tool serve`). Both fail alike.
 - **Likely cause, not confirmed:** the runtime starts the ticker as a module worker from inside the render worker (`new Worker(self.location.href, { type: "module" })` in `worker.js`), and the pane's error event carries no message. Nested module workers may be unavailable there.
 - **Meanwhile:** play in Chrome itself. In-Chrome play of the capybara lab is still to be checked: a headless Chrome run in test mode ended before writing results, so it says nothing either way.
-- **Status:** open; the cause needs confirming before a fix. If nested workers are the cause, a fix is for the page to start the ticker's worker and hand its port to the render worker.
-
-## Fixed
+- **Status:** fixed in toolchain 0.5.1 (rywible/wrela-compiler#29), which the pin's 0.5.2 holds. The cause, confirmed in the pane: it starts no nested worker, module or classic, and the error event has no message; the page starts one fine. Helper threads (more than one worker) failed alike. The page now starts the render worker's threads and hands each its channel. `examples/climber-lab` and the capybara game run in the pane.
 
 ### `wrela trace` and `wrela bisect` don't run a program's ticker
 
