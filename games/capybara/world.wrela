@@ -74,9 +74,9 @@ pub const OPTION_ITEMS: u32 = 4
 pub const PAGE_NODE: u32 = 15
 const NODES: u32 = 128
 
-/// The semantic node of item `item` (or `PAGE_NODE`) of page `page`, after `chosen` choices. It
-/// is a new number after each choice, so the host lets go of a node that was pressed and the keys
-/// come back to the game.
+/// The semantic node of item `item` (or `PAGE_NODE`) of page `page`, after `chosen` choices: a new
+/// number after each choice. Toolchains before 0.5.1 kept the keys in a pressed node until it
+/// went; `chosen` is in the sim's state, so the numbering stays.
 pub fn node(chosen: u32, page: u32, item: u32) -> u32 {
     1 + (chosen % 1024) * NODES + page * 16 + item
 }

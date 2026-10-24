@@ -865,10 +865,10 @@ pub fn clock(
 
 // ---- the semantic tree -------------------------------------------------------------------------
 
-/// Page `page`'s semantic tree, after `chosen` choices in the menus: the page, named `heading`,
-/// and in it a node for each item at `rects`. The items are links to the page's own anchors, as a
-/// host lets a pointer press a link (docs/toolchain-gaps.md): a press comes back to the sim as
-/// `Event::Assist` on the item's node (world.wrela's `node`).
+/// Page `page`'s semantic tree, after `chosen` choices in the menus: the page, a menu named
+/// `heading`, and in it a menu item for each item at `rects`. A press, the pointer's, a key's or
+/// a screen reader's, comes back to the sim as `Event::Assist` on the item's node (world.wrela's
+/// `node`).
 pub fn tree(chosen: u32, page: u32, heading: str, labels: [Text], rects: [Rect]) -> Vec<Node> {
     var nodes: Vec<Node> = Vec::new()
     let root = node(chosen, page, PAGE_NODE)
@@ -880,10 +880,9 @@ pub fn tree(chosen: u32, page: u32, heading: str, labels: [Text], rects: [Rect])
             Node {
                 id: node(chosen, page, i),
                 parent: root,
-                role: Role::Link,
+                role: Role::MenuItem,
                 label: String::from(label),
                 rect: vec4(r.x, r.y, r.w, r.h),
-                href: f"#{page}-{i}",
             },
         )
     }
@@ -920,6 +919,7 @@ fn a_page_s_tree_names_its_items_by_their_nodes() {
     assert(nodes.len() == 6 && std::semantics::problem(nodes).is_none(), "a tree a host takes")
     assert(nodes[2].id == node(7, world::MENU, 1) && nodes[2].label.as_str() == "Restart")
     assert(nodes[2].parent == nodes[0].id && nodes[2].rect.z > 0.0)
+    assert(nodes[2].role == Role::MenuItem, "a menu item, which a pointer presses")
 }
 
 @test
