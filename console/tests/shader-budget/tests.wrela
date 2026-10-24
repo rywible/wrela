@@ -18,7 +18,7 @@ fn the_console_ships_within_its_shader_budget() {
     assert(build.ok, "the console builds")
     var shaders = 0
     for k in 0..build.files.len() {
-        let name = build.files[k].clone()
+        borrow name = build.files[k]
         if !name.as_str().ends_with(".wgsl") {
             continue
         }

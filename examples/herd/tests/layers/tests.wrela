@@ -71,7 +71,7 @@ fn the_engine_and_the_herd_keep_their_layers() {
         let found = files_under(root)
         assert(found.len() > 10, f"{root} has its files")
         for k in 0..found.len() {
-            let path = found[k].clone()
+            borrow path = found[k]
             let wrela = path.as_str().ends_with(".wrela")
             let p = path.as_str()
             let golden = p.starts_with("repo/engine/tests/") &&

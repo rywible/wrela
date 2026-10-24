@@ -140,7 +140,7 @@ pub fn blind(renders: [(String, Render)], letters: str, order: [u32]) -> Blind {
     var key = obj()
     for k in 0..order.len() {
         let letter = String::from(letters.slice(k, k + 1))
-        let name = renders[order[k]].0.clone()
+        borrow name = renders[order[k]].0
         borrow r = renders[order[k]].1
         let gain = gains[order[k]]
         files.push((letter.clone(), pcm16(r.samples, gain, longest, r.channels, r.rate)))

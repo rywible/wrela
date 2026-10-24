@@ -415,7 +415,7 @@ fn release(revision: str) -> Result<String, ToolError> {
     }
     projects[0].tree.put_bytes("catalog.tsv", catalog_text.as_bytes())
     for g in 0..c.games.len() {
-        let game = c.games[g].clone()
+        borrow game = c.games[g]
         var lists: Vec<(Text, Vec<String>)> = Vec::new()
         for name in fetch_order(game) {
             var paths_of: Vec<String> = Vec::new()
@@ -719,9 +719,9 @@ pub fn licences(dir: str) -> Result<Vec<(String, String)>, ToolError> {
         }
         seen.push(dir.clone())
         let Some(m) = manifest_at(dir.as_str())? else { continue }
-        let deps = m.dependencies.clone()
+        borrow deps = m.dependencies
         for di in 0..deps.len() {
-            let d = deps[di].clone()
+            borrow d = deps[di]
             match d.path {
                 Some(rel) => {
                     let Some(to) = joined(dir.as_str(), rel.as_str()) else {

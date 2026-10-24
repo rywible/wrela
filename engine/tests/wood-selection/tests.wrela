@@ -224,7 +224,7 @@ fn wood_selection_dispatches_only_current_lists_after_shrink_and_regrowth() {
         var arguments: Option<Bound> = None
         var spans: Vec<u32> = Vec::new()
         for k in 0..commands.len() {
-            let cmd = commands[k].clone()
+            borrow cmd = commands[k]
             if cmd.kind.as_str() != "Dispatch" {
                 continue
             }

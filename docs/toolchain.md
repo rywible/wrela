@@ -23,13 +23,15 @@ wrela suite                               # everything, before a PR: fmt, allow,
 | Command                                                                   | Gives                                                                                                                                                                                             |
 | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `wrela context <item> <pkg> [--budget n]`                                 | An item's source, with its doc comment, and what it needs nearby                                                                                                                                  |
-| `wrela doc <item> [<pkg>]`                                                | An item's signature and docs (`wrela doc std::gpu::timed`)                                                                                                                                        |
+| `wrela doc <item> [<pkg>]`                                                | An item's signature and docs (`wrela doc std::gpu::timed`); a built-in type's too (`wrela doc f32`, `vec3`, `str`, `[T]`), with its methods. `wrela doc builtins` lists them                      |
 | `wrela query <pkg> "callers F"`                                           | Call graph, types, impls, effects, borrows, instantiations: `callers`, `callees`, `type file:line:col`, `fields`, `impls`, `effects`, `borrows file:line`, `instantiations`, `search <signature>` |
 | `wrela primer [area]`                                                     | The language's rules by area (`mem`, `gpu`, `eff`, `trait`, ...)                                                                                                                                  |
-| `wrela explain E0513`                                                     | What an error code means, and the usual fix                                                                                                                                                       |
-| `wrela pipelines <pkg>`                                                   | Each GPU entry point, its instantiations and where CPU code reaches it                                                                                                                            |
+| `wrela explain E0513`                                                     | What an error code means, with a program that has it and the same program fixed                                                                                                                   |
+| `wrela pipelines <pkg>`                                                   | Each GPU entry point, its instantiations and where CPU code reaches it; a site under a runtime condition is marked `(under a condition)`                                                          |
 | `wrela refactor <pkg> rename\|move\|add-param\|change-mode ... --dry-run` | A checked edit across the package, as a diff first                                                                                                                                                |
-| `wrela fix <pkg>`                                                         | The compiler's suggested fixes, applied                                                                                                                                                           |
+| `wrela refactor <pkg> extract-const\|inline\|extract-fn ... --dry-run`    | Extract a constant (`file:line:col NAME`) or lines into a function (`file:first-last name`), or inline a function; each refuses where what the code computes would change                         |
+| `wrela fix <pkg> [--dry-run]`                                             | The compiler's suggested fixes, applied (`--dry-run` shows the diff)                                                                                                                              |
+| `wrela migrate <pkg> [--dry-run]`                                         | The migrations' fixes alone: run it on each member after moving the pin                                                                                                                           |
 
 `query` answers within one package: a caller in another package isn't listed. Check what a `refactor` misses there too. Fall back to `rg` or `git grep`.
 
@@ -37,7 +39,7 @@ wrela suite                               # everything, before a PR: fmt, allow,
 
 ```bash
 wrela build games/capybara -o build/cand/capybara
-~/.wrela/toolchains/0.4.1/bin/wrela-host build/cand/capybara --frames 600 --size 640x360 \
+~/.wrela/toolchains/0.5.0/bin/wrela-host build/cand/capybara --frames 600 --size 640x360 \
     --workers 1 --rgba out.rgba                        # prints the state hash last
 wrela run games/capybara                               # serve it to a browser
 ```
@@ -55,11 +57,13 @@ wrela run games/capybara                               # serve it to a browser
 wrela trace games/capybara --watch capybara --frames 120 --csv --no-gpu
 wrela bisect games/capybara --until "capybara.z > 0" --frames 600
 wrela profile games/last-green --size 1920x1080 --workers 4 --compare build/base/last-green --pairs 3
+wrela same games/capybara --against build/base/capybara --frames 120   # behaves as the saved build?
 ```
 
 - `trace` prints what exports say after each frame, and `bisect` finds the first frame a condition holds (`<`, `<=`, `>`, `>=`, `==`, `!=`, `nan <export>`, `<export>.x`). Both run a ticked program's ticks in lockstep, and both are debug builds unless `--release`.
 - `profile --compare <build-dir>` alternates pairs with a saved build and says what's faster or slower. Both builds must come from the same toolchain release.
 - `profile --serial` runs each pass alone, so its times add up; in the default mode passes overlap on the GPU, and only the frame's span is the whole. `--serial` doesn't combine with `--compare`: write a report with `--json`, then compare with `--baseline <report.json>`.
+- `same` builds the package now (into `<package>/build/same`) and runs it beside a saved build made outside it (`wrela build ... -o`), each with one worker, its own empty storage and the same `--input`. It compares each frame's hash, the last screens (`--within`, 0.5 by default) and the pipelines, and exits 0 when they behave the same, 1 when they differ and 2 on an error. With `--no-gpu` the commands are checked but not run, so the screens aren't compared. Use it to show a refactor or a pin move changed nothing.
 - Run profiles with nothing else building or using the GPU. Report GPU span, CPU frame call and Chrome frame rate as the separate things they are.
 
 ## Tests
@@ -102,8 +106,10 @@ wrela profile games/last-green --size 1920x1080 --workers 4 --compare build/base
 - **`pub fn` in a program's `main.wrela` is an export.** It takes numbers, bools and vectors (and `frame`'s state), and returns those or structs, tuples and arrays of them. Put shared code in another module; a library package has no `main.wrela`.
 - **A dependency's `main.wrela` is an ordinary module** (`pkg::main::x`), but its `pub fn`s are still exports in its own build.
 - **Overlapping `mut` arguments are refused** (E0513). Keep the parts a call changes in sibling fields: `frame.draw(mut s.scene, aim)` beside `s.frame`.
-- **A place of a non-`Copy` type isn't copied by `let`.** Write `borrow x = place` to read it, `mut x = place` to change it, or `take` to move it.
-- **A draw behind a runtime `if` is still a pipeline in the build**, and `wrela pipelines` counts it. Leave a stage out by the program's structure.
+- **A place of a non-`Copy` type isn't copied by `let`.** Write `borrow x = place` to read it, `mut x = place` to change it, or `take` to move it. A `.clone()` that is only read is W0010: borrow it instead.
+- **A draw behind a runtime `if` is still a pipeline in the build**, and `wrela pipelines` counts it, marked `(under a condition)`. Leave a stage out by the program's structure.
 - **`package` is a keyword**, so it can't name a variable. The keywords, reserved ones too, are in `spec/lexical.md`.
 - **A tool test builds its fixtures through overrides.** When a package gains a dependency, the tests that write its manifest or list its overrides need it too.
-- **A test of code runs as a constant does:** no GPU, no clock, no randomness.
+- **A test of code runs as a constant does:** no GPU, no clock, no randomness. One that reaches no `assert` and no panic can't fail (W0011).
+- **A request is answered on a later call.** A `Pending` polled in the call that made it is `None` there (W0012): keep it in the state and poll it next frame.
+- **Every error says what to do next**, as a help or a fix. `wrela fix` makes the fixes that are the only one.
