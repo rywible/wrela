@@ -1,19 +1,18 @@
 // The water and the forest over the geology: the layer over `geology`. Its water is the land's
 // own (`geology::Water`: its ponds, and its streams down its own drainage); its forest grows by the
-// floor's history (`engine::grow::simulate_given`) on the land as its water left it, from the soil
+// floor's history (`land::grow::simulate_given`) on the land as its water left it, from the soil
 // its rock and its shape made (`geology::soil_layer`) and as wet as its drainage makes it: with no
 // people, no herd and no events (those are a later layer's). Drawn in the grown view.
 
-use engine::bake::{bake, unbake}
+use land::bake::{bake, unbake}
 use engine::noise::fbm2_seen
-use engine::grow::{
-    BAKE, Given, Grain, Grid, Ground, History, Land, Start, State, rotate, simulate_given,
-}
-use engine::place::{Character, Herd, Kind, Map, Region, TILE, tile_of}
-use engine::soil::SoilKind
+use land::grow::{BAKE, Given, Grain, Grid, History, Land, Start, State, rotate, simulate_given}
+use engine::terrain::Ground
+use land::place::{Character, Herd, Kind, Map, Region, TILE, tile_of}
+use land::soil::SoilKind
 use engine::terrain::{Cover, Terrain}
 use geology::{Bare, SQUARE, SQUARE_COLLAR, SQUARE_N, SQUARE_SOIL, WATER, WORLD}
-use lookbook::Shot
+use engine::shot::Shot
 use std::io::{Shipped, ship}
 use std::math::TAU
 
@@ -272,10 +271,10 @@ fn spread(hard: [bool]) -> Vec<bool> {
 // ---- its water -------------------------------------------------------------------------------------
 
 /// The grown land's water as the program carries it: each stream's course, held so it never rises
-/// down it (`engine::water::Course::held`: the land's detail rises across a course its drainage
+/// down it (`land::water::Course::held`: the land's detail rises across a course its drainage
 /// traced), and each pond's level and the square's cells it holds (`geology::Water`).
 pub struct Waters: Clone {
-    pub courses: Vec<engine::water::Course>,
+    pub courses: Vec<land::water::Course>,
     pub ponds: Vec<Pond>,
 }
 
@@ -292,7 +291,7 @@ fn waters_of() -> Waters {
     var out = Waters { courses: Vec::new(), ponds: Vec::new() }
     for st in w.streams {
         out.courses.push(
-            engine::water::Course { points: st.points.clone(), falls: false, held: true },
+            land::water::Course { points: st.points.clone(), falls: false, held: true },
         )
     }
     for k in 0..w.lakes.level.len() {
@@ -307,17 +306,17 @@ fn waters_of() -> Waters {
     out
 }
 
-/// The grown land's water, laid over it (`engine::water::lay_with`): each stream down its course,
+/// The grown land's water, laid over it (`land::water::lay_with`): each stream down its course,
 /// and each pond a sheet at its level over its basin.
 pub fn waters() -> engine::water::WaterMesh {
-    var sheets: Vec<engine::water::Sheet> = Vec::new()
+    var sheets: Vec<land::water::Sheet> = Vec::new()
     for p in WATERS.ponds {
         var holds: Vec<bool> = Vec::filled(SQUARE_N, value: false)
         for c in p.cells {
             holds[c] = true
         }
         sheets.push(
-            engine::water::Sheet {
+            land::water::Sheet {
                 lo: SQUARE.lo,
                 nx: SQUARE.nx,
                 nz: SQUARE.nz,
@@ -328,7 +327,7 @@ pub fn waters() -> engine::water::WaterMesh {
         )
     }
     let pools: Vec<vec4> = Vec::new()
-    engine::water::lay_with(LAND, growth_map().water, WATERS.courses, pools, sheets)
+    land::water::lay_with(LAND, growth_map().water, WATERS.courses, pools, sheets)
 }
 
 // ---- its forest ------------------------------------------------------------------------------------
@@ -336,8 +335,8 @@ pub fn waters() -> engine::water::WaterMesh {
 /// The history's present: the floor's.
 pub const PRESENT: i32 = map::PRESENT
 
-/// The wood's mix (`engine::place::Character::mix`, by `species::HABITS`): its trees alike, so the
-/// ground picks among them as it suits each (`engine::grow::takes`); its shrubs few, as in each of
+/// The wood's mix (`land::place::Character::mix`, by `species::HABITS`): its trees alike, so the
+/// ground picks among them as it suits each (`land::grow::takes`); its shrubs few, as in each of
 /// the floor's regions (`map`), which a wood with no mix would fill with them.
 const WOOD = [0.2, 0.2, 0.15, 0.05, 0.0, 0.2, 0.2, 0.0]
 
@@ -358,12 +357,12 @@ pub fn growth_map() -> Map {
         lo: LO,
         hi: HI,
         present: PRESENT,
-        land: engine::place::Land {},
+        land: land::place::Land {},
         sites: Vec::new(),
         relations: Vec::new(),
         openings: Vec::new(),
         routes: Vec::new(),
-        water: engine::place::Water {},
+        water: land::place::Water {},
         events: Vec::new(),
         wind: vec2(0.75, -0.66),
         kept: Vec::new(),
@@ -372,12 +371,12 @@ pub fn growth_map() -> Map {
     }
 }
 
-/// What the grown land gives the history (`engine::grow::Given`), on its grid at `grain`: its
+/// What the grown land gives the history (`land::grow::Given`), on its grid at `grain`: its
 /// streams (`geology::Water::streams`); how wet each cell is (`geology::Water::wet`, between the
 /// square's cells, to `WETTEST`); how thin its soil is (from its depth, `geology::soil_layer`: bare rock 1, a
-/// soil 10 cm deep nearly, half a metre none, as `engine::soil`'s thin soil is under 35 cm; its
+/// soil 10 cm deep nearly, half a metre none, as `land::soil`'s thin soil is under 35 cm; its
 /// talus, from 30 cm deep to all of it at 2 m); and its ponds' water. Past the square, where the land has no water or soil of its own, it's as damp as
-/// the wildwood's (`OUTSIDE_WET`) and as thin as its slope makes it (`engine::soil::soil`'s), the
+/// the wildwood's (`OUTSIDE_WET`) and as thin as its slope makes it (`land::soil::soil`'s), the
 /// square's fading into it through its collar.
 pub fn given(grain: Grain) -> Given {
     let g = Grid::over(LO, HI, grain.cell)
@@ -441,7 +440,7 @@ pub fn tiles_hi() -> vec2i {
     tile_of(SQUARE.hi() - vec2(0.01))
 }
 
-/// Its bake, at the floor's grain (`engine::grow::BAKE`), each standing tree's fork chosen among
+/// Its bake, at the floor's grain (`land::grow::BAKE`), each standing tree's fork chosen among
 /// its neighbours as the floor's are (`history::forked`): a file a tile and the far layer.
 @fuel(2 ** 43)
 pub const GROWN: Shipped = ship(
@@ -450,7 +449,7 @@ pub const GROWN: Shipped = ship(
 )
 
 /// The bake read back.
-pub fn decisions() -> engine::bake::Unbaked {
+pub fn decisions() -> land::bake::Unbaked {
     unbake(GROWN, tiles_lo(), tiles_hi())
 }
 
@@ -478,7 +477,7 @@ fn no_ride(p: vec2) -> f32 {
 }
 
 /// Wild tile `t`'s decisions in the grown view (`wildwood::decisions_with`).
-pub fn wild_decisions(t: vec2i, own: take Vec<engine::grow::Tree>) -> engine::bake::Decisions {
+pub fn wild_decisions(t: vec2i, own: take Vec<land::grow::Tree>) -> land::bake::Decisions {
     wildwood::decisions_with(t, take own, no_ride, kept_clear, species::ancient())
 }
 
@@ -532,7 +531,7 @@ fn shots() -> Shots {
 /// The wood's oldest: its thickest oak or beech within the square, off its collar, seen from
 /// `ANCIENT_FROM` m away, of 16 ways round it the one whose way to it is clearest of the stems
 /// (x, z, radius) and on gentle ground, looking at its trunk a third of the way up its crown.
-fn ancient(trees: [engine::grow::Tree], stems: [vec3]) -> Shot {
+fn ancient(trees: [land::grow::Tree], stems: [vec3]) -> Shot {
     var best = trees[0]
     var thickest = -1.0
     for t in trees {
@@ -654,7 +653,7 @@ fn off_wood(s: Shot, wood: [vec3]) -> Shot {
 /// not in its collar, on ground gentler than 0.25 that no tree is kept off, one of those round
 /// which most trees stand over 15 m, with a way clear of its stems: `CANDIDATES`, `LONG_WAY`),
 /// looking along that way; and over it, 45 m up there, out across it to the horizon the same way.
-fn in_wood(trees: [engine::grow::Tree], stems: [vec3]) -> (Shot, Shot) {
+fn in_wood(trees: [land::grow::Tree], stems: [vec3]) -> (Shot, Shot) {
     let g = Grid::over(SQUARE.lo, SQUARE.hi(), 16.0)
     var tall: Vec<u32> = Vec::filled(g.cells(), 0)
     for t in trees {

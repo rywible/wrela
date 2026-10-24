@@ -1,6 +1,6 @@
 // Real reflection shader sampling, without a full scene or temporal history. A thin red
 // far surface lies beside a blue foreground occluder; a second panel is a continuous ramp.
-use engine::floor::fullscreen
+use engine::frame::fullscreen
 use engine::view::{Camera, first_camera}
 use engine::water::reflected_on_screen
 use std::gpu::{FragCoord, Rgba16Float, Texture, begin_pass, begin_screen_pass, texture}

@@ -3,7 +3,7 @@
 // is down; the cycle is a pelvis sway, the neck and head set by the head's lowering, a tail wave,
 // legs in a lateral-sequence walk, and a root bob.
 
-use engine::render::Poser
+use engine::character::Poser
 use grazer::{HEAD, LEG0, NECK0, PELVIS, TAIL0}
 use std::math::TAU
 use std::transform::{identity, rotate_x, rotate_y, rotate_z, translate}

@@ -1,4 +1,4 @@
-// The world's geology, the first level its land is made in (`engine::landform`): a dissected
+// The world's geology, the first level its land is made in (`land::landform`): a dissected
 // plateau. An old, level land of bedded rock stands over the lowland round it, a hard grit
 // sandstone on top, shale under it with a band of sandstone, and granite bosses through them.
 // Over a million years and more its rivers cut back into it from the lowland and the trunk
@@ -13,19 +13,19 @@
 // The floor's play doesn't stand on this land yet: the bare view (F8's fourth) draws it alone,
 // to be judged before what grows on it is.
 
-use engine::grow::Grid
-use engine::grow::Stream
-use engine::landform::{
+use land::grow::Grid
+use land::grow::Stream
+use land::landform::{
     Basins, Feature, Finding, Landscape, PlaceKind, Relief, Shaping, Strength, basins, border,
     channels, evolve, places,
 }
 use engine::noise::{fbm2, fbm2_seen, rand}
-use engine::soil::{SoilKind, soil}
-use engine::look::{CreatureLook, Mesh as Tolerance}
+use land::soil::{SoilKind, soil}
+use engine::look::Mesh as Tolerance
 use engine::stone::{Placement, Realized, block, normal_matrix, realize_block}
 use engine::terrain::{Cover, Terrain}
 use ground::{joints, rock_albedo}
-use lookbook::Shot
+use engine::shot::Shot
 use std::io::{Shipped, ship}
 use std::math::TAU
 use std::string::String
@@ -281,7 +281,7 @@ fn trunk(p: vec2) -> vec2 {
         total += length(TRUNK[i + 1] - TRUNK[i])
     }
     for i in 0..7 {
-        let (d, t) = engine::place::to_segment(p, a: TRUNK[i], b: TRUNK[i + 1])
+        let (d, t) = land::place::to_segment(p, a: TRUNK[i], b: TRUNK[i + 1])
         let here = length(TRUNK[i + 1] - TRUNK[i])
         if d < best {
             best = d
@@ -661,7 +661,7 @@ fn made() -> Made {
     let (shots, shot_names) = shots_of(land, rock_placements(land, tor_points(found)), found, names)
     let lakes = ponds(basins(s), s.lakes)
     let streams = streams_of(s, lakes)
-    let depth: Vec<f32> = Vec::from_fn(SQUARE_N, |c| if lakes.of[c] == engine::grow::NONE {
+    let depth: Vec<f32> = Vec::from_fn(SQUARE_N, |c| if lakes.of[c] == land::grow::NONE {
         0.0
     } else {
         s.lakes[c]
@@ -686,12 +686,12 @@ fn ponds(b: Basins, depth: [f32]) -> Basins {
     var deepest: Vec<f32> = Vec::filled(n, 0.0)
     for c in 0..b.of.len() {
         let k = b.of[c]
-        if k != engine::grow::NONE {
+        if k != land::grow::NONE {
             cells[k] += 1
             deepest[k] = max(deepest[k], depth[c])
         }
     }
-    var renumber: Vec<u32> = Vec::filled(n, engine::grow::NONE)
+    var renumber: Vec<u32> = Vec::filled(n, land::grow::NONE)
     var level: Vec<f32> = Vec::new()
     for k in 0..n {
         if cells[k] >= 3 || deepest[k] >= 1.0 {
@@ -700,15 +700,15 @@ fn ponds(b: Basins, depth: [f32]) -> Basins {
         }
     }
     Basins {
-        of: Vec::from_fn(b.of.len(), |c| if b.of[c] == engine::grow::NONE { b.of[c] } else {
+        of: Vec::from_fn(b.of.len(), |c| if b.of[c] == land::grow::NONE { b.of[c] } else {
             renumber[b.of[c]]
         }),
         level,
     }
 }
 
-/// The square's streams (`engine::grow::Stream`: x, z, width, depth a point): each of its
-/// channels (`engine::landform::channels`, over `STREAM`, its lakes `lakes`) through its cells'
+/// The square's streams (`land::grow::Stream`: x, z, width, depth a point): each of its
+/// channels (`land::landform::channels`, over `STREAM`, its lakes `lakes`) through its cells'
 /// middles, rounded off (twice cut at its corners, its ends kept) and taken every 4 m; as wide and
 /// as deep as the area draining through it makes it (the root of the area: a few hectares a
 /// trickle, a few square kilometres a river 20 m across). One that ends on another ends on that
@@ -836,11 +836,11 @@ fn unpack_soil(bits: u32) -> (f32, u32, f32) {
 /// How finely a cell's talus's depth is kept (m).
 const TALUS_STEP: f32 = 0.2
 
-/// The deepest a soil is (m: `engine::soil::soil`'s).
+/// The deepest a soil is (m: `land::soil::soil`'s).
 const DEEPEST: f32 = 2.5
 
 /// The square's soil, cell by cell (`pack_soil`), two to a word: what the ground's shape and its
-/// water make of it (`engine::soil::soil`, after Heimsath and others, 1997: its curvature at 12 and
+/// water make of it (`land::soil::soil`, after Heimsath and others, 1997: its curvature at 12 and
 /// 32 m and its slope off the land as made, `s` its making; its wetness `wet`, each cell's
 /// `wetness`), and its talus (`talus`). No rock is given it bare: where it's too steep or too
 /// sharp a crest to hold a soil, the soil says so.
@@ -854,7 +854,7 @@ fn soil_layer(land: Bare, s: Landscape, wet: [f32]) -> [u32; SQUARE_SOIL] {
         var lap = 0.0
         var slope = 0.0
         for k in 0..2 {
-            let d = engine::soil::SOIL_SPANS[k]
+            let d = land::soil::SOIL_SPANS[k]
             let e = land.made(p + vec2(d, 0.0)).x
             let w = land.made(p - vec2(d, 0.0)).x
             let n = land.made(p - vec2(0.0, d)).x
@@ -871,7 +871,7 @@ fn soil_layer(land: Bare, s: Landscape, wet: [f32]) -> [u32; SQUARE_SOIL] {
 }
 
 /// How wet the soil of the square's cell `c` is (0 to 1): its topographic index, ln of the area
-/// draining through it (`s`) a metre of its width over its slope, as `engine::soil` reads it.
+/// draining through it (`s`) a metre of its width over its slope, as `land::soil` reads it.
 pub fn wetness(land: Bare, s: Landscape, c: u32) -> f32 {
     let p = SQUARE.centre(c)
     let twi = log(s.area[c] / SQUARE.cell / (length(land.made(p).yz) + 0.01))
@@ -1038,11 +1038,11 @@ const BEDDED: u32 = 2 * 9 * VARIANTS
 pub const CORESTONES: u32 = 3 * 9 * VARIANTS
 const CORE = vec3(1.0, 0.65, 0.85)
 
-/// The prototypes (`CORESTONES`), each realized to `look`'s tolerance, its colours a cell `cell`
+/// The prototypes (`CORESTONES`), each realized to `surface`'s tolerance, its colours a cell `cell`
 /// across. The bedded rock's colours are a little greyer than the land's (weathered, it reads
 /// olive in the sun), from its weathered crust to its fresh breaks; the granite's blocks are
 /// worn rounder along its joints.
-pub fn rock_prototypes(look: CreatureLook, cell: f32) -> Vec<Realized> {
+pub fn rock_prototypes(surface: Tolerance, cell: f32) -> Vec<Realized> {
     var out: Vec<Realized> = Vec::new()
     for r in 0..3 {
         let own = COLOUR[SOLID[r]]
@@ -1069,7 +1069,7 @@ pub fn rock_prototypes(look: CreatureLook, cell: f32) -> Vec<Realized> {
                     realize_block(
                         b,
                         rough: if granite { 0.08 } else { 0.09 },
-                        look: look,
+                        surface: surface,
                         cell: cell,
                         steps: if granite { 0.0 } else { 0.05 },
                     ),
@@ -1082,7 +1082,7 @@ pub fn rock_prototypes(look: CreatureLook, cell: f32) -> Vec<Realized> {
     for k in 0..4 {
         var b = block(seed: 800 + k * 13, half: CORE, dark: granite * 0.45, light: granite * 0.75)
         b.round = 0.3
-        out.push(realize_block(b, rough: 0.08, look: look, cell: cell, steps: 0.0))
+        out.push(realize_block(b, rough: 0.08, surface: surface, cell: cell, steps: 0.0))
     }
     out
 }
@@ -1110,8 +1110,8 @@ pub fn rock_grain() -> Vec<vec4> {
 
 /// The rocks' near prototypes, for those close to the eye: fine enough to show their laminae and
 /// chips a few metres off; and their far ones.
-pub const NEAR_LOOK = CreatureLook { surface: Tolerance { tolerance: 1cm, largest: 3cm } }
-pub const FAR_LOOK = CreatureLook { surface: Tolerance { tolerance: 6cm, largest: 18cm } }
+pub const NEAR_LOOK = Tolerance { tolerance: 1cm, largest: 3cm }
+pub const FAR_LOOK = Tolerance { tolerance: 6cm, largest: 18cm }
 
 /// The prototype for a block of stratum `s` (a solid one) half `half` (along its turn, up,
 /// across), seed `seed`, worn round if `worn`: its index, how much further it's turned (a quarter, if that fits it

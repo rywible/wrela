@@ -1,0 +1,7 @@
+# engine::character's Cast::recolour: a realized character's materials are cooked again from new
+# channels, its mesh kept, on the GPU.
+[package]
+name = "recolour"
+
+[dependencies]
+engine = { workspace = true }

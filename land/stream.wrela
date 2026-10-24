@@ -1,0 +1,73 @@
+// The tiles a floor streams round the player: which are within reach, nearest first.
+
+use place::{TILE, tile_of}
+
+// ---- The tiles round the player -------------------------------------------------------------
+
+/// How far tile `t` is from `p` (m): to its nearest point.
+pub fn tile_distance(t: vec2i, p: vec2) -> f32 {
+    let lo = vec2(t) * TILE
+    let q = clamp(p, lo, lo + vec2(TILE))
+    length(p - q)
+}
+
+/// The square round the eye's tile that contains every tile within `reach` metres.
+/// One more tile covers the eye's position within its own tile.
+pub fn tile_radius(reach: f32) -> i32 {
+    i32(ceil(reach / TILE)) + 1
+}
+
+/// The near search within the far search's original square. At extreme world coordinates,
+/// f32 can round several integer tiles to one corner: retain that square and its tie order.
+pub fn near_tile_radius(eye: vec2, reach: f32, far: f32) -> i32 {
+    let outer = tile_radius(far)
+    if !(reach > 0.0 && reach < far) || max(abs(eye.x), abs(eye.y)) >= TILE * 8388608.0 {
+        return outer
+    }
+    min(tile_radius(reach), outer)
+}
+
+/// The tiles round `eye` within `radius` of its tile, nearer than `reach`, in search order.
+fn candidates(eye: vec2, radius: i32, reach: f32) -> Vec<vec2i> {
+    let at = tile_of(eye)
+    var out: Vec<vec2i> = Vec::new()
+    for j in (at.y - radius)..(at.y + radius + 1) {
+        for i in (at.x - radius)..(at.x + radius + 1) {
+            let t = vec2i(i, j)
+            if tile_distance(t, eye) < reach { out.push(t) }
+        }
+    }
+    out
+}
+
+/// The tighter near search visits exactly the same wanted tiles in the same order as the far
+/// search, ties on boundaries and eyes either side of the origin included.
+@test
+fn the_near_tile_search_keeps_every_candidate_in_order() {
+    for cell in [-67108864, -8388608, -40, -1, 0, 1, 40, 8388608, 67108864] {
+        for x in [-0.001, 0.0, 128.0, 255.999] {
+            for z in [0.0, 128.0, 255.999] {
+                let eye = vec2(f32(cell) * TILE + x, -f32(cell) * TILE + z)
+                for reach in [
+                    -350.0,
+                    0.0,
+                    1.0,
+                    255.999,
+                    256.0,
+                    256.001,
+                    350.0,
+                    512.0,
+                    1200.0,
+                    bitcast_f32(0x7f7fffff),
+                ] {
+                    let near = candidates(eye, near_tile_radius(eye, reach, 900.0), reach)
+                    let far = candidates(eye, tile_radius(900.0), reach)
+                    assert(near.len() == far.len(), "a wanted tile was skipped")
+                    for i in 0..near.len() {
+                        assert(near[i] == far[i], "the nearest-tile tie order changed")
+                    }
+                }
+            }
+        }
+    }
+}

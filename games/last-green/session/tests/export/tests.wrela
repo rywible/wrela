@@ -73,7 +73,7 @@ const FIXTURE: [Text; 73] = [
     "        saved: 17,",
     "        body: save(",
     "            CarryFixture {",
-    "                tower: engine::tower::Tower::new(2),",
+    "                tower: tower::rule::Tower::new(2),",
     "                at: 0,",
     "                door: STAIR,",
     "                going: 0xFFFFFFFE,",
@@ -106,7 +106,7 @@ fn built() {
     written("scratch/session/wrela.toml", text_of("repo/games/last-green/session/wrela.toml"))
     var options = toolchain::options()
     options.overrides.push(
-        Override { name: String::from("engine"), dir: String::from("repo/engine") },
+        Override { name: String::from("tower"), dir: String::from("repo/games/last-green/tower") },
     )
     options.overrides.push(
         Override { name: String::from("platform"), dir: String::from("repo/platform") },

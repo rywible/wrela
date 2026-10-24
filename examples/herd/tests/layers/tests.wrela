@@ -63,7 +63,7 @@ fn code_of(text: str) -> String {
 /// modules or its grazer (its comments may cite them; M6's history has a herd of its own, a
 /// word of the floor's map, not this example's); neither uses `unsafe`. And AC9's "no ratio is
 /// met by hand": the engine and the herd are wrela sources and their manifests alone, with no
-/// WGSL or JS of their own.
+/// WGSL or JS of their own (an engine test's goldens, PNGs in its `goldens/`, are its data).
 @test(tool, read: [("repo", "../../../..")], budget: 120)
 fn the_engine_and_the_herd_keep_their_layers() {
     for d in 0..2 {
@@ -73,6 +73,13 @@ fn the_engine_and_the_herd_keep_their_layers() {
         for k in 0..found.len() {
             let path = found[k].clone()
             let wrela = path.as_str().ends_with(".wrela")
+            let p = path.as_str()
+            let golden = p.starts_with("repo/engine/tests/") &&
+                p.find("/goldens/").is_some() &&
+                p.ends_with(".png")
+            if golden {
+                continue
+            }
             assert(
                 wrela || path.as_str().ends_with("/wrela.toml"),
                 f"{path.as_str()} isn't a wrela source or a manifest",

@@ -31,7 +31,7 @@
 // on the GPU (scripts.wrela has scripts), and `capybara` exports the capybara's state for `wrela
 // trace --watch capybara`, which needs a toolchain whose trace runs the ticker in lockstep.
 
-use art::{Page, Scale, Targets, copy, finish, grain_texture, pace, render_size, targets}
+use art::{Page, finish, grain_texture}
 use body::{Mode, RADIUS}
 use camera::{Camera, camera, follow, framed, half_view}
 use cast::{Cast, cast, ghost, grounded, react, sprites}
@@ -40,7 +40,7 @@ use earth::{
     LAB_EARTH, LAB_GRASS, LAB_TOPS, LEVEL_EARTH, LEVEL_GRASS, LEVEL_TOPS, Field, earth,
     earth_vertex, grass, grass_vertex,
 }
-use engine::plant::full
+use engine::frame::full
 use engine::present::Snapshots
 use engine::run::run
 use feel::HZ
@@ -48,12 +48,14 @@ use ink::INK
 use scenery::View
 use sound::Cue
 use std::audio::RingWriter
-use sprites::{Sprite, Stage, sprite, sprite_vertex}
+use engine::sheet::{Sheet, sheet}
+use engine::sprite::{Stage, quad_vertex}
+use engine::view::flat_camera
+use sprites::{Sprite, sprite}
 use std::gpu::{
     Address, GpuBuffer, Rgba16Float, Sampler, Texture, begin_pass, begin_screen_pass, buffer,
     buffer_of, draw, sampler, write,
 }
-use std::transform::{look_at, ortho}
 use ui::draw::{DrawList, Rect, Renderer}
 use std::input::{Event, Key, PadButton, events}
 use std::io::{Pending, load, store}
@@ -107,15 +109,12 @@ pub struct Lab {
     /// The course the camera was last following, and its cast.
     shown: u32,
     cast: Cast,
-    targets: Targets,
+    /// The scene, its copy under the water and the render scale (`engine::sheet`).
+    sheet: Sheet,
     linear: Sampler,
     /// The baked grain (ink.wrela) and the sampler that repeats it.
     grain: Texture<Rgba16Float>,
     repeat: Sampler,
-    /// The scene's size (px) at the render scale, and the scale.
-    width: u32,
-    height: u32,
-    scale: Scale,
     camera: Camera,
     last: Option<f32>,
     /// The ring to the voice (sound.wrela): none until it starts, on the first frame.
@@ -211,13 +210,10 @@ pub fn init() -> Lab {
         sprites: buffer(SPRITES),
         shown: LEVEL,
         cast: shown,
-        targets: targets(width: 4, height: 4),
+        sheet: sheet(),
         linear: sampler(),
         grain: grain_texture(),
         repeat: sampler(address: Address::Repeat),
-        width: 0,
-        height: 0,
-        scale: Scale {},
         camera: camera(course(LEVEL).start),
         last: None,
         voice: None,
@@ -388,18 +384,13 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         s.watched = watching
     }
     follow(mut s.camera, snap, dt)
-    // The scene is drawn at the render scale, the page and the HUD at the screen's size.
-    pace(mut s.scale, dt)
+    // The scene is drawn at the render scale (paced by the frames), the page and the HUD at the
+    // screen's size.
+    let (rw, rh) = s.sheet.begin(dt, width, height)
     if dt > 0.0 && dt < 0.25 {
         s.frame_time = if s.frame_time == 0.0 { dt } else {
             s.frame_time + (dt - s.frame_time) * 0.05
         }
-    }
-    let (rw, rh) = render_size(s.scale, width, height)
-    if rw != s.width || rh != s.height {
-        s.targets = targets(width: rw, height: rh)
-        s.width = rw
-        s.height = rh
     }
     let aspect = f32(width) / f32(max(height, 1))
     let half = half_view(aspect)
@@ -419,9 +410,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     // playing.
     let hud_at = eye + vec2(-half.x + 1.1, half.y - 0.85)
     let count = snap.paused == 0 && !watching
-    let at = vec3(eye, 0.0)
-    let view_proj = ortho(-half.x, half.x, -half.y, half.y, near: 1.0, far: 100.0) *
-        look_at(at + vec3(0.0, 0.0, 50.0), at)
+    let view_proj = flat_camera(eye, half)
     let px = 2.0 * half.y / f32(rh)
     var back: Vec<Sprite> = Vec::new()
     var front: Vec<Sprite> = Vec::new()
@@ -481,7 +470,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     let stage = Stage { view_proj, px, time, first: 0 }
     // The scene: the sky and the zoo behind (one pass, nearest first); the ground and its grass; the
     // cast.
-    let scene = begin_pass(mut s.targets.scene)
+    let scene = begin_pass(mut s.sheet.scene)
     draw(
         scene,
         full.bind(z: 0.0),
@@ -508,7 +497,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     )
     draw(
         scene,
-        sprite_vertex.bind(sprites: s.sprites.items(), st: stage),
+        quad_vertex.bind(sprites: s.sprites.items(), st: stage),
         sprite.bind(sprites: s.sprites.items(), st: stage),
         vertices: 6,
         instances: behind,
@@ -516,10 +505,8 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     s.signs.draw(scene, scene_size)
     scene.end()
     // The water reads a copy of the scene, bending what's behind it; the splashes go over it.
-    let copied = begin_pass(mut s.targets.below)
-    draw(copied, full.bind(z: 0.0), copy.bind(src: s.targets.scene, s: s.linear), vertices: 3)
-    copied.end()
-    let wet = begin_pass(mut s.targets.scene, keep: true)
+    s.sheet.copy_below(s.linear)
+    let wet = begin_pass(mut s.sheet.scene, keep: true)
     let pond = Pond { view_proj, centre: eye, half, px, time }
     draw(
         wet,
@@ -528,7 +515,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
             f: pond,
             pools: s.pools.items(),
             heights: s.heights.items(),
-            below: s.targets.below,
+            below: s.sheet.below,
             s: s.linear,
         ),
         vertices: if level { LEVEL_WATER.len() } else { LAB_WATER.len() },
@@ -536,7 +523,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     let ahead = Stage { first: behind, ..stage }
     draw(
         wet,
-        sprite_vertex.bind(sprites: s.sprites.items(), st: ahead),
+        quad_vertex.bind(sprites: s.sprites.items(), st: ahead),
         sprite.bind(sprites: s.sprites.items(), st: ahead),
         vertices: 6,
         instances: back.len() - behind,
@@ -558,7 +545,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     draw(
         out,
         full.bind(z: 0.0),
-        finish.bind(scene: s.targets.scene, s: s.linear, page: page),
+        finish.bind(scene: s.sheet.scene, s: s.linear, page: page),
         vertices: 3,
     )
     s.renderer.draw(out, screen)
@@ -830,8 +817,10 @@ fn hud(s: mut Lab, snap: Snap, screen: vec2, time: f32) {
         // screen's own) or the render scale's.
         let ms = s.frame_time * 1000.0
         let fps = if s.frame_time > 0.0 { 1.0 / s.frame_time } else { 0.0 }
-        let at = if s.scale.value >= 1.0 { f"native" } else { f"{s.scale.value * 100.0:.0}%" }
-        let readout = f"{fps:.0} fps  {ms:.1} ms  {at} {s.width}x{s.height}"
+        let at = if s.sheet.scale.value >= 1.0 { f"native" } else {
+            f"{s.sheet.scale.value * 100.0:.0}%"
+        }
+        let readout = f"{fps:.0} fps  {ms:.1} ms  {at} {s.sheet.width}x{s.sheet.height}"
         say(
             mut s,
             Face::Mono,

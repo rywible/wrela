@@ -1,11 +1,11 @@
 // How a frame is made, as a page of a picture book (ink.wrela):
 //
-// 1. The scene, on its own target (`Targets::scene`): the sky and the zoo behind
+// 1. The scene, on the sheet's target (`engine::sheet::Sheet::scene`): the sky and the zoo behind
 //    (scenery.wrela), the ground and its grass (earth.wrela), the shadows, the things, the
 //    creatures and the particles. Every shape is a wash with an ink line, drawn crisp, at the
-//    render scale (`Scale`): the screen's own size while the GPU keeps up with the display, less
-//    while it doesn't.
-// 2. A copy of it (`below`), which the water reads to bend what's under it a little.
+//    render scale (`engine::sheet::Scale`): the screen's own size while the GPU keeps up with the
+//    display, less while it doesn't.
+// 2. A copy of it (`Sheet::copy_below`), which the water reads to bend what's under it a little.
 // 3. The water, over the scene, then what goes in front of it.
 // 4. The page, at the screen's own size: the scene stretched over it, its colours lifted a little, the corners darker as an old page's are;
 //    and an iris that closes on the capybara when it dies and opens where it comes back. The paper
@@ -15,35 +15,10 @@
 // there's no tone curve and no glow.
 
 use engine::noise::noise2_wrapped
-use engine::plant::full
+use engine::frame::full
 use ink::{GRAIN_CELLS, INK, PAPER}
 use shapes::blend
 use std::gpu::{FragCoord, Rgba16Float, Sampler, Texture, begin_pass, draw, texture}
-
-/// The frame's targets, remade when the screen's size changes.
-pub struct Targets {
-    pub scene: Texture<Rgba16Float>,
-    pub below: Texture<Rgba16Float>,
-    pub width: u32,
-    pub height: u32,
-}
-
-pub fn targets(width: u32, height: u32) -> Targets {
-    let (w, h) = (max(width, 4), max(height, 4))
-    Targets {
-        scene: texture(width: w, height: h),
-        below: texture(width: w, height: h),
-        width: w,
-        height: h,
-    }
-}
-
-/// A copy of `src`, texel for texel.
-@fragment
-pub fn copy(pixel: FragCoord, src: Texture<Rgba16Float>, s: Sampler) -> vec4 {
-    let size = vec2(f32(src.width()), f32(src.height()))
-    src.sample_level(s, pixel.position.xy / size)
-}
 
 /// The grain's texels a cell (`ink::GRAIN`): enough that reading between them is the noise's own
 /// smooth blend, near enough.
@@ -111,127 +86,4 @@ pub fn finish(pixel: FragCoord, scene: Texture<Rgba16Float>, s: Sampler, page: P
     // Paused: a wash of the paper's cream over the page, the card on it.
     c = blend(c, PAPER * 0.93, page.dim * 0.55)
     vec4(saturate(c), 1.0)
-}
-
-// ---- the render scale ---------------------------------------------------------------------------
-
-/// The least render scale: a GPU that can't keep up at this is too slow for the game.
-pub const LEAST_SCALE: f32 = 0.35
-
-/// The render scale, kept by watching the frames (Ryan, 2026-10-22: "match the max fps and display
-/// resolution of the device", and play on "basically all commodity hardware"). The game draws a
-/// frame each time the display refreshes, at the screen's size in its own pixels. While frames
-/// come once a refresh, the scene is drawn at that size (1). When a fraction of them come late (a
-/// refresh or more missed: the GPU can't keep up), the scene is drawn smaller, a tenth less at a
-/// time, and the page stretches it over the screen (the HUD stays at the screen's size). After
-/// five seconds with none late, it's drawn a twentieth bigger again, up to 1.
-pub struct Scale: Copy {
-    pub value: f32 = 1.0,
-    /// The display's refresh interval as the frames show it (s): their usual shortest.
-    pub refresh: f32 = 0.0,
-    frames: u32 = 0,
-    window: u32 = 0,
-    late: u32 = 0,
-    calm: u32 = 0,
-}
-
-/// Frames at the start not judged (pipelines are being made), and a window's frames.
-const WARM_FRAMES: u32 = 90
-const WINDOW: u32 = 30
-
-/// A frame later than this many refresh intervals is late; this many late in a window steps the
-/// scale down; this many frames with none late steps it up.
-const LATE: f32 = 1.5
-const LATE_IN_WINDOW: u32 = 4
-const CALM_FRAMES: u32 = 300
-
-/// The scale after a frame `dt` seconds after the last.
-pub fn pace(g: mut Scale, dt: f32) {
-    if dt <= 0.0 || dt > 0.25 {
-        // The first frame, or a pause (the tab hidden): nothing to judge.
-        return
-    }
-    // The refresh: the frames' usual shortest interval, quick to come down, slow to go up.
-    if g.refresh <= 0.0 {
-        g.refresh = dt
-    } else {
-        let rate = if dt < g.refresh { 0.1 } else { 0.002 }
-        g.refresh += (dt - g.refresh) * rate
-    }
-    g.frames += 1
-    if g.frames < WARM_FRAMES {
-        return
-    }
-    g.window += 1
-    if dt > g.refresh * LATE {
-        g.late += 1
-    }
-    if g.window < WINDOW {
-        return
-    }
-    if g.late >= LATE_IN_WINDOW {
-        g.value = max(g.value - 0.1, LEAST_SCALE)
-        g.calm = 0
-    } else if g.late == 0 {
-        g.calm += WINDOW
-        if g.calm >= CALM_FRAMES && g.value < 1.0 {
-            g.value = min(g.value + 0.05, 1.0)
-            g.calm = 0
-        }
-    } else {
-        g.calm = 0
-    }
-    g.window = 0
-    g.late = 0
-}
-
-/// The size the scene is drawn at, for a screen `width` by `height` (px).
-pub fn render_size(g: Scale, width: u32, height: u32) -> (u32, u32) {
-    let w = max(u32(round(f32(width) * g.value)), 4)
-    let h = max(u32(round(f32(height) * g.value)), 4)
-    (w, h)
-}
-
-@test
-fn the_scale_stays_whole_while_frames_come_every_refresh() {
-    var g = Scale {}
-    for i in 0..2000 {
-        // A 120 Hz display, its frames' times jittering a little.
-        pace(mut g, 1.0 / 120.0 + 0.0003 * f32(i % 3))
-    }
-    assert(g.value == 1.0)
-    assert(abs(g.refresh - 1.0 / 120.0) < 3.0e-4)
-}
-
-@test
-fn the_scale_comes_down_when_frames_are_late_and_back_up_once_they_are_not() {
-    var g = Scale {}
-    // A 60 Hz display; a GPU that misses one refresh in three.
-    for i in 0..600 {
-        pace(mut g, if i % 3 == 0 { 2.0 / 60.0 } else { 1.0 / 60.0 })
-    }
-    assert(g.value < 0.5, "drawn smaller")
-    assert(g.value >= LEAST_SCALE, "but not too small")
-    let low = g.value
-    // Once frames come every refresh again, it grows back, slowly.
-    for _ in 0..600 {
-        pace(mut g, 1.0 / 60.0)
-    }
-    assert(g.value > low && g.value < low + 0.2, "a little bigger after 10 s")
-    for _ in 0..12000 {
-        pace(mut g, 1.0 / 60.0)
-    }
-    assert(g.value == 1.0, "and whole again")
-}
-
-@test
-fn a_pause_and_the_first_frames_dont_move_the_scale() {
-    var g = Scale {}
-    for i in 0..WARM_FRAMES - 1 {
-        // Pipelines being made: slow frames.
-        pace(mut g, if i == 0 { 0.2 } else { 1.0 / 20.0 })
-    }
-    pace(mut g, 3.0)
-    assert(g.value == 1.0)
-    assert(render_size(g, width: 2940, height: 1912) == (2940, 1912))
 }

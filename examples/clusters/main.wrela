@@ -1,10 +1,10 @@
 // The virtual geometry spike (S1a of the rendering moonshots): spike 13's smooth creature
-// (`compiler/tests/spike13`, its bark left off) cooked as clusters (`engine::clusters`) and
+// (`compiler/tests/spike13`, its bark left off) cooked as clusters (clusters.wrela) and
 // drawn at the coarsest level whose error is at most `PIXELS` from where the eye is, block by
 // block. The scene: a field of copies on a plane, the eye moving between them; a test sets its
 // own eye and level of error (`view`).
-use engine::clusters::{ClusterLook, Clusters, Placed, cook_creature}
-use engine::creature::{Creature, Skeleton, creature}
+use clusters::{ClusterLook, Clusters, Placed, cook_creature}
+use engine::creature::Creature
 use engine::view::{Camera, first_camera}
 use std::derive::Box3
 use std::field::{Surface, ellipsoid, round_cone, sphere}
@@ -36,9 +36,7 @@ fn smooth_creature() -> Surface {
 
 /// It as a creature of one part (channels it has none of: a number), in its box.
 fn body() -> Creature<f32> {
-    var sk = Skeleton::new()
-    let root = sk.root("body", vec3(0.0))
-    creature(sk).part(root, smooth_creature().with(1.0)).bounded(BOUNDS)
+    engine::realize::solid(smooth_creature().with(1.0), BOUNDS, name: "body")
 }
 
 /// The box that holds it.

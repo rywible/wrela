@@ -1,0 +1,180 @@
+// A lookbook's shots: named views of a scene, each an eye, what it looks at and a short move, that
+// a look is developed against. `wrela tool lookbook` renders each one settled as a still and
+// records its move as a clip, from a program's build and its `lookbook.wrela`.
+//
+// A program lists its shots (`[Shot]`) and holds a `Shots`, which takes the keys as a player
+// presses them: L, a shot's number and Enter hold the camera on that shot; Escape lets it go. A
+// held shot stays still for `SETTLE` seconds while its view arrives, then moves for `MOVE` seconds
+// (`place`); its clock waits while the frame covers an arrival (`Shots::clock`).
+
+use std::input::Key
+
+/// How long a shot holds still once it's chosen while the scene round it streams in and its caches
+/// settle (its still is taken as the move starts), and how long its move takes (s).
+pub const SETTLE: f32 = 5.0
+pub const MOVE: f32 = 10.0
+
+/// A shot with nobody of the program's own standing in it (`Shot::cast`).
+pub const NO_CAST: u32 = 0xFFFFFFFF
+
+/// A shot: its name, where the eye is and what it looks at (x, height above the ground, z), how far
+/// the eye moves over the shot's move (m, on the plane), the field of view (radians), how far round
+/// what it looks at its subject reaches (m: a sightline is judged to it, not through it), and who
+/// stands in it (the program's own number for them: `NO_CAST`, nobody).
+pub struct Shot: Copy {
+    pub name: Text,
+    pub eye: vec3,
+    pub at: vec3,
+    pub moves: vec2,
+    pub fovy: f32 = 0.82,
+    pub reach: f32 = 3.0,
+    pub cast: u32 = NO_CAST,
+}
+
+/// Where shot `s`'s eye is and what it looks at, `t` seconds after it was chosen (it holds still
+/// `SETTLE` seconds, then moves), the ground's height given by `height`.
+pub fn place(s: Shot, t: f32, height: fn(vec2) -> f32) -> (vec3, vec3) {
+    let k = clamp((t - SETTLE) / MOVE, 0.0, 1.0)
+    let e = s.eye.xz + s.moves * k
+    let eye = vec3(e.x, height(e) + s.eye.y, e.y)
+    let at = vec3(s.at.x, height(s.at.xz) + s.at.y, s.at.z)
+    (eye, at)
+}
+
+/// A shot's clock while an arrival covers it: it stays at its start (`start`) until the cover
+/// goes, so its hold and move begin when its view can be shown.
+pub fn shot_clock(start: f32, time: f32, covered: bool) -> f32 {
+    if covered { time } else { start }
+}
+
+/// The shot the camera is held on (none: the program's own camera), since when (s), and the
+/// number being typed after L.
+pub struct Shots: Copy {
+    pub held: Option<u32> = None,
+    pub from: f32 = 0.0,
+    typing: bool = false,
+    digits: u32 = 0,
+}
+
+/// What a key did to the shots: whether it was theirs (the program reads it no further), and
+/// whether it chose a shot (the program's frame then arrives at the shot's view: `Frame::arrive`).
+pub struct Chose: Copy {
+    pub taken: bool,
+    pub chosen: bool,
+}
+
+impl Shots {
+    /// `key` pressed at `time`, with `count` shots to choose from. While a number is being typed,
+    /// a digit adds to it and any other key ends it: Enter holds the camera on that shot if there
+    /// is one. L starts a number, and Escape lets the camera go.
+    pub fn key(mut self, key: Key, count: u32, time: f32) -> Chose {
+        if self.typing {
+            if let Some(d) = digit(key) {
+                self.digits = self.digits * 10 + d
+                return Chose { taken: true, chosen: false }
+            }
+            self.typing = false
+            let chosen = key == Key::Enter && self.digits < count
+            if chosen {
+                self.held = Some(self.digits)
+                self.from = time
+            }
+            return Chose { taken: true, chosen }
+        }
+        if key == Key::L {
+            self.typing = true
+            self.digits = 0
+        }
+        if key == Key::Escape {
+            self.held = None
+        }
+        Chose { taken: false, chosen: false }
+    }
+
+    /// The shot's clock at `time`: it waits while the frame covers an arrival (`covered`), so its
+    /// hold and move begin when its view can be shown.
+    pub fn clock(mut self, time: f32, covered: bool) {
+        self.from = shot_clock(self.from, time, covered)
+    }
+
+    /// How long the held shot has run at `time` (s).
+    pub fn since(self, time: f32) -> f32 {
+        time - self.from
+    }
+}
+
+/// The digit a key types (0 to 9), if it's one of the digit keys.
+pub fn digit(k: Key) -> Option<u32> {
+    match k {
+        Key::Digit0 => Some(0),
+        Key::Digit1 => Some(1),
+        Key::Digit2 => Some(2),
+        Key::Digit3 => Some(3),
+        Key::Digit4 => Some(4),
+        Key::Digit5 => Some(5),
+        Key::Digit6 => Some(6),
+        Key::Digit7 => Some(7),
+        Key::Digit8 => Some(8),
+        Key::Digit9 => Some(9),
+        _ => None,
+    }
+}
+
+/// L, a number and Enter hold a shot; a number past the last chooses none; another key ends the
+/// number; Escape lets it go. The chooser takes the keys it reads, and leaves L and Escape to the
+/// program too.
+@test
+fn a_shot_is_chosen_by_its_number_and_let_go_by_escape() {
+    var s = Shots {}
+    assert(!s.key(Key::L, 12, 1.0).taken, "L is left to the program as well")
+    assert(s.key(Key::Digit1, 12, 1.0).taken && s.key(Key::Digit1, 12, 1.0).taken)
+    let c = s.key(Key::Enter, 12, 2.0)
+    assert(c.taken && c.chosen && s.held == Some(11) && s.from == 2.0, "shot 11 is held")
+    let _ = s.key(Key::L, 12, 3.0)
+    let _ = s.key(Key::Digit2, 12, 3.0)
+    let _ = s.key(Key::Digit0, 12, 3.0)
+    assert(!s.key(Key::Enter, 12, 3.0).chosen && s.held == Some(11), "there's no shot 20")
+    let _ = s.key(Key::L, 12, 4.0)
+    let _ = s.key(Key::Digit3, 12, 4.0)
+    let m = s.key(Key::M, 12, 4.0)
+    assert(m.taken && !m.chosen && s.held == Some(11), "another key ends the number")
+    assert(!s.key(Key::Enter, 12, 4.0).chosen, "Enter after it chooses nothing")
+    let _ = s.key(Key::Escape, 12, 5.0)
+    assert(s.held.is_none(), "Escape lets the camera go")
+}
+
+/// A shot holds still for `SETTLE` seconds, then moves the eye by `moves` over `MOVE` seconds, on
+/// the ground, and its clock waits while an arrival is covered.
+@test
+fn a_shot_holds_then_moves_and_waits_for_its_view() {
+    let s = Shot {
+        name: "a",
+        eye: vec3(0.0, 1.5, 0.0),
+        at: vec3(0.0, 1.0, 10.0),
+        moves: vec2(2.0, 0.0),
+    }
+    let ground = |p: vec2| p.x
+    let (e0, a0) = place(s, 1.0, ground)
+    assert(e0 == vec3(0.0, 1.5, 0.0) && a0 == vec3(0.0, 1.0, 10.0), "still while it settles")
+    let (e1, _) = place(s, SETTLE + 0.5 * MOVE, ground)
+    assert(abs(e1.x - 1.0) < 1.0e-5 && abs(e1.y - 2.5) < 1.0e-5, "halfway, on the ground")
+    let (e2, _) = place(s, SETTLE + 2.0 * MOVE, ground)
+    assert(abs(e2.x - 2.0) < 1.0e-5, "it stops at the move's end")
+    var shots = Shots { held: Some(0), from: 1.0 }
+    shots.clock(3.0, covered: true)
+    assert(shots.since(3.5) == 0.5, "covered: the clock starts again")
+    shots.clock(4.0, covered: false)
+    assert(shots.since(4.0) == 1.0, "shown: it runs")
+}
+
+/// A shot's clock holds at its start while covered, and runs once the cover goes.
+@test
+fn a_shot_waits_while_covered() {
+    var started = 0.0
+    for i in 0..601 {
+        started = shot_clock(started, f32(i) / 60.0, covered: true)
+        assert(started == f32(i) / 60.0, "the shot's clock ran while covered")
+    }
+    let held = shot_clock(started, 20.0, covered: false)
+    assert(held == started, "the shot's clock jumped when the cover went")
+}

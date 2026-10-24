@@ -1,16 +1,16 @@
 // The floor's simulation (#54 §5): the climber walking and running over the floor, in the
 // sim's tick (`engine::run`) at 60 Hz, colliding with what the bake left (`history::OBSTACLES`)
-// and stopped by deep water and steep ground (`engine::footing`'s one rule). Its input records
+// and stopped by deep water and steep ground (`land::footing`'s one rule). Its input records
 // are the walk's replay. A travel (the play harness's) moves the player beside a site. The fawn
 // grazes in the glade and notices the player (behaviour.wrela).
 
-use engine::footing::{BODY, Obstacle, Obstacles, Thing, stands}
-use engine::place::{Place, Water}
-use engine::player::{Motion, NONE, Player, control, facing, spawn, step_with, turn_to}
+use land::footing::{BODY, Obstacle, Obstacles, Thing, stands}
+use land::place::{Place, Water}
+use land::player::{Motion, NONE, Player, control, facing, spawn, step_with, turn_to}
 use behaviour::{Fawn, STEPPED_WITHIN, presence, spawn_fawn, step_fawn}
 use encounter::{Encounter, encounter, holds, step_encounter}
 use engine::run::{Asks, TickInput}
-use engine::senses::{Occluders, clear_over}
+use land::senses::{Occluders, clear_over}
 use engine::sim::{SimState, Tick}
 use ground::{GROUND, Ground}
 use history::{OBSTACLES, TOUR}
@@ -258,7 +258,7 @@ pub fn tick(w: mut World, input: TickInput<World>) {
     }
     // Also refresh a stationary body's lift when a replacement answer arrives. The initial
     // answer and any teleport hold the body inside known coverage until local wood is ready.
-    engine::player::place_at(mut w.player, GROUND, o, before.moved(safe), w.player.heading)
+    land::player::place_at(mut w.player, GROUND, o, before.moved(safe), w.player.heading)
     let feet = w.player.at.world()
     w.player.y += o.lift(feet, BODY, TRAVEL.clearance)
     if w.fight.awake {
@@ -275,8 +275,8 @@ pub fn tick(w: mut World, input: TickInput<World>) {
 
 /// Whether a report's position is outside the authored floor's tiles.
 fn near_wild(p: vec2, d: f32) -> bool {
-    let lo = vec2(history::tiles_lo()) * engine::place::TILE + vec2(d)
-    let hi = vec2(history::tiles_hi() + vec2i(1)) * engine::place::TILE - vec2(d)
+    let lo = vec2(history::tiles_lo()) * land::place::TILE + vec2(d)
+    let hi = vec2(history::tiles_hi() + vec2i(1)) * land::place::TILE - vec2(d)
     p.x < lo.x || p.y < lo.y || p.x >= hi.x || p.y >= hi.y
 }
 
@@ -385,7 +385,7 @@ fn travel(p: mut Player, s: vec3, from: f32) {
 }
 
 /// The floor's map, for the frames' reports.
-pub const MAP: engine::place::Map = map::map()
+pub const MAP: land::place::Map = map::map()
 
 /// The play harness's report on world `w` after `ticks` ticks (#55 AC5: every 2 s, the same in
 /// both hosts): one line of JSON, from the sim's state alone: the time, where the player is and
@@ -406,7 +406,7 @@ pub fn report(w: World, ticks: u32) -> String {
         MAP.regions[MAP.region_of(at)].name
     }
     let water = max(
-        engine::footing::mere_depth(WATER, at, GROUND.at(at.x, at.y)),
+        land::footing::mere_depth(WATER, at, GROUND.at(at.x, at.y)),
         OBSTACLES.depth(at),
     )
     let t = f32(ticks) / 60.0
@@ -481,7 +481,7 @@ fn wildwood_log_answers_decode_height_and_preserve_standing_solids() {
     w.trunks[0] = vec4(0.0, 0.0, 0.4, 0.8)
     w.trunks[1] = vec4(4.0, 0.0, 0.4, 0.0)
     let none: Vec<Obstacle> = Vec::new()
-    let empty = engine::footing::Obstacles::of(none, vec2(-64.0), vec2(64.0))
+    let empty = land::footing::Obstacles::of(none, vec2(-64.0), vec2(64.0))
     let o = player_obstacles(w, vec2(0.0), empty)
     assert(!o.blocked_over(vec2(0.0), BODY, TRAVEL.clearance), "low wildwood log blocked travel")
     assert(o.lift(vec2(0.0), BODY, TRAVEL.clearance) >= 0.8, "wildwood log lost its lift")
@@ -627,7 +627,7 @@ fn authored_local_logs_combine_with_static_walls_and_streams() {
     var at = vec2(-2.0, 0.0)
     var high = 0.0
     for _ in 0..100 {
-        let (moved, _) = engine::footing::step_over(
+        let (moved, _) = land::footing::step_over(
             engine::terrain::Flat {},
             behaviour::DRY,
             combined,

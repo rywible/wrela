@@ -1,6 +1,6 @@
 // The fawn's behaviour (vision gap 3: creatures that notice you): the fawn grazes in the glade
 // on the floor's walk (the lookbook's shot 16), taking a step to fresh grass now and then. It
-// senses the player (`engine::senses`): when it notices, it lifts its head and watches, turned
+// senses the player (`land::senses`): when it notices, it lifts its head and watches, turned
 // to where it sensed the player; a player who comes on toward it, comes too near or runs at it
 // makes it flee at a bound, away and round what's in its way; a player who keeps away lets it
 // calm down and graze again, where it is. Stepped in the floor's tick (world.wrela), its feet
@@ -8,13 +8,13 @@
 // as the frames draw it (`palette`).
 
 use engine::creature::{MAX_BONES, Skeleton}
-use engine::footing::{Obstacles, stands}
+use land::footing::{Obstacles, stands}
 use engine::gait::{Body, Path, Walk, Walker, stand, step}
 use engine::noise::rand
-use engine::place::Water
+use land::place::Water
 use engine::present::short_way
-use engine::render::bone_matrix
-use engine::senses::{Awareness, Occluders, Presence, Senses, sense}
+use engine::gait::bone_matrix
+use land::senses::{Awareness, Occluders, Presence, Senses, sense}
 use engine::sim::{SimState, Transform}
 use engine::terrain::{Flat, Terrain}
 use fawn::creature::{skeleton, walker_body}
@@ -156,7 +156,7 @@ pub fn spawn_fawn<G: Terrain>(ground: G) -> Fawn {
 /// What the player gives off: its feet, its motion, a person's height, and as loud as it is fast
 /// (a run, 1).
 pub fn presence(at: vec3, velocity: vec2) -> Presence {
-    let loud = clamp(length(velocity) / engine::player::RUN, 0.0, 1.0)
+    let loud = clamp(length(velocity) / land::player::RUN, 0.0, 1.0)
     Presence { at, velocity, height: 1.7, loud }
 }
 
@@ -192,7 +192,7 @@ fn heading_of(d: vec2) -> f32 {
 
 /// Whether the fawn can go `CLEAR` m from `at` along `dir`: ground it can stand on, and no
 /// obstacle, at a third, two thirds and the whole of the way.
-fn way_clear<G: Terrain + engine::grow::Ground>(
+fn way_clear<G: Terrain + engine::terrain::Ground>(
     ground: G,
     water: Water,
     o: Obstacles,
@@ -210,7 +210,7 @@ fn way_clear<G: Terrain + engine::grow::Ground>(
 
 /// The way it flees from `from`: straight away, or the nearest to that it can go, turning up to
 /// 135° either way; straight away if none is clear.
-fn flight_way<G: Terrain + engine::grow::Ground>(
+fn flight_way<G: Terrain + engine::terrain::Ground>(
     ground: G,
     water: Water,
     o: Obstacles,
@@ -233,7 +233,7 @@ fn flight_way<G: Terrain + engine::grow::Ground>(
 /// One tick (`dt` s) of the fawn on `ground` among `o` (what hides the player from it: `sight`),
 /// the player giving off `player`.
 @deterministic
-pub fn step_fawn<G: Terrain + engine::grow::Ground, O: Occluders>(
+pub fn step_fawn<G: Terrain + engine::terrain::Ground, O: Occluders>(
     f: mut Fawn,
     ground: G,
     water: Water,
@@ -473,7 +473,7 @@ struct Walking: Copy {
 /// `seconds` of the fawn and the player, the player moving toward `goal` at `pace` m/s (and
 /// standing once there); what the fawn did each tick goes to `seen`.
 fn play(f: mut Fawn, p: mut Walking, goal: vec2, seen: mut Vec<Doing>, pace: f32, seconds: f32) {
-    let none: Vec<engine::footing::Obstacle> = Vec::new()
+    let none: Vec<land::footing::Obstacle> = Vec::new()
     let o = Obstacles::of(none, vec2(-512.0), vec2(512.0))
     let dt = 1.0 / 60.0
     for _ in 0..u32(seconds * 60.0) {
@@ -523,7 +523,7 @@ fn the_fawn_notices_watches_flees_and_grazes_again() {
     for _ in 0..80 {
         // To 30 m of where it is now (a graze step moves it).
         let goal = fawn_at(f) + normalize(p.at - fawn_at(f)) * 30.0
-        play(mut f, mut p, goal, mut seen, pace: engine::player::WALK, seconds: 0.5)
+        play(mut f, mut p, goal, mut seen, pace: land::player::WALK, seconds: 0.5)
         if f.doing == Doing::Watch && noticed_at == 0.0 {
             noticed_at = length(p.at - fawn_at(f))
             assert(f.neck.x < NECK_GRAZE, f"it watches with its neck pitched {f.neck.x}")
@@ -541,7 +541,7 @@ fn the_fawn_notices_watches_flees_and_grazes_again() {
     var fled_at = 0.0
     seen = Vec::new()
     for _ in 0..80 {
-        play(mut f, mut p, fawn_at(f), mut seen, pace: engine::player::WALK, seconds: 0.25)
+        play(mut f, mut p, fawn_at(f), mut seen, pace: land::player::WALK, seconds: 0.25)
         if f.doing == Doing::Flee && fled_at == 0.0 {
             fled_at = length(p.at - fawn_at(f))
         }
@@ -563,12 +563,12 @@ fn the_fawn_notices_watches_flees_and_grazes_again() {
     var fled = false
     seen = Vec::new()
     for _ in 0..40 {
-        play(mut f, mut p, before, mut seen, pace: engine::player::RUN, seconds: 0.5)
+        play(mut f, mut p, before, mut seen, pace: land::player::RUN, seconds: 0.5)
         fastest = max(fastest, f.walker.speed)
         fled = fled || f.doing == Doing::Flee
     }
     assert(fled, "it didn't flee a player running at it")
-    assert(fastest > engine::player::RUN, f"it fled at {fastest} m/s at most")
+    assert(fastest > land::player::RUN, f"it fled at {fastest} m/s at most")
     let away = dot(fawn_at(f) - before, normalize(before - from))
     assert(away > 20.0, f"it fled only {away} m away from the player")
     seen = Vec::new()

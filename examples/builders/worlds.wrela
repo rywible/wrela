@@ -1,7 +1,7 @@
 // Two construction studies. These are deliberately small models, not claims of realistic
 // structural engineering or established game lore. No building coordinates are authored.
 
-use engine::construction::{Ground, Material}
+use land::construction::{Ground, Material}
 use engine::noise::noise2
 
 /// Construction knowledge and needs, owned by these studies' peoples.

@@ -2,9 +2,9 @@
 // geology if it has one. `wrela tool studio -- <floor>` writes one for the floor's `lens`
 // module; this one is the Last Green's.
 
-use engine::interest::Preview
-use engine::landform::Survey
-use engine::place::Map
+use land::interest::Preview
+use land::landform::Survey
+use land::place::Map
 
 pub fn map() -> Map {
     last_green::lens::map()

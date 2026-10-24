@@ -1,42 +1,43 @@
-// The lookbook tool (`wrela tool lookbook`): the floor's lookbook (#54 §9, #55 AC10), each shot
-// of games/last-green/lookbook.wrela rendered settled at 1080p, as a still on the native host and
-// as a 10 s clip in Chrome (its move), into a directory.
+// The lookbook tool (`wrela tool lookbook`): a program's lookbook (the floor's unless `--package`
+// names another; #54 §9, #55 AC10), each shot of its `lookbook.wrela` (`engine::shot::Shot`s)
+// rendered settled at 1080p, as a still on the native host and as a 10 s clip in Chrome (its
+// move), into a directory.
 //
 // ```text
-// wrela tool lookbook -- <out-dir> [--stills] [--capture]
+// wrela tool lookbook -- <out-dir> [--package <dir>] [--stills] [--capture]
 //     [--view clay|silhouette|bare|grown|specimens] [--size WxH] [--jobs N] [--workers N]
 //     [shot-number ...]
 // ```
 //
-// The floor must be built (`wrela build games/last-green`). Paths are from the workspace's
-// directory (the root `ws`). A shot is chosen as a player would (L, its number, Enter); the
-// still is the frame its move starts at (`lookbook::SETTLE` seconds in), when the tiles round it
-// have streamed in and its caches have settled. The build runs on the native host's GPU
+// The package must be built (`wrela build games/last-green`, or `examples/clearing`). Paths are
+// from the workspace's directory (the root `ws`). A shot is chosen as a player would (L, its
+// number, Enter: `engine::shot::Shots`); the still is the frame its move starts at
+// (`engine::shot::SETTLE` seconds in), when what's round it has streamed in and its caches have
+// settled. The build runs on the native host's GPU
 // (`std::tool::drive`), and its screen is encoded as a PNG (`std::tool::image`). The clip is its
 // move, from then for `lookbook::MOVE` seconds, paced as in play, recorded from Chrome's canvas
 // (test mode's `clip`: a WebM), with the build served on a free port (`std::tool::serve`) and
 // the page's jobs on `--workers` threads (8 unless given). `--stills` makes the stills alone.
 //
-// `--view` draws a debug view of form instead of the look (F8 in the floor): `clay`, the scene's
-// light on its forms all one matte grey, or `silhouette`, the sky white, the land light and the
-// solid forms dark, a step lighter for each band of distance; or `bare`, the world's land as its
-// geology made it, alone, whose shots are of the places found in it (the build's
-// `files/geology/shots.json`, numbered as there); or `grown`, the world's land as its water and
-// its forest left it, whose shots are of those places and of its wood (`files/growth/shots.json`);
-// or `specimens`, each species at a run of ages on level ground, a species a shot
+// `--view` draws a debug view of form instead of the look (F8): `clay`, the scene's light on its
+// forms all one matte grey, or `silhouette`, the sky white, the land light and the solid forms
+// dark, a step lighter for each band of distance; or, in the floor alone, `bare`, the world's land
+// as its geology made it, alone, whose shots are of the places found in it (the build's
+// `files/geology/shots.json`, numbered as there); or `grown`, the world's land as its water and its
+// forest left it, whose shots are of those places and of its wood (`files/growth/shots.json`); or
+// `specimens`, each species at a run of ages on level ground, a species a shot
 // (`files/specimens/shots.json`). `--size` renders the stills at another size than 1920x1080
 // (1280x720 while iterating). Stills render one at a time unless `--jobs` says how many at once,
 // with the same pixels. Each shot's numbers, the interest check's view at its eye (the build's
 // `files/check/shots.json`), are printed beside it and saved as `check.json`.
 //
-// `--capture` takes each still in capture mode (F7, `Floor::capture` in
-// games/last-green/main.wrela): the floor does its load in a few frames, and the still is the
-// frame it prints `still at frame N` on, a 16-frame resolve once the light round the eye is in,
-// not the frame 5 s in.
+// `--capture` takes each still in capture mode (F7, `engine::frame::Frame::key`): the program does
+// its load in a few frames, and the still is the frame it prints `still at frame N` on, a
+// 16-frame resolve once the light round the eye is in, not the frame 5 s in.
 
 use shots::{
-    BUILD, CAPTURE_FRAMES, LOOKBOOK, MOVE_FRAMES, Options, SETTLE_FRAMES, STILL, VIEWS, check_line,
-    keys, names_in, names_listed, parse_args, shown_path, stem,
+    CAPTURE_FRAMES, MOVE_FRAMES, Options, SETTLE_FRAMES, STILL, VIEWS, build_of, check_line, keys,
+    lookbook_of, names_in, names_listed, parse_args, shown_path, stem,
 }
 use std::input::Script
 use std::io::print
@@ -104,27 +105,28 @@ pub fn still(s: take Still) -> Result<String, ToolError> {
 }
 
 /// Shot `i`'s move as a clip in Chrome (1080p, paced, its jobs on `workers` threads), from the
-/// build in `BUILD`, copied to `webm`.
-pub fn clip(keys: Script, webm: str, workers: u32) -> Result<(), ToolError> {
-    let script = String::from(f"{BUILD}/lookbook-keys.json")
+/// build in `build`, copied to `webm`.
+pub fn clip(build: str, keys: Script, webm: str, workers: u32) -> Result<(), ToolError> {
+    let script = String::from(f"{build}/lookbook-keys.json")
     let _ = files::write(script.as_str(), String::from(keys.as_json()).as_bytes()).wait()?
     let frames = SETTLE_FRAMES + MOVE_FRAMES + 30
     let hash = String::from(
         f"#test&frames={frames}&width=1920&height=1080&fps=60&workers={workers}&paced=1&nohash=1&input=lookbook-keys.json&clipfrom={SETTLE_FRAMES}&clip={MOVE_FRAMES}",
     )
-    let ran = run_page(BUILD, hash.as_str(), width: 1920, height: 1080, timeout: CLIP_TIMEOUT)
+    let ran = run_page(build, hash.as_str(), width: 1920, height: 1080, timeout: CLIP_TIMEOUT)
     let _ = files::remove(script.as_str()).wait()
     let _ = (take ran)?
-    copy_file(f"{BUILD}/results/clip.webm", webm)
+    copy_file(f"{build}/results/clip.webm", webm)
 }
 
 /// Makes the stills, then the clips, as `o` says.
 pub fn lookbook(o: Options) -> Result<(), ToolError> {
     let (view, presses, listed) = VIEWS[o.view]
+    let build = build_of(o.program.as_str())
     let names_at = if listed.is_empty() {
-        String::from(LOOKBOOK)
+        lookbook_of(o.program.as_str())
     } else {
-        String::from(f"{BUILD}/files/{listed}/shots.json")
+        String::from(f"{build}/files/{listed}/shots.json")
     }
     let source = String::from_utf8(read_file(names_at.as_str(), names_at.as_str())?).unwrap_or(
         String::new(),
@@ -152,7 +154,7 @@ pub fn lookbook(o: Options) -> Result<(), ToolError> {
     // The interest check's numbers, for the look and its debug views of form.
     var check: Option<Doc> = None
     if listed.is_empty() {
-        let numbers = String::from(f"{BUILD}/files/check/shots.json")
+        let numbers = String::from(f"{build}/files/check/shots.json")
         if let Ok(bytes) = read_file(numbers.as_str(), numbers.as_str()) {
             check = std::json::parse(
                 String::from_utf8(bytes.clone()).unwrap_or(String::new()).as_str(),
@@ -167,7 +169,7 @@ pub fn lookbook(o: Options) -> Result<(), ToolError> {
         while running.len() < o.jobs && next < picks.len() {
             let i = picks[next]
             let s = Still {
-                build: String::from(BUILD),
+                build: build.clone(),
                 keys: keys(i, presses, o.capture),
                 png: String::from(f"{o.out}/{stem(i, shots[i].as_str())}.png"),
                 width: o.width,
@@ -188,7 +190,8 @@ pub fn lookbook(o: Options) -> Result<(), ToolError> {
     if !o.stills {
         for i in picks {
             let webm = String::from(f"{o.out}/{stem(i, shots[i].as_str())}.webm")
-            if let Err(e) = clip(keys(i, presses, capture: false), webm.as_str(), o.workers) {
+            let k = keys(i, presses, capture: false)
+            if let Err(e) = clip(build.as_str(), k, webm.as_str(), o.workers) {
                 return Err(ToolError::new(f"shot {i} ({shots[i]})'s clip failed: {e.message()}"))
             }
             print(shown_path(webm.as_str()))

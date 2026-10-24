@@ -31,7 +31,7 @@
 // `--frames` cuts the round short (to try the tool).
 
 use lookbook_tool::main::lookbook
-use lookbook_tool::shots::{BUILD, LOOKBOOK, names_in, shown_path}
+use lookbook_tool::shots::{BUILD, LOOKBOOK, PROGRAM, names_in, shown_path}
 use lookbook_tool::shots::Options as Stills
 use std::io::print
 use std::tool::{ToolError, args}
@@ -227,6 +227,7 @@ pub fn round(o: Options) -> u32 {
     }
     if o.lookbook && !o.quick {
         let stills = Stills {
+            program: String::from(PROGRAM),
             out: String::from(f"{out}/lookbook"),
             stills: true,
             capture: false,

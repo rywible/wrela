@@ -698,7 +698,7 @@ fn source(t: Tables, keys: [u32], velocities: [u32], shown: str) -> String {
     s.push_str(
         "// recordings, moved by rounds of the model's own notes measured against them. The\n",
     )
-    s.push_str("// recordings' source and licence are in docs/process.md.\n")
+    s.push_str("// recordings' source and licence are in docs/citations.md.\n")
     s.push_str("//\n")
     s.push_str(
         f"// Written by `wrela tool audio -- model {shown}`; edit the tool, not this file.\n",

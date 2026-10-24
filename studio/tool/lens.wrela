@@ -190,6 +190,7 @@ pub fn begin(place: Place) -> Result<Building, ToolError> {
         var deps: Vec<String> = Vec::new()
         deps.push(String::from("maplens"))
         deps.push(String::from("engine"))
+        deps.push(String::from("land"))
         writes.push(
             (
                 String::from(f"{b.program.as_str()}/wrela.toml"),
@@ -200,6 +201,7 @@ pub fn begin(place: Place) -> Result<Building, ToolError> {
             Override { name: String::from("maplens"), dir: String::from(f"{ws}/studio/maplens") },
         )
         overrides.push(Override { name: String::from("engine"), dir: String::from(f"{ws}/engine") })
+        overrides.push(Override { name: String::from("land"), dir: String::from(f"{ws}/land") })
         // The map's literals alone: what a drag moves. (The ground's, the species' and the rest
         // are built into the code, so the preview runs at the speed of the game's build.)
         options.lift.push(String::from(f"{name.as_str()}/map.wrela"))

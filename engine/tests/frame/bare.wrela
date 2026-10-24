@@ -1,0 +1,82 @@
+// The bare scene the frame's tests draw (engine/tests/frame, engine/tests/frame-budget): flat
+// ground that casts into the cascades, open land for the probes, and the sky's own clouds.
+
+use engine::air::{Air, hazy}
+use engine::frame::Scene
+use engine::light::{Light, SUN_TOP}
+use engine::plant::Wind
+use engine::probes::{Occluder, ProbeGrid, Trace, grid}
+use engine::sky::{Gap, Weather}
+use engine::terrain::{Clipmap, Flat}
+use engine::view::Camera
+
+/// The sun at the start.
+pub const SUN = vec3(0.900, 0.407, -0.159)
+
+/// Where the eye starts (the world's, m), and how far ahead it looks.
+pub const START = vec3(0.0, 1.6, 0.0)
+pub const AHEAD = vec3(0.0, 0.0, 40.0)
+
+/// The scene: flat ground, nothing standing on it (the probes see open land), and its weather.
+pub struct Bare {
+    weather: Weather,
+}
+
+impl Scene for Bare {
+    fn wind(self, cam: Camera, time: f32) -> Wind {
+        Wind { time, dir: vec2(1.0, 0.0), strength: 0.3 }
+    }
+
+    fn weather(self) -> Weather {
+        self.weather.clone()
+    }
+
+    fn trace(self, light: Light, grid: ProbeGrid) -> Trace {
+        Trace {
+            light,
+            grid,
+            foliage: vec3(0.0),
+            reach: 24.0,
+            leaf: vec3(0.0),
+            bounced: 0,
+        }
+    }
+
+    fn probe_grid(self, at: vec2, origin: vec3) -> ProbeGrid {
+        grid(at, cols: 17, spacing: 4.0, low: -8.0, high: 24.0, voxel: 2.0)
+    }
+
+    fn occluders(self, at: vec2, origin: vec3) -> Option<Vec<Occluder>> {
+        Some(Vec::new())
+    }
+
+    fn height_at(self, world: vec2) -> f32 {
+        0.0
+    }
+
+    fn cook_ground(mut self, clipmap: mut Clipmap, eye: vec3, again: bool) -> u32 {
+        clipmap.follow(Flat {}, eye, again)
+    }
+
+    /// The ground casts into the static cascades: their depth is its plane seen from the sun.
+    fn ground_casts(self) -> bool {
+        true
+    }
+}
+
+/// The bare scene, with the sky's own clouds and nothing more: what engine/tests/frame-budget
+/// draws too.
+pub fn bare() -> Bare {
+    Bare {
+        weather: Weather {
+            clouds: Vec::new(),
+            fair: 0.3,
+            gap: Gap { a: vec2(3300.0, -590.0), b: vec2(12200.0, -2150.0), radius: 2500.0 },
+            wind: vec2(-5.5, 3.0),
+        },
+    }
+}
+
+pub fn air_of(sun: vec3) -> Air {
+    hazy(sun, SUN_TOP, eye: START.y)
+}

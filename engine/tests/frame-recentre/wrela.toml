@@ -1,0 +1,8 @@
+# engine::frame's recentring (`Frame::recentre`): a frame moved to a new render origin before its
+# probes' occluders cook, while their strips bake, or after they're baked publishes the probes
+# of a frame that started at that origin.
+[package]
+name = "frame_recentre"
+
+[dependencies]
+engine = { workspace = true }

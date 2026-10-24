@@ -3,8 +3,8 @@
 // scene varies a pixel at a time in colour and class (thin geometry, sky and ground), and its
 // history is a blue that the neighbourhoods clip, so both the reconstruction and the clip read
 // them.
-use engine::floor::fullscreen
-use engine::plant::full
+use engine::frame::fullscreen
+use engine::frame::full
 use engine::temporal::{Resolve, neighbourhoods, resolve, resolve_gathered}
 use engine::view::first_camera
 use std::gpu::{

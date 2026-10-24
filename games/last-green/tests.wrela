@@ -1,10 +1,10 @@
 // The floor's own tests (`wrela test games/last-green`, #55): what the bake leaves, read back
 // as the program reads it. They read the bake, so they're long (`suite/last_green.rs`).
 
-use engine::bake::{WEAR_N, decode_tile, reaching, tile_fields, tile_name}
-use engine::grow::{BAKE, BESIDE_PATH, Cause, Grid, HEAD_ROOM, Mark, State, Tree}
+use land::bake::{WEAR_N, decode_tile, reaching, tile_fields, tile_name}
+use land::grow::{BAKE, BESIDE_PATH, Cause, Grid, HEAD_ROOM, Mark, State, Tree}
 use engine::noise::rand
-use engine::place::{Feature, Keeper, Map, TILE}
+use land::place::{Feature, Keeper, Map, TILE}
 use engine::terrain::Terrain
 use engine::run::{Answered, Asks, TickInput}
 use std::field::Surface
@@ -83,7 +83,7 @@ fn no_meadow_grass_under_a_closed_canopy() {
     let habits = species::HABITS
     let m = map::map()
     borrow g = ground::GROUND
-    var tiles: Vec<engine::bake::Decisions> = Vec::new()
+    var tiles: Vec<land::bake::Decisions> = Vec::new()
     for j in lo.y..(hi.y + 1) {
         for i in lo.x..(hi.x + 1) {
             tiles.push(
@@ -185,7 +185,7 @@ fn no_meadow_grass_under_a_closed_canopy() {
 /// The points down the laid water's courses that the water's tests read: every seventh point's
 /// way to the next, 37% along it, across its width to 0.6 of it each way (a bend's ribbon
 /// turns); each with whether its course falls.
-fn course_samples(laid: engine::water::Laid) -> Vec<(vec2, bool)> {
+fn course_samples(laid: land::water::Laid) -> Vec<(vec2, bool)> {
     var out: Vec<(vec2, bool)> = Vec::new()
     for c in laid.courses {
         var k = 0
@@ -266,7 +266,7 @@ fn a_streams_water_lies_a_skin_over_its_ground() {
     var samples = 0
     for (p, falls) in course_samples(laid) {
         let ground = ground::GROUND.at(p.x, p.y)
-        let in_mere = length(p - w.meres[0].xy) < w.meres[0].z * engine::water::MERE_REACH &&
+        let in_mere = length(p - w.meres[0].xy) < w.meres[0].z * land::water::MERE_REACH &&
             ground < w.meres[0].w
         if !falls && !in_mere {
             let skin = laid.surface(p) - ground - engine::water::SKIN
@@ -328,12 +328,12 @@ const BANK: f32 = 1.5
 
 /// Whether `p` is within a stream's course, more than `BANK` in from its edge (not a fall's:
 /// past the edge, where no tree is read).
-fn in_course(laid: engine::water::Laid, p: vec2) -> bool {
+fn in_course(laid: land::water::Laid, p: vec2) -> bool {
     for c in laid.courses {
         if !c.falls {
             for i in 0..c.points.len() - 1 {
                 let a = c.points[i]
-                let (d, _) = engine::place::to_segment(p, a.xy, c.points[i + 1].xy)
+                let (d, _) = land::place::to_segment(p, a.xy, c.points[i + 1].xy)
                 if d < 0.5 * a.z - BANK {
                     return true
                 }
@@ -363,33 +363,33 @@ struct Walked {
 fn walk_toward(from: vec2, to: vec2, seconds: f32, run: bool, a: vec2, b: vec2, r: f32) -> Walked {
     let w = map::map().water
     let d = to - from
-    var p = engine::player::spawn(ground::GROUND, engine::place::Place::of(from), atan2(d.x, d.y))
+    var p = land::player::spawn(ground::GROUND, land::place::Place::of(from), atan2(d.x, d.y))
     p.controls.forward = true
     p.controls.run_held = run
     p.controls.yaw = atan2(d.x, d.y)
-    let target = engine::footing::Obstacle {
+    let target = land::footing::Obstacle {
         a,
         b,
         r,
-        thing: engine::footing::Thing::Stone,
+        thing: land::footing::Thing::Stone,
         depth: 0.0,
     }
     var out = Walked { room: 1.0e9, stood: 1.0e9, closest: 1.0e9, wading_pace: 1.0, deepest: 0.0 }
     for _ in 0..u32(seconds * 60.0) {
-        engine::player::step(mut p, ground::GROUND, w, history::OBSTACLES, 1.0 / 60.0)
+        land::player::step(mut p, ground::GROUND, w, history::OBSTACLES, 1.0 / 60.0)
         let at = p.at.world()
         history::OBSTACLES.near(at, |o| {
-            if o.thing != engine::footing::Thing::Stream {
+            if o.thing != land::footing::Thing::Stream {
                 out.room = min(out.room, o.reach(at).0)
             }
         })
         out.stood = min(
             out.stood,
-            engine::footing::stands(ground::GROUND, w, history::OBSTACLES, at),
+            land::footing::stands(ground::GROUND, w, history::OBSTACLES, at),
         )
         out.closest = min(out.closest, target.reach(at).0)
         let deep = max(
-            engine::footing::mere_depth(w, at, ground::GROUND.at(at.x, at.y)),
+            land::footing::mere_depth(w, at, ground::GROUND.at(at.x, at.y)),
             history::OBSTACLES.depth(at),
         )
         if deep > out.deepest {
@@ -407,8 +407,8 @@ fn start_near(at: vec2, r: f32, away: f32) -> vec2 {
     for k in 0..16 {
         let a = TAU * f32(k) / 16.0
         let s = at + vec2(cos(a), sin(a)) * (r + away)
-        if engine::footing::stands(ground::GROUND, w, history::OBSTACLES, s) > 0.0 &&
-            !history::OBSTACLES.blocked(s, engine::footing::BODY + 0.2) {
+        if land::footing::stands(ground::GROUND, w, history::OBSTACLES, s) > 0.0 &&
+            !history::OBSTACLES.blocked(s, land::footing::BODY + 0.2) {
             return s
         }
     }
@@ -423,7 +423,7 @@ fn start_near(at: vec2, r: f32, away: f32) -> vec2 {
 @test
 fn the_player_walks_into_each_thing_and_never_through_it() {
     let m = map::map()
-    let body = engine::footing::BODY
+    let body = land::footing::BODY
     // Each thing's candidates: its middle, its radius (a wall: its ends).
     let habits = species::HABITS
     var trunks: Vec<vec3> = Vec::new()
@@ -486,7 +486,7 @@ fn the_player_walks_into_each_thing_and_never_through_it() {
     stood = min(stood, into.stood)
     let deepest = into.deepest
     assert(
-        deepest > engine::footing::WADE && deepest <= engine::footing::DEEP,
+        deepest > land::footing::WADE && deepest <= land::footing::DEEP,
         f"walking into the mere it stood in {deepest} m of water",
     )
     assert(
@@ -520,7 +520,7 @@ fn the_player_walks_into_each_thing_and_never_through_it() {
     let pace = wade.wading_pace
     let wading_depth = wade.deepest
     assert(
-        wading_depth > engine::footing::WADE && pace <= engine::footing::WADING + 1.0e-4,
+        wading_depth > land::footing::WADE && pace <= land::footing::WADING + 1.0e-4,
         f"in a stream {wading_depth} m deep, its pace was {pace}",
     )
 }
@@ -542,7 +542,7 @@ fn a_trunk_stops_the_player_where_it_is_drawn() {
             m.inside(t.at) {
             var r = 0.0
             history::OBSTACLES.near(t.at, |o| {
-                if o.thing == engine::footing::Thing::Trunk && length(o.a - t.at) < 0.05 {
+                if o.thing == land::footing::Thing::Trunk && length(o.a - t.at) < 0.05 {
                     r = max(r, o.r)
                 }
             })
@@ -619,7 +619,7 @@ fn walking_from(first: u32) -> world::World {
     var w = world::spawn_world()
     let at = history::TOUR[first]
     let d = history::TOUR[first + 1] - at
-    w.player = engine::player::spawn(ground::GROUND, engine::place::Place::of(at), atan2(d.x, d.y))
+    w.player = land::player::spawn(ground::GROUND, land::place::Place::of(at), atan2(d.x, d.y))
     w.player.controls.forward = true
     w.player.controls.run_held = true
     w.tour.on = true
@@ -726,7 +726,7 @@ fn the_camera_is_never_inside_a_thing() {
             in_bin[bins.cell_at(all[i].at)].push(i)
         }
     }
-    let framing = engine::player::Framing {}
+    let framing = land::player::Framing {}
     var frames = 0
     var seen = 0
     for first in stretches() {
@@ -739,7 +739,7 @@ fn the_camera_is_never_inside_a_thing() {
             let at = w.player.at.world()
             let feet = vec3(at.x, w.player.y, at.y)
             let c = w.player.controls
-            let (eye, _) = engine::player::third_person(
+            let (eye, _) = land::player::third_person(
                 framing,
                 feet,
                 c.yaw,
@@ -752,9 +752,9 @@ fn the_camera_is_never_inside_a_thing() {
             let ground = ground::GROUND.at(eye.x, eye.z)
             assert(eye.y - ground >= NEAR, f"at {at} the eye is {eye.y - ground} m over the ground")
             history::OBSTACLES.near(eye.xz, |o| {
-                let solid = o.thing == engine::footing::Thing::Trunk ||
-                    o.thing == engine::footing::Thing::Stone ||
-                    o.thing == engine::footing::Thing::Wall
+                let solid = o.thing == land::footing::Thing::Trunk ||
+                    o.thing == land::footing::Thing::Stone ||
+                    o.thing == land::footing::Thing::Wall
                 let (d, _) = o.reach(eye.xz)
                 assert(
                     !solid || d >= NEAR || eye.y - ground > 3.0,
@@ -801,7 +801,7 @@ fn the_camera_is_never_inside_a_thing() {
     assert(2 * frames >= points, f"only {frames} frames of the walk's {points} points")
 }
 
-/// AC7's wildwood (Q9): a wild tile grown alone with its margin (`engine::wild::MARGIN` cells)
+/// AC7's wildwood (Q9): a wild tile grown alone with its margin (`land::wild::MARGIN` cells)
 /// is the same tile cut from a wood grown three tiles wide round it, to 3% of its cells' species
 /// and 0.3 m of their heights on average (spike 17's seam test), at the egg's road and away from
 /// it.
@@ -809,9 +809,9 @@ fn the_camera_is_never_inside_a_thing() {
 @fuel(2 ** 42)
 fn a_wild_tile_grown_alone_matches_the_wider_wood() {
     for t in [vec2i(9, -9), vec2i(14, -14), vec2i(-12, 6)] {
-        let e = engine::wild::seam_error(
+        let e = land::wild::seam_error(
             t,
-            engine::wild::MARGIN,
+            land::wild::MARGIN,
             wildwood::road_distance,
             wildwood::kept_clear,
         )
@@ -824,7 +824,7 @@ fn a_wild_tile_grown_alone_matches_the_wider_wood() {
         )
     }
     // With no margin, its edge shows (the margin is what keeps the seam out).
-    let bare = engine::wild::seam_error(
+    let bare = land::wild::seam_error(
         vec2i(9, -9),
         0,
         wildwood::road_distance,
@@ -842,7 +842,7 @@ fn a_wild_tile_grown_alone_matches_the_wider_wood() {
 fn walk_error(x: f64, z: f64, tiled: bool) -> f64 {
     let v = vec2(cos(0.7), sin(0.7)) * 5.0
     let dt = 1.0 / 60.0
-    var p = engine::place::Place::of_f64(x, z)
+    var p = land::place::Place::of_f64(x, z)
     var q = vec2(f32(x), f32(z))
     for _ in 0..3600 {
         p = p.moved(v * dt)
@@ -961,7 +961,7 @@ fn the_fire_and_the_gales_leave_what_they_did() {
     let u = decisions()
     for e in m.events {
         match e.kind {
-            engine::place::EventKind::Fire { at, reach } => {
+            land::place::EventKind::Fire { at, reach } => {
                 let (marked, cells) = remembered(u, at, reach, Mark::Fire, e.year)
                 var killed = 0
                 var scarred = 0
@@ -979,7 +979,7 @@ fn the_fire_and_the_gales_leave_what_they_did() {
                 assert(killed > 3 * scarred, f"{name}: {scarred} lived through it, {killed} died")
                 assert(scarred > 0, f"{name}: no tree lived through it")
             },
-            engine::place::EventKind::Storm { at, reach, .. } => {
+            land::place::EventKind::Storm { at, reach, .. } => {
                 let (marked, cells) = remembered(u, at, 0.6 * reach, Mark::Wind, e.year)
                 // A snapped stem stands as a snag, then falls and rots; a living tree's broken top
                 // is remembered too. Within its reach, some trees snapped (its whole reach: in its
@@ -1017,14 +1017,14 @@ fn the_fire_and_the_gales_leave_what_they_did() {
 }
 
 /// How many of the bake's 4 m cells within `reach` of `at` remember `mark` in `year`, of how many.
-fn remembered(u: engine::bake::Unbaked, at: vec2, reach: f32, mark: Mark, year: i32) -> (u32, u32) {
+fn remembered(u: land::bake::Unbaked, at: vec2, reach: f32, mark: Mark, year: i32) -> (u32, u32) {
     let g = u.wet_grid
     var marked = 0
     var cells = 0
     for c in 0..g.cells() {
         if length(g.centre(c) - at) < reach {
             cells += 1
-            let r = engine::bake::memory_at(u, g.centre(c))
+            let r = land::bake::memory_at(u, g.centre(c))
             if r.mark == mark && r.year == year {
                 marked += 1
             }
@@ -1098,7 +1098,7 @@ impl Listener {
     /// A frame (1/60 s) with the feet at `feet` (on the plane) facing `facing`, the camera behind
     /// and above them as the floor frames the player: its cues, then the samples due by its end.
     fn frame(mut self, feet: vec2, facing: vec2) {
-        let t = engine::place::tile_of(feet)
+        let t = land::place::tile_of(feet)
         var have = false
         for g in self.grounds {
             have = have || g.tile == t
@@ -1182,7 +1182,7 @@ fn bed_db(l: Listener, from: u32, to: u32) -> f32 {
 }
 
 /// The lookbook's shot named `name`.
-fn shot(name: Text) -> lookbook::Shot {
+fn shot(name: Text) -> engine::shot::Shot {
     for s in lookbook::SHOTS {
         if s.name == name {
             return s

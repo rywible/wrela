@@ -9,7 +9,7 @@
 
 use climber::moves::drift_rate
 use climber::sounds::{IMPACTS, WHOOSHES}
-use engine::place::Water
+use land::place::Water
 use engine::plant::{Wind, gust}
 use engine::sound::{Babble, Breath, Cue, Mixer, Palette, Surface, WATERS, mix, mixer}
 use ground::{CLOSED, Ground}
@@ -154,7 +154,7 @@ pub fn surface_at(g: Ground, at: vec3, n: vec3, f: vec4, wading: f32) -> u32 {
     if wading > 0.05 {
         return SHALLOWS
     }
-    if f.z > engine::bake::STREAM_BED {
+    if f.z > land::bake::STREAM_BED {
         return GRAVEL
     }
     if g.rocky(at.xz, n) > 0.5 {
@@ -205,7 +205,7 @@ fn nearest_in(p: vec2, at: vec2, r: f32) -> vec2 {
 /// height is costly to work out, and a source's height matters little to how it's heard.
 pub fn heard(
     ears: vec3,
-    courses: [engine::water::Course],
+    courses: [land::water::Course],
     pools: [vec4],
     w: Water,
     ground: f32,
@@ -377,7 +377,7 @@ pub fn moment(
 ) -> Moment {
     borrow g = ground::GROUND
     let wading = max(
-        engine::footing::mere_depth(world::MAP.water, feet.xz, feet.y),
+        land::footing::mere_depth(world::MAP.water, feet.xz, feet.y),
         history::OBSTACLES.depth(feet.xz),
     )
     Moment {

@@ -1,6 +1,6 @@
 // Deterministic atlas samples through the production impostor fragment shaders. Each
 // 16×16 panel fixes its atlas coordinate; no world bake, scene or temporal history.
-use engine::floor::fullscreen
+use engine::frame::fullscreen
 use engine::impostor::{ATLAS, CELL, VIEWS, Bake, FarVertex, far_cut, far_cut_flat, far_shade}
 use engine::light::Light
 use engine::lit::Lighting

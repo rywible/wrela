@@ -1,13 +1,13 @@
 // The specimens: each of the history's species at a run of ages, grown in the open and among
-// others (`engine::grow::grown`), stood apart on level ground and drawn as the floor draws its
+// others (`land::grow::grown`), stood apart on level ground and drawn as the floor draws its
 // trees (`trees::placed`). The specimen view (F8's sixth, `wrela tool lookbook -- <dir> --view specimens`)
 // shows them a species a shot, to judge their forms beside each other.
 
-use engine::bake::Decisions
-use engine::grow::{Tree, grown}
-use engine::place::TILE
+use land::bake::Decisions
+use land::grow::{Tree, grown}
+use land::place::TILE
 use engine::terrain::{Cover, Terrain}
-use lookbook::Shot
+use engine::shot::Shot
 use species::Species
 
 /// The ages each species is shown at (years), a column each.
@@ -59,7 +59,7 @@ pub fn trees() -> Vec<Tree> {
 pub fn decisions(t: vec2i) -> Decisions {
     var mine: Vec<Tree> = Vec::new()
     for tr in trees() {
-        if engine::place::tile_of(tr.at) == t {
+        if land::place::tile_of(tr.at) == t {
             mine.push(tr)
         }
     }

@@ -1,0 +1,35 @@
+// The clearing's lookbook: its camera path's three views as shots (`engine::shot`), which
+// `wrela tool lookbook --package examples/clearing` renders settled and records in motion. The
+// opening is spike 15's; the others are where the path turns toward the gap and pans up the great
+// tree (path.wrela). Heights are above the ground under each point.
+
+use engine::shot::Shot
+use scene::{EYE_HEIGHT, FOVY, KNOLL, LOOK_AT, STAND, height}
+
+pub const SHOTS = [
+    // Spike 15's: the meadow from the track's foot, the great tree and the forest's rim beyond.
+    Shot {
+        name: "the opening",
+        eye: vec3(STAND.x, EYE_HEIGHT, STAND.y),
+        at: vec3(LOOK_AT.x, LOOK_AT.y - height(x: LOOK_AT.x, z: LOOK_AT.z), LOOK_AT.z),
+        moves: vec2(0.0, 1.0),
+        fovy: FOVY,
+    },
+    // From the meadow's far side, down the valley through the gap in the forest.
+    Shot {
+        name: "toward the gap",
+        eye: vec3(-9.0, 1.8, 34.0),
+        at: vec3(-30.0, 2.0 - height(x: -30.0, z: 60.0), 60.0),
+        moves: vec2(0.5, 0.0),
+        fovy: FOVY,
+    },
+    // From near the rise, up the great tree's trunk to its crown.
+    Shot {
+        name: "the great tree",
+        eye: vec3(-1.5, 1.6, 24.0),
+        at: vec3(KNOLL.x, 7.5, KNOLL.y),
+        moves: vec2(0.6, 0.0),
+        fovy: FOVY,
+        reach: 6.0,
+    },
+]

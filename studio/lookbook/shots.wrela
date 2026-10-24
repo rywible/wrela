@@ -1,4 +1,4 @@
-// The floor's lookbook shots, chosen as a player chooses them, and the lookbook tool's command
+// A program's lookbook shots, chosen as a player chooses them, and the lookbook tool's command
 // line: what is pure of the tool, so its tests need no build.
 
 use std::input::{Key, Script}
@@ -9,9 +9,22 @@ use toolkit::command::size_of
 /// The root the tool reads and writes the workspace in.
 pub const WS: Text = "ws"
 
+/// The package whose lookbook the tool renders unless `--package` names another: the floor's.
+pub const PROGRAM: Text = "ws/games/last-green"
+
 /// The floor's build (`wrela build games/last-green`), and its lookbook's source.
 pub const BUILD: Text = "ws/games/last-green/build"
 pub const LOOKBOOK: Text = "ws/games/last-green/lookbook.wrela"
+
+/// A package's build (`wrela build <package>`), from its root path.
+pub fn build_of(program: str) -> String {
+    String::from(f"{program}/build")
+}
+
+/// A package's lookbook's source (its `engine::shot::Shot`s), from its root path.
+pub fn lookbook_of(program: str) -> String {
+    String::from(f"{program}/lookbook.wrela")
+}
 
 /// A shot's move starts this many frames after it's chosen (`lookbook::SETTLE` seconds at 60 a
 /// second): its still is the frame then.
@@ -25,9 +38,9 @@ pub const STILL: Text = "still at frame"
 /// A shot's move, in frames: its clip's length.
 pub const MOVE_FRAMES: u32 = 600
 
-/// The views: each one's name, how many presses of F8 draw it (`view` in
-/// games/last-green/main.wrela), and the directory of the build's `files/` that names its shots
-/// (empty: the lookbook's own).
+/// The views: each one's name, how many presses of F8 draw it (`engine::frame::Frame::form`'s
+/// views first; the floor's own world views after them, `view` in games/last-green/main.wrela),
+/// and the directory of the build's `files/` that names its shots (empty: the lookbook's own).
 pub const VIEWS: [(Text, u32, Text); 6] = [
     ("look", 0, ""),
     ("clay", 1, ""),
@@ -174,11 +187,12 @@ pub fn check_line(doc: Doc, i: u32) -> Option<String> {
     Some(line)
 }
 
-/// What a run of the tool does: where its files go (a root path), whether it makes the stills
-/// alone, whether in capture mode, its view (an index in `VIEWS`), the stills' size, how many
-/// stills render at once, how many threads the clips' pages run their jobs on, and the shots
-/// (none: every one).
+/// What a run of the tool does: the program whose lookbook it renders and where its files go
+/// (root paths), whether it makes the stills alone, whether in capture mode, its view (an index in
+/// `VIEWS`), the stills' size, how many stills render at once, how many threads the clips' pages
+/// run their jobs on, and the shots (none: every one).
 pub struct Options: Clone {
+    pub program: String,
     pub out: String,
     pub stills: bool,
     pub capture: bool,
@@ -190,11 +204,12 @@ pub struct Options: Clone {
     pub picks: Vec<u32>,
 }
 
-pub const USAGE: Text = "usage: wrela tool lookbook -- <out-dir> [--stills] [--capture] [--view clay|silhouette|bare|grown|specimens] [--size WxH] [--jobs N] [--workers N] [shot-number ...]"
+pub const USAGE: Text = "usage: wrela tool lookbook -- <out-dir> [--package <dir>] [--stills] [--capture] [--view clay|silhouette|bare|grown|specimens] [--size WxH] [--jobs N] [--workers N] [shot-number ...]"
 
 /// The options the command line gives, or what's wrong with it.
 pub fn parse_args(given: [String]) -> Result<Options, String> {
     var o = Options {
+        program: String::from(PROGRAM),
         out: String::new(),
         stills: false,
         capture: false,
@@ -211,7 +226,13 @@ pub fn parse_args(given: [String]) -> Result<Options, String> {
         let a = given[k].as_str()
         let next = if k + 1 < given.len() { given[k + 1].clone() } else { String::new() }
         let value = next.as_str()
-        if a == "--stills" {
+        if a == "--package" {
+            let Some(path) = rooted(WS, value) else {
+                return Err(String::from(f"--package takes a package's directory in the workspace"))
+            }
+            o.program = take path
+            k += 1
+        } else if a == "--stills" {
             o.stills = true
         } else if a == "--capture" {
             o.capture = true

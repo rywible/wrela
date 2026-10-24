@@ -1,12 +1,17 @@
 // Sun shadows: shadow maps that say how much of the sun's light reaches each point of the world.
 //
+// `Kept` is a static cascade kept round a moving middle: the map in use stays while the next is
+// drawn beside it a strip a frame (`Kept::strip`, `Kept::drawn`), and the two swap when the last
+// strip is drawn (the frame draws it: engine::frame).
+//
 // Two static cascades cover the land, one over the near land and one over the far; they are
 // drawn only when something static changes. A dynamic map covers the space round what moves
 // (the creature) and is drawn every frame. A lookup (`sunlit`) reads both and takes the darker.
 // Four fixed comparison taps soften edges in shadow-map space. A surface keeps the same light as
 // time and the viewing camera change.
 
-use std::gpu::{ComparisonSampler, DepthBias, DepthTexture}
+use std::collections::swap
+use std::gpu::{ComparisonSampler, DepthBias, DepthTexture, depth_texture}
 use std::transform::{look_at, ortho}
 
 /// The depth bias a caster draws into a shadow map with: enough that a lit surface doesn't
@@ -232,4 +237,220 @@ fn static_shadow_cascades_meet_over_a_continuous_band() {
         previous = share
     }
     assert(previous == 0.0, "near map extends beyond its valid border")
+}
+
+// ---- A cascade that follows the eye ---------------------------------------------------------
+
+/// A static shadow cascade kept round a moving middle, with no frame drawing it whole: the map
+/// in use stays while the next is drawn beside it, a strip of its trees a frame (the wood
+/// chooses each strip's on the GPU), and the two swap when the last strip is drawn. So the
+/// shadows re-centre with no long frame.
+///
+/// It holds the map in use and its middle; the map being drawn beside it and its middle, and the
+/// strip it's at; its square's size and reach, how far past the square a shadow can reach into
+/// it, its texels a side and its strips; and whether what casts into it changed (it's drawn
+/// again in place).
+pub struct Kept {
+    pub front: DepthTexture,
+    pub back: DepthTexture,
+    pub centre: vec3,
+    next: Option<vec3>,
+    strip: u32,
+    pub span: f32,
+    pub reach: f32,
+    reach_in: f32,
+    pub side: u32,
+    pub strips: u32,
+    stale: bool,
+    /// The sun the strips being drawn are seen from: a set is drawn from one sun.
+    sun: vec3,
+    /// Whether the map in use has been drawn at all (the first is drawn before it's used).
+    pub ready: bool,
+}
+
+impl Kept {
+    /// A cascade `span` wide round `centre`, `side` texels a side, drawn in `strips` strips;
+    /// `reach_in` is how far past its square a tree's shadow can reach into it (m: a 25 m tree's
+    /// at a sun 24° up is 56 m long).
+    pub fn new(centre: vec3, span: f32, reach: f32, reach_in: f32, side: u32, strips: u32) -> Kept {
+        Kept {
+            front: depth_texture(width: side, height: side),
+            back: depth_texture(width: side, height: side),
+            centre,
+            next: Some(centre),
+            strip: 0,
+            span,
+            reach,
+            reach_in,
+            side,
+            strips,
+            stale: false,
+            sun: vec3(0.0),
+            ready: false,
+        }
+    }
+
+    /// The cascade in use.
+    pub fn cascade(self) -> Cascade {
+        Cascade { centre: self.centre, span: self.span, reach: self.reach, side: self.side }
+    }
+
+    /// Moved by `d` with render space (the render origin moved by `-d`): its maps hold what they
+    /// held: replacement maps snap relative to this shifted centre.
+    pub fn shift(mut self, d: vec3) {
+        self.centre += d
+        if let Some(n) = self.next {
+            self.next = Some(n + d)
+        }
+    }
+
+    /// What casts into it changed: drawn again where it is, once the drawing under way ends (a
+    /// drawing that hasn't drawn its first strip yet draws what casts now).
+    pub fn changed(mut self) {
+        self.stale = self.stale || draws_again(drawing: self.next.is_some(), strip: self.strip)
+    }
+
+    /// Follows `at`: once it's `moves` from the middle in use (or what casts changed), the next
+    /// map starts round it, unless one is being drawn.
+    pub fn follow(mut self, at: vec3, moves: f32) {
+        if self.next.is_some() {
+            return
+        }
+        let moved = length(at.xz - self.centre.xz) > moves
+        if moved || self.stale {
+            self.next = Some(if moved { at } else { self.centre })
+            self.strip = 0
+            self.stale = false
+        }
+    }
+
+    /// Whether a map is being drawn beside the one in use.
+    pub fn drawing(self) -> bool {
+        self.next.is_some()
+    }
+
+    /// A complete map with no active or queued replacement. Finishing a strip set may
+    /// leave a stale map until follow starts the next set on the following frame.
+    pub fn settled(self) -> bool {
+        cache_settled(self.ready, self.drawing(), self.stale)
+    }
+
+    /// The strip of the next map to draw, if one's being drawn: its square's view from the sun
+    /// toward `sun`, the part of the square (and a shadow's reach past it) whose casters it
+    /// draws, and whether it's the first strip (which draws what casts only once: solids, the
+    /// ground). The first strip of a replacement snaps to the texels of the map in use. A set
+    /// whose sun has moved since its first strip starts again from it, so no map is drawn from
+    /// two suns. Draw it into `back` (cleared on the first strip, kept after), then call `drawn`.
+    pub fn strip(mut self, sun: vec3) -> Option<Strip> {
+        let Some(requested) = self.next else { return None }
+        if starts_again(self.strip, self.sun, sun) {
+            self.strip = 0
+        }
+        self.sun = sun
+        let c = if self.strip == 0 && self.ready {
+            snapped_centre(sun, requested, self.centre, self.span / f32(self.side))
+        } else { requested }
+        self.next = Some(c)
+        let half = self.span * 0.5 + self.reach_in
+        let lo = c.xz - vec2(half)
+        let step = 2.0 * half / f32(self.strips)
+        let a = vec2(lo.x, lo.y + step * f32(self.strip))
+        Some(
+            Strip {
+                view: sun_view(normalize(sun), c, self.span, self.reach),
+                lo: a,
+                hi: vec2(lo.x + 2.0 * half, a.y + step),
+                first: self.strip == 0,
+            },
+        )
+    }
+
+    /// The strip `strip` gave is drawn: after the last, the maps swap.
+    pub fn drawn(mut self) {
+        let Some(c) = self.next else { return }
+        self.strip += 1
+        if self.strip >= self.strips {
+            swap(mut self.front, mut self.back)
+            self.centre = c
+            self.next = None
+            self.ready = true
+        }
+    }
+}
+
+/// A strip of a kept cascade being drawn: the sun's view of its square, the part of the square
+/// whose casters it draws (`lo` to `hi`, x and z), and whether it's the first.
+pub struct Strip: Copy {
+    pub view: mat4,
+    pub lo: vec2,
+    pub hi: vec2,
+    pub first: bool,
+}
+
+fn cache_settled(ready: bool, drawing: bool, stale: bool) -> bool {
+    ready && !drawing && !stale
+}
+
+@test
+fn static_light_is_not_settled_between_queued_replacements() {
+    assert(!cache_settled(ready: false, drawing: false, stale: false), "an empty map is settled")
+    assert(
+        !cache_settled(ready: false, drawing: true, stale: false),
+        "the first strip set is settled",
+    )
+    assert(
+        cache_settled(ready: true, drawing: false, stale: false),
+        "the completed first map is not settled",
+    )
+    assert(
+        !cache_settled(ready: true, drawing: true, stale: false),
+        "an active replacement is settled",
+    )
+    assert(
+        !cache_settled(ready: true, drawing: true, stale: true),
+        "changed casters are settled during drawing",
+    )
+    assert(
+        !cache_settled(ready: true, drawing: false, stale: true),
+        "the gap before a queued replacement is settled",
+    )
+    assert(
+        cache_settled(ready: true, drawing: false, stale: false),
+        "the completed replacement never settles",
+    )
+}
+
+/// Whether a change to what casts draws a cascade again: not while its drawing (`drawing`) is
+/// still at its first strip (`strip`), which draws what casts then.
+fn draws_again(drawing: bool, strip: u32) -> bool {
+    !drawing || strip > 0
+}
+
+/// A change to what casts before a drawing's first strip is drawn with it (the far cascade at
+/// load: the far layer and the built things come while it waits); one after it, or with no
+/// drawing under way, draws the map again.
+@test
+fn a_change_before_the_first_strip_is_drawn_with_it() {
+    assert(
+        !draws_again(drawing: true, strip: 0),
+        "a change before the first strip draws the map again",
+    )
+    assert(draws_again(drawing: true, strip: 1), "a change after the first strip isn't drawn")
+    assert(draws_again(drawing: false, strip: 0), "a change with no drawing under way isn't drawn")
+}
+
+/// Whether a set of strips starts again at strip `strip` (0 the first) for `sun`: it does when
+/// it's partway and the sun has moved from the one it began from (`began`).
+fn starts_again(strip: u32, began: vec3, sun: vec3) -> bool {
+    strip > 0 && sun != began
+}
+
+/// A set of strips is drawn from one sun: one partway through starts again when the sun moves,
+/// and not when it stays; a set's first strip has nothing to start again.
+@test
+fn a_cascade_set_is_drawn_from_one_sun() {
+    let (a, b) = (normalize(vec3(0.5, 0.8, 0.2)), normalize(vec3(-0.4, 0.7, 0.3)))
+    assert(starts_again(2, a, b), "a moved sun kept the strips drawn from the last")
+    assert(!starts_again(2, a, a), "a still sun started the set again")
+    assert(!starts_again(0, a, b), "a first strip started again")
 }

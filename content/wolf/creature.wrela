@@ -697,3 +697,16 @@ pub fn wolf() -> Creature<Coat> {
         )
         .then(Fur { head: h })
 }
+
+/// The wolf's body for walking (`engine::gait::body`): springs on its neck, 90 stiff, and on its
+/// tail, 30 stiff.
+pub fn walker_body() -> engine::gait::Body {
+    let s = skeleton()
+    engine::gait::body(
+        s,
+        [s.find("neck"), s.find("head")],
+        [s.find("tail 0"), s.find("tail 1"), s.find("tail 2"), s.find("tail 3")],
+        head_k: 90.0,
+        tail_k: 30.0,
+    )
+}

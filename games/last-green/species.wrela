@@ -2,7 +2,7 @@
 // seven: oak and beech, birch the pioneer, hawthorn and blackthorn at the edges, pine on thin soil,
 // alder in the wet.
 
-use engine::grow::Habit
+use land::grow::Habit
 
 /// The floor's species: each one's `u32` is its index in the history's tables, and `HABITS`
 /// has one habit for each, in this order.

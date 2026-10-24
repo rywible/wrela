@@ -5,14 +5,13 @@
 // `select` the lists and draw them (`prepass_cards`, `occlude`, `prepass_far`, `shade`; `shadow`
 // for a cascade chosen by `select_shadow`).
 //
-// `vegetation::Forest` chooses each instance's way (its cards' level, an impostor, a volume) on
-// the CPU and writes the frame's lists, which suits a few thousand instances. A floor streams
-// tens of thousands round the player, and a moving player changes them every frame. Here every
-// loaded instance stays on the GPU, in its tile's slot; each frame a kernel chooses each one's
-// ways (`lod::place`, the same function the draws read its shares by) and writes its index and
-// marks into its list's room, counted with atomics; a second gathers each list's instances into
-// place, and a third writes each list's indirect draws. The draws are `vegetation`'s own shaders,
-// unchanged: the same cards, limbs, impostors and volumes as a `vegetation::Forest` draws.
+// A floor streams tens of thousands of instances round the player, and a moving player changes
+// them every frame, so every loaded instance stays on the GPU, in its tile's slot; each frame a
+// kernel chooses each one's ways (its cards' level, an impostor, a volume: `lod::place`, the same
+// function the draws read its shares by) and writes its index and marks into its list's room,
+// counted with atomics; a second gathers each list's instances into place, and a third writes
+// each list's indirect draws. The draws are `vegetation`'s shaders. A scene that stands still (the
+// clearing) is one tile of a wood.
 //
 // A list is a kind drawn one way. Its room is the kind's loaded instances (an instance is in at
 // most two ways), laid out on the CPU when tiles come and go.
@@ -894,7 +893,7 @@ impl Wood {
         CardDraw { clear: self.clear, ..d }
     }
 
-    /// The depth prepass's cards (`Forest::prepass`'s): each list of cards, cut, into the depth
+    /// The depth prepass's cards: each list of cards, cut, into the depth
     /// target alone. Then `occlude` and `prepass_far`, in a pass of their own.
     pub fn prepass_cards<P: RenderPass>(self, pass: P, cam: Camera, wind: Wind, s: Sampler) {
         borrow lists = self.seen.lists
@@ -981,7 +980,7 @@ impl Wood {
         }
     }
 
-    /// The shading pass's draws (`Forest::shade`): the cards where the prepass left their depth,
+    /// The shading pass's draws: the cards where the prepass left their depth,
     /// the limbs, then the far instances.
     pub fn shade<P: RenderPass>(self, pass: P, lt: Lighting, wind: Wind, ids: Texture<R32Uint>) {
         let cam = lt.cam
@@ -1094,7 +1093,7 @@ impl Wood {
         }
     }
 
-    /// A shadow cascade's draws (`Forest::shadow`), of what `select_shadow` chose: each kind's
+    /// A shadow cascade's draws, of what `select_shadow` chose: each kind's
     /// cards at level 1, facing the sun, cut to their leaves, and its limbs.
     pub fn shadow<P: RenderPass>(self, pass: P, view: mat4, sh: Shadows, wind: Wind, s: Sampler) {
         borrow lists = self.shadowed.lists

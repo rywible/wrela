@@ -1,7 +1,7 @@
 // The left half held dark moving cloth; it now shows the same striped ground as the right.
 // Matching depths and a dark neighbour keep ordinary rejection from hiding a motion error.
-use engine::floor::fullscreen
-use engine::plant::full
+use engine::frame::fullscreen
+use engine::frame::full
 use engine::temporal::{Resolve, neighbourhoods, resolve}
 use engine::view::first_camera
 use std::gpu::{

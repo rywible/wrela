@@ -3,11 +3,12 @@
 // checked as the bake is: with the crowns as they're drawn and the built things), and its
 // geology. The game never calls these, so none of it is in its build.
 
-use engine::footing::obstacles_of
-use engine::grow::{Ground, PREVIEW, simulate}
-use engine::interest::{Evidence, Preview, QUICK, check}
-use engine::landform::{Landscape, Survey}
-use engine::place::Map
+use land::footing::obstacles_of
+use engine::terrain::Ground
+use land::grow::{PREVIEW, simulate}
+use land::interest::{Evidence, Preview, QUICK, check}
+use land::landform::{Landscape, Survey}
+use land::place::Map
 
 /// The floor's map.
 pub fn map() -> Map {
