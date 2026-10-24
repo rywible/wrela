@@ -74,7 +74,7 @@ fn first_difference(a: [u8], b: [u8]) -> Option<u32> {
 fn the_mixer_mixes_the_same_samples_every_time() {
     built()
     let runs = [mixed(), mixed()]
-    let samples = runs[0].clone()
+    borrow samples = runs[0]
     let n = samples.len() / 4
     assert(n == MIXED * 128 * 2, f"{n} samples")
     var peak = 0.0

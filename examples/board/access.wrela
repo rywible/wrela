@@ -271,7 +271,7 @@ fn items_are_named_by_kind_and_words() {
         can_undo: false,
         can_redo: false,
     )
-    let items: Vec<Node> = nodes.clone()
+    borrow items = nodes
     var found = 0
     for n in items {
         if n.id == ITEMS + a {

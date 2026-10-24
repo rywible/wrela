@@ -30,11 +30,11 @@ fn copy_into(from: str, to: str) {
     todo.push((String::from(from), String::from(to)))
     while todo.len() > 0 {
         let Some(pair) = todo.pop() else { break }
-        let src = pair.0.clone()
-        let dest = pair.1.clone()
+        borrow src = pair.0
+        borrow dest = pair.1
         let Ok(entries) = files::list(src.as_str()).wait() else { panic(f"{src.as_str()} lists") }
         for k in 0..entries.len() {
-            let e = entries[k].clone()
+            borrow e = entries[k]
             let s = String::from(f"{src.as_str()}/{e.name.as_str()}")
             let d = String::from(f"{dest.as_str()}/{e.name.as_str()}")
             if e.kind == Kind::Dir {

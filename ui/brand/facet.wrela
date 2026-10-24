@@ -1071,7 +1071,7 @@ fn every_square_corner_of_a_letter_or_digit_is_cut_at_45_degrees() {
     for l in letters {
         for k in 0..l.strokes.len() {
             let stroke = l.strokes[k].clone()
-            let p = stroke.points.clone()
+            borrow p = stroke.points
             let n = p.len()
             for i in 0..n {
                 if !stroke.closed && (i == 0 || i + 1 == n) { continue }

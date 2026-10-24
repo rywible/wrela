@@ -2354,7 +2354,7 @@ fn a_successful_store_marks_its_board_as_saved(game: App) {
 @test(frames: 14, input: scripts::NOTE)
 fn a_note_is_placed_and_typed(game: App) {
     assert(game.board.items.len() == 1, f"{game.board.items.len()} items")
-    let it = game.board.items[0].clone()
+    borrow it = game.board.items[0]
     assert(it.kind == Kind::Note && it.text == "Hi there", f"`{it.text}`")
     assert(game.typing.is_none(), "Escape stopped the typing")
     let r = screen_rect(game, 0)
@@ -2385,7 +2385,7 @@ fn undo_puts_a_move_back(game: App) {
 @test(frames: 20, input: scripts::LINK)
 fn a_connector_joins_two_notes(game: App) {
     assert(game.board.items.len() == 3, f"{game.board.items.len()} items")
-    let link = game.board.items[2].clone()
+    borrow link = game.board.items[2]
     assert(link.kind == Kind::Link, "the connector is on top")
     assert(link.from == game.board.items[0].id && link.to == game.board.items[1].id)
 }
@@ -2402,7 +2402,7 @@ fn a_marquee_selects_and_backspace_deletes(game: App) {
 @test(frames: 12, input: scripts::PEN)
 fn the_pen_draws_a_stroke(game: App) {
     assert(game.board.items.len() == 1)
-    let it = game.board.items[0].clone()
+    borrow it = game.board.items[0]
     assert(it.kind == Kind::Pen && it.points.len() == 4, f"{it.points.len()} points")
     assert(game.tool == Tool::Pen, "the pen stays in hand")
 }
@@ -2420,7 +2420,7 @@ fn a_paste_without_the_hosts_clipboard_uses_the_boards(game: App) {
 /// typed before.
 @test(frames: 12, input: scripts::COMPOSE)
 fn composed_text_is_typed_once(game: App) {
-    let note = game.board.items[0].clone()
+    borrow note = game.board.items[0]
     assert(note.text == "a仮名", f"`{note.text}`")
     assert(game.composer.text.is_empty(), "nothing is composing")
     assert(game.typing == Some(Typing::caret(note.id, note.text.len())))
@@ -2443,15 +2443,15 @@ fn an_assistive_selection_names_its_item(game: App) {
 fn editing_moves_over_whole_groups(game: App) {
     // "a", "e" + U+0301, 👍🏽, "x": Left to before "x", Backspace takes 👍🏽; Left to before
     // "é", Delete takes it.
-    let note = game.board.items[0].clone()
+    borrow note = game.board.items[0]
     assert(note.text == "ax", f"`{note.text}` ({note.text.len()} bytes)")
 }
 
 /// A note dragged to within a few pixels of its neighbour's top lands exactly on it.
 @test(frames: 18, input: scripts::SNAP)
 fn a_dragged_note_snaps_to_its_neighbour(game: App) {
-    let a = game.board.items[0].clone()
-    let b = game.board.items[1].clone()
+    borrow a = game.board.items[0]
+    borrow b = game.board.items[1]
     assert(b.at.y == a.at.y, f"{b.at.y} against {a.at.y}")
     assert(b.at.x > a.at.x + 200.0, "it moved across too, unsnapped")
     assert(game.guides.is_empty(), "no guides once it's let go")
@@ -2461,8 +2461,8 @@ fn a_dragged_note_snaps_to_its_neighbour(game: App) {
 @test(frames: 14, input: scripts::ALT)
 fn an_alt_drag_leaves_a_copy(game: App) {
     assert(game.board.items.len() == 2, f"{game.board.items.len()} items")
-    let first = game.board.items[0].clone()
-    let copy = game.board.items[1].clone()
+    borrow first = game.board.items[0]
+    borrow copy = game.board.items[1]
     let moved = (copy.at - first.at) * game.view.scale()
     // 80 pixels across and 20 down: nowhere near the original's lines, so nothing snaps.
     assert(length(moved - vec2(80.0, 20.0)) < 0.01, f"moved {moved.x}, {moved.y}")
@@ -2493,9 +2493,9 @@ fn arrowheads_go_round() {
 fn a_dot_drags_out_a_connector_with_a_label(game: App) {
     assert(game.board.items.len() == 3, f"{game.board.items.len()} items")
     // The right-hand note was made first; the connector runs from the left-hand one to it.
-    let b = game.board.items[0].clone()
-    let a = game.board.items[1].clone()
-    let link = game.board.items[2].clone()
+    borrow b = game.board.items[0]
+    borrow a = game.board.items[1]
+    borrow link = game.board.items[2]
     assert(link.kind == Kind::Link && link.from == a.id && link.to == b.id)
     assert(link.style == board::CONNECTOR)
     assert(link.text == "yes", f"`{link.text}`")
@@ -2507,7 +2507,7 @@ fn a_dot_drags_out_a_connector_with_a_label(game: App) {
 /// Alt+Shift+Left selects the last word; typing replaces it, and nothing's selected after.
 @test(frames: 52, input: scripts::REPLACE)
 fn typing_replaces_a_selected_word(game: App) {
-    let note = game.board.items[0].clone()
+    borrow note = game.board.items[0]
     assert(note.text == "hello there", f"`{note.text}`")
     assert(game.typing == Some(Typing::caret(note.id, 11)))
 }
@@ -2560,7 +2560,7 @@ fn a_locked_note_stays(game: App) {
 @test(frames: 20, input: scripts::FRAME)
 fn a_frame_carries_what_is_inside_it(game: App) {
     assert(game.board.items.len() == 2)
-    let frame = game.board.items[0].clone()
+    borrow frame = game.board.items[0]
     assert(frame.kind == Kind::Frame && frame.text == "Frame 1", f"`{frame.text}`")
     assert(game.selected.len() == 1 && game.selected[0] == frame.id)
     let note = screen_rect(game, 1)
@@ -2579,7 +2579,7 @@ fn the_shapes_flyout_picks_a_triangle(game: App) {
 /// The text size control steps a text's words up twice: 20, then 28, then 40.
 @test(frames: 12, input: scripts::SIZE)
 fn text_size_steps_up(game: App) {
-    let t = game.board.items[0].clone()
+    borrow t = game.board.items[0]
     assert(t.kind == Kind::Text && t.type_size == 40.0, f"{t.type_size}")
     assert(t.size.y > 40.0, "it grew to hold its words")
 }
@@ -2619,8 +2619,8 @@ fn a_click_off_a_note_lets_it_go(game: App) {
 @test(frames: 64, input: scripts::GROUPING)
 fn a_group_moves_whole_and_opens_to_a_click(game: App) {
     assert(game.board.items.len() == 2)
-    let a = game.board.items[0].clone()
-    let b = game.board.items[1].clone()
+    borrow a = game.board.items[0]
+    borrow b = game.board.items[1]
     assert(a.group != 0 && a.group == b.group, f"groups {a.group} and {b.group}")
     let ra = screen_rect(game, 0)
     let rb = screen_rect(game, 1)
@@ -2678,7 +2678,7 @@ fn the_box_round_several_scales_them(game: App) {
 @test(frames: 74, input: scripts::END)
 fn a_connectors_end_moves_to_another_item(game: App) {
     assert(game.board.items.len() == 4, f"{game.board.items.len()} items")
-    let link = game.board.items[3].clone()
+    borrow link = game.board.items[3]
     assert(link.kind == Kind::Link)
     assert(link.from == game.board.items[0].id, "its start stays")
     assert(link.to == game.board.items[2].id, f"it ends at {link.to}")

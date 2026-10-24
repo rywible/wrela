@@ -724,7 +724,7 @@ fn notes_in(root: str, shown: str) -> Result<Notes, ToolError> {
 
 /// `model`: the fit, written to `--out` and formatted, and what it measured of each key.
 pub fn fit_model(a: Args) -> Result<(), ToolError> {
-    let shown = a.rest[0].clone()
+    borrow shown = a.rest[0]
     let Some(out_shown) = a.out.clone() else { return Err(ToolError::new("model needs --out")) }
     let out = in_root(a.root.as_str(), out_shown.as_str())?
     let reference = notes_in(a.root.as_str(), shown.as_str())?

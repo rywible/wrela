@@ -195,7 +195,7 @@ pub fn failed(why: take String) -> ToolError {
 
 pub fn tool() -> u32 {
     let Some(a) = parse_args(args()) else { return usage() }
-    let action = a.action.clone()
+    borrow action = a.action
     let known = [
         "wav",
         "describe",
@@ -281,7 +281,7 @@ fn voice_on(b: drive::Build, s: take Steps, timed: bool) -> Result<(Rendered, f6
 /// A piece's action: built once, then described, rendered, or both (on two instances: `describe`
 /// is the program's export and can change its state).
 pub fn piece_command(a: Args) -> Result<(), ToolError> {
-    let action = a.action.clone()
+    borrow action = a.action
     let out_arg: Option<String> = if a.rest.is_empty() { None } else { Some(a.rest[0].clone()) }
     let needs_file = action.as_str() == "wav" ||
         action.as_str() == "midi" ||

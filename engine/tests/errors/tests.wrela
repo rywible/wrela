@@ -84,7 +84,7 @@ fn a_skeleton_holds_64_bones_and_says_so_past_them() {
     }
     assert(run.results.len() == 2, "both tests ran")
     assert(run.results[0].name.as_str() == "holds_its_limit" && run.results[0].passed, "64 bones")
-    let past = run.results[1].clone()
+    borrow past = run.results[1]
     assert(past.name.as_str() == "one_past_it_fails" && !past.passed, "65 bones fail")
     assert(
         past.message.as_str().find("a skeleton has at most 64 bones").is_some(),
