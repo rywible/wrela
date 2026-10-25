@@ -32,7 +32,7 @@ use shadow::{Cascade, Kept, Shadows, shadows}
 use sheet::{Scale, pace}
 use sky::{Clouds, Sky, Weather, new_sky, sky_shade}
 use temporal::{Resolve, held, neighbourhoods, resolve, resolve_gathered}
-use terrain::{Clipmap, Texel, ground, ground_shade}
+use terrain::{Clipmap, SIDES, Texel, ground, ground_shade}
 use view::{BEHIND, Camera, NEAREST, camera, jitter_of}
 use std::input::Key
 use std::cache::Stale
@@ -1506,6 +1506,10 @@ impl<R: Resolver> Frame<R> {
             grid.cols = 0
         }
         borrow maps = self.probes.using.maps
+        if self.on(Off::Terrain) {
+            label("terrain cull")
+            self.clipmap.cull(cam)
+        }
         let texels = self.clipmap.texels()
         let grounds = self.probes.using.grounds.span(
             start: 0,
@@ -1558,7 +1562,7 @@ impl<R: Resolver> Frame<R> {
             keep_depth: true,
         )
         if terrain {
-            for l in 0..lt.levels.count {
+            for d in 0..lt.levels.count * SIDES {
                 draw(
                     ter,
                     ground.bind(cam, lt.levels, texels),
@@ -1572,7 +1576,7 @@ impl<R: Resolver> Frame<R> {
                         ds: self.clipmap.details.s,
                     ),
                     indices: self.clipmap.indices(),
-                    indirect: self.clipmap.draw_args(l),
+                    indirect: self.clipmap.side_args(l: d / SIDES, k: d % SIDES),
                     depth: NEAREST,
                 )
             }

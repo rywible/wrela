@@ -22,9 +22,10 @@ use light::Lit
 use sim::Hit
 use noise::{hash2, noise2_wrapped, wrapped}
 use std::gpu::{
-    Address, ClipPosition, DrawIndexedArgs, FragCoord, GlobalId, GpuBuffer, GpuSpan, Oct32, Rgba8,
-    RenderPass, Sampler, Slots, Texture, Unorm8x4, VertexIndex, begin_pass, buffer, buffer_of,
-    dispatch, draw, label, sampler, texture, write,
+    Address, Atomics, ClipPosition, DrawIndexedArgs, FragCoord, GlobalId, GpuBuffer, GpuSpan,
+    LocalId, Oct32, Rgba8, RenderPass, Sampler, SharedAtomics, Slots, Texture, Unorm8x4,
+    VertexIndex, WorkgroupId, begin_pass, buffer, buffer_of, dispatch, draw, label, sampler,
+    texture, write,
 }
 use view::Camera
 
@@ -242,6 +243,13 @@ pub struct Clipmap {
     /// run of them, one instance, from its first point.
     indices: GpuBuffer<u32>,
     args: GpuBuffer<DrawIndexedArgs>,
+    /// Each run's sides (`SIDES`), where their indices are (first, count); each level's sides'
+    /// draws as `follow` lays them, and as the camera sees them (`cull`: a side outside its
+    /// frustum draws no instance); and each side's height bounds (`bound_sides`).
+    sides: Vec<vec2u>,
+    side_template: GpuBuffer<DrawIndexedArgs>,
+    side_args: GpuBuffer<DrawIndexedArgs>,
+    bounds: GpuBuffer<u32>,
     finest: f32,
     /// Whether each level holds what its place asks (false until it's cooked).
     cooked: [bool; MAX_LEVELS],
@@ -275,12 +283,17 @@ impl Clipmap {
     /// A clipmap of `levels` levels (at most `MAX_LEVELS`), the finest `finest` apart.
     pub fn new(levels: u32, finest: f32) -> Clipmap {
         let n = min(levels, MAX_LEVELS)
+        let mesh = ground_indices()
         Clipmap {
             texels: buffer(n * STRIDE),
             moving: buffer(STRIDE),
             levels: Levels { at: [vec4(0.0); MAX_LEVELS], count: n, eye: vec2(0.0) },
-            indices: buffer_of(ground_indices()),
+            indices: buffer_of(take mesh.indices),
             args: buffer(MAX_LEVELS),
+            sides: take mesh.sides,
+            side_template: buffer(MAX_LEVELS * SIDES),
+            side_args: buffer(MAX_LEVELS * SIDES),
+            bounds: buffer_of(Vec::filled(2 * MAX_LEVELS * SIDES, 0)),
             finest,
             cooked: [false; MAX_LEVELS],
             cooks: 0,
@@ -444,8 +457,9 @@ impl Clipmap {
             }
         }
         self.cooks += cooked
-        // Each level's draw: its run of the indices, by where its hole is.
+        // Each level's draw: its run of the indices, by where its hole is; and its sides'.
         var args: Vec<DrawIndexedArgs> = Vec::new()
+        var sides: Vec<DrawIndexedArgs> = Vec::new()
         for l in 0..self.levels.count {
             var run = HOLES
             if l > 0 {
@@ -462,8 +476,34 @@ impl Clipmap {
                     first_instance: 0,
                 },
             )
+            for k in 0..SIDES {
+                let at = self.sides[run * SIDES + k]
+                sides.push(
+                    DrawIndexedArgs {
+                        indices: at.y,
+                        instances: 1,
+                        first_index: at.x,
+                        base_vertex: i32(l * LEVEL_POINTS),
+                        first_instance: 0,
+                    },
+                )
+            }
         }
         write(mut self.args, 0, args)
+        write(mut self.side_template, 0, sides)
+        // A cooked level changes its sides' heights, and the finer level's (it morphs to them).
+        if cooked > 0 {
+            label("terrain cook")
+            write(mut self.bounds, 0, Vec::filled(2 * self.levels.count * SIDES, 0))
+            dispatch(
+                bound_sides.bind(
+                    levels: self.levels,
+                    texels: self.texels.span(start: 0, count: self.levels.count * STRIDE),
+                    bounds: mut self.bounds,
+                ),
+                groups: (SIDES, self.levels.count, 1),
+            )
+        }
         cooked
     }
 
@@ -475,6 +515,28 @@ impl Clipmap {
     /// Level `l`'s draw of the ground's indices this frame.
     pub fn draw_args(self, l: u32) -> GpuSpan<DrawIndexedArgs> {
         self.args.span(start: l, count: 1)
+    }
+
+    /// Chooses which of the levels' sides `cam` sees (`cull_sides`): each side outside its
+    /// frustum draws no instance (`side_args`).
+    pub fn cull(mut self, cam: Camera) {
+        let n = self.levels.count * SIDES
+        dispatch(
+            cull_sides.bind(
+                cam,
+                levels: self.levels,
+                bounds: self.bounds,
+                template: self.side_template,
+                out: mut self.side_args,
+                n: n,
+            ),
+            over: n,
+        )
+    }
+
+    /// Side `k` of level `l`'s draw, as the camera sees it (`cull`).
+    pub fn side_args(self, l: u32, k: u32) -> GpuSpan<DrawIndexedArgs> {
+        self.side_args.span(start: l * SIDES + k, count: 1)
     }
 
     /// The ground as a shadow caster into `pass`, seen from the sun by `view`: each level drawn
@@ -514,54 +576,234 @@ fn first_index(r: u32) -> u32 {
     at
 }
 
-/// The ground's indices: each run's (`HOLES` with a hole, then one without) quads, then its
-/// outer skirts, then its inner skirts, each quad's corners as `ground` once drew them.
-fn ground_indices() -> Vec<u32> {
+/// A level's ring in sides, each drawn (and culled, `cull_sides`) apart: north (the rows before
+/// the finer level's hole), south (after it), west and east (beside it, in its rows).
+pub const SIDES: u32 = 4
+
+/// The side of a level that its cell (`cx`, `cz`) is in, the finer level's hole from `lo` to
+/// `hi` (a level without one splits at its middle row: north and south).
+fn side_of(cx: u32, cz: u32, lo: vec2u, hi: vec2u) -> u32 {
+    if cz < lo.y { 0 } else if cz >= hi.y { 1 } else if cx < lo.x { 2 } else { 3 }
+}
+
+/// Where run `r`'s sides divide: the finer level's hole, or a level's middle without one.
+fn split_of(r: u32) -> (vec2u, vec2u) {
+    if r < HOLES {
+        (hole_of(r), hole_of(r) + vec2u(QUADS / 2))
+    } else { (vec2u(QUADS / 2), vec2u(QUADS / 2)) }
+}
+
+/// The ground's triangles, and where each run's sides are in them (first, count).
+pub struct GroundMesh {
+    pub indices: Vec<u32>,
+    pub sides: Vec<vec2u>,
+}
+
+/// The ground's indices: each run's (`HOLES` with a hole, then one without), a side at a time
+/// (`side_of`): its quads, then its outer skirts, then its inner skirts, each quad's corners as
+/// `ground` once drew them.
+fn ground_indices() -> GroundMesh {
     let qx = [0, 1, 1, 0, 1, 0]
     let qz = [0, 0, 1, 0, 1, 1]
     var out: Vec<u32> = Vec::new()
+    var sides: Vec<vec2u> = Vec::new()
     for r in 0..HOLES + 1 {
         let lo = if r < HOLES { hole_of(r) } else { vec2u(QUADS) }
         let hi = lo + vec2u(QUADS / 2)
-        for cz in 0..QUADS {
-            for cx in 0..QUADS {
-                if cx >= lo.x && cx < hi.x && cz >= lo.y && cz < hi.y {
-                    continue
-                }
-                for c in 0..6 {
-                    out.push((cz + qz[c]) * SIDE + cx + qx[c])
-                }
-            }
-        }
-        for side in 0..4 {
-            for i in 0..QUADS {
-                for c in 0..6 {
-                    let j = i + qx[c]
-                    let top = if side == 0 { j } else if side == 1 {
-                        QUADS * SIDE + j
-                    } else if side == 2 {
-                        j * SIDE
-                    } else { j * SIDE + QUADS }
-                    out.push(if qz[c] == 0 { top } else { SIDE * SIDE + side * SIDE + j })
-                }
-            }
-        }
-        if r < HOLES {
-            for side in 0..4 {
-                for i in 0..QUADS / 2 {
+        let (split_lo, split_hi) = split_of(r)
+        for k in 0..SIDES {
+            let first = out.len()
+            for cz in 0..QUADS {
+                for cx in 0..QUADS {
+                    if cx >= lo.x && cx < hi.x && cz >= lo.y && cz < hi.y {
+                        continue
+                    }
+                    if side_of(cx, cz, split_lo, split_hi) != k {
+                        continue
+                    }
                     for c in 0..6 {
-                        let j = i + qx[c]
-                        let g = if side == 0 { vec2u(lo.x + j, lo.y) } else if side == 1 {
-                            vec2u(lo.x + j, hi.y)
-                        } else if side == 2 { vec2u(lo.x, lo.y + j) } else { vec2u(hi.x, lo.y + j) }
-                        let dropped = SIDE * SIDE + 4 * SIDE + side * (QUADS / 2 + 1) + j
-                        out.push(if qz[c] == 0 { g.y * SIDE + g.x } else { dropped })
+                        out.push((cz + qz[c]) * SIDE + cx + qx[c])
                     }
                 }
             }
+            for side in 0..4 {
+                for i in 0..QUADS {
+                    // The cell the skirt hangs from.
+                    let cell = if side == 0 { vec2u(i, 0) } else if side == 1 {
+                        vec2u(i, QUADS - 1)
+                    } else if side == 2 { vec2u(0, i) } else { vec2u(QUADS - 1, i) }
+                    if side_of(cell.x, cell.y, split_lo, split_hi) != k {
+                        continue
+                    }
+                    for c in 0..6 {
+                        let j = i + qx[c]
+                        let top = if side == 0 { j } else if side == 1 {
+                            QUADS * SIDE + j
+                        } else if side == 2 {
+                            j * SIDE
+                        } else { j * SIDE + QUADS }
+                        out.push(if qz[c] == 0 { top } else { SIDE * SIDE + side * SIDE + j })
+                    }
+                }
+            }
+            if r < HOLES {
+                // Each edge of the hole is its outer neighbour's side: north, south, west, east.
+                for side in 0..4 {
+                    if side != k {
+                        continue
+                    }
+                    for i in 0..QUADS / 2 {
+                        for c in 0..6 {
+                            let j = i + qx[c]
+                            let g = if side == 0 { vec2u(lo.x + j, lo.y) } else if side == 1 {
+                                vec2u(lo.x + j, hi.y)
+                            } else if side == 2 { vec2u(lo.x, lo.y + j) } else {
+                                vec2u(hi.x, lo.y + j)
+                            }
+                            let dropped = SIDE * SIDE + 4 * SIDE + side * (QUADS / 2 + 1) + j
+                            out.push(if qz[c] == 0 { g.y * SIDE + g.x } else { dropped })
+                        }
+                    }
+                }
+            }
+            sides.push(vec2u(first, out.len() - first))
         }
     }
-    out
+    GroundMesh { indices: out, sides }
+}
+
+/// Side `k` of level `l`'s grid points (x, z from; x, z to; inclusive), the finer level's hole
+/// where `levels` puts it.
+fn side_rect(levels: Levels, l: u32, k: u32) -> vec4u {
+    let a = levels.at[l]
+    var lo = vec2u(QUADS / 2)
+    var hi = vec2u(QUADS / 2)
+    if l > 0 {
+        lo = vec2u((levels.at[l - 1].xy - a.xy) / a.z + vec2(0.5))
+        hi = lo + vec2u(QUADS / 2)
+    }
+    if k == 0 {
+        vec4u(0, 0, QUADS, lo.y)
+    } else if k == 1 {
+        vec4u(0, hi.y, QUADS, QUADS)
+    } else if k == 2 { vec4u(0, lo.y, lo.x, hi.y) } else { vec4u(hi.x, lo.y, QUADS, hi.y) }
+}
+
+/// A height's bits, ordered as unsigned integers order (so an atomic max is the highest).
+fn ordered(h: f32) -> u32 {
+    let b = bitcast_u32(h)
+    if b >= 2147483648 { b ^ 4294967295 } else { b | 2147483648 }
+}
+
+/// The height whose ordered bits (`ordered`) are `u`.
+fn unordered(u: u32) -> f32 {
+    if u >= 2147483648 { bitcast_f32(u & 2147483647) } else { bitcast_f32(u ^ 4294967295) }
+}
+
+/// Side `group.x` of level `group.y`: the lowest and highest heights its points can draw at
+/// (its texels', and the coarser level's over it, which it morphs to), as ordered bits
+/// (`ordered`): the highest's, and the lowest's inverted, both a maximum.
+@compute(256)
+fn bound_sides(
+    levels: Levels,
+    texels: [Texel],
+    bounds: mut Atomics<u32>,
+    most: mut SharedAtomics<2>,
+    lid: LocalId,
+    group: WorkgroupId,
+) {
+    let k = group.x
+    let l = group.y
+    let r = side_rect(levels, l, k)
+    let w = r.z - r.x + 1
+    let n = w * (r.w - r.y + 1)
+    var i = lid.x
+    while i < n {
+        let h = texels[texel_index(l, r.x + i % w, r.y + i / w)].height
+        let _ = most.max(0, ordered(h))
+        let _ = most.max(1, ordered(h) ^ 4294967295)
+        i += 256
+    }
+    if l + 1 < levels.count {
+        // The coarser level's points over the side (and one beyond: a morph reads between them).
+        let a = levels.at[l]
+        let c = levels.at[l + 1]
+        let from = (a.xy + vec2(f32(r.x), f32(r.y)) * a.z - c.xy) / c.z
+        let to = (a.xy + vec2(f32(r.z), f32(r.w)) * a.z - c.xy) / c.z
+        let lo = vec2u(clamp(floor(from) - vec2(1.0), vec2(0.0), vec2(f32(QUADS))))
+        let hi = vec2u(clamp(ceil(to) + vec2(1.0), vec2(0.0), vec2(f32(QUADS))))
+        let cw = hi.x - lo.x + 1
+        let cn = cw * (hi.y - lo.y + 1)
+        var j = lid.x
+        while j < cn {
+            let h = texels[texel_index(l + 1, lo.x + j % cw, lo.y + j / cw)].height
+            let _ = most.max(0, ordered(h))
+            let _ = most.max(1, ordered(h) ^ 4294967295)
+            j += 256
+        }
+    }
+    most.barrier()
+    if lid.x == 0 {
+        let at = 2 * (l * SIDES + k)
+        bounds.store(at, most.load(0))
+        bounds.store(at + 1, most.load(1))
+    }
+}
+
+/// Whether any of the box from `lo` to `hi` (render space) can be on `cam`'s screen: not every
+/// corner beyond one side of its frustum, nor every corner behind the eye.
+pub fn box_seen(cam: Camera, lo: vec3, hi: vec3) -> bool {
+    var left = true
+    var right = true
+    var below = true
+    var above = true
+    var behind = true
+    for c in 0..8 {
+        let p = vec3(
+            if (c & 1) == 0 { lo.x } else { hi.x },
+            if (c & 2) == 0 { lo.y } else { hi.y },
+            if (c & 4) == 0 { lo.z } else { hi.z },
+        )
+        let q = cam.clip(p)
+        left = left && q.x < -q.w
+        right = right && q.x > q.w
+        below = below && q.y < -q.w
+        above = above && q.y > q.w
+        behind = behind && q.w <= 0.0
+    }
+    !(left || right || below || above || behind)
+}
+
+/// Side `id` of the levels' (`SIDES` a level) draw as `cam` sees it: its template's, with no
+/// instance if its box (`side_rect`, between its height bounds, the skirts hanging below) is out
+/// of view. A side whose bounds aren't cooked yet is drawn.
+@compute(64)
+fn cull_sides(
+    cam: Camera,
+    levels: Levels,
+    bounds: [u32],
+    template: [DrawIndexedArgs],
+    out: mut Slots<DrawIndexedArgs>,
+    n: u32,
+    id: GlobalId,
+) {
+    if id.x >= n {
+        return
+    }
+    let l = id.x / SIDES
+    let t = template[id.x]
+    let top = bounds[2 * id.x]
+    if top == 0 {
+        out[id] = t
+        return
+    }
+    let a = levels.at[l]
+    let r = side_rect(levels, l, id.x % SIDES)
+    let lo = a.xy + vec2(f32(r.x), f32(r.y)) * a.z
+    let hi = a.xy + vec2(f32(r.z), f32(r.w)) * a.z
+    let low = unordered(bounds[2 * id.x + 1] ^ 4294967295) - SKIRT * a.z
+    let seen = box_seen(cam, vec3(lo.x, low, lo.y), vec3(hi.x, unordered(top), hi.y))
+    out[id] = DrawIndexedArgs { instances: if seen { t.instances } else { 0 }, ..t }
 }
 
 /// A level's texels: the terrain's height, normal and cover at each point of its grid. A
@@ -1219,4 +1461,40 @@ fn shallow_ground_rays_reach_their_hit() {
     assert(!short.hit, "a ray searched past its reach")
     let end = raycast(Flat {}, vec3(0.0, 1.0, 0.0), vec3(0.0, -1.0, 0.0), reach: 1.0)
     assert(end.hit && end.distance == 1.0, "a hit exactly at the ray's reach was lost")
+}
+
+/// Each run's sides lie end to end over exactly its indices, so the four draws of a level are
+/// its one draw's triangles; and every quad and skirt of the run is in one side.
+@test
+fn a_runs_sides_cover_its_indices() {
+    let mesh = ground_indices()
+    for r in 0..HOLES + 1 {
+        var at = first_index(r)
+        for k in 0..SIDES {
+            let side = mesh.sides[r * SIDES + k]
+            assert(side.x == at, f"run {r}'s side {k} doesn't follow the one before")
+            at += side.y
+        }
+        assert(at == first_index(r) + run_length(r), f"run {r}'s sides don't cover it")
+    }
+    assert(mesh.indices.len() == first_index(HOLES + 1), "the mesh has other indices")
+}
+
+/// A box in front of the camera is seen; one behind it, or off to a side of its view, isn't.
+@test
+fn a_box_out_of_view_is_not_seen() {
+    let cam = view::first_camera(vec3(0.0), vec3(0.0, 0.0, 10.0), 0.8, width: 320, height: 180)
+    let seen = |x: f32, z: f32| box_seen(
+        cam,
+        vec3(x - 1.0, -1.0, z - 1.0),
+        vec3(x + 1.0, 1.0, z + 1.0),
+    )
+    assert(seen(0.0, 20.0), "a box ahead isn't seen")
+    assert(!seen(0.0, -20.0), "a box behind is seen")
+    assert(!seen(60.0, 20.0), "a box far to one side is seen")
+    assert(!seen(-60.0, 20.0), "a box far to the other side is seen")
+    assert(
+        box_seen(cam, vec3(-50.0, -1.0, -50.0), vec3(50.0, 1.0, 50.0)),
+        "a box round the eye isn't seen",
+    )
 }
