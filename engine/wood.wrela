@@ -19,6 +19,7 @@
 // The static shadows choose the same way, for the sun's view of a cascade: every instance in
 // its square, drawn whole.
 
+use cull::{Hzb, NO_HZB, occluded}
 use impostor::{KindDesc, far_cut_flat, far_quad, far_shade, of_kind, volume_cut, volume_shade}
 use lit::Lighting
 use lod::{IMPOSTOR, Lod, VOLUME, ways}
@@ -28,10 +29,10 @@ use plant::{
 use shadow::{CASTER, Shadows}
 use std::field::Tube
 use std::gpu::{
-    Atomics, DepthTexture, DrawArgs, DrawIndexedArgs, GlobalId, GpuBuffer, GpuSpan, R32Uint,
-    RenderPass, Rgba16Float, Rgba8, Sampler, Slots, Texels3d, Texture, Texture3d, TextureArray,
-    buffer, buffer_of, copy, copy_texture, dispatch, draw, draw_multi, label, texture, texture3d,
-    texture_array, write,
+    Atomics, DepthTexture, DrawArgs, DrawIndexedArgs, GlobalId, GpuBuffer, GpuSpan, R32Float,
+    R32Uint, RenderPass, Rgba16Float, Rgba8, Sampler, Slots, Texels3d, Texture, Texture3d,
+    TextureArray, buffer, buffer_of, copy, copy_texture, dispatch, draw, draw_multi, label, texture,
+    texture3d, texture_array, writable_texture, write,
 }
 use vegetation::{
     CARD_INDICES, CardDraw, Kind, ListDraws, SHADOW_LEAVES, WAYS, ALL, bark_shade, card, card_draw,
@@ -79,6 +80,11 @@ pub struct Choose: Copy + GpuData {
     pub square: vec4,
     pub loaded: u32,
     pub runs: u32,
+    /// How many lists there are, and where the second phase's counts begin in `counts`
+    /// (`Chosen`); the pyramid an instance is tested against (`cull::occluded`).
+    pub lists: u32,
+    pub late_at: u32,
+    pub hzb: Hzb,
 }
 
 /// The place of the `k`th loaded instance: the loaded slots' instances are runs, each a slot's
@@ -113,6 +119,7 @@ pub fn choose(
     metadata: [u32],
     lods: [Lod],
     lists: [List],
+    pyramid: Texture<R32Float>,
     counts: mut Atomics<u32>,
     picked: mut Atomics<u32>,
     marks: mut Atomics<u32>,
@@ -143,8 +150,16 @@ pub fn choose(
     if out_of_view(inst, c.cam, l.top, l.reach, c.corner) {
         return
     }
-    let (level, distant) = place_of(l, c.cam, inst)
+    // Hidden behind what last frame drew (its pyramid): left for the second phase (`reveal`),
+    // which tests it against this frame's.
+    let b = bound_of(inst, l.top, l.reach)
+    if occluded(pyramid, c.hzb, b.xyz, b.w) {
+        let j = counts.add(c.lists, 1)
+        counts.store(c.lists + 1 + j, i)
+        return
+    }
     let visibility = bitcast_f32(metadata[c.instances + i / SLOT])
+    let (level, distant) = place_of(l, c.cam, inst)
     let faint = 1.0 - (1.0 - distant) * visibility
     let (drawn, lower, upper) = ways(level, faint)
     if !drawn {
@@ -166,6 +181,65 @@ pub fn choose(
             marks.store(2 * to + 1, m.y)
         }
     }
+}
+
+/// The second phase's choosing: candidate `id` of those the first phase left (`choose`: their
+/// count after the lists' counts, then their indices), tested against this frame's pyramid
+/// (built after the first phase's opaque passes); one it doesn't hide is chosen into the second
+/// phase's lists as `choose` chooses (their counts from `c.late_at`), and drawn this frame.
+@compute(64)
+pub fn reveal(
+    c: Choose,
+    every: [Instance],
+    metadata: [u32],
+    lods: [Lod],
+    lists: [List],
+    pyramid: Texture<R32Float>,
+    counts: mut Atomics<u32>,
+    picked: mut Atomics<u32>,
+    marks: mut Atomics<u32>,
+    id: GlobalId,
+) {
+    if id.x >= counts.load(c.lists) {
+        return
+    }
+    let i = counts.load(c.lists + 1 + id.x)
+    let k = metadata[i]
+    let inst = every[i]
+    let l = lods[k]
+    let b = bound_of(inst, l.top, l.reach)
+    if occluded(pyramid, c.hzb, b.xyz, b.w) {
+        return
+    }
+    let visibility = bitcast_f32(metadata[c.instances + i / SLOT])
+    let (level, distant) = place_of(l, c.cam, inst)
+    let faint = 1.0 - (1.0 - distant) * visibility
+    let (drawn, lower, upper) = ways(level, faint)
+    if !drawn {
+        return
+    }
+    for n in 0..2 {
+        let way = if n == 0 { lower } else { upper }
+        if n == 1 && upper == lower {
+            return
+        }
+        let slot = way * c.kinds + k
+        let list = lists[slot]
+        let at = counts.add(c.late_at + slot, 1)
+        if at < list.room {
+            let to = list.first + at
+            picked.store(to, i)
+            let m = mark_of(l, c.cam, inst, way, vec2(level, faint))
+            marks.store(2 * to, m.x)
+            marks.store(2 * to + 1, m.y)
+        }
+    }
+}
+
+/// An instance's bounding sphere (its centre and radius, `w`): its crown's middle, as
+/// `out_of_view` has it, widened as the crown is.
+fn bound_of(inst: Instance, top: f32, reach: f32) -> vec4 {
+    vec4(inst.at + inst.turn(vec3(0.0, top * 0.5 * inst.scale, 0.0)), inst.bound_radius(reach))
 }
 
 /// Every instance moved by `d` (the render origin moved by `-d`); an empty one (`scale` 0)
@@ -229,202 +303,102 @@ pub fn draws_of(
     far[id] = DrawArgs { vertices: 6, instances: count, first_vertex: 0, first_instance: l.first }
 }
 
-/// The occluders' blocks: a coarse map of the target's depth, each texel a block `OCC` pixels a
-/// side, which a far crown must be in front of to be drawn.
-pub const OCC: u32 = 8
+/// What one phase of a choosing writes (`Chosen`): the places' instance indices and marks as
+/// the choosing wrote them, the instances and marks gathered into place, and each list's draws
+/// (`draws_of`): its cards', its limbs' and its far quads'.
+pub struct Phase {
+    picked: GpuBuffer<u32>,
+    raw_marks: GpuBuffer<u32>,
+    pub instances: GpuBuffer<Instance>,
+    pub marks: GpuBuffer<vec2u>,
+    pub cards: GpuBuffer<DrawIndexedArgs>,
+    pub limbs: GpuBuffer<DrawIndexedArgs>,
+    pub far: GpuBuffer<DrawArgs>,
+}
 
-/// Block `id`'s farthest depth (the least, reversed). Any uncovered pixel keeps the
-/// block open: crowns behind foliage gaps remain visible when those gaps move across it.
-@compute(64)
-pub fn occluders(depth: DepthTexture, cols: u32, rows: u32, out: mut Slots<f32>, id: GlobalId) {
-    if id.x >= cols * rows {
-        return
-    }
-    let bx = id.x % cols
-    let by = id.x / cols
-    let (w, h) = (depth.width(), depth.height())
-    var least = 1.0
-    for y in 0..OCC {
-        for x in 0..OCC {
-            let px = min(bx * OCC + x, w - 1)
-            let py = min(by * OCC + y, h - 1)
-            let d = depth.load(px, py)
-            least = min(least, d)
+impl Phase {
+    fn empty() -> Phase {
+        Phase {
+            picked: buffer(1),
+            raw_marks: buffer(2),
+            instances: buffer(1),
+            marks: buffer(1),
+            cards: buffer(1),
+            limbs: buffer(1),
+            far: buffer(1),
         }
     }
-    out[id] = least
-}
 
-/// What culling reads: the camera, the occluders' map's size, and how many places there are.
-pub struct Cull: Copy + GpuData {
-    pub cam: Camera,
-    pub cols: u32,
-    pub rows: u32,
-    pub places: u32,
-    pub lists: u32,
-}
-
-/// Conservative pixel bounds of the view-aligned box enclosing a sphere, wholly beyond
-/// the near plane. Perspective uses forward depth, including the nearest face; using
-/// distance to the eye underbounded crowns at the edge of the view. Include raster jitter
-/// because the occluder blocks come from this frame's depth target.
-fn occlusion_bounds(cam: Camera, centre: vec3, r: f32) -> vec4 {
-    let to = centre - cam.eye
-    let z = dot(to, cam.forward)
-    let p = vec2(dot(to, cam.right), dot(to, cam.up))
-    let near = 1.0 / (z - r)
-    let far = 1.0 / (z + r)
-    let low = min((p - vec2(r)) * near, (p - vec2(r)) * far)
-    let high = max((p + vec2(r)) * near, (p + vec2(r)) * far)
-    let scale = cam.screen.y / (2.0 * cam.tan_half)
-    let middle = cam.screen * 0.5 + cam.jitter * cam.screen * vec2(0.5, -0.5)
-    vec4(middle + vec2(low.x, -high.y) * scale, middle + vec2(high.x, -low.y) * scale)
-}
-
-@test
-fn far_crown_occlusion_bounds_cover_off_axis_spheres() {
-    let cam = view::first_camera(
-        vec3(2.0, 4.0, 6.0),
-        vec3(2.0, 4.0, 7.0),
-        1.3,
-        width: 1600,
-        height: 900,
-    )
-    for side in -2..3 {
-        let cam = Camera { jitter: vec2(0.0007, -0.0009), ..cam }
-        let centre = cam.eye + cam.forward * 30.0 + cam.right * (f32(side) * 15.0) + cam.up * 8.0
-        let radius = 9.0
-        let bounds = occlusion_bounds(cam, centre, radius)
-        for i in 0..128 {
-            let point = centre + radius * noise::direction(noise::rand(i, 0), noise::rand(i, 1))
-            let q = cam.clip(point)
-            let px = vec2(
-                (q.x / q.w + 1.0) * cam.screen.x * 0.5,
-                (1.0 - q.y / q.w) * cam.screen.y * 0.5,
-            )
-            assert(
-                px.x >= bounds.x && px.y >= bounds.y && px.x <= bounds.z && px.y <= bounds.w,
-                "occlusion bounds clipped an off-axis crown",
-            )
-            assert(
-                q.z / q.w <= cam.near / (30.0 - radius) + 1.0e-6,
-                "occlusion used a depth behind the crown's nearest surface",
-            )
+    /// Room for `places` places (`grown` of them, when it grows) and `lists` lists' draws.
+    fn fit(mut self, places: u32, grown: u32, lists: u32) {
+        if places > self.instances.len() {
+            self.picked = buffer(grown)
+            self.raw_marks = buffer(2 * grown)
+            self.instances = buffer(grown)
+            self.marks = buffer(grown)
         }
+        self.cards = buffer(room(lists))
+        self.limbs = buffer(room(lists))
+        self.far = buffer(room(lists))
     }
 }
 
-/// Whether place `id` holds a far crown that's seen (1) or hidden behind the near crowns (0;
-/// and 1 for every place of a card list, or past its list's count): its crown's sphere's nearest
-/// point behind the farthest occluder over the blocks its sphere covers on screen.
-@compute(64)
-pub fn cull(
-    c: Cull,
-    every: [Instance],
-    picked: [u32],
-    lists: [List],
-    counts: [u32],
-    lods: [Lod],
-    occ: [f32],
-    seen: mut Slots<u32>,
-    id: GlobalId,
-) {
-    if id.x >= c.places {
-        return
-    }
-    // The list it's in: the last whose first place is at or before it.
-    var lo = 0
-    var hi = c.lists
-    while hi - lo > 1 {
-        let mid = (lo + hi) / 2
-        if lists[mid].first <= id.x {
-            lo = mid
-        } else {
-            hi = mid
-        }
-    }
-    let l = lists[lo]
-    var keep = 1
-    if (l.how == IMPOSTOR || l.how == VOLUME) && id.x - l.first < min(counts[lo], l.room) {
-        let i = picked[id.x]
-        if i < every.len() {
-            let inst = every[i]
-            let lod = lods[l.kind]
-            let r = inst.bound_radius(lod.reach)
-            let centre = inst.at + inst.turn(vec3(0.0, lod.top * 0.5 * inst.scale, 0.0))
-            let ahead = dot(centre - c.cam.eye, c.cam.forward)
-            if ahead - r > c.cam.near {
-                // The nearest forward depth, and every block touched by the enclosing box.
-                let z = c.cam.near / (ahead - r)
-                let bounds = occlusion_bounds(c.cam, centre, r)
-                let b0 = vec2i(floor(bounds.xy / f32(OCC)))
-                let b1 = vec2i(floor(bounds.zw / f32(OCC)))
-                if b1.x >= 0 &&
-                    b1.y >= 0 &&
-                    b0.x < i32(c.cols) &&
-                    b0.y < i32(c.rows) &&
-                    (b1.x - b0.x) * (b1.y - b0.y) <= 64 {
-                    var least = 1.0
-                    for by in max(b0.y, 0)..(min(b1.y, i32(c.rows) - 1) + 1) {
-                        for bx in max(b0.x, 0)..(min(b1.x, i32(c.cols) - 1) + 1) {
-                            least = min(least, occ[u32(by) * c.cols + u32(bx)])
-                        }
-                    }
-                    // Reversed depth: behind is less.
-                    if z < least {
-                        keep = 0
-                    }
-                }
-            }
-        }
-    }
-    seen[id] = keep
-}
-
-/// The far crowns `cull` hid, put out of the gathered instances (their scale 0: no quad).
-@compute(64)
-pub fn hide(
-    seen: [u32],
-    places: u32,
-    out: mut Slots<Instance>,
-    gathered: [Instance],
-    id: GlobalId,
-) {
-    if id.x >= places {
-        return
-    }
-    var inst = gathered[id.x]
-    if seen[id.x] == 0 {
-        inst.scale = 0.0
-    }
-    out[id] = inst
-}
-
-/// What a choosing writes: its lists (and their rooms), the counts, the places' instance indices
-/// and marks, the gathered instances and marks, and each list's draws.
+/// What a choosing writes: its lists (and their rooms), the counts, and two phases' places and
+/// draws (`Phase`): the first's (`early`: what wasn't hidden behind last frame's depth), and the
+/// second's (`late`: what the first left out that this frame's depth doesn't hide, `reveal`).
+/// `counts` holds the first phase's lists' counts, how many it left out and which, then the
+/// second phase's lists' counts (from `late_at`).
 pub struct Chosen {
     pub lists: Vec<List>,
     lists_gpu: GpuBuffer<List>,
     templates: GpuBuffer<ListDraws>,
     counts: GpuBuffer<u32>,
-    /// Counts' reset values, kept on the CPU while the lists stay laid out.
+    /// Counts' reset values (the first phase's and how many it left out; the second phase's),
+    /// kept on the CPU while the lists stay laid out.
     zero_counts: Vec<u32>,
-    picked: GpuBuffer<u32>,
-    raw_marks: GpuBuffer<u32>,
-    pub instances: GpuBuffer<Instance>,
-    pub marks: GpuBuffer<vec2u>,
-    /// Each list's draws (`draws_of`): its cards', its limbs' and its far quads'.
-    pub cards: GpuBuffer<DrawIndexedArgs>,
-    pub limbs: GpuBuffer<DrawIndexedArgs>,
-    pub far: GpuBuffer<DrawArgs>,
+    pub early: Phase,
+    pub late: Phase,
     /// The current lists' aligned places. Buffers keep extra room for later tiles, but a
-    /// frame gathers, culls and hides only these places; draws cannot read the unused tail.
+    /// frame gathers only these places; draws cannot read the unused tail.
     places: u32,
-    /// The instances as the far crowns are drawn: the far crowns the near hid put out (`hide`);
-    /// whether each place is seen; and the occluders' map.
-    drawn: GpuBuffer<Instance>,
-    seen_places: GpuBuffer<u32>,
-    occ: GpuBuffer<f32>,
+    /// Room for what the first phase leaves out (every instance the lists hold).
+    held: u32,
+}
+
+/// Phase `ph`'s `places` places gathered from `every` (`gather`), and its `n` lists' draws
+/// written from their `counts` (`draws_of`).
+fn finished(
+    ph: mut Phase,
+    every: GpuBuffer<Instance>,
+    templates: GpuBuffer<ListDraws>,
+    counts: GpuSpan<u32>,
+    lists: GpuBuffer<List>,
+    places: u32,
+    n: u32,
+) {
+    dispatch(
+        gather.bind(
+            every,
+            picked: ph.picked,
+            from: ph.raw_marks,
+            places: places,
+            out: mut ph.instances,
+            marks: mut ph.marks,
+        ),
+        over: places,
+    )
+    dispatch(
+        draws_of.bind(
+            templates: templates,
+            counts: counts,
+            lists: lists,
+            n: n,
+            cards: mut ph.cards,
+            limbs: mut ph.limbs,
+            far: mut ph.far,
+        ),
+        over: room(n),
+    )
 }
 
 /// Room for `n` places, at least one.
@@ -438,30 +412,34 @@ impl Chosen {
             lists: Vec::new(),
             lists_gpu: buffer(1),
             templates: buffer(1),
-            counts: buffer(1),
+            counts: buffer(3),
             zero_counts: Vec::new(),
-            picked: buffer(1),
-            raw_marks: buffer(2),
-            instances: buffer(1),
-            marks: buffer(1),
-            cards: buffer(1),
-            limbs: buffer(1),
-            far: buffer(1),
+            early: Phase::empty(),
+            late: Phase::empty(),
             places: 0,
-            drawn: buffer(1),
-            seen_places: buffer(1),
-            occ: buffer(1),
+            held: 0,
         }
+    }
+
+    /// Where the second phase's counts begin in `counts`: after the first phase's and what it
+    /// left out, at a word a binding may start at (256 bytes).
+    fn late_at(self) -> u32 {
+        (self.lists.len() + 1 + room(self.held) + 63) / 64 * 64
     }
 
     /// Lists laid out for `per_kind` instances of each kind loaded (`kinds`, then each far kind,
     /// `far_kinds` its own), `ways` lists a kind (the camera's every way, or a shadow's one), each
     /// list's draws' template from its kind: a way's lists one after another, a kind each (list
-    /// `way * kinds + kind`), so its draws are one multi-draw.
+    /// `way * kinds + kind`), so its draws are one multi-draw. A second phase (`late`) has room
+    /// only for the camera's (`ways` more than 1).
     fn lay_out(mut self, kinds: [Kind], far_kinds: [u32], per_kind: [u32], ways: u32) {
         self.lists.clear()
         var first = 0
+        var held = 0
         var templates: Vec<ListDraws> = Vec::new()
+        for k in 0..(kinds.len() + far_kinds.len()) {
+            held += per_kind[k]
+        }
         for way in 0..ways {
             for k in 0..(kinds.len() + far_kinds.len()) {
                 let n = per_kind[k]
@@ -488,36 +466,35 @@ impl Chosen {
             }
         }
         let places = room(first)
-        if places > self.instances.len() {
-            // Room to grow into, so a tile more doesn't make them again.
-            let grown = places + places / 2
-            self.picked = buffer(grown)
-            self.raw_marks = buffer(2 * grown)
-            self.instances = buffer(grown)
-            self.marks = buffer(grown)
-            self.drawn = buffer(grown)
-            self.seen_places = buffer(grown)
+        // Room to grow into, so a tile more doesn't make them again.
+        let grown = places + places / 2
+        let n = self.lists.len()
+        self.early.fit(places, grown, n)
+        if ways > 1 {
+            self.late.fit(places, grown, n)
         }
         self.places = places
+        self.held = if ways > 1 { held } else { 0 }
         self.lists_gpu = buffer_of(self.lists, at_least: 1)
         self.templates = buffer_of(templates, at_least: 1)
-        self.counts = buffer(room(self.lists.len()))
-        self.zero_counts = Vec::filled(room(self.lists.len()), 0)
-        self.cards = buffer(room(self.lists.len()))
-        self.limbs = buffer(room(self.lists.len()))
-        self.far = buffer(room(self.lists.len()))
+        self.counts = buffer(self.late_at() + n + 1)
+        self.zero_counts = Vec::filled(n + 1, 0)
     }
 
-    /// Chooses from `every` for `c`, then gathers and writes the draws.
+    /// Chooses from `every` for `c` (its first phase, against `pyramid`: last frame's), then
+    /// gathers and writes its draws. The second phase's counts are made 0 for `reveal`.
     fn run(
         mut self,
         c: Choose,
         every: GpuBuffer<Instance>,
         metadata: GpuBuffer<u32>,
         lods: GpuBuffer<Lod>,
+        pyramid: Texture<R32Float>,
     ) {
         let n = self.lists.len()
+        let c = Choose { lists: n, late_at: self.late_at(), ..c }
         write(mut self.counts, 0, self.zero_counts)
+        write(mut self.counts, self.late_at(), self.zero_counts)
         dispatch(
             choose.bind(
                 c,
@@ -525,54 +502,57 @@ impl Chosen {
                 metadata,
                 lods,
                 lists: self.lists_gpu,
+                pyramid: pyramid,
                 counts: mut self.counts,
-                picked: mut self.picked,
-                marks: mut self.raw_marks,
+                picked: mut self.early.picked,
+                marks: mut self.early.raw_marks,
             ),
             over: max(c.loaded, 1),
         )
+        self.finish(every, late: false)
+    }
+
+    /// The second phase: what the first left out, tested against `pyramid` (this frame's, `c`'s
+    /// camera), chosen, gathered and drawn.
+    fn reveal(
+        mut self,
+        c: Choose,
+        every: GpuBuffer<Instance>,
+        metadata: GpuBuffer<u32>,
+        lods: GpuBuffer<Lod>,
+        pyramid: Texture<R32Float>,
+    ) {
+        let c = Choose { lists: self.lists.len(), late_at: self.late_at(), ..c }
         dispatch(
-            gather.bind(
+            reveal.bind(
+                c,
                 every,
-                picked: self.picked,
-                from: self.raw_marks,
-                places: self.places,
-                out: mut self.instances,
-                marks: mut self.marks,
-            ),
-            over: self.places,
-        )
-        dispatch(
-            draws_of.bind(
-                templates: self.templates,
-                counts: self.counts,
+                metadata,
+                lods,
                 lists: self.lists_gpu,
-                n: n,
-                cards: mut self.cards,
-                limbs: mut self.limbs,
-                far: mut self.far,
+                pyramid: pyramid,
+                counts: mut self.counts,
+                picked: mut self.late.picked,
+                marks: mut self.late.raw_marks,
             ),
-            over: room(n),
+            over: room(self.held),
         )
+        self.finish(every, late: true)
     }
 
-    /// Every list's instances, to bind (a list's draws start at its first place).
-    fn every_place(self) -> std::gpu::GpuSpan<Instance> {
-        self.instances.span(start: 0, count: self.places)
-    }
-
-    /// Every list's instances as they're drawn (after `occlude`: the far crowns hidden put out).
-    fn every_drawn(self) -> std::gpu::GpuSpan<Instance> {
-        self.drawn.span(start: 0, count: self.places)
-    }
-
-    /// Every list's marks, to bind.
-    fn every_mark(self) -> std::gpu::GpuSpan<vec2u> {
-        self.marks.span(start: 0, count: self.places)
+    /// A phase's places gathered and its draws written (`late`: the second's).
+    fn finish(mut self, every: GpuBuffer<Instance>, late: bool) {
+        let n = self.lists.len()
+        let counts = self.counts.span(start: if late { self.late_at() } else { 0 }, count: room(n))
+        if late {
+            finished(mut self.late, every, self.templates, counts, self.lists_gpu, self.places, n)
+        } else {
+            finished(mut self.early, every, self.templates, counts, self.lists_gpu, self.places, n)
+        }
     }
 
     /// Whether any list of way `way` (of `kinds` kinds) holds a place (the CPU's laid-out
-    /// rooms), and its draws' span in `of` (`kinds` of them).
+    /// rooms).
     fn way_has(self, way: u32, kinds: u32) -> bool {
         for k in 0..kinds {
             if self.lists[way * kinds + k].room > 0 {
@@ -580,46 +560,6 @@ impl Chosen {
             }
         }
         false
-    }
-
-    /// The far crowns hidden behind what's in `depth` (the near crowns' cards), put out: the
-    /// occluders' map, each place culled, the far lists' instances written as they're drawn.
-    fn occlude(
-        mut self,
-        cam: Camera,
-        depth: DepthTexture,
-        every: GpuBuffer<Instance>,
-        lods: GpuBuffer<Lod>,
-    ) {
-        let cols = (depth.width() + OCC - 1) / OCC
-        let rows = (depth.height() + OCC - 1) / OCC
-        if self.occ.len() < cols * rows {
-            self.occ = buffer(cols * rows)
-        }
-        dispatch(occluders.bind(depth, cols, rows, out: mut self.occ), over: cols * rows)
-        let c = Cull { cam, cols, rows, places: self.places, lists: self.lists.len() }
-        dispatch(
-            cull.bind(
-                c,
-                every,
-                picked: self.picked,
-                lists: self.lists_gpu,
-                counts: self.counts,
-                lods: lods,
-                occ: self.occ,
-                seen: mut self.seen_places,
-            ),
-            over: self.places,
-        )
-        dispatch(
-            hide.bind(
-                seen: self.seen_places,
-                places: self.places,
-                out: mut self.drawn,
-                gathered: self.instances,
-            ),
-            over: self.places,
-        )
     }
 }
 
@@ -769,6 +709,10 @@ pub struct Wood {
     pub slots: Vec<Slot>,
     /// The kinds pooled for the draws.
     pub pool: Pool,
+    /// The camera's last choosing (`select`), which `reveal`'s second phase repeats; and a
+    /// pyramid of nothing, for the shadows' choosing.
+    chose: Option<Choose>,
+    no_pyramid: Texture<R32Float>,
     /// The instances loaded, and the runs they're in (laid out with the lists).
     loaded_places: u32,
     runs: u32,
@@ -842,6 +786,8 @@ impl Wood {
                 },
             ),
             pool,
+            chose: None,
+            no_pyramid: writable_texture::<R32Float>(width: 1, height: 1),
             loaded_places: 0,
             runs: 0,
             seen: Chosen::empty(),
@@ -1046,7 +992,7 @@ impl Wood {
     }
 
     /// This frame's lists for `cam`, chosen on the GPU.
-    pub fn select(mut self, cam: Camera) {
+    pub fn select(mut self, cam: Camera, pyramid: Texture<R32Float>, hzb: Hzb) {
         self.lay_out()
         let corner = atan(cam.tan_half * sqrt(1.0 + cam.aspect * cam.aspect))
         let c = Choose {
@@ -1058,8 +1004,12 @@ impl Wood {
             square: vec4(0.0),
             loaded: self.loaded_places,
             runs: self.runs,
+            lists: 0,
+            late_at: 0,
+            hzb,
         }
-        self.seen.run(c, self.every, self.metadata, self.lods)
+        self.seen.run(c, self.every, self.metadata, self.lods, pyramid)
+        self.chose = Some(c)
     }
 
     /// The lists for a shadow cascade: every instance within the square `lo` to `hi` (x, z).
@@ -1074,8 +1024,20 @@ impl Wood {
             square: vec4(lo, hi),
             loaded: self.loaded_places,
             runs: self.runs,
+            lists: 0,
+            late_at: 0,
+            hzb: NO_HZB,
         }
-        self.shadowed.run(c, self.every, self.metadata, self.lods)
+        self.shadowed.run(c, self.every, self.metadata, self.lods, self.no_pyramid)
+    }
+
+    /// The second phase (`cull`): what `select` left out as hidden behind last frame's depth,
+    /// tested against `pyramid` (this frame's, built after the first phase's opaque passes:
+    /// `hzb`), chosen into the second phase's lists for `late_prepass` and `late_shade`.
+    pub fn reveal(mut self, pyramid: Texture<R32Float>, hzb: Hzb) {
+        if let Some(c) = self.chose {
+            self.seen.reveal(Choose { hzb, ..c }, self.every, self.metadata, self.lods, pyramid)
+        }
     }
 
     /// The cards' draw state of way `way` (a card level), seen by `cam`: each kind's leaves
@@ -1096,6 +1058,25 @@ impl Wood {
     /// one multi-draw a level over every kind. Then `occlude` and `prepass_far`, in a pass of
     /// their own.
     pub fn prepass_cards<P: RenderPass>(self, pass: P, cam: Camera, wind: Wind, s: Sampler) {
+        self.cards_prepass(pass, cam, wind, s, late: false)
+    }
+
+    /// The second phase's depth prepass (`reveal`'s): its cards and its far crowns.
+    pub fn late_prepass<P: RenderPass>(self, pass: P, cam: Camera, wind: Wind, s: Sampler) {
+        self.cards_prepass(pass, cam, wind, s, late: true)
+        self.far_prepass(pass, cam, wind, s, late: true)
+    }
+
+    /// A phase's cards in the depth prepass (`late`: the second's).
+    fn cards_prepass<P: RenderPass>(
+        self,
+        pass: P,
+        cam: Camera,
+        wind: Wind,
+        s: Sampler,
+        late: bool,
+    ) {
+        borrow ph = if late { self.seen.late } else { self.seen.early }
         let n = self.all_kinds()
         for way in 0..CARD_LEVELS {
             if !self.seen.way_has(way, n) {
@@ -1109,29 +1090,29 @@ impl Wood {
                     d,
                     kinds: self.pool.kinds,
                     cards: self.pool.cards,
-                    instances: self.seen.every_place(),
-                    marks: self.seen.every_mark(),
+                    instances: ph.instances.span(start: 0, count: self.seen.places),
+                    marks: ph.marks.span(start: 0, count: self.seen.places),
                     outlines: self.outlines,
                     orders: self.pool.orders,
                 ),
                 leaf_cut.bind(d, kinds: self.pool.kinds, atlas: self.atlas, s: s),
                 indices: self.card_triangles,
-                indirect: self.of_way(self.seen.cards, way),
+                indirect: self.of_way(ph.cards, way),
                 count: n,
                 depth: NEAREST,
             )
         }
     }
 
-    /// The far crowns behind the near ones' cards (what `prepass_cards` left in `depth`), put out
-    /// of the far draws: in a dense wood, most of them.
-    pub fn occlude(mut self, cam: Camera, depth: DepthTexture) {
-        self.seen.occlude(cam, depth, self.every, self.lods)
-    }
-
     /// The depth prepass's far crowns: their cut quads (impostors and volumes), after
     /// `occlude`: one multi-draw a way over every kind.
     pub fn prepass_far<P: RenderPass>(self, pass: P, cam: Camera, wind: Wind, s: Sampler) {
+        self.far_prepass(pass, cam, wind, s, late: false)
+    }
+
+    /// A phase's far crowns in the depth prepass (`late`: the second's).
+    fn far_prepass<P: RenderPass>(self, pass: P, cam: Camera, wind: Wind, s: Sampler, late: bool) {
+        borrow ph = if late { self.seen.late } else { self.seen.early }
         let n = self.all_kinds()
         if self.seen.way_has(IMPOSTOR, n) {
             draw_multi(
@@ -1140,8 +1121,8 @@ impl Wood {
                     cam,
                     wind,
                     kinds: self.pool.kinds,
-                    instances: self.seen.every_drawn(),
-                    marks: self.seen.every_mark(),
+                    instances: ph.instances.span(start: 0, count: self.seen.places),
+                    marks: ph.marks.span(start: 0, count: self.seen.places),
                     bounds: self.pool.bounds,
                     front: 0,
                 ),
@@ -1151,7 +1132,7 @@ impl Wood {
                     s: s,
                     cell: self.cell,
                 ),
-                indirect: self.of_way(self.seen.far, IMPOSTOR),
+                indirect: self.of_way(ph.far, IMPOSTOR),
                 count: n,
                 depth: NEAREST,
             )
@@ -1163,8 +1144,8 @@ impl Wood {
                     cam,
                     wind,
                     kinds: self.pool.kinds,
-                    instances: self.seen.every_drawn(),
-                    marks: self.seen.every_mark(),
+                    instances: ph.instances.span(start: 0, count: self.seen.places),
+                    marks: ph.marks.span(start: 0, count: self.seen.places),
                     bounds: self.pool.bounds,
                     front: 0,
                 ),
@@ -1176,7 +1157,7 @@ impl Wood {
                     s: s,
                     cell: self.cell,
                 ),
-                indirect: self.of_way(self.seen.far, VOLUME),
+                indirect: self.of_way(ph.far, VOLUME),
                 count: n,
                 depth: NEAREST,
             )
@@ -1186,6 +1167,30 @@ impl Wood {
     /// The shading pass's draws: the cards where the prepass left their depth, the limbs, then
     /// the far instances: one multi-draw a way over every kind.
     pub fn shade<P: RenderPass>(self, pass: P, lt: Lighting, wind: Wind, ids: Texture<R32Uint>) {
+        self.phase_shade(pass, lt, wind, ids, late: false)
+    }
+
+    /// The second phase's shading (`reveal`'s), as `shade`'s.
+    pub fn late_shade<P: RenderPass>(
+        self,
+        pass: P,
+        lt: Lighting,
+        wind: Wind,
+        ids: Texture<R32Uint>,
+    ) {
+        self.phase_shade(pass, lt, wind, ids, late: true)
+    }
+
+    /// A phase's shading draws (`late`: the second's).
+    fn phase_shade<P: RenderPass>(
+        self,
+        pass: P,
+        lt: Lighting,
+        wind: Wind,
+        ids: Texture<R32Uint>,
+        late: bool,
+    ) {
+        borrow ph = if late { self.seen.late } else { self.seen.early }
         let cam = lt.cam
         let n = self.all_kinds()
         for way in 0..CARD_LEVELS {
@@ -1200,20 +1205,20 @@ impl Wood {
                     d,
                     kinds: self.pool.kinds,
                     cards: self.pool.cards,
-                    instances: self.seen.every_place(),
-                    marks: self.seen.every_mark(),
+                    instances: ph.instances.span(start: 0, count: self.seen.places),
+                    marks: ph.marks.span(start: 0, count: self.seen.places),
                     outlines: self.outlines,
                     orders: self.pool.orders,
                 ),
                 leaf_shade.bind(
                     kinds: self.pool.kinds,
                     cards: self.pool.cards,
-                    instances: self.seen.every_place(),
+                    instances: ph.instances.span(start: 0, count: self.seen.places),
                     lt: lt,
                     atlas: self.atlas,
                 ),
                 indices: self.card_triangles,
-                indirect: self.of_way(self.seen.cards, way),
+                indirect: self.of_way(ph.cards, way),
                 count: n,
                 depth: PREPASSED,
             )
@@ -1228,8 +1233,8 @@ impl Wood {
                     cam,
                     kinds: self.pool.kinds,
                     limbs: self.pool.limbs,
-                    instances: self.seen.every_place(),
-                    marks: self.seen.every_mark(),
+                    instances: ph.instances.span(start: 0, count: self.seen.places),
+                    marks: ph.marks.span(start: 0, count: self.seen.places),
                 ),
                 bark_shade.bind(
                     lt,
@@ -1239,7 +1244,7 @@ impl Wood {
                     rs: self.repeat,
                 ),
                 indices: self.limb_triangles,
-                indirect: self.of_way(self.seen.limbs, way),
+                indirect: self.of_way(ph.limbs, way),
                 count: n,
                 cull: std::gpu::Cull::Back,
                 depth: NEAREST,
@@ -1252,8 +1257,8 @@ impl Wood {
                     cam,
                     wind,
                     kinds: self.pool.kinds,
-                    instances: self.seen.every_drawn(),
-                    marks: self.seen.every_mark(),
+                    instances: ph.instances.span(start: 0, count: self.seen.places),
+                    marks: ph.marks.span(start: 0, count: self.seen.places),
                     bounds: self.pool.bounds,
                     front: 1,
                 ),
@@ -1265,7 +1270,7 @@ impl Wood {
                     normal: self.pool.normal,
                     grid: self.pool.grid,
                 ),
-                indirect: self.of_way(self.seen.far, IMPOSTOR),
+                indirect: self.of_way(ph.far, IMPOSTOR),
                 count: n,
                 depth: impostor::SHADED,
             )
@@ -1277,8 +1282,8 @@ impl Wood {
                     cam,
                     wind,
                     kinds: self.pool.kinds,
-                    instances: self.seen.every_drawn(),
-                    marks: self.seen.every_mark(),
+                    instances: ph.instances.span(start: 0, count: self.seen.places),
+                    marks: ph.marks.span(start: 0, count: self.seen.places),
                     bounds: self.pool.bounds,
                     front: 1,
                 ),
@@ -1289,7 +1294,7 @@ impl Wood {
                     grid: self.pool.grid,
                     grid_depth: self.pool.grid_depth,
                 ),
-                indirect: self.of_way(self.seen.far, VOLUME),
+                indirect: self.of_way(ph.far, VOLUME),
                 count: n,
                 depth: impostor::SHADED,
             )
@@ -1303,7 +1308,7 @@ impl Wood {
         if !self.shadowed.way_has(0, n) {
             return
         }
-        let instances = self.shadowed.every_place()
+        let instances = self.shadowed.early.instances.span(start: 0, count: self.shadowed.places)
         let leaves = Leaves { per_card: SHADOW_LEAVES }
         let d = card_draw(wind, 1, leaves, sh.right, sh.up, self.cell, ALL)
         draw_multi(
@@ -1318,7 +1323,7 @@ impl Wood {
             ),
             leaf_cut.bind(d, kinds: self.pool.kinds, atlas: self.atlas, s: s),
             indices: self.card_triangles,
-            indirect: self.of_way(self.shadowed.cards, 0),
+            indirect: self.of_way(self.shadowed.early.cards, 0),
             count: n,
             depth_bias: CASTER,
         )
@@ -1332,7 +1337,7 @@ impl Wood {
             ),
             nothing,
             indices: self.limb_triangles,
-            indirect: self.of_way(self.shadowed.limbs, 0),
+            indirect: self.of_way(self.shadowed.early.limbs, 0),
             count: n,
             depth_bias: CASTER,
         )

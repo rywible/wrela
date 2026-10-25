@@ -6,6 +6,7 @@ use creature::{Fawn, Grown, REALIZED, SKELETON, grown}
 use fawn::creature::Coat
 use engine::character::{Cast, PartOf, cast, parts_of}
 use engine::cook::Work
+use engine::cull::Hzb
 use engine::frame::{Cooks, Scene, Targets, full}
 use engine::gait::{Walker, posed_bounds}
 use engine::grass::{Blooms, Grass, GrassLook}
@@ -26,8 +27,8 @@ use rocks::{BOULDERS, boulder, footprints}
 use scene::{Ground, MEADOW}
 use std::collections::{Flags, replace}
 use std::gpu::{
-    Cull, GpuBuffer, GpuSpan, R32Uint, RenderPass, Rgba8, Sampler, ScreenPass, Texture, buffer_of,
-    draw, texture,
+    Cull, GpuBuffer, GpuSpan, R32Float, R32Uint, RenderPass, Rgba8, Sampler, ScreenPass, Texture,
+    buffer_of, draw, texture,
 }
 use std::mem::test_build
 use testing::View
@@ -314,7 +315,13 @@ impl Scene for Stage {
         self.creature_on()
     }
 
-    fn choose(mut self, lt: Lighting, texels: GpuSpan<Texel>) {
+    fn choose(
+        mut self,
+        lt: Lighting,
+        texels: GpuSpan<Texel>,
+        pyramid: Texture<R32Float>,
+        hzb: Hzb,
+    ) {
         self.grass.place(
             lt.cam,
             lt.light,
@@ -330,13 +337,38 @@ impl Scene for Stage {
         )
         if on(self.off, System::Trees) {
             match mut self.wood {
-                Some(w) => w.select(lt.cam),
+                Some(w) => w.select(lt.cam, pyramid, hzb),
                 None => {},
             }
         }
     }
 
-    /// The depth prepass: the near cut cards and the grass's flowers.
+    /// The trees the wood's first phase left out as hidden behind last frame's depth
+    /// (`Wood::reveal`), when there are trees.
+    fn reveals(self) -> bool {
+        self.wood.is_some() && on(self.off, System::Trees)
+    }
+
+    fn reveal(mut self, pyramid: Texture<R32Float>, hzb: Hzb) {
+        match mut self.wood {
+            Some(w) => w.reveal(pyramid, hzb),
+            None => {},
+        }
+    }
+
+    fn late_prepass<P: RenderPass>(self, pass: P, cam: Camera, wind: Wind, s: Sampler) {
+        if let Some(w) = self.wood {
+            w.late_prepass(pass, cam, wind, s)
+        }
+    }
+
+    fn late_shade<P: RenderPass>(self, pass: P, lt: Lighting, wind: Wind, ids: Texture<R32Uint>) {
+        if let Some(w) = self.wood {
+            w.late_shade(pass, lt, wind, ids)
+        }
+    }
+
+    /// The depth prepass: the near cut cards, the grass's flowers and the far crowns' quads.
     fn prepass<P: RenderPass>(self, pass: P, cam: Camera, wind: Wind, s: Sampler) {
         if on(self.off, System::Trees) {
             if let Some(w) = self.wood {
@@ -346,28 +378,10 @@ impl Scene for Stage {
         if on(self.off, System::Grass) {
             self.grass.prepass(pass, cam, wind)
         }
-    }
-
-    /// The far crowns behind the near ones put out, and the rest drawn into the prepass.
-    fn after_prepass(mut self, t: mut Targets, cam: Camera, wind: Wind, s: Sampler) {
-        if !on(self.off, System::Trees) {
-            return
-        }
-        match mut self.wood {
-            Some(w) => {
-                std::gpu::label("vegetation occlusion")
-                w.occlude(cam, t.depth)
-                std::gpu::label("vegetation far")
-                let far = std::gpu::begin_pass_with_depth(
-                    mut t.ids,
-                    mut t.depth,
-                    keep: true,
-                    keep_depth: true,
-                )
-                w.prepass_far(far, cam, wind, s)
-                far.end()
-            },
-            None => {},
+        if on(self.off, System::Trees) {
+            if let Some(w) = self.wood {
+                w.prepass_far(pass, cam, wind, s)
+            }
         }
     }
 

@@ -1,0 +1,172 @@
+// Pyramids built from depth images written by the CPU, and spheres tested against them in a
+// kernel (`engine::cull::occluded`), each answer read back. Frame 0 records every case; the
+// tests read the answers once they've come.
+
+use engine::cull::{Hzb, Pyramid, occluded}
+use engine::view::{Camera, first_camera}
+use std::gpu::{GlobalId, GpuBuffer, R32Float, Slots, Texture, buffer, buffer_of, dispatch, read}
+use std::io::Pending
+
+/// Each sphere (centre and radius) of a case, tested against its pyramid: 1 if occluded.
+@compute(64)
+fn probe(pyramid: Texture<R32Float>, h: Hzb, spheres: [vec4], out: mut Slots<u32>, id: GlobalId) {
+    if id.x >= spheres.len() {
+        return
+    }
+    let s = spheres[id.x]
+    out[id] = if occluded(pyramid, h, s.xyz, s.w) { 1 } else { 0 }
+}
+
+/// Each level's last texel (its bottom right), as the pyramid holds it.
+@compute(1)
+fn corners(pyramid: Texture<R32Float>, levels: u32, out: mut Slots<f32>, id: GlobalId) {
+    for l in 0..levels {
+        let w = max(pyramid.width() >> l, 1)
+        let h = max(pyramid.height() >> l, 1)
+        out[id] = pyramid.load(x: w - 1, y: h - 1, level: l)
+        if l == id.x {
+            return
+        }
+    }
+}
+
+/// A camera at the origin looking along +z, its screen `w` × `h`, unjittered.
+fn camera(w: u32, h: u32) -> Camera {
+    first_camera(vec3(0.0), vec3(0.0, 0.0, 1.0), 1.0, width: w, height: h).unjittered()
+}
+
+/// The depth at `d` metres along the view (reversed: near over the distance).
+fn at(cam: Camera, d: f32) -> f32 {
+    cam.near / d
+}
+
+pub struct State {
+    cases: Vec<Pending<u32>>,
+    corner: Option<Pending<f32>>,
+    answers: Vec<Vec<u32>>,
+    corner_depths: Vec<f32>,
+}
+
+pub fn init() -> State {
+    State { cases: Vec::new(), corner: None, answers: Vec::new(), corner_depths: Vec::new() }
+}
+
+/// Records case `spheres` against a `w` × `h` pyramid of `texels`.
+fn case(s: mut State, w: u32, h: u32, texels: [f32], spheres: [vec4]) {
+    let cam = camera(w, h)
+    var p = Pyramid::new(w, h)
+    p.build_from(texels, cam)
+    var out: GpuBuffer<u32> = buffer(spheres.len())
+    dispatch(
+        probe.bind(p.depth, p.at, spheres: buffer_of(spheres).items(), out: mut out),
+        over: spheres.len(),
+    )
+    s.cases.push(read(out.items()))
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    if s.cases.is_empty() {
+        let cam = camera(64, 64)
+        let wall = at(cam, 10.0)
+        // 0: a wall at 10 m hides a sphere at 20 m, not one at 5 m.
+        let full = Vec::filled(64 * 64, wall)
+        case(mut s, 64, 64, full, [vec4(0.0, 0.0, 20.0, 1.0), vec4(0.0, 0.0, 5.0, 1.0)])
+        // 1: a cell whose four pixels hold [0.9, 0, 0, 0] (three uncovered) hides nothing
+        // behind it, at any level.
+        var holes = Vec::filled(64 * 64, 0.9)
+        for y in 0..64 {
+            for x in 0..64 {
+                if (x % 2 != 0 || y % 2 != 0) {
+                    holes[y * 64 + x] = 0.0
+                }
+            }
+        }
+        case(mut s, 64, 64, holes, [vec4(0.0, 0.0, 20.0, 1.0), vec4(0.0, 0.0, 20.0, 6.0)])
+        // 2: a wall with a one-pixel gap: a sphere behind the gap stays drawn wherever the gap
+        // crosses a cell's edge (columns 15 to 17, 31 to 33), and one beside it is hidden.
+        for g in [15, 16, 17, 31, 32, 33] {
+            var gap = Vec::filled(64 * 64, wall)
+            gap[32 * 64 + g] = 0.0
+            // The gap's pixel's direction, 30 m out, a sphere a little more than a pixel wide.
+            let x = (f32(g) + 0.5) / 64.0 * 2.0 - 1.0
+            let y = 1.0 - (32.5 / 64.0) * 2.0
+            let dir = cam.forward +
+                cam.right * (x * cam.aspect * cam.tan_half) +
+                cam.up * (y * cam.tan_half)
+            case(
+                mut s,
+                64,
+                64,
+                gap,
+                [vec4(dir * 30.0, 0.3), vec4(vec3(-0.5, 0.0, 1.0) * 30.0, 0.3)],
+            )
+        }
+        // 3: a 5 × 3 image whose only uncovered pixel is its last row's and column's: every
+        // level's last texel keeps it open.
+        var odd = Vec::filled(15, 0.9)
+        odd[14] = 0.0
+        let c = camera(5, 3)
+        var p = Pyramid::new(5, 3)
+        p.build_from(odd, c)
+        var out: GpuBuffer<f32> = buffer(p.at.levels)
+        dispatch(corners.bind(p.depth, levels: p.at.levels, out: mut out), groups: p.at.levels)
+        s.corner = Some(read(out.items()))
+        return
+    }
+    if s.answers.len() < s.cases.len() {
+        var k = s.answers.len()
+        while k < s.cases.len() {
+            match s.cases[k].poll() {
+                Some(Ok(v)) => s.answers.push(take v),
+                _ => return,
+            }
+            k += 1
+        }
+    }
+    match mut s.corner {
+        Some(p) => match p.poll() {
+            Some(Ok(v)) => s.corner_depths = take v,
+            _ => {},
+        },
+        None => {},
+    }
+}
+
+/// A wall hides what's behind it, not what's before it.
+@test(frames: 8, gpu: true)
+fn a_wall_hides_what_is_behind_it(s: State) {
+    assert(s.answers.len() >= 1, "the case didn't come back")
+    assert(s.answers[0][0] == 1, "a sphere behind the wall is drawn")
+    assert(s.answers[0][1] == 0, "a sphere before the wall is hidden")
+}
+
+/// An uncovered pixel keeps its cell open: a cell of [0.9, 0, 0, 0] hides nothing behind it.
+@test(frames: 8, gpu: true)
+fn an_uncovered_pixel_keeps_its_cell_open(s: State) {
+    assert(s.answers.len() >= 2, "the case didn't come back")
+    assert(
+        s.answers[1][0] == 0 && s.answers[1][1] == 0,
+        "a sphere behind a part-uncovered cell is hidden",
+    )
+}
+
+/// A sphere behind a one-pixel gap stays drawn as the gap crosses cells' edges; one behind the
+/// wall beside it doesn't.
+@test(frames: 8, gpu: true)
+fn a_gap_keeps_what_is_behind_it_drawn(s: State) {
+    assert(s.answers.len() >= 8, "the cases didn't come back")
+    for k in 2..8 {
+        assert(s.answers[k][0] == 0, f"a sphere behind the gap (case {k}) is hidden")
+        assert(s.answers[k][1] == 1, f"a sphere behind the wall (case {k}) is drawn")
+    }
+}
+
+/// An odd image's last row and column are under every level's last texel: its one uncovered
+/// pixel keeps it open at every level.
+@test(frames: 8, gpu: true)
+fn an_odd_images_last_pixel_reaches_every_level(s: State) {
+    assert(s.corner_depths.len() == 3, f"{s.corner_depths.len()} levels came back")
+    for l in 0..s.corner_depths.len() {
+        assert(s.corner_depths[l] == 0.0, f"level {l}'s last texel lost the uncovered pixel")
+    }
+}

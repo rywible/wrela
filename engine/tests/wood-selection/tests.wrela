@@ -13,7 +13,8 @@ use std::tool::toolchain
 use std::tool::toolchain::Override
 
 /// The engine's modules wood.wrela names by their own paths.
-const MODULES: [Text; 8] = [
+const MODULES: [Text; 9] = [
+    "cull",
     "impostor",
     "lit",
     "lod",
@@ -27,7 +28,7 @@ const MODULES: [Text; 8] = [
 /// How many instances each frame selects.
 const SELECTED: [u32; 6] = [73, 3, 2, 0, 40, 201]
 
-const FIXTURE: [Text; 87] = [
+const FIXTURE: [Text; 88] = [
     "pub struct Fixture {",
     "    kinds: Vec<Kind>,",
     "    chosen: Chosen,",
@@ -35,7 +36,7 @@ const FIXTURE: [Text; 87] = [
     "    metadata: GpuBuffer<u32>,",
     "    metadata_values: Vec<u32>,",
     "    lods: GpuBuffer<Lod>,",
-    "    depth: DepthTexture,",
+    "    pyramid: Texture<R32Float>,",
     "}",
     "",
     "fn fixture_kind() -> Kind {",
@@ -81,7 +82,7 @@ const FIXTURE: [Text; 87] = [
     "    }])",
     "    Fixture {",
     "        kinds, chosen, every, metadata, metadata_values, lods,",
-    "        depth: std::gpu::depth_texture(1, 1),",
+    "        pyramid: writable_texture::<R32Float>(1, 1),",
     "    }",
     "}",
     "",
@@ -95,8 +96,8 @@ const FIXTURE: [Text; 87] = [
     "    if u32(time) == 1 {",
     "        // Poison room outside the shrunken lists. No dispatch or draw may consume it.",
     "        let poison = Instance { at: vec3(-999.0), scale: 777.0, ..NO_INSTANCE }",
-    "        write(mut state.chosen.instances, 160, [poison; 32])",
-    "        write(mut state.chosen.drawn, 160, [poison; 32])",
+    "        write(mut state.chosen.early.instances, 160, [poison; 32])",
+    "        write(mut state.chosen.late.instances, 160, [poison; 32])",
     "    }",
     "    for i in 0..256 {",
     "        state.metadata_values[i] = if i < n { 0 } else { NO_KIND }",
@@ -106,15 +107,16 @@ const FIXTURE: [Text; 87] = [
     "    let c = Choose {",
     "        cam, corner: 1.0, kinds: 1, shadow: 1, instances: 256,",
     "        square: vec4(-1000.0, -1000.0, 1000.0, 1000.0), loaded: n, runs: 1,",
+    "        lists: 0, late_at: 0, hzb: engine::cull::NO_HZB,",
     "    }",
     "    let before = std::alloc::allocations()",
-    "    state.chosen.run(c, state.every, state.metadata, state.lods)",
-    "    state.chosen.occlude(cam, state.depth, state.every, state.lods)",
+    "    state.chosen.run(c, state.every, state.metadata, state.lods, state.pyramid)",
+    "    state.chosen.reveal(c, state.every, state.metadata, state.lods, state.pyramid)",
     "    assert(std::alloc::allocations() == before, \"selection allocated its count reset\")",
     "}",
     "",
     "pub fn places(state: Fixture) -> u32 { state.chosen.places }",
-    "pub fn capacity(state: Fixture) -> u32 { state.chosen.instances.len() }",
+    "pub fn capacity(state: Fixture) -> u32 { state.chosen.early.instances.len() }",
 ]
 
 /// The fixture package, written into `scratch/fixture`, built into `scratch/build`, loaded on
@@ -192,11 +194,11 @@ fn last_part(name: str) -> String {
     String::from(name.slice(start, name.len()))
 }
 
-/// Selection keeps its lists to what each frame selects: the choosing covers what is loaded, and
-/// the gather, cull and hide passes the active span alone; shrinking and regrowing keep the room
-/// (a larger regrowth gains room) and the instance buffer; each frame's lists hold exactly its
-/// instances, none hidden, and the draws' counts are its own; a shrink leaves the poisoned room
-/// outside its lists untouched.
+/// Selection keeps its lists to what each frame selects: the choosing covers what is loaded, the
+/// second phase what the lists hold, and both phases' gathers the active span alone; shrinking
+/// and regrowing keep the room (a larger regrowth gains room) and the instance buffer; each
+/// frame's lists hold exactly its instances and the draws' counts are its own; a shrink leaves
+/// the poisoned room outside its lists untouched.
 @test(tool, read: [("repo", "../../..")], budget: 300)
 fn wood_selection_dispatches_only_current_lists_after_shrink_and_regrowth() {
     let (h, initial_capacity) = opened()
@@ -224,7 +226,8 @@ fn wood_selection_dispatches_only_current_lists_after_shrink_and_regrowth() {
         }
         let commands = all_commands(h, seen.commands[0])
         var gathered: Option<Bound> = None
-        var drawn: Option<Bound> = None
+        var late: Option<Bound> = None
+        var revealed: Option<u32> = None
         var arguments: Option<Bound> = None
         var limb_arguments: Option<Bound> = None
         var chose: Option<u32> = None
@@ -237,13 +240,14 @@ fn wood_selection_dispatches_only_current_lists_after_shrink_and_regrowth() {
             let name = last_part(cmd.pipeline.as_str())
             if name.as_str() == "gather" {
                 spans.push(cmd.groups.x)
-                gathered = Some(cmd.bindings[3])
-            } else if name.as_str() == "cull" {
-                spans.push(cmd.groups.x)
-            } else if name.as_str() == "hide" {
-                spans.push(cmd.groups.x)
-                drawn = Some(cmd.bindings[1])
-            } else if name.as_str() == "draws_of" {
+                if gathered.is_none() {
+                    gathered = Some(cmd.bindings[3])
+                } else {
+                    late = Some(cmd.bindings[3])
+                }
+            } else if name.as_str() == "reveal" {
+                revealed = Some(cmd.groups.x)
+            } else if name.as_str() == "draws_of" && arguments.is_none() {
                 arguments = Some(cmd.bindings[3])
                 limb_arguments = Some(cmd.bindings[4])
             } else if name.as_str() == "choose" {
@@ -252,8 +256,13 @@ fn wood_selection_dispatches_only_current_lists_after_shrink_and_regrowth() {
         }
         let span = (active + 63) / 64
         assert(
-            spans.len() == 3 && spans[0] == span && spans[1] == span && spans[2] == span,
-            f"dispatch bounds in frame {frame}: {spans.len()} passes, not 3 of {span} groups",
+            spans.len() == 2 && spans[0] == span && spans[1] == span,
+            f"dispatch bounds in frame {frame}: {spans.len()} gathers, not 2 (a phase each) of {span} groups",
+        )
+        let Some(r) = revealed else { panic("the second phase's choosing") }
+        assert(
+            r == max((n + 63) / 64, 1),
+            f"frame {frame} revealed over {r} groups, not what the lists hold",
         )
         let Some(groups) = chose else { panic("the choosing") }
         assert(
@@ -261,7 +270,7 @@ fn wood_selection_dispatches_only_current_lists_after_shrink_and_regrowth() {
             f"frame {frame} chose over {groups} groups, not what's loaded",
         )
         let Some(g) = gathered else { panic("gathered instances") }
-        let Some(d) = drawn else { panic("drawn instances") }
+        let Some(d) = late else { panic("the second phase's instances") }
         let Some(a) = arguments else { panic("draw arguments") }
         let Some(la) = limb_arguments else { panic("limb draw arguments") }
         let reads = [
@@ -294,11 +303,6 @@ fn wood_selection_dispatches_only_current_lists_after_shrink_and_regrowth() {
         ids.sort_by(|x: u32, y: u32| x < y)
         for i in 0..n {
             assert(ids[i] == i, "a selected instance was stale or missing")
-        }
-        for i in 0..n {
-            for b in i * stride..(i + 1) * stride {
-                assert(shown[b] == instances[b], "a card-list instance was hidden")
-            }
         }
         if frame == 0 {
             first_instances = Some(g.handle)

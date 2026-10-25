@@ -12,6 +12,7 @@ use engine::cook::Work
 use land::stream::{near_tile_radius, tile_distance, tile_radius}
 use tower::door::Doorway
 use world::GATE
+use engine::cull::Hzb
 use engine::frame::{Cooks, Effects, Scene, Targets, full, fullscreen}
 use engine::grass::{Blooms, Contact, Grass, GrassLook}
 use engine::light::{Light, SUN_TOP, sunlight}
@@ -37,8 +38,8 @@ use ground::GROUND
 use provenance::NearTile
 use std::collections::{Flags, replace, swap}
 use std::gpu::{
-    Blend, Cull, GpuBuffer, GpuSpan, R32Uint, RenderPass, Rgba8, Sampler, ScreenPass, Texture,
-    begin_pass, begin_pass_with_depth, buffer_of, dispatch, draw, label, texture,
+    Blend, Cull, GpuBuffer, GpuSpan, R32Float, R32Uint, RenderPass, Rgba8, Sampler, ScreenPass,
+    Texture, begin_pass, begin_pass_with_depth, buffer_of, dispatch, draw, label, texture,
 }
 use std::io::{Pending, print}
 
@@ -341,7 +342,13 @@ impl Scene for Stage {
     }
 
     /// The rocks the camera sees, the grass placed round the eye, and the wood's lists.
-    fn choose(mut self, lt: Lighting, texels: GpuSpan<Texel>) {
+    fn choose(
+        mut self,
+        lt: Lighting,
+        texels: GpuSpan<Texel>,
+        pyramid: Texture<R32Float>,
+        hzb: Hzb,
+    ) {
         if rocky(self.view) {
             let o = origin_of(self)
             match mut self.rocks {
@@ -364,13 +371,38 @@ impl Scene for Stage {
         )
         if on(shown(self.off, self.view), System::Trees) {
             match mut self.wood {
-                Some(w) => w.select(lt.cam),
+                Some(w) => w.select(lt.cam, pyramid, hzb),
                 None => {},
             }
         }
     }
 
-    /// The depth prepass: the near crowns' cards and the grass.
+    /// The trees the wood's first phase left out as hidden behind last frame's depth
+    /// (`Wood::reveal`), when there are trees.
+    fn reveals(self) -> bool {
+        self.wood.is_some() && on(shown(self.off, self.view), System::Trees)
+    }
+
+    fn reveal(mut self, pyramid: Texture<R32Float>, hzb: Hzb) {
+        match mut self.wood {
+            Some(w) => w.reveal(pyramid, hzb),
+            None => {},
+        }
+    }
+
+    fn late_prepass<P: RenderPass>(self, pass: P, cam: Camera, wind: Wind, s: Sampler) {
+        if let Some(w) = self.wood {
+            w.late_prepass(pass, cam, wind, s)
+        }
+    }
+
+    fn late_shade<P: RenderPass>(self, pass: P, lt: Lighting, wind: Wind, ids: Texture<R32Uint>) {
+        if let Some(w) = self.wood {
+            w.late_shade(pass, lt, wind, ids)
+        }
+    }
+
+    /// The depth prepass: the near crowns' cards, the grass, and the far crowns' quads.
     fn prepass<P: RenderPass>(self, pass: P, cam: Camera, wind: Wind, s: Sampler) {
         let off = shown(self.off, self.view)
         if on(off, System::Trees) {
@@ -381,28 +413,11 @@ impl Scene for Stage {
         if on(off, System::Grass) {
             self.grass.prepass(pass, cam, wind)
         }
-    }
-
-    /// The far crowns behind the near ones put out (`Wood::occlude`), and the rest drawn.
-    fn after_prepass(mut self, t: mut Targets, cam: Camera, wind: Wind, s: Sampler) {
-        let trees = on(shown(self.off, self.view), System::Trees)
-        label("vegetation occlusion")
-        match mut self.wood {
-            Some(w) => {
-                if trees {
-                    w.occlude(cam, t.depth)
-                }
-            },
-            None => {},
-        }
-        label("vegetation far")
-        let far = begin_pass_with_depth(mut t.ids, mut t.depth, keep: true, keep_depth: true)
-        if trees {
+        if on(off, System::Trees) {
             if let Some(w) = self.wood {
-                w.prepass_far(far, cam, wind, s)
+                w.prepass_far(pass, cam, wind, s)
             }
         }
-        far.end()
     }
 
     /// The vegetation pass: the grass, the built things in view (the floor's), the banks'

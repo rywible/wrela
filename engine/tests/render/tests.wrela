@@ -304,7 +304,8 @@ fn static_shadow_edges_keep_their_light_across_frames_and_view_motion() {
     }
 }
 
-/// Foliage occlusion keeps a gap a single pixel wide: the open block's 128, the wood's 0.
+/// Occlusion keeps a gap a single pixel wide: the depth pyramid's block over it is open (0), as
+/// is the empty block's, the opaque block's 128.
 @test(tool, read: [("repo", "../../..")], budget: 120)
 fn foliage_occlusion_preserves_even_a_single_pixel_gap() {
     let shots = screens("wood-occlusion", width: 24, height: 8, groups: together([0.0]))

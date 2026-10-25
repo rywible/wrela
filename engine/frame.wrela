@@ -32,6 +32,7 @@ use shadow::{Cascade, Kept, Shadows, shadows}
 use sheet::{Scale, pace}
 use sky::{Clouds, Sky, Weather, new_sky, sky_shade}
 use temporal::{Resolve, held, neighbourhoods, resolve, resolve_gathered}
+use cull::{Hzb, Pyramid}
 use terrain::{Clipmap, SIDES, Texel, ground, ground_shade}
 use view::{BEHIND, Camera, NEAREST, camera, jitter_of}
 use std::input::Key
@@ -39,9 +40,10 @@ use std::cache::Stale
 use std::collections::{Flags, replace, swap}
 use std::gpu::{
     Address, ClipPosition, ComparisonSampler, DepthTexture, FragmentShader, GpuBuffer, GpuSpan,
-    R32Uint, RenderPass, Rgba16Float, Sampler, ScreenPass, Texture, VertexIndex, begin_depth_pass,
-    begin_pass, begin_pass_with_depth, begin_screen_pass, buffer, comparison_sampler, depth_texture,
-    dispatch, draw, draw_multi, label, sampler, texture, timed, writable_texture,
+    R32Float, R32Uint, RenderPass, Rgba16Float, Sampler, ScreenPass, Texture, VertexIndex,
+    begin_depth_pass, begin_pass, begin_pass_with_depth, begin_screen_pass, buffer,
+    comparison_sampler, depth_texture, dispatch, draw, draw_multi, label, sampler, texture, timed,
+    writable_texture,
 }
 use std::io::{Pending, print}
 
@@ -154,8 +156,31 @@ pub trait Scene {
     }
 
     /// What the GPU chooses before any pass: grass placed round the eye, a wood's instances,
-    /// lit by `lt`, on the clipmap's `texels`.
-    fn choose(mut self, lt: Lighting, texels: GpuSpan<Texel>) {}
+    /// lit by `lt`, on the clipmap's `texels`; what last frame's depth (`pyramid`, `hzb`) hid
+    /// is left for `reveal`.
+    fn choose(
+        mut self,
+        lt: Lighting,
+        texels: GpuSpan<Texel>,
+        pyramid: Texture<R32Float>,
+        hzb: Hzb,
+    ) {}
+
+    /// Whether the scene leaves what's hidden for `reveal` (the frame then builds its pyramid
+    /// and draws the late passes).
+    fn reveals(self) -> bool {
+        false
+    }
+
+    /// After the opaque passes: what `choose` left out, tested against this frame's depth
+    /// (`pyramid`, `hzb`), chosen for `late_prepass` and `late_shade`.
+    fn reveal(mut self, pyramid: Texture<R32Float>, hzb: Hzb) {}
+
+    /// The depth prepass of what `reveal` revealed (into the ids and the depth).
+    fn late_prepass<P: RenderPass>(self, pass: P, cam: Camera, wind: Wind, s: Sampler) {}
+
+    /// The shading of what `reveal` revealed, as `shade`'s.
+    fn late_shade<P: RenderPass>(self, pass: P, lt: Lighting, wind: Wind, ids: Texture<R32Uint>) {}
 
     /// The depth prepass (into the ids and the depth): cut cards, grass.
     fn prepass<P: RenderPass>(self, pass: P, cam: Camera, wind: Wind, s: Sampler) {}
@@ -457,6 +482,10 @@ pub struct Quality: Copy {
     /// it plans with the code's estimates and records, and a frame's order is the same on every
     /// run, as the tests of order need.
     pub measured: bool = true,
+    /// Whether the frame culls what's hidden (`cull`): the scene's choosing leaves out what last
+    /// frame's depth hid, and after the opaque passes this frame's depth pyramid reveals what of
+    /// it shows, drawn then (both phases or neither: the first alone would drop what's revealed).
+    pub occlusion: bool = true,
 }
 
 /// The kinds of work a measuring frame times (`Quality::measured`), each by the label its pass or
@@ -652,6 +681,9 @@ pub struct Frame<R: Resolver> {
     pub probes: Probes,
     pub clipmap: Clipmap,
     pub targets: Targets,
+    /// The depth pyramid (`cull`): this frame's, built after its opaque passes, which the next
+    /// frame's choosing reads.
+    pub pyramid: Pyramid,
     resolver: R,
     pub exposure: GpuBuffer<Exposure>,
     pub linear: Sampler,
@@ -794,6 +826,7 @@ impl<R: Resolver> Frame<R> {
             },
             clipmap,
             targets: no_targets(),
+            pyramid: Pyramid::new(width: 1, height: 1),
             resolver: R::made(),
             exposure: buffer(1),
             linear: sampler(),
@@ -992,6 +1025,8 @@ impl<R: Resolver> Frame<R> {
         let d = self.origin - origin
         self.origin = origin
         scene.shift(d)
+        // Last frame's depth was drawn in the old render space: nothing is hidden by it.
+        self.pyramid.at.on = 0
         self.clipmap.set_origin(origin.xz)
         self.probes.using.shift(d.xz)
         self.probes.at += d.xz
@@ -1024,6 +1059,7 @@ impl<R: Resolver> Frame<R> {
         let (w, h) = (max(u32(f32(width) * scale), 1), max(u32(f32(height) * scale), 1))
         if width != self.width || height != self.height || f32(w) != self.cam.screen.x {
             self.targets = targets_for(width, height, w, h, scene.has_effects())
+            self.pyramid = Pyramid::new(width: w, height: h)
             self.resolver.resize(w, h)
             scene.resized(w, h)
             self.width = width
@@ -1543,7 +1579,12 @@ impl<R: Resolver> Frame<R> {
             air: self.tables.aerial,
             s: self.linear,
         }
-        scene.choose(lt, texels)
+        // Last frame's pyramid, if it's this view's (not after a jump, nor with occlusion off).
+        var hzb = self.pyramid.at
+        if !self.quality.occlusion || self.jumped || !scene.reveals() {
+            hzb.on = 0
+        }
+        scene.choose(lt, texels, self.pyramid.depth, hzb)
         label("vegetation prepass")
         let pre = begin_pass_with_depth(
             mut self.targets.ids,
@@ -1601,13 +1642,40 @@ impl<R: Resolver> Frame<R> {
         )
         scene.characters(cr, lt)
         cr.end()
+        // The second phase (`cull`): this frame's pyramid from the opaque passes' depth, what the
+        // first phase left out tested against it, and what it reveals drawn now.
+        let late = self.quality.occlusion && scene.reveals()
+        if late {
+            label("occlusion")
+            self.pyramid.build(self.targets.depth, cam)
+            scene.reveal(self.pyramid.depth, self.pyramid.at)
+            label("vegetation late")
+            let lp = begin_pass_with_depth(
+                mut self.targets.ids,
+                mut self.targets.depth,
+                keep: true,
+                keep_depth: true,
+            )
+            scene.late_prepass(lp, cam, wind, self.linear)
+            lp.end()
+            let ls = begin_pass_with_depth(
+                mut self.targets.scene,
+                mut self.targets.depth,
+                keep: true,
+                keep_depth: true,
+            )
+            scene.late_shade(ls, lt, wind, self.targets.ids)
+            ls.end()
+        } else {
+            self.pyramid.at.on = 0
+        }
         label("sky")
         let sky = begin_pass_with_depth(
             mut self.targets.scene,
             mut self.targets.depth,
             keep: true,
             keep_depth: true,
-            join: true,
+            join: !late,
         )
         if !scene.sky_instead(sky) {
             draw(

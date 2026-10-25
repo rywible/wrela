@@ -1,0 +1,7 @@
+# The occlusion pyramid and its test (engine/cull.wrela) on the GPU: what a pyramid keeps open,
+# odd sizes, and spheres behind and before a wall and behind a gap.
+[package]
+name = "cull_tests"
+
+[dependencies]
+engine = { workspace = true }
