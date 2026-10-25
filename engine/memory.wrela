@@ -2,8 +2,9 @@
 // (`std::gpu::memory()`, std's count of every buffer and texture), against a total, and each
 // subsystem's share as its own count says (the realizer's meshes, the wood's impostors and lists,
 // and whatever else a game counts), against its own budget. What's over says which to trim: the
-// realizer evicts sooner (`Realizer::evict_after`), the wood's lists give back room
-// (`wood::SHRINK_AFTER`).
+// realizer evicts sooner (`Realizer::evict_after`), the wood's lists give back room sooner
+// (`Wood::shrink_after`). The 3D frame reads it every `MEMORY_EVERY` frames
+// (`engine::frame::Frame::usage`, `Scene::shares` and `Scene::pressed`).
 
 use std::gpu::Memory
 
@@ -77,6 +78,22 @@ pub fn evict_after(u: Usage, default: u32) -> u32 {
     if u.is_over("total") || u.is_over("realizer") { min(default, 120) } else { default }
 }
 
+/// How many frames a wood's choosing stays under half full before its room is given back
+/// (`Wood::shrink_after`): the default while its lists and the total are within their budgets,
+/// a second when either is over.
+pub fn shrink_after(u: Usage, default: u32) -> u32 {
+    if u.is_over("total") || u.is_over("wood lists") { min(default, 60) } else { default }
+}
+
+/// No use: nothing held, no shares.
+pub fn unused() -> Usage {
+    Usage {
+        gpu: Memory { buffers: 0, textures: 0, peak_buffers: 0, peak_textures: 0 },
+        total: TOTAL,
+        shares: Vec::new(),
+    }
+}
+
 fn usage(held: u64, realizer: u64) -> Usage {
     Usage {
         gpu: Memory { buffers: held, textures: 0, peak_buffers: held, peak_textures: 0 },
@@ -106,4 +123,11 @@ fn over_a_budget_evicts_sooner() {
         "the realizer's share isn't said",
     )
     assert(evict_after(meshes, default: 600) == 120, "over the realizer's budget, it waits as long")
+}
+
+/// Over the total, a wood's room is given back after a second of being half empty, not five.
+@test
+fn over_a_budget_a_wood_gives_back_room_sooner() {
+    assert(shrink_after(usage(held: 600 * MIB, realizer: 0), default: 300) == 300, "within, sooner")
+    assert(shrink_after(usage(held: 1100 * MIB, realizer: 0), default: 300) == 60, "over, as long")
 }

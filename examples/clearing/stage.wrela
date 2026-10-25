@@ -6,6 +6,7 @@ use creature::{Fawn, Grown, REALIZED, SKELETON, grown}
 use fawn::creature::Coat
 use engine::character::{Cast, PartOf, cast, parts_of}
 use engine::cook::Work
+use engine::memory::{Share, Usage, WOOD_LISTS, shrink_after}
 use engine::cull::Hzb
 use engine::frame::{Cooks, Scene, Targets, full}
 use engine::gait::{Walker, posed_bounds}
@@ -22,7 +23,7 @@ use engine::temporal::seen_box
 use engine::terrain::{Clipmap, Terrain, Texel}
 use engine::vegetation::{Kind, kind, nothing}
 use engine::view::{BEHIND, Camera, NEAREST}
-use engine::wood::Wood
+use engine::wood::{SHRINK_AFTER, Wood}
 use rocks::{BOULDERS, boulder, footprints}
 use scene::{Ground, MEADOW}
 use std::collections::{Flags, replace}
@@ -461,6 +462,24 @@ impl Scene for Stage {
             engine::frame::fullscreen(pass, testing::scene_view.bind(t.scene, self.scale))
         } else {
             engine::frame::fullscreen(pass, testing::temporal_view.bind(t.history, self.light))
+        }
+    }
+
+    /// The wood's lists against their budget (`engine::memory::WOOD_LISTS`).
+    fn shares(self) -> Vec<Share> {
+        match self.wood {
+            Some(w) => Vec::from(
+                [Share { name: "wood lists", bytes: w.list_bytes(), budget: WOOD_LISTS }],
+            ),
+            None => Vec::new(),
+        }
+    }
+
+    /// Over its budget, the wood gives back its choosings' room sooner.
+    fn pressed(mut self, usage: Usage) {
+        match mut self.wood {
+            Some(w) => w.shrink_after = shrink_after(usage, default: SHRINK_AFTER),
+            None => {},
         }
     }
 

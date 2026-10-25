@@ -384,9 +384,10 @@ pub struct Chosen {
 /// what they need (the room a tile more grows into).
 pub const SHRINK_AFTER: u32 = 300
 
-/// Whether a choosing's room of `room` places shrinks for `places` (`under` frames under half).
-pub fn shrinks(places: u32, room: u32, under: u32) -> bool {
-    places * 2 < room && under >= SHRINK_AFTER
+/// Whether a choosing's room of `room` places shrinks for `places` (`under` frames under half,
+/// `after` of them enough: `SHRINK_AFTER`, or fewer while memory is over its budget).
+pub fn shrinks(places: u32, room: u32, under: u32, after: u32 = SHRINK_AFTER) -> bool {
+    places * 2 < room && under >= after
 }
 
 /// Phase `ph`'s `places` places gathered from `every` (`gather`), and its `n` lists' draws
@@ -515,12 +516,13 @@ impl Chosen {
         metadata: GpuBuffer<u32>,
         lods: GpuBuffer<Lod>,
         pyramid: Texture<R32Float>,
+        after: u32,
     ) {
         let n = self.lists.len()
         // Room left half empty for long (tiles dropped) is given back: half again what's needed.
         let room = self.early.instances.len()
         self.under = if self.places * 2 < room { self.under + 1 } else { 0 }
-        if shrinks(self.places, room, self.under) {
+        if shrinks(self.places, room, self.under, after) {
             let grown = self.places + self.places / 2
             self.early.room_for(grown)
             if self.held > 0 {
@@ -843,6 +845,9 @@ pub struct Wood {
     pub cell: f32,
     /// What the camera keeps clear of leaves (`vegetation::CardDraw::clear`).
     pub clear: vec4,
+    /// Frames a choosing's room stays under half full before it's given back (`shrinks`): fewer
+    /// while memory is over its budget (`engine::memory::shrink_after`).
+    pub shrink_after: u32,
 }
 
 impl Wood {
@@ -914,6 +919,7 @@ impl Wood {
             card_px: lod::CARD_PX,
             cell: 1.0,
             clear: vec4(0.0),
+            shrink_after: SHRINK_AFTER,
         }
         w.write_lods()
         w
@@ -1136,7 +1142,7 @@ impl Wood {
             late_at: 0,
             hzb,
         }
-        self.seen.run(c, self.every, self.metadata, self.lods, pyramid)
+        self.seen.run(c, self.every, self.metadata, self.lods, pyramid, self.shrink_after)
         self.chose = Some(c)
     }
 
@@ -1156,7 +1162,14 @@ impl Wood {
             late_at: 0,
             hzb: NO_HZB,
         }
-        self.shadowed.run(c, self.every, self.metadata, self.lods, self.no_pyramid)
+        self.shadowed.run(
+            c,
+            self.every,
+            self.metadata,
+            self.lods,
+            self.no_pyramid,
+            self.shrink_after,
+        )
     }
 
     /// The second phase (`cull`): what `select` left out as hidden behind last frame's depth,

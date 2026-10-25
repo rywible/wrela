@@ -522,6 +522,16 @@ fn a_measuring_frame_goes_on_after_a_resize(s: State) {
     assert(s.records[to - 1].drawn > 50, "the resized frame didn't draw")
 }
 
+/// The frame reads the program's GPU memory against its budget (`Frame::usage`): it holds some,
+/// against the proposed total, and the bare scene is within it.
+@test(frames: 200, gpu: true)
+fn the_frame_reads_its_gpu_memory(s: State) {
+    borrow u = s.frame.usage
+    print(f"{u.held() / engine::memory::MIB} MiB held, of {u.total / engine::memory::MIB}")
+    assert(u.held() > 0, "the frame read no memory")
+    assert(u.total == engine::memory::TOTAL && u.over().is_empty(), "the bare scene is over budget")
+}
+
 /// The settled bare scene after its jump and its weather is its golden on this machine's GPU,
 /// within a GPU's differences.
 @test(frames: 200, gpu: true, golden: "goldens/bare.png", within: 1.0)

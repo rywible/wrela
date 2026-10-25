@@ -24,6 +24,7 @@
 use air::{AIR_SLICES, Air, Tables, tables}
 use ambient::Occlusion
 use lights::{LocalLight, Lights}
+use memory::{Share, Usage, unused}
 use particles::{Emits, Particles, Step, composite, wind_of}
 use reflect::{Mirror, Specular, copy_below}
 use cook::{Budget, Planner, Work}
@@ -50,7 +51,7 @@ use std::gpu::{
     GpuSpan, R32Float, R32Uint, R8, RenderPass, Rgba16Float, Rgba8, Sampler, ScreenPass, Texture,
     Texture3d, VertexIndex, begin_depth_pass, begin_pass, begin_pass2_with_depth,
     begin_pass_with_depth, begin_screen_pass, buffer, comparison_sampler, depth_texture, dispatch,
-    draw, draw_multi, label, sampler, texture, timed, writable_texture,
+    draw, draw_multi, label, memory, sampler, texture, timed, writable_texture,
 }
 use std::io::{Pending, print}
 
@@ -262,6 +263,16 @@ pub trait Scene {
 
     /// The render origin moved: what the scene keeps in render space moves by `d` with it.
     fn shift(mut self, d: vec3) {}
+
+    /// What the scene's own subsystems hold on the GPU, each against its budget
+    /// (`engine::memory`: the wood's lists, a realizer's meshes), for the frame's `usage`.
+    fn shares(self) -> Vec<Share> {
+        Vec::new()
+    }
+
+    /// The program's GPU memory, as the frame read it (`Frame::usage`): what's over its budget
+    /// says what the scene trims (`memory::shrink_after`, `memory::evict_after`).
+    fn pressed(mut self, usage: Usage) {}
 }
 
 /// Where the camera is this frame: its eye and what it looks at (render space), its field of
@@ -567,6 +578,9 @@ pub struct Quality: Copy {
     /// `MEASURE_FIRST` times, then every `MEASURE_AGAIN` frames: a host times only the work asked
     /// for, so a frame that times nothing costs nothing more. Off,
     pub measured: bool = true,
+    /// The GPU memory the program keeps to (`engine::memory::TOTAL`, **proposed**: a tab's 1.5 GB
+    /// less the WASM heap and the page), read every `MEMORY_EVERY` frames (`Frame::usage`).
+    pub memory: u64 = memory::TOTAL,
     /// Whether the frame culls what's hidden (`cull`): the scene's choosing leaves out what last
     /// frame's depth hid, and after the opaque passes this frame's depth pyramid reveals what of
     /// it shows, drawn then (both phases or neither: the first alone would drop what's revealed).
@@ -621,6 +635,9 @@ pub const LEAST_SCALE: f32 = 0.5
 /// While the sun moves, every this many frames draws no strip of the cascades, so the probes
 /// (which a frame that draws one doesn't bake) keep their turns (`Frame::static_strips`).
 const PROBE_TURN: u32 = 4
+
+/// How often the frame reads the program's GPU memory against its budget (`Frame::usage`).
+const MEMORY_EVERY: u32 = 30
 
 /// A measuring frame's pace (`Quality::measured`): each kind is measured this many times as soon
 /// as it runs, then once every this many frames (4 s at 60 Hz).
@@ -860,6 +877,10 @@ pub struct Frame<R: Resolver> {
     see_through: Option<SeeThrough>,
     /// How far the render space moved since the particles' last step (`recentre`).
     particle_shift: vec3,
+    /// The program's GPU memory against its budget, last read (`MEMORY_EVERY`), and whether
+    /// it's been said to be over.
+    pub usage: Usage,
+    said_over: bool,
     resolver: R,
     pub exposure: GpuBuffer<Exposure>,
     pub linear: Sampler,
@@ -1030,6 +1051,8 @@ impl<R: Resolver> Frame<R> {
             grade: identity(),
             particles: None,
             particle_shift: vec3(0.0),
+            usage: unused(),
+            said_over: false,
             emits: Emits::new(),
             see_through: None,
             resolver: R::made(),
@@ -1314,6 +1337,9 @@ impl<R: Resolver> Frame<R> {
         if self.quality.measured {
             self.measure()
         }
+        if self.ran % MEMORY_EVERY == 0 {
+            self.memory(mut scene)
+        }
         let cam = self.cam
         let eye = cam.eye
         let eye_w = eye.xz + self.origin.xz
@@ -1503,6 +1529,29 @@ impl<R: Resolver> Frame<R> {
             if !asked && due {
                 self.measuring.push((w, timed(name)))
             }
+        }
+    }
+
+    /// The program's GPU memory read against its budget (`Quality::memory`, the scene's
+    /// `shares`) and handed to the scene to trim what's over (`Scene::pressed`); the first time
+    /// something is over, it's said.
+    fn memory<S: Scene>(mut self, scene: mut S) {
+        self.usage = Usage { gpu: memory(), total: self.quality.memory, shares: scene.shares() }
+        scene.pressed(self.usage)
+        let over = self.usage.over()
+        if !over.is_empty() && !self.said_over {
+            self.said_over = true
+            let mib = |b: u64| b / memory::MIB
+            var names = String::new()
+            for n in over {
+                if !names.is_empty() {
+                    names.push_str(", ")
+                }
+                names.push_str(n)
+            }
+            print(
+                f"GPU memory over its budget ({names}): {mib(self.usage.held())} MiB held of {mib(self.usage.total)}",
+            )
         }
     }
 

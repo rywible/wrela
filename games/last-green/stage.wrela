@@ -12,6 +12,7 @@ use engine::cook::Work
 use land::stream::{near_tile_radius, tile_distance, tile_radius}
 use tower::door::Doorway
 use world::GATE
+use engine::memory::{Share, Usage, WOOD_LISTS, shrink_after}
 use engine::cull::Hzb
 use engine::frame::{Cooks, Effects, Scene, Targets, full, fullscreen}
 use engine::grass::{Blooms, Contact, Grass, GrassLook}
@@ -32,7 +33,7 @@ use engine::vegetation::{Kind, Placed, kind}
 use engine::view::{Camera, NEAREST}
 use engine::reflect::copy_below
 use engine::water::{LOOKS, MistAt, WaterVert, mist_over, water_shade, water_vertex}
-use engine::wood::Wood
+use engine::wood::{SHRINK_AFTER, Wood}
 use engine::air::{Air, hazy}
 use history::{BAKED, tiles_hi, tiles_lo}
 use ground::GROUND
@@ -640,6 +641,24 @@ impl Scene for Stage {
     /// Render space moved by `d` (the render origin by `-d`): the wood's instances, the banks'
     /// stones and the built things move with it; the rocks are drawn and cast from the new
     /// origin; the grass's footprints are made again.
+    /// The wood's lists against their budget (`engine::memory::WOOD_LISTS`).
+    fn shares(self) -> Vec<Share> {
+        match self.wood {
+            Some(w) => Vec::from(
+                [Share { name: "wood lists", bytes: w.list_bytes(), budget: WOOD_LISTS }],
+            ),
+            None => Vec::new(),
+        }
+    }
+
+    /// Over its budget, the wood gives back its choosings' room sooner.
+    fn pressed(mut self, usage: Usage) {
+        match mut self.wood {
+            Some(w) => w.shrink_after = shrink_after(usage, default: SHRINK_AFTER),
+            None => {},
+        }
+    }
+
     fn shift(mut self, d: vec3) {
         match mut self.wood {
             Some(w) => w.shift(d),
