@@ -22,8 +22,93 @@ impl Water {
     }
 }
 
+/// The broadphase: a uniform grid of `CELL` m cells over the course's pieces, each cell's list of
+/// the pieces whose boxes reach into it, in the course's order. Cell (`x`, `y`)'s pieces are
+/// `items[starts[i]]` up to `items[starts[i + 1]]`, `i` = `y` × `cols` + `x`, from `lo`.
+pub struct Cells: Clone {
+    pub lo: vec2,
+    pub cols: u32,
+    pub rows: u32,
+    pub starts: Vec<u32>,
+    pub items: Vec<u32>,
+}
+
+/// A broadphase cell's side (m).
+pub const CELL: f32 = 8.0
+
+impl Cells {
+    /// None: an empty course's.
+    pub fn none() -> Cells {
+        Cells { lo: vec2(0.0), cols: 0, rows: 0, starts: Vec::from([0]), items: Vec::new() }
+    }
+
+    /// The cells of `pieces`.
+    pub fn of(pieces: [Piece]) -> Cells {
+        if pieces.is_empty() {
+            return Cells::none()
+        }
+        var lo = pieces[0].lo
+        var hi = pieces[0].hi
+        for p in pieces {
+            lo = min(lo, p.lo)
+            hi = max(hi, p.hi)
+        }
+        lo = floor(lo / CELL) * CELL
+        var g = Cells {
+            lo,
+            cols: u32(floor((hi.x - lo.x) / CELL)) + 1,
+            rows: u32(floor((hi.y - lo.y) / CELL)) + 1,
+            starts: Vec::new(),
+            items: Vec::new(),
+        }
+        // Counted, then placed: each cell's pieces in the course's order.
+        var counts: Vec<u32> = Vec::filled(g.cols * g.rows, 0)
+        for p in pieces {
+            let (a, b) = g.span(p.lo, p.hi)
+            for y in a.y..b.y + 1 {
+                for x in a.x..b.x + 1 {
+                    counts[y * g.cols + x] += 1
+                }
+            }
+        }
+        var at = 0
+        for n in counts {
+            g.starts.push(at)
+            at += n
+        }
+        g.starts.push(at)
+        g.items = Vec::filled(at, 0)
+        var next = g.starts.clone()
+        for i in 0..pieces.len() {
+            let (a, b) = g.span(pieces[i].lo, pieces[i].hi)
+            for y in a.y..b.y + 1 {
+                for x in a.x..b.x + 1 {
+                    let c = y * g.cols + x
+                    g.items[next[c]] = i
+                    next[c] += 1
+                }
+            }
+        }
+        g
+    }
+
+    /// The first and last cells (column, row) a box from `lo` to `hi` reaches into, within the
+    /// grid; the first past the last where it reaches into none.
+    pub fn span(self, lo: vec2, hi: vec2) -> (vec2u, vec2u) {
+        let size = vec2(f32(self.cols), f32(self.rows))
+        let a = floor((lo - self.lo) / CELL)
+        let b = floor((hi - self.lo) / CELL)
+        if self.cols == 0 || b.x < 0.0 || b.y < 0.0 || a.x >= size.x || a.y >= size.y {
+            return (vec2u(1, 1), vec2u(0, 0))
+        }
+        (vec2u(max(a, vec2(0.0))), vec2u(min(b, size - 1.0)))
+    }
+}
+
 pub struct Course: Clone {
     pub pieces: Vec<Piece>,
+    /// The pieces' broadphase, made again as each chain is added.
+    pub cells: Cells,
     /// Each chain's first piece, then one past the last chain's last: chain `i` is the pieces
     /// from `chains[i]` up to `chains[i + 1]`.
     pub chains: Vec<u32>,
@@ -81,6 +166,7 @@ impl Course {
     pub fn new(start: vec2, goal_lo: vec2, goal_hi: vec2, floor: f32) -> Course {
         Course {
             pieces: Vec::new(),
+            cells: Cells::none(),
             chains: Vec::from([0]),
             waters: Vec::new(),
             start,
@@ -181,6 +267,7 @@ impl Course {
         let index = c.chains.len() - 1
         build_chain(mut c.pieces, corners, closed, chain: index)
         c.chains.push(c.pieces.len())
+        c.cells = Cells::of(c.pieces)
         c
     }
 
@@ -205,6 +292,7 @@ impl Course {
     /// the middle: of every piece (`ground` false), or of the ground it can stand on alone. A
     /// one-way ledge counts only if the middle was above it by the radius (less a little) at
     /// `from`, the tick's start. Of pieces at the same distance, the first in the course's order.
+    /// Only the pieces in the cells within `reach` are looked at (`cells`).
     pub fn contact(
         self,
         at: vec2,
@@ -214,38 +302,64 @@ impl Course {
         ground: bool,
     ) -> Option<Contact> {
         var best: Option<Contact> = None
-        var nearest = reach
-        for i in 0..self.pieces.len() {
-            let p = self.pieces[i]
-            if at.x < p.lo.x - reach ||
-                at.x > p.hi.x + reach ||
-                at.y < p.lo.y - reach ||
-                at.y > p.hi.y + reach {
-                continue
-            }
-            let near = p.nearest(at)
-            let q = p.point(near.u)
-            let d = distance(at, q)
-            if d >= nearest {
-                continue
-            }
-            let corner = near.free < -CORNER_SLACK || near.free > p.length + CORNER_SLACK
-            let normal = if d > 1.0e-6 { (at - q) / d } else { p.normal(near.u) }
-            let k = Contact { piece: i, point: q, normal, dist: d, u: near.u, corner }
-            if ground && !k.ground() {
-                continue
-            }
-            if p.ledge {
-                let was = p.nearest(from)
-                let above = dot(from - p.point(was.u), p.normal(was.u))
-                if above < body - 0.02 {
-                    continue
+        let (a, b) = self.cells.span(at - reach, at + reach)
+        for y in a.y..b.y + 1 {
+            for x in a.x..b.x + 1 {
+                let c = y * self.cells.cols + x
+                for j in self.cells.starts[c]..self.cells.starts[c + 1] {
+                    let i = self.cells.items[j]
+                    // A piece in more than one of the cells is met again: the first time decided.
+                    let Some(k) = self.touch(i, at, reach, from, body, ground) else { continue }
+                    let better = match best {
+                        Some(o) => k.dist < o.dist || k.dist == o.dist && k.piece < o.piece,
+                        None => true,
+                    }
+                    if better {
+                        best = Some(k)
+                    }
                 }
             }
-            nearest = d
-            best = Some(k)
         }
         best
+    }
+
+    /// Piece `i`'s contact with a circle as `contact` says, if it makes one closer than `reach`.
+    fn touch(
+        self,
+        i: u32,
+        at: vec2,
+        reach: f32,
+        from: vec2,
+        body: f32,
+        ground: bool,
+    ) -> Option<Contact> {
+        let p = self.pieces[i]
+        if at.x < p.lo.x - reach ||
+            at.x > p.hi.x + reach ||
+            at.y < p.lo.y - reach ||
+            at.y > p.hi.y + reach {
+            return None
+        }
+        let near = p.nearest(at)
+        let q = p.point(near.u)
+        let d = distance(at, q)
+        if d >= reach {
+            return None
+        }
+        let corner = near.free < -CORNER_SLACK || near.free > p.length + CORNER_SLACK
+        let normal = if d > 1.0e-6 { (at - q) / d } else { p.normal(near.u) }
+        let k = Contact { piece: i, point: q, normal, dist: d, u: near.u, corner }
+        if ground && !k.ground() {
+            return None
+        }
+        if p.ledge {
+            let was = p.nearest(from)
+            let above = dot(from - p.point(was.u), p.normal(was.u))
+            if above < body - 0.02 {
+                return None
+            }
+        }
+        Some(k)
     }
 
     /// The water that holds `p`, if any.
@@ -554,4 +668,78 @@ fn every_snack_of_a_course_with_the_most_is_every_bit() {
         let all = c.every_snack()
         assert(all.count_ones() == i + 1 && all & (1 << i) != 0, f"{i + 1} snacks")
     }
+}
+
+/// Every piece's contact, looked at in the course's order: what `contact` finds, without its cells.
+fn scanned(
+    c: Course,
+    at: vec2,
+    reach: f32,
+    from: vec2,
+    body: f32,
+    ground: bool,
+) -> Option<Contact> {
+    var best: Option<Contact> = None
+    var nearest = reach
+    for i in 0..c.pieces.len() {
+        if let Some(k) = c.touch(i, at, nearest, from, body, ground) {
+            nearest = k.dist
+            best = Some(k)
+        }
+    }
+    best
+}
+
+/// A number from 0 to 1, the next of `s`'s.
+fn next(s: mut u32) -> f32 {
+    s = s.wrapping_mul(1664525).wrapping_add(1013904223)
+    f32(s >> 8) / 16777216.0
+}
+
+@test
+fn the_cells_find_the_contacts_every_piece_does() {
+    // 5,000 circles over each course, seeded: through its cells and against every piece, the
+    // same contact or none.
+    var seed: u32 = 0x2545f491
+    var found = 0
+    for i in 0..COURSES {
+        borrow c = course(i)
+        var lo = c.pieces[0].lo
+        var hi = c.pieces[0].hi
+        for p in c.pieces {
+            lo = min(lo, p.lo)
+            hi = max(hi, p.hi)
+        }
+        for n in 0..5000 {
+            // Half anywhere over the course, half within a metre of a piece.
+            let at = if n % 2 == 0 {
+                vec2(
+                    lo.x - 2.0 + (hi.x - lo.x + 4.0) * next(mut seed),
+                    lo.y - 2.0 + (hi.y - lo.y + 4.0) * next(mut seed),
+                )
+            } else {
+                let p = c.pieces[min(u32(next(mut seed) * f32(c.pieces.len())), c.pieces.len() - 1)]
+                let along = p.point(p.length * next(mut seed))
+                along + vec2(2.0 * next(mut seed) - 1.0, 2.0 * next(mut seed) - 1.0)
+            }
+            let reach = 0.1 + 0.6 * next(mut seed)
+            let from = at + vec2(0.4 * next(mut seed) - 0.2, 0.4 * next(mut seed) - 0.2)
+            let ground = next(mut seed) < 0.5
+            std::time::phase("contacts through the cells")
+            let k = c.contact(at, reach, from, 0.35, ground)
+            std::time::phase("contacts of every piece")
+            let w = scanned(c, at, reach, from, 0.35, ground)
+            std::time::phase("")
+            match (k, w) {
+                (Some(a), Some(b)) => {
+                    assert(a.piece == b.piece && a.dist == b.dist && a.point == b.point, f"at {at}")
+                    found += 1
+                },
+                (None, None) => {},
+                _ => panic(f"one found a contact at {at} and the other didn't"),
+            }
+        }
+    }
+    std::io::print(f"{found} of 10000 contacts")
+    assert(found > 1000, f"{found} contacts: too few to say")
 }
