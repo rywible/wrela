@@ -1,12 +1,13 @@
-// Clusters (the rendering moonshots' virtual geometry, spike S1a): a field's surface cooked at
-// several levels of detail, each level cut into the blocks it's extracted in (`realize`), and
-// drawn each frame at the coarsest level whose error on the screen is under a pixel's fraction,
-// block by block, so near parts of one surface are drawn finely and far parts coarsely.
+// Virtual geometry (the rendering moonshots' spike S1a, promoted: docs/plan-world-class.md §B7): a
+// field's surface cooked at several levels of detail, each level cut into the blocks it's
+// extracted in (`realize`), and drawn each frame at the coarsest level whose error on the screen
+// is under a pixel's fraction, block by block, so near parts of one surface are drawn finely
+// and far parts coarsely.
 //
 // - Levels: level k's cells are 2^k times level 0's, on grids from one origin, so a block of
 //   level k + 1 covers eight of level k's exactly (its children).
 // - A cluster is a block's quads: those of the edges leaving its cells' low corners, as
-//   `engine::realize::emit_quads` makes them, kept together. Its error is measured from the field: the
+//   `realize::emit_quads` makes them, kept together. Its error is measured from the field: the
 //   largest distance of its quads' corners and middles from the surface, raised to at least its
 //   children's (so an ancestor's is never less than a descendant's), and to a quarter of a cell.
 // - The cut: a cluster is drawn where its error, as large as it looks from the eye (from its
@@ -25,20 +26,21 @@
 // - A list (candidates, picks, listed quads) is a buffer of `u32`s: how many were pushed, then
 //   two a pushed item; one past its room is counted and kept nowhere (`push_pair`).
 
-use engine::creature::{Creature, Parts}
-use engine::realize::{
+use creature::{Creature, Parts}
+use realize::{
     BLOCK, CellWord, Grid, LiveBlock, Mesh, NO_VERTEX, Room, Scratch, SkinVertex, cell_key,
     record_cull, record_vertices, vertex_at, word_at,
 }
 use std::collections::replace
 use std::derive::{Box3, gradient}
 use std::gpu::{
-    Append, AppendBuffer, Atomics, ClipPosition, Cull, DispatchArgs, DrawArgs, GlobalId, GpuBuffer,
-    GpuSpan, LocalId, One, RenderPass, Shared, Slots, VertexIndex, WorkgroupId, append_buffer,
-    barrier, buffer, copy, dispatch, draw, read, write,
+    Append, AppendBuffer, Atomics, ClipPosition, Cull, DepthTexture, DispatchArgs, DrawArgs, Flat,
+    FragCoord, GlobalId, GpuBuffer, GpuSpan, LocalId, One, R32Uint, RenderPass, Shared, Slots,
+    Texture, VertexIndex, WorkgroupId, append_buffer, barrier, buffer, copy, discard, dispatch,
+    draw, read, write,
 }
 use std::io::Pending
-use engine::view::Camera
+use view::Camera
 
 /// The most levels a cluster set has.
 pub const MOST_LEVELS: u32 = 8
@@ -791,6 +793,14 @@ pub fn draw_counts(list: [u32], args: mut One<DrawArgs>, id: GlobalId) {
     )
 }
 
+/// A triangle covering the target (`resolve`).
+@vertex
+pub fn full_screen(v: VertexIndex) -> ClipPosition {
+    let x = f32((v.index << 1) & 2) * 2.0 - 1.0
+    let y = f32(v.index & 2) * 2.0 - 1.0
+    ClipPosition { position: vec4(x, y, 0.5, 1.0) }
+}
+
 /// A cluster vertex as the fragment shader reads it: its clip position, its world position and
 /// its normal.
 pub struct ClusterVertex: Copy {
@@ -827,6 +837,191 @@ pub fn cluster_vertex(
     ClusterVertex { clip: ClipPosition { position: d.cam.clip(world) }, world, normal: sv.normal }
 }
 
+// ---- the visibility buffer ------------------------------------------------------------------
+//
+// The visibility pass draws each level's listed triangles writing only which they are (an
+// `R32Uint`: the level + 1 in the top four bits, the listed triangle below) and their depth; the
+// material resolve, a full-screen pass a level, finds each of its pixels' triangle from that id
+// (its pick, its quad's corners, by vertex pulling), the pixel's point on it from the depth, its
+// barycentrics there, and shades it (Burns and Hunt, The Visibility Buffer, JCGT 2013; Schied
+// and Dachsbacher, Deferred Attribute Interpolation, HPG 2015). So a pixel is shaded once,
+// whatever its overdraw, and a small triangle costs its raster alone.
+
+/// The level of a visibility id, and its listed triangle (`vis_id`); a pixel no cluster drew
+/// holds 0.
+pub fn id_of(level: u32, triangle: u32) -> u32 {
+    ((level + 1) << 28) | triangle
+}
+
+/// What the visibility pass and a level's resolve read beside their buffers: the camera, the
+/// level's skirt depth, and the level.
+pub struct VisDraw: Copy + GpuData {
+    pub cam: Camera,
+    pub skirt: f32,
+    pub level: u32,
+}
+
+/// Corner `c` (of six: two triangles) of listed quad `q`: its world point (placed by its pick's
+/// instance, a skirt's corner pushed into the surface) and its normal.
+fn corner_of(
+    d: VisDraw,
+    list: [u32],
+    picks: [u32],
+    words: [u32],
+    verts: [SkinVertex],
+    places: [Placed],
+    q: u32,
+    c: u32,
+) -> (vec3, vec3) {
+    let pick = list[1 + 2 * q]
+    let word = words[6 * list[2 + 2 * q] + c]
+    let sv = verts[word & (SKIRT - 1)]
+    let p = places[picks[1 + 2 * pick]]
+    let rest = if (word & SKIRT) != 0 { sv.pos - sv.normal * d.skirt } else { sv.pos }
+    (p.at + rest * p.scale, sv.normal)
+}
+
+/// A visibility pass's vertex: its clip position, and its triangle's id (`id_of`), the same at
+/// its three corners.
+pub struct VisVertex: Copy {
+    pub clip: ClipPosition,
+    pub id: Flat<u32>,
+}
+
+/// Vertex `v` of a level's list (as `cluster_vertex`), carrying its triangle's id.
+@vertex
+pub fn vis_vertex(
+    v: VertexIndex,
+    d: VisDraw,
+    list: [u32],
+    picks: [u32],
+    words: [u32],
+    verts: [SkinVertex],
+    places: [Placed],
+) -> VisVertex {
+    let (world, _) = corner_of(d, list, picks, words, verts, places, v.index / 6, v.index % 6)
+    VisVertex {
+        clip: ClipPosition { position: d.cam.clip(world) },
+        id: Flat { value: id_of(d.level, v.index / 3) },
+    }
+}
+
+/// A visibility pass's pixel: its triangle's id.
+@fragment
+pub fn vis_id(v: VisVertex) -> u32 {
+    v.id.value
+}
+
+/// Level `d.level`'s pixels of the visibility buffer (`ids`, its `depth`), shaded: the pixel's
+/// triangle's corners pulled again, the pixel's point (from its depth) placed on the triangle by
+/// its barycentrics, its normal theirs between the corners', lit as `cluster_shade` lights. A
+/// pixel of another level, or of none, is left to its own resolve.
+@fragment
+pub fn resolve_level(
+    pixel: FragCoord,
+    d: VisDraw,
+    look: ClusterLook,
+    ids: Texture<R32Uint>,
+    depth: DepthTexture,
+    list: [u32],
+    picks: [u32],
+    words: [u32],
+    verts: [SkinVertex],
+    places: [Placed],
+) -> vec4 {
+    let px = vec2u(pixel.position.xy)
+    let id = ids.load(x: px.x, y: px.y)
+    if (id >> 28) != d.level + 1 {
+        discard()
+    }
+    let tri = id & 268435455
+    let q = tri / 2
+    let first = 3 * (tri % 2)
+    let (a, na) = corner_of(d, list, picks, words, verts, places, q, first)
+    let (b, nb) = corner_of(d, list, picks, words, verts, places, q, first + 1)
+    let (c, nc) = corner_of(d, list, picks, words, verts, places, q, first + 2)
+    let p = d.cam.world_at(pixel.position.xy, depth.load(x: px.x, y: px.y))
+    let w = barycentrics(p, a, b, c)
+    let n = na * w.x + nb * w.y + nc * w.z
+    lit_cluster(n, look)
+}
+
+/// The barycentrics of `p` (on or near the triangle `a`, `b`, `c`'s plane) in the triangle.
+pub fn barycentrics(p: vec3, a: vec3, b: vec3, c: vec3) -> vec3 {
+    let v0 = b - a
+    let v1 = c - a
+    let v2 = p - a
+    let d00 = dot(v0, v0)
+    let d01 = dot(v0, v1)
+    let d11 = dot(v1, v1)
+    let d20 = dot(v2, v0)
+    let d21 = dot(v2, v1)
+    let den = d00 * d11 - d01 * d01
+    if abs(den) < 1.0e-20 {
+        return vec3(1.0, 0.0, 0.0)
+    }
+    let v = (d11 * d20 - d01 * d21) / den
+    let w = (d00 * d21 - d01 * d20) / den
+    vec3(1.0 - v - w, v, w)
+}
+
+/// Invocations a row of a wide dispatch takes (`areas`: 65535 groups of 64, the most a dimension
+/// has).
+const WIDE: u32 = 65535 * 64
+
+/// A pass over a list's items too many for one row of groups (`areas`): rows of `WIDE`.
+@compute(1)
+fn wide_counts(list: [u32], args: mut One<DispatchArgs>, id: GlobalId) {
+    let n = min(list[0], (list.len() - 1) / 2)
+    let groups = (n + 63) / 64
+    args.set(id, DispatchArgs { x: min(groups, 65535), y: (groups + 65534) / 65535, z: 1 })
+}
+
+/// The listed triangles' projected areas, counted (`bins`: under 1, 4, 16 and 64 px², and the
+/// rest; then the triangles): what decides a software rasterizer (docs/plan-world-class.md
+/// §B7b). Listed quad `id` of the level's list, its two triangles.
+@compute(64)
+pub fn areas(
+    d: VisDraw,
+    list: [u32],
+    picks: [u32],
+    words: [u32],
+    verts: [SkinVertex],
+    places: [Placed],
+    bins: mut Atomics<u32>,
+    id: GlobalId,
+) {
+    let q = id.y * WIDE + id.x
+    if q >= min(list[0], (list.len() - 1) / 2) {
+        return
+    }
+    for t in 0..2 {
+        var px = [vec2(0.0); 3]
+        var behind = false
+        for k in 0..3 {
+            let (w, _) = corner_of(d, list, picks, words, verts, places, q, 3 * t + k)
+            let q = d.cam.clip(w)
+            behind = behind || q.w <= 1.0e-4
+            px[k] = vec2(q.x / q.w, q.y / q.w) * 0.5 * d.cam.screen
+        }
+        if behind {
+            continue
+        }
+        let area = 0.5 *
+            abs(
+                (px[1].x - px[0].x) * (px[2].y - px[0].y) -
+                    (px[2].x - px[0].x) * (px[1].y - px[0].y),
+            )
+        let bin = if area < 1.0 { 0 } else if area < 4.0 { 1 } else if area < 16.0 {
+            2
+        } else if area < 64.0 {
+            3
+        } else { 4 }
+        let _ = bins.add(i: bin, value: 1)
+        let _ = bins.add(i: 5, value: 1)
+    }
+}
+
 /// How clusters are lit: their colour, the sun's direction, and how much of the sky's light
 /// reaches them.
 pub struct ClusterLook: Copy + GpuData {
@@ -838,9 +1033,14 @@ pub struct ClusterLook: Copy + GpuData {
 /// A cluster's pixel: its colour lit by the sun along its normal and by the sky above it.
 @fragment
 pub fn cluster_shade(v: ClusterVertex, look: ClusterLook) -> vec4 {
-    let n = normalize(v.normal)
-    let diffuse = max(dot(n, look.sun), 0.0)
-    vec4(look.albedo * (look.sky * (0.5 + 0.5 * n.y) + diffuse), 1.0)
+    lit_cluster(v.normal, look)
+}
+
+/// A cluster's colour at normal `n`, lit as `look` says: the forward draw's and the resolve's.
+fn lit_cluster(n: vec3, look: ClusterLook) -> vec4 {
+    let u = normalize(n)
+    let diffuse = max(dot(u, look.sun), 0.0)
+    vec4(look.albedo * (look.sky * (0.5 + 0.5 * u.y) + diffuse), 1.0)
 }
 
 /// The most picks and listed quads a level is given room for.
@@ -1054,6 +1254,89 @@ impl Clusters {
         }
     }
 
+    /// The frame's clusters into a visibility pass (`pass`: an `R32Uint` target and depth): each
+    /// level's triangles, their ids (`vis_id`), both faces.
+    pub fn draw_ids<P: RenderPass>(self, pass: P, cam: Camera, places: GpuBuffer<Placed>) {
+        for k in 0..self.levels.len() {
+            borrow l = self.levels[k]
+            draw(
+                pass,
+                vis_vertex.bind(
+                    VisDraw { cam, skirt: l.skirt, level: k },
+                    list: l.list.items(),
+                    picks: l.picks.items(),
+                    words: l.words.items(),
+                    verts: l.mesh.verts.items(),
+                    places: places.items(),
+                ),
+                vis_id,
+                indirect: l.draw_args.items(),
+                cull: Cull::None,
+                depth: view::NEAREST,
+            )
+        }
+    }
+
+    /// The visibility buffer (`ids`, `depth`: `draw_ids`'s) resolved into `pass`, lit as `look`
+    /// says: a full-screen draw a level, each shading its own pixels.
+    pub fn resolve<P: RenderPass>(
+        self,
+        pass: P,
+        cam: Camera,
+        places: GpuBuffer<Placed>,
+        look: ClusterLook,
+        ids: Texture<R32Uint>,
+        depth: DepthTexture,
+    ) {
+        for k in 0..self.levels.len() {
+            borrow l = self.levels[k]
+            draw(
+                pass,
+                full_screen,
+                resolve_level.bind(
+                    VisDraw { cam, skirt: l.skirt, level: k },
+                    look,
+                    ids,
+                    depth,
+                    list: l.list.items(),
+                    picks: l.picks.items(),
+                    words: l.words.items(),
+                    verts: l.mesh.verts.items(),
+                    places: places.items(),
+                ),
+                vertices: 3,
+            )
+        }
+    }
+
+    /// The frame's listed triangles' projected areas counted into `bins` (`areas`: six words,
+    /// zeroed first), each level's.
+    pub fn count_areas(mut self, cam: Camera, places: GpuBuffer<Placed>, bins: mut GpuBuffer<u32>) {
+        write(mut bins, 0, [0, 0, 0, 0, 0, 0])
+        for k in 0..self.levels.len() {
+            dispatch(
+                wide_counts.bind(
+                    list: self.levels[k].list.items(),
+                    args: mut self.levels[k].select_args,
+                ),
+                groups: 1,
+            )
+            borrow l = self.levels[k]
+            dispatch(
+                areas.bind(
+                    VisDraw { cam, skirt: l.skirt, level: k },
+                    list: l.list.items(),
+                    picks: l.picks.items(),
+                    words: l.words.items(),
+                    verts: l.mesh.verts.items(),
+                    places: places.items(),
+                    bins: mut bins,
+                ),
+                groups: l.select_args.items(),
+            )
+        }
+    }
+
     /// The frame's clusters drawn into `pass`, lit as `look` says, a level a draw, both faces (a
     /// skirt is seen from either side).
     pub fn draw<P: RenderPass>(
@@ -1077,7 +1360,7 @@ impl Clusters {
                 cluster_shade.bind(look),
                 indirect: l.draw_args.items(),
                 cull: Cull::None,
-                depth: engine::view::NEAREST,
+                depth: view::NEAREST,
             )
         }
     }

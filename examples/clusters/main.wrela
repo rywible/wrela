@@ -1,20 +1,25 @@
 // The virtual geometry spike (S1a of the rendering moonshots): spike 13's smooth creature
-// (`compiler/tests/spike13`, its bark left off) cooked as clusters (clusters.wrela) and
+// (`compiler/tests/spike13`, its bark left off) cooked as clusters (`engine::virtual`) and
 // drawn at the coarsest level whose error is at most `PIXELS` from where the eye is, block by
 // block. The scene: a field of copies on a plane, the eye moving between them; a test sets its
 // own eye and level of error (`view`).
-use clusters::{ClusterLook, Clusters, Placed, cook_creature}
+use engine::virtual::{ClusterLook, Clusters, Placed, cook_creature}
 use engine::creature::Creature
 use engine::view::{Camera, first_camera}
 use std::derive::Box3
 use std::field::{Surface, ellipsoid, round_cone, sphere}
 use std::io::Pending
 use std::gpu::{
-    DepthTexture, GpuBuffer, begin_screen_pass_with_depth, buffer, depth_texture, label, write,
+    DepthTexture, GpuBuffer, R32Uint, Texture, begin_pass_with_depth, begin_screen_pass,
+    begin_screen_pass_with_depth, buffer, depth_texture, label, read, texture, write,
 }
 
 /// The error a cluster may show, in pixels.
 pub const PIXELS: f32 = 0.5
+
+/// Whether the copies are drawn through the visibility buffer (`engine::virtual`) and resolved,
+/// or forward.
+pub const VISIBILITY: bool = true
 
 /// The copies along each side of the field.
 pub const SIDE: u32 = 8
@@ -46,6 +51,14 @@ pub struct State {
     clusters: Clusters,
     places: GpuBuffer<Placed>,
     depth: DepthTexture,
+    /// Whether the copies are drawn through the visibility buffer (`VISIBILITY`, or a test's
+    /// `shade_visibility`), into `ids`, and resolved; or forward.
+    visibility: bool,
+    ids: Texture<R32Uint>,
+    /// The listed triangles' areas, counted (`Clusters::count_areas`), and a test's readback.
+    bins: GpuBuffer<u32>,
+    bins_asked: Option<Pending<u32>>,
+    bins_got: Vec<u32>,
     /// A test's eye and where it looks, and its error in pixels; none: the moving eye.
     eye: Option<(vec3, vec3)>,
     pixels: f32,
@@ -76,6 +89,11 @@ pub fn init() -> State {
         clusters,
         places: placements(SIDE),
         depth: depth_texture(width: 1, height: 1),
+        visibility: VISIBILITY,
+        ids: texture::<R32Uint>(width: 1, height: 1),
+        bins: buffer(6),
+        bins_asked: None,
+        bins_got: Vec::new(),
         eye: None,
         pixels: PIXELS,
         side: SIDE,
@@ -104,6 +122,39 @@ pub fn view(
         s.places = placements(side)
         s.side = side
     }
+}
+
+/// Draws through the visibility buffer and its resolve (`on`), or forward.
+@testing
+pub fn shade_visibility(s: mut State, on: bool) {
+    s.visibility = on
+}
+
+/// Asks for the listed triangles' areas, counted this frame (`Clusters::count_areas`), which
+/// `area` gives once they arrive.
+@testing
+pub fn ask_areas(s: mut State) {
+    let cam = camera_at(s, 0.0, s.depth.width(), s.depth.height())
+    s.clusters.count_areas(cam, s.places, mut s.bins)
+    s.bins_asked = Some(read(s.bins.items()))
+    s.bins_got = Vec::new()
+}
+
+/// Bin `i` of the areas asked for (`ask_areas`: under 1, 4, 16 and 64 px², the rest, then the
+/// triangles), or `NOT_YET` before they've come.
+@testing
+pub fn area(s: mut State, i: u32) -> u32 {
+    if s.bins_got.len() == 0 {
+        match mut s.bins_asked {
+            Some(p) => {
+                if let Some(Ok(v)) = p.poll() {
+                    s.bins_got = take v
+                }
+            },
+            None => {},
+        }
+    }
+    if s.bins_got.len() > i { s.bins_got[i] } else { NOT_YET }
 }
 
 /// A count not yet read back.
@@ -173,10 +224,23 @@ const LOOK = ClusterLook {
 pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     if s.depth.width() != width || s.depth.height() != height {
         s.depth = depth_texture(width, height)
+        s.ids = texture::<R32Uint>(width, height)
     }
     let cam = camera_at(s, time, width, height)
     label("clusters select")
     s.clusters.select(cam, s.places, s.pixels)
+    if s.visibility {
+        // The visibility pass (the raster alone), then the resolve (the shading), each timed.
+        label("virtual raster")
+        let v = begin_pass_with_depth(mut s.ids, mut s.depth, clear: vec4(0.0), clear_depth: 0.0)
+        s.clusters.draw_ids(v, cam, s.places)
+        v.end()
+        label("virtual resolve")
+        let p = begin_screen_pass(clear: vec4(0.55, 0.68, 0.85, 1.0))
+        s.clusters.resolve(p, cam, s.places, LOOK, s.ids, s.depth)
+        p.present()
+        return
+    }
     label("clusters draw")
     let p = begin_screen_pass_with_depth(
         mut s.depth,

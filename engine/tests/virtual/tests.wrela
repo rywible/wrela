@@ -152,7 +152,7 @@ fn covered(frame: [u8]) -> Vec<bool> {
 /// Every level's quads and listed quads fit their rooms, and the cut over the field of 64
 /// copies takes at least three levels; its buffers, cooking's fitted to what it emitted and the
 /// frames' with room for every quad, take under 400 MB.
-@test(tool, read: [("repo", "../../../..")], budget: 300)
+@test(tool, read: [("repo", "../../..")], budget: 300)
 fn a_cut_holds_every_quad_it_wants() {
     let b = opened()
     view(b, 0.5, 8)
@@ -168,7 +168,7 @@ fn a_cut_holds_every_quad_it_wants() {
 /// allowed), shows the sky nowhere the finest level covers a pixel and all eight round it (a
 /// crack), and every pixel the two cover differently is beside the finest level's silhouette
 /// (within a pixel of it).
-@test(tool, read: [("repo", "../../../..")], budget: 300)
+@test(tool, read: [("repo", "../../..")], budget: 300)
 fn a_cut_opens_no_crack_and_keeps_its_silhouettes() {
     let b = opened()
     let cut_frame = view(b, 0.5, 3)
@@ -217,11 +217,70 @@ fn a_cut_opens_no_crack_and_keeps_its_silhouettes() {
     assert(far == 0, f"{far} pixels differ away from the finest level's silhouettes")
 }
 
+/// The copies drawn through the visibility buffer and resolved (`Clusters::draw_ids`, then
+/// `Clusters::resolve`) show what the forward draw does, every pixel within 1/255 (the resolve
+/// rebuilds each pixel's barycentrics from its depth, so the interpolants differ by rounding); and
+/// the listed triangles' areas, counted, fall in their bins: the bins sum to the triangles.
+@test(tool, read: [("repo", "../../..")], budget: 300)
+fn the_visibility_buffer_shades_as_forward() {
+    let b = opened()
+    let resolved = view(b, 0.5, 3)
+    stepped(b, [call("shade_visibility", Vec::from([Scalar::I32(0)]))], "forward")
+    let forward = view(b, 0.5, 3)
+    var most = 0
+    var shown = 0
+    let sky = covered(forward)
+    for i in 0..W * H * 4 {
+        let d = if resolved[i] > forward[i] { resolved[i] - forward[i] } else {
+            forward[i] - resolved[i]
+        }
+        most = max(most, u32(d))
+    }
+    for c in sky {
+        if c {
+            shown += 1
+        }
+    }
+    print(f"{shown} pixels covered; the resolve differs from forward by at most {most}/255")
+    assert(shown > W * H / 10, f"the copies cover too little to test: {shown} pixels")
+    assert(most <= 1, f"the resolve differs from forward by {most}/255")
+    var got: Vec<u32> = Vec::new()
+    var i = 0
+    while i < 30 && got.len() == 0 {
+        var list: Vec<Step> = Vec::new()
+        if i == 0 {
+            list.push(call("ask_areas", Vec::new()))
+        }
+        list.push(Step::FrameAt(1.0 + f32(i) / 60.0))
+        for k in 0..6 {
+            list.push(call("area", Vec::from([Scalar::I32(i32(k))])))
+        }
+        let seen = stepped(b, list, "a frame and its areas")
+        let n = seen.ran.len()
+        let last = first(seen.ran[n - 1], "area")
+        if last != 4294967295 {
+            for k in 0..6 {
+                got.push(first(seen.ran[n - 6 + k], "area"))
+            }
+        }
+        i += 1
+    }
+    assert(got.len() == 6, "the areas never arrived")
+    print(
+        f"areas: <1 {got[0]}, <4 {got[1]}, <16 {got[2]}, <64 {got[3]}, more {got[4]}, of {got[5]}",
+    )
+    assert(got[5] > 0, "no triangle was counted")
+    assert(
+        got[0] + got[1] + got[2] + got[3] + got[4] == got[5],
+        "the bins don't sum to the triangles",
+    )
+}
+
 /// Chrome draws the moving eye's cut of the 64 copies as the native host does: frames within a
 /// mean of 0.5/255 after 30 frames (Tint takes the clusters' shaders, and its atomics keep each
 /// cluster's quads together as wgpu's do). Not the same state hash: cooking's buffers are fitted
 /// once its counts are read back, at a frame each host chooses.
-@test(tool, read: [("repo", "../../../..")], browser: true, budget: 300)
+@test(tool, read: [("repo", "../../..")], browser: true, budget: 300)
 fn the_browser_draws_the_native_hosts_clusters() {
     let both = both_hosts(
         "repo/examples/clusters",
