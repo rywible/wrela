@@ -1,0 +1,8 @@
+# Text at a title's size: glyphs drawn from the ui's multi-channel fields (ui/ttf.wrela) at 128 px
+# set beside their TrueType outlines, every pixel's coverage on the right side of the outline
+# within half a pixel.
+[package]
+name = "ui_msdf"
+
+[dependencies]
+ui = { workspace = true }

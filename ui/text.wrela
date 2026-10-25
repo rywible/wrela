@@ -1,8 +1,9 @@
-// Fonts and text layout for a user interface: fonts as signed distance fields, baked when the
-// program is built (ttf.wrela), and text laid out a line at a time. The default fonts are Inter
-// for the UI and JetBrains Mono for source, from ui/fonts; a program may bake others. A glyph's
-// field is sampled at 32 pixels per em; the GPU reads it at any size (draw.wrela), from 10 to
-// 72 pixels.
+// Fonts and text layout for a user interface: fonts as multi-channel signed distance fields,
+// baked when the program is built (ttf.wrela), and text laid out a line at a time. The default
+// fonts are Inter for the UI and JetBrains Mono for source, from ui/fonts; a program may bake
+// others. A glyph's field is sampled at 32 pixels per em; the GPU reads it at any size
+// (draw.wrela: the median of its three channels), from 10 pixels to a title's 140, its corners
+// kept sharp.
 //
 // Text is laid out by character group (`next_cluster`): a letter with its accents, an emoji
 // with its skin tone, a flag's two letters, an emoji sequence joined by U+200D, each one glyph.
@@ -18,7 +19,10 @@ use ttf::{Baked, bake}
 /// The fonts, baked from their files: constants, so a build holds each once, and the build's
 /// cache keeps them while the files and the baker are as they were.
 @fuel(2 ** 38)
-pub const SANS: Baked = bake(embed("fonts/Inter-Regular-Latin1.ttf"), em: 32.0, spread: 4.0)
+pub const SANS: Baked = bake(SANS_FILE, em: 32.0, spread: 4.0)
+
+/// The sans font's file (Inter): a test sets its outlines beside what's drawn (`ttf::outline_of`).
+pub const SANS_FILE: Bytes = embed("fonts/Inter-Regular-Latin1.ttf")
 
 @fuel(2 ** 38)
 pub const MONO: Baked = bake(embed("fonts/JetBrainsMono-Regular-Latin1.ttf"), em: 32.0, spread: 4.0)
@@ -229,7 +233,7 @@ impl Font {
         self.glyphs[i]
     }
 
-    /// Byte `k` of glyph `i`'s field (rows from the top).
+    /// Byte `k` of glyph `i`'s field (rows from the top, three a texel: its channels).
     pub fn field_byte(self, i: u32, k: u32) -> u8 {
         self.fields[self.glyphs[i].offset + k]
     }
@@ -656,7 +660,8 @@ impl Fonts {
         Some(at)
     }
 
-    /// The baked rows' texels, RGBA8 with each glyph's field in red, rows from the top.
+    /// The baked rows' texels, RGBA8 with each glyph's field's three channels in red, green and
+    /// blue, rows from the top.
     pub fn atlas(self) -> Vec<u8> {
         var bytes: Vec<u8> = Vec::filled(self.width * self.baked * 4, 0)
         for f in 0..2 {
@@ -666,8 +671,12 @@ impl Fonts {
                 for row in 0..g.height {
                     let base = ((g.atlas_y + row) * self.width + g.atlas_x) * 4
                     for col in 0..g.width {
-                        let v = font.field_byte(i, row * g.width + col)
-                        bytes[base + col * 4] = v
+                        for c in 0..3 {
+                            bytes[base + col * 4 + c] = font.field_byte(
+                                i,
+                                3 * (row * g.width + col) + c,
+                            )
+                        }
                         bytes[base + col * 4 + 3] = 255
                     }
                 }
@@ -721,7 +730,7 @@ fn caller_fonts_keep_their_own_fields_and_atlas_places() {
         line_gap: 0.0,
         glyphs,
         kerning: Vec::new(),
-        fields: Vec::filled(2, 17),
+        fields: Vec::filled(6, 17),
     }
     var second = first.clone()
     second.fields[0] = 231

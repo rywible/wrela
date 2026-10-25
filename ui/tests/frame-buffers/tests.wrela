@@ -16,7 +16,7 @@ const MODULES: [Text; 5] = [
 
 /// The fonts text.wrela bakes, which `EMPTY` replaces.
 const BAKES: [Text; 2] = [
-    "bake(embed(\"fonts/Inter-Regular-Latin1.ttf\"), em: 32.0, spread: 4.0)",
+    "bake(SANS_FILE, em: 32.0, spread: 4.0)",
     "bake(embed(\"fonts/JetBrainsMono-Regular-Latin1.ttf\"), em: 32.0, spread: 4.0)",
 ]
 
@@ -184,6 +184,10 @@ fn perf_ui_frame_buffers_and_typing_preserve_behavior() {
                 assert(text.as_str().find(b).is_some(), f"text.wrela bakes {b}")
                 text = replaced(text.as_str(), b, EMPTY)
             }
+            // The font's file a test reads isn't here: any file stands for it.
+            let file = "embed(\"fonts/Inter-Regular-Latin1.ttf\")"
+            assert(text.as_str().find(file).is_some(), "text.wrela embeds the sans font's file")
+            text = replaced(text.as_str(), file, "embed(\"main.wrela\")")
         }
         tests += declared(text.as_str())
         if file == "widgets.wrela" {

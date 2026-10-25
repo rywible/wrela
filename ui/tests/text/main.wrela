@@ -79,7 +79,7 @@ fn field_hash(face: u32) -> u64 {
     h.write_u32(font.field_bytes())
     for i in 0..font.count() {
         let glyph = font.glyph(i)
-        for k in 0..glyph.width * glyph.height {
+        for k in 0..3 * glyph.width * glyph.height {
             h.write_u32(u32(font.field_byte(i, k)))
         }
     }
@@ -108,15 +108,17 @@ pub fn tool() -> u32 {
     0
 }
 
-/// The build bakes each font from its file (ui/ttf.wrela), into at most 200 KB of fields: what
-/// a font adds to a build. Every baked byte matches the original per-segment-distance baker:
-/// choosing the nearest squared distance must not change its output.
+/// The build bakes each font from its file (ui/ttf.wrela), into at most 600 KB of fields: what
+/// a font adds to a build (three channels at 32 px an em, 4 px of spread: at 18 px an em the
+/// fields fit 200 KB, but a title's thin strokes and corners came out no better than one channel
+/// at 32). Every baked byte is as the multi-channel baker made it when this was written: a change
+/// to it must say so here.
 @test
 fn the_fonts_are_baked_small() {
-    let hashes = [17162884810785632069, 7364730740798196822]
+    let hashes = [12941331899668559131, 11706683979192801689]
     for face in 0..2 {
         let bytes = field_bytes(face)
-        assert(bytes > 100 * 1024 && bytes <= 200 * 1024, f"face {face}: {bytes} bytes of fields")
+        assert(bytes > 300 * 1024 && bytes <= 600 * 1024, f"face {face}: {bytes} bytes of fields")
         assert(field_hash(face) == hashes[face], f"face {face}: baked fields changed")
     }
 }

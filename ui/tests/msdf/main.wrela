@@ -1,0 +1,126 @@
+// Glyphs drawn at 128 px through the ui's quads (`DrawList::text`, `Renderer`), white on black
+// into a texture, and read back; then each pixel set beside the glyph's TrueType outline at that
+// size (`ui::ttf::outline_of`): a pixel whose centre is more than half a pixel inside the outline
+// is drawn more than half covered, one more than half a pixel outside it less. The corners are
+// where a one-channel field would fail (it rounds them).
+
+use std::gpu::{
+    GlobalId, GpuBuffer, Rgba8, Slots, Texture, begin_pass, buffer, dispatch, read, texture,
+}
+use std::io::{Pending, print}
+use ui::draw::{DrawList, Renderer}
+use ui::text::{Face, Fonts, SANS_FILE}
+use ui::ttf::outline_of
+
+/// The target's size, the glyphs' size, and the glyphs.
+pub const W: u32 = 720
+pub const H: u32 = 200
+pub const SIZE: f32 = 128.0
+pub const GLYPHS: [u32; 5] = [0x41, 0x4D, 0x6B, 0x38, 0x57]
+const TEXTS: [Text; 5] = ["A", "M", "k", "8", "W"]
+
+/// Where glyph `i`'s pen starts.
+fn pen_of(i: u32) -> vec2 {
+    vec2(20.0 + 140.0 * f32(i), 20.0)
+}
+
+/// A texture's texels packed as RGBA8 in a word each, row by row.
+@compute(64)
+fn copy(t: Texture<Rgba8>, out: mut Slots<u32>, id: GlobalId) {
+    let w = t.width()
+    let c = t.load(x: id.x % w, y: id.x / w)
+    let b = vec4u(round(c * 255.0))
+    out[id] = b.x | (b.y << 8) | (b.z << 16) | (b.w << 24)
+}
+
+pub struct State {
+    fonts: Fonts,
+    renderer: Renderer,
+    target: Texture<Rgba8>,
+    pixels: GpuBuffer<u32>,
+    pending: Option<Pending<u32>>,
+    got: Vec<u32>,
+}
+
+pub fn init() -> State {
+    let fonts = Fonts::load()
+    let renderer = Renderer::new(fonts)
+    State {
+        fonts,
+        renderer,
+        target: texture::<Rgba8>(width: W, height: H),
+        pixels: buffer(W * H),
+        pending: None,
+        got: Vec::new(),
+    }
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    if s.pending.is_none() {
+        var list = DrawList::new()
+        let screen = vec2(f32(W), f32(H))
+        list.clear(screen)
+        for i in 0..GLYPHS.len() {
+            let _ = list.text(s.fonts, Face::Sans, TEXTS[i], SIZE, pen_of(i), vec4(1.0))
+        }
+        s.renderer.upload(list)
+        let p = begin_pass(mut s.target, clear: vec4(0.0, 0.0, 0.0, 1.0))
+        s.renderer.draw(p, screen)
+        p.end()
+        dispatch(copy.bind(s.target, out: mut s.pixels), over: W * H)
+        s.pending = Some(read(s.pixels.items()))
+        return
+    }
+    if s.got.is_empty() {
+        match mut s.pending {
+            Some(p) => match p.poll() {
+                Some(Ok(v)) => s.got = take v,
+                _ => {},
+            },
+            None => {},
+        }
+    }
+}
+
+/// Every pixel of each glyph's box is on the outline's side within half a pixel: more than half a
+/// pixel inside, more than half covered; more than half a pixel outside, less. The 8's are counted
+/// apart: the notches at its waist close to less than a field's texel (4 px at this size) near
+/// their ends, where filtering any distance field fills them (6 px; a one-channel field misses 78
+/// px of these glyphs, the 8's among them).
+@test(frames: 8, gpu: true)
+fn a_title_sized_glyph_keeps_its_outline_within_half_a_pixel(s: State) {
+    assert(s.got.len() == W * H, "the pixels didn't come back")
+    borrow font = s.fonts.font(Face::Sans)
+    var wrong = 0
+    var notch = 0
+    var edge = 0
+    for i in 0..GLYPHS.len() {
+        let outline = outline_of(SANS_FILE, GLYPHS[i], SIZE)
+        let pen = pen_of(i)
+        let baseline = floor(pen.y + font.ascender * SIZE + 0.5)
+        for y in 0..H {
+            for x in u32(pen.x) - 10..u32(pen.x) + 130 {
+                let d = outline.distance(f64(f32(x) + 0.5 - pen.x), f64(baseline - (f32(y) + 0.5)))
+                let cover = f32(s.got[y * W + x] & 255) / 255.0
+                if (d > 0.5 && cover <= 0.5) || (d < -0.5 && cover >= 0.5) {
+                    if GLYPHS[i] == 0x38 {
+                        notch += 1
+                    } else {
+                        wrong += 1
+                    }
+                }
+                if abs(d) <= 0.5 {
+                    edge += 1
+                }
+            }
+        }
+    }
+    print(
+        f"{edge} pixels within half a pixel of the outlines; {wrong} on the wrong side past it; the 8's {notch}",
+    )
+    assert(edge > 1000, f"the glyphs' outlines cross only {edge} pixels")
+    assert(
+        wrong == 0,
+        f"{wrong} pixels are on the wrong side of their outline by over half a pixel",
+    )
+}
