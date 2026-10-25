@@ -1,8 +1,10 @@
 // A sky cube white on its +y face and black on the rest, written by the CPU; every face's
 // levels prefiltered from it (`engine::reflect::prefilter`); then the prefiltered cube sampled
-// in a kernel along a few directions at each level, as shading samples it.
+// in a kernel along a few directions at each level, as shading samples it. And a smooth surface
+// reflecting a lit wall through the screen's copy (`reflected`), with the reflections' switch
+// off and on, contact shadows on both times.
 
-use engine::reflect::{LEVELS, Mirror, SIDE, Specular, contact_shadow, prefilter}
+use engine::reflect::{LEVELS, Mirror, SIDE, Specular, contact_shadow, prefilter, reflected}
 use engine::view::{Camera, first_camera}
 use std::gpu::{
     Cubemap, GlobalId, GpuBuffer, Rgba16Float, Sampler, Slots, Texture, buffer, buffer_of, dispatch,
@@ -77,15 +79,57 @@ fn contact_screen() -> Texture<Rgba16Float> {
     t
 }
 
+/// A screen copy of a wall 10 m off, lit white (half floats: colour 1, distance 10).
+fn wall_screen() -> Texture<Rgba16Float> {
+    var t = texture::<Rgba16Float>(width: S, height: S)
+    var bytes: Vec<u8> = Vec::with_capacity(S * S * 8)
+    for _ in 0..S * S {
+        for _ in 0..3 {
+            bytes.push(0x00)
+            bytes.push(0x3c)
+        }
+        bytes.push(0x00)
+        bytes.push(0x49)
+    }
+    t.write(x: 0, y: 0, width: S, height: S, bytes: bytes)
+    t
+}
+
+/// A smooth surface 6 m off reflecting along a ray that reaches the wall: what it sees, its
+/// probes' light (`toward`) black and the specular probe not baked, with `m`'s switches.
+@compute(1)
+fn mirrored(
+    m: Mirror,
+    screen: Texture<Rgba16Float>,
+    cube: Cubemap<Rgba16Float>,
+    s: Sampler,
+    out: mut Slots<f32>,
+    id: GlobalId,
+) {
+    let cam = m.cam
+    let p = along(cam, vec2(40.5, 32.5), 6.0)
+    let r = normalize(along(cam, vec2(20.5, 32.5), 10.0) - p)
+    out[id] = reflected(m, screen, cube, s, p, r, 0.0, vec3(0.0)).r
+}
+
 pub struct State {
     asked: Option<Pending<f32>>,
     pub seen: Vec<f32>,
     contact_asked: Option<Pending<f32>>,
     pub contact: Vec<f32>,
+    mirror_asked: Vec<Pending<f32>>,
+    pub mirrored: Vec<f32>,
 }
 
 pub fn init() -> State {
-    State { asked: None, seen: Vec::new(), contact_asked: None, contact: Vec::new() }
+    State {
+        asked: None,
+        seen: Vec::new(),
+        contact_asked: None,
+        contact: Vec::new(),
+        mirror_asked: Vec::new(),
+        mirrored: Vec::new(),
+    }
 }
 
 /// A face of `SIDE` texels a side, every texel `v` (its four halves: 0 or 1 only).
@@ -117,6 +161,13 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
                     _ => {},
                 },
                 None => {},
+            }
+        }
+        if s.mirrored.len() < s.mirror_asked.len() {
+            let k = s.mirrored.len()
+            match s.mirror_asked[k].poll() {
+                Some(Ok(v)) => s.mirrored.push(v[0]),
+                _ => {},
             }
         }
         return
@@ -151,6 +202,13 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     var out: GpuBuffer<f32> = buffer(3 * LEVELS)
     dispatch(probe.bind(spec.cube, lin, out: mut out), over: 3 * LEVELS)
     s.asked = Some(read(out.items()))
+    let wall = wall_screen()
+    for reflect in [0, 1] {
+        let mm = Mirror { cam: contact_camera(), on: 1, probe: 0, contact: 1, reflect }
+        var seen: GpuBuffer<f32> = buffer(1)
+        dispatch(mirrored.bind(mm, wall, spec.cube, lin, out: mut seen), groups: 1)
+        s.mirror_asked.push(read(seen.items()))
+    }
 }
 
 /// Straight up the sky is white at every level, straight down black at every level; just past
@@ -188,4 +246,14 @@ fn a_surface_behind_something_near_toward_the_sun_is_in_its_contact_shadow(s: St
     print(f"toward the square {s.contact[0]}, toward the open side {s.contact[1]}")
     assert(s.contact[0] < 0.1, f"the surface behind the square is lit: {s.contact[0]}")
     assert(s.contact[1] == 1.0, f"the surface lit from the open side is shadowed: {s.contact[1]}")
+}
+
+/// With contact shadows on and the reflections' switch off, a smooth surface doesn't march the
+/// screen (it sees its probes' light, black here); with the switch on, it sees the lit wall.
+@test(frames: 8, gpu: true)
+fn the_reflections_switch_alone_marches_the_screen(s: State) {
+    assert(s.mirrored.len() == 2, "the mirrored case didn't come back")
+    print(f"reflections off {s.mirrored[0]}, on {s.mirrored[1]}")
+    assert(s.mirrored[0] == 0.0, f"with reflections off, the screen was marched: {s.mirrored[0]}")
+    assert(s.mirrored[1] > 0.5, f"with reflections on, the wall wasn't seen: {s.mirrored[1]}")
 }
