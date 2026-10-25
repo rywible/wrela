@@ -18,8 +18,9 @@ use std::derive::Box3
 use std::derive::Interval
 use std::field::{Blend, Fbm, Noise, Surface, VALUE_NOISE_LIPSCHITZ, fbm, oval, value_noise}
 use std::gpu::{
-    ClipPosition, DrawIndexedArgs, Flat, FragCoord, GlobalId, GpuBuffer, InstanceIndex, RenderPass,
-    Slots, Unorm8x4, VertexIndex, buffer, discard, dispatch, draw, write,
+    Atomics, ClipPosition, DrawIndexedArgs, Flat, FragCoord, GlobalId, GpuBuffer, InstanceIndex,
+    RenderPass, Slots, Unorm8x4, VertexIndex, buffer, buffer_of, copy, discard, dispatch, draw,
+    label, write,
 }
 use std::math::TAU
 use std::transform::{rotate_y, translate}
@@ -711,23 +712,29 @@ pub struct RockAt: Copy + GpuData {
 /// Rocks: a few kinds of prototype solid, each realized near (fine, for rocks close to the eye)
 /// and far (coarse), and many placements of them; each kind and level drawn with one instanced
 /// draw (`Rocks::draw`) over the placements of its run (`first`, `count`) the camera sees at that
-/// level (`Rocks::cull`: `seen`, from `seen_first`, `seen_count` of them, kind by kind, near then
-/// far); its shadows from all of them, far (`Rocks::cast`).
+/// level, chosen on the GPU (`Rocks::cull`: into `seen`, from `seen_first`: kind by kind, the near
+/// lists, then the far); its shadows from all of them, far (`Rocks::cast`).
 pub struct Rocks {
     pub near: Vec<Realized>,
     pub far: Vec<Realized>,
     pub placed: GpuBuffer<RockAt>,
     pub first: Vec<u32>,
     pub count: Vec<u32>,
-    /// Each kind's draw of all its placements (shadows), and each kind's and level's of those
-    /// seen.
+    /// Each kind's draw of all its placements (shadows); each kind's and level's mesh draw
+    /// (`templates`), and its draw of those seen (`seen_args`, `rock_draws`).
     pub args: Vec<GpuBuffer<DrawIndexedArgs>>,
-    pub seen_args: Vec<GpuBuffer<DrawIndexedArgs>>,
-    /// Where each placement is and how far it reaches (its centre and radius), on the CPU.
-    pub spheres: Vec<vec4>,
+    templates: GpuBuffer<DrawIndexedArgs>,
+    seen_args: GpuBuffer<DrawIndexedArgs>,
+    /// Where each placement is and how far it reaches (its centre and radius, in the world), its
+    /// kind and its kind's first placement, on the GPU.
+    spheres: GpuBuffer<vec4>,
+    kinds: GpuBuffer<vec2u>,
+    /// The placements seen, each kind's and level's list from `seen_first` (a kind's near list
+    /// holds at most its count, as its far list does), and how many each holds (`counts`, made 0
+    /// again as they're drawn).
     pub seen: GpuBuffer<u32>,
     pub seen_first: Vec<u32>,
-    pub seen_count: Vec<u32>,
+    counts: GpuBuffer<u32>,
     /// The render origin (its world point): placements are in the world, the camera and the
     /// shadows' views in render space, the world less it (`cull` sets it).
     pub origin: vec3,
@@ -788,6 +795,67 @@ fn a_rock_is_drawn_where_it_is_seen_and_big_enough_to_be() {
     assert(in_view(vec4(0.0, 2.0, -1.0, 3.0), eye, ahead, t, w), "a rock round the eye isn't")
 }
 
+/// The tangent of the widest half angle of `cam`'s view: a cone enclosing the rectangular view
+/// reaches its corners, along the diagonal (`in_view`'s `wide`).
+pub fn view_cone(cam: Camera) -> f32 {
+    cam.tan_half * sqrt(1.0 + cam.aspect * cam.aspect)
+}
+
+/// What the rocks' culling reads: the eye (render space), its view, the render origin (the
+/// placements are in the world), and how many placements there are.
+pub struct RockCull: Copy + GpuData {
+    pub eye: vec3,
+    pub tan_half: f32,
+    pub forward: vec3,
+    pub wide: f32,
+    pub origin: vec3,
+    pub total: u32,
+}
+
+/// Placement `id` into its kind's near or far list if the camera sees it (`in_view`), near
+/// within `NEAR_RADII` of its radii: a place taken from the list's count (`counts`, the near and
+/// far of each kind), the near lists from 0, the far after every near list's room (`total`).
+@compute(64)
+fn cull_rocks(
+    c: RockCull,
+    spheres: [vec4],
+    kinds: [vec2u],
+    counts: mut Atomics<u32>,
+    seen: mut Atomics<u32>,
+    id: GlobalId,
+) {
+    let i = id.x
+    if i >= c.total {
+        return
+    }
+    let sp = vec4(spheres[i].xyz - c.origin, spheres[i].w)
+    if !in_view(sp, c.eye, c.forward, c.tan_half, c.wide) {
+        return
+    }
+    let k = kinds[i]
+    let near = length(sp.xyz - c.eye) < NEAR_RADII * sp.w
+    let level = if near { 0 } else { 1 }
+    let at = counts.add(2 * k.x + level, 1)
+    seen.store(level * c.total + k.y + at, i)
+}
+
+/// Each kind's and level's draw of the placements its list holds (`counts`), its count made 0
+/// for the next frame's culling.
+@compute(64)
+fn rock_draws(
+    templates: [DrawIndexedArgs],
+    counts: mut Atomics<u32>,
+    out: mut Slots<DrawIndexedArgs>,
+    n: u32,
+    id: GlobalId,
+) {
+    if id.x >= n {
+        return
+    }
+    out[id] = DrawIndexedArgs { instances: counts.load(id.x), ..templates[id.x] }
+    counts.store(id.x, 0)
+}
+
 /// Prototype `k`'s mesh's draw arguments, for `count` instances.
 @compute(1)
 fn rock_args(mesh: [DrawIndexedArgs], count: u32, out: mut Slots<DrawIndexedArgs>, id: GlobalId) {
@@ -812,6 +880,7 @@ impl Rocks {
         let n = far.len()
         var sorted: Vec<RockAt> = Vec::with_capacity(placements.len())
         var spheres: Vec<vec4> = Vec::with_capacity(placements.len())
+        var kinds: Vec<vec2u> = Vec::with_capacity(placements.len())
         var first: Vec<u32> = Vec::new()
         var count: Vec<u32> = Vec::new()
         for k in 0..n {
@@ -820,6 +889,7 @@ impl Rocks {
                 if p.prototype == k {
                     sorted.push(RockAt { at: p.at, normal_at: p.normal_at, seed: p.seed })
                     spheres.push(vec4(p.at[3].xyz, p.reach))
+                    kinds.push(vec2u(k, first[k]))
                 }
             }
             count.push(sorted.len() - first[k])
@@ -829,15 +899,22 @@ impl Rocks {
             write(mut placed, 0, sorted)
         }
         var args: Vec<GpuBuffer<DrawIndexedArgs>> = Vec::new()
-        var seen_args: Vec<GpuBuffer<DrawIndexedArgs>> = Vec::new()
+        var templates: GpuBuffer<DrawIndexedArgs> = buffer(max(2 * n, 1))
+        var seen_first: Vec<u32> = Vec::new()
         for k in 0..n {
             var a: GpuBuffer<DrawIndexedArgs> = buffer(1)
             dispatch(rock_args.bind(far[k].mesh.draw.items(), count[k], mut a), groups: 1)
             args.push(take a)
-            seen_args.push(buffer(1))
-            seen_args.push(buffer(1))
+            copy(from: near[k].mesh.draw.items(), to: templates.span_mut(start: 2 * k, count: 1))
+            copy(from: far[k].mesh.draw.items(), to: templates.span_mut(start: 2 * k + 1, count: 1))
+            seen_first.push(first[k])
+            seen_first.push(sorted.len() + first[k])
         }
         let total = max(sorted.len(), 1)
+        if spheres.is_empty() {
+            spheres.push(vec4(0.0))
+            kinds.push(vec2u(0))
+        }
         Rocks {
             near,
             far,
@@ -845,11 +922,13 @@ impl Rocks {
             first,
             count,
             args,
-            seen_args,
-            spheres,
-            seen: buffer(total),
-            seen_first: Vec::filled(2 * n, 0),
-            seen_count: Vec::filled(2 * n, 0),
+            templates,
+            seen_args: buffer(max(2 * n, 1)),
+            spheres: buffer_of(spheres),
+            kinds: buffer_of(kinds),
+            seen: buffer(2 * total),
+            seen_first,
+            counts: buffer_of(Vec::filled(max(2 * n, 1), 0)),
             origin: vec3(0.0),
             grain: Vec::filled(n, vec4(0.0)),
         }
@@ -860,41 +939,39 @@ impl Rocks {
     /// or far; their indices written for the draws, each kind's and level's count into its draw.
     pub fn cull(mut self, cam: Camera, origin: vec3) {
         self.origin = origin
-        var seen: Vec<u32> = Vec::with_capacity(self.spheres.len())
-        // A cone enclosing the rectangular view reaches its corners, along the diagonal.
-        let wide = cam.tan_half * sqrt(1.0 + cam.aspect * cam.aspect)
-        for k in 0..self.far.len() {
-            for level in 0..2 {
-                let at = 2 * k + level
-                self.seen_first[at] = seen.len()
-                for i in self.first[k]..(self.first[k] + self.count[k]) {
-                    let sp = vec4(self.spheres[i].xyz - origin, self.spheres[i].w)
-                    let near = length(sp.xyz - cam.eye) < NEAR_RADII * sp.w
-                    if near == (level == 0) &&
-                        in_view(sp, cam.eye, cam.forward, cam.tan_half, wide) {
-                        seen.push(i)
-                    }
-                }
-                self.seen_count[at] = seen.len() - self.seen_first[at]
-            }
+        let total = self.len()
+        let n = 2 * self.far.len()
+        if total == 0 || n == 0 {
+            return
         }
-        if !seen.is_empty() {
-            write(mut self.seen, 0, seen)
+        let c = RockCull {
+            eye: cam.eye,
+            tan_half: cam.tan_half,
+            forward: cam.forward,
+            wide: view_cone(cam),
+            origin,
+            total,
         }
-        for k in 0..self.far.len() {
-            for level in 0..2 {
-                let at = 2 * k + level
-                borrow p = if level == 0 { self.near[k] } else { self.far[k] }
-                dispatch(
-                    rock_args.bind(
-                        p.mesh.draw.items(),
-                        self.seen_count[at],
-                        mut self.seen_args[at],
-                    ),
-                    groups: 1,
-                )
-            }
-        }
+        label("rocks cull")
+        dispatch(
+            cull_rocks.bind(
+                c,
+                spheres: self.spheres,
+                kinds: self.kinds,
+                counts: mut self.counts,
+                seen: mut self.seen,
+            ),
+            over: total,
+        )
+        dispatch(
+            rock_draws.bind(
+                templates: self.templates,
+                counts: mut self.counts,
+                out: mut self.seen_args,
+                n: n,
+            ),
+            over: n,
+        )
     }
 
     /// How many rocks are placed.
@@ -936,7 +1013,7 @@ impl Rocks {
         for k in 0..self.far.len() {
             for level in 0..2 {
                 let at = 2 * k + level
-                if self.seen_count[at] == 0 {
+                if self.count[k] == 0 {
                     continue
                 }
                 borrow p = if level == 0 { self.near[k] } else { self.far[k] }
@@ -953,7 +1030,7 @@ impl Rocks {
                     ),
                     rock_shade.bind(lt, origin: self.origin, grain: self.grain[k]),
                     indices: p.mesh.quads.items(),
-                    indirect: self.seen_args[at].items(),
+                    indirect: self.seen_args.span(start: at, count: 1),
                     cull: std::gpu::Cull::Back,
                     depth: view::NEAREST,
                 )
