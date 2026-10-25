@@ -259,7 +259,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         v.end()
         label("virtual resolve")
         let p = begin_screen_pass(clear: vec4(0.55, 0.68, 0.85, 1.0))
-        s.clusters.resolve(p, cam, s.places, LOOK, s.ids, s.depth)
+        s.clusters.resolve(p, cam, s.places, LOOK, s.ids)
         p.present()
         return
     }

@@ -34,7 +34,7 @@
 
 use creature::{Creature, Parts}
 use realize::{
-    BLOCK, CellWord, Grid, LiveBlock, Mesh, NO_VERTEX, Room, Scratch, SkinVertex, cell_key,
+    BLOCK, CellWord, Grid, LiveBlock, Mesh, NO_VERTEX, Room, Scratch, SkinVertex, Tally, cell_key,
     record_cull, record_vertices, vertex_at, word_at,
 }
 use std::collections::replace
@@ -62,9 +62,12 @@ const NO_ROOM: u32 = 0xffffffff
 /// rasterizer's.
 const SMALL_PICK: u32 = 0x80000000
 
-/// A visibility id's flag (below its level's bits, `id_of`): its triangle is of its level's
-/// small quads (`soft_at`).
-pub const SOFT_ID: u32 = 0x08000000
+/// A visibility id's flag (below its level's and its set's bits, `id_of`): its triangle is of its
+/// level's small quads (`soft_at`).
+pub const SOFT_ID: u32 = 0x02000000
+
+/// The most cluster sets one visibility buffer tells apart (`Clusters::set`, two bits of an id).
+pub const MOST_SETS: u32 = 4
 
 /// The id of a pixel no software triangle has reached yet (`nearest_depths`).
 pub const NO_ID: u32 = 0xffffffff
@@ -73,10 +76,44 @@ pub const NO_ID: u32 = 0xffffffff
 /// finer than a cell can be missing from it.
 pub const FLOOR: f32 = 0.25
 
-/// A placed copy of the surface: where its rest space's origin is, and its scale.
+/// A placed copy of the surface: where its rest space's origin is, and its scale; its size along
+/// each of its own axes (times the scale) and its turn about the vertical (radians, as
+/// `std::transform::rotate_y` turns): so a copy is placed as a prototype stone is
+/// (`translate * rotate_y * scale`); and its seed (its shading's own).
 pub struct Placed: Copy + GpuData {
     pub at: vec3,
     pub scale: f32,
+    pub size: vec3 = vec3(1.0),
+    pub turn: f32 = 0.0,
+    pub seed: u32 = 0,
+}
+
+/// Rest point `r` placed by `p`.
+pub fn placed_point(p: Placed, r: vec3) -> vec3 {
+    let q = r * p.size * p.scale
+    let (c, s) = (cos(p.turn), sin(p.turn))
+    p.at + vec3(c * q.x + s * q.z, q.y, -s * q.x + c * q.z)
+}
+
+/// Rest normal `n` placed by `p` (not of unit length: the inverse of its size, turned).
+pub fn placed_normal(p: Placed, n: vec3) -> vec3 {
+    let q = n / p.size
+    let (c, s) = (cos(p.turn), sin(p.turn))
+    vec3(c * q.x + s * q.z, q.y, -s * q.x + c * q.z)
+}
+
+/// The most a length in rest space grows placed by `p`: its scale times its largest size.
+pub fn extent(p: Placed) -> f32 {
+    p.scale * max(p.size.x, max(p.size.y, p.size.z))
+}
+
+/// The box rest box `lo`..`hi` takes placed by `p`: its turned corners' bounds.
+pub fn placed_bounds(p: Placed, lo: vec3, hi: vec3) -> Box3 {
+    let centre = placed_point(p, 0.5 * (lo + hi))
+    let h = 0.5 * (hi - lo) * p.size * p.scale
+    let (c, s) = (abs(cos(p.turn)), abs(sin(p.turn)))
+    let half = vec3(c * h.x + s * h.z, h.y, s * h.x + c * h.z)
+    Box3 { lo: centre - half, hi: centre + half }
 }
 
 /// How a level's cut is made: the camera, how large a pixel is at a metre (`pixels / metre`),
@@ -146,6 +183,8 @@ pub struct Clusters {
     pub small: f32,
     pub soft_pixels: GpuBuffer<u32>,
     pub soft_size: vec2u,
+    /// Which of the surfaces sharing a visibility buffer these are (`id_of`: under `MOST_SETS`).
+    pub set: u32,
 }
 
 /// The live blocks a grid of `blocks` blocks is expected to hold: a surface's (`realize`'s
@@ -204,6 +243,16 @@ pub fn cook<C, F: Parts<C>>(field: F, bounds: Box3, cell: f32, levels: u32) -> C
                 spans: mut spans,
             ),
             groups: scratch.live.count(),
+        )
+        // Its tally, as a realized mesh's: its vertices, so what cooks per vertex (its colours,
+        // `character::colours`) reaches them all.
+        dispatch(
+            tally_vertices.bind(
+                count: mesh.verts.count(),
+                room: mesh.verts.capacity(),
+                tally: mut mesh.tally,
+            ),
+            groups: 1,
         )
         // The cell map and the probes were extraction's: only the live list and the block map
         // are read after.
@@ -327,6 +376,7 @@ pub fn cook<C, F: Parts<C>>(field: F, bounds: Box3, cell: f32, levels: u32) -> C
         small: 0.0,
         soft_pixels: buffer(2),
         soft_size: vec2u(0),
+        set: 0,
     }
 }
 
@@ -335,6 +385,23 @@ fn empty_list(room: u32) -> GpuBuffer<u32> {
     var b: GpuBuffer<u32> = buffer(1 + 2 * room)
     write(mut b, 0, [0])
     b
+}
+
+/// A level's mesh's tally from its vertices' count (`count`, as many as its room holds), for
+/// what reads a realized mesh's.
+@compute(1)
+pub fn tally_vertices(count: [u32], room: u32, tally: mut One<Tally>, id: GlobalId) {
+    tally.set(
+        id,
+        Tally {
+            vertices: min(count[0], room),
+            holes: 0,
+            flags: 0,
+            pushed_vertices: count[0],
+            pushed_quads: 0,
+            live_blocks: 0,
+        },
+    )
 }
 
 /// A level's roots: its live clusters with no live parent (`pairs`' second, negative).
@@ -675,8 +742,7 @@ fn nearest(b: Box3, eye: vec3) -> f32 {
 /// Block `b` of `grid` placed by `p`, as a box in the world.
 fn placed_box(grid: Grid, b: vec3u, p: Placed) -> Box3 {
     let lo = grid.origin + vec3(b) * (f32(BLOCK) * grid.cell)
-    let hi = lo + vec3(f32(BLOCK) * grid.cell)
-    Box3 { lo: p.at + lo * p.scale, hi: p.at + hi * p.scale }
+    placed_bounds(p, lo, lo + vec3(f32(BLOCK) * grid.cell))
 }
 
 /// Whether box `b` can be in `cam`'s view: in front of the eye and within the frustum's sides,
@@ -708,8 +774,7 @@ pub fn cull_instances(
     if id.x >= places.len() {
         return
     }
-    let p = places[id.x]
-    let b = Box3 { lo: p.at + bounds.lo * p.scale, hi: p.at + bounds.hi * p.scale }
+    let b = placed_bounds(places[id.x], bounds.lo, bounds.hi)
     if in_view(cam, b) {
         let _ = visible.push(id.x)
     }
@@ -785,7 +850,7 @@ pub fn select(
         return
     }
     let near = max(nearest(own, cut.cam.eye), cut.cam.near)
-    if cut.level == 0 || pairs[slot].x * p.scale * cut.per_metre / near <= cut.pixels {
+    if cut.level == 0 || pairs[slot].x * extent(p) * cut.per_metre / near <= cut.pixels {
         // How wide its block looks, at most, from its nearest point.
         let across = length(own.hi - own.lo) * cut.per_metre / near
         push_pair(mut picks, instance, if across < cut.small { slot | SMALL_PICK } else { slot })
@@ -801,7 +866,7 @@ pub fn select(
 }
 
 /// Each pick's quads into the level's list (a range of it a pick, taken with one atomic): the
-/// pick's index and the quad's; a small cluster's (`SMALL_PICK`) from the list's end, counted in
+/// pick's instance and the quad's; a small cluster's (`SMALL_PICK`) from the list's end, counted in
 /// `soft`.
 @compute(64)
 pub fn gather(
@@ -826,7 +891,7 @@ pub fn gather(
             return
         }
         let i = if small { soft_at(room, at + k) } else { at + k }
-        list.store(i: 1 + 2 * i, value: id.x)
+        list.store(i: 1 + 2 * i, value: picks[1 + 2 * id.x])
         list.store(i: 2 + 2 * i, value: first + k)
     }
 }
@@ -895,19 +960,22 @@ pub fn cluster_vertex(
     v: VertexIndex,
     d: LevelDraw,
     list: [u32],
-    picks: [u32],
     words: [u32],
     verts: [SkinVertex],
     places: [Placed],
 ) -> ClusterVertex {
     let q = v.index / 6
-    let pick = list[1 + 2 * q]
+    let instance = list[1 + 2 * q]
     let word = words[6 * list[2 + 2 * q] + v.index % 6]
     let sv = verts[word & (SKIRT - 1)]
-    let p = places[picks[1 + 2 * pick]]
+    let p = places[instance]
     let rest = if (word & SKIRT) != 0 { sv.pos - sv.normal * d.skirt } else { sv.pos }
-    let world = p.at + rest * p.scale
-    ClusterVertex { clip: ClipPosition { position: d.cam.clip(world) }, world, normal: sv.normal }
+    let world = placed_point(p, rest)
+    ClusterVertex {
+        clip: ClipPosition { position: d.cam.clip(world) },
+        world,
+        normal: placed_normal(p, sv.normal),
+    }
 }
 
 // ---- the visibility buffer ------------------------------------------------------------------
@@ -920,11 +988,17 @@ pub fn cluster_vertex(
 // and Dachsbacher, Deferred Attribute Interpolation, HPG 2015). So a pixel is shaded once,
 // whatever its overdraw, and a small triangle costs its raster alone.
 
-/// The visibility id of level `level`'s listed triangle `triangle` (`vis_id`; a small quad's
-/// with `SOFT_ID`, counted from the list's end): the level + 1 in its top four bits. A pixel no
-/// cluster drew holds 0.
-pub fn id_of(level: u32, triangle: u32) -> u32 {
-    ((level + 1) << 28) | triangle
+/// The visibility id of set `set`'s level `level`'s listed triangle `triangle` (`vis_id`; a
+/// small quad's with `SOFT_ID`, counted from the list's end): the level + 1 in its top four bits,
+/// the set in the two below (`MOST_SETS`: several surfaces' clusters share one buffer, a set
+/// each), then the triangle. A pixel no cluster drew holds 0.
+pub fn id_of(level: u32, set: u32, triangle: u32) -> u32 {
+    ((level + 1) << 28) | ((set % MOST_SETS) << 26) | triangle
+}
+
+/// Whether visibility id `id` is of `d`'s set and level.
+pub fn of_level(d: VisDraw, id: u32) -> bool {
+    (id >> 28) == d.level + 1 && ((id >> 26) & (MOST_SETS - 1)) == d.set % MOST_SETS
 }
 
 /// What the visibility pass and a level's resolve read beside their buffers: the camera, the
@@ -933,6 +1007,7 @@ pub struct VisDraw: Copy + GpuData {
     pub cam: Camera,
     pub skirt: f32,
     pub level: u32,
+    pub set: u32 = 0,
 }
 
 /// Corner `c` (of six: two triangles) of listed quad `q`: its world point (placed by its pick's
@@ -940,19 +1015,18 @@ pub struct VisDraw: Copy + GpuData {
 fn corner_of(
     d: VisDraw,
     list: [u32],
-    picks: [u32],
     words: [u32],
     verts: [SkinVertex],
     places: [Placed],
     q: u32,
     c: u32,
 ) -> (vec3, vec3) {
-    let pick = list[1 + 2 * q]
+    let instance = list[1 + 2 * q]
     let word = words[6 * list[2 + 2 * q] + c]
     let sv = verts[word & (SKIRT - 1)]
-    let p = places[picks[1 + 2 * pick]]
+    let p = places[instance]
     let rest = if (word & SKIRT) != 0 { sv.pos - sv.normal * d.skirt } else { sv.pos }
-    (p.at + rest * p.scale, sv.normal)
+    (placed_point(p, rest), placed_normal(p, sv.normal))
 }
 
 /// A visibility pass's vertex: its clip position, and its triangle's id (`id_of`), the same at
@@ -968,15 +1042,14 @@ pub fn vis_vertex(
     v: VertexIndex,
     d: VisDraw,
     list: [u32],
-    picks: [u32],
     words: [u32],
     verts: [SkinVertex],
     places: [Placed],
 ) -> VisVertex {
-    let (world, _) = corner_of(d, list, picks, words, verts, places, v.index / 6, v.index % 6)
+    let (world, _) = corner_of(d, list, words, verts, places, v.index / 6, v.index % 6)
     VisVertex {
         clip: ClipPosition { position: d.cam.clip(world) },
-        id: Flat { value: id_of(d.level, v.index / 3) },
+        id: Flat { value: id_of(d.level, d.set, v.index / 3) },
     }
 }
 
@@ -986,38 +1059,81 @@ pub fn vis_id(v: VisVertex) -> u32 {
     v.id.value
 }
 
-/// Level `d.level`'s pixels of the visibility buffer (`ids`, its `depth`), shaded: the pixel's
-/// triangle's corners pulled again, the pixel's point (from its depth) placed on the triangle by
-/// its barycentrics, its normal theirs between the corners', lit as `cluster_shade` lights. A
-/// pixel of another level, or of none, is left to its own resolve.
+/// Level `d.level`'s pixels of the visibility buffer (`ids`), shaded: the pixel's triangle's
+/// corners pulled again, the pixel's point where the camera's ray meets it, its normal theirs
+/// between the corners' (`pulled`), lit as `cluster_shade` lights. A pixel of another level, or of
+/// none, is left to its own resolve.
 @fragment
 pub fn resolve_level(
     pixel: FragCoord,
     d: VisDraw,
     look: ClusterLook,
     ids: Texture<R32Uint>,
-    depth: DepthTexture,
     list: [u32],
-    picks: [u32],
     words: [u32],
     verts: [SkinVertex],
     places: [Placed],
 ) -> vec4 {
     let px = vec2u(pixel.position.xy)
-    let id = ids.load(x: px.x, y: px.y)
-    if (id >> 28) != d.level + 1 {
-        discard()
+    match pulled(d, ids.load(x: px.x, y: px.y), pixel.position.xy, list, words, verts, places) {
+        Some(s) => lit_cluster(s.normal, look),
+        None => {
+            discard()
+            vec4(0.0)
+        },
+    }
+}
+
+/// A visibility buffer's pixel's surface, pulled: its point, its normal (placed, not of unit
+/// length), its barycentrics in its triangle, its corners' vertices, and its instance.
+pub struct Pulled: Copy {
+    pub world: vec3,
+    pub normal: vec3,
+    pub w: vec3,
+    pub corners: vec3u,
+    pub instance: u32,
+}
+
+/// The surface of level `d.level`'s visibility id `id` at pixel `px` (its middle, in the
+/// screen's pixels): the triangle's corners pulled, the pixel's point where `d.cam`'s ray through
+/// it meets the triangle's plane (no depth is read, so a pass with the depth bound may resolve;
+/// Burns and Hunt 2013), and its barycentrics there. None for a pixel of another level, or of
+/// none.
+pub fn pulled(
+    d: VisDraw,
+    id: u32,
+    px: vec2,
+    list: [u32],
+    words: [u32],
+    verts: [SkinVertex],
+    places: [Placed],
+) -> Option<Pulled> {
+    if !of_level(d, id) {
+        return None
     }
     let tri = id & (SOFT_ID - 1)
     let q = if (id & SOFT_ID) != 0 { soft_at((list.len() - 1) / 2, tri / 2) } else { tri / 2 }
     let first = 3 * (tri % 2)
-    let (a, na) = corner_of(d, list, picks, words, verts, places, q, first)
-    let (b, nb) = corner_of(d, list, picks, words, verts, places, q, first + 1)
-    let (c, nc) = corner_of(d, list, picks, words, verts, places, q, first + 2)
-    let p = d.cam.world_at(pixel.position.xy, depth.load(x: px.x, y: px.y))
+    let (a, na) = corner_of(d, list, words, verts, places, q, first)
+    let (b, nb) = corner_of(d, list, words, verts, places, q, first + 1)
+    let (c, nc) = corner_of(d, list, words, verts, places, q, first + 2)
+    let across = cross(b - a, c - a)
+    let ray = d.cam.ray(px)
+    let facing = dot(ray, across)
+    let t = if abs(facing) > 1.0e-12 { dot(a - d.cam.eye, across) / facing } else { 0.0 }
+    let p = d.cam.eye + ray * t
     let w = barycentrics(p, a, b, c)
-    let n = na * w.x + nb * w.y + nc * w.z
-    lit_cluster(n, look)
+    let at = 6 * list[2 + 2 * q] + first
+    let corner = |k: u32| words[at + k] & (SKIRT - 1)
+    Some(
+        Pulled {
+            world: p,
+            normal: na * w.x + nb * w.y + nc * w.z,
+            w,
+            corners: vec3u(corner(0), corner(1), corner(2)),
+            instance: list[1 + 2 * q],
+        },
+    )
 }
 
 /// The barycentrics of `p` (on or near the triangle `a`, `b`, `c`'s plane) in the triangle.
@@ -1071,7 +1187,6 @@ pub fn areas(
     d: VisDraw,
     list: [u32],
     soft: [u32],
-    picks: [u32],
     words: [u32],
     verts: [SkinVertex],
     places: [Placed],
@@ -1088,7 +1203,7 @@ pub fn areas(
         var px = [vec2(0.0); 3]
         var behind = false
         for k in 0..3 {
-            let (w, _) = corner_of(d, list, picks, words, verts, places, q, 3 * t + k)
+            let (w, _) = corner_of(d, list, words, verts, places, q, 3 * t + k)
             let q = d.cam.clip(w)
             behind = behind || q.w <= 1.0e-4
             px[k] = vec2(q.x / q.w, q.y / q.w) * 0.5 * d.cam.screen
@@ -1247,12 +1362,11 @@ fn soft_corners(
     d: VisDraw,
     list: [u32],
     q: u32,
-    picks: [u32],
     words: [u32],
     verts: [SkinVertex],
     places: [Placed],
 ) -> [vec4; 6] {
-    let p = places[picks[1 + 2 * list[1 + 2 * q]]]
+    let p = places[list[1 + 2 * q]]
     let first = 6 * list[2 + 2 * q]
     var clip = [vec4(0.0); 6]
     for c in 0..6 {
@@ -1261,7 +1375,7 @@ fn soft_corners(
         let rest = if (word & SKIRT) != 0 { verts[i].pos - verts[i].normal * d.skirt } else {
             verts[i].pos
         }
-        clip[c] = d.cam.clip(p.at + rest * p.scale)
+        clip[c] = d.cam.clip(placed_point(p, rest))
     }
     clip
 }
@@ -1274,7 +1388,6 @@ pub fn soft_depths(
     d: SoftDraw,
     list: [u32],
     soft: mut Atomics<u32>,
-    picks: [u32],
     words: [u32],
     verts: [SkinVertex],
     places: [Placed],
@@ -1290,7 +1403,6 @@ pub fn soft_depths(
             d.vis,
             list,
             soft_at((list.len() - 1) / 2, j),
-            picks,
             words,
             verts,
             places,
@@ -1320,7 +1432,6 @@ pub fn soft_ids(
     d: SoftDraw,
     list: [u32],
     soft: [u32],
-    picks: [u32],
     words: [u32],
     verts: [SkinVertex],
     places: [Placed],
@@ -1335,7 +1446,6 @@ pub fn soft_ids(
         d.vis,
         list,
         soft_at((list.len() - 1) / 2, j),
-        picks,
         words,
         verts,
         places,
@@ -1343,7 +1453,7 @@ pub fn soft_ids(
     for t in 0..2 {
         let tri = [clip[3 * t], clip[3 * t + 1], clip[3 * t + 2]]
         if let Some(s) = set_up(tri, d.size) {
-            least_ids(s, id_of(d.vis.level, SOFT_ID | (2 * j + t)), d.size, mut pixels)
+            least_ids(s, id_of(d.vis.level, d.vis.set, SOFT_ID | (2 * j + t)), d.size, mut pixels)
         }
     }
 }
@@ -1653,10 +1763,12 @@ impl Clusters {
             match mut self.levels[k] {
                 l => dispatch(
                     soft_depths.bind(
-                        SoftDraw { vis: VisDraw { cam, skirt: l.skirt, level: k }, size },
+                        SoftDraw {
+                            vis: VisDraw { cam, skirt: l.skirt, level: k, set: self.set },
+                            size,
+                        },
                         list: l.list.items(),
                         soft: mut l.soft,
-                        picks: l.picks.items(),
                         words: l.words.items(),
                         verts: l.mesh.verts.items(),
                         places: places.items(),
@@ -1670,10 +1782,12 @@ impl Clusters {
             borrow l = self.levels[k]
             dispatch(
                 soft_ids.bind(
-                    SoftDraw { vis: VisDraw { cam, skirt: l.skirt, level: k }, size },
+                    SoftDraw {
+                        vis: VisDraw { cam, skirt: l.skirt, level: k, set: self.set },
+                        size,
+                    },
                     list: l.list.items(),
                     soft: l.soft.items(),
-                    picks: l.picks.items(),
                     words: l.words.items(),
                     verts: l.mesh.verts.items(),
                     places: places.items(),
@@ -1693,9 +1807,8 @@ impl Clusters {
             draw(
                 pass,
                 vis_vertex.bind(
-                    VisDraw { cam, skirt: l.skirt, level: k },
+                    VisDraw { cam, skirt: l.skirt, level: k, set: self.set },
                     list: l.list.items(),
-                    picks: l.picks.items(),
                     words: l.words.items(),
                     verts: l.mesh.verts.items(),
                     places: places.items(),
@@ -1720,8 +1833,8 @@ impl Clusters {
         }
     }
 
-    /// The visibility buffer (`ids`, `depth`: `draw_ids`'s) resolved into `pass`, lit as `look`
-    /// says: a full-screen draw a level, each shading its own pixels.
+    /// The visibility buffer (`ids`: `draw_ids`'s) resolved into `pass`, lit as `look` says: a
+    /// full-screen draw a level, each shading its own pixels (no depth is read: `pulled`).
     pub fn resolve<P: RenderPass>(
         self,
         pass: P,
@@ -1729,7 +1842,6 @@ impl Clusters {
         places: GpuBuffer<Placed>,
         look: ClusterLook,
         ids: Texture<R32Uint>,
-        depth: DepthTexture,
     ) {
         for k in 0..self.levels.len() {
             borrow l = self.levels[k]
@@ -1737,12 +1849,10 @@ impl Clusters {
                 pass,
                 full_screen,
                 resolve_level.bind(
-                    VisDraw { cam, skirt: l.skirt, level: k },
+                    VisDraw { cam, skirt: l.skirt, level: k, set: self.set },
                     look,
                     ids,
-                    depth,
                     list: l.list.items(),
-                    picks: l.picks.items(),
                     words: l.words.items(),
                     verts: l.mesh.verts.items(),
                     places: places.items(),
@@ -1768,10 +1878,9 @@ impl Clusters {
             borrow l = self.levels[k]
             dispatch(
                 areas.bind(
-                    VisDraw { cam, skirt: l.skirt, level: k },
+                    VisDraw { cam, skirt: l.skirt, level: k, set: self.set },
                     list: l.list.items(),
                     soft: l.soft.items(),
-                    picks: l.picks.items(),
                     words: l.words.items(),
                     verts: l.mesh.verts.items(),
                     places: places.items(),
@@ -1798,7 +1907,6 @@ impl Clusters {
                 cluster_vertex.bind(
                     LevelDraw { cam, skirt: l.skirt },
                     list: l.list.items(),
-                    picks: l.picks.items(),
                     words: l.words.items(),
                     verts: l.mesh.verts.items(),
                     places: places.items(),
