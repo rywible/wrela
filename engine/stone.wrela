@@ -952,7 +952,6 @@ impl Rocks {
             origin,
             total,
         }
-        label("rocks cull")
         dispatch(
             cull_rocks.bind(
                 c,

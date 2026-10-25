@@ -1,0 +1,159 @@
+// The tool test: the fixture (`FIXTURE`, with its kinds' count `KINDS` filled in) written into a
+// package of its own, built with the engine read from the workspace, driven a frame on the GPU
+// recording its commands, and the draws counted.
+
+use hosts::steps::{built, recorded, replaced, written}
+use std::tool::drive
+use std::tool::drive::Step
+use std::tool::toolchain
+use std::tool::toolchain::Override
+
+const FIXTURE: [Text; 69] = [
+    "use engine::impostor::{Bake, Cooked, Impostor, VIEWS}",
+    "use engine::plant::{Bark, Instance, Leaves, NO_INSTANCE, Wind, plant}",
+    "use engine::vegetation::{Kind, Placed}",
+    "use engine::view::first_camera",
+    "use engine::wood::Wood",
+    "use std::gpu::{Rgba8, Rgba16Float, begin_pass_with_depth, buffer, depth_texture, sampler, texture, texture3d}",
+    "",
+    "const KINDS: u32 = __KINDS__",
+    "",
+    "fn kind() -> Kind {",
+    "    let leaves = Leaves {}",
+    "    let bark = Bark {}",
+    "    Kind {",
+    "        plant: plant(leaves, bark),",
+    "        cards: buffer(8),",
+    "        card_count: 8,",
+    "        orders: buffer(8 * engine::plant::CORNERS),",
+    "        limbs: buffer(1),",
+    "        limb_count: 1,",
+    "        top: 2.0,",
+    "        reach: 1.0,",
+    "        impostor: Impostor {",
+    "            colour: texture::<Rgba8>(width: 1, height: 1),",
+    "            normal: texture::<Rgba16Float>(width: 1, height: 1),",
+    "            bake: Bake { mid: vec3(0.0, 1.0, 0.0), half: 1.0, leaves, bark },",
+    "            bounds: buffer(VIEWS * VIEWS),",
+    "        },",
+    "        volume: Cooked {",
+    "            grid: texture3d::<Rgba16Float>(width: 1, height: 1, depth: 1),",
+    "            grid_depth: texture3d::<Rgba16Float>(width: 1, height: 1, depth: 1),",
+    "        },",
+    "    }",
+    "}",
+    "",
+    "pub struct Fixture {",
+    "    wood: Wood,",
+    "}",
+    "",
+    "pub fn init() -> Fixture {",
+    "    let kinds = Vec::from_fn(KINDS, |_| kind())",
+    "    let no_far: Vec<u32> = Vec::new()",
+    "    var wood = Wood::new(take kinds, take no_far, texture::<Rgba8>(width: 1, height: 1), slots: 1, cards_to: 30.0, impostors_to: 400.0)",
+    "    var placed: Vec<Placed> = Vec::new()",
+    "    for k in 0..KINDS {",
+    "        for i in 0..10 {",
+    "            // Near (its cards) and far (its impostor), each kind's own.",
+    "            let z = if i < 5 { 5.0 + f32(i) } else { 120.0 + 10.0 * f32(i) }",
+    "            placed.push(Placed { kind: k, at: Instance { at: vec3(f32(k) * 2.0 - 2.0, 0.0, z), scale: 1.0, ..NO_INSTANCE } })",
+    "        }",
+    "    }",
+    "    let _ = wood.load(vec2i(0), placed)",
+    "    Fixture { wood }",
+    "}",
+    "",
+    "pub fn frame(f: mut Fixture, time: f32, width: u32, height: u32) {",
+    "    let cam = first_camera(vec3(0.0, 1.0, 0.0), vec3(0.0, 1.0, 10.0), 1.0, width: 64, height: 64)",
+    "    let wind = Wind { time: 0.0, dir: vec2(1.0, 0.0), strength: 0.0 }",
+    "    let s = sampler()",
+    "    f.wood.select(cam)",
+    "    var ids = texture::<std::gpu::R32Uint>(width: 64, height: 64)",
+    "    var depth = depth_texture(width: 64, height: 64)",
+    "    let pre = begin_pass_with_depth(mut ids, mut depth, clear_depth: 0.0)",
+    "    f.wood.prepass_cards(pre, cam, wind, s)",
+    "    pre.end()",
+    "    f.wood.occlude(cam, depth)",
+    "    let far = begin_pass_with_depth(mut ids, mut depth, keep: true, keep_depth: true)",
+    "    f.wood.prepass_far(far, cam, wind, s)",
+    "    far.end()",
+    "}",
+]
+
+/// Whether `text` has `part` in it.
+fn has(text: str, part: str) -> bool {
+    var i = 0
+    while i + part.len() <= text.len() {
+        var hit = true
+        for j in 0..part.len() {
+            if text.byte(i + j) != part.byte(j) {
+                hit = false
+                break
+            }
+        }
+        if hit {
+            return true
+        }
+        i += 1
+    }
+    false
+}
+
+/// The draws a fixture wood of `kinds` kinds records in its first frame's prepasses.
+fn draws(kinds: u32) -> u32 {
+    let dir = f"scratch/fixture{kinds}"
+    var main = String::new()
+    for k in 0..FIXTURE.len() {
+        main.push_str(replaced(FIXTURE[k], "__KINDS__", f"{kinds}").as_str())
+        main.push_str("\n")
+    }
+    written(f"{dir}/main.wrela", main.as_str())
+    written(
+        f"{dir}/wrela.toml",
+        "[package]\nname = \"wood_merge_fixture\"\n\n[dependencies]\nengine = { workspace = true }\n",
+    )
+    var options = toolchain::options()
+    options.overrides.push(
+        Override { name: String::from("engine"), dir: String::from("repo/engine") },
+    )
+    built(dir.as_str(), f"{dir}/build".as_str(), options, "the fixture builds")
+    var load = drive::gpu()
+    load.width = 64
+    load.height = 64
+    load.record = true
+    let Ok(it) = drive::load(f"{dir}/build".as_str(), load).wait() else {
+        panic("the fixture loads on a GPU")
+    }
+    let h = it.build
+    let Ok(seen) = drive::steps(
+        h,
+        [Step::Init, Step::Commands, Step::FrameAt(0.0), Step::Commands],
+    ).wait() else {
+        panic("the frame's request")
+    }
+    if let Some(trap) = seen.trap {
+        panic(trap.message.as_str())
+    }
+    var out = seen.commands[1].commands.clone()
+    for r in recorded(h) {
+        out.push(r.clone())
+    }
+    // Every draw command (a multi-draw is one), all of them the wood's.
+    var n = 0
+    for c in out {
+        if has(c.kind.as_str(), "Draw") {
+            n += 1
+        }
+    }
+    n
+}
+
+/// A wood of three kinds records as many prepass draws as a wood of one: a way's every kind is
+/// one multi-draw.
+@test(tool, read: [("repo", "../../..")], budget: 300)
+fn a_ways_kinds_are_one_draw() {
+    let one = draws(1)
+    let three = draws(3)
+    assert(one > 0, "the wood drew nothing")
+    assert(three == one, f"three kinds recorded {three} draws, one kind {one}")
+}

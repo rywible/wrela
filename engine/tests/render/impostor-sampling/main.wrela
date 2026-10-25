@@ -1,7 +1,9 @@
 // Deterministic atlas samples through the production impostor fragment shaders. Each
 // 16×16 panel fixes its atlas coordinate; no world bake, scene or temporal history.
 use engine::frame::fullscreen
-use engine::impostor::{ATLAS, CELL, VIEWS, Bake, FarVertex, far_cut, far_cut_flat, far_shade}
+use engine::impostor::{
+    ATLAS, CELL, VIEWS, Bake, FarVertex, KindDesc, far_cut, far_cut_flat, far_shade,
+}
 use engine::light::Light
 use engine::lit::Lighting
 use engine::plant::{Bark, Leaves}
@@ -13,7 +15,7 @@ use std::gpu::{
     ClipPosition, Compare, Depth, DepthTexture, Flat, FragCoord, GlobalId, InstanceIndex, R32Uint,
     Rgba8, Rgba16Float, Texels, Texels3d, Texture, VertexIndex, begin_depth_pass, begin_pass,
     begin_pass_with_depth, begin_screen_pass, buffer_of, comparison_sampler, depth_texture,
-    dispatch, draw, sampler, texture, texture3d, writable_texture,
+    copy_texture, dispatch, draw, sampler, texture, texture3d, texture_array, writable_texture,
 }
 
 const WIDTH: u32 = 192
@@ -88,6 +90,7 @@ fn sample_quad(v: VertexIndex, i: InstanceIndex) -> FarVertex {
         cells: Flat { value: vec4u(cell) },
         keep: Flat { value: 16383 << 14 },
         seed: Flat { value: 71 },
+        kind: Flat { value: 0 },
     }
 }
 
@@ -141,6 +144,11 @@ pub fn frame(time: f32, width: u32, height: u32) {
     var colour = writable_texture::<Rgba8>(width: ATLAS, height: ATLAS)
     var normal = writable_texture::<Rgba16Float>(width: ATLAS, height: ATLAS)
     dispatch(atlas.bind(mut colour, mut normal), over: colour)
+    // The wood's impostors are layers of arrays (`wood::Pool`): this kind's is layer 0.
+    var colours = texture_array::<Rgba8>(width: ATLAS, height: ATLAS, layers: 1)
+    var normals = texture_array::<Rgba16Float>(width: ATLAS, height: ATLAS, layers: 1)
+    copy_texture(from: colour.level(0), to: colours.layer_mut(0))
+    copy_texture(from: normal.level(0), to: normals.layer_mut(0))
     let cam = first_camera(
         vec3(0.0, 0.0, 10.0),
         vec3(0.0),
@@ -149,13 +157,28 @@ pub fn frame(time: f32, width: u32, height: u32) {
         height: SIDE,
     ).unjittered()
     let b = Bake { mid: vec3(0.0), half: 1.0, leaves: Leaves { through: vec3(0.0) }, bark: Bark {} }
+    let kinds = buffer_of(
+        [
+            KindDesc {
+                bake: b,
+                card_first: 0,
+                card_count: 0,
+                order_first: 0,
+                limb_first: 0,
+                limb_count: 0,
+                bounds_first: 0,
+                layer: 0,
+                slab: 0,
+            },
+        ],
+    )
     let s = sampler()
     var flat = texture::<R32Uint>(width: WIDTH, height: SIDE)
     let p = begin_pass(mut flat)
     draw(
         p,
         sample_quad.bind(),
-        far_cut_flat.bind(b, colour, s, cell: 1.0),
+        far_cut_flat.bind(kinds, colours, s, cell: 1.0),
         vertices: 6,
         instances: 12,
     )
@@ -166,7 +189,7 @@ pub fn frame(time: f32, width: u32, height: u32) {
     draw(
         p,
         sample_quad.bind(),
-        far_cut.bind(cam, b, colour, normal, s, cell: 1.0),
+        far_cut.bind(cam, kinds, colours, normals, s, cell: 1.0),
         vertices: 6,
         instances: 12,
         depth: Depth { compare: Compare::Always, write: true },
@@ -230,7 +253,7 @@ pub fn frame(time: f32, width: u32, height: u32) {
     draw(
         p,
         sample_quad.bind(),
-        far_shade.bind(lt, ids: flat, b: b, colour: colour, normal: normal, grid: volume),
+        far_shade.bind(lt, ids: flat, kinds: kinds, colour: colours, normal: normals, grid: volume),
         vertices: 6,
         instances: 12,
     )

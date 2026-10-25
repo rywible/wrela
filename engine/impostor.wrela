@@ -24,8 +24,9 @@ use plant::{
 use std::field::Tube
 use std::gpu::{
     ClipPosition, Compare, Depth, Flat, FragCoord, GlobalId, GpuBuffer, InstanceIndex, R32Uint,
-    Rgba16Float, Rgba8, Sampler, Slots, Texels3d, Texture, Texture3d, VertexIndex, WithDepth,
-    begin_pass_with_depth, buffer, depth_texture, discard, dispatch, draw, texture, texture3d,
+    Rgba16Float, Rgba8, Sampler, Slots, Texels3d, Texture, Texture3d, TextureArray, VertexIndex,
+    WithDepth, begin_pass_with_depth, buffer, depth_texture, discard, dispatch, draw, texture,
+    texture3d,
 }
 use view::{Camera, LEAVES}
 
@@ -309,6 +310,33 @@ pub fn bake_normal(
     vec4(oct_encode(n), saturate(f.toward * 0.5 + 0.5), saturate(f.depth / DEEPEST))
 }
 
+/// What a wood's draws read of an instance's kind (`kind_of` names it): where its cards, their
+/// orders and its limbs are in the wood's pools (`wood::Wood`), its impostor's box, leaves and
+/// bark (`impostor::Bake`), its views' bounds, its impostor's layer and its volume's slab.
+/// Indexed by the kind an instance names, a far kind's its own kind's but for its index.
+pub struct KindDesc: Copy + GpuData {
+    pub bake: Bake,
+    pub card_first: u32,
+    pub card_count: u32,
+    pub order_first: u32,
+    pub limb_first: u32,
+    pub limb_count: u32,
+    pub bounds_first: u32,
+    pub layer: u32,
+    pub slab: u32,
+}
+
+/// The kind an instance is of: a wood writes it into its tint's high half as it loads it (the
+/// tint's low half is its leaves' red and green, `Instance::tint_rgb`).
+pub fn kind_of(inst: Instance) -> u32 {
+    inst.tint.bits >> 16
+}
+
+/// `inst` naming kind `k` (`kind_of`).
+pub fn of_kind(inst: Instance, k: u32) -> Instance {
+    Instance { tint: std::gpu::Unorm8x4 { bits: (inst.tint.bits & 65535) | (k << 16) }, ..inst }
+}
+
 /// A kind's impostor: its two atlases, and how it was baked.
 pub struct Impostor {
     pub colour: Texture<Rgba8>,
@@ -447,11 +475,14 @@ pub struct FarVertex: Copy {
     pub keep: Flat<u32>,
     /// Its own seed (`seed_at`), from where it stands in the world.
     pub seed: Flat<u32>,
+    /// The kind it's of (`kind_of`).
+    pub kind: Flat<u32>,
 }
 
 /// A far instance: a quad facing the eye, the plant's reach wide, about its middle; swayed by
 /// the wind as its cards would be at each corner's height (`plant::sway`), so it leans and moves
-/// as they do. Its id is its place in the frame's instances (`first` is its list's) plus 1. For
+/// as they do; its kind's box and views' bounds from `kinds` (one draw draws every kind's
+/// instances of a way). Its id is its place in the frame's instances plus 1. For
 /// the shading pass (`front`), the quad is moved toward the eye to the front of the plant's box
 /// (along the eye's rays, so it covers the same pixels and its points are the same): a depth
 /// test there leaves what's in front of the plant, early.
@@ -461,14 +492,16 @@ pub fn far_quad(
     i: InstanceIndex,
     cam: Camera,
     wind: Wind,
-    b: Bake,
+    kinds: [KindDesc],
     instances: [Instance],
     marks: [vec2u],
     bounds: [vec4],
-    first: u32,
     front: u32,
 ) -> FarVertex {
     let inst = instances[i.index]
+    let kind = kind_of(inst)
+    let kd = kinds[kind]
+    let b = kd.bake
     let centre = inst.at + inst.turn(b.mid * inst.scale)
     let to = normalize(cam.eye - centre)
     let local_eye = unoriented(inst.yaw, inst.pitch, to)
@@ -480,7 +513,7 @@ pub fn far_quad(
     var lo = vec2(1.0)
     var hi = vec2(-1.0)
     for c in cells {
-        let r = bounds[c.y * VIEWS + c.x]
+        let r = bounds[kd.bounds_first + c.y * VIEWS + c.x]
         lo = min(lo, r.xy)
         hi = max(hi, r.zw)
     }
@@ -515,7 +548,7 @@ pub fn far_quad(
         centre,
         yaw_scale: Flat { value: vec4(inst.yaw, inst.scale, inst.pitch, wide) },
         tint: inst.tint_rgb(),
-        id: Flat { value: first + i.index + 1 },
+        id: Flat { value: i.index + 1 },
         views: vec4(uv[0], uv[1]),
         views2: vec4(uv[2], uv[3]),
         weights: Flat { value: w },
@@ -529,6 +562,7 @@ pub fn far_quad(
         },
         keep: Flat { value: marks[i.index].x },
         seed: Flat { value: seed_at(centre + cam.keyed()) },
+        kind: Flat { value: kind },
     }
 }
 
@@ -574,14 +608,14 @@ fn view_at(f: FarVertex, k: u32) -> (vec2, u32) {
 
 /// Keep bilinear taps inside their own view. Points outside the cell have no coverage;
 /// clamping those points alone would stretch the cell's last leaf along its whole border.
-fn sample_cell(colour: Texture<Rgba8>, s: Sampler, at: vec2, cell: u32) -> vec4 {
+fn sample_cell(colour: TextureArray<Rgba8>, layer: u32, s: Sampler, at: vec2, cell: u32) -> vec4 {
     let base = vec2(f32(cell % VIEWS), f32(cell / VIEWS)) / f32(VIEWS)
     let end = base + vec2(1.0 / f32(VIEWS))
     if at.x < base.x || at.y < base.y || at.x >= end.x || at.y >= end.y {
         return vec4(0.0)
     }
     let inset = vec2(0.5 / f32(ATLAS))
-    colour.sample_level(s, clamp(at, base + inset, end - inset))
+    colour.sample_level(s, clamp(at, base + inset, end - inset), layer)
 }
 
 /// Which of a far quad's four views this pixel shows this frame: picked by their weights, by a
@@ -618,8 +652,9 @@ struct Seen {
 /// Filter decoded normals and depth only where their colour texels have coverage. Empty
 /// texels contain clear values, which must not bend normals or pull the surface backward.
 fn normal_at(
-    colour: Texture<Rgba8>,
-    normal: Texture<Rgba16Float>,
+    colour: TextureArray<Rgba8>,
+    normal: TextureArray<Rgba16Float>,
+    layer: u32,
     uv: vec2,
     cell: u32,
 ) -> (vec3, vec2) {
@@ -638,8 +673,8 @@ fn normal_at(
                 t.y
             })
             let at = clamp(vec2u(i + vec2(f32(dx), f32(dy))), lo, hi)
-            let covered = w * colour.load(x: at.x, y: at.y).a
-            let nd = normal.load(x: at.x, y: at.y)
+            let covered = w * colour.load(x: at.x, y: at.y, layer: layer).a
+            let nd = normal.load(x: at.x, y: at.y, layer: layer)
             n += oct_decode(nd.xy) * covered
             zw += nd.zw * covered
             coverage += covered
@@ -654,13 +689,14 @@ fn normal_at(
 fn seen(
     f: FarVertex,
     k: u32,
-    colour: Texture<Rgba8>,
-    normal: Texture<Rgba16Float>,
+    colour: TextureArray<Rgba8>,
+    normal: TextureArray<Rgba16Float>,
+    layer: u32,
     s: Sampler,
 ) -> Seen {
     let (at, cell) = view_at(f, k)
-    let c = sample_cell(colour, s, at, cell)
-    let (n, zw) = normal_at(colour, normal, at, cell)
+    let c = sample_cell(colour, layer, s, at, cell)
+    let (n, zw) = normal_at(colour, normal, layer, at, cell)
     // Its albedo where its leaves cover it (the texel's colour is filtered with the empty texels
     // round it).
     let own = c.rgb / max(c.a, 1.0e-3)
@@ -704,18 +740,19 @@ pub fn far_cut(
     f: FarVertex,
     pixel: FragCoord,
     cam: Camera,
-    b: Bake,
-    colour: Texture<Rgba8>,
-    normal: Texture<Rgba16Float>,
+    kinds: [KindDesc],
+    colour: TextureArray<Rgba8>,
+    normal: TextureArray<Rgba16Float>,
     s: Sampler,
     cell: f32,
 ) -> WithDepth<u32> {
+    let kd = kinds[f.kind.value]
     // The cells of a draw that holds still on the quad (hashed alpha), for its coverage.
     let size = cell_size(f.uv, cell)
     // Most of the quad is empty: left before its leaf's place is read.
-    let (at, view) = cut_view(f, pixel.position.xy, colour, s, size)
-    let toward = normal_at(colour, normal, at, view).1.x * 2.0 - 1.0
-    let at = leaf_place(f, cam, b, toward)
+    let (at, view) = cut_view(f, pixel.position.xy, colour, kd.layer, s, size)
+    let toward = normal_at(colour, normal, kd.layer, at, view).1.x * 2.0 - 1.0
+    let at = leaf_place(f, cam, kd.bake, toward)
     WithDepth { color: f.id.value, depth: depth_of(cam, at) }
 }
 
@@ -725,6 +762,7 @@ fn volume_normal(
     f: FarVertex,
     b: Bake,
     grid: Texture3d<Rgba16Float>,
+    slab: u32,
     s: Sampler,
     at: vec3,
     otherwise: vec3,
@@ -733,7 +771,7 @@ fn volume_normal(
     let local = unoriented(yaw, pitch, (at - f.centre) / scale)
     let wide = max(f.yaw_scale.value.w, 1.0e-4)
     let q = vec3(local.x / wide, local.y, local.z / wide) / b.half
-    let v = grid.sample_level(s, q * 0.5 + vec3(0.5))
+    let v = grid.sample_level(s, in_slab(grid, slab, q * 0.5 + vec3(0.5)))
     if length(v.yzw) <= 1.0e-4 * v.x || v.x <= 1.0e-5 {
         return otherwise
     }
@@ -749,13 +787,13 @@ fn volume_normal(
 pub fn far_cut_flat(
     f: FarVertex,
     pixel: FragCoord,
-    b: Bake,
-    colour: Texture<Rgba8>,
+    kinds: [KindDesc],
+    colour: TextureArray<Rgba8>,
     s: Sampler,
     cell: f32,
 ) -> u32 {
     let size = cell_size(f.uv, cell)
-    let _ = cut_view(f, pixel.position.xy, colour, s, size)
+    let _ = cut_view(f, pixel.position.xy, colour, kinds[f.kind.value].layer, s, size)
     f.id.value
 }
 
@@ -765,7 +803,8 @@ pub fn far_cut_flat(
 fn cut_view(
     f: FarVertex,
     pixel: vec2,
-    colour: Texture<Rgba8>,
+    colour: TextureArray<Rgba8>,
+    layer: u32,
     s: Sampler,
     size: f32,
 ) -> (vec2, u32) {
@@ -773,7 +812,7 @@ fn cut_view(
         discard()
     }
     let (at, view) = view_at(f, view_of(f, pixel))
-    cut_dithered(f, sample_cell(colour, s, at, view).a, size)
+    cut_dithered(f, sample_cell(colour, layer, s, at, view).a, size)
     (at, view)
 }
 
@@ -801,22 +840,24 @@ pub fn far_shade(
     pixel: FragCoord,
     lt: Lighting,
     ids: Texture<R32Uint>,
-    b: Bake,
-    colour: Texture<Rgba8>,
-    normal: Texture<Rgba16Float>,
+    kinds: [KindDesc],
+    colour: TextureArray<Rgba8>,
+    normal: TextureArray<Rgba16Float>,
     grid: Texture3d<Rgba16Float>,
 ) -> vec4 {
     if id_at(ids, pixel) != f.id.value {
         discard()
     }
-    let leaf = seen(f, view_of(f, pixel.position.xy), colour, normal, lt.s)
+    let kd = kinds[f.kind.value]
+    let b = kd.bake
+    let leaf = seen(f, view_of(f, pixel.position.xy), colour, normal, kd.layer, lt.s)
     let n = world_normal(f, leaf.normal)
     let at = leaf_place(f, lt.cam, b, leaf.toward)
     let out = leaf_light(
         lt,
         at,
         n,
-        sky_n: volume_normal(f, b, grid, lt.s, at, otherwise: n),
+        sky_n: volume_normal(f, b, grid, kd.slab, lt.s, at, otherwise: n),
         depth: leaf.depth * f.yaw_scale.value.y,
         albedo: tinted(leaf.albedo, f.tint),
         through: b.leaves.through,
@@ -895,16 +936,27 @@ pub fn cook_volume(
     depths.store(id, vec4(depth, 0.0, 0.0, 0.0))
 }
 
+/// Where a point of kind `slab`'s volume (`uvw`, in [0, 1]³) is in the volumes' atlas, its
+/// kinds' volumes one after another along z (`VOXELS` deep each): its own voxels' between its
+/// first and last voxels' middles, so filtering keeps to its slab (as the edge voxels' values
+/// lie beyond them in a volume of its own).
+pub fn in_slab(atlas: Texture3d<Rgba16Float>, slab: u32, uvw: vec3) -> vec3 {
+    let n = f32(VOXELS)
+    let z = clamp(uvw.z * n, 0.5, n - 0.5) + f32(slab) * n
+    vec3(uvw.xy, z / f32(atlas.depth()))
+}
+
 /// A volume's voxels at a point of its box `q` (in [-1, 1]³), filtered between them by the GPU
 /// (the edge voxels' values beyond them): the density and normal (times the density), and the
 /// depth (times the density).
 fn voxels_in(
     grid: Texture3d<Rgba16Float>,
     grid_depth: Texture3d<Rgba16Float>,
+    slab: u32,
     s: Sampler,
     q: vec3,
 ) -> (vec4, f32) {
-    let uvw = q * 0.5 + vec3(0.5)
+    let uvw = in_slab(grid, slab, q * 0.5 + vec3(0.5))
     (grid.sample_level(s, uvw), grid_depth.sample_level(s, uvw).r)
 }
 
@@ -924,6 +976,7 @@ fn march_volume(
     b: Bake,
     grid: Texture3d<Rgba16Float>,
     grid_depth: Texture3d<Rgba16Float>,
+    slab: u32,
     s: Sampler,
 ) -> Met {
     let (yaw, scale, pitch) = (f.yaw_scale.value.x, f.yaw_scale.value.y, f.yaw_scale.value.z)
@@ -956,7 +1009,7 @@ fn march_volume(
     var shown = 0.0
     for i in 0..steps {
         let q = o + dir * (near + (f32(i) + 0.5) * dt)
-        let (vx, d) = voxels_in(grid, grid_depth, s, (q - b.mid) / b.half)
+        let (vx, d) = voxels_in(grid, grid_depth, slab, s, (q - b.mid) / b.half)
         if vx.x > 1.0e-5 {
             let a = 1.0 - exp(-vx.x * dt)
             let w = trans * a
@@ -996,7 +1049,7 @@ pub fn volume_cut(
     f: FarVertex,
     pixel: FragCoord,
     cam: Camera,
-    b: Bake,
+    kinds: [KindDesc],
     grid: Texture3d<Rgba16Float>,
     grid_depth: Texture3d<Rgba16Float>,
     s: Sampler,
@@ -1006,7 +1059,9 @@ pub fn volume_cut(
     if !keeps_packed(f.keep.value, pixel.position.xy) {
         discard()
     }
-    let met = march_volume(f, cam, b, grid, grid_depth, s)
+    let kd = kinds[f.kind.value]
+    let b = kd.bake
+    let met = march_volume(f, cam, b, grid, grid_depth, kd.slab, s)
     cut_dithered(f, met.opacity, size)
     WithDepth { color: f.id.value, depth: depth_of(cam, volume_place(f, b, met.at)) }
 }
@@ -1026,14 +1081,16 @@ pub fn volume_shade(
     pixel: FragCoord,
     lt: Lighting,
     ids: Texture<R32Uint>,
-    b: Bake,
+    kinds: [KindDesc],
     grid: Texture3d<Rgba16Float>,
     grid_depth: Texture3d<Rgba16Float>,
 ) -> vec4 {
     if id_at(ids, pixel) != f.id.value {
         discard()
     }
-    let met = march_volume(f, lt.cam, b, grid, grid_depth, lt.s)
+    let kd = kinds[f.kind.value]
+    let b = kd.bake
+    let met = march_volume(f, lt.cam, b, grid, grid_depth, kd.slab, lt.s)
     let crown_n = world_normal(f, met.normal)
     // Lit where its leaves are, not on the quad (which lies in its own shadow); aged by the
     // normal the ray met (in the plant's frame: its y is the crown's).

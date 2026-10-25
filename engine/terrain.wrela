@@ -24,8 +24,8 @@ use noise::{hash2, noise2_wrapped, wrapped}
 use std::gpu::{
     Address, Atomics, ClipPosition, DrawIndexedArgs, FragCoord, GlobalId, GpuBuffer, GpuSpan,
     LocalId, Oct32, Rgba8, RenderPass, Sampler, SharedAtomics, Slots, Texture, Unorm8x4,
-    VertexIndex, WorkgroupId, begin_pass, buffer, buffer_of, dispatch, draw, label, sampler,
-    texture, write,
+    VertexIndex, WorkgroupId, begin_pass, buffer, buffer_of, dispatch, draw, draw_multi, label,
+    sampler, texture, write,
 }
 use view::Camera
 
@@ -534,25 +534,25 @@ impl Clipmap {
         )
     }
 
-    /// Side `k` of level `l`'s draw, as the camera sees it (`cull`).
-    pub fn side_args(self, l: u32, k: u32) -> GpuSpan<DrawIndexedArgs> {
-        self.side_args.span(start: l * SIDES + k, count: 1)
+    /// Every level's sides' draws (`SIDES` a level), as the camera sees them (`cull`): one
+    /// multi-draw.
+    pub fn sides_args(self) -> GpuSpan<DrawIndexedArgs> {
+        self.side_args.span(start: 0, count: self.levels.count * SIDES)
     }
 
     /// The ground as a shadow caster into `pass`, seen from the sun by `view`: each level drawn
     /// (its depth alone), biased as casters are (`shadow::CASTER`).
     pub fn cast<P: RenderPass>(self, pass: P, view: mat4) {
         let levels = self.levels()
-        for l in 0..levels.count {
-            draw(
-                pass,
-                ground_shadow.bind(levels, self.texels(), view),
-                vegetation::nothing,
-                indices: self.indices(),
-                indirect: self.draw_args(l),
-                depth_bias: shadow::CASTER,
-            )
-        }
+        draw_multi(
+            pass,
+            ground_shadow.bind(levels, self.texels(), view),
+            vegetation::nothing,
+            indices: self.indices(),
+            indirect: self.args.span(start: 0, count: levels.count),
+            count: levels.count,
+            depth_bias: shadow::CASTER,
+        )
     }
 }
 

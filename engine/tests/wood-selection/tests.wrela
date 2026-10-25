@@ -226,6 +226,7 @@ fn wood_selection_dispatches_only_current_lists_after_shrink_and_regrowth() {
         var gathered: Option<Bound> = None
         var drawn: Option<Bound> = None
         var arguments: Option<Bound> = None
+        var limb_arguments: Option<Bound> = None
         var chose: Option<u32> = None
         var spans: Vec<u32> = Vec::new()
         for k in 0..commands.len() {
@@ -244,6 +245,7 @@ fn wood_selection_dispatches_only_current_lists_after_shrink_and_regrowth() {
                 drawn = Some(cmd.bindings[1])
             } else if name.as_str() == "draws_of" {
                 arguments = Some(cmd.bindings[3])
+                limb_arguments = Some(cmd.bindings[4])
             } else if name.as_str() == "choose" {
                 chose = Some(cmd.groups.x)
             }
@@ -261,19 +263,28 @@ fn wood_selection_dispatches_only_current_lists_after_shrink_and_regrowth() {
         let Some(g) = gathered else { panic("gathered instances") }
         let Some(d) = drawn else { panic("drawn instances") }
         let Some(a) = arguments else { panic("draw arguments") }
+        let Some(la) = limb_arguments else { panic("limb draw arguments") }
         let reads = [
             Step::ReadBuffer(a.handle),
             Step::ReadBuffer(g.handle),
             Step::ReadBuffer(d.handle),
+            Step::ReadBuffer(la.handle),
         ]
         let Ok(back) = drive::steps(h, reads).wait() else { panic("the buffers' bytes") }
         let args = bytes_of(back.bytes[0].clone())
         let instances = bytes_of(back.bytes[1].clone())
         let shown = bytes_of(back.bytes[2].clone())
+        let limb_args = bytes_of(back.bytes[3].clone())
+        // Each list's cards' and limbs' draws (five words each), from its first place: one kind,
+        // so list `way` (lists are a way's kinds one after another).
         for list in 0..5 {
             let expected = if list == 0 { n } else { 0 }
-            assert(word(args, list * 40 + 4) == expected, f"cards in list {list}")
-            assert(word(args, list * 40 + 24) == expected, f"limbs in list {list}")
+            assert(word(args, list * 20 + 4) == expected, f"cards in list {list}")
+            assert(word(limb_args, list * 20 + 4) == expected, f"limbs in list {list}")
+            assert(
+                word(args, list * 20 + 16) == word(limb_args, list * 20 + 16),
+                "a list's draws start apart",
+            )
         }
         let stride = g.size / capacity
         var ids: Vec<u32> = Vec::new()

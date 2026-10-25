@@ -41,7 +41,7 @@ use std::gpu::{
     Address, ClipPosition, ComparisonSampler, DepthTexture, FragmentShader, GpuBuffer, GpuSpan,
     R32Uint, RenderPass, Rgba16Float, Sampler, ScreenPass, Texture, VertexIndex, begin_depth_pass,
     begin_pass, begin_pass_with_depth, begin_screen_pass, buffer, comparison_sampler, depth_texture,
-    dispatch, draw, label, sampler, texture, timed, writable_texture,
+    dispatch, draw, draw_multi, label, sampler, texture, timed, writable_texture,
 }
 use std::io::{Pending, print}
 
@@ -1515,8 +1515,10 @@ impl<R: Resolver> Frame<R> {
             grid.cols = 0
         }
         borrow maps = self.probes.using.maps
+        // The culling phase: what every pass draws, chosen on the GPU in one compute pass before
+        // the first render pass (the terrain's sides, the scene's: its wood, rocks and grass).
+        label("cull")
         if self.on(Off::Terrain) {
-            label("terrain cull")
             self.clipmap.cull(cam)
         }
         let texels = self.clipmap.texels()
@@ -1541,7 +1543,6 @@ impl<R: Resolver> Frame<R> {
             air: self.tables.aerial,
             s: self.linear,
         }
-        label("vegetation choose")
         scene.choose(lt, texels)
         label("vegetation prepass")
         let pre = begin_pass_with_depth(
@@ -1571,24 +1572,23 @@ impl<R: Resolver> Frame<R> {
             keep_depth: true,
         )
         if terrain {
-            for d in 0..lt.levels.count * SIDES {
-                draw(
-                    ter,
-                    ground.bind(cam, lt.levels, texels),
-                    ground_shade.bind(
-                        lt,
-                        texels,
-                        litter: self.clipmap.details.litter,
-                        soil: self.clipmap.details.soil,
-                        rock: self.clipmap.details.rock,
-                        moss: self.clipmap.details.moss,
-                        ds: self.clipmap.details.s,
-                    ),
-                    indices: self.clipmap.indices(),
-                    indirect: self.clipmap.side_args(l: d / SIDES, k: d % SIDES),
-                    depth: NEAREST,
-                )
-            }
+            draw_multi(
+                ter,
+                ground.bind(cam, lt.levels, texels),
+                ground_shade.bind(
+                    lt,
+                    texels,
+                    litter: self.clipmap.details.litter,
+                    soil: self.clipmap.details.soil,
+                    rock: self.clipmap.details.rock,
+                    moss: self.clipmap.details.moss,
+                    ds: self.clipmap.details.s,
+                ),
+                indices: self.clipmap.indices(),
+                indirect: self.clipmap.sides_args(),
+                count: lt.levels.count * SIDES,
+                depth: NEAREST,
+            )
         }
         ter.end()
         label("creature")

@@ -9,8 +9,8 @@
 // no `discard` (which would turn off the GPU's early depth test).
 
 use impostor::{
-    Cooked, Impostor, bake, cook, far_cut, far_quad, far_shade, leaf_light, volume_cut,
-    volume_shade, which_crown,
+    Cooked, Impostor, KindDesc, bake, cook, far_cut, far_quad, far_shade, kind_of, leaf_light,
+    volume_cut, volume_shade, which_crown,
 }
 use light::Lit
 use lit::{Lighting, shown, sun_and_sky}
@@ -180,6 +180,8 @@ pub struct LeafVertex: Copy {
     /// is in the high 8, `which_crown`): the shading reads the rest from them.
     pub card: Flat<u32>,
     pub instance: Flat<u32>,
+    /// The kind it's of (`kind_of`).
+    pub kind: Flat<u32>,
 }
 
 /// Indices a card draws: its outline's two triangles (each corner shaded once).
@@ -221,12 +223,15 @@ fn card_corner(
 /// A card's corner, seen by the camera. Its vertices carry little (a tile-based GPU writes every
 /// vertex's outputs to memory before it draws, and the cards are many): the shading reads the
 /// card's normal, depth and tint from the card and its instance, and its point from the depth.
+/// Every kind's cards are in `cards`, and their orders in `orders` (`KindDesc`), so one draw
+/// draws every kind's instances of a way.
 @vertex
 pub fn card(
     v: VertexIndex,
     i: InstanceIndex,
     cam: Camera,
     d: CardDraw,
+    kinds: [KindDesc],
     cards: [Card],
     instances: [Instance],
     marks: [vec2u],
@@ -234,11 +239,14 @@ pub fn card(
     orders: [u32],
 ) -> LeafVertex {
     // The instance's cards in the order for the corner it's seen from (front to back).
+    let inst = instances[i.index]
+    let k = kind_of(inst)
+    let kd = kinds[k]
     let mark = marks[i.index]
-    let c = orders[(mark.y >> 8) * (orders.len() / CORNERS) + v.index / OUTLINE]
+    let c = kd.card_first +
+        orders[kd.order_first + (mark.y >> 8) * kd.card_count + v.index / OUTLINE]
     let card = cards[c]
     // A card in the camera's way fades: its share of the instance's cards shrinks.
-    let inst = instances[i.index]
     let fade = faded(
         inst.place(card.centre),
         card.size * d.grow * inst.scale * 0.75,
@@ -273,6 +281,7 @@ pub fn card(
         keep: Flat { value: keep },
         card: Flat { value: c },
         instance: Flat { value: i.index | ((mark.y & 255) << 24) },
+        kind: Flat { value: k },
     }
 }
 
@@ -299,11 +308,13 @@ pub fn card_shadow(
     i: InstanceIndex,
     view: mat4,
     d: CardDraw,
+    kinds: [KindDesc],
     cards: [Card],
     instances: [Instance],
     outlines: [vec2],
 ) -> LeafVertex {
-    let c = v.index / OUTLINE
+    let k = kind_of(instances[i.index])
+    let c = kinds[k].card_first + v.index / OUTLINE
     let (world, uv, card, _) = card_corner(
         c,
         v.index % OUTLINE,
@@ -320,21 +331,27 @@ pub fn card_shadow(
         keep: Flat { value: packed(vec4(0.0, 1.0, 0.0, 0.0)) },
         card: Flat { value: c },
         instance: Flat { value: i.index },
+        kind: Flat { value: k },
     }
 }
 
 /// A card cut to its leaves, from the leaf atlas: the depth prepass's (its id 0: no far
 /// instance's, `impostor::far_cut`), and the shadow maps' (which keep only the first `per_card`
-/// of a pattern's leaves, so a crown's shadow is dappled).
+/// of a pattern's leaves, so a crown's shadow is dappled; a draw whose `per_card` is 0 keeps
+/// its kind's leaves).
 @fragment
 pub fn leaf_cut(
     l: LeafVertex,
     pixel: FragCoord,
     d: CardDraw,
+    kinds: [KindDesc],
     atlas: Texture<Rgba8>,
     s: Sampler,
 ) -> u32 {
-    let cover = leaf_pixel(atlas, s, l.seed.value, l.uv, d.per_card)
+    let per_card = if d.per_card > 0 { d.per_card } else {
+        kinds[l.kind.value].bake.leaves.per_card
+    }
+    let cover = leaf_pixel(atlas, s, l.seed.value, l.uv, per_card)
     let size = cell_size(l.uv, d.cell)
     if cover <= 0.0 || !keeps_packed(l.keep.value, pixel.position.xy) {
         discard()
@@ -386,12 +403,13 @@ fn leaf_cover(m: f32) -> f32 {
 pub fn leaf_shade(
     l: LeafVertex,
     pixel: FragCoord,
+    kinds: [KindDesc],
     cards: [Card],
     instances: [Instance],
     lt: Lighting,
-    leaves: Leaves,
     atlas: Texture<Rgba8>,
 ) -> vec4 {
+    let leaves = kinds[l.kind.value].bake.leaves
     let card = cards[l.card.value]
     let inst = instances[l.instance.value & 16777215]
     let world = lt.cam.world_at(pixel.position.xy, pixel.position.z)
@@ -432,6 +450,8 @@ pub struct BarkVertex: Copy {
     pub moss: f32,
     /// The part of a pixel's draws its instance keeps this way, packed (`wood::Wood`'s marks).
     pub keep: Flat<u32>,
+    /// The kind it's of (`kind_of`).
+    pub kind: Flat<u32>,
 }
 
 /// `n` limbs' triangles: each limb's points (`limb_corner`).
@@ -445,13 +465,20 @@ pub fn limb_indices(n: u32) -> Vec<u32> {
     out
 }
 
-/// Point `v % LIMB_POINTS` of limb `v / LIMB_POINTS`, of instance `i`, in the world, and where it
-/// is on its bark (`BarkVertex::along`: round a whole number of bark's tiles, as round as its
-/// limb is at its foot in the world; along, in the world's metres).
-fn limb_world(v: u32, i: u32, limbs: [Tube<4>], instances: [Instance]) -> (vec3, vec3, vec2) {
-    let limb = limbs[v / LIMB_POINTS]
-    let (centre, n, radius, along) = limb_point(limb, v % LIMB_POINTS)
+/// Point `v % LIMB_POINTS` of limb `v / LIMB_POINTS` of instance `i`'s kind (every kind's limbs
+/// in `limbs`, `KindDesc`), in the world, and where it is on its bark (`BarkVertex::along`:
+/// round a whole number of bark's tiles, as round as its limb is at its foot in the world;
+/// along, in the world's metres).
+fn limb_world(
+    v: u32,
+    i: u32,
+    kinds: [KindDesc],
+    limbs: [Tube<4>],
+    instances: [Instance],
+) -> (vec3, vec3, vec2) {
     let inst = instances[i]
+    let limb = limbs[kinds[kind_of(inst)].limb_first + v / LIMB_POINTS]
+    let (centre, n, radius, along) = limb_point(limb, v % LIMB_POINTS)
     let girth = TAU * limb.radii[0] * inst.scale * inst.thick
     let on_bark = vec2(along.x * plant::bark_round(girth), along.y * inst.scale)
     (inst.place_round(centre, n * radius), inst.turn_normal(n, centre.y), on_bark)
@@ -462,11 +489,12 @@ pub fn limb(
     v: VertexIndex,
     i: InstanceIndex,
     cam: Camera,
+    kinds: [KindDesc],
     limbs: [Tube<4>],
     instances: [Instance],
     marks: [vec2u],
 ) -> BarkVertex {
-    let (world, n, along) = limb_world(v.index, i.index, limbs, instances)
+    let (world, n, along) = limb_world(v.index, i.index, kinds, limbs, instances)
     let inst = instances[i.index]
     BarkVertex {
         clip: ClipPosition { position: cam.clip(world) },
@@ -476,6 +504,7 @@ pub fn limb(
         up: (world.y - inst.at.y) / max(inst.scale, 1.0e-3),
         moss: mossy(n, along.y, noise::noise2((world.xz + cam.keyed().xz) * 3.0 + world.y * 0.7)),
         keep: Flat { value: marks[i.index].x },
+        kind: Flat { value: kind_of(inst) },
     }
 }
 
@@ -484,10 +513,11 @@ pub fn limb_shadow(
     v: VertexIndex,
     i: InstanceIndex,
     view: mat4,
+    kinds: [KindDesc],
     limbs: [Tube<4>],
     instances: [Instance],
 ) -> ClipPosition {
-    let (world, _, _) = limb_world(v.index, i.index, limbs, instances)
+    let (world, _, _) = limb_world(v.index, i.index, kinds, limbs, instances)
     ClipPosition { position: view * vec4(world, 1.0) }
 }
 
@@ -530,11 +560,12 @@ pub fn bark_shade(
     b: BarkVertex,
     pixel: FragCoord,
     lt: Lighting,
-    bark: Bark,
+    kinds: [KindDesc],
     ridges: Texture<Rgba8>,
     coarse: Texture<Rgba8>,
     rs: Sampler,
 ) -> vec4 {
+    let bark = kinds[b.kind.value].bake.bark
     // Derivatives run before the coverage discard, so every lane has a surface and height.
     let uv = vec2(b.along.x, b.along.y / plant::RIDGES_ALONG)
     let size = vec2(f32(plant::RIDGES_W), f32(plant::RIDGES_H))

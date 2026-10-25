@@ -1284,7 +1284,6 @@ impl Grass {
         grounds: std::gpu::GpuSpan<f32>,
         stones: std::gpu::GpuSpan<vec4>,
     ) {
-        std::gpu::label("grass")
         self.near.clear()
         self.middle.clear()
         self.far.clear()
