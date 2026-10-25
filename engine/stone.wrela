@@ -9,21 +9,27 @@
 
 use character::{ByChannels, Shaded, colours}
 use creature::Creature
+use frame::full
 use light::Lit
 use lit::{Lighting, shown, sun_and_gloss}
 use look::Mesh as Tolerance
 use noise::{hash3, noise3, rand}
-use realize::{Mesh, SkinVertex, realize_rigid, solid}
+use realize::{Mesh, SkinVertex, Tally, realize_rigid, solid}
 use std::derive::Box3
 use std::derive::Interval
 use std::field::{Blend, Fbm, Noise, Surface, VALUE_NOISE_LIPSCHITZ, fbm, oval, value_noise}
 use std::gpu::{
-    ClipPosition, DrawIndexedArgs, Flat, FragCoord, GlobalId, GpuBuffer, InstanceIndex, RenderPass,
-    Slots, Unorm8x4, VertexIndex, buffer, discard, dispatch, draw, write,
+    Atomics, ClipPosition, DrawIndexedArgs, Flat, FragCoord, GlobalId, GpuBuffer, InstanceIndex,
+    RenderPass, Slots, Unorm8x4, VertexIndex, buffer, buffer_of, copy, discard, dispatch, draw,
+    label, read, write,
 }
+use std::io::Pending
+use std::mem::size_of
+use std::gpu::{Compare, Depth, R32Uint, Texture}
 use std::math::TAU
 use std::transform::{rotate_y, translate}
 use view::{Camera, ROCK}
+use virtual::{Clusters, Placed, VisDraw, cook, pulled}
 
 /// What a point of a stone carries: its colour (linear).
 pub struct Rock: Copy + GpuData + Blend {
@@ -129,12 +135,76 @@ pub fn stone(radius: f32, squash: vec3, seed: u32) -> Creature<Rock> {
     solid(stone_field(radius, squash, seed), Box3 { lo: -half, hi: half }, name: "stone")
 }
 
-/// A stone realized: its mesh, its colours, and where it is (its rest space to the world).
+/// A stone realized: its mesh, its colours, and where it is (its rest space to the world); and
+/// what its mesh holds, asked for to fit it (`settle`): none once it's fitted, or if it never
+/// will be.
 pub struct Realized {
     pub mesh: Mesh,
     pub colours: GpuBuffer<Unorm8x4>,
     pub at: mat4,
     pub seed: u32,
+    pub fit: Option<Fit> = None,
+}
+
+/// What a realized mesh holds, asked for to fit it (`Realized::settle`, `fitted`): its tally (its
+/// vertices, and the quads pushed: as many as fit its room).
+pub struct Fit {
+    pub tally: Pending<Tally>,
+}
+
+impl Fit {
+    /// The counts of `r`'s mesh, asked for.
+    pub fn of(r: Realized) -> Fit {
+        Fit { tally: read(r.mesh.tally.items()) }
+    }
+
+    /// The vertices and quads, once they've come.
+    pub fn counts(mut self) -> Option<(u32, u32)> {
+        match self.tally.poll() {
+            Some(Ok(t)) => Some((t[0].vertices, t[0].pushed_quads)),
+            _ => None,
+        }
+    }
+}
+
+impl Realized {
+    /// Fitted to what its mesh holds (`realize::fitted`, `Fit`): its mesh and its colours, a
+    /// vertex each.
+    pub fn fitted(r: take Realized, vertices: u32, quads: u32) -> Realized {
+        var r = take r
+        r.fit_to(vertices, quads)
+        r
+    }
+
+    /// Fitted in place to what its mesh holds, once its counts (`fit`, asked for when it was
+    /// realized) have come: as `fitted`. Nothing before then, or once it's fitted. A realized
+    /// mesh has room for its whole grid's blocks, which its surface crosses a few of.
+    pub fn settle(mut self) {
+        let counts = match mut self.fit {
+            Some(f) => f.counts(),
+            None => None,
+        }
+        if let Some((v, q)) = counts {
+            self.fit_to(v, q)
+            self.fit = None
+        }
+    }
+
+    /// Its mesh and its colours fitted to `vertices` and `quads` (`fitted`).
+    fn fit_to(mut self, vertices: u32, quads: u32) {
+        let n = max(vertices, 1)
+        if n < self.colours.len() {
+            var colours: GpuBuffer<Unorm8x4> = buffer(n)
+            copy(self.colours.span(start: 0, count: n), colours.items_mut())
+            self.colours = take colours
+        }
+        self.mesh.fit(vertices, quads)
+    }
+
+    /// The GPU bytes its mesh and its colours take.
+    pub fn bytes(self) -> u64 {
+        self.mesh.bytes() + u64(self.colours.len()) * 4
+    }
 }
 
 /// A placement borrows one mesh from its owner. Its enclosing sphere is in world space.
@@ -249,7 +319,7 @@ pub fn realize_stone_within(
 
 /// Rock `c` (a `realize::solid`) realized as one rigid mesh to `surface`'s tolerance, its colours
 /// cooked a cell `cell` across, placed by `at`, its tone's seed `seed`: a stone, a bed, or a game's
-/// built thing of rock.
+/// built thing of rock. Its counts are asked for, to fit it once they've come (`settle`).
 pub fn realize_rock(
     c: Creature<Rock>,
     surface: Tolerance,
@@ -259,7 +329,8 @@ pub fn realize_rock(
 ) -> Realized {
     let mesh = realize_rigid(c, surface)
     let colours = colours(mesh, c.field(), ByChannels {}, cell)
-    Realized { mesh, colours, at, seed }
+    let fit = Some(Fit { tally: read(mesh.tally.items()) })
+    Realized { mesh, colours, at, seed, fit }
 }
 
 /// What a stone's vertex passes on.
@@ -711,23 +782,29 @@ pub struct RockAt: Copy + GpuData {
 /// Rocks: a few kinds of prototype solid, each realized near (fine, for rocks close to the eye)
 /// and far (coarse), and many placements of them; each kind and level drawn with one instanced
 /// draw (`Rocks::draw`) over the placements of its run (`first`, `count`) the camera sees at that
-/// level (`Rocks::cull`: `seen`, from `seen_first`, `seen_count` of them, kind by kind, near then
-/// far); its shadows from all of them, far (`Rocks::cast`).
+/// level, chosen on the GPU (`Rocks::cull`: into `seen`, from `seen_first`: kind by kind, the near
+/// lists, then the far); its shadows from all of them, far (`Rocks::cast`).
 pub struct Rocks {
     pub near: Vec<Realized>,
     pub far: Vec<Realized>,
     pub placed: GpuBuffer<RockAt>,
     pub first: Vec<u32>,
     pub count: Vec<u32>,
-    /// Each kind's draw of all its placements (shadows), and each kind's and level's of those
-    /// seen.
+    /// Each kind's draw of all its placements (shadows); each kind's and level's mesh draw
+    /// (`templates`), and its draw of those seen (`seen_args`, `rock_draws`).
     pub args: Vec<GpuBuffer<DrawIndexedArgs>>,
-    pub seen_args: Vec<GpuBuffer<DrawIndexedArgs>>,
-    /// Where each placement is and how far it reaches (its centre and radius), on the CPU.
-    pub spheres: Vec<vec4>,
+    templates: GpuBuffer<DrawIndexedArgs>,
+    seen_args: GpuBuffer<DrawIndexedArgs>,
+    /// Where each placement is and how far it reaches (its centre and radius, in the world), its
+    /// kind and its kind's first placement, on the GPU.
+    spheres: GpuBuffer<vec4>,
+    kinds: GpuBuffer<vec2u>,
+    /// The placements seen, each kind's and level's list from `seen_first` (a kind's near list
+    /// holds at most its count, as its far list does), and how many each holds (`counts`, made 0
+    /// again as they're drawn).
     pub seen: GpuBuffer<u32>,
     pub seen_first: Vec<u32>,
-    pub seen_count: Vec<u32>,
+    counts: GpuBuffer<u32>,
     /// The render origin (its world point): placements are in the world, the camera and the
     /// shadows' views in render space, the world less it (`cull` sets it).
     pub origin: vec3,
@@ -788,6 +865,61 @@ fn a_rock_is_drawn_where_it_is_seen_and_big_enough_to_be() {
     assert(in_view(vec4(0.0, 2.0, -1.0, 3.0), eye, ahead, t, w), "a rock round the eye isn't")
 }
 
+/// What the rocks' culling reads: the eye (render space), its view, the render origin (the
+/// placements are in the world), and how many placements there are.
+pub struct RockCull: Copy + GpuData {
+    pub eye: vec3,
+    pub tan_half: f32,
+    pub forward: vec3,
+    pub wide: f32,
+    pub origin: vec3,
+    pub total: u32,
+}
+
+/// Placement `id` into its kind's near or far list if the camera sees it (`in_view`), near
+/// within `NEAR_RADII` of its radii: a place taken from the list's count (`counts`, the near and
+/// far of each kind), the near lists from 0, the far after every near list's room (`total`).
+@compute(64)
+fn cull_rocks(
+    c: RockCull,
+    spheres: [vec4],
+    kinds: [vec2u],
+    counts: mut Atomics<u32>,
+    seen: mut Atomics<u32>,
+    id: GlobalId,
+) {
+    let i = id.x
+    if i >= c.total {
+        return
+    }
+    let sp = vec4(spheres[i].xyz - c.origin, spheres[i].w)
+    if !in_view(sp, c.eye, c.forward, c.tan_half, c.wide) {
+        return
+    }
+    let k = kinds[i]
+    let near = length(sp.xyz - c.eye) < NEAR_RADII * sp.w
+    let level = if near { 0 } else { 1 }
+    let at = counts.add(2 * k.x + level, 1)
+    seen.store(level * c.total + k.y + at, i)
+}
+
+/// Each kind's and level's draw of the placements its list holds (`counts`), its count made 0
+/// for the next frame's culling.
+@compute(64)
+fn rock_draws(
+    templates: [DrawIndexedArgs],
+    counts: mut Atomics<u32>,
+    out: mut Slots<DrawIndexedArgs>,
+    n: u32,
+    id: GlobalId,
+) {
+    if id.x >= n {
+        return
+    }
+    out[id] = DrawIndexedArgs { instances: counts.load(id.x), ..templates[id.x] }
+    counts.store(id.x, 0)
+}
+
 /// Prototype `k`'s mesh's draw arguments, for `count` instances.
 @compute(1)
 fn rock_args(mesh: [DrawIndexedArgs], count: u32, out: mut Slots<DrawIndexedArgs>, id: GlobalId) {
@@ -802,6 +934,18 @@ fn rock_args(mesh: [DrawIndexedArgs], count: u32, out: mut Slots<DrawIndexedArgs
 }
 
 impl Rocks {
+    /// The GPU bytes its kinds' meshes and their colours take, both levels.
+    pub fn bytes(self) -> u64 {
+        var n = 0
+        for r in self.near {
+            n += r.bytes()
+        }
+        for r in self.far {
+            n += r.bytes()
+        }
+        n
+    }
+
     /// Rocks of the kinds `near` and `far` realize (the same kinds, fine and coarse) placed as
     /// `placements` say (each placement's `prototype` a kind; others are left out).
     pub fn new(
@@ -812,6 +956,7 @@ impl Rocks {
         let n = far.len()
         var sorted: Vec<RockAt> = Vec::with_capacity(placements.len())
         var spheres: Vec<vec4> = Vec::with_capacity(placements.len())
+        var kinds: Vec<vec2u> = Vec::with_capacity(placements.len())
         var first: Vec<u32> = Vec::new()
         var count: Vec<u32> = Vec::new()
         for k in 0..n {
@@ -820,6 +965,7 @@ impl Rocks {
                 if p.prototype == k {
                     sorted.push(RockAt { at: p.at, normal_at: p.normal_at, seed: p.seed })
                     spheres.push(vec4(p.at[3].xyz, p.reach))
+                    kinds.push(vec2u(k, first[k]))
                 }
             }
             count.push(sorted.len() - first[k])
@@ -829,15 +975,22 @@ impl Rocks {
             write(mut placed, 0, sorted)
         }
         var args: Vec<GpuBuffer<DrawIndexedArgs>> = Vec::new()
-        var seen_args: Vec<GpuBuffer<DrawIndexedArgs>> = Vec::new()
+        var templates: GpuBuffer<DrawIndexedArgs> = buffer(max(2 * n, 1))
+        var seen_first: Vec<u32> = Vec::new()
         for k in 0..n {
             var a: GpuBuffer<DrawIndexedArgs> = buffer(1)
             dispatch(rock_args.bind(far[k].mesh.draw.items(), count[k], mut a), groups: 1)
             args.push(take a)
-            seen_args.push(buffer(1))
-            seen_args.push(buffer(1))
+            copy(from: near[k].mesh.draw.items(), to: templates.span_mut(start: 2 * k, count: 1))
+            copy(from: far[k].mesh.draw.items(), to: templates.span_mut(start: 2 * k + 1, count: 1))
+            seen_first.push(first[k])
+            seen_first.push(sorted.len() + first[k])
         }
         let total = max(sorted.len(), 1)
+        if spheres.is_empty() {
+            spheres.push(vec4(0.0))
+            kinds.push(vec2u(0))
+        }
         Rocks {
             near,
             far,
@@ -845,11 +998,13 @@ impl Rocks {
             first,
             count,
             args,
-            seen_args,
-            spheres,
-            seen: buffer(total),
-            seen_first: Vec::filled(2 * n, 0),
-            seen_count: Vec::filled(2 * n, 0),
+            templates,
+            seen_args: buffer(max(2 * n, 1)),
+            spheres: buffer_of(spheres),
+            kinds: buffer_of(kinds),
+            seen: buffer(2 * total),
+            seen_first,
+            counts: buffer_of(Vec::filled(max(2 * n, 1), 0)),
             origin: vec3(0.0),
             grain: Vec::filled(n, vec4(0.0)),
         }
@@ -859,42 +1014,47 @@ impl Rocks {
     /// meets its view and spans enough of it (`in_view`), near (within `NEAR_RADII` of its radii)
     /// or far; their indices written for the draws, each kind's and level's count into its draw.
     pub fn cull(mut self, cam: Camera, origin: vec3) {
+        // Its kinds' meshes fitted once their counts have come (`Realized::settle`): the draws
+        // read what they hold, the same before and after.
+        for mut r in self.near {
+            r.settle()
+        }
+        for mut r in self.far {
+            r.settle()
+        }
         self.origin = origin
-        var seen: Vec<u32> = Vec::with_capacity(self.spheres.len())
-        // A cone enclosing the rectangular view reaches its corners, along the diagonal.
-        let wide = cam.tan_half * sqrt(1.0 + cam.aspect * cam.aspect)
-        for k in 0..self.far.len() {
-            for level in 0..2 {
-                let at = 2 * k + level
-                self.seen_first[at] = seen.len()
-                for i in self.first[k]..(self.first[k] + self.count[k]) {
-                    let sp = vec4(self.spheres[i].xyz - origin, self.spheres[i].w)
-                    let near = length(sp.xyz - cam.eye) < NEAR_RADII * sp.w
-                    if near == (level == 0) &&
-                        in_view(sp, cam.eye, cam.forward, cam.tan_half, wide) {
-                        seen.push(i)
-                    }
-                }
-                self.seen_count[at] = seen.len() - self.seen_first[at]
-            }
+        let total = self.len()
+        let n = 2 * self.far.len()
+        if total == 0 || n == 0 {
+            return
         }
-        if !seen.is_empty() {
-            write(mut self.seen, 0, seen)
+        let c = RockCull {
+            eye: cam.eye,
+            tan_half: cam.tan_half,
+            forward: cam.forward,
+            wide: cam.corner_tan(),
+            origin,
+            total,
         }
-        for k in 0..self.far.len() {
-            for level in 0..2 {
-                let at = 2 * k + level
-                borrow p = if level == 0 { self.near[k] } else { self.far[k] }
-                dispatch(
-                    rock_args.bind(
-                        p.mesh.draw.items(),
-                        self.seen_count[at],
-                        mut self.seen_args[at],
-                    ),
-                    groups: 1,
-                )
-            }
-        }
+        dispatch(
+            cull_rocks.bind(
+                c,
+                spheres: self.spheres,
+                kinds: self.kinds,
+                counts: mut self.counts,
+                seen: mut self.seen,
+            ),
+            over: total,
+        )
+        dispatch(
+            rock_draws.bind(
+                templates: self.templates,
+                counts: mut self.counts,
+                out: mut self.seen_args,
+                n: n,
+            ),
+            over: n,
+        )
     }
 
     /// How many rocks are placed.
@@ -936,7 +1096,7 @@ impl Rocks {
         for k in 0..self.far.len() {
             for level in 0..2 {
                 let at = 2 * k + level
-                if self.seen_count[at] == 0 {
+                if self.count[k] == 0 {
                     continue
                 }
                 borrow p = if level == 0 { self.near[k] } else { self.far[k] }
@@ -953,7 +1113,7 @@ impl Rocks {
                     ),
                     rock_shade.bind(lt, origin: self.origin, grain: self.grain[k]),
                     indices: p.mesh.quads.items(),
-                    indirect: self.seen_args[at].items(),
+                    indirect: self.seen_args.span(start: at, count: 1),
                     cull: std::gpu::Cull::Back,
                     depth: view::NEAREST,
                 )
@@ -1026,4 +1186,181 @@ pub fn rock_vertex(
     var sv = stone_point(v.index, verts, colours, at, r.normal_at, r.seed, cam)
     sv.albedo *= 0.94 + 0.12 * rand(r.seed, 1)
     sv
+}
+
+// ---- repeated stones through clusters ----------------------------------------------------------
+//
+// A prototype stone's surface cooked into clusters at levels of detail (`engine::virtual`,
+// docs/plan-world-class.md §B7) and drawn for all its copies at once, a level a draw: chosen on
+// the GPU before the frame's passes (`choose`), their ids drawn in the frame's depth prepass
+// (`prepass`), and resolved in its shading pass a full-screen draw a level (`shade`), each pixel
+// pulled from its triangle and lit as a stone (`lit_stone`). Each level's colours are cooked from
+// the stone's field, as a realized stone's are. The copies' shadows stay the prototype's mesh's
+// (`cast_stone`): a cut is made for the camera, and a cascade's strip sees copies it doesn't.
+
+/// The error a stone's cluster may show on the screen (pixels): half a pixel, as the clusters'
+/// measurement (B7a) chose.
+pub const CLUSTER_PIXELS: f32 = 0.5
+
+/// The levels a prototype's clusters are cooked at, from its finest cell.
+pub const CLUSTER_LEVELS: u32 = 5
+
+/// Placement `p` as a cluster copy (`virtual::Placed`): its matrix's translation, its columns'
+/// lengths (its size), its turn about +y (a placement is `translate * rotate_y * scale`), its
+/// seed.
+pub fn placed_of(p: Placement) -> Placed {
+    let size = vec3(length(p.at[0].xyz), length(p.at[1].xyz), length(p.at[2].xyz))
+    Placed { at: p.at[3].xyz, scale: 1.0, size, turn: atan2(-p.at[0].z, p.at[0].x), seed: p.seed }
+}
+
+/// A prototype's clusters, its copies' placements, and each level's colours.
+pub struct ClusterStones {
+    pub clusters: Clusters,
+    pub places: GpuBuffer<Placed>,
+    pub colours: Vec<GpuBuffer<Unorm8x4>>,
+}
+
+impl ClusterStones {
+    /// Stone `c`'s clusters, its finest cells `cell` across (each level's colours cooked a
+    /// finest cell across), with no copies yet: set `set` of those sharing the frame's ids
+    /// (`virtual::MOST_SETS`).
+    pub fn new(c: Creature<Rock>, cell: f32, set: u32) -> ClusterStones {
+        var clusters = cook(c.field(), c.bounds(), cell, CLUSTER_LEVELS)
+        clusters.set = set
+        var colours: Vec<GpuBuffer<Unorm8x4>> = Vec::new()
+        for l in clusters.levels {
+            // At the finest cell at every level, as a realized stone's are cooked (a stain seen
+            // across a coarse level's cell filters to nothing).
+            colours.push(character::colours(l.mesh, c.field(), ByChannels {}, cell))
+        }
+        ClusterStones { clusters, places: buffer(1), colours }
+    }
+
+    /// Its copies, `places`, written (none: nothing is drawn).
+    pub fn place(mut self, places: [Placed]) {
+        if places.len() != self.places.len() {
+            self.places = buffer(max(places.len(), 1))
+        }
+        if places.len() > 0 {
+            write(mut self.places, 0, places)
+        }
+    }
+
+    /// The frame's cut for `cam` (`Clusters::select`), before its passes.
+    pub fn choose(mut self, cam: Camera) {
+        label("stone clusters")
+        self.clusters.select(cam, self.places, CLUSTER_PIXELS, small: 0.0)
+    }
+
+    /// Its triangles' ids and depths, into the frame's depth prepass.
+    pub fn prepass<P: RenderPass>(self, pass: P, cam: Camera) {
+        self.clusters.draw_ids(pass, cam, self.places)
+    }
+
+    /// Its pixels of the prepass's ids, lit by `lt`, into the frame's shading pass: a full-screen
+    /// draw a level, each shading its own and writing no depth (the prepass did).
+    pub fn shade<P: RenderPass>(self, pass: P, lt: Lighting, ids: Texture<R32Uint>) {
+        for k in 0..self.clusters.levels.len() {
+            borrow l = self.clusters.levels[k]
+            draw(
+                pass,
+                full.bind(z: 0.5),
+                cluster_stone_shade.bind(
+                    self.clusters.vis(lt.cam, k),
+                    ids,
+                    list: l.list.items(),
+                    words: l.words.items(),
+                    verts: l.mesh.verts.items(),
+                    places: self.places.items(),
+                    colours: self.colours[k].items(),
+                    lt: lt,
+                ),
+                vertices: 3,
+                depth: Depth { compare: Compare::Always, write: false },
+            )
+        }
+    }
+
+    /// The GPU bytes its clusters, colours and placements take.
+    pub fn bytes(self) -> u64 {
+        var n = self.clusters.bytes() + u64(self.places.len()) * u64(size_of::<Placed>())
+        for c in self.colours {
+            n += u64(c.len()) * 4
+        }
+        n
+    }
+}
+
+/// A pixel of level `d.level`'s clusters (`ids`, the prepass's), its surface pulled from its
+/// triangle (`virtual::pulled`), its colour between its corners' (as a realized stone's is), lit
+/// as a stone; another level's, or none's, discarded.
+@fragment
+pub fn cluster_stone_shade(
+    pixel: FragCoord,
+    d: VisDraw,
+    ids: Texture<R32Uint>,
+    list: [u32],
+    words: [u32],
+    verts: [SkinVertex],
+    places: [Placed],
+    colours: [Unorm8x4],
+    lt: Lighting,
+) -> vec4 {
+    let px = vec2u(pixel.position.xy)
+    match pulled(d, ids.load(x: px.x, y: px.y), pixel.position.xy, list, words, verts, places) {
+        Some(s) => {
+            let albedo = |i: u32| {
+                let c = colours[i].decode().rgb
+                c * c
+            }
+            let a = albedo(s.corners.x) * s.w.x +
+                albedo(s.corners.y) * s.w.y +
+                albedo(s.corners.z) * s.w.z
+            lit_stone(
+                StoneVertex {
+                    clip: ClipPosition { position: vec4(0.0) },
+                    world: s.world,
+                    normal: s.normal,
+                    albedo: a,
+                    seed: Flat { value: places[s.instance].seed },
+                },
+                lt,
+            )
+        },
+        None => {
+            discard()
+            vec4(0.0)
+        },
+    }
+}
+
+/// A placement's cluster copy places every rest point where its matrix does, and its bounds hold
+/// the matrix's turned corners.
+@test
+fn a_placements_cluster_copy_places_as_its_matrix() {
+    let at = translate(vec3(4.0, 2.0, -7.0)) *
+        rotate_y(0.7) *
+        std::transform::scale(vec3(1.4, 0.35, 0.8))
+    let p = Placement { prototype: 0, at, normal_at: normal_matrix(at), reach: 2.0, seed: 9 }
+    let c = placed_of(p)
+    var most = 0.0
+    let (lo, hi) = (vec3(-1.0, -0.5, -0.25), vec3(0.5, 1.0, 1.0))
+    let b = virtual::placed_bounds(c, lo, hi)
+    for i in 0..8 {
+        let r = vec3(
+            if (i & 1) != 0 { hi.x } else { lo.x },
+            if (i & 2) != 0 { hi.y } else { lo.y },
+            if (i & 4) != 0 { hi.z } else { lo.z },
+        )
+        let want = (at * vec4(r, 1.0)).xyz
+        most = max(most, length(virtual::placed_point(c, r) - want))
+        let out = max(max(b.lo - want, want - b.hi), vec3(0.0))
+        assert(length(out) < 1.0e-4, f"corner {i} is outside the bounds by {out}")
+        let n = normalize(vec3(r.y, -r.x, 0.5))
+        let turned = normalize(virtual::placed_normal(c, n))
+        let matrix = normalize(normal_matrix(at) * n)
+        most = max(most, length(turned - matrix))
+    }
+    assert(most < 1.0e-4, f"a copy's point or normal is {most} off its matrix's")
+    assert(c.seed == 9, "the seed was lost")
 }

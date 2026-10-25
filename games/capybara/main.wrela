@@ -33,9 +33,9 @@
 
 use art::{Page, finish, grain_texture}
 use body::{Mode, RADIUS}
-use camera::{Camera, camera, follow, framed, half_view}
+use camera::{Camera, camera, follow, framed, half_view, play_rect}
 use cast::{Cast, cast, ghost, grounded, react, sprites}
-use course::course
+use course::{Course, course}
 use earth::{
     LAB_EARTH, LAB_GRASS, LAB_TOPS, LEVEL_EARTH, LEVEL_GRASS, LEVEL_TOPS, Field, earth,
     earth_vertex, grass, grass_vertex,
@@ -45,7 +45,7 @@ use engine::present::Snapshots
 use engine::run::run
 use feel::HZ
 use ink::INK
-use scenery::View
+use scenery::{Strips, View, strips}
 use sound::Cue
 use std::audio::RingWriter
 use engine::sheet::{Sheet, sheet}
@@ -54,9 +54,9 @@ use engine::view::flat_camera
 use sprites::{Sprite, sprite}
 use std::gpu::{
     Address, GpuBuffer, Rgba16Float, Sampler, Texture, begin_pass, begin_screen_pass, buffer,
-    buffer_of, draw, sampler, write,
+    buffer_of, draw, label, sampler, write,
 }
-use ui::draw::{DrawList, Rect, Renderer}
+use ui::draw::{DrawList, Rect, Renderer, Uploaded}
 use std::input::{Event, Key, PadButton, events}
 use std::io::{Pending, load, store}
 use replay::{
@@ -111,6 +111,8 @@ pub struct Lab {
     cast: Cast,
     /// The scene, its copy under the water and the render scale (`engine::sheet`).
     sheet: Sheet,
+    /// The backdrop's layers, cached (scenery.wrela's `Strips`).
+    strips: Strips,
     linear: Sampler,
     /// The baked grain (ink.wrela) and the sampler that repeats it.
     grain: Texture<Rgba16Float>,
@@ -140,13 +142,24 @@ pub struct Lab {
     fonts: Fonts,
     renderer: Renderer,
     list: DrawList,
-    /// The signs' words, drawn into the scene behind the cast (signs.wrela).
-    signs: Renderer,
+    /// The signs' words, drawn into the scene behind the cast (signs.wrela), with the one
+    /// renderer's atlas.
+    signs: Uploaded,
     sign_list: DrawList,
+    /// The frame's sprites: the cast's and the dust behind the water, and in front of it (kept
+    /// from frame to frame, so no frame makes them).
+    back: Vec<Sprite>,
+    front: Vec<Sprite>,
     /// What the host can do (its environment's capabilities), once it has said; the semantic tree
     /// last sent; and the requests to it still out.
     environment: Option<Pending<u8>>,
     capabilities: Option<u32>,
+    /// The device's pixels to a CSS pixel, as the host's environment says (1 until it has, or
+    /// where it doesn't).
+    ratio: f32,
+    /// The pools in view, as rectangles of the scene's pixels (`wet_rects`): where the water's
+    /// copy of the scene is made.
+    wet: Vec<vec4>,
     tree: Sent,
     told: Vec<Pending<u8>>,
     /// The player's runs (replay.wrela), as they load from storage and are stored again, and when
@@ -197,7 +210,6 @@ pub fn init() -> Lab {
     }
     let fonts = Fonts::load()
     let renderer = Renderer::new(fonts)
-    let signs = Renderer::new(fonts)
     let shown = cast(course(LEVEL))
     Lab {
         snaps: Snapshots::new(take latest, hz: HZ),
@@ -211,6 +223,7 @@ pub fn init() -> Lab {
         shown: LEVEL,
         cast: shown,
         sheet: sheet(),
+        strips: strips(),
         linear: sampler(),
         grain: grain_texture(),
         repeat: sampler(address: Address::Repeat),
@@ -231,10 +244,14 @@ pub fn init() -> Lab {
         fonts,
         renderer,
         list: DrawList::new(),
-        signs,
+        signs: Uploaded::new(),
         sign_list: DrawList::new(),
+        back: Vec::with_capacity(SPRITES),
+        front: Vec::with_capacity(SPRITES),
         environment: Some(host::environment()),
         capabilities: None,
+        ratio: 1.0,
+        wet: Vec::new(),
         tree: Sent {},
         told: Vec::new(),
         runs: board(),
@@ -312,7 +329,11 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         s.voice = Some(sound::start(music::music()))
     }
     s.snaps.update()
-    let screen = vec2(f32(width), f32(height))
+    // The play area (camera.wrela's `play_rect`): what the scene, the page and the screens are
+    // laid out in (`screen`, its size), at `origin` on the screen; the margins round it the sky's.
+    let play = play_rect(vec2(f32(width), f32(height)), s.settings.aspect)
+    let screen = play.zw
+    let origin = play.xy
     let (live_snap, live_lag) = drawn(s.snaps, time)
     host_answers(mut s)
     store_runs(mut s, dt)
@@ -330,7 +351,8 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     // sim's ticks take theirs. On the runs, the sim leaves the keys and clicks to the frames: the
     // board's and the watch's.
     let browsing = live_snap.paused == 1 && live_snap.page == RUNS
-    for e in events() {
+    for raw in events() {
+        let e = in_play(raw, origin)
         if let Some(d) = device_of(e) {
             s.device = d
         }
@@ -386,13 +408,13 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     follow(mut s.camera, snap, dt)
     // The scene is drawn at the render scale (paced by the frames), the page and the HUD at the
     // screen's size.
-    let (rw, rh) = s.sheet.begin(dt, width, height)
+    let (rw, rh) = s.sheet.begin(dt, u32(screen.x), u32(screen.y), ratio: s.ratio)
     if dt > 0.0 && dt < 0.25 {
         s.frame_time = if s.frame_time == 0.0 { dt } else {
             s.frame_time + (dt - s.frame_time) * 0.05
         }
     }
-    let aspect = f32(width) / f32(max(height, 1))
+    let aspect = screen.x / max(screen.y, 1.0)
     let half = half_view(aspect)
     let eye = framed(s.camera, half, c.ends)
     react(mut s.cast, snap, c, dt, eye, half)
@@ -412,9 +434,9 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     let count = snap.paused == 0 && !watching
     let view_proj = flat_camera(eye, half)
     let px = 2.0 * half.y / f32(rh)
-    var back: Vec<Sprite> = Vec::new()
-    var front: Vec<Sprite> = Vec::new()
-    sprites(s.cast, snap, c, time, lag, hud_at, count, mut back, mut front)
+    s.back.clear()
+    s.front.clear()
+    sprites(s.cast, snap, c, time, lag, hud_at, count, mut s.back, mut s.front)
     // The ghost, behind the cast, on the player's clock.
     if !watching {
         follow_ghost(mut s, snap.course)
@@ -423,15 +445,14 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
             if let Some(g) = ghost(s.trail[max(t, 1) - 1], s.trail[t], if t == 0 { 0.0 } else {
                 lag
             }) {
-                back.push(g)
+                s.back.push(g)
             }
         }
     }
-    let behind = back.len()
-    for f in front {
-        back.push(f)
-    }
-    write(mut s.sprites, 0, back)
+    // Those behind the water, then those over it.
+    let behind = s.back.len()
+    write(mut s.sprites, 0, s.back)
+    write(mut s.sprites, behind, s.front)
     write(mut s.heights, 0, s.cast.waves.heights)
     hud(mut s, snap, screen, time)
     s.renderer.fetch(mut s.fonts, s.list)
@@ -470,11 +491,25 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     let stage = Stage { view_proj, px, time, first: 0 }
     // The scene: the sky and the zoo behind (one pass, nearest first); the ground and its grass; the
     // cast.
+    label("strips")
+    s.strips.update(view, s.grain, s.repeat)
+    label("scene")
     let scene = begin_pass(mut s.sheet.scene)
     draw(
         scene,
         full.bind(z: 0.0),
-        scenery::backdrop.bind(v: view, tops: s.tops[i].items(), g: s.grain, gs: s.repeat),
+        scenery::backdrop.bind(
+            v: view,
+            tops: s.tops[i].items(),
+            drawn: s.strips.drawn(),
+            marsh: s.strips.strips[0],
+            wetlands: s.strips.strips[1],
+            savanna_strip: s.strips.strips[2],
+            hills: s.strips.strips[3],
+            s: s.linear,
+            g: s.grain,
+            gs: s.repeat,
+        ),
         vertices: 3,
     )
     draw(
@@ -502,10 +537,14 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         vertices: 6,
         instances: behind,
     )
-    s.signs.draw(scene, scene_size)
+    s.renderer.draw_uploaded(scene, s.signs, scene_size)
     scene.end()
     // The water reads a copy of the scene, bending what's behind it; the splashes go over it.
-    s.sheet.copy_below(s.linear)
+    label("water copy")
+    s.wet.clear()
+    wet_rects(mut s.wet, c, eye, half, scene_size)
+    s.sheet.copy_below(s.linear, s.wet)
+    label("water")
     let wet = begin_pass(mut s.sheet.scene, keep: true)
     let pond = Pond { view_proj, centre: eye, half, px, time }
     draw(
@@ -526,16 +565,19 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         quad_vertex.bind(sprites: s.sprites.items(), st: ahead),
         sprite.bind(sprites: s.sprites.items(), st: ahead),
         vertices: 6,
-        instances: back.len() - behind,
+        instances: s.front.len(),
     )
     wet.end()
-    let out = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
+    label("page")
+    let out = begin_screen_pass(clear: MARGINS)
+    out.viewport(x: play.x, y: play.y, width: play.z, height: play.w)
     let (iris, open) = cast::iris(s.cast, snap, lag)
     let page = Page {
         centre: eye,
         half,
         iris,
         screen,
+        origin,
         open,
         // Washed over under the pause's pages, a little under the title.
         dim: if snap.paused == 0 || watching { 0.0 } else if snap.page == TITLE { 0.35 } else {
@@ -550,7 +592,54 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     )
     s.renderer.draw(out, screen)
     out.present()
-    publish(mut s, snap, screen)
+    publish(mut s, snap, play)
+}
+
+/// The margins round the play area: the sky's colour at the top of the page, as the page's
+/// finish draws it (art.wrela).
+const MARGINS = vec4(0.56, 0.81, 0.96, 1.0)
+
+/// `e` with its place (a pointer's) in the play area's pixels, its top left at `origin` on the
+/// screen.
+fn in_play(e: Event, origin: vec2) -> Event {
+    match e {
+        Event::PointerMove { at, mods } => Event::PointerMove { at: at - origin, mods },
+        Event::PointerDown { at, button, mods } => {
+            Event::PointerDown { at: at - origin, button, mods }
+        },
+        Event::PointerUp { at, button, mods } => Event::PointerUp { at: at - origin, button, mods },
+        Event::Wheel { at, delta, mods } => Event::Wheel { at: at - origin, delta, mods },
+        _ => e,
+    }
+}
+
+/// `rects` (the play area's pixels) on the screen, the play area's top left at `origin`.
+fn on_screen(rects: [Rect], origin: vec2) -> Vec<Rect> {
+    var out: Vec<Rect> = Vec::with_capacity(rects.len())
+    for r in rects {
+        out.push(Rect::new(r.x + origin.x, r.y + origin.y, r.w, r.h))
+    }
+    out
+}
+
+/// How far round a pool its water reads the scene under it (m): the wobble's reach and a little
+/// (`waves::water`), and how high its waves can rise over its surface.
+const WET_MARGIN: f32 = 0.1
+const WAVE_ROOM: f32 = 1.5
+
+/// The pools of `c` in the view round `eye` (`half` its half size, m) as rectangles of a scene
+/// `size` pixels (left, top, right, bottom), onto `out`: none off the screen.
+fn wet_rects(out: mut Vec<vec4>, c: Course, eye: vec2, half: vec2, size: vec2) {
+    for w in c.waters {
+        let lo = (vec2(w.lo.x - WET_MARGIN, w.lo.y - WET_MARGIN) - eye) / half
+        let hi = (vec2(w.hi.x + WET_MARGIN, w.hi.y + WAVE_ROOM) - eye) / half
+        if hi.x < -1.0 || lo.x > 1.0 || hi.y < -1.0 || lo.y > 1.0 {
+            continue
+        }
+        let a = vec2(lo.x * 0.5 + 0.5, 0.5 - hi.y * 0.5) * size
+        let b = vec2(hi.x * 0.5 + 0.5, 0.5 - lo.y * 0.5) * size
+        out.push(vec4(a - vec2(2.0), b + vec2(2.0)))
+    }
 }
 
 /// Text in `colour` with a soft dark shadow under it, so it reads over the sky and the ground.
@@ -646,10 +735,14 @@ fn host_answers(s: mut Lab) {
     }
     if let Some(result) = said {
         s.environment = None
-        s.capabilities = Some(match result {
-            Ok(b) => host::read_environment(b).capabilities,
-            Err(_) => 0,
-        })
+        match result {
+            Ok(b) => {
+                let environment = host::read_environment(b)
+                s.capabilities = Some(environment.capabilities)
+                s.ratio = environment.pixel_ratio.unwrap_or(1.0)
+            },
+            Err(_) => s.capabilities = Some(0),
+        }
     }
     var i = 0
     while i < s.told.len() {
@@ -663,7 +756,8 @@ fn host_answers(s: mut Lab) {
 
 /// The page shown as a semantic tree (screens.wrela's `tree`), if the host shows one: its items,
 /// so a click, the keyboard's Tab or a screen reader can choose them; none while playing.
-fn publish(s: mut Lab, snap: Snap, screen: vec2) {
+fn publish(s: mut Lab, snap: Snap, play: vec4) {
+    let (screen, origin) = (play.zw, play.xy)
     let Some(capabilities) = s.capabilities else { return }
     if capabilities & host::SEMANTICS == 0 {
         return
@@ -671,23 +765,28 @@ fn publish(s: mut Lab, snap: Snap, screen: vec2) {
     var nodes: Vec<Node> = Vec::new()
     if snap.paused == 1 && s.watching.is_none() {
         let page = snap.page
+        // The page's heading, its items' labels, and where they are in the play area.
+        var parts: Option<(Text, Vec<Text>, Vec<Rect>)> = None
         if page == TITLE {
             let start = start_rect(screen)
-            nodes = tree(snap.chosen, page, course_name(snap.course), ["Start"], [start])
+            parts = Some((course_name(snap.course), Vec::from(["Start"]), Vec::from([start])))
         } else if page == MENU {
             let (_, rects) = list_rects(screen, MENU)
-            nodes = tree(snap.chosen, page, "Paused", MENU_LABELS, rects)
+            parts = Some(("Paused", Vec::from(MENU_LABELS), take rects))
         } else if page == OPTIONS {
             let (_, rects) = list_rects(screen, OPTIONS)
-            nodes = tree(snap.chosen, page, "Options", OPTION_LABELS, rects)
+            parts = Some(("Options", Vec::from(OPTION_LABELS), take rects))
         } else if page == CONTROLS {
             let (_, back) = controls_rects(screen)
-            nodes = tree(snap.chosen, page, "Controls", ["Back"], [back])
+            parts = Some(("Controls", Vec::from(["Back"]), Vec::from([back])))
         } else if page == RUNS {
-            nodes = tree(snap.chosen, page, "Runs", ["Back"], [back_rect(screen)])
+            parts = Some(("Runs", Vec::from(["Back"]), Vec::from([back_rect(screen)])))
+        }
+        if let Some((heading, labels, rects)) = parts {
+            nodes = tree(snap.chosen, page, heading, labels, on_screen(rects, origin))
         }
     }
-    host::publish(mut s.told, mut s.tree, "Capybara", nodes, vec4(0.0, 0.0, screen.x, screen.y))
+    host::publish(mut s.told, mut s.tree, "Capybara", nodes, play)
 }
 
 /// The item of list page `page` under the pointer, while the player uses the pointer.

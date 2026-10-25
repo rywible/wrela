@@ -1,0 +1,88 @@
+// The scenes the bench measures (docs/plan-world-class.md §B1): each a package, its input
+// script, its frames and its size. The scripts are the gates' (build/gates in a checkout).
+
+use std::input::{Key, Script}
+
+/// A scene: its name, its package (`pkg`) (from the workspace), the frames it measures after the
+/// warmup, and its size.
+pub struct Scene: Clone {
+    pub name: Text,
+    pub pkg: Text,
+    pub frames: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Every scene, in the order the report lists them.
+pub const SCENES: [Scene; 7] = [
+    Scene {
+        name: "clearing-path",
+        pkg: "examples/clearing",
+        frames: 600,
+        width: 1920,
+        height: 1080,
+    },
+    Scene {
+        name: "last-green-shot",
+        pkg: "games/last-green",
+        frames: 480,
+        width: 1920,
+        height: 1080,
+    },
+    Scene {
+        name: "last-green-walk",
+        pkg: "games/last-green",
+        frames: 1200,
+        width: 1920,
+        height: 1080,
+    },
+    Scene { name: "capybara-run", pkg: "games/capybara", frames: 600, width: 1920, height: 1080 },
+    Scene {
+        name: "capybara-run-large",
+        pkg: "games/capybara",
+        frames: 600,
+        width: 2940,
+        height: 1912,
+    },
+    Scene { name: "herd", pkg: "examples/herd", frames: 600, width: 1920, height: 1080 },
+    Scene { name: "leapling", pkg: "games/leapling", frames: 600, width: 1920, height: 1080 },
+]
+
+/// Scene `name`'s input: the gates' scripts (CLEARING_PATH, LG_SHOT, LG_WALK, CAPY_RUN), or none.
+pub fn script(name: str) -> Script {
+    if name == "clearing-path" {
+        return Script::frames()
+            .key_down(120, Key::Space)
+            .key_up(121, Key::Space)
+            .key_down(400, Key::H)
+            .key_up(401, Key::H)
+    }
+    if name == "last-green-shot" {
+        return Script::frames()
+            .key_down(240, Key::L)
+            .key_up(241, Key::L)
+            .key_down(242, Key::Digit3)
+            .key_up(243, Key::Digit3)
+            .key_down(244, Key::Enter)
+            .key_up(245, Key::Enter)
+    }
+    if name == "last-green-walk" {
+        return Script::frames()
+            .key_down(240, Key::W)
+            .key_down(300, Key::ShiftLeft)
+            .key_up(1140, Key::ShiftLeft)
+            .key_up(1140, Key::W)
+    }
+    if name == "capybara-run" || name == "capybara-run-large" {
+        return Script::frames()
+            .key_down(1, Key::Enter)
+            .key_down(1, Key::D)
+            .key_up(2, Key::Enter)
+            .key_down(281, Key::Space)
+            .key_up(330, Key::Space)
+            .key_down(350, Key::Space)
+            .key_up(400, Key::Space)
+            .key_down(573, Key::S)
+    }
+    Script::frames()
+}

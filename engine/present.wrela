@@ -22,10 +22,11 @@ pub struct Between<S>: Copy {
     pub alpha: f32,
 }
 
-/// The last three snapshots the frames read, oldest first, and the sim's rate.
+/// The last three snapshots the frames read (a ring: the oldest at `first`), and the sim's rate.
 pub struct Snapshots<S: Copy + Plain> {
     latest: Latest<Stamped<S>>,
     kept: Bounded<Stamped<S>, 3>,
+    first: u32,
     hz: f32,
 }
 
@@ -34,7 +35,7 @@ impl<S: Copy + Plain> Snapshots<S> {
     pub fn new(latest: take Latest<Stamped<S>>, hz: u32) -> Snapshots<S> {
         var l = take latest
         let first = l.read()
-        Snapshots { latest: l, kept: Bounded::from([first]), hz: f32(hz) }
+        Snapshots { latest: l, kept: Bounded::from([first]), first: 0, hz: f32(hz) }
     }
 
     /// Reads the newest snapshot, and keeps it if it's newer than those kept: the hand-off reuses
@@ -45,14 +46,22 @@ impl<S: Copy + Plain> Snapshots<S> {
             return
         }
         if self.kept.is_full() {
-            self.kept.remove(0)
+            // Over the oldest, which is then the newest.
+            self.kept[self.first] = s
+            self.first = (self.first + 1) % self.kept.len()
+        } else {
+            self.kept.push(s)
         }
-        self.kept.push(s)
+    }
+
+    /// The `i`th snapshot kept, oldest first.
+    fn kept_at(self, i: u32) -> Stamped<S> {
+        self.kept[(self.first + i) % self.kept.len()]
     }
 
     /// The newest snapshot read.
     pub fn newest(self) -> Stamped<S> {
-        self.kept[self.kept.len() - 1]
+        self.kept_at(self.kept.len() - 1)
     }
 
     /// The sim time a frame at `now` (seconds, the frame's time) draws, in ticks run.
@@ -63,8 +72,8 @@ impl<S: Copy + Plain> Snapshots<S> {
     /// The two kept snapshots around sim time `s` (ticks run), and how far between them it is.
     pub fn at(self, s: f32) -> Between<S> {
         let last = self.kept.len() - 1
-        let oldest = self.kept[0]
-        let newest = self.kept[last]
+        let oldest = self.kept_at(0)
+        let newest = self.kept_at(last)
         if s <= f32(oldest.ticks) {
             return Between { a: oldest.snap, b: oldest.snap, alpha: 0.0 }
         }
@@ -72,10 +81,10 @@ impl<S: Copy + Plain> Snapshots<S> {
             return Between { a: newest.snap, b: newest.snap, alpha: 0.0 }
         }
         var i = 0
-        while i < last - 1 && f32(self.kept[i + 1].ticks) <= s {
+        while i < last - 1 && f32(self.kept_at(i + 1).ticks) <= s {
             i += 1
         }
-        let (a, b) = (self.kept[i], self.kept[i + 1])
+        let (a, b) = (self.kept_at(i), self.kept_at(i + 1))
         Between { a: a.snap, b: b.snap, alpha: (s - f32(a.ticks)) / f32(b.ticks - a.ticks) }
     }
 }

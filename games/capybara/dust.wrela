@@ -6,7 +6,7 @@ use ink::INK
 use sprites::{BUBBLE, CONFETTI, DROP, DUST, FEATHER, FRUIT, SPARK, STREAK, Sprite}
 use std::collections::Vec
 
-/// The most particles alive at once; the oldest make way.
+/// The most particles alive at once; the oldest make way (the motes are a ring).
 pub const MOST: u32 = 600
 
 pub struct Mote: Copy {
@@ -28,13 +28,16 @@ pub struct Mote: Copy {
     pub front: bool,
 }
 
+/// The particles: a ring of motes (`MOST` once full, the next made where the oldest was:
+/// `next`), each living while its age is under its life; and the sequence they're made from.
 pub struct Dust {
     motes: Vec<Mote>,
+    next: u32,
     seed: u32,
 }
 
 pub fn dust() -> Dust {
-    Dust { motes: Vec::new(), seed: 12345 }
+    Dust { motes: Vec::with_capacity(MOST), next: 0, seed: 12345 }
 }
 
 /// A number from 0 to 1, the next of the dust's own sequence.
@@ -49,10 +52,12 @@ pub fn between(d: mut Dust, range: vec2) -> f32 {
 }
 
 pub fn add(d: mut Dust, m: Mote) {
-    if d.motes.len() >= MOST {
-        d.motes.remove(0)
+    if d.motes.len() < MOST {
+        d.motes.push(m)
+        return
     }
-    d.motes.push(m)
+    d.motes[d.next] = m
+    d.next = (d.next + 1) % MOST
 }
 
 /// A mote of `kind` at `at` going `vel`, its size `size` growing to `end`, for `life` seconds.
@@ -76,34 +81,38 @@ pub fn mote(kind: f32, at: vec2, vel: vec2, size: f32, end: f32, life: f32, colo
 /// The particles `dt` seconds on: moved, slowed, pulled, aged; the old ones gone. A bubble that
 /// reaches the water's surface (`surface`, at its x) bursts.
 pub fn step_dust(d: mut Dust, dt: f32, surface: fn(vec2) -> Option<f32>) {
-    var kept: Vec<Mote> = Vec::new()
-    for m in d.motes {
-        var n = m
+    for i in 0..d.motes.len() {
+        var n = d.motes[i]
+        if n.age >= n.life {
+            continue
+        }
         n.age += dt
         n.vel = n.vel * exp(-n.drag * dt) - vec2(0.0, n.gravity * dt)
         n.at += n.vel * dt
         n.angle += n.spin * dt
         if n.kind == BUBBLE {
             n.vel.x += sin(n.age * 9.0 + n.size.x * 100.0) * dt * 2.0
-            match surface(n.at) {
-                Some(y) => {
-                    if n.at.y > y - n.size.x {
-                        continue
-                    }
-                },
-                None => continue,
+            let burst = match surface(n.at) {
+                Some(y) => n.at.y > y - n.size.x,
+                None => true,
+            }
+            if burst {
+                n.age = n.life
             }
         }
-        if n.age < n.life {
-            kept.push(n)
-        }
+        d.motes[i] = n
     }
-    d.motes = take kept
 }
 
 /// The particles as sprites: those behind the water into `back`, those in front into `front`.
 pub fn dust_sprites(d: Dust, back: mut Vec<Sprite>, front: mut Vec<Sprite>) {
-    for m in d.motes {
+    // The oldest first, as they were made: the ring from where the next goes.
+    let n = d.motes.len()
+    for j in 0..n {
+        let m = d.motes[(d.next + j) % n]
+        if m.age >= m.life {
+            continue
+        }
         let t = m.age / m.life
         let r = m.size.x + (m.size.y - m.size.x) * t
         let (half, angle) = if m.kind == STREAK {

@@ -1,0 +1,279 @@
+// Textures compressed on the GPU, a block of 4 × 4 texels an invocation, into the words a
+// buffer-to-texture copy puts in a block format's texture (`std::gpu::copy_buffer_to_texture`):
+// BC7 in its mode 6 alone (one subset, colour and alpha, 7 bits and a parity bit an endpoint, 4-bit
+// indices), and BC4 a channel (BC5: two of them), as real-time encoders do: endpoints from the
+// block's range, each texel the nearest of their palette (van Waveren, Real-Time DXT Compression,
+// Intel 2006; van Waveren and Castaño, Real-Time YCoCg-DXT Compression, 2007). And the plain
+// form, two channels of a four-channel texture packed as halves, where the device has no BC.
+
+use std::gpu::{Atomics, GlobalId, Half2, Rgba16Float, Rgba8, Texture}
+
+/// `w` with `n` bits of `v` written from bit `at` on (the block's bits, the first word's lowest
+/// first).
+fn put(w: [u32; 4], at: u32, v: u32, n: u32) -> [u32; 4] {
+    var o = w
+    let i = at / 32
+    let b = at % 32
+    let bits = if n >= 32 { v } else { v & ((1 << n) - 1) }
+    o[i] = o[i] | (bits << b)
+    if b + n > 32 {
+        o[i + 1] = o[i + 1] | (bits >> (32 - b))
+    }
+    o
+}
+
+/// BC7's 4-bit indices' weights (over 64).
+const WEIGHTS: [u32; 16] = [0, 4, 9, 13, 17, 21, 26, 30, 34, 38, 43, 47, 51, 55, 60, 64]
+
+/// An endpoint (each channel 0 to 255) quantized to 7 bits and a parity bit shared by its four
+/// channels (mode 6): the parity that leaves the least error, and the endpoint it gives.
+fn endpoint(v: vec4) -> (vec4u, u32) {
+    var best = vec4u(0)
+    var parity = 0
+    var least = 1.0e9
+    for p in 0..2 {
+        let q = clamp(vec4u(round((v - vec4(f32(p))) * 0.5)), vec4u(0), vec4u(127))
+        let back = vec4(q * 2 + vec4u(p))
+        let e = dot(back - v, back - v)
+        if e < least {
+            least = e
+            best = q
+            parity = p
+        }
+    }
+    (best, parity)
+}
+
+/// Each texel of `px` the weight (of `WEIGHTS`, over 64) nearest its place on the line from `lo`
+/// to `hi`, as 0 to 1.
+fn places_on(px: [vec4; 16], lo: vec4, hi: vec4) -> [f32; 16] {
+    let d = hi - lo
+    let dd = dot(d, d)
+    var t = [0.0; 16]
+    for i in 0..16 {
+        let u = if dd > 0.0 { clamp(dot(px[i] - lo, d) / dd, 0.0, 1.0) } else { 0.0 }
+        t[i] = round(u * 15.0) / 15.0
+    }
+    t
+}
+
+/// The endpoints that fit `px` best (least squares) given each texel's place `t` between them;
+/// `lo` and `hi` if the places don't determine them.
+fn fitted(px: [vec4; 16], t: [f32; 16], lo: vec4, hi: vec4) -> (vec4, vec4) {
+    var a = 0.0
+    var b = 0.0
+    var c = 0.0
+    var x = vec4(0.0)
+    var y = vec4(0.0)
+    for i in 0..16 {
+        let u = 1.0 - t[i]
+        let v = t[i]
+        a += u * u
+        b += u * v
+        c += v * v
+        x += px[i] * u
+        y += px[i] * v
+    }
+    let det = a * c - b * b
+    if abs(det) < 1.0e-6 {
+        return (lo, hi)
+    }
+    (
+        clamp((x * c - y * b) / det, vec4(0.0), vec4(255.0)),
+        clamp((y * a - x * b) / det, vec4(0.0), vec4(255.0)),
+    )
+}
+
+/// The 16 texels `px` (each channel 0 to 255) as a BC7 mode 6 block: its endpoints the corners of
+/// their range, refined once by least squares on the places that gives them; each texel the
+/// weight nearest its place between them.
+pub fn bc7_mode6(px: [vec4; 16]) -> vec4u {
+    var lo = vec4(255.0)
+    var hi = vec4(0.0)
+    for i in 0..16 {
+        lo = min(lo, px[i])
+        hi = max(hi, px[i])
+    }
+    let (flo, fhi) = fitted(px, places_on(px, lo, hi), lo, hi)
+    lo = flo
+    hi = fhi
+    let first = endpoint(lo)
+    let last = endpoint(hi)
+    var q0 = first.0
+    var p0 = first.1
+    var q1 = last.0
+    var p1 = last.1
+    let e0 = vec4(q0 * 2 + vec4u(p0))
+    let e1 = vec4(q1 * 2 + vec4u(p1))
+    let d = e1 - e0
+    let dd = dot(d, d)
+    var idx = [0; 16]
+    for i in 0..16 {
+        let t = if dd > 0.0 { clamp(dot(px[i] - e0, d) / dd, 0.0, 1.0) } else { 0.0 }
+        var best = 0
+        var gap = 1.0e9
+        for k in 0..16 {
+            let g = abs(t * 64.0 - f32(WEIGHTS[k]))
+            if g < gap {
+                gap = g
+                best = k
+            }
+        }
+        idx[i] = best
+    }
+    // The first texel's index has its top bit implied 0: swap the endpoints if it'd be set.
+    if idx[0] >= 8 {
+        let (tq, tp) = (q0, p0)
+        q0 = q1
+        p0 = p1
+        q1 = tq
+        p1 = tp
+        for i in 0..16 {
+            idx[i] = 15 - idx[i]
+        }
+    }
+    var w = [0; 4]
+    w = put(w, at: 0, v: 64, n: 7)
+    for c in 0..4 {
+        w = put(w, at: 7 + 14 * c, v: q0[c], n: 7)
+        w = put(w, at: 14 + 14 * c, v: q1[c], n: 7)
+    }
+    w = put(w, at: 63, v: p0, n: 1)
+    w = put(w, at: 64, v: p1, n: 1)
+    w = put(w, at: 65, v: idx[0], n: 3)
+    for i in 1..16 {
+        w = put(w, at: 68 + 4 * (i - 1), v: idx[i], n: 4)
+    }
+    vec4u(w[0], w[1], w[2], w[3])
+}
+
+/// The 16 values `v` (0 to 1) as a BC4 block (two words): its endpoints their largest and least,
+/// each value the nearest of the eight their palette holds.
+pub fn bc4(v: [f32; 16]) -> vec2u {
+    var mx = 0.0
+    var mn = 1.0
+    for i in 0..16 {
+        mx = max(mx, v[i])
+        mn = min(mn, v[i])
+    }
+    let r0 = u32(round(saturate(mx) * 255.0))
+    let r1 = u32(round(saturate(mn) * 255.0))
+    var w = [0; 4]
+    w = put(w, at: 0, v: r0, n: 8)
+    w = put(w, at: 8, v: r1, n: 8)
+    if r0 > r1 {
+        // Its eight: r0, r1, then six between them, from r0's end.
+        for i in 0..16 {
+            let x = saturate(v[i]) * 255.0
+            var best = 0
+            var gap = 1.0e9
+            for k in 0..8 {
+                let p = if k == 0 { f32(r0) } else if k == 1 { f32(r1) } else {
+                    (f32(8 - k) * f32(r0) + f32(k - 1) * f32(r1)) / 7.0
+                }
+                let g = abs(x - p)
+                if g < gap {
+                    gap = g
+                    best = k
+                }
+            }
+            w = put(w, at: 16 + 3 * i, v: best, n: 3)
+        }
+    }
+    vec2u(w[0], w[1])
+}
+
+/// Block `id` of `colour` (`blocks` blocks a row) as BC7 (`bc7_mode6`): its four words into
+/// `out` at its place.
+@compute(64)
+pub fn encode_bc7(colour: Texture<Rgba8>, blocks: vec2u, out: mut Atomics<u32>, id: GlobalId) {
+    if id.x >= blocks.x * blocks.y {
+        return
+    }
+    let b = vec2u(id.x % blocks.x, id.x / blocks.x) * 4
+    var px = [vec4(0.0); 16]
+    for i in 0..16 {
+        px[i] = colour.load(x: b.x + i % 4, y: b.y + i / 4) * 255.0
+    }
+    let w = bc7_mode6(px)
+    for k in 0..4 {
+        out.store(4 * id.x + k, w[k])
+    }
+}
+
+/// Channels `which` of texel `t`: 0, x and y, mapped from [-1, 1] by `* 0.5 + 0.5`; 1, z and w,
+/// as they are.
+fn channels(t: vec4, which: u32) -> vec2 {
+    if which == 0 { t.xy * 0.5 + vec2(0.5) } else { t.zw }
+}
+
+/// Block `id` of channels `which` (`channels`) of `normal` as BC5 (a BC4 a channel): its four
+/// words into `out`.
+@compute(64)
+pub fn encode_bc5(
+    normal: Texture<Rgba16Float>,
+    which: u32,
+    blocks: vec2u,
+    out: mut Atomics<u32>,
+    id: GlobalId,
+) {
+    if id.x >= blocks.x * blocks.y {
+        return
+    }
+    let b = vec2u(id.x % blocks.x, id.x / blocks.x) * 4
+    var r = [0.0; 16]
+    var g = [0.0; 16]
+    for i in 0..16 {
+        let t = normal.load(x: b.x + i % 4, y: b.y + i / 4)
+        let two = channels(t, which)
+        r[i] = two.x
+        g[i] = two.y
+    }
+    let a = bc4(r)
+    let c = bc4(g)
+    out.store(4 * id.x, a.x)
+    out.store(4 * id.x + 1, a.y)
+    out.store(4 * id.x + 2, c.x)
+    out.store(4 * id.x + 3, c.y)
+}
+
+/// Texel `id` of channels `which` of `normal` (as `encode_bc5` maps them), packed as two halves:
+/// a two-channel half-float texture's texel, for a device without BC.
+@compute(64)
+pub fn halves(
+    normal: Texture<Rgba16Float>,
+    which: u32,
+    size: vec2u,
+    out: mut Atomics<u32>,
+    id: GlobalId,
+) {
+    if id.x >= size.x * size.y {
+        return
+    }
+    let t = normal.load(x: id.x % size.x, y: id.x / size.x)
+    out.store(id.x, Half2::encode(channels(t, which)).bits)
+}
+
+/// A flat block's BC7 decodes to its colour, within a step of its quantization; a block of two
+/// colours keeps both ends; BC4 keeps a ramp's ends and puts a midpoint near the middle.
+@test
+fn blocks_hold_their_texels() {
+    let flat = bc7_mode6([vec4(200.0, 100.0, 50.0, 255.0); 16])
+    // Mode 6: its first seven bits say so.
+    assert((flat.x & 127) == 64, "not a mode 6 block")
+    let r0 = ((flat.x >> 7) & 127) * 2
+    assert(r0 >= 198 && r0 <= 202, f"the flat block's red endpoint is {r0}")
+    var two = [vec4(0.0, 0.0, 0.0, 255.0); 16]
+    for i in 8..16 {
+        two[i] = vec4(255.0)
+    }
+    let b = bc7_mode6(two)
+    let index_bits = b.z >> 1
+    assert(index_bits != 0 || b.w != 0, "two colours share an index")
+    var ramp = [0.0; 16]
+    for i in 0..16 {
+        ramp[i] = f32(i) / 15.0
+    }
+    let r = bc4(ramp)
+    assert((r.x & 255) == 255 && ((r.x >> 8) & 255) == 0, "the ramp's ends aren't its endpoints")
+}

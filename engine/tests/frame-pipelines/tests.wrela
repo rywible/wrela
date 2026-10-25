@@ -6,8 +6,18 @@ use std::io::print
 use std::tool::toolchain
 use std::tool::toolchain::Override
 
-/// How many pipelines a bare scene's frame makes.
-const FRAME_PIPELINES: u32 = 28
+/// How many pipelines a bare scene's frame makes (31 since B3: the terrain's sides bounded
+/// and culled, `terrain::bound_sides` and `cull_sides`, and the probes' voxels cleared before a
+/// cook, `probes::clear_voxels`; 33 since B4b: the depth pyramid's, `cull::level_zero` and
+/// `farthest`; 34 since B8.1: the ambient occlusion's, `ambient::gtao`; 35 since B8.4: the local
+/// lights' binning, `lights::bin`, dispatched only when a scene has lights; 38 since B8.5: the
+/// reflections', `reflect::bake_sky`, `prefilter` and the screen's copy, `copy_below`; 39 since
+/// B8.7: the bloom's pyramid, `paint::bloom_down` and `bloom_up`, for the glow's two, and the
+/// identity grading table's kernel, `identity_lut`; 52 since B9: the particles' (`particles`:
+/// `simulate`, `admit`, `groups_of`, `draw_args`, `keys_of`, the sort's `digit_counts`,
+/// `scan_blocks`, `scan_sums`, `add_sums` and `scatter`, `light_particle`, the particles' draw)
+/// and the see-through matter's `composite`, reached, made only when a scene has them).
+const FRAME_PIPELINES: u32 = 52
 
 /// The fixture's pipelines: each one's entry points, `+` between them.
 fn pipelines() -> Vec<String> {

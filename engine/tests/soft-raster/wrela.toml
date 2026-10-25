@@ -1,0 +1,8 @@
+# The software rasterizer (engine/virtual.wrela's small clusters) on the GPU, on triangles given
+# in clip space: coplanar triangles resolve to the smaller id every run, and the merge into a
+# visibility pass keeps the nearer of the two rasterizers' and skips what software left.
+[package]
+name = "soft_raster_tests"
+
+[dependencies]
+engine = { workspace = true }

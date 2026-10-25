@@ -1,0 +1,217 @@
+// The frame's occlusion culling: a depth pyramid (a hierarchical depth buffer: Greene, Kass and
+// Miller, Hierarchical Z-Buffer Visibility, SIGGRAPH 1993) built from the frame's depth, and the
+// test a kernel makes against it (two-phase, after Haar and Aaltonen, GPU-Driven Rendering
+// Pipelines, SIGGRAPH 2015).
+//
+// Depth is reversed (`view`: 1 at the near plane, 0 at infinity, cleared to 0), so each level
+// above the first holds the least of the texels under it: the farthest depth in its cell, and
+// an uncovered pixel (0) keeps the whole cell open. A level of odd width or height has a last
+// column or row its parent's last texel covers with the two before it, so no texel goes
+// unrepresented.
+//
+// A thing is occluded when its nearest point is farther than the farthest depth stored over
+// what it covers on screen, read at the level where that is at most 2 × 2 texels. The frame tests
+// against last frame's pyramid first (phase 1: what was hidden then stays out of the first
+// passes), then builds this frame's after its opaque passes and tests what phase 1 left out
+// against it (phase 2): what's revealed this frame is drawn this frame.
+
+use std::gpu::{
+    DepthTexture, GlobalId, MipStep, R32Float, Texels, Texture, dispatch, label, mip_levels,
+    writable_texture,
+}
+use view::Camera
+
+/// What an occlusion test reads beside the pyramid: the camera it was built from (its
+/// projection, its eye and forward and near plane), level 0's size, its levels, and whether it's
+/// to be used (`on` 0: nothing is occluded, as before a pyramid is built or after the render
+/// origin moved).
+pub struct Hzb: Copy + GpuData {
+    pub view_proj: mat4,
+    pub eye: vec3,
+    pub near: f32,
+    pub forward: vec3,
+    pub levels: u32,
+    pub size: vec2,
+    pub on: u32,
+}
+
+/// No pyramid: nothing occluded.
+pub const NO_HZB = Hzb {
+    view_proj: mat4(
+        vec4(1.0, 0.0, 0.0, 0.0),
+        vec4(0.0, 1.0, 0.0, 0.0),
+        vec4(0.0, 0.0, 1.0, 0.0),
+        vec4(0.0, 0.0, 0.0, 1.0),
+    ),
+    eye: vec3(0.0),
+    near: 1.0,
+    forward: vec3(0.0, 0.0, 1.0),
+    levels: 1,
+    size: vec2(1.0),
+    on: 0,
+}
+
+/// A depth pyramid: its levels (an `R32Float` chain at the scene's size) and what it was built
+/// from (`Hzb`).
+pub struct Pyramid {
+    pub depth: Texture<R32Float>,
+    pub at: Hzb,
+}
+
+impl Pyramid {
+    /// The GPU bytes its levels take.
+    pub fn bytes(self) -> u64 {
+        var n: u64 = 0
+        for l in 0..self.depth.levels() {
+            let (w, h) = (max(self.depth.width() >> l, 1), max(self.depth.height() >> l, 1))
+            n += memory::texels(w, h, 4)
+        }
+        n
+    }
+
+    /// A pyramid for a scene `width` × `height`, not built yet.
+    pub fn new(width: u32, height: u32) -> Pyramid {
+        let w = max(width, 1)
+        let h = max(height, 1)
+        Pyramid {
+            depth: writable_texture::<R32Float>(width: w, height: h, levels: mip_levels(w, h)),
+            at: Hzb { size: vec2(f32(w), f32(h)), levels: mip_levels(w, h), ..NO_HZB },
+        }
+    }
+
+    /// Built from `depth` (the scene's, as `cam` drew it): level 0 its texels, each level above
+    /// the least of the texels under it. One dispatch a level.
+    pub fn build(mut self, depth: DepthTexture, cam: Camera) {
+        let w = self.depth.width()
+        let h = self.depth.height()
+        label("occlusion pyramid")
+        dispatch(level_zero.bind(depth, size: vec2u(w, h), out: mut self.depth), over: (w, h))
+        self.reduce(cam)
+    }
+
+    /// Built from `texels` (level 0's, a row after another, `width` × `height`): a test's.
+    pub fn build_from(mut self, texels: [f32], cam: Camera) {
+        var bytes: Vec<u8> = Vec::new()
+        for t in texels {
+            let b = bitcast_u32(t)
+            bytes.push(u8(b & 255))
+            bytes.push(u8((b >> 8) & 255))
+            bytes.push(u8((b >> 16) & 255))
+            bytes.push(u8(b >> 24))
+        }
+        let w = self.depth.width()
+        let h = self.depth.height()
+        self.depth.write(x: 0, y: 0, width: w, height: h, bytes: bytes)
+        self.reduce(cam)
+    }
+
+    /// Each level above 0 built from the one under it (`farthest`, one dispatch a level), and what
+    /// it was built from: `cam`'s.
+    fn reduce(mut self, cam: Camera) {
+        let w = self.depth.width()
+        let h = self.depth.height()
+        for l in 1..self.depth.levels() {
+            dispatch(
+                farthest.bind(step: self.depth.mip_step(l)),
+                over: (max(w >> l, 1), max(h >> l, 1)),
+            )
+        }
+        self.at = Hzb {
+            view_proj: cam.view_proj,
+            eye: cam.eye,
+            near: cam.near,
+            forward: cam.forward,
+            levels: self.depth.levels(),
+            size: vec2(f32(w), f32(h)),
+            on: 1,
+        }
+    }
+}
+
+/// Level 0: the scene's depth texel at `id`.
+@compute(8, 8)
+fn level_zero(depth: DepthTexture, size: vec2u, out: mut Texels<R32Float>, id: GlobalId) {
+    if id.x >= size.x || id.y >= size.y {
+        return
+    }
+    out.store(id, depth.load(x: id.x, y: id.y))
+}
+
+/// The children a parent texel `p` of a level covers in the level under it (`w` its size on
+/// that axis): its two, and the last one too where the child level is odd and `p` is its
+/// parent's last texel.
+fn children(p: u32, w: u32) -> vec2u {
+    let first = 2 * p
+    let last = if first + 2 == w - 1 { first + 2 } else { min(first + 1, w - 1) }
+    vec2u(min(first, w - 1), last)
+}
+
+/// A level's texel `id`: the least (farthest) of the texels it covers in the level under it.
+@compute(8, 8)
+fn farthest(step: mut MipStep<R32Float>, id: GlobalId) {
+    let src = step.source_size()
+    let w = max(src.x / 2, 1)
+    let h = max(src.y / 2, 1)
+    if id.x >= w || id.y >= h {
+        return
+    }
+    let xs = children(id.x, src.x)
+    let ys = children(id.y, src.y)
+    var least = 1.0
+    for y in ys.x..(ys.y + 1) {
+        for x in xs.x..(xs.y + 1) {
+            least = min(least, step.load(x: x, y: y))
+        }
+    }
+    step.store(id, least)
+}
+
+/// Whether a sphere at `centre` of `radius` (render space) is hidden behind what `pyramid` holds
+/// (`h` what it was built from): its nearest point's depth less than the farthest depth over the
+/// pixels its box covers, read where they're at most 2 × 2 texels. Not hidden if the pyramid is
+/// off, or the sphere reaches the near plane or behind it.
+pub fn occluded(pyramid: Texture<R32Float>, h: Hzb, centre: vec3, radius: f32) -> bool {
+    if h.on == 0 {
+        return false
+    }
+    let ahead = dot(centre - h.eye, h.forward) - radius
+    if ahead <= h.near {
+        return false
+    }
+    // The pixels the sphere's box covers (each corner beyond the near plane, since its nearest
+    // point is), a pixel wider each way for the jitter.
+    var lo = vec2(1.0e9)
+    var hi = vec2(-1.0e9)
+    for c in 0..8 {
+        let p = centre + vec3(
+            if (c & 1) == 0 { -radius } else { radius },
+            if (c & 2) == 0 { -radius } else { radius },
+            if (c & 4) == 0 { -radius } else { radius },
+        )
+        let q = h.view_proj * vec4(p, 1.0)
+        if q.w <= 1.0e-4 {
+            return false
+        }
+        let px = vec2(q.x / q.w * 0.5 + 0.5, 0.5 - q.y / q.w * 0.5) * h.size
+        lo = min(lo, px)
+        hi = max(hi, px)
+    }
+    lo = max(lo - vec2(1.0), vec2(0.0))
+    hi = min(hi + vec2(1.0), h.size - vec2(1.0))
+    if hi.x < lo.x || hi.y < lo.y {
+        // Off screen: the frustum's test's, not this one's.
+        return false
+    }
+    let span = max(hi.x - lo.x, hi.y - lo.y)
+    let level = min(u32(ceil(log2(max(span, 1.0)))), h.levels - 1)
+    let size = vec2u(max(u32(h.size.x) >> level, 1), max(u32(h.size.y) >> level, 1))
+    let a = min(vec2u(lo) >> vec2u(level), size - vec2u(1))
+    let b = min(vec2u(hi) >> vec2u(level), size - vec2u(1))
+    var farthest = 1.0
+    for y in a.y..(b.y + 1) {
+        for x in a.x..(b.x + 1) {
+            farthest = min(farthest, pyramid.load(x: x, y: y, level: level))
+        }
+    }
+    h.near / ahead < farthest
+}

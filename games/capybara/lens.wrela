@@ -1,0 +1,71 @@
+// What the studio's course lens needs of the game (studio/courselens: `wrela tool studio --
+// games/capybara`): the first level's course as its literals say now, in plain corners, lines and
+// boxes, and where its recorded any% run goes. The lens moves the course's corners by their
+// literals and writes them back through `wrela edit`; nothing of the studio is in the game.
+
+use course::made
+use feel::HZ
+use pad::pad_of
+use proofs::LEVEL_ANY
+use world::{step, world}
+
+/// The ticks a second its run is recorded at (`run`, a position a tick): the sim's.
+pub const TICKS: f32 = f32(HZ)
+
+/// The course the lens shows: the first level.
+const SHOWN: u32 = 1
+
+/// How far apart the ground's lines sample its pieces (m).
+const SAMPLE: f32 = 0.25
+
+/// The course as its literals say now: each chain's corners, its ground as lines (each chain's
+/// pieces sampled every `SAMPLE`), and its water's boxes (left, bottom, right, top).
+pub fn course() -> (Vec<Vec<vec2>>, Vec<Vec<vec2>>, Vec<vec4>) {
+    let c = made(SHOWN)
+    var ground: Vec<Vec<vec2>> = Vec::new()
+    for k in 0..c.chains.len() - 1 {
+        var line: Vec<vec2> = Vec::new()
+        for i in c.chains[k]..c.chains[k + 1] {
+            let p = c.pieces[i]
+            let n = max(u32(ceil(p.length / SAMPLE)), 1)
+            for s in 0..n {
+                line.push(p.point(p.length * f32(s) / f32(n)))
+            }
+            if i + 1 == c.chains[k + 1] {
+                line.push(p.point(p.length))
+            }
+        }
+        ground.push(take line)
+    }
+    var waters: Vec<vec4> = Vec::new()
+    for w in c.waters {
+        waters.push(vec4(w.lo, w.hi))
+    }
+    (take c.corners, ground, waters)
+}
+
+/// Where the capybara's middle is each tick of the level's recorded any% run
+/// (`proofs::LEVEL_ANY`), on the course as the game is built.
+pub fn run() -> Vec<vec2> {
+    var w = world(SHOWN)
+    var out: Vec<vec2> = Vec::from([w.body.at])
+    for h in LEVEL_ANY {
+        for i in 0..h.ticks {
+            if w.finished == 0 {
+                step(mut w, pad_of(h, i))
+                out.push(w.body.at)
+            }
+        }
+    }
+    out
+}
+
+@test
+fn the_lens_sees_each_chains_corners_and_the_run_reaches_the_goal() {
+    let (corners, ground, waters) = course()
+    let c = made(SHOWN)
+    assert(corners.len() == c.chains.len() - 1 && ground.len() == corners.len())
+    assert(waters.len() == c.waters.len())
+    let path = run()
+    assert(c.at_goal(path[path.len() - 1]), "the recorded run ends at the goal")
+}

@@ -1284,7 +1284,6 @@ impl Grass {
         grounds: std::gpu::GpuSpan<f32>,
         stones: std::gpu::GpuSpan<vec4>,
     ) {
-        std::gpu::label("grass")
         self.near.clear()
         self.middle.clear()
         self.far.clear()
@@ -1641,7 +1640,8 @@ pub fn blade_shade(
     let sun = sun_at(lt, world, ground, soft: 1.5)
     // Darker down in the sward, but not so much that each blade reads as a dark-rooted spike.
     let ao = 0.5 + 0.5 * smoothstep(0.0, 0.8, t)
-    let sky = b.sky.decode().xyz * 2.0 * ao
+    // And by what's near it beyond its own sward (`lit::ambient_at`).
+    let sky = b.sky.decode().xyz * 2.0 * ao * lit::ambient_at(lt, world)
     // (A wood's floor plant's species; a meadow blade's third part is how deep a green it is.)
     let sp = if kind > 0.1 { u32(round(colour.z * 255.0)) } else { 0 }
     let albedo = if sp > 0 {

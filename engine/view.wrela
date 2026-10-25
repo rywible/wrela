@@ -238,9 +238,14 @@ impl Camera {
         self.pixel_of(self.last_view_proj * vec4(world, 1.0))
     }
 
+    /// The tangent of the angle between where it looks and its view's corners.
+    pub fn corner_tan(self) -> f32 {
+        self.tan_half * sqrt(1.0 + self.aspect * self.aspect)
+    }
+
     /// The angle between where it looks and its view's corners (radians).
     pub fn corner_angle(self) -> f32 {
-        atan(self.tan_half * sqrt(1.0 + self.aspect * self.aspect))
+        atan(self.corner_tan())
     }
 
     /// Where a world point is on the target this frame, in pixels, unjittered.
@@ -249,7 +254,7 @@ impl Camera {
     }
 
     /// Where clip position `c` is on the target, in pixels from its top left.
-    fn pixel_of(self, c: vec4) -> vec2 {
+    pub fn pixel_of(self, c: vec4) -> vec2 {
         let ndc = c.xy / c.w
         vec2((ndc.x * 0.5 + 0.5) * self.screen.x, (0.5 - ndc.y * 0.5) * self.screen.y)
     }

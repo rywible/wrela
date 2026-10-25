@@ -1,0 +1,8 @@
+# Local lights (engine/lights.wrela) on the GPU: 200 lights binned into a camera's froxels,
+# each froxel's count read back against the same binning on the CPU, and a light's light shed
+# on surfaces in its reach and out of it.
+[package]
+name = "lights_tests"
+
+[dependencies]
+engine = { workspace = true }

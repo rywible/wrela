@@ -5,7 +5,7 @@
 [workspace]
 # The toolchain release the workspace runs: a `wrela` of another release runs this one instead,
 # downloading it to ~/.wrela/toolchains (`wrela toolchain` says which runs and why).
-toolchain = "0.5.2"
+toolchain = "0.6.3"
 members = [
     "console",
     "console/tests/shader-budget",
@@ -16,7 +16,6 @@ members = [
     "engine/tests/*",
     "examples/*",
     "examples/clearing/tests/checks",
-    "examples/clusters/tests/cuts",
     "examples/gymnopedie/tests/piece",
     "examples/herd/tests/layers",
     "examples/herd/tests/raycasts",
@@ -24,6 +23,7 @@ members = [
     "games/*",
     "games/capybara/scores",
     "games/capybara/route",
+    "games/capybara/budget",
     "games/capybara/keys",
     "games/last-green/session",
     "games/last-green/session/tests/export",
@@ -41,7 +41,10 @@ members = [
     "studio/glue",
     "studio/maplens",
     "studio/maplens/glue",
+    "studio/courselens",
+    "studio/courselens/glue",
     "studio/audio",
+    "studio/bench",
     "studio/toolkit",
     "studio/listening",
     "studio/lookbook",
@@ -80,6 +83,8 @@ allow = [
     "docs/citations.md",
     "docs/toolchain.md",
     "docs/toolchain-gaps.md",
+    "docs/plan-world-class.md",
+    "docs/bench.md",
     "games/*/design.md",
     ".gitignore",
     ".github/workflows/deploy.yml",
@@ -140,6 +145,14 @@ package = "studio/round"
 write = ["ws=."]
 browser = true
 
+# The bench tool (studio/bench): what the engine's scenes cost on this machine, in headless
+# Chrome and natively. It reads the workspace's packages and builds each into build/bench, and
+# adds its table to docs/bench.md, so it writes the workspace.
+[tools.bench]
+package = "studio/bench"
+write = ["ws=.", "out=build/bench"]
+browser = true
+
 # The serve tool (studio/serve): a directory of the workspace served to a browser on this
 # machine, its pages' results written into its `results/`.
 [tools.serve]
@@ -148,6 +161,11 @@ write = ["ws=."]
 
 # The route tool (games/capybara/route): the route search's fastest runs of the capybara game's
 # first level. It writes them as the game's routes.wrela, in games/capybara.
+# The budget tool (games/capybara/budget): the capybara game's voice at its busiest, timed a
+# quantum at a time against its audio budget. It writes nothing.
+[tools.budget]
+package = "games/capybara/budget"
+
 [tools.route]
 package = "games/capybara/route"
 write = ["game=games/capybara"]

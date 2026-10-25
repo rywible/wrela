@@ -4,7 +4,8 @@
 // channels' numbers for the probe, its spec and its blueprint's outlines. What it needs to know
 // of the subject, the compiler tells it: the tool writes a probe beside the subject and asks
 // `toolchain::query` about it (`probe` and `read_probe`). A floor's map lens is
-// studio/maplens/glue's program, with the floor's `lens` module in place of the Last Green's.
+// studio/maplens/glue's program, with the floor's `lens` module in place of the Last Green's; a
+// game's course lens is studio/courselens/glue's, with the game's in place of the capybara's.
 
 use std::json::{TOP, parse}
 use std::collections::Vec
@@ -59,6 +60,27 @@ pub fn package_name(text: str, dir: str) -> String {
         name.push_byte(if b == 45 { 95 } else { b })
     }
     name
+}
+
+/// Which lens shows a package: the field lens (a subject's), the map lens (a floor's) or the
+/// course lens (a 2D game's course).
+pub enum LensKind: Copy + Eq {
+    Field,
+    Map,
+    Course,
+}
+
+/// Which lens shows the package whose module `lens` is `text` (empty if it has none): the map
+/// lens if its `lens` has `pub fn map()` and `pub fn preview()` (a floor), the course lens if it
+/// has `pub fn course()` and `pub fn run()`, else the field lens.
+pub fn lens_kind(text: str) -> LensKind {
+    if is_floor(text) {
+        LensKind::Map
+    } else if text.find("pub fn course(").is_some() && text.find("pub fn run(").is_some() {
+        LensKind::Course
+    } else {
+        LensKind::Field
+    }
 }
 
 /// Whether the package whose module `lens` is `text` is a floor, which the map lens shows: its
@@ -326,6 +348,12 @@ pub fn floor_text(template: str, name: str, geology: bool) -> String {
     out
 }
 
+/// The course lens's module `course` for the game `name`, from studio/courselens/glue's
+/// (`template`, the capybara's): the game's name in its place.
+pub fn course_text(template: str, name: str) -> String {
+    replace(template, "capybara::", f"{name}::".as_str())
+}
+
 /// `text` with each `from` replaced by `to`.
 pub fn replace(text: str, from: str, to: str) -> String {
     var out = String::new()
@@ -388,4 +416,17 @@ fn a_floors_module_is_the_last_greens_with_its_name() {
     let without = floor_text(t, "moor", geology: false)
     assert(without.as_str().find("    None\n").is_some())
     assert(is_floor("pub fn map() {}\npub fn preview() {}") && !is_floor("pub fn map() {}"))
+}
+
+@test
+fn a_games_lens_with_a_course_and_a_run_is_the_course_lenss() {
+    assert(lens_kind("pub fn course() {}\npub fn run() {}") == LensKind::Course)
+    assert(lens_kind("pub fn course() {}") == LensKind::Field)
+    assert(lens_kind("pub fn map() {}\npub fn preview() {}") == LensKind::Map)
+    assert(lens_kind("") == LensKind::Field)
+    let t = "    let (a, b, c) = capybara::lens::course()\n    capybara::lens::run()\n    capybara::lens::TICKS\n"
+    let g = course_text(t, "otter")
+    assert(g.as_str().find("otter::lens::course()").is_some(), g.as_str())
+    assert(g.as_str().find("otter::lens::run()").is_some(), g.as_str())
+    assert(g.as_str().find("otter::lens::TICKS").is_some(), g.as_str())
 }

@@ -35,8 +35,9 @@ use std::derive::{Box3, gradient}
 use std::field::Surface
 use std::collections::replace
 use std::gpu::{
-    Append, AppendBuffer, Atomics, DispatchArgs, DrawIndexedArgs, GlobalId, GpuBuffer, LocalId, One,
-    Shared, Slots, WorkgroupId, append_buffer, barrier, buffer, dispatch, read, write,
+    Append, AppendBuffer, Atomics, DispatchArgs, DrawIndexedArgs, GlobalId, GpuBuffer, GpuSpan,
+    LocalId, One, Shared, Slots, WorkgroupId, append_buffer, barrier, buffer, copy, dispatch, read,
+    write,
 }
 use std::io::Pending
 use std::mem::{debug_build, size_of}
@@ -702,6 +703,47 @@ impl Mesh {
     }
 }
 
+/// `m` fitted to what it holds (`vertices` and `quads`, as its tally and draw read back say): a
+/// mesh with just that room, the used part copied into it, with its draw, skin pass and tally. A
+/// realization makes room for its whole grid's blocks (`prepare`), which a surface crosses a
+/// few of: the Last Green's built things held 558 MiB in that room. It's a mesh to draw, not to
+/// realize into again: its vertices' and quads' append counts start at 0 (std can't set an
+/// append buffer's count but by pushing, which would reorder its items), so what reads it reads
+/// its draw, its skin pass's groups and its tally, as every reader of a realized mesh does.
+pub fn fitted(m: take Mesh, vertices: u32, quads: u32) -> Mesh {
+    var m = take m
+    m.fit(vertices, quads)
+    m
+}
+
+impl Mesh {
+    /// Fitted in place to what it holds (`vertices` and `quads`): as `fitted`, for a mesh held
+    /// where it can't be moved out.
+    pub fn fit(mut self, vertices: u32, quads: u32) {
+        let (v, q) = (max(vertices, 1), max(quads, 1))
+        if v >= self.verts.capacity() && q >= self.quads.capacity() {
+            return
+        }
+        var out = Mesh::new(
+            Room { vertices: min(v, self.verts.capacity()), quads: min(q, self.quads.capacity()) },
+        )
+        let (verts, quads) = (self.verts.items(), self.quads.items())
+        copy(
+            GpuSpan { buffer: verts.buffer, start: 0, count: out.verts.capacity() },
+            out.verts.items_mut(),
+        )
+        copy(
+            GpuSpan { buffer: quads.buffer, start: 0, count: out.quads.capacity() },
+            out.quads.items_mut(),
+        )
+        copy(self.draw.items(), out.draw.items_mut())
+        copy(self.skin.items(), out.skin.items_mut())
+        copy(self.holes.items(), out.holes.items_mut())
+        copy(self.tally.items(), out.tally.items_mut())
+        self = take out
+    }
+}
+
 /// Records one realization: `field`'s mesh on `grid`, its skin weights falling off over
 /// `falloff`, into `mesh`: `record_cull`, `record_vertices`, then `record_finish` (a
 /// `Realizer` spreads a level change's vertices over frames: `record_slice`).
@@ -1020,6 +1062,8 @@ struct Held<F> {
     visible: bool,
     /// Its drawn mesh is to be realized again (a calibration's, or one that overflowed).
     stale: bool,
+    /// Frames since it was last on screen (`Realizer::evict_after`).
+    unseen: u32,
 }
 
 /// A realization whose result is being read back: its instance and level, and whether it
@@ -1086,10 +1130,38 @@ struct Slicing {
 /// largest grid waiting; each realization's counts are read back to catch an overflow, which
 /// grows the room and realizes the instance again. These two readbacks are presentation's alone:
 /// nothing read back drives a pass. A released mesh goes back to its level's free list.
+/// Frames an instance may be off screen before it drops to its coarsest level (10 s at 60 Hz:
+/// `Realizer::evict_after`'s default).
+pub const EVICT_AFTER: u32 = 600
+
+/// Meshes a level keeps for reuse once released; more are let go.
+pub const SPARE: u32 = 1
+
+/// Whether an instance off screen `unseen` frames, drawn at `drawn`, drops to its coarsest
+/// level, `after` frames off screen being the most it may stay as it is.
+pub fn evicts(unseen: u32, drawn: u32, after: u32) -> bool {
+    unseen >= after && drawn != NO_LEVEL && drawn > 0
+}
+
+/// Frames a creature's new level fades in over its old one (with the plant's dither,
+/// `lod::dithered`), the old mesh drawn beside it until it's gone.
+pub const FADE_FRAMES: u32 = 16
+
+/// A mesh an instance drew at `level` before, fading out (`age` frames of `FADE_FRAMES`).
+pub struct Fading {
+    pub instance: u32,
+    pub level: u32,
+    pub mesh: Mesh,
+    pub age: u32,
+}
+
 pub struct Realizer<F> {
     /// The type's levels and realization settings (its look's `detail`), and how far its skin
     /// weights fall off from each part (its look's).
     pub detail: Detail,
+    /// Frames an instance may be off screen before it drops to its coarsest level and lets its
+    /// finer mesh go (`engine::memory`: 10 s at 60 Hz; fewer while the budget is over).
+    pub evict_after: u32,
     falloff: f32,
     held: Vec<Held<F>>,
     rooms: Vec<LevelRoom>,
@@ -1102,6 +1174,8 @@ pub struct Realizer<F> {
     /// The meshes placed since the last `frame` (or `realize_all`): each instance and level, so a
     /// program cooks what it draws from them (`character::colours`).
     placed: Vec<(u32, u32)>,
+    /// The meshes an instance drew at its level before, kept while the new one fades in.
+    fades: Vec<Fading>,
     /// How many readbacks it made, how many realizations, and how many holes and overflows the
     /// readbacks found.
     pub readbacks: u32,
@@ -1116,6 +1190,7 @@ impl<F> Realizer<F> {
         let detail = look.detail
         Realizer {
             detail,
+            evict_after: EVICT_AFTER,
             falloff: look.deform.weights.falloff,
             held: Vec::new(),
             rooms: Vec::filled(detail.levels.len(), LevelRoom::Unknown),
@@ -1129,6 +1204,7 @@ impl<F> Realizer<F> {
             slicing: None,
             slow: Scratch::new(1),
             placed: Vec::new(),
+            fades: Vec::new(),
         }
     }
 
@@ -1146,6 +1222,7 @@ impl<F> Realizer<F> {
                 priority: 0.0,
                 visible: true,
                 stale: false,
+                unseen: 0,
             },
         )
         self.held.len() - 1
@@ -1255,6 +1332,7 @@ impl<C, F: Parts<C>> Realizer<F> {
     /// target level, from how large its cells look; then the queue, realized within the budget.
     pub fn frame(mut self, eye: Eye, placed: [Placement]) {
         self.placed.clear()
+        self.age_fades()
         self.answer()
         let n = min(self.held.len(), placed.len())
         let top = self.detail.levels.len() - 1
@@ -1267,6 +1345,7 @@ impl<C, F: Parts<C>> Realizer<F> {
         for i in 0..n {
             let (centre, radius) = self.sphere(i, placed[i])
             self.held[i].visible = on_screen(centre, radius, eye.view_proj, scale)
+            self.held[i].unseen = if self.held[i].visible { 0 } else { self.held[i].unseen + 1 }
             // The size of a pixel at its point nearest the eye.
             let near = max(length(centre - eye.at) - radius, 0.1)
             let pixel = 2.0 * near * half_height / eye.height
@@ -1285,19 +1364,27 @@ impl<C, F: Parts<C>> Realizer<F> {
                     want = drawn
                 }
             }
-            self.held[i].target = want
+            self.held[i].target = if evicts(self.held[i].unseen, drawn, self.evict_after) {
+                0
+            } else { want }
             self.held[i].priority = self.projected(top, pixel)
         }
-        // An instance this frame doesn't place isn't in it.
+        // An instance this frame doesn't place isn't in it: unseen, it drops its finer levels as
+        // one off screen does (`evicts`).
         for i in n..self.held.len() {
             self.held[i].visible = false
+            self.held[i].unseen += 1
+            if evicts(self.held[i].unseen, self.held[i].drawn, self.evict_after) {
+                self.held[i].target = 0
+            }
         }
         self.spend()
     }
 
     /// Every instance at `level`, whatever the budget, on screen or not: for still frames and
     /// tests. A frame realizes all it can; a level whose room isn't known yet is calibrated
-    /// first, which takes a readback, answered from a later frame. Whether every instance draws
+    /// first, which takes a readback, answered from a later frame. No mesh fades: a still frame
+    /// draws each instance's level whole (only `frame` ages a fade). Whether every instance draws
     /// `level` now.
     pub fn realize_all(mut self, level: u32) -> bool {
         self.placed.clear()
@@ -1313,6 +1400,10 @@ impl<C, F: Parts<C>> Realizer<F> {
             self.held[i].target = level
         }
         while self.step(force: true, off_screen: true).0 > 0.0 {}
+        while self.fades.len() > 0 {
+            let f = self.fades.remove(self.fades.len() - 1)
+            self.release(f.level, take f.mesh)
+        }
         self.settled()
     }
 
@@ -1348,6 +1439,11 @@ impl<C, F: Parts<C>> Realizer<F> {
         }
         if h.stale && h.drawn != NO_LEVEL {
             return h.drawn
+        }
+        // Off screen long enough, its coarsest (`evicts`): realized though unseen, so its finer
+        // mesh can go.
+        if !h.visible && !force && h.target == 0 && evicts(h.unseen, h.drawn, self.evict_after) {
+            return 0
         }
         if (!h.visible && !force) || h.target == NO_LEVEL {
             return NO_LEVEL
@@ -1552,8 +1648,10 @@ impl<C, F: Parts<C>> Realizer<F> {
             self.release(level, take old)
         }
         if before != NO_LEVEL && before != level {
+            // The old level's mesh is drawn beside the new one while it fades out.
+            self.end_fade(i)
             if let Some(old) = replace(mut self.held[i].meshes[before], None) {
-                self.release(before, take old)
+                self.fades.push(Fading { instance: i, level: before, mesh: old, age: 0 })
             }
         }
         self.held[i].drawn = level
@@ -1566,12 +1664,79 @@ impl<C, F: Parts<C>> Realizer<F> {
         self.placed
     }
 
+    /// The meshes fading out (each its instance's level before), each drawn where its share of
+    /// a pixel's dither is (`fade_share`: the part of the dither the new mesh hasn't taken).
+    pub fn fading(self) -> [Fading] {
+        self.fades
+    }
+
+    /// How far instance `i`'s mesh has faded in over its old level's (`FADE_FRAMES`): 1 when
+    /// it isn't fading. The new mesh draws where a pixel's dither is under it, the old where it
+    /// isn't (`lod::dithered`).
+    pub fn fade_share(self, i: u32) -> f32 {
+        for f in self.fades {
+            if f.instance == i {
+                return f32(f.age + 1) / f32(FADE_FRAMES + 1)
+            }
+        }
+        1.0
+    }
+
+    /// Ends instance `i`'s fade, if it's fading: its old mesh is released.
+    fn end_fade(mut self, i: u32) {
+        var k = 0
+        while k < self.fades.len() {
+            if self.fades[k].instance == i {
+                let f = self.fades.remove(k)
+                self.release(f.level, take f.mesh)
+            } else {
+                k += 1
+            }
+        }
+    }
+
+    /// Each fade a frame on; those done release their old mesh.
+    fn age_fades(mut self) {
+        var k = 0
+        while k < self.fades.len() {
+            self.fades[k].age += 1
+            if self.fades[k].age >= FADE_FRAMES {
+                let f = self.fades.remove(k)
+                self.release(f.level, take f.mesh)
+            } else {
+                k += 1
+            }
+        }
+    }
+
     fn release(mut self, level: u32, mesh: take Mesh) {
         if let Some(room) = self.rooms[level].room() {
-            if mesh.room() == room {
+            // A spare or so kept for reuse; the rest let go (`SPARE`).
+            if mesh.room() == room && self.free[level].len() < SPARE {
                 self.free[level].push(take mesh)
             }
         }
+    }
+
+    /// The GPU bytes its meshes take: those drawn, those fading out, and the spares.
+    pub fn bytes(self) -> u64 {
+        var n: u64 = 0
+        for h in self.held {
+            for m in h.meshes {
+                if let Some(mesh) = m {
+                    n += mesh.bytes()
+                }
+            }
+        }
+        for f in self.fades {
+            n += f.mesh.bytes()
+        }
+        for level in self.free {
+            for m in level {
+                n += m.bytes()
+            }
+        }
+        n
     }
 
     /// The readbacks that have arrived: a calibration sets its level's room; an overflow grows
@@ -1661,4 +1826,15 @@ pub fn measured_error<C, F: Parts<C>>(mesh: Mesh, field: F) -> Pending<u32> {
         groups: (max(room.vertices, room.quads) + 63) / 64,
     )
     read(out.items())
+}
+
+/// An instance off screen ten seconds drops to its coarsest level; one on screen, or at its
+/// coarsest already, or without a mesh, doesn't.
+@test
+fn an_unseen_instance_drops_to_its_coarsest_level() {
+    assert(evicts(unseen: EVICT_AFTER, drawn: 2, after: EVICT_AFTER), "an unseen fine mesh stays")
+    assert(!evicts(unseen: EVICT_AFTER - 1, drawn: 2, after: EVICT_AFTER), "it dropped early")
+    assert(!evicts(unseen: EVICT_AFTER, drawn: 0, after: EVICT_AFTER), "the coarsest dropped")
+    assert(!evicts(unseen: EVICT_AFTER, drawn: NO_LEVEL, after: EVICT_AFTER), "no mesh dropped")
+    assert(evicts(unseen: 120, drawn: 1, after: 120), "a tighter budget's wait didn't hold")
 }

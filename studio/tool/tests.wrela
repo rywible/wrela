@@ -8,11 +8,11 @@
 // The drags on the great tree are checked independently of the lens: the copy is rebuilt from
 // the written files (a normal build) and measured on the CPU, as AC9 of #39 asked.
 
-use glue::replace
+use glue::{LensKind, replace}
 use std::json::{Doc, TOP, parse}
 use lens::{
-    ACTIONS, Built, Lens, Place, build, call, cpu_action, last_json, logs, read_png, read_text,
-    save_png, screen, start, write_text,
+    ACTIONS, Built, COURSE_ACTIONS, MAP_ACTIONS, Lens, Place, build, call, cpu_action, last_json,
+    logs, read_png, read_text, save_png, screen, start, write_text,
 }
 use main::{compare, read_command, run}
 use std::collections::Vec
@@ -166,6 +166,13 @@ fn point(d: Doc, n: u32) -> vec3 {
     p
 }
 
+/// A point `[x, y]` of list node `n`.
+fn point2(d: Doc, n: u32) -> vec2 {
+    let (Some(a), Some(b)) = (d.at(n, 0), d.at(n, 1)) else { panic("a point") }
+    let (Some(x), Some(y)) = (d.num(a), d.num(b)) else { panic("a point's numbers") }
+    vec2(f32(x), f32(y))
+}
+
 /// The index of the literal `literals`'s answer lists in `file` with `text` at `column`.
 fn literal_at(d: Doc, file: str, text_of: str, column: u32) -> u32 {
     let Some(list) = d.get(TOP, "literals") else { panic("literals") }
@@ -180,20 +187,27 @@ fn literal_at(d: Doc, file: str, text_of: str, column: u32) -> u32 {
     panic(f"no literal `{text_of}` at column {column} of {file}")
 }
 
-/// studio/glue, the lens's program, checks alone (on its sphere), and exports each action of
-/// `ACTIONS`, with the state and then its arguments, which the headless runner passes.
-@test(tool, read: [("ws", "../..")], budget: 120)
+/// Each lens's program (studio/glue's on its sphere, studio/maplens/glue's on the Last Green,
+/// studio/courselens/glue's on the capybara) checks alone, and exports each action of its table,
+/// with the state and then its arguments, which the headless runner passes.
+@test(tool, read: [("ws", "../..")], budget: 300)
 fn the_lens_program_exports_each_action() {
-    let Ok(ch) = toolchain::check("ws/studio/glue").wait() else { panic("the check's request") }
-    assert(ch.ok, "studio/glue checks alone")
-    let Ok(Some(t)) = read_text("ws/studio/glue/main.wrela") else {
-        panic("studio/glue/main.wrela")
-    }
+    exports_each("studio/glue", "Lens", ACTIONS)
+    exports_each("studio/maplens/glue", "MapLens", MAP_ACTIONS)
+    exports_each("studio/courselens/glue", "CourseLens", COURSE_ACTIONS)
+}
+
+/// The program at `ws/<dir>` checks, and exports `init`, `frame`, `busy` and each of `table`'s
+/// actions, each taking a `mut <state>` and the table's arguments.
+fn exports_each(dir: str, state: str, table: [(Text, Text)]) {
+    let Ok(ch) = toolchain::check(f"ws/{dir}").wait() else { panic("the check's request") }
+    assert(ch.ok, f"{dir} checks alone")
+    let Ok(Some(t)) = read_text(f"ws/{dir}/main.wrela") else { panic(f"{dir}/main.wrela") }
     let text = t.as_str()
-    for a in ACTIONS {
+    for a in table {
         let (name, args) = a
-        let Some(at) = text.find(f"pub fn {name}(state: mut Lens") else {
-            panic(f"studio/glue exports no `{name}`")
+        let Some(at) = text.find(f"pub fn {name}(state: mut {state}") else {
+            panic(f"{dir} exports no `{name}`")
         }
         let rest = text.slice(at, text.len())
         let end = match rest.find("\n") {
@@ -207,7 +221,7 @@ fn the_lens_program_exports_each_action() {
             let (from, to) = parts[k]
             kinds.push_str(if line.slice(from, to).find(": f32").is_some() { "f" } else { "u" })
         }
-        assert(kinds.as_str() == args, f"`{name}`'s arguments: {line}")
+        assert(kinds.as_str() == args, f"{dir}: `{name}`'s arguments: {line}")
     }
     var exports = 0
     var at = 0
@@ -218,7 +232,7 @@ fn the_lens_program_exports_each_action() {
     if text.starts_with("pub fn ") {
         exports += 1
     }
-    assert(exports == ACTIONS.len() + 3, "init, frame and busy, and each action")
+    assert(exports == table.len() + 3, f"{dir}: init, frame and busy, and each action")
 }
 
 /// A drag rounds a literal to its source's unit and exponent: `15cm` to centimetres,
@@ -887,4 +901,61 @@ fn the_ball_compares_by_eye() {
     a_ball_beside_its_own_photo_covers_it(lb)
     variants_and_sweeps_are_numbered_panels(lb)
     deferred_view_controls_keep_the_same_pixels_after_literal_changes(lb)
+}
+
+/// A game's course for the course lens: one chain of three corners, and its `lens` module.
+const TRACK_COURSE: Text = "pub fn corners() -> Vec<Vec<vec2>> {\n    Vec::from([Vec::from([vec2(0.0, 0.0), vec2(4.0, 0.0), vec2(4.0, -2.0)])])\n}\n"
+
+const TRACK_LENS: Text = "use course::corners\n\npub fn course() -> (Vec<Vec<vec2>>, Vec<Vec<vec2>>, Vec<vec4>) {\n    let c = corners()\n    let ground = c.clone()\n    (c, ground, Vec::from([vec4(1.0, -1.0, 3.0, 0.0)]))\n}\n\npub fn run() -> Vec<vec2> {\n    Vec::from([vec2(0.0, 0.3), vec2(2.0, 0.3)])\n}\n\npub const TICKS: f32 = 60.0\n"
+
+/// The course lens on a small game (B10.10): a corner dragged a metre right moves by the
+/// literal its click names, and `write` writes that literal through `wrela edit`.
+@test(tool, read: [("ws", "../..")], budget: 300)
+fn the_course_lens_drags_a_corner_and_writes_its_literal() {
+    write_package(
+        "track",
+        [
+            (String::from("course.wrela"), String::from(TRACK_COURSE)),
+            (String::from("lens.wrela"), String::from(TRACK_LENS)),
+        ],
+    )
+    let built = lens_built(place("track"))
+    assert(built.kind == LensKind::Course, "a game with a course is the course lens's")
+    var lens = opened(built, 512, cpu: false, reference: None)
+    // The corners' pixels: (0, 0) and (4, 0) give the metre's pixels.
+    let cd = act(mut lens, "corners", [])
+    let call = cd.write(TOP)
+    let Some(list) = cd.get(TOP, "corners") else { panic(call.as_str()) }
+    assert(cd.count(list) == 3, call.as_str())
+    var px: Vec<vec2> = Vec::new()
+    for k in 0..3 {
+        let Some(c) = cd.at(list, k) else { panic(call.as_str()) }
+        let Some(p) = cd.get(c, "pixel") else { panic(call.as_str()) }
+        px.push(point2(cd, p))
+    }
+    let metre = (px[1].x - px[0].x) / 4.0
+    assert(metre > 10.0, call.as_str())
+    // A click names the corner's x literal, on its line.
+    let kd = act(mut lens, "click", [f(px[1].x), f(px[1].y)])
+    let kall = kd.write(TOP)
+    assert(kall.as_str().find("\"text\":\"4.0\"").is_some(), kall.as_str())
+    // Dragged a metre right.
+    let md = act(mut lens, "move", [f(px[1].x), f(px[1].y), f(px[1].x + metre), f(px[1].y)])
+    let mall = md.write(TOP)
+    let Some(corner) = md.get(TOP, "corner") else { panic(mall.as_str()) }
+    let Some(at) = md.get(corner, "at") else { panic(mall.as_str()) }
+    let moved = point2(md, at)
+    assert(moved == vec2(5.0, 0.0), mall.as_str())
+    // Written, and read back from the source.
+    let wd = act(mut lens, "write", [])
+    let wall = wd.write(TOP)
+    let Some(a) = wd.get(TOP, "answer") else { panic(wall.as_str()) }
+    let Some(ok) = wd.get(a, "written") else { panic(wall.as_str()) }
+    assert(wd.is_true(ok), wall.as_str())
+    let Ok(Some(source)) = read_text("scratch/track/course.wrela") else { panic("the source") }
+    assert(
+        source.as_str().find("vec2(4.0, -2.0)").is_some() &&
+            source.as_str().find("vec2(5.0, 0.0)").is_some(),
+        source.as_str(),
+    )
 }

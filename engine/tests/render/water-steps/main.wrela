@@ -5,7 +5,7 @@
 // rays meet them at every one of the march's steps, and each row a ray tilted a little more.
 use engine::frame::fullscreen
 use engine::view::{Camera, first_camera}
-use engine::water::{Met, reflection_march}
+use engine::reflect::{Met, reflection_march}
 use std::gpu::{FragCoord, Rgba16Float, Texture, begin_pass, begin_screen_pass, texture}
 
 const W: u32 = 96

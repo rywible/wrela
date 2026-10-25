@@ -181,6 +181,9 @@ pub fn frame(time: f32, width: u32, height: u32) {
         cols: 0,
         ..engine::probes::grid(vec2(0.0), cols: 2, spacing: 1.0, low: 0.0, high: 1.0, voxel: 1.0),
     }
+    let no_lights = buffer_of([0])
+    let no_screen = std::gpu::texture::<Rgba16Float>(width: 1, height: 1)
+    let no_spec = std::gpu::cubemap::<Rgba16Float>(side: 1)
     let lt = Lighting {
         cam,
         light: Light { sun, sun_colour: if env { vec3(0.0) } else {
@@ -205,6 +208,14 @@ pub fn frame(time: f32, width: u32, height: u32) {
         grounds: grounds.items(),
         cloud,
         air,
+        // No ambient occlusion built: everything open.
+        ambient: engine::ambient::OPEN,
+        froxels: engine::lights::DARK,
+        lights: no_lights.items(),
+        mirror: engine::reflect::Mirror { cam, on: 0, probe: 0 },
+        screen: no_screen,
+        spec: no_spec,
+        ao: probes,
         s,
     }
     let polished = rendered(verts, materials, palettes, args, 0, lt)

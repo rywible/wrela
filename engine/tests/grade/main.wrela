@@ -1,0 +1,82 @@
+// Colours graded through the identity table (`engine::paint::identity`, `graded`) taken whole,
+// in a kernel, and read back.
+
+use engine::paint::{graded, identity}
+use std::gpu::{
+    GlobalId, GpuBuffer, Rgba8, Sampler, Slots, Texture3d, buffer, buffer_of, dispatch, read,
+    sampler,
+}
+use std::io::{Pending, print}
+
+/// The colours: a ramp of greys and some hues, display-referred.
+fn colours() -> Vec<vec3> {
+    var out: Vec<vec3> = Vec::new()
+    for i in 0..33 {
+        out.push(vec3(f32(i) / 32.0))
+    }
+    for c in [
+        vec3(0.9, 0.2, 0.1),
+        vec3(0.13, 0.71, 0.33),
+        vec3(0.05, 0.08, 0.6),
+        vec3(0.47, 0.51, 0.49),
+    ] {
+        out.push(c)
+    }
+    out
+}
+
+/// Each of `colours` graded by `lut` whole.
+@compute(64)
+fn grade(lut: Texture3d<Rgba8>, s: Sampler, colours: [vec3], out: mut Slots<vec4>, id: GlobalId) {
+    if id.x >= colours.len() {
+        return
+    }
+    out[id] = vec4(graded(colours[id.x], lut, s, grade: 1.0), 0.0)
+}
+
+pub struct State {
+    asked: Option<Pending<vec4>>,
+    pub got: Vec<vec4>,
+}
+
+pub fn init() -> State {
+    State { asked: None, got: Vec::new() }
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    if s.asked.is_none() {
+        let lut = identity()
+        let cs = colours()
+        var out: GpuBuffer<vec4> = buffer(cs.len())
+        dispatch(
+            grade.bind(lut, sampler(), colours: buffer_of(cs).items(), out: mut out),
+            over: cs.len(),
+        )
+        s.asked = Some(read(out.items()))
+        return
+    }
+    if s.got.is_empty() {
+        match mut s.asked {
+            Some(p) => match p.poll() {
+                Some(Ok(v)) => s.got = take v,
+                _ => {},
+            },
+            None => {},
+        }
+    }
+}
+
+/// The identity table, taken whole, gives back every colour within 1.5/255 (its texels are
+/// 8-bit, its filtering too).
+@test(frames: 8, gpu: true)
+fn the_identity_table_keeps_every_colour(s: State) {
+    let cs = colours()
+    assert(s.got.len() == cs.len(), "the colours didn't come back")
+    var most = 0.0
+    for i in 0..cs.len() {
+        let d = s.got[i].xyz - cs[i]
+        most = max(most, max(abs(d.x), max(abs(d.y), abs(d.z))))
+    }
+    print(f"the identity moves a colour {most * 255.0}/255 at most")
+    assert(most * 255.0 <= 1.5, f"the identity moved a colour {most * 255.0}/255")
+}

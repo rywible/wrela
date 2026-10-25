@@ -1,38 +1,21 @@
-// The broad culling cone of engine::stone's rocks contains the camera's edges and corners,
-// also with a square viewport, and drops rocks behind or well outside the view. This is CPU
-// visibility state: the empty prototype needs no mesh realization or GPU work.
+// The broad culling cone of engine::stone's rocks (`Camera::corner_tan`, the GPU's `cull_rocks` tests
+// each rock's sphere with it through `in_view`) contains the camera's edges and corners, also
+// with a square viewport, and drops rocks behind or well outside the view.
 
-use engine::realize::{Mesh, Room}
-use engine::stone::{Placement, Realized, Rocks, normal_matrix}
+use engine::stone::{NEAR_RADII, in_view}
 use engine::view::first_camera
-use std::gpu::buffer
-use std::transform::{identity, translate}
 
-fn prototype() -> Realized {
-    Realized {
-        mesh: Mesh::new(Room { vertices: 1, quads: 1 }),
-        colours: buffer(1),
-        at: identity(),
-        seed: 1,
-    }
+/// Whether `cull_rocks` draws a rock of radius 0.25 at `at` (render space) for `cam`, and near.
+fn kept(cam: engine::view::Camera, at: vec3) -> (bool, bool) {
+    let sp = vec4(at, 0.25)
+    let seen = in_view(sp, cam.eye, cam.forward, cam.tan_half, cam.corner_tan())
+    (seen, length(at - cam.eye) < NEAR_RADII * sp.w)
 }
 
-pub fn frame(time: f32, width: u32, height: u32) {
-    var near: Vec<Realized> = Vec::new()
-    near.push(prototype())
-    var far: Vec<Realized> = Vec::new()
-    far.push(prototype())
-    let origin = vec3(100.0, 20.0, -50.0)
-    let placements = [
-        Placement {
-            prototype: 0,
-            at: translate(origin),
-            normal_at: normal_matrix(identity()),
-            reach: 0.25,
-            seed: 1,
-        },
-    ]
-    var rocks = Rocks::new(take near, take far, placements)
+pub fn frame(time: f32, width: u32, height: u32) {}
+
+@test
+fn each_visible_rock_is_kept() {
     for width in [640, 360, 960] {
         let cam = first_camera(vec3(0.0), vec3(0.0, 0.0, 1.0), 1.0, width, 640)
         // The centre, four edges and four corners project inside the actual view.
@@ -46,26 +29,14 @@ pub fn frame(time: f32, width: u32, height: u32) {
                     abs(clip.x) < clip.w && abs(clip.y) < clip.w && clip.z > 0.0 && clip.z < clip.w,
                     "the sample is outside the view",
                 )
-                rocks.spheres[0] = vec4(point + origin, 0.25)
-                rocks.cull(cam, origin)
-                assert(rocks.seen_count[0] == 0, "a distant sphere used its near mesh")
-                assert(rocks.seen_count[1] == 1, "a visible edge or corner rock was culled")
+                let (seen, near) = kept(cam, point)
+                assert(!near, "a distant sphere used its near mesh")
+                assert(seen, "a visible edge or corner rock was culled")
             }
         }
-        rocks.spheres[0] = vec4(origin - cam.forward * 20.0, 0.25)
-        rocks.cull(cam, origin)
-        assert(
-            rocks.seen_count[0] + rocks.seen_count[1] == 0,
-            "a rock behind the camera was retained",
-        )
-        rocks.spheres[0] = vec4(origin + cam.forward * 20.0 + cam.right * 100.0, 0.25)
-        rocks.cull(cam, origin)
-        assert(
-            rocks.seen_count[0] + rocks.seen_count[1] == 0,
-            "a rock well outside the view was retained",
-        )
+        let (behind, _) = kept(cam, -cam.forward * 20.0)
+        assert(!behind, "a rock behind the camera was retained")
+        let (aside, _) = kept(cam, cam.forward * 20.0 + cam.right * 100.0)
+        assert(!aside, "a rock well outside the view was retained")
     }
 }
-
-@test(frames: 1)
-fn each_visible_rock_is_kept() {}

@@ -1,0 +1,264 @@
+// A box (2 m a side) on a floor, drawn into a depth buffer by a camera 5 m off; its ambient
+// occlusion built (`engine::ambient::build`), and points read through `ao_at` in a kernel, as
+// shading reads them, and the whole of it read back. Frame 0 records it all; the tests read the
+// answers once they've come.
+
+use engine::ambient::{Ambient, ao_at, build}
+use engine::view::{Camera, NEAREST, first_camera}
+use std::gpu::{
+    ClipPosition, DepthTexture, GlobalId, GpuBuffer, Half2, Rgba16Float, Slots, Texture,
+    TextureRead, VertexIndex, begin_pass_with_depth, buffer, buffer_of, depth_texture, dispatch,
+    draw, read, read_texture, texture, writable_texture,
+}
+use std::io::{Pending, print}
+
+/// The screen.
+pub const W: u32 = 256
+pub const H: u32 = 144
+
+/// The camera: 5 m off the box's front, a little above it, looking at its middle.
+fn camera() -> Camera {
+    first_camera(vec3(0.0, 1.8, -5.0), vec3(0.0, 0.6, 0.0), 1.0, width: W, height: H).unjittered()
+}
+
+/// The close camera: half a metre from the box's foot, at 1920×1080, where a pixel's neighbours
+/// are half a millimetre apart; and the point it reads, on the floor a centimetre from the box
+/// (within the march's `MOST_PIXELS`, 2.4 cm there).
+pub const CLOSE_FOOT = vec3(0.0, 0.0, -1.01)
+pub const CW: u32 = 1920
+pub const CH: u32 = 1080
+
+fn close_camera() -> Camera {
+    first_camera(vec3(0.0, 0.3, -1.5), vec3(0.0, 0.0, -1.08), 1.0, width: CW, height: CH)
+        .unjittered()
+}
+
+/// Vertex `v` of `corners` (three a triangle), placed by `cam`.
+@vertex
+fn placed(v: VertexIndex, cam: Camera, corners: [vec3]) -> ClipPosition {
+    ClipPosition { position: cam.clip(corners[v.index]) }
+}
+
+@fragment
+fn white() -> vec4 {
+    vec4(1.0)
+}
+
+/// Each of `points` read as shading reads the occlusion (`ao_at`).
+@compute(64)
+fn probe(a: Ambient, ao: Texture<Rgba16Float>, points: [vec3], out: mut Slots<f32>, id: GlobalId) {
+    if id.x >= points.len() {
+        return
+    }
+    out[id] = ao_at(a, ao, points[id.x])
+}
+
+/// The quad `a`, `b`, `c`, `d` (in order round it) as two triangles onto `out`.
+fn quad(out: mut Vec<vec3>, a: vec3, b: vec3, c: vec3, d: vec3) {
+    for p in [a, b, c, a, c, d] {
+        out.push(p)
+    }
+}
+
+/// The floor (40 m square at y 0) and the box (x and z in [-1, 1], y in [0, 2]): its faces.
+fn scene() -> Vec<vec3> {
+    var out: Vec<vec3> = Vec::new()
+    quad(
+        mut out,
+        vec3(-20.0, 0.0, -20.0),
+        vec3(20.0, 0.0, -20.0),
+        vec3(20.0, 0.0, 20.0),
+        vec3(-20.0, 0.0, 20.0),
+    )
+    let (lo, hi) = (vec3(-1.0, 0.0, -1.0), vec3(1.0, 2.0, 1.0))
+    quad(
+        mut out,
+        vec3(lo.x, lo.y, lo.z),
+        vec3(hi.x, lo.y, lo.z),
+        vec3(hi.x, hi.y, lo.z),
+        vec3(lo.x, hi.y, lo.z),
+    )
+    quad(
+        mut out,
+        vec3(lo.x, lo.y, hi.z),
+        vec3(hi.x, lo.y, hi.z),
+        vec3(hi.x, hi.y, hi.z),
+        vec3(lo.x, hi.y, hi.z),
+    )
+    quad(
+        mut out,
+        vec3(lo.x, lo.y, lo.z),
+        vec3(lo.x, lo.y, hi.z),
+        vec3(lo.x, hi.y, hi.z),
+        vec3(lo.x, hi.y, lo.z),
+    )
+    quad(
+        mut out,
+        vec3(hi.x, lo.y, lo.z),
+        vec3(hi.x, lo.y, hi.z),
+        vec3(hi.x, hi.y, hi.z),
+        vec3(hi.x, hi.y, lo.z),
+    )
+    quad(
+        mut out,
+        vec3(lo.x, hi.y, lo.z),
+        vec3(hi.x, hi.y, lo.z),
+        vec3(hi.x, hi.y, hi.z),
+        vec3(lo.x, hi.y, hi.z),
+    )
+    out
+}
+
+/// The points read: the open floor 4 m to the box's side, the floor at the foot of its front
+/// face, the middle of its top, and a point in the air between the eye and the box (on no
+/// surface).
+pub const POINTS: [vec3; 4] = [
+    vec3(-4.0, 0.0, -1.5),
+    vec3(0.0, 0.0, -1.08),
+    vec3(0.0, 2.0, 0.0),
+    vec3(0.0, 1.2, -3.0),
+]
+
+pub struct State {
+    colour: Texture<Rgba16Float>,
+    depth: DepthTexture,
+    ao: Texture<Rgba16Float>,
+    asked: Option<Pending<f32>>,
+    pub answers: Vec<f32>,
+    whole: Option<TextureRead>,
+    pub texels: Vec<u8>,
+    close_asked: Option<Pending<f32>>,
+    pub close: Vec<f32>,
+}
+
+pub fn init() -> State {
+    State {
+        colour: texture::<Rgba16Float>(width: W, height: H),
+        depth: depth_texture(width: W, height: H),
+        ao: writable_texture::<Rgba16Float>(width: W / 2, height: H / 2),
+        asked: None,
+        answers: Vec::new(),
+        whole: None,
+        texels: Vec::new(),
+        close_asked: None,
+        close: Vec::new(),
+    }
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    if s.asked.is_none() {
+        let cam = camera()
+        let corners = buffer_of(scene())
+        let p = begin_pass_with_depth(mut s.colour, mut s.depth, clear: vec4(0.0), clear_depth: 0.0)
+        draw(
+            p,
+            placed.bind(cam, corners: corners.items()),
+            white,
+            vertices: corners.len(),
+            depth: NEAREST,
+        )
+        p.end()
+        let a = build(mut s.ao, s.depth, cam)
+        var out: GpuBuffer<f32> = buffer(POINTS.len())
+        dispatch(
+            probe.bind(a, s.ao, points: buffer_of(POINTS).items(), out: mut out),
+            over: POINTS.len(),
+        )
+        s.asked = Some(read(out.items()))
+        s.whole = Some(read_texture(s.ao.level(0)))
+        // The close case: the box's foot from half a metre.
+        let near = close_camera()
+        var colour = texture::<Rgba16Float>(width: CW, height: CH)
+        var depth = depth_texture(width: CW, height: CH)
+        var ao = writable_texture::<Rgba16Float>(width: CW / 2, height: CH / 2)
+        let p = begin_pass_with_depth(mut colour, mut depth, clear: vec4(0.0), clear_depth: 0.0)
+        draw(
+            p,
+            placed.bind(near, corners: corners.items()),
+            white,
+            vertices: corners.len(),
+            depth: NEAREST,
+        )
+        p.end()
+        let a = build(mut ao, depth, near)
+        var foot: GpuBuffer<f32> = buffer(1)
+        dispatch(
+            probe.bind(a, ao, points: buffer_of([CLOSE_FOOT]).items(), out: mut foot),
+            over: 1,
+        )
+        s.close_asked = Some(read(foot.items()))
+        return
+    }
+    if s.close.is_empty() {
+        match mut s.close_asked {
+            Some(p) => match p.poll() {
+                Some(Ok(v)) => s.close = take v,
+                _ => {},
+            },
+            None => {},
+        }
+    }
+    if s.texels.is_empty() {
+        match mut s.whole {
+            Some(r) => match r.poll() {
+                Some(Ok(b)) => s.texels = take b,
+                _ => {},
+            },
+            None => {},
+        }
+    }
+    if s.answers.is_empty() {
+        match mut s.asked {
+            Some(p) => match p.poll() {
+                Some(Ok(v)) => s.answers = take v,
+                _ => {},
+            },
+            None => {},
+        }
+    }
+}
+
+/// The open floor and the box's top see the sky; the floor at the box's foot doesn't see much of
+/// it; a point on no surface is taken as open.
+@test(frames: 8, gpu: true)
+fn a_box_occludes_the_floor_at_its_foot(s: State) {
+    assert(s.answers.len() == 4, "the answers didn't come back")
+    borrow a = s.answers
+    print(f"open floor {a[0]}, foot {a[1]}, top {a[2]}, in the air {a[3]}")
+    assert(a[0] > 0.9, f"the open floor is occluded: {a[0]}")
+    assert(a[1] < 0.75, f"the box's foot is open: {a[1]}")
+    assert(a[2] > 0.9, f"the box's top is occluded: {a[2]}")
+    assert(a[3] == 1.0, f"a point on no surface is occluded: {a[3]}")
+}
+
+/// Every texel of the occlusion is a share of the sky (finite, from 0 to 1), the screen's edges
+/// too, where a pixel's neighbour past the edge is the pixel itself; and the open floor along the
+/// left edge sees the sky.
+@test(frames: 8, gpu: true)
+fn the_occlusion_holds_at_the_screens_edges(s: State) {
+    let (w, h) = (W / 2, H / 2)
+    assert(s.texels.len() == w * h * 8, "the occlusion didn't come back")
+    let share = |x: u32, y: u32| {
+        let i = 8 * (y * w + x)
+        let bits = u32(s.texels[i]) | (u32(s.texels[i + 1]) << 8)
+        Half2 { bits }.decode().x
+    }
+    for y in 0..h {
+        for x in 0..w {
+            let a = share(x, y)
+            assert(a >= 0.0 && a <= 1.0, f"texel ({x}, {y}) is {a}")
+        }
+    }
+    let edge = share(0, h - 1)
+    print(f"the floor at the left edge {edge}")
+    assert(edge > 0.9, f"the open floor at the left edge is occluded: {edge}")
+}
+
+/// From half a metre at 1920×1080, the floor a centimetre from the box is occluded: a near
+/// surface's steps between pixels are tiny, and they aren't taken for no surface.
+@test(frames: 8, gpu: true)
+fn the_foot_is_occluded_from_close_up(s: State) {
+    assert(s.close.len() == 1, "the close case didn't come back")
+    print(f"the foot from close up {s.close[0]}")
+    assert(s.close[0] < 0.8, f"the box's foot, close up, is open: {s.close[0]}")
+}

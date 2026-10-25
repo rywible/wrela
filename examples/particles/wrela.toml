@@ -1,0 +1,8 @@
+# Dust in the air: GPU particles over flat ground, drawn through the engine's frame, about 100,000
+# live at once, moved, sorted and drawn each frame (engine/particles.wrela); their cost read under
+# `wrela profile` (the "particles" and "see-through" passes).
+[package]
+name = "particles"
+
+[dependencies]
+engine = { workspace = true }

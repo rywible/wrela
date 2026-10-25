@@ -1,0 +1,19 @@
+// What the course lens needs of its game: its course (as its literals say now) and its player's
+// run, with the ticks a second it was recorded at. `wrela tool studio -- <game>` writes one for the game's `lens` module; this one is the
+// capybara's.
+
+use courselens::lens::Plan
+
+pub fn plan() -> Plan {
+    let (corners, ground, waters) = capybara::lens::course()
+    Plan { corners, ground, waters }
+}
+
+pub fn run() -> Vec<vec2> {
+    capybara::lens::run()
+}
+
+/// The ticks a second its run is recorded at.
+pub fn ticks() -> f32 {
+    capybara::lens::TICKS
+}

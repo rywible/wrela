@@ -1,0 +1,254 @@
+// 10,000 particles emitted on frame 0 and stepped ten frames (`engine::particles::Particles`),
+// the render space moving 4 m on the fifth (`Step::shift`, as `Frame::recentre` gives it), then
+// read back: where they are, their keys in sorted order, and the order. And two see-through
+// quads drawn as weighted blended transparency over a background, laid over it
+// (`particles::composite`), read back and set beside the formula.
+
+use engine::particles::{Particle, Particles, SOFT, Step, composite, weighted}
+use engine::view::{Camera, first_camera}
+use std::gpu::{
+    Blend, ClipPosition, Half2, R8, Rgba16Float, Targets2, Texture, TextureRead, begin_pass,
+    begin_pass2, depth_texture, draw, read, read_texture, sampler, texture,
+}
+use std::io::{Pending, print}
+
+/// The particles: 100 × 100 on a square 10 m across, from 10 to 20 m up, still.
+pub const N: u32 = 10000
+
+/// The frames they're stepped, each 1/60 s.
+pub const STEPS: u32 = 10
+pub const DT: f32 = 1.0 / 60.0
+
+/// How far the render space moves under them on the fifth step: they move with it.
+pub const SHIFT = vec3(0.0, 4.0, 0.0)
+
+/// A camera beside the square, looking across it, so their depths differ.
+fn camera() -> Camera {
+    first_camera(vec3(-20.0, 15.0, -20.0), vec3(0.0, 12.0, 0.0), 1.0, width: 640, height: 360)
+        .unjittered()
+}
+
+fn height_of(i: u32) -> f32 {
+    10.0 + 10.0 * f32((i * 7919) % 1000) / 1000.0
+}
+
+fn emitted() -> Vec<Particle> {
+    var out: Vec<Particle> = Vec::new()
+    for i in 0..N {
+        out.push(
+            Particle {
+                at: vec3(f32(i % 100) * 0.1 - 5.0, height_of(i), f32(i / 100) * 0.1 - 5.0),
+                life: 10.0,
+                vel: vec3(0.0),
+                size: 0.05,
+                colour: vec4(1.0),
+                kind: SOFT,
+                drag: 0.0,
+                grow: 0.0,
+                age: 0.0,
+            },
+        )
+    }
+    out
+}
+
+// ---- the see-through quads ------------------------------------------------------------------
+
+/// A see-through quad: its colour, coverage and distance (m).
+pub struct Veil: Copy + GpuData {
+    pub colour: vec3,
+    pub alpha: f32,
+    pub dist: f32,
+}
+
+pub const NEAR = Veil { colour: vec3(1.0, 0.0, 0.0), alpha: 0.5, dist: 5.0 }
+pub const FAR = Veil { colour: vec3(0.0, 0.0, 1.0), alpha: 0.6, dist: 12.0 }
+pub const BACKGROUND = vec3(0.0, 1.0, 0.0)
+pub const S: u32 = 16
+
+@vertex
+fn cover(v: std::gpu::VertexIndex) -> ClipPosition {
+    let x = f32((v.index << 1) & 2) * 2.0 - 1.0
+    let y = f32(v.index & 2) * 2.0 - 1.0
+    ClipPosition { position: vec4(x, y, 0.5, 1.0) }
+}
+
+@fragment
+fn veil(v: Veil) -> Targets2<vec4, f32> {
+    weighted(v.colour, v.alpha, v.dist)
+}
+
+@fragment
+fn flat(c: vec3) -> vec4 {
+    vec4(c, 0.0)
+}
+
+pub struct State {
+    particles: Particles,
+    asked: Vec<Pending<u32>>,
+    places: Option<Pending<Particle>>,
+    pub count: u32,
+    pub keys: Vec<u32>,
+    pub order: Vec<u32>,
+    pub at: Vec<Particle>,
+    out: Texture<Rgba16Float>,
+    composited: Option<TextureRead>,
+    pub seen: Vec<u8>,
+}
+
+pub fn init() -> State {
+    State {
+        particles: Particles::new(),
+        asked: Vec::new(),
+        places: None,
+        count: 0,
+        keys: Vec::new(),
+        order: Vec::new(),
+        at: Vec::new(),
+        out: texture::<Rgba16Float>(width: S, height: S),
+        composited: None,
+        seen: Vec::new(),
+    }
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    let f = u32(round(time * 60.0))
+    let st = Step {
+        cam: camera(),
+        gravity: vec3(0.0, -9.81, 0.0),
+        dt: DT,
+        wind: vec3(0.0),
+        collide: 0,
+        shift: if f == 5 { SHIFT } else { vec3(0.0) },
+    }
+    let none = depth_texture(width: 1, height: 1)
+    if f < STEPS {
+        let fresh = if f == 0 { emitted() } else { Vec::new() }
+        s.particles.step(st, none, fresh)
+    }
+    if f == STEPS {
+        s.asked.push(read(s.particles.live.count()))
+        s.asked.push(read(s.particles.keys()))
+        s.asked.push(read(s.particles.order.items()))
+        s.places = Some(read(s.particles.live.items()))
+        see_through(mut s)
+    }
+    if f > STEPS {
+        collect(mut s)
+    }
+}
+
+/// The two veils over the background, weighted and laid over it, into `s.out`, read back.
+fn see_through(s: mut State) {
+    var accum = texture::<Rgba16Float>(width: S, height: S)
+    var reveal = texture::<R8>(width: S, height: S)
+    var parts = texture::<Rgba16Float>(width: S, height: S)
+    var bg = texture::<Rgba16Float>(width: S, height: S)
+    begin_pass(mut accum, clear: vec4(0.0)).end()
+    begin_pass(mut reveal, clear: vec4(1.0)).end()
+    begin_pass(mut parts, clear: vec4(0.0)).end()
+    let b = begin_pass(mut bg)
+    draw(b, cover, flat.bind(BACKGROUND), vertices: 3)
+    b.end()
+    let p = begin_pass2(mut accum, mut reveal, keep: true)
+    // Far first, then near: the order doesn't matter.
+    draw(p, cover, veil.bind(FAR), vertices: 3, blends: [Blend::Add, Blend::Multiply])
+    draw(p, cover, veil.bind(NEAR), vertices: 3, blends: [Blend::Add, Blend::Multiply])
+    p.end()
+    let lin = sampler()
+    let c = begin_pass(mut s.out)
+    draw(
+        c,
+        cover,
+        composite.bind(scene: bg, accum: accum, reveal: reveal, parts: parts, s: lin),
+        vertices: 3,
+    )
+    c.end()
+    s.composited = Some(read_texture(s.out.level(0)))
+}
+
+fn collect(s: mut State) {
+    if s.keys.is_empty() && s.asked.len() == 3 {
+        var got: Vec<Vec<u32>> = Vec::new()
+        for k in 0..3 {
+            match s.asked[k].poll() {
+                Some(Ok(v)) => got.push(take v),
+                _ => return,
+            }
+        }
+        s.count = got[0][0]
+        s.keys = got[1].clone()
+        s.order = got[2].clone()
+    }
+    if s.at.is_empty() {
+        match mut s.places {
+            Some(p) => match p.poll() {
+                Some(Ok(v)) => s.at = take v,
+                _ => {},
+            },
+            None => {},
+        }
+    }
+    if s.seen.is_empty() {
+        match mut s.composited {
+            Some(r) => match r.poll() {
+                Some(Ok(b)) => s.seen = take b,
+                _ => {},
+            },
+            None => {},
+        }
+    }
+}
+
+/// Every particle is alive after ten steps, each fallen as gravity says (they're added after the
+/// first step's move, so moved by the nine after it; semi-implicit Euler: g dt² × (1 + ... + 9))
+/// and carried with the render space (`SHIFT`),
+/// and they come back sorted by depth, far first (their keys never fall), the order a permutation
+/// of them.
+@test(frames: 20, gpu: true)
+fn particles_fall_and_come_back_sorted_by_depth(s: State) {
+    assert(s.count == N, f"{s.count} particles live, not {N}")
+    assert(s.at.len() >= N, "the particles didn't come back")
+    let drop = 9.81 * DT * DT * 45.0
+    var most = 0.0
+    var seen: Vec<bool> = Vec::filled(N, value: false)
+    for i in 0..N {
+        let p = s.at[i]
+        // Their places in the buffer aren't their emitted order: find each by its column.
+        let k = u32(round((p.at.x + 5.0) / 0.1)) + 100 * u32(round((p.at.z + 5.0) / 0.1))
+        most = max(most, abs(height_of(k) + SHIFT.y - p.at.y - drop))
+    }
+    print(f"fallen {drop} m each, within {most}")
+    assert(most < 1.0e-3, f"a particle fell {most} m off gravity's")
+    for i in 1..N {
+        assert(s.keys[i] >= s.keys[i - 1], f"keys {i - 1} and {i} out of order")
+    }
+    for i in 0..N {
+        let j = s.order[i]
+        assert(j < N && !seen[j], f"the order holds {j} twice or past the end")
+        seen[j] = true
+    }
+}
+
+/// The two veils over the background are McGuire and Bavoil's mean of their weighted colours over
+/// what they leave showing, within 1/255.
+@test(frames: 20, gpu: true)
+fn veils_composite_as_the_formula_says(s: State) {
+    assert(s.seen.len() == S * S * 8, "the composite didn't come back")
+    let w = |v: Veil| {
+        let z = v.dist / 200.0
+        v.alpha * clamp(0.03 / (1.0e-5 + z * z * z * z), 1.0e-2, 3.0e3)
+    }
+    let (wn, wf) = (w(NEAR), w(FAR))
+    let mean = (NEAR.colour * NEAR.alpha * wn + FAR.colour * FAR.alpha * wf) /
+        (NEAR.alpha * wn + FAR.alpha * wf)
+    let r = (1.0 - NEAR.alpha) * (1.0 - FAR.alpha)
+    let want = mean * (1.0 - r) + BACKGROUND * r
+    let i = 8 * (S * (S / 2) + S / 2)
+    let half = |k: u32| u32(s.seen[i + k]) | (u32(s.seen[i + k + 1]) << 8)
+    let rg = Half2 { bits: half(0) | (half(2) << 16) }.decode()
+    let ba = Half2 { bits: half(4) | (half(6) << 16) }.decode()
+    let got = vec3(rg.x, rg.y, ba.x)
+    print(f"composite {got}, the formula {want}")
+    assert(length(got - want) * 255.0 <= 1.0, f"the composite {got} is off the formula's {want}")
+}

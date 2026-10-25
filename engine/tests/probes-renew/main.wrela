@@ -1,0 +1,81 @@
+// Probes cooked with one solid occluder, then renewed in place with none and cooked again
+// (`engine::probes::Baked::renew`, `cook`): the density where the occluder stood is read in a
+// kernel after each cook, and read back.
+
+use engine::probes::{Baked, Occluder, ProbeGrid, density_at, grid}
+use std::gpu::{
+    GlobalId, GpuBuffer, Rgba16Float, Sampler, Slots, Texture3d, buffer, dispatch, read, sampler,
+}
+use std::collections::replace
+use std::io::{Pending, print}
+
+/// The grid: 9 columns 4 m apart round the origin, from 8 m down to 24 m up, 2 m voxels.
+fn probes() -> ProbeGrid {
+    grid(vec2(0.0), cols: 9, spacing: 4.0, low: -8.0, high: 24.0, voxel: 2.0)
+}
+
+/// A solid trunk at the middle, 4 m thick, 12 m tall.
+const TRUNK = Occluder { a: vec3(0.0, 0.0, 0.0), radius: 2.0, b: vec3(0.0, 12.0, 0.0), solid: 1.0 }
+
+/// The density at the trunk's middle.
+@compute(1)
+fn sample(
+    g: ProbeGrid,
+    density: Texture3d<Rgba16Float>,
+    s: Sampler,
+    out: mut Slots<f32>,
+    id: GlobalId,
+) {
+    out[id] = density_at(g, density, s, vec3(0.0, 6.0, 0.0))
+}
+
+pub struct State {
+    baked: Option<Baked>,
+    asked: Vec<Pending<f32>>,
+    pub got: Vec<f32>,
+}
+
+pub fn init() -> State {
+    State { baked: None, asked: Vec::new(), got: Vec::new() }
+}
+
+fn read_density(s: mut State) {
+    let Some(b) = s.baked else { return }
+    var out: GpuBuffer<f32> = buffer(1)
+    dispatch(sample.bind(b.grid, b.density, sampler(), out: mut out), over: 1)
+    s.asked.push(read(out.items()))
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    let f = u32(round(time * 60.0))
+    if f == 0 {
+        var b = Baked::new(probes(), [TRUNK])
+        b.cook()
+        s.baked = Some(take b)
+        read_density(mut s)
+    }
+    if f == 1 {
+        let Some(old) = replace(mut s.baked, None) else { return }
+        var b = Baked::renew(take old, probes(), [])
+        b.cook()
+        s.baked = Some(take b)
+        read_density(mut s)
+    }
+    if f > 1 && s.got.len() < s.asked.len() {
+        let k = s.got.len()
+        match s.asked[k].poll() {
+            Some(Ok(v)) => s.got.push(v[0]),
+            _ => {},
+        }
+    }
+}
+
+/// The trunk's voxels are dense once cooked, and empty once the probes are renewed with nothing:
+/// the renewed buffer still holds the trunk, which mustn't be cooked again.
+@test(frames: 12, gpu: true)
+fn probes_renewed_with_no_occluders_cook_an_empty_volume(s: State) {
+    assert(s.got.len() == 2, f"{s.got.len()} densities came back")
+    print(f"density with the trunk {s.got[0]}, renewed with none {s.got[1]}")
+    assert(s.got[0] > 0.5, f"the trunk wasn't cooked: {s.got[0]}")
+    assert(s.got[1] == 0.0, f"a renewal with no occluders kept the old one: {s.got[1]}")
+}

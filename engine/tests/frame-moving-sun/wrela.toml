@@ -1,0 +1,9 @@
+# engine::frame under a sun that never stops: the bare scene of engine/tests/frame, its sun turning
+# every frame from the first, loads and becomes playable, and a jump's arrival is uncovered while
+# the sun goes on turning.
+[package]
+name = "frame_moving_sun"
+
+[dependencies]
+engine = { workspace = true }
+frame_transitions = { path = "../frame" }

@@ -172,6 +172,13 @@ fn bayer(o: vec2u) -> f32 {
     f32(v) / 16.0 + 1.0 / 32.0
 }
 
+/// Whether the pixel at `pixel` (its window coordinates) is in the dither's share from `from` to
+/// `to`: two draws of complementary shares cover each pixel once (a level's fade, `realize`).
+pub fn dithered(pixel: vec2, from: f32, to: f32) -> bool {
+    let t = bayer(vec2u(pixel) & vec2u(3))
+    t >= from && t < to
+}
+
 /// A way's share (its start and end in [0, 1), `share`) and the instance's anchor (`anchor`) in
 /// one word, for a vertex to pass on: the share's start and end in 14 bits each, and of the
 /// anchor only what a pixel's draw depends on (a pixel centre's offset from it is its whole pixel
@@ -384,4 +391,30 @@ fn projected_crown_handover_follows_lens_and_output_pixels() {
         assert(abs(a.0 - b.0) < 1.0e-5)
         assert(abs(a.1 - b.1) < 1.0e-5)
     }
+}
+
+/// A level's fade covers every pixel once: the new mesh's share and the old one's are
+/// complementary at each step, and the new one's grows to the whole dither.
+@test
+fn a_fades_two_shares_cover_each_pixel_once() {
+    for step in 1..17 {
+        let share = f32(step) / 17.0
+        var new_count = 0
+        for y in 0..4 {
+            for x in 0..4 {
+                let p = vec2(f32(x) + 0.5, f32(y) + 0.5)
+                let new = dithered(p, from: 0.0, to: share)
+                let old = dithered(p, from: share, to: 2.0)
+                assert(new != old, "a pixel is drawn by both levels, or by neither")
+                if new {
+                    new_count += 1
+                }
+            }
+        }
+        assert(
+            new_count == u32(floor(share * 16.0 + 0.5)),
+            "the new level's share isn't its step's",
+        )
+    }
+    assert(dithered(vec2(3.5, 2.5), from: 0.0, to: 1.0), "a whole share leaves a pixel out")
 }

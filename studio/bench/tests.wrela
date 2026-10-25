@@ -1,0 +1,118 @@
+// The bench tool's tests: its command line, its statistics, its reading of a page's GPU timings
+// and its report, written as a later `--compare` reads it and as docs/bench.md shows it.
+
+use main::{chosen, parse_args}
+use report::{
+    Measured, Stats, compared, date_of, doc, intervals, markdown, report_json, spans, stats,
+    time_of,
+}
+use scenes::{SCENES, script}
+
+fn texts(lines: [Text]) -> Vec<String> {
+    var out: Vec<String> = Vec::new()
+    for l in lines {
+        out.push(String::from(l))
+    }
+    out
+}
+
+fn contains(haystack: str, needle: str) -> bool {
+    haystack.find(needle).is_some()
+}
+
+@test
+fn the_command_line_names_scenes_and_cuts_frames() {
+    let Some(o) = parse_args(
+        texts(["--scene", "herd", "--frames", "30", "--warmup", "10", "--no-native"]),
+    ) else {
+        panic("a short bench of the herd")
+    }
+    assert(o.frames == 30 && o.warmup == 10 && !o.native && o.docs)
+    let picked = chosen(o)
+    assert(picked.len() == 1 && picked[0].name == "herd" && picked[0].frames == 30)
+    let Some(all) = parse_args(texts([])) else { panic("every scene") }
+    assert(chosen(all).len() == SCENES.len())
+    assert(parse_args(texts(["--scene", "nowhere"])).is_none(), "an unknown scene")
+    assert(parse_args(texts(["--frames"])).is_none(), "an option without its value")
+}
+
+@test
+fn each_gated_scene_has_its_gates_script() {
+    // The gates' own files' events (build/gates/CLEARING_PATH.json): H's code is 8.
+    assert(
+        contains(
+            script("clearing-path").as_json(),
+            "{\"frame\": 400, \"type\": \"keydown\", \"code\": 8}",
+        ),
+    )
+    assert(contains(script("last-green-walk").as_json(), "1140"))
+    assert(contains(script("capybara-run-large").as_json(), "573"))
+    assert(!contains(script("herd").as_json(), "frame"))
+}
+
+@test
+fn statistics_are_by_nearest_rank() {
+    var xs: Vec<f64> = Vec::new()
+    for k in 0..100 {
+        xs.push(f64(100 - k))
+    }
+    let s = stats(take xs)
+    assert(s.p50 == 50.0 && s.p95 == 95.0 && s.p99 == 99.0)
+    let none = stats(Vec::new())
+    assert(none.p50 == 0.0 && none.p99 == 0.0)
+}
+
+@test
+fn a_frames_gpu_span_is_its_first_start_to_its_last_end_whatever_the_origin() {
+    // Times are from the host's first timestamp, so they may be negative.
+    let Ok(d) = doc(
+        "[{\"frame\": 0, \"start\": 0, \"end\": 5}, {\"frame\": 1, \"start\": -3000000, \"end\": -1000000}, {\"frame\": 1, \"start\": -2000000, \"end\": 500000}]",
+        "timings",
+    ) else {
+        panic("timings")
+    }
+    let s = spans(d, 1)
+    assert(s.len() == 1 && s[0] == 3.5)
+    let between = intervals(Vec::from([0.0, 16.0, 33.0, 50.0]), 1)
+    assert(between.len() == 3 && between[1] == 17.0)
+}
+
+@test
+fn a_report_reads_back_for_a_comparison_and_shows_as_a_table() {
+    let st = Stats { p50: 2.0, p95: 3.0, p99: 4.0 }
+    let m = Measured {
+        scene: String::from("herd"),
+        span: st,
+        interval: st,
+        over_16: 1,
+        over_33: 0,
+        cpu: st,
+        native: st,
+        first_frame_ms: 100.0,
+        playable_ms: 0.0,
+        pipelines_ms: 50.0,
+        loaded_bytes: 1048576.0,
+        gpu_bytes: 2097152.0,
+        gpu_peak: 2097152.0,
+    }
+    let all = Vec::from([m.clone()])
+    let text = report_json("Apple M4", "2026-10-25", all)
+    let Ok(earlier) = doc(text.as_str(), "report") else { panic("the report is JSON") }
+    var faster = m.clone()
+    faster.span = Stats { p50: 1.0, p95: 3.0, p99: 4.0 }
+    let lines = compared(earlier, Vec::from([take faster]))
+    assert(contains(lines.as_str(), "herd: GPU span p50 2.00 -> 1.00 (-50.0%)"), lines.as_str())
+    let table = markdown("Apple M4", "2026-10-25", Vec::from([take m]))
+    assert(contains(table.as_str(), "## 2026-10-25, Apple M4"))
+    assert(contains(table.as_str(), "| herd | 2.00 / 3.00 / 4.00 |"))
+    assert(contains(table.as_str(), "| 1.0 | 2.0 |"))
+}
+
+@test
+fn a_date_is_the_civil_day_of_its_milliseconds() {
+    assert(date_of(0.0) == "1970-01-01")
+    assert(date_of(1792886400000.0) == "2026-10-25")
+    assert(date_of(951782400000.0) == "2000-02-29")
+    // Two runs on one day are two reports.
+    assert(time_of(1792886400000.0 + 3723000.0) == "010203")
+}

@@ -23,8 +23,14 @@
 //
 // Everything on the audio thread is f32 arithmetic in a fixed order, and its noise is seeded, so
 // both hosts give the same samples.
+//
+// The audio budget (a contract, design.md): at its busiest (`busiest`, `every_cue`) the voice
+// renders a quantum in under 1.3 ms at the 99th percentile, half the 2.67 ms a quantum lasts, on a
+// slow core (`wrela tool budget`, under `taskpolicy -c background` on a Mac). The piano keeps to
+// `engine::piano::MAX_SOUNDING` keys at once, and the effects to `TONES` voices.
 
-use engine::piano::{Piano, play_piano}
+use engine::piano::{Piano, piano, play_piano}
+use engine::piano_grand::GRAND
 use std::audio::{QUANTUM, RingReader, RingWriter, SAMPLE_RATE, play, ring}
 use std::math::{PI, TAU}
 
@@ -87,10 +93,11 @@ struct Tone: Copy {
     age: f32,
     phase: f32,
     mod_phase: f32,
-    // A band's filter state, and a low's last smoothing.
+    // A band's filter state, and a low's last smoothing, and its noise's.
     low: f32,
     band: f32,
     smooth: f32,
+    noise: u32,
 }
 
 const SILENT = Tone {
@@ -111,6 +118,7 @@ const SILENT = Tone {
     low: 0.0,
     band: 0.0,
     smooth: 0.0,
+    noise: 0,
 }
 
 /// The voices that sound at once; the oldest makes way.
@@ -144,6 +152,23 @@ pub fn start(music: take Piano) -> RingWriter<Cue> {
     let (writer, reader) = ring::<Cue>(128)
     play(voice(take reader, take music), render)
     writer
+}
+
+/// The game's voice at its busiest, for the audio budget (`games/capybara/budget`): the music's
+/// two busiest seconds (`music::busiest`), and the writer its cues come through, which
+/// `every_cue` keeps every one of the `TONES` voices sounding with. It renders `QUANTUM` samples
+/// at a time into a left and a right (`render`).
+pub fn busiest() -> (RingWriter<Cue>, Voice) {
+    let (writer, reader) = ring::<Cue>(128)
+    (writer, voice(take reader, piano(GRAND, music::busiest(seconds: 2.0))))
+}
+
+/// Every kind of cue, and some again: more voices than the voice has (`TONES`), across the view.
+pub fn every_cue(w: mut RingWriter<Cue>) {
+    for n in 0..TONES + 8 {
+        let kind = STEP + n % (BANG - STEP + 1)
+        let _ = w.push(Cue { kind, amount: 1.0, pan: f32(n % 5) * 0.4 - 0.8 })
+    }
 }
 
 /// A voice that plays `music` and the cues it reads from `cues`.
@@ -182,7 +207,9 @@ fn rand(v: mut Voice) -> f32 {
 /// A new voice.
 @audio
 fn tone(v: mut Voice, t: Tone) {
-    v.tones[v.next] = t
+    // Its own noise, seeded from the voice's, so each voice's noise is its own however many sound.
+    v.noise = v.noise.wrapping_mul(1664525).wrapping_add(1013904223)
+    v.tones[v.next] = Tone { noise: v.noise ^ 0x85ebca6b, ..t }
     let a = (clamp(t.pan, -1.0, 1.0) + 1.0) * 0.25 * PI
     v.gains[v.next] = vec2(cos(a), sin(a))
     v.next = (v.next + 1) % TONES
@@ -477,46 +504,66 @@ fn chirp(v: mut Voice) {
     }
 }
 
-/// One sample of a voice, and the voice a sample on.
+/// A voice's next quantum added into `left` and `right` at `gains`, and the voice a quantum on.
+/// Its pitch and its fall step by the same ratio each sample: the glide's and the fall's.
 @audio
-fn sample(v: mut Voice, k: u32, dt: f32) -> f32 {
-    var t = v.tones[k]
-    t.age += dt
-    if t.age < 0.0 || t.age > t.t60 {
-        v.tones[k] = t
-        return 0.0
+fn sound(t: mut Tone, gains: vec2, left: mut [f32; QUANTUM], right: mut [f32; QUANTUM], dt: f32) {
+    let end = t.age + f32(QUANTUM) * dt
+    if end < 0.0 || t.age > t.t60 {
+        // Not yet, or done: silent the whole quantum.
+        t.age = end
+        return
     }
-    let f = t.from * pow(t.to / t.from, min(t.age / t.glide, 1.0))
-    t.phase = fract(t.phase + f * dt)
-    var s = 0.0
-    if t.kind == SINE {
-        s = sin(TAU * t.phase)
-    } else if t.kind == FM {
-        t.mod_phase = fract(t.mod_phase + f * t.ratio * dt)
-        // The modulation fades faster than the tone: a bell's strike, then its hum.
-        let depth = t.index * (1.0 - 0.7 * min(t.age / max(t.t60 * 0.3, 1.0e-3), 1.0))
-        s = sin(TAU * t.phase + depth * sin(TAU * t.mod_phase))
-    } else {
-        // Noise through a state-variable band-pass round `f`.
-        let white = rand(mut v) * 2.0 - 1.0
-        let g = 2.0 * sin(PI * min(f, RATE * 0.2) / RATE)
-        t.low += g * t.band
-        let high = white - t.low - t.band / t.q
-        t.band += g * high
-        s = t.band
-        if t.kind == LOW {
-            t.smooth += (t.low - t.smooth) * min(TAU * f / RATE, 1.0)
-            s = t.smooth
+    let glide_step = pow(t.to / t.from, dt / t.glide)
+    let fall_step = exp(-6.9 * dt / t.t60)
+    var f = 0.0
+    var fade = 0.0
+    var started = false
+    for i in 0..QUANTUM {
+        t.age += dt
+        if t.age < 0.0 || t.age > t.t60 {
+            continue
         }
+        if !started {
+            f = t.from * pow(t.to / t.from, min(t.age / t.glide, 1.0))
+            fade = exp(-6.9 * t.age / t.t60)
+            started = true
+        } else {
+            f = if t.age < t.glide { f * glide_step } else { t.to }
+            fade *= fall_step
+        }
+        t.phase = fract(t.phase + f * dt)
+        var s = 0.0
+        if t.kind == SINE {
+            s = sin(TAU * t.phase)
+        } else if t.kind == FM {
+            t.mod_phase = fract(t.mod_phase + f * t.ratio * dt)
+            // The modulation fades faster than the tone: a bell's strike, then its hum.
+            let depth = t.index * (1.0 - 0.7 * min(t.age / max(t.t60 * 0.3, 1.0e-3), 1.0))
+            s = sin(TAU * t.phase + depth * sin(TAU * t.mod_phase))
+        } else {
+            // Noise through a state-variable band-pass round `f`.
+            t.noise = t.noise.wrapping_mul(1664525).wrapping_add(1013904223)
+            let white = f32(t.noise >> 8) / 8388608.0 - 1.0
+            let g = 2.0 * sin(PI * min(f, RATE * 0.2) / RATE)
+            t.low += g * t.band
+            let high = white - t.low - t.band / t.q
+            t.band += g * high
+            s = t.band
+            if t.kind == LOW {
+                t.smooth += (t.low - t.smooth) * min(TAU * f / RATE, 1.0)
+                s = t.smooth
+            }
+        }
+        let a = s * t.gain * saturate(t.age / t.attack) * fade
+        left[i] += a * gains.x
+        right[i] += a * gains.y
     }
-    let attack = saturate(t.age / t.attack)
-    let fade = exp(-6.9 * t.age / t.t60)
-    v.tones[k] = t
-    s * t.gain * attack * fade
 }
 
+/// The next quantum of `v`, added into `left` and `right`.
 @audio
-fn render(v: mut Voice, left: mut [f32], right: mut [f32]) {
+pub fn render(v: mut Voice, left: mut [f32], right: mut [f32]) {
     var more = true
     while more {
         match v.cues.pop() {
@@ -532,16 +579,15 @@ fn render(v: mut Voice, left: mut [f32], right: mut [f32]) {
         chirp(mut v)
         v.bird = 4.0 + 8.0 * rand(mut v)
     }
+    // The effects' voices, a voice at a time over the quantum, summed in their order.
+    var fx_l = [0.0; QUANTUM]
+    var fx_r = [0.0; QUANTUM]
+    for k in 0..TONES {
+        sound(mut v.tones[k], v.gains[k], mut fx_l, mut fx_r, dt)
+    }
     for i in 0..QUANTUM {
-        var l = 0.0
-        var r = 0.0
-        for k in 0..TONES {
-            let s = sample(mut v, k, dt)
-            if s != 0.0 {
-                l += s * v.gains[k].x
-                r += s * v.gains[k].y
-            }
-        }
+        var l = fx_l[i]
+        var r = fx_r[i]
         // The slide's hiss, its level eased towards what's wanted.
         v.slide += (v.slide_to - v.slide) * 0.002
         if v.slide > 1.0e-4 {
@@ -571,8 +617,6 @@ fn render(v: mut Voice, left: mut [f32], right: mut [f32]) {
 // ---- tests -------------------------------------------------------------------------------------
 
 use engine::perform::{PedalPoint, Performance}
-use engine::piano_grand::GRAND
-use engine::piano::piano
 use std::io::print
 use std::math::is_finite
 
@@ -625,11 +669,13 @@ fn heard_over(music: take Piano, cues: [Cue], seconds: f32) -> vec3 {
 
 @test
 fn every_cue_sounds_over_the_wind() {
-    // Each cue, alone, is many times the energy of the wind and birds it plays over.
+    // Each cue, alone, is several times the energy of the wind and birds it plays over. The
+    // faintest, the rocket's thin whistle (`LAUNCH`), is 3.3 to 4.3 times it as its noise's seed
+    // falls (four seeds, B10.8).
     let bed = heard([], seconds: 0.4).x
     for kind in STEP..BANG + 1 {
         let e = heard([Cue { kind, amount: 0.8 }], seconds: 0.4).x
-        assert(e > 4.0 * bed, f"cue {kind}: {e} over a bed of {bed}")
+        assert(e > 3.0 * bed, f"cue {kind}: {e} over a bed of {bed}")
     }
 }
 

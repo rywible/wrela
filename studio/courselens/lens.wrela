@@ -1,0 +1,553 @@
+// The course lens: a 2D game's course, its chains' corners over its ground and its water, with
+// its player running its recorded run over them. A click names the literals that place a corner,
+// with their source; a drag moves the corner there (the literals set, as a lifted build sets
+// them, and the course made again from them); `write` writes the moved literals back to the
+// source through `wrela edit`, as the field lens and the map lens do (spec/language.md §23.5).
+// Corners alone: slopes and water boxes are a later scope's.
+//
+// Each action is an export and a command, and answers with one line of JSON
+// (`std::io::print`), as the other lenses' do: an agent calls them headless, a person clicks,
+// drags and types. What the lens needs of the game comes as functions (the program `wrela tool
+// studio` writes round it passes them): the course as its literals say now (`Plan`), and the run.
+
+use std::gpu::begin_screen_pass
+use std::input::{Button, Event, Key, events}
+use std::io::{Pending, print}
+use std::lift::{Literal, file_name, file_text, generation, reads}
+use studio::json::{list, obj}
+use studio::view::BACKGROUND
+use ui::draw::{Rect, Renderer}
+use ui::text::{Face, Fonts, previous}
+use ui::widgets::Ui
+
+/// A course as the lens sees it: each chain's corners (what a drag moves), its ground as lines,
+/// and its water's boxes (left, bottom, right, top), in metres, y up.
+pub struct Plan: Clone {
+    pub corners: Vec<Vec<vec2>>,
+    pub ground: Vec<Vec<vec2>>,
+    pub waters: Vec<vec4>,
+}
+
+/// A corner: corner `i` of chain `chain`.
+pub struct Corner: Copy + Eq {
+    pub chain: u32,
+    pub i: u32,
+}
+
+/// How near a pixel a corner must be for a click or a drag to take it (pixels).
+pub const NEAR: f32 = 12.0
+
+/// The course lens's state.
+pub struct CourseLens {
+    pub width: u32,
+    pub height: u32,
+    /// What the screen shows: its middle (x, y) and half the screen's width across (m).
+    pub view: vec3,
+    /// The course as last made, and the literal table's generation it was made at.
+    pub plan: Plan,
+    pub made: u32,
+    /// Where the player is each tick of its run, the ticks a second it was recorded at (the lens
+    /// runs it at that pace, again and again), and the seconds the lens has run it.
+    pub run: Vec<vec2>,
+    pub ticks: f32,
+    pub time: f32,
+    /// The literals moved since the build, and the write of them on its way.
+    pub moved: Vec<Literal>,
+    pub writing: Option<Pending<u8>>,
+    /// Where the pointer went down, and the corner there, if any.
+    pub press: Option<(vec2, Option<Corner>)>,
+    /// The command being typed, the commands typed while a write was on its way (each runs once
+    /// it's in, in order), the labels' toolkit and its renderer, and how many answers.
+    pub line: String,
+    pub queue: Vec<String>,
+    pub ui: Ui,
+    pub renderer: Renderer,
+    pub answers: u32,
+}
+
+/// The lens on the course `plan` gives, its player on the run `run` gives (recorded at `ticks` a
+/// second): the whole course in view.
+pub fn open(plan: fn() -> Plan, run: fn() -> Vec<vec2>, ticks: f32) -> CourseLens {
+    let fonts = Fonts::load()
+    let renderer = Renderer::new(fonts)
+    let p = plan()
+    var lo = vec2(1.0e9)
+    var hi = vec2(-1.0e9)
+    for chain in p.corners {
+        for c in chain {
+            lo = min(lo, c)
+            hi = max(hi, c)
+        }
+    }
+    if lo.x > hi.x {
+        lo = vec2(-10.0)
+        hi = vec2(10.0)
+    }
+    let middle = 0.5 * (lo + hi)
+    CourseLens {
+        width: 1,
+        height: 1,
+        view: vec3(middle, 0.5 * (hi.x - lo.x) * 1.05 + 1.0),
+        plan: p,
+        made: generation(),
+        run: run(),
+        ticks,
+        time: 0.0,
+        moved: Vec::new(),
+        writing: None,
+        press: None,
+        line: String::new(),
+        queue: Vec::new(),
+        ui: Ui::new(take fonts),
+        renderer,
+        answers: 0,
+    }
+}
+
+impl CourseLens {
+    /// Prints one answer.
+    pub fn answer(mut self, a: str) {
+        print(a)
+        self.answers += 1
+    }
+
+    /// Metres a pixel.
+    fn scale(self) -> f32 {
+        2.0 * self.view.z / f32(max(self.width, 1))
+    }
+
+    /// The point of the course under pixel `px` (y up the screen).
+    pub fn world(self, px: vec2) -> vec2 {
+        let mid = vec2(f32(self.width), f32(self.height)) * 0.5
+        self.view.xy + (px - mid) * vec2(1.0, -1.0) * self.scale()
+    }
+
+    /// The pixel over point `p` of the course.
+    pub fn pixel(self, p: vec2) -> vec2 {
+        let mid = vec2(f32(self.width), f32(self.height)) * 0.5
+        mid + (p - self.view.xy) * vec2(1.0, -1.0) / self.scale()
+    }
+}
+
+/// The course made again if a literal changed since it was last.
+fn renew(lens: mut CourseLens, plan: fn() -> Plan) {
+    let g = generation()
+    if g != lens.made {
+        lens.plan = plan()
+        lens.made = g
+    }
+}
+
+/// Whether a write is on its way: the lens is busy until its answer is in.
+pub fn busy(lens: CourseLens) -> bool {
+    lens.writing.is_some()
+}
+
+// ---- the corners ---------------------------------------------------------------------------------
+
+/// Where corner `c` is.
+pub fn corner_at(p: Plan, c: Corner) -> vec2 {
+    p.corners[c.chain][c.i]
+}
+
+/// The corner nearest pixel `px`, within `within` pixels.
+pub fn corner_under(lens: CourseLens, px: vec2, within: f32) -> Option<Corner> {
+    var best: Option<Corner> = None
+    var d = within
+    for chain in 0..lens.plan.corners.len() {
+        for i in 0..lens.plan.corners[chain].len() {
+            let e = length(lens.pixel(lens.plan.corners[chain][i]) - px)
+            if e < d {
+                d = e
+                best = Some(Corner { chain, i })
+            }
+        }
+    }
+    best
+}
+
+/// A literal that places a corner, and how the corner moves with it (its x and y, a unit each).
+pub struct Placing: Copy {
+    pub literal: Literal,
+    pub moves: vec2,
+}
+
+/// The literals that place corner `c`, of those the course reads: each whose value is the
+/// corner's x or y and whose change moves it, found by changing it a unit and making the course
+/// again (the course is built in vectors, which a derivative can't follow). If none, every
+/// literal the course reads is tried.
+pub fn placing(plan: fn() -> Plan, c: Corner) -> Vec<Placing> {
+    borrow all = reads(plan)
+    let at = corner_at(plan(), c)
+    var out: Vec<Placing> = Vec::new()
+    for l in all {
+        let v = l.value()
+        if abs(abs(v) - abs(at.x)) < 1.0e-3 || abs(abs(v) - abs(at.y)) < 1.0e-3 {
+            try_literal(plan, c, at, l, mut out)
+        }
+    }
+    if out.is_empty() {
+        for l in all {
+            try_literal(plan, c, at, l, mut out)
+        }
+    }
+    out
+}
+
+/// Literal `l` changed a unit and back: if corner `c` (at `at`) moved, it's one that places it.
+fn try_literal(plan: fn() -> Plan, c: Corner, at: vec2, l: Literal, out: mut Vec<Placing>) {
+    let v = l.value()
+    l.set(v + 1.0)
+    let moved = corner_at(plan(), c) - at
+    l.set(v)
+    if length(moved) > 1.0e-4 {
+        out.push(Placing { literal: l, moves: moved })
+    }
+}
+
+/// A literal as JSON: its index, file, line, column and text, and its value.
+fn literal_json(l: Literal) -> String {
+    let s = l.source()
+    let text = file_text(s.file)
+    obj()
+        .int("index", l.index)
+        .text("file", file_name(s.file))
+        .int("line", s.line)
+        .int("column", s.column)
+        .text("text", text.slice(s.start, s.end))
+        .num("value", l.value())
+        .done()
+}
+
+/// A corner as JSON: its chain, its number in it, where it is and its pixel.
+fn corner_json(lens: CourseLens, c: Corner) -> String {
+    let at = corner_at(lens.plan, c)
+    obj()
+        .int("chain", c.chain)
+        .int("i", c.i)
+        .vec2("at", at)
+        .vec2("pixel", lens.pixel(at))
+        .done()
+}
+
+// ---- the actions -----------------------------------------------------------------------------------
+
+/// `zoom x y half`: the view on (x, y), `half` metres either side of it across the screen.
+pub fn zoom(lens: mut CourseLens, x: f32, y: f32, half: f32) {
+    lens.view = vec3(x, y, max(half, 1.0))
+    let a = obj().text("action", "zoom").vec("view", lens.view).done()
+    lens.answer(a.as_str())
+}
+
+/// `corners`: every corner of the course, each where it is and its pixel.
+pub fn corners(lens: mut CourseLens, plan: fn() -> Plan) {
+    renew(mut lens, plan)
+    var out = list()
+    for chain in 0..lens.plan.corners.len() {
+        for i in 0..lens.plan.corners[chain].len() {
+            out.add(corner_json(lens, Corner { chain, i }).as_str())
+        }
+    }
+    let a = obj().text("action", "corners").raw("corners", (take out).done().as_str()).done()
+    lens.answer(a.as_str())
+}
+
+/// `click x y`: the corner under the pixel and the literals that place it, with their source;
+/// or the point of the course there.
+pub fn click(lens: mut CourseLens, plan: fn() -> Plan, x: f32, y: f32) {
+    renew(mut lens, plan)
+    let px = vec2(x, y)
+    let a = match corner_under(lens, px, NEAR) {
+        Some(c) => {
+            var lits = list()
+            for p in placing(plan, c) {
+                let j = obj()
+                    .raw("literal", literal_json(p.literal).as_str())
+                    .vec2("moves", p.moves)
+                    .done()
+                lits.add(j.as_str())
+            }
+            obj()
+                .text("action", "click")
+                .raw("corner", corner_json(lens, c).as_str())
+                .raw("literals", (take lits).done().as_str())
+                .done()
+        },
+        None => obj().text("action", "click").vec2("at", lens.world(px)).done(),
+    }
+    lens.answer(a.as_str())
+}
+
+/// `move x0 y0 x1 y1`: the corner under pixel (x0, y0) moved to (x1, y1), to the centimetre:
+/// the literal that moves it most along x, and the one that moves it most along y, each set so
+/// the corner stands there; the course made again.
+pub fn drag(lens: mut CourseLens, plan: fn() -> Plan, x0: f32, y0: f32, x1: f32, y1: f32) {
+    renew(mut lens, plan)
+    let Some(c) = corner_under(lens, vec2(x0, y0), NEAR) else {
+        let a = obj().text("action", "move").text("error", "no corner there to move").done()
+        lens.answer(a.as_str())
+        return
+    }
+    let from = corner_at(lens.plan, c)
+    let to = round(lens.world(vec2(x1, y1)) * 100.0) / 100.0
+    let lits = placing(plan, c)
+    var set = list()
+    for axis in 0..2 {
+        var best: Option<Placing> = None
+        for p in lits {
+            let k = abs(p.moves[axis])
+            let had = match best {
+                Some(b) => abs(b.moves[axis]),
+                None => 0.0,
+            }
+            if k > max(had, 0.5) {
+                best = Some(p)
+            }
+        }
+        if let Some(p) = best {
+            let old = p.literal.value()
+            p.literal.set(old + (to[axis] - from[axis]) / p.moves[axis])
+            var known = false
+            for l in lens.moved {
+                known = known || l == p.literal
+            }
+            if !known {
+                lens.moved.push(p.literal)
+            }
+            let j = obj().raw("literal", literal_json(p.literal).as_str()).num("was", old).done()
+            set.add(j.as_str())
+        }
+    }
+    renew(mut lens, plan)
+    let a = obj()
+        .text("action", "move")
+        .raw("corner", corner_json(lens, c).as_str())
+        .raw("set", (take set).done().as_str())
+        .done()
+    lens.answer(a.as_str())
+}
+
+/// `write`: the moved literals written to the source, through the server (`wrela edit`): a post
+/// of `{"edits": [[literal, value], ...]}` to `studio/edit`, its answer a later frame's.
+pub fn write(lens: mut CourseLens) {
+    if lens.moved.is_empty() {
+        let a = obj().text("action", "write").int("edits", 0).flag("written", b: false).done()
+        lens.answer(a.as_str())
+        return
+    }
+    var edits = list()
+    for l in lens.moved {
+        let e = f"[{l.index},{l.value()}]"
+        edits.add(e.as_str())
+    }
+    let body = obj().raw("edits", (take edits).done().as_str()).done()
+    lens.writing = Some(std::io::post("studio/edit", body.as_bytes()))
+}
+
+fn poll_write(lens: mut CourseLens) {
+    let answer = match mut lens.writing {
+        Some(w) => w.poll(),
+        None => None,
+    }
+    if answer.is_none() {
+        return
+    }
+    lens.writing = None
+    var text = String::from("null")
+    match take answer {
+        Some(Ok(bytes)) => {
+            if let Some(s) = String::from_utf8(take bytes) {
+                text = take s
+            }
+            if text.as_str().find("\"written\":true").is_some() {
+                lens.moved.clear()
+            }
+        },
+        _ => {},
+    }
+    let a = obj().text("action", "write").raw("answer", text.as_str()).done()
+    lens.answer(a.as_str())
+}
+
+// ---- a frame -----------------------------------------------------------------------------------------
+
+/// A frame: typed commands and the pointer, the write when it comes, the course made again if a
+/// literal changed, and the course drawn with the player where its run has it now.
+pub fn frame(lens: mut CourseLens, plan: fn() -> Plan, time: f32, width: u32, height: u32) {
+    lens.width = width
+    lens.height = height
+    lens.time = time
+    for e in events() {
+        match e {
+            Event::Text { char } => lens.line.push_char(char),
+            Event::KeyDown { key, .. } => {
+                if key == Key::Enter {
+                    let line = std::collections::replace(mut lens.line, String::new())
+                    lens.queue.push(take line)
+                } else if key == Key::Backspace {
+                    if !lens.line.is_empty() {
+                        let from = previous(lens.line.as_str(), lens.line.len())
+                        lens.line.truncate(from)
+                    }
+                }
+            },
+            Event::PointerDown { at, button, .. } => {
+                if button == Button::Primary {
+                    lens.press = Some((at, corner_under(lens, at, NEAR)))
+                }
+            },
+            Event::PointerUp { at, button, .. } => {
+                if button == Button::Primary {
+                    if let Some((from, c)) = std::collections::replace(mut lens.press, None) {
+                        if c.is_some() && length(at - from) > 3.0 {
+                            drag(mut lens, plan, from.x, from.y, at.x, at.y)
+                        } else {
+                            click(mut lens, plan, from.x, from.y)
+                        }
+                    }
+                }
+            },
+            _ => {},
+        }
+    }
+    poll_write(mut lens)
+    while !busy(lens) && !lens.queue.is_empty() {
+        let line = lens.queue.remove(0)
+        command(mut lens, plan, line.as_str())
+    }
+    renew(mut lens, plan)
+    let screen = vec2(f32(width), f32(height))
+    draw_course(mut lens, screen)
+    let pass = begin_screen_pass(clear: BACKGROUND)
+    lens.renderer.draw(pass, screen)
+    pass.present()
+}
+
+/// The course's water, ground and corners, the player's run and the player on it, and the
+/// command line.
+fn draw_course(lens: mut CourseLens, screen: vec2) {
+    let none: Vec<Event> = Vec::new()
+    lens.ui.begin(screen, none)
+    for w in lens.plan.waters {
+        let a = lens.pixel(w.xw)
+        let b = lens.pixel(w.zy)
+        lens.ui.draw.rect(Rect::spanning(a, b), vec4(0.25, 0.5, 0.85, 0.5))
+    }
+    let earth = vec4(0.85, 0.78, 0.6, 1.0)
+    for chain in lens.plan.ground {
+        for k in 1..chain.len() {
+            let a = lens.pixel(chain[k - 1])
+            let b = lens.pixel(chain[k])
+            lens.ui.draw.line(a, b, earth, width: 1.5)
+        }
+    }
+    // The run as a faint trail, and the player where it is now, a disc the capybara's size.
+    let trail = vec4(1.0, 1.0, 1.0, 0.25)
+    var k = 8
+    while k < lens.run.len() {
+        let a = lens.pixel(lens.run[k - 8])
+        let b = lens.pixel(lens.run[k])
+        lens.ui.draw.line(a, b, trail)
+        k += 8
+    }
+    if !lens.run.is_empty() {
+        let at = run_at(lens.run, lens.ticks, lens.time)
+        let p = lens.pixel(at)
+        let r = max(0.35 / lens.scale(), 3.0)
+        lens.ui.draw.ellipse(
+            Rect::new(p.x - r, p.y - r, w: 2.0 * r, h: 2.0 * r),
+            vec4(0.95, 0.6, 0.3, 1.0),
+        )
+    }
+    for chain in lens.plan.corners {
+        for c in chain {
+            let p = lens.pixel(c)
+            lens.ui.draw.rect(
+                Rect::new(p.x - 3.0, p.y - 3.0, w: 6.0, h: 6.0),
+                vec4(1.0, 1.0, 1.0, 1.0),
+                radius: 1.0,
+            )
+        }
+    }
+    let status = if lens.moved.is_empty() {
+        String::from("corners: drag one")
+    } else {
+        f"{lens.moved.len()} literals moved: write"
+    }
+    let _ = lens.ui.draw.text(
+        lens.ui.fonts,
+        Face::Mono,
+        f"{status}   > {lens.line}".as_str(),
+        13.0,
+        vec2(8.0, screen.y - 22.0),
+        vec4(1.0, 1.0, 1.0, 1.0),
+    )
+    lens.ui.end()
+    lens.renderer.upload(lens.ui.draw)
+}
+
+/// A typed command: an action's name and its numbers.
+pub fn command(lens: mut CourseLens, plan: fn() -> Plan, line: str) {
+    var words: Vec<String> = Vec::new()
+    for (a, b) in line.split(" ") {
+        if b > a {
+            words.push(String::from(line.slice(a, b)))
+        }
+    }
+    if words.is_empty() {
+        return
+    }
+    var n: Vec<f32> = Vec::new()
+    for i in 1..words.len() {
+        n.push(words[i].as_str().parse_f32().unwrap_or(0.0))
+    }
+    borrow name = words[0].as_str()
+    let arg = |i: u32| if i < n.len() { n[i] } else { 0.0 }
+    if name == "zoom" {
+        zoom(mut lens, arg(0), arg(1), arg(2))
+    } else if name == "corners" {
+        corners(mut lens, plan)
+    } else if name == "click" {
+        click(mut lens, plan, arg(0), arg(1))
+    } else if name == "move" {
+        drag(mut lens, plan, arg(0), arg(1), arg(2), arg(3))
+    } else if name == "write" {
+        write(mut lens)
+    } else {
+        let a = obj().text("error", f"no action `{name}`".as_str()).done()
+        lens.answer(a.as_str())
+    }
+}
+
+/// Where a run recorded at `ticks` a second (`run`, a position a tick) is `time` seconds in,
+/// played again and again.
+fn run_at(run: [vec2], ticks: f32, time: f32) -> vec2 {
+    run[u32(time * ticks) % run.len()]
+}
+
+// ---- tests ------------------------------------------------------------------------------------
+
+/// A run plays at the pace it was recorded: a second into the capybara's (120 ticks a second, its
+/// sim's), its 120th tick; and it starts again once it's run.
+@test
+fn a_run_plays_at_the_pace_it_was_recorded() {
+    var run: Vec<vec2> = Vec::new()
+    for k in 0..200 {
+        run.push(vec2(f32(k), 0.0))
+    }
+    assert(run_at(run, 120.0, 1.0).x == 120.0, "a second in isn't the 120th tick")
+    assert(run_at(run, 120.0, 2.0).x == 40.0, "the run didn't start again")
+}
+
+@test
+fn a_pixel_and_its_point_of_the_course_go_both_ways() {
+    let view = vec3(10.0, 2.0, 20.0)
+    let w = 800.0
+    let h = 600.0
+    let scale = 2.0 * view.z / w
+    let px = vec2(100.0, 50.0)
+    let at = view.xy + (px - vec2(w, h) * 0.5) * vec2(1.0, -1.0) * scale
+    assert(at.y > view.y, "up the screen is up the course")
+    let back = vec2(w, h) * 0.5 + (at - view.xy) * vec2(1.0, -1.0) / scale
+    assert(length(back - px) < 1.0e-3)
+}

@@ -1,6 +1,6 @@
 // Production far quads and volume depth at three widths, from level and raised cameras.
 use engine::frame::fullscreen
-use engine::impostor::{Bake, VIEWS, far_quad, volume_cut}
+use engine::impostor::{Bake, KindDesc, VIEWS, far_quad, volume_cut}
 use engine::plant::{Bark, Instance, Leaves, Wind, tint_of}
 use engine::view::{Camera, first_camera}
 use std::gpu::{
@@ -52,6 +52,21 @@ pub fn frame(time: f32, width: u32, height: u32) {
     var depths = texture3d::<Rgba16Float>(width: 24, height: 24, depth: 24)
     dispatch(box_volume.bind(mut grid, mut depths), over: grid)
     let b = Bake { mid: vec3(0.0), half: 1.0, leaves: Leaves {}, bark: Bark {} }
+    let kinds = buffer_of(
+        [
+            KindDesc {
+                bake: b,
+                card_first: 0,
+                card_count: 0,
+                order_first: 0,
+                limb_first: 0,
+                limb_count: 0,
+                bounds_first: 0,
+                layer: 0,
+                slab: 0,
+            },
+        ],
+    )
     let bounds = buffer_of(Vec::filled(VIEWS * VIEWS, vec4(-1.0, -1.0, 1.0, 1.0)))
     let marks = buffer_of([vec2u(16383 << 14, 0)])
     var cases: Vec<Instance> = Vec::new()
@@ -78,14 +93,13 @@ pub fn frame(time: f32, width: u32, height: u32) {
             far_quad.bind(
                 cam,
                 wind: Wind { time: 0.0, dir: vec2(1.0, 0.0), strength: 0.0 },
-                b: b,
+                kinds: kinds,
                 instances: placed.span(start: (k % 3) * 16, count: 1),
                 marks: marks.items(),
                 bounds: bounds.items(),
-                first: k,
                 front: 0,
             ),
-            volume_cut.bind(cam, b, grid, grid_depth: depths, s: s, cell: 1.0),
+            volume_cut.bind(cam, kinds, grid, grid_depth: depths, s: s, cell: 1.0),
             vertices: 6,
             depth: Depth { compare: Compare::Greater, write: true },
         )

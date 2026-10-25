@@ -16,19 +16,21 @@
 
 use engine::present::Snapshots
 use engine::look::{ByPart, CreatureLook, Detail, Shadow, Skin}
-use engine::realize::{Eye, NO_LEVEL, Placement, Realizer}
+use engine::memory::{REALIZER, Share, Usage, evict_after}
+use engine::realize::{EVICT_AFTER, Eye, Mesh, NO_LEVEL, Placement, Realizer}
 use engine::character::{Instance, RestSkeleton, colours, pose_instances}
 use engine::creature::MAX_BONES
-use engine::plain::{depth_only, skin_coloured, skin_shadow, view}
+use engine::plain::{View, depth_only, skin_coloured, skin_shadow, view}
 use engine::run::run
 use grazer::{FALLOFF, GrazerField, field_of, grazer, params}
 use herd::{HERD, Seen, Snap, between, snapshot, spawn, step}
 use look::{GrazerLook, LIGHTS, SKY, SUN, grazer_shade, ground_shade, transfer}
 use std::gpu::{
-    ComparisonSampler, Cull, DepthBias, DepthTexture, GpuBuffer, Unorm8x4, begin_depth_pass,
-    begin_screen_pass_with_depth, buffer, comparison_sampler, depth_texture, dispatch, draw, write,
+    ComparisonSampler, Cull, DepthBias, DepthTexture, GpuBuffer, GpuSpan, RenderPass, Unorm8x4,
+    begin_depth_pass, begin_screen_pass_with_depth, buffer, comparison_sampler, depth_texture,
+    dispatch, draw, write,
 }
-use std::input::{Event, Key, events}
+use std::input::{Event, Key, Script, events}
 use std::io::print
 use std::math::PI
 use terrain::{GRID, ground, height}
@@ -101,6 +103,12 @@ pub struct Game {
     /// Whether each grazer has been drawn, and reached the level it should have, yet (live).
     drawn_yet: Vec<bool>,
     at_level_yet: Vec<bool>,
+    /// Where each grazer was posed this frame: its place among the frame's instances, or how
+    /// many there are if it wasn't.
+    posed: Vec<u32>,
+    /// What the realizer's last live frame allocated (it keeps what it needs from frame to
+    /// frame).
+    realizer_allocations: u32,
 }
 
 pub fn init() -> Game {
@@ -143,6 +151,8 @@ pub fn init() -> Game {
         terrain: true,
         drawn_yet: Vec::new(),
         at_level_yet: Vec::new(),
+        posed: Vec::filled(HERD, 0),
+        realizer_allocations: 0,
     }
 }
 
@@ -231,10 +241,23 @@ pub fn frame(game: mut Game, time: f32, width: u32, height: u32) {
         for g in grazers {
             placed.push(Placement { at: g.pos, heading: g.heading })
         }
+        // The budget (`engine::memory`): over it, an unseen grazer drops its finer levels sooner.
+        let usage = Usage {
+            gpu: std::gpu::memory(),
+            total: engine::memory::TOTAL,
+            shares: Vec::from(
+                [
+                    Share { name: "realizer", bytes: game.realizer.bytes(), budget: REALIZER },
+                ],
+            ),
+        }
+        game.realizer.evict_after = evict_after(usage, default: EVICT_AFTER)
+        let before = std::alloc::allocations()
         game.realizer.frame(
             Eye { at: v.eye, view_proj: v.view_proj, height: f32(height), fovy },
             placed,
         )
+        game.realizer_allocations = std::alloc::allocations() - before
         // When each grazer is first drawn, and first has the level it should (#42 AC4).
         while game.drawn_yet.len() < HERD {
             game.drawn_yet.push(false)
@@ -333,31 +356,64 @@ pub fn frame(game: mut Game, time: f32, width: u32, height: u32) {
             vertices: GRID * GRID * 6,
         )
     }
+    // Each grazer's mesh, its share of the dither if a level fades in; then the meshes fading
+    // out, the rest of it.
+    for i in 0..HERD {
+        game.posed[i] = n
+    }
     for k in 0..n {
         let i = instances[k].skeleton
+        game.posed[i] = k
         borrow mesh = game.realizer.mesh(i)
         let Some(c) = game.colours[i][game.realizer.drawn(i)] else { continue }
-        draw(
-            pass,
-            skin_coloured.bind(
-                verts: mesh.verts.items(),
-                colours: c.items(),
-                palettes: palettes,
-                first: k * MAX_BONES,
-                view: v,
-            ),
-            grazer_shade.bind(
-                view: v,
-                lights: LIGHTS,
-                shadow: game.shadow,
-                shadow_sampler: game.shadow_sampler,
-            ),
-            indices: mesh.quads.items(),
-            indirect: mesh.draw.items(),
-            cull: Cull::Back,
-        )
+        let keep = vec2(0.0, game.realizer.fade_share(i))
+        draw_grazer(pass, mesh, c, palettes, k, v, game.shadow, game.shadow_sampler, keep)
+    }
+    for f in game.realizer.fading() {
+        let k = game.posed[f.instance]
+        if k == n {
+            continue
+        }
+        let Some(c) = game.colours[f.instance][f.level] else { continue }
+        let keep = vec2(game.realizer.fade_share(f.instance), 2.0)
+        draw_grazer(pass, f.mesh, c, palettes, k, v, game.shadow, game.shadow_sampler, keep)
     }
     pass.present()
+}
+
+/// A grazer's mesh drawn in `pass` in its colours, posed by the `k`th instance's palettes, seen
+/// by `v` and shadowed by `shadow`, its share of the dither `keep` (`grazer_shade`).
+fn draw_grazer<P: RenderPass>(
+    pass: P,
+    mesh: Mesh,
+    colours: GpuBuffer<Unorm8x4>,
+    palettes: GpuSpan<mat4>,
+    k: u32,
+    v: View,
+    shadow: DepthTexture,
+    shadow_sampler: ComparisonSampler,
+    keep: vec2,
+) {
+    draw(
+        pass,
+        skin_coloured.bind(
+            verts: mesh.verts.items(),
+            colours: colours.items(),
+            palettes: palettes,
+            first: k * MAX_BONES,
+            view: v,
+        ),
+        grazer_shade.bind(
+            view: v,
+            lights: LIGHTS,
+            shadow: shadow,
+            shadow_sampler: shadow_sampler,
+            keep: keep,
+        ),
+        indices: mesh.quads.items(),
+        indirect: mesh.draw.items(),
+        cull: Cull::Back,
+    )
 }
 
 // ---- tests (`wrela test examples/herd`) -----------------------------------------------------
@@ -443,4 +499,48 @@ fn the_physique_gives_each_bone_its_mass_and_moments() {
     assert(p.least >= -1.0e-4, f"a bone's moments break the triangle inequality: {p.least}")
     let differ = physique_methods_differ(1, 0.02)
     assert(differ <= 0.05, f"a bone is {differ * 100.0:.2}% from integrate's")
+}
+
+/// The live herd, then a still frame at level 1 (the 2 key, at frame 400).
+const STILL_AFTER_LIVE: Script = Script::frames().press(400, Key::Digit2)
+
+/// A still frame's level asked for after the live herd draws every grazer at it whole: no mesh of
+/// the live herd's levels is left fading out over it (`Realizer::realize_all`).
+@test(frames: 900, gpu: true, input: STILL_AFTER_LIVE)
+fn a_still_level_after_the_live_herd_is_drawn_whole(game: Game) {
+    assert(game.realized == 1, "the herd wasn't realized at level 1")
+    let fading = game.realizer.fading().len()
+    assert(fading == 0, f"{fading} meshes of the live herd are still fading out")
+    for i in 0..game.realizer.len() {
+        let share = game.realizer.fade_share(i)
+        assert(share == 1.0, f"grazer {i}'s level 1 draws {share} of its pixels")
+    }
+}
+
+/// Every grazer at its finest level (the 3 key, at frame 300), then the live close-up (the L and C
+/// keys, at frame 450), which places seed 1's grazer alone.
+const CLOSE_UP_AFTER_HERD: Script = Script::frames()
+    .press(300, Key::Digit3)
+    .press(450, Key::L)
+    .press(451, Key::C)
+
+/// The grazers the close-up leaves out are unseen, as long as one off screen is: each drops its
+/// finer levels as an unseen one does (`Realizer::frame`, `engine::realize::evicts`).
+@test(frames: 1500, gpu: true, input: CLOSE_UP_AFTER_HERD)
+fn the_grazers_a_close_up_leaves_out_drop_their_finer_levels(game: Game) {
+    for i in 1..game.realizer.len() {
+        let d = game.realizer.drawn(i)
+        assert(d == 0 || d == NO_LEVEL, f"grazer {i}, left out of the close-up, still draws {d}")
+    }
+}
+
+/// Once the herd is drawn at its levels, the realizer's frame allocates nothing: it keeps its
+/// lists from frame to frame, and its pick is one pass over the instances.
+@test(frames: 900, gpu: true)
+fn a_settled_realizer_allocates_nothing_a_frame(game: Game) {
+    assert(game.all_drawn, "the herd wasn't drawn")
+    assert(
+        game.realizer_allocations == 0,
+        f"the realizer allocated {game.realizer_allocations} times",
+    )
 }

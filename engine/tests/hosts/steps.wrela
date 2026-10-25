@@ -1,10 +1,10 @@
 // The steps the workspace's tool tests share: files read and written as text, source text
-// patched and counted, packages built, a driven build's commands and screen read back, and the
-// words of bytes a build read back.
+// patched and counted, packages built, a driven build's steps run (its exports' calls among
+// them) and its commands and screen read back, and the words of bytes a build read back.
 
 use both::bytes_of
 use std::tool::drive
-use std::tool::drive::Step
+use std::tool::drive::{Scalar, Seen, Step}
 use std::tool::files
 use std::tool::toolchain
 
@@ -80,6 +80,20 @@ pub fn built(pkg: str, out: str, options: toolchain::BuildOptions, what: str) {
         assert(!d.error, d.rendered.as_str())
     }
     assert(build.ok, what)
+}
+
+/// `list` run on `h`, none of it trapping (`what` names it in a trap's message): what it saw.
+pub fn stepped(h: drive::Build, list: [Step], what: str) -> Seen {
+    let Ok(seen) = drive::steps(h, list).wait() else { panic(f"{what}'s request") }
+    if let Some(trap) = seen.trap {
+        panic(f"{what}: {trap.message.as_str()}")
+    }
+    seen
+}
+
+/// A call of the export `name` with `args`.
+pub fn call(name: str, args: take Vec<Scalar>) -> Step {
+    Step::Call(String::from(name), take args)
 }
 
 /// Every command `h` recorded since the last time, however many answers they take.

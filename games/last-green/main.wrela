@@ -12,7 +12,7 @@ use climber::draw::{drawn, wolf_bones}
 use climber::figure::{Figure, figure}
 use climber::moves::{drift_rate, locomotion}
 use climber::sounds::{Heard, cues, heard}
-use engine::frame::{Aim, Change, Frame, Gathered, Off, Quality, ShadowQuality}
+use engine::frame::{Aim, Change, Frame, Off, Quality, ShadowQuality, Shared}
 use engine::shot::{MOVE, NO_CAST, SETTLE, Shots, place, shot_clock}
 use land::stream::tile_distance
 use tower::door::Exit
@@ -77,7 +77,7 @@ pub struct Floor {
     snaps: Snapshots<World>,
     /// The frame (the engine's: targets, light, shadows, probes, sky, readiness) and what it
     /// draws (stage.wrela).
-    frame: Frame<Gathered>,
+    frame: Frame<Shared>,
     stage: Stage,
     /// Whether the floor's ready (its kinds cooked, the tiles round the player in and placed).
     ready: bool,

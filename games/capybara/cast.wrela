@@ -376,7 +376,7 @@ pub fn react(k: mut Cast, s: Snap, c: Course, dt: f32, eye: vec2, half: vec2) {
         clamp(s.vel.y * 0.03, -0.4, 0.4) * s.facing
     }
     k.tilt += (tilt - k.tilt) * (1.0 - exp(-dt * 16.0))
-    step_waves(mut k.waves, dt)
+    step_waves(mut k.waves, dt, eye, half)
     step_dust(mut k.dust, dt, |p: vec2| surface_at(k.waves, p.x))
 }
 

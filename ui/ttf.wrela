@@ -1,7 +1,16 @@
 // TrueType fonts baked into signed distance fields when the program is built (language.md
-// §13): each Latin-1 glyph's outline as a field, its metrics, and the font's kerning, from the
-// font's file (`embed`). A program calls `bake` in a constant; text.wrela's fonts are
-// constants made this way.
+// §13): each Latin-1 glyph's outline as a multi-channel field, its metrics, and the font's
+// kerning, from the font's file (`embed`). A program calls `bake` in a constant; text.wrela's
+// fonts are constants made this way.
+//
+// A field of three channels keeps a glyph's corners sharp at any size (Chlumský, Shape
+// Decomposition for Multi-channel Distance Fields, 2015): each contour is cut into edges where it
+// turns sharply, the edges coloured so two meeting at a corner differ (a channel each of red,
+// green and blue, two a colour), and each channel holds the distance to the nearest edge of its
+// colours (past an edge's end, to its line), so the median of the three is the distance to the
+// outline away from the corners and keeps them square where it meets them. Where the median's
+// side of the outline isn't the winding rule's (a crossing of contours, a sliver), the texel is
+// the true distance in every channel.
 //
 // What it reads of the file: `head`'s units per em and `loca`'s format, `maxp`, `hhea` and
 // `hmtx` for the advances, `OS/2` for the metrics a font says to use, `cmap` (formats 4 and
@@ -12,9 +21,9 @@
 
 use std::math::is_finite
 
-/// A font's glyphs as distance fields, sampled at `em` pixels per em: a field's byte `v` is
-/// the signed distance `(v / 255 − 0.5) × 2 × spread` pixels from the pixel's centre to the
-/// outline, positive inside.
+/// A font's glyphs as distance fields, sampled at `em` pixels per em, three bytes a texel (its
+/// channels: the median of them is the distance): a byte `v` is the signed distance
+/// `(v / 255 − 0.5) × 2 × spread` pixels from the pixel's centre to the outline, positive inside.
 pub struct Baked: Clone {
     pub em: f32,
     pub spread: f32,
@@ -27,7 +36,7 @@ pub struct Baked: Clone {
     /// The kerning that isn't 0, by glyph (in the order above): 1/8192 ems added to the left
     /// glyph's advance.
     pub kerning: Vec<Kern>,
-    /// Each glyph's field, `width × height` bytes, rows from the top.
+    /// Each glyph's field, `width × height` texels of three bytes, rows from the top.
     pub fields: Vec<u8>,
 }
 
@@ -120,6 +129,38 @@ pub fn bake(file: Bytes, em: f32, spread: f32) -> Baked {
         glyphs,
         kerning: kerning(file, t, ids, upem),
         fields,
+    }
+}
+
+/// Character `c`'s outline in `file` at `em` pixels per em, flattened as the baker flattens it:
+/// what a test sets a drawn glyph beside (`Outline::distance`). Pixels from the pen, up from the
+/// baseline.
+pub fn outline_of(file: Bytes, c: u32, em: f32) -> Outline {
+    let t = Tables::of(file)
+    let upem = f64(u16_at(file, t.head + 18))
+    let id = glyph_index(file, t, c)
+    assert(id >= 0, f"the font has no U+{c:04x}")
+    var pen = Pen::new(f64(em) / upem)
+    outline(file, t, u32(id), Transform::identity(), mut pen, 0)
+    Outline { segments: coloured(pen.contours) }
+}
+
+/// A glyph's outline (`outline_of`).
+pub struct Outline {
+    segments: Vec<Segment>,
+}
+
+impl Outline {
+    /// The signed distance from (`x`, `y`) to the outline (pixels), positive inside (the winding
+    /// rule's).
+    pub fn distance(self, x: f64, y: f64) -> f64 {
+        var d2 = 1.0e300
+        var winding = 0
+        for s in self.segments {
+            d2 = min(d2, s.distance_squared(x, y))
+            winding += s.winds(x, y)
+        }
+        if winding != 0 { sqrt(d2) } else { -sqrt(d2) }
     }
 }
 
@@ -759,52 +800,249 @@ impl Field {
         }
     }
 
-    /// Each pixel's signed distance to the outline, positive inside, as a byte.
+    /// Each pixel's signed distance to the outline, positive inside, as three bytes (a
+    /// multi-channel field: the file's comment).
     fn sample(mut self, spread: f32) {
-        borrow c = self.contours
-        // The segment geometry is the same for every pixel of this glyph.
-        var segments: Vec<Segment> = Vec::with_capacity(c.xs.len())
-        for k in 0..c.starts.len() {
-            let from = c.starts[k]
-            let to = if k + 1 < c.starts.len() { c.starts[k + 1] } else { c.xs.len() }
-            for i in from..to - 1 {
-                let (ax, ay, bx, by) = (c.xs[i], c.ys[i], c.xs[i + 1], c.ys[i + 1])
-                let (dx, dy) = (bx - ax, by - ay)
-                segments.push(Segment { ax, ay, by, dx, dy, len2: dx * dx + dy * dy })
-            }
-        }
-        var bytes: Vec<u8> = Vec::with_capacity(self.width * self.height)
+        let segments = coloured(self.contours)
+        var texels: Vec<[f64; 3]> = Vec::with_capacity(self.width * self.height)
         for row in 0..self.height {
             // Rows from the top: row 0's centre is half a pixel below `top`.
             let y = self.top - f64(row) - 0.5
             for col in 0..self.width {
                 let x = self.left + f64(col) + 0.5
-                var d2 = 1.0e300
-                var winding = 0
-                for s in segments {
-                    d2 = min(d2, s.distance_squared(x, y))
-                    // The nonzero winding rule (TrueType's).
-                    let cross = s.dx * (y - s.ay) - (x - s.ax) * s.dy
-                    if s.ay <= y {
-                        if s.by > y && cross > 0.0 {
-                            winding += 1
-                        }
-                    } else if s.by <= y && cross < 0.0 {
-                        winding -= 1
-                    }
-                }
-                // Square root is monotone: take it once, after choosing the nearest segment.
-                let d = sqrt(d2)
-                let signed = if winding != 0 { d } else { -d }
-                let v = min(max(0.5 + signed / (2.0 * f64(spread)), 0.0), 1.0)
-                bytes.push(u8(floor(v * 255.0 + 0.5)))
+                texels.push(texel(segments, x, y, f64(spread)))
+            }
+        }
+        corrected(mut texels, self.width, self.height, 1.001 / (2.0 * f64(spread)))
+        var bytes: Vec<u8> = Vec::with_capacity(3 * self.width * self.height)
+        for v in texels {
+            for k in 0..3 {
+                bytes.push(u8(floor(min(max(v[k], 0.0), 1.0) * 255.0 + 0.5)))
             }
         }
         self.bytes = take bytes
     }
 }
 
-/// A flattened outline segment, with its direction and squared length already found.
+/// An edge's colours: the channels it's in (red 1, green 2, blue 4).
+const WHITE: u32 = 7
+const CYAN: u32 = 6
+const MAGENTA: u32 = 5
+const YELLOW: u32 = 3
+
+/// The colour after `c`, round cyan, magenta and yellow.
+fn next_colour(c: u32) -> u32 {
+    if c == CYAN { MAGENTA } else if c == MAGENTA { YELLOW } else { CYAN }
+}
+
+/// Whether the outline turns sharply from direction `a` to `b` (more than about 8 degrees, or
+/// back on itself): a corner, where an edge ends. A curve flattened as finely as `outline` does
+/// turns far less at each joint.
+fn corner(ax: f64, ay: f64, bx: f64, by: f64) -> bool {
+    let (la, lb) = (sqrt(ax * ax + ay * ay), sqrt(bx * bx + by * by))
+    if la == 0.0 || lb == 0.0 {
+        return false
+    }
+    let dot = (ax * bx + ay * by) / (la * lb)
+    let cross = (ax * by - ay * bx) / (la * lb)
+    dot <= 0.0 || abs(cross) > 0.14
+}
+
+/// The contours' segments, each with its colours and whether it begins or ends an edge (a
+/// corner at its start or its end): Chlumský's simple colouring, a contour at a time. A
+/// contour with no corner is white; with one, cut in three (one colour, white, another); with
+/// more, the colour changes at each, and the last edge takes neither the first's nor the one
+/// before it.
+fn coloured(c: Contours) -> Vec<Segment> {
+    var out: Vec<Segment> = Vec::with_capacity(c.xs.len())
+    for k in 0..c.starts.len() {
+        let from = c.starts[k]
+        let to = if k + 1 < c.starts.len() { c.starts[k + 1] } else { c.xs.len() }
+        let first = out.len()
+        for i in from..to - 1 {
+            let (ax, ay, bx, by) = (c.xs[i], c.ys[i], c.xs[i + 1], c.ys[i + 1])
+            let (dx, dy) = (bx - ax, by - ay)
+            let len2 = dx * dx + dy * dy
+            out.push(
+                Segment {
+                    ax,
+                    ay,
+                    by,
+                    dx,
+                    dy,
+                    len2,
+                    len: sqrt(len2),
+                    colour: WHITE,
+                    starts: false,
+                    ends: false,
+                },
+            )
+        }
+        let n = out.len() - first
+        if n == 0 {
+            continue
+        }
+        // The corners: segment `i` starts at one when the contour turns sharply into it.
+        var corners: Vec<u32> = Vec::new()
+        for i in 0..n {
+            let a = out[first + (i + n - 1) % n]
+            let b = out[first + i]
+            if corner(a.dx, a.dy, b.dx, b.dy) {
+                corners.push(i)
+            }
+        }
+        if corners.is_empty() {
+            continue
+        }
+        for c in corners {
+            out[first + c].starts = true
+            out[first + (c + n - 1) % n].ends = true
+        }
+        if corners.len() == 1 {
+            // A teardrop: from its corner, a third in one colour, a third white, a third another.
+            let c0 = corners[0]
+            for j in 0..n {
+                out[first + (c0 + j) % n].colour = if j * 3 < n { CYAN } else if j * 3 < 2 * n {
+                    WHITE
+                } else { MAGENTA }
+            }
+            continue
+        }
+        var colour = CYAN
+        let first_colour = colour
+        var m = 0
+        for j in 0..n {
+            let i = (corners[0] + j) % n
+            if j > 0 && out[first + i].starts {
+                m += 1
+                colour = next_colour(colour)
+                // The last edge meets the first: neither's colour.
+                if m == corners.len() - 1 && colour == first_colour {
+                    colour = next_colour(colour)
+                }
+            }
+            out[first + i].colour = colour
+        }
+    }
+    out
+}
+
+/// A texel's three channels at (`x`, `y`) (pixels at `em`), each `0.5 + d / (2 × spread)`: for
+/// each channel, the signed distance to the nearest segment of its colours (the most square on to
+/// the point where two are as near), past an edge's first or last segment to its line; and where
+/// the median's side isn't the winding rule's, the true distance in all three.
+fn texel(segments: [Segment], x: f64, y: f64, spread: f64) -> [f64; 3] {
+    var best = [1.0e300; 3]
+    var along = [1.0; 3]
+    var pick = [0; 3]
+    var d2_all = 1.0e300
+    var winding = 0
+    for i in 0..segments.len() {
+        let s = segments[i]
+        let d2 = s.distance_squared(x, y)
+        d2_all = min(d2_all, d2)
+        winding += s.winds(x, y)
+        // How far from square on the segment is to the point (0 square on): breaks a tie at a
+        // shared end.
+        let len = s.len
+        let t = if s.len2 > 0.0 {
+            ((x - s.ax) * s.dx + (y - s.ay) * s.dy) / s.len2
+        } else { 0.0 }
+        let tc = min(max(t, 0.0), 1.0)
+        let (px, py) = (x - (s.ax + tc * s.dx), y - (s.ay + tc * s.dy))
+        let dist = sqrt(d2)
+        let a = if dist > 0.0 && len > 0.0 { abs(px * s.dx + py * s.dy) / (dist * len) } else {
+            0.0
+        }
+        for k in 0..3 {
+            if (s.colour >> k) & 1 == 0 {
+                continue
+            }
+            if d2 < best[k] - 1.0e-12 || (abs(d2 - best[k]) <= 1.0e-12 && a < along[k]) {
+                best[k] = d2
+                along[k] = a
+                pick[k] = i
+            }
+        }
+    }
+    let inside = winding != 0
+    let truth = if inside { sqrt(d2_all) } else { -sqrt(d2_all) }
+    var v = [0.0; 3]
+    for k in 0..3 {
+        let s = segments[pick[k]]
+        let t = if s.len2 > 0.0 {
+            ((x - s.ax) * s.dx + (y - s.ay) * s.dy) / s.len2
+        } else { 0.0 }
+        let cross = s.dx * (y - s.ay) - (x - s.ax) * s.dy
+        // Inside is on the segment's right: TrueType's outer contours run clockwise.
+        let side = if cross < 0.0 { 1.0 } else { -1.0 }
+        let d = if (t < 0.0 && s.starts) || (t > 1.0 && s.ends) {
+            abs(cross) / sqrt(max(s.len2, 1.0e-300))
+        } else { sqrt(best[k]) }
+        v[k] = 0.5 + side * d / (2.0 * spread)
+    }
+    if (median(v) > 0.5) != inside || best[0] > 1.0e299 || best[1] > 1.0e299 || best[2] > 1.0e299 {
+        let w = 0.5 + truth / (2.0 * spread)
+        return [w, w, w]
+    }
+    v
+}
+
+/// The median of a texel's three channels.
+fn median(v: [f64; 3]) -> f64 {
+    max(min(v[0], v[1]), min(max(v[0], v[1]), v[2]))
+}
+
+/// Whether texels `a` and `b`, side by side, clash: a channel changes between them by
+/// `threshold` or more (a texel's distance) where the median's wouldn't, so filtering between
+/// them would draw an edge that isn't there; of the two, only the one farther from the outline
+/// is flagged (Chlumský's error correction, msdfgen's `detectClash`).
+fn clash(a: [f64; 3], b: [f64; 3], threshold: f64) -> bool {
+    // The channels in order of how much they change, most first.
+    var x = a
+    var y = b
+    if abs(y[0] - x[0]) < abs(y[1] - x[1]) {
+        x = [x[1], x[0], x[2]]
+        y = [y[1], y[0], y[2]]
+    }
+    if abs(y[1] - x[1]) < abs(y[2] - x[2]) {
+        x = [x[0], x[2], x[1]]
+        y = [y[0], y[2], y[1]]
+        if abs(y[0] - x[0]) < abs(y[1] - x[1]) {
+            x = [x[1], x[0], x[2]]
+            y = [y[1], y[0], y[2]]
+        }
+    }
+    abs(y[1] - x[1]) >= threshold &&
+        !(y[0] == y[1] && y[0] == y[2]) &&
+        abs(x[2] - 0.5) >= abs(y[2] - 0.5)
+}
+
+/// Each texel of a `width` × `height` field that clashes with a neighbour (`clash`) made its
+/// median in every channel: an edge that isn't there is gone, at the cost of that texel's
+/// corner's sharpness.
+fn corrected(texels: mut Vec<[f64; 3]>, width: u32, height: u32, threshold: f64) {
+    var flagged: Vec<u32> = Vec::new()
+    for y in 0..height {
+        for x in 0..width {
+            let i = y * width + x
+            let a = texels[i]
+            if (x > 0 && clash(a, texels[i - 1], threshold)) ||
+                (x + 1 < width && clash(a, texels[i + 1], threshold)) ||
+                (y > 0 && clash(a, texels[i - width], threshold)) ||
+                (y + 1 < height && clash(a, texels[i + width], threshold)) {
+                flagged.push(i)
+            }
+        }
+    }
+    for i in flagged {
+        let m = median(texels[i])
+        texels[i] = [m, m, m]
+    }
+}
+
+/// A flattened outline segment, with its direction, its squared length and its length already
+/// found.
 struct Segment: Copy {
     ax: f64,
     ay: f64,
@@ -812,9 +1050,24 @@ struct Segment: Copy {
     dx: f64,
     dy: f64,
     len2: f64,
+    len: f64,
+    /// Its edge's colours (`coloured`), and whether it begins or ends its edge.
+    colour: u32,
+    starts: bool,
+    ends: bool,
 }
 
 impl Segment {
+    /// How it changes the outline's winding about (`x`, `y`), by the nonzero rule (TrueType's):
+    /// 1 where it crosses the point's row going up, the point on its left; -1 where it crosses
+    /// going down, the point on its right; else 0.
+    fn winds(self, x: f64, y: f64) -> i32 {
+        let cross = self.dx * (y - self.ay) - (x - self.ax) * self.dy
+        if self.ay <= y {
+            if self.by > y && cross > 0.0 { 1 } else { 0 }
+        } else if self.by <= y && cross < 0.0 { -1 } else { 0 }
+    }
+
     fn distance_squared(self, x: f64, y: f64) -> f64 {
         let t = if self.len2 > 0.0 {
             min(max(((x - self.ax) * self.dx + (y - self.ay) * self.dy) / self.len2, 0.0), 1.0)

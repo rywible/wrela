@@ -6,6 +6,8 @@ use creature::{Fawn, Grown, REALIZED, SKELETON, grown}
 use fawn::creature::Coat
 use engine::character::{Cast, PartOf, cast, parts_of}
 use engine::cook::Work
+use engine::memory::{Share, Usage}
+use engine::cull::Hzb
 use engine::frame::{Cooks, Scene, Targets, full}
 use engine::gait::{Walker, posed_bounds}
 use engine::grass::{Blooms, Grass, GrassLook}
@@ -26,8 +28,8 @@ use rocks::{BOULDERS, boulder, footprints}
 use scene::{Ground, MEADOW}
 use std::collections::{Flags, replace}
 use std::gpu::{
-    Cull, GpuBuffer, GpuSpan, R32Uint, RenderPass, Rgba8, Sampler, ScreenPass, Texture, buffer_of,
-    draw, texture,
+    Cull, GpuBuffer, GpuSpan, R32Float, R32Uint, RenderPass, Rgba8, Sampler, ScreenPass, Texture,
+    buffer_of, draw, texture,
 }
 use std::mem::test_build
 use testing::View
@@ -162,6 +164,8 @@ impl Stage {
             slots: 1,
             cards_to: CARDS_TO,
             impostors_to: IMPOSTORS_TO,
+            // Compressed where the device has BC (`engine::wood::Impostors`).
+            compress: std::gpu::features().bc,
         )
         w.card_px = card_px(self.scale)
         w.cell = 1.0 / f32(self.scale)
@@ -225,9 +229,13 @@ impl Scene for Stage {
         clipmap.follow(Ground {}, eye, again)
     }
 
-    /// The load's work this frame: the forest's kinds, a few a frame, and the wood once they're
-    /// all cooked; a boulder; and a slice of the creature's mesh, until it's whole.
+    /// The load's work this frame: the boulders fitted to what their meshes hold, once their
+    /// counts have come (`Realized::settle`); the forest's kinds, a few a frame, and the wood once
+    /// they're all cooked; a boulder; and a slice of the creature's mesh, until it's whole.
     fn cook(mut self, c: mut Cooks, clipmap: mut Clipmap, linear: Sampler) {
+        for mut st in self.stones {
+            st.settle()
+        }
         if self.wood.is_none() {
             for _ in 0..KINDS_PER_FRAME {
                 let k = self.kinds.len()
@@ -310,7 +318,17 @@ impl Scene for Stage {
         }
     }
 
-    fn choose(mut self, lt: Lighting, texels: GpuSpan<Texel>) {
+    fn casts_moving(self) -> bool {
+        self.creature_on()
+    }
+
+    fn choose(
+        mut self,
+        lt: Lighting,
+        texels: GpuSpan<Texel>,
+        pyramid: Texture<R32Float>,
+        hzb: Hzb,
+    ) {
         self.grass.place(
             lt.cam,
             lt.light,
@@ -326,13 +344,38 @@ impl Scene for Stage {
         )
         if on(self.off, System::Trees) {
             match mut self.wood {
-                Some(w) => w.select(lt.cam),
+                Some(w) => w.select(lt.cam, pyramid, hzb),
                 None => {},
             }
         }
     }
 
-    /// The depth prepass: the near cut cards and the grass's flowers.
+    /// The trees the wood's first phase left out as hidden behind last frame's depth
+    /// (`Wood::reveal`), when there are trees.
+    fn reveals(self) -> bool {
+        self.wood.is_some() && on(self.off, System::Trees)
+    }
+
+    fn reveal(mut self, pyramid: Texture<R32Float>, hzb: Hzb) {
+        match mut self.wood {
+            Some(w) => w.reveal(pyramid, hzb),
+            None => {},
+        }
+    }
+
+    fn late_prepass<P: RenderPass>(self, pass: P, cam: Camera, wind: Wind, s: Sampler) {
+        if let Some(w) = self.wood {
+            w.late_prepass(pass, cam, wind, s)
+        }
+    }
+
+    fn late_shade<P: RenderPass>(self, pass: P, lt: Lighting, wind: Wind, ids: Texture<R32Uint>) {
+        if let Some(w) = self.wood {
+            w.late_shade(pass, lt, wind, ids)
+        }
+    }
+
+    /// The depth prepass: the near cut cards, the grass's flowers and the far crowns' quads.
     fn prepass<P: RenderPass>(self, pass: P, cam: Camera, wind: Wind, s: Sampler) {
         if on(self.off, System::Trees) {
             if let Some(w) = self.wood {
@@ -342,28 +385,10 @@ impl Scene for Stage {
         if on(self.off, System::Grass) {
             self.grass.prepass(pass, cam, wind)
         }
-    }
-
-    /// The far crowns behind the near ones put out, and the rest drawn into the prepass.
-    fn after_prepass(mut self, t: mut Targets, cam: Camera, wind: Wind, s: Sampler) {
-        if !on(self.off, System::Trees) {
-            return
-        }
-        match mut self.wood {
-            Some(w) => {
-                std::gpu::label("vegetation occlusion")
-                w.occlude(cam, t.depth)
-                std::gpu::label("vegetation far")
-                let far = std::gpu::begin_pass_with_depth(
-                    mut t.ids,
-                    mut t.depth,
-                    keep: true,
-                    keep_depth: true,
-                )
-                w.prepass_far(far, cam, wind, s)
-                far.end()
-            },
-            None => {},
+        if on(self.off, System::Trees) {
+            if let Some(w) = self.wood {
+                w.prepass_far(pass, cam, wind, s)
+            }
         }
     }
 
@@ -441,6 +466,23 @@ impl Scene for Stage {
             engine::frame::fullscreen(pass, testing::scene_view.bind(t.scene, self.scale))
         } else {
             engine::frame::fullscreen(pass, testing::temporal_view.bind(t.history, self.light))
+        }
+    }
+
+    /// Its shares of the GPU's memory (`engine::memory`): the wood's (`Wood::shares`), none
+    /// before it's made.
+    fn shares(self) -> Vec<Share> {
+        match self.wood {
+            Some(w) => w.shares(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Over its budget, the wood gives back its choosings' room sooner (`Wood::pressed`).
+    fn pressed(mut self, usage: Usage) {
+        match mut self.wood {
+            Some(w) => w.pressed(usage),
+            None => {},
         }
     }
 

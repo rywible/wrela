@@ -1,0 +1,654 @@
+// Particles and transparency: what's see-through, drawn after the opaque passes.
+//
+// - GPU particles (`Particles`): the scene emits them each frame (`Emits`: where, how fast, how
+//   long they live, how large, their colour and kind); a kernel moves the live ones a frame
+//   (gravity, drag toward the wind, a bounce off the scene's depth) from one append buffer into
+//   the other, with the new ones, dropping the dead (`simulate`, `admit`). They're sorted by
+//   their distance, far first, by a radix sort of 16-bit keys in 2 passes of 8 bits (Satish,
+//   Harris and Garland,
+//   Designing Efficient Sorting Algorithms for Manycore GPUs, IPDPS 2009: each workgroup's digits
+//   counted in workgroup memory, the counts scanned across the workgroups, each element
+//   scattered to its digit's place, after those before it in its workgroup with the same digit,
+//   so each pass is stable). Each is lit by the sun and the probes at its middle, once
+//   (`light_particle`); then one indirect instanced draw of quads facing the eye, at half the
+//   scene's size (soft blobs lose nothing by it, and their overdraw is a quarter), faded where it
+//   nears what's behind it (soft particles), premultiplied over (a spark's light only adds:
+//   alpha 0).
+// - Veils: see-through matter a scene draws (`Scene::veils`), by weighted blended
+//   order-independent transparency (McGuire and Bavoil, Weighted Blended Order-Independent
+//   Transparency, JCGT 2013): each fragment's premultiplied colour, weighted by its depth and
+//   coverage, added into one target (`accum`), and what it leaves showing multiplied into another
+//   (`reveal`), in any order (`weighted`).
+// - Both are drawn into targets of their own (the scene's alpha holds its tags, which blending
+//   would spoil) and laid over the scene in one pass (`composite`), the veils first, then the
+//   particles; a pixel they mostly cover takes the veils' tag (`view::VEIL`).
+
+use lit::{Lighting, sun_and_sky}
+use plant::Wind
+use std::collections::swap
+use std::gpu::{
+    Append, AppendBuffer, Atomics, Blend, ClipPosition, DepthTexture, DispatchArgs, DrawArgs, Flat,
+    FragCoord, GlobalId, GpuBuffer, GpuSpan, LocalId, One, R8, RenderPass, Rgba16Float, Sampler,
+    Shared, SharedAtomics, Slots, Targets2, Texture, VertexIndex, WorkgroupId, append_buffer,
+    buffer, discard, dispatch, draw, label, workgroup_prefix_sum, write,
+}
+use view::{Camera, VEIL}
+
+/// The most particles live at once.
+pub const BUDGET: u32 = 262144
+
+/// A kernel's workgroup here, and the most of them a pass over the particles takes.
+pub const GROUP: u32 = 256
+const MOST_GROUPS: u32 = BUDGET / GROUP
+
+/// A particle's kinds: soft matter (dust, smoke, spray: its colour over what's behind it), and
+/// sparks (embers, glints: light that adds).
+pub const SOFT: u32 = 0
+pub const SPARK: u32 = 1
+
+/// A particle: where it is and how long it has to live (s), how fast it goes (m/s) and how large
+/// it is (its radius, m), its colour (straight alpha), its kind, how fast it takes the wind's
+/// speed (per second), how fast it grows (m/s), and how long it has lived (s).
+pub struct Particle: Copy + GpuData + Plain {
+    pub at: vec3,
+    pub life: f32,
+    pub vel: vec3,
+    pub size: f32,
+    pub colour: vec4,
+    pub kind: u32,
+    pub drag: f32,
+    pub grow: f32,
+    pub age: f32,
+}
+
+/// The particles a scene emits in a frame (`Scene::emit`).
+pub struct Emits {
+    pub list: Vec<Particle>,
+}
+
+impl Emits {
+    pub fn new() -> Emits {
+        Emits { list: Vec::new() }
+    }
+
+    /// `p` emitted this frame.
+    pub fn push(mut self, p: Particle) {
+        self.list.push(p)
+    }
+}
+
+/// A frame's step for the particles: the camera they're drawn with (the scene's depth is its),
+/// gravity (m/s²), the frame's length (s), the wind's speed (m/s), whether they bounce off the
+/// scene's depth, and how far the render space moved since the last step (`Frame::recentre`:
+/// the live particles move with it).
+pub struct Step: Copy + GpuData {
+    pub cam: Camera,
+    pub gravity: vec3,
+    pub dt: f32,
+    pub wind: vec3,
+    pub collide: u32,
+    pub shift: vec3 = vec3(0.0),
+}
+
+/// The wind's speed `w` gives a particle: its direction at its speed, as strong as it blows.
+pub fn wind_of(w: Wind) -> vec3 {
+    vec3(w.dir.x, 0.0, w.dir.y) * (w.speed * w.strength)
+}
+
+/// How many of an append buffer's particles are kept (its count, at most its room).
+fn kept(count: [u32], room: u32) -> u32 {
+    min(count[0], room)
+}
+
+/// Particle `id` of `from` moved a frame: carried with the render space (`st.shift`); it ages
+/// and dies; gravity pulls it and drag takes it
+/// toward the wind's speed; if it would go behind the scene's surface (`depth`, as `st.cam` drew
+/// it, by less than its size), it bounces back off it, slowed. The living pushed onto `to`.
+@compute(256)
+fn simulate(
+    st: Step,
+    from: [Particle],
+    count: [u32],
+    depth: DepthTexture,
+    to: mut Append<Particle>,
+    id: GlobalId,
+) {
+    if id.x >= kept(count, from.len()) {
+        return
+    }
+    var p = from[id.x]
+    p.at += st.shift
+    p.life -= st.dt
+    if p.life <= 0.0 {
+        return
+    }
+    p.age += st.dt
+    p.vel += st.gravity * st.dt
+    p.vel += (st.wind - p.vel) * (1.0 - exp(-p.drag * st.dt))
+    let next = p.at + p.vel * st.dt
+    var hit = false
+    if st.collide != 0 {
+        let c = st.cam.clip(next)
+        if c.w > st.cam.near {
+            let uv = vec2(c.x / c.w * 0.5 + 0.5, 0.5 - c.y / c.w * 0.5)
+            if uv.x >= 0.0 && uv.y >= 0.0 && uv.x < 1.0 && uv.y < 1.0 {
+                let px = vec2u(uv * st.cam.screen)
+                let surface = st.cam.distance_of(depth.load(x: px.x, y: px.y))
+                let d = dot(next - st.cam.eye, st.cam.forward)
+                hit = d > surface && d - surface < max(p.size * 4.0, 0.2)
+            }
+        }
+    }
+    if hit {
+        p.vel = -p.vel * 0.3
+    } else {
+        p.at = next
+    }
+    p.size = max(p.size + p.grow * st.dt, 0.0)
+    let _ = to.push(p)
+}
+
+/// The frame's new particles (`fresh`, `n` of them) pushed onto `to`.
+@compute(256)
+fn admit(fresh: [Particle], n: u32, to: mut Append<Particle>, id: GlobalId) {
+    if id.x < n {
+        let _ = to.push(fresh[id.x])
+    }
+}
+
+/// The groups a pass over the particles `count` says there are takes (`room` the most).
+@compute(1)
+fn groups_of(count: [u32], room: u32, args: mut One<DispatchArgs>, id: GlobalId) {
+    args.set(id, DispatchArgs { x: (kept(count, room) + GROUP - 1) / GROUP, y: 1, z: 1 })
+}
+
+/// The particles' draw: one instance, six corners a particle.
+@compute(1)
+fn draw_args(count: [u32], room: u32, args: mut One<DrawArgs>, id: GlobalId) {
+    args.set(
+        id,
+        DrawArgs {
+            vertices: 6 * kept(count, room),
+            instances: 1,
+            first_vertex: 0,
+            first_instance: 0,
+        },
+    )
+}
+
+/// The bits of a particle's sort key (`keys_of`), and the distances they span (m): a key is the
+/// logarithm of its distance along the view, nearer larger, so ascending keys are far first.
+pub const KEY_BITS: u32 = 16
+const KEY_NEAR: f32 = 0.05
+const KEY_FAR: f32 = 20000.0
+
+/// Particle `id`'s key (`KEY_BITS` of its distance's logarithm: 65,536 steps from `KEY_NEAR` to
+/// `KEY_FAR`, each 0.02 % of the distance) and its index, to sort.
+@compute(256)
+fn keys_of(
+    cam: Camera,
+    parts: [Particle],
+    count: [u32],
+    keys: mut Slots<u32>,
+    vals: mut Slots<u32>,
+    id: GlobalId,
+) {
+    if id.x >= kept(count, parts.len()) {
+        return
+    }
+    let d = max(dot(parts[id.x].at - cam.eye, cam.forward), KEY_NEAR)
+    let far = saturate(log(d / KEY_NEAR) / log(KEY_FAR / KEY_NEAR))
+    keys[id] = u32(round((1.0 - far) * f32((1 << KEY_BITS) - 1)))
+    vals[id] = id.x
+}
+
+// ---- the radix sort ---------------------------------------------------------------------------
+
+/// The workgroups `n` elements take.
+fn groups(n: u32) -> u32 {
+    (n + GROUP - 1) / GROUP
+}
+
+/// Workgroup `g`'s count of each digit (`keys`' bits from `shift`, 8 of them) among its
+/// elements, into `table` digit by digit (digit `d`'s count of group `g` at `d × groups + g`).
+@compute(256)
+fn digit_counts(
+    keys: [u32],
+    count: [u32],
+    shift: u32,
+    table: mut Atomics<u32>,
+    local: mut SharedAtomics<256>,
+    g: WorkgroupId,
+    lid: LocalId,
+) {
+    let n = kept(count, BUDGET)
+    let i = g.x * GROUP + lid.x
+    if i < n {
+        let _ = local.add(i: (keys[i] >> shift) & 255, value: 1)
+    }
+    local.barrier()
+    table.store(i: lid.x * groups(n) + g.x, value: local.load(lid.x))
+}
+
+/// The table's block `g` (256 entries) scanned in place (each the sum of those before it in its
+/// block), the block's total into `sums`.
+@compute(256)
+fn scan_blocks(
+    count: [u32],
+    table: mut Atomics<u32>,
+    sums: mut Atomics<u32>,
+    shared: mut Shared<u32, 256>,
+    g: WorkgroupId,
+    lid: LocalId,
+) {
+    let total = 256 * groups(kept(count, BUDGET))
+    let i = g.x * GROUP + lid.x
+    let v = if i < total { table.load(i) } else { 0 }
+    let before = workgroup_prefix_sum(mut shared, lid, v)
+    if i < total {
+        table.store(i: i, value: before)
+    }
+    if lid.x == GROUP - 1 {
+        sums.store(i: g.x, value: before + v)
+    }
+}
+
+/// The blocks' totals (`sums`, up to `MOST_GROUPS`) scanned in place: one workgroup, four
+/// totals an invocation.
+@compute(256)
+fn scan_sums(count: [u32], sums: mut Atomics<u32>, shared: mut Shared<u32, 256>, lid: LocalId) {
+    let blocks = groups(kept(count, BUDGET))
+    var own = [0; 4]
+    var mine = 0
+    for k in 0..4 {
+        let i = 4 * lid.x + k
+        own[k] = if i < blocks { sums.load(i) } else { 0 }
+        mine += own[k]
+    }
+    var before = workgroup_prefix_sum(mut shared, lid, mine)
+    for k in 0..4 {
+        let i = 4 * lid.x + k
+        if i < blocks {
+            sums.store(i: i, value: before)
+        }
+        before += own[k]
+    }
+}
+
+/// Block `g`'s entries of the table given the sum of the blocks before it: each entry the sum of
+/// every entry before it.
+@compute(256)
+fn add_sums(count: [u32], sums: [u32], table: mut Atomics<u32>, g: WorkgroupId, lid: LocalId) {
+    let total = 256 * groups(kept(count, BUDGET))
+    let i = g.x * GROUP + lid.x
+    if i < total {
+        let _ = table.add(i: i, value: sums[g.x])
+    }
+}
+
+/// Workgroup `g`'s elements scattered by their digit: each to its digit's place (`table`,
+/// scanned: the elements of lesser digits, and of its digit in the groups before), after those of
+/// its digit before it in its group (found from a mask of its group's invocations a digit, in
+/// workgroup memory), so equal digits keep their order.
+@compute(256)
+fn scatter(
+    keys: [u32],
+    vals: [u32],
+    count: [u32],
+    shift: u32,
+    table: [u32],
+    keys_out: mut Atomics<u32>,
+    vals_out: mut Atomics<u32>,
+    masks: mut SharedAtomics<2048>,
+    g: WorkgroupId,
+    lid: LocalId,
+) {
+    let n = kept(count, BUDGET)
+    let i = g.x * GROUP + lid.x
+    let live = i < n
+    let d = if live { (keys[i] >> shift) & 255 } else { 0 }
+    let word = lid.x / 32
+    if live {
+        let _ = masks.or(i: d * 8 + word, value: 1 << (lid.x % 32))
+    }
+    masks.barrier()
+    if !live {
+        return
+    }
+    var rank = (masks.load(d * 8 + word) & ((1 << (lid.x % 32)) - 1)).count_ones()
+    for k in 0..word {
+        rank += masks.load(d * 8 + k).count_ones()
+    }
+    let at = table[d * groups(n) + g.x] + rank
+    keys_out.store(i: at, value: keys[i])
+    vals_out.store(i: at, value: vals[i])
+}
+
+// ---- the particles on the GPU -------------------------------------------------------------
+
+/// The live particles (`live`, an append buffer, and the one the next frame's go into), the
+/// frame's new ones, the sort's keys and indices (two of each: a pass reads one, writes the
+/// other), its table of digits' counts and the blocks' sums, and the passes' group counts and
+/// the draw's.
+pub struct Particles {
+    pub live: AppendBuffer<Particle>,
+    next: AppendBuffer<Particle>,
+    fresh: GpuBuffer<Particle>,
+    keys: GpuBuffer<u32>,
+    pub order: GpuBuffer<u32>,
+    keys_b: GpuBuffer<u32>,
+    order_b: GpuBuffer<u32>,
+    table: GpuBuffer<u32>,
+    sums: GpuBuffer<u32>,
+    groups: GpuBuffer<DispatchArgs>,
+    args: GpuBuffer<DrawArgs>,
+    /// The live particles to draw, in their sorted order, lit (`light`).
+    drawn: GpuBuffer<Drawn>,
+}
+
+impl Particles {
+    /// Room for `BUDGET` particles, none live.
+    pub fn new() -> Particles {
+        Particles {
+            live: append_buffer(BUDGET),
+            next: append_buffer(BUDGET),
+            fresh: buffer(1),
+            keys: buffer(BUDGET),
+            order: buffer(BUDGET),
+            keys_b: buffer(BUDGET),
+            order_b: buffer(BUDGET),
+            table: buffer(256 * MOST_GROUPS),
+            sums: buffer(MOST_GROUPS),
+            groups: buffer(1),
+            args: buffer(1),
+            drawn: buffer(BUDGET),
+        }
+    }
+
+    /// The particles' bytes on the GPU.
+    pub fn bytes(self) -> u64 {
+        u64(2 * 64 * BUDGET + 32 * BUDGET + 4 * (4 * BUDGET + 256 * MOST_GROUPS + MOST_GROUPS))
+    }
+
+    /// A frame (`st`): the live particles moved (against `depth`, as `st.cam` drew it) and
+    /// `emitted` added; then sorted by their depth, far first (`order`), and the draw's counts
+    /// set.
+    pub fn step(mut self, st: Step, depth: DepthTexture, emitted: [Particle]) {
+        label("particles")
+        self.next.clear()
+        dispatch(
+            groups_of.bind(count: self.live.count(), room: BUDGET, args: mut self.groups),
+            groups: 1,
+        )
+        dispatch(
+            simulate.bind(
+                st,
+                from: self.live.items(),
+                count: self.live.count(),
+                depth: depth,
+                to: mut self.next,
+            ),
+            groups: self.groups.items(),
+        )
+        if emitted.len() > 0 {
+            if self.fresh.len() < emitted.len() {
+                self.fresh = buffer(emitted.len())
+            }
+            write(mut self.fresh, 0, emitted)
+            dispatch(
+                admit.bind(fresh: self.fresh.items(), n: emitted.len(), to: mut self.next),
+                over: emitted.len(),
+            )
+        }
+        swap(mut self.live, mut self.next)
+        dispatch(
+            groups_of.bind(count: self.live.count(), room: BUDGET, args: mut self.groups),
+            groups: 1,
+        )
+        dispatch(
+            keys_of.bind(
+                st.cam,
+                parts: self.live.items(),
+                count: self.live.count(),
+                keys: mut self.keys,
+                vals: mut self.order,
+            ),
+            groups: self.groups.items(),
+        )
+        // Passes of 8 bits (`KEY_BITS` / 8, an even number), back and forth, the buffers swapped
+        // after each: the last leaves them in `keys` and `order`.
+        for pass in 0..KEY_BITS / 8 {
+            sort_pass(
+                keys: self.keys,
+                vals: self.order,
+                keys_out: mut self.keys_b,
+                vals_out: mut self.order_b,
+                table: mut self.table,
+                sums: mut self.sums,
+                count: self.live.count(),
+                groups: self.groups,
+                shift: 8 * pass,
+            )
+            swap(mut self.keys, mut self.keys_b)
+            swap(mut self.order, mut self.order_b)
+        }
+        dispatch(
+            draw_args.bind(count: self.live.count(), room: BUDGET, args: mut self.args),
+            groups: 1,
+        )
+    }
+
+    /// Each live particle lit by `lt`, into the list drawn, in their sorted order
+    /// (`light_particle`), once a frame.
+    pub fn light(mut self, lt: Lighting) {
+        dispatch(
+            light_particle.bind(
+                lt,
+                parts: self.live.items(),
+                order: self.order.items(),
+                count: self.live.count(),
+                drawn: mut self.drawn,
+            ),
+            groups: self.groups.items(),
+        )
+    }
+
+    /// The particles drawn into `pass` (premultiplied; its target `target_width` wide, the scene a
+    /// whole multiple of it), far first, as `light` lit them (seen from `cam`), each faded where it
+    /// nears the scene's surface behind it (`depth`).
+    pub fn draw<P: RenderPass>(self, pass: P, cam: Camera, depth: DepthTexture, target_width: u32) {
+        draw(
+            pass,
+            particle_vertex.bind(cam, drawn: self.drawn.items()),
+            particle_shade.bind(depth, cam, scale: cam.screen.x / f32(target_width)),
+            indirect: self.args.items(),
+            blend: Blend::Premultiplied,
+        )
+    }
+
+    /// The live particles' keys, sorted (a test's readback).
+    pub fn keys(self) -> GpuSpan<u32> {
+        self.keys.items()
+    }
+}
+
+/// A pass of the radix sort: `keys` (and `vals` with them) by their 8 bits from `shift` into
+/// `keys_out` (`vals_out`): their digits counted a workgroup at a time (`digit_counts`), the
+/// counts scanned (`scan_blocks`, `scan_sums`, `add_sums`), each scattered (`scatter`).
+fn sort_pass(
+    keys: GpuBuffer<u32>,
+    vals: GpuBuffer<u32>,
+    keys_out: mut GpuBuffer<u32>,
+    vals_out: mut GpuBuffer<u32>,
+    table: mut GpuBuffer<u32>,
+    sums: mut GpuBuffer<u32>,
+    count: GpuSpan<u32>,
+    groups: GpuBuffer<DispatchArgs>,
+    shift: u32,
+) {
+    dispatch(
+        digit_counts.bind(keys: keys.items(), count: count, shift: shift, table: mut table),
+        groups: groups.items(),
+    )
+    dispatch(
+        scan_blocks.bind(count: count, table: mut table, sums: mut sums),
+        groups: groups.items(),
+    )
+    dispatch(scan_sums.bind(count: count, sums: mut sums), groups: 1)
+    dispatch(
+        add_sums.bind(count: count, sums: sums.items(), table: mut table),
+        groups: groups.items(),
+    )
+    dispatch(
+        scatter.bind(
+            keys: keys.items(),
+            vals: vals.items(),
+            count: count,
+            shift: shift,
+            table: table.items(),
+            keys_out: mut keys_out,
+            vals_out: mut vals_out,
+        ),
+        groups: groups.items(),
+    )
+}
+
+// ---- drawing ------------------------------------------------------------------------------------
+
+/// A particle's corner as its fragment shader reads it: its clip position, its place on the
+/// quad (-1 to 1 each way), its distance along the view (m), its radius, its colour lit (straight
+/// alpha), and its kind.
+pub struct ParticleVertex: Copy {
+    pub clip: ClipPosition,
+    pub uv: vec2,
+    pub dist: f32,
+    pub size: f32,
+    pub colour: vec4,
+    pub kind: Flat<u32>,
+}
+
+/// A particle as it's drawn: where it is, its radius (negative for a spark), and its colour lit
+/// (straight alpha).
+pub struct Drawn: Copy + GpuData {
+    pub at: vec3,
+    pub size: f32,
+    pub colour: vec4,
+}
+
+/// The `id`th particle in sorted order (`order`), lit at its middle by the sun and the sky
+/// (`lit::sun_and_sky`, facing the sun: a particle lets light through as a cloud does; a spark's
+/// its own light), into the list drawn at its place: the draw reads its instances in order, each
+/// once, from one small buffer.
+@compute(256)
+fn light_particle(
+    lt: Lighting,
+    parts: [Particle],
+    order: [u32],
+    count: [u32],
+    drawn: mut Slots<Drawn>,
+    id: GlobalId,
+) {
+    if id.x >= kept(count, parts.len()) {
+        return
+    }
+    let p = parts[order[id.x]]
+    let spark = p.kind == SPARK
+    let c = if spark { p.colour.rgb } else {
+        let (sun, sky) = sun_and_sky(lt, p.at, lt.light.sun, sky_n: vec3(0.0, 1.0, 0.0), soft: 1.0)
+        p.colour.rgb * (lt.light.sun_colour * (sun * 0.6) + sky)
+    }
+    drawn[id] = Drawn {
+        at: p.at,
+        size: if spark { -p.size } else { p.size },
+        colour: vec4(c, p.colour.a),
+    }
+}
+
+/// Corner `v % 6` of the `v / 6`th particle by depth (`drawn`, far first), facing the eye
+/// (`cam`), its colour as `light_particle` lit it.
+@vertex
+fn particle_vertex(v: VertexIndex, cam: Camera, drawn: [Drawn]) -> ParticleVertex {
+    let p = drawn[v.index / 6]
+    let size = abs(p.size)
+    let corners = [
+        vec2(-1.0, -1.0),
+        vec2(1.0, -1.0),
+        vec2(1.0, 1.0),
+        vec2(-1.0, -1.0),
+        vec2(1.0, 1.0),
+        vec2(-1.0, 1.0),
+    ]
+    let uv = corners[v.index % 6]
+    let world = p.at + (cam.right * uv.x + cam.up * uv.y) * size
+    ParticleVertex {
+        clip: ClipPosition { position: cam.clip(world) },
+        uv,
+        dist: dot(p.at - cam.eye, cam.forward),
+        size,
+        colour: p.colour,
+        kind: Flat { value: if p.size < 0.0 { SPARK } else { SOFT } },
+    }
+}
+
+/// A particle's pixel, premultiplied: a soft disc, gone behind what's in front of it (`depth`, as
+/// `cam` drew it: the scene's, `scale` times the particles' target) and faded as it nears it; a
+/// spark's light adds (alpha 0).
+@fragment
+fn particle_shade(
+    f: ParticleVertex,
+    pixel: FragCoord,
+    depth: DepthTexture,
+    cam: Camera,
+    scale: f32,
+) -> vec4 {
+    let r2 = dot(f.uv, f.uv)
+    if r2 >= 1.0 {
+        discard()
+    }
+    let px = min(vec2u(pixel.position.xy * scale), vec2u(cam.screen) - vec2u(1))
+    let behind = cam.distance_of(depth.load(x: px.x, y: px.y))
+    if f.dist >= behind {
+        discard()
+    }
+    let fade = saturate((behind - f.dist) / max(f.size, 0.05))
+    let a = f.colour.a * (1.0 - r2) * (1.0 - r2) * fade
+    if f.kind.value == SPARK { vec4(f.colour.rgb * a, 0.0) } else { vec4(f.colour.rgb * a, a) }
+}
+
+// ---- weighted blended transparency ---------------------------------------------------------
+
+/// A see-through fragment's two outputs for weighted blended transparency (`Scene::veils`, drawn
+/// with `blends: [Blend::Add, Blend::Multiply]` into the frame's `accum` and `reveal`): its
+/// colour `c` premultiplied by its coverage `a` and weighted by its distance `d` (m: McGuire and
+/// Bavoil's equation 10, near fragments weighing more), with that weight times `a`; and what it
+/// leaves showing, `1 − a`.
+pub fn weighted(c: vec3, a: f32, d: f32) -> Targets2<vec4, f32> {
+    let z = d / 200.0
+    let w = a * clamp(0.03 / (1.0e-5 + z * z * z * z), 1.0e-2, 3.0e3)
+    Targets2 { first: vec4(c * a * w, a * w), second: 1.0 - a }
+}
+
+/// The scene's pixel with the veils (`accum`, `reveal`) and then the particles (`parts`,
+/// premultiplied, filtered up through `s` from their size) laid over it: its tag kept, or the
+/// veils' where they cover most of it.
+@fragment
+pub fn composite(
+    pixel: FragCoord,
+    scene: Texture<Rgba16Float>,
+    accum: Texture<Rgba16Float>,
+    reveal: Texture<R8>,
+    parts: Texture<Rgba16Float>,
+    s: Sampler,
+) -> vec4 {
+    let px = vec2u(pixel.position.xy)
+    let here = scene.load(x: px.x, y: px.y)
+    let a = accum.load(x: px.x, y: px.y)
+    let r = reveal.load(x: px.x, y: px.y)
+    let mean = a.rgb / max(a.a, 1.0e-5)
+    let veiled = mean * (1.0 - r) + here.rgb * r
+    let size = vec2(f32(scene.width()), f32(scene.height()))
+    let p = parts.sample_level(s, pixel.position.xy / size)
+    let c = p.rgb + veiled * (1.0 - p.a)
+    let seen = 1.0 - r * (1.0 - p.a)
+    vec4(c, if seen > 0.5 { VEIL } else { here.a })
+}

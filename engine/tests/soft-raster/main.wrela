@@ -1,0 +1,357 @@
+// The software rasterizer (`engine::virtual::nearest_depths`, `least_ids`, `soft_clear`, `soft_merge`) on
+// triangles given in pixels and turned to clip space. Frame 0 records every case: two coplanar
+// overlapping triangles rasterized ten times, in alternating order; and a hardware quad drawn
+// into a visibility pass, software triangles in front of it, behind it and beside it merged
+// in. The tests read the answers once they've come; every frame shows them (the tie's first run
+// on the left, the merge on the right), for engine/tests/virtual to compare the hosts' screens.
+
+use engine::frame::full
+use engine::view::NEAREST
+use engine::virtual::{NO_ID, least_ids, nearest_depths, set_up, soft_clear, soft_merge}
+use std::gpu::{
+    Atomics, ClipPosition, Cull, DepthTexture, Flat, FragCoord, GlobalId, GpuBuffer, R32Uint,
+    Texture, TextureRead, VertexIndex, begin_pass_with_depth, begin_screen_pass, buffer, buffer_of,
+    depth_texture, dispatch, draw, read, read_texture, texture,
+}
+use std::io::Pending
+
+/// The cases' screens' side, in pixels.
+pub const S: u32 = 64
+
+/// The tie's runs.
+pub const RUNS: u32 = 10
+
+/// The ids the cases give their triangles: the tie's two, the hardware quad's, and the merge's
+/// software triangles in front of it, behind it and beside it.
+pub const TIE_LARGER: u32 = 7
+pub const TIE_SMALLER: u32 = 3
+pub const HARDWARE: u32 = 100
+pub const FRONT: u32 = 7
+pub const BEHIND: u32 = 9
+pub const BESIDE: u32 = 11
+
+/// Triangle `id.x` of `corners` (three clip-space corners each) set up on a `size` screen: pass 0
+/// (`nearest_depths`).
+@compute(64)
+fn depths(corners: [vec4], size: vec2u, pixels: mut Atomics<u32>, id: GlobalId) {
+    if 3 * id.x >= corners.len() {
+        return
+    }
+    let i = 3 * id.x
+    if let Some(t) = set_up([corners[i], corners[i + 1], corners[i + 2]], size) {
+        let _ = nearest_depths(t, size, mut pixels)
+    }
+}
+
+/// Pass 1 of the same triangle, its id `ids`' own (`least_ids`).
+@compute(64)
+fn least(corners: [vec4], ids: [u32], size: vec2u, pixels: mut Atomics<u32>, id: GlobalId) {
+    if id.x >= ids.len() {
+        return
+    }
+    let i = 3 * id.x
+    if let Some(t) = set_up([corners[i], corners[i + 1], corners[i + 2]], size) {
+        least_ids(t, ids[id.x], size, mut pixels)
+    }
+}
+
+/// A triangle in pixels (`a`, `b`, `c`: x and y from the top left of an `S` × `S` screen) at
+/// depth `z`, its corners in clip space.
+pub fn in_clip(a: vec2, b: vec2, c: vec2, z: f32) -> [vec4; 3] {
+    var out = [vec4(0.0); 3]
+    let p = [a, b, c]
+    for k in 0..3 {
+        out[k] = vec4(p[k].x / f32(S) * 2.0 - 1.0, 1.0 - p[k].y / f32(S) * 2.0, z, 1.0)
+    }
+    out
+}
+
+/// The tie's triangles: the larger id's, then the smaller's, both at one depth, overlapping.
+pub fn tie_larger() -> [vec4; 3] {
+    in_clip(vec2(2.0, 2.0), vec2(50.0, 2.0), vec2(2.0, 50.0), 0.4)
+}
+
+pub fn tie_smaller() -> [vec4; 3] {
+    in_clip(vec2(10.0, 10.0), vec2(62.0, 10.0), vec2(10.0, 62.0), 0.4)
+}
+
+/// The merge's software triangles: in front of the hardware quad (the screen's left half, at
+/// 0.5), behind it, and beside it (where the hardware drew nothing).
+pub fn front() -> [vec4; 3] {
+    in_clip(vec2(4.0, 4.0), vec2(28.0, 4.0), vec2(4.0, 28.0), 0.7)
+}
+
+pub fn behind() -> [vec4; 3] {
+    in_clip(vec2(4.0, 60.0), vec2(28.0, 60.0), vec2(28.0, 36.0), 0.3)
+}
+
+pub fn beside() -> [vec4; 3] {
+    in_clip(vec2(36.0, 4.0), vec2(60.0, 4.0), vec2(36.0, 28.0), 0.3)
+}
+
+/// The hardware quad's vertex: its corner, and its id.
+pub struct QuadVertex: Copy {
+    pub clip: ClipPosition,
+    pub id: Flat<u32>,
+}
+
+/// Vertex `v` of the hardware quad: the screen's left half, at depth 0.5.
+@vertex
+fn half_quad(v: VertexIndex) -> QuadVertex {
+    let corner = [
+        vec2(-1.0, -1.0),
+        vec2(0.0, -1.0),
+        vec2(0.0, 1.0),
+        vec2(-1.0, -1.0),
+        vec2(0.0, 1.0),
+        vec2(-1.0, 1.0),
+    ]
+    QuadVertex {
+        clip: ClipPosition { position: vec4(corner[v.index], 0.5, 1.0) },
+        id: Flat { value: HARDWARE },
+    }
+}
+
+@fragment
+fn quad_id(v: QuadVertex) -> u32 {
+    v.id.value
+}
+
+/// An id as a colour: none (0 or `NO_ID`) black, each other its own.
+fn shade(id: u32) -> vec4 {
+    if id == 0 || id == NO_ID {
+        return vec4(0.0, 0.0, 0.0, 1.0)
+    }
+    vec4(
+        f32((id * 37) % 256) / 255.0,
+        f32((id * 91) % 256) / 255.0,
+        f32((id * 53) % 256) / 255.0,
+        1.0,
+    )
+}
+
+/// The screen: the tie's first run's ids on its left half, the merged visibility pass's on its
+/// right, each `S` × `S` stretched over its half.
+@fragment
+fn show(pixel: FragCoord, screen: vec2, tie: [u32], merged: Texture<R32Uint>) -> vec4 {
+    let half = vec2(screen.x * 0.5, screen.y)
+    let left = pixel.position.x < half.x
+    let at = vec2(if left { pixel.position.x } else { pixel.position.x - half.x }, pixel.position.y)
+    let p = min(vec2u(at / half * f32(S)), vec2u(S - 1))
+    shade(if left { tie[2 * (p.y * S + p.x) + 1] } else { merged.load(x: p.x, y: p.y) })
+}
+
+pub struct State {
+    /// Each run's ids, and their readbacks.
+    tie: Vec<GpuBuffer<u32>>,
+    asked: Vec<Pending<u32>>,
+    /// The visibility pass merged into, and its readback.
+    target: Texture<R32Uint>,
+    depth: DepthTexture,
+    merge_asked: Option<TextureRead>,
+    /// What's come back: each run's ids, and the merged pass's.
+    pub runs: Vec<Vec<u32>>,
+    pub merged: Vec<u32>,
+}
+
+pub fn init() -> State {
+    State {
+        tie: Vec::new(),
+        asked: Vec::new(),
+        target: texture::<R32Uint>(width: S, height: S),
+        depth: depth_texture(width: S, height: S),
+        merge_asked: None,
+        runs: Vec::new(),
+        merged: Vec::new(),
+    }
+}
+
+/// `tris` (three corners each) with `ids` rasterized into fresh words of an `S` × `S` screen:
+/// cleared, then pass 0 and pass 1. Two words a pixel: its depth's, then its id.
+fn rasterized(tris: [vec4], ids: [u32]) -> GpuBuffer<u32> {
+    let size = vec2u(S)
+    // No id anywhere (the rasterizer empties only the pixels it reaches).
+    var pixels = buffer_of(Vec::filled(2 * S * S, NO_ID))
+    dispatch(soft_clear.bind(size, pixels: mut pixels), groups: (S / 8, S / 8, 1))
+    let corners = buffer_of(tris)
+    let id_list = buffer_of(ids)
+    dispatch(depths.bind(corners: corners.items(), size: size, pixels: mut pixels), over: ids.len())
+    dispatch(
+        least.bind(corners: corners.items(), ids: id_list.items(), size: size, pixels: mut pixels),
+        over: ids.len(),
+    )
+    pixels
+}
+
+/// The three corners of each of `tris`, in order.
+fn corners_of(tris: [[vec4; 3]]) -> Vec<vec4> {
+    var out: Vec<vec4> = Vec::new()
+    for t in tris {
+        for k in 0..3 {
+            out.push(t[k])
+        }
+    }
+    out
+}
+
+/// The cases recorded (see the file's comment).
+fn record(s: mut State) {
+    for r in 0..RUNS {
+        // Alternate which is rasterized first.
+        let (tris, ids) = if r % 2 == 0 {
+            (corners_of([tie_larger(), tie_smaller()]), [TIE_LARGER, TIE_SMALLER])
+        } else {
+            (corners_of([tie_smaller(), tie_larger()]), [TIE_SMALLER, TIE_LARGER])
+        }
+        let out = rasterized(tris, ids)
+        s.asked.push(read(out.items()))
+        s.tie.push(take out)
+    }
+    let soft = rasterized(corners_of([front(), behind(), beside()]), [FRONT, BEHIND, BESIDE])
+    let pass = begin_pass_with_depth(mut s.target, mut s.depth, clear: vec4(0.0), clear_depth: 0.0)
+    draw(pass, half_quad, quad_id, vertices: 6, cull: Cull::None, depth: NEAREST)
+    draw(
+        pass,
+        full.bind(z: 0.5),
+        soft_merge.bind(vec2u(S), pixels: soft.items()),
+        vertices: 3,
+        depth: NEAREST,
+    )
+    pass.end()
+    s.merge_asked = Some(read_texture(s.target.level(0)))
+}
+
+/// Little-endian words of `bytes`.
+fn words(bytes: [u8]) -> Vec<u32> {
+    var out: Vec<u32> = Vec::with_capacity(bytes.len() / 4)
+    for i in 0..bytes.len() / 4 {
+        let j = 4 * i
+        out.push(
+            u32(bytes[j]) |
+                (u32(bytes[j + 1]) << 8) |
+                (u32(bytes[j + 2]) << 16) |
+                (u32(bytes[j + 3]) << 24),
+        )
+    }
+    out
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    if s.tie.is_empty() {
+        record(mut s)
+    }
+    while s.runs.len() < s.asked.len() {
+        match s.asked[s.runs.len()].poll() {
+            Some(Ok(v)) => s.runs.push(take v),
+            _ => break,
+        }
+    }
+    if s.merged.is_empty() {
+        match mut s.merge_asked {
+            Some(r) => match r.poll() {
+                Some(Ok(b)) => s.merged = words(b),
+                _ => {},
+            },
+            None => {},
+        }
+    }
+    let p = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
+    draw(
+        p,
+        full.bind(z: 0.5),
+        show.bind(vec2(f32(width), f32(height)), tie: s.tie[0].items(), merged: s.target),
+        vertices: 3,
+    )
+    p.present()
+}
+
+// ---- the tests ----------------------------------------------------------------------------
+
+/// Whether pixel `x`, `y`'s centre is inside triangle `t` (clip space, an `S` screen), by a
+/// margin: none of its barycentrics within a thousandth of 0 (an edge's pixels are left out).
+fn inside(t: [vec4; 3], x: u32, y: u32) -> Option<bool> {
+    var px = [vec2(0.0); 3]
+    for k in 0..3 {
+        px[k] = vec2((t[k].x * 0.5 + 0.5) * f32(S), (0.5 - t[k].y * 0.5) * f32(S))
+    }
+    let p = vec2(f32(x) + 0.5, f32(y) + 0.5)
+    let e = |a: vec2, b: vec2, q: vec2| (b.x - a.x) * (q.y - a.y) - (b.y - a.y) * (q.x - a.x)
+    let area = e(px[0], px[1], px[2])
+    let w = vec3(e(px[1], px[2], p), e(px[2], px[0], p), e(px[0], px[1], p)) / area
+    if abs(w.x) < 0.001 || abs(w.y) < 0.001 || abs(w.z) < 0.001 {
+        return None
+    }
+    Some(w.x > 0.0 && w.y > 0.0 && w.z > 0.0)
+}
+
+/// Two coplanar overlapping triangles give the smaller id at every pixel both cover, and each its
+/// own where it alone does, nothing elsewhere: the same words every run, whichever is first.
+@test(frames: 8, gpu: true)
+fn coplanar_triangles_resolve_to_the_smaller_id(s: State) {
+    assert(s.runs.len() == RUNS, f"{s.runs.len()} runs came back")
+    var shared = 0
+    for y in 0..S {
+        for x in 0..S {
+            let (Some(a), Some(b)) = (
+                inside(tie_larger(), x, y),
+                inside(tie_smaller(), x, y),
+            ) else {
+                continue
+            }
+            let want = if b { TIE_SMALLER } else if a { TIE_LARGER } else { NO_ID }
+            if a && b {
+                shared += 1
+            }
+            for r in 0..RUNS {
+                let got = s.runs[r][2 * (y * S + x) + 1]
+                assert(got == want, f"run {r}, pixel ({x}, {y}): {got}, not {want}")
+            }
+        }
+    }
+    assert(shared > 300, f"the triangles share only {shared} pixels")
+    for r in 1..RUNS {
+        assert(s.runs[r] == s.runs[0], f"run {r} differs from the first")
+    }
+}
+
+/// A software triangle in front of the hardware quad shows; one behind it doesn't; one where the
+/// hardware drew nothing shows; a pixel software left keeps the hardware's id (or none).
+@test(frames: 8, gpu: true)
+fn the_merge_keeps_the_nearer_and_skips_what_software_left(s: State) {
+    assert(s.merged.len() == S * S, "the merged pass didn't come back")
+    var seen = [0; 4]
+    for y in 0..S {
+        for x in 0..S {
+            let (Some(f), Some(k), Some(b)) = (
+                inside(front(), x, y),
+                inside(behind(), x, y),
+                inside(beside(), x, y),
+            ) else {
+                continue
+            }
+            if x == S / 2 - 1 || x == S / 2 {
+                continue
+            }
+            let hardware = x < S / 2
+            let want = if f { FRONT } else if b { BESIDE } else if hardware { HARDWARE } else { 0 }
+            let got = s.merged[y * S + x]
+            assert(got == want, f"pixel ({x}, {y}): {got}, not {want}")
+            if f {
+                seen[0] += 1
+            }
+            if k {
+                seen[1] += 1
+            }
+            if b {
+                seen[2] += 1
+            }
+            if !f && !k && !b && hardware {
+                seen[3] += 1
+            }
+        }
+    }
+    assert(
+        seen[0] > 100 && seen[1] > 100 && seen[2] > 100 && seen[3] > 100,
+        "a case covered too little",
+    )
+}

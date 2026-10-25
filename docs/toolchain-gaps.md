@@ -6,9 +6,65 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 
 ## Open
 
-None.
+### A branch under a false constant still makes its pipelines
+
+- **Needed:** an experimental path behind a switch that costs a build without it nothing: the Last Green's banks drawn through clusters (`games/last-green/stage.wrela` `CLUSTERED`, false), whose 17 pipelines a player without it shouldn't build.
+- **What happens:** toolchain 0.6.3's pipeline reachability doesn't fold constants: code under `if CLUSTERED { ... }` with `CLUSTERED` false still reaches its kernels, so the build lists their pipelines (`wrela pipelines games/last-green`: 171 with the path, 154 without) and the page builds them at load.
+- **Found:** 2026-10-25, the council's third round on B7c.
+- **Evidence:** the Last Green's opening, cold, in Chrome, two alternating pairs: playable 9.90 and 10.08 s without the path's code, 10.14 and 10.12 s with it switched off (+0.14 s); its pipelines 4.44 and 4.39 s against 4.49 and 4.33 s; its first frame +35 ms.
+- **Meanwhile:** the cost is measured and kept: the path stays in the build, off.
+- **Status:** open: fold a `const` condition before finding what a build reaches (or build a pipeline on its first use).
+
+### A struct update from a borrowed struct doesn't compile
+
+- **Needed:** a span of the first `n` items of an append buffer (`GpuSpan { count: n, ..a.items() }`), to copy a realized mesh's used part into a mesh fitted to it (`engine::realize::fitted`).
+- **What happens:** toolchains 0.6.2 and 0.6.3 stop with an internal error, `error[I0001]: the CPU module's IR is malformed: fn5 first_5: v3 is a *GpuBuffer<u32>, not a GpuBuffer<u32>` ("this is a bug in the wrela compiler"). The struct update's base is a borrow struct (`GpuSpan`), and the copied field is a borrow; naming every field (`GpuSpan { buffer: s.buffer, start: 0, count: n }`) compiles.
+- **Found:** 2026-10-25, fitting the Last Green's built things (B13's review).
+- **Evidence:** eight lines: `fn first(a: AppendBuffer<u32>, n: u32, to: mut GpuBuffer<u32>) { copy(GpuSpan { count: n, ..a.items() }, to.items_mut()) }`, called from `init`.
+- **Meanwhile:** `fitted` names the span's fields.
+- **Status:** open.
+
+### No 64-bit atomics on the GPU
+
+- **Needed:** the software rasterizer's single-pass variant (docs/plan-world-class.md §B7b): one `atomicMax` of a 64-bit word holding a fragment's depth and its cluster's id, so a pixel's nearest fragment wins in one operation.
+- **What happens:** toolchain 0.6.0 has `Atomics<u32>` and `Atomics<i32>` only; `std::gpu::features().atomic64_min_max` is always false.
+- **Found:** 2026-10-24, building 0.6.0's optional features (§A10). Neither WebGPU's core nor Chrome stable exposes a 64-bit atomic feature, and wgpu 30's `SHADER_INT64_ATOMIC_MIN_MAX` has no browser counterpart, so a program couldn't rely on it in a browser.
+- **Meanwhile:** §B7b's two-pass form: an `atomicMax` of the depth's bits, then an `atomicMin` of the id at the winning depth, in `Atomics<u32>` buffers.
+- **Status:** open until a browser ships 64-bit atomics.
+
+### The native host can't be given a pixel ratio
+
+- **Needed:** profiling a 2D game as a 2× display draws it (docs/plan-world-class.md §B10.1): the capybara draws its scene at most 1.5 times its CSS pixels (`engine::sheet::render_size`), from the environment's `pixel_ratio`.
+- **What happens:** the native host's environment has no pixel ratio (`Environment::pixel_ratio` is `None`), and neither `wrela-host` nor `wrela profile` takes one, so a native profile at 2940×1912 draws the scene at the device's full size, as a 1× display.
+- **Found:** 2026-10-25, gating §B10.1 at 2940×1912.
+- **Meanwhile:** the native profiles measure the 1× case (the larger), and the saving a 2× display gets is a browser's; the B10 gate's span is native, so it understates it.
+- **Status:** open: a `--pixel-ratio r` for `wrela-host` and `wrela profile`, which the environment then answers.
+
+### A lifted build takes a storage buffer from every pipeline
+
+- **Needed:** the course lens (§B10.10) lifts the capybara's course in a build that reaches the engine, whose software rasterizer bound eight storage buffers (WebGPU's most).
+- **What happens:** a lifted build binds its literal table last in every pipeline (spec/language.md §23.1), also in the pipelines that read no lifted literal, so a kernel at eight buffers fails the lifted build (E0602, "binds 9 storage buffers") though the normal build passes. The error doesn't say the ninth is the table.
+- **Found:** 2026-10-25, building the course lens on the capybara.
+- **Meanwhile:** the engine's kernels keep to seven storage buffers (the soft rasterizer's depth and id are one buffer).
+- **Status:** open: bind the table only in pipelines whose code reads a lifted literal, or say in E0602 that one of the buffers is the lifted table.
 
 ## Fixed
+
+### A timed ask timed all of a program's work
+
+- **Needed:** the planner measuring this device's costs by default (docs/plan-world-class.md §B2, D1): the frame asks `std::gpu::timed` for five labels' times (the clouds, the cascades' strips, the probes' occluders and bake).
+- **What happens:** in toolchain 0.6.1 a program's first ask starts a timer that times every pass and dispatch from then on, on both hosts: the browser gives each timed dispatch a compute pass of its own, and the native host reads every frame's timestamps back before the frame call returns. Measuring five costs paid for timing all the work.
+- **Found:** 2026-10-25, benching B13: the clearing's paced 95th percentile in Chrome went from 18.4 ms (B1) to 20.7-29.7 ms with B2's measuring on, and the native frame call from 9.4 to 12.2 ms. With measuring off it was 18.3 ms; with the asks made and their answers ignored, 22.7 ms.
+- **Meanwhile:** nothing: the fix shipped the same day.
+- **Status:** fixed in 0.6.2 (rywible/wrela-compiler#33): outside a run timed from its start, a host times only the work of a label asked for and not yet answered, from the ask on, so the frame asks at its start (`Frame::measure`). The clearing's paced 95th percentile is 18.1 ms, the native call 9.44 ms. In 0.6.2 the browser took an ask as made when its request started, so while commands waited for a pipeline the label's work recorded before it was timed too; 0.6.3 (rywible/wrela-compiler#34) takes it where its `Timed` command runs in the stream.
+
+### A mip step's load didn't compile
+
+- **Needed:** the depth pyramid (docs/plan-world-class.md §B4b): a kernel reads the level before through `MipStep::load` (unfiltered: the farthest of a cell's depths) and writes the next.
+- **What happens:** toolchain 0.6.0 refuses any kernel that calls `MipStep::load`: `error[I0001]: the IR for ... is malformed: ... Load with the wrong arguments` (the lowering gave the texture load no level; `MipStep::sample` passed level 0). Every format alike.
+- **Found:** 2026-10-24, building `engine::cull`'s pyramid.
+- **Meanwhile:** Part B built against rywible/wrela-compiler's `release-0.6.1` branch (`WRELA_TOOLCHAIN`) from §B4b until the release.
+- **Status:** fixed in 0.6.1 (rywible/wrela-compiler#32): the load passes level 0 of the step's view, and the kernels suite tests a 5×3 `R32Float` chain read back.
 
 ### A pointer can't press a semantic tree's button, and a tick can't find what the frames drew
 

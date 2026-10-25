@@ -39,7 +39,7 @@ wrela suite                               # everything, before a PR: fmt, allow,
 
 ```bash
 wrela build games/capybara -o build/cand/capybara
-~/.wrela/toolchains/0.5.2/bin/wrela-host build/cand/capybara --frames 600 --size 640x360 \
+~/.wrela/toolchains/0.6.3/bin/wrela-host build/cand/capybara --frames 600 --size 640x360 \
     --workers 1 --rgba out.rgba                        # prints the state hash last
 wrela run games/capybara                               # serve it to a browser
 ```
@@ -58,12 +58,17 @@ wrela trace games/capybara --watch capybara --frames 120 --csv --no-gpu
 wrela bisect games/capybara --until "capybara.z > 0" --frames 600
 wrela profile games/last-green --size 1920x1080 --workers 4 --compare build/base/last-green --pairs 3
 wrela same games/capybara --against build/base/capybara --frames 120   # behaves as the saved build?
+wrela profile games/last-green --chrome --compare build/base/last-green --pairs 3   # in headless Chrome
+wrela-host --compare-ticks a.ticks b.ticks   # two builds' tick logs: equal, or the first tick that differs
 ```
 
 - `trace` prints what exports say after each frame, and `bisect` finds the first frame a condition holds (`<`, `<=`, `>`, `>=`, `==`, `!=`, `nan <export>`, `<export>.x`). Both run a ticked program's ticks in lockstep, and both are debug builds unless `--release`.
 - `profile --compare <build-dir>` alternates pairs with a saved build and says what's faster or slower. Both builds must come from the same toolchain release.
 - `profile --serial` runs each pass alone, so its times add up; in the default mode passes overlap on the GPU, and only the frame's span is the whole. `--serial` doesn't combine with `--compare`: write a report with `--json`, then compare with `--baseline <report.json>`.
 - `same` builds the package now (into `<package>/build/same`) and runs it beside a saved build made outside it (`wrela build ... -o`), each with one worker, its own empty storage and the same `--input`. It compares each frame's hash, the last screens (`--within`, 0.5 by default) and the pipelines, and exits 0 when they behave the same, 1 when they differ and 2 on an error. With `--no-gpu` the commands are checked but not run, so the screens aren't compared. Use it to show a refactor or a pin move changed nothing.
+- `profile --chrome` measures in headless Chrome: GPU spans and the executor's counters from a saturated run, then CPU frame times, phases and frame intervals from a paced run (two frames in flight), as a player's are. The command checker is off, as in a release build (`--checked` keeps it); `--features none` hides the device's optional features, so a program's fallback paths are measured; `--optimize size|speed` profiles the shipped `wasm-opt` build. Every profile reports the executor's counters a frame: passes, dispatches, draws and draw calls, writes, bind groups and pipelines set.
+- `wrela-host <build> ... --log out.ticks` writes a ticked program's tick log; `--compare-ticks` compares two builds' logs on the same input (the sim unchanged) without checking their WASM hashes, which `--replay` does.
+- `WRELA_FEATURES=none` (or a comma list to keep) hides optional GPU features from a program on the native host, and `wrela test` passes the same mask to Chrome.
 - Run profiles with nothing else building or using the GPU. Report GPU span, CPU frame call and Chrome frame rate as the separate things they are.
 
 ## Tests
@@ -94,12 +99,13 @@ wrela same games/capybara --against build/base/capybara --frames 120   # behaves
 | -------------------- | --------------------------------------------------------------------------------------------------------- |
 | `lookbook`           | A program's lookbook shots as stills and clips (`--package examples/clearing`, `--stills`, `--view clay`) |
 | `motion`, `round`    | The Last Green in motion; a play round in Chrome                                                          |
-| `studio`             | The lens on a subject                                                                                     |
+| `studio`             | The lens on a subject, a floor's map or a game's course                                                   |
 | `serve`              | A directory served to a browser                                                                           |
 | `audio`, `listening` | A piece's take and measurements; blind listening tests                                                    |
 | `reference`          | Replicas of reference meshes, and how far a surface is from one                                           |
 | `route`, `keys`      | The capybara's fastest runs; its piano keys page                                                          |
 | `release`, `deploy`  | A release, and its deploy (CI does these from `main`)                                                     |
+| `bench`              | What the engine's scenes cost on this machine, in Chrome and natively, added to `docs/bench.md` (`--scene herd`, `--compare out/<report>.json` for a report in build/bench) |
 
 ## What trips agents up
 

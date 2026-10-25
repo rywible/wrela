@@ -5,7 +5,7 @@
 // clearing on the CPU at 320 × 180, its frames in lockstep with its ticker, so two runs draw the
 // same; the static shadows' test counts the draws its recorded commands make.
 
-use hosts::steps::{recorded, text_of}
+use hosts::steps::{call, recorded, text_of}
 use std::input::Script
 use std::json::{Doc, TOP, parse}
 use std::tool::drive
@@ -471,11 +471,6 @@ fn stepped(h: drive::Build, list: [Step], what: str) -> Seen {
         panic(f"{what}: {trap.message.as_str()}")
     }
     seen
-}
-
-/// A call of the export `name` with `args`.
-fn call(name: str, args: take Vec<Scalar>) -> Step {
-    Step::Call(String::from(name), take args)
 }
 
 /// The next `n` frames, in lockstep.

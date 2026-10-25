@@ -355,6 +355,8 @@ pub fn character_shade(c: CharacterVertex, pixel: FragCoord, lt: Lighting) -> ve
     let dy = dpdy(n)
     let r2 = max(c.rough * c.rough, 0.01)
     let rough = min(1.0, sqrt(sqrt(r2 * r2 + 0.25 * (dot(dx, dx) + dot(dy, dy)))))
+    // A polished surface reflects the screen and the specular probe (`lit::reflect`).
+    let reflected = lit::reflect(lt, c.world, n, rough, reflected)
     let specular = gloss(
         lt.light,
         Lit { albedo, n, sun, sky, through: vec3(0.0), rough, metallic, reflected, glint: 1.0 },

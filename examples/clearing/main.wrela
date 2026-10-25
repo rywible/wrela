@@ -32,12 +32,13 @@ use testing::{Capture, View}
 use trees::{standing, woods}
 use world::{World, present as snapshot, spawn, tick}
 
-/// How the camera meters (`paint::meter`): the start's view, settled (its mean luminance
-/// 0.136), at the exposure the look was picked at; other views half-way (in stops) to the same
-/// mean.
+/// How the camera meters (`paint::meter`): the start's view, settled (its metered luminance
+/// 0.197: its geometric mean, 0.136, was what the look was picked at, and the band the meter
+/// reads is 1.45 times it), at the exposure the look was picked at; other views half-way (in
+/// stops) to the same.
 const METERING = Metering {
     base: 0.62,
-    reference: 0.136,
+    reference: 0.197,
     strength: 0.5,
     lo: 0.15,
     hi: 0.75,

@@ -21,13 +21,14 @@
 // probes where they land (the ground's light, the crowns' leaves lit by the sun and the probes
 // round them), so each round of them adds a bounce of light.
 
+use std::mem::size_of
 use light::{LUMA, Light, sky}
 use sky::{Clouds, cloud_shadow, clouded_sky}
 use shadow::{Shadows, statically_sunlit}
 use std::gpu::{
     Atomics, ComparisonSampler, DepthTexture, GlobalId, GpuBuffer, GpuSpan, Rgba16Float, Sampler,
     Slots, Texels, Texels3d, Texture, Texture3d, buffer, buffer_of, dispatch, label, texture3d,
-    writable_texture,
+    writable_texture, write,
 }
 use std::math::PI
 use terrain::{Levels, Texel, ground_at, height_at}
@@ -219,6 +220,14 @@ pub fn cook_occluders(
             let _ = volume.max(grid.voxel_index(v), u32(density * 1000.0))
         }
         i += 64
+    }
+}
+
+/// The first `n` voxels made 0, before the occluders are cooked into them again.
+@compute(64)
+fn clear_voxels(n: u32, volume: mut Slots<u32>, id: GlobalId) {
+    if id.x < n {
+        volume[id] = 0
     }
 }
 
@@ -829,6 +838,8 @@ pub struct Baked {
     /// The open sky's probe (`open_sky`): its sky's part, then its sun's.
     pub open: GpuBuffer<Probe>,
     pub density: Texture3d<Rgba16Float>,
+    /// The voxels the occluders are cooked into (`cook_occluders`), cleared before each cook.
+    volume: GpuBuffer<u32>,
     pub occluders: GpuBuffer<Occluder>,
     pub occluder_count: u32,
     /// How many columns are baked; once all are, the next column to bake again, and how many
@@ -850,14 +861,28 @@ pub struct Baked {
 /// probe.
 pub const STRIP_COLUMNS: u32 = 640
 
-/// Once every column is baked: columns baked again a frame, with how many rays a probe, keeping
-/// how much of what each held. A whole round takes 6561 / 16 frames, 6.8 s, and the probes
-/// follow the clouds' drift (a few metres a second) through it.
-pub const AGAIN_COLUMNS: u32 = 16
+/// Once every column is baked: columns traced again a frame, with how many rays a probe, keeping
+/// how much of what each held. A whole round of the Last Green's 81 × 81 columns takes 6561 / 32
+/// frames, 3.4 s: the probes follow the clouds' drift (a few metres a second) and a moving sun
+/// through it, a new sky within a tenth of what it was after about three rounds (DDGI's 0.9
+/// would take 22: its probes are each traced every frame).
+pub const AGAIN_COLUMNS: u32 = 32
 pub const AGAIN_RAYS: u32 = 64
 pub const AGAIN_KEEP: f32 = 0.5
 
 impl Baked {
+    /// The GPU bytes its probes, their maps, its volume and its occluders take.
+    pub fn bytes(self) -> u64 {
+        let d = self.grid.volume_dims
+        u64(self.probes.len() + self.bounces.len() + self.open.len()) * u64(size_of::<Probe>()) +
+            u64(self.grounds.len()) * 4 +
+            memory::texels(self.maps.width(), self.maps.height(), 8) +
+            memory::texels(d.x, d.y, 8, d: d.z) +
+            u64(self.volume.len()) * 4 +
+            u64(self.occluders.len()) * u64(size_of::<Occluder>()) +
+            u64(self.rays.len()) * u64(size_of::<Ray>())
+    }
+
     /// The grid moved by `d` with render space (the render origin moved by `-d`): what it baked
     /// stays, since it moves with the world. Its occluders must be cooked already (they're cooked
     /// once, into the volume, which moves with the grid).
@@ -884,6 +909,7 @@ impl Baked {
                 grid.volume_dims.y,
                 grid.volume_dims.z,
             ),
+            volume: buffer(grid.voxels()),
             occluders: o,
             occluder_count: occluders.len(),
             baked: 0,
@@ -895,6 +921,28 @@ impl Baked {
         }
     }
 
+    /// `old`'s buffers and textures made `grid`'s probes, unbaked, with `occluders`, uncooked:
+    /// a replacement of probes of the same shape allocates nothing new but room for more
+    /// occluders (`Baked::new` otherwise).
+    pub fn renew(old: take Baked, grid: ProbeGrid, occluders: [Occluder]) -> Baked {
+        let same = old.grid.cols == grid.cols && old.grid.volume_dims == grid.volume_dims
+        if !same {
+            return Baked::new(grid, occluders)
+        }
+        var b = take old
+        b.grid = grid
+        if occluders.len() > b.occluders.len() {
+            b.occluders = buffer_of(occluders, at_least: 1)
+        } else if occluders.len() > 0 {
+            write(mut b.occluders, 0, occluders)
+        }
+        b.occluder_count = occluders.len()
+        b.baked = 0
+        b.again = 0
+        b.agains = 0
+        b
+    }
+
     /// Whether every column is baked.
     pub fn done(self) -> bool {
         self.baked >= self.grid.cols * self.grid.cols
@@ -904,21 +952,25 @@ impl Baked {
     /// share by an atomic max, then read into `density`.
     pub fn cook(mut self) {
         label("probes occluders")
-        var volume: GpuBuffer<u32> = buffer(self.grid.voxels())
+        let n = self.grid.voxels()
+        dispatch(clear_voxels.bind(n, volume: mut self.volume), over: n)
+        // With none, the volume stays clear: a renewed buffer still holds the old occluders.
+        if self.occluder_count > 0 {
+            dispatch(
+                cook_occluders.bind(
+                    grid: self.grid,
+                    occluders: self.occluders.span(start: 0, count: self.occluder_count),
+                    volume: mut self.volume,
+                ),
+                groups: (
+                    min(self.occluder_count, OCCLUDER_ROW),
+                    (self.occluder_count + OCCLUDER_ROW - 1) / OCCLUDER_ROW,
+                    1,
+                ),
+            )
+        }
         dispatch(
-            cook_occluders.bind(
-                grid: self.grid,
-                occluders: self.occluders.span(start: 0, count: max(self.occluder_count, 1)),
-                volume: mut volume,
-            ),
-            groups: (
-                min(max(self.occluder_count, 1), OCCLUDER_ROW),
-                (max(self.occluder_count, 1) + OCCLUDER_ROW - 1) / OCCLUDER_ROW,
-                1,
-            ),
-        )
-        dispatch(
-            filterable.bind(self.grid, volume.items(), density: mut self.density),
+            filterable.bind(self.grid, self.volume.items(), density: mut self.density),
             over: self.density,
         )
     }

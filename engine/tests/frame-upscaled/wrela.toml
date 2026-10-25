@@ -1,0 +1,8 @@
+# The bare scene (engine/tests/frame) drawn as the games draw it: temporal super-resolution, the
+# scene at the engine's default scale (0.667) under the output, brought up by the shared resolve.
+[package]
+name = "frame_upscaled"
+
+[dependencies]
+engine = { workspace = true }
+frame_transitions = { path = "../frame" }

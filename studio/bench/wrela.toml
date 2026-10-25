@@ -1,0 +1,7 @@
+# The bench tool (`wrela tool bench`): what the engine's scenes cost on this machine, in Chrome
+# and natively, against an earlier report (main.wrela says how).
+[package]
+name = "bench_tool"
+
+[dependencies]
+toolkit = { workspace = true }

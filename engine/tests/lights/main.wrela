@@ -1,0 +1,231 @@
+// 200 lights, scattered by a seeded generator through the view of a camera, and a crowd of 40
+// more over one place, binned into its froxels on the GPU (`engine::lights::Lights::bin`); the
+// froxels' counts and lists read back, and set beside the same binning on the CPU (`reaches`,
+// each light against each froxel, the first `PER_FROXEL` in the lights' order). And the light
+// they shed (`shed`) on points read in a kernel, against the sum over every light.
+
+use engine::lights::{
+    FROXELS, Froxels, LocalLight, Lights, MOST_LIGHTS, PER_FROXEL, froxel_of, point, reaches, shed,
+    spot,
+}
+use engine::view::{Camera, first_camera}
+use std::gpu::{GlobalId, GpuBuffer, Slots, buffer, buffer_of, dispatch, read}
+use std::io::{Pending, print}
+
+/// The camera: at the origin's side, looking down a 60 m field.
+fn camera() -> Camera {
+    first_camera(vec3(0.0, 2.0, -5.0), vec3(0.0, 1.0, 20.0), 1.0, width: 1280, height: 720)
+        .unjittered()
+}
+
+/// A number in [0, 1) for `n` (a hash of it: Wang's integer hash).
+fn hashed(n: u32) -> f32 {
+    var x = (n ^ 61) ^ (n >> 16)
+    x = x.wrapping_add(x << 3)
+    x = x ^ (x >> 4)
+    x = x.wrapping_mul(0x27d4eb2d)
+    x = x ^ (x >> 15)
+    f32(x >> 8) / 16777216.0
+}
+
+/// Numbers from `lo` to `hi`, the `k`th of seed `seed`'s.
+fn between(seed: u32, k: u32, lo: f32, hi: f32) -> f32 {
+    lo + (hi - lo) * hashed(seed.wrapping_mul(7919).wrapping_add(k))
+}
+
+/// The lights: 200, through the field in front of the camera, radii 1 to 9 m, every fifth a
+/// spot pointing down; then 40 over one place beyond the shaded points, more than a froxel keeps.
+fn scattered() -> Vec<LocalLight> {
+    var out: Vec<LocalLight> = Vec::new()
+    for i in 0..200 {
+        let b = |k: u32, lo: f32, hi: f32| between(seed: 7, k: 8 * i + k, lo: lo, hi: hi)
+        let at = vec3(b(0, -30.0, 30.0), b(1, 0.0, 8.0), b(2, -2.0, 60.0))
+        let radius = b(3, 1.0, 9.0)
+        let colour = vec3(b(4, 0.2, 1.0), b(5, 0.2, 1.0), b(6, 0.2, 1.0))
+        out.push(
+            if i % 5 == 0 {
+                spot(at, vec3(0.0, -1.0, 0.0), radius, colour, outer: 0.6, inner: 0.4)
+            } else {
+                point(at, radius, colour)
+            },
+        )
+    }
+    for i in 0..40 {
+        let at = vec3(between(seed: 13, k: i, lo: 20.0, hi: 21.0), 5.0, 55.0)
+        out.push(point(at, 2.0, vec3(1.0)))
+    }
+    out
+}
+
+/// The points shaded: each facing up.
+fn points() -> Vec<vec3> {
+    var out: Vec<vec3> = Vec::new()
+    for i in 0..64 {
+        let b = |k: u32, lo: f32, hi: f32| between(seed: 11, k: 3 * i + k, lo: lo, hi: hi)
+        out.push(vec3(b(0, -15.0, 15.0), b(1, 0.0, 3.0), b(2, 2.0, 40.0)))
+    }
+    out
+}
+
+/// The light shed on each of `points` (facing up) as shading reads it.
+@compute(64)
+fn shade(
+    f: Froxels,
+    words: [u32],
+    cam: Camera,
+    points: [vec3],
+    out: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    if id.x >= points.len() {
+        return
+    }
+    out[id] = vec4(shed(f, words, cam, points[id.x], vec3(0.0, 1.0, 0.0)), 0.0)
+}
+
+pub struct State {
+    lights: Lights,
+    asked: Option<Pending<u32>>,
+    shaded: Option<Pending<vec4>>,
+    pub counts: Vec<u32>,
+    pub light: Vec<vec4>,
+}
+
+pub fn init() -> State {
+    State {
+        lights: Lights::new(),
+        asked: None,
+        shaded: None,
+        counts: Vec::new(),
+        light: Vec::new(),
+    }
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    if s.asked.is_none() {
+        let cam = camera()
+        s.lights.bin(cam, scattered())
+        let at = MOST_LIGHTS * engine::lights::LIGHT_WORDS
+        s.asked = Some(read(s.lights.words.span(start: at, count: FROXELS * (1 + PER_FROXEL))))
+        let ps = points()
+        var out: GpuBuffer<vec4> = buffer(ps.len())
+        dispatch(
+            shade.bind(
+                s.lights.at,
+                s.lights.words.items(),
+                cam,
+                points: buffer_of(ps).items(),
+                out: mut out,
+            ),
+            over: ps.len(),
+        )
+        s.shaded = Some(read(out.items()))
+        return
+    }
+    if s.counts.is_empty() {
+        match mut s.asked {
+            Some(p) => match p.poll() {
+                Some(Ok(v)) => s.counts = take v,
+                _ => {},
+            },
+            None => {},
+        }
+    }
+    if s.light.is_empty() {
+        match mut s.shaded {
+            Some(p) => match p.poll() {
+                Some(Ok(v)) => s.light = take v,
+                _ => {},
+            },
+            None => {},
+        }
+    }
+}
+
+/// Each froxel's count and list are what the CPU's binning keeps: the lights that reach it, the
+/// first `PER_FROXEL` in the lights' order where more do (the crowd's froxels); and the lights
+/// reach many froxels, some of them more than one light.
+@test(frames: 8, gpu: true)
+fn the_gpus_froxels_hold_the_cpus_lights(s: State) {
+    assert(s.counts.len() == FROXELS * (1 + PER_FROXEL), "the counts didn't come back")
+    let cam = camera()
+    let ls = scattered()
+    var differ = 0
+    var lit = 0
+    var shared = 0
+    var full = 0
+    for f in 0..FROXELS {
+        var want: Vec<u32> = Vec::new()
+        var reached = 0
+        for i in 0..ls.len() {
+            if reaches(cam, ls[i].at, ls[i].radius, f) {
+                reached += 1
+                if want.len() < PER_FROXEL {
+                    want.push(i)
+                }
+            }
+        }
+        var same = s.counts[f] == want.len()
+        for j in 0..want.len() {
+            same = same && s.counts[FROXELS + f * PER_FROXEL + j] == want[j]
+        }
+        if !same {
+            differ += 1
+        }
+        if reached > 0 {
+            lit += 1
+        }
+        if reached > 1 {
+            shared += 1
+        }
+        if reached > PER_FROXEL {
+            full += 1
+        }
+    }
+    print(f"{lit} froxels lit, {shared} by more than one light, {full} past full, {differ} differ")
+    assert(differ == 0, f"{differ} froxels' lists differ from the CPU's")
+    assert(lit > 300 && shared > 50 && full > 0, f"too few froxels lit: {lit}, {shared}, {full}")
+}
+
+/// The light shed on each point in view is the sum over every light that reaches it (none is
+/// missed by its froxel's list, which holds them all), within rounding; a point off the screen
+/// has no froxel and takes none.
+@test(frames: 8, gpu: true)
+fn a_point_sees_every_light_that_reaches_it(s: State) {
+    assert(s.light.len() == 64, "the light didn't come back")
+    let cam = camera()
+    let ls = scattered()
+    let ps = points()
+    var lit = 0
+    for i in 0..ps.len() {
+        let Some(f) = froxel_of(cam, ps[i]) else {
+            assert(length(s.light[i].xyz) == 0.0, f"point {i}, off the screen, is lit")
+            continue
+        }
+        assert(s.counts[f] < PER_FROXEL, f"point {i}'s froxel is full")
+        var want = vec3(0.0)
+        for l in ls {
+            let d = l.at - ps[i]
+            let d2 = dot(d, d)
+            let r2 = l.radius * l.radius
+            if d2 >= r2 {
+                continue
+            }
+            let to = d / sqrt(max(d2, 1.0e-8))
+            let fade = clamp(1.0 - (d2 / r2) * (d2 / r2), 0.0, 1.0)
+            let cone = if l.cos_outer < -1.0 { 1.0 } else {
+                smoothstep(l.cos_outer, l.cos_inner, dot(-to, l.dir))
+            }
+            want += l.colour * (fade * fade / (d2 + 0.01) * cone * max(to.y, 0.0))
+        }
+        let got = s.light[i].xyz
+        assert(
+            length(got - want) <= 1.0e-3 * (1.0 + length(want)),
+            f"point {i}: {got} against {want}",
+        )
+        if length(want) > 0.0 {
+            lit += 1
+        }
+    }
+    assert(lit > 8, f"only {lit} points are lit")
+}

@@ -1,0 +1,7 @@
+# The specular probe (engine/reflect.wrela) on the GPU: a sky white above and black elsewhere,
+# prefiltered into its levels, and sampled as shading samples it.
+[package]
+name = "reflect_tests"
+
+[dependencies]
+engine = { workspace = true }

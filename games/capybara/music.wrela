@@ -39,7 +39,7 @@
 // The game's main makes the music's piano once (`music`), on the program's thread, and gives it to
 // the game's voice (sound.wrela), which plays it with the game's sounds over it.
 
-use engine::perform::{Mark, Pedal, Performance, Played, Taste, bar, perform}
+use engine::perform::{Mark, Pedal, PedalPoint, Performance, Played, Taste, bar, perform}
 use engine::piano::{Piano, piano, play_piano}
 use engine::piano_grand::GRAND
 use engine::score::{Level, Score, meter, score}
@@ -316,6 +316,79 @@ pub fn backing(passes: u32) -> Performance {
     }
     p.notes = take kept
     p
+}
+
+/// A pedal's depth at `t` (s): linear between its points, the first's before them, the last's
+/// after.
+fn depth_at(points: [PedalPoint], t: f64) -> f32 {
+    if points.is_empty() {
+        return 0.0
+    }
+    if t <= points[0].at {
+        return points[0].depth
+    }
+    for i in 1..points.len() {
+        let (a, b) = (points[i - 1], points[i])
+        if t <= b.at {
+            let u = if b.at > a.at { f32((t - a.at) / (b.at - a.at)) } else { 1.0 }
+            return a.depth + (b.depth - a.depth) * u
+        }
+    }
+    points[points.len() - 1].depth
+}
+
+/// The music from its busiest `seconds` on: the window of the first pass whose notes' velocities
+/// sum most (the most and loudest notes struck in it), its pedals as they were then, as if the
+/// music began there (sound.wrela's audio budget, `wrela tool budget`).
+pub fn busiest(seconds: f64) -> Performance {
+    let whole = performance(1)
+    var start = 0.0
+    var most = 0.0
+    for n in whole.notes {
+        var sum = 0.0
+        for m in whole.notes {
+            if m.onset >= n.onset && m.onset < n.onset + seconds {
+                sum += m.velocity
+            }
+        }
+        if sum > most {
+            most = sum
+            start = n.onset
+        }
+    }
+    var notes: Vec<Played> = Vec::new()
+    for n in whole.notes {
+        if n.onset >= start {
+            notes.push(Played { onset: n.onset - start, release: n.release - start, ..n })
+        }
+    }
+    let shifted = |points: [PedalPoint]| {
+        var out: Vec<PedalPoint> = Vec::from(
+            [PedalPoint { at: 0.0, depth: depth_at(points, start) }],
+        )
+        for q in points {
+            if q.at > start {
+                out.push(PedalPoint { at: q.at - start, depth: q.depth })
+            }
+        }
+        take out
+    }
+    var beats: Vec<f64> = Vec::new()
+    for b in whole.beats {
+        if b >= start {
+            beats.push(b - start)
+        }
+    }
+    if beats.is_empty() {
+        beats.push(0.0)
+    }
+    Performance {
+        notes,
+        sustain: shifted(whole.sustain),
+        soft: shifted(whole.soft),
+        beats,
+        length: whole.length - start,
+    }
 }
 
 /// The music: `PASSES` passes of the piece on engine::piano's grand, made on the program's thread,

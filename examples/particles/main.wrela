@@ -1,0 +1,139 @@
+// Dust in the air over flat ground under the open sky, through the engine's frame: each frame it
+// emits `PER_FRAME` motes through a block of air 40 m wide and deep and 8 m high in front of the
+// eye, each living `LIFE` seconds, so about `PER_FRAME × 60 × LIFE` are live at once (100,000); a
+// twentieth of them sparks. What `wrela profile` measures particles by.
+
+use engine::air::{Air, hazy}
+use engine::frame::{Aim, Frame, Quality, Scene, Shared}
+use engine::light::{Light, SUN_TOP, sunlight}
+use engine::particles::{Emits, Particle, SOFT, SPARK}
+use engine::plant::Wind
+use engine::probes::{Occluder, ProbeGrid, Trace, grid}
+use engine::sky::{Gap, Weather}
+use engine::terrain::{Clipmap, Flat}
+use engine::view::{Camera, first_camera}
+
+/// Particles a frame, and how long each lives (s): 833 × 60 × 2 ≈ 100,000 live.
+pub const PER_FRAME: u32 = 833
+pub const LIFE: f32 = 2.0
+
+/// The sun, and the eye (m).
+pub const SUN = vec3(0.6, 0.55, -0.3)
+pub const EYE = vec3(0.0, 2.0, -6.0)
+pub const AT = vec3(0.0, 3.0, 8.0)
+
+/// The scene: flat ground, the sky's own clouds, the dust (`emitted`: how many motes so far).
+pub struct Dust {
+    weather: Weather,
+    emitted: u32,
+}
+
+/// A number in [0, 1) for `n` (Wang's integer hash).
+fn hashed(n: u32) -> f32 {
+    var x = (n ^ 61) ^ (n >> 16)
+    x = x.wrapping_add(x << 3)
+    x = x ^ (x >> 4)
+    x = x.wrapping_mul(0x27d4eb2d)
+    x = x ^ (x >> 15)
+    f32(x >> 8) / 16777216.0
+}
+
+impl Scene for Dust {
+    fn wind(self, cam: Camera, time: f32) -> Wind {
+        Wind { time, dir: vec2(1.0, 0.0), strength: 0.3 }
+    }
+
+    fn weather(self) -> Weather {
+        self.weather.clone()
+    }
+
+    fn trace(self, light: Light, grid: ProbeGrid) -> Trace {
+        Trace { light, grid, foliage: vec3(0.0), reach: 24.0, leaf: vec3(0.0), bounced: 0 }
+    }
+
+    fn probe_grid(self, at: vec2, origin: vec3) -> ProbeGrid {
+        grid(at, cols: 17, spacing: 4.0, low: -8.0, high: 24.0, voxel: 2.0)
+    }
+
+    fn occluders(self, at: vec2, origin: vec3) -> Option<Vec<Occluder>> {
+        Some(Vec::new())
+    }
+
+    fn height_at(self, world: vec2) -> f32 {
+        0.0
+    }
+
+    fn cook_ground(mut self, clipmap: mut Clipmap, eye: vec3, again: bool) -> u32 {
+        clipmap.follow(Flat {}, eye, again)
+    }
+
+    fn ground_casts(self) -> bool {
+        true
+    }
+
+    /// The dust: motes through the air in front of the eye, drifting, and a few sparks.
+    fn emit(mut self, e: mut Emits) {
+        for _ in 0..PER_FRAME {
+            let n = self.emitted
+            self.emitted += 1
+            let h = |k: u32| hashed(n.wrapping_mul(4).wrapping_add(k))
+            let a = h(0) * 6.2831853
+            let spark = n % 20 == 0
+            let at = vec3(h(1) * 40.0 - 20.0, h(2) * 8.0, h(3) * 40.0 + 2.0)
+            e.push(
+                Particle {
+                    at: at,
+                    life: LIFE * (0.6 + 0.4 * h(3)),
+                    vel: vec3(cos(a), 0.5, sin(a)) * 0.3,
+                    size: if spark { 0.02 } else { 0.05 },
+                    colour: if spark { vec4(4.0, 2.0, 0.6, 1.0) } else {
+                        vec4(0.8, 0.85, 0.9, 0.1)
+                    },
+                    kind: if spark { SPARK } else { SOFT },
+                    drag: 0.3,
+                    grow: if spark { 0.0 } else { 0.05 },
+                    age: 0.0,
+                },
+            )
+        }
+    }
+}
+
+pub struct State {
+    frame: Frame<Shared>,
+    scene: Dust,
+}
+
+fn air_of(sun: vec3) -> Air {
+    hazy(normalize(sun), SUN_TOP, eye: EYE.y)
+}
+
+pub fn init() -> State {
+    let air = air_of(SUN)
+    State {
+        frame: Frame::new(
+            Quality {},
+            sunlight(air),
+            air,
+            Clipmap::new(levels: 6, finest: 0.5),
+            first_camera(EYE, AT, 0.9, width: 640, height: 360),
+            grid(EYE.xz, cols: 17, spacing: 4.0, low: -8.0, high: 24.0, voxel: 2.0),
+            EYE.xz,
+        ),
+        scene: Dust {
+            weather: Weather {
+                clouds: Vec::new(),
+                fair: 0.3,
+                gap: Gap { a: vec2(3300.0, -590.0), b: vec2(12200.0, -2150.0), radius: 2500.0 },
+                wind: vec2(-5.5, 3.0),
+            },
+            emitted: 0,
+        },
+    }
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    let aim = Aim { eye: EYE, at: AT, fovy: 0.9, moving_at: EYE }
+    let _ = s.frame.begin(mut s.scene, aim, time, width, height)
+    s.frame.draw(mut s.scene, aim)
+}
