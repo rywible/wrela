@@ -3,8 +3,9 @@
 // of the distance, the slices growing with it), so a pixel reads only the lights that reach its
 // froxel (clustered shading: Olsson, Billeter and Assarsson, Clustered Deferred and Forward
 // Shading, HPG 2012). A workgroup bins a froxel: its invocations test the lights against the
-// froxel's box, and keep those that reach it in its list (at most `PER_FROXEL`) through a
-// counter in workgroup memory.
+// froxel's box, and keep those that reach it in its list (at most `PER_FROXEL`: past that, the
+// first in the scene's order, so a scene lists the lights that matter most first) through a mask
+// of them in workgroup memory.
 //
 // The lights and the lists share one buffer of words (a shading pass binds one more buffer, not
 // two): `LIGHT_WORDS` words a light, then a count a froxel, then `PER_FROXEL` indices a froxel.
@@ -182,13 +183,15 @@ pub fn reaches(cam: Camera, l: LocalLight, f: u32) -> bool {
 }
 
 /// Froxel `g` (a workgroup's) binned: its invocations test the `count` lights against it, each
-/// that reaches it put in its list by a counter in workgroup memory; then its count stored.
+/// that reaches it setting its bit in a mask in workgroup memory; then each light that reaches it
+/// takes its place in the list by how many lights before it reach it too, so the list holds the
+/// first `PER_FROXEL` of them in the scene's order, the same on every run and host.
 @compute(64)
 fn bin(
     cam: Camera,
     count: u32,
     words: mut Atomics<u32>,
-    kept: mut SharedAtomics<1>,
+    mask: mut SharedAtomics<8>,
     g: WorkgroupId,
     lid: LocalId,
 ) {
@@ -206,16 +209,31 @@ fn bin(
             cos_inner: 0.0,
         }
         if reaches(cam, l, f) {
-            let n = kept.add(i: 0, value: 1)
+            let _ = mask.or(i: i / 32, value: u32(1) << (i % 32))
+        }
+        i += 64
+    }
+    mask.barrier()
+    i = lid.x
+    while i < count {
+        let bits = mask.load(i / 32)
+        if (bits >> (i % 32)) & 1 != 0 {
+            var n = (bits & ((u32(1) << (i % 32)) - 1)).count_ones()
+            for k in 0..i / 32 {
+                n += mask.load(k).count_ones()
+            }
             if n < PER_FROXEL {
                 words.store(i: list_at(f) + n, value: i)
             }
         }
         i += 64
     }
-    kept.barrier()
     if lid.x == 0 {
-        words.store(i: count_at(f), value: min(kept.load(0), PER_FROXEL))
+        var n = 0
+        for k in 0..8 {
+            n += mask.load(k).count_ones()
+        }
+        words.store(i: count_at(f), value: min(n, PER_FROXEL))
     }
 }
 

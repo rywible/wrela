@@ -1,6 +1,7 @@
-// 200 lights, scattered by a seeded generator through the view of a camera, binned into its
-// froxels on the GPU (`engine::lights::Lights::bin`); the froxels' counts read back, and set
-// beside the same binning on the CPU (`reaches`, each light against each froxel). And the light
+// 200 lights, scattered by a seeded generator through the view of a camera, and a crowd of 40
+// more over one place, binned into its froxels on the GPU (`engine::lights::Lights::bin`); the
+// froxels' counts and lists read back, and set beside the same binning on the CPU (`reaches`,
+// each light against each froxel, the first `PER_FROXEL` in the lights' order). And the light
 // they shed (`shed`) on points read in a kernel, against the sum over every light.
 
 use engine::lights::{
@@ -33,7 +34,7 @@ fn between(seed: u32, k: u32, lo: f32, hi: f32) -> f32 {
 }
 
 /// The lights: 200, through the field in front of the camera, radii 1 to 9 m, every fifth a
-/// spot pointing down.
+/// spot pointing down; then 40 over one place beyond the shaded points, more than a froxel keeps.
 fn scattered() -> Vec<LocalLight> {
     var out: Vec<LocalLight> = Vec::new()
     for i in 0..200 {
@@ -48,6 +49,10 @@ fn scattered() -> Vec<LocalLight> {
                 point(at, radius, colour)
             },
         )
+    }
+    for i in 0..40 {
+        let at = vec3(between(seed: 13, k: i, lo: 20.0, hi: 21.0), 5.0, 55.0)
+        out.push(point(at, 2.0, vec3(1.0)))
     }
     out
 }
@@ -101,7 +106,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         let cam = camera()
         s.lights.bin(cam, scattered())
         let at = MOST_LIGHTS * engine::lights::LIGHT_WORDS
-        s.asked = Some(read(s.lights.words.span(start: at, count: FROXELS)))
+        s.asked = Some(read(s.lights.words.span(start: at, count: FROXELS * (1 + PER_FROXEL))))
         let ps = points()
         var out: GpuBuffer<vec4> = buffer(ps.len())
         dispatch(
@@ -137,37 +142,49 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     }
 }
 
-/// Each froxel's count is what the CPU's binning counts (at most `PER_FROXEL`), and the lights
+/// Each froxel's count and list are what the CPU's binning keeps: the lights that reach it, the
+/// first `PER_FROXEL` in the lights' order where more do (the crowd's froxels); and the lights
 /// reach many froxels, some of them more than one light.
 @test(frames: 8, gpu: true)
 fn the_gpus_froxels_hold_the_cpus_lights(s: State) {
-    assert(s.counts.len() == FROXELS, "the counts didn't come back")
+    assert(s.counts.len() == FROXELS * (1 + PER_FROXEL), "the counts didn't come back")
     let cam = camera()
     let ls = scattered()
     var differ = 0
     var lit = 0
     var shared = 0
+    var full = 0
     for f in 0..FROXELS {
-        var want = 0
-        for l in ls {
-            if reaches(cam, l, f) {
-                want += 1
+        var want: Vec<u32> = Vec::new()
+        var reached = 0
+        for i in 0..ls.len() {
+            if reaches(cam, ls[i], f) {
+                reached += 1
+                if want.len() < PER_FROXEL {
+                    want.push(i)
+                }
             }
         }
-        want = min(want, PER_FROXEL)
-        if s.counts[f] != want {
+        var same = s.counts[f] == want.len()
+        for j in 0..want.len() {
+            same = same && s.counts[FROXELS + f * PER_FROXEL + j] == want[j]
+        }
+        if !same {
             differ += 1
         }
-        if want > 0 {
+        if reached > 0 {
             lit += 1
         }
-        if want > 1 {
+        if reached > 1 {
             shared += 1
         }
+        if reached > PER_FROXEL {
+            full += 1
+        }
     }
-    print(f"{lit} froxels lit, {shared} by more than one light, {differ} differ from the CPU's")
-    assert(differ == 0, f"{differ} froxels' counts differ from the CPU's")
-    assert(lit > 300 && shared > 50, f"the lights reach too few froxels: {lit}, {shared}")
+    print(f"{lit} froxels lit, {shared} by more than one light, {full} past full, {differ} differ")
+    assert(differ == 0, f"{differ} froxels' lists differ from the CPU's")
+    assert(lit > 300 && shared > 50 && full > 0, f"too few froxels lit: {lit}, {shared}, {full}")
 }
 
 /// The light shed on each point in view is the sum over every light that reaches it (none is

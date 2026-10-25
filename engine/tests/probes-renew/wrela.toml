@@ -1,0 +1,7 @@
+# The probes' replacement (engine/probes.wrela, `Baked::renew`) on the GPU: probes renewed with
+# no occluders cook an empty volume, whatever the buffer they took held.
+[package]
+name = "probes_renew_tests"
+
+[dependencies]
+engine = { workspace = true }

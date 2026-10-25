@@ -78,14 +78,16 @@ impl Emits {
 }
 
 /// A frame's step for the particles: the camera they're drawn with (the scene's depth is its),
-/// gravity (m/s²), the frame's length (s), the wind's speed (m/s), and whether they bounce off
-/// the scene's depth.
+/// gravity (m/s²), the frame's length (s), the wind's speed (m/s), whether they bounce off the
+/// scene's depth, and how far the render space moved since the last step (`Frame::recentre`:
+/// the live particles move with it).
 pub struct Step: Copy + GpuData {
     pub cam: Camera,
     pub gravity: vec3,
     pub dt: f32,
     pub wind: vec3,
     pub collide: u32,
+    pub shift: vec3 = vec3(0.0),
 }
 
 /// The wind's speed `w` gives a particle: its direction at its speed, as strong as it blows.
@@ -98,7 +100,8 @@ fn kept(count: [u32], room: u32) -> u32 {
     min(count[0], room)
 }
 
-/// Particle `id` of `from` moved a frame: it ages and dies; gravity pulls it and drag takes it
+/// Particle `id` of `from` moved a frame: carried with the render space (`st.shift`); it ages
+/// and dies; gravity pulls it and drag takes it
 /// toward the wind's speed; if it would go behind the scene's surface (`depth`, as `st.cam` drew
 /// it, by less than its size), it bounces back off it, slowed. The living pushed onto `to`.
 @compute(256)
@@ -114,6 +117,7 @@ fn simulate(
         return
     }
     var p = from[id.x]
+    p.at += st.shift
     p.life -= st.dt
     if p.life <= 0.0 {
         return

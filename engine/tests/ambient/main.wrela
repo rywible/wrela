@@ -1,13 +1,14 @@
 // A box (2 m a side) on a floor, drawn into a depth buffer by a camera 5 m off; its ambient
 // occlusion built (`engine::ambient::build`), and points read through `ao_at` in a kernel, as
-// shading reads them. Frame 0 records it all; the tests read the answers once they've come.
+// shading reads them, and the whole of it read back. Frame 0 records it all; the tests read the
+// answers once they've come.
 
 use engine::ambient::{Ambient, ao_at, build}
 use engine::view::{Camera, NEAREST, first_camera}
 use std::gpu::{
-    ClipPosition, DepthTexture, GlobalId, GpuBuffer, Rgba16Float, Slots, Texture, VertexIndex,
-    begin_pass_with_depth, buffer, buffer_of, depth_texture, dispatch, draw, read, texture,
-    writable_texture,
+    ClipPosition, DepthTexture, GlobalId, GpuBuffer, Half2, Rgba16Float, Slots, Texture,
+    TextureRead, VertexIndex, begin_pass_with_depth, buffer, buffer_of, depth_texture, dispatch,
+    draw, read, read_texture, texture, writable_texture,
 }
 use std::io::{Pending, print}
 
@@ -112,6 +113,8 @@ pub struct State {
     ao: Texture<Rgba16Float>,
     asked: Option<Pending<f32>>,
     pub answers: Vec<f32>,
+    whole: Option<TextureRead>,
+    pub texels: Vec<u8>,
 }
 
 pub fn init() -> State {
@@ -121,6 +124,8 @@ pub fn init() -> State {
         ao: writable_texture::<Rgba16Float>(width: W / 2, height: H / 2),
         asked: None,
         answers: Vec::new(),
+        whole: None,
+        texels: Vec::new(),
     }
 }
 
@@ -144,7 +149,17 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             over: POINTS.len(),
         )
         s.asked = Some(read(out.items()))
+        s.whole = Some(read_texture(s.ao.level(0)))
         return
+    }
+    if s.texels.is_empty() {
+        match mut s.whole {
+            Some(r) => match r.poll() {
+                Some(Ok(b)) => s.texels = take b,
+                _ => {},
+            },
+            None => {},
+        }
     }
     if s.answers.is_empty() {
         match mut s.asked {
@@ -168,4 +183,27 @@ fn a_box_occludes_the_floor_at_its_foot(s: State) {
     assert(a[1] < 0.75, f"the box's foot is open: {a[1]}")
     assert(a[2] > 0.9, f"the box's top is occluded: {a[2]}")
     assert(a[3] == 1.0, f"a point on no surface is occluded: {a[3]}")
+}
+
+/// Every texel of the occlusion is a share of the sky (finite, from 0 to 1), the screen's edges
+/// too, where a pixel's neighbour past the edge is the pixel itself; and the open floor along the
+/// left edge sees the sky.
+@test(frames: 8, gpu: true)
+fn the_occlusion_holds_at_the_screens_edges(s: State) {
+    let (w, h) = (W / 2, H / 2)
+    assert(s.texels.len() == w * h * 8, "the occlusion didn't come back")
+    let share = |x: u32, y: u32| {
+        let i = 8 * (y * w + x)
+        let bits = u32(s.texels[i]) | (u32(s.texels[i + 1]) << 8)
+        Half2 { bits }.decode().x
+    }
+    for y in 0..h {
+        for x in 0..w {
+            let a = share(x, y)
+            assert(a >= 0.0 && a <= 1.0, f"texel ({x}, {y}) is {a}")
+        }
+    }
+    let edge = share(0, h - 1)
+    print(f"the floor at the left edge {edge}")
+    assert(edge > 0.9, f"the open floor at the left edge is occluded: {edge}")
 }

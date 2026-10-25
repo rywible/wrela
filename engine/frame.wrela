@@ -156,7 +156,9 @@ pub trait Scene {
     /// What moves into the moving map, seen from the sun by `view`.
     fn cast_moving<P: RenderPass>(self, pass: P, view: mat4) {}
 
-    /// The scene's local lights this frame (`lights`: at most `lights::MOST_LIGHTS` are used).
+    /// The scene's local lights this frame (`lights`: at most `lights::MOST_LIGHTS` are used, and
+    /// where more than `lights::PER_FROXEL` reach one place, the first of them): the lights that
+    /// matter most first.
     fn lights(self) -> Vec<LocalLight> {
         Vec::new()
     }
@@ -856,14 +858,17 @@ pub struct Frame<R: Resolver> {
     pub particles: Option<Particles>,
     emits: Emits,
     see_through: Option<SeeThrough>,
+    /// How far the render space moved since the particles' last step (`recentre`).
+    particle_shift: vec3,
     resolver: R,
     pub exposure: GpuBuffer<Exposure>,
     pub linear: Sampler,
     pub repeat: Sampler,
     pub cooks: Cooks,
     /// The kinds whose GPU time a measuring frame asked for and hasn't had (`Quality::measured`);
-    /// how many times each of `MEASURED` was measured and the frame it last was; and whether the
-    /// host can't time them (it stops asking).
+    /// how many times each of `MEASURED` was measured and the frame it last was (`ran`'s count,
+    /// which a resize doesn't start again); and whether the host can't time them (it stops
+    /// asking).
     measuring: Vec<(Work, Pending<f32>)>,
     measured: [u32; 5],
     measured_at: [u32; 5],
@@ -1024,6 +1029,7 @@ impl<R: Resolver> Frame<R> {
             specular: Specular::new(),
             grade: identity(),
             particles: None,
+            particle_shift: vec3(0.0),
             emits: Emits::new(),
             see_through: None,
             resolver: R::made(),
@@ -1237,6 +1243,7 @@ impl<R: Resolver> Frame<R> {
         self.probes.next = None
         self.near.shift(d)
         self.far.shift(d)
+        self.particle_shift += d
     }
 
     /// The look graded by `lut` (a `paint::LUT_SIDE`³ table of display colours), as much as
@@ -1470,7 +1477,7 @@ impl<R: Resolver> Frame<R> {
                     for i in 0..5 {
                         if MEASURED[i].0 == w {
                             self.measured[i] += 1
-                            self.measured_at[i] = self.frames
+                            self.measured_at[i] = self.ran
                         }
                     }
                     let _ = self.measuring.remove(k)
@@ -1492,7 +1499,7 @@ impl<R: Resolver> Frame<R> {
                 asked = asked || m.0 == w
             }
             let due = self.measured[i] < MEASURE_FIRST ||
-                self.frames - self.measured_at[i] >= MEASURE_AGAIN
+                self.ran - self.measured_at[i] >= MEASURE_AGAIN
             if !asked && due {
                 self.measuring.push((w, timed(name)))
             }
@@ -1882,6 +1889,7 @@ impl<R: Resolver> Frame<R> {
                 on: if self.quality.reflections || self.quality.contact { self.mirror.on } else {
                     0
                 },
+                reflect: if self.quality.reflections { 1 } else { 0 },
                 probe: if self.quality.reflections && self.specular.baked { 1 } else { 0 },
                 contact: if self.quality.contact { 1 } else { 0 },
                 ..self.mirror,
@@ -2034,11 +2042,13 @@ impl<R: Resolver> Frame<R> {
             dt: self.cooks.dt,
             wind: wind_of(wind),
             collide: 1,
+            shift: self.particle_shift,
         }
         match mut self.particles {
             Some(ps) => ps.step(st, self.targets.depth, self.emits.list),
             _ => {},
         }
+        self.particle_shift = vec3(0.0)
         let veils = scene.has_veils()
         let weighted = self.quality.transparency == Transparency::Weighted
         if veils && !weighted {

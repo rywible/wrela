@@ -411,13 +411,15 @@ pub fn prefilter(
 
 /// What an opaque pass reads beside the screen's copy (`Lighting::screen`): the camera the last
 /// frame's copy was drawn with, whether there's a copy (`on`), whether the specular probe has
-/// been baked whole (`probe`), and whether sunlit surfaces march toward the sun through the
-/// copy for contact shadows (`contact`: `contact_shadow`).
+/// been baked whole (`probe`), whether sunlit surfaces march toward the sun through the copy for
+/// contact shadows (`contact`: `contact_shadow`), and whether smooth ones march it for their
+/// reflections (`reflect`: `Quality::reflections`).
 pub struct Mirror: Copy + GpuData {
     pub cam: Camera,
     pub on: u32,
     pub probe: u32,
     pub contact: u32 = 0,
+    pub reflect: u32 = 0,
 }
 
 /// The world a surface at `world` of roughness `rough` reflects along `r` (a unit vector), for a
@@ -448,7 +450,7 @@ pub fn reflected(
         let opens = clamp(dot(toward, LUMA) / max(dot(open, LUMA), 1.0e-4), 0.0, 1.0)
         c = mix(toward, probe, vec3(opens * opens))
     }
-    if m.on != 0 {
+    if m.on != 0 && m.reflect != 0 {
         let hit = reflected_above(m.cam, screen, world, r, rough, floor: -1.0e9)
         c = mix(c, hit.rgb, vec3(hit.a))
     }

@@ -1,5 +1,6 @@
 // 10,000 particles emitted on frame 0 and stepped ten frames (`engine::particles::Particles`),
-// then read back: where they are, their keys in sorted order, and the order. And two see-through
+// the render space moving 4 m on the fifth (`Step::shift`, as `Frame::recentre` gives it), then
+// read back: where they are, their keys in sorted order, and the order. And two see-through
 // quads drawn as weighted blended transparency over a background, laid over it
 // (`particles::composite`), read back and set beside the formula.
 
@@ -17,6 +18,9 @@ pub const N: u32 = 10000
 /// The frames they're stepped, each 1/60 s.
 pub const STEPS: u32 = 10
 pub const DT: f32 = 1.0 / 60.0
+
+/// How far the render space moves under them on the fifth step: they move with it.
+pub const SHIFT = vec3(0.0, 4.0, 0.0)
 
 /// A camera beside the square, looking across it, so their depths differ.
 fn camera() -> Camera {
@@ -115,6 +119,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         dt: DT,
         wind: vec3(0.0),
         collide: 0,
+        shift: if f == 5 { SHIFT } else { vec3(0.0) },
     }
     let none = depth_texture(width: 1, height: 1)
     if f < STEPS {
@@ -196,7 +201,8 @@ fn collect(s: mut State) {
 }
 
 /// Every particle is alive after ten steps, each fallen as gravity says (they're added after the
-/// first step's move, so moved by the nine after it; semi-implicit Euler: g dt² × (1 + ... + 9)),
+/// first step's move, so moved by the nine after it; semi-implicit Euler: g dt² × (1 + ... + 9))
+/// and carried with the render space (`SHIFT`),
 /// and they come back sorted by depth, far first (their keys never fall), the order a permutation
 /// of them.
 @test(frames: 20, gpu: true)
@@ -210,7 +216,7 @@ fn particles_fall_and_come_back_sorted_by_depth(s: State) {
         let p = s.at[i]
         // Their places in the buffer aren't their emitted order: find each by its column.
         let k = u32(round((p.at.x + 5.0) / 0.1)) + 100 * u32(round((p.at.z + 5.0) / 0.1))
-        most = max(most, abs(height_of(k) - p.at.y - drop))
+        most = max(most, abs(height_of(k) + SHIFT.y - p.at.y - drop))
     }
     print(f"fallen {drop} m each, within {most}")
     assert(most < 1.0e-3, f"a particle fell {most} m off gravity's")

@@ -4,7 +4,8 @@
 // changes; 90 frames later the air does, and 90 after that the sun moves; once its cascades are
 // drawn again, the sun moves every frame for 120 frames; then the screen is held for 8 frames;
 // then the frame measures its work on this device
-// (`Quality::measured`), and its cascades and probes are drawn again to be measured. Each frame's
+// (`Quality::measured`), and its cascades and probes are drawn again to be measured; 400 frames
+// later the screen is resized to half, and the frame goes on measuring. Each frame's
 // plan (`engine::cook::Planner`) and readiness are recorded, and the tests read the record. Until
 // it measures, a frame's order is the same on every run and in both hosts.
 
@@ -65,6 +66,7 @@ pub enum Step: Copy + Eq {
     Moving,
     Hold,
     Done,
+    Resized,
 }
 
 pub struct State {
@@ -75,6 +77,8 @@ pub struct State {
     pub began: Vec<u32>,
     pub records: Vec<Record>,
     eye: vec3,
+    /// Whether the screen is half its size (`Step::Resized`).
+    small: bool,
 }
 
 pub fn init() -> State {
@@ -97,6 +101,7 @@ pub fn init() -> State {
         began: Vec::from([0]),
         records: Vec::new(),
         eye: START,
+        small: false,
     }
 }
 
@@ -156,14 +161,19 @@ fn script(s: mut State) {
             s.frame.changed(Change::Casters)
             s.frame.changed(Change::Occluders)
         },
-        Step::Done => {},
+        Step::Done => if since >= 400 {
+            next(mut s, Step::Resized)
+            s.small = true
+        },
+        Step::Resized => {},
     }
 }
 
 pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     script(mut s)
     let aim = Aim { eye: s.eye, at: s.eye + AHEAD, fovy: 0.82, moving_at: s.eye }
-    let _ = s.frame.begin(mut s.scene, aim, time, width, height)
+    let (w, h) = if s.small { (width / 2, height / 2) } else { (width, height) }
+    let _ = s.frame.begin(mut s.scene, aim, time, w, h)
     s.frame.draw(mut s.scene, aim)
     borrow p = s.frame.cooks.planner
     s.records.push(
@@ -205,7 +215,7 @@ fn window(s: State, k: u32) -> (u32, u32) {
 
 /// The steps the script reached, failing a test that needs one it didn't.
 fn reached(s: State, step: Step) {
-    let names = ["load", "jump", "weather", "air", "sun", "moving", "hold", "done"]
+    let names = ["load", "jump", "weather", "air", "sun", "moving", "hold", "done", "resized"]
     var k = 0
     for st in [
         Step::Load,
@@ -216,6 +226,7 @@ fn reached(s: State, step: Step) {
         Step::Moving,
         Step::Hold,
         Step::Done,
+        Step::Resized,
     ] {
         if st == step {
             assert(s.began.len() > k, f"the script didn't reach its {names[k]} by its last frame")
@@ -441,7 +452,9 @@ fn a_held_screen_runs_frames_and_draws_none(s: State) {
         assert(s.records[i].drawn == drawn, f"frame {s.records[i].ran} drew while held")
     }
     assert(to - from == 8, f"it was held {to - from} frames")
-    let last = s.records[s.records.len() - 1]
+    // The last frame before the resize, which starts the count of drawn frames again.
+    let (_, done) = window(s, 7)
+    let last = s.records[done - 1]
     assert(last.drawn > drawn, "drawing didn't resume once it was let go")
 }
 
@@ -496,6 +509,17 @@ fn a_measuring_frame_keeps_the_budgets_promises(s: State) {
         near > 0 && far > 0 && probes > 0,
         f"a kind made eligible didn't run: {near} {far} {probes}",
     )
+}
+
+/// A measuring frame resized goes on measuring: a resize starts the frame's count of drawn frames
+/// again, and the measuring's own count (`ran`) doesn't, so a kind measured before is asked again
+/// in time, and the frames after the resize are drawn.
+@test(frames: 2000, gpu: true)
+fn a_measuring_frame_goes_on_after_a_resize(s: State) {
+    reached(s, Step::Resized)
+    let (from, to) = window(s, 8)
+    assert(to - from >= 100, f"only {to - from} frames after the resize")
+    assert(s.records[to - 1].drawn > 50, "the resized frame didn't draw")
 }
 
 /// The settled bare scene after its jump and its weather is its golden on this machine's GPU,

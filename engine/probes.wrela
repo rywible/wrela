@@ -941,18 +941,21 @@ impl Baked {
         label("probes occluders")
         let n = self.grid.voxels()
         dispatch(clear_voxels.bind(n, volume: mut self.volume), over: n)
-        dispatch(
-            cook_occluders.bind(
-                grid: self.grid,
-                occluders: self.occluders.span(start: 0, count: max(self.occluder_count, 1)),
-                volume: mut self.volume,
-            ),
-            groups: (
-                min(max(self.occluder_count, 1), OCCLUDER_ROW),
-                (max(self.occluder_count, 1) + OCCLUDER_ROW - 1) / OCCLUDER_ROW,
-                1,
-            ),
-        )
+        // With none, the volume stays clear: a renewed buffer still holds the old occluders.
+        if self.occluder_count > 0 {
+            dispatch(
+                cook_occluders.bind(
+                    grid: self.grid,
+                    occluders: self.occluders.span(start: 0, count: self.occluder_count),
+                    volume: mut self.volume,
+                ),
+                groups: (
+                    min(self.occluder_count, OCCLUDER_ROW),
+                    (self.occluder_count + OCCLUDER_ROW - 1) / OCCLUDER_ROW,
+                    1,
+                ),
+            )
+        }
         dispatch(
             filterable.bind(self.grid, self.volume.items(), density: mut self.density),
             over: self.density,
