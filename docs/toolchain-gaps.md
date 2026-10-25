@@ -6,7 +6,13 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 
 ## Open
 
-None.
+### No 64-bit atomics on the GPU
+
+- **Needed:** the software rasterizer's single-pass variant (docs/plan-world-class.md §B7b): one `atomicMax` of a 64-bit word holding a fragment's depth and its cluster's id, so a pixel's nearest fragment wins in one operation.
+- **What happens:** toolchain 0.6.0 has `Atomics<u32>` and `Atomics<i32>` only; `std::gpu::features().atomic64_min_max` is always false.
+- **Found:** 2026-10-24, building 0.6.0's optional features (§A10). Neither WebGPU's core nor Chrome stable exposes a 64-bit atomic feature, and wgpu 30's `SHADER_INT64_ATOMIC_MIN_MAX` has no browser counterpart, so a program couldn't rely on it in a browser.
+- **Meanwhile:** §B7b's two-pass form: an `atomicMax` of the depth's bits, then an `atomicMin` of the id at the winning depth, in `Atomics<u32>` buffers.
+- **Status:** open until a browser ships 64-bit atomics.
 
 ## Fixed
 

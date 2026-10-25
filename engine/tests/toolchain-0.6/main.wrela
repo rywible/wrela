@@ -1,0 +1,403 @@
+// Toolchain 0.6's capabilities, each used once and read back (docs/plan-world-class.md §A18):
+// a pass of three targets with a blend each, a mip chain generated and sampled trilinear, a
+// cube face drawn and sampled, an array layer a kernel writes, a scissored draw, a histogram in
+// workgroup atomics, a direct indexed draw, a multi-draw, a half-float kernel and a subgroup scan
+// behind `features()`, a BC1 upload, texture readback, and `memory()`. Frame 0 records it all and
+// asks for each result; later frames take the answers; each test checks one. The suite runs it
+// on both hosts, and with `WRELA_FEATURES=none` its feature tests pass trivially.
+use std::gpu::{
+    Atomics, Bc1, Blend, ClipPosition, Cubemap, FragCoord, GlobalId, GpuBuffer, DrawArgs, LocalId,
+    Memory, R32Uint, Rgba16Float, Rgba8, Sampler, SharedAtomics, Shared, Slots, SubgroupInvocation,
+    SubgroupSize, Targets3, Texels, Texture, TextureArray, TextureRead, VertexIndex, WorkgroupId,
+    begin_face_pass, begin_pass, begin_pass3, buffer, buffer_of, cubemap, dispatch, draw,
+    draw_multi, features, generate_mips, memory, read, read_texture, sampler, subgroup_prefix_sum,
+    texture, writable_texture, writable_texture_array, Features, Filter, Address,
+}
+use std::io::{Pending, print}
+
+/// One triangle that covers the target.
+@vertex
+fn cover(v: VertexIndex) -> ClipPosition {
+    let x = f32((v.index << 1) & 2) * 2.0 - 1.0
+    let y = f32(v.index & 2) * 2.0 - 1.0
+    ClipPosition { position: vec4(x, y, 0.5, 1.0) }
+}
+
+/// A square of half the target's side, at its centre, from its four corners by index.
+@vertex
+fn square(corners: [vec2], v: VertexIndex) -> ClipPosition {
+    let c = corners[v.index]
+    ClipPosition { position: vec4(c.x, c.y, 0.5, 1.0) }
+}
+
+@fragment
+fn colour(c: vec4) -> vec4 {
+    c
+}
+
+@fragment
+fn three() -> Targets3<vec4, vec4, u32> {
+    Targets3 { first: vec4(0.5, 0.25, 0.0, 0.5), second: vec4(0.25, 0.25, 0.25, 0.5), third: 77 }
+}
+
+/// Level 0 of a 16 × 16 texture: red x / 15, green y / 15.
+@compute(8, 8)
+fn gradient(out: mut Texels<Rgba16Float>, id: GlobalId) {
+    out.store(id, vec4(f32(id.x) / 15.0, f32(id.y) / 15.0, 0.0, 1.0))
+}
+
+/// Level 2 of the mipped texture, sampled at a pixel's centre, into a 4 × 4 target.
+@fragment
+fn sample_level_two(p: FragCoord, t: Texture<Rgba16Float>, s: Sampler) -> vec4 {
+    t.sample_level(s, p.position.xy / 4.0, level: 2.0)
+}
+
+/// A layer of the array: its number over 2 in red.
+@compute(4, 4, 1)
+fn layer(out: mut Texels<Rgba16Float>, n: f32, id: GlobalId) {
+    out.store(id, vec4(n / 2.0, 0.0, 0.0, 1.0))
+}
+
+/// Looks along +y: the face drawn blue.
+@fragment
+fn up(cube: Cubemap<Rgba8>, s: Sampler) -> vec4 {
+    cube.sample_level(s, vec3(0.0, 1.0, 0.0), level: 0.0)
+}
+
+/// The BC1 texture's centre.
+@fragment
+fn show_bc1(t: Texture<Bc1>, s: Sampler) -> vec4 {
+    t.sample_level(s, vec2(0.5), level: 0.0)
+}
+
+/// One workgroup's 256 values counted in workgroup memory, then added to the totals.
+@compute(256)
+fn histogram(
+    values: [u32],
+    totals: mut Atomics<u32>,
+    bins: mut SharedAtomics<256>,
+    lid: LocalId,
+    id: GlobalId,
+) {
+    let _ = bins.add(values[id.x] % 256, 1)
+    bins.barrier()
+    let _ = totals.add(lid.x, bins.load(lid.x))
+}
+
+/// Each workgroup's place for each odd value, by a subgroup scan.
+@compute(256)
+fn places(
+    values: [u32],
+    out: mut Slots<u32>,
+    scan: mut Shared<u32, 256>,
+    lid: LocalId,
+    lane: SubgroupInvocation,
+    width: SubgroupSize,
+    id: GlobalId,
+) {
+    let keep = values[id.x] % 2
+    out[id] = subgroup_prefix_sum(mut scan, lid, keep)
+}
+
+/// Eight values summed in half floats.
+@compute(64)
+fn halves(out: mut Slots<f32>, id: GlobalId) {
+    var sum = f16(0.0)
+    for k in 0..8 {
+        sum += f16(f32(8 * id.x + k) / 8.0)
+    }
+    out[id] = f32(sum)
+}
+
+pub struct State {
+    frame: u32,
+    features: Features,
+    mrt: (Texture<Rgba16Float>, Texture<Rgba16Float>, Texture<R32Uint>),
+    mipped: Texture<Rgba16Float>,
+    mipped_out: Texture<Rgba16Float>,
+    cube: Cubemap<Rgba8>,
+    cube_out: Texture<Rgba8>,
+    layered: TextureArray<Rgba16Float>,
+    scissored: Texture<Rgba8>,
+    indexed: Texture<Rgba8>,
+    multi: Texture<Rgba8>,
+    bc1: Option<Texture<Bc1>>,
+    bc1_out: Texture<Rgba8>,
+    linear: Sampler,
+    indices: GpuBuffer<u32>,
+    args: GpuBuffer<DrawArgs>,
+    values: GpuBuffer<u32>,
+    totals: GpuBuffer<u32>,
+    places: GpuBuffer<u32>,
+    halves: GpuBuffer<f32>,
+    memory: Memory,
+    reads: Vec<TextureRead>,
+    got: Vec<Vec<u8>>,
+    words: Vec<Pending<u32>>,
+    got_words: Vec<Vec<u32>>,
+    half_read: Option<Pending<f32>>,
+    got_halves: Vec<f32>,
+}
+
+/// Value `i`: a hash's top byte.
+fn value(i: u32) -> u32 {
+    i.wrapping_mul(2654435761) >> 24
+}
+
+pub fn init() -> State {
+    State {
+        frame: 0,
+        features: features(),
+        mrt: (
+            texture(width: 1, height: 1),
+            texture(width: 1, height: 1),
+            texture(width: 1, height: 1),
+        ),
+        mipped: writable_texture(width: 16, height: 16, levels: 5),
+        mipped_out: texture(width: 4, height: 4),
+        cube: cubemap(side: 2),
+        cube_out: texture(width: 1, height: 1),
+        layered: writable_texture_array(width: 4, height: 4, layers: 3),
+        scissored: texture(width: 4, height: 2),
+        indexed: texture(width: 4, height: 4),
+        multi: texture(width: 4, height: 4),
+        bc1: None,
+        bc1_out: texture(width: 1, height: 1),
+        linear: sampler(filter: Filter::Linear, address: Address::Clamp, mip: Filter::Linear),
+        indices: buffer_of([0, 1, 2, 0, 2, 3]),
+        args: buffer_of(
+            [
+                DrawArgs { vertices: 3, instances: 1, first_vertex: 0, first_instance: 0 },
+                DrawArgs { vertices: 3, instances: 0, first_vertex: 0, first_instance: 0 },
+            ],
+        ),
+        values: buffer_of(Vec::from_fn(4096, |i| value(i))),
+        totals: buffer(256),
+        places: buffer(4096),
+        halves: buffer(64),
+        memory: memory(),
+        reads: Vec::new(),
+        got: Vec::new(),
+        words: Vec::new(),
+        got_words: Vec::new(),
+        half_read: None,
+        got_halves: Vec::new(),
+    }
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    if s.frame == 0 {
+        record(mut s)
+    } else {
+        var k = 0
+        while k < s.reads.len() {
+            if s.got.len() == k {
+                match s.reads[k].poll() {
+                    Some(Ok(bytes)) => s.got.push(take bytes),
+                    Some(Err(_)) => s.got.push(Vec::new()),
+                    None => {},
+                }
+            }
+            k += 1
+        }
+        var w = 0
+        while w < s.words.len() {
+            if s.got_words.len() == w {
+                if let Some(Ok(v)) = s.words[w].poll() {
+                    s.got_words.push(take v)
+                }
+            }
+            w += 1
+        }
+        match mut s.half_read {
+            Some(p) => {
+                if s.got_halves.len() == 0 {
+                    if let Some(Ok(v)) = p.poll() {
+                        s.got_halves = take v
+                    }
+                }
+            },
+            None => {},
+        }
+    }
+    s.memory = memory()
+    s.frame += 1
+}
+
+fn record(s: mut State) {
+    // 0–2: three targets, each blended its own way over its clear.
+    let p = begin_pass3(mut s.mrt.0, mut s.mrt.1, mut s.mrt.2, clear: vec4(0.25, 0.25, 0.25, 0.5))
+    draw(p, cover, three, vertices: 3, blends: [Blend::Add, Blend::Premultiplied, Blend::Replace])
+    p.end()
+    s.reads.push(read_texture(s.mrt.0.level(0)))
+    s.reads.push(read_texture(s.mrt.1.level(0)))
+    s.reads.push(read_texture(s.mrt.2.level(0)))
+    // 3: a mip chain generated from level 0, level 2 sampled trilinear.
+    dispatch(gradient.bind(mut s.mipped), groups: (2, 2, 1))
+    generate_mips(mut s.mipped, s.linear)
+    let p = begin_pass(mut s.mipped_out)
+    draw(p, cover, sample_level_two.bind(s.mipped, s.linear), vertices: 3)
+    p.end()
+    s.reads.push(read_texture(s.mipped_out.level(0)))
+    // 4: a cube face drawn and sampled by direction.
+    let f = begin_face_pass(mut s.cube, 2, clear: vec4(0.0, 0.0, 1.0, 1.0))
+    f.end()
+    let p = begin_pass(mut s.cube_out)
+    draw(p, cover, up.bind(s.cube, s.linear), vertices: 3)
+    p.end()
+    s.reads.push(read_texture(s.cube_out.level(0)))
+    // 5: the array's layer 2, written by a kernel, read back.
+    dispatch(layer.bind(s.layered.layer_mut(2), 2.0), groups: (1, 1, 1))
+    s.reads.push(read_texture(s.layered.layer(2)))
+    // 6: a full-screen triangle scissored to the left half.
+    let p = begin_pass(mut s.scissored, clear: vec4(0.0, 0.0, 0.0, 1.0))
+    p.scissor(x: 0, y: 0, width: 2, height: 2)
+    draw(p, cover, colour.bind(vec4(1.0, 1.0, 1.0, 1.0)), vertices: 3)
+    p.end()
+    s.reads.push(read_texture(s.scissored.level(0)))
+    // 7: a square drawn directly from its indices.
+    let corners = buffer_of([vec2(-0.5, -0.5), vec2(0.5, -0.5), vec2(0.5, 0.5), vec2(-0.5, 0.5)])
+    let p = begin_pass(mut s.indexed, clear: vec4(0.0, 0.0, 0.0, 1.0))
+    draw(
+        p,
+        square.bind(corners),
+        colour.bind(vec4(0.0, 1.0, 0.0, 1.0)),
+        indices: s.indices,
+        index_count: 6,
+    )
+    p.end()
+    s.reads.push(read_texture(s.indexed.level(0)))
+    // 8: two indirect draws in one command, the second of no instances.
+    let p = begin_pass(mut s.multi, clear: vec4(0.0, 0.0, 0.0, 1.0))
+    draw_multi(p, cover, colour.bind(vec4(0.0, 0.0, 1.0, 1.0)), indirect: s.args, count: 2)
+    p.end()
+    s.reads.push(read_texture(s.multi.level(0)))
+    // 9: a BC1 block of pure red, sampled, where the device has BC.
+    if s.features.bc {
+        var t: Texture<Bc1> = texture(width: 4, height: 4)
+        t.write(x: 0, y: 0, width: 4, height: 4, bytes: [0x00, 0xF8, 0x00, 0xF8, 0, 0, 0, 0])
+        let p = begin_pass(mut s.bc1_out)
+        draw(p, cover, show_bc1.bind(t, s.linear), vertices: 3)
+        p.end()
+        s.bc1 = Some(take t)
+    }
+    s.reads.push(read_texture(s.bc1_out.level(0)))
+    // The kernels: a histogram; a subgroup scan and half floats where the device has them.
+    dispatch(histogram.bind(s.values, mut s.totals), groups: (16, 1, 1))
+    s.words.push(read(s.totals.items()))
+    if s.features.subgroups {
+        dispatch(places.bind(s.values, mut s.places), groups: (16, 1, 1))
+        s.words.push(read(s.places.items()))
+    }
+    if s.features.f16 {
+        dispatch(halves.bind(mut s.halves), over: 64)
+        s.half_read = Some(read(s.halves.items()))
+    }
+}
+
+/// Half float `i` (its bytes from `2i`) of `b`.
+fn half(b: [u8], i: u32) -> f32 {
+    std::gpu::Half2 { bits: u32(b[2 * i]) | (u32(b[2 * i + 1]) << 8) }.decode().x
+}
+
+fn word(b: [u8], i: u32) -> u32 {
+    u32(b[i]) | (u32(b[i + 1]) << 8) | (u32(b[i + 2]) << 16) | (u32(b[i + 3]) << 24)
+}
+
+fn close(d: f32, by: f32) -> bool {
+    abs(d) <= by
+}
+
+@test(frames: 6, gpu: true)
+fn three_targets_blend_each_their_own_way(s: State) {
+    assert(s.got.len() == 10)
+    // Add: (0.25 + 0.5, 0.25 + 0.25, 0.25, 0.5 + 0.5).
+    assert(close(half(s.got[0], 0) - 0.75, 0.002) && close(half(s.got[0], 3) - 1.0, 0.002))
+    // Premultiplied: src + dst × (1 − 0.5).
+    assert(close(half(s.got[1], 0) - 0.375, 0.002) && close(half(s.got[1], 3) - 0.75, 0.002))
+    assert(word(s.got[2], 0) == 77)
+}
+
+@test(frames: 6, gpu: true)
+fn a_generated_mip_level_is_its_gradients_mean(s: State) {
+    let red = half(s.got[3], 4 * 5)
+    assert(close(red - 5.5 / 15.0, 0.01))
+}
+
+@test(frames: 6, gpu: true)
+fn a_cube_face_is_sampled_by_direction(s: State) {
+    assert(u32(s.got[4][2]) == 255 && u32(s.got[4][0]) == 0)
+}
+
+@test(frames: 6, gpu: true)
+fn a_kernel_writes_an_arrays_layer(s: State) {
+    assert(close(half(s.got[5], 0) - 1.0, 0.002))
+}
+
+@test(frames: 6, gpu: true)
+fn a_scissor_keeps_a_draw_to_its_rectangle(s: State) {
+    assert(u32(s.got[6][0]) == 255 && u32(s.got[6][12]) == 0)
+}
+
+@test(frames: 6, gpu: true)
+fn indexed_and_multi_draws_draw(s: State) {
+    assert(u32(s.got[7][4 * 5 + 1]) == 255 && u32(s.got[7][1]) == 0)
+    assert(u32(s.got[8][2]) == 255)
+}
+
+@test(frames: 6, gpu: true)
+fn a_bc1_block_samples_as_its_colour(s: State) {
+    if !s.features.bc {
+        print("no `texture-compression-bc` on this device: passed trivially")
+        return
+    }
+    assert(u32(s.got[9][0]) == 255 && u32(s.got[9][1]) == 0)
+}
+
+@test(frames: 6, gpu: true)
+fn a_workgroup_histogram_counts_every_value(s: State) {
+    var want = Vec::from_fn(256, |_| 0)
+    for i in 0..4096 {
+        want[value(i)] += 1
+    }
+    for b in 0..256 {
+        assert(s.got_words[0][b] == want[b])
+    }
+}
+
+@test(frames: 6, gpu: true)
+fn a_subgroup_scan_counts_the_odd_values_before_each(s: State) {
+    if !s.features.subgroups {
+        print("no `subgroups` on this device: passed trivially")
+        return
+    }
+    for g in 0..16 {
+        var n = 0
+        for i in 0..256 {
+            assert(s.got_words[1][256 * g + i] == n)
+            n += value(256 * g + i) % 2
+        }
+    }
+}
+
+@test(frames: 6, gpu: true)
+fn a_half_float_kernel_sums_within_f16s_precision(s: State) {
+    if !s.features.f16 {
+        print("no `shader-f16` on this device: passed trivially")
+        return
+    }
+    for i in 0..64 {
+        let want = 8.0 * f32(i) + 3.5
+        assert(close(s.got_halves[i] - want, want / 256.0))
+    }
+}
+
+@test(frames: 6, gpu: true)
+fn std_counts_the_gpu_memory_it_holds(s: State) {
+    // Its buffers: 6 + 2 × 4 + 4096 + 256 + 4096 + 64 words, and the corners' 8 floats.
+    assert(s.memory.buffers >= 4 * (6 + 8 + 4096 + 256 + 4096 + 64))
+    assert(s.memory.textures > 0 && s.memory.peak_textures >= s.memory.textures)
+}
+
+@test(frames: 4, gpu: true, hosts: both)
+fn both_hosts_record_the_same_capabilities(s: State) {}
