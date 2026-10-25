@@ -6,14 +6,6 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 
 ## Open
 
-### A mip step's load didn't compile
-
-- **Needed:** the depth pyramid (docs/plan-world-class.md §B4b): a kernel reads the level before through `MipStep::load` (unfiltered: the farthest of a cell's depths) and writes the next.
-- **What happens:** toolchain 0.6.0 refuses any kernel that calls `MipStep::load`: `error[I0001]: the IR for ... is malformed: ... Load with the wrong arguments` (the lowering gave the texture load no level; `MipStep::sample` passed level 0). Every format alike.
-- **Found:** 2026-10-24, building `engine::cull`'s pyramid.
-- **Meanwhile:** Part B builds against rywible/wrela-compiler's `release-0.6.1` branch (`WRELA_TOOLCHAIN`), where the load passes level 0 of the step's view; its kernels suite tests a 5×3 `R32Float` chain read back.
-- **Status:** fixed on `release-0.6.1` (commit 2601682); open until 0.6.1 is released and pinned.
-
 ### No 64-bit atomics on the GPU
 
 - **Needed:** the software rasterizer's single-pass variant (docs/plan-world-class.md §B7b): one `atomicMax` of a 64-bit word holding a fragment's depth and its cluster's id, so a pixel's nearest fragment wins in one operation.
@@ -39,6 +31,14 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Status:** open: bind the table only in pipelines whose code reads a lifted literal, or say in E0602 that one of the buffers is the lifted table.
 
 ## Fixed
+
+### A mip step's load didn't compile
+
+- **Needed:** the depth pyramid (docs/plan-world-class.md §B4b): a kernel reads the level before through `MipStep::load` (unfiltered: the farthest of a cell's depths) and writes the next.
+- **What happens:** toolchain 0.6.0 refuses any kernel that calls `MipStep::load`: `error[I0001]: the IR for ... is malformed: ... Load with the wrong arguments` (the lowering gave the texture load no level; `MipStep::sample` passed level 0). Every format alike.
+- **Found:** 2026-10-24, building `engine::cull`'s pyramid.
+- **Meanwhile:** Part B built against rywible/wrela-compiler's `release-0.6.1` branch (`WRELA_TOOLCHAIN`) from §B4b until the release.
+- **Status:** fixed in 0.6.1 (rywible/wrela-compiler#32): the load passes level 0 of the step's view, and the kernels suite tests a 5×3 `R32Float` chain read back. The pin is 0.6.1.
 
 ### A pointer can't press a semantic tree's button, and a tick can't find what the frames drew
 
