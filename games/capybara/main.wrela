@@ -45,7 +45,7 @@ use engine::present::Snapshots
 use engine::run::run
 use feel::HZ
 use ink::INK
-use scenery::View
+use scenery::{Strips, View, strips}
 use sound::Cue
 use std::audio::RingWriter
 use engine::sheet::{Sheet, sheet}
@@ -111,6 +111,8 @@ pub struct Lab {
     cast: Cast,
     /// The scene, its copy under the water and the render scale (`engine::sheet`).
     sheet: Sheet,
+    /// The backdrop's layers, cached (scenery.wrela's `Strips`).
+    strips: Strips,
     linear: Sampler,
     /// The baked grain (ink.wrela) and the sampler that repeats it.
     grain: Texture<Rgba16Float>,
@@ -217,6 +219,7 @@ pub fn init() -> Lab {
         shown: LEVEL,
         cast: shown,
         sheet: sheet(),
+        strips: strips(),
         linear: sampler(),
         grain: grain_texture(),
         repeat: sampler(address: Address::Repeat),
@@ -478,12 +481,25 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     let stage = Stage { view_proj, px, time, first: 0 }
     // The scene: the sky and the zoo behind (one pass, nearest first); the ground and its grass; the
     // cast.
+    label("strips")
+    s.strips.update(view, s.grain, s.repeat)
     label("scene")
     let scene = begin_pass(mut s.sheet.scene)
     draw(
         scene,
         full.bind(z: 0.0),
-        scenery::backdrop.bind(v: view, tops: s.tops[i].items(), g: s.grain, gs: s.repeat),
+        scenery::backdrop.bind(
+            v: view,
+            tops: s.tops[i].items(),
+            drawn: s.strips.drawn(),
+            marsh: s.strips.strips[0],
+            wetlands: s.strips.strips[1],
+            savanna_strip: s.strips.strips[2],
+            hills: s.strips.strips[3],
+            s: s.linear,
+            g: s.grain,
+            gs: s.repeat,
+        ),
         vertices: 3,
     )
     draw(

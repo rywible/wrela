@@ -20,13 +20,22 @@
 // ground, behind the Savanna's wall, above a marsh plant's height), and all of them are drawn in
 // one pass, nearest first (`backdrop`), each only while what's nearer leaves the pixel uncovered,
 // and none where the course's ground covers it.
+//
+// The four layers are cached (`Strips`): each drawn into a strip of its own, wider and taller than
+// the screen (`MARGIN`), at the camera's place then, and drawn again only when the camera has
+// moved it a quarter of the way to the strip's edge or its moving parts are due (each layer's
+// `REFRESH`, one strip a frame), so most frames read four textures where they'd work out four
+// layers' shapes. The sky is still worked out each frame (its clouds drift).
 
 use earth::surely_ground_below
 use engine::noise::{hash2, noise2}
 use ink::{INK, SUN, inked, paper, pooled, washed}
 use shapes::{blend, capsule, cone, ellipse, rbox, turn}
 use std::field::smin
-use std::gpu::{FragCoord, Rgba16Float, Sampler, Texture, discard}
+use engine::frame::full
+use std::gpu::{
+    FragCoord, RenderPass, Rgba16Float, Rgba8, Sampler, Texture, begin_pass, discard, draw, texture,
+}
 
 /// What each of the screen's layers is told: the camera's point on the plane of play (m), half
 /// the view's size (m), the screen's size (px) and the time (s).
@@ -647,22 +656,181 @@ fn bamboo(pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> ve
 
 // ---- the backdrop's pass ---------------------------------------------------------------------
 
-/// `back` under `front` so far, `front` premultiplied (its colour times its cover).
+/// `back` (premultiplied) under `front` (premultiplied), so far.
 fn under_of(front: vec4, back: vec4) -> vec4 {
     let left = 1.0 - front.w
-    vec4(front.xyz + back.xyz * back.w * left, front.w + back.w * left)
+    front + back * left
 }
 
-/// The backdrop: the layers in one pass, nearest first, each worked out only while what's nearer
-/// hasn't covered the pixel; and none where the course's ground (`tops`, its top) covers it. A
-/// layer's shapes cost far more than this, so what's hidden costs almost nothing (Ryan,
-/// 2026-10-22: "make it way more performant"): drawn in five passes, back to front, every layer
-/// worked out every pixel.
+/// Layer `k` (0 the marsh, nearest, to 3 the far hills) at `pixel`, premultiplied.
+fn layer(k: u32, pixel: FragCoord, v: View, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+    let o = if k == 0 { bamboo(pixel, v, g, gs) } else if k == 1 {
+        path(pixel, v, g, gs)
+    } else if k == 2 {
+        savanna(pixel, v, g, gs)
+    } else { far_hills(pixel, v, g, gs) }
+    vec4(o.xyz * o.w, o.w)
+}
+
+/// The layers' fractions of the camera's motion, nearest first (`layer`'s order).
+pub const PARALLAX: [f32; 4] = [BAMBOO, PATH, SAVANNA, FAR]
+
+/// How much wider and taller a strip is than the screen.
+pub const MARGIN = vec2(1.5, 1.25)
+
+/// How often each layer's moving parts are drawn again (s): the marsh's sway and the wetlands'
+/// spring and tapir 10 times a second, the giraffes 5; the far hills don't move. Only the part of
+/// the strip in view is (the rest is drawn whole again when the camera carries it there).
+pub const REFRESH: [f32; 4] = [1.0 / 10.0, 1.0 / 10.0, 1.0 / 5.0, 1.0e9]
+
+/// Where each strip was drawn from: the camera's point then (m), a layer each (`layer`'s order).
+pub struct Drawn: Copy + GpuData {
+    pub at0: vec2,
+    pub at1: vec2,
+    pub at2: vec2,
+    pub at3: vec2,
+}
+
+/// The cached layers: a strip each (`MARGIN` times the screen), where each was drawn from
+/// (`Drawn`) and when (s), the screen and view they were drawn for, and whether they've been.
+pub struct Strips {
+    pub strips: [Texture<Rgba8>; 4],
+    pub at: [vec2; 4],
+    pub when: [f32; 4],
+    pub screen: vec2,
+    pub half: vec2,
+    pub ready: [bool; 4],
+}
+
+/// No strips drawn yet.
+pub fn strips() -> Strips {
+    Strips {
+        strips: [
+            texture::<Rgba8>(width: 1, height: 1),
+            texture::<Rgba8>(width: 1, height: 1),
+            texture::<Rgba8>(width: 1, height: 1),
+            texture::<Rgba8>(width: 1, height: 1),
+        ],
+        at: [vec2(0.0); 4],
+        when: [0.0; 4],
+        screen: vec2(0.0),
+        half: vec2(0.0),
+        ready: [false; 4],
+    }
+}
+
+/// A strip's pixel: layer `k` as the view `v` (the strip's: `MARGIN` times the screen's) shows
+/// it, premultiplied.
+@fragment
+fn strip_layer(pixel: FragCoord, v: View, k: u32, g: Texture<Rgba16Float>, gs: Sampler) -> vec4 {
+    layer(k, pixel, v, g, gs)
+}
+
+impl Strips {
+    /// The strips brought up to the view `v`: made again for a new screen or view (and all
+    /// drawn); then each that the camera has carried past a quarter of its margin, or whose
+    /// moving parts are due, is due; the most due of them drawn (one a frame), and any the
+    /// camera has carried past three quarters of its margin drawn whatever else is.
+    pub fn update(mut self, v: View, g: Texture<Rgba16Float>, gs: Sampler) {
+        if v.screen != self.screen || v.half != self.half {
+            let size = vec2u(ceil(v.screen * MARGIN))
+            for k in 0..4 {
+                self.strips[k] = texture::<Rgba8>(width: size.x, height: size.y)
+                self.ready[k] = false
+            }
+            self.screen = v.screen
+            self.half = v.half
+        }
+        let room = (MARGIN - vec2(1.0)) * v.half
+        var most = 0.0
+        var pick: Option<(u32, bool)> = None
+        for k in 0..4 {
+            let moved = abs((v.centre - self.at[k]) * PARALLAX[k]) / room
+            let far = max(moved.x, moved.y)
+            let late = (v.time - self.when[k]) / REFRESH[k]
+            if !self.ready[k] || far > 0.75 {
+                self.draw_strip(k, v, g, gs, whole: true)
+            } else if far >= 0.25 && far / 0.25 > most {
+                most = far / 0.25
+                pick = Some((k, true))
+            } else if late >= 1.0 && late > most {
+                most = late
+                pick = Some((k, false))
+            }
+        }
+        if let Some((k, whole)) = pick {
+            self.draw_strip(k, v, g, gs, whole)
+        }
+    }
+
+    /// Strip `k` drawn: `whole`, from the camera's place now; else just the part the view `v`
+    /// shows, from where it was drawn (its moving parts brought up to now).
+    fn draw_strip(mut self, k: u32, v: View, g: Texture<Rgba16Float>, gs: Sampler, whole: bool) {
+        let from = if whole { v.centre } else { self.at[k] }
+        let sv = View {
+            centre: from,
+            half: v.half * MARGIN,
+            screen: v.screen * MARGIN,
+            time: v.time,
+        }
+        let p = begin_pass(mut self.strips[k], clear: vec4(0.0), keep: !whole)
+        if !whole {
+            // The view's rectangle in the strip, a pixel round it.
+            let shift = (v.centre - from) * PARALLAX[k] / (v.half * MARGIN)
+            let lo = (vec2(-1.0, 1.0) / MARGIN + shift) * vec2(0.5, -0.5) + vec2(0.5)
+            let hi = (vec2(1.0, -1.0) / MARGIN + shift) * vec2(0.5, -0.5) + vec2(0.5)
+            let a = vec2u(clamp(lo * sv.screen - vec2(1.0), vec2(0.0), sv.screen))
+            let b = vec2u(clamp(hi * sv.screen + vec2(2.0), vec2(0.0), sv.screen))
+            p.scissor(x: a.x, y: a.y, width: max(b.x - a.x, 1), height: max(b.y - a.y, 1))
+        }
+        draw(p, full.bind(z: 0.0), strip_layer.bind(v: sv, k: k, g: g, gs: gs), vertices: 3)
+        p.end()
+        self.at[k] = from
+        self.when[k] = v.time
+        self.ready[k] = true
+    }
+
+    /// Where each strip was drawn from.
+    pub fn drawn(self) -> Drawn {
+        Drawn { at0: self.at[0], at1: self.at[1], at2: self.at[2], at3: self.at[3] }
+    }
+}
+
+/// Layer `k` at `pixel` from its strip (`strip`, drawn from the camera at `at`), filtered by `s`;
+/// worked out itself where the strip doesn't reach (it's drawn again before it can).
+fn cached(
+    k: u32,
+    strip: Texture<Rgba8>,
+    at: vec2,
+    pixel: FragCoord,
+    v: View,
+    s: Sampler,
+    g: Texture<Rgba16Float>,
+    gs: Sampler,
+) -> vec4 {
+    let uv = pixel.position.xy / v.screen
+    let off = vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0) * v.half + (v.centre - at) * PARALLAX[k]
+    let q = off / (v.half * MARGIN)
+    if abs(q.x) > 1.0 || abs(q.y) > 1.0 {
+        return layer(k, pixel, v, g, gs)
+    }
+    strip.sample_level(s, vec2(q.x * 0.5 + 0.5, 0.5 - q.y * 0.5))
+}
+
+/// The backdrop: the layers from their strips (`Strips`), nearest first, each read only while
+/// what's nearer hasn't covered the pixel, then the sky; and none where the course's ground
+/// (`tops`, its top) covers it.
 @fragment
 pub fn backdrop(
     pixel: FragCoord,
     v: View,
     tops: [f32],
+    drawn: Drawn,
+    marsh: Texture<Rgba8>,
+    wetlands: Texture<Rgba8>,
+    savanna_strip: Texture<Rgba8>,
+    hills: Texture<Rgba8>,
+    s: Sampler,
     g: Texture<Rgba16Float>,
     gs: Sampler,
 ) -> vec4 {
@@ -670,18 +838,19 @@ pub fn backdrop(
     if w.y < surely_ground_below(tops, w.x) - 0.05 {
         discard()
     }
-    var c = under_of(vec4(0.0), bamboo(pixel, v, g, gs))
+    var c = cached(0, marsh, drawn.at0, pixel, v, s, g, gs)
     if c.w < 0.999 {
-        c = under_of(c, path(pixel, v, g, gs))
+        c = under_of(c, cached(1, wetlands, drawn.at1, pixel, v, s, g, gs))
     }
     if c.w < 0.999 {
-        c = under_of(c, savanna(pixel, v, g, gs))
+        c = under_of(c, cached(2, savanna_strip, drawn.at2, pixel, v, s, g, gs))
     }
     if c.w < 0.999 {
-        c = under_of(c, far_hills(pixel, v, g, gs))
+        c = under_of(c, cached(3, hills, drawn.at3, pixel, v, s, g, gs))
     }
     if c.w < 0.999 {
-        c = under_of(c, sky(pixel, v, g, gs))
+        let k = sky(pixel, v, g, gs)
+        c = under_of(c, vec4(k.xyz * k.w, k.w))
     }
     vec4(c.xyz, 1.0)
 }
