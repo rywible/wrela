@@ -21,6 +21,10 @@ pub const PIXELS: f32 = 0.5
 /// or forward.
 pub const VISIBILITY: bool = true
 
+/// How small a cluster looks across (pixels) for the software rasterizer to draw it, when the
+/// copies are drawn through the visibility buffer (0: the hardware draws every cluster).
+pub const SMALL: f32 = 32.0
+
 /// The copies along each side of the field.
 pub const SIDE: u32 = 8
 
@@ -55,6 +59,9 @@ pub struct State {
     /// `shade_visibility`), into `ids`, and resolved; or forward.
     visibility: bool,
     ids: Texture<R32Uint>,
+    /// How small a cluster looks for the software rasterizer to draw it (`SMALL`, or a test's
+    /// `rasterize_small`).
+    small: f32,
     /// The listed triangles' areas, counted (`Clusters::count_areas`), and a test's readback.
     bins: GpuBuffer<u32>,
     bins_asked: Option<Pending<u32>>,
@@ -91,6 +98,7 @@ pub fn init() -> State {
         depth: depth_texture(width: 1, height: 1),
         visibility: VISIBILITY,
         ids: texture::<R32Uint>(width: 1, height: 1),
+        small: SMALL,
         bins: buffer(6),
         bins_asked: None,
         bins_got: Vec::new(),
@@ -128,6 +136,12 @@ pub fn view(
 @testing
 pub fn shade_visibility(s: mut State, on: bool) {
     s.visibility = on
+}
+
+/// The software rasterizer draws clusters that look under `small` pixels across (0: none).
+@testing
+pub fn rasterize_small(s: mut State, small: f32) {
+    s.small = small
 }
 
 /// Asks for the listed triangles' areas, counted this frame (`Clusters::count_areas`), which
@@ -171,8 +185,8 @@ pub fn ask_counts(s: mut State) {
 }
 
 /// How many of the counts asked for (`ask_counts`) there are, each beside its room
-/// (`Clusters::rooms`: wanted, room, listed, room, a level at a time); 0 until every answer has
-/// arrived.
+/// (`Clusters::rooms`: wanted, room, listed by either rasterizer, room, a level at a time); 0
+/// until every answer has arrived.
 @testing
 pub fn counts(s: mut State) -> u32 {
     var waiting = false
@@ -185,13 +199,18 @@ pub fn counts(s: mut State) -> u32 {
             }
         }
     }
-    if waiting { 0 } else { 2 * s.answered.len() }
+    if waiting { 0 } else { 4 * s.answered.len() / 3 }
 }
 
 /// Count `i` of those `counts` says there are.
 @testing
 pub fn count(s: State, i: u32) -> u32 {
-    if i % 2 == 0 { s.answered[i / 2] } else { s.clusters.rooms()[i / 2] }
+    let (level, k) = (i / 4, i % 4)
+    match k {
+        0 => s.answered[3 * level],
+        2 => s.answered[3 * level + 1] + s.answered[3 * level + 2],
+        _ => s.clusters.rooms()[2 * level + k / 2],
+    }
 }
 
 /// The clusters' bytes in megabytes (`Clusters::bytes`).
@@ -228,9 +247,12 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     }
     let cam = camera_at(s, time, width, height)
     label("clusters select")
-    s.clusters.select(cam, s.places, s.pixels)
+    s.clusters.select(cam, s.places, s.pixels, small: if s.visibility { s.small } else { 0.0 })
     if s.visibility {
-        // The visibility pass (the raster alone), then the resolve (the shading), each timed.
+        // The small clusters in software, the visibility pass (the hardware's raster and the
+        // merge), then the resolve (the shading), each timed.
+        label("virtual software")
+        s.clusters.raster_small(cam, s.places)
         label("virtual raster")
         let v = begin_pass_with_depth(mut s.ids, mut s.depth, clear: vec4(0.0), clear_depth: 0.0)
         s.clusters.draw_ids(v, cam, s.places)

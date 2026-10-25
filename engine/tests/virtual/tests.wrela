@@ -139,6 +139,28 @@ fn settled_megabytes(h: drive::Build) -> u32 {
     panic("the clusters' buffers never settled")
 }
 
+/// How `a` and `b` (frames) differ: the most a channel does, how many pixels differ by more than
+/// 1/255, and the mean over the channels.
+fn compared(a: [u8], b: [u8]) -> (u32, u32, f32) {
+    var most = 0
+    var over = 0
+    var sum = 0.0
+    for p in 0..W * H {
+        var d = 0
+        for c in 0..3 {
+            let i = 4 * p + c
+            let e = if a[i] > b[i] { a[i] - b[i] } else { b[i] - a[i] }
+            d = max(d, u32(e))
+            sum += f32(e)
+        }
+        most = max(most, d)
+        if d > 1 {
+            over += 1
+        }
+    }
+    (most, over, sum / f32(3 * W * H))
+}
+
 /// Which pixels of `frame` show a copy: not the sky's colour (its top left pixel's).
 fn covered(frame: [u8]) -> Vec<bool> {
     var out: Vec<bool> = Vec::with_capacity(W * H)
@@ -218,32 +240,36 @@ fn a_cut_opens_no_crack_and_keeps_its_silhouettes() {
 }
 
 /// The copies drawn through the visibility buffer and resolved (`Clusters::draw_ids`, then
-/// `Clusters::resolve`) show what the forward draw does, every pixel within 1/255 (the resolve
-/// rebuilds each pixel's barycentrics from its depth, so the interpolants differ by rounding); and
-/// the listed triangles' areas, counted, fall in their bins: the bins sum to the triangles.
+/// `Clusters::resolve`), the small clusters by the software rasterizer, show what the forward
+/// draw does: the hardware's pixels within 1/255 (the resolve rebuilds each pixel's barycentrics
+/// from its depth, so the interpolants differ by rounding), and the software's too but at a few
+/// pixels in 10,000, where an edge's pixel centre or a skirt's near tie falls the other way.
+/// And the listed triangles' areas, counted, fall in their bins: the bins sum to the triangles.
 @test(tool, read: [("repo", "../../..")], budget: 300)
 fn the_visibility_buffer_shades_as_forward() {
     let b = opened()
-    let resolved = view(b, 0.5, 3)
+    stepped(b, [call("rasterize_small", Vec::from([Scalar::F32(0.0)]))], "hardware alone")
+    let hardware = view(b, 0.5, 3)
+    stepped(b, [call("rasterize_small", Vec::from([Scalar::F32(32.0)]))], "small in software")
+    let software = view(b, 0.5, 3)
     stepped(b, [call("shade_visibility", Vec::from([Scalar::I32(0)]))], "forward")
     let forward = view(b, 0.5, 3)
-    var most = 0
+    stepped(b, [call("shade_visibility", Vec::from([Scalar::I32(1)]))], "visibility")
+    let (most, _, _) = compared(hardware, forward)
+    let (_, over, mean) = compared(software, forward)
     var shown = 0
-    let sky = covered(forward)
-    for i in 0..W * H * 4 {
-        let d = if resolved[i] > forward[i] { resolved[i] - forward[i] } else {
-            forward[i] - resolved[i]
-        }
-        most = max(most, u32(d))
-    }
-    for c in sky {
+    for c in covered(forward) {
         if c {
             shown += 1
         }
     }
-    print(f"{shown} pixels covered; the resolve differs from forward by at most {most}/255")
+    print(
+        f"{shown} pixels covered; hardware against forward at most {most}/255; software {over} pixels over 1/255, mean {mean}/255",
+    )
     assert(shown > W * H / 10, f"the copies cover too little to test: {shown} pixels")
     assert(most <= 1, f"the resolve differs from forward by {most}/255")
+    assert(over * 2000 <= W * H, f"{over} pixels of the software's differ from forward")
+    assert(mean <= 0.1, f"the software's pixels differ from forward by a mean {mean}/255")
     var got: Vec<u32> = Vec::new()
     var i = 0
     while i < 30 && got.len() == 0 {
@@ -293,4 +319,21 @@ fn the_browser_draws_the_native_hosts_clusters() {
     let (mean, most) = difference(both.chrome, both.native)
     print(f"Chrome against the native host: mean {mean}/255, max {most}/255")
     assert(mean <= 0.5, f"mean difference {mean}")
+}
+
+/// Chrome rasterizes the software rasterizer's cases (engine/tests/soft-raster: the coplanar
+/// tie, the merge into a hardware visibility pass) as the native host does: every pixel the same.
+@test(tool, read: [("repo", "../../..")], browser: true, budget: 300)
+fn the_browser_rasterizes_small_triangles_as_the_native_host() {
+    let both = both_hosts(
+        "repo/engine/tests/soft-raster",
+        "soft-raster-browser",
+        width: 128,
+        height: 64,
+        frames: 10,
+        testing: false,
+    )
+    let (mean, most) = difference(both.chrome, both.native)
+    print(f"Chrome against the native host: mean {mean}/255, max {most}/255")
+    assert(most == 0, f"Chrome's ids differ from the native host's: max {most}/255")
 }

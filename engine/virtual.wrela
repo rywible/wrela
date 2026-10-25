@@ -25,6 +25,12 @@
 //   its vertices pulled from the list.
 // - A list (candidates, picks, listed quads) is a buffer of `u32`s: how many were pushed, then
 //   two a pushed item; one past its room is counted and kept nowhere (`push_pair`).
+// - Small clusters: a pick whose block looks smaller than `Cut::small` pixels across is flagged
+//   (`SMALL_PICK`), and its quads listed from the list's other end (`soft_at`, counted apart in
+//   `Level::soft`), for the software rasterizer (`soft_depths`, `soft_ids`): two passes of
+//   atomics into a word a pixel, the nearest depth and then the least id at it, merged into the visibility
+//   pass through its depth test (`soft_merge`). A triangle of a pixel or two costs the hardware
+//   a quad of pixels' shading and its setup; in software it costs its pixels.
 
 use creature::{Creature, Parts}
 use realize::{
@@ -35,9 +41,9 @@ use std::collections::replace
 use std::derive::{Box3, gradient}
 use std::gpu::{
     Append, AppendBuffer, Atomics, ClipPosition, Cull, DepthTexture, DispatchArgs, DrawArgs, Flat,
-    FragCoord, GlobalId, GpuBuffer, GpuSpan, LocalId, One, R32Uint, RenderPass, Shared, Slots,
-    Texture, VertexIndex, WorkgroupId, append_buffer, barrier, buffer, copy, discard, dispatch,
-    draw, read, write,
+    FragCoord, GlobalId, GpuBuffer, GpuSpan, LocalId, One, R32Uint, RenderPass, Shared,
+    SharedAtomics, Slots, Texture, VertexIndex, WithDepth, WorkgroupId, append_buffer, barrier,
+    buffer, copy, discard, dispatch, draw, read, write,
 }
 use std::io::Pending
 use view::Camera
@@ -52,6 +58,17 @@ pub const SKIRT: u32 = 0x80000000
 /// A cluster's range when it didn't fit (`emit_clusters`).
 const NO_ROOM: u32 = 0xffffffff
 
+/// A pick's slot's flag: its cluster looks small (`Cut::small`), its quads are the software
+/// rasterizer's.
+const SMALL_PICK: u32 = 0x80000000
+
+/// A visibility id's flag (below its level's bits, `id_of`): its triangle is of its level's
+/// small quads (`soft_at`).
+pub const SOFT_ID: u32 = 0x08000000
+
+/// The id of a pixel no software triangle has reached yet (`nearest_depths`).
+pub const NO_ID: u32 = 0xffffffff
+
 /// The least error a cluster has, in cells: its vertices are placed within a cell, and a feature
 /// finer than a cell can be missing from it.
 pub const FLOOR: f32 = 0.25
@@ -63,12 +80,14 @@ pub struct Placed: Copy + GpuData {
 }
 
 /// How a level's cut is made: the camera, how large a pixel is at a metre (`pixels / metre`),
-/// the error a cluster may show (pixels), the level, its grid, and the grid of the level below
-/// (`parent`: where its children are; the finest level's own).
+/// the error a cluster may show (pixels), how small a picked cluster's block looks across
+/// (pixels) for the software rasterizer to draw it (0: none is), the level, its grid, and the
+/// grid of the level below (`parent`: where its children are; the finest level's own).
 pub struct Cut: Copy + GpuData {
     pub cam: Camera,
     pub per_metre: f32,
     pub pixels: f32,
+    pub small: f32,
     pub level: u32,
     pub grid: Grid,
     pub parent: Grid,
@@ -97,6 +116,11 @@ pub struct Level {
     pub select_args: GpuBuffer<DispatchArgs>,
     pub gather_args: GpuBuffer<DispatchArgs>,
     pub draw_args: GpuBuffer<DrawArgs>,
+    /// How many of the frame's small clusters' quads it listed (they're kept at the list's end,
+    /// `soft_at`), then a bit a small quad: the software rasterizer's first pass found it
+    /// nearest nowhere (`BEATEN_AT`); and the software rasterizer's group counts over them.
+    pub soft: GpuBuffer<u32>,
+    pub soft_args: GpuBuffer<DispatchArgs>,
     /// How deep its skirts hang (m): a cell.
     pub skirt: f32,
     /// The quads and vertices cooking emitted, read back to fit their buffers to them
@@ -116,6 +140,12 @@ pub struct Clusters {
     /// Each level's block map (each block's live slot + 1, or 0), kept apart from its level so
     /// the walk reads the level below's while it changes its own.
     pub maps: Vec<GpuBuffer<u32>>,
+    /// The frame's `select`'s `small` (0: no cluster was small), and the software rasterizer's
+    /// nearest depths' bits and least ids, a word a pixel of a `soft_size` screen.
+    pub small: f32,
+    pub soft_depth: GpuBuffer<u32>,
+    pub soft_ids: GpuBuffer<u32>,
+    pub soft_size: vec2u,
 }
 
 /// The live blocks a grid of `blocks` blocks is expected to hold: a surface's (`realize`'s
@@ -260,6 +290,8 @@ pub fn cook<C, F: Parts<C>>(field: F, bounds: Box3, cell: f32, levels: u32) -> C
                 select_args: buffer(1),
                 gather_args: buffer(1),
                 draw_args: buffer(1),
+                soft: buffer(3),
+                soft_args: buffer(1),
                 skirt: grid.cell,
                 emitted: Vec::new(),
                 emitted_got: Vec::new(),
@@ -292,6 +324,10 @@ pub fn cook<C, F: Parts<C>>(field: F, bounds: Box3, cell: f32, levels: u32) -> C
         here: empty_list(1),
         below: empty_list(1),
         maps,
+        small: 0.0,
+        soft_depth: buffer(1),
+        soft_ids: buffer(1),
+        soft_size: vec2u(0),
     }
 }
 
@@ -751,7 +787,9 @@ pub fn select(
     }
     let near = max(nearest(own, cut.cam.eye), cut.cam.near)
     if cut.level == 0 || pairs[slot].x * p.scale * cut.per_metre / near <= cut.pixels {
-        push_pair(mut picks, instance, slot)
+        // How wide its block looks, at most, from its nearest point.
+        let across = length(own.hi - own.lo) * cut.per_metre / near
+        push_pair(mut picks, instance, if across < cut.small { slot | SMALL_PICK } else { slot })
         return
     }
     // Too coarse here: its live children are tried a level down.
@@ -764,32 +802,68 @@ pub fn select(
 }
 
 /// Each pick's quads into the level's list (a range of it a pick, taken with one atomic): the
-/// pick's index and the quad's.
+/// pick's index and the quad's; a small cluster's (`SMALL_PICK`) from the list's end, counted in
+/// `soft`.
 @compute(64)
-pub fn gather(picks: [u32], spans: [u32], list: mut Atomics<u32>, id: GlobalId) {
+pub fn gather(
+    picks: [u32],
+    spans: [u32],
+    list: mut Atomics<u32>,
+    soft: mut Atomics<u32>,
+    id: GlobalId,
+) {
     if id.x >= listed(picks) {
         return
     }
-    let slot = picks[2 + 2 * id.x]
+    let pick = picks[2 + 2 * id.x]
+    let slot = pick & (SMALL_PICK - 1)
+    let small = (pick & SMALL_PICK) != 0
     let first = spans[1 + 3 * slot]
     let n = spans[2 + 3 * slot]
     let room = (list.len() - 1) / 2
-    let at = list.add(i: 0, value: n)
+    let at = if small { soft.add(i: 0, value: n) } else { list.add(i: 0, value: n) }
     for k in 0..n {
         if at + k >= room {
             return
         }
-        list.store(i: 1 + 2 * (at + k), value: id.x)
-        list.store(i: 2 + 2 * (at + k), value: first + k)
+        let i = if small { soft_at(room, at + k) } else { at + k }
+        list.store(i: 1 + 2 * i, value: id.x)
+        list.store(i: 2 + 2 * i, value: first + k)
     }
 }
 
-/// The level's draw: six vertices a listed quad.
+/// Where small quad `j` of a list with room for `room` is: from its end, the first last.
+fn soft_at(room: u32, j: u32) -> u32 {
+    room - 1 - j
+}
+
+/// How many of a level's listed quads the hardware draws (x) and the software rasterizer does
+/// (y): as many of each as were listed, and as fit beside the other's. They grow from the list's
+/// two ends; where they'd meet (the room was too small), each keeps only those the other can't
+/// have written over.
+fn quads_of(list: [u32], soft: [u32]) -> vec2u {
+    split((list.len() - 1) / 2, list[0], soft[0])
+}
+
+/// `quads_of` for a list with room for `room`, `listed` quads pushed from its start and `small`
+/// from its end.
+fn split(room: u32, listed: u32, small: u32) -> vec2u {
+    let a = min(listed, room)
+    let b = min(small, room)
+    vec2u(min(a, room - b), min(b, room - a))
+}
+
+/// The level's draw: six vertices a quad the hardware draws.
 @compute(1)
-pub fn draw_counts(list: [u32], args: mut One<DrawArgs>, id: GlobalId) {
+pub fn draw_counts(list: [u32], soft: [u32], args: mut One<DrawArgs>, id: GlobalId) {
     args.set(
         id,
-        DrawArgs { vertices: 6 * listed(list), instances: 1, first_vertex: 0, first_instance: 0 },
+        DrawArgs {
+            vertices: 6 * quads_of(list, soft).x,
+            instances: 1,
+            first_vertex: 0,
+            first_instance: 0,
+        },
     )
 }
 
@@ -847,8 +921,9 @@ pub fn cluster_vertex(
 // and Dachsbacher, Deferred Attribute Interpolation, HPG 2015). So a pixel is shaded once,
 // whatever its overdraw, and a small triangle costs its raster alone.
 
-/// The level of a visibility id, and its listed triangle (`vis_id`); a pixel no cluster drew
-/// holds 0.
+/// The visibility id of level `level`'s listed triangle `triangle` (`vis_id`; a small quad's
+/// with `SOFT_ID`, counted from the list's end): the level + 1 in its top four bits. A pixel no
+/// cluster drew holds 0.
 pub fn id_of(level: u32, triangle: u32) -> u32 {
     ((level + 1) << 28) | triangle
 }
@@ -934,8 +1009,8 @@ pub fn resolve_level(
     if (id >> 28) != d.level + 1 {
         discard()
     }
-    let tri = id & 268435455
-    let q = tri / 2
+    let tri = id & (SOFT_ID - 1)
+    let q = if (id & SOFT_ID) != 0 { soft_at((list.len() - 1) / 2, tri / 2) } else { tri / 2 }
     let first = 3 * (tri % 2)
     let (a, na) = corner_of(d, list, picks, words, verts, places, q, first)
     let (b, nb) = corner_of(d, list, picks, words, verts, places, q, first + 1)
@@ -969,21 +1044,34 @@ pub fn barycentrics(p: vec3, a: vec3, b: vec3, c: vec3) -> vec3 {
 /// has).
 const WIDE: u32 = 65535 * 64
 
-/// A pass over a list's items too many for one row of groups (`areas`): rows of `WIDE`.
-@compute(1)
-fn wide_counts(list: [u32], args: mut One<DispatchArgs>, id: GlobalId) {
-    let n = min(list[0], (list.len() - 1) / 2)
+/// Groups of 64 for `n` invocations, in rows of `WIDE` (a dimension's most groups).
+fn wide(n: u32) -> DispatchArgs {
     let groups = (n + 63) / 64
-    args.set(id, DispatchArgs { x: min(groups, 65535), y: (groups + 65534) / 65535, z: 1 })
+    DispatchArgs { x: min(groups, 65535), y: (groups + 65534) / 65535, z: 1 }
+}
+
+/// A pass over a level's listed quads, both rasterizers' (`areas`), in rows of `WIDE`.
+@compute(1)
+fn wide_counts(list: [u32], soft: [u32], args: mut One<DispatchArgs>, id: GlobalId) {
+    let q = quads_of(list, soft)
+    args.set(id, wide(q.x + q.y))
+}
+
+/// The software rasterizer's pass over a level's small quads, in rows of `WIDE`.
+@compute(1)
+fn soft_counts(list: [u32], soft: [u32], args: mut One<DispatchArgs>, id: GlobalId) {
+    args.set(id, wide(quads_of(list, soft).y))
 }
 
 /// The listed triangles' projected areas, counted (`bins`: under 1, 4, 16 and 64 px², and the
 /// rest; then the triangles): what decides a software rasterizer (docs/plan-world-class.md
-/// §B7b). Listed quad `id` of the level's list, its two triangles.
+/// §B7b). Listed quad `id` of the level's list (the hardware's, then the small ones), its two
+/// triangles.
 @compute(64)
 pub fn areas(
     d: VisDraw,
     list: [u32],
+    soft: [u32],
     picks: [u32],
     words: [u32],
     verts: [SkinVertex],
@@ -991,10 +1079,12 @@ pub fn areas(
     bins: mut Atomics<u32>,
     id: GlobalId,
 ) {
-    let q = id.y * WIDE + id.x
-    if q >= min(list[0], (list.len() - 1) / 2) {
+    let i = id.y * WIDE + id.x
+    let n = quads_of(list, soft)
+    if i >= n.x + n.y {
         return
     }
+    let q = if i < n.x { i } else { soft_at((list.len() - 1) / 2, i - n.x) }
     for t in 0..2 {
         var px = [vec2(0.0); 3]
         var behind = false
@@ -1020,6 +1110,275 @@ pub fn areas(
         let _ = bins.add(i: bin, value: 1)
         let _ = bins.add(i: 5, value: 1)
     }
+}
+
+// ---- the software rasterizer ------------------------------------------------------------------
+//
+// Small clusters' triangles, an invocation a quad, into two words a pixel (atomics live in
+// buffers: a texel can be written only by its own invocation). Pass 0 keeps each pixel's nearest
+// depth's bits (the largest: depth is reversed-Z and positive, and a positive float's bits order
+// as integers); pass 1, where a triangle's depth there is that nearest one, the least id. So
+// coplanar triangles at one depth resolve to the smallest id, every run, on every host. A quad
+// pass 0 found nearest at none of its pixels (most sub-pixel triangles cover no pixel's centre)
+// is marked beaten, and pass 1 passes it by before reading its corners. The merge draws each pixel's
+// id at its depth into the visibility pass, through its depth test. (One pass of 64-bit
+// atomics, depth over id, would do both; the toolchain has none yet.)
+
+/// Where a level's `soft` buffer's bits begin: small quad `j`'s is bit `j % 32` of word
+/// `BEATEN_AT + j / 32`.
+const BEATEN_AT: u32 = 1
+
+/// What the software rasterizer reads beside its buffers: the level's (`VisDraw`), and the
+/// screen's size in pixels.
+pub struct SoftDraw: Copy + GpuData {
+    pub vis: VisDraw,
+    pub size: vec2u,
+}
+
+/// Twice the signed area of the triangle `a`, `b`, `p`: reckoned from the edge's lesser end
+/// whichever way round it's given, so two triangles sharing an edge find a point's side of it
+/// with exactly opposite signs, and a pixel's centre near it is covered by one of them (on it,
+/// by both): rounding opens no crack between them.
+fn edge(a: vec2, b: vec2, p: vec2) -> f32 {
+    if a.x < b.x || (a.x == b.x && a.y < b.y) { side(a, b, p) } else { -side(b, a, p) }
+}
+
+fn side(a: vec2, b: vec2, p: vec2) -> f32 {
+    (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)
+}
+
+/// A triangle set up to rasterize on a screen: its corners in pixels (rows from the top), their
+/// depths, its area (twice, signed), and the pixels whose centres its box holds (`lo` to `hi`,
+/// on the screen; none if `lo` is past `hi`).
+pub struct Setup: Copy {
+    pub px: [vec2; 3],
+    pub z: [f32; 3],
+    pub area: f32,
+    pub lo: vec2u,
+    pub hi: vec2u,
+}
+
+/// The triangle with corners `clip` (clip space) set up on a `size` screen, either face (a
+/// cluster's back faces show where the cut leaves a sliver open, as the hardware draws them):
+/// none if it's edge on, if a corner is behind the eye (a small cluster has none), or if it
+/// holds no pixel's centre.
+pub fn set_up(clip: [vec4; 3], size: vec2u) -> Option<Setup> {
+    var px = [vec2(0.0); 3]
+    var z = [0.0; 3]
+    for k in 0..3 {
+        if clip[k].w <= 1.0e-6 {
+            return None
+        }
+        let ndc = clip[k].xyz / clip[k].w
+        px[k] = vec2((ndc.x * 0.5 + 0.5) * f32(size.x), (0.5 - ndc.y * 0.5) * f32(size.y))
+        z[k] = ndc.z
+    }
+    let area = edge(px[0], px[1], px[2])
+    if area == 0.0 {
+        return None
+    }
+    let lo = max(ceil(min(min(px[0], px[1]), px[2]) - vec2(0.5)), vec2(0.0))
+    let hi = min(floor(max(max(px[0], px[1]), px[2]) - vec2(0.5)), vec2(size) - vec2(1.0))
+    if lo.x > hi.x || lo.y > hi.y {
+        return None
+    }
+    Some(Setup { px, z, area, lo: vec2u(lo), hi: vec2u(hi) })
+}
+
+/// The depth of triangle `t` at pixel `x`, `y`'s centre, if it covers it (its edges included:
+/// both triangles at a shared edge cover it, so none leaves a crack) and the depth is in (0, 1].
+/// Interpolated in screen space as the hardware's is, from the first corner's, so a triangle of
+/// one depth keeps it exactly (and coplanar triangles facing the eye tie exactly).
+pub fn depth_at(t: Setup, x: u32, y: u32) -> Option<f32> {
+    let p = vec2(f32(x) + 0.5, f32(y) + 0.5)
+    let w = vec3(edge(t.px[1], t.px[2], p), edge(t.px[2], t.px[0], p), edge(t.px[0], t.px[1], p)) /
+        t.area
+    if w.x < 0.0 || w.y < 0.0 || w.z < 0.0 {
+        return None
+    }
+    let depth = t.z[0] + w.y * (t.z[1] - t.z[0]) + w.z * (t.z[2] - t.z[0])
+    if depth <= 0.0 || depth > 1.0 {
+        return None
+    }
+    Some(depth)
+}
+
+/// Pass 0 of triangle `t` on a `size` screen: each pixel it covers keeps the nearest depth's
+/// bits (`depth_bits`), and a pixel it's the first at has its id (`ids`) emptied for pass 1.
+/// Whether at some pixel it was at least as near as every triangle before it: if not, it's
+/// nearest nowhere, and pass 1 can pass it by.
+pub fn nearest_depths(
+    t: Setup,
+    size: vec2u,
+    depth_bits: mut Atomics<u32>,
+    ids: mut Atomics<u32>,
+) -> bool {
+    var nearest = false
+    for y in t.lo.y..t.hi.y + 1 {
+        for x in t.lo.x..t.hi.x + 1 {
+            if let Some(depth) = depth_at(t, x, y) {
+                let i = y * size.x + x
+                let bits = bitcast_u32(depth)
+                let old = depth_bits.max(i: i, value: bits)
+                if old <= bits {
+                    nearest = true
+                }
+                if old == 0 {
+                    ids.store(i: i, value: NO_ID)
+                }
+            }
+        }
+    }
+    nearest
+}
+
+/// Pass 1 of triangle `t` (id `id`) on a `size` screen: at each pixel it covers where its depth is
+/// the nearest (`depth_bits`, pass 0's), the least id (`ids`).
+pub fn least_ids(t: Setup, id: u32, size: vec2u, depth_bits: [u32], ids: mut Atomics<u32>) {
+    for y in t.lo.y..t.hi.y + 1 {
+        for x in t.lo.x..t.hi.x + 1 {
+            if let Some(depth) = depth_at(t, x, y) {
+                let i = y * size.x + x
+                if depth_bits[i] == bitcast_u32(depth) {
+                    let _ = ids.min(i: i, value: id)
+                }
+            }
+        }
+    }
+}
+
+/// Small quad `q` of a level's list: its six corners in clip space, its pick and placement read
+/// once.
+fn soft_corners(
+    d: VisDraw,
+    list: [u32],
+    q: u32,
+    picks: [u32],
+    words: [u32],
+    verts: [SkinVertex],
+    places: [Placed],
+) -> [vec4; 6] {
+    let p = places[picks[1 + 2 * list[1 + 2 * q]]]
+    let first = 6 * list[2 + 2 * q]
+    var clip = [vec4(0.0); 6]
+    for c in 0..6 {
+        let word = words[first + c]
+        let i = word & (SKIRT - 1)
+        let rest = if (word & SKIRT) != 0 { verts[i].pos - verts[i].normal * d.skirt } else {
+            verts[i].pos
+        }
+        clip[c] = d.cam.clip(p.at + rest * p.scale)
+    }
+    clip
+}
+
+/// Pass 0 over small quad `id` of a level's list (counted from its end), its two triangles
+/// (`nearest_depths`): its bit of `soft` (`BEATEN_AT`; `flags`: its workgroup's, stored by one
+/// invocation a word) set if neither can be nearest anywhere.
+@compute(64)
+pub fn soft_depths(
+    d: SoftDraw,
+    list: [u32],
+    soft: mut Atomics<u32>,
+    picks: [u32],
+    words: [u32],
+    verts: [SkinVertex],
+    places: [Placed],
+    depth_bits: mut Atomics<u32>,
+    ids: mut Atomics<u32>,
+    flags: mut SharedAtomics<2>,
+    id: GlobalId,
+    lid: LocalId,
+) {
+    let j = id.y * WIDE + id.x
+    var nearest = true
+    if j < split((list.len() - 1) / 2, list[0], soft.load(0)).y {
+        let clip = soft_corners(
+            d.vis,
+            list,
+            soft_at((list.len() - 1) / 2, j),
+            picks,
+            words,
+            verts,
+            places,
+        )
+        nearest = false
+        for t in 0..2 {
+            let tri = [clip[3 * t], clip[3 * t + 1], clip[3 * t + 2]]
+            if let Some(s) = set_up(tri, d.size) {
+                let near = nearest_depths(s, d.size, mut depth_bits, mut ids)
+                nearest = nearest || near
+            }
+        }
+    }
+    if !nearest {
+        let _ = flags.or(i: lid.x / 32, value: 1 << (lid.x % 32))
+    }
+    flags.barrier()
+    if lid.x % 32 == 0 && BEATEN_AT + j / 32 < soft.len() {
+        soft.store(i: BEATEN_AT + j / 32, value: flags.load(lid.x / 32))
+    }
+}
+
+/// Pass 1 over small quad `id` of a level's list, unless pass 0 found it beaten: its two
+/// triangles' ids where they're nearest (`least_ids`).
+@compute(64)
+pub fn soft_ids(
+    d: SoftDraw,
+    list: [u32],
+    soft: [u32],
+    picks: [u32],
+    words: [u32],
+    verts: [SkinVertex],
+    places: [Placed],
+    depth_bits: [u32],
+    ids: mut Atomics<u32>,
+    id: GlobalId,
+) {
+    let j = id.y * WIDE + id.x
+    if j >= quads_of(list, soft).y || ((soft[BEATEN_AT + j / 32] >> (j % 32)) & 1) != 0 {
+        return
+    }
+    let clip = soft_corners(
+        d.vis,
+        list,
+        soft_at((list.len() - 1) / 2, j),
+        picks,
+        words,
+        verts,
+        places,
+    )
+    for t in 0..2 {
+        let tri = [clip[3 * t], clip[3 * t + 1], clip[3 * t + 2]]
+        if let Some(s) = set_up(tri, d.size) {
+            least_ids(s, id_of(d.vis.level, SOFT_ID | (2 * j + t)), d.size, depth_bits, mut ids)
+        }
+    }
+}
+
+/// Pixel `id` of a `size` screen cleared for the software rasterizer: the far plane's depth (0,
+/// reversed-Z). (Its id is emptied by the first triangle to reach it, `nearest_depths`.)
+@compute(8, 8)
+pub fn soft_clear(size: vec2u, depth_bits: mut Atomics<u32>, id: GlobalId) {
+    if id.x >= size.x || id.y >= size.y {
+        return
+    }
+    depth_bits.store(i: id.y * size.x + id.x, value: 0)
+}
+
+/// The software rasterizer's pixel `pixel` (of a `size` screen) into a visibility pass: its id at
+/// its depth, through the pass's depth test, so a nearer hardware fragment wins and one at an
+/// equal depth keeps the hardware's (the tie between the two rasterizers). A pixel it left (at
+/// the far plane's depth) keeps what the hardware drew.
+@fragment
+pub fn soft_merge(pixel: FragCoord, size: vec2u, depth_bits: [u32], ids: [u32]) -> WithDepth<u32> {
+    let px = vec2u(pixel.position.xy)
+    let i = px.y * size.x + px.x
+    let bits = depth_bits[i]
+    if bits == 0 {
+        discard()
+    }
+    WithDepth { color: ids[i], depth: bitcast_f32(bits) }
 }
 
 /// How clusters are lit: their colour, the sun's direction, and how much of the sky's light
@@ -1059,6 +1418,11 @@ impl Level {
         let listed = min(u64(self.words.len() / 6) * n, u64(MOST_LISTED))
         fit_list(mut self.picks, u32(picks))
         fit_list(mut self.list, u32(listed))
+        // The count, then two words of bits a group of 64 small quads.
+        let words = BEATEN_AT + (u32(listed) + 63) / 64 * 2
+        if self.soft.len() != words {
+            self.soft = buffer(words)
+        }
     }
 
     /// The quads and vertices cooking emitted, once read back: their buffers fitted to them
@@ -1115,12 +1479,14 @@ fn fit_list(list: mut GpuBuffer<u32>, room: u32) {
 
 impl Clusters {
     /// Reads back each level's quads wanted (the clusters' quads and skirts) and the quads its
-    /// last frame listed: two a level, in order, to set beside `rooms`.
+    /// last frame listed for the hardware and for the software rasterizer (which share the
+    /// list's room): three a level, in order, to set beside `rooms`.
     pub fn counts(self) -> Vec<Pending<u32>> {
         var out: Vec<Pending<u32>> = Vec::new()
         for l in self.levels {
             out.push(read(l.spans.span(start: 0, count: 1)))
             out.push(read(l.list.span(start: 0, count: 1)))
+            out.push(read(l.soft.span(start: 0, count: 1)))
         }
         out
     }
@@ -1128,12 +1494,14 @@ impl Clusters {
     /// The bytes its buffers take: every level's vertices, quads, spans, errors, roots, lists and
     /// block map, and the frame's candidates.
     pub fn bytes(self) -> u64 {
-        var n = u64(4 * (self.here.len() + self.below.len()))
+        var n = u64(
+            4 * (self.here.len() + self.below.len() + self.soft_depth.len() + self.soft_ids.len()),
+        )
         for l in self.levels {
             n += l.mesh.bytes()
             n += u64(4 * (l.words.len() + l.spans.len() + l.errors.len()))
             n += u64(8 * l.pairs.len() + 4 * l.roots.capacity())
-            n += u64(4 * (l.picks.len() + l.list.len()))
+            n += u64(4 * (l.picks.len() + l.list.len() + l.soft.len()))
             n += u64(
                 8 * l.scratch.live.capacity() +
                     4 * (l.scratch.cells.len() + l.scratch.chunks.len()),
@@ -1157,8 +1525,11 @@ impl Clusters {
 
     /// The frame's cut and its draws' lists: the instances of `places` in view, then down the
     /// levels from the coarsest, each level's candidates tested (see the file's comment), for
-    /// `cam`, at most `pixels` of error.
-    pub fn select(mut self, cam: Camera, places: GpuBuffer<Placed>, pixels: f32) {
+    /// `cam`, at most `pixels` of error; a picked cluster that looks under `small` pixels across
+    /// listed for the software rasterizer (`raster_small`; 0: none is, as the forward `draw`
+    /// needs).
+    pub fn select(mut self, cam: Camera, places: GpuBuffer<Placed>, pixels: f32, small: f32) {
+        self.small = small
         if self.visible.capacity() < places.len() {
             self.visible = append_buffer(places.len())
         }
@@ -1190,6 +1561,7 @@ impl Clusters {
                 l => {
                     write(mut l.picks, 0, [0])
                     write(mut l.list, 0, [0])
+                    write(mut l.soft, 0, [0])
                     dispatch(
                         seed_counts.bind(
                             roots: l.roots.count(),
@@ -1215,6 +1587,7 @@ impl Clusters {
                         cam,
                         per_metre,
                         pixels,
+                        small,
                         level: k,
                         grid: l.grid,
                         parent: child_grid,
@@ -1241,11 +1614,24 @@ impl Clusters {
                             picks: l.picks.items(),
                             spans: l.spans.items(),
                             list: mut l.list,
+                            soft: mut l.soft,
                         ),
                         groups: l.gather_args.items(),
                     )
                     dispatch(
-                        draw_counts.bind(list: l.list.items(), args: mut l.draw_args),
+                        draw_counts.bind(
+                            list: l.list.items(),
+                            soft: l.soft.items(),
+                            args: mut l.draw_args,
+                        ),
+                        groups: 1,
+                    )
+                    dispatch(
+                        soft_counts.bind(
+                            list: l.list.items(),
+                            soft: l.soft.items(),
+                            args: mut l.soft_args,
+                        ),
                         groups: 1,
                     )
                 },
@@ -1254,8 +1640,64 @@ impl Clusters {
         }
     }
 
+    /// The frame's small clusters (`select`'s `small`) rasterized in software into the clusters'
+    /// own depths and ids, a word a pixel of `cam`'s screen, for `draw_ids` to merge: cleared,
+    /// then every level's small quads' nearest depths (pass 0, `soft_depths`), then their ids
+    /// (pass 1, `soft_ids`).
+    pub fn raster_small(mut self, cam: Camera, places: GpuBuffer<Placed>) {
+        if self.small <= 0.0 {
+            return
+        }
+        let size = vec2u(cam.screen)
+        if self.soft_size != size {
+            self.soft_depth = buffer(size.x * size.y)
+            self.soft_ids = buffer(size.x * size.y)
+            self.soft_size = size
+        }
+        dispatch(
+            soft_clear.bind(size, depth_bits: mut self.soft_depth),
+            groups: ((size.x + 7) / 8, (size.y + 7) / 8, 1),
+        )
+        for k in 0..self.levels.len() {
+            match mut self.levels[k] {
+                l => dispatch(
+                    soft_depths.bind(
+                        SoftDraw { vis: VisDraw { cam, skirt: l.skirt, level: k }, size },
+                        list: l.list.items(),
+                        soft: mut l.soft,
+                        picks: l.picks.items(),
+                        words: l.words.items(),
+                        verts: l.mesh.verts.items(),
+                        places: places.items(),
+                        depth_bits: mut self.soft_depth,
+                        ids: mut self.soft_ids,
+                    ),
+                    groups: l.soft_args.items(),
+                ),
+            }
+        }
+        for k in 0..self.levels.len() {
+            borrow l = self.levels[k]
+            dispatch(
+                soft_ids.bind(
+                    SoftDraw { vis: VisDraw { cam, skirt: l.skirt, level: k }, size },
+                    list: l.list.items(),
+                    soft: l.soft.items(),
+                    picks: l.picks.items(),
+                    words: l.words.items(),
+                    verts: l.mesh.verts.items(),
+                    places: places.items(),
+                    depth_bits: self.soft_depth.items(),
+                    ids: mut self.soft_ids,
+                ),
+                groups: l.soft_args.items(),
+            )
+        }
+    }
+
     /// The frame's clusters into a visibility pass (`pass`: an `R32Uint` target and depth): each
-    /// level's triangles, their ids (`vis_id`), both faces.
+    /// level's triangles the hardware draws, their ids (`vis_id`), both faces; then the software
+    /// rasterizer's (`raster_small`, run before the pass), through the depth test (`soft_merge`).
     pub fn draw_ids<P: RenderPass>(self, pass: P, cam: Camera, places: GpuBuffer<Placed>) {
         for k in 0..self.levels.len() {
             borrow l = self.levels[k]
@@ -1272,6 +1714,19 @@ impl Clusters {
                 vis_id,
                 indirect: l.draw_args.items(),
                 cull: Cull::None,
+                depth: view::NEAREST,
+            )
+        }
+        if self.small > 0.0 {
+            draw(
+                pass,
+                full_screen,
+                soft_merge.bind(
+                    self.soft_size,
+                    depth_bits: self.soft_depth.items(),
+                    ids: self.soft_ids.items(),
+                ),
+                vertices: 3,
                 depth: view::NEAREST,
             )
         }
@@ -1317,6 +1772,7 @@ impl Clusters {
             dispatch(
                 wide_counts.bind(
                     list: self.levels[k].list.items(),
+                    soft: self.levels[k].soft.items(),
                     args: mut self.levels[k].select_args,
                 ),
                 groups: 1,
@@ -1326,6 +1782,7 @@ impl Clusters {
                 areas.bind(
                     VisDraw { cam, skirt: l.skirt, level: k },
                     list: l.list.items(),
+                    soft: l.soft.items(),
                     picks: l.picks.items(),
                     words: l.words.items(),
                     verts: l.mesh.verts.items(),
@@ -1338,7 +1795,8 @@ impl Clusters {
     }
 
     /// The frame's clusters drawn into `pass`, lit as `look` says, a level a draw, both faces (a
-    /// skirt is seen from either side).
+    /// skirt is seen from either side): the hardware's alone, so for a cut made with no small
+    /// clusters (`select`'s `small` 0).
     pub fn draw<P: RenderPass>(
         self,
         pass: P,
