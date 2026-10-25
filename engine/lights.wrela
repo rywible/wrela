@@ -1,0 +1,280 @@
+// Local lights: points and spots a scene supplies (`Scene::lights`, at most `MOST_LIGHTS`),
+// binned each frame into a grid of froxels over the view (16 × 9 tiles of the screen, 24 slices
+// of the distance, the slices growing with it), so a pixel reads only the lights that reach its
+// froxel (clustered shading: Olsson, Billeter and Assarsson, Clustered Deferred and Forward
+// Shading, HPG 2012). A workgroup bins a froxel: its invocations test the lights against the
+// froxel's box, and keep those that reach it in its list (at most `PER_FROXEL`) through a
+// counter in workgroup memory.
+//
+// The lights and the lists share one buffer of words (a shading pass binds one more buffer, not
+// two): `LIGHT_WORDS` words a light, then a count a froxel, then `PER_FROXEL` indices a froxel.
+// A light reaches what's within its radius, fading to nothing there (`reach`); a spot within its
+// cone, softened between its inner and outer angles. Shadowed lights are out of scope.
+
+use std::gpu::{
+    Atomics, GlobalId, GpuBuffer, LocalId, SharedAtomics, WorkgroupId, buffer, dispatch, label,
+    write,
+}
+use view::Camera
+
+/// The most lights a frame bins, and the most a froxel keeps.
+pub const MOST_LIGHTS: u32 = 256
+pub const PER_FROXEL: u32 = 32
+
+/// The froxel grid: tiles across and down the screen, and slices of the distance.
+pub const TILES_X: u32 = 16
+pub const TILES_Y: u32 = 9
+pub const SLICES: u32 = 24
+pub const FROXELS: u32 = TILES_X * TILES_Y * SLICES
+
+/// The distances the slices span (m): the first from the eye to `NEAREST_SLICE`, the last to
+/// `FARTHEST_SLICE` (and past it).
+pub const NEAREST_SLICE: f32 = 0.5
+pub const FARTHEST_SLICE: f32 = 256.0
+
+/// A light: where it is, how far it reaches (m), its colour (what a white surface facing it a
+/// metre off reflects, as `light::Light`'s `sun_colour` is the sun's), and for a spot, where it
+/// points and the cosines of its cone's outer and inner half-angles (a point's outer is below -1).
+pub struct LocalLight: Copy + GpuData {
+    pub at: vec3,
+    pub radius: f32,
+    pub colour: vec3,
+    pub cos_outer: f32,
+    pub dir: vec3,
+    pub cos_inner: f32,
+}
+
+/// The words a light takes in the buffer.
+pub const LIGHT_WORDS: u32 = 12
+
+/// A point light at `at`, reaching `radius` metres, of `colour`.
+pub fn point(at: vec3, radius: f32, colour: vec3) -> LocalLight {
+    LocalLight { at, radius, colour, cos_outer: -2.0, dir: vec3(0.0, -1.0, 0.0), cos_inner: -1.0 }
+}
+
+/// A spot light at `at` pointing along `dir`, reaching `radius` metres, of `colour`, its cone's
+/// half-angles `outer` and `inner` (radians).
+pub fn spot(at: vec3, dir: vec3, radius: f32, colour: vec3, outer: f32, inner: f32) -> LocalLight {
+    LocalLight {
+        at,
+        radius,
+        colour,
+        cos_outer: cos(outer),
+        dir: normalize(dir),
+        cos_inner: cos(min(inner, outer)),
+    }
+}
+
+/// What shading reads beside the buffer: how many lights there are (0: none, and no froxel is
+/// read).
+pub struct Froxels: Copy + GpuData {
+    pub count: u32,
+}
+
+/// No lights.
+pub const DARK = Froxels { count: 0 }
+
+/// Where a froxel's count is in the buffer, and its first index.
+fn count_at(f: u32) -> u32 {
+    MOST_LIGHTS * LIGHT_WORDS + f
+}
+
+fn list_at(f: u32) -> u32 {
+    MOST_LIGHTS * LIGHT_WORDS + FROXELS + f * PER_FROXEL
+}
+
+/// The words a frame's lights and lists take.
+pub const WORDS: u32 = MOST_LIGHTS * LIGHT_WORDS + FROXELS * (1 + PER_FROXEL)
+
+/// Light `i` from the buffer.
+pub fn light_of(words: [u32], i: u32) -> LocalLight {
+    let w = i * LIGHT_WORDS
+    let f = |k: u32| bitcast_f32(words[w + k])
+    LocalLight {
+        at: vec3(f(0), f(1), f(2)),
+        radius: f(3),
+        colour: vec3(f(4), f(5), f(6)),
+        cos_outer: f(7),
+        dir: vec3(f(8), f(9), f(10)),
+        cos_inner: f(11),
+    }
+}
+
+/// `l` as its words.
+fn words_of(l: LocalLight) -> [u32; 12] {
+    [
+        bitcast_u32(l.at.x),
+        bitcast_u32(l.at.y),
+        bitcast_u32(l.at.z),
+        bitcast_u32(l.radius),
+        bitcast_u32(l.colour.x),
+        bitcast_u32(l.colour.y),
+        bitcast_u32(l.colour.z),
+        bitcast_u32(l.cos_outer),
+        bitcast_u32(l.dir.x),
+        bitcast_u32(l.dir.y),
+        bitcast_u32(l.dir.z),
+        bitcast_u32(l.cos_inner),
+    ]
+}
+
+/// The distance slice `k` begins at (m), of `SLICES` growing evenly in the logarithm.
+pub fn slice_from(k: u32) -> f32 {
+    if k == 0 {
+        return 0.0
+    }
+    NEAREST_SLICE * pow(FARTHEST_SLICE / NEAREST_SLICE, f32(k - 1) / f32(SLICES - 1))
+}
+
+/// The slice holding a point `d` metres along the view.
+pub fn slice_of(d: f32) -> u32 {
+    if d < NEAREST_SLICE {
+        return 0
+    }
+    let k = 1.0 +
+        floor(log(d / NEAREST_SLICE) / log(FARTHEST_SLICE / NEAREST_SLICE) * f32(SLICES - 1))
+    min(u32(k), SLICES - 1)
+}
+
+/// `p`'s place in `cam`'s view: across (right), up and along the view (m).
+fn in_view(cam: Camera, p: vec3) -> vec3 {
+    let r = p - cam.eye
+    vec3(dot(r, cam.right), dot(r, cam.up), dot(r, cam.forward))
+}
+
+/// The froxel holding `p` in `cam`'s view: its index, or none behind the eye or off the screen.
+pub fn froxel_of(cam: Camera, p: vec3) -> Option<u32> {
+    let v = in_view(cam, p)
+    if v.z <= 1.0e-4 {
+        return None
+    }
+    let x = v.x / (v.z * cam.tan_half * cam.aspect)
+    let y = v.y / (v.z * cam.tan_half)
+    if abs(x) > 1.0 || abs(y) > 1.0 {
+        return None
+    }
+    let tx = min(u32((x * 0.5 + 0.5) * f32(TILES_X)), TILES_X - 1)
+    let ty = min(u32((0.5 - y * 0.5) * f32(TILES_Y)), TILES_Y - 1)
+    Some((slice_of(v.z) * TILES_Y + ty) * TILES_X + tx)
+}
+
+/// Whether light `l` reaches froxel `f` of `cam`'s view: its sphere meets the froxel's box (in
+/// the view's space, round the froxel's frustum between its slice's two distances).
+pub fn reaches(cam: Camera, l: LocalLight, f: u32) -> bool {
+    let tx = f % TILES_X
+    let ty = (f / TILES_X) % TILES_Y
+    let k = f / (TILES_X * TILES_Y)
+    let z0 = slice_from(k)
+    let z1 = if k + 1 < SLICES { slice_from(k + 1) } else { 1.0e9 }
+    let sx = cam.tan_half * cam.aspect
+    let sy = cam.tan_half
+    let x0 = (f32(tx) / f32(TILES_X) * 2.0 - 1.0) * sx
+    let x1 = (f32(tx + 1) / f32(TILES_X) * 2.0 - 1.0) * sx
+    let y1 = (1.0 - f32(ty) / f32(TILES_Y) * 2.0) * sy
+    let y0 = (1.0 - f32(ty + 1) / f32(TILES_Y) * 2.0) * sy
+    let c = in_view(cam, l.at)
+    // The frustum's box: its sides at the slice's near and far distances.
+    let zf = min(z1, max(c.z, z0) + l.radius)
+    let lo = vec3(min(x0 * z0, x0 * zf), min(y0 * z0, y0 * zf), z0)
+    let hi = vec3(max(x1 * z0, x1 * zf), max(y1 * z0, y1 * zf), z1)
+    let q = clamp(c, lo, hi)
+    dot(q - c, q - c) <= l.radius * l.radius
+}
+
+/// Froxel `g` (a workgroup's) binned: its invocations test the `count` lights against it, each
+/// that reaches it put in its list by a counter in workgroup memory; then its count stored.
+@compute(64)
+fn bin(
+    cam: Camera,
+    count: u32,
+    words: mut Atomics<u32>,
+    kept: mut SharedAtomics<1>,
+    g: WorkgroupId,
+    lid: LocalId,
+) {
+    let f = g.x
+    var i = lid.x
+    while i < count {
+        let w = i * LIGHT_WORDS
+        let at = |k: u32| bitcast_f32(words.load(w + k))
+        let l = LocalLight {
+            at: vec3(at(0), at(1), at(2)),
+            radius: at(3),
+            colour: vec3(0.0),
+            cos_outer: 0.0,
+            dir: vec3(0.0),
+            cos_inner: 0.0,
+        }
+        if reaches(cam, l, f) {
+            let n = kept.add(i: 0, value: 1)
+            if n < PER_FROXEL {
+                words.store(i: list_at(f) + n, value: i)
+            }
+        }
+        i += 64
+    }
+    kept.barrier()
+    if lid.x == 0 {
+        words.store(i: count_at(f), value: min(kept.load(0), PER_FROXEL))
+    }
+}
+
+/// A frame's lights and their froxels' lists.
+pub struct Lights {
+    pub words: GpuBuffer<u32>,
+    pub at: Froxels,
+}
+
+impl Lights {
+    /// No lights yet.
+    pub fn new() -> Lights {
+        Lights { words: buffer(WORDS), at: DARK }
+    }
+
+    /// The frame's `lights` (the first `MOST_LIGHTS`) binned into `cam`'s froxels.
+    pub fn bin(mut self, cam: Camera, lights: [LocalLight]) {
+        let n = min(lights.len(), MOST_LIGHTS)
+        self.at = Froxels { count: n }
+        if n == 0 {
+            return
+        }
+        var w: Vec<u32> = Vec::with_capacity(n * LIGHT_WORDS)
+        for i in 0..n {
+            for x in words_of(lights[i]) {
+                w.push(x)
+            }
+        }
+        write(mut self.words, 0, w)
+        label("lights")
+        dispatch(bin.bind(cam, count: n, words: mut self.words), groups: FROXELS)
+    }
+}
+
+/// How much light the `f.count` lights in `words` shed on a surface at `world` facing `n`, seen by
+/// `cam`: each light in its froxel's list, by its distance (an inverse square, windowed to
+/// nothing at its radius: Karis, Real Shading in Unreal Engine 4, 2013), its cone and the cosine
+/// to it. Light as the sky's is, which the surface's albedo takes.
+pub fn shed(f: Froxels, words: [u32], cam: Camera, world: vec3, n: vec3) -> vec3 {
+    if f.count == 0 {
+        return vec3(0.0)
+    }
+    let Some(x) = froxel_of(cam, world) else { return vec3(0.0) }
+    var out = vec3(0.0)
+    let k = words[count_at(x)]
+    for j in 0..k {
+        let l = light_of(words, words[list_at(x) + j])
+        let d = l.at - world
+        let d2 = dot(d, d)
+        let r2 = l.radius * l.radius
+        if d2 >= r2 {
+            continue
+        }
+        let to = d / sqrt(max(d2, 1.0e-8))
+        let fade = saturate(1.0 - (d2 / r2) * (d2 / r2))
+        let cone = if l.cos_outer < -1.0 { 1.0 } else {
+            smoothstep(l.cos_outer, l.cos_inner, dot(-to, l.dir))
+        }
+        out += l.colour * (fade * fade / (d2 + 0.01) * cone * max(dot(n, to), 0.0))
+    }
+    out
+}

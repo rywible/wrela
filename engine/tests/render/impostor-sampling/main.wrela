@@ -223,6 +223,7 @@ pub fn frame(time: f32, width: u32, height: u32) {
     let grounds = buffer_of([0.0])
     let cascade = Cascade { centre: vec3(0.0), span: 20.0, reach: 20.0, side: 1 }
     let sun = normalize(vec3(1.0, 1.0, 1.0))
+    let no_lights = buffer_of([0])
     let lt = Lighting {
         cam,
         light: Light {
@@ -262,6 +263,8 @@ pub fn frame(time: f32, width: u32, height: u32) {
         air,
         // No ambient occlusion built: everything open.
         ambient: engine::ambient::OPEN,
+        froxels: engine::lights::DARK,
+        lights: no_lights.items(),
         ao: cloud,
         s,
     }

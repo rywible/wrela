@@ -23,6 +23,7 @@
 
 use air::{AIR_SLICES, Air, Tables, tables}
 use ambient::Occlusion
+use lights::{LocalLight, Lights}
 use cook::{Budget, Planner, Work}
 use light::Light
 use lit::Lighting
@@ -149,6 +150,11 @@ pub trait Scene {
 
     /// What moves into the moving map, seen from the sun by `view`.
     fn cast_moving<P: RenderPass>(self, pass: P, view: mat4) {}
+
+    /// The scene's local lights this frame (`lights`: at most `lights::MOST_LIGHTS` are used).
+    fn lights(self) -> Vec<LocalLight> {
+        Vec::new()
+    }
 
     /// Whether anything casts into the moving map this frame (`cast_moving`): when nothing
     /// does, the frame keeps the map it cleared and draws no pass.
@@ -725,6 +731,8 @@ pub struct Frame<R: Resolver> {
     /// The ambient occlusion (`ambient`): the last frame's, which this frame's shading reads, and
     /// this frame's, built after its opaque passes.
     pub ambient: Occlusion,
+    /// The scene's local lights, binned into the frame's froxels (`lights`).
+    pub lights: Lights,
     resolver: R,
     pub exposure: GpuBuffer<Exposure>,
     pub linear: Sampler,
@@ -882,6 +890,7 @@ impl<R: Resolver> Frame<R> {
             targets: no_targets(),
             pyramid: Pyramid::new(width: 1, height: 1),
             ambient: Occlusion::new(width: 1, height: 1),
+            lights: Lights::new(),
             resolver: R::made(),
             exposure: buffer(1),
             linear: sampler(),
@@ -1675,6 +1684,7 @@ impl<R: Resolver> Frame<R> {
         if self.on(Off::Terrain) {
             self.clipmap.cull(cam)
         }
+        self.lights.bin(cam, scene.lights())
         let texels = self.clipmap.texels()
         let grounds = self.probes.using.grounds.span(
             start: 0,
@@ -1697,6 +1707,8 @@ impl<R: Resolver> Frame<R> {
             air: self.tables.aerial,
             ambient: self.ambient.at,
             ao: self.ambient.last,
+            froxels: self.lights.at,
+            lights: self.lights.words.items(),
             s: self.linear,
         }
         // Last frame's pyramid, if it's this view's (not after a jump, nor with occlusion off).
