@@ -56,7 +56,7 @@ use std::gpu::{
     Address, GpuBuffer, Rgba16Float, Sampler, Texture, begin_pass, begin_screen_pass, buffer,
     buffer_of, draw, label, sampler, write,
 }
-use ui::draw::{DrawList, Rect, Renderer}
+use ui::draw::{DrawList, Rect, Renderer, Uploaded}
 use std::input::{Event, Key, PadButton, events}
 use std::io::{Pending, load, store}
 use replay::{
@@ -142,9 +142,14 @@ pub struct Lab {
     fonts: Fonts,
     renderer: Renderer,
     list: DrawList,
-    /// The signs' words, drawn into the scene behind the cast (signs.wrela).
-    signs: Renderer,
+    /// The signs' words, drawn into the scene behind the cast (signs.wrela), with the one
+    /// renderer's atlas.
+    signs: Uploaded,
     sign_list: DrawList,
+    /// The frame's sprites: the cast's and the dust behind the water, and in front of it (kept
+    /// from frame to frame, so no frame makes them).
+    back: Vec<Sprite>,
+    front: Vec<Sprite>,
     /// What the host can do (its environment's capabilities), once it has said; the semantic tree
     /// last sent; and the requests to it still out.
     environment: Option<Pending<u8>>,
@@ -205,7 +210,6 @@ pub fn init() -> Lab {
     }
     let fonts = Fonts::load()
     let renderer = Renderer::new(fonts)
-    let signs = Renderer::new(fonts)
     let shown = cast(course(LEVEL))
     Lab {
         snaps: Snapshots::new(take latest, hz: HZ),
@@ -240,8 +244,10 @@ pub fn init() -> Lab {
         fonts,
         renderer,
         list: DrawList::new(),
-        signs,
+        signs: Uploaded::new(),
         sign_list: DrawList::new(),
+        back: Vec::with_capacity(SPRITES),
+        front: Vec::with_capacity(SPRITES),
         environment: Some(host::environment()),
         capabilities: None,
         ratio: 1.0,
@@ -423,9 +429,9 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     let count = snap.paused == 0 && !watching
     let view_proj = flat_camera(eye, half)
     let px = 2.0 * half.y / f32(rh)
-    var back: Vec<Sprite> = Vec::new()
-    var front: Vec<Sprite> = Vec::new()
-    sprites(s.cast, snap, c, time, lag, hud_at, count, mut back, mut front)
+    s.back.clear()
+    s.front.clear()
+    sprites(s.cast, snap, c, time, lag, hud_at, count, mut s.back, mut s.front)
     // The ghost, behind the cast, on the player's clock.
     if !watching {
         follow_ghost(mut s, snap.course)
@@ -434,15 +440,15 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
             if let Some(g) = ghost(s.trail[max(t, 1) - 1], s.trail[t], if t == 0 { 0.0 } else {
                 lag
             }) {
-                back.push(g)
+                s.back.push(g)
             }
         }
     }
-    let behind = back.len()
-    for f in front {
-        back.push(f)
+    let behind = s.back.len()
+    for f in s.front {
+        s.back.push(f)
     }
-    write(mut s.sprites, 0, back)
+    write(mut s.sprites, 0, s.back)
     write(mut s.heights, 0, s.cast.waves.heights)
     hud(mut s, snap, screen, time)
     s.renderer.fetch(mut s.fonts, s.list)
@@ -527,7 +533,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         vertices: 6,
         instances: behind,
     )
-    s.signs.draw(scene, scene_size)
+    s.renderer.draw_uploaded(scene, s.signs, scene_size)
     scene.end()
     // The water reads a copy of the scene, bending what's behind it; the splashes go over it.
     label("water copy")
@@ -555,7 +561,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         quad_vertex.bind(sprites: s.sprites.items(), st: ahead),
         sprite.bind(sprites: s.sprites.items(), st: ahead),
         vertices: 6,
-        instances: back.len() - behind,
+        instances: s.back.len() - behind,
     )
     wet.end()
     label("page")

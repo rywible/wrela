@@ -60,14 +60,23 @@ pub fn waves(c: Course) -> Waves {
     Waves { pools, heights: heights.clone(), speeds: heights, owed: 0.0 }
 }
 
-/// The waves `dt` seconds on.
-pub fn step_waves(w: mut Waves, dt: f32) {
+/// How far from the camera the waves are stepped, in the view's widths: farther, a pool's columns
+/// keep still until it comes near.
+pub const STEPPED_WIDTHS: f32 = 2.0
+
+/// The waves `dt` seconds on: the columns within `STEPPED_WIDTHS` views (each `2 × half.x` m
+/// wide) of the camera's point `eye`.
+pub fn step_waves(w: mut Waves, dt: f32, eye: vec2, half: vec2) {
+    let reach = STEPPED_WIDTHS * 2.0 * half.x
     w.owed = min(w.owed + dt, 0.1)
     let k = SPEED * SPEED / (COLUMN * COLUMN)
     while w.owed >= DT {
         w.owed -= DT
         for pool in w.pools {
             let (first, count) = (u32(pool.y), u32(pool.z))
+            if pool.x > eye.x + reach || pool.x + f32(count) * COLUMN < eye.x - reach {
+                continue
+            }
             for i in first..first + count {
                 // The banks reflect: a missing neighbour is the column itself.
                 let l = if i > first { w.heights[i - 1] } else { w.heights[i] }

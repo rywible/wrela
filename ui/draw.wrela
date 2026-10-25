@@ -597,11 +597,19 @@ const DRAWN_PX: u32 = 128
 /// The most glyphs asked of the host at once.
 const ASKING: u32 = 16
 
-/// Draws lists on the GPU: the atlas, and buffers that grow to the largest list.
+/// Draws lists on the GPU: the atlas, and the list uploaded last (`Uploaded`). A program with
+/// more than one list to draw (into different passes) keeps an `Uploaded` for each other and
+/// draws it with the one atlas (`draw_uploaded`).
 pub struct Renderer {
     atlas: Texture<Rgba8>,
     asking: Vec<Asking>,
     linear: Sampler,
+    own: Uploaded,
+}
+
+/// A list on the GPU, to draw with a renderer's atlas: its quads and clips, in buffers that grow
+/// to the largest list.
+pub struct Uploaded {
     quads: GpuBuffer<Quad>,
     clips: GpuBuffer<vec4>,
     quad_room: u32,
@@ -609,21 +617,44 @@ pub struct Renderer {
     count: u32,
 }
 
-impl Renderer {
-    /// Makes the atlas from `fonts`' glyphs.
-    pub fn new(fonts: Fonts) -> Renderer {
-        var atlas = texture::<Rgba8>(width: fonts.width, height: fonts.height)
-        atlas.write(x: 0, y: 0, width: fonts.width, height: fonts.baked, bytes: fonts.atlas())
-        Renderer {
-            atlas,
-            asking: Vec::new(),
-            linear: sampler(),
+impl Uploaded {
+    /// Room for a list of a thousand quads, nothing uploaded.
+    pub fn new() -> Uploaded {
+        Uploaded {
             quads: buffer(1024),
             clips: buffer(64),
             quad_room: 1024,
             clip_room: 64,
             count: 0,
         }
+    }
+
+    /// Uploads `list`: before the pass that draws it begins.
+    pub fn upload(mut self, list: DrawList) {
+        if list.quads.len() > self.quad_room {
+            self.quad_room = max(list.quads.len(), 2 * self.quad_room)
+            self.quads = buffer(self.quad_room)
+        }
+        if list.clips.len() > self.clip_room {
+            self.clip_room = max(list.clips.len(), 2 * self.clip_room)
+            self.clips = buffer(self.clip_room)
+        }
+        if list.quads.len() > 0 {
+            write(mut self.quads, 0, list.quads)
+        }
+        if list.clips.len() > 0 {
+            write(mut self.clips, 0, list.clips)
+        }
+        self.count = list.quads.len()
+    }
+}
+
+impl Renderer {
+    /// Makes the atlas from `fonts`' glyphs.
+    pub fn new(fonts: Fonts) -> Renderer {
+        var atlas = texture::<Rgba8>(width: fonts.width, height: fonts.height)
+        atlas.write(x: 0, y: 0, width: fonts.width, height: fonts.baked, bytes: fonts.atlas())
+        Renderer { atlas, asking: Vec::new(), linear: sampler(), own: Uploaded::new() }
     }
 
     /// Asks the host for glyphs for the groups `list` drew as `?` (`font/glyph`, the system's
@@ -692,32 +723,24 @@ impl Renderer {
 
     /// Uploads `list`: before the pass that draws it begins.
     pub fn upload(mut self, list: DrawList) {
-        if list.quads.len() > self.quad_room {
-            self.quad_room = max(list.quads.len(), 2 * self.quad_room)
-            self.quads = buffer(self.quad_room)
-        }
-        if list.clips.len() > self.clip_room {
-            self.clip_room = max(list.clips.len(), 2 * self.clip_room)
-            self.clips = buffer(self.clip_room)
-        }
-        if list.quads.len() > 0 {
-            write(mut self.quads, 0, list.quads)
-        }
-        if list.clips.len() > 0 {
-            write(mut self.clips, 0, list.clips)
-        }
-        self.count = list.quads.len()
+        self.own.upload(list)
     }
 
     /// Draws what was uploaded, in `pass`, on a target `screen` pixels wide and high.
     pub fn draw<P: RenderPass>(self, pass: P, screen: vec2) {
-        if self.count > 0 {
+        self.draw_uploaded(pass, self.own, screen)
+    }
+
+    /// Draws `list` (uploaded apart: `Uploaded::upload`) with the atlas, in `pass`, on a target
+    /// `screen` pixels wide and high.
+    pub fn draw_uploaded<P: RenderPass>(self, pass: P, list: Uploaded, screen: vec2) {
+        if list.count > 0 {
             draw(
                 pass,
-                quad_corner.bind(quads: self.quads, clips: self.clips, screen: screen),
+                quad_corner.bind(quads: list.quads, clips: list.clips, screen: screen),
                 quad_color.bind(atlas: self.atlas, linear: self.linear),
                 vertices: 6,
-                instances: self.count,
+                instances: list.count,
             )
         }
     }
