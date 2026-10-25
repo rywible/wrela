@@ -516,7 +516,7 @@ impl Chosen {
         metadata: GpuBuffer<u32>,
         lods: GpuBuffer<Lod>,
         pyramid: Texture<R32Float>,
-        after: u32,
+        after: u32 = SHRINK_AFTER,
     ) {
         let n = self.lists.len()
         // Room left half empty for long (tiles dropped) is given back: half again what's needed.
