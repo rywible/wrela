@@ -28,7 +28,10 @@ use reflect::{Mirror, Specular, copy_below}
 use cook::{Budget, Planner, Work}
 use light::Light
 use lit::Lighting
-use paint::{Develop, Exposure, Look, Metering, dab_map, develop, glow_blur, glow_down, lines, meter}
+use paint::{
+    Develop, Exposure, Look, Metering, bloom_down, bloom_up, dab_map, develop, identity, lines,
+    meter,
+}
 use plant::Wind
 use probes::{Baked, Occluder, ProbeGrid, Trace}
 use shadow::{Cascade, Kept, Shadows, shadows}
@@ -42,11 +45,11 @@ use std::input::Key
 use std::cache::Stale
 use std::collections::{Flags, replace, swap}
 use std::gpu::{
-    Address, ClipPosition, ComparisonSampler, DepthTexture, FragmentShader, GpuBuffer, GpuSpan,
-    R32Float, R32Uint, RenderPass, Rgba16Float, Sampler, ScreenPass, Texture, VertexIndex,
-    begin_depth_pass, begin_pass, begin_pass_with_depth, begin_screen_pass, buffer,
-    comparison_sampler, depth_texture, dispatch, draw, draw_multi, label, sampler, texture, timed,
-    writable_texture,
+    Address, Blend, ClipPosition, ComparisonSampler, DepthTexture, FragmentShader, GpuBuffer,
+    GpuSpan, R32Float, R32Uint, RenderPass, Rgba16Float, Rgba8, Sampler, ScreenPass, Texture,
+    Texture3d, VertexIndex, begin_depth_pass, begin_pass, begin_pass_with_depth, begin_screen_pass,
+    buffer, comparison_sampler, depth_texture, dispatch, draw, draw_multi, label, sampler, texture,
+    timed, writable_texture,
 }
 use std::io::{Pending, print}
 
@@ -272,8 +275,12 @@ pub struct Targets {
     pub dabs: Texture<Rgba16Float>,
     pub history: Texture<Rgba16Float>,
     pub last_history: Texture<Rgba16Float>,
-    pub glow_a: Texture<Rgba16Float>,
-    pub glow_b: Texture<Rgba16Float>,
+    /// The bloom's pyramid (`paint::BLOOM_LEVELS`): half the output's size, then each level half
+    /// the last.
+    pub bloom_1: Texture<Rgba16Float>,
+    pub bloom_2: Texture<Rgba16Float>,
+    pub bloom_3: Texture<Rgba16Float>,
+    pub bloom_4: Texture<Rgba16Float>,
 }
 
 /// Targets of a texel each, before the first frame sizes them.
@@ -291,8 +298,10 @@ fn no_targets() -> Targets {
         dabs: texture::<Rgba16Float>(width: 1, height: 1),
         history: texture::<Rgba16Float>(width: 1, height: 1),
         last_history: texture::<Rgba16Float>(width: 1, height: 1),
-        glow_a: texture::<Rgba16Float>(width: 1, height: 1),
-        glow_b: texture::<Rgba16Float>(width: 1, height: 1),
+        bloom_1: texture::<Rgba16Float>(width: 1, height: 1),
+        bloom_2: texture::<Rgba16Float>(width: 1, height: 1),
+        bloom_3: texture::<Rgba16Float>(width: 1, height: 1),
+        bloom_4: texture::<Rgba16Float>(width: 1, height: 1),
     }
 }
 
@@ -300,7 +309,6 @@ fn no_targets() -> Targets {
 /// water and the shafts only if the scene has `effects`.
 fn targets_for(width: u32, height: u32, w: u32, h: u32, effects: bool) -> Targets {
     let (ew, eh) = if effects { (w, h) } else { (1, 1) }
-    let (qw, qh) = (max(width / 4, 1), max(height / 4, 1))
     Targets {
         scene: texture::<Rgba16Float>(width: w, height: h),
         scene_b: texture::<Rgba16Float>(width: w, height: h),
@@ -314,9 +322,48 @@ fn targets_for(width: u32, height: u32, w: u32, h: u32, effects: bool) -> Target
         dabs: texture::<Rgba16Float>(width: w, height: h),
         history: texture::<Rgba16Float>(width: width, height: height),
         last_history: texture::<Rgba16Float>(width: width, height: height),
-        glow_a: texture::<Rgba16Float>(width: qw, height: qh),
-        glow_b: texture::<Rgba16Float>(width: qw, height: qh),
+        bloom_1: bloom_of(width, height, level: 1),
+        bloom_2: bloom_of(width, height, level: 2),
+        bloom_3: bloom_of(width, height, level: 3),
+        bloom_4: bloom_of(width, height, level: 4),
     }
+}
+
+/// The bloom's level `level` for an output `width` × `height`: `2^level` times smaller.
+fn bloom_of(width: u32, height: u32, level: u32) -> Texture<Rgba16Float> {
+    texture::<Rgba16Float>(width: max(width >> level, 1), height: max(height >> level, 1))
+}
+
+/// A level of the bloom drawn from the one above it (`from`; the first from the output, its
+/// light above the threshold: `paint::bloom_down`).
+fn bloom_level(
+    into: mut Texture<Rgba16Float>,
+    from: Texture<Rgba16Float>,
+    s: Sampler,
+    first: bool,
+    base: f32,
+    exposure: GpuSpan<Exposure>,
+) {
+    let p = begin_pass(mut into)
+    fullscreen(
+        p,
+        bloom_down.bind(
+            from,
+            s,
+            first: if first { 1 } else { 0 },
+            threshold: 1.1,
+            base: base,
+            exposure: exposure,
+        ),
+    )
+    p.end()
+}
+
+/// The level under `into` (`from`) brought up and added to it (`paint::bloom_up`).
+fn bloom_add(into: mut Texture<Rgba16Float>, from: Texture<Rgba16Float>, s: Sampler) {
+    let p = begin_pass(mut into, keep: true)
+    draw(p, full.bind(z: 0.5), bloom_up.bind(from, s), vertices: 3, blend: Blend::Add)
+    p.end()
 }
 
 /// What an effect reads from the frame: everything a shading pass reads (`lt`), the air's sky
@@ -746,6 +793,9 @@ pub struct Frame<R: Resolver> {
     pub screen: Texture<Rgba16Float>,
     pub mirror: Mirror,
     pub specular: Specular,
+    /// The look's grading table (`paint::graded`, as much as `Look::grade` says): the identity
+    /// until a game gives one (`grade_with`).
+    pub grade: Texture3d<Rgba8>,
     resolver: R,
     pub exposure: GpuBuffer<Exposure>,
     pub linear: Sampler,
@@ -842,7 +892,9 @@ impl<R: Resolver> Frame<R> {
             look: Look {},
             metering: Metering {
                 base: 0.62,
-                reference: 0.136,
+                // The band the meter reads is 2.1 times the scene's geometric mean the Last
+                // Green's look was picked at (0.136), as the start's view and its walk measure.
+                reference: 0.286,
                 strength: 0.85,
                 lo: 0.15,
                 hi: 4.0,
@@ -907,6 +959,7 @@ impl<R: Resolver> Frame<R> {
             screen: texture::<Rgba16Float>(width: 1, height: 1),
             mirror: Mirror { cam: first, on: 0, probe: 0 },
             specular: Specular::new(),
+            grade: identity(),
             resolver: R::made(),
             exposure: buffer(1),
             linear: sampler(),
@@ -1116,6 +1169,12 @@ impl<R: Resolver> Frame<R> {
         self.probes.next = None
         self.near.shift(d)
         self.far.shift(d)
+    }
+
+    /// The look graded by `lut` (a `paint::LUT_SIDE`³ table of display colours), as much as
+    /// `Look::grade` says.
+    pub fn grade_with(mut self, lut: take Texture3d<Rgba8>) {
+        self.grade = take lut
     }
 
     /// The frame's size and camera: the output is `width` × `height`; the scene's at the render
@@ -1992,30 +2051,46 @@ impl<R: Resolver> Frame<R> {
             ),
         )
         dp.end()
-        let down = begin_pass(mut self.targets.glow_a)
-        fullscreen(
-            down,
-            glow_down.bind(
-                self.targets.history,
-                s: self.linear,
-                threshold: 1.1,
-                base: self.metering.base,
-                exposure: e,
-            ),
+        // The bloom: down its pyramid from temporal AA's output (the first level the light
+        // above the threshold), then back up it, each level adding its light to the one above.
+        label("bloom")
+        let base = self.metering.base
+        borrow s = self.linear
+        bloom_level(
+            mut self.targets.bloom_1,
+            self.targets.history,
+            s,
+            first: true,
+            base: base,
+            exposure: e,
         )
-        down.end()
-        let x = begin_pass(mut self.targets.glow_b)
-        fullscreen(
-            x,
-            glow_blur.bind(src: self.targets.glow_a, s: self.linear, across: 0, spread: 2.0),
+        bloom_level(
+            mut self.targets.bloom_2,
+            self.targets.bloom_1,
+            s,
+            first: false,
+            base: base,
+            exposure: e,
         )
-        x.end()
-        let y = begin_pass(mut self.targets.glow_a)
-        fullscreen(
-            y,
-            glow_blur.bind(src: self.targets.glow_b, s: self.linear, across: 1, spread: 2.0),
+        bloom_level(
+            mut self.targets.bloom_3,
+            self.targets.bloom_2,
+            s,
+            first: false,
+            base: base,
+            exposure: e,
         )
-        y.end()
+        bloom_level(
+            mut self.targets.bloom_4,
+            self.targets.bloom_3,
+            s,
+            first: false,
+            base: base,
+            exposure: e,
+        )
+        bloom_add(mut self.targets.bloom_3, self.targets.bloom_4, s)
+        bloom_add(mut self.targets.bloom_2, self.targets.bloom_3, s)
+        bloom_add(mut self.targets.bloom_1, self.targets.bloom_2, s)
         let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
         fullscreen(
             screen,
@@ -2023,8 +2098,9 @@ impl<R: Resolver> Frame<R> {
                 d,
                 self.targets.history,
                 self.targets.depth,
-                glow: self.targets.glow_a,
+                glow: self.targets.bloom_1,
                 dabs: self.targets.dabs,
+                lut: self.grade,
                 s: self.linear,
                 exposure: e,
             ),

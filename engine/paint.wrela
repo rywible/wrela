@@ -12,23 +12,30 @@
 // - Characters: their two bands are their shading's (`light::character`). Thin lines in a
 //   darker shade of their colour lie on their silhouettes and where their parts meet, from the
 //   depth and the tags. The world's dabs lie on them at half strength.
-// - Bloom: the bright light, brought down to a quarter and blurred (`glow_down`, `glow_blur`);
-//   then the tone curve, at an exposure metered from the scene (`meter`).
+// - Bloom: the bright light, brought down a pyramid of `BLOOM_LEVELS` levels and back up it, each
+//   level adding its light, wider, to the one above (`bloom_down`, `bloom_up`); then the tone
+//   curve, at an exposure metered from a histogram of the scene's luminance
+//   (`meter`: the band from its median to its brightest twentieth); then the look's grading table
+//   (`graded`).
 //
 // Every texture the look lays on is anchored in the world.
 
 use light::{LUMA, tone}
 use noise::{hash2, noise3, octave_of}
 use std::gpu::{
-    DepthTexture, FragCoord, GlobalId, LocalId, One, Rgba16Float, Sampler, Shared, Texture, barrier,
+    DepthTexture, FragCoord, GlobalId, LocalId, One, Rgba16Float, Rgba8, Sampler, SharedAtomics,
+    Texels3d, Texture, Texture3d, dispatch, texture3d,
 }
 use terrain::{Levels, Texel, ground_at, level_at, materials_at}
 use view::{BARK, CREATURE, Camera, FLOWER, GRASS, GROUND, LEAVES, ROCK, WATER, class_of}
 
-/// The look's settings: how strong the dabs are on near surfaces, on broad far ones and on the
-/// sky; the paper's tooth; the bloom; the characters' lines (their width in output pixels, and
+/// The look's settings: how much of the grading table it takes; how strong the dabs are on near
+/// surfaces, on broad far ones and on the sky; the paper's tooth; the bloom; the characters' lines (their width in output pixels, and
 /// how dark); how much the edges sharpen; and the vignette.
 pub struct Look: Copy + GpuData {
+    /// How much of the frame's grading table the colour takes (`Frame::grade_with`; 0: none,
+    /// the identity's).
+    pub grade: f32 = 0.0,
     pub dabs_near: f32 = 0.16,
     pub dabs_far: f32 = 0.30,
     pub dabs_sky: f32 = 0.10,
@@ -138,69 +145,93 @@ fn tooth(world: vec3, footprint: f32) -> f32 {
     mix(noise3(world / s0), noise3(world / (2.0 * s0) + vec3(9.0, 3.0, 5.0)), f) - 0.5
 }
 
-/// A quarter-resolution texel of the glow: the mean of the 4×4 texels under it of `image`'s
-/// light above `threshold` (the light at the exposure `base`; so at the metered exposure,
-/// `exposure`'s, it's scaled to the same brightness on the screen), each 2×2 of them read as
-/// one filtered sample (its mean, then the threshold): four samples, not sixteen loads.
+// ---- bloom --------------------------------------------------------------------------------
+
+/// The bloom's levels: half the output's size, then each half the last.
+pub const BLOOM_LEVELS: u32 = 4
+
+/// `src` filtered down to a texel of a target half its size at `pixel` (Jimenez's 13 taps, Next
+/// Generation Post Processing in Call of Duty: Advanced Warfare, SIGGRAPH 2014: five overlapping
+/// boxes of 2 × 2 texels, each a filtered sample, no texel left out and none flickering as the
+/// light moves). The first level takes only the light above `threshold` (at the exposure `base`;
+/// so at the metered exposure, `exposure`'s, it's the same brightness on the screen).
 @fragment
-pub fn glow_down(
+pub fn bloom_down(
     pixel: FragCoord,
-    image: Texture<Rgba16Float>,
+    src: Texture<Rgba16Float>,
     s: Sampler,
+    first: u32,
     threshold: f32,
     base: f32,
     exposure: [Exposure],
 ) -> vec4 {
-    let size = vec2(f32(image.width()), f32(image.height()))
-    let t = threshold * base / max(exposure[0].value, 1.0e-3)
-    let base = floor(pixel.position.xy) * 4.0
-    var sum = vec3(0.0)
-    for j in 0..2 {
-        for i in 0..2 {
-            let at = (base + vec2(f32(i), f32(j)) * 2.0 + vec2(1.0)) / size
-            let c = image.sample_level(s, at).rgb
-            sum += max(c - vec3(t), vec3(0.0))
-        }
+    let size = vec2(f32(src.width()), f32(src.height()))
+    let at = pixel.position.xy * 2.0
+    let t = |dx: f32, dy: f32| src.sample_level(s, (at + vec2(dx, dy)) / size).rgb
+    var c = t(0.0, 0.0) * 0.125 +
+        (t(-2.0, -2.0) + t(2.0, -2.0) + t(-2.0, 2.0) + t(2.0, 2.0)) * 0.03125 +
+        (t(0.0, -2.0) + t(-2.0, 0.0) + t(2.0, 0.0) + t(0.0, 2.0)) * 0.0625 +
+        (t(-1.0, -1.0) + t(1.0, -1.0) + t(-1.0, 1.0) + t(1.0, 1.0)) * 0.125
+    if first != 0 {
+        c = max(c - vec3(threshold * base / max(exposure[0].value, 1.0e-3)), vec3(0.0))
     }
-    vec4(sum / 4.0, 1.0)
+    vec4(c, 1.0)
 }
 
-/// A 13-tap Gaussian blur along x (`across` 0) or y (1), `spread` texels a tap. Each tap but the
-/// middle one is a filtered sample (`s`, linear) half a texel inside its place, so with `spread`
-/// 2 it reads two texels and every texel is read: taps that loaded one texel each skipped every
-/// other one, and left a grid of bright and dark texels round the sun.
+/// `src` (a level half its target's size) brought up at `pixel` by a 3 × 3 tent, a texel of
+/// `src` a tap: what a level adds to the one above it (drawn with `Blend::Add`).
 @fragment
-pub fn glow_blur(
-    pixel: FragCoord,
-    src: Texture<Rgba16Float>,
-    s: Sampler,
-    across: u32,
-    spread: f32,
-) -> vec4 {
+pub fn bloom_up(pixel: FragCoord, src: Texture<Rgba16Float>, s: Sampler) -> vec4 {
     let size = vec2(f32(src.width()), f32(src.height()))
-    let at = pixel.position.xy
-    let w = [0.1964, 0.1748, 0.1232, 0.0687, 0.0303, 0.0106, 0.0029]
-    let along = select(if_false: vec2(1.0, 0.0), if_true: vec2(0.0, 1.0), cond: across == 1)
-    var sum = src.sample_level(s, at / size).rgb * w[0]
-    for k in 1..7 {
-        let d = along * max(f32(k) * spread - 0.5, 0.0)
-        sum += (src.sample_level(s, (at + d) / size).rgb +
-            src.sample_level(s, (at - d) / size).rgb) *
-            w[k]
+    let at = pixel.position.xy * 0.5
+    let t = |dx: f32, dy: f32| src.sample_level(s, (at + vec2(dx, dy)) / size).rgb
+    let c = (t(-1.0, -1.0) + t(1.0, -1.0) + t(-1.0, 1.0) + t(1.0, 1.0)) * 0.0625 +
+        (t(0.0, -1.0) + t(-1.0, 0.0) + t(1.0, 0.0) + t(0.0, 1.0)) * 0.125 +
+        t(0.0, 0.0) * 0.25
+    vec4(c, 1.0)
+}
+
+// ---- grading ---------------------------------------------------------------------------------
+
+/// A grading table's side: 32 texels, a colour's channels its three coordinates.
+pub const LUT_SIDE: u32 = 32
+
+/// Texel `id` of the identity grading table: its own colour.
+@compute(4, 4, 4)
+pub fn identity_lut(out: mut Texels3d<Rgba8>, id: GlobalId) {
+    if id.x >= LUT_SIDE || id.y >= LUT_SIDE || id.z >= LUT_SIDE {
+        return
     }
-    vec4(sum, 1.0)
+    out.store(id, vec4(vec3(f32(id.x), f32(id.y), f32(id.z)) / f32(LUT_SIDE - 1), 1.0))
+}
+
+/// The identity grading table (`Look::grade` 0 reads none).
+pub fn identity() -> Texture3d<Rgba8> {
+    var t = texture3d::<Rgba8>(LUT_SIDE, LUT_SIDE, LUT_SIDE)
+    dispatch(identity_lut.bind(out: mut t), over: (LUT_SIDE, LUT_SIDE, LUT_SIDE))
+    t
+}
+
+/// Display colour `c` graded by `lut` (through `s`, linear), `grade` of the way.
+pub fn graded(c: vec3, lut: Texture3d<Rgba8>, s: Sampler, grade: f32) -> vec3 {
+    if grade <= 0.0 {
+        return c
+    }
+    let uvw = saturate(c) * (f32(LUT_SIDE - 1) / f32(LUT_SIDE)) + vec3(0.5 / f32(LUT_SIDE))
+    mix(c, lut.sample_level(s, uvw).rgb, vec3(grade))
 }
 
 // ---- metering -------------------------------------------------------------------------------
 
-/// How the camera meters (the eye adapting): `base`, the exposure of a scene whose mean
-/// luminance (geometric, over a 32 × 32 grid of its pixels) is `reference`, and for another
-/// mean, `base` times (`reference` / mean) to the power `strength` (1 brings every scene to the
-/// same mean, 0 doesn't meter), within `lo` to `hi`; reached a fraction `rate` of the way each
-/// frame, or at once (`fresh` 1); but never more than `flash` times it, so a scene that
-/// brightens at once (a turn from the wood's shade to a sunlit clearing) shows no more than that
-/// over its settled brightness, while one that darkens adapts at `rate`. A
-/// hazy sky toward a low sun is ten times the rest of it: a fixed exposure shows it white.
+/// How the camera meters (the eye adapting): `base`, the exposure of a scene whose metered
+/// luminance (`meter`: the geometric mean of the brighter half of its pixels but the brightest
+/// twentieth) is `reference`, and for another, `base` times (`reference` / it) to the power
+/// `strength` (1 brings every scene to the same, 0 doesn't meter), within `lo` to `hi`; reached a
+/// fraction `rate` of the way each frame, or at once (`fresh` 1); but never more than `flash`
+/// times it, so a scene that brightens at once (a turn from the wood's shade to a sunlit
+/// clearing) shows no more than that over its settled brightness, while one that darkens adapts
+/// at `rate`. A hazy sky toward a low sun is ten times the rest of it: a fixed exposure shows it
+/// white.
 pub struct Metering: Copy + GpuData {
     pub base: f32,
     pub reference: f32,
@@ -212,50 +243,89 @@ pub struct Metering: Copy + GpuData {
     pub fresh: u32,
 }
 
-/// The metered exposure (`meter`), and the scene's mean luminance (for tests).
+/// The metered exposure (`meter`), the luminance it was metered from, and the scene's geometric
+/// mean luminance (for tests).
 pub struct Exposure: Copy + GpuData {
     pub value: f32,
+    pub metered: f32,
     pub mean: f32,
 }
 
-/// The exposure, and the scene's mean luminance: one workgroup, each invocation four of the
-/// grid's pixels, then their logs summed in workgroup memory.
+/// The histogram's bins, and the stops of log luminance they span (from `LOWEST`).
+pub const BINS: u32 = 128
+pub const LOWEST: f32 = -14.0
+pub const STOPS: f32 = 20.0
+
+/// The band of the scene's pixels (by luminance) the meter reads: from the median to the
+/// brightest twentieth (the sun, its glow, a sky's highlights: left out).
+pub const BAND_LO: f32 = 0.5
+pub const BAND_HI: f32 = 0.95
+
+/// The bin of log2 luminance `l`.
+pub fn bin_of(l: f32) -> u32 {
+    u32(clamp((l - LOWEST) / STOPS * f32(BINS), 0.0, f32(BINS - 1)))
+}
+
+/// The log2 luminance at bin `b`'s middle.
+pub fn bin_middle(b: u32) -> f32 {
+    LOWEST + (f32(b) + 0.5) / f32(BINS) * STOPS
+}
+
+/// The geometric mean of the band of `bins` (a histogram of `total` pixels' log luminance) from
+/// the `lo` to the `hi` share of them, darkest first: each bin weighed by its pixels in the band.
+/// And the geometric mean of all of them.
+pub fn band_of(bins: [u32; 128], total: u32, lo: f32, hi: f32) -> (f32, f32) {
+    let from = lo * f32(total)
+    let to = hi * f32(total)
+    var below = 0.0
+    var sum = 0.0
+    var weight = 0.0
+    var all = 0.0
+    for b in 0..BINS {
+        let n = f32(bins[b])
+        let inside = max(min(below + n, to) - max(below, from), 0.0)
+        sum += inside * bin_middle(b)
+        weight += inside
+        all += n * bin_middle(b)
+        below += n
+    }
+    (exp2(sum / max(weight, 1.0)), exp2(all / max(f32(total), 1.0)))
+}
+
+/// The exposure: one workgroup, each invocation sixteen of a 64 × 64 grid of the scene's pixels
+/// put in a histogram of their log luminance in workgroup memory (`BINS` bins over `STOPS` stops);
+/// then the band's geometric mean (`band_of`), metered as `Metering` says.
 @compute(256)
 pub fn meter(
     scene: Texture<Rgba16Float>,
     m: Metering,
-    sums: mut Shared<f32, 256>,
+    bins: mut SharedAtomics<128>,
     exposure: mut One<Exposure>,
     id: GlobalId,
     lid: LocalId,
 ) {
     let size = vec2(f32(scene.width()), f32(scene.height()))
-    var sum = 0.0
-    for k in 0..4 {
+    for k in 0..16 {
         let i = lid.x + 256 * k
-        let at = (vec2(f32(i % 32), f32(i / 32)) + vec2(0.5)) / 32.0 * size
+        let at = (vec2(f32(i % 64), f32(i / 64)) + vec2(0.5)) / 64.0 * size
         let c = scene.load(x: u32(at.x), y: u32(at.y)).rgb
-        sum += log2(max(dot(c, LUMA), 1.0e-4))
+        let _ = bins.add(i: bin_of(log2(max(dot(c, LUMA), 1.0e-6))), value: 1)
     }
-    let mine = sums.chunk(lid)
-    sums.write(mine, 0, sum)
-    barrier(mut sums)
-    // Halved eight times: each round, the first half's invocations add the second half's.
-    for k in 0..8 {
-        let half = 128 >> k
-        let own = sums.get(lid.x)
-        let v = if lid.x < half { own + sums.get(lid.x + half) } else { own }
-        barrier(mut sums)
-        sums.write(mine, 0, v)
-        barrier(mut sums)
+    bins.barrier()
+    if lid.x != 0 {
+        return
     }
-    let mean = exp2(sums.get(0) / 1024.0)
-    let target = clamp(m.base * pow(m.reference / mean, m.strength), m.lo, m.hi)
+    var h = [0; 128]
+    for b in 0..BINS {
+        h[b] = bins.load(b)
+    }
+    let (metered, mean) = band_of(h, total: 4096, lo: BAND_LO, hi: BAND_HI)
+    let target = clamp(m.base * pow(m.reference / metered, m.strength), m.lo, m.hi)
     exposure.update(id, |old| {
         let value = if m.fresh != 0 { target } else {
             min(mix(old.value, target, m.rate), target * m.flash)
         }
-        Exposure { value, mean }
+        Exposure { value, metered, mean }
     })
 }
 
@@ -538,6 +608,7 @@ pub fn develop(
     depth: DepthTexture,
     glow: Texture<Rgba16Float>,
     dabs: Texture<Rgba16Float>,
+    lut: Texture3d<Rgba8>,
     s: Sampler,
     exposure: [Exposure],
 ) -> vec4 {
@@ -562,10 +633,10 @@ pub fn develop(
     let q = px * (d.cam.screen / d.out)
     let m = if clay { vec4(0.0) } else { dabs.sample_level(s, q / d.cam.screen) }
     paint = paint * (1.0 + m.r) * vec3(1.0 + 0.25 * m.r, 1.0, 1.0 - 0.3 * m.r) * (1.0 + m.g)
-    // Bloom.
-    // Filtered (a texel of the glow is 4×4 pixels: loaded, it showed as their blocks).
-    paint += glow.sample_level(s, px / d.out).rgb * look.bloom
-    var c = tone(paint, exposure[0].value)
+    // Bloom: the pyramid's top, which holds its levels' light each once (a quarter of it, so as
+    // much light is spread as before).
+    paint += glow.sample_level(s, px / d.out).rgb * (look.bloom / f32(BLOOM_LEVELS))
+    var c = graded(tone(paint, exposure[0].value), lut, s, look.grade)
     if clay {
         return vec4(c, 1.0)
     }
@@ -609,4 +680,28 @@ fn rcas_sharpens_within_its_crosss_range() {
     assert(bright.r >= 0.0 && bright.r < 1.0e6, "a bright pixel isn't finite")
     let off = rcas(vec3(0.5), vec3(0.9), vec3(0.1), vec3(0.5), vec3(0.5), sharpen: 0.0)
     assert(length(off - vec3(0.5)) < 1.0e-4, "no sharpening changed the pixel")
+}
+
+/// The band's mean: a scene of two halves, one 4 stops under the other, meters at its brighter
+/// half; the brightest twentieth (a sun) moves it nothing; all of it reads the geometric mean.
+@test
+fn the_meter_reads_the_band_from_the_median_up() {
+    var h = [0; 128]
+    let dark = bin_of(-6.0)
+    let lit = bin_of(-2.0)
+    h[dark] = 2048
+    h[lit] = 2048
+    let (band, all) = band_of(h, total: 4096, lo: 0.5, hi: 0.95)
+    assert(abs(log2(band) - bin_middle(lit)) < 1.0e-4, f"the band read {log2(band)}")
+    assert(abs(log2(all) - (bin_middle(dark) + bin_middle(lit)) * 0.5) < 1.0e-4, "the mean")
+    // A sun: the brightest 4 % far brighter; the band is the same.
+    var sunny = [0; 128]
+    sunny[dark] = 2048
+    sunny[lit] = 2048 - 160
+    sunny[bin_of(5.0)] = 160
+    let (with_sun, _) = band_of(sunny, total: 4096, lo: 0.5, hi: 0.95)
+    assert(
+        abs(log2(with_sun) - bin_middle(lit)) < 1.0e-4,
+        f"the sun moved the band: {log2(with_sun)}",
+    )
 }

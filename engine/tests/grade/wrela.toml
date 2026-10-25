@@ -1,0 +1,7 @@
+# The look's grading table (engine/paint.wrela) on the GPU: the identity table, taken whole,
+# gives back each colour within its rounding.
+[package]
+name = "grade_tests"
+
+[dependencies]
+engine = { workspace = true }
