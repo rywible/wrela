@@ -60,11 +60,13 @@ pub const DOOR = Doorway { at: GATE + vec2(0.0, -5.0), reach: 0.6 }
 pub const DOOR_POST = vec3(0.25, 1.4, 0.3)
 pub const DOOR_POSTS = [vec2(-0.95, 0.0), vec2(0.95, 0.0)]
 
-/// Whether the banks' stones are drawn through clusters by default (`Stage::clustered`): not, as
+/// Whether the banks' stones are drawn through clusters, or each copy its prototype's mesh: not, as
 /// measured (M4 Air, 1080p, the waterfall's shot): the clusters' GPU span is 20.08 ms against
 /// 19.09 forward in Chrome (17.28 against 14.21 natively), their choosing 2.1 ms against the
 /// 0.9 ms they save in the shading pass, and their lists, room for every copy drawn whole at
-/// each level, hold 667 MiB.
+/// each level, hold 667 MiB. A constant: the build still makes their 17 pipelines (toolchain
+/// 0.6.3 doesn't fold a constant condition: docs/toolchain-gaps.md), which costs the opening's
+/// cold start 0.14 s.
 pub const CLUSTERED: bool = false
 
 /// The floor's scene: its plants and the kinds cooked so far with their leaves' atlas, then the
@@ -103,10 +105,8 @@ pub struct Stage {
     built_far_fit: Vec<Option<Fit>>,
     /// Bank stones share three meshes; the placements contain no GPU resources.
     pub banks: Instances,
-    /// Whether the banks' stones are drawn through clusters (`engine::stone::ClusterStones`, a
-    /// prototype's each), or each copy its prototype's mesh; and the clusters, cooked once the
-    /// prototypes are.
-    pub clustered: bool,
+    /// The banks' stones' clusters (`engine::stone::ClusterStones`, a prototype's each), cooked
+    /// once the prototypes are, where they're drawn through them (`CLUSTERED`).
     bank_stones: Vec<ClusterStones>,
     pub footprints: GpuBuffer<vec4>,
     /// The climber (its sword realized at the first frame), the fawn and the wolf.
@@ -158,7 +158,6 @@ pub fn stage() -> Stage {
         built_fit: Vec::new(),
         built_far_fit: Vec::new(),
         banks: blockouts::bank_instances(history::COURSES.courses, height_at),
-        clustered: CLUSTERED,
         bank_stones: Vec::new(),
         footprints: buffer_of(footprints_in(vec3(0.0), FLOOR), at_least: 1),
         drawn: None,
@@ -477,6 +476,13 @@ impl Scene for Stage {
             )
         }
         if !world {
+            // The banks' clusters first: their resolve writes no depth and tests none (the
+            // prepass gave theirs), so what's drawn after it over them, nearer, keeps its colour.
+            if banks_clustered(self) {
+                for b in self.bank_stones {
+                    b.shade(pass, lt, ids)
+                }
+            }
             for i in 0..self.built.len() {
                 // Keep resident structures wherever their bounds meet the view. Distance cutoffs
                 // removed stones and walls while they still covered several pixels.
@@ -496,11 +502,6 @@ impl Scene for Stage {
                         }
                     },
                     None => draw_built(pass, self.built[i], lt, cam),
-                }
-            }
-            if banks_clustered(self) {
-                for b in self.bank_stones {
-                    b.shade(pass, lt, ids)
                 }
             }
             for p in self.banks.placements {
@@ -1486,7 +1487,7 @@ fn bank_copies(banks: Instances, k: u32) -> Vec<engine::virtual::Placed> {
 
 /// Whether the banks are drawn through their clusters this frame: all cooked.
 fn banks_clustered(s: Stage) -> bool {
-    s.clustered && s.bank_stones.len() == blockouts::BANK_PROTOTYPES
+    CLUSTERED && s.bank_stones.len() == blockouts::BANK_PROTOTYPES
 }
 
 /// Each built thing whose counts have come fitted to them (`Realized::fitted`): it was realized
@@ -1539,7 +1540,7 @@ pub fn streamed(s: Stage, eye: vec2) -> bool {
     if !s.to_build.is_empty() || s.banks.prototypes.len() < blockouts::BANK_PROTOTYPES {
         return false
     }
-    if s.clustered && s.bank_stones.len() < blockouts::BANK_PROTOTYPES {
+    if CLUSTERED && s.bank_stones.len() < blockouts::BANK_PROTOTYPES {
         return false
     }
     let at = land::place::tile_of(eye)
@@ -2048,7 +2049,7 @@ pub fn cook_load(s: mut Stage, c: mut Cooks, eye: vec2, linear: Sampler) {
             }
             return
         }
-        if s.clustered && s.bank_stones.len() < blockouts::BANK_PROTOTYPES {
+        if CLUSTERED && s.bank_stones.len() < blockouts::BANK_PROTOTYPES {
             if !c.planner.may(Work::Built) {
                 return
             }

@@ -6,6 +6,15 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 
 ## Open
 
+### A branch under a false constant still makes its pipelines
+
+- **Needed:** an experimental path behind a switch that costs a build without it nothing: the Last Green's banks drawn through clusters (`games/last-green/stage.wrela` `CLUSTERED`, false), whose 17 pipelines a player without it shouldn't build.
+- **What happens:** toolchain 0.6.3's pipeline reachability doesn't fold constants: code under `if CLUSTERED { ... }` with `CLUSTERED` false still reaches its kernels, so the build lists their pipelines (`wrela pipelines games/last-green`: 171 with the path, 154 without) and the page builds them at load.
+- **Found:** 2026-10-25, the council's third round on B7c.
+- **Evidence:** the Last Green's opening, cold, in Chrome, two alternating pairs: playable 9.90 and 10.08 s without the path's code, 10.14 and 10.12 s with it switched off (+0.14 s); its pipelines 4.44 and 4.39 s against 4.49 and 4.33 s; its first frame +35 ms.
+- **Meanwhile:** the cost is measured and kept: the path stays in the build, off.
+- **Status:** open: fold a `const` condition before finding what a build reaches (or build a pipeline on its first use).
+
 ### A struct update from a borrowed struct doesn't compile
 
 - **Needed:** a span of the first `n` items of an append buffer (`GpuSpan { count: n, ..a.items() }`), to copy a realized mesh's used part into a mesh fitted to it (`engine::realize::fitted`).

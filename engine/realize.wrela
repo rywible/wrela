@@ -706,7 +706,10 @@ impl Mesh {
 /// `m` fitted to what it holds (`vertices` and `quads`, as its tally and draw read back say): a
 /// mesh with just that room, the used part copied into it, with its draw, skin pass and tally. A
 /// realization makes room for its whole grid's blocks (`prepare`), which a surface crosses a
-/// few of: the Last Green's built things held 558 MiB in that room.
+/// few of: the Last Green's built things held 558 MiB in that room. It's a mesh to draw, not to
+/// realize into again: its vertices' and quads' append counts start at 0 (std can't set an
+/// append buffer's count but by pushing, which would reorder its items), so what reads it reads
+/// its draw, its skin pass's groups and its tally, as every reader of a realized mesh does.
 pub fn fitted(m: take Mesh, vertices: u32, quads: u32) -> Mesh {
     let (v, q) = (max(vertices, 1), max(quads, 1))
     if v >= m.verts.capacity() && q >= m.quads.capacity() {
