@@ -32,13 +32,21 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 
 ## Fixed
 
+### A timed ask timed all of a program's work
+
+- **Needed:** the planner measuring this device's costs by default (docs/plan-world-class.md §B2, D1): the frame asks `std::gpu::timed` for five labels' times (the clouds, the cascades' strips, the probes' occluders and bake).
+- **What happens:** in toolchain 0.6.1 a program's first ask starts a timer that times every pass and dispatch from then on, on both hosts: the browser gives each timed dispatch a compute pass of its own, and the native host reads every frame's timestamps back before the frame call returns. Measuring five costs paid for timing all the work.
+- **Found:** 2026-10-25, benching B13: the clearing's paced 95th percentile in Chrome went from 18.4 ms (B1) to 20.7-29.7 ms with B2's measuring on, and the native frame call from 9.4 to 12.2 ms. With measuring off it was 18.3 ms; with the asks made and their answers ignored, 22.7 ms.
+- **Meanwhile:** nothing: the fix shipped the same day.
+- **Status:** fixed in 0.6.2 (rywible/wrela-compiler#33): outside a run timed from its start, a host times only the work of a label asked for and not yet answered, from the ask on, so the frame asks at its start (`Frame::measure`). The clearing's paced 95th percentile is 18.1 ms, the native call 9.44 ms.
+
 ### A mip step's load didn't compile
 
 - **Needed:** the depth pyramid (docs/plan-world-class.md §B4b): a kernel reads the level before through `MipStep::load` (unfiltered: the farthest of a cell's depths) and writes the next.
 - **What happens:** toolchain 0.6.0 refuses any kernel that calls `MipStep::load`: `error[I0001]: the IR for ... is malformed: ... Load with the wrong arguments` (the lowering gave the texture load no level; `MipStep::sample` passed level 0). Every format alike.
 - **Found:** 2026-10-24, building `engine::cull`'s pyramid.
 - **Meanwhile:** Part B built against rywible/wrela-compiler's `release-0.6.1` branch (`WRELA_TOOLCHAIN`) from §B4b until the release.
-- **Status:** fixed in 0.6.1 (rywible/wrela-compiler#32): the load passes level 0 of the step's view, and the kernels suite tests a 5×3 `R32Float` chain read back. The pin is 0.6.1.
+- **Status:** fixed in 0.6.1 (rywible/wrela-compiler#32): the load passes level 0 of the step's view, and the kernels suite tests a 5×3 `R32Float` chain read back.
 
 ### A pointer can't press a semantic tree's button, and a tick can't find what the frames drew
 

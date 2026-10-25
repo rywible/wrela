@@ -39,7 +39,7 @@ wrela suite                               # everything, before a PR: fmt, allow,
 
 ```bash
 wrela build games/capybara -o build/cand/capybara
-~/.wrela/toolchains/0.6.1/bin/wrela-host build/cand/capybara --frames 600 --size 640x360 \
+~/.wrela/toolchains/0.6.2/bin/wrela-host build/cand/capybara --frames 600 --size 640x360 \
     --workers 1 --rgba out.rgba                        # prints the state hash last
 wrela run games/capybara                               # serve it to a browser
 ```
@@ -105,7 +105,7 @@ wrela-host --compare-ticks a.ticks b.ticks   # two builds' tick logs: equal, or 
 | `reference`          | Replicas of reference meshes, and how far a surface is from one                                           |
 | `route`, `keys`      | The capybara's fastest runs; its piano keys page                                                          |
 | `release`, `deploy`  | A release, and its deploy (CI does these from `main`)                                                     |
-| `bench`              | What the engine's scenes cost on this machine, in Chrome and natively, added to `docs/bench.md` (`--scene herd`, `--compare <report.json>`) |
+| `bench`              | What the engine's scenes cost on this machine, in Chrome and natively, added to `docs/bench.md` (`--scene herd`, `--compare out/<report>.json` for a report in build/bench) |
 
 ## What trips agents up
 
