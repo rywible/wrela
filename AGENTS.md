@@ -9,6 +9,7 @@ This repository holds only Wrela code. The language, its toolchain (compiler, st
 For citing external work, see: ./docs/citations.md
 For operating the toolchain, see ./docs/toolchain.md
 For recording useful toolchain functionality that is currently missing, see ./docs/toolchain-gaps.md
+For recording performance claims (what was measured, on what, with which build), see ./docs/bench.md
 
 ## Rules
 

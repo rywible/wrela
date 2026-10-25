@@ -15,12 +15,12 @@
 //
 // It is presentation, stepped by the frame's time.
 //
-// The play area (contract, D3): the view shows `HALF_HEIGHT` up and down from the camera and,
-// with `Aspect::Fixed` (the default), `HALF_HEIGHT × PLAY_ASPECT` (16:9) across, whatever the
-// screen's shape: a wider screen shows the same course with margins at its sides (pillarboxed), a
-// taller one margins above and below (letterboxed), each in the sky's colour (`play_rect`). So no
-// player sees more of the course ahead for a wider screen. `Aspect::Free` (a setting) fills the
-// screen instead, the view as wide as its shape.
+// The play area (contract, D3; design.md): the view shows `HALF_HEIGHT` up and down from the
+// camera and, with `Aspect::Fixed` (the default), `HALF_HEIGHT × PLAY_ASPECT` (16:9) across,
+// whatever the screen's shape: a wider screen shows the same course with margins at its sides
+// (pillarboxed), a taller one margins above and below (letterboxed), each in the sky's colour
+// (`play_rect`). So no player sees more of the course ahead for a wider screen. `Aspect::Free` (a
+// setting) fills the screen instead, the view as wide as its shape.
 
 use body::Mode
 use feel::FEEL

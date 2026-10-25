@@ -22,6 +22,22 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Meanwhile:** §B7b's two-pass form: an `atomicMax` of the depth's bits, then an `atomicMin` of the id at the winning depth, in `Atomics<u32>` buffers.
 - **Status:** open until a browser ships 64-bit atomics.
 
+### The native host can't be given a pixel ratio
+
+- **Needed:** profiling a 2D game as a 2× display draws it (docs/plan-world-class.md §B10.1): the capybara draws its scene at most 1.5 times its CSS pixels (`engine::sheet::render_size`), from the environment's `pixel_ratio`.
+- **What happens:** the native host's environment has no pixel ratio (`Environment::pixel_ratio` is `None`), and neither `wrela-host` nor `wrela profile` takes one, so a native profile at 2940×1912 draws the scene at the device's full size, as a 1× display.
+- **Found:** 2026-10-25, gating §B10.1 at 2940×1912.
+- **Meanwhile:** the native profiles measure the 1× case (the larger), and the saving a 2× display gets is a browser's; the B10 gate's span is native, so it understates it.
+- **Status:** open: a `--pixel-ratio r` for `wrela-host` and `wrela profile`, which the environment then answers.
+
+### A lifted build takes a storage buffer from every pipeline
+
+- **Needed:** the course lens (§B10.10) lifts the capybara's course in a build that reaches the engine, whose software rasterizer bound eight storage buffers (WebGPU's most).
+- **What happens:** a lifted build binds its literal table last in every pipeline (spec/language.md §23.1), also in the pipelines that read no lifted literal, so a kernel at eight buffers fails the lifted build (E0602, "binds 9 storage buffers") though the normal build passes. The error doesn't say the ninth is the table.
+- **Found:** 2026-10-25, building the course lens on the capybara.
+- **Meanwhile:** the engine's kernels keep to seven storage buffers (the soft rasterizer's depth and id are one buffer).
+- **Status:** open: bind the table only in pipelines whose code reads a lifted literal, or say in E0602 that one of the buffers is the lifted table.
+
 ## Fixed
 
 ### A pointer can't press a semantic tree's button, and a tick can't find what the frames drew

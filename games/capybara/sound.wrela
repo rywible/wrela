@@ -24,9 +24,9 @@
 // Everything on the audio thread is f32 arithmetic in a fixed order, and its noise is seeded, so
 // both hosts give the same samples.
 //
-// The audio budget (a contract): at its busiest (`busiest`, `every_cue`) the voice renders a
-// quantum in under 1.3 ms at the 99th percentile, half the 2.67 ms a quantum lasts, on a slow core
-// (`wrela tool budget`, under `taskpolicy -c background` on a Mac). The piano keeps to
+// The audio budget (a contract, design.md): at its busiest (`busiest`, `every_cue`) the voice
+// renders a quantum in under 1.3 ms at the 99th percentile, half the 2.67 ms a quantum lasts, on a
+// slow core (`wrela tool budget`, under `taskpolicy -c background` on a Mac). The piano keeps to
 // `engine::piano::MAX_SOUNDING` keys at once, and the effects to `TONES` voices.
 
 use engine::piano::{Piano, piano, play_piano}
