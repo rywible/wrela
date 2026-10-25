@@ -12,7 +12,7 @@ use engine::cook::Work
 use land::stream::{near_tile_radius, tile_distance, tile_radius}
 use tower::door::Doorway
 use world::GATE
-use engine::frame::{Cooks, Effects, Scene, Targets, fullscreen}
+use engine::frame::{Cooks, Effects, Scene, Targets, full, fullscreen}
 use engine::grass::{Blooms, Contact, Grass, GrassLook}
 use engine::light::{Light, SUN_TOP, sunlight}
 use engine::lit::Lighting
@@ -37,8 +37,8 @@ use ground::GROUND
 use provenance::NearTile
 use std::collections::{Flags, replace, swap}
 use std::gpu::{
-    Cull, GpuBuffer, GpuSpan, R32Uint, RenderPass, Rgba8, Sampler, ScreenPass, Texture, begin_pass,
-    begin_pass_with_depth, buffer_of, dispatch, draw, label, texture,
+    Blend, Cull, GpuBuffer, GpuSpan, R32Uint, RenderPass, Rgba8, Sampler, ScreenPass, Texture,
+    begin_pass, begin_pass_with_depth, buffer_of, dispatch, draw, label, texture,
 }
 use std::io::{Pending, print}
 
@@ -575,10 +575,16 @@ impl Scene for Stage {
                 ),
                 over: t.shafts,
             )
-            let ap = begin_pass(mut t.scene_b)
-            fullscreen(ap, add_shafts.bind(scene: t.scene, shafts: t.shafts, s: fx.lt.s))
+            let size = vec2(f32(t.scene.width()), f32(t.scene.height()))
+            let ap = begin_pass(mut t.scene, keep: true)
+            draw(
+                ap,
+                full.bind(z: 0.5),
+                add_shafts.bind(shafts: t.shafts, size: size, s: fx.lt.s),
+                vertices: 3,
+                blend: Blend::Add,
+            )
             ap.end()
-            swap(mut t.scene, mut t.scene_b)
         }
     }
 

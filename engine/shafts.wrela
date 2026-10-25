@@ -4,8 +4,8 @@
 // quarter of the output's pixels, through the sun's static shadow cascades and the clouds'
 // shadow. Its start moves each frame, and temporal AA settles it. Each step adds the light that
 // reaches it, scattered forward (a Henyey-Greenstein lobe round the sun) and dimmed by the air
-// between it and the eye. `add_shafts` adds the result to the scene before temporal AA, into the
-// scene's second target.
+// between it and the eye. `add_shafts` adds the result to the scene before temporal AA, drawn
+// over it with `Blend::Add`.
 
 use light::Light
 use shadow::{Shadows, statically_sunlit}
@@ -81,17 +81,11 @@ pub fn march_shafts(
     out.store(id, vec4(c, 1.0))
 }
 
-/// The scene's pixel with the shafts added (their texel's, bilinear: four taps cost twice the
-/// pass), its tag kept.
+/// The shafts' light at the scene's pixel (their texel's, bilinear: four taps cost twice the
+/// pass), drawn with `Blend::Add` over the scene, so its tag (alpha 0 added) is kept and the
+/// scene isn't copied.
 @fragment
-pub fn add_shafts(
-    pixel: FragCoord,
-    scene: Texture<Rgba16Float>,
-    shafts: Texture<Rgba16Float>,
-    s: Sampler,
-) -> vec4 {
-    let p = vec2u(pixel.position.xy)
-    let c = scene.load(x: p.x, y: p.y)
-    let uv = pixel.position.xy / vec2(f32(scene.width()), f32(scene.height()))
-    vec4(c.rgb + shafts.sample_level(s, uv).rgb, c.a)
+pub fn add_shafts(pixel: FragCoord, shafts: Texture<Rgba16Float>, size: vec2, s: Sampler) -> vec4 {
+    let uv = pixel.position.xy / size
+    vec4(shafts.sample_level(s, uv).rgb, 0.0)
 }
