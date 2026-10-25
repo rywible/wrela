@@ -54,7 +54,7 @@ use engine::view::flat_camera
 use sprites::{Sprite, sprite}
 use std::gpu::{
     Address, GpuBuffer, Rgba16Float, Sampler, Texture, begin_pass, begin_screen_pass, buffer,
-    buffer_of, draw, sampler, write,
+    buffer_of, draw, label, sampler, write,
 }
 use ui::draw::{DrawList, Rect, Renderer}
 use std::input::{Event, Key, PadButton, events}
@@ -147,6 +147,9 @@ pub struct Lab {
     /// last sent; and the requests to it still out.
     environment: Option<Pending<u8>>,
     capabilities: Option<u32>,
+    /// The device's pixels to a CSS pixel, as the host's environment says (1 until it has, or
+    /// where it doesn't).
+    ratio: f32,
     tree: Sent,
     told: Vec<Pending<u8>>,
     /// The player's runs (replay.wrela), as they load from storage and are stored again, and when
@@ -235,6 +238,7 @@ pub fn init() -> Lab {
         sign_list: DrawList::new(),
         environment: Some(host::environment()),
         capabilities: None,
+        ratio: 1.0,
         tree: Sent {},
         told: Vec::new(),
         runs: board(),
@@ -386,7 +390,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     follow(mut s.camera, snap, dt)
     // The scene is drawn at the render scale (paced by the frames), the page and the HUD at the
     // screen's size.
-    let (rw, rh) = s.sheet.begin(dt, width, height)
+    let (rw, rh) = s.sheet.begin(dt, width, height, ratio: s.ratio)
     if dt > 0.0 && dt < 0.25 {
         s.frame_time = if s.frame_time == 0.0 { dt } else {
             s.frame_time + (dt - s.frame_time) * 0.05
@@ -470,6 +474,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     let stage = Stage { view_proj, px, time, first: 0 }
     // The scene: the sky and the zoo behind (one pass, nearest first); the ground and its grass; the
     // cast.
+    label("scene")
     let scene = begin_pass(mut s.sheet.scene)
     draw(
         scene,
@@ -505,7 +510,9 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     s.signs.draw(scene, scene_size)
     scene.end()
     // The water reads a copy of the scene, bending what's behind it; the splashes go over it.
+    label("water copy")
     s.sheet.copy_below(s.linear)
+    label("water")
     let wet = begin_pass(mut s.sheet.scene, keep: true)
     let pond = Pond { view_proj, centre: eye, half, px, time }
     draw(
@@ -529,6 +536,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         instances: back.len() - behind,
     )
     wet.end()
+    label("page")
     let out = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
     let (iris, open) = cast::iris(s.cast, snap, lag)
     let page = Page {
@@ -650,6 +658,9 @@ fn host_answers(s: mut Lab) {
             Ok(b) => host::read_environment(b).capabilities,
             Err(_) => 0,
         })
+        if let Ok(b) = result {
+            s.ratio = host::read_environment(b).pixel_ratio.unwrap_or(1.0)
+        }
     }
     var i = 0
     while i < s.told.len() {

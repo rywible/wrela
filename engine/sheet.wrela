@@ -1,7 +1,9 @@
 // A flat frame: a scene drawn at a render scale the frames keep (`Scale`, `pace`), a copy of it
 // under what bends it (water), and a page that stretches it over the screen at the screen's own
 // size (the game's fragment shader). No depth, no light, no history: a 2D game's (the capybara's),
-// which pays for nothing a lit 3D frame (`engine::frame`) does.
+// which pays for nothing a lit 3D frame (`engine::frame`) does. Its targets hold display colours
+// (`Rgba8`: no light is simulated), at most one and a half times the screen's logical size (its
+// CSS pixels: `render_size`), however many device pixels a CSS pixel is.
 //
 //     let size = sheet.begin(dt, width, height)   paced, the targets sized
 //     begin_pass(mut sheet.scene) ...             the scene
@@ -10,13 +12,13 @@
 //     begin_screen_pass(...) + the page           stretched over the screen
 
 use frame::full
-use std::gpu::{FragCoord, Rgba16Float, Sampler, Texture, begin_pass, draw, texture}
+use std::gpu::{FragCoord, Rgba8, Sampler, Texture, begin_pass, draw, texture}
 
 /// A flat frame's targets at the render scale (`width` × `height`, the scene's), the scale kept
 /// by watching the frames, and the screen's size the last frame.
 pub struct Sheet {
-    pub scene: Texture<Rgba16Float>,
-    pub below: Texture<Rgba16Float>,
+    pub scene: Texture<Rgba8>,
+    pub below: Texture<Rgba8>,
     pub width: u32,
     pub height: u32,
     pub scale: Scale,
@@ -34,11 +36,12 @@ pub fn sheet() -> Sheet {
 }
 
 impl Sheet {
-    /// A frame `dt` seconds after the last, on a screen `width` × `height`: the scale paced by
-    /// it, and the targets made again at the scene's size if it changed. The scene's size.
-    pub fn begin(mut self, dt: f32, width: u32, height: u32) -> (u32, u32) {
+    /// A frame `dt` seconds after the last, on a screen `width` × `height` (device pixels, `ratio`
+    /// of them a CSS pixel): the scale paced by it, and the targets made again at the scene's size
+    /// if it changed. The scene's size.
+    pub fn begin(mut self, dt: f32, width: u32, height: u32, ratio: f32 = 1.0) -> (u32, u32) {
         pace(mut self.scale, dt)
-        let (w, h) = render_size(self.scale, width, height)
+        let (w, h) = render_size(self.scale, width, height, ratio)
         if w != self.width || h != self.height {
             self.scene = texture(width: w, height: h)
             self.below = texture(width: w, height: h)
@@ -58,7 +61,7 @@ impl Sheet {
 
 /// A copy of `src`, texel for texel.
 @fragment
-pub fn copy(pixel: FragCoord, src: Texture<Rgba16Float>, s: Sampler) -> vec4 {
+pub fn copy(pixel: FragCoord, src: Texture<Rgba8>, s: Sampler) -> vec4 {
     let size = vec2(f32(src.width()), f32(src.height()))
     src.sample_level(s, pixel.position.xy / size)
 }
@@ -141,10 +144,17 @@ pub fn pace(g: mut Scale, dt: f32) {
     g.late = 0
 }
 
-/// The size the scene is drawn at, for a screen `width` by `height` (px).
-pub fn render_size(g: Scale, width: u32, height: u32) -> (u32, u32) {
-    let w = max(u32(round(f32(width) * g.value)), 4)
-    let h = max(u32(round(f32(height) * g.value)), 4)
+/// How many device pixels the scene is drawn at a CSS pixel, at most: a 2× display's scene is
+/// drawn at 1.5× (the page stretches it the rest), which a painted picture loses nothing by.
+pub const MOST_DENSITY: f32 = 1.5
+
+/// The size the scene is drawn at, for a screen `width` by `height` (device pixels, `ratio` of
+/// them a CSS pixel): the screen's CSS size at `MOST_DENSITY`, no more than its device pixels,
+/// times the scale.
+pub fn render_size(g: Scale, width: u32, height: u32, ratio: f32 = 1.0) -> (u32, u32) {
+    let dense = min(MOST_DENSITY / max(ratio, 1.0), 1.0)
+    let w = max(u32(round(f32(width) * dense * g.value)), 4)
+    let h = max(u32(round(f32(height) * dense * g.value)), 4)
     (w, h)
 }
 
@@ -190,4 +200,13 @@ fn a_pause_and_the_first_frames_dont_move_the_scale() {
     pace(mut g, 3.0)
     assert(g.value == 1.0)
     assert(render_size(g, width: 2940, height: 1912) == (2940, 1912))
+}
+
+/// A 2× display's scene is drawn at 1.5× its CSS size; a 1× display's at its own; a 3×'s at 1.5×.
+@test
+fn the_scene_is_drawn_at_most_one_and_a_half_times_css_pixels() {
+    let g = Scale {}
+    assert(render_size(g, width: 2940, height: 1912, ratio: 2.0) == (2205, 1434))
+    assert(render_size(g, width: 1280, height: 720, ratio: 1.0) == (1280, 720))
+    assert(render_size(g, width: 1170, height: 2532, ratio: 3.0) == (585, 1266))
 }

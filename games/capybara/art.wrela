@@ -18,7 +18,7 @@ use engine::noise::noise2_wrapped
 use engine::frame::full
 use ink::{GRAIN_CELLS, INK, PAPER}
 use shapes::blend
-use std::gpu::{FragCoord, Rgba16Float, Sampler, Texture, begin_pass, draw, texture}
+use std::gpu::{FragCoord, Rgba16Float, Rgba8, Sampler, Texture, begin_pass, draw, texture}
 
 /// The grain's texels a cell (`ink::GRAIN`): enough that reading between them is the noise's own
 /// smooth blend, near enough.
@@ -64,7 +64,7 @@ pub struct Page: Copy + GpuData {
 /// The page: the scene, its colours a little more vivid, the corners darker, and the iris: outside
 /// it, the page dark as ink, a ring of ink round its edge.
 @fragment
-pub fn finish(pixel: FragCoord, scene: Texture<Rgba16Float>, s: Sampler, page: Page) -> vec4 {
+pub fn finish(pixel: FragCoord, scene: Texture<Rgba8>, s: Sampler, page: Page) -> vec4 {
     let size = page.screen
     let uv = pixel.position.xy / size
     var c = scene.sample_level(s, uv).rgb

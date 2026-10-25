@@ -16,7 +16,7 @@ use shapes::blend
 use engine::noise::{hash2, noise2}
 use ground::triangulate
 use std::gpu::{
-    ClipPosition, FragCoord, Flat, Over, Rgba16Float, Sampler, Texture, VertexIndex, discard,
+    ClipPosition, FragCoord, Flat, Over, Rgba16Float, Rgba8, Sampler, Texture, VertexIndex, discard,
 }
 
 /// A column's width (m).
@@ -241,7 +241,7 @@ pub fn water(
     f: Pond,
     pools: [vec4],
     heights: [f32],
-    below: Texture<Rgba16Float>,
+    below: Texture<Rgba8>,
     s: Sampler,
 ) -> Over {
     let p = w.world
