@@ -13,6 +13,7 @@
 use light::{CLAY, LUMA, Light, sun_reflection}
 use lit::{Lighting, sun_and_gloss, through_air}
 use noise::noise2
+use reflect::reflected_on_screen
 use sky::clouded_sky
 use std::gpu::{ClipPosition, FragCoord, Rgba16Float, Texture, VertexIndex}
 use std::math::TAU
@@ -185,20 +186,6 @@ impl WaterMesh {
 
 // ---- drawing ------------------------------------------------------------------------------------
 
-/// What the water's pass reads of the scene drawn before it: its colour, and each pixel's
-/// distance along the view (m; the sky's 60 km), written by `copy_below`.
-@fragment
-pub fn copy_below(
-    pixel: FragCoord,
-    scene: Texture<Rgba16Float>,
-    depth: std::gpu::DepthTexture,
-    cam: Camera,
-) -> vec4 {
-    let p = vec2u(pixel.position.xy)
-    let d = depth.load(x: p.x, y: p.y)
-    vec4(scene.load(x: p.x, y: p.y).rgb, min(cam.distance_of(d), 60000.0))
-}
-
 /// A look of the water: its colour deep (what light it scatters back, per metre of sky light),
 /// how fast it dims what's under it (per metre, each channel), its ripples' strength, still and
 /// flowing, how much the reflection shows (1 Fresnel's), its foam's colour, and how many bands
@@ -329,182 +316,6 @@ fn sun_glint(n: vec3, sun: vec3, v: vec3, lost: f32, flowing: bool) -> f32 {
 fn ripple_roughness(lost: f32, flowing: bool) -> f32 {
     let slope_width = mix(if flowing { 0.16 } else { 0.08 }, 0.25, clamp(lost, 0.0, 1.0))
     sqrt(slope_width)
-}
-
-/// How far a reflection from the screen marches, in steps (a whole number of threes:
-/// `reflected_on_screen`), and how far each goes (m, growing).
-const MARCH: u32 = 24
-const FIRST: f32 = 0.4
-
-/// A bilinear colour sample restricted to the hit's depth layer. The colour taps cannot
-/// borrow a nearer bank or trunk just because the reflection's centre hit the water's far
-/// shore. Weight is retained as coverage so narrow silhouettes fade toward the fallback.
-fn reflection_colour(below: Texture<Rgba16Float>, px: vec2, depth: f32, tolerance: f32) -> vec4 {
-    let q = px - vec2(0.5)
-    let base = vec2i(floor(q))
-    let f = fract(q)
-    let limit = vec2i(i32(below.width()) - 1, i32(below.height()) - 1)
-    var colour = vec3(0.0)
-    var weight = 0.0
-    for y in 0..2 {
-        for x in 0..2 {
-            let p = clamp(base + vec2i(x, y), vec2i(0), limit)
-            let sample = below.load(x: u32(p.x), y: u32(p.y))
-            let same = 1.0 - smoothstep(tolerance * 0.25, tolerance, abs(sample.a - depth))
-            let w = (if x == 0 { 1.0 - f.x } else { f.x }) * (if y == 0 { 1.0 - f.y } else {
-                f.y
-            }) * same
-            colour += sample.rgb * w
-            weight += w
-        }
-    }
-    vec4(colour, weight)
-}
-
-/// The world the water's reflection meets from the screen: marched from `world` along `r` in
-/// view space against `below`'s distances, the colour where the ray goes behind what's there
-/// (within the step's length), and how much to trust it (fading at the screen's edges, and to
-/// nothing where it leaves the screen or comes back toward the eye).
-pub fn reflected_on_screen(
-    cam: Camera,
-    below: Texture<Rgba16Float>,
-    world: vec3,
-    r: vec3,
-    rough: f32,
-) -> vec4 {
-    // The hit is filtered after the march, so a group of pixels whose rays meet surfaces at
-    // different steps filters them together, once.
-    let m = reflection_march(cam, below, world, r)
-    if !m.hit {
-        return vec4(0.0)
-    }
-    reflection_at(below, cam, m.px, m.seen, m.d, m.len, rough)
-}
-
-/// Where a reflection's march meets a surface (`hit`): its pixel, the surface's distance there,
-/// and the step's distance and length.
-pub struct Met: Copy {
-    pub hit: bool,
-    pub px: vec2,
-    pub seen: f32,
-    pub d: f32,
-    pub len: f32,
-}
-
-/// The march of `reflected_on_screen`: from `world` along `r` in view space against `below`'s
-/// distances, until a step goes behind what's there (within the step's length), or leaves the
-/// screen, goes under the water or comes back toward the eye.
-pub fn reflection_march(cam: Camera, below: Texture<Rgba16Float>, world: vec3, r: vec3) -> Met {
-    var len = FIRST
-    var at = world
-    let shift = cam.jitter * cam.screen * vec2(0.5, -0.5)
-    var hit = false
-    var px = vec2(0.0)
-    var seen = 0.0
-    var d = 0.0
-    // The steps go in threes. Every step is checked for the march's ends, but only the third's
-    // texel is read; if it lands behind a surface (or the march ends within the three), the
-    // first two are read and tested first, so a surface either was behind is met there, as one
-    // step at a time would meet it. A surface is passed by only where a first or second step is
-    // behind it and the third is in front of what lies beyond: a thin one, met between reads.
-    // The march's reads wait on each other (reading four steps at once was slower), so a third
-    // of them is what it saves.
-    for _ in 0..MARCH / 3 {
-        at += r * len
-        if at.y < world.y {
-            return Met { hit: false, px, seen, d, len }
-        }
-        let p1 = cam.pixel(at) + shift
-        if outside(p1, cam.screen) {
-            return Met { hit: false, px, seen, d, len }
-        }
-        let d1 = dot(at - cam.eye, cam.forward)
-        if d1 <= cam.near {
-            return Met { hit: false, px, seen, d, len }
-        }
-        let l1 = len
-        len *= 1.18
-        at += r * len
-        let p2 = cam.pixel(at) + shift
-        let d2 = dot(at - cam.eye, cam.forward)
-        let end2 = at.y < world.y || outside(p2, cam.screen) || d2 <= cam.near
-        let l2 = len
-        if !end2 {
-            len *= 1.18
-            at += r * len
-        }
-        px = cam.pixel(at) + shift
-        d = dot(at - cam.eye, cam.forward)
-        let ends = end2 || at.y < world.y || outside(px, cam.screen) || d <= cam.near
-        seen = if ends { 0.0 } else { below.load(x: u32(px.x), y: u32(px.y)).a }
-        if ends || seen < d {
-            let s1 = below.load(x: u32(p1.x), y: u32(p1.y)).a
-            if s1 < d1 && d1 - s1 < thickness(l1) {
-                px = p1
-                seen = s1
-                d = d1
-                len = l1
-                hit = true
-                break
-            }
-            if !end2 {
-                let s2 = below.load(x: u32(p2.x), y: u32(p2.y)).a
-                if s2 < d2 && d2 - s2 < thickness(l2) {
-                    px = p2
-                    seen = s2
-                    d = d2
-                    len = l2
-                    hit = true
-                    break
-                }
-            }
-            if ends {
-                return Met { hit: false, px, seen, d, len }
-            }
-            if d - seen < thickness(len) {
-                hit = true
-                break
-            }
-        }
-        len *= 1.18
-    }
-    Met { hit, px, seen, d, len }
-}
-
-/// How far behind what's there a reflection's step of length `len` may go and still meet it (m):
-/// the ray's thickness.
-fn thickness(len: f32) -> f32 {
-    len * 1.5 + 0.2
-}
-
-/// Whether pixel `px` is off a target `screen` pixels in size.
-fn outside(px: vec2, screen: vec2) -> bool {
-    px.x < 0.0 || px.y < 0.0 || px.x >= screen.x || px.y >= screen.y
-}
-
-/// The reflection where the march found it (`reflected_on_screen`): at `px`, a surface at
-/// distance `seen` that the step of length `len` reached at `d`.
-fn reflection_at(
-    below: Texture<Rgba16Float>,
-    cam: Camera,
-    px: vec2,
-    seen: f32,
-    d: f32,
-    len: f32,
-    rough: f32,
-) -> vec4 {
-    let edge = min(min(px.x, cam.screen.x - px.x), min(px.y, cam.screen.y - px.y))
-    // A hit close to the ray thickness limit is uncertain. Fade it before the next frame can
-    // lose it; nearest-depth tests still prevent foreground leaks.
-    let trust = smoothstep(0.0, 0.08 * cam.screen.y, edge) *
-        (1.0 - smoothstep(0.25, 1.0, (d - seen) / thickness(len)))
-    let spread = 1.0 + rough * 4.0
-    let tolerance = min(thickness(len), 0.05 + seen * 0.02)
-    let filtered = reflection_colour(below, px + vec2(spread, 0.0), seen, tolerance) +
-        reflection_colour(below, px - vec2(spread, 0.0), seen, tolerance) +
-        reflection_colour(below, px + vec2(0.0, spread), seen, tolerance) +
-        reflection_colour(below, px - vec2(0.0, spread), seen, tolerance)
-    vec4(filtered.rgb / max(filtered.a, 1.0e-6), trust * filtered.a * 0.25)
 }
 
 /// The water's pixel: what's under it through it, the world reflected, the sun's glint, foam.

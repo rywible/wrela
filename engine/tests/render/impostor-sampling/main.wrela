@@ -224,6 +224,8 @@ pub fn frame(time: f32, width: u32, height: u32) {
     let cascade = Cascade { centre: vec3(0.0), span: 20.0, reach: 20.0, side: 1 }
     let sun = normalize(vec3(1.0, 1.0, 1.0))
     let no_lights = buffer_of([0])
+    let no_screen = std::gpu::texture::<Rgba16Float>(width: 1, height: 1)
+    let no_spec = std::gpu::cubemap::<Rgba16Float>(side: 1)
     let lt = Lighting {
         cam,
         light: Light {
@@ -265,6 +267,9 @@ pub fn frame(time: f32, width: u32, height: u32) {
         ambient: engine::ambient::OPEN,
         froxels: engine::lights::DARK,
         lights: no_lights.items(),
+        mirror: engine::reflect::Mirror { cam, on: 0, probe: 0 },
+        screen: no_screen,
+        spec: no_spec,
         ao: cloud,
         s,
     }

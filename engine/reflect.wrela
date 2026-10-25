@@ -1,0 +1,474 @@
+// Reflections: the world a glossy surface reflects, from the screen where what it reflects is on
+// it, and from a specular probe where it isn't.
+//
+// - The screen's march (`reflected_on_screen`, from the water's: `water`): from the surface along
+//   the reflected ray in view space against a copy of the scene's colour and each pixel's
+//   distance (`copy_below`), the colour where the ray goes behind what's there, filtered by the
+//   surface's roughness, and how much to trust it. The water marches against the scene under it
+//   this frame; the opaque passes, which shade as they draw, against the last frame's copy, as
+//   its camera saw it (`Mirror`).
+// - The specular probe (`Specular`): the sky round the probes' middle in a cube (the air's sky
+//   and the clouds' dome above the horizon, open land below it), baked a face a frame, and
+//   prefiltered into `LEVELS` levels for roughness 0 to `GLOSSY` (Karis, Real Shading in Unreal
+//   Engine 4, 2013: GGX's lobe sampled about the reflection, as if the eye looked along it).
+// - `lit::reflect` puts them together for a surface rougher than nothing and smoother than
+//   `GLOSSY`; rougher ones keep the probes' own light toward their reflection.
+
+use light::{LUMA, Light}
+use probes::open_light
+use sky::clouded_sky
+use std::gpu::{
+    Cubemap, FragCoord, GlobalId, Rgba16Float, Sampler, Texels, Texture, dispatch, label,
+    writable_cubemap,
+}
+use std::math::{PI, TAU}
+use view::Camera
+
+/// What the water's pass reads of the scene drawn before it: its colour, and each pixel's
+/// distance along the view (m; the sky's 60 km), written by `copy_below`.
+@fragment
+pub fn copy_below(
+    pixel: FragCoord,
+    scene: Texture<Rgba16Float>,
+    depth: std::gpu::DepthTexture,
+    cam: Camera,
+) -> vec4 {
+    let p = vec2u(pixel.position.xy)
+    let d = depth.load(x: p.x, y: p.y)
+    vec4(scene.load(x: p.x, y: p.y).rgb, min(cam.distance_of(d), 60000.0))
+}
+
+/// How far a reflection from the screen marches, in steps (a whole number of threes:
+/// `reflected_on_screen`), and how far each goes (m, growing).
+const MARCH: u32 = 24
+const FIRST: f32 = 0.4
+
+/// A bilinear colour sample restricted to the hit's depth layer. The colour taps cannot
+/// borrow a nearer bank or trunk just because the reflection's centre hit the water's far
+/// shore. Weight is retained as coverage so narrow silhouettes fade toward the fallback.
+fn reflection_colour(below: Texture<Rgba16Float>, px: vec2, depth: f32, tolerance: f32) -> vec4 {
+    let q = px - vec2(0.5)
+    let base = vec2i(floor(q))
+    let f = fract(q)
+    let limit = vec2i(i32(below.width()) - 1, i32(below.height()) - 1)
+    var colour = vec3(0.0)
+    var weight = 0.0
+    for y in 0..2 {
+        for x in 0..2 {
+            let p = clamp(base + vec2i(x, y), vec2i(0), limit)
+            let sample = below.load(x: u32(p.x), y: u32(p.y))
+            let same = 1.0 - smoothstep(tolerance * 0.25, tolerance, abs(sample.a - depth))
+            let w = (if x == 0 { 1.0 - f.x } else { f.x }) * (if y == 0 { 1.0 - f.y } else {
+                f.y
+            }) * same
+            colour += sample.rgb * w
+            weight += w
+        }
+    }
+    vec4(colour, weight)
+}
+
+/// The world the water's reflection meets from the screen: marched from `world` along `r` in
+/// view space against `below`'s distances, the colour where the ray goes behind what's there
+/// (within the step's length), and how much to trust it (fading at the screen's edges, and to
+/// nothing where it leaves the screen or comes back toward the eye).
+pub fn reflected_on_screen(
+    cam: Camera,
+    below: Texture<Rgba16Float>,
+    world: vec3,
+    r: vec3,
+    rough: f32,
+) -> vec4 {
+    reflected_above(cam, below, world, r, rough, floor: world.y)
+}
+
+/// `reflected_on_screen`, the march ending where the ray goes under `floor` (m: the water's
+/// surface; a surface that isn't water has none, -1e9).
+pub fn reflected_above(
+    cam: Camera,
+    below: Texture<Rgba16Float>,
+    world: vec3,
+    r: vec3,
+    rough: f32,
+    floor: f32,
+) -> vec4 {
+    // The hit is filtered after the march, so a group of pixels whose rays meet surfaces at
+    // different steps filters them together, once.
+    let m = march_above(cam, below, world, r, floor)
+    if !m.hit {
+        return vec4(0.0)
+    }
+    reflection_at(below, cam, m.px, m.seen, m.d, m.len, rough)
+}
+
+/// Where a reflection's march meets a surface (`hit`): its pixel, the surface's distance there,
+/// and the step's distance and length.
+pub struct Met: Copy {
+    pub hit: bool,
+    pub px: vec2,
+    pub seen: f32,
+    pub d: f32,
+    pub len: f32,
+}
+
+/// The march of `reflected_on_screen`: from `world` along `r` in view space against `below`'s
+/// distances, until a step goes behind what's there (within the step's length), or leaves the
+/// screen, goes under the water or comes back toward the eye.
+pub fn reflection_march(cam: Camera, below: Texture<Rgba16Float>, world: vec3, r: vec3) -> Met {
+    march_above(cam, below, world, r, floor: world.y)
+}
+
+/// `reflection_march`, ending where the ray goes under `floor` (m).
+fn march_above(cam: Camera, below: Texture<Rgba16Float>, world: vec3, r: vec3, floor: f32) -> Met {
+    var len = FIRST
+    var at = world
+    let shift = cam.jitter * cam.screen * vec2(0.5, -0.5)
+    var hit = false
+    var px = vec2(0.0)
+    var seen = 0.0
+    var d = 0.0
+    // The steps go in threes. Every step is checked for the march's ends, but only the third's
+    // texel is read; if it lands behind a surface (or the march ends within the three), the
+    // first two are read and tested first, so a surface either was behind is met there, as one
+    // step at a time would meet it. A surface is passed by only where a first or second step is
+    // behind it and the third is in front of what lies beyond: a thin one, met between reads.
+    // The march's reads wait on each other (reading four steps at once was slower), so a third
+    // of them is what it saves.
+    for _ in 0..MARCH / 3 {
+        at += r * len
+        if at.y < floor {
+            return Met { hit: false, px, seen, d, len }
+        }
+        let p1 = cam.pixel(at) + shift
+        if outside(p1, cam.screen) {
+            return Met { hit: false, px, seen, d, len }
+        }
+        let d1 = dot(at - cam.eye, cam.forward)
+        if d1 <= cam.near {
+            return Met { hit: false, px, seen, d, len }
+        }
+        let l1 = len
+        len *= 1.18
+        at += r * len
+        let p2 = cam.pixel(at) + shift
+        let d2 = dot(at - cam.eye, cam.forward)
+        let end2 = at.y < floor || outside(p2, cam.screen) || d2 <= cam.near
+        let l2 = len
+        if !end2 {
+            len *= 1.18
+            at += r * len
+        }
+        px = cam.pixel(at) + shift
+        d = dot(at - cam.eye, cam.forward)
+        let ends = end2 || at.y < floor || outside(px, cam.screen) || d <= cam.near
+        seen = if ends { 0.0 } else { below.load(x: u32(px.x), y: u32(px.y)).a }
+        if ends || seen < d {
+            let s1 = below.load(x: u32(p1.x), y: u32(p1.y)).a
+            if s1 < d1 && d1 - s1 < thickness(l1) {
+                px = p1
+                seen = s1
+                d = d1
+                len = l1
+                hit = true
+                break
+            }
+            if !end2 {
+                let s2 = below.load(x: u32(p2.x), y: u32(p2.y)).a
+                if s2 < d2 && d2 - s2 < thickness(l2) {
+                    px = p2
+                    seen = s2
+                    d = d2
+                    len = l2
+                    hit = true
+                    break
+                }
+            }
+            if ends {
+                return Met { hit: false, px, seen, d, len }
+            }
+            if d - seen < thickness(len) {
+                hit = true
+                break
+            }
+        }
+        len *= 1.18
+    }
+    Met { hit, px, seen, d, len }
+}
+
+/// How far behind what's there a reflection's step of length `len` may go and still meet it (m):
+/// the ray's thickness.
+fn thickness(len: f32) -> f32 {
+    len * 1.5 + 0.2
+}
+
+/// Whether pixel `px` is off a target `screen` pixels in size.
+fn outside(px: vec2, screen: vec2) -> bool {
+    px.x < 0.0 || px.y < 0.0 || px.x >= screen.x || px.y >= screen.y
+}
+
+/// The reflection where the march found it (`reflected_on_screen`): at `px`, a surface at
+/// distance `seen` that the step of length `len` reached at `d`.
+fn reflection_at(
+    below: Texture<Rgba16Float>,
+    cam: Camera,
+    px: vec2,
+    seen: f32,
+    d: f32,
+    len: f32,
+    rough: f32,
+) -> vec4 {
+    let edge = min(min(px.x, cam.screen.x - px.x), min(px.y, cam.screen.y - px.y))
+    // A hit close to the ray thickness limit is uncertain. Fade it before the next frame can
+    // lose it; nearest-depth tests still prevent foreground leaks.
+    let trust = smoothstep(0.0, 0.08 * cam.screen.y, edge) *
+        (1.0 - smoothstep(0.25, 1.0, (d - seen) / thickness(len)))
+    let spread = 1.0 + rough * 4.0
+    let tolerance = min(thickness(len), 0.05 + seen * 0.02)
+    let filtered = reflection_colour(below, px + vec2(spread, 0.0), seen, tolerance) +
+        reflection_colour(below, px - vec2(spread, 0.0), seen, tolerance) +
+        reflection_colour(below, px + vec2(0.0, spread), seen, tolerance) +
+        reflection_colour(below, px - vec2(0.0, spread), seen, tolerance)
+    vec4(filtered.rgb / max(filtered.a, 1.0e-6), trust * filtered.a * 0.25)
+}
+
+
+// ---- the specular probe -------------------------------------------------------------------
+
+/// The cube's faces' side (texels), its levels, and the roughest surface it's for (perceptual
+/// roughness: its last level's).
+pub const SIDE: u32 = 64
+pub const LEVELS: u32 = 5
+pub const GLOSSY: f32 = 0.3
+
+/// The specular probe: the sky round it (`sky`, a level), and its levels prefiltered for
+/// roughness (`cube`, `LEVELS`); the face baked next, and whether every face has been.
+pub struct Specular {
+    pub sky: Cubemap<Rgba16Float>,
+    pub cube: Cubemap<Rgba16Float>,
+    pub face: u32,
+    pub baked: bool,
+}
+
+impl Specular {
+    /// A probe not yet baked.
+    pub fn new() -> Specular {
+        Specular {
+            sky: writable_cubemap::<Rgba16Float>(side: SIDE),
+            cube: writable_cubemap::<Rgba16Float>(side: SIDE, levels: LEVELS),
+            face: 0,
+            baked: false,
+        }
+    }
+
+    /// The next face baked: the sky that way (`view`, the air's sky table, and `dome`, the
+    /// clouds', read through `s`; the open sky's light on the ground below the horizon, from
+    /// the probes' `maps`, on ground of albedo `ground`), then its levels prefiltered from the
+    /// sky's faces as they are.
+    pub fn bake_face(
+        mut self,
+        light: Light,
+        ground: vec3,
+        view: Texture<Rgba16Float>,
+        dome: Texture<Rgba16Float>,
+        maps: Texture<Rgba16Float>,
+        s: Sampler,
+    ) {
+        label("reflections probe")
+        let f = self.face
+        dispatch(
+            bake_sky.bind(
+                light,
+                ground,
+                view,
+                dome,
+                maps,
+                s,
+                face: f,
+                out: self.sky.face_mut(f),
+            ),
+            over: (SIDE, SIDE),
+        )
+        for level in 0..LEVELS {
+            let side = max(SIDE >> level, 1)
+            dispatch(
+                prefilter.bind(
+                    face: f,
+                    level: level,
+                    side: side,
+                    sky: self.sky,
+                    s: s,
+                    out: self.cube.face_mut(f, level: level),
+                ),
+                over: (side, side),
+            )
+        }
+        self.face = (f + 1) % 6
+        self.baked = self.baked || self.face == 0
+    }
+}
+
+/// The direction from a cube's centre through texel `uv` (0 to 1 across, rows down) of face
+/// `face` (+x, -x, +y, -y, +z, -z: WebGPU's order and orientation).
+pub fn face_dir(face: u32, uv: vec2) -> vec3 {
+    let a = uv * 2.0 - vec2(1.0)
+    let d = if face == 0 { vec3(1.0, -a.y, -a.x) } else if face == 1 { vec3(-1.0, -a.y, a.x) } else if face == 2 {
+        vec3(a.x, 1.0, a.y)
+    } else if face == 3 { vec3(a.x, -1.0, -a.y) } else if face == 4 { vec3(a.x, -a.y, 1.0) } else {
+        vec3(-a.x, -a.y, -1.0)
+    }
+    normalize(d)
+}
+
+/// Texel `id` of face `face` of the sky round the probe: the sky and its clouds above the
+/// horizon; below it, open ground lit by the open sky (`probes::open_light`) and the sun.
+@compute(8, 8)
+fn bake_sky(
+    light: Light,
+    ground: vec3,
+    view: Texture<Rgba16Float>,
+    dome: Texture<Rgba16Float>,
+    maps: Texture<Rgba16Float>,
+    s: Sampler,
+    face: u32,
+    out: mut Texels<Rgba16Float>,
+    id: GlobalId,
+) {
+    if id.x >= SIDE || id.y >= SIDE {
+        return
+    }
+    let d = face_dir(face, (vec2(f32(id.x), f32(id.y)) + vec2(0.5)) / f32(SIDE))
+    let c = if d.y > 0.0 { clouded_sky(view, light, d, dome, s) } else {
+        ground * open_light(maps, vec3(0.0, 1.0, 0.0))
+    }
+    out.store(id, vec4(c, 1.0))
+}
+
+/// The `i`th of `n` points of the Hammersley set in the unit square.
+fn hammersley(i: u32, n: u32) -> vec2 {
+    var b = i
+    b = (b << 16) | (b >> 16)
+    b = ((b & 0x55555555) << 1) | ((b & 0xAAAAAAAA) >> 1)
+    b = ((b & 0x33333333) << 2) | ((b & 0xCCCCCCCC) >> 2)
+    b = ((b & 0x0F0F0F0F) << 4) | ((b & 0xF0F0F0F0) >> 4)
+    b = ((b & 0x00FF00FF) << 8) | ((b & 0xFF00FF00) >> 8)
+    vec2(f32(i) / f32(n), f32(b) * 2.3283064e-10)
+}
+
+/// The roughness a level of the probe is for.
+pub fn rough_of(level: u32) -> f32 {
+    GLOSSY * f32(level) / f32(LEVELS - 1)
+}
+
+/// The samples a prefiltered texel takes.
+const SAMPLES: u32 = 48
+
+/// Texel `id` of level `level` (`side` texels a side) of face `face` of the probe: the sky
+/// (`sky`) reflected about its direction by a surface of the level's roughness, GGX's lobe
+/// sampled (the eye along the reflection: Karis 2013's split sum's first factor).
+@compute(8, 8)
+pub fn prefilter(
+    face: u32,
+    level: u32,
+    side: u32,
+    sky: Cubemap<Rgba16Float>,
+    s: Sampler,
+    out: mut Texels<Rgba16Float>,
+    id: GlobalId,
+) {
+    if id.x >= side || id.y >= side {
+        return
+    }
+    let n = face_dir(face, (vec2(f32(id.x), f32(id.y)) + vec2(0.5)) / f32(side))
+    if level == 0 {
+        out.store(id, vec4(sky.sample_level(s, n).rgb, 1.0))
+        return
+    }
+    let a = rough_of(level) * rough_of(level)
+    let up = if abs(n.y) < 0.999 { vec3(0.0, 1.0, 0.0) } else { vec3(1.0, 0.0, 0.0) }
+    let tx = normalize(cross(up, n))
+    let ty = cross(n, tx)
+    var sum = vec3(0.0)
+    var weight = 0.0
+    for i in 0..SAMPLES {
+        let xi = hammersley(i, SAMPLES)
+        let phi = TAU * xi.x
+        let ct = sqrt((1.0 - xi.y) / (1.0 + (a * a - 1.0) * xi.y))
+        let st = sqrt(max(1.0 - ct * ct, 0.0))
+        let h = tx * (st * cos(phi)) + ty * (st * sin(phi)) + n * ct
+        let l = h * (2.0 * dot(n, h)) - n
+        let nl = dot(n, l)
+        if nl > 0.0 {
+            sum += sky.sample_level(s, l).rgb * nl
+            weight += nl
+        }
+    }
+    out.store(id, vec4(sum / max(weight, 1.0e-4), 1.0))
+}
+
+// ---- reflections in the opaque passes ---------------------------------------------------
+
+/// What an opaque pass's reflections read beside the screen's copy (`Lighting::screen`): the
+/// camera the last frame's copy was drawn with, whether there's a copy (`on`), and whether the
+/// specular probe has been baked whole (`probe`).
+pub struct Mirror: Copy + GpuData {
+    pub cam: Camera,
+    pub on: u32,
+    pub probe: u32,
+}
+
+/// The world a surface at `world` of roughness `rough` reflects along `r` (a unit vector), for a
+/// surface smoother than `GLOSSY`: the last frame's screen (`screen`, as `m.cam` drew it) where
+/// the reflection is on it; else the specular probe's level for its roughness (`cube`), dimmed
+/// to the light the probes see that way where they see less of the sky (`toward`, the probes'
+/// light toward its reflection); toward `GLOSSY`, `toward` itself.
+pub fn reflected(
+    m: Mirror,
+    screen: Texture<Rgba16Float>,
+    cube: Cubemap<Rgba16Float>,
+    s: Sampler,
+    world: vec3,
+    r: vec3,
+    rough: f32,
+    toward: vec3,
+) -> vec3 {
+    if rough >= GLOSSY {
+        return toward
+    }
+    var c = toward
+    if m.probe != 0 {
+        let level = rough / GLOSSY * f32(LEVELS - 1)
+        let probe = cube.sample_level(s, r, level).rgb
+        // The probe sees the open sky; under trees the probes' own light toward the reflection
+        // is the lesser, and sets how much of it shows (as the water's reflection does).
+        let open = cube.sample_level(s, r, f32(LEVELS - 1)).rgb
+        let opens = clamp(dot(toward, LUMA) / max(dot(open, LUMA), 1.0e-4), 0.0, 1.0)
+        c = mix(toward, probe, vec3(opens * opens))
+    }
+    if m.on != 0 {
+        let hit = reflected_above(m.cam, screen, world, r, rough, floor: -1.0e9)
+        c = mix(c, hit.rgb, vec3(hit.a))
+    }
+    // Toward the rough end, the probes' own light.
+    mix(c, toward, vec3(smoothstep(GLOSSY * 0.66, GLOSSY, rough)))
+}
+
+/// Each face's middle looks along its own axis, and two faces that meet at an edge give the
+/// same direction there.
+@test
+fn a_cubes_faces_meet_at_their_edges() {
+    let axes = [
+        vec3(1.0, 0.0, 0.0),
+        vec3(-1.0, 0.0, 0.0),
+        vec3(0.0, 1.0, 0.0),
+        vec3(0.0, -1.0, 0.0),
+        vec3(0.0, 0.0, 1.0),
+        vec3(0.0, 0.0, -1.0),
+    ]
+    for f in 0..6 {
+        assert(length(face_dir(f, vec2(0.5)) - axes[f]) < 1.0e-6, f"face {f}'s middle")
+    }
+    // +y's row nearest +z (its last) meets +z's top row; +x's left edge meets +z's right edge.
+    assert(length(face_dir(2, vec2(0.5, 1.0)) - face_dir(4, vec2(0.5, 0.0))) < 1.0e-6, "+y, +z")
+    assert(length(face_dir(0, vec2(0.0, 0.5)) - face_dir(4, vec2(1.0, 0.5))) < 1.0e-6, "+x, +z")
+}

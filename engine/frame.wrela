@@ -24,6 +24,7 @@
 use air::{AIR_SLICES, Air, Tables, tables}
 use ambient::Occlusion
 use lights::{LocalLight, Lights}
+use reflect::{Mirror, Specular, copy_below}
 use cook::{Budget, Planner, Work}
 use light::Light
 use lit::Lighting
@@ -507,6 +508,9 @@ pub struct Quality: Copy {
     /// Whether what's near a surface hides some of the sky's light from it (`ambient`: built
     /// from each frame's opaque depth, read by the next frame's shading).
     pub ambient: bool = true,
+    /// Whether glossy surfaces reflect the screen (the last frame's, copied after its effects)
+    /// and a specular probe of the sky, a face baked a frame (`reflect`).
+    pub reflections: bool = true,
 }
 
 /// The least scene a paced 3D frame draws, over the output's size (`Quality::pace`): below it a
@@ -733,6 +737,12 @@ pub struct Frame<R: Resolver> {
     pub ambient: Occlusion,
     /// The scene's local lights, binned into the frame's froxels (`lights`).
     pub lights: Lights,
+    /// What glossy surfaces reflect (`reflect`): the last frame's scene and distances (its
+    /// colour and each pixel's distance, copied after its effects) as `mirror`'s camera drew
+    /// them, and the specular probe, a face baked a frame.
+    pub screen: Texture<Rgba16Float>,
+    pub mirror: Mirror,
+    pub specular: Specular,
     resolver: R,
     pub exposure: GpuBuffer<Exposure>,
     pub linear: Sampler,
@@ -891,6 +901,9 @@ impl<R: Resolver> Frame<R> {
             pyramid: Pyramid::new(width: 1, height: 1),
             ambient: Occlusion::new(width: 1, height: 1),
             lights: Lights::new(),
+            screen: texture::<Rgba16Float>(width: 1, height: 1),
+            mirror: Mirror { cam: first, on: 0, probe: 0 },
+            specular: Specular::new(),
             resolver: R::made(),
             exposure: buffer(1),
             linear: sampler(),
@@ -1093,6 +1106,7 @@ impl<R: Resolver> Frame<R> {
         // shades what's near.
         self.pyramid.at.on = 0
         self.ambient.forget()
+        self.mirror.on = 0
         self.clipmap.set_origin(origin.xz)
         self.probes.using.shift(d.xz)
         self.probes.at += d.xz
@@ -1129,6 +1143,8 @@ impl<R: Resolver> Frame<R> {
             self.targets = targets_for(width, height, w, h, scene.has_effects())
             self.pyramid = Pyramid::new(width: w, height: h)
             self.ambient = Occlusion::new(width: w, height: h)
+            self.screen = texture::<Rgba16Float>(width: w, height: h)
+            self.mirror.on = 0
             self.resolver.resize(w, h)
             scene.resized(w, h)
             self.width = width
@@ -1290,6 +1306,18 @@ impl<R: Resolver> Frame<R> {
         self.ambient.turn()
         if self.jumped {
             self.ambient.forget()
+            self.mirror.on = 0
+        }
+        // The specular probe's next face, from the sky as it is.
+        if self.quality.reflections {
+            self.specular.bake_face(
+                self.light,
+                self.air.ground,
+                self.tables.view,
+                self.sky.dome,
+                self.probes.using.maps,
+                self.linear,
+            )
         }
         self.draw_scene(mut scene, sh, wind)
         self.finish(scene)
@@ -1709,6 +1737,13 @@ impl<R: Resolver> Frame<R> {
             ao: self.ambient.last,
             froxels: self.lights.at,
             lights: self.lights.words.items(),
+            mirror: Mirror {
+                on: if self.quality.reflections { self.mirror.on } else { 0 },
+                probe: if self.quality.reflections && self.specular.baked { 1 } else { 0 },
+                ..self.mirror
+            },
+            screen: self.screen,
+            spec: self.specular.cube,
             s: self.linear,
         }
         // Last frame's pyramid, if it's this view's (not after a jump, nor with occlusion off).
@@ -1841,6 +1876,18 @@ impl<R: Resolver> Frame<R> {
             time: self.time,
         }
         scene.effects(mut self.targets, fx)
+        // What the next frame's glossy surfaces reflect from the screen: this frame's scene
+        // after its effects, and each pixel's distance.
+        if self.quality.reflections {
+            label("reflections copy")
+            let rp = begin_pass(mut self.screen)
+            fullscreen(
+                rp,
+                copy_below.bind(scene: self.targets.scene, depth: self.targets.depth, cam: cam),
+            )
+            rp.end()
+            self.mirror = Mirror { cam, on: 1, probe: 0 }
+        }
         // What moved, over the older motion target: the last frame's is kept.
         label("motion")
         swap(mut self.targets.motion, mut self.targets.last_motion)

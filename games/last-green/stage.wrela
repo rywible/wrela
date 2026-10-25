@@ -30,7 +30,8 @@ use engine::stone::{
 use engine::terrain::{Clipmap, Texel}
 use engine::vegetation::{Kind, Placed, kind}
 use engine::view::{Camera, NEAREST}
-use engine::water::{LOOKS, MistAt, WaterVert, copy_below, mist_over, water_shade, water_vertex}
+use engine::reflect::copy_below
+use engine::water::{LOOKS, MistAt, WaterVert, mist_over, water_shade, water_vertex}
 use engine::wood::Wood
 use engine::air::{Air, hazy}
 use history::{BAKED, tiles_hi, tiles_lo}

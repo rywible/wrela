@@ -1,6 +1,7 @@
 // The lighting that every shading pass reads, as one parameter (`Lighting`, a group:
 // language.md §18): the frame's camera and light, the sun's shadows, the probes' sky light (and
-// the ambient occlusion over it), the scene's local lights, the clouds' shadows and the air.
+// the ambient occlusion over it), the scene's local lights, what glossy surfaces reflect, the
+// clouds' shadows and the air.
 //
 // A shading pass binds a `Lighting`, then asks how much sun reaches a point (`sun_at`, or
 // `sun_and_sky` and `sun_and_gloss` for more), and `shown` for a lit surface's colour as the
@@ -9,10 +10,13 @@
 use ambient::{Ambient, ao_at}
 use light::{Light, Lit}
 use lights::{Froxels, shed}
+use reflect::{Mirror, reflected}
 use probes::{ProbeGrid, sky_light, sky_lights}
 use shadow::{Shadows, sunlit}
 use sky::{Clouds, cloud_shadow}
-use std::gpu::{ComparisonSampler, DepthTexture, GpuSpan, Rgba16Float, Sampler, Texture, Texture3d}
+use std::gpu::{
+    ComparisonSampler, Cubemap, DepthTexture, GpuSpan, Rgba16Float, Sampler, Texture, Texture3d,
+}
 use terrain::Levels
 use view::Camera
 
@@ -21,8 +25,9 @@ use view::Camera
 /// `grounds`, the clouds (where their field has drifted) and their shadow map (`cloud`), the
 /// clipmap's levels, the air's aerial perspective (`air`), and the ambient occlusion (`ao`, as
 /// `ambient` says it was built: `ambient::ao_at`), and the local lights and their froxels'
-/// lists (`lights`, as `froxels` says: `lights::shed`); textures read through `s`, a linear
-/// sampler.
+/// lists (`lights`, as `froxels` says: `lights::shed`), and what glossy surfaces reflect: the last
+/// frame's screen (`screen`, as `mirror` says) and the specular probe (`spec`: `reflect`);
+/// textures read through `s`, a linear sampler.
 pub borrow struct Lighting {
     pub cam: Camera,
     pub light: Light,
@@ -42,6 +47,9 @@ pub borrow struct Lighting {
     pub ao: borrow Texture<Rgba16Float>,
     pub froxels: Froxels,
     pub lights: GpuSpan<u32>,
+    pub mirror: Mirror,
+    pub screen: borrow Texture<Rgba16Float>,
+    pub spec: borrow Cubemap<Rgba16Float>,
     pub s: borrow Sampler,
 }
 
@@ -119,6 +127,16 @@ pub fn sun_sky_and_gloss(
         sky * ambient_at(l, world) + local_at(l, world, n),
         reflected,
     )
+}
+
+/// What a surface at `world` facing `n` of roughness `rough` reflects toward the eye, given the
+/// probes' light toward its reflection (`toward`: `sun_and_gloss`'s third): for a glossy one
+/// (smoother than `reflect::GLOSSY`), the screen and the specular probe (`reflect::reflected`);
+/// for the rest, `toward`.
+pub fn reflect(l: Lighting, world: vec3, n: vec3, rough: f32, toward: vec3) -> vec3 {
+    let v = normalize(l.cam.eye - world)
+    let r = n * (2.0 * dot(n, v)) - v
+    reflected(l.mirror, l.screen, l.spec, l.s, world, r, rough, toward)
 }
 
 /// `colour`, at `world`, as the eye sees it through the air between them (`light::hazed`).

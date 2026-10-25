@@ -10,8 +10,9 @@ use std::tool::toolchain::Override
 /// and culled, `terrain::bound_sides` and `cull_sides`, and the probes' voxels cleared before a
 /// cook, `probes::clear_voxels`; 33 since B4b: the depth pyramid's, `cull::level_zero` and
 /// `farthest`; 34 since B8.1: the ambient occlusion's, `ambient::gtao`; 35 since B8.4: the local
-/// lights' binning, `lights::bin`, dispatched only when a scene has lights).
-const FRAME_PIPELINES: u32 = 35
+/// lights' binning, `lights::bin`, dispatched only when a scene has lights; 38 since B8.5: the
+/// reflections', `reflect::bake_sky`, `prefilter` and the screen's copy, `copy_below`).
+const FRAME_PIPELINES: u32 = 38
 
 /// The fixture's pipelines: each one's entry points, `+` between them.
 fn pipelines() -> Vec<String> {
