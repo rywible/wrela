@@ -2,14 +2,16 @@
 // through `engine::frame` on the GPU, and a script of what a game does to a frame: it loads; 30
 // frames after its first full frame the eye jumps 500 m; once that arrival is shown, the weather
 // changes; 90 frames later the air does, and 90 after that the sun moves; once its cascades are
-// drawn again, the screen is held for 8 frames; then the frame measures its work on this device
+// drawn again, the sun moves every frame for 120 frames; then the screen is held for 8 frames;
+// then the frame measures its work on this device
 // (`Quality::measured`), and its cascades and probes are drawn again to be measured. Each frame's
 // plan (`engine::cook::Planner`) and readiness are recorded, and the tests read the record. Until
 // it measures, a frame's order is the same on every run and in both hosts.
 
 use engine::cook::{Evidence, Work}
+use std::io::print
 use engine::frame::{Aim, Change, Frame, Gathered, Quality}
-use engine::air::hazy
+use engine::air::{AIR_SLICES, hazy}
 use engine::light::{SUN_TOP, sunlight}
 use engine::probes::grid
 use engine::terrain::Clipmap
@@ -31,6 +33,10 @@ pub struct Record: Copy {
     pub weather: u32,
     pub phase: u32,
     pub probes: u32,
+    /// The slices of the air's tables cooked, and the sets of strips each cascade has drawn whole.
+    pub air: u32,
+    pub near_sets: u32,
+    pub far_sets: u32,
     pub spent: f32,
     /// The plan's mandatory and optional costs apart, its first optional step's, and its budget.
     pub mandatory: f32,
@@ -52,6 +58,7 @@ pub enum Step: Copy + Eq {
     Weather,
     Air,
     Sun,
+    Moving,
     Hold,
     Done,
 }
@@ -121,8 +128,22 @@ fn script(s: mut State) {
             s.frame.light = sunlight(s.frame.air)
         },
         Step::Sun => if since >= 30 && s.frame.near.settled() && s.frame.far.settled() {
+            next(mut s, Step::Moving)
+        },
+        Step::Moving => if since >= 120 {
             next(mut s, Step::Hold)
             s.frame.hold = true
+        } else {
+            // The sun turns round the vertical a fifth of a degree a frame.
+            let a = f32(since + 1) * 0.0035
+            let (c, n) = (cos(a), sin(a))
+            let sun = vec3(
+                LATER_SUN.x * c - LATER_SUN.z * n,
+                LATER_SUN.y,
+                LATER_SUN.x * n + LATER_SUN.z * c,
+            )
+            s.frame.air = air_of(normalize(sun))
+            s.frame.light = sunlight(s.frame.air)
         },
         Step::Hold => if since >= 8 {
             next(mut s, Step::Done)
@@ -151,6 +172,9 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             weather: p.ran(Work::SkyWeather),
             phase: p.ran(Work::SkyPhase),
             probes: p.ran(Work::ProbeStrip),
+            air: p.ran(Work::AirTables),
+            near_sets: s.frame.near.sets,
+            far_sets: s.frame.far.sets,
             spent: p.spent(),
             mandatory: p.spent_mandatory(),
             optional: p.spent_optional(),
@@ -175,7 +199,7 @@ fn window(s: State, k: u32) -> (u32, u32) {
 
 /// The steps the script reached, failing a test that needs one it didn't.
 fn reached(s: State, step: Step) {
-    let names = ["load", "jump", "weather", "air", "sun", "hold", "done"]
+    let names = ["load", "jump", "weather", "air", "sun", "moving", "hold", "done"]
     var k = 0
     for st in [
         Step::Load,
@@ -183,6 +207,7 @@ fn reached(s: State, step: Step) {
         Step::Weather,
         Step::Air,
         Step::Sun,
+        Step::Moving,
         Step::Hold,
         Step::Done,
     ] {
@@ -197,7 +222,7 @@ fn reached(s: State, step: Step) {
 /// levels draws no strip of a cascade once the near one is ready; a playable frame that cooked the
 /// ground or drew a strip bakes no probes; one that cooked two levels marches no sky; and the
 /// optional work keeps to the budget, but for a frame's first step.
-@test(frames: 900, gpu: true)
+@test(frames: 1100, gpu: true)
 fn the_planners_rules_hold_on_every_frame(s: State) {
     reached(s, Step::Done)
     let budget = engine::cook::Budget {}
@@ -220,7 +245,7 @@ fn the_planners_rules_hold_on_every_frame(s: State) {
 /// A jump is covered from its frame until the light round the new eye has been drawn, then for
 /// as many consecutive lit frames as an arrival gathers, and it ends then; nothing is gathered
 /// while the light isn't drawn.
-@test(frames: 900, gpu: true)
+@test(frames: 1100, gpu: true)
 fn a_jump_is_covered_until_its_light_has_gathered(s: State) {
     reached(s, Step::Weather)
     let gather = engine::frame::Arrival {}.gather
@@ -257,7 +282,7 @@ fn a_jump_is_covered_until_its_light_has_gathered(s: State) {
 
 /// A weather change cooks the clouds' weather again and starts the dome's march again, draws no
 /// cascade, and bakes the probes again once the dome is marched (they bake its light).
-@test(frames: 900, gpu: true)
+@test(frames: 1100, gpu: true)
 fn a_weather_change_redraws_the_clouds_and_then_the_probes(s: State) {
     reached(s, Step::Air)
     let (from, to) = window(s, 2)
@@ -288,7 +313,7 @@ fn a_weather_change_redraws_the_clouds_and_then_the_probes(s: State) {
 
 /// An air change with the sun where it was cooks the air's tables again, marches the dome again
 /// through the new air, and bakes the probes again under that dome; it draws no cascade.
-@test(frames: 900, gpu: true)
+@test(frames: 1100, gpu: true)
 fn an_air_change_redraws_the_dome_and_then_the_probes(s: State) {
     reached(s, Step::Sun)
     let (from, to) = window(s, 3)
@@ -316,7 +341,7 @@ fn an_air_change_redraws_the_dome_and_then_the_probes(s: State) {
 /// A sun change draws both cascades again and cooks the clouds' weather again (it's lit from the
 /// sun); the probes are baked again under it once the dome has been marched again (they bake its
 /// light), which is after the cascades.
-@test(frames: 900, gpu: true)
+@test(frames: 1100, gpu: true)
 fn a_sun_change_redraws_the_cascades_the_clouds_and_then_the_probes(s: State) {
     reached(s, Step::Done)
     let (from, to) = window(s, 4)
@@ -349,11 +374,33 @@ fn a_sun_change_redraws_the_cascades_the_clouds_and_then_the_probes(s: State) {
     assert(b > from, "the probes were baked in the sun's own frame")
 }
 
+/// A sun that moves every frame (for 120 frames): no frame cooks the air's tables whole, a slice a
+/// frame, and they're cooked again through it, each cook finishing with the air it began with;
+/// and both cascades complete sets of strips, each drawn from the sun it began with, though every
+/// fourth frame draws none (the probes' turn).
+@test(frames: 1100, gpu: true)
+fn a_moving_sun_cooks_its_air_in_slices_and_completes_its_cascades(s: State) {
+    reached(s, Step::Hold)
+    let (from, to) = window(s, 5)
+    var slices = 0
+    for i in from..to {
+        let r = s.records[i]
+        assert(r.air < AIR_SLICES, f"frame {r.ran} cooked the air's tables whole")
+        slices += r.air
+    }
+    assert(slices >= AIR_SLICES * 4, f"only {slices} slices of the air's tables were cooked")
+    let near = s.records[to - 1].near_sets - s.records[from].near_sets
+    let far = s.records[to - 1].far_sets - s.records[from].far_sets
+    print(f"the moving sun: {slices} slices of the air, {near} near sets and {far} far")
+    assert(near >= 3, f"the near cascade completed {near} sets")
+    assert(far >= 1, f"the far cascade completed {far} sets")
+}
+
 /// A held screen runs frames (it cooks) and draws none; drawing resumes when it's let go.
-@test(frames: 900, gpu: true)
+@test(frames: 1100, gpu: true)
 fn a_held_screen_runs_frames_and_draws_none(s: State) {
     reached(s, Step::Done)
-    let (from, to) = window(s, 5)
+    let (from, to) = window(s, 6)
     let drawn = s.records[from].drawn
     for i in from..to {
         assert(s.records[i].drawn == drawn, f"frame {s.records[i].ran} drew while held")
@@ -366,7 +413,7 @@ fn a_held_screen_runs_frames_and_draws_none(s: State) {
 /// A measuring frame plans with what this device takes: each kind it times, once it has run a
 /// step alone, is measured (the records of the cascades' strips moved to this device's), and a
 /// time is more than nothing. No test says how small.
-@test(frames: 900, gpu: true)
+@test(frames: 1100, gpu: true)
 fn the_planner_measures_this_devices_costs(s: State) {
     reached(s, Step::Done)
     borrow p = s.frame.cooks.planner
@@ -389,10 +436,10 @@ fn the_planner_measures_this_devices_costs(s: State) {
 /// what the budget leaves past the mandatory work, but for the frame's first optional step,
 /// which always runs; the mandatory work is never refused; and every kind the frame's changes
 /// made eligible ran.
-@test(frames: 1300, gpu: true)
+@test(frames: 1500, gpu: true)
 fn a_measuring_frame_keeps_the_budgets_promises(s: State) {
     reached(s, Step::Done)
-    let (from, to) = window(s, 6)
+    let (from, to) = window(s, 7)
     assert(to - from >= 300, f"only {to - from} measuring frames")
     var near = 0
     var far = 0

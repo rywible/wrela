@@ -27,7 +27,8 @@
 
 /// A kind of amortized GPU work.
 pub enum Work: Copy + Eq + Fieldless {
-    /// The air's tables, cooked for its sun (and the probes' open sky from them).
+    /// A slice of the air's tables, cooked for its sun (and once whole, the probes' open sky from
+    /// them).
     AirTables,
     /// The clouds' noises, once.
     SkyNoise,
@@ -102,9 +103,10 @@ pub fn costs() -> [Cost; WORKS] {
     let e = |us: f32| Cost { us, evidence: Evidence::Estimated }
     let m = |us: f32| Cost { us, evidence: Evidence::Measured }
     [
-        // The air's tables and the clouds' weather: tens of milliseconds each, at load (a frame
-        // that cooked the air and the clouds together took 137 ms: they're a frame each).
-        e(20000.0),
+        // A slice of the air's tables (an eighth of a cook estimated at 20 ms: `air::AIR_SLICES`);
+        // the clouds' noise and weather: tens of milliseconds each, at load (a frame that cooked
+        // the air and the clouds together took 137 ms: they're a frame each).
+        e(2500.0),
         e(20000.0),
         e(20000.0),
         e(800.0),
@@ -440,8 +442,8 @@ fn injected_measurements_plan_by_the_ladder_and_keep_the_budgets_promises() {
     var busy = Planner::new(Budget { playing_us: 8000.0 })
     busy.measure(Work::TerrainLevel, 3000.0)
     busy.begin(levels: 3, playable: true, near_ready: false, filling: false)
-    busy.note(Work::AirTables)
-    assert(busy.ran(Work::TerrainLevel) == 3 && busy.ran(Work::AirTables) == 1)
+    busy.note(Work::SkyWeather)
+    assert(busy.ran(Work::TerrainLevel) == 3 && busy.ran(Work::SkyWeather) == 1)
     assert(busy.spent_mandatory() == 3.0 * ladder(3000.0) + 20000.0, f"{busy.spent_mandatory()}")
     assert(busy.may(Work::Tile), "a frame's first optional step waited")
     assert(!busy.may(Work::Tile), "an optional step past the budget ran")

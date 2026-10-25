@@ -34,12 +34,19 @@ pub struct Shadows: Copy + GpuData {
 }
 
 /// Where the static cascades are: each a square `span` metres wide round `centre`, seen from
-/// `reach` metres toward the sun, `side` texels a side.
+/// `reach` metres toward the sun, `side` texels a side; and the sun its map was drawn from (a map
+/// drawn while the sun moved is read as it was drawn: `Kept::strip`), none (0) for the frame's.
 pub struct Cascade: Copy {
     pub centre: vec3,
     pub span: f32,
     pub reach: f32,
     pub side: u32,
+    pub sun: vec3 = vec3(0.0),
+}
+
+/// The sun cascade `c`'s map is read toward: its own, or the frame's `sun` if it has none.
+fn sun_of(c: Cascade, sun: vec3) -> vec3 {
+    if dot(c.sun, c.sun) > 0.0 { normalize(c.sun) } else { sun }
 }
 
 /// The sun's view of a square round `centre`, `span` wide, from `reach` toward `sun`.
@@ -96,8 +103,8 @@ pub fn shadows(
     )
     let centre = right * snapped.x + up * snapped.y + fwd * snapped.z
     Shadows {
-        near: sun_view(s, near.centre, near.span, near.reach),
-        far: sun_view(s, far.centre, far.span, far.reach),
+        near: sun_view(sun_of(near, s), near.centre, near.span, near.reach),
+        far: sun_view(sun_of(far, s), far.centre, far.span, far.reach),
         moving: sun_view(s, centre, moving_span, 40.0),
         right,
         near_texel: near.span / f32(near.side),
@@ -264,8 +271,12 @@ pub struct Kept {
     stale: bool,
     /// The sun the strips being drawn are seen from: a set is drawn from one sun.
     sun: vec3,
+    /// The sun the map in use was drawn from.
+    front_sun: vec3,
     /// Whether the map in use has been drawn at all (the first is drawn before it's used).
     pub ready: bool,
+    /// How many sets of strips have been drawn whole.
+    pub sets: u32,
 }
 
 impl Kept {
@@ -286,13 +297,21 @@ impl Kept {
             strips,
             stale: false,
             sun: vec3(0.0),
+            front_sun: vec3(0.0),
             ready: false,
+            sets: 0,
         }
     }
 
-    /// The cascade in use.
+    /// The cascade in use, read toward the sun its map was drawn from.
     pub fn cascade(self) -> Cascade {
-        Cascade { centre: self.centre, span: self.span, reach: self.reach, side: self.side }
+        Cascade {
+            centre: self.centre,
+            span: self.span,
+            reach: self.reach,
+            side: self.side,
+            sun: self.front_sun,
+        }
     }
 
     /// Moved by `d` with render space (the render origin moved by `-d`): its maps hold what they
@@ -338,15 +357,15 @@ impl Kept {
     /// The strip of the next map to draw, if one's being drawn: its square's view from the sun
     /// toward `sun`, the part of the square (and a shadow's reach past it) whose casters it
     /// draws, and whether it's the first strip (which draws what casts only once: solids, the
-    /// ground). The first strip of a replacement snaps to the texels of the map in use. A set
-    /// whose sun has moved since its first strip starts again from it, so no map is drawn from
-    /// two suns. Draw it into `back` (cleared on the first strip, kept after), then call `drawn`.
+    /// ground). The first strip of a replacement snaps to the texels of the map in use. A set is
+    /// drawn from the sun it began with, though the sun moves meanwhile: no map is drawn from two
+    /// suns, and a set always finishes (its map is read toward its own sun: `cascade`), so
+    /// shadows follow a moving sun a set behind. Draw it into `back` (cleared on the first
+    /// strip, kept after), then call `drawn`.
     pub fn strip(mut self, sun: vec3) -> Option<Strip> {
         let Some(requested) = self.next else { return None }
-        if starts_again(self.strip, self.sun, sun) {
-            self.strip = 0
-        }
-        self.sun = sun
+        self.sun = set_sun(self.strip, self.sun, sun)
+        let sun = self.sun
         let c = if self.strip == 0 && self.ready {
             snapped_centre(sun, requested, self.centre, self.span / f32(self.side))
         } else { requested }
@@ -372,8 +391,10 @@ impl Kept {
         if self.strip >= self.strips {
             swap(mut self.front, mut self.back)
             self.centre = c
+            self.front_sun = self.sun
             self.next = None
             self.ready = true
+            self.sets += 1
         }
     }
 }
@@ -439,18 +460,17 @@ fn a_change_before_the_first_strip_is_drawn_with_it() {
     assert(draws_again(drawing: false, strip: 0), "a change with no drawing under way isn't drawn")
 }
 
-/// Whether a set of strips starts again at strip `strip` (0 the first) for `sun`: it does when
-/// it's partway and the sun has moved from the one it began from (`began`).
-fn starts_again(strip: u32, began: vec3, sun: vec3) -> bool {
-    strip > 0 && sun != began
+/// The sun strip `strip` (0 the first) of a set is drawn from, the sun now `sun`: a set's first
+/// strip takes it, and the rest keep the one the set began with (`began`).
+fn set_sun(strip: u32, began: vec3, sun: vec3) -> vec3 {
+    if strip == 0 { sun } else { began }
 }
 
-/// A set of strips is drawn from one sun: one partway through starts again when the sun moves,
-/// and not when it stays; a set's first strip has nothing to start again.
+/// A set of strips is drawn from one sun: one partway through keeps the sun it began with when
+/// the sun moves (and finishes), and a set's first strip takes the sun as it is.
 @test
 fn a_cascade_set_is_drawn_from_one_sun() {
     let (a, b) = (normalize(vec3(0.5, 0.8, 0.2)), normalize(vec3(-0.4, 0.7, 0.3)))
-    assert(starts_again(2, a, b), "a moved sun kept the strips drawn from the last")
-    assert(!starts_again(2, a, a), "a still sun started the set again")
-    assert(!starts_again(0, a, b), "a first strip started again")
+    assert(set_sun(2, a, b) == a, "a moved sun changed the strips of a set under way")
+    assert(set_sun(0, a, b) == b, "a first strip kept the last set's sun")
 }
