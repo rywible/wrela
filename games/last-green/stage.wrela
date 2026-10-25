@@ -12,7 +12,7 @@ use engine::cook::Work
 use land::stream::{near_tile_radius, tile_distance, tile_radius}
 use tower::door::Doorway
 use world::GATE
-use engine::memory::{IMPOSTORS, Share, Usage, WOOD_LISTS, shrink_after}
+use engine::memory::{Share, Usage}
 use engine::cull::Hzb
 use engine::frame::{Cooks, Effects, Scene, Targets, full, fullscreen}
 use engine::grass::{Blooms, Contact, Grass, GrassLook}
@@ -26,7 +26,7 @@ use engine::shadow::Shadows
 use engine::shafts::{Shafts, add_shafts, march_shafts}
 use engine::sky::Weather
 use engine::stone::{
-    ClusterStones, Fit, Instances, Realized, Rocks, placed_of, stone_instance_vertex, stone_shade,
+    ClusterStones, Instances, Realized, Rocks, placed_of, stone_instance_vertex, stone_shade,
     stone_shadow, stone_vertex,
 }
 use engine::terrain::{Clipmap, Texel}
@@ -34,7 +34,7 @@ use engine::vegetation::{Kind, Placed, kind}
 use engine::view::{Camera, NEAREST}
 use engine::reflect::copy_below
 use engine::water::{LOOKS, MistAt, WaterVert, mist_over, water_shade, water_vertex}
-use engine::wood::{SHRINK_AFTER, Wood}
+use engine::wood::Wood
 use engine::air::{Air, hazy}
 use history::{BAKED, tiles_hi, tiles_lo}
 use ground::GROUND
@@ -96,13 +96,7 @@ pub struct Stage {
     pub own: Vec<Arrived>,
     pub grass: Grass,
     pub to_build: Vec<blockouts::Built>,
-    pub built: Vec<Realized>,
-    pub built_reach: Vec<f32>,
-    pub built_far: Vec<Option<Realized>>,
-    /// Each built thing's counts, asked for to fit its mesh (`Fit`), and its far mesh's: none
-    /// once it's fitted.
-    built_fit: Vec<Option<Fit>>,
-    built_far_fit: Vec<Option<Fit>>,
+    pub built: Vec<Thing>,
     /// Bank stones share three meshes; the placements contain no GPU resources.
     pub banks: Instances,
     /// The banks' stones' clusters (`engine::stone::ClusterStones`, a prototype's each), cooked
@@ -133,6 +127,14 @@ pub struct Stage {
     pub origin: vec2i,
 }
 
+/// A built thing realized: its mesh, its reach (how far round its place it stands), and its
+/// coarser mesh to draw from far off, if it has one (the tower's).
+pub struct Thing {
+    pub near: Realized,
+    pub reach: f32,
+    pub far: Option<Realized>,
+}
+
 /// The floor's scene at load, round the player's start (`start`, the world's): its kinds and
 /// tiles cooked from the first frame.
 pub fn stage() -> Stage {
@@ -153,10 +155,6 @@ pub fn stage() -> Stage {
         grass: Grass::new(),
         to_build: to_build(),
         built: Vec::new(),
-        built_reach: Vec::new(),
-        built_far: Vec::new(),
-        built_fit: Vec::new(),
-        built_far_fit: Vec::new(),
         banks: blockouts::bank_instances(history::COURSES.courses, height_at),
         bank_stones: Vec::new(),
         footprints: buffer_of(footprints_in(vec3(0.0), FLOOR), at_least: 1),
@@ -243,7 +241,7 @@ impl Scene for Stage {
     /// built things, the tiles round the eye, and a slice of the fawn's and the wolf's meshes
     /// where they're wanted.
     fn cook(mut self, c: mut Cooks, clipmap: mut Clipmap, linear: Sampler) {
-        fit_built(mut self)
+        settle(mut self)
         if rocky(self.view) && self.rocks.is_none() {
             let began = std::time::now()
             let placements = geology::rock_placements(growth::LAND.land, geology::TORS)
@@ -339,8 +337,8 @@ impl Scene for Stage {
             }
             return
         }
-        for st in self.built {
-            cast_stone(pass, st, st.at, view)
+        for t in self.built {
+            cast_stone(pass, t.near, t.near.at, view)
         }
         for p in self.banks.placements {
             if p.prototype < self.banks.prototypes.len() && p.casts_into(view) {
@@ -380,7 +378,7 @@ impl Scene for Stage {
                 None => {},
             }
         }
-        if banks_clustered(self) && !of_world(self.view) {
+        if clusters_shown(self) {
             for mut b in self.bank_stones {
                 b.choose(lt.cam)
             }
@@ -434,7 +432,7 @@ impl Scene for Stage {
     /// The depth prepass: the near crowns' cards, the grass, and the far crowns' quads.
     fn prepass<P: RenderPass>(self, pass: P, cam: Camera, wind: Wind, s: Sampler) {
         let off = shown(self.off, self.view)
-        if banks_clustered(self) && !of_world(self.view) {
+        if clusters_shown(self) {
             for b in self.bank_stones {
                 b.prepass(pass, cam)
             }
@@ -478,55 +476,57 @@ impl Scene for Stage {
         if !world {
             // The banks' clusters first: their resolve writes no depth and tests none (the
             // prepass gave theirs), so what's drawn after it over them, nearer, keeps its colour.
-            if banks_clustered(self) {
+            let clustered = banks_clustered(self)
+            if clustered {
                 for b in self.bank_stones {
                     b.shade(pass, lt, ids)
                 }
             }
-            for i in 0..self.built.len() {
+            for t in self.built {
                 // Keep resident structures wherever their bounds meet the view. Distance cutoffs
                 // removed stones and walls while they still covered several pixels.
-                if !meets_view(cam, self.built[i].at[3].xyz, self.built_reach[i]) {
+                if !meets_view(cam, t.near.at[3].xyz, t.reach) {
                     continue
                 }
-                let d = length(self.built[i].at[3].xyz - cam.eye)
-                match self.built_far[i] {
+                let d = length(t.near.at[3].xyz - cam.eye)
+                match t.far {
                     Some(f) => {
                         let far = blockouts::tower_far_share(d)
                         let split = 1.0 - far
                         if far < 1.0 {
-                            draw_built(pass, self.built[i], lt, cam, coverage: vec2(0.0, split))
+                            draw_built(pass, t.near, lt, cam, coverage: vec2(0.0, split))
                         }
                         if far > 0.0 {
                             draw_built(pass, f, lt, cam, coverage: vec2(split, 1.0))
                         }
                     },
-                    None => draw_built(pass, self.built[i], lt, cam),
+                    None => draw_built(pass, t.near, lt, cam),
                 }
             }
-            for p in self.banks.placements {
-                if banks_clustered(self) ||
-                    p.prototype >= self.banks.prototypes.len() ||
-                    !meets_view(cam, p.at[3].xyz, p.reach) {
-                    continue
+            if !clustered {
+                for p in self.banks.placements {
+                    if p.prototype >= self.banks.prototypes.len() ||
+                        !meets_view(cam, p.at[3].xyz, p.reach) {
+                        continue
+                    }
+                    borrow prototype = self.banks.prototypes[p.prototype]
+                    draw(
+                        pass,
+                        stone_instance_vertex.bind(
+                            verts: prototype.mesh.verts.items(),
+                            colours: prototype.colours.items(),
+                            at: p.at,
+                            normal_at: p.normal_at,
+                            seed: p.seed,
+                            cam: cam,
+                        ),
+                        stone_shade.bind(lt),
+                        indices: prototype.mesh.quads.items(),
+                        indirect: prototype.mesh.draw.items(),
+                        cull: Cull::Back,
+                        depth: NEAREST,
+                    )
                 }
-                borrow prototype = self.banks.prototypes[p.prototype]
-                draw(
-                    pass,
-                    stone_instance_vertex.bind(
-                        verts: prototype.mesh.verts.items(),
-                        colours: prototype.colours.items(),
-                        at: p.at,
-                        normal_at: p.normal_at,
-                        seed: p.seed,
-                        cam: cam,
-                    ),
-                    stone_shade.bind(lt),
-                    indices: prototype.mesh.quads.items(),
-                    indirect: prototype.mesh.draw.items(),
-                    cull: Cull::Back,
-                    depth: NEAREST,
-                )
             }
         }
         if on(off, System::Trees) {
@@ -677,19 +677,14 @@ impl Scene for Stage {
         self.map.draw(pass, out, self.feet, self.heading)
     }
 
-    /// Render space moved by `d` (the render origin by `-d`): the wood's instances, the banks'
-    /// stones and the built things move with it; the rocks are drawn and cast from the new
-    /// origin; the grass's footprints are made again.
-    /// The wood's lists and impostors against their budgets (`engine::memory`).
+    /// Its shares of the GPU's memory (`engine::memory`): the wood's (`Wood::shares`), then the
+    /// built things', the rocks', the banks' and the leaves' atlas's, each against the total.
     fn shares(self) -> Vec<Share> {
         var built = 0
-        for b in self.built {
-            built += b.bytes()
-        }
-        for b in self.built_far {
-            match b {
-                Some(r) => built += r.bytes(),
-                None => {},
+        for t in self.built {
+            built += t.near.bytes()
+            if let Some(f) = t.far {
+                built += f.bytes()
             }
         }
         let rocks = match self.rocks {
@@ -703,42 +698,34 @@ impl Scene for Stage {
         for b in self.bank_stones {
             banks += b.bytes()
         }
-        let own = Vec::from(
-            [
-                Share { name: "built", bytes: built, budget: engine::memory::TOTAL },
-                Share { name: "rocks", bytes: rocks, budget: engine::memory::TOTAL },
-                Share { name: "banks", bytes: banks, budget: engine::memory::TOTAL },
-                Share {
-                    name: "leaves' atlas",
-                    bytes: engine::memory::texels(self.atlas.width(), self.atlas.height(), 4),
-                    budget: engine::memory::TOTAL,
-                },
-            ],
-        )
         var out = match self.wood {
-            Some(w) => Vec::from(
-                [
-                    Share { name: "wood lists", bytes: w.list_bytes(), budget: WOOD_LISTS },
-                    Share { name: "impostors", bytes: w.impostor_bytes(), budget: IMPOSTORS },
-                    Share { name: "wood", bytes: w.pool_bytes(), budget: engine::memory::TOTAL },
-                ],
-            ),
+            Some(w) => w.shares(),
             None => Vec::new(),
         }
-        for o in own {
-            out.push(o.clone())
-        }
+        out.push(Share { name: "built", bytes: built, budget: engine::memory::TOTAL })
+        out.push(Share { name: "rocks", bytes: rocks, budget: engine::memory::TOTAL })
+        out.push(Share { name: "banks", bytes: banks, budget: engine::memory::TOTAL })
+        out.push(
+            Share {
+                name: "leaves' atlas",
+                bytes: engine::memory::texels(self.atlas.width(), self.atlas.height(), 4),
+                budget: engine::memory::TOTAL,
+            },
+        )
         out
     }
 
-    /// Over its budget, the wood gives back its choosings' room sooner.
+    /// Over its budget, the wood gives back its choosings' room sooner (`Wood::pressed`).
     fn pressed(mut self, usage: Usage) {
         match mut self.wood {
-            Some(w) => w.shrink_after = shrink_after(usage, default: SHRINK_AFTER),
+            Some(w) => w.pressed(usage),
             None => {},
         }
     }
 
+    /// Render space moved by `d` (the render origin by `-d`): the wood's instances, the banks'
+    /// stones and the built things move with it; the rocks are drawn and cast from the new
+    /// origin; the grass's footprints are made again.
     fn shift(mut self, d: vec3) {
         match mut self.wood {
             Some(w) => w.shift(d),
@@ -754,12 +741,10 @@ impl Scene for Stage {
             Some(r) => r.origin = o,
             None => {},
         }
-        for mut b in self.built {
-            b.at[3] = vec4(b.at[3].xyz + d, 1.0)
-        }
-        for mut f in self.built_far {
-            match mut f {
-                Some(b) => b.at[3] = vec4(b.at[3].xyz + d, 1.0),
+        for mut t in self.built {
+            t.near.at[3] = vec4(t.near.at[3].xyz + d, 1.0)
+            match mut t.far {
+                Some(f) => f.at[3] = vec4(f.at[3].xyz + d, 1.0),
                 None => {},
             }
         }
@@ -1490,44 +1475,30 @@ fn banks_clustered(s: Stage) -> bool {
     CLUSTERED && s.bank_stones.len() == blockouts::BANK_PROTOTYPES
 }
 
-/// Each built thing whose counts have come fitted to them (`Realized::fitted`): it was realized
-/// with room for its whole grid.
-fn fit_built(s: mut Stage) {
-    for i in 0..s.built_fit.len() {
-        let counts = match mut s.built_fit[i] {
-            Some(f) => f.counts(),
-            None => None,
-        }
-        if let Some((v, q)) = counts {
-            let r = replace(mut s.built[i], placeholder())
-            s.built[i] = Realized::fitted(take r, v, q)
-            s.built_fit[i] = None
-        }
-        let far = match mut s.built_far_fit[i] {
-            Some(f) => f.counts(),
-            None => None,
-        }
-        if let Some((v, q)) = far {
-            if let Some(r) = replace(mut s.built_far[i], None) {
-                s.built_far[i] = Some(Realized::fitted(take r, v, q))
-            }
-            s.built_far_fit[i] = None
-        }
-    }
+/// Whether the banks' clusters are chosen and drawn this frame: cooked, and in the floor's
+/// views (not the world's).
+fn clusters_shown(s: Stage) -> bool {
+    banks_clustered(s) && !of_world(s.view)
 }
 
-/// A realized nothing, to hold a built thing's place while it's fitted.
-fn placeholder() -> Realized {
-    Realized {
-        mesh: engine::realize::Mesh::new(engine::realize::Room { vertices: 1, quads: 1 }),
-        colours: std::gpu::buffer(1),
-        at: mat4(
-            vec4(1.0, 0.0, 0.0, 0.0),
-            vec4(0.0, 1.0, 0.0, 0.0),
-            vec4(0.0, 0.0, 1.0, 0.0),
-            vec4(0.0, 0.0, 0.0, 1.0),
-        ),
-        seed: 0,
+/// Whether the banks' clusters are still to cook, where they're drawn through them.
+fn clusters_due(s: Stage) -> bool {
+    CLUSTERED && s.bank_stones.len() < blockouts::BANK_PROTOTYPES
+}
+
+/// The built things, their far meshes and the banks' prototypes, each fitted to what its mesh
+/// holds once its counts have come (`Realized::settle`): each was realized with room for its
+/// whole grid.
+fn settle(s: mut Stage) {
+    for mut t in s.built {
+        t.near.settle()
+        match mut t.far {
+            Some(f) => f.settle(),
+            None => {},
+        }
+    }
+    for mut p in s.banks.prototypes {
+        p.settle()
     }
 }
 
@@ -1540,7 +1511,7 @@ pub fn streamed(s: Stage, eye: vec2) -> bool {
     if !s.to_build.is_empty() || s.banks.prototypes.len() < blockouts::BANK_PROTOTYPES {
         return false
     }
-    if CLUSTERED && s.bank_stones.len() < blockouts::BANK_PROTOTYPES {
+    if clusters_due(s) {
         return false
     }
     let at = land::place::tile_of(eye)
@@ -2049,7 +2020,7 @@ pub fn cook_load(s: mut Stage, c: mut Cooks, eye: vec2, linear: Sampler) {
             }
             return
         }
-        if CLUSTERED && s.bank_stones.len() < blockouts::BANK_PROTOTYPES {
+        if clusters_due(s) {
             if !c.planner.may(Work::Built) {
                 return
             }
@@ -2069,24 +2040,15 @@ pub fn cook_load(s: mut Stage, c: mut Cooks, eye: vec2, linear: Sampler) {
             // frames (one a frame from the list's start, the arena's ring stood after a second).
             let b = s.to_build.remove(blockouts::nearest(s.to_build, eye))
             label("built things")
-            var r = blockouts::realize(b, height_at)
+            var near = blockouts::realize(b, height_at)
             let o = origin_of(s)
-            r.at[3] = vec4(r.at[3].xyz - o, 1.0)
-            s.built_fit.push(Some(Fit::of(r)))
-            s.built.push(take r)
-            s.built_reach.push(blockouts::reach(b))
+            near.at[3] = vec4(near.at[3].xyz - o, 1.0)
             var far = blockouts::realize_far(b, height_at)
             match mut far {
                 Some(f) => f.at[3] = vec4(f.at[3].xyz - o, 1.0),
                 None => {},
             }
-            s.built_far_fit.push(
-                match far {
-                    Some(f) => Some(Fit::of(f)),
-                    None => None,
-                },
-            )
-            s.built_far.push(take far)
+            s.built.push(Thing { near, reach: blockouts::reach(b), far })
             if s.to_build.is_empty() {
                 c.near_changed = true
                 c.far_changed = true

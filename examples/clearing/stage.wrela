@@ -6,7 +6,7 @@ use creature::{Fawn, Grown, REALIZED, SKELETON, grown}
 use fawn::creature::Coat
 use engine::character::{Cast, PartOf, cast, parts_of}
 use engine::cook::Work
-use engine::memory::{IMPOSTORS, Share, Usage, WOOD_LISTS, shrink_after}
+use engine::memory::{Share, Usage}
 use engine::cull::Hzb
 use engine::frame::{Cooks, Scene, Targets, full}
 use engine::gait::{Walker, posed_bounds}
@@ -23,7 +23,7 @@ use engine::temporal::seen_box
 use engine::terrain::{Clipmap, Terrain, Texel}
 use engine::vegetation::{Kind, kind, nothing}
 use engine::view::{BEHIND, Camera, NEAREST}
-use engine::wood::{SHRINK_AFTER, Wood}
+use engine::wood::Wood
 use rocks::{BOULDERS, boulder, footprints}
 use scene::{Ground, MEADOW}
 use std::collections::{Flags, replace}
@@ -229,9 +229,13 @@ impl Scene for Stage {
         clipmap.follow(Ground {}, eye, again)
     }
 
-    /// The load's work this frame: the forest's kinds, a few a frame, and the wood once they're
-    /// all cooked; a boulder; and a slice of the creature's mesh, until it's whole.
+    /// The load's work this frame: the boulders fitted to what their meshes hold, once their
+    /// counts have come (`Realized::settle`); the forest's kinds, a few a frame, and the wood once
+    /// they're all cooked; a boulder; and a slice of the creature's mesh, until it's whole.
     fn cook(mut self, c: mut Cooks, clipmap: mut Clipmap, linear: Sampler) {
+        for mut st in self.stones {
+            st.settle()
+        }
         if self.wood.is_none() {
             for _ in 0..KINDS_PER_FRAME {
                 let k = self.kinds.len()
@@ -465,24 +469,19 @@ impl Scene for Stage {
         }
     }
 
-    /// The wood's lists and impostors against their budgets (`engine::memory`).
+    /// Its shares of the GPU's memory (`engine::memory`): the wood's (`Wood::shares`), none
+    /// before it's made.
     fn shares(self) -> Vec<Share> {
         match self.wood {
-            Some(w) => Vec::from(
-                [
-                    Share { name: "wood lists", bytes: w.list_bytes(), budget: WOOD_LISTS },
-                    Share { name: "impostors", bytes: w.impostor_bytes(), budget: IMPOSTORS },
-                    Share { name: "wood", bytes: w.pool_bytes(), budget: engine::memory::TOTAL },
-                ],
-            ),
+            Some(w) => w.shares(),
             None => Vec::new(),
         }
     }
 
-    /// Over its budget, the wood gives back its choosings' room sooner.
+    /// Over its budget, the wood gives back its choosings' room sooner (`Wood::pressed`).
     fn pressed(mut self, usage: Usage) {
         match mut self.wood {
-            Some(w) => w.shrink_after = shrink_after(usage, default: SHRINK_AFTER),
+            Some(w) => w.pressed(usage),
             None => {},
         }
     }

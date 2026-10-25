@@ -17,17 +17,18 @@
 use engine::present::Snapshots
 use engine::look::{ByPart, CreatureLook, Detail, Shadow, Skin}
 use engine::memory::{REALIZER, Share, Usage, evict_after}
-use engine::realize::{EVICT_AFTER, Eye, NO_LEVEL, Placement, Realizer}
+use engine::realize::{EVICT_AFTER, Eye, Mesh, NO_LEVEL, Placement, Realizer}
 use engine::character::{Instance, RestSkeleton, colours, pose_instances}
 use engine::creature::MAX_BONES
-use engine::plain::{depth_only, skin_coloured, skin_shadow, view}
+use engine::plain::{View, depth_only, skin_coloured, skin_shadow, view}
 use engine::run::run
 use grazer::{FALLOFF, GrazerField, field_of, grazer, params}
 use herd::{HERD, Seen, Snap, between, snapshot, spawn, step}
 use look::{GrazerLook, LIGHTS, SKY, SUN, grazer_shade, ground_shade, transfer}
 use std::gpu::{
-    ComparisonSampler, Cull, DepthBias, DepthTexture, GpuBuffer, Unorm8x4, begin_depth_pass,
-    begin_screen_pass_with_depth, buffer, comparison_sampler, depth_texture, dispatch, draw, write,
+    ComparisonSampler, Cull, DepthBias, DepthTexture, GpuBuffer, GpuSpan, RenderPass, Unorm8x4,
+    begin_depth_pass, begin_screen_pass_with_depth, buffer, comparison_sampler, depth_texture,
+    dispatch, draw, write,
 }
 use std::input::{Event, Key, events}
 use std::io::print
@@ -102,6 +103,9 @@ pub struct Game {
     /// Whether each grazer has been drawn, and reached the level it should have, yet (live).
     drawn_yet: Vec<bool>,
     at_level_yet: Vec<bool>,
+    /// Where each grazer was posed this frame: its place among the frame's instances, or how
+    /// many there are if it wasn't.
+    posed: Vec<u32>,
     /// What the realizer's last live frame allocated (it keeps what it needs from frame to
     /// frame).
     realizer_allocations: u32,
@@ -147,6 +151,7 @@ pub fn init() -> Game {
         terrain: true,
         drawn_yet: Vec::new(),
         at_level_yet: Vec::new(),
+        posed: Vec::filled(HERD, 0),
         realizer_allocations: 0,
     }
 }
@@ -353,61 +358,62 @@ pub fn frame(game: mut Game, time: f32, width: u32, height: u32) {
     }
     // Each grazer's mesh, its share of the dither if a level fades in; then the meshes fading
     // out, the rest of it.
-    var posed: Vec<u32> = Vec::filled(HERD, n)
+    for i in 0..HERD {
+        game.posed[i] = n
+    }
     for k in 0..n {
         let i = instances[k].skeleton
-        posed[i] = k
+        game.posed[i] = k
         borrow mesh = game.realizer.mesh(i)
         let Some(c) = game.colours[i][game.realizer.drawn(i)] else { continue }
-        draw(
-            pass,
-            skin_coloured.bind(
-                verts: mesh.verts.items(),
-                colours: c.items(),
-                palettes: palettes,
-                first: k * MAX_BONES,
-                view: v,
-            ),
-            grazer_shade.bind(
-                view: v,
-                lights: LIGHTS,
-                shadow: game.shadow,
-                shadow_sampler: game.shadow_sampler,
-                keep: vec2(0.0, game.realizer.fade_share(i)),
-            ),
-            indices: mesh.quads.items(),
-            indirect: mesh.draw.items(),
-            cull: Cull::Back,
-        )
+        let keep = vec2(0.0, game.realizer.fade_share(i))
+        draw_grazer(pass, mesh, c, palettes, k, v, game.shadow, game.shadow_sampler, keep)
     }
     for f in game.realizer.fading() {
-        let k = posed[f.instance]
+        let k = game.posed[f.instance]
         if k == n {
             continue
         }
         let Some(c) = game.colours[f.instance][f.level] else { continue }
-        draw(
-            pass,
-            skin_coloured.bind(
-                verts: f.mesh.verts.items(),
-                colours: c.items(),
-                palettes: palettes,
-                first: k * MAX_BONES,
-                view: v,
-            ),
-            grazer_shade.bind(
-                view: v,
-                lights: LIGHTS,
-                shadow: game.shadow,
-                shadow_sampler: game.shadow_sampler,
-                keep: vec2(game.realizer.fade_share(f.instance), 2.0),
-            ),
-            indices: f.mesh.quads.items(),
-            indirect: f.mesh.draw.items(),
-            cull: Cull::Back,
-        )
+        let keep = vec2(game.realizer.fade_share(f.instance), 2.0)
+        draw_grazer(pass, f.mesh, c, palettes, k, v, game.shadow, game.shadow_sampler, keep)
     }
     pass.present()
+}
+
+/// A grazer's mesh drawn in `pass` in its colours, posed by the `k`th instance's palettes, seen
+/// by `v` and shadowed by `shadow`, its share of the dither `keep` (`grazer_shade`).
+fn draw_grazer<P: RenderPass>(
+    pass: P,
+    mesh: Mesh,
+    colours: GpuBuffer<Unorm8x4>,
+    palettes: GpuSpan<mat4>,
+    k: u32,
+    v: View,
+    shadow: DepthTexture,
+    shadow_sampler: ComparisonSampler,
+    keep: vec2,
+) {
+    draw(
+        pass,
+        skin_coloured.bind(
+            verts: mesh.verts.items(),
+            colours: colours.items(),
+            palettes: palettes,
+            first: k * MAX_BONES,
+            view: v,
+        ),
+        grazer_shade.bind(
+            view: v,
+            lights: LIGHTS,
+            shadow: shadow,
+            shadow_sampler: shadow_sampler,
+            keep: keep,
+        ),
+        indices: mesh.quads.items(),
+        indirect: mesh.draw.items(),
+        cull: Cull::Back,
+    )
 }
 
 // ---- tests (`wrela test examples/herd`) -----------------------------------------------------

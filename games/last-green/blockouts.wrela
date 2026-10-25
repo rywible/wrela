@@ -958,21 +958,27 @@ pub const BANK_PROTOTYPES: u32 = 3
 
 /// Bank prototype `index`'s stone, as a field (its clusters' source: `engine::stone::ClusterStones`).
 pub fn bank_creature(index: u32) -> engine::creature::Creature<engine::stone::Rock> {
-    engine::stone::stone(1.0, vec3(1.0), 12000 + index * 19)
+    engine::stone::stone(1.0, vec3(1.0), bank_seed(index))
+}
+
+/// Bank prototype `index`'s stone's seed.
+fn bank_seed(index: u32) -> u32 {
+    12000 + index * 19
 }
 
 /// The finest cells of a bank prototype's clusters (in its own unit space, as its 2 cm
 /// tolerance).
 pub const BANK_CELL: f32 = 1.5cm
 
+/// Bank prototype `index`'s stone (`bank_creature`) realized to a 2 cm tolerance, its colours
+/// cooked a centimetre apart, unmoved (as `engine::stone::realize_stone_within` places it).
 pub fn bank_prototype(index: u32) -> Realized {
-    engine::stone::realize_stone_within(
-        radius: 1.0,
-        squash: vec3(1.0),
-        seed: 12000 + index * 19,
-        at: vec3(0.0),
-        turn: 0.0,
-        surface: Tolerance { tolerance: 2cm, largest: 8cm },
+    realize_rock(
+        bank_creature(index),
+        Tolerance { tolerance: 2cm, largest: 8cm },
+        1cm,
+        translate(vec3(0.0)) * rotate_y(0.0),
+        bank_seed(index),
     )
 }
 

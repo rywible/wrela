@@ -449,11 +449,10 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
             }
         }
     }
+    // Those behind the water, then those over it.
     let behind = s.back.len()
-    for f in s.front {
-        s.back.push(f)
-    }
     write(mut s.sprites, 0, s.back)
+    write(mut s.sprites, behind, s.front)
     write(mut s.heights, 0, s.cast.waves.heights)
     hud(mut s, snap, screen, time)
     s.renderer.fetch(mut s.fonts, s.list)
@@ -566,7 +565,7 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         quad_vertex.bind(sprites: s.sprites.items(), st: ahead),
         sprite.bind(sprites: s.sprites.items(), st: ahead),
         vertices: 6,
-        instances: s.back.len() - behind,
+        instances: s.front.len(),
     )
     wet.end()
     label("page")
@@ -736,12 +735,13 @@ fn host_answers(s: mut Lab) {
     }
     if let Some(result) = said {
         s.environment = None
-        s.capabilities = Some(match result {
-            Ok(b) => host::read_environment(b).capabilities,
-            Err(_) => 0,
-        })
-        if let Ok(b) = result {
-            s.ratio = host::read_environment(b).pixel_ratio.unwrap_or(1.0)
+        match result {
+            Ok(b) => {
+                let environment = host::read_environment(b)
+                s.capabilities = Some(environment.capabilities)
+                s.ratio = environment.pixel_ratio.unwrap_or(1.0)
+            },
+            Err(_) => s.capabilities = Some(0),
         }
     }
     var i = 0
@@ -765,32 +765,25 @@ fn publish(s: mut Lab, snap: Snap, play: vec4) {
     var nodes: Vec<Node> = Vec::new()
     if snap.paused == 1 && s.watching.is_none() {
         let page = snap.page
+        // The page's heading, its items' labels, and where they are in the play area.
+        var parts: Option<(Text, Vec<Text>, Vec<Rect>)> = None
         if page == TITLE {
             let start = start_rect(screen)
-            nodes = tree(
-                snap.chosen,
-                page,
-                course_name(snap.course),
-                ["Start"],
-                on_screen([start], origin),
-            )
+            parts = Some((course_name(snap.course), Vec::from(["Start"]), Vec::from([start])))
         } else if page == MENU {
             let (_, rects) = list_rects(screen, MENU)
-            nodes = tree(snap.chosen, page, "Paused", MENU_LABELS, on_screen(rects, origin))
+            parts = Some(("Paused", Vec::from(MENU_LABELS), take rects))
         } else if page == OPTIONS {
             let (_, rects) = list_rects(screen, OPTIONS)
-            nodes = tree(snap.chosen, page, "Options", OPTION_LABELS, on_screen(rects, origin))
+            parts = Some(("Options", Vec::from(OPTION_LABELS), take rects))
         } else if page == CONTROLS {
             let (_, back) = controls_rects(screen)
-            nodes = tree(snap.chosen, page, "Controls", ["Back"], on_screen([back], origin))
+            parts = Some(("Controls", Vec::from(["Back"]), Vec::from([back])))
         } else if page == RUNS {
-            nodes = tree(
-                snap.chosen,
-                page,
-                "Runs",
-                ["Back"],
-                on_screen([back_rect(screen)], origin),
-            )
+            parts = Some(("Runs", Vec::from(["Back"]), Vec::from([back_rect(screen)])))
+        }
+        if let Some((heading, labels, rects)) = parts {
+            nodes = tree(snap.chosen, page, heading, labels, on_screen(rects, origin))
         }
     }
     host::publish(mut s.told, mut s.tree, "Capybara", nodes, play)

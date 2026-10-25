@@ -103,6 +103,14 @@ impl Cells {
         }
         (vec2u(max(a, vec2(0.0))), vec2u(min(b, size - 1.0)))
     }
+
+    /// Whether cell (`x`, `y`) is the first that a box from `lo` reaches into of those a look
+    /// over the cells from `a` on meets (row by row, each from its first column): its row and
+    /// its column the lowest of the box's (`span`), or `a`'s.
+    pub fn first(self, lo: vec2, x: u32, y: u32, a: vec2u) -> bool {
+        let c = floor((lo - self.lo) / CELL)
+        (x == a.x || c.x >= f32(x)) && (y == a.y || c.y >= f32(y))
+    }
 }
 
 pub struct Course: Clone {
@@ -316,7 +324,10 @@ impl Course {
                 let c = y * self.cells.cols + x
                 for j in self.cells.starts[c]..self.cells.starts[c + 1] {
                     let i = self.cells.items[j]
-                    // A piece in more than one of the cells is met again: the first time decided.
+                    // A piece in more than one of the cells is looked at in the first alone.
+                    if !self.cells.first(self.pieces[i].lo, x, y, a) {
+                        continue
+                    }
                     let Some(k) = self.touch(i, at, reach, from, body, ground) else { continue }
                     let better = match best {
                         Some(o) => k.dist < o.dist || k.dist == o.dist && k.piece < o.piece,
