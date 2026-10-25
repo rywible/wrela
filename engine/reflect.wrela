@@ -232,7 +232,6 @@ fn reflection_at(
     vec4(filtered.rgb / max(filtered.a, 1.0e-6), trust * filtered.a * 0.25)
 }
 
-
 // ---- the specular probe -------------------------------------------------------------------
 
 /// The cube's faces' side (texels), its levels, and the roughest surface it's for (perceptual
@@ -312,7 +311,9 @@ impl Specular {
 /// `face` (+x, -x, +y, -y, +z, -z: WebGPU's order and orientation).
 pub fn face_dir(face: u32, uv: vec2) -> vec3 {
     let a = uv * 2.0 - vec2(1.0)
-    let d = if face == 0 { vec3(1.0, -a.y, -a.x) } else if face == 1 { vec3(-1.0, -a.y, a.x) } else if face == 2 {
+    let d = if face == 0 { vec3(1.0, -a.y, -a.x) } else if face == 1 {
+        vec3(-1.0, -a.y, a.x)
+    } else if face == 2 {
         vec3(a.x, 1.0, a.y)
     } else if face == 3 { vec3(a.x, -1.0, -a.y) } else if face == 4 { vec3(a.x, -a.y, 1.0) } else {
         vec3(-a.x, -a.y, -1.0)
@@ -408,13 +409,15 @@ pub fn prefilter(
 
 // ---- reflections in the opaque passes ---------------------------------------------------
 
-/// What an opaque pass's reflections read beside the screen's copy (`Lighting::screen`): the
-/// camera the last frame's copy was drawn with, whether there's a copy (`on`), and whether the
-/// specular probe has been baked whole (`probe`).
+/// What an opaque pass reads beside the screen's copy (`Lighting::screen`): the camera the last
+/// frame's copy was drawn with, whether there's a copy (`on`), whether the specular probe has
+/// been baked whole (`probe`), and whether sunlit surfaces march toward the sun through the
+/// copy for contact shadows (`contact`: `contact_shadow`).
 pub struct Mirror: Copy + GpuData {
     pub cam: Camera,
     pub on: u32,
     pub probe: u32,
+    pub contact: u32 = 0,
 }
 
 /// The world a surface at `world` of roughness `rough` reflects along `r` (a unit vector), for a
@@ -471,4 +474,76 @@ fn a_cubes_faces_meet_at_their_edges() {
     // +y's row nearest +z (its last) meets +z's top row; +x's left edge meets +z's right edge.
     assert(length(face_dir(2, vec2(0.5, 1.0)) - face_dir(4, vec2(0.5, 0.0))) < 1.0e-6, "+y, +z")
     assert(length(face_dir(0, vec2(0.0, 0.5)) - face_dir(4, vec2(1.0, 0.5))) < 1.0e-6, "+x, +z")
+}
+
+// ---- contact shadows ----------------------------------------------------------------------
+
+/// How far toward the sun a contact shadow's march goes (m), in how many steps, and how thick
+/// what it meets is taken to be (m).
+pub const CONTACT_REACH: f32 = 2.0
+pub const CONTACT_STEPS: u32 = 8
+const CONTACT_THICK: f32 = 0.35
+
+/// How far from the eye contact shadows reach (m), fading out from half of it.
+pub const CONTACT_FAR: f32 = 40.0
+
+/// How much of the sun reaches `world` (facing `n`) past what's within `CONTACT_REACH` of it
+/// toward the sun (`sun`), small things the shadow maps' texels are too coarse for: a march
+/// through the last frame's screen (`screen`'s distances, as `m.cam` drew them) that's shadowed
+/// where a step goes behind what's there by less than `CONTACT_THICK`. `pixel` turns the steps
+/// a pixel's own way (a number in [0, 1)); 1 where there's no copy, or the march leaves it.
+pub fn contact_shadow(
+    m: Mirror,
+    screen: Texture<Rgba16Float>,
+    world: vec3,
+    n: vec3,
+    sun: vec3,
+    pixel: f32,
+) -> f32 {
+    if m.on == 0 || m.contact == 0 {
+        return 1.0
+    }
+    let cam = m.cam
+    let near = length(world - cam.eye)
+    // Past `CONTACT_FAR` the shadow maps' texels are fine enough for what it would find.
+    if near >= CONTACT_FAR {
+        return 1.0
+    }
+    // Off the surface a little, so it doesn't meet itself. The steps lie on one segment, so its
+    // ends are projected once and the steps found between them (clip space and the distance
+    // along the view are both linear along it).
+    let start = world + n * 0.03
+    let end = start + sun * CONTACT_REACH
+    let c0 = cam.view_proj * vec4(start, 1.0)
+    let c1 = cam.view_proj * vec4(end, 1.0)
+    let d0 = dot(start - cam.eye, cam.forward)
+    let d1 = dot(end - cam.eye, cam.forward)
+    let shift = cam.jitter * cam.screen * vec2(0.5, -0.5)
+    for i in 0..CONTACT_STEPS {
+        // Steps closer together near the surface, where contact matters most.
+        let t = (f32(i) + pixel) / f32(CONTACT_STEPS)
+        let f = t * t
+        let c = c0 + (c1 - c0) * f
+        let d = d0 + (d1 - d0) * f
+        if c.w <= 1.0e-4 || d <= cam.near {
+            return 1.0
+        }
+        let px = vec2(
+            (c.x / c.w * 0.5 + 0.5) * cam.screen.x,
+            (0.5 - c.y / c.w * 0.5) * cam.screen.y,
+        ) +
+            shift
+        if outside(px, cam.screen) {
+            return 1.0
+        }
+        let seen = screen.load(x: u32(px.x), y: u32(px.y)).a
+        // A step behind what's there, by a little: it's met something (a margin that grows with
+        // the distance, past the copy's precision).
+        let gap = d - seen
+        if gap > 0.02 + 0.002 * near && gap < CONTACT_THICK {
+            // Faded out toward `CONTACT_FAR`.
+            return smoothstep(CONTACT_FAR * 0.5, CONTACT_FAR, near)
+        }
+    }
+    1.0
 }

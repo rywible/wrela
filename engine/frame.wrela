@@ -511,6 +511,9 @@ pub struct Quality: Copy {
     /// Whether glossy surfaces reflect the screen (the last frame's, copied after its effects)
     /// and a specular probe of the sky, a face baked a frame (`reflect`).
     pub reflections: bool = true,
+    /// Whether sunlit surfaces march a couple of metres toward the sun through the last frame's
+    /// screen for the shadows of small things the shadow maps miss (`reflect::contact_shadow`).
+    pub contact: bool = true,
 }
 
 /// The least scene a paced 3D frame draws, over the output's size (`Quality::pace`): below it a
@@ -1738,9 +1741,12 @@ impl<R: Resolver> Frame<R> {
             froxels: self.lights.at,
             lights: self.lights.words.items(),
             mirror: Mirror {
-                on: if self.quality.reflections { self.mirror.on } else { 0 },
+                on: if self.quality.reflections || self.quality.contact { self.mirror.on } else {
+                    0
+                },
                 probe: if self.quality.reflections && self.specular.baked { 1 } else { 0 },
-                ..self.mirror
+                contact: if self.quality.contact { 1 } else { 0 },
+                ..self.mirror,
             },
             screen: self.screen,
             spec: self.specular.cube,
@@ -1878,7 +1884,7 @@ impl<R: Resolver> Frame<R> {
         scene.effects(mut self.targets, fx)
         // What the next frame's glossy surfaces reflect from the screen: this frame's scene
         // after its effects, and each pixel's distance.
-        if self.quality.reflections {
+        if self.quality.reflections || self.quality.contact {
             label("reflections copy")
             let rp = begin_pass(mut self.screen)
             fullscreen(
