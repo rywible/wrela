@@ -1,0 +1,8 @@
+# The course lens (B10.10): a 2D course's corners over its ground, its water and its player's run.
+# `wrela tool studio -- <game>` builds it with the game's course literals lifted and serves it.
+[package]
+name = "courselens"
+
+[dependencies]
+studio = { workspace = true }
+ui = { workspace = true }

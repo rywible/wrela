@@ -1,0 +1,39 @@
+// The course lens's program (B10.10): the course lens (the `courselens` package) on a game. Each
+// action is an export, and a command the lens reads as typed text (the tool's `COURSE_ACTIONS`
+// lists them, for its headless runner). What the lens needs of the game is `course.wrela`'s:
+// `wrela tool studio -- <game>` writes one for the game's `lens` module.
+
+use course::{plan, run}
+use courselens::lens::CourseLens
+
+pub fn init() -> CourseLens {
+    courselens::lens::open(plan, run)
+}
+
+pub fn frame(state: mut CourseLens, time: f32, width: u32, height: u32) {
+    courselens::lens::frame(mut state, plan, time, width, height)
+}
+
+pub fn busy(state: CourseLens) -> u32 {
+    if courselens::lens::busy(state) { 1 } else { 0 }
+}
+
+pub fn zoom(state: mut CourseLens, x: f32, y: f32, half: f32) {
+    courselens::lens::zoom(mut state, x, y, half)
+}
+
+pub fn corners(state: mut CourseLens) {
+    courselens::lens::corners(mut state, plan)
+}
+
+pub fn click(state: mut CourseLens, x: f32, y: f32) {
+    courselens::lens::click(mut state, plan, x, y)
+}
+
+pub fn move(state: mut CourseLens, x0: f32, y0: f32, x1: f32, y1: f32) {
+    courselens::lens::drag(mut state, plan, x0, y0, x1, y1)
+}
+
+pub fn write(state: mut CourseLens) {
+    courselens::lens::write(mut state)
+}

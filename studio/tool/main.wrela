@@ -22,7 +22,11 @@
 // Checks>(c: mut C)` is its spec (language.md §23.6), and a module `blueprint` with any of `pub
 // fn side()`, `front()` and `top()` is its blueprint (§23.7). A package whose module `lens` has
 // `pub fn map()` and `pub fn preview()` is a floor, which the map lens (studio/maplens) shows:
-// the map's literals alone are lifted.
+// the map's literals alone are lifted. A game whose module `lens` has `pub fn course()` (its
+// chains' corners, its ground's lines and its water's boxes) and `pub fn run()` (its player's
+// path) is a course, which the course lens (studio/courselens) shows, its player running over
+// it: its `course.wrela`'s literals alone are lifted, and a drag moves a corner by them
+// (`corners`, `click x y`, `move x0 y0 x1 y1`, `write`, `zoom x y half`).
 //
 // **Every action is an export and a command,** and answers with one line of JSON.
 // `<action> [args...]` runs one action headless on the native host and prints its lines;
@@ -299,11 +303,11 @@ pub fn run(place: take Place, c: Command, a: str, shown: str) -> u32 {
     // numeric argument mustn't cost a full build.
     var requested: Option<Action> = None
     if !command {
-        var floor = false
+        var kind = glue::LensKind::Field
         if let Ok(Some(t)) = read_text(f"{place.subject.as_str()}/lens.wrela") {
-            floor = glue::is_floor(t.as_str())
+            kind = glue::lens_kind(t.as_str())
         }
-        match parse_action(actions(floor), a, rest) {
+        match parse_action(actions(kind), a, rest) {
             Ok(p) => requested = Some(take p),
             Err(why) => {
                 print(f"error: {why.as_str()}")
@@ -448,7 +452,7 @@ pub fn one_action(
     let (w, h) = size
     // These exports print their answer at once: the program's own action, without the GPU's
     // setup, its shaders' compiling and frames that only draw an unseen image.
-    let cpu = png.is_none() && cpu_action(a.name.as_str()) && !built.floor
+    let cpu = png.is_none() && cpu_action(a.name.as_str()) && built.kind == glue::LensKind::Field
     var lens = start(built, w, h, cpu, take mask)?
     if cpu {
         let _ = invoke(mut lens, a.name.as_str(), a.args)?
@@ -856,23 +860,28 @@ pub fn overlay(photo: Photo, f: Framing, n: u32, sil: [u8]) -> (Vec<u8>, Vec<u8>
 @test
 fn action_arguments_fit_the_values_the_host_receives() {
     for value in ["2147483648", "4294967295", "-1"] {
-        assert(parse_action(actions(false), "view", [String::from(value)]).is_err(), value)
+        assert(
+            parse_action(actions(glue::LensKind::Field), "view", [String::from(value)]).is_err(),
+            value,
+        )
         var args: Vec<String> = Vec::new()
         for a in ["0", "0", "0", "0", "0", "0", value] {
             args.push(String::from(a))
         }
-        assert(parse_action(actions(false), "move", args).is_err(), value)
+        assert(parse_action(actions(glue::LensKind::Field), "move", args).is_err(), value)
     }
     for value in ["nan", "inf", "-inf", "1e99"] {
         var args: Vec<String> = Vec::new()
         for a in [value, "0", "0", "0"] {
             args.push(String::from(a))
         }
-        assert(parse_action(actions(false), "zoom", args).is_err(), value)
+        assert(parse_action(actions(glue::LensKind::Field), "zoom", args).is_err(), value)
     }
-    assert(parse_action(actions(false), "view", [String::from("2147483647")]).is_ok())
+    assert(
+        parse_action(actions(glue::LensKind::Field), "view", [String::from("2147483647")]).is_ok(),
+    )
     let Ok(m) = parse_action(
-        actions(false),
+        actions(glue::LensKind::Field),
         "move",
         [
             String::from("0"),
@@ -887,7 +896,9 @@ fn action_arguments_fit_the_values_the_host_receives() {
         panic("a move naming a literal")
     }
     assert(m.args.len() == 6 && m.literals.len() == 1)
-    let Err(no) = parse_action(actions(false), "no-such-action", []) else { panic("an action") }
+    let Err(no) = parse_action(actions(glue::LensKind::Field), "no-such-action", []) else {
+        panic("an action")
+    }
     assert(
         no
             .as_str()
@@ -896,8 +907,8 @@ fn action_arguments_fit_the_values_the_host_receives() {
             ),
     )
     assert(
-        parse_action(actions(false), "probe", []).is_err() &&
-            parse_action(actions(true), "geology", [String::from("1")]).is_ok(),
+        parse_action(actions(glue::LensKind::Field), "probe", []).is_err() &&
+            parse_action(actions(glue::LensKind::Map), "geology", [String::from("1")]).is_ok(),
     )
 }
 

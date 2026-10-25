@@ -7,8 +7,8 @@
 // edit`'s code) and answers a reference with the mask it was given.
 
 use glue::{
-    floor_text, glue_text, has_geology, is_floor, manifest, package_name, probe_main, probe_queries,
-    probe_text, read_probe,
+    LensKind, course_text, floor_text, glue_text, has_geology, lens_kind, manifest, package_name,
+    probe_main, probe_queries, probe_text, read_probe,
 }
 use std::json::{Kind, TOP, parse}
 use json::quoted
@@ -68,12 +68,21 @@ pub const MAP_ACTIONS: [(Text, Text); 10] = [
     ("geology", "u"),
 ]
 
+/// The course lens's exported actions, as `ACTIONS` lists the field lens's.
+pub const COURSE_ACTIONS: [(Text, Text); 5] = [
+    ("zoom", "fff"),
+    ("corners", ""),
+    ("click", "ff"),
+    ("move", "ffff"),
+    ("write", ""),
+]
+
 /// How long a headless run waits for the lens at most, in the host's seconds: for the GPU's
 /// answers, or for work on its helpers (the map lens's preview history, a few seconds).
 pub const WAIT: f64 = 120.0
 
 /// Where a lens is built: the root path of the workspace's directory (`ws`: it holds studio/,
-/// studio/glue, studio/maplens and engine/), the directories the command line's paths are from
+/// studio/glue, studio/maplens, studio/courselens and engine/), the directories the command line's paths are from
 /// (`files`) and the lenses' programs go in (`outs`, in a write root), the subject's package,
 /// the directory its programs and its build go in, the dependencies the subject's own manifest
 /// reads from elsewhere (a copy's), and whether the build is a debug one.
@@ -89,13 +98,13 @@ pub struct Place: Clone {
     pub debug: bool,
 }
 
-/// A lens built: its subject's name, whether it's a floor's map lens, its program's directory,
-/// its build's (`page`), how many warnings the build had, and its errors as `wrela check` shows
-/// them (empty if it built).
+/// A lens built: its subject's name, which lens it is, its program's directory, its build's
+/// (`page`), how many warnings the build had, and its errors as `wrela check` shows them (empty
+/// if it built).
 pub struct Built: Clone {
     pub errors: String,
     pub name: String,
-    pub floor: bool,
+    pub kind: LensKind,
     pub program: String,
     pub page: String,
     pub warnings: u32,
@@ -119,12 +128,12 @@ pub fn write_text(path: str, text: str) -> Result<(), ToolError> {
 }
 
 /// A lens's build under way, a request at a time, so a caller can answer other requests
-/// meanwhile (the server's rebuild): the subject's name, whether it's a floor, the program's
+/// meanwhile (the server's rebuild): the subject's name, which lens it is, the program's
 /// directory, its build's, the workspace's directory and the build's options, and the request
 /// it waits on: a field lens's probe query, then the build.
 pub struct Building {
     name: String,
-    floor: bool,
+    kind: LensKind,
     program: String,
     page: String,
     ws: String,
@@ -140,15 +149,15 @@ pub fn begin(place: Place) -> Result<Building, ToolError> {
     let subject = place.subject.as_str()
     let out = place.out.as_str()
     let ws = place.ws.as_str()
-    // The subject's name, and whether it's a floor.
+    // The subject's name, and which lens shows it.
     let Some(m) = read_text(f"{subject}/wrela.toml")? else {
         return Err(ToolError::new(f"`{subject}` isn't a package: it has no wrela.toml"))
     }
     let name = package_name(m.as_str(), subject)
-    var floor = false
+    var kind = LensKind::Field
     var geology = false
     if let Some(t) = read_text(f"{subject}/lens.wrela")? {
-        floor = is_floor(t.as_str())
+        kind = lens_kind(t.as_str())
         geology = has_geology(t.as_str())
     }
     // What the program is, and what's written for it.
@@ -164,7 +173,7 @@ pub fn begin(place: Place) -> Result<Building, ToolError> {
     }
     var b = Building {
         name: name.clone(),
-        floor,
+        kind,
         program: String::from(f"{out}/lens"),
         page,
         ws: String::from(ws),
@@ -172,7 +181,39 @@ pub fn begin(place: Place) -> Result<Building, ToolError> {
         query: None,
         build: None,
     }
-    if floor {
+    if kind == LensKind::Course {
+        b.program = String::from(f"{out}/course")
+        let glue_dir = String::from(f"{ws}/studio/courselens/glue")
+        for f in ["main.wrela", "course.wrela"] {
+            let Some(text) = read_text(f"{glue_dir.as_str()}/{f}")? else {
+                return Err(ToolError::new(f"there's no {glue_dir.as_str()}/{f}"))
+            }
+            let written = if f == "course.wrela" {
+                course_text(text.as_str(), name.as_str())
+            } else {
+                take text
+            }
+            write_text(f"{b.program.as_str()}/{f}", written.as_str())?
+        }
+        var deps: Vec<String> = Vec::new()
+        deps.push(String::from("courselens"))
+        write_text(
+            f"{b.program.as_str()}/wrela.toml",
+            manifest("course_lens", name.as_str(), deps).as_str(),
+        )?
+        for (dep, dir) in [
+            ("courselens", "studio/courselens"),
+            ("engine", "engine"),
+            ("ui", "ui"),
+        ] {
+            overrides.push(Override { name: String::from(dep), dir: String::from(f"{ws}/{dir}") })
+        }
+        // The course's literals alone: what a drag moves. (The rest is built into the code, so
+        // the player's run is the game's.)
+        options.lift.push(String::from(f"{name.as_str()}/course.wrela"))
+        options.overrides = take overrides
+        b.build = Some(toolchain::build(b.program.as_str(), b.page.as_str(), options.clone()))
+    } else if kind == LensKind::Map {
         b.program = String::from(f"{out}/map")
         let glue_dir = String::from(f"{ws}/studio/maplens/glue")
         var writes: Vec<(String, String)> = Vec::new()
@@ -280,7 +321,7 @@ impl Building {
                 Built {
                     errors,
                     name: self.name.clone(),
-                    floor: self.floor,
+                    kind: self.kind,
                     program: self.program.clone(),
                     page: self.page.clone(),
                     warnings,
@@ -301,19 +342,21 @@ pub fn build(place: Place) -> Result<Built, ToolError> {
     }
 }
 
-/// The lens's actions: the map lens's on a floor, else the field lens's.
-pub fn actions(floor: bool) -> Vec<(String, String)> {
+/// The actions of a lens of kind `kind`: the field lens's, the map lens's or the course lens's.
+pub fn actions(kind: LensKind) -> Vec<(String, String)> {
+    match kind {
+        LensKind::Field => listed(ACTIONS),
+        LensKind::Map => listed(MAP_ACTIONS),
+        LensKind::Course => listed(COURSE_ACTIONS),
+    }
+}
+
+/// An action table's names and arguments as strings.
+fn listed(table: [(Text, Text)]) -> Vec<(String, String)> {
     var out: Vec<(String, String)> = Vec::new()
-    if floor {
-        for a in MAP_ACTIONS {
-            let (n, k) = a
-            out.push((n.to_string(), k.to_string()))
-        }
-    } else {
-        for a in ACTIONS {
-            let (n, k) = a
-            out.push((n.to_string(), k.to_string()))
-        }
+    for a in table {
+        let (n, k) = a
+        out.push((n.to_string(), k.to_string()))
     }
     out
 }
@@ -405,7 +448,7 @@ pub fn start(
         width,
         height,
         frame: 0,
-        field: !built.floor,
+        field: built.kind == LensKind::Field,
         program: built.program.clone(),
         page: built.page.clone(),
         reference,

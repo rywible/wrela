@@ -1,0 +1,9 @@
+# The course lens's program (`wrela tool studio` on a game with a course): the course lens on a
+# game. `wrela tool studio -- <game>` builds a copy of it whose `course.wrela` is the game's; this
+# one's is the capybara's, so it checks alone.
+[package]
+name = "course_lens"
+
+[dependencies]
+capybara = { workspace = true }
+courselens = { workspace = true }

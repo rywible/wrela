@@ -112,6 +112,8 @@ pub struct Course: Clone {
     /// Each chain's first piece, then one past the last chain's last: chain `i` is the pieces
     /// from `chains[i]` up to `chains[i + 1]`.
     pub chains: Vec<u32>,
+    /// Each chain's corners, as its builder wrote them: what the course lens moves (lens.wrela).
+    pub corners: Vec<Vec<vec2>>,
     pub waters: Vec<Water>,
     /// Where the capybara's middle starts.
     pub start: vec2,
@@ -168,6 +170,7 @@ impl Course {
             pieces: Vec::new(),
             cells: Cells::none(),
             chains: Vec::from([0]),
+            corners: Vec::new(),
             waters: Vec::new(),
             start,
             goal_lo,
@@ -268,6 +271,11 @@ impl Course {
         build_chain(mut c.pieces, corners, closed, chain: index)
         c.chains.push(c.pieces.len())
         c.cells = Cells::of(c.pieces)
+        var at: Vec<vec2> = Vec::new()
+        for k in corners {
+            at.push(k.at)
+        }
+        c.corners.push(take at)
         c
     }
 
@@ -399,6 +407,13 @@ pub const COURSES: u32 = 2
 pub fn course(i: u32) -> borrow Course {
     assert(i < COURSES, "a course that doesn't exist")
     if i == 0 { LAB } else { LEVEL }
+}
+
+/// Course `i` made again as its literals say now: the course lens's (lens.wrela), whose drags
+/// change them in a lifted build. The game reads the constants, made once in the build.
+pub fn made(i: u32) -> Course {
+    assert(i < COURSES, "a course that doesn't exist")
+    if i == 0 { lab() } else { level() }
 }
 
 /// The movement lab: from the left, a runway with two one-way ledges above it (2 m and 3.5 m

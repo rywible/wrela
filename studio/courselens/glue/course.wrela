@@ -1,0 +1,14 @@
+// What the course lens needs of its game: its course (as its literals say now) and its player's
+// run. `wrela tool studio -- <game>` writes one for the game's `lens` module; this one is the
+// capybara's.
+
+use courselens::lens::Plan
+
+pub fn plan() -> Plan {
+    let (corners, ground, waters) = capybara::lens::course()
+    Plan { corners, ground, waters }
+}
+
+pub fn run() -> Vec<vec2> {
+    capybara::lens::run()
+}

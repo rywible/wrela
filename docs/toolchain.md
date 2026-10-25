@@ -99,7 +99,7 @@ wrela-host --compare-ticks a.ticks b.ticks   # two builds' tick logs: equal, or 
 | -------------------- | --------------------------------------------------------------------------------------------------------- |
 | `lookbook`           | A program's lookbook shots as stills and clips (`--package examples/clearing`, `--stills`, `--view clay`) |
 | `motion`, `round`    | The Last Green in motion; a play round in Chrome                                                          |
-| `studio`             | The lens on a subject                                                                                     |
+| `studio`             | The lens on a subject, a floor's map or a game's course                                                   |
 | `serve`              | A directory served to a browser                                                                           |
 | `audio`, `listening` | A piece's take and measurements; blind listening tests                                                    |
 | `reference`          | Replicas of reference meshes, and how far a surface is from one                                           |
