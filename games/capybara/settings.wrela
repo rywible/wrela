@@ -6,11 +6,14 @@
 // The options are changed in the pause's menus, which are the sim's (world.wrela): the sim counts
 // the steps taken on each, and the frames apply the steps they haven't yet (`turned`).
 
+use camera::Aspect
+
 /// Where the settings are stored.
 pub const SETTINGS: Text = "capybara/settings"
 
-/// The stored settings' version: a store of another reads as the settings at first.
-const VERSION: u8 = 1
+/// The stored settings' version (a store of the one before reads its settings and the aspect at
+/// first; of another, as the settings at first).
+const VERSION: u8 = 2
 
 /// The ghost that runs beside the player: none, their best any% run, the robot's (the route
 /// search's fastest) or the human line's.
@@ -26,6 +29,9 @@ pub struct Settings: Copy + Eq {
     pub ghost: u32 = BEST_GHOST,
     /// The moves the signs have seen made, a bit each (signs.wrela's `RUN_AND_JUMP`...).
     pub learned: u32 = 0,
+    /// The view's shape: the fixed play area, or the screen's (camera.wrela's `Aspect`). Stored;
+    /// no option shows it yet (the options' steps are the sim's).
+    pub aspect: Aspect = Aspect::Fixed,
 }
 
 /// The settings as stored.
@@ -38,19 +44,27 @@ pub fn encode(s: Settings) -> Vec<u8> {
     for i in 0..4 {
         out.push(u8((s.learned >> (8 * i)) & 0xff))
     }
+    out.push(if s.aspect == Aspect::Free { 1 } else { 0 })
     out
 }
 
 /// The settings stored as `b`, or the settings at first if `b` isn't settings of this version.
 pub fn decode(b: [u8]) -> Settings {
-    if b.len() != 8 || b[0] != VERSION {
+    let first = b.len() == 8 && b[0] == 1
+    if !first && (b.len() != 9 || b[0] != VERSION) {
         return Settings {}
     }
     var learned = 0
     for i in 0..4 {
         learned = learned | (u32(b[4 + i]) << (8 * i))
     }
-    Settings { music: b[1] == 1, clock: b[2] == 1, ghost: min(u32(b[3]), GHOSTS - 1), learned }
+    Settings {
+        music: b[1] == 1,
+        clock: b[2] == 1,
+        ghost: min(u32(b[3]), GHOSTS - 1),
+        learned,
+        aspect: if !first && b[8] == 1 { Aspect::Free } else { Aspect::Fixed },
+    }
 }
 
 /// `s` after the steps taken on the options from `before` to `now` (world.wrela's `turns`: the
@@ -89,8 +103,17 @@ fn the_clock_is_off_and_the_music_on_at_first() {
 
 @test
 fn settings_are_stored_and_read_back_and_anything_else_reads_as_the_first() {
-    let s = Settings { music: false, clock: true, ghost: HUMAN_GHOST, learned: 0x80000005 }
+    let s = Settings {
+        music: false,
+        clock: true,
+        ghost: HUMAN_GHOST,
+        learned: 0x80000005,
+        aspect: Aspect::Free,
+    }
     assert(decode(encode(s)) == s)
+    // The version before's (no aspect) reads as stored, in the fixed aspect.
+    let old = [1, 0, 1, u8(HUMAN_GHOST), 5, 0, 0, 0x80]
+    assert(decode(old) == Settings { aspect: Aspect::Fixed, ..s }, "the version before's")
     assert(decode([]) == Settings {}, "nothing stored")
     var other = encode(s)
     other[0] = 9

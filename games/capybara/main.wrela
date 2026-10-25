@@ -33,7 +33,7 @@
 
 use art::{Page, finish, grain_texture}
 use body::{Mode, RADIUS}
-use camera::{Camera, camera, follow, framed, half_view}
+use camera::{Camera, camera, follow, framed, half_view, play_rect}
 use cast::{Cast, cast, ghost, grounded, react, sprites}
 use course::{Course, course}
 use earth::{
@@ -329,7 +329,11 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
         s.voice = Some(sound::start(music::music()))
     }
     s.snaps.update()
-    let screen = vec2(f32(width), f32(height))
+    // The play area (camera.wrela's `play_rect`): what the scene, the page and the screens are
+    // laid out in (`screen`, its size), at `origin` on the screen; the margins round it the sky's.
+    let play = play_rect(vec2(f32(width), f32(height)), s.settings.aspect)
+    let screen = play.zw
+    let origin = play.xy
     let (live_snap, live_lag) = drawn(s.snaps, time)
     host_answers(mut s)
     store_runs(mut s, dt)
@@ -347,7 +351,8 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     // sim's ticks take theirs. On the runs, the sim leaves the keys and clicks to the frames: the
     // board's and the watch's.
     let browsing = live_snap.paused == 1 && live_snap.page == RUNS
-    for e in events() {
+    for raw in events() {
+        let e = in_play(raw, origin)
         if let Some(d) = device_of(e) {
             s.device = d
         }
@@ -403,13 +408,13 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     follow(mut s.camera, snap, dt)
     // The scene is drawn at the render scale (paced by the frames), the page and the HUD at the
     // screen's size.
-    let (rw, rh) = s.sheet.begin(dt, width, height, ratio: s.ratio)
+    let (rw, rh) = s.sheet.begin(dt, u32(screen.x), u32(screen.y), ratio: s.ratio)
     if dt > 0.0 && dt < 0.25 {
         s.frame_time = if s.frame_time == 0.0 { dt } else {
             s.frame_time + (dt - s.frame_time) * 0.05
         }
     }
-    let aspect = f32(width) / f32(max(height, 1))
+    let aspect = screen.x / max(screen.y, 1.0)
     let half = half_view(aspect)
     let eye = framed(s.camera, half, c.ends)
     react(mut s.cast, snap, c, dt, eye, half)
@@ -565,13 +570,15 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     )
     wet.end()
     label("page")
-    let out = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
+    let out = begin_screen_pass(clear: MARGINS)
+    out.viewport(x: play.x, y: play.y, width: play.z, height: play.w)
     let (iris, open) = cast::iris(s.cast, snap, lag)
     let page = Page {
         centre: eye,
         half,
         iris,
         screen,
+        origin,
         open,
         // Washed over under the pause's pages, a little under the title.
         dim: if snap.paused == 0 || watching { 0.0 } else if snap.page == TITLE { 0.35 } else {
@@ -586,7 +593,34 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     )
     s.renderer.draw(out, screen)
     out.present()
-    publish(mut s, snap, screen)
+    publish(mut s, snap, play)
+}
+
+/// The margins round the play area: the sky's colour at the top of the page, as the page's
+/// finish draws it (art.wrela).
+const MARGINS = vec4(0.56, 0.81, 0.96, 1.0)
+
+/// `e` with its place (a pointer's) in the play area's pixels, its top left at `origin` on the
+/// screen.
+fn in_play(e: Event, origin: vec2) -> Event {
+    match e {
+        Event::PointerMove { at, mods } => Event::PointerMove { at: at - origin, mods },
+        Event::PointerDown { at, button, mods } => {
+            Event::PointerDown { at: at - origin, button, mods }
+        },
+        Event::PointerUp { at, button, mods } => Event::PointerUp { at: at - origin, button, mods },
+        Event::Wheel { at, delta, mods } => Event::Wheel { at: at - origin, delta, mods },
+        _ => e,
+    }
+}
+
+/// `rects` (the play area's pixels) on the screen, the play area's top left at `origin`.
+fn on_screen(rects: [Rect], origin: vec2) -> Vec<Rect> {
+    var out: Vec<Rect> = Vec::with_capacity(rects.len())
+    for r in rects {
+        out.push(Rect::new(r.x + origin.x, r.y + origin.y, r.w, r.h))
+    }
+    out
 }
 
 /// How far round a pool its water reads the scene under it (m): the wobble's reach and a little
@@ -722,7 +756,8 @@ fn host_answers(s: mut Lab) {
 
 /// The page shown as a semantic tree (screens.wrela's `tree`), if the host shows one: its items,
 /// so a click, the keyboard's Tab or a screen reader can choose them; none while playing.
-fn publish(s: mut Lab, snap: Snap, screen: vec2) {
+fn publish(s: mut Lab, snap: Snap, play: vec4) {
+    let (screen, origin) = (play.zw, play.xy)
     let Some(capabilities) = s.capabilities else { return }
     if capabilities & host::SEMANTICS == 0 {
         return
@@ -732,21 +767,33 @@ fn publish(s: mut Lab, snap: Snap, screen: vec2) {
         let page = snap.page
         if page == TITLE {
             let start = start_rect(screen)
-            nodes = tree(snap.chosen, page, course_name(snap.course), ["Start"], [start])
+            nodes = tree(
+                snap.chosen,
+                page,
+                course_name(snap.course),
+                ["Start"],
+                on_screen([start], origin),
+            )
         } else if page == MENU {
             let (_, rects) = list_rects(screen, MENU)
-            nodes = tree(snap.chosen, page, "Paused", MENU_LABELS, rects)
+            nodes = tree(snap.chosen, page, "Paused", MENU_LABELS, on_screen(rects, origin))
         } else if page == OPTIONS {
             let (_, rects) = list_rects(screen, OPTIONS)
-            nodes = tree(snap.chosen, page, "Options", OPTION_LABELS, rects)
+            nodes = tree(snap.chosen, page, "Options", OPTION_LABELS, on_screen(rects, origin))
         } else if page == CONTROLS {
             let (_, back) = controls_rects(screen)
-            nodes = tree(snap.chosen, page, "Controls", ["Back"], [back])
+            nodes = tree(snap.chosen, page, "Controls", ["Back"], on_screen([back], origin))
         } else if page == RUNS {
-            nodes = tree(snap.chosen, page, "Runs", ["Back"], [back_rect(screen)])
+            nodes = tree(
+                snap.chosen,
+                page,
+                "Runs",
+                ["Back"],
+                on_screen([back_rect(screen)], origin),
+            )
         }
     }
-    host::publish(mut s.told, mut s.tree, "Capybara", nodes, vec4(0.0, 0.0, screen.x, screen.y))
+    host::publish(mut s.told, mut s.tree, "Capybara", nodes, play)
 }
 
 /// The item of list page `page` under the pointer, while the player uses the pointer.

@@ -48,14 +48,16 @@ pub fn grain_texture() -> Texture<Rgba16Float> {
     t
 }
 
-/// Where the page lies on the plane of play: the view's middle and half its size (m); the
-/// screen's size (px), which the scene, drawn at the render scale, is stretched over; and the iris:
-/// its middle (m on the plane of play) and how open (0 shut, 1 open).
+/// Where the page lies on the plane of play: the view's middle and half its size (m); the play
+/// area's size (px), which the scene, drawn at the render scale, is stretched over, and its top
+/// left on the screen (camera.wrela's `play_rect`); and the iris: its middle (m on the plane of
+/// play) and how open (0 shut, 1 open).
 pub struct Page: Copy + GpuData {
     pub centre: vec2,
     pub half: vec2,
     pub iris: vec2,
     pub screen: vec2,
+    pub origin: vec2 = vec2(0.0),
     pub open: f32,
     /// How much the page is washed over, under the pause's card (0 to 1).
     pub dim: f32 = 0.0,
@@ -66,7 +68,7 @@ pub struct Page: Copy + GpuData {
 @fragment
 pub fn finish(pixel: FragCoord, scene: Texture<Rgba8>, s: Sampler, page: Page) -> vec4 {
     let size = page.screen
-    let uv = pixel.position.xy / size
+    let uv = (pixel.position.xy - page.origin) / size
     var c = scene.sample_level(s, uv).rgb
     // The paint a little more vivid, and a touch more contrast.
     let luma = dot(c, vec3(0.299, 0.587, 0.114))
