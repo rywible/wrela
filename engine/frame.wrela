@@ -22,6 +22,7 @@
 // defaults draw nothing, so a program builds only the pipelines it reaches.
 
 use air::{Air, Tables, tables}
+use ambient::Occlusion
 use cook::{Budget, Planner, Work}
 use light::Light
 use lit::Lighting
@@ -497,6 +498,9 @@ pub struct Quality: Copy {
     /// frame's depth hid, and after the opaque passes this frame's depth pyramid reveals what of
     /// it shows, drawn then (both phases or neither: the first alone would drop what's revealed).
     pub occlusion: bool = true,
+    /// Whether what's near a surface hides some of the sky's light from it (`ambient`: built
+    /// from each frame's opaque depth, read by the next frame's shading).
+    pub ambient: bool = true,
 }
 
 /// The least scene a paced 3D frame draws, over the output's size (`Quality::pace`): below it a
@@ -699,6 +703,9 @@ pub struct Frame<R: Resolver> {
     /// The depth pyramid (`cull`): this frame's, built after its opaque passes, which the next
     /// frame's choosing reads.
     pub pyramid: Pyramid,
+    /// The ambient occlusion (`ambient`): the last frame's, which this frame's shading reads, and
+    /// this frame's, built after its opaque passes.
+    pub ambient: Occlusion,
     resolver: R,
     pub exposure: GpuBuffer<Exposure>,
     pub linear: Sampler,
@@ -842,6 +849,7 @@ impl<R: Resolver> Frame<R> {
             clipmap,
             targets: no_targets(),
             pyramid: Pyramid::new(width: 1, height: 1),
+            ambient: Occlusion::new(width: 1, height: 1),
             resolver: R::made(),
             exposure: buffer(1),
             linear: sampler(),
@@ -1040,8 +1048,10 @@ impl<R: Resolver> Frame<R> {
         let d = self.origin - origin
         self.origin = origin
         scene.shift(d)
-        // Last frame's depth was drawn in the old render space: nothing is hidden by it.
+        // Last frame's depth was drawn in the old render space: nothing is hidden by it, nor
+        // shades what's near.
         self.pyramid.at.on = 0
+        self.ambient.forget()
         self.clipmap.set_origin(origin.xz)
         self.probes.using.shift(d.xz)
         self.probes.at += d.xz
@@ -1077,6 +1087,7 @@ impl<R: Resolver> Frame<R> {
         if width != self.width || height != self.height || f32(w) != self.cam.screen.x {
             self.targets = targets_for(width, height, w, h, scene.has_effects())
             self.pyramid = Pyramid::new(width: w, height: h)
+            self.ambient = Occlusion::new(width: w, height: h)
             self.resolver.resize(w, h)
             scene.resized(w, h)
             self.width = width
@@ -1228,6 +1239,10 @@ impl<R: Resolver> Frame<R> {
             return
         }
         swap(mut self.targets.depth, mut self.targets.last_depth)
+        self.ambient.turn()
+        if self.jumped {
+            self.ambient.forget()
+        }
         self.draw_scene(mut scene, sh, wind)
         self.finish(scene)
         self.frames += 1
@@ -1594,6 +1609,8 @@ impl<R: Resolver> Frame<R> {
             grounds,
             cloud: self.sky.shadow,
             air: self.tables.aerial,
+            ambient: self.ambient.at,
+            ao: self.ambient.last,
             s: self.linear,
         }
         // Last frame's pyramid, if it's this view's (not after a jump, nor with occlusion off).
@@ -1685,6 +1702,13 @@ impl<R: Resolver> Frame<R> {
             ls.end()
         } else {
             self.pyramid.at.on = 0
+        }
+        // The ambient occlusion from this frame's opaque depth, for the next frame's shading (its
+        // slices still in plain rendering, which has no history to gather them).
+        if self.quality.ambient {
+            label("ambient occlusion")
+            let still = Camera { frame: if self.debug.plain { 0 } else { cam.frame }, ..cam }
+            self.ambient.next_at = ambient::build(mut self.ambient.next, self.targets.depth, still)
         }
         label("sky")
         let sky = begin_pass_with_depth(

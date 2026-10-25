@@ -9,8 +9,8 @@ use std::tool::toolchain::Override
 /// How many pipelines a bare scene's frame makes (31 since B3: the terrain's sides bounded
 /// and culled, `terrain::bound_sides` and `cull_sides`, and the probes' voxels cleared before a
 /// cook, `probes::clear_voxels`; 33 since B4b: the depth pyramid's, `cull::level_zero` and
-/// `farthest`).
-const FRAME_PIPELINES: u32 = 33
+/// `farthest`; 34 since B8.1: the ambient occlusion's, `ambient::gtao`).
+const FRAME_PIPELINES: u32 = 34
 
 /// The fixture's pipelines: each one's entry points, `+` between them.
 fn pipelines() -> Vec<String> {

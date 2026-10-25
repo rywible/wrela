@@ -1,0 +1,214 @@
+// Ambient occlusion: how much of the sky's light reaches a point past what's near it, from the
+// frame's depth (ground-truth ambient occlusion, GTAO: Jimenez, Wu, Pesce and Jarabo, Practical
+// Real-Time Strategies for Accurate Indirect Occlusion, SIGGRAPH 2016 course), at half the
+// scene's size: two slices a pixel, each a horizon searched four steps either way, their visible
+// arc integrated against the cosine about the pixel's normal (the normal rebuilt from the depth
+// round it). The slices turn with the frame, so temporal AA's history gathers their noise.
+//
+// The frame is drawn forward (each pass shades as it draws), so the depth is whole only after
+// the opaque passes: the occlusion is built then, and read by the next frame's shading at each
+// point's place in the camera it was built from (`ao_at`). A texel whose distance from that
+// camera isn't the point's (what moved, or what was hidden then) is taken as open.
+
+use std::gpu::{DepthTexture, GlobalId, Rgba16Float, Texels, Texture, dispatch, writable_texture}
+use std::math::PI
+use view::Camera
+
+/// How far an occluder reaches (m), and the most pixels a slice's search spans.
+pub const RADIUS: f32 = 1.0
+pub const MOST_PIXELS: f32 = 48.0
+
+/// What shading reads beside the occlusion's texels: the camera they were built from (its
+/// projection, without jitter, and its eye), their size, and whether they're to be used (`on`
+/// 0: everything open, as before the first are built or after the render origin moved).
+pub struct Ambient: Copy + GpuData {
+    pub view_proj: mat4,
+    pub eye: vec3,
+    pub on: u32,
+    pub size: vec2,
+}
+
+/// No occlusion: everything open.
+pub const OPEN = Ambient {
+    view_proj: mat4(
+        vec4(1.0, 0.0, 0.0, 0.0),
+        vec4(0.0, 1.0, 0.0, 0.0),
+        vec4(0.0, 0.0, 1.0, 0.0),
+        vec4(0.0, 0.0, 0.0, 1.0),
+    ),
+    eye: vec3(0.0),
+    on: 0,
+    size: vec2(1.0),
+}
+
+/// The occlusion: the texels the frame's shading reads (`last`, built from the last frame's
+/// depth, as `at` says) and those built from this frame's (`next`, as `next_at` will say), each
+/// the share of the sky a texel's point sees and its distance from the eye (m).
+pub struct Occlusion {
+    pub last: Texture<Rgba16Float>,
+    pub at: Ambient,
+    pub next: Texture<Rgba16Float>,
+    pub next_at: Ambient,
+}
+
+impl Occlusion {
+    /// The occlusion for a scene `width` × `height`, none built yet.
+    pub fn new(width: u32, height: u32) -> Occlusion {
+        let w = max(width / 2, 1)
+        let h = max(height / 2, 1)
+        Occlusion {
+            last: writable_texture::<Rgba16Float>(width: w, height: h),
+            at: OPEN,
+            next: writable_texture::<Rgba16Float>(width: w, height: h),
+            next_at: OPEN,
+        }
+    }
+
+    /// The frame begins: what the last built is what its shading reads.
+    pub fn turn(mut self) {
+        swap(mut self.last, mut self.next)
+        self.at = self.next_at
+        self.next_at = OPEN
+    }
+
+    /// Nothing built is to be used (the render origin moved, or the eye jumped).
+    pub fn forget(mut self) {
+        self.at = OPEN
+        self.next_at = OPEN
+    }
+}
+
+/// The occlusion's texels `next` built from `depth` (the scene's opaque depth, as `cam` drew it),
+/// for the next frame: what reads them is to be told so (`Occlusion::next_at`). (Apart from its
+/// `Occlusion`, so this frame's shading can read the last while it's built.)
+pub fn build(next: mut Texture<Rgba16Float>, depth: DepthTexture, cam: Camera) -> Ambient {
+    let size = vec2u(next.width(), next.height())
+    dispatch(gtao.bind(depth, cam, size, out: mut next), over: (size.x, size.y))
+    Ambient { view_proj: cam.view_proj, eye: cam.eye, on: 1, size: vec2(size) }
+}
+
+/// An arccosine within 0.0001 rad (Lagarde's fit): the search's many cheaply.
+fn fast_acos(x: f32) -> f32 {
+    let a = abs(x)
+    let r = (-0.156583 * a + PI * 0.5) * sqrt(max(1.0 - a, 0.0))
+    if x >= 0.0 { r } else { PI - r }
+}
+
+/// A number in [0, 1) for pixel `p`, spread evenly over the screen (Jimenez's interleaved
+/// gradient noise, Next Generation Post Processing in Call of Duty: Advanced Warfare, 2014).
+fn noise(p: vec2) -> f32 {
+    fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))))
+}
+
+/// The world point at full-size pixel `p` of `depth` (as `cam` drew it), and its depth (0:
+/// nothing drawn there).
+fn point_at(depth: DepthTexture, cam: Camera, p: vec2i) -> (vec3, f32) {
+    let q = clamp(p, vec2i(0), vec2i(cam.screen) - vec2i(1))
+    let d = depth.load(x: u32(q.x), y: u32(q.y))
+    (cam.world_at(vec2(q) + vec2(0.5), d), d)
+}
+
+/// The occlusion's texel `id` (of `size`, half the scene's): the share of the sky its point
+/// sees (1 open), and its distance from the eye (m); where nothing was drawn, open.
+@compute(8, 8)
+fn gtao(depth: DepthTexture, cam: Camera, size: vec2u, out: mut Texels<Rgba16Float>, id: GlobalId) {
+    if id.x >= size.x || id.y >= size.y {
+        return
+    }
+    let c = vec2i(i32(id.x), i32(id.y)) * 2
+    let (p, d) = point_at(depth, cam, c)
+    if d <= 0.0 {
+        out.store(id, vec4(1.0, 0.0, 0.0, 1.0))
+        return
+    }
+    let dist = length(p - cam.eye)
+    let v = (cam.eye - p) / dist
+    // The normal from the depth round it: on each axis the nearer neighbour's side (an edge's
+    // far side would bend it).
+    let (l, _) = point_at(depth, cam, c - vec2i(1, 0))
+    let (r, _) = point_at(depth, cam, c + vec2i(1, 0))
+    let (u, _) = point_at(depth, cam, c - vec2i(0, 1))
+    let (b, _) = point_at(depth, cam, c + vec2i(0, 1))
+    let dx = if length(r - p) < length(p - l) { r - p } else { p - l }
+    let dy = if length(b - p) < length(p - u) { b - p } else { p - u }
+    var n = normalize(cross(dy, dx))
+    if dot(n, v) < 0.0 {
+        n = -n
+    }
+    let per_metre = cam.screen.y / (2.0 * cam.tan_half)
+    let reach = min(RADIUS * per_metre / dist, MOST_PIXELS)
+    if reach < 1.0 {
+        out.store(id, vec4(1.0, dist, 0.0, 1.0))
+        return
+    }
+    let spin = fract(noise(vec2(c)) + f32(cam.frame % 16) * 0.618034)
+    let offset = fract(noise(vec2(c) + vec2(5.3, 11.7)) + f32(cam.frame % 16) * 0.381966)
+    var seen = 0.0
+    for i in 0..2 {
+        let phi = (f32(i) + spin) * PI * 0.5
+        let dir = vec2(cos(phi), sin(phi))
+        // The slice's plane holds the view and the screen's direction (rows run down).
+        let along = cam.right * dir.x - cam.up * dir.y
+        let side = normalize(along - v * dot(along, v))
+        let axis = cross(side, v)
+        let np = n - axis * dot(n, axis)
+        let np_len = max(length(np), 1.0e-4)
+        let ang = fast_acos(clamp(dot(np, v) / np_len, -1.0, 1.0)) * sign(dot(np, side))
+        var h = [0.0; 2]
+        for s in 0..2 {
+            let way = if s == 0 { -1.0 } else { 1.0 }
+            var best = -1.0
+            for k in 0..4 {
+                let t = (f32(k) + offset) / 4.0
+                let at = vec2(c) + dir * (way * max(t * reach, 1.0))
+                let (q, qd) = point_at(depth, cam, vec2i(round(at)))
+                if qd <= 0.0 {
+                    continue
+                }
+                let to = q - p
+                let len = length(to)
+                if len < 1.0e-4 {
+                    continue
+                }
+                // Past the radius an occluder fades to none.
+                let fade = saturate((len - RADIUS * 0.6) / (RADIUS * 0.4))
+                best = max(best, mix(dot(to, v) / len, -1.0, fade))
+            }
+            h[s] = way * fast_acos(best)
+        }
+        // The horizons, no lower than the surface's tangent plane.
+        let h0 = ang + max(h[0] - ang, -PI * 0.5)
+        let h1 = ang + min(h[1] - ang, PI * 0.5)
+        let arc = -cos(2.0 * h0 - ang) +
+            cos(ang) +
+            2.0 * h0 * sin(ang) +
+            (-cos(2.0 * h1 - ang) + cos(ang) + 2.0 * h1 * sin(ang))
+        seen += np_len * 0.25 * arc
+    }
+    out.store(id, vec4(saturate(seen * 0.5), dist, 0.0, 1.0))
+}
+
+/// The share of the sky that reaches `world` past what's near it (1: open), from the occlusion's
+/// texels (`ao`, as `a` says they were built): at the point's place in the camera they were built
+/// from, if the texel there is of the point (its distance within a tenth of the point's); open
+/// otherwise, off screen, or with none built.
+pub fn ao_at(a: Ambient, ao: Texture<Rgba16Float>, world: vec3) -> f32 {
+    if a.on == 0 {
+        return 1.0
+    }
+    let c = a.view_proj * vec4(world, 1.0)
+    if c.w <= 1.0e-4 {
+        return 1.0
+    }
+    let uv = vec2(c.x / c.w * 0.5 + 0.5, 0.5 - c.y / c.w * 0.5)
+    if uv.x < 0.0 || uv.y < 0.0 || uv.x >= 1.0 || uv.y >= 1.0 {
+        return 1.0
+    }
+    let t = vec2u(uv * a.size)
+    let texel = ao.load(x: t.x, y: t.y)
+    let dist = length(world - a.eye)
+    if abs(texel.y - dist) > 0.1 * dist + 0.05 {
+        return 1.0
+    }
+    texel.x
+}

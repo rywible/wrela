@@ -205,6 +205,9 @@ pub fn frame(time: f32, width: u32, height: u32) {
         grounds: grounds.items(),
         cloud,
         air,
+        // No ambient occlusion built: everything open.
+        ambient: engine::ambient::OPEN,
+        ao: probes,
         s,
     }
     let polished = rendered(verts, materials, palettes, args, 0, lt)

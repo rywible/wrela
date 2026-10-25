@@ -1,0 +1,9 @@
+# Ambient occlusion (engine/ambient.wrela) on the GPU: a box on a floor drawn into a depth
+# buffer, its occlusion built, and points read through `ao_at` as the next frame's shading reads
+# them: the open floor and the box's top open, the floor at the box's foot occluded, a point not
+# on any surface open.
+[package]
+name = "ambient_tests"
+
+[dependencies]
+engine = { workspace = true }
