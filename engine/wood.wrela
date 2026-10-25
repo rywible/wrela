@@ -63,7 +63,8 @@ pub struct List: Copy + GpuData {
 
 /// What choosing reads besides the instances: the camera, the view's cone (its corner's angle),
 /// where the levels hand over, the lists' count, and whether it chooses for a shadow (every
-/// instance within `square`, drawn whole: the cards' level 1) or for the camera.
+/// instance within `square`, drawn whole: the cards' level 1) or for the camera; the slots'
+/// places (`instances`), and the instances loaded in them, in `runs` runs (`instance_of`).
 pub struct Choose: Copy + GpuData {
     pub cam: Camera,
     pub corner: f32,
@@ -71,13 +72,35 @@ pub struct Choose: Copy + GpuData {
     pub shadow: u32,
     pub instances: u32,
     pub square: vec4,
+    pub loaded: u32,
+    pub runs: u32,
 }
 
-/// Chooses instance `id`'s ways (`lod::place`), and puts its index and marks in each way's list:
-/// a place taken from the list's count (`counts`), its index into `picked` and its marks into
-/// `marks` (two words a place). For a shadow, its one list is its kind's, at level 1, if it
-/// stands in the cascade's square. `metadata` holds the instances' kinds followed by each
-/// slot's visible share as an f32 bit pattern, read together through one storage binding.
+/// The place of the `k`th loaded instance: the loaded slots' instances are runs, each a slot's
+/// first `count` places, numbered on from the run before (`metadata` holds each run's first
+/// number and its slot after the slots' visible shares), so a choosing dispatches over what's
+/// loaded, not over every slot's room.
+fn instance_of(c: Choose, metadata: [u32], k: u32) -> u32 {
+    let base = c.instances + c.instances / SLOT
+    var lo = 0
+    var hi = c.runs
+    while hi - lo > 1 {
+        let mid = (lo + hi) / 2
+        if metadata[base + 2 * mid] <= k {
+            lo = mid
+        } else {
+            hi = mid
+        }
+    }
+    metadata[base + 2 * lo + 1] * SLOT + k - metadata[base + 2 * lo]
+}
+
+/// Chooses the `id`th loaded instance's ways (`lod::place`), and puts its index and marks in each
+/// way's list: a place taken from the list's count (`counts`), its index into `picked` and its
+/// marks into `marks` (two words a place). For a shadow, its one list is its kind's, at level 1,
+/// if it stands in the cascade's square. `metadata` holds the instances' kinds, then each
+/// slot's visible share as an f32 bit pattern, then the loaded runs (`instance_of`), read
+/// together through one storage binding.
 @compute(64)
 pub fn choose(
     c: Choose,
@@ -90,10 +113,10 @@ pub fn choose(
     marks: mut Atomics<u32>,
     id: GlobalId,
 ) {
-    let i = id.x
-    if i >= c.instances {
+    if id.x >= c.loaded {
         return
     }
+    let i = instance_of(c, metadata, id.x)
     let k = metadata[i]
     if k == NO_KIND {
         return
@@ -494,7 +517,7 @@ impl Chosen {
                 picked: mut self.picked,
                 marks: mut self.raw_marks,
             ),
-            over: c.instances,
+            over: max(c.loaded, 1),
         )
         dispatch(
             gather.bind(
@@ -593,11 +616,14 @@ pub struct Wood {
     limb_triangles: GpuBuffer<u32>,
     lods: GpuBuffer<Lod>,
     every: GpuBuffer<Instance>,
-    /// One kind per instance, then one f32 bit pattern per slot for its visible share.
-    /// Sharing a binding leaves room for lifted kernels' parameter storage within WebGPU's
-    /// eight-storage-buffer limit.
+    /// One kind per instance, then one f32 bit pattern per slot for its visible share, then
+    /// the loaded runs (two words each: `instance_of`). Sharing a binding leaves room for lifted
+    /// kernels' parameter storage within WebGPU's eight-storage-buffer limit.
     metadata: GpuBuffer<u32>,
     pub slots: Vec<Slot>,
+    /// The instances loaded, and the runs they're in (laid out with the lists).
+    loaded_places: u32,
+    runs: u32,
     seen: Chosen,
     shadowed: Chosen,
     /// Whether the lists need laying out again (a tile came or went).
@@ -636,7 +662,7 @@ impl Wood {
             most = max(most, k.card_count)
             most_limbs = max(most_limbs, k.limb_count)
         }
-        var metadata: GpuBuffer<u32> = buffer(slots * SLOT + slots)
+        var metadata: GpuBuffer<u32> = buffer(slots * SLOT + 3 * slots)
         // Empty slots return at NO_KIND before reading their unused visibility words.
         write(mut metadata, 0, Vec::filled(slots * SLOT, NO_KIND))
         let n = kinds.len() + far_kinds.len()
@@ -665,6 +691,8 @@ impl Wood {
                     visibility: 1.0,
                 },
             ),
+            loaded_places: 0,
+            runs: 0,
             seen: Chosen::empty(),
             shadowed: Chosen::empty(),
             laid: false,
@@ -847,6 +875,21 @@ impl Wood {
                 per[k] = 0
             }
             self.shadowed.lay_out(self.kinds, self.far_kinds, per, 1)
+            // The loaded runs: each occupied slot's instances, numbered on.
+            var runs: Vec<u32> = Vec::new()
+            var total = 0
+            for i in 0..self.slots.len() {
+                if self.slots[i].count > 0 {
+                    runs.push(total)
+                    runs.push(i)
+                    total += self.slots[i].count
+                }
+            }
+            self.loaded_places = total
+            self.runs = runs.len() / 2
+            if runs.len() > 0 {
+                write(mut self.metadata, self.slots.len() * (SLOT + 1), runs)
+            }
             self.laid = true
         }
     }
@@ -862,6 +905,8 @@ impl Wood {
             shadow: 0,
             instances: self.slots.len() * SLOT,
             square: vec4(0.0),
+            loaded: self.loaded_places,
+            runs: self.runs,
         }
         self.seen.run(c, self.every, self.metadata, self.lods)
     }
@@ -876,6 +921,8 @@ impl Wood {
             shadow: 1,
             instances: self.slots.len() * SLOT,
             square: vec4(lo, hi),
+            loaded: self.loaded_places,
+            runs: self.runs,
         }
         self.shadowed.run(c, self.every, self.metadata, self.lods)
     }
