@@ -1,0 +1,64 @@
+// The audio budget (`wrela tool budget`): the capybara game's voice at its busiest
+// (`capybara::sound::busiest`: the music's two busiest seconds, and every effect's voice
+// sounding, struck again every `AGAIN` quanta), rendered `QUANTA` quanta, each timed, on this
+// machine's host.
+//
+// ```text
+// wrela tool budget
+// taskpolicy -c background wrela tool budget     on a Mac: the efficiency cores, a slow core
+// ```
+//
+// The contract: at the 99th percentile a quantum renders in under `BUDGET_MS`, half of the
+// 2.67 ms it lasts (128 samples at 48 kHz), so the voice keeps its time on a slow core with the
+// page's other work beside it. It prints the mean, the 99th percentile and the worst, and fails
+// (1) past the budget.
+
+use capybara::sound::{busiest, every_cue, render}
+use std::audio::QUANTUM
+use std::io::print
+use std::time::now
+
+/// The quanta timed (two seconds), and the budget (ms) the 99th percentile of them keeps to.
+pub const QUANTA: u32 = 750
+
+pub const BUDGET_MS: f64 = 1.3
+
+/// The quanta between the cues struck again (43 ms).
+pub const AGAIN: u32 = 16
+
+pub fn tool() -> u32 {
+    let (writer, voice) = busiest()
+    var w = take writer
+    var v = take voice
+    var l = [0.0; QUANTUM]
+    var r = [0.0; QUANTUM]
+    var times: Vec<f64> = Vec::with_capacity(QUANTA)
+    for q in 0..QUANTA {
+        if q % AGAIN == 0 {
+            every_cue(mut w)
+        }
+        for i in 0..QUANTUM {
+            l[i] = 0.0
+            r[i] = 0.0
+        }
+        let t0 = now()
+        render(mut v, mut l, mut r)
+        times.push((now() - t0) * 1000.0)
+    }
+    var sum = 0.0
+    for t in times {
+        sum += t
+    }
+    times.sort_by(|a, b| a < b)
+    let p99 = times[QUANTA * 99 / 100]
+    let mean = sum / f64(QUANTA)
+    let worst = times[QUANTA - 1]
+    print(
+        f"budget: a quantum renders in {mean:.3} ms on average, {p99:.3} ms at the 99th percentile, {worst:.3} ms at worst (the budget: {BUDGET_MS} ms)",
+    )
+    if p99 >= BUDGET_MS {
+        print("budget: over")
+        return 1
+    }
+    0
+}

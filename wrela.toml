@@ -23,6 +23,7 @@ members = [
     "games/*",
     "games/capybara/scores",
     "games/capybara/route",
+    "games/capybara/budget",
     "games/capybara/keys",
     "games/last-green/session",
     "games/last-green/session/tests/export",
@@ -158,6 +159,11 @@ write = ["ws=."]
 
 # The route tool (games/capybara/route): the route search's fastest runs of the capybara game's
 # first level. It writes them as the game's routes.wrela, in games/capybara.
+# The budget tool (games/capybara/budget): the capybara game's voice at its busiest, timed a
+# quantum at a time against its audio budget. It writes nothing.
+[tools.budget]
+package = "games/capybara/budget"
+
 [tools.route]
 package = "games/capybara/route"
 write = ["game=games/capybara"]

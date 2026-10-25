@@ -497,6 +497,11 @@ const BOARD_Q: [f32; 12] = [6.0, 6.0, 6.0, 5.0, 5.0, 4.0, 4.0, 3.5, 3.0, 2.5, 2.
 /// The sympathetic strings: each key's first two partials, four to a vec4.
 const SYMPATHY_GROUPS: u32 = 44
 
+/// The most keys whose strings sound at once: a strike past it silences the quietest of the
+/// others (what it rings can't be heard under the rest), so a pedalled run's voice keeps to its
+/// time (a key's resonators are most of a quantum's work).
+pub const MAX_SOUNDING: u32 = 32
+
 /// A piano playing a performance: what the audio thread owns.
 pub struct Piano {
     model: Model,
@@ -1090,10 +1095,51 @@ impl Piano {
         self.sounding[k] = true
         self.held[k] += 1
         self.quiet[k] = 0
+        self.keep_to_most(k)
         // The key lifted its damper before the hammer reached the string.
         if self.damp[k] != 0.0 {
             self.damp[k] = 0.0
             self.set_damping(k)
+        }
+    }
+
+    /// Past `MAX_SOUNDING` keys sounding, the quietest other than `k` (just struck) silenced.
+    @audio
+    fn keep_to_most(mut self, k: u32) {
+        var n = 0
+        for j in 0..KEYS {
+            if self.sounding[j] {
+                n += 1
+            }
+        }
+        if n <= MAX_SOUNDING {
+            return
+        }
+        var quietest = k
+        var least = 1.0e30
+        for j in 0..KEYS {
+            if !self.sounding[j] || j == k {
+                continue
+            }
+            var energy = 0.0
+            for g in self.first[j]..self.first[j] + self.groups[j] {
+                let e = self.re[g] * self.re[g] + self.im[g] * self.im[g]
+                energy += (e.x + e.y) + (e.z + e.w)
+            }
+            if energy < least {
+                least = energy
+                quietest = j
+            }
+        }
+        if quietest != k {
+            self.sounding[quietest] = false
+            self.swell[quietest] = 0
+            for g in self.first[quietest]..self.first[quietest] + self.groups[quietest] {
+                self.re[g] = vec4(0.0)
+                self.im[g] = vec4(0.0)
+                self.new_re[g] = vec4(0.0)
+                self.new_im[g] = vec4(0.0)
+            }
         }
     }
 
@@ -1721,4 +1767,27 @@ fn a_key_a_person_presses_sounds_and_its_damper_stops_it_when_let_go() {
     // Off the keyboard: nothing, and no trap.
     press(mut held, 10, 0.5)
     release(mut held, 120)
+}
+
+/// With the pedal down, forty keys struck one after another leave at most `MAX_SOUNDING`
+/// sounding, the last struck among them, and it still sounding.
+@test
+fn no_more_than_the_most_keys_sound_at_once() {
+    var p = piano(piano_grand::GRAND, nothing())
+    hold_pedal(mut p, 1.0)
+    for i in 0..40 {
+        let key = 30 + 2 * i
+        press(mut p, key, 0.4 + 0.015 * f32(i))
+        let _ = loudness(mut p, 4)
+        release(mut p, key)
+    }
+    var n = 0
+    for j in 0..KEYS {
+        if p.sounding[j] {
+            n += 1
+        }
+    }
+    assert(n <= MAX_SOUNDING, f"{n} keys sounding")
+    assert(p.sounding[30 + 2 * 39 - LOWEST], "the last struck sounds")
+    assert(std::math::is_finite(loudness(mut p, 8)))
 }
