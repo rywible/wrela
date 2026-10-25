@@ -7,12 +7,12 @@
 //
 //     let size = sheet.begin(dt, width, height)   paced, the targets sized
 //     begin_pass(mut sheet.scene) ...             the scene
-//     sheet.copy_below(linear)                    the copy the water reads
+//     sheet.copy_below(linear, rects)             the copy the water reads, where it is
 //     begin_pass(mut sheet.scene, keep: true) ... what goes over the copy
 //     begin_screen_pass(...) + the page           stretched over the screen
 
 use frame::full
-use std::gpu::{FragCoord, Rgba8, Sampler, Texture, begin_pass, draw, texture}
+use std::gpu::{FragCoord, RenderPass, Rgba8, Sampler, Texture, begin_pass, draw, texture}
 
 /// A flat frame's targets at the render scale (`width` × `height`, the scene's), the scale kept
 /// by watching the frames, and the screen's size the last frame.
@@ -51,10 +51,22 @@ impl Sheet {
         (w, h)
     }
 
-    /// The scene copied under what bends it (`below`): water reads it to see what's behind.
-    pub fn copy_below(mut self, s: Sampler) {
+    /// The scene copied under what bends it (`below`), within each of `rects` (pixels of the
+    /// scene: the left, top, right and bottom edges) and nowhere else: water reads it to see
+    /// what's behind, where it is. With none, nothing is recorded.
+    pub fn copy_below(mut self, s: Sampler, rects: [vec4]) {
+        if rects.is_empty() {
+            return
+        }
         let p = begin_pass(mut self.below)
-        draw(p, full.bind(z: 0.0), copy.bind(src: self.scene, s: s), vertices: 3)
+        for r in rects {
+            let lo = vec2u(clamp(floor(r.xy), vec2(0.0), vec2(f32(self.width), f32(self.height))))
+            let hi = vec2u(clamp(ceil(r.zw), vec2(0.0), vec2(f32(self.width), f32(self.height))))
+            if hi.x > lo.x && hi.y > lo.y {
+                p.scissor(x: lo.x, y: lo.y, width: hi.x - lo.x, height: hi.y - lo.y)
+                draw(p, full.bind(z: 0.0), copy.bind(src: self.scene, s: s), vertices: 3)
+            }
+        }
         p.end()
     }
 }

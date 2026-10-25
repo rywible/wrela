@@ -35,7 +35,7 @@ use art::{Page, finish, grain_texture}
 use body::{Mode, RADIUS}
 use camera::{Camera, camera, follow, framed, half_view}
 use cast::{Cast, cast, ghost, grounded, react, sprites}
-use course::course
+use course::{Course, course}
 use earth::{
     LAB_EARTH, LAB_GRASS, LAB_TOPS, LEVEL_EARTH, LEVEL_GRASS, LEVEL_TOPS, Field, earth,
     earth_vertex, grass, grass_vertex,
@@ -150,6 +150,9 @@ pub struct Lab {
     /// The device's pixels to a CSS pixel, as the host's environment says (1 until it has, or
     /// where it doesn't).
     ratio: f32,
+    /// The pools in view, as rectangles of the scene's pixels (`wet_rects`): where the water's
+    /// copy of the scene is made.
+    wet: Vec<vec4>,
     tree: Sent,
     told: Vec<Pending<u8>>,
     /// The player's runs (replay.wrela), as they load from storage and are stored again, and when
@@ -239,6 +242,7 @@ pub fn init() -> Lab {
         environment: Some(host::environment()),
         capabilities: None,
         ratio: 1.0,
+        wet: Vec::new(),
         tree: Sent {},
         told: Vec::new(),
         runs: board(),
@@ -511,7 +515,9 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     scene.end()
     // The water reads a copy of the scene, bending what's behind it; the splashes go over it.
     label("water copy")
-    s.sheet.copy_below(s.linear)
+    s.wet.clear()
+    wet_rects(mut s.wet, c, eye, half, scene_size)
+    s.sheet.copy_below(s.linear, s.wet)
     label("water")
     let wet = begin_pass(mut s.sheet.scene, keep: true)
     let pond = Pond { view_proj, centre: eye, half, px, time }
@@ -559,6 +565,26 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     s.renderer.draw(out, screen)
     out.present()
     publish(mut s, snap, screen)
+}
+
+/// How far round a pool its water reads the scene under it (m): the wobble's reach and a little
+/// (`waves::water`), and how high its waves can rise over its surface.
+const WET_MARGIN: f32 = 0.1
+const WAVE_ROOM: f32 = 1.5
+
+/// The pools of `c` in the view round `eye` (`half` its half size, m) as rectangles of a scene
+/// `size` pixels (left, top, right, bottom), onto `out`: none off the screen.
+fn wet_rects(out: mut Vec<vec4>, c: Course, eye: vec2, half: vec2, size: vec2) {
+    for w in c.waters {
+        let lo = (vec2(w.lo.x - WET_MARGIN, w.lo.y - WET_MARGIN) - eye) / half
+        let hi = (vec2(w.hi.x + WET_MARGIN, w.hi.y + WAVE_ROOM) - eye) / half
+        if hi.x < -1.0 || lo.x > 1.0 || hi.y < -1.0 || lo.y > 1.0 {
+            continue
+        }
+        let a = vec2(lo.x * 0.5 + 0.5, 0.5 - hi.y * 0.5) * size
+        let b = vec2(hi.x * 0.5 + 0.5, 0.5 - lo.y * 0.5) * size
+        out.push(vec4(a - vec2(2.0), b + vec2(2.0)))
+    }
 }
 
 /// Text in `colour` with a soft dark shadow under it, so it reads over the sky and the ground.
