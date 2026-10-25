@@ -41,6 +41,26 @@ pub struct Look: Copy + GpuData {
     pub vignette: f32 = 0.28,
 }
 
+/// A pixel `e` sharpened against its cross (`b`, `d`, `f`, `h`), as AMD's robust contrast-adaptive
+/// sharpening does it (Lottes, FidelityFX CAS / RCAS, MIT): a negative lobe as strong as keeps
+/// the result within the cross's range, at most `sharpen` / 4 (the cross the look sharpened
+/// against before, where nothing clips), in tamed colours (each over one plus its largest
+/// channel, so a bright pixel's range is the [0, 1] RCAS reads).
+pub fn rcas(e: vec3, b: vec3, d: vec3, f: vec3, h: vec3, sharpen: f32) -> vec3 {
+    let tame = |c: vec3| max(c, vec3(0.0)) / (1.0 + max(c.r, max(c.g, c.b)))
+    let (te, tb, td, tf, th) = (tame(e), tame(b), tame(d), tame(f), tame(h))
+    let mn = min(min(tb, td), min(tf, th))
+    let mx = max(max(tb, td), max(tf, th))
+    let hit_min = min(mn, te) / (4.0 * max(mx, vec3(1.0e-5)))
+    let hit_max = (vec3(1.0) - max(mx, te)) / min(4.0 * mn - vec3(4.0), vec3(-1.0e-5))
+    let lobes = max(-hit_min, hit_max)
+    let lobe = max(-0.1875, min(max(lobes.r, max(lobes.g, lobes.b)), 0.0)) *
+        min(sharpen * 4.0 / 3.0, 1.0)
+    let t = (lobe * (tb + td + tf + th) + te) / (4.0 * lobe + 1.0)
+    let c = clamp(t, vec3(0.0), vec3(0.999))
+    c / (1.0 - max(c.r, max(c.g, c.b)))
+}
+
 /// The strokes at `q` (in cells): the value of the one that covers it most, of the four cells
 /// nearest it (a stroke reaches less than a cell from its centre's cell), in [-1, 1].
 fn strokes(q: vec2) -> f32 {
@@ -529,16 +549,14 @@ pub fn develop(
     }
     let clay = d.view == 1
     let look = d.look
-    // A little sharpening against temporal AA's softness: the pixel against its cross.
+    // Sharpening against temporal AA's softness (and its upscaling): the pixel against its
+    // cross, limited so it stays within its cross's range (`rcas`).
     let size = vec2u(d.out) - vec2u(1)
     let n1 = image.load(x: min(p.x + 1, size.x), y: p.y).rgb
     let n2 = image.load(x: max(p.x, 1) - 1, y: p.y).rgb
     let n3 = image.load(x: p.x, y: min(p.y + 1, size.y)).rgb
     let n4 = image.load(x: p.x, y: max(p.y, 1) - 1).rgb
-    var paint = max(
-        here.rgb + (here.rgb * 4.0 - (n1 + n2 + n3 + n4)) * (look.sharpen * 0.25),
-        vec3(0.0),
-    )
+    var paint = rcas(here.rgb, n1, n2, n3, n4, look.sharpen)
     // The dab map's texel for this point: its texels hold their unjittered centres' points
     // (`dab_map`), so the same place each frame.
     let q = px * (d.cam.screen / d.out)
@@ -577,4 +595,18 @@ fn terrain_rock_rejects_paint_on_flat_and_sloping_surfaces() {
         ground_grain(up: 0.4, material: vec4(0.0, 1.0, 0.0, 0.0)) == 0.0,
         "steep soil took ovals",
     )
+}
+
+/// The sharpening leaves a flat neighbourhood as it is, stays within its cross's range at an
+/// edge (no halo), and does nothing at 0.
+@test
+fn rcas_sharpens_within_its_crosss_range() {
+    let flat = rcas(vec3(0.4), vec3(0.4), vec3(0.4), vec3(0.4), vec3(0.4), sharpen: 0.2)
+    assert(length(flat - vec3(0.4)) < 1.0e-4, "a flat neighbourhood changed")
+    let edge = rcas(vec3(0.5), vec3(0.9), vec3(0.1), vec3(0.5), vec3(0.5), sharpen: 0.2)
+    assert(edge.r >= 0.1 - 1.0e-4 && edge.r <= 0.9 + 1.0e-4, "the edge overshot its cross")
+    let bright = rcas(vec3(6.0, 2.0, 1.0), vec3(4.0), vec3(1.0), vec3(5.0), vec3(3.0), sharpen: 0.2)
+    assert(bright.r >= 0.0 && bright.r < 1.0e6, "a bright pixel isn't finite")
+    let off = rcas(vec3(0.5), vec3(0.9), vec3(0.1), vec3(0.5), vec3(0.5), sharpen: 0.0)
+    assert(length(off - vec3(0.5)) < 1.0e-4, "no sharpening changed the pixel")
 }

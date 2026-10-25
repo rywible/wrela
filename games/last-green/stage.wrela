@@ -46,8 +46,9 @@ use std::io::{Pending, print}
 /// Toward the sun: the clearing's (low, 24°).
 pub const SUN = vec3(0.900, 0.407, -0.159)
 
-/// The scene drawn at the output's full resolution: the look is authored there, and temporal
-/// AA's reconstruction tuned against it (`engine::frame::Gathered`).
+/// The scale the floor's levels of detail are in (their cards' and cells' sizes, in the scene's
+/// pixels): the scene's own, which is the engine's default under the output's (temporal
+/// super-resolution, `engine::frame::Quality::scale`), so a smaller scene draws less detail.
 pub const SCALE: f32 = 1.0
 
 /// The door back down to the stair: behind the gate, where a player comes in facing away from

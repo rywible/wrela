@@ -346,6 +346,12 @@ pub struct Cooks {
 pub trait Resolver {
     fn made() -> Self
 
+    /// Whether it brings a scene of another size up to the output's (`Quality::scale`), or draws
+    /// the scene at the output's size.
+    fn scaled() -> bool {
+        true
+    }
+
     /// The scene is `w` × `h` now.
     fn resize(mut self, w: u32, h: u32)
 
@@ -371,6 +377,10 @@ pub struct Gathered {}
 impl Resolver for Gathered {
     fn made() -> Gathered {
         Gathered {}
+    }
+
+    fn scaled() -> bool {
+        false
     }
 
     fn resize(mut self, w: u32, h: u32) {}
@@ -464,12 +474,13 @@ impl Resolver for Shared {
 /// defaults are the Last Green's approved values, where they aren't the floor's own (its far
 /// cascade's place).
 pub struct Quality: Copy {
-    /// The scene's size over the output's (temporal AA brings it up). `Gathered` needs 1.
-    pub scale: f32 = 1.0,
+    /// The scene's size over the output's (temporal AA brings it up: temporal super-resolution).
+    /// `Gathered` draws at 1 whatever this says (`Resolver::scaled`).
+    pub scale: f32 = 0.667,
     /// Whether the scale is paced by the frames as well (`sheet::pace`: smaller while frames come
-    /// late, back up once they don't): the valve when the frame's work doesn't fit the display's
-    /// interval. Needs `Shared`.
-    pub pace: bool = false,
+    /// late, back up once they don't, down to `LEAST_SCALE` of the output): the valve when the
+    /// frame's work doesn't fit the display's interval. Needs `Shared`.
+    pub pace: bool = true,
     pub shadows: ShadowQuality = ShadowQuality {},
     pub probes: ProbeQuality = ProbeQuality {},
     pub arrival: Arrival = Arrival {},
@@ -487,6 +498,10 @@ pub struct Quality: Copy {
     /// it shows, drawn then (both phases or neither: the first alone would drop what's revealed).
     pub occlusion: bool = true,
 }
+
+/// The least scene a paced 3D frame draws, over the output's size (`Quality::pace`): below it a
+/// field's detail and the resolve's reconstruction give out.
+pub const LEAST_SCALE: f32 = 0.5
 
 /// The kinds of work a measuring frame times (`Quality::measured`), each by the label its pass or
 /// dispatch carries.
@@ -1051,11 +1066,13 @@ impl<R: Resolver> Frame<R> {
             Some(t) => clamp(time - t, 0.0, 0.1),
             None => 0.0,
         }
-        if self.quality.pace {
+        let scaled = R::scaled()
+        if self.quality.pace && scaled {
+            self.pacer.least = min(LEAST_SCALE / self.quality.scale, 1.0)
             pace(mut self.pacer, dt)
         }
-        let paced = if self.quality.pace { self.pacer.value } else { 1.0 }
-        let scale = if self.debug.plain { 1.0 } else { self.quality.scale * paced }
+        let paced = if self.quality.pace && scaled { self.pacer.value } else { 1.0 }
+        let scale = if self.debug.plain || !scaled { 1.0 } else { self.quality.scale * paced }
         let (w, h) = (max(u32(f32(width) * scale), 1), max(u32(f32(height) * scale), 1))
         if width != self.width || height != self.height || f32(w) != self.cam.screen.x {
             self.targets = targets_for(width, height, w, h, scene.has_effects())

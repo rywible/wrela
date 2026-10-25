@@ -152,8 +152,9 @@ pub fn neighbourhoods(
     spreads.store(id, spread)
 }
 
-/// The history at `px` (output pixels), filtered by a Catmull-Rom spline in 5 taps (bilinear
-/// taps placed to give its weights), so a moving history stays sharp.
+/// `history` (the history, or the scene) at `px` (its own pixels), filtered by a Catmull-Rom
+/// spline in 5 taps (bilinear taps placed to give its weights), so a moving history stays sharp
+/// and an upscaled scene comes up sharp.
 fn history_at(history: Texture<Rgba16Float>, s: Sampler, px: vec2, size: vec2) -> vec3 {
     let pos = px - vec2(0.5)
     let c = floor(pos) + vec2(0.5)
@@ -282,6 +283,12 @@ fn resolved(
     // extend past the four-tap footprint, including when reducing scene resolution.
     let support = if coverage { 0.8 } else { 0.55 }
     let radius = min(vec2(1.0) / scale, max(vec2(1.0), support / scale))
+    // The four samples' range, and whether a depth break runs between them (a scene drawn
+    // below the output's size is brought up sharper where none does: below).
+    let upscaling = scale.x < 0.999
+    var lo4 = vec3(1.0e9)
+    var hi4 = vec3(-1.0e9)
+    var broken = false
     for dy in 0..2 {
         for dx in 0..2 {
             let p = clamp(base + vec2i(dx, dy), vec2i(0), lim)
@@ -296,6 +303,9 @@ fn resolved(
             // behind it. Keep the nearest sample's surface across large depth breaks; small
             // changes on a slope still filter. Jittered frames supply silhouette coverage.
             let same_surface = abs(sample_depth - z) <= max(max(sample_depth, z) * 0.2, 1.0e-7)
+            lo4 = min(lo4, c)
+            hi4 = max(hi4, c)
+            broken = broken || !same_surface
             let tent = max(vec2(1.0) - abs(d) / radius, vec2(0.0))
             let w = if coverage || same_surface { tent.x * tent.y } else { 0.0 }
             sum += c * w
@@ -318,10 +328,17 @@ fn resolved(
     // colour in a pixel of the ground would trail once the creature walked on, as the pixel's
     // history says the ground. (A moving thing's own pixels take every sample, so its edge
     // stays smooth from within.)
-    let current = if moving {
+    var current = if moving {
         sum / max(weight, 1.0e-6)
     } else {
         sum_else / max(weight_else, 1.0e-6)
+    }
+    if upscaling && !coverage && !moving && !broken && weight_else > 0.0 {
+        // Brought up by a Catmull-Rom spline over the scene's samples (bicubic, as the history
+        // is filtered: five bilinear taps), sharper than the tent at a fraction of a 4 × 4
+        // filter's loads; one surface, still, so nothing of another bleeds in; its overshoot at
+        // a gradient's end kept within the four samples' range.
+        current = clamp(tamed(history_at(scene, s, q + j, in_size)), lo4, hi4)
     }
     // Reproject the same surface that supplied the nearest colour and tag. Taking the
     // closest of the four depths instead borrowed a foreground edge's motion for the

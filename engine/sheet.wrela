@@ -78,6 +78,8 @@ pub const LEAST_SCALE: f32 = 0.35
 /// up to 1.
 pub struct Scale: Copy {
     pub value: f32 = 1.0,
+    /// The least it steps down to (`LEAST_SCALE` for the 2D sheet; the 3D frame's own).
+    pub least: f32 = LEAST_SCALE,
     /// The display's refresh interval as the frames show it (s): their usual shortest.
     pub refresh: f32 = 0.0,
     frames: u32 = 0,
@@ -124,7 +126,7 @@ pub fn pace(g: mut Scale, dt: f32) {
         return
     }
     if g.late >= LATE_IN_WINDOW {
-        g.value = max(g.value - 0.1, LEAST_SCALE)
+        g.value = max(g.value - 0.1, g.least)
         g.calm = 0
     } else if g.late == 0 {
         g.calm += WINDOW

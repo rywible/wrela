@@ -1,0 +1,47 @@
+// The bare scene (engine/tests/frame) drawn as the games draw it (docs/plan-world-class.md §B5):
+// the scene at the engine's default scale under the output (`Quality::scale`, 0.667), brought up
+// by the shared resolve (`Shared`: its Catmull-Rom reconstruction, its history) and sharpened
+// in the look (`paint::rcas`). Its own golden, and the scale-1 frame's within what upscaling
+// moves.
+
+use engine::frame::{Aim, Frame, Quality, Shared}
+use engine::probes::grid
+use engine::light::sunlight
+use engine::terrain::Clipmap
+use engine::view::first_camera
+use frame_transitions::bare::{AHEAD, Bare, START, SUN, air_of, bare}
+
+pub struct State {
+    frame: Frame<Shared>,
+    scene: Bare,
+}
+
+pub fn init() -> State {
+    let air = air_of(SUN)
+    let frame: Frame<Shared> = Frame::new(
+        Quality { measured: false, pace: false },
+        sunlight(air),
+        air,
+        Clipmap::new(levels: 6, finest: 0.5),
+        first_camera(START, START + AHEAD, 0.82, width: 320, height: 180),
+        grid(START.xz, cols: 17, spacing: 4.0, low: -8.0, high: 24.0, voxel: 2.0),
+        START.xz,
+    )
+    State { frame, scene: bare() }
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    let aim = Aim { eye: START, at: START + AHEAD, fovy: 0.82, moving_at: START }
+    let _ = s.frame.begin(mut s.scene, aim, time, width, height)
+    s.frame.draw(mut s.scene, aim)
+}
+
+/// The settled bare scene, upscaled, is its golden on this machine's GPU.
+@test(frames: 200, gpu: true, golden: "goldens/bare-upscaled.png", within: 1.0)
+fn the_upscaled_bare_scene_is_its_golden(s: State) {}
+
+/// The upscaled scene is the scale-1 scene's golden (`goldens/bare-native.png`, a copy of
+/// engine/tests/frame's `bare.png`) within what drawing it at 0.667 moves (its edges and its
+/// ground's texture, softer: 1.865/255 on average on an M4, 80/255 at most).
+@test(frames: 200, gpu: true, golden: "goldens/bare-native.png", within: 2.5)
+fn the_upscaled_bare_scene_is_the_native_ones_within_its_softening(s: State) {}
