@@ -141,10 +141,10 @@ pub struct Clusters {
     /// the walk reads the level below's while it changes its own.
     pub maps: Vec<GpuBuffer<u32>>,
     /// The frame's `select`'s `small` (0: no cluster was small), and the software rasterizer's
-    /// nearest depths' bits and least ids, a word a pixel of a `soft_size` screen.
+    /// nearest depths' bits and least ids, two words a pixel (depth, then id) of a `soft_size`
+    /// screen.
     pub small: f32,
-    pub soft_depth: GpuBuffer<u32>,
-    pub soft_ids: GpuBuffer<u32>,
+    pub soft_pixels: GpuBuffer<u32>,
     pub soft_size: vec2u,
 }
 
@@ -325,8 +325,7 @@ pub fn cook<C, F: Parts<C>>(field: F, bounds: Box3, cell: f32, levels: u32) -> C
         below: empty_list(1),
         maps,
         small: 0.0,
-        soft_depth: buffer(1),
-        soft_ids: buffer(1),
+        soft_pixels: buffer(2),
         soft_size: vec2u(0),
     }
 }
@@ -1204,27 +1203,22 @@ pub fn depth_at(t: Setup, x: u32, y: u32) -> Option<f32> {
 }
 
 /// Pass 0 of triangle `t` on a `size` screen: each pixel it covers keeps the nearest depth's
-/// bits (`depth_bits`), and a pixel it's the first at has its id (`ids`) emptied for pass 1.
-/// Whether at some pixel it was at least as near as every triangle before it: if not, it's
-/// nearest nowhere, and pass 1 can pass it by.
-pub fn nearest_depths(
-    t: Setup,
-    size: vec2u,
-    depth_bits: mut Atomics<u32>,
-    ids: mut Atomics<u32>,
-) -> bool {
+/// bits (`pixels`, a pixel's first word), and a pixel it's the first at has its id (its second)
+/// emptied for pass 1. Whether at some pixel it was at least as near as every triangle before
+/// it: if not, it's nearest nowhere, and pass 1 can pass it by.
+pub fn nearest_depths(t: Setup, size: vec2u, pixels: mut Atomics<u32>) -> bool {
     var nearest = false
     for y in t.lo.y..t.hi.y + 1 {
         for x in t.lo.x..t.hi.x + 1 {
             if let Some(depth) = depth_at(t, x, y) {
-                let i = y * size.x + x
+                let i = 2 * (y * size.x + x)
                 let bits = bitcast_u32(depth)
-                let old = depth_bits.max(i: i, value: bits)
+                let old = pixels.max(i: i, value: bits)
                 if old <= bits {
                     nearest = true
                 }
                 if old == 0 {
-                    ids.store(i: i, value: NO_ID)
+                    pixels.store(i: i + 1, value: NO_ID)
                 }
             }
         }
@@ -1233,14 +1227,14 @@ pub fn nearest_depths(
 }
 
 /// Pass 1 of triangle `t` (id `id`) on a `size` screen: at each pixel it covers where its depth is
-/// the nearest (`depth_bits`, pass 0's), the least id (`ids`).
-pub fn least_ids(t: Setup, id: u32, size: vec2u, depth_bits: [u32], ids: mut Atomics<u32>) {
+/// the nearest (`pixels`' first word, pass 0's), the least id (its second).
+pub fn least_ids(t: Setup, id: u32, size: vec2u, pixels: mut Atomics<u32>) {
     for y in t.lo.y..t.hi.y + 1 {
         for x in t.lo.x..t.hi.x + 1 {
             if let Some(depth) = depth_at(t, x, y) {
-                let i = y * size.x + x
-                if depth_bits[i] == bitcast_u32(depth) {
-                    let _ = ids.min(i: i, value: id)
+                let i = 2 * (y * size.x + x)
+                if pixels.load(i) == bitcast_u32(depth) {
+                    let _ = pixels.min(i: i + 1, value: id)
                 }
             }
         }
@@ -1284,8 +1278,7 @@ pub fn soft_depths(
     words: [u32],
     verts: [SkinVertex],
     places: [Placed],
-    depth_bits: mut Atomics<u32>,
-    ids: mut Atomics<u32>,
+    pixels: mut Atomics<u32>,
     flags: mut SharedAtomics<2>,
     id: GlobalId,
     lid: LocalId,
@@ -1306,7 +1299,7 @@ pub fn soft_depths(
         for t in 0..2 {
             let tri = [clip[3 * t], clip[3 * t + 1], clip[3 * t + 2]]
             if let Some(s) = set_up(tri, d.size) {
-                let near = nearest_depths(s, d.size, mut depth_bits, mut ids)
+                let near = nearest_depths(s, d.size, mut pixels)
                 nearest = nearest || near
             }
         }
@@ -1331,8 +1324,7 @@ pub fn soft_ids(
     words: [u32],
     verts: [SkinVertex],
     places: [Placed],
-    depth_bits: [u32],
-    ids: mut Atomics<u32>,
+    pixels: mut Atomics<u32>,
     id: GlobalId,
 ) {
     let j = id.y * WIDE + id.x
@@ -1351,7 +1343,7 @@ pub fn soft_ids(
     for t in 0..2 {
         let tri = [clip[3 * t], clip[3 * t + 1], clip[3 * t + 2]]
         if let Some(s) = set_up(tri, d.size) {
-            least_ids(s, id_of(d.vis.level, SOFT_ID | (2 * j + t)), d.size, depth_bits, mut ids)
+            least_ids(s, id_of(d.vis.level, SOFT_ID | (2 * j + t)), d.size, mut pixels)
         }
     }
 }
@@ -1359,11 +1351,11 @@ pub fn soft_ids(
 /// Pixel `id` of a `size` screen cleared for the software rasterizer: the far plane's depth (0,
 /// reversed-Z). (Its id is emptied by the first triangle to reach it, `nearest_depths`.)
 @compute(8, 8)
-pub fn soft_clear(size: vec2u, depth_bits: mut Atomics<u32>, id: GlobalId) {
+pub fn soft_clear(size: vec2u, pixels: mut Atomics<u32>, id: GlobalId) {
     if id.x >= size.x || id.y >= size.y {
         return
     }
-    depth_bits.store(i: id.y * size.x + id.x, value: 0)
+    pixels.store(i: 2 * (id.y * size.x + id.x), value: 0)
 }
 
 /// The software rasterizer's pixel `pixel` (of a `size` screen) into a visibility pass: its id at
@@ -1371,14 +1363,14 @@ pub fn soft_clear(size: vec2u, depth_bits: mut Atomics<u32>, id: GlobalId) {
 /// equal depth keeps the hardware's (the tie between the two rasterizers). A pixel it left (at
 /// the far plane's depth) keeps what the hardware drew.
 @fragment
-pub fn soft_merge(pixel: FragCoord, size: vec2u, depth_bits: [u32], ids: [u32]) -> WithDepth<u32> {
+pub fn soft_merge(pixel: FragCoord, size: vec2u, pixels: [u32]) -> WithDepth<u32> {
     let px = vec2u(pixel.position.xy)
-    let i = px.y * size.x + px.x
-    let bits = depth_bits[i]
+    let i = 2 * (px.y * size.x + px.x)
+    let bits = pixels[i]
     if bits == 0 {
         discard()
     }
-    WithDepth { color: ids[i], depth: bitcast_f32(bits) }
+    WithDepth { color: pixels[i + 1], depth: bitcast_f32(bits) }
 }
 
 /// How clusters are lit: their colour, the sun's direction, and how much of the sky's light
@@ -1495,7 +1487,7 @@ impl Clusters {
     /// block map, and the frame's candidates.
     pub fn bytes(self) -> u64 {
         var n = u64(
-            4 * (self.here.len() + self.below.len() + self.soft_depth.len() + self.soft_ids.len()),
+            4 * (self.here.len() + self.below.len() + self.soft_pixels.len()),
         )
         for l in self.levels {
             n += l.mesh.bytes()
@@ -1650,12 +1642,11 @@ impl Clusters {
         }
         let size = vec2u(cam.screen)
         if self.soft_size != size {
-            self.soft_depth = buffer(size.x * size.y)
-            self.soft_ids = buffer(size.x * size.y)
+            self.soft_pixels = buffer(2 * size.x * size.y)
             self.soft_size = size
         }
         dispatch(
-            soft_clear.bind(size, depth_bits: mut self.soft_depth),
+            soft_clear.bind(size, pixels: mut self.soft_pixels),
             groups: ((size.x + 7) / 8, (size.y + 7) / 8, 1),
         )
         for k in 0..self.levels.len() {
@@ -1669,8 +1660,7 @@ impl Clusters {
                         words: l.words.items(),
                         verts: l.mesh.verts.items(),
                         places: places.items(),
-                        depth_bits: mut self.soft_depth,
-                        ids: mut self.soft_ids,
+                        pixels: mut self.soft_pixels,
                     ),
                     groups: l.soft_args.items(),
                 ),
@@ -1687,8 +1677,7 @@ impl Clusters {
                     words: l.words.items(),
                     verts: l.mesh.verts.items(),
                     places: places.items(),
-                    depth_bits: self.soft_depth.items(),
-                    ids: mut self.soft_ids,
+                    pixels: mut self.soft_pixels,
                 ),
                 groups: l.soft_args.items(),
             )
@@ -1723,8 +1712,7 @@ impl Clusters {
                 full_screen,
                 soft_merge.bind(
                     self.soft_size,
-                    depth_bits: self.soft_depth.items(),
-                    ids: self.soft_ids.items(),
+                    pixels: self.soft_pixels.items(),
                 ),
                 vertices: 3,
                 depth: view::NEAREST,

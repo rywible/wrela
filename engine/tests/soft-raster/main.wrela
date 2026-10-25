@@ -32,38 +32,25 @@ pub const BESIDE: u32 = 11
 /// Triangle `id.x` of `corners` (three clip-space corners each) set up on a `size` screen: pass 0
 /// (`nearest_depths`).
 @compute(64)
-fn depths(
-    corners: [vec4],
-    size: vec2u,
-    depth_bits: mut Atomics<u32>,
-    out: mut Atomics<u32>,
-    id: GlobalId,
-) {
+fn depths(corners: [vec4], size: vec2u, pixels: mut Atomics<u32>, id: GlobalId) {
     if 3 * id.x >= corners.len() {
         return
     }
     let i = 3 * id.x
     if let Some(t) = set_up([corners[i], corners[i + 1], corners[i + 2]], size) {
-        let _ = nearest_depths(t, size, mut depth_bits, mut out)
+        let _ = nearest_depths(t, size, mut pixels)
     }
 }
 
 /// Pass 1 of the same triangle, its id `ids`' own (`least_ids`).
 @compute(64)
-fn least(
-    corners: [vec4],
-    ids: [u32],
-    size: vec2u,
-    depth_bits: [u32],
-    out: mut Atomics<u32>,
-    id: GlobalId,
-) {
+fn least(corners: [vec4], ids: [u32], size: vec2u, pixels: mut Atomics<u32>, id: GlobalId) {
     if id.x >= ids.len() {
         return
     }
     let i = 3 * id.x
     if let Some(t) = set_up([corners[i], corners[i + 1], corners[i + 2]], size) {
-        least_ids(t, ids[id.x], size, depth_bits, mut out)
+        least_ids(t, ids[id.x], size, mut pixels)
     }
 }
 
@@ -150,7 +137,7 @@ fn show(pixel: FragCoord, screen: vec2, tie: [u32], merged: Texture<R32Uint>) ->
     let left = pixel.position.x < half.x
     let at = vec2(if left { pixel.position.x } else { pixel.position.x - half.x }, pixel.position.y)
     let p = min(vec2u(at / half * f32(S)), vec2u(S - 1))
-    shade(if left { tie[p.y * S + p.x] } else { merged.load(x: p.x, y: p.y) })
+    shade(if left { tie[2 * (p.y * S + p.x) + 1] } else { merged.load(x: p.x, y: p.y) })
 }
 
 pub struct State {
@@ -179,30 +166,20 @@ pub fn init() -> State {
 }
 
 /// `tris` (three corners each) with `ids` rasterized into fresh words of an `S` × `S` screen:
-/// cleared, then pass 0 and pass 1. The ids' words, and the depths'.
-fn rasterized(tris: [vec4], ids: [u32]) -> (GpuBuffer<u32>, GpuBuffer<u32>) {
+/// cleared, then pass 0 and pass 1. Two words a pixel: its depth's, then its id.
+fn rasterized(tris: [vec4], ids: [u32]) -> GpuBuffer<u32> {
     let size = vec2u(S)
-    var depth_bits: GpuBuffer<u32> = buffer(S * S)
     // No id anywhere (the rasterizer empties only the pixels it reaches).
-    var out = buffer_of(Vec::filled(S * S, NO_ID))
-    dispatch(soft_clear.bind(size, depth_bits: mut depth_bits), groups: (S / 8, S / 8, 1))
+    var pixels = buffer_of(Vec::filled(2 * S * S, NO_ID))
+    dispatch(soft_clear.bind(size, pixels: mut pixels), groups: (S / 8, S / 8, 1))
     let corners = buffer_of(tris)
     let id_list = buffer_of(ids)
+    dispatch(depths.bind(corners: corners.items(), size: size, pixels: mut pixels), over: ids.len())
     dispatch(
-        depths.bind(corners: corners.items(), size: size, depth_bits: mut depth_bits, out: mut out),
+        least.bind(corners: corners.items(), ids: id_list.items(), size: size, pixels: mut pixels),
         over: ids.len(),
     )
-    dispatch(
-        least.bind(
-            corners: corners.items(),
-            ids: id_list.items(),
-            size: size,
-            depth_bits: depth_bits.items(),
-            out: mut out,
-        ),
-        over: ids.len(),
-    )
-    (out, depth_bits)
+    pixels
 }
 
 /// The three corners of each of `tris`, in order.
@@ -225,20 +202,17 @@ fn record(s: mut State) {
         } else {
             (corners_of([tie_smaller(), tie_larger()]), [TIE_SMALLER, TIE_LARGER])
         }
-        let (out, _) = rasterized(tris, ids)
+        let out = rasterized(tris, ids)
         s.asked.push(read(out.items()))
         s.tie.push(take out)
     }
-    let (soft_ids, soft_depth) = rasterized(
-        corners_of([front(), behind(), beside()]),
-        [FRONT, BEHIND, BESIDE],
-    )
+    let soft = rasterized(corners_of([front(), behind(), beside()]), [FRONT, BEHIND, BESIDE])
     let pass = begin_pass_with_depth(mut s.target, mut s.depth, clear: vec4(0.0), clear_depth: 0.0)
     draw(pass, half_quad, quad_id, vertices: 6, cull: Cull::None, depth: NEAREST)
     draw(
         pass,
         full_screen,
-        soft_merge.bind(vec2u(S), depth_bits: soft_depth.items(), ids: soft_ids.items()),
+        soft_merge.bind(vec2u(S), pixels: soft.items()),
         vertices: 3,
         depth: NEAREST,
     )
@@ -328,7 +302,7 @@ fn coplanar_triangles_resolve_to_the_smaller_id(s: State) {
                 shared += 1
             }
             for r in 0..RUNS {
-                let got = s.runs[r][y * S + x]
+                let got = s.runs[r][2 * (y * S + x) + 1]
                 assert(got == want, f"run {r}, pixel ({x}, {y}): {got}, not {want}")
             }
         }
