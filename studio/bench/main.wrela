@@ -21,7 +21,8 @@
 // measured frames to that many (to try the tool). The report is written to
 // `build/bench/<machine>-<date>.json` and printed as a Markdown table, which is added to
 // `docs/bench.md` under a heading of its date and machine (unless `--no-docs`). `--compare`
-// prints each scene's change from an earlier report.
+// prints each scene's change from an earlier report, named by the tool's roots
+// (`out/<report>.json` for one in build/bench).
 
 use report::{
     Measured, compared, date_of, doc, intervals, markdown, number_at, numbers, report_json, spans,
@@ -307,7 +308,7 @@ fn measure(s: Scene, o: Options, salt: u32) -> Result<(Measured, f64, String), T
 }
 
 /// The heading and introduction `docs/bench.md` starts with, when the bench writes it first.
-const BENCH_HEAD: Text = "# Benchmarks\n\nWhat the engine's scenes cost, measured by `wrela tool bench` (studio/bench): each scene's GPU span (saturated, timestamped), the intervals between paced frames as a player sees them, each frame's CPU time, a cold start's time to first frame and to playable, and the GPU memory at its most, in headless Chrome stable, and each frame call natively. Each run adds a table under its date and machine; compare a change with the run before it on the same machine (`--compare build/bench/<report>.json`).\n\n## Other engines on this machine\n\nMeasured by hand in a sibling repository (this one holds only Wrela), with the command and date beside each number. None yet.\n\n"
+const BENCH_HEAD: Text = "# Benchmarks\n\nWhat the engine's scenes cost, measured by `wrela tool bench` (studio/bench): each scene's GPU span (saturated, timestamped), the intervals between paced frames as a player sees them, each frame's CPU time, a cold start's time to first frame and to playable, and the GPU memory at its most, in headless Chrome stable, and each frame call natively. Each run adds a table under its date and machine; compare a change with the run before it on the same machine (`--compare out/<report>.json`: a report in build/bench, the tool's `out` root).\n\n## Other engines on this machine\n\nMeasured by hand in a sibling repository (this one holds only Wrela), with the command and date beside each number. None yet.\n\n"
 
 fn bench(o: Options) -> Result<(), ToolError> {
     let _ = files::make_dirs("out/builds").wait()?
