@@ -336,6 +336,10 @@ impl Scene for Stage {
         self.wolf.shadow(pass, view)
     }
 
+    fn casts_moving(self) -> bool {
+        !of_world(self.view)
+    }
+
     /// The rocks the camera sees, the grass placed round the eye, and the wood's lists.
     fn choose(mut self, lt: Lighting, texels: GpuSpan<Texel>) {
         if rocky(self.view) {

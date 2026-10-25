@@ -310,6 +310,10 @@ impl Scene for Stage {
         }
     }
 
+    fn casts_moving(self) -> bool {
+        self.creature_on()
+    }
+
     fn choose(mut self, lt: Lighting, texels: GpuSpan<Texel>) {
         self.grass.place(
             lt.cam,

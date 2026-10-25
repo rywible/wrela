@@ -147,6 +147,12 @@ pub trait Scene {
     /// What moves into the moving map, seen from the sun by `view`.
     fn cast_moving<P: RenderPass>(self, pass: P, view: mat4) {}
 
+    /// Whether anything casts into the moving map this frame (`cast_moving`): when nothing
+    /// does, the frame keeps the map it cleared and draws no pass.
+    fn casts_moving(self) -> bool {
+        false
+    }
+
     /// What the GPU chooses before any pass: grass placed round the eye, a wood's instances,
     /// lit by `lt`, on the clipmap's `texels`.
     fn choose(mut self, lt: Lighting, texels: GpuSpan<Texel>) {}
@@ -637,6 +643,8 @@ pub struct Frame<R: Resolver> {
     pub near: Kept,
     pub far: Kept,
     pub moving: DepthTexture,
+    /// Whether the moving map is clear (the last frame drew nothing into it).
+    moving_clear: bool,
     pub cmp: ComparisonSampler,
     pub probes: Probes,
     pub clipmap: Clipmap,
@@ -768,6 +776,7 @@ impl<R: Resolver> Frame<R> {
                 strips: sh.far_strips,
             ),
             moving: depth_texture(width: sh.moving_side, height: sh.moving_side),
+            moving_clear: false,
             cmp: comparison_sampler(),
             probes: Probes {
                 using: probes,
@@ -868,6 +877,7 @@ impl<R: Resolver> Frame<R> {
                 strips: sh.far_strips,
             )
             self.moving = depth_texture(width: sh.moving_side, height: sh.moving_side)
+            self.moving_clear = false
         }
         // Probes of other rays: baked again beside those in use.
         if q.probes.rays != self.quality.probes.rays {
@@ -1110,10 +1120,17 @@ impl<R: Resolver> Frame<R> {
             moving_span: q.moving_span,
             moving_side: q.moving_side,
         )
-        label("shadow moving")
-        let mv = begin_depth_pass(mut self.moving, clear_depth: 1.0)
-        scene.cast_moving(mv, sh.moving)
-        mv.end()
+        // Nothing moving casts: the map cleared once is kept.
+        let casts = scene.casts_moving()
+        if casts || !self.moving_clear {
+            label("shadow moving")
+            let mv = begin_depth_pass(mut self.moving, clear_depth: 1.0)
+            if casts {
+                scene.cast_moving(mv, sh.moving)
+            }
+            mv.end()
+            self.moving_clear = !casts
+        }
         // The sky a phase a frame (all of it while a capture fills the dome).
         for k in 0..self.cooks.planner.steps(filling: !self.sky.done()) {
             if k > 0 && self.sky.done() {
