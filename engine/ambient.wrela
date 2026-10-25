@@ -109,14 +109,13 @@ fn point_at(depth: DepthTexture, cam: Camera, p: vec2i) -> (vec3, f32) {
 }
 
 /// Of a point's step to its neighbour before (`before`) and after (`after`) on one axis, the
-/// shorter, but never one of none (a neighbour past the screen's edge is the point itself).
-fn nearer_side(before: vec3, after: vec3) -> vec3 {
-    let a = dot(before, before)
-    let b = dot(after, after)
-    if a == 0.0 {
+/// shorter, but only of those within the screen (`has_before`, `has_after`: a neighbour past
+/// its edge would be the point itself).
+fn nearer_side(before: vec3, after: vec3, has_before: bool, has_after: bool) -> vec3 {
+    if !has_before {
         return after
     }
-    if b == 0.0 || a <= b { before } else { after }
+    if !has_after || dot(before, before) <= dot(after, after) { before } else { after }
 }
 
 /// The occlusion's texel `id` (of `size`, half the scene's): the share of the sky its point
@@ -141,10 +140,14 @@ fn gtao(depth: DepthTexture, cam: Camera, size: vec2u, out: mut Texels<Rgba16Flo
     let (r, _) = point_at(depth, cam, c + vec2i(1, 0))
     let (u, _) = point_at(depth, cam, c - vec2i(0, 1))
     let (b, _) = point_at(depth, cam, c + vec2i(0, 1))
-    let dx = nearer_side(p - l, r - p)
-    let dy = nearer_side(p - u, b - p)
+    let last = vec2i(cam.screen) - vec2i(1)
+    let dx = nearer_side(p - l, r - p, has_before: c.x > 0, has_after: c.x < last.x)
+    let dy = nearer_side(p - u, b - p, has_before: c.y > 0, has_after: c.y < last.y)
     let across = cross(dy, dx)
-    if dot(across, across) <= 1.0e-12 {
+    // No step on an axis, or the two along one line (relative to their lengths: a near surface's
+    // steps are a fraction of a millimetre at a high resolution).
+    let (xx, yy) = (dot(dx, dx), dot(dy, dy))
+    if xx == 0.0 || yy == 0.0 || dot(across, across) <= 1.0e-8 * xx * yy {
         out.store(id, vec4(1.0, dist, 0.0, 1.0))
         return
     }
@@ -177,8 +180,12 @@ fn gtao(depth: DepthTexture, cam: Camera, size: vec2u, out: mut Texels<Rgba16Flo
             var best = -1.0
             for k in 0..4 {
                 let t = (f32(k) + offset) / 4.0
-                let at = vec2(c) + dir * (way * max(t * reach, 1.0))
-                let (q, qd) = point_at(depth, cam, vec2i(round(at)))
+                let at = vec2i(round(vec2(c) + dir * (way * max(t * reach, 1.0))))
+                // Past the screen's edge there's nothing to see (not the edge's pixel again).
+                if at.x < 0 || at.y < 0 || at.x > last.x || at.y > last.y {
+                    continue
+                }
+                let (q, qd) = point_at(depth, cam, at)
                 if qd <= 0.0 {
                     continue
                 }
