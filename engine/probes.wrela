@@ -860,10 +860,12 @@ pub struct Baked {
 /// probe.
 pub const STRIP_COLUMNS: u32 = 640
 
-/// Once every column is baked: columns baked again a frame, with how many rays a probe, keeping
-/// how much of what each held. A whole round takes 6561 / 16 frames, 6.8 s, and the probes
-/// follow the clouds' drift (a few metres a second) through it.
-pub const AGAIN_COLUMNS: u32 = 16
+/// Once every column is baked: columns traced again a frame, with how many rays a probe, keeping
+/// how much of what each held. A whole round of the Last Green's 81 × 81 columns takes 6561 / 32
+/// frames, 3.4 s: the probes follow the clouds' drift (a few metres a second) and a moving sun
+/// through it, a new sky within a tenth of what it was after about three rounds (DDGI's 0.9
+/// would take 22: its probes are each traced every frame).
+pub const AGAIN_COLUMNS: u32 = 32
 pub const AGAIN_RAYS: u32 = 64
 pub const AGAIN_KEEP: f32 = 0.5
 

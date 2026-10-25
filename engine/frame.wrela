@@ -540,11 +540,15 @@ pub struct ShadowQuality: Copy {
 
 /// The probes: how far the eye goes from their middle before the next are baked round it (m);
 /// the rays a probe is first baked with (of `probes::RAYS`); and whether, once baked, a strip is
-/// baked again each frame as the clouds drift (`probes::AGAIN_COLUMNS`).
+/// traced again each frame through the volume, lit by the sun and sky as they are, blended into
+/// what it held (`probes::AGAIN_COLUMNS`, `AGAIN_KEEP`: DDGI's update, Majercik et al. 2019), so
+/// the bounce light follows the clouds and the sun, and a change of the sky or the sun is traced
+/// into the probes in use rather than baked into new ones (only the eye moving on and what
+/// occludes them changing bake new ones).
 pub struct ProbeQuality: Copy {
     pub moves: f32 = 30.0,
     pub rays: u32 = 32,
-    pub again: bool = false,
+    pub again: bool = true,
 }
 
 /// An arrival: whether the frames stay covered until the light round the eye is drawn (at the
@@ -597,6 +601,12 @@ pub struct Readiness: Copy {
 /// Arrival's count of consecutive lit frames: a frame that isn't lit starts it again.
 pub fn arrival_gathered(previous: u32, lit: bool) -> u32 {
     if lit { previous + 1 } else { 0 }
+}
+
+/// Whether probes baked from `a` hold what `b` asks for: the same inputs, or with the probes traced
+/// again (`again`, which brings in a new sky and sun), the same occluders and ground.
+fn same_inputs(a: ProbeKey, b: ProbeKey, again: bool) -> bool {
+    if again { a.0 == b.0 } else { a == b }
 }
 
 /// Whether a probe step of `w` may run now (`Planner::may`); a step the rules allow and the
@@ -767,10 +777,13 @@ pub struct Frame<R: Resolver> {
     probes_waited: bool,
     /// The sky's cook this frame's plan counted before its optional steps (`sky_cook`).
     sky_noted: Option<Work>,
-    /// The sun as the last frame had it, and the frame it last moved at: while it moves, both
-    /// cascades draw a strip a frame (`static_strips`).
+    /// The sun as the last frame had it, the frame it last moved at, and how many frames in a row
+    /// it has moved: while it moves, both cascades draw a strip a frame (`static_strips`), and
+    /// once it has moved two frames running, the probes are traced again through a sky that
+    /// isn't settled (`bake_probes`).
     last_sun: vec3,
     sun_moved_at: u32,
+    sun_moves: u32,
 }
 
 /// What changed of a scene, outside the frame's own state (the light and the air the frame
@@ -824,6 +837,7 @@ impl<R: Resolver> Frame<R> {
             air_slice: None,
             last_sun: light.sun,
             sun_moved_at: 0,
+            sun_moves: 0,
             cooking_key: (air, light.sun, light.sun_colour),
             sky: new_sky(),
             clouds: Clouds {
@@ -1196,6 +1210,9 @@ impl<R: Resolver> Frame<R> {
         if self.light.sun != self.last_sun {
             self.sun_moved_at = self.ran
             self.last_sun = self.light.sun
+            self.sun_moves += 1
+        } else {
+            self.sun_moves = 0
         }
         for _ in 0..steps {
             self.static_strips(mut scene, sh, wind)
@@ -1498,7 +1515,13 @@ impl<R: Resolver> Frame<R> {
     /// strip (one moving cache a frame).
     fn bake_probes<S: Scene>(mut self, scene: S, sh: Shadows, eye: vec2) {
         let air_key = (self.air, self.light.sun, self.light.sun_colour)
-        if !self.near.ready || self.air_cooked.stale(air_key) || !self.sky.done() {
+        // The sky the probes bake is settled: the air's tables cooked for the light, the dome
+        // marched through them. While the sun moves it never is; then only the probes in use are
+        // traced again, by the tables and the dome as they are.
+        let settled = !self.air_cooked.stale(air_key) && self.sky.done()
+        let moving = self.sun_moves >= 2
+        let tracing = self.quality.probes.again && self.probes.done() && self.probes.next.is_none()
+        if !self.near.ready || !(settled || (moving && tracing)) {
             return
         }
         if !self.cooks.planner.would(Work::ProbeStrip) {
@@ -1548,12 +1571,16 @@ impl<R: Resolver> Frame<R> {
             }
             return
         }
-        // A replacement started from older inputs is dropped.
-        if self.probes.next.is_some() && self.probes.next_k != key {
+        // A replacement started from older inputs is dropped (with the probes traced again, older
+        // occluders: they follow a new sky by tracing).
+        let again = self.quality.probes.again
+        if self.probes.next.is_some() && !same_inputs(self.probes.next_k, key, again) {
             self.probes.spare = replace(mut self.probes.next, None)
         }
         let moved = length(eye - self.probes.at) > self.quality.probes.moves
-        if self.probes.next.is_none() && (moved || self.probes.using_k != key) {
+        if self.probes.next.is_none() &&
+            settled &&
+            (moved || !same_inputs(self.probes.using_k, key, again)) {
             let Some(occluders) = scene.occluders(eye, self.origin) else { return }
             let g = scene.probe_grid(eye, self.origin)
             var b = match replace(mut self.probes.spare, None) {
@@ -1603,10 +1630,10 @@ impl<R: Resolver> Frame<R> {
                 }
             },
             None => {
-                // Once baked, a strip baked again a frame as the clouds drift.
-                if self.quality.probes.again &&
-                    !self.debug.still &&
-                    self.cooks.planner.may(Work::ProbeStrip) {
+                // Once baked, a strip traced again a frame as the clouds drift and the sun moves:
+                // the probes in use take the new sky as they're traced.
+                if again && !self.debug.still && self.cooks.planner.may(Work::ProbeStrip) {
+                    self.probes.using_k = key
                     self.probes.using.bake_strip(
                         trace,
                         sh,
