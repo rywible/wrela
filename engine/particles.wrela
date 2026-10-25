@@ -282,16 +282,6 @@ fn add_sums(count: [u32], sums: [u32], table: mut Atomics<u32>, g: WorkgroupId, 
     }
 }
 
-/// The ones in `x`'s bits.
-fn ones(x: u32) -> u32 {
-    var v = x - ((x >> 1) & 0x55555555)
-    v = (v & 0x33333333) + ((v >> 2) & 0x33333333)
-    v = (v + (v >> 4)) & 0x0F0F0F0F
-    v = v + (v >> 8)
-    v = v + (v >> 16)
-    v & 63
-}
-
 /// Workgroup `g`'s elements scattered by their digit: each to its digit's place (`table`,
 /// scanned: the elements of lesser digits, and of its digit in the groups before), after those of
 /// its digit before it in its group (found from a mask of its group's invocations a digit, in
@@ -321,9 +311,9 @@ fn scatter(
     if !live {
         return
     }
-    var rank = ones(masks.load(d * 8 + word) & ((1 << (lid.x % 32)) - 1))
+    var rank = (masks.load(d * 8 + word) & ((1 << (lid.x % 32)) - 1)).count_ones()
     for k in 0..word {
-        rank += ones(masks.load(d * 8 + k))
+        rank += masks.load(d * 8 + k).count_ones()
     }
     let at = table[d * groups(n) + g.x] + rank
     keys_out.store(i: at, value: keys[i])
