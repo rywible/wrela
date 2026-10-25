@@ -1,0 +1,374 @@
+// The bench tool (`wrela tool bench`, docs/plan-world-class.md §B1): what each scene costs on
+// this machine, in Chrome and natively.
+//
+// ```text
+// wrela tool bench -- [--scene <name>]... [--frames <n>] [--warmup <n>] [--workers <n>]
+//     [--compare <report.json>] [--no-native] [--no-docs]
+// ```
+//
+// Each scene (scenes.wrela) is built as it ships (optimized) into `build/bench/builds/<name>`,
+// served (`std::tool::serve`) and run in headless Chrome's test mode (`std::tool::browser`), its
+// gate script given as input, the command checker off as in a release build:
+//
+// 1. GPU: `timestamps=1&saturate=1&nohash=1`: each frame's GPU span, its p50, p95 and p99;
+// 2. play: `paced=1&inflight=2&nohash=1`: the intervals between frames (p50, p95, p99, and how
+//    many over 16.7 and 33 ms), each frame's CPU time, and the GPU memory (`memory.json`);
+// 3. cold start: `salt=<n>` (no pipeline cache): ms from the page opening to its first frame
+//    and to the program's `playable` print, the pipelines' ms, and the bytes loaded;
+// 4. natively, on the native host's GPU (`std::tool::drive`): each frame call's time.
+//
+// The warmup (60 frames unless `--warmup` says) isn't counted. `--frames` cuts every scene's
+// measured frames to that many (to try the tool). The report is written to
+// `build/bench/<machine>-<date>.json` and printed as a Markdown table, which is added to
+// `docs/bench.md` under a heading of its date and machine (unless `--no-docs`). `--compare`
+// prints each scene's change from an earlier report.
+
+use report::{
+    Measured, compared, date_of, doc, intervals, markdown, number_at, numbers, report_json, spans,
+    time_of, stats,
+}
+use scenes::{SCENES, Scene, script}
+use std::io::print
+use std::json::TOP
+use std::tool::{ToolError, args}
+use std::tool::drive
+use std::tool::drive::Step
+use std::tool::files
+use std::tool::toolchain
+use toolkit::driven::untrapped
+use toolkit::page::run_page
+use toolkit::whole::{chunked, read_file, write_file}
+
+pub const USAGE: Text = "usage: wrela tool bench -- [--scene <name>]... [--frames <n>] [--warmup <n>] [--workers <n>] [--compare <report.json>] [--no-native] [--no-docs]"
+
+/// What a run of the bench does.
+pub struct Options: Clone {
+    pub scenes: Vec<String>,
+    pub frames: u32,
+    pub warmup: u32,
+    pub workers: u32,
+    pub compare: String,
+    pub native: bool,
+    pub docs: bool,
+}
+
+/// The options the command line gives, or `None` for a usage error.
+pub fn parse_args(given: [String]) -> Option<Options> {
+    var o = Options {
+        scenes: Vec::new(),
+        frames: 0,
+        warmup: 60,
+        workers: 4,
+        compare: String::new(),
+        native: true,
+        docs: true,
+    }
+    var k = 0
+    while k < given.len() {
+        let a = given[k].as_str()
+        let value = |k: u32| -> Option<String> {
+            if k + 1 < given.len() { Some(given[k + 1].clone()) } else { None }
+        }
+        if a == "--scene" {
+            let v = value(k)?
+            var known = false
+            for s in SCENES {
+                if s.name == v.as_str() {
+                    known = true
+                }
+            }
+            if !known {
+                return None
+            }
+            o.scenes.push(take v)
+            k += 2
+        } else if a == "--frames" {
+            o.frames = value(k)?.as_str().parse_u32()?
+            k += 2
+        } else if a == "--warmup" {
+            o.warmup = value(k)?.as_str().parse_u32()?
+            k += 2
+        } else if a == "--workers" {
+            o.workers = value(k)?.as_str().parse_u32()?
+            k += 2
+        } else if a == "--compare" {
+            o.compare = value(k)?
+            k += 2
+        } else if a == "--no-native" {
+            o.native = false
+            k += 1
+        } else if a == "--no-docs" {
+            o.docs = false
+            k += 1
+        } else {
+            return None
+        }
+    }
+    Some(o)
+}
+
+/// The scenes `o` names, or every one.
+pub fn chosen(o: Options) -> Vec<Scene> {
+    var out = Vec::new()
+    for s in SCENES {
+        var wanted = o.scenes.is_empty()
+        for n in o.scenes {
+            if n.as_str() == s.name {
+                wanted = true
+            }
+        }
+        if wanted {
+            var c = s.clone()
+            if o.frames > 0 {
+                c.frames = o.frames
+            }
+            out.push(take c)
+        }
+    }
+    out
+}
+
+fn text_of(path: str) -> Result<String, ToolError> {
+    let bytes = read_file(path, path)?
+    match String::from_utf8(take bytes) {
+        Some(t) => Ok(t),
+        None => Err(ToolError::new(f"{path} isn't UTF-8")),
+    }
+}
+
+fn json_of(path: str) -> Result<std::json::Doc, ToolError> {
+    doc(text_of(path)?.as_str(), path).map_err(|e| ToolError::new(e.as_str()))
+}
+
+/// The adapter a page ran on (`device.json`), for the report's machine.
+fn machine_of(dir: str) -> Result<String, ToolError> {
+    let d = json_of(f"{dir}/results/device.json")?
+    var out = String::new()
+    for key in ["vendor", "architecture", "description"] {
+        if let Some(k) = d.get(TOP, key) {
+            if let Some(t) = d.text(k) {
+                if t.len() > 0 {
+                    if out.len() > 0 {
+                        out.push_str(" ")
+                    }
+                    out.push_str(t.as_str())
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Scene `s` measured, its build in `dir`; the page's date (ms since the epoch) and the machine.
+fn measure(s: Scene, o: Options, salt: u32) -> Result<(Measured, f64, String), ToolError> {
+    let dir = String::from(f"out/builds/{s.name}")
+    var options = toolchain::options()
+    options.optimize = true
+    options.timeout = 600.0
+    let built = toolchain::build(f"ws/{s.pkg}", dir.as_str(), options).wait()?
+    if !built.ok {
+        for d in built.diagnostics {
+            if d.error {
+                print(d.rendered.as_str())
+            }
+        }
+        return Err(ToolError::new(f"{s.pkg} didn't build"))
+    }
+    let input = script(s.name)
+    let _ = files::write(
+        f"{dir}/bench-input.json",
+        String::from(input.as_json()).as_bytes(),
+    ).wait()?
+    let frames = o.warmup + s.frames
+    let (w, h) = (s.width, s.height)
+    let timeout = f64(frames) / 60.0 * 10.0 + 240.0
+    let common = String::from(
+        f"#test&frames={frames}&width={w}&height={h}&fps=60&workers={o.workers}&input=bench-input.json&checks=0",
+    )
+    // 1. The GPU.
+    run_page(dir.as_str(), f"{common}&timestamps=1&saturate=1&nohash=1", w, h, timeout)?
+    let span = stats(spans(json_of(f"{dir}/results/timings.json")?, o.warmup))
+    let machine = machine_of(dir.as_str())?
+    // 2. Play.
+    run_page(dir.as_str(), f"{common}&paced=1&inflight=2&nohash=1", w, h, timeout)?
+    let framed = json_of(f"{dir}/results/frames.json")?
+    let began = match framed.get(TOP, "began_ms") {
+        Some(n) => numbers(framed, n, 0),
+        None => Vec::new(),
+    }
+    let between = intervals(began, o.warmup)
+    var over_16 = 0
+    var over_33 = 0
+    for x in between {
+        if x > 16.7 {
+            over_16 += 1
+        }
+        if x > 33.3 {
+            over_33 += 1
+        }
+    }
+    let cpu = match framed.get(TOP, "cpu_ms") {
+        Some(n) => stats(numbers(framed, n, o.warmup)),
+        None => stats(Vec::new()),
+    }
+    let memory = json_of(f"{dir}/results/memory.json")?
+    let (gpu_bytes, gpu_peak) = match memory.get(TOP, "gpu") {
+        Some(g) => (number_at(memory, g, "bytes"), number_at(memory, g, "peak")),
+        None => (0.0, 0.0),
+    }
+    // 3. A cold start.
+    let cold_frames = min(frames, 300)
+    run_page(
+        dir.as_str(),
+        f"#test&frames={cold_frames}&width={w}&height={h}&fps=60&workers={o.workers}&input=bench-input.json&checks=0&nohash=1&salt={salt}",
+        w,
+        h,
+        timeout,
+    )?
+    let load = json_of(f"{dir}/results/load.json")?
+    let opened = number_at(load, TOP, "opened_ms")
+    let first_frame_ms = number_at(load, TOP, "first_frame_ms") - opened
+    var loaded_bytes = 0.0
+    if let Some(r) = load.get(TOP, "resources") {
+        for i in 0..load.count(r) {
+            if let Some(e) = load.at(r, i) {
+                loaded_bytes += number_at(load, e, "bytes")
+            }
+        }
+    }
+    let pipelines = json_of(f"{dir}/results/pipelines.json")?
+    let pipelines_ms = number_at(pipelines, TOP, "ms")
+    let cold = json_of(f"{dir}/results/frames.json")?
+    let log = text_of(f"{dir}/results/log.txt")?
+    var playable_ms = 0.0
+    if let (Some(pi), Some(bi)) = (cold.get(TOP, "printed_in"), cold.get(TOP, "began_ms")) {
+        let printed_in = numbers(cold, pi, 0)
+        let began_cold = numbers(cold, bi, 0)
+        var line = 0
+        for (a, b) in log.lines() {
+            let l = log.as_str().slice(a, b)
+            if playable_ms == 0.0 && l.find("playable").is_some() && line < printed_in.len() {
+                let f = u32(printed_in[line])
+                if f < began_cold.len() {
+                    playable_ms = began_cold[f] - opened
+                }
+            }
+            line += 1
+        }
+    }
+    // 4. Natively.
+    var native = stats(Vec::new())
+    if o.native {
+        var load_native = drive::gpu()
+        load_native.width = w
+        load_native.height = h
+        load_native.workers = o.workers
+        load_native.timeout = min(timeout, 600.0)
+        let b = drive::load(dir.as_str(), load_native).wait()?.build
+        let _ = untrapped(
+            "init",
+            drive::steps(b, [Step::Init], timeout: min(timeout, 600.0)).wait()?,
+        )?
+        let seen = untrapped(
+            "the frames",
+            drive::steps(
+                b,
+                [Step::Frames(frames, input.clone())],
+                timeout: min(timeout, 600.0),
+            ).wait()?,
+        )?
+        let _ = drive::close(b).wait()
+        var calls = Vec::new()
+        if seen.ran.len() > 0 {
+            let spans = seen.ran[0].spans.len()
+            for k in o.warmup..spans {
+                let span = seen.ran[0].spans[k]
+                calls.push((span.end - span.start) * 1000.0)
+            }
+        }
+        native = stats(take calls)
+    }
+    let m = Measured {
+        scene: String::from(s.name),
+        span,
+        interval: stats(take between),
+        over_16,
+        over_33,
+        cpu,
+        native,
+        first_frame_ms,
+        playable_ms,
+        pipelines_ms,
+        loaded_bytes,
+        gpu_bytes,
+        gpu_peak,
+    }
+    Ok((m, opened, machine))
+}
+
+/// The heading and introduction `docs/bench.md` starts with, when the bench writes it first.
+const BENCH_HEAD: Text = "# Benchmarks\n\nWhat the engine's scenes cost, measured by `wrela tool bench` (studio/bench): each scene's GPU span (saturated, timestamped), the intervals between paced frames as a player sees them, each frame's CPU time, a cold start's time to first frame and to playable, and the GPU memory at its most, in headless Chrome stable, and each frame call natively. Each run adds a table under its date and machine; compare a change with the run before it on the same machine (`--compare build/bench/<report>.json`).\n\n## Other engines on this machine\n\nMeasured by hand in a sibling repository (this one holds only Wrela), with the command and date beside each number. None yet.\n\n"
+
+fn bench(o: Options) -> Result<(), ToolError> {
+    let _ = files::make_dirs("out/builds").wait()?
+    // The earlier report, read before this run writes its own.
+    let earlier = if o.compare.len() > 0 { Some(json_of(o.compare.as_str())?) } else { None }
+    var all: Vec<Measured> = Vec::new()
+    var date = String::new()
+    var opened_at = 0.0
+    var machine = String::new()
+    var salt = 1
+    for s in chosen(o.clone()) {
+        print(f"bench: {s.name} ({s.pkg}, {s.frames} frames at {s.width}x{s.height})")
+        let (m, opened, mach) = measure(s, o.clone(), salt)?
+        salt += 1
+        date = date_of(opened)
+        opened_at = opened
+        machine = take mach
+        all.push(take m)
+    }
+    let table = markdown(machine.as_str(), date.as_str(), all)
+    print(table.as_str())
+    var slug = String::new()
+    for (a, b) in machine.split(" ") {
+        if slug.len() > 0 {
+            slug.push_str("-")
+        }
+        slug.push_str(machine.as_str().slice(a, b))
+    }
+    // A run of its own: the machine, the date and the time of day (UTC) its last page opened.
+    let path = String::from(f"out/{slug}-{date}-{time_of(opened_at)}.json")
+    write_file(
+        path.as_str(),
+        chunked(Vec::from(report_json(machine.as_str(), date.as_str(), all).as_bytes())),
+    )?
+    print(f"bench: the report is {path}")
+    if let Some(e) = earlier {
+        print(compared(e, all).as_str())
+    }
+    if o.docs {
+        let existing = match files::read("ws/docs/bench.md").wait() {
+            Ok(b) => String::from_utf8(take b).unwrap_or(String::new()),
+            Err(_) => String::from(BENCH_HEAD),
+        }
+        var text = take existing
+        text.push_str(table.as_str())
+        write_file("ws/docs/bench.md", chunked(Vec::from(text.as_bytes())))?
+        print("bench: the table is added to docs/bench.md")
+    }
+    Ok(())
+}
+
+pub fn tool() -> u32 {
+    let Some(o) = parse_args(args()) else {
+        print(USAGE)
+        return 2
+    }
+    match bench(o) {
+        Ok(()) => 0,
+        Err(e) => {
+            print(f"bench: {e.message()}")
+            1
+        },
+    }
+}

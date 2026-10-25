@@ -105,6 +105,7 @@ wrela-host --compare-ticks a.ticks b.ticks   # two builds' tick logs: equal, or 
 | `reference`          | Replicas of reference meshes, and how far a surface is from one                                           |
 | `route`, `keys`      | The capybara's fastest runs; its piano keys page                                                          |
 | `release`, `deploy`  | A release, and its deploy (CI does these from `main`)                                                     |
+| `bench`              | What the engine's scenes cost on this machine, in Chrome and natively, added to `docs/bench.md` (`--scene herd`, `--compare <report.json>`) |
 
 ## What trips agents up
 

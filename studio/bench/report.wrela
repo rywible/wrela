@@ -1,0 +1,248 @@
+// What the bench measured of a scene, read from a test-mode page's results (runtime/browser's
+// testmode.ts) and the native host's frames, and the report it writes: JSON for a later
+// `--compare`, and a Markdown table for docs/bench.md.
+
+use std::json
+use std::json::{Doc, TOP}
+
+/// A sample's statistics, in ms: its median and its 95th and 99th percentiles, by nearest rank.
+pub struct Stats: Copy {
+    pub p50: f64,
+    pub p95: f64,
+    pub p99: f64,
+}
+
+fn before(a: f64, b: f64) -> bool {
+    a < b
+}
+
+/// `xs`'s statistics; all zero for none.
+pub fn stats(xs: take Vec<f64>) -> Stats {
+    var v = take xs
+    if v.len() == 0 {
+        return Stats { p50: 0.0, p95: 0.0, p99: 0.0 }
+    }
+    v.sort_by(before)
+    let at = |p: u32| -> f64 {
+        let rank = (v.len() * p + 99) / 100
+        v[max(rank, 1) - 1]
+    }
+    Stats { p50: at(50), p95: at(95), p99: at(99) }
+}
+
+/// One scene's measurements.
+pub struct Measured: Clone {
+    pub scene: String,
+    /// The GPU's frame span (saturated, timestamped).
+    pub span: Stats,
+    /// The interval between paced frames, as a player sees them, and how many were over 16.7
+    /// and over 33.3 ms.
+    pub interval: Stats,
+    pub over_16: u32,
+    pub over_33: u32,
+    /// A paced frame's CPU time (its call, its commands encoded).
+    pub cpu: Stats,
+    /// The native host's frame call (its GPU waits included).
+    pub native: Stats,
+    /// A cold start (no pipeline cache): ms from the page opening to the first frame, and to the
+    /// program's `playable` print (0 if it printed none), the pipelines' ms, and the bytes loaded.
+    pub first_frame_ms: f64,
+    pub playable_ms: f64,
+    pub pipelines_ms: f64,
+    pub loaded_bytes: f64,
+    /// The program's GPU memory at the end and at its most (`memory.json`), bytes.
+    pub gpu_bytes: f64,
+    pub gpu_peak: f64,
+}
+
+/// The numbers of list `n` of `d`, from index `from`.
+pub fn numbers(d: Doc, n: u32, from: u32) -> Vec<f64> {
+    var out = Vec::new()
+    for i in from..d.count(n) {
+        if let Some(k) = d.at(n, i) {
+            if let Some(x) = d.num(k) {
+                out.push(x)
+            }
+        }
+    }
+    out
+}
+
+/// The number at `key` of object `n` of `d`, or 0.
+pub fn number_at(d: Doc, n: u32, key: str) -> f64 {
+    match d.get(n, key) {
+        Some(k) => d.num(k).unwrap_or(0.0),
+        None => 0.0,
+    }
+}
+
+/// Each frame's GPU span (its first timed start to its last end, ms) in `timings.json`, for
+/// the frames from `warmup` on.
+pub fn spans(timings: Doc, warmup: u32) -> Vec<f64> {
+    // A start may be negative: the times are from the first timestamp the host read.
+    var seen: Vec<bool> = Vec::new()
+    var first: Vec<f64> = Vec::new()
+    var last: Vec<f64> = Vec::new()
+    for i in 0..timings.count(TOP) {
+        let Some(t) = timings.at(TOP, i) else { continue }
+        let frame = number_at(timings, t, "frame")
+        if frame < f64(warmup) {
+            continue
+        }
+        let k = u32(frame) - warmup
+        while seen.len() <= k {
+            seen.push(false)
+            first.push(0.0)
+            last.push(0.0)
+        }
+        let (start, end) = (number_at(timings, t, "start"), number_at(timings, t, "end"))
+        if !seen[k] || start < first[k] {
+            first[k] = start
+        }
+        if !seen[k] || end > last[k] {
+            last[k] = end
+        }
+        seen[k] = true
+    }
+    var out = Vec::new()
+    for k in 0..seen.len() {
+        if seen[k] {
+            out.push((last[k] - first[k]) / 1000000.0)
+        }
+    }
+    out
+}
+
+/// The intervals between paced frames' beginnings, from frame `warmup` on.
+pub fn intervals(began: Vec<f64>, warmup: u32) -> Vec<f64> {
+    var out = Vec::new()
+    for k in max(warmup, 1)..began.len() {
+        out.push(began[k] - began[k - 1])
+    }
+    out
+}
+
+fn stats_json(s: Stats) -> String {
+    String::from(f"{{\"p50\": {s.p50}, \"p95\": {s.p95}, \"p99\": {s.p99}}}")
+}
+
+/// `m` as JSON.
+pub fn measured_json(m: Measured) -> String {
+    String::from(
+        f"{{\"scene\": \"{m.scene}\", \"span\": {stats_json(m.span)}, \"interval\": {stats_json(m.interval)}, \"over_16\": {m.over_16}, \"over_33\": {m.over_33}, \"cpu\": {stats_json(m.cpu)}, \"native\": {stats_json(m.native)}, \"first_frame_ms\": {m.first_frame_ms}, \"playable_ms\": {m.playable_ms}, \"pipelines_ms\": {m.pipelines_ms}, \"loaded_bytes\": {m.loaded_bytes}, \"gpu_bytes\": {m.gpu_bytes}, \"gpu_peak\": {m.gpu_peak}}}",
+    )
+}
+
+/// A whole report: the machine, the date, and each scene's measurements.
+pub fn report_json(machine: str, date: str, all: [Measured]) -> String {
+    var s = String::from(f"{{\"machine\": \"{machine}\", \"date\": \"{date}\", \"scenes\": [")
+    for k in 0..all.len() {
+        if k > 0 {
+            s.push_str(", ")
+        }
+        s.push_str(measured_json(all[k].clone()).as_str())
+    }
+    s.push_str("]}\n")
+    s
+}
+
+fn ms(x: f64) -> String {
+    String::from(f"{x:.2}")
+}
+
+fn mib(bytes: f64) -> String {
+    String::from(f"{bytes / 1048576.0:.1}")
+}
+
+/// The report as Markdown: a heading for the machine and the date, then a row a scene.
+pub fn markdown(machine: str, date: str, all: [Measured]) -> String {
+    var s = String::from(f"## {date}, {machine}\n\n")
+    s.push_str(
+        "| Scene | GPU span p50 / p95 / p99 ms | Interval p50 / p95 / p99 ms | Over 16.7 / 33 ms | CPU p50 / p95 ms | Native p50 / p95 ms | First frame ms | Playable ms | Pipelines ms | Loaded MiB | GPU peak MiB |\n",
+    )
+    s.push_str("|---|---|---|---|---|---|---|---|---|---|---|\n")
+    for m in all {
+        s.push_str(
+            f"| {m.scene} | {ms(m.span.p50)} / {ms(m.span.p95)} / {ms(m.span.p99)} | {ms(m.interval.p50)} / {ms(m.interval.p95)} / {ms(m.interval.p99)} | {m.over_16} / {m.over_33} | {ms(m.cpu.p50)} / {ms(m.cpu.p95)} | {ms(m.native.p50)} / {ms(m.native.p95)} | {ms(m.first_frame_ms)} | {ms(m.playable_ms)} | {ms(m.pipelines_ms)} | {mib(m.loaded_bytes)} | {mib(m.gpu_peak)} |\n",
+        )
+    }
+    s.push_str("\n")
+    s
+}
+
+/// The change from `then` to `now` of scene `scene`'s main numbers, a line each, from an earlier
+/// report's JSON `earlier`.
+pub fn compared(earlier: Doc, now: [Measured]) -> String {
+    var s = String::new()
+    let Some(scenes) = earlier.get(TOP, "scenes") else {
+        return String::from("the earlier report has no scenes\n")
+    }
+    for m in now {
+        var found = false
+        for i in 0..earlier.count(scenes) {
+            let Some(e) = earlier.at(scenes, i) else { continue }
+            let Some(name) = earlier.get(e, "scene") else { continue }
+            if earlier.text(name).unwrap_or(String::new()).as_str() != m.scene.as_str() {
+                continue
+            }
+            found = true
+            let at = |key: str, stat: str| -> f64 {
+                match earlier.get(e, key) {
+                    Some(k) => number_at(earlier, k, stat),
+                    None => 0.0,
+                }
+            }
+            let change = |then: f64, now: f64| -> String {
+                if then > 0.0 {
+                    let pc = (now - then) / then * 100.0
+                    let sign = if pc >= 0.0 { "+" } else { "" }
+                    String::from(f"{then:.2} -> {now:.2} ({sign}{pc:.1}%)")
+                } else {
+                    String::from(f"{now:.2}")
+                }
+            }
+            let span = change(at("span", "p50"), m.span.p50)
+            let interval = change(at("interval", "p95"), m.interval.p95)
+            let cpu = change(at("cpu", "p50"), m.cpu.p50)
+            let first = change(number_at(earlier, e, "first_frame_ms"), m.first_frame_ms)
+            let peak = change(number_at(earlier, e, "gpu_peak") / 1048576.0, m.gpu_peak / 1048576.0)
+            s.push_str(
+                f"{m.scene}: GPU span p50 {span}; interval p95 {interval}; CPU p50 {cpu}; first frame {first}; GPU peak MiB {peak}\n",
+            )
+        }
+        if !found {
+            s.push_str(f"{m.scene}: new\n")
+        }
+    }
+    s
+}
+
+/// `d`'s JSON document, or why not.
+pub fn doc(text: str, what: str) -> Result<Doc, String> {
+    match json::parse(text) {
+        Some(d) => Ok(d),
+        None => Err(String::from(f"{what} isn't JSON")),
+    }
+}
+
+/// The date of `ms` since the epoch, as `YYYY-MM-DD` (Hinnant's days-from-civil, inverted).
+pub fn date_of(ms: f64) -> String {
+    let days = i64(ms / 86400000.0)
+    let z = days + 719468
+    let era = (if z >= 0 { z } else { z - 146096 }) / 146097
+    let doe = z - era * 146097
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
+    let mp = (5 * doy + 2) / 153
+    let d = doy - (153 * mp + 2) / 5 + 1
+    let m = if mp < 10 { mp + 3 } else { mp - 9 }
+    let y = yoe + era * 400 + (if m <= 2 { 1 } else { 0 })
+    String::from(f"{y}-{m:02}-{d:02}")
+}
+
+/// The time of day of `ms` since the epoch, UTC, as `HHMMSS`.
+pub fn time_of(ms: f64) -> String {
+    let secs = i64(ms / 1000.0) % 86400
+    let (h, m, sec) = (secs / 3600, (secs / 60) % 60, secs % 60)
+    String::from(f"{h:02}{m:02}{sec:02}")
+}

@@ -42,6 +42,7 @@ members = [
     "studio/maplens",
     "studio/maplens/glue",
     "studio/audio",
+    "studio/bench",
     "studio/toolkit",
     "studio/listening",
     "studio/lookbook",
@@ -81,6 +82,7 @@ allow = [
     "docs/toolchain.md",
     "docs/toolchain-gaps.md",
     "docs/plan-world-class.md",
+    "docs/bench.md",
     "games/*/design.md",
     ".gitignore",
     ".github/workflows/deploy.yml",
@@ -139,6 +141,14 @@ run = ["ffmpeg"]
 [tools.round]
 package = "studio/round"
 write = ["ws=."]
+browser = true
+
+# The bench tool (studio/bench): what the engine's scenes cost on this machine, in headless
+# Chrome and natively. It reads the workspace's packages and builds each into build/bench, and
+# adds its table to docs/bench.md, so it writes the workspace.
+[tools.bench]
+package = "studio/bench"
+write = ["ws=.", "out=build/bench"]
 browser = true
 
 # The serve tool (studio/serve): a directory of the workspace served to a browser on this
