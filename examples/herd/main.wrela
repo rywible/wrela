@@ -101,6 +101,9 @@ pub struct Game {
     /// Whether each grazer has been drawn, and reached the level it should have, yet (live).
     drawn_yet: Vec<bool>,
     at_level_yet: Vec<bool>,
+    /// What the realizer's last live frame allocated (it keeps what it needs from frame to
+    /// frame).
+    realizer_allocations: u32,
 }
 
 pub fn init() -> Game {
@@ -143,6 +146,7 @@ pub fn init() -> Game {
         terrain: true,
         drawn_yet: Vec::new(),
         at_level_yet: Vec::new(),
+        realizer_allocations: 0,
     }
 }
 
@@ -231,10 +235,12 @@ pub fn frame(game: mut Game, time: f32, width: u32, height: u32) {
         for g in grazers {
             placed.push(Placement { at: g.pos, heading: g.heading })
         }
+        let before = std::alloc::allocations()
         game.realizer.frame(
             Eye { at: v.eye, view_proj: v.view_proj, height: f32(height), fovy },
             placed,
         )
+        game.realizer_allocations = std::alloc::allocations() - before
         // When each grazer is first drawn, and first has the level it should (#42 AC4).
         while game.drawn_yet.len() < HERD {
             game.drawn_yet.push(false)
@@ -475,4 +481,15 @@ fn the_physique_gives_each_bone_its_mass_and_moments() {
     assert(p.least >= -1.0e-4, f"a bone's moments break the triangle inequality: {p.least}")
     let differ = physique_methods_differ(1, 0.02)
     assert(differ <= 0.05, f"a bone is {differ * 100.0:.2}% from integrate's")
+}
+
+/// Once the herd is drawn at its levels, the realizer's frame allocates nothing: it keeps its
+/// lists from frame to frame, and its pick is one pass over the instances.
+@test(frames: 900, gpu: true)
+fn a_settled_realizer_allocates_nothing_a_frame(game: Game) {
+    assert(game.all_drawn, "the herd wasn't drawn")
+    assert(
+        game.realizer_allocations == 0,
+        f"the realizer allocated {game.realizer_allocations} times",
+    )
 }
