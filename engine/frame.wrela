@@ -557,11 +557,13 @@ pub struct Quality: Copy {
     /// How much of this frame a pixel takes where a sample falls on it (temporal AA).
     pub blend: f32 = 0.12,
     pub budget: Budget = Budget {},
-    /// Whether the planner learns this device's costs (the default): after a frame that ran one
-    /// step of a kind it plans, the frame asks for that step's GPU time (`std::gpu::timed`), and
-    /// the planner plans with it from then on (`Planner::measure`, on its ladder of steps). Off,
-    /// it plans with the code's estimates and records, and a frame's order is the same on every
-    /// run, as the tests of order need.
+    /// Whether the planner learns this device's costs (the default): at a frame's start the frame
+    /// asks for the GPU time of each kind it plans that's due (`std::gpu::timed`), which the host
+    /// then times in the first frame that runs one of its steps (a frame runs one of each but
+    /// while a capture fills its caches), and the planner plans with it from then on
+    /// (`Planner::measure`, on its ladder of steps). A kind is due until it's been measured
+    /// `MEASURE_FIRST` times, then every `MEASURE_AGAIN` frames: a host times only the work asked
+    /// for, so a frame that times nothing costs nothing more. Off,
     pub measured: bool = true,
     /// Whether the frame culls what's hidden (`cull`): the scene's choosing leaves out what last
     /// frame's depth hid, and after the opaque passes this frame's depth pyramid reveals what of
@@ -617,6 +619,12 @@ pub const LEAST_SCALE: f32 = 0.5
 /// While the sun moves, every this many frames draws no strip of the cascades, so the probes
 /// (which a frame that draws one doesn't bake) keep their turns (`Frame::static_strips`).
 const PROBE_TURN: u32 = 4
+
+/// A measuring frame's pace (`Quality::measured`): each kind is measured this many times as soon
+/// as it runs, then once every this many frames (4 s at 60 Hz).
+const MEASURE_FIRST: u32 = 4
+
+const MEASURE_AGAIN: u32 = 240
 
 /// The kinds of work a measuring frame times (`Quality::measured`), each by the label its pass or
 /// dispatch carries.
@@ -853,9 +861,12 @@ pub struct Frame<R: Resolver> {
     pub linear: Sampler,
     pub repeat: Sampler,
     pub cooks: Cooks,
-    /// The steps whose GPU time a measuring frame asked for and hasn't had (`Quality::measured`),
-    /// and whether the host can't time them (it stops asking).
+    /// The kinds whose GPU time a measuring frame asked for and hasn't had (`Quality::measured`);
+    /// how many times each of `MEASURED` was measured and the frame it last was; and whether the
+    /// host can't time them (it stops asking).
     measuring: Vec<(Work, Pending<f32>)>,
+    measured: [u32; 5],
+    measured_at: [u32; 5],
     untimed: bool,
     /// The paced scale (`Quality::pace`).
     pub pacer: Scale,
@@ -1031,6 +1042,8 @@ impl<R: Resolver> Frame<R> {
                 far_changed: false,
             },
             measuring: Vec::new(),
+            measured: [0; 5],
+            measured_at: [0; 5],
             untimed: false,
             pacer: Scale {},
             ready: Readiness {
@@ -1291,6 +1304,9 @@ impl<R: Resolver> Frame<R> {
 
     /// This frame cooked and drawn (the module's comment), the camera `begin` made at `aim`.
     pub fn draw<S: Scene>(mut self, scene: mut S, aim: Aim) {
+        if self.quality.measured {
+            self.measure()
+        }
         let cam = self.cam
         let eye = cam.eye
         let eye_w = eye.xz + self.origin.xz
@@ -1413,9 +1429,6 @@ impl<R: Resolver> Frame<R> {
             self.ready.playable_at = Some(self.frames)
             print(f"playable at frame {self.frames}")
         }
-        if self.quality.measured {
-            self.measure()
-        }
         if self.hold {
             self.ran += 1
             return
@@ -1443,9 +1456,10 @@ impl<R: Resolver> Frame<R> {
         self.ran += 1
     }
 
-    /// A measuring frame's times (`Quality::measured`): each that's come is the planner's, and
-    /// each kind that ran one step this frame, and isn't being timed, is asked for (its answer is
-    /// this frame's step's, which ran before the ask).
+    /// A measuring frame's times (`Quality::measured`), before anything is recorded: each answer
+    /// that's come is the planner's, and each kind that's due and not asked for is asked for (its
+    /// answer is the first frame's from this one that runs a step of it). None is asked for while
+    /// a capture fills its caches, whose frames run many steps of a kind.
     fn measure(mut self) {
         var k = 0
         while k < self.measuring.len() {
@@ -1453,6 +1467,12 @@ impl<R: Resolver> Frame<R> {
             match self.measuring[k].1.poll() {
                 Some(Ok(us)) => {
                     self.cooks.planner.measure(w, us[0])
+                    for i in 0..5 {
+                        if MEASURED[i].0 == w {
+                            self.measured[i] += 1
+                            self.measured_at[i] = self.frames
+                        }
+                    }
                     let _ = self.measuring.remove(k)
                 },
                 Some(Err(_)) => {
@@ -1462,15 +1482,18 @@ impl<R: Resolver> Frame<R> {
                 None => k += 1,
             }
         }
-        if self.untimed {
+        if self.untimed || self.debug.capture {
             return
         }
-        for (w, name) in MEASURED {
+        for i in 0..5 {
+            let (w, name) = MEASURED[i]
             var asked = false
             for m in self.measuring {
                 asked = asked || m.0 == w
             }
-            if !asked && self.cooks.planner.ran(w) == 1 {
+            let due = self.measured[i] < MEASURE_FIRST ||
+                self.frames - self.measured_at[i] >= MEASURE_AGAIN
+            if !asked && due {
                 self.measuring.push((w, timed(name)))
             }
         }
