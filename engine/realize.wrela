@@ -1086,6 +1086,18 @@ struct Slicing {
 /// largest grid waiting; each realization's counts are read back to catch an overflow, which
 /// grows the room and realizes the instance again. These two readbacks are presentation's alone:
 /// nothing read back drives a pass. A released mesh goes back to its level's free list.
+/// Frames a creature's new level fades in over its old one (with the plant's dither,
+/// `lod::dithered`), the old mesh drawn beside it until it's gone.
+pub const FADE_FRAMES: u32 = 16
+
+/// A mesh an instance drew at `level` before, fading out (`age` frames of `FADE_FRAMES`).
+pub struct Fading {
+    pub instance: u32,
+    pub level: u32,
+    pub mesh: Mesh,
+    pub age: u32,
+}
+
 pub struct Realizer<F> {
     /// The type's levels and realization settings (its look's `detail`), and how far its skin
     /// weights fall off from each part (its look's).
@@ -1102,6 +1114,8 @@ pub struct Realizer<F> {
     /// The meshes placed since the last `frame` (or `realize_all`): each instance and level, so a
     /// program cooks what it draws from them (`character::colours`).
     placed: Vec<(u32, u32)>,
+    /// The meshes an instance drew at its level before, kept while the new one fades in.
+    fades: Vec<Fading>,
     /// How many readbacks it made, how many realizations, and how many holes and overflows the
     /// readbacks found.
     pub readbacks: u32,
@@ -1129,6 +1143,7 @@ impl<F> Realizer<F> {
             slicing: None,
             slow: Scratch::new(1),
             placed: Vec::new(),
+            fades: Vec::new(),
         }
     }
 
@@ -1255,6 +1270,7 @@ impl<C, F: Parts<C>> Realizer<F> {
     /// target level, from how large its cells look; then the queue, realized within the budget.
     pub fn frame(mut self, eye: Eye, placed: [Placement]) {
         self.placed.clear()
+        self.age_fades()
         self.answer()
         let n = min(self.held.len(), placed.len())
         let top = self.detail.levels.len() - 1
@@ -1552,8 +1568,10 @@ impl<C, F: Parts<C>> Realizer<F> {
             self.release(level, take old)
         }
         if before != NO_LEVEL && before != level {
+            // The old level's mesh is drawn beside the new one while it fades out.
+            self.end_fade(i)
             if let Some(old) = replace(mut self.held[i].meshes[before], None) {
-                self.release(before, take old)
+                self.fades.push(Fading { instance: i, level: before, mesh: old, age: 0 })
             }
         }
         self.held[i].drawn = level
@@ -1564,6 +1582,51 @@ impl<C, F: Parts<C>> Realizer<F> {
     /// The meshes placed since the last `frame` (or `realize_all`): each its instance and level.
     pub fn placed(self) -> [(u32, u32)] {
         self.placed
+    }
+
+    /// The meshes fading out (each its instance's level before), each drawn where its share of
+    /// a pixel's dither is (`fade_share`: the part of the dither the new mesh hasn't taken).
+    pub fn fading(self) -> [Fading] {
+        self.fades
+    }
+
+    /// How far instance `i`'s mesh has faded in over its old level's (`FADE_FRAMES`): 1 when
+    /// it isn't fading. The new mesh draws where a pixel's dither is under it, the old where it
+    /// isn't (`lod::dithered`).
+    pub fn fade_share(self, i: u32) -> f32 {
+        for f in self.fades {
+            if f.instance == i {
+                return f32(f.age + 1) / f32(FADE_FRAMES + 1)
+            }
+        }
+        1.0
+    }
+
+    /// Ends instance `i`'s fade, if it's fading: its old mesh is released.
+    fn end_fade(mut self, i: u32) {
+        var k = 0
+        while k < self.fades.len() {
+            if self.fades[k].instance == i {
+                let f = self.fades.remove(k)
+                self.release(f.level, take f.mesh)
+            } else {
+                k += 1
+            }
+        }
+    }
+
+    /// Each fade a frame on; those done release their old mesh.
+    fn age_fades(mut self) {
+        var k = 0
+        while k < self.fades.len() {
+            self.fades[k].age += 1
+            if self.fades[k].age >= FADE_FRAMES {
+                let f = self.fades.remove(k)
+                self.release(f.level, take f.mesh)
+            } else {
+                k += 1
+            }
+        }
     }
 
     fn release(mut self, level: u32, mesh: take Mesh) {

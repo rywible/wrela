@@ -10,7 +10,8 @@ use engine::character::Look
 use engine::plain::{Coloured, Lights, View}
 use grazer::Tissue
 use std::field::value_noise
-use std::gpu::{ComparisonSampler, DepthTexture}
+use engine::lod::dithered
+use std::gpu::{ComparisonSampler, DepthTexture, FragCoord, discard}
 use terrain::Ground
 
 /// Spike 01's lights.
@@ -82,11 +83,17 @@ impl Look<Tissue> for GrazerLook {
 @fragment
 pub fn grazer_shade(
     c: Coloured,
+    pixel: FragCoord,
     view: View,
     lights: Lights,
     shadow: DepthTexture,
     shadow_sampler: ComparisonSampler,
+    keep: vec2,
 ) -> vec4 {
+    // A level fading in or out draws its share of the dither (`Realizer::fade_share`).
+    if !dithered(pixel.position.xy, keep.x, keep.y) {
+        discard()
+    }
     let n = normalize(c.normal)
     let lit = lights.shadow(view, c.world, n, shadow, shadow_sampler)
     vec4(transfer(lights.light(c.albedo, c.rough, n, c.world, view, lit)), 1.0)

@@ -333,8 +333,12 @@ pub fn frame(game: mut Game, time: f32, width: u32, height: u32) {
             vertices: GRID * GRID * 6,
         )
     }
+    // Each grazer's mesh, its share of the dither if a level fades in; then the meshes fading
+    // out, the rest of it.
+    var posed: Vec<u32> = Vec::filled(HERD, n)
     for k in 0..n {
         let i = instances[k].skeleton
+        posed[i] = k
         borrow mesh = game.realizer.mesh(i)
         let Some(c) = game.colours[i][game.realizer.drawn(i)] else { continue }
         draw(
@@ -351,9 +355,37 @@ pub fn frame(game: mut Game, time: f32, width: u32, height: u32) {
                 lights: LIGHTS,
                 shadow: game.shadow,
                 shadow_sampler: game.shadow_sampler,
+                keep: vec2(0.0, game.realizer.fade_share(i)),
             ),
             indices: mesh.quads.items(),
             indirect: mesh.draw.items(),
+            cull: Cull::Back,
+        )
+    }
+    for f in game.realizer.fading() {
+        let k = posed[f.instance]
+        if k == n {
+            continue
+        }
+        let Some(c) = game.colours[f.instance][f.level] else { continue }
+        draw(
+            pass,
+            skin_coloured.bind(
+                verts: f.mesh.verts.items(),
+                colours: c.items(),
+                palettes: palettes,
+                first: k * MAX_BONES,
+                view: v,
+            ),
+            grazer_shade.bind(
+                view: v,
+                lights: LIGHTS,
+                shadow: game.shadow,
+                shadow_sampler: game.shadow_sampler,
+                keep: vec2(game.realizer.fade_share(f.instance), 2.0),
+            ),
+            indices: f.mesh.quads.items(),
+            indirect: f.mesh.draw.items(),
             cull: Cull::Back,
         )
     }
