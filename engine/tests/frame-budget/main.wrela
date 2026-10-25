@@ -19,7 +19,7 @@ pub fn init() -> State {
     let air = air_of(SUN)
     let small = Budget { playing_us: 1000.0, loading_us: 1000.0 }
     let frame: Frame<Gathered> = Frame::new(
-        Quality { budget: small },
+        Quality { budget: small, measured: false },
         sunlight(air),
         air,
         Clipmap::new(levels: 6, finest: 0.5),

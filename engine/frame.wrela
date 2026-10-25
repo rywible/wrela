@@ -445,11 +445,12 @@ pub struct Quality: Copy {
     /// How much of this frame a pixel takes where a sample falls on it (temporal AA).
     pub blend: f32 = 0.12,
     pub budget: Budget = Budget {},
-    /// Whether the planner learns this device's costs: after a frame that ran one step of a
-    /// kind it plans, the frame asks for that step's GPU time (`std::gpu::timed`), and the
-    /// planner plans with it from then on (`Planner::measure`). Off, it plans with the code's
-    /// estimates and records, and a frame's order is the same on every run.
-    pub measured: bool = false,
+    /// Whether the planner learns this device's costs (the default): after a frame that ran one
+    /// step of a kind it plans, the frame asks for that step's GPU time (`std::gpu::timed`), and
+    /// the planner plans with it from then on (`Planner::measure`, on its ladder of steps). Off,
+    /// it plans with the code's estimates and records, and a frame's order is the same on every
+    /// run, as the tests of order need.
+    pub measured: bool = true,
 }
 
 /// The kinds of work a measuring frame times (`Quality::measured`), each by the label its pass or

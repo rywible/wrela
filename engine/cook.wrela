@@ -62,6 +62,31 @@ pub const WORKS: u32 = 13
 pub struct Cost: Copy {
     pub us: f32,
     pub evidence: Evidence,
+    /// A measured cost's running average, before `ladder` rounds it up to `us` (0 for an
+    /// estimate).
+    pub raw: f32 = 0.0,
+}
+
+/// The geometric ladder measured costs are planned on: steps a factor `LADDER_STEP` apart from
+/// `LADDER_FROM` µs, to `LADDER_TOP`. A measurement that jitters inside a step plans the same
+/// frames, at every scale, so two runs on one device plan alike most of the time; it isn't a
+/// guarantee (a measurement can cross a step), and no test asserts that two measuring runs plan
+/// the same frames.
+pub const LADDER_FROM: f32 = 25.0
+pub const LADDER_STEP: f32 = 1.25
+pub const LADDER_TOP: f32 = 8000.0
+
+/// `us` rounded up to the ladder's next step: 25, 31.25, 39.06, ..., capped at 8000; past the
+/// top, `us` itself. The steps are products of 1.25, so every host computes the same ones.
+pub fn ladder(us: f32) -> f32 {
+    if us > LADDER_TOP {
+        return us
+    }
+    var step = LADDER_FROM
+    while step < us {
+        step = step * LADDER_STEP
+    }
+    min(step, LADDER_TOP)
 }
 
 pub enum Evidence: Copy + Eq {
@@ -116,7 +141,11 @@ pub struct Planner {
     /// levels and the noted cooks too), whether an optional step has run, the ground levels
     /// cooked, and whether a strip was drawn.
     ran: [u32; WORKS],
-    spent: f32,
+    /// What the frame's mandatory work (its ground levels, its noted cooks) and its optional
+    /// steps cost, apart, and the frame's first optional step's cost.
+    mandatory: f32,
+    spent_optional: f32,
+    first_optional: f32,
     optional: bool,
     levels: u32,
     strip: bool,
@@ -133,7 +162,9 @@ impl Planner {
             budget,
             costs: costs(),
             ran: [0; WORKS],
-            spent: 0.0,
+            mandatory: 0.0,
+            spent_optional: 0.0,
+            first_optional: 0.0,
             optional: false,
             levels: 0,
             strip: false,
@@ -149,7 +180,9 @@ impl Planner {
     pub fn begin(mut self, levels: u32, playable: bool, near_ready: bool, filling: bool) {
         self.ran = [0; WORKS]
         self.ran[Work::TerrainLevel.index()] = levels
-        self.spent = f32(levels) * self.costs[Work::TerrainLevel.index()].us
+        self.mandatory = f32(levels) * self.costs[Work::TerrainLevel.index()].us
+        self.spent_optional = 0.0
+        self.first_optional = 0.0
         self.optional = false
         self.levels = levels
         self.strip = false
@@ -172,11 +205,14 @@ impl Planner {
         if !self.filling {
             let limit = if self.playable { self.budget.playing_us } else { self.budget.loading_us }
             let cost = self.costs[w.index()].us
-            if self.optional && self.spent + cost > limit {
+            if self.optional && self.spent() + cost > limit {
                 self.cut += 1
                 return false
             }
-            self.spent += cost
+            if !self.optional {
+                self.first_optional = cost
+            }
+            self.spent_optional += cost
         }
         self.optional = true
         self.ran[w.index()] += 1
@@ -190,7 +226,7 @@ impl Planner {
     /// tables, the clouds' noise and weather), counted.
     pub fn note(mut self, w: Work) {
         self.ran[w.index()] += 1
-        self.spent += self.costs[w.index()].us
+        self.mandatory += self.costs[w.index()].us
     }
 
     /// Whether the moving-cache rules let a step of `w` run now (the budget aside): nothing is
@@ -219,7 +255,27 @@ impl Planner {
     /// The estimated microseconds this frame's work cost: the ground's levels, the noted cooks
     /// and the optional steps.
     pub fn spent(self) -> f32 {
-        self.spent
+        self.mandatory + self.spent_optional
+    }
+
+    /// What this frame's mandatory work cost (its ground levels and noted cooks), which runs
+    /// whatever the budget.
+    pub fn spent_mandatory(self) -> f32 {
+        self.mandatory
+    }
+
+    /// What this frame's optional steps cost, and the first one's (which runs however large).
+    pub fn spent_optional(self) -> f32 {
+        self.spent_optional
+    }
+
+    pub fn first_optional(self) -> f32 {
+        self.first_optional
+    }
+
+    /// The budget this frame plans to: the playable one, or the loading one.
+    pub fn limit(self) -> f32 {
+        if self.playable { self.budget.playing_us } else { self.budget.loading_us }
     }
 
     /// Whether this frame drew a strip of a static cascade.
@@ -233,12 +289,14 @@ impl Planner {
     }
 
     /// A step of `w` measured on this device at `us` microseconds of GPU time: the first
-    /// measurement replaces the estimate, and later ones move the cost a quarter of the way to
-    /// each, so one slow frame doesn't starve the work.
+    /// measurement replaces the estimate (or the code's record), and later ones move the running
+    /// average a quarter of the way to each, so one slow frame doesn't starve the work. The
+    /// planner plans with the average rounded up the ladder (`ladder`).
     pub fn measure(mut self, w: Work, us: f32) {
         let c = self.costs[w.index()]
-        let measured = if c.evidence == Evidence::Measured { c.us + (us - c.us) * 0.25 } else { us }
-        self.costs[w.index()] = Cost { us: measured, evidence: Evidence::Measured }
+        let before = if c.raw > 0.0 { c.raw } else { c.us }
+        let raw = if c.evidence == Evidence::Measured { before + (us - before) * 0.25 } else { us }
+        self.costs[w.index()] = Cost { us: ladder(raw), evidence: Evidence::Measured, raw }
     }
 }
 
@@ -317,22 +375,77 @@ fn a_capture_fills_its_caches() {
 /// of the way: what the budget then admits follows the device.
 @test
 fn a_measured_cost_replaces_the_estimate_and_follows_the_device() {
-    var p = Planner::new(Budget { playing_us: 2500.0 })
+    var p = Planner::new(Budget { playing_us: 2600.0 })
     assert(p.cost(Work::NearStrip).evidence == Evidence::Measured, "the near strips' record")
     assert(p.cost(Work::ProbeStrip).evidence == Evidence::Estimated)
     p.measure(Work::ProbeStrip, 400.0)
     let c = p.cost(Work::ProbeStrip)
-    assert(c.evidence == Evidence::Measured && c.us == 400.0, f"{c.us}")
+    assert(c.evidence == Evidence::Measured && c.raw == 400.0 && c.us == ladder(400.0), f"{c.us}")
     p.measure(Work::ProbeStrip, 800.0)
-    assert(p.cost(Work::ProbeStrip).us == 500.0, f"{p.cost(Work::ProbeStrip).us}")
-    // The near strips' record (1400) moves a quarter of the way to a measured 2000: 1550. A dome
-    // phase (800) fits a budget of 2500 beside it, and a tile (300) more doesn't.
+    assert(p.cost(Work::ProbeStrip).raw == 500.0, f"{p.cost(Work::ProbeStrip).raw}")
+    // The near strips' record (1400) moves a quarter of the way to a measured 2000: 1550, planned
+    // as the ladder's 1734.7. A dome phase (800) fits a budget of 2600 beside it, and a tile (300)
+    // more doesn't.
     p.measure(Work::NearStrip, 2000.0)
-    assert(p.cost(Work::NearStrip).us == 1550.0, f"{p.cost(Work::NearStrip).us}")
+    assert(p.cost(Work::NearStrip).raw == 1550.0, f"{p.cost(Work::NearStrip).raw}")
     p.begin(levels: 0, playable: true, near_ready: false, filling: false)
     assert(p.may(Work::NearStrip), "the first step runs")
     assert(p.may(Work::SkyPhase), "800 more fits")
     assert(!p.may(Work::Tile), "300 more doesn't")
+}
+
+/// The ladder's steps: 25 µs, then a factor of 1.25 each, to 8000; a cost past the top is
+/// itself.
+@test
+fn measured_costs_are_planned_on_a_geometric_ladder() {
+    assert(ladder(0.0) == 25.0 && ladder(25.0) == 25.0)
+    assert(ladder(26.0) == 31.25, f"{ladder(26.0)}")
+    assert(ladder(31.25) == 31.25)
+    assert(ladder(7999.0) == 8000.0 && ladder(9000.0) == 9000.0)
+    var step = 25.0
+    while step < 8000.0 {
+        let next = step * 1.25
+        assert(ladder(step + 0.01) == min(next, 8000.0), f"{step}")
+        step = next
+    }
+}
+
+/// Measurements injected as a device would give them: a cost just under a step's edge and one
+/// just over plan one step apart, which changes the plan exactly where the arithmetic says; a
+/// cost ten times its estimate still runs as a frame's first optional step; the budget holds for
+/// the rest, and the mandatory work runs whatever it costs.
+@test
+fn injected_measurements_plan_by_the_ladder_and_keep_the_budgets_promises() {
+    // 454.7 is a step (25 × 1.25^13); 454 plans as it, and 455 as the next (568.4).
+    let edge = ladder(454.0)
+    assert(ladder(455.0) == edge * 1.25, f"{ladder(455.0)}")
+    // A budget of 1000: two tiles at 454 (908) fit, at 455 (1136.8) the second doesn't.
+    var under = Planner::new(Budget { playing_us: 1000.0 })
+    under.measure(Work::Tile, 454.0)
+    under.begin(levels: 0, playable: true, near_ready: true, filling: false)
+    assert(under.may(Work::Tile) && under.may(Work::Tile), "two steps under the edge")
+    var over = Planner::new(Budget { playing_us: 1000.0 })
+    over.measure(Work::Tile, 455.0)
+    over.begin(levels: 0, playable: true, near_ready: true, filling: false)
+    assert(over.may(Work::Tile) && !over.may(Work::Tile), "one step over the edge")
+    // Ten times the estimate (a kind's 4000 measured at 40,000): it runs as the frame's first
+    // optional step, and nothing after it does.
+    var slow = Planner::new(Budget { playing_us: 8000.0 })
+    slow.measure(Work::Kind, 40000.0)
+    slow.begin(levels: 0, playable: true, near_ready: true, filling: false)
+    assert(slow.may(Work::Kind), "the first optional step waited")
+    assert(slow.first_optional() == 40000.0)
+    assert(!slow.may(Work::Tile), "a step past the budget ran")
+    // Mandatory work past the budget: three levels at a measured 3000 each, and a noted cook.
+    var busy = Planner::new(Budget { playing_us: 8000.0 })
+    busy.measure(Work::TerrainLevel, 3000.0)
+    busy.begin(levels: 3, playable: true, near_ready: false, filling: false)
+    busy.note(Work::AirTables)
+    assert(busy.ran(Work::TerrainLevel) == 3 && busy.ran(Work::AirTables) == 1)
+    assert(busy.spent_mandatory() == 3.0 * ladder(3000.0) + 20000.0, f"{busy.spent_mandatory()}")
+    assert(busy.may(Work::Tile), "a frame's first optional step waited")
+    assert(!busy.may(Work::Tile), "an optional step past the budget ran")
+    assert(busy.spent_optional() == busy.first_optional())
 }
 
 /// The ground's levels and the noted cooks count against the budget: optional work beside them

@@ -32,6 +32,11 @@ pub struct Record: Copy {
     pub phase: u32,
     pub probes: u32,
     pub spent: f32,
+    /// The plan's mandatory and optional costs apart, its first optional step's, and its budget.
+    pub mandatory: f32,
+    pub optional: f32,
+    pub first_optional: f32,
+    pub limit: f32,
     pub playable: bool,
     pub near_ready: bool,
     pub arriving: bool,
@@ -63,8 +68,10 @@ pub struct State {
 
 pub fn init() -> State {
     let air = air_of(SUN)
+    // Not measuring until the script's last step: until then a frame's order is the same on
+    // every run and in both hosts, which the tests of order read.
     let frame: Frame<Gathered> = Frame::new(
-        Quality {},
+        Quality { measured: false },
         sunlight(air),
         air,
         Clipmap::new(levels: 6, finest: 0.5),
@@ -145,6 +152,10 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             phase: p.ran(Work::SkyPhase),
             probes: p.ran(Work::ProbeStrip),
             spent: p.spent(),
+            mandatory: p.spent_mandatory(),
+            optional: p.spent_optional(),
+            first_optional: p.first_optional(),
+            limit: p.limit(),
             playable: s.frame.ready.playable_at.is_some(),
             near_ready: s.frame.near.ready,
             arriving: s.frame.ready.arriving,
@@ -371,6 +382,32 @@ fn the_planner_measures_this_devices_costs(s: State) {
         assert(c.evidence == Evidence::Measured && c.us > 0.0, f"a step wasn't measured: {c.us} us")
         assert(c.us != fresh.cost(w).us, f"a step kept the code's cost: {c.us} us")
     }
+}
+
+/// The live path, measuring (`Quality::measured`, the default): over 300 measuring frames the
+/// order isn't asserted, only the budget's promises. In every frame the optional steps keep to
+/// what the budget leaves past the mandatory work, but for the frame's first optional step,
+/// which always runs; the mandatory work is never refused; and every kind the frame's changes
+/// made eligible ran.
+@test(frames: 1300, gpu: true)
+fn a_measuring_frame_keeps_the_budgets_promises(s: State) {
+    reached(s, Step::Done)
+    let (from, to) = window(s, 6)
+    assert(to - from >= 300, f"only {to - from} measuring frames")
+    var near = 0
+    var far = 0
+    var probes = 0
+    for k in from..to {
+        let r = s.records[k]
+        if r.optional > r.first_optional {
+            assert(r.mandatory + r.optional <= r.limit + 0.01, f"frame {r.ran} spent {r.mandatory} + {r.optional} of {r.limit}")
+        }
+        assert(r.spent == r.mandatory + r.optional, f"frame {r.ran}'s costs don't add up")
+        near += r.near
+        far += r.far
+        probes += r.probes
+    }
+    assert(near > 0 && far > 0 && probes > 0, f"a kind made eligible didn't run: {near} {far} {probes}")
 }
 
 /// The settled bare scene after its jump and its weather is its golden on this machine's GPU,
