@@ -1,0 +1,109 @@
+// The frame's GPU memory budget (docs/plan-world-class.md §B6): what the program holds on the GPU
+// (`std::gpu::memory()`, std's count of every buffer and texture), against a total, and each
+// subsystem's share as its own count says (the realizer's meshes, the wood's impostors and lists,
+// and whatever else a game counts), against its own budget. What's over says which to trim: the
+// realizer evicts sooner (`Realizer::evict_after`), the wood's lists give back room
+// (`wood::SHRINK_AFTER`).
+
+use std::gpu::Memory
+
+pub const MIB: u64 = 1048576
+
+/// The budget a browser tab's GPU memory allows (proposed: a tab's 1.5 GB, less what the WASM
+/// heap and the page take).
+pub const TOTAL: u64 = 1024 * MIB
+
+/// A subsystem's share: its name, the GPU bytes its own count says it holds, and its budget.
+pub struct Share: Clone {
+    pub name: Text,
+    pub bytes: u64,
+    pub budget: u64,
+}
+
+/// The budgets proposed for the subsystems that hold the most, by name: the realizer's meshes,
+/// the wood's impostors and its choosings' lists.
+pub const REALIZER: u64 = 192 * MIB
+pub const IMPOSTORS: u64 = 128 * MIB
+pub const WOOD_LISTS: u64 = 64 * MIB
+
+/// What the program holds (`gpu`) against `total`, and its subsystems' `shares`.
+pub struct Usage: Clone {
+    pub gpu: Memory,
+    pub total: u64,
+    pub shares: Vec<Share>,
+}
+
+impl Usage {
+    /// The bytes held: the buffers' and the textures'.
+    pub fn held(self) -> u64 {
+        self.gpu.buffers + self.gpu.textures
+    }
+
+    /// The most held at once.
+    pub fn peak(self) -> u64 {
+        self.gpu.peak_buffers + self.gpu.peak_textures
+    }
+
+    /// What's over its budget: "total" if what's held is over `total`, then each share's name
+    /// that's over its own.
+    pub fn over(self) -> Vec<Text> {
+        var out: Vec<Text> = Vec::new()
+        if self.held() > self.total {
+            out.push("total")
+        }
+        for s in self.shares {
+            if s.bytes > s.budget {
+                out.push(s.name)
+            }
+        }
+        out
+    }
+
+    /// Whether `name` is over its budget (`over`).
+    pub fn is_over(self, name: str) -> bool {
+        for n in self.over() {
+            if n == name {
+                return true
+            }
+        }
+        false
+    }
+}
+
+/// How long an unseen creature keeps its finer levels (frames, `Realizer::evict_after`): the
+/// default while the realizer's within its budget and the total within its, two seconds when
+/// either is over.
+pub fn evict_after(u: Usage, default: u32) -> u32 {
+    if u.is_over("total") || u.is_over("realizer") { min(default, 120) } else { default }
+}
+
+fn usage(held: u64, realizer: u64) -> Usage {
+    Usage {
+        gpu: Memory { buffers: held, textures: 0, peak_buffers: held, peak_textures: 0 },
+        total: TOTAL,
+        shares: Vec::from(
+            [
+                Share { name: "realizer", bytes: realizer, budget: REALIZER },
+                Share { name: "impostors", bytes: 78 * MIB, budget: IMPOSTORS },
+            ],
+        ),
+    }
+}
+
+/// Within budget nothing's over and an unseen creature keeps its levels ten seconds; over the
+/// total, or the realizer over its own, it drops them after two.
+@test
+fn over_a_budget_evicts_sooner() {
+    let fine = usage(held: 600 * MIB, realizer: 100 * MIB)
+    assert(fine.over().len() == 0, "within budget, something's over")
+    assert(evict_after(fine, default: 600) == 600, "within budget, eviction came sooner")
+    let full = usage(held: 1100 * MIB, realizer: 100 * MIB)
+    assert(full.over().len() == 1 && full.is_over("total"), "over the total isn't said")
+    assert(evict_after(full, default: 600) == 120, "over the total, eviction waits as long")
+    let meshes = usage(held: 600 * MIB, realizer: 300 * MIB)
+    assert(
+        meshes.is_over("realizer") && !meshes.is_over("total"),
+        "the realizer's share isn't said",
+    )
+    assert(evict_after(meshes, default: 600) == 120, "over the realizer's budget, it waits as long")
+}

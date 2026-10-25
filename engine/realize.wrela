@@ -1020,6 +1020,8 @@ struct Held<F> {
     visible: bool,
     /// Its drawn mesh is to be realized again (a calibration's, or one that overflowed).
     stale: bool,
+    /// Frames since it was last on screen (`Realizer::evict_after`).
+    unseen: u32,
 }
 
 /// A realization whose result is being read back: its instance and level, and whether it
@@ -1086,6 +1088,19 @@ struct Slicing {
 /// largest grid waiting; each realization's counts are read back to catch an overflow, which
 /// grows the room and realizes the instance again. These two readbacks are presentation's alone:
 /// nothing read back drives a pass. A released mesh goes back to its level's free list.
+/// Frames an instance may be off screen before it drops to its coarsest level (10 s at 60 Hz:
+/// `Realizer::evict_after`'s default).
+pub const EVICT_AFTER: u32 = 600
+
+/// Meshes a level keeps for reuse once released; more are let go.
+pub const SPARE: u32 = 1
+
+/// Whether an instance off screen `unseen` frames, drawn at `drawn`, drops to its coarsest
+/// level, `after` frames off screen being the most it may stay as it is.
+pub fn evicts(unseen: u32, drawn: u32, after: u32) -> bool {
+    unseen >= after && drawn != NO_LEVEL && drawn > 0
+}
+
 /// Frames a creature's new level fades in over its old one (with the plant's dither,
 /// `lod::dithered`), the old mesh drawn beside it until it's gone.
 pub const FADE_FRAMES: u32 = 16
@@ -1102,6 +1117,9 @@ pub struct Realizer<F> {
     /// The type's levels and realization settings (its look's `detail`), and how far its skin
     /// weights fall off from each part (its look's).
     pub detail: Detail,
+    /// Frames an instance may be off screen before it drops to its coarsest level and lets its
+    /// finer mesh go (`engine::memory`: 10 s at 60 Hz; fewer while the budget is over).
+    pub evict_after: u32,
     falloff: f32,
     held: Vec<Held<F>>,
     rooms: Vec<LevelRoom>,
@@ -1130,6 +1148,7 @@ impl<F> Realizer<F> {
         let detail = look.detail
         Realizer {
             detail,
+            evict_after: EVICT_AFTER,
             falloff: look.deform.weights.falloff,
             held: Vec::new(),
             rooms: Vec::filled(detail.levels.len(), LevelRoom::Unknown),
@@ -1161,6 +1180,7 @@ impl<F> Realizer<F> {
                 priority: 0.0,
                 visible: true,
                 stale: false,
+                unseen: 0,
             },
         )
         self.held.len() - 1
@@ -1283,6 +1303,7 @@ impl<C, F: Parts<C>> Realizer<F> {
         for i in 0..n {
             let (centre, radius) = self.sphere(i, placed[i])
             self.held[i].visible = on_screen(centre, radius, eye.view_proj, scale)
+            self.held[i].unseen = if self.held[i].visible { 0 } else { self.held[i].unseen + 1 }
             // The size of a pixel at its point nearest the eye.
             let near = max(length(centre - eye.at) - radius, 0.1)
             let pixel = 2.0 * near * half_height / eye.height
@@ -1301,7 +1322,9 @@ impl<C, F: Parts<C>> Realizer<F> {
                     want = drawn
                 }
             }
-            self.held[i].target = want
+            self.held[i].target = if evicts(self.held[i].unseen, drawn, self.evict_after) {
+                0
+            } else { want }
             self.held[i].priority = self.projected(top, pixel)
         }
         // An instance this frame doesn't place isn't in it.
@@ -1364,6 +1387,11 @@ impl<C, F: Parts<C>> Realizer<F> {
         }
         if h.stale && h.drawn != NO_LEVEL {
             return h.drawn
+        }
+        // Off screen long enough, its coarsest (`evicts`): realized though unseen, so its finer
+        // mesh can go.
+        if !h.visible && !force && h.target == 0 && evicts(h.unseen, h.drawn, self.evict_after) {
+            return 0
         }
         if (!h.visible && !force) || h.target == NO_LEVEL {
             return NO_LEVEL
@@ -1631,10 +1659,32 @@ impl<C, F: Parts<C>> Realizer<F> {
 
     fn release(mut self, level: u32, mesh: take Mesh) {
         if let Some(room) = self.rooms[level].room() {
-            if mesh.room() == room {
+            // A spare or so kept for reuse; the rest let go (`SPARE`).
+            if mesh.room() == room && self.free[level].len() < SPARE {
                 self.free[level].push(take mesh)
             }
         }
+    }
+
+    /// The GPU bytes its meshes take: those drawn, those fading out, and the spares.
+    pub fn bytes(self) -> u64 {
+        var n: u64 = 0
+        for h in self.held {
+            for m in h.meshes {
+                if let Some(mesh) = m {
+                    n += mesh.bytes()
+                }
+            }
+        }
+        for f in self.fades {
+            n += f.mesh.bytes()
+        }
+        for level in self.free {
+            for m in level {
+                n += m.bytes()
+            }
+        }
+        n
     }
 
     /// The readbacks that have arrived: a calibration sets its level's room; an overflow grows
@@ -1724,4 +1774,15 @@ pub fn measured_error<C, F: Parts<C>>(mesh: Mesh, field: F) -> Pending<u32> {
         groups: (max(room.vertices, room.quads) + 63) / 64,
     )
     read(out.items())
+}
+
+/// An instance off screen ten seconds drops to its coarsest level; one on screen, or at its
+/// coarsest already, or without a mesh, doesn't.
+@test
+fn an_unseen_instance_drops_to_its_coarsest_level() {
+    assert(evicts(unseen: EVICT_AFTER, drawn: 2, after: EVICT_AFTER), "an unseen fine mesh stays")
+    assert(!evicts(unseen: EVICT_AFTER - 1, drawn: 2, after: EVICT_AFTER), "it dropped early")
+    assert(!evicts(unseen: EVICT_AFTER, drawn: 0, after: EVICT_AFTER), "the coarsest dropped")
+    assert(!evicts(unseen: EVICT_AFTER, drawn: NO_LEVEL, after: EVICT_AFTER), "no mesh dropped")
+    assert(evicts(unseen: 120, drawn: 1, after: 120), "a tighter budget's wait didn't hold")
 }

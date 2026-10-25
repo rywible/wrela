@@ -16,7 +16,8 @@
 
 use engine::present::Snapshots
 use engine::look::{ByPart, CreatureLook, Detail, Shadow, Skin}
-use engine::realize::{Eye, NO_LEVEL, Placement, Realizer}
+use engine::memory::{REALIZER, Share, Usage, evict_after}
+use engine::realize::{EVICT_AFTER, Eye, NO_LEVEL, Placement, Realizer}
 use engine::character::{Instance, RestSkeleton, colours, pose_instances}
 use engine::creature::MAX_BONES
 use engine::plain::{depth_only, skin_coloured, skin_shadow, view}
@@ -235,6 +236,17 @@ pub fn frame(game: mut Game, time: f32, width: u32, height: u32) {
         for g in grazers {
             placed.push(Placement { at: g.pos, heading: g.heading })
         }
+        // The budget (`engine::memory`): over it, an unseen grazer drops its finer levels sooner.
+        let usage = Usage {
+            gpu: std::gpu::memory(),
+            total: engine::memory::TOTAL,
+            shares: Vec::from(
+                [
+                    Share { name: "realizer", bytes: game.realizer.bytes(), budget: REALIZER },
+                ],
+            ),
+        }
+        game.realizer.evict_after = evict_after(usage, default: EVICT_AFTER)
         let before = std::alloc::allocations()
         game.realizer.frame(
             Eye { at: v.eye, view_proj: v.view_proj, height: f32(height), fovy },

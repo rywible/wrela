@@ -23,10 +23,10 @@ use plant::{
 }
 use std::field::Tube
 use std::gpu::{
-    ClipPosition, Compare, Depth, Flat, FragCoord, GlobalId, GpuBuffer, InstanceIndex, R32Uint,
-    Rgba16Float, Rgba8, Sampler, Slots, Texels3d, Texture, Texture3d, TextureArray, VertexIndex,
-    WithDepth, begin_pass_with_depth, buffer, depth_texture, discard, dispatch, draw, texture,
-    texture3d,
+    ClipPosition, Compare, Depth, Filtered, Flat, Format, FragCoord, GlobalId, GpuBuffer,
+    InstanceIndex, R32Uint, Rgba16Float, Rgba8, Sampler, Slots, Texels3d, Texture, Texture3d,
+    TextureArray, VertexIndex, WithDepth, begin_pass_with_depth, buffer, depth_texture, discard,
+    dispatch, draw, texture, texture3d,
 }
 use view::{Camera, LEAVES}
 
@@ -608,14 +608,20 @@ fn view_at(f: FarVertex, k: u32) -> (vec2, u32) {
 
 /// Keep bilinear taps inside their own view. Points outside the cell have no coverage;
 /// clamping those points alone would stretch the cell's last leaf along its whole border.
-fn sample_cell(colour: TextureArray<Rgba8>, layer: u32, s: Sampler, at: vec2, cell: u32) -> vec4 {
+fn sample_cell<C: Format + Filtered>(
+    colour: TextureArray<C>,
+    layer: u32,
+    s: Sampler,
+    at: vec2,
+    cell: u32,
+) -> vec4 {
     let base = vec2(f32(cell % VIEWS), f32(cell / VIEWS)) / f32(VIEWS)
     let end = base + vec2(1.0 / f32(VIEWS))
     if at.x < base.x || at.y < base.y || at.x >= end.x || at.y >= end.y {
         return vec4(0.0)
     }
     let inset = vec2(0.5 / f32(ATLAS))
-    colour.sample_level(s, clamp(at, base + inset, end - inset), layer)
+    C::rgba(colour.sample_level(s, clamp(at, base + inset, end - inset), layer))
 }
 
 /// Which of a far quad's four views this pixel shows this frame: picked by their weights, by a
@@ -650,10 +656,14 @@ struct Seen {
 }
 
 /// Filter decoded normals and depth only where their colour texels have coverage. Empty
-/// texels contain clear values, which must not bend normals or pull the surface backward.
-fn normal_at(
-    colour: TextureArray<Rgba8>,
-    normal: TextureArray<Rgba16Float>,
+/// texels contain clear values, which must not bend normals or pull the surface backward. The
+/// wood's impostors hold a view's normal (octahedral, `* 0.5 + 0.5`) in `normal` and its
+/// toward-and-depth in `depth`, two channels each (`wood::Impostors`: two-channel textures, or
+/// BC5).
+fn normal_at<C: Format, N: Format>(
+    colour: TextureArray<C>,
+    normal: TextureArray<N>,
+    depth: TextureArray<N>,
     layer: u32,
     uv: vec2,
     cell: u32,
@@ -673,10 +683,10 @@ fn normal_at(
                 t.y
             })
             let at = clamp(vec2u(i + vec2(f32(dx), f32(dy))), lo, hi)
-            let covered = w * colour.load(x: at.x, y: at.y, layer: layer).a
-            let nd = normal.load(x: at.x, y: at.y, layer: layer)
-            n += oct_decode(nd.xy) * covered
-            zw += nd.zw * covered
+            let covered = w * C::rgba(colour.load(x: at.x, y: at.y, layer: layer)).a
+            let nxy = N::rgba(normal.load(x: at.x, y: at.y, layer: layer)).xy * 2.0 - vec2(1.0)
+            n += oct_decode(nxy) * covered
+            zw += N::rgba(depth.load(x: at.x, y: at.y, layer: layer)).xy * covered
             coverage += covered
         }
     }
@@ -686,17 +696,18 @@ fn normal_at(
     (n / coverage, zw / coverage)
 }
 
-fn seen(
+fn seen<C: Format + Filtered, N: Format>(
     f: FarVertex,
     k: u32,
-    colour: TextureArray<Rgba8>,
-    normal: TextureArray<Rgba16Float>,
+    colour: TextureArray<C>,
+    normal: TextureArray<N>,
+    depth: TextureArray<N>,
     layer: u32,
     s: Sampler,
 ) -> Seen {
     let (at, cell) = view_at(f, k)
     let c = sample_cell(colour, layer, s, at, cell)
-    let (n, zw) = normal_at(colour, normal, layer, at, cell)
+    let (n, zw) = normal_at(colour, normal, depth, layer, at, cell)
     // Its albedo where its leaves cover it (the texel's colour is filtered with the empty texels
     // round it).
     let own = c.rgb / max(c.a, 1.0e-3)
@@ -736,13 +747,14 @@ pub const SHADED = Depth { compare: Compare::GreaterEqual, write: false }
 /// the depth of the leaf it shows, its id the texel: the depth prepass's. (The four views'
 /// coverage and place, without their parallax: the shading pass reads which instance won.)
 @fragment
-pub fn far_cut(
+pub fn far_cut<C: Format + Filtered, N: Format>(
     f: FarVertex,
     pixel: FragCoord,
     cam: Camera,
     kinds: [KindDesc],
-    colour: TextureArray<Rgba8>,
-    normal: TextureArray<Rgba16Float>,
+    colour: TextureArray<C>,
+    normal: TextureArray<N>,
+    depth: TextureArray<N>,
     s: Sampler,
     cell: f32,
 ) -> WithDepth<u32> {
@@ -751,7 +763,7 @@ pub fn far_cut(
     let size = cell_size(f.uv, cell)
     // Most of the quad is empty: left before its leaf's place is read.
     let (at, view) = cut_view(f, pixel.position.xy, colour, kd.layer, s, size)
-    let toward = normal_at(colour, normal, kd.layer, at, view).1.x * 2.0 - 1.0
+    let toward = normal_at(colour, normal, depth, kd.layer, at, view).1.x * 2.0 - 1.0
     let at = leaf_place(f, cam, kd.bake, toward)
     WithDepth { color: f.id.value, depth: depth_of(cam, at) }
 }
@@ -784,11 +796,11 @@ fn volume_normal(
 /// The shading pass finds its leaf as `far_cut`'s does; only the far crowns' order among
 /// themselves, within a crown's depth, is the plane's.
 @fragment
-pub fn far_cut_flat(
+pub fn far_cut_flat<C: Format + Filtered>(
     f: FarVertex,
     pixel: FragCoord,
     kinds: [KindDesc],
-    colour: TextureArray<Rgba8>,
+    colour: TextureArray<C>,
     s: Sampler,
     cell: f32,
 ) -> u32 {
@@ -800,10 +812,10 @@ pub fn far_cut_flat(
 /// The view a far quad's pixel shows this frame (`view_of`) and the pixel's place in it, the
 /// pixel cut to its share, where it's between two ways (`lod::keeps_packed`), and to that view's
 /// coverage (`cut_dithered`): `far_cut`'s and `far_cut_flat`'s.
-fn cut_view(
+fn cut_view<C: Format + Filtered>(
     f: FarVertex,
     pixel: vec2,
-    colour: TextureArray<Rgba8>,
+    colour: TextureArray<C>,
     layer: u32,
     s: Sampler,
     size: f32,
@@ -835,14 +847,15 @@ fn world_normal(f: FarVertex, n: vec3) -> vec3 {
 /// (`seen`), lit as a leaf is, where the leaf is. The sky light is for the crown's normal there,
 /// as a card's is: its kind's volume holds it (`grid`).
 @fragment
-pub fn far_shade(
+pub fn far_shade<C: Format + Filtered, N: Format>(
     f: FarVertex,
     pixel: FragCoord,
     lt: Lighting,
     ids: Texture<R32Uint>,
     kinds: [KindDesc],
-    colour: TextureArray<Rgba8>,
-    normal: TextureArray<Rgba16Float>,
+    colour: TextureArray<C>,
+    normal: TextureArray<N>,
+    depth: TextureArray<N>,
     grid: Texture3d<Rgba16Float>,
 ) -> vec4 {
     if id_at(ids, pixel) != f.id.value {
@@ -850,7 +863,7 @@ pub fn far_shade(
     }
     let kd = kinds[f.kind.value]
     let b = kd.bake
-    let leaf = seen(f, view_of(f, pixel.position.xy), colour, normal, kd.layer, lt.s)
+    let leaf = seen(f, view_of(f, pixel.position.xy), colour, normal, depth, kd.layer, lt.s)
     let n = world_normal(f, leaf.normal)
     let at = leaf_place(f, lt.cam, b, leaf.toward)
     let out = leaf_light(

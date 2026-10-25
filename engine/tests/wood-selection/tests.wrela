@@ -13,7 +13,8 @@ use std::tool::toolchain
 use std::tool::toolchain::Override
 
 /// The engine's modules wood.wrela names by their own paths.
-const MODULES: [Text; 9] = [
+const MODULES: [Text; 10] = [
+    "compress",
     "cull",
     "impostor",
     "lit",

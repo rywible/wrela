@@ -1924,6 +1924,8 @@ pub fn cook_load(s: mut Stage, c: mut Cooks, eye: vec2, linear: Sampler) {
             slots: SLOTS,
             cards_to: CARDS_TO,
             impostors_to: IMPOSTORS_TO,
+            // Compressed where the device has BC (`engine::wood::Impostors`).
+            compress: std::gpu::features().bc,
         )
         // Retain leaf detail by output size and keep large crowns as geometry farther away.
         // The whole handover stays inside the loaded near forest; cut cells use output pixels.

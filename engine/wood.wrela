@@ -19,6 +19,7 @@
 // The static shadows choose the same way, for the sun's view of a cascade: every instance in
 // its square, drawn whole.
 
+use compress::{encode_bc5, encode_bc7, halves}
 use cull::{Hzb, NO_HZB, occluded}
 use impostor::{KindDesc, far_cut_flat, far_quad, far_shade, of_kind, volume_cut, volume_shade}
 use lit::Lighting
@@ -28,11 +29,13 @@ use plant::{
 }
 use shadow::{CASTER, Shadows}
 use std::field::Tube
+use std::mem::size_of
 use std::gpu::{
-    Atomics, DepthTexture, DrawArgs, DrawIndexedArgs, GlobalId, GpuBuffer, GpuSpan, R32Float,
-    R32Uint, RenderPass, Rgba16Float, Rgba8, Sampler, Slots, Texels3d, Texture, Texture3d,
-    TextureArray, buffer, buffer_of, copy, copy_texture, dispatch, draw, draw_multi, label, texture,
-    texture3d, texture_array, writable_texture, write,
+    Atomics, Bc5, Bc7, DepthTexture, DrawArgs, DrawIndexedArgs, Filtered, Format, GlobalId,
+    GpuBuffer, GpuSpan, R32Float, Rg16Float, copy_buffer_to_texture, R32Uint, RenderPass,
+    Rgba16Float, Rgba8, Sampler, Slots, Texels3d, Texture, Texture3d, TextureArray, buffer,
+    buffer_of, copy, copy_texture, dispatch, draw, draw_multi, label, texture, texture3d,
+    texture_array, writable_texture, write,
 }
 use vegetation::{
     CARD_INDICES, CardDraw, Kind, ListDraws, SHADOW_LEAVES, WAYS, ALL, bark_shade, card, card_draw,
@@ -317,6 +320,19 @@ pub struct Phase {
 }
 
 impl Phase {
+    /// Room for `n` places, made anew (to grow, or to shrink: `Chosen::run`).
+    fn room_for(mut self, n: u32) {
+        self.picked = buffer(n)
+        self.raw_marks = buffer(2 * n)
+        self.instances = buffer(n)
+        self.marks = buffer(n)
+    }
+
+    /// The GPU bytes its places take.
+    fn bytes(self) -> u64 {
+        u64(self.instances.len()) * u64(size_of::<Instance>() + size_of::<vec2u>() + 12)
+    }
+
     fn empty() -> Phase {
         Phase {
             picked: buffer(1),
@@ -332,10 +348,7 @@ impl Phase {
     /// Room for `places` places (`grown` of them, when it grows) and `lists` lists' draws.
     fn fit(mut self, places: u32, grown: u32, lists: u32) {
         if places > self.instances.len() {
-            self.picked = buffer(grown)
-            self.raw_marks = buffer(2 * grown)
-            self.instances = buffer(grown)
-            self.marks = buffer(grown)
+            self.room_for(grown)
         }
         self.cards = buffer(room(lists))
         self.limbs = buffer(room(lists))
@@ -363,6 +376,17 @@ pub struct Chosen {
     places: u32,
     /// Room for what the first phase leaves out (every instance the lists hold).
     held: u32,
+    /// Frames its places have filled less than half their room (`SHRINK_AFTER`).
+    under: u32,
+}
+
+/// Frames a choosing's places may fill less than half their room before it shrinks to half again
+/// what they need (the room a tile more grows into).
+pub const SHRINK_AFTER: u32 = 300
+
+/// Whether a choosing's room of `room` places shrinks for `places` (`under` frames under half).
+pub fn shrinks(places: u32, room: u32, under: u32) -> bool {
+    places * 2 < room && under >= SHRINK_AFTER
 }
 
 /// Phase `ph`'s `places` places gathered from `every` (`gather`), and its `n` lists' draws
@@ -418,6 +442,7 @@ impl Chosen {
             late: Phase::empty(),
             places: 0,
             held: 0,
+            under: 0,
         }
     }
 
@@ -492,6 +517,17 @@ impl Chosen {
         pyramid: Texture<R32Float>,
     ) {
         let n = self.lists.len()
+        // Room left half empty for long (tiles dropped) is given back: half again what's needed.
+        let room = self.early.instances.len()
+        self.under = if self.places * 2 < room { self.under + 1 } else { 0 }
+        if shrinks(self.places, room, self.under) {
+            let grown = self.places + self.places / 2
+            self.early.room_for(grown)
+            if self.held > 0 {
+                self.late.room_for(grown)
+            }
+            self.under = 0
+        }
         let c = Choose { lists: n, late_at: self.late_at(), ..c }
         write(mut self.counts, 0, self.zero_counts)
         write(mut self.counts, self.late_at(), self.zero_counts)
@@ -551,6 +587,11 @@ impl Chosen {
         }
     }
 
+    /// The GPU bytes its places take, both phases'.
+    fn bytes(self) -> u64 {
+        self.early.bytes() + self.late.bytes()
+    }
+
     /// Whether any list of way `way` (of `kinds` kinds) holds a place (the CPU's laid-out
     /// rooms).
     fn way_has(self, way: u32, kinds: u32) -> bool {
@@ -573,10 +614,21 @@ pub struct Pool {
     pub orders: GpuBuffer<u32>,
     pub limbs: GpuBuffer<Tube<4>>,
     pub bounds: GpuBuffer<vec4>,
-    pub colour: TextureArray<Rgba8>,
-    pub normal: TextureArray<Rgba16Float>,
+    pub impostors: Impostors,
     pub grid: Texture3d<Rgba16Float>,
     pub grid_depth: Texture3d<Rgba16Float>,
+}
+
+/// The kinds' impostors, a layer of each array a kind: their colour, their normals (octahedral,
+/// `* 0.5 + 0.5`) and their toward-and-depth, compressed (BC7 and BC5: a byte a texel each, where
+/// the device has BC) or not (8-bit colour and half floats).
+pub enum Impostors {
+    Plain {
+        colour: TextureArray<Rgba8>,
+        normal: TextureArray<Rg16Float>,
+        depth: TextureArray<Rg16Float>,
+    },
+    Compressed { colour: TextureArray<Bc7>, normal: TextureArray<Bc5>, depth: TextureArray<Bc5> },
 }
 
 /// Kind `k`'s volume into slab `slab` of the volumes' atlas (`in_slab`): its voxel there, read
@@ -591,9 +643,68 @@ fn slab_of(from: Texture3d<Rgba16Float>, slab: u32, out: mut Texels3d<Rgba16Floa
     out.store(id, from.load(x: id.x, y: id.y, z: id.z - z0))
 }
 
-/// `kinds` pooled (`Pool`), for `far_kinds` too (each its own kind's, but for its index). Each
-/// kind's own impostor textures and volumes are copied into the pool's and let go.
-fn pool_of(kinds: mut Vec<Kind>, far_kinds: [u32]) -> Pool {
+/// `n` layers of impostors, compressed or not.
+fn impostors_of(n: u32, compress: bool) -> Impostors {
+    let a = impostor::ATLAS
+    if compress {
+        Impostors::Compressed {
+            colour: texture_array::<Bc7>(width: a, height: a, layers: n),
+            normal: texture_array::<Bc5>(width: a, height: a, layers: n),
+            depth: texture_array::<Bc5>(width: a, height: a, layers: n),
+        }
+    } else {
+        Impostors::Plain {
+            colour: texture_array::<Rgba8>(width: a, height: a, layers: n),
+            normal: texture_array::<Rg16Float>(width: a, height: a, layers: n),
+            depth: texture_array::<Rg16Float>(width: a, height: a, layers: n),
+        }
+    }
+}
+
+/// A kind's impostor (`colour`, `normal`: its bake's) into layer `i` of `into`, through
+/// `scratch`: compressed (BC7, and BC5 twice: the normals, then toward-and-depth) or the colour
+/// copied and the normal's channels packed as halves (`compress::halves`).
+fn into_layer(
+    into: mut Impostors,
+    scratch: mut GpuBuffer<u32>,
+    colour: Texture<Rgba8>,
+    normal: Texture<Rgba16Float>,
+    i: u32,
+) {
+    let a = impostor::ATLAS
+    let blocks = vec2u(a / 4)
+    let words = 4 * blocks.x * blocks.y
+    match mut into {
+        Impostors::Compressed { colour: c, normal: nm, depth: d } => {
+            label("impostors compress")
+            dispatch(encode_bc7.bind(colour, blocks, out: mut scratch), over: blocks.x * blocks.y)
+            copy_buffer_to_texture(from: scratch.span(start: 0, count: words), to: c.layer_mut(i))
+            dispatch(
+                encode_bc5.bind(normal, which: 0, blocks: blocks, out: mut scratch),
+                over: blocks.x * blocks.y,
+            )
+            copy_buffer_to_texture(from: scratch.span(start: 0, count: words), to: nm.layer_mut(i))
+            dispatch(
+                encode_bc5.bind(normal, which: 1, blocks: blocks, out: mut scratch),
+                over: blocks.x * blocks.y,
+            )
+            copy_buffer_to_texture(from: scratch.span(start: 0, count: words), to: d.layer_mut(i))
+        },
+        Impostors::Plain { colour: c, normal: nm, depth: d } => {
+            copy_texture(from: colour.level(0), to: c.layer_mut(i))
+            let texels = a * a
+            dispatch(halves.bind(normal, which: 0, size: vec2u(a), out: mut scratch), over: texels)
+            copy_buffer_to_texture(from: scratch.span(start: 0, count: texels), to: nm.layer_mut(i))
+            dispatch(halves.bind(normal, which: 1, size: vec2u(a), out: mut scratch), over: texels)
+            copy_buffer_to_texture(from: scratch.span(start: 0, count: texels), to: d.layer_mut(i))
+        },
+    }
+}
+
+/// `kinds` pooled (`Pool`), for `far_kinds` too (each its own kind's, but for its index), their
+/// impostors compressed if `compress` (`Impostors`). Each kind's own impostor textures and
+/// volumes are copied into the pool's (encoded on the GPU, `compress`) and let go.
+fn pool_of(kinds: mut Vec<Kind>, far_kinds: [u32], compress: bool) -> Pool {
     let n = max(kinds.len(), 1)
     var cards = 0
     var orders = 0
@@ -611,17 +722,14 @@ fn pool_of(kinds: mut Vec<Kind>, far_kinds: [u32]) -> Pool {
         orders: buffer(max(orders, 1)),
         limbs: buffer(max(limbs, 1)),
         bounds: buffer(n * views),
-        colour: texture_array::<Rgba8>(width: impostor::ATLAS, height: impostor::ATLAS, layers: n),
-        normal: texture_array::<Rgba16Float>(
-            width: impostor::ATLAS,
-            height: impostor::ATLAS,
-            layers: n,
-        ),
+        impostors: impostors_of(n, compress),
         grid: texture3d::<Rgba16Float>(side, side, side * n),
         grid_depth: texture3d::<Rgba16Float>(side, side, side * n),
     }
     var descs: Vec<KindDesc> = Vec::new()
     var at = vec3u(0)
+    // The words an encoding writes before they're copied into a layer: a texel's at most.
+    var scratch: GpuBuffer<u32> = buffer(impostor::ATLAS * impostor::ATLAS)
     for i in 0..kinds.len() {
         let c = kinds[i].card_count
         let l = kinds[i].limb_count
@@ -658,8 +766,13 @@ fn pool_of(kinds: mut Vec<Kind>, far_kinds: [u32]) -> Pool {
             from: kinds[i].impostor.bounds.span(start: 0, count: views),
             to: p.bounds.span_mut(start: i * views, count: views),
         )
-        copy_texture(from: kinds[i].impostor.colour.level(0), to: p.colour.layer_mut(i))
-        copy_texture(from: kinds[i].impostor.normal.level(0), to: p.normal.layer_mut(i))
+        into_layer(
+            mut p.impostors,
+            mut scratch,
+            kinds[i].impostor.colour,
+            kinds[i].impostor.normal,
+            i,
+        )
         dispatch(
             slab_of.bind(from: kinds[i].volume.grid, slab: i, out: mut p.grid),
             groups: (side / 4, side / 4, side * (i + 1) / 4),
@@ -742,9 +855,10 @@ impl Wood {
         slots: u32,
         cards_to: f32,
         impostors_to: f32,
+        compress: bool = false,
     ) -> Wood {
         var kinds = take kinds
-        let pool = pool_of(mut kinds, far_kinds)
+        let pool = pool_of(mut kinds, far_kinds, compress)
         var outlines: GpuBuffer<vec2> = buffer(plant::LEAF_PATTERNS * plant::OUTLINE)
         dispatch(
             cook_outlines.bind(atlas, mut outlines),
@@ -803,6 +917,20 @@ impl Wood {
         }
         w.write_lods()
         w
+    }
+
+    /// The GPU bytes its kinds' impostors take (`Impostors`: a layer of each array a kind).
+    pub fn impostor_bytes(self) -> u64 {
+        let texels = u64(impostor::ATLAS) * u64(impostor::ATLAS) * u64(self.kinds.len())
+        match self.pool.impostors {
+            Impostors::Plain { .. } => texels * 12,
+            Impostors::Compressed { .. } => texels * 3,
+        }
+    }
+
+    /// The GPU bytes its choosings' places take (the camera's and the shadows').
+    pub fn list_bytes(self) -> u64 {
+        self.seen.bytes() + self.shadowed.bytes()
     }
 
     /// All the kinds its instances name: its own and its far ones.
@@ -1115,27 +1243,19 @@ impl Wood {
         borrow ph = if late { self.seen.late } else { self.seen.early }
         let n = self.all_kinds()
         if self.seen.way_has(IMPOSTOR, n) {
-            draw_multi(
-                pass,
-                far_quad.bind(
+            match self.pool.impostors {
+                Impostors::Plain { colour: c, .. } => self.impostors_prepass(
+                    pass,
                     cam,
                     wind,
-                    kinds: self.pool.kinds,
-                    instances: ph.instances.span(start: 0, count: self.seen.places),
-                    marks: ph.marks.span(start: 0, count: self.seen.places),
-                    bounds: self.pool.bounds,
-                    front: 0,
+                    s,
+                    ph,
+                    c,
                 ),
-                far_cut_flat.bind(
-                    kinds: self.pool.kinds,
-                    colour: self.pool.colour,
-                    s: s,
-                    cell: self.cell,
-                ),
-                indirect: self.of_way(ph.far, IMPOSTOR),
-                count: n,
-                depth: NEAREST,
-            )
+                Impostors::Compressed { colour: c, .. } => {
+                    self.impostors_prepass(pass, cam, wind, s, ph, c)
+                },
+            }
         }
         if self.seen.way_has(VOLUME, n) {
             draw_multi(
@@ -1162,6 +1282,36 @@ impl Wood {
                 depth: NEAREST,
             )
         }
+    }
+
+    /// A phase's (`ph`) impostors in the depth prepass, cut to their coverage in `c` (the pool's
+    /// colour, of whichever format: `Impostors`).
+    fn impostors_prepass<P: RenderPass, C: Format + Filtered>(
+        self,
+        pass: P,
+        cam: Camera,
+        wind: Wind,
+        s: Sampler,
+        ph: Phase,
+        c: TextureArray<C>,
+    ) {
+        let n = self.all_kinds()
+        draw_multi(
+            pass,
+            far_quad.bind(
+                cam,
+                wind,
+                kinds: self.pool.kinds,
+                instances: ph.instances.span(start: 0, count: self.seen.places),
+                marks: ph.marks.span(start: 0, count: self.seen.places),
+                bounds: self.pool.bounds,
+                front: 0,
+            ),
+            far_cut_flat.bind(kinds: self.pool.kinds, colour: c, s: s, cell: self.cell),
+            indirect: self.of_way(ph.far, IMPOSTOR),
+            count: n,
+            depth: NEAREST,
+        )
     }
 
     /// The shading pass's draws: the cards where the prepass left their depth, the limbs, then
@@ -1251,29 +1401,14 @@ impl Wood {
             )
         }
         if self.seen.way_has(IMPOSTOR, n) {
-            draw_multi(
-                pass,
-                far_quad.bind(
-                    cam,
-                    wind,
-                    kinds: self.pool.kinds,
-                    instances: ph.instances.span(start: 0, count: self.seen.places),
-                    marks: ph.marks.span(start: 0, count: self.seen.places),
-                    bounds: self.pool.bounds,
-                    front: 1,
-                ),
-                far_shade.bind(
-                    lt,
-                    ids,
-                    kinds: self.pool.kinds,
-                    colour: self.pool.colour,
-                    normal: self.pool.normal,
-                    grid: self.pool.grid,
-                ),
-                indirect: self.of_way(ph.far, IMPOSTOR),
-                count: n,
-                depth: impostor::SHADED,
-            )
+            match self.pool.impostors {
+                Impostors::Plain { colour: c, normal: nm, depth: d } => {
+                    self.impostors_shade(pass, lt, wind, ids, ph, c, nm, d)
+                },
+                Impostors::Compressed { colour: c, normal: nm, depth: d } => {
+                    self.impostors_shade(pass, lt, wind, ids, ph, c, nm, d)
+                },
+            }
         }
         if self.seen.way_has(VOLUME, n) {
             draw_multi(
@@ -1299,6 +1434,47 @@ impl Wood {
                 depth: impostor::SHADED,
             )
         }
+    }
+
+    /// A phase's (`ph`) impostors shaded, from the pool's colour, normals and toward-and-depth
+    /// (`c`, `nm`, `d`: of whichever formats, `Impostors`).
+    fn impostors_shade<P: RenderPass, C: Format + Filtered, N: Format>(
+        self,
+        pass: P,
+        lt: Lighting,
+        wind: Wind,
+        ids: Texture<R32Uint>,
+        ph: Phase,
+        c: TextureArray<C>,
+        nm: TextureArray<N>,
+        d: TextureArray<N>,
+    ) {
+        let cam = lt.cam
+        let n = self.all_kinds()
+        draw_multi(
+            pass,
+            far_quad.bind(
+                cam,
+                wind,
+                kinds: self.pool.kinds,
+                instances: ph.instances.span(start: 0, count: self.seen.places),
+                marks: ph.marks.span(start: 0, count: self.seen.places),
+                bounds: self.pool.bounds,
+                front: 1,
+            ),
+            far_shade.bind(
+                lt,
+                ids,
+                kinds: self.pool.kinds,
+                colour: c,
+                normal: nm,
+                depth: d,
+                grid: self.pool.grid,
+            ),
+            indirect: self.of_way(ph.far, IMPOSTOR),
+            count: n,
+            depth: impostor::SHADED,
+        )
     }
 
     /// A shadow cascade's draws, of what `select_shadow` chose: every kind's cards at level 1,
@@ -1342,4 +1518,13 @@ impl Wood {
             depth_bias: CASTER,
         )
     }
+}
+
+/// A choosing's room shrinks once its places fill less than half of it for `SHRINK_AFTER`
+/// frames, not before, and not while they fill half.
+@test
+fn a_half_empty_choosing_shrinks_after_a_while() {
+    assert(shrinks(places: 100, room: 300, under: SHRINK_AFTER), "a third-full room didn't shrink")
+    assert(!shrinks(places: 100, room: 300, under: SHRINK_AFTER - 1), "it shrank early")
+    assert(!shrinks(places: 160, room: 300, under: SHRINK_AFTER), "a half-full room shrank")
 }

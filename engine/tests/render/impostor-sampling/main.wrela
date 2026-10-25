@@ -1,5 +1,6 @@
 // Deterministic atlas samples through the production impostor fragment shaders. Each
 // 16×16 panel fixes its atlas coordinate; no world bake, scene or temporal history.
+use engine::compress::halves
 use engine::frame::fullscreen
 use engine::impostor::{
     ATLAS, CELL, VIEWS, Bake, FarVertex, KindDesc, far_cut, far_cut_flat, far_shade,
@@ -15,7 +16,8 @@ use std::gpu::{
     ClipPosition, Compare, Depth, DepthTexture, Flat, FragCoord, GlobalId, InstanceIndex, R32Uint,
     Rgba8, Rgba16Float, Texels, Texels3d, Texture, VertexIndex, begin_depth_pass, begin_pass,
     begin_pass_with_depth, begin_screen_pass, buffer_of, comparison_sampler, depth_texture,
-    copy_texture, dispatch, draw, sampler, texture, texture3d, texture_array, writable_texture,
+    GpuBuffer, Rg16Float, buffer, copy_buffer_to_texture, copy_texture, dispatch, draw, sampler,
+    texture, texture3d, texture_array, writable_texture,
 }
 
 const WIDTH: u32 = 192
@@ -144,11 +146,23 @@ pub fn frame(time: f32, width: u32, height: u32) {
     var colour = writable_texture::<Rgba8>(width: ATLAS, height: ATLAS)
     var normal = writable_texture::<Rgba16Float>(width: ATLAS, height: ATLAS)
     dispatch(atlas.bind(mut colour, mut normal), over: colour)
-    // The wood's impostors are layers of arrays (`wood::Pool`): this kind's is layer 0.
+    // The wood's impostors are layers of arrays (`wood::Impostors`, uncompressed): this kind's
+    // is layer 0, its normals and its toward-and-depth packed as halves apart.
     var colours = texture_array::<Rgba8>(width: ATLAS, height: ATLAS, layers: 1)
-    var normals = texture_array::<Rgba16Float>(width: ATLAS, height: ATLAS, layers: 1)
+    var normals = texture_array::<Rg16Float>(width: ATLAS, height: ATLAS, layers: 1)
+    var depths = texture_array::<Rg16Float>(width: ATLAS, height: ATLAS, layers: 1)
     copy_texture(from: colour.level(0), to: colours.layer_mut(0))
-    copy_texture(from: normal.level(0), to: normals.layer_mut(0))
+    var packed: GpuBuffer<u32> = buffer(ATLAS * ATLAS)
+    dispatch(
+        halves.bind(normal, which: 0, size: vec2u(ATLAS), out: mut packed),
+        over: ATLAS * ATLAS,
+    )
+    copy_buffer_to_texture(from: packed.items(), to: normals.layer_mut(0))
+    dispatch(
+        halves.bind(normal, which: 1, size: vec2u(ATLAS), out: mut packed),
+        over: ATLAS * ATLAS,
+    )
+    copy_buffer_to_texture(from: packed.items(), to: depths.layer_mut(0))
     let cam = first_camera(
         vec3(0.0, 0.0, 10.0),
         vec3(0.0),
@@ -189,7 +203,7 @@ pub fn frame(time: f32, width: u32, height: u32) {
     draw(
         p,
         sample_quad.bind(),
-        far_cut.bind(cam, kinds, colours, normals, s, cell: 1.0),
+        far_cut.bind(cam, kinds, colours, normals, depths, s, cell: 1.0),
         vertices: 6,
         instances: 12,
         depth: Depth { compare: Compare::Always, write: true },
@@ -253,7 +267,15 @@ pub fn frame(time: f32, width: u32, height: u32) {
     draw(
         p,
         sample_quad.bind(),
-        far_shade.bind(lt, ids: flat, kinds: kinds, colour: colours, normal: normals, grid: volume),
+        far_shade.bind(
+            lt,
+            ids: flat,
+            kinds: kinds,
+            colour: colours,
+            normal: normals,
+            depth: depths,
+            grid: volume,
+        ),
         vertices: 6,
         instances: 12,
     )
