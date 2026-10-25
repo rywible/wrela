@@ -9,7 +9,7 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 ### A struct update from a borrowed struct doesn't compile
 
 - **Needed:** a span of the first `n` items of an append buffer (`GpuSpan { count: n, ..a.items() }`), to copy a realized mesh's used part into a mesh fitted to it (`engine::realize::fitted`).
-- **What happens:** toolchain 0.6.2 stops with an internal error, `error[I0001]: the CPU module's IR is malformed: fn5 first_5: v3 is a *GpuBuffer<u32>, not a GpuBuffer<u32>` ("this is a bug in the wrela compiler"). The struct update's base is a borrow struct (`GpuSpan`), and the copied field is a borrow; naming every field (`GpuSpan { buffer: s.buffer, start: 0, count: n }`) compiles.
+- **What happens:** toolchains 0.6.2 and 0.6.3 stop with an internal error, `error[I0001]: the CPU module's IR is malformed: fn5 first_5: v3 is a *GpuBuffer<u32>, not a GpuBuffer<u32>` ("this is a bug in the wrela compiler"). The struct update's base is a borrow struct (`GpuSpan`), and the copied field is a borrow; naming every field (`GpuSpan { buffer: s.buffer, start: 0, count: n }`) compiles.
 - **Found:** 2026-10-25, fitting the Last Green's built things (B13's review).
 - **Evidence:** eight lines: `fn first(a: AppendBuffer<u32>, n: u32, to: mut GpuBuffer<u32>) { copy(GpuSpan { count: n, ..a.items() }, to.items_mut()) }`, called from `init`.
 - **Meanwhile:** `fitted` names the span's fields.
@@ -47,7 +47,7 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **What happens:** in toolchain 0.6.1 a program's first ask starts a timer that times every pass and dispatch from then on, on both hosts: the browser gives each timed dispatch a compute pass of its own, and the native host reads every frame's timestamps back before the frame call returns. Measuring five costs paid for timing all the work.
 - **Found:** 2026-10-25, benching B13: the clearing's paced 95th percentile in Chrome went from 18.4 ms (B1) to 20.7-29.7 ms with B2's measuring on, and the native frame call from 9.4 to 12.2 ms. With measuring off it was 18.3 ms; with the asks made and their answers ignored, 22.7 ms.
 - **Meanwhile:** nothing: the fix shipped the same day.
-- **Status:** fixed in 0.6.2 (rywible/wrela-compiler#33): outside a run timed from its start, a host times only the work of a label asked for and not yet answered, from the ask on, so the frame asks at its start (`Frame::measure`). The clearing's paced 95th percentile is 18.1 ms, the native call 9.44 ms.
+- **Status:** fixed in 0.6.2 (rywible/wrela-compiler#33): outside a run timed from its start, a host times only the work of a label asked for and not yet answered, from the ask on, so the frame asks at its start (`Frame::measure`). The clearing's paced 95th percentile is 18.1 ms, the native call 9.44 ms. In 0.6.2 the browser took an ask as made when its request started, so while commands waited for a pipeline the label's work recorded before it was timed too; 0.6.3 (rywible/wrela-compiler#34) takes it where its `Timed` command runs in the stream.
 
 ### A mip step's load didn't compile
 
