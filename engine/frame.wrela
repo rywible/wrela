@@ -605,6 +605,9 @@ pub struct Probes {
     pub next: Option<Baked>,
     pub next_at: vec2,
     next_cooked: bool,
+    /// The probes last replaced, whose buffers the next replacement of their shape takes
+    /// (`Baked::renew`).
+    spare: Option<Baked>,
     /// Whether the probes in use have their occluders (the first bake begins with them).
     pub cooked: bool,
     using_k: ProbeKey,
@@ -784,6 +787,7 @@ impl<R: Resolver> Frame<R> {
                 next: None,
                 next_at: at,
                 next_cooked: false,
+                spare: None,
                 cooked: false,
                 using_k: (0, 0, vec3(0.0), vec3(0.0)),
                 next_k: (0, 0, vec3(0.0), vec3(0.0)),
@@ -1419,12 +1423,16 @@ impl<R: Resolver> Frame<R> {
         }
         // A replacement started from older inputs is dropped.
         if self.probes.next.is_some() && self.probes.next_k != key {
-            self.probes.next = None
+            self.probes.spare = replace(mut self.probes.next, None)
         }
         let moved = length(eye - self.probes.at) > self.quality.probes.moves
         if self.probes.next.is_none() && (moved || self.probes.using_k != key) {
             let Some(occluders) = scene.occluders(eye, self.origin) else { return }
-            var b = Baked::new(scene.probe_grid(eye, self.origin), occluders)
+            let g = scene.probe_grid(eye, self.origin)
+            var b = match replace(mut self.probes.spare, None) {
+                Some(old) => Baked::renew(take old, g, occluders),
+                None => Baked::new(g, occluders),
+            }
             b.strip_rays = self.quality.probes.rays
             self.probes.next = Some(take b)
             self.probes.next_at = eye
@@ -1488,7 +1496,8 @@ impl<R: Resolver> Frame<R> {
             },
         }
         if swap_now {
-            self.probes.using = replace(mut self.probes.next, None).unwrap()
+            let old = replace(mut self.probes.using, replace(mut self.probes.next, None).unwrap())
+            self.probes.spare = Some(take old)
             self.probes.at = self.probes.next_at
             self.probes.using_k = self.probes.next_k
         }
