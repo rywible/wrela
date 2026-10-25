@@ -126,7 +126,11 @@ fn run(when: When, open: bool) -> Run {
         moving_side: 128,
     }
     let frame: Frame<Gathered> = Frame::new(
-        Quality { shadows, budget: Budget { playing_us: 1.0e6, loading_us: 1.0e6 }, measured: false },
+        Quality {
+            shadows,
+            budget: Budget { playing_us: 1.0e6, loading_us: 1.0e6 },
+            measured: false,
+        },
         sunlight(air),
         air,
         Clipmap::new(levels: 4, finest: 0.5),

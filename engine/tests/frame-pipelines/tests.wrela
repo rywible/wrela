@@ -6,8 +6,10 @@ use std::io::print
 use std::tool::toolchain
 use std::tool::toolchain::Override
 
-/// How many pipelines a bare scene's frame makes.
-const FRAME_PIPELINES: u32 = 28
+/// How many pipelines a bare scene's frame makes (31 since B3: the terrain's sides bounded
+/// and culled, `terrain::bound_sides` and `cull_sides`, and the probes' voxels cleared before a
+/// cook, `probes::clear_voxels`).
+const FRAME_PIPELINES: u32 = 31
 
 /// The fixture's pipelines: each one's entry points, `+` between them.
 fn pipelines() -> Vec<String> {

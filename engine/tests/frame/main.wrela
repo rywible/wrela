@@ -400,14 +400,20 @@ fn a_measuring_frame_keeps_the_budgets_promises(s: State) {
     for k in from..to {
         let r = s.records[k]
         if r.optional > r.first_optional {
-            assert(r.mandatory + r.optional <= r.limit + 0.01, f"frame {r.ran} spent {r.mandatory} + {r.optional} of {r.limit}")
+            assert(
+                r.mandatory + r.optional <= r.limit + 0.01,
+                f"frame {r.ran} spent {r.mandatory} + {r.optional} of {r.limit}",
+            )
         }
         assert(r.spent == r.mandatory + r.optional, f"frame {r.ran}'s costs don't add up")
         near += r.near
         far += r.far
         probes += r.probes
     }
-    assert(near > 0 && far > 0 && probes > 0, f"a kind made eligible didn't run: {near} {far} {probes}")
+    assert(
+        near > 0 && far > 0 && probes > 0,
+        f"a kind made eligible didn't run: {near} {far} {probes}",
+    )
 }
 
 /// The settled bare scene after its jump and its weather is its golden on this machine's GPU,
