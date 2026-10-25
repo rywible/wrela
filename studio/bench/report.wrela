@@ -79,10 +79,9 @@ pub fn number_at(d: Doc, n: u32, key: str) -> f64 {
 /// Each frame's GPU span (its first timed start to its last end, ms) in `timings.json`, for
 /// the frames from `warmup` on.
 pub fn spans(timings: Doc, warmup: u32) -> Vec<f64> {
-    // A start may be negative: the times are from the first timestamp the host read.
-    var seen: Vec<bool> = Vec::new()
-    var first: Vec<f64> = Vec::new()
-    var last: Vec<f64> = Vec::new()
+    // A start may be negative: the times are from the first timestamp the host read. Each
+    // frame's first start and last end, if it was timed.
+    var frames: Vec<Option<(f64, f64)>> = Vec::new()
     for i in 0..timings.count(TOP) {
         let Some(t) = timings.at(TOP, i) else { continue }
         let frame = number_at(timings, t, "frame")
@@ -90,24 +89,21 @@ pub fn spans(timings: Doc, warmup: u32) -> Vec<f64> {
             continue
         }
         let k = u32(frame) - warmup
-        while seen.len() <= k {
-            seen.push(false)
-            first.push(0.0)
-            last.push(0.0)
+        while frames.len() <= k {
+            frames.push(None)
         }
         let (start, end) = (number_at(timings, t, "start"), number_at(timings, t, "end"))
-        if !seen[k] || start < first[k] {
-            first[k] = start
-        }
-        if !seen[k] || end > last[k] {
-            last[k] = end
-        }
-        seen[k] = true
+        frames[k] = Some(match frames[k] {
+            Some((first, last)) => {
+                (if start < first { start } else { first }, if end > last { end } else { last })
+            },
+            None => (start, end),
+        })
     }
     var out = Vec::new()
-    for k in 0..seen.len() {
-        if seen[k] {
-            out.push((last[k] - first[k]) / 1000000.0)
+    for f in frames {
+        if let Some((first, last)) = f {
+            out.push((last - first) / 1000000.0)
         }
     }
     out

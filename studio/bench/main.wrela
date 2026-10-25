@@ -6,9 +6,10 @@
 //     [--compare <report.json>] [--no-native] [--no-docs]
 // ```
 //
-// Each scene (scenes.wrela) is built as it ships (optimized) into `build/bench/builds/<name>`,
-// served (`std::tool::serve`) and run in headless Chrome's test mode (`std::tool::browser`), its
-// gate script given as input, the command checker off as in a release build:
+// Each scene's package (scenes.wrela) is built as it ships (optimized) into
+// `build/bench/builds/<package>` (its path, a dash for each slash), once for the scenes that share
+// it, served (`std::tool::serve`) and run in headless Chrome's test mode (`std::tool::browser`),
+// each scene's gate script given as its own input, the command checker off as in a release build:
 //
 // 1. GPU: `timestamps=1&saturate=1&nohash=1`: each frame's GPU span, its p50, p95 and p99;
 // 2. play: `paced=1&inflight=2&nohash=1`: the intervals between frames (p50, p95, p99, and how
@@ -160,32 +161,64 @@ fn machine_of(dir: str) -> Result<String, ToolError> {
     Ok(out)
 }
 
-/// Scene `s` measured, its build in `dir`; the page's date (ms since the epoch) and the machine.
-fn measure(s: Scene, o: Options, salt: u32) -> Result<(Measured, f64, String), ToolError> {
-    let dir = String::from(f"out/builds/{s.name}")
-    var options = toolchain::options()
-    options.optimize = true
-    options.timeout = 600.0
-    let built = toolchain::build(f"ws/{s.pkg}", dir.as_str(), options).wait()?
-    if !built.ok {
-        for d in built.diagnostics {
-            if d.error {
-                print(d.rendered.as_str())
-            }
+/// `text`'s parts between `sep`s, joined by dashes.
+fn dashed(text: str, sep: str) -> String {
+    var out = String::new()
+    for (a, b) in text.split(sep) {
+        if out.len() > 0 {
+            out.push_str("-")
         }
-        return Err(ToolError::new(f"{s.pkg} didn't build"))
+        out.push_str(text.slice(a, b))
+    }
+    out
+}
+
+/// Where package `pkg` (the workspace's) is built for the bench.
+fn build_dir(pkg: str) -> String {
+    String::from(f"out/builds/{dashed(pkg, "/")}")
+}
+
+/// A test-mode page's hash: `frames` frames at `w` × `h` on `workers` workers, its input
+/// `input`, the command checker off.
+fn page_hash(frames: u32, w: u32, h: u32, workers: u32, input: str) -> String {
+    String::from(
+        f"#test&frames={frames}&width={w}&height={h}&fps=60&workers={workers}&input={input}&checks=0",
+    )
+}
+
+/// Scene `s` measured, its package built first unless an earlier scene's was (`build`); the
+/// page's date (ms since the epoch) and the machine.
+fn measure(
+    s: Scene,
+    o: Options,
+    salt: u32,
+    build: bool,
+) -> Result<(Measured, f64, String), ToolError> {
+    let dir = build_dir(s.pkg)
+    if build {
+        var options = toolchain::options()
+        options.optimize = true
+        options.timeout = 600.0
+        let built = toolchain::build(f"ws/{s.pkg}", dir.as_str(), options).wait()?
+        if !built.ok {
+            for d in built.diagnostics {
+                if d.error {
+                    print(d.rendered.as_str())
+                }
+            }
+            return Err(ToolError::new(f"{s.pkg} didn't build"))
+        }
     }
     let input = script(s.name)
+    let input_file = String::from(f"input-{s.name}.json")
     let _ = files::write(
-        f"{dir}/bench-input.json",
+        f"{dir}/{input_file}",
         String::from(input.as_json()).as_bytes(),
     ).wait()?
     let frames = o.warmup + s.frames
     let (w, h) = (s.width, s.height)
     let timeout = f64(frames) / 60.0 * 10.0 + 240.0
-    let common = String::from(
-        f"#test&frames={frames}&width={w}&height={h}&fps=60&workers={o.workers}&input=bench-input.json&checks=0",
-    )
+    let common = page_hash(frames, w, h, o.workers, input_file.as_str())
     // 1. The GPU.
     run_page(dir.as_str(), f"{common}&timestamps=1&saturate=1&nohash=1", w, h, timeout)?
     let span = stats(spans(json_of(f"{dir}/results/timings.json")?, o.warmup))
@@ -219,13 +252,8 @@ fn measure(s: Scene, o: Options, salt: u32) -> Result<(Measured, f64, String), T
     }
     // 3. A cold start.
     let cold_frames = min(frames, 300)
-    run_page(
-        dir.as_str(),
-        f"#test&frames={cold_frames}&width={w}&height={h}&fps=60&workers={o.workers}&input=bench-input.json&checks=0&nohash=1&salt={salt}",
-        w,
-        h,
-        timeout,
-    )?
+    let cold_hash = page_hash(cold_frames, w, h, o.workers, input_file.as_str())
+    run_page(dir.as_str(), f"{cold_hash}&nohash=1&salt={salt}", w, h, timeout)?
     let load = json_of(f"{dir}/results/load.json")?
     let opened = number_at(load, TOP, "opened_ms")
     let first_frame_ms = number_at(load, TOP, "first_frame_ms") - opened
@@ -260,23 +288,20 @@ fn measure(s: Scene, o: Options, salt: u32) -> Result<(Measured, f64, String), T
     // 4. Natively.
     var native = stats(Vec::new())
     if o.native {
+        let native_timeout = min(timeout, 600.0)
         var load_native = drive::gpu()
         load_native.width = w
         load_native.height = h
         load_native.workers = o.workers
-        load_native.timeout = min(timeout, 600.0)
+        load_native.timeout = native_timeout
         let b = drive::load(dir.as_str(), load_native).wait()?.build
         let _ = untrapped(
             "init",
-            drive::steps(b, [Step::Init], timeout: min(timeout, 600.0)).wait()?,
+            drive::steps(b, [Step::Init], timeout: native_timeout).wait()?,
         )?
         let seen = untrapped(
             "the frames",
-            drive::steps(
-                b,
-                [Step::Frames(frames, input.clone())],
-                timeout: min(timeout, 600.0),
-            ).wait()?,
+            drive::steps(b, [Step::Frames(frames, input.clone())], timeout: native_timeout).wait()?,
         )?
         let _ = drive::close(b).wait()
         var calls = Vec::new()
@@ -319,9 +344,20 @@ fn bench(o: Options) -> Result<(), ToolError> {
     var opened_at = 0.0
     var machine = String::new()
     var salt = 1
+    // The packages built so far: each once, for all the scenes that share it.
+    var built: Vec<String> = Vec::new()
     for s in chosen(o.clone()) {
         print(f"bench: {s.name} ({s.pkg}, {s.frames} frames at {s.width}x{s.height})")
-        let (m, opened, mach) = measure(s, o.clone(), salt)?
+        var build = true
+        for b in built {
+            if b.as_str() == s.pkg {
+                build = false
+            }
+        }
+        if build {
+            built.push(String::from(s.pkg))
+        }
+        let (m, opened, mach) = measure(s, o.clone(), salt, build)?
         salt += 1
         date = date_of(opened)
         opened_at = opened
@@ -330,13 +366,7 @@ fn bench(o: Options) -> Result<(), ToolError> {
     }
     let table = markdown(machine.as_str(), date.as_str(), all)
     print(table.as_str())
-    var slug = String::new()
-    for (a, b) in machine.split(" ") {
-        if slug.len() > 0 {
-            slug.push_str("-")
-        }
-        slug.push_str(machine.as_str().slice(a, b))
-    }
+    let slug = dashed(machine.as_str(), " ")
     // A run of its own: the machine, the date and the time of day (UTC) its last page opened.
     let path = String::from(f"out/{slug}-{date}-{time_of(opened_at)}.json")
     write_file(

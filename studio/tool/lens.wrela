@@ -121,6 +121,12 @@ pub fn read_text(path: str) -> Result<Option<String>, ToolError> {
     }
 }
 
+/// Reads the text file at `path`, which must be there.
+fn needed_text(path: str) -> Result<String, ToolError> {
+    let Some(text) = read_text(path)? else { return Err(ToolError::new(f"there's no {path}")) }
+    Ok(text)
+}
+
 /// Writes `text` as the whole file at `path`, in a write root.
 pub fn write_text(path: str, text: str) -> Result<(), ToolError> {
     let _ = files::write(path, String::from(text).as_bytes()).wait()?
@@ -184,19 +190,14 @@ pub fn begin(place: Place) -> Result<Building, ToolError> {
     if kind == LensKind::Course {
         b.program = String::from(f"{out}/course")
         let glue_dir = String::from(f"{ws}/studio/courselens/glue")
-        for f in ["main.wrela", "course.wrela"] {
-            let Some(text) = read_text(f"{glue_dir.as_str()}/{f}")? else {
-                return Err(ToolError::new(f"there's no {glue_dir.as_str()}/{f}"))
-            }
-            let written = if f == "course.wrela" {
-                course_text(text.as_str(), name.as_str())
-            } else {
-                take text
-            }
-            write_text(f"{b.program.as_str()}/{f}", written.as_str())?
-        }
-        var deps: Vec<String> = Vec::new()
-        deps.push(String::from("courselens"))
+        let main = needed_text(f"{glue_dir.as_str()}/main.wrela")?
+        write_text(f"{b.program.as_str()}/main.wrela", main.as_str())?
+        let course = needed_text(f"{glue_dir.as_str()}/course.wrela")?
+        write_text(
+            f"{b.program.as_str()}/course.wrela",
+            course_text(course.as_str(), name.as_str()).as_str(),
+        )?
+        let deps = Vec::from([String::from("courselens")])
         write_text(
             f"{b.program.as_str()}/wrela.toml",
             manifest("course_lens", name.as_str(), deps).as_str(),
@@ -218,9 +219,7 @@ pub fn begin(place: Place) -> Result<Building, ToolError> {
         let glue_dir = String::from(f"{ws}/studio/maplens/glue")
         var writes: Vec<(String, String)> = Vec::new()
         for f in ["main.wrela", "floor.wrela"] {
-            let Some(text) = read_text(f"{glue_dir.as_str()}/{f}")? else {
-                return Err(ToolError::new(f"there's no {glue_dir.as_str()}/{f}"))
-            }
+            let text = needed_text(f"{glue_dir.as_str()}/{f}")?
             let written = if f == "floor.wrela" {
                 floor_text(text.as_str(), name.as_str(), geology)
             } else {
@@ -228,10 +227,9 @@ pub fn begin(place: Place) -> Result<Building, ToolError> {
             }
             writes.push((String::from(f"{b.program.as_str()}/{f}"), take written))
         }
-        var deps: Vec<String> = Vec::new()
-        deps.push(String::from("maplens"))
-        deps.push(String::from("engine"))
-        deps.push(String::from("land"))
+        let deps = Vec::from(
+            [String::from("maplens"), String::from("engine"), String::from("land")],
+        )
         writes.push(
             (
                 String::from(f"{b.program.as_str()}/wrela.toml"),
@@ -286,14 +284,11 @@ impl Building {
                 |e| ToolError::new(e.as_str()),
             )?
             let ws = self.ws.as_str()
-            let Some(main) = read_text(f"{ws}/studio/glue/main.wrela")? else {
-                return Err(ToolError::new(f"there's no {ws}/studio/glue/main.wrela"))
-            }
+            let main = needed_text(f"{ws}/studio/glue/main.wrela")?
             let program = self.program.as_str()
             write_text(f"{program}/main.wrela", main.as_str())?
             write_text(f"{program}/subject.wrela", glue_text(s).as_str())?
-            var deps: Vec<String> = Vec::new()
-            deps.push(String::from("studio"))
+            let deps = Vec::from([String::from("studio")])
             write_text(
                 f"{program}/wrela.toml",
                 manifest("lens", self.name.as_str(), deps).as_str(),

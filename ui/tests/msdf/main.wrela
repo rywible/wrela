@@ -4,10 +4,8 @@
 // is drawn more than half covered, one more than half a pixel outside it less. The corners are
 // where a one-channel field would fail (it rounds them).
 
-use std::gpu::{
-    GlobalId, GpuBuffer, Rgba8, Slots, Texture, begin_pass, buffer, dispatch, read, texture,
-}
-use std::io::{Pending, print}
+use std::gpu::{Rgba8, Texture, TextureRead, begin_pass, read_texture, texture}
+use std::io::print
 use ui::draw::{DrawList, Renderer}
 use ui::text::{Face, Fonts, SANS_FILE}
 use ui::ttf::outline_of
@@ -24,22 +22,14 @@ fn pen_of(i: u32) -> vec2 {
     vec2(20.0 + 140.0 * f32(i), 20.0)
 }
 
-/// A texture's texels packed as RGBA8 in a word each, row by row.
-@compute(64)
-fn copy(t: Texture<Rgba8>, out: mut Slots<u32>, id: GlobalId) {
-    let w = t.width()
-    let c = t.load(x: id.x % w, y: id.x / w)
-    let b = vec4u(round(c * 255.0))
-    out[id] = b.x | (b.y << 8) | (b.z << 16) | (b.w << 24)
-}
-
+/// The fonts and the renderer; the target drawn into, on its way back, and its texels' bytes
+/// (RGBA, row by row) once they've come.
 pub struct State {
     fonts: Fonts,
     renderer: Renderer,
     target: Texture<Rgba8>,
-    pixels: GpuBuffer<u32>,
-    pending: Option<Pending<u32>>,
-    got: Vec<u32>,
+    pending: Option<TextureRead>,
+    got: Vec<u8>,
 }
 
 pub fn init() -> State {
@@ -49,7 +39,6 @@ pub fn init() -> State {
         fonts,
         renderer,
         target: texture::<Rgba8>(width: W, height: H),
-        pixels: buffer(W * H),
         pending: None,
         got: Vec::new(),
     }
@@ -67,8 +56,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         let p = begin_pass(mut s.target, clear: vec4(0.0, 0.0, 0.0, 1.0))
         s.renderer.draw(p, screen)
         p.end()
-        dispatch(copy.bind(s.target, out: mut s.pixels), over: W * H)
-        s.pending = Some(read(s.pixels.items()))
+        s.pending = Some(read_texture(s.target.level(0)))
         return
     }
     if s.got.is_empty() {
@@ -89,7 +77,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
 /// px of these glyphs, the 8's among them).
 @test(frames: 8, gpu: true)
 fn a_title_sized_glyph_keeps_its_outline_within_half_a_pixel(s: State) {
-    assert(s.got.len() == W * H, "the pixels didn't come back")
+    assert(s.got.len() == W * H * 4, "the pixels didn't come back")
     borrow font = s.fonts.font(Face::Sans)
     var wrong = 0
     var notch = 0
@@ -101,7 +89,7 @@ fn a_title_sized_glyph_keeps_its_outline_within_half_a_pixel(s: State) {
         for y in 0..H {
             for x in u32(pen.x) - 10..u32(pen.x) + 130 {
                 let d = outline.distance(f64(f32(x) + 0.5 - pen.x), f64(baseline - (f32(y) + 0.5)))
-                let cover = f32(s.got[y * W + x] & 255) / 255.0
+                let cover = f32(s.got[(y * W + x) * 4]) / 255.0
                 if (d > 0.5 && cover <= 0.5) || (d < -0.5 && cover >= 0.5) {
                     if GLYPHS[i] == 0x38 {
                         notch += 1
