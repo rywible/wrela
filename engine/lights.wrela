@@ -13,8 +13,7 @@
 // cone, softened between its inner and outer angles. Shadowed lights are out of scope.
 
 use std::gpu::{
-    Atomics, GlobalId, GpuBuffer, LocalId, SharedAtomics, WorkgroupId, buffer, dispatch, label,
-    write,
+    Atomics, GpuBuffer, LocalId, SharedAtomics, WorkgroupId, buffer, dispatch, label, write,
 }
 use view::Camera
 
@@ -159,9 +158,16 @@ pub fn froxel_of(cam: Camera, p: vec3) -> Option<u32> {
     Some((slice_of(v.z) * TILES_Y + ty) * TILES_X + tx)
 }
 
-/// Whether light `l` reaches froxel `f` of `cam`'s view: its sphere meets the froxel's box (in
-/// the view's space, round the froxel's frustum between its slice's two distances).
-pub fn reaches(cam: Camera, l: LocalLight, f: u32) -> bool {
+/// A froxel's frustum in the view's space: its sides' slopes across (`x`: left, right) and up
+/// (`y`: bottom, top), and its slice's two distances (`z`).
+struct Frustum: Copy {
+    x: vec2,
+    y: vec2,
+    z: vec2,
+}
+
+/// Froxel `f`'s frustum in `cam`'s view.
+fn frustum_of(cam: Camera, f: u32) -> Frustum {
     let tx = f % TILES_X
     let ty = (f / TILES_X) % TILES_Y
     let k = f / (TILES_X * TILES_Y)
@@ -173,13 +179,26 @@ pub fn reaches(cam: Camera, l: LocalLight, f: u32) -> bool {
     let x1 = (f32(tx + 1) / f32(TILES_X) * 2.0 - 1.0) * sx
     let y1 = (1.0 - f32(ty) / f32(TILES_Y) * 2.0) * sy
     let y0 = (1.0 - f32(ty + 1) / f32(TILES_Y) * 2.0) * sy
-    let c = in_view(cam, l.at)
+    Frustum { x: vec2(x0, x1), y: vec2(y0, y1), z: vec2(z0, z1) }
+}
+
+/// Whether a sphere at `c` (in the view's space) of `radius` meets frustum `fr`'s box: round the
+/// frustum between its slice's two distances.
+fn meets(fr: Frustum, c: vec3, radius: f32) -> bool {
+    let (x0, x1, y0, y1, z0, z1) = (fr.x.x, fr.x.y, fr.y.x, fr.y.y, fr.z.x, fr.z.y)
     // The frustum's box: its sides at the slice's near and far distances.
-    let zf = min(z1, max(c.z, z0) + l.radius)
+    let zf = min(z1, max(c.z, z0) + radius)
     let lo = vec3(min(x0 * z0, x0 * zf), min(y0 * z0, y0 * zf), z0)
     let hi = vec3(max(x1 * z0, x1 * zf), max(y1 * z0, y1 * zf), z1)
     let q = clamp(c, lo, hi)
-    dot(q - c, q - c) <= l.radius * l.radius
+    dot(q - c, q - c) <= radius * radius
+}
+
+/// Whether a light at `at` reaching `radius` metres reaches froxel `f` of `cam`'s view: its sphere
+/// meets the froxel's box (in the view's space, round the froxel's frustum between its slice's
+/// two distances).
+pub fn reaches(cam: Camera, at: vec3, radius: f32, f: u32) -> bool {
+    meets(frustum_of(cam, f), in_view(cam, at), radius)
 }
 
 /// Froxel `g` (a workgroup's) binned: its invocations test the `count` lights against it, each
@@ -196,32 +215,29 @@ fn bin(
     lid: LocalId,
 ) {
     let f = g.x
+    let fr = frustum_of(cam, f)
     var i = lid.x
     while i < count {
         let w = i * LIGHT_WORDS
         let at = |k: u32| bitcast_f32(words.load(w + k))
-        let l = LocalLight {
-            at: vec3(at(0), at(1), at(2)),
-            radius: at(3),
-            colour: vec3(0.0),
-            cos_outer: 0.0,
-            dir: vec3(0.0),
-            cos_inner: 0.0,
-        }
-        if reaches(cam, l, f) {
+        if meets(fr, in_view(cam, vec3(at(0), at(1), at(2))), at(3)) {
             let _ = mask.or(i: i / 32, value: u32(1) << (i % 32))
         }
         i += 64
     }
     mask.barrier()
+    // How many lights reaching it each word of the mask has before it, and how many there are.
+    var before = [0; 8]
+    var all = 0
+    for k in 0..8 {
+        before[k] = all
+        all += mask.load(k).count_ones()
+    }
     i = lid.x
     while i < count {
         let bits = mask.load(i / 32)
         if (bits >> (i % 32)) & 1 != 0 {
-            var n = (bits & ((u32(1) << (i % 32)) - 1)).count_ones()
-            for k in 0..i / 32 {
-                n += mask.load(k).count_ones()
-            }
+            let n = (bits & ((u32(1) << (i % 32)) - 1)).count_ones() + before[i / 32]
             if n < PER_FROXEL {
                 words.store(i: list_at(f) + n, value: i)
             }
@@ -229,11 +245,7 @@ fn bin(
         i += 64
     }
     if lid.x == 0 {
-        var n = 0
-        for k in 0..8 {
-            n += mask.load(k).count_ones()
-        }
-        words.store(i: count_at(f), value: min(n, PER_FROXEL))
+        words.store(i: count_at(f), value: min(all, PER_FROXEL))
     }
 }
 
@@ -241,12 +253,18 @@ fn bin(
 pub struct Lights {
     pub words: GpuBuffer<u32>,
     pub at: Froxels,
+    /// The frame's lights' words, as they're written: kept from frame to frame.
+    staged: Vec<u32>,
 }
 
 impl Lights {
     /// No lights yet.
     pub fn new() -> Lights {
-        Lights { words: buffer(WORDS), at: DARK }
+        Lights {
+            words: buffer(WORDS),
+            at: DARK,
+            staged: Vec::with_capacity(MOST_LIGHTS * LIGHT_WORDS),
+        }
     }
 
     /// The frame's `lights` (the first `MOST_LIGHTS`) binned into `cam`'s froxels.
@@ -256,13 +274,13 @@ impl Lights {
         if n == 0 {
             return
         }
-        var w: Vec<u32> = Vec::with_capacity(n * LIGHT_WORDS)
+        self.staged.clear()
         for i in 0..n {
             for x in words_of(lights[i]) {
-                w.push(x)
+                self.staged.push(x)
             }
         }
-        write(mut self.words, 0, w)
+        write(mut self.words, 0, self.staged)
         label("lights")
         dispatch(bin.bind(cam, count: n, words: mut self.words), groups: FROXELS)
     }

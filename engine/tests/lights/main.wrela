@@ -158,7 +158,7 @@ fn the_gpus_froxels_hold_the_cpus_lights(s: State) {
         var want: Vec<u32> = Vec::new()
         var reached = 0
         for i in 0..ls.len() {
-            if reaches(cam, ls[i], f) {
+            if reaches(cam, ls[i].at, ls[i].radius, f) {
                 reached += 1
                 if want.len() < PER_FROXEL {
                     want.push(i)

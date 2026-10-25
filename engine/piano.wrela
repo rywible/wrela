@@ -1121,25 +1121,41 @@ impl Piano {
             if !self.sounding[j] || j == k {
                 continue
             }
-            var energy = 0.0
-            for g in self.first[j]..self.first[j] + self.groups[j] {
-                let e = self.re[g] * self.re[g] + self.im[g] * self.im[g]
-                energy += (e.x + e.y) + (e.z + e.w)
-            }
+            let energy = self.key_energy(j)
             if energy < least {
                 least = energy
                 quietest = j
             }
         }
         if quietest != k {
-            self.sounding[quietest] = false
+            self.silence(quietest)
+            // A blow swelling in on it, gone too.
             self.swell[quietest] = 0
             for g in self.first[quietest]..self.first[quietest] + self.groups[quietest] {
-                self.re[g] = vec4(0.0)
-                self.im[g] = vec4(0.0)
                 self.new_re[g] = vec4(0.0)
                 self.new_im[g] = vec4(0.0)
             }
+        }
+    }
+
+    /// The energy of key `k`'s strings: the sum of their partials' squared amplitudes.
+    @audio
+    fn key_energy(self, k: u32) -> f32 {
+        var energy = 0.0
+        for g in self.first[k]..self.first[k] + self.groups[k] {
+            let e = self.re[g] * self.re[g] + self.im[g] * self.im[g]
+            energy += (e.x + e.y) + (e.z + e.w)
+        }
+        energy
+    }
+
+    /// Key `k` silenced: no longer sounding, its strings' partials at rest.
+    @audio
+    fn silence(mut self, k: u32) {
+        self.sounding[k] = false
+        for g in self.first[k]..self.first[k] + self.groups[k] {
+            self.re[g] = vec4(0.0)
+            self.im[g] = vec4(0.0)
         }
     }
 
@@ -1254,18 +1270,9 @@ impl Piano {
             self.quiet[k] += 1
             if self.quiet[k] >= 16 && self.swell[k] == 0 {
                 self.quiet[k] = 0
-                var energy = 0.0
-                for g in self.first[k]..self.first[k] + self.groups[k] {
-                    let e = self.re[g] * self.re[g] + self.im[g] * self.im[g]
-                    energy += (e.x + e.y) + (e.z + e.w)
-                }
                 // -120 dB of full scale: silence.
-                if energy < 1e-12 {
-                    self.sounding[k] = false
-                    for g in self.first[k]..self.first[k] + self.groups[k] {
-                        self.re[g] = vec4(0.0)
-                        self.im[g] = vec4(0.0)
-                    }
+                if self.key_energy(k) < 1e-12 {
+                    self.silence(k)
                 }
             }
         }

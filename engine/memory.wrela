@@ -11,14 +11,9 @@ use std::gpu::Memory
 pub const MIB: u64 = 1048576
 
 /// The bytes of `w` × `h` texels (× `d` deep) of `texel` bytes each: a texture's own count of
-/// what it holds (a mip chain's levels add a third more: `chain`).
+/// what it holds.
 pub fn texels(w: u32, h: u32, texel: u64, d: u32 = 1) -> u64 {
     u64(w) * u64(h) * u64(d) * texel
-}
-
-/// A full mip chain's bytes from its first level's (`texels`): about four thirds of it.
-pub fn chain(first: u64) -> u64 {
-    first + first / 3
 }
 
 /// The budget a browser tab's GPU memory allows (proposed: a tab's 1.5 GB, less what the WASM
@@ -51,11 +46,6 @@ impl Usage {
         self.gpu.buffers + self.gpu.textures
     }
 
-    /// The most held at once.
-    pub fn peak(self) -> u64 {
-        self.gpu.peak_buffers + self.gpu.peak_textures
-    }
-
     /// What's over its budget: "total" if what's held is over `total`, then each share's name
     /// that's over its own.
     pub fn over(self) -> Vec<Text> {
@@ -71,10 +61,14 @@ impl Usage {
         out
     }
 
-    /// Whether `name` is over its budget (`over`).
+    /// Whether `name` is over its budget (`over`): "total" if what's held is over `total`, or a
+    /// share of that name over its own.
     pub fn is_over(self, name: str) -> bool {
-        for n in self.over() {
-            if n == name {
+        if name == "total" && self.held() > self.total {
+            return true
+        }
+        for s in self.shares {
+            if s.name == name && s.bytes > s.budget {
                 return true
             }
         }

@@ -5,7 +5,7 @@
 // Frames are drawn at the times the tests name (`drive::Step::FrameAt`), and the screen captured.
 
 use hosts::both::{both_hosts, bytes_of, difference}
-use hosts::steps::built
+use hosts::steps::{built, call, stepped}
 use std::io::print
 use std::tool::drive
 use std::tool::drive::{Ran, Scalar, Seen, Step}
@@ -33,20 +33,6 @@ fn opened() -> drive::Build {
     }
     stepped(it.build, [Step::Init], "init")
     it.build
-}
-
-/// `list` run on `h`, none of it trapping (`what` names it in a trap's message): what it saw.
-fn stepped(h: drive::Build, list: [Step], what: str) -> Seen {
-    let Ok(seen) = drive::steps(h, list).wait() else { panic(f"{what}'s request") }
-    if let Some(trap) = seen.trap {
-        panic(f"{what}: {trap.message.as_str()}")
-    }
-    seen
-}
-
-/// A call of the export `name` with `args`.
-fn call(name: str, args: take Vec<Scalar>) -> Step {
-    Step::Call(String::from(name), take args)
 }
 
 /// The first result of the call `name` that `ran` is, as a `u32` (0 if it has none).

@@ -1,14 +1,14 @@
-// The broad culling cone of engine::stone's rocks (`view_cone`, the GPU's `cull_rocks` tests
+// The broad culling cone of engine::stone's rocks (`Camera::corner_tan`, the GPU's `cull_rocks` tests
 // each rock's sphere with it through `in_view`) contains the camera's edges and corners, also
 // with a square viewport, and drops rocks behind or well outside the view.
 
-use engine::stone::{NEAR_RADII, in_view, view_cone}
+use engine::stone::{NEAR_RADII, in_view}
 use engine::view::first_camera
 
 /// Whether `cull_rocks` draws a rock of radius 0.25 at `at` (render space) for `cam`, and near.
 fn kept(cam: engine::view::Camera, at: vec3) -> (bool, bool) {
     let sp = vec4(at, 0.25)
-    let seen = in_view(sp, cam.eye, cam.forward, cam.tan_half, view_cone(cam))
+    let seen = in_view(sp, cam.eye, cam.forward, cam.tan_half, cam.corner_tan())
     (seen, length(at - cam.eye) < NEAR_RADII * sp.w)
 }
 

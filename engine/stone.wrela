@@ -9,11 +9,12 @@
 
 use character::{ByChannels, Shaded, colours}
 use creature::Creature
+use frame::full
 use light::Lit
 use lit::{Lighting, shown, sun_and_gloss}
 use look::Mesh as Tolerance
 use noise::{hash3, noise3, rand}
-use realize::{Mesh, SkinVertex, Tally, fitted, realize_rigid, solid}
+use realize::{Mesh, SkinVertex, Tally, realize_rigid, solid}
 use std::derive::Box3
 use std::derive::Interval
 use std::field::{Blend, Fbm, Noise, Surface, VALUE_NOISE_LIPSCHITZ, fbm, oval, value_noise}
@@ -28,7 +29,7 @@ use std::gpu::{Compare, Depth, R32Uint, Texture}
 use std::math::TAU
 use std::transform::{rotate_y, translate}
 use view::{Camera, ROCK}
-use virtual::{Clusters, Placed, VisDraw, cook, full_screen, pulled}
+use virtual::{Clusters, Placed, VisDraw, cook, pulled}
 
 /// What a point of a stone carries: its colour (linear).
 pub struct Rock: Copy + GpuData + Blend {
@@ -134,15 +135,18 @@ pub fn stone(radius: f32, squash: vec3, seed: u32) -> Creature<Rock> {
     solid(stone_field(radius, squash, seed), Box3 { lo: -half, hi: half }, name: "stone")
 }
 
-/// A stone realized: its mesh, its colours, and where it is (its rest space to the world).
+/// A stone realized: its mesh, its colours, and where it is (its rest space to the world); and
+/// what its mesh holds, asked for to fit it (`settle`): none once it's fitted, or if it never
+/// will be.
 pub struct Realized {
     pub mesh: Mesh,
     pub colours: GpuBuffer<Unorm8x4>,
     pub at: mat4,
     pub seed: u32,
+    pub fit: Option<Fit> = None,
 }
 
-/// What a realized mesh holds, asked for to fit it (`Realized::fitted`): its tally (its
+/// What a realized mesh holds, asked for to fit it (`Realized::settle`, `fitted`): its tally (its
 /// vertices, and the quads pushed: as many as fit its room).
 pub struct Fit {
     pub tally: Pending<Tally>,
@@ -168,14 +172,33 @@ impl Realized {
     /// vertex each.
     pub fn fitted(r: take Realized, vertices: u32, quads: u32) -> Realized {
         var r = take r
-        let n = max(vertices, 1)
-        if n < r.colours.len() {
-            var colours: GpuBuffer<Unorm8x4> = buffer(n)
-            copy(r.colours.span(start: 0, count: n), colours.items_mut())
-            r.colours = take colours
-        }
-        r.mesh = fitted(take r.mesh, vertices, quads)
+        r.fit_to(vertices, quads)
         r
+    }
+
+    /// Fitted in place to what its mesh holds, once its counts (`fit`, asked for when it was
+    /// realized) have come: as `fitted`. Nothing before then, or once it's fitted. A realized
+    /// mesh has room for its whole grid's blocks, which its surface crosses a few of.
+    pub fn settle(mut self) {
+        let counts = match mut self.fit {
+            Some(f) => f.counts(),
+            None => None,
+        }
+        if let Some((v, q)) = counts {
+            self.fit_to(v, q)
+            self.fit = None
+        }
+    }
+
+    /// Its mesh and its colours fitted to `vertices` and `quads` (`fitted`).
+    fn fit_to(mut self, vertices: u32, quads: u32) {
+        let n = max(vertices, 1)
+        if n < self.colours.len() {
+            var colours: GpuBuffer<Unorm8x4> = buffer(n)
+            copy(self.colours.span(start: 0, count: n), colours.items_mut())
+            self.colours = take colours
+        }
+        self.mesh.fit(vertices, quads)
     }
 
     /// The GPU bytes its mesh and its colours take.
@@ -296,7 +319,7 @@ pub fn realize_stone_within(
 
 /// Rock `c` (a `realize::solid`) realized as one rigid mesh to `surface`'s tolerance, its colours
 /// cooked a cell `cell` across, placed by `at`, its tone's seed `seed`: a stone, a bed, or a game's
-/// built thing of rock.
+/// built thing of rock. Its counts are asked for, to fit it once they've come (`settle`).
 pub fn realize_rock(
     c: Creature<Rock>,
     surface: Tolerance,
@@ -306,7 +329,8 @@ pub fn realize_rock(
 ) -> Realized {
     let mesh = realize_rigid(c, surface)
     let colours = colours(mesh, c.field(), ByChannels {}, cell)
-    Realized { mesh, colours, at, seed }
+    let fit = Some(Fit { tally: read(mesh.tally.items()) })
+    Realized { mesh, colours, at, seed, fit }
 }
 
 /// What a stone's vertex passes on.
@@ -841,12 +865,6 @@ fn a_rock_is_drawn_where_it_is_seen_and_big_enough_to_be() {
     assert(in_view(vec4(0.0, 2.0, -1.0, 3.0), eye, ahead, t, w), "a rock round the eye isn't")
 }
 
-/// The tangent of the widest half angle of `cam`'s view: a cone enclosing the rectangular view
-/// reaches its corners, along the diagonal (`in_view`'s `wide`).
-pub fn view_cone(cam: Camera) -> f32 {
-    cam.tan_half * sqrt(1.0 + cam.aspect * cam.aspect)
-}
-
 /// What the rocks' culling reads: the eye (render space), its view, the render origin (the
 /// placements are in the world), and how many placements there are.
 pub struct RockCull: Copy + GpuData {
@@ -996,6 +1014,14 @@ impl Rocks {
     /// meets its view and spans enough of it (`in_view`), near (within `NEAR_RADII` of its radii)
     /// or far; their indices written for the draws, each kind's and level's count into its draw.
     pub fn cull(mut self, cam: Camera, origin: vec3) {
+        // Its kinds' meshes fitted once their counts have come (`Realized::settle`): the draws
+        // read what they hold, the same before and after.
+        for mut r in self.near {
+            r.settle()
+        }
+        for mut r in self.far {
+            r.settle()
+        }
         self.origin = origin
         let total = self.len()
         let n = 2 * self.far.len()
@@ -1006,7 +1032,7 @@ impl Rocks {
             eye: cam.eye,
             tan_half: cam.tan_half,
             forward: cam.forward,
-            wide: view_cone(cam),
+            wide: cam.corner_tan(),
             origin,
             total,
         }
@@ -1238,9 +1264,9 @@ impl ClusterStones {
             borrow l = self.clusters.levels[k]
             draw(
                 pass,
-                full_screen,
+                full.bind(z: 0.5),
                 cluster_stone_shade.bind(
-                    VisDraw { cam: lt.cam, skirt: l.skirt, level: k, set: self.clusters.set },
+                    self.clusters.vis(lt.cam, k),
                     ids,
                     list: l.list.items(),
                     words: l.words.items(),

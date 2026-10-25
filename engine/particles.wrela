@@ -28,9 +28,9 @@ use plant::Wind
 use std::collections::swap
 use std::gpu::{
     Append, AppendBuffer, Atomics, Blend, ClipPosition, DepthTexture, DispatchArgs, DrawArgs, Flat,
-    FragCoord, GlobalId, GpuBuffer, GpuSpan, InstanceIndex, LocalId, One, R8, RenderPass,
-    Rgba16Float, Sampler, Shared, SharedAtomics, Slots, Targets2, Texture, VertexIndex, WorkgroupId,
-    append_buffer, buffer, discard, dispatch, draw, label, workgroup_prefix_sum, write,
+    FragCoord, GlobalId, GpuBuffer, GpuSpan, LocalId, One, R8, RenderPass, Rgba16Float, Sampler,
+    Shared, SharedAtomics, Slots, Targets2, Texture, VertexIndex, WorkgroupId, append_buffer,
+    buffer, discard, dispatch, draw, label, workgroup_prefix_sum, write,
 }
 use view::{Camera, VEIL}
 
@@ -162,7 +162,7 @@ fn groups_of(count: [u32], room: u32, args: mut One<DispatchArgs>, id: GlobalId)
     args.set(id, DispatchArgs { x: (kept(count, room) + GROUP - 1) / GROUP, y: 1, z: 1 })
 }
 
-/// The particles' draw: six corners an instance, an instance a particle.
+/// The particles' draw: one instance, six corners a particle.
 @compute(1)
 fn draw_args(count: [u32], room: u32, args: mut One<DrawArgs>, id: GlobalId) {
     args.set(
@@ -414,34 +414,22 @@ impl Particles {
             ),
             groups: self.groups.items(),
         )
-        // Passes of 8 bits (`KEY_BITS` / 8, an even number), back and forth: the last leaves
-        // them in `keys` and `order`.
+        // Passes of 8 bits (`KEY_BITS` / 8, an even number), back and forth, the buffers swapped
+        // after each: the last leaves them in `keys` and `order`.
         for pass in 0..KEY_BITS / 8 {
-            if pass % 2 == 0 {
-                sort_pass(
-                    keys: self.keys,
-                    vals: self.order,
-                    keys_out: mut self.keys_b,
-                    vals_out: mut self.order_b,
-                    table: mut self.table,
-                    sums: mut self.sums,
-                    count: self.live.count(),
-                    groups: self.groups,
-                    shift: 8 * pass,
-                )
-            } else {
-                sort_pass(
-                    keys: self.keys_b,
-                    vals: self.order_b,
-                    keys_out: mut self.keys,
-                    vals_out: mut self.order,
-                    table: mut self.table,
-                    sums: mut self.sums,
-                    count: self.live.count(),
-                    groups: self.groups,
-                    shift: 8 * pass,
-                )
-            }
+            sort_pass(
+                keys: self.keys,
+                vals: self.order,
+                keys_out: mut self.keys_b,
+                vals_out: mut self.order_b,
+                table: mut self.table,
+                sums: mut self.sums,
+                count: self.live.count(),
+                groups: self.groups,
+                shift: 8 * pass,
+            )
+            swap(mut self.keys, mut self.keys_b)
+            swap(mut self.order, mut self.order_b)
         }
         dispatch(
             draw_args.bind(count: self.live.count(), room: BUDGET, args: mut self.args),
@@ -573,15 +561,10 @@ fn light_particle(
     }
 }
 
-/// Corner `v` of the `inst`th particle by depth (`drawn`, far first), facing the eye (`cam`),
-/// its colour as `light_particle` lit it.
+/// Corner `v % 6` of the `v / 6`th particle by depth (`drawn`, far first), facing the eye
+/// (`cam`), its colour as `light_particle` lit it.
 @vertex
-fn particle_vertex(
-    v: VertexIndex,
-    inst: InstanceIndex,
-    cam: Camera,
-    drawn: [Drawn],
-) -> ParticleVertex {
+fn particle_vertex(v: VertexIndex, cam: Camera, drawn: [Drawn]) -> ParticleVertex {
     let p = drawn[v.index / 6]
     let size = abs(p.size)
     let corners = [

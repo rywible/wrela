@@ -21,7 +21,7 @@ use std::gpu::{
     Cubemap, FragCoord, GlobalId, Rgba16Float, Sampler, Texels, Texture, dispatch, label,
     writable_cubemap,
 }
-use std::math::{PI, TAU}
+use std::math::TAU
 use view::Camera
 
 /// What the water's pass reads of the scene drawn before it: its colour, and each pixel's

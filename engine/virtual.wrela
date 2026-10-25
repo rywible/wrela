@@ -33,6 +33,7 @@
 //   a quad of pixels' shading and its setup; in software it costs its pixels.
 
 use creature::{Creature, Parts}
+use frame::full
 use realize::{
     BLOCK, CellWord, Grid, LiveBlock, Mesh, NO_VERTEX, Room, Scratch, SkinVertex, Tally, cell_key,
     record_cull, record_vertices, vertex_at, word_at,
@@ -40,10 +41,10 @@ use realize::{
 use std::collections::replace
 use std::derive::{Box3, gradient}
 use std::gpu::{
-    Append, AppendBuffer, Atomics, ClipPosition, Cull, DepthTexture, DispatchArgs, DrawArgs, Flat,
-    FragCoord, GlobalId, GpuBuffer, GpuSpan, LocalId, One, R32Uint, RenderPass, Shared,
-    SharedAtomics, Slots, Texture, VertexIndex, WithDepth, WorkgroupId, append_buffer, barrier,
-    buffer, copy, discard, dispatch, draw, read, write,
+    Append, AppendBuffer, Atomics, ClipPosition, Cull, DispatchArgs, DrawArgs, Flat, FragCoord,
+    GlobalId, GpuBuffer, LocalId, One, R32Uint, RenderPass, Shared, SharedAtomics, Slots, Texture,
+    VertexIndex, WithDepth, WorkgroupId, append_buffer, barrier, buffer, copy, discard, dispatch,
+    draw, read, write,
 }
 use std::io::Pending
 use view::Camera
@@ -62,12 +63,19 @@ const NO_ROOM: u32 = 0xffffffff
 /// rasterizer's.
 const SMALL_PICK: u32 = 0x80000000
 
-/// A visibility id's flag (below its level's and its set's bits, `id_of`): its triangle is of its
-/// level's small quads (`soft_at`).
-pub const SOFT_ID: u32 = 0x02000000
+/// Where a visibility id's level + 1 begins (its top four bits, `id_of`), how many bits its set
+/// takes below that, and where they begin.
+const LEVEL_SHIFT: u32 = 28
+const SET_BITS: u32 = 2
+const SET_SHIFT: u32 = LEVEL_SHIFT - SET_BITS
 
-/// The most cluster sets one visibility buffer tells apart (`Clusters::set`, two bits of an id).
-pub const MOST_SETS: u32 = 4
+/// A visibility id's flag (the bit below its set's, `id_of`): its triangle is of its level's
+/// small quads (`soft_at`).
+pub const SOFT_ID: u32 = 1 << (SET_SHIFT - 1)
+
+/// The most cluster sets one visibility buffer tells apart (`Clusters::set`, `SET_BITS` of an
+/// id).
+pub const MOST_SETS: u32 = 1 << SET_BITS
 
 /// The id of a pixel no software triangle has reached yet (`nearest_depths`).
 pub const NO_ID: u32 = 0xffffffff
@@ -147,7 +155,7 @@ pub struct Level {
     pub roots: AppendBuffer<u32>,
     /// The frame's picks: instance and slot, two `u32`s each (a list).
     pub picks: GpuBuffer<u32>,
-    /// The frame's quads to draw: the pick's index and the quad's (a list).
+    /// The frame's quads to draw: the pick's instance and the quad's (a list).
     pub list: GpuBuffer<u32>,
     pub seed_args: GpuBuffer<DispatchArgs>,
     pub select_args: GpuBuffer<DispatchArgs>,
@@ -554,14 +562,14 @@ fn cell_quads(
         // Facing from inside to outside, as `emit_quads` faces them.
         let order = if in0 == 1 { [0, 1, 2, 3] } else { [0, 3, 2, 1] }
         if write_out {
-            let base = (at + count) * 6
-            let (a, b, c, d) = (vs[order[0]], vs[order[1]], vs[order[2]], vs[order[3]])
-            words.store(i: base, value: a)
-            words.store(i: base + 1, value: b)
-            words.store(i: base + 2, value: c)
-            words.store(i: base + 3, value: a)
-            words.store(i: base + 4, value: c)
-            words.store(i: base + 5, value: d)
+            store_quad(
+                mut words,
+                at + count,
+                vs[order[0]],
+                vs[order[1]],
+                vs[order[2]],
+                vs[order[3]],
+            )
         }
         count += 1
         // Its edges between cells: (g, g - u) and (g - w, g - u - w) cross faces along a1, (g,
@@ -577,19 +585,25 @@ fn cell_quads(
                 continue
             }
             if write_out {
-                let base = (at + count) * 6
                 let (vi, vj) = (vs[i], vs[j])
-                words.store(i: base, value: vi)
-                words.store(i: base + 1, value: vj)
-                words.store(i: base + 2, value: vj | SKIRT)
-                words.store(i: base + 3, value: vi)
-                words.store(i: base + 4, value: vj | SKIRT)
-                words.store(i: base + 5, value: vi | SKIRT)
+                store_quad(mut words, at + count, vi, vj, vj | SKIRT, vi | SKIRT)
             }
             count += 1
         }
     }
     count
+}
+
+/// Quad `q` of `words` (six `u32`s a quad): its corners `a`, `b`, `c`, `d` (in order round it)
+/// as two triangles, `a b c` and `a c d`.
+fn store_quad(words: mut Atomics<u32>, q: u32, a: u32, b: u32, c: u32, d: u32) {
+    let base = q * 6
+    words.store(i: base, value: a)
+    words.store(i: base + 1, value: b)
+    words.store(i: base + 2, value: c)
+    words.store(i: base + 3, value: a)
+    words.store(i: base + 4, value: c)
+    words.store(i: base + 5, value: d)
 }
 
 /// Each live block's cluster: its cells' quads and skirts (`cell_quads`) counted, a range of
@@ -789,9 +803,14 @@ fn push_pair(list: mut Atomics<u32>, a: u32, b: u32) {
     }
 }
 
+/// The items a list `words` long has room for: two words an item, after its count.
+fn room_of(words: u32) -> u32 {
+    (words - 1) / 2
+}
+
 /// How many items list `list` holds: those pushed, as many as it has room for.
 fn listed(list: [u32]) -> u32 {
-    min(list[0], (list.len() - 1) / 2)
+    min(list[0], room_of(list.len()))
 }
 
 /// The seed pass's group counts: a group of 64 roots along x, one visible instance along y.
@@ -884,7 +903,7 @@ pub fn gather(
     let small = (pick & SMALL_PICK) != 0
     let first = spans[1 + 3 * slot]
     let n = spans[2 + 3 * slot]
-    let room = (list.len() - 1) / 2
+    let room = room_of(list.len())
     let at = if small { soft.add(i: 0, value: n) } else { list.add(i: 0, value: n) }
     for k in 0..n {
         if at + k >= room {
@@ -906,7 +925,7 @@ fn soft_at(room: u32, j: u32) -> u32 {
 /// two ends; where they'd meet (the room was too small), each keeps only those the other can't
 /// have written over.
 fn quads_of(list: [u32], soft: [u32]) -> vec2u {
-    split((list.len() - 1) / 2, list[0], soft[0])
+    split(room_of(list.len()), list[0], soft[0])
 }
 
 /// `quads_of` for a list with room for `room`, `listed` quads pushed from its start and `small`
@@ -917,26 +936,19 @@ fn split(room: u32, listed: u32, small: u32) -> vec2u {
     vec2u(min(a, room - b), min(b, room - a))
 }
 
-/// The level's draw: six vertices a quad the hardware draws.
+/// The level's draw (`args`: six vertices a quad the hardware draws), and the software
+/// rasterizer's pass over its small quads (`soft_args`, in rows of `WIDE`).
 @compute(1)
-pub fn draw_counts(list: [u32], soft: [u32], args: mut One<DrawArgs>, id: GlobalId) {
-    args.set(
-        id,
-        DrawArgs {
-            vertices: 6 * quads_of(list, soft).x,
-            instances: 1,
-            first_vertex: 0,
-            first_instance: 0,
-        },
-    )
-}
-
-/// A triangle covering the target (`resolve`).
-@vertex
-pub fn full_screen(v: VertexIndex) -> ClipPosition {
-    let x = f32((v.index << 1) & 2) * 2.0 - 1.0
-    let y = f32(v.index & 2) * 2.0 - 1.0
-    ClipPosition { position: vec4(x, y, 0.5, 1.0) }
+pub fn draw_counts(
+    list: [u32],
+    soft: [u32],
+    args: mut One<DrawArgs>,
+    soft_args: mut One<DispatchArgs>,
+    id: GlobalId,
+) {
+    let q = quads_of(list, soft)
+    args.set(id, DrawArgs { vertices: 6 * q.x, instances: 1, first_vertex: 0, first_instance: 0 })
+    soft_args.set(id, wide(q.y))
 }
 
 /// A cluster vertex as the fragment shader reads it: its clip position, its world position and
@@ -947,35 +959,19 @@ pub struct ClusterVertex: Copy {
     pub normal: vec3,
 }
 
-/// What a level's draw reads besides its buffers: the camera and how deep its skirts hang.
-pub struct LevelDraw: Copy + GpuData {
-    pub cam: Camera,
-    pub skirt: f32,
-}
-
-/// Vertex `v` of a level's list: its quad's corner (`v % 6`), placed by its pick's instance, a
-/// skirt's corner pushed into the surface by the level's skirt depth.
+/// Vertex `v` of a level's list: its quad's corner (`v % 6`, `corner_of`), placed by its pick's
+/// instance, a skirt's corner pushed into the surface by the level's skirt depth.
 @vertex
 pub fn cluster_vertex(
     v: VertexIndex,
-    d: LevelDraw,
+    d: VisDraw,
     list: [u32],
     words: [u32],
     verts: [SkinVertex],
     places: [Placed],
 ) -> ClusterVertex {
-    let q = v.index / 6
-    let instance = list[1 + 2 * q]
-    let word = words[6 * list[2 + 2 * q] + v.index % 6]
-    let sv = verts[word & (SKIRT - 1)]
-    let p = places[instance]
-    let rest = if (word & SKIRT) != 0 { sv.pos - sv.normal * d.skirt } else { sv.pos }
-    let world = placed_point(p, rest)
-    ClusterVertex {
-        clip: ClipPosition { position: d.cam.clip(world) },
-        world,
-        normal: placed_normal(p, sv.normal),
-    }
+    let (world, normal) = corner_of(d, list, words, verts, places, v.index / 6, v.index % 6)
+    ClusterVertex { clip: ClipPosition { position: d.cam.clip(world) }, world, normal }
 }
 
 // ---- the visibility buffer ------------------------------------------------------------------
@@ -993,16 +989,43 @@ pub fn cluster_vertex(
 /// the set in the two below (`MOST_SETS`: several surfaces' clusters share one buffer, a set
 /// each), then the triangle. A pixel no cluster drew holds 0.
 pub fn id_of(level: u32, set: u32, triangle: u32) -> u32 {
-    ((level + 1) << 28) | ((set % MOST_SETS) << 26) | triangle
+    ((level + 1) << LEVEL_SHIFT) | ((set % MOST_SETS) << SET_SHIFT) | triangle
+}
+
+/// A visibility id's parts, as `id_of` packs them: its level + 1 (0 where no cluster drew its
+/// pixel), its set, whether its triangle is of the small quads (`SOFT_ID`), and the triangle.
+struct VisId: Copy {
+    above: u32,
+    set: u32,
+    soft: bool,
+    triangle: u32,
+}
+
+/// Visibility id `id` unpacked (`VisId`).
+fn decode(id: u32) -> VisId {
+    VisId {
+        above: id >> LEVEL_SHIFT,
+        set: (id >> SET_SHIFT) & (MOST_SETS - 1),
+        soft: (id & SOFT_ID) != 0,
+        triangle: id & (SOFT_ID - 1),
+    }
+}
+
+impl VisId {
+    /// Whether it's of `d`'s set and level.
+    fn is_of(self, d: VisDraw) -> bool {
+        self.above == d.level + 1 && self.set == d.set % MOST_SETS
+    }
 }
 
 /// Whether visibility id `id` is of `d`'s set and level.
 pub fn of_level(d: VisDraw, id: u32) -> bool {
-    (id >> 28) == d.level + 1 && ((id >> 26) & (MOST_SETS - 1)) == d.set % MOST_SETS
+    decode(id).is_of(d)
 }
 
-/// What the visibility pass and a level's resolve read beside their buffers: the camera, the
-/// level's skirt depth, and the level.
+/// What a level's draws and passes (the visibility pass, its resolve, the forward draw) read
+/// beside their buffers: the camera, the level's skirt depth, the level, and the set
+/// (`Clusters::vis`).
 pub struct VisDraw: Copy + GpuData {
     pub cam: Camera,
     pub skirt: f32,
@@ -1021,12 +1044,23 @@ fn corner_of(
     q: u32,
     c: u32,
 ) -> (vec3, vec3) {
-    let instance = list[1 + 2 * q]
-    let word = words[6 * list[2 + 2 * q] + c]
+    placed_corner(places[list[1 + 2 * q]], words[6 * list[2 + 2 * q] + c], verts, d.skirt)
+}
+
+/// A quad's corner `word` (a vertex of `verts`, `SKIRT` flagged) placed by `p`: its world point
+/// and its normal.
+fn placed_corner(p: Placed, word: u32, verts: [SkinVertex], skirt: f32) -> (vec3, vec3) {
+    (
+        placed_point(p, rest_of(word, verts, skirt)),
+        placed_normal(p, verts[word & (SKIRT - 1)].normal),
+    )
+}
+
+/// A quad's corner `word` in rest space: its vertex of `verts`, pushed `skirt` into the surface
+/// along its normal if it's a skirt's (`SKIRT`).
+fn rest_of(word: u32, verts: [SkinVertex], skirt: f32) -> vec3 {
     let sv = verts[word & (SKIRT - 1)]
-    let p = places[instance]
-    let rest = if (word & SKIRT) != 0 { sv.pos - sv.normal * d.skirt } else { sv.pos }
-    (placed_point(p, rest), placed_normal(p, sv.normal))
+    if (word & SKIRT) != 0 { sv.pos - sv.normal * skirt } else { sv.pos }
 }
 
 /// A visibility pass's vertex: its clip position, and its triangle's id (`id_of`), the same at
@@ -1108,30 +1142,34 @@ pub fn pulled(
     verts: [SkinVertex],
     places: [Placed],
 ) -> Option<Pulled> {
-    if !of_level(d, id) {
+    let v = decode(id)
+    if !v.is_of(d) {
         return None
     }
-    let tri = id & (SOFT_ID - 1)
-    let q = if (id & SOFT_ID) != 0 { soft_at((list.len() - 1) / 2, tri / 2) } else { tri / 2 }
+    let tri = v.triangle
+    let q = if v.soft { soft_at(room_of(list.len()), tri / 2) } else { tri / 2 }
     let first = 3 * (tri % 2)
-    let (a, na) = corner_of(d, list, words, verts, places, q, first)
-    let (b, nb) = corner_of(d, list, words, verts, places, q, first + 1)
-    let (c, nc) = corner_of(d, list, words, verts, places, q, first + 2)
+    // Its pick's instance and placement, and its corners' words, read once for the three.
+    let instance = list[1 + 2 * q]
+    let p = places[instance]
+    let at = 6 * list[2 + 2 * q] + first
+    let (a, na) = placed_corner(p, words[at], verts, d.skirt)
+    let (b, nb) = placed_corner(p, words[at + 1], verts, d.skirt)
+    let (c, nc) = placed_corner(p, words[at + 2], verts, d.skirt)
     let across = cross(b - a, c - a)
     let ray = d.cam.ray(px)
     let facing = dot(ray, across)
     let t = if abs(facing) > 1.0e-12 { dot(a - d.cam.eye, across) / facing } else { 0.0 }
-    let p = d.cam.eye + ray * t
-    let w = barycentrics(p, a, b, c)
-    let at = 6 * list[2 + 2 * q] + first
+    let at_ray = d.cam.eye + ray * t
+    let w = barycentrics(at_ray, a, b, c)
     let corner = |k: u32| words[at + k] & (SKIRT - 1)
     Some(
         Pulled {
-            world: p,
+            world: at_ray,
             normal: na * w.x + nb * w.y + nc * w.z,
             w,
             corners: vec3u(corner(0), corner(1), corner(2)),
-            instance: list[1 + 2 * q],
+            instance,
         },
     )
 }
@@ -1172,12 +1210,6 @@ fn wide_counts(list: [u32], soft: [u32], args: mut One<DispatchArgs>, id: Global
     args.set(id, wide(q.x + q.y))
 }
 
-/// The software rasterizer's pass over a level's small quads, in rows of `WIDE`.
-@compute(1)
-fn soft_counts(list: [u32], soft: [u32], args: mut One<DispatchArgs>, id: GlobalId) {
-    args.set(id, wide(quads_of(list, soft).y))
-}
-
 /// The listed triangles' projected areas, counted (`bins`: under 1, 4, 16 and 64 px², and the
 /// rest; then the triangles): what decides a software rasterizer (docs/plan-world-class.md
 /// §B7b). Listed quad `id` of the level's list (the hardware's, then the small ones), its two
@@ -1198,7 +1230,7 @@ pub fn areas(
     if i >= n.x + n.y {
         return
     }
-    let q = if i < n.x { i } else { soft_at((list.len() - 1) / 2, i - n.x) }
+    let q = if i < n.x { i } else { soft_at(room_of(list.len()), i - n.x) }
     for t in 0..2 {
         var px = [vec2(0.0); 3]
         var behind = false
@@ -1370,12 +1402,7 @@ fn soft_corners(
     let first = 6 * list[2 + 2 * q]
     var clip = [vec4(0.0); 6]
     for c in 0..6 {
-        let word = words[first + c]
-        let i = word & (SKIRT - 1)
-        let rest = if (word & SKIRT) != 0 { verts[i].pos - verts[i].normal * d.skirt } else {
-            verts[i].pos
-        }
-        clip[c] = d.cam.clip(placed_point(p, rest))
+        clip[c] = d.cam.clip(placed_point(p, rest_of(words[first + c], verts, d.skirt)))
     }
     clip
 }
@@ -1398,11 +1425,12 @@ pub fn soft_depths(
 ) {
     let j = id.y * WIDE + id.x
     var nearest = true
-    if j < split((list.len() - 1) / 2, list[0], soft.load(0)).y {
+    let room = room_of(list.len())
+    if j < split(room, list[0], soft.load(0)).y {
         let clip = soft_corners(
             d.vis,
             list,
-            soft_at((list.len() - 1) / 2, j),
+            soft_at(room, j),
             words,
             verts,
             places,
@@ -1445,7 +1473,7 @@ pub fn soft_ids(
     let clip = soft_corners(
         d.vis,
         list,
-        soft_at((list.len() - 1) / 2, j),
+        soft_at(room_of(list.len()), j),
         words,
         verts,
         places,
@@ -1528,7 +1556,7 @@ impl Level {
     }
 
     /// The quads and vertices cooking emitted, once read back: their buffers fitted to them
-    /// (copied).
+    /// (copied; the mesh by `realize::Mesh::fit`).
     fn settle(mut self) {
         if self.emitted.len() > 0 && answered(mut self.emitted, mut self.emitted_got) {
             let total = min(self.emitted_got[0], self.words.len() / 6)
@@ -1541,12 +1569,7 @@ impl Level {
             }
             self.words = take words
             let count = min(self.emitted_got[1], self.mesh.verts.capacity())
-            var mesh = Mesh::new(Room { vertices: max(count, 1), quads: 1 })
-            if count > 0 {
-                let from = self.mesh.verts.items()
-                copy(GpuSpan { buffer: from.buffer, start: 0, count }, mesh.verts.items_mut())
-            }
-            self.mesh = take mesh
+            self.mesh.fit(count, 1)
             self.emitted = Vec::new()
         }
     }
@@ -1580,6 +1603,11 @@ fn fit_list(list: mut GpuBuffer<u32>, room: u32) {
 }
 
 impl Clusters {
+    /// What level `k`'s passes read beside its buffers, seen from `cam`.
+    pub fn vis(self, cam: Camera, k: u32) -> VisDraw {
+        VisDraw { cam, skirt: self.levels[k].skirt, level: k, set: self.set }
+    }
+
     /// Reads back each level's quads wanted (the clusters' quads and skirts) and the quads its
     /// last frame listed for the hardware and for the software rasterizer (which share the
     /// list's room): three a level, in order, to set beside `rooms`.
@@ -1620,7 +1648,7 @@ impl Clusters {
         var out: Vec<u32> = Vec::new()
         for l in self.levels {
             out.push(l.words.len() / 6)
-            out.push((l.list.len() - 1) / 2)
+            out.push(room_of(l.list.len()))
         }
         out
     }
@@ -1647,7 +1675,7 @@ impl Clusters {
         for mut l in self.levels {
             l.settle()
             l.fit(places.len())
-            most = max(most, (l.picks.len() - 1) / 2)
+            most = max(most, room_of(l.picks.len()))
         }
         fit_list(mut self.here, most)
         fit_list(mut self.below, most)
@@ -1725,14 +1753,7 @@ impl Clusters {
                             list: l.list.items(),
                             soft: l.soft.items(),
                             args: mut l.draw_args,
-                        ),
-                        groups: 1,
-                    )
-                    dispatch(
-                        soft_counts.bind(
-                            list: l.list.items(),
-                            soft: l.soft.items(),
-                            args: mut l.soft_args,
+                            soft_args: mut l.soft_args,
                         ),
                         groups: 1,
                     )
@@ -1760,13 +1781,11 @@ impl Clusters {
             groups: ((size.x + 7) / 8, (size.y + 7) / 8, 1),
         )
         for k in 0..self.levels.len() {
+            let vis = self.vis(cam, k)
             match mut self.levels[k] {
                 l => dispatch(
                     soft_depths.bind(
-                        SoftDraw {
-                            vis: VisDraw { cam, skirt: l.skirt, level: k, set: self.set },
-                            size,
-                        },
+                        SoftDraw { vis, size },
                         list: l.list.items(),
                         soft: mut l.soft,
                         words: l.words.items(),
@@ -1782,10 +1801,7 @@ impl Clusters {
             borrow l = self.levels[k]
             dispatch(
                 soft_ids.bind(
-                    SoftDraw {
-                        vis: VisDraw { cam, skirt: l.skirt, level: k, set: self.set },
-                        size,
-                    },
+                    SoftDraw { vis: self.vis(cam, k), size },
                     list: l.list.items(),
                     soft: l.soft.items(),
                     words: l.words.items(),
@@ -1807,7 +1823,7 @@ impl Clusters {
             draw(
                 pass,
                 vis_vertex.bind(
-                    VisDraw { cam, skirt: l.skirt, level: k, set: self.set },
+                    self.vis(cam, k),
                     list: l.list.items(),
                     words: l.words.items(),
                     verts: l.mesh.verts.items(),
@@ -1822,7 +1838,7 @@ impl Clusters {
         if self.small > 0.0 {
             draw(
                 pass,
-                full_screen,
+                full.bind(z: 0.5),
                 soft_merge.bind(
                     self.soft_size,
                     pixels: self.soft_pixels.items(),
@@ -1847,9 +1863,9 @@ impl Clusters {
             borrow l = self.levels[k]
             draw(
                 pass,
-                full_screen,
+                full.bind(z: 0.5),
                 resolve_level.bind(
-                    VisDraw { cam, skirt: l.skirt, level: k, set: self.set },
+                    self.vis(cam, k),
                     look,
                     ids,
                     list: l.list.items(),
@@ -1878,7 +1894,7 @@ impl Clusters {
             borrow l = self.levels[k]
             dispatch(
                 areas.bind(
-                    VisDraw { cam, skirt: l.skirt, level: k, set: self.set },
+                    self.vis(cam, k),
                     list: l.list.items(),
                     soft: l.soft.items(),
                     words: l.words.items(),
@@ -1901,11 +1917,12 @@ impl Clusters {
         places: GpuBuffer<Placed>,
         look: ClusterLook,
     ) {
-        for l in self.levels {
+        for k in 0..self.levels.len() {
+            borrow l = self.levels[k]
             draw(
                 pass,
                 cluster_vertex.bind(
-                    LevelDraw { cam, skirt: l.skirt },
+                    self.vis(cam, k),
                     list: l.list.items(),
                     words: l.words.items(),
                     verts: l.mesh.verts.items(),

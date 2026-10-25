@@ -205,7 +205,7 @@ impl Planner {
             return false
         }
         if !self.filling {
-            let limit = if self.playable { self.budget.playing_us } else { self.budget.loading_us }
+            let limit = self.limit()
             let cost = self.costs[w.index()].us
             if self.optional && self.spent() + cost > limit {
                 self.cut += 1

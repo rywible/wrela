@@ -251,6 +251,9 @@ pub struct Clipmap {
     side_template: GpuBuffer<DrawIndexedArgs>,
     side_args: GpuBuffer<DrawIndexedArgs>,
     bounds: GpuBuffer<u32>,
+    /// Whether `args` and `side_template` lay the levels where they are: they change only as a
+    /// level is cooked where it moved to, or every level moves with the origin (`set_origin`).
+    laid: bool,
     finest: f32,
     /// Whether each level holds what its place asks (false until it's cooked).
     cooked: [bool; MAX_LEVELS],
@@ -302,6 +305,7 @@ impl Clipmap {
             side_template: buffer(MAX_LEVELS * SIDES),
             side_args: buffer(MAX_LEVELS * SIDES),
             bounds: buffer_of(Vec::filled(2 * MAX_LEVELS * SIDES, 0)),
+            laid: false,
             finest,
             cooked: [false; MAX_LEVELS],
             cooks: 0,
@@ -335,6 +339,7 @@ impl Clipmap {
         }
         self.levels.eye -= d
         self.origin = o
+        self.laid = false
     }
 
     /// Turns the ground's fields on: `blocks` blocks a side, each a tile `tile` metres across of
@@ -465,40 +470,44 @@ impl Clipmap {
             }
         }
         self.cooks += cooked
-        // Each level's draw: its run of the indices, by where its hole is; and its sides'.
-        var args: Vec<DrawIndexedArgs> = Vec::new()
-        var sides: Vec<DrawIndexedArgs> = Vec::new()
-        for l in 0..self.levels.count {
-            var run = HOLES
-            if l > 0 {
-                let a = self.levels.at[l]
-                let lo = vec2u((self.levels.at[l - 1].xy - a.xy) / a.z + vec2(0.5))
-                run = min(lo.x - HOLE, 1) + 2 * min(lo.y - HOLE, 1)
-            }
-            args.push(
-                DrawIndexedArgs {
-                    indices: run_length(run),
-                    instances: 1,
-                    first_index: first_index(run),
-                    base_vertex: i32(l * LEVEL_POINTS),
-                    first_instance: 0,
-                },
-            )
-            for k in 0..SIDES {
-                let at = self.sides[run * SIDES + k]
-                sides.push(
+        // Each level's draw: its run of the indices, by where its hole is; and its sides'. Each
+        // lies where its level is, so it's laid again only once a level is somewhere else.
+        if cooked > 0 || !self.laid {
+            var args: Vec<DrawIndexedArgs> = Vec::new()
+            var sides: Vec<DrawIndexedArgs> = Vec::new()
+            for l in 0..self.levels.count {
+                var run = HOLES
+                if l > 0 {
+                    let a = self.levels.at[l]
+                    let lo = vec2u((self.levels.at[l - 1].xy - a.xy) / a.z + vec2(0.5))
+                    run = min(lo.x - HOLE, 1) + 2 * min(lo.y - HOLE, 1)
+                }
+                args.push(
                     DrawIndexedArgs {
-                        indices: at.y,
+                        indices: run_length(run),
                         instances: 1,
-                        first_index: at.x,
+                        first_index: first_index(run),
                         base_vertex: i32(l * LEVEL_POINTS),
                         first_instance: 0,
                     },
                 )
+                for k in 0..SIDES {
+                    let at = self.sides[run * SIDES + k]
+                    sides.push(
+                        DrawIndexedArgs {
+                            indices: at.y,
+                            instances: 1,
+                            first_index: at.x,
+                            base_vertex: i32(l * LEVEL_POINTS),
+                            first_instance: 0,
+                        },
+                    )
+                }
             }
+            write(mut self.args, 0, args)
+            write(mut self.side_template, 0, sides)
+            self.laid = true
         }
-        write(mut self.args, 0, args)
-        write(mut self.side_template, 0, sides)
         // A cooked level changes its sides' heights, and the finer level's (it morphs to them).
         if cooked > 0 {
             label("terrain cook")
@@ -515,14 +524,10 @@ impl Clipmap {
         cooked
     }
 
-    /// The ground's indices, to draw with `draw_args`.
+    /// The ground's indices, to draw with each level's sides' draws (`sides_args`), or each
+    /// level's whole (`cast`).
     pub fn indices(self) -> GpuSpan<u32> {
         self.indices.span(start: 0, count: self.indices.len())
-    }
-
-    /// Level `l`'s draw of the ground's indices this frame.
-    pub fn draw_args(self, l: u32) -> GpuSpan<DrawIndexedArgs> {
-        self.args.span(start: l, count: 1)
     }
 
     /// Chooses which of the levels' sides `cam` sees (`cull_sides`): each side outside its
@@ -656,21 +661,17 @@ fn ground_indices() -> GroundMesh {
             }
             if r < HOLES {
                 // Each edge of the hole is its outer neighbour's side: north, south, west, east.
-                for side in 0..4 {
-                    if side != k {
-                        continue
-                    }
-                    for i in 0..QUADS / 2 {
-                        for c in 0..6 {
-                            let j = i + qx[c]
-                            let g = if side == 0 { vec2u(lo.x + j, lo.y) } else if side == 1 {
-                                vec2u(lo.x + j, hi.y)
-                            } else if side == 2 { vec2u(lo.x, lo.y + j) } else {
-                                vec2u(hi.x, lo.y + j)
-                            }
-                            let dropped = SIDE * SIDE + 4 * SIDE + side * (QUADS / 2 + 1) + j
-                            out.push(if qz[c] == 0 { g.y * SIDE + g.x } else { dropped })
+                let side = k
+                for i in 0..QUADS / 2 {
+                    for c in 0..6 {
+                        let j = i + qx[c]
+                        let g = if side == 0 { vec2u(lo.x + j, lo.y) } else if side == 1 {
+                            vec2u(lo.x + j, hi.y)
+                        } else if side == 2 { vec2u(lo.x, lo.y + j) } else {
+                            vec2u(hi.x, lo.y + j)
                         }
+                        let dropped = SIDE * SIDE + 4 * SIDE + side * (QUADS / 2 + 1) + j
+                        out.push(if qz[c] == 0 { g.y * SIDE + g.x } else { dropped })
                     }
                 }
             }
@@ -708,6 +709,13 @@ fn unordered(u: u32) -> f32 {
     if u >= 2147483648 { bitcast_f32(u & 2147483647) } else { bitcast_f32(u ^ 4294967295) }
 }
 
+/// The bounds in `most` (`bound_sides`) widened to hold height `h`: the highest's ordered bits
+/// (`ordered`) at 0, and the lowest's inverted at 1, both a maximum.
+fn widen(most: mut SharedAtomics<2>, h: f32) {
+    let _ = most.max(0, ordered(h))
+    let _ = most.max(1, ordered(h) ^ 4294967295)
+}
+
 /// Side `group.x` of level `group.y`: the lowest and highest heights its points can draw at
 /// (its texels', and the coarser level's over it, which it morphs to), as ordered bits
 /// (`ordered`): the highest's, and the lowest's inverted, both a maximum.
@@ -727,9 +735,7 @@ fn bound_sides(
     let n = w * (r.w - r.y + 1)
     var i = lid.x
     while i < n {
-        let h = texels[texel_index(l, r.x + i % w, r.y + i / w)].height
-        let _ = most.max(0, ordered(h))
-        let _ = most.max(1, ordered(h) ^ 4294967295)
+        widen(mut most, texels[texel_index(l, r.x + i % w, r.y + i / w)].height)
         i += 256
     }
     if l + 1 < levels.count {
@@ -744,9 +750,7 @@ fn bound_sides(
         let cn = cw * (hi.y - lo.y + 1)
         var j = lid.x
         while j < cn {
-            let h = texels[texel_index(l + 1, lo.x + j % cw, lo.y + j / cw)].height
-            let _ = most.max(0, ordered(h))
-            let _ = most.max(1, ordered(h) ^ 4294967295)
+            widen(mut most, texels[texel_index(l + 1, lo.x + j % cw, lo.y + j / cw)].height)
             j += 256
         }
     }
@@ -924,7 +928,7 @@ pub struct GroundVertex: Copy {
 }
 
 /// The ground's points: level `v / LEVEL_POINTS`'s (`LEVEL_POINTS`), each shaded once for the
-/// triangles that share it (an indexed draw a level, `Clipmap::draw_args`). Each reads its
+/// triangles that share it (an indexed draw a side, `Clipmap::sides_args`). Each reads its
 /// level's texels, morphed in the band at the level's edge to the coarser level's heights; it
 /// never evaluates the field.
 @vertex

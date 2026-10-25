@@ -100,11 +100,12 @@ fn from_ycocg(c: vec3) -> vec3 {
 }
 
 /// A colour squashed so a bright sample doesn't dominate its neighbours' mean.
-fn tamed(c: vec3) -> vec3 {
+pub fn tamed(c: vec3) -> vec3 {
     c / (1.0 + max(c.r, max(c.g, c.b)))
 }
 
-fn untamed(c: vec3) -> vec3 {
+/// A tamed colour (`tamed`) brought back.
+pub fn untamed(c: vec3) -> vec3 {
     c / max(1.0 - max(c.r, max(c.g, c.b)), 1.0e-4)
 }
 

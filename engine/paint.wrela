@@ -64,8 +64,7 @@ pub fn rcas(e: vec3, b: vec3, d: vec3, f: vec3, h: vec3, sharpen: f32) -> vec3 {
     let lobe = max(-0.1875, min(max(lobes.r, max(lobes.g, lobes.b)), 0.0)) *
         min(sharpen * 4.0 / 3.0, 1.0)
     let t = (lobe * (tb + td + tf + th) + te) / (4.0 * lobe + 1.0)
-    let c = clamp(t, vec3(0.0), vec3(0.999))
-    c / (1.0 - max(c.r, max(c.g, c.b)))
+    temporal::untamed(clamp(t, vec3(0.0), vec3(0.999)))
 }
 
 /// The strokes at `q` (in cells): the value of the one that covers it most, of the four cells

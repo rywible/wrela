@@ -76,21 +76,7 @@ impl Pyramid {
         let h = self.depth.height()
         label("occlusion pyramid")
         dispatch(level_zero.bind(depth, size: vec2u(w, h), out: mut self.depth), over: (w, h))
-        for l in 1..self.depth.levels() {
-            dispatch(
-                farthest.bind(step: self.depth.mip_step(l)),
-                over: (max(w >> l, 1), max(h >> l, 1)),
-            )
-        }
-        self.at = Hzb {
-            view_proj: cam.view_proj,
-            eye: cam.eye,
-            near: cam.near,
-            forward: cam.forward,
-            levels: self.depth.levels(),
-            size: vec2(f32(w), f32(h)),
-            on: 1,
-        }
+        self.reduce(cam)
     }
 
     /// Built from `texels` (level 0's, a row after another, `width` × `height`): a test's.
@@ -106,6 +92,14 @@ impl Pyramid {
         let w = self.depth.width()
         let h = self.depth.height()
         self.depth.write(x: 0, y: 0, width: w, height: h, bytes: bytes)
+        self.reduce(cam)
+    }
+
+    /// Each level above 0 built from the one under it (`farthest`, one dispatch a level), and what
+    /// it was built from: `cam`'s.
+    fn reduce(mut self, cam: Camera) {
+        let w = self.depth.width()
+        let h = self.depth.height()
         for l in 1..self.depth.levels() {
             dispatch(
                 farthest.bind(step: self.depth.mip_step(l)),

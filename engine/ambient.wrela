@@ -96,7 +96,7 @@ fn fast_acos(x: f32) -> f32 {
 
 /// A number in [0, 1) for pixel `p`, spread evenly over the screen (Jimenez's interleaved
 /// gradient noise, Next Generation Post Processing in Call of Duty: Advanced Warfare, 2014).
-fn noise(p: vec2) -> f32 {
+pub fn noise(p: vec2) -> f32 {
     fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))))
 }
 

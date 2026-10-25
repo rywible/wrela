@@ -77,25 +77,6 @@ const FIXTURE: [Text; 66] = [
     "}",
 ]
 
-/// Whether `text` has `part` in it.
-fn has(text: str, part: str) -> bool {
-    var i = 0
-    while i + part.len() <= text.len() {
-        var hit = true
-        for j in 0..part.len() {
-            if text.byte(i + j) != part.byte(j) {
-                hit = false
-                break
-            }
-        }
-        if hit {
-            return true
-        }
-        i += 1
-    }
-    false
-}
-
 /// The draws a fixture wood of `kinds` kinds records in its first frame's prepasses.
 fn draws(kinds: u32) -> u32 {
     let dir = f"scratch/fixture{kinds}"
@@ -138,7 +119,7 @@ fn draws(kinds: u32) -> u32 {
     // Every draw command (a multi-draw is one), all of them the wood's.
     var n = 0
     for c in out {
-        if has(c.kind.as_str(), "Draw") {
+        if c.kind.as_str().find("Draw").is_some() {
             n += 1
         }
     }

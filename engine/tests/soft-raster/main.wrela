@@ -1,12 +1,13 @@
-// The software rasterizer (`engine::virtual::raster_triangle`, `soft_clear`, `soft_merge`) on
+// The software rasterizer (`engine::virtual::nearest_depths`, `least_ids`, `soft_clear`, `soft_merge`) on
 // triangles given in pixels and turned to clip space. Frame 0 records every case: two coplanar
 // overlapping triangles rasterized ten times, in alternating order; and a hardware quad drawn
 // into a visibility pass, software triangles in front of it, behind it and beside it merged
 // in. The tests read the answers once they've come; every frame shows them (the tie's first run
 // on the left, the merge on the right), for engine/tests/virtual to compare the hosts' screens.
 
+use engine::frame::full
 use engine::view::NEAREST
-use engine::virtual::{NO_ID, full_screen, least_ids, nearest_depths, set_up, soft_clear, soft_merge}
+use engine::virtual::{NO_ID, least_ids, nearest_depths, set_up, soft_clear, soft_merge}
 use std::gpu::{
     Atomics, ClipPosition, Cull, DepthTexture, Flat, FragCoord, GlobalId, GpuBuffer, R32Uint,
     Texture, TextureRead, VertexIndex, begin_pass_with_depth, begin_screen_pass, buffer, buffer_of,
@@ -211,7 +212,7 @@ fn record(s: mut State) {
     draw(pass, half_quad, quad_id, vertices: 6, cull: Cull::None, depth: NEAREST)
     draw(
         pass,
-        full_screen,
+        full.bind(z: 0.5),
         soft_merge.bind(vec2u(S), pixels: soft.items()),
         vertices: 3,
         depth: NEAREST,
@@ -257,7 +258,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     let p = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
     draw(
         p,
-        full_screen,
+        full.bind(z: 0.5),
         show.bind(vec2(f32(width), f32(height)), tie: s.tie[0].items(), merged: s.target),
         vertices: 3,
     )

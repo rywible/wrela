@@ -564,7 +564,7 @@ impl Tables {
     }
 
     /// Slice `k` (of `AIR_SLICES`) of the tables cooked for `air`: the slices before it must be
-    /// cooked (for the same air) first.
+    /// cooked (for the same air) first. Each dispatches up to its slice's last row (or layer).
     pub fn cook_slice(mut self, air: Air, s: Sampler, k: u32) {
         label("air")
         if k == 0 {
@@ -577,39 +577,36 @@ impl Tables {
                 over: self.transmittance,
             )
         } else if k < 3 {
+            let rows = part_of(MULTIPLE_SIDE, k - 1, 2)
             dispatch(
-                cook_multiple.bind(
-                    air,
-                    self.transmittance,
-                    s,
-                    rows: part_of(MULTIPLE_SIDE, k - 1, 2),
-                    out: mut self.multiple,
-                ),
-                over: self.multiple,
+                cook_multiple.bind(air, self.transmittance, s, rows, out: mut self.multiple),
+                over: (MULTIPLE_SIDE, rows.y),
             )
         } else if k < 5 {
+            let rows = part_of(VIEW_H, k - 3, 2)
             dispatch(
                 cook_view.bind(
                     air,
                     self.transmittance,
                     self.multiple,
                     s,
-                    rows: part_of(VIEW_H, k - 3, 2),
+                    rows,
                     out: mut self.view,
                 ),
-                over: self.view,
+                over: (VIEW_W, rows.y),
             )
         } else {
+            let layers = part_of(AERIAL_D, k - 5, 3)
             dispatch(
                 cook_aerial.bind(
                     air,
                     self.transmittance,
                     self.multiple,
                     s,
-                    layers: part_of(AERIAL_D, k - 5, 3),
+                    layers,
                     out: mut self.aerial,
                 ),
-                over: self.aerial,
+                over: (AERIAL_W, AERIAL_H, layers.y),
             )
         }
     }

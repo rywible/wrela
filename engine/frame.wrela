@@ -666,9 +666,12 @@ const MEASURE_FIRST: u32 = 4
 
 const MEASURE_AGAIN: u32 = 240
 
+/// How many kinds of work a measuring frame times (`MEASURED`).
+const MEASURED_KINDS: u32 = 5
+
 /// The kinds of work a measuring frame times (`Quality::measured`), each by the label its pass or
 /// dispatch carries.
-const MEASURED: [(Work, Text); 5] = [
+const MEASURED: [(Work, Text); MEASURED_KINDS] = [
     (Work::SkyPhase, "clouds"),
     (Work::NearStrip, "shadows near"),
     (Work::FarStrip, "shadows far"),
@@ -907,13 +910,13 @@ pub struct Frame<R: Resolver> {
     pub linear: Sampler,
     pub repeat: Sampler,
     pub cooks: Cooks,
-    /// The kinds whose GPU time a measuring frame asked for and hasn't had (`Quality::measured`);
-    /// how many times each of `MEASURED` was measured and the frame it last was (`ran`'s count,
-    /// which a resize doesn't start again); and whether the host can't time them (it stops
-    /// asking).
-    measuring: Vec<(Work, Pending<f32>)>,
-    measured: [u32; 5],
-    measured_at: [u32; 5],
+    /// The kinds whose GPU time a measuring frame asked for and hasn't had (`Quality::measured`),
+    /// each by its place in `MEASURED`; how many times each of `MEASURED` was measured and the
+    /// frame it last was (`ran`'s count, which a resize doesn't start again); and whether the host
+    /// can't time them (it stops asking).
+    measuring: Vec<(u32, Pending<f32>)>,
+    measured: [u32; MEASURED_KINDS],
+    measured_at: [u32; MEASURED_KINDS],
     untimed: bool,
     /// The paced scale (`Quality::pace`).
     pub pacer: Scale,
@@ -1092,8 +1095,8 @@ impl<R: Resolver> Frame<R> {
                 far_changed: false,
             },
             measuring: Vec::new(),
-            measured: [0; 5],
-            measured_at: [0; 5],
+            measured: [0; MEASURED_KINDS],
+            measured_at: [0; MEASURED_KINDS],
             untimed: false,
             pacer: Scale {},
             ready: Readiness {
@@ -1517,16 +1520,12 @@ impl<R: Resolver> Frame<R> {
     fn measure(mut self) {
         var k = 0
         while k < self.measuring.len() {
-            let w = self.measuring[k].0
+            let i = self.measuring[k].0
             match self.measuring[k].1.poll() {
                 Some(Ok(us)) => {
-                    self.cooks.planner.measure(w, us[0])
-                    for i in 0..5 {
-                        if MEASURED[i].0 == w {
-                            self.measured[i] += 1
-                            self.measured_at[i] = self.ran
-                        }
-                    }
+                    self.cooks.planner.measure(MEASURED[i].0, us[0])
+                    self.measured[i] += 1
+                    self.measured_at[i] = self.ran
                     let _ = self.measuring.remove(k)
                 },
                 Some(Err(_)) => {
@@ -1539,16 +1538,15 @@ impl<R: Resolver> Frame<R> {
         if self.untimed || self.debug.capture {
             return
         }
-        for i in 0..5 {
-            let (w, name) = MEASURED[i]
+        for i in 0..MEASURED_KINDS {
             var asked = false
             for m in self.measuring {
-                asked = asked || m.0 == w
+                asked = asked || m.0 == i
             }
             let due = self.measured[i] < MEASURE_FIRST ||
                 self.ran - self.measured_at[i] >= MEASURE_AGAIN
             if !asked && due {
-                self.measuring.push((w, timed(name)))
+                self.measuring.push((i, timed(MEASURED[i].1)))
             }
         }
     }
@@ -1978,6 +1976,9 @@ impl<R: Resolver> Frame<R> {
             start: 0,
             count: self.probes.using.grid.probes(),
         )
+        // Whether glossy surfaces reflect the screen: last frame's (`Mirror`), and this frame's
+        // copied for the next.
+        let mirrored = self.quality.reflections || self.quality.contact
         let lt = Lighting {
             cam,
             light: self.light,
@@ -1998,9 +1999,7 @@ impl<R: Resolver> Frame<R> {
             froxels: self.lights.at,
             lights: self.lights.words.items(),
             mirror: Mirror {
-                on: if self.quality.reflections || self.quality.contact { self.mirror.on } else {
-                    0
-                },
+                on: if mirrored { self.mirror.on } else { 0 },
                 reflect: if self.quality.reflections { 1 } else { 0 },
                 probe: if self.quality.reflections && self.specular.baked { 1 } else { 0 },
                 contact: if self.quality.contact { 1 } else { 0 },
@@ -2174,22 +2173,24 @@ impl<R: Resolver> Frame<R> {
             scene.veils(vp, lt, weighted: false)
             vp.end()
         }
-        let particles = self.particles.is_some()
+        // The weighted veils and the particles are drawn see-through (`SeeThrough`).
+        let weighted_veils = veils && weighted
+        let see_through = self.particles.is_some() || weighted_veils
         let (w, h) = (self.targets.scene.width(), self.targets.scene.height())
-        if (particles || (veils && weighted)) && self.see_through.is_none() {
+        if see_through && self.see_through.is_none() {
             self.see_through = Some(SeeThrough::new(w, h))
         }
         match mut self.see_through {
-            Some(t) if particles || (veils && weighted) => {
+            Some(t) if see_through => {
                 label("see-through")
                 // The veils' targets cleared for this frame's, or once when there are none, which
                 // they then keep.
-                if (veils && weighted) || !t.empty {
+                if weighted_veils || !t.empty {
                     begin_pass(mut t.accum, clear: vec4(0.0)).end()
                     begin_pass(mut t.reveal, clear: vec4(1.0)).end()
                     t.empty = true
                 }
-                if veils && weighted {
+                if weighted_veils {
                     t.empty = false
                     let vp = begin_pass2_with_depth(
                         mut t.accum,
@@ -2230,7 +2231,7 @@ impl<R: Resolver> Frame<R> {
         }
         // What the next frame's glossy surfaces reflect from the screen: this frame's scene
         // after its effects, and each pixel's distance.
-        if self.quality.reflections || self.quality.contact {
+        if mirrored {
             label("reflections copy")
             let rp = begin_pass(mut self.screen)
             fullscreen(

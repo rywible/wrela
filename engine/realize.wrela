@@ -711,27 +711,37 @@ impl Mesh {
 /// append buffer's count but by pushing, which would reorder its items), so what reads it reads
 /// its draw, its skin pass's groups and its tally, as every reader of a realized mesh does.
 pub fn fitted(m: take Mesh, vertices: u32, quads: u32) -> Mesh {
-    let (v, q) = (max(vertices, 1), max(quads, 1))
-    if v >= m.verts.capacity() && q >= m.quads.capacity() {
-        return take m
+    var m = take m
+    m.fit(vertices, quads)
+    m
+}
+
+impl Mesh {
+    /// Fitted in place to what it holds (`vertices` and `quads`): as `fitted`, for a mesh held
+    /// where it can't be moved out.
+    pub fn fit(mut self, vertices: u32, quads: u32) {
+        let (v, q) = (max(vertices, 1), max(quads, 1))
+        if v >= self.verts.capacity() && q >= self.quads.capacity() {
+            return
+        }
+        var out = Mesh::new(
+            Room { vertices: min(v, self.verts.capacity()), quads: min(q, self.quads.capacity()) },
+        )
+        let (verts, quads) = (self.verts.items(), self.quads.items())
+        copy(
+            GpuSpan { buffer: verts.buffer, start: 0, count: out.verts.capacity() },
+            out.verts.items_mut(),
+        )
+        copy(
+            GpuSpan { buffer: quads.buffer, start: 0, count: out.quads.capacity() },
+            out.quads.items_mut(),
+        )
+        copy(self.draw.items(), out.draw.items_mut())
+        copy(self.skin.items(), out.skin.items_mut())
+        copy(self.holes.items(), out.holes.items_mut())
+        copy(self.tally.items(), out.tally.items_mut())
+        self = take out
     }
-    var out = Mesh::new(
-        Room { vertices: min(v, m.verts.capacity()), quads: min(q, m.quads.capacity()) },
-    )
-    let (verts, quads) = (m.verts.items(), m.quads.items())
-    copy(
-        GpuSpan { buffer: verts.buffer, start: 0, count: out.verts.capacity() },
-        out.verts.items_mut(),
-    )
-    copy(
-        GpuSpan { buffer: quads.buffer, start: 0, count: out.quads.capacity() },
-        out.quads.items_mut(),
-    )
-    copy(m.draw.items(), out.draw.items_mut())
-    copy(m.skin.items(), out.skin.items_mut())
-    copy(m.holes.items(), out.holes.items_mut())
-    copy(m.tally.items(), out.tally.items_mut())
-    out
 }
 
 /// Records one realization: `field`'s mesh on `grid`, its skin weights falling off over

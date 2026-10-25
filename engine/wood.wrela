@@ -2,8 +2,8 @@
 // and dropped when their tile is, and chosen each frame on the GPU, not the CPU.
 //
 // Make a `Wood` (`Wood::new`), `load` and `drop` tiles as the player moves, and each frame
-// `select` the lists and draw them (`prepass_cards`, `occlude`, `prepass_far`, `shade`; `shadow`
-// for a cascade chosen by `select_shadow`).
+// `select` the lists and draw them (`prepass_cards`, `prepass_far`, `shade`; `shadow` for a
+// cascade chosen by `select_shadow`).
 //
 // A floor streams tens of thousands of instances round the player, and a moving player changes
 // them every frame, so every loaded instance stays on the GPU, in its tile's slot; each frame a
@@ -24,6 +24,7 @@ use cull::{Hzb, NO_HZB, occluded}
 use impostor::{KindDesc, far_cut_flat, far_quad, far_shade, of_kind, volume_cut, volume_shade}
 use lit::Lighting
 use lod::{IMPOSTOR, Lod, VOLUME, ways}
+use memory::{Share, Usage}
 use plant::{
     CARD_LEVELS, CORNERS, Card, Instance, Leaves, NO_INSTANCE, Wind, cook_outlines, level_cards,
 }
@@ -161,29 +162,19 @@ pub fn choose(
         counts.store(c.lists + 1 + j, i)
         return
     }
-    let visibility = bitcast_f32(metadata[c.instances + i / SLOT])
-    let (level, distant) = place_of(l, c.cam, inst)
-    let faint = 1.0 - (1.0 - distant) * visibility
-    let (drawn, lower, upper) = ways(level, faint)
-    if !drawn {
-        return
-    }
-    for n in 0..2 {
-        let way = if n == 0 { lower } else { upper }
-        if n == 1 && upper == lower {
-            return
-        }
-        let slot = way * c.kinds + k
-        let list = lists[slot]
-        let at = counts.add(slot, 1)
-        if at < list.room {
-            let to = list.first + at
-            picked.store(to, i)
-            let m = mark_of(l, c.cam, inst, way, vec2(level, faint))
-            marks.store(2 * to, m.x)
-            marks.store(2 * to + 1, m.y)
-        }
-    }
+    chosen_into(
+        c,
+        metadata,
+        lists,
+        i,
+        k,
+        inst,
+        l,
+        counts_from: 0,
+        counts: mut counts,
+        picked: mut picked,
+        marks: mut marks,
+    )
 }
 
 /// The second phase's choosing: candidate `id` of those the first phase left (`choose`: their
@@ -214,6 +205,37 @@ pub fn reveal(
     if occluded(pyramid, c.hzb, b.xyz, b.w) {
         return
     }
+    chosen_into(
+        c,
+        metadata,
+        lists,
+        i,
+        k,
+        inst,
+        l,
+        counts_from: c.late_at,
+        counts: mut counts,
+        picked: mut picked,
+        marks: mut marks,
+    )
+}
+
+/// Instance `i` (of kind `k`, `l` its kind's levels) chosen into its ways' lists (`lod::place`):
+/// for each way, a place taken from its list's count (`counts`, from `counts_from`), its index
+/// into `picked` and its marks into `marks` (two words a place). `choose`'s and `reveal`'s.
+fn chosen_into(
+    c: Choose,
+    metadata: [u32],
+    lists: [List],
+    i: u32,
+    k: u32,
+    inst: Instance,
+    l: Lod,
+    counts_from: u32,
+    counts: mut Atomics<u32>,
+    picked: mut Atomics<u32>,
+    marks: mut Atomics<u32>,
+) {
     let visibility = bitcast_f32(metadata[c.instances + i / SLOT])
     let (level, distant) = place_of(l, c.cam, inst)
     let faint = 1.0 - (1.0 - distant) * visibility
@@ -228,7 +250,7 @@ pub fn reveal(
         }
         let slot = way * c.kinds + k
         let list = lists[slot]
-        let at = counts.add(c.late_at + slot, 1)
+        let at = counts.add(counts_from + slot, 1)
         if at < list.room {
             let to = list.first + at
             picked.store(to, i)
@@ -508,7 +530,8 @@ impl Chosen {
     }
 
     /// Chooses from `every` for `c` (its first phase, against `pyramid`: last frame's), then
-    /// gathers and writes its draws. The second phase's counts are made 0 for `reveal`.
+    /// gathers and writes its draws. The second phase's counts are made 0 for `reveal` (a
+    /// shadow's choosing has no second phase: nothing reads them).
     fn run(
         mut self,
         c: Choose,
@@ -532,7 +555,9 @@ impl Chosen {
         }
         let c = Choose { lists: n, late_at: self.late_at(), ..c }
         write(mut self.counts, 0, self.zero_counts)
-        write(mut self.counts, self.late_at(), self.zero_counts)
+        if c.shadow == 0 {
+            write(mut self.counts, self.late_at(), self.zero_counts)
+        }
         dispatch(
             choose.bind(
                 c,
@@ -929,28 +954,49 @@ impl Wood {
     /// card orders, limbs, impostor bounds and volumes, and every instance loaded.
     pub fn pool_bytes(self) -> u64 {
         borrow p = self.pool
-        let v = u64(impostor::VOXELS)
+        let v = impostor::VOXELS
         u64(p.cards.len()) * u64(size_of::<Card>()) +
             u64(p.orders.len()) * 4 +
             u64(p.limbs.len()) * u64(size_of::<Tube<4>>()) +
             u64(p.bounds.len()) * 16 +
-            2 * v * v * v * 8 * u64(self.kinds.len()) +
+            2 * memory::texels(v, v, 8, d: v) * u64(self.kinds.len()) +
             u64(self.every.len()) * u64(size_of::<Instance>()) +
             u64(self.metadata.len()) * 4
     }
 
     /// The GPU bytes its kinds' impostors take (`Impostors`: a layer of each array a kind).
     pub fn impostor_bytes(self) -> u64 {
-        let texels = u64(impostor::ATLAS) * u64(impostor::ATLAS) * u64(self.kinds.len())
-        match self.pool.impostors {
-            Impostors::Plain { .. } => texels * 12,
-            Impostors::Compressed { .. } => texels * 3,
+        let texel = match self.pool.impostors {
+            Impostors::Plain { .. } => 12,
+            Impostors::Compressed { .. } => 3,
         }
+        memory::texels(impostor::ATLAS, impostor::ATLAS, texel, d: self.kinds.len())
     }
 
     /// The GPU bytes its choosings' places take (the camera's and the shadows').
     pub fn list_bytes(self) -> u64 {
         self.seen.bytes() + self.shadowed.bytes()
+    }
+
+    /// Its shares of the GPU's memory (`engine::memory`): its lists' and its impostors', each
+    /// against its own budget, and the rest of what it holds (`pool_bytes`), against the total.
+    pub fn shares(self) -> Vec<Share> {
+        Vec::from(
+            [
+                Share { name: "wood lists", bytes: self.list_bytes(), budget: memory::WOOD_LISTS },
+                Share {
+                    name: "impostors",
+                    bytes: self.impostor_bytes(),
+                    budget: memory::IMPOSTORS,
+                },
+                Share { name: "wood", bytes: self.pool_bytes(), budget: memory::TOTAL },
+            ],
+        )
+    }
+
+    /// Over its budget (`usage`), it gives back its choosings' room sooner (`shrink_after`).
+    pub fn pressed(mut self, usage: Usage) {
+        self.shrink_after = memory::shrink_after(usage, default: SHRINK_AFTER)
     }
 
     /// All the kinds its instances name: its own and its far ones.
@@ -1142,7 +1188,7 @@ impl Wood {
     /// This frame's lists for `cam`, chosen on the GPU.
     pub fn select(mut self, cam: Camera, pyramid: Texture<R32Float>, hzb: Hzb) {
         self.lay_out()
-        let corner = atan(cam.tan_half * sqrt(1.0 + cam.aspect * cam.aspect))
+        let corner = cam.corner_angle()
         let c = Choose {
             cam,
             corner,
@@ -1210,8 +1256,7 @@ impl Wood {
     }
 
     /// The depth prepass's cards: each card level's lists, cut, into the depth target alone,
-    /// one multi-draw a level over every kind. Then `occlude` and `prepass_far`, in a pass of
-    /// their own.
+    /// one multi-draw a level over every kind. Then `prepass_far`.
     pub fn prepass_cards<P: RenderPass>(self, pass: P, cam: Camera, wind: Wind, s: Sampler) {
         self.cards_prepass(pass, cam, wind, s, late: false)
     }
@@ -1260,7 +1305,7 @@ impl Wood {
     }
 
     /// The depth prepass's far crowns: their cut quads (impostors and volumes), after
-    /// `occlude`: one multi-draw a way over every kind.
+    /// `prepass_cards`: one multi-draw a way over every kind.
     pub fn prepass_far<P: RenderPass>(self, pass: P, cam: Camera, wind: Wind, s: Sampler) {
         self.far_prepass(pass, cam, wind, s, late: false)
     }
