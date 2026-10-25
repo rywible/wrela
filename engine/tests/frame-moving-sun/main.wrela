@@ -1,0 +1,162 @@
+// The bare scene (engine/tests/frame) under a sun that turns round the vertical from the first
+// frame, as fast as engine/tests/frame's moving sun (a fifth of a degree a frame), stepped every
+// fourth frame (a game whose time of day ticks at 15 Hz: steps the cascades' sets can't keep up
+// with, nor the sky's cooks, and that the probes' turns must survive): the frame loads
+// (its first sky and probes cooked for one light while the sun moves on: `Frame::follow_light`;
+// its cascades whole though a set always follows the last), and 30 frames after it's playable
+// the eye jumps 500 m, whose arrival is uncovered once the light round the new eye is drawn,
+// the sun still turning. 30 frames after that, what casts changes and the frames are covered
+// again (`Frame::arrive`): uncovered only once both cascades' maps hold what casts now; and 30
+// frames after that the shadows are switched off, and the next frame on, each a recast of both
+// cascades (a map drawn with them off doesn't hold what casts with them on).
+
+use engine::frame::{Aim, Change, Frame, Gathered, Off, Quality}
+use engine::light::sunlight
+use engine::probes::grid
+use engine::terrain::Clipmap
+use engine::view::first_camera
+use std::io::print
+use frame_transitions::bare::{AHEAD, Bare, START, SUN, air_of, bare}
+
+/// Where the eye jumps to (the world's, m).
+const JUMPED = vec3(500.0, 1.6, 0.0)
+
+pub struct State {
+    frame: Frame<Gathered>,
+    scene: Bare,
+    eye: vec3,
+    /// The frame the eye jumped at, and the first after it that wasn't covered.
+    jumped_at: Option<u32>,
+    uncovered_at: Option<u32>,
+    /// The frame what casts changed at, the first after it that wasn't covered, and whether
+    /// both cascades' maps in use held what casts then.
+    recast_at: Option<u32>,
+    recovered_at: Option<u32>,
+    held_casters: bool,
+    /// How many times switching the shadows off or on (the two frames after `recovered_at` + 30)
+    /// recast both cascades.
+    switch_recasts: u32,
+}
+
+pub fn init() -> State {
+    let air = air_of(SUN)
+    let frame: Frame<Gathered> = Frame::new(
+        Quality { measured: false },
+        sunlight(air),
+        air,
+        Clipmap::new(levels: 6, finest: 0.5),
+        first_camera(START, START + AHEAD, 0.82, width: 320, height: 180),
+        grid(START.xz, cols: 17, spacing: 4.0, low: -8.0, high: 24.0, voxel: 2.0),
+        START.xz,
+    )
+    State {
+        frame,
+        scene: bare(),
+        eye: START,
+        jumped_at: None,
+        uncovered_at: None,
+        recast_at: None,
+        recovered_at: None,
+        held_casters: false,
+        switch_recasts: 0,
+    }
+}
+
+/// The sun `k` frames on: turned round the vertical a fifth of a degree a frame, stepped every
+/// fourth frame.
+fn sun_at(k: u32) -> vec3 {
+    let a = f32(k / 4 * 4 + 1) * 0.0035
+    let (c, n) = (cos(a), sin(a))
+    normalize(vec3(SUN.x * c - SUN.z * n, SUN.y, SUN.x * n + SUN.z * c))
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    s.frame.air = air_of(sun_at(s.frame.ran))
+    s.frame.light = sunlight(s.frame.air)
+    if let Some(at) = s.frame.ready.playable_at {
+        if s.jumped_at.is_none() && s.frame.frames >= at + 30 {
+            s.eye = JUMPED
+            s.jumped_at = Some(s.frame.ran)
+        }
+    }
+    if let Some(u) = s.uncovered_at {
+        if s.recast_at.is_none() && s.frame.ran >= u + 30 {
+            s.frame.changed(Change::Casters)
+            s.frame.arrive()
+            s.recast_at = Some(s.frame.ran)
+        }
+    }
+    // The shadows switched off, then on the next frame.
+    var switched = false
+    if let Some(r) = s.recovered_at {
+        let k = s.frame.ran
+        if k == r + 30 || k == r + 31 {
+            s.frame.set(Off::Shadows, on: k == r + 31)
+            switched = true
+        }
+    }
+    let (near_was, far_was) = (s.frame.near.casters, s.frame.far.casters)
+    let aim = Aim { eye: s.eye, at: s.eye + AHEAD, fovy: 0.82, moving_at: s.eye }
+    let _ = s.frame.begin(mut s.scene, aim, time, width, height)
+    s.frame.draw(mut s.scene, aim)
+    if switched && s.frame.near.casters > near_was && s.frame.far.casters > far_was {
+        s.switch_recasts += 1
+    }
+    let covered = s.frame.ready.arriving
+    if let Some(j) = s.jumped_at {
+        if s.uncovered_at.is_none() && s.frame.ran > j + 1 && !covered {
+            s.uncovered_at = Some(s.frame.ran)
+        }
+    }
+    if let Some(r) = s.recast_at {
+        if s.recovered_at.is_none() && s.frame.ran > r + 1 && !covered {
+            s.recovered_at = Some(s.frame.ran)
+            borrow near = s.frame.near
+            borrow far = s.frame.far
+            s.held_casters = near.front_casters == near.casters && far.front_casters == far.casters
+        }
+    }
+}
+
+/// The sun turns from the first frame, and the frame loads all the same: its first sky and probes
+/// are cooked, its cascades drawn whole, and it's playable.
+@test(frames: 900, gpu: true)
+fn a_sun_that_never_stops_still_loads(s: State) {
+    let Some(at) = s.frame.ready.playable_at else {
+        panic("the frame wasn't playable under a sun that keeps moving")
+    }
+    assert(s.frame.probes.done(), "the probes weren't baked whole")
+    print(f"playable at frame {at}")
+}
+
+/// A jump while the sun turns is covered until the light round the new eye is drawn (its cascade
+/// and its probes round it: `Frame::lit`), and then uncovered, the sun still turning.
+@test(frames: 900, gpu: true)
+fn a_jump_under_a_moving_sun_is_uncovered(s: State) {
+    let Some(j) = s.jumped_at else { panic("the eye didn't jump: the frame wasn't playable") }
+    let Some(u) = s.uncovered_at else {
+        panic(f"the jump at frame {j} stayed covered under the moving sun")
+    }
+    print(f"jumped at frame {j}, uncovered at {u}")
+}
+
+/// A change of what casts while the sun turns, its frames covered again, is uncovered only once
+/// both cascades' maps in use hold what casts now (`shadow::Kept::whole`): not with a map drawn
+/// before it.
+@test(frames: 900, gpu: true)
+fn a_change_of_what_casts_under_a_moving_sun_waits_for_its_maps(s: State) {
+    let Some(r) = s.recast_at else { panic("what casts didn't change: the jump wasn't uncovered") }
+    let Some(u) = s.recovered_at else {
+        panic(f"the change at frame {r} stayed covered under the moving sun")
+    }
+    assert(s.held_casters, f"frame {u} was uncovered with a map drawn before the change at {r}")
+    print(f"what casts changed at frame {r}, uncovered at {u}")
+}
+
+/// Switching the shadows off, then on, recasts both cascades each time (`shadow::Kept::recast`):
+/// readiness then waits for maps drawn as the shadows are, as for a change of what casts.
+@test(frames: 900, gpu: true)
+fn switching_the_shadows_recasts_the_cascades(s: State) {
+    let Some(_) = s.recovered_at else { panic("the change of what casts wasn't uncovered") }
+    assert(s.switch_recasts == 2, f"{s.switch_recasts} of the 2 switches recast both cascades")
+}

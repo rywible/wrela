@@ -597,7 +597,9 @@ pub struct Quality: Copy {
     /// while a capture fills its caches), and the planner plans with it from then on
     /// (`Planner::measure`, on its ladder of steps). A kind is due until it's been measured
     /// `MEASURE_FIRST` times, then every `MEASURE_AGAIN` frames: a host times only the work asked
-    /// for, so a frame that times nothing costs nothing more. Off,
+    /// for, so a frame that times nothing costs nothing more. Off, it plans with the code's
+    /// estimates and records, and a frame's order is the same on every run, as the tests of order
+    /// need.
     pub measured: bool = true,
     /// The GPU memory the program keeps to (`engine::memory::TOTAL`, **proposed**: a tab's 1.5 GB
     /// less the WASM heap and the page), read every `MEMORY_EVERY` frames (`Frame::usage`).
@@ -646,6 +648,13 @@ impl SeeThrough {
             parts: texture::<Rgba16Float>(width: max(w / 2, 1), height: max(h / 2, 1)),
             empty: false,
         }
+    }
+
+    /// The GPU bytes its targets take.
+    fn bytes(self) -> u64 {
+        memory::texels(self.accum.width(), self.accum.height(), 8) +
+            memory::texels(self.reveal.width(), self.reveal.height(), 1) +
+            memory::texels(self.parts.width(), self.parts.height(), 8)
     }
 }
 
@@ -861,11 +870,13 @@ pub struct Frame<R: Resolver> {
     pub light: Light,
     pub air: Air,
     pub tables: Tables,
-    /// The tables being cooked a slice a frame (`air::AIR_SLICES`), for the air and light of
-    /// `cooking_key` (the air as it was when they began): they swap in for `tables` once whole.
+    /// The tables being cooked a slice a frame (`air::AIR_SLICES`): they swap in for `tables`
+    /// once whole. And the air and the light the sky cooks for (its tables, its clouds' weather
+    /// and dome, the probes' open sky and what they're baked from): the frame's own, but held
+    /// through a cook under way and while probes wait for the sky they bake (`follow_light`).
     next_tables: Tables,
     air_slice: Option<u32>,
-    cooking_key: (Air, vec3, vec3),
+    sky_key: (Air, vec3, vec3),
     pub sky: Sky,
     pub clouds: Clouds,
     pub near: Kept,
@@ -961,13 +972,20 @@ pub struct Frame<R: Resolver> {
     probes_waited: bool,
     /// The sky's cook this frame's plan counted before its optional steps (`sky_cook`).
     sky_noted: Option<Work>,
-    /// The sun as the last frame had it, the frame it last moved at, and how many frames in a row
-    /// it has moved: while it moves, both cascades draw a strip a frame (`static_strips`), and
-    /// once it has moved two frames running, the probes are traced again through a sky that
-    /// isn't settled (`bake_probes`).
+    /// The sun as the last frame had it, the frame it last moved at, and how many times it has
+    /// moved since the sky last caught up with it (its tables and its dome cooked for the sun as
+    /// it is): while it moves, both cascades draw a strip a frame (`static_strips`), and once it
+    /// has moved again before the sky caught up, the probes are traced again through a sky that
+    /// isn't settled (`bake_probes`). And how many times it has moved since both cascades last
+    /// settled: once it has moved again before they could, the probes keep their turns
+    /// (`static_strips`).
     last_sun: vec3,
     sun_moved_at: u32,
     sun_moves: u32,
+    cascade_moves: u32,
+    /// Whether the cascades' last casting drew shadows (`Off::Shadows`): a switch of it recasts
+    /// them (`shadow::Kept::recast`), where a move of the sun only draws them again.
+    cast_on: bool,
 }
 
 /// What changed of a scene, outside the frame's own state (the light and the air the frame
@@ -1024,7 +1042,9 @@ impl<R: Resolver> Frame<R> {
             last_sun: light.sun,
             sun_moved_at: 0,
             sun_moves: 0,
-            cooking_key: (air, light.sun, light.sun_colour),
+            cascade_moves: 0,
+            cast_on: true,
+            sky_key: (air, light.sun, light.sun_colour),
             sky: new_sky(),
             clouds: Clouds {
                 eye: vec3(0.0),
@@ -1186,13 +1206,13 @@ impl<R: Resolver> Frame<R> {
         match c {
             Change::Ground => {
                 self.ground_again = true
-                self.near.changed()
-                self.far.changed()
+                self.near.recast()
+                self.far.recast()
                 self.probes_v += 1
             },
             Change::Casters => {
-                self.near.changed()
-                self.far.changed()
+                self.near.recast()
+                self.far.recast()
             },
             Change::Occluders => self.probes_v += 1,
             Change::Weather => self.weather_v += 1,
@@ -1375,7 +1395,9 @@ impl<R: Resolver> Frame<R> {
         let filling = self.debug.capture
         // (The moving-cache rules hold from the first full frame on, through later arrivals.)
         self.cooks.planner.begin(levels, self.ready.playable_at.is_some(), self.near.ready, filling)
-        // A cook of the sky that's a frame of its own counts before any optional step.
+        // A cook of the sky that's a frame of its own counts before any optional step, of the
+        // light the sky cooks for this frame.
+        self.follow_light(eye.xz)
         self.sky_noted = self.sky_cook()
         if let Some(w) = self.sky_noted {
             self.cooks.planner.note(w)
@@ -1390,21 +1412,26 @@ impl<R: Resolver> Frame<R> {
             scene.cook(mut self.cooks, mut self.clipmap, self.linear)
         }
         if self.cooks.near_changed {
-            self.near.changed()
+            self.near.recast()
         }
         if self.cooks.far_changed {
-            self.far.changed()
+            self.far.recast()
         }
         self.cooks.near_changed = false
         self.cooks.far_changed = false
         // The static cascades: drawn again when the sun or the casting moved; the near round
         // where the eye is (a little ahead), the far round its place in the world.
-        let cast_key = (self.light.sun, self.on(Off::Shadows))
+        let on = self.on(Off::Shadows)
+        let cast_key = (self.light.sun, on)
         if self.casting.stale(cast_key) {
-            if self.casting.ready() {
+            if self.casting.ready() && on != self.cast_on {
+                self.near.recast()
+                self.far.recast()
+            } else if self.casting.ready() {
                 self.near.changed()
                 self.far.changed()
             }
+            self.cast_on = on
             self.casting.cooked(cast_key)
         }
         let q = self.quality.shadows
@@ -1423,13 +1450,19 @@ impl<R: Resolver> Frame<R> {
             moving_span: q.moving_span,
             moving_side: q.moving_side,
         )
-        if self.light.sun != self.last_sun {
+        let moved = self.light.sun != self.last_sun
+        if moved {
             self.sun_moved_at = self.ran
             self.last_sun = self.light.sun
-            self.sun_moves += 1
-        } else {
-            self.sun_moves = 0
         }
+        let caught = !self.air_cooked.stale(self.sky_key) &&
+            self.sky.done() &&
+            self.sky_key.1 == self.light.sun
+        self.sun_moves = (if caught { 0 } else { self.sun_moves }) + (if moved { 1 } else { 0 })
+        let settled = self.near.settled() && self.far.settled()
+        self.cascade_moves = (if settled { 0 } else { self.cascade_moves }) + (if moved { 1 } else {
+            0
+        })
         for _ in 0..steps {
             self.static_strips(mut scene, sh, wind)
         }
@@ -1585,9 +1618,12 @@ impl<R: Resolver> Frame<R> {
         }
     }
 
-    /// What the frame's own subsystems hold on the GPU, by their own counts: its targets, the
-    /// cascades and the moving map, the sky, the probes (in use, being baked and kept for the
-    /// next), and the ground's clipmap. None has a budget of its own: the total is theirs.
+    /// What the frame's own subsystems hold on the GPU, by their own counts: its targets (with
+    /// the depth pyramid, the ambient occlusion and the see-through targets), the cascades and
+    /// the moving map, the sky, the probes (in use, being baked and kept for the next), the
+    /// ground's clipmap, the reflections (the screen's copy and the specular probe), the lights'
+    /// lists, and the particles once there are some. None has a budget of its own: the total is
+    /// theirs.
     pub fn shares(self) -> Vec<Share> {
         let total = self.quality.memory
         let share = |name: Text, bytes: u64| Share { name, bytes, budget: total }
@@ -1600,9 +1636,16 @@ impl<R: Resolver> Frame<R> {
             Some(b) => probes += b.bytes(),
             None => {},
         }
-        Vec::from(
+        var targets = self.targets.bytes() + self.pyramid.bytes() + self.ambient.bytes()
+        match self.see_through {
+            Some(t) => targets += t.bytes(),
+            None => {},
+        }
+        let reflections = memory::texels(self.screen.width(), self.screen.height(), 8) +
+            self.specular.bytes()
+        var out = Vec::from(
             [
-                share("targets", self.targets.bytes()),
+                share("targets", targets),
                 share(
                     "shadows",
                     self.near.bytes() +
@@ -1612,8 +1655,15 @@ impl<R: Resolver> Frame<R> {
                 share("sky", self.sky.bytes()),
                 share("probes", probes),
                 share("terrain", self.clipmap.bytes()),
+                share("reflections", reflections),
+                share("lights", self.lights.bytes()),
             ],
         )
+        match self.particles {
+            Some(p) => out.push(share("particles", p.bytes())),
+            None => {},
+        }
+        out
     }
 
     /// Whether a frame from `eye_w` (the world's) is full: the near cascade drawn, the probes in
@@ -1626,8 +1676,7 @@ impl<R: Resolver> Frame<R> {
     /// full frame there, both cascades settled, the near one and the probes in use round it (not
     /// round where the eye was).
     pub fn lit<S: Scene>(self, scene: S, eye: vec2, eye_w: vec2) -> bool {
-        self.near.settled() &&
-            self.far.settled() &&
+        self.cascades_whole() &&
             length(eye - self.near.centre.xz) <= self.quality.shadows.near_moves &&
             self.probes.next.is_none() &&
             length(eye - self.probes.at) <= self.quality.probes.moves &&
@@ -1638,17 +1687,22 @@ impl<R: Resolver> Frame<R> {
     /// drawn (the near first, the far once its casters are in); while the sun moves (it moved
     /// last frame or this), a strip of each, so neither waits on the other's sets (each set is
     /// drawn from the sun it began with: `shadow::Kept::strip`), and none every `PROBE_TURN`th
-    /// frame, which the probes take (a frame that draws a strip bakes none).
+    /// frame, which the probes take (a frame that draws a strip bakes none); and none on that
+    /// frame either while the sun moves again before the cascades settle (`cascade_moves`: a sun
+    /// stepped every few frames), whose sets would otherwise take every frame.
     fn static_strips<S: Scene>(mut self, scene: mut S, sh: Shadows, wind: Wind) {
-        if self.ran - self.sun_moved_at >= 2 {
+        let turn = self.ran % PROBE_TURN == PROBE_TURN - 1
+        if self.ran - self.sun_moved_at < 2 {
+            if !turn {
+                self.strip(mut scene, sh, wind, far: false)
+                self.strip(mut scene, sh, wind, far: true)
+            }
+        } else if !(turn && self.cascade_moves >= 2) {
             if self.near.drawing() && scene.casters_ready(far: false) {
                 self.strip(mut scene, sh, wind, far: false)
             } else {
                 self.strip(mut scene, sh, wind, far: true)
             }
-        } else if self.ran % PROBE_TURN != PROBE_TURN - 1 {
-            self.strip(mut scene, sh, wind, far: false)
-            self.strip(mut scene, sh, wind, far: true)
         }
     }
 
@@ -1697,11 +1751,10 @@ impl<R: Resolver> Frame<R> {
     /// cooks first: the air's tables, then the clouds' noise, then their weather), so the plan
     /// counts it before the frame's optional steps.
     fn sky_cook(self) -> Option<Work> {
-        let air_key = (self.air, self.light.sun, self.light.sun_colour)
-        let weather_key = (self.light.sun, self.weather_v)
+        let weather_key = (self.sky_key.1, self.weather_v)
         if self.ran == 0 {
             None
-        } else if self.air_slice.is_some() || self.air_cooked.stale(air_key) {
+        } else if self.air_slice.is_some() || self.air_cooked.stale(self.sky_key) {
             Some(Work::AirTables)
         } else if !self.noise_cooked {
             Some(Work::SkyNoise)
@@ -1721,8 +1774,7 @@ impl<R: Resolver> Frame<R> {
     /// load's other work, a frame took 137 ms); then a phase of the dome marched a frame, from
     /// `eye`, the field drifted with the wind.
     fn cook_sky<S: Scene>(mut self, scene: S, eye: vec3, wind: Wind) {
-        let air_key = (self.air, self.light.sun, self.light.sun_colour)
-        let weather_key = (self.light.sun, self.weather_v)
+        let weather_key = (self.sky_key.1, self.weather_v)
         let cloud_shadows = self.on(Off::CloudShadows)
         let cooking = self.sky_cook()
         // Counted once: the cook `draw` counted before the optional steps isn't counted again.
@@ -1735,26 +1787,24 @@ impl<R: Resolver> Frame<R> {
         }
         match cooking {
             Some(Work::AirTables) => {
+                // The air and the light are held while it cooks (`follow_light`).
                 let k = match self.air_slice {
                     Some(k) => k,
-                    None => {
-                        self.cooking_key = air_key
-                        0
-                    },
+                    None => 0,
                 }
-                self.next_tables.cook_slice(self.cooking_key.0, self.linear, k)
+                self.next_tables.cook_slice(self.sky_key.0, self.linear, k)
                 if k + 1 < AIR_SLICES {
                     self.air_slice = Some(k + 1)
                 } else {
                     self.air_slice = None
                     swap(mut self.tables, mut self.next_tables)
                     self.probes.using.open(
-                        self.light,
-                        self.cooking_key.0.ground,
+                        self.sky_light(),
+                        self.sky_key.0.ground,
                         self.tables.view,
                         self.linear,
                     )
-                    self.air_cooked.cooked(self.cooking_key)
+                    self.air_cooked.cooked(self.sky_key)
                     self.sky_v += 1
                     // The dome is marched again through the new air (the probes wait for it).
                     self.sky.frames = 0
@@ -1767,7 +1817,7 @@ impl<R: Resolver> Frame<R> {
             Some(Work::SkyWeather) => {
                 let w = scene.weather()
                 self.cloud_wind = w.wind
-                self.sky.cook_weather(w, self.light.sun, self.repeat, shadows: cloud_shadows)
+                self.sky.cook_weather(w, self.sky_key.1, self.repeat, shadows: cloud_shadows)
                 self.weather_cooked.cooked(weather_key)
                 self.sky_v += 1
                 self.cloud_shadow.cooked((cloud_shadows, self.weather_cooked.version()))
@@ -1777,7 +1827,7 @@ impl<R: Resolver> Frame<R> {
         let fresh = !self.weather_cooked.stale(weather_key)
         let shadow_key = (cloud_shadows, self.weather_cooked.version())
         if fresh && self.cloud_shadow.stale(shadow_key) {
-            self.sky.cook_shadow(self.light.sun, self.repeat, shadows: cloud_shadows)
+            self.sky.cook_shadow(self.sky_key.1, self.repeat, shadows: cloud_shadows)
             self.cloud_shadow.cooked(shadow_key)
         }
         // A dome that's whole is marched again only while the probes' steps aren't waiting on
@@ -1785,8 +1835,8 @@ impl<R: Resolver> Frame<R> {
         let yield_to_probes = self.probes_waited && self.sky.done()
         if fresh && !yield_to_probes && self.cooks.planner.may(Work::SkyPhase) {
             self.clouds = self.sky.march(
-                self.air,
-                self.light,
+                self.sky_key.0,
+                self.sky_light(),
                 self.tables,
                 eye,
                 // The field's drift, less the render origin (`Clouds::drift`).
@@ -1800,6 +1850,49 @@ impl<R: Resolver> Frame<R> {
         }
     }
 
+    /// The air and the light the sky cooks for (`sky_key`) brought to the frame's own, unless a
+    /// cook of the air's tables is under way (it finishes with the air it began with), or the
+    /// tables are cooked for them and probes wait for the sky they bake (`wants_probes`): the sky
+    /// is then cooked whole for them first. So a sun that moves from the first frame still has
+    /// its first sky and probes, and a moving sun's probes round a new eye are baked, the sky a
+    /// cook behind the sun meanwhile. (`eye`: render space.)
+    fn follow_light(mut self, eye: vec2) {
+        if self.air_slice.is_some() {
+            return
+        }
+        if self.air_cooked.stale(self.sky_key) || !self.wants_probes(eye) {
+            self.sky_key = (self.air, self.light.sun, self.light.sun_colour)
+        }
+    }
+
+    /// The light the sky cooks for (`sky_key`): the frame's, its sun as the sky has it.
+    fn sky_light(self) -> Light {
+        Light { sun: self.sky_key.1, sun_colour: self.sky_key.2, ..self.light }
+    }
+
+    /// What the probes are baked from, as the sky has it: their occluders' and ground's version,
+    /// the sky's, and the sun the sky cooks for.
+    fn probe_key(self) -> ProbeKey {
+        (self.probes_v, self.sky_v, self.sky_key.1, self.sky_key.2)
+    }
+
+    /// Whether probes wait for the sky they bake (`bake_probes`): the first, or new ones beside
+    /// them, under way or due (the eye, `eye` in render space, moved on, or what they're baked
+    /// from changed).
+    fn wants_probes(self, eye: vec2) -> bool {
+        !self.probes.cooked ||
+            !self.probes.done() ||
+            self.probes.next.is_some() ||
+            length(eye - self.probes.at) > self.quality.probes.moves ||
+            !same_inputs(self.probes.using_k, self.probe_key(), self.quality.probes.again)
+    }
+
+    /// Whether both static cascades are drawn whole for what casts now (`shadow::Kept::whole`):
+    /// settled, or a set behind a sun that moved, however often it moves.
+    fn cascades_whole(self) -> bool {
+        self.near.whole(self.light.sun) && self.far.whole(self.light.sun)
+    }
+
     /// The probes, lit by `sh`: the first baked round the eye once the near cascade, the air's
     /// tables and the clouds' dome are drawn (the dome's light is what they bake: a dome half
     /// marched left the light in shade greener and dimmer) and every static caster is in with
@@ -1809,11 +1902,11 @@ impl<R: Resolver> Frame<R> {
     /// swapped in when whole. While playable, not in a frame that cooked the ground or drew a
     /// strip (one moving cache a frame).
     fn bake_probes<S: Scene>(mut self, scene: S, sh: Shadows, eye: vec2) {
-        let air_key = (self.air, self.light.sun, self.light.sun_colour)
-        // The sky the probes bake is settled: the air's tables cooked for the light, the dome
-        // marched through them. While the sun moves it never is; then only the probes in use are
+        // The sky the probes bake is settled: the air's tables cooked for the light the sky
+        // cooks for, the dome marched through them. While the sun moves it's held for probes that
+        // wait for it (`follow_light`), and otherwise isn't; then only the probes in use are
         // traced again, by the tables and the dome as they are.
-        let settled = !self.air_cooked.stale(air_key) && self.sky.done()
+        let settled = !self.air_cooked.stale(self.sky_key) && self.sky.done()
         let moving = self.sun_moves >= 2
         let tracing = self.quality.probes.again && self.probes.done() && self.probes.next.is_none()
         if !self.near.ready || !(settled || (moving && tracing)) {
@@ -1826,11 +1919,10 @@ impl<R: Resolver> Frame<R> {
         if self.debug.capture && scene.loading() {
             return
         }
-        if !self.probes.cooked &&
-            !(scene.casters_complete() && self.near.settled() && self.far.settled()) {
+        if !self.probes.cooked && !(scene.casters_complete() && self.cascades_whole()) {
             return
         }
-        let key = (self.probes_v, self.sky_v, self.light.sun, self.light.sun_colour)
+        let key = self.probe_key()
         let trace = scene.trace(self.light, self.probes.using.grid)
         let texels = self.clipmap.texels()
         let levels = self.clipmap.levels()
@@ -1843,7 +1935,12 @@ impl<R: Resolver> Frame<R> {
             b.strip_rays = self.quality.probes.rays
             self.probes.using = take b
             self.probes.at = eye
-            self.probes.using.open(self.light, self.air.ground, self.tables.view, self.linear)
+            self.probes.using.open(
+                self.sky_light(),
+                self.sky_key.0.ground,
+                self.tables.view,
+                self.linear,
+            )
             self.probes.using.cook()
             self.probes.cooked = true
             self.probes.using_k = key
@@ -1898,7 +1995,12 @@ impl<R: Resolver> Frame<R> {
                         Work::ProbeOccluders,
                     ) {
                         next.cook()
-                        next.open(self.light, self.air.ground, self.tables.view, self.linear)
+                        next.open(
+                            self.sky_light(),
+                            self.sky_key.0.ground,
+                            self.tables.view,
+                            self.linear,
+                        )
                         self.probes.next_cooked = true
                     }
                 } else if !next.done() {
@@ -1926,9 +2028,10 @@ impl<R: Resolver> Frame<R> {
             },
             None => {
                 // Once baked, a strip traced again a frame as the clouds drift and the sun moves:
-                // the probes in use take the new sky as they're traced.
+                // the probes in use take the new sky as they're traced (not new occluders or
+                // ground: those are baked into new probes).
                 if again && !self.debug.still && self.cooks.planner.may(Work::ProbeStrip) {
-                    self.probes.using_k = key
+                    self.probes.using_k = (self.probes.using_k.0, key.1, key.2, key.3)
                     self.probes.using.bake_strip(
                         trace,
                         sh,

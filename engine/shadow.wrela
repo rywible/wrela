@@ -256,7 +256,7 @@ fn static_shadow_cascades_meet_over_a_continuous_band() {
 /// It holds the map in use and its middle; the map being drawn beside it and its middle, and the
 /// strip it's at; its square's size and reach, how far past the square a shadow can reach into
 /// it, its texels a side and its strips; and whether what casts into it changed (it's drawn
-/// again in place).
+/// again in place), and which of what casts the maps hold (`recast`, `whole`).
 pub struct Kept {
     pub front: DepthTexture,
     pub back: DepthTexture,
@@ -275,6 +275,11 @@ pub struct Kept {
     front_sun: vec3,
     /// Whether the map in use has been drawn at all (the first is drawn before it's used).
     pub ready: bool,
+    /// What casts into it, a version a change of it (`recast`); and the version the set being
+    /// drawn began with, and the one the map in use was drawn with.
+    pub casters: u32,
+    next_casters: u32,
+    pub front_casters: u32,
     /// How many sets of strips have been drawn whole.
     pub sets: u32,
 }
@@ -305,6 +310,9 @@ impl Kept {
             sun: vec3(0.0),
             front_sun: vec3(0.0),
             ready: false,
+            casters: 0,
+            next_casters: 0,
+            front_casters: 0,
             sets: 0,
         }
     }
@@ -333,6 +341,21 @@ impl Kept {
     /// drawing that hasn't drawn its first strip yet draws what casts now).
     pub fn changed(mut self) {
         self.stale = self.stale || draws_again(drawing: self.next.is_some(), strip: self.strip)
+    }
+
+    /// What casts into it changed (not only the sun it's seen from): drawn again where it is
+    /// (`changed`), and whole only once a map holds what casts now (`whole`).
+    pub fn recast(mut self) {
+        self.casters += 1
+        self.changed()
+    }
+
+    /// Whether it's drawn whole for what casts now, seen from `sun`: settled, or with a complete
+    /// map of what casts now drawn from a sun that has moved since. (A sun that moves again
+    /// before a set ends never lets it settle: each set begins as the last ends, a set behind.)
+    pub fn whole(self, sun: vec3) -> bool {
+        self.settled() ||
+            (self.ready && self.front_casters == self.casters && self.front_sun != sun)
     }
 
     /// Follows `at`: once it's `moves` from the middle in use (or what casts changed), the next
@@ -371,6 +394,10 @@ impl Kept {
     pub fn strip(mut self, sun: vec3) -> Option<Strip> {
         let Some(requested) = self.next else { return None }
         self.sun = set_sun(self.strip, self.sun, sun)
+        // A set draws what casts as its first strip is drawn (`changed`).
+        if self.strip == 0 {
+            self.next_casters = self.casters
+        }
         let sun = self.sun
         let c = if self.strip == 0 && self.ready {
             snapped_centre(sun, requested, self.centre, self.span / f32(self.side))
@@ -398,6 +425,7 @@ impl Kept {
             swap(mut self.front, mut self.back)
             self.centre = c
             self.front_sun = self.sun
+            self.front_casters = self.next_casters
             self.next = None
             self.ready = true
             self.sets += 1

@@ -46,7 +46,7 @@ use std::gpu::{
     VertexIndex, WithDepth, WorkgroupId, append_buffer, barrier, buffer, copy, discard, dispatch,
     draw, read, write,
 }
-use std::io::Pending
+use std::io::{Pending, print}
 use view::Camera
 
 /// The most levels a cluster set has.
@@ -169,7 +169,8 @@ pub struct Level {
     /// How deep its skirts hang (m): a cell.
     pub skirt: f32,
     /// The quads and vertices cooking emitted, read back to fit their buffers to them
-    /// (`settle`), and what's arrived (`NOT_YET` until it has); empty once they're fitted.
+    /// (`settle`), and its live blocks (said if past its room: `live_room`); what's arrived
+    /// (`NOT_YET` until it has); empty once they're fitted.
     pub emitted: Vec<Pending<u32>>,
     pub emitted_got: Vec<u32>,
 }
@@ -196,7 +197,9 @@ pub struct Clusters {
 }
 
 /// The live blocks a grid of `blocks` blocks is expected to hold: a surface's (`realize`'s
-/// estimate: about 7.5 × blocks^(2/3)), a fifth more.
+/// estimate: about 7.5 × blocks^(2/3)), a fifth more. A level has room for that many clusters;
+/// a surface that crosses more blocks loses those past it (`drop_past_room`), and says so once
+/// its count is read back (`Level::settle`).
 fn live_room(blocks: u32) -> u32 {
     min(blocks, u32(9.0 * pow(f32(blocks), 2.0 / 3.0)) + 64)
 }
@@ -235,6 +238,11 @@ pub fn cook<C, F: Parts<C>>(field: F, bounds: Box3, cell: f32, levels: u32) -> C
         var mesh = Mesh::new(Room { vertices: live * VERTICES_PER_BLOCK, quads: 1 })
         record_cull(field, grid, mut scratch, mut mesh)
         record_vertices(field, grid, mut scratch, mut mesh)
+        // The blocks past its room are dropped from its map, before any pass reads it.
+        dispatch(
+            drop_past_room.bind(room: live, map: mut scratch.block_map),
+            over: scratch.block_map.len(),
+        )
         var words: GpuBuffer<u32> = buffer(live * QUADS_PER_BLOCK * 6)
         var spans: GpuBuffer<u32> = buffer(1 + 3 * live)
         write(mut spans, 0, [0])
@@ -370,7 +378,8 @@ pub fn cook<C, F: Parts<C>>(field: F, bounds: Box3, cell: f32, levels: u32) -> C
     for mut l in out {
         l.emitted.push(read(l.spans.span(start: 0, count: 1)))
         l.emitted.push(read(l.mesh.verts.count()))
-        l.emitted_got = Vec::from([NOT_YET, NOT_YET])
+        l.emitted.push(read(l.scratch.live.count()))
+        l.emitted_got = Vec::from([NOT_YET, NOT_YET, NOT_YET])
         let map = replace(mut l.scratch.block_map, buffer(1))
         maps.push(take map)
     }
@@ -385,6 +394,16 @@ pub fn cook<C, F: Parts<C>>(field: F, bounds: Box3, cell: f32, levels: u32) -> C
         soft_pixels: buffer(2),
         soft_size: vec2u(0),
         set: 0,
+    }
+}
+
+/// Each block of a level's map past its room for clusters (its live slot `room` or more: the map
+/// holds a block's slot + 1) dropped from it (0: no live block), so no pass reads a cluster its
+/// buffers hold nothing of: its clusters' spans, errors and parents, and the cut's picks.
+@compute(64)
+fn drop_past_room(room: u32, map: mut Atomics<u32>, id: GlobalId) {
+    if id.x < map.len() && map.load(id.x) > room {
+        map.store(i: id.x, value: 0)
     }
 }
 
@@ -628,6 +647,10 @@ pub fn emit_clusters<C, F: Parts<C>>(
     lid: LocalId,
 ) {
     let slot = block.x
+    // A block past the level's room for clusters has none (`drop_past_room`).
+    if slot >= (spans.len() - 1) / 3 {
+        return
+    }
     let n = cells.len() / (BLOCK * BLOCK * BLOCK)
     let lb = blocks[slot]
     let b = vec3i(grid.block_xyz(lb.block))
@@ -1570,6 +1593,11 @@ impl Level {
             self.words = take words
             let count = min(self.emitted_got[1], self.mesh.verts.capacity())
             self.mesh.fit(count, 1)
+            if self.emitted_got[2] > self.pairs.len() {
+                print(
+                    f"clusters: a level's surface crosses {self.emitted_got[2]} blocks, room for {self.pairs.len()}: those past it are dropped",
+                )
+            }
             self.emitted = Vec::new()
         }
     }

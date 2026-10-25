@@ -267,6 +267,11 @@ impl Lights {
         }
     }
 
+    /// The GPU bytes its buffer takes.
+    pub fn bytes(self) -> u64 {
+        u64(4 * self.words.len())
+    }
+
     /// The frame's `lights` (the first `MOST_LIGHTS`) binned into `cam`'s froxels.
     pub fn bin(mut self, cam: Camera, lights: [LocalLight]) {
         let n = min(lights.len(), MOST_LIGHTS)
@@ -307,8 +312,10 @@ pub fn shed(f: Froxels, words: [u32], cam: Camera, world: vec3, n: vec3) -> vec3
         }
         let to = d / sqrt(max(d2, 1.0e-8))
         let fade = saturate(1.0 - (d2 / r2) * (d2 / r2))
+        // A spot's cone, softened from its outer angle in (a hard one, its inner angle its outer,
+        // over a sliver: `smoothstep`'s edges must differ).
         let cone = if l.cos_outer < -1.0 { 1.0 } else {
-            smoothstep(l.cos_outer, l.cos_inner, dot(-to, l.dir))
+            smoothstep(l.cos_outer, max(l.cos_inner, l.cos_outer + 1.0e-4), dot(-to, l.dir))
         }
         out += l.colour * (fade * fade / (d2 + 0.01) * cone * max(dot(n, to), 0.0))
     }

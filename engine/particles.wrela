@@ -341,7 +341,8 @@ pub struct Particles {
     table: GpuBuffer<u32>,
     sums: GpuBuffer<u32>,
     groups: GpuBuffer<DispatchArgs>,
-    args: GpuBuffer<DrawArgs>, /// The live particles to draw, in their sorted order, lit (`light`).
+    args: GpuBuffer<DrawArgs>,
+    /// The live particles to draw, in their sorted order, lit (`light`).
     drawn: GpuBuffer<Drawn>,
 }
 
@@ -435,7 +436,9 @@ impl Particles {
             draw_args.bind(count: self.live.count(), room: BUDGET, args: mut self.args),
             groups: 1,
         )
-    } /// Each live particle lit by `lt`, into the list drawn, in their sorted order
+    }
+
+    /// Each live particle lit by `lt`, into the list drawn, in their sorted order
     /// (`light_particle`), once a frame.
     pub fn light(mut self, lt: Lighting) {
         dispatch(

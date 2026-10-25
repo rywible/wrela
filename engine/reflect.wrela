@@ -305,6 +305,16 @@ impl Specular {
         self.face = (f + 1) % 6
         self.baked = self.baked || self.face == 0
     }
+
+    /// The GPU bytes its cubes take (half floats): the sky's faces, and each level's.
+    pub fn bytes(self) -> u64 {
+        var n = memory::texels(SIDE, SIDE, 8, d: 6)
+        for level in 0..LEVELS {
+            let side = max(SIDE >> level, 1)
+            n += memory::texels(side, side, 8, d: 6)
+        }
+        n
+    }
 }
 
 /// The direction from a cube's centre through texel `uv` (0 to 1 across, rows down) of face

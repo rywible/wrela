@@ -4,9 +4,13 @@
 // literals and writes them back through `wrela edit`; nothing of the studio is in the game.
 
 use course::made
+use feel::HZ
 use pad::pad_of
 use proofs::LEVEL_ANY
 use world::{step, world}
+
+/// The ticks a second its run is recorded at (`run`, a position a tick): the sim's.
+pub const TICKS: f32 = f32(HZ)
 
 /// The course the lens shows: the first level.
 const SHOWN: u32 = 1

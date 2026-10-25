@@ -906,7 +906,7 @@ fn the_ball_compares_by_eye() {
 /// A game's course for the course lens: one chain of three corners, and its `lens` module.
 const TRACK_COURSE: Text = "pub fn corners() -> Vec<Vec<vec2>> {\n    Vec::from([Vec::from([vec2(0.0, 0.0), vec2(4.0, 0.0), vec2(4.0, -2.0)])])\n}\n"
 
-const TRACK_LENS: Text = "use course::corners\n\npub fn course() -> (Vec<Vec<vec2>>, Vec<Vec<vec2>>, Vec<vec4>) {\n    let c = corners()\n    let ground = c.clone()\n    (c, ground, Vec::from([vec4(1.0, -1.0, 3.0, 0.0)]))\n}\n\npub fn run() -> Vec<vec2> {\n    Vec::from([vec2(0.0, 0.3), vec2(2.0, 0.3)])\n}\n"
+const TRACK_LENS: Text = "use course::corners\n\npub fn course() -> (Vec<Vec<vec2>>, Vec<Vec<vec2>>, Vec<vec4>) {\n    let c = corners()\n    let ground = c.clone()\n    (c, ground, Vec::from([vec4(1.0, -1.0, 3.0, 0.0)]))\n}\n\npub fn run() -> Vec<vec2> {\n    Vec::from([vec2(0.0, 0.3), vec2(2.0, 0.3)])\n}\n\npub const TICKS: f32 = 60.0\n"
 
 /// The course lens on a small game (B10.10): a corner dragged a metre right moves by the
 /// literal its click names, and `write` writes that literal through `wrela edit`.

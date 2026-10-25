@@ -1369,16 +1369,22 @@ impl<C, F: Parts<C>> Realizer<F> {
             } else { want }
             self.held[i].priority = self.projected(top, pixel)
         }
-        // An instance this frame doesn't place isn't in it.
+        // An instance this frame doesn't place isn't in it: unseen, it drops its finer levels as
+        // one off screen does (`evicts`).
         for i in n..self.held.len() {
             self.held[i].visible = false
+            self.held[i].unseen += 1
+            if evicts(self.held[i].unseen, self.held[i].drawn, self.evict_after) {
+                self.held[i].target = 0
+            }
         }
         self.spend()
     }
 
     /// Every instance at `level`, whatever the budget, on screen or not: for still frames and
     /// tests. A frame realizes all it can; a level whose room isn't known yet is calibrated
-    /// first, which takes a readback, answered from a later frame. Whether every instance draws
+    /// first, which takes a readback, answered from a later frame. No mesh fades: a still frame
+    /// draws each instance's level whole (only `frame` ages a fade). Whether every instance draws
     /// `level` now.
     pub fn realize_all(mut self, level: u32) -> bool {
         self.placed.clear()
@@ -1394,6 +1400,10 @@ impl<C, F: Parts<C>> Realizer<F> {
             self.held[i].target = level
         }
         while self.step(force: true, off_screen: true).0 > 0.0 {}
+        while self.fades.len() > 0 {
+            let f = self.fades.remove(self.fades.len() - 1)
+            self.release(f.level, take f.mesh)
+        }
         self.settled()
     }
 

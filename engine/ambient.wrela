@@ -76,6 +76,11 @@ impl Occlusion {
         self.at = OPEN
         self.next_at = OPEN
     }
+
+    /// The GPU bytes its two textures take (half floats).
+    pub fn bytes(self) -> u64 {
+        2 * memory::texels(self.last.width(), self.last.height(), 8)
+    }
 }
 
 /// The occlusion's texels `next` built from `depth` (the scene's opaque depth, as `cam` drew it),

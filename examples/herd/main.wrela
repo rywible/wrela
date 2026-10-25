@@ -30,7 +30,7 @@ use std::gpu::{
     begin_depth_pass, begin_screen_pass_with_depth, buffer, comparison_sampler, depth_texture,
     dispatch, draw, write,
 }
-use std::input::{Event, Key, events}
+use std::input::{Event, Key, Script, events}
 use std::io::print
 use std::math::PI
 use terrain::{GRID, ground, height}
@@ -499,6 +499,39 @@ fn the_physique_gives_each_bone_its_mass_and_moments() {
     assert(p.least >= -1.0e-4, f"a bone's moments break the triangle inequality: {p.least}")
     let differ = physique_methods_differ(1, 0.02)
     assert(differ <= 0.05, f"a bone is {differ * 100.0:.2}% from integrate's")
+}
+
+/// The live herd, then a still frame at level 1 (the 2 key, at frame 400).
+const STILL_AFTER_LIVE: Script = Script::frames().press(400, Key::Digit2)
+
+/// A still frame's level asked for after the live herd draws every grazer at it whole: no mesh of
+/// the live herd's levels is left fading out over it (`Realizer::realize_all`).
+@test(frames: 900, gpu: true, input: STILL_AFTER_LIVE)
+fn a_still_level_after_the_live_herd_is_drawn_whole(game: Game) {
+    assert(game.realized == 1, "the herd wasn't realized at level 1")
+    let fading = game.realizer.fading().len()
+    assert(fading == 0, f"{fading} meshes of the live herd are still fading out")
+    for i in 0..game.realizer.len() {
+        let share = game.realizer.fade_share(i)
+        assert(share == 1.0, f"grazer {i}'s level 1 draws {share} of its pixels")
+    }
+}
+
+/// Every grazer at its finest level (the 3 key, at frame 300), then the live close-up (the L and C
+/// keys, at frame 450), which places seed 1's grazer alone.
+const CLOSE_UP_AFTER_HERD: Script = Script::frames()
+    .press(300, Key::Digit3)
+    .press(450, Key::L)
+    .press(451, Key::C)
+
+/// The grazers the close-up leaves out are unseen, as long as one off screen is: each drops its
+/// finer levels as an unseen one does (`Realizer::frame`, `engine::realize::evicts`).
+@test(frames: 1500, gpu: true, input: CLOSE_UP_AFTER_HERD)
+fn the_grazers_a_close_up_leaves_out_drop_their_finer_levels(game: Game) {
+    for i in 1..game.realizer.len() {
+        let d = game.realizer.drawn(i)
+        assert(d == 0 || d == NO_LEVEL, f"grazer {i}, left out of the close-up, still draws {d}")
+    }
 }
 
 /// Once the herd is drawn at its levels, the realizer's frame allocates nothing: it keeps its

@@ -424,8 +424,9 @@ fn a_games_lens_with_a_course_and_a_run_is_the_course_lenss() {
     assert(lens_kind("pub fn course() {}") == LensKind::Field)
     assert(lens_kind("pub fn map() {}\npub fn preview() {}") == LensKind::Map)
     assert(lens_kind("") == LensKind::Field)
-    let t = "    let (a, b, c) = capybara::lens::course()\n    capybara::lens::run()\n"
+    let t = "    let (a, b, c) = capybara::lens::course()\n    capybara::lens::run()\n    capybara::lens::TICKS\n"
     let g = course_text(t, "otter")
     assert(g.as_str().find("otter::lens::course()").is_some(), g.as_str())
     assert(g.as_str().find("otter::lens::run()").is_some(), g.as_str())
+    assert(g.as_str().find("otter::lens::TICKS").is_some(), g.as_str())
 }

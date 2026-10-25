@@ -59,6 +59,16 @@ pub struct Pyramid {
 }
 
 impl Pyramid {
+    /// The GPU bytes its levels take.
+    pub fn bytes(self) -> u64 {
+        var n: u64 = 0
+        for l in 0..self.depth.levels() {
+            let (w, h) = (max(self.depth.width() >> l, 1), max(self.depth.height() >> l, 1))
+            n += memory::texels(w, h, 4)
+        }
+        n
+    }
+
     /// A pyramid for a scene `width` × `height`, not built yet.
     pub fn new(width: u32, height: u32) -> Pyramid {
         let w = max(width, 1)

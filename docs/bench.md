@@ -35,8 +35,14 @@ Part B's engine changes), its pin moved to 0.6.2 in a worktree so both sides run
 
 The same machine, the same day, against the baseline above (`--compare`), after the council's
 review fixes: the built things fitted to their meshes (the Last Green's GPU memory), the frame
-measuring as 0.6.2 and 0.6.3 time (the clearing's intervals). The commits after it change only
-a switched-off path and a test's call. (The baseline ran on 0.6.2; 0.6.3 changes only when the
+measuring as 0.6.2 and 0.6.3 time (the clearing's intervals). The two commits after it change
+only a switched-off path and a test's call. The cleanup after those (`b51c6ab5`, `3390e42b`,
+`024d6f77`) and the last review's fixes change code these scenes run, but not what they do.
+With measuring off (the native host, 640 × 360, against `246d7d65`), each scene's sim is the same
+every tick, and its frame is one the base's own runs draw: a run of either lands on one of a few
+frames (the clearing's within 4/255 of each other, over at most 2,142 pixels), and two runs of
+one build, the same commands to the byte, can differ so; the closest pair across the builds is
+the same to the pixel. Their times weren't measured again. (The baseline ran on 0.6.2; 0.6.3 changes only when the
 browser starts timing a label, which B1's code never asks.)
 
 | Scene | GPU span p50 / p95 / p99 ms | Interval p50 / p95 / p99 ms | Over 16.7 / 33 ms | CPU p50 / p95 ms | Native p50 / p95 ms | First frame ms | Playable ms | Pipelines ms | Loaded MiB | GPU peak MiB |

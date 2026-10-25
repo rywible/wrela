@@ -37,9 +37,6 @@ pub struct Corner: Copy + Eq {
 /// How near a pixel a corner must be for a click or a drag to take it (pixels).
 pub const NEAR: f32 = 12.0
 
-/// The ticks a second the run was recorded at: the player runs it at this pace, again and again.
-pub const TICKS: f32 = 60.0
-
 /// The course lens's state.
 pub struct CourseLens {
     pub width: u32,
@@ -49,8 +46,10 @@ pub struct CourseLens {
     /// The course as last made, and the literal table's generation it was made at.
     pub plan: Plan,
     pub made: u32,
-    /// Where the player is each tick of its run, and the seconds the lens has run it.
+    /// Where the player is each tick of its run, the ticks a second it was recorded at (the lens
+    /// runs it at that pace, again and again), and the seconds the lens has run it.
     pub run: Vec<vec2>,
+    pub ticks: f32,
     pub time: f32,
     /// The literals moved since the build, and the write of them on its way.
     pub moved: Vec<Literal>,
@@ -66,9 +65,9 @@ pub struct CourseLens {
     pub answers: u32,
 }
 
-/// The lens on the course `plan` gives, its player on the run `run` gives: the whole course in
-/// view.
-pub fn open(plan: fn() -> Plan, run: fn() -> Vec<vec2>) -> CourseLens {
+/// The lens on the course `plan` gives, its player on the run `run` gives (recorded at `ticks` a
+/// second): the whole course in view.
+pub fn open(plan: fn() -> Plan, run: fn() -> Vec<vec2>, ticks: f32) -> CourseLens {
     let fonts = Fonts::load()
     let renderer = Renderer::new(fonts)
     let p = plan()
@@ -92,6 +91,7 @@ pub fn open(plan: fn() -> Plan, run: fn() -> Vec<vec2>) -> CourseLens {
         plan: p,
         made: generation(),
         run: run(),
+        ticks,
         time: 0.0,
         moved: Vec::new(),
         writing: None,
@@ -451,7 +451,7 @@ fn draw_course(lens: mut CourseLens, screen: vec2) {
         k += 8
     }
     if !lens.run.is_empty() {
-        let at = lens.run[u32(lens.time * TICKS) % lens.run.len()]
+        let at = run_at(lens.run, lens.ticks, lens.time)
         let p = lens.pixel(at)
         let r = max(0.35 / lens.scale(), 3.0)
         lens.ui.draw.ellipse(
@@ -519,7 +519,25 @@ pub fn command(lens: mut CourseLens, plan: fn() -> Plan, line: str) {
     }
 }
 
+/// Where a run recorded at `ticks` a second (`run`, a position a tick) is `time` seconds in,
+/// played again and again.
+fn run_at(run: [vec2], ticks: f32, time: f32) -> vec2 {
+    run[u32(time * ticks) % run.len()]
+}
+
 // ---- tests ------------------------------------------------------------------------------------
+
+/// A run plays at the pace it was recorded: a second into the capybara's (120 ticks a second, its
+/// sim's), its 120th tick; and it starts again once it's run.
+@test
+fn a_run_plays_at_the_pace_it_was_recorded() {
+    var run: Vec<vec2> = Vec::new()
+    for k in 0..200 {
+        run.push(vec2(f32(k), 0.0))
+    }
+    assert(run_at(run, 120.0, 1.0).x == 120.0, "a second in isn't the 120th tick")
+    assert(run_at(run, 120.0, 2.0).x == 40.0, "the run didn't start again")
+}
 
 @test
 fn a_pixel_and_its_point_of_the_course_go_both_ways() {

@@ -3,11 +3,11 @@
 // lists them, for its headless runner). What the lens needs of the game is `course.wrela`'s:
 // `wrela tool studio -- <game>` writes one for the game's `lens` module.
 
-use course::{plan, run}
+use course::{plan, run, ticks}
 use courselens::lens::CourseLens
 
 pub fn init() -> CourseLens {
-    courselens::lens::open(plan, run)
+    courselens::lens::open(plan, run, ticks())
 }
 
 pub fn frame(state: mut CourseLens, time: f32, width: u32, height: u32) {
