@@ -31,37 +31,47 @@ Part B's engine changes), its pin moved to 0.6.2 in a worktree so both sides run
 | herd | 4.50 / 5.23 / 6.63 | 16.57 / 18.52 / 19.43 | 278 / 0 | 0.32 / 0.94 | 1.08 / 1.24 | 162.22 | 0.00 | 290.56 | 1.5 | 112.4 |
 | leapling | 2.14 / 2.35 / 2.36 | 16.67 / 17.47 / 18.22 | 276 / 0 | 0.14 / 0.51 | 0.24 / 0.28 | 109.03 | 0.00 | 20.39 | 0.4 | 0.0 |
 
-## 2026-10-25: B13 (`b137893c`), toolchain 0.6.2
+## 2026-10-25: B13 (`78a31b6c`), toolchain 0.6.3
 
-The same machine, the same hour, against the baseline above (`--compare`).
+The same machine, the same day, against the baseline above (`--compare`), after the council's
+review fixes: the built things fitted to their meshes (the Last Green's GPU memory), the frame
+measuring as 0.6.2 and 0.6.3 time (the clearing's intervals). The commits after it change only
+a switched-off path and a test's call. (The baseline ran on 0.6.2; 0.6.3 changes only when the
+browser starts timing a label, which B1's code never asks.)
 
 | Scene | GPU span p50 / p95 / p99 ms | Interval p50 / p95 / p99 ms | Over 16.7 / 33 ms | CPU p50 / p95 ms | Native p50 / p95 ms | First frame ms | Playable ms | Pipelines ms | Loaded MiB | GPU peak MiB |
 |---|---|---|---|---|---|---|---|---|---|---|
-| clearing-path | 10.06 / 10.78 / 11.07 | 15.04 / 18.44 / 19.61 | 158 / 1 | 0.41 / 1.32 | 9.48 / 10.46 | 381.73 | 3475.74 | 2692.18 | 4.9 | 513.4 |
-| last-green-shot | 18.70 / 19.59 / 26.89 | 18.51 / 22.91 / 36.03 | 312 / 7 | 4.63 / 5.38 | 9.09 / 14.20 | 585.20 | 11639.78 | 5326.91 | 14.6 | 1227.7 |
-| last-green-walk | 12.41 / 14.66 / 17.98 | 12.91 / 23.63 / 29.46 | 111 / 7 | 3.98 / 5.07 | 10.51 / 13.83 | 592.28 | 11886.19 | 5401.41 | 14.6 | 1228.5 |
-| capybara-run | 1.12 / 1.74 / 2.10 | 16.56 / 19.89 / 21.17 | 277 / 0 | 0.22 / 0.82 | 0.40 / 0.53 | 157.94 | 0.00 | 613.52 | 3.6 | 81.9 |
-| capybara-run-large | 2.01 / 3.02 / 3.55 | 16.67 / 17.81 / 18.14 | 282 / 0 | 0.15 / 0.69 | 0.49 / 2.71 | 192.36 | 0.00 | 616.32 | 3.6 | 183.0 |
-| herd | 4.65 / 8.19 / 12.22 | 16.67 / 18.12 / 18.71 | 290 / 0 | 0.33 / 0.94 | 1.10 / 1.30 | 157.54 | 0.00 | 329.39 | 1.6 | 112.4 |
-| leapling | 2.15 / 2.38 / 2.58 | 16.67 / 17.79 / 18.15 | 226 / 0 | 0.09 / 0.45 | 0.24 / 0.27 | 106.62 | 0.00 | 110.13 | 0.4 | 0.0 |
+| clearing-path | 10.18 / 10.91 / 11.15 | 10.09 / 17.91 / 18.64 | 124 / 0 | 0.44 / 1.39 | 9.52 / 10.86 | 400.67 | 3956.89 | 3082.18 | 4.9 | 513.4 |
+| last-green-shot | 18.92 / 19.91 / 25.72 | 18.80 / 23.49 / 40.15 | 317 / 8 | 4.73 / 5.66 | 12.39 / 16.60 | 667.19 | 14099.28 | 7492.50 | 15.0 | 780.8 |
+| last-green-walk | 12.59 / 14.85 / 18.53 | 13.05 / 19.57 / 28.96 | 70 / 9 | 4.09 / 5.87 | 11.63 / 14.44 | 641.93 | 13928.06 | 7410.71 | 14.9 | 780.8 |
+| capybara-run | 1.05 / 1.59 / 1.97 | 16.68 / 17.98 / 18.40 | 291 / 0 | 0.25 / 0.62 | 0.40 / 0.58 | 177.64 | 0.00 | 604.24 | 3.6 | 81.9 |
+| capybara-run-large | 2.01 / 3.06 / 3.58 | 16.67 / 18.59 / 19.39 | 271 / 0 | 0.23 / 0.42 | 0.51 / 2.87 | 171.57 | 0.00 | 614.28 | 3.6 | 183.0 |
+| herd | 4.65 / 6.02 / 6.65 | 16.67 / 17.20 / 17.64 | 222 / 0 | 0.37 / 0.95 | 1.11 / 1.33 | 153.49 | 0.00 | 319.61 | 1.6 | 112.4 |
+| leapling | 2.14 / 2.36 / 2.44 | 16.66 / 18.17 / 18.62 | 254 / 0 | 0.12 / 0.47 | 0.24 / 0.28 | 103.06 | 0.00 | 109.04 | 0.4 | 0.0 |
 
 The change from B1, as `--compare` printed it:
 
 | Scene | GPU span p50 | Interval p95 | CPU p50 | First frame | GPU peak |
 |---|---|---|---|---|---|
-| clearing-path | 10.53 → 10.06 ms (−4.4%) | 17.82 → 18.44 ms | 0.78 → 0.41 ms (−47%) | 329 → 382 ms (+16%) | 476 → 513 MiB (+8%) |
-| last-green-shot | 21.82 → 18.70 ms (−14.3%) | 28.65 → 22.91 ms | 5.18 → 4.63 ms (−10.5%) | 495 → 585 ms (+18%) | 1,468 → 1,228 MiB (−16.4%) |
-| last-green-walk | 15.26 → 12.41 ms (−18.7%) | 19.50 → 23.63 ms | 4.66 → 3.98 ms (−14.5%) | 544 → 592 ms (+9%) | 1,469 → 1,228 MiB (−16.4%) |
-| capybara-run | 1.69 → 1.12 ms (−33.8%) | 18.79 → 19.89 ms | 0.21 → 0.22 ms | 167 → 158 ms | 44 → 82 MiB (+85%) |
-| capybara-run-large | 4.52 → 2.01 ms (−55.6%) | 18.43 → 17.81 ms | 0.19 → 0.15 ms | 196 → 192 ms | 98 → 183 MiB (+86%) |
-| herd | 4.50 → 4.65 ms (+3.2%) | 18.52 → 18.12 ms | 0.32 → 0.33 ms | 162 → 158 ms | 112 → 112 MiB |
-| leapling | 2.14 → 2.15 ms | 17.47 → 17.79 ms | 0.14 → 0.09 ms | 109 → 107 ms | 0.03 → 0.03 MiB |
+| clearing-path | 10.53 → 10.18 ms (−3.3%) | 17.82 → 17.91 ms | 0.78 → 0.44 ms (−43%) | 329 → 401 ms (+22%) | 476 → 513 MiB (+8%) |
+| last-green-shot | 21.82 → 18.92 ms (−13.3%) | 28.65 → 23.49 ms | 5.18 → 4.73 ms (−8.6%) | 495 → 667 ms (+35%) | 1,468 → 781 MiB (−46.8%) |
+| last-green-walk | 15.26 → 12.59 ms (−17.5%) | 19.50 → 19.57 ms | 4.66 → 4.09 ms (−12.3%) | 544 → 642 ms (+18%) | 1,469 → 781 MiB (−46.9%) |
+| capybara-run | 1.69 → 1.05 ms (−37.7%) | 18.79 → 17.98 ms | 0.21 → 0.25 ms | 167 → 178 ms | 44 → 82 MiB (+85%) |
+| capybara-run-large | 4.52 → 2.01 ms (−55.5%) | 18.43 → 18.59 ms | 0.19 → 0.23 ms | 196 → 172 ms | 98 → 183 MiB (+86%) |
+| herd | 4.50 → 4.65 ms (+3.2%) | 18.52 → 17.20 ms | 0.32 → 0.37 ms | 162 → 153 ms | 112 → 112 MiB |
+| leapling | 2.14 → 2.14 ms | 17.47 → 18.17 ms | 0.14 → 0.12 ms | 109 → 103 ms | 0.03 → 0.03 MiB |
 
 The capybara's GPU memory is its parallax strips (B10.3: four layers, 1.5 by 1.25 screens each).
-The Last Green's is the compressed impostors (B6).
+The Last Green's fell by its built things' meshes, fitted to what they hold (558 MiB of room
+they didn't use), and by its compressed impostors (B6).
 
-**Repeats** (Chrome only, `--no-native`, two more runs a side, alternating B1 and B13): the
-paced intervals, p95 / p99, over 33 ms.
+A cold start varies from run to run: the Last Green's opening was playable in 11.6, 11.9, 14.1
+and (in two later pairs, against the same code without the banks' cluster path) 10.1 and 10.1 s
+today, its pipelines' build 4.3 to 7.5 s of it.
+
+**Repeats** (Chrome only, `--no-native`, two more runs a side, alternating B1 and B13 at
+`b137893c`, before the review fixes: the scenes' intervals didn't change with them): the paced
+intervals, p95 / p99, over 33 ms.
 
 | Scene | B1 | B13 |
 |---|---|---|
@@ -83,18 +93,18 @@ on the same machine. As measured, it doesn't hold as written for any scene: no p
 a 99th percentile under 16.7 ms in headless Chrome (the leapling's is 18.2 ms), so the scenes
 below are judged by their GPU frame against 16.7 ms and their frames over 33 ms.
 
-- **The clearing's path:** holds 60 fps. Its GPU frame is 10.1 ms, its intervals are the
-  leapling's within a ms (p99 19.1 to 19.6 ms), 0 or 1 frame of 600 over 33 ms, and it's playable
-  in 3.5 s. The next lever is that one hitch.
-- **The Last Green's opening (the shot):** misses. Its GPU frame is 18.7 ms, 2.0 ms over a
-  refresh, so it runs at about 53 fps (interval p50 18.5 ms), with 7 of 480 frames over 33 ms; and
-  it's playable in 11.6 s, 6.6 s over. The levers, by its labels' GPU times in Chrome (`wrela
+- **The clearing's path:** holds 60 fps. Its GPU frame is 10.1 to 10.2 ms, its intervals are the
+  leapling's within a ms (p99 18.6 to 19.6 ms), 0 or 1 frame of 600 over 33 ms, and it's playable
+  in 3.5 to 4.0 s. The next lever is that one hitch.
+- **The Last Green's opening (the shot):** misses. Its GPU frame is 18.7 to 18.9 ms, 2 ms over
+  a refresh, so it runs at about 53 fps (interval p50 18.5 to 18.8 ms), with 7 or 8 of 480 frames
+  over 33 ms; and it's playable in 10 to 14 s, 5 to 9 s over. The levers, by its labels' GPU times in Chrome (`wrela
   profile games/last-green --chrome --input build/gates/LG_SHOT.json --compare <B1's build>
   --pairs 3`: span 21.76 → 18.59 ms, −14.2%): the terrain's cook (4.65 ms), the vegetation
   (3.93), the probes' bake (2.69), the near cascade's strips (2.45) and the clouds (2.35); for
   the start, the pipelines' build (5.3 s of it) and the streaming behind it.
-- **The Last Green's walk:** misses, by its hitches. Its GPU frame is 12.4 ms, but 7 to 9 of 1,200
-  frames are over 33 ms and its p99 is 29 ms. The next lever is what those frames cook
+- **The Last Green's walk:** misses, by its hitches. Its GPU frame is 12.4 to 12.6 ms, but 7 to 9
+  of 1,200 frames are over 33 ms and its p99 is 29 ms. The next lever is what those frames cook
   (`wrela profile --chrome` on the walk's frames over 33 ms).
 - **The capybara's run:** holds, at 1080p and at 2940×1912: GPU frame 1.1 and 2.0 ms, the
   leapling's intervals, no frame over 33 ms.
