@@ -35,8 +35,9 @@ use std::derive::{Box3, gradient}
 use std::field::Surface
 use std::collections::replace
 use std::gpu::{
-    Append, AppendBuffer, Atomics, DispatchArgs, DrawIndexedArgs, GlobalId, GpuBuffer, LocalId, One,
-    Shared, Slots, WorkgroupId, append_buffer, barrier, buffer, dispatch, read, write,
+    Append, AppendBuffer, Atomics, DispatchArgs, DrawIndexedArgs, GlobalId, GpuBuffer, GpuSpan,
+    LocalId, One, Shared, Slots, WorkgroupId, append_buffer, barrier, buffer, copy, dispatch, read,
+    write,
 }
 use std::io::Pending
 use std::mem::{debug_build, size_of}
@@ -700,6 +701,34 @@ impl Mesh {
         let args = size_of::<DrawIndexedArgs>() + size_of::<DispatchArgs>()
         u64(room.vertices) * 48 + u64(room.quads) * 24 + u64(args + size_of::<Tally>() + 4 + 24)
     }
+}
+
+/// `m` fitted to what it holds (`vertices` and `quads`, as its tally and draw read back say): a
+/// mesh with just that room, the used part copied into it, with its draw, skin pass and tally. A
+/// realization makes room for its whole grid's blocks (`prepare`), which a surface crosses a
+/// few of: the Last Green's built things held 558 MiB in that room.
+pub fn fitted(m: take Mesh, vertices: u32, quads: u32) -> Mesh {
+    let (v, q) = (max(vertices, 1), max(quads, 1))
+    if v >= m.verts.capacity() && q >= m.quads.capacity() {
+        return take m
+    }
+    var out = Mesh::new(
+        Room { vertices: min(v, m.verts.capacity()), quads: min(q, m.quads.capacity()) },
+    )
+    let (verts, quads) = (m.verts.items(), m.quads.items())
+    copy(
+        GpuSpan { buffer: verts.buffer, start: 0, count: out.verts.capacity() },
+        out.verts.items_mut(),
+    )
+    copy(
+        GpuSpan { buffer: quads.buffer, start: 0, count: out.quads.capacity() },
+        out.quads.items_mut(),
+    )
+    copy(m.draw.items(), out.draw.items_mut())
+    copy(m.skin.items(), out.skin.items_mut())
+    copy(m.holes.items(), out.holes.items_mut())
+    copy(m.tally.items(), out.tally.items_mut())
+    out
 }
 
 /// Records one realization: `field`'s mesh on `grid`, its skin weights falling off over

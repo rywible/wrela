@@ -357,6 +357,27 @@ fn targets_for(width: u32, height: u32, w: u32, h: u32, effects: bool) -> Target
     }
 }
 
+impl Targets {
+    /// The GPU bytes its textures take: half floats but the depths and the ids (32 bits).
+    pub fn bytes(self) -> u64 {
+        let h = |t: Texture<Rgba16Float>| memory::texels(t.width(), t.height(), 8)
+        let n = h(self.scene) +
+            h(self.scene_b) +
+            h(self.motion) +
+            h(self.last_motion) +
+            h(self.below) +
+            h(self.shafts) +
+            h(self.dabs) +
+            h(self.history) +
+            h(self.last_history) +
+            h(self.bloom_1) +
+            h(self.bloom_2) +
+            h(self.bloom_3) +
+            h(self.bloom_4)
+        n + memory::texels(self.depth.width(), self.depth.height(), 4) * 3
+    }
+}
+
 /// The bloom's level `level` for an output `width` × `height`: `2^level` times smaller.
 fn bloom_of(width: u32, height: u32, level: u32) -> Texture<Rgba16Float> {
     texture::<Rgba16Float>(width: max(width >> level, 1), height: max(height >> level, 1))
@@ -1536,7 +1557,11 @@ impl<R: Resolver> Frame<R> {
     /// `shares`) and handed to the scene to trim what's over (`Scene::pressed`); the first time
     /// something is over, it's said.
     fn memory<S: Scene>(mut self, scene: mut S) {
-        self.usage = Usage { gpu: memory(), total: self.quality.memory, shares: scene.shares() }
+        var shares = self.shares()
+        for sh in scene.shares() {
+            shares.push(sh.clone())
+        }
+        self.usage = Usage { gpu: memory(), total: self.quality.memory, shares }
         scene.pressed(self.usage)
         let over = self.usage.over()
         if !over.is_empty() && !self.said_over {
@@ -1549,10 +1574,48 @@ impl<R: Resolver> Frame<R> {
                 }
                 names.push_str(n)
             }
+            var parts = String::new()
+            var counted = 0
+            for sh in self.usage.shares {
+                parts.push_str(f", {sh.name} {mib(sh.bytes)}")
+                counted += sh.bytes
+            }
+            let rest = if self.usage.held() > counted { self.usage.held() - counted } else { 0 }
             print(
-                f"GPU memory over its budget ({names}): {mib(self.usage.held())} MiB held of {mib(self.usage.total)}",
+                f"GPU memory over its budget ({names}): {mib(self.usage.held())} MiB held of {mib(self.usage.total)}{parts}, the rest {mib(rest)}",
             )
         }
+    }
+
+    /// What the frame's own subsystems hold on the GPU, by their own counts: its targets, the
+    /// cascades and the moving map, the sky, the probes (in use, being baked and kept for the
+    /// next), and the ground's clipmap. None has a budget of its own: the total is theirs.
+    pub fn shares(self) -> Vec<Share> {
+        let total = self.quality.memory
+        let share = |name: Text, bytes: u64| Share { name, bytes, budget: total }
+        var probes = self.probes.using.bytes()
+        match self.probes.next {
+            Some(b) => probes += b.bytes(),
+            None => {},
+        }
+        match self.probes.spare {
+            Some(b) => probes += b.bytes(),
+            None => {},
+        }
+        Vec::from(
+            [
+                share("targets", self.targets.bytes()),
+                share(
+                    "shadows",
+                    self.near.bytes() +
+                        self.far.bytes() +
+                        memory::texels(self.moving.width(), self.moving.height(), 4),
+                ),
+                share("sky", self.sky.bytes()),
+                share("probes", probes),
+                share("terrain", self.clipmap.bytes()),
+            ],
+        )
     }
 
     /// Whether a frame from `eye_w` (the world's) is full: the near cascade drawn, the probes in

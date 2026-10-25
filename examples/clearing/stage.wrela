@@ -6,7 +6,7 @@ use creature::{Fawn, Grown, REALIZED, SKELETON, grown}
 use fawn::creature::Coat
 use engine::character::{Cast, PartOf, cast, parts_of}
 use engine::cook::Work
-use engine::memory::{Share, Usage, WOOD_LISTS, shrink_after}
+use engine::memory::{IMPOSTORS, Share, Usage, WOOD_LISTS, shrink_after}
 use engine::cull::Hzb
 use engine::frame::{Cooks, Scene, Targets, full}
 use engine::gait::{Walker, posed_bounds}
@@ -465,11 +465,15 @@ impl Scene for Stage {
         }
     }
 
-    /// The wood's lists against their budget (`engine::memory::WOOD_LISTS`).
+    /// The wood's lists and impostors against their budgets (`engine::memory`).
     fn shares(self) -> Vec<Share> {
         match self.wood {
             Some(w) => Vec::from(
-                [Share { name: "wood lists", bytes: w.list_bytes(), budget: WOOD_LISTS }],
+                [
+                    Share { name: "wood lists", bytes: w.list_bytes(), budget: WOOD_LISTS },
+                    Share { name: "impostors", bytes: w.impostor_bytes(), budget: IMPOSTORS },
+                    Share { name: "wood", bytes: w.pool_bytes(), budget: engine::memory::TOTAL },
+                ],
             ),
             None => Vec::new(),
         }

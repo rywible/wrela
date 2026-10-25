@@ -280,6 +280,12 @@ pub struct Kept {
 }
 
 impl Kept {
+    /// The GPU bytes its two maps take (32-bit depth).
+    pub fn bytes(self) -> u64 {
+        memory::texels(self.front.width(), self.front.height(), 4) +
+            memory::texels(self.back.width(), self.back.height(), 4)
+    }
+
     /// A cascade `span` wide round `centre`, `side` texels a side, drawn in `strips` strips;
     /// `reach_in` is how far past its square a tree's shadow can reach into it (m: a 25 m tree's
     /// at a sun 24° up is 56 m long).

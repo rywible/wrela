@@ -13,15 +13,16 @@ use light::Lit
 use lit::{Lighting, shown, sun_and_gloss}
 use look::Mesh as Tolerance
 use noise::{hash3, noise3, rand}
-use realize::{Mesh, SkinVertex, realize_rigid, solid}
+use realize::{Mesh, SkinVertex, Tally, fitted, realize_rigid, solid}
 use std::derive::Box3
 use std::derive::Interval
 use std::field::{Blend, Fbm, Noise, Surface, VALUE_NOISE_LIPSCHITZ, fbm, oval, value_noise}
 use std::gpu::{
     Atomics, ClipPosition, DrawIndexedArgs, Flat, FragCoord, GlobalId, GpuBuffer, InstanceIndex,
     RenderPass, Slots, Unorm8x4, VertexIndex, buffer, buffer_of, copy, discard, dispatch, draw,
-    label, write,
+    label, read, write,
 }
+use std::io::Pending
 use std::math::TAU
 use std::transform::{rotate_y, translate}
 use view::{Camera, ROCK}
@@ -136,6 +137,48 @@ pub struct Realized {
     pub colours: GpuBuffer<Unorm8x4>,
     pub at: mat4,
     pub seed: u32,
+}
+
+/// What a realized mesh holds, asked for to fit it (`Realized::fitted`): its tally (its
+/// vertices, and the quads pushed: as many as fit its room).
+pub struct Fit {
+    pub tally: Pending<Tally>,
+}
+
+impl Fit {
+    /// The counts of `r`'s mesh, asked for.
+    pub fn of(r: Realized) -> Fit {
+        Fit { tally: read(r.mesh.tally.items()) }
+    }
+
+    /// The vertices and quads, once they've come.
+    pub fn counts(mut self) -> Option<(u32, u32)> {
+        match self.tally.poll() {
+            Some(Ok(t)) => Some((t[0].vertices, t[0].pushed_quads)),
+            _ => None,
+        }
+    }
+}
+
+impl Realized {
+    /// Fitted to what its mesh holds (`realize::fitted`, `Fit`): its mesh and its colours, a
+    /// vertex each.
+    pub fn fitted(r: take Realized, vertices: u32, quads: u32) -> Realized {
+        var r = take r
+        let n = max(vertices, 1)
+        if n < r.colours.len() {
+            var colours: GpuBuffer<Unorm8x4> = buffer(n)
+            copy(r.colours.span(start: 0, count: n), colours.items_mut())
+            r.colours = take colours
+        }
+        r.mesh = fitted(take r.mesh, vertices, quads)
+        r
+    }
+
+    /// The GPU bytes its mesh and its colours take.
+    pub fn bytes(self) -> u64 {
+        self.mesh.bytes() + u64(self.colours.len()) * 4
+    }
 }
 
 /// A placement borrows one mesh from its owner. Its enclosing sphere is in world space.
@@ -870,6 +913,18 @@ fn rock_args(mesh: [DrawIndexedArgs], count: u32, out: mut Slots<DrawIndexedArgs
 }
 
 impl Rocks {
+    /// The GPU bytes its kinds' meshes and their colours take, both levels.
+    pub fn bytes(self) -> u64 {
+        var n = 0
+        for r in self.near {
+            n += r.bytes()
+        }
+        for r in self.far {
+            n += r.bytes()
+        }
+        n
+    }
+
     /// Rocks of the kinds `near` and `far` realize (the same kinds, fine and coarse) placed as
     /// `placements` say (each placement's `prototype` a kind; others are left out).
     pub fn new(

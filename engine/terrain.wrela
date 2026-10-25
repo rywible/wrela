@@ -18,6 +18,7 @@
 // the hole the finer level fills, each sharing its edge's vertices, so a pixel the seam's
 // T-junctions leave uncovered on either side sees a skirt, never past the ground.
 
+use std::mem::size_of
 use light::Lit
 use sim::Hit
 use noise::{hash2, noise2_wrapped, wrapped}
@@ -280,6 +281,13 @@ pub struct Details {
 }
 
 impl Clipmap {
+    /// The GPU bytes its levels' texels, its triangles, its draws and its fields take.
+    pub fn bytes(self) -> u64 {
+        u64(self.texels.len() + self.moving.len()) * u64(size_of::<Texel>()) +
+            u64(self.indices.len() + self.bounds.len()) * 4 +
+            memory::texels(self.fields.width(), self.fields.height(), 4)
+    }
+
     /// A clipmap of `levels` levels (at most `MAX_LEVELS`), the finest `finest` apart.
     pub fn new(levels: u32, finest: f32) -> Clipmap {
         let n = min(levels, MAX_LEVELS)

@@ -12,7 +12,7 @@ use engine::cook::Work
 use land::stream::{near_tile_radius, tile_distance, tile_radius}
 use tower::door::Doorway
 use world::GATE
-use engine::memory::{Share, Usage, WOOD_LISTS, shrink_after}
+use engine::memory::{IMPOSTORS, Share, Usage, WOOD_LISTS, shrink_after}
 use engine::cull::Hzb
 use engine::frame::{Cooks, Effects, Scene, Targets, full, fullscreen}
 use engine::grass::{Blooms, Contact, Grass, GrassLook}
@@ -26,7 +26,7 @@ use engine::shadow::Shadows
 use engine::shafts::{Shafts, add_shafts, march_shafts}
 use engine::sky::Weather
 use engine::stone::{
-    Instances, Realized, Rocks, stone_instance_vertex, stone_shade, stone_shadow, stone_vertex,
+    Fit, Instances, Realized, Rocks, stone_instance_vertex, stone_shade, stone_shadow, stone_vertex,
 }
 use engine::terrain::{Clipmap, Texel}
 use engine::vegetation::{Kind, Placed, kind}
@@ -89,6 +89,10 @@ pub struct Stage {
     pub built: Vec<Realized>,
     pub built_reach: Vec<f32>,
     pub built_far: Vec<Option<Realized>>,
+    /// Each built thing's counts, asked for to fit its mesh (`Fit`), and its far mesh's: none
+    /// once it's fitted.
+    built_fit: Vec<Option<Fit>>,
+    built_far_fit: Vec<Option<Fit>>,
     /// Bank stones share three meshes; the placements contain no GPU resources.
     pub banks: Instances,
     pub footprints: GpuBuffer<vec4>,
@@ -138,6 +142,8 @@ pub fn stage() -> Stage {
         built: Vec::new(),
         built_reach: Vec::new(),
         built_far: Vec::new(),
+        built_fit: Vec::new(),
+        built_far_fit: Vec::new(),
         banks: blockouts::bank_instances(history::COURSES.courses, height_at),
         footprints: buffer_of(footprints_in(vec3(0.0), FLOOR), at_least: 1),
         drawn: None,
@@ -223,6 +229,7 @@ impl Scene for Stage {
     /// built things, the tiles round the eye, and a slice of the fawn's and the wolf's meshes
     /// where they're wanted.
     fn cook(mut self, c: mut Cooks, clipmap: mut Clipmap, linear: Sampler) {
+        fit_built(mut self)
         if rocky(self.view) && self.rocks.is_none() {
             let began = std::time::now()
             let placements = geology::rock_placements(growth::LAND.land, geology::TORS)
@@ -641,14 +648,47 @@ impl Scene for Stage {
     /// Render space moved by `d` (the render origin by `-d`): the wood's instances, the banks'
     /// stones and the built things move with it; the rocks are drawn and cast from the new
     /// origin; the grass's footprints are made again.
-    /// The wood's lists against their budget (`engine::memory::WOOD_LISTS`).
+    /// The wood's lists and impostors against their budgets (`engine::memory`).
     fn shares(self) -> Vec<Share> {
-        match self.wood {
+        var built = 0
+        for b in self.built {
+            built += b.bytes()
+        }
+        for b in self.built_far {
+            match b {
+                Some(r) => built += r.bytes(),
+                None => {},
+            }
+        }
+        let rocks = match self.rocks {
+            Some(r) => r.bytes(),
+            None => 0,
+        }
+        let own = Vec::from(
+            [
+                Share { name: "built", bytes: built, budget: engine::memory::TOTAL },
+                Share { name: "rocks", bytes: rocks, budget: engine::memory::TOTAL },
+                Share {
+                    name: "leaves' atlas",
+                    bytes: engine::memory::texels(self.atlas.width(), self.atlas.height(), 4),
+                    budget: engine::memory::TOTAL,
+                },
+            ],
+        )
+        var out = match self.wood {
             Some(w) => Vec::from(
-                [Share { name: "wood lists", bytes: w.list_bytes(), budget: WOOD_LISTS }],
+                [
+                    Share { name: "wood lists", bytes: w.list_bytes(), budget: WOOD_LISTS },
+                    Share { name: "impostors", bytes: w.impostor_bytes(), budget: IMPOSTORS },
+                    Share { name: "wood", bytes: w.pool_bytes(), budget: engine::memory::TOTAL },
+                ],
             ),
             None => Vec::new(),
         }
+        for o in own {
+            out.push(o.clone())
+        }
+        out
     }
 
     /// Over its budget, the wood gives back its choosings' room sooner.
@@ -1390,6 +1430,47 @@ pub fn rendered(placed: [Placed], d: vec3) -> Vec<Placed> {
     out
 }
 
+/// Each built thing whose counts have come fitted to them (`Realized::fitted`): it was realized
+/// with room for its whole grid.
+fn fit_built(s: mut Stage) {
+    for i in 0..s.built_fit.len() {
+        let counts = match mut s.built_fit[i] {
+            Some(f) => f.counts(),
+            None => None,
+        }
+        if let Some((v, q)) = counts {
+            let r = replace(mut s.built[i], placeholder())
+            s.built[i] = Realized::fitted(take r, v, q)
+            s.built_fit[i] = None
+        }
+        let far = match mut s.built_far_fit[i] {
+            Some(f) => f.counts(),
+            None => None,
+        }
+        if let Some((v, q)) = far {
+            if let Some(r) = replace(mut s.built_far[i], None) {
+                s.built_far[i] = Some(Realized::fitted(take r, v, q))
+            }
+            s.built_far_fit[i] = None
+        }
+    }
+}
+
+/// A realized nothing, to hold a built thing's place while it's fitted.
+fn placeholder() -> Realized {
+    Realized {
+        mesh: engine::realize::Mesh::new(engine::realize::Room { vertices: 1, quads: 1 }),
+        colours: std::gpu::buffer(1),
+        at: mat4(
+            vec4(1.0, 0.0, 0.0, 0.0),
+            vec4(0.0, 1.0, 0.0, 0.0),
+            vec4(0.0, 0.0, 1.0, 0.0),
+            vec4(0.0, 0.0, 0.0, 1.0),
+        ),
+        seed: 0,
+    }
+}
+
 /// Whether what a frame from `eye` (the world's) needs is in: the wood cooked, the built
 /// things realized, every tile within 120 m placed and wholly shown (the frame adds the near
 /// shadows and the probes: `engine::frame::Frame::playable`).
@@ -1913,6 +1994,7 @@ pub fn cook_load(s: mut Stage, c: mut Cooks, eye: vec2, linear: Sampler) {
             var r = blockouts::realize(b, height_at)
             let o = origin_of(s)
             r.at[3] = vec4(r.at[3].xyz - o, 1.0)
+            s.built_fit.push(Some(Fit::of(r)))
             s.built.push(take r)
             s.built_reach.push(blockouts::reach(b))
             var far = blockouts::realize_far(b, height_at)
@@ -1920,6 +2002,12 @@ pub fn cook_load(s: mut Stage, c: mut Cooks, eye: vec2, linear: Sampler) {
                 Some(f) => f.at[3] = vec4(f.at[3].xyz - o, 1.0),
                 None => {},
             }
+            s.built_far_fit.push(
+                match far {
+                    Some(f) => Some(Fit::of(f)),
+                    None => None,
+                },
+            )
             s.built_far.push(take far)
             if s.to_build.is_empty() {
                 c.near_changed = true

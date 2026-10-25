@@ -21,6 +21,7 @@
 // probes where they land (the ground's light, the crowns' leaves lit by the sun and the probes
 // round them), so each round of them adds a bounce of light.
 
+use std::mem::size_of
 use light::{LUMA, Light, sky}
 use sky::{Clouds, cloud_shadow, clouded_sky}
 use shadow::{Shadows, statically_sunlit}
@@ -870,6 +871,18 @@ pub const AGAIN_RAYS: u32 = 64
 pub const AGAIN_KEEP: f32 = 0.5
 
 impl Baked {
+    /// The GPU bytes its probes, their maps, its volume and its occluders take.
+    pub fn bytes(self) -> u64 {
+        let d = self.grid.volume_dims
+        u64(self.probes.len() + self.bounces.len() + self.open.len()) * u64(size_of::<Probe>()) +
+            u64(self.grounds.len()) * 4 +
+            memory::texels(self.maps.width(), self.maps.height(), 8) +
+            memory::texels(d.x, d.y, 8, d: d.z) +
+            u64(self.volume.len()) * 4 +
+            u64(self.occluders.len()) * u64(size_of::<Occluder>()) +
+            u64(self.rays.len()) * u64(size_of::<Ray>())
+    }
+
     /// The grid moved by `d` with render space (the render origin moved by `-d`): what it baked
     /// stays, since it moves with the world. Its occluders must be cooked already (they're cooked
     /// once, into the volume, which moves with the grid).

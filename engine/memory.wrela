@@ -10,6 +10,17 @@ use std::gpu::Memory
 
 pub const MIB: u64 = 1048576
 
+/// The bytes of `w` × `h` texels (× `d` deep) of `texel` bytes each: a texture's own count of
+/// what it holds (a mip chain's levels add a third more: `chain`).
+pub fn texels(w: u32, h: u32, texel: u64, d: u32 = 1) -> u64 {
+    u64(w) * u64(h) * u64(d) * texel
+}
+
+/// A full mip chain's bytes from its first level's (`texels`): about four thirds of it.
+pub fn chain(first: u64) -> u64 {
+    first + first / 3
+}
+
 /// The budget a browser tab's GPU memory allows (proposed: a tab's 1.5 GB, less what the WASM
 /// heap and the page take).
 pub const TOTAL: u64 = 1024 * MIB

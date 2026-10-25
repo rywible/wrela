@@ -925,6 +925,20 @@ impl Wood {
         w
     }
 
+    /// The GPU bytes its pooled kinds take but their impostors (`impostor_bytes`): their cards,
+    /// card orders, limbs, impostor bounds and volumes, and every instance loaded.
+    pub fn pool_bytes(self) -> u64 {
+        borrow p = self.pool
+        let v = u64(impostor::VOXELS)
+        u64(p.cards.len()) * u64(size_of::<Card>()) +
+            u64(p.orders.len()) * 4 +
+            u64(p.limbs.len()) * u64(size_of::<Tube<4>>()) +
+            u64(p.bounds.len()) * 16 +
+            2 * v * v * v * 8 * u64(self.kinds.len()) +
+            u64(self.every.len()) * u64(size_of::<Instance>()) +
+            u64(self.metadata.len()) * 4
+    }
+
     /// The GPU bytes its kinds' impostors take (`Impostors`: a layer of each array a kind).
     pub fn impostor_bytes(self) -> u64 {
         let texels = u64(impostor::ATLAS) * u64(impostor::ATLAS) * u64(self.kinds.len())

@@ -6,6 +6,15 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 
 ## Open
 
+### A struct update from a borrowed struct doesn't compile
+
+- **Needed:** a span of the first `n` items of an append buffer (`GpuSpan { count: n, ..a.items() }`), to copy a realized mesh's used part into a mesh fitted to it (`engine::realize::fitted`).
+- **What happens:** toolchain 0.6.2 stops with an internal error, `error[I0001]: the CPU module's IR is malformed: fn5 first_5: v3 is a *GpuBuffer<u32>, not a GpuBuffer<u32>` ("this is a bug in the wrela compiler"). The struct update's base is a borrow struct (`GpuSpan`), and the copied field is a borrow; naming every field (`GpuSpan { buffer: s.buffer, start: 0, count: n }`) compiles.
+- **Found:** 2026-10-25, fitting the Last Green's built things (B13's review).
+- **Evidence:** eight lines: `fn first(a: AppendBuffer<u32>, n: u32, to: mut GpuBuffer<u32>) { copy(GpuSpan { count: n, ..a.items() }, to.items_mut()) }`, called from `init`.
+- **Meanwhile:** `fitted` names the span's fields.
+- **Status:** open.
+
 ### No 64-bit atomics on the GPU
 
 - **Needed:** the software rasterizer's single-pass variant (docs/plan-world-class.md §B7b): one `atomicMax` of a 64-bit word holding a fragment's depth and its cluster's id, so a pixel's nearest fragment wins in one operation.

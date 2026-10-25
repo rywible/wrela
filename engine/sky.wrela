@@ -19,6 +19,7 @@
 // together), each texel blended with what it held; the clouds drift a few metres (well under
 // half a texel at 5 km) while a tile waits its turn.
 
+use std::mem::size_of
 use air::{ALTITUDE, Air, BOTTOM, Tables, aerial_uvw, irradiance, radius_of, transmittance}
 use light::{Light, sky, sun_disc}
 use noise::{fbm2, hash3, wrapped}
@@ -743,6 +744,17 @@ pub fn new_sky() -> Sky {
 }
 
 impl Sky {
+    /// The GPU bytes its textures take (half floats: the noises, the weather, the clouds'
+    /// shadow and the dome).
+    pub fn bytes(self) -> u64 {
+        memory::texels(SHAPE_SIDE, SHAPE_SIDE, 8, d: SHAPE_SIDE) +
+            memory::texels(DETAIL_SIDE, DETAIL_SIDE, 8, d: DETAIL_SIDE) +
+            memory::texels(WEATHER_SIDE, WEATHER_SIDE, 8) +
+            memory::texels(SHADOW_SIDE, SHADOW_SIDE, 8) +
+            memory::texels(SKY_W, SKY_H, 8) +
+            u64(self.marched.len()) * u64(size_of::<vec4>())
+    }
+
     /// The noises cooked (once).
     pub fn cook_noise(mut self) {
         label("clouds noise")
