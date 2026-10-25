@@ -1,0 +1,8 @@
+# GPU particles and weighted blended transparency (engine/particles.wrela) on the GPU: 10,000
+# particles fall under gravity and come back sorted by depth; two see-through quads composite as
+# McGuire and Bavoil's formula says.
+[package]
+name = "particles_tests"
+
+[dependencies]
+engine = { workspace = true }

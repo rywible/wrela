@@ -24,6 +24,7 @@
 use air::{AIR_SLICES, Air, Tables, tables}
 use ambient::Occlusion
 use lights::{LocalLight, Lights}
+use particles::{Emits, Particles, Step, composite, wind_of}
 use reflect::{Mirror, Specular, copy_below}
 use cook::{Budget, Planner, Work}
 use light::Light
@@ -46,10 +47,10 @@ use std::cache::Stale
 use std::collections::{Flags, replace, swap}
 use std::gpu::{
     Address, Blend, ClipPosition, ComparisonSampler, DepthTexture, FragmentShader, GpuBuffer,
-    GpuSpan, R32Float, R32Uint, RenderPass, Rgba16Float, Rgba8, Sampler, ScreenPass, Texture,
-    Texture3d, VertexIndex, begin_depth_pass, begin_pass, begin_pass_with_depth, begin_screen_pass,
-    buffer, comparison_sampler, depth_texture, dispatch, draw, draw_multi, label, sampler, texture,
-    timed, writable_texture,
+    GpuSpan, R32Float, R32Uint, R8, RenderPass, Rgba16Float, Rgba8, Sampler, ScreenPass, Texture,
+    Texture3d, VertexIndex, begin_depth_pass, begin_pass, begin_pass2_with_depth,
+    begin_pass_with_depth, begin_screen_pass, buffer, comparison_sampler, depth_texture, dispatch,
+    draw, draw_multi, label, sampler, texture, timed, writable_texture,
 }
 use std::io::{Pending, print}
 
@@ -159,6 +160,20 @@ pub trait Scene {
     fn lights(self) -> Vec<LocalLight> {
         Vec::new()
     }
+
+    /// The particles the scene emits this frame (`particles`), into `e`.
+    fn emit(mut self, e: mut Emits) {}
+
+    /// Whether the scene draws veils (`veils`).
+    fn has_veils(self) -> bool {
+        false
+    }
+
+    /// The scene's veils, see-through matter, drawn into `pass` lit by `lt`: with `weighted`,
+    /// into weighted blended transparency's two targets (`particles::weighted`, with `blends:
+    /// [Blend::Add, Blend::Multiply]`, no depth written); without, into the scene, dithered by
+    /// their coverage (temporal AA settles it), tagged `view::VEIL`.
+    fn veils<P: RenderPass>(self, pass: P, lt: Lighting, weighted: bool) {}
 
     /// Whether anything casts into the moving map this frame (`cast_moving`): when nothing
     /// does, the frame keeps the map it cleared and draws no pass.
@@ -558,9 +573,41 @@ pub struct Quality: Copy {
     /// Whether glossy surfaces reflect the screen (the last frame's, copied after its effects)
     /// and a specular probe of the sky, a face baked a frame (`reflect`).
     pub reflections: bool = true,
+    /// How veils are drawn (`Scene::veils`): blended in any order (weighted blended
+    /// transparency), or dithered by their coverage.
+    pub transparency: Transparency = Transparency::Weighted,
     /// Whether sunlit surfaces march a couple of metres toward the sun through the last frame's
     /// screen for the shadows of small things the shadow maps miss (`reflect::contact_shadow`).
     pub contact: bool = true,
+}
+
+/// How see-through matter is drawn (`Quality::transparency`).
+pub enum Transparency: Copy + Eq + Fieldless {
+    Dithered,
+    Weighted,
+}
+
+/// What see-through matter is drawn into before it's laid over the scene (`particles::composite`):
+/// the veils' weighted colours and what they leave showing, and the particles, premultiplied (at
+/// half the scene's size); and
+/// whether the veils' two hold nothing (cleared, and none drawn since).
+pub struct SeeThrough {
+    pub accum: Texture<Rgba16Float>,
+    pub reveal: Texture<R8>,
+    pub parts: Texture<Rgba16Float>,
+    pub empty: bool,
+}
+
+impl SeeThrough {
+    /// Its targets for a scene `w` × `h`.
+    fn new(w: u32, h: u32) -> SeeThrough {
+        SeeThrough {
+            accum: texture::<Rgba16Float>(width: w, height: h),
+            reveal: texture::<R8>(width: w, height: h),
+            parts: texture::<Rgba16Float>(width: max(w / 2, 1), height: max(h / 2, 1)),
+            empty: false,
+        }
+    }
 }
 
 /// The least scene a paced 3D frame draws, over the output's size (`Quality::pace`): below it a
@@ -796,6 +843,11 @@ pub struct Frame<R: Resolver> {
     /// The look's grading table (`paint::graded`, as much as `Look::grade` says): the identity
     /// until a game gives one (`grade_with`).
     pub grade: Texture3d<Rgba8>,
+    /// The particles (`particles`), made when the scene first emits one; the frame's emitted;
+    /// and what see-through matter is drawn into, made when there's some to draw.
+    pub particles: Option<Particles>,
+    emits: Emits,
+    see_through: Option<SeeThrough>,
     resolver: R,
     pub exposure: GpuBuffer<Exposure>,
     pub linear: Sampler,
@@ -960,6 +1012,9 @@ impl<R: Resolver> Frame<R> {
             mirror: Mirror { cam: first, on: 0, probe: 0 },
             specular: Specular::new(),
             grade: identity(),
+            particles: None,
+            emits: Emits::new(),
+            see_through: None,
             resolver: R::made(),
             exposure: buffer(1),
             linear: sampler(),
@@ -1207,6 +1262,7 @@ impl<R: Resolver> Frame<R> {
             self.ambient = Occlusion::new(width: w, height: h)
             self.screen = texture::<Rgba16Float>(width: w, height: h)
             self.mirror.on = 0
+            self.see_through = None
             self.resolver.resize(w, h)
             scene.resized(w, h)
             self.width = width
@@ -1941,6 +1997,92 @@ impl<R: Resolver> Frame<R> {
             time: self.time,
         }
         scene.effects(mut self.targets, fx)
+        // The see-through matter, over the scene drawn so far (`particles`): the particles the
+        // scene emits moved and sorted; dithered veils into the scene; or the veils (weighted)
+        // and the particles into their targets, and laid over the scene.
+        self.emits.list.clear()
+        scene.emit(mut self.emits)
+        if self.particles.is_none() && !self.emits.list.is_empty() {
+            self.particles = Some(Particles::new())
+        }
+        let st = Step {
+            cam,
+            gravity: vec3(0.0, -9.81, 0.0),
+            dt: self.cooks.dt,
+            wind: wind_of(wind),
+            collide: 1,
+        }
+        match mut self.particles {
+            Some(ps) => ps.step(st, self.targets.depth, self.emits.list),
+            _ => {},
+        }
+        let veils = scene.has_veils()
+        let weighted = self.quality.transparency == Transparency::Weighted
+        if veils && !weighted {
+            label("veils")
+            let vp = begin_pass_with_depth(
+                mut self.targets.scene,
+                mut self.targets.depth,
+                keep: true,
+                keep_depth: true,
+            )
+            scene.veils(vp, lt, weighted: false)
+            vp.end()
+        }
+        let particles = self.particles.is_some()
+        let (w, h) = (self.targets.scene.width(), self.targets.scene.height())
+        if (particles || (veils && weighted)) && self.see_through.is_none() {
+            self.see_through = Some(SeeThrough::new(w, h))
+        }
+        match mut self.see_through {
+            Some(t) if particles || (veils && weighted) => {
+                label("see-through")
+                // The veils' targets cleared for this frame's, or once when there are none, which
+                // they then keep.
+                if (veils && weighted) || !t.empty {
+                    begin_pass(mut t.accum, clear: vec4(0.0)).end()
+                    begin_pass(mut t.reveal, clear: vec4(1.0)).end()
+                    t.empty = true
+                }
+                if veils && weighted {
+                    t.empty = false
+                    let vp = begin_pass2_with_depth(
+                        mut t.accum,
+                        mut t.reveal,
+                        mut self.targets.depth,
+                        keep: true,
+                        keep_depth: true,
+                    )
+                    scene.veils(vp, lt, weighted: true)
+                    vp.end()
+                }
+                match mut self.particles {
+                    Some(ps) => ps.light(lt),
+                    None => {},
+                }
+                let width = t.parts.width()
+                let pp = begin_pass(mut t.parts, clear: vec4(0.0))
+                match self.particles {
+                    Some(ps) => ps.draw(pp, cam, self.targets.depth, target_width: width),
+                    None => {},
+                }
+                pp.end()
+                let cp = begin_pass(mut self.targets.scene_b)
+                fullscreen(
+                    cp,
+                    composite.bind(
+                        scene: self.targets.scene,
+                        accum: t.accum,
+                        reveal: t.reveal,
+                        parts: t.parts,
+                        s: self.linear,
+                    ),
+                )
+                cp.end()
+                swap(mut self.targets.scene, mut self.targets.scene_b)
+            },
+            _ => {},
+        }
         // What the next frame's glossy surfaces reflect from the screen: this frame's scene
         // after its effects, and each pixel's distance.
         if self.quality.reflections || self.quality.contact {

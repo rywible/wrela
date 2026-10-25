@@ -13,8 +13,11 @@ use std::tool::toolchain::Override
 /// lights' binning, `lights::bin`, dispatched only when a scene has lights; 38 since B8.5: the
 /// reflections', `reflect::bake_sky`, `prefilter` and the screen's copy, `copy_below`; 39 since
 /// B8.7: the bloom's pyramid, `paint::bloom_down` and `bloom_up`, for the glow's two, and the
-/// identity grading table's kernel, `identity_lut`).
-const FRAME_PIPELINES: u32 = 39
+/// identity grading table's kernel, `identity_lut`; 52 since B9: the particles' (`particles`:
+/// `simulate`, `admit`, `groups_of`, `draw_args`, `keys_of`, the sort's `digit_counts`,
+/// `scan_blocks`, `scan_sums`, `add_sums` and `scatter`, `light_particle`, the particles' draw)
+/// and the see-through matter's `composite`, reached, made only when a scene has them).
+const FRAME_PIPELINES: u32 = 52
 
 /// The fixture's pipelines: each one's entry points, `+` between them.
 fn pipelines() -> Vec<String> {

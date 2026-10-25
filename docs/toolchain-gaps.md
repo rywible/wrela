@@ -22,6 +22,14 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Meanwhile:** §B7b's two-pass form: an `atomicMax` of the depth's bits, then an `atomicMin` of the id at the winning depth, in `Atomics<u32>` buffers.
 - **Status:** open until a browser ships 64-bit atomics.
 
+### No count of a word's set bits in GPU code
+
+- **Needed:** the particles' radix sort (docs/plan-world-class.md §B9): a stable scatter ranks each element among those before it in its workgroup with the same digit by counting the set bits of a mask of its group's invocations (WGSL's `countOneBits`).
+- **What happens:** toolchain 0.6.0's std has no bit count, on the CPU or the GPU (no `u32::count_ones`, no intrinsic for WGSL's `countOneBits`).
+- **Found:** 2026-10-25, writing `engine::particles::scatter`.
+- **Meanwhile:** `particles::ones` counts them with shifts and masks (the parallel bit count), a dozen instructions where the hardware has one.
+- **Status:** open.
+
 ## Fixed
 
 ### A pointer can't press a semantic tree's button, and a tick can't find what the frames drew
