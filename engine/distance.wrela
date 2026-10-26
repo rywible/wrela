@@ -169,10 +169,11 @@ pub const CONTACT_STEPS: u32 = 8
 const CONTACT_SOFT: f32 = 8.0
 
 /// How much of the sun reaches `world` (facing `n`) past the solids within `CONTACT_REACH` of it
-/// toward `sun` (a unit vector): a march through the volume, each step as far as nothing solid
-/// is (at least 0.1 m), shadowed by the nearest it comes over how far it has gone (a soft
-/// penumbra: Quilez's, the march's own cone). 1 with no volume. No screen: it doesn't fail at
-/// the screen's edge as the screen's march did.
+/// toward `sun` (a unit vector): a march through the volume (its nearest voxels: a read a step,
+/// as the screen's march was), each step as far as nothing solid is (at least 0.1 m), shadowed by
+/// the nearest it comes over how far it has gone (a soft penumbra: Quilez's, the march's own
+/// cone). 1 with no volume. No screen: it doesn't fail at the screen's edge as the screen's march
+/// did.
 pub fn contact_through(
     g: DistanceGrid,
     volume: Texture3d<R32Float>,
@@ -190,7 +191,7 @@ pub fn contact_through(
         if x >= CONTACT_REACH {
             break
         }
-        let d = distance_at(g, volume, start + sun * x)
+        let d = distance_near(g, volume, start + sun * x)
         lit = min(lit, CONTACT_SOFT * d / x)
         if lit <= 0.0 {
             return 0.0
@@ -200,8 +201,8 @@ pub fn contact_through(
     saturate(lit)
 }
 
-/// The share of the sky that reaches `p` (facing `n`) past the solids from 1 to 4 m off it: four
-/// cones (along the normal and three 60° from it) read at 1, 2 and 4 m (nearest), each read's
+/// The share of the sky that reaches `p` (facing `n`) past the solids from 1.5 to 4 m off it:
+/// four cones (along the normal and three 60° from it) read at 1.5 and 4 m (nearest), each read's
 /// occlusion how much nearer a solid is than the surface's own plane would be, averaged.
 /// Nearer than a metre is the screen's (`ambient`'s GTAO). 1 with no volume.
 pub fn cones(g: DistanceGrid, volume: Texture3d<R32Float>, p: vec3, n: vec3) -> f32 {
@@ -219,13 +220,13 @@ pub fn cones(g: DistanceGrid, volume: Texture3d<R32Float>, p: vec3, n: vec3) -> 
         let dir = if c == 0 { n } else { n * 0.5 + (t * cos(a) + b * sin(a)) * 0.866025 }
         // How far the surface's own plane is from a read along `dir`, over its distance.
         let plane = if c == 0 { 1.0 } else { 0.5 }
-        for k in 0..3 {
-            let r = f32(1 << k)
+        for k in 0..2 {
+            let r = if k == 0 { 1.5 } else { 4.0 }
             let d = distance_near(g, volume, from + dir * r)
             shut += saturate(1.0 - d / (r * plane))
         }
     }
-    1.0 - shut / 12.0
+    1.0 - shut / 8.0
 }
 
 /// The inverse of `m`, a rotation and a translation (no scale): what turns render space into a

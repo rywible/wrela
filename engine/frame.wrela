@@ -639,7 +639,7 @@ pub struct Quality: Copy {
     /// Whether the scene's solids are cooked into a distance volume round the eye
     /// (`distance`), which the probes' rays step through, the contact shadows march and the
     /// ambient occlusion reads past the screen (B9b).
-    pub distance: bool = false,
+    pub distance: bool = true,
     /// Whether glossy surfaces reflect the screen (the last frame's, copied after its effects)
     /// and a specular probe of the sky, a face baked a frame (`reflect`).
     pub reflections: bool = true,

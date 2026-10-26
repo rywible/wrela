@@ -530,6 +530,42 @@ between a point and a column stands between it and both of its layers).
 - **G-memory:** the probes' share 24.2 → 31.8 MB: the sights' 7.6 MB (52,488 probes × 36 texels ×
   4 bytes), nothing else.
 
+**B9b, the solids' distance volume** (`engine::distance`). 192 × 64 × 192 voxels of 0.5 m round
+the eye (a 3D texture of 32-bit floats: as a storage buffer it took a shading pass past WebGPU's
+eight), toroidal, moved by whole 8 m bins; each voxel the distance to the ground (the clipmap's
+relief) and to the solids its bin lists, at most 4 m. `Scene::solids` (new) gives them: the Last
+Green's are its occluders that are solid (5,928 capsules of trunks, limbs and stones) and its
+built things as tapes (134 of 135: the tower's 1,575 operations are past a `ShapeTape`), each
+landing a new version. A cook is eight slabs, one a frame (`Work::Distance`). Its users: the
+probes' rays step through open air by it (two steps at most: the leaves aren't in it) and end at
+a solid as at the ground; the contact shadow marches it toward the sun (nearest voxels, a read a
+step, as the screen's march did) and so doesn't fail at the screen's edge; the ambient occlusion
+adds four cones read at 1.5 and 4 m past GTAO's metre.
+
+- **The tests** (engine/tests/distance): a sphere's volume within 0.233 m of its distance at 1,000
+  points, a cuboid's tape within 0.239 (half a voxel is 0.25); a probe's ray toward a trunk stops
+  3.51 m on (its surface is 3.5) with the trunk's light, one beside it reaches the sky; a contact
+  shadow beside a post at the screen's edge is the one beside a post in its middle (0 and 0).
+  A post thinner than a voxel (0.3 m round) shadows only half: its middle lies between voxels'
+  middles, which never see inside it. The Last Green's test counts its solids after the load.
+- **G-profile** (one run each, steering on: B9c's commit follows):
+
+| Label, p50 ms | walk B9a | walk B9b | shot B9a | shot B9b |
+|---|---|---|---|---|
+| probes again (a strip) | 0.75 | 0.76 | 0.83 | 0.87 |
+| distance (a slab; 197 of 1,260 frames, 34 of 540) | | 0.32 | | 0.43 |
+| ambient occlusion (B7: 0.53, 0.31) | 0.53 | 0.69 | | 0.59 |
+| terrain | 1.86 | 1.90 | 2.17 | 2.23 |
+| creature | 0.55 | 0.53 | 2.03 | 2.09 |
+| GPU span | 13.80 | 13.97 | 13.71 | 13.88 |
+
+  `probes again` doesn't fall (asked: 30%): its rays spend their steps in crowns, lit by the
+  probes there, which the volume can't skip, not in open air. The contact march through the
+  volume costs what the screen's did once it reads a voxel a step (trilinear, it cost 0.5 ms
+  more in the shot's terrain and creature). A slab costs 0.32 ms (asked: 0.25); a frame cooks
+  one on a sixth of the walk's frames, the volume moving every 8 m.
+- **G-memory:** a new `distance` share, 10.9 MB (the volume's 9.4 and its solids' lists).
+
 ## Devices
 
 Each device D20 names (docs/plan-world-class-2.md §0.5), measured by `wrela tool bench -- --lan`

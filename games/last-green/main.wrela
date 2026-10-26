@@ -976,6 +976,22 @@ fn the_load_chain_runs_its_links_side_by_side(s: Floor) {
     assert(playable <= PLAYABLE_HELD, f"playable at frame {playable}")
 }
 
+/// What's solid round the eye once the floor is playable (`Scene::solids`, B9b): the trunks',
+/// limbs' and stones' capsules (the probes' occluders that are solid) and the built things'
+/// tapes, and the distance volume cooked from them.
+@test(frames: 400, gpu: true)
+fn the_floors_solids_land_with_its_wood_and_built_things(s: Floor) {
+    let Some(solids) = engine::frame::Scene::solids(s.stage, s.frame.origin, 0xfffffffe) else {
+        panic("the floor said nothing is solid")
+    }
+    let (capsules, shapes) = (solids.capsules.len(), solids.shapes.len())
+    print(
+        f"{capsules} capsules, {shapes} shapes of {s.stage.built.len()} built things; the volume cooked: {s.frame.distance.cooked}",
+    )
+    assert(capsules > 100 && shapes > 10, f"{capsules} capsules, {shapes} shapes")
+    assert(s.frame.distance.cooked, "the distance volume isn't cooked")
+}
+
 /// The planner's costs as this device measured them, for docs/bench.md: `cook::costs()`'s
 /// order, µs, the ladder's step then the running average (`e`: still the estimate).
 fn costs_said(planner: Planner) -> String {
