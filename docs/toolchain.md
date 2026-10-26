@@ -73,6 +73,7 @@ wrela-host --compare-ticks a.ticks b.ticks   # two builds' tick logs: equal, or 
 - `wrela-host <build> ... --log out.ticks` writes a ticked program's tick log; `--compare-ticks` compares two builds' logs on the same input (the sim unchanged) without checking their WASM hashes, which `--replay` does.
 - `wrela precision <pkg> <module>::<fn> --box lo..hi,lo..hi,...` says, operation by operation, where a half-float twin of a function of a point would be safe: it walks the function's interval as an `f32` rounds and as a half float rounds, over each `--box` (several are a sampled domain), and gives each operation `safe`, `watch` or `unsafe` (by its extra width beside its magnitude, `--tol`, 1e-3 by default; past 65504, or an integer past 2048, by range), and the first that isn't safe. It's advice: a twin written where it says `safe` is proven by measuring it.
 - `wrela build --relaxed-simd` (release only) writes `game.relaxed.wasm` beside `game.wasm`: the code only `frame` reaches fuses its vector multiply-adds. Chrome loads it, Safari the standard one; `wrela-host --relaxed` and `wrela profile --relaxed-simd` run it natively. Both modules run the same ticks (`--compare-ticks`).
+- `wrela build <pkg> --report data` lists the twenty largest constants by their laid-out size, with each one's share of zero bytes, and the data section's total: a large constant read only at load is better shipped as a file (`std::io::Shipped`).
 - `WRELA_FEATURES=none` (or a comma list to keep) hides optional GPU features from a program on the native host, and `wrela test` passes the same mask to Chrome.
 - Run profiles with nothing else building or using the GPU. Report GPU span, CPU frame call and Chrome frame rate as the separate things they are.
 
@@ -113,6 +114,7 @@ wrela-host --compare-ticks a.ticks b.ticks   # two builds' tick logs: equal, or 
 | `bench`              | What the engine's scenes cost on this machine, in Chrome and natively, added to `docs/bench.md` (`--scene herd`, `--compare out/<report>.json` for a report in build/bench); `--lan` for another device |
 | `export`             | A floor's ground as a 16-bit PNG and its JSON (`height games/last-green --out <file.png>`), a scene's camera path as JSON (`path ... --out <file.json>`): what the other engines' scenes take |
 | `passes`             | A frame's passes and dispatches, in order, as a page |
+| `fit`                | A small network trained and its weights written as source (`--net sine --out content/...`), or the impostor's ladder run and printed (`--net impostor --rungs ABCD`): `engine::neural` |
 
 ## Benching another device
 

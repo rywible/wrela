@@ -75,6 +75,38 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Meanwhile:** the engine's kernels keep to seven storage buffers (the soft rasterizer's depth and id are one buffer).
 - **Status:** open: bind the table only in pipelines whose code reads a lifted literal, or say in E0602 that one of the buffers is the lifted table.
 
+### A kernel can't start its dispatch at an offset
+
+- **Needed:** a cook that writes part of a texture or a buffer: a slab of the distance volume (docs/plan-world-class-2.md §B9b), the sights of a strip of probes (§B9a), a band of a fixture's readback (§B14.2).
+- **What happens:** `Texels` and `Texels3d` store only the invocation's own texel, and `Slots` only its own element (by `GlobalId`); a dispatch's ids start at 0. A slab of z from 168 to 192 is a dispatch over z from 0 to 192 whose first 168 slices return at once; a buffer's part is a `span_mut` at a 256-byte-aligned offset, which a texture has no counterpart of.
+- **Found:** 2026-10-26, writing `engine/distance.wrela` and `engine/probes.wrela`'s sights.
+- **Meanwhile:** the distance volume's slab dispatches reach from z 0 (its earlier slices return); the probes' sights live in a buffer, not the maps texture, partly for this.
+- **Status:** open: a dispatch's id offset (`dispatch(k, over: n, from: (x, y, z))`), or a store at a computed texel.
+
+### No 4 × 4 matrix inverse in std
+
+- **Needed:** a built thing's tape read in its own space from render space (§B9b's `Shape::to_local`).
+- **What happens:** `std` has `Quat::inverse` but no `mat4` inverse.
+- **Found:** 2026-10-26, writing `engine/distance.wrela`.
+- **Meanwhile:** `distance::rigid_inverse` inverts a rotation and a translation by hand (the built things' transforms are rigid).
+- **Status:** open.
+
+### A closure can't capture a function-typed parameter
+
+- **Needed:** a helper inside `blockouts::realize` that reads the ground through the `height` function it was given (§B11d).
+- **What happens:** E0702 "a closure can't capture a function-typed parameter yet".
+- **Found:** 2026-10-26.
+- **Meanwhile:** a plain function taking what the closure would have captured (`rock_look(height(at), water, seed)`).
+- **Status:** open.
+
+### A texture can't be a field's data
+
+- **Needed:** the cascades' march (§B14.4) generic over `std::field::Surface`, the distance volume one such field.
+- **What happens:** `Surface` needs `Copy + GpuData`, and a `Texture3d` is neither; a `borrow` field can't be part of an ordinary struct (E0519).
+- **Found:** 2026-10-26, writing `engine/cascades.wrela`.
+- **Meanwhile:** the march is generic over analytic fields (its tests); the volume's march repeats its steps over `distance::distance_at`.
+- **Status:** open.
+
 ## Fixed
 
 ### A loop body's last call leaked its temporaries
