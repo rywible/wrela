@@ -613,6 +613,8 @@ pub fn test_reference(s: mut Clearing, first: u32, count: u32, step: u32, rays: 
             f.targets.depth,
             f.targets.scene,
             density: probes.density,
+            volume: f.distance.volume,
+            seen: probes.seen.items(),
             levels: f.clipmap.levels(),
             texels: f.clipmap.texels(),
             maps: probes.maps,

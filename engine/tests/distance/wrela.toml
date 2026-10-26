@@ -1,0 +1,8 @@
+# The solids' distance volume (engine/distance.wrela, B9b) on the GPU: cooked round the eye from a
+# scene's solids through the real frame, read back against the shapes' own distances, and what
+# reads it (a probe's ray, a contact shadow).
+[package]
+name = "distance_tests"
+
+[dependencies]
+engine = { workspace = true }

@@ -226,6 +226,7 @@ pub fn frame(time: f32, width: u32, height: u32) {
     let no_lights = buffer_of([0])
     let no_screen = std::gpu::texture::<Rgba16Float>(width: 1, height: 1)
     let no_spec = std::gpu::cubemap::<Rgba16Float>(side: 1)
+    let no_volume = std::gpu::texture3d::<std::gpu::R32Float>(width: 1, height: 1, depth: 1)
     let lt = Lighting {
         cam,
         light: Light {
@@ -272,6 +273,8 @@ pub fn frame(time: f32, width: u32, height: u32) {
         spec: no_spec,
         ao: cloud,
         s,
+        distance: engine::distance::NO_DISTANCE,
+        volume: no_volume,
     }
     var shade = texture::<Rgba16Float>(width: WIDTH, height: SIDE)
     let p = begin_pass(mut shade)

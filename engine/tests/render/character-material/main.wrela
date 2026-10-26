@@ -184,6 +184,7 @@ pub fn frame(time: f32, width: u32, height: u32) {
     let no_lights = buffer_of([0])
     let no_screen = std::gpu::texture::<Rgba16Float>(width: 1, height: 1)
     let no_spec = std::gpu::cubemap::<Rgba16Float>(side: 1)
+    let no_volume = std::gpu::texture3d::<std::gpu::R32Float>(width: 1, height: 1, depth: 1)
     let lt = Lighting {
         cam,
         light: Light { sun, sun_colour: if env { vec3(0.0) } else {
@@ -217,6 +218,8 @@ pub fn frame(time: f32, width: u32, height: u32) {
         spec: no_spec,
         ao: probes,
         s,
+        distance: engine::distance::NO_DISTANCE,
+        volume: no_volume,
     }
     let polished = rendered(verts, materials, palettes, args, 0, lt)
     let rough = rendered(verts, materials, palettes, args, 1, lt)

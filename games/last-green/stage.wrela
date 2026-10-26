@@ -14,6 +14,7 @@ use tower::door::Doorway
 use world::GATE
 use engine::memory::{Share, Usage}
 use engine::cull::{Hzb, in_frustum}
+use engine::distance::{Capsule, Shape, Solids, rigid_inverse}
 use engine::frame::{Cooks, Effects, Scene, Targets, full, fullscreen}
 use engine::grass::{Blooms, Contact, Grass, GrassLook}
 use engine::light::{Light, SUN_TOP, sunlight}
@@ -27,8 +28,8 @@ use engine::shafts::{Shafts, add_shafts, march_shafts}
 use engine::sky::Weather
 use engine::pool::{Item, Pool, pool}
 use engine::stone::{
-    ClusterStones, Instances, Realized, Rocks, placed_of, stone_instance_vertex, stone_shade,
-    stone_shadow, stone_vertex,
+    ClusterStones, Instances, Realized, Rocks, ShapeTape, placed_of, stone_instance_vertex,
+    stone_shade, stone_shadow, stone_vertex,
 }
 use engine::terrain::{Clipmap, Texel}
 use engine::vegetation::{Kind, Placed, kind}
@@ -126,6 +127,9 @@ pub struct Stage {
     /// (`gather_occluders`): the job under way and the last it found.
     occluding: Option<(vec2, std::par::Task<Vec<Occluder>>)> = None,
     occluded: Option<(vec2, Vec<Occluder>)> = None,
+    /// The version of what's solid (`solids`): counted as the occluders are gathered and built
+    /// things land.
+    solids_v: u32 = 0,
     /// The climber (its sword realized at the first frame), the fawn and the wolf.
     pub drawn: Option<Drawn>,
     pub fawn: Cast<fawn::creature::Coat, fawns::Grown, fawns::FawnLook>,
@@ -162,6 +166,9 @@ pub struct Thing {
     pub far: Option<Realized>,
     /// Its items in the pool, near and far (`NOT_POOLED`: none), once it's in.
     pub pooled: Option<vec2u> = None,
+    /// Its shape as a tape, for the distance volume (`blockouts::shape_tape`; the tower has
+    /// none).
+    pub shape: Option<ShapeTape> = None,
 }
 
 /// The floor's scene at load, round the player's start (`start`, the world's): its kinds and
@@ -237,6 +244,36 @@ impl Scene for Stage {
 
     /// The occluders the stage's job gathered round a place near `at` (`gather_occluders`): none
     /// until one has, for a place within `OCCLUDED_NEAR` of it.
+    /// What's solid: the trunks, limbs and stones the probes' occluders hold (those that are
+    /// solid), and the built things' shapes.
+    fn solids(self, origin: vec3, since: u32) -> Option<Solids> {
+        if self.solids_v == since {
+            return None
+        }
+        var capsules: Vec<Capsule> = Vec::new()
+        if let Some(o) = self.occluded {
+            for c in o.1 {
+                if c.solid > 0.5 {
+                    capsules.push(Capsule { a: c.a - origin, radius: c.radius, b: c.b - origin })
+                }
+            }
+        }
+        var shapes: Vec<Shape> = Vec::new()
+        for t in self.built {
+            if let Some(tape) = t.shape {
+                shapes.push(
+                    Shape {
+                        tape,
+                        to_local: rigid_inverse(t.near.at),
+                        centre: t.near.at[3].xyz,
+                        radius: t.reach + 1.0,
+                    },
+                )
+            }
+        }
+        Some(Solids { capsules, shapes, version: self.solids_v })
+    }
+
     fn occluders(self, at: vec2, origin: vec3) -> Option<Vec<Occluder>> {
         let Some((centre, found)) = self.occluded else { return None }
         if length(at + origin.xz - centre) > OCCLUDED_NEAR {
@@ -450,6 +487,7 @@ impl Scene for Stage {
             lt.cloud,
             lt.s,
             lt.grounds,
+            lt.seen,
             stones: self.footprints.items(),
             pyramid: pyramid,
             hzb: hzb,
@@ -2380,7 +2418,9 @@ pub fn cook_load(s: mut Stage, c: mut Cooks, eye: vec2, linear: Sampler) {
             Some(f) => f.at[3] = vec4(f.at[3].xyz - o, 1.0),
             None => {},
         }
-        s.built.push(Thing { near, reach: blockouts::reach(b), far })
+        let shape = blockouts::shape_tape(b)
+        s.built.push(Thing { near, reach: blockouts::reach(b), far, shape })
+        s.solids_v += 1
         if s.first_built_at.is_none() {
             s.first_built_at = Some(c.frames)
         }
@@ -2443,6 +2483,7 @@ fn occlude(s: mut Stage, eye: vec2, origin: vec3) {
     if done {
         let Some((centre, job)) = replace(mut s.occluding, None) else { return }
         s.occluded = Some((centre, take job.join()))
+        s.solids_v += 1
     }
     let near = match s.occluded {
         Some(o) => length(o.0 - world) < OCCLUDED_AGAIN,

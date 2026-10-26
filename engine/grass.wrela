@@ -230,6 +230,7 @@ pub fn place(
     cloud: Texture<Rgba16Float>,
     linear: Sampler,
     grounds: [f32],
+    seen: [u32],
     stones: [vec4],
     flora: Flora,
     pyramid: Texture<R32Float>,
@@ -318,6 +319,7 @@ pub fn place(
             cloud,
             linear,
             grounds,
+            seen,
             flora,
             mut blades,
             mut flowers,
@@ -356,7 +358,7 @@ pub fn place(
     let ground_n = t.normal
     let root = vec3(xz.x, y + 0.1, xz.y)
     let shade = cloud_shadow(at.clouds, cloud, linear, root)
-    let sky = sky_light(at.grid, probes, linear, grounds, at.light, root, ground_n, shade)
+    let sky = sky_light(at.grid, probes, linear, grounds, seen, at.light, root, ground_n, shade)
     let _ = blades.push(
         Blade {
             root: vec3(xz.x, y - 0.02, xz.y),
@@ -1061,6 +1063,7 @@ fn under_plant(
     cloud: Texture<Rgba16Float>,
     linear: Sampler,
     grounds: [f32],
+    seen: [u32],
     flora: Flora,
     blades: mut Append<Blade>,
     flowers: mut Append<Flower>,
@@ -1119,7 +1122,7 @@ fn under_plant(
     }
     let root = vec3(xz.x, y - 0.02, xz.y)
     let shade = cloud_shadow(at.clouds, cloud, linear, root)
-    let sky = sky_light(at.grid, probes, linear, grounds, at.light, root, t.normal, shade)
+    let sky = sky_light(at.grid, probes, linear, grounds, seen, at.light, root, t.normal, shade)
     let _ = blades.push(
         Blade {
             root,
@@ -1363,6 +1366,7 @@ impl Grass {
         cloud: Texture<Rgba16Float>,
         linear: Sampler,
         grounds: std::gpu::GpuSpan<f32>,
+        seen: std::gpu::GpuSpan<u32>,
         stones: std::gpu::GpuSpan<vec4>,
         pyramid: Texture<R32Float>,
         hzb: Hzb,
@@ -1428,6 +1432,7 @@ impl Grass {
                         cloud,
                         linear,
                         grounds,
+                        seen,
                         stones,
                         flora: flora,
                         pyramid: pyramid,

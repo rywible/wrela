@@ -1,0 +1,7 @@
+# The probes' sight (engine/probes.wrela, `Seen`, B9a) on the GPU: a scene of walls drawn through
+# the real frame until its probes are baked, the sky light read with visibility and without.
+[package]
+name = "probes_visibility_tests"
+
+[dependencies]
+engine = { workspace = true }

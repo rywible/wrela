@@ -487,6 +487,49 @@ below are judged by their GPU frame against 16.7 ms and their frames over 33 ms.
   scenes (§0.6) are in a sibling repository that doesn't exist yet, so there is no number to
   compare with.
 
+## 2026-10-26: B9, light with visibility (world-class 2, the 0.9.0 checkout)
+
+Each scene's labels below are the medians over the frames each ran in (`probes again` runs on
+some frames only), from the bench's GPU run of the Last Green at 1080p in Chrome on the M4 Air,
+against B7's run (`build/bench/2026-10-26-154945`).
+
+**B9a, the probes' sight.** Each probe keeps what it sees (DDGI's depth, Majercik et al. 2019):
+6 × 6 octahedral texels of the mean and deviation of its rays' hit distances, made by a kernel of
+their own (`probes::see`, a texel an invocation) from the hits the bake and the re-trace write. A
+lookup weighs the four columns of the nearer layer by Chebyshev's bound and DDGI's backface term,
+and turns those weights into where its bilinear samples fall (four reads, not eight: a wall
+between a point and a column stands between it and both of its layers).
+`ProbeQuality::visibility` (on) switches the lookup; off, it's the last one's.
+
+- **The tests** (engine/tests/probes-visibility, the frame's probes after 20 rounds of re-tracing):
+  a point 1 m inside a closed room beside open ground gets **0.0%** of the open side's sky light
+  (34.7% without the sight); a point 1 m inside a closed box **1.05%** of the meadow's (9.9%);
+  the meadow's 50 points move by at most **0.61/255** of their light.
+- **Off is the last lookup:** the clearing, native, 640 × 360, 240 frames, against B8: **1 pixel by
+  1/255** (the new kernels' pipelines move the schedule), with the re-trace's planning as it was
+  (the next item changes it, and with it the clearing's light in 33% of pixels by up to 17/255).
+- **The re-trace planned at its own cost.** A strip traced again (32 columns, 64 rays) was planned
+  at a bake strip's measured cost (4.2 ms on the ladder at B7; 0.57 ms is what it takes); the
+  sight made the bake strip 20% dearer, its rung 5.3 ms, and no playable frame had room for it.
+  `Work::ProbeAgain` now has its own cost (B7's 600 µs to start, then measured by its label).
+  The walk traces again on 720 frames of 1,260 (443 at B7).
+- **G-profile** (one run each; the plan's estimate: under 0.3 ms together):
+
+| Label, p50 ms | walk B7 | walk B9a | shot B7 | shot B9a |
+|---|---|---|---|---|
+| probes again (a strip) | 0.57 | 0.75 | 0.66 | 0.83 |
+| probes bake (a strip, at load) | 3.01 | 3.72 | 2.72 | 3.14 |
+| vegetation | 2.01 | 2.03 | 2.95 | 3.08 |
+| terrain | 1.83 | 1.86 | 1.98 | 2.17 |
+| creature | 0.51 | 0.55 | 1.84 | 2.03 |
+| GPU span | 13.27 | 13.80 | 13.19 | 13.71 |
+
+  The walk's re-trace and lookups rise 0.28 ms together on a frame that traces (meets); the
+  shot's, close to the fawn, 0.68 (misses: its pixels read the probes four times as often). The
+  span rises 0.5 ms in both, the re-trace running on more frames among it.
+- **G-memory:** the probes' share 24.2 → 31.8 MB: the sights' 7.6 MB (52,488 probes × 36 texels ×
+  4 bytes), nothing else.
+
 ## Devices
 
 Each device D20 names (docs/plan-world-class-2.md §0.5), measured by `wrela tool bench -- --lan`

@@ -28,6 +28,7 @@ use memory::{Share, Usage, unused}
 use particles::{Emits, Particles, Step, composite, wind_of}
 use reflect::{Mirror, Specular, copy_below}
 use cook::{Budget, Planner, Work}
+use distance::{Distance, Solids}
 use light::Light
 use lit::Lighting
 use paint::{
@@ -35,7 +36,7 @@ use paint::{
     identity, lines, meter,
 }
 use plant::Wind
-use probes::{Baked, Occluder, ProbeGrid, STRIP_COLUMNS, Trace, band}
+use probes::{Baked, Occluder, ProbeGrid, STRIP_COLUMNS, Steer, Trace, band}
 use shadow::{Cascade, Kept, Shadows, Soft, shadows}
 use sheet::{Scale, pace}
 use sky::{Clouds, MAP_BANDS, NOISE_SLICES, Sky, Weather, new_sky, sky_shade}
@@ -96,6 +97,14 @@ pub trait Scene {
     /// The ground's height at a point of the world (x, z): where the near cascade follows the
     /// eye to.
     fn height_at(self, world: vec2) -> f32
+
+    /// What's solid round the eye (render space, the render origin `origin` taken off), for the
+    /// distance volume (`distance`): `None` if it hasn't changed since version `since` (its
+    /// `Solids::version`), which the volume was last cooked from. None by default: the volume
+    /// holds the ground alone.
+    fn solids(self, origin: vec3, since: u32) -> Option<Solids> {
+        None
+    }
 
     /// The ground cooked into the clipmap round `eye` with whichever terrain the scene draws
     /// (`Clipmap::follow`; `again`: every level, the ground having changed). How many levels it
@@ -627,6 +636,10 @@ pub struct Quality: Copy {
     /// Whether what's near a surface hides some of the sky's light from it (`ambient`: built
     /// from each frame's opaque depth, read by the next frame's shading).
     pub ambient: bool = true,
+    /// Whether the scene's solids are cooked into a distance volume round the eye
+    /// (`distance`), which the probes' rays step through, the contact shadows march and the
+    /// ambient occlusion reads past the screen (B9b).
+    pub distance: bool = false,
     /// Whether glossy surfaces reflect the screen (the last frame's, copied after its effects)
     /// and a specular probe of the sky, a face baked a frame (`reflect`).
     pub reflections: bool = true,
@@ -730,8 +743,12 @@ pub const PHASES: [Text; 5] = ["cook", "choose", "passes", "finish", "present"]
 /// planned): the first slice runs whatever it costs.
 const SKY_FRAME_US: f32 = 4000.0
 
+/// Whether the probes in use are traced again where things changed first (B9c), or each strip
+/// in turn.
+const STEERED: bool = false
+
 /// How many kinds of work a measuring frame times (`MEASURED`).
-const MEASURED_KINDS: u32 = 12
+const MEASURED_KINDS: u32 = 14
 
 /// The kinds of work a measuring frame times (`Quality::measured`), each by the label its pass or
 /// dispatch carries: a frame may run several steps of a kind, so the time is divided by the steps
@@ -750,6 +767,8 @@ const MEASURED: [(Work, Text); MEASURED_KINDS] = [
     (Work::Built, "built things"),
     (Work::TerrainLevel, "terrain cook"),
     (Work::Tile, "tile"),
+    (Work::Distance, "distance"),
+    (Work::ProbeAgain, "probes again"),
 ]
 
 /// The static cascades: the near one (its square's `centre` is where it starts, and where it
@@ -782,6 +801,10 @@ pub struct ProbeQuality: Copy {
     pub moves: f32 = 30.0,
     pub rays: u32 = 32,
     pub again: bool = true,
+    /// Whether a lookup weighs each probe by what it sees of the point (`probes::Seen`, B9a), so
+    /// light doesn't leak through trunks and walls; off, by nearness alone. Only the lookup
+    /// changes: the sights are traced either way.
+    pub visibility: bool = true,
 }
 
 /// An arrival: whether the frames stay covered until the light round the eye is drawn (at the
@@ -978,6 +1001,8 @@ pub struct Frame<R: Resolver> {
     moving_clear: bool,
     pub cmp: ComparisonSampler,
     pub probes: Probes,
+    /// The solids' distance volume round the eye (`Quality::distance`).
+    pub distance: Distance,
     pub clipmap: Clipmap,
     pub targets: Targets,
     /// The depth pyramid (`cull`): this frame's, built after its opaque passes, which the next
@@ -1116,6 +1141,7 @@ impl<R: Resolver> Frame<R> {
         let near_at = if sh.near_moves >= 1.0e8 { sh.near.centre } else { first.eye }
         var probes = Baked::new(grid, Vec::new())
         probes.strip_rays = quality.probes.rays
+        probes.grid.visibility = u32(quality.probes.visibility)
         Frame {
             quality,
             debug: Debug { off: Flags::none() },
@@ -1172,6 +1198,7 @@ impl<R: Resolver> Frame<R> {
             moving: depth_texture(width: sh.moving_side, height: sh.moving_side),
             moving_clear: false,
             cmp: comparison_sampler(),
+            distance: Distance::new(quality.distance),
             probes: Probes {
                 using: probes,
                 at,
@@ -1300,6 +1327,11 @@ impl<R: Resolver> Frame<R> {
         // Probes of other rays: baked again beside those in use.
         if q.probes.rays != self.quality.probes.rays {
             self.probes_v += 1
+        }
+        self.probes.using.grid.visibility = u32(q.probes.visibility)
+        match mut self.probes.next {
+            Some(n) => n.grid.visibility = u32(q.probes.visibility),
+            None => {},
         }
         self.quality = q
         self.cooks.planner = Planner::new(q.budget)
@@ -1451,6 +1483,7 @@ impl<R: Resolver> Frame<R> {
     pub fn restart_probes<S: Scene>(mut self, scene: S) {
         var b = Baked::new(scene.probe_grid(self.probes.at, self.origin), Vec::new())
         b.strip_rays = self.quality.probes.rays
+        b.grid.visibility = u32(self.quality.probes.visibility)
         self.probes.using = take b
         self.probes.cooked = false
         self.probes.next = None
@@ -1483,6 +1516,7 @@ impl<R: Resolver> Frame<R> {
         self.probes.using.shift(d.xz)
         self.probes.at += d.xz
         self.probes.next = None
+        self.distance.forget()
         self.near.shift(d)
         self.far.shift(d)
         self.particle_shift += d
@@ -1693,6 +1727,13 @@ impl<R: Resolver> Frame<R> {
             }
             self.cook_sky(scene, eye, wind)
         }
+        // The distance volume round the eye: a slab a frame while it's due (the scene's solids
+        // changed, or the eye moved a bin).
+        let since = self.distance.version()
+        self.distance.follow(eye, scene.solids(self.origin, since))
+        if self.distance.due() && self.cooks.planner.may(Work::Distance) {
+            self.distance.cook(self.clipmap.levels(), self.clipmap.texels())
+        }
         // The probes a strip a frame (many while a capture's bake is under way).
         for _ in 0..steps {
             let baking = !self.probes.done() || self.probes.next.is_some()
@@ -1876,6 +1917,7 @@ impl<R: Resolver> Frame<R> {
                 ),
                 share("sky", self.sky.bytes()),
                 share("probes", probes),
+                share("distance", self.distance.bytes()),
                 share("terrain", self.clipmap.bytes()),
                 share("reflections", reflections),
                 share("lights", self.lights.bytes()),
@@ -2177,7 +2219,8 @@ impl<R: Resolver> Frame<R> {
         if !self.near.ready || !(settled || (moving && tracing)) {
             return
         }
-        if !self.cooks.planner.would(Work::ProbeStrip) {
+        if !self.cooks.planner.would(Work::ProbeStrip) &&
+            !(tracing && self.cooks.planner.would(Work::ProbeAgain)) {
             return
         }
         // A still's probes wait for what's round the eye too: their occluders.
@@ -2188,7 +2231,11 @@ impl<R: Resolver> Frame<R> {
             return
         }
         let key = self.probe_key()
-        let trace = scene.trace(self.light, self.probes.using.grid)
+        // The rays step through the solids' distance volume once it's cooked.
+        let trace = Trace {
+            solids: self.distance.read(),
+            ..scene.trace(self.light, self.probes.using.grid),
+        }
         let texels = self.clipmap.texels()
         let levels = self.clipmap.levels()
         if !self.probes.cooked {
@@ -2198,6 +2245,7 @@ impl<R: Resolver> Frame<R> {
             }
             var b = Baked::new(scene.probe_grid(eye, self.origin), occluders)
             b.strip_rays = self.quality.probes.rays
+            b.grid.visibility = u32(self.quality.probes.visibility)
             self.probes.using = take b
             self.probes.at = eye
             self.probes.using.open(
@@ -2221,7 +2269,7 @@ impl<R: Resolver> Frame<R> {
                     STRIP_COLUMNS
                 }
                 self.probes.using.bake_strip(
-                    scene.trace(self.light, self.probes.using.grid),
+                    Trace { grid: self.probes.using.grid, ..trace },
                     sh,
                     levels,
                     texels,
@@ -2231,6 +2279,7 @@ impl<R: Resolver> Frame<R> {
                     self.tables.view,
                     self.sky.dome,
                     self.linear,
+                    self.distance.volume,
                 )
             }
             return
@@ -2260,6 +2309,7 @@ impl<R: Resolver> Frame<R> {
                 None => Baked::new(g, occluders),
             }
             b.strip_rays = self.quality.probes.rays
+            b.grid.visibility = u32(self.quality.probes.visibility)
             self.probes.next = Some(take b)
             self.probes.next_at = eye
             self.probes.next_cooked = false
@@ -2300,6 +2350,7 @@ impl<R: Resolver> Frame<R> {
                             self.tables.view,
                             self.sky.dome,
                             self.linear,
+                            self.distance.volume,
                         )
                     }
                 } else {
@@ -2310,8 +2361,20 @@ impl<R: Resolver> Frame<R> {
                 // Once baked, a strip traced again a frame as the clouds drift and the sun moves:
                 // the probes in use take the new sky as they're traced (not new occluders or
                 // ground: those are baked into new probes).
-                if again && !self.debug.still && self.cooks.planner.may(Work::ProbeStrip) {
+                if again && !self.debug.still && self.cooks.planner.may(Work::ProbeAgain) {
                     self.probes.using_k = (self.probes.using_k.0, key.1, key.2, key.3)
+                    // Steered to where the sun or the sky changed, near and ahead of the eye
+                    // first (`probes::next_strip`, B9c).
+                    let ahead = self.cam.forward.xz
+                    let steer = Steer {
+                        frame: self.ran + 1,
+                        sun: normalize(self.sky_key.1),
+                        weather: key.1,
+                        eye,
+                        ahead: if dot(ahead, ahead) > 1.0e-8 { normalize(ahead) } else {
+                            vec2(0.0, 1.0)
+                        },
+                    }
                     self.probes.using.bake_strip(
                         trace,
                         sh,
@@ -2323,6 +2386,8 @@ impl<R: Resolver> Frame<R> {
                         self.tables.view,
                         self.sky.dome,
                         self.linear,
+                        self.distance.volume,
+                        steer: if STEERED { steer } else { Steer {} },
                     )
                 }
             },
@@ -2375,6 +2440,7 @@ impl<R: Resolver> Frame<R> {
             cmp: self.cmp,
             probes: maps,
             grounds,
+            seen: self.probes.using.seen.items(),
             cloud: self.sky.shadow,
             air: self.tables.aerial,
             ambient: self.ambient.at,
@@ -2391,6 +2457,8 @@ impl<R: Resolver> Frame<R> {
             screen: self.screen,
             spec: self.specular.cube,
             s: self.linear,
+            distance: self.distance.read(),
+            volume: self.distance.volume,
         }
         // Last frame's pyramid, if it's this view's (not after a jump, nor with occlusion off).
         var hzb = self.pyramid.at
@@ -2515,7 +2583,13 @@ impl<R: Resolver> Frame<R> {
         if self.quality.ambient {
             label("ambient occlusion")
             let still = Camera { frame: if self.debug.plain { 0 } else { cam.frame }, ..cam }
-            self.ambient.next_at = ambient::build(mut self.ambient.next, self.targets.depth, still)
+            self.ambient.next_at = ambient::build(
+                mut self.ambient.next,
+                self.targets.depth,
+                still,
+                self.distance.read(),
+                self.distance.volume,
+            )
         }
         let fx = Effects {
             lt,

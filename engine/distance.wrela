@@ -1,0 +1,523 @@
+// The scene's solids as a signed-distance volume round the eye (B9b): how far each point is from
+// the nearest solid (a trunk or a limb, a stone, a built thing, the ground), so a march through
+// it steps as far as nothing can be met. The probes' rays step through open air by it, a contact
+// shadow marches it toward the sun (not the screen, whose edge it fails at), and the ambient
+// occlusion reads it past what's on screen.
+//
+// The volume is `DISTANCE_DIMS` voxels of `DISTANCE_VOXEL` m (96 × 32 × 96 m) round the eye, a
+// 3D texture of 32-bit floats (read texel by texel: a texture binding, where shading passes have
+// room, not a storage buffer, where they have none), each voxel a world voxel taken modulo the
+// dims (toroidal): when the eye has moved `RECENTRE` m the volume moves by whole bins,
+// and only the voxels it didn't hold are cooked. A voxel holds the distance to the solids a scene
+// lists (`Solids`: capsules, and shapes as tapes, `std::stage`) and to the ground (the clipmap's
+// relief), at most `DISTANCE_FAR`: each bin of `BIN` voxels lists the solids that come within
+// that of it, built on the CPU when the solids or the volume's place change. A cook is
+// `DISTANCE_SLABS` slabs, one a frame (`Work::Distance`).
+
+use std::gpu::{
+    GlobalId, GpuBuffer, R32Float, Texels3d, Texture3d, buffer, buffer_of, dispatch, label,
+    texture3d, write,
+}
+use std::mem::size_of
+use std::stage::interpret
+use stone::ShapeTape
+use terrain::{Levels, Texel, ground_at, height_at}
+
+/// The volume's voxels each way, and a voxel's size (m).
+pub const DISTANCE_DIMS = vec3u(192, 64, 192)
+pub const DISTANCE_VOXEL: f32 = 0.5
+
+/// A bin's voxels a side (8 m), and the bins each way.
+const BIN: u32 = 16
+const BINS = vec3u(12, 4, 12)
+
+/// The farthest a voxel says a solid is (m): its bin lists only those that come this near it.
+pub const DISTANCE_FAR: f32 = 4.0
+
+/// The slabs a whole cook takes (along z), one a frame.
+pub const DISTANCE_SLABS: u32 = 8
+
+/// How far the eye moves (m) before the volume moves round it: a bin.
+pub const RECENTRE: f32 = 8.0
+
+/// How far below the eye the volume begins (m): it holds 8 m under it and 24 over.
+const BELOW: f32 = 8.0
+
+/// A solid capsule from `a` to `b`, `radius` round (a trunk's or a limb's; a stone's, `a` and
+/// `b` alike), in render space.
+pub struct Capsule: Copy + GpuData {
+    pub a: vec3,
+    pub radius: f32,
+    pub b: vec3,
+    pub spare: f32 = 0.0,
+}
+
+/// A solid shape: a tape of its field (`stone::ShapeTape`), read at a point turned into its own
+/// space (`to_local`, render space to the shape's); the sphere round it (render space).
+pub struct Shape: Copy + GpuData {
+    pub tape: ShapeTape,
+    pub to_local: mat4,
+    pub centre: vec3,
+    pub radius: f32,
+}
+
+/// What a scene says is solid (`frame::Scene::solids`), and its version: the volume is cooked
+/// again when it changes.
+pub struct Solids: Clone {
+    pub capsules: Vec<Capsule> = Vec::new(),
+    pub shapes: Vec<Shape> = Vec::new(),
+    pub version: u32 = 0,
+}
+
+/// Where the volume is, as shading reads it: its least voxel (render space, in voxels), the
+/// voxel's size, the voxels each way, and whether it's cooked whole (`on`; none: 0, and a read
+/// says nothing is near).
+pub struct DistanceGrid: Copy + GpuData {
+    pub origin: vec3i,
+    pub voxel: f32,
+    pub dims: vec3u,
+    pub on: u32,
+}
+
+/// No volume: a read says nothing is near (a pass with no frame's volume to read).
+pub const NO_DISTANCE = DistanceGrid { origin: vec3i(0), voxel: 1.0, dims: vec3u(1), on: 0 }
+
+/// The voxels a cook leaves as they are: those of the volume before it moved (world voxels, the
+/// low corner in, the high one out); none for a whole cook.
+pub struct Kept: Copy + GpuData {
+    pub lo: vec3i,
+    pub spare_a: u32 = 0,
+    pub hi: vec3i,
+    pub spare_b: u32 = 0,
+}
+
+const NONE_KEPT = Kept { lo: vec3i(0), hi: vec3i(0) }
+
+/// The version of no scene's solids (`forget`): a scene's next are new.
+const FORGOTTEN: u32 = 0xffffffff
+
+/// A list's entry for a shape (an index of a capsule otherwise).
+const SHAPE_BIT: u32 = 0x80000000
+
+fn inside_box(w: vec3i, lo: vec3i, hi: vec3i) -> bool {
+    w.x >= lo.x && w.y >= lo.y && w.z >= lo.z && w.x < hi.x && w.y < hi.y && w.z < hi.z
+}
+
+/// World voxel `w`'s texel in the volume (modulo its dims).
+fn texel_of(g: DistanceGrid, w: vec3i) -> vec3u {
+    let d = vec3i(g.dims)
+    vec3u(((w % d) + d) % d)
+}
+
+/// World voxel `w`'s distance, as the volume holds it.
+fn at(volume: Texture3d<R32Float>, g: DistanceGrid, w: vec3i) -> f32 {
+    let t = texel_of(g, w)
+    volume.load(x: t.x, y: t.y, z: t.z)
+}
+
+/// Whether world voxel `w` is in the volume.
+fn held(g: DistanceGrid, w: vec3i) -> bool {
+    inside_box(w, g.origin, g.origin + vec3i(g.dims))
+}
+
+/// The distance from `p` (render space) to the nearest solid, at most `DISTANCE_FAR`, between
+/// the voxels round it (trilinear); `DISTANCE_FAR` where the volume doesn't reach or isn't
+/// cooked.
+pub fn distance_at(g: DistanceGrid, volume: Texture3d<R32Float>, p: vec3) -> f32 {
+    if g.on == 0 {
+        return DISTANCE_FAR
+    }
+    let q = p / g.voxel - vec3(0.5)
+    let c = floor(q)
+    let f = q - c
+    let w = vec3i(c)
+    if !held(g, w) || !held(g, w + vec3i(1)) {
+        return DISTANCE_FAR
+    }
+    let d000 = at(volume, g, w)
+    let d100 = at(volume, g, w + vec3i(1, 0, 0))
+    let d010 = at(volume, g, w + vec3i(0, 1, 0))
+    let d110 = at(volume, g, w + vec3i(1, 1, 0))
+    let d001 = at(volume, g, w + vec3i(0, 0, 1))
+    let d101 = at(volume, g, w + vec3i(1, 0, 1))
+    let d011 = at(volume, g, w + vec3i(0, 1, 1))
+    let d111 = at(volume, g, w + vec3i(1, 1, 1))
+    mix(
+        mix(mix(d000, d100, f.x), mix(d010, d110, f.x), f.y),
+        mix(mix(d001, d101, f.x), mix(d011, d111, f.x), f.y),
+        f.z,
+    )
+}
+
+/// The distance at `p` as its nearest voxel holds it (within half a voxel's diagonal of
+/// `distance_at`): one read, for a march that reads it many times.
+pub fn distance_near(g: DistanceGrid, volume: Texture3d<R32Float>, p: vec3) -> f32 {
+    if g.on == 0 {
+        return DISTANCE_FAR
+    }
+    let w = vec3i(floor(p / g.voxel))
+    if !held(g, w) {
+        return DISTANCE_FAR
+    }
+    at(volume, g, w)
+}
+
+/// How far toward the sun a contact shadow marches (m), in at most how many steps, and how
+/// soft its edge is (a cone whose tangent is one over this).
+pub const CONTACT_REACH: f32 = 2.0
+pub const CONTACT_STEPS: u32 = 8
+const CONTACT_SOFT: f32 = 8.0
+
+/// How much of the sun reaches `world` (facing `n`) past the solids within `CONTACT_REACH` of it
+/// toward `sun` (a unit vector): a march through the volume, each step as far as nothing solid
+/// is (at least 0.1 m), shadowed by the nearest it comes over how far it has gone (a soft
+/// penumbra: Quilez's, the march's own cone). 1 with no volume. No screen: it doesn't fail at
+/// the screen's edge as the screen's march did.
+pub fn contact_through(
+    g: DistanceGrid,
+    volume: Texture3d<R32Float>,
+    world: vec3,
+    n: vec3,
+    sun: vec3,
+) -> f32 {
+    if g.on == 0 {
+        return 1.0
+    }
+    let start = world + n * 0.05
+    var x = 0.1
+    var lit = 1.0
+    for _ in 0..CONTACT_STEPS {
+        if x >= CONTACT_REACH {
+            break
+        }
+        let d = distance_at(g, volume, start + sun * x)
+        lit = min(lit, CONTACT_SOFT * d / x)
+        if lit <= 0.0 {
+            return 0.0
+        }
+        x += max(d, 0.1)
+    }
+    saturate(lit)
+}
+
+/// The share of the sky that reaches `p` (facing `n`) past the solids from 1 to 4 m off it: four
+/// cones (along the normal and three 60° from it) read at 1, 2 and 4 m (nearest), each read's
+/// occlusion how much nearer a solid is than the surface's own plane would be, averaged.
+/// Nearer than a metre is the screen's (`ambient`'s GTAO). 1 with no volume.
+pub fn cones(g: DistanceGrid, volume: Texture3d<R32Float>, p: vec3, n: vec3) -> f32 {
+    if g.on == 0 {
+        return 1.0
+    }
+    let t = normalize(if abs(n.y) < 0.9 { cross(n, vec3(0.0, 1.0, 0.0)) } else {
+        cross(n, vec3(1.0, 0.0, 0.0))
+    })
+    let b = cross(n, t)
+    let from = p + n * 0.1
+    var shut = 0.0
+    for c in 0..4 {
+        let a = f32(c) * 2.094395
+        let dir = if c == 0 { n } else { n * 0.5 + (t * cos(a) + b * sin(a)) * 0.866025 }
+        // How far the surface's own plane is from a read along `dir`, over its distance.
+        let plane = if c == 0 { 1.0 } else { 0.5 }
+        for k in 0..3 {
+            let r = f32(1 << k)
+            let d = distance_near(g, volume, from + dir * r)
+            shut += saturate(1.0 - d / (r * plane))
+        }
+    }
+    1.0 - shut / 12.0
+}
+
+/// The inverse of `m`, a rotation and a translation (no scale): what turns render space into a
+/// shape's own (`Shape::to_local`).
+pub fn rigid_inverse(m: mat4) -> mat4 {
+    let x = m[0].xyz
+    let y = m[1].xyz
+    let z = m[2].xyz
+    let t = m[3].xyz
+    mat4(
+        vec4(x.x, y.x, z.x, 0.0),
+        vec4(x.y, y.y, z.y, 0.0),
+        vec4(x.z, y.z, z.z, 0.0),
+        vec4(-dot(x, t), -dot(y, t), -dot(z, t), 1.0),
+    )
+}
+
+/// The volume's gradient at `p` (a solid's outward normal there, near one).
+pub fn distance_normal(g: DistanceGrid, volume: Texture3d<R32Float>, p: vec3) -> vec3 {
+    let e = g.voxel * 0.5
+    let n = vec3(
+        distance_at(g, volume, p + vec3(e, 0.0, 0.0)) -
+            distance_at(g, volume, p - vec3(e, 0.0, 0.0)),
+        distance_at(g, volume, p + vec3(0.0, e, 0.0)) -
+            distance_at(g, volume, p - vec3(0.0, e, 0.0)),
+        distance_at(g, volume, p + vec3(0.0, 0.0, e)) -
+            distance_at(g, volume, p - vec3(0.0, 0.0, e)),
+    )
+    if dot(n, n) < 1.0e-10 { vec3(0.0, 1.0, 0.0) } else { normalize(n) }
+}
+
+/// The distance from `p` to capsule `c`'s surface.
+fn to_capsule(c: Capsule, p: vec3) -> f32 {
+    let ab = c.b - c.a
+    let t = clamp(dot(p - c.a, ab) / max(dot(ab, ab), 1.0e-8), 0.0, 1.0)
+    length(p - c.a - ab * t) - c.radius
+}
+
+/// A slab of the volume cooked: its texels from z `first` (a dispatch reaches them from z 0, and
+/// those before return), but those it `kept`, the distance to the ground and to the solids its bin lists
+/// (`bins`: each bin's first entry in `list` and how many), at most `DISTANCE_FAR`.
+@compute(64)
+pub fn cook_distance(
+    g: DistanceGrid,
+    first: u32,
+    kept: Kept,
+    bins: [vec2u],
+    list: [u32],
+    capsules: [Capsule],
+    shapes: [Shape],
+    levels: Levels,
+    texels: [Texel],
+    out: mut Texels3d<R32Float>,
+    id: GlobalId,
+) {
+    if id.z < first || id.x >= g.dims.x || id.y >= g.dims.y || id.z >= g.dims.z {
+        return
+    }
+    let t = vec3i(id.xyz())
+    let d = vec3i(g.dims)
+    let w = g.origin + (((t - g.origin) % d) + d) % d
+    if inside_box(w, kept.lo, kept.hi) {
+        return
+    }
+    let p = (vec3(w) + vec3(0.5)) * g.voxel
+    // The ground: the height above it along its normal (`(y − h) / sqrt(1 + |∇h|²)`).
+    let (n, _, _) = ground_at(levels, texels, p.xz)
+    var dist = min((p.y - height_at(levels, texels, p.xz)) * n.y, DISTANCE_FAR)
+    let b = vec3u(clamp((w - g.origin) / i32(BIN), vec3i(0), vec3i(BINS) - vec3i(1)))
+    let entry = bins[(b.z * BINS.y + b.y) * BINS.x + b.x]
+    for i in 0..entry.y {
+        let k = list[entry.x + i]
+        if k & SHAPE_BIT == 0 {
+            dist = min(dist, to_capsule(capsules[k], p))
+        } else {
+            let s = shapes[k & !SHAPE_BIT]
+            // Its sphere first: a tape is read only where it could be nearer.
+            if length(p - s.centre) - s.radius < dist {
+                dist = min(dist, interpret(s.tape, (s.to_local * vec4(p, 1.0)).xyz))
+            }
+        }
+    }
+    out.store(id, dist)
+}
+
+/// Entry `k` added to the lists of the bins (`BINS`, from `corner`) that come within
+/// `DISTANCE_FAR` of the box from `lo` to `hi`.
+fn bin_into(lists: mut Vec<Vec<u32>>, corner: vec3, lo: vec3, hi: vec3, k: u32) {
+    let size = DISTANCE_VOXEL * f32(BIN)
+    let a = max(vec3i(floor((lo - vec3(DISTANCE_FAR) - corner) / size)), vec3i(0))
+    let b = min(vec3i(floor((hi + vec3(DISTANCE_FAR) - corner) / size)), vec3i(BINS) - vec3i(1))
+    for z in a.z..b.z + 1 {
+        for y in a.y..b.y + 1 {
+            for x in a.x..b.x + 1 {
+                lists[u32((z * i32(BINS.y) + y) * i32(BINS.x) + x)].push(k)
+            }
+        }
+    }
+}
+
+/// The volume and what it's cooked from: its place (`grid`; `on` once cooked whole), its
+/// buffer, the solids it was cooked from and their bins (on the GPU, and the CPU's copy to bin
+/// them again when it moves), the slabs still to cook and the voxels they write.
+pub struct Distance {
+    pub grid: DistanceGrid,
+    pub volume: Texture3d<R32Float>,
+    capsules: GpuBuffer<Capsule>,
+    shapes: GpuBuffer<Shape>,
+    bins: GpuBuffer<vec2u>,
+    list: GpuBuffer<u32>,
+    solids: Solids,
+    /// The next slab to cook, and how many are left (0: cooked).
+    next: u32,
+    left: u32,
+    kept: Kept,
+    /// Whether it's been placed round an eye yet, and cooked whole once.
+    placed: bool,
+    pub cooked: bool,
+    /// Whether it's wanted (`frame::Quality::distance`).
+    pub wanted: bool,
+}
+
+impl Distance {
+    pub fn new(wanted: bool) -> Distance {
+        let d = DISTANCE_DIMS
+        Distance {
+            grid: DistanceGrid { origin: vec3i(0), voxel: DISTANCE_VOXEL, dims: d, on: 0 },
+            volume: if wanted { texture3d::<R32Float>(d.x, d.y, d.z) } else {
+                texture3d::<R32Float>(width: 1, height: 1, depth: 1)
+            },
+            capsules: buffer(1),
+            shapes: buffer(1),
+            bins: buffer(BINS.x * BINS.y * BINS.z),
+            list: buffer(1),
+            solids: Solids {},
+            next: 0,
+            left: 0,
+            kept: NONE_KEPT,
+            placed: false,
+            cooked: false,
+            wanted,
+        }
+    }
+
+    /// The GPU bytes it holds.
+    pub fn bytes(self) -> u64 {
+        memory::texels(self.volume.width(), self.volume.height(), 4, d: self.volume.depth()) +
+            u64(self.capsules.len()) * u64(size_of::<Capsule>()) +
+            u64(self.shapes.len()) * u64(size_of::<Shape>()) +
+            u64(self.bins.len()) * 8 +
+            u64(self.list.len()) * 4
+    }
+
+    /// The grid as shading reads it: off until it's cooked whole once (and while it's not
+    /// wanted).
+    pub fn read(self) -> DistanceGrid {
+        DistanceGrid { on: u32(self.wanted && self.cooked), ..self.grid }
+    }
+
+    /// Everything it holds dropped (the render origin moved: its voxels and its solids are of
+    /// the old render space), to be cooked again round the eye from the scene's solids, which it
+    /// asks for anew.
+    pub fn forget(mut self) {
+        self.placed = false
+        self.cooked = false
+        self.left = 0
+        self.solids = Solids { version: FORGOTTEN }
+    }
+
+    /// The version of the solids it was cooked from (`Solids::version`).
+    pub fn version(self) -> u32 {
+        self.solids.version
+    }
+
+    /// Whether a slab waits to be cooked.
+    pub fn due(self) -> bool {
+        self.wanted && self.left > 0
+    }
+
+    /// Round `eye` (render space), from `solids` if the scene has new ones (its `Solids` changed:
+    /// all of it cooked again): when the eye has moved a bin from the volume's middle, the volume
+    /// moves round it by whole bins and the voxels it didn't hold are cooked.
+    pub fn follow(mut self, eye: vec3, solids: Option<Solids>) {
+        if !self.wanted {
+            return
+        }
+        let dims = vec3i(DISTANCE_DIMS)
+        // Its least corner for this eye, in whole bins.
+        let at = vec3i(
+            floor(
+                (eye - vec3(0.0, BELOW - f32(DISTANCE_DIMS.y) * 0.5 * DISTANCE_VOXEL, 0.0)) /
+                    (DISTANCE_VOXEL * f32(BIN)),
+            ),
+        )
+        let origin = at * i32(BIN) - dims / 2
+        var moved = !self.placed
+        // A move while a cook is under way cooks it all (what it held isn't all cooked).
+        var whole = !self.placed || self.left > 0
+        if self.placed && origin != self.grid.origin {
+            moved = true
+        }
+        if let Some(new) = solids {
+            self.solids = new.clone()
+            whole = true
+            moved = true
+        }
+        if !moved {
+            return
+        }
+        let old = self.grid.origin
+        self.grid.origin = origin
+        self.placed = true
+        self.bin()
+        // What it held where it was stays (a voxel is a world voxel, wherever the volume is).
+        self.kept = if whole { NONE_KEPT } else { Kept { lo: old, hi: old + dims } }
+        self.next = 0
+        self.left = DISTANCE_SLABS
+        if whole {
+            self.cooked = false
+        }
+    }
+
+    /// The solids binned round the volume where it is, and sent to the GPU.
+    fn bin(mut self) {
+        let n = BINS.x * BINS.y * BINS.z
+        var lists: Vec<Vec<u32>> = Vec::with_capacity(n)
+        for _ in 0..n {
+            lists.push(Vec::new())
+        }
+        let corner = vec3(self.grid.origin) * DISTANCE_VOXEL
+        for k in 0..self.solids.capsules.len() {
+            let c = self.solids.capsules[k]
+            bin_into(
+                mut lists,
+                corner,
+                min(c.a, c.b) - vec3(c.radius),
+                max(c.a, c.b) + vec3(c.radius),
+                k,
+            )
+        }
+        for k in 0..self.solids.shapes.len() {
+            let s = self.solids.shapes[k]
+            bin_into(
+                mut lists,
+                corner,
+                s.centre - vec3(s.radius),
+                s.centre + vec3(s.radius),
+                k | SHAPE_BIT,
+            )
+        }
+        var heads: Vec<vec2u> = Vec::with_capacity(n)
+        var flat: Vec<u32> = Vec::new()
+        for l in lists {
+            heads.push(vec2u(flat.len(), l.len()))
+            for k in l {
+                flat.push(k)
+            }
+        }
+        write(mut self.bins, 0, heads)
+        self.list = buffer_of(flat, at_least: 1)
+        self.capsules = buffer_of(self.solids.capsules, at_least: 1)
+        self.shapes = buffer_of(self.solids.shapes, at_least: 1)
+    }
+
+    /// The next slab cooked (`Work::Distance`), its ground from the clipmap's `levels`.
+    pub fn cook(mut self, levels: Levels, texels: std::gpu::GpuSpan<Texel>) {
+        if !self.due() {
+            return
+        }
+        label("distance")
+        let d = DISTANCE_DIMS
+        let depth = d.z / DISTANCE_SLABS
+        let first = self.next * depth
+        dispatch(
+            cook_distance.bind(
+                self.grid,
+                first: first,
+                kept: self.kept,
+                bins: self.bins.items(),
+                list: self.list.items(),
+                capsules: self.capsules.items(),
+                shapes: self.shapes.items(),
+                levels: levels,
+                texels: texels,
+                out: mut self.volume,
+            ),
+            over: (d.x, d.y, first + depth),
+        )
+        self.next += 1
+        self.left -= 1
+        if self.left == 0 {
+            self.cooked = true
+        }
+    }
+}

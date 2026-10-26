@@ -11,7 +11,10 @@ use engine::look::Mesh as Tolerance
 use engine::realize::solid
 use engine::noise::{noise3, rand}
 use land::place::{Feature, Map, SiteKind}
-use engine::stone::{Bed, Realized, Rock, grain, realize_bed, realize_rock, realize_stone}
+use engine::stone::{
+    Bed, Realized, Rock, ShapeTape, bed, grain, realize_bed, realize_rock, realize_stone, stone,
+}
+use std::derive::tape
 use engine::sweep::wrap
 use std::derive::Box3
 use std::field::{Surface, cuboid}
@@ -788,6 +791,37 @@ pub enum Built: Copy {
     Tower { at: vec2 },
     Wall { a: vec2, b: vec2, tall: f32, seed: u32 },
     Rock { at: vec3, bed: Bed },
+}
+
+/// `b`'s shape as a tape (`engine::stone::ShapeTape`): its creature's field at rest, in its own
+/// space (what `realize` places by its `at`), for the distance volume
+/// (`engine::distance::Shape`); `None` for one too long for a tape (the tower's 1,575
+/// operations: tapes.wrela's table).
+pub fn shape_tape(b: Built) -> Option<ShapeTape> {
+    match b {
+        Built::Stone { radius, squash, seed, .. } => taped_shape(stone(radius, squash, seed)),
+        Built::Standing { half, seed, .. } => {
+            taped_shape(slab_creature(Slab { half, seed: f32(seed % 97) * 0.37 }))
+        },
+        Built::Block { half, seed, .. } => {
+            let tilt = vec2(rand(seed, 6) - 0.5, rand(seed, 7) - 0.5) * 0.5
+            taped_shape(block_creature(Block { half, tilt, seed }))
+        },
+        Built::Waystone { tall, seed, .. } => {
+            taped_shape(waystone_creature(Waystone { tall, seed: f32(seed % 97) * 0.37 }))
+        },
+        Built::Tower { .. } => None,
+        Built::Wall { a, b, tall, .. } => {
+            let w = Wall { half: vec3(length(b - a) * 0.5 + 0.4, tall * 0.5, 0.45) }
+            taped_shape(wall_creature(w, tall))
+        },
+        Built::Rock { bed: r, .. } => taped_shape(bed(r)),
+    }
+}
+
+fn taped_shape<C, K: Creature<C>>(k: K) -> Option<ShapeTape> {
+    let f = k.field()
+    tape(|q: vec3| f.distance(q)).resized()
 }
 
 /// A standing slab `half` its size each way, turned at random.

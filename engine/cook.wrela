@@ -42,9 +42,11 @@ pub enum Work: Copy + Eq + Fieldless {
     NearStrip,
     FarStrip,
     /// The probes' occluders cooked (the first bake's or a replacement's), a strip of columns
-    /// baked, or baked again.
+    /// baked, and a strip of the probes in use traced again (a few columns, few rays: a fraction
+    /// of a bake's strip, so it's planned at its own cost).
     ProbeOccluders,
     ProbeStrip,
+    ProbeAgain,
     /// A scene's plant kind cooked (its leaf cards).
     Kind,
     /// A scene's built thing realized (a mesh at load).
@@ -53,10 +55,12 @@ pub enum Work: Copy + Eq + Fieldless {
     Tile,
     /// A slice of a character's mesh realized.
     Realize,
+    /// A slab of the solids' distance volume cooked (`distance::DISTANCE_SLABS` a whole cook).
+    Distance,
 }
 
 /// How many kinds of work there are.
-pub const WORKS: u32 = 13
+pub const WORKS: u32 = 15
 
 /// What a step of a kind costs, in microseconds of GPU time, and whether that was measured on
 /// the reference device or is an estimate.
@@ -130,6 +134,10 @@ pub fn costs() -> [Cost; WORKS] {
         // A slice of a creature's mesh: the realizer's levels, measured in Chrome, about 0.3 µs a
         // block, 384 blocks a slice (timed by no label of its own).
         m(120.0),
+        // A slab of the distance volume (295k voxels): an estimate until measured.
+        e(400.0),
+        // A strip traced again: the walk's `probes again` p50 at B7 (docs/bench.md, B9).
+        m(600.0),
     ]
 }
 
@@ -259,7 +267,7 @@ impl Planner {
     fn allowed(self, w: Work) -> bool {
         match w {
             Work::NearStrip | Work::FarStrip => !(self.levels > 0 && self.near_ready),
-            Work::ProbeOccluders | Work::ProbeStrip => {
+            Work::ProbeOccluders | Work::ProbeStrip | Work::ProbeAgain => {
                 !(self.playable && (self.levels > 0 || self.strip))
             },
             Work::SkyPhase => !(self.playable && self.levels >= 2),
@@ -341,6 +349,8 @@ impl Work {
             Work::Built => 10,
             Work::Tile => 11,
             Work::Realize => 12,
+            Work::Distance => 13,
+            Work::ProbeAgain => 14,
         }
     }
 }

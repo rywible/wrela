@@ -187,7 +187,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             weather: p.ran(Work::SkyWeather),
             noise: p.ran(Work::SkyNoise),
             phase: p.ran(Work::SkyPhase),
-            probes: p.ran(Work::ProbeStrip),
+            probes: p.ran(Work::ProbeStrip) + p.ran(Work::ProbeAgain),
             air: p.ran(Work::AirTables),
             near_sets: s.frame.near.sets,
             far_sets: s.frame.far.sets,

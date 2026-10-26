@@ -64,6 +64,7 @@ const SHIFT = vec2i(2, 0)
 fn sample_shift(
     g: ProbeGrid,
     maps: Texture<Rgba16Float>,
+    seen: [u32],
     density: Texture3d<Rgba16Float>,
     probes: [Probe],
     col: u32,
@@ -71,7 +72,7 @@ fn sample_shift(
     out: mut Slots<vec4>,
     id: GlobalId,
 ) {
-    let h = held_at(g, maps, s, vec2(4.0, 0.0), 2.0)
+    let h = held_at(g, maps, s, seen, vec2(4.0, 0.0), 2.0)
     out[id] = vec4(
         h.sky.r.x,
         h.sun.r.x,
@@ -97,6 +98,7 @@ fn read_shift(s: mut State, b: Baked, col: u32) {
         sample_shift.bind(
             b.grid,
             b.maps,
+            b.seen.items(),
             b.density,
             b.probes.items(),
             col: col,
