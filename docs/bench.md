@@ -749,6 +749,187 @@ their field (the realizer's `measured_error`) wasn't measured here.
   ms): **14.25 ms** (misses by 2.25). Its heaviest labels: vegetation 3.2, look 2.6, clouds 2.5,
   terrain 2.3, creature 2.2, temporal 1.7, fog 0.8, probes again 0.9 (where it runs).
 
+## 2026-10-26: B14, the frontier (world-class 2, toolchain 0.9.0)
+
+Four experiments, each behind a switch that is off unless its rule says it pays (D18). The
+decisions, then each experiment's numbers.
+
+| Experiment | Switch | Its rule | Measured | Default |
+|---|---|---|---|---|
+| Neural impostors (14.2) | `Quality::neural` | on past 160 m if PSNR ≥ 32 dB and the pass ≤ 1.3× the atlas's | PSNR 13.86 dB (rung D over all 256 views); every kind through the net: the frame 421.8 ms against 16.6 | **off** |
+| Learned history rejector (14.3) | `Quality::learned_resolve` | on if held-out PSNR ≥ +1.0 dB over the heuristics, the resolve ≤ +0.2 ms, flicker and pop not up | +0.10 dB held out (rung A); the resolve +27.6 ms | **off** |
+| Radiance cascades (14.4) | `Quality::cascades` | on at the finest rung ≤ 2.0 ms with trunk shade +15 % and no leak | 13.1, 4.4 and 3.2 ms at R1–R3; shade +95 to +109 % | **off** |
+
+### 14.1 Small networks and `studio/fit`
+
+`engine/neural.wrela`: two-hidden-layer MLPs (ReLU, linear out), a hand-written backward pass,
+Adam, MSE and L1; weights shipped as half floats two a word and evaluated in a shader
+(`eval_gpu`). The trainer is on the CPU (a step's batch split over the program's helpers in the
+fit fixtures): the nets are small, and a GPU backward pass for thousands of weights is a project
+of its own.
+
+- A hand-set 2 → 2 → 1 net is its hand computation at four inputs. The gradient against central
+  differences at 100 weights of a 4 → 8 → 8 → 2 net: within **1.6e-3** relative (f32's rounding;
+  the plan asked 1e-3, the test asks 2e-3). A 1 → 16 → 16 → 1 net learns `sin` over [-π, π] to a
+  held-out MSE of **1.7e-4** within 2,000 steps (asked: under 1e-3).
+- The shader's evaluation against the CPU's at 1,000 inputs: within **0.13/255** after scaling
+  (asked: 1/255).
+- `wrela tool fit -- --net sine --out content/kit/sine_net.wrela`: a 1 → 32 → 32 → 1 net in
+  **20 s** (asked: under 60), held out 1.9e-5; read back from its half floats, `sin` within
+  0.0033 on average (0.015 at worst) at 100 points (asked: 1e-2). It refuses paths outside
+  `content/` and `build/`.
+- **1d, the truth renderer** (`wrela tool fit -- --net rejector`, with 14.3's dataset): the
+  floor driven natively at 1280 × 720, its shot 2 settled, time frozen (F10) and the eye dollied
+  along its look (F11); every 32 frames the resolve's findings at 20,000 pixels, then the dolly
+  paused and the lookdev instrument's reference drawn there (F12: every knob at its most, no
+  history, the jitter on an 8 × 8 grid), its 64 frames' mean of this frame's luma at the same
+  pixels the truth. 50 frames in **701 s** (14 s a frame: 200 would take about 47 minutes;
+  asked: 20 for 200). The resolver's own blend against the truth: **32.96 to 36.74 dB** a frame,
+  35.04 on average (asked: at least 30). The world is frozen while the eye moves (the frozen
+  time is what lets the reference be the play frame's): the dataset has the camera's motion, not
+  the wind's or the creatures'.
+
+### 14.2 Neural impostors
+
+The dataset (2a): the great tree's impostor baked as the engine bakes a kind's (16 × 16 views of
+64²), read back as 1,048,576 rows `(view_uv, texel_uv) → (rgb, coverage, oct normal, toward,
+depth)`, every 16th view held out (983,040 rows trained on, 65,536 held out). The ladder (2b),
+each rung 4,000 steps of 16,384 rows (Adam at 1e-3), three seeds, PSNR over colour (weighted by
+the true coverage) and coverage at the held-out views:
+
+| Rung | Seed | PSNR dB | colour MSE | coverage MSE | s | loss, first 500 steps → last |
+|---|---|---|---|---|---|---|
+| A | 1 | 12.19 | 0.02030 | 0.08575 | 176 | 0.03834 → 0.02867 |
+| A | 2 | 12.57 | 0.01890 | 0.07844 | 172 | 0.03861 → 0.02849 |
+| A | 3 | 11.70 | 0.02237 | 0.09634 | 177 | 0.04797 → 0.03091 |
+| B | 1 | 12.65 | 0.01846 | 0.07702 | 144 | 0.03280 → 0.02713 |
+| B | 2 | 12.29 | 0.02224 | 0.08236 | 144 | 0.03497 → 0.02711 |
+| B | 3 | 12.68 | 0.01578 | 0.07826 | 157 | 0.03523 → 0.02718 |
+| C | 1 | 14.09 | 0.01110 | 0.05666 | 177 | 0.02645 → 0.02322 |
+| C | 2 | 13.98 | 0.01271 | 0.05726 | 204 | 0.02702 → 0.02264 |
+| C | 3 | 13.57 | 0.01367 | 0.06312 | 254 | 0.03210 → 0.02433 |
+| D | 1 | 14.39 | 0.01111 | 0.05244 | 357 | 0.02599 → 0.02149 |
+| D | 2 | 14.41 | 0.01058 | 0.05250 | 303 | 0.02464 → 0.02086 |
+| D | 3 | 14.45 | 0.01098 | 0.05170 | 443 | 0.02462 → 0.02089 |
+
+Parameters: A 488, B 1,480, C 616 and a 2,048-value grid, D 3,368 and an 8,192-value grid. No
+rung reaches its mark (26, 29, 32, 33 dB: these are results under the fixed budget). Every curve
+still falls at 4,000 steps, slowly (D's last 2,000 steps: 0.0216 → 0.0209), so the budget, not
+only the capacity, bounds them; but the step from B to C (the grid) is the only large one: a
+crown's leaves are detail at the texel, which a net of the view's and the texel's coordinates
+doesn't hold and a 32² grid over a 64² cell only begins to.
+
+2c, the shader: `impostor::net_texel` evaluates a kind's net (and its grid, bilinear) where a
+view is read, in the far crowns' cut and shading, under `Quality::neural`
+(`wood::Wood::read_through`; the Last Green gives its great tree the net when the switch is on).
+Test (engine/tests/neural-impostor): a rung-D-shaped net with a grid, the shader's eight values
+at 1,000 points of the views against the CPU's evaluation of the same half floats: within
+**0.000/255**.
+
+2d, the measures and the rule (the opening at 1080p, `wrela tool bench`, two runs each, the
+machine settled: its frame without any switch 16.65 ms at the start and 16.50–16.63 at the end):
+
+- **PSNR against the atlas, all 256 views at 64²:** rung D's best seed (3), **13.86 dB** (14.45
+  held out), written as `content/kit/great_tree_net.wrela` (the great tree: the floor's one tree
+  whose kind the fixture bakes).
+- **Time:** the great tree alone through its net: the GPU frame 16.64 ms against 16.65 (a single
+  tree, too little of the frame to tell). Every kind through the same net (`EVERY_KIND`, a
+  measuring setting whose images are wrong): the vegetation pass **390.0 ms** against 5.4 and the
+  GPU frame **421.8 ms** against 16.6. The evaluator is the plain one (`neural::eval_gpu`: each of
+  rung D's 3,264 multiply-adds reads its weight from storage and unpacks its half): the plan's
+  `vec4h` dot products would cut that several times, not the 50 that 1.3× asks.
+- **Bytes per kind:** the atlas 12 MiB plain (1024², RGBA8 and two RG16F), **3 MiB** compressed
+  (BC7 and two BC5); rung D's net and grid **22.6 KiB** (11,560 half floats), 136 times fewer
+  than the compressed atlas.
+- **The rule** (on past 160 m if PSNR ≥ 32 dB and the pass ≤ 1.3× the atlas's): both missed, by
+  18 dB and by far: **off**. The trained net stays (`content/kit/great_tree_net.wrela`), the
+  switch reads it, and the bytes are the case for a next attempt: a net per kind 136 times
+  smaller than its atlas if its detail could be learned (a finer grid than rung D's, more steps).
+
+### 14.3 A learned history rejector
+
+`engine::temporal`'s resolve is split into what it finds at a pixel (`found`: this frame's
+reconstruction, the history reprojected and clipped, the heuristics' share, and what a learned
+rejector reads) and the blend (`blended`), so a capture kernel (`found_rows`) reads the same
+findings the resolve blends; the render package's seven temporal tests pass unchanged. Under
+`Quality::learned_resolve` the share is the sigmoid of `REJECTOR`'s net (rung A: 14 → 16 → 8 →
+1) over the 3 × 3 samples' luma round the nearest, the history's luma unclipped, how far the point
+moved, how far its old depth is, whether thin geometry covers it, and its class; capped as a
+settled view's share is.
+
+- **3a, the dataset:** 50 frames (above), of each frame's 20,000 asked pixels those whose share
+  isn't forced, up to 5,000 the heuristics clipped and 5,000 they didn't: **388,140 rows**
+  (312,351 from the first 40 frames to train on, 75,789 from the last 10 held out).
+- **3b, the baseline:** the heuristics' blend against the truth: 35.04 dB a frame on average
+  (above); **34.10 dB** over the held-out rows.
+- **3c, the ladder** (4,000 steps of 4,096 rows, Adam from 1e-3, the loss `|mix(history,
+  current, a) − truth|`):
+
+| Rung | Inputs | Held out: heuristics → learned | Trained on: heuristics → learned | s |
+|---|---|---|---|---|
+| A | 14 | 34.10 → **34.21 dB (+0.10)** | 35.17 → 35.50 (+0.33) | 33 |
+
+  The mark is +1.0 dB: A misses it, and so does what it fits on the frames it trained on. **B and
+  C (the samples' chroma, the history's 3 × 3) aren't tried: Blocked** on a capture with 27 more
+  floats a row; with A at a tenth of the mark held out and a third of it on its own frames,
+  what's left for a net to learn over these heuristics on this truth is small.
+- **3d:** the shader's share against the CPU's at 998 pixels of a dollied frame (those not
+  forced; `wrela tool fit -- --net rejector --check`): within **0.000/255**. The opening's
+  `temporal` with the learned share: **29.4 to 29.8 ms** against 1.78 (two runs each): rung A's
+  360 multiply-adds a pixel, each weight read from storage and unpacked, at every output pixel
+  of 1080p. **The rule** (on if +1.0 dB held out, at most +0.2 ms, flicker and pop not up):
+  missed on the first two: **off**, and G-look's moving measures weren't needed. The net stays
+  (`content/kit/rejector_net.wrela`) with the switch.
+
+### 14.4 Radiance cascades
+
+`engine/cascades.wrela` (Sannikov 2023): four cascades of screen-space probes on the last
+frame's depth, c0's probes 8 scene pixels apart with 4 × 4 directions (octahedral, the whole
+sphere), each cascade's probes twice as far apart with twice the directions a side, over 0–0.5,
+0.5–2, 2–8 and 8–32 m. Each ray marches the solids' distance volume with the conservative
+bounded advance (4a); what it meets gives back an albedo of 0.3 under the sun (the shadow maps)
+and the probes' sky, and c3's rays that meet nothing hold the clouded sky. The merge (c2 to c0)
+is depth-aware at every query (an upper probe whose distance differs by over a tenth is weighed
+out), radiance and transmittance together; the resolve, at half the scene each way, takes the
+four nearest c0 probes (5 %) and the cosine-weighted sum of their directions, and writes the
+light over π where the ambient occlusion goes: the next frame's shading reads it for the sky's
+term (`ambient::cascaded_at`) in place of the probes' times the occlusion. The directions turn
+each frame in a cycle of four. Known limitations: the crowns' leaves aren't in the volume (the
+rays see solids alone), every surface's albedo is 0.3 (no surface cache), and a ray that leaves
+the volume (96 m round the eye) goes on as open air.
+
+- **4a, the march** (engine/cascades.wrela's tests, analytic shapes, 16 and 8 steps): a wall
+  2 cm alongside a ray never stops it; slabs 1 m and 10 cm thick in c3's interval, and one at
+  30°, are met; over 10,000 rays each grazing a ball, **0** of 5,964 that a 256-step march meets
+  are passed (asked: under 1 %).
+- **4a–b on the GPU** (engine/tests/cascades: flat ground through `engine::frame` with the
+  cascades on, a hollow box and a wall in the volume): from inside the closed box **0 of 64**
+  rays leave it; a wall a metre before a probe is met by **c1 alone**; up from over open ground
+  no cascade meets anything; and the light the cascades leave over the open ground in view is the
+  sky's (its cosine-weighted mean over the hemisphere, 1,024 directions) within **5.6 %** on
+  average (asked: 10 %). Not built: the merge's tests with a lit wall beside a sphere and a post
+  (4b's), which need the surfaces lit as the scene's are; the open-sky and closed-box ones stand
+  for them.
+- **4d, the rungs** (the opening at 1080p, two runs each; the shade, the luma of the off still's
+  darkest quarter of pixels in `02-beech-high-forest`, a stand-in for the trunks' shaded sides,
+  whose class the lookbook's stills don't carry; the leak, `16-the-fawn-in-the-glade` under the
+  climber's hem, looked at):
+
+| Rung | c0 probes | Steps | `cascades` ms | GPU frame ms (off: 16.65) | Shade, darkest quarter | Leak under the hem |
+|---|---|---|---|---|---|---|
+| R1 | 8 px | 16 | **13.12** | 29.35 | +95 % (0.026 → 0.051) | none seen |
+| R2 | 16 px | 16 | **4.42** | 20.53 | +109 % | none seen |
+| R3 | 16 px | 8 | **3.18** | 19.42 | +91 % | none seen |
+
+  Every rung gives the shade far more than the +15 % asked (the probes' sky under the canopy is
+  dimmer than open rays through a volume without leaves: the leaves are this spike's missing
+  occluder) and none meets 2.0 ms: **off**. The stills (`build/stills-b14/`) show the trunks'
+  shaded sides lit and the ground under the canopy a little darker, and a defect: dark bands
+  across thin trunks where the bark's probes find no light, which pushing a probe out of a solid
+  the volume holds it in (`cascades::outside`) didn't cure. The next levers are the plan's: a
+  surface cache in place of the 0.3 albedo, the leaves' density in the rays' transmittance, and
+  the cascades traced at a lower rate (a quarter of the directions a frame).
+
 ## Devices
 
 Each device D20 names (docs/plan-world-class-2.md §0.5), measured by `wrela tool bench -- --lan`

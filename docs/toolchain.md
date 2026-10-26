@@ -114,7 +114,7 @@ wrela-host --compare-ticks a.ticks b.ticks   # two builds' tick logs: equal, or 
 | `bench`              | What the engine's scenes cost on this machine, in Chrome and natively, added to `docs/bench.md` (`--scene herd`, `--compare out/<report>.json` for a report in build/bench); `--lan` for another device |
 | `export`             | A floor's ground as a 16-bit PNG and its JSON (`height games/last-green --out <file.png>`), a scene's camera path as JSON (`path ... --out <file.json>`): what the other engines' scenes take |
 | `passes`             | A frame's passes and dispatches, in order, as a page |
-| `fit`                | A small network trained and its weights written as source (`--net sine --out content/...`), or the impostor's ladder run and printed (`--net impostor --rungs ABCD`): `engine::neural` |
+| `fit`                | A small network trained and its weights written as source (`--net sine --out content/...`); the impostor's ladder run and printed (`--net impostor --rungs ABCD`, the best run written with `--out`); or the learned rejector's truth, dataset, baseline and rung (`--net rejector --frames n [--out ...]`): `engine::neural` |
 
 ## Benching another device
 

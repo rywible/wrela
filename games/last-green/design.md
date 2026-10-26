@@ -14,7 +14,9 @@ measured in docs/bench.md, and his to set.
 | `fog` | on | the air as froxels: fog, the canopy's haze, the falls' mist (B10) | the opening's fog 0.78 ms; +16.6 MB |
 | `look.output` | SDR | HDR output where the screen is HDR (B13.3, D11) | |
 | planar reflection (D15) | absent | not built (B12) | |
-| neural impostors | absent | the ladder is in docs/bench.md's Experiments; no switch until a rung passes (B14.2) | |
+| `neural` | off | the great tree's far crowns read through its net (`content/kit/great_tree_net.wrela`, B14.2) | 13.86 dB against its atlas; every kind through a net: the frame 25× (docs/bench.md, B14) |
+| `cascades` | off | radiance cascades over the solids' volume light the sky's term in place of the probes' and the occlusion (B14.4); `spacing` 8, `steps` 16 | 3.2 ms at the coarsest rung, 13.1 at the finest (asked: 2.0) |
+| `learned_resolve` | off | temporal AA's share of each frame from a small net (`content/kit/rejector_net.wrela`, B14.3) | docs/bench.md, B14 |
 
 ## The air (`stage::fog`, `engine::fog::FogField`)
 

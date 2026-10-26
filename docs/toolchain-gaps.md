@@ -107,6 +107,15 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Meanwhile:** the march is generic over analytic fields (its tests); the volume's march repeats its steps over `distance::distance_at`.
 - **Status:** open.
 
+### A struct update of the floor's stage is malformed IR
+
+- **Needed:** the Last Green's `init` builds its stage with one field changed: `Stage { neural: quality().neural, ..stage() }`.
+- **What happens:** toolchain 0.9.0's build stops with an internal error: "the CPU module's IR is malformed: fn0 `init_0_export`: v1862 is a `Cast<Coat, Body<…>>`, not a `Cast<Coat, Grown, FawnLook>`": the update's copied fields reach a cast of another field's type.
+- **Found:** 2026-10-26, adding `Quality::neural` (B14.2c).
+- **Evidence:** `wrela build games/last-green` with that line in `games/last-green/main.wrela`'s `init` (the stage holds the floor's creatures' generic bodies).
+- **Meanwhile:** `init` makes the stage and sets the field after (`var staged = stage()`, `staged.neural = …`).
+- **Status:** open: not yet cut down to a small program.
+
 ## Fixed
 
 ### A loop body's last call leaked its temporaries
