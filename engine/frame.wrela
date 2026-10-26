@@ -18,7 +18,7 @@
 //
 // Every pipeline the frame itself draws with is one every lit program needs (the ground, the
 // sky, the lines, the resolve, the meter, the dabs, the glow, the develop): what's optional (the
-// water, mists, sun shafts, a test's views) is drawn only from the scene's own methods, whose
+// water, a test's views; the air's fog is the frame's, `fog`) is drawn only from the scene's own methods, whose
 // defaults draw nothing, so a program builds only the pipelines it reaches.
 
 use air::{AIR_SLICES, Air, Tables, tables}
@@ -29,6 +29,7 @@ use particles::{Emits, Particles, Step, composite, wind_of}
 use reflect::{Mirror, Specular, copy_below}
 use cook::{Budget, Planner, Work}
 use distance::{Distance, Solids}
+use fog::{FogField, FogVolume, sky_fogged}
 use light::Light
 use lit::Lighting
 use paint::{
@@ -103,6 +104,13 @@ pub trait Scene {
     /// `Solids::version`), which the volume was last cooked from. None by default: the volume
     /// holds the ground alone.
     fn solids(self, origin: vec3, since: u32) -> Option<Solids> {
+        None
+    }
+
+    /// What the air holds (render space, the render origin `origin` taken off): its fog, its
+    /// mists and its canopy's haze (`fog::FogField`), the froxels' (`Quality::fog`). None by
+    /// default: clear air.
+    fn fog(self, origin: vec3) -> Option<FogField> {
         None
     }
 
@@ -239,13 +247,13 @@ pub trait Scene {
     }
 
     /// Whether the scene draws effects over the lit scene (`effects`), which take targets of
-    /// their own (the scene under water, the shafts).
+    /// their own (the scene under water).
     fn has_effects(self) -> bool {
         false
     }
 
     /// What goes over the lit scene before motion and temporal AA: water over a copy of the
-    /// scene, veils, sun shafts, drawn into `t` with what the frame holds (`fx`).
+    /// scene, veils, drawn into `t` with what the frame holds (`fx`).
     fn effects(mut self, t: mut Targets, fx: Effects) {}
 
     /// What moved since the last frame, into the motion target (over the scene's depth).
@@ -296,15 +304,16 @@ pub struct Aim: Copy {
 }
 
 /// The frame's targets. The scene's (`w` × `h`: the output's at the render scale): its colour
-/// and tags, a second it ping-pongs with (the lines, mists, shafts), its depth and the last
-/// frame's, the far crowns' ids, motion and the last frame's, the scene under the water (when
-/// the scene has effects) and then the dabs in the same texture (`below`: the water and the mist
-/// read it before the look writes the dabs into it), the shafts (with effects); the output's:
-/// temporal AA's history and the last frame's; a quarter of the output's: the glow's chain.
+/// and tags, a second it ping-pongs with (the lines, the water), its depth and the last frame's,
+/// the far crowns' ids, motion and the last frame's, the scene under the water (when the scene has
+/// effects) and then the dabs in the same texture (`below`: the water reads it before the look
+/// writes the dabs into it); the output's: temporal AA's history and the last frame's; a quarter
+/// of the output's: the glow's chain.
 ///
 /// At 1080p (the scene at 0.667: 1280 × 720) each scene-sized half-float target is 7.0 MiB, the
-/// depths and the ids 3.5 MiB each, the shafts 1.8, each history 15.8 MiB, the glow's chain 5.3
-/// MiB in all: 84 MiB, where the dabs' own texture was 7.0 MiB more (the audit's §3.4).
+/// depths and the ids 3.5 MiB each, each history 15.8 MiB, the glow's chain 5.3 MiB in all: 82
+/// MiB, where the dabs' own texture was 7.0 MiB more (the audit's §3.4) and the shafts' 1.8 (B10:
+/// the air's froxels hold them).
 pub struct Targets {
     pub scene: Texture<Rgba16Float>,
     pub scene_b: Texture<Rgba16Float>,
@@ -314,7 +323,6 @@ pub struct Targets {
     pub motion: Texture<Rgba16Float>,
     pub last_motion: Texture<Rgba16Float>,
     pub below: Texture<Rgba16Float>,
-    pub shafts: Texture<Rgba16Float>,
     pub history: Texture<Rgba16Float>,
     pub last_history: Texture<Rgba16Float>,
     /// The bloom's pyramid (`paint::BLOOM_LEVELS`): half the output's size, then each level half
@@ -336,7 +344,6 @@ fn no_targets() -> Targets {
         motion: texture::<Rgba16Float>(width: 1, height: 1),
         last_motion: texture::<Rgba16Float>(width: 1, height: 1),
         below: texture::<Rgba16Float>(width: 1, height: 1),
-        shafts: writable_texture::<Rgba16Float>(width: 1, height: 1),
         history: texture::<Rgba16Float>(width: 1, height: 1),
         last_history: texture::<Rgba16Float>(width: 1, height: 1),
         bloom_1: texture::<Rgba16Float>(width: 1, height: 1),
@@ -346,10 +353,9 @@ fn no_targets() -> Targets {
     }
 }
 
-/// Targets for an output of `width` × `height`, the scene's `w` × `h`; the scene under the
-/// water and the shafts only if the scene has `effects`.
+/// Targets for an output of `width` × `height`, the scene's `w` × `h` (`effects`: whether the
+/// scene draws over itself, whose targets every frame has now: the dabs share the water's).
 fn targets_for(width: u32, height: u32, w: u32, h: u32, effects: bool) -> Targets {
-    let (ew, eh) = if effects { (w, h) } else { (1, 1) }
     Targets {
         scene: texture::<Rgba16Float>(width: w, height: h),
         scene_b: texture::<Rgba16Float>(width: w, height: h),
@@ -359,7 +365,6 @@ fn targets_for(width: u32, height: u32, w: u32, h: u32, effects: bool) -> Target
         motion: texture::<Rgba16Float>(width: w, height: h),
         last_motion: texture::<Rgba16Float>(width: w, height: h),
         below: texture::<Rgba16Float>(width: w, height: h),
-        shafts: writable_texture::<Rgba16Float>(width: max(ew / 2, 1), height: max(eh / 2, 1)),
         history: texture::<Rgba16Float>(width: width, height: height),
         last_history: texture::<Rgba16Float>(width: width, height: height),
         bloom_1: bloom_of(width, height, level: 1),
@@ -378,7 +383,6 @@ impl Targets {
             h(self.motion) +
             h(self.last_motion) +
             h(self.below) +
-            h(self.shafts) +
             h(self.history) +
             h(self.last_history) +
             h(self.bloom_1) +
@@ -640,6 +644,9 @@ pub struct Quality: Copy {
     /// (`distance`), which the probes' rays step through, the contact shadows march and the
     /// ambient occlusion reads past the screen (B9b).
     pub distance: bool = true,
+    /// Whether the air is a froxel volume (`fog`: the scene's fog, mists and the canopy's haze,
+    /// lit by the sun through the cascades and by the probes), or clear (B10).
+    pub fog: bool = true,
     /// Whether glossy surfaces reflect the screen (the last frame's, copied after its effects)
     /// and a specular probe of the sky, a face baked a frame (`reflect`).
     pub reflections: bool = true,
@@ -1003,6 +1010,8 @@ pub struct Frame<R: Resolver> {
     pub probes: Probes,
     /// The solids' distance volume round the eye (`Quality::distance`).
     pub distance: Distance,
+    /// The air's froxels (`Quality::fog`).
+    pub fog: FogVolume,
     pub clipmap: Clipmap,
     pub targets: Targets,
     /// The depth pyramid (`cull`): this frame's, built after its opaque passes, which the next
@@ -1199,6 +1208,7 @@ impl<R: Resolver> Frame<R> {
             moving_clear: false,
             cmp: comparison_sampler(),
             distance: Distance::new(quality.distance),
+            fog: FogVolume::new(quality.fog),
             probes: Probes {
                 using: probes,
                 at,
@@ -1517,6 +1527,7 @@ impl<R: Resolver> Frame<R> {
         self.probes.at += d.xz
         self.probes.next = None
         self.distance.forget()
+        self.fog.forget()
         self.near.shift(d)
         self.far.shift(d)
         self.particle_shift += d
@@ -1918,6 +1929,7 @@ impl<R: Resolver> Frame<R> {
                 share("sky", self.sky.bytes()),
                 share("probes", probes),
                 share("distance", self.distance.bytes()),
+                share("fog", self.fog.bytes()),
                 share("terrain", self.clipmap.bytes()),
                 share("reflections", reflections),
                 share("lights", self.lights.bytes()),
@@ -2424,6 +2436,26 @@ impl<R: Resolver> Frame<R> {
             start: 0,
             count: self.probes.using.grid.probes(),
         )
+        // The air's froxels, lit as the scene will be, before the passes that look through them.
+        match scene.fog(self.origin) {
+            Some(field) => self.fog.make(
+                cam,
+                self.light,
+                field,
+                sh,
+                self.near.front,
+                self.far.front,
+                self.cmp,
+                self.clouds,
+                self.sky.shadow,
+                grid,
+                maps,
+                grounds,
+                self.probes.using.density,
+                self.linear,
+            ),
+            None => self.fog.clear(),
+        }
         // Whether glossy surfaces reflect the screen: last frame's (`Mirror`), and this frame's
         // copied for the next.
         let mirrored = self.quality.reflections || self.quality.contact
@@ -2459,6 +2491,8 @@ impl<R: Resolver> Frame<R> {
             s: self.linear,
             distance: self.distance.read(),
             volume: self.distance.volume,
+            fog: self.fog.grid,
+            fogged: self.fog.lit,
         }
         // Last frame's pyramid, if it's this view's (not after a jump, nor with occlusion off).
         var hzb = self.pyramid.at
@@ -2566,12 +2600,14 @@ impl<R: Resolver> Frame<R> {
             draw(
                 sky,
                 full.bind(z: 0.0),
-                sky_shade.bind(
+                sky_fogged.bind(
                     cam,
                     self.light,
                     view: self.tables.view,
                     dome: self.sky.dome,
                     s: self.linear,
+                    fog: self.fog.grid,
+                    fogged: self.fog.lit,
                 ),
                 vertices: 3,
                 depth: BEHIND,

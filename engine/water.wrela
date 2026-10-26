@@ -8,7 +8,7 @@
 // reflected from the screen where the reflection is on it, and from the probes and the sky where
 // it isn't (no ray is traced through the scene); the sun's glints, and foam
 // at the banks and where it falls. No vertex moves: the ripples are the shading's. Three looks
-// (`WaterLook`): clear, peat-dark, and painted. A fall's mist is drawn over it (`mist_over`).
+// (`WaterLook`): clear, peat-dark, and painted. A fall's mist is the air's (`fog`).
 
 use light::{CLAY, LUMA, Light, sun_reflection}
 use lit::{Lighting, sun_and_gloss, through_air}
@@ -510,82 +510,8 @@ pub fn water_shade(
     vec4(through_air(lt, c, w.world), WATER)
 }
 
-/// What the mist's pass reads besides its textures: the camera, the light, how many mists there
-/// are, and the time (s).
-pub struct MistAt: Copy + GpuData {
-    pub cam: Camera,
-    pub light: Light,
-    pub count: u32,
-    pub time: f32,
-}
-
-/// The scene's pixel seen through the falls' mist (a volume, since cards that blend would blend
-/// the scene's tags too): along the pixel's
-/// ray to what it meets, each mist's sphere of drifting, rising noise, the light it scatters (the
-/// sun's, forward most, and the sky's) over what's behind it, the tag kept.
-@fragment
-pub fn mist_over(
-    pixel: FragCoord,
-    at: MistAt,
-    scene: Texture<Rgba16Float>,
-    below: Texture<Rgba16Float>,
-    mists: [vec4],
-) -> vec4 {
-    let p = vec2u(pixel.position.xy)
-    let c = scene.load(x: p.x, y: p.y)
-    let cam = at.cam
-    let dir = cam.unjittered().ray(pixel.position.xy)
-    // The distance to what the pixel shows (the copy under the water holds it).
-    let far = below.load(x: p.x, y: p.y).a
-    var through = 1.0
-    var lit = vec3(0.0)
-    let keyed = cam.keyed()
-    let drift = vec3(0.0, -at.time * 0.7, at.time * 0.15)
-    for i in 0..min(at.count, mists.len()) {
-        let m = mists[i]
-        let centre = m.xyz - cam.origin
-        let oc = cam.eye - centre
-        let b = dot(oc, dir)
-        let disc = b * b - (dot(oc, oc) - m.w * m.w)
-        if disc <= 0.0 {
-            continue
-        }
-        let h = sqrt(disc)
-        let t0 = max(-b - h, 0.0)
-        let t1 = min(-b + h, far)
-        if t1 <= t0 {
-            continue
-        }
-        // Samples along the chord: soft billows rising and drifting, densest low in the sphere
-        // (it rises off the water) and thinning smoothly to its edge.
-        var d = 0.0
-        for k in 0..MIST_SAMPLES {
-            let t = mix(t0, t1, (f32(k) + 0.5) / f32(MIST_SAMPLES))
-            let q = cam.eye + dir * t
-            let rel = (q - centre) / m.w
-            let r2 = dot(rel, rel)
-            let fade = (1.0 - min(r2, 1.0)) * (1.0 - min(r2, 1.0))
-            let low = 1.0 - 0.6 * smoothstep(-0.6, 0.8, rel.y)
-            let n = noise::noise3((q + keyed) * 0.25 + drift * 0.6)
-            d += fade * low * smoothstep(0.2, 0.75, n)
-        }
-        let a = 1.0 - exp(-MIST_THICK * d * (t1 - t0) / f32(MIST_SAMPLES))
-        // Droplets throw the sun's light forward most, and are lit by the whole sky.
-        let forward = pow(max(dot(dir, at.light.sun), 0.0), 4.0)
-        let light = at.light.sun_colour * (0.3 + 0.9 * forward) + vec3(0.55, 0.6, 0.68)
-        lit += through * a * light
-        through *= 1.0 - a
-    }
-    vec4(c.rgb * through + lit * 0.5, c.a)
-}
-
 /// How far a fall's sheet leans back from upright (its face's rise for each unit out).
 const FALL_LEAN: f32 = 0.3
-
-/// How thick a fall's mist is where it's densest (per m), and how many points of each sphere's
-/// chord a pixel reads it at (a noise each: the pass is full-screen).
-const MIST_THICK: f32 = 0.22
-const MIST_SAMPLES: u32 = 4
 
 // ---- tests ------------------------------------------------------------------------------------
 

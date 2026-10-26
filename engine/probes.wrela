@@ -288,6 +288,46 @@ const SOLID_HIT: f32 = 0.1
 /// What a solid a ray meets reflects (bark and stone, near enough).
 const SOLID_ALBEDO = vec3(0.18, 0.16, 0.14)
 
+/// The light round the point over `xz`, `above` metres up, averaged over every facing (the light
+/// a mote of air scatters, each way alike), its sun's part times `sun`: from the nearer layer's
+/// probes' constant terms alone (four samples of the maps, where `held_at` takes ten), or the
+/// open sky outside the grid. For the air's froxels (`fog`), a million a frame.
+pub fn mean_near(
+    grid: ProbeGrid,
+    maps: Texture<Rgba16Float>,
+    s: Sampler,
+    xz: vec2,
+    above: f32,
+    sun: f32,
+) -> vec3 {
+    let g = (xz - grid.corner) / grid.spacing
+    let last = f32(max(grid.cols, 2) - 1)
+    if grid.cols < 2 || g.x < 0.0 || g.y < 0.0 || g.x >= last || g.y >= last {
+        return mean_held(open_probe(maps), sun)
+    }
+    let (k, lo, hi) = layers_round(above)
+    let layer = if above - lo > (hi - lo) * 0.5 { k + 1 } else { k }
+    let size = vec2(f32(PLANES * grid.cols), f32(grid.cols * LAYERS + 1))
+    let plane = vec2(f32(grid.cols), 0.0) / size
+    let at = (g + vec2(0.5, 0.5 + f32(layer * grid.cols))) / size
+    let constant = maps.sample_level(s, at + 3.0 * plane)
+    if constant.w <= 1.0e-4 {
+        return mean_held(open_probe(maps), sun)
+    }
+    let sky = vec3(
+        maps.sample_level(s, at).x,
+        maps.sample_level(s, at + plane).x,
+        maps.sample_level(s, at + 2.0 * plane).x,
+    )
+    max((sky + constant.rgb * sun) / constant.w * (0.282095 / PI), vec3(0.0))
+}
+
+/// What a probe holds averaged over every facing (the light a mote of air scatters, each way
+/// alike): its sky's part and its sun's times `sun` (how much reaches it past the clouds).
+pub fn mean_held(h: Held, sun: f32) -> vec3 {
+    mean_light(h.sky) + mean_light(h.sun) * sun
+}
+
 /// A part's light averaged over every facing: what scatters off leaves that face every way
 /// (its constant term's: the irradiance's mean, over π).
 fn mean_light(p: Probe) -> vec3 {

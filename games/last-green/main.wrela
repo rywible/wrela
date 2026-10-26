@@ -223,7 +223,7 @@ fn recentre(s: mut Floor, to: vec2i) {
 }
 
 /// The keys the frames read (the sim reads the player's): F1–F5 leave a system out, F6 draws the
-/// water's next look, F7 captures stills, F8 the next debug view of form, B the sun shafts, V
+/// water's next look, F7 captures stills, F8 the next debug view of form, B the air's fog, V
 /// the frame as plain rendering; L, a shot's number and Enter hold the camera on a lookbook shot
 /// (Escape lets it go).
 fn keys(s: mut Floor, time: f32) {
@@ -269,7 +269,7 @@ fn keys(s: mut Floor, time: f32) {
                 s.stage.water_look = (s.stage.water_look + 1) % engine::water::LOOKS.len()
             }
             if key == Key::B {
-                s.stage.shafts_on = !s.stage.shafts_on
+                s.stage.fog_on = !s.stage.fog_on
             }
             // F7 stills and V plain rendering (no look, to tell the look's work from the
             // scene's): the frame's own keys.
@@ -757,10 +757,10 @@ pub fn test_leave(s: mut Floor, x: f32, z: f32) -> f32 {
     if s.exit.leave(vec2(x, z)) { 1.0 } else { 0.0 }
 }
 
-/// Sun shafts on (`on` 1) or off.
+/// The air's fog, mists and canopy haze on (`on` 1) or off.
 @testing
-pub fn test_shafts(s: mut Floor, on: u32) {
-    s.stage.shafts_on = on != 0
+pub fn test_fog(s: mut Floor, on: u32) {
+    s.stage.fog_on = on != 0
 }
 
 /// Frames drawn as plain rendering (`on` 1: the scene at the output's size, no jitter, no

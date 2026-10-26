@@ -11,6 +11,7 @@ use ambient::{Ambient, ao_at}
 use light::{Light, Lit}
 use lights::{Froxels, shed}
 use distance::{DistanceGrid, contact_through}
+use fog::{FogGrid, fog_at}
 use reflect::{Mirror, contact_shadow, reflected}
 use probes::{ProbeGrid, sky_light, sky_lights}
 use shadow::{Shadows, sunlit}
@@ -57,6 +58,8 @@ pub borrow struct Lighting {
     pub s: borrow Sampler,
     pub distance: DistanceGrid,
     pub volume: borrow Texture3d<R32Float>,
+    pub fog: FogGrid,
+    pub fogged: borrow Texture3d<Rgba16Float>,
 }
 
 /// How much sun reaches `world` (0 to 1), its normal `n`: the shadow maps', `soft` texels of
@@ -169,7 +172,9 @@ pub fn reflect(l: Lighting, world: vec3, n: vec3, rough: f32, toward: vec3) -> v
 
 /// `colour`, at `world`, as the eye sees it through the air between them (`light::hazed`).
 pub fn through_air(l: Lighting, colour: vec3, world: vec3) -> vec3 {
-    light::hazed(l.air, l.s, l.light, colour, world, l.cam.eye)
+    // The froxels' fog first (`fog::fog_at`): what shows of the surface, and the light in front.
+    let f = fog_at(l.fog, l.fogged, l.s, world)
+    light::hazed(l.air, l.s, l.light, colour * f.a + f.rgb, world, l.cam.eye)
 }
 
 /// What a surface at `world` shows: lit as `lit` says (`light::world`), through the air.

@@ -585,6 +585,44 @@ aren't; the strip is the unit the re-trace already has.
   with other turns of the spiral (kept half of): they differ by those traces' noise. Steady
   state, with nothing changing, is the order taken in turn again, a round later.
 
+## 2026-10-26: B10, light in the air (world-class 2, the 0.9.0 checkout)
+
+`engine::fog` (Wronski 2014; Hillaire 2015): 160 × 90 froxels over the frustum, 48 slices from
+0.5 to 200 m (exponential), jittered along their rays each frame. Each frame a froxel takes its
+density (the scene's `FogField`: the engine's height fog, spheres of mist, the crowns' density
+from the probes' volume times 0.02) and the light it scatters toward the eye (the sun through
+the static cascades and the clouds' shadow, Henyey-Greenstein g 0.5; the sky, from the nearer
+probe layer's constant terms), blended with the last frame's reprojected (0.9) unless its density
+moved by more than a fifth. A workgroup a column integrates it (Hillis-Steele's scan in workgroup
+memory), and `lit::through_air` applies it before the air's aerial table; the sky pass applies
+its last slice. `Scene::fog` (new; none by default); the Last Green's: the height fog, a sphere
+of mist at each fall (`history::MISTS`), the canopy's haze (B switches it). The shafts
+(`engine/shafts.wrela`) and the falls' mist pass (`water::mist_over`) are gone: `wrela pipelines
+games/last-green` names neither `march_shafts`, `add_shafts` nor `mist_over`.
+
+- **The tests** (engine/tests/fog): a uniform fog of 0.02 per metre shows 0.9048, 0.6699 and
+  0.3015 of points 5, 20 and 60 m ahead (`exp(-σd)`: 0.9048, 0.6703, 0.3012); a step to 0.04
+  settles in **1 frame** (asked: 16); with the eye 10 m under the ground, every froxel in its
+  shadow, the light in front of those points is the same with the sun's in-scatter and without
+  (within 0.0005).
+- **G-profile** (one run each; asked: the fog at most 1.0 ms in the opening and the frame's net
+  rise at most 0.6 ms, the shafts and the mist gone): the first run, 64 slices, each slice's
+  integral a loop over those before it and the sky from `held_at`'s ten samples, took **2.93 ms**
+  on the walk and 1.79 in the opening, the walk's span +1.31 ms. With 48 slices (the plan's first
+  lever), the scan, and four samples for the sky:
+
+| | walk B9 | walk B10 | opening B9 | opening B10 |
+|---|---|---|---|---|
+| fog, p50 ms | | 1.91 | | **0.78** |
+| water (the mist pass was its) | 0.73 | none | 0.62 | 0.20 (296 frames) |
+| GPU span p50 | 13.97 | 14.24 (**+0.27**) | 13.88 | 14.17 (**+0.29**) |
+
+  The opening meets both; the walk's fog is 1.9 ms (the wood: its canopy's haze on most froxels).
+- **G-memory:** a `fog` share of 16.6 MB (three volumes of 160 × 90 × 48 half floats); the shafts'
+  1.8 MB target is gone.
+- **Off is B9's image:** the clearing, which has no fog: 2 pixels by 1/255 against B9c (native,
+  640 × 360, 240 frames).
+
 ## Devices
 
 Each device D20 names (docs/plan-world-class-2.md §0.5), measured by `wrela tool bench -- --lan`

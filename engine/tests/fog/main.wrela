@@ -1,0 +1,259 @@
+// The air's froxels (`engine::fog`, B10) on a bare scene filled with a uniform fog (a height fog
+// whose height scale is a million metres: σ 0.02 per metre everywhere), drawn through
+// `engine::frame`:
+//
+// 1. once the probes are baked, what shows of a point straight ahead at 5, 20 and 60 m
+//    (`fog_at`'s transmittance) against `exp(-σ d)`;
+// 2. the fog's density steps to 0.04: the frames until those points show `exp(-0.04 d)`;
+// 3. the eye goes 10 m under the ground, where every froxel is in the ground's shadow: the
+//    light in front of a point ahead with the sun's in-scatter and without it (the sky's alone).
+
+use engine::fog::{FogField, FogGrid, HeightFog, fog_at}
+use engine::frame::{Aim, Frame, Gathered, Quality, Scene}
+use engine::light::{Light, SUN_TOP, sunlight}
+use engine::plant::Wind
+use engine::probes::{Occluder, ProbeGrid, Trace, grid}
+use engine::sky::{Gap, Weather}
+use engine::terrain::{Clipmap, Flat}
+use engine::view::{Camera, first_camera}
+use engine::air::hazy
+use std::gpu::{GlobalId, GpuBuffer, Rgba16Float, Sampler, Slots, Texture3d, buffer, dispatch, read}
+use std::io::{Pending, print}
+
+const SUN = vec3(0.5, 0.6, -0.4)
+const ABOVE = vec3(0.0, 1.6, 0.0)
+const UNDER = vec3(0.0, -10.0, 0.0)
+const AHEAD = vec3(0.0, 0.0, -1.0)
+
+/// How far ahead the points read are (m).
+const FAR = [5.0, 20.0, 60.0]
+
+pub struct Hazy {
+    weather: Weather,
+    pub sigma: f32,
+    pub sun: f32,
+}
+
+impl Scene for Hazy {
+    fn wind(self, cam: Camera, time: f32) -> Wind {
+        Wind { time, dir: vec2(1.0, 0.0), strength: 0.0 }
+    }
+
+    fn weather(self) -> Weather {
+        self.weather.clone()
+    }
+
+    fn trace(self, light: Light, grid: ProbeGrid) -> Trace {
+        Trace { light, grid, foliage: vec3(0.0), reach: 24.0, leaf: vec3(0.0), bounced: 0 }
+    }
+
+    fn probe_grid(self, at: vec2, origin: vec3) -> ProbeGrid {
+        grid(at, cols: 9, spacing: 4.0, low: -16.0, high: 24.0, voxel: 2.0)
+    }
+
+    fn occluders(self, at: vec2, origin: vec3) -> Option<Vec<Occluder>> {
+        Some(Vec::new())
+    }
+
+    fn height_at(self, world: vec2) -> f32 {
+        0.0
+    }
+
+    fn cook_ground(mut self, clipmap: mut Clipmap, eye: vec3, again: bool) -> u32 {
+        clipmap.follow(Flat {}, eye, again)
+    }
+
+    fn ground_casts(self) -> bool {
+        true
+    }
+
+    fn fog(self, origin: vec3) -> Option<FogField> {
+        Some(
+            FogField {
+                height: HeightFog { base_y: 0.0, d0: self.sigma, h: 1.0e6, albedo: vec3(1.0) },
+                canopy: 0.0,
+                sun: self.sun,
+            },
+        )
+    }
+}
+
+/// What shows of each point ahead (a), and the light in front of it (rgb).
+@compute(3)
+fn ahead(
+    g: FogGrid,
+    lit: Texture3d<Rgba16Float>,
+    s: Sampler,
+    eye: vec3,
+    out: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    out[id] = fog_at(g, lit, s, eye + AHEAD * FAR[id.x])
+}
+
+/// The script's steps.
+pub enum Step: Copy + Eq {
+    Clear,
+    Stepped,
+    Under,
+    UnderDark,
+    Done,
+}
+
+pub struct State {
+    frame: Frame<Gathered>,
+    scene: Hazy,
+    eye: vec3,
+    step: Step,
+    at: u32,
+    asked: Vec<Pending<vec4>>,
+    /// Each read's frame and its points.
+    pub reads: Vec<(u32, Vec<vec4>)>,
+    pub stepped_at: u32,
+}
+
+pub fn init() -> State {
+    let air = hazy(SUN, SUN_TOP, eye: ABOVE.y)
+    let frame: Frame<Gathered> = Frame::new(
+        Quality { measured: false },
+        sunlight(air),
+        air,
+        Clipmap::new(levels: 6, finest: 0.5),
+        first_camera(ABOVE, ABOVE + AHEAD * 20.0, 0.82, width: 320, height: 180),
+        grid(ABOVE.xz, cols: 9, spacing: 4.0, low: -16.0, high: 24.0, voxel: 2.0),
+        ABOVE.xz,
+    )
+    State {
+        frame,
+        scene: Hazy {
+            weather: Weather {
+                clouds: Vec::new(),
+                fair: 0.0,
+                gap: Gap { a: vec2(3300.0, -590.0), b: vec2(12200.0, -2150.0), radius: 2500.0 },
+                wind: vec2(0.0),
+            },
+            sigma: 0.02,
+            sun: 1.0,
+        },
+        eye: ABOVE,
+        step: Step::Clear,
+        at: 0,
+        asked: Vec::new(),
+        reads: Vec::new(),
+        stepped_at: 0,
+    }
+}
+
+fn ask(s: mut State) {
+    var out: GpuBuffer<vec4> = buffer(3)
+    borrow f = s.frame
+    dispatch(ahead.bind(f.fog.grid, f.fog.lit, f.linear, s.eye - f.origin, out: mut out), over: 3)
+    s.asked.push(read(out.items()))
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    let ran = s.frame.ran
+    let ready = s.frame.probes.done() && s.frame.ready.playable_at.is_some()
+    // The script: clear fog read, a step in density read each frame for 20, then under the
+    // ground with the sun and without.
+    if s.step == Step::Clear && ready {
+        s.step = Step::Stepped
+        s.at = ran
+    } else if s.step == Step::Stepped && ran == s.at + 1 {
+        s.scene.sigma = 0.04
+        s.stepped_at = ran
+    } else if s.step == Step::Stepped && ran > s.at + 24 {
+        s.step = Step::Under
+        s.at = ran
+        s.eye = UNDER
+    } else if s.step == Step::Under && ran == s.at + 61 {
+        s.step = Step::UnderDark
+        s.at = ran
+        s.scene.sun = 0.0
+    } else if s.step == Step::UnderDark && ran == s.at + 64 {
+        s.step = Step::Done
+    }
+    let aim = Aim { eye: s.eye, at: s.eye + AHEAD * 20.0, fovy: 0.82, moving_at: s.eye }
+    let _ = s.frame.begin(mut s.scene, aim, time, width, height)
+    s.frame.draw(mut s.scene, aim)
+    // Under the ground, the reads 64 frames apart: the same jitter along the rays (it turns
+    // every 64), so they differ by the sun's in-scatter alone.
+    let reading = (s.step == Step::Stepped && ran <= s.at + 24) ||
+        (s.step == Step::Under && ran == s.at + 60) ||
+        (s.step == Step::UnderDark && ran == s.at + 63)
+    if reading {
+        ask(mut s)
+        s.reads.push((ran, Vec::new()))
+    }
+    for k in 0..s.asked.len() {
+        if s.reads[k].1.is_empty() {
+            match s.asked[k].poll() {
+                Some(Ok(v)) => s.reads[k].1 = take v,
+                _ => {},
+            }
+        }
+    }
+}
+
+/// The read at frame `f`.
+fn read_at(s: State, f: u32) -> Vec<vec4> {
+    for r in s.reads {
+        if r.0 == f {
+            return r.1.clone()
+        }
+    }
+    panic(f"no read at frame {f}")
+}
+
+/// A uniform fog's transmittance to 5, 20 and 60 m is `exp(-σ d)` within 1/255.
+@test(frames: 300, gpu: true)
+fn a_uniform_fog_shows_what_its_density_lets_through(s: State) {
+    let first = read_at(s, s.stepped_at - 1)
+    for k in 0..3 {
+        let want = exp(-0.02 * FAR[k])
+        print(f"{FAR[k]} m: shows {first[k].a:.4}, exp(-σd) {want:.4}")
+        assert(abs(first[k].a - want) < 1.0 / 255.0, f"at {FAR[k]} m: {first[k].a} for {want}")
+    }
+}
+
+/// A step in density shows within 16 frames (at once: a froxel whose density changed by more
+/// than a fifth drops its history).
+@test(frames: 300, gpu: true)
+fn a_step_in_density_settles_within_sixteen_frames(s: State) {
+    var settled = 0
+    for r in s.reads {
+        if r.0 > s.stepped_at && r.0 <= s.stepped_at + 24 && settled == 0 {
+            var all = true
+            for k in 0..3 {
+                all = all && abs(r.1[k].a - exp(-0.04 * FAR[k])) < 1.0 / 255.0
+            }
+            if all {
+                settled = r.0 - s.stepped_at
+            }
+        }
+    }
+    print(f"the density's step settled in {settled} frames")
+    assert(settled > 0 && settled <= 16, f"settled in {settled} frames")
+}
+
+/// Under the ground, every froxel in its shadow: the light in front of a point ahead is the sky's
+/// alone within 1/255, with the sun's in-scatter or without (read 64 frames apart, at the same
+/// jitter: the history's 0.9 of 64 frames back is under 0.2%).
+@test(frames: 300, gpu: true)
+fn a_column_in_full_shadow_scatters_no_sun(s: State) {
+    var lit: Vec<vec4> = Vec::new()
+    var dark: Vec<vec4> = Vec::new()
+    for r in s.reads {
+        if r.0 > s.stepped_at + 30 && lit.is_empty() {
+            lit = r.1.clone()
+        } else if !lit.is_empty() && dark.is_empty() {
+            dark = r.1.clone()
+        }
+    }
+    assert(lit.len() == 3 && dark.len() == 3, "the reads under the ground")
+    for k in 0..3 {
+        let d = abs(lit[k].rgb - dark[k].rgb)
+        print(f"{FAR[k]} m under the ground: with the sun {lit[k].rgb}, without {dark[k].rgb}")
+        assert(max(d.x, max(d.y, d.z)) < 1.0 / 255.0, f"at {FAR[k]} m the sun shows: {d}")
+    }
+}

@@ -1,0 +1,391 @@
+// Light in the air (B10): a froxel volume over the camera's frustum (Wronski, Volumetric Fog,
+// SIGGRAPH 2014; Hillaire, Physically Based and Unified Volumetric Rendering in Frostbite,
+// SIGGRAPH 2015) that gives fog, the light the canopy lets through (shafts) and the falls' mist
+// in one place.
+//
+// `FOG_DIMS` froxels, `FOG_SLICES` slices from `FOG_NEAR` to `FOG_FAR` m, slice `i` at
+// `near × (far / near)^(i / slices)` along each pixel's ray. Each frame:
+//
+// 1. **Inject** (`inject`, a froxel an invocation): at its point (jittered along its ray by the
+//    frame's number, so the history gathers what's between the slices), the scene's fog's
+//    density (`FogField`: a height fog and spheres of mist) and the crowns' (the probes' density
+//    volume, times `FogField::canopy`), and the light it scatters toward the eye: the sun's,
+//    through the static cascades and the clouds' shadow, by a Henyey-Greenstein lobe, and the
+//    sky's (the probes' light round it); blended with the last frame's (reprojected, 0.9 of it)
+//    where that saw the same point and its density is within a fifth of it (a change of the
+//    air is taken at once, not over the history's forty frames).
+// 2. **Integrate** (`integrate`, a workgroup a column, its slices in workgroup memory): front to
+//    back, the light scattered toward the eye so far and what of what's beyond still shows.
+// 3. **Apply** (`fog_at`): a surface's colour times what shows of it, plus the light in front of
+//    it (`lit::through_air`, before the air's aerial table); the sky's, the last slice's.
+
+use light::Light
+use probes::{ProbeGrid, density_at, ground_under, mean_near}
+use shadow::{Shadows, statically_sunlit}
+use sky::{Clouds, cloud_shadow, hg, sky_with_clouds}
+use std::gpu::{
+    ComparisonSampler, DepthTexture, FragCoord, GlobalId, GpuBuffer, LocalId, Rgba16Float, Sampler,
+    Shared, Texels3d, Texture, Texture3d, barrier, buffer_of, dispatch, label, texture3d, write,
+}
+use std::collections::swap
+use view::Camera
+
+/// The froxels across and down, and the slices along each ray.
+pub const FOG_DIMS = vec2u(160, 90)
+pub const FOG_SLICES: u32 = 48
+
+/// Where the slices begin and end along a ray (m).
+pub const FOG_NEAR: f32 = 0.5
+pub const FOG_FAR: f32 = 200.0
+
+/// How much of the last frame's light a froxel keeps where the last saw its point, and how far
+/// (a share) its density may have changed for it to.
+const FOG_KEEP: f32 = 0.9
+const FOG_CHANGED: f32 = 0.2
+
+/// The engine's height fog (**proposed**: `d0` 0.004 per metre at `base_y`, falling by e every
+/// `h` 12 m above it), its albedo.
+pub struct HeightFog: Copy + GpuData {
+    pub base_y: f32 = 0.0,
+    pub d0: f32 = 0.004,
+    pub h: f32 = 12.0,
+    pub spare: f32 = 0.0,
+    pub albedo: vec3 = vec3(0.9),
+    pub spare_b: f32 = 0.0,
+}
+
+/// A sphere of mist (a fall's): its middle (render space), how far it reaches (m), and its
+/// density at its middle (per metre), falling to none at its edge.
+pub struct FogSphere: Copy + GpuData {
+    pub at: vec3,
+    pub radius: f32,
+    pub density: f32,
+    pub spare: f32 = 0.0,
+    pub spare_b: f32 = 0.0,
+    pub spare_c: f32 = 0.0,
+}
+
+/// What a scene's air holds (`frame::Scene::fog`): its height fog, its spheres of mist (render
+/// space), and how dense its crowns' leaves make it (per unit of the probes' crown density:
+/// **proposed** 0.02, the canopy's own haze, where the sun's shafts show); and how much of the
+/// sun it scatters (1; a test's 0 leaves the sky's alone).
+pub struct FogField: Clone {
+    pub height: HeightFog = HeightFog {},
+    pub spheres: Vec<FogSphere> = Vec::new(),
+    pub canopy: f32 = 0.02,
+    pub sun: f32 = 1.0,
+}
+
+/// What the passes read of the froxels: the unjittered camera they were made for (its
+/// projection and its eye), this frame's jitter along the rays (a fraction of a slice), and
+/// whether there are any (`on` 0: the air is clear).
+pub struct FogGrid: Copy + GpuData {
+    pub view_proj: mat4,
+    pub eye: vec3,
+    pub on: u32,
+    pub jitter: f32,
+    pub canopy: f32,
+    pub spheres: u32,
+    pub sun: f32 = 1.0,
+}
+
+/// No froxels: the air is clear (a pass with no frame's to read).
+pub const NO_FOG = FogGrid {
+    view_proj: mat4(
+        vec4(1.0, 0.0, 0.0, 0.0),
+        vec4(0.0, 1.0, 0.0, 0.0),
+        vec4(0.0, 0.0, 1.0, 0.0),
+        vec4(0.0, 0.0, 0.0, 1.0),
+    ),
+    eye: vec3(0.0),
+    on: 0,
+    jitter: 0.0,
+    canopy: 0.0,
+    spheres: 0,
+}
+
+/// The distance along a ray (m) of slice coordinate `z` (0 the first slice's start).
+pub fn slice_depth(z: f32) -> f32 {
+    FOG_NEAR * pow(FOG_FAR / FOG_NEAR, z / f32(FOG_SLICES))
+}
+
+/// The slice coordinate of distance `d` (m) along a ray.
+pub fn depth_slice(d: f32) -> f32 {
+    log(max(d, FOG_NEAR) / FOG_NEAR) / log(FOG_FAR / FOG_NEAR) * f32(FOG_SLICES)
+}
+
+/// Where `world` falls in froxels made by `g`'s camera: (u, v, slice), each in [0, 1] inside.
+fn froxel_of(g: FogGrid, world: vec3) -> vec3 {
+    let c = g.view_proj * vec4(world, 1.0)
+    let w = max(c.w, 1.0e-4)
+    let uv = vec2(c.x / w * 0.5 + 0.5, 0.5 - c.y / w * 0.5)
+    vec3(uv, depth_slice(length(world - g.eye)) / f32(FOG_SLICES))
+}
+
+/// The density of `field` at `p` (per metre): its height fog and its spheres.
+fn density_of(h: HeightFog, spheres: [FogSphere], count: u32, p: vec3) -> f32 {
+    var d = h.d0 * exp(-max(p.y - h.base_y, 0.0) / h.h)
+    for i in 0..count {
+        let s = spheres[i]
+        let r = length(p - s.at) / max(s.radius, 1.0e-3)
+        if r < 1.0 {
+            d += s.density * (1.0 - r * r)
+        }
+    }
+    d
+}
+
+/// Froxel `id`'s light and density: what it scatters toward the eye per metre (rgb) and how
+/// much it dims per metre (a), blended with the last frame's (`last`, as `was` made it) where
+/// that saw its point.
+@compute(4, 4, 4)
+pub fn inject(
+    g: FogGrid,
+    was: FogGrid,
+    cam: Camera,
+    light: Light,
+    h: HeightFog,
+    spheres: [FogSphere],
+    sh: Shadows,
+    near: DepthTexture,
+    far: DepthTexture,
+    cmp: ComparisonSampler,
+    clouds: Clouds,
+    cloud: Texture<Rgba16Float>,
+    grid: ProbeGrid,
+    maps: Texture<Rgba16Float>,
+    grounds: [f32],
+    density: Texture3d<Rgba16Float>,
+    last: Texture3d<Rgba16Float>,
+    s: Sampler,
+    out: mut Texels3d<Rgba16Float>,
+    id: GlobalId,
+) {
+    if id.x >= FOG_DIMS.x || id.y >= FOG_DIMS.y || id.z >= FOG_SLICES {
+        return
+    }
+    let still = cam.unjittered()
+    let px = (vec2(f32(id.x), f32(id.y)) + vec2(0.5)) / vec2(FOG_DIMS) * cam.screen
+    let dir = still.ray(px)
+    let p = g.eye + dir * slice_depth(f32(id.z) + 0.5 + g.jitter)
+    var sigma = density_of(h, spheres, g.spheres, p)
+    let crowns = density_at(grid, density, s, p)
+    // The crowns' leaves (a solid's density, a trunk's, isn't air).
+    if crowns <= 1.0 {
+        sigma += g.canopy * crowns
+    }
+    var c = vec4(0.0, 0.0, 0.0, sigma)
+    if sigma > 0.0 {
+        let shade = cloud_shadow(clouds, cloud, s, p)
+        let sun = statically_sunlit(sh, p, vec3(0.0), near, far, cmp, 1.0) * shade * g.sun
+        // The sky round it, as the probes there hold it (their mean over every facing).
+        let above = max(p.y - ground_under(grid, grounds, p.xz), 0.25)
+        let sky = mean_near(grid, maps, s, p.xz, above, shade)
+        let albedo = h.albedo
+        c = vec4(
+            albedo * sigma * (light.sun_colour * (sun * hg(0.5, dot(dir, light.sun))) + sky),
+            sigma,
+        )
+    }
+    // The last frame's, where it saw this point.
+    if was.on != 0 {
+        let q = froxel_of(was, p)
+        if q.x >= 0.0 && q.y >= 0.0 && q.x <= 1.0 && q.y <= 1.0 && q.z <= 1.0 {
+            let old = last.sample_level(s, q)
+            if abs(old.a - c.a) <= FOG_CHANGED * max(c.a, old.a) {
+                c = mix(c, old, vec4(FOG_KEEP))
+            }
+        }
+    }
+    out.store(id, c)
+}
+
+/// Column (`id.x`, `id.y`)'s froxels integrated front to back, a slice an invocation: at each,
+/// the light scattered toward the eye from the eye to its far side (rgb) and what of what's
+/// beyond still shows (a). Each slice's own (its light, dimmed as it passes through its own depth:
+/// Hillaire's integral; and what of it shows through), then a scan of the column in workgroup
+/// memory (Hillis and Steele: log2 of its slices steps), a slice in front `(l, t)` taking one
+/// behind it as `(l + t × l', t × t')`.
+@compute(1, 1, 48)
+pub fn integrate(
+    scatter: Texture3d<Rgba16Float>,
+    column: mut Shared<vec4, 48>,
+    out: mut Texels3d<Rgba16Float>,
+    id: GlobalId,
+    lid: LocalId,
+) {
+    let inside = id.x < FOG_DIMS.x && id.y < FOG_DIMS.y
+    let c = if inside { scatter.load(x: id.x, y: id.y, z: id.z) } else { vec4(0.0) }
+    // The first slice from the eye (its air before `FOG_NEAR` is the first slice's).
+    let dz = slice_depth(f32(id.z + 1)) - (if id.z == 0 { 0.0 } else { slice_depth(f32(id.z)) })
+    let e = exp(-c.a * dz)
+    let through = if c.a > 1.0e-6 { (1.0 - e) / c.a } else { dz }
+    var sum = vec4(c.rgb * through, e)
+    let own = column.chunk(lid)
+    column.write(own, 0, sum)
+    barrier(mut column)
+    var offset = 1
+    while offset < FOG_SLICES {
+        let front = if id.z >= offset { column.get(id.z - offset) } else {
+            vec4(0.0, 0.0, 0.0, 1.0)
+        }
+        barrier(mut column)
+        sum = vec4(front.rgb + front.a * sum.rgb, front.a * sum.a)
+        column.write(own, 0, sum)
+        barrier(mut column)
+        offset = offset * 2
+    }
+    if inside {
+        out.store(id, sum)
+    }
+}
+
+/// What the froxels (`lit`, as `g` says) do to a surface at `world`: the light in front of it
+/// (rgb), and what of it shows (a); nothing with none.
+pub fn fog_at(g: FogGrid, lit: Texture3d<Rgba16Float>, s: Sampler, world: vec3) -> vec4 {
+    if g.on == 0 {
+        return vec4(0.0, 0.0, 0.0, 1.0)
+    }
+    let q = froxel_of(g, world)
+    // Each slice holds the light to its far side: a point is between the one before and its own.
+    let z = clamp(q.z - 0.5 / f32(FOG_SLICES), 0.0, 1.0)
+    lit.sample_level(s, vec3(clamp(q.xy, vec2(0.0), vec2(1.0)), z))
+}
+
+/// The sky's pixel (as `sky::sky_shade` draws it) through the froxels' last slice: its colour times what
+/// shows of it, and the light in front of it.
+@fragment
+pub fn sky_fogged(
+    pixel: FragCoord,
+    cam: Camera,
+    light: Light,
+    view: Texture<Rgba16Float>,
+    dome: Texture<Rgba16Float>,
+    s: Sampler,
+    fog: FogGrid,
+    fogged: Texture3d<Rgba16Float>,
+) -> vec4 {
+    let c = sky_with_clouds(view, light, cam.ray(pixel.position.xy), dome, s)
+    let f = fog_at(fog, fogged, s, cam.eye + cam.ray(pixel.position.xy) * (FOG_FAR * 0.999))
+    vec4(c.rgb * f.a + f.rgb, c.a * 0.99)
+}
+
+/// The froxels: this frame's light and density (`scatter`), the last frame's (`last`, as
+/// `was` says), and this frame's integrated (`lit`, as `grid` says); the scene's spheres.
+pub struct FogVolume {
+    pub scatter: Texture3d<Rgba16Float>,
+    pub last: Texture3d<Rgba16Float>,
+    pub lit: Texture3d<Rgba16Float>,
+    pub grid: FogGrid,
+    was: FogGrid,
+    spheres: GpuBuffer<FogSphere>,
+    pub wanted: bool,
+}
+
+impl FogVolume {
+    pub fn new(wanted: bool) -> FogVolume {
+        let (x, y, z) = if wanted { (FOG_DIMS.x, FOG_DIMS.y, FOG_SLICES) } else { (1, 1, 1) }
+        FogVolume {
+            scatter: texture3d::<Rgba16Float>(x, y, z),
+            last: texture3d::<Rgba16Float>(x, y, z),
+            lit: texture3d::<Rgba16Float>(x, y, z),
+            grid: NO_FOG,
+            was: NO_FOG,
+            spheres: buffer_of(
+                [FogSphere { at: vec3(0.0), radius: 0.0, density: 0.0 }],
+                at_least: 1,
+            ),
+            wanted,
+        }
+    }
+
+    /// The GPU bytes its three volumes take (half floats).
+    pub fn bytes(self) -> u64 {
+        3 * memory::texels(self.lit.width(), self.lit.height(), 8, d: self.lit.depth())
+    }
+
+    /// Clear air this frame (the scene has no fog).
+    pub fn clear(mut self) {
+        self.grid = NO_FOG
+        self.was = NO_FOG
+    }
+
+    /// Nothing made is to be used (the render origin moved: the last frame's froxels are of the
+    /// old render space).
+    pub fn forget(mut self) {
+        self.was = NO_FOG
+    }
+
+    /// This frame's froxels for `cam` (its jitter along the rays from its frame's number), the
+    /// scene's `field`, lit by `light` through `sh`'s cascades and the clouds' shadow, and the
+    /// probes' light round them; then integrated.
+    pub fn make(
+        mut self,
+        cam: Camera,
+        light: Light,
+        field: FogField,
+        sh: Shadows,
+        near: DepthTexture,
+        far: DepthTexture,
+        cmp: ComparisonSampler,
+        clouds: Clouds,
+        cloud: Texture<Rgba16Float>,
+        grid: ProbeGrid,
+        maps: Texture<Rgba16Float>,
+        grounds: std::gpu::GpuSpan<f32>,
+        density: Texture3d<Rgba16Float>,
+        s: Sampler,
+    ) {
+        if !self.wanted {
+            self.grid = NO_FOG
+            return
+        }
+        label("fog")
+        let still = cam.unjittered()
+        let n = field.spheres.len()
+        if n > self.spheres.len() {
+            self.spheres = buffer_of(field.spheres, at_least: 1)
+        } else if n > 0 {
+            write(mut self.spheres, 0, field.spheres)
+        }
+        self.grid = FogGrid {
+            view_proj: still.view_proj,
+            eye: cam.eye,
+            on: 1,
+            jitter: fract(f32(cam.frame % 64) * 0.618034) - 0.5,
+            canopy: field.canopy,
+            spheres: n,
+            sun: field.sun,
+        }
+        swap(mut self.scatter, mut self.last)
+        dispatch(
+            inject.bind(
+                self.grid,
+                was: self.was,
+                cam: cam,
+                light: light,
+                h: field.height,
+                spheres: self.spheres.items(),
+                sh: sh,
+                near: near,
+                far: far,
+                cmp: cmp,
+                clouds: clouds,
+                cloud: cloud,
+                grid: grid,
+                maps: maps,
+                grounds: grounds,
+                density: density,
+                last: self.last,
+                s: s,
+                out: mut self.scatter,
+            ),
+            over: (FOG_DIMS.x, FOG_DIMS.y, FOG_SLICES),
+        )
+        dispatch(
+            integrate.bind(self.scatter, out: mut self.lit),
+            groups: (FOG_DIMS.x, FOG_DIMS.y, 1),
+        )
+        self.was = self.grid
+    }
+}

@@ -15,6 +15,7 @@ use world::GATE
 use engine::memory::{Share, Usage}
 use engine::cull::{Hzb, in_frustum}
 use engine::distance::{Capsule, Shape, Solids, rigid_inverse}
+use engine::fog::{FogField, FogSphere, HeightFog}
 use engine::frame::{Cooks, Effects, Scene, Targets, full, fullscreen}
 use engine::grass::{Blooms, Contact, Grass, GrassLook}
 use engine::light::{Light, SUN_TOP, sunlight}
@@ -24,20 +25,17 @@ use land::place::TILE
 use engine::plant::{Plant, Wind}
 use engine::probes::{Occluder, ProbeGrid, Trace, grid}
 use engine::shadow::Shadows
-use engine::shafts::{Shafts, add_shafts, march_shafts}
 use engine::sky::Weather
 use engine::pool::{Item, Pool, pool}
 use engine::stone::{
-    ClusterStones, Instances, Realized, Rocks, ShapeTape, placed_of, stone_instance_vertex,
-    stone_shade, stone_shadow, stone_vertex,
+    Instances, Realized, Rocks, ShapeTape, stone_instance_vertex, stone_shade, stone_shadow,
+    stone_vertex,
 }
 use engine::terrain::{Clipmap, Texel}
 use engine::vegetation::{Kind, Placed, kind}
 use engine::view::{Camera, NEAREST, first_camera}
 use engine::reflect::copy_below
-use engine::water::{
-    LOOKS, MistAt, WaterMesh, WaterTile, WaterVert, mist_over, tiled, water_shade, water_vertex,
-}
+use engine::water::{LOOKS, WaterMesh, WaterTile, WaterVert, tiled, water_shade, water_vertex}
 use engine::wood::Wood
 use engine::air::{Air, hazy}
 use history::{BAKED, tiles_hi, tiles_lo}
@@ -64,15 +62,6 @@ pub const SCALE: f32 = 1.0
 pub const DOOR = Doorway { at: GATE + vec2(0.0, -5.0), reach: 0.6 }
 pub const DOOR_POST = vec3(0.25, 1.4, 0.3)
 pub const DOOR_POSTS = [vec2(-0.95, 0.0), vec2(0.95, 0.0)]
-
-/// Whether the banks' stones are drawn through clusters, or each copy its prototype's mesh: not, as
-/// measured (M4 Air, 1080p, the waterfall's shot): the clusters' GPU span is 20.08 ms against
-/// 19.09 forward in Chrome (17.28 against 14.21 natively), their choosing 2.1 ms against the
-/// 0.9 ms they save in the shading pass, and their lists, room for every copy drawn whole at
-/// each level, hold 667 MiB. A constant: the build still makes their 17 pipelines (toolchain
-/// 0.6.3 doesn't fold a constant condition: docs/toolchain-gaps.md), which costs the opening's
-/// cold start 0.14 s.
-pub const CLUSTERED: bool = false
 
 /// The floor's scene: its plants and the kinds cooked so far with their leaves' atlas, then the
 /// wood; the tiles being fetched, cooked, come but not yet placed, the tiles cooked and near
@@ -119,9 +108,6 @@ pub struct Stage {
     pub pool: Pool,
     banks_pooled: bool = false,
     pool_fitted: bool = false,
-    /// The banks' stones' clusters (`engine::stone::ClusterStones`, a prototype's each), cooked
-    /// once the prototypes are, where they're drawn through them (`CLUSTERED`).
-    bank_stones: Vec<ClusterStones>,
     pub footprints: GpuBuffer<vec4>,
     /// The probes' occluders round a place (the world's), gathered on a helper
     /// (`gather_occluders`): the job under way and the last it found.
@@ -142,13 +128,13 @@ pub struct Stage {
     water_tiles: Vec<WaterTile>,
     water_args: GpuBuffer<DrawArgs>,
     pub water_look: u32,
-    pub mists: GpuBuffer<vec4>,
     pub rocks: Option<Rocks>,
     pub off: Flags<System>,
     pub view: u32,
     pub source: u32,
     land_cooked: u32,
-    pub shafts_on: bool,
+    /// Whether the air holds its fog, mists and canopy haze (`fog`; B turns it off and on).
+    pub fog_on: bool,
     pub map: harness::HarnessMap,
     pub feet: vec2,
     pub heading: f32,
@@ -170,6 +156,10 @@ pub struct Thing {
     /// none).
     pub shape: Option<ShapeTape> = None,
 }
+
+/// How dense a fall's mist is at its middle (per metre): the mist pass's thickest (0.22) as the
+/// noise it read averaged it.
+const MIST_DENSITY: f32 = 0.12
 
 /// The floor's scene at load, round the player's start (`start`, the world's): its kinds and
 /// tiles cooked from the first frame.
@@ -194,7 +184,6 @@ pub fn stage() -> Stage {
         built: Vec::new(),
         banks: blockouts::bank_instances(history::COURSES.courses, height_at),
         pool: pool(),
-        bank_stones: Vec::new(),
         footprints: buffer_of(footprints_in(vec3(0.0), FLOOR), at_least: 1),
         drawn: None,
         fawn: cast(fawns::grown(), fawns::FawnLook {}, fawns::REALIZED, fawns::SLICES),
@@ -205,13 +194,12 @@ pub fn stage() -> Stage {
         water_args: buffer(max(water_tiles.len(), 1)),
         water_tiles,
         water_look: 0,
-        mists: buffer_of(history::MISTS, at_least: 1),
         rocks: None,
         off: Flags::none(),
         view: 0,
         source: FLOOR,
         land_cooked: 0,
-        shafts_on: false,
+        fog_on: true,
         map: harness::HarnessMap::new(),
         feet: vec2(0.0),
         heading: 0.0,
@@ -244,6 +232,20 @@ impl Scene for Stage {
 
     /// The occluders the stage's job gathered round a place near `at` (`gather_occluders`): none
     /// until one has, for a place within `OCCLUDED_NEAR` of it.
+    /// The air: a height fog (the engine's, its base the floor's level ground), a sphere of mist
+    /// at each fall (`history::MISTS`), and the canopy's haze; none in the land's views or with
+    /// the fog off (B).
+    fn fog(self, origin: vec3) -> Option<FogField> {
+        if !self.fog_on || of_world(self.view) {
+            return None
+        }
+        var spheres: Vec<FogSphere> = Vec::new()
+        for m in history::MISTS {
+            spheres.push(FogSphere { at: m.xyz - origin, radius: m.w, density: MIST_DENSITY })
+        }
+        Some(FogField { height: HeightFog { base_y: -origin.y }, spheres })
+    }
+
     /// What's solid: the trunks, limbs and stones the probes' occluders hold (those that are
     /// solid), and the built things' shapes.
     fn solids(self, origin: vec3, since: u32) -> Option<Solids> {
@@ -467,11 +469,6 @@ impl Scene for Stage {
                 None => {},
             }
         }
-        if clusters_shown(self) {
-            for mut b in self.bank_stones {
-                b.choose(lt.cam)
-            }
-        }
         if !of_world(self.view) {
             hand_over(mut self, lt.cam)
             self.pool.cull(lt.cam, pyramid, hzb)
@@ -528,11 +525,6 @@ impl Scene for Stage {
     /// The depth prepass: the near crowns' cards, the grass, and the far crowns' quads.
     fn prepass<P: RenderPass>(self, pass: P, cam: Camera, wind: Wind, s: Sampler) {
         let off = shown(self.off, self.view)
-        if clusters_shown(self) {
-            for b in self.bank_stones {
-                b.prepass(pass, cam)
-            }
-        }
         if on(off, System::Trees) {
             if let Some(w) = self.wood {
                 w.prepass_cards(pass, cam, wind, s)
@@ -570,14 +562,6 @@ impl Scene for Stage {
             )
         }
         if !world {
-            // The banks' clusters first: their resolve writes no depth and tests none (the
-            // prepass gave theirs), so what's drawn after it over them, nearer, keeps its colour.
-            let clustered = banks_clustered(self)
-            if clustered {
-                for b in self.bank_stones {
-                    b.shade(pass, lt, ids)
-                }
-            }
             // What's built and the banks' stones, in the pool: what the GPU's culling found (its
             // bounds whole: distance cutoffs removed stones and walls while they still covered
             // several pixels). What's not in it yet, here.
@@ -601,7 +585,7 @@ impl Scene for Stage {
                     None => draw_built(pass, t.near, lt, cam),
                 }
             }
-            if !clustered && !self.banks_pooled {
+            if !self.banks_pooled {
                 for p in self.banks.placements {
                     if p.prototype >= self.banks.prototypes.len() ||
                         !meets_view(cam, p.at[3].xyz, p.reach) {
@@ -655,24 +639,13 @@ impl Scene for Stage {
         true
     }
 
-    /// The water over a copy of the scene under it, then the falls' mist where one's near enough
-    /// to see (it reads the distances the water's copy holds), into the scene's second target,
-    /// which becomes the scene; and the sun's shafts, if they're on (in the grown view unless B
-    /// turns them off: the light through its canopy), marched at a quarter of the scene's
-    /// pixels and added into the scene's second target, which becomes the scene.
+    /// The water over a copy of the scene under it, into the scene's second target, which becomes
+    /// the scene. (The falls' mist and the sun's shafts are the air's: `fog`.)
     fn effects(mut self, t: mut Targets, fx: Effects) {
         let cam = fx.lt.cam
-        let world = of_world(self.view)
         if on(shown(self.off, self.view), System::Water) {
-            var near_mist = false
-            for m in history::MISTS {
-                if world {
-                    break
-                }
-                near_mist = near_mist || length(m.xyz - cam.origin - cam.eye) < 500.0
-            }
             let size = vec2u(t.below.width(), t.below.height())
-            let (args, under) = water_draws(self.water_tiles, cam, size, near_mist)
+            let (args, under) = water_draws(self.water_tiles, cam, size)
             if let Some(r) = under {
                 label("water")
                 let bp = begin_pass(mut t.below)
@@ -711,52 +684,6 @@ impl Scene for Stage {
                 )
                 wp.end()
             }
-            if near_mist {
-                label("water")
-                let at = MistAt {
-                    cam,
-                    light: fx.lt.light,
-                    count: history::MISTS.len(),
-                    time: cam.time,
-                }
-                let mp = begin_pass(mut t.scene_b)
-                fullscreen(
-                    mp,
-                    mist_over.bind(at, scene: t.scene, below: t.below, mists: self.mists.items()),
-                )
-                mp.end()
-                swap(mut t.scene, mut t.scene_b)
-            }
-        }
-        if self.shafts_on != (self.view == GROWN) {
-            label("shafts")
-            dispatch(
-                march_shafts.bind(
-                    cam,
-                    fx.lt.light,
-                    fx.sh,
-                    near: fx.lt.near,
-                    far: fx.lt.far,
-                    cmp: fx.lt.cmp,
-                    clouds: fx.lt.clouds,
-                    cloud: fx.lt.cloud,
-                    s: fx.lt.s,
-                    depth: t.depth,
-                    look: Shafts {},
-                    out: mut t.shafts,
-                ),
-                over: t.shafts,
-            )
-            let size = vec2(f32(t.scene.width()), f32(t.scene.height()))
-            let ap = begin_pass(mut t.scene, keep: true)
-            draw(
-                ap,
-                full.bind(z: 0.5),
-                add_shafts.bind(shafts: t.shafts, size: size, s: fx.lt.s),
-                vertices: 3,
-                blend: Blend::Add,
-            )
-            ap.end()
         }
     }
 
@@ -810,9 +737,6 @@ impl Scene for Stage {
         for p in self.banks.prototypes {
             banks += p.bytes()
         }
-        for b in self.bank_stones {
-            banks += b.bytes()
-        }
         var out = match self.wood {
             Some(w) => w.shares(),
             None => Vec::new(),
@@ -856,10 +780,6 @@ impl Scene for Stage {
             None => {},
         }
         self.banks.shift(d)
-        for k in 0..self.bank_stones.len() {
-            let copies = bank_copies(self.banks, k)
-            self.bank_stones[k].place(copies)
-        }
         let o = origin_of(self)
         match mut self.rocks {
             Some(r) => r.origin = o,
@@ -1601,33 +1521,6 @@ pub fn rendered(placed: [Placed], d: vec3) -> Vec<Placed> {
     out
 }
 
-/// Bank prototype `k`'s copies, as its clusters place them.
-fn bank_copies(banks: Instances, k: u32) -> Vec<engine::virtual::Placed> {
-    var out: Vec<engine::virtual::Placed> = Vec::new()
-    for p in banks.placements {
-        if p.prototype == k {
-            out.push(placed_of(p))
-        }
-    }
-    out
-}
-
-/// Whether the banks are drawn through their clusters this frame: all cooked.
-fn banks_clustered(s: Stage) -> bool {
-    CLUSTERED && s.bank_stones.len() == blockouts::BANK_PROTOTYPES
-}
-
-/// Whether the banks' clusters are chosen and drawn this frame: cooked, and in the floor's
-/// views (not the world's).
-fn clusters_shown(s: Stage) -> bool {
-    banks_clustered(s) && !of_world(s.view)
-}
-
-/// Whether the banks' clusters are still to cook, where they're drawn through them.
-fn clusters_due(s: Stage) -> bool {
-    CLUSTERED && s.bank_stones.len() < blockouts::BANK_PROTOTYPES
-}
-
 /// The built things, their far meshes and the banks' prototypes, each fitted to what its mesh
 /// holds once its counts have come (`Realized::settle`): each was realized with room for its
 /// whole grid.
@@ -1647,13 +1540,8 @@ fn settle(s: mut Stage) {
 
 /// The water's draws for `cam` (a target `size` pixels): a draw for each tile the frustum meets,
 /// and where the copy of the scene under it is made (x, y, width, height): the screen those
-/// tiles cover, all of it for the mist (which reads it too), none when no water is in view.
-pub fn water_draws(
-    tiles: [WaterTile],
-    cam: Camera,
-    size: vec2u,
-    near_mist: bool,
-) -> (Vec<DrawArgs>, Option<vec4u>) {
+/// tiles cover, none when no water is in view.
+pub fn water_draws(tiles: [WaterTile], cam: Camera, size: vec2u) -> (Vec<DrawArgs>, Option<vec4u>) {
     var args: Vec<DrawArgs> = Vec::new()
     var lo = vec2(1.0e9)
     var hi = vec2(-1.0e9)
@@ -1669,9 +1557,6 @@ pub fn water_draws(
         let (a, b) = screen_box(cam, c, w.radius, px)
         lo = min(lo, a)
         hi = max(hi, b)
-    }
-    if near_mist {
-        return (take args, Some(vec4u(0, 0, size.x, size.y)))
     }
     if args.is_empty() {
         return (take args, None)
@@ -1775,9 +1660,9 @@ fn pool_settled(s: mut Stage) {
 }
 
 /// The banks' prototypes put in the pool once all three are settled, with an item for each of
-/// their stones (the clusters draw them where `CLUSTERED`).
+/// their stones.
 fn pool_banks(s: mut Stage) {
-    if !s.banks_pooled && !CLUSTERED && s.banks.prototypes.len() == blockouts::BANK_PROTOTYPES {
+    if !s.banks_pooled && s.banks.prototypes.len() == blockouts::BANK_PROTOTYPES {
         for p in s.banks.prototypes {
             if p.counted.is_none() {
                 return
@@ -1809,9 +1694,6 @@ pub fn streamed(s: Stage, eye: vec2) -> bool {
     let Some(w) = s.wood else { return false }
     // The built things too: realized a frame each at load, the tower among them.
     if !s.to_build.is_empty() || s.banks.prototypes.len() < blockouts::BANK_PROTOTYPES {
-        return false
-    }
-    if clusters_due(s) {
         return false
     }
     let at = land::place::tile_of(eye)
@@ -2393,18 +2275,6 @@ pub fn cook_load(s: mut Stage, c: mut Cooks, eye: vec2, linear: Sampler) {
         }
         return
     }
-    // `CLUSTERED` here too: through `clusters_due` alone, the clusters' pipelines were built.
-    if CLUSTERED && clusters_due(s) {
-        if !c.planner.may(Work::Built) {
-            return
-        }
-        label("bank clusters")
-        let k = s.bank_stones.len()
-        var stones = ClusterStones::new(blockouts::bank_creature(k), blockouts::BANK_CELL, set: k)
-        stones.place(bank_copies(s.banks, k))
-        s.bank_stones.push(take stones)
-        return
-    }
     // As many a frame as the planner allows, the nearest to the eye first, so what a player
     // sees on arriving stands in the first frames.
     while s.to_build.len() > 0 && c.planner.may(Work::Built) {
@@ -2679,8 +2549,7 @@ pub fn the_fields_hold_every_tile_kept() {
 }
 
 /// The floor's water drawn by its tiles: looking at a tile, some tiles and the copy under them,
-/// within the screen; looking up, away from every tile, none, and no copy at all; the mist's
-/// copy whole wherever the eye looks.
+/// within the screen; looking up, away from every tile, none, and no copy at all.
 @test
 fn the_water_is_drawn_and_copied_only_where_it_is_seen() {
     let (_, tiles) = tiled(history::waters().mesh)
@@ -2690,7 +2559,7 @@ fn the_water_is_drawn_and_copied_only_where_it_is_seen() {
     let eye = w.centre + vec3(30.0, 100.0, 0.0)
     let size = vec2u(1920, 1080)
     let at = first_camera(eye: eye, at: w.centre, fovy: 0.9, width: 1920, height: 1080)
-    let (args, under) = water_draws(tiles, at, size, near_mist: false)
+    let (args, under) = water_draws(tiles, at, size)
     assert(!args.is_empty() && args.len() < tiles.len(), f"{args.len()} of {tiles.len()} drawn")
     let Some(r) = under else { panic("no copy under water in view") }
     assert(r.z > 0 && r.w > 0 && r.x + r.z <= size.x && r.y + r.w <= size.y, f"{r}")
@@ -2701,8 +2570,6 @@ fn the_water_is_drawn_and_copied_only_where_it_is_seen() {
         width: 1920,
         height: 1080,
     )
-    let (none, no_copy) = water_draws(tiles, up, size, near_mist: false)
+    let (none, no_copy) = water_draws(tiles, up, size)
     assert(none.is_empty() && no_copy.is_none(), f"{none.len()} drawn looking up")
-    let (_, misty) = water_draws(tiles, up, size, near_mist: true)
-    assert(misty == Some(vec4u(0, 0, 1920, 1080)), "the mist's copy")
 }
