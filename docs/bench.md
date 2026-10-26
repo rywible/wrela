@@ -388,6 +388,51 @@ over it 2 (PCF: 2 and 2). In the opening it costs **0.71 ms** more over the lit 
 13.54): over the 0.4 ms asked, so it stays a switch with that number. With `Pcf` the shaders
 compute what they did.
 
+## 2026-10-26: B7, memory (world-class 2, the 0.9.0 checkout)
+
+The frame prints `memory shares:` once at `playable`, and the bench reads it into a table (the
+program's own counts: what's held, then each share). The Last Green's walk at 1080p in Chrome:
+
+| Share | MiB at playable |
+|---|---|
+| held (buffers and textures) | 584.5 |
+| targets | 92.6 |
+| impostors | 78.0 |
+| sky (the dome 4096 × 1280 half floats: 40.0; the shape noise 16.0; the weather and its shadow 16.0) | 74.8 |
+| shadows (two cascades' two 2048² maps: 64.0; the moving map 4.0) | 68.0 |
+| wood | 58.1 |
+| built (B5.2's pool: 177.3 before these items) | 57.4 |
+| wood lists | 41.5 |
+| probes (30.1 before item 5) | 23.1 |
+| realizer (the fawn's and the wolf's meshes) | 18.3 |
+| terrain | 10.8 |
+| reflections | 7.5 |
+
+- **B7.1.** The breakdown above; the game's shares add `realizer` (the casts' meshes, against
+  `memory::REALIZER`, so `evict_after` can fire).
+- **B7.2, impostor kinds streamed: not done.** The impostors are one array texture a kind a
+  layer (26 × 1024² compressed: 78 MiB); streaming them needs a kind-to-layer indirection in the
+  wood's choosing and shading.
+- **B7.3.** The herd's close-up test: the realizer's bytes 225 MiB as the close-up begins, 68
+  after 1,000 frames with the other grazers unseen.
+- **B7.4.** The dome stays 4096 × 1280 (D17 off): 40 MiB of the sky's 75.
+- **B7.5.** The probes' voxels are given back once cooked (a shift reads the density texture):
+  the probes' share 30.1 → 23.1 MiB.
+- **B7.6, a pool for transient targets: one texture.** The dabs are drawn into the texture the
+  water's copy held (the water and the mist read it before the look writes the dabs): 7 MiB at
+  1080p. The plan's general pool (the shafts, the see-through targets, the glow's chain) isn't
+  built.
+- **The pool fitted, its vertices packed.** B5.2's pool grew by doubling: once everything built
+  is in it's fitted to what it holds (177 → 100 MiB), and its vertices are a place and an
+  oct-encoded normal (16 bytes, where a skinned vertex is 48): 57 MiB.
+- **B7.7.** `Targets`' notes say what each costs at 1080p (84 MiB in all).
+
+The gate: the walk's `gpu_peak` **857.7 MiB** (512 asked: misses; about 890 before), the
+opening's **819.1** (560: misses). What's held at `playable` is 585 MiB: the peak's other 270
+MiB come and go during the load (built things realized into room for their whole grid until
+their counts come, the pool's copies as it grew). The walk had no frame over 33 ms (GPU span
+p50 13.27 ms), and the opening none (13.19).
+
 ## Whether D10 holds
 
 The claim (docs/plan-world-class-2.md §0.1, D10, **proposed**): on a MacBook Air M4 in Chrome at

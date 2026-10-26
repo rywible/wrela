@@ -193,3 +193,14 @@ fn a_bench_keeps_its_runs_and_reports_the_warm_start_and_the_hitches() {
         assert(contains(json.as_str(), key), key)
     }
 }
+
+/// A program's `memory shares:` line, its names' spaces kept: what's held, then each share.
+@test
+fn the_memory_shares_line_is_read() {
+    let line = "wrela: memory shares: held 902000000, targets 120000000, leaves' atlas 4194304"
+    let sh = report::shares_of(line)
+    assert(sh.len() == 3, f"{sh.len()} shares")
+    assert(sh[0].0.as_str() == "held" && sh[0].1 == 902000000.0)
+    assert(sh[2].0.as_str() == "leaves' atlas" && sh[2].1 == 4194304.0)
+    assert(report::shares_of("playable at frame 80").is_empty())
+}

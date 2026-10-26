@@ -288,9 +288,14 @@ pub struct Aim: Copy {
 
 /// The frame's targets. The scene's (`w` × `h`: the output's at the render scale): its colour
 /// and tags, a second it ping-pongs with (the lines, mists, shafts), its depth and the last
-/// frame's, the far crowns' ids, motion and the last frame's, the scene under the water and the
-/// shafts (when the scene has effects), the dabs; the output's: temporal AA's history and the
-/// last frame's; a quarter of the output's: the glow's chain.
+/// frame's, the far crowns' ids, motion and the last frame's, the scene under the water (when
+/// the scene has effects) and then the dabs in the same texture (`below`: the water and the mist
+/// read it before the look writes the dabs into it), the shafts (with effects); the output's:
+/// temporal AA's history and the last frame's; a quarter of the output's: the glow's chain.
+///
+/// At 1080p (the scene at 0.667: 1280 × 720) each scene-sized half-float target is 7.0 MiB, the
+/// depths and the ids 3.5 MiB each, the shafts 1.8, each history 15.8 MiB, the glow's chain 5.3
+/// MiB in all: 84 MiB, where the dabs' own texture was 7.0 MiB more (the audit's §3.4).
 pub struct Targets {
     pub scene: Texture<Rgba16Float>,
     pub scene_b: Texture<Rgba16Float>,
@@ -301,7 +306,6 @@ pub struct Targets {
     pub last_motion: Texture<Rgba16Float>,
     pub below: Texture<Rgba16Float>,
     pub shafts: Texture<Rgba16Float>,
-    pub dabs: Texture<Rgba16Float>,
     pub history: Texture<Rgba16Float>,
     pub last_history: Texture<Rgba16Float>,
     /// The bloom's pyramid (`paint::BLOOM_LEVELS`): half the output's size, then each level half
@@ -324,7 +328,6 @@ fn no_targets() -> Targets {
         last_motion: texture::<Rgba16Float>(width: 1, height: 1),
         below: texture::<Rgba16Float>(width: 1, height: 1),
         shafts: writable_texture::<Rgba16Float>(width: 1, height: 1),
-        dabs: texture::<Rgba16Float>(width: 1, height: 1),
         history: texture::<Rgba16Float>(width: 1, height: 1),
         last_history: texture::<Rgba16Float>(width: 1, height: 1),
         bloom_1: texture::<Rgba16Float>(width: 1, height: 1),
@@ -346,9 +349,8 @@ fn targets_for(width: u32, height: u32, w: u32, h: u32, effects: bool) -> Target
         ids: texture::<R32Uint>(width: w, height: h),
         motion: texture::<Rgba16Float>(width: w, height: h),
         last_motion: texture::<Rgba16Float>(width: w, height: h),
-        below: texture::<Rgba16Float>(width: ew, height: eh),
+        below: texture::<Rgba16Float>(width: w, height: h),
         shafts: writable_texture::<Rgba16Float>(width: max(ew / 2, 1), height: max(eh / 2, 1)),
-        dabs: texture::<Rgba16Float>(width: w, height: h),
         history: texture::<Rgba16Float>(width: width, height: height),
         last_history: texture::<Rgba16Float>(width: width, height: height),
         bloom_1: bloom_of(width, height, level: 1),
@@ -368,7 +370,6 @@ impl Targets {
             h(self.last_motion) +
             h(self.below) +
             h(self.shafts) +
-            h(self.dabs) +
             h(self.history) +
             h(self.last_history) +
             h(self.bloom_1) +
@@ -1716,6 +1717,7 @@ impl<R: Resolver> Frame<R> {
         if self.ready.playable && self.ready.playable_at.is_none() {
             self.ready.playable_at = Some(self.frames)
             print(f"playable at frame {self.frames}")
+            self.say_shares(scene)
         }
         if self.hold {
             self.ran += 1
@@ -1822,6 +1824,20 @@ impl<R: Resolver> Frame<R> {
                 f"GPU memory over its budget ({names}): {mib(self.usage.held())} MiB held of {mib(self.usage.total)}{parts}, the rest {mib(rest)}",
             )
         }
+    }
+
+    /// The GPU memory held and each share of it (the frame's and the scene's), printed once at
+    /// `playable` as `memory shares: held <bytes>, <name> <bytes>, ...` (the bench reads it).
+    fn say_shares<S: Scene>(self, scene: S) {
+        let gpu = memory()
+        var line = String::from(f"memory shares: held {gpu.buffers + gpu.textures}")
+        for sh in self.shares() {
+            line.push_str(f", {sh.name} {sh.bytes}")
+        }
+        for sh in scene.shares() {
+            line.push_str(f", {sh.name} {sh.bytes}")
+        }
+        print(line)
     }
 
     /// What the frame's own subsystems hold on the GPU, by their own counts: its targets (with
@@ -2698,7 +2714,8 @@ impl<R: Resolver> Frame<R> {
             return
         }
         let d = Develop { cam, look: self.look, out, view: self.debug.view }
-        let dp = begin_pass(mut self.targets.dabs)
+        // The dabs into the texture the water's copy held (done with by now).
+        let dp = begin_pass(mut self.targets.below)
         fullscreen(
             dp,
             dab_map.bind(
@@ -2774,7 +2791,7 @@ impl<R: Resolver> Frame<R> {
                 glow: self.targets.bloom_1,
                 below: self.targets.bloom_2,
                 levels: levels,
-                dabs: self.targets.dabs,
+                dabs: self.targets.below,
                 lut: self.grade,
                 s: self.linear,
                 exposure: e,

@@ -27,7 +27,7 @@
 
 use report::{
     Measured, compared, date_of, doc, hitches, intervals, markdown, number_at, numbers, report_json,
-    spans, time_of, stats,
+    shares_of, spans, stats, time_of,
 }
 use scenes::{SCENES, Scene, script}
 use std::io::print
@@ -268,14 +268,14 @@ pub fn measure(
     let cold_hash = page_hash(cold_frames, w, h, o.workers, input_file.as_str())
     run_page(dir.as_str(), f"{cold_hash}&nohash=1&salt={salt}", w, h, timeout)?
     keep_results(dir.as_str(), runs[2].as_str())?
-    let (opened, first_frame_ms, loaded_bytes, playable_ms) = started(dir.as_str())?
+    let (opened, first_frame_ms, loaded_bytes, playable_ms, shares) = started(dir.as_str())?
     let pipelines = json_of(f"{dir}/results/pipelines.json")?
     let pipelines_ms = number_at(pipelines, TOP, "ms")
     let compiles = slowest_compiles(dir.as_str(), pipelines)?
     // 4. A warm start: opened again in the same profile, no salt, so its caches serve it.
     run_page(dir.as_str(), f"{cold_hash}&nohash=1", w, h, timeout, again: true)?
     keep_results(dir.as_str(), runs[3].as_str())?
-    let (_, _, warm_loaded_bytes, warm_playable_ms) = started(dir.as_str())?
+    let (_, _, warm_loaded_bytes, warm_playable_ms, _) = started(dir.as_str())?
     // Where the page timed its pipelines (a salted run alone does, today).
     let warm_pipelines_ms = match files::read(f"{dir}/results/pipelines.json").wait() {
         Ok(_) => number_at(json_of(f"{dir}/results/pipelines.json")?, TOP, "ms"),
@@ -330,6 +330,7 @@ pub fn measure(
         hitches: held,
         compiles,
         runs,
+        shares,
     }
     Ok((m, opened, machine))
 }
@@ -337,7 +338,7 @@ pub fn measure(
 /// A start's numbers, from the page in `dir`'s `load.json`, `frames.json` and `log.txt`: when the
 /// page opened (ms since the epoch), ms from then to its first frame, the bytes it loaded, and
 /// ms to the program's first line that says `playable` (0 if none did).
-fn started(dir: str) -> Result<(f64, f64, f64, f64), ToolError> {
+fn started(dir: str) -> Result<(f64, f64, f64, f64, Vec<(String, f64)>), ToolError> {
     let load = json_of(f"{dir}/results/load.json")?
     let opened = number_at(load, TOP, "opened_ms")
     let first_frame_ms = number_at(load, TOP, "first_frame_ms") - opened
@@ -352,6 +353,12 @@ fn started(dir: str) -> Result<(f64, f64, f64, f64), ToolError> {
     let framed = json_of(f"{dir}/results/frames.json")?
     let log = text_of(f"{dir}/results/log.txt")?
     var playable_ms = 0.0
+    var shares: Vec<(String, f64)> = Vec::new()
+    for (a, b) in log.lines() {
+        if shares.is_empty() {
+            shares = shares_of(log.as_str().slice(a, b))
+        }
+    }
     if let (Some(pi), Some(bi)) = (framed.get(TOP, "printed_in"), framed.get(TOP, "began_ms")) {
         let printed_in = numbers(framed, pi, 0)
         let began = numbers(framed, bi, 0)
@@ -367,7 +374,7 @@ fn started(dir: str) -> Result<(f64, f64, f64, f64), ToolError> {
             line += 1
         }
     }
-    Ok((opened, first_frame_ms, loaded_bytes, playable_ms))
+    Ok((opened, first_frame_ms, loaded_bytes, playable_ms, take shares))
 }
 
 /// The ten slowest pipelines to compile, from a cold run's `pipelines.json` (`each`, each one

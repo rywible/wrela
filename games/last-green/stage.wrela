@@ -117,6 +117,7 @@ pub struct Stage {
     /// each, culled on the GPU (`engine::pool`), and whether the banks are in it.
     pub pool: Pool,
     banks_pooled: bool = false,
+    pool_fitted: bool = false,
     /// The banks' stones' clusters (`engine::stone::ClusterStones`, a prototype's each), cooked
     /// once the prototypes are, where they're drawn through them (`CLUSTERED`).
     bank_stones: Vec<ClusterStones>,
@@ -779,6 +780,15 @@ impl Scene for Stage {
             None => Vec::new(),
         }
         out.push(Share { name: "built", bytes: built, budget: engine::memory::TOTAL })
+        // The casts' meshes (the fawn's and the wolf's), against the realizer's budget
+        // (`engine::memory::evict_after` reads it).
+        out.push(
+            Share {
+                name: "realizer",
+                bytes: self.fawn.bytes() + self.wolf.bytes(),
+                budget: engine::memory::REALIZER,
+            },
+        )
         out.push(Share { name: "rocks", bytes: rocks, budget: engine::memory::TOTAL })
         out.push(Share { name: "banks", bytes: banks, budget: engine::memory::TOTAL })
         out.push(
@@ -1712,6 +1722,17 @@ fn pool_settled(s: mut Stage) {
         t.pooled = Some(vec2u(n, f))
     }
     pool_banks(mut s)
+    // Everything built is in: the pool's room fitted to it (once).
+    if !s.pool_fitted && s.banks_pooled && s.to_build.is_empty() {
+        var all = true
+        for t in s.built {
+            all = all && t.pooled.is_some()
+        }
+        if all {
+            s.pool.fit()
+            s.pool_fitted = true
+        }
+    }
     s.pool.ready()
 }
 

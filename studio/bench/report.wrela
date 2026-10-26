@@ -66,6 +66,31 @@ pub struct Measured: Clone {
     pub compiles: Vec<(String, f64, f64)>,
     /// Where each run's results are kept: `gpu`, `play`, `cold`, `warm`, in that order.
     pub runs: Vec<String>,
+    /// The program's GPU memory at `playable`, as it printed it (`memory shares:`): what's held,
+    /// then each share, bytes.
+    pub shares: Vec<(String, f64)> = Vec::new(),
+}
+
+/// A `memory shares: held <bytes>, <name> <bytes>, ...` line's shares (a name may hold spaces:
+/// its bytes are the last word), or none if `line` isn't one.
+pub fn shares_of(line: str) -> Vec<(String, f64)> {
+    var out: Vec<(String, f64)> = Vec::new()
+    let Some(at) = line.find("memory shares: ") else { return out }
+    let rest = line.slice(at + 15, line.len())
+    for (a, b) in rest.split(", ") {
+        let part = rest.slice(a, b)
+        // The last space: the name before it, the bytes after.
+        var space: Option<u32> = None
+        var from = 0
+        while let Some(i) = part.slice(from, part.len()).find(" ") {
+            space = Some(from + i)
+            from += i + 1
+        }
+        let Some(at) = space else { continue }
+        let Some(bytes) = part.slice(at + 1, part.len()).parse_f64() else { continue }
+        out.push((String::from(part.slice(0, at)), bytes))
+    }
+    out
 }
 
 /// A frame of a paced run over 33 ms (docs/plan-world-class-2.md §B1.2): which, its interval
@@ -321,6 +346,15 @@ pub fn markdown(machine: str, date: str, all: [Measured]) -> String {
             s.push_str(
                 f"\n{unattributed} of {m.hitches.len()} unattributed (no label over 2 ms, CPU under 2 ms).\n\n",
             )
+        }
+        if m.shares.len() > 0 {
+            s.push_str(
+                f"Memory at playable, {m.scene} (cold, by the program's own counts):\n\n| Share | MiB |\n|---|---|\n",
+            )
+            for sh in m.shares {
+                s.push_str(f"| {sh.0} | {sh.1 / 1048576.0:.1} |\n")
+            }
+            s.push_str("\n")
         }
         if m.compiles.len() > 0 {
             s.push_str(
