@@ -1,0 +1,7 @@
+# Toolchain 0.8's capabilities, each used once and read back: the living test of what Part B of
+# docs/plan-world-class-2.md builds on (§A16).
+[package]
+name = "toolchain_0_7"
+
+[dependencies]
+round1 = { workspace = true }

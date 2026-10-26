@@ -1,0 +1,203 @@
+// Toolchain 0.8's capabilities, each used once and read back (docs/plan-world-class-2.md §A16):
+// a constant that's mostly zeros (its data section without the zero runs, A4), a kernel only a
+// later frame dispatches (built second, A5), a dispatch behind a false constant (folded away, so
+// never built, A6), one kernel's two `const` variants (pipeline constants, A7), a corpus field's
+// tape interpreted against the field (A8), a `gather` (A10), a fragment's depth with its intent
+// (A11), and the screen asked for in HDR and Display P3 and read back (A12). Frame 0 records the
+// work (the `const` variants every frame) and asks for each result; later frames take the answers; each test checks one. The suite
+// runs it on both hosts, and with `WRELA_FEATURES=none`.
+use round1::shapes::ell
+use std::field::Surface
+use std::gpu::{
+    ClipPosition, DepthTexture, Gamut, GlobalId, GpuBuffer, Rgba16Float, Sampler, Screen, Slots,
+    Texels, Texture, VertexIndex, WithDepthGreater, begin_depth_pass, buffer, depth_texture,
+    dispatch, draw, read, sampler, screen, screen_is, writable_texture,
+}
+use std::io::Pending
+use std::stage::interpret
+
+/// 64 Ki words, all zero but every 4,096th: the build keeps the zeros out of its data section.
+const SPARSE: [u32; 65536] = sparse()
+
+fn sparse() -> [u32; 65536] {
+    var a = [0; 65536]
+    for k in 0..16 {
+        a[k * 4096] = k + 1
+    }
+    a
+}
+
+/// No build has this kernel: the only dispatch of it is behind `NEVER`, which folds.
+const NEVER: bool = false
+
+@compute(64)
+fn never(out: mut Slots<u32>, id: GlobalId) {
+    out[id] = 99
+}
+
+/// A kernel that only a later frame dispatches: under a runtime condition, so built second.
+@compute(64)
+fn later(out: mut Slots<u32>, id: GlobalId) {
+    out[id] = id.x + 1000
+}
+
+/// One kernel, two pipelines: `double` and `add` are its pipeline's constants.
+@compute(64)
+fn scale(out: mut Slots<u32>, id: GlobalId, double: const bool, add: const u32) {
+    out[id] = if double { id.x * 2 + add } else { id.x + add }
+}
+
+/// Texel (x, y) of a 2 × 2 texture: its number, 1 to 4, in red.
+@compute(2, 2)
+fn fill(out: mut Texels<Rgba16Float>, id: GlobalId) {
+    out.store(id, vec4(f32(1 + id.x + 2 * id.y), 0.0, 0.0, 1.0))
+}
+
+/// The four red texels in one fetch, at the 2 × 2's middle.
+@compute(1)
+fn gathered(t: Texture<Rgba16Float>, s: Sampler, out: mut Slots<vec4>, id: GlobalId) {
+    out[id] = t.gather(s, vec2(0.5, 0.5))
+}
+
+@vertex
+fn cover(v: VertexIndex) -> ClipPosition {
+    let x = f32((v.index << 1) & 2) * 2.0 - 1.0
+    let y = f32(v.index & 2) * 2.0 - 1.0
+    ClipPosition { position: vec4(x, y, 0.25, 1.0) }
+}
+
+/// A fragment that only pushes its depth back.
+@fragment
+fn pushed() -> WithDepthGreater<vec4> {
+    WithDepthGreater { color: vec4(1.0), depth: 0.75 }
+}
+
+pub struct State {
+    frame: u32,
+    later: GpuBuffer<u32>,
+    doubled: GpuBuffer<u32>,
+    plain: GpuBuffer<u32>,
+    gathered: GpuBuffer<vec4>,
+    colour: Texture<Rgba16Float>,
+    depth: DepthTexture,
+    words: Vec<Pending<u32>>,
+    gather: Option<Pending<vec4>>,
+    got: Vec<Vec<u32>>,
+    seen: Vec<vec4>,
+    screen: Screen,
+    /// `SPARSE`'s nonzero words, a frame each.
+    sparse: u32,
+}
+
+pub fn init() -> State {
+    State {
+        frame: 0,
+        later: buffer(64),
+        doubled: buffer(64),
+        plain: buffer(64),
+        gathered: buffer(1),
+        colour: writable_texture(width: 2, height: 2),
+        depth: depth_texture(width: 4, height: 4),
+        words: Vec::new(),
+        gather: None,
+        got: Vec::new(),
+        seen: Vec::new(),
+        screen: Screen { hdr: false, gamut: Gamut::Srgb },
+        sparse: 0,
+    }
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    // Every frame: the two `const` variants are in the first tier, `later` in the second.
+    dispatch(scale.bind(out: mut s.doubled, double: true, add: 5), groups: 1)
+    dispatch(scale.bind(out: mut s.plain, double: false, add: 7), groups: 1)
+    s.sparse += SPARSE[(s.frame % 16) * 4096]
+    if s.frame == 0 {
+        screen(hdr: true, gamut: Gamut::DisplayP3)
+        if NEVER {
+            dispatch(never.bind(out: mut s.plain), groups: 1)
+        }
+        s.words.push(read(s.doubled.items()))
+        s.words.push(read(s.plain.items()))
+        dispatch(fill.bind(out: mut s.colour), groups: 1)
+        dispatch(gathered.bind(t: s.colour, s: sampler(), out: mut s.gathered), groups: 1)
+        s.gather = Some(read(s.gathered.items()))
+        let p = begin_depth_pass(mut s.depth, clear_depth: 0.0)
+        draw(p, cover, pushed, vertices: 3)
+        p.end()
+    }
+    if s.frame == 2 {
+        dispatch(later.bind(out: mut s.later), groups: 1)
+        s.words.push(read(s.later.items()))
+    }
+    // In the order they were asked: a later one waits for the earlier ones.
+    while !s.words.is_empty() {
+        match s.words[0].poll() {
+            Some(Ok(w)) => {
+                s.got.push(take w)
+                let _ = s.words.remove(0)
+            },
+            Some(Err(_)) => {
+                let _ = s.words.remove(0)
+            },
+            None => break,
+        }
+    }
+    if s.seen.is_empty() {
+        match mut s.gather {
+            Some(g) => {
+                if let Some(Ok(v)) = g.poll() {
+                    s.seen = take v
+                }
+            },
+            None => {},
+        }
+    }
+    s.screen = screen_is()
+    s.frame += 1
+}
+
+@test(frames: 6, gpu: true, hosts: both)
+fn a_constant_of_zero_runs_reads_back_whole(s: State) {
+    assert(SPARSE[0] == 1 && SPARSE[4096] == 2 && SPARSE[61440] == 16)
+    assert(SPARSE[1] == 0 && SPARSE[65535] == 0)
+    // Frames 0 to 5 read words 1 to 6.
+    assert(s.sparse == 1 + 2 + 3 + 4 + 5 + 6)
+}
+
+@test(frames: 6, gpu: true, hosts: both)
+fn one_kernel_makes_two_pipelines_by_its_constants(s: State) {
+    assert(s.got.len() >= 2)
+    assert(s.got[0][3] == 3 * 2 + 5 && s.got[1][3] == 3 + 7)
+}
+
+@test(frames: 6, gpu: true, hosts: both)
+fn a_kernel_built_second_still_runs(s: State) {
+    assert(s.got.len() == 3)
+    assert(s.got[2][0] == 1000 && s.got[2][63] == 1063)
+}
+
+@test(frames: 6, gpu: true, hosts: both)
+fn a_gather_is_four_texels_in_wgsls_order(s: State) {
+    assert(s.seen.len() == 1)
+    // WGSL's order: (0, 1), (1, 1), (1, 0), (0, 0).
+    assert(s.seen[0] == vec4(3.0, 4.0, 2.0, 1.0))
+}
+
+@test(frames: 6, gpu: true, hosts: both)
+fn the_screen_is_what_the_host_can_show(s: State) {
+    // Offscreen (the native host) and test mode without `hdr=1` keep SDR in sRGB.
+    assert(s.screen == Screen { hdr: false, gamut: Gamut::Srgb })
+}
+
+@test
+fn a_corpus_fields_tape_is_the_field() {
+    let f = ell(vec3(0.5, 0.3, 0.4))
+    let t = f.to_tape()
+    var worst = 0.0
+    for i in 0..64 {
+        let p = vec3(f32(i % 4), f32((i / 4) % 4), f32(i / 16)) * 0.3 - vec3(0.45)
+        worst = max(worst, abs(interpret(t, p) - f.distance(p)))
+    }
+    assert(t.len() > 0 && worst < 1.0e-5)
+}

@@ -6,14 +6,14 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 
 ## Open
 
-### A branch under a false constant still makes its pipelines
+### A fragment can't say its depth only grows
 
-- **Needed:** an experimental path behind a switch that costs a build without it nothing: the Last Green's banks drawn through clusters (`games/last-green/stage.wrela` `CLUSTERED`, false), whose 17 pipelines a player without it shouldn't build.
-- **What happens:** toolchain 0.6.3's pipeline reachability doesn't fold constants: code under `if CLUSTERED { ... }` with `CLUSTERED` false still reaches its kernels, so the build lists their pipelines (`wrela pipelines games/last-green`: 171 with the path, 154 without) and the page builds them at load.
-- **Found:** 2026-10-25, the council's third round on B7c.
-- **Evidence:** the Last Green's opening, cold, in Chrome, two alternating pairs: playable 9.90 and 10.08 s without the path's code, 10.14 and 10.12 s with it switched off (+0.14 s); its pipelines 4.44 and 4.39 s against 4.49 and 4.33 s; its first frame +35 ms.
-- **Meanwhile:** the cost is measured and kept: the path stays in the build, off.
-- **Status:** open: fold a `const` condition before finding what a build reaches (or build a pipeline on its first use).
+- **Needed:** the early depth test kept on for a fragment that writes its own depth only further away (or only nearer) than its triangle's: the impostors' leaves and the soft raster's merge (docs/plan-world-class-2.md §A11, §B5.6), which turn early-Z off for their draws today.
+- **What happens:** toolchain 0.8.0 has `std::gpu::WithDepthGreater<C>` and `WithDepthLess<C>` to name the intent, but they are `WithDepth<C>`: naga 30.0.1's WGSL writer emits no conservative-depth attribute (its IR has `EarlyDepthTest::Allow { conservative: ConservativeDepth::GreaterEqual }`, which its WGSL front end parses from `@early_depth_test(greater_equal)` and its WGSL back end never writes), and Chrome 155 accepts none either.
+- **Found:** 2026-10-25, 0.8.0's §A11.
+- **Evidence:** Chrome 155.0.8059.86 on the M4: `@fragment @early_depth_test(greater_equal) fn f() -> @builtin(frag_depth) f32` fails with "expected attribute" (its attributes are `align`, `binding`, `blend_src`, `builtin`, `color`, `compute`, `diagnostic`, `fragment`, `group`, `id`, `input_attachment_index`, `interpolate`, `invariant`, `location`, `must_use`, `size`, `subgroup_size`, `vertex`, `workgroup_size`), and `navigator.gpu.wgslLanguageFeatures` has no depth feature.
+- **Meanwhile:** the engine writes `WithDepthGreater` where its depth only grows, and draws as `WithDepth` does.
+- **Status:** open: when WGSL and naga can say it, the types emit it and the host asks for it.
 
 ### A struct update from a borrowed struct doesn't compile
 
@@ -49,6 +49,15 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Status:** open: bind the table only in pipelines whose code reads a lifted literal, or say in E0602 that one of the buffers is the lifted table.
 
 ## Fixed
+
+### A branch under a false constant still makes its pipelines
+
+- **Needed:** an experimental path behind a switch that costs a build without it nothing: the Last Green's banks drawn through clusters (`games/last-green/stage.wrela` `CLUSTERED`, false), whose 17 pipelines a player without it shouldn't build.
+- **What happens:** toolchain 0.6.3's pipeline reachability doesn't fold constants: code under `if CLUSTERED { ... }` with `CLUSTERED` false still reaches its kernels, so the build lists their pipelines (`wrela pipelines games/last-green`: 171 with the path, 154 without) and the page builds them at load.
+- **Found:** 2026-10-25, the council's third round on B7c.
+- **Evidence:** the Last Green's opening, cold, in Chrome, two alternating pairs: playable 9.90 and 10.08 s without the path's code, 10.14 and 10.12 s with it switched off (+0.14 s); its pipelines 4.44 and 4.39 s against 4.49 and 4.33 s; its first frame +35 ms.
+- **Meanwhile:** the cost is measured and kept: the path stays in the build, off.
+- **Status:** fixed in 0.8.0 (rywible/wrela-compiler#36, §A6): constants fold after inlining, so what only a false constant's branch reaches isn't built. The Last Green's build went from 130 pipelines to 115 (the 15 behind `CLUSTERED` gone, as `wrela pipelines` counts them), and a pipeline reached only under a runtime condition is built second (§A5).
 
 ### A timed ask timed all of a program's work
 
