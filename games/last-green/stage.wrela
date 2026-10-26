@@ -408,6 +408,8 @@ impl Scene for Stage {
             lt.s,
             lt.grounds,
             stones: self.footprints.items(),
+            pyramid: pyramid,
+            hzb: hzb,
         )
         if on(shown(self.off, self.view), System::Trees) {
             match mut self.wood {

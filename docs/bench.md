@@ -236,7 +236,11 @@ The step's gate (one run each, the 0.9.0 checkout):
 | last-green-shot (480 frames) | 17.56 / 19.09 / 24.10 | 20.44 / 22.41 / 31.98 | **2** (8 at B1: meets) | 7,832 / 6,700 |
 | last-green-walk (1,200 frames) | 12.50 / 14.42 / 17.89 | 14.89 / 23.14 / **26.47** (22: misses) | **5**, 4 without `shadows far` (9 at B1; 2: misses) | 11,880 / 6,606 |
 
-The walk's cold start shared the machine with a compile (7,675 ms the run before). Its hitches:
+The walk's cold start shared the machine with a compile (7,675 ms the run before). Pixels at
+frame 600 against B3: the clearing's path 16.6% differ, 99% of them by 1 or 2/255 and 0.2% of
+the screen by more (at most 32/255, over the crowns: the sky's and the probes' work lands on
+other frames); the Last Green 14.7%, 97% by 1 or 2/255, at most 22 (its run-to-run noise is
+about 10%). Its hitches:
 
 | Frame | Interval ms | Heaviest label, GPU ms | What it is |
 |---|---|---|---|
@@ -250,6 +254,24 @@ None is the ground's cook, a built thing, a kind, the sky's noise or weather, or
 placement. The last three are the B2 reading's: a frame or two before a probe replacement
 starts (`probes occluders`, `probes open sky`, then `probes bake`), the bloom's label holding
 the wait for the screen. B5.5 shifts the probes rather than replacing them.
+
+## 2026-10-26: B5, the frame (world-class 2, the 0.9.0 checkout)
+
+Each item's numbers: label p50s from the saturated run's timings (`wrela tool bench -- --scene
+last-green-shot --scene last-green-walk --no-native`), the M4 Air, Chrome; pixels native at
+640×360 against the step before at frame 600 (`wrela-host --rgba`).
+
+- **B5.1, the grass.** Blades are drawn in the depth prepass (cut to their fronds there, shaded
+  at equal depth after), a blade the last frame's pyramid hides isn't placed while the camera
+  moves, and each of the five rings keeps its placement until its cells, the render origin, the
+  probes' grid or the thinning change, or `KEPT_FRAMES` (8) pass (the pyramid tests the rings
+  past the first: near, what hides a blade is mostly what moves). One bench of all three: the
+  opening's `vegetation` 3.95 → **3.50 ms** (2.4 asked: misses), `vegetation prepass` 1.40 →
+  1.88, the placement (in `cull`) 1.33 → 0.31, `terrain` 2.28 → 1.84 (the blades' depth hides
+  ground it shaded); its GPU span p50 17.56 → 17.12. The walk: `vegetation` 2.44 → 2.04,
+  `terrain` 2.22 → 1.85, the prepass 1.61 → 1.79, `cull` 1.45 → 1.48. The clearing's still
+  camera: 40 placements in 64 frames (the test's limit, 5 × 8). Pixels: the clearing's path
+  0.23% differ, all but 4 by 1/255.
 
 ## Whether D10 holds
 

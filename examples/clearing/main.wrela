@@ -516,6 +516,14 @@ pub fn test_capture(s: mut Clearing, what: Capture) -> u32 {
     }
 }
 
+/// How many of the grass's rings have been placed so far (`Grass::placed`), and the probes'
+/// grid it was lit by (its corner and its columns: a change places every ring again).
+@testing
+pub fn test_placed(s: Clearing) -> vec4 {
+    let g = s.frame.probes.using.grid
+    vec4(f32(s.stage.grass.placed), g.corner, f32(g.cols))
+}
+
 /// The camera the last frame was drawn by.
 pub struct CameraReport: Copy {
     pub eye: vec3,
@@ -635,18 +643,18 @@ pub fn test_clip_layout() -> vec4 {
 @testing
 pub fn test_under_boulders(s: mut Clearing) {
     s.captured_counts = buffer(1)
-    count_under_boulders(s.stage.grass.near, mut s.captured_counts)
-    count_under_boulders(s.stage.grass.middle, mut s.captured_counts)
-    count_under_boulders(s.stage.grass.far, mut s.captured_counts)
+    for ring in s.stage.grass.rings {
+        count_under_boulders(ring, mut s.captured_counts)
+    }
 }
 
 fn count_under_boulders(
-    tier: std::gpu::AppendBuffer<engine::grass::Blade>,
+    ring: std::gpu::AppendBuffer<engine::grass::Blade>,
     out: mut GpuBuffer<u32>,
 ) {
     dispatch(
-        testing::under_boulders.bind(blades: tier.items(), count: tier.count(), out: mut out),
-        over: tier.capacity(),
+        testing::under_boulders.bind(blades: ring.items(), count: ring.count(), out: mut out),
+        over: ring.capacity(),
     )
 }
 
