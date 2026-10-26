@@ -623,6 +623,16 @@ games/last-green` names neither `march_shafts`, `add_shafts` nor `mist_over`.
 - **Off is B9's image:** the clearing, which has no fog: 2 pixels by 1/255 against B9c (native,
   640 × 360, 240 frames).
 
+## 2026-10-26: B11, geometry from the field (world-class 2, the 0.9.0 checkout)
+
+**B11c, the cluster path leaves the game (D14).** `engine::stone::ClusterStones` and its shading
+are gone, and with them the Last Green's `CLUSTERED` switch and its branches in its choosing, its
+prepass, its shading, its load and its readiness (the stage's lines went with B10's commit, the
+same file). `engine/virtual.wrela` stays for `examples/clusters`, the soft rasterizer and its
+tests, with a note that no game draws through it. `wrela pipelines games/last-green`: **93
+pipelines before and after**: since toolchain 0.8.0 (A6) the false constant built none of the
+path's 17. The path was off, so nothing the Last Green ran changed.
+
 ## Devices
 
 Each device D20 names (docs/plan-world-class-2.md §0.5), measured by `wrela tool bench -- --lan`

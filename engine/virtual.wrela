@@ -4,6 +4,10 @@
 // is under a pixel's fraction, block by block, so near parts of one surface are drawn finely
 // and far parts coarsely.
 //
+// No game draws through it (the Last Green's banks did, behind a switch that measured off: it left
+// at B11c of docs/plan-world-class-2.md). It stays for examples/clusters and the soft rasterizer's
+// and its own tests.
+//
 // - Levels: level k's cells are 2^k times level 0's, on grids from one origin, so a block of
 //   level k + 1 covers eight of level k's exactly (its children).
 // - A cluster is a block's quads: those of the edges leaving its cells' low corners, as
