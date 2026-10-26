@@ -150,6 +150,8 @@ pub struct Thing {
     pub near: Realized,
     pub reach: f32,
     pub far: Option<Realized>,
+    /// Where its far level takes over from its near one (`blockouts::far_band`).
+    pub band: vec2 = vec2(1.0e9, 2.0e9),
     /// Its items in the pool, near and far (`NOT_POOLED`: none), once it's in.
     pub pooled: Option<vec2u> = None,
     /// Its shape as a tape, for the distance volume (`blockouts::shape_tape`; the tower has
@@ -573,7 +575,7 @@ impl Scene for Stage {
                 let d = length(t.near.at[3].xyz - cam.eye)
                 match t.far {
                     Some(f) => {
-                        let far = blockouts::tower_far_share(d)
+                        let far = blockouts::far_share(t.band, d)
                         let split = 1.0 - far
                         if far < 1.0 {
                             draw_built(pass, t.near, lt, cam, coverage: vec2(0.0, split))
@@ -1593,8 +1595,8 @@ fn screen_box(cam: Camera, c: vec3, r: f32, size: vec2) -> (vec2, vec2) {
 const NOT_POOLED: u32 = 0xffffffff
 
 /// A pooled thing with a far mesh hands over between its two by its distance from `cam`'s eye
-/// (`blockouts::tower_far_share`), each drawn over its share of the pixels; a mesh with no
-/// share is hidden from the culling.
+/// (`blockouts::far_share` over its band), each drawn over its share of the pixels; a mesh with
+/// no share is hidden from the culling.
 fn hand_over(s: mut Stage, cam: Camera) {
     for t in s.built {
         let Some(items) = t.pooled else { continue }
@@ -1602,7 +1604,7 @@ fn hand_over(s: mut Stage, cam: Camera) {
             continue
         }
         let centre = t.near.at[3].xyz
-        let far = blockouts::tower_far_share(length(centre - cam.eye))
+        let far = blockouts::far_share(t.band, length(centre - cam.eye))
         let split = 1.0 - far
         let near = Item { coverage: vec2(0.0, split), ..s.pool.item(items.x) }
         let far_item = Item { coverage: vec2(split, 1.0), ..s.pool.item(items.y) }
@@ -2284,13 +2286,15 @@ pub fn cook_load(s: mut Stage, c: mut Cooks, eye: vec2, linear: Sampler) {
         var near = blockouts::realize(b, height_at, water: water)
         let o = origin_of(s)
         near.at[3] = vec4(near.at[3].xyz - o, 1.0)
-        var far = blockouts::realize_far(b, height_at)
+        var far = blockouts::realize_far(b, height_at, water: water)
         match mut far {
             Some(f) => f.at[3] = vec4(f.at[3].xyz - o, 1.0),
             None => {},
         }
         let shape = blockouts::shape_tape(b)
-        s.built.push(Thing { near, reach: blockouts::reach(b), far, shape })
+        s.built.push(
+            Thing { near, reach: blockouts::reach(b), far, shape, band: blockouts::far_band(b) },
+        )
         s.solids_v += 1
         if s.first_built_at.is_none() {
             s.first_built_at = Some(c.frames)

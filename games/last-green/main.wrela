@@ -978,7 +978,8 @@ fn the_load_chain_runs_its_links_side_by_side(s: Floor) {
 
 /// What's solid round the eye once the floor is playable (`Scene::solids`, B9b): the trunks',
 /// limbs' and stones' capsules (the probes' occluders that are solid) and the built things'
-/// tapes, and the distance volume cooked from them.
+/// tapes, and the distance volume cooked from them; and the built things' far levels (B11a), a
+/// small share of their near levels' vertices.
 @test(frames: 400, gpu: true)
 fn the_floors_solids_land_with_its_wood_and_built_things(s: Floor) {
     let Some(solids) = engine::frame::Scene::solids(s.stage, s.frame.origin, 0xfffffffe) else {
@@ -990,6 +991,25 @@ fn the_floors_solids_land_with_its_wood_and_built_things(s: Floor) {
     )
     assert(capsules > 100 && shapes > 10, f"{capsules} capsules, {shapes} shapes")
     assert(s.frame.distance.cooked, "the distance volume isn't cooked")
+    // The built things' levels (B11a): the far level's vertices against the near's.
+    var near = 0
+    var far = 0
+    var both = 0
+    for t in s.stage.built {
+        let f = match t.far {
+            Some(r) => r.counted,
+            None => None,
+        }
+        if let (Some(n), Some(c)) = (t.near.counted, f) {
+            near += n.0
+            far += c.0
+            both += 1
+        }
+    }
+    print(
+        f"{both} built things with two levels: {near} vertices near, {far} far ({f32(far) / f32(max(near, 1)) * 100.0:.1}%)",
+    )
+    assert(both > 100 && far * 4 < near, f"{near} near, {far} far")
 }
 
 /// The planner's costs as this device measured them, for docs/bench.md: `cook::costs()`'s

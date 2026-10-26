@@ -652,6 +652,35 @@ Its parameters are proposed.
 - **G-profile:** a frame's `built things` (its realizing and colours, at load) p50 4.80 ms on the
   walk and 7.85 in the opening, against 4.77 and 5.92 at B10 (asked: at most 2×).
 
+**B11a, levels of a built thing from its field.** Every built thing but a crag's beds now has a
+far level: its field extracted again with four times the cell and tolerance
+(`blockouts::realize_far`, `FAR_COARSER`), which takes over across a band where its largest cell
+covers about four pixels (`far_band`: a stone's and a slab's middle 50 m, a waystone's 37, a
+block's 75, a wall's 124; the tower keeps its 64 to 96 m), each level drawn over its share of the
+pixels (the dithered coverage the tower's two levels had). The Last Green's 115 such things hold
+760,361 vertices near and **132,522 far (17.4%)**.
+
+- **Measured:** the GPU span doesn't move (walk 14.24 ms, opening 14.30; 14.15 and 14.27 at B11d):
+  the built things are a small share of the frame. A load frame's `built things` p50 7.70 ms (the
+  far level realized too; 4.80 before), the `built` share 60.2 → 64.7 MB; playable 7.5 and 7.4 s.
+- **Not done:** the plan's continuous blend (each fine vertex's coarse normal from the filtered
+  field and its presence from the coarse level's occupancy, the shading normal and a dithered
+  fade blended per instance), its prototype's switch sweep on the tower, a crag, a post and a
+  bank stone from four views (B11a.0's acceptance number), the thin-rod and coarse-normal tests,
+  and levels for the banks' placements, the rocks and the herd. The sweep needs a capture tool
+  with each instance's level pinned (none exists yet); the herd's realizer has dithered levels of
+  its own; the banks and the rocks are a few prototypes placed many times, each level another
+  prototype in the pool. What draws now is the tower's dithered cross-fade, for everything built.
+
+**B11b, the crags as solids: already so.** Since the land's re-architecture (#330) a crag of two
+tiers or more (`land::place::bedded`, 20 m and up) stands as beds of rock (`crag_slabs`): built
+things realized from their fields, the ground's substrate leaving their volume out
+(`Ground::substrate_height`), collision reading the full ground. B11d gives them rock's look.
+What stays a heightfield is a lower crag, an outcrop, by design (one rounded mass, soil in its
+pockets: the land's note says a 4 m rock cut as one slab reads as a blank sheet). Nothing in the
+ground changed, so `height_at` and the sim are as they were. The beds' realized surface against
+their field (the realizer's `measured_error`) wasn't measured here.
+
 ## Devices
 
 Each device D20 names (docs/plan-world-class-2.md §0.5), measured by `wrela tool bench -- --lan`
