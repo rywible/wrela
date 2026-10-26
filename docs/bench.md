@@ -312,6 +312,31 @@ last-green-shot --scene last-green-walk --no-native`), the M4 Air, Chrome; pixel
   the step before rebuilt moves 3 pixels by 1/255: the build has one pipeline more (the
   upsample's), and the load's schedule shifts with it.
 
+- **B5.5, the probes shift, and their occluders off the main thread.** The walk's three late
+  hitches (B4) went with probe replacement: with it off, the walk had 2 frames over 33 ms, not
+  5. A replacement now shifts the grid by whole columns when only the eye moved
+  (`Baked::shifted`: the columns both grids hold and their voxels copied into the spare, the new
+  band's occluders cooked into the kept volume, only the new columns baked: 144 of 648 probes
+  for a two-column shift in `engine/tests/probes-renew`, the held light and the occluders'
+  density where both grids reach unchanged). That alone left the hitches: a print showed the
+  Last Green gathering the grid's occluders on the frame that starts it, 33 to 40 ms in Chrome
+  (65 natively for the first bake), fitting each limb's capsule to its mesh's planes. The stage
+  now gathers them on a helper as the eye moves (`gather_occluders`, a job round a place each 8
+  m, used within 12 m), and the frame takes them when it wants them. Walk: **1 frame over 33
+  ms of 1,200** (33.9 ms; 5 before; G-hitch's 2: meets), paced p99 25.9 ms; opening: **none of
+  480** (2 before), and the first probe-lit frame's 100 ms is gone. GPU span p50: opening 17.12
+  → 13.27 ms (B5.2's water copy 1.74 → 0.63 ms, the pool's culling), walk 12.49 → 13.31; the
+  walk's labels' p50s sum 23.09 → 19.33 ms (bloom's wait aside): the span rose where the work
+  fell (not explained yet).
+- **B5.6, early-Z for depth-writing fragments: nothing to do yet.** A11 recorded the gap
+  (docs/toolchain-gaps.md, "A fragment can't say its depth only grows": no conservative-depth
+  attribute in Chrome's WGSL or naga's writer), so `WithDepthGreater` is still `WithDepth`. One
+  correction for when it lands: with reversed depth the depth test passes the greater value,
+  so an early rejection needs a fragment's written depth never *greater* than its rasterized
+  one (`WithDepthLess`), the draw at its bound's nearest point (an impostor's card at its
+  sphere's near side), not at its farthest: a merge triangle at the far plane (z = 0) fails the
+  early test everywhere and still can't be rejected.
+
 ## Whether D10 holds
 
 The claim (docs/plan-world-class-2.md §0.1, D10, **proposed**): on a MacBook Air M4 in Chrome at

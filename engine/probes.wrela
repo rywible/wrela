@@ -395,6 +395,14 @@ pub struct Strip: Copy + GpuData {
     pub rays: u32,
     pub turn: f32,
     pub keep: f32,
+    /// The columns a shift kept (`Baked::shifted`: from `kept.xy` to `kept.zw`, inclusive), which
+    /// the bake leaves as they are: none by default.
+    pub kept: vec4u = vec4u(1, 1, 0, 0),
+}
+
+/// Whether column (i, j) is in `kept` (`Strip::kept`).
+fn kept_column(kept: vec4u, i: u32, j: u32) -> bool {
+    i >= kept.x && i <= kept.z && j >= kept.y && j <= kept.w
 }
 
 /// The probes of a strip of columns: each traces its rays and projects their light to
@@ -428,6 +436,10 @@ pub fn bake(
         return
     }
     let (i, j) = (col % g.cols, col / g.cols)
+    // A column a shift kept holds its light already.
+    if kept_column(strip.kept, i, j) {
+        return
+    }
     let p = probe_at(g, levels, texels, i, j, k)
     // Each probe's slot holds its column's ground height too (a layer's, all alike).
     grounds[id] = p.y - LAYER_HEIGHTS[k]
@@ -855,6 +867,72 @@ pub struct Baked {
     /// and baking again (`AGAIN_RAYS` a strip) fills the rest in).
     pub strip_columns: u32,
     pub strip_rays: u32,
+    /// The columns a shift kept (`shifted`; `Strip::kept`), and whether its volume holds what
+    /// it kept (its cook adds the new band's occluders to it, clearing nothing).
+    pub kept: vec4u = vec4u(1, 1, 0, 0),
+    pub shifted: bool = false,
+}
+
+/// Of `occluders`, those a grid shifted by `d` columns from `g` must cook: all but those wholly
+/// inside the columns it keeps (in the voxels it keeps), with a column's margin for the filter.
+pub fn band(occluders: [Occluder], g: ProbeGrid, d: vec2i) -> Vec<Occluder> {
+    let span = f32(g.cols - 1) * g.spacing
+    let corner = g.corner + vec2(d) * g.spacing
+    // The kept square: the old grid's and the new one's overlap.
+    let lo = max(g.corner, corner) + vec2(g.spacing)
+    let hi = min(g.corner, corner) + vec2(span - g.spacing)
+    var out: Vec<Occluder> = Vec::new()
+    for o in occluders {
+        let a = min(o.a.xz, o.b.xz) - vec2(o.radius)
+        let b = max(o.a.xz, o.b.xz) + vec2(o.radius)
+        let inside = a.x >= lo.x && a.y >= lo.y && b.x <= hi.x && b.y <= hi.y
+        if !inside {
+            out.push(o)
+        }
+    }
+    out
+}
+
+/// Probe (column `id.x / LAYERS`, layer) of a grid shifted by `d` columns (its new place), from
+/// where it was (`d` further): copied if it was in the grid, else left to be baked.
+@compute(64)
+fn shift_probes(
+    cols: u32,
+    d: vec2i,
+    probes: [Probe],
+    bounces: [Probe],
+    grounds: [f32],
+    out_probes: mut Slots<Probe>,
+    out_bounces: mut Slots<Probe>,
+    out_grounds: mut Slots<f32>,
+    id: GlobalId,
+) {
+    let col = id.x / LAYERS
+    if col >= cols * cols {
+        return
+    }
+    let from = vec2i(i32(col % cols), i32(col / cols)) + d
+    if from.x < 0 || from.y < 0 || from.x >= i32(cols) || from.y >= i32(cols) {
+        return
+    }
+    let at = (u32(from.y) * cols + u32(from.x)) * LAYERS + id.x % LAYERS
+    out_probes[id] = probes[at]
+    out_bounces[id] = bounces[at]
+    out_grounds[id] = grounds[at]
+}
+
+/// Voxel `id` of a volume shifted by `d` voxels (x and z), from where it was: copied if it was
+/// in the volume, else cleared for the new band's occluders.
+@compute(4, 4, 4)
+fn shift_voxels(grid: ProbeGrid, d: vec3i, volume: [u32], out: mut Atomics<u32>, id: GlobalId) {
+    let dims = grid.volume_dims
+    if id.x >= dims.x || id.y >= dims.y || id.z >= dims.z {
+        return
+    }
+    let from = vec3i(id.xyz()) + d
+    let inside = from.x >= 0 && from.z >= 0 && from.x < i32(dims.x) && from.z < i32(dims.z)
+    let v = if inside { volume[grid.voxel_index(vec3u(from))] } else { 0 }
+    out.store(grid.voxel_index(id.xyz()), v)
 }
 
 /// Columns a strip of baking traces, a frame each (a short submission), with `RAYS` rays a
@@ -940,7 +1018,84 @@ impl Baked {
         b.baked = 0
         b.again = 0
         b.agains = 0
+        b.kept = vec4u(1, 1, 0, 0)
+        b.shifted = false
         b
+    }
+
+    /// Whether `old`'s buffers can hold `from`'s probes shifted (`shifted`): the same shape, a
+    /// column a whole number of voxels, and `from` baked.
+    pub fn shifts(old: Baked, from: Baked) -> bool {
+        let g = from.grid
+        let step = g.spacing / g.voxel
+        old.grid.cols == g.cols &&
+            old.grid.volume_dims == g.volume_dims &&
+            abs(step - round(step)) < 1.0e-4 &&
+            from.done()
+    }
+
+    /// `old`'s buffers and textures (`shifts`) made `from`'s probes shifted by `d` whole columns
+    /// (its grid moved `d` spacings, its volume as many voxels; its vertical as it was): the
+    /// columns both hold and the voxels both hold copied, the rest to bake and to cook from
+    /// `occluders` (those of the new band are enough, `band`: an occluder the kept voxels hold
+    /// already is cooked into them again by its max).
+    pub fn shifted(old: take Baked, from: Baked, d: vec2i, occluders: [Occluder]) -> Baked {
+        let g = from.grid
+        let step = g.spacing / g.voxel
+        var b = Baked::renew(take old, g, occluders)
+        let moved = vec2(d) * g.spacing
+        b.grid.corner += moved
+        b.grid.volume_corner += vec3(moved.x, 0.0, moved.y)
+        let n = g.probes()
+        dispatch(
+            shift_probes.bind(
+                cols: g.cols,
+                d: d,
+                probes: from.probes.span(start: 0, count: n),
+                bounces: from.bounces.span(start: 0, count: n),
+                grounds: from.grounds.span(start: 0, count: n),
+                out_probes: b.probes.span_mut(start: 0, count: n),
+                out_bounces: b.bounces.span_mut(start: 0, count: n),
+                out_grounds: b.grounds.span_mut(start: 0, count: n),
+            ),
+            groups: (n + 63) / 64,
+        )
+        let s = i32(round(step))
+        dispatch(
+            shift_voxels.bind(
+                grid: b.grid,
+                d: vec3i(d.x * s, 0, d.y * s),
+                volume: from.volume.items(),
+                out: mut b.volume,
+            ),
+            over: (g.volume_dims.x, g.volume_dims.y, g.volume_dims.z),
+        )
+        // The columns both grids hold, in the new grid's numbering.
+        let c = i32(g.cols)
+        let lo = vec2i(max(-d.x, 0), max(-d.y, 0))
+        let hi = vec2i(min(c - 1 - d.x, c - 1), min(c - 1 - d.y, c - 1))
+        b.kept = if hi.x < lo.x || hi.y < lo.y { vec4u(1, 1, 0, 0) } else {
+            vec4u(u32(lo.x), u32(lo.y), u32(hi.x), u32(hi.y))
+        }
+        b.shifted = true
+        b
+    }
+
+    /// Whether every column from `first`, `n` of them, is one a shift kept.
+    fn kept_whole(self, first: u32, n: u32) -> bool {
+        for c in first..first + n {
+            if !kept_column(self.kept, c % self.grid.cols, c / self.grid.cols) {
+                return false
+            }
+        }
+        true
+    }
+
+    /// How many columns a bake traces: those a shift didn't keep.
+    pub fn fresh(self) -> u32 {
+        let k = self.kept
+        let held = if k.z < k.x || k.w < k.y { 0 } else { (k.z - k.x + 1) * (k.w - k.y + 1) }
+        self.grid.cols * self.grid.cols - held
     }
 
     /// Whether every column is baked.
@@ -953,7 +1108,10 @@ impl Baked {
     pub fn cook(mut self) {
         label("probes occluders")
         let n = self.grid.voxels()
-        dispatch(clear_voxels.bind(n, volume: mut self.volume), over: n)
+        // A shifted volume holds what it kept, and nothing in its new band (`shift_voxels`).
+        if !self.shifted {
+            dispatch(clear_voxels.bind(n, volume: mut self.volume), over: n)
+        }
         // With none, the volume stays clear: a renewed buffer still holds the old occluders.
         if self.occluder_count > 0 {
             dispatch(
@@ -1019,10 +1177,25 @@ impl Baked {
         s: Sampler,
     ) {
         let total = self.grid.cols * self.grid.cols
+        // Strips whose columns a shift kept, all of them, aren't dispatched.
+        while !self.done() &&
+            self.kept_whole(self.baked, min(self.strip_columns, total - self.baked)) {
+            self.baked += min(self.strip_columns, total - self.baked)
+            if self.done() {
+                self.map(0, total)
+                return
+            }
+        }
         if !self.done() {
             label("probes bake")
             let n = min(self.strip_columns, total - self.baked)
-            let strip = Strip { first: self.baked, rays: self.strip_rays, turn: 0.0, keep: 0.0 }
+            let strip = Strip {
+                first: self.baked,
+                rays: self.strip_rays,
+                turn: 0.0,
+                keep: 0.0,
+                kept: self.kept,
+            }
             let at = self.baked * LAYERS
             dispatch(
                 bake.bind(

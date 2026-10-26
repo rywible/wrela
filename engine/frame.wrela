@@ -35,7 +35,7 @@ use paint::{
     identity, lines, meter,
 }
 use plant::Wind
-use probes::{Baked, Occluder, ProbeGrid, STRIP_COLUMNS, Trace}
+use probes::{Baked, Occluder, ProbeGrid, STRIP_COLUMNS, Trace, band}
 use shadow::{Cascade, Kept, Shadows, shadows}
 use sheet::{Scale, pace}
 use sky::{Clouds, MAP_BANDS, NOISE_SLICES, Sky, Weather, new_sky, sky_shade}
@@ -2225,8 +2225,16 @@ impl<R: Resolver> Frame<R> {
             (moved || !same_inputs(self.probes.using_k, key, again)) {
             let Some(occluders) = scene.occluders(eye, self.origin) else { return }
             let g = scene.probe_grid(eye, self.origin)
+            // Moved alone (its inputs the same), the probes shift by whole columns: those both
+            // grids hold kept, the new band's baked and its occluders cooked (`Baked::shifted`).
+            let shift = same_inputs(self.probes.using_k, key, again) &&
+                g.spacing == self.probes.using.grid.spacing
+            let d = vec2i(round((g.corner - self.probes.using.grid.corner) / g.spacing))
             var b = match replace(mut self.probes.spare, None) {
-                Some(old) => Baked::renew(take old, g, occluders),
+                Some(old) => if shift && Baked::shifts(old, self.probes.using) {
+                    let near = band(occluders, self.probes.using.grid, d)
+                    Baked::shifted(take old, self.probes.using, d, near)
+                } else { Baked::renew(take old, g, occluders) },
                 None => Baked::new(g, occluders),
             }
             b.strip_rays = self.quality.probes.rays

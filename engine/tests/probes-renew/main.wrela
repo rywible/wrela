@@ -1,10 +1,14 @@
 // Probes cooked with one solid occluder, then renewed in place with none and cooked again
 // (`engine::probes::Baked::renew`, `cook`): the density where the occluder stood is read in a
-// kernel after each cook, and read back.
+// kernel after each cook, and read back. And probes shifted by whole columns
+// (`Baked::shifted`): what they held where both grids reach, read before and after.
 
-use engine::probes::{Baked, Occluder, ProbeGrid, density_at, grid}
+use engine::air::hazy
+use engine::light::{SUN_TOP, sunlight}
+use engine::probes::{Baked, LAYERS, Occluder, Probe, ProbeGrid, band, density_at, grid, held_at}
 use std::gpu::{
-    GlobalId, GpuBuffer, Rgba16Float, Sampler, Slots, Texture3d, buffer, dispatch, read, sampler,
+    GlobalId, GpuBuffer, Rgba16Float, Sampler, Slots, Texture, Texture3d, buffer, dispatch, read,
+    sampler, texture, write,
 }
 use std::collections::replace
 use std::io::{Pending, print}
@@ -33,10 +37,75 @@ pub struct State {
     baked: Option<Baked>,
     asked: Vec<Pending<f32>>,
     pub got: Vec<f32>,
+    /// The shift's case: what was read before it and after, and its fresh columns.
+    shift_asked: Vec<Pending<vec4>>,
+    pub shift_got: Vec<Vec<vec4>>,
+    pub fresh: u32,
 }
 
 pub fn init() -> State {
-    State { baked: None, asked: Vec::new(), got: Vec::new() }
+    State {
+        baked: None,
+        asked: Vec::new(),
+        got: Vec::new(),
+        shift_asked: Vec::new(),
+        shift_got: Vec::new(),
+        fresh: 0,
+    }
+}
+
+/// The shift's columns: two of the grid's 4 m spacings along x (8 m).
+const SHIFT = vec2i(2, 0)
+
+/// What the shift's test reads of `b`: the light held 2 m above (4, 0) (inside both grids:
+/// its sky's and its sun's red), the density at the trunk's middle, and the probe in column
+/// (`col`, 4)'s first layer (red).
+@compute(1)
+fn sample_shift(
+    g: ProbeGrid,
+    maps: Texture<Rgba16Float>,
+    density: Texture3d<Rgba16Float>,
+    probes: [Probe],
+    col: u32,
+    s: Sampler,
+    out: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    let h = held_at(g, maps, s, vec2(4.0, 0.0), 2.0)
+    out[id] = vec4(
+        h.sky.r.x,
+        h.sun.r.x,
+        density_at(g, density, s, vec3(0.0, 6.0, 0.0)),
+        probes[(4 * g.cols + col) * LAYERS].r.x,
+    )
+}
+
+/// The probes of `probes()`, as if baked: each probe's red its index, the rest 0.
+fn filled(b: mut Baked) {
+    var ps: Vec<Probe> = Vec::new()
+    for i in 0..b.grid.probes() {
+        ps.push(Probe { r: vec4(f32(i), 0.0, 0.0, 0.0), g: vec4(0.0), b: vec4(0.0) })
+    }
+    write(mut b.probes, 0, ps.clone())
+    write(mut b.bounces, 0, ps)
+    b.baked = b.grid.cols * b.grid.cols
+}
+
+fn read_shift(s: mut State, b: Baked, col: u32) {
+    var out: GpuBuffer<vec4> = buffer(1)
+    dispatch(
+        sample_shift.bind(
+            b.grid,
+            b.maps,
+            b.density,
+            b.probes.items(),
+            col: col,
+            s: sampler(),
+            out: mut out,
+        ),
+        over: 1,
+    )
+    s.shift_asked.push(read(out.items()))
 }
 
 fn read_density(s: mut State) {
@@ -61,6 +130,32 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         s.baked = Some(take b)
         read_density(mut s)
     }
+    if f == 2 {
+        // A grid with the trunk, baked (`filled`) and mapped; then shifted 8 m along x into a
+        // spare, mapped as if its new band were baked too.
+        let light = sunlight(hazy(vec3(0.3, 0.8, 0.5), SUN_TOP, eye: 0.0))
+        let view = texture::<Rgba16Float>(width: 1, height: 1)
+        var from = Baked::new(probes(), [TRUNK])
+        from.cook()
+        filled(mut from)
+        from.open(light, vec3(0.2), view, sampler())
+        read_shift(mut s, from, 6)
+        let spare = Baked::new(probes(), [])
+        let near = band([TRUNK], from.grid, SHIFT)
+        var b = Baked::shifted(take spare, from, SHIFT, near)
+        b.cook()
+        s.fresh = b.fresh()
+        b.baked = b.grid.cols * b.grid.cols
+        b.open(light, vec3(0.2), view, sampler())
+        read_shift(mut s, b, 4)
+    }
+    if f > 2 && s.shift_got.len() < s.shift_asked.len() {
+        let k = s.shift_got.len()
+        match s.shift_asked[k].poll() {
+            Some(Ok(v)) => s.shift_got.push(take v),
+            _ => {},
+        }
+    }
     if f > 1 && s.got.len() < s.asked.len() {
         let k = s.got.len()
         match s.asked[k].poll() {
@@ -78,4 +173,20 @@ fn probes_renewed_with_no_occluders_cook_an_empty_volume(s: State) {
     print(f"density with the trunk {s.got[0]}, renewed with none {s.got[1]}")
     assert(s.got[0] > 0.5, f"the trunk wasn't cooked: {s.got[0]}")
     assert(s.got[1] == 0.0, f"a renewal with no occluders kept the old one: {s.got[1]}")
+}
+
+/// Probes shifted 8 m (two columns) bake only the two new columns of every row, 2 × 9 columns
+/// of `LAYERS` probes, not all 81; what the kept columns held moved with them (column 6 is
+/// column 4 after the shift); the light held at a point inside both grids is the same before and
+/// after within 1/1024, and so is the trunk's density, which the shifted volume kept.
+@test(frames: 12, gpu: true)
+fn probes_shifted_by_whole_columns_keep_what_both_grids_hold(s: State) {
+    assert(s.shift_got.len() == 2, f"{s.shift_got.len()} reads came back")
+    assert(s.fresh == 2 * 9, f"{s.fresh} columns to bake")
+    let (a, b) = (s.shift_got[0][0], s.shift_got[1][0])
+    print(f"before {a}, after {b}: {s.fresh * LAYERS} probes to bake of {81 * LAYERS}")
+    assert(a.w == b.w, f"the kept column's probe moved wrong: {a.w} then {b.w}")
+    assert(abs(a.x - b.x) <= max(abs(a.x), 1.0) / 1024.0, f"the held sky moved: {a.x} then {b.x}")
+    assert(abs(a.y - b.y) <= max(abs(a.y), 1.0) / 1024.0, f"the held sun moved: {a.y} then {b.y}")
+    assert(a.z > 0.5 && abs(a.z - b.z) < 1.0e-3, f"the trunk's density: {a.z} then {b.z}")
 }

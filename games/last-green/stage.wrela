@@ -121,6 +121,10 @@ pub struct Stage {
     /// once the prototypes are, where they're drawn through them (`CLUSTERED`).
     bank_stones: Vec<ClusterStones>,
     pub footprints: GpuBuffer<vec4>,
+    /// The probes' occluders round a place (the world's), gathered on a helper
+    /// (`gather_occluders`): the job under way and the last it found.
+    occluding: Option<(vec2, std::par::Task<Vec<Occluder>>)> = None,
+    occluded: Option<(vec2, Vec<Occluder>)> = None,
     /// The climber (its sword realized at the first frame), the fawn and the wolf.
     pub drawn: Option<Drawn>,
     pub fawn: Cast<fawn::creature::Coat, fawns::Grown, fawns::FawnLook>,
@@ -230,8 +234,18 @@ impl Scene for Stage {
         probe_grid(at, origin.xz, self.source)
     }
 
+    /// The occluders the stage's job gathered round a place near `at` (`gather_occluders`): none
+    /// until one has, for a place within `OCCLUDED_NEAR` of it.
     fn occluders(self, at: vec2, origin: vec3) -> Option<Vec<Occluder>> {
-        loaded_probe_occluders(self.own, self.plants, at, origin.xz)
+        let Some((centre, found)) = self.occluded else { return None }
+        if length(at + origin.xz - centre) > OCCLUDED_NEAR {
+            return None
+        }
+        var out: Vec<Occluder> = Vec::with_capacity(found.len())
+        for o in found {
+            out.push(Occluder { a: o.a - origin, b: o.b - origin, ..o })
+        }
+        Some(out)
     }
 
     /// The land under a point: the view's (the bare land, the grown land, the specimens'
@@ -270,6 +284,7 @@ impl Scene for Stage {
     /// where they're wanted.
     fn cook(mut self, c: mut Cooks, clipmap: mut Clipmap, linear: Sampler) {
         settle(mut self)
+        occlude(mut self, c.eye, c.origin)
         if rocky(self.view) && self.rocks.is_none() {
             let began = std::time::now()
             let placements = geology::rock_placements(growth::LAND.land, geology::TORS)
@@ -2370,6 +2385,92 @@ pub fn trace_of(light: Light, grid: ProbeGrid) -> Trace {
 
 /// Occluders for a complete loaded neighbourhood. An empty result is valid in open land;
 /// a missing tile is not: baking it as empty would brighten the wood until the next bake.
+/// How far from where its occluders were gathered a probe grid may be centred and use them
+/// (m), and how far the eye goes before they're gathered again: the gathering's square reaches
+/// `OCCLUDED_MARGIN` past the grid's, more than either.
+pub const OCCLUDED_NEAR: f32 = 12.0
+const OCCLUDED_AGAIN: f32 = 8.0
+const OCCLUDED_MARGIN: f32 = 20.0
+
+/// What a gathering of the probes' occluders reads (`gather_occluders`): the trees of the tiles
+/// round its place (the world's), the plants they're of, and the square it gathers.
+pub struct OccluderInput {
+    placed: Vec<Placed>,
+    plants: Vec<Plant>,
+    lo: vec2,
+    hi: vec2,
+}
+
+/// The occluders of `input`'s trees within its square (`trees::occluders_into`), on a helper: a
+/// limb's capsule is fitted to its mesh's planes, which took the walk's frame 40 ms in Chrome.
+pub fn gather_occluders(input: take OccluderInput) -> Vec<Occluder> {
+    var out: Vec<Occluder> = Vec::new()
+    trees::occluders_into(input.placed, input.plants, vec3(0.0), input.lo, input.hi, mut out)
+    out
+}
+
+/// The stage's gathering of the probes' occluders, round the eye at `eye` (render space; the
+/// render origin `origin`): a job's result taken once done; a job started once the eye is
+/// `OCCLUDED_AGAIN` from where the last gathered, if every tile it needs is in.
+fn occlude(s: mut Stage, eye: vec2, origin: vec3) {
+    let world = eye + origin.xz
+    var done = false
+    match s.occluding {
+        Some(j) => done = j.1.done(),
+        None => {},
+    }
+    if done {
+        let Some((centre, job)) = replace(mut s.occluding, None) else { return }
+        s.occluded = Some((centre, take job.join()))
+    }
+    let near = match s.occluded {
+        Some(o) => length(o.0 - world) < OCCLUDED_AGAIN,
+        None => false,
+    }
+    if near || s.occluding.is_some() {
+        return
+    }
+    let Some(placed) = probe_trees(s.own, world) else { return }
+    let half = vec2(0.5 * f32(PROBE_COLS - 1) * PROBE_SPACING + OCCLUDED_MARGIN)
+    let input = OccluderInput {
+        placed,
+        plants: s.plants.clone(),
+        lo: world - half,
+        hi: world + half,
+    }
+    s.occluding = Some((world, std::par::spawn(take input, gather_occluders)))
+}
+
+/// The trees (the world's) of the tiles within `PROBE_TREES` of `world`, if every one of them
+/// is in.
+fn probe_trees(own: [Arrived], world: vec2) -> Option<Vec<Placed>> {
+    let at = land::place::tile_of(world)
+    let r = tile_radius(PROBE_TREES)
+    for j in (at.y - r)..(at.y + r + 1) {
+        for i in (at.x - r)..(at.x + r + 1) {
+            let tile = vec2i(i, j)
+            if tile_distance(tile, world) < PROBE_TREES {
+                var loaded = false
+                for a in own {
+                    loaded = loaded || a.tile == tile
+                }
+                if !loaded {
+                    return None
+                }
+            }
+        }
+    }
+    var placed: Vec<Placed> = Vec::new()
+    for a in own {
+        if tile_distance(a.tile, world) < PROBE_TREES {
+            for p in a.placed {
+                placed.push(p)
+            }
+        }
+    }
+    Some(placed)
+}
+
 pub fn loaded_probe_occluders(
     own: [Arrived],
     plants: [Plant],
@@ -2393,15 +2494,15 @@ pub fn loaded_probe_occluders(
             }
         }
     }
-    var placed: Vec<Placed> = Vec::new()
+    let half = vec2(0.5 * f32(PROBE_COLS - 1) * PROBE_SPACING)
+    var out: Vec<engine::probes::Occluder> = Vec::new()
     for a in own {
         if tile_distance(a.tile, world) < PROBE_TREES {
-            var more = rendered(a.placed, vec3(-origin.x, 0.0, -origin.y))
-            placed.append(mut more)
+            let d = vec3(-origin.x, 0.0, -origin.y)
+            trees::occluders_into(a.placed, plants, d, eye - half, eye + half, mut out)
         }
     }
-    let half = vec2(0.5 * f32(PROBE_COLS - 1) * PROBE_SPACING)
-    Some(trees::occluders(placed, plants, eye - half, eye + half))
+    Some(out)
 }
 
 @test
