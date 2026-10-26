@@ -1,0 +1,6 @@
+[package]
+name = "reconstruction_capture"
+
+[dependencies]
+engine = { workspace = true }
+frame_transitions = { path = "../../../engine/tests/frame" }

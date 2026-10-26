@@ -1,0 +1,111 @@
+// Spatial samples of one scene snapshot, accumulated in linear HDR with f32 sums. A reference
+// is developed only after its mean is read: averaging developed screenshots changes the target.
+// The source's alpha is a renderer tag, not radiance, and is deliberately not averaged.
+//
+// A caller gives every sample the same Moment, changing its revision whenever the camera,
+// scene, light, exposure convention or rendering function changes. Jitter alone may vary.
+// Moment checks prevent accidental mixing of snapshots; they do not freeze the caller's state.
+// Reset starts another snapshot without a clear pass: its first sample overwrites every sum.
+
+use std::gpu::{GlobalId, GpuBuffer, Rgba16Float, Slots, Texture, buffer, dispatch, read}
+use std::io::Pending
+
+/// One deterministic scene snapshot. Frame identifies simulation time, revision the remaining
+/// render state. All spatial samples must evaluate that same snapshot.
+pub struct Moment: Copy + Eq {
+    pub frame: u32,
+    pub revision: u32,
+}
+
+/// Why a sample was not accumulated. Rejection leaves the accumulated image unchanged.
+pub enum Rejected: Copy + Eq {
+    Moment,
+    Size,
+    Count,
+}
+
+@compute(64)
+fn accumulate(source: Texture<Rgba16Float>, first: bool, sums: mut Slots<vec4>, id: GlobalId) {
+    let width = source.width()
+    if id.x >= width * source.height() {
+        return
+    }
+    let c = source.load(x: id.x % width, y: id.x / width)
+    let radiance = vec4(c.rgb, 1.0)
+    sums[id] = if first { radiance } else { sums[id] + radiance }
+}
+
+@compute(64)
+fn averaged(sums: [vec4], count: f32, out: mut Slots<vec4>, id: GlobalId) {
+    if id.x < sums.len() {
+        out[id] = sums[id.x] / count
+    }
+}
+
+/// A reference image of one Moment. RGB is scene-linear radiance; a read's alpha is 1.
+/// The sums are f32 even when the renderer's individual samples are half-float textures.
+pub struct Reference {
+    width: u32,
+    height: u32,
+    moment: Moment,
+    samples: u32,
+    sums: GpuBuffer<vec4>,
+}
+
+impl Reference {
+    pub fn new(width: u32, height: u32, moment: Moment) -> Reference {
+        assert(width > 0 && height > 0, "a reference needs a nonempty image")
+        assert(width <= 4294967295 / height, "a reference's dimensions overflow")
+        Reference { width, height, moment, samples: 0, sums: buffer(width * height) }
+    }
+
+    /// Start a new scene snapshot at the same resolution. An empty reference cannot be read.
+    pub fn reset(mut self, moment: Moment) {
+        self.moment = moment
+        self.samples = 0
+    }
+
+    pub fn samples(self) -> u32 {
+        self.samples
+    }
+
+    /// Add one spatial sample. The count stays exactly representable as an f32; larger
+    /// integrations must combine separately accumulated batches.
+    pub fn add(mut self, source: Texture<Rgba16Float>, moment: Moment) -> Result<(), Rejected> {
+        if moment != self.moment {
+            return Err(Rejected::Moment)
+        }
+        if source.width() != self.width || source.height() != self.height {
+            return Err(Rejected::Size)
+        }
+        if self.samples >= 16777216 {
+            return Err(Rejected::Count)
+        }
+        dispatch(
+            accumulate.bind(source, first: self.samples == 0, sums: mut self.sums),
+            over: self.width * self.height,
+        )
+        self.samples += 1
+        Ok(())
+    }
+
+    /// Snapshot the mean in a new f32 buffer. Later samples or a reset cannot change it.
+    /// None means no samples have been accumulated.
+    pub fn image(self) -> Option<GpuBuffer<vec4>> {
+        if self.samples == 0 {
+            return None
+        }
+        var mean: GpuBuffer<vec4> = buffer(self.width * self.height)
+        dispatch(
+            averaged.bind(self.sums.items(), count: f32(self.samples), out: mut mean),
+            over: self.width * self.height,
+        )
+        Some(mean)
+    }
+
+    /// Read a snapshot of the mean without developing or clipping the radiance.
+    pub fn read(self) -> Option<Pending<vec4>> {
+        let mean = self.image()?
+        Some(read(mean.items()))
+    }
+}

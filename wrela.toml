@@ -48,6 +48,7 @@ members = [
     "studio/passes",
     "studio/export",
     "studio/fit",
+    "studio/reconstruct",
     "studio/toolkit",
     "studio/listening",
     "studio/lookbook",
@@ -89,6 +90,9 @@ allow = [
     "docs/plan-world-class.md",
     "docs/bench.md",
     "docs/world-class-next.md",
+    "docs/neural-rendering-research.md",
+    "docs/neural-rendering-goals.md",
+    "docs/neural-rendering-progress.md",
     "docs/plan-world-class-2.md",
     "docs/lookdev.md",
     "games/*/design.md",
@@ -229,3 +233,9 @@ net = ["wrela.dev", "docs.wrela.dev", "leapling.wrela.dev", "last-green.wrela.de
 run = ["npx"]
 secrets = ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]
 timeout = 3600
+
+# HDR reconstruction instrument: builds a fixture and keeps raw float captures and scores.
+[tools.reconstruct]
+package = "studio/reconstruct"
+read = ["ws=."]
+write = ["out=build/reconstruct"]

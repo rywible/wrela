@@ -1,0 +1,58 @@
+// The reference toggle must not blend old temporal output into its samples. Both initial
+// history settings must be restored on exit. No scene draw is needed to test this transition.
+
+use engine::frame::{Frame, Off, Quality, Shared}
+use engine::light::sunlight
+use engine::probes::grid
+use engine::terrain::Clipmap
+use engine::view::first_camera
+use frame_transitions::bare::{AHEAD, START, SUN, air_of}
+use std::input::Key
+
+pub struct State {
+    frame: Frame<Shared>,
+    pub checked: bool,
+}
+
+pub fn init() -> State {
+    let air = air_of(SUN)
+    State {
+        frame: Frame::new(
+            Quality { measured: false, pace: false },
+            sunlight(air),
+            air,
+            Clipmap::new(levels: 1, finest: 1.0),
+            first_camera(START, START + AHEAD, 0.82, width: 12, height: 12),
+            grid(START.xz, cols: 1, spacing: 4.0, low: -8.0, high: 24.0, voxel: 2.0),
+            START.xz,
+        ),
+        checked: false,
+    }
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    for prior in 0..2 {
+        let history = prior == 1
+        s.frame.set(Off::History, on: history)
+        let quality = s.frame.quality()
+        assert(s.frame.key(Key::F12), "reference key not recognized")
+        assert(!s.frame.on(Off::History), "reference enabled temporal history")
+        // The clearing reapplies its own history switch each frame. Reference mode must
+        // still suppress history, then restore the entry setting on exit.
+        s.frame.set(Off::History, on: true)
+        assert(!s.frame.on(Off::History), "application re-enabled reference history")
+        assert(s.frame.debug.reference.is_some(), "reference state absent")
+        assert(s.frame.debug.frozen.is_some() && s.frame.debug.held.is_some(), "snapshot not held")
+        assert(s.frame.quality().scale == 1.0, "reference not at native resolution")
+        assert(s.frame.key(Key::F12), "reference exit key not recognized")
+        assert(s.frame.on(Off::History) == history, "reference exit lost history setting")
+        assert(s.frame.debug.reference.is_none(), "reference state retained")
+        assert(s.frame.quality().scale == quality.scale, "reference exit lost quality")
+    }
+    s.checked = true
+}
+
+@test(frames: 1, gpu: true, hosts: both)
+fn reference_disables_history_and_restores_each_previous_setting(s: State) {
+    assert(s.checked, "reference transitions not checked")
+}

@@ -1,0 +1,129 @@
+// A moving analytic HDR edge sampled on a 4 x 4 spatial grid at one fixed Moment.
+// The oracle integrates its coverage exactly. A bright first blue sample checks that f16
+// accumulation cannot silently discard the following small samples. Two readbacks around a
+// reset check that a snapshot stays independent of later frames.
+
+use engine::supersample::{Moment, Reference, Rejected}
+use std::gpu::{GlobalId, Rgba16Float, Texels, dispatch, writable_texture}
+use std::io::{Pending, print}
+
+const WIDTH: u32 = 4
+const HEIGHT: u32 = 2
+const FIRST = Moment { frame: 0, revision: 7 }
+const NEXT = Moment { frame: 1, revision: 7 }
+
+@compute(8, 8)
+fn sample(out: mut Texels<Rgba16Float>, step: u32, frame: u32, id: GlobalId) {
+    if id.x >= WIDTH || id.y >= HEIGHT {
+        return
+    }
+    let jitter = (vec2(f32(step % 4), f32(step / 4)) + vec2(0.5)) / 4.0
+    let p = vec2(f32(id.x), f32(id.y)) + jitter
+    let edge = 1.25 + f32(frame)
+    let red = if p.x < edge { 4.0 } else { 0.0 }
+    let blue = if step == 0 { 4096.0 } else { 1.0 }
+    out.store(id, vec4(red, p.y, blue, f32(step + 10)))
+}
+
+pub struct State {
+    before: Option<Pending<vec4>>,
+    after: Option<Pending<vec4>>,
+    pub first: Vec<vec4>,
+    pub next: Vec<vec4>,
+    started: bool,
+    pub rejected_moment: bool,
+    pub rejected_size: bool,
+    pub empty: bool,
+    pub count: u32,
+}
+
+pub fn init() -> State {
+    State {
+        before: None,
+        after: None,
+        first: Vec::new(),
+        next: Vec::new(),
+        started: false,
+        rejected_moment: false,
+        rejected_size: false,
+        empty: false,
+        count: 0,
+    }
+}
+
+fn poll(request: mut Option<Pending<vec4>>, out: mut Vec<vec4>) {
+    if !out.is_empty() {
+        return
+    }
+    match mut request {
+        Some(p) => match p.poll() {
+            Some(Ok(v)) => out = take v,
+            Some(Err(_)) => panic("reference readback failed"),
+            None => {},
+        },
+        None => {},
+    }
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    if !s.started {
+        s.started = true
+        var source = writable_texture::<Rgba16Float>(width: WIDTH, height: HEIGHT)
+        var reference = Reference::new(WIDTH, HEIGHT, FIRST)
+        s.empty = reference.read().is_none()
+        for k in 0..16 {
+            dispatch(sample.bind(out: mut source, step: k, frame: FIRST.frame), over: source)
+            assert(reference.add(source, FIRST).is_ok(), "same snapshot rejected")
+        }
+        s.count = reference.samples()
+        s.rejected_moment = match reference.add(source, NEXT) {
+            Err(Rejected::Moment) => true,
+            _ => false,
+        }
+        let wrong_size = writable_texture::<Rgba16Float>(width: 1, height: 1)
+        s.rejected_size = match reference.add(wrong_size, FIRST) {
+            Err(Rejected::Size) => true,
+            _ => false,
+        }
+        assert(reference.samples() == 16, "a rejected sample changed the count")
+        s.before = reference.read()
+        reference.reset(NEXT)
+        assert(reference.read().is_none(), "reset retained the previous image")
+        for k in 0..16 {
+            dispatch(sample.bind(out: mut source, step: k, frame: NEXT.frame), over: source)
+            assert(reference.add(source, NEXT).is_ok(), "next snapshot rejected")
+        }
+        s.after = reference.read()
+        return
+    }
+    poll(mut s.before, mut s.first)
+    poll(mut s.after, mut s.next)
+}
+
+@test(frames: 3, gpu: true, hosts: both)
+fn references_integrate_radiance_at_one_snapshot_without_clipping_or_history(s: State) {
+    assert(s.empty && s.rejected_moment && s.rejected_size, "invalid reference sample accepted")
+    assert(s.count == 16, "wrong spatial sample count")
+    assert(s.first.len() == WIDTH * HEIGHT && s.next.len() == WIDTH * HEIGHT, "missing HDR reads")
+    for y in 0..HEIGHT {
+        for x in 0..WIDTH {
+            let a = s.first[y * WIDTH + x]
+            let b = s.next[y * WIDTH + x]
+            let first = if x == 0 { 4.0 } else if x == 1 { 1.0 } else { 0.0 }
+            let next = if x < 2 { 4.0 } else if x == 2 { 1.0 } else { 0.0 }
+            assert(abs(a.x - first) < 1.0e-5, f"first edge {x},{y}: {a.x} for {first}")
+            assert(abs(b.x - next) < 1.0e-5, f"next edge {x},{y}: {b.x} for {next}")
+            assert(abs(a.y - f32(y) - 0.5) < 1.0e-5, "spatial grid's mean moved")
+            assert(abs(a.z - 256.9375) < 1.0e-5, f"HDR accumulation lost small samples: {a.z}")
+            assert(abs(b.z - a.z) < 1.0e-5, "reset or readback changed a captured image")
+            assert(a.w == 1.0 && b.w == 1.0, "renderer tags were averaged as radiance")
+        }
+    }
+    // At the quarter-covered pixel: develop(mean radiance) = 1/2, whereas averaging
+    // individually developed samples gives (1/4)*(4/5) = 1/5. The instrument must separate them.
+    let c = s.first[1].x
+    assert(abs(c / (1.0 + c) - 0.2) > 0.29, "developed samples passed as linear truth")
+    print(
+        "HDR reference: exact edge coverage, f32 accumulation, snapshot isolation and reset verified",
+    )
+}

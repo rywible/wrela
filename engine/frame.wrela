@@ -1441,9 +1441,10 @@ impl<R: Resolver> Frame<R> {
         self.debug.off = self.debug.off.toggled(off)
     }
 
-    /// Whether system `off` is drawn.
+    /// Whether system `off` is drawn. Spatial reference samples never use temporal history,
+    /// even when a game reapplies its own history switch after handling the reference key.
     pub fn on(self, off: Off) -> bool {
-        !self.debug.off.has(off)
+        !self.debug.off.has(off) && !(off == Off::History && self.debug.reference.is_some())
     }
 
     /// The frame's own keys for looking at it, not for play: F7 stills (capture mode: each
@@ -1502,7 +1503,7 @@ impl<R: Resolver> Frame<R> {
                     self.debug.frozen = Some(self.debug.frozen.unwrap_or(self.time))
                     self.debug.held = Some(self.debug.held.unwrap_or(self.aimed))
                     self.requality(Quality::reference())
-                    self.set(Off::History, on: true)
+                    self.set(Off::History, on: false)
                 },
             }
             self.debug.unsaid = true

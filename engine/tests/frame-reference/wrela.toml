@@ -1,0 +1,6 @@
+[package]
+name = "frame_reference"
+
+[dependencies]
+engine = { workspace = true }
+frame_transitions = { path = "../frame" }

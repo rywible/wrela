@@ -1,0 +1,240 @@
+// Initial real-renderer reconstruction instrument. Raw images are little-endian f32 RGBA,
+// top row first, RGB scene-linear and alpha 1. This is a development smoke scene, not a
+// perceptual benchmark. All loads have independent caches and the same fixed simulation time.
+
+use std::input::Script
+use std::io::print
+use std::tool::{ToolError, args}
+use std::tool::{drive, files, time, toolchain}
+use std::tool::drive::{Scalar, Step}
+use toolkit::driven::untrapped
+use toolkit::whole::{chunked, data_bytes, joined, write_file}
+
+struct Options: Copy {
+    width: u32 = 192,
+    height: u32 = 108,
+    warmup: u32 = 240,
+    cells: u32 = 8,
+}
+
+fn options(given: [String]) -> Option<Options> {
+    var o = Options {}
+    var i = 0
+    while i < given.len() {
+        if i + 1 >= given.len() { return None }
+        let v = given[i + 1].as_str().parse_u32()?
+        match given[i].as_str() {
+            "--width" => o.width = v,
+            "--height" => o.height = v,
+            "--warmup" => o.warmup = v,
+            "--cells" => o.cells = v,
+            _ => return None,
+        }
+        i += 2
+    }
+    // Every scale has an integral input size. Reference count doubles per axis for convergence.
+    if o.width == 0 ||
+        o.height == 0 ||
+        o.width % 12 != 0 ||
+        o.height % 12 != 0 ||
+        o.width > 3840 ||
+        o.height > 2160 ||
+        o.warmup < 1 ||
+        o.warmup > 4096 ||
+        o.cells < 2 ||
+        o.cells > 16 { return None }
+    Some(o)
+}
+
+fn call(b: drive::Build, name: str, arguments: take Vec<Scalar>) -> Result<i32, ToolError> {
+    let saw = untrapped(
+        name,
+        drive::steps(b, [Step::Call(String::from(name), take arguments)], timeout: 600.0).wait()?,
+    )?
+    if saw.ran[0].results.is_empty() { return Ok(0) }
+    match saw.ran[0].results[0] {
+        Scalar::I32(n) => Ok(n),
+        _ => Err(ToolError::new("expected a scalar count")),
+    }
+}
+
+fn frames(b: drive::Build, n: u32) -> Result<(), ToolError> {
+    var left = n
+    while left > 0 {
+        let count = min(left, 32)
+        let _ = untrapped(
+            "render",
+            drive::steps(b, [Step::Frames(count, Script::frames())], timeout: 600.0).wait()?,
+        )?
+        left -= count
+    }
+    Ok(())
+}
+
+/// Decode without changing range; reject a broken capture before it becomes a good score.
+fn floats(bytes: [u8], expected: u32) -> Result<Vec<f32>, ToolError> {
+    if bytes.len() != expected * 4 { return Err(ToolError::new("wrong capture byte count")) }
+    var out: Vec<f32> = Vec::with_capacity(expected)
+    for i in 0..expected {
+        let k = i * 4
+        let w = u32(bytes[k]) |
+            (u32(bytes[k + 1]) << 8) |
+            (u32(bytes[k + 2]) << 16) |
+            (u32(bytes[k + 3]) << 24)
+        if (w & 0x7f800000) == 0x7f800000 {
+            return Err(ToolError::new("capture contains a non-finite value"))
+        }
+        let v = bitcast_f32(w)
+        if i % 4 == 3 && v != 1.0 { return Err(ToolError::new("capture alpha is not 1")) }
+        out.push(v)
+    }
+    Ok(out)
+}
+
+fn captured(
+    b: drive::Build,
+    o: Options,
+    divisor: u32,
+    cells: u32,
+    name: str,
+    directory: str,
+) -> Result<Vec<f32>, ToolError> {
+    let _ = untrapped("init", drive::steps(b, [Step::Init], timeout: 600.0).wait()?)?
+    let _ = call(b, "configure", Vec::from([Scalar::I32(i32(divisor)), Scalar::I32(i32(cells))]))?
+    frames(b, o.warmup)?
+    if call(b, "ready", Vec::new())? != 1 {
+        return Err(ToolError::new("scene did not settle; increase --warmup"))
+    }
+    let _ = call(b, "collect", Vec::from([Scalar::I32(i32(o.width)), Scalar::I32(i32(o.height))]))?
+    let samples = max(cells * cells, 1)
+    frames(b, samples)?
+    if call(b, "publish", Vec::new())? != i32(samples) {
+        return Err(ToolError::new("reference sample count differs"))
+    }
+    let ids = untrapped("buffers", drive::steps(b, [Step::Buffers]).wait()?)?
+    borrow buffers = ids.buffers[0]
+    let id = buffers[buffers.len() - 1]
+    var read = untrapped("float image", drive::steps(b, [Step::ReadBuffer(id)]).wait()?)?
+    let bytes = joined(data_bytes(read.bytes.remove(0))?)
+    let out = floats(bytes, o.width * o.height * 4)?
+    write_file(f"{directory}/{name}.rgba32f", chunked(take bytes))?
+    Ok(out)
+}
+
+fn capture(
+    o: Options,
+    divisor: u32,
+    cells: u32,
+    name: str,
+    directory: str,
+) -> Result<Vec<f32>, ToolError> {
+    print(
+        f"reconstruct: {name}, {o.width}x{o.height}, scale 1/{divisor}, {max(cells * cells, 1)} samples",
+    )
+    var load = drive::gpu()
+    load.width = o.width
+    load.height = o.height
+    load.workers = 1
+    load.timeout = 600.0
+    let b = drive::load(f"{directory}/fixture", load).wait()?.build
+    let result = captured(b, o, divisor, cells, name, directory)
+    let closed = drive::close(b).wait()
+    let image = (take result)?
+    let _ = (take closed)?
+    Ok(image)
+}
+
+/// Raw HDR mean squared error and fixed-view diagnostic PSNR (Reinhard at exposure 1,
+/// no gamma). It is not FLIP, HDR-VDP, display-referred PSNR or a goal acceptance metric.
+fn errors(a: [f32], b: [f32]) -> (f64, f64) {
+    assert(a.len() == b.len() && a.len() > 0 && a.len() % 4 == 0, "different images")
+    var raw: f64 = 0.0
+    var view: f64 = 0.0
+    for i in 0..a.len() {
+        if i % 4 == 3 { continue }
+        let (x, y) = (f64(a[i]), f64(b[i]))
+        raw += (x - y) * (x - y)
+        let (px, py) = (max(x, 0.0), max(y, 0.0))
+        let d = px / (1.0 + px) - py / (1.0 + py)
+        view += d * d
+    }
+    let n = f64(a.len() / 4 * 3)
+    (raw / n, view / n)
+}
+
+fn row(name: str, a: [f32], b: [f32]) -> String {
+    let (raw, view) = errors(a, b)
+    let psnr = 10.0 * log(f32(1.0 / max(view, 1.0e-30))) / log(10.0)
+    let score = if view == 0.0 { String::from("inf") } else { f"{psnr:.4}" }
+    let s = f"{name},{raw:.10},{view:.10},{score}\n"
+    print(s.as_str())
+    s
+}
+
+fn run(o: Options) -> Result<(), ToolError> {
+    let now = time::utc_now().wait()?
+    let directory = f"out/runs/{now.seconds}-{now.nanos}"
+    // Keep each run's inputs, build and output; never overwrite an earlier reference.
+    if files::stat(directory.as_str()).wait().is_ok() {
+        return Err(ToolError::new("run directory already exists"))
+    }
+    print(f"reconstruct: writing {directory}")
+    var opt = toolchain::options()
+    opt.optimize = true
+    opt.timeout = 600.0
+    let built = toolchain::build(
+        "ws/studio/reconstruct/fixture",
+        f"{directory}/fixture",
+        opt,
+    ).wait()?
+    if !built.ok {
+        for d in built.diagnostics { if d.error { print(d.rendered.as_str()) } }
+        return Err(ToolError::new("capture fixture did not build"))
+    }
+    let coarse = capture(o, 1, o.cells, "reference-coarse", directory.as_str())?
+    let reference = capture(o, 1, o.cells * 2, "reference", directory.as_str())?
+    let repeat = capture(o, 1, o.cells * 2, "reference-repeat", directory.as_str())?
+    var report = String::from("candidate,linear_hdr_mse,reinhard_mse,reinhard_psnr_db\n")
+    report.push_str(row("reference-convergence", coarse, reference).as_str())
+    report.push_str(row("reference-repeat", repeat, reference).as_str())
+    for divisor in 1..5 {
+        let name = f"temporal-{divisor}x"
+        let image = capture(o, divisor, 0, name.as_str(), directory.as_str())?
+        report.push_str(row(name.as_str(), image, reference).as_str())
+    }
+    let _ = files::write(f"{directory}/scores.csv", report.as_bytes()).wait()?
+    let metadata = f"scene=engine/tests/frame/bare\nwidth={o.width}\nheight={o.height}\nwarmup={o.warmup}\nreference_samples={o.cells * o.cells * 4}\nsimulation_time=0\ncamera=START,AHEAD,0.82\nformat=rgba32f_le_top_down_scene_linear_alpha1\nreference=spatial_quadrature_of_production_renderer_not_unbiased_lighting_truth\nworkers=1\nquality=production_defaults_measured_false_pace_false\ntrack=development_smoke_not_validation_or_sealed_test\n"
+    let _ = files::write(f"{directory}/capture.txt", metadata.as_bytes()).wait()?
+    Ok(())
+}
+
+pub fn tool() -> u32 {
+    let Some(o) = options(args()) else {
+        print("usage: wrela tool reconstruct -- [--width 192 --height 108 --warmup 240 --cells 8]")
+        return 2
+    }
+    match run(o) {
+        Ok(()) => 0,
+        Err(e) => {
+            print(f"reconstruct: {e.message()}")
+            1
+        },
+    }
+}
+
+// These controls protect the instrument, not a candidate's performance.
+@test
+fn capture_decoding_keeps_hdr_and_rejects_invalid_images() {
+    let bytes: [u8; 16] = [0, 0, 128, 64, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 63]
+    let good = floats(bytes, 4).unwrap()
+    assert(good[0] == 4.0 && good[1] == 0.0 && good[3] == 1.0)
+    assert(floats(bytes, 3).is_err(), "wrong dimensions accepted")
+    let nan: [u8; 16] = [0, 0, 192, 127, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 63]
+    assert(floats(nan, 4).is_err(), "NaN accepted")
+    let tag: [u8; 16] = [0, 0, 128, 64, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    assert(floats(tag, 4).is_err(), "material tag accepted as image alpha")
+    let (raw, view) = errors(good, [1.0, 0.0, 0.0, 1.0])
+    assert(abs(raw - 3.0) < 1.0e-10, "HDR was clipped in the raw score")
+    assert(abs(view - 0.03) < 1.0e-10, "wrong fixed-view score")
+    assert(errors(good, good) == (0.0, 0.0), "an identical image has error")
+}

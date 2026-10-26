@@ -123,3 +123,17 @@ Named in words; no image is copied from them.
 | Miro and Lucid; shadcn/ui's documentation | Interaction conventions for the board; the polish the docs aim past |
 
 The lookdev rubric's "hero" anchor is a private set of 83 images, not in the repo: 23 public-domain paintings from The Met's Open Access (CC0), 52 official Studio Ghibli stills ([free to use](https://www.ghibli.jp/info/013344/) "within the bounds of common sense"), and 8 Nintendo store screenshots (private study only). An agent looks at them beside a render to judge light, colour, value and depth.
+
+## Neural reconstruction instrument
+
+[Pharr, Jakob and Humphreys, *Physically Based Rendering*, 4th ed., chapter 8](https://pbr-book.org/4ed/Sampling_and_Reconstruction)
+(2023) describes sampling a continuous radiance function and combining samples into pixels.
+`engine::supersample` uses f32 sums of scene-linear RGB; `studio/reconstruct` applies a regular
+spatial grid before any develop curve. This is our small quadrature instrument, not PBRT code
+or a claim that the existing engine's lighting is physically unbiased. The temporary diagnostic
+view is explicitly `max(x,0)/(1+max(x,0))` at fixed exposure 1; its PSNR is not a perceptual gate.
+
+The offline development-image evaluator uses [NVIDIA's FLIP 1.7](https://github.com/NVlabs/flip)
+(BSD 3-Clause), installed as the external package `flip-evaluator==1.7`, with NumPy 2.2.6.
+The named LDR-FLIP viewing conditions and float preprocessing are in
+[neural-rendering-progress.md](neural-rendering-progress.md); no FLIP implementation is vendored.
