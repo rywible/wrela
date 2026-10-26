@@ -97,7 +97,8 @@ pub fn eval(m: Model, w: [f32], x: [f32]) -> Vec<f32> {
 }
 
 /// The loss's gradient for one sample added into `g`: `x` (from `x_at`) went through `m` as `p`
-/// says, and `dout` is the loss's derivative by each output.
+/// says, and `dout` is the loss's derivative by each output; and by each input into `dx`, if it
+/// has room for them (empty: not asked).
 pub fn backward(
     m: Model,
     w: [f32],
@@ -105,6 +106,7 @@ pub fn backward(
     p: Pass,
     dout: [f32],
     g: mut Vec<f32>,
+    dx: mut Vec<f32>,
     x_at: u32 = 0,
 ) {
     let o = m.offsets()
@@ -138,6 +140,11 @@ pub fn backward(
         g[o[1] + r] += d
         for c in 0..m.inputs {
             g[o[0] + r * m.inputs + c] += d * x[x_at + c]
+        }
+        if dx.len() >= m.inputs {
+            for c in 0..m.inputs {
+                dx[c] += d * w[o[0] + r * m.inputs + c]
+            }
         }
     }
 }
@@ -220,6 +227,7 @@ pub fn train_step(
     }
     var total = 0.0
     var dout: Vec<f32> = Vec::from([0.0; MOST_OUT])
+    var none: Vec<f32> = Vec::new()
     for k in 0..count {
         let p = forward(m, w, xs, x_at: k * m.inputs)
         for r in 0..m.outputs {
@@ -227,7 +235,7 @@ pub fn train_step(
             total += if loss == Loss::Mse { e * e } else { abs(e) }
             dout[r] = (if loss == Loss::Mse { 2.0 * e } else { sign(e) }) / f32(count * m.outputs)
         }
-        backward(m, w, xs, p, dout, mut g, x_at: k * m.inputs)
+        backward(m, w, xs, p, dout, mut g, mut none, x_at: k * m.inputs)
     }
     adam.step(mut w, g)
     total / f32(count * m.outputs)
@@ -346,7 +354,16 @@ fn the_gradient_is_its_finite_differences() {
         g.push(0.0)
     }
     let p = forward(m, w, x)
-    backward(m, w, x, p.clone(), [2.0 * (p.out[0] - y[0]), 2.0 * (p.out[1] - y[1])], mut g)
+    var none: Vec<f32> = Vec::new()
+    backward(
+        m,
+        w,
+        x,
+        p.clone(),
+        [2.0 * (p.out[0] - y[0]), 2.0 * (p.out[1] - y[1])],
+        mut g,
+        mut none,
+    )
     var worst = 0.0
     for k in 0..100 {
         let i = u32(rand(77, k) * f32(m.size())) % m.size()

@@ -5,7 +5,13 @@
 //
 // ```text
 // wrela tool fit -- --net sine --out <file.wrela> [--steps n] [--report]
+// wrela tool fit -- --net impostor [--rungs ABCD] [--steps n] [--batch n] [--seeds n]
 // ```
+//
+// `impostor` (§B14.2b): its fixture (studio/fit/fixtures/impostor) built with its testing exports
+// and run on the native host with the GPU: the great tree's impostor baked and read back as rows,
+// and each rung trained from each seed on the program's helpers, its held-out PSNR measured; a
+// row a rung and seed printed, and the curve's loss every 500 steps.
 //
 // `sine`: a 1 → 32 → 32 → 1 net on `sin` over [-π, π] (1,024 samples a step, held out: 200 points
 // evenly over it). `--report` prints the loss every 100 steps. It writes only under `content/`
@@ -17,9 +23,14 @@ use engine::noise::rand
 use std::io::print
 use std::tool::{ToolError, args}
 use std::tool::time
+use std::tool::drive
+use std::input::Script
+use std::tool::drive::{Scalar, Step}
+use std::tool::toolchain
+use toolkit::driven::untrapped
 use toolkit::whole::{chunked, write_file}
 
-pub const USAGE: Text = "usage: wrela tool fit -- --net sine --out <content/... or build/....wrela> [--steps n] [--report]"
+pub const USAGE: Text = "usage: wrela tool fit -- --net sine --out <content/... or build/....wrela> [--steps n] [--report] | --net impostor [--rungs ABCD] [--steps n] [--batch n] [--seeds n]"
 
 /// A run of the tool: the net, where its source goes (a workspace path), how many steps, and
 /// whether to print the curve.
@@ -28,6 +39,9 @@ pub struct Options: Clone {
     pub out: String,
     pub steps: u32 = 2000,
     pub report: bool = false,
+    pub rungs: String = String::new(),
+    pub batch: u32 = 16384,
+    pub seeds: u32 = 3,
 }
 
 pub fn parse_args(given: [String]) -> Option<Options> {
@@ -50,10 +64,22 @@ pub fn parse_args(given: [String]) -> Option<Options> {
             o.out = take v
         } else if a == "--steps" {
             o.steps = v.as_str().parse_u32()?
+        } else if a == "--batch" {
+            o.batch = v.as_str().parse_u32()?
+        } else if a == "--seeds" {
+            o.seeds = v.as_str().parse_u32()?
+        } else if a == "--rungs" {
+            o.rungs = take v
         } else {
             return None
         }
         k += 2
+    }
+    if o.net.as_str() == "impostor" {
+        if o.rungs.is_empty() {
+            o.rungs = String::from("ABCD")
+        }
+        return Some(o)
     }
     if o.net.as_str() != "sine" || !writable(o.out.as_str()) {
         return None
@@ -120,7 +146,107 @@ fn sine(o: Options) -> (Vec<f32>, f32) {
     (take w, held / 200.0)
 }
 
+/// A scalar as a number.
+fn number(s: Scalar) -> f64 {
+    match s {
+        Scalar::F32(x) => f64(x),
+        Scalar::I32(x) => f64(x),
+        Scalar::F64(x) => x,
+        Scalar::I64(x) => f64(x),
+    }
+}
+
+/// Export `name` called with `args` on `d`: its results.
+fn call(d: drive::Build, name: str, args: take Vec<Scalar>) -> Result<Vec<f64>, ToolError> {
+    let seen = untrapped(
+        name,
+        drive::steps(d, [Step::Call(String::from(name), take args)], timeout: 600.0).wait()?,
+    )?
+    var out: Vec<f64> = Vec::new()
+    for x in seen.ran[0].results {
+        out.push(number(x))
+    }
+    Ok(out)
+}
+
+/// The impostor's ladder (§B14.2b): each rung from each seed, `o.steps` steps of `o.batch` rows
+/// (Adam at 1e-3), its held-out PSNR; printed as rows.
+fn impostor(o: Options) -> Result<(), ToolError> {
+    let dir = "out/fixtures/impostor"
+    var options = toolchain::options()
+    options.testing = true
+    options.optimize = true
+    options.timeout = 600.0
+    let b = toolchain::build("ws/studio/fit/fixtures/impostor", dir, options).wait()?
+    if !b.ok {
+        for d in b.diagnostics {
+            if d.error {
+                print(d.rendered.as_str())
+            }
+        }
+        return Err(ToolError::new("the impostor fixture didn't build"))
+    }
+    var load = drive::gpu()
+    load.workers = HELPERS
+    load.timeout = 600.0
+    let d = drive::load(dir, load).wait()?.build
+    let _ = untrapped("init", drive::steps(d, [Step::Init], timeout: 600.0).wait()?)?
+    // Frames until the atlases are read back and laid out as rows.
+    var ready = call(d, "test_ready", Vec::new())?
+    while ready[0] < 0.5 {
+        let _ = untrapped(
+            "frames",
+            drive::steps(d, [Step::Frames(4, Script::frames())], timeout: 600.0).wait()?,
+        )?
+        ready = call(d, "test_ready", Vec::new())?
+    }
+    print(f"fit: the great tree's impostor: {ready[1]:.0} rows to train on, {ready[2]:.0} held out")
+    print("| rung | seed | PSNR dB | colour MSE | coverage MSE | final loss | s |")
+    print("|---|---|---|---|---|---|---|")
+    for k in 0..o.rungs.len() {
+        let r = u32(o.rungs.as_str().byte(k)) - 65
+        for seed in 0..o.seeds {
+            let t0 = std::time::now()
+            let _ = call(
+                d,
+                "test_start",
+                Vec::from([Scalar::I32(i32(r)), Scalar::I32(i32(seed + 1)), Scalar::F32(1.0e-3)]),
+            )?
+            var done = 0
+            var loss = 0.0
+            var curve = String::new()
+            while done < o.steps {
+                let n = min(CHUNK, o.steps - done)
+                loss = call(
+                    d,
+                    "test_train",
+                    Vec::from(
+                        [Scalar::I32(i32(n)), Scalar::I32(i32(o.batch)), Scalar::I32(i32(HELPERS))],
+                    ),
+                )?[0]
+                done += n
+                curve.push_str(f" {loss:.5}")
+            }
+            let score = call(d, "test_score", Vec::from([]))?
+            let secs = std::time::now() - t0
+            print(
+                f"| {o.rungs.as_str().slice(k, k + 1)} | {seed + 1} | {score[0]:.2} | {score[1]:.5} | {score[2]:.5} | {loss:.5} | {secs:.0} |",
+            )
+            print(f"fit:   the loss every {CHUNK} steps:{curve}")
+        }
+    }
+    let _ = drive::close(d).wait()
+    Ok(())
+}
+
+/// The helpers a step's batch is split across, and the steps a call trains.
+const HELPERS: u32 = 8
+const CHUNK: u32 = 500
+
 fn fit(o: Options) -> Result<(), ToolError> {
+    if o.net.as_str() == "impostor" {
+        return impostor(o)
+    }
     let started = std::time::now()
     let now = time::utc_now().wait()?
     let date = date_of(f64(now.seconds) * 1000.0)

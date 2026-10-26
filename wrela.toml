@@ -179,7 +179,7 @@ write = ["ws=.", "out=build/export"]
 # --net sine --out content/...`), for the engine's experiments (docs/plan-world-class-2.md §B14).
 [tools.fit]
 package = "studio/fit"
-write = ["ws=."]
+write = ["ws=.", "out=build/fit"]
 
 # The serve tool (studio/serve): a directory of the workspace served to a browser on this
 # machine, its pages' results written into its `results/`.
