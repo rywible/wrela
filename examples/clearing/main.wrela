@@ -305,6 +305,8 @@ fn keep_carried(s: Clearing) {
 
 pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     keys(mut s, time)
+    // Its clocks held while the frame's time is (the lookdev instrument's F10, F12).
+    let time = s.frame.held_time(time)
     let off = s.carried.off
     // The systems the frame itself leaves out, and the scale the scene is drawn at.
     s.frame.set(Off::Shadows, on: on(off, System::Shadows))
@@ -320,9 +322,12 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
         s.frame.requality(quality(s.carried.scale))
     }
     // The creature, between the two ticks round the frame's sim time, and its palette.
-    // The sim's part of the frame: its snapshots read (engine::frame `PHASES`).
+    // The sim's part of the frame: its snapshots read (engine::frame `PHASES`), none while the
+    // frame's time is frozen (the lookdev instrument's F10, F12).
     phase("sim")
-    s.snaps.update()
+    if !s.frame.frozen() {
+        s.snaps.update()
+    }
     let b = s.snaps.at(s.snaps.sim_time(time))
     let walker = between(b.a.walker, b.b.walker, b.alpha)
     s.stage.walker = walker

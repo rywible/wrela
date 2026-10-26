@@ -623,6 +623,31 @@ pub struct Quality: Copy {
     pub contact: bool = true,
 }
 
+impl Quality {
+    /// The lookdev instrument's reference (docs/lookdev.md, F12): every knob at its most. The
+    /// scene at the output's size, unpaced, the planner with the code's estimates; the cascades
+    /// at 4096² (their finest before shadow pages), drawn whole each frame; probes of 128 rays.
+    /// With temporal AA's history off and the jitter on an 8 × 8 grid, a mean of 64 frames of it
+    /// is a 64-sample supersample.
+    pub fn reference() -> Quality {
+        let q = Quality {}
+        Quality {
+            scale: 1.0,
+            pace: false,
+            measured: false,
+            shadows: ShadowQuality {
+                near: Cascade { side: 4096, ..q.shadows.near },
+                far: Cascade { side: 4096, ..q.shadows.far },
+                near_strips: 1,
+                far_strips: 1,
+                ..q.shadows,
+            },
+            probes: ProbeQuality { rays: 128, ..q.probes },
+            ..q,
+        }
+    }
+}
+
 /// How see-through matter is drawn (`Quality::transparency`).
 pub enum Transparency: Copy + Eq + Fieldless {
     Dithered,
@@ -755,7 +780,33 @@ pub struct Debug: Copy {
     pub plain: bool = false,
     pub capture: bool = false,
     pub still: bool = false,
+    /// Time frozen at this frame time (F10): the wind, the clouds' drift, the water's and the
+    /// particles hold, so only what the renderer does moves a pixel (the lookdev instrument).
+    pub frozen: Option<f32> = None,
+    /// The eye held at this aim (F11), whatever the game aims at; with `dolly` (F11 again), moved
+    /// along its look at `DOLLY` m a frame while no reference, arrival or pause (`paused`, the
+    /// backquote) holds it.
+    pub held: Option<Aim> = None,
+    pub dolly: bool = false,
+    pub paused: bool = false,
+    /// The ghost control's history, unclipped (`Frame::ghost`).
+    pub ghost: bool = false,
+    /// The reference (F12): the quality and the history it replaced, to put back; and whether
+    /// the first frame round the eye since F12 last toggled it is still to be said (`REFERENCE`,
+    /// `PLAY`).
+    pub reference: Option<(Quality, bool)> = None,
+    pub unsaid: bool = false,
 }
+
+/// How far a dolly (F11's second press) moves the held eye each frame: 0.5 m/s at 60 frames a
+/// second, the frame's time frozen or not.
+pub const DOLLY: f32 = 0.5 / 60.0
+
+/// What the frame prints when a reference's first frame is drawn round the eye (F12), and when
+/// play's is once F12 puts it back: the lookdev instrument then takes its frames (`wrela tool
+/// lookbook --quality`).
+pub const REFERENCE: Text = "reference at frame"
+pub const PLAY: Text = "play at frame"
 
 // ---- Readiness ---------------------------------------------------------------------------------
 
@@ -945,6 +996,8 @@ pub struct Frame<R: Resolver> {
     pub ran: u32,
     /// Frames the camera has held still (`temporal::held`).
     settled: u32,
+    /// The last aim `begin` was given: what F11 holds.
+    aimed: Aim,
     width: u32,
     height: u32,
     /// The render origin (the world point, whole tiles, y 0).
@@ -1135,6 +1188,12 @@ impl<R: Resolver> Frame<R> {
             frames: 0,
             ran: 0,
             settled: 0,
+            aimed: Aim {
+                eye: vec3(0.0),
+                at: vec3(0.0, 0.0, -1.0),
+                fovy: 1.0,
+                moving_at: vec3(0.0),
+            },
             width: 0,
             height: 0,
             origin: vec3(0.0),
@@ -1254,6 +1313,54 @@ impl<R: Resolver> Frame<R> {
             self.debug.plain = !self.debug.plain
             return true
         }
+        // The lookdev instrument's (docs/lookdev.md): F10 freezes time, F11 holds the eye, F12
+        // draws the reference (and holds time and the eye while it does).
+        if key == Key::F10 {
+            self.debug.frozen = match self.debug.frozen {
+                Some(_) => None,
+                None => Some(self.time),
+            }
+            return true
+        }
+        // The backquote pauses the dolly where it is, and resumes it.
+        if key == Key::Backquote {
+            self.debug.paused = !self.debug.paused
+            return true
+        }
+        // F11 cycles: the eye held, then dollied along its look, then the game's again.
+        if key == Key::F11 {
+            match self.debug.held {
+                None => self.debug.held = Some(self.aimed),
+                Some(_) => {
+                    if self.debug.dolly {
+                        self.debug.held = None
+                    }
+                    self.debug.dolly = !self.debug.dolly
+                },
+            }
+            return true
+        }
+        if key == Key::F12 {
+            // Either way the caches are made again: the frame waits for them (`arrive`).
+            match self.debug.reference {
+                Some((q, history)) => {
+                    self.requality(q)
+                    self.set(Off::History, on: history)
+                    self.debug.reference = None
+                },
+                None => {
+                    let history = self.on(Off::History)
+                    self.debug.reference = Some((self.quality, history))
+                    self.debug.frozen = Some(self.debug.frozen.unwrap_or(self.time))
+                    self.debug.held = Some(self.debug.held.unwrap_or(self.aimed))
+                    self.requality(Quality::reference())
+                    self.set(Off::History, on: true)
+                },
+            }
+            self.debug.unsaid = true
+            self.arrive()
+            return true
+        }
         false
     }
 
@@ -1262,6 +1369,26 @@ impl<R: Resolver> Frame<R> {
     pub fn form(mut self, view: u32) {
         self.debug.view = view
         self.light.clay = if view == 1 { 1 } else { 0 }
+    }
+
+    /// Temporal AA's blend forced to `blend` (`Quality::blend`) and its history no longer clipped
+    /// to the frame's neighbourhood: the lookdev instrument's ghost control (docs/lookdev.md), a
+    /// history that drags behind what moves.
+    pub fn ghost(mut self, blend: f32) {
+        self.debug.ghost = true
+        self.requality(Quality { blend, ..self.quality })
+    }
+
+    /// The game's time for the frame at `time`: the frozen one while F10 or F12 holds it, so a
+    /// game that steps its own clocks by it (its snapshots, its shots' moves) holds them too.
+    pub fn held_time(self, time: f32) -> f32 {
+        self.debug.frozen.unwrap_or(time)
+    }
+
+    /// Whether the frame's time is frozen (F10, F12): a game then reads no new snapshots of its
+    /// sim, so it holds as well.
+    pub fn frozen(self) -> bool {
+        self.debug.frozen.is_some()
     }
 
     /// An arrival begins (a lookbook shot, a capture, a jump the eye didn't make): frames are
@@ -1338,6 +1465,17 @@ impl<R: Resolver> Frame<R> {
         width: u32,
         height: u32,
     ) -> Camera {
+        // The lookdev instrument's held time and eye (F10, F11, F12).
+        self.aimed = aim
+        if let Some(h) = self.debug.held {
+            let stopped = self.debug.paused || self.debug.reference.is_some() || self.ready.arriving
+            if self.debug.dolly && !stopped {
+                let step = normalize(h.at - h.eye) * DOLLY
+                self.debug.held = Some(Aim { eye: h.eye + step, at: h.at + step, ..h })
+            }
+        }
+        let aim = self.debug.held.unwrap_or(aim)
+        let time = self.debug.frozen.unwrap_or(time)
         let dt = match self.last_time {
             Some(t) => clamp(time - t, 0.0, 0.1),
             None => 0.0,
@@ -1378,7 +1516,8 @@ impl<R: Resolver> Frame<R> {
             last: self.cam,
             still: self.debug.plain,
             origin: self.origin,
-            grid: self.debug.capture,
+            grid: self.debug.capture || self.debug.reference.is_some(),
+            cells: if self.debug.reference.is_some() { 8 } else { 4 },
         )
         self.cam
     }
@@ -1386,6 +1525,12 @@ impl<R: Resolver> Frame<R> {
     /// This frame cooked and drawn (the module's comment), the camera `begin` made at `aim`.
     pub fn draw<S: Scene>(mut self, scene: mut S, aim: Aim) {
         phase("cook")
+        let aim = self.debug.held.unwrap_or(aim)
+        if self.debug.unsaid && !self.ready.arriving {
+            self.debug.unsaid = false
+            let said = if self.debug.reference.is_some() { REFERENCE } else { PLAY }
+            print(f"{said} {self.frames}")
+        }
         if self.quality.measured {
             self.measure()
         }
@@ -2381,8 +2526,9 @@ impl<R: Resolver> Frame<R> {
             out,
             blend: self.quality.blend,
             fresh: if fresh { 1 } else { 0 },
-            jitter: jitter_of(cam.frame, cam.grid != 0),
-            last_jitter: jitter_of(max(cam.frame, 1) - 1, cam.grid != 0),
+            unclipped: if self.debug.ghost { 1 } else { 0 },
+            jitter: jitter_of(cam.frame, cam.grid != 0, cells: max(cam.grid, 1)),
+            last_jitter: jitter_of(max(cam.frame, 1) - 1, cam.grid != 0, cells: max(cam.grid, 1)),
             moving: scene.moves_in(cam, out),
             settled: if again { 0.0 } else { f32(self.settled) },
         }

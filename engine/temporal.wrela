@@ -42,6 +42,9 @@ pub struct Resolve: Copy + GpuData {
     /// How many frames the camera has held still before this one (`held`; 0 when it moved):
     /// a settled view's history gathers more frames (`SETTLED`).
     pub settled: f32 = 0.0,
+    /// The history kept whole, not clipped to the frame's neighbourhood: the lookdev
+    /// instrument's ghost control alone (`Frame::ghost`).
+    pub unclipped: u32 = 0,
 }
 
 /// The least share of a frame a settled view's pixel takes: its history is the mean of about
@@ -411,7 +414,7 @@ fn resolved(
     let off = h - centre
     let unit = abs(off / extent)
     let most = max(unit.x, max(unit.y, unit.z))
-    let clipped = if most > 1.0 { centre + off / most } else { h }
+    let clipped = if most > 1.0 && r.unclipped == 0 { centre + off / most } else { h }
     // This frame's share: more where a sample fell near the pixel's centre. Where the history
     // showed something moving and the pixel doesn't move now, it moved off: this frame's alone
     // (the box round an edge holds its colours, which would let it trail). The history showed

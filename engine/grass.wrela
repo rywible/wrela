@@ -112,6 +112,8 @@ pub struct Place: Copy + GpuData {
     pub level: u32,
     pub cols: u32,
     pub ahead: f32,
+    /// The share of the cover's grass placed (`Grass::thin`).
+    pub thin: f32,
 }
 
 /// The cells level `k` covers when the eye is at `eye`, looking along `forward`: its first
@@ -269,7 +271,7 @@ pub fn place(
     // grass's reach, into the meadow's ground: nothing pops.
     let dropped = density_scale(keep, k)
     let shrink = dropped * trodden * (1.0 - smoothstep(REACH - 12.0, REACH, d))
-    let grass = rand(seed, 3) < cover.a
+    let grass = rand(seed, 3) < cover.a * at.thin
     // In the grass, a share of forbs (a meadow is not grass alone: `FORBS`), most of them in
     // the meadow's drifts of flowers (`bloom_drift`).
     let wxz = xz + keyed
@@ -1238,6 +1240,9 @@ pub struct Blooms: Copy + GpuData {
 pub struct Grass {
     /// A cloth's contact (`Contact`); none by default.
     pub contact: Contact,
+    /// The share of the cover's grass placed: 1, or less for the lookdev instrument's
+    /// detail-removal control (docs/lookdev.md).
+    pub thin: f32,
     pub near: AppendBuffer<Blade>,
     pub middle: AppendBuffer<Blade>,
     pub far: AppendBuffer<Blade>,
@@ -1256,6 +1261,7 @@ impl Grass {
     pub fn new() -> Grass {
         Grass {
             contact: Contact {},
+            thin: 1.0,
             near: append_buffer(MAX_BLADES / 4),
             middle: append_buffer(MAX_BLADES / 2),
             far: append_buffer(MAX_BLADES / 2),
@@ -1305,6 +1311,7 @@ impl Grass {
                 level: k,
                 cols,
                 ahead,
+                thin: self.thin,
             }
             let groups = ((cols + 7) / 8, (rows + 7) / 8, 1)
             // The level's blades go to its tier's buffer.

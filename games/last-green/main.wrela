@@ -312,11 +312,16 @@ fn keys(s: mut Floor, time: f32) {
 
 pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     keys(mut s, time)
+    // Its clocks held while the frame's time is (the lookdev instrument's F10, F12).
+    let time = s.frame.held_time(time)
     hash_bake(mut s)
     s.stage.map.poll()
-    // The sim's part of the frame: its snapshots read (engine::frame `PHASES`).
+    // The sim's part of the frame: its snapshots read (engine::frame `PHASES`), none while the
+    // frame's time is frozen (the lookdev instrument's F10, F12).
     phase("sim")
-    s.snaps.update()
+    if !s.frame.frozen() {
+        s.snaps.update()
+    }
     // The play harness's report, each 2 s of the sim's time (`world::report`).
     let newest = s.snaps.newest()
     // The frames since the last report, beside it: the longest between two frames' times, and
@@ -749,6 +754,16 @@ pub fn test_shafts(s: mut Floor, on: u32) {
 @testing
 pub fn test_plain(s: mut Floor, on: u32) {
     s.frame.debug.plain = on != 0
+}
+
+/// The lookdev instrument's negative controls (`wrela tool lookbook --quality --controls`,
+/// docs/lookdev.md): temporal AA's blend forced to `blend` and its history unclipped (0 leaves
+/// both), and `thin` of the grass's cover placed (1 all of it).
+pub fn lookdev(s: mut Floor, blend: f32, thin: f32) {
+    if blend > 0.0 {
+        s.frame.ghost(blend)
+    }
+    s.stage.grass.thin = thin
 }
 
 /// The wind blowing (`on` 1) or still.
