@@ -30,6 +30,7 @@ use stage::{
     air_for, air_of, bare_at, fields_clipmap, grown_at, height_at, level_at, look_of, look_view,
     of_world, origin_of, probe_grid, shot_count, source_of, stage, sun_light,
 }
+use std::time::phase
 use std::collections::replace
 use std::gpu::{GpuBuffer, buffer, dispatch, write}
 use std::input::{Button, Event, Key, events}
@@ -313,6 +314,8 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     keys(mut s, time)
     hash_bake(mut s)
     s.stage.map.poll()
+    // The sim's part of the frame: its snapshots read (engine::frame `PHASES`).
+    phase("sim")
     s.snaps.update()
     // The play harness's report, each 2 s of the sim's time (`world::report`).
     let newest = s.snaps.newest()

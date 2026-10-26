@@ -26,8 +26,8 @@
 // (`out/<report>.json` for one in build/bench).
 
 use report::{
-    Measured, compared, date_of, doc, intervals, markdown, number_at, numbers, report_json, spans,
-    time_of, stats,
+    Measured, compared, date_of, doc, hitches, intervals, markdown, number_at, numbers, report_json,
+    spans, time_of, stats,
 }
 use scenes::{SCENES, Scene, script}
 use std::io::print
@@ -36,9 +36,10 @@ use std::tool::{ToolError, args}
 use std::tool::drive
 use std::tool::drive::Step
 use std::tool::files
+use std::tool::time
 use std::tool::toolchain
 use toolkit::driven::untrapped
-use toolkit::page::run_page
+use toolkit::page::{keep_results, run_page}
 use toolkit::whole::{chunked, read_file, write_file}
 
 pub const USAGE: Text = "usage: wrela tool bench -- [--scene <name>]... [--frames <n>] [--warmup <n>] [--workers <n>] [--compare <report.json>] [--no-native] [--no-docs]"
@@ -173,9 +174,9 @@ fn dashed(text: str, sep: str) -> String {
     out
 }
 
-/// Where package `pkg` (the workspace's) is built for the bench.
-fn build_dir(pkg: str) -> String {
-    String::from(f"out/builds/{dashed(pkg, "/")}")
+/// Where package `pkg` (the workspace's) is built for the bench, in the write root `out`.
+fn build_dir(out: str, pkg: str) -> String {
+    String::from(f"{out}/builds/{dashed(pkg, "/")}")
 }
 
 /// A test-mode page's hash: `frames` frames at `w` × `h` on `workers` workers, its input
@@ -186,20 +187,29 @@ fn page_hash(frames: u32, w: u32, h: u32, workers: u32, input: str) -> String {
     )
 }
 
-/// Scene `s` measured, its package built first unless an earlier scene's was (`build`); the
-/// page's date (ms since the epoch) and the machine.
-fn measure(
+/// Scene `s` measured, its package (in the root `ws`) built first into the write root `out`
+/// unless an earlier scene's was (`build`), each run's results kept in `kept`; the page's date
+/// (ms since the epoch) and the machine.
+pub fn measure(
     s: Scene,
     o: Options,
     salt: u32,
     build: bool,
+    ws: str,
+    out: str,
+    kept: str,
 ) -> Result<(Measured, f64, String), ToolError> {
-    let dir = build_dir(s.pkg)
+    let dir = build_dir(out, s.pkg)
+    // Each run's results, kept before the next run empties them.
+    var runs: Vec<String> = Vec::new()
+    for r in ["gpu", "play", "cold", "warm"] {
+        runs.push(String::from(f"{kept}/{s.name}/{r}"))
+    }
     if build {
         var options = toolchain::options()
         options.optimize = true
         options.timeout = 600.0
-        let built = toolchain::build(f"ws/{s.pkg}", dir.as_str(), options).wait()?
+        let built = toolchain::build(f"{ws}/{s.pkg}", dir.as_str(), options).wait()?
         if !built.ok {
             for d in built.diagnostics {
                 if d.error {
@@ -221,11 +231,14 @@ fn measure(
     let common = page_hash(frames, w, h, o.workers, input_file.as_str())
     // 1. The GPU.
     run_page(dir.as_str(), f"{common}&timestamps=1&saturate=1&nohash=1", w, h, timeout)?
+    keep_results(dir.as_str(), runs[0].as_str())?
     let span = stats(spans(json_of(f"{dir}/results/timings.json")?, o.warmup))
     let machine = machine_of(dir.as_str())?
-    // 2. Play.
-    run_page(dir.as_str(), f"{common}&paced=1&inflight=2&nohash=1", w, h, timeout)?
+    // 2. Play, each frame's labels timed (what a hitch held).
+    run_page(dir.as_str(), f"{common}&paced=1&inflight=2&nohash=1&timestamps=1", w, h, timeout)?
+    keep_results(dir.as_str(), runs[1].as_str())?
     let framed = json_of(f"{dir}/results/frames.json")?
+    let held = hitches(framed, json_of(f"{dir}/results/counters.json")?, o.warmup)
     let began = match framed.get(TOP, "began_ms") {
         Some(n) => numbers(framed, n, 0),
         None => Vec::new(),
@@ -254,38 +267,21 @@ fn measure(
     let cold_frames = min(frames, 300)
     let cold_hash = page_hash(cold_frames, w, h, o.workers, input_file.as_str())
     run_page(dir.as_str(), f"{cold_hash}&nohash=1&salt={salt}", w, h, timeout)?
-    let load = json_of(f"{dir}/results/load.json")?
-    let opened = number_at(load, TOP, "opened_ms")
-    let first_frame_ms = number_at(load, TOP, "first_frame_ms") - opened
-    var loaded_bytes = 0.0
-    if let Some(r) = load.get(TOP, "resources") {
-        for i in 0..load.count(r) {
-            if let Some(e) = load.at(r, i) {
-                loaded_bytes += number_at(load, e, "bytes")
-            }
-        }
-    }
+    keep_results(dir.as_str(), runs[2].as_str())?
+    let (opened, first_frame_ms, loaded_bytes, playable_ms) = started(dir.as_str())?
     let pipelines = json_of(f"{dir}/results/pipelines.json")?
     let pipelines_ms = number_at(pipelines, TOP, "ms")
-    let cold = json_of(f"{dir}/results/frames.json")?
-    let log = text_of(f"{dir}/results/log.txt")?
-    var playable_ms = 0.0
-    if let (Some(pi), Some(bi)) = (cold.get(TOP, "printed_in"), cold.get(TOP, "began_ms")) {
-        let printed_in = numbers(cold, pi, 0)
-        let began_cold = numbers(cold, bi, 0)
-        var line = 0
-        for (a, b) in log.lines() {
-            let l = log.as_str().slice(a, b)
-            if playable_ms == 0.0 && l.find("playable").is_some() && line < printed_in.len() {
-                let f = u32(printed_in[line])
-                if f < began_cold.len() {
-                    playable_ms = began_cold[f] - opened
-                }
-            }
-            line += 1
-        }
+    let compiles = slowest_compiles(dir.as_str(), pipelines)?
+    // 4. A warm start: opened again in the same profile, no salt, so its caches serve it.
+    run_page(dir.as_str(), f"{cold_hash}&nohash=1", w, h, timeout, again: true)?
+    keep_results(dir.as_str(), runs[3].as_str())?
+    let (_, _, warm_loaded_bytes, warm_playable_ms) = started(dir.as_str())?
+    // Where the page timed its pipelines (a salted run alone does, today).
+    let warm_pipelines_ms = match files::read(f"{dir}/results/pipelines.json").wait() {
+        Ok(_) => number_at(json_of(f"{dir}/results/pipelines.json")?, TOP, "ms"),
+        Err(_) => 0.0,
     }
-    // 4. Natively.
+    // 5. Natively.
     var native = stats(Vec::new())
     if o.native {
         let native_timeout = min(timeout, 600.0)
@@ -328,8 +324,97 @@ fn measure(
         loaded_bytes,
         gpu_bytes,
         gpu_peak,
+        warm_playable_ms,
+        warm_pipelines_ms,
+        warm_loaded_bytes,
+        hitches: held,
+        compiles,
+        runs,
     }
     Ok((m, opened, machine))
+}
+
+/// A start's numbers, from the page in `dir`'s `load.json`, `frames.json` and `log.txt`: when the
+/// page opened (ms since the epoch), ms from then to its first frame, the bytes it loaded, and
+/// ms to the program's first line that says `playable` (0 if none did).
+fn started(dir: str) -> Result<(f64, f64, f64, f64), ToolError> {
+    let load = json_of(f"{dir}/results/load.json")?
+    let opened = number_at(load, TOP, "opened_ms")
+    let first_frame_ms = number_at(load, TOP, "first_frame_ms") - opened
+    var loaded_bytes = 0.0
+    if let Some(r) = load.get(TOP, "resources") {
+        for i in 0..load.count(r) {
+            if let Some(e) = load.at(r, i) {
+                loaded_bytes += number_at(load, e, "bytes")
+            }
+        }
+    }
+    let framed = json_of(f"{dir}/results/frames.json")?
+    let log = text_of(f"{dir}/results/log.txt")?
+    var playable_ms = 0.0
+    if let (Some(pi), Some(bi)) = (framed.get(TOP, "printed_in"), framed.get(TOP, "began_ms")) {
+        let printed_in = numbers(framed, pi, 0)
+        let began = numbers(framed, bi, 0)
+        var line = 0
+        for (a, b) in log.lines() {
+            let l = log.as_str().slice(a, b)
+            if playable_ms == 0.0 && l.find("playable").is_some() && line < printed_in.len() {
+                let f = u32(printed_in[line])
+                if f < began.len() {
+                    playable_ms = began[f] - opened
+                }
+            }
+            line += 1
+        }
+    }
+    Ok((opened, first_frame_ms, loaded_bytes, playable_ms))
+}
+
+/// The ten slowest pipelines to compile, from a cold run's `pipelines.json` (`each`, each one
+/// built again alone): their names, ms and WGSL bytes (from the build in `dir`).
+fn slowest_compiles(
+    dir: str,
+    pipelines: std::json::Doc,
+) -> Result<Vec<(String, f64, f64)>, ToolError> {
+    var each: Vec<(String, f64)> = Vec::new()
+    if let Some(e) = pipelines.get(TOP, "each") {
+        for i in 0..pipelines.count(e) {
+            let Some(p) = pipelines.at(e, i) else { continue }
+            let name = match pipelines.get(p, "name") {
+                Some(n) => pipelines.text(n).unwrap_or(String::new()),
+                None => String::new(),
+            }
+            each.push((take name, number_at(pipelines, p, "ms")))
+        }
+    }
+    each.sort_by(slower)
+    let manifest = json_of(f"{dir}/manifest.json")?
+    var out = Vec::new()
+    for k in 0..min(each.len(), 10) {
+        var bytes = 0.0
+        if let Some(list) = manifest.get(TOP, "pipelines") {
+            for i in 0..manifest.count(list) {
+                let Some(p) = manifest.at(list, i) else { continue }
+                let (Some(n), Some(sh)) = (
+                    manifest.get(p, "name"),
+                    manifest.get(p, "shader"),
+                ) else { continue }
+                if manifest.text(n).unwrap_or(String::new()).as_str() == each[k].0.as_str() {
+                    let shader = manifest.text(sh).unwrap_or(String::new())
+                    bytes = match files::stat(f"{dir}/{shader}").wait() {
+                        Ok(e) => f64(e.size),
+                        Err(_) => 0.0,
+                    }
+                }
+            }
+        }
+        out.push((each[k].0.clone(), each[k].1, bytes))
+    }
+    Ok(out)
+}
+
+fn slower(a: (String, f64), b: (String, f64)) -> bool {
+    a.1 > b.1
 }
 
 /// The heading and introduction `docs/bench.md` starts with, when the bench writes it first.
@@ -344,6 +429,10 @@ fn bench(o: Options) -> Result<(), ToolError> {
     var opened_at = 0.0
     var machine = String::new()
     var salt = 1
+    // Where the runs' results are kept: `out/<date>-<time>/<scene>/<run>/`, the bench's start.
+    let now = time::utc_now().wait()?
+    let at = f64(now.seconds) * 1000.0
+    let kept = String::from(f"out/{date_of(at)}-{time_of(at)}")
     // The packages built so far: each once, for all the scenes that share it.
     var built: Vec<String> = Vec::new()
     for s in chosen(o.clone()) {
@@ -357,7 +446,7 @@ fn bench(o: Options) -> Result<(), ToolError> {
         if build {
             built.push(String::from(s.pkg))
         }
-        let (m, opened, mach) = measure(s, o.clone(), salt, build)?
+        let (m, opened, mach) = measure(s, o.clone(), salt, build, "ws", "out", kept.as_str())?
         salt += 1
         date = date_of(opened)
         opened_at = opened

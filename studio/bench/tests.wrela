@@ -1,12 +1,13 @@
 // The bench tool's tests: its command line, its statistics, its reading of a page's GPU timings
 // and its report, written as a later `--compare` reads it and as docs/bench.md shows it.
 
-use main::{chosen, parse_args}
+use main::{chosen, measure, parse_args}
 use report::{
-    Measured, Stats, compared, date_of, doc, intervals, markdown, report_json, spans, stats,
-    time_of,
+    hitches, Measured, Stats, compared, date_of, doc, intervals, markdown, report_json, spans,
+    stats, time_of,
 }
-use scenes::{SCENES, script}
+use scenes::{SCENES, Scene, script}
+use std::tool::files
 
 fn texts(lines: [Text]) -> Vec<String> {
     var out: Vec<String> = Vec::new()
@@ -94,6 +95,12 @@ fn a_report_reads_back_for_a_comparison_and_shows_as_a_table() {
         loaded_bytes: 1048576.0,
         gpu_bytes: 2097152.0,
         gpu_peak: 2097152.0,
+        warm_playable_ms: 40.0,
+        warm_pipelines_ms: 0.0,
+        warm_loaded_bytes: 1024.0,
+        hitches: Vec::new(),
+        compiles: Vec::new(),
+        runs: Vec::new(),
     }
     let all = Vec::from([m.clone()])
     let text = report_json("Apple M4", "2026-10-25", all)
@@ -105,7 +112,7 @@ fn a_report_reads_back_for_a_comparison_and_shows_as_a_table() {
     let table = markdown("Apple M4", "2026-10-25", Vec::from([take m]))
     assert(contains(table.as_str(), "## 2026-10-25, Apple M4"))
     assert(contains(table.as_str(), "| herd | 2.00 / 3.00 / 4.00 |"))
-    assert(contains(table.as_str(), "| 1.0 | 2.0 |"))
+    assert(contains(table.as_str(), "| 1.0 | 40.00 | 0.0 | 2.0 |"), table.as_str())
 }
 
 @test
@@ -115,4 +122,74 @@ fn a_date_is_the_civil_day_of_its_milliseconds() {
     assert(date_of(951782400000.0) == "2000-02-29")
     // Two runs on one day are two reports.
     assert(time_of(1792886400000.0 + 3723000.0) == "010203")
+}
+
+@test
+fn a_paced_runs_hitches_name_their_heaviest_labels() {
+    // Frames 0..4 at 16.6 ms but frame 3, 40 ms late: one hitch; frame 4's 50 ms has no label
+    // over 2 ms and 1 ms of CPU, so it's the browser's.
+    let frames = "{\"began_ms\": [0, 16.6, 33.2, 73.2, 123.2], \"cpu_ms\": [1, 1, 1, 9, 1], \"phases\": [{}, {}, {}, {\"cook\": 6, \"passes\": 2}, {}], \"labels\": [[], [], [], [[\"terrain cook\", 4.5], [\"sky\", 12.25]], [[\"sky\", 0.5]]]}"
+    let counters = "[{}, {}, {}, {\"draws\": 31, \"write_buffer_bytes\": 4096}, {}]"
+    let (Ok(f), Ok(c)) = (doc(frames, "frames"), doc(counters, "counters")) else { panic("JSON") }
+    let h = hitches(f, c, 1)
+    assert(h.len() == 2 && h[0].frame == 3 && h[1].frame == 4)
+    assert(h[0].labels[0].0.as_str() == "sky" && h[0].phases[0].0.as_str() == "cook")
+    assert(h[0].draws == 31 && h[0].written == 4096.0 && !h[0].unattributed())
+    assert(h[1].unattributed())
+}
+
+/// The bench of a small scene (examples/hello-field, 30 frames after 10 of warmup, at 640 × 360)
+/// keeps each run's results where the report names them, and its report has the warm start and
+/// the hitch table, an empty one or not.
+@test(tool, read: [("ws", "../..")], browser: true, budget: 600)
+fn a_bench_keeps_its_runs_and_reports_the_warm_start_and_the_hitches() {
+    let s = Scene {
+        name: "hello-field",
+        pkg: "examples/hello-field",
+        frames: 30,
+        width: 640,
+        height: 360,
+    }
+    let Some(o) = parse_args(texts(["--warmup", "10", "--no-docs"])) else { panic("the options") }
+    let Ok((m, _, machine)) = measure(
+        s,
+        o,
+        salt: 1,
+        build: true,
+        ws: "ws",
+        out: "scratch",
+        kept: "scratch/kept",
+    ) else {
+        panic("the bench of hello-field")
+    }
+    assert(m.runs.len() == 4)
+    let named = ["gpu", "play", "cold", "warm"]
+    for k in 0..4 {
+        let run = named[k]
+        assert(m.runs[k].as_str() == f"scratch/kept/hello-field/{run}", m.runs[k].as_str())
+        for file in ["frames.json", "counters.json", "memory.json", "log.txt"] {
+            assert(files::stat(f"{m.runs[k]}/{file}").wait().is_ok(), f"{run}'s {file}")
+        }
+    }
+    // The timed runs' GPU timings (a start isn't timed: its timestamps would cost it), and the
+    // starts' loads.
+    for k in 0..2 {
+        assert(files::stat(f"{m.runs[k]}/timings.json").wait().is_ok(), "a timed run's timings")
+    }
+    for k in 2..4 {
+        assert(files::stat(f"{m.runs[k]}/load.json").wait().is_ok(), "a start's load.json")
+    }
+    assert(m.warm_playable_ms >= 0.0 && m.warm_loaded_bytes > 0.0, "the warm start's numbers")
+    let table = markdown(machine.as_str(), "2026-01-01", [m.clone()])
+    assert(contains(table.as_str(), "Warm playable") && contains(table.as_str(), "Hitches"))
+    let json = report_json(machine.as_str(), "2026-01-01", [take m])
+    for key in [
+        "\"hitches\"",
+        "\"unattributed\"",
+        "\"warm_playable_ms\"",
+        "\"runs\"",
+        "\"compiles\"",
+    ] {
+        assert(contains(json.as_str(), key), key)
+    }
 }

@@ -54,6 +54,7 @@ use std::gpu::{
     draw, draw_multi, label, memory, sampler, texture, timed, writable_texture,
 }
 use std::io::{Pending, print}
+use std::time::phase
 
 /// A triangle that covers the target, at depth `z`.
 @vertex
@@ -674,6 +675,12 @@ const MEMORY_EVERY: u32 = 30
 const MEASURE_FIRST: u32 = 4
 
 const MEASURE_AGAIN: u32 = 240
+
+/// The phases of a frame's CPU time it names (`std::time::phase`), in order: the cooking and
+/// the planner (`draw`'s start), the scene's choosing, recording the passes, the finish (temporal
+/// AA to the bloom), and the present (the develop). A game's `frame` adds `sim`, round its read
+/// of the latest snapshot.
+pub const PHASES: [Text; 5] = ["cook", "choose", "passes", "finish", "present"]
 
 /// How many kinds of work a measuring frame times (`MEASURED`).
 const MEASURED_KINDS: u32 = 5
@@ -1378,6 +1385,7 @@ impl<R: Resolver> Frame<R> {
 
     /// This frame cooked and drawn (the module's comment), the camera `begin` made at `aim`.
     pub fn draw<S: Scene>(mut self, scene: mut S, aim: Aim) {
+        phase("cook")
         if self.quality.measured {
             self.measure()
         }
@@ -2117,7 +2125,9 @@ impl<R: Resolver> Frame<R> {
         if !self.quality.occlusion || self.jumped || !scene.reveals() {
             hzb.on = 0
         }
+        phase("choose")
         scene.choose(lt, texels, self.pyramid.depth, hzb)
+        phase("passes")
         label("vegetation prepass")
         let pre = begin_pass_with_depth(
             mut self.targets.ids,
@@ -2360,6 +2370,7 @@ impl<R: Resolver> Frame<R> {
     /// Temporal AA up to the output, then the look's passes to the screen (or an arrival's
     /// cover, plain rendering, or a scene's own view).
     fn finish<S: Scene>(mut self, scene: S) {
+        phase("finish")
         let cam = self.cam
         let out = vec2(f32(self.width), f32(self.height))
         // An arrival's first frame under the new eye's light: temporal AA's history starts again.
@@ -2482,6 +2493,7 @@ impl<R: Resolver> Frame<R> {
         bloom_add(mut self.targets.bloom_3, self.targets.bloom_4, s)
         bloom_add(mut self.targets.bloom_2, self.targets.bloom_3, s)
         bloom_add(mut self.targets.bloom_1, self.targets.bloom_2, s)
+        phase("present")
         let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
         fullscreen(
             screen,

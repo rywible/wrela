@@ -47,6 +47,7 @@ use feel::HZ
 use ink::INK
 use scenery::{Strips, View, strips}
 use sound::Cue
+use std::time::phase
 use std::audio::RingWriter
 use engine::sheet::{Sheet, sheet}
 use engine::sprite::{Stage, quad_vertex}
@@ -328,6 +329,8 @@ pub fn frame(s: mut Lab, time: f32, width: u32, height: u32) {
     if s.voice.is_none() {
         s.voice = Some(sound::start(music::music()))
     }
+    // The sim's part of the frame: its snapshots read (engine::frame `PHASES`).
+    phase("sim")
     s.snaps.update()
     // The play area (camera.wrela's `play_rect`): what the scene, the page and the screens are
     // laid out in (`screen`, its size), at `origin` on the screen; the margins round it the sky's.

@@ -53,6 +53,109 @@ pub struct Measured: Clone {
     /// The program's GPU memory at the end and at its most (`memory.json`), bytes.
     pub gpu_bytes: f64,
     pub gpu_peak: f64,
+    /// A warm start: the same build opened again by the same browser profile, its caches warm
+    /// (no `salt`): ms to `playable`, the pipelines' ms (0 where the page didn't time them), and
+    /// the bytes loaded over the wire.
+    pub warm_playable_ms: f64,
+    pub warm_pipelines_ms: f64,
+    pub warm_loaded_bytes: f64,
+    /// The paced run's frames over 33 ms, each with what it held.
+    pub hitches: Vec<Hitch>,
+    /// The ten slowest pipelines to compile in the cold run (`pipelines.json`'s `each`): each
+    /// one's name, its ms and its WGSL's bytes.
+    pub compiles: Vec<(String, f64, f64)>,
+    /// Where each run's results are kept: `gpu`, `play`, `cold`, `warm`, in that order.
+    pub runs: Vec<String>,
+}
+
+/// A frame of a paced run over 33 ms (docs/plan-world-class-2.md §B1.2): which, its interval
+/// and its CPU time, its phases and its labels' GPU ms (the heaviest first), its draws and the
+/// bytes it wrote to buffers.
+pub struct Hitch: Clone {
+    pub frame: u32,
+    pub interval_ms: f64,
+    pub cpu_ms: f64,
+    pub phases: Vec<(String, f64)>,
+    pub labels: Vec<(String, f64)>,
+    pub draws: u32,
+    pub written: f64,
+}
+
+impl Hitch {
+    /// No label over 2 ms and a CPU time under 2 ms: a stall of the browser's, not the program's.
+    pub fn unattributed(self) -> bool {
+        var named = false
+        for l in self.labels {
+            named = named || l.1 > 2.0
+        }
+        !named && self.cpu_ms < 2.0
+    }
+}
+
+fn heavier(a: (String, f64), b: (String, f64)) -> bool {
+    a.1 > b.1
+}
+
+/// A list of `[name, ms]`s, or an object of `name: ms`, as `(name, ms)`s, the heaviest first.
+fn weighed(d: Doc, n: u32) -> Vec<(String, f64)> {
+    var out: Vec<(String, f64)> = Vec::new()
+    if d.count(n) > 0 {
+        for i in 0..d.count(n) {
+            let Some(e) = d.at(n, i) else { continue }
+            let (Some(k), Some(v)) = (d.at(e, 0), d.at(e, 1)) else { continue }
+            out.push((d.text(k).unwrap_or(String::new()), d.num(v).unwrap_or(0.0)))
+        }
+    } else {
+        for m in d.members(n) {
+            out.push((m.0.clone(), d.num(m.1).unwrap_or(0.0)))
+        }
+    }
+    out.sort_by(heavier)
+    out
+}
+
+/// The paced run's frames over 33 ms, from its `frames.json` and `counters.json`, the frames
+/// from `warmup` on.
+pub fn hitches(frames: Doc, counters: Doc, warmup: u32) -> Vec<Hitch> {
+    var out = Vec::new()
+    let began = match frames.get(TOP, "began_ms") {
+        Some(n) => numbers(frames, n, 0),
+        None => return out,
+    }
+    let cpu = match frames.get(TOP, "cpu_ms") {
+        Some(n) => numbers(frames, n, 0),
+        None => Vec::new(),
+    }
+    for i in max(warmup, 1)..began.len() {
+        let interval = began[i] - began[i - 1]
+        if interval <= 33.3 {
+            continue
+        }
+        let at = |key: str| -> Vec<(String, f64)> {
+            let Some(all) = frames.get(TOP, key) else { return Vec::new() }
+            match frames.at(all, i) {
+                Some(n) => weighed(frames, n),
+                None => Vec::new(),
+            }
+        }
+        let c = counters.at(TOP, i)
+        let count = |key: str| -> f64 {
+            match c {
+                Some(n) => number_at(counters, n, key),
+                None => 0.0,
+            }
+        }
+        out.push(Hitch {
+            frame: i,
+            interval_ms: interval,
+            cpu_ms: if i < cpu.len() { cpu[i] } else { 0.0 },
+            phases: at("phases"),
+            labels: at("labels"),
+            draws: u32(count("draws")),
+            written: count("write_buffer_bytes"),
+        })
+    }
+    out
 }
 
 /// The numbers of list `n` of `d`, from index `from`.
@@ -124,9 +227,43 @@ fn stats_json(s: Stats) -> String {
 
 /// `m` as JSON.
 pub fn measured_json(m: Measured) -> String {
-    String::from(
-        f"{{\"scene\": \"{m.scene}\", \"span\": {stats_json(m.span)}, \"interval\": {stats_json(m.interval)}, \"over_16\": {m.over_16}, \"over_33\": {m.over_33}, \"cpu\": {stats_json(m.cpu)}, \"native\": {stats_json(m.native)}, \"first_frame_ms\": {m.first_frame_ms}, \"playable_ms\": {m.playable_ms}, \"pipelines_ms\": {m.pipelines_ms}, \"loaded_bytes\": {m.loaded_bytes}, \"gpu_bytes\": {m.gpu_bytes}, \"gpu_peak\": {m.gpu_peak}}}",
+    var s = String::from(
+        f"{{\"scene\": \"{m.scene}\", \"span\": {stats_json(m.span)}, \"interval\": {stats_json(m.interval)}, \"over_16\": {m.over_16}, \"over_33\": {m.over_33}, \"cpu\": {stats_json(m.cpu)}, \"native\": {stats_json(m.native)}, \"first_frame_ms\": {m.first_frame_ms}, \"playable_ms\": {m.playable_ms}, \"pipelines_ms\": {m.pipelines_ms}, \"loaded_bytes\": {m.loaded_bytes}, \"gpu_bytes\": {m.gpu_bytes}, \"gpu_peak\": {m.gpu_peak}, \"warm_playable_ms\": {m.warm_playable_ms}, \"warm_pipelines_ms\": {m.warm_pipelines_ms}, \"warm_loaded_bytes\": {m.warm_loaded_bytes}",
     )
+    var unattributed = 0
+    s.push_str(", \"hitches\": [")
+    for k in 0..m.hitches.len() {
+        borrow h = m.hitches[k]
+        unattributed += u32(h.unattributed())
+        s.push_str(if k > 0 { ", " } else { "" })
+        s.push_str(
+            f"{{\"frame\": {h.frame}, \"interval_ms\": {h.interval_ms}, \"cpu_ms\": {h.cpu_ms}, \"draws\": {h.draws}, \"written\": {h.written}, \"labels\": {pairs_json(h.labels)}, \"phases\": {pairs_json(h.phases)}}}",
+        )
+    }
+    s.push_str(f"], \"unattributed\": {unattributed}, \"compiles\": [")
+    for k in 0..m.compiles.len() {
+        let (name, at, bytes) = m.compiles[k].clone()
+        s.push_str(if k > 0 { ", " } else { "" })
+        s.push_str(f"{{\"name\": \"{name}\", \"ms\": {at}, \"wgsl_bytes\": {bytes}}}")
+    }
+    s.push_str("], \"runs\": [")
+    for k in 0..m.runs.len() {
+        s.push_str(if k > 0 { ", " } else { "" })
+        s.push_str(f"\"{m.runs[k]}\"")
+    }
+    s.push_str("]}")
+    s
+}
+
+/// `[[name, ms], ...]`: the first five.
+fn pairs_json(xs: [(String, f64)]) -> String {
+    var s = String::from("[")
+    for k in 0..min(xs.len(), 5) {
+        s.push_str(if k > 0 { ", " } else { "" })
+        s.push_str(f"[\"{xs[k].0}\", {xs[k].1:.3}]")
+    }
+    s.push_str("]")
+    s
 }
 
 /// A whole report: the machine, the date, and each scene's measurements.
@@ -154,15 +291,57 @@ fn mib(bytes: f64) -> String {
 pub fn markdown(machine: str, date: str, all: [Measured]) -> String {
     var s = String::from(f"## {date}, {machine}\n\n")
     s.push_str(
-        "| Scene | GPU span p50 / p95 / p99 ms | Interval p50 / p95 / p99 ms | Over 16.7 / 33 ms | CPU p50 / p95 ms | Native p50 / p95 ms | First frame ms | Playable ms | Pipelines ms | Loaded MiB | GPU peak MiB |\n",
+        "| Scene | GPU span p50 / p95 / p99 ms | Interval p50 / p95 / p99 ms | Over 16.7 / 33 ms | CPU p50 / p95 ms | Native p50 / p95 ms | First frame ms | Playable ms | Pipelines ms | Loaded MiB | Warm playable ms | Warm loaded MiB | GPU peak MiB |\n",
     )
-    s.push_str("|---|---|---|---|---|---|---|---|---|---|---|\n")
+    s.push_str("|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
     for m in all {
         s.push_str(
-            f"| {m.scene} | {ms(m.span.p50)} / {ms(m.span.p95)} / {ms(m.span.p99)} | {ms(m.interval.p50)} / {ms(m.interval.p95)} / {ms(m.interval.p99)} | {m.over_16} / {m.over_33} | {ms(m.cpu.p50)} / {ms(m.cpu.p95)} | {ms(m.native.p50)} / {ms(m.native.p95)} | {ms(m.first_frame_ms)} | {ms(m.playable_ms)} | {ms(m.pipelines_ms)} | {mib(m.loaded_bytes)} | {mib(m.gpu_peak)} |\n",
+            f"| {m.scene} | {ms(m.span.p50)} / {ms(m.span.p95)} / {ms(m.span.p99)} | {ms(m.interval.p50)} / {ms(m.interval.p95)} / {ms(m.interval.p99)} | {m.over_16} / {m.over_33} | {ms(m.cpu.p50)} / {ms(m.cpu.p95)} | {ms(m.native.p50)} / {ms(m.native.p95)} | {ms(m.first_frame_ms)} | {ms(m.playable_ms)} | {ms(m.pipelines_ms)} | {mib(m.loaded_bytes)} | {ms(m.warm_playable_ms)} | {mib(m.warm_loaded_bytes)} | {mib(m.gpu_peak)} |\n",
         )
     }
     s.push_str("\n")
+    for m in all {
+        if m.hitches.len() == 0 {
+            s.push_str(f"Hitches, {m.scene}: none (no frame over 33 ms).\n\n")
+        } else {
+            var unattributed = 0
+            s.push_str(
+                f"Hitches, {m.scene} (frames over 33 ms, the five heaviest labels each):\n\n",
+            )
+            s.push_str(
+                "| Frame | Interval ms | CPU ms | Labels, GPU ms | Phases, ms | Draws | Written KiB |\n|---|---|---|---|---|---|---|\n",
+            )
+            for h in m.hitches {
+                let none = h.unattributed()
+                unattributed += u32(none)
+                s.push_str(
+                    f"| {h.frame} | {ms(h.interval_ms)} | {ms(h.cpu_ms)} | {if none { "unattributed: " } else { "" }}{listed(h.labels)} | {listed(h.phases)} | {h.draws} | {h.written / 1024.0:.0} |\n",
+                )
+            }
+            s.push_str(
+                f"\n{unattributed} of {m.hitches.len()} unattributed (no label over 2 ms, CPU under 2 ms).\n\n",
+            )
+        }
+        if m.compiles.len() > 0 {
+            s.push_str(
+                f"Slowest compiles, {m.scene} (cold):\n\n| Pipeline | ms | WGSL KiB |\n|---|---|---|\n",
+            )
+            for c in m.compiles {
+                s.push_str(f"| {c.0} | {ms(c.1)} | {c.2 / 1024.0:.1} |\n")
+            }
+            s.push_str("\n")
+        }
+    }
+    s
+}
+
+/// The first five `(name, ms)`s, as `name 1.23, ...`.
+fn listed(xs: [(String, f64)]) -> String {
+    var s = String::new()
+    for k in 0..min(xs.len(), 5) {
+        s.push_str(if k > 0 { ", " } else { "" })
+        s.push_str(f"{xs[k].0} {ms(xs[k].1)}")
+    }
     s
 }
 
