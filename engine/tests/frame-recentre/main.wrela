@@ -28,9 +28,10 @@ const TREE_B = vec3(306.0, 9.0, -476.0)
 /// The render origin the frames end at.
 pub const ORIGIN = vec3(256.0, 0.0, -512.0)
 
-/// The probes' grid round `at` (render space): 33 columns a side, more than a strip bakes.
+/// The probes' grid round `at` (render space): 41 columns a side, more than a loading frame's
+/// strip bakes (twice `STRIP_COLUMNS`), so a frame can be recentred between its strips.
 fn probes_round(at: vec2) -> ProbeGrid {
-    grid(at, cols: 33, spacing: 2.0, low: -8.0, high: 24.0, voxel: 1.0)
+    grid(at, cols: 41, spacing: 2.0, low: -8.0, high: 24.0, voxel: 1.0)
 }
 
 /// The scene: flat ground, a clear sky, and the occluder (unless `open`).
