@@ -1,115 +1,53 @@
-// A first instrument scene: the engine's bare ground and sky at one fixed time and camera.
-// Both production and spatial-reference paths use the same quality settings. This measures
-// reconstruction of this renderer; it is not an unbiased lighting reference or a test corpus.
-
-use engine::frame::{Aim, Frame, Off, Quality, Shared}
+// First instrument scene: bare ground and sky at one fixed time and camera.
+use engine::frame::{Aim, Frame, Quality, Shared}
 use engine::light::sunlight
 use engine::probes::grid
-use engine::supersample::{Moment, Reference}
+use engine::supersample::Moment
 use engine::terrain::Clipmap
-use engine::view::{camera, first_camera}
+use engine::view::first_camera
 use frame_transitions::bare::{AHEAD, Bare, START, SUN, air_of, bare}
-use std::gpu::{GpuBuffer, buffer}
+use session::Session
 
 const MOMENT = Moment { frame: 0, revision: 1 }
 
-pub struct State {
-    frame: Frame<Shared>,
-    scene: Bare,
-    reference: Option<Reference>,
-    captured: GpuBuffer<vec4>,
-    cells: u32,
-    sample: u32,
-    collecting: bool,
-}
+pub struct State { capture: Session<Bare> }
 
 pub fn init() -> State {
     let air = air_of(SUN)
-    State {
-        frame: Frame::new(
-            Quality { scale: 1.0, measured: false, pace: false },
-            sunlight(air),
-            air,
-            Clipmap::new(levels: 6, finest: 0.5),
-            first_camera(START, START + AHEAD, 0.82, width: 192, height: 108),
-            grid(START.xz, cols: 17, spacing: 4.0, low: -8.0, high: 24.0, voxel: 2.0),
-            START.xz,
-        ),
-        scene: bare(),
-        reference: None,
-        captured: buffer(1),
-        cells: 0,
-        sample: 0,
-        collecting: false,
-    }
+    let frame: Frame<Shared> = Frame::new(
+        Quality { scale: 1.0, measured: false, pace: false },
+        sunlight(air),
+        air,
+        Clipmap::new(levels: 6, finest: 0.5),
+        first_camera(START, START + AHEAD, 0.82, width: 192, height: 108),
+        grid(START.xz, cols: 17, spacing: 4.0, low: -8.0, high: 24.0, voxel: 2.0),
+        START.xz,
+    )
+    State { capture: Session::new(take frame, bare()) }
 }
 
-/// Configure before warming. Cells 0 captures a production temporal output; a positive count
-/// integrates that many by that many spatial samples, without using temporal output.
-pub fn configure(s: mut State, divisor: u32, cells: u32) {
-    assert(divisor >= 1 && divisor <= 4, "divisor outside 1..4")
-    assert(cells <= 32 && (cells == 0 || divisor == 1), "reference must be native size")
-    s.cells = cells
-    var q = s.frame.quality()
-    q.scale = 1.0 / f32(divisor)
-    s.frame.requality(q)
-    s.frame.set(Off::History, on: cells == 0)
+pub fn configure(s: mut State, divisor: u32, cells: u32, shot: u32) {
+    assert(shot == 0, "the bare scene has one view")
+    s.capture.configure(divisor, cells)
 }
 
 pub fn ready(s: State) -> u32 {
-    u32(s.frame.ready.playable && !s.frame.ready.arriving)
+    u32(s.capture.ready())
 }
 
-/// Warm caches before this call. The sample clock starts here; the simulation clock stays 0.
 pub fn collect(s: mut State, width: u32, height: u32) {
-    assert(ready(s) == 1, "cannot capture an unsettled scene")
-    s.reference = Some(Reference::new(width, height, MOMENT))
-    s.sample = 0
-    s.collecting = true
+    s.capture.collect(width, height, MOMENT)
 }
 
 pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     let aim = Aim { eye: START, at: START + AHEAD, fovy: 0.82, moving_at: START }
-    let cam = s.frame.begin(mut s.scene, aim, time: 0.0, width: width, height: height)
-    if s.collecting && s.cells > 0 {
-        s.frame.cam = camera(
-            aim.eye,
-            aim.at,
-            aim.fovy,
-            width,
-            height,
-            frame: s.sample,
-            time: 0.0,
-            last: cam,
-            origin: s.frame.origin,
-            grid: true,
-            cells: s.cells,
-        )
-    }
-    s.frame.draw(mut s.scene, aim)
-    if s.collecting {
-        match mut s.reference {
-            Some(r) => {
-                borrow source = if s.cells == 0 { s.frame.targets.history } else {
-                    s.frame.targets.scene
-                }
-                assert(r.add(source, MOMENT).is_ok(), "capture dimensions changed")
-            },
-            None => panic("capture has no reference"),
-        }
-        s.sample += 1
-    }
+    s.capture.draw(aim, time: 0.0, width: width, height: height, moment: MOMENT)
 }
 
-/// Leave the snapshot in the newest GPU buffer for the tool's ReadBuffer. No byte conversion
-/// or tone curve occurs in the driven program.
 pub fn publish(s: mut State) -> u32 {
-    s.collecting = false
-    match s.reference {
-        Some(r) => {
-            s.captured = r.image().unwrap()
-            r.samples()
-        },
-        None => 0,
-    }
+    s.capture.publish()
+}
+
+pub fn sample_count(s: State) -> u32 {
+    s.capture.sample_count()
 }

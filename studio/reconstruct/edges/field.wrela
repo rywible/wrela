@@ -1,0 +1,132 @@
+// A continuous, moving two-layer field with an independently integrated pixel target.
+// Foreground: narrow vertical slats. Background: a checkerboard. Periods and widths are in
+// output pixels, so render scale changes sampling density, not content. Integrals use the
+// periodic pulse's antiderivative and interval intersections, not a sampled approximation.
+
+use engine::view::{GRASS, GROUND}
+
+pub struct Field: Copy + GpuData {
+    pub front: vec3,
+    pub period: f32,
+    pub dark: vec3,
+    pub width: f32,
+    pub light: vec3,
+    pub offset: f32,
+    pub speed: f32,
+    pub checker: f32,
+}
+
+/// Development cases. Fractional periods, thin coverage and bright radiance resist a model
+/// merely learning a pixel-aligned pattern. Entire cases must be split, never random pixels.
+pub fn case(index: u32) -> Field {
+    let i = index % 8
+    Field {
+        period: 4.75 + f32(i) * 0.625,
+        width: 0.35 + f32(i % 4) * 0.55,
+        offset: 0.137 + f32(i) * 0.173,
+        speed: [-1.25, 0.375, 1.5, -0.625, 2.25, 0.0, 0.875, -2.5][i],
+        checker: 3.5 + f32(i % 3) * 0.75,
+        front: vec3(0.05 + f32(i % 2) * 3.0, 1.2, 0.15),
+        dark: vec3(0.025, 0.04, 0.08),
+        light: vec3(0.8, 0.35, 0.12),
+    }
+}
+
+/// Integral from zero to x of a pulse [0,width) repeated every period, including negative x.
+fn primitive(x: f32, period: f32, width: f32) -> f32 {
+    let n = floor(x / period)
+    n * width + min(x - n * period, width)
+}
+
+fn pulse(a: f32, b: f32, period: f32, width: f32) -> f32 {
+    max(primitive(b, period, width) - primitive(a, period, width), 0.0)
+}
+
+pub fn front_at(f: Field, p: vec2, frame: u32) -> bool {
+    let x = p.x - f.offset - f.speed * f32(frame)
+    x - floor(x / f.period) * f.period < f.width
+}
+
+/// A point sample and its semantic class (scene alpha is a tag).
+pub fn point(f: Field, p: vec2, frame: u32) -> vec4 {
+    if front_at(f, p, frame) { return vec4(f.front, GRASS) }
+    let x = floor(p.x / f.checker)
+    let y = floor(p.y / f.checker)
+    let parity = x + y - floor((x + y) / 2.0) * 2.0
+    vec4(if parity < 1.0 { f.light } else { f.dark }, GROUND)
+}
+
+/// A checkerboard's bright area within an axis-aligned rectangle.
+fn bright(f: Field, lo: vec2, hi: vec2) -> f32 {
+    let size = max(hi - lo, vec2(0.0))
+    let x = pulse(lo.x, hi.x, 2.0 * f.checker, f.checker)
+    let y = pulse(lo.y, hi.y, 2.0 * f.checker, f.checker)
+    x * y + (size.x - x) * (size.y - y)
+}
+
+/// Exact box-filtered linear RGB over a unit output pixel, with the front layer occluding
+/// the checkerboard. At most two slats intersect a pixel because every supported period > 1.
+pub fn pixel(f: Field, at: vec2, frame: u32) -> vec4 {
+    let hi = at + vec2(1.0)
+    let shift = f.offset + f.speed * f32(frame)
+    let first = floor((at.x - shift) / f.period)
+    var front = 0.0
+    var behind_bright = bright(f, at, hi)
+    for k in 0..2 {
+        let a = (first + f32(k)) * f.period + shift
+        let lo = max(at.x, a)
+        let end = min(hi.x, a + f.width)
+        if end > lo {
+            front += end - lo
+            behind_bright -= bright(f, vec2(lo, at.y), vec2(end, hi.y))
+        }
+    }
+    let light = clamp(behind_bright, 0.0, 1.0 - front)
+    vec4(f.front * front + f.light * light + f.dark * (1.0 - front - light), 1.0)
+}
+
+@test
+fn exact_pixel_preserves_fractional_coverage_hdr_and_negative_motion() {
+    let f = Field {
+        period: 8.0,
+        width: 0.25,
+        offset: 0.0,
+        speed: -0.5,
+        checker: 4.0,
+        front: vec3(4.0, 0.0, 0.0),
+        dark: vec3(0.0),
+        light: vec3(1.0),
+    }
+    // Quarter red slat over white; a full background pixel; then a quarter slat at x=-1.
+    assert(pixel(f, vec2(0.0), 0) == vec4(1.75, 0.75, 0.75, 1.0))
+    assert(pixel(f, vec2(1.0, 0.0), 0) == vec4(1.0))
+    assert(pixel(f, vec2(-1.0, 0.0), 1) == vec4(1.0, 0.0, 0.0, 1.0))
+    // Fractional checker split in both dimensions: half white, half black.
+    let check = Field { offset: 20.0, period: 100.0, ..f }
+    assert(pixel(check, vec2(3.5), 0) == vec4(0.5, 0.5, 0.5, 1.0))
+}
+
+@test
+fn point_samples_converge_to_independent_integrals() {
+    // Independent midpoint quadrature controls the antiderivative/intersection oracle across
+    // moving slats and checker boundaries. Fine enough to bound edge discretization by .02.
+    for c in 0..8 {
+        let f = case(c)
+        for frame in [0, 7, 31] {
+            for p in [vec2(0.0), vec2(3.0, 4.0), vec2(7.0, 2.0), vec2(-2.0, -1.0)] {
+                var sum = vec3(0.0)
+                for y in 0..128 {
+                    for x in 0..128 {
+                        let at = p + (vec2(f32(x), f32(y)) + vec2(0.5)) / 128.0
+                        sum += point(f, at, frame).rgb / 16384.0
+                    }
+                }
+                let error = abs(sum - pixel(f, p, frame).rgb)
+                assert(
+                    max(error.x, max(error.y, error.z)) < 0.02,
+                    f"case {c} frame {frame} pixel {p}: {error}",
+                )
+            }
+        }
+    }
+}

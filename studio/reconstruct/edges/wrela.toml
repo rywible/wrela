@@ -1,0 +1,6 @@
+[package]
+name = "reconstruction_edges"
+
+[dependencies]
+engine = { workspace = true }
+reconstruction_model = { path = "../model" }

@@ -1,0 +1,115 @@
+// Actual clearing assets and production Scene implementation, at a deterministic tick-0 pose.
+// No background simulation is started. Spatial samples cannot advance the walker or the wind.
+// Camera shots, terrain, vegetation, field-realized stones and the fawn come from the clearing.
+
+use clearing::creature::{SKELETON, WALKER_BODY}
+use clearing::lookbook::SHOTS
+use clearing::scene::{FOVY, LOOK_AT, MEADOW, SUN, on_ground, start_eye}
+use clearing::stage::{Stage, stage}
+use clearing::world::spawn
+use engine::air::hazy
+use engine::frame::{Aim, Arrival, Frame, ProbeQuality, Quality, ShadowQuality, Shared}
+use engine::gait::palette
+use engine::light::{SUN_TOP, sunlight}
+use engine::probes::grid
+use engine::shadow::Cascade
+use engine::shot::place
+use engine::supersample::Moment
+use engine::terrain::Clipmap
+use engine::view::first_camera
+use reconstruction_capture::session::Session
+
+pub struct State {
+    capture: Session<Stage>,
+    aim: Aim,
+    shot: u32,
+}
+
+pub fn init() -> State {
+    let eye = start_eye()
+    let air = hazy(SUN, SUN_TOP, eye: eye.y)
+    let light = sunlight(air)
+    let walker = spawn().walker
+    var scene = stage(walker, light)
+    scene.scale = 1
+    scene.fit()
+    // The production stage retains this pose while its field-generated creature realizes.
+    scene.fawn.pose(palette(SKELETON, WALKER_BODY, walker).bones, shadowed: true, moved: false)
+    // The clearing's production shadow/probe configuration; pacing and online planning are
+    // disabled so scale and submitted work do not depend on this device's timings.
+    let q = Quality {
+        scale: 1.0,
+        measured: false,
+        pace: false,
+        shadows: ShadowQuality {
+            near: Cascade { centre: vec3(0.0, 4.0, 36.0), span: 144.0, reach: 250.0, side: 2048 },
+            near_strips: 1,
+            near_moves: 1.0e9,
+            far: Cascade {
+                centre: vec3(-60.0, -40.0, 330.0),
+                span: 1040.0,
+                reach: 1300.0,
+                side: 2048,
+            },
+            far_strips: 1,
+        },
+        probes: ProbeQuality { moves: 1.0e9, rays: engine::probes::RAYS, again: true },
+        arrival: Arrival { on: false },
+    }
+    let frame: Frame<Shared> = Frame::new(
+        q,
+        light,
+        air,
+        Clipmap::new(levels: 11, finest: 0.125),
+        first_camera(eye, LOOK_AT, FOVY, width: 192, height: 108),
+        grid(MEADOW, cols: 81, spacing: 2.0, low: -12.0, high: 40.0, voxel: 1.0),
+        eye.xz,
+    )
+    State {
+        capture: Session::new(take frame, take scene),
+        aim: Aim { eye, at: LOOK_AT, fovy: FOVY, moving_at: walker.root.pos },
+        shot: 0,
+    }
+}
+
+pub fn configure(s: mut State, divisor: u32, cells: u32, shot: u32) {
+    assert(shot < SHOTS.len(), "unknown clearing shot")
+    s.capture.configure(divisor, cells)
+    s.capture.scene.scale = divisor
+    s.capture.scene.fit()
+    let (eye, at) = place(SHOTS[shot], 0.0, |p: vec2| on_ground(p).y)
+    s.aim = Aim { eye, at, fovy: SHOTS[shot].fovy, moving_at: s.capture.scene.walker.root.pos }
+    s.shot = shot
+}
+
+pub fn ready(s: State) -> u32 {
+    u32(
+        s.capture.ready() &&
+            s.capture.frame.probes.done() &&
+            s.capture.frame.sky.done() &&
+            s.capture.scene.fawn.realized.is_some(),
+    )
+}
+
+pub fn collect(s: mut State, width: u32, height: u32) {
+    assert(ready(s) == 1, "clearing still loading")
+    s.capture.collect(width, height, Moment { frame: 0, revision: s.shot + 1 })
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    s.capture.draw(
+        s.aim,
+        time: 0.0,
+        width: width,
+        height: height,
+        moment: Moment { frame: 0, revision: s.shot + 1 },
+    )
+}
+
+pub fn publish(s: mut State) -> u32 {
+    s.capture.publish()
+}
+
+pub fn sample_count(s: State) -> u32 {
+    s.capture.sample_count()
+}

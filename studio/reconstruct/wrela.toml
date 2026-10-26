@@ -3,3 +3,5 @@ name = "reconstruct_tool"
 
 [dependencies]
 toolkit = { workspace = true }
+engine = { workspace = true }
+reconstruction_model = { path = "model" }

@@ -1,0 +1,107 @@
+// The capture protocol shared by real scene fixtures. Scene state and simulation time are
+// supplied by the fixture. Calling draw repeatedly only advances spatial sampling while a
+// reference is being collected. This integrates the existing renderer, not unbiased transport.
+
+use engine::frame::{Aim, Frame, Off, Scene, Shared}
+use engine::supersample::{Moment, Reference}
+use engine::view::camera
+use std::gpu::{GpuBuffer, buffer}
+
+pub struct Session<S: Scene> {
+    pub frame: Frame<Shared>,
+    pub scene: S,
+    reference: Option<Reference>,
+    captured: GpuBuffer<vec4>,
+    cells: u32,
+    sample: u32,
+    moment: Moment,
+    collecting: bool,
+}
+
+impl<S: Scene> Session<S> {
+    pub fn new(frame: take Frame<Shared>, scene: take S) -> Session<S> {
+        Session {
+            frame,
+            scene,
+            reference: None,
+            captured: buffer(1),
+            cells: 0,
+            sample: 0,
+            moment: Moment { frame: 0, revision: 0 },
+            collecting: false,
+        }
+    }
+
+    /// Cells 0 captures a production temporal output; positive cells integrate a grid.
+    pub fn configure(mut self, divisor: u32, cells: u32) {
+        assert(divisor >= 1 && divisor <= 4, "divisor outside 1..4")
+        assert(cells <= 32 && (cells == 0 || divisor == 1), "reference must be native size")
+        self.cells = cells
+        var q = self.frame.quality()
+        q.scale = 1.0 / f32(divisor)
+        self.frame.requality(q)
+        self.frame.set(Off::History, on: cells == 0)
+    }
+
+    pub fn sample_count(self) -> u32 {
+        max(self.cells * self.cells, 1)
+    }
+
+    pub fn ready(self) -> bool {
+        self.frame.ready.playable && !self.frame.ready.arriving
+    }
+
+    /// Start one snapshot after warming. Every draw must receive this exact Moment.
+    pub fn collect(mut self, width: u32, height: u32, moment: Moment) {
+        assert(self.ready(), "cannot capture an unsettled scene")
+        self.reference = Some(Reference::new(width, height, moment))
+        self.moment = moment
+        self.sample = 0
+        self.collecting = true
+    }
+
+    pub fn draw(mut self, aim: Aim, time: f32, width: u32, height: u32, moment: Moment) {
+        if self.collecting { assert(moment == self.moment, "scene changed during capture") }
+        let cam = self.frame.begin(mut self.scene, aim, time, width, height)
+        if self.collecting && self.cells > 0 {
+            self.frame.cam = camera(
+                aim.eye,
+                aim.at,
+                aim.fovy,
+                width,
+                height,
+                frame: self.sample,
+                time: time,
+                last: cam,
+                origin: self.frame.origin,
+                grid: true,
+                cells: self.cells,
+            )
+        }
+        self.frame.draw(mut self.scene, aim)
+        if self.collecting {
+            match mut self.reference {
+                Some(r) => {
+                    borrow source = if self.cells == 0 { self.frame.targets.history } else {
+                        self.frame.targets.scene
+                    }
+                    assert(r.add(source, moment).is_ok(), "capture dimensions changed")
+                },
+                None => panic("capture has no reference"),
+            }
+            self.sample += 1
+        }
+    }
+
+    /// Keep the mean in the newest GPU buffer, for the tool's ReadBuffer.
+    pub fn publish(mut self) -> u32 {
+        self.collecting = false
+        match self.reference {
+            Some(r) => {
+                self.captured = r.image().unwrap()
+                r.samples()
+            },
+            None => 0,
+        }
+    }
+}

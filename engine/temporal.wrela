@@ -599,6 +599,51 @@ pub fn found_rows(
     out[id] = row
 }
 
+/// An instrument row for the shared resolve, kept as RGB until after the reference is
+/// accumulated. Entries: 0..14 rejector inputs, 14..17 current tamed RGB, 17..20 clipped-history
+/// tamed RGB, 20 heuristic share, 21 forced-current flag, 22 settled-view cap, 23 material tag.
+/// Unlike found_rows, it reads the same half-float neighbourhood buffers as resolve. No target
+/// or future frame is an input. This pass is only dispatched by measurement/training fixtures.
+pub struct ReconstructionSample: Copy + GpuData {
+    pub v: [f32; 24],
+}
+
+@compute(64)
+pub fn reconstruction_samples(
+    r: Resolve,
+    scene: Texture<Rgba16Float>,
+    depth: DepthTexture,
+    last_depth: DepthTexture,
+    motion: Texture<Rgba16Float>,
+    last_motion: Texture<Rgba16Float>,
+    history: Texture<Rgba16Float>,
+    means: Texture<Rgba16Float>,
+    spreads: Texture<Rgba16Float>,
+    s: Sampler,
+    out: mut Slots<ReconstructionSample>,
+    id: GlobalId,
+) {
+    let width = u32(r.out.x)
+    if id.x >= width * u32(r.out.y) { return }
+    let px = vec2(f32(id.x % width), f32(id.x / width)) + vec2(0.5)
+    let near = nearest(r, px)
+    let hood = means.load(x: u32(near.x), y: u32(near.y))
+    let spread = spreads.load(x: u32(near.x), y: u32(near.y))
+    let f = found(px, r, scene, depth, last_depth, motion, last_motion, history, hood, spread, s)
+    let x = rejector_inputs(f, scene)
+    var row = ReconstructionSample { v: [0.0; 24] }
+    for k in 0..14 { row.v[k] = x[k] }
+    for k in 0..3 {
+        row.v[14 + k] = f.current[k]
+        row.v[17 + k] = f.clipped[k]
+    }
+    row.v[20] = f.a
+    row.v[21] = f32(f.forced)
+    row.v[22] = f.settle
+    row.v[23] = f.tag
+    out[id] = row
+}
+
 /// What the motion target holds: in a pixel something moved in, where it was last frame
 /// relative to now (scene pixels, `now - last`), and 1 in z; in a pixel of thin geometry the wind
 /// bends (`deforming_of`), the same with 0.5 in z; elsewhere 0 (the camera's own motion is found

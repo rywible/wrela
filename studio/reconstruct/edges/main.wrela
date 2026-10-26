@@ -1,0 +1,310 @@
+// Production temporal reconstruction on a moving analytic field. Reference pixels integrate
+// visible foreground/background exactly in linear RGB. They never use temporal history.
+// Warmup advances output time; collect freezes one named frame for the requested observation.
+
+use engine::frame::{full, fullscreen}
+use engine::neural::eval_gpu
+use reconstruction_model::main::{MODEL, baseline, features, linear, view}
+use engine::supersample::{Moment, Reference}
+use engine::temporal::{
+    ReconstructionSample, Resolve, neighbourhoods, reconstruction_samples, resolve,
+}
+use engine::view::{Camera, camera, first_camera, jitter_of}
+use field::{Field, case, front_at, pixel, point}
+use std::collections::swap
+use std::gpu::{
+    Compare, Depth, DepthTexture, FragCoord, GlobalId, GpuBuffer, Half2, Rgba16Float, Sampler,
+    Slots, Texture, WithDepth, begin_pass, begin_pass_with_depth, begin_screen_pass, buffer,
+    depth_texture, dispatch, draw, sampler, texture, writable_texture, copy, write,
+}
+
+@fragment
+fn sampled(p: FragCoord, f: Field, tick: u32, jitter: vec2, scale: vec2) -> WithDepth<vec4> {
+    let at = (p.position.xy - jitter) / scale
+    WithDepth { color: point(f, at, tick), depth: if front_at(f, at, tick) { 0.5 } else { 0.25 } }
+}
+
+@fragment
+fn moved(p: FragCoord, f: Field, tick: u32, jitter: vec2, scale: vec2) -> vec4 {
+    let at = (p.position.xy - jitter) / scale
+    if front_at(f, at, tick) { vec4(f.speed * scale.x, 0.0, 0.5, 1.0) } else { vec4(0.0) }
+}
+
+@compute(64)
+fn integrated(f: Field, tick: u32, width: u32, count: u32, out: mut Slots<vec4>, id: GlobalId) {
+    if id.x < count {
+        out[id] = pixel(f, vec2(f32(id.x % width), f32(id.x / width)), tick)
+    }
+}
+
+@fragment
+fn shown(p: FragCoord, image: Texture<Rgba16Float>) -> vec4 {
+    let c = max(image.load(x: u32(p.position.x), y: u32(p.position.y)).rgb, vec3(0.0))
+    vec4(c / (vec3(1.0) + c), 1.0)
+}
+
+pub struct State {
+    width: u32,
+    height: u32,
+    divisor: u32,
+    cells: u32,
+    shot: u32,
+    tick: u32,
+    collecting: bool,
+    captured_count: u32,
+    cam: Camera,
+    scene: Texture<Rgba16Float>,
+    depth: DepthTexture,
+    last_depth: DepthTexture,
+    motion: Texture<Rgba16Float>,
+    last_motion: Texture<Rgba16Float>,
+    means: Texture<Rgba16Float>,
+    spreads: Texture<Rgba16Float>,
+    current: Texture<Rgba16Float>,
+    last: Texture<Rgba16Float>,
+    captured: GpuBuffer<vec4>,
+    no_net: GpuBuffer<Half2>,
+    rgb_net: GpuBuffer<Half2>,
+    rgb_words: u32,
+    rgb_enabled: bool,
+    samples: GpuBuffer<ReconstructionSample>,
+    exported_samples: GpuBuffer<ReconstructionSample>,
+    linear: Sampler,
+}
+
+pub fn init() -> State {
+    State {
+        width: 0,
+        height: 0,
+        divisor: 1,
+        cells: 0,
+        shot: 0,
+        tick: 0,
+        collecting: false,
+        captured_count: 0,
+        cam: first_camera(vec3(0.0), vec3(0.0, 0.0, -1.0), 1.0, width: 1, height: 1),
+        scene: texture(width: 1, height: 1),
+        depth: depth_texture(width: 1, height: 1),
+        last_depth: depth_texture(width: 1, height: 1),
+        motion: texture(width: 1, height: 1),
+        last_motion: texture(width: 1, height: 1),
+        means: writable_texture(width: 1, height: 1),
+        spreads: writable_texture(width: 1, height: 1),
+        current: texture(width: 1, height: 1),
+        last: texture(width: 1, height: 1),
+        captured: buffer(1),
+        no_net: buffer(1),
+        rgb_net: buffer(1),
+        rgb_words: 0,
+        rgb_enabled: false,
+        samples: buffer(1),
+        exported_samples: buffer(1),
+        linear: sampler(),
+    }
+}
+
+pub fn configure(s: mut State, divisor: u32, cells: u32, shot: u32) {
+    assert(divisor >= 1 && divisor <= 4 && shot < 8, "unknown analytic configuration")
+    assert(cells == 0 || divisor == 1, "analytic truth has output resolution")
+    s.divisor = divisor
+    s.cells = cells
+    s.shot = shot
+}
+
+pub fn ready(s: State) -> u32 {
+    u32(s.width > 0 && s.height > 0)
+}
+
+/// The exact integral takes one evaluation, regardless of a quadrature-grid request.
+pub fn sample_count(s: State) -> u32 {
+    1
+}
+
+pub fn collect(s: mut State, width: u32, height: u32) {
+    assert(s.width == width && s.height == height, "capture changed image size")
+    s.collecting = true
+    s.captured_count = 0
+}
+
+fn resize(s: mut State, width: u32, height: u32) {
+    if s.width == width && s.height == height { return }
+    assert(!s.collecting, "resize during capture")
+    s.width = width
+    s.height = height
+    let (w, h) = (width / s.divisor, height / s.divisor)
+    assert(w > 0 && h > 0 && width % s.divisor == 0 && height % s.divisor == 0)
+    s.scene = texture(width: w, height: h)
+    s.depth = depth_texture(width: w, height: h)
+    s.last_depth = depth_texture(width: w, height: h)
+    s.motion = texture(width: w, height: h)
+    s.last_motion = texture(width: w, height: h)
+    s.means = writable_texture(width: w, height: h)
+    s.spreads = writable_texture(width: w, height: h)
+    s.current = texture(width, height)
+    s.last = texture(width, height)
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    resize(mut s, width, height)
+    let f = case(s.shot)
+    if s.collecting && s.cells > 0 {
+        s.captured = buffer(width * height)
+        dispatch(
+            integrated.bind(
+                f,
+                tick: s.tick,
+                width: width,
+                count: width * height,
+                out: mut s.captured,
+            ),
+            over: width * height,
+        )
+        s.captured_count = 1
+        return
+    }
+    let (w, h) = (s.scene.width(), s.scene.height())
+    let scale = vec2(f32(w) / f32(width), f32(h) / f32(height))
+    let jitter = jitter_of(s.tick)
+    s.cam = camera(
+        vec3(0.0),
+        vec3(0.0, 0.0, -1.0),
+        1.0,
+        w,
+        h,
+        frame: s.tick,
+        time: f32(s.tick) / 60.0,
+        last: s.cam,
+    )
+    swap(mut s.depth, mut s.last_depth)
+    swap(mut s.motion, mut s.last_motion)
+    swap(mut s.current, mut s.last)
+    let p = begin_pass_with_depth(mut s.scene, mut s.depth)
+    draw(
+        p,
+        full.bind(z: 0.5),
+        sampled.bind(f, tick: s.tick, jitter: jitter, scale: scale),
+        vertices: 3,
+        depth: Depth { compare: Compare::Always, write: true },
+    )
+    p.end()
+    let p = begin_pass(mut s.motion)
+    fullscreen(p, moved.bind(f, tick: s.tick, jitter: jitter, scale: scale))
+    p.end()
+    dispatch(neighbourhoods.bind(s.scene, mut s.means, mut s.spreads), over: s.scene)
+    let r = Resolve {
+        cam: s.cam,
+        out: vec2(f32(width), f32(height)),
+        blend: 0.12,
+        fresh: u32(s.tick == 0),
+        jitter,
+        last_jitter: jitter_of(if s.tick == 0 { 0 } else { s.tick - 1 }),
+        moving: vec4(0.0, 0.0, f32(width), f32(height)),
+        settled: f32(s.tick),
+    }
+    if s.collecting || s.rgb_enabled {
+        s.samples = buffer(width * height)
+        dispatch(
+            reconstruction_samples.bind(
+                r,
+                s.scene,
+                s.depth,
+                s.last_depth,
+                s.motion,
+                s.last_motion,
+                s.last,
+                s.means,
+                s.spreads,
+                s.linear,
+                out: mut s.samples,
+            ),
+            over: width * height,
+        )
+    }
+    let p = begin_pass(mut s.current)
+    if s.rgb_enabled {
+        fullscreen(
+            p,
+            corrected.bind(s.samples.items(), s.rgb_net.items(), width, height, s.divisor, jitter),
+        )
+    } else {
+        fullscreen(
+            p,
+            resolve.bind(
+                r,
+                s.scene,
+                s.depth,
+                s.last_depth,
+                s.motion,
+                s.last_motion,
+                s.last,
+                s.means,
+                s.spreads,
+                s.linear,
+                s.no_net.items(),
+            ),
+        )
+    }
+    p.end()
+    let screen = begin_screen_pass(clear: vec4(0.0))
+    fullscreen(screen, shown.bind(s.current))
+    screen.present()
+    if s.collecting {
+        var reference = Reference::new(width, height, Moment { frame: s.tick, revision: s.shot })
+        assert(reference.add(s.current, Moment { frame: s.tick, revision: s.shot }).is_ok())
+        s.captured = reference.image().unwrap()
+        s.captured_count = 1
+    } else {
+        s.tick += 1
+    }
+}
+
+pub fn publish(s: mut State) -> u32 {
+    s.collecting = false
+    s.captured_count
+}
+
+/// Training evidence in the newest buffer; valid only for a captured production frame.
+pub fn publish_samples(s: mut State) -> u32 {
+    assert(s.cells == 0 && s.captured_count == 1, "no production samples captured")
+    s.exported_samples = buffer(s.samples.len())
+    copy(from: s.samples.items(), to: s.exported_samples.items_mut())
+    s.samples.len()
+}
+
+// Weight upload is explicit and complete before any rendering; a half-written net cannot run.
+pub fn model_begin(s: mut State, words: u32) {
+    assert(words == (MODEL.size() + 1) / 2)
+    s.rgb_enabled = false
+    s.rgb_words = 0
+    s.rgb_net = buffer(words)
+}
+
+pub fn model_word(s: mut State, index: u32, bits: u32) {
+    assert(index == s.rgb_words && index < s.rgb_net.len())
+    assert((bits & 0x7c00) != 0x7c00 && ((bits >> 16) & 0x7c00) != 0x7c00, "non-finite weight")
+    write(mut s.rgb_net, index, [Half2 { bits }])
+    s.rgb_words += 1
+}
+
+pub fn model_end(s: mut State) {
+    assert(s.rgb_words == (MODEL.size() + 1) / 2)
+    s.rgb_enabled = true
+}
+
+@fragment
+fn corrected(
+    p: FragCoord,
+    rows: [ReconstructionSample],
+    weights: [Half2],
+    width: u32,
+    height: u32,
+    divisor: u32,
+    jitter: vec2,
+) -> vec4 {
+    let row = rows[u32(p.position.y) * width + u32(p.position.x)]
+    let base = baseline(row)
+    if row.v[21] > 0.5 { return vec4(base, row.v[23]) }
+    let x = features(row, p.position.xy, vec2(f32(width), f32(height)), divisor, jitter)
+    let out = eval_gpu(MODEL, weights, x)
+    vec4(linear(view(base) + vec3(out[0], out[1], out[2])), row.v[23])
+}

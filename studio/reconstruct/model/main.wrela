@@ -1,0 +1,64 @@
+// Experimental RGB residual decoder. Shared CPU/GPU features prevent training/runtime drift.
+// No scene identity, absolute position, target, future sample or field parameter is an input.
+use engine::neural::Model
+use engine::temporal::{ReconstructionSample, untamed}
+
+pub const MODEL = Model { inputs: 27, h1: 32, h2: 32, outputs: 3 }
+
+/// Bounded, fixed exposure-1 linear view used for loss. References are integrated before this.
+pub fn view(c: vec3) -> vec3 {
+    let x = max(c, vec3(0.0))
+    x / (vec3(1.0) + x)
+}
+
+pub fn linear(c: vec3) -> vec3 {
+    let x = clamp(c, vec3(0.0), vec3(0.9999))
+    x / (vec3(1.0) - x)
+}
+
+pub fn baseline(row: ReconstructionSample) -> vec3 {
+    let a = if row.v[21] > 0.5 { 1.0 } else { row.v[20] }
+    let current = vec3(row.v[14], row.v[15], row.v[16])
+    let history = vec3(row.v[17], row.v[18], row.v[19])
+    untamed(max(mix(history, current, vec3(a)), vec3(0.0)))
+}
+
+/// Pixel's relative sample phase and scale are available to any renderer, independent of truth.
+pub fn features(
+    row: ReconstructionSample,
+    at: vec2,
+    size: vec2,
+    divisor: u32,
+    jitter: vec2,
+) -> [f32; 48] {
+    var x = [0.0; 48]
+    for k in 0..24 { x[k] = row.v[k] }
+    x[23] /= 9.0
+    let scale = 1.0 / f32(divisor)
+    let q = at * scale
+    let near = clamp(floor(q + jitter), vec2(0.0), size * scale - vec2(1.0))
+    let phase = (near + vec2(0.5) - jitter - q) / scale
+    x[24] = phase.x / 4.0
+    x[25] = phase.y / 4.0
+    x[26] = scale
+    x
+}
+
+@test
+fn rgb_residual_features_and_forced_baseline() {
+    var row = ReconstructionSample { v: [0.0; 24] }
+    row.v[14] = 0.25
+    row.v[15] = 0.125
+    row.v[20] = 0.5
+    row.v[23] = 7.0
+    let b = baseline(row)
+    assert(abs(b.x - 1.0 / 7.0) < 1.0e-6 && abs(b.y - 1.0 / 14.0) < 1.0e-6)
+    let x = features(row, vec2(0.5), vec2(192.0, 108.0), 4, vec2(-0.1))
+    assert(abs(x[24] - 0.475) < 1.0e-6 && abs(x[25] - 0.475) < 1.0e-6)
+    assert(x[26] == 0.25 && abs(x[23] - 7.0 / 9.0) < 1.0e-6)
+    row.v[21] = 1.0
+    assert(abs(baseline(row).x - 1.0 / 3.0) < 1.0e-6, "forced current was blended with history")
+    let hdr = vec3(4.0, 0.1, 16.0)
+    let error = abs(linear(view(hdr)) - hdr)
+    assert(max(error.x, max(error.y, error.z)) < 1.0e-4, "view round trip clipped HDR")
+}

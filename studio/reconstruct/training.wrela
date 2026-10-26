@@ -1,0 +1,241 @@
+// Development RGB residual experiment. Manifest lines: train,<run id> or validate,<run id>.
+// Entire analytic cases are disjoint. Integrate linear truth first, then form the fixed-view
+// residual target. No averaging of nonlinearly tamed point samples. Final GPU rollout is
+// deliberately a separate measurement: one-step validation cannot certify recurrent quality.
+use engine::neural::{Adam, Loss, eval, halves, start, train_step, unhalves}
+use engine::noise::rand
+use engine::temporal::ReconstructionSample
+use engine::view::jitter_of
+use reconstruction_model::main::{MODEL, baseline, features, view}
+use std::io::print
+use std::tool::{ToolError, files, time}
+use toolkit::whole::{chunked, read_file, write_file}
+
+struct Data {
+    xs: Vec<f32>,
+    truth: Vec<f32>,
+    base: Vec<f32>,
+    forced: Vec<bool>,
+}
+
+fn empty() -> Data {
+    Data { xs: Vec::new(), truth: Vec::new(), base: Vec::new(), forced: Vec::new() }
+}
+
+fn fail(message: str) -> ToolError {
+    ToolError::new(message)
+}
+
+fn text_file(path: str) -> Result<String, ToolError> {
+    let Some(text) = String::from_utf8(read_file(path, path)?) else {
+        return Err(fail("text is not UTF-8"))
+    }
+    Ok(text)
+}
+
+fn number(meta: str, key: str) -> Result<u32, ToolError> {
+    let prefix = f"{key}="
+    for (a, b) in meta.split("\n") {
+        let line = meta.slice(a, b)
+        if line.starts_with(prefix.as_str()) {
+            let Some(n) = line.slice(prefix.len(), line.len()).parse_u32() else {
+                return Err(fail("invalid metadata number"))
+            }
+            return Ok(n)
+        }
+    }
+    Err(fail("missing metadata number"))
+}
+
+fn floats(bytes: [u8]) -> Result<Vec<f32>, ToolError> {
+    if bytes.len() % 4 != 0 { return Err(fail("misaligned floats")) }
+    var out: Vec<f32> = Vec::with_capacity(bytes.len() / 4)
+    for k in 0..bytes.len() / 4 {
+        let i = k * 4
+        let bits = u32(bytes[i]) |
+            (u32(bytes[i + 1]) << 8) |
+            (u32(bytes[i + 2]) << 16) |
+            (u32(bytes[i + 3]) << 24)
+        if (bits & 0x7f800000) == 0x7f800000 { return Err(fail("non-finite dataset")) }
+        out.push(bitcast_f32(bits))
+    }
+    Ok(out)
+}
+
+fn add(data: mut Data, directory: str, training: bool) -> Result<u32, ToolError> {
+    let meta = text_file(f"{directory}/capture.txt")?
+    if meta.as_str().find("scene=analytic/slats-checkerboard\n").is_none() ||
+        meta.as_str().find("reference=exact_box_integral_of_analytic_field\n").is_none() ||
+        (meta.as_str().find("model=").is_some() && meta.as_str().find("model=\n").is_none()) {
+        return Err(fail("dataset must be an unlearned analytic capture"))
+    }
+    let width = number(meta.as_str(), "width")?
+    let height = number(meta.as_str(), "height")?
+    let tick = number(meta.as_str(), "simulation_frame")?
+    let shot = number(meta.as_str(), "shot")?
+    if shot >= 8 { return Err(fail("unknown analytic case")) }
+    let reference = floats(read_file(f"{directory}/reference.rgba32f", "reference")?)?
+    if reference.len() != width * height * 4 { return Err(fail("wrong reference dimensions")) }
+    for i in 0..width * height {
+        if reference[i * 4 + 3] != 1.0 { return Err(fail("reference alpha is not one")) }
+    }
+    for divisor in 1..5 {
+        let rows = floats(read_file(f"{directory}/temporal-{divisor}x.samples32f", "samples")?)?
+        if rows.len() != width * height * 24 { return Err(fail("wrong row dimensions")) }
+        for i in 0..width * height {
+            // A deterministic random subset for training; all validation pixels remain.
+            if training && rand(tick * 977 + shot * 7919 + divisor, i) >= 0.25 { continue }
+            var row = ReconstructionSample { v: [0.0; 24] }
+            for k in 0..24 { row.v[k] = rows[i * 24 + k] }
+            let forced = row.v[21] > 0.5
+            if training && forced { continue }
+            let at = vec2(f32(i % width) + 0.5, f32(i / width) + 0.5)
+            let x = features(row, at, vec2(f32(width), f32(height)), divisor, jitter_of(tick))
+            for k in 0..MODEL.inputs { data.xs.push(x[k]) }
+            let base = view(baseline(row))
+            let target = view(vec3(reference[i * 4], reference[i * 4 + 1], reference[i * 4 + 2]))
+            for k in 0..3 {
+                data.base.push(base[k])
+                data.truth.push(target[k])
+            }
+            data.forced.push(forced)
+        }
+    }
+    Ok(shot)
+}
+
+fn scores(data: Data, weights: [f32]) -> (f64, f64) {
+    var base: f64 = 0.0
+    var learned: f64 = 0.0
+    for i in 0..data.forced.len() {
+        var x: Vec<f32> = Vec::with_capacity(MODEL.inputs)
+        for k in 0..MODEL.inputs { x.push(data.xs[i * MODEL.inputs + k]) }
+        let out = eval(MODEL, weights, x)
+        for k in 0..3 {
+            let j = i * 3 + k
+            let d = if data.forced[i] { 0.0 } else { out[k] }
+            let p = clamp(data.base[j] + d, 0.0, 0.9999)
+            let e = f64(p - data.truth[j])
+            let b = f64(data.base[j] - data.truth[j])
+            learned += e * e
+            base += b * b
+        }
+    }
+    let n = f64(data.forced.len() * 3)
+    (base / n, learned / n)
+}
+
+fn word(out: mut Vec<u8>, bits: u32) {
+    for shift in [0, 8, 16, 24] { out.push(u8((bits >> shift) & 255)) }
+}
+
+fn run(manifest: str, steps: u32, seed: u32) -> Result<(), ToolError> {
+    let list = text_file(manifest)?
+    var train = empty()
+    var validation = empty()
+    var train_mask: u32 = 0
+    var validation_mask: u32 = 0
+    for (a, b) in list.as_str().split("\n") {
+        let line = list.as_str().slice(a, b)
+        if line.is_empty() { continue }
+        let Some(at) = line.find(",") else { return Err(fail("manifest line needs role,run-id")) }
+        let role = line.slice(0, at)
+        let id = line.slice(at + 1, line.len())
+        if id.find("/").is_some() || id.find("..").is_some() || id.is_empty() {
+            return Err(fail("invalid run id"))
+        }
+        let directory = f"out/runs/{id}"
+        if role == "train" {
+            train_mask |= 1 << add(mut train, directory.as_str(), training: true)?
+        } else if role == "validate" {
+            validation_mask |= 1 << add(mut validation, directory.as_str(), training: false)?
+        } else { return Err(fail("unknown dataset role")) }
+    }
+    if train_mask == 0 || validation_mask == 0 || (train_mask & validation_mask) != 0 {
+        return Err(fail("training and validation must have disjoint complete cases"))
+    }
+    let now = time::utc_now().wait()?
+    let directory = f"out/models/{now.seconds}-{now.nanos}"
+    if files::stat(directory.as_str()).wait().is_ok() { return Err(fail("model run exists")) }
+    let _ = files::write(f"{directory}/dataset.txt", list.as_bytes()).wait()?
+    print(
+        f"reconstruct train: {directory}; {train.forced.len()} training rows, {validation.forced.len()} validation rows; {MODEL.size()} weights",
+    )
+    let about = f"model=27-32-32-3 RGB residual in exposure-1 Reinhard linear RGB\ntraining_case_mask={train_mask}\nvalidation_case_mask={validation_mask}\nsteps={steps}\nbatch=128\nseed={seed}\nrate=0.002 linearly decaying to 0.0002\nweights=half2 little endian; arithmetic f32\nscope=one-step development validation; GPU recurrence measured separately\n"
+    let _ = files::write(f"{directory}/model.txt", about.as_bytes()).wait()?
+    var weights = start(MODEL, seed)
+    // Zero residual starts from the measured heuristic, avoiding an arbitrary RGB image.
+    let offsets = MODEL.offsets()
+    for i in offsets[4]..MODEL.size() { weights[i] = 0.0 }
+    var adam = Adam::new(MODEL.size(), rate: 0.002)
+    var curve = String::from("step,training_batch_mse\n")
+    for step in 0..steps {
+        adam.rate = 0.002 * (1.0 - 0.9 * f32(step) / f32(steps))
+        var xs: Vec<f32> = Vec::with_capacity(128 * MODEL.inputs)
+        var ys: Vec<f32> = Vec::with_capacity(128 * 3)
+        for k in 0..128 {
+            let i = u32(rand(seed * 7919 + step, k) * f32(train.forced.len())) % train.forced.len()
+            for c in 0..MODEL.inputs { xs.push(train.xs[i * MODEL.inputs + c]) }
+            for c in 0..3 { ys.push(train.truth[i * 3 + c] - train.base[i * 3 + c]) }
+        }
+        let loss = train_step(MODEL, mut weights, mut adam, xs, ys, 128, Loss::Mse)
+        if (bitcast_u32(loss) & 0x7f800000) == 0x7f800000 {
+            return Err(fail("training loss became non-finite"))
+        }
+        if step % 100 == 0 || step + 1 == steps {
+            print(f"reconstruct train: step {step + 1}/{steps}, batch MSE {loss:.7}")
+            curve.push_str(f"{step + 1},{loss:.9}\n")
+        }
+    }
+    for w in weights {
+        if (bitcast_u32(w) & 0x7f800000) == 0x7f800000 {
+            return Err(fail("training produced non-finite weights"))
+        }
+    }
+    let packed = halves(weights)
+    for p in packed {
+        if (p.bits & 0x7c00) == 0x7c00 || ((p.bits >> 16) & 0x7c00) == 0x7c00 {
+            return Err(fail("model cannot be represented by finite half weights"))
+        }
+    }
+    let quantized = unhalves(packed, MODEL.size())
+    let (base, learned) = scores(validation, quantized)
+    print(f"reconstruct train: whole-case one-step validation MSE {base:.9} -> {learned:.9}")
+    var raw: Vec<u8> = Vec::new()
+    for w in weights { word(mut raw, bitcast_u32(w)) }
+    write_file(f"{directory}/weights.f32", chunked(take raw))?
+    var half: Vec<u8> = Vec::new()
+    for p in packed { word(mut half, p.bits) }
+    write_file(f"{directory}/weights.half", chunked(take half))?
+    let _ = files::write(f"{directory}/curve.csv", curve.as_bytes()).wait()?
+    let score = f"baseline_view_mse,learned_half_view_mse\n{base:.12},{learned:.12}\n"
+    let _ = files::write(f"{directory}/one-step.csv", score.as_bytes()).wait()?
+    Ok(())
+}
+
+pub fn tool(given: [String]) -> u32 {
+    if given.len() != 4 {
+        print("usage: wrela tool reconstruct -- train <out/datasets/manifest.txt> <steps> <seed>")
+        return 2
+    }
+    let Some(steps) = given[2].as_str().parse_u32() else { return 2 }
+    let Some(seed) = given[3].as_str().parse_u32() else { return 2 }
+    if steps < 1 || steps > 100000 || seed > 10000 { return 2 }
+    match run(given[1].as_str(), steps, seed) {
+        Ok(()) => 0,
+        Err(e) => {
+            print(f"reconstruct train: {e.message()}")
+            1
+        },
+    }
+}
+
+@test
+fn training_reader_preserves_hdr_and_rejects_invalid_floats() {
+    assert(floats([0, 0, 128, 64]).unwrap()[0] == 4.0)
+    assert(floats([0, 0, 192, 127]).is_err(), "NaN accepted")
+    assert(floats([0, 0, 128, 127]).is_err(), "infinity accepted")
+    assert(floats([0, 0, 0]).is_err(), "truncated float accepted")
+    assert(number("width=192\nheight=108\n", "height").unwrap() == 108)
+    assert(number("width=192\n", "height").is_err(), "missing metadata accepted")
+}

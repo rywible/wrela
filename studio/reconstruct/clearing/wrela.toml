@@ -1,0 +1,7 @@
+[package]
+name = "clearing_capture"
+
+[dependencies]
+engine = { workspace = true }
+clearing = { workspace = true }
+reconstruction_capture = { path = "../fixture" }
