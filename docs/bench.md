@@ -144,6 +144,56 @@ clouds, vegetation prepass, vegetation, terrain, creature, occlusion pyramid, ve
 dispatch and a pass), look (a dispatch and a pass), bloom (eight). The plan's "22" counted
 another frame's passes; this is the recorded count.
 
+## 2026-10-26: B2, the cold start (world-class 2, toolchain 0.8.1 and the 0.9.0 checkout)
+
+What each item found or changed, on the M4 Air:
+
+- **B2.1, compressed at the edge.** No test Worker could be deployed from this machine (no
+  Cloudflare credentials here), so the live site, whose Worker serves the same `CONTENT_TYPES`
+  as this branch, was asked (`curl -sI -H 'Accept-Encoding: br, gzip'`, release
+  `3676b81c1276de005613`, `last-green/`): `game.wasm` answers `content-encoding: br`, 8,319,320
+  bytes as 2,817,252 on the wire; `manifest.json` `br`, 148,534 as 6,558; `pipeline_0.wgsl` `br`,
+  1,326 as 575. Cloudflare compresses every type the release serves: nothing to change.
+- **B2.2, the big constants.** `wrela build games/last-green --report data`: 4,357,984 bytes in
+  1,402 constants. The three over 256 KB: `OBSTACLES` (1,000,248 in two) and the fallen trees'
+  per-tile lists (`FALLEN`, 934,736 in its fifteen largest), both read by the sim from its first
+  ticks (the player's and the fawn's collisions), which the plan's own rule keeps in the module;
+  and `LAND` (782,896), the bare and grown views' land, whose readers are functions passed by
+  value to the jobs that place those views' trees. Shipping `LAND` needs those views' streaming
+  to carry the land as data: not done. The section stays 4.36 MB.
+- **B2.3, tiers.** 152 pipelines, 94 in tier 0 and 58 in tier 1; none of the 17 `CLUSTERED`
+  ones (B2.4 had brought seven back; `838d1e60` keeps them out); `lights::bin`,
+  `probes::trace_again`, the shafts, `particles::admit` and the map's overlay are tier 1 already.
+- **B2.4, the load chain.** All 26 kinds cook by frame 2 (12 before); the built things and the
+  banks' prototypes no longer wait for the wood, and come as many a frame as the budget allows.
+  Native, 960×540, one worker: playable at frame 204 with the kinds alone moved, then 81.
+- **B2.5, the realizer through tapes.** Through their tapes (box-filtered noise is one tape
+  operation in 0.9.0), the built things' meshes match their compiled ones to 0.01 mm, but the
+  load took 38 s to playable in Chrome, cold and warm alike (the GPU's time interpreting
+  unpruned tapes at every corner, not the pipelines'), against 9.2 s compiled: the load keeps
+  the compiled kernels. Pipeline tiers that follow calls were tried in the toolchain and
+  reverted: 129 pipelines went to tier 1, many needed at load, and Chrome made those one at a
+  time, 58 s to playable.
+
+The step's gate, three runs each (`wrela tool bench -- --scene last-green-walk --scene
+clearing-path --no-native`, the 0.9.0 checkout):
+
+| Scene | Cold playable ms | Pipelines ms (tier 0) | Warm playable ms | Playable at frame |
+|---|---|---|---|---|
+| last-green-walk | 13,475 / 7,490 / 7,612: median **7,612** (G-cold 5,000: misses) | 6,746 / 3,695 / 3,239 | 6,323 / 5,316 / 5,613: median **5,613** (G-warm 3,000: misses) | 83 to 89 (220 at B1) |
+| clearing-path | 4,794 / 4,785 / 5,168: median **4,794** (2,500: misses) | 3,964 / 3,305 / 3,503 | 1,420 / 1,417 / 1,444 | 47 |
+
+The first run's walk shared the machine with a compile. What's left of the walk's cold start is
+its pipelines (3.2 to 3.7 s in tier 0, frame 1 waiting for them) and its first frames' work
+(the first frame alone holds 587 ms of CPU and 142 ms of its first render pass).
+
+**The B1 attribution, read again.** In a paced run (`paced=1`), the frame's last labelled pass,
+the bloom's, reads about 24 ms of GPU time on every frame: its end waits for the screen, so it
+says nothing of the bloom. The walk's three late hitches (frames 550, 836 and 1129 of this run,
+546, 822 and 1106 of B1's) show *less* bloom than the frames round them; each comes a frame or two
+before a probe replacement starts (`probes occluders` and `probes open sky`, then `probes bake`
+two frames later). B4 works against those, not against the bloom.
+
 ## Whether D10 holds
 
 The claim (docs/plan-world-class-2.md §0.1, D10, **proposed**): on a MacBook Air M4 in Chrome at
