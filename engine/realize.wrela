@@ -157,7 +157,7 @@ pub const PROBE_BLOCKS: u32 = 32768
 /// One vertex of a realized mesh, 48 bytes: its rest position, its four bones (a
 /// byte each), its normal, their weights (a byte each, adding up to 255), and the items that
 /// matter near it, for shading.
-pub struct SkinVertex: Copy + GpuData {
+pub struct SkinVertex: Copy + GpuData + Plain {
     pub pos: vec3,
     pub bones: u32,
     pub normal: vec3,
@@ -773,8 +773,16 @@ pub fn solid<F: Surface>(field: F, bounds: Box3, name: Text = "solid") -> Body<P
 /// weights: its vertices `place_vertices` gives to its one bone whole, as the skin pass would. A
 /// pass less at load, and a pipeline less in the scene.
 pub fn realize_rigid<C, K: Creature<C>>(solid: K, surface: look::Mesh) -> Mesh {
-    var p = prepare(solid.bounds(), surface)
-    let field = solid.field()
+    realize_rigid_field(solid.field(), solid.bounds(), surface)
+}
+
+/// `realize_rigid` of a field already in hand inside `bounds`: a compiled field, or one read
+/// from a tape (`stone::RockShape`), whose kernels every kind shares. A tape is interpreted at
+/// every corner and step the realizer reads: the Last Green's built things realized through
+/// theirs took 38 s to playable in Chrome where compiled they take 9.2 s, so a load realizes
+/// through compiled fields until a block's tape is pruned to it (§B2.5).
+pub fn realize_rigid_field<C, F: Parts<C>>(field: F, bounds: Box3, surface: look::Mesh) -> Mesh {
+    var p = prepare(bounds, surface)
     record_cull(field, p.grid, mut p.scratch, mut p.mesh)
     record_vertices(field, p.grid, mut p.scratch, mut p.mesh)
     record_mesh(p.grid, mut p.scratch, mut p.mesh)

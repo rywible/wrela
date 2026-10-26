@@ -1,0 +1,98 @@
+// Two stones realized twice: through their compiled fields (`engine::realize::realize_rigid`)
+// and through the tapes of their shapes (`engine::stone::rock_shape`, the field seen a cell wide
+// as the realizer sees it, read by kernels every rock shares). Their meshes have the same vertex
+// and quad counts, and each tape vertex lies within 1e-4 m of a compiled one. The vertices are
+// read back once both meshes have their counts.
+
+use engine::look::Mesh as Tolerance
+use engine::realize::{Mesh, SkinVertex, Tally, realize_rigid, realize_rigid_field}
+use engine::stone::{rock_shape, stone}
+use std::gpu::read
+use std::io::{Pending, print}
+
+/// What the stones are realized to (`stone::realize_stone`'s).
+const SURFACE: Tolerance = Tolerance { tolerance: 8mm, largest: 4cm }
+
+/// The stones: radius, squash, seed.
+const STONES: [(f32, vec3, u32); 2] = [
+    (0.6, vec3(1.0, 0.7, 1.2), 11),
+    (0.35, vec3(1.4, 0.5, 0.9), 29),
+]
+
+pub struct State {
+    meshes: Vec<(Mesh, Mesh)>,
+    tallies: Vec<(Pending<Tally>, Pending<Tally>)>,
+    pub counts: Vec<(Tally, Tally)>,
+    asked: Vec<(Pending<SkinVertex>, Pending<SkinVertex>)>,
+    pub read: Vec<(Vec<SkinVertex>, Vec<SkinVertex>)>,
+}
+
+pub fn init() -> State {
+    var meshes: Vec<(Mesh, Mesh)> = Vec::new()
+    var tallies: Vec<(Pending<Tally>, Pending<Tally>)> = Vec::new()
+    for (radius, squash, seed) in STONES {
+        let c = stone(radius, squash, seed)
+        let Some(shape) = rock_shape(c, SURFACE) else { panic("the stone's tape is too long") }
+        let compiled = realize_rigid(c, SURFACE)
+        let taped = realize_rigid_field(shape, c.bounds(), SURFACE)
+        tallies.push((read(compiled.tally.items()), read(taped.tally.items())))
+        meshes.push((take compiled, take taped))
+    }
+    State { meshes, tallies, counts: Vec::new(), asked: Vec::new(), read: Vec::new() }
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    if s.counts.len() < s.tallies.len() {
+        for mut (a, b) in s.tallies {
+            let (Some(Ok(ta)), Some(Ok(tb))) = (a.poll(), b.poll()) else { return }
+            s.counts.push((ta[0], tb[0]))
+        }
+        for (a, b) in s.meshes {
+            s.asked.push((read(a.verts.items()), read(b.verts.items())))
+        }
+        return
+    }
+    if s.read.len() < s.asked.len() {
+        for mut (a, b) in s.asked {
+            let (Some(Ok(va)), Some(Ok(vb))) = (a.poll(), b.poll()) else { return }
+            s.read.push((Vec::from(va), Vec::from(vb)))
+        }
+    }
+}
+
+/// How far `v` lies from the nearest of `among`'s first `n`.
+fn nearest(v: vec3, among: [SkinVertex], n: u32) -> f32 {
+    var best = 1.0e30
+    for i in 0..n {
+        best = min(best, length(among[i].pos - v))
+    }
+    best
+}
+
+/// Each stone's meshes: the same vertex and quad counts, and each tape vertex within 1e-4 m of
+/// a compiled one.
+@test(frames: 30, gpu: true)
+fn a_stone_through_its_tape_is_the_stone(s: State) {
+    assert(s.read.len() == STONES.len(), "the vertices came back")
+    for k in 0..STONES.len() {
+        let (ta, tb) = s.counts[k]
+        let (va, qa, vb, qb) = (ta.vertices, ta.pushed_quads, tb.vertices, tb.pushed_quads)
+        print(f"stone {k}: compiled {va} vertices, {qa} quads; tape {vb} vertices, {qb} quads")
+        assert(va == vb && qa == qb, f"stone {k}'s counts differ")
+        let (a, b) = s.read[k]
+        var worst = 0.0
+        for i in 0..vb {
+            worst = max(worst, nearest(b[i].pos, a, va))
+        }
+        print(f"stone {k}: the farthest tape vertex is {worst * 1000.0:.4} mm from a compiled one")
+        assert(worst <= 1.0e-4, f"stone {k}: a tape vertex {worst} m from the compiled mesh")
+    }
+}
+
+/// The stones' shapes fit a shape tape (`stone::SHAPE_OPS`).
+@test
+fn a_stone_fits_a_shape_tape() {
+    for (radius, squash, seed) in STONES {
+        assert(rock_shape(stone(radius, squash, seed), SURFACE).is_some())
+    }
+}

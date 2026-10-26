@@ -8,16 +8,19 @@
 // each kind and level.
 
 use character::{ByChannels, Shaded, colours}
-use creature::Creature
+use creature::{ALL, BoneWeights, Creature, Culled, PartMask, Parts}
 use frame::full
 use light::Lit
 use lit::{Lighting, shown, sun_and_gloss}
 use look::Mesh as Tolerance
 use noise::{hash3, noise3, rand}
 use realize::{Mesh, SkinVertex, Tally, realize_rigid, solid}
-use std::derive::Box3
+use std::derive::{Box3, tape, value_and_gradient}
 use std::derive::Interval
-use std::field::{Blend, Fbm, Noise, Surface, VALUE_NOISE_LIPSCHITZ, fbm, oval, value_noise}
+use std::field::{
+    Blend, Bound, Fbm, Field, Noise, Surface, UNBOUNDED, VALUE_NOISE_LIPSCHITZ, fbm, oval,
+    value_noise,
+}
 use std::gpu::{
     Atomics, ClipPosition, DrawIndexedArgs, Flat, FragCoord, GlobalId, GpuBuffer, InstanceIndex,
     RenderPass, Slots, Unorm8x4, VertexIndex, buffer, buffer_of, copy, discard, dispatch, draw,
@@ -27,6 +30,7 @@ use std::io::Pending
 use std::mem::size_of
 use std::gpu::{Compare, Depth, R32Uint, Texture}
 use std::math::TAU
+use std::stage::{Taped, interpret}
 use std::transform::{rotate_y, translate}
 use view::{Camera, ROCK}
 use virtual::{Clusters, Placed, VisDraw, cook, pulled}
@@ -331,6 +335,75 @@ pub fn realize_rock(
     let colours = colours(mesh, c.field(), ByChannels {}, cell)
     let fit = Some(Fit { tally: read(mesh.tally.items()) })
     Realized { mesh, colours, at, seed, fit }
+}
+
+/// A rock's shape as a tape (`rock_shape`), for `realize::realize_rigid_field` to realize through
+/// kernels every kind shares: the same mesh as its compiled field's, to 0.01 mm
+/// (engine/tests/realize-tape). The operations and constants it holds: within what a kernel's
+/// uniform can pass on (a tape twice this size left the realizer's vertex pass no room). The
+/// floor's built things' shapes take 88 to 368 operations; its tower, 1,575, keeps its own
+/// kernels.
+pub const SHAPE_OPS: u32 = 512
+pub const SHAPE_CONSTS: u32 = 256
+
+pub type ShapeTape = Taped<SHAPE_OPS, SHAPE_CONSTS>
+
+/// Rock `c`'s shape as a tape, seen as the realizer sees it at `surface`'s cell (its detail
+/// finer than a cell is shading's), or `None` if it's too long for a `ShapeTape`.
+pub fn rock_shape(c: Creature<Rock>, surface: Tolerance) -> Option<RockShape> {
+    let field = c.field()
+    let fp = surface.cell_size(surface.radius)
+    let tape: ShapeTape = tape(|p: vec3| field.distance_masked(p, ALL, fp)).resized()?
+    Some(RockShape { tape })
+}
+
+/// A rock's shape as a tape, read by the realizer's kernels as any field is: one part on one
+/// bone, wherever it reaches (a solid's). Its channels aren't on it: a rock's colours are cooked
+/// from its compiled field.
+pub struct RockShape: Copy + GpuData {
+    pub tape: ShapeTape,
+}
+
+impl Surface for RockShape {
+    fn distance(self, p: vec3) -> f32 {
+        interpret(self.tape, p)
+    }
+}
+
+impl Field<Rock> for RockShape {
+    fn channels(self, p: vec3) -> Rock {
+        Rock { albedo: vec3(0.5) }
+    }
+}
+
+impl Parts<Rock> for RockShape {
+    fn distance_masked(self, p: vec3, mask: PartMask, fp: f32) -> f32 {
+        self.distance(p)
+    }
+
+    fn sample_masked(self, p: vec3, mask: PartMask, fp: f32) -> (f32, vec3, Rock) {
+        let (d, g) = value_and_gradient(|q: vec3| self.distance(q), p)
+        (d, g, self.channels(p))
+    }
+
+    fn cull(self, b: Box3) -> Culled {
+        let iv = self.tape.interval(b)
+        Culled { mask: PartMask::bit(0), lo: iv.lo, hi: iv.hi }
+    }
+
+    fn skin_at(self, p: vec3, mask: PartMask, fp: f32, falloff: f32) -> (u32, u32) {
+        var w = BoneWeights::new()
+        w.add(0, 1.0)
+        w.quantized()
+    }
+
+    fn item_bounds(self) -> Vec<Bound> {
+        Vec::from([UNBOUNDED])
+    }
+
+    fn sample_pruned(self, p: vec3, bounds: [Bound]) -> (f32, Rock) {
+        (self.distance(p), self.channels(p))
+    }
 }
 
 /// What a stone's vertex passes on.
