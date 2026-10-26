@@ -1,0 +1,6 @@
+# engine::terrain's clipmap cooks a field write's texels, not its levels (§B3).
+[package]
+name = "clipmap_rect"
+
+[dependencies]
+engine = { workspace = true }
