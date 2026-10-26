@@ -47,6 +47,7 @@ members = [
     "studio/bench",
     "studio/passes",
     "studio/export",
+    "studio/fit",
     "studio/toolkit",
     "studio/listening",
     "studio/lookbook",
@@ -173,6 +174,12 @@ browser = true
 [tools.export]
 package = "studio/export"
 write = ["ws=.", "out=build/export"]
+
+# The fit tool (studio/fit): a small network trained and written as source (`wrela tool fit --
+# --net sine --out content/...`), for the engine's experiments (docs/plan-world-class-2.md §B14).
+[tools.fit]
+package = "studio/fit"
+write = ["ws=."]
 
 # The serve tool (studio/serve): a directory of the workspace served to a browser on this
 # machine, its pages' results written into its `results/`.

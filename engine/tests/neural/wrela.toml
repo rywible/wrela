@@ -1,0 +1,8 @@
+# Small networks on the GPU (engine/neural.wrela, B14.1): a net's evaluation in a shader, its
+# weights half floats, against the CPU's.
+[package]
+name = "neural_tests"
+
+[dependencies]
+engine = { workspace = true }
+kit = { workspace = true }

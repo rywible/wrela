@@ -1,0 +1,96 @@
+// A 4 → 16 → 16 → 2 net's evaluation on the GPU (`engine::neural::eval_rows`, its weights half
+// floats) against the CPU's (`eval`, `f32` weights) at 1,000 random inputs, read back.
+
+use engine::neural::{Model, eval, eval_rows, halves, start, unhalves}
+use kit::sine_net::{SINE, SINE_MODEL}
+use engine::noise::rand
+use std::gpu::{GpuBuffer, buffer, buffer_of, dispatch, read}
+use std::io::{Pending, print}
+
+const M = Model { inputs: 4, h1: 16, h2: 16, outputs: 2 }
+const ROWS: u32 = 1000
+
+fn inputs() -> Vec<f32> {
+    var xs: Vec<f32> = Vec::new()
+    for i in 0..ROWS * M.inputs {
+        xs.push(rand(41, i) * 2.0 - 1.0)
+    }
+    xs
+}
+
+pub struct State {
+    asked: Option<Pending<f32>>,
+    pub got: Vec<f32>,
+}
+
+pub fn init() -> State {
+    State { asked: None, got: Vec::new() }
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    if s.asked.is_none() {
+        let w = start(M, seed: 9)
+        let wh = buffer_of(halves(w), at_least: 1)
+        let xs = buffer_of(inputs(), at_least: 1)
+        var out: GpuBuffer<f32> = buffer(ROWS * M.outputs)
+        dispatch(eval_rows.bind(M, wh.items(), xs.items(), out: mut out), over: ROWS * M.outputs)
+        s.asked = Some(read(out.items()))
+    }
+    if s.got.is_empty() {
+        match mut s.asked {
+            Some(p) => match p.poll() {
+                Some(Ok(v)) => s.got = take v,
+                _ => {},
+            },
+            None => {},
+        }
+    }
+}
+
+/// Scaled to [0, 1] by the CPU's outputs' range, the GPU's are within 1/255 of them.
+@test(frames: 4, gpu: true)
+fn a_nets_shader_evaluation_is_its_cpu_one(s: State) {
+    assert(s.got.len() == ROWS * M.outputs, f"{s.got.len()} read back")
+    let w = start(M, seed: 9)
+    let xs = inputs()
+    var cpu: Vec<f32> = Vec::new()
+    var lo = 1.0e9
+    var hi = -1.0e9
+    for r in 0..ROWS {
+        var x: Vec<f32> = Vec::new()
+        for c in 0..M.inputs {
+            x.push(xs[r * M.inputs + c])
+        }
+        for v in eval(M, w, x) {
+            cpu.push(v)
+            lo = min(lo, v)
+            hi = max(hi, v)
+        }
+    }
+    var worst = 0.0
+    for i in 0..cpu.len() {
+        worst = max(worst, abs(s.got[i] - cpu[i]) / max(hi - lo, 1.0e-6))
+    }
+    print(
+        f"the GPU's outputs within {worst * 255.0:.3}/255 of the CPU's (range {lo:.3} to {hi:.3})",
+    )
+    assert(worst < 1.0 / 255.0, f"{worst * 255.0}/255")
+}
+
+/// The sine `wrela tool fit` wrote (content/kit/sine_net.wrela), read back from its half floats,
+/// is `sin` within 1e-2 on average over 100 points of [-π, π] (its worst point printed: a
+/// 16-wide net of straight pieces is off most at the peaks).
+@test
+fn the_fitted_sine_is_the_sine() {
+    let w = unhalves(SINE, SINE_MODEL.size())
+    var worst = 0.0
+    var mean = 0.0
+    for k in 0..100 {
+        let x = -3.14159265 + (f32(k) + 0.5) / 100.0 * 6.2831853
+        let e = abs(eval(SINE_MODEL, w, [x])[0] - sin(x))
+        worst = max(worst, e)
+        mean += e / 100.0
+    }
+    print(f"the fitted sine within {mean:.4} of sin on average, {worst:.4} at worst")
+    assert(mean < 1.0e-2, f"{mean} on average")
+}
