@@ -25,7 +25,8 @@
 // the device's `device.json` (its adapter and its browser's user agent), under docs/bench.md's
 // "Devices"; the native run is this machine's, so it's skipped. `--row "<machine>;<scene>;<p50>;
 // <p95>;<p99>;<over 33>;<playable ms>"` adds a row typed by hand from such a page's summary
-// under "Devices" and runs nothing.
+// under "Devices" and runs nothing; `--row <file.json>` (a workspace path) adds another engine's
+// report, as rywible/wrela-others' harness writes it, under "Other engines on this machine".
 //
 // The warmup (60 frames unless `--warmup` says) isn't counted. `--frames` cuts every scene's
 // measured frames to that many (to try the tool). The report is written to
@@ -40,7 +41,7 @@ use report::{
 }
 use scenes::{SCENES, Scene, script}
 use std::io::print
-use std::json::TOP
+use std::json::{Doc, TOP}
 use std::tool::{ToolError, args}
 use std::tool::drive
 use std::tool::drive::Step
@@ -53,7 +54,7 @@ use toolkit::driven::untrapped
 use toolkit::page::{keep_results, run_page}
 use toolkit::whole::{chunked, read_file, write_file}
 
-pub const USAGE: Text = "usage: wrela tool bench -- [--scene <name>]... [--frames <n>] [--warmup <n>] [--workers <n>] [--compare <report.json>] [--no-native] [--no-docs] [--lan] | --row \"<machine>;<scene>;<p50>;<p95>;<p99>;<over 33>;<playable ms>\""
+pub const USAGE: Text = "usage: wrela tool bench -- [--scene <name>]... [--frames <n>] [--warmup <n>] [--workers <n>] [--compare <report.json>] [--no-native] [--no-docs] [--lan] | --row \"<machine>;<scene>;<p50>;<p95>;<p99>;<over 33>;<playable ms>\" | --row <others-report.json>"
 
 /// What a run of the bench does.
 pub struct Options: Clone {
@@ -569,7 +570,13 @@ const BENCH_HEAD: Text = "# Benchmarks\n\nWhat the engine's scenes cost, measure
 /// `text` (docs/bench.md) with `add` at the end of its "Devices" section, which is made at the end
 /// if it isn't there.
 pub fn into_devices(text: str, add: str) -> String {
-    let heading = "\n## Devices\n"
+    into_section(text, add, "Devices")
+}
+
+/// `text` (docs/bench.md) with `add` at the end of its section `name`, made at the end if it
+/// isn't there.
+pub fn into_section(text: str, add: str, name: str) -> String {
+    let heading = f"\n## {name}\n"
     var out = String::new()
     match text.find(heading) {
         Some(at) => {
@@ -584,7 +591,7 @@ pub fn into_devices(text: str, add: str) -> String {
         },
         None => {
             out.push_str(text)
-            out.push_str("## Devices\n\n")
+            out.push_str(f"## {name}\n\n")
             out.push_str(add)
         },
     }
@@ -612,6 +619,43 @@ pub fn by_hand(row: str, date: str) -> Option<String> {
     )
 }
 
+/// Another engine's report (rywible/wrela-others' harness, `doc`) as docs/bench.md's rows under
+/// "Other engines on this machine": each scene's engine and version, its GPU span (where the engine
+/// timed it), its intervals, how many over 33 ms, its cold and warm first frames and its bytes, with
+/// the command and the date; `None` if it isn't one.
+pub fn other_rows(d: Doc, path: str) -> Option<String> {
+    let machine = d.text(d.get(TOP, "machine")?)?
+    let date = d.text(d.get(TOP, "date")?)?
+    let command = d.text(d.get(TOP, "command")?)?
+    let scenes = d.get(TOP, "scenes")?
+    var out = String::new()
+    for i in 0..d.count(scenes) {
+        let sc = d.at(scenes, i)?
+        let stat = |key: str, q: str| match d.get(sc, key) {
+            Some(o) => number_at(d, o, q),
+            None => 0.0,
+        }
+        let engine = d.text(d.get(sc, "engine")?)?
+        let version = d.text(d.get(sc, "version")?)?
+        let scene = d.text(d.get(sc, "scene")?)?
+        let timed = match d.get(sc, "gpu_timed") {
+            Some(t) => d.is_true(t),
+            None => false,
+        }
+        let gpu = if timed {
+            String::from(
+                f"{stat("span", "p50"):.2} / {stat("span", "p95"):.2} / {stat("span", "p99"):.2}",
+            )
+        } else {
+            String::from("not exposed")
+        }
+        out.push_str(
+            f"| {engine} {version} | {scene} | {gpu} | {stat("interval", "p50"):.2} / {stat("interval", "p95"):.2} / {stat("interval", "p99"):.2} | {number_at(d, sc, "over_33"):.0} | {number_at(d, sc, "first_frame_ms"):.0} | {number_at(d, sc, "warm_first_frame_ms"):.0} | {number_at(d, sc, "loaded_bytes") / 1048576.0:.1} | {date}, {machine}: `{command}` ({path}) |\n",
+        )
+    }
+    Some(out)
+}
+
 /// docs/bench.md, or its head if it isn't there yet.
 fn bench_md() -> String {
     match files::read("ws/docs/bench.md").wait() {
@@ -621,6 +665,19 @@ fn bench_md() -> String {
 }
 
 fn bench(o: Options) -> Result<(), ToolError> {
+    if o.row.as_str().ends_with(".json") {
+        let path = o.row.as_str()
+        let Some(rows) = other_rows(json_of(f"ws/{path}")?, path) else {
+            return Err(
+                ToolError::new(f"{path} isn't another engine's report (rywible/wrela-others)"),
+            )
+        }
+        print(rows.as_str())
+        let text = into_section(bench_md().as_str(), rows.as_str(), "Other engines on this machine")
+        write_file("ws/docs/bench.md", chunked(Vec::from(text.as_bytes())))?
+        print("bench: the rows are added to docs/bench.md's Other engines on this machine")
+        return Ok(())
+    }
     if !o.row.is_empty() {
         let now = time::utc_now().wait()?
         let Some(line) = by_hand(o.row.as_str(), date_of(f64(now.seconds) * 1000.0).as_str()) else {

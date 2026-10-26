@@ -1,7 +1,10 @@
 // The bench tool's tests: its command line, its statistics, its reading of a page's GPU timings
 // and its report, written as a later `--compare` reads it and as docs/bench.md shows it.
 
-use main::{by_hand, chosen, into_devices, lan_url, machine_in, measure, parse_args, posted, slug_of}
+use main::{
+    by_hand, chosen, into_devices, lan_url, machine_in, measure, other_rows, parse_args, posted,
+    slug_of,
+}
 use report::{
     hitches, Measured, Stats, compared, date_of, doc, intervals, markdown, report_json, spans,
     stats, time_of,
@@ -247,6 +250,23 @@ fn a_row_by_hand_has_its_five_numbers_and_says_so() {
     )
     assert(by_hand("M1 Air;walk;16.7;17;33;2", "2026-10-26").is_none())
     assert(by_hand("M1 Air;walk;16.7;17;fast;2;5400", "2026-10-26").is_none())
+}
+
+/// Another engine's report (rywible/wrela-others' harness) is a row a scene: its engine and
+/// version, its GPU span or that the engine doesn't expose one, its intervals and cold and warm
+/// first frames, with the command and the date; JSON of another shape isn't one.
+@test
+fn another_engines_report_is_a_row_a_scene() {
+    let json = "{\"machine\": \"Apple M4\", \"date\": \"2026-10-26\", \"command\": \"npm run bench -- --engine three\", \"scenes\": [{\"scene\": \"three-walk\", \"engine\": \"three.js\", \"version\": \"0.186.1\", \"span\": {\"p50\": 0, \"p95\": 0, \"p99\": 0}, \"gpu_timed\": false, \"interval\": {\"p50\": 16.7, \"p95\": 18.1, \"p99\": 33.4}, \"over_33\": 2, \"first_frame_ms\": 1800, \"warm_first_frame_ms\": 900, \"loaded_bytes\": 2097152}]}"
+    let Some(d) = std::json::parse(json) else { panic("the JSON") }
+    let Some(rows) = other_rows(d, "build/others/three.json") else { panic("the rows") }
+    assert(
+        rows.as_str() ==
+            "| three.js 0.186.1 | three-walk | not exposed | 16.70 / 18.10 / 33.40 | 2 | 1800 | 900 | 2.0 | 2026-10-26, Apple M4: `npm run bench -- --engine three` (build/others/three.json) |\n",
+        rows.as_str(),
+    )
+    let Some(other) = std::json::parse("{\"scenes\": []}") else { panic("the JSON") }
+    assert(other_rows(other, "x.json").is_none())
 }
 
 /// A device's table goes at the end of "Devices", before the next section; with no "Devices",
