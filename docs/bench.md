@@ -337,6 +337,17 @@ last-green-shot --scene last-green-walk --no-native`), the M4 Air, Chrome; pixel
   sphere's near side), not at its farthest: a merge triangle at the far plane (z = 0) fails the
   early test everywhere and still can't be rejected.
 
+The step's gate (one run each, the 0.9.0 checkout, after B5.5):
+
+| Gate | Asked | Measured |
+|---|---|---|
+| G-profile, the opening's GPU span p50 | 12.0 ms (18.9 at B1) | **13.27** (misses by 1.27; its heaviest label `vegetation` 3.04) |
+| G-profile, the walk's | 9.0 ms (12.6) | **13.31** (misses; the labels' work fell 3.8 ms, the span rose 0.8) |
+| G-draws, the walk's frame 600 | under 30 logical draws | **78** (misses) |
+| G-hitch | at most 2 frames over 33 ms | walk **1** of 1,200, opening **0** of 480 (meet) |
+| G-pixels | within 2/255 | B5.1 and B5.3 hold it on the clearing (4 and 1 pixels past 1/255); B5.2 within the Last Green's noise; B5.4's switch is off, its build's schedule moves 4.1% of the clearing's pixels by up to 21/255 |
+| G-stills | | not run per step: the final gate's (B16) |
+
 ## Whether D10 holds
 
 The claim (docs/plan-world-class-2.md §0.1, D10, **proposed**): on a MacBook Air M4 in Chrome at
