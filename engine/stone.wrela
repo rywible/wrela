@@ -33,7 +33,7 @@ use std::math::TAU
 use std::stage::{Taped, interpret}
 use std::transform::{rotate_y, translate}
 use view::{Camera, ROCK}
-use virtual::{Clusters, Placed, VisDraw, cook, pulled}
+use rock::{RockLook, cook_rock}
 
 /// What a point of a stone carries: its colour (linear).
 pub struct Rock: Copy + GpuData + Blend {
@@ -308,7 +308,14 @@ fn repeated_stone_bounds_follow_the_origin_and_shadow_volume() {
 /// The stone of `radius`, `squash` and `seed`, realized once (cells for an 8 mm tolerance, at
 /// most 4 cm: a stone bends gently, and its stain varies over a sixth of its radius) at `at`
 /// turned by `turn` about +y.
-pub fn realize_stone(radius: f32, squash: vec3, seed: u32, at: vec3, turn: f32) -> Realized {
+pub fn realize_stone(
+    radius: f32,
+    squash: vec3,
+    seed: u32,
+    at: vec3,
+    turn: f32,
+    look: RockLook = PLAIN_ROCK,
+) -> Realized {
     realize_stone_within(
         radius,
         squash,
@@ -316,6 +323,7 @@ pub fn realize_stone(radius: f32, squash: vec3, seed: u32, at: vec3, turn: f32) 
         at,
         turn,
         Tolerance { tolerance: 8mm, largest: 4cm },
+        look: look,
     )
 }
 
@@ -327,24 +335,73 @@ pub fn realize_stone_within(
     at: vec3,
     turn: f32,
     surface: Tolerance,
+    look: RockLook = PLAIN_ROCK,
 ) -> Realized {
-    realize_rock(stone(radius, squash, seed), surface, 1cm, translate(at) * rotate_y(turn), seed)
+    realize_rock(
+        stone(radius, squash, seed),
+        surface,
+        1cm,
+        translate(at) * rotate_y(turn),
+        seed,
+        look: look,
+    )
 }
 
 /// Rock `c` (a `realize::solid`) realized as one rigid mesh to `surface`'s tolerance, its colours
 /// cooked a cell `cell` across, placed by `at`, its tone's seed `seed`: a stone, a bed, or a game's
-/// built thing of rock. Its counts are asked for, to fit it once they've come (`settle`).
+/// built thing of rock; its colours as rock (`look`: its `to_world` is `at`) or its field's alone
+/// (`PLAIN_ROCK`). Its counts are asked for, to fit it once they've come (`settle`).
 pub fn realize_rock(
     c: Creature<Rock>,
     surface: Tolerance,
     cell: f32,
     at: mat4,
     seed: u32,
+    look: RockLook = PLAIN_ROCK,
 ) -> Realized {
     let mesh = realize_rigid(c, surface)
-    let colours = colours(mesh, c.field(), ByChannels {}, cell)
+    // Its colours from its field alone, or as rock (`rock::RockLook`: strata, cracks, lichen and
+    // wetness by where each vertex is).
+    let colours = if look.on == 0 { colours(mesh, c.field(), ByChannels {}, cell) } else {
+        rock_colours(mesh, c.field(), RockLook { to_world: at, ..look }, cell)
+    }
     let fit = Some(Fit { tally: read(mesh.tally.items()) })
     Realized { mesh, colours, at, seed, fit }
+}
+
+/// The look of a rock cooked from its field's colour alone (`realize_rock`'s default).
+pub const PLAIN_ROCK = RockLook {
+    to_world: mat4(
+        vec4(1.0, 0.0, 0.0, 0.0),
+        vec4(0.0, 1.0, 0.0, 0.0),
+        vec4(0.0, 0.0, 1.0, 0.0),
+        vec4(0.0, 0.0, 0.0, 1.0),
+    ),
+    on: 0,
+}
+
+/// A realized rock's colours as rock (`rock::cook_rock`): a buffer of one per vertex the mesh has
+/// room for.
+fn rock_colours<F: Parts<Rock>>(
+    mesh: Mesh,
+    field: F,
+    look: RockLook,
+    cell: f32,
+) -> GpuBuffer<Unorm8x4> {
+    let room = mesh.room().vertices
+    var out: GpuBuffer<Unorm8x4> = buffer(room)
+    dispatch(
+        cook_rock.bind(
+            field,
+            look,
+            fp: cell,
+            tally: mesh.tally.items(),
+            verts: mesh.verts.items(),
+            colours: mut out,
+        ),
+        groups: (room + 63) / 64,
+    )
+    out
 }
 
 /// A rock's shape as a tape (`rock_shape`), for `realize::realize_rigid_field` to realize through
@@ -422,6 +479,8 @@ pub struct StoneVertex: Copy {
     pub world: vec3,
     pub normal: vec3,
     pub albedo: vec3,
+    /// Its roughness, as its colours hold it (`rock::RockLook`'s wet bands are glossier).
+    pub rough: f32,
     pub seed: Flat<u32>,
 }
 
@@ -454,6 +513,7 @@ pub fn stone_point(
         world,
         normal: normal_at * sv.normal,
         albedo: c.rgb * c.rgb,
+        rough: c.a,
         seed: Flat { value: seed },
     }
 }
@@ -537,7 +597,7 @@ pub fn lit_stone(s: StoneVertex, lt: Lighting) -> vec4 {
         sun,
         sky: sky * low,
         through: vec3(0.0),
-        rough: Rock { albedo: s.albedo }.roughness(),
+        rough: s.rough,
         reflected: reflected * low,
         glint: 1.0,
     }
@@ -595,8 +655,15 @@ pub fn bed(b: Bed) -> Creature<Rock> {
 
 /// Bed `b` realized at `at` (its frame's origin in the world): cells of about 45 cm (its faces
 /// are planes; an edge rounds by about a cell), its colours a cell 25 cm.
-pub fn realize_bed(b: Bed, at: vec3) -> Realized {
-    realize_rock(bed(b), Tolerance { tolerance: 50cm, largest: 45cm }, 25cm, translate(at), b.seed)
+pub fn realize_bed(b: Bed, at: vec3, look: RockLook = PLAIN_ROCK) -> Realized {
+    realize_rock(
+        bed(b),
+        Tolerance { tolerance: 50cm, largest: 45cm },
+        25cm,
+        translate(at),
+        b.seed,
+        look: look,
+    )
 }
 
 // ---- rocks: many solids from a few ----------------------------------------------------------------

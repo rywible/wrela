@@ -1,0 +1,7 @@
+# Rock as a material (engine/rock.wrela, B11d) on the GPU: a cube of rock realized with its look,
+# its vertices' colours read back.
+[package]
+name = "rock_tests"
+
+[dependencies]
+engine = { workspace = true }

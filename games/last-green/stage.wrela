@@ -2280,7 +2280,8 @@ pub fn cook_load(s: mut Stage, c: mut Cooks, eye: vec2, linear: Sampler) {
     while s.to_build.len() > 0 && c.planner.may(Work::Built) {
         let b = s.to_build.remove(blockouts::nearest(s.to_build, eye))
         label("built things")
-        var near = blockouts::realize(b, height_at)
+        let water = water_near(s.water_tiles, blockouts::place(b), origin_of(s))
+        var near = blockouts::realize(b, height_at, water: water)
         let o = origin_of(s)
         near.at[3] = vec4(near.at[3].xyz - o, 1.0)
         var far = blockouts::realize_far(b, height_at)
@@ -2299,6 +2300,22 @@ pub fn cook_load(s: mut Stage, c: mut Cooks, eye: vec2, linear: Sampler) {
             c.far_changed = true
         }
     }
+}
+
+/// The level of the water nearest `xz` (the world's), for rock's wet band (`engine::rock`): the
+/// nearest water tile's middle within its reach and 4 m; none (far below) otherwise.
+fn water_near(tiles: [WaterTile], xz: vec2, origin: vec3) -> f32 {
+    var best = 1.0e9
+    var level = -1.0e9
+    for t in tiles {
+        let c = t.centre + origin
+        let d = length(c.xz - xz)
+        if d < t.radius + 4.0 && d < best {
+            best = d
+            level = c.y
+        }
+    }
+    level
 }
 
 pub fn trace_of(light: Light, grid: ProbeGrid) -> Trace {

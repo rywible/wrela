@@ -63,6 +63,7 @@ pub struct PooledVertex: Copy {
     pub world: vec3,
     pub normal: vec3,
     pub albedo: vec3,
+    pub rough: f32,
     pub seed: Flat<u32>,
     pub coverage: Flat<vec2>,
 }
@@ -89,6 +90,7 @@ pub fn pooled_vertex(
         world,
         normal: it.normal_at * p.normal.decode(),
         albedo: c.rgb * c.rgb,
+        rough: c.a,
         seed: Flat { value: it.seed },
         coverage: Flat { value: it.coverage },
     }
@@ -106,6 +108,7 @@ pub fn pooled_shade(v: PooledVertex, pixel: FragCoord, lt: Lighting) -> vec4 {
             world: v.world,
             normal: v.normal,
             albedo: v.albedo,
+            rough: v.rough,
             seed: v.seed,
         },
         lt,

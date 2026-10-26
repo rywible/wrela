@@ -633,6 +633,25 @@ tests, with a note that no game draws through it. `wrela pipelines games/last-gr
 pipelines before and after**: since toolchain 0.8.0 (A6) the false constant built none of the
 path's 17. The path was off, so nothing the Last Green ran changed.
 
+**B11d, rock as a material** (`engine::rock`). A stone's colour and roughness cooked per vertex
+at realization by where the vertex is (`cook_rock`, a `RockLook` through `stone::realize_rock`):
+strata (bands about 0.3 to 1.2 m deep along a bedding direction, warped by a noise, each its tone
+between 0.72 and 1.18 of the rock's), cracks (Worley's edge distance on 1.6 m cells, darkened by
+up to 0.45), lichen (faces under 30°, over half a metre above the ground, in patches: a grey-green,
+a fifth at most) and wetness (within 0.6 m of the nearest water's level: 0.6 of the colour,
+roughness 0.35). The colour's alpha holds the roughness, which `lit_stone` and the pool's stones
+now read (it was a constant 0.8; a rock cooked from its field alone still says 0.8). The plan's
+`Material.rough` and `.wet` aren't needed: stones keep their four-byte colours, the wet band in
+the colour and the roughness. The Last Green's stones, standing slabs, waystones, crag beds and
+bank stones are rock (its dressed masonry, the blocks, the walls and the tower, keeps its look);
+each built thing's water is the nearest water tile's level, a bank stone's its own lowest 0.3 m.
+Its parameters are proposed.
+
+- **The test** (engine/tests/rock): a 2 m cube of rock, bands 0.5 m deep, the water 0.3 m over its
+  foot: **4** distinct tones up its sides; its wet foot 0.14 of luma against 0.26 just above.
+- **G-profile:** a frame's `built things` (its realizing and colours, at load) p50 4.80 ms on the
+  walk and 7.85 in the opening, against 4.77 and 5.92 at B10 (asked: at most 2×).
+
 ## Devices
 
 Each device D20 names (docs/plan-world-class-2.md §0.5), measured by `wrela tool bench -- --lan`
