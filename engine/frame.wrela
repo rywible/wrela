@@ -35,7 +35,7 @@ use paint::{
     meter,
 }
 use plant::Wind
-use probes::{Baked, Occluder, ProbeGrid, Trace}
+use probes::{Baked, Occluder, ProbeGrid, STRIP_COLUMNS, Trace}
 use shadow::{Cascade, Kept, Shadows, shadows}
 use sheet::{Scale, pace}
 use sky::{Clouds, Sky, Weather, new_sky, sky_shade}
@@ -2101,6 +2101,13 @@ impl<R: Resolver> Frame<R> {
         }
         if !self.probes.done() {
             if probe_step(mut self.cooks.planner, mut self.probes_waited, Work::ProbeStrip) {
+                // Twice the columns a strip while the frame loads: its budget allows it, and
+                // the probes' first bake is the last link before playable.
+                self.probes.using.strip_columns = if self.ready.playable_at.is_none() {
+                    2 * STRIP_COLUMNS
+                } else {
+                    STRIP_COLUMNS
+                }
                 self.probes.using.bake_strip(
                     scene.trace(self.light, self.probes.using.grid),
                     sh,

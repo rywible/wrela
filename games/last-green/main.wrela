@@ -896,6 +896,27 @@ fn the_first_frames_run(s: Floor) {
     assert(s.frame.frames == 40, f"{s.frame.frames} frames drawn")
 }
 
+/// The load's chain (`stage::cook_load`): with the far layer held to frame 200, the wood and the
+/// built things don't wait for it (nor the built things for the wood), and the floor is
+/// playable soon after it lands.
+@test(frames: 400, gpu: true, hold: [("files/floor/far.bin", 200)])
+fn the_load_chain_runs_its_links_side_by_side(s: Floor) {
+    let (Some(built), Some(wood)) = (s.stage.first_built_at, s.stage.wood_at) else {
+        panic("the wood and the built things came")
+    }
+    assert(
+        built < 20 && wood < 20,
+        f"the first built thing stood at frame {built}, the wood at {wood}",
+    )
+    let Some(playable) = s.frame.ready.playable_at else { panic("playable within 400 frames") }
+    print(f"built from frame {built}, the wood at {wood}, playable at frame {playable}")
+    assert(playable <= PLAYABLE_HELD, f"playable at frame {playable}")
+}
+
+/// The frame the load-chain test's floor is playable by, its far layer held to frame 200: what
+/// it measured, and 20 frames' room.
+const PLAYABLE_HELD: u32 = 273
+
 /// The fight's ground (`fought`) is worn over its disc and the wolf's way out to the trail, and
 /// nowhere else; its edge is ragged, not a circle.
 @test

@@ -82,6 +82,10 @@ pub const CLUSTERED: bool = false
 /// map, and the player's feet and heading it marks; last frame's wind and cloth contact (the
 /// grass's motion); whether the wind is still; and the render origin's tile.
 pub struct Stage {
+    /// The frames the wood was made on and the first built thing stood on (the load chain's
+    /// order, `cook_load`).
+    pub wood_at: Option<u32> = None,
+    pub first_built_at: Option<u32> = None,
     pub plants: Vec<Plant>,
     pub kinds: Vec<Kind>,
     pub atlas: Texture<Rgba8>,
@@ -768,9 +772,6 @@ pub fn cast_stone<P: RenderPass>(pass: P, st: Realized, at: mat4, view: mat4) {
 pub const CARDS_TO: f32 = 80.0
 
 pub const IMPOSTORS_TO: f32 = 4000.0
-
-/// The forest's kinds cooked a frame at load.
-pub const KINDS_PER_FRAME: u32 = 2
 
 /// The tiles streamed round the player: those within `WANT` of the eye are fetched (the nearest
 /// first, `IN_FLIGHT` at a time) and placed (one a frame), those past `DROP` dropped; room for
@@ -2006,84 +2007,96 @@ pub fn stream(s: mut Stage, c: mut Cooks, clipmap: mut Clipmap, eye: vec2) {
 
 /// The load's work this frame: the forest's kinds, a few a frame; the wood once they're all
 /// cooked; then the built things, a frame each, the nearest to the eye (`eye`, the world's) first.
+/// The load's chain, each link waiting only on what it needs (the frame's planner spending the
+/// loading budget on as many steps as fit):
+///
+/// | Link | Waits for |
+/// |---|---|
+/// | the kinds | nothing (as many a frame as the planner allows) |
+/// | the wood | the last kind (the frame it lands) |
+/// | the tiles placed | the wood (the same frame) |
+/// | the banks' prototypes, the built things | their pipelines alone, not the wood |
+/// | the near cascade | nothing (`casters_ready(far: false)`) |
+/// | the far cascade | the far layer, the wood and the built things |
+/// | the probes' first bake | the built things, the prototypes, the cascades whole, the air and dome |
+/// | playable | the probes, the frame round the eye |
 pub fn cook_load(s: mut Stage, c: mut Cooks, eye: vec2, linear: Sampler) {
-    if s.wood.is_some() {
-        if s.banks.prototypes.len() < blockouts::BANK_PROTOTYPES {
-            if !c.planner.may(Work::Built) {
-                return
-            }
-            let prototype = blockouts::bank_prototype(s.banks.prototypes.len())
-            s.banks.prototypes.push(take prototype)
-            if s.banks.prototypes.len() == blockouts::BANK_PROTOTYPES {
-                c.near_changed = true
-                c.far_changed = true
-            }
-            return
+    if s.wood.is_none() {
+        while s.kinds.len() < s.plants.len() && c.planner.may(Work::Kind) {
+            let k = s.kinds.len()
+            s.kinds.push(kind(s.plants[k], seed: k + 1, atlas: s.atlas, s: linear))
         }
-        if clusters_due(s) {
-            if !c.planner.may(Work::Built) {
-                return
-            }
-            label("bank clusters")
-            let k = s.bank_stones.len()
-            var stones = ClusterStones::new(
-                blockouts::bank_creature(k),
-                blockouts::BANK_CELL,
-                set: k,
+        if s.kinds.len() == s.plants.len() {
+            let kinds = replace(mut s.kinds, Vec::new())
+            let atlas = replace(mut s.atlas, texture::<Rgba8>(width: 1, height: 1))
+            var w = Wood::new(
+                take kinds,
+                trees::far_kinds(),
+                take atlas,
+                slots: SLOTS,
+                cards_to: CARDS_TO,
+                impostors_to: IMPOSTORS_TO,
+                // Compressed where the device has BC (`engine::wood::Impostors`).
+                compress: std::gpu::features().bc,
             )
-            stones.place(bank_copies(s.banks, k))
-            s.bank_stones.push(take stones)
+            // Retain leaf detail by output size and keep large crowns as geometry farther away.
+            // The whole handover stays inside the loaded near forest; cut cells use output pixels.
+            w.cards_limit = 160.0
+            w.impostor_px = 128.0 / SCALE
+            w.card_px = engine::lod::CARD_PX / SCALE
+            w.cell = 1.0 / SCALE
+            w.write_lods()
+            s.wood = Some(take w)
+            s.wood_at = Some(c.frames)
+            print(f"the wood: {s.plants.len()} kinds cooked at frame {c.frames}")
+        }
+    }
+    // The banks' prototypes, their clusters and the built things need their pipelines alone:
+    // they come beside the kinds, not after the wood.
+    if s.banks.prototypes.len() < blockouts::BANK_PROTOTYPES {
+        if !c.planner.may(Work::Built) {
             return
         }
-        if s.to_build.len() > 0 && c.planner.may(Work::Built) {
-            // The nearest to the eye first, so what a player sees on arriving stands in the first
-            // frames (one a frame from the list's start, the arena's ring stood after a second).
-            let b = s.to_build.remove(blockouts::nearest(s.to_build, eye))
-            label("built things")
-            var near = blockouts::realize(b, height_at)
-            let o = origin_of(s)
-            near.at[3] = vec4(near.at[3].xyz - o, 1.0)
-            var far = blockouts::realize_far(b, height_at)
-            match mut far {
-                Some(f) => f.at[3] = vec4(f.at[3].xyz - o, 1.0),
-                None => {},
-            }
-            s.built.push(Thing { near, reach: blockouts::reach(b), far })
-            if s.to_build.is_empty() {
-                c.near_changed = true
-                c.far_changed = true
-            }
+        let prototype = blockouts::bank_prototype(s.banks.prototypes.len())
+        s.banks.prototypes.push(take prototype)
+        if s.banks.prototypes.len() == blockouts::BANK_PROTOTYPES {
+            c.near_changed = true
+            c.far_changed = true
         }
         return
     }
-    for _ in 0..KINDS_PER_FRAME {
-        let k = s.kinds.len()
-        if k < s.plants.len() && c.planner.may(Work::Kind) {
-            s.kinds.push(kind(s.plants[k], seed: k + 1, atlas: s.atlas, s: linear))
+    if clusters_due(s) {
+        if !c.planner.may(Work::Built) {
+            return
         }
+        label("bank clusters")
+        let k = s.bank_stones.len()
+        var stones = ClusterStones::new(blockouts::bank_creature(k), blockouts::BANK_CELL, set: k)
+        stones.place(bank_copies(s.banks, k))
+        s.bank_stones.push(take stones)
+        return
     }
-    if s.kinds.len() == s.plants.len() {
-        let kinds = replace(mut s.kinds, Vec::new())
-        let atlas = replace(mut s.atlas, texture::<Rgba8>(width: 1, height: 1))
-        var w = Wood::new(
-            take kinds,
-            trees::far_kinds(),
-            take atlas,
-            slots: SLOTS,
-            cards_to: CARDS_TO,
-            impostors_to: IMPOSTORS_TO,
-            // Compressed where the device has BC (`engine::wood::Impostors`).
-            compress: std::gpu::features().bc,
-        )
-        // Retain leaf detail by output size and keep large crowns as geometry farther away.
-        // The whole handover stays inside the loaded near forest; cut cells use output pixels.
-        w.cards_limit = 160.0
-        w.impostor_px = 128.0 / SCALE
-        w.card_px = engine::lod::CARD_PX / SCALE
-        w.cell = 1.0 / SCALE
-        w.write_lods()
-        s.wood = Some(take w)
-        print(f"the wood: {s.plants.len()} kinds cooked at frame {c.frames}")
+    // As many a frame as the planner allows, the nearest to the eye first, so what a player
+    // sees on arriving stands in the first frames.
+    while s.to_build.len() > 0 && c.planner.may(Work::Built) {
+        let b = s.to_build.remove(blockouts::nearest(s.to_build, eye))
+        label("built things")
+        var near = blockouts::realize(b, height_at)
+        let o = origin_of(s)
+        near.at[3] = vec4(near.at[3].xyz - o, 1.0)
+        var far = blockouts::realize_far(b, height_at)
+        match mut far {
+            Some(f) => f.at[3] = vec4(f.at[3].xyz - o, 1.0),
+            None => {},
+        }
+        s.built.push(Thing { near, reach: blockouts::reach(b), far })
+        if s.first_built_at.is_none() {
+            s.first_built_at = Some(c.frames)
+        }
+        if s.to_build.is_empty() {
+            c.near_changed = true
+            c.far_changed = true
+        }
     }
 }
 
