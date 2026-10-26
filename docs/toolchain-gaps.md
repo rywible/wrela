@@ -15,15 +15,6 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Meanwhile:** the viewer lists each pass's label, its pipelines and its draws or dispatches, with the frame's screen. `wrela profile --worst` gives the labels' GPU times.
 - **Status:** open: a pass's targets in its record, the timings beside the spans (`Ran`), and a `Capture` of a labelled pass.
 
-### A recorded indexed or multi-draw names no pipeline
-
-- **Needed:** the pass viewer names each pass's pipelines (§B1.5).
-- **What happens:** toolchain 0.8.0's recorder (`Recorded::of`) fills `pipeline` and `bindings` for `Draw`, `DispatchIndirect`, `DrawIndirect` and `DrawIndexedIndirect` only; a `DrawIndexed` or `MultiDrawIndirect` comes with an empty pipeline, so the Last Green's terrain and late vegetation passes list none.
-- **Found:** 2026-10-26, the first `wrela tool passes` of the Last Green's frame 300.
-- **Evidence:** `runtime/native/src/tool/drive/child.rs` `Recorded::of`'s match.
-- **Meanwhile:** those passes show their draws with no pipeline.
-- **Status:** fixed in the compiler's 0.8.1 (`every_draw_names_its_pipeline`); this workspace takes it with the pin.
-
 ### A tool can't read an input script from its JSON
 
 - **Needed:** `wrela tool passes -- games/last-green --frame 300 --input build/gates/LG_WALK.json`: a gate script's file as a driven build's input.
@@ -85,6 +76,23 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Status:** open: bind the table only in pipelines whose code reads a lifted literal, or say in E0602 that one of the buffers is the lifted table.
 
 ## Fixed
+
+### A loop body's last call leaked its temporaries
+
+- **Needed:** the lookdev instrument (`wrela tool lookbook --quality`) adds each of a run's thousand frames to running sums: `for _ in 0..SAMPLES { still.add(luma(d.screen()?)) }`.
+- **What happens:** toolchains up to 0.8.0 never freed the temporaries of a call that ends a loop's body (its value): each pass kept its `luma` and its screen, about 400 MB a run at 320x180, and the tool ran out of its heap after one shot. Every `for ... { print(f"...") }` leaked its string the same way.
+- **Found:** 2026-10-26, the first `--controls` run.
+- **Evidence:** the MIR of a loop ending in `sum_into(mut t, made(n))` has no `Drop` of `made(n)`; `end_loop` popped the loop's scope, which held it, without dropping.
+- **Status:** fixed in 0.8.1 (rywible/wrela-compiler#37): a loop's body has its own temporaries' scope, ended with each pass.
+
+### A recorded indexed or multi-draw names no pipeline
+
+- **Needed:** the pass viewer names each pass's pipelines (§B1.5).
+- **What happens:** toolchain 0.8.0's recorder (`Recorded::of`) fills `pipeline` and `bindings` for `Draw`, `DispatchIndirect`, `DrawIndirect` and `DrawIndexedIndirect` only; a `DrawIndexed` or `MultiDrawIndirect` comes with an empty pipeline, so the Last Green's terrain and late vegetation passes list none.
+- **Found:** 2026-10-26, the first `wrela tool passes` of the Last Green's frame 300.
+- **Evidence:** `runtime/native/src/tool/drive/child.rs` `Recorded::of`'s match.
+- **Meanwhile:** those passes show their draws with no pipeline.
+- **Status:** fixed in 0.8.1 (rywible/wrela-compiler#37): `Command::pipeline()` names every draw's and dispatch's pipeline, and the recorder reads it.
 
 ### A branch under a false constant still makes its pipelines
 
