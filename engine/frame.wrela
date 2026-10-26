@@ -1012,6 +1012,8 @@ pub struct Frame<R: Resolver> {
     pub distance: Distance,
     /// The air's froxels (`Quality::fog`).
     pub fog: FogVolume,
+    /// Whether the screen has been asked to be HDR (`Look::output`).
+    asked_hdr: bool = false,
     pub clipmap: Clipmap,
     pub targets: Targets,
     /// The depth pyramid (`cull`): this frame's, built after its opaque passes, which the next
@@ -2823,7 +2825,13 @@ impl<R: Resolver> Frame<R> {
             screen.present()
             return
         }
-        let d = Develop { cam, look: self.look, out, view: self.debug.view }
+        // The screen HDR where the look asks for it, once (the host swaps it in when it can).
+        if self.look.output == 1 && !self.asked_hdr {
+            std::gpu::screen(hdr: true, gamut: std::gpu::Gamut::DisplayP3)
+            self.asked_hdr = true
+        }
+        let hdr = self.look.output == 1 && std::gpu::screen_is().hdr
+        let d = Develop { cam, look: self.look, out, view: self.debug.view, hdr: u32(hdr) }
         // The dabs into the texture the water's copy held (done with by now).
         let dp = begin_pass(mut self.targets.below)
         fullscreen(
