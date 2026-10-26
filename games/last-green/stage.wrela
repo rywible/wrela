@@ -2065,7 +2065,8 @@ pub fn cook_load(s: mut Stage, c: mut Cooks, eye: vec2, linear: Sampler) {
         }
         return
     }
-    if clusters_due(s) {
+    // `CLUSTERED` here too: through `clusters_due` alone, the clusters' pipelines were built.
+    if CLUSTERED && clusters_due(s) {
         if !c.planner.may(Work::Built) {
             return
         }
