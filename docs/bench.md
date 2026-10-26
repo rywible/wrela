@@ -709,6 +709,46 @@ their field (the realizer's `measured_error`) wasn't measured here.
   `..._follow_raster_jitter...`). The opening's `water` label p50 0.20 ms, as before (asked: at
   most 1.0).
 
+## 2026-10-26: B13, the image (world-class 2, the 0.9.0 checkout)
+
+1. **The resolver: measured and reverted.** Dilated motion (FSR 2's: a moving surface's motion
+   from the nearest depth of the 3 × 3 round the pixel's nearest sample) took the opening's
+   `temporal` from 1.73 to 2.72 ms and its GPU span from 14.29 to 15.22 ms (allowed: 0.15 ms);
+   kept to the screen box where something can move (`Resolve::moving`), the same, the box
+   covering nearly the whole frame where the grass bends. Reverted (8e697e46): the resolve 1.72
+   ms again. The reactive mask (wider boxes, a higher blend floor for cards, grass, water and
+   particles) and the lock for thin features aren't built: each trades flicker for ghosting,
+   and their settings want the lookdev gate's moving measures (B16's run), which B13 didn't
+   have. The render package's seven temporal tests held with and without the dilation.
+2. **Cloth that reads.** `Lit::sheen` and `sheen_tint`, `light::sheen_light`: Charlie's
+   distribution (Estevez and Kulla 2017) with Ashikhmin's visibility for the sun, a fit of its
+   directional albedo (0.12 head on to 0.9 edge on) for the sky. The climber's coat: sheen 0.6,
+   tint (0.08, 0.06, 0.12), dark in the hood's tunnel; its albedo stays its 0.012 (the plan's
+   0.02 is near it). Test: near-black velvet's edge **9.6** times its middle with a sheen of 1,
+   **0.6** without (asked: over 1.3, under 1.1).
+3. **HDR output (D11).** `Look::output` (SDR by default, as D11 says; HDR a setting) and `peak`
+   (4.0); with HDR the frame asks for an HDR screen in Display P3 once, and the develop, while
+   `screen_is` says HDR, outputs linear light rolled off above SDR white toward the peak, chroma
+   kept, no SDR curve or display grade. Test: 0.5 stays 0.5, 3.0 white shows between 1 and the
+   peak, nothing past it. SDR's path is the same code as before.
+4. **`f16` twins: none kept.** `wrela precision` at tol 1e-3: `grass::bloom_drift` over ±500 m
+   (49 operations, 5 safe, 44 unsafe: the lattice hash's range), `noise::noise3` over ±200 m (46,
+   7 safe, 38 unsafe), `light::aces` over 0–16 (9, 5 safe, 4 to watch), `temporal::tamed` over
+   0–64 (4, all safe). The paths that cost (the cover noises, the sward, the sky's march) hash
+   world positions, which no `f16` holds; the one wholly safe function is four operations, too
+   few to save a tenth of its label. The reports are kept with the step's run.
+5. **Relaxed SIMD (D16): stays off.** `wrela profile games/last-green --chrome --optimize
+   --frames 480 --compare <a --relaxed-simd build> --pairs 7` (its default scenario, the herd, at
+   1280 × 720): CPU frame 8.64 → 8.46 ms (−2.2%, the pairs' ranges overlapping), GPU span −4.8%,
+   inconclusive. D16 asks 3%: `wrela build --release` keeps it off.
+6. **Leaves against the sun.** A leaf's light through it gains a narrow lobe toward the sun
+   (strength 0.35, proposed), on the crown's outer leaves, under the sun's shadow: cards,
+   impostors and volumes alike.
+
+- **The step's gate** (the opening's GPU frame p50 with every switch of B5–B13 on, asked: 12.0
+  ms): **14.25 ms** (misses by 2.25). Its heaviest labels: vegetation 3.2, look 2.6, clouds 2.5,
+  terrain 2.3, creature 2.2, temporal 1.7, fog 0.8, probes again 0.9 (where it runs).
+
 ## Devices
 
 Each device D20 names (docs/plan-world-class-2.md §0.5), measured by `wrela tool bench -- --lan`
