@@ -745,7 +745,7 @@ const SKY_FRAME_US: f32 = 4000.0
 
 /// Whether the probes in use are traced again where things changed first (B9c), or each strip
 /// in turn.
-const STEERED: bool = false
+const STEERED: bool = true
 
 /// How many kinds of work a measuring frame times (`MEASURED`).
 const MEASURED_KINDS: u32 = 14

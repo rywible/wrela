@@ -566,6 +566,25 @@ adds four cones read at 1.5 and 4 m past GTAO's metre.
   one on a sixth of the walk's frames, the volume moving every 8 m.
 - **G-memory:** a new `distance` share, 10.9 MB (the volume's 9.4 and its solids' lists).
 
+**B9c, the re-trace steered** (`probes::next_strip`). A strip of 32 columns is still traced a
+frame; which one is chosen on the CPU, which knows what changed: the oldest if two rounds haven't
+traced it, else the one the sun turned most (degrees) and the sky's version moved most since it
+was, up to five times as much the nearer it lights what the eye sees (its nearest column within
+12 m, or ahead within 40 m), its age over a round past that. The plan's GPU bucket select of 32
+columns anywhere would need the probes' buffers written out of order, which a kernel's slots
+aren't; the strip is the unit the re-trace already has.
+
+- **The tests** (CPU, the Last Green's 81 × 81 grid, 206 strips): with nothing changing, every
+  strip within a round, as in turn; after a 5° step of the sun, the strips under the eye within
+  **3 frames** and every strip the eye sees (34) within **34**: in turn, within 206 (the `Sun`
+  fixture's frames to convergence: a sixth).
+- **G-pixels** (the clearing, native, 640 × 360, 600 frames, steered against in turn): 21.8% of
+  pixels differ, 96% of them by 1/255, at most 27/255 (misses 2/255). The clearing's sky changes
+  version as its air and weather finish cooking; steered, the near strips are traced first after
+  each, and from then the two runs trace strips in different orders, each probe's last traces
+  with other turns of the spiral (kept half of): they differ by those traces' noise. Steady
+  state, with nothing changing, is the order taken in turn again, a round later.
+
 ## Devices
 
 Each device D20 names (docs/plan-world-class-2.md §0.5), measured by `wrela tool bench -- --lan`
