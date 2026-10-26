@@ -56,6 +56,79 @@ pub struct WaterMesh: Clone {
 /// The bins' size (m).
 const BIN: f32 = 8.0
 
+/// The side of the tiles the water is drawn in (m): each culled by itself (`tiled`).
+pub const WATER_TILE: f32 = 64.0
+
+/// A tile of the water's drawn triangles: its first index in the tiled indices and how many, and
+/// a sphere round its points (the world's).
+pub struct WaterTile: Copy {
+    pub first: u32,
+    pub count: u32,
+    pub centre: vec3,
+    pub radius: f32,
+}
+
+/// `m`'s triangles' indices in tiles of `WATER_TILE` m (a triangle by its first point's tile),
+/// and the tiles: the draws a frame culls.
+pub fn tiled(m: WaterMesh) -> (Vec<u32>, Vec<WaterTile>) {
+    let n = m.tris.len() / 3
+    if n == 0 {
+        return (Vec::new(), Vec::new())
+    }
+    var lo = vec2i(2147483647, 2147483647)
+    var hi = vec2i(-2147483647, -2147483647)
+    var keys: Vec<vec2i> = Vec::new()
+    for t in 0..n {
+        let p = m.verts[m.tris[3 * t]].at
+        let k = vec2i(floor(p.xz / WATER_TILE))
+        keys.push(k)
+        lo = min(lo, k)
+        hi = max(hi, k)
+    }
+    let w = u32(hi.x - lo.x + 1)
+    let cells = w * u32(hi.y - lo.y + 1)
+    let cell = |k: vec2i| u32(k.y - lo.y) * w + u32(k.x - lo.x)
+    var count: Vec<u32> = Vec::filled(cells, 0)
+    for k in keys {
+        count[cell(k)] += 1
+    }
+    var start: Vec<u32> = Vec::filled(cells, 0)
+    var at = 0
+    for c in 0..cells {
+        start[c] = at
+        at += count[c]
+    }
+    var placed: Vec<u32> = Vec::filled(cells, 0)
+    var tris: Vec<u32> = Vec::filled(m.tris.len(), 0)
+    var box_lo: Vec<vec3> = Vec::filled(cells, vec3(1.0e30))
+    var box_hi: Vec<vec3> = Vec::filled(cells, vec3(-1.0e30))
+    for t in 0..n {
+        let c = cell(keys[t])
+        let to = 3 * (start[c] + placed[c])
+        for j in 0..3 {
+            let i = m.tris[3 * t + j]
+            tris[to + j] = i
+            box_lo[c] = min(box_lo[c], m.verts[i].at)
+            box_hi[c] = max(box_hi[c], m.verts[i].at)
+        }
+        placed[c] += 1
+    }
+    var tiles: Vec<WaterTile> = Vec::new()
+    for c in 0..cells {
+        if count[c] > 0 {
+            tiles.push(
+                WaterTile {
+                    first: 3 * start[c],
+                    count: 3 * count[c],
+                    centre: 0.5 * (box_lo[c] + box_hi[c]),
+                    radius: 0.5 * length(box_hi[c] - box_lo[c]),
+                },
+            )
+        }
+    }
+    (tris, tiles)
+}
+
 /// How far a stream's wet bank reaches past its edge (of its half-width).
 pub const MARGIN: f32 = 0.45
 
@@ -582,5 +655,63 @@ fn water_glint_spreads_without_creating_reflected_energy() {
                 "water's direct reflection creates energy or is not finite",
             )
         }
+    }
+}
+
+/// The water's tiles hold every triangle once, each in its own tile, and their spheres hold
+/// their points.
+@test
+fn the_waters_tiles_hold_each_triangle_once() {
+    var verts: Vec<WaterVert> = Vec::new()
+    var tris: Vec<u32> = Vec::new()
+    for i in 0..40 {
+        let x = f32(i) * 17.0 - 300.0
+        let z = f32(i % 7) * 29.0
+        let base = verts.len()
+        for d in [vec2(0.0), vec2(3.0, 0.0), vec2(0.0, 3.0)] {
+            verts.push(
+                WaterVert {
+                    at: vec3(x + d.x, 1.0, z + d.y),
+                    depth: 1.0,
+                    flow: vec2(0.0),
+                    kind: 0.0,
+                    bank: 0.0,
+                },
+            )
+        }
+        tris.push(base)
+        tris.push(base + 1)
+        tris.push(base + 2)
+    }
+    let m = WaterMesh {
+        verts: verts.clone(),
+        tris: tris.clone(),
+        lo: vec2(0.0),
+        nx: 0,
+        nz: 0,
+        start: Vec::new(),
+        items: Vec::new(),
+    }
+    let (tiled_tris, tiles) = tiled(m)
+    assert(tiled_tris.len() == tris.len(), "a triangle lost or doubled")
+    var total = 0
+    var seen: Vec<u32> = Vec::filled(n: 40, value: 0)
+    for t in tiles {
+        total += t.count
+        for k in 0..t.count / 3 {
+            let first = tiled_tris[t.first + 3 * k]
+            seen[first / 3] += 1
+            for j in 0..3 {
+                let p = verts[tiled_tris[t.first + 3 * k + j]].at
+                assert(
+                    length(p - t.centre) <= t.radius + 1.0e-3,
+                    "a point outside its tile's sphere",
+                )
+            }
+        }
+    }
+    assert(total == tris.len(), "the tiles' counts")
+    for s in seen {
+        assert(s == 1, "a triangle in two tiles, or none")
     }
 }

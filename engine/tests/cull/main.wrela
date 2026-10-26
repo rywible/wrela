@@ -2,10 +2,14 @@
 // kernel (`engine::cull::occluded`), each answer read back. Frame 0 records every case; the
 // tests read the answers once they've come.
 
-use engine::cull::{Hzb, Pyramid, occluded}
+use engine::cull::{Bound, BoundCull, Hzb, Pyramid, bound_draws, cull_bounds, in_frustum, occluded}
 use engine::view::{Camera, first_camera}
-use std::gpu::{GlobalId, GpuBuffer, R32Float, Slots, Texture, buffer, buffer_of, dispatch, read}
-use std::io::Pending
+use engine::noise::rand
+use std::gpu::{
+    Atomics, DrawIndexedArgs, GlobalId, GpuBuffer, R32Float, Slots, Texture, buffer, buffer_of,
+    dispatch, read,
+}
+use std::io::{Pending, print}
 
 /// Each sphere (centre and radius) of a case, tested against its pyramid: 1 if occluded.
 @compute(64)
@@ -15,6 +19,16 @@ fn probe(pyramid: Texture<R32Float>, h: Hzb, spheres: [vec4], out: mut Slots<u32
     }
     let s = spheres[id.x]
     out[id] = if occluded(pyramid, h, s.xyz, s.w) { 1 } else { 0 }
+}
+
+/// Each culled draw's instances, then each one's indices.
+@compute(4)
+fn drawn_of(args: [DrawIndexedArgs], out: mut Atomics<u32>, id: GlobalId) {
+    if id.x >= args.len() {
+        return
+    }
+    out.store(id.x, args[id.x].instances)
+    out.store(id.x + args.len(), args[id.x].indices)
 }
 
 /// Each level's last texel (its bottom right), as the pyramid holds it.
@@ -45,10 +59,52 @@ pub struct State {
     corner: Option<Pending<f32>>,
     answers: Vec<Vec<u32>>,
     corner_depths: Vec<f32>,
+    /// The bounds' case: what was culled, and its draws and lists read back.
+    bounds: Vec<Bound>,
+    draws: Option<Pending<u32>>,
+    lists: Option<Pending<u32>>,
+    culled: Vec<u32>,
+    listed: Vec<u32>,
 }
 
 pub fn init() -> State {
-    State { cases: Vec::new(), corner: None, answers: Vec::new(), corner_depths: Vec::new() }
+    State {
+        cases: Vec::new(),
+        corner: None,
+        answers: Vec::new(),
+        corner_depths: Vec::new(),
+        bounds: Vec::new(),
+        draws: None,
+        lists: None,
+        culled: Vec::new(),
+        listed: Vec::new(),
+    }
+}
+
+/// The bounds' case: `BOUNDS` spheres of `KINDS` kinds round a camera at the origin looking
+/// along +z at a wall 10 m off (a 64 × 64 pyramid of it): ahead or behind, beside the view or in
+/// it, before the wall or past it, each clearly one or the other.
+const BOUNDS: u32 = 10000
+const KINDS: u32 = 4
+const ROOM: u32 = BOUNDS
+
+fn bounds_case() -> Vec<Bound> {
+    var out: Vec<Bound> = Vec::new()
+    for i in 0..BOUNDS {
+        // Ahead between 2 and 7 m (before the wall) or 13 and 40 (past it), or behind; across
+        // up to twice the view's width.
+        let along = if rand(i, 1) < 0.5 { 2.0 + 5.0 * rand(i, 2) } else { 13.0 + 27.0 * rand(i, 2) }
+        let z = if rand(i, 3) < 0.2 { -along } else { along }
+        let x = (rand(i, 4) * 2.0 - 1.0) * z * 1.2
+        let y = (rand(i, 5) * 2.0 - 1.0) * z * 0.6
+        out.push(Bound { centre: vec3(x, y, z), radius: 0.4, kind: i % KINDS, payload: i })
+    }
+    out
+}
+
+/// Whether the case's bound `b` is drawn: in the camera's frustum, and before the wall.
+fn seen(cam: Camera, b: Bound) -> bool {
+    in_frustum(cam.view_proj, b.centre, b.radius) && b.centre.z - b.radius < 10.0
 }
 
 /// Records case `spheres` against a `w` × `h` pyramid of `texels`.
@@ -111,7 +167,64 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         var out: GpuBuffer<f32> = buffer(p.at.levels)
         dispatch(corners.bind(p.depth, levels: p.at.levels, out: mut out), groups: p.at.levels)
         s.corner = Some(read(out.items()))
+        // 4: the bounds, culled against the wall's pyramid.
+        let wall_cam = camera(64, 64)
+        var pw = Pyramid::new(64, 64)
+        pw.build_from(Vec::filled(64 * 64, at(wall_cam, 10.0)), wall_cam)
+        s.bounds = bounds_case()
+        var rooms: Vec<u32> = Vec::new()
+        for k in 0..KINDS {
+            rooms.push(k * ROOM)
+        }
+        var counts: GpuBuffer<u32> = buffer_of(Vec::filled(KINDS, 0))
+        var lists: GpuBuffer<u32> = buffer(KINDS * ROOM)
+        var args: GpuBuffer<DrawIndexedArgs> = buffer(KINDS)
+        let template = DrawIndexedArgs {
+            indices: 36,
+            instances: 0,
+            first_index: 0,
+            base_vertex: 0,
+            first_instance: 0,
+        }
+        dispatch(
+            cull_bounds.bind(
+                c: BoundCull { view_proj: wall_cam.view_proj, hzb: pw.at, total: BOUNDS },
+                pyramid: pw.depth,
+                bounds: buffer_of(s.bounds.clone()).items(),
+                rooms: buffer_of(rooms).items(),
+                counts: mut counts,
+                lists: mut lists,
+            ),
+            over: BOUNDS,
+        )
+        dispatch(
+            bound_draws.bind(
+                templates: buffer_of(Vec::filled(KINDS, template)).items(),
+                counts: mut counts,
+                out: mut args,
+                n: KINDS,
+            ),
+            over: KINDS,
+        )
+        var instances: GpuBuffer<u32> = buffer(2 * KINDS)
+        dispatch(drawn_of.bind(args: args.items(), out: mut instances), over: KINDS)
+        s.draws = Some(read(instances.items()))
+        s.lists = Some(read(lists.items()))
         return
+    }
+    match mut s.draws {
+        Some(p) => match p.poll() {
+            Some(Ok(v)) => s.culled = take v,
+            _ => {},
+        },
+        None => {},
+    }
+    match mut s.lists {
+        Some(p) => match p.poll() {
+            Some(Ok(v)) => s.listed = take v,
+            _ => {},
+        },
+        None => {},
     }
     if s.answers.len() < s.cases.len() {
         var k = s.answers.len()
@@ -169,4 +282,38 @@ fn an_odd_images_last_pixel_reaches_every_level(s: State) {
     for l in 0..s.corner_depths.len() {
         assert(s.corner_depths[l] == 0.0, f"level {l}'s last texel lost the uncovered pixel")
     }
+}
+
+/// One bounds list of four kinds, culled on the GPU (`cull_bounds`, `bound_draws`): each kind's
+/// draw has as many instances as its bounds the frustum meets and the wall doesn't hide, and its
+/// list holds exactly those.
+@test(frames: 8, gpu: true)
+fn four_kinds_of_ten_thousand_bounds_draw_only_what_is_seen(s: State) {
+    assert(
+        s.culled.len() == 2 * KINDS && s.listed.len() == KINDS * ROOM,
+        "the culling didn't come back",
+    )
+    let cam = camera(64, 64)
+    var drawn = 0
+    for k in 0..KINDS {
+        var want: Vec<u32> = Vec::new()
+        for b in s.bounds {
+            if b.kind == k && seen(cam, b) {
+                want.push(b.payload)
+            }
+        }
+        let n = s.culled[k]
+        assert(n == want.len(), f"kind {k}: {n} drawn, {want.len()} seen")
+        assert(s.culled[KINDS + k] == 36, "the template's indices")
+        var listed: Vec<bool> = Vec::filled(BOUNDS, false)
+        for j in 0..n {
+            listed[s.listed[k * ROOM + j]] = true
+        }
+        for w in want {
+            assert(listed[w], f"kind {k}'s list lacks bound {w}")
+        }
+        drawn += n
+    }
+    print(f"{drawn} of {BOUNDS} bounds drawn")
+    assert(drawn > 500 && drawn < BOUNDS / 2, f"{drawn} drawn: the case isn't a test of both sides")
 }

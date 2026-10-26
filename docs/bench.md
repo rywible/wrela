@@ -273,6 +273,22 @@ last-green-shot --scene last-green-walk --no-native`), the M4 Air, Chrome; pixel
   camera: 40 placements in 64 frames (the test's limit, 5 × 8). Pixels: the clearing's path
   0.23% differ, all but 4 by 1/255.
 
+- **B5.2, one bounds list.** `engine::cull` has `Bound`, a frustum test (`in_frustum`, the
+  planes after Gribb and Hartmann 2001) and `cull_bounds`/`bound_draws`: a bound's kind is the
+  draw it's an instance of, the pyramid hides what last frame's depth hid, and each kind's list
+  and draw come out (`engine/tests/cull`: 10,000 bounds of four kinds, 2,211 drawn, each kind's
+  list exactly what the CPU's test sees). `engine::pool` copies the built things' and the banks'
+  stones' meshes into one set of buffers (each thing's own given back): they're drawn with one
+  multi-draw (a mesh's draw's instances what was culled; a vertex finds its mesh by its vertex,
+  its item by the mesh's room and the instance, needing no first instance) and cast with
+  another; the tower's near and far meshes hand over by their items' coverage. The water is laid
+  in 64 m tiles (`engine::water::tiled`), the tiles the frustum meets drawn by one multi-draw,
+  and its copy is made only over the screen they cover, or not at all (the mist's copy stays
+  whole; a test on the floor's water). Not done: the characters (their CPU test stays) and the
+  rocks (their own GPU culling) through the one kernel. The walk's frame 600 records **78
+  logical draws** (30 asked: misses): the wood's ways and phases, the grass's rings (B5.1's
+  kept rings are a draw each, prepass and shading), the characters' parts. The Last Green's
+  pixels at frame 600: 11.4% differ, at most 28/255 (its noise).
 - **B5.3, fewer passes.** `wrela tool passes` now counts a pass that joins the one before it
   (`std::gpu`'s `join`, which the host runs as one: the recorder says so in 0.9.0) with that
   one, and the full-screen ones. The Last Green's walk at frame 300: 28 GPU passes, 15

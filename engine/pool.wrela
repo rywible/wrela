@@ -1,0 +1,480 @@
+// A pool of rigid meshes (what's built, a bank's stones' prototypes) drawn with one multi-draw:
+// each mesh's vertices, colours and quads copied into the pool's buffers at load, and each of
+// its items (a placement: a transform, a seed, a coverage) culled on the GPU each frame
+// (`cull::cull_bounds`: the frustum, then the last frame's depth pyramid), so a mesh's draw has
+// as many instances as are seen of it. A vertex finds its mesh by the vertex (`owners`, the
+// draw's base vertex counted in), and its item by its mesh's room in the culled list and the
+// instance (a draw's first instance needs a feature WebGPU doesn't promise).
+
+use cull::{Bound, BoundCull, Hzb, bound_draws, cull_bounds}
+use lit::Lighting
+use realize::{Quad, SkinVertex}
+use std::gpu::{
+    Atomics, ClipPosition, GpuSpan, Cull, DrawIndexedArgs, Flat, FragCoord, GlobalId, GpuBuffer,
+    InstanceIndex, R32Float, RenderPass, Slots, Texture, Unorm8x4, VertexIndex, buffer, buffer_of,
+    copy, discard, dispatch, draw_multi, write,
+}
+use std::mem::size_of
+use stone::{Realized, StoneVertex, coverage_kept, lit_stone, stone_point}
+use view::{Camera, NEAREST}
+
+/// A placement of a pooled mesh: its transform and its normals' (the transform's inverse
+/// transpose), its seed, and the share of its pixels it covers (`stone::coverage_kept`: a far
+/// mesh and a near one hand over across a band).
+pub struct Item: Copy + GpuData {
+    pub at: mat4,
+    pub normal_at: mat3,
+    pub seed: u32,
+    pub coverage: vec2 = vec2(0.0, 1.0),
+}
+
+/// No transform.
+const IDENTITY = mat4(
+    vec4(1.0, 0.0, 0.0, 0.0),
+    vec4(0.0, 1.0, 0.0, 0.0),
+    vec4(0.0, 0.0, 1.0, 0.0),
+    vec4(0.0, 0.0, 0.0, 1.0),
+)
+
+/// What a pooled vertex passes on: a stone's, and its item's coverage.
+pub struct PooledVertex: Copy {
+    pub clip: ClipPosition,
+    pub world: vec3,
+    pub normal: vec3,
+    pub albedo: vec3,
+    pub seed: Flat<u32>,
+    pub coverage: Flat<vec2>,
+}
+
+/// Instance `i` of the mesh vertex `v` belongs to: the item the culled list holds for it.
+@vertex
+pub fn pooled_vertex(
+    v: VertexIndex,
+    i: InstanceIndex,
+    verts: [SkinVertex],
+    colours: [Unorm8x4],
+    owners: [u32],
+    rooms: [u32],
+    lists: [u32],
+    items: [Item],
+    cam: Camera,
+) -> PooledVertex {
+    let it = items[lists[rooms[owners[v.index]] + i.index]]
+    let s = stone_point(v.index, verts, colours, it.at, it.normal_at, it.seed, cam)
+    PooledVertex {
+        clip: s.clip,
+        world: s.world,
+        normal: s.normal,
+        albedo: s.albedo,
+        seed: s.seed,
+        coverage: Flat { value: it.coverage },
+    }
+}
+
+/// A pooled stone's pixel, where its item's coverage keeps it.
+@fragment
+pub fn pooled_shade(v: PooledVertex, pixel: FragCoord, lt: Lighting) -> vec4 {
+    if !coverage_kept(v.coverage.value, pixel.position.xy, lt.cam.frame) {
+        discard()
+    }
+    lit_stone(
+        StoneVertex {
+            clip: v.clip,
+            world: v.world,
+            normal: v.normal,
+            albedo: v.albedo,
+            seed: v.seed,
+        },
+        lt,
+    )
+}
+
+/// Instance `i` of the mesh vertex `v` belongs to as a shadow caster: every item that casts, in
+/// its mesh's room (`order`), seen from the sun by `view`.
+@vertex
+pub fn pooled_cast(
+    v: VertexIndex,
+    i: InstanceIndex,
+    verts: [SkinVertex],
+    owners: [u32],
+    rooms: [u32],
+    order: [u32],
+    items: [Item],
+    view: mat4,
+) -> ClipPosition {
+    let it = items[order[rooms[owners[v.index]] + i.index]]
+    ClipPosition { position: view * (it.at * vec4(verts[v.index].pos, 1.0)) }
+}
+
+/// Vertex `id` of a mesh's range (`first`, `count`) belongs to mesh `mesh`.
+@compute(64)
+fn own(first: u32, count: u32, mesh: u32, owners: mut Atomics<u32>, id: GlobalId) {
+    if id.x >= count {
+        return
+    }
+    owners.store(first + id.x, mesh)
+}
+
+/// The first `n` of `s`.
+fn first_of<T>(s: GpuSpan<T>, n: u32) -> GpuSpan<T> {
+    GpuSpan { buffer: s.buffer, start: s.start, count: n }
+}
+
+/// A pooled mesh: where its vertices and quads start, how many, and whether its items cast.
+struct Range: Copy {
+    vertices: u32,
+    first_vertex: u32,
+    quads: u32,
+    first_quad: u32,
+    casts: bool,
+}
+
+/// The pool: the meshes' buffers, what's used of them, each mesh's range and its items; and
+/// what the GPU culls and draws from, made again when an item or a mesh is added (`ready`).
+pub struct Pool {
+    verts: GpuBuffer<SkinVertex>,
+    colours: GpuBuffer<Unorm8x4>,
+    owners: GpuBuffer<u32>,
+    quads: GpuBuffer<Quad>,
+    used_vertices: u32,
+    used_quads: u32,
+    meshes: Vec<Range>,
+    items: Vec<Item>,
+    /// Each item's mesh and its bound (centre, radius).
+    of: Vec<u32>,
+    bounds: Vec<vec4>,
+    /// The meshes' rooms (each mesh's items' first place in `lists` and `order`), the items in
+    /// room order, the culling's bounds, its counts and lists, each mesh's draw's template, the
+    /// culled draws, and the casters' draws.
+    rooms: GpuBuffer<u32>,
+    order: GpuBuffer<u32>,
+    gpu_items: GpuBuffer<Item>,
+    gpu_bounds: GpuBuffer<Bound>,
+    counts: GpuBuffer<u32>,
+    lists: GpuBuffer<u32>,
+    templates: GpuBuffer<DrawIndexedArgs>,
+    args: GpuBuffer<DrawIndexedArgs>,
+    casts: GpuBuffer<DrawIndexedArgs>,
+    /// Whether the GPU's side is behind the CPU's.
+    stale: bool,
+}
+
+/// An empty pool.
+pub fn pool() -> Pool {
+    Pool {
+        verts: buffer(1),
+        colours: buffer(1),
+        owners: buffer(1),
+        quads: buffer(1),
+        used_vertices: 0,
+        used_quads: 0,
+        meshes: Vec::new(),
+        items: Vec::new(),
+        of: Vec::new(),
+        bounds: Vec::new(),
+        rooms: buffer(1),
+        order: buffer(1),
+        gpu_items: buffer(1),
+        gpu_bounds: buffer(1),
+        counts: buffer(1),
+        lists: buffer(1),
+        templates: buffer(1),
+        args: buffer(1),
+        casts: buffer(1),
+        stale: false,
+    }
+}
+
+impl Pool {
+    /// How many meshes and items it holds.
+    pub fn meshes(self) -> u32 {
+        self.meshes.len()
+    }
+
+    pub fn items(self) -> u32 {
+        self.items.len()
+    }
+
+    /// `r`'s mesh (fitted: `Realized::settle`) copied in; its items cast shadows if `casts`. Its
+    /// index, or `None` if it isn't fitted yet.
+    pub fn add_mesh(mut self, r: Realized, casts: bool) -> Option<u32> {
+        let (v, q) = r.counted?
+        self.room_for(self.used_vertices + v, self.used_quads + q)
+        let first_vertex = self.used_vertices
+        let first_quad = self.used_quads
+        if v > 0 {
+            copy(
+                first_of(r.mesh.verts.items(), v),
+                self.verts.span_mut(start: first_vertex, count: v),
+            )
+            copy(
+                r.colours.span(start: 0, count: v),
+                self.colours.span_mut(start: first_vertex, count: v),
+            )
+        }
+        if q > 0 {
+            copy(
+                first_of(r.mesh.quads.items(), q),
+                self.quads.span_mut(start: first_quad, count: q),
+            )
+        }
+        let mesh = self.meshes.len()
+        if v > 0 {
+            dispatch(
+                own.bind(first: first_vertex, count: v, mesh: mesh, owners: mut self.owners),
+                over: v,
+            )
+        }
+        self.used_vertices += v
+        self.used_quads += q
+        self.meshes.push(Range { vertices: v, first_vertex, quads: q, first_quad, casts })
+        self.stale = true
+        Some(mesh)
+    }
+
+    /// An item of mesh `mesh`, bounded by a sphere at `centre` of `radius`: its index.
+    pub fn add_item(mut self, mesh: u32, item: Item, centre: vec3, radius: f32) -> u32 {
+        self.items.push(item)
+        self.of.push(mesh)
+        self.bounds.push(vec4(centre, radius))
+        self.stale = true
+        self.items.len() - 1
+    }
+
+    /// Item `i` changed (moved with the render origin, or its coverage): its bound too. A
+    /// negative radius hides it.
+    pub fn set_item(mut self, i: u32, item: Item, centre: vec3, radius: f32) {
+        self.items[i] = item
+        self.bounds[i] = vec4(centre, radius)
+        if !self.stale {
+            write(mut self.gpu_items, i, [item])
+            write(mut self.gpu_bounds, i, [self.bound_of(i)])
+        }
+    }
+
+    /// Item `i`.
+    pub fn item(self, i: u32) -> Item {
+        self.items[i]
+    }
+
+    /// Render space moved by `d`: every item and its bound with it.
+    pub fn shift(mut self, d: vec3) {
+        for mut it in self.items {
+            it.at[3] = vec4(it.at[3].xyz + d, 1.0)
+        }
+        for mut b in self.bounds {
+            b.x += d.x
+            b.y += d.y
+            b.z += d.z
+        }
+        self.stale = true
+    }
+
+    /// Item `i`'s bound for the culling: its place in its mesh's list is the culling's.
+    fn bound_of(self, i: u32) -> Bound {
+        let b = self.bounds[i]
+        Bound { centre: b.xyz, radius: b.w, kind: self.of[i], payload: i }
+    }
+
+    /// Room for `vertices` and `quads` in the meshes' buffers: grown to twice what's asked when
+    /// they're short, what they hold copied over.
+    fn room_for(mut self, vertices: u32, quads: u32) {
+        if vertices > self.verts.len() {
+            let n = max(2 * vertices, 1024)
+            var verts: GpuBuffer<SkinVertex> = buffer(n)
+            var colours: GpuBuffer<Unorm8x4> = buffer(n)
+            var owners: GpuBuffer<u32> = buffer(n)
+            let used = self.used_vertices
+            if used > 0 {
+                copy(self.verts.span(start: 0, count: used), verts.span_mut(start: 0, count: used))
+                copy(
+                    self.colours.span(start: 0, count: used),
+                    colours.span_mut(start: 0, count: used),
+                )
+                copy(
+                    self.owners.span(start: 0, count: used),
+                    owners.span_mut(start: 0, count: used),
+                )
+            }
+            self.verts = take verts
+            self.colours = take colours
+            self.owners = take owners
+        }
+        if quads > self.quads.len() {
+            var q: GpuBuffer<Quad> = buffer(max(2 * quads, 1024))
+            let used = self.used_quads
+            if used > 0 {
+                copy(self.quads.span(start: 0, count: used), q.span_mut(start: 0, count: used))
+            }
+            self.quads = take q
+        }
+    }
+
+    /// The GPU's side made again from the CPU's, if it's behind (an item or a mesh added, or the
+    /// render origin moved): each mesh's room (its items counted), the items in room order, their
+    /// bounds, and each mesh's draw templates (culled, and every caster). Before the frame's
+    /// casters and its culling: until then they draw nothing new.
+    pub fn ready(mut self) {
+        if !self.stale {
+            return
+        }
+        self.stale = false
+        let n = self.meshes.len()
+        var per: Vec<u32> = Vec::filled(max(n, 1), 0)
+        for m in self.of {
+            per[m] += 1
+        }
+        var rooms: Vec<u32> = Vec::new()
+        var at = 0
+        for k in 0..max(n, 1) {
+            rooms.push(at)
+            at += per[k]
+        }
+        var placed: Vec<u32> = Vec::filled(max(n, 1), 0)
+        var order: Vec<u32> = Vec::filled(max(self.items.len(), 1), 0)
+        var bounds: Vec<Bound> = Vec::new()
+        for i in 0..self.items.len() {
+            let m = self.of[i]
+            order[rooms[m] + placed[m]] = i
+            placed[m] += 1
+            bounds.push(self.bound_of(i))
+        }
+        var templates: Vec<DrawIndexedArgs> = Vec::new()
+        var casts: Vec<DrawIndexedArgs> = Vec::new()
+        for k in 0..n {
+            let r = self.meshes[k]
+            let t = DrawIndexedArgs {
+                indices: 6 * r.quads,
+                instances: 0,
+                first_index: 6 * r.first_quad,
+                base_vertex: i32(r.first_vertex),
+                first_instance: 0,
+            }
+            templates.push(t)
+            casts.push(DrawIndexedArgs { instances: if r.casts { per[k] } else { 0 }, ..t })
+        }
+        if bounds.is_empty() {
+            bounds.push(Bound { centre: vec3(0.0), radius: -1.0, kind: 0, payload: 0 })
+        }
+        if templates.is_empty() {
+            templates.push(
+                DrawIndexedArgs {
+                    indices: 0,
+                    instances: 0,
+                    first_index: 0,
+                    base_vertex: 0,
+                    first_instance: 0,
+                },
+            )
+            casts.push(templates[0])
+        }
+        let items = if self.items.is_empty() {
+            Vec::from(
+                [
+                    Item {
+                        at: IDENTITY,
+                        normal_at: mat3(IDENTITY[0].xyz, IDENTITY[1].xyz, IDENTITY[2].xyz),
+                        seed: 0,
+                    },
+                ],
+            )
+        } else { self.items.clone() }
+        self.rooms = buffer_of(rooms)
+        self.order = buffer_of(order)
+        self.gpu_items = buffer_of(items)
+        self.gpu_bounds = buffer_of(bounds)
+        self.counts = buffer_of(Vec::filled(max(n, 1), 0))
+        self.lists = buffer(max(self.items.len(), 1))
+        self.args = buffer_of(templates.clone())
+        self.templates = buffer_of(templates)
+        self.casts = buffer_of(casts)
+    }
+
+    /// The items `cam` sees: in the frustum, and not hidden by `pyramid` (the last frame's,
+    /// `hzb`; off: the frustum alone). Each mesh's draw's instances are what was found.
+    pub fn cull(mut self, cam: Camera, pyramid: Texture<R32Float>, hzb: Hzb) {
+        let n = self.meshes.len()
+        if n == 0 || self.items.is_empty() || self.stale {
+            return
+        }
+        let total = self.items.len()
+        dispatch(
+            cull_bounds.bind(
+                c: BoundCull { view_proj: cam.view_proj, hzb, total },
+                pyramid: pyramid,
+                bounds: self.gpu_bounds.items(),
+                rooms: self.rooms.items(),
+                counts: mut self.counts,
+                lists: mut self.lists,
+            ),
+            over: total,
+        )
+        dispatch(
+            bound_draws.bind(
+                templates: self.templates.items(),
+                counts: mut self.counts,
+                out: mut self.args,
+                n: n,
+            ),
+            over: n,
+        )
+    }
+
+    /// The items culled (`cull`) drawn into `pass`, lit by `lt`: one multi-draw.
+    pub fn draw<P: RenderPass>(self, pass: P, lt: Lighting) {
+        let n = self.meshes.len()
+        if n == 0 || self.items.is_empty() || self.stale {
+            return
+        }
+        draw_multi(
+            pass,
+            pooled_vertex.bind(
+                verts: self.verts.items(),
+                colours: self.colours.items(),
+                owners: self.owners.items(),
+                rooms: self.rooms.items(),
+                lists: self.lists.items(),
+                items: self.gpu_items.items(),
+                cam: lt.cam,
+            ),
+            pooled_shade.bind(lt),
+            indices: self.quads.items(),
+            indirect: self.args.items(),
+            count: n,
+            cull: Cull::Back,
+            depth: NEAREST,
+        )
+    }
+
+    /// Every item of a mesh that casts drawn into `pass` as a caster, seen from the sun by
+    /// `view`, biased as casters are (`shadow::CASTER`): one multi-draw.
+    pub fn cast<P: RenderPass>(self, pass: P, view: mat4) {
+        let n = self.meshes.len()
+        if n == 0 || self.items.is_empty() || self.stale {
+            return
+        }
+        draw_multi(
+            pass,
+            pooled_cast.bind(
+                verts: self.verts.items(),
+                owners: self.owners.items(),
+                rooms: self.rooms.items(),
+                order: self.order.items(),
+                items: self.gpu_items.items(),
+                view: view,
+            ),
+            vegetation::nothing,
+            indices: self.quads.items(),
+            indirect: self.casts.items(),
+            count: n,
+            depth_bias: shadow::CASTER,
+        )
+    }
+
+    /// The GPU bytes it holds.
+    pub fn bytes(self) -> u64 {
+        u64(self.verts.len()) * (u64(size_of::<SkinVertex>()) + 8) +
+            u64(self.quads.len()) * u64(size_of::<Quad>()) +
+            u64(self.items.len()) * u64(size_of::<Item>() + size_of::<Bound>() + 8)
+    }
+}

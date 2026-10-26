@@ -13,7 +13,7 @@ use land::stream::{near_tile_radius, tile_distance, tile_radius}
 use tower::door::Doorway
 use world::GATE
 use engine::memory::{Share, Usage}
-use engine::cull::Hzb
+use engine::cull::{Hzb, in_frustum}
 use engine::frame::{Cooks, Effects, Scene, Targets, full, fullscreen}
 use engine::grass::{Blooms, Contact, Grass, GrassLook}
 use engine::light::{Light, SUN_TOP, sunlight}
@@ -25,15 +25,18 @@ use engine::probes::{Occluder, ProbeGrid, Trace, grid}
 use engine::shadow::Shadows
 use engine::shafts::{Shafts, add_shafts, march_shafts}
 use engine::sky::Weather
+use engine::pool::{Item, Pool, pool}
 use engine::stone::{
     ClusterStones, Instances, Realized, Rocks, placed_of, stone_instance_vertex, stone_shade,
     stone_shadow, stone_vertex,
 }
 use engine::terrain::{Clipmap, Texel}
 use engine::vegetation::{Kind, Placed, kind}
-use engine::view::{Camera, NEAREST}
+use engine::view::{Camera, NEAREST, first_camera}
 use engine::reflect::copy_below
-use engine::water::{LOOKS, MistAt, WaterVert, mist_over, water_shade, water_vertex}
+use engine::water::{
+    LOOKS, MistAt, WaterMesh, WaterTile, WaterVert, mist_over, tiled, water_shade, water_vertex,
+}
 use engine::wood::Wood
 use engine::air::{Air, hazy}
 use history::{BAKED, tiles_hi, tiles_lo}
@@ -41,8 +44,9 @@ use ground::GROUND
 use provenance::NearTile
 use std::collections::{Flags, replace, swap}
 use std::gpu::{
-    Blend, Cull, GpuBuffer, GpuSpan, R32Float, R32Uint, RenderPass, Rgba8, Sampler, ScreenPass,
-    Texture, begin_pass, begin_pass_with_depth, buffer_of, dispatch, draw, label, texture,
+    Blend, Cull, DrawArgs, GpuBuffer, GpuSpan, R32Float, R32Uint, RenderPass, Rgba8, Sampler,
+    ScreenPass, Texture, begin_pass, begin_pass_with_depth, buffer, buffer_of, dispatch, draw,
+    draw_multi, label, texture, write,
 }
 use std::io::{Pending, print}
 
@@ -109,6 +113,10 @@ pub struct Stage {
     pub built: Vec<Thing>,
     /// Bank stones share three meshes; the placements contain no GPU resources.
     pub banks: Instances,
+    /// The built things' and the banks' stones' meshes, drawn and cast through one multi-draw
+    /// each, culled on the GPU (`engine::pool`), and whether the banks are in it.
+    pub pool: Pool,
+    banks_pooled: bool = false,
     /// The banks' stones' clusters (`engine::stone::ClusterStones`, a prototype's each), cooked
     /// once the prototypes are, where they're drawn through them (`CLUSTERED`).
     bank_stones: Vec<ClusterStones>,
@@ -120,6 +128,10 @@ pub struct Stage {
     pub water_verts: GpuBuffer<WaterVert>,
     pub water_tris: GpuBuffer<u32>,
     pub water_count: u32,
+    /// The water's tiles (`engine::water::tiled`: `water_tris` in their order), and their draws:
+    /// the frame's visible ones', one multi-draw.
+    water_tiles: Vec<WaterTile>,
+    water_args: GpuBuffer<DrawArgs>,
     pub water_look: u32,
     pub mists: GpuBuffer<vec4>,
     pub rocks: Option<Rocks>,
@@ -143,12 +155,15 @@ pub struct Thing {
     pub near: Realized,
     pub reach: f32,
     pub far: Option<Realized>,
+    /// Its items in the pool, near and far (`NOT_POOLED`: none), once it's in.
+    pub pooled: Option<vec2u> = None,
 }
 
 /// The floor's scene at load, round the player's start (`start`, the world's): its kinds and
 /// tiles cooked from the first frame.
 pub fn stage() -> Stage {
     let waters = history::waters()
+    let (water_tris, water_tiles) = tiled(waters.mesh)
     Stage {
         plants: trees::plants(),
         kinds: Vec::new(),
@@ -166,14 +181,17 @@ pub fn stage() -> Stage {
         to_build: to_build(),
         built: Vec::new(),
         banks: blockouts::bank_instances(history::COURSES.courses, height_at),
+        pool: pool(),
         bank_stones: Vec::new(),
         footprints: buffer_of(footprints_in(vec3(0.0), FLOOR), at_least: 1),
         drawn: None,
         fawn: cast(fawns::grown(), fawns::FawnLook {}, fawns::REALIZED, fawns::SLICES),
         wolf: cast_wolf(),
-        water_verts: buffer_of(waters.mesh.verts, at_least: 1),
-        water_tris: buffer_of(waters.mesh.tris, at_least: 1),
+        water_verts: buffer_of(waters.mesh.verts.clone(), at_least: 1),
+        water_tris: buffer_of(water_tris, at_least: 1),
         water_count: waters.mesh.tris.len(),
+        water_args: buffer(max(water_tiles.len(), 1)),
+        water_tiles,
         water_look: 0,
         mists: buffer_of(history::MISTS, at_least: 1),
         rocks: None,
@@ -350,12 +368,17 @@ impl Scene for Stage {
             }
             return
         }
+        self.pool.cast(pass, view)
         for t in self.built {
-            cast_stone(pass, t.near, t.near.at, view)
+            if t.pooled.is_none() {
+                cast_stone(pass, t.near, t.near.at, view)
+            }
         }
-        for p in self.banks.placements {
-            if p.prototype < self.banks.prototypes.len() && p.casts_into(view) {
-                cast_stone(pass, self.banks.prototypes[p.prototype], p.at, view)
+        if !self.banks_pooled {
+            for p in self.banks.placements {
+                if p.prototype < self.banks.prototypes.len() && p.casts_into(view) {
+                    cast_stone(pass, self.banks.prototypes[p.prototype], p.at, view)
+                }
             }
         }
     }
@@ -395,6 +418,10 @@ impl Scene for Stage {
             for mut b in self.bank_stones {
                 b.choose(lt.cam)
             }
+        }
+        if !of_world(self.view) {
+            hand_over(mut self, lt.cam)
+            self.pool.cull(lt.cam, pyramid, hzb)
         }
         self.grass.place(
             lt.cam,
@@ -497,10 +524,12 @@ impl Scene for Stage {
                     b.shade(pass, lt, ids)
                 }
             }
+            // What's built and the banks' stones, in the pool: what the GPU's culling found (its
+            // bounds whole: distance cutoffs removed stones and walls while they still covered
+            // several pixels). What's not in it yet, here.
+            self.pool.draw(pass, lt)
             for t in self.built {
-                // Keep resident structures wherever their bounds meet the view. Distance cutoffs
-                // removed stones and walls while they still covered several pixels.
-                if !meets_view(cam, t.near.at[3].xyz, t.reach) {
+                if t.pooled.is_some() || !meets_view(cam, t.near.at[3].xyz, t.reach) {
                     continue
                 }
                 let d = length(t.near.at[3].xyz - cam.eye)
@@ -518,7 +547,7 @@ impl Scene for Stage {
                     None => draw_built(pass, t.near, lt, cam),
                 }
             }
-            if !clustered {
+            if !clustered && !self.banks_pooled {
                 for p in self.banks.placements {
                     if p.prototype >= self.banks.prototypes.len() ||
                         !meets_view(cam, p.at[3].xyz, p.reach) {
@@ -581,35 +610,52 @@ impl Scene for Stage {
         let cam = fx.lt.cam
         let world = of_world(self.view)
         if on(shown(self.off, self.view), System::Water) {
-            label("water")
-            let bp = begin_pass(mut t.below)
-            fullscreen(bp, copy_below.bind(scene: t.scene, depth: t.depth, cam: cam))
-            bp.end()
-            let wp = begin_pass_with_depth(mut t.scene, mut t.depth, keep: true, keep_depth: true)
-            draw(
-                wp,
-                water_vertex.bind(
-                    verts: self.water_verts.items(),
-                    tris: self.water_tris.items(),
-                    cam: cam,
-                ),
-                water_shade.bind(
-                    fx.lt,
-                    below: t.below,
-                    view: fx.view,
-                    dome: fx.dome,
-                    look: LOOKS[self.water_look],
-                ),
-                vertices: self.water_count,
-                depth: NEAREST,
-            )
-            wp.end()
             var near_mist = false
             for m in history::MISTS {
                 if world {
                     break
                 }
                 near_mist = near_mist || length(m.xyz - cam.origin - cam.eye) < 500.0
+            }
+            let size = vec2u(t.below.width(), t.below.height())
+            let (args, under) = water_draws(self.water_tiles, cam, size, near_mist)
+            if let Some(r) = under {
+                label("water")
+                let bp = begin_pass(mut t.below)
+                if r != vec4u(0, 0, size.x, size.y) {
+                    bp.scissor(r.x, r.y, r.z, r.w)
+                }
+                fullscreen(bp, copy_below.bind(scene: t.scene, depth: t.depth, cam: cam))
+                bp.end()
+            }
+            if !args.is_empty() {
+                let n = args.len()
+                write(mut self.water_args, 0, take args)
+                let wp = begin_pass_with_depth(
+                    mut t.scene,
+                    mut t.depth,
+                    keep: true,
+                    keep_depth: true,
+                )
+                draw_multi(
+                    wp,
+                    water_vertex.bind(
+                        verts: self.water_verts.items(),
+                        tris: self.water_tris.items(),
+                        cam: cam,
+                    ),
+                    water_shade.bind(
+                        fx.lt,
+                        below: t.below,
+                        view: fx.view,
+                        dome: fx.dome,
+                        look: LOOKS[self.water_look],
+                    ),
+                    indirect: self.water_args.items(),
+                    count: n,
+                    depth: NEAREST,
+                )
+                wp.end()
             }
             if near_mist {
                 label("water")
@@ -695,7 +741,7 @@ impl Scene for Stage {
     /// Its shares of the GPU's memory (`engine::memory`): the wood's (`Wood::shares`), then the
     /// built things', the rocks', the banks' and the leaves' atlas's, each against the total.
     fn shares(self) -> Vec<Share> {
-        var built = 0
+        var built = self.pool.bytes()
         for t in self.built {
             built += t.near.bytes()
             if let Some(f) = t.far {
@@ -763,6 +809,7 @@ impl Scene for Stage {
                 None => {},
             }
         }
+        self.pool.shift(d)
         self.footprints = buffer_of(footprints_in(o, self.source), at_least: 1)
     }
 }
@@ -1462,11 +1509,15 @@ pub fn restream(s: mut Stage, source: u32, clipmap: mut Clipmap) {
         s.water_verts = buffer_of(verts, at_least: 1)
         s.water_tris = buffer_of(tris, at_least: 1)
         s.water_count = 0
+        s.water_tiles = Vec::new()
     } else {
         let mesh = if source == GROWN_LAND { growth::waters() } else { history::waters().mesh }
-        s.water_verts = buffer_of(mesh.verts, at_least: 1)
-        s.water_tris = buffer_of(mesh.tris, at_least: 1)
+        let (tris, tiles) = tiled(mesh)
+        s.water_verts = buffer_of(mesh.verts.clone(), at_least: 1)
+        s.water_tris = buffer_of(tris, at_least: 1)
         s.water_count = mesh.tris.len()
+        s.water_tiles = take tiles
+        s.water_args = buffer(max(s.water_tiles.len(), 1))
     }
     s.footprints = buffer_of(footprints_in(origin_of(s), source), at_least: 1)
 }
@@ -1528,6 +1579,153 @@ fn settle(s: mut Stage) {
     for mut p in s.banks.prototypes {
         p.settle()
     }
+    pool_settled(mut s)
+}
+
+/// The water's draws for `cam` (a target `size` pixels): a draw for each tile the frustum meets,
+/// and where the copy of the scene under it is made (x, y, width, height): the screen those
+/// tiles cover, all of it for the mist (which reads it too), none when no water is in view.
+pub fn water_draws(
+    tiles: [WaterTile],
+    cam: Camera,
+    size: vec2u,
+    near_mist: bool,
+) -> (Vec<DrawArgs>, Option<vec4u>) {
+    var args: Vec<DrawArgs> = Vec::new()
+    var lo = vec2(1.0e9)
+    var hi = vec2(-1.0e9)
+    let px = vec2(size)
+    for w in tiles {
+        let c = w.centre - cam.origin
+        if !in_frustum(cam.view_proj, c, w.radius) {
+            continue
+        }
+        args.push(
+            DrawArgs { vertices: w.count, instances: 1, first_vertex: w.first, first_instance: 0 },
+        )
+        let (a, b) = screen_box(cam, c, w.radius, px)
+        lo = min(lo, a)
+        hi = max(hi, b)
+    }
+    if near_mist {
+        return (take args, Some(vec4u(0, 0, size.x, size.y)))
+    }
+    if args.is_empty() {
+        return (take args, None)
+    }
+    let a = vec2u(clamp(floor(lo), vec2(0.0), px))
+    let b = max(vec2u(clamp(ceil(hi), vec2(0.0), px)), a + vec2u(1))
+    (take args, Some(vec4u(a.x, a.y, min(b.x, size.x) - a.x, min(b.y, size.y) - a.y)))
+}
+
+/// The pixels (of a target `size`) a sphere at `c` of radius `r` (render space) covers as `cam`
+/// sees it: its box's corners' bounds; all of them if a corner is at or behind the eye.
+fn screen_box(cam: Camera, c: vec3, r: f32, size: vec2) -> (vec2, vec2) {
+    var lo = vec2(1.0e9)
+    var hi = vec2(-1.0e9)
+    for k in 0..8 {
+        let p = c + vec3(
+            if (k & 1) == 0 { -r } else { r },
+            if (k & 2) == 0 { -r } else { r },
+            if (k & 4) == 0 { -r } else { r },
+        )
+        let q = cam.view_proj * vec4(p, 1.0)
+        if q.w <= 1.0e-4 {
+            return (vec2(0.0), size)
+        }
+        let px = vec2(q.x / q.w * 0.5 + 0.5, 0.5 - q.y / q.w * 0.5) * size
+        lo = min(lo, px)
+        hi = max(hi, px)
+    }
+    // A pixel's jitter either way.
+    (lo - vec2(1.0), hi + vec2(1.0))
+}
+
+/// No item in the pool.
+const NOT_POOLED: u32 = 0xffffffff
+
+/// A pooled thing with a far mesh hands over between its two by its distance from `cam`'s eye
+/// (`blockouts::tower_far_share`), each drawn over its share of the pixels; a mesh with no
+/// share is hidden from the culling.
+fn hand_over(s: mut Stage, cam: Camera) {
+    for t in s.built {
+        let Some(items) = t.pooled else { continue }
+        if items.y == NOT_POOLED {
+            continue
+        }
+        let centre = t.near.at[3].xyz
+        let far = blockouts::tower_far_share(length(centre - cam.eye))
+        let split = 1.0 - far
+        let near = Item { coverage: vec2(0.0, split), ..s.pool.item(items.x) }
+        let far_item = Item { coverage: vec2(split, 1.0), ..s.pool.item(items.y) }
+        if s.pool.item(items.x).coverage != near.coverage {
+            s.pool.set_item(items.x, near, centre, if far < 1.0 { t.reach } else { -1.0 })
+            s.pool.set_item(items.y, far_item, centre, if far > 0.0 { t.reach } else { -1.0 })
+        }
+    }
+}
+
+/// What's settled put in the pool, its own buffers given back: each built thing (its near mesh
+/// casts, its far one doesn't), and the banks' stones (`pool_banks`); then the pool's GPU side
+/// made again for the frame's casters and culling.
+fn pool_settled(s: mut Stage) {
+    for mut t in s.built {
+        if t.pooled.is_some() || t.near.counted.is_none() {
+            continue
+        }
+        let far_ready = match t.far {
+            Some(f) => f.counted.is_some(),
+            None => true,
+        }
+        if !far_ready {
+            continue
+        }
+        let Some(near) = s.pool.add_mesh(t.near, casts: true) else { continue }
+        let centre = t.near.at[3].xyz
+        let n = s.pool.add_item(near, item_of(t.near.at, t.near.seed), centre, t.reach)
+        var f = NOT_POOLED
+        match mut t.far {
+            Some(r) => {
+                if let Some(m) = s.pool.add_mesh(r, casts: false) {
+                    f = s.pool.add_item(m, item_of(r.at, r.seed), centre, -1.0)
+                }
+                r.release()
+            },
+            None => {},
+        }
+        t.near.release()
+        t.pooled = Some(vec2u(n, f))
+    }
+    pool_banks(mut s)
+    s.pool.ready()
+}
+
+/// The banks' prototypes put in the pool once all three are settled, with an item for each of
+/// their stones (the clusters draw them where `CLUSTERED`).
+fn pool_banks(s: mut Stage) {
+    if !s.banks_pooled && !CLUSTERED && s.banks.prototypes.len() == blockouts::BANK_PROTOTYPES {
+        for p in s.banks.prototypes {
+            if p.counted.is_none() {
+                return
+            }
+        }
+        var meshes: Vec<u32> = Vec::new()
+        for mut p in s.banks.prototypes {
+            let Some(m) = s.pool.add_mesh(p, casts: true) else { return }
+            meshes.push(m)
+            p.release()
+        }
+        for p in s.banks.placements {
+            let it = Item { at: p.at, normal_at: p.normal_at, seed: p.seed }
+            let _ = s.pool.add_item(meshes[p.prototype], it, p.at[3].xyz, p.reach)
+        }
+        s.banks_pooled = true
+    }
+}
+
+/// A built mesh's item: placed by `at` (its normals by its rotation), with its seed.
+fn item_of(at: mat4, seed: u32) -> Item {
+    Item { at, normal_at: mat3(at[0].xyz, at[1].xyz, at[2].xyz), seed }
 }
 
 /// Whether what a frame from `eye` (the world's) needs is in: the wood cooked, the built
@@ -2315,4 +2513,33 @@ pub fn draw_built<P: RenderPass>(
 pub fn the_fields_hold_every_tile_kept() {
     let across = u32(ceil(2.0 * DROP / TILE)) + 1
     assert(across <= FIELD_BLOCKS, f"{across} tiles across are kept, in {FIELD_BLOCKS} blocks")
+}
+
+/// The floor's water drawn by its tiles: looking at a tile, some tiles and the copy under them,
+/// within the screen; looking up, away from every tile, none, and no copy at all; the mist's
+/// copy whole wherever the eye looks.
+@test
+fn the_water_is_drawn_and_copied_only_where_it_is_seen() {
+    let (_, tiles) = tiled(history::waters().mesh)
+    assert(tiles.len() > 4, f"{tiles.len()} tiles")
+    let w = tiles[tiles.len() / 2]
+    // Above it, higher than any tile's sphere reaches.
+    let eye = w.centre + vec3(30.0, 100.0, 0.0)
+    let size = vec2u(1920, 1080)
+    let at = first_camera(eye: eye, at: w.centre, fovy: 0.9, width: 1920, height: 1080)
+    let (args, under) = water_draws(tiles, at, size, near_mist: false)
+    assert(!args.is_empty() && args.len() < tiles.len(), f"{args.len()} of {tiles.len()} drawn")
+    let Some(r) = under else { panic("no copy under water in view") }
+    assert(r.z > 0 && r.w > 0 && r.x + r.z <= size.x && r.y + r.w <= size.y, f"{r}")
+    let up = first_camera(
+        eye: eye,
+        at: eye + vec3(0.01, 10.0, 0.0),
+        fovy: 0.9,
+        width: 1920,
+        height: 1080,
+    )
+    let (none, no_copy) = water_draws(tiles, up, size, near_mist: false)
+    assert(none.is_empty() && no_copy.is_none(), f"{none.len()} drawn looking up")
+    let (_, misty) = water_draws(tiles, up, size, near_mist: true)
+    assert(misty == Some(vec4u(0, 0, 1920, 1080)), "the mist's copy")
 }

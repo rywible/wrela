@@ -14,7 +14,7 @@ use light::Lit
 use lit::{Lighting, shown, sun_and_gloss}
 use look::Mesh as Tolerance
 use noise::{hash3, noise3, rand}
-use realize::{Mesh, SkinVertex, Tally, realize_rigid, solid}
+use realize::{Mesh, Room, SkinVertex, Tally, realize_rigid, solid}
 use std::derive::{Box3, tape, value_and_gradient}
 use std::derive::Interval
 use std::field::{
@@ -148,6 +148,8 @@ pub struct Realized {
     pub at: mat4,
     pub seed: u32,
     pub fit: Option<Fit> = None,
+    /// Its vertices and quads, once fitted (`settle`).
+    pub counted: Option<(u32, u32)> = None,
 }
 
 /// What a realized mesh holds, asked for to fit it (`Realized::settle`, `fitted`): its tally (its
@@ -191,6 +193,7 @@ impl Realized {
         if let Some((v, q)) = counts {
             self.fit_to(v, q)
             self.fit = None
+            self.counted = Some((v, min(q, self.mesh.quads.capacity())))
         }
     }
 
@@ -208,6 +211,13 @@ impl Realized {
     /// The GPU bytes its mesh and its colours take.
     pub fn bytes(self) -> u64 {
         self.mesh.bytes() + u64(self.colours.len()) * 4
+    }
+
+    /// Its mesh and colours given back (a pool holds a copy, `pool::Pool::add_mesh`): what's
+    /// left is its place and its counts.
+    pub fn release(mut self) {
+        self.mesh = Mesh::new(Room { vertices: 1, quads: 1 })
+        self.colours = buffer(1)
     }
 }
 
@@ -427,7 +437,7 @@ pub fn stone_vertex(
     stone_point(v.index, verts, colours, at, mat3(at[0].xyz, at[1].xyz, at[2].xyz), seed, cam)
 }
 
-fn stone_point(
+pub fn stone_point(
     index: u32,
     verts: [SkinVertex],
     colours: [Unorm8x4],
@@ -516,7 +526,7 @@ pub fn stone_shade(
 }
 
 /// Stone `s` lit by `lt`'s light, darker where it meets the ground.
-fn lit_stone(s: StoneVertex, lt: Lighting) -> vec4 {
+pub fn lit_stone(s: StoneVertex, lt: Lighting) -> vec4 {
     let n = normalize(s.normal)
     let (sun, sky, reflected) = sun_and_gloss(lt, s.world, n, soft: 1.0)
     let ground = probes::ground_under(lt.grid, lt.grounds, s.world.xz)
