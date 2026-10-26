@@ -23,6 +23,7 @@
 
 use air::{AIR_SLICES, Air, Tables, tables}
 use ambient::Occlusion
+use cascades::Cascades
 use lights::{LocalLight, Lights}
 use memory::{Share, Usage, unused}
 use particles::{Emits, Particles, Step, composite, wind_of}
@@ -41,7 +42,7 @@ use probes::{Baked, Occluder, ProbeGrid, STRIP_COLUMNS, Steer, Trace, band}
 use shadow::{Cascade, Kept, Shadows, Soft, shadows}
 use sheet::{Scale, pace}
 use sky::{Clouds, MAP_BANDS, NOISE_SLICES, Sky, Weather, new_sky, sky_shade}
-use temporal::{Resolve, held, neighbourhoods, resolve, resolve_gathered}
+use temporal::{FoundRow, Resolve, found_rows, held, neighbourhoods, resolve, resolve_gathered}
 use cull::{Hzb, Pyramid}
 use terrain::{Clipmap, SIDES, Texel, ground, ground_shade}
 use view::{BEHIND, Camera, NEAREST, camera, jitter_of}
@@ -50,10 +51,10 @@ use std::cache::Stale
 use std::collections::{Flags, replace, swap}
 use std::gpu::{
     Address, Blend, ClipPosition, ComparisonSampler, DepthTexture, FragmentShader, GpuBuffer,
-    GpuSpan, R32Float, R32Uint, R8, RenderPass, Rgba16Float, Rgba8, Sampler, ScreenPass, Texture,
-    Texture3d, VertexIndex, begin_depth_pass, begin_pass, begin_pass2_with_depth,
-    begin_pass_with_depth, begin_screen_pass, buffer, comparison_sampler, depth_texture, dispatch,
-    draw, draw_multi, label, memory, sampler, texture, timed, writable_texture,
+    GpuSpan, Half2, R32Float, R32Uint, R8, RenderPass, Rgba16Float, Rgba8, Sampler, ScreenPass,
+    Texture, Texture3d, VertexIndex, begin_depth_pass, begin_pass, begin_pass2_with_depth,
+    begin_pass_with_depth, begin_screen_pass, buffer, buffer_of, comparison_sampler, depth_texture,
+    dispatch, draw, draw_multi, label, memory, sampler, texture, timed, writable_texture, copy,
 }
 use std::io::{Pending, print}
 use std::time::phase
@@ -500,6 +501,7 @@ pub trait Resolver {
         last_motion: Texture<Rgba16Float>,
         last_history: Texture<Rgba16Float>,
         s: Sampler,
+        net: GpuSpan<Half2>,
     )
 }
 
@@ -529,6 +531,7 @@ impl Resolver for Gathered {
         last_motion: Texture<Rgba16Float>,
         last_history: Texture<Rgba16Float>,
         s: Sampler,
+        net: GpuSpan<Half2>,
     ) {
         let p = begin_pass(mut into)
         fullscreen(
@@ -542,6 +545,7 @@ impl Resolver for Gathered {
                 last_motion,
                 last_history,
                 s,
+                net,
             ),
         )
         p.end()
@@ -579,6 +583,7 @@ impl Resolver for Shared {
         last_motion: Texture<Rgba16Float>,
         last_history: Texture<Rgba16Float>,
         s: Sampler,
+        net: GpuSpan<Half2>,
     ) {
         dispatch(neighbourhoods.bind(scene, mut self.means, mut self.spreads), over: scene)
         let p = begin_pass(mut into)
@@ -595,6 +600,7 @@ impl Resolver for Shared {
                 self.means,
                 self.spreads,
                 s,
+                net,
             ),
         )
         p.end()
@@ -616,6 +622,16 @@ pub struct Quality: Copy {
     pub pace: bool = true,
     pub shadows: ShadowQuality = ShadowQuality {},
     pub probes: ProbeQuality = ProbeQuality {},
+    /// The radiance cascades (B14.4, `cascades`): off unless the experiment's rule says on.
+    pub cascades: CascadeQuality = CascadeQuality {},
+    /// Whether a scene reads the kinds it has nets for through them (B14.2,
+    /// `impostor::Neural`), not their atlases: off unless the experiment's rule says on. The
+    /// frame only carries it: a scene gives its wood the nets (`wood::Wood::read_through`).
+    pub neural: bool = false,
+    /// Whether temporal AA's share of this frame is the learned rejector's (B14.3,
+    /// `temporal::learned_share`, its net given by `Frame::reject_by`), not the heuristics': off
+    /// unless the experiment's rule says on.
+    pub learned_resolve: bool = false,
     pub arrival: Arrival = Arrival {},
     /// How much of this frame a pixel takes where a sample falls on it (temporal AA).
     pub blend: f32 = 0.12,
@@ -812,6 +828,16 @@ pub struct ProbeQuality: Copy {
     /// light doesn't leak through trunks and walls; off, by nearness alone. Only the lookup
     /// changes: the sights are traced either way.
     pub visibility: bool = true,
+}
+
+/// The radiance cascades (§B14.4, `cascades`): whether they light the sky's term in place of the
+/// probes' and the ambient occlusion (built from the frame's depth, read by the next frame's
+/// shading, as the occlusion is), c0's probes' spacing (scene pixels) and each ray's steps (the
+/// experiment's rungs: 8 and 16, 16 and 16, 16 and 8).
+pub struct CascadeQuality: Copy {
+    pub on: bool = false,
+    pub spacing: u32 = 8,
+    pub steps: u32 = 16,
 }
 
 /// An arrival: whether the frames stay covered until the light round the eye is drawn (at the
@@ -1022,6 +1048,13 @@ pub struct Frame<R: Resolver> {
     /// The ambient occlusion (`ambient`): the last frame's, which this frame's shading reads, and
     /// this frame's, built after its opaque passes.
     pub ambient: Occlusion,
+    /// The radiance cascades (`Quality::cascades`), which build into the occlusion's texture.
+    cascades: Option<Cascades>,
+    /// The learned rejector's net (`Quality::learned_resolve`, `reject_by`: none until given),
+    /// and the output pixels whose resolve is asked for (`ask_found`) with where it goes.
+    rejector: GpuBuffer<Half2>,
+    rejects: bool,
+    found: Option<(GpuBuffer<vec2u>, GpuBuffer<FoundRow>)>,
     /// The scene's local lights, binned into the frame's froxels (`lights`).
     pub lights: Lights,
     /// What glossy surfaces reflect (`reflect`): the last frame's scene and distances (its
@@ -1226,6 +1259,10 @@ impl<R: Resolver> Frame<R> {
             targets: no_targets(),
             pyramid: Pyramid::new(width: 1, height: 1),
             ambient: Occlusion::new(width: 1, height: 1),
+            cascades: None,
+            rejector: buffer(1),
+            rejects: false,
+            found: None,
             lights: Lights::new(),
             screen: texture::<Rgba16Float>(width: 1, height: 1),
             mirror: Mirror { cam: first, on: 0, probe: 0 },
@@ -1298,6 +1335,32 @@ impl<R: Resolver> Frame<R> {
     }
 
     /// The frame's quality.
+    /// The learned rejector's net (`temporal::REJECTOR`'s shape, half floats), which temporal AA
+    /// reads under `Quality::learned_resolve`.
+    pub fn reject_by(mut self, net: [Half2]) {
+        self.rejector = buffer_of(net)
+        self.rejects = true
+    }
+
+    /// What the resolve finds at `pixels` of the output, each frame from the next until asked
+    /// again (`temporal::found_rows`), into `found`'s rows (a row a pixel).
+    pub fn ask_found(mut self, pixels: [vec2u]) {
+        self.found = Some((buffer_of(pixels, at_least: 1), buffer(max(pixels.len(), 1))))
+    }
+
+    /// What the resolve found the last frame at the pixels `ask_found` asked for, as a new
+    /// buffer (none if nothing was asked).
+    pub fn found(self) -> Option<GpuBuffer<FoundRow>> {
+        match self.found {
+            Some((pixels, rows)) => {
+                var out: GpuBuffer<FoundRow> = buffer(pixels.len())
+                copy(from: rows.items(), to: out.items_mut())
+                Some(out)
+            },
+            None => None,
+        }
+    }
+
     pub fn quality(self) -> Quality {
         self.quality
     }
@@ -1580,6 +1643,12 @@ impl<R: Resolver> Frame<R> {
             self.targets = targets_for(width, height, w, h, scene.has_effects())
             self.pyramid = Pyramid::new(width: w, height: h)
             self.ambient = Occlusion::new(width: w, height: h)
+            let cq = self.quality.cascades
+            self.cascades = if cq.on {
+                Some(Cascades::new(vec2u(w, h), spacing: cq.spacing, steps: cq.steps))
+            } else {
+                None
+            }
             self.screen = texture::<Rgba16Float>(width: w, height: h)
             self.mirror.on = 0
             self.see_through = None
@@ -1913,6 +1982,10 @@ impl<R: Resolver> Frame<R> {
             None => {},
         }
         var targets = self.targets.bytes() + self.pyramid.bytes() + self.ambient.bytes()
+        match self.cascades {
+            Some(c) => targets += c.bytes(),
+            None => {},
+        }
         match self.see_through {
             Some(t) => targets += t.bytes(),
             None => {},
@@ -2618,16 +2691,27 @@ impl<R: Resolver> Frame<R> {
         sky.end()
         // The ambient occlusion from this frame's opaque depth (the sky's leaves it as it was), for the next frame's shading (its
         // slices still in plain rendering, which has no history to gather them).
-        if self.quality.ambient {
-            label("ambient occlusion")
-            let still = Camera { frame: if self.debug.plain { 0 } else { cam.frame }, ..cam }
-            self.ambient.next_at = ambient::build(
+        // Or the radiance cascades' light, in its place.
+        let still = Camera { frame: if self.debug.plain { 0 } else { cam.frame }, ..cam }
+        match mut self.cascades {
+            Some(c) => self.ambient.next_at = c.build(
                 mut self.ambient.next,
                 self.targets.depth,
                 still,
-                self.distance.read(),
-                self.distance.volume,
-            )
+                lt,
+                self.tables.view,
+                self.sky.dome,
+            ),
+            None => if self.quality.ambient {
+                label("ambient occlusion")
+                self.ambient.next_at = ambient::build(
+                    mut self.ambient.next,
+                    self.targets.depth,
+                    still,
+                    self.distance.read(),
+                    self.distance.volume,
+                )
+            },
         }
         let fx = Effects {
             lt,
@@ -2772,6 +2856,7 @@ impl<R: Resolver> Frame<R> {
             last_jitter: jitter_of(max(cam.frame, 1) - 1, cam.grid != 0, cells: max(cam.grid, 1)),
             moving: scene.moves_in(cam, out),
             settled: if again { 0.0 } else { f32(self.settled) },
+            learned: if self.quality.learned_resolve && self.rejects { 1 } else { 0 },
         }
         self.settled = if !held(cam) { 0 } else if again { 1 } else { self.settled + 1 }
         let instead = scene.shows_instead()
@@ -2797,7 +2882,29 @@ impl<R: Resolver> Frame<R> {
             self.targets.last_motion,
             self.targets.last_history,
             self.linear,
+            self.rejector.items(),
         )
+        match mut self.found {
+            Some((pixels, rows)) => {
+                dispatch(
+                    found_rows.bind(
+                        r,
+                        self.targets.scene,
+                        self.targets.depth,
+                        self.targets.last_depth,
+                        self.targets.motion,
+                        self.targets.last_motion,
+                        self.targets.last_history,
+                        self.linear,
+                        self.rejector.items(),
+                        pixels.items(),
+                        out: mut rows,
+                    ),
+                    over: pixels.len(),
+                )
+            },
+            None => {},
+        }
         label("look")
         // (While arriving, the exposure is metered afresh each frame: the eye arrives adapted.)
         let m = Metering { fresh: if self.frames == 0 || self.ready.arriving { 1 } else {

@@ -6,7 +6,8 @@ use engine::temporal::{Resolve, neighbourhoods, resolve}
 use engine::view::first_camera
 use std::gpu::{
     Compare, Depth, FragCoord, Rgba16Float, Texture, WithDepth, begin_pass, begin_pass_with_depth,
-    begin_screen_pass, depth_texture, dispatch, draw, sampler, texture, writable_texture,
+    begin_screen_pass, depth_texture, dispatch, draw, sampler, texture, writable_texture, GpuBuffer,
+    Half2, buffer,
 }
 
 @fragment
@@ -40,6 +41,7 @@ fn show(
 }
 
 pub fn frame(time: f32, width: u32, height: u32) {
+    let no_net: GpuBuffer<Half2> = buffer(1)
     var scene = texture::<Rgba16Float>(width: 16, height: 20)
     var scratch = texture::<Rgba16Float>(width: 16, height: 20)
     var depth = depth_texture(width: 16, height: 20)
@@ -100,17 +102,45 @@ pub fn frame(time: f32, width: u32, height: u32) {
             means,
             spreads,
             s,
+            no_net.items(),
         ),
     )
     p.end()
     let p = begin_pass(mut rejected)
     fullscreen(
         p,
-        resolve.bind(r, scene, depth, old_depth, motion, motion, history, means, spreads, s),
+        resolve.bind(
+            r,
+            scene,
+            depth,
+            old_depth,
+            motion,
+            motion,
+            history,
+            means,
+            spreads,
+            s,
+            no_net.items(),
+        ),
     )
     p.end()
     let p = begin_pass(mut kept)
-    fullscreen(p, resolve.bind(r, scene, depth, depth, motion, motion, history, means, spreads, s))
+    fullscreen(
+        p,
+        resolve.bind(
+            r,
+            scene,
+            depth,
+            depth,
+            motion,
+            motion,
+            history,
+            means,
+            spreads,
+            s,
+            no_net.items(),
+        ),
+    )
     p.end()
     let screen = begin_screen_pass(clear: vec4(0.0))
     fullscreen(screen, show.bind(fresh, rejected, kept))

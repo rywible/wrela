@@ -30,6 +30,32 @@ pub struct Ambient: Copy + GpuData {
     pub eye: vec3,
     pub on: u32,
     pub size: vec2,
+    /// Whether its texels hold the radiance cascades' light (`cascades::resolve`: the sky's and
+    /// the bounce's, over π, in place of the probes' times the occlusion) instead of occlusion.
+    pub cascades: u32 = 0,
+}
+
+/// The light the cascades left at `world` for the sky's term (`Ambient::cascades`: the last
+/// frame's, where it saw `world`), if they did.
+pub fn cascaded_at(a: Ambient, ao: Texture<Rgba16Float>, world: vec3) -> Option<vec3> {
+    if a.on == 0 || a.cascades == 0 {
+        return None
+    }
+    let c = a.view_proj * vec4(world, 1.0)
+    if c.w <= 1.0e-4 {
+        return None
+    }
+    let uv = vec2(c.x / c.w * 0.5 + 0.5, 0.5 - c.y / c.w * 0.5)
+    if uv.x < 0.0 || uv.y < 0.0 || uv.x >= 1.0 || uv.y >= 1.0 {
+        return None
+    }
+    let t = vec2u(uv * a.size)
+    let texel = ao.load(x: t.x, y: t.y)
+    let dist = length(world - a.eye)
+    if abs(texel.a - dist) > 0.1 * dist + 0.05 {
+        return None
+    }
+    Some(texel.rgb)
 }
 
 /// No occlusion: everything open.
@@ -119,10 +145,33 @@ pub fn noise(p: vec2) -> f32 {
 
 /// The world point at full-size pixel `p` of `depth` (as `cam` drew it), and its depth (0:
 /// nothing drawn there).
-fn point_at(depth: DepthTexture, cam: Camera, p: vec2i) -> (vec3, f32) {
+pub fn point_at(depth: DepthTexture, cam: Camera, p: vec2i) -> (vec3, f32) {
     let q = clamp(p, vec2i(0), vec2i(cam.screen) - vec2i(1))
     let d = depth.load(x: u32(q.x), y: u32(q.y))
     (cam.world_at(vec2(q) + vec2(0.5), d), d)
+}
+
+/// The normal at full-size pixel `c` of `depth` (its world point `p`), facing the eye, from the
+/// depth round it: on each axis the nearer neighbour's side (an edge's far side would bend it),
+/// the side within the screen at its edge (the other is the pixel itself); zero where the depth
+/// gives none.
+pub fn facing_at(depth: DepthTexture, cam: Camera, c: vec2i, p: vec3) -> vec3 {
+    let (l, _) = point_at(depth, cam, c - vec2i(1, 0))
+    let (r, _) = point_at(depth, cam, c + vec2i(1, 0))
+    let (u, _) = point_at(depth, cam, c - vec2i(0, 1))
+    let (b, _) = point_at(depth, cam, c + vec2i(0, 1))
+    let last = vec2i(cam.screen) - vec2i(1)
+    let dx = nearer_side(p - l, r - p, has_before: c.x > 0, has_after: c.x < last.x)
+    let dy = nearer_side(p - u, b - p, has_before: c.y > 0, has_after: c.y < last.y)
+    let across = cross(dy, dx)
+    // No step on an axis, or the two along one line (relative to their lengths: a near surface's
+    // steps are a fraction of a millimetre at a high resolution).
+    let (xx, yy) = (dot(dx, dx), dot(dy, dy))
+    if xx == 0.0 || yy == 0.0 || dot(across, across) <= 1.0e-8 * xx * yy {
+        return vec3(0.0)
+    }
+    let n = normalize(across)
+    if dot(n, cam.eye - p) < 0.0 { -n } else { n }
 }
 
 /// Of a point's step to its neighbour before (`before`) and after (`after`) on one axis, the
@@ -158,28 +207,12 @@ fn gtao(
     }
     let dist = length(p - cam.eye)
     let v = (cam.eye - p) / dist
-    // The normal from the depth round it: on each axis the nearer neighbour's side (an edge's
-    // far side would bend it), the side within the screen at its edge (the other is the pixel
-    // itself); open where the depth gives none.
-    let (l, _) = point_at(depth, cam, c - vec2i(1, 0))
-    let (r, _) = point_at(depth, cam, c + vec2i(1, 0))
-    let (u, _) = point_at(depth, cam, c - vec2i(0, 1))
-    let (b, _) = point_at(depth, cam, c + vec2i(0, 1))
-    let last = vec2i(cam.screen) - vec2i(1)
-    let dx = nearer_side(p - l, r - p, has_before: c.x > 0, has_after: c.x < last.x)
-    let dy = nearer_side(p - u, b - p, has_before: c.y > 0, has_after: c.y < last.y)
-    let across = cross(dy, dx)
-    // No step on an axis, or the two along one line (relative to their lengths: a near surface's
-    // steps are a fraction of a millimetre at a high resolution).
-    let (xx, yy) = (dot(dx, dx), dot(dy, dy))
-    if xx == 0.0 || yy == 0.0 || dot(across, across) <= 1.0e-8 * xx * yy {
+    let n = facing_at(depth, cam, c, p)
+    if dot(n, n) == 0.0 {
         out.store(id, vec4(1.0, dist, 0.0, 1.0))
         return
     }
-    var n = normalize(across)
-    if dot(n, v) < 0.0 {
-        n = -n
-    }
+    let last = vec2i(cam.screen) - vec2i(1)
     let per_metre = cam.screen.y / (2.0 * cam.tan_half)
     let reach = min(RADIUS * per_metre / dist, MOST_PIXELS)
     if reach < 1.0 {
@@ -243,7 +276,8 @@ fn gtao(
 /// from, if the texel there is of the point (its distance within a tenth of the point's); open
 /// otherwise, off screen, or with none built.
 pub fn ao_at(a: Ambient, ao: Texture<Rgba16Float>, world: vec3) -> f32 {
-    if a.on == 0 {
+    // The cascades' light holds the occlusion itself (`cascaded_at`).
+    if a.on == 0 || a.cascades != 0 {
         return 1.0
     }
     let c = a.view_proj * vec4(world, 1.0)

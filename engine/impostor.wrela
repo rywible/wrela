@@ -11,8 +11,12 @@
 //   the eye's direction, and lights what it reads as a leaf is lit.
 // - A volume is the kind's crown as densities on a small grid (`VOXELS` a side), from its
 //   cards. A farther instance is a quad that marches it.
+// - A kind's impostor can be read through a small net instead (§B14.2, `Neural`, off unless a
+//   game turns it on): `(view_uv, texel_uv)` and a learned grid's features → the eight values
+//   its atlases hold, evaluated where a view is read (`net_texel`).
 
 use light::{Lit, gloss, gloss_occlusion, matte}
+use neural::{Model, eval_gpu, half_at}
 use lod::{draw_packed, keeps_packed}
 use lit::{Lighting, sun_sky_and_gloss, through_air}
 use noise::{cell_size, hash2, hash2u, hashed_threshold_of}
@@ -23,7 +27,7 @@ use plant::{
 }
 use std::field::Tube
 use std::gpu::{
-    ClipPosition, Compare, Depth, Filtered, Flat, Format, FragCoord, GlobalId, GpuBuffer,
+    ClipPosition, Compare, Depth, Filtered, Flat, Format, FragCoord, GlobalId, GpuBuffer, Half2,
     InstanceIndex, R32Uint, Rgba16Float, Rgba8, Sampler, Slots, Texels3d, Texture, Texture3d,
     TextureArray, VertexIndex, WithDepth, begin_pass_with_depth, buffer, depth_texture, discard,
     dispatch, draw, texture, texture3d,
@@ -598,6 +602,63 @@ fn cell_uv(cell: vec2u, q: vec3) -> vec2 {
     (vec2(cell) + (vec2(dot(q, right), dot(q, up)) * 0.5 + vec2(0.5))) / f32(VIEWS)
 }
 
+/// A kind's impostor as a net (§B14.2, `Quality::neural`): its model, its grid's side over
+/// `texel_uv` (0: none) and features a cell (stored after the net's weights), and the layer of the
+/// kind it stands for; `on` 0 reads every kind's atlas.
+pub struct Neural: Copy + GpuData {
+    pub model: Model,
+    pub grid: u32 = 0,
+    pub features: u32 = 0,
+    pub layer: u32 = 0,
+    pub on: u32 = 0,
+}
+
+/// No net: every kind's atlas.
+pub const NO_NET = Neural { model: Model { inputs: 1, h1: 1, h2: 1, outputs: 1 } }
+
+/// A `Neural::layer` that stands for every kind (one net read for all: what a net a kind would
+/// cost, measured; their images are the one kind's).
+pub const EVERY_KIND: u32 = 4294967295
+
+/// Whether the kind on atlas layer `layer` is read through the net.
+fn through_net(nn: Neural, layer: u32) -> bool {
+    nn.on != 0 && (layer == nn.layer || nn.layer == EVERY_KIND)
+}
+
+/// Feature `k` of the net's grid's cell `(x, y)`.
+fn grid_at(nn: Neural, w: [Half2], x: u32, y: u32, k: u32) -> f32 {
+    half_at(w, nn.model.size() + (y * nn.grid + x) * nn.features + k)
+}
+
+/// The net's eight values at view `cell`'s point `at` (on the atlas, 0 to 1), as the atlases
+/// hold them: the texel's colour and coverage, its normal (`oct_encode`), toward and depth (over
+/// `DEEPEST`); nothing outside the cell. Its inputs are the fit fixture's
+/// (`studio/fit/fixtures/impostor`): the view's place on the grid and the point's in its cell,
+/// then the grid's features there, bilinear.
+pub fn net_texel(nn: Neural, w: [Half2], at: vec2, cell: u32) -> [f32; 8] {
+    let v = vec2u(cell % VIEWS, cell / VIEWS)
+    let uv = at * f32(VIEWS) - vec2(v)
+    if uv.x < 0.0 || uv.y < 0.0 || uv.x >= 1.0 || uv.y >= 1.0 {
+        return [0.0; 8]
+    }
+    var x = [0.0; 48]
+    x[0] = (f32(v.x) + 0.5) / f32(VIEWS)
+    x[1] = (f32(v.y) + 0.5) / f32(VIEWS)
+    x[2] = uv.x
+    x[3] = uv.y
+    if nn.grid > 1 {
+        let g = uv * f32(nn.grid - 1)
+        let c = vec2u(min(floor(g), vec2(f32(nn.grid - 2))))
+        let t = g - vec2(c)
+        for k in 0..nn.features {
+            let lo = mix(grid_at(nn, w, c.x, c.y, k), grid_at(nn, w, c.x + 1, c.y, k), t.x)
+            let hi = mix(grid_at(nn, w, c.x, c.y + 1, k), grid_at(nn, w, c.x + 1, c.y + 1, k), t.x)
+            x[4 + k] = mix(lo, hi, t.y)
+        }
+    }
+    eval_gpu(nn.model, w, x)
+}
+
 /// A far quad's point's place and cell in view `k`. Both passes use the same coordinates.
 fn view_at(f: FarVertex, k: u32) -> (vec2, u32) {
     let c = f.cells.value
@@ -727,6 +788,21 @@ fn seen<C: Format + Filtered, N: Format>(
     }
 }
 
+/// `seen`, through the net (`net_texel`): one texel's values, so no filtering of its own.
+fn net_seen(nn: Neural, w: [Half2], f: FarVertex, k: u32) -> Seen {
+    let (at, cell) = view_at(f, k)
+    let t = net_texel(nn, w, at, cell)
+    let coverage = saturate(t[3])
+    let own = saturate(vec3(t[0], t[1], t[2]) / max(coverage, 1.0e-3))
+    Seen {
+        coverage,
+        albedo: own * own,
+        normal: normalize(oct_decode(vec2(t[4], t[5])) + vec3(0.0, 1.0e-4, 0.0)),
+        depth: saturate(t[7]) * DEEPEST,
+        toward: saturate(t[6]) * 2.0 - 1.0,
+    }
+}
+
 /// Where the leaf an impostor shows at a far quad's point is: toward the eye from the quad by
 /// what was baked (the quad is the plant's reach wide, `b.half` times its scale).
 fn leaf_place(f: FarVertex, cam: Camera, b: Bake, toward: f32) -> vec3 {
@@ -764,13 +840,19 @@ pub fn far_cut<C: Format + Filtered, N: Format>(
     depth: TextureArray<N>,
     s: Sampler,
     cell: f32,
+    nn: Neural,
+    net: [Half2],
 ) -> WithDepth<u32> {
     let kd = kinds[f.kind.value]
     // The cells of a draw that holds still on the quad (hashed alpha), for its coverage.
     let size = cell_size(f.uv, cell)
     // Most of the quad is empty: left before its leaf's place is read.
-    let (at, view) = cut_view(f, pixel.position.xy, colour, kd.layer, s, size)
-    let toward = normal_at(colour, normal, depth, kd.layer, at, view).1.x * 2.0 - 1.0
+    let (at, view) = cut_view(f, pixel.position.xy, colour, kd.layer, s, size, nn, net)
+    let toward = if through_net(nn, kd.layer) {
+        saturate(net_texel(nn, net, at, view)[6]) * 2.0 - 1.0
+    } else {
+        normal_at(colour, normal, depth, kd.layer, at, view).1.x * 2.0 - 1.0
+    }
     let at = leaf_place(f, cam, kd.bake, toward)
     WithDepth { color: f.id.value, depth: depth_of(cam, at) }
 }
@@ -810,15 +892,18 @@ pub fn far_cut_flat<C: Format + Filtered>(
     colour: TextureArray<C>,
     s: Sampler,
     cell: f32,
+    nn: Neural,
+    net: [Half2],
 ) -> u32 {
     let size = cell_size(f.uv, cell)
-    let _ = cut_view(f, pixel.position.xy, colour, kinds[f.kind.value].layer, s, size)
+    let _ = cut_view(f, pixel.position.xy, colour, kinds[f.kind.value].layer, s, size, nn, net)
     f.id.value
 }
 
 /// The view a far quad's pixel shows this frame (`view_of`) and the pixel's place in it, the
 /// pixel cut to its share, where it's between two ways (`lod::keeps_packed`), and to that view's
-/// coverage (`cut_dithered`): `far_cut`'s and `far_cut_flat`'s.
+/// coverage (`cut_dithered`; the net's where it stands for the kind): `far_cut`'s and
+/// `far_cut_flat`'s.
 fn cut_view<C: Format + Filtered>(
     f: FarVertex,
     pixel: vec2,
@@ -826,12 +911,17 @@ fn cut_view<C: Format + Filtered>(
     layer: u32,
     s: Sampler,
     size: f32,
+    nn: Neural,
+    net: [Half2],
 ) -> (vec2, u32) {
     if !keeps_packed(f.keep.value, pixel) {
         discard()
     }
     let (at, view) = view_at(f, view_of(f, pixel))
-    cut_dithered(f, sample_cell(colour, layer, s, at, view).a, size)
+    let c = if through_net(nn, layer) { saturate(net_texel(nn, net, at, view)[3]) } else {
+        sample_cell(colour, layer, s, at, view).a
+    }
+    cut_dithered(f, c, size)
     (at, view)
 }
 
@@ -864,13 +954,18 @@ pub fn far_shade<C: Format + Filtered, N: Format>(
     normal: TextureArray<N>,
     depth: TextureArray<N>,
     grid: Texture3d<Rgba16Float>,
+    nn: Neural,
+    net: [Half2],
 ) -> vec4 {
     if id_at(ids, pixel) != f.id.value {
         discard()
     }
     let kd = kinds[f.kind.value]
     let b = kd.bake
-    let leaf = seen(f, view_of(f, pixel.position.xy), colour, normal, depth, kd.layer, lt.s)
+    let k = view_of(f, pixel.position.xy)
+    let leaf = if through_net(nn, kd.layer) { net_seen(nn, net, f, k) } else {
+        seen(f, k, colour, normal, depth, kd.layer, lt.s)
+    }
     let n = world_normal(f, leaf.normal)
     let at = leaf_place(f, lt.cam, b, leaf.toward)
     let out = leaf_light(

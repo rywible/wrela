@@ -269,6 +269,32 @@ pub struct RowValues: Copy {
     pub v: [f32; 12],
 }
 
+/// The rung training's weights from `from`: 32 of them (0 past the last), how many there are,
+/// the rung's grid side and its features.
+pub struct Weights: Copy {
+    pub v: [f32; 32],
+    pub count: u32,
+    pub grid: u32,
+    pub features: u32,
+}
+
+/// The rung's weights from `from` (`Weights`): the tool reads the best seed's back to write.
+@testing
+pub fn test_weights(s: State, from: u32) -> Weights {
+    var out = Weights {
+        v: [0.0; 32],
+        count: s.w.len(),
+        grid: s.rung.grid,
+        features: s.rung.features,
+    }
+    for k in 0..32 {
+        if from + k < s.w.len() {
+            out.v[k] = s.w[from + k]
+        }
+    }
+    out
+}
+
 /// Rung `i` started from `seed` (He's weights, the grid's small and random), Adam at `rate`.
 @testing
 pub fn test_start(s: mut State, i: u32, seed: u32, rate: f32) {
@@ -331,30 +357,47 @@ pub fn test_train(s: mut State, steps: u32, batch: u32, helpers: u32) -> f32 {
     last
 }
 
-/// The rung's PSNR (dB) over the held-out views' colour and coverage (the colour's error weighted
-/// by the true coverage), and the colour's and coverage's mean squared errors.
-@testing
-pub fn test_score(s: State) -> vec3 {
+/// Over `rows` through the rung: the colour's squared error weighted by the true coverage, that
+/// weight, the coverage's squared error, and the rows.
+fn sums(s: State, rows: [f32]) -> vec4 {
     let g = s.rung
     let net = g.model.size()
-    let n = s.held.len() / ROW
+    let n = rows.len() / ROW
     var colour = 0.0
     var covered = 0.0
     var coverage = 0.0
     for r in 0..n {
-        let (x, _, _) = inputs_of(g, s.w, net, s.held, r)
+        let (x, _, _) = inputs_of(g, s.w, net, rows, r)
         let out = forward(g.model, s.w, x).out
-        let truth_cover = s.held[r * ROW + INPUTS + 3]
+        let truth_cover = rows[r * ROW + INPUTS + 3]
         for k in 0..3 {
-            let e = out[k] - s.held[r * ROW + INPUTS + k]
+            let e = out[k] - rows[r * ROW + INPUTS + k]
             colour += truth_cover * e * e
         }
         covered += truth_cover * 3.0
         let e = out[3] - truth_cover
         coverage += e * e
     }
-    let mse_colour = colour / max(covered, 1.0)
-    let mse_cover = coverage / f32(max(n, 1))
-    let mse = (colour + coverage) / max(covered + f32(n), 1.0)
-    vec3(10.0 * log(1.0 / max(mse, 1.0e-12)) / log(10.0), mse_colour, mse_cover)
+    vec4(colour, covered, coverage, f32(n))
+}
+
+/// The PSNR (dB) of `sums` over colour and coverage, and the colour's and coverage's mean squared
+/// errors.
+fn psnr(t: vec4) -> vec3 {
+    let mse = (t.x + t.z) / max(t.y + t.w, 1.0)
+    vec3(10.0 * log(1.0 / max(mse, 1.0e-12)) / log(10.0), t.x / max(t.y, 1.0), t.z / max(t.w, 1.0))
+}
+
+/// The rung's PSNR (dB) over the held-out views' colour and coverage (the colour's error weighted
+/// by the true coverage), and the colour's and coverage's mean squared errors.
+@testing
+pub fn test_score(s: State) -> vec3 {
+    psnr(sums(s, s.held))
+}
+
+/// `test_score` over all 256 views, those it trained on and those held out: the net against the
+/// atlas (§B14.2d).
+@testing
+pub fn test_score_all(s: State) -> vec3 {
+    psnr(sums(s, s.held) + sums(s, s.rows))
 }

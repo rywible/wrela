@@ -1,0 +1,7 @@
+# An impostor read through a net (engine::impostor::net_texel, §B14.2c): the shader's eight values
+# at 1,000 points of the views against the CPU's evaluation of the same net and grid.
+[package]
+name = "neural_impostor_test"
+
+[dependencies]
+engine = { workspace = true }

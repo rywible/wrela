@@ -186,6 +186,8 @@ pub fn frame(time: f32, width: u32, height: u32) {
     let no_spec = std::gpu::cubemap::<Rgba16Float>(side: 1)
     let no_volume = std::gpu::texture3d::<std::gpu::R32Float>(width: 1, height: 1, depth: 1)
     let no_fog = std::gpu::texture3d::<Rgba16Float>(width: 1, height: 1, depth: 1)
+    // No sights: the probes' lookups weigh by nearness alone where they're read.
+    let grounds_seen: GpuBuffer<u32> = buffer(1)
     let lt = Lighting {
         cam,
         light: Light { sun, sun_colour: if env { vec3(0.0) } else {
@@ -208,6 +210,7 @@ pub fn frame(time: f32, width: u32, height: u32) {
         cmp,
         probes,
         grounds: grounds.items(),
+        seen: grounds_seen.items(),
         cloud,
         air,
         // No ambient occlusion built: everything open.

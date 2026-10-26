@@ -38,6 +38,8 @@ use engine::view::{Camera, NEAREST, first_camera}
 use engine::reflect::copy_below
 use engine::water::{LOOKS, WaterMesh, WaterTile, WaterVert, tiled, water_shade, water_vertex}
 use engine::wood::Wood
+use engine::impostor::Neural
+use kit::great_tree_net::{GREAT_TREE, GREAT_TREE_FEATURES, GREAT_TREE_GRID, GREAT_TREE_MODEL}
 use engine::air::{Air, hazy}
 use history::{BAKED, tiles_hi, tiles_lo}
 use ground::GROUND
@@ -77,6 +79,8 @@ pub const DOOR_POSTS = [vec2(-0.95, 0.0), vec2(0.95, 0.0)]
 /// map, and the player's feet and heading it marks; last frame's wind and cloth contact (the
 /// grass's motion); whether the wind is still; and the render origin's tile.
 pub struct Stage {
+    /// Whether the great tree's far crowns are read through its net (`Quality::neural`).
+    pub neural: bool = false,
     /// The frames the wood was made on and the first built thing stood on (the load chain's
     /// order, `cook_load`).
     pub wood_at: Option<u32> = None,
@@ -2350,6 +2354,17 @@ pub fn cook_load(s: mut Stage, c: mut Cooks, eye: vec2, linear: Sampler) {
             w.card_px = engine::lod::CARD_PX / SCALE
             w.cell = 1.0 / SCALE
             w.write_lods()
+            if s.neural {
+                w.read_through(
+                    trees::GREAT,
+                    Neural {
+                        model: GREAT_TREE_MODEL,
+                        grid: GREAT_TREE_GRID,
+                        features: GREAT_TREE_FEATURES,
+                    },
+                    GREAT_TREE,
+                )
+            }
             s.wood = Some(take w)
             s.wood_at = Some(c.frames)
             print(f"the wood: {s.plants.len()} kinds cooked at frame {c.frames}")

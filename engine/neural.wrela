@@ -263,7 +263,7 @@ pub fn unhalves(h: [Half2], count: u32) -> Vec<f32> {
 }
 
 /// Weight `i` of a net shipped as half floats (`halves`).
-fn half_at(w: [Half2], i: u32) -> f32 {
+pub fn half_at(w: [Half2], i: u32) -> f32 {
     let pair = w[i / 2].decode()
     if i % 2 == 0 { pair.x } else { pair.y }
 }

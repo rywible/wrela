@@ -520,7 +520,7 @@ pub const VIS_TEXELS: u32 = 36
 // suits its tiles; 8 reaches a texel's neighbours about 30° off, which 32 rays a probe need.
 
 /// A unit vector folded onto the octahedron and unfolded onto a square, each in [-1, 1].
-fn oct_of(n: vec3) -> vec2 {
+pub fn oct_of(n: vec3) -> vec2 {
     let p = n.xz / (abs(n.x) + abs(n.y) + abs(n.z))
     if n.y >= 0.0 {
         return p
@@ -532,7 +532,8 @@ fn oct_of(n: vec3) -> vec2 {
     })
 }
 
-fn oct_dir(e: vec2) -> vec3 {
+/// The unit vector folded at `e` (`oct_of`'s inverse).
+pub fn oct_dir(e: vec2) -> vec3 {
     let y = 1.0 - abs(e.x) - abs(e.y)
     let t = max(-y, 0.0)
     normalize(vec3(e.x + (if e.x >= 0.0 { -t } else { t }), y, e.y + (if e.y >= 0.0 { -t } else {

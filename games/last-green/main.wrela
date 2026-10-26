@@ -13,6 +13,7 @@ use climber::figure::{Figure, figure}
 use climber::moves::{drift_rate, locomotion}
 use climber::sounds::{Heard, cues, heard}
 use engine::frame::{Aim, Change, Frame, Off, Quality, ShadowQuality, Shared}
+use kit::rejector_net::REJECTOR_NET
 use engine::shot::{MOVE, NO_CAST, SETTLE, Shots, place, shot_clock}
 use land::stream::tile_distance
 use tower::door::Exit
@@ -86,6 +87,8 @@ pub struct Floor {
     /// What a test captured of the last frame (`test_capture`).
     captured: GpuBuffer<f32>,
     captured_exposure: GpuBuffer<engine::paint::Exposure>,
+    /// What temporal AA's resolve found at the pixels a test asked for (`test_found`).
+    captured_found: GpuBuffer<engine::temporal::FoundRow>,
     framing: Framing,
     /// The camera's arm as it was last frame (`land::player::follow`).
     arm: Arm,
@@ -145,7 +148,9 @@ pub fn init() -> Floor {
     let latest = run(take world, hz: 60, step: tick, present: snapshot)
     print(f"the floor: {BAKED.len()} files baked, {OBSTACLES.len()} obstacles")
     let eye = vec3(start.x, height_at(start) + 2.0, start.y)
-    Floor {
+    var staged = stage()
+    staged.neural = quality().neural
+    var floor = Floor {
         console: Link::new(),
         exit: Exit::begin(WORLD, WORLDS, SAVE, STAIR_BUILD, DOOR),
         snaps: Snapshots::new(take latest, hz: 60),
@@ -158,10 +163,11 @@ pub fn init() -> Floor {
             probe_grid(start, vec2(0.0), FLOOR),
             start,
         ),
-        stage: stage(),
+        stage: staged,
         ready: false,
         captured: buffer(1),
         captured_exposure: buffer(1),
+        captured_found: buffer(1),
         // Far enough back that the whole robe, its train and the licks at its hem are seen.
         framing: Framing { target: 1.4, behind: 5.0 },
         arm: Arm {},
@@ -191,6 +197,11 @@ pub fn init() -> Floor {
         hearing: sound::start(),
         fight_heard,
     }
+    // The learned history rejector's net, read under `Quality::learned_resolve` (B14.3).
+    if quality().learned_resolve {
+        floor.frame.reject_by(REJECTOR_NET)
+    }
+    floor
 }
 
 /// The world's source changed to `source` (`source_of`): the stage's part (its tiles' trees and
@@ -823,6 +834,43 @@ pub fn test_capture(s: mut Floor, what: testing::Capture) -> u32 {
             std::gpu::copy(from: s.frame.exposure.items(), to: s.captured_exposure.items_mut())
             1
         },
+    }
+}
+
+/// From the next frame on, what temporal AA's resolve finds at `n` pixels of a `width` ×
+/// `height` output, random from `seed` (`engine::frame::Frame::ask_found`: the learned
+/// rejector's dataset, §B14.3).
+@testing
+pub fn test_found_ask(s: mut Floor, n: u32, seed: u32, width: u32, height: u32) {
+    var pixels: Vec<vec2u> = Vec::with_capacity(n)
+    for i in 0..n {
+        let u = vec2(engine::noise::rand(seed, 2 * i), engine::noise::rand(seed, 2 * i + 1))
+        pixels.push(min(vec2u(u * vec2(f32(width), f32(height))), vec2u(width - 1, height - 1)))
+    }
+    s.frame.ask_found(pixels)
+}
+
+/// Temporal AA's share of this frame from the learned rejector (`Quality::learned_resolve`, its
+/// net the floor's: `REJECTOR_NET`), or from the heuristics (§B14.3d's check).
+@testing
+pub fn test_learned(s: mut Floor, on: u32) {
+    s.frame.reject_by(REJECTOR_NET)
+    var q = s.frame.quality()
+    q.learned_resolve = on != 0
+    s.frame.requality(q)
+}
+
+/// What the resolve found the last frame at the pixels `test_found_ask` asked for, copied into
+/// a new buffer (the newest), and how many rows (`engine::temporal::FOUND_FLOATS` floats each).
+@testing
+pub fn test_found(s: mut Floor) -> u32 {
+    match s.frame.found() {
+        Some(b) => {
+            let n = b.len()
+            s.captured_found = take b
+            n
+        },
+        None => 0,
     }
 }
 

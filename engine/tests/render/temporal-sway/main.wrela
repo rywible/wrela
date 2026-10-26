@@ -10,7 +10,8 @@ use engine::temporal::{Resolve, resolve_gathered}
 use engine::view::{GRASS, GROUND, first_camera}
 use std::gpu::{
     Compare, Depth, DepthTexture, FragCoord, Rgba16Float, Texture, WithDepth, begin_pass,
-    begin_pass_with_depth, begin_screen_pass, depth_texture, draw, sampler, texture,
+    begin_pass_with_depth, begin_screen_pass, depth_texture, draw, sampler, texture, GpuBuffer,
+    Half2, buffer,
 }
 
 const W: u32 = 64
@@ -79,6 +80,7 @@ fn resolved(
     history: mut Texture<Rgba16Float>,
     fresh: u32,
 ) {
+    let no_net: GpuBuffer<Half2> = buffer(1)
     let cam = first_camera(vec3(0.0), vec3(0.0, 0.0, -1.0), 1.0, width: W, height: H).unjittered()
     let r = Resolve {
         cam,
@@ -94,7 +96,7 @@ fn resolved(
     let p = begin_pass(mut history)
     fullscreen(
         p,
-        resolve_gathered.bind(r, scene, depth, depth, motion, motion, last, linear),
+        resolve_gathered.bind(r, scene, depth, depth, motion, motion, last, linear, no_net.items()),
     )
     p.end()
 }

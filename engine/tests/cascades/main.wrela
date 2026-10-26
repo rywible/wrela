@@ -1,0 +1,352 @@
+// The radiance cascades (`engine::cascades`, B14.4) on flat ground drawn through `engine::frame`
+// with `Quality::cascades` on: a hollow box (a tape of a cuboid's shell) and a wall (a cuboid
+// half a metre thick) stand off screen. Once the solids' volume is cooked, rays are marched
+// through it (`cascades::march` over the volume) at each cascade's interval: from inside the box,
+// from a metre before the wall, and up from above the ground into the open. And the light the
+// cascades leave for the shading (the occlusion's texture, `ambient::cascaded_at`'s) over the
+// ground in view is read against the sky's light there.
+
+use engine::air::hazy
+use engine::cascades::{CASCADES, Volume, interval_of, march}
+use engine::distance::{DistanceGrid, Shape, Solids}
+use engine::frame::{Aim, CascadeQuality, Frame, Gathered, Quality, Scene}
+use engine::light::{Light, SUN_TOP, sunlight}
+use engine::plant::Wind
+use engine::probes::{Occluder, ProbeGrid, Trace, grid}
+use engine::sky::{Gap, Weather, clouded_sky}
+use engine::stone::ShapeTape
+use engine::terrain::{Clipmap, Flat}
+use engine::view::{Camera, first_camera}
+use std::derive::tape
+use std::field::{Surface, cuboid}
+use std::gpu::{
+    GlobalId, GpuBuffer, R32Float, Rgba16Float, Sampler, Slots, Texture, Texture3d, buffer,
+    dispatch, read,
+}
+use std::io::{Pending, print}
+
+const SUN = vec3(0.3, 0.8, 0.5)
+const EYE = vec3(0.0, 1.6, 0.0)
+
+/// The hollow box: its middle, half its size, and its walls' thickness; the wall: its middle and
+/// half its size (its faces at x = -30.25 and -29.75).
+const BOX = vec3(30.0, 3.0, -30.0)
+const HALF = vec3(1.5)
+const SHELL: f32 = 0.25
+const WALL = vec3(-30.0, 3.0, -20.0)
+const WALL_HALF = vec3(0.25, 3.0, 4.0)
+
+/// The directions each march test takes, and the ground's texels the light is read at.
+const RAYS: u32 = 64
+const TEXELS: u32 = 100
+
+pub struct Open {
+    weather: Weather,
+}
+
+/// A shape of the solids: `f`'s tape about `at` (the shape's own space: its middle the origin).
+fn shape_of(t: ShapeTape, at: vec3, radius: f32, origin: vec3) -> Shape {
+    let to_local = mat4(
+        vec4(1.0, 0.0, 0.0, 0.0),
+        vec4(0.0, 1.0, 0.0, 0.0),
+        vec4(0.0, 0.0, 1.0, 0.0),
+        vec4(origin - at, 1.0),
+    )
+    Shape { tape: t, to_local, centre: at - origin, radius }
+}
+
+fn shell_tape() -> ShapeTape {
+    let t = tape(|p: vec3| abs(cuboid(HALF - vec3(SHELL * 0.5)).distance(p)) - SHELL * 0.5)
+    let Some(r) = t.resized() else { panic("the shell's tape is too long") }
+    r
+}
+
+fn wall_tape() -> ShapeTape {
+    let t = tape(|p: vec3| cuboid(WALL_HALF).distance(p))
+    let Some(r) = t.resized() else { panic("the wall's tape is too long") }
+    r
+}
+
+impl Scene for Open {
+    fn wind(self, cam: Camera, time: f32) -> Wind {
+        Wind { time, dir: vec2(1.0, 0.0), strength: 0.0 }
+    }
+
+    fn weather(self) -> Weather {
+        self.weather.clone()
+    }
+
+    fn trace(self, light: Light, grid: ProbeGrid) -> Trace {
+        Trace { light, grid, foliage: vec3(0.0), reach: 24.0, leaf: vec3(0.0), bounced: 0 }
+    }
+
+    fn probe_grid(self, at: vec2, origin: vec3) -> ProbeGrid {
+        grid(at, cols: 9, spacing: 4.0, low: -8.0, high: 24.0, voxel: 2.0)
+    }
+
+    fn occluders(self, at: vec2, origin: vec3) -> Option<Vec<Occluder>> {
+        Some(Vec::new())
+    }
+
+    fn height_at(self, world: vec2) -> f32 {
+        0.0
+    }
+
+    fn cook_ground(mut self, clipmap: mut Clipmap, eye: vec3, again: bool) -> u32 {
+        clipmap.follow(Flat {}, eye, again)
+    }
+
+    fn solids(self, origin: vec3, since: u32) -> Option<Solids> {
+        if since == 1 {
+            return None
+        }
+        let shapes = Vec::from(
+            [
+                shape_of(shell_tape(), BOX, length(HALF), origin),
+                shape_of(wall_tape(), WALL, length(WALL_HALF), origin),
+            ],
+        )
+        Some(Solids { capsules: Vec::new(), shapes, version: 1 })
+    }
+}
+
+/// Direction `i` of `RAYS`, spread over the sphere.
+fn ray_dir(i: u32) -> vec3 {
+    let y = 1.0 - (f32(i) + 0.5) / f32(RAYS) * 2.0
+    let a = f32(i) * 2.399963
+    let s = sqrt(max(1.0 - y * y, 0.0))
+    vec3(s * cos(a), y, s * sin(a))
+}
+
+/// What each test's rays met at each cascade's interval (1: a hit), `CASCADES` a ray: from the
+/// box's middle along each direction; from a metre before the wall toward it; up from 2 m over
+/// the open ground in view.
+@compute(64)
+fn marched(
+    g: DistanceGrid,
+    volume: Texture3d<R32Float>,
+    origin: vec3,
+    out: mut Slots<u32>,
+    id: GlobalId,
+) {
+    let ray = id.x / CASCADES
+    let i = id.x % CASCADES
+    if ray >= RAYS + 1 + RAYS {
+        return
+    }
+    let (o, dir) = if ray < RAYS { (BOX, ray_dir(ray)) } else if ray == RAYS {
+        (WALL - vec3(WALL_HALF.x + 1.0, 0.0, 0.0), vec3(1.0, 0.0, 0.0))
+    } else {
+        let d = ray_dir(ray - RAYS - 1)
+        (
+            vec3(0.0, 2.0, -10.0),
+            vec3(d.x, abs(d.y) + 0.05, d.z) / length(vec3(d.x, abs(d.y) + 0.05, d.z)),
+        )
+    }
+    let iv = interval_of(i)
+    let m = march(Volume { g, volume }, o - origin, dir, iv.x, iv.y, 16)
+    out[id] = u32(m.hit)
+}
+
+/// The cascades' light (`texel.rgb`) and the sky's at each test texel of the occlusion's texture
+/// (half the scene each way, the ground's lower rows): the clouded sky over the upper hemisphere,
+/// cosine-weighted (1,024 directions), its mean.
+@compute(64)
+fn lights(
+    ao: Texture<Rgba16Float>,
+    view: Texture<Rgba16Float>,
+    dome: Texture<Rgba16Float>,
+    light: Light,
+    s: Sampler,
+    out: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    let k = id.x / 2
+    if k >= TEXELS {
+        return
+    }
+    let w = ao.width()
+    let h = ao.height()
+    let t = vec2u((k * 37) % w, h * 2 / 3 + (k * 13) % (h / 3))
+    if id.x % 2 == 0 {
+        out[id] = ao.load(x: t.x, y: t.y)
+        return
+    }
+    var sum = vec3(0.0)
+    for j in 0..1024 {
+        // Cosine-weighted: a point of the unit disc, raised.
+        let r = sqrt((f32(j) + 0.5) / 1024.0)
+        let a = f32(j) * 2.399963
+        let d = vec3(r * cos(a), sqrt(max(1.0 - r * r, 0.0)), r * sin(a))
+        sum += clouded_sky(view, light, d, dome, s)
+    }
+    out[id] = vec4(sum / 1024.0, 0.0)
+}
+
+pub struct State {
+    frame: Frame<Gathered>,
+    scene: Open,
+    hits: Option<Pending<u32>>,
+    asked: Option<Pending<vec4>>,
+    pub met: Vec<u32>,
+    pub light: Vec<vec4>,
+    pub cooked_at: u32,
+}
+
+pub fn init() -> State {
+    let air = hazy(SUN, SUN_TOP, eye: EYE.y)
+    let frame: Frame<Gathered> = Frame::new(
+        Quality { measured: false, distance: true, cascades: CascadeQuality { on: true } },
+        sunlight(air),
+        air,
+        Clipmap::new(levels: 6, finest: 0.5),
+        first_camera(EYE, EYE + vec3(0.0, -4.0, -20.0), 0.82, width: 320, height: 180),
+        grid(EYE.xz, cols: 9, spacing: 4.0, low: -8.0, high: 24.0, voxel: 2.0),
+        EYE.xz,
+    )
+    State {
+        frame,
+        scene: Open {
+            weather: Weather {
+                clouds: Vec::new(),
+                fair: 0.0,
+                gap: Gap { a: vec2(3300.0, -590.0), b: vec2(12200.0, -2150.0), radius: 2500.0 },
+                wind: vec2(0.0),
+            },
+        },
+        hits: None,
+        asked: None,
+        met: Vec::new(),
+        light: Vec::new(),
+        cooked_at: 0,
+    }
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    let aim = Aim { eye: EYE, at: EYE + vec3(0.0, -4.0, -20.0), fovy: 0.82, moving_at: EYE }
+    let _ = s.frame.begin(mut s.scene, aim, time, width, height)
+    s.frame.draw(mut s.scene, aim)
+    // A few frames after the volume and the probes are in, so the cascades have seen both.
+    if s.cooked_at == 0 && s.frame.distance.cooked && s.frame.probes.done() {
+        s.cooked_at = s.frame.ran
+    }
+    if s.cooked_at > 0 && s.frame.ran == s.cooked_at + 4 {
+        borrow f = s.frame
+        var m: GpuBuffer<u32> = buffer((2 * RAYS + 1) * CASCADES)
+        dispatch(
+            marched.bind(f.distance.read(), f.distance.volume, f.origin, out: mut m),
+            over: (2 * RAYS + 1) * CASCADES,
+        )
+        s.hits = Some(read(m.items()))
+        var l: GpuBuffer<vec4> = buffer(2 * TEXELS)
+        dispatch(
+            lights.bind(
+                ao: f.ambient.next,
+                view: f.tables.view,
+                dome: f.sky.dome,
+                light: f.light,
+                s: f.linear,
+                out: mut l,
+            ),
+            over: 2 * TEXELS,
+        )
+        s.asked = Some(read(l.items()))
+    }
+    if s.met.is_empty() {
+        match mut s.hits {
+            Some(p) => match p.poll() {
+                Some(Ok(v)) => s.met = take v,
+                _ => {},
+            },
+            None => {},
+        }
+    }
+    if s.light.is_empty() {
+        match mut s.asked {
+            Some(p) => match p.poll() {
+                Some(Ok(v)) => s.light = take v,
+                _ => {},
+            },
+            None => {},
+        }
+    }
+}
+
+fn hit(s: State, ray: u32, i: u32) -> bool {
+    s.met[ray * CASCADES + i] == 1
+}
+
+/// From inside a closed box every ray meets its walls within the cascades' reach, in c1 (its
+/// walls 1.25 m off the middle): the merged transmittance is 0 every way.
+@test(frames: 240, gpu: true)
+fn a_closed_box_lets_no_ray_out(s: State) {
+    assert(s.met.len() == (2 * RAYS + 1) * CASCADES, f"cooked at {s.cooked_at}: {s.met.len()}")
+    var out = 0
+    for r in 0..RAYS {
+        var any = false
+        for i in 0..CASCADES {
+            any = any || hit(s, r, i)
+        }
+        if !any {
+            out += 1
+        }
+    }
+    print(f"cooked at frame {s.cooked_at}; {out} of {RAYS} rays out of the box")
+    assert(out == 0, f"{out} rays out")
+}
+
+/// A wall a metre before a probe is met by c1's ray alone (its interval holds it; c0's ends
+/// short of it, and c2's begins past it).
+@test(frames: 240, gpu: true)
+fn a_wall_a_metre_off_is_c1s(s: State) {
+    assert(s.met.len() == (2 * RAYS + 1) * CASCADES, f"{s.met.len()}")
+    let met = [hit(s, RAYS, 0), hit(s, RAYS, 1), hit(s, RAYS, 2), hit(s, RAYS, 3)]
+    print(f"the wall's ray met it in c0..c3: {met[0]} {met[1]} {met[2]} {met[3]}")
+    assert(!met[0] && met[1] && !met[2] && !met[3], "not c1's alone")
+}
+
+/// Up from over open ground, no cascade meets anything.
+@test(frames: 240, gpu: true)
+fn the_open_sky_meets_nothing(s: State) {
+    assert(s.met.len() == (2 * RAYS + 1) * CASCADES, f"{s.met.len()}")
+    var met = 0
+    for r in RAYS + 1..2 * RAYS + 1 {
+        for i in 0..CASCADES {
+            if hit(s, r, i) {
+                met += 1
+            }
+        }
+    }
+    assert(met == 0, f"{met} rays met something")
+}
+
+/// Over the open ground in view, the light the cascades leave is the sky's (its cosine-weighted
+/// mean over the hemisphere) within 10 % on average, and within 25 % at every texel.
+@test(frames: 240, gpu: true)
+fn open_ground_has_the_skys_light(s: State) {
+    assert(s.light.len() == 2 * TEXELS, f"{s.light.len()} read back")
+    var got = 0.0
+    var want = 0.0
+    var worst = 0.0
+    var none = 0
+    for k in 0..TEXELS {
+        let (c, sky) = (s.light[2 * k], s.light[2 * k + 1])
+        if c.a <= 0.0 {
+            none += 1
+            continue
+        }
+        let (a, b) = (
+            dot(c.rgb, vec3(0.2126, 0.7152, 0.0722)),
+            dot(sky.rgb, vec3(0.2126, 0.7152, 0.0722)),
+        )
+        got += a
+        want += b
+        worst = max(worst, abs(a - b) / max(b, 1.0e-6))
+    }
+    let off = abs(got - want) / max(want, 1.0e-6)
+    print(
+        f"{TEXELS - none} texels: the cascades' light {got:.3} against the sky's {want:.3} ({off * 100.0:.1}% off on average, {worst * 100.0:.1}% at worst)",
+    )
+    assert(none < TEXELS / 10, f"{none} texels without the cascades' light")
+    assert(off < 0.1 && worst < 0.25, f"{off}, {worst}")
+}
