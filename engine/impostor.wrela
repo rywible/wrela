@@ -64,6 +64,9 @@ pub fn leaf_sky_normal(n: vec3) -> vec3 {
     normalize(vec3(n.x, max(abs(n.y), 0.25), n.z))
 }
 
+/// How much brighter a leaf's light through it is with the sun right behind it (**proposed**).
+const AGAINST_SUN: f32 = 0.35
+
 /// A leaf's light at `at`, the same for its cards (`vegetation::leaf_shade`), its impostor and
 /// its volume: its normal `n`, the sky light for a surface facing `sky_n` (its crown's normal,
 /// where that's known), and `depth` metres inside its crown, which darkens the sun, the sky
@@ -98,12 +101,16 @@ pub fn leaf_light(
         shadow_at: at + lt.light.sun * SELF_SHADE,
     )
     let inside = 0.25 + 0.75 * ao
+    // Leaves against the sun (B13): a narrow lobe toward it, over the light through them that
+    // `light::matte` gives, where the eye looks toward the sun through the crown's edge (its
+    // outer leaves, the least shaded: `ao`); the sun's shadow keeps it to the lit leaves.
+    let against = AGAINST_SUN * pow(max(dot(-v, lt.light.sun), 0.0), 8.0) * ao
     let lit = Lit {
         albedo,
         n,
         sun: sun * (0.35 + 0.65 * ao),
         sky: sky * inside,
-        through: through * (0.4 + 0.6 * ao),
+        through: through * (0.4 + 0.6 * ao) * (1.0 + against),
     }
     let rough = leaf_rough(leaf / lt.cam.footprint(max(dot(at - lt.cam.eye, lt.cam.forward), 0.1)))
     let glossy = Lit {
