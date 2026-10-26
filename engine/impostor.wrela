@@ -17,6 +17,7 @@
 
 use light::{Lit, gloss, gloss_occlusion, matte}
 use neural::{Model, eval_gpu, half_at}
+use probes::{oct_dir, oct_of}
 use lod::{draw_packed, keeps_packed}
 use lit::{Lighting, sun_sky_and_gloss, through_air}
 use noise::{cell_size, hash2, hash2u, hashed_threshold_of}
@@ -249,27 +250,6 @@ fn outside_cell(pixel: vec2, view: u32) -> bool {
 /// The deepest a leaf is in its crown that an impostor holds (m).
 const DEEPEST: f32 = 40.0
 
-/// A unit vector folded onto the octahedron and unfolded onto a square, each in [-1, 1].
-fn oct_encode(n: vec3) -> vec2 {
-    let p = n.xz / (abs(n.x) + abs(n.y) + abs(n.z))
-    if n.y >= 0.0 {
-        return p
-    }
-    (vec2(1.0) - abs(vec2(p.y, p.x))) * vec2(if p.x >= 0.0 { 1.0 } else { -1.0 }, if p.y >= 0.0 {
-        1.0
-    } else {
-        -1.0
-    })
-}
-
-fn oct_decode(e: vec2) -> vec3 {
-    let y = 1.0 - abs(e.x) - abs(e.y)
-    let t = max(-y, 0.0)
-    let x = e.x + (if e.x >= 0.0 { -t } else { t })
-    let z = e.y + (if e.y >= 0.0 { -t } else { t })
-    normalize(vec3(x, y, z))
-}
-
 /// A baked leaf's normal and albedo, as `vegetation::leaf_shade` has them: its crown's normal,
 /// its age there and its card's tint (its instance's is added where
 /// it's drawn, `far_shade`); cut where the card has no leaf.
@@ -318,7 +298,7 @@ pub fn bake_normal(
         discard()
     }
     let (n, _) = baked_leaf(f, b, atlas, s)
-    vec4(oct_encode(n), saturate(f.toward * 0.5 + 0.5), saturate(f.depth / DEEPEST))
+    vec4(oct_of(n), saturate(f.toward * 0.5 + 0.5), saturate(f.depth / DEEPEST))
 }
 
 /// What a wood's draws read of an instance's kind (`kind_of` names it): where its cards, their
@@ -616,13 +596,9 @@ pub struct Neural: Copy + GpuData {
 /// No net: every kind's atlas.
 pub const NO_NET = Neural { model: Model { inputs: 1, h1: 1, h2: 1, outputs: 1 } }
 
-/// A `Neural::layer` that stands for every kind (one net read for all: what a net a kind would
-/// cost, measured; their images are the one kind's).
-pub const EVERY_KIND: u32 = 4294967295
-
 /// Whether the kind on atlas layer `layer` is read through the net.
 fn through_net(nn: Neural, layer: u32) -> bool {
-    nn.on != 0 && (layer == nn.layer || nn.layer == EVERY_KIND)
+    nn.on != 0 && layer == nn.layer
 }
 
 /// Feature `k` of the net's grid's cell `(x, y)`.
@@ -753,7 +729,7 @@ fn normal_at<C: Format, N: Format>(
             let at = clamp(vec2u(i + vec2(f32(dx), f32(dy))), lo, hi)
             let covered = w * C::rgba(colour.load(x: at.x, y: at.y, layer: layer)).a
             let nxy = N::rgba(normal.load(x: at.x, y: at.y, layer: layer)).xy * 2.0 - vec2(1.0)
-            n += oct_decode(nxy) * covered
+            n += oct_dir(nxy) * covered
             zw += N::rgba(depth.load(x: at.x, y: at.y, layer: layer)).xy * covered
             coverage += covered
         }
@@ -797,7 +773,7 @@ fn net_seen(nn: Neural, w: [Half2], f: FarVertex, k: u32) -> Seen {
     Seen {
         coverage,
         albedo: own * own,
-        normal: normalize(oct_decode(vec2(t[4], t[5])) + vec3(0.0, 1.0e-4, 0.0)),
+        normal: normalize(oct_dir(vec2(t[4], t[5])) + vec3(0.0, 1.0e-4, 0.0)),
         depth: saturate(t[7]) * DEEPEST,
         toward: saturate(t[6]) * 2.0 - 1.0,
     }
@@ -847,10 +823,8 @@ pub fn far_cut<C: Format + Filtered, N: Format>(
     // The cells of a draw that holds still on the quad (hashed alpha), for its coverage.
     let size = cell_size(f.uv, cell)
     // Most of the quad is empty: left before its leaf's place is read.
-    let (at, view) = cut_view(f, pixel.position.xy, colour, kd.layer, s, size, nn, net)
-    let toward = if through_net(nn, kd.layer) {
-        saturate(net_texel(nn, net, at, view)[6]) * 2.0 - 1.0
-    } else {
+    let (at, view, t) = cut_view(f, pixel.position.xy, colour, kd.layer, s, size, nn, net)
+    let toward = if through_net(nn, kd.layer) { saturate(t[6]) * 2.0 - 1.0 } else {
         normal_at(colour, normal, depth, kd.layer, at, view).1.x * 2.0 - 1.0
     }
     let at = leaf_place(f, cam, kd.bake, toward)
@@ -902,8 +876,8 @@ pub fn far_cut_flat<C: Format + Filtered>(
 
 /// The view a far quad's pixel shows this frame (`view_of`) and the pixel's place in it, the
 /// pixel cut to its share, where it's between two ways (`lod::keeps_packed`), and to that view's
-/// coverage (`cut_dithered`; the net's where it stands for the kind): `far_cut`'s and
-/// `far_cut_flat`'s.
+/// coverage (`cut_dithered`; the net's where it stands for the kind, whose eight values come back
+/// with it, zeros otherwise): `far_cut`'s and `far_cut_flat`'s.
 fn cut_view<C: Format + Filtered>(
     f: FarVertex,
     pixel: vec2,
@@ -913,16 +887,16 @@ fn cut_view<C: Format + Filtered>(
     size: f32,
     nn: Neural,
     net: [Half2],
-) -> (vec2, u32) {
+) -> (vec2, u32, [f32; 8]) {
     if !keeps_packed(f.keep.value, pixel) {
         discard()
     }
     let (at, view) = view_at(f, view_of(f, pixel))
-    let c = if through_net(nn, layer) { saturate(net_texel(nn, net, at, view)[3]) } else {
-        sample_cell(colour, layer, s, at, view).a
-    }
+    let netted = through_net(nn, layer)
+    let t = if netted { net_texel(nn, net, at, view) } else { [0.0; 8] }
+    let c = if netted { saturate(t[3]) } else { sample_cell(colour, layer, s, at, view).a }
     cut_dithered(f, c, size)
-    (at, view)
+    (at, view, t)
 }
 
 /// A far quad's pixel cut where its coverage `c` is under a draw that holds still on the quad

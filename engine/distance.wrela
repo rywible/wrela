@@ -21,7 +21,8 @@ use std::gpu::{
 use std::mem::size_of
 use std::stage::interpret
 use stone::ShapeTape
-use terrain::{Levels, Texel, ground_at, height_at}
+use physique::segment_distance
+use terrain::{Levels, Texel, ground_at}
 
 /// The volume's voxels each way, and a voxel's size (m).
 pub const DISTANCE_DIMS = vec3u(192, 64, 192)
@@ -260,9 +261,7 @@ pub fn distance_normal(g: DistanceGrid, volume: Texture3d<R32Float>, p: vec3) ->
 
 /// The distance from `p` to capsule `c`'s surface.
 fn to_capsule(c: Capsule, p: vec3) -> f32 {
-    let ab = c.b - c.a
-    let t = clamp(dot(p - c.a, ab) / max(dot(ab, ab), 1.0e-8), 0.0, 1.0)
-    length(p - c.a - ab * t) - c.radius
+    segment_distance(p, c.a, c.b) - c.radius
 }
 
 /// A slab of the volume cooked: its texels from z `first` (a dispatch reaches them from z 0, and
@@ -293,8 +292,8 @@ pub fn cook_distance(
     }
     let p = (vec3(w) + vec3(0.5)) * g.voxel
     // The ground: the height above it along its normal (`(y − h) / sqrt(1 + |∇h|²)`).
-    let (n, _, _) = ground_at(levels, texels, p.xz)
-    var dist = min((p.y - height_at(levels, texels, p.xz)) * n.y, DISTANCE_FAR)
+    let (n, _, h) = ground_at(levels, texels, p.xz)
+    var dist = min((p.y - h) * n.y, DISTANCE_FAR)
     let b = vec3u(clamp((w - g.origin) / i32(BIN), vec3i(0), vec3i(BINS) - vec3i(1)))
     let entry = bins[(b.z * BINS.y + b.y) * BINS.x + b.x]
     for i in 0..entry.y {
@@ -422,12 +421,9 @@ impl Distance {
             ),
         )
         let origin = at * i32(BIN) - dims / 2
-        var moved = !self.placed
+        var moved = !self.placed || origin != self.grid.origin
         // A move while a cook is under way cooks it all (what it held isn't all cooked).
         var whole = !self.placed || self.left > 0
-        if self.placed && origin != self.grid.origin {
-            moved = true
-        }
         if let Some(new) = solids {
             self.solids = new.clone()
             whole = true

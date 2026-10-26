@@ -49,9 +49,8 @@ pub struct Resolve: Copy + GpuData {
     /// instrument's ghost control alone (`Frame::ghost`).
     pub unclipped: u32 = 0,
     /// Whether this frame's share comes from the learned rejector (`learned_share`, B14.3:
-    /// `Quality::learned_resolve`), whose net's shape this is, not from the heuristics.
+    /// `Quality::learned_resolve`, its net `REJECTOR`), not from the heuristics.
     pub learned: u32 = 0,
-    pub rejector: Model = REJECTOR,
 }
 
 /// The learned rejector's net (§B14.3c's rung A): the 14 inputs `rejector_inputs` makes, two
@@ -65,7 +64,7 @@ pub const FOUND_FLOATS: u32 = 20
 
 /// A row of `found_rows`.
 pub struct FoundRow: Copy + GpuData {
-    pub v: [f32; 20],
+    pub v: [f32; FOUND_FLOATS],
 }
 
 /// The least share of a frame a settled view's pixel takes: its history is the mean of about
@@ -548,7 +547,7 @@ fn rejector_inputs(f: Found, scene: Texture<Rgba16Float>) -> [f32; 48] {
 /// This frame's share as the learned rejector gives it at what `f` found: the sigmoid of its
 /// net's output (`net`, half floats).
 fn learned_share(f: Found, r: Resolve, scene: Texture<Rgba16Float>, net: [Half2]) -> f32 {
-    1.0 / (1.0 + exp(-eval_gpu(r.rejector, net, rejector_inputs(f, scene))[0]))
+    1.0 / (1.0 + exp(-eval_gpu(REJECTOR, net, rejector_inputs(f, scene))[0]))
 }
 
 /// What `f` found blended: the clipped history and this frame's by this frame's share (the
@@ -586,8 +585,8 @@ pub fn found_rows(
     let (hood, spread) = neighbourhood(scene, nearest(r, px))
     let f = found(px, r, scene, depth, last_depth, motion, last_motion, history, hood, spread, s)
     let x = rejector_inputs(f, scene)
-    var row = FoundRow { v: [0.0; 20] }
-    for k in 0..14 {
+    var row = FoundRow { v: [0.0; FOUND_FLOATS] }
+    for k in 0..REJECTOR.inputs {
         row.v[k] = x[k]
     }
     row.v[14] = to_ycocg(f.current).x

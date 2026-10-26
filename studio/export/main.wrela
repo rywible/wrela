@@ -23,7 +23,7 @@ use std::tool::{ToolError, args}
 use std::tool::drive
 use std::tool::drive::{Scalar, Step}
 use std::tool::toolchain
-use toolkit::driven::untrapped
+use toolkit::driven::{dashed, number, untrapped}
 use toolkit::whole::{chunked, write_file}
 
 pub const USAGE: Text = "usage: wrela tool export -- height <pkg> --out <file.png> [--size <texels>] [--span <m>] [--at <x>,<z>] | path <pkg> --out <file.json> [--scene <name>] [--frames <n>]"
@@ -82,19 +82,6 @@ pub fn parse_args(given: [String]) -> Option<Options> {
     Some(o)
 }
 
-/// `text` with each `/` a `-`: a package's path as a directory's name.
-fn dashed(text: str) -> String {
-    var out = String::new()
-    var from = 0
-    while let Some(i) = text.slice(from, text.len()).find("/") {
-        out.push_str(text.slice(from, from + i))
-        out.push_str("-")
-        from += i + 1
-    }
-    out.push_str(text.slice(from, text.len()))
-    out
-}
-
 /// `pkg` built with its testing exports into `root` and loaded on the CPU, its `init` run.
 fn driven(pkg: str, ws: str, root: str) -> Result<drive::Build, ToolError> {
     let dir = String::from(f"{root}/{dashed(pkg)}")
@@ -115,16 +102,6 @@ fn driven(pkg: str, ws: str, root: str) -> Result<drive::Build, ToolError> {
     let d = drive::load(dir.as_str(), load).wait()?.build
     let _ = untrapped("init", drive::steps(d, [Step::Init], timeout: 600.0).wait()?)?
     Ok(d)
-}
-
-/// A scalar as a number.
-fn number(s: Scalar) -> f64 {
-    match s {
-        Scalar::F32(x) => f64(x),
-        Scalar::I32(x) => f64(x),
-        Scalar::F64(x) => x,
-        Scalar::I64(x) => f64(x),
-    }
 }
 
 /// Each call's results as numbers, from a request of calls.

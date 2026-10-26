@@ -101,12 +101,22 @@ fn sun_past(l: Lighting, world: vec3, n: vec3, soft: f32, shade: f32) -> f32 {
 /// facing `n` (`local_at`).
 pub fn sun_and_sky(l: Lighting, world: vec3, n: vec3, sky_n: vec3, soft: f32) -> (f32, vec3) {
     let shade = cloud_shadow(l.clouds, l.cloud, l.s, world)
-    let sky = match cascaded_at(l.ambient, l.ao, world) {
-        Some(e) => e,
-        None => sky_light(l.grid, l.probes, l.s, l.grounds, l.seen, l.light, world, sky_n, shade) *
-            ambient_at(l, world),
-    }
+    let sky = sky_at(
+        l,
+        world,
+        sky_light(l.grid, l.probes, l.s, l.grounds, l.seen, l.light, world, sky_n, shade),
+    )
     (sun_past(l, world, n, soft, shade), sky + local_at(l, world, n))
+}
+
+/// The sky's light that reaches `world`, the probes' being `sky`: the radiance cascades', where
+/// they left it (`ambient::cascaded_at`: it holds its own occlusion), or `sky` dimmed by what's
+/// near it (`ambient_at`). Every surface's sky term goes through here.
+pub fn sky_at(l: Lighting, world: vec3, sky: vec3) -> vec3 {
+    match cascaded_at(l.ambient, l.ao, world) {
+        Some(e) => e,
+        None => sky * ambient_at(l, world),
+    }
 }
 
 /// The local lights' light on a surface at `world` facing `n` (`lights::shed`).
@@ -154,12 +164,11 @@ pub fn sun_sky_and_gloss(
         r,
         shade,
     )
-    // The radiance cascades' light, where they left it, holds its own occlusion.
-    let lit_sky = match cascaded_at(l.ambient, l.ao, world) {
-        Some(e) => e,
-        None => sky * ambient_at(l, world),
-    }
-    (sun_past(l, shadow_at, n, soft, shade), lit_sky + local_at(l, world, n), reflected)
+    (
+        sun_past(l, shadow_at, n, soft, shade),
+        sky_at(l, world, sky) + local_at(l, world, n),
+        reflected,
+    )
 }
 
 /// What a surface at `world` facing `n` of roughness `rough` reflects toward the eye, given the

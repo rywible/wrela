@@ -82,22 +82,22 @@ pub struct Measured: Clone {
 
 /// A driven build, the frames it has run, and the keys pressed so far (a script's frames count
 /// from the build's first: each step is given all of them).
-struct Driven {
-    b: drive::Build,
-    script: Script,
-    frame: u32,
-    width: u32,
+pub struct Driven {
+    pub b: drive::Build,
+    pub script: Script,
+    pub frame: u32,
+    pub width: u32,
 }
 
 impl Driven {
     /// `key` pressed on the next frame.
-    fn press(mut self, key: Key) {
+    pub fn press(mut self, key: Key) {
         let script = replace(mut self.script, Script::frames())
         self.script = (take script).press(self.frame + 1, key)
     }
 
     /// The next `n` frames, and the lines they printed.
-    fn run(mut self, n: u32) -> Result<Vec<String>, ToolError> {
+    pub fn run(mut self, n: u32) -> Result<Vec<String>, ToolError> {
         let seen = drive::steps(self.b, [Step::Frames(n, self.script.clone())], timeout: 600.0)
             .wait()?
         self.frame += n
@@ -116,7 +116,7 @@ impl Driven {
     }
 
     /// Frames until one prints `said` (`REFERENCE`, `PLAY`).
-    fn until(mut self, said: str) -> Result<(), ToolError> {
+    pub fn until(mut self, said: str) -> Result<(), ToolError> {
         for _ in 0..ARRIVAL_FRAMES {
             for line in self.run(1)? {
                 if line.as_str().find(said).is_some() {

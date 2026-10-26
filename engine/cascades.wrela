@@ -370,8 +370,9 @@ pub fn resolve(
     }
     // c0's probes, as an upper cascade's are found, at 5 %.
     let (at, w) = upper_probes(lv, depth, cam, vec2(c) + vec2(0.5), dist, 0.05)
+    // The weights are normalized: all 0 where no probe is of this surface.
     var e = vec3(0.0)
-    var total = 0.0
+    var any = false
     for k in 0..4 {
         if w[k] > 0.0 {
             var sum = vec3(0.0)
@@ -382,12 +383,12 @@ pub fn resolve(
                 sum += c0.load(x: t.x, y: t.y).rgb * cosine
             }
             e += sum * w[k]
-            total += w[k]
+            any = true
         }
     }
     // Each direction's share of the sphere (4π over their count) over π.
     let k = 4.0 / f32(lv.dirs * lv.dirs)
-    out.store(id, if total > 0.0 { vec4(e / total * k, dist) } else { vec4(-1.0) })
+    out.store(id, if any { vec4(e * k, dist) } else { vec4(-1.0) })
 }
 
 /// The cascades' textures, three used in turn (each cascade's is about half the scene each way,

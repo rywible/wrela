@@ -50,7 +50,7 @@ use std::tool::time
 use std::time::now
 use std::tool::serve
 use std::tool::toolchain
-use toolkit::driven::untrapped
+use toolkit::driven::{dashed, untrapped}
 use toolkit::page::{keep_results, run_page}
 use toolkit::whole::{chunked, read_file, write_file}
 
@@ -199,18 +199,6 @@ pub fn machine_in(d: std::json::Doc, agent: bool) -> String {
     out
 }
 
-/// `text`'s parts between `sep`s, joined by dashes.
-fn dashed(text: str, sep: str) -> String {
-    var out = String::new()
-    for (a, b) in text.split(sep) {
-        if out.len() > 0 {
-            out.push_str("-")
-        }
-        out.push_str(text.slice(a, b))
-    }
-    out
-}
-
 /// `text` as a file's name: its letters, digits and dots, each run of anything else one dash.
 pub fn slug_of(text: str) -> String {
     var out = String::new()
@@ -233,7 +221,7 @@ pub fn slug_of(text: str) -> String {
 
 /// Where package `pkg` (the workspace's) is built for the bench, in the write root `out`.
 fn build_dir(out: str, pkg: str) -> String {
-    String::from(f"{out}/builds/{dashed(pkg, "/")}")
+    String::from(f"{out}/builds/{dashed(pkg)}")
 }
 
 /// A test-mode page's hash: `frames` frames at `w` × `h` on `workers` workers, its input

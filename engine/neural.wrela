@@ -153,10 +153,7 @@ pub fn backward(
 /// from `seed`), its biases 0.
 pub fn start(m: Model, seed: u32) -> Vec<f32> {
     let o = m.offsets()
-    var w: Vec<f32> = Vec::with_capacity(m.size())
-    for _ in 0..m.size() {
-        w.push(0.0)
-    }
+    var w: Vec<f32> = Vec::filled(m.size(), 0.0)
     spread(mut w, seed * 7919 + 1, o[0], m.h1 * m.inputs, m.inputs)
     spread(mut w, seed * 7919 + 2, o[2], m.h2 * m.h1, m.h1)
     spread(mut w, seed * 7919 + 3, o[4], m.outputs * m.h2, m.h2)
@@ -182,13 +179,7 @@ pub struct Adam: Clone {
 
 impl Adam {
     pub fn new(size: u32, rate: f32) -> Adam {
-        var mean: Vec<f32> = Vec::with_capacity(size)
-        var square: Vec<f32> = Vec::with_capacity(size)
-        for _ in 0..size {
-            mean.push(0.0)
-            square.push(0.0)
-        }
-        Adam { mean, square, steps: 0, rate }
+        Adam { mean: Vec::filled(size, 0.0), square: Vec::filled(size, 0.0), steps: 0, rate }
     }
 
     /// `w` stepped down its gradient `g` (a batch's mean).
@@ -221,10 +212,7 @@ pub fn train_step(
     count: u32,
     loss: Loss,
 ) -> f32 {
-    var g: Vec<f32> = Vec::with_capacity(w.len())
-    for _ in 0..w.len() {
-        g.push(0.0)
-    }
+    var g: Vec<f32> = Vec::filled(w.len(), 0.0)
     var total = 0.0
     var dout: Vec<f32> = Vec::from([0.0; MOST_OUT])
     var none: Vec<f32> = Vec::new()
@@ -349,10 +337,7 @@ fn the_gradient_is_its_finite_differences() {
         let out = eval(m, w, x)
         (out[0] - y[0]) * (out[0] - y[0]) + (out[1] - y[1]) * (out[1] - y[1])
     }
-    var g: Vec<f32> = Vec::new()
-    for _ in 0..m.size() {
-        g.push(0.0)
-    }
+    var g: Vec<f32> = Vec::filled(m.size(), 0.0)
     let p = forward(m, w, x)
     var none: Vec<f32> = Vec::new()
     backward(

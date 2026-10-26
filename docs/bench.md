@@ -858,8 +858,8 @@ machine settled: its frame without any switch 16.65 ms at the start and 16.50–
   held out), written as `content/kit/great_tree_net.wrela` (the great tree: the floor's one tree
   whose kind the fixture bakes).
 - **Time:** the great tree alone through its net: the GPU frame 16.64 ms against 16.65 (a single
-  tree, too little of the frame to tell). Every kind through the same net (`EVERY_KIND`, a
-  measuring setting whose images are wrong): the vegetation pass **390.0 ms** against 5.4 and the
+  tree, too little of the frame to tell). Every kind through the same net (a measuring
+  setting, `impostor::EVERY_KIND` in be308267, since removed: its images were the one kind's): the vegetation pass **390.0 ms** against 5.4 and the
   GPU frame **421.8 ms** against 16.6. The evaluator is the plain one (`neural::eval_gpu`: each of
   rung D's 3,264 multiply-adds reads its weight from storage and unpacks its half): the plan's
   `vec4h` dot products would cut that several times, not the 50 that 1.3× asks.

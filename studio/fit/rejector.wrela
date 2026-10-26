@@ -3,6 +3,7 @@
 use engine::neural::{Adam, Model, backward, forward, halves, start}
 use engine::noise::rand
 use engine::temporal::{FOUND_FLOATS, REJECTOR}
+use lookbook_tool::quality::{Driven, SAMPLES, SETTLE}
 use lookbook_tool::shots::{PLAY, REFERENCE, SETTLE_FRAMES, choose}
 use std::input::{Key, Script}
 use std::io::print
@@ -14,85 +15,87 @@ use toolkit::driven::untrapped
 use toolkit::whole::{data_bytes, joined}
 
 /// The size the floor is driven at, its lookbook's shot, the frames between two samples, the
-/// pixels asked for a sample, the rows kept of each kind, the reference's frames and the most
-/// frames a reference or play may take to arrive.
+/// pixels asked for a sample and the rows kept of each kind (the reference's settling and frames
+/// are the lookbook instrument's, `SETTLE` and `SAMPLES`).
 const WIDTH: u32 = 1280
 const HEIGHT: u32 = 720
 const SHOT: u32 = 2
 const GAP: u32 = 32
 const ASKED: u32 = 20000
 const KEPT: u32 = 5000
-const SAMPLES: u32 = 64
-const SETTLE: u32 = 64
-const ARRIVAL: u32 = 1200
 
 /// A row: the rejector's 14 inputs, this frame's luma, the clipped history's, the heuristics'
 /// share, the settled view's cap, the truth; and the frame it's of.
 pub const ROW: u32 = 20
 
-/// The driven floor, its frames so far and its keys.
-struct Driven {
-    b: drive::Build,
-    script: Script,
-    frame: u32,
+/// Export `name` called with `args` on the driven floor.
+fn call(d: Driven, name: str, args: take Vec<Scalar>) -> Result<(), ToolError> {
+    let seen = drive::steps(d.b, [Step::Call(String::from(name), take args)]).wait()?
+    let _ = untrapped(name, take seen)?
+    Ok(())
 }
 
-impl Driven {
-    fn press(mut self, key: Key) {
-        let script = std::collections::replace(mut self.script, Script::frames())
-        self.script = (take script).press(self.frame + 1, key)
+/// What the resolve found the last frame at the pixels asked for: `FOUND_FLOATS` a row.
+fn found(d: Driven) -> Result<Vec<f32>, ToolError> {
+    let seen = drive::steps(
+        d.b,
+        [Step::Call(String::from("test_found"), Vec::new()), Step::Buffers],
+    )
+        .wait()?
+    let saw = untrapped("test_found", take seen)?
+    borrow held = saw.buffers[0]
+    let newest = held[held.len() - 1]
+    let read = drive::steps(d.b, [Step::ReadBuffer(newest)]).wait()?
+    var got = untrapped("its rows", take read)?
+    let bytes = joined(data_bytes(got.bytes.remove(0))?)
+    var out: Vec<f32> = Vec::with_capacity(bytes.len() / 4)
+    var i = 0
+    while i + 4 <= bytes.len() {
+        let w = u32(bytes[i]) |
+            (u32(bytes[i + 1]) << 8) |
+            (u32(bytes[i + 2]) << 16) |
+            (u32(bytes[i + 3]) << 24)
+        out.push(bitcast_f32(w))
+        i += 4
     }
+    Ok(out)
+}
 
-    fn run(mut self, n: u32) -> Result<Vec<String>, ToolError> {
-        let seen = drive::steps(self.b, [Step::Frames(n, self.script.clone())], timeout: 600.0)
-            .wait()?
-        self.frame += n
-        var saw = untrapped(f"frame {self.frame}", take seen)?
-        drive::lines(mut saw)
-    }
-
-    fn until(mut self, said: str) -> Result<(), ToolError> {
-        for _ in 0..ARRIVAL {
-            for line in self.run(1)? {
-                if line.as_str().find(said).is_some() {
-                    return Ok(())
-                }
+/// The floor built with its testing exports and driven at `WIDTH` × `HEIGHT`, its shot `SHOT`
+/// chosen and settled, time frozen (F10) and the eye dollying along its look (F11): the
+/// rejector's run's and its check's start.
+fn drive_floor() -> Result<Driven, ToolError> {
+    let dir = "out/fixtures/rejector"
+    var options = toolchain::options()
+    options.testing = true
+    options.optimize = true
+    options.timeout = 600.0
+    let b = toolchain::build("ws/games/last-green", dir, options).wait()?
+    if !b.ok {
+        for d in b.diagnostics {
+            if d.error {
+                print(d.rendered.as_str())
             }
         }
-        Err(ToolError::new(f"it didn't print \"{said}\" within {ARRIVAL} frames"))
+        return Err(ToolError::new("the floor didn't build"))
     }
-
-    fn call(self, name: str, args: take Vec<Scalar>) -> Result<(), ToolError> {
-        let seen = drive::steps(self.b, [Step::Call(String::from(name), take args)]).wait()?
-        let _ = untrapped(name, take seen)?
-        Ok(())
+    var load = drive::gpu()
+    load.width = WIDTH
+    load.height = HEIGHT
+    load.timeout = 600.0
+    var d = Driven {
+        b: drive::load(dir, load).wait()?.build,
+        script: choose(Script::frames(), 1, SHOT),
+        frame: 0,
+        width: WIDTH,
     }
-
-    /// What the resolve found the last frame at the pixels asked for: `FOUND_FLOATS` a row.
-    fn found(self) -> Result<Vec<f32>, ToolError> {
-        let seen = drive::steps(
-            self.b,
-            [Step::Call(String::from("test_found"), Vec::new()), Step::Buffers],
-        )
-            .wait()?
-        let saw = untrapped("test_found", take seen)?
-        borrow held = saw.buffers[0]
-        let newest = held[held.len() - 1]
-        let read = drive::steps(self.b, [Step::ReadBuffer(newest)]).wait()?
-        var got = untrapped("its rows", take read)?
-        let bytes = joined(data_bytes(got.bytes.remove(0))?)
-        var out: Vec<f32> = Vec::with_capacity(bytes.len() / 4)
-        var i = 0
-        while i + 4 <= bytes.len() {
-            let w = u32(bytes[i]) |
-                (u32(bytes[i + 1]) << 8) |
-                (u32(bytes[i + 2]) << 16) |
-                (u32(bytes[i + 3]) << 24)
-            out.push(bitcast_f32(w))
-            i += 4
-        }
-        Ok(out)
-    }
+    let _ = untrapped("init", drive::steps(d.b, [Step::Init], timeout: 600.0).wait()?)?
+    let _ = d.run(SETTLE_FRAMES + 1)?
+    d.press(Key::F10)
+    d.press(Key::F11)
+    let _ = d.run(SETTLE)?
+    d.press(Key::F11)
+    Ok(d)
 }
 
 /// A sample's rows: of the play frame's found rows, those not forced, up to `KEPT` the
@@ -198,40 +201,13 @@ fn trained(rows: [f32], to: u32, steps: u32) -> Vec<f32> {
 /// The rejector's run (main.wrela says how): its rows, the baseline, the rung, and its source if
 /// `out` names a file.
 pub fn rejector(frames: u32, steps: u32) -> Result<(Vec<f32>, Vec<f32>, String), ToolError> {
-    let dir = "out/fixtures/rejector"
-    var options = toolchain::options()
-    options.testing = true
-    options.optimize = true
-    options.timeout = 600.0
-    let b = toolchain::build("ws/games/last-green", dir, options).wait()?
-    if !b.ok {
-        for d in b.diagnostics {
-            if d.error {
-                print(d.rendered.as_str())
-            }
-        }
-        return Err(ToolError::new("the floor didn't build"))
-    }
-    var load = drive::gpu()
-    load.width = WIDTH
-    load.height = HEIGHT
-    load.timeout = 600.0
     let started = std::time::now()
-    var d = Driven {
-        b: drive::load(dir, load).wait()?.build,
-        script: choose(Script::frames(), 1, SHOT),
-        frame: 0,
-    }
-    let _ = untrapped("init", drive::steps(d.b, [Step::Init], timeout: 600.0).wait()?)?
-    let _ = d.run(SETTLE_FRAMES + 1)?
-    d.press(Key::F10)
-    d.press(Key::F11)
-    let _ = d.run(SETTLE)?
-    d.press(Key::F11)
+    var d = drive_floor()?
     var rows: Vec<f32> = Vec::new()
     for k in 0..frames {
         let _ = d.run(GAP)?
-        d.call(
+        call(
+            d,
             "test_found_ask",
             Vec::from(
                 [
@@ -243,7 +219,7 @@ pub fn rejector(frames: u32, steps: u32) -> Result<(Vec<f32>, Vec<f32>, String),
             ),
         )?
         let _ = d.run(1)?
-        let play = d.found()?
+        let play = found(d)?
         // The truth there: the dolly paused, the reference's mean of this frame's luma.
         d.press(Key::Backquote)
         d.press(Key::F12)
@@ -252,7 +228,7 @@ pub fn rejector(frames: u32, steps: u32) -> Result<(Vec<f32>, Vec<f32>, String),
         var truth: Vec<f32> = Vec::filled(ASKED, 0.0)
         for _ in 0..SAMPLES {
             let _ = d.run(1)?
-            let r = d.found()?
+            let r = found(d)?
             for i in 0..ASKED {
                 truth[i] += r[i * FOUND_FLOATS + 14] / f32(SAMPLES)
             }
@@ -310,40 +286,18 @@ pub fn check(source: str) -> Result<f32, ToolError> {
         halves_read.push(std::gpu::Half2 { bits })
     }
     let w = engine::neural::unhalves(halves_read, REJECTOR.size())
-    let dir = "out/fixtures/rejector"
-    var options = toolchain::options()
-    options.testing = true
-    options.optimize = true
-    options.timeout = 600.0
-    let b = toolchain::build("ws/games/last-green", dir, options).wait()?
-    if !b.ok {
-        return Err(ToolError::new("the floor didn't build"))
-    }
-    var load = drive::gpu()
-    load.width = WIDTH
-    load.height = HEIGHT
-    load.timeout = 600.0
-    var d = Driven {
-        b: drive::load(dir, load).wait()?.build,
-        script: choose(Script::frames(), 1, SHOT),
-        frame: 0,
-    }
-    let _ = untrapped("init", drive::steps(d.b, [Step::Init], timeout: 600.0).wait()?)?
-    let _ = d.run(SETTLE_FRAMES + 1)?
-    d.press(Key::F10)
-    d.press(Key::F11)
-    let _ = d.run(SETTLE)?
-    d.press(Key::F11)
-    d.call("test_learned", Vec::from([Scalar::I32(1)]))?
+    var d = drive_floor()?
+    call(d, "test_learned", Vec::from([Scalar::I32(1)]))?
     let _ = d.run(GAP)?
-    d.call(
+    call(
+        d,
         "test_found_ask",
         Vec::from(
             [Scalar::I32(1000), Scalar::I32(7), Scalar::I32(i32(WIDTH)), Scalar::I32(i32(HEIGHT))],
         ),
     )?
     let _ = d.run(1)?
-    let rows = d.found()?
+    let rows = found(d)?
     let _ = drive::close(d.b).wait()
     var worst = 0.0
     var checked = 0

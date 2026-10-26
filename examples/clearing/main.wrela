@@ -73,6 +73,10 @@ fn quality(scale: u32) -> Quality {
         },
         probes: ProbeQuality { moves: 1.0e9, rays: engine::probes::RAYS, again: true },
         arrival: Arrival { on: false },
+        // No fog and no solids of its own: neither the froxel volume nor the distance volume
+        // (each cost it in the frame, B16's bisect, for nothing it shows).
+        fog: false,
+        distance: false,
     }
 }
 

@@ -44,7 +44,7 @@ use std::tool::drive
 use std::input::Script
 use std::tool::drive::{Scalar, Step}
 use std::tool::toolchain
-use toolkit::driven::untrapped
+use toolkit::driven::{number, untrapped}
 use toolkit::whole::{chunked, read_file, write_file}
 
 pub const USAGE: Text = "usage: wrela tool fit -- --net sine --out <content/... or build/....wrela> [--steps n] [--report] | --net impostor [--rungs ABCD] [--steps n] [--batch n] [--seeds n] [--out <content/... or build/....wrela>] | --net rejector [--frames n] [--steps n] [--out <content/... or build/....wrela>] [--check]"
@@ -181,16 +181,6 @@ fn sine(o: Options) -> (Vec<f32>, f32) {
         held += e * e
     }
     (take w, held / 200.0)
-}
-
-/// A scalar as a number.
-fn number(s: Scalar) -> f64 {
-    match s {
-        Scalar::F32(x) => f64(x),
-        Scalar::I32(x) => f64(x),
-        Scalar::F64(x) => x,
-        Scalar::I64(x) => f64(x),
-    }
 }
 
 /// Export `name` called with `args` on `d`: its results.

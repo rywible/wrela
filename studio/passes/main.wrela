@@ -27,7 +27,7 @@ use std::tool::files
 use std::tool::image
 use std::tool::serve
 use std::tool::toolchain
-use toolkit::driven::untrapped
+use toolkit::driven::{dashed, untrapped}
 use toolkit::whole::{chunked, write_file, write_png}
 
 pub const USAGE: Text = "usage: wrela tool passes -- <pkg> --frame <n> [--input <scene>] [--size WxH]"
@@ -350,18 +350,6 @@ fn passes(o: Options) -> Result<(), ToolError> {
     loop {
         let _ = serve::next_post(started.server).wait()?
     }
-}
-
-/// `pkg`'s path, a dash for each slash.
-fn dashed(pkg: str) -> String {
-    var out = String::new()
-    for (a, b) in pkg.split("/") {
-        if out.len() > 0 {
-            out.push_str("-")
-        }
-        out.push_str(pkg.slice(a, b))
-    }
-    out
 }
 
 pub fn tool() -> u32 {

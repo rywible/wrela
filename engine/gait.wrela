@@ -14,6 +14,7 @@
 //   half its stance's travel, so it is under the hip mid-stance, and lifts as far behind.
 
 use creature::{Bone, Skeleton}
+use distance::rigid_inverse
 use present::short_way
 use creature::MAX_BONES
 use sim::{SimState, Transform}
@@ -436,19 +437,6 @@ pub fn between(a: Walker, b: Walker, alpha: f32) -> Walker {
         out.springs[i].pos = mix(a.springs[i].pos, b.springs[i].pos, vec3(alpha))
     }
     out
-}
-
-/// The inverse of a rigid transform.
-fn rigid_inverse(m: mat4) -> mat4 {
-    // The rotation's inverse is its transpose: its rows are the axes.
-    let (x, y, z) = (m[0].xyz, m[1].xyz, m[2].xyz)
-    let p = m[3].xyz
-    mat4(
-        vec4(x.x, y.x, z.x, 0.0),
-        vec4(x.y, y.y, z.y, 0.0),
-        vec4(x.z, y.z, z.z, 0.0),
-        vec4(-dot(x, p), -dot(y, p), -dot(z, p), 1.0),
-    )
 }
 
 /// The rotation `r` about the point `at`.
