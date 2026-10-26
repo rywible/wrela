@@ -18,7 +18,7 @@ use engine::character::{
 }
 use engine::creature::{Creature, MAX_BONES}
 use engine::gait::{between, palette}
-use engine::light::CLAY
+use engine::light::{CLAY, sheen_light}
 use engine::lit::{Lighting, sun_and_gloss, through_air}
 use engine::look::{CreatureLook, Mesh as Tolerance}
 use engine::noise::fbm2
@@ -404,6 +404,11 @@ pub fn garment_shadow(v: VertexIndex, points: [vec4], d: Drawing, view: mat4) ->
 /// The shadow-cloth's colour: all but black, a little cold; and the faint violet its edge
 /// gives off (the licks' colour, much dimmer).
 const COAT = vec3(0.012, 0.012, 0.016)
+
+/// The coat's sheen (`engine::light::sheen_light`): near-black velvet whose folds show, its
+/// sheen a deep violet (B13: **proposed**).
+const SHEEN: f32 = 0.6
+const SHEEN_TINT = vec3(0.08, 0.06, 0.12)
 const GLOW = vec3(0.012, 0.004, 0.03)
 
 /// The garment at a point (`n` its normal, `fold` from a crease's valley to its crest): cloth
@@ -428,7 +433,9 @@ fn coat(lt: Lighting, world: vec3, n: vec3, fold: f32) -> vec3 {
     let away = 1.0 - max(dot(n, v), 0.0)
     let hole = 1.0 - 0.75 * smoothstep(0.45, 0.85, away)
     let c = COAT * light * (1.0 - 0.4 * valley) * hole
-    c + GLOW * smoothstep(0.88, 0.97, away)
+    // Velvet's sheen at its folds' edges, dark in the hood's tunnel as the rest is.
+    let sheen = sheen_light(lt.light, n, v, sky, sun, SHEEN, SHEEN_TINT) * hole
+    c + sheen + GLOW * smoothstep(0.88, 0.97, away)
 }
 
 // ---- the licks of shadow ---------------------------------------------------------------------------
