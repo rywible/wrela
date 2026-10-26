@@ -36,7 +36,7 @@ use paint::{
 }
 use plant::Wind
 use probes::{Baked, Occluder, ProbeGrid, STRIP_COLUMNS, Trace, band}
-use shadow::{Cascade, Kept, Shadows, shadows}
+use shadow::{Cascade, Kept, Shadows, Soft, shadows}
 use sheet::{Scale, pace}
 use sky::{Clouds, MAP_BANDS, NOISE_SLICES, Sky, Weather, new_sky, sky_shade}
 use temporal::{Resolve, held, neighbourhoods, resolve, resolve_gathered}
@@ -766,6 +766,8 @@ pub struct ShadowQuality: Copy {
     pub reach_in: f32 = 60.0,
     pub moving_side: u32 = 1024,
     pub moving_span: f32 = 6.0,
+    /// How the static shadows are softened (`shadow::Soft`; **proposed** `Pcf`).
+    pub soft: Soft = Soft::Pcf,
 }
 
 /// The probes: how far the eye goes from their middle before the next are baked round it (m);
@@ -1660,14 +1662,18 @@ impl<R: Resolver> Frame<R> {
         }
         // A completed strip set swaps its depth map and cascade together: shading uses the new
         // cascade this frame, the moving map and the probes' bake too.
-        sh = shadows(
-            self.light.sun,
-            self.near.cascade(),
-            self.far.cascade(),
-            moving_at: moving_at,
-            moving_span: q.moving_span,
-            moving_side: q.moving_side,
-        )
+        sh = Shadows {
+            soft_pcss: if q.soft == Soft::Pcss { 1 } else { 0 },
+            sun_size: self.light.sun_size,
+            ..shadows(
+                self.light.sun,
+                self.near.cascade(),
+                self.far.cascade(),
+                moving_at: moving_at,
+                moving_span: q.moving_span,
+                moving_side: q.moving_side,
+            ),
+        }
         // Nothing moving casts: the map cleared once is kept.
         let casts = scene.casts_moving()
         if casts || !self.moving_clear {

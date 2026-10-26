@@ -348,6 +348,46 @@ The step's gate (one run each, the 0.9.0 checkout, after B5.5):
 | G-pixels | within 2/255 | B5.1 and B5.3 hold it on the clearing (4 and 1 pixels past 1/255); B5.2 within the Last Green's noise; B5.4's switch is off, its build's schedule moves 4.1% of the clearing's pixels by up to 21/255 |
 | G-stills | | not run per step: the final gate's (B16) |
 
+## 2026-10-26: B6, shadow pages (world-class 2, the 0.9.0 checkout)
+
+**B6a and B6b: built, measured, and set aside** (branch `b6-virtual-shadow-pages`, commit
+`a4c1e9ce`). The static shadows as a virtual shadow map: ten clipmap levels (8 m to 4 km, level
+0 left out: its half-metre pages were drawn again every few steps) of 16 × 16 pages of 128
+texels in a 4096² pool (1,024 pages), pages asked for by the last frame's depth (a marking pass,
+read back) and 384 reserved (the coarsest level whole, each finer level's middle 4 × 4), at most
+16 drawn a frame (64 loading), a tile's box invalidating its pages, two sets so a moving sun's
+next set is drawn beside the one read. Its tests passed (bookkeeping, shadow-stability on a page,
+the frame fixture, the clearing's), and the walk's `shadow pages` p50 was **0.57 ms** (1.5
+asked). It didn't ship, measured in Chrome on the Last Green against B5:
+
+| | B5 | Pages (best of four tunings) |
+|---|---|---|
+| Opening GPU span p50 | 13.27 ms | 16.8 to 18.1 |
+| Walk GPU span p50 | 13.31 | 17.9 to 18.3 |
+| Walk frames over 33 ms of 1,200 | 1 | 56 to 114 |
+| Cold start to playable | 7.3 s | 14 to 25 s |
+
+Two costs, each found by taking the other away: the page table's lookup in every lit pixel (a
+dependent read before the depth samples) took about 3 ms of the opening's frame (with the static
+lookups skipped: vegetation 5.45 → 3.77 ms, terrain 4.83 → 2.94, span 18.1 → 14.8); and a
+page's drawing draws the built things, the banks and the ground whole into every page, and a
+coarse page kilometres of trees, so the reserved set's 384 pages cost several times the
+cascades' 60 strips (choosing the casters once a level or once a 4 × 4 block only moved the cost
+from the choice into the casting). What the plan names for both is what this attempt lacked:
+per-page caster lists from the one bounds list (B5.2's kernel testing each caster against the
+pages to draw), and a lookup cheap enough for a forward renderer's every pixel (a shadow mask
+from the depth, or the table where the fragment's own page is known). The engine keeps its
+cascades.
+
+**B6c, PCSS: a switch, off.** `ShadowQuality::soft` (`Soft::Pcf`, **proposed** default, or
+`Soft::Pcss`): an 8-texel blocker search in the near cascade, the penumbra the sun's 0.53° disc
+(`Light::sun_size`) spreads at the blockers' distance, then 12 taps that wide (Fernando 2005).
+`engine/tests/shadow-pcss`: a blocker 16 m over its receiver casts a 13-texel penumbra, one 1 m
+over it 2 (PCF: 2 and 2). In the opening it costs **0.71 ms** more over the lit passes' p50s
+(vegetation 3.04 → 3.23, terrain 1.99 → 2.26, the creature 1.82 → 2.09; the span 13.27 →
+13.54): over the 0.4 ms asked, so it stays a switch with that number. With `Pcf` the shaders
+compute what they did.
+
 ## Whether D10 holds
 
 The claim (docs/plan-world-class-2.md §0.1, D10, **proposed**): on a MacBook Air M4 in Chrome at

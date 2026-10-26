@@ -222,7 +222,10 @@ impl Planner {
                 // The first optional step runs whatever its size, so a frame always gets on:
                 // once playable, only one no bigger than twice the frame's budget. A kind past
                 // that is cooked a slice at a time; one that isn't would hitch every frame it runs.
-                if std::mem::debug_build() && self.playable && cost > 2.0 * self.budget.playing_us {
+                // (Against the design's budget: a test's or a slow device's smaller one is no
+                // reason to slice what the design's frame holds.)
+                let design = max(self.budget.playing_us, Budget {}.playing_us)
+                if std::mem::debug_build() && self.playable && cost > 2.0 * design {
                     panic(
                         f"a step of work {w.index()} ({cost:.0} µs) is past twice the playing budget: slice it",
                     )

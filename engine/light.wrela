@@ -28,6 +28,9 @@ pub struct Light: Copy + GpuData + Eq {
     pub eye: f32,
     pub horizon: f32,
     pub clay: u32 = 0,
+    /// The sun's angular size (radians: 0.53°), for the width of a shadow's penumbra
+    /// (`shadow::Soft::Pcss`).
+    pub sun_size: f32 = 0.00925,
 }
 
 /// The clay view's albedo (`Light`'s `clay`): a mid grey.
