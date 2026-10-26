@@ -31,8 +31,8 @@ use cook::{Budget, Planner, Work}
 use light::Light
 use lit::Lighting
 use paint::{
-    Develop, Exposure, Look, Metering, bloom_down, bloom_up, dab_map, develop, identity, lines,
-    meter,
+    BLOOM_LEVELS, Develop, Exposure, Look, Metering, bloom_down, bloom_up, dab_map, develop,
+    identity, lines, meter,
 }
 use plant::Wind
 use probes::{Baked, Occluder, ProbeGrid, STRIP_COLUMNS, Trace}
@@ -382,6 +382,19 @@ impl Targets {
 /// The bloom's level `level` for an output `width` × `height`: `2^level` times smaller.
 fn bloom_of(width: u32, height: u32, level: u32) -> Texture<Rgba16Float> {
     texture::<Rgba16Float>(width: max(width >> level, 1), height: max(height >> level, 1))
+}
+
+/// The narrowest a bloom level is drawn (texels).
+const BLOOM_NARROWEST: u32 = 64
+
+/// How many of the bloom's levels an output `width` wide draws: those at least
+/// `BLOOM_NARROWEST` wide, and the first whatever its width.
+fn bloom_levels(width: u32) -> u32 {
+    var n = 1
+    while n < BLOOM_LEVELS && (width >> (n + 1)) >= BLOOM_NARROWEST {
+        n += 1
+    }
+    n
 }
 
 /// A level of the bloom drawn from the one above it (`from`; the first from the output, its
@@ -2441,20 +2454,15 @@ impl<R: Resolver> Frame<R> {
         } else {
             self.pyramid.at.on = 0
         }
-        // The ambient occlusion from this frame's opaque depth, for the next frame's shading (its
-        // slices still in plain rendering, which has no history to gather them).
-        if self.quality.ambient {
-            label("ambient occlusion")
-            let still = Camera { frame: if self.debug.plain { 0 } else { cam.frame }, ..cam }
-            self.ambient.next_at = ambient::build(mut self.ambient.next, self.targets.depth, still)
-        }
+        // The sky joins the pass before it (the creature pass, or the late shading), where nothing
+        // was drawn (its depth doesn't change).
         label("sky")
         let sky = begin_pass_with_depth(
             mut self.targets.scene,
             mut self.targets.depth,
             keep: true,
             keep_depth: true,
-            join: !late,
+            join: true,
         )
         if !scene.sky_instead(sky) {
             draw(
@@ -2472,6 +2480,13 @@ impl<R: Resolver> Frame<R> {
             )
         }
         sky.end()
+        // The ambient occlusion from this frame's opaque depth (the sky's leaves it as it was), for the next frame's shading (its
+        // slices still in plain rendering, which has no history to gather them).
+        if self.quality.ambient {
+            label("ambient occlusion")
+            let still = Camera { frame: if self.debug.plain { 0 } else { cam.frame }, ..cam }
+            self.ambient.next_at = ambient::build(mut self.ambient.next, self.targets.depth, still)
+        }
         let fx = Effects {
             lt,
             view: self.tables.view,
@@ -2688,6 +2703,10 @@ impl<R: Resolver> Frame<R> {
         label("bloom")
         let base = self.metering.base
         borrow s = self.linear
+        // Its levels at least `BLOOM_NARROWEST` wide (a phone's narrowest are a few texels: blur
+        // the levels above already give); the top level's up-sample of the one under it is the
+        // develop's (`paint::develop`'s `below`), not a pass of its own.
+        let levels = bloom_levels(self.width)
         bloom_level(
             mut self.targets.bloom_1,
             self.targets.history,
@@ -2696,33 +2715,40 @@ impl<R: Resolver> Frame<R> {
             base: base,
             exposure: e,
         )
-        bloom_level(
-            mut self.targets.bloom_2,
-            self.targets.bloom_1,
-            s,
-            first: false,
-            base: base,
-            exposure: e,
-        )
-        bloom_level(
-            mut self.targets.bloom_3,
-            self.targets.bloom_2,
-            s,
-            first: false,
-            base: base,
-            exposure: e,
-        )
-        bloom_level(
-            mut self.targets.bloom_4,
-            self.targets.bloom_3,
-            s,
-            first: false,
-            base: base,
-            exposure: e,
-        )
-        bloom_add(mut self.targets.bloom_3, self.targets.bloom_4, s)
-        bloom_add(mut self.targets.bloom_2, self.targets.bloom_3, s)
-        bloom_add(mut self.targets.bloom_1, self.targets.bloom_2, s)
+        if levels > 1 {
+            bloom_level(
+                mut self.targets.bloom_2,
+                self.targets.bloom_1,
+                s,
+                first: false,
+                base: base,
+                exposure: e,
+            )
+        }
+        if levels > 2 {
+            bloom_level(
+                mut self.targets.bloom_3,
+                self.targets.bloom_2,
+                s,
+                first: false,
+                base: base,
+                exposure: e,
+            )
+        }
+        if levels > 3 {
+            bloom_level(
+                mut self.targets.bloom_4,
+                self.targets.bloom_3,
+                s,
+                first: false,
+                base: base,
+                exposure: e,
+            )
+            bloom_add(mut self.targets.bloom_3, self.targets.bloom_4, s)
+        }
+        if levels > 2 {
+            bloom_add(mut self.targets.bloom_2, self.targets.bloom_3, s)
+        }
         phase("present")
         let screen = begin_screen_pass(clear: vec4(0.0, 0.0, 0.0, 1.0))
         fullscreen(
@@ -2732,6 +2758,8 @@ impl<R: Resolver> Frame<R> {
                 self.targets.history,
                 self.targets.depth,
                 glow: self.targets.bloom_1,
+                below: self.targets.bloom_2,
+                levels: levels,
                 dabs: self.targets.dabs,
                 lut: self.grade,
                 s: self.linear,

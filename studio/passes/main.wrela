@@ -90,13 +90,32 @@ pub fn parse_args(given: [String]) -> Option<Options> {
 }
 
 /// One pass of a frame: a render pass, or a run of dispatches outside any; its label, its
-/// pipelines (each once, in order), and how many draws and dispatches it makes.
+/// pipelines (each once, in order), and how many draws and dispatches it makes; and whether
+/// it joins the render pass before it (`std::gpu`'s `join`: it may, that one ended right before
+/// it, and they draw into the same targets), which the host may run as one.
 pub struct Pass: Clone {
     pub render: bool,
     pub label: String,
     pub pipelines: Vec<String>,
     pub draws: u32,
     pub dispatches: u32,
+    pub joined: bool = false,
+}
+
+/// How many of `passes` the GPU runs (a pass that joins the one before it is that one), and
+/// how many of those draw over the whole screen (a `full` triangle's: `full+…`).
+pub fn counted(passes: [Pass]) -> (u32, u32) {
+    var gpu = 0
+    var whole = 0
+    for p in passes {
+        gpu += u32(!p.joined)
+        var full = false
+        for q in p.pipelines {
+            full = full || q.as_str().starts_with("full+")
+        }
+        whole += u32(full && !p.joined)
+    }
+    (gpu, whole)
 }
 
 /// The last frame's passes in `commands`, every command recorded so far: those after the
@@ -113,6 +132,9 @@ pub fn last_frame(commands: [Recorded]) -> Vec<Pass> {
     var out: Vec<Pass> = Vec::new()
     var label = String::new()
     var open: Option<Pass> = None
+    // The targets of the render pass that ended last, if nothing but labels came since.
+    var ended: Option<Vec<std::tool::drive::Bound>> = None
+    var targets: Vec<std::tool::drive::Bound> = Vec::new()
     for i in from..to {
         borrow c = commands[i]
         let kind = c.kind.as_str()
@@ -122,6 +144,11 @@ pub fn last_frame(commands: [Recorded]) -> Vec<Pass> {
             if let Some(p) = replace(mut open, None) {
                 out.push(take p)
             }
+            let joined = match ended {
+                Some(t) => c.groups.x == 1 && same_targets(t, c.bindings),
+                None => false,
+            }
+            targets = c.bindings.clone()
             open = Some(
                 Pass {
                     render: true,
@@ -129,16 +156,20 @@ pub fn last_frame(commands: [Recorded]) -> Vec<Pass> {
                     pipelines: Vec::new(),
                     draws: 0,
                     dispatches: 0,
+                    joined,
                 },
             )
+            ended = None
         } else if kind == "EndPass" || kind == "Present" {
             if let Some(p) = replace(mut open, None) {
                 out.push(take p)
             }
             open = None
+            ended = Some(targets.clone())
         } else if kind.starts_with("Dispatch") ||
             kind.starts_with("Draw") ||
             kind.starts_with("MultiDraw") {
+            ended = None
             let dispatch = kind.starts_with("Dispatch")
             let in_render = match open {
                 Some(p) => p.render,
@@ -183,6 +214,19 @@ pub fn last_frame(commands: [Recorded]) -> Vec<Pass> {
     out
 }
 
+/// Whether two passes' targets are the same textures, levels and layers.
+fn same_targets(a: [std::tool::drive::Bound], b: [std::tool::drive::Bound]) -> bool {
+    if a.len() != b.len() {
+        return false
+    }
+    for k in 0..a.len() {
+        if a[k].handle != b[k].handle || a[k].offset != b[k].offset || a[k].size != b[k].size {
+            return false
+        }
+    }
+    true
+}
+
 /// `passes` as JSON.
 pub fn passes_json(pkg: str, frame: u32, passes: [Pass]) -> String {
     var s = String::from(f"{{\"package\": \"{pkg}\", \"frame\": {frame}, \"passes\": [")
@@ -190,7 +234,7 @@ pub fn passes_json(pkg: str, frame: u32, passes: [Pass]) -> String {
         borrow p = passes[k]
         s.push_str(if k > 0 { ", " } else { "" })
         s.push_str(
-            f"{{\"kind\": \"{if p.render { "render" } else { "compute" }}\", \"label\": \"{p.label}\", \"draws\": {p.draws}, \"dispatches\": {p.dispatches}, \"pipelines\": [",
+            f"{{\"kind\": \"{if p.render { "render" } else { "compute" }}\", \"label\": \"{p.label}\", \"draws\": {p.draws}, \"dispatches\": {p.dispatches}, \"joined\": {p.joined}, \"pipelines\": [",
         )
         for j in 0..p.pipelines.len() {
             s.push_str(if j > 0 { ", " } else { "" })
@@ -297,8 +341,9 @@ fn passes(o: Options) -> Result<(), ToolError> {
     for p in found {
         compute += u32(!p.render)
     }
+    let (gpu, whole) = counted(found)
     print(
-        f"passes: frame {o.frame} of {o.pkg}: {found.len()} passes, {found.len() - compute} render and {compute} compute",
+        f"passes: frame {o.frame} of {o.pkg}: {found.len()} passes, {found.len() - compute} render and {compute} compute; {gpu} on the GPU (a pass that joins the one before is that one), {whole} of them full-screen",
     )
     let started = serve::start(out.as_str()).wait()?
     print(f"passes: the page is {started.origin}/ (the tool serves it until you stop it)")

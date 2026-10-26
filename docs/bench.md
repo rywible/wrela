@@ -273,6 +273,16 @@ last-green-shot --scene last-green-walk --no-native`), the M4 Air, Chrome; pixel
   camera: 40 placements in 64 frames (the test's limit, 5 × 8). Pixels: the clearing's path
   0.23% differ, all but 4 by 1/255.
 
+- **B5.3, fewer passes.** `wrela tool passes` now counts a pass that joins the one before it
+  (`std::gpu`'s `join`, which the host runs as one: the recorder says so in 0.9.0) with that
+  one, and the full-screen ones. The Last Green's walk at frame 300: 28 GPU passes, 15
+  full-screen → **26 and 13** (20 and 11 asked: misses). The sky joins the pass before it (the
+  ambient occlusion's dispatch moves after it); the develop brings the bloom's second level up
+  itself (`bloom_up`'s tent, where a pass added it to the first); levels narrower than 64 texels
+  aren't drawn (none at 1080p). Not done: the lines into the resolve (the resolve reconstructs
+  from four samples an output pixel, each of which would need its line test, at the output's
+  size: four times the lines pass's 0.4 ms), the mist into the froxels (B10), the water's copy
+  scissored (B5.2). The clearing's pixels: one differs, by 1/255.
 - **B5.4, cloud rays (D17): off.** The march at half the dome's size each way (2048 × 640, a
   frame's share 40,960 rays where it was 163,840), put in the dome bilinearly, moves the
   clearing's frame 600 by up to 28/255 (15.5% of pixels differ, 1.2% by more than 2/255: the

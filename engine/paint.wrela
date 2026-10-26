@@ -606,6 +606,8 @@ pub fn develop(
     image: Texture<Rgba16Float>,
     depth: DepthTexture,
     glow: Texture<Rgba16Float>,
+    below: Texture<Rgba16Float>,
+    levels: u32,
     dabs: Texture<Rgba16Float>,
     lut: Texture3d<Rgba8>,
     s: Sampler,
@@ -632,9 +634,20 @@ pub fn develop(
     let q = px * (d.cam.screen / d.out)
     let m = if clay { vec4(0.0) } else { dabs.sample_level(s, q / d.cam.screen) }
     paint = paint * (1.0 + m.r) * vec3(1.0 + 0.25 * m.r, 1.0, 1.0 - 0.3 * m.r) * (1.0 + m.g)
-    // Bloom: the pyramid's top, which holds its levels' light each once (a quarter of it, so as
+    // Bloom: the pyramid's top and the level under it brought up (`bloom_up`'s tent, here rather
+    // than in a pass of its own), which hold the levels' light each once (a quarter of it, so as
     // much light is spread as before).
-    paint += glow.sample_level(s, px / d.out).rgb * (look.bloom / f32(BLOOM_LEVELS))
+    let glow_at = px / d.out
+    var bloom = glow.sample_level(s, glow_at).rgb
+    if levels > 1 {
+        let size = vec2(f32(below.width()), f32(below.height()))
+        let at = glow_at * size
+        let t = |dx: f32, dy: f32| below.sample_level(s, (at + vec2(dx, dy)) / size).rgb
+        bloom += (t(-1.0, -1.0) + t(1.0, -1.0) + t(-1.0, 1.0) + t(1.0, 1.0)) * 0.0625 +
+            (t(0.0, -1.0) + t(-1.0, 0.0) + t(1.0, 0.0) + t(0.0, 1.0)) * 0.125 +
+            t(0.0, 0.0) * 0.25
+    }
+    paint += bloom * (look.bloom / f32(BLOOM_LEVELS))
     var c = graded(tone(paint, exposure[0].value), lut, s, look.grade)
     if clay {
         return vec4(c, 1.0)

@@ -1,7 +1,7 @@
 // The pass viewer's own logic: the command line, and the last frame's passes from what a
 // driven build recorded.
 
-use main::{last_frame, parse_args, record}
+use main::{counted, last_frame, parse_args, record}
 use std::tool::files
 use std::tool::drive::Recorded
 
@@ -82,6 +82,41 @@ fn the_last_frames_passes_are_its_labels_in_order() {
             p[1].pipelines.len() == 2,
     )
     assert(p[2].render && p[2].draws == 1)
+}
+
+/// A pass that may join the one before it, begun right after that one ended (labels between
+/// are nothing) on the same targets, is the same pass on the GPU; one on other targets, or
+/// after a dispatch, isn't.
+@test
+fn a_joined_pass_is_counted_with_the_one_before() {
+    let target = |t: u32, join: bool| {
+        var r = rec("BeginPass", "", "")
+        r.groups = vec3u(u32(join), 1, 0)
+        r.bindings = Vec::from([std::tool::drive::Bound { handle: t, offset: 0, size: 0 }])
+        take r
+    }
+    let frame = [
+        target(7, false),
+        rec("Draw", "", "full+sky"),
+        rec("EndPass", "", ""),
+        rec("Label", "creature", ""),
+        target(7, true),
+        rec("Draw", "", "character"),
+        rec("EndPass", "", ""),
+        target(8, true),
+        rec("Draw", "", "full+copy"),
+        rec("EndPass", "", ""),
+        rec("Dispatch", "", "meter"),
+        target(8, true),
+        rec("Draw", "", "water"),
+        rec("EndPass", "", ""),
+        rec("Present", "", ""),
+    ]
+    let p = last_frame(frame)
+    assert(p.len() == 5, f"{p.len()} passes")
+    assert(!p[0].joined && p[1].joined && !p[2].joined && !p[4].joined)
+    let (gpu, whole) = counted(p)
+    assert(gpu == 4 && whole == 2, f"{gpu} on the GPU, {whole} full-screen")
 }
 
 /// The pass viewer on a small program (examples/hello-field's third frame) writes a page that
