@@ -328,6 +328,23 @@ fn resolved(
             }
         }
     }
+    // Dilated motion (FSR 2's): the nearest surface's within the 3 × 3 round the nearest sample,
+    // where it moves, so a moving thing's edge is reprojected as it moves, not as what's behind
+    // it (which a sample's own motion says once the edge has passed over it).
+    var nearest_z = z
+    for dy in 0..3 {
+        for dx in 0..3 {
+            let p = clamp(near + vec2i(dx - 1, dy - 1), vec2i(0), lim)
+            let d = depth.load(x: u32(p.x), y: u32(p.y))
+            if d > nearest_z {
+                let m = motion.load(x: u32(p.x), y: u32(p.y))
+                if m.z > 0.5 {
+                    nearest_z = d
+                    moved = m
+                }
+            }
+        }
+    }
     // A pixel whose nearest sample doesn't move takes none of the moving samples: a creature's
     // colour in a pixel of the ground would trail once the creature walked on, as the pixel's
     // history says the ground. (A moving thing's own pixels take every sample, so its edge
