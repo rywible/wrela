@@ -1,13 +1,14 @@
 // The bench tool's tests: its command line, its statistics, its reading of a page's GPU timings
 // and its report, written as a later `--compare` reads it and as docs/bench.md shows it.
 
-use main::{chosen, measure, parse_args}
+use main::{by_hand, chosen, into_devices, lan_url, machine_in, measure, parse_args, posted, slug_of}
 use report::{
     hitches, Measured, Stats, compared, date_of, doc, intervals, markdown, report_json, spans,
     stats, time_of,
 }
 use scenes::{SCENES, Scene, script}
 use std::tool::files
+use std::tool::serve
 
 fn texts(lines: [Text]) -> Vec<String> {
     var out: Vec<String> = Vec::new()
@@ -203,4 +204,112 @@ fn the_memory_shares_line_is_read() {
     assert(sh[0].0.as_str() == "held" && sh[0].1 == 902000000.0)
     assert(sh[2].0.as_str() == "leaves' atlas" && sh[2].1 == 4194304.0)
     assert(report::shares_of("playable at frame 80").is_empty())
+}
+
+/// `--lan` serves the pages to a device instead of running them here, so the native run, this
+/// machine's, is skipped; `--row` takes its row whole.
+@test
+fn the_command_line_serves_the_lan_and_takes_a_row() {
+    let Some(o) = parse_args(texts(["--lan", "--scene", "last-green-walk"])) else { panic("--lan") }
+    assert(o.lan && !o.native && o.row.is_empty())
+    let Some(r) = parse_args(
+        texts(["--row", "M1 Air;last-green-walk;16.7;17.1;33.4;2;5400"]),
+    ) else {
+        panic("--row")
+    }
+    assert(r.row.as_str() == "M1 Air;last-green-walk;16.7;17.1;33.4;2;5400" && !r.lan)
+    assert(parse_args(texts(["--row"])).is_none())
+}
+
+/// A device's page has a query of its own for each run, and asks to show its summary.
+@test
+fn a_lan_page_has_its_runs_query_and_shows_its_summary() {
+    let u = lan_url("http://10.0.0.5:8123/", "cold", "#test&frames=360&salt=2")
+    assert(u.as_str() == "http://10.0.0.5:8123/?run=cold#test&frames=360&salt=2&show=1", u.as_str())
+}
+
+/// A row typed from a page's summary lists its machine, scene and five numbers, marked by hand;
+/// one with a number missing or not a number isn't a row.
+@test
+fn a_row_by_hand_has_its_five_numbers_and_says_so() {
+    let Some(line) = by_hand(
+        "Iris Xe laptop; last-green-opening; 16.7; 18.2; 34.0; 3; 6100",
+        "2026-10-26",
+    ) else {
+        panic("the row")
+    }
+    assert(
+        contains(
+            line.as_str(),
+            "- 2026-10-26, Iris Xe laptop, last-green-opening: intervals p50 16.7 / p95 18.2 / p99 34.0 ms, 3 over 33 ms, playable 6100 ms (by hand",
+        ),
+        line.as_str(),
+    )
+    assert(by_hand("M1 Air;walk;16.7;17;33;2", "2026-10-26").is_none())
+    assert(by_hand("M1 Air;walk;16.7;17;fast;2;5400", "2026-10-26").is_none())
+}
+
+/// A device's table goes at the end of "Devices", before the next section; with no "Devices",
+/// one is made at the end.
+@test
+fn a_devices_row_goes_under_devices() {
+    let text = "# Benchmarks\n\n## Devices\n\n- one\n\n## Browsers\n\nChrome\n"
+    let added = into_devices(text, "- two\n")
+    assert(
+        added.as_str() == "# Benchmarks\n\n## Devices\n\n- one\n\n- two\n## Browsers\n\nChrome\n",
+        added.as_str(),
+    )
+    let made = into_devices("# Benchmarks\n", "- two\n")
+    assert(made.as_str() == "# Benchmarks\n## Devices\n\n- two\n", made.as_str())
+}
+
+/// A device's `device.json` names its adapter, and on the LAN its browser too.
+@test
+fn a_device_is_named_by_its_adapter_and_its_browser() {
+    let Ok(d) = doc(
+        "{\"vendor\": \"intel\", \"architecture\": \"xe\", \"description\": \"\", \"agent\": \"Mozilla/5.0 (Windows NT 10.0) Chrome/141.0\"}",
+        "device.json",
+    ) else {
+        panic("the json")
+    }
+    assert(machine_in(d.clone(), agent: false).as_str() == "intel xe")
+    let m = machine_in(d, agent: true)
+    assert(m.as_str() == "intel xe (Mozilla/5.0 (Windows NT 10.0) Chrome/141.0)", m.as_str())
+    // Its report's file is named by it, a slash or a space no more than a dash.
+    let slug = slug_of(m.as_str())
+    assert(slug.as_str() == "intel-xe-Mozilla-5.0-Windows-NT-10.0-Chrome-141.0", slug.as_str())
+    assert(slug_of("apple metal-3 Apple M4").as_str() == "apple-metal-3-Apple-M4")
+}
+
+/// Served to the LAN, a fake site has a URL there; the bench waits until a device has put the
+/// page's `results/DONE`, and reads the run's results and its machine from what was put.
+@test(tool, budget: 60)
+fn the_lan_bench_serves_a_site_and_reads_what_a_device_put() {
+    let dir = "scratch/site"
+    let _ = files::remove_all(dir).wait()
+    let _ = files::make_dirs(f"{dir}/results").wait()
+    let _ = files::write(f"{dir}/index.html", String::from("<!doctype html>").as_bytes()).wait()
+    let Ok(started) = serve::start(dir, lan: true).wait() else { panic("served") }
+    for url in started.lan {
+        assert(url.as_str().starts_with("http://") && url.as_str().ends_with("/"), url.as_str())
+        assert(!contains(url.as_str(), "127.0.0.1"), url.as_str())
+    }
+    // What a device puts: its device and its DONE.
+    let _ = files::write(
+        f"{dir}/results/device.json",
+        String::from(
+            "{\"vendor\": \"apple\", \"architecture\": \"metal-3\", \"description\": \"\", \"agent\": \"Safari\"}",
+        ).as_bytes(),
+    ).wait()
+    let _ = files::write(f"{dir}/results/DONE", String::from("ok").as_bytes()).wait()
+    assert(posted(dir, 5.0).is_ok(), "the device's results")
+    let _ = files::write(
+        f"{dir}/results/DONE",
+        String::from("the adapter was lost").as_bytes(),
+    ).wait()
+    let Err(e) = posted(dir, 5.0) else { panic("a failed page is a failure") }
+    assert(contains(e.message(), "the adapter was lost"), e.message())
+    let _ = files::remove_all(f"{dir}/results").wait()
+    assert(posted(dir, 1.0).is_err(), "no device put anything")
+    let _ = serve::close(started.server).wait()
 }

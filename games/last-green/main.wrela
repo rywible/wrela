@@ -133,6 +133,9 @@ pub struct Floor {
     hearing: sound::Hearing,
     /// What the fight has sounded so far (`climber::sounds`).
     fight_heard: Heard,
+    /// The camera each frame drew from (its eye and where it looks, the world's), once a test
+    /// asks for it (`test_record_path`): the walk's path for `wrela tool export -- path`.
+    path: Option<Vec<(vec3, vec3)>> = None,
 }
 
 pub fn init() -> Floor {
@@ -607,6 +610,13 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     s.stage.feet = feet.xz + o2
     s.stage.heading = heading
     s.frame.draw(mut s.stage, aim)
+    match mut s.path {
+        Some(p) => {
+            let c = s.frame.cam
+            p.push((c.eye + c.origin, c.eye + c.origin + c.forward))
+        },
+        None => {},
+    }
     if !s.ready &&
         s.stage.wood.is_some() &&
         s.stage.fetching.is_empty() &&
@@ -850,6 +860,50 @@ pub fn test_camera(s: Floor) -> CameraReport {
 @testing
 pub fn test_ground(x: f32, z: f32) -> f32 {
     height_at(vec2(x, z))
+}
+
+/// How many heights a row of `test_heights` holds.
+pub const HEIGHT_ROW: u32 = 64
+
+/// A row of the ground's heights (`test_heights`).
+pub struct HeightRow: Copy {
+    pub h: [f32; HEIGHT_ROW],
+}
+
+/// `HEIGHT_ROW` of the ground's heights from (x, z), `step` metres apart along x: a row of the
+/// heightmap `wrela tool export -- height` writes (Part C's brief).
+@testing
+pub fn test_heights(x: f32, z: f32, step: f32) -> HeightRow {
+    var row = HeightRow { h: [0.0; HEIGHT_ROW] }
+    for i in 0..HEIGHT_ROW {
+        row.h[i] = height_at(vec2(x + f32(i) * step, z))
+    }
+    row
+}
+
+/// From now on, each frame's camera kept (`test_path_at`).
+@testing
+pub fn test_record_path(s: mut Floor) {
+    s.path = Some(Vec::new())
+}
+
+/// The camera of the `i`th frame kept (`test_record_path`): its eye, then where it looks (a
+/// metre along its view), the world's; and how many frames were kept (all 0 past the last).
+@testing
+pub fn test_path_at(s: Floor, i: u32) -> PathPoint {
+    match s.path {
+        Some(p) => if i < p.len() {
+            PathPoint { eye: p[i].0, at: p[i].1, kept: p.len() }
+        } else { PathPoint { eye: vec3(0.0), at: vec3(0.0), kept: p.len() } },
+        None => PathPoint { eye: vec3(0.0), at: vec3(0.0), kept: 0 },
+    }
+}
+
+/// A frame's camera on the recorded path (`test_path_at`).
+pub struct PathPoint: Copy {
+    pub eye: vec3,
+    pub at: vec3,
+    pub kept: u32,
 }
 
 /// Whether the floor round the camera's eye has settled: the light round it drawn (`lit`: a

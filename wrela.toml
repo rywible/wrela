@@ -46,6 +46,7 @@ members = [
     "studio/audio",
     "studio/bench",
     "studio/passes",
+    "studio/export",
     "studio/toolkit",
     "studio/listening",
     "studio/lookbook",
@@ -164,6 +165,14 @@ package = "studio/passes"
 read = ["ws=."]
 write = ["out=build/passes"]
 browser = true
+
+# The export tool (studio/export): what Part C's brief takes from a game (`wrela tool export --
+# height|path <pkg> --out <file>`): the floor's ground as a 16-bit PNG, the walk's camera as JSON.
+# It builds the package into build/export and writes where its command line says, in the
+# workspace.
+[tools.export]
+package = "studio/export"
+write = ["ws=.", "out=build/export"]
 
 # The serve tool (studio/serve): a directory of the workspace served to a browser on this
 # machine, its pages' results written into its `results/`.

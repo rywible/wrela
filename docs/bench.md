@@ -433,6 +433,10 @@ MiB come and go during the load (built things realized into room for their whole
 their counts come, the pool's copies as it grew). The walk had no frame over 33 ms (GPU span
 p50 13.27 ms), and the opening none (13.19).
 
+G-pixels (native host, 640×360, B6's `c4df4f16` against B7's `8f49f88c`): the clearing's frames
+are byte for byte the same; the Last Green's differ in 12.9% of pixels by at most 28/255, most by
+1, which is its run-to-run noise (two runs of one build differ by 10 to 12%, at most 28).
+
 ## Whether D10 holds
 
 The claim (docs/plan-world-class-2.md §0.1, D10, **proposed**): on a MacBook Air M4 in Chrome at
@@ -482,6 +486,39 @@ below are judged by their GPU frame against 16.7 ms and their frames over 33 ms.
 - **"At a visual tier that native engines run under 30 fps":** not checked. The other engines'
   scenes (§0.6) are in a sibling repository that doesn't exist yet, so there is no number to
   compare with.
+
+## Devices
+
+Each device D20 names (docs/plan-world-class-2.md §0.5), measured by `wrela tool bench -- --lan`
+(docs/toolchain.md, "Benching another device"): the Last Green's opening and walk and the
+clearing's path at 1080p. A device's tables go here, and so do rows typed by hand from a page's
+`show=1` summary (`--row`).
+
+| Device | Rows | Why |
+|---|---|---|
+| MacBook Air M4 (the reference) | the sections above, from `wrela tool bench` here | |
+| MacBook Air M1, 8 GB | none | not to hand: the work was done on one M4 Air, with no other machine on its network |
+| Intel Iris Xe laptop, Windows 11 (Chrome and Firefox) | none | not to hand, as above |
+| AMD Radeon 780M machine | none | not to hand, as above |
+| iPad Pro, Safari 26 | none | not to hand; and Safari takes no flag for a secure origin, so it needs a released build over HTTPS |
+| An Android phone | none | not to hand |
+
+The procedure was checked on 2026-10-26 by standing a second, headless Chrome 155 on the M4 in
+for a device: a fresh profile, started with `--unsafely-treat-insecure-origin-as-secure` for the
+LAN origin the tool printed (`http://10.0.0.109:<port>`), opening each URL as the tool asked for
+it (`wrela tool bench -- --lan --scene last-green-walk --frames 120 --no-docs`, the walk cut to
+120 frames to check the procedure, not to measure it). Every run put its results; the report
+named the machine `apple metal-3 Apple M4 (Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)
+AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36)`, and its row:
+
+| Scene | GPU span p50 / p95 / p99 ms | Interval p50 / p95 / p99 ms | Over 16.7 / 33 ms | CPU p50 / p95 ms | First frame ms | Playable ms | Pipelines ms | Warm playable ms | GPU peak MiB |
+|---|---|---|---|---|---|---|---|---|---|
+| last-green-walk (120 frames) | 13.34 / 16.92 / 28.28 | 14.88 / 23.56 / 30.95 | 35 / 0 | 4.42 / 5.01 | 671.66 | 12260.68 | 5405.52 | 5115.76 | 878.4 |
+
+Its GPU span is the local bench's (13.27 ms at B7); its cold start is slower (playable 12.3 s
+against 8.2, its pipelines 5.4 s against 3.4) and its warm one a little faster (5.1 s against
+6.0). The stand-in was a Chrome of its own (none of the toolchain's flags, a fresh profile, the
+pages over the LAN address), so this checks the procedure; it isn't a device's row.
 
 ## Other engines on this machine
 

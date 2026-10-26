@@ -1,0 +1,19 @@
+// The export tool's tests: its PNG, byte for byte as zlib's own CRC-32 and Adler-32 make it.
+
+use main::png16
+
+/// Two 16-bit samples in one row: the signature, the header, one stored block and the end, each
+/// chunk's CRC and the stream's Adler-32 those of Python's `zlib`.
+@test
+fn a_png_is_its_bytes() {
+    let want: [u8; 73] = [
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 1, 16, 0,
+        0, 0, 0, 129, 217, 252, 21, 0, 0, 0, 16, 73, 68, 65, 84, 120, 1, 1, 5, 0, 250, 255, 0, 1, 2,
+        255, 254, 3, 11, 2, 1, 6, 144, 33, 25, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+    ]
+    let got = png16(width: 2, height: 1, values: [0x0102, 0xfffe])
+    assert(got.len() == want.len(), f"{got.len()} bytes")
+    for i in 0..want.len() {
+        assert(got[i] == want[i], f"byte {i}: {got[i]}, not {want[i]}")
+    }
+}

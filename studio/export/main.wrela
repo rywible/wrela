@@ -1,0 +1,371 @@
+// The export tool (`wrela tool export`): what Part C's brief (docs/plan-world-class-2.md) takes
+// from a game, so the other engines' scenes (rywible/wrela-others) stand on the same land and
+// walk the same path.
+//
+// ```text
+// wrela tool export -- height <pkg> --out <file.png> [--size <texels>] [--span <m>] [--at <x>,<z>]
+// wrela tool export -- path <pkg> --out <file.json> [--scene <name>] [--frames <n>]
+// ```
+//
+// `height` writes the game's ground (its `test_heights` export: the floor's `height_at`) over a
+// square `span` metres wide centred on `at` (the world's x and z) as a `size`² 16-bit grayscale
+// PNG, its lowest height black and its highest white, with a JSON beside it (the PNG's name,
+// `.json`) saying the square's corner, span and the heights black and white stand for. `path`
+// runs the game on the bench's script for `scene` (studio/bench's scenes) and writes each frame's
+// camera (its eye and a point a metre along its view, the world's: `test_path_at`) as JSON.
+//
+// The package is built into the tool's `out` root with its testing exports and driven on the
+// CPU (`std::tool::drive`): a height is the field's, a camera the game's own, no GPU needed.
+
+use bench_tool::scenes::script
+use std::io::print
+use std::tool::{ToolError, args}
+use std::tool::drive
+use std::tool::drive::{Scalar, Step}
+use std::tool::toolchain
+use toolkit::driven::untrapped
+use toolkit::whole::{chunked, write_file}
+
+pub const USAGE: Text = "usage: wrela tool export -- height <pkg> --out <file.png> [--size <texels>] [--span <m>] [--at <x>,<z>] | path <pkg> --out <file.json> [--scene <name>] [--frames <n>]"
+
+/// What a run exports: `height` or `path`, of a package, where.
+pub struct Options: Clone {
+    pub what: String,
+    pub pkg: String,
+    pub out: String,
+    pub size: u32 = 2048,
+    pub span: f32 = 1000.0,
+    pub at: vec2 = vec2(0.0),
+    pub scene: String = String::from("last-green-walk"),
+    pub frames: u32 = 1260,
+}
+
+/// The options the command line gives, or `None` for a usage error.
+pub fn parse_args(given: [String]) -> Option<Options> {
+    if given.len() < 2 {
+        return None
+    }
+    var o = Options { what: given[0].clone(), pkg: given[1].clone(), out: String::new() }
+    if o.what.as_str() != "height" && o.what.as_str() != "path" {
+        return None
+    }
+    var k = 2
+    while k < given.len() {
+        let a = given[k].as_str()
+        if k + 1 >= given.len() {
+            return None
+        }
+        let v = given[k + 1].clone()
+        if a == "--out" {
+            o.out = take v
+        } else if a == "--size" {
+            o.size = v.as_str().parse_u32()?
+        } else if a == "--span" {
+            o.span = f32(v.as_str().parse_f64()?)
+        } else if a == "--at" {
+            let c = v.as_str().find(",")?
+            let x = v.as_str().slice(0, c).parse_f64()?
+            let z = v.as_str().slice(c + 1, v.len()).parse_f64()?
+            o.at = vec2(f32(x), f32(z))
+        } else if a == "--scene" {
+            o.scene = take v
+        } else if a == "--frames" {
+            o.frames = v.as_str().parse_u32()?
+        } else {
+            return None
+        }
+        k += 2
+    }
+    if o.out.is_empty() || o.size == 0 || o.size % ROW != 0 {
+        return None
+    }
+    Some(o)
+}
+
+/// `text` with each `/` a `-`: a package's path as a directory's name.
+fn dashed(text: str) -> String {
+    var out = String::new()
+    var from = 0
+    while let Some(i) = text.slice(from, text.len()).find("/") {
+        out.push_str(text.slice(from, from + i))
+        out.push_str("-")
+        from += i + 1
+    }
+    out.push_str(text.slice(from, text.len()))
+    out
+}
+
+/// `pkg` built with its testing exports into `root` and loaded on the CPU, its `init` run.
+fn driven(pkg: str, ws: str, root: str) -> Result<drive::Build, ToolError> {
+    let dir = String::from(f"{root}/{dashed(pkg)}")
+    var options = toolchain::options()
+    options.testing = true
+    options.timeout = 600.0
+    let b = toolchain::build(f"{ws}/{pkg}", dir.as_str(), options).wait()?
+    if !b.ok {
+        for d in b.diagnostics {
+            if d.error {
+                print(d.rendered.as_str())
+            }
+        }
+        return Err(ToolError::new(f"{pkg} didn't build"))
+    }
+    var load = drive::cpu()
+    load.timeout = 600.0
+    let d = drive::load(dir.as_str(), load).wait()?.build
+    let _ = untrapped("init", drive::steps(d, [Step::Init], timeout: 600.0).wait()?)?
+    Ok(d)
+}
+
+/// A scalar as a number.
+fn number(s: Scalar) -> f64 {
+    match s {
+        Scalar::F32(x) => f64(x),
+        Scalar::I32(x) => f64(x),
+        Scalar::F64(x) => x,
+        Scalar::I64(x) => f64(x),
+    }
+}
+
+/// Each call's results as numbers, from a request of calls.
+fn called(d: drive::Build, calls: take Vec<Step>, what: str) -> Result<Vec<Vec<f64>>, ToolError> {
+    let seen = untrapped(what, drive::steps(d, calls, timeout: 600.0).wait()?)?
+    var out: Vec<Vec<f64>> = Vec::new()
+    for r in seen.ran {
+        var row: Vec<f64> = Vec::new()
+        for x in r.results {
+            row.push(number(x))
+        }
+        out.push(take row)
+    }
+    Ok(out)
+}
+
+/// How many heights a `test_heights` call gives (its `HEIGHT_ROW`).
+const ROW: u32 = 64
+
+/// How many calls a request carries.
+const BATCH: u32 = 64
+
+/// The ground's heights over the square: `size` rows of `size`, each row along x, the rows from
+/// the square's least z (`test_heights`, `ROW` a call).
+pub fn heights(o: Options, d: drive::Build) -> Result<Vec<f32>, ToolError> {
+    let step = o.span / f32(o.size)
+    let corner = o.at - vec2(o.span * 0.5)
+    var out: Vec<f32> = Vec::with_capacity(o.size * o.size)
+    var calls: Vec<Step> = Vec::new()
+    for j in 0..o.size {
+        for c in 0..o.size / ROW {
+            // A texel's middle.
+            let x = corner.x + (f32(c * ROW) + 0.5) * step
+            let z = corner.y + (f32(j) + 0.5) * step
+            var a: Vec<Scalar> = Vec::new()
+            a.push(Scalar::F32(x))
+            a.push(Scalar::F32(z))
+            a.push(Scalar::F32(step))
+            calls.push(Step::Call(String::from("test_heights"), take a))
+            if calls.len() == BATCH || (j + 1 == o.size && c + 1 == o.size / ROW) {
+                for row in called(d, take calls, "the heights")? {
+                    for h in row {
+                        out.push(f32(h))
+                    }
+                }
+                calls = Vec::new()
+            }
+        }
+    }
+    Ok(out)
+}
+
+// ---- a 16-bit grayscale PNG (stored deflate: no compression) -------------------------------------
+
+/// The CRC-32 table (ISO 3309's polynomial, reflected).
+fn crc_table() -> Vec<u32> {
+    var t: Vec<u32> = Vec::new()
+    for n in 0..256 {
+        var c = n
+        for _ in 0..8 {
+            c = if (c & 1) != 0 { 0xedb88320 ^ (c >> 1) } else { c >> 1 }
+        }
+        t.push(c)
+    }
+    t
+}
+
+/// The CRC-32 of `bytes` (a PNG chunk's type and data).
+fn crc32(table: [u32], bytes: [u8]) -> u32 {
+    var c = 0xffffffff
+    for b in bytes {
+        c = table[(c ^ u32(b)) & 0xff] ^ (c >> 8)
+    }
+    c ^ 0xffffffff
+}
+
+fn push_u32(out: mut Vec<u8>, x: u32) {
+    out.push(u8(x >> 24))
+    out.push(u8((x >> 16) & 0xff))
+    out.push(u8((x >> 8) & 0xff))
+    out.push(u8(x & 0xff))
+}
+
+/// A PNG chunk of type `kind` holding `data`, onto `out`.
+fn chunk(out: mut Vec<u8>, table: [u32], kind: str, data: take Vec<u8>) {
+    push_u32(mut out, data.len())
+    var typed: Vec<u8> = Vec::new()
+    for i in 0..kind.len() {
+        typed.push(kind.byte(i))
+    }
+    var data = take data
+    typed.append(mut data)
+    let crc = crc32(table, typed)
+    out.append(mut typed)
+    push_u32(mut out, crc)
+}
+
+/// `values` (`width` × `height`, rows top to bottom) as a 16-bit grayscale PNG.
+pub fn png16(width: u32, height: u32, values: [u16]) -> Vec<u8> {
+    let table = crc_table()
+    var out: Vec<u8> = Vec::from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+    var head: Vec<u8> = Vec::new()
+    push_u32(mut head, width)
+    push_u32(mut head, height)
+    // 16 bits, grayscale, deflate, adaptive filtering, no interlace.
+    for b in [16, 0, 0, 0, 0] {
+        head.push(u8(b))
+    }
+    chunk(mut out, table, "IHDR", take head)
+    // The rows, each its filter byte (none) then its values big-endian.
+    var raw: Vec<u8> = Vec::with_capacity(height * (1 + 2 * width))
+    for y in 0..height {
+        raw.push(0)
+        for x in 0..width {
+            let v = values[y * width + x]
+            raw.push(u8(v >> 8))
+            raw.push(u8(v & 0xff))
+        }
+    }
+    // A zlib stream of stored blocks (at most 65,535 bytes each), its Adler-32 last.
+    var z: Vec<u8> = Vec::from([0x78, 0x01])
+    var at = 0
+    var a = 1
+    var b = 0
+    for byte in raw {
+        a = (a + u32(byte)) % 65521
+        b = (b + a) % 65521
+    }
+    while at < raw.len() {
+        let n = min(raw.len() - at, 65535)
+        z.push(if at + n == raw.len() { 1 } else { 0 })
+        z.push(u8(n & 0xff))
+        z.push(u8(n >> 8))
+        z.push(u8(!n & 0xff))
+        z.push(u8((!n >> 8) & 0xff))
+        for i in at..at + n {
+            z.push(raw[i])
+        }
+        at += n
+    }
+    push_u32(mut z, (b << 16) | a)
+    chunk(mut out, table, "IDAT", take z)
+    chunk(mut out, table, "IEND", Vec::new())
+    out
+}
+
+fn height(o: Options, ws: str, root: str) -> Result<(), ToolError> {
+    let d = driven(o.pkg.as_str(), ws, root)?
+    let h = heights(o.clone(), d)?
+    let _ = drive::close(d).wait()
+    var lo = 1.0e30
+    var hi = -1.0e30
+    for x in h {
+        lo = min(lo, x)
+        hi = max(hi, x)
+    }
+    let range = max(hi - lo, 1.0e-3)
+    var values: Vec<u16> = Vec::with_capacity(h.len())
+    // Rows top to bottom: the square's greatest z first (its north at the top).
+    for j in 0..o.size {
+        let row = o.size - 1 - j
+        for i in 0..o.size {
+            let x = h[row * o.size + i]
+            values.push(u16(round((x - lo) / range * 65535.0)))
+        }
+    }
+    write_file(f"ws/{o.out}", chunked(png16(o.size, o.size, values)))?
+    let corner = o.at - vec2(o.span * 0.5)
+    let json = o.out.as_str().slice(0, o.out.len() - 4)
+    // The sidecar names the PNG beside it.
+    var from = 0
+    while let Some(i) = o.out.as_str().slice(from, o.out.len()).find("/") {
+        from += i + 1
+    }
+    let name = o.out.as_str().slice(from, o.out.len())
+    let meta = f"{{\"png\": \"{name}\", \"size\": {o.size}, \"span\": {o.span}, \"corner\": [{corner.x}, {corner.y}], \"black\": {lo}, \"white\": {hi}, \"rows\": \"the first row is the square's greatest z\"}}\n"
+    write_file(f"ws/{json}.json", chunked(Vec::from(meta.as_bytes())))?
+    print(
+        f"export: {o.size}² heights over {o.span} m round {o.at}, {lo:.2} to {hi:.2} m, to {o.out}",
+    )
+    Ok(())
+}
+
+fn path(o: Options, ws: str, root: str) -> Result<(), ToolError> {
+    let d = driven(o.pkg.as_str(), ws, root)?
+    let _ = untrapped(
+        "the path's frames",
+        drive::steps(
+            d,
+            [
+                Step::Call(String::from("test_record_path"), Vec::new()),
+                Step::Frames(o.frames, script(o.scene.as_str())),
+            ],
+            timeout: 600.0,
+        ).wait()?,
+    )?
+    var points: Vec<Vec<f64>> = Vec::new()
+    var calls: Vec<Step> = Vec::new()
+    for i in 0..o.frames {
+        calls.push(Step::Call(String::from("test_path_at"), Vec::from([Scalar::I32(i32(i))])))
+        if calls.len() == BATCH || i + 1 == o.frames {
+            for p in called(d, take calls, "the path")? {
+                points.push(p.clone())
+            }
+            calls = Vec::new()
+        }
+    }
+    let _ = drive::close(d).wait()
+    var s = String::from(
+        f"{{\"scene\": \"{o.scene}\", \"fps\": 60, \"frames\": {o.frames}, \"points\": [",
+    )
+    for i in 0..points.len() {
+        s.push_str(if i > 0 { ",\n" } else { "\n" })
+        s.push_str("[")
+        for k in 0..6 {
+            s.push_str(if k > 0 { ", " } else { "" })
+            s.push_str(f"{points[i][k]:.3}")
+        }
+        s.push_str("]")
+    }
+    s.push_str(
+        "\n], \"point\": \"the eye, then a point a metre along its view, the world's x, y, z\"}\n",
+    )
+    write_file(f"ws/{o.out}", chunked(Vec::from(s.as_bytes())))?
+    print(f"export: {points.len()} frames of {o.scene}'s camera to {o.out}")
+    Ok(())
+}
+
+pub fn tool() -> u32 {
+    let Some(o) = parse_args(args()) else {
+        print(USAGE)
+        return 2
+    }
+    let done = if o.what.as_str() == "height" { height(o, "ws", "out") } else {
+        path(o, "ws", "out")
+    }
+    match done {
+        Ok(()) => 0,
+        Err(e) => {
+            print(f"export: {e.message()}")
+            1
+        },
+    }
+}

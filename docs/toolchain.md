@@ -110,7 +110,18 @@ wrela-host --compare-ticks a.ticks b.ticks   # two builds' tick logs: equal, or 
 | `reference`          | Replicas of reference meshes, and how far a surface is from one                                           |
 | `route`, `keys`      | The capybara's fastest runs; its piano keys page                                                          |
 | `release`, `deploy`  | A release, and its deploy (CI does these from `main`)                                                     |
-| `bench`              | What the engine's scenes cost on this machine, in Chrome and natively, added to `docs/bench.md` (`--scene herd`, `--compare out/<report>.json` for a report in build/bench) |
+| `bench`              | What the engine's scenes cost on this machine, in Chrome and natively, added to `docs/bench.md` (`--scene herd`, `--compare out/<report>.json` for a report in build/bench); `--lan` for another device |
+| `export`             | A floor's ground as a 16-bit PNG and its JSON (`height games/last-green --out <file.png>`), a scene's camera path as JSON (`path ... --out <file.json>`): what the other engines' scenes take |
+| `passes`             | A frame's passes and dispatches, in order, as a page |
+
+## Benching another device
+
+`wrela tool bench -- --lan [--scene <name>]...` measures the scenes on a device on this machine's network instead of here. It builds each scene, serves it to the LAN, and prints its four pages' URLs (gpu, play, cold, warm, each with `show=1`); a person opens them on the device in that order, each once the one before has finished, and the warm one twice (the tool says when). The device puts each run's results back, and the report names it by its adapter and its browser's user agent, under `docs/bench.md`'s "Devices". The native run is skipped: it would be this machine's.
+
+1. The device and this machine on one network; note the device's OS, its browser and its version.
+2. WebGPU and `SharedArrayBuffer` need a secure context, which plain HTTP to another machine's address isn't. On Chrome (Windows, Linux, macOS, Android with a desktop's flags page) start it with `--unsafely-treat-insecure-origin-as-secure=http://<ip>:<port>` (the origin the tool printed) and a fresh profile (`--user-data-dir=<dir>`), so the cold start is cold; Safari, iOS and a phone where flags can't be set need the page over HTTPS: a released build is, at the release's worker (CI deploys `main`), and the same hashes open it there with `show=1`, its numbers typed in as step 4 says; a bench build of a branch has no HTTPS serving in this workspace yet.
+3. Open each URL as the tool prints it and let it finish (the page draws its summary when it's done). Run each scene three times; keep the median cold start, as the plan's §B8 says.
+4. A device that can't put its results (a tablet, a phone on a served release page) still shows its summary on the page: type its numbers in, `wrela tool bench -- --row "<machine>;<scene>;<p50>;<p95>;<p99>;<over 33>;<playable ms>"`, which adds a line marked "by hand" under "Devices".
 
 ## What trips agents up
 
