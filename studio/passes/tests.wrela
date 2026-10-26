@@ -1,0 +1,101 @@
+// The pass viewer's own logic: the command line, and the last frame's passes from what a
+// driven build recorded.
+
+use main::{last_frame, parse_args, record}
+use std::tool::files
+use std::tool::drive::Recorded
+
+fn rec(kind: str, label: str, pipeline: str) -> Recorded {
+    Recorded {
+        kind: String::from(kind),
+        label: String::from(label),
+        pipeline: String::from(pipeline),
+        groups: vec3u(0, 0, 0),
+        bindings: Vec::new(),
+        target: String::new(),
+        bytes: Vec::new(),
+    }
+}
+
+@test
+fn the_command_line_names_a_package_and_a_frame() {
+    let a = [
+        String::from("games/last-green"),
+        String::from("--frame"),
+        String::from("300"),
+        String::from("--input"),
+        String::from("last-green-walk"),
+    ]
+    let Some(o) = parse_args(a) else { panic("parses") }
+    assert(
+        o.pkg.as_str() == "games/last-green" &&
+            o.frame == 300 &&
+            o.input.as_str() == "last-green-walk",
+    )
+    assert(parse_args([String::from("games/last-green")]).is_none())
+    assert(
+        parse_args(
+            [
+                String::from("x"),
+                String::from("--frame"),
+                String::from("3"),
+                String::from("--input"),
+                String::from("nowhere"),
+            ],
+        ).is_none(),
+    )
+}
+
+@test
+fn the_last_frames_passes_are_its_labels_in_order() {
+    let frame = [
+        rec("Label", "cook", ""),
+        rec("Dispatch", "", "cook_level"),
+        rec("Dispatch", "", "cook_level"),
+        rec("Label", "scene", ""),
+        rec("BeginPass", "", ""),
+        rec("Draw", "", "ground"),
+        rec("Draw", "", "trees"),
+        rec("EndPass", "", ""),
+        rec("BeginScreenPass", "", ""),
+        rec("Draw", "", "develop"),
+        rec("Present", "", ""),
+    ]
+    var all: Vec<Recorded> = Vec::new()
+    for _ in 0..2 {
+        for r in frame {
+            all.push(r.clone())
+        }
+    }
+    let p = last_frame(all)
+    assert(p.len() == 3)
+    assert(
+        !p[0].render &&
+            p[0].label.as_str() == "cook" &&
+            p[0].dispatches == 2 &&
+            p[0].pipelines.len() == 1,
+    )
+    assert(
+        p[1].render &&
+            p[1].label.as_str() == "scene" &&
+            p[1].draws == 2 &&
+            p[1].pipelines.len() == 2,
+    )
+    assert(p[2].render && p[2].draws == 1)
+}
+
+/// The pass viewer on a small program (examples/hello-field's third frame) writes a page that
+/// lists its passes, each named.
+@test(tool, read: [("ws", "../..")], budget: 300)
+fn the_pass_viewer_writes_a_small_programs_passes() {
+    let a = [String::from("examples/hello-field"), String::from("--frame"), String::from("3")]
+    let Some(o) = parse_args(a) else { panic("parses") }
+    let Ok((found, out)) = record(o, "ws", "scratch") else { panic("hello-field's frame") }
+    assert(found.len() > 0, "a frame with passes")
+    let Ok(bytes) = files::read(f"{out}/index.html").wait() else { panic("the page") }
+    let html = String::from_utf8(take bytes).unwrap_or(String::new())
+    for p in found {
+        assert(html.as_str().find(p.label.as_str()).is_some(), p.label.as_str())
+    }
+    assert(files::stat(f"{out}/passes.json").wait().is_ok())
+}

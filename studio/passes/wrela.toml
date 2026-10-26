@@ -1,0 +1,8 @@
+# The pass viewer (`wrela tool passes`): a frame's passes and dispatches, in order, as a page
+# (main.wrela says how).
+[package]
+name = "passes_tool"
+
+[dependencies]
+toolkit = { workspace = true }
+bench_tool = { workspace = true }

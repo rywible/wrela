@@ -6,6 +6,42 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 
 ## Open
 
+### A driven frame doesn't say its passes' targets or GPU times
+
+- **Needed:** `wrela tool passes` (docs/plan-world-class-2.md §B1.5) shows a frame's passes with their targets (name, format, size), their GPU time, and a thumbnail of what each drew.
+- **What happens:** toolchain 0.8.0's `std::tool::drive` records a frame's commands (`Step::Commands`) with each draw's and dispatch's pipeline and bindings, but a `BeginPass` carries no targets and a `CreateTexture` no format or size. A driven build's GPU timings (its `Load::timing`) aren't given back to the tool, and `Step::Capture` gives only the screen, not a labelled pass's target.
+- **Found:** 2026-10-26, writing `studio/passes`.
+- **Evidence:** `runtime/native/src/tool/drive/child.rs` `Recorded`: only `Dispatch`, `Draw` and the indirect draws fill `pipeline` and `bindings`, and paths fill `target`.
+- **Meanwhile:** the viewer lists each pass's label, its pipelines and its draws or dispatches, with the frame's screen. `wrela profile --worst` gives the labels' GPU times.
+- **Status:** open: a pass's targets in its record, the timings beside the spans (`Ran`), and a `Capture` of a labelled pass.
+
+### A recorded indexed or multi-draw names no pipeline
+
+- **Needed:** the pass viewer names each pass's pipelines (§B1.5).
+- **What happens:** toolchain 0.8.0's recorder (`Recorded::of`) fills `pipeline` and `bindings` for `Draw`, `DispatchIndirect`, `DrawIndirect` and `DrawIndexedIndirect` only; a `DrawIndexed` or `MultiDrawIndirect` comes with an empty pipeline, so the Last Green's terrain and late vegetation passes list none.
+- **Found:** 2026-10-26, the first `wrela tool passes` of the Last Green's frame 300.
+- **Evidence:** `runtime/native/src/tool/drive/child.rs` `Recorded::of`'s match.
+- **Meanwhile:** those passes show their draws with no pipeline.
+- **Status:** fixed in the compiler's 0.8.1 (`every_draw_names_its_pipeline`); this workspace takes it with the pin.
+
+### A tool can't read an input script from its JSON
+
+- **Needed:** `wrela tool passes -- games/last-green --frame 300 --input build/gates/LG_WALK.json`: a gate script's file as a driven build's input.
+- **What happens:** `std::input::Script`'s fields are private and std has no parser for its JSON (runtime/abi `input`'s format), so a tool can only drive a build with a `Script` constant it was compiled with.
+- **Found:** 2026-10-26, writing `studio/passes`.
+- **Evidence:** compiler/std/input.wrela: `Script { json, ticks, last, count }`, built only by its methods.
+- **Meanwhile:** `--input` names one of the bench's scenes (`last-green-walk` is `LG_WALK`), whose script `studio/bench/scenes.wrela` holds.
+- **Status:** open: `Script::from_json(text) -> Option<Script>`.
+
+### A warm page doesn't time its pipelines
+
+- **Needed:** the bench's warm run (§B1.4) reports `warm_pipelines_ms` beside `warm_playable_ms`.
+- **What happens:** test mode writes `results/pipelines.json` only for a salted run (`salt=<n>`), so a warm run, which mustn't be salted, has no pipelines' time.
+- **Found:** 2026-10-26, adding the warm run.
+- **Evidence:** runtime/browser `worker.ts`: `params.salt > 0 ? putResult(base, "pipelines.json", ...) : null`.
+- **Meanwhile:** the warm row's pipelines column is 0, and the report says so.
+- **Status:** open: write `pipelines.json` on every run, its `each` only when salted.
+
 ### A fragment can't say its depth only grows
 
 - **Needed:** the early depth test kept on for a fragment that writes its own depth only further away (or only nearer) than its triangle's: the impostors' leaves and the soft raster's merge (docs/plan-world-class-2.md §A11, §B5.6), which turn early-Z off for their draws today.

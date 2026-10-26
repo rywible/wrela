@@ -45,6 +45,7 @@ members = [
     "studio/courselens/glue",
     "studio/audio",
     "studio/bench",
+    "studio/passes",
     "studio/toolkit",
     "studio/listening",
     "studio/lookbook",
@@ -153,6 +154,14 @@ browser = true
 [tools.bench]
 package = "studio/bench"
 write = ["ws=.", "out=build/bench"]
+browser = true
+
+# The pass viewer (studio/passes): a frame's passes and dispatches, in order, as a page served on
+# this machine (`wrela tool passes -- <pkg> --frame <n>`).
+[tools.passes]
+package = "studio/passes"
+read = ["ws=."]
+write = ["out=build/passes"]
 browser = true
 
 # The serve tool (studio/serve): a directory of the workspace served to a browser on this

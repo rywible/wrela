@@ -1,0 +1,334 @@
+// The pass viewer (`wrela tool passes`, docs/plan-world-class-2.md §B1.5): a frame's passes and
+// dispatch groups, in order, as a page.
+//
+// ```text
+// wrela tool passes -- <pkg> --frame <n> [--input <scene>] [--size WxH]
+// ```
+//
+// It builds the package (`out/<pkg>/build`, its path a dash for each slash), drives it `n` frames
+// on the native host's GPU (`std::tool::drive`), its input the bench's script of `scene` (one of
+// studio/bench's scenes, `last-green-walk` for `LG_WALK`), records the commands, and reads the
+// last frame's: each pass (a render pass by its label, a run of dispatches between two passes
+// by its first label) with the pipelines it uses and how many draws or dispatches it makes. It
+// writes `out/<pkg>/passes.json`, the frame's screen as `screen.png`, and `index.html`, served
+// on a free port (`std::tool::serve`) and printed, to open in a browser.
+//
+// What a driven frame doesn't say yet (docs/toolchain-gaps.md): a pass's targets, its GPU time,
+// or a capture of what it drew. The page has a thumbnail of the frame, not of each pass.
+
+use bench_tool::scenes::{SCENES, script}
+use std::collections::replace
+use std::input::Script
+use std::io::print
+use std::tool::{ToolError, args}
+use std::tool::drive
+use std::tool::drive::{Recorded, Step}
+use std::tool::files
+use std::tool::image
+use std::tool::serve
+use std::tool::toolchain
+use toolkit::driven::untrapped
+use toolkit::whole::{chunked, write_file, write_png}
+
+pub const USAGE: Text = "usage: wrela tool passes -- <pkg> --frame <n> [--input <scene>] [--size WxH]"
+
+/// What a run of the viewer does.
+pub struct Options: Clone {
+    pub pkg: String,
+    pub frame: u32,
+    pub input: String,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// The options the command line gives, or `None` for a usage error.
+pub fn parse_args(given: [String]) -> Option<Options> {
+    var o = Options {
+        pkg: String::new(),
+        frame: 0,
+        input: String::new(),
+        width: 1920,
+        height: 1080,
+    }
+    var k = 0
+    while k < given.len() {
+        let a = given[k].as_str()
+        let value = |k: u32| -> Option<String> {
+            if k + 1 < given.len() { Some(given[k + 1].clone()) } else { None }
+        }
+        if a == "--frame" {
+            o.frame = value(k)?.as_str().parse_u32()?
+            k += 2
+        } else if a == "--input" {
+            let v = value(k)?
+            var known = false
+            for s in SCENES {
+                known = known || s.name == v.as_str()
+            }
+            if !known {
+                return None
+            }
+            o.input = take v
+            k += 2
+        } else if a == "--size" {
+            let v = value(k)?
+            let x = v.as_str().find("x")?
+            o.width = v.as_str().slice(0, x).parse_u32()?
+            o.height = v.as_str().slice(x + 1, v.len()).parse_u32()?
+            k += 2
+        } else if o.pkg.is_empty() && !a.starts_with("--") {
+            o.pkg = String::from(a)
+            k += 1
+        } else {
+            return None
+        }
+    }
+    if o.pkg.is_empty() || o.frame == 0 {
+        return None
+    }
+    Some(o)
+}
+
+/// One pass of a frame: a render pass, or a run of dispatches outside any; its label, its
+/// pipelines (each once, in order), and how many draws and dispatches it makes.
+pub struct Pass: Clone {
+    pub render: bool,
+    pub label: String,
+    pub pipelines: Vec<String>,
+    pub draws: u32,
+    pub dispatches: u32,
+}
+
+/// The last frame's passes in `commands`, every command recorded so far: those after the
+/// second-to-last `Present` (a frame ends with its screen's).
+pub fn last_frame(commands: [Recorded]) -> Vec<Pass> {
+    var presents = Vec::new()
+    for i in 0..commands.len() {
+        if commands[i].kind.as_str() == "Present" {
+            presents.push(i)
+        }
+    }
+    let from = if presents.len() >= 2 { presents[presents.len() - 2] + 1 } else { 0 }
+    let to = if presents.len() >= 1 { presents[presents.len() - 1] + 1 } else { commands.len() }
+    var out: Vec<Pass> = Vec::new()
+    var label = String::new()
+    var open: Option<Pass> = None
+    for i in from..to {
+        borrow c = commands[i]
+        let kind = c.kind.as_str()
+        if kind == "Label" {
+            label = c.label.clone()
+        } else if kind == "BeginPass" || kind == "BeginScreenPass" {
+            if let Some(p) = replace(mut open, None) {
+                out.push(take p)
+            }
+            open = Some(
+                Pass {
+                    render: true,
+                    label: label.clone(),
+                    pipelines: Vec::new(),
+                    draws: 0,
+                    dispatches: 0,
+                },
+            )
+        } else if kind == "EndPass" || kind == "Present" {
+            if let Some(p) = replace(mut open, None) {
+                out.push(take p)
+            }
+            open = None
+        } else if kind.starts_with("Dispatch") ||
+            kind.starts_with("Draw") ||
+            kind.starts_with("MultiDraw") {
+            let dispatch = kind.starts_with("Dispatch")
+            let in_render = match open {
+                Some(p) => p.render,
+                None => false,
+            }
+            if open.is_none() || (dispatch && in_render) {
+                if let Some(p) = replace(mut open, None) {
+                    out.push(take p)
+                }
+                open = Some(
+                    Pass {
+                        render: false,
+                        label: label.clone(),
+                        pipelines: Vec::new(),
+                        draws: 0,
+                        dispatches: 0,
+                    },
+                )
+            }
+            match mut open {
+                Some(p) => {
+                    if dispatch {
+                        p.dispatches += 1
+                    } else {
+                        p.draws += 1
+                    }
+                    var seen = false
+                    for q in p.pipelines {
+                        seen = seen || q.as_str() == c.pipeline.as_str()
+                    }
+                    if !seen && c.pipeline.len() > 0 {
+                        p.pipelines.push(c.pipeline.clone())
+                    }
+                },
+                None => {},
+            }
+        }
+    }
+    if let Some(p) = replace(mut open, None) {
+        out.push(take p)
+    }
+    out
+}
+
+/// `passes` as JSON.
+pub fn passes_json(pkg: str, frame: u32, passes: [Pass]) -> String {
+    var s = String::from(f"{{\"package\": \"{pkg}\", \"frame\": {frame}, \"passes\": [")
+    for k in 0..passes.len() {
+        borrow p = passes[k]
+        s.push_str(if k > 0 { ", " } else { "" })
+        s.push_str(
+            f"{{\"kind\": \"{if p.render { "render" } else { "compute" }}\", \"label\": \"{p.label}\", \"draws\": {p.draws}, \"dispatches\": {p.dispatches}, \"pipelines\": [",
+        )
+        for j in 0..p.pipelines.len() {
+            s.push_str(if j > 0 { ", " } else { "" })
+            s.push_str(f"\"{p.pipelines[j]}\"")
+        }
+        s.push_str("]}")
+    }
+    s.push_str("]}\n")
+    s
+}
+
+/// `passes` as a page: a row each, and the frame's screen.
+pub fn page(pkg: str, frame: u32, passes: [Pass]) -> String {
+    var s = String::from(
+        f"<!doctype html><meta charset=utf-8><title>{pkg}, frame {frame}</title><style>body{{font:14px system-ui;margin:16px;background:#fafafa;color:#222}}table{{border-collapse:collapse}}td,th{{padding:4px 10px;border-bottom:1px solid #ddd;text-align:left;vertical-align:top}}img{{max-width:640px;cursor:zoom-in}}img.big{{max-width:100%}}code{{font-size:12px}}</style><h1>{pkg}, frame {frame}: {passes.len()} passes</h1><p><img src=screen.png onclick=\"this.classList.toggle('big')\"></p><table><tr><th>#</th><th>Kind</th><th>Label</th><th>Draws</th><th>Dispatches</th><th>Pipelines</th></tr>",
+    )
+    for k in 0..passes.len() {
+        borrow p = passes[k]
+        var names = String::new()
+        for q in p.pipelines {
+            names.push_str(f"<code>{q}</code> ")
+        }
+        s.push_str(
+            f"<tr><td>{k}</td><td>{if p.render { "render" } else { "compute" }}</td><td>{p.label}</td><td>{p.draws}</td><td>{p.dispatches}</td><td>{names}</td></tr>",
+        )
+    }
+    s.push_str("</table>\n")
+    s
+}
+
+/// `o`'s frame driven and recorded: its package (in the root `ws`) built into
+/// `<root>/<package, dashed>/build`, and its passes written beside it as `passes.json` and
+/// `index.html` (with `screen.png`, the frame's screen). Its passes, and their directory.
+pub fn record(o: Options, ws: str, root: str) -> Result<(Vec<Pass>, String), ToolError> {
+    let out = String::from(f"{root}/{dashed(o.pkg.as_str())}")
+    let built = String::from(f"{out}/build")
+    var options = toolchain::options()
+    options.timeout = 600.0
+    let b = toolchain::build(f"{ws}/{o.pkg}", built.as_str(), options).wait()?
+    if !b.ok {
+        for d in b.diagnostics {
+            if d.error {
+                print(d.rendered.as_str())
+            }
+        }
+        return Err(ToolError::new(f"{o.pkg} didn't build"))
+    }
+    var load = drive::gpu()
+    load.width = o.width
+    load.height = o.height
+    load.record = true
+    load.timeout = 600.0
+    let d = drive::load(built.as_str(), load).wait()?.build
+    let input = if o.input.is_empty() { Script::frames() } else { script(o.input.as_str()) }
+    let _ = untrapped("init", drive::steps(d, [Step::Init], timeout: 600.0).wait()?)?
+    let _ = untrapped(
+        "the frames",
+        drive::steps(d, [Step::Frames(o.frame, take input)], timeout: 600.0).wait()?,
+    )?
+    // Every command since the build loaded, a step's worth at a time.
+    var all: Vec<Recorded> = Vec::new()
+    loop {
+        let seen = untrapped(
+            "the commands",
+            drive::steps(d, [Step::Commands], timeout: 600.0).wait()?,
+        )?
+        var waiting = 0
+        for c in seen.commands {
+            waiting = c.waiting
+            for r in c.commands {
+                all.push(r.clone())
+            }
+        }
+        if waiting == 0 {
+            break
+        }
+    }
+    var shot = untrapped("the screen", drive::steps(d, [Step::Capture], timeout: 600.0).wait()?)?
+    if shot.captures.len() > 0 {
+        let screen = shot.captures.remove(0)
+        let img = image::Image {
+            width: screen.width,
+            height: screen.height,
+            rgba: take screen.rgba,
+        }
+        write_png(take img, f"{out}/screen.png")?
+    }
+    let _ = drive::close(d).wait()
+    let found = last_frame(all)
+    write_file(
+        f"{out}/passes.json",
+        chunked(Vec::from(passes_json(o.pkg.as_str(), o.frame, found).as_bytes())),
+    )?
+    write_file(
+        f"{out}/index.html",
+        chunked(Vec::from(page(o.pkg.as_str(), o.frame, found).as_bytes())),
+    )?
+    Ok((take found, take out))
+}
+
+fn passes(o: Options) -> Result<(), ToolError> {
+    let (found, out) = record(o.clone(), "ws", "out")?
+    var compute = 0
+    for p in found {
+        compute += u32(!p.render)
+    }
+    print(
+        f"passes: frame {o.frame} of {o.pkg}: {found.len()} passes, {found.len() - compute} render and {compute} compute",
+    )
+    let started = serve::start(out.as_str()).wait()?
+    print(f"passes: the page is {started.origin}/ (the tool serves it until you stop it)")
+    loop {
+        let _ = serve::next_post(started.server).wait()?
+    }
+}
+
+/// `pkg`'s path, a dash for each slash.
+fn dashed(pkg: str) -> String {
+    var out = String::new()
+    for (a, b) in pkg.split("/") {
+        if out.len() > 0 {
+            out.push_str("-")
+        }
+        out.push_str(pkg.slice(a, b))
+    }
+    out
+}
+
+pub fn tool() -> u32 {
+    let Some(o) = parse_args(args()) else {
+        print(USAGE)
+        return 2
+    }
+    match passes(o) {
+        Ok(()) => 0,
+        Err(e) => {
+            print(f"passes: {e.message()}")
+            1
+        },
+    }
+}
