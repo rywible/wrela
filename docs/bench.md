@@ -453,7 +453,7 @@ says "holds", "misses by …" or "not measured: why".
 |---|---|---|---|---|---|---|---|
 | M4 Air | the Last Green's opening | misses by 4.6 (16.62) | misses: 5 of 480 | misses by 13.7 (33.73) | < 5 s: misses by 10.5 (15.5 s; 7.6 to 8.9 s in B14's quieter runs) | misses by 4.8 (7.8 s) | < 512 MiB: misses by 376 (887.9 MiB at its peak) |
 | M4 Air | the Last Green's walk | misses by 6.1 (18.14) | misses: 5 | misses by 5.9 (25.94) | < 5 s: misses by 11.0 (16.0 s) | misses by 5.0 (8.0 s) | < 512 MiB: misses by 350 (861.8 MiB) |
-| M4 Air | the clearing's path | misses by 0.65 (12.65) | misses: 46 of 600 | misses by 21.4 (41.42) | < 5 s: holds in the A/B runs (4.5 to 5.0 s), misses in the full bench's (9.0 s) | holds (1.9 s) | |
+| M4 Air | the clearing's path | misses by 0.43 to 0.65 (12.43 with its volumes off, 12.65 before) | misses: 45 to 46 of 600 | misses by 21.4 (41.42) | < 5 s: holds in the A/B runs (4.5 to 5.0 s), misses in the full bench's (9.0 s) | holds (1.9 s) | |
 | M4 Air | the capybara's run | holds (1.12) | holds (0) | misses by 0.33 (20.33) | < 5 s: holds (first frame 0.17 s; it prints no playable) | holds | |
 | M1 Air 8 GB | the floor | 60 fps: not measured: no M1 to hand | | | < 8 s: not measured | | |
 | Iris Xe laptop | the floor | < 25 ms: not measured: no laptop to hand | over 50 ms = 0: not measured | | | | |
@@ -472,10 +472,13 @@ table is under "2026-10-26: B16" at the end), a sentence each:
 - **The walk misses the same way** (18.1 ms, 5 of 1,200 frames over 33 ms, p99 25.9 ms), its
   hitches what a frame cooks (the hitch table under B16).
 - **The clearing's path misses its GPU frame by 0.65 ms and its hitches by 46.** Bisected
-  (B5 10.2 ms with no frame over 33, B7 10.8, B9c 11.9, B10 12.4, B15 and B16 12.6): the probes'
-  sight, the distance volume and the froxel volume each cost it, though it has no fog. The next
-  lever is the clearing's own quality: the froxel volume and the distance volume off where a
-  scene has no fog and no near solids.
+  (B5 10.2 ms with no frame over 33, B7 10.8, B9c 11.9, B10 12.4, B15 and B16 12.6). Its own
+  switches explain little of it: with the froxel and distance volumes off (it has neither fog nor
+  solids; a950ec70 turns them off for it) it measures 12.43 ms and 45 frames over 33, and with
+  the probes' sight lookups off too, 12.26 and 50. The rest is in code every frame runs whatever
+  the switches say: the shading passes now carry the sight, fog and distance paths and their
+  bindings. The next lever is to build those paths only where a scene's quality asks for them
+  (a `const` per switch, as B11c showed a false constant builds none of a path).
 - **The capybara's run holds** but for a p99 0.33 ms over (the leapling's, a 2 ms frame, is 19.4:
   headless Chrome's pacing).
 - **The M1 Air and the Iris Xe laptop are not measured:** neither was to hand (B8, "Devices").
