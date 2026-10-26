@@ -231,6 +231,8 @@ pub fn round(o: Options) -> u32 {
             out: String::from(f"{out}/lookbook"),
             stills: true,
             capture: false,
+            quality: false,
+            controls: false,
             view: 0,
             width: 1920,
             height: 1080,

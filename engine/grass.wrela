@@ -24,7 +24,7 @@ use light::{Light, Lit}
 use lit::{Lighting, shown, sun_and_gloss, sun_at}
 use noise::{hash2, hash2u, rand}
 use plant::{Wind, sway}
-use probes::{ProbeGrid, sky_light}
+use probes::{ProbeGrid, sky_light_near}
 use sky::{Clouds, cloud_shadow}
 use cull::{Hzb, occluded}
 use std::gpu::{
@@ -230,7 +230,6 @@ pub fn place(
     cloud: Texture<Rgba16Float>,
     linear: Sampler,
     grounds: [f32],
-    seen: [u32],
     stones: [vec4],
     flora: Flora,
     pyramid: Texture<R32Float>,
@@ -319,7 +318,6 @@ pub fn place(
             cloud,
             linear,
             grounds,
-            seen,
             flora,
             mut blades,
             mut flowers,
@@ -358,7 +356,9 @@ pub fn place(
     let ground_n = t.normal
     let root = vec3(xz.x, y + 0.1, xz.y)
     let shade = cloud_shadow(at.clouds, cloud, linear, root)
-    let sky = sky_light(at.grid, probes, linear, grounds, seen, at.light, root, ground_n, shade)
+    // By nearness alone: the sights would be a ninth storage buffer (a lifted build's parameters
+    // take one), and a blade's colour needn't see round a trunk.
+    let sky = sky_light_near(at.grid, probes, linear, grounds, at.light, root, ground_n, shade)
     let _ = blades.push(
         Blade {
             root: vec3(xz.x, y - 0.02, xz.y),
@@ -1063,7 +1063,6 @@ fn under_plant(
     cloud: Texture<Rgba16Float>,
     linear: Sampler,
     grounds: [f32],
-    seen: [u32],
     flora: Flora,
     blades: mut Append<Blade>,
     flowers: mut Append<Flower>,
@@ -1122,7 +1121,7 @@ fn under_plant(
     }
     let root = vec3(xz.x, y - 0.02, xz.y)
     let shade = cloud_shadow(at.clouds, cloud, linear, root)
-    let sky = sky_light(at.grid, probes, linear, grounds, seen, at.light, root, t.normal, shade)
+    let sky = sky_light_near(at.grid, probes, linear, grounds, at.light, root, t.normal, shade)
     let _ = blades.push(
         Blade {
             root,
@@ -1366,7 +1365,6 @@ impl Grass {
         cloud: Texture<Rgba16Float>,
         linear: Sampler,
         grounds: std::gpu::GpuSpan<f32>,
-        seen: std::gpu::GpuSpan<u32>,
         stones: std::gpu::GpuSpan<vec4>,
         pyramid: Texture<R32Float>,
         hzb: Hzb,
@@ -1432,7 +1430,6 @@ impl Grass {
                         cloud,
                         linear,
                         grounds,
-                        seen,
                         stones,
                         flora: flora,
                         pyramid: pyramid,

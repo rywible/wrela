@@ -3,6 +3,7 @@
 // shading reads them, and the whole of it read back. Frame 0 records it all; the tests read the
 // answers once they've come.
 
+use engine::distance::NO_DISTANCE
 use engine::ambient::{Ambient, ao_at, build}
 use engine::view::{Camera, NEAREST, first_camera}
 use std::gpu::{
@@ -119,6 +120,11 @@ pub const POINTS: [vec3; 4] = [
     vec3(0.0, 1.2, -3.0),
 ]
 
+/// No solids' volume: the occlusion is the screen's alone (the volume's cones read open).
+fn no_volume() -> std::gpu::Texture3d<std::gpu::R32Float> {
+    std::gpu::texture3d::<std::gpu::R32Float>(width: 1, height: 1, depth: 1)
+}
+
 pub struct State {
     colour: Texture<Rgba16Float>,
     depth: DepthTexture,
@@ -158,7 +164,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             depth: NEAREST,
         )
         p.end()
-        let a = build(mut s.ao, s.depth, cam)
+        let a = build(mut s.ao, s.depth, cam, NO_DISTANCE, no_volume())
         var out: GpuBuffer<f32> = buffer(POINTS.len())
         dispatch(
             probe.bind(a, s.ao, points: buffer_of(POINTS).items(), out: mut out),
@@ -180,7 +186,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             depth: NEAREST,
         )
         p.end()
-        let a = build(mut ao, depth, near)
+        let a = build(mut ao, depth, near, NO_DISTANCE, no_volume())
         var foot: GpuBuffer<f32> = buffer(1)
         dispatch(
             probe.bind(a, ao, points: buffer_of([CLOSE_FOOT]).items(), out: mut foot),

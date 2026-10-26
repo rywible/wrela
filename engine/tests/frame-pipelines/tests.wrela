@@ -16,8 +16,14 @@ use std::tool::toolchain::Override
 /// identity grading table's kernel, `identity_lut`; 52 since B9: the particles' (`particles`:
 /// `simulate`, `admit`, `groups_of`, `draw_args`, `keys_of`, the sort's `digit_counts`,
 /// `scan_blocks`, `scan_sums`, `add_sums` and `scatter`, `light_particle`, the particles' draw)
-/// and the see-through matter's `composite`, reached, made only when a scene has them).
-const FRAME_PIPELINES: u32 = 52
+/// and the see-through matter's `composite`, reached, made only when a scene has them); 64 since
+/// world-class 2: the probes shifted by whole columns (`shift_probes`, `shift_voxels`, B5.5), the
+/// cloud dome's half-size march brought up (`upsample`, B5.4), the probes' sights (`see`,
+/// `shift_seen`, B9a), the solids' distance volume (`cook_distance`, B9b), the froxel volume
+/// (`inject`, `integrate`, and the sky through it, `sky_fogged`, in place of `sky_shade`, B10),
+/// the radiance cascades (`trace`, `merge`, `resolve`, B14.4) and the resolve's findings
+/// (`found_rows`, B14.3), the last four made only when a frame's quality asks for them.
+const FRAME_PIPELINES: u32 = 64
 
 /// The fixture's pipelines: each one's entry points, `+` between them.
 fn pipelines() -> Vec<String> {

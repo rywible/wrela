@@ -404,7 +404,8 @@ fn the_sky_pass_reads_the_cooked_clouds_and_marches_nothing() {
     var sky: Option<Pipeline> = None
     var march: Option<Pipeline> = None
     for k in 0..ps.len() {
-        if sky.is_none() && ps[k].fragment.as_str() == "sky_shade" {
+        // The sky through the air's froxels (`fog::sky_fogged`, B10).
+        if sky.is_none() && ps[k].fragment.as_str() == "sky_fogged" {
             sky = Some(ps[k].clone())
         }
         // A kernel's entry is its pipeline's first.
@@ -679,7 +680,9 @@ fn a_still_cameras_grass_is_placed_again_only_every_eight_frames() {
     let placed = u32(after[0] - before[0])
     let regridded = after[1] != before[1] || after[2] != before[2] || after[3] != before[3]
     let most = 5 * 8 + if regridded { 5 } else { 0 }
-    print(f"a still camera's grass: {placed} placements in 64 frames (the probes' grid moved: {regridded})")
+    print(
+        f"a still camera's grass: {placed} placements in 64 frames (the probes' grid moved: {regridded})",
+    )
     assert(placed <= most, f"{placed} placements in 64 still frames (at most {most})")
     assert(placed >= 5 * 7, f"{placed} placements in 64 still frames: the rings aren't refreshed")
 }

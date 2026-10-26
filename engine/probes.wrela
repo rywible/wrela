@@ -1072,6 +1072,42 @@ pub fn held_at(
             weight = w
         }
     }
+    held_in(grid, maps, s, g, c, f, weight, k, fk)
+}
+
+/// `held_at` by nearness alone, whatever the grid's `visibility`: what a lookup that can't bind
+/// the sights reads (the grass's placement, whose blades' colour is all it lights).
+pub fn held_near(
+    grid: ProbeGrid,
+    maps: Texture<Rgba16Float>,
+    s: Sampler,
+    xz: vec2,
+    above: f32,
+) -> Held {
+    let g = (xz - grid.corner) / grid.spacing
+    let last = f32(max(grid.cols, 2) - 1)
+    if grid.cols < 2 || g.x < 0.0 || g.y < 0.0 || g.x >= last || g.y >= last {
+        return open_probe(maps)
+    }
+    let (k, lo, hi) = layers_round(above)
+    let c = floor(g)
+    held_in(grid, maps, s, g, c, g - c, 1.0, k, saturate((above - lo) / (hi - lo)))
+}
+
+/// The light at grid point `g` (cell `c`, its sample `f` within it, weighed by `weight`) between
+/// layers `k` and `k + 1` (`fk` of the way): `held_at`'s and `held_near`'s.
+fn held_in(
+    grid: ProbeGrid,
+    maps: Texture<Rgba16Float>,
+    s: Sampler,
+    g: vec2,
+    c: vec2,
+    f: vec2,
+    weight: f32,
+    k: u32,
+    fk: f32,
+) -> Held {
+    let last = f32(max(grid.cols, 2) - 1)
     // The eight round it, weighted by nearness; one inside a solid (which holds no light) left
     // out, and the others' weights grown to make up for it: each layer's four columns, a
     // bilinear sample of each plane of the maps.
@@ -1112,6 +1148,24 @@ pub fn held_at(
         sky: plus(scaled(open.sky, 1.0 - edge), scaled(probed.sky, edge)),
         sun: plus(scaled(open.sun, 1.0 - edge), scaled(probed.sun, edge)),
     }
+}
+
+/// `sky_light` by nearness alone (`held_near`): no sights bound.
+pub fn sky_light_near(
+    grid: ProbeGrid,
+    maps: Texture<Rgba16Float>,
+    s: Sampler,
+    grounds: [f32],
+    light: Light,
+    world: vec3,
+    n: vec3,
+    sun: f32,
+) -> vec3 {
+    if light.sky_test == 1 {
+        return vec3(dot(light.sky_sh, sh_basis(n)))
+    }
+    let h = held_near(grid, maps, s, world.xz, world.y - ground_under(grid, grounds, world.xz))
+    probe_light(h.sky, n) + probe_light(h.sun, n) * sun
 }
 
 /// The sky light at `world` for a surface facing `n`: what a probe there holds (`sky_sh`), its
