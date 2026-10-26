@@ -622,6 +622,10 @@ pub struct Quality: Copy {
     /// Whether sunlit surfaces march a couple of metres toward the sun through the last frame's
     /// screen for the shadows of small things the shadow maps miss (`reflect::contact_shadow`).
     pub contact: bool = true,
+    /// Whether the clouds' dome is marched at half its size each way and put in it bilinearly
+    /// (`sky::Sky::halved`, D17): a quarter of the rays, softer clouds (off: docs/bench.md
+    /// B5.4).
+    pub clouds_halved: bool = false,
 }
 
 impl Quality {
@@ -1124,7 +1128,7 @@ impl<R: Resolver> Frame<R> {
             cascade_moves: 0,
             cast_on: true,
             sky_key: (air, light.sun, light.sun_colour),
-            sky: new_sky(),
+            sky: new_sky(halved: quality.clouds_halved),
             clouds: Clouds {
                 eye: vec3(0.0),
                 phase: 0,

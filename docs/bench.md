@@ -273,6 +273,19 @@ last-green-shot --scene last-green-walk --no-native`), the M4 Air, Chrome; pixel
   camera: 40 placements in 64 frames (the test's limit, 5 × 8). Pixels: the clearing's path
   0.23% differ, all but 4 by 1/255.
 
+- **B5.4, cloud rays (D17): off.** The march at half the dome's size each way (2048 × 640, a
+  frame's share 40,960 rays where it was 163,840), put in the dome bilinearly, moves the
+  clearing's frame 600 by up to 28/255 (15.5% of pixels differ, 1.2% by more than 2/255: the
+  clouds' edges); the light loop's early exit at an optical depth of 4 with its last four
+  samples at twice the step moves it by up to 45/255 (87% differ: the faint scattering octaves
+  see past an optical depth of 4, `exp(-od · 0.3³)`, so they brighten), and an exit that keeps
+  every octave under 2% (an optical depth of 145) never comes before the last sample. Neither
+  holds 2/255, so the frame marches whole as before and the half march is
+  `Quality::clouds_halved`, off, for a device that needs the time (B8). With it off, the
+  clearing's frame 600 still moves (4.1% of pixels, at most 21/255, from frame 40 on), where
+  the step before rebuilt moves 3 pixels by 1/255: the build has one pipeline more (the
+  upsample's), and the load's schedule shifts with it.
+
 ## Whether D10 holds
 
 The claim (docs/plan-world-class-2.md §0.1, D10, **proposed**): on a MacBook Air M4 in Chrome at

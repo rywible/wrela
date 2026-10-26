@@ -64,6 +64,13 @@ pub const TILES_W: u32 = SKY_W / TILE
 pub const PHASES: u32 = 32
 pub const PHASE_TEXELS: u32 = (TILES_W * (SKY_H / TILE) / PHASES) * TILE * TILE
 
+/// A march at half the dome's size each way (`Sky::halved`, D17: off, docs/bench.md B5.4): a
+/// ray for every four of its texels, kept in a dome of its own (`Sky::half`, its tiles
+/// `HALF_TILE` a side, the dome's tiles' halves) and put in the dome bilinearly (`upsample`).
+pub const HALF_W: u32 = SKY_W / 2
+pub const HALF_H: u32 = SKY_H / 2
+pub const HALF_TILE: u32 = TILE / 2
+
 /// How far the dome's rays look for clouds (m), and how far through the layer they march.
 const REACH: f32 = 60000.0
 const THROUGH: f32 = 30000.0
@@ -123,6 +130,8 @@ pub struct Clouds: Copy + GpuData {
     pub drift: vec2,
     pub sight: f32 = -2.0,
     pub round: u32 = 0,
+    /// The march's texels a side of a dome texel: 1, or 2 for the half dome (`Sky::halved`).
+    pub scale: u32 = 1,
 }
 
 /// How many rounds a tile out of sight waits between its marches: it's marched one round in
@@ -564,19 +573,18 @@ fn march(
     vec4(lit * ap.a + ap.rgb * cover, cover)
 }
 
-/// Where the frame's `k`th texel of the dome is: its tile, `k` / `TILE`² of the frame's (the
-/// tiles numbered `phase` modulo `PHASES`), and in it, rows of `TILE`.
+/// Where the frame's `k`th texel of the march is: its tile, `k` / its tile's texels of the
+/// frame's (the tiles numbered `phase` modulo `PHASES`), and in it, rows of `TILE` / `scale`.
 fn phase_texel(c: Clouds, k: u32) -> vec2u {
-    let tile = (k / (TILE * TILE)) * PHASES + c.phase % PHASES
-    let within = k % (TILE * TILE)
-    vec2u(
-        TILE * (tile % TILES_W) + within % TILE,
-        TILE * (tile / TILES_W) + within / TILE,
-    )
+    let side = TILE / c.scale
+    let tile = (k / (side * side)) * PHASES + c.phase % PHASES
+    let within = k % (side * side)
+    vec2u(side * (tile % TILES_W) + within % side, side * (tile / TILES_W) + within / side)
 }
 
-/// The frame's texels of the dome, marched: each blended with what the dome held there, into
-/// `out` (packed: `scatter` puts them in the dome).
+/// The frame's texels of the march's dome (the dome, or the half dome), marched: each blended
+/// with what it held there, into `out` (packed: `scatter` puts them in their dome, and from the
+/// half dome `upsample` puts them in the dome).
 @compute(64)
 pub fn march_dome(
     c: Clouds,
@@ -594,17 +602,24 @@ pub fn march_dome(
     out: mut Slots<vec4>,
     id: GlobalId,
 ) {
+    if id.x >= PHASE_TEXELS / (c.scale * c.scale) {
+        return
+    }
     let t = phase_texel(c, id.x)
     let old = dome.load(x: t.x, y: t.y)
     // A tile out of sight is marched one round in `RESTING`, once the dome is whole: the rest of
     // the time it keeps what it held. Its turn is by its place among its phase's tiles, so each
     // frame marches its share of them (all of a phase's tiles are the same modulo `PHASES`).
-    let tile = (t.y / TILE) * TILES_W + t.x / TILE
-    if c.blend < 1.0 && !in_sight(c, t) && (c.round + tile / PHASES) % RESTING != 0 {
+    let side = TILE / c.scale
+    let tile = (t.y / side) * TILES_W + t.x / side
+    if c.blend < 1.0 &&
+        !in_sight(c, t * vec2u(c.scale)) &&
+        (c.round + tile / PHASES) % RESTING != 0 {
         out[id] = old
         return
     }
-    let uv = (vec2(t) + vec2(0.5)) / vec2(f32(SKY_W), f32(SKY_H))
+    // (Over the dome's size and then scaled: the dome's own march divides as it always did.)
+    let uv = (vec2(t) + vec2(0.5)) / vec2(f32(SKY_W), f32(SKY_H)) * f32(c.scale)
     // Interleaved gradient noise: neighbouring texels' jitters spread evenly, so
     // their errors cancel when the sky pass blends them; moved by the golden ratio each round.
     let ign = fract(52.9829189 * fract(0.06711056 * f32(t.x) + 0.00583715 * f32(t.y)))
@@ -627,9 +642,26 @@ pub fn march_dome(
     out[id] = mix(old, new, vec4(c.blend))
 }
 
-/// The dome's texels the frame marched (`march_dome`), from where they're packed.
+/// The march's texels the frame marched (`march_dome`), from where they're packed, into its
+/// dome.
 @compute(8, 8)
 pub fn scatter(c: Clouds, marched: [vec4], out: mut Texels<Rgba16Float>, id: GlobalId) {
+    if id.x >= SKY_W / c.scale || id.y >= SKY_H / c.scale {
+        return
+    }
+    let side = TILE / c.scale
+    let tile = (id.y / side) * TILES_W + id.x / side
+    if tile % PHASES != c.phase % PHASES {
+        return
+    }
+    out.store(id, marched[(tile / PHASES) * side * side + (id.y % side) * side + id.x % side])
+}
+
+/// The dome's texels of the frame's tiles, from the half dome, bilinearly: round the dome's
+/// seam (its azimuth wraps), held at its top and bottom rows. In the first round a tile's
+/// neighbours aren't marched yet, so it reads only its own texels.
+@compute(8, 8)
+pub fn upsample(c: Clouds, half: Texture<Rgba16Float>, out: mut Texels<Rgba16Float>, id: GlobalId) {
     if id.x >= SKY_W || id.y >= SKY_H {
         return
     }
@@ -637,7 +669,24 @@ pub fn scatter(c: Clouds, marched: [vec4], out: mut Texels<Rgba16Float>, id: Glo
     if tile % PHASES != c.phase % PHASES {
         return
     }
-    out.store(id, marched[(tile / PHASES) * TILE * TILE + (id.y % TILE) * TILE + id.x % TILE])
+    // The texel's middle in the half dome's texels, and the four round it.
+    let p = vec2(f32(id.x), f32(id.y)) * 0.5 - vec2(0.25)
+    let lo = vec2i(floor(p))
+    let f = p - floor(p)
+    let first = c.blend >= 1.0
+    let tile_lo = vec2i(i32(id.x / TILE * HALF_TILE), i32(id.y / TILE * HALF_TILE))
+    let tile_hi = tile_lo + vec2i(i32(HALF_TILE) - 1)
+    var v = [vec4(0.0); 4]
+    for k in 0..4 {
+        var q = lo + vec2i(i32(k & 1), i32(k >> 1))
+        if first {
+            q = clamp(q, tile_lo, tile_hi)
+        } else {
+            q = vec2i((q.x + i32(HALF_W)) % i32(HALF_W), clamp(q.y, 0, i32(HALF_H) - 1))
+        }
+        v[k] = half.load(x: u32(q.x), y: u32(q.y))
+    }
+    out.store(id, mix(mix(v[0], v[1], vec4(f.x)), mix(v[2], v[3], vec4(f.x)), vec4(f.y)))
 }
 
 // ---- shadows ------------------------------------------------------------------------------------
@@ -747,19 +796,27 @@ pub struct Sky {
     pub weather: Texture<Rgba16Float>,
     pub shadow: Texture<Rgba16Float>,
     pub dome: Texture<Rgba16Float>,
+    /// Whether the march is half the dome's size (`HALF_W`; D17); its own dome then (a texel
+    /// otherwise); and its texels marched this frame.
+    pub halved: bool,
+    pub half: Texture<Rgba16Float>,
     pub marched: GpuBuffer<vec4>,
     pub frames: u32,
 }
 
-/// The clouds' textures, uncooked.
-pub fn new_sky() -> Sky {
+/// The clouds' textures, uncooked (`halved`: the march half the dome's size, `Sky::halved`).
+pub fn new_sky(halved: bool = false) -> Sky {
     Sky {
         shape: texture3d::<Rgba16Float>(SHAPE_SIDE, SHAPE_SIDE, SHAPE_SIDE),
         detail: texture3d::<Rgba16Float>(DETAIL_SIDE, DETAIL_SIDE, DETAIL_SIDE),
         weather: writable_texture::<Rgba16Float>(width: WEATHER_SIDE, height: WEATHER_SIDE),
         shadow: writable_texture::<Rgba16Float>(width: SHADOW_SIDE, height: SHADOW_SIDE),
         dome: writable_texture::<Rgba16Float>(width: SKY_W, height: SKY_H),
-        marched: buffer(PHASE_TEXELS),
+        halved,
+        half: if halved { writable_texture::<Rgba16Float>(width: HALF_W, height: HALF_H) } else {
+            writable_texture::<Rgba16Float>(width: 1, height: 1)
+        },
+        marched: buffer(if halved { PHASE_TEXELS / 4 } else { PHASE_TEXELS }),
         frames: 0,
     }
 }
@@ -773,6 +830,7 @@ impl Sky {
             memory::texels(WEATHER_SIDE, WEATHER_SIDE, 8) +
             memory::texels(SHADOW_SIDE, SHADOW_SIDE, 8) +
             memory::texels(SKY_W, SKY_H, 8) +
+            memory::texels(self.half.width(), self.half.height(), 8) +
             u64(self.marched.len()) * u64(size_of::<vec4>())
     }
 
@@ -874,14 +932,17 @@ impl Sky {
             forward,
             sight: cos(min(view + TURN + TILE_RADIUS, PI)),
             round: self.frames / PHASES,
+            scale: if self.halved { 2 } else { 1 },
         }
         label("clouds")
+        let scale = c.scale
+        borrow marching = if self.halved { self.half } else { self.dome }
         dispatch(
             march_dome.bind(
                 c,
                 air,
                 light,
-                self.dome,
+                marching,
                 self.weather,
                 self.shape,
                 self.detail,
@@ -892,17 +953,24 @@ impl Sky {
                 s,
                 out: mut self.marched,
             ),
-            over: PHASE_TEXELS,
+            over: PHASE_TEXELS / (scale * scale),
         )
-        let n = ((SKY_W + 7) / 8, (SKY_H + 7) / 8, 1)
-        dispatch(
-            scatter.bind(
-                c,
-                marched: self.marched.span(start: 0, count: PHASE_TEXELS),
-                out: mut self.dome,
-            ),
-            groups: n,
-        )
+        let groups = ((SKY_W / scale + 7) / 8, (SKY_H / scale + 7) / 8, 1)
+        if self.halved {
+            dispatch(
+                scatter.bind(c, marched: self.marched.items(), out: mut self.half),
+                groups: groups,
+            )
+            dispatch(
+                upsample.bind(c, half: self.half, out: mut self.dome),
+                groups: ((SKY_W + 7) / 8, (SKY_H + 7) / 8, 1),
+            )
+        } else {
+            dispatch(
+                scatter.bind(c, marched: self.marched.items(), out: mut self.dome),
+                groups: groups,
+            )
+        }
         self.frames += 1
         c
     }
@@ -952,23 +1020,37 @@ fn cloud_view_intervals_resolve_grazing_skins_with_bounded_work() {
 fn cloud_dome_phases_cover_each_texel_once_without_partial_tiles() {
     assert(SKY_W % TILE == 0 && SKY_H % TILE == 0, "cloud dome ends in a partial tile")
     assert(PHASE_TEXELS * PHASES == SKY_W * SKY_H, "cloud dome phases leave unvisited texels")
-    var c = Clouds {
-        eye: vec3(0.0),
-        phase: 0,
-        sun: vec3(0.0, 1.0, 0.0),
-        blend: 1.0,
-        drift: vec2(0.0),
-        seed: 0,
-    }
-    for phase in 0..PHASES {
-        c.phase = phase
-        for k in [0, TILE * TILE - 1, PHASE_TEXELS - 1] {
-            let t = phase_texel(c, k)
-            assert(t.x < SKY_W && t.y < SKY_H, "cloud phase maps outside the dome")
-            let tile = (t.y / TILE) * TILES_W + t.x / TILE
-            assert(tile % PHASES == phase, "cloud phase visits another phase's tile")
-            let packed = (tile / PHASES) * TILE * TILE + (t.y % TILE) * TILE + t.x % TILE
-            assert(packed == k, "cloud scatter does not invert the phase mapping")
+    for scale in [1, 2] {
+        let side = TILE / scale
+        let per = PHASE_TEXELS / (scale * scale)
+        var c = Clouds {
+            eye: vec3(0.0),
+            phase: 0,
+            sun: vec3(0.0, 1.0, 0.0),
+            blend: 1.0,
+            drift: vec2(0.0),
+            seed: 0,
+            scale,
+        }
+        for phase in 0..PHASES {
+            c.phase = phase
+            for k in [0, side * side - 1, per - 1] {
+                let t = phase_texel(c, k)
+                assert(
+                    t.x < SKY_W / scale && t.y < SKY_H / scale,
+                    "cloud phase maps outside the dome",
+                )
+                let tile = (t.y / side) * TILES_W + t.x / side
+                assert(tile % PHASES == phase, "cloud phase visits another phase's tile")
+                let packed = (tile / PHASES) * side * side + (t.y % side) * side + t.x % side
+                assert(packed == k, "cloud scatter does not invert the phase mapping")
+                // The dome's tile it fills is the same tile (`upsample`).
+                let full = t * vec2u(scale)
+                assert(
+                    (full.y / TILE) * TILES_W + full.x / TILE == tile,
+                    "a march tile isn't its dome tile",
+                )
+            }
         }
     }
 }
