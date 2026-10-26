@@ -90,7 +90,82 @@ Over the three runs a side, the clearing's and the capybara's intervals didn't c
 Green's walk has 57 to 111 of its 1,200 intervals over 16.7 ms where B1 had 382 to 397, and a
 p99 of 29 ms where B1's was 33.
 
-## Whether §0.1's claim holds on the M4 Air
+## 2026-10-26: the B1 attribution (world-class 2, toolchain 0.8.0)
+
+The Last Green's walk, measured by `wrela tool bench -- --scene last-green-walk --no-docs` on the
+M4 Air at `2b922010` with B1's bench in the tree (its pages keep their runs in
+`build/bench/<date>-<time>/<scene>/{gpu,play,cold,warm}/`, the play run times each frame's
+labels, the fourth run opens the cold build again in the same profile). The machine was also
+running other work for part of the run, so these intervals are the hitches' evidence, not a
+baseline.
+
+| Scene | GPU span p50 / p95 / p99 ms | Interval p50 / p95 / p99 ms | Over 16.7 / 33 ms | CPU p50 / p95 ms | Native p50 / p95 ms | First frame ms | Playable ms | Pipelines ms | Loaded MiB | Warm playable ms | Warm loaded MiB | GPU peak MiB |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| last-green-walk | 12.72 / 15.00 / 18.28 | 14.73 / 23.35 / 28.83 | 218 / 6 | 4.18 / 4.97 | 10.82 / 14.46 | 619.59 | 10406.02 | 3897.22 | 4.6 | 8706.17 | 0.1 | 780.8 |
+
+Hitches (frames over 33 ms, the five heaviest labels each; phases are `engine::frame::PHASES`,
+each from its mark to the next, so `sim` holds the game's frame code before `draw` too):
+
+| Frame | Interval ms | CPU ms | Labels, GPU ms | Phases, ms | Draws | Written KiB |
+|---|---|---|---|---|---|---|
+| 61 | 59.44 | 4.94 | vegetation 3.16, creature 2.91, terrain 2.83, clouds 2.36, temporal 2.04 | sim 3.51, cook 0.25, finish 0.14, passes 0.06, choose 0.05 | 939 | 541 |
+| 203 | 33.52 | 5.46 | shadows far 18.82, vegetation 3.21, creature 2.90, clouds 2.89, terrain 2.79 | sim 4.81, cook 0.17, finish 0.07, passes 0.05, choose 0.01 | 1005 | 114 |
+| 210 | 90.96 | 4.76 | vegetation 3.23, creature 3.02, terrain 2.89, clouds 2.69, probes bake 2.61 | sim 3.74, cook 0.38, finish 0.07, passes 0.04, choose 0.01 | 939 | 113 |
+| 546 | 55.48 | 4.13 | bloom 15.86, clouds 2.65, creature 2.33, vegetation 2.31, terrain 2.28 | sim 3.57, cook 0.13, present 0.06, passes 0.04, choose 0.01 | 945 | 113 |
+| 822 | 46.18 | 4.08 | bloom 15.46, vegetation 2.36, creature 2.01, temporal 1.92, look 1.92 | sim 3.59, cook 0.13, present 0.05, passes 0.03, choose 0.01 | 945 | 114 |
+| 1106 | 37.65 | 4.00 | bloom 14.55, clouds 2.54, vegetation 2.39, creature 2.22, terrain 2.18 | sim 3.46, cook 0.13, present 0.06, passes 0.03, choose 0.01 | 945 | 113 |
+
+0 of 6 unattributed (no label over 2 ms and a CPU time under 2 ms). Read as B4's evidence: the
+far cascade's redraw lands whole on one frame (203); the bloom's chain takes 15 ms on three
+frames of the walk where it takes about 1 ms on the others; frames 61 and 210 hold no label
+heavier than the frame's usual, so their time is outside the timed passes (the first frames'
+uploads at 61, 541 KiB written; at 210 the probes' bake starting).
+
+The ten slowest pipelines to compile in the cold run (each built again alone; a name twice is
+two variants):
+
+| Pipeline | ms | WGSL KiB |
+|---|---|---|
+| cook_materials | 1197.15 | 165.2 |
+| skin_vertices | 1177.58 | 103.0 |
+| place_vertices | 828.38 | 92.2 |
+| cull_blocks | 704.77 | 114.6 |
+| cull_blocks | 641.54 | 114.6 |
+| cook_level | 589.23 | 165.2 |
+| cook_materials | 498.91 | 165.2 |
+| place | 311.97 | 59.3 |
+| skin_vertices | 266.66 | 103.0 |
+| cull_blocks | 248.89 | 114.6 |
+
+The pass viewer on the same frame the gates read (`wrela tool passes -- games/last-green --frame
+300 --input last-green-walk`): 29 passes, 24 render and 5 compute, in order: shadow moving,
+clouds, vegetation prepass, vegetation, terrain, creature, occlusion pyramid, vegetation late
+(two), ambient occlusion, sky, water (three), reflections copy, motion, lines, temporal (a
+dispatch and a pass), look (a dispatch and a pass), bloom (eight). The plan's "22" counted
+another frame's passes; this is the recorded count.
+
+## Whether D10 holds
+
+The claim (docs/plan-world-class-2.md §0.1, D10, **proposed**): on a MacBook Air M4 in Chrome at
+1080p, every flagship scene's GPU frame is under 12 ms at the median with every `Quality`
+switch on, no frame of 1,200 paced frames is over 33 ms and the paced 99th percentile is under
+20 ms; each is playable within 5 s of a cold page open and 3 s of a warm one; the Last Green's
+floor keeps its GPU memory under 512 MiB. On a MacBook Air M1 with 8 GB the floor holds 60 fps
+with the same switches and is playable within 8 s cold. On an Intel Iris Xe laptop in Chrome the
+floor's GPU frame is under 25 ms with no frame over 50 ms. The other engines' scenes are recorded
+beside these numbers, whatever they show. §B16 fills each cell from its own bench run; a cell
+says "holds", "misses by …" or "not measured: why".
+
+| Device | Scene | GPU p50 < 12 ms | Frames over 33 ms of 1,200 = 0 | Paced p99 < 20 ms | Cold playable | Warm playable < 3 s | Memory |
+|---|---|---|---|---|---|---|---|
+| M4 Air | the Last Green's opening | | | | < 5 s: | | < 512 MiB: |
+| M4 Air | the Last Green's walk | | | | < 5 s: | | < 512 MiB: |
+| M4 Air | the clearing's path | | | | < 5 s: | | |
+| M4 Air | the capybara's run | | | | < 5 s: | | |
+| M1 Air 8 GB | the floor | 60 fps: | | | < 8 s: | | |
+| Iris Xe laptop | the floor | < 25 ms: | over 50 ms = 0: | | | | |
+
+What B13 left (toolchain 0.6.3), against §0.1's first wording, kept for the record:
 
 The claim (docs/plan-world-class.md §0.1, **proposed**): at 1080p in Chrome, each flagship scene
 holds 60 fps with a 99th-percentile frame interval under 16.7 ms, no shader or streaming hitch,
