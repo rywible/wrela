@@ -20,6 +20,7 @@ use engine::grass::Contact
 use land::player::{Arm, Focus, Framing, follow}
 use engine::present::Snapshots
 use engine::run::run
+use engine::cook::{Evidence, Planner}
 use engine::shadow::Cascade
 use engine::view::first_camera
 use history::{BAKED, OBSTACLES}
@@ -622,6 +623,9 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
         print(
             f"frame {s.frame.frames - 1}: the player at {feet.x + o.x:.1}, {feet.z + o.z:.1}; {s.stage.tiles_in} tiles come, {loaded} instances loaded",
         )
+        if (s.frame.frames - 1) % 600 == 0 {
+            print(costs_said(s.frame.cooks.planner))
+        }
     }
     // A tile the player can see whose own trees aren't placed yet (#55 AC7's tiles on time):
     // within the cards' reach of the eye (past it, the far layer's crowns stand for them). Not
@@ -897,8 +901,8 @@ fn the_first_frames_run(s: Floor) {
 }
 
 /// The load's chain (`stage::cook_load`): with the far layer held to frame 200, the wood and the
-/// built things don't wait for it (nor the built things for the wood), and the floor is
-/// playable soon after it lands.
+/// built things don't wait for it (nor the built things for the wood), the far layer lands over
+/// eight frames or more (`FAR_PER_FRAME` a frame), and the floor is playable soon after.
 @test(frames: 400, gpu: true, hold: [("files/floor/far.bin", 200)])
 fn the_load_chain_runs_its_links_side_by_side(s: Floor) {
     let (Some(built), Some(wood)) = (s.stage.first_built_at, s.stage.wood_at) else {
@@ -909,8 +913,27 @@ fn the_load_chain_runs_its_links_side_by_side(s: Floor) {
         f"the first built thing stood at frame {built}, the wood at {wood}",
     )
     let Some(playable) = s.frame.ready.playable_at else { panic("playable within 400 frames") }
-    print(f"built from frame {built}, the wood at {wood}, playable at frame {playable}")
+    print(
+        f"built from frame {built}, the wood at {wood}, playable at frame {playable}, the far layer over {s.stage.far_frames} frames",
+    )
+    print(costs_said(s.frame.cooks.planner))
+    // The far layer's 65 tiles, `FAR_PER_FRAME` a frame.
+    assert(s.stage.far_frames >= 8, f"the far layer landed over {s.stage.far_frames} frames")
     assert(playable <= PLAYABLE_HELD, f"playable at frame {playable}")
+}
+
+/// The planner's costs as this device measured them, for docs/bench.md: `cook::costs()`'s
+/// order, µs, the ladder's step then the running average (`e`: still the estimate).
+fn costs_said(planner: Planner) -> String {
+    var costs = String::from("costs:")
+    for c in planner.costs() {
+        if c.evidence == Evidence::Measured {
+            costs.push_str(f" {c.us:.0}/{c.raw:.0}")
+        } else {
+            costs.push_str(f" e{c.us:.0}")
+        }
+    }
+    costs
 }
 
 /// The frame the load-chain test's floor is playable by, its far layer held to frame 200: what

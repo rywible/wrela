@@ -97,6 +97,12 @@ pub struct Stage {
     pub tiles_in: u32,
     pub far_fetch: Option<Pending<u8>>,
     pub far_layer: Vec<FarTile>,
+    /// The far layer come and its tiles still to place (`FAR_PER_FRAME` a frame, the nearest
+    /// first): placed all in one frame, they held it 60 ms.
+    pub far_data: Option<Far> = None,
+    pub far_pending: Vec<vec2i> = Vec::new(),
+    /// The frames that placed some of the far layer.
+    pub far_frames: u32 = 0,
     pub own: Vec<Arrived>,
     pub grass: Grass,
     pub to_build: Vec<blockouts::Built>,
@@ -289,7 +295,10 @@ impl Scene for Stage {
     fn casters_ready(self, far: bool) -> bool {
         !far ||
             self.view == BARE ||
-            (self.far_fetch.is_none() && self.wood.is_some() && self.to_build.is_empty())
+            (self.far_fetch.is_none() &&
+                self.far_pending.is_empty() &&
+                self.wood.is_some() &&
+                self.to_build.is_empty())
     }
 
     /// The bare view lights its land without the probes, which were baked over the floor's.
@@ -791,6 +800,20 @@ pub const WILD_FAR: f32 = 900.0
 pub const FAR_REACH: f32 = WILD_FAR + TILE
 
 pub const FAR_IN_FLIGHT: u32 = 2
+
+/// The far layer's tiles placed a frame (`stream`), at most.
+pub const FAR_PER_FRAME: u32 = 8
+
+/// The index of the tile of `tiles` nearest `eye` (the first, of those as near).
+fn nearest_tile(tiles: [vec2i], eye: vec2) -> u32 {
+    var best = 0
+    for k in 1..tiles.len() {
+        if tile_distance(tiles[k], eye) < tile_distance(tiles[best], eye) {
+            best = k
+        }
+    }
+    best
+}
 
 pub const IN_FLIGHT: u32 = 4
 
@@ -1428,6 +1451,8 @@ pub fn restream(s: mut Stage, source: u32, clipmap: mut Clipmap) {
     s.arrived = Vec::new()
     s.own = Vec::new()
     s.far_layer = Vec::new()
+    s.far_data = None
+    s.far_pending = Vec::new()
     s.tiles_in = 0
     s.far_fetch = fetch_of(source, "far.bin")
     if source == SPECIMEN_LAND {
@@ -1550,12 +1575,13 @@ pub fn cooking(s: Stage, t: vec2i) -> bool {
     false
 }
 
-/// How many tiles are being cooked whole (wild ones grown, baked ones decoded), and how many for
-/// their far layer alone.
+/// How many tiles are being cooked whole (wild ones grown, baked ones decoded) or their fields
+/// again, and how many for their far layer alone.
 pub fn near_cooking(s: Stage) -> u32 {
     var n = 0
+    // A neighbour's refresh (its fields again, `fields_only`) counts: each is a field write.
     for c in s.cooking {
-        if !c.fields_only && !c.far_only {
+        if !c.far_only {
             n += 1
         }
     }
@@ -1692,6 +1718,9 @@ pub fn far_requests_cover_the_fade_band_within_the_slot_budget() {
 /// The tiles round `eye`: the nearest wanted one not yet known fetched; those come decoded and
 /// their trees placed (one a frame, once the wood is cooked); those far behind dropped.
 pub fn stream(s: mut Stage, c: mut Cooks, clipmap: mut Clipmap, eye: vec2) {
+    // Its own label, so what the load's steps before it record (`kind`, `built things`) is timed
+    // apart from the tiles.
+    label("tile")
     var i = 0
     while i < s.fetching.len() {
         var done = false
@@ -1729,9 +1758,14 @@ pub fn stream(s: mut Stage, c: mut Cooks, clipmap: mut Clipmap, eye: vec2) {
             i += 1
         }
     }
-    // Those cooked: their fields to the ground, their trees to place.
+    // Those cooked: their fields to the ground, their trees to place; once playable, one field
+    // write a frame (each cooks its texels of every level over it), all of them while loading.
     var j = 0
+    var wrote = false
     while j < s.cooking.len() {
+        if wrote && c.playable && !c.capture {
+            break
+        }
         if s.cooking[j].job.done() {
             let k = s.cooking.remove(j)
             let cooked = take k.job.join()
@@ -1756,10 +1790,12 @@ pub fn stream(s: mut Stage, c: mut Cooks, clipmap: mut Clipmap, eye: vec2) {
             if k.fields_only {
                 if update_fields(mut s.grounds, t, k.with, cooked.fields) {
                     clipmap.write_fields(t, cooked.fields)
+                    wrote = true
                 }
                 continue
             }
             clipmap.write_fields(t, cooked.fields)
+            wrote = true
             s.grounds.push(
                 NearTile {
                     tile: t,
@@ -1896,21 +1932,38 @@ pub fn stream(s: mut Stage, c: mut Cooks, clipmap: mut Clipmap, eye: vec2) {
         },
         None => {},
     }
-    if let Some(far) = far_came {
+    if far_came.is_some() {
         s.far_fetch = None
-        c.far_changed = true
         let (lo, hi) = baked_tiles(s.source)
         for j in lo.y..(hi.y + 1) {
             for x in lo.x..(hi.x + 1) {
-                let t = vec2i(x, j)
-                s.far_layer.push(
-                    FarTile {
-                        tile: t,
-                        fine: far_on(s.source, far, t, step: 1),
-                        coarse: far_on(s.source, far, t, step: 2),
-                    },
-                )
+                s.far_pending.push(vec2i(x, j))
             }
+        }
+        s.far_data = take far_came
+    }
+    // Its tiles placed, `FAR_PER_FRAME` a frame, the nearest first; the far cascade is drawn
+    // again once the last is in.
+    var placed = 0
+    while placed < FAR_PER_FRAME && !s.far_pending.is_empty() && c.planner.may(Work::Tile) {
+        let next = nearest_tile(s.far_pending, eye)
+        let t = s.far_pending.remove(next)
+        if let Some(far) = s.far_data {
+            s.far_layer.push(
+                FarTile {
+                    tile: t,
+                    fine: far_on(s.source, far, t, step: 1),
+                    coarse: far_on(s.source, far, t, step: 2),
+                },
+            )
+        }
+        placed += 1
+        if placed == 1 {
+            s.far_frames += 1
+        }
+        if s.far_pending.is_empty() {
+            s.far_data = None
+            c.far_changed = true
         }
     }
     var changed = false
@@ -2024,6 +2077,7 @@ pub fn cook_load(s: mut Stage, c: mut Cooks, eye: vec2, linear: Sampler) {
     if s.wood.is_none() {
         while s.kinds.len() < s.plants.len() && c.planner.may(Work::Kind) {
             let k = s.kinds.len()
+            label("kind")
             s.kinds.push(kind(s.plants[k], seed: k + 1, atlas: s.atlas, s: linear))
         }
         if s.kinds.len() == s.plants.len() {

@@ -32,6 +32,7 @@ pub struct Record: Copy {
     pub near: u32,
     pub far: u32,
     pub weather: u32,
+    pub noise: u32,
     pub phase: u32,
     pub probes: u32,
     /// The slices of the air's tables cooked, and the sets of strips each cascade has drawn whole.
@@ -184,6 +185,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             near: p.ran(Work::NearStrip),
             far: p.ran(Work::FarStrip),
             weather: p.ran(Work::SkyWeather),
+            noise: p.ran(Work::SkyNoise),
             phase: p.ran(Work::SkyPhase),
             probes: p.ran(Work::ProbeStrip),
             air: p.ran(Work::AirTables),
@@ -204,6 +206,45 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             sky_frames: s.frame.sky.frames,
         },
     )
+}
+
+/// Once playable, no frame plans work past twice its budget: what the planner spends, the
+/// ground's levels and a noted cook of the sky's included (§B4: every kind past that is cooked
+/// a slice at a time). And the clouds' noise and weather at load are cooked a slice a step over
+/// at least 8 frames, where they were a frame each; a weather change in play cooks all its bands.
+@test(frames: 1100, gpu: true)
+fn no_playable_frame_plans_past_twice_its_budget_and_the_sky_is_sliced(s: State) {
+    reached(s, Step::Air)
+    var worst = 0.0
+    for r in s.records {
+        if r.playable && !r.arriving {
+            worst = max(worst, r.spent / max(r.limit, 1.0))
+        }
+    }
+    print(f"the heaviest playable frame planned {worst:.2} of its budget")
+    assert(worst <= 2.0, f"a playable frame planned {worst:.2} of its budget")
+    let (from, to) = window(s, 0)
+    var load = 0
+    var noise = 0
+    for i in from..to {
+        let r = s.records[i]
+        noise += r.noise
+        load += if r.noise + r.weather > 0 { 1 } else { 0 }
+    }
+    print(f"the load's sky: {noise} slices of noise, the noise and the weather over {load} frames")
+    assert(noise == 9 && load >= 8, f"the load's sky cooked over {load} frames")
+    let (from, to) = window(s, 2)
+    var weather = 0
+    var frames = 0
+    var most = 0
+    for i in from..to {
+        let w = s.records[i].weather
+        weather += w
+        frames += if w > 0 { 1 } else { 0 }
+        most = max(most, w)
+    }
+    print(f"the weather change: {weather} bands over {frames} frames, {most} at most in one")
+    assert(weather >= 8, f"the weather change cooked {weather} bands")
 }
 
 /// The frames of step `k` (`Step`'s order): from the frame it began at to the next one's.
@@ -322,20 +363,34 @@ fn a_jump_is_covered_until_its_light_has_gathered(s: State) {
     assert(near > 0 && probes > 0, "the cascade and the probes weren't drawn round the new eye")
 }
 
-/// A weather change cooks the clouds' weather again and starts the dome's march again, draws no
-/// cascade, and bakes the probes again once the dome is marched (they bake its light).
+/// A weather change cooks the clouds' weather again (a band a step) and then starts the dome's
+/// march again, draws no cascade, and bakes the probes again once the dome is marched (they
+/// bake its light).
 @test(frames: 1100, gpu: true)
 fn a_weather_change_redraws_the_clouds_and_then_the_probes(s: State) {
     reached(s, Step::Air)
     let (from, to) = window(s, 2)
     var weather = 0
     var near = 0
-    var probes = 0
-    var marched = 0
-    var baked_after = 0
     for i in from..to {
         weather += s.records[i].weather
         near += s.records[i].near + s.records[i].far
+    }
+    assert(weather >= 1, "the clouds' weather wasn't cooked again")
+    assert(near == 0, f"the weather drew {near} strips of the cascades")
+    // Once the weather map is whole (a band a step, the old dome in use meanwhile), the dome is
+    // marched afresh, and the probes bake only once it has been.
+    var restart = to
+    for i in from..to {
+        if restart == to && s.records[i].sky_frames <= 1 {
+            restart = i
+        }
+    }
+    assert(restart < to, "the dome's march didn't start again")
+    var probes = 0
+    var marched = 0
+    var baked_after = 0
+    for i in restart..to {
         // A frame's phase is marched before its probes' step.
         if probes == 0 {
             marched += s.records[i].phase
@@ -345,9 +400,6 @@ fn a_weather_change_redraws_the_clouds_and_then_the_probes(s: State) {
             baked_after = marched
         }
     }
-    assert(weather >= 1, "the clouds' weather wasn't cooked again")
-    assert(s.records[from].sky_frames <= 1, "the dome's march didn't start again")
-    assert(near == 0, f"the weather drew {near} strips of the cascades")
     assert(probes > 0, "the probes weren't baked again under the new weather")
     assert(
         baked_after >= engine::sky::PHASES,

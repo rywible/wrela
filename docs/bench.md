@@ -194,6 +194,63 @@ says nothing of the bloom. The walk's three late hitches (frames 550, 836 and 11
 before a probe replacement starts (`probes occluders` and `probes open sky`, then `probes bake`
 two frames later). B4 works against those, not against the bloom.
 
+## 2026-10-26: B4, the hitch sources (world-class 2, the 0.9.0 checkout)
+
+What each item found or changed (`wrela tool bench -- --scene last-green-walk --scene
+last-green-shot --no-native`, the M4 Air, the playing run's labels):
+
+- **B4.1, the far layer.** The 65 baked tiles' crowns land `FAR_PER_FRAME` (8) a frame, nearest
+  first, each under `may(Work::Tile)`; the far cascade waits for the last. Natively, with the
+  far layer's file held to frame 200: the layer over 11 frames, playable at frame 263.
+- **B4.2, the sky.** The clouds' noise cooks in 9 slices (`sky::NOISE_SLICES`), the weather and
+  shadow maps in 4 bands each (`sky::MAP_BANDS`), each slice asked of the planner, and at most
+  4 ms of them planned a frame (`SKY_FRAME_US`). Measured with a 6 ms cap, the heaviest frame's
+  sky labels (`clouds noise`, `clouds weather`, the dome's `clouds` and the `air`): **5.42 ms**
+  in the opening (frame 268), 6.74 in the walk (frame 42); before the cap a loading frame cooked
+  12.2 ms of noise. At 6 ms the load's noise and weather took 6 frames; at 4, the frame fixture
+  cooks the load's 9 slices of noise and its weather over 10 frames, and a weather change in
+  play its 8 bands in one frame (a band is 0.36 ms).
+- **B4.3, built things as jobs: not needed.** A built thing's tally is already a `Pending`
+  polled on a later frame, and they're realized only while loading (B2.4): the heaviest frame's
+  `built things` is 46.7 ms (walk frame 8), under twice the loading budget (60 ms).
+- **B4.4, one field write a frame** once playable (all of them while loading or capturing), the
+  neighbours' refreshes counted against `IN_FLIGHT`.
+- **B4.5, the far strips** (`shadows far`, 20.8 ms at most) are listed, not counted: B6.
+- **B4.6, measured costs.** `MEASURED` times 12 kinds by their labels (`air`, `clouds noise`,
+  `clouds weather`, `kind`, `built things`, `terrain cook`, `tile` added), each time divided by
+  the steps the timed frame ran. `cook::costs()` holds the walk's running averages at frame
+  1,200 (µs, the ladder's step / the average): air slice 291/289, noise slice 2,711/2,412,
+  weather band 364/363, dome phase 3,388/2,723, ground level 455/394, near strip 2,168/1,810,
+  far strip 1,388/1,312, occluders 455/408, probe strip 4,235/4,118, kind 64,841, built thing
+  8,000/7,542, tile 364/292 (the creature's mesh slice is timed by no label: its record stays).
+  A kind's 65 ms stays an estimate (4 ms) in the table: planned at its cost, the load would cook
+  one a frame and repeat each loading frame's own 25 ms 26 times.
+- **B4.7, the first optional step, bounded**: once playable, a step planned past twice the
+  playing budget panics in a debug build (`Planner::may`). It never fired in the Last Green's
+  tests or the frame fixture.
+
+The step's gate (one run each, the 0.9.0 checkout):
+
+| Scene | GPU span p50 / p95 / p99 ms | Interval p50 / p95 / p99 ms | Over 33 ms | Cold / warm playable ms |
+|---|---|---|---|---|
+| last-green-shot (480 frames) | 17.56 / 19.09 / 24.10 | 20.44 / 22.41 / 31.98 | **2** (8 at B1: meets) | 7,832 / 6,700 |
+| last-green-walk (1,200 frames) | 12.50 / 14.42 / 17.89 | 14.89 / 23.14 / **26.47** (22: misses) | **5**, 4 without `shadows far` (9 at B1; 2: misses) | 11,880 / 6,606 |
+
+The walk's cold start shared the machine with a compile (7,675 ms the run before). Its hitches:
+
+| Frame | Interval ms | Heaviest label, GPU ms | What it is |
+|---|---|---|---|
+| 88 | 33.47 | shadows far 18.94 | a far strip (B6) |
+| 95 | 126.54 | probes bake 5.05 | the first frame lit by the probes: its labels sum to about 20 ms, the rest is the frame's new pipelines being made |
+| 552 | 56.97 | bloom 16.04 | |
+| 833 | 62.04 | bloom 24.19 | |
+| 1114 | 44.58 | bloom 13.25 | |
+
+None is the ground's cook, a built thing, a kind, the sky's noise or weather, or a tile's
+placement. The last three are the B2 reading's: a frame or two before a probe replacement
+starts (`probes occluders`, `probes open sky`, then `probes bake`), the bloom's label holding
+the wait for the screen. B5.5 shifts the probes rather than replacing them.
+
 ## Whether D10 holds
 
 The claim (docs/plan-world-class-2.md §0.1, D10, **proposed**): on a MacBook Air M4 in Chrome at

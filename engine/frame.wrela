@@ -38,7 +38,7 @@ use plant::Wind
 use probes::{Baked, Occluder, ProbeGrid, STRIP_COLUMNS, Trace}
 use shadow::{Cascade, Kept, Shadows, shadows}
 use sheet::{Scale, pace}
-use sky::{Clouds, Sky, Weather, new_sky, sky_shade}
+use sky::{Clouds, MAP_BANDS, NOISE_SLICES, Sky, Weather, new_sky, sky_shade}
 use temporal::{Resolve, held, neighbourhoods, resolve, resolve_gathered}
 use cull::{Hzb, Pyramid}
 use terrain::{Clipmap, SIDES, Texel, ground, ground_shade}
@@ -429,13 +429,14 @@ pub borrow struct Effects {
 
 /// What a scene's load is given (`Scene::cook`): the plan to ask before each step, whether a
 /// capture fills its caches and whether an arrival is covered (what comes in under the cover is
-/// whole at once), the frame's length (s, at most 0.1), the eye (the world's, x and z), the render
-/// origin and the frame's number. The scene sets `near_changed` or `far_changed` when what casts
-/// into a static cascade changed.
+/// whole at once), whether the frame has been playable, the frame's length (s, at most 0.1), the
+/// eye (the world's, x and z), the render origin and the frame's number. The scene sets
+/// `near_changed` or `far_changed` when what casts into a static cascade changed.
 pub struct Cooks {
     pub planner: Planner,
     pub capture: bool,
     pub arriving: bool,
+    pub playable: bool = false,
     pub dt: f32,
     pub eye: vec2,
     pub origin: vec3,
@@ -707,17 +708,30 @@ const MEASURE_AGAIN: u32 = 240
 /// of the latest snapshot.
 pub const PHASES: [Text; 5] = ["cook", "choose", "passes", "finish", "present"]
 
+/// The most a frame spends on the clouds' noise and weather slices, loading or not (µs,
+/// planned): the first slice runs whatever it costs.
+const SKY_FRAME_US: f32 = 4000.0
+
 /// How many kinds of work a measuring frame times (`MEASURED`).
-const MEASURED_KINDS: u32 = 5
+const MEASURED_KINDS: u32 = 12
 
 /// The kinds of work a measuring frame times (`Quality::measured`), each by the label its pass or
-/// dispatch carries.
+/// dispatch carries: a frame may run several steps of a kind, so the time is divided by the steps
+/// the frame it timed ran (`Frame::measure`). (A creature's mesh is timed by none yet: it's
+/// labelled with the work round it.)
 const MEASURED: [(Work, Text); MEASURED_KINDS] = [
     (Work::SkyPhase, "clouds"),
     (Work::NearStrip, "shadows near"),
     (Work::FarStrip, "shadows far"),
     (Work::ProbeOccluders, "probes occluders"),
     (Work::ProbeStrip, "probes bake"),
+    (Work::AirTables, "air"),
+    (Work::SkyNoise, "clouds noise"),
+    (Work::SkyWeather, "clouds weather"),
+    (Work::Kind, "kind"),
+    (Work::Built, "built things"),
+    (Work::TerrainLevel, "terrain cook"),
+    (Work::Tile, "tile"),
 ]
 
 /// The static cascades: the near one (its square's `centre` is where it starts, and where it
@@ -983,7 +997,7 @@ pub struct Frame<R: Resolver> {
     /// each by its place in `MEASURED`; how many times each of `MEASURED` was measured and the
     /// frame it last was (`ran`'s count, which a resize doesn't start again); and whether the host
     /// can't time them (it stops asking).
-    measuring: Vec<(u32, Pending<f32>)>,
+    measuring: Vec<(u32, Pending<f32>, u32)>,
     measured: [u32; MEASURED_KINDS],
     measured_at: [u32; MEASURED_KINDS],
     untimed: bool,
@@ -1018,6 +1032,11 @@ pub struct Frame<R: Resolver> {
     /// changed (`changed`).
     air_cooked: Stale<(Air, vec3, vec3)>,
     noise_cooked: bool,
+    /// The noises' slices cooked (`sky::NOISE_SLICES`), and the weather cook under way: its
+    /// step (`sky::MAP_BANDS` bands of the weather map, then as many of the shadow map), what
+    /// it's for, and the weather it cooks.
+    noise_slices: u32,
+    weather_cooking: Option<(u32, (vec3, u32), bool, Weather)>,
     weather_cooked: Stale<(vec3, u32)>,
     cloud_shadow: Stale<(bool, u32)>,
     casting: Stale<(vec3, bool)>,
@@ -1204,6 +1223,8 @@ impl<R: Resolver> Frame<R> {
             hold: false,
             air_cooked: Stale::new(),
             noise_cooked: false,
+            noise_slices: 0,
+            weather_cooking: None,
             weather_cooked: Stale::new(),
             cloud_shadow: Stale::new(),
             casting: Stale::new(),
@@ -1557,6 +1578,7 @@ impl<R: Resolver> Frame<R> {
         }
         self.cooks.capture = filling
         self.cooks.arriving = self.ready.arriving
+        self.cooks.playable = self.ready.playable_at.is_some()
         self.cooks.eye = eye_w
         self.cooks.origin = self.origin
         self.cooks.frames = self.frames
@@ -1704,12 +1726,20 @@ impl<R: Resolver> Frame<R> {
     /// answer is the first frame's from this one that runs a step of it). None is asked for while
     /// a capture fills its caches, whose frames run many steps of a kind.
     fn measure(mut self) {
+        // How many steps of each kind the frame a time was asked for ran (the first frame from the
+        // asking that ran one, as the host times it): the planner's count is the last frame's.
+        for mut m in self.measuring {
+            if m.2 == 0 {
+                m.2 = self.cooks.planner.ran(MEASURED[m.0].0)
+            }
+        }
         var k = 0
         while k < self.measuring.len() {
             let i = self.measuring[k].0
+            let steps = max(self.measuring[k].2, 1)
             match self.measuring[k].1.poll() {
                 Some(Ok(us)) => {
-                    self.cooks.planner.measure(MEASURED[i].0, us[0])
+                    self.cooks.planner.measure(MEASURED[i].0, us[0] / f32(steps))
                     self.measured[i] += 1
                     self.measured_at[i] = self.ran
                     let _ = self.measuring.remove(k)
@@ -1732,7 +1762,7 @@ impl<R: Resolver> Frame<R> {
             let due = self.measured[i] < MEASURE_FIRST ||
                 self.ran - self.measured_at[i] >= MEASURE_AGAIN
             if !asked && due {
-                self.measuring.push((i, timed(MEASURED[i].1)))
+                self.measuring.push((i, timed(MEASURED[i].1), 0))
             }
         }
     }
@@ -1900,19 +1930,14 @@ impl<R: Resolver> Frame<R> {
         }
     }
 
-    /// The cook of the sky that's a frame of its own this frame, if one is (what `cook_sky`
-    /// cooks first: the air's tables, then the clouds' noise, then their weather), so the plan
-    /// counts it before the frame's optional steps.
+    /// The cook of the sky that's a frame of its own this frame, if one is (a slice of the air's
+    /// tables, which `cook_sky` cooks first), so the plan counts it before the frame's optional
+    /// steps. The clouds' noise and weather are optional steps, a slice each.
     fn sky_cook(self) -> Option<Work> {
-        let weather_key = (self.sky_key.1, self.weather_v)
         if self.ran == 0 {
             None
         } else if self.air_slice.is_some() || self.air_cooked.stale(self.sky_key) {
             Some(Work::AirTables)
-        } else if !self.noise_cooked {
-            Some(Work::SkyNoise)
-        } else if self.weather_cooked.stale(weather_key) {
-            Some(Work::SkyWeather)
         } else {
             None
         }
@@ -1963,19 +1988,67 @@ impl<R: Resolver> Frame<R> {
                     self.sky.frames = 0
                 }
             },
-            Some(Work::SkyNoise) => {
-                self.sky.cook_noise()
-                self.noise_cooked = true
-            },
-            Some(Work::SkyWeather) => {
+            _ => {},
+        }
+        // Once the air is in: the clouds' noises, then their weather and its shadow, a slice a
+        // step, as many a frame as the budget allows and `SKY_FRAME_US` holds (whole, a cook
+        // took tens of milliseconds, and one frame cooking the air and the clouds together took
+        // 137 ms).
+        let air_in = cooking.is_none() && self.ran > 0
+        var sky_us = 0.0
+        if air_in && !self.noise_cooked {
+            let cost = self.cooks.planner.cost(Work::SkyNoise).us
+            while self.noise_slices < NOISE_SLICES &&
+                (sky_us == 0.0 || sky_us + cost <= SKY_FRAME_US) &&
+                self.cooks.planner.may(Work::SkyNoise) {
+                self.sky.cook_noise_slice(self.noise_slices)
+                self.noise_slices += 1
+                sky_us += cost
+            }
+            self.noise_cooked = self.noise_slices == NOISE_SLICES
+        } else if air_in &&
+            (self.weather_cooking.is_some() || self.weather_cooked.stale(weather_key)) {
+            if self.weather_cooking.is_none() {
                 let w = scene.weather()
                 self.cloud_wind = w.wind
-                self.sky.cook_weather(w, self.sky_key.1, self.repeat, shadows: cloud_shadows)
-                self.weather_cooked.cooked(weather_key)
+                self.weather_cooking = Some((0, weather_key, cloud_shadows, take w))
+            }
+            loop {
+                let step = match self.weather_cooking {
+                    Some(c) => c.0,
+                    None => 2 * MAP_BANDS,
+                }
+                let cost = self.cooks.planner.cost(Work::SkyWeather).us
+                if step >= 2 * MAP_BANDS ||
+                    (sky_us > 0.0 && sky_us + cost > SKY_FRAME_US) ||
+                    !self.cooks.planner.may(Work::SkyWeather) {
+                    break
+                }
+                sky_us += cost
+                match mut self.weather_cooking {
+                    Some(c) => {
+                        if step < MAP_BANDS {
+                            self.sky.cook_weather_band(c.3, step)
+                        } else {
+                            let band = step - MAP_BANDS
+                            self.sky.cook_shadow_band(self.sky_key.1, self.repeat, c.2, band)
+                        }
+                        c.0 += 1
+                    },
+                    None => {},
+                }
+            }
+            // Whole: for the weather and the sun it began with (a change since is cooked next).
+            let done = match self.weather_cooking {
+                Some(c) => if c.0 == 2 * MAP_BANDS { Some((c.1, c.2)) } else { None },
+                None => None,
+            }
+            if let Some((key, shadows)) = done {
+                self.weather_cooking = None
+                self.weather_cooked.cooked(key)
                 self.sky_v += 1
-                self.cloud_shadow.cooked((cloud_shadows, self.weather_cooked.version()))
-            },
-            _ => {},
+                self.cloud_shadow.cooked((shadows, self.weather_cooked.version()))
+            }
         }
         let fresh = !self.weather_cooked.stale(weather_key)
         let shadow_key = (cloud_shadows, self.weather_cooked.version())

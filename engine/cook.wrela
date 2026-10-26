@@ -30,9 +30,9 @@ pub enum Work: Copy + Eq + Fieldless {
     /// A slice of the air's tables, cooked for its sun (and once whole, the probes' open sky from
     /// them).
     AirTables,
-    /// The clouds' noises, once.
+    /// A slice of the clouds' noises (`sky::NOISE_SLICES`), at load.
     SkyNoise,
-    /// The clouds' weather map and their shadow map.
+    /// A band of the clouds' weather map or of their shadow map (`sky::MAP_BANDS` each).
     SkyWeather,
     /// One phase of the clouds' dome marched.
     SkyPhase,
@@ -102,26 +102,33 @@ pub enum Evidence: Copy + Eq {
 pub fn costs() -> [Cost; WORKS] {
     let e = |us: f32| Cost { us, evidence: Evidence::Estimated }
     let m = |us: f32| Cost { us, evidence: Evidence::Measured }
+    // Measured: the Last Green's walk in Chrome on the M4 Air, the planner's running averages at
+    // frame 1,200 (docs/bench.md, B4). Each is a first guess: the frame measures its own device's
+    // (`Frame::measure`).
     [
-        // A slice of the air's tables (an eighth of a cook estimated at 20 ms: `air::AIR_SLICES`);
-        // the clouds' noise and weather: tens of milliseconds each, at load (a frame that cooked
-        // the air and the clouds together took 137 ms: they're a frame each).
-        e(2500.0),
-        e(20000.0),
-        e(20000.0),
-        e(800.0),
-        e(1200.0),
-        // A near strip (12 strips of 2048²: 6 cost 1.3 to 1.5 ms each); a far strip (48 strips:
-        // 11 ms each at 12, in Chrome).
-        m(1400.0),
-        m(2800.0),
-        e(1500.0),
-        e(1500.0),
+        // A slice of the air's tables (`air::AIR_SLICES`); a slice of the clouds' noise
+        // (`sky::NOISE_SLICES`); a band of their weather or their shadow map (`sky::MAP_BANDS`);
+        // a phase of the dome; a level of the ground.
+        m(290.0),
+        m(2410.0),
+        m(360.0),
+        m(2720.0),
+        m(390.0),
+        // A near strip (12 strips of 2048²); a far strip (48 strips); the probes' occluders; a
+        // strip of probes.
+        m(1810.0),
+        m(1310.0),
+        m(410.0),
+        m(4120.0),
+        // A plant's kind: 65 ms measured, cooked only at load. Planned at that, the load would
+        // cook one a frame, and each loading frame's own work (about 25 ms) would come 26 times,
+        // not 3: the estimate lets 15 a frame until the first measurement comes.
         e(4000.0),
-        e(2000.0),
-        e(300.0),
+        // A built thing; a tile's field write.
+        m(7540.0),
+        m(290.0),
         // A slice of a creature's mesh: the realizer's levels, measured in Chrome, about 0.3 µs a
-        // block, 384 blocks a slice.
+        // block, 384 blocks a slice (timed by no label of its own).
         m(120.0),
     ]
 }
@@ -212,6 +219,14 @@ impl Planner {
                 return false
             }
             if !self.optional {
+                // The first optional step runs whatever its size, so a frame always gets on:
+                // once playable, only one no bigger than twice the frame's budget. A kind past
+                // that is cooked a slice at a time; one that isn't would hitch every frame it runs.
+                if std::mem::debug_build() && self.playable && cost > 2.0 * self.budget.playing_us {
+                    panic(
+                        f"a step of work {w.index()} ({cost:.0} µs) is past twice the playing budget: slice it",
+                    )
+                }
                 self.first_optional = cost
             }
             self.spent_optional += cost
@@ -290,6 +305,11 @@ impl Planner {
         self.costs[w.index()]
     }
 
+    /// What a step of each kind costs, in `Work`'s order (`costs()`'s).
+    pub fn costs(self) -> [Cost; WORKS] {
+        self.costs
+    }
+
     /// A step of `w` measured on this device at `us` microseconds of GPU time: the first
     /// measurement replaces the estimate (or the code's record), and later ones move the running
     /// average a quarter of the way to each, so one slow frame doesn't starve the work. The
@@ -346,15 +366,16 @@ fn one_moving_cache_a_frame_while_playable() {
 }
 
 /// The budget cuts optional work short, but the first step of a frame always runs, however
-/// large: every kind makes progress.
+/// large: every kind makes progress. (Once playable, a step past twice the budget is a bug:
+/// `may` says so in a debug build.)
 @test
 fn the_budget_cuts_but_never_stalls() {
     var p = Planner::new(Budget { playing_us: 1000.0, loading_us: 1000.0 })
-    p.begin(levels: 0, playable: true, near_ready: true, filling: false)
+    p.begin(levels: 0, playable: false, near_ready: true, filling: false)
     assert(p.may(Work::Kind), "the first step waited")
     assert(!p.may(Work::Built), "a step past the budget ran")
     assert(p.cut == 1, "the cut wasn't counted")
-    p.begin(levels: 0, playable: true, near_ready: true, filling: false)
+    p.begin(levels: 0, playable: false, near_ready: true, filling: false)
     assert(p.may(Work::AirTables), "a step larger than the budget never runs")
     assert(p.ran(Work::AirTables) == 1 && p.ran(Work::Kind) == 0, "the frame's count carried over")
 }
@@ -377,23 +398,23 @@ fn a_capture_fills_its_caches() {
 /// of the way: what the budget then admits follows the device.
 @test
 fn a_measured_cost_replaces_the_estimate_and_follows_the_device() {
-    var p = Planner::new(Budget { playing_us: 2600.0 })
+    var p = Planner::new(Budget { playing_us: 2500.0 })
     assert(p.cost(Work::NearStrip).evidence == Evidence::Measured, "the near strips' record")
-    assert(p.cost(Work::ProbeStrip).evidence == Evidence::Estimated)
-    p.measure(Work::ProbeStrip, 400.0)
-    let c = p.cost(Work::ProbeStrip)
+    assert(p.cost(Work::Kind).evidence == Evidence::Estimated)
+    p.measure(Work::Kind, 400.0)
+    let c = p.cost(Work::Kind)
     assert(c.evidence == Evidence::Measured && c.raw == 400.0 && c.us == ladder(400.0), f"{c.us}")
-    p.measure(Work::ProbeStrip, 800.0)
-    assert(p.cost(Work::ProbeStrip).raw == 500.0, f"{p.cost(Work::ProbeStrip).raw}")
-    // The near strips' record (1400) moves a quarter of the way to a measured 2000: 1550, planned
-    // as the ladder's 1734.7. A dome phase (800) fits a budget of 2600 beside it, and a tile (300)
-    // more doesn't.
-    p.measure(Work::NearStrip, 2000.0)
-    assert(p.cost(Work::NearStrip).raw == 1550.0, f"{p.cost(Work::NearStrip).raw}")
+    p.measure(Work::Kind, 800.0)
+    assert(p.cost(Work::Kind).raw == 500.0, f"{p.cost(Work::Kind).raw}")
+    // The near strips' record (1810) moves a quarter of the way to a measured 1410: 1710, planned
+    // as the ladder's 1734.7. A kind (500, planned 568.4) fits a budget of 2500 beside it, and a
+    // tile (290) more doesn't.
+    p.measure(Work::NearStrip, 1410.0)
+    assert(p.cost(Work::NearStrip).raw == 1710.0, f"{p.cost(Work::NearStrip).raw}")
     p.begin(levels: 0, playable: true, near_ready: false, filling: false)
     assert(p.may(Work::NearStrip), "the first step runs")
-    assert(p.may(Work::SkyPhase), "800 more fits")
-    assert(!p.may(Work::Tile), "300 more doesn't")
+    assert(p.may(Work::Kind), "568.4 more fits")
+    assert(!p.may(Work::Tile), "290 more doesn't")
 }
 
 /// The ladder's steps: 25 µs, then a factor of 1.25 each, to 8000; a cost past the top is
@@ -421,30 +442,33 @@ fn injected_measurements_plan_by_the_ladder_and_keep_the_budgets_promises() {
     // 454.7 is a step (25 × 1.25^13); 454 plans as it, and 455 as the next (568.4).
     let edge = ladder(454.0)
     assert(ladder(455.0) == edge * 1.25, f"{ladder(455.0)}")
-    // A budget of 1000: two tiles at 454 (908) fit, at 455 (1136.8) the second doesn't.
+    // A budget of 1000: two steps of an estimated kind measured at 454 (908) fit, at 455
+    // (1136.8) the second doesn't.
     var under = Planner::new(Budget { playing_us: 1000.0 })
-    under.measure(Work::Tile, 454.0)
+    under.measure(Work::Kind, 454.0)
     under.begin(levels: 0, playable: true, near_ready: true, filling: false)
-    assert(under.may(Work::Tile) && under.may(Work::Tile), "two steps under the edge")
+    assert(under.may(Work::Kind) && under.may(Work::Kind), "two steps under the edge")
     var over = Planner::new(Budget { playing_us: 1000.0 })
-    over.measure(Work::Tile, 455.0)
+    over.measure(Work::Kind, 455.0)
     over.begin(levels: 0, playable: true, near_ready: true, filling: false)
-    assert(over.may(Work::Tile) && !over.may(Work::Tile), "one step over the edge")
-    // Ten times the estimate (a kind's 4000 measured at 40,000): it runs as the frame's first
-    // optional step, and nothing after it does.
-    var slow = Planner::new(Budget { playing_us: 8000.0 })
+    assert(over.may(Work::Kind) && !over.may(Work::Kind), "one step over the edge")
+    // Ten times the estimate (a kind's 4000 measured at 40,000), while loading: it runs as the
+    // frame's first optional step, and nothing after it does.
+    var slow = Planner::new(Budget { playing_us: 8000.0, loading_us: 8000.0 })
     slow.measure(Work::Kind, 40000.0)
-    slow.begin(levels: 0, playable: true, near_ready: true, filling: false)
+    slow.begin(levels: 0, playable: false, near_ready: true, filling: false)
     assert(slow.may(Work::Kind), "the first optional step waited")
     assert(slow.first_optional() == 40000.0)
     assert(!slow.may(Work::Tile), "a step past the budget ran")
-    // Mandatory work past the budget: three levels at a measured 3000 each, and a noted cook.
-    var busy = Planner::new(Budget { playing_us: 8000.0 })
+    // Mandatory work past the budget: three levels (their record moved toward a measured 3000)
+    // and a noted cook.
+    var busy = Planner::new(Budget { playing_us: 3000.0 })
     busy.measure(Work::TerrainLevel, 3000.0)
     busy.begin(levels: 3, playable: true, near_ready: false, filling: false)
     busy.note(Work::SkyWeather)
     assert(busy.ran(Work::TerrainLevel) == 3 && busy.ran(Work::SkyWeather) == 1)
-    assert(busy.spent_mandatory() == 3.0 * ladder(3000.0) + 20000.0, f"{busy.spent_mandatory()}")
+    let mandatory = 3.0 * busy.cost(Work::TerrainLevel).us + busy.cost(Work::SkyWeather).us
+    assert(mandatory > 3000.0 && busy.spent_mandatory() == mandatory, f"{busy.spent_mandatory()}")
     assert(busy.may(Work::Tile), "a frame's first optional step waited")
     assert(!busy.may(Work::Tile), "an optional step past the budget ran")
     assert(busy.spent_optional() == busy.first_optional())
@@ -455,14 +479,14 @@ fn injected_measurements_plan_by_the_ladder_and_keep_the_budgets_promises() {
 @test
 fn mandatory_work_counts_against_the_budget() {
     var p = Planner::new(Budget { playing_us: 3000.0, loading_us: 3000.0 })
-    // Two levels (2400 of 3000): one dome phase (800) is over the budget, but it's the frame's
+    // Two levels (780 of 3000): one dome phase (2720) is over the budget, but it's the frame's
     // first optional step; a tile more isn't.
     p.begin(levels: 2, playable: false, near_ready: false, filling: false)
-    assert(p.spent() == 2400.0, f"{p.spent()}")
+    assert(p.spent() == 2.0 * p.cost(Work::TerrainLevel).us, f"{p.spent()}")
     assert(p.may(Work::SkyPhase), "a frame's first optional step waited")
     assert(!p.may(Work::Tile), "a step past what the ground left ran")
-    // A noted cook (the air's tables) takes the frame's budget the same way.
+    // A noted cook (a dome phase, 2720) takes the frame's budget the same way.
     p.begin(levels: 0, playable: true, near_ready: false, filling: false)
-    p.note(Work::AirTables)
+    p.note(Work::SkyPhase)
     assert(p.may(Work::Tile) && !p.may(Work::Tile), "after a noted cook, more than one step ran")
 }
