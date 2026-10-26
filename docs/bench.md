@@ -681,6 +681,34 @@ pockets: the land's note says a 4 m rock cut as one slab reads as a blank sheet)
 ground changed, so `height_at` and the sim are as they were. The beds' realized surface against
 their field (the realizer's `measured_error`) wasn't measured here.
 
+## 2026-10-26: B12, water (world-class 2, the 0.9.0 checkout)
+
+1. **Flow.** The water's mesh already carries a flow per point (`WaterVert.flow`, a course's
+   direction times a speed from its slope: `land::water`'s 0.35 + 2.5 × slope, close to the
+   plan's), so no field layer is cooked for it. What was missing is bounded advection: the
+   ripples drifted as `p − flow × t`, which draws them out without end where the flow varies.
+   They're now carried in two phases half a 2 s period apart, each started again when its
+   weight is none (`water::advected`; Vlachos 2010). Test: a marker on a 1.2 m/s course moves
+   6 cm in 0.05 s in either phase, the weights a whole at every time.
+2. **Falls.** The mist is the air's (B10: `mist_over` is gone). Each fall within 60 m of the eye
+   throws spray each frame (soft, the foam's colour at 0.6, 0.3 to 0.8 m, 1.5 s: about 200 a
+   second) and a column of foam at its foot (light that adds, 0.8 s): `stage::spray`, the floor's
+   `Scene::emit`, the frame's particles' first use. The foam is the additive kind the particles
+   have (`SPARK`), not a new one. Test: a fall in view throws spray and foam each frame, one past
+   60 m none. Neither benched scene passes within 60 m of a fall.
+3. **Wet margins: already so.** The baked wet field darkens and soaks the ground by a stream
+   (`ground::covered`'s `soaked`, its banks and beds), and rock's wet band (B11d) reads the
+   nearest water's level.
+4. **The planar reflection of the mere (D15): not done.** A mirrored pass of the terrain, the
+   wood's far ways, the built things' coarse levels and the sky, with its own targets, is the
+   largest item here; the reflections stay the screen's (marched in threes) and the specular
+   probe's. D15 is off by its absence.
+5. **Culled by tiles: done at B5.2** (64 m tiles, one draw, the copy scissored).
+
+- The render package's water tests hold (`water_reflections_marched_in_threes...`,
+  `..._follow_raster_jitter...`). The opening's `water` label p50 0.20 ms, as before (asked: at
+  most 1.0).
+
 ## Devices
 
 Each device D20 names (docs/plan-world-class-2.md §0.5), measured by `wrela tool bench -- --lan`

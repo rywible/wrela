@@ -16,6 +16,7 @@ use engine::memory::{Share, Usage}
 use engine::cull::{Hzb, in_frustum}
 use engine::distance::{Capsule, Shape, Solids, rigid_inverse}
 use engine::fog::{FogField, FogSphere, HeightFog}
+use engine::particles::{Emits, Particle, SOFT, SPARK}
 use engine::frame::{Cooks, Effects, Scene, Targets, full, fullscreen}
 use engine::grass::{Blooms, Contact, Grass, GrassLook}
 use engine::light::{Light, SUN_TOP, sunlight}
@@ -135,6 +136,10 @@ pub struct Stage {
     land_cooked: u32,
     /// Whether the air holds its fog, mists and canopy haze (`fog`; B turns it off and on).
     pub fog_on: bool,
+    /// Where the eye was last frame (the world's), and the falls' particles emitted so far
+    /// (`emit`).
+    eye: vec3 = vec3(0.0),
+    pub sprayed: u32 = 0,
     pub map: harness::HarnessMap,
     pub feet: vec2,
     pub heading: f32,
@@ -157,6 +162,81 @@ pub struct Thing {
     /// Its shape as a tape, for the distance volume (`blockouts::shape_tape`; the tower has
     /// none).
     pub shape: Option<ShapeTape> = None,
+}
+
+/// How far from the eye a fall throws spray (m), how many a second, and its foam's column a
+/// second (B12: **proposed**).
+const SPRAY_NEAR: f32 = 60.0
+const SPRAY_RATE: f32 = 200.0
+const FOAM_RATE: f32 = 60.0
+
+/// A number in [0, 1) for `n` (Wang's integer hash).
+fn hashed(n: u32) -> f32 {
+    var x = (n ^ 61) ^ (n >> 16)
+    x = x.wrapping_add(x << 3)
+    x = x ^ (x >> 4)
+    x = x.wrapping_mul(0x27d4eb2d)
+    x = x ^ (x >> 15)
+    f32(x >> 8) / 16777216.0
+}
+
+/// A frame's (a sixtieth's) spray and foam from each fall within `SPRAY_NEAR` of `eye` (the
+/// world's; `mists` the falls' feet and their mists' reach, the world's): spray thrown out and up
+/// from its foot (soft, the foam's colour at 0.6, 0.3 to 0.8 m, 1.5 s), and a column of foam
+/// rising at its foot (light that adds, 0.8 s); render space (`origin` taken off), the `n`th
+/// onward.
+pub fn spray(mists: [vec4], eye: vec3, origin: vec3, n: u32) -> Vec<Particle> {
+    var out: Vec<Particle> = Vec::new()
+    var k = n
+    for m in mists {
+        if length(m.xyz - eye) > SPRAY_NEAR {
+            continue
+        }
+        let foot = m.xyz - origin
+        let sprays = u32(SPRAY_RATE / 60.0 + hashed(k * 7 + 1))
+        for i in 0..sprays + u32(FOAM_RATE / 60.0) {
+            let h = |j: u32| hashed(k.wrapping_mul(8).wrapping_add(j))
+            let a = h(0) * 6.2831853
+            let out_dir = vec3(cos(a), 0.0, sin(a))
+            let foam = i >= sprays
+            let at = foot + out_dir * (h(1) * m.w * 0.3) + vec3(0.0, h(2) * 0.5, 0.0)
+            out.push(
+                Particle {
+                    at,
+                    life: if foam { 0.8 } else { 1.5 } * (0.7 + 0.3 * h(3)),
+                    vel: if foam { vec3(0.0, 1.2 + h(4), 0.0) + out_dir * 0.3 } else {
+                        out_dir * (2.0 * (0.5 + h(4))) + vec3(0.0, 1.0 + h(5), 0.0)
+                    },
+                    size: if foam { 0.25 } else { 0.3 + 0.5 * h(6) },
+                    colour: if foam { vec4(0.45, 0.47, 0.5, 1.0) } else {
+                        vec4(0.86, 0.9, 0.93, 0.6)
+                    },
+                    kind: if foam { SPARK } else { SOFT },
+                    drag: 0.6,
+                    grow: if foam { 0.1 } else { 0.25 },
+                    age: 0.0,
+                },
+            )
+            k += 1
+        }
+    }
+    out
+}
+
+/// A fall in view throws spray and foam each frame; one past `SPRAY_NEAR` throws none.
+@test
+fn a_fall_near_the_eye_throws_spray_and_foam() {
+    let m = history::MISTS[0]
+    let near = spray([m], m.xyz + vec3(5.0, 2.0, 0.0), vec3(0.0), 0)
+    var soft = 0
+    var foam = 0
+    for p in near {
+        if p.kind == SOFT { soft += 1 } else { foam += 1 }
+        assert(length(p.at - m.xyz) < m.w + 1.0, "a particle far from its fall")
+    }
+    assert(soft >= 3 && foam >= 1, f"{soft} spray, {foam} foam")
+    let far = spray([m], vec3(1.0e5, 0.0, 1.0e5), vec3(0.0), 0)
+    assert(far.is_empty(), f"{far.len()} from falls out of reach")
 }
 
 /// How dense a fall's mist is at its middle (per metre): the mist pass's thickest (0.22) as the
@@ -234,6 +314,17 @@ impl Scene for Stage {
 
     /// The occluders the stage's job gathered round a place near `at` (`gather_occluders`): none
     /// until one has, for a place within `OCCLUDED_NEAR` of it.
+    /// The falls' spray and foam (`spray`), near the eye, in the floor's views.
+    fn emit(mut self, e: mut Emits) {
+        if of_world(self.view) {
+            return
+        }
+        for p in spray(history::MISTS, self.eye, origin_of(self), self.sprayed) {
+            e.push(p)
+            self.sprayed += 1
+        }
+    }
+
     /// The air: a height fog (the engine's, its base the floor's level ground), a sphere of mist
     /// at each fall (`history::MISTS`), and the canopy's haze; none in the land's views or with
     /// the fog off (B).
@@ -471,6 +562,7 @@ impl Scene for Stage {
                 None => {},
             }
         }
+        self.eye = lt.cam.eye + lt.cam.origin
         if !of_world(self.view) {
             hand_over(mut self, lt.cam)
             self.pool.cull(lt.cam, pyramid, hzb)

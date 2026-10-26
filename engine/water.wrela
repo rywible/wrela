@@ -340,37 +340,54 @@ pub fn water_vertex(v: VertexIndex, verts: [WaterVert], tris: [u32], cam: Camera
     }
 }
 
-/// The ripples' slope at `p` (on the plane), `t` seconds in: two layers of noise drifting with
-/// the flow (and a breeze across still water), their slopes by differences. Where the water runs,
-/// its ripples are drawn out along it (streaks, not round cells). A layer finer than the pixel's
-/// footprint `fp` (m) fades out, so the far water doesn't sparkle; how much of the ripples' slope
-/// is lost so is the second value (0 to 1), which the glint's spread takes up.
+/// How long a phase of the flow's advection runs (s) before it starts again (`advected`).
+pub const FLOW_PERIOD: f32 = 2.0
+
+/// How far the water at a point has carried its ripples `t` seconds in, flowing at `flow` (m/s,
+/// on the plane): two phases half a period apart, each carried `flow` × its age and started again
+/// when its weight is none (Vlachos, Water Flow in Portal 2, SIGGRAPH 2010), so where the flow
+/// varies its ripples are never drawn out without bound; each phase's offset (m), and the first's
+/// weight (the second's is the rest).
+pub fn advected(flow: vec2, t: f32) -> (vec2, vec2, f32) {
+    let a = fract(t / FLOW_PERIOD)
+    let b = fract(t / FLOW_PERIOD + 0.5)
+    (flow * (a * FLOW_PERIOD), flow * (b * FLOW_PERIOD), 1.0 - abs(1.0 - 2.0 * a))
+}
+
+/// The ripples' slope at `p` (on the plane), `t` seconds in: two layers of noise carried by the
+/// flow (`advected`: two phases blended) and drifting with a breeze across still water, their
+/// slopes by differences. Where the water runs, its ripples are drawn out along it (streaks, not
+/// round cells). A layer finer than the pixel's footprint `fp` (m) fades out, so the far water
+/// doesn't sparkle; how much of the ripples' slope is lost so is the second value (0 to 1),
+/// which the glint's spread takes up.
 fn ripples(p: vec2, flow: vec2, t: f32, fp: f32) -> (vec2, f32) {
-    let drift = flow + vec2(0.08, 0.05)
+    let breeze = vec2(0.08, 0.05)
     let speed = length(flow)
     let down = if speed > 1.0e-3 { flow / speed } else { vec2(1.0, 0.0) }
     let stretch = 1.0 + 0.8 * smoothstep(0.1, 1.0, speed)
     // The plane turned to the flow and squeezed along it: the noise's cells long down it.
-    let q = vec2(dot(p, down) / stretch, dot(p, vec2(-down.y, down.x)))
-    let qd = vec2(dot(drift, down) / stretch, dot(drift, vec2(-down.y, down.x)))
+    let turn = |v: vec2| vec2(dot(v, down) / stretch, dot(v, vec2(-down.y, down.x)))
+    let q = turn(p)
+    let qd = turn(breeze)
+    let (o1, o2, w1) = advected(flow, t)
+    let (q1, q2) = (q - turn(o1), q - turn(o2))
     // Each layer's share fades once its wavelength (0.77 m and 0.27 m) is under 4 footprints.
     // All unresolved slope becomes roughness; keeping any of it aliases into moving sparkles.
     let k1 = 0.6 * (1.0 - smoothstep(0.19, 0.77, fp))
     let k2 = 0.4 * (1.0 - smoothstep(0.07, 0.27, fp))
     let e = 0.05
-    let h = wave(q, qd, t, k1, k2)
-    let g = vec2(
-        wave(q + vec2(e, 0.0), qd, t, k1, k2) - h,
-        wave(q + vec2(0.0, e), qd, t, k1, k2) - h,
-    ) /
-        e
+    let height = |at: vec2| {
+        mix(wave(at - q + q2, qd, t, k1, k2), wave(at - q + q1, qd, t, k1, k2), w1)
+    }
+    let h = height(q)
+    let g = vec2(height(q + vec2(e, 0.0)) - h, height(q + vec2(0.0, e)) - h) / e
     // Back to the world's axes.
     let slope = down * (g.x / stretch) + vec2(-down.y, down.x) * g.y
     (slope, 1.0 - (k1 + k2))
 }
 
-/// The ripples' height at `q`, drifting at `drift`, `t` seconds in, each layer at its share.
-/// The fine layer only where it has a share (none past a few metres).
+/// The ripples' height at `q`, drifting with the breeze `drift`, `t` seconds in, each layer at
+/// its share. The fine layer only where it has a share (none past a few metres).
 fn wave(q: vec2, drift: vec2, t: f32, k1: f32, k2: f32) -> f32 {
     let broad = noise2(q * 1.3 - drift * t * 1.3) * k1
     if k2 > 0.0 { broad + noise2(q * 3.7 + vec2(4.0, 1.0) - drift * t * 2.6) * k2 } else { broad }
@@ -514,6 +531,32 @@ pub fn water_shade(
 const FALL_LEAN: f32 = 0.3
 
 // ---- tests ------------------------------------------------------------------------------------
+
+/// A marker on a course flowing 1.2 m/s travels at its speed within a phase of the advection,
+/// and the two phases' weights make a whole at every time.
+@test
+fn the_flow_carries_the_ripples_at_its_speed() {
+    let flow = vec2(0.0, 1.2)
+    for k in 0..40 {
+        let t = f32(k) * 0.1 + 0.013
+        let (a, b, w) = advected(flow, t)
+        let (a2, b2, _) = advected(flow, t + 0.05)
+        // Neither phase started again between the two: each moved the flow's 6 cm.
+        if fract(t / FLOW_PERIOD) < 0.97 {
+            assert(abs(length(a2 - a) - 0.06) < 1.0e-4, f"the first phase moved {length(a2 - a)} m")
+        }
+        if fract(t / FLOW_PERIOD + 0.5) < 0.97 {
+            assert(
+                abs(length(b2 - b) - 0.06) < 1.0e-4,
+                f"the second phase moved {length(b2 - b)} m",
+            )
+        }
+        assert(w >= 0.0 && w <= 1.0, f"a weight of {w}")
+    }
+    // A phase that starts again weighs nothing then.
+    let (_, _, w0) = advected(flow, 0.0)
+    assert(w0 == 0.0, f"the first phase starts again weighing {w0}")
+}
 
 /// A view directly away from the sun has no half vector. Water has no glint there, not NaN.
 @test
