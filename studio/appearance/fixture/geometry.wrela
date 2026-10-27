@@ -2,10 +2,11 @@
 // This is a candidate initializer / conventional control, not rendering truth.
 use engine::impostor::{BAKED, VOXELS, Bake, cook_pattern_cover, cook_volume}
 use engine::plant::{
-    Bark, Card, Leaves, LEAF_PATTERNS, card_centres, card_scale, card_tint, cook_cards, leaf_age,
-    leaf_atlas, tinted,
+    Bark, Card, Leaves, LEAF_ATLAS, LEAF_PATTERNS, LIMB_VERTICES, card_centres, card_scale,
+    card_tint, cook_cards, leaf_age, leaf_atlas, tinted,
 }
 use great_tree::tree::great_tree
+use std::field::Tube
 use std::gpu::{
     GlobalId, GpuBuffer, Rgba8, Rgba16Float, Slots, Texture, Texture3d, buffer, buffer_of, dispatch,
     sampler, texture, texture3d,
@@ -36,6 +37,9 @@ pub struct Export {
     voxels: GpuBuffer<Voxel>,
     grid: Texture3d<Rgba16Float>,
     depths: Texture3d<Rgba16Float>,
+    extra: GpuBuffer<vec4>,
+    wood: GpuBuffer<primitives::Vertex>,
+    limbs: GpuBuffer<Tube<4>>,
 }
 
 pub fn init() -> Export {
@@ -53,6 +57,9 @@ pub fn init() -> Export {
         voxels: buffer(1),
         grid: texture3d(width: 1, height: 1, depth: 1),
         depths: texture3d(width: 1, height: 1, depth: 1),
+        extra: buffer(1),
+        wood: buffer(1),
+        limbs: buffer(1),
     }
 }
 
@@ -122,9 +129,10 @@ fn raw_volume(b: Bake, cards: [Card], n: u32, covers: [f32], out: mut Slots<Voxe
 // Mode 0 initializes from the authored source and returns its canonical description.
 // Mode 1 returns cooked card samples; mode 2 the actual 24^3 f16 volume expanded to f32;
 // mode 3 independently generated CPU card centres; mode 4 the f32 volume equation.
-// Each allocates its export last.
+// Primitive modes 5..11 add card rotations/pattern ids, GPU/CPU limb vertices,
+// pattern texels and 128/256/512 midpoint pattern samples. Each export is last.
 pub fn publish(s: mut Export, seed: u32, mode: u32) -> u32 {
-    assert(mode <= 4)
+    assert(mode <= 11)
     let plant = great_tree()
     if mode == 0 {
         assert(!s.ready)
@@ -168,6 +176,51 @@ pub fn publish(s: mut Export, seed: u32, mode: u32) -> u32 {
         return bytes
     }
     assert(s.ready && seed == s.seed)
+    if mode == 5 {
+        s.extra = buffer(s.n)
+        dispatch(primitives::card_info.bind(s.raw.items(), s.n, mut s.extra), over: s.n)
+        return s.n * 16
+    }
+    if mode == 6 {
+        var list: Vec<Tube<4>> = Vec::new()
+        for limb in plant.limbs { list.push(limb) }
+        s.limbs = buffer_of(list, at_least: 1)
+        let count = plant.limbs.len() * LIMB_VERTICES
+        s.wood = buffer(count)
+        dispatch(
+            primitives::wood_vertices.bind(s.limbs.items(), plant.limbs.len(), mut s.wood),
+            over: count,
+        )
+        return count * 32
+    }
+    if mode == 7 {
+        let vertices = primitives::wood_cpu(plant)
+        let bytes = vertices.len() * 32
+        s.wood = buffer_of(vertices, at_least: 1)
+        return bytes
+    }
+    if mode == 8 {
+        let count = LEAF_ATLAS * LEAF_ATLAS
+        s.extra = buffer(count)
+        dispatch(primitives::pattern_texels.bind(s.pattern, mut s.extra), over: count)
+        return count * 16
+    }
+    if mode >= 9 {
+        let grid = 128 << (mode - 9)
+        let count = LEAF_PATTERNS * grid * grid
+        s.extra = buffer(count)
+        dispatch(
+            primitives::pattern_samples.bind(
+                s.pattern,
+                sampler(),
+                plant.leaves.per_card,
+                grid,
+                mut s.extra,
+            ),
+            over: count,
+        )
+        return count * 16
+    }
     if mode == 1 {
         s.samples = buffer(s.n)
         dispatch(

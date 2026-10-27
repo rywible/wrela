@@ -252,6 +252,22 @@ pub fn capture(
     level: u32,
     grid: u32,
 ) -> u32 {
+    capture_parts(mut s, seed, gx, gy, size, level, grid, parts: 0)
+}
+
+// Parts 0=full source, 1=leaves, 2=wood. Component captures are diagnostics;
+// only the full source is used for complete-tree quality comparisons.
+pub fn capture_parts(
+    s: mut Source,
+    seed: u32,
+    gx: f32,
+    gy: f32,
+    size: u32,
+    level: u32,
+    grid: u32,
+    parts: u32,
+) -> u32 {
+    assert(parts <= 2)
     assert(size > 0 && size <= 512 && grid > 0 && grid <= 128 && size * grid <= 8192)
     assert(gx >= 0.0 && gx <= 1.0 && gy >= 0.0 && gy <= 1.0 && level <= BAKED)
     let plant = great_tree()
@@ -281,20 +297,24 @@ pub fn capture(
     let filter = sampler()
     {
         let p = begin_pass_with_depth(mut s.colour, mut s.depth, clear: vec4(0.0), clear_depth: 1.0)
-        draw(
-            p,
-            card_vertex.bind(b, c, s.cards.items()),
-            colour.bind(b, s.pattern, filter),
-            vertices: nearest * 6,
-            instances: 1,
-        )
-        draw(
-            p,
-            limb_vertex_at.bind(b, c, s.limbs.items()),
-            colour.bind(b, s.pattern, filter),
-            vertices: limbs * LIMB_VERTICES,
-            instances: 1,
-        )
+        if parts != 2 {
+            draw(
+                p,
+                card_vertex.bind(b, c, s.cards.items()),
+                colour.bind(b, s.pattern, filter),
+                vertices: nearest * 6,
+                instances: 1,
+            )
+        }
+        if parts != 1 {
+            draw(
+                p,
+                limb_vertex_at.bind(b, c, s.limbs.items()),
+                colour.bind(b, s.pattern, filter),
+                vertices: limbs * LIMB_VERTICES,
+                instances: 1,
+            )
+        }
         p.end()
     }
     {
@@ -304,20 +324,24 @@ pub fn capture(
             clear: vec4(0.0, 0.0, 0.5, 0.0),
             clear_depth: 1.0,
         )
-        draw(
-            p,
-            card_vertex.bind(b, c, s.cards.items()),
-            normal.bind(b, s.pattern, filter),
-            vertices: nearest * 6,
-            instances: 1,
-        )
-        draw(
-            p,
-            limb_vertex_at.bind(b, c, s.limbs.items()),
-            normal.bind(b, s.pattern, filter),
-            vertices: limbs * LIMB_VERTICES,
-            instances: 1,
-        )
+        if parts != 2 {
+            draw(
+                p,
+                card_vertex.bind(b, c, s.cards.items()),
+                normal.bind(b, s.pattern, filter),
+                vertices: nearest * 6,
+                instances: 1,
+            )
+        }
+        if parts != 1 {
+            draw(
+                p,
+                limb_vertex_at.bind(b, c, s.limbs.items()),
+                normal.bind(b, s.pattern, filter),
+                vertices: limbs * LIMB_VERTICES,
+                instances: 1,
+            )
+        }
         p.end()
     }
     s.size = size

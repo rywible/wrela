@@ -1935,3 +1935,37 @@ SHA-256 `f365b7ae83243e450cf225fdad8a33913a07c083e9a14fee77d56297cd7806b6`; sour
 scripts `99620c89af3d8cc0250d19de944873ddc3a7e82c3fccaac14376fa0a750dd36f`. The independent scalar model, unfitted initialization,
 original volume dependencies, complete corpora and dense comparisons are
 retained. Every G1–G7 threshold and prior failure remains intact.
+
+
+## Source primitive visibility and count controls
+
+The [complete experiment](neural-source-primitives.md) adds independently
+checked source primitive exports and leaf/wood component captures.
+Source card rotations, pattern cuts, covariance/area and actual wood
+triangles are available without learning image geometry from scratch.
+The independent wood raster agrees with GPU captures, and old source and
+geometry outputs remain byte identical.
+
+Full-count untrained ellipses reduce coverage MAE to
+0.001255631 across four stored directions and
+0.001252439 across four off-grid directions.
+Both ellipse/Gaussian controls pass all five material screens in both
+groups. They keep all 26,560 cards and 7,392 wood triangles; this is a
+conventional full-geometry diagnostic, not compression or a learned result.
+Integration passes only 6/16 at 8→16 and 12/16 at 16→32; escalation to
+32→64 passes all sixteen under the original limits.
+
+The half/quarter/eighth count ladder and native hard-cut LODs provide
+capacity controls for the next fit. All six reduced-count primitive variants
+fail the joint stored-view quality screen after sampling converges. The complete table, all failures,
+changed-seed stress cases and sampling checks are retained. Larger support
+offsets much of the reduction in primitive count at the sample-work level.
+No new packed model, GPU primitive runtime or production promotion exists.
+
+Evidence: `appearance-primitives-v1/manifest.json`, SHA-256
+`2a232b363a4f279ae0cb3a70d9c000e327933436989d262d8b223220883e2d39`; count controls
+`appearance-primitive-budget-v1/manifest.json`, SHA-256
+`7d55fc50d287fc0457b4d2ff2026f9cf91063bb2c4abda015d260238e34bc55c`. Source snapshot
+`b333ba10f3c1fb3902c52a47ec7e1c21343b9d45af25cdb90bc2640003e7a453`; external scripts
+`54933ac1ce22ba48aaf2cd7d1a9cc034263bc6128130f6509f77d79e3d72490d`. All reside below `build/neural-evidence/` on Pop!_OS.
+Focused source checks pass; no full-suite/PR readiness or G1–G7 pass.

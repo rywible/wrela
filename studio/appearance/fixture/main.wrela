@@ -203,6 +203,21 @@ pub fn source_capture(
     bytes
 }
 
+pub fn source_layer_capture(
+    s: mut State,
+    seed: u32,
+    gx: f32,
+    gy: f32,
+    size: u32,
+    level: u32,
+    grid: u32,
+    parts: u32,
+) -> u32 {
+    let bytes = source::capture_parts(mut s.source, seed, gx, gy, size, level, grid, parts)
+    s.ready = true
+    bytes
+}
+
 pub fn source_probe(s: mut State, x: u32, y: u32, grid: u32) -> u32 {
     assert(s.ready)
     source::probe(mut s.source, x, y, grid)

@@ -1,0 +1,64 @@
+// Source geometry for primitive visibility experiments. These are authored inputs,
+// not learned labels or a substitute for the source image reference.
+use engine::plant::{
+    Card, Plant, LEAF_ATLAS, LEAF_PATTERNS, LIMB_VERTICES, card_turn, leaf_at, limb_vertex,
+}
+use std::field::Tube
+use std::gpu::{GlobalId, Rgba8, Sampler, Slots, Texture}
+
+pub struct Vertex: Copy + GpuData {
+    place: vec4, // position XYZ, along U
+    normal: vec4, // normal XYZ, along V
+}
+
+@compute(64)
+pub fn card_info(cards: [Card], n: u32, out: mut Slots<vec4>, id: GlobalId) {
+    if id.x >= n { return }
+    let card = cards[id.x]
+    let turn = card_turn(card, vec2(1.0, 0.0))
+    out[id] = vec4(turn, f32(card.seed % LEAF_PATTERNS), 0.0)
+}
+
+@compute(64)
+pub fn wood_vertices(limbs: [Tube<4>], n: u32, out: mut Slots<Vertex>, id: GlobalId) {
+    if id.x >= n * LIMB_VERTICES { return }
+    let (p, normal, along) = limb_vertex(limbs[id.x / LIMB_VERTICES], id.x % LIMB_VERTICES)
+    out[id] = Vertex { place: vec4(p, along.x), normal: vec4(normal, along.y) }
+}
+
+pub fn wood_cpu(plant: Plant) -> Vec<Vertex> {
+    var out: Vec<Vertex> = Vec::with_capacity(plant.limbs.len() * LIMB_VERTICES)
+    for limb in plant.limbs {
+        for k in 0..LIMB_VERTICES {
+            let (p, normal, along) = limb_vertex(limb, k)
+            out.push(Vertex { place: vec4(p, along.x), normal: vec4(normal, along.y) })
+        }
+    }
+    out
+}
+
+@compute(256)
+pub fn pattern_texels(atlas: Texture<Rgba8>, out: mut Slots<vec4>, id: GlobalId) {
+    if id.x >= LEAF_ATLAS * LEAF_ATLAS { return }
+    out[id] = atlas.load(id.x % LEAF_ATLAS, id.x / LEAF_ATLAS)
+}
+
+// Each pattern's hard material cut on a fixed midpoint grid. Keep the sampled
+// red channel and decoded leaf index too, so a CPU sampler can check the cut.
+@compute(256)
+pub fn pattern_samples(
+    atlas: Texture<Rgba8>,
+    s: Sampler,
+    per_card: u32,
+    grid: u32,
+    out: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    if id.x >= LEAF_PATTERNS * grid * grid { return }
+    let pattern = id.x / (grid * grid)
+    let uv = (vec2(f32(id.x % grid), f32((id.x / grid) % grid)) + vec2(0.5)) * (2.0 / f32(grid)) -
+        vec2(1.0)
+    let (mask, which) = leaf_at(atlas, s, pattern, uv)
+    let kept = mask >= 0.5 && which < per_card
+    out[id] = vec4(mask, f32(which), f32(kept), 0.0)
+}

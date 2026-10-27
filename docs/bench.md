@@ -1679,3 +1679,30 @@ resident compression, whole-foliage performance or G1–G7 pass follows.
 See [full controls and limitations](neural-rendering-progress.md#independent-source-material-field-beside-learned-visibility).
 Manifest `f365b7ae83243e450cf225fdad8a33913a07c083e9a14fee77d56297cd7806b6`; source `7474c288dc082b72d9cd94423efc5f61cc446c283ccc8eb01a53aa9375c132c3`;
 scripts `99620c89af3d8cc0250d19de944873ddc3a7e82c3fccaac14376fa0a750dd36f`.
+
+
+## Source primitive visibility controls (Pop!_OS AMD, 2026-10-27)
+
+[Full methods, raw evidence and limits](neural-source-primitives.md).
+Ryzen 5 5500U / Radeon Graphics RADV RENOIR; Wrela 0.9.0/compiler
+`de9b81e52a7747870dfbd5223cb8aeb41e584d23`, NumPy 2.2.6.
+This is a material-quality/count diagnostic, not a runtime benchmark.
+Full source at 64×64 output pixels is truth; all five moment-error screens
+retain their mean≤1.05×BC / worst-view≤1.10×BC limits.
+
+Full-count ellipses: stored-four coverage MAE
+0.001255631, off-grid-four
+0.001252439; fixed BC is
+0.003223348 /
+0.025882901.
+Both full-count kernels pass 5/5 screens in each group, retaining all
+26,560 source cards plus 7,392 wood triangles. Integration passes
+6/16 at 8→16, 12/16 at 16→32 and 16/16 at 32→64. The smaller count ladder
+and native hard-cut comparisons are in the linked record. All six reduced-count
+primitive variants fail joint stored-view quality; none establishes
+packed/resident compression or GPU cost. Capture and CPU elapsed values
+include compilation/cooking/readback or evaluator/file work.
+
+Evidence manifests: `2a232b363a4f279ae0cb3a70d9c000e327933436989d262d8b223220883e2d39` (source controls),
+`7d55fc50d287fc0457b4d2ff2026f9cf91063bb2c4abda015d260238e34bc55c` (count controls).
+No learned primitive model, production promotion or G1–G7 success.

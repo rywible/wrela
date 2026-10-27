@@ -266,19 +266,32 @@ all 256 stored views and every public dense-integration case.
 
 ![Separate source scalar material before and after fitting](figures/neural-appearance-source-depth.png)
 
+## Source primitive visibility controls
+
+Source-derived, unfitted ellipses and Gaussians now provide stronger
+complete-tree material controls than the current volume. They retain all
+26,560 cards and 7,392 wood triangles. Both pass all five material screens
+on the four stored and four off-grid public directions after independent
+source, wood-raster and numerical-integration checks. Full-count ellipse
+coverage error is 61.05% below BC on the stored mean and
+95.16% below it off-grid. This is an uncompressed conventional
+control, with no learned advantage or G1–G7 success.
+
+[The complete source primitive record](neural-source-primitives.md)
+includes the new `primitives SEED` and `source --part` commands, both kernels,
+all sampling failures, half/quarter/eighth count controls, and native
+hard-cut LOD comparisons. Source-derived positions, areas and materials
+give useful information. All six reduced-count controls fail the joint
+stored-view quality screen despite converged sampling.
+
 ## Next decision
 
-Preserve the useful source material model while attacking visibility and
-inference cost. Test a compact source-position primitive representation
-with explicit visibility ordering, starting from authored card geometry.
-Compare its unfitted source aggregation with a fitted variant at the same
-capacity, then with the strongest practical conventional control.
-
-[Kerbl et al.'s Gaussian-splatting author description](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/)
-is relevant method context, not evidence that Wrela will meet the budget.
-No external code or performance result is imported. Primitive records,
-sorting/tiling, update work and scratch count as representation costs;
-source geometry is not a free runtime input to this comparison.
+Use the verified source primitive controls to fit an aggregation at a fixed
+capacity. Compare the learned variant with the unfitted representation
+using the same primitive budget and with native hard-cut LODs, then with
+the strongest practical conventional control. Full source geometry is
+not a free runtime input. Primitive records, wood geometry, sorting/tiling,
+updates and scratch all count.
 
 Keep fitted-view quality, unseen views and sampling/footprint tests separate.
 A small packed payload alone does not meet G4. Complete production materials,

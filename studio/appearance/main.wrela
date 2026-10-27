@@ -88,10 +88,30 @@ fn probe(b: drive::Build, directory: str) -> Result<(), ToolError> {
     Ok(())
 }
 
-fn capture_geometry(b: drive::Build, directory: str, seed: u32) -> Result<(), ToolError> {
+fn capture_geometry(
+    b: drive::Build,
+    directory: str,
+    seed: u32,
+    primitives: bool,
+) -> Result<(), ToolError> {
     let _ = untrapped("init", drive::steps(b, [Step::Init]).wait()?)?
-    let names = ["geometry.f32", "cards.f32", "volume.f32", "centres.f32", "volume-raw.f32"]
-    for mode in 0..5 {
+    let names = [
+        "geometry.f32",
+        "cards.f32",
+        "volume.f32",
+        "centres.f32",
+        "volume-raw.f32",
+        "card-info.f32",
+        "wood-gpu.f32",
+        "wood-cpu.f32",
+        "pattern-texels.f32",
+        "pattern128.f32",
+        "pattern256.f32",
+        "pattern512.f32",
+    ]
+    let count = if primitives { 12 } else { 5 }
+    for mode in 0..count {
+        if primitives && (mode == 2 || mode == 4) { continue }
         let saw = untrapped(
             "geometry",
             drive::steps(
@@ -121,16 +141,24 @@ fn capture_geometry(b: drive::Build, directory: str, seed: u32) -> Result<(), To
     }
     let metadata = f"asset=great_tree\nseed={seed}\ngeometry=vec4_f32_le;header6_then_clump2_then_limb4\nheader=mid_xyz_half;clumps_limbs_cards_cover;young_rgb_card_size;old_rgb_leaves_per_card;bark_dark_rgb_blend;bark_light_rgb_volume_size\nclump=centre_xyz_radius;squash_zero_zero_zero\nlimb=controlpoint_xyz_radius_times4\ncards=12_f32_le;centre_xyz_width;normal_xyz_crown_depth;unquantized_albedo_rgb_pattern_cover8x8\nvolume=24cubed;z_y_x;8_f32_le;density_normalXYZ;depth_times_density_zero_zero_zero;actual_f16_storage_expanded\ncentres=CPU_card_centres_vec4_f32_le\nvolume_raw=same_volume_equation_in_f32_buffer_for_independent_precision_audit\nvolume_scope=existing_leaf_only_density_no_limbs_not_source_truth\n"
     let _ = files::write(f"{directory}/geometry.txt", metadata.as_bytes()).wait()?
+    if primitives {
+        let detail = String::from(
+            "mode=source_primitives_not_image_truth\ncard_info=4_f32_le;turn_cos_sin,pattern_index,zero\nwood=limb_major_triangle_vertex_order;8_f32_le;position_xyz_U;normal_xyz_V\nwood_vertices_per_limb=1008\npatterns=16;texels=512x512_rgba_f32_from_actual_rgba8;tiles4x4_each128\npattern_samples=pattern_y_x;4_f32_le;filtered_red,leaf_index,hard_cut,zero\npattern_grids=128,256,512;midpoints_in_card_local_minus1_to1;hard_cut=red_greater_equal_half_and_leaf_index_below6\nvolume_exports=omitted_for_primitive_mode\n",
+        )
+        let _ = files::write(f"{directory}/primitives.txt", detail.as_bytes()).wait()?
+    }
     Ok(())
 }
 
 struct SourceConfig: Copy {
     enabled: bool = false,
     geometry: bool = false,
+    primitives: bool = false,
     batch: bool = false,
     compress: bool = false,
     first: u32 = 0,
     count: u32 = 1,
+    part: u32 = 0,
     probe: bool = false,
     px: u32 = 0,
     py: u32 = 0,
@@ -149,28 +177,31 @@ fn capture_source(
     initialize: bool,
 ) -> Result<(), ToolError> {
     if initialize { let _ = untrapped("init", drive::steps(b, [Step::Init]).wait()?)? }
+    var parameters = Vec::from(
+        [
+            Scalar::I32(i32(seed)),
+            Scalar::F32(c.gx),
+            Scalar::F32(c.gy),
+            Scalar::I32(i32(c.size)),
+            Scalar::I32(i32(c.level)),
+            Scalar::I32(i32(c.grid)),
+        ],
+    )
+    let entry = if c.part == 0 { "source_capture" } else { "source_layer_capture" }
+    if c.part != 0 { parameters.push(Scalar::I32(i32(c.part))) }
     let saw = untrapped(
         "source",
         drive::steps(
             b,
-            [
-                Step::Call(
-                    String::from("source_capture"),
-                    Vec::from(
-                        [
-                            Scalar::I32(i32(seed)),
-                            Scalar::F32(c.gx),
-                            Scalar::F32(c.gy),
-                            Scalar::I32(i32(c.size)),
-                            Scalar::I32(i32(c.level)),
-                            Scalar::I32(i32(c.grid)),
-                        ],
-                    ),
-                ),
-            ],
+            [Step::Call(String::from(entry), take parameters)],
             timeout: 600.0,
         ).wait()?,
     )?
+    if c.part != 0 {
+        let part = if c.part == 1 { "leaves" } else { "wood" }
+        let metadata = f"part={part}\nscope=component_diagnostic_not_full_tree_reference\n"
+        let _ = files::write(f"{directory}/source-part.txt", metadata.as_bytes()).wait()?
+    }
     let expected = c.size * c.size * 48
     match saw.ran[0].results[0] {
         Scalar::I32(n) => if u32(n) != expected {
@@ -315,7 +346,7 @@ fn run(seed: u32, only_probe: bool, source: SourceConfig) -> Result<(), ToolErro
     load.timeout = 600.0
     let b = drive::load(f"{directory}/fixture", load).wait()?.build
     let result = if source.geometry {
-        capture_geometry(b, directory.as_str(), seed)
+        capture_geometry(b, directory.as_str(), seed, source.primitives)
     } else if source.batch {
         capture_views(b, directory.as_str(), seed, source)
     } else if source.enabled {
@@ -334,14 +365,15 @@ pub fn tool() -> u32 {
     var seed = 7
     var source = SourceConfig {}
     let only_probe = given.len() == 1 && given[0].as_str() == "bc-probe"
-    if given.len() > 0 && given[0].as_str() == "geometry" {
+    if given.len() > 0 && (given[0].as_str() == "geometry" || given[0].as_str() == "primitives") {
         if given.len() != 2 {
-            print("usage: appearance geometry SEED")
+            print("usage: appearance geometry SEED | primitives SEED")
             return 2
         }
         let Some(n) = given[1].as_str().parse_u32() else { return 2 }
         seed = n
         source.geometry = true
+        source.primitives = given[0].as_str() == "primitives"
     } else if given.len() > 0 && given[0].as_str() == "source-grid" {
         if given.len() != 7 && given.len() != 8 {
             print("usage: appearance source-grid SEED SIZE LEVEL GRID FIRST COUNT [--bc]")
@@ -372,8 +404,10 @@ pub fn tool() -> u32 {
             source.compress = true
         }
     } else if given.len() > 0 && given[0].as_str() == "source" {
-        if given.len() != 7 && given.len() != 10 {
-            print("usage: appearance source SEED GX GY SIZE LEVEL GRID [--pixel X Y]")
+        if given.len() != 7 && given.len() != 9 && given.len() != 10 {
+            print(
+                "usage: appearance source SEED GX GY SIZE LEVEL GRID [--pixel X Y | --part all|leaves|wood]",
+            )
             return 2
         }
         let Some(n) = given[1].as_str().parse_u32() else { return 2 }
@@ -397,6 +431,15 @@ pub fn tool() -> u32 {
         }
         seed = n
         source = SourceConfig { enabled: true, gx, gy, size, level, grid }
+        if given.len() == 9 {
+            if given[7].as_str() != "--part" { return 2 }
+            source.part = match given[8].as_str() {
+                "all" => 0,
+                "leaves" => 1,
+                "wood" => 2,
+                _ => return 2,
+            }
+        }
         if given.len() == 10 {
             if given[7].as_str() != "--pixel" { return 2 }
             let Some(px) = given[8].as_str().parse_u32() else { return 2 }
