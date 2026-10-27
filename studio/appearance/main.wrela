@@ -1,0 +1,140 @@
+// Export actual AMD-decoded conventional/neural representations from one authored
+// crown, plus packed blocks and model bytes for independent CPU checks.
+use std::io::print
+use std::tool::{ToolError, args, drive, files, time, toolchain}
+use std::tool::drive::{Scalar, Step}
+use toolkit::driven::untrapped
+use toolkit::whole::{chunked, data_bytes, joined, write_file}
+
+fn capture(b: drive::Build, directory: str, seed: u32) -> Result<(), ToolError> {
+    let _ = untrapped("init", drive::steps(b, [Step::Init], timeout: 600.0).wait()?)?
+    let _ = untrapped(
+        "generate",
+        drive::steps(
+            b,
+            [
+                Step::Call(String::from("generate"), Vec::from([Scalar::I32(i32(seed))])),
+            ],
+            timeout: 600.0,
+        ).wait()?,
+    )?
+    let names = [
+        "bake.f32",
+        "bc.f32",
+        "legacy.f32",
+        "colour.bc7",
+        "normal.bc5",
+        "depth.bc5",
+        "legacy.half",
+    ]
+    for mode in 0..7 {
+        let saw = untrapped(
+            "publish",
+            drive::steps(
+                b,
+                [
+                    Step::Call(String::from("publish"), Vec::from([Scalar::I32(i32(mode))])),
+                ],
+                timeout: 600.0,
+            ).wait()?,
+        )?
+        let expected = match saw.ran[0].results[0] {
+            Scalar::I32(n) => u32(n),
+            _ => return Err(ToolError::new("publish did not return a byte count")),
+        }
+        let ids = untrapped("buffers", drive::steps(b, [Step::Buffers]).wait()?)?
+        borrow buffers = ids.buffers[0]
+        let id = buffers[buffers.len() - 1]
+        var read = untrapped(
+            "representation",
+            drive::steps(b, [Step::ReadBuffer(id)], timeout: 600.0).wait()?,
+        )?
+        let bytes = joined(data_bytes(read.bytes.remove(0))?)
+        if bytes.len() != expected { return Err(ToolError::new("wrong representation byte count")) }
+        if mode <= 2 {
+            for k in 0..bytes.len() / 4 {
+                let word = u32(bytes[k * 4]) |
+                    (u32(bytes[k * 4 + 1]) << 8) |
+                    (u32(bytes[k * 4 + 2]) << 16) |
+                    (u32(bytes[k * 4 + 3]) << 24)
+                if (word & 0x7f800000) == 0x7f800000 {
+                    return Err(ToolError::new("non-finite representation"))
+                }
+            }
+        }
+        write_file(f"{directory}/{names[mode]}", chunked(take bytes))?
+        print(f"appearance: exported {names[mode]} ({expected} bytes)")
+    }
+    let metadata = f"asset=great_tree\nseed={seed}\natlas_width=1024\natlas_height=1024\nviews=16x16\ncell=64\nlayout=atlas_row_major_8_f32_le\nchannels=sqrt_albedo_rgb,coverage,oct_normal_xy,toward,depth\nreference=existing_uncompressed_bake_not_converged_source_truth\nbc=existing_mode6_bc7_plus_two_bc5_not_exhaustive_best_encoder\nlegacy=model_from_content_kit_great_tree_net\nlegacy_train_views=all_except_view_mod_16_eq_15\nlegacy_train_seed=7\ntrack=public_asset_specialization_diagnostic_not_G4_or_G7_acceptance\n"
+    let _ = files::write(f"{directory}/capture.txt", metadata.as_bytes()).wait()?
+    Ok(())
+}
+
+fn probe(b: drive::Build, directory: str) -> Result<(), ToolError> {
+    let _ = untrapped("init", drive::steps(b, [Step::Init]).wait()?)?
+    let _ = untrapped(
+        "bc probe",
+        drive::steps(b, [
+            Step::Call(String::from("bc_probe"), Vec::new()),
+        ], timeout: 600.0).wait()?,
+    )?
+    let ids = untrapped("buffers", drive::steps(b, [Step::Buffers]).wait()?)?
+    borrow buffers = ids.buffers[0]
+    let id = buffers[buffers.len() - 1]
+    var read = untrapped("probe read", drive::steps(b, [Step::ReadBuffer(id)]).wait()?)?
+    let bytes = joined(data_bytes(read.bytes.remove(0))?)
+    if bytes.len() != 1024 * 1024 * 16 { return Err(ToolError::new("wrong probe byte count")) }
+    write_file(f"{directory}/bc-probe.f32", chunked(take bytes))?
+    Ok(())
+}
+
+fn run(seed: u32, only_probe: bool) -> Result<(), ToolError> {
+    let now = time::utc_now().wait()?
+    let directory = f"out/runs/{now.seconds}-{now.nanos}"
+    if files::stat(directory.as_str()).wait().is_ok() { return Err(ToolError::new("run exists")) }
+    print(f"appearance: writing {directory}")
+    var opt = toolchain::options()
+    opt.optimize = true
+    opt.timeout = 600.0
+    let built = toolchain::build(
+        "ws/studio/appearance/fixture",
+        f"{directory}/fixture",
+        opt,
+    ).wait()?
+    if !built.ok {
+        for d in built.diagnostics { if d.error { print(d.rendered.as_str()) } }
+        return Err(ToolError::new("appearance fixture did not build"))
+    }
+    var load = drive::gpu()
+    load.workers = 1
+    load.timeout = 600.0
+    let b = drive::load(f"{directory}/fixture", load).wait()?.build
+    let result = if only_probe { probe(b, directory.as_str()) } else {
+        capture(b, directory.as_str(), seed)
+    }
+    let closed = drive::close(b).wait()
+    (take result)?
+    let _ = (take closed)?
+    Ok(())
+}
+
+pub fn tool() -> u32 {
+    let given = args()
+    var seed = 7
+    let only_probe = given.len() == 1 && given[0].as_str() == "bc-probe"
+    if given.len() != 0 && !only_probe {
+        if given.len() != 2 || given[0].as_str() != "--seed" {
+            print("usage: wrela tool appearance -- [--seed 7] | bc-probe")
+            return 2
+        }
+        let Some(n) = given[1].as_str().parse_u32() else { return 2 }
+        seed = n
+    }
+    match run(seed, only_probe) {
+        Ok(()) => 0,
+        Err(e) => {
+            print(f"appearance: {e.message()}")
+            1
+        },
+    }
+}

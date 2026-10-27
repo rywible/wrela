@@ -48,6 +48,8 @@ members = [
     "studio/passes",
     "studio/export",
     "studio/fit",
+    "studio/appearance",
+    "studio/appearance/fixture",
     "studio/reconstruct",
     "studio/reconstruct/edges",
     "studio/reconstruct/fixture",
@@ -96,6 +98,7 @@ allow = [
     "docs/world-class-next.md",
     "docs/neural-rendering-research.md",
     "docs/neural-kernel-reconstruction.md",
+    "docs/neural-appearance.md",
     "docs/neural-rendering-goals.md",
     "docs/neural-rendering-progress.md",
     "docs/plan-world-class-2.md",
@@ -244,3 +247,9 @@ timeout = 3600
 package = "studio/reconstruct"
 read = ["ws=."]
 write = ["out=build/reconstruct"]
+
+# Authored foliage representation diagnostics; actual decoded fields and packed payloads.
+[tools.appearance]
+package = "studio/appearance"
+read = ["ws=."]
+write = ["out=build/appearance"]

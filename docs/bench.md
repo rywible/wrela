@@ -1469,3 +1469,50 @@ Capture source `525dcd47275091ab034c62b1ee0dafec819f43c117c262c5a2276c4646a1fdc7
 `ebb6849cc253588fce6bae0203515af41fbb100f20e453ae25dd953a1ab87f04`.
 [The development record](neural-rendering-progress.md#preparing-the-kernels-shared-geometry-terms)
 details independent table checks, controls, numerical bounds and limitations.
+
+
+## 2026-10-27 UTC AMD authored foliage representation audit
+
+Base `e6170e4c`, Pop!_OS AMD Ryzen 5 5500U / RADV RENOIR PCI 1002:164c,
+Mesa 26.1.6-1pop0~1787580452~24.04~a5619ea, Linux 7.1.5-76070105-generic,
+Wrela 0.9.0/compiler `de9b81e52a7747870dfbd5223cb8aeb41e584d23`.
+The actual great-tree bake has 256 views of 64² texels. Seed 7 is the shipped
+model's training individual. The target is the existing uncompressed bake,
+**not a converged source-scene reference**. GPU readbacks export all eight
+attributes, current BC7/BC5 blocks and the exact shipped half weights.
+
+| Representation | Payload KiB | Legacy weighted attribute PSNR dB | Coverage precision / recall at 0.5 | Covered normal mean / p95 degrees |
+| --- | ---: | ---: | ---: | ---: |
+| Existing BC7 + two BC5 | 3072.00 | 37.623 | 100.00% / 100.00% | 5.77 / 13.33 |
+| Shipped coordinate/grid MLP | 22.58 | 13.854 | 80.91% / 83.08% | 59.96 / 133.00 |
+| Per-view quantized grid trial | 83.64 | 17.752 | 91.42% / 95.91% | 55.08 / 123.54 |
+
+Payload is serialized attribute/model data only, not complete resident memory.
+The plain GPU bake uses 12 MiB; the f32 eight-channel diagnostic readback uses 32 MiB.
+The instrument intentionally holds multiple representations, output buffers and
+scratch; its allocations are not a deployed-memory comparison. BC is the
+engine's current mode-6 encoder, not a proven strongest conventional encoder.
+
+The PSNR reproduces the existing trainer's combined coverage-weighted sqrt-albedo
+and coverage formula. It is **not** G4's display-image PSNR. Coverage is a static
+texel threshold diagnostic, not G3's motion/strand gate. Per-view and separate
+albedo, coverage, normal, toward and depth results are retained.
+
+The trial fits all 256 views, whereas the shipped network held out every 16th
+view. The table describes atlas reconstruction, not fair unseen-view performance.
+It used 4,096 fixed Adam steps of 4,096 positions, four CPU threads and PyTorch
+2.5.1+cpu. Fit time was 30.705 s after data loading;
+CPU decode of the full atlas took 0.546 s.
+These exclude build/data generation, validation and installation, and do not
+establish G7. No browser/GPU inference/full-foliage-pass timing is claimed.
+
+The candidate is rejected despite the better training reconstruction. Its
+85,648-byte payload alone cannot prove 16× resident compression; normal errors
+and damaged coverage already prevent quality acceptance. No model is installed.
+
+Evidence: `build/neural-evidence/appearance-baseline-v1/manifest.json` and
+`appearance-grid-v1/manifest.json` on Pop!_OS. Final source archive
+`fd13bcdba8dc017b9b899a8ef1efb974cb706bc989be61d9052c23830c30c84f`; external scripts
+`ad3de7bf4ac0e9188028179157d8c48124cb6173d2153f1f9afb6a09923d2954`.
+[Audit, calibration and limitations](neural-rendering-progress.md#authored-foliage-audits-and-a-rejected-quantized-grid).
+G1–G7 remain unchanged and unmet.

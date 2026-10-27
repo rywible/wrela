@@ -1292,3 +1292,70 @@ Capture source `525dcd47275091ab034c62b1ee0dafec819f43c117c262c5a2276c4646a1fdc7
 `729e9b0cdaecf8bb55e1270cf6d0752eed691079c3c2e3b8b3149833b24cbb8f`; external scripts
 `ebb6849cc253588fce6bae0203515af41fbb100f20e453ae25dd953a1ab87f04`. Focused checks, formatting, allow-list
 and diff checks pass. This is not a full-suite or PR-readiness claim.
+
+
+## Authored foliage audits and a rejected quantized grid
+
+The new `studio/appearance` tool audits a real authored great-tree crown.
+It exports every texel of the uncompressed bake, current compressed atlas and
+shipped network on AMD, plus the exact compressed blocks and model payload.
+Seven payloads match byte for byte across the repeated seed 7 capture and again
+after adding the decoder probe. Seed 11 changes the bake while the frozen
+seed 7 network returns the same output, as expected; this perturbation is a
+diagnostic, not a new-asset specialization success.
+
+Independent BC7 mode 6 decoding matches GPU output exactly. The initial ideal
+BC5 verifier fails: normal/depth errors exceed its 1/255 allowance, with an
+example 3/7 interpolation returning 27/64 on this device. That failure is retained.
+An independent controlled probe covers all 65,536 byte-endpoint pairs and every
+index in both channels, 2,097,152 values including repeats. The predeclared
+six-bit-weight hypothesis matches within 1.49011612e-8. Wrong index ordering
+fails by 1.0. The empirically calibrated replay then checks both crowns'
+actual BC5 payloads within 1.49011612e-8. The ideal differences remain reported;
+no format-conformance or portability claim is made, and no goal is relaxed.
+
+The shipped half network independently replays at 1,024 deterministic texels
+within 4.76837158e-7 of the actual GPU output. Channel-permutation negatives
+fail. This establishes that the bad quality is present in the representation,
+rather than assuming a shader/trainer mismatch is the cause.
+
+| Representation | Payload KiB | Legacy weighted attribute PSNR dB | Coverage precision / recall at 0.5 | Covered normal mean / p95 degrees |
+| --- | ---: | ---: | ---: | ---: |
+| Existing BC7 + two BC5 | 3072.00 | 37.623 | 100.00% / 100.00% | 5.77 / 13.33 |
+| Shipped coordinate/grid MLP | 22.58 | 13.854 | 80.91% / 83.08% | 59.96 / 133.00 |
+| Per-view quantized grid trial | 83.64 | 17.752 | 91.42% / 95.91% | 55.08 / 123.54 |
+
+This is a diagnostic weighted attribute PSNR, not G4 display PSNR. Static
+coverage precision/recall is not a G3 motion or strand result. Normal errors
+are measured on source-covered texels. Full per-view/channel tables for
+both seed 7 and seed 11 are retained. The BC encoder is the current engine
+control, not an exhaustive best-encoder comparison.
+
+The fixed quantized per-view trial uses four-bit fine/coarse features and a
+half-weight 16→32→32→8 decoder. It improves coarse coverage structure but still
+loses leaf holes and predicts near-average normals. The actual packed payload
+independently decodes within 7.15255737e-7 of the training
+implementation; swapping a latent axis fails by 1.099882.
+**Rejected.** It is not integrated into the renderer or promoted.
+
+This trial fitted all 256 atlas views; the shipped model used a 16-view holdout.
+No unseen-view or fair holdout win is claimed. Fitting took
+30.705 s after data loading, but data generation, validation and
+installation remain separate, and only one public asset was specialized.
+No G7 five-minute success rate follows. The 85,648-byte payload omits future
+cache/scratch/fallback allocation and cannot establish G4 resident compression.
+The original bake is not independent converged source truth.
+
+The [research note](neural-appearance.md) cites the feature-pyramid prior art,
+records our architecture and explains the next source-geometry sharing hypothesis.
+The normal/depth/silhouette relationship must survive compression and changed
+views. Before another runtime integration, generate independent off-grid source
+views and compare stronger conventional representations. More optimisation of a
+rejected blurred representation would not resolve this measured quality gap.
+
+Evidence on Pop!_OS: `build/neural-evidence/appearance-baseline-v1/manifest.json`
+and `appearance-grid-v1/manifest.json`. Final source archive
+`fd13bcdba8dc017b9b899a8ef1efb974cb706bc989be61d9052c23830c30c84f`; external scripts
+`ad3de7bf4ac0e9188028179157d8c48124cb6173d2153f1f9afb6a09923d2954`. Focused tool/fixture checks,
+formatting, allow-list and diff checks pass. No full-suite or PR-readiness claim.
+G1–G7 remain unchanged and unmet.

@@ -1,0 +1,185 @@
+// Representation audit of a real authored crown. The target is the current bake,
+// not a converged source-scene reference or a G4 acceptance test.
+use engine::compress::{encode_bc5, encode_bc7}
+use engine::impostor::{ATLAS, CELL, Neural, VIEWS, net_texel}
+use engine::plant::leaf_atlas
+use engine::vegetation::kind
+use great_tree::tree::great_tree
+use kit::great_tree_net::{GREAT_TREE, GREAT_TREE_FEATURES, GREAT_TREE_GRID, GREAT_TREE_MODEL}
+use std::gpu::{
+    Bc5, Bc7, GlobalId, GpuBuffer, Half2, Rgba8, Rgba16Float, Slots, Texture, buffer, buffer_of,
+    copy, copy_buffer_to_texture, dispatch, sampler, texture,
+}
+
+pub struct Fields: Copy + GpuData {
+    pub colour: vec4,
+    pub geometry: vec4,
+}
+
+@compute(64)
+fn decoded(
+    mode: u32,
+    colour: Texture<Rgba8>,
+    normal: Texture<Rgba16Float>,
+    bc_colour: Texture<Bc7>,
+    bc_normal: Texture<Bc5>,
+    bc_depth: Texture<Bc5>,
+    weights: [Half2],
+    out: mut Slots<Fields>,
+    id: GlobalId,
+) {
+    if id.x >= ATLAS * ATLAS { return }
+    let x = id.x % ATLAS
+    let y = id.x / ATLAS
+    if mode == 0 {
+        out[id] = Fields { colour: colour.load(x, y), geometry: normal.load(x, y) }
+    } else if mode == 1 {
+        out[id] = Fields {
+            colour: bc_colour.load(x, y),
+            geometry: vec4(bc_normal.load(x, y).xy * 2.0 - vec2(1.0), bc_depth.load(x, y).xy),
+        }
+    } else {
+        let nn = Neural {
+            model: GREAT_TREE_MODEL,
+            grid: GREAT_TREE_GRID,
+            features: GREAT_TREE_FEATURES,
+            on: 1,
+        }
+        let cell = (y / CELL) * VIEWS + x / CELL
+        let t = net_texel(nn, weights, (vec2(f32(x), f32(y)) + vec2(0.5)) / f32(ATLAS), cell)
+        out[id] = Fields {
+            colour: vec4(t[0], t[1], t[2], t[3]),
+            geometry: vec4(t[4], t[5], t[6], t[7]),
+        }
+    }
+}
+
+pub struct State {
+    ready: bool,
+    colour: Texture<Rgba8>,
+    normal: Texture<Rgba16Float>,
+    bc_colour: Texture<Bc7>,
+    bc_normal: Texture<Bc5>,
+    bc_depth: Texture<Bc5>,
+    colour_words: GpuBuffer<u32>,
+    normal_words: GpuBuffer<u32>,
+    depth_words: GpuBuffer<u32>,
+    weights: GpuBuffer<Half2>,
+    fields: GpuBuffer<Fields>,
+    words: GpuBuffer<u32>,
+    model: GpuBuffer<Half2>,
+    probe: GpuBuffer<vec4>,
+}
+
+pub fn init() -> State {
+    State {
+        ready: false,
+        colour: texture(width: 1, height: 1),
+        normal: texture(width: 1, height: 1),
+        bc_colour: texture(width: 4, height: 4),
+        bc_normal: texture(width: 4, height: 4),
+        bc_depth: texture(width: 4, height: 4),
+        colour_words: buffer(1),
+        normal_words: buffer(1),
+        depth_words: buffer(1),
+        weights: buffer_of(GREAT_TREE, at_least: 1),
+        fields: buffer(1),
+        words: buffer(1),
+        model: buffer(1),
+        probe: buffer(1),
+    }
+}
+
+pub fn generate(s: mut State, seed: u32) {
+    assert(!s.ready)
+    let k = kind(great_tree(), seed, leaf_atlas(6), sampler())
+    s.colour = take k.impostor.colour
+    s.normal = take k.impostor.normal
+    s.bc_colour = texture(width: ATLAS, height: ATLAS)
+    s.bc_normal = texture(width: ATLAS, height: ATLAS)
+    s.bc_depth = texture(width: ATLAS, height: ATLAS)
+    let blocks = vec2u(ATLAS / 4)
+    let count = blocks.x * blocks.y
+    s.colour_words = buffer(count * 4)
+    s.normal_words = buffer(count * 4)
+    s.depth_words = buffer(count * 4)
+    dispatch(encode_bc7.bind(s.colour, blocks, mut s.colour_words), over: count)
+    copy_buffer_to_texture(s.colour_words.items(), s.bc_colour.level_mut(0))
+    dispatch(
+        encode_bc5.bind(s.normal, which: 0, blocks: blocks, out: mut s.normal_words),
+        over: count,
+    )
+    copy_buffer_to_texture(s.normal_words.items(), s.bc_normal.level_mut(0))
+    dispatch(
+        encode_bc5.bind(s.normal, which: 1, blocks: blocks, out: mut s.depth_words),
+        over: count,
+    )
+    copy_buffer_to_texture(s.depth_words.items(), s.bc_depth.level_mut(0))
+    s.ready = true
+}
+
+// The newly allocated last buffer is exported by the tool. Modes 0..2 are eight
+// floats per texel; 3..5 are packed BC blocks; 6 is the exact shipped half model.
+pub fn publish(s: mut State, mode: u32) -> u32 {
+    assert(s.ready && mode <= 6)
+    if mode <= 2 {
+        s.fields = buffer(ATLAS * ATLAS)
+        dispatch(
+            decoded.bind(
+                mode,
+                s.colour,
+                s.normal,
+                s.bc_colour,
+                s.bc_normal,
+                s.bc_depth,
+                s.weights.items(),
+                mut s.fields,
+            ),
+            over: ATLAS * ATLAS,
+        )
+        return ATLAS * ATLAS * 32
+    }
+    if mode == 6 {
+        s.model = buffer(s.weights.len())
+        copy(s.weights.items(), s.model.items_mut())
+        return s.weights.len() * 4
+    }
+    s.words = buffer(ATLAS * ATLAS / 4)
+    let source = if mode == 3 { s.colour_words.items() } else if mode == 4 {
+        s.normal_words.items()
+    } else { s.depth_words.items() }
+    copy(source, s.words.items_mut())
+    s.words.len() * 4
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {}
+
+// Controlled decoder probe: every pair of byte endpoints and every index.
+// Channels swap the endpoints, covering both BC4 palette branches independently.
+@compute(64)
+fn probe_decode(from: Texture<Bc5>, out: mut Slots<vec4>, id: GlobalId) {
+    if id.x < ATLAS * ATLAS {
+        let value: vec2 = from.load(x: id.x % ATLAS, y: id.x / ATLAS)
+        out[id] = vec4(value, 0.0, 1.0)
+    }
+}
+
+pub fn bc_probe(s: mut State) -> u32 {
+    assert(!s.ready)
+    var words: Vec<u32> = Vec::with_capacity(256 * 256 * 4)
+    for a in 0..256 {
+        for b in 0..256 {
+            words.push(a | (b << 8) | 3330801664)
+            words.push(4207315194)
+            words.push(b | (a << 8) | 3330801664)
+            words.push(4207315194)
+        }
+    }
+    s.normal_words = buffer_of(words, at_least: 1)
+    s.bc_normal = texture(width: ATLAS, height: ATLAS)
+    copy_buffer_to_texture(s.normal_words.items(), s.bc_normal.level_mut(0))
+    s.probe = buffer(ATLAS * ATLAS)
+    dispatch(probe_decode.bind(s.bc_normal, mut s.probe), over: ATLAS * ATLAS)
+    s.ready = true
+    ATLAS * ATLAS * 16
+}
