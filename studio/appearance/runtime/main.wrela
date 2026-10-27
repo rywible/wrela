@@ -137,7 +137,12 @@ fn alpha_of(v: OpticalVertex) -> f32 {
         2.0 * v.delta.x * v.delta.y * inverse.y +
         v.delta.y * v.delta.y * inverse.z
     if q > 18.0 { return 0.0 }
-    let t = v.tau.value * exp(-0.5 * q)
+    // The squared-q profile has integral pi^2*sqrt(det) and the same
+    // nominal untruncated covariance. At q<=18 its covariance is 0.1112% larger.
+    // Account for the Gaussian's finite-support mass normalization.
+    let t = if profile::SHAPE == 0 { v.tau.value * exp(-0.5 * q) } else {
+        v.tau.value * 0.636541206 * exp(-q * q / 12.566370614)
+    }
     // Avoid cancellation for the very small optical tail.
     if t < 0.01 { t * (1.0 - t * (0.5 - t / 6.0)) } else { 1.0 - exp(-t) }
 }
@@ -515,7 +520,7 @@ pub struct State {
 }
 
 pub fn init() -> State {
-    assert(config::MODE <= 9 && config::AA > 0)
+    assert(config::MODE <= 9 && config::AA > 0 && profile::SHAPE <= 1)
     if config::MODE == 0 {
         assert(data::COLOUR.len() == 262144, "restore the archived BC payload first")
     }

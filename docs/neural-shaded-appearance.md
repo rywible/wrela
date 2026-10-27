@@ -754,3 +754,141 @@ under build/neural-evidence/g4-joint-field-v1 on Pop!_OS. The runnable rejected 
 is studio/appearance/joint; appearance joint-runtime [FIRST COUNT] captures it.
 The first complete comparison and the follow-up decision finished within the block's
 two-hour deadline. Manifest SHA-256: `d412e61a93664caa3724d00759759a626d93d4d90027affd462af81410ef40fa`.
+
+
+## Source anchors: preserve order, change local appearance
+
+**Decision: change the representation; retain ordered rendering and exact wood.** Do not
+promote any of these 88-element models. A fixed quota of two elements per authored clump
+loses to ordinary spatial grouping, both before and after equal-budget shaded-image fitting.
+No neural-specific advantage or G4 pass is demonstrated.
+
+The previous image/camera field lost projection and silhouette. This block instead keeps
+the established 5D joint position/pattern optical elements, production shading before
+blending, per-view depth sorting, four-point spatial integration and exact authored wood.
+It reduces foliage from 1,897 elements to 88. The two initial conventional controls use
+the identical 26,560 source cards, cutout-pattern moments, material information and
+covariance/mass aggregation. One reproduces source ownership across the 44 authored clumps
+and places two elements in each; the other spatially groups all cards into 88 elements.
+Both get eight fixed grouping iterations. The source ownership arithmetic is checked
+against every card's normalized authored shell radius. No image labels select these
+initial controls.
+
+These are explicit optical representations, not MLP decoders. The second follow-up fits
+their numbers by differentiating shaded rendering; it does not turn them into a runtime
+neural network. Source definitions are in [plant.wrela](../engine/plant.wrela) and
+[great-tree/tree.wrela](../content/great-tree/tree.wrela). The source-only aggregation and
+rendering reuse the previously verified optical primitive machinery.
+
+| Variant | Mean PSNR dB ↑ | Mean FLIP ↓ | Mean LPIPS ↓ | Complete GPU p95/p99 ms | CPU start to final GPU completion p95/p99 ms | Numeric quality passes vs BC |
+|---|---:|---:|---:|---:|---:|---:|
+| source-88 | 28.426 | 0.08018 | 0.11304 | 0.211/0.212 | 4.510/4.659 | 1/24 |
+| global-88 | 29.966 | 0.06103 | 0.06585 | 0.205/0.206 | 4.210/4.427 | 8/24 |
+| source-88-square | 28.649 | 0.07861 | 0.08598 | 0.211/0.211 | 1.952/3.595 | 3/24 |
+| global-88-square | 30.161 | 0.06027 | 0.04453 | 0.205/0.205 | 4.176/4.448 | 11/24 |
+| source-88-square-fit | 31.895 | 0.04479 | 0.05424 | 0.212/0.213 | 4.380/4.613 | 8/24 |
+| global-88-square-fit | 32.424 | 0.04013 | 0.04164 | 0.210/0.211 | 4.170/4.268 | 13/24 |
+
+All six use 4,928 bytes of optical parameters, 1,408 serialized wood bytes and 32 common
+metadata bytes: **6,368 packed bytes**, 16.91× smaller than the frozen best's 107,672 bytes.
+That is not a resident-memory or matched-quality win. All six actually allocate
+**613,500 live / 629,884 peak requested GPU bytes**. Excluding the identical 65,536-byte
+output, engine appearance and scratch total 203,900 bytes: 196,608 bytes are the AA2
+colour/depth attachments; the remainder includes optical data, wood, sorting indices and
+inactive helper resources. Host rings, uniform storage, screen target and output account
+for the remaining common 409,600 bytes. Full resource lifetime logs and CPU/WASM memory
+are retained; no hidden source-card cache or fallback atlas supplies the compact output.
+
+The preserved best measured 40.128 dB, 0.01235 FLIP and 0.00189 LPIPS, with prior GPU
+p95/p99 0.314/0.316ms and 721,852 live requested GPU bytes. These same-machine results
+are reused, not newly paired timing estimates. The compact spatial fit is faster and uses
+about 15% less total live GPU allocation, but is **7.70 dB worse**. It also fails 11 of 24
+numeric quality comparisons against BC, whose mean PSNR is 30.685dB. Smaller/faster at
+lower quality does not meet G4.
+
+### Exactly two targeted experiments
+
+1. **Sharper optical profile, no training.** Replace the Gaussian optical density
+   exp(−q/2) with a normalized exp(−q²/(4π)), retaining every source-derived element,
+   its nominal covariance, integrated mass, bounds, material and draw order.
+   The integral over q is π rather than 2, giving the amplitude factor 2/π;
+   the existing Gaussian's finite-support normalization is also included.
+   At the retained q≤18 cutoff, integrated mass agrees to about 2e-9 relative, while
+   the sharper kernel's finite-support covariance is 0.1112% larger. The initial
+   plan's “same covariance” means nominal untruncated covariance; the numerical
+   clarification is preserved in the evidence. Spatial grouping improves by only
+   0.195dB, although LPIPS falls 32.4%. Both controls receive the same profile.
+2. **Direct shaded-image fitting at the same capacity.** Fit both initializations for
+   2,048 steps, with the same seed, sampling sequence, constraints, optimizer rates,
+   loss and fixed endpoint. Each step samples one of the existing 128 AA8 teacher
+   poses, one of four lights and 1,024 pixels, rendered at the same four spatial
+   points as the AMD path. The loss is display RGB over the three established
+   backgrounds plus coverage, with foreground weighting. There is **no material-moment
+   objective**. The public AA64 test views are excluded from training. The frozen
+   1,897-element model and reference captures are unchanged.
+
+The direct fit raises spatial grouping from 30.161 to **32.424dB**, and source grouping
+from 28.649 to **31.895dB**. On the separate 16-pose AA8 teacher validation set, the final
+means are 31.445 and 31.028dB respectively. The endpoint is not chosen using public
+reference scores. Both optimization slots are now exhausted.
+
+### What still fails
+
+The best compact fit has coverage MAE **0.02360**, versus **0.00883** for the frozen best.
+Worst symmetric silhouette boundary p99 is **2.86 pixels**, versus **1.41 pixels**.
+Inside mostly opaque reference pixels, conditional foreground display-colour MSE is
+0.001256 versus 0.000170 for the frozen model—about 7.4× higher. This interior diagnostic
+does not mask or replace any pixel in the full-image scores. Both visible shape and
+local shaded response need more expressive models; another global opacity adjustment
+cannot address the colour error.
+
+![Reference, frozen ordered model, fitted source groups and fitted spatial groups; same display transform and 4× nearest enlargement](figures/neural-source-anchors.png)
+
+**Next bet:** retain spatial anchors, explicit ordering and exact wood, but replace one
+constant material response per broad element with a shared local opacity/radiance decoder
+conditioned on local geometry and source-field features. Give conventional local
+functions the same features. Use authored clumps as conditioning information rather than
+forcing every clump to receive the same capacity. That proposal remains unproven.
+
+### Verification, residency and provenance
+
+The initial strict CPU/GPU maximum-RGBA discrepancy limit of 0.002 failed at a wood edge;
+the failed check and log are preserved. The CPU training approximation uses the existing
+triangle query and f32 optical accumulation, whereas the GPU uses raster edge rules and
+f16 target blending. The discrepancy is quantified, not silently treated as byte parity:
+the initial maximum RGBA difference was 0.02357, but displayed-image discrepancy was
+at most 0.00809% of the actual GPU reference MSE. After fitting, the corresponding maximum
+fraction is 0.01375%. Both are below the declared 1% surrogate-error limit; final claims
+use actual AMD output. The new differentiable shading agrees with the independent
+material equation, and eight parameter groups pass smooth finite-difference checks.
+No additional reference or capture system was built to eliminate a difference too small
+to affect this decision.
+
+The complete runtime measurements include decoding, projection, sorting/index uploads,
+visibility, wood, integration, view/light updates and final compositing. Completion timing
+also includes browser/driver notification and is not input-to-photon. Paced/saturated
+timings, CPU tails and all allocations are preserved separately. Actual DRM resident-memory
+and browser PSS snapshots are retained; they include exposed retained driver/client
+allocations and caches, but not proven transient physical peaks or per-asset attribution.
+Overlapping UMA counters must not be added.
+
+For the final spatial fit specifically, CPU frame p99 is 0.544 ms and saturated GPU p95
+is 0.0549 ms. Its actual client snapshots report 17,305,600 resident VRAM bytes,
+9,740,288 resident GTT bytes and 476,049,408 browser-group PSS bytes, separately.
+WASM reports 30,474,240 used bytes and a 1 GiB virtual reservation; virtual reservation
+is not physical residency. These figures retain host/driver overhead rather than
+equating the 6,368-byte payload with memory consumed by the complete renderer.
+
+
+This is still one static tree, four known controlled lights and a 64-pixel footprint.
+No wind, unseen-light, transport, 8–512-pixel, new-individual or full-family claim is made.
+The format/type checks pass and the restored default reproduces all eight original
+outputs byte for byte. G1–G7 remain unchanged and unmet; no full-suite/PR-readiness claim
+is made.
+
+Evidence lives at build/neural-evidence/g4-source-anchors-v1 on Pop!_OS: all six variants,
+both fitted checkpoints, grouping ownership, training curves, teacher dependencies,
+wood training caches, failed and successful checks, source builds, raw GPU pixels,
+metrics, allocation/completion logs, physical-residency snapshots and the decision.
+First measurements and both follow-ups finished within the two-hour block.
+Manifest SHA-256: `bd5636383b51a19ff6f258290ad5608294e9112b58b5518bbb7880c9a36b01dd`.

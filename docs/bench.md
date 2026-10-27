@@ -2000,3 +2000,33 @@ Decision:retire tested global image/camera factorization;next source-anchored lo
 visibility,explicit support/order and exact wood. G1–G7 unchanged.
 [Full comparison, image and evidence](neural-shaded-appearance.md#joint-shaded-light-field-retire-imagecamera-factorization).
 Evidence:build/neural-evidence/g4-joint-field-v1 on Pop!_OS.
+
+
+### 2026-10-27 — G4 compact source anchors, two follow-ups, no promotion
+
+Measured on Pop!_OS, Ryzen5 5500U / AMD RADV RENOIR, Mesa26.1.6, Chrome154.0.8037.57;
+Wrela0.9.0 compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23. Source parent:
+91002cb9daa06098b59b48947d58dac12818ca6a, plus archived experimental source.
+Solo; sequential CPU fitting, builds, native captures, Chrome profiles and scoring.
+
+Two 88-element source-only groupings, two sharper-profile variants and two fixed
+2,048-step shaded-image fits. No material-moment fitting. Existing 128 training /
+16 validation AA8 teacher poses and AA64 public truth are reused. Profiles: 64×64,
+240 measured frames after 60 warmup frames, one worker. Complete rendering includes
+exact wood, sort/uploads, ordered visibility, shading/integration and compositing.
+
+Best compact spatial fit: 32.424 dB, 0.04013 FLIP, 0.04164 LPIPS; GPU p95/p99
+0.210/0.211 ms; 6,368 packed bytes; 613,500 live / 629,884 peak requested GPU bytes.
+It passes 13/24 numeric quality cases versus BC and is 7.70 dB below the frozen best.
+Full residency snapshots and CPU-to-final-GPU completion are retained; overlapping
+UMA counters must not be summed.
+
+Eight new shaded-gradient parameter groups pass. The strict CPU/GPU maximum RGBA
+check failed at a wood edge and is retained; displayed discrepancy is below 0.014%
+of actual GPU reference MSE after fitting. GPU outputs judge quality. Format/type
+checks pass; the default's eight outputs are byte-identical. No full-suite claim.
+
+Decision: change local opacity/radiance representation, retaining order and exact
+wood. Default unchanged; G1–G7 unmet. All six results are preserved.
+[Full comparison and limits](neural-shaded-appearance.md#source-anchors-preserve-order-change-local-appearance).
+Evidence: build/neural-evidence/g4-source-anchors-v1 on Pop!_OS.

@@ -2195,3 +2195,24 @@ an equally informed conventional control.
 
 [Full result and limitations](neural-shaded-appearance.md#joint-shaded-light-field-retire-imagecamera-factorization).
 Evidence build/neural-evidence/g4-joint-field-v1; manifest `d412e61a93664caa3724d00759759a626d93d4d90027affd462af81410ef40fa`.
+
+
+### 2026-10-27: compact source anchors need richer local appearance
+
+Completed the AMD 88-element comparison and both allowed follow-ups: a sharper optical
+profile, then equal-budget direct shaded-image fitting of source-clump and spatial
+initializations. Spatial grouping remains better. Its fitted result is 32.424 dB,
+0.04013 FLIP, 0.04164 LPIPS and GPU p95/p99 of 0.210/0.211 ms; 13/24 numeric quality
+cases pass versus BC. The 6,368-byte packed representation becomes 613,500 live /
+629,884 peak requested GPU bytes. It is smaller and faster than the frozen model,
+but loses 7.70 dB and does not meet G4.
+
+Decision: change the representation; retain ordered rendering and exact wood. Do not
+promote these 88-element models. Next bet: spatial anchors plus a shared local
+opacity/radiance decoder, compared with equally informed conventional local functions.
+Fixed two-elements-per-clump allocation is rejected. All failures are retained; no
+material-moment training or new references; the frozen default's eight outputs are
+byte-identical. G1–G7 remain unchanged.
+
+[Full result](neural-shaded-appearance.md#source-anchors-preserve-order-change-local-appearance).
+Evidence: build/neural-evidence/g4-source-anchors-v1; manifest `bd5636383b51a19ff6f258290ad5608294e9112b58b5518bbb7880c9a36b01dd`.
