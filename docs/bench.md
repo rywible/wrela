@@ -1974,3 +1974,29 @@ source builds retained under build/neural-evidence/g4-tile-ordered-v1 on Pop!_OS
 Manifest SHA-256 19998e152994f78f42b6e63c1b2e23668b66485cad005e5077c303677d6e604e;
 source archive 9b52d08a196ec92339a127a05deaef8da89acb2585f1c9621a53a2b26a5fb27d;
 external scripts 63616c9a91eebe7c3871e824db68e6289c7cd89a9bb3080213c1be3f933a170a.
+
+
+### 2026-10-27 — G4 joint shaded light field rejected
+
+Measured on Pop!_OS, Ryzen5 5500U / AMD RADV RENOIR, Mesa26.1.6, Chrome154.0.8037.57;
+Wrela0.9.0 compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23. Source parent
+ddbc61318725e7d580455f61ac971756a7da14c7 plus archived experimental source. Solo,
+sequential fitting/build/capture/profile/scoring. Six fixed 2,048-step shaded-image fits,
+one targeted angular-grid follow-up; no material-moment fitting or new truth references.
+
+Each profile:64×64,240 measured frames after60 warmup,one worker,AMD Chrome WebGPU;
+view/light changes every frame. All GPU field decoding, coverage and compositing timed.
+Neural coarse-angle result:mean PSNR23.619dB,FLIP0.15422,LPIPS0.22198;GPU p95/p99
+2.060/2.160ms;16,520 asset bytes;426,120 live/442,504 peak requested GPU bytes.
+Same-input conventional C8 tensor:23.354dB,0.15845,0.21425;GPU1.263/1.374ms;
+26,632 asset bytes;436,232 live/452,616 peak. Neural relative quality passes only9/24cases.
+Both are substantially worse than the preserved ordered model's40.128dB.
+
+Allocation observer includes host rings/screen/output; actual DRM residency and process
+PSS snapshots also retained, without adding overlapping UMA counters or claiming physical
+transient peaks. All48new GPU/independent decoder comparisons pass(max2.98e-7); restored
+default8outputs byte-identical;format/type pass. No full-suite claim.
+Decision:retire tested global image/camera factorization;next source-anchored local
+visibility,explicit support/order and exact wood. G1–G7 unchanged.
+[Full comparison, image and evidence](neural-shaded-appearance.md#joint-shaded-light-field-retire-imagecamera-factorization).
+Evidence:build/neural-evidence/g4-joint-field-v1 on Pop!_OS.

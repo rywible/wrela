@@ -219,3 +219,12 @@ uses the standard bitonic sorting-network construction associated with [K. E. Ba
 Sorting Networks and Their Applications, AFIPS 1968, pp. 307–314](https://doi.org/10.1145/1468075.1468121).
 The Wrela workgroup implementation, source-derived culling, four-sample integration and
 measurements are our own. No implementation or hardware performance result is imported.
+
+
+The [rejected joint shaded-field diagnostic](neural-shaded-appearance.md#joint-shaded-light-field-retire-imagecamera-factorization)
+uses six bilinear factor planes over image position and camera coordinates, with neural
+and conventional tensor/basis decoders. The general plane-factorization idea is informed
+by [Ang Cao and Justin Johnson, HexPlane: A Fast Representation for Dynamic Scenes,
+CVPR 2023, pp. 130–141](https://openaccess.thecvf.com/content/CVPR2023/html/Cao_HexPlane_A_Fast_Representation_for_Dynamic_Scenes_CVPR_2023_paper.html).
+Our light-field coordinates differ from their space-time volume; this is not a
+reproduction. No code, weights, assets or performance claims are imported.

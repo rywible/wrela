@@ -1,0 +1,92 @@
+// Rejected G4 joint shaded appearance diagnostic; see docs/neural-shaded-appearance.md. The field includes wood and foliage;
+// no geometry fallback or unreported source data is resident. Only a 64px footprint and
+// four controlled illuminations are fitted. Never use this as a general scene renderer.
+use std::gpu::{
+    ClipPosition, FragCoord, GpuBuffer, Half2, VertexIndex, begin_screen_pass, buffer, buffer_of,
+    dispatch, draw, label, memory,
+}
+
+pub struct State {
+    planes: GpuBuffer<u32>,
+    head: GpuBuffer<Half2>,
+    out: GpuBuffer<vec4>,
+    view: u32,
+    illumination: u32,
+    step: u32,
+}
+
+fn grid(view: u32) -> vec2 {
+    if view == 0 { return vec2(0.46875, 0.40625) }
+    if view == 1 { return vec2(0.375, 0.1875) }
+    let cell = if view < 130 { 2 * (view - 2) } else { (2 * (view - 130) * 37 + 1) % 256 }
+    (vec2(f32(cell % 16), f32(cell / 16)) + vec2(0.5)) / 16.0
+}
+
+pub fn init() -> State {
+    assert(data::CHANNELS == 4 || data::CHANNELS == 8)
+    assert(data::KIND <= 1)
+    assert(data::ANGULAR == 8 || data::ANGULAR == 16)
+    State {
+        planes: buffer_of(data::PLANES),
+        head: buffer_of(data::HEAD),
+        out: buffer(4096),
+        view: 0,
+        illumination: 0,
+        step: 0,
+    }
+}
+
+pub fn configure(s: mut State, view: u32, illumination: u32) {
+    assert(view < 146 && illumination < 4)
+    s.view = view
+    s.illumination = illumination
+}
+
+fn render(s: mut State) {
+    label("joint field decode and visibility")
+    dispatch(
+        decoder::decode.bind(
+            grid(s.view),
+            s.illumination,
+            s.planes.items(),
+            s.head.items(),
+            mut s.out,
+        ),
+        over: 4096,
+    )
+}
+
+pub fn publish(s: mut State) -> u32 {
+    render(mut s)
+    65536
+}
+
+pub fn resident(s: State) -> (u32, u32, u32, u32) {
+    let m = memory()
+    (u32(m.buffers), u32(m.textures), u32(m.peak_buffers), u32(m.peak_textures))
+}
+
+@vertex
+fn full(v: VertexIndex) -> ClipPosition {
+    ClipPosition {
+        position: vec4(f32((v.index << 1) & 2) * 2.0 - 1.0, f32(v.index & 2) * 2.0 - 1.0, 0.0, 1.0),
+    }
+}
+
+@fragment
+fn composite(pixel: FragCoord, source: [vec4]) -> vec4 {
+    let x = u32(pixel.position.x) % 64
+    let y = u32(pixel.position.y) % 64
+    let v = source[y * 64 + x]
+    vec4(engine::light::tone(v.rgb + vec3(0.18) * (1.0 - v.a), 0.62), 1.0)
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    s.view = s.step % 2
+    s.illumination = (s.step / 2) % 4
+    render(mut s)
+    let screen = begin_screen_pass(vec4(0.0))
+    draw(screen, full, composite.bind(s.out.items()), vertices: 3)
+    screen.present()
+    s.step += 1
+}

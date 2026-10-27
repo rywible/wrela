@@ -2174,3 +2174,24 @@ paced timing is contradicted by three alternating pairs: saturated GPU median
 power snapshots and failed results are retained. Original default restored, eight
 outputs byte-identical; no training/new references or goal achievement.
 Manifest: `19998e152994f78f42b6e63c1b2e23668b66485cad005e5077c303677d6e604e`.
+
+
+### 2026-10-27: retire global image/camera joint appearance field
+
+The next compact joint-shading experiment is complete on AMD, solo. Six frozen fits
+(three initial and three in one angular-grid follow-up) all fail the public shaded-quality
+gate against BC. The best neural field reaches 23.619 dB, 0.15422 FLIP and 0.22198 LPIPS;
+the old ordered representation remains at 40.128 dB. Worst silhouette boundary p99 is
+8.64px. Its 16,520-byte payload becomes 426,120 live / 442,504 peak requested GPU bytes,
+and complete GPU p95/p99 is 2.060/2.160ms. The same-information C8 tensor fit is similar
+in quality, has only 2.37% more live allocation, and is faster (1.263/1.374ms).
+
+Decision: retire the tested global image/camera factorization for G4. One follow-up used;
+no second tuning cycle. The previous model and G1–G7 are unchanged. Training targeted
+complete shaded images and coverage, never material moments. No truth references were
+added. All six failures and physical residency evidence are preserved. Next bet:
+source-anchored local visibility/radiance with explicit ordering and exact wood, against
+an equally informed conventional control.
+
+[Full result and limitations](neural-shaded-appearance.md#joint-shaded-light-field-retire-imagecamera-factorization).
+Evidence build/neural-evidence/g4-joint-field-v1; manifest `d412e61a93664caa3724d00759759a626d93d4d90027affd462af81410ef40fa`.

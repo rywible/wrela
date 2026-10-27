@@ -1,0 +1,165 @@
+// Six factor planes over image x/y and camera gx/gy. Related factorization:
+// Cao and Johnson, HexPlane (CVPR 2023), docs/citations.md. This is a 4D light
+// field, not their space-time volume; neither their code nor weights are used.
+use engine::neural::half_at
+use std::gpu::{GlobalId, Half2, Slots}
+
+fn level(words: [u32], at: u32) -> f32 {
+    (f32((words[at / 8] >> ((at % 8) * 4)) & 15) - 7.0) / 7.0
+}
+
+fn plane(words: [u32], start: u32, width: u32, height: u32, uv: vec2, channel: u32) -> f32 {
+    let p = clamp(
+        uv * vec2(f32(width), f32(height)) - vec2(0.5),
+        vec2(0.0),
+        vec2(f32(width - 1), f32(height - 1)),
+    )
+    let lo = vec2u(p)
+    let hi = min(lo + vec2u(1), vec2u(width - 1, height - 1))
+    let f = p - vec2(lo)
+    let a = level(words, start + (lo.y * width + lo.x) * data::CHANNELS + channel)
+    let b = level(words, start + (lo.y * width + hi.x) * data::CHANNELS + channel)
+    let c = level(words, start + (hi.y * width + lo.x) * data::CHANNELS + channel)
+    let d = level(words, start + (hi.y * width + hi.x) * data::CHANNELS + channel)
+    (a * (1.0 - f.x) + b * f.x) * (1.0 - f.y) + (c * (1.0 - f.x) + d * f.x) * f.y
+}
+
+fn sigmoid(x: f32) -> f32 {
+    1.0 / (1.0 + exp(clamp(-x, -80.0, 80.0)))
+}
+
+fn positive(x: f32) -> f32 {
+    max(x, 0.0) + log(1.0 + exp(-abs(x)))
+}
+
+@compute(64)
+pub fn decode(
+    grid: vec2,
+    illumination: u32,
+    planes: [u32],
+    head: [Half2],
+    out: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    if id.x >= 4096 { return }
+    let uv = (vec2(f32(id.x % 64), f32(id.x / 64)) + vec2(0.5)) / 64.0
+    let angular = data::ANGULAR
+    let cross = 4096 + angular * angular
+    let channels = data::CHANNELS
+    let features = 3 * channels + 4
+    var f = [0.0; 29]
+    for c in 0..channels {
+        let xy = plane(planes, start: 0, width: 64, height: 64, uv: uv, channel: c)
+        let gg = plane(
+            planes,
+            start: 4096 * channels,
+            width: angular,
+            height: angular,
+            uv: grid,
+            channel: c,
+        )
+        let xg = plane(
+            planes,
+            start: (cross + 0 * 64 * angular) * channels,
+            width: 64,
+            height: angular,
+            uv: vec2(uv.x, grid.x),
+            channel: c,
+        )
+        let yh = plane(
+            planes,
+            start: (cross + 1 * 64 * angular) * channels,
+            width: 64,
+            height: angular,
+            uv: vec2(uv.y, grid.y),
+            channel: c,
+        )
+        let xh = plane(
+            planes,
+            start: (cross + 2 * 64 * angular) * channels,
+            width: 64,
+            height: angular,
+            uv: vec2(uv.x, grid.y),
+            channel: c,
+        )
+        let yg = plane(
+            planes,
+            start: (cross + 3 * 64 * angular) * channels,
+            width: 64,
+            height: angular,
+            uv: vec2(uv.y, grid.x),
+            channel: c,
+        )
+        f[c] = xy * gg
+        f[channels + c] = xg * yh
+        f[2 * channels + c] = xh * yg
+    }
+    f[features - 4] = uv.x * 2.0 - 1.0
+    f[features - 3] = uv.y * 2.0 - 1.0
+    f[features - 2] = grid.x * 2.0 - 1.0
+    f[features - 1] = grid.y * 2.0 - 1.0
+    f[features] = 1.0
+    let directions = [
+        vec3(0.3, 0.8, 0.5),
+        vec3(-0.8, 0.2, -0.3),
+        vec3(0.1, 0.2, -0.9),
+        vec3(-0.2, 0.95, 0.1),
+    ]
+    let d = normalize(directions[illumination])
+    let sun = if illumination == 3 { 0.0 } else { 1.0 }
+    let light = [
+        1.0,
+        sun,
+        sun * d.x,
+        sun * d.y,
+        sun * d.z,
+        sun * d.x * d.y,
+        sun * d.x * d.z,
+        sun * d.y * d.z,
+        sun * (d.x * d.x - d.y * d.y),
+        sun * (3.0 * d.z * d.z - 1.0),
+    ]
+    var a = 0.0
+    var rgb = [0.0; 3]
+    if data::KIND == 0 {
+        let b0 = 32 * features
+        let wa = b0 + 32
+        let ba = wa + 32
+        let w1 = ba + 1
+        let b1 = w1 + 32 * 42
+        let w2 = b1 + 32
+        let b2 = w2 + 3 * 32
+        var hidden = [0.0; 42]
+        for r in 0..32 {
+            var sum = half_at(head, b0 + r)
+            for c in 0..features { sum += half_at(head, r * features + c) * f[c] }
+            hidden[r] = max(sum, 0.0)
+        }
+        a = half_at(head, ba)
+        for c in 0..32 { a += half_at(head, wa + c) * hidden[c] }
+        for c in 0..10 { hidden[32 + c] = light[c] }
+        var second = [0.0; 32]
+        for r in 0..32 {
+            var sum = half_at(head, b1 + r)
+            for c in 0..42 { sum += half_at(head, w1 + r * 42 + c) * hidden[c] }
+            second[r] = max(sum, 0.0)
+        }
+        for r in 0..3 {
+            rgb[r] = half_at(head, b2 + r)
+            for c in 0..32 { rgb[r] += half_at(head, w2 + r * 32 + c) * second[c] }
+        }
+    } else {
+        for c in 0..features + 1 { a += half_at(head, c) * f[c] }
+        for r in 0..3 {
+            for l in 0..10 {
+                var sum = 0.0
+                for c in 0..features + 1 {
+                    sum += f[c] * half_at(head, features + 1 + (c * 10 + l) * 3 + r)
+                }
+                rgb[r] += sum * light[l]
+            }
+        }
+    }
+    let alpha = sigmoid(a)
+    out[id] = vec4(vec3(positive(rgb[0]), positive(rgb[1]), positive(rgb[2])) * alpha, alpha)
+}

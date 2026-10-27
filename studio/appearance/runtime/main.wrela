@@ -24,7 +24,12 @@ struct Camera: Copy + GpuData {
 }
 
 fn camera(view: u32, light: u32, aa: u32) -> Camera {
-    let g = if view == 0 { vec2(0.46875, 0.40625) } else { vec2(0.375, 0.1875) }
+    let g = if view == 0 { vec2(0.46875, 0.40625) } else if view == 1 {
+        vec2(0.375, 0.1875)
+    } else {
+        let cell = if view < 130 { 2 * (view - 2) } else { (2 * (view - 130) * 37 + 1) % 256 }
+        (vec2(f32(cell % 16), f32(cell / 16)) + vec2(0.5)) / 16.0
+    }
     let d = hemi_dir(g)
     let up0 = if d.y > 0.99 { vec3(0.0, 0.0, 1.0) } else { vec3(0.0, 1.0, 0.0) }
     let right = normalize(cross(up0, d))
@@ -582,7 +587,7 @@ pub fn init() -> State {
 }
 
 pub fn configure(s: mut State, view: u32, illumination: u32) {
-    assert(view < 2 && illumination < 4)
+    assert(view < 146 && illumination < 4)
     s.view = view
     s.illumination = illumination
 }

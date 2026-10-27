@@ -155,6 +155,7 @@ struct SourceConfig: Copy {
     geometry: bool = false,
     response: bool = false,
     runtime: bool = false,
+    joint: bool = false,
     shaded: bool = false,
     illumination: u32 = 0,
     detailed: u32 = 1,
@@ -408,9 +409,14 @@ fn runtime_word(values: [Scalar], i: u32) -> u32 {
     }
 }
 
-fn capture_runtime(b: drive::Build, directory: str) -> Result<(), ToolError> {
+fn capture_runtime(
+    b: drive::Build,
+    directory: str,
+    first: u32,
+    count: u32,
+) -> Result<(), ToolError> {
     let _ = untrapped("init", drive::steps(b, [Step::Init]).wait()?)?
-    for view in 0..2 {
+    for view in first..first + count {
         for light in 0..4 {
             let _ = untrapped(
                 "runtime configuration",
@@ -490,7 +496,9 @@ fn run(seed: u32, only_probe: bool, source: SourceConfig) -> Result<(), ToolErro
     opt.optimize = true
     opt.timeout = 600.0
     let built = toolchain::build(
-        if source.runtime { "ws/studio/appearance/runtime" } else {
+        if source.joint { "ws/studio/appearance/joint" } else if source.runtime {
+            "ws/studio/appearance/runtime"
+        } else {
             "ws/studio/appearance/fixture"
         },
         f"{directory}/fixture",
@@ -505,7 +513,7 @@ fn run(seed: u32, only_probe: bool, source: SourceConfig) -> Result<(), ToolErro
     load.timeout = 600.0
     let b = drive::load(f"{directory}/fixture", load).wait()?.build
     let result = if source.runtime {
-        capture_runtime(b, directory.as_str())
+        capture_runtime(b, directory.as_str(), source.first, source.count)
     } else if source.shaded {
         capture_shaded(b, directory.as_str(), seed, source)
     } else if source.response {
@@ -530,8 +538,21 @@ pub fn tool() -> u32 {
     var seed = 7
     var source = SourceConfig {}
     let only_probe = given.len() == 1 && given[0].as_str() == "bc-probe"
-    if given.len() == 1 && given[0].as_str() == "runtime" {
+    if given.len() > 0 && (given[0].as_str() == "runtime" || given[0].as_str() == "joint-runtime") {
         source.runtime = true
+        source.joint = given[0].as_str() == "joint-runtime"
+        source.first = 0
+        source.count = 2
+        if given.len() == 3 {
+            let Some(first) = given[1].as_str().parse_u32() else { return 2 }
+            let Some(count) = given[2].as_str().parse_u32() else { return 2 }
+            if first >= 146 || count == 0 || count > 146 - first { return 2 }
+            source.first = first
+            source.count = count
+        } else if given.len() != 1 {
+            print("usage: appearance runtime | joint-runtime [FIRST COUNT]")
+            return 2
+        }
     } else if given.len() > 0 && given[0].as_str() == "shaded" {
         if given.len() != 8 {
             print("usage: appearance shaded SEED GX GY SIZE GRID LIGHT TISSUE")

@@ -615,3 +615,142 @@ The runtime preserves rejected diagnostics as modes 7–9 and restores mode 2 as
 Focused formatting/type checks pass, and all eight restored default images are
 byte-identical to the original measured AA2. No full-suite or PR-readiness claim.
 Manifest SHA-256: `19998e152994f78f42b6e63c1b2e23668b66485cad005e5077c303677d6e604e`.
+
+
+## Joint shaded light field: retire image/camera factorization
+
+**Decision: retire this tested representation for G4.** A compact field of image position
+and camera direction loses too much geometry and costs too much to decode. The previous
+frozen ordered model remains the default. G1–G7 are unchanged and unmet.
+
+This follow-on block tested an actual AMD renderer, not material-moment accuracy. It
+fits complete premultiplied shaded RGB and coverage, including authored wood, into
+six bilinear factor planes over image x/y and camera gx/gy. Complementary plane pairs
+are multiplied. Signed 4-bit planes feed either a two-layer 32-wide neural decoder or
+a conventional tensor/basis decoder with no hidden network. Both get the same coordinates,
+ten-term lighting basis, source captures, quantization method, rendered loss and
+2,048-step budget. Conventional C8 has twice the feature channels of C4; it avoids
+claiming an advantage over only a deliberately small control. Our implementation is
+informed by the general plane-factorization idea in
+[Cao and Johnson, HexPlane, CVPR 2023](https://openaccess.thecvf.com/content/CVPR2023/html/Cao_HexPlane_A_Fast_Representation_for_Dynamic_Scenes_CVPR_2023_paper.html);
+our dimensions are image/camera coordinates, not their space-time volume.
+
+The old AA64 shaded references are unchanged. The existing source-card/wood renderer
+provided AA8 **training targets**, not new reference truth: 128 training poses and 16
+validation poses, four lights each. The two public reference views are excluded from
+training. All three fits use the same shaded display loss across the three established
+backgrounds, foreground weighting and coverage loss; no further material-moment training
+was performed. Fixed endpoints are retained without selecting a checkpoint on the public
+references. The previous BC, calibrated optical and source-card controls still have the
+source geometry/material/visibility information. The new conventional tensor fits receive
+exactly the same teacher data as the neural fit.
+
+| Fit | Mean PSNR dB ↑ | Mean FLIP ↓ | Mean LPIPS ↓ | Complete GPU p95/p99 ms | Asset/decoder bytes, output excluded | All live/peak requested GPU bytes |
+|---|---:|---:|---:|---:|---:|---:|
+| neural-c4 | 20.168 | 0.20498 | 0.38626 | 1.773/1.803 | 21,000 | 430,600/446,984 |
+| tensor-c4 | 21.268 | 0.22610 | 0.42865 | 1.234/1.241 | 17,952 | 427,552/443,936 |
+| tensor-c8 | 21.384 | 0.24533 | 0.41750 | 1.434/1.471 | 35,592 | 445,192/461,576 |
+| neural-c4-a8 | 23.619 | 0.15422 | 0.22198 | 2.060/2.160 | 16,520 | 426,120/442,504 |
+| tensor-c4-a8 | 23.082 | 0.17706 | 0.24028 | 1.228/1.242 | 13,472 | 423,072/439,456 |
+| tensor-c8-a8 | 23.354 | 0.15845 | 0.21425 | 1.263/1.374 | 26,632 | 436,232/452,616 |
+
+The common runtime allocation overhead above the asset is 409,600 bytes: output,
+upload/uniform rings and screen target. This is measured live allocation, not an estimate
+from the model file. Conventional half-weight buffers include two alignment bytes.
+Neither path retains source geometry, an exact wood fallback, a hidden view atlas or a
+sort cache: wood and visibility are part of the approximation, and their lost detail
+counts against quality. GPU timing includes every plane lookup, unpack, decoder,
+coverage evaluation and final composite; CPU timing includes view/light updates and
+command recording. There is no runtime sorting. Build-time fitting and source capture
+are recorded separately.
+
+| Fit | CPU frame p99 ms | Saturated GPU p95 ms | CPU start through final GPU completion p95/p99 ms |
+|---|---:|---:|---:|
+| neural-c4 | 0.451 | 0.864 | 4.836/5.023 |
+| tensor-c4 | 0.431 | 0.291 | 4.385/4.682 |
+| tensor-c8 | 0.461 | 0.480 | 4.330/4.431 |
+| neural-c4-a8 | 0.524 | 0.865 | 6.264/6.585 |
+| tensor-c4-a8 | 0.470 | 0.278 | 4.295/4.402 |
+| tensor-c8-a8 | 0.355 | 0.485 | 4.225/4.406 |
+
+Completion timings cover every submission belonging to the frame and include browser/driver
+notification latency; they are not input-to-photon. Saturated timing is reported separately
+from paced timing because power state affects this AMD iGPU. No power policy was changed.
+
+For context, the preserved ordered model scored **40.128 dB / 0.01235 FLIP / 0.00189
+LPIPS** with prior measured GPU p95/p99 **0.314/0.316 ms**, and the calibrated conventional
+optical control scored **39.740 dB / 0.01392 / 0.00212**. These are reused measurements on
+the same AMD machine, not a newly paired timing experiment. The quality failure is large
+enough that another timing audit cannot change this decision. Every new fit fails all
+24 joint numeric quality cases against the existing BC control, which itself averages
+30.685 dB.
+
+### One targeted follow-up, then stop
+
+The initial 16×16 angular lattice was underconstrained: the even-column training poses
+touched only 128 of its 256 camera-plane coefficients. The first follow-up coarsened
+angular planes to 8×8, making all 64 coefficients reachable from training. Image
+resolution, channels, decoder, quantization, loss, data and step budget stayed fixed.
+Both neural and conventional fits received this change.
+
+The neural public mean rose from 20.168 to **23.619 dB**. Its separate 16-pose validation
+mean was 23.874 dB against the AA8 teacher; conventional C8 reached 24.065 dB on that
+same validation set. Fixing coefficient support helps, but does not recover geometry:
+the best neural field has mean coverage error **0.11075**, worst symmetric
+boundary p99 **8.64 pixels**, and worst thresholded silhouette precision/recall
+**71.19%/83.56%**. The previous ordered result was 1.41 pixels with 97.80%/98.54%.
+These static silhouette metrics do not establish the motion requirements of G3/G4.
+
+Against conventional C8 at the coarser angular resolution, the neural field has +0.265 dB,
+2.67% lower FLIP and **3.61% worse LPIPS** on public means. It meets all three relative
+numeric quality limits in only **9/24** cases. Its payload is 1.61× smaller, but complete
+live GPU allocations fall only **2.32%**, while measured GPU p95 is **63.0% higher**.
+This is not a useful combined quality/memory/runtime advantage, let alone G4's 16×
+resident-memory requirement with ≤10% runtime regression. The second allowed optimization
+slot is unused. This rejects the tested compact implementation and fit budget; it is
+not a proof that every image/camera factorization or longer fit must fail. A larger or
+more expensive representation would still have to meet the same combined G4 gates.
+
+![Unretouched source, ordered, neural and conventional outputs; fixed display transform, 4× nearest-pixel enlargement](figures/neural-joint-field.png)
+
+### Resident memory, scope and verification
+
+All six runs retain full resource create/destroy logs, live/peak requested GPU bytes,
+CPU-to-last-GPU-completion timings, and actual Linux DRM resident-memory/browser PSS
+snapshots. Those snapshots expose approximately 16.5–16.8 MiB of resident VRAM, 9.3–9.6
+MiB of resident GTT and 442–446 MiB of browser-group PSS. They are separate, potentially
+overlapping UMA views and **must not be summed**. They include reported retained
+driver/client allocations and caches; they do not establish transient physical peaks
+or exact per-asset driver attribution. The two final compared builds each report 30,474,240 used WASM bytes and a 1 GiB virtual
+reservation; the reservation is not a physical residency measurement. There is no declared
+workgroup scratch, although
+thread-private arrays may spill. This uncertainty cannot rescue the failed quality gate.
+
+This remains one static tree, one 64-pixel footprint and four known controlled
+illuminations. There is no unseen-light, wind, full transport, 8–512-pixel or asset-family
+claim. A neural output is one fitted integrated pixel, not a point sample proved to
+integrate correctly at other footprints. Capturing additional views was necessary to
+test generalization of the new image/camera representation; no new convergence or
+reference system was built.
+
+Packed-payload GPU decoding agrees with independent CPU evaluation in all **48** new
+view/light cases, maximum absolute RGBA error **2.98e-7** (declared tolerance 5e-5).
+Changed tooling and the new package pass format/type checks. Restoring the frozen
+default reproduces all eight original outputs byte for byte. Frozen primitive
+SHA-256 remains dc329e4b4c4eaa8ad0bbbb93eeea90cb2a94f4a0f01b284487f344d4ee2ff71c.
+No full-suite or PR-readiness claim is made.
+
+**Next architecture-level bet:** compile authored clumps and geometry into local
+coordinates, explicit support and ordering; retain exact wood, then learn only local
+shaded visibility/residual response. Give conventional local fits the identical source
+and sampling knowledge. This uses Wrela's source to constrain the representation instead
+of asking a global image field to relearn projection and silhouette. It is a proposed
+experiment, not a demonstrated advantage.
+
+All six failed fits, full checkpoints, quantized payloads, training logs, 576 teacher
+captures, independent decoder checks, raw reference-comparison outputs, builds, timings,
+allocation records, physical-memory snapshots and the initial syntax failure are kept
+under build/neural-evidence/g4-joint-field-v1 on Pop!_OS. The runnable rejected fixture
+is studio/appearance/joint; appearance joint-runtime [FIRST COUNT] captures it.
+The first complete comparison and the follow-up decision finished within the block's
+two-hour deadline. Manifest SHA-256: `d412e61a93664caa3724d00759759a626d93d4d90027affd462af81410ef40fa`.
