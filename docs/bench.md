@@ -1292,3 +1292,26 @@ limitations are in [the development record](neural-rendering-progress.md#joint-s
 and `build/neural-evidence/joint-v1/manifest.json` on Pop!_OS. No new G6 performance result is
 claimed. The additional stress catalog's capture elapsed times include build/readback/disk
 work and are not renderer latency measurements.
+
+
+## 2026-10-26 AMD retained-sample kernels
+
+
+Same Pop!_OS AMD Ryzen 5 5500U / Radeon Graphics (RADV RENOIR, PCI 1002:164c), Mesa 26.1.6, Chrome 154.0.8037.57 and Wrela 0.9.0 compiler `de9b81e52a7747870dfbd5223cb8aeb41e584d23`. Browser diagnostics use one worker, 4× linear reduction and moving analytic case 1. No owned training, scoring, capture or other profile runs overlap these sequential profiles. Exact shader/fixture archive: `14deba433e93ca9cd0b745b17af7d62348aea09e6792acb587a15758a0ecb45c`.
+
+The learned adapter uploads the exact coefficient-0.25 model once before warmup. The measured decoder includes its geometry queries and retained-sample gathering; retain and display are separate labels. There is no reference or diagnostic feature readback in timing. Reported GPU bytes are instrumented allocations, not a complete measurement of browser/driver memory.
+
+
+| Decoder / output | Warmup / measured frames | Decoder median / p95 ms | Retain median / p95 ms | Fixture GPU span median / p95 ms | Reported GPU MiB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| fixed-1920x1080 | 240 / 240 | 60.356 / 60.471 | 0.355 / 0.378 | 61.584 / 61.701 | 100.86 |
+| fixed-3840x2160 | 240 / 240 | 241.246 / 241.680 | 1.419 / 1.458 | 245.866 / 246.317 | 403.42 |
+| learned-1920x1080 | 240 / 240 | 67.676 / 67.809 | 0.356 / 0.381 | 68.891 / 69.037 | 100.86 |
+| learned-3840x2160-short-warmup | 32 / 240 | 270.598 / 271.082 | 1.421 / 1.506 | 275.192 / 275.713 | 403.42 |
+
+
+The learned 4K attempt with 240 warmup + 240 measured frames timed out at the host 120-second limit. Its failure is retained. A declared retry keeps 240 measured frames and reduces warmup to 32; it completes, but is not a matched-warmup comparison. No p99, 20-minute stability or production whole-frame acceptance claim is made.
+
+**G6 fails.** Decoder latency alone is far beyond the 1 ms/2 ms p95 targets, and the 4K fixture already exceeds the 384 MiB allocation limit. The 336-byte model excludes the sixteen-frame history and other buffers. Source geometry is extra full-stack work, not free fixed-input information. Capturing/training/scoring elapsed times are not renderer latency or G7 evidence.
+
+Quality, exact command lines, environment/build hashes, all successful reports, memory records, timeout and retry plans are retained in `build/neural-evidence/raw-source-v1/manifest.json`. [The development record](neural-rendering-progress.md#raw-sample-kernels-clearer-detail-rejected-quality-and-cost) records why both trained candidates remain experimental.

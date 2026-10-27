@@ -1030,3 +1030,77 @@ make representation and generalization the next useful focus: preserve observed 
 surface information while reconstructing detail, and test beyond the original small case set.
 No G1–G7 threshold has changed or been met. Focused reference/gradient checks, package checks,
 allow and changed-source formatting pass; no full suite/PR is claimed at this checkpoint.
+
+
+## Raw-sample kernels: clearer detail, rejected quality and cost
+
+
+At base `46f9c968`, a new full-stack control preserves sixteen raw renderer frames and gathers both authored layer trajectories. It rejects currently occluded sample points, then normalizes positive scene-linear colour weights. Extra source input is geometry only (slat period, width, offset and speed); no checker frequency, source colour, analytic coverage, reference or future frame reaches inference. This remains a two-layer analytic diagnostic, not general 3D or a fixed-input upscaler result.
+
+The [design and primary sources](neural-kernel-reconstruction.md) describe the colour-independent 8→8→1 MLP: 81 f32 parameters, 336 deployment bytes including padding. It modulates tent weights using geometry and sample age. Four whole cases (0/3/5/7), all four scales and 32 cold frames supply 64 seeded pixels/frame, 32,768 current training positions. Two fixed 2,048-step Adam runs use named-view MSE plus opaque temporal MAE coefficients 0 and 0.25. Both final models are measured on legacy cases 1/6 and all six previously declared stress cases, without fitting those cases.
+
+### Legacy 4× results
+
+
+All values below are means over 32 cold-start frames at 192×108. Lower is better. Temporal error is reference-subtracted opaque correspondence MAE; it is not trail length or a complete G3 test.
+
+
+| Case / method | FLIP | LPIPS | Opaque temporal MAE |
+| --- | ---: | ---: | ---: |
+| 1 / old raw | 0.512591 | 0.387900 | 0.077566 |
+| 1 / source raw, fixed | 0.255558 | 0.197783 | 0.025210 |
+| 1 / learned λ0 | 0.221607 | 0.146160 | 0.016287 |
+| 1 / learned λ0.25 | 0.231822 | 0.153543 | 0.015530 |
+| 6 / old raw | 0.485842 | 0.334271 | 0.034208 |
+| 6 / source raw, fixed | 0.251275 | 0.180354 | 0.016725 |
+| 6 / learned λ0 | 0.236069 | 0.138334 | 0.013055 |
+| 6 / learned λ0.25 | 0.238755 | 0.139881 | 0.012341 |
+
+
+The new correspondence control improves detail over the old raw method. Learning further improves legacy FLIP/LPIPS and motion error. It still loses motion stability to the earlier smoother source-geometry constant-history baseline, and absolute FLIP remains far above G1. Every paired comparison verifies identical reference/mask hashes and metric settings.
+
+### Six-case stress results
+
+
+These are the same public diagnostic cases 8/10/13/18/21/23, with signed speeds 1/8/32 pixels per frame and changed colours/geometry. They are not a sealed suite or an independent scene generator. Relative changes below compare each trained kernel against the new fixed raw-source control at 4×. Negative FLIP/LPIPS change and temporal ratio below one are better.
+
+
+| Case | λ0 FLIP Δ | λ0 LPIPS Δ | λ0 temporal ratio | λ0.25 FLIP Δ | λ0.25 LPIPS Δ | λ0.25 temporal ratio |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 8 | +2.85% | -3.38% | 0.956× | +17.73% | +1.65% | 1.323× |
+| 10 | -2.93% | -10.98% | 0.884× | +2.17% | -14.08% | 0.850× |
+| 13 | +1.84% | -5.11% | 1.014× | +2.97% | -8.34% | 0.973× |
+| 18 | -4.20% | -18.51% | 0.726× | -5.22% | -19.53% | 0.687× |
+| 21 | -4.82% | -16.58% | 0.756× | +5.06% | -11.14% | 0.594× |
+| 23 | -1.16% | -3.27% | 0.786× | +23.06% | -0.18% | 0.680× |
+
+
+**Neither model is promoted.** The spatial-only model still regresses FLIP on cases 8/13 and temporal error on 13. The temporal-loss model has larger fast-motion regressions, including case 8. All-scale, reveal, mixed/changed-pixel and worst-frame results remain in the manifest; this table does not replace them. Fixed-view frame-31 inspections of cases 6/13 show more structure but obvious incorrect high-frequency patterns. These still images are debugging aids, not blinded human or motion evidence.
+
+### Controls and limits
+
+
+- An independent CPU replay checks all 32 frames and all scales of both fixed-control legacy clips; maximum named-view channel difference is below 0.000244. The learned audit samples 257 seeded pixels in every frame/scale of both models and both legacy clips, with maximum difference below 0.000243. Wrong jitter and zero-model negatives are retained.
+
+- All 81 parameter finite differences pass (maximum error 4.41e-13); detaching the normalization denominator fails (gradient difference 0.00420). Constant and nonnegative affine RGB transforms pass in float64 before deployment rounding/clipping. This property follows from geometry-only weights, not from kernel prediction in general.
+
+- A zero head reproduces 640 captured image/input/reference/mask files byte for byte. Fixed and trained cut captures each match all eight fresh-start images across four scales; suppressing the reset produces a measurable error. Non-finite, wrong-length and nonzero-padding model files are rejected.
+
+- The visibility test passes; deliberately accepting the wrong layer makes it fail. Package checks, changed-source formatting and the workspace allow-list check pass. No full-suite or PR readiness claim is made.
+
+- Browser latency and 4K allocation measurements fail G6; [the benchmark record](bench.md#2026-10-26-amd-retained-sample-kernels) includes the 120-second profiler failure and its explicitly shorter-warmup diagnostic. The 336-byte network does not make its history buffers or sample search inexpensive.
+
+
+The next implementation opportunity is to avoid reading samples that cannot contribute, then investigate a compact cache and broader whole-case training. Preserving colours has helped, but it has not solved sparse support, mixed coverage, general geometry, population quality or deployment cost. G1–G7 remain unchanged and unmet.
+
+
+Evidence is on Pop!_OS at `build/neural-evidence/raw-source-v1/manifest.json`. Source archives distinguish the initial fixed control, learned captures and timing (which adds a separate retain label). The original missing export-directory attempt and corrected model relocation are retained; binary weights were unchanged.
+
+
+Learned capture source SHA-256: `be16076190ee333584d739b77b8bdaf123c8beaca4bf4c5fbce62986124381e7`. Timing source: `14deba433e93ca9cd0b745b17af7d62348aea09e6792acb587a15758a0ecb45c`. External scripts/models bundle: `17f238073e0cd7b062338349582b38b9e801bf51d85abaeda8d8d2a191bc44e1`.
+
+
+| Objective | Model directory | Weights SHA-256 |
+| --- | --- | --- |
+| λ0.0 | `raw-kernel-1793075359061891164` | `168d11903b4bedc831ca3816275338ae0d96fa17d308389f7454bc406c1921bc` |
+| λ0.25 | `raw-kernel-1793075364934390340` | `16d099f82d3dda4e447bbdf8668d4060bff3276a2562acb28cfbadf9ab9999d6` |

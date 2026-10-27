@@ -96,6 +96,10 @@ pub struct State {
     exported_patch: GpuBuffer<patch::Input>,
     exported_cells: GpuBuffer<patch::Cell>,
     raw_enabled: bool,
+    raw_source: bool,
+    raw_trained: bool,
+    raw_kernel: GpuBuffer<vec4>,
+    raw_kernel_rows: u32,
     raw_count: u32,
     raw_history: GpuBuffer<raw::Sample>,
     exported_raw: GpuBuffer<raw::Sample>,
@@ -157,6 +161,10 @@ pub fn init() -> State {
         exported_patch: buffer(1),
         exported_cells: buffer(1),
         raw_enabled: false,
+        raw_source: false,
+        raw_trained: false,
+        raw_kernel: buffer(1),
+        raw_kernel_rows: 0,
         raw_count: 0,
         raw_history: buffer(1),
         exported_raw: buffer(1),
@@ -263,6 +271,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     if s.raw_enabled {
         if s.reset { s.raw_count = 0 }
         s.raw_count = min(s.raw_count + 1, raw::HISTORY)
+        label("raw retain")
         dispatch(
             raw::retain.bind(
                 s.scene,
@@ -419,6 +428,21 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         } else {
             fullscreen(p, patch::reconstruct.bind(s.patch_cells.items(), w, h, s.divisor, s.tick))
         }
+    } else if s.raw_source {
+        fullscreen(
+            p,
+            raw::reconstruct_source.bind(
+                s.raw_history.items(),
+                w,
+                h,
+                s.divisor,
+                s.tick,
+                s.raw_count,
+                vec4(f.period, f.width, f.offset, f.speed),
+                s.raw_kernel.items(),
+                u32(s.raw_trained),
+            ),
+        )
     } else if s.raw_enabled {
         fullscreen(
             p,
@@ -522,7 +546,7 @@ fn corrected(
 // A continuous instrument starts without consuming a frame. Its target and visibility are
 // computed only AFTER reconstruction, in separate buffers that no decoder can read.
 pub fn prepare_sequence(s: mut State, width: u32, height: u32, start: u32, inputs: u32) {
-    assert(inputs <= 1 && (inputs == 0 || s.patch_enabled))
+    assert(inputs <= 1 && (inputs == 0 || s.patch_enabled || s.raw_enabled))
     resize(mut s, width, height)
     s.tick = start
     s.collect_rows = inputs == 1
@@ -577,8 +601,9 @@ pub fn publish_visibility(s: mut State) -> u32 {
 
 /// An explicit fixture-only control. Never silently combines with a trained RGB correction.
 pub fn decoder(s: mut State, mode: u32) {
-    assert(mode <= 2 && !s.rgb_enabled && s.width == 0)
-    s.raw_enabled = mode == 1
+    assert(mode <= 3 && !s.rgb_enabled && s.width == 0)
+    s.raw_enabled = mode == 1 || mode == 3
+    s.raw_source = mode == 3
     s.patch_enabled = mode == 2
     if s.raw_enabled { s.collect_rows = false }
 }
@@ -645,7 +670,12 @@ pub fn patch_history(s: mut State, permille: u32) {
 // Observation only, after reconstruction: raw point colour, output-pixel motion and depth.
 // Reuse the diagnostic export buffer; no geometry readback allocation in normal rendering.
 pub fn publish_patch_geometry(s: mut State) -> u32 {
-    assert(s.patch_enabled && s.collect_rows && !s.collecting && s.captured_count == 1)
+    assert(
+        (s.patch_enabled || s.raw_enabled) &&
+            s.collect_rows &&
+            !s.collecting &&
+            s.captured_count == 1,
+    )
     let n = s.scene.width() * s.scene.height()
     s.exported_raw = buffer(n)
     dispatch(
@@ -663,7 +693,11 @@ pub fn patch_source_geometry(s: mut State, source: u32) {
 
 // Preserve the exact geometry-only source parameters used by the full-stack pipeline.
 pub fn publish_patch_source(s: mut State) -> u32 {
-    assert(s.patch_enabled && s.patch_source == 1 && s.collect_rows && !s.collecting)
+    assert(
+        ((s.patch_enabled && s.patch_source == 1) || s.raw_source) &&
+            s.collect_rows &&
+            !s.collecting,
+    )
     let f = case(s.captured_shot)
     s.exported_source = buffer(2)
     write(
@@ -709,4 +743,25 @@ pub fn publish_gate(s: mut State) -> u32 {
     s.exported_gate = buffer(s.gate_inputs.len())
     copy(from: s.gate_inputs.items(), to: s.exported_gate.items_mut())
     s.gate_inputs.len()
+}
+
+// Fixture-only model upload: source raw kernel, 81 finite f32 coefficients and zero padding.
+pub fn raw_kernel_begin(s: mut State) {
+    assert(s.raw_source)
+    s.raw_kernel = buffer(21)
+    s.raw_kernel_rows = 0
+    s.raw_trained = false
+}
+
+pub fn raw_kernel_row(s: mut State, index: u32, x: f32, y: f32, z: f32, w: f32) {
+    assert(index == s.raw_kernel_rows && index < 21)
+    for v in [x, y, z, w] { assert((bitcast_u32(v) & 0x7f800000) != 0x7f800000) }
+    if index == 20 { assert(y == 0.0 && z == 0.0 && w == 0.0) }
+    write(mut s.raw_kernel, index, [vec4(x, y, z, w)])
+    s.raw_kernel_rows += 1
+}
+
+pub fn raw_kernel_end(s: mut State) {
+    assert(s.raw_source && s.raw_kernel_rows == 21)
+    s.raw_trained = true
 }

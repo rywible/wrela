@@ -1,6 +1,6 @@
 // Continuous analytic clips, including cold starts and a declared scene cut. Truth and
 // visibility are separate observation passes after the causal reconstruction, never inputs.
-use main::{call, finite_floats, floats, frames, upload_gate, upload_model}
+use main::{call, finite_floats, floats, frames, upload_gate, upload_model, upload_raw_kernel}
 use std::io::print
 use std::tool::{ToolError, drive, files}
 use std::tool::drive::{Scalar, Step}
@@ -49,6 +49,7 @@ fn path(
     divisor: u32,
     model: str,
     gate: str,
+    raw_model: str,
 ) -> Result<(), ToolError> {
     let _ = untrapped("clip init", drive::steps(b, [Step::Init], timeout: 600.0).wait()?)?
     let _ = call(
@@ -78,6 +79,7 @@ fn path(
         upload_model(b, read_file(model, "clip model")?, patch: spec.decoder == 2)?
     }
     if !gate.is_empty() { upload_gate(b, read_file(gate, "clip history gate")?)? }
+    if !raw_model.is_empty() { upload_raw_kernel(b, read_file(raw_model, "clip raw kernel")?)? }
     frames(b, spec.warmup)?
     for frame in 0..spec.length {
         if spec.cut_at > 0 && frame == spec.cut_at {
@@ -109,15 +111,17 @@ fn path(
         save(b, f"{stem}.visibility32f", count)?
         if spec.training_inputs == 1 {
             let n = (spec.width / divisor) * (spec.height / divisor)
-            if call(b, "publish_patch", Vec::new())? != i32(n) {
-                return Err(ToolError::new("clip patch input count"))
+            if spec.decoder == 2 {
+                if call(b, "publish_patch", Vec::new())? != i32(n) {
+                    return Err(ToolError::new("clip patch input count"))
+                }
+                save(b, f"{stem}.patch32f", n, stride: 52, records: true)?
             }
-            save(b, f"{stem}.patch32f", n, stride: 52, records: true)?
             if call(b, "publish_patch_geometry", Vec::new())? != i32(n) {
                 return Err(ToolError::new("clip patch geometry count"))
             }
             save(b, f"{stem}.geometry32f", n, stride: 8, records: true)?
-            if spec.patch_source == 1 {
+            if spec.patch_source == 1 || spec.decoder == 3 {
                 if call(b, "publish_patch_source", Vec::new())? != 2 {
                     return Err(ToolError::new("clip source geometry parameters"))
                 }
@@ -137,11 +141,19 @@ fn path(
     Ok(())
 }
 
-pub fn run(directory: str, spec: Spec, model: str, gate: str) -> Result<(), ToolError> {
-    let input_track = if spec.patch_source == 1 { "source_geometry_full_stack" } else {
+pub fn run(
+    directory: str,
+    spec: Spec,
+    model: str,
+    gate: str,
+    raw_model: str,
+) -> Result<(), ToolError> {
+    let input_track = if spec.patch_source == 1 || spec.decoder == 3 {
+        "source_geometry_full_stack"
+    } else {
         "fixed_sampler_inputs"
     }
-    let metadata = f"scene=analytic/slats-checkerboard\ncase_catalog=legacy8_and_stress64_v1\nshot={spec.shot}\ncut_shot={(spec.shot + 3) % 8}\nwidth={spec.width}\nheight={spec.height}\nstart_frame={spec.start + spec.warmup}\nwarmup={spec.warmup}\nframes={spec.length}\nsimulation_fps=60\ncut_at={spec.cut_at}\nreset_cut={spec.reset_cut}\nmodel={model}\ngate_model={gate}\ngate_input_version=1\ndecoder={spec.decoder}\npatch_fast={spec.patch_fast}\npatch_history={spec.patch_history}\npatch_source_geometry={spec.patch_source}\ninput_track={input_track}\ntraining_inputs={spec.training_inputs}\nformat=rgba32f_le_top_down_scene_linear_alpha1\nvisibility=foreground_area,horizontal_speed_output_pixels_per_frame,0,1\nreference=analytic_pixel_integral_after_reconstruction_never_decoder_input\ntrack=development_continuous_clip_not_sealed_test\n"
+    let metadata = f"scene=analytic/slats-checkerboard\ncase_catalog=legacy8_and_stress64_v1\nshot={spec.shot}\ncut_shot={(spec.shot + 3) % 8}\nwidth={spec.width}\nheight={spec.height}\nstart_frame={spec.start + spec.warmup}\nwarmup={spec.warmup}\nframes={spec.length}\nsimulation_fps=60\ncut_at={spec.cut_at}\nreset_cut={spec.reset_cut}\nmodel={model}\ngate_model={gate}\nraw_model={raw_model}\ngate_input_version=1\nraw_input_version=1\ndecoder={spec.decoder}\npatch_fast={spec.patch_fast}\npatch_history={spec.patch_history}\npatch_source_geometry={spec.patch_source}\ninput_track={input_track}\ntraining_inputs={spec.training_inputs}\nformat=rgba32f_le_top_down_scene_linear_alpha1\nvisibility=foreground_area,horizontal_speed_output_pixels_per_frame,0,1\nreference=analytic_pixel_integral_after_reconstruction_never_decoder_input\ntrack=development_continuous_clip_not_sealed_test\n"
     let _ = files::write(f"{directory}/sequence.txt", metadata.as_bytes()).wait()?
     for divisor in 1..5 {
         var load = drive::gpu()
@@ -150,7 +162,7 @@ pub fn run(directory: str, spec: Spec, model: str, gate: str) -> Result<(), Tool
         load.workers = 1
         load.timeout = 600.0
         let b = drive::load(f"{directory}/fixture", load).wait()?.build
-        let result = path(b, directory, spec, divisor, model, gate)
+        let result = path(b, directory, spec, divisor, model, gate, raw_model)
         let closed = drive::close(b).wait()
         (take result)?
         let _ = (take closed)?

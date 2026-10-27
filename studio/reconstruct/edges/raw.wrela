@@ -1,5 +1,5 @@
-// Experimental control: preserve 16 causal raw frames, then gather point observations.
-// No analytic field, coverage, reference, future frame or absolute case ID reaches this pass.
+// Experimental controls: preserve 16 causal raw frames, then gather point observations.
+// The fixed-input entry reads no source field, coverage, reference, future frame or case ID.
 // The nearest current sample supplies a constant-velocity correspondence hypothesis. This
 // deliberately limited control is not a visibility solution or the production decoder.
 use engine::view::jitter_of
@@ -115,4 +115,127 @@ fn retained_frame_offsets_obey_storage_alignment() {
         let size = stride(12 / divisor, 12 / divisor)
         assert(size >= n && size - n < 8 && (size * 32) % 256 == 0)
     }
+}
+
+// Full-stack control: authored geometry supplies both layer trajectories and visibility.
+// Colours still come exclusively from retained renderer samples. The decoder never reads
+// source colours, checker frequency, analytic pixel integrals or reference coverage.
+pub fn visible(position: vec2, depth: f32, tick: u32, shape: vec4) -> bool {
+    let geometry = reconstruction_patch::history::source_geometry(position, tick, shape)
+    abs(depth - geometry.z) < 0.01
+}
+
+@fragment
+pub fn reconstruct_source(
+    p: FragCoord,
+    samples: [Sample],
+    width: u32,
+    height: u32,
+    divisor: u32,
+    tick: u32,
+    count: u32,
+    shape: vec4,
+    kernel: [vec4],
+    trained: u32,
+) -> vec4 {
+    let d = f32(divisor)
+    let size = stride(width, height)
+    let limit = vec2i(i32(width) - 1, i32(height) - 1)
+    let near = clamp(vec2i(floor(p.position.xy / d + jitter_of(tick))), vec2i(0), limit)
+    let current = samples[(tick % HISTORY) * size + u32(near.y) * width + u32(near.x)]
+    let radius = max(0.8, 1.25 * d / sqrt(f32(count)))
+    var sum = vec3(0.0)
+    var total = 0.0
+    var support = 0.0
+    // Enumerate each layer exactly once, including when their velocities are equal.
+    for layer in 0..2 {
+        let velocity = vec2(if layer == 1 { shape.w } else { 0.0 }, 0.0)
+        let depth = if layer == 1 { 0.5 } else { 0.25 }
+        for age in 0..HISTORY {
+            if age < count {
+                let frame = tick - age
+                let jitter = jitter_of(frame)
+                let at = vec2i(floor((p.position.xy - velocity * f32(age)) / d + jitter))
+                for y in 0..3 {
+                    for x in 0..3 {
+                        let xy = at + vec2i(i32(x) - 1, i32(y) - 1)
+                        if xy.x >= 0 && xy.y >= 0 && xy.x <= limit.x && xy.y <= limit.y {
+                            let sample = samples[(frame % HISTORY) * size +
+                                u32(xy.y) * width +
+                                u32(xy.x)]
+                            let position = (vec2(f32(xy.x), f32(xy.y)) + vec2(0.5) - jitter) * d +
+                                sample.geometry.xy * f32(age)
+                            if abs(sample.geometry.z - depth) < 0.01 &&
+                                length(sample.geometry.xy - velocity) < 0.05 &&
+                                visible(position, sample.geometry.z, tick, shape) {
+                                let distance = position - p.position.xy
+                                let base = weight(distance, radius)
+                                let factor = if trained == 1 && base > 0.0 {
+                                    kernel_factor(
+                                        vec4(
+                                            abs(distance) / radius,
+                                            f32(age) / 15.0,
+                                            f32(count) / 16.0,
+                                        ),
+                                        vec4(
+                                            1.0 / d,
+                                            f32(layer),
+                                            abs(velocity.x) / 32.0,
+                                            radius / d,
+                                        ),
+                                        kernel,
+                                    )
+                                } else { 1.0 }
+                                let w = base * factor
+                                sum += max(sample.color.rgb, vec3(0.0)) * w
+                                total += w
+                                support += base
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    vec4(if support > 1.0e-5 { sum / total } else {
+        max(current.color.rgb, vec3(0.0))
+    }, current.color.a)
+}
+
+@test
+fn source_visibility_rejects_occluded_background_and_preserves_moving_front() {
+    let shape = vec4(8.0, 1.0, 0.0, 2.0)
+    assert(visible(vec2(0.5, 4.0), depth: 0.5, tick: 0, shape: shape))
+    assert(!visible(vec2(0.5, 4.0), depth: 0.25, tick: 0, shape: shape))
+    assert(visible(vec2(0.5, 4.0), depth: 0.25, tick: 1, shape: shape))
+    assert(!visible(vec2(2.5, 4.0), depth: 0.25, tick: 1, shape: shape))
+    assert(visible(vec2(2.5, 4.0), depth: 0.5, tick: 1, shape: shape))
+    assert(visible(vec2(-5.5, 4.0), depth: 0.5, tick: 1, shape: shape))
+}
+
+// Colour-independent 8 -> 8 ReLU -> 1 MLP, packed into 21 vec4 rows (81 coefficients,
+// three zero padding values). The same positive scalar weights all RGB channels.
+// Geometry-only features preserve affine RGB transforms before clipping/target storage.
+pub fn kernel_factor(a: vec4, b: vec4, w: [vec4]) -> f32 {
+    let h0 = max(
+        vec4(
+            dot(w[0], a) + dot(w[1], b),
+            dot(w[2], a) + dot(w[3], b),
+            dot(w[4], a) + dot(w[5], b),
+            dot(w[6], a) + dot(w[7], b),
+        ) +
+            w[16],
+        vec4(0.0),
+    )
+    let h1 = max(
+        vec4(
+            dot(w[8], a) + dot(w[9], b),
+            dot(w[10], a) + dot(w[11], b),
+            dot(w[12], a) + dot(w[13], b),
+            dot(w[14], a) + dot(w[15], b),
+        ) +
+            w[17],
+        vec4(0.0),
+    )
+    exp(clamp(dot(h0, w[18]) + dot(h1, w[19]) + w[20].x, -5.0, 5.0))
 }

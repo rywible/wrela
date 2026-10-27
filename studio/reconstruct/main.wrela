@@ -13,6 +13,7 @@ use toolkit::whole::{chunked, data_bytes, joined, write_file, read_file}
 struct Options: Clone {
     model: String = String::new(),
     gate_model: String = String::new(),
+    raw_model: String = String::new(),
     scene: u32 = 0,
     sampling: u32 = 0,
     decoder: u32 = 0,
@@ -41,6 +42,7 @@ fn options(given: [String]) -> Option<Options> {
             o.decoder = match given[i + 1].as_str() {
                 "production" => 0,
                 "raw" => 1,
+                "raw-source" => 3,
                 "patch" => 2,
                 _ => return None,
             }
@@ -53,6 +55,11 @@ fn options(given: [String]) -> Option<Options> {
                 "phase64" => 1,
                 _ => return None,
             }
+            i += 2
+            continue
+        }
+        if given[i].as_str() == "--raw-model" {
+            o.raw_model = given[i + 1].clone()
             i += 2
             continue
         }
@@ -102,10 +109,11 @@ fn options(given: [String]) -> Option<Options> {
     }) || o.width == 0 || o.height == 0 || o.width % 12 != 0 || o.height % 12 != 0 || o.width > 3840 || o.height > 2160 || (o.warmup < 1 && (o.scene != 2 || o.length == 1)) || o.warmup > 4096 || o.cells < 2 || o.cells > 16 {
         return None
     }
+    if !o.raw_model.is_empty() && o.decoder != 3 { return None }
     if !o.gate_model.is_empty() && (o.scene != 2 || o.decoder != 2 || o.patch_history == 0) {
         return None
     }
-    if !o.model.is_empty() && (o.scene != 2 || o.decoder == 1) { return None }
+    if !o.model.is_empty() && (o.scene != 2 || o.decoder == 1 || o.decoder == 3) { return None }
     // Diagnostic captures export raw histories or per-input features at every scale.
     // Bound their size; dedicated timing adapters measure the deployed scale separately.
     if o.decoder != 0 && (o.scene != 2 || o.width > 384 || o.height > 216) { return None }
@@ -115,7 +123,7 @@ fn options(given: [String]) -> Option<Options> {
     }
     if o.patch_history > 1000 || (o.patch_history > 0 && o.decoder != 2) { return None }
     if o.patch_fast > 1 || (o.patch_fast == 1 && o.decoder != 2) { return None }
-    if o.training_inputs > 1 || (o.training_inputs == 1 && (o.decoder != 2 || o.length < 2)) {
+    if o.training_inputs > 1 || (o.training_inputs == 1 && (o.decoder == 0 || o.length < 2)) {
         return None
     }
     if o.start > 100000 || (o.start != 0 && o.length == 1) { return None }
@@ -213,6 +221,9 @@ fn captured(
         let bytes = read_file(o.model.as_str(), "RGB model")?
         upload_model(b, bytes, patch: o.decoder == 2)?
     }
+    if !o.raw_model.is_empty() && cells == 0 {
+        upload_raw_kernel(b, read_file(o.raw_model.as_str(), "raw kernel")?)?
+    }
     if !o.gate_model.is_empty() && cells == 0 {
         upload_gate(b, read_file(o.gate_model.as_str(), "history gate")?)?
     }
@@ -249,7 +260,7 @@ fn captured(
         }
         write_file(f"{directory}/{name}.samples32f", chunked(take bytes))?
     }
-    if o.scene == 2 && cells == 0 && o.decoder == 1 {
+    if o.scene == 2 && cells == 0 && (o.decoder == 1 || o.decoder == 3) {
         let count = u32(call(b, "publish_raw", Vec::new())?)
         if count != (((o.width / divisor) * (o.height / divisor) + 7) / 8 * 8) * 16 {
             return Err(ToolError::new("wrong raw observation count"))
@@ -383,6 +394,7 @@ fn run(o: Options) -> Result<(), ToolError> {
             },
             o.model.as_str(),
             o.gate_model.as_str(),
+            o.raw_model.as_str(),
         )
     }
     let coarse = capture(o, 1, o.cells, "reference-coarse", directory.as_str())?
@@ -413,7 +425,7 @@ fn run(o: Options) -> Result<(), ToolError> {
         "regular_grid_tied_to_frame"
     }
     let repeat = if o.sampling == 1 { "independent_seed_plus_one" } else { "identical_seed" }
-    let metadata = f"scene={scene}\nshot={o.shot}\nwidth={o.width}\nheight={o.height}\nwarmup={o.warmup}\nreference_samples={count}\nsimulation_frame={frame}\nsimulation_fps=60\ncamera=fixture_shot_at_time_0\nformat=rgba32f_le_top_down_scene_linear_alpha1\nreference={reference_kind}\nworkers=1\nquality=fixture_declared_quality_measured_false_pace_false\ntrack=development_smoke_not_validation_or_sealed_test\nmodel={o.model}\ngate_model={o.gate_model}\ndecoder={o.decoder}\npatch_fast={o.patch_fast}\npatch_history={o.patch_history}\npatch_source_geometry={o.patch_source}\nraw_layout=16_frames_of_32_byte_color_motion_depth_records_frame_stride_ceil_pixels_to_8\nsampling={sampling}\nseed={o.seed}\nrepeat={repeat}\n"
+    let metadata = f"scene={scene}\nshot={o.shot}\nwidth={o.width}\nheight={o.height}\nwarmup={o.warmup}\nreference_samples={count}\nsimulation_frame={frame}\nsimulation_fps=60\ncamera=fixture_shot_at_time_0\nformat=rgba32f_le_top_down_scene_linear_alpha1\nreference={reference_kind}\nworkers=1\nquality=fixture_declared_quality_measured_false_pace_false\ntrack=development_smoke_not_validation_or_sealed_test\nmodel={o.model}\ngate_model={o.gate_model}\nraw_model={o.raw_model}\ndecoder={o.decoder}\npatch_fast={o.patch_fast}\npatch_history={o.patch_history}\npatch_source_geometry={o.patch_source}\nraw_layout=16_frames_of_32_byte_color_motion_depth_records_frame_stride_ceil_pixels_to_8\nsampling={sampling}\nseed={o.seed}\nrepeat={repeat}\n"
     let _ = files::write(f"{directory}/capture.txt", metadata.as_bytes()).wait()?
     Ok(())
 }
@@ -427,7 +439,7 @@ pub fn tool() -> u32 {
     }
     let Some(o) = options(given) else {
         print(
-            "usage: wrela tool reconstruct -- [--scene bare|clearing|edges --shot 0..71(edges) --width 192 --height 108 --warmup 240 --cells 8 --sampling grid|phase64 --seed 17 --frames 1 --start-frame 0 --cut-at 0 --reset-cut 1 --model out/models/.../weights.half --decoder production|raw|patch --training-inputs 0|1 --patch-fast 0|1 --patch-history 0..1000 --patch-source-geometry 0|1 --gate-model out/models/.../weights.f32] | train <manifest> <steps> <seed> | patch-train <manifest> <steps> <seed> [initial-f32] | gate-train <manifest> <steps> <seed> <temporal-permille>",
+            "usage: wrela tool reconstruct -- [--scene bare|clearing|edges --shot 0..71(edges) --width 192 --height 108 --warmup 240 --cells 8 --sampling grid|phase64 --seed 17 --frames 1 --start-frame 0 --cut-at 0 --reset-cut 1 --model out/models/.../weights.half --decoder production|raw|raw-source|patch --training-inputs 0|1 --patch-fast 0|1 --patch-history 0..1000 --patch-source-geometry 0|1 --gate-model out/models/.../weights.f32 --raw-model out/models/.../weights.f32] | train <manifest> <steps> <seed> | patch-train <manifest> <steps> <seed> [initial-f32] | gate-train <manifest> <steps> <seed> <temporal-permille>",
         )
         return 2
     }
@@ -514,5 +526,31 @@ pub fn upload_gate(b: drive::Build, bytes: [u8]) -> Result<(), ToolError> {
         )?
     }
     let _ = call(b, "gate_end", Vec::new())?
+    Ok(())
+}
+
+// Twenty-one vec4 rows: 81 coefficients and three checked zero-padding values.
+pub fn upload_raw_kernel(b: drive::Build, bytes: [u8]) -> Result<(), ToolError> {
+    let w = finite_floats(bytes, 84)?
+    if w[81] != 0.0 || w[82] != 0.0 || w[83] != 0.0 {
+        return Err(ToolError::new("raw kernel padding must be zero"))
+    }
+    let _ = call(b, "raw_kernel_begin", Vec::new())?
+    for i in 0..21 {
+        let _ = call(
+            b,
+            "raw_kernel_row",
+            Vec::from(
+                [
+                    Scalar::I32(i32(i)),
+                    Scalar::F32(w[i * 4]),
+                    Scalar::F32(w[i * 4 + 1]),
+                    Scalar::F32(w[i * 4 + 2]),
+                    Scalar::F32(w[i * 4 + 3]),
+                ],
+            ),
+        )?
+    }
+    let _ = call(b, "raw_kernel_end", Vec::new())?
     Ok(())
 }
