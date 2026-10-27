@@ -1170,3 +1170,67 @@ SHA-256 `77db68f801b6de876cbcf1a45821ec9827b41eed48271b0567e63c66b41ff9a9`; timi
 `62469e6afbbd6dbb12603b0adee2bcf76cf51010b515744674ea9ad65cbee8c3`.
 Focused checks, changed-source formatting and allow-list results are retained.
 This is an implementation checkpoint, not full-suite or PR readiness.
+
+
+## Spatial-index completeness and a modest cost tradeoff
+
+At base `93949167`, `raw-index` adds a current-output-space index over the same
+sixteen packed raw frames. It checks source geometry once per retained observation
+and follows bin lists during reconstruction, preserving the old per-frame 3×3
+candidate domain. A separate clear/build runs every frame and every link is charged
+to memory. The 2D dispatch also stays within per-dimension workgroup limits at 4K.
+This remains the two-layer analytic full-stack control, not a general 3D or
+fixed-input upscaler. No source colours, references or future observations are added.
+
+Independent CPU checks reconstruct expected nodes/bins from exported raw observations
+and geometry-only source parameters. Six declared snapshots across four scales
+check 1,882,080 node occurrences in 24 graphs; every expected node
+occurs exactly once, in the right bin, with no cycle. The largest tested bin holds
+64 observations, with no capacity truncation. Removing a list or introducing a cycle
+makes the graph verifier fail. Removing the spatial halo fails the unit test.
+An initial source-export assertion was repaired and its failed run retained.
+
+The 27 continuous clips and cut controls compare 9,672 image/reference/mask files.
+Every reconstructed RGB difference is at most one positive finite half-float code
+step, within the predeclared two-step bound; alpha, references and masks are exact.
+All eight cut/fresh images match exactly, and all eight no-reset negative images
+differ. The previous learned source decoder still reproduces 384 checked files
+byte for byte after adding the new mode.
+
+Atomic insertion order is not deterministic. Repeated λ0.25 clips for cases 1 and
+23 change 747 and 1,434 HDR channels respectively, each by at most one half-float
+step. All four index files in the repeated snapshot change order but pass the
+same complete membership/acyclicity checks. No deterministic-output or long-run
+temporal-stability claim is made. Raw observations, rather than previous neural
+outputs, remain the history.
+
+All 24 fixed/learned clips are independently re-scored on every frame and scale.
+Maximum per-frame absolute changes are FLIP
+0.00009173, LPIPS
+0.00004542, and PSNR
+0.00020721 dB; maximum aggregate
+opaque temporal MAE change is
+0.000002525.
+The declared limits remain 0.0001 FLIP/LPIPS, 0.01 dB PSNR and 0.00001 opaque
+temporal MAE. These are implementation-comparison bounds, not replacements for
+any G1–G7 threshold. Fixed-filter score comparisons use the byte-identical earlier
+fixed captures; learned comparisons use the packed-stage scores.
+
+The four native final displayed screens match the previous full-size builds,
+but the complete `wrela same` result is false because command/pipeline state changes.
+The [browser comparison](bench.md#2026-10-27-utc-amd-spatial-sample-index) gives modest
+median fixture-span gains, higher memory and three p95 regressions. Index rebuilding
+alone exceeds the entire G6 reconstruction budget. **The indexed variant remains
+experimental; neither model is promoted.** G1–G7 remain unchanged and unmet.
+
+Next tests should reduce index rebuild/traversal cost or repeated neural arithmetic,
+not infer deployment readiness from a faster gather label. Smaller bins, contiguous
+lists or per-age/layer specialization of the six distance-independent MLP features
+are hypotheses to measure, with all extra work and storage counted.
+
+Evidence: `build/neural-evidence/raw-kernel-index-v1/manifest.json` on Pop!_OS.
+Capture source SHA-256 `10b9de7e24f8551617955108249f63c047fe748d91de66237d35cd368f69b049`;
+timing source `272732e5702330b51a4ec0118ca37e4b743b0a2ce7788840512216367e91d3e7`;
+external scripts `f4ab59a7c12a781611d910d7ea5dc765e861111c6fbdac21cb44cb0307146205`.
+Focused source/halo checks, formatting, allow-list and diff checks pass.
+This checkpoint does not claim the full suite or PR readiness.

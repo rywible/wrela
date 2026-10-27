@@ -161,3 +161,40 @@ for Wrela's authored fields. It adds information and work relative to an RGB
 upscaler. Output-resolution material evaluation, cache storage and any neural
 appearance decoding would be explicitly charged to the full-stack budget;
 nothing in this experiment demonstrates that tradeoff yet.
+
+## Spatial-index control
+
+The explicit `raw-index` decoder keeps the same raw history and filter, but builds
+an index in current output coordinates. Two-pixel bins have an eight-pixel halo,
+large enough for the maximum cold-start support at all four diagnostic scales.
+A 2D dispatch examines each retained observation once, checks layer/motion and
+current source visibility, and inserts its node into a bin with an atomic exchange.
+One link per allocated observation provides collision storage without a per-bin cap.
+A separate clear pass removes previous-frame heads. Both passes are timed and charged.
+
+Reconstruction visits only bins intersecting its tent, follows their lists and
+retains the original 3×3 per-frame/per-layer candidate domain. It does not enlarge
+the filter, discard crowded-bin entries or read source colour. The graph is rebuilt
+from all live raw frames; this is not an incremental surface-space cache or a
+general moving-camera/3D visibility solution. Diagnostic exports contain bin heads
+then age-major links, with zero as null and node IDs encoded plus one.
+
+Atomic insertion order is unspecified. The independent graph audit therefore
+requires exact membership and bins, no duplicates or cycles, and no lost collisions;
+it does not require identical link order. Repeated actual GPU runs change some
+reconstruction channels by one half-float code step. This variation and its temporal
+implications remain part of acceptance; no deterministic-output claim is made.
+The analytic scores do not replace G3's trail/reveal/population requirements.
+
+The measured two-pixel variant reduces median fixture span modestly but increases
+memory and worsens some p95 results. It remains an explicit experiment, with the
+previous decoder available. [The benchmark](bench.md#2026-10-27-utc-amd-spatial-sample-index)
+charges clearing, indexing, gathering, retention and display separately.
+
+Next hypotheses include smaller bins to reduce candidate traversal, a contiguous
+index to avoid dependent pointer reads, and specialization of the kernel network.
+Only normalized x/y distance varies per output/sample pair; the other six network
+features are constant for an age/layer/scale/history-count/source-velocity combination. Folding
+those features into hidden biases could reduce repeated work. This is an algebraic
+proposal, not a measured speedup or a claim that deployed f32 arithmetic is unchanged.
+Any variant still needs numerical/temporal checks and a complete cost comparison.

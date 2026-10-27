@@ -1368,3 +1368,47 @@ and `build/neural-evidence/raw-kernel-packed-v1/manifest.json`. Timing source ar
 Stage A `6b998afb04ef602490a2cef4b7368c02fbb97a8425c6d3b1dcf1d54235eafe28`;
 Stage B `5673e31d9f1fc73787d260582c712a2bd265b03144cbc2390f14596d96894a89`.
 Every profile includes its exact build hash, command, allocation record and workload.
+
+
+## 2026-10-27 UTC AMD spatial sample index
+
+Pop!_OS AMD Ryzen 5 5500U / Radeon Graphics (RADV RENOIR, PCI 1002:164c),
+Mesa 26.1.6-1pop0~1787580452~24.04~a5619ea, Chrome 154.0.8037.57,
+Wrela 0.9.0/compiler `de9b81e52a7747870dfbd5223cb8aeb41e584d23`.
+Base `93949167`. Same analytic case 1 at 4× linear reduction, fixed filter and
+frozen λ0.25 kernel, one worker. Four sequential Chrome profiles, no owned scoring,
+capture, training or other profile work overlapping them. Each has 240 measured
+frames and 240 warmup frames, except learned 4K uses 32 warmup as before.
+
+The explicit `raw-index` variant rebuilds two-pixel spatial bins over the sixteen
+raw frames. Linked lists have no per-bin cap. Its table below includes the complete
+fixture GPU span: retain, clear, build, reconstruct and display are all present.
+Label percentiles are separate; they are not added to manufacture a pipeline p95.
+
+| Decoder / output | Previous fixture median / p95 ms | Indexed fixture median / p95 ms | Index clear median / p95 ms | Index build median / p95 ms | Indexed gather median / p95 ms | GPU MiB, previous → indexed |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| fixed-1920x1080 | 21.899 / 22.226 | 19.975 / 21.946 | 0.070 / 0.086 | 2.714 / 2.806 | 16.005 / 18.037 | 77.12 → 87.06 |
+| fixed-3840x2160 | 87.393 / 88.720 | 82.399 / 89.236 | 0.282 / 0.326 | 10.881 / 11.096 | 66.798 / 73.682 | 308.50 → 348.14 |
+| learned-1920x1080 | 28.338 / 28.659 | 26.581 / 28.862 | 0.072 / 0.087 | 2.729 / 2.935 | 22.635 / 24.889 | 77.13 → 87.06 |
+| learned-3840x2160 | 113.113 / 114.418 | 106.628 / 115.284 | 0.282 / 0.317 | 10.824 / 11.088 | 91.271 / 99.833 | 308.50 → 348.14 |
+
+The indexed median fixture span is lower in all four unpaired short runs, but
+**three of four measured p95 values are worse** and allocations increase. The variant
+is not promoted as a generally faster replacement. Rebuilding the index alone takes
+about 2.7 ms at 1080p / 10.8–10.9 ms at 4K. It already exceeds G6's reconstruction
+budget before gathering. Instrumented GPU allocations exclude unmeasured browser/
+driver overhead; there is no p99, production or 20-minute stability claim.
+
+All four final native comparison screens are byte-identical to the previous builds;
+command hashes and pipelines differ as expected. Continuous HDR and repeated-run
+audits find one-half-float-step changes, including atomic-order variation. All freshly
+scored diagnostic quality differences meet the predeclared bounds, but the previously
+rejected models remain rejected. [The development record](neural-rendering-progress.md#spatial-index-completeness-and-a-modest-cost-tradeoff)
+records complete node checks, cut/reset, repeat variation and limitations.
+
+Evidence on Pop!_OS: `build/neural-evidence/raw-kernel-index-v1/manifest.json`.
+Capture source `10b9de7e24f8551617955108249f63c047fe748d91de66237d35cd368f69b049`; timing source
+`272732e5702330b51a4ec0118ca37e4b743b0a2ce7788840512216367e91d3e7`; external scripts
+`f4ab59a7c12a781611d910d7ea5dc765e861111c6fbdac21cb44cb0307146205`. Reports retain commands, build/environment
+hashes, individual retain/display times, all allocations and the initial failed
+diagnostic source export. G1–G7 remain unchanged and unmet.

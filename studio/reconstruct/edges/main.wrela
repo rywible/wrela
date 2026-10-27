@@ -97,6 +97,10 @@ pub struct State {
     exported_cells: GpuBuffer<patch::Cell>,
     raw_enabled: bool,
     raw_source: bool,
+    raw_indexed: bool,
+    raw_heads: GpuBuffer<u32>,
+    raw_links: GpuBuffer<u32>,
+    exported_raw_index: GpuBuffer<u32>,
     raw_trained: bool,
     raw_kernel: GpuBuffer<vec4>,
     raw_kernel_rows: u32,
@@ -163,6 +167,10 @@ pub fn init() -> State {
         exported_cells: buffer(1),
         raw_enabled: false,
         raw_source: false,
+        raw_indexed: false,
+        raw_heads: buffer(1),
+        raw_links: buffer(1),
+        exported_raw_index: buffer(1),
         raw_trained: false,
         raw_kernel: buffer(1),
         raw_kernel_rows: 0,
@@ -218,6 +226,11 @@ fn resize(s: mut State, width: u32, height: u32) {
     if s.raw_source {
         s.raw_packed = buffer(raw::packed_stride(w, h) * raw::HISTORY)
     } else if s.raw_enabled { s.raw_history = buffer(raw::stride(w, h) * raw::HISTORY) }
+    if s.raw_indexed {
+        let grid = raw_index::grid_size(width, height)
+        s.raw_heads = buffer(grid.x * grid.y)
+        s.raw_links = buffer(w * h * raw::HISTORY)
+    }
     s.raw_count = 0
     s.patch_frames = 0
     if s.patch_enabled { s.patch_cells = buffer(w * h) }
@@ -399,6 +412,25 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             over: width * height,
         )
     }
+    if s.raw_indexed {
+        label("raw index clear")
+        dispatch(raw_index::clear.bind(s.raw_heads.len(), mut s.raw_heads), over: s.raw_heads.len())
+        label("raw index build")
+        dispatch(
+            raw_index::build.bind(
+                s.raw_packed.items(),
+                w,
+                h,
+                s.divisor,
+                s.tick,
+                s.raw_count,
+                vec4(f.period, f.width, f.offset, f.speed),
+                mut s.raw_heads,
+                mut s.raw_links,
+            ),
+            over: (w, h * s.raw_count),
+        )
+    }
     label(if s.patch_enabled { "patch decode" } else { "temporal control" })
     let p = begin_pass(mut s.current)
     if s.patch_enabled {
@@ -448,6 +480,23 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         } else {
             fullscreen(p, patch::reconstruct.bind(s.patch_cells.items(), w, h, s.divisor, s.tick))
         }
+    } else if s.raw_indexed {
+        fullscreen(
+            p,
+            raw_index::reconstruct.bind(
+                s.raw_packed.items(),
+                s.raw_heads.items(),
+                s.raw_links.items(),
+                w,
+                h,
+                s.divisor,
+                s.tick,
+                s.raw_count,
+                vec4(f.period, f.width, f.offset, f.speed),
+                s.raw_kernel.items(),
+                u32(s.raw_trained),
+            ),
+        )
     } else if s.raw_source {
         fullscreen(
             p,
@@ -621,9 +670,10 @@ pub fn publish_visibility(s: mut State) -> u32 {
 
 /// An explicit fixture-only control. Never silently combines with a trained RGB correction.
 pub fn decoder(s: mut State, mode: u32) {
-    assert(mode <= 3 && !s.rgb_enabled && s.width == 0)
-    s.raw_enabled = mode == 1 || mode == 3
-    s.raw_source = mode == 3
+    assert(mode <= 4 && !s.rgb_enabled && s.width == 0)
+    s.raw_enabled = mode == 1 || mode >= 3
+    s.raw_source = mode >= 3
+    s.raw_indexed = mode == 4
     s.patch_enabled = mode == 2
     if s.raw_enabled { s.collect_rows = false }
 }
@@ -726,8 +776,9 @@ pub fn patch_source_geometry(s: mut State, source: u32) {
 pub fn publish_patch_source(s: mut State) -> u32 {
     assert(
         ((s.patch_enabled && s.patch_source == 1) || s.raw_source) &&
-            s.collect_rows &&
-            !s.collecting,
+            (s.collect_rows || s.raw_indexed) &&
+            !s.collecting &&
+            s.captured_count == 1,
     )
     let f = case(s.captured_shot)
     s.exported_source = buffer(2)
@@ -795,4 +846,20 @@ pub fn raw_kernel_row(s: mut State, index: u32, x: f32, y: f32, z: f32, w: f32) 
 pub fn raw_kernel_end(s: mut State) {
     assert(s.raw_source && s.raw_kernel_rows == 21)
     s.raw_trained = true
+}
+
+// Diagnostic readback only: heads then one link per allocated raw node, both u32.
+pub fn publish_raw_index(s: mut State) -> u32 {
+    assert(s.raw_indexed && s.cells == 0 && !s.collecting && s.captured_count == 1)
+    let count = s.raw_heads.len() + s.raw_links.len()
+    s.exported_raw_index = buffer(count)
+    dispatch(
+        raw_index::export_index.bind(
+            s.raw_heads.items(),
+            s.raw_links.items(),
+            mut s.exported_raw_index,
+        ),
+        over: count,
+    )
+    count
 }

@@ -1,0 +1,155 @@
+// Full-stack spatial index over the same retained observations. Lists have no per-bin
+// capacity and discard no collisions. Rebuilt each frame; no reference/colour source queries.
+use engine::view::jitter_of
+use raw::{HISTORY, PackedSample, kernel_factor, packed_stride, unpack, visible, weight}
+use std::gpu::{Atomics, FragCoord, GlobalId, Slots}
+
+pub const BIN: u32 = 2
+pub const PAD: u32 = 8
+
+pub fn grid_size(output_width: u32, output_height: u32) -> vec2u {
+    vec2u((output_width + PAD * 2 + BIN - 1) / BIN, (output_height + PAD * 2 + BIN - 1) / BIN)
+}
+
+pub fn bin_at(position: vec2) -> vec2i {
+    vec2i(floor((position + vec2(f32(PAD))) / f32(BIN)))
+}
+
+pub fn layer_of(depth: f32) -> i32 {
+    if abs(depth - 0.25) < 0.01 { 0 } else if abs(depth - 0.5) < 0.01 { 1 } else { -1 }
+}
+
+@compute(64)
+pub fn clear(count: u32, heads: mut Slots<u32>, id: GlobalId) {
+    if id.x < count { heads[id] = 0 }
+}
+
+@compute(8, 8)
+pub fn build(
+    samples: [PackedSample],
+    width: u32,
+    height: u32,
+    divisor: u32,
+    tick: u32,
+    count: u32,
+    shape: vec4,
+    heads: mut Atomics<u32>,
+    links: mut Atomics<u32>,
+    id: GlobalId,
+) {
+    if id.x >= width || id.y >= height * count { return }
+    let node = id.y * width + id.x
+    let age = id.y / height
+    let pixel = (id.y % height) * width + id.x
+    let frame = tick - age
+    let sample = unpack(samples[(frame % HISTORY) * packed_stride(width, height) + pixel])
+    let layer = layer_of(sample.geometry.z)
+    if layer < 0 { return }
+    let velocity = vec2(if layer == 1 { shape.w } else { 0.0 }, 0.0)
+    if length(sample.geometry.xy - velocity) >= 0.05 { return }
+    let xy = vec2(f32(pixel % width), f32(pixel / width))
+    let position = (xy + vec2(0.5) - jitter_of(frame)) * f32(divisor) +
+        sample.geometry.xy * f32(age)
+    if !visible(position, sample.geometry.z, tick, shape) { return }
+    let grid = grid_size(width * divisor, height * divisor)
+    let cell = bin_at(position)
+    if cell.x < 0 || cell.y < 0 || cell.x >= i32(grid.x) || cell.y >= i32(grid.y) { return }
+    let at = u32(cell.y) * grid.x + u32(cell.x)
+    // Each node is inserted exactly once. Exchange defines an acyclic insertion order;
+    // links are complete before the later draw reads the index.
+    links.store(node, heads.exchange(at, node + 1))
+}
+
+@fragment
+pub fn reconstruct(
+    p: FragCoord,
+    samples: [PackedSample],
+    heads: [u32],
+    links: [u32],
+    width: u32,
+    height: u32,
+    divisor: u32,
+    tick: u32,
+    count: u32,
+    shape: vec4,
+    kernel: [vec4],
+    trained: u32,
+) -> vec4 {
+    let d = f32(divisor)
+    let pixels = width * height
+    let size = packed_stride(width, height)
+    let limit = vec2i(i32(width) - 1, i32(height) - 1)
+    let near = clamp(vec2i(floor(p.position.xy / d + jitter_of(tick))), vec2i(0), limit)
+    let current = unpack(samples[(tick % HISTORY) * size + u32(near.y) * width + u32(near.x)])
+    let radius = max(0.8, 1.25 * d / sqrt(f32(count)))
+    let grid = grid_size(width * divisor, height * divisor)
+    let lo = max(bin_at(p.position.xy - vec2(radius)), vec2i(0))
+    let hi = min(bin_at(p.position.xy + vec2(radius)), vec2i(i32(grid.x) - 1, i32(grid.y) - 1))
+    var sum = vec3(0.0)
+    var total = 0.0
+    var support = 0.0
+    for by in lo.y..(hi.y + 1) {
+        for bx in lo.x..(hi.x + 1) {
+            var node = heads[u32(by) * grid.x + u32(bx)]
+            while node != 0 {
+                let id = node - 1
+                node = links[id]
+                let age = id / pixels
+                let pixel = id % pixels
+                let frame = tick - age
+                let jitter = jitter_of(frame)
+                let sample = unpack(samples[(frame % HISTORY) * size + pixel])
+                let layer = layer_of(sample.geometry.z)
+                let velocity = vec2(if layer == 1 { shape.w } else { 0.0 }, 0.0)
+                let xy = vec2i(i32(pixel % width), i32(pixel / width))
+                // Keep the original 3x3 domain; indexing must not silently enlarge its filter.
+                let center = vec2i(floor((p.position.xy - velocity * f32(age)) / d + jitter))
+                let delta = xy - center
+                if abs(delta.x) <= 1 && abs(delta.y) <= 1 {
+                    let position = (vec2(f32(xy.x), f32(xy.y)) + vec2(0.5) - jitter) * d +
+                        sample.geometry.xy * f32(age)
+                    let distance = position - p.position.xy
+                    let base = weight(distance, radius)
+                    if base > 0.0 {
+                        let factor = if trained == 1 {
+                            kernel_factor(
+                                vec4(abs(distance) / radius, f32(age) / 15.0, f32(count) / 16.0),
+                                vec4(1.0 / d, f32(layer), abs(velocity.x) / 32.0, radius / d),
+                                kernel,
+                            )
+                        } else { 1.0 }
+                        let w = base * factor
+                        sum += max(sample.color.rgb, vec3(0.0)) * w
+                        total += w
+                        support += base
+                    }
+                }
+            }
+        }
+    }
+    vec4(if support > 1.0e-5 { sum / total } else {
+        max(current.color.rgb, vec3(0.0))
+    }, current.color.a)
+}
+
+@compute(64)
+pub fn export_index(heads: [u32], links: [u32], out: mut Slots<u32>, id: GlobalId) {
+    if id.x < heads.len() + links.len() {
+        out[id] = if id.x < heads.len() { heads[id.x] } else { links[id.x - heads.len()] }
+    }
+}
+
+@test
+fn bins_cover_the_largest_support_and_distinguish_layers() {
+    for divisor in 1..5 {
+        let radius = 1.25 * f32(divisor)
+        let grid = grid_size(output_width: 3840, output_height: 2160)
+        for at in [vec2(0.5), vec2(3839.5, 2159.5)] {
+            for shift in [vec2(-radius), vec2(radius)] {
+                let cell = bin_at(at + shift)
+                assert(cell.x >= 0 && cell.y >= 0 && cell.x < i32(grid.x) && cell.y < i32(grid.y))
+            }
+        }
+    }
+    assert(layer_of(0.25) == 0 && layer_of(0.5) == 1 && layer_of(0.75) == -1)
+}
