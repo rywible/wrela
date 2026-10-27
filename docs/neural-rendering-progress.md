@@ -2003,3 +2003,27 @@ scripts `52dba28f362738b71fea246768421c947d703dfc9238345681b1a423ad32f1f5`, unde
 `build/neural-evidence/appearance-learned-primitives-v1/` on Pop!_OS.
 No Wrela implementation or default weights change. All G1–G7 targets
 remain intact; no full-suite or PR-readiness claim.
+
+
+## Source spatial aggregation at matched capacity
+
+[Grouping all source cards](neural-source-primitives.md#spatial-aggregation-of-every-source-card)
+produces an unfitted 1,897-group optical model at 107,672 packed bytes.
+All-256 stored coverage MAE is 0.008003161,
+26.95% below the previous 107,680-byte fitted prefix model. All five
+mean material errors improve, and all five off-grid screens pass.
+Stored coverage is still 2.6155× BC; only the stored normal screen
+passes. All four spatial controls remain rejected.
+
+The source moment/packing checks, independent raster controls and all
+32 public 16→32 integration checks pass. A matched-count 187,360-byte
+optical control improves coverage only 1.23% over the smaller model.
+Gaussian alpha overfills coverage; optical alpha underfills it. Next is
+calibration versus a full packed optical fit at the smaller budget.
+
+Evidence manifest `d5910f77992f6870134c09bf3faaa2be6c0a033a33189b615b8ec5481194140a`;
+source `b333ba10f3c1fb3902c52a47ec7e1c21343b9d45af25cdb90bc2640003e7a453`;
+scripts `f1f48fbfd11a892b2d56cb460a4a4e940466caf956b6a0b8e6355253c55514b6`, under
+`build/neural-evidence/appearance-spatial-primitives-v1/` on Pop!_OS.
+No GPU primitive runtime, resident-memory or G1–G7 achievement. All original
+goals remain intact; no full-suite or PR-readiness claim.

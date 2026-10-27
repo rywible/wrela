@@ -1731,3 +1731,27 @@ passes. All sixteen public 16→32 integration checks pass. No promotion.
 
 Evidence: `56fe9d315bdc182559753f30a1a6091f3426b1b6c2dfb63c17adaef30e863f83`. This is a learned explicit
 primitive model, not an MLP decoder; no G1–G7 success.
+
+
+## Source spatial grouping (Pop!_OS AMD, 2026-10-27)
+
+[All controls, methods and failures](neural-source-primitives.md#spatial-aggregation-of-every-source-card).
+Ryzen 5 5500U; reused source references captured on its Radeon/RADV GPU.
+Clustering and evaluation use NumPy 2.2.6 and independently checked C++17,
+four OpenMP threads, no fast-math. No GPU primitive timing is claimed.
+
+Packed data including common header and authored wood: 107,672 bytes for
+1,897 groups, 187,360 bytes for 3,320 groups. Runtime allocations remain
+additional. Fixed eight-step construction of both models:
+0.343 s wall time after source/pattern loading;
+all-256, four-model nominal decode/wood/scoring/writes:
+241.632 s. Neither is end-to-end G7 timing.
+
+Unfitted 1,897 optical coverage MAE:
+0.008003161 stored, 0.008965747 off-grid.
+Stored error is 26.95% below the prior fitted 107,680-byte model,
+but 2.6155× BC. Only stored normals pass; all five off-grid screens pass.
+All four spatial models fail the joint stored gate. Every public 16→32
+integration check passes. No runtime promotion or G1–G7 pass.
+
+Evidence manifest `d5910f77992f6870134c09bf3faaa2be6c0a033a33189b615b8ec5481194140a`.

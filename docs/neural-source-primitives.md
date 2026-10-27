@@ -329,6 +329,174 @@ source dependencies. No Wrela runtime or shipped-model edits occur.
 Focused allow-list and diff checks pass; no full-suite or PR readiness
 claim is made.
 
+## Spatial aggregation of every source card
+
+An unfitted overlap-aware model now improves on the previous fitted
+prefix model at essentially the same packed capacity. Its all-256-view
+coverage MAE is 0.008003161, 26.95% below the
+previous fit; all five mean material errors improve. Four public off-grid
+views improve coverage by 29.26% and pass all five screens.
+**All four spatial controls still fail the stored-view quality gate.**
+The matched-budget optical model is 2.6155× BC on mean stored coverage
+and 3.7401× in its worst stored direction. No model is promoted.
+
+### Source partition, projection and opacity
+
+Eight fixed area-weighted Lloyd iterations group all 26,560 source cards
+by their three-dimensional centres. Initialization is deterministic and
+uniformly spaced over the coarsest 6,640-card prefix. Every source card is
+assigned and every group is nonempty. Source area supplies the weights;
+no reference pixels, image loss or off-grid labels enter construction.
+
+Each group preserves the area-weighted mean and covariance of the joint
+five-dimensional vector (position XYZ, local pattern centroid XY).
+Intrinsic pattern covariance is added in the local XY block. The source
+pattern moments use the independently checked 512×512 hard-cut integrals.
+Linear albedo, normal and crown-depth first moments are averaged with the
+same area weights. This preserves statistics before visibility and
+nonlinear opacity mapping, not exact rendered coverage.
+
+The view projection is H=[right, local-X; up, local-Y]. Projected mean and
+covariance are Hμ and HΣHᵀ. Keeping the joint covariance includes the cross
+terms between source position and local pattern offset. A normalized
+1e-12 identity term makes Cholesky factorization defined; it is retained
+and audited separately from the source covariance.
+
+Two kernels use the same packed data and finite support q≤18:
+
+- **Gaussian alpha:** amplitude is source area divided by the truncated
+  Gaussian integral. Covariance expands when needed to keep peak alpha
+  at 0.99. Integrated alpha area is preserved; covariance changes.
+- **Optical alpha:** preserve projected covariance, interpret that
+  normalized density as optical depth, and set alpha=1−exp(−density).
+  Integrated optical depth matches source area. Integrated alpha area
+  does not. This is an overlap approximation, not exact source opacity.
+
+Both sort group centres front to back, reject contributions behind the
+regenerated source wood, and composite constant material moments. The
+group covariance does not supply per-ray depth distributions or exact
+occlusion ordering.
+
+| Model | Groups | Packed bytes including common header and wood |
+|---|---:|---:|
+| Prior fitted prefix | 3,320 | 107,680 |
+| Matched-budget spatial | 1,897 | 107,672 |
+| Matched-count spatial | 3,320 | 187,360 |
+
+A spatial record stores 28 half values: mean5, lower-Cholesky15, area1,
+square-root albedo3, normal3 and crown depth1. Common bounds/material/count
+use 32 bytes; authored wood uses 1,408 bytes. Decoded normals are capped
+to unit length. The matched-budget model uses eight fewer bytes than the
+prior fit. The matched-count model uses 74.01% more packed data than the
+1,897-group model. These are data sizes, not resident-memory measurements;
+alignment, sorting, tile lists, caches, scratch, fallback and runtime
+metadata remain additional.
+
+### Independent checks
+
+An independent NumPy nearest-centre calculation checks 512 fixed source
+points and stable tie behavior. The entire 1,897-group construction
+repeats byte for byte, including all assignments and half records.
+Clustering objectives decrease at every iteration.
+
+Directly projected source-card statistics agree with the grouped moments
+for every group in all eight public directions: mean error≤
+4.44e-16,
+covariance error≤
+5.96e-16.
+Packed projected mean error≤
+0.000259
+in normalized coordinates, below 0.001. Every packed covariance remains
+positive definite and passes the fixed component tolerance
+1e-5+0.005 relative. Packed total area changes by at most
+0.001190%.
+
+All 96 numeric kernel checks pass the 0.002 relative integral tolerance.
+Independent two-dimensional integration checks source area for Gaussian
+alpha and optical depth for the optical kernel; a 128-node radial
+quadrature separately checks actual alpha area. This does not mislabel
+optical-depth preservation as alpha-area preservation.
+
+Eight packed CPU-raster checks against independent NumPy point integration
+differ by at most 5.19e-08,
+below 2e-5. Swapped-axis and reversed-order controls detect geometry and
+visibility mistakes. All corpus outputs pass physical moment bounds.
+The external C++17 raster uses four CPU threads without fast-math;
+it is not a GPU or Wrela runtime measurement.
+
+### Complete results and remaining failure
+
+All four controls are scored on all 256 stored directions at nominal
+16×16 spatial sampling. All 32 public 16→32 sampling comparisons pass,
+so the 16 public seed/view cases use 32×32 samples. This eight-direction
+integration check does not prove convergence for every nominal view.
+
+All 256 stored directions, mean absolute moment errors:
+
+| Control | Coverage | Linear RGB moment | Normal moment | Toward moment | Crown-depth moment |
+|---|---:|---:|---:|---:|---:|
+| Fixed BC | 0.003059909 | 0.001120013 | 0.028233120 | 0.002727373 | 0.000138883 |
+| Prior unfitted prefix | 0.021473852 | 0.002227915 | 0.025598879 | 0.014859017 | 0.000687627 |
+| Prior fitted prefix | 0.010956385 | 0.001180598 | 0.013913842 | 0.007334720 | 0.000369860 |
+| 1,897 spatial Gaussian | 0.016764010 | 0.001694544 | 0.016259599 | 0.011761421 | 0.000537327 |
+| 1,897 spatial optical | 0.008003161 | 0.000852460 | 0.010762640 | 0.005510278 | 0.000251127 |
+| 3,320 spatial Gaussian | 0.013164961 | 0.001350447 | 0.012881684 | 0.009277249 | 0.000413203 |
+| 3,320 spatial optical | 0.007904711 | 0.000828031 | 0.009423307 | 0.005564124 | 0.000224118 |
+
+Four public off-grid directions, denser integration:
+
+| Control | Coverage | Linear RGB moment | Normal moment | Toward moment | Crown-depth moment |
+|---|---:|---:|---:|---:|---:|
+| Fixed BC | 0.025882901 | 0.002766674 | 0.034725454 | 0.015425762 | 0.000571803 |
+| Prior unfitted prefix | 0.024310225 | 0.002578289 | 0.028003841 | 0.016593909 | 0.000761315 |
+| Prior fitted prefix | 0.012674492 | 0.001354021 | 0.015474488 | 0.008360843 | 0.000417555 |
+| 1,897 spatial Gaussian | 0.018850097 | 0.001941743 | 0.017683025 | 0.012964355 | 0.000602873 |
+| 1,897 spatial optical | 0.008965747 | 0.000963805 | 0.011689313 | 0.006073518 | 0.000276902 |
+| 3,320 spatial Gaussian | 0.014936378 | 0.001563573 | 0.014121724 | 0.010314394 | 0.000462837 |
+| 3,320 spatial optical | 0.008863372 | 0.000945167 | 0.010289603 | 0.006141483 | 0.000241856 |
+
+Only the normal screen passes over all stored directions for each of
+the four models. For the matched-budget optical model, albedo mean error
+is below BC, but its worst-view ratio still fails. All screens retain
+mean≤1.05×BC and worst-view≤1.10×BC. Public off-grid pass counts are 2/5
+for 1,897 Gaussian and 5/5 for the other three models. Full-source,
+native-LOD, prior volume and prefix-model comparisons remain in the record.
+
+Increasing optical-model packed data by 74.01% improves stored coverage
+by only 1.23%. The errors also have opposing signed biases:
+the 1,897 Gaussian model adds mean coverage 0.016425863, while the optical
+model loses 0.003684227. Optical positive and negative error components
+are both retained, so a total-area correction alone cannot establish a
+quality pass.
+
+![Spatial grouping controls at fixed stored direction 103](figures/neural-appearance-spatial-primitives.png)
+
+Construction of both group sets takes
+0.343 s elapsed wall time for CPU work
+after source/pattern loading. This excludes source export, reference
+generation and validation. Complete four-model nominal decode, wood,
+scoring and writes take
+241.632 s. Neither time is GPU
+latency or a G7 pipeline result. Changed-seed cases still use seed-7
+geometry and are stress tests, not new-asset generation.
+
+Next, compare a low-dimensional opacity/shape calibration with a full
+packed fit of the 1,897-group optical model. Keep the source-derived model
+as the fixed control and select using stored training directions only.
+This will test how much is calibration bias and how much requires learned
+local geometry/material changes. Neither result can replace the original
+production, temporal, perceptual, runtime or G1–G7 gates.
+
+Evidence: `build/neural-evidence/appearance-spatial-primitives-v1/manifest.json`,
+SHA-256 `d5910f77992f6870134c09bf3faaa2be6c0a033a33189b615b8ec5481194140a`.
+Source snapshot `b333ba10f3c1fb3902c52a47ec7e1c21343b9d45af25cdb90bc2640003e7a453`;
+external scripts `f1f48fbfd11a892b2d56cb460a4a4e940466caf956b6a0b8e6355253c55514b6`.
+The record contains every packed model, all nominal/public decoded outputs,
+construction, projection/packing/integration/decoder controls, diagnostics,
+compiler details, figure and immutable dependencies. No Wrela runtime or
+shipped weights change. Focused allow-list and diff checks pass; no
+full-suite or PR-readiness claim.
+
 ## Earlier untrained checkpoint: decision and reproducibility
 
 Retain these source-derived controls when fitting any compact learned

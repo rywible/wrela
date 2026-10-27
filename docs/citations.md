@@ -177,5 +177,9 @@ The external source-position visibility study is informed by [Kerbl et al.,
 optimized 3D Gaussian primitives and visibility-aware splatting. Our own
 untrained and fitted controls use source-pattern moment initialization,
 view-facing two-dimensional kernels and Wrela's actual wood triangles;
-they do not reproduce that paper. No implementation, assets, weights or hardware performance claim
-is imported. See [the measured controls and limits](neural-source-primitives.md).
+they do not reproduce that paper. The later spatial control groups all
+source cards and projects joint position/pattern moments, with separately
+audited Gaussian-alpha and optical-depth mappings. Those source-derived
+statistics and overlap approximations are our own experiment, not a
+paper implementation. No implementation, assets, weights or hardware
+performance claim is imported. See [the measured controls and limits](neural-source-primitives.md).

@@ -298,14 +298,28 @@ the failed quality ratios. It is a learned explicit representation, not
 an MLP decoder; packed size and CPU fitting time establish neither runtime
 cost nor G4/G7 success.
 
+## Spatial grouping before fitting
+
+A source-only 1,897-group optical model at 107,672 packed bytes improves
+all-256-view coverage by 26.95% against the prior 107,680-byte fit,
+without image optimization. It preserves projected source statistics,
+then uses an explicit overlap approximation. All five off-grid screens
+pass; four stored-view screens fail and stored coverage remains
+2.62× BC. The model is rejected.
+
+[The matched-budget and matched-count study](neural-source-primitives.md#spatial-aggregation-of-every-source-card)
+retains both opacity kernels, every stored view, public sampling checks
+and all failures. Adding 74.01% more packed data improves optical coverage
+only 1.23%; larger capacity alone is not an adequate next step.
+
 ## Next decision
 
-Test source-derived spatial aggregation before another fit: group
-neighbouring cards in three dimensions and preserve their spatial and
-material moments. Compare that unfitted representation and its fitted
-variant at equal capacity against the current prefix-thinning controls,
-native LODs and the strongest practical atlas. Full source geometry,
-wood, sorting, tiling, caches and scratch are not free runtime inputs.
+Compare a low-dimensional opacity/shape calibration with a complete
+packed fit of the 1,897-group optical model. The unfitted source model
+is a fixed control; fit and selection use stored directions only.
+Measure the learned gain beyond calibration at the same packed capacity.
+Full source geometry, wood, sorting, tiling, caches and scratch remain
+part of the eventual runtime accounting.
 
 Keep fitted-view quality, unseen views and sampling/footprint tests separate.
 A small packed payload alone does not meet G4. Complete production materials,
