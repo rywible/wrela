@@ -470,3 +470,29 @@ The earlier exact decoder sources are retained under `raw-history-v1` and
 External measurement utilities are `replay_raw.py`, `compare_sequences.py` and
 `check_raw_cut.py` in the established external state directory, each embedded in its results.
 No G1–G7 gate has been satisfied or weakened.
+
+### The 65,536-sample production-reference check completed
+
+The pending phase64 clearing run `1793059465-54690141` completed successfully on the AMD.
+Its fixed shot, simulation time, size and view transform are the same as the smaller runs.
+Coarse/reference/repeat use 16,384 / 65,536 / 65,536 samples, with independent seeds 17 and 18
+for the two fine estimates.
+
+| Numerical check | Whole-image mean FLIP | Upper half | Lower half |
+| --- | ---: | ---: | ---: |
+| 16k versus 65k | 0.002115 | 0.001109 | 0.003121 |
+| Independent 65k seeds | 0.000730 | 0.000555 | 0.000904 |
+
+Both **whole-image necessary numerical checks pass 0.003**. The lower-half coarse/fine
+diagnostic still exceeds that limit, so this is not a worst-region guarantee. Agreement
+between these estimates cannot establish unbiased lighting: all use the production renderer.
+One frozen 192×108 shot also cannot establish temporal, scene-population or sealed-test
+reference validity. G1–G7 remain unmet.
+
+Against this reference, production FLIP is 0.073293 / 0.096488 / 0.142255 / 0.183315 for
+1× / 2× / 3× / 4×. All four candidate buffers are byte-identical to the 4k/16k phase64 run,
+so the convergence experiment changed the reference estimate, not the reconstruction.
+The run's `flip.json` embeds the scorer and records image hashes; `provenance.json` records
+the exact execution-source archive, compiler and AMD driver. The active measurement record
+outside the repository now marks this job completed. No elapsed capture time is used as a
+frame-rate or latency claim.
