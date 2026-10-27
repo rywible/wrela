@@ -4,6 +4,7 @@
 // periodic pulse's antiderivative and interval intersections, not a sampled approximation.
 
 use engine::view::{GRASS, GROUND}
+use engine::noise::rand
 
 pub struct Field: Copy + GpuData {
     pub front: vec3,
@@ -16,10 +17,49 @@ pub struct Field: Copy + GpuData {
     pub checker: f32,
 }
 
+// Eight unchanged legacy cases followed by 64 additional development stress cases.
+// This catalog is public development data, not a sealed release suite.
+pub const CASES: u32 = 72
+
+fn draw(index: u32, channel: u32, count: u32) -> u32 {
+    u32(rand(index + 31337, channel) * f32(count))
+}
+
+fn stress(index: u32) -> Field {
+    let period = 2.5 + f32(draw(index, channel: 0, count: 192)) / 16.0
+    Field {
+        period,
+        width: min(0.125 + f32(draw(index, channel: 1, count: 24)) / 8.0, period - 0.25),
+        offset: f32(draw(index, channel: 2, count: 512)) / 128.0 - 2.0,
+        speed: [
+            -32.0, -16.0, -8.0, -4.0, -2.0, -1.0, -0.75, -0.25, 0.25, 0.75, 1.0, 2.0, 4.0, 8.0,
+            16.0, 32.0,
+        ][index % 16],
+        checker: 0.875 + f32(draw(index, channel: 3, count: 120)) / 16.0,
+        front: vec3(
+            0.0625 + f32(draw(index, channel: 4, count: 256)) / 64.0,
+            0.0625 + f32(draw(index, channel: 5, count: 256)) / 64.0,
+            0.0625 + f32(draw(index, channel: 6, count: 256)) / 64.0,
+        ),
+        dark: vec3(
+            f32(draw(index, channel: 7, count: 17)) / 128.0,
+            f32(draw(index, channel: 8, count: 17)) / 128.0,
+            f32(draw(index, channel: 9, count: 17)) / 128.0,
+        ),
+        light: vec3(
+            0.25 + f32(draw(index, channel: 10, count: 112)) / 32.0,
+            0.25 + f32(draw(index, channel: 11, count: 112)) / 32.0,
+            0.25 + f32(draw(index, channel: 12, count: 112)) / 32.0,
+        ),
+    }
+}
+
 /// Development cases. Fractional periods, thin coverage and bright radiance resist a model
 /// merely learning a pixel-aligned pattern. Entire cases must be split, never random pixels.
 pub fn case(index: u32) -> Field {
-    let i = index % 8
+    assert(index < CASES, "unknown analytic case")
+    if index >= 8 { return stress(index - 8) }
+    let i = index
     Field {
         period: 4.75 + f32(i) * 0.625,
         width: 0.35 + f32(i % 4) * 0.55,
@@ -138,4 +178,47 @@ fn point_samples_converge_to_independent_integrals() {
 pub fn front_coverage(f: Field, at: vec2, frame: u32) -> f32 {
     let shift = f.offset + f.speed * f32(frame)
     clamp(pulse(at.x - shift, at.x + 1.0 - shift, f.period, f.width), 0.0, 1.0)
+}
+
+@test
+fn stress_catalog_preserves_integral_domain_and_covers_fast_motion() {
+    var left = 0
+    var right = 0
+    var subpixel = 0
+    var resolved = 0
+    for index in 8..CASES {
+        let f = case(index)
+        assert(f.period > 1.0 && f.width > 0.0 && f.width < f.period && f.checker > 0.0)
+        assert(abs(f.speed) <= 32.0)
+        if f.speed == -32.0 { left += 1 }
+        if f.speed == 32.0 { right += 1 }
+        if f.width < 1.0 { subpixel += 1 } else { resolved += 1 }
+        for v in [f.front.x, f.front.y, f.front.z] { assert(v >= 0.0 && v < 4.1) }
+    }
+    assert(left == 4 && right == 4 && subpixel > 0 && resolved > 0)
+}
+
+@test
+fn stress_integral_matches_independent_point_quadrature() {
+    // Dyadic parameters and integer pixels make the 128x128 midpoint quadrature exact
+    // for these axis-aligned boundaries; this checks the target at up to 32 px/frame.
+    for index in [8, 10, 13, 15, 16, 18, 21, 23, 32, 47, 56, 71] {
+        let f = case(index)
+        for frame in [0, 31, 63] {
+            for p in [vec2(0.0), vec2(3.0, 4.0), vec2(191.0, 107.0), vec2(-2.0, -1.0)] {
+                var sum = vec3(0.0)
+                for y in 0..128 {
+                    for x in 0..128 {
+                        let at = p + (vec2(f32(x), f32(y)) + vec2(0.5)) / 128.0
+                        sum += point(f, at, frame).rgb / 16384.0
+                    }
+                }
+                let error = abs(sum - pixel(f, p, frame).rgb)
+                assert(
+                    max(error.x, max(error.y, error.z)) < 0.0001,
+                    f"stress {index} frame {frame} pixel {p}: {error}",
+                )
+            }
+        }
+    }
 }

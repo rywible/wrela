@@ -903,3 +903,130 @@ Reproduce using the bundled `train_recurrent_gate.py` with the pinned CPU enviro
 the recorded gate-v1 dataset, then `evaluate_recurrent_gate.py`; both create unique model/run
 directories. Renderer invocation is unchanged except for the new `--gate-model` weight path.
 This remains development work. No sealed test, full suite/PR or G1–G7 acceptance is claimed.
+
+
+### Joint spatial/history training and a broader diagnostic catalog
+
+The next experiment trains all 1,260 spatial parameters and all 13 confidence parameters
+together through their own 32-frame output history. It uses the preceding calibrated CPU
+replay, the same four training cases and all four scales, with every output pixel participating.
+The two candidates start from patch-v1 and the preceding recurrent coefficient-1 gate.
+Their objectives are view MSE plus 0.25 or 1 times conservative opaque temporal MAE.
+Adam uses spatial rate 0.001→0.0001 and gate rate 0.01→0.001, seed 3, 256 updates;
+the declared combined gradient-norm cap of 1 clips no update. Validation remains cases 1/6,
+excluded from fitting. This is development data, not a sealed test.
+
+The external prototype follows the same [PyTorch reverse differentiation mechanism](https://raw.githubusercontent.com/pytorch/pytorch/v2.5.1/docs/source/notes/autograd.rst)
+as the preceding experiment. Parameter packing reproduces the old replay exactly. Double-
+precision finite differences check 31 coordinates (including all gate parameters, spatial
+layer boundaries/biases and history coefficients) and 16 seeded directions spanning every
+parameter. Maximum disagreement is 2.77e-9. Detaching frame feedback instead produces
+0.02518 maximum gradient disagreement and fails the 2e-6 check.
+
+Training uses f32 weights/history, then packs spatial weights to f16 and retains a padded
+f32 gate. Shipped model data would still be 2,520 + 64 bytes, with the existing architecture
+and inference stages. This is not a complete GPU memory or runtime measurement.
+[CPU fitting costs](bench.md#2026-10-26-pop-os-joint-spatial-and-history-training) are about
+145 seconds per candidate after loading.
+
+**Both candidates are rejected.** Lower training loss does not transfer into a better complete
+validation tradeoff. The table compares actual AMD GPU output with the constant 90% source-
+geometry control; ratios above one are worse. These remain full-stack experiments.
+
+| Case | Temporal coefficient | 4× FLIP | 4× LPIPS | Opaque temporal ratio | Newly exposed error ratio |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.25 | 0.356660 | 0.433309 | 1.405× | 1.108× |
+| 1 | 1 | 0.346174 | 0.424700 | 1.213× | 1.071× |
+| 6 | 0.25 | 0.421716 | 0.477091 | 1.209× | 1.038× |
+| 6 | 1 | 0.429820 | 0.467764 | 1.074× | 1.005× |
+
+At 1×, case 6 LPIPS regresses 75–89% against that control. All four-scale comparisons against
+the constant control, production and the initial recurrent stack are retained, including
+visibility-change and unmatched masks. The unchanged independent scorer verifies the same
+target/mask hashes and viewing conditions for each pair.
+
+The full recurrent CPU replay of the **packed** models matches GPU output with maximum
+named-view disagreement 0.000411 and worst mean disagreement 7.57e-7. Replayed MSE/opaque
+temporal MAE agree with independent GPU scoring within 5.24e-8. A separate packing-only probe
+compares f32 and f16 spatial weights under the same recurrent target conversion. Across all
+scales, its maximum mean view difference is 8.35e-5, maximum MSE change 7.39e-6 and maximum
+temporal-MAE change 4.16e-6. Large quality regressions remain in the deployed packed output;
+they are not rescued by the small packing differences. Frame-31 inspection montages are
+retained as visual debugging, with no motion or human-acceptance claim.
+
+| Coefficient | Model directory | Spatial half SHA-256 | Gate SHA-256 |
+| --- | --- | --- | --- |
+| 0.25 | `joint-1793072611-692335964` | `422760a06fbf0f59dc1c4cac0278d946279311bffd45029eb4cd3b2c3534720d` | `a8456ac573c38a656c9b31c1a928fc9e072fd0e6e518209c05484d80a5f9b22e` |
+| 1 | `joint-1793072756-960751169` | `1d64233f6bb17681cdaa3e4eac4147a04d3437451a08599ceedbc2b93e7e7d04` | `614d55fadbc2fb0b14265b55774cf3046b3b71481f98b7112d0622fe704d43cc` |
+
+Validation runs are `1793072939-167539238` / `1793072953-323341949` for coefficient 0.25
+and `1793072967-325207231` / `1793072981-502237001` for coefficient 1 (cases 1 / 6).
+Use `--model out/models/<directory>/weights.half --gate-model out/models/<directory>/gate.f32`
+with the existing source-history capture configuration. No new runtime model is enabled
+by default.
+
+Evidence: `build/neural-evidence/joint-v1/manifest.json` on Pop!_OS embeds training source,
+dataset/weight hashes, curves, numerical/gradient checks, quantization probes and complete
+paired comparisons. Its external-source bundle SHA-256 is `fece003dafaaa0c0bfab4e5a658236263f967c8884a50002a9cf8804b51e8d12`. Renderer/capture
+source SHA-256 is `4b4a798e869a65707547b63081508a87f50fd551eb45f880776e09ad0e39f503`.
+The external trainer/evaluator and their sources remain outside the tracked repository.
+
+### Additional colour, footprint and fast-motion development cases
+
+The analytic catalog now preserves cases 0–7 and adds cases 8–71, with deterministic variation
+in foreground/background colour, spacing, width, checker footprint and signed speed. The new
+geometry parameters are dyadic fractions: periods 2.5–14.4375 pixels, widths 0.125–3 pixels
+(clipped below the period), checker cells 0.875–8.3125 pixels, and speeds from ±0.25 to ±32
+pixels/frame. Colours vary independently, with foreground radiance reaching 4.046875.
+The same independent box integral remains the target. No target, integrated coverage, colour
+parameter or future frame is added to inference.
+
+These are additional parameter cases of the **same analytic family**. They are neither
+production-content evidence, whole-generator holdouts, the sealed release suite, nor a
+complete G3 test. Existing Wrela trainers retain their legacy 0–7 case restriction;
+the broader catalog is initially an evaluation instrument.
+
+Before viewing these results, the stress plan selected cases 8/10/13/18/21/23, covering
+−32/−8/−1/+1/+8/+32 pixels/frame. Each is 32 frames at 192×108, all four scales. Three methods
+were captured: production, the original spatial model with constant source history, and the
+joint coefficient-1 candidate selected on the preceding legacy results. No fitting used
+these six extra cases. Subsequent use makes them development feedback, not unseen release data.
+
+| Method | Median clip-mean 4× FLIP | Median clip-mean 4× LPIPS | Median clip opaque temporal MAE |
+| --- | ---: | ---: | ---: |
+| Production | 0.487061 | 0.482253 | 0.022780 |
+| Constant source history | 0.454154 | 0.370478 | 0.021027 |
+| Joint coefficient 1 | 0.448415 | 0.358328 | 0.025932 |
+
+Each entry is the median of six clip scores, not a median ratio or a population estimate.
+The joint model has worse opaque temporal error than the constant control in **every** clip.
+At case 8 (−32 px/frame), that error is 5.101× larger and FLIP is 9.2% worse; at case 18,
+LPIPS is 7.3% worse. Per-clip/all-scale scores, mask populations, changed/unmatched regions,
+reveal errors, and production comparisons are retained. Absolute spatial error is far above
+G1; small aggregate image gains cannot override the motion/tail failures.
+
+Catalog checks cover all new cases' integral-domain bounds and fast-motion endpoints. Dense
+128×128 independent point quadrature agrees with the analytic integral within 1e-4 on every
+scored stress case plus six additional cases, at three times and four pixel locations,
+including negative coordinates. The dyadic boundaries align with this quadrature's cells.
+A deliberate 10% bias in the bright-background integral fails the new test; restoration
+passes. This is a reference check for this analytic family, not independent light transport.
+
+A fresh 32-frame legacy case-1 capture has all 384 image/target/mask files byte-identical to
+the earlier control across all four scales. Case 71 captures successfully; case 72 is rejected
+with usage before capture. Sequence metadata now names `legacy8_and_stress64_v1`.
+Reproduce a production stress clip with
+`wrela tool reconstruct -- --scene edges --shot 8 --width 192 --height 108 --warmup 0 --frames 32`;
+add the documented patch/history/model arguments for the other methods.
+
+Evidence: `build/neural-evidence/stress-v1/manifest.json`, with the pre-capture plan, all 18
+scored run IDs, comparisons, legacy parity and CLI/test controls. Capture-source SHA-256:
+`3a6c463c5b519e17807e210c4469b4c6b5e6404a82000793d9f6a84041ef112a`.
+The later tested-source archive, which expands only the quadrature test's case list, has
+SHA-256 `6d672b52c1972a90f971206ce6aafa885ec797a8bf7c7db8f23462e79ced75a1`. The external bundle is shared with joint-v1 above.
+
+Both training attempts remain rejected. The broader catalog and the packing/replay checks
+make representation and generalization the next useful focus: preserve observed colour and
+surface information while reconstructing detail, and test beyond the original small case set.
+No G1–G7 threshold has changed or been met. Focused reference/gradient checks, package checks,
+allow and changed-source formatting pass; no full suite/PR is claimed at this checkpoint.

@@ -1258,3 +1258,37 @@ Their model SHA-256 values are `c9c4ccccf9a348cd9fdb58a3e8b44b41e62823804ef1e9a8
 and `3cab57a84072d3289cc5ada7e5336a99d47631eab78ae56e908bc2fa00cbf60f`.
 The complete source, dataset hashes, curves, timings and independent AMD GPU comparisons
 are retained in `build/neural-evidence/recurrent-gate-v1/manifest.json` on Pop!_OS.
+
+
+## 2026-10-26 Pop!_OS joint spatial and history training
+
+Same AMD Ryzen 5 5500U / Radeon Graphics (RADV RENOIR) Pop!_OS machine.
+Training uses external PyTorch 2.5.1+cpu and NumPy 2.2.6, two Torch threads/one interop thread.
+Actual quality captures use the AMD GPU with Wrela 0.9.0 compiler
+`de9b81e52a7747870dfbd5223cb8aeb41e584d23`. Base source `8e43ccb6`, renderer archive
+`4b4a798e869a65707547b63081508a87f50fd551eb45f880776e09ad0e39f503`.
+No other owned training, capture, build or profile work overlaps the timed training runs.
+
+All 1,260 spatial and 13 gate parameters train through 32-frame feedback. Same initial patch-v1
+and recurrent coefficient-1 gate for both candidates; cases 0/3/5/7, all four scales, all
+192×108 output pixels. Seed 3, 256 Adam steps, spatial rate 0.001→0.0001 and gate rate
+0.01→0.001. The declared norm cap of 1 clips zero steps.
+
+| Temporal MAE coefficient | Training seconds after loading | Process peak RSS KiB | Packed model bytes |
+| --- | ---: | ---: | ---: |
+| 0.25 | 144.65 | 5,035,388 | 2,584 |
+| 1 | 144.29 | 5,035,388 | 2,584 |
+
+The two runs are sequential in one process. Shared loading/hash/preparation costs 8.96 seconds,
+excluded from the table. RSS is the process high-water mark; caches were not controlled.
+A separate full 32-frame 4× forward/backward probe took 0.564 seconds. These are CPU fitting
+measurements, not inference timings or complete GPU memory counts. Runtime architecture is
+unchanged, but no new inference speedup is inferred from that fact.
+
+Data generation, independent scoring, broader content and deployment validation are excluded,
+and **both models fail quality promotion**, so this does not establish G7. Complete model
+hashes, training source/curves, packed-weight probes, independent AMD GPU comparisons and
+limitations are in [the development record](neural-rendering-progress.md#joint-spatialhistory-training-and-a-broader-diagnostic-catalog)
+and `build/neural-evidence/joint-v1/manifest.json` on Pop!_OS. No new G6 performance result is
+claimed. The additional stress catalog's capture elapsed times include build/readback/disk
+work and are not renderer latency measurements.

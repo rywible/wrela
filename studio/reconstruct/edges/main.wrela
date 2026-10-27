@@ -167,7 +167,7 @@ pub fn init() -> State {
 }
 
 pub fn configure(s: mut State, divisor: u32, cells: u32, shot: u32) {
-    assert(divisor >= 1 && divisor <= 4 && shot < 8, "unknown analytic configuration")
+    assert(divisor >= 1 && divisor <= 4 && shot < field::CASES, "unknown analytic configuration")
     assert(cells == 0 || divisor == 1, "analytic truth has output resolution")
     s.divisor = divisor
     s.cells = cells
@@ -529,7 +529,7 @@ pub fn prepare_sequence(s: mut State, width: u32, height: u32, start: u32, input
 }
 
 pub fn cut(s: mut State, shot: u32, reset: u32) {
-    assert(!s.collecting && shot < 8 && reset <= 1)
+    assert(!s.collecting && shot < field::CASES && reset <= 1)
     s.shot = shot
     if reset == 1 { s.reset = true }
 }
