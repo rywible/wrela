@@ -815,7 +815,12 @@ of its own.
   asked: 20 for 200). The resolver's own blend against the truth: **32.96 to 36.74 dB** a frame,
   35.04 on average (asked: at least 30). The world is frozen while the eye moves (the frozen
   time is what lets the reference be the play frame's): the dataset has the camera's motion, not
-  the wind's or the creatures'.
+  the wind's or the creatures'. A correction from the council's review: until it, F12 turned
+  the history **on** where it meant off (`Frame::set(Off::History, on: true)`), so every
+  reference above, and the lookbook's quality references of this part, averaged frames the
+  history had already filtered. The resolver's 35.04 dB and 14.3's dataset were measured
+  against a truth with the resolve in it; they flatter the resolver and weren't run again (its
+  rejector stays off). F12 now turns the history off.
 
 ### 14.2 Neural impostors
 
@@ -929,7 +934,12 @@ the volume (96 m round the eye) goes on as open air.
 - **4a, the march** (engine/cascades.wrela's tests, analytic shapes, 16 and 8 steps): a wall
   2 cm alongside a ray never stops it; slabs 1 m and 10 cm thick in c3's interval, and one at
   30°, are met; over 10,000 rays each grazing a ball, **0** of 5,964 that a 256-step march meets
-  are passed (asked: under 1 %).
+  are passed (asked: under 1 %). After the council's review the march no longer takes its
+  tangent estimate on trust (a ray 1.05 m past a unit ball's centre was "met" where the ball
+  was 0.2 m away): the step is sampled at its quarters and an estimate is a hit only within
+  10 cm of a surface. Then **2 of 5,966** are passed at 16 steps and **28 of 5,966 (0.47 %)**
+  at 8, and rays 15, 30 and 50 cm past a ball meet nothing. (4d's times are from before this:
+  the march samples more a step now; the switch is off either way.)
 - **4a–b on the GPU** (engine/tests/cascades: flat ground through `engine::frame` with the
   cascades on, a hollow box and a wall in the volume): from inside the closed box **0 of 64**
   rays leave it; a wall a metre before a probe is met by **c1 alone**; up from over open ground

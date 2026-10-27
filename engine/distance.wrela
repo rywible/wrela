@@ -72,12 +72,17 @@ pub struct Solids: Clone {
 
 /// Where the volume is, as shading reads it: its least voxel (render space, in voxels), the
 /// voxel's size, the voxels each way, and whether it's cooked whole (`on`; none: 0, and a read
-/// says nothing is near).
+/// says nothing is near); and the world voxels that hold their distance (`lo` in, `hi` out):
+/// while a move's slabs are cooked, those it kept, beyond which a read says nothing is near.
 pub struct DistanceGrid: Copy + GpuData {
     pub origin: vec3i,
     pub voxel: f32,
     pub dims: vec3u,
     pub on: u32,
+    pub lo: vec3i = vec3i(-2147483647),
+    pub spare_a: u32 = 0,
+    pub hi: vec3i = vec3i(2147483647),
+    pub spare_b: u32 = 0,
 }
 
 /// No volume: a read says nothing is near (a pass with no frame's volume to read).
@@ -116,9 +121,9 @@ fn at(volume: Texture3d<R32Float>, g: DistanceGrid, w: vec3i) -> f32 {
     volume.load(x: t.x, y: t.y, z: t.z)
 }
 
-/// Whether world voxel `w` is in the volume.
+/// Whether world voxel `w` is in the volume and holds its distance.
 fn held(g: DistanceGrid, w: vec3i) -> bool {
-    inside_box(w, g.origin, g.origin + vec3i(g.dims))
+    inside_box(w, max(g.origin, g.lo), min(g.origin + vec3i(g.dims), g.hi))
 }
 
 /// The distance from `p` (render space) to the nearest solid, at most `DISTANCE_FAR`, between
@@ -192,7 +197,13 @@ pub fn contact_through(
         if x >= CONTACT_REACH {
             break
         }
-        let d = distance_near(g, volume, start + sun * x)
+        // Interpolated within two voxels of the surface, where the nearest voxel's centre could
+        // be inside the surface's own ground; the nearest voxel's beyond, where that error is small
+        // against the distance marched.
+        let at = start + sun * x
+        let d = if x < 2.0 * g.voxel { distance_at(g, volume, at) } else {
+            distance_near(g, volume, at)
+        }
         lit = min(lit, CONTACT_SOFT * d / x)
         if lit <= 0.0 {
             return 0.0
@@ -382,7 +393,13 @@ impl Distance {
     /// The grid as shading reads it: off until it's cooked whole once (and while it's not
     /// wanted).
     pub fn read(self) -> DistanceGrid {
-        DistanceGrid { on: u32(self.wanted && self.cooked), ..self.grid }
+        let on = u32(self.wanted && self.cooked)
+        // A move's slabs still cooking: only what it kept holds its distance (the new voxels'
+        // texels hold the far side's until their slab is cooked).
+        if self.left > 0 && self.kept.hi != self.kept.lo {
+            return DistanceGrid { on, lo: self.kept.lo, hi: self.kept.hi, ..self.grid }
+        }
+        DistanceGrid { on, ..self.grid }
     }
 
     /// Everything it holds dropped (the render origin moved: its voxels and its solids are of

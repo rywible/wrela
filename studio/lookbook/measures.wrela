@@ -169,6 +169,9 @@ pub fn sharpness(play: [f32], reference: [f32], w: u32) -> f64 {
     let steps = |l: [f32]| -> f64 {
         let h = l.len() / max(w, 1)
         var total = 0.0
+        if w < 2 || h < 2 {
+            return total
+        }
         for y in 0..h - 1 {
             for x in 0..w - 1 {
                 let at = l[y * w + x]

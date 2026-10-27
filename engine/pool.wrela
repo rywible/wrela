@@ -225,7 +225,9 @@ impl Pool {
     /// index, or `None` if it isn't fitted yet.
     pub fn add_mesh(mut self, r: Realized, casts: bool) -> Option<u32> {
         let (v, q) = r.counted?
-        self.room_for(self.used_vertices + v, self.used_quads + q)
+        // The next mesh's vertices start where a binding may (`ALIGN`): the room this one takes.
+        let aligned = (v + ALIGN - 1) / ALIGN * ALIGN
+        self.room_for(self.used_vertices + aligned, self.used_quads + q)
         let first_vertex = self.used_vertices
         let first_quad = self.used_quads
         if v > 0 {
@@ -255,8 +257,7 @@ impl Pool {
                 over: v,
             )
         }
-        // The next mesh's vertices start where a binding may (`ALIGN`).
-        self.used_vertices += (v + ALIGN - 1) / ALIGN * ALIGN
+        self.used_vertices += aligned
         self.used_quads += q
         self.meshes.push(Range { vertices: v, first_vertex, quads: q, first_quad, casts })
         self.stale = true

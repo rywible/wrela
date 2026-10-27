@@ -140,7 +140,9 @@ fn weighed(d: Doc, n: u32) -> Vec<(String, f64)> {
 }
 
 /// The paced run's frames over 33 ms, from its `frames.json` and `counters.json`, the frames
-/// from `warmup` on.
+/// from `warmup` on. A frame's interval is from when it began to when the next did: the host
+/// notes a frame's start before it runs, so the work that made a gap long is the frame before
+/// the gap's end.
 pub fn hitches(frames: Doc, counters: Doc, warmup: u32) -> Vec<Hitch> {
     var out = Vec::new()
     let began = match frames.get(TOP, "began_ms") {
@@ -151,8 +153,9 @@ pub fn hitches(frames: Doc, counters: Doc, warmup: u32) -> Vec<Hitch> {
         Some(n) => numbers(frames, n, 0),
         None => Vec::new(),
     }
-    for i in max(warmup, 1)..began.len() {
-        let interval = began[i] - began[i - 1]
+    for next in (warmup + 1)..began.len() {
+        let i = next - 1
+        let interval = began[next] - began[i]
         if interval <= 33.3 {
             continue
         }

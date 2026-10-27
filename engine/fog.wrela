@@ -187,9 +187,10 @@ pub fn inject(
             sigma,
         )
     }
-    // The last frame's, where it saw this point.
+    // The last frame's, where it saw this point: its texels held their slices' points shifted
+    // by its jitter, so the slice coordinate is taken back by it.
     if was.on != 0 {
-        let q = froxel_of(was, p)
+        let q = froxel_of(was, p) - vec3(0.0, 0.0, was.jitter / f32(FOG_SLICES))
         if q.x >= 0.0 && q.y >= 0.0 && q.x <= 1.0 && q.y <= 1.0 && q.z <= 1.0 {
             let old = last.sample_level(s, q)
             if abs(old.a - c.a) <= FOG_CHANGED * max(c.a, old.a) {

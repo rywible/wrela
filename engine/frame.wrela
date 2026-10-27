@@ -1334,7 +1334,6 @@ impl<R: Resolver> Frame<R> {
         }
     }
 
-    /// The frame's quality.
     /// The learned rejector's net (`temporal::REJECTOR`'s shape, half floats), which temporal AA
     /// reads under `Quality::learned_resolve`.
     pub fn reject_by(mut self, net: [Half2]) {
@@ -1361,6 +1360,7 @@ impl<R: Resolver> Frame<R> {
         }
     }
 
+    /// The frame's quality.
     pub fn quality(self) -> Quality {
         self.quality
     }
@@ -1408,6 +1408,17 @@ impl<R: Resolver> Frame<R> {
             Some(n) => n.grid.visibility = u32(q.probes.visibility),
             None => {},
         }
+        // The volumes and the cascades made again where their switches changed.
+        if q.distance != self.quality.distance {
+            self.distance = Distance::new(q.distance)
+        }
+        if q.fog != self.quality.fog {
+            self.fog = FogVolume::new(q.fog)
+        }
+        let (a, b) = (q.cascades, self.quality.cascades)
+        if a.on != b.on || a.spacing != b.spacing || a.steps != b.steps {
+            self.width = 0
+        }
         self.quality = q
         self.cooks.planner = Planner::new(q.budget)
         if remade {
@@ -1423,6 +1434,8 @@ impl<R: Resolver> Frame<R> {
                 self.near.recast()
                 self.far.recast()
                 self.probes_v += 1
+                // Its voxels hold the ground's distance too: cooked again.
+                self.distance.forget()
             },
             Change::Casters => {
                 self.near.recast()
@@ -1502,7 +1515,9 @@ impl<R: Resolver> Frame<R> {
                     self.debug.frozen = Some(self.debug.frozen.unwrap_or(self.time))
                     self.debug.held = Some(self.debug.held.unwrap_or(self.aimed))
                     self.requality(Quality::reference())
-                    self.set(Off::History, on: true)
+                    // No history: the instrument's mean of 64 frames is then a 64-sample
+                    // supersample, not the resolver's own filtering of them.
+                    self.set(Off::History, on: false)
                 },
             }
             self.debug.unsaid = true
@@ -2199,7 +2214,8 @@ impl<R: Resolver> Frame<R> {
                             self.sky.cook_weather_band(c.3, step)
                         } else {
                             let band = step - MAP_BANDS
-                            self.sky.cook_shadow_band(self.sky_key.1, self.repeat, c.2, band)
+                            // For the sun the cook began with (its key's): a map of one sun.
+                            self.sky.cook_shadow_band(c.1.0, self.repeat, c.2, band)
                         }
                         c.0 += 1
                     },
@@ -2689,9 +2705,9 @@ impl<R: Resolver> Frame<R> {
             )
         }
         sky.end()
-        // The ambient occlusion from this frame's opaque depth (the sky's leaves it as it was), for the next frame's shading (its
-        // slices still in plain rendering, which has no history to gather them).
-        // Or the radiance cascades' light, in its place.
+        // The ambient occlusion from this frame's opaque depth (the sky's leaves it as it was),
+        // for the next frame's shading (its slices still in plain rendering, which has no history
+        // to gather them); or the radiance cascades' light, in its place.
         let still = Camera { frame: if self.debug.plain { 0 } else { cam.frame }, ..cam }
         match mut self.cascades {
             Some(c) => self.ambient.next_at = c.build(

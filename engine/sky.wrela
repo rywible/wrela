@@ -883,9 +883,11 @@ impl Sky {
         }
     }
 
-    /// Band `band` of the shadow map (`MAP_BANDS`), for the sun toward `sun`.
+    /// Band `band` of the shadow map (`MAP_BANDS`), for the sun toward `sun`. It's labelled as
+    /// the weather's bands are: the planner counts both as steps of one kind (`Work::SkyWeather`),
+    /// and a measuring frame times that kind by one label.
     pub fn cook_shadow_band(mut self, sun: vec3, rep: Sampler, shadows: bool, band: u32) {
-        label("clouds shadow")
+        label("clouds weather")
         let rows = SHADOW_SIDE / MAP_BANDS
         dispatch(
             cook_shadow.bind(

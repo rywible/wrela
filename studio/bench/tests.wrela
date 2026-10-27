@@ -130,13 +130,13 @@ fn a_date_is_the_civil_day_of_its_milliseconds() {
 
 @test
 fn a_paced_runs_hitches_name_their_heaviest_labels() {
-    // Frames 0..4 at 16.6 ms but frame 3, 40 ms late: one hitch; frame 4's 50 ms has no label
-    // over 2 ms and 1 ms of CPU, so it's the browser's.
-    let frames = "{\"began_ms\": [0, 16.6, 33.2, 73.2, 123.2], \"cpu_ms\": [1, 1, 1, 9, 1], \"phases\": [{}, {}, {}, {\"cook\": 6, \"passes\": 2}, {}], \"labels\": [[], [], [], [[\"terrain cook\", 4.5], [\"sky\", 12.25]], [[\"sky\", 0.5]]]}"
-    let counters = "[{}, {}, {}, {\"draws\": 31, \"write_buffer_bytes\": 4096}, {}]"
+    // Frames 0..4 begin 16.6 ms apart but frame 2 runs 40 ms to frame 3: one hitch, frame 2's
+    // work; frame 3's 50 ms has no label over 2 ms and 1 ms of CPU, so it's the browser's.
+    let frames = "{\"began_ms\": [0, 16.6, 33.2, 73.2, 123.2], \"cpu_ms\": [1, 1, 9, 1, 1], \"phases\": [{}, {}, {\"cook\": 6, \"passes\": 2}, {}, {}], \"labels\": [[], [], [[\"terrain cook\", 4.5], [\"sky\", 12.25]], [[\"sky\", 0.5]], []]}"
+    let counters = "[{}, {}, {\"draws\": 31, \"write_buffer_bytes\": 4096}, {}, {}]"
     let (Ok(f), Ok(c)) = (doc(frames, "frames"), doc(counters, "counters")) else { panic("JSON") }
     let h = hitches(f, c, 1)
-    assert(h.len() == 2 && h[0].frame == 3 && h[1].frame == 4)
+    assert(h.len() == 2 && h[0].frame == 2 && h[1].frame == 3)
     assert(h[0].labels[0].0.as_str() == "sky" && h[0].phases[0].0.as_str() == "cook")
     assert(h[0].draws == 31 && h[0].written == 4096.0 && !h[0].unattributed())
     assert(h[1].unattributed())

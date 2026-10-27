@@ -6,7 +6,7 @@
 // over the step count. Where the field says no surface is within that (`d ≥ least`), it steps
 // `d`; nearer, it looks at how fast the ray closes on the surface (`a = −∇d · dir`): if it closes
 // within the least step (`d / a ≤ least`) the ray hits there; else it steps the least step, and a
-// negative or sub-threshold field at the step's middle or end is a hit at the first. Every step
+// negative or sub-threshold field at one of the step's quarters is a hit at the first. Every step
 // advances at least the least step or ends the ray, so a ray reaches `t1` or a hit in its step
 // count. Generic over what it steps through (`Distances`): the tests' analytic shapes on the CPU,
 // the solids' volume on the GPU (`Volume`).
@@ -56,8 +56,10 @@ impl Distances for Volume {
     }
 }
 
-/// How near a surface a ray is before it's met it (m).
+/// How near a surface a ray is before it's met it (m); and how near the point a closing ray's
+/// estimate puts it at (or the way there) must be for the estimate to be a hit.
 pub const HIT: f32 = 0.01
+const CLOSE: f32 = 0.1
 
 /// What a march found: whether it hit, and where along the ray (`t1` if it didn't), and the
 /// steps it took.
@@ -95,18 +97,24 @@ pub fn march<S: Distances>(s: S, o: vec3, dir: vec3, t0: f32, t1: f32, steps: u3
             t = min(t + d, t1)
             continue
         }
-        // Nearer than a least step: how fast the ray closes on the surface.
+        // Nearer than a least step: how fast the ray closes on the surface. Where it closes
+        // within the step, the point it would meet the surface at is a hit if the field there
+        // says so (a ray that grazes past bends away from it: the estimate isn't a hit by
+        // itself); else the least step below goes on.
         let a = -dot(gradient(s, p, max(least * 0.05, 1.0e-3)), dir)
         if a > 0.0 && d / a <= least {
-            return Marched { hit: true, t: min(t + d / a, t1), steps: k + 1 }
+            let at = min(t + d / a, t1)
+            if s.distance(o + dir * at) < CLOSE || s.distance(o + dir * (0.5 * (t + at))) < CLOSE {
+                return Marched { hit: true, t: at, steps: k + 1 }
+            }
         }
         let next = min(t + least, t1)
-        let mid = 0.5 * (t + next)
-        if s.distance(o + dir * mid) < HIT {
-            return Marched { hit: true, t: mid, steps: k + 1 }
-        }
-        if s.distance(o + dir * next) < HIT {
-            return Marched { hit: true, t: next, steps: k + 1 }
+        // The step read at its quarters: a thin solid's chord can fall between halves.
+        for q in 1..5 {
+            let at = t + (next - t) * f32(q) * 0.25
+            if s.distance(o + dir * at) < HIT {
+                return Marched { hit: true, t: at, steps: k + 1 }
+            }
         }
         t = next
     }
@@ -558,6 +566,20 @@ struct Ball: Copy {
 impl Distances for Ball {
     fn distance(self, p: vec3) -> f32 {
         length(p - self.c) - self.r
+    }
+}
+
+/// A ray that passes a ball by (a unit ball 1.15 m or more off its line: 15 cm or more past it, in
+/// c3's interval) is never said to meet it: the closing rate's estimate is a hit only where the
+/// field agrees.
+@test
+fn a_ray_passing_a_ball_doesnt_meet_it() {
+    for n in STEPS {
+        for off in [1.15, 1.3, 1.5] {
+            let b = Ball { c: vec3(10.0, off, 0.0), r: 1.0 }
+            let m = march(b, vec3(0.0), vec3(1.0, 0.0, 0.0), t0: 8.0, t1: 32.0, steps: n)
+            assert(!m.hit, f"{n} steps: met a ball {off} m off at {m.t}")
+        }
     }
 }
 
