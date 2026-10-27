@@ -818,3 +818,88 @@ These small-fixture costs do not establish G7's source-to-validated-asset requir
 
 Package checks, the focused gradient test, allow, changed-source formatting and diff checks
 pass. No full suite/PR, model promotion or G1–G7 acceptance is claimed at this checkpoint.
+
+
+### Full recurrent training: improved tradeoff, still rejected
+
+The confidence gate now has an externally trained comparison that follows its **own outputs
+through all 32 frames**, including their effect on both the next spatial encoder and the final
+history blend. The spatial model's weights remain frozen. Captured prior RGB features are
+explicitly discarded and recomputed from the candidate's output. Current source samples,
+point geometry, jitter and age are causal inputs; truth and integrated coverage are used only
+by the offline loss. The source-geometry variant retains its separate full-stack scope.
+
+The external prototype uses PyTorch 2.5.1+cpu on Pop!_OS, outside the Wrela repository; the
+deployed candidate still uses the Wrela gate and renderer. [PyTorch's reverse differentiation
+description](https://raw.githubusercontent.com/pytorch/pytorch/v2.5.1/docs/source/notes/autograd.rst)
+describes the graph/chain-rule mechanism used here. A double-precision six-frame finite-
+difference probe checks all 13 gate parameters: maximum gradient disagreement is 2.26e-13.
+Detaching frame history produces 9.92e-5 disagreement and fails the same 2e-6 bound. This
+checks the smooth recurrent surrogate, not a derivative through discrete target quantization.
+
+The initial forward replay failed its numerical checks. Inspection found two device behaviors:
+
+- RADV RENOIR reports `subTexelPrecisionBits = 8`. Rounding bilinear fractional weights to
+  that precision reduces maximum encoder-history disagreement from 0.000599 to 0.00000358.
+  Six- and ten-bit alternatives do worse; the probe and device report are retained.
+- The measured positive half-float render target behaves like rounding toward zero. On the
+  cold-frame probe, that conversion matches 99.30–100% of channels, versus 46.4–54.4% for
+  round-to-nearest. Remaining spatial arithmetic differences are retained separately.
+
+These are measured properties of this AMD/compiler/driver path, not portable WebGPU promises.
+The calibrated full recurrent replay has p99 channel error zero on all four new validation
+captures, with maximum view error 0.000376 and worst mean error 7.19e-7. Teacher-forced
+intermediate checks also pass. Initial failures remain in evidence; no acceptance threshold
+was changed. Training uses f32 recurrent targets, while audit/evaluation applies the measured
+half conversion. Actual GPU rollout remains the quality authority.
+
+Both candidates start from the earlier coefficient-1 gate and train for 256 steps (16 epochs)
+over complete cases 0/3/5/7 at all four scales. Each update uses every pixel of one 32-frame
+clip; seeded case/scale shuffling and Adam rate 0.03→0.003 are recorded. Validation cases 1/6
+are excluded from updates. Loss is named-view RGB MSE plus either 0.25 or 1 times the
+conservative opaque temporal MAE used by the independent evaluator. Its masks come from
+offline reference visibility. Replayed loss values agree with independently scored GPU
+captures within 4.56e-8. This is still only one temporal diagnostic, not G3's full requirements.
+
+| Case | Temporal coefficient | 4× FLIP | 4× LPIPS | Temporal / constant history | Newly exposed error / constant history |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.25 | 0.314339 | 0.456450 | 1.254× | 0.980× |
+| 1 | 1 | 0.321247 | 0.439038 | 1.118× | 0.992× |
+| 6 | 0.25 | 0.417438 | 0.437736 | 1.121× | 0.998× |
+| 6 | 1 | 0.418061 | 0.438783 | 1.055× | 0.999× |
+
+Compared with its initial one-step gate, the coefficient-1 candidate reduces 4× opaque
+temporal error by 32.4% / 22.0%. Both new candidates nevertheless regress that metric against
+the constant-history control, and case 1 LPIPS remains worse by 3.3–7.4%. All scales show a
+temporal regression against that control. **Neither is promoted.** The loss definition and
+training regime both changed, so the comparison does not isolate the causal effect of
+backpropagating through time.
+
+At 4×, the stronger penalty uses 97.15% / 99.10% of the eligible history cap on average.
+It approaches the constant control while giving back some image improvement. These results
+support shifting the next experiment toward the spatial representation and its interaction
+with feedback, plus broader production content. They do not establish that confidence
+learning cannot help with a different representation or training set.
+
+[Training costs](bench.md#2026-10-26-pop-os-recurrent-confidence-training) are 139.84 / 137.68
+seconds after data loading, with 4,402,096 KiB process peak RSS. No new GPU speedup or G7
+claim follows: this reuses the frozen model and captured toy data, and quality rejects the
+outputs. Runtime code and default behavior are unchanged in this experiment.
+
+Evidence on Pop!_OS: `build/neural-evidence/recurrent-gate-v1/manifest.json`, including both
+training programs' source, all input/weight hashes, original and corrected numerical probes,
+gradient controls, all four-scale comparisons, independent loss parity and gate-use summaries.
+The source bundle `external-sources.tar.gz` contains the external replay/trainer/evaluators
+for reproduction outside the repository. Its SHA-256 is `a63a738de1a554fb755893c89d2de4ea681c230c3852a26d1f85b60255d42080`.
+Renderer/capture source SHA-256 is
+`4b4a798e869a65707547b63081508a87f50fd551eb45f880776e09ad0e39f503`.
+
+| Coefficient | Model directory | Weight SHA-256 | Validation run IDs (cases 1 / 6) |
+| --- | --- | --- | --- |
+| 0.25 | `recurrent-gate-1793071668-176717405` | `c9c4ccccf9a348cd9fdb58a3e8b44b41e62823804ef1e9a8bc8f88ea0abbe4df` | `1793071973-417518141` / `1793071987-469352288` |
+| 1 | `recurrent-gate-1793071808-886661632` | `3cab57a84072d3289cc5ada7e5336a99d47631eab78ae56e908bc2fa00cbf60f` | `1793072001-624444023` / `1793072015-927421509` |
+
+Reproduce using the bundled `train_recurrent_gate.py` with the pinned CPU environment and
+the recorded gate-v1 dataset, then `evaluate_recurrent_gate.py`; both create unique model/run
+directories. Renderer invocation is unchanged except for the new `--gate-model` weight path.
+This remains development work. No sealed test, full suite/PR or G1–G7 acceptance is claimed.

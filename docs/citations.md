@@ -149,3 +149,12 @@ to [-1,1], without resizing. Effective weight hashes, software versions, control
 complete evaluator are embedded in each result. No package code or pretrained metric weights
 are shipped in the engine. The pinned CPU combination follows [PyTorch's versioned installation
 instructions](https://pytorch.org/get-started/previous-versions/#v251).
+
+
+The external recurrent-training prototype uses [PyTorch 2.5.1's reverse automatic
+differentiation](https://raw.githubusercontent.com/pytorch/pytorch/v2.5.1/docs/source/notes/autograd.rst)
+to differentiate through the candidate's own frame history, and checks the smooth surrogate
+against central finite differences. The prototype, dependency environment and artifacts
+remain outside the tracked repository; the runtime model uses our Wrela implementation.
+Device-specific sampler/half-target behavior is measured from independent AMD captures and
+recorded in `build/neural-evidence/recurrent-gate-v1`, not assumed to be portable.

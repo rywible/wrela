@@ -1223,3 +1223,38 @@ then 3840x2160; retained builds identify the original measurements. Top-level GP
 from saturated execution, CPU/frame intervals from a separate paced population.
 [Full recurrent quality and controls](neural-rendering-progress.md#learned-history-confidence-one-step-gains-recurrent-rejection)
 reject all three trained gates; the profiled model was not selected for deployment.
+
+
+## 2026-10-26 Pop!_OS recurrent confidence training
+
+CPU training on the same AMD Ryzen 5 5500U machine; all renderer validation captures use
+its Radeon Graphics / RADV RENOIR GPU. External PyTorch 2.5.1+cpu, NumPy 2.2.6, two Torch
+threads and one interop thread. Renderer Wrela 0.9.0/compiler
+`de9b81e52a7747870dfbd5223cb8aeb41e584d23`, source based on `4c03ae10`.
+No RTX, Mac training/rendering, paid compute or other owned concurrent training/profile work.
+
+Thirteen trainable gate parameters, frozen patch-v1 spatial weights, same initial
+`gate-1793068787-531418279` weights for both runs. Sixteen complete training case/scale
+combinations (cases 0/3/5/7 × divisors 1/2/3/4), 32 frames each at 192×108. Every output pixel
+participates; history is the candidate's own output with gradients through all 32 frames.
+256 optimizer updates, seed 3, Adam rate 0.03→0.003. Validation captures are separate.
+
+| Temporal MAE coefficient | Training wall seconds after load | Process peak RSS KiB | Stored output weights |
+| --- | ---: | ---: | ---: |
+| 0.25 | 139.84 | 4,402,096 | 64 bytes |
+| 1 | 137.68 | 4,402,096 | 64 bytes |
+
+Both models ran sequentially in one process. Initial dataset loading/hash/preparation took
+9.45 seconds, excluded from the table; peak RSS is the process high-water mark, not a separate
+incremental measurement for each model. The process's caches were not controlled. A separate
+full 32-frame 4× forward/backward probe took 0.580 seconds; it is a training microbenchmark,
+not GPU inference latency. No new GPU runtime, thermal, p99 or G6 measurement is implied.
+
+The benchmark reuses captured data and a pretrained spatial model. It excludes source
+generation, dataset capture, independent scoring, broader assets and deployment validation;
+it therefore does not establish G7's source-to-validated-representation deadline.
+[Both trained models fail quality promotion](neural-rendering-progress.md#full-recurrent-training-improved-tradeoff-still-rejected).
+Their model SHA-256 values are `c9c4ccccf9a348cd9fdb58a3e8b44b41e62823804ef1e9a8bc8f88ea0abbe4df`
+and `3cab57a84072d3289cc5ada7e5336a99d47631eab78ae56e908bc2fa00cbf60f`.
+The complete source, dataset hashes, curves, timings and independent AMD GPU comparisons
+are retained in `build/neural-evidence/recurrent-gate-v1/manifest.json` on Pop!_OS.
