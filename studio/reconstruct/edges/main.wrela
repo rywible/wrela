@@ -73,6 +73,10 @@ pub struct State {
     rgb_net: GpuBuffer<Half2>,
     rgb_words: u32,
     rgb_enabled: bool,
+    raw_enabled: bool,
+    raw_count: u32,
+    raw_history: GpuBuffer<raw::Sample>,
+    exported_raw: GpuBuffer<raw::Sample>,
     samples: GpuBuffer<ReconstructionSample>,
     exported_samples: GpuBuffer<ReconstructionSample>,
     linear: Sampler,
@@ -109,6 +113,10 @@ pub fn init() -> State {
         rgb_net: buffer(1),
         rgb_words: 0,
         rgb_enabled: false,
+        raw_enabled: false,
+        raw_count: 0,
+        raw_history: buffer(1),
+        exported_raw: buffer(1),
         samples: buffer(1),
         exported_samples: buffer(1),
         linear: sampler(),
@@ -154,6 +162,8 @@ fn resize(s: mut State, width: u32, height: u32) {
     s.last_motion = texture(width: w, height: h)
     s.means = writable_texture(width: w, height: h)
     s.spreads = writable_texture(width: w, height: h)
+    if s.raw_enabled { s.raw_history = buffer(raw::stride(w, h) * raw::HISTORY) }
+    s.raw_count = 0
     s.current = texture(width, height)
     s.last = texture(width, height)
 }
@@ -204,6 +214,20 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     let p = begin_pass(mut s.motion)
     fullscreen(p, moved.bind(f, tick: s.tick, jitter: jitter, scale: scale))
     p.end()
+    if s.raw_enabled {
+        if s.reset { s.raw_count = 0 }
+        s.raw_count = min(s.raw_count + 1, raw::HISTORY)
+        dispatch(
+            raw::retain.bind(
+                s.scene,
+                s.depth,
+                s.motion,
+                s.divisor,
+                s.raw_history.span_mut((s.tick % raw::HISTORY) * raw::stride(w, h), w * h),
+            ),
+            over: w * h,
+        )
+    }
     dispatch(neighbourhoods.bind(s.scene, mut s.means, mut s.spreads), over: s.scene)
     let r = Resolve {
         cam: s.cam,
@@ -235,7 +259,12 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         )
     }
     let p = begin_pass(mut s.current)
-    if s.rgb_enabled {
+    if s.raw_enabled {
+        fullscreen(
+            p,
+            raw::reconstruct.bind(s.raw_history.items(), w, h, s.divisor, s.tick, s.raw_count),
+        )
+    } else if s.rgb_enabled {
         fullscreen(
             p,
             corrected.bind(s.samples.items(), s.rgb_net.items(), width, height, s.divisor, jitter),
@@ -290,7 +319,7 @@ pub fn publish_samples(s: mut State) -> u32 {
 
 // Weight upload is explicit and complete before any rendering; a half-written net cannot run.
 pub fn model_begin(s: mut State, words: u32) {
-    assert(words == (MODEL.size() + 1) / 2)
+    assert(!s.raw_enabled && words == (MODEL.size() + 1) / 2)
     s.rgb_enabled = false
     s.rgb_words = 0
     s.rgb_net = buffer(words)
@@ -379,4 +408,19 @@ pub fn publish_visibility(s: mut State) -> u32 {
         over: s.width * s.height,
     )
     s.width * s.height
+}
+
+/// An explicit fixture-only control. Never silently combines with a trained RGB correction.
+pub fn decoder(s: mut State, mode: u32) {
+    assert(mode <= 1 && !s.rgb_enabled && s.width == 0)
+    s.raw_enabled = mode == 1
+    if s.raw_enabled { s.collect_rows = false }
+}
+
+/// Observation only, after capture. Its RGBA tags and motion/depth are not display pixels.
+pub fn publish_raw(s: mut State) -> u32 {
+    assert(s.raw_enabled && s.cells == 0 && !s.collecting && s.captured_count == 1)
+    s.exported_raw = buffer(s.raw_history.len())
+    copy(from: s.raw_history.items(), to: s.exported_raw.items_mut())
+    s.raw_history.len()
 }

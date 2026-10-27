@@ -14,6 +14,7 @@ struct Options: Clone {
     model: String = String::new(),
     scene: u32 = 0,
     sampling: u32 = 0,
+    decoder: u32 = 0,
     seed: u32 = 17,
     length: u32 = 1,
     start: u32 = 0,
@@ -31,6 +32,15 @@ fn options(given: [String]) -> Option<Options> {
     var i = 0
     while i < given.len() {
         if i + 1 >= given.len() { return None }
+        if given[i].as_str() == "--decoder" {
+            o.decoder = match given[i + 1].as_str() {
+                "production" => 0,
+                "raw" => 1,
+                _ => return None,
+            }
+            i += 2
+            continue
+        }
         if given[i].as_str() == "--sampling" {
             o.sampling = match given[i + 1].as_str() {
                 "grid" => 0,
@@ -77,7 +87,10 @@ fn options(given: [String]) -> Option<Options> {
     }) || o.width == 0 || o.height == 0 || o.width % 12 != 0 || o.height % 12 != 0 || o.width > 3840 || o.height > 2160 || (o.warmup < 1 && (o.scene != 2 || o.length == 1)) || o.warmup > 4096 || o.cells < 2 || o.cells > 16 {
         return None
     }
-    if !o.model.is_empty() && o.scene != 2 { return None }
+    if !o.model.is_empty() && (o.scene != 2 || o.decoder != 0) { return None }
+    // The diagnostic retains 16 uncompressed frames. Refuse sizes beyond its instrument
+    // budget; this is not a production memory design or a G6 resolution claim.
+    if o.decoder != 0 && (o.scene != 2 || o.width > 384 || o.height > 216) { return None }
     if o.scene == 2 && o.sampling != 0 { return None }
     if o.start > 100000 || (o.start != 0 && o.length == 1) { return None }
     if o.length == 0 ||
@@ -114,7 +127,7 @@ pub fn frames(b: drive::Build, n: u32) -> Result<(), ToolError> {
 }
 
 /// Decode without changing range; reject a broken capture before it becomes a good score.
-pub fn floats(bytes: [u8], expected: u32) -> Result<Vec<f32>, ToolError> {
+fn finite_floats(bytes: [u8], expected: u32) -> Result<Vec<f32>, ToolError> {
     if bytes.len() != expected * 4 { return Err(ToolError::new("wrong capture byte count")) }
     var out: Vec<f32> = Vec::with_capacity(expected)
     for i in 0..expected {
@@ -127,8 +140,15 @@ pub fn floats(bytes: [u8], expected: u32) -> Result<Vec<f32>, ToolError> {
             return Err(ToolError::new("capture contains a non-finite value"))
         }
         let v = bitcast_f32(w)
-        if i % 4 == 3 && v != 1.0 { return Err(ToolError::new("capture alpha is not 1")) }
         out.push(v)
+    }
+    Ok(out)
+}
+
+pub fn floats(bytes: [u8], expected: u32) -> Result<Vec<f32>, ToolError> {
+    let out = finite_floats(bytes, expected)?
+    for i in 0..expected {
+        if i % 4 == 3 && out[i] != 1.0 { return Err(ToolError::new("capture alpha is not 1")) }
     }
     Ok(out)
 }
@@ -147,6 +167,9 @@ fn captured(
         "configure",
         Vec::from([Scalar::I32(i32(divisor)), Scalar::I32(i32(cells)), Scalar::I32(i32(o.shot))]),
     )?
+    if o.scene == 2 {
+        let _ = call(b, "decoder", Vec::from([Scalar::I32(i32(o.decoder))]))?
+    }
     if o.sampling != 0 && cells > 0 {
         let seed = o.seed.wrapping_add(if name == "reference-repeat" { 1 } else { 0 })
         let _ = call(
@@ -177,7 +200,7 @@ fn captured(
     let bytes = joined(data_bytes(read.bytes.remove(0))?)
     let out = floats(bytes, o.width * o.height * 4)?
     write_file(f"{directory}/{name}.rgba32f", chunked(take bytes))?
-    if o.scene == 2 && cells == 0 {
+    if o.scene == 2 && cells == 0 && o.decoder == 0 {
         let count = call(b, "publish_samples", Vec::new())?
         if count != i32(o.width * o.height) {
             return Err(ToolError::new("missing training samples"))
@@ -191,6 +214,19 @@ fn captured(
             return Err(ToolError::new("wrong training row layout"))
         }
         write_file(f"{directory}/{name}.samples32f", chunked(take bytes))?
+    }
+    if o.scene == 2 && cells == 0 && o.decoder == 1 {
+        let count = u32(call(b, "publish_raw", Vec::new())?)
+        if count != (((o.width / divisor) * (o.height / divisor) + 7) / 8 * 8) * 16 {
+            return Err(ToolError::new("wrong raw observation count"))
+        }
+        let ids = untrapped("raw buffers", drive::steps(b, [Step::Buffers]).wait()?)?
+        borrow buffers = ids.buffers[0]
+        let id = buffers[buffers.len() - 1]
+        var read = untrapped("raw observations", drive::steps(b, [Step::ReadBuffer(id)]).wait()?)?
+        let bytes = joined(data_bytes(read.bytes.remove(0))?)
+        let _ = finite_floats(bytes, count * 8)?
+        write_file(f"{directory}/{name}.raw32f", chunked(take bytes))?
     }
 
     Ok(out)
@@ -284,6 +320,7 @@ fn run(o: Options) -> Result<(), ToolError> {
                 shot: o.shot,
                 cut_at: o.cut_at,
                 reset_cut: o.reset_cut,
+                decoder: o.decoder,
             },
             o.model.as_str(),
         )
@@ -316,7 +353,7 @@ fn run(o: Options) -> Result<(), ToolError> {
         "regular_grid_tied_to_frame"
     }
     let repeat = if o.sampling == 1 { "independent_seed_plus_one" } else { "identical_seed" }
-    let metadata = f"scene={scene}\nshot={o.shot}\nwidth={o.width}\nheight={o.height}\nwarmup={o.warmup}\nreference_samples={count}\nsimulation_frame={frame}\nsimulation_fps=60\ncamera=fixture_shot_at_time_0\nformat=rgba32f_le_top_down_scene_linear_alpha1\nreference={reference_kind}\nworkers=1\nquality=fixture_declared_quality_measured_false_pace_false\ntrack=development_smoke_not_validation_or_sealed_test\nmodel={o.model}\nsampling={sampling}\nseed={o.seed}\nrepeat={repeat}\n"
+    let metadata = f"scene={scene}\nshot={o.shot}\nwidth={o.width}\nheight={o.height}\nwarmup={o.warmup}\nreference_samples={count}\nsimulation_frame={frame}\nsimulation_fps=60\ncamera=fixture_shot_at_time_0\nformat=rgba32f_le_top_down_scene_linear_alpha1\nreference={reference_kind}\nworkers=1\nquality=fixture_declared_quality_measured_false_pace_false\ntrack=development_smoke_not_validation_or_sealed_test\nmodel={o.model}\ndecoder={o.decoder}\nraw_layout=16_frames_of_32_byte_color_motion_depth_records_frame_stride_ceil_pixels_to_8\nsampling={sampling}\nseed={o.seed}\nrepeat={repeat}\n"
     let _ = files::write(f"{directory}/capture.txt", metadata.as_bytes()).wait()?
     Ok(())
 }
@@ -328,7 +365,7 @@ pub fn tool() -> u32 {
     }
     let Some(o) = options(given) else {
         print(
-            "usage: wrela tool reconstruct -- [--scene bare|clearing|edges --shot 0 --width 192 --height 108 --warmup 240 --cells 8 --sampling grid|phase64 --seed 17 --frames 1 --start-frame 0 --cut-at 0 --reset-cut 1 --model out/models/.../weights.half] | train <manifest> <steps> <seed>",
+            "usage: wrela tool reconstruct -- [--scene bare|clearing|edges --shot 0 --width 192 --height 108 --warmup 240 --cells 8 --sampling grid|phase64 --seed 17 --frames 1 --start-frame 0 --cut-at 0 --reset-cut 1 --model out/models/.../weights.half --decoder production|raw] | train <manifest> <steps> <seed>",
         )
         return 2
     }

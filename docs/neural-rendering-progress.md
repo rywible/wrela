@@ -390,3 +390,83 @@ were byte-identical to `1793058806-214392282`. Six focused pure tests and the na
 capture controls pass. Whole-workspace formatting still reports the existing unrelated
 `examples/clearing/tests/checks/tests.wrela` issue; changed files are formatted. The 65,536
 sample convergence measurement is still running and is not counted as a passing result.
+
+### Retained raw observations: a useful control, not a promoted decoder
+
+Added the explicit fixture-only option `--decoder raw`. It stores 16 causal raw colour,
+motion and depth frames, with their known jitter positions. A gather pass reconstructs from
+those observations using the nearest current sample's constant-velocity hypothesis. It reads
+no field parameters, exact pixel integrals, reference visibility, future frames or case ID.
+This is a conventional control for the next neural architecture, not a trained model.
+The production engine and the existing neural experiment are unchanged.
+
+The first version rejected historical observations with a different depth. That was wrong
+for static fractional coverage: a pixel alternates between foreground and background without
+either layer moving. Removing that rejection when motion agrees improves the static control.
+It does not solve changing visibility or ambiguous correspondence. Both versions and their
+measured failures remain in the evidence.
+
+All rows below are **192×108, 32 consecutive frames from a cold start**, AMD RADV RENOIR.
+They are short development clips, not the five-second population or sealed validation set.
+The static case is 5. The motion clip changes from case 7 to 2 at frame 16, with an explicit
+history reset. Production and candidate use byte-identical references and visibility masks.
+FLIP and LPIPS follow the pinned definitions above.
+
+| Clip | Scale | Production FLIP | Raw FLIP | Production LPIPS | Raw LPIPS |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Static | 1× | 0.290096 | 0.090682 | 0.104883 | 0.011957 |
+| Static | 2× | 0.300883 | 0.125800 | 0.161901 | 0.031573 |
+| Static | 3× | 0.306910 | 0.192211 | 0.230668 | 0.075269 |
+| Static | 4× | 0.337088 | 0.231750 | 0.344775 | 0.121331 |
+| Motion/cut | 1× | 0.393728 | 0.212599 | 0.168920 | 0.075582 |
+| Motion/cut | 2× | 0.419706 | 0.237453 | 0.282647 | 0.088752 |
+| Motion/cut | 3× | 0.497995 | 0.449301 | 0.438710 | 0.193064 |
+| Motion/cut | 4× | 0.474830 | 0.538963 | 0.401666 | 0.310719 |
+
+At 4×, static FLIP improves 31.25% and LPIPS improves 64.81%, but motion FLIP
+**regresses 13.51%**, despite its LPIPS improvement. A retained comparison image also shows
+substantial missing structure and aliasing. The control is **not promoted**. At moving case 7,
+frame 31, 7.05% of 4× output pixels have no weighted compatible observation and fall back to
+the nearest current sample. This is a narrow diagnostic frame, not a population failure rate.
+It motivates a model with spatial context and explicit visibility handling; it does not
+establish that a larger model will succeed.
+
+The earlier depth-gated version's static 4× FLIP was 0.443984, worse than production.
+At the moving cases, both raw versions give identical results because the two layers have
+distinct velocities. This confirms that the static gain came from retaining fractional
+coverage, not a new sample budget or a changed reference.
+
+Independent CPU replay reads only the exported raw observations and declared timing,
+never the field or target. On static case 5 and moving case 7, all four scales agree with the
+GPU within **0.000242** maximum absolute error in the named linear view, consistent with
+the final half-float render target. Removing jitter from the replay produces mean view
+errors of 0.008–0.101. Cut frames 16 and 17 are byte-identical to fresh rendering of the new
+case at the same times, including truth and masks. Suppressing the reset changes 96.6–99.5%
+of pixels by more than 2/255 in at least one named-view RGB channel on the cut frame.
+
+A small-size native control found a real storage-binding bug: unpadded frames could start
+between 256-byte boundaries. Raw frame strides now round up to eight 32-byte records.
+The failed 12×12 control is retained; the corrected capture and independent replay pass at
+all four scales, including padded 6×6 and 3×3 inputs. The pure alignment rule, kernel support,
+image decoding and workspace allow checks pass. Raw records have semantic tags and geometry;
+their finite-value validation is separate from display images' mandatory alpha=1 check.
+
+This uncompressed instrument deliberately refuses output above 384×216. Its history alone
+uses `16 × aligned(input_pixels,8) × 32` bytes: at hypothetical 4× 1080p it would be
+63.28 MiB, and at 4K 253.13 MiB, before any other allocations; lower scale factors cost more.
+Those sizes have not been run, and a large single storage binding would need a different
+layout. No G6 timing or memory claim follows. Existing neighbourhood work is still executed;
+this control is not a cost-optimized production path. No timing measured while the reference
+job and other captures shared the GPU is used as performance evidence.
+
+Reproduction:
+`wrela tool reconstruct -- --scene edges --shot 5 --width 192 --height 108 --warmup 0 --frames 32 --decoder raw`;
+repeat with decoder `production` for the paired baseline. The motion pair uses
+`--shot 7 --cut-at 16`. Independent replay inputs are captured with
+`--warmup 31 --frames 1 --decoder raw`. Sources, run IDs, fixture hashes and metric hashes
+are recorded in `build/neural-evidence/raw-history-aligned/manifest.json`.
+The earlier exact decoder sources are retained under `raw-history-v1` and
+`raw-history-v2`; the final archive adds aligned buffer strides.
+External measurement utilities are `replay_raw.py`, `compare_sequences.py` and
+`check_raw_cut.py` in the established external state directory, each embedded in its results.
+No G1–G7 gate has been satisfied or weakened.

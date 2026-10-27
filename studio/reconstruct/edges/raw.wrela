@@ -1,0 +1,118 @@
+// Experimental control: preserve 16 causal raw frames, then gather point observations.
+// No analytic field, coverage, reference, future frame or absolute case ID reaches this pass.
+// The nearest current sample supplies a constant-velocity correspondence hypothesis. This
+// deliberately limited control is not a visibility solution or the production decoder.
+use engine::view::jitter_of
+use std::gpu::{DepthTexture, FragCoord, GlobalId, Rgba16Float, Slots, Texture}
+
+pub const HISTORY: u32 = 16
+
+/// Each 32-byte record frame starts on the storage binding's 256-byte boundary.
+pub fn stride(width: u32, height: u32) -> u32 {
+    (width * height + 7) / 8 * 8
+}
+
+pub struct Sample: Copy + GpuData {
+    pub color: vec4,
+    // Motion in output pixels/frame, reversed depth, unused.
+    pub geometry: vec4,
+}
+
+@compute(64)
+pub fn retain(
+    scene: Texture<Rgba16Float>,
+    depth: DepthTexture,
+    motion: Texture<Rgba16Float>,
+    divisor: u32,
+    out: mut Slots<Sample>,
+    id: GlobalId,
+) {
+    let count = scene.width() * scene.height()
+    if id.x < count {
+        let x = id.x % scene.width()
+        let y = id.x / scene.width()
+        let velocity = motion.load(x, y).xy * f32(divisor)
+        out[id] = Sample {
+            color: scene.load(x, y),
+            geometry: vec4(velocity, depth.load(x, y), 0.0),
+        }
+    }
+}
+
+pub fn weight(distance: vec2, radius: f32) -> f32 {
+    let w = max(vec2(1.0) - abs(distance) / radius, vec2(0.0))
+    w.x * w.y
+}
+
+@fragment
+pub fn reconstruct(
+    p: FragCoord,
+    samples: [Sample],
+    width: u32,
+    height: u32,
+    divisor: u32,
+    tick: u32,
+    count: u32,
+) -> vec4 {
+    let d = f32(divisor)
+    let size = stride(width, height)
+    let limit = vec2i(i32(width) - 1, i32(height) - 1)
+    let near = clamp(vec2i(floor(p.position.xy / d + jitter_of(tick))), vec2i(0), limit)
+    let current = samples[(tick % HISTORY) * size + u32(near.y) * width + u32(near.x)]
+    // Widen only while history is sparse. With 16 observations a 4x path has roughly one
+    // observation/output pixel before rejection; the minimum support remains subpixel.
+    let radius = max(0.8, 1.25 * d / sqrt(f32(count)))
+    var sum = vec3(0.0)
+    var total = 0.0
+    for age in 0..HISTORY {
+        if age < count {
+            let frame = tick - age
+            let jitter = jitter_of(frame)
+            let predicted = p.position.xy - current.geometry.xy * f32(age)
+            let at = vec2i(floor(predicted / d + jitter))
+            for y in 0..3 {
+                for x in 0..3 {
+                    let xy = at + vec2i(i32(x) - 1, i32(y) - 1)
+                    if xy.x >= 0 && xy.y >= 0 && xy.x <= limit.x && xy.y <= limit.y {
+                        let sample = samples[(frame % HISTORY) * size +
+                            u32(xy.y) * width +
+                            u32(xy.x)]
+                        // Equal motion may cross static depth layers: those samples encode
+                        // fractional visibility. Depth rejection would erase that coverage.
+                        let compatible = age == 0 ||
+                            length(sample.geometry.xy - current.geometry.xy) < 0.05
+                        if compatible {
+                            let position = (vec2(f32(xy.x), f32(xy.y)) + vec2(0.5) - jitter) * d +
+                                sample.geometry.xy * f32(age)
+                            let w = weight(position - p.position.xy, radius)
+                            sum += max(sample.color.rgb, vec3(0.0)) * w
+                            total += w
+                        }
+                    }
+                }
+            }
+        }
+    }
+    vec4(if total > 1.0e-5 { sum / total } else {
+        max(current.color.rgb, vec3(0.0))
+    }, current.color.a)
+}
+
+@test
+fn point_support_is_symmetric_bounded_and_interpolates() {
+    assert(weight(vec2(0.0), 0.8) == 1.0)
+    assert(weight(vec2(0.8, 0.0), 0.8) == 0.0)
+    assert(weight(vec2(3.0, 0.0), 0.8) == 0.0)
+    assert(abs(weight(vec2(0.4, -0.4), 0.8) - 0.25) < 1.0e-6)
+    assert(weight(vec2(-0.4, 0.4), 0.8) == weight(vec2(0.4, -0.4), 0.8))
+}
+
+@test
+fn retained_frame_offsets_obey_storage_alignment() {
+    assert(stride(6, 6) == 40 && stride(3, 3) == 16)
+    for divisor in 1..5 {
+        let n = (12 / divisor) * (12 / divisor)
+        let size = stride(12 / divisor, 12 / divisor)
+        assert(size >= n && size - n < 8 && (size * 32) % 256 == 0)
+    }
+}
