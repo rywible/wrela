@@ -18,24 +18,22 @@
 
 ## Immediate milestone
 
-The [source-hierarchy comparison](neural-shaded-appearance.md#source-hierarchy-exact-reconstruction-helps-repeated-visibility-work-does-not)
-preserves all source cards and eight shaded outputs exactly, reducing complete
-requested GPU memory 33.91%. Physical residency savings remain unproved. Full
-hierarchy saturated median is 16.36% slower. Reusable bands reduce allocations
-further, but even conservative culling leaves 5.21x the cached control's cost.
+The [source work-list comparison](neural-shaded-appearance.md#source-work-lists-selective-submission-still-fails-the-band-strategy)
+preserves all72RGBA comparisons and removes most redundant geometry submissions,
+but still rejects band reuse for G4 on this AMD path. After batching and wider
+bands, the fastest reconstructed candidate costs0.511ms saturated median versus
+0.278ms cached control, using986,124requested live bytes versus1,875,712.
+Physical savings remain unproved. Same routing is measured on stored cards too.
 
-A 16-cubed source-response volume passes only 1/24 rendered quality cases despite
-identical silhouettes; it is 5.30x slower. Change representation: retain exact
-source reconstruction as a conventional control, retire repeated full-geometry
-bands and uniform response volume as G4 candidates. Exactly two optimizations;
-first assessment 12m15s, decision 23m09s. All failed results preserved.
+Retire the experimental work-list/band paths; exact prior runtime54aaf879 restored.
+All sources, failed results, costs and actual memory observations are archived.
+No training/new shaded truth. Frozen explicit fit remains unchanged,8/24cases.
 
-Next unproven bet: submit only intersecting source-cluster ranges to each region,
-with the same routing available to the conventional control. First demand exact
-cached-response image parity and complete runtime near the control. Local adaptive
-or residual shading is a later candidate; no new material-moment fitting now.
-The frozen explicit optical-primitive fit is unchanged, passing 8/24 against
-the strong controls. G1–G7 remain unchanged and unmet.
+Next: use existing shaded captures to separate opacity from straight-radiance
+errors through diagnostic substitutions. Then choose a joint visibility/radiance
+residual only if it corrects actual rendered failures, against an equally informed
+conventional residual codec at the same byte budget. No material-moment fitting
+based on proxy error. G1–G7 remain unchanged and unmet.
 
 ## Evidence recorded so far
 
@@ -2386,3 +2384,22 @@ No full-suite claim; failures preserved; G1–G7 unchanged/unmet.
 [Report](neural-shaded-appearance.md#source-hierarchy-exact-reconstruction-helps-repeated-visibility-work-does-not).
 Evidence build/neural-evidence/g4-source-hierarchy-v1 on Pop!_OS.
 Manifest SHA-256: `410b6972c5ee90a227e686e906f9a324968f366a2e606f7294833013b8387403`.
+
+
+### Source work lists preserve quality but retire the band strategy
+
+Nine AMD variants;72RGBA comparisons exact;24/24cases versus3strong controls.
+Selection removes70.65–72.01% leaf submissions and63.07% wood submissions, but
+batched source8 still costs1.112ms saturated median. Wider source32 costs0.511ms
+versus cached0.278ms, requests986,124 versus1,875,712live bytes; physical savings
+unproved. Both optimizations include identical stored-card routing controls.
+Retire band reuse for this G4 path; all failed implementations preserved.
+Initial assessment376.4s; decision875.8s; exactly two optimizations.
+No training/new truth; frozen fit8/24. Runtime restored byte-for-byte to54aaf879,
+so its established default checks apply; no new allocations or redundant suite.
+Next: opacity/radiance attribution from existing shaded captures, then a
+matched-budget residual representation if the rendered failure warrants it.
+G1–G7 unchanged/unmet.
+[Report](neural-shaded-appearance.md#source-work-lists-selective-submission-still-fails-the-band-strategy).
+Evidence build/neural-evidence/g4-source-worklist-v1 on Pop!_OS.
+Manifest SHA-256: `b90b9266a472ff3f19480f5b53d273514f487940e521a49bfdb38fb47034801c`.

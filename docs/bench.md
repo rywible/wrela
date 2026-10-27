@@ -2311,3 +2311,30 @@ bytes counted; format/type pass. Failed results preserved; no full suite.
 G1–G7 unchanged/unmet.
 [Complete evidence](neural-shaded-appearance.md#source-hierarchy-exact-reconstruction-helps-repeated-visibility-work-does-not).
 Evidence build/neural-evidence/g4-source-hierarchy-v1 on Pop!_OS.
+
+
+### 2026-10-27 — Source work lists reject band reuse for G4
+
+AMD RADV RENOIR/Ryzen5 5500U, Mesa26.1.6, Chrome154.0.8037.57, Pop!_OS;
+Wrela0.9.0 compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23.
+Parent54aaf879 plus archived sources, solo/sequential, 64px,
+60warmup+240measured frames. Initial assessment376.4s, decision875.8s;
+exactly two optimizations, no training/new shaded references.
+
+Nine variants all24/24 against3strong controls; all72RGBA comparisons exact.
+Stable range selection removes70.65–72.01% of leaf submissions and63.07% of wood
+submissions versus8full bands, but complete cost remains too high.
+Reconstructed8-row saturated median1.153ms; batched1.112ms; two32-row bands0.511ms
+versus cached full-frame0.278ms. Final paced GPU95/99=1.654/1.848ms versus1.058/1.085ms.
+Final source32 requested live986,124bytes versus1,875,712control:47.43% less,
+83.32% more saturated GPU time. Physical residency savings unproved.
+With identical routing, stored32 uses1,623,540bytes and0.484ms, still no16x ratio.
+
+Decision: retire band reuse on this AMD G4 path. Archive implementations and restore
+the exact prior runtime; no new default allocations. Native range/argument checks
+cover154ranges,8bands,2views,4lighting repeats. No redundant checks of unchanged
+runtime/profiler; no full suite. Frozen fit unchanged,8/24; G1–G7 unchanged/unmet.
+Next diagnostic: separate opacity and radiance errors in existing shaded captures
+before choosing joint visibility/radiance residuals at a matched conventional byte budget.
+[Complete evidence](neural-shaded-appearance.md#source-work-lists-selective-submission-still-fails-the-band-strategy).
+Evidence build/neural-evidence/g4-source-worklist-v1 on Pop!_OS.

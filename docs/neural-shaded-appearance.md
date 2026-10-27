@@ -2500,3 +2500,167 @@ All seven variants, failed results, exact sources/builds, raw timing, requested
 allocations, physical snapshots and checks are preserved on Pop!_OS in
 build/neural-evidence/g4-source-hierarchy-v1.
 Manifest SHA-256: `410b6972c5ee90a227e686e906f9a324968f366a2e606f7294833013b8387403`.
+
+
+## Source work lists: selective submission still fails the band strategy
+
+**Decision: retire band reuse as the G4 strategy on this AMD path.** GPU-built
+range lists preserve all rendered outputs and remove most redundant submissions,
+but do not recover the required runtime or residency ratio. The implementations
+are preserved in the evidence archive; the active runtime is restored byte for
+byte to parent 54aaf879. No rendering improvement is promoted.
+
+The fastest reconstructed band candidate uses two 32-row bands. It requests
+986,124 live GPU bytes versus 1,875,712 for the cached conventional control
+(47.43% less), but saturated median cost is 0.511 versus 0.278ms (83.32% more).
+Its paced GPU p95/p99 is 1.654/1.848ms versus 1.058/1.085ms. Actual DRM/PSS
+snapshots do not demonstrate a physical residency saving.
+
+Solo Pop!_OS work began 2026-10-27 23:28:16 UTC. Initial five-way assessment
+completed 2026-10-27T23:34:32.385303+00:00 (376.4s elapsed);
+decision 2026-10-27T23:42:51.780114+00:00 (875.8s elapsed), within two hours.
+Exactly two optimization experiments followed. No training or new shaded truth.
+
+### Selection and fair comparison
+
+The initial path uses one 256-thread workgroup per band. It evaluates conservative
+source-clump/wood bounds, computes an exclusive prefix sum of selected range sizes,
+and writes stable range records plus indexed-leaf/non-indexed-wood indirect draw
+arguments. Source order and global surface identities remain unchanged.
+
+Each record stores selected end, original source start, clump/limb index and count.
+There are 132 leaf ranges (44 clumps times three source shares) and 22 wood ranges:
+2,464 bytes, plus 36 bytes of indirect arguments. Vertex lookup searches the prefix
+records, then reads either stored cards or the exact reconstructed source.
+The [retained source hierarchy](../studio/appearance/runtime/source_hierarchy.wrela)
+supplies identical bounds and source ranges to both alternatives. This uses existing
+GPU capabilities, also exercised by the engine's [particles](../engine/particles.wrela)
+and [grass](../engine/grass.wrela); no compiler changes.
+
+Both stored and reconstructed variants receive the same authored source, selection,
+cached leaf coverage, wood, shading, seed and 16 visibility samples. No privileged
+learned inputs. The strongest fast comparator remains the conventional full-frame
+coverage-tile cache; full source hierarchy and the previous culled-band path are
+remeasured controls.
+
+A native readback checks all 154 range records and indirect counts across eight
+bands and two views. All four lighting settings give identical selections.
+Leaf submissions fall from 212,480 per frame to 62,354/59,477 (70.65%/72.01% fewer).
+Wood vertex submissions fall from 177,408 to 65,520 (63.07% fewer).
+The remaining repetitions are still 2.35x/2.24x for leaves and 2.95x for wood.
+
+First optimization batches all eight lists into one dispatch, one workgroup per
+band, with independent prefix storage and raw u32 indirect-argument arrays.
+It reduces compute passes from 16 to 9, but costs 32,768 bytes of range storage
+plus 288 argument bytes. Reconstructed saturated median only improves
+1.153 to 1.112ms, with a worse observed paced tail in its single run.
+
+Second optimization uses two 32-row bands, retaining the same batched selector.
+It returns visibility memory: ID/depth targets rise from 65,536 to 262,144 bytes.
+Range storage falls to 8,192 bytes plus 72 argument bytes. Only three compute
+passes and five draws remain. Runtime improves substantially over eight bands,
+but still fails against the full-frame control. Both optimizations are measured
+with stored and reconstructed cards; they are two ideas, not four tuning attempts.
+
+### Rendered quality
+
+Reuse existing AA64 shaded references: two views, four analytic lights and three
+backgrounds at 64x64. Exposure 0.62, sRGB, LDR FLIP at 67 pixels/degree and
+AlexNet LPIPS v0.1 preprocessing are unchanged. All nine variants pass 24/24
+numeric cases against the current cache and the archived forward/packed controls.
+
+All 72 RGBA captures match the cached control byte for byte, including the control
+itself; eight prior cached-control captures also match. Shared mean PSNR is
+40.295971dB, FLIP 0.01300193 and LPIPS 0.00249104. Mean coverage MAE is
+0.01005954, soft IoU 0.959469, mean boundary p99 1.707 pixels and worst 2 pixels.
+These are static one-asset observations, not motion, unseen-family or natural
+close-up validation.
+
+The frozen explicit optical-primitive fit remains unchanged and passes 8/24
+against all three controls. Against the current cache, its largest PSNR loss is
+1.896dB (between view, light0, dark background); that case also has FLIP 1.109x
+and LPIPS 1.819x. Other failures differ by background and light. This identifies
+a real rendered discrepancy, but does not yet attribute it to opacity or radiance.
+
+### Complete cost and actual memory observations
+
+AMD RADV RENOIR PCI1002:164c, Ryzen5 5500U, Mesa26.1.6,
+Chrome154.0.8037.57, Pop!_OS. Wrela0.9.0 compiler
+de9b81e52a7747870dfbd5223cb8aeb41e584d23; parent54aaf879 plus archived sources.
+Sequential runs, 60 warmup + 240 measured frames.
+
+GPU spans include selection, indirect argument construction, range lookup,
+geometry, decoding, wood, visibility, shading resolve and final compositing.
+Source order is stable and depth testing replaces optical sorting; no sort is
+omitted. CPU timings include view/light updates, repeated source setup, uploads
+and command recording. Initialization is excluded from steady timings but its
+requested allocation peak is retained. Dynamic asset edits/rebuilds are untested.
+
+| Variant | Paced GPU p95/p99 ms | Saturated GPU median/p95 ms | CPU p99 ms | CPU start to last GPU completion p95/p99 ms |
+| --- | ---: | ---: | ---: | ---: |
+| worklist-cache | 1.058/1.085 | 0.278/0.406 | 0.643 | 4.581/5.054 |
+| worklist-full | 1.188/1.218 | 0.311/0.529 | 0.680 | 4.366/4.594 |
+| worklist-band8 | 2.432/2.469 | 1.433/1.440 | 1.685 | 5.968/6.571 |
+| worklist-stored8 | 1.923/1.997 | 1.049/1.055 | 1.779 | 7.025/7.195 |
+| worklist-source8 | 2.033/2.101 | 1.153/1.166 | 2.153 | 7.245/7.554 |
+| worklist-batch-stored8 | 1.917/1.966 | 1.021/1.028 | 1.703 | 6.897/7.135 |
+| worklist-batch-source8 | 2.292/2.421 | 1.112/1.119 | 1.798 | 6.592/7.134 |
+| worklist-batch-stored32 | 1.299/1.358 | 0.484/0.515 | 1.044 | 5.017/5.219 |
+| worklist-batch-source32 | 1.654/1.848 | 0.511/0.566 | 0.995 | 4.850/4.990 |
+
+The completion observer includes browser/driver notification; it is not photon
+latency. These are single per-variant measurements. No paired speedup claim or
+power-state explanation; failures are wide enough, and memory remains far enough
+from G4, that more timing repetitions cannot promote a candidate.
+
+| Variant | Engine persistent representation/scratch bytes | All requested live/peak bytes | DRM resident VRAM/GTT bytes | Browser group PSS bytes |
+| --- | ---: | ---: | ---: | ---: |
+| worklist-cache | 1,466,112 | 1,875,712/1,892,096 | 17,338,368/9,953,280 | 487,445,504 |
+| worklist-full | 830,104 | 1,239,704/1,256,088 | 17,670,144/9,936,896 | 490,674,176 |
+| worklist-band8 | 371,704 | 781,304/797,688 | 17,670,144/10,035,200 | 495,860,736 |
+| worklist-stored8 | 1,011,568 | 1,421,168/1,437,552 | 17,690,624/9,953,280 | 496,344,064 |
+| worklist-source8 | 374,152 | 783,752/800,136 | 17,440,768/9,953,280 | 497,726,464 |
+| worklist-batch-stored8 | 1,042,124 | 1,451,724/1,468,108 | 17,690,624/9,953,280 | 496,095,232 |
+| worklist-batch-source8 | 404,708 | 814,308/830,692 | 17,707,008/10,035,200 | 496,058,368 |
+| worklist-batch-stored32 | 1,213,940 | 1,623,540/1,639,924 | 17,690,624/9,953,280 | 490,789,888 |
+| worklist-batch-source32 | 576,524 | 986,124/1,002,508 | 17,690,624/10,035,200 | 489,768,960 |
+
+Engine bytes exclude the same 409,600 common output/upload/uniform/screen bytes;
+all-live figures include them. All source, fallback, cache, work-list and argument
+buffers are counted. The new paths also declare 1,024 bytes of shared memory per
+selection workgroup: one group per narrow-band dispatch, eight groups in the
+batched eight-row dispatch (up to 8,192 bytes across groups), or two groups for
+32-row bands (up to 2,048). This is separate from persistent requested bytes.
+Thread-private spills and driver caches are not separately attributable.
+
+DRM/PSS are actual whole-client residency snapshots, not per-asset physical
+allocation or transient physical peaks. Do not sum UMA pools. No physical savings
+are established. Comparing identical routing does not rescue the result:
+stored32 requests 1,623,540 bytes and takes 0.484ms saturated median, versus
+source32's 986,124 bytes and 0.511ms. Its memory ratio remains far short of 16x.
+The strongest conventional method is still the faster full-frame cache.
+
+### Retirement and next consequential experiment
+
+Stop tuning exact band reuse for this G4 attempt. The next bet is joint visibility
+and radiance approximation, guided by the frozen fit's actual rendered failures.
+The shortest next experiment substitutes reference opacity and reference straight
+radiance separately into existing captured outputs. This is a diagnostic
+counterfactual, not a rendering candidate or a quality claim. It can distinguish
+opacity, radiance and their interaction without training or new reference images.
+
+Only after that attribution should a compact view-conditioned residual be tried,
+alongside an equally informed conventional residual codec with the same byte budget.
+Do not resume material-moment fitting based only on proxy errors.
+
+Every measured source/build, failed result, memory observation and raw timing is
+preserved. Initial validation rejected domain dispatch for a shared-memory kernel;
+the failed source/diagnostic and the corrected explicit-group dispatch are archived.
+The experimental work-list module is removed from the active runtime, and every
+tracked runtime file is byte-identical to54aaf879. Its established frozen-model,
+eight-image, memory and format/type checks therefore apply without rerunning
+unchanged machinery. No new default allocations, no full-suite claim.
+G1–G7 remain unchanged and unmet.
+
+Evidence on Pop!_OS: build/neural-evidence/g4-source-worklist-v1.
+Manifest SHA-256: `b90b9266a472ff3f19480f5b53d273514f487940e521a49bfdb38fb47034801c`.
