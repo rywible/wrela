@@ -102,6 +102,7 @@ pub struct State {
     raw_kernel_rows: u32,
     raw_count: u32,
     raw_history: GpuBuffer<raw::Sample>,
+    raw_packed: GpuBuffer<raw::PackedSample>,
     exported_raw: GpuBuffer<raw::Sample>,
     samples: GpuBuffer<ReconstructionSample>,
     exported_samples: GpuBuffer<ReconstructionSample>,
@@ -167,6 +168,7 @@ pub fn init() -> State {
         raw_kernel_rows: 0,
         raw_count: 0,
         raw_history: buffer(1),
+        raw_packed: buffer(1),
         exported_raw: buffer(1),
         samples: buffer(1),
         exported_samples: buffer(1),
@@ -213,7 +215,9 @@ fn resize(s: mut State, width: u32, height: u32) {
     s.last_motion = texture(width: w, height: h)
     s.means = writable_texture(width: w, height: h)
     s.spreads = writable_texture(width: w, height: h)
-    if s.raw_enabled { s.raw_history = buffer(raw::stride(w, h) * raw::HISTORY) }
+    if s.raw_source {
+        s.raw_packed = buffer(raw::packed_stride(w, h) * raw::HISTORY)
+    } else if s.raw_enabled { s.raw_history = buffer(raw::stride(w, h) * raw::HISTORY) }
     s.raw_count = 0
     s.patch_frames = 0
     if s.patch_enabled { s.patch_cells = buffer(w * h) }
@@ -272,16 +276,32 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         if s.reset { s.raw_count = 0 }
         s.raw_count = min(s.raw_count + 1, raw::HISTORY)
         label("raw retain")
-        dispatch(
-            raw::retain.bind(
-                s.scene,
-                s.depth,
-                s.motion,
-                s.divisor,
-                s.raw_history.span_mut((s.tick % raw::HISTORY) * raw::stride(w, h), w * h),
-            ),
-            over: w * h,
-        )
+        if s.raw_source {
+            dispatch(
+                raw::retain_packed.bind(
+                    s.scene,
+                    s.depth,
+                    s.motion,
+                    s.divisor,
+                    s.raw_packed.span_mut(
+                        (s.tick % raw::HISTORY) * raw::packed_stride(w, h),
+                        w * h,
+                    ),
+                ),
+                over: w * h,
+            )
+        } else {
+            dispatch(
+                raw::retain.bind(
+                    s.scene,
+                    s.depth,
+                    s.motion,
+                    s.divisor,
+                    s.raw_history.span_mut((s.tick % raw::HISTORY) * raw::stride(w, h), w * h),
+                ),
+                over: w * h,
+            )
+        }
     }
     if s.patch_enabled {
         label("patch encode")
@@ -432,7 +452,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         fullscreen(
             p,
             raw::reconstruct_source.bind(
-                s.raw_history.items(),
+                s.raw_packed.items(),
                 w,
                 h,
                 s.divisor,
@@ -611,9 +631,20 @@ pub fn decoder(s: mut State, mode: u32) {
 /// Observation only, after capture. Its RGBA tags and motion/depth are not display pixels.
 pub fn publish_raw(s: mut State) -> u32 {
     assert(s.raw_enabled && s.cells == 0 && !s.collecting && s.captured_count == 1)
-    s.exported_raw = buffer(s.raw_history.len())
-    copy(from: s.raw_history.items(), to: s.exported_raw.items_mut())
-    s.raw_history.len()
+    if s.raw_source {
+        let (w, h) = (s.scene.width(), s.scene.height())
+        let count = raw::stride(w, h) * raw::HISTORY
+        s.exported_raw = buffer(count)
+        dispatch(
+            raw::export_packed.bind(s.raw_packed.items(), w, h, mut s.exported_raw),
+            over: count,
+        )
+        count
+    } else {
+        s.exported_raw = buffer(s.raw_history.len())
+        copy(from: s.raw_history.items(), to: s.exported_raw.items_mut())
+        s.raw_history.len()
+    }
 }
 
 pub fn patch_begin(s: mut State, words: u32) {

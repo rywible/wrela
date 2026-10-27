@@ -8,7 +8,7 @@ methods, our proposed architecture, and the measurements needed to accept it.
 
 Bako et al., [Kernel-Predicting Convolutional Networks for Denoising Monte Carlo
 Renderings](https://la.disneyresearch.com/wp-content/uploads/Kernel-Predicting-Convolutional-Networks-for-Denoising-Monte-Carlo-Renderings-Paper33.pdf)
-(ACM TOG 36(4), 2017, `4.2) compare direct RGB prediction with predicting scalar
+(ACM TOG 36(4), 2017, Section 4.2) compare direct RGB prediction with predicting scalar
 neighbourhood weights shared across RGB. Softmax makes those weights nonnegative
 and sum to one, bounding the output by the observations' convex hull. Their
 application is static Monte Carlo denoising for film production; its results do
@@ -45,11 +45,13 @@ remain an information limit.
 
 ## First control
 
-The `raw-source` experimental decoder keeps sixteen causal raw frames, using
-32-byte colour/motion/depth records. It gathers both authored layer trajectories,
-classifies samples by their stored depth and motion, and rejects samples whose
-projected point is occluded at the current time. Surviving observations receive
-the existing positive tent weights and are normalized in scene-linear RGB.
+The `raw-source` experimental decoder keeps sixteen causal raw frames. The first
+control used 32-byte colour/motion/depth records; the current cache uses 20 bytes,
+keeping already-half-float colour in two packed words and retaining f32 motion
+and depth. It gathers both authored layer trajectories, classifies samples by
+stored depth and motion, and rejects samples whose projected point is occluded
+at the current time. Surviving observations receive positive tent weights and
+are normalized in scene-linear RGB.
 
 The shader receives only slat period, width, offset and speed as extra source
 parameters. It receives no source colour, checker frequency, coverage integral,
@@ -74,14 +76,18 @@ reference-subtracted motion errors must be checked. An average gain cannot
 erase a tail regression. The public analytic family cannot satisfy the sealed
 scene, independent renderer, human or production requirements.
 
-The uncompressed history alone is 63.28 MiB at 1080p output / 4× linear reduction
-and 253.13 MiB at 4K / 4×, calculated from sixteen 32-byte records per input
-pixel. Other buffers are additional. Two layers × sixteen frames × nine taps
-is at most 288 candidate visits per output pixel, including rejected visits.
-These are capacity/work counts, not measured latency. This deliberately costly
-control must establish whether better sample handling helps before investing
-in a compact cache, learned support or optimized GPU kernel. Deployment still
-requires the original G6 browser latency, memory and whole-frame gates.
+The original history alone used 63.28 MiB at 1080p output / 4× linear reduction
+and 253.13 MiB at 4K / 4×: sixteen 32-byte records per input pixel. The current
+20-byte cache uses 39.55 and 158.20 MiB respectively at those dimensions; other
+buffers are additional. Both retain all sixteen raw frames. This is packing of
+observed half-float colour, not learned appearance compression or a G4 result.
+
+The original two layers × sixteen frames × nine taps visited at most 288
+candidates per output pixel. The current implementation restricts the loop to
+a conservative support rectangle, then rejects impossible support before loading
+storage or querying visibility. These are work/capacity descriptions; measured
+latency and total fixture allocations belong in [the benchmark record](bench.md).
+G6 still requires its original browser latency, memory and whole-frame gates.
 
 ## First learned kernel
 
@@ -111,13 +117,29 @@ promotion decision and quality measurements belong in the development record.
 
 ## Follow-up hypotheses after the cost measurement
 
-The current shader loads all nine neighbours for each layer/frame before testing
-the spatial support. A conservative support test before storage loads is an
-implementation opportunity, not a measured speedup. It must preserve the
-existing accepted motion tolerance: the source trajectory and the stored
-half-precision motion can differ. Rejecting from the source trajectory alone
-can drop valid observations. Any such optimization needs byte comparisons of
-cold, warm, moving, edge and cut sequences before performance measurement.
+Two optimizations have been implemented and measured separately. First, reject a
+candidate before its storage load when even the accepted motion discrepancy
+cannot put it inside the tent. Second, invert that conservative support interval
+to bound the old 3×3 search, preserving candidate order, and pack the history.
+The margin includes 0.05 output pixels/frame times age plus coordinate-scaled
+f32 roundoff. Removing the motion margin fails the bound tests. The actual
+stored-motion, depth, visibility and tent checks remain.
+
+Packing does not round motion to half precision. All 63,488 finite half-float
+bit patterns round-trip in the AMD GPU probe, and the expanded 32-byte diagnostic
+exports are byte-identical to the original cache. Export layout and internal
+storage format are recorded separately. Sixty-four 20-byte records make each
+frame's binding offset a multiple of 256 bytes.
+
+The first pruning stage preserves every tested HDR byte. The packed/bounded
+stage does not preserve every learned output byte: both isolated changes can
+alter arithmetic rounding, while repeating the first stage reproduces its old
+bytes. Validation therefore records the failed strict comparison and checks
+at most one positive finite half-float code step per reconstructed RGB channel,
+exact alpha/reference/mask bytes, exact cut/fresh resets, and newly computed
+perceptual and temporal scores. Fixed-filter clips remain byte-identical.
+This bounded numerical check does not change any G1–G7 tolerance and does not
+promote either previously rejected model.
 
 A more substantial design would cache a compact set of raw observations in
 surface coordinates or an output grid and reconstruct from a small support.

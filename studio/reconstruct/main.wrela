@@ -425,7 +425,12 @@ fn run(o: Options) -> Result<(), ToolError> {
         "regular_grid_tied_to_frame"
     }
     let repeat = if o.sampling == 1 { "independent_seed_plus_one" } else { "identical_seed" }
-    let metadata = f"scene={scene}\nshot={o.shot}\nwidth={o.width}\nheight={o.height}\nwarmup={o.warmup}\nreference_samples={count}\nsimulation_frame={frame}\nsimulation_fps=60\ncamera=fixture_shot_at_time_0\nformat=rgba32f_le_top_down_scene_linear_alpha1\nreference={reference_kind}\nworkers=1\nquality=fixture_declared_quality_measured_false_pace_false\ntrack=development_smoke_not_validation_or_sealed_test\nmodel={o.model}\ngate_model={o.gate_model}\nraw_model={o.raw_model}\ndecoder={o.decoder}\npatch_fast={o.patch_fast}\npatch_history={o.patch_history}\npatch_source_geometry={o.patch_source}\nraw_layout=16_frames_of_32_byte_color_motion_depth_records_frame_stride_ceil_pixels_to_8\nsampling={sampling}\nseed={o.seed}\nrepeat={repeat}\n"
+    let raw_storage = if o.decoder == 3 {
+        "20_byte_half_color_f32_motion_depth_stride_ceil_pixels_to_64"
+    } else if o.decoder == 1 { "32_byte_f32_color_motion_depth_stride_ceil_pixels_to_8" } else {
+        "unused"
+    }
+    let metadata = f"scene={scene}\nshot={o.shot}\nwidth={o.width}\nheight={o.height}\nwarmup={o.warmup}\nreference_samples={count}\nsimulation_frame={frame}\nsimulation_fps=60\ncamera=fixture_shot_at_time_0\nformat=rgba32f_le_top_down_scene_linear_alpha1\nreference={reference_kind}\nworkers=1\nquality=fixture_declared_quality_measured_false_pace_false\ntrack=development_smoke_not_validation_or_sealed_test\nmodel={o.model}\ngate_model={o.gate_model}\nraw_model={o.raw_model}\nraw_storage={raw_storage}\ndecoder={o.decoder}\npatch_fast={o.patch_fast}\npatch_history={o.patch_history}\npatch_source_geometry={o.patch_source}\nraw_layout=16_frames_of_32_byte_color_motion_depth_records_frame_stride_ceil_pixels_to_8\nsampling={sampling}\nseed={o.seed}\nrepeat={repeat}\n"
     let _ = files::write(f"{directory}/capture.txt", metadata.as_bytes()).wait()?
     Ok(())
 }

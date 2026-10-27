@@ -3,7 +3,7 @@
 // The nearest current sample supplies a constant-velocity correspondence hypothesis. This
 // deliberately limited control is not a visibility solution or the production decoder.
 use engine::view::jitter_of
-use std::gpu::{DepthTexture, FragCoord, GlobalId, Rgba16Float, Slots, Texture}
+use std::gpu::{DepthTexture, FragCoord, GlobalId, Half2, Rgba16Float, Slots, Texture}
 
 pub const HISTORY: u32 = 16
 
@@ -128,7 +128,7 @@ pub fn visible(position: vec2, depth: f32, tick: u32, shape: vec4) -> bool {
 @fragment
 pub fn reconstruct_source(
     p: FragCoord,
-    samples: [Sample],
+    samples: [PackedSample],
     width: u32,
     height: u32,
     divisor: u32,
@@ -139,10 +139,10 @@ pub fn reconstruct_source(
     trained: u32,
 ) -> vec4 {
     let d = f32(divisor)
-    let size = stride(width, height)
+    let size = packed_stride(width, height)
     let limit = vec2i(i32(width) - 1, i32(height) - 1)
     let near = clamp(vec2i(floor(p.position.xy / d + jitter_of(tick))), vec2i(0), limit)
-    let current = samples[(tick % HISTORY) * size + u32(near.y) * width + u32(near.x)]
+    let current = unpack(samples[(tick % HISTORY) * size + u32(near.y) * width + u32(near.x)])
     let radius = max(0.8, 1.25 * d / sqrt(f32(count)))
     var sum = vec3(0.0)
     var total = 0.0
@@ -155,14 +155,28 @@ pub fn reconstruct_source(
             if age < count {
                 let frame = tick - age
                 let jitter = jitter_of(frame)
-                let at = vec2i(floor((p.position.xy - velocity * f32(age)) / d + jitter))
-                for y in 0..3 {
-                    for x in 0..3 {
-                        let xy = at + vec2i(i32(x) - 1, i32(y) - 1)
+                let (lo, hi) = sample_bounds(
+                    p.position.xy,
+                    velocity,
+                    jitter,
+                    divisor,
+                    radius,
+                    age,
+                    limit,
+                )
+                for y in lo.y..(hi.y + 1) {
+                    for x in lo.x..(hi.x + 1) {
+                        let xy = vec2i(x, y)
                         if xy.x >= 0 && xy.y >= 0 && xy.x <= limit.x && xy.y <= limit.y {
-                            let sample = samples[(frame % HISTORY) * size +
-                                u32(xy.y) * width +
-                                u32(xy.x)]
+                            // Reject only samples that cannot have positive tent support,
+                            // even after the accepted stored-motion discrepancy. No storage
+                            // load or authored visibility query is needed for these visits.
+                            let proposed = (vec2(f32(xy.x), f32(xy.y)) + vec2(0.5) - jitter) * d +
+                                velocity * f32(age)
+                            if !possible_support(proposed, p.position.xy, radius, age) { continue }
+                            let sample = unpack(
+                                samples[(frame % HISTORY) * size + u32(xy.y) * width + u32(xy.x)],
+                            )
                             let position = (vec2(f32(xy.x), f32(xy.y)) + vec2(0.5) - jitter) * d +
                                 sample.geometry.xy * f32(age)
                             if abs(sample.geometry.z - depth) < 0.01 &&
@@ -238,4 +252,216 @@ pub fn kernel_factor(a: vec4, b: vec4, w: [vec4]) -> f32 {
         vec4(0.0),
     )
     exp(clamp(dot(h0, w[18]) + dot(h1, w[19]) + w[20].x, -5.0, 5.0))
+}
+
+// If an accepted velocity differs by less than .05 pixels/frame in length, neither
+// coordinate can move farther than .05*age from the proposed trajectory. The generous
+// coordinate-scaled roundoff term covers f32 multiplication/addition near pixel edges.
+// This only rejects zero-support candidates; it does not change the accepted filter.
+pub fn possible_support(proposed: vec2, at: vec2, radius: f32, age: u32) -> bool {
+    let magnitude = max(max(abs(proposed.x), abs(proposed.y)), max(abs(at.x), abs(at.y)))
+    let reach = radius + 0.05 * f32(age) + 1.0e-5 * (1.0 + magnitude)
+    let distance = abs(proposed - at)
+    distance.x <= reach && distance.y <= reach
+}
+
+@test
+fn conservative_support_keeps_motion_tolerance_and_roundoff_edges() {
+    // Dropping the accumulated motion margin rejects this genuinely contributing sample.
+    let at = vec2(3839.5, 2159.5)
+    let proposed = at + vec2(1.5, 0.0)
+    let actual = proposed + vec2(-0.049, 0.0) * 15.0
+    assert(weight(actual - at, 0.8) > 0.0)
+    assert(possible_support(proposed, at, radius: 0.8, age: 15))
+    assert(!possible_support(at + vec2(4.0), at, radius: 0.8, age: 15))
+    // Exercise both axes, every available age, cold/warm support and near/far coordinates.
+    for d in 1..5 {
+        for count in [1, 2, 4, 8, 16] {
+            let radius = max(0.8, 1.25 * f32(d) / sqrt(f32(count)))
+            for age in 0..count {
+                for origin in [vec2(0.5), vec2(191.5, 107.5), at] {
+                    for delta in [vec2(-0.049, 0.0), vec2(0.049, 0.0), vec2(0.03), vec2(-0.03)] {
+                        assert(length(delta) < 0.05)
+                        for distance in [vec2(0.0), vec2(radius * 0.999), vec2(-radius * 0.999)] {
+                            let proposed = origin + distance - delta * f32(age)
+                            let actual = proposed + delta * f32(age)
+                            if weight(actual - origin, radius) > 0.0 {
+                                assert(possible_support(proposed, origin, radius, age))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Colour was already Rgba16Float; motion and depth retain their f32 precision.
+// Five scalar words give a 20-byte record. Diagnostic Sample exports stay 32 bytes.
+pub struct PackedSample: Copy + GpuData {
+    pub color0: Half2,
+    pub color1: Half2,
+    pub motion_x: f32,
+    pub motion_y: f32,
+    pub depth: f32,
+}
+
+pub fn pack(row: Sample) -> PackedSample {
+    PackedSample {
+        color0: Half2::encode(row.color.xy),
+        color1: Half2::encode(row.color.zw),
+        motion_x: row.geometry.x,
+        motion_y: row.geometry.y,
+        depth: row.geometry.z,
+    }
+}
+
+pub fn unpack(row: PackedSample) -> Sample {
+    Sample {
+        color: vec4(row.color0.decode(), row.color1.decode()),
+        geometry: vec4(row.motion_x, row.motion_y, row.depth, 0.0),
+    }
+}
+
+/// Sixty-four 20-byte records are a multiple of the 256-byte binding alignment.
+pub fn packed_stride(width: u32, height: u32) -> u32 {
+    (width * height + 63) / 64 * 64
+}
+
+@compute(64)
+pub fn retain_packed(
+    scene: Texture<Rgba16Float>,
+    depth: DepthTexture,
+    motion: Texture<Rgba16Float>,
+    divisor: u32,
+    out: mut Slots<PackedSample>,
+    id: GlobalId,
+) {
+    if id.x < scene.width() * scene.height() {
+        let x = id.x % scene.width()
+        let y = id.x / scene.width()
+        let velocity = motion.load(x, y).xy * f32(divisor)
+        out[id] = pack(
+            Sample {
+                color: scene.load(x, y),
+                geometry: vec4(velocity, depth.load(x, y), 0.0),
+            },
+        )
+    }
+}
+
+@compute(64)
+pub fn export_packed(
+    samples: [PackedSample],
+    width: u32,
+    height: u32,
+    out: mut Slots<Sample>,
+    id: GlobalId,
+) {
+    let size = stride(width, height)
+    if id.x < size * HISTORY {
+        let frame = id.x / size
+        let pixel = id.x % size
+        out[id] = if pixel < width * height {
+            unpack(samples[frame * packed_stride(width, height) + pixel])
+        } else { Sample { color: vec4(0.0), geometry: vec4(0.0) } }
+    }
+}
+
+// Invert the proposed position to restrict the old 3x3 search, preserving its order.
+// The interval includes stored-motion tolerance and f32 roundoff. Inner checks remain.
+pub fn sample_bounds(
+    at: vec2,
+    velocity: vec2,
+    jitter: vec2,
+    divisor: u32,
+    radius: f32,
+    age: u32,
+    limit: vec2i,
+) -> (vec2i, vec2i) {
+    let d = f32(divisor)
+    let shift = velocity * f32(age)
+    let center = vec2i(floor((at - shift) / d + jitter))
+    let magnitude = max(abs(at.x), abs(at.y)) + 2.0 * d + max(abs(shift.x), abs(shift.y))
+    let reach = radius + 0.05 * f32(age) + 1.0e-5 * (1.0 + magnitude)
+    let low = vec2i(ceil((at - shift - vec2(reach)) / d + jitter - vec2(0.5)))
+    let high = vec2i(floor((at - shift + vec2(reach)) / d + jitter - vec2(0.5)))
+    (max(max(center - vec2i(1), low), vec2i(0)), min(min(center + vec2i(1), high), limit))
+}
+
+@test
+fn packed_history_aligns_without_rounding_motion_or_depth() {
+    for divisor in 1..5 {
+        let n = (192 / divisor) * (108 / divisor)
+        let size = packed_stride(192 / divisor, 108 / divisor)
+        assert(size >= n && size - n < 64 && (size * 20) % 256 == 0)
+    }
+    let row = Sample {
+        color: vec4(Half2 { bits: 0x00018001 }.decode(), Half2 { bits: 0x7bff0400 }.decode()),
+        geometry: vec4(1.24951171875, -0.01234567, 0.1234567, 0.0),
+    }
+    let stored = unpack(pack(row))
+    assert(stored.color == row.color && stored.geometry == row.geometry)
+    assert(stored.geometry.x != Half2::encode(vec2(row.geometry.x)).decode().x)
+}
+
+@test
+fn source_sample_bounds_keep_every_contributing_old_candidate() {
+    for divisor in 1..5 {
+        let d = f32(divisor)
+        let limit = vec2i(i32(3840 / divisor) - 1, i32(2160 / divisor) - 1)
+        for count in [1, 16] {
+            let radius = max(0.8, 1.25 * d / sqrt(f32(count)))
+            for age in 0..count {
+                for phase in [0, 7, 15] {
+                    let jitter = jitter_of(phase)
+                    for speed in [-32.0, -0.625, 0.0, 0.375, 32.0] {
+                        let velocity = vec2(speed, 0.0)
+                        for at in [vec2(0.5), vec2(191.5, 107.5), vec2(3839.5, 2159.5)] {
+                            let old = vec2i(floor((at - velocity * f32(age)) / d + jitter))
+                            let (lo, hi) = sample_bounds(
+                                at,
+                                velocity,
+                                jitter,
+                                divisor,
+                                radius,
+                                age,
+                                limit,
+                            )
+                            for y in 0..3 {
+                                for x in 0..3 {
+                                    let xy = old + vec2i(i32(x) - 1, i32(y) - 1)
+                                    if xy.x >= 0 &&
+                                        xy.y >= 0 &&
+                                        xy.x <= limit.x &&
+                                        xy.y <= limit.y {
+                                        for delta in [
+                                            vec2(-0.049, 0.0),
+                                            vec2(0.049, 0.0),
+                                            vec2(0.03),
+                                            vec2(-0.03),
+                                        ] {
+                                            let actual = (vec2(f32(xy.x), f32(xy.y)) +
+                                                vec2(0.5) -
+                                                jitter) *
+                                                d +
+                                                (velocity + delta) * f32(age)
+                                            if weight(actual - at, radius) > 0.0 {
+                                                assert(
+                                                    xy.x >= lo.x &&
+                                                        xy.x <= hi.x &&
+                                                        xy.y >= lo.y &&
+                                                        xy.y <= hi.y,
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

@@ -1104,3 +1104,69 @@ Learned capture source SHA-256: `be16076190ee333584d739b77b8bdaf123c8beaca4bf4c5
 | --- | --- | --- |
 | λ0.0 | `raw-kernel-1793075359061891164` | `168d11903b4bedc831ca3816275338ae0d96fa17d308389f7454bc406c1921bc` |
 | λ0.25 | `raw-kernel-1793075364934390340` | `16d099f82d3dda4e447bbdf8668d4060bff3276a2562acb28cfbadf9ab9999d6` |
+
+
+## Sample-search cost and lossless observation packing
+
+Starting at `0cc8b17c`, two measured implementation stages reduce sample-search
+cost without retraining or promoting either raw-kernel model. Stage A rejects
+candidates before loading their observations when even the accepted motion error
+cannot give them positive support. Stage B bounds the existing candidate loops
+and replaces 32-byte records with 20-byte records. Colour was already Rgba16Float;
+motion and depth remain f32. The horizon stays sixteen frames, source inputs stay
+geometry-only, and the original 32-byte diagnostic export remains available.
+
+Stage A reproduces 27 clips / 9,672 image, reference and mask files byte for byte,
+including cuts and the no-reset negative. It also passes four 32-frame high-resolution
+command/pipeline/final-display comparisons against immutable original builds.
+
+Stage B's first strict HDR comparison **failed** on learned output. This failure is
+retained. Packed-only and bounded-loop-only isolation each changes learned rounding;
+repeating Stage A remains exact. The raw cache export is byte-identical across all
+four scales, and an AMD GPU probe round-trips all 63,488 finite half-float patterns.
+The bound tests fail when their accumulated motion margin is removed; the precision
+test fails when motion is incorrectly rounded to half. These controls separate stored
+information from arithmetic/output rounding.
+
+Before completing the audit, the revised diagnostic plan requires at most one
+positive finite half-float code step per reconstructed RGB channel, exact alpha,
+references and masks, and fresh perceptual/temporal comparisons. It does not alter
+any G1–G7 gate. All 27 clips / 9,672 files meet it; 7,522 files are byte-identical.
+The fixed-filter clips are exact. Cut/fresh images match exactly across all four
+scales, while suppressing the reset changes all eight corresponding images.
+
+Both models are re-scored on every frame/scale of the eight evaluation cases.
+Maximum per-frame absolute score changes are FLIP
+0.00004244, LPIPS
+0.00004542, and PSNR
+0.00015775 dB.
+Maximum aggregate opaque temporal MAE change is
+0.000000579.
+The declared diagnostic limits are 0.0001 FLIP/LPIPS, 0.01 dB PSNR, and
+0.00001 opaque temporal MAE. Reference/mask hashes, metric definitions and learned
+LPIPS weights match. All other temporal categories remain in the record.
+
+The final displayed frames at 1080p and 4K match exactly for fixed and learned
+timing fixtures. The whole `wrela same` result is false because cache layout and
+pipelines change; only its final screen comparison is used here. This complements
+the continuous 192×108 HDR audit and is not a full-resolution sequence audit.
+
+[Browser measurements](bench.md#2026-10-26-amd-sample-pruning-and-packed-history)
+show useful implementation gains, but latency remains far beyond G6. The 4K fixture's
+reported allocations now fit below 384 MiB; complete browser/driver memory and
+production performance remain unproven. Packing existing observations is not G4's
+16× learned appearance compression. No new quality, population, G3, G5 or G7 success
+is implied. Both models remain rejected and G1–G7 remain unchanged and unmet.
+
+The remaining search still considers sixteen frames for each layer. The next
+architectural experiment should test a compact cache of observations in surface
+coordinates, with explicit collisions, age and visibility accounting, or amortized
+filter evaluation. Broader training alone cannot remove this measured cost.
+
+Evidence on Pop!_OS: `build/neural-evidence/raw-kernel-prune-v1/manifest.json` and
+`build/neural-evidence/raw-kernel-packed-v1/manifest.json`. Packed capture source
+SHA-256 `77db68f801b6de876cbcf1a45821ec9827b41eed48271b0567e63c66b41ff9a9`; timing source
+`5673e31d9f1fc73787d260582c712a2bd265b03144cbc2390f14596d96894a89`; external scripts bundle
+`62469e6afbbd6dbb12603b0adee2bcf76cf51010b515744674ea9ad65cbee8c3`.
+Focused checks, changed-source formatting and allow-list results are retained.
+This is an implementation checkpoint, not full-suite or PR readiness.

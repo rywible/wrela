@@ -1315,3 +1315,56 @@ The learned 4K attempt with 240 warmup + 240 measured frames timed out at the ho
 **G6 fails.** Decoder latency alone is far beyond the 1 ms/2 ms p95 targets, and the 4K fixture already exceeds the 384 MiB allocation limit. The 336-byte model excludes the sixteen-frame history and other buffers. Source geometry is extra full-stack work, not free fixed-input information. Capturing/training/scoring elapsed times are not renderer latency or G7 evidence.
 
 Quality, exact command lines, environment/build hashes, all successful reports, memory records, timeout and retry plans are retained in `build/neural-evidence/raw-source-v1/manifest.json`. [The development record](neural-rendering-progress.md#raw-sample-kernels-clearer-detail-rejected-quality-and-cost) records why both trained candidates remain experimental.
+
+
+## 2026-10-26 AMD sample pruning and packed history
+
+Same Pop!_OS AMD Ryzen 5 5500U / Radeon Graphics (RADV RENOIR, PCI 1002:164c),
+Mesa 26.1.6-1pop0~1787580452~24.04~a5619ea, Chrome 154.0.8037.57,
+Wrela 0.9.0/compiler `de9b81e52a7747870dfbd5223cb8aeb41e584d23`.
+Source base `0cc8b17c`. Sequential browser profiles, one worker, analytic case 1,
+4× linear reduction, 240 measured frames. Warmup is 240 frames except learned 4K,
+which uses 32 in every listed stage to match the previous successful diagnostic.
+No owned capture, training, scoring or other profiling overlaps these measurements.
+
+Stage A rejects impossible support before loading a raw sample or querying visibility.
+Stage B adds conservative loop bounds and stores already-half-float colour in a 20-byte
+record while keeping f32 motion/depth. Models, observations and the sixteen-frame
+horizon are unchanged. The learned timing fixture uploads the frozen λ0.25 model
+(336 bytes). Retain and display are separate from the decoder label.
+
+| Stage / decoder / output | Decoder median / p95 ms | Retain median / p95 ms | Fixture GPU span median / p95 ms | Reported GPU MiB |
+| --- | ---: | ---: | ---: | ---: |
+| original / fixed / 1920x1080 | 60.356 / 60.471 | 0.355 / 0.378 | 61.584 / 61.701 | 100.86 |
+| original / fixed / 3840x2160 | 241.246 / 241.680 | 1.419 / 1.458 | 245.866 / 246.317 | 403.42 |
+| original / learned / 1920x1080 | 67.676 / 67.809 | 0.356 / 0.381 | 68.891 / 69.037 | 100.86 |
+| original / learned / 3840x2160 | 270.598 / 271.082 | 1.421 / 1.506 | 275.192 / 275.713 | 403.42 |
+| prune / fixed / 1920x1080 | 25.452 / 25.598 | 0.355 / 0.387 | 26.665 / 26.816 | 100.86 |
+| prune / fixed / 3840x2160 | 101.716 / 102.272 | 1.419 / 1.475 | 106.308 / 106.867 | 403.42 |
+| prune / learned / 1920x1080 | 33.646 / 33.833 | 0.351 / 0.382 | 34.860 / 35.032 | 100.86 |
+| prune / learned / 3840x2160 | 134.491 / 135.238 | 1.421 / 1.497 | 139.080 / 139.802 | 403.42 |
+| packed / fixed / 1920x1080 | 20.778 / 21.118 | 0.270 / 0.291 | 21.899 / 22.226 | 77.12 |
+| packed / fixed / 3840x2160 | 83.069 / 84.406 | 1.126 / 1.157 | 87.393 / 88.720 | 308.50 |
+| packed / learned / 1920x1080 | 27.207 / 27.541 | 0.269 / 0.294 | 28.338 / 28.659 | 77.13 |
+| packed / learned / 3840x2160 | 108.796 / 110.106 | 1.128 / 1.208 | 113.113 / 114.418 | 308.50 |
+
+These are unpaired short diagnostic runs, not production frames, p99 measurements
+or a 20-minute thermal/stability result. GPU bytes are instrumented allocation totals,
+not complete browser/driver memory. The raw ring itself shrinks by 37.5% at these
+aligned dimensions. **G6 still fails on latency**; a fixture allocation below 384 MiB
+does not establish the complete 4K memory gate. The models also retain their quality
+failures; no G1–G7 gate changes.
+
+Stage A preserves all 9,672 checked image/reference/mask files and all four
+full-size command/display comparisons. Stage B preserves raw exported observations,
+references and masks exactly, but some learned HDR output channels change by one
+half-float code step. Fresh scores meet the declared numerical bounds. All four final
+displayed frames at 1080p/4K are byte-identical; command hashes/pipeline inventories
+intentionally change with the new cache/retain/export implementation. This final-screen
+check does not cover every full-size HDR frame. See [the development record](neural-rendering-progress.md#sample-search-cost-and-lossless-observation-packing).
+
+Evidence on Pop!_OS: `build/neural-evidence/raw-kernel-prune-v1/manifest.json`
+and `build/neural-evidence/raw-kernel-packed-v1/manifest.json`. Timing source archives:
+Stage A `6b998afb04ef602490a2cef4b7368c02fbb97a8425c6d3b1dcf1d54235eafe28`;
+Stage B `5673e31d9f1fc73787d260582c712a2bd265b03144cbc2390f14596d96894a89`.
+Every profile includes its exact build hash, command, allocation record and workload.
