@@ -600,6 +600,158 @@ scripts `9aacd3d0f9b0ac115e82a5ce99d1a2b4b9be2f5c081042a6f2da11a032cfc41a`.
 No Wrela runtime or shipped weights change. Focused allow-list and diff
 checks pass; no full-suite or PR-readiness claim. All original goals remain.
 
+## Local optical fit: regression against calibration
+
+Learning local geometry and materials at the same 107,672-byte capacity
+regresses against the two-parameter calibration. Across all 256 stored
+directions, coverage MAE rises
+0.006854065→0.007795158
+(13.73%). All five stored mean material errors worsen. Off-grid
+coverage worsens 15.91%, and all five off-grid means worsen too.
+**Reject this local fit; retain global calibration as the best model at
+this budget.** The source-only control is also retained.
+
+### Actual packed fit and checks
+
+The fit begins byte for byte from the calibrated 1,897-group model.
+It optimizes position XYZ, local pattern offset XY, five logarithmic
+Cholesky diagonals, ten off-diagonal entries, logarithmic optical area,
+square-root albedo RGB, normal XYZ and crown depth. The model remains
+28 half values per group, plus the same 32-byte header and 1,408-byte wood
+description. Half conversion is active from the first step.
+
+Projected covariance uses HLLᵀHᵀ; optical transmission uses the
+exponential of accumulated density. Contributions are centre sorted and
+tested against exact source wood at each sampled point. Actual material
+toward values follow the measured half-target rounding. Packed decoding
+is independently checked; there is no decoder-only covariance clamp to
+hide invalid geometry. Bounds and every learning rate are in the retained
+plan.
+
+Seed 5483 selects one of the 256 stored directions uniformly each step.
+Each batch contains eight uniform pixels and eight with target coverage
+above 0.01, with exact mixture importance correction. Each pixel uses a
+4×4 independently jittered grid. The weighted squared-error loss is the
+same as calibration: weights 8, 64, 8, 16 and 1600 for coverage, mean RGB,
+mean normal, toward and crown depth. Adam rates decay to 10% over exactly
+4,096 steps. The final checkpoint is fixed by step count; no off-grid
+label or validation-selected stopping is used.
+
+Initial packed Torch and independent NumPy point decoders differ by at
+most 3.54e-06,
+below 2e-5. All eight smooth double-precision finite-difference checks
+pass; the largest absolute discrepancy is
+1.41e-09. A zeroed
+optical-area gradient fails the control. Packing/rounding are disabled
+for that smooth check. Sorting, truncation and wood visibility still
+have discontinuities; this audit does not prove exact derivatives of
+their integrated effects.
+
+After fitting, initial/final Torch point checks are at most
+3.84e-06;
+independent NumPy integration versus the CPU raster is at most
+4.68e-08.
+The initial raster repeats calibration's checked outputs byte for byte.
+Projected covariances are positive definite for all 256 directions:
+minimum eigenvalue 2.53e-06,
+maximum condition number 240.111.
+Wrong-axis and zero-mass controls detect failures. Every decoded image
+passes the physical moment bounds.
+
+The run changes 52,826 of 53,116 half values and takes
+142.921 s elapsed wall time
+on PyTorch 2.5.1+cpu with four threads, including lazy wood-query
+acceleration. It excludes the earlier calibration search, source/reference
+generation and validation. Evaluation of all 256 views takes
+183.343 s including CPU wood,
+rasterization, scoring and writes. Neither time is GPU latency or a
+complete G7 pipeline result. These are learned explicit primitives,
+not neural-network weights.
+
+### Full-corpus quality
+
+All 256 stored directions use nominal 16×16 spatial sampling. Public
+integration checks: 8/8 16to32; public quality uses
+32×32 samples. That eight-direction check
+does not prove convergence for all nominal views.
+
+All stored directions, mean absolute moment errors:
+
+| Control | Coverage | Linear RGB moment | Normal moment | Toward moment | Crown-depth moment |
+|---|---:|---:|---:|---:|---:|
+| Fixed BC | 0.003059909 | 0.001120013 | 0.028233120 | 0.002727373 | 0.000138883 |
+| Older prefix fit | 0.010956385 | 0.001180598 | 0.013913842 | 0.007334720 | 0.000369860 |
+| Source optical | 0.008003161 | 0.000852460 | 0.010762640 | 0.005510278 | 0.000251127 |
+| Global calibration | 0.006854065 | 0.000733637 | 0.009609885 | 0.004511756 | 0.000249948 |
+| Local optical fit | 0.007795158 | 0.000847792 | 0.010233790 | 0.005143842 | 0.000276841 |
+
+Four public off-grid directions, denser integration:
+
+| Control | Coverage | Linear RGB moment | Normal moment | Toward moment | Crown-depth moment |
+|---|---:|---:|---:|---:|---:|
+| Fixed BC | 0.025882901 | 0.002766674 | 0.034725454 | 0.015425762 | 0.000571803 |
+| Older prefix fit | 0.012674492 | 0.001354021 | 0.015474488 | 0.008360843 | 0.000417555 |
+| Source optical | 0.008965747 | 0.000963805 | 0.011689313 | 0.006073518 | 0.000276902 |
+| Global calibration | 0.007715352 | 0.000822936 | 0.010396534 | 0.004986157 | 0.000279038 |
+| Local optical fit | 0.008942803 | 0.000970206 | 0.011246962 | 0.005778944 | 0.000313521 |
+
+Only 1/5 stored screens pass; 5/5 off-grid screens pass.
+Stored coverage is 2.5475× BC on the mean and 3.6196× in the
+worst view. The stored albedo tail ratio is
+1.1051, exceeding the
+unchanged 1.10 limit and losing calibration's albedo pass. The original
+mean≤1.05×BC and worst-view≤1.10×BC rules remain unchanged.
+
+![The regressed local fit compared with its source and calibrated controls](figures/neural-appearance-learned-spatial.png)
+
+### Training-objective diagnostic
+
+The full 256-view weighted MSE also worsens:
+0.012722495→0.015157969.
+This is not merely a tradeoff between the optimized MSE and reported MAE.
+
+[Nicolet et al., Recursive Control Variates for Inverse Rendering
+(SIGGRAPH 2023)](https://research.nvidia.com/labs/rtr/publication/nicolet2023recursive/)
+identify problems from differentiating losses with noisy inputs.
+That motivates a separate diagnostic here; no paper implementation,
+control-variate algorithm, dataset, weights or performance result is used.
+
+For a fixed target t, a random prediction Z satisfies
+E[(Z−t)²]=(E[Z]−t)²+Var(Z). For independent predictions A and B with
+the same mean, E[(A−t)(B−t)]=(E[Z]−t)². This algebra removes the prediction
+variance term from the expected loss; it does not establish unbiased
+gradients through hard visibility, sorting or packing.
+
+The post-result diagnostic uses four fixed stored anchors, 16 fixed
+importance-weighted pixels per anchor and 128 independent 4×4 jittered
+estimates. Models use common random points; adjacent repeat pairs are
+independent for the cross loss. All points, wood queries and predictions
+are retained. These 64 pixels are a conditional diagnostic, not corpus
+confidence or a causal training ablation.
+
+Calibrated→fitted self loss:
+0.015436596→0.016293264;
+independent-pair cross loss:
+0.014242917→0.015130818.
+The variance penalty changes only
+0.001218411→
+0.001182623. Both losses get worse;
+this does not support blaming the variance term alone for the regression.
+
+Next, repeat the same initialization, seed, samples and 4,096-step budget
+with all optimizer step sizes reduced tenfold. This isolates step size
+before changing the representation, objective or sample budget. Retain
+both this failed fit and calibration; require actual packed quality gains.
+Production materials, light response, temporal behavior, footprints,
+resident memory, browser timing and all original G1–G7 targets remain.
+
+Evidence: `build/neural-evidence/appearance-learned-spatial-v1/manifest.json`,
+SHA-256 `7d534b610dfb2e276b0abe814ed0ca0916e732c6f1be160cc9ed25ebd8ee1ea8`;
+source `b333ba10f3c1fb3902c52a47ec7e1c21343b9d45af25cdb90bc2640003e7a453`;
+scripts `7f2aedaab046238caf435164bbe5d364d4a69ccf9af6139b3a680d6ed0c3a7ab`.
+No Wrela runtime or shipped weights change. Focused allow-list and diff
+checks pass; no full-suite or PR-readiness claim.
+
 ## Earlier untrained checkpoint: decision and reproducibility
 
 Retain these source-derived controls when fitting any compact learned

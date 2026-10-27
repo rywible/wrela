@@ -1779,3 +1779,24 @@ but 2.2400× BC. Stored/off-grid screens: 2/5 and
 The calibrated model remains rejected. No G1–G7 success.
 
 Evidence manifest `fd84699ae12d2f5a4cc49e3ad89f13bc0a57e17f46ef7627197f1697845a891b`.
+
+
+## Local optical fit regression (Pop!_OS AMD, 2026-10-27)
+
+[Method, controls, full results and loss diagnostic](neural-source-primitives.md#local-optical-fit-regression-against-calibration).
+Ryzen 5 5500U; PyTorch 2.5.1+cpu, four threads; NumPy 2.2.6 and checked
+C++17/OpenMP CPU evaluator. Source references from Radeon/RADV GPU.
+No GPU primitive runtime.
+
+Actual payload stays 107,672 bytes. Fixed 4,096-step seed 5483 fit takes
+142.921 s CPU-work wall time including lazy wood acceleration,
+excluding prior calibration/source/reference generation and validation.
+All-256 final nominal decode/wood/scoring/writes:
+183.343 s. These are not G7 pipeline or GPU timing results.
+
+Stored coverage MAE 0.007795158, 13.73% worse than calibration
+and 2.5475× BC. All five stored/off-grid means regress versus calibration;
+only 1/5 stored screens pass. 8/8 16to32 public sampling checks pass.
+Dense weighted MSE also worsens. Reject the local fit and retain calibration.
+
+Manifest `7d534b610dfb2e276b0abe814ed0ca0916e732c6f1be160cc9ed25ebd8ee1ea8`. No runtime, resident-memory or G1–G7 success.

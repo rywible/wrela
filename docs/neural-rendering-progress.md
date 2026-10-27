@@ -2049,3 +2049,30 @@ scripts `9aacd3d0f9b0ac115e82a5ce99d1a2b4b9be2f5c081042a6f2da11a032cfc41a`, unde
 `build/neural-evidence/appearance-spatial-calibration-v1/` on Pop!_OS.
 Next is a local packed fit against both source-only and calibration
 controls. All original targets remain intact.
+
+
+## Local optical fit rejected after complete scoring
+
+A [fixed packed local fit](neural-source-primitives.md#local-optical-fit-regression-against-calibration)
+from calibration regresses coverage
+0.006854065→0.007795158
+(13.73%) across all 256 stored views. All five stored/off-grid
+mean errors worsen against calibration. Only 1/5 stored screens pass;
+coverage is 2.5475× BC. Retain calibration as the best at this budget.
+
+The exact 107,672-byte model passes independent decoders, all eight smooth
+gradient checks, covariance/physical controls and 8/8 16to32 public
+integration checks. 4,096-step fit: 142.921 s CPU-work
+wall time, excluding earlier calibration/source/reference generation
+and validation. No GPU runtime or G1–G7 success.
+
+Dense MSE worsens too. A 64-pixel, 128-repeat diagnostic finds both self
+and independent-pair losses worsen; it does not establish sampling
+variance as the cause. Next is the same fixed experiment with tenfold
+smaller optimizer steps, preserving all baseline and failed evidence.
+
+Evidence manifest `7d534b610dfb2e276b0abe814ed0ca0916e732c6f1be160cc9ed25ebd8ee1ea8`;
+source `b333ba10f3c1fb3902c52a47ec7e1c21343b9d45af25cdb90bc2640003e7a453`;
+scripts `7f2aedaab046238caf435164bbe5d364d4a69ccf9af6139b3a680d6ed0c3a7ab`, under
+`build/neural-evidence/appearance-learned-spatial-v1/` on Pop!_OS.
+All original goals remain intact; no full-suite/PR readiness claim.

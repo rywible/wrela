@@ -322,14 +322,27 @@ model and 37.44% below the older fitted prefix model. Stored coverage
 is still 2.24× BC; 2/5 stored screens pass.
 The calibrated model remains rejected. This supplies a stronger conventional baseline for a local fit.
 
+## Local optical fitting regression
+
+[The 4,096-step local fit](neural-source-primitives.md#local-optical-fit-regression-against-calibration)
+passes decoder and smooth-gradient controls but worsens all five stored
+and off-grid mean errors against calibration. Stored coverage rises
+13.73% to 0.007795158; only one stored screen
+passes. Dense weighted MSE also worsens. Retain calibration as the best
+model at this budget; reject the new fit.
+
+A fixed noisy-loss diagnostic finds both self and independent-pair losses
+worsen, with only a small variance-penalty reduction. That evidence does
+not support blaming sampling variance alone.
+
 ## Next decision
 
-Fit local position, covariance, density and material parameters from
-the calibrated 1,897-group optical model at the same actual packed
-capacity. Keep both source-only and calibrated controls. Use stored
-directions for fitting and a fixed training budget; report every
-stored/public failure. Full source geometry, wood, sorting, tiling,
-caches and scratch remain part of eventual runtime accounting.
+Repeat the calibrated initialization, seed, samples and 4,096-step
+budget with tenfold smaller optimizer steps. This isolates step size;
+retain the current failed fit and source/calibrated controls. Require
+actual packed quality gains before spending more on this training path.
+Full source geometry, wood, sorting, tiling, caches and scratch remain
+part of eventual runtime accounting.
 
 Keep fitted-view quality, unseen views and sampling/footprint tests separate.
 A small packed payload alone does not meet G4. Complete production materials,

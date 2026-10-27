@@ -183,3 +183,13 @@ audited Gaussian-alpha and optical-depth mappings. Those source-derived
 statistics and overlap approximations are our own experiment, not a
 paper implementation. No implementation, assets, weights or hardware
 performance claim is imported. See [the measured controls and limits](neural-source-primitives.md).
+
+
+The local optical-fit loss diagnostic cites [Nicolet et al., Recursive
+Control Variates for Inverse Rendering (SIGGRAPH 2023), author
+abstract](https://research.nvidia.com/labs/rtr/publication/nicolet2023recursive/)
+for the problem of noisy inputs to differentiated losses. Our fixed
+sampling diagnostic uses the elementary variance decomposition and an
+independent-pair product to compare losses. It does not implement that
+paper's recursive control variate or copy code, assets, weights or hardware
+claims. See [the diagnostic and its limits](neural-source-primitives.md#training-objective-diagnostic).
