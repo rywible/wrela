@@ -1953,3 +1953,159 @@ One static64px tree, two public views, four known lights and three backgrounds:
 no motion, family, unseen-light/individual,8–512px or sustainedG6 result.
 G1–G7 remain unchanged and unmet.
 Manifest SHA-256: `7d8a6a58ed568e092da0264b6b5b770fd22235a276b6fc9cad69984277e5e285`.
+
+
+## Compiled leaf programs: quality survives, repeated decoding does not
+
+**Decision: retire per-fragment compiled leaf decoding as the G4 runtime architecture.**
+A 3,328-byte source table preserves all 24 static numeric quality cases against all
+three same-input conventional controls. That is a compact description, not an
+end-to-end rendering win: complete GPU p95/p99 are more than twice every current
+control, and complete requested memory improves only 9.4–12.6% against packed masks.
+Whole-client physical observations establish no residency saving. Two conservative
+coverage-cache optimizations preserve the images but fail to fix cost.
+
+The frozen 1,897-patch model is unchanged. Its established captures pass only 8/24
+numeric cases against each current control; mean metrics cannot rescue those failed
+cases. No training, new shaded truth or reference infrastructure was added.
+
+Solo AMD Pop!_OS work started 2026-10-27 21:49:15 UTC. The initial four-way comparison
+finished at 21:55:41 UTC, about 6m27s. Decision at 22:25:44 UTC, about 36m30s, after
+exactly two optimization experiments. Both the assessment and decision fit two hours.
+
+### What was executable and compared
+
+All paths use the same stored source cards, seed, authored leaf functions, wood,
+materials, cameras, lights and 16 independent visibility samples per output pixel.
+The conventional methods receive the same useful source information as the compact
+program. Nothing derived from reference images is supplied at runtime.
+
+- program-raster: original forward renderer with the full 1,048,576-byte RGBA8 atlas.
+- program-atlas: identical full atlas behind the established integer surface-ID renderer.
+- program-masks: 262,144-byte packed coverage atlas, with source tissue evaluated only
+  when resolved, behind the same surface-ID renderer.
+- program-cached: partially evaluate authored leaf geometry into 832 u32 words.
+  Decode the original four quantized texels and bilinear interpolation per lookup.
+- program-regions4: first follow-up, add a 4,096-byte conservative two-bit predicate
+  cache. Each 4x4 region includes a one-texel support halo. Regions entirely above or
+  below half bypass field evaluation; mixed regions retain the four-texel decoder.
+- program-regions1: second and final follow-up, one classification per bilinear cell,
+  using its four support texels; 65,536 cache bytes plus the same source table.
+
+The compiled program is an original partial evaluation of
+[the authored sprig](../engine/plant.wrela), implemented in
+[leaf_program.wrela](../studio/appearance/runtime/leaf_program.wrela).
+[Source control](../studio/appearance/runtime/source_control.wrela) supports the
+matched atlas and program paths. The initial diagnostic remains executable but is
+not promoted as a production architecture. Failed predicate implementations are
+preserved in exact evidence archives and removed from retained code.
+
+### Shaded quality, silhouettes and bounded verification
+
+Reuse the completed AA64 references: two public views, four lights, three backgrounds,
+64x64 output, established tone mapping and pinned FLIP/LPIPS preprocessing.
+This is one static asset, not unseen-family, motion, human, or natural 8–512px validation.
+
+| Variant | Mean PSNR dB | FLIP | LPIPS | Coverage MAE | Numeric cases vs each control |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| program-raster | 40.294314 | 0.01300185 | 0.00249142 | 0.01005954 | 24/24 |
+| program-atlas | 40.294466 | 0.01300426 | 0.00249026 | 0.01005954 | 24/24 |
+| program-masks | 40.295971 | 0.01300193 | 0.00249104 | 0.01005954 | 24/24 |
+| program-cached | 40.293874 | 0.01303834 | 0.00247681 | 0.01007283 | 24/24 |
+| program-regions4 | 40.293874 | 0.01303834 | 0.00247681 | 0.01007283 | 24/24 |
+| program-regions1 | 40.293874 | 0.01303834 | 0.00247681 | 0.01007283 | 24/24 |
+
+Worst silhouette boundary p99 remains 2.0 pixels for every path. Both predicate-cache
+variants match all eight program RGBA outputs byte for byte. The program is not
+bit-identical to the original atlas: coverage MAE rises from 0.01005954 to 0.01007283.
+The original forward and packed controls reproduce 16 previous images exactly.
+
+Because distant images do not exercise resolved tissue, a bounded GPU conformance
+check compares all 262,144 original atlas texels across all four channels. Different
+texel counts are [356, 0, 784, 4534] for R/G/B/A; every difference is at most one
+8-bit step, with zero half-threshold crossings at texel centers. This does not imply
+identical interpolated coverage: rendered differences remain measured above.
+It verifies the decoder against its source atlas, not against new rendered truth.
+
+The first predicate cache correctly classifies 85.5957% of all bilinear cells with
+zero false classifications in a complete support-texel check. Its lack of speedup
+therefore justified the final finer-cache experiment. Neither experiment improves
+saturated GPU cost. No unmeasured explanation involving driver optimization,
+divergence or power state is asserted.
+
+### Complete rendering cost and memory
+
+AMD RADV RENOIR, PCI1002:164c, Ryzen5 5500U, Mesa26.1.6, Chrome154.0.8037.57;
+Wrela0.9.0 compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23. Sequential builds,
+captures, profiles and scoring; one browser worker, 60 warmup and 240 measured frames.
+
+GPU spans include source geometry, decoding, wood, depth ordering/visibility,
+attribute reconstruction, shading, sample resolve and final composite. There is no
+optical-patch sort in these depth-tested source paths. CPU includes camera/light
+updates, source parameters, uploads and command recording. Forward uploads 1,120
+bytes/frame; all deferred paths upload 768. Source edits and cache rebuilds are not
+exercised each frame. Initialization is outside steady timing but inside requested
+allocation peaks. CPU-to-final-GPU completion includes browser/driver notification;
+it is not input-to-photon latency.
+
+| Variant | Paced GPU p95/p99 ms | Saturated GPU p95 ms | CPU p99 ms | CPU to final GPU p95/p99 ms | Engine appearance/scratch bytes | All requested live/peak GPU bytes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| program-raster | 1.161/1.190 | 0.410 | 0.515 | 4.565/4.719 | 2,690,992 | 3,100,592/3,116,976 |
+| program-atlas | 1.067/1.076 | 0.455 | 0.660 | 4.570/4.762 | 2,428,852 | 2,838,452/2,854,836 |
+| program-masks | 1.039/1.043 | 0.353 | 0.710 | 4.105/4.342 | 1,642,420 | 2,052,020/2,068,404 |
+| program-cached | 2.411/2.469 | 1.489 | 0.739 | 5.151/5.426 | 1,383,604 | 1,793,204/1,809,588 |
+| program-regions4 | 2.436/2.852 | 1.494 | 0.727 | 4.302/4.837 | 1,387,700 | 1,797,300/1,813,684 |
+| program-regions1 | 2.345/2.405 | 1.493 | 0.577 | 4.422/4.805 | 1,449,140 | 1,858,740/1,875,124 |
+
+All requested bytes include source geometry, caches, fallback/dummy resources,
+scratch, targets, rings and output. Engine-only excludes the same 409,600 common
+bytes: output65,536, upload262,144, uniforms65,536 and screen16,384. No workgroup
+shared array is declared. Register allocation, spills and driver caches are not
+attributed to the asset; whole-client observations below include their physical
+context, without claiming per-asset attribution.
+
+| Variant | DRM resident VRAM bytes | DRM resident GTT bytes | Browser-group PSS bytes |
+| --- | ---: | ---: | ---: |
+| program-raster | 17,309,696 | 9,838,592 | 479,571,968 |
+| program-atlas | 17,641,472 | 9,936,896 | 480,757,760 |
+| program-masks | 17,641,472 | 9,838,592 | 483,062,784 |
+| program-cached | 17,653,760 | 10,133,504 | 482,864,128 |
+| program-regions4 | 17,391,616 | 10,035,200 | 485,972,992 |
+| program-regions1 | 17,391,616 | 10,133,504 | 485,391,360 |
+
+Physical counters are snapshots, not transient physical peaks. UMA VRAM/GTT can
+overlap and are not added. Requested allocation is not interchangeable with
+physical residency. These snapshots do not establish a physical memory advantage.
+
+The smallest program saves 12.61% of all requested live GPU bytes against packed
+masks, but costs 2.32x GPU p95 and 2.37x p99. The final cache saves only 9.42% and
+costs 2.26x/2.31x. Against the larger original forward atlas the program variants
+still exceed 2.0x both tails. Saturated p95 is approximately 1.49ms for every program
+variant versus 0.35–0.46ms for controls. These are individual complete measurements,
+not repeated paired promotion evidence. The large failures in both pacing modes
+justify rejection without additional tuning or promotion runs.
+
+### Next architecture-level bet and evidence
+
+Compile source fields into a bounded cache of hardware-filtered working tiles.
+Use known visibility and sampling footprints to choose what is resident; charge
+decoding, misses, rebuilds, page tables, scratch and fallback data to total cost.
+This is an unproven next representation, not a result of this block. A conventional
+tile compiler gets the same source information; add a learned residual only if a
+specific rendered error or cost remains that it can measurably improve.
+
+The immediate missing evidence is whether a bounded tile working set can retain
+filtered silhouette quality while beating the existing full/packed atlases after
+cache cost. The shortest next experiment is one fixed-budget cache with warm and
+forced-miss frames against those same controls. No further material-moment fitting
+is justified here. G1–G7 stay unchanged and unmet.
+
+Proportional verification: format and type checks pass; all eight frozen output
+images, model hash and native memory counts are unchanged. Retained implementation
+matches the initially measured program source; failed cache variants remain archived.
+No full-suite or all-scale validation claim.
+
+All six source/build variants, raw frames, quality cases, conformance captures,
+requested allocations, DRM/PSS snapshots, decision and unsuccessful results are in
+build/neural-evidence/g4-leaf-program-v1 on Pop!_OS.
+Manifest SHA-256: `7c7e26aba5b3016a8d84c372a7266508861413c6853dd717a8bbac4dec7dd1ff`.

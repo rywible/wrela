@@ -1,0 +1,87 @@
+// Partial evaluation of engine::plant::sprig_on: store authored invariant geometry,
+// then evaluate the same coverage, label and tissue law at original atlas texels.
+use engine::plant::{sprig_leaf, LEAF_PATTERNS, LEAF_TEXELS}
+use engine::noise::rand
+use std::gpu::{GlobalId, Slots, GpuBuffer, Unorm8x4, buffer, dispatch}
+use std::math::PI
+
+fn stride(n: u32) -> u32 {
+    4 + n * 8
+}
+
+@compute(64)
+fn cook(n: u32, out: mut Slots<u32>, id: GlobalId) {
+    if id.x >= LEAF_PATTERNS * stride(n) { return }
+    let k = id.x / stride(n)
+    let at = id.x % stride(n)
+    let seed = k.wrapping_mul(2246822519) ^ 3266489917
+    var value = 0.0
+    if at == 0 { value = (rand(seed, 3) - 0.5) * 0.3 } else if at >= 4 {
+        let (base, dir, len) = sprig_leaf(seed, (at - 4) / 8, n)
+        let part = (at - 4) % 8
+        value = if part == 0 { base.x } else if part == 1 { base.y } else if part == 2 {
+            dir.x
+        } else if part == 3 { dir.y } else if part == 4 { len } else { 0.0 }
+    }
+    out[id] = bitcast_u32(value)
+}
+
+pub fn parameters(n: u32) -> GpuBuffer<u32> {
+    assert(n > 0)
+    var out = buffer(LEAF_PATTERNS * stride(n))
+    dispatch(cook.bind(n, mut out), over: LEAF_PATTERNS * stride(n))
+    take out
+}
+
+fn at(values: [u32], i: u32) -> f32 {
+    bitcast_f32(values[i])
+}
+
+fn evaluate(k: u32, uv: vec2, n: u32, values: [u32]) -> vec4 {
+    let offset = k * stride(n)
+    var best = -1.0
+    var which = 0
+    var tissue = vec2(1.0, 0.5)
+    for i in 0..n {
+        let entry = offset + 4 + i * 8
+        let base = vec2(at(values, entry), at(values, entry + 1))
+        let dir = vec2(at(values, entry + 2), at(values, entry + 3))
+        let len = at(values, entry + 4)
+        let q = uv - base - dir * (len * 0.08)
+        let s = dot(q, dir) / len
+        let t = dot(q, vec2(-dir.y, dir.x))
+        let half = 0.36 * len * sin(PI * clamp(s, 0.0, 1.0)) * (1.15 - 0.5 * s)
+        let inside = min(half - abs(t), min(s, 1.0 - s) * len) / max(len, 0.01)
+        let along = saturate(s)
+        let across = t / len
+        if inside > best {
+            best = inside
+            which = i
+            let rib = smoothstep(0.012, 0.065, abs(across))
+            let fold = 0.5 + 0.5 * sin(PI * along) * (1.0 - smoothstep(0.03, 0.3, abs(across)))
+            tissue = vec2(rib, fold)
+        }
+        let stalk = uv - base
+        let l = clamp(dot(stalk, dir), 0.0, len * 0.08)
+        let reach = (0.022 * 0.6 - length(stalk - dir * l)) / max(len, 0.01)
+        if reach > best {
+            best = reach
+            which = i
+            tissue = vec2(0.0, 0.5)
+        }
+    }
+    let t = saturate((uv.y + 0.98) / 1.36)
+    let stem = (0.022 * (1.0 - 0.5 * t) - abs(uv.x - at(values, offset) * sin(PI * t))) / 0.6
+    if uv.y <= 0.38 && stem > best {
+        best = stem
+        which = 0
+        tissue = vec2(0.0, 0.5)
+    }
+    let w = 2.0 / f32(LEAF_TEXELS)
+    vec4(smoothstep(-w, w, best), (f32(which) + 0.5) / 8.0, tissue.x, tissue.y)
+}
+
+pub fn texel(k: u32, pixel: vec2u, n: u32, values: [u32]) -> vec4 {
+    let uv = (vec2(pixel) + vec2(0.5)) / f32(LEAF_TEXELS) * 2.0 - vec2(1.0)
+    Unorm8x4::encode(evaluate(k, uv, n, values)).decode()
+}

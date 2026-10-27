@@ -18,17 +18,18 @@
 
 ## Immediate milestone
 
-The [surface-identity comparison](neural-shaded-appearance.md#surface-identities-preserve-visibility-but-reject-the-tail-regressions)
-preserves all coverage and passes24/24 shaded numeric cases while reducing requested
-GPU allocations11.33% with stored cards, or38.86% with reconstructed source placement.
-Both fail repeated p95/p99 runtime comparisons; physical memory savings remain unproved.
-Direct identity avoids substantial full-material evaluation work, but the original
-larger RGBA8 atlas remains a strong speed control. No G4 promotion.
+The [compiled leaf-program experiment](neural-shaded-appearance.md#compiled-leaf-programs-quality-survives-repeated-decoding-does-not)
+preserves24/24 static numeric quality cases with a3,328-byte source table, but complete
+GPU95/99 exceeds every conventional control by more than2x. Complete requested memory
+falls only9.4–12.6% against packed masks; physical residency savings are unproved.
+Both conservative predicate-cache follow-ups preserve images and fail runtime.
+Retire per-fragment compiled field decoding as the G4 runtime direction.
 
-Change the representation again: specialize source leaf/material programs into compact
-constant tables and decoders, sharing exact visibility. Move invariant computation
-and uniform uploads out of each frame. Any neural decoder must beat an equally
-informed analytic decoder. G1–G7 remain unchanged and unmet.
+Next unproven bet: compile fields into a bounded cache of hardware-filtered working
+tiles, using source visibility and sampling knowledge. Charge cache misses, rebuilds,
+scratch and fallback; compare equally informed conventional methods. No new material
+moment training. Frozen model remains unchanged and passes8/24 cases against the
+current controls. G1–G7 remain unchanged and unmet.
 
 ## Evidence recorded so far
 
@@ -2327,3 +2328,19 @@ Initial assessment5m31s, decision21m58s; no training/newtruth; frozen8images/mod
 [Report](neural-shaded-appearance.md#surface-identities-preserve-visibility-but-reject-the-tail-regressions).
 Evidence build/neural-evidence/g4-surface-identity-v1 on Pop!_OS.
 Manifest SHA-256: `7d8a6a58ed568e092da0264b6b5b770fd22235a276b6fc9cad69984277e5e285`.
+
+
+### Compiled leaf programs preserve quality but fail complete cost
+
+Six AMD paths, exactly two optimization follow-ups. A3,328-byte source table
+passes24/24 numeric cases against all three conventional controls; both predicate
+caches preserve images but fail to reduce saturated GPU cost. Program GPU95/99 is
+2.411/2.469ms vs packed masks1.039/1.043ms; total requested live allocations fall
+only12.61%, with no demonstrated physical residency saving. Final finer cache saves
+9.42% and remains2.26x/2.31x slower. Retire repeated per-fragment field evaluation;
+next bet is bounded source-compiled hardware-filtered tiles. Frozen model passes8/24.
+Initial assessment6m27s; decision36m30s; no training/new truth. Default frozen images,
+model and native memory unchanged; format/type pass; failures preserved.
+[Report](neural-shaded-appearance.md#compiled-leaf-programs-quality-survives-repeated-decoding-does-not).
+Evidence build/neural-evidence/g4-leaf-program-v1 on Pop!_OS.
+Manifest SHA-256: `7c7e26aba5b3016a8d84c372a7266508861413c6853dd717a8bbac4dec7dd1ff`.

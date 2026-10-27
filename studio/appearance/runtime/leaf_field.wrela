@@ -1,5 +1,5 @@
 // Leaf-atlas diagnostic: 0 = RGBA8, 1 = BC7, 2 = direct source,
-// 3 = independent128-texel masks, 4 = box-filtered64-texel masks.
+// 3 = independent128-texel masks, 4 = box-filtered64-texel masks, 5 = specialized source.
 use engine::plant::{sprig_on, LEAF_TEXELS, LEAF_PATTERNS}
 use std::gpu::{Unorm8x4, FragCoord, Rgba8, Texture, begin_pass, draw, texture}
 use engine::frame::full
@@ -14,6 +14,10 @@ fn texel(k: u32, at: vec2u, n: u32) -> vec4 {
     Unorm8x4::encode(vec4(m, (f32(which) + 0.5) / 8.0, tissue.x, tissue.y)).decode()
 }
 
+fn decoded_texel(k: u32, pixel: vec2u, n: u32, parameters: [u32]) -> vec4 {
+    if MODE == 5 { leaf_program::texel(k, pixel, n, parameters) } else { texel(k, pixel, n) }
+}
+
 pub fn sample(seed: u32, uv: vec2, n: u32, parameters: [u32]) -> vec4 {
     let local = clamp(
         uv * 0.5 + vec2(0.5),
@@ -25,8 +29,16 @@ pub fn sample(seed: u32, uv: vec2, n: u32, parameters: [u32]) -> vec4 {
     let hi = min(lo + vec2u(1), vec2u(LEAF_TEXELS - 1))
     let f = p - vec2(lo)
     let k = seed % LEAF_PATTERNS
-    let a = mix(texel(k, lo, n), texel(k, vec2u(hi.x, lo.y), n), vec4(f.x))
-    let b = mix(texel(k, vec2u(lo.x, hi.y), n), texel(k, hi, n), vec4(f.x))
+    let a = mix(
+        decoded_texel(k, lo, n, parameters),
+        decoded_texel(k, vec2u(hi.x, lo.y), n, parameters),
+        vec4(f.x),
+    )
+    let b = mix(
+        decoded_texel(k, vec2u(lo.x, hi.y), n, parameters),
+        decoded_texel(k, hi, n, parameters),
+        vec4(f.x),
+    )
     mix(a, b, vec4(f.y))
 }
 

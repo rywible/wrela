@@ -223,7 +223,7 @@ fn radiance<F: Format + Filtered>(
     var albedo = f.albedo
     var tissue = vec2(1.0, 0.5)
     if f.leaf.value == 1 {
-        if leaf_field::MODE >= 3 {
+        if (leaf_field::MODE == 3 || leaf_field::MODE == 4) {
             // The atlas is generated with this exact leaf count. Its label is always in
             // range; retain coverage alone and evaluate tissue only when it contributes.
             let (uv, channel) = leaf_field::packed_uv(f.seed.value, f.uv)
@@ -233,7 +233,7 @@ fn radiance<F: Format + Filtered>(
                 tissue = leaf_field::sample(f.seed.value, f.uv, b.leaves.per_card, parameters).ba
             }
         } else {
-            let t = if leaf_field::MODE == 2 {
+            let t = if (leaf_field::MODE == 2 || leaf_field::MODE == 5) {
                 leaf_field::sample(f.seed.value, f.uv, b.leaves.per_card, parameters)
             } else { F::rgba(atlas.sample_level(filter, leaf_uv(f.seed.value, f.uv))) }
             if t.r < 0.5 || u32(t.g * 8.0) >= b.leaves.per_card { discard() }
@@ -303,9 +303,13 @@ pub fn init(active: bool) -> Source {
         parameters = buffer(size)
         dispatch(cook_parameters.bind(plant, n, mut parameters), over: size)
     }
+    if leaf_field::MODE == 5 {
+        assert(!source_options::CACHE_DISTRIBUTION && !source_options::PROCEDURAL)
+        parameters = leaf_program::parameters(plant.leaves.per_card)
+    }
     var limbs: Vec<Tube<4>> = Vec::new()
     for i in 0..plant.limbs.len() { limbs.push(plant.limbs[i]) }
-    assert(leaf_field::MODE <= 4)
+    assert(leaf_field::MODE <= 5)
     var atlas = texture::<Rgba8>(width: 1, height: 1)
     var compressed = texture::<Bc7>(width: 4, height: 4)
     if leaf_field::MODE == 0 {
@@ -317,7 +321,9 @@ pub fn init(active: bool) -> Source {
         compressed = texture(width: 512, height: 512)
         dispatch(encode_bc7.bind(plain, blocks, mut scratch), over: 128 * 128)
         copy_buffer_to_texture(scratch.items(), compressed.level_mut(0))
-    } else if leaf_field::MODE >= 3 { atlas = leaf_field::masks(plant.leaves.per_card) }
+    } else if (leaf_field::MODE == 3 || leaf_field::MODE == 4) {
+        atlas = leaf_field::masks(plant.leaves.per_card)
+    }
     Source {
         cards,
         wood: buffer_of(limbs, at_least: 1),
@@ -494,10 +500,23 @@ fn identity_wood(v: VertexIndex, b: Bake, c: Camera, limbs: [Tube<4>]) -> Identi
 }
 
 @fragment
-fn identity_fragment(f: IdentityVertex, atlas: Texture<Rgba8>, filter: Sampler) -> u32 {
+fn identity_fragment(
+    f: IdentityVertex,
+    atlas: Texture<Rgba8>,
+    filter: Sampler,
+    n: u32,
+    parameters: [u32],
+) -> u32 {
     if (f.surface.value & 0x80000000) == 0 {
-        let (uv, channel) = leaf_field::packed_uv(f.seed.value, f.uv)
-        if atlas.sample_level(filter, uv)[channel] < 0.5 { discard() }
+        if leaf_field::MODE == 3 {
+            let (uv, channel) = leaf_field::packed_uv(f.seed.value, f.uv)
+            if atlas.sample_level(filter, uv)[channel] < 0.5 { discard() }
+        } else {
+            let value = if leaf_field::MODE == 5 {
+                leaf_field::sample(f.seed.value, f.uv, n, parameters)
+            } else { atlas.sample_level(filter, leaf_uv(f.seed.value, f.uv)) }
+            if value.r < 0.5 || u32(value.g * 8.0) >= n { discard() }
+        }
     }
     f.surface.value
 }
@@ -513,14 +532,15 @@ fn source_bake() -> Bake {
 }
 
 pub fn draw_identity(s: Source, p: DepthPass<R32Uint>, c: Camera) {
-    assert(source_options::INDEXED && !source_options::PROCEDURAL && leaf_field::MODE == 3)
+    assert(source_options::INDEXED && !source_options::PROCEDURAL)
+    assert(leaf_field::MODE == 0 || leaf_field::MODE == 3 || leaf_field::MODE == 5)
     let plant = great_tree()
     assert(plant.cards() < 0x80000000)
     let b = source_bake()
     draw(
         p,
         identity_card.bind(b, c, s.cards.items()),
-        identity_fragment.bind(s.atlas, s.filter),
+        identity_fragment.bind(s.atlas, s.filter, plant.leaves.per_card, s.parameters.items()),
         indices: s.card_indices,
         index_count: 6,
         instances: plant.cards(),
@@ -529,7 +549,7 @@ pub fn draw_identity(s: Source, p: DepthPass<R32Uint>, c: Camera) {
     draw(
         p,
         identity_wood.bind(b, c, s.wood.items()),
-        identity_fragment.bind(s.atlas, s.filter),
+        identity_fragment.bind(s.atlas, s.filter, plant.leaves.per_card, s.parameters.items()),
         vertices: plant.limbs.len() * LIMB_VERTICES,
         instances: 1,
     )
@@ -558,6 +578,8 @@ fn identity_value(
     cards: [Card],
     wood: [Tube<4>],
     parameters: [u32],
+    atlas: Texture<Rgba8>,
+    filter: Sampler,
 ) -> vec4 {
     if key == 0 { return vec4(0.0) }
     let light = relight::light(illumination)
@@ -573,7 +595,9 @@ fn identity_value(
                 (card.size * card_scale(c.level) * 0.5)
             let axis = card_turn(card, vec2(1.0, 0.0))
             let uv = vec2(dot(t, axis), dot(t, vec2(-axis.y, axis.x)))
-            tissue = leaf_field::sample(card.seed, uv, b.leaves.per_card, parameters).ba
+            tissue = if leaf_field::MODE == 0 {
+                atlas.sample_level(filter, leaf_uv(card.seed, uv)).ba
+            } else { leaf_field::sample(card.seed, uv, b.leaves.per_card, parameters).ba }
         }
         let transmission = mix(1.0, mix(0.4, 1.06, tissue.x), resolved)
         let fold = mix(1.0, mix(0.92, 1.04, tissue.y), resolved)
@@ -624,6 +648,8 @@ fn resolve_identity(
     cards: [Card],
     wood: [Tube<4>],
     parameters: [u32],
+    atlas: Texture<Rgba8>,
+    filter: Sampler,
     out: mut Slots<vec4>,
     id: GlobalId,
 ) {
@@ -643,6 +669,8 @@ fn resolve_identity(
                 cards,
                 wood,
                 parameters,
+                atlas,
+                filter,
             )
         }
     }
@@ -667,6 +695,8 @@ pub fn finish_identity(
             s.cards.items(),
             s.wood.items(),
             s.parameters.items(),
+            s.atlas,
+            s.filter,
             mut out,
         ),
         over: 4096,

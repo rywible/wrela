@@ -2221,3 +2221,32 @@ methods. Initial assessment5m31s; decision21m58s. Defaults/model/frozen8images u
 G1–G7 unchanged/unmet.
 [Full evidence](neural-shaded-appearance.md#surface-identities-preserve-visibility-but-reject-the-tail-regressions).
 Evidence build/neural-evidence/g4-surface-identity-v1 on Pop!_OS.
+
+
+### 2026-10-27 — Compiled source leaf programs: reject per-fragment decoding
+
+AMD RADV RENOIR/Ryzen5 5500U, Mesa26.1.6, Chrome154.0.8037.57, Pop!_OS;
+Wrela0.9.0 compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23. Parent75f446fe
+plus archived sources. Solo/sequential,64px,60warmup+240measured frames.
+Six conventional variants, two optimization follow-ups, no training or new truth.
+
+A3,328-byte specialized source table passes24/24 static shaded cases against each
+original forward atlas, deferred atlas and packed-mask control. Mean40.293874dB,
+FLIP0.01303834, LPIPS0.00247681, coverageMAE0.01007283; worst boundaryp99=2px.
+Both conservative predicate caches preserve all eight program images. All262,144
+source texels checked: at most one8-bit step difference, zero half crossings at
+texel centers. Frozen neural model still passes only8/24 vs each current control.
+
+Complete program GPU95/99=2.411/2.469ms vs packed masks1.039/1.043ms;
+requested live/peak1,793,204/1,809,588 vs2,052,020/2,068,404 bytes.
+Final65,536-byte predicate cache: GPU95/99=2.345/2.405ms,
+live/peak1,858,740/1,875,124. Both follow-ups fail runtime. All decoded geometry,
+wood, visibility, updates, scratch, caches, fallback and composite are counted.
+Physical DRM/PSS snapshots do not establish residency savings; no16xG4 claim.
+
+Decision: retire per-fragment field decoding; next unproven bet is a bounded cache
+of source-compiled hardware-filtered tiles, charging misses and rebuilds.
+Initial assessment6m27s; decision36m30s. Frozen model/eight images/native memory
+unchanged; format/type pass; no full suite. G1–G7 unchanged/unmet.
+[Full evidence](neural-shaded-appearance.md#compiled-leaf-programs-quality-survives-repeated-decoding-does-not).
+Evidence build/neural-evidence/g4-leaf-program-v1 on Pop!_OS.
