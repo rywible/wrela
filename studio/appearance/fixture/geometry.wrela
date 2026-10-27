@@ -1,0 +1,202 @@
+// Authored geometry and the existing cooked volume, exported without image labels.
+// This is a candidate initializer / conventional control, not rendering truth.
+use engine::impostor::{BAKED, VOXELS, Bake, cook_pattern_cover, cook_volume}
+use engine::plant::{
+    Bark, Card, Leaves, LEAF_PATTERNS, card_centres, card_scale, card_tint, cook_cards, leaf_age,
+    leaf_atlas, tinted,
+}
+use great_tree::tree::great_tree
+use std::gpu::{
+    GlobalId, GpuBuffer, Rgba8, Rgba16Float, Slots, Texture, Texture3d, buffer, buffer_of, dispatch,
+    sampler, texture, texture3d,
+}
+
+struct Sample: Copy + GpuData {
+    place: vec4, // world centre, card width
+    normal: vec4, // decoded mean source normal, crown depth in metres
+    material: vec4, // unquantized linear albedo, existing 8x8 pattern coverage estimate
+}
+
+struct Voxel: Copy + GpuData {
+    value: vec4, // extinction per metre, normal XYZ times extinction
+    depth: vec4, // crown depth times extinction, three zeros
+}
+
+pub struct Export {
+    ready: bool,
+    seed: u32,
+    n: u32,
+    bake: Bake,
+    raw: GpuBuffer<Card>,
+    covers: GpuBuffer<f32>,
+    pattern: Texture<Rgba8>,
+    description: GpuBuffer<vec4>,
+    samples: GpuBuffer<Sample>,
+    centres: GpuBuffer<vec4>,
+    voxels: GpuBuffer<Voxel>,
+    grid: Texture3d<Rgba16Float>,
+    depths: Texture3d<Rgba16Float>,
+}
+
+pub fn init() -> Export {
+    Export {
+        ready: false,
+        seed: 0,
+        n: 0,
+        bake: Bake { mid: vec3(0.0), half: 1.0, leaves: Leaves {}, bark: Bark {} },
+        raw: buffer(1),
+        covers: buffer(1),
+        pattern: texture(width: 1, height: 1),
+        description: buffer(1),
+        samples: buffer(1),
+        centres: buffer(1),
+        voxels: buffer(1),
+        grid: texture3d(width: 1, height: 1, depth: 1),
+        depths: texture3d(width: 1, height: 1, depth: 1),
+    }
+}
+
+@compute(64)
+fn card_samples(
+    cards: [Card],
+    covers: [f32],
+    b: Bake,
+    n: u32,
+    out: mut Slots<Sample>,
+    id: GlobalId,
+) {
+    if id.x >= n { return }
+    let c = cards[id.x]
+    let normal = c.normal.decode()
+    out[id] = Sample {
+        place: vec4(c.centre, c.size),
+        normal: vec4(normal, c.depth),
+        material: vec4(
+            tinted(leaf_age(b.leaves, normal.y), card_tint(c)),
+            covers[c.seed % LEAF_PATTERNS],
+        ),
+    }
+}
+
+@compute(64)
+fn volume_samples(
+    grid: Texture3d<Rgba16Float>,
+    depths: Texture3d<Rgba16Float>,
+    out: mut Slots<Voxel>,
+    id: GlobalId,
+) {
+    if id.x >= VOXELS * VOXELS * VOXELS { return }
+    let x = id.x % VOXELS
+    let y = (id.x / VOXELS) % VOXELS
+    let z = id.x / (VOXELS * VOXELS)
+    out[id] = Voxel { value: grid.load(x, y, z), depth: depths.load(x, y, z) }
+}
+
+// Same existing volume equation written to f32 storage for the numerical audit.
+// The independent CPU verifier checks this before comparing actual f16 conversion.
+@compute(64)
+fn raw_volume(b: Bake, cards: [Card], n: u32, covers: [f32], out: mut Slots<Voxel>, id: GlobalId) {
+    if id.x >= VOXELS * VOXELS * VOXELS { return }
+    let c = vec3u(id.x % VOXELS, (id.x / VOXELS) % VOXELS, id.x / (VOXELS * VOXELS))
+    let voxel = 2.0 * b.half / f32(VOXELS)
+    let p = b.mid + (vec3(c) + vec3(0.5)) * voxel - vec3(b.half)
+    var density = 0.0
+    var normal = vec3(0.0)
+    var depth = 0.0
+    for k in 0..n {
+        let card = cards[k]
+        let d = p - card.centre
+        let sigma = max(card.size * 0.5, voxel * 0.6)
+        let q = dot(d, d) / (sigma * sigma)
+        if q < 9.0 {
+            let area = card.size * card.size * covers[card.seed % LEAF_PATTERNS]
+            let w = area * exp(-0.5 * q) / (15.749610 * sigma * sigma * sigma)
+            density += w
+            normal += card.normal.decode() * w
+            depth += card.depth * w
+        }
+    }
+    out[id] = Voxel { value: vec4(density, normal), depth: vec4(depth, 0.0, 0.0, 0.0) }
+}
+
+// Mode 0 initializes from the authored source and returns its canonical description.
+// Mode 1 returns cooked card samples; mode 2 the actual 24^3 f16 volume expanded to f32;
+// mode 3 independently generated CPU card centres; mode 4 the f32 volume equation.
+// Each allocates its export last.
+pub fn publish(s: mut Export, seed: u32, mode: u32) -> u32 {
+    assert(mode <= 4)
+    let plant = great_tree()
+    if mode == 0 {
+        assert(!s.ready)
+        let n = plant.cards()
+        s.n = n
+        s.seed = seed
+        let b = Bake {
+            mid: vec3(0.0, plant.top() * 0.5, 0.0),
+            half: plant.reach() + plant.leaves.size * 1.2 * card_scale(BAKED) * 0.5 * 1.415,
+            leaves: plant.leaves,
+            bark: plant.bark,
+        }
+        s.bake = b
+        s.raw = buffer(n)
+        dispatch(cook_cards.bind(plant, n, seed, mut s.raw), over: n)
+        s.pattern = leaf_atlas(plant.leaves.per_card)
+        s.covers = buffer(LEAF_PATTERNS)
+        dispatch(
+            cook_pattern_cover.bind(s.pattern, sampler(), plant.leaves.per_card, mut s.covers),
+            groups: 1,
+        )
+        var description: Vec<vec4> = Vec::new()
+        description.push(vec4(b.mid, b.half))
+        description.push(
+            vec4(f32(plant.clumps.len()), f32(plant.limbs.len()), f32(n), plant.leaves.cover),
+        )
+        description.push(vec4(plant.leaves.young, plant.leaves.size))
+        description.push(vec4(plant.leaves.old, f32(plant.leaves.per_card)))
+        description.push(vec4(plant.bark.dark, plant.blend))
+        description.push(vec4(plant.bark.light, f32(VOXELS)))
+        for c in plant.clumps {
+            description.push(vec4(c.centre, c.radius))
+            description.push(vec4(c.squash, 0.0, 0.0, 0.0))
+        }
+        for limb in plant.limbs {
+            for i in 0..4 { description.push(vec4(limb.points[i], limb.radii[i])) }
+        }
+        let bytes = description.len() * 16
+        s.description = buffer_of(description, at_least: 1)
+        s.ready = true
+        return bytes
+    }
+    assert(s.ready && seed == s.seed)
+    if mode == 1 {
+        s.samples = buffer(s.n)
+        dispatch(
+            card_samples.bind(s.raw.items(), s.covers.items(), s.bake, s.n, mut s.samples),
+            over: s.n,
+        )
+        return s.n * 48
+    }
+    if mode == 3 {
+        let centres = card_centres(plant, seed)
+        assert(centres.len() == s.n)
+        s.centres = buffer_of(centres, at_least: 1)
+        return s.n * 16
+    }
+    if mode == 4 {
+        s.voxels = buffer(VOXELS * VOXELS * VOXELS)
+        dispatch(
+            raw_volume.bind(s.bake, s.raw.items(), s.n, s.covers.items(), mut s.voxels),
+            over: VOXELS * VOXELS * VOXELS,
+        )
+        return VOXELS * VOXELS * VOXELS * 32
+    }
+    s.grid = texture3d(VOXELS, VOXELS, VOXELS)
+    s.depths = texture3d(VOXELS, VOXELS, VOXELS)
+    dispatch(
+        cook_volume.bind(s.bake, s.raw.items(), s.n, s.covers.items(), mut s.grid, mut s.depths),
+        over: s.grid,
+    )
+    s.voxels = buffer(VOXELS * VOXELS * VOXELS)
+    dispatch(volume_samples.bind(s.grid, s.depths, mut s.voxels), over: VOXELS * VOXELS * VOXELS)
+    VOXELS * VOXELS * VOXELS * 32
+}

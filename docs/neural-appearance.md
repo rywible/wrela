@@ -177,23 +177,67 @@ sealed G4 or G7 result. No production model or shader changes.
 
 ![Stored and unseen directions: source, stronger BC control, rejected neural field and errors](figures/neural-appearance-field.png)
 
+## Source-initialized volume field
+
+Export the authored geometry and existing cooked leaf volume:
+
+```bash
+wrela tool appearance --timeout 900 --blob-budget 3221225472 -- geometry 7
+```
+
+The capture includes canonical clump/limb parameters, actual GPU card
+attributes, independently generated CPU card centres, the actual 24³ half
+volume and its unquantized equation output. `geometry.txt` specifies each
+layout. A separate seed-consistency check prevents mixing placements across
+export modes. This instrument does not produce a new rendering reference.
+
+[Mildenhall et al., NeRF (ECCV 2020), author method description](https://www.matthewtancik.com/nerf)
+uses a neural volumetric function queried along camera rays and optimized
+through volume rendering.
+[Fridovich-Keil, Yu et al., Plenoxels (CVPR 2022), author pipeline](https://alexyu.net/plenoxels/)
+also optimizes explicit voxel coefficients through trilinear interpolation
+and differentiable volume rendering, without requiring a neural network.
+These establish useful methods, not novelty or speed claims for our trial.
+No external implementation, data or weights are imported.
+
+Our experiment learns quantized 3D features and a small network that emits
+extinction and material attributes, then integrates coverage-weighted moments.
+It initializes features from the existing source-generated volume and an
+authored-limb capsule proxy. Both coverage and toward follow the same ray
+weights. Viewing direction can affect density as well as material, since the
+source cards themselves face the camera. This is a material diagnostic, not
+a reproduction of NeRF/Plenoxels or a relightable production renderer.
+
+A matched trained ablation preserves initial network weights, material
+constants, data stream, fitting steps and quantization, changing only the
+feature-grid initialization. On four public unseen camera directions, the
+source prior lowers coverage error by 10.24% and crown-depth error by 42.77%
+versus random grids. Against the stronger BC control, coverage improves
+36.72% and normal error improves 31.87%, but crown depth is 77.95% worse.
+Fitted-view errors and integration-sampling checks also fail. Both models
+remain rejected; one asset and one training pair cannot establish a general
+advantage.
+
+[The measured record](neural-rendering-progress.md#source-initialized-neural-volume-and-matched-training-ablation)
+retains all cases, failures, sampling variants and independent replays.
+
+![Unseen view: source, BC, source-initialized neural volume and matched random-grid ablation](figures/neural-appearance-volume.png)
+
 ## Next decision
 
-Visibility and position remain the limiting errors in this trial. Increasing
-a material decoder's capacity alone would not address the observed coverage
-loss. The next representation should be conditioned on authored geometry
-and the pixel footprint, and should preserve position/coverage together
-under view changes. The view-facing source cards themselves change with
-camera direction; a single fixed 3D surface is an approximation. Test that
-assumption explicitly before treating a mean position as sufficient.
+Source geometry supplies a useful measured initialization in this experiment.
+Preserve that advantage while correcting crown depth and resolving the
+ray/spatial sampling sensitivity. The current direct integrator performs
+128 field evaluations per output pixel and has no GPU/runtime result.
+Crown depth is normalized by 40 in the target; inspect its loss scaling
+against the larger coverage/normal errors before increasing model capacity.
 
-The source pipeline can generate these targets and controlled variations,
-but the complete production material, lights, wind, motion, unseen assets,
-footprint range and strongest conventional alternatives are still required.
-A view-page cache remains a possible runtime strategy; decoded pages,
-scratch, misses, fallback and update spikes must all count. Neither the
-packed payload nor this CPU fit satisfies G4's resident memory/timing
-requirements or G7's twenty-asset validated-build requirement.
+After quality is established, compare a cheaper direct decoder, integration
+method or cache against the full-cost conventional pipeline. Count every
+cache page, decode/update buffer, fallback and miss. The packed 141,748-byte
+payload alone does not meet G4. Complete production materials, motion,
+lighting, 8–512-pixel footprints, unseen asset families and the full G1–G7
+validation still remain.
 
 ![Fixed view 103: albedo, coverage and decoded normals for the bake, BC, shipped MLP and quantized grid](figures/neural-appearance-view103.png)
 

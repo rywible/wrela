@@ -88,8 +88,45 @@ fn probe(b: drive::Build, directory: str) -> Result<(), ToolError> {
     Ok(())
 }
 
+fn capture_geometry(b: drive::Build, directory: str, seed: u32) -> Result<(), ToolError> {
+    let _ = untrapped("init", drive::steps(b, [Step::Init]).wait()?)?
+    let names = ["geometry.f32", "cards.f32", "volume.f32", "centres.f32", "volume-raw.f32"]
+    for mode in 0..5 {
+        let saw = untrapped(
+            "geometry",
+            drive::steps(
+                b,
+                [
+                    Step::Call(
+                        String::from("geometry_export"),
+                        Vec::from([Scalar::I32(i32(seed)), Scalar::I32(i32(mode))]),
+                    ),
+                ],
+                timeout: 600.0,
+            ).wait()?,
+        )?
+        let expected = match saw.ran[0].results[0] {
+            Scalar::I32(n) => u32(n),
+            _ => return Err(ToolError::new("geometry export did not return bytes")),
+        }
+        let ids = untrapped("geometry buffers", drive::steps(b, [Step::Buffers]).wait()?)?
+        borrow buffers = ids.buffers[0]
+        var read = untrapped(
+            "geometry read",
+            drive::steps(b, [Step::ReadBuffer(buffers[buffers.len() - 1])]).wait()?,
+        )?
+        let bytes = joined(data_bytes(read.bytes.remove(0))?)
+        if bytes.len() != expected { return Err(ToolError::new("wrong geometry byte count")) }
+        write_file(f"{directory}/{names[mode]}", chunked(take bytes))?
+    }
+    let metadata = f"asset=great_tree\nseed={seed}\ngeometry=vec4_f32_le;header6_then_clump2_then_limb4\nheader=mid_xyz_half;clumps_limbs_cards_cover;young_rgb_card_size;old_rgb_leaves_per_card;bark_dark_rgb_blend;bark_light_rgb_volume_size\nclump=centre_xyz_radius;squash_zero_zero_zero\nlimb=controlpoint_xyz_radius_times4\ncards=12_f32_le;centre_xyz_width;normal_xyz_crown_depth;unquantized_albedo_rgb_pattern_cover8x8\nvolume=24cubed;z_y_x;8_f32_le;density_normalXYZ;depth_times_density_zero_zero_zero;actual_f16_storage_expanded\ncentres=CPU_card_centres_vec4_f32_le\nvolume_raw=same_volume_equation_in_f32_buffer_for_independent_precision_audit\nvolume_scope=existing_leaf_only_density_no_limbs_not_source_truth\n"
+    let _ = files::write(f"{directory}/geometry.txt", metadata.as_bytes()).wait()?
+    Ok(())
+}
+
 struct SourceConfig: Copy {
     enabled: bool = false,
+    geometry: bool = false,
     batch: bool = false,
     compress: bool = false,
     first: u32 = 0,
@@ -277,7 +314,9 @@ fn run(seed: u32, only_probe: bool, source: SourceConfig) -> Result<(), ToolErro
     load.workers = 1
     load.timeout = 600.0
     let b = drive::load(f"{directory}/fixture", load).wait()?.build
-    let result = if source.batch {
+    let result = if source.geometry {
+        capture_geometry(b, directory.as_str(), seed)
+    } else if source.batch {
         capture_views(b, directory.as_str(), seed, source)
     } else if source.enabled {
         capture_source(b, directory.as_str(), seed, source, initialize: true)
@@ -295,7 +334,15 @@ pub fn tool() -> u32 {
     var seed = 7
     var source = SourceConfig {}
     let only_probe = given.len() == 1 && given[0].as_str() == "bc-probe"
-    if given.len() > 0 && given[0].as_str() == "source-grid" {
+    if given.len() > 0 && given[0].as_str() == "geometry" {
+        if given.len() != 2 {
+            print("usage: appearance geometry SEED")
+            return 2
+        }
+        let Some(n) = given[1].as_str().parse_u32() else { return 2 }
+        seed = n
+        source.geometry = true
+    } else if given.len() > 0 && given[0].as_str() == "source-grid" {
         if given.len() != 7 && given.len() != 8 {
             print("usage: appearance source-grid SEED SIZE LEVEL GRID FIRST COUNT [--bc]")
             return 2

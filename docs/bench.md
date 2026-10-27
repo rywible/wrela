@@ -1588,3 +1588,40 @@ See [the complete experiment and limitations](neural-rendering-progress.md#sourc
 Evidence manifest SHA-256 `9d41ea7cec470cada043f4bfdf7a5b2b6686d79c12dc410a32d9dea57c4d9339`; final source
 `e8a82d12be929d625eb4aeda4cb11b0335fe9ce8ccca2fbb636a8f4aa11b16bf`; scripts
 `fad0c5185d5ddcdb8ba70ae11c6b27a2a029e286bd199e15f01ab29f57f65fa3`. Earlier failed layouts/evaluators are retained.
+
+## Source-initialized neural volume (Pop!_OS AMD)
+
+Fixed public great-tree material diagnostic, 64×64 pixels/view; native Radeon
+Graphics/RADV RENOIR (Ryzen 5 5500U, PCI 1002:164c), Mesa
+26.1.6-1pop0~1787580452~24.04~a5619ea, Wrela 0.9.0 compiler
+`de9b81e52a7747870dfbd5223cb8aeb41e584d23`. Four CPU PyTorch 2.5.1 threads
+fit a 48³×2 / 24³×4 quantized-grid volume plus 12→32→32→8 network in 96.066 s,
+after 0.620 s source initialization. Full packed CPU decode takes 64.846 s.
+These are observations, not renderer/GPU/browser latency or G7 validation.
+
+At four public unseen directions, mean coverage/normal/toward/crown-depth
+moment errors are 0.016379/0.023660/0.010109/0.001018 for the candidate,
+versus 0.025883/0.034725/0.015426/0.000572 for the fixed stronger BC control.
+Crown depth and four fitted-view diagnostics fail the acceptance screen.
+Both integration sensitivity checks fail all 16 public cases. The model is
+rejected despite better off-grid coverage and normals.
+
+A matched 4,096-step random-grid ablation retains weights, material constants
+and sample stream. Its four-view errors are 0.018247/0.025959/0.011253/0.001778
+in the same order. Source initialization reduces those errors by
+10.24%/8.85%/10.17%/42.77%. This is one controlled training pair on one asset,
+not a general or sealed result. The no-prior fit takes 89.239 s; its final
+decode overlaps focused type checks and is not a comparative timing.
+
+Actual source card exports and volume arithmetic are checked independently.
+The original nearest-half assumption fails; explicit f32 equation exports
+and independent toward-zero conversion reproduce every f16 volume component.
+The failed check is retained. The final rebuilt capture repeats all six
+exports byte exactly. The model occupies 141,748 packed bytes before
+scratch/cache/fallback/metadata, and requires 128 point evaluations/pixel
+at the tested setting. No GPU model, resident-memory ratio or frontier success.
+
+See [the complete record](neural-rendering-progress.md#source-initialized-neural-volume-and-matched-training-ablation).
+Manifest SHA-256 `e0306b6c44d957a6fbca9a80191474b1b1c83e7bcec103b4ffa0e54ca3e73486`; source
+`7474c288dc082b72d9cd94423efc5f61cc446c283ccc8eb01a53aa9375c132c3`; scripts
+`d9252c27d0d3a66592667340c4c84afcb1064c89be73eaea4ea550e468d9083a`.

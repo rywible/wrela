@@ -70,6 +70,7 @@ pub struct State {
     model: GpuBuffer<Half2>,
     probe: GpuBuffer<vec4>,
     source: source::Source,
+    geometry: geometry::Export,
 }
 
 pub fn init() -> State {
@@ -89,6 +90,7 @@ pub fn init() -> State {
         model: buffer(1),
         probe: buffer(1),
         source: source::init(),
+        geometry: geometry::init(),
     }
 }
 
@@ -209,4 +211,8 @@ pub fn source_probe(s: mut State, x: u32, y: u32, grid: u32) -> u32 {
 pub fn source_compress(s: mut State, mode: u32) -> u32 {
     assert(s.ready)
     source::compress(mut s.source, mode)
+}
+
+pub fn geometry_export(s: mut State, seed: u32, mode: u32) -> u32 {
+    geometry::publish(mut s.geometry, seed, mode)
 }

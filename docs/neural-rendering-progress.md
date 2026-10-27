@@ -1572,3 +1572,144 @@ capture/decoder hashes, per-view metrics, failed trials, projected outputs
 and an illustrated comparison are retained. The next experiment should
 resolve visibility and position under view changes before adding decoder
 capacity or claiming appearance compression.
+
+## Source-initialized neural volume and matched training ablation
+
+The volume model improves four material diagnostics at the four public
+between-view directions, but still fails crown depth and the fitted-view
+comparison. **Both trained models remain rejected for runtime integration.**
+This is one authored asset and a single matched fitting pair, not a sealed
+result, broad generalization estimate, production rendering win or G1–G7 pass.
+
+The new `appearance geometry SEED` command exports the actual authored
+description, GPU-cooked card attributes, existing 24³ f16 volume, independent
+CPU card centres and an f32 evaluation of the volume equation. Great tree has
+44 clumps, 22 limbs and 26,560 cards; its shared bake half-width is 11.406363 m.
+The existing volume's two RGBA16F textures occupy 221,184 bytes and cover
+leaves only. They omit limbs and are not a matched-quality full-tree control.
+
+Two seed-7 captures match in all six exports byte for byte. Seed 11 leaves
+authored parameters unchanged but changes the card placement and volume.
+GPU and CPU card centre/width exports agree within 9.537e-7 over every card.
+An independent f64 implementation of the existing Gaussian volume equation
+checks 64 predetermined voxels per seed. Its maximum error against the
+GPU f32 equation is 3.476e-6, within the fixed 1e-5 absolute plus 1e-4 relative
+arithmetic tolerance. Swapping x/z fails by more than 1.66.
+
+The initial audit assumed nearest half conversion and failed: maximum
+error/tolerance ratios are 1.4645 and 1.5447. The separate f32 export isolates
+the calculation from texture storage. Independently rounding that f32
+buffer toward zero matches **every voxel/component** of both actual f16
+texture exports exactly. Nearest rounding disagrees on 5,258 and 5,315
+components. This records observed AMD/RADV behavior for these values,
+not a portable texture-format definition. The failed nearest-assumption
+check and original sources remain retained; rendering gates are unchanged.
+
+The learned field uses a 48³×2 fine grid, a 24³×4 coarse grid and a
+12→32→32→8 ReLU network. Inputs are position, viewing direction and the
+interpolated grids. Outputs are positive extinction, linear albedo,
+a bounded mean normal and crown depth. All outputs, including density,
+can depend on viewing direction; view-facing source cards do not define
+one fixed surface. Coverage and toward are integrated from the same
+positive ray weights instead of being predicted independently.
+
+The source initializer uses the checked leaf volume plus a capsule proxy
+along authored limb control-point segments. The capsule proxy is only an
+initializer, not the limb reference. It is baked into initial features;
+neither that volume nor source geometry is needed by the packed decoder.
+Shared material constants remain in both compared models. Half network
+weights, four-bit grids and those constants occupy 141,748 bytes
+(138,240 + 3,472 + 36), excluding runtime scratch, cache, fallback and metadata.
+No resident compression ratio follows from that payload.
+
+The fixed run uses seed 2718, 4,096 Adam steps, 128 pixels per batch,
+512 initial float-feature steps and then quantization-aware training.
+Each pixel integrates 32 ray strata and 2×2 spatial samples. Depth strata
+are jittered during fitting and sampled at midpoints for frozen inference.
+Half uniform / half foreground sampling uses the exact mixture importance
+correction. The loss separately weights coverage, linear-albedo, normal,
+toward and crown-depth moment errors. All 256 stored seed-7 views fit the
+model; no off-grid or seed-11 label enters fitting.
+
+A trained random-grid ablation uses the same original network weights,
+material constants, optimizer steps, loss, quantization schedule and sample
+stream. Reconstructed initial payloads are byte identical; replaying the
+first 128 original fitting steps reproduces loss 0.1288122534751892 exactly
+before the ablation's sampling state is reset. This compares equal steps
+and data, not controlled equal wall time. It is stronger evidence than the
+also-retained untrained-initializer comparison, but still only one fitting
+pair on one public asset.
+
+At the fixed 32-step/2×2 operating point:
+
+| Cases | Representation | Coverage MAE | Albedo-moment MAE | Normal-moment MAE | Toward-moment MAE | Crown-depth-moment MAE |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 256 fitted directions | Independent-depth BC | 0.003060 | 0.001120 | 0.028233 | 0.002727 | 0.000139 |
+| 256 fitted directions | Neural volume, source initialization | 0.015374 | 0.001927 | 0.022706 | 0.009653 | 0.000941 |
+| 256 fitted directions | Same neural volume, random grids | 0.017557 | 0.002454 | 0.025274 | 0.010869 | 0.001694 |
+| 4 unseen directions | Independent-depth BC | 0.025883 | 0.002767 | 0.034725 | 0.015426 | 0.000572 |
+| 4 unseen directions | Neural volume, source initialization | 0.016379 | 0.002008 | 0.023660 | 0.010109 | 0.001018 |
+| 4 unseen directions | Same neural volume, random grids | 0.018247 | 0.002554 | 0.025959 | 0.011253 | 0.001778 |
+
+The off-grid BC control uses the previous fixed one-step depth reprojection;
+the neural volume decodes directly at the requested direction. Relative to
+that BC control, the source-initialized model reduces mean off-grid coverage
+error by 36.72%, albedo by 27.41%, normal by 31.87% and toward by 34.47%.
+Each of those four diagnostics improves in every tested off-grid view.
+Crown-depth error is **77.95% worse**, and four fitted-view metrics also
+fail the fixed rejection screen. No display PSNR, FLIP, LPIPS or motion
+quality is established by these material moments.
+
+Compared with the matched trained random-grid model, source initialization
+reduces the four-view mean errors by 10.24% coverage, 21.38% albedo,
+8.85% normal, 10.17% toward and 42.77% crown depth. The eight seed-11 public
+perturbation cases, still using the unchanged seed-7 models, retain the same
+direction of mean improvement. This supports a source-geometry prior for
+this fixed experiment; it does not prove a universal or zero-shot advantage.
+
+Independent NumPy decoding checks 8,192 world points and 512 complete
+pixel/ray integrals for each trained model. The source-initialized model's
+maximum moment discrepancy is 3.100e-6; the random-grid model's is 2.265e-6,
+both within the fixed 2e-5 ray tolerance. Pointwise density/material results
+pass the separate 3e-5 absolute plus 1e-4 relative tolerance. Wrong grid axes
+and reversed ray order change outputs by more than 1.54. Positive moment
+bounds and source-echo controls pass.
+
+Sampling remains a material failure. All sixteen public cases fail both
+the 32→64 ray-step and 2×2→4×4 spatial checks against the earlier convergence
+limits. Ray-step coverage differences range from MAE 0.004526–0.010510 and
+p99 0.074668–0.161846. Spatial coverage differences range from MAE
+0.001189–0.001649 and p99 0.016117–0.020743. Higher-sample outputs and their
+reference errors remain recorded. These checks concern the model integrator,
+not the already-validated source reference. The nominal result must not be
+presented as a converged or temporally stable renderer.
+
+Everything runs on Pop!_OS Ryzen 5 5500U / Radeon Graphics, RADV RENOIR
+(1002:164c), Wrela 0.9.0 compiler `de9b81e52a7747870dfbd5223cb8aeb41e584d23`,
+Mesa `26.1.6-1pop0~1787580452~24.04~a5619ea`. PyTorch 2.5.1+cpu uses
+four CPU threads. Source initialization takes 0.620 s, fitting 96.066 s,
+and a complete packed CPU decode of the 256-view corpus 64.846 s.
+The no-prior fit takes 89.239 s; its final decode overlaps focused type
+checks, so that decode timing is not a comparative measurement. These
+observations are not GPU inference, foliage-pass, browser or validated
+G7 source-to-shipping timings.
+
+Direct inference performs 128 field evaluations per output pixel at the
+tested setting. No GPU implementation, caching, distillation, or complete
+resident-memory accounting exists for this candidate. The legacy leaf-only
+volume is reported only as a diagnostic; the comparison target remains the
+full-tree BC control, and strongest conventional atlas/volume alternatives
+are still required. Production materials, wind, lighting, footprint range,
+independent assets and human/temporal gates remain untested.
+
+The final rebuilt geometry capture matches all six files exactly, including
+after the exporter gains a seed-consistency assertion. Focused type checks,
+changed-file formatting, allow-list and diff checks pass. No full-suite or
+PR-readiness claim. Next work must repair crown-depth fitting and integration
+sensitivity, then reduce total inference cost before runtime promotion.
+
+Evidence: `build/neural-evidence/appearance-volume-v1/manifest.json`,
+SHA-256 `e0306b6c44d957a6fbca9a80191474b1b1c83e7bcec103b4ffa0e54ca3e73486`; final source `7474c288dc082b72d9cd94423efc5f61cc446c283ccc8eb01a53aa9375c132c3`;
+external scripts `d9252c27d0d3a66592667340c4c84afcb1064c89be73eaea4ea550e468d9083a`. Model payloads, trained ablation,
+original numerical failures, source exports, complete per-view metrics and
+sampling variants are retained.

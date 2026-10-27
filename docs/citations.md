@@ -161,3 +161,12 @@ against central finite differences. The prototype, dependency environment and ar
 remain outside the tracked repository; the runtime model uses our Wrela implementation.
 Device-specific sampler/half-target behavior is measured from independent AMD captures and
 recorded in `build/neural-evidence/recurrent-gate-v1`, not assumed to be portable.
+
+The external source-initialized volume experiment follows the general idea
+of differentiable ray integration described by [Mildenhall et al., NeRF
+(ECCV 2020)](https://www.matthewtancik.com/nerf) and compares that context with
+[Fridovich-Keil, Yu et al., Plenoxels (CVPR 2022)](https://alexyu.net/plenoxels/).
+Our implementation predicts unlit material moments from quantized features
+initialized using Wrela's source geometry; it is neither paper's reproduction.
+No paper implementation, dataset or pretrained weights are copied. See
+[the actual experiment and limitations](neural-appearance.md#source-initialized-volume-field).
