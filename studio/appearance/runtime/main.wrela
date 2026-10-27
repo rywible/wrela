@@ -728,6 +728,8 @@ pub fn init() -> State {
     if config::MODE == 0 {
         assert(data::COLOUR.len() == 262144, "restore the archived BC payload first")
     }
+    assert(!source_hierarchy::ENABLED || config::MODE == 10)
+    assert(source_hierarchy::rows() > 0 && 64 % source_hierarchy::rows() == 0)
     let aa = config::AA
     var s = State {
         source: source_control::init(config::MODE == 3 || config::MODE == 10),
@@ -765,8 +767,8 @@ pub fn init() -> State {
         copy_buffer_to_texture(b.items(), s.bc_normal.level_mut(0))
         copy_buffer_to_texture(c.items(), s.bc_depth.level_mut(0))
     } else if config::MODE == 10 {
-        s.surface_ids = texture(width: 64 * aa, height: 64 * aa)
-        s.depth = depth_texture(width: 64 * aa, height: 64 * aa)
+        s.surface_ids = texture(width: 64 * aa, height: source_hierarchy::rows() * aa)
+        s.depth = depth_texture(width: 64 * aa, height: source_hierarchy::rows() * aa)
     } else if config::MODE == 3 {
         s.colour = texture(width: 64 * aa, height: 64 * aa)
         s.depth = depth_texture(width: 64 * aa, height: 64 * aa)
@@ -923,28 +925,33 @@ pub fn render(s: mut State) {
         )
     } else if config::MODE == 10 {
         source_control::refresh(mut s.source)
-        let source_camera = source_control::Camera {
-            direction: c.direction,
-            right: c.right,
-            up: c.up,
-            level: 0,
+        let rows = source_hierarchy::rows()
+        for band in 0..64 / rows {
+            let source_camera = source_control::Camera {
+                direction: c.direction,
+                right: c.right,
+                up: c.up,
+                level: 0,
+                band: band * rows,
+                rows,
+            }
+            let p = begin_pass_with_depth(
+                mut s.surface_ids,
+                mut s.depth,
+                clear: vec4(0.0),
+                clear_depth: 1.0,
+            )
+            source_control::draw_identity(s.source, p, source_camera)
+            p.end()
+            source_control::finish_identity(
+                s.source,
+                s.surface_ids,
+                s.aa,
+                source_camera,
+                c.illumination,
+                mut s.out,
+            )
         }
-        let p = begin_pass_with_depth(
-            mut s.surface_ids,
-            mut s.depth,
-            clear: vec4(0.0),
-            clear_depth: 1.0,
-        )
-        source_control::draw_identity(s.source, p, source_camera)
-        p.end()
-        source_control::finish_identity(
-            s.source,
-            s.surface_ids,
-            s.aa,
-            source_camera,
-            c.illumination,
-            mut s.out,
-        )
     } else if config::MODE == 3 {
         let p = begin_pass_with_depth(mut s.colour, mut s.depth, clear: vec4(0.0), clear_depth: 1.0)
         source_control::draw_source(

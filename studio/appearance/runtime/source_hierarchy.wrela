@@ -1,0 +1,181 @@
+// Source-instance hierarchy: exact source range selection and procedural card geometry.
+// Response remains exact until a separately measured representation replaces it.
+use engine::plant::{Card, Clump, Plant, card_at, limb_ring_axis, RINGS}
+use engine::noise::{direction, rand, pick}
+use std::gpu::{GlobalId, GpuBuffer, Oct32, Slots, Unorm8x4, buffer, dispatch}
+
+pub const ENABLED: bool = false
+pub const ROWS: u32 = 64
+pub const CULL: bool = false
+
+pub fn rows() -> u32 {
+    if ENABLED { ROWS } else { 64 }
+}
+
+fn share(index: u32, n: u32) -> u32 {
+    if index < n / 4 { 0 } else if index < n / 2 { 1 } else { 2 }
+}
+
+fn range(part: u32, n: u32) -> vec2u {
+    if part == 0 { vec2u(0, n / 4) } else if part == 1 { vec2u(n / 4, n / 2) } else {
+        vec2u(n / 2, n)
+    }
+}
+
+// Preserve the original f32 accumulation/subtraction order when compiling range boundaries.
+fn source_owner(plant: Plant, n: u32, index: u32) -> u32 {
+    let r = range(share(index, n), n)
+    let f = (f32(index - r.x) + 0.5) / f32(r.y - r.x)
+    var total = 0.0
+    for i in 0..plant.clumps.len() {
+        let c = plant.clumps[i]
+        total += c.radius * c.radius * c.area_share()
+    }
+    var at = f * total
+    for i in 0..plant.clumps.len() {
+        let c = plant.clumps[i]
+        let area = c.radius * c.radius * c.area_share()
+        if at < area { return i }
+        at -= area
+    }
+    plant.clumps.len() - 1
+}
+
+fn end_of(plant: Plant, n: u32, which: u32, part: u32) -> u32 {
+    let r = range(part, n)
+    var low = r.x
+    var high = r.y
+    while low < high {
+        let middle = (low + high) / 2
+        if source_owner(plant, n, middle) <= which { low = middle + 1 } else { high = middle }
+    }
+    low
+}
+
+@compute(64)
+fn cook_nodes(plant: Plant, n: u32, nodes: mut Slots<vec4>, id: GlobalId) {
+    let first_wood = 1 + plant.clumps.len() * 2
+    if id.x >= first_wood + if CULL { plant.limbs.len() } else { 0 } { return }
+    if id.x >= first_wood {
+        let limb = plant.limbs[id.x - first_wood]
+        let centre = (limb.points[0] + limb.points[1] + limb.points[2] + limb.points[3]) * 0.25
+        var radius = 0.0
+        for k in 0..(3 * RINGS + 1) {
+            let (at, _, r) = limb_ring_axis(limb, k)
+            radius = max(radius, length(at - centre) + abs(r))
+        }
+        nodes[id] = vec4(centre, radius * 1.00001)
+        return
+    }
+    if id.x == 0 {
+        nodes[id] = vec4(f32(plant.clumps.len()), f32(n), plant.leaves.size, plant.blend)
+        return
+    }
+    let which = (id.x - 1) / 2
+    let c = plant.clumps[which]
+    nodes[id] = if (id.x - 1) % 2 == 0 { vec4(c.centre, c.radius) } else {
+        vec4(
+            c.squash,
+            f32(end_of(plant, n, which, 0)),
+            f32(end_of(plant, n, which, 1)),
+            f32(end_of(plant, n, which, 2)),
+        )
+    }
+}
+
+@compute(64)
+fn cook_response(plant: Plant, n: u32, response: mut Slots<vec2u>, id: GlobalId) {
+    if id.x >= n { return }
+    let card = card_at(plant, n, seed: 7, index: id.x)
+    response[id] = vec2u(card.normal.bits, bitcast_u32(card.depth))
+}
+
+pub fn nodes(plant: Plant, n: u32) -> GpuBuffer<vec4> {
+    let count = 1 + plant.clumps.len() * 2 + if CULL { plant.limbs.len() } else { 0 }
+    var nodes = buffer(count)
+    dispatch(cook_nodes.bind(plant, n, mut nodes), over: count)
+    take nodes
+}
+
+pub fn response(plant: Plant, n: u32) -> GpuBuffer<vec2u> {
+    var response = buffer(n)
+    dispatch(cook_response.bind(plant, n, mut response), over: n)
+    take response
+}
+
+pub fn owner(index: u32, nodes: [vec4]) -> u32 {
+    let part = share(index, u32(nodes[0].y))
+    var low = 0
+    var high = u32(nodes[0].x)
+    while low < high {
+        let middle = (low + high) / 2
+        if index < u32(nodes[2 + middle * 2][part + 1]) { high = middle } else { low = middle + 1 }
+    }
+    low
+}
+
+fn clump(which: u32, nodes: [vec4]) -> Clump {
+    let a = nodes[1 + which * 2]
+    Clump { centre: a.xyz, radius: a.w, squash: nodes[2 + which * 2].x }
+}
+
+fn attributes(index: u32, which: u32, nodes: [vec4]) -> Card {
+    let k = u32(7).wrapping_mul(7919) ^ index.wrapping_mul(2654435761)
+    Card {
+        centre: vec3(0.0),
+        size: nodes[0].z * pick(k, 6, lo: 0.8, hi: 1.2),
+        normal: Oct32 { bits: 0 },
+        depth: 0.0,
+        seed: k,
+        tint: Unorm8x4::encode(vec4(rand(k, 7), rand(k, 8), rand(k, 9), rand(which, 10))),
+    }
+}
+
+pub fn placed(index: u32, which: u32, nodes: [vec4]) -> Card {
+    let card = attributes(index, which, nodes)
+    let k = card.seed
+    let dir = direction(rand(k, 3), rand(k, 4))
+    Card { centre: clump(which, nodes).point(dir, 0.72 + 0.28 * sqrt(rand(k, 5))), ..card }
+}
+
+pub fn shaded(index: u32, nodes: [vec4], response: [vec2u], position_needed: bool) -> Card {
+    let which = owner(index, nodes)
+    let card = if position_needed { placed(index, which, nodes) } else {
+        attributes(index, which, nodes)
+    }
+    let r = response[index]
+    Card { normal: Oct32 { bits: r.x }, depth: bitcast_f32(r.y), ..card }
+}
+
+fn outside(bound: vec4, mid: vec3, half: f32, up: vec3, band: u32, rows: u32) -> bool {
+    let y = (dot(bound.xyz - mid, up) / half * 0.5 + 0.5) * 64.0
+    let radius = bound.w / half * 32.0 + 0.5
+    y + radius < f32(band) || y - radius > f32(band + rows)
+}
+
+pub fn outside_leaf(
+    which: u32,
+    nodes: [vec4],
+    mid: vec3,
+    half: f32,
+    up: vec3,
+    band: u32,
+    rows: u32,
+    scale: f32,
+) -> bool {
+    let c = clump(which, nodes)
+    let radius = c.radius * max(c.squash, 1.0) + nodes[0].z * 1.2 * scale * 0.5 * 1.415
+    outside(vec4(c.centre, radius), mid, half, up, band, rows)
+}
+
+pub fn outside_wood(
+    which: u32,
+    nodes: [vec4],
+    mid: vec3,
+    half: f32,
+    up: vec3,
+    band: u32,
+    rows: u32,
+) -> bool {
+    outside(nodes[1 + u32(nodes[0].x) * 2 + which], mid, half, up, band, rows)
+}

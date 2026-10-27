@@ -2279,3 +2279,35 @@ Frozen8images unchanged; +8inactive buffer bytes counted; format/typepass.
 Failures preserved; no full suite; G1–G7 unchanged/unmet.
 [Full evidence](neural-shaded-appearance.md#bounded-source-tiles-recover-speed-then-confront-the-memory-floor).
 Evidence build/neural-evidence/g4-leaf-tiles-v1 on Pop!_OS.
+
+
+### 2026-10-27 — Source hierarchy and bounded visibility
+
+AMD RADV RENOIR/Ryzen 5 5500U, Mesa 26.1.6, Chrome 154.0.8037.57, Pop!_OS.
+Wrela 0.9.0 compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23.
+Parent fcc7d35d plus exact archived sources; solo, sequential, 64px,
+60 warmup + 240 measured frames. Initial five-way assessment 12m15s; decision
+23m09s, after exactly two optimizations. No training or new shaded truth.
+
+Full source hierarchy preserves eight shaded outputs exactly and cuts requested
+live memory from 1,875,660 to 1,239,652 bytes (33.91%). Saturated median rises
+0.275 to 0.320ms; paced GPU p95/p99 rises 0.924/1.019 to 1.190/1.217ms.
+Eight-row targets save another 458,752 bytes, but full-geometry repetitions cost
+1.467ms saturated median. Conservative culling only lowers that to 1.433ms,
+5.21x the cached control. Its live allocation is 781,252 bytes.
+
+A 16-cubed source shading volume reduces live allocation to 601,580 bytes, but
+passes only 1/24 quality cases, versus 24/24 for exact source methods.
+PSNR 38.552 vs 40.296dB; FLIP 0.022787 vs 0.013002; coverage remains identical.
+Saturated median 1.459ms; paced GPU p95/p99 2.309/2.437ms.
+Actual DRM/PSS snapshots show no demonstrated physical residency saving.
+
+Decision: change representation; retain exact source compilation as conventional
+control. Retire repeated full-geometry bands and uniform response volume for G4.
+Next bet: submit only intersecting source-cluster ranges; use equally informed
+conventional routing. All 26,560 source cards match; all 22,176 wood vertices
+inside bounds. Frozen fit/model and eight defaults unchanged; +24 inactive buffer
+bytes counted; format/type pass. Failed results preserved; no full suite.
+G1–G7 unchanged/unmet.
+[Complete evidence](neural-shaded-appearance.md#source-hierarchy-exact-reconstruction-helps-repeated-visibility-work-does-not).
+Evidence build/neural-evidence/g4-source-hierarchy-v1 on Pop!_OS.

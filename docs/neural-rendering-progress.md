@@ -18,19 +18,24 @@
 
 ## Immediate milestone
 
-The [bounded source-tile comparison](neural-shaded-appearance.md#bounded-source-tiles-recover-speed-then-confront-the-memory-floor)
-recovers packed-mask images exactly at full capacity, with3.06x smaller leaf-subsystem
-storage and8.60% lower complete requested GPU memory. Physical residency savings remain
-unproved; paired warm tails fail1/3saturated comparisons and median is3.15% slower.
-Full-content rebuild cost is measured. Keep the cache as an equally informed
-conventional control; change G4 beyond leaf-only compression.
+The [source-hierarchy comparison](neural-shaded-appearance.md#source-hierarchy-exact-reconstruction-helps-repeated-visibility-work-does-not)
+preserves all source cards and eight shaded outputs exactly, reducing complete
+requested GPU memory 33.91%. Physical residency savings remain unproved. Full
+hierarchy saturated median is 16.36% slower. Reusable bands reduce allocations
+further, but even conservative culling leaves 5.21x the cached control's cost.
 
-The current dominant storage is849,920bytes of source cards and524,288bytes of
-visibility targets. Next unproven bet: a joint source-instance/visibility hierarchy,
-spending exact source work on boundaries and uncertain/newly exposed samples.
-Compare equally informed conventional selection and charge fallback/scratch.
-Frozen model remains unchanged,8/24cases vs current controls. No new material-moment
-fitting. G1–G7 remain unchanged and unmet.
+A 16-cubed source-response volume passes only 1/24 rendered quality cases despite
+identical silhouettes; it is 5.30x slower. Change representation: retain exact
+source reconstruction as a conventional control, retire repeated full-geometry
+bands and uniform response volume as G4 candidates. Exactly two optimizations;
+first assessment 12m15s, decision 23m09s. All failed results preserved.
+
+Next unproven bet: submit only intersecting source-cluster ranges to each region,
+with the same routing available to the conventional control. First demand exact
+cached-response image parity and complete runtime near the control. Local adaptive
+or residual shading is a later candidate; no new material-moment fitting now.
+The frozen explicit optical-primitive fit is unchanged, passing 8/24 against
+the strong controls. G1–G7 remain unchanged and unmet.
 
 ## Evidence recorded so far
 
@@ -2361,3 +2366,23 @@ Failures preserved; G1–G7 unchanged/unmet.
 [Report](neural-shaded-appearance.md#bounded-source-tiles-recover-speed-then-confront-the-memory-floor).
 Evidence build/neural-evidence/g4-leaf-tiles-v1 on Pop!_OS.
 Manifest SHA-256: `dd1466ac0b5821aac90d9346223b1ca02c7d40a94ff16cb573cf4c3fdf1a3b30`.
+
+
+### Source hierarchy preserves images but repeated visibility work fails
+
+Seven AMD paths, exactly two optimizations. Full hierarchy removes 636,008
+requested bytes and preserves every shaded output; complete requested memory
+falls 33.91%. Physical savings unproved, saturated median +16.36%.
+Culled eight-row visibility is 5.21x slower than the cached source control.
+A 16-cubed response volume saves 67.93% all-live bytes but passes only 1/24
+quality cases and is 5.30x slower; all coverage remains exact.
+Change representation. Retain exact source compilation as a conventional control;
+retire repeated full-geometry bands and uniform response volume for G4.
+Next bet: source-cluster work submission with equally informed conventional routing.
+Initial assessment 12m15s; decision 23m09s. No training/new truth.
+All 26,560 cards exact; all 22,176 wood vertices within bounds. Frozen fit/model
+and eight images unchanged; +24 inactive buffer bytes; format/type pass.
+No full-suite claim; failures preserved; G1–G7 unchanged/unmet.
+[Report](neural-shaded-appearance.md#source-hierarchy-exact-reconstruction-helps-repeated-visibility-work-does-not).
+Evidence build/neural-evidence/g4-source-hierarchy-v1 on Pop!_OS.
+Manifest SHA-256: `410b6972c5ee90a227e686e906f9a324968f366a2e606f7294833013b8387403`.

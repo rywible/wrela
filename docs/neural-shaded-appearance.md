@@ -2307,3 +2307,196 @@ All9 variants,12raw paired runs, material checks, conformance captures, memory
 observations, failed results and exact source/build archives are preserved in
 build/neural-evidence/g4-leaf-tiles-v1 on Pop!_OS.
 Manifest SHA-256: `dd1466ac0b5821aac90d9346223b1ca02c7d40a94ff16cb573cf4c3fdf1a3b30`.
+
+
+## Source hierarchy: exact reconstruction helps, repeated visibility work does not
+
+**Decision: change the representation.** Keep exact source-instance reconstruction
+as an equally informed conventional control. Retire repeated full-geometry band
+rendering and the uniform shading volume as G4 candidates. No neural advantage
+or G4 achievement is demonstrated.
+
+Reconstructing source cards from clumps and seeds removes 636,008 requested GPU
+bytes while preserving all eight shaded outputs exactly. Complete requested live
+memory falls from 1,875,660 to 1,239,652 bytes (33.91%). This is useful source
+compilation, but the full hierarchy's saturated median is 16.36% slower and its
+initial paced p95/p99 ratios are 1.287/1.193 against the cached control. Physical
+residency savings remain unproved.
+
+Reusing visibility targets in eight-row bands lowers requested memory further,
+but repeats too much work. Conservative bounds barely help: the resulting saturated
+median is 5.21x the cached control. A 16-cubed source-response volume reduces total
+requested live memory to 601,580 bytes, but passes only 1/24 quality cases and is
+5.30x slower. These failures decide this block without more timing repetitions.
+
+Solo Pop!_OS work began 2026-10-27 22:57:06 UTC. The initial five-way comparison
+completed 23:09:20 UTC (12m15s); decision at 23:20:15 UTC (23m09s), inside the
+two-hour limit. Exactly two optimization experiments followed the initial
+comparison. No training, new shaded references or reference infrastructure.
+
+### Representation and equally informed controls
+
+[source_hierarchy.wrela](../studio/appearance/runtime/source_hierarchy.wrela)
+compiles the 44 authored clumps and exact source index-range endpoints into
+89 vec4 values (1,424 bytes). Range construction preserves the original f32
+accumulation/subtraction order. A binary lookup chooses the clump; the original
+seed law reconstructs card position, size and tint. The exact response cache
+holds Oct32 normal and f32 crown depth for all 26,560 cards (212,480 bytes).
+This replaces the 849,920-byte stored card array, retaining a charged dummy handle.
+
+The source laws are [card_at and plant geometry](../engine/plant.wrela) and the
+[authored great tree](../content/great-tree/tree.wrela). No teacher-derived
+routing, privileged learned inputs or hidden full-card fallback. Wood remains
+the same source geometry. All paths use the same seed, material law, lights,
+16 independent visibility samples and final composite.
+
+Controls are the original forward RGBA8 atlas, deferred packed masks, and the
+strong bounded coverage-tile cache from the previous block. The hierarchy uses
+that same cache. Both controls and candidates have complete authored source
+information. They differ in how they store and execute it.
+
+The full hierarchy retains 256x256 R32Uint identity and depth targets, totaling
+524,288 bytes. Eight-row bands reuse two 256x32 targets totaling 65,536 bytes,
+saving 458,752 bytes. Each band still submits all cards and wood, then resolves
+its rows into the shared output. This is bounded visibility storage, not a
+selective work scheduler.
+
+First optimization: conservative source-clump spheres reject off-band leaves
+before placement, and 22 limb spheres reject wood before curve evaluation.
+Leaf bounds include maximum rotated square support; wood bounds enclose all
+rendered rings. A half-output-pixel margin is included. This adds 352 node bytes.
+It avoids some per-vertex calculations, but still invokes the vertex stages
+and records all bands.
+
+Second optimization: replace the exact per-card response cache with a 16x16x16
+RGBA16Float volume (32,768 bytes). Sample the authored crown's raw gradient and
+signed distance on a tight source-clump AABB, then trilinearly sample at each
+reconstructed card center. Normalize the interpolated gradient before Oct32
+encoding and clamp negative distance to crown depth. Placement, seeds and
+coverage stay exact. Two bound records and all dummy handles are counted.
+This failed variant and its executable source/build are archived; its volume
+binding is removed from retained code.
+
+### Shaded quality and silhouettes
+
+Reuse completed AA64 shaded truth: two views, four analytic lights, three
+backgrounds, 64x64 output. The established exposure 0.62, sRGB, LDR FLIP at
+67 pixels/degree and AlexNet LPIPS v0.1 protocol is unchanged. Per-case gates
+remain PSNR loss at most 0.25 dB, FLIP/LPIPS increases at most 5% with the
+1e-4 floor. Means never substitute for these gates.
+
+| Variant | Mean PSNR dB | FLIP | LPIPS | Cases passing against each of 3 controls |
+| --- | ---: | ---: | ---: | ---: |
+| hierarchy-raster | 40.294314 | 0.01300185 | 0.00249142 | 24/24 |
+| hierarchy-masks | 40.295971 | 0.01300193 | 0.00249104 | 24/24 |
+| hierarchy-cache | 40.295971 | 0.01300193 | 0.00249104 | 24/24 |
+| hierarchy-full | 40.295971 | 0.01300193 | 0.00249104 | 24/24 |
+| hierarchy-band8 | 40.295971 | 0.01300193 | 0.00249104 | 24/24 |
+| hierarchy-cull8 | 40.295971 | 0.01300193 | 0.00249104 | 24/24 |
+| hierarchy-field16 | 38.551649 | 0.02278740 | 0.00355300 | 1/24 |
+
+All 56 native captures are finite and have identical coverage. The packed, cached,
+full-hierarchy, band and culled-band images match the cached control byte for byte
+(40 comparisons, including the control itself). All 24 prior control images also
+match. The volume changes shading only: mean PSNR loses 1.744 dB and mean FLIP
+increases about 75%. This is a demonstrated rendered-response failure, not a
+material-moment proxy. It justifies considering a local adaptive/residual response
+representation later, but does not justify more fitting in this block.
+
+Against AA64 truth, shared mean coverage MAE is 0.01005954, mean soft IoU 0.959469,
+mean boundary p99 1.707 pixels and worst boundary p99 2 pixels. Exact parity to
+a conventional control does not remove its sampling error.
+
+The frozen 1,897-primitive appearance fit remains unchanged and passes 8/24
+numeric cases against each control. Terminology correction: this frozen payload
+is an optimized explicit optical-primitive representation, not a neural MLP.
+No new claim of learned superiority follows from the source-control work.
+
+### Complete runtime and memory
+
+AMD RADV RENOIR, PCI 1002:164c, Ryzen 5 5500U, Mesa 26.1.6,
+Chrome 154.0.8037.57, Pop!_OS. Wrela 0.9.0, compiler
+de9b81e52a7747870dfbd5223cb8aeb41e584d23. Parent fcc7d35d plus exact archived
+per-variant source/builds. Sequential runs, 60 warmup + 240 measured frames.
+
+GPU spans include source reconstruction, leaf decoding, wood, depth/identity
+visibility, resolve and display compositing. Depth testing replaces optical
+sorting; there is no omitted sort in these paths. CPU timings include camera/light
+updates, repeated CPU source setup, uploads and command recording. Band variants
+record 17 draws, 8 compute passes and 7,952 upload bytes/frame versus 3 draws,
+1 compute pass and 784 bytes for the cached control.
+
+| Variant | Paced GPU p95/p99 ms | Saturated GPU median/p95 ms | CPU frame p99 ms | CPU start to last GPU completion p95/p99 ms |
+| --- | ---: | ---: | ---: | ---: |
+| hierarchy-raster | 1.181/1.198 | 0.353/0.430 | 0.595 | 4.675/4.959 |
+| hierarchy-masks | 1.033/1.038 | 0.265/0.457 | 0.675 | 4.635/4.804 |
+| hierarchy-cache | 0.924/1.019 | 0.275/0.468 | 0.728 | 4.585/4.740 |
+| hierarchy-full | 1.190/1.217 | 0.320/0.425 | 0.645 | 4.580/4.738 |
+| hierarchy-band8 | 2.706/2.893 | 1.467/1.472 | 1.727 | 5.686/6.422 |
+| hierarchy-cull8 | 2.365/2.434 | 1.433/1.439 | 1.703 | 5.637/6.286 |
+| hierarchy-field16 | 2.309/2.437 | 1.459/1.465 | 1.736 | 6.556/6.799 |
+
+The completion measurement includes driver/browser notification; it is not
+input-to-photon latency. These are single per-variant measurements, not paired
+speed claims. The wide regression plus failed memory/quality gates already
+decide the candidates; unchanged profiler machinery was not repeatedly audited.
+Initialization is excluded from steady timings but included in requested allocation
+peaks. Source edits and topology rebuilds are untested; updates here mean the
+actual per-frame view/light/setup work, not arbitrary dynamic asset edits.
+
+| Variant | Engine representation/scratch bytes | All requested live/peak bytes | DRM resident VRAM/GTT bytes | Browser group PSS bytes |
+| --- | ---: | ---: | ---: | ---: |
+| hierarchy-raster | 2,691,024 | 3,100,624/3,117,008 | 17,375,232/9,756,672 | 479,324,160 |
+| hierarchy-masks | 1,642,452 | 2,052,052/2,068,436 | 17,399,808/9,838,592 | 484,488,192 |
+| hierarchy-cache | 1,466,060 | 1,875,660/1,892,044 | 17,682,432/9,936,896 | 487,510,016 |
+| hierarchy-full | 830,052 | 1,239,652/1,256,036 | 17,682,432/9,936,896 | 489,201,664 |
+| hierarchy-band8 | 371,300 | 780,900/797,284 | 17,420,288/10,035,200 | 493,975,552 |
+| hierarchy-cull8 | 371,652 | 781,252/797,636 | 17,670,144/9,936,896 | 495,933,440 |
+| hierarchy-field16 | 191,980 | 601,580/617,964 | 17,698,816/9,953,280 | 492,585,984 |
+
+Engine bytes exclude the same 409,600 common bytes: output 65,536, upload capacity
+262,144, uniform capacity 65,536 and screen 16,384. All-live figures include them.
+Requested accounting includes caches, source data, fallback code data and scratch.
+No declared workgroup arrays are added; thread-private spilling and driver caches
+are not separately attributable to this asset.
+
+DRM and PSS are actual whole-client residency snapshots after the measured run,
+not per-asset attribution or transient physical peaks. Do not sum UMA pools.
+They establish no physical saving. Even the rejected field's 7.64x engine-requested
+compression falls short of 16x; its 67.93% all-live reduction is not a G4 result.
+
+### Verification and next architecture bet
+
+Native AMD checks compare every source card's position, size, seed, tint, normal
+and depth against the existing source function: zero mismatches. Conservative
+spheres contain every card's square support (tested with scale 4, covering fixture
+LODs) and all 22,176 rendered wood vertices. This checks the new hierarchy only;
+it is not held-out asset validation. The first probe used an invalid positional
+argument after a named argument; its failed source/log are preserved.
+
+Retained code matches the measured exact-response variant, with hierarchy disabled,
+64-row targets and no culling by default. The only equivalent cleanup replaces
+the literal 13 ring samples with 3*RINGS+1, where RINGS is 4. The failed volume stays
+in its archive. Format/type checks pass. Frozen model and all eight default images
+are unchanged; native accounting confirms 24 added inactive buffer bytes and
+unchanged textures. No full-suite claim.
+
+The next architecture-level bet is **source-cluster work submission**: emit only
+intersecting card ranges and wood to each region, rather than dispatching every
+source instance through every band. Share that routing with the conventional
+control. First use exact cached response and existing shaded references; demand
+image parity and complete cost near the cached control before coupling it to
+compact appearance. If repeated work cannot be eliminated, abandon band reuse
+as this memory strategy.
+
+For appearance itself, a uniform volume has now failed rendered shading while
+silhouettes stayed fixed. A local adaptive/residual response representation is
+a candidate, not a demonstrated remedy. Do not restart material-moment training.
+Static one-asset 64px results do not cover unseen families, continuous motion,
+natural close-ups, dynamic source changes, or G4's 8–512px range and richness test.
+G1–G7 remain unchanged and unmet.
+
+All seven variants, failed results, exact sources/builds, raw timing, requested
+allocations, physical snapshots and checks are preserved on Pop!_OS in
+build/neural-evidence/g4-source-hierarchy-v1.
+Manifest SHA-256: `410b6972c5ee90a227e686e906f9a324968f366a2e606f7294833013b8387403`.

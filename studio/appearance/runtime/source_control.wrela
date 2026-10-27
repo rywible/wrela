@@ -22,6 +22,8 @@ pub struct Camera: Copy + GpuData {
     pub right: vec3,
     pub up: vec3,
     pub level: u32,
+    pub band: u32 = 0,
+    pub rows: u32 = 64,
 }
 
 // Three coverage-weighted moments. Normal components are decoded before averaging;
@@ -35,8 +37,11 @@ pub struct Moments: Copy + GpuData {
 fn projected(p: vec3, b: Bake, c: Camera) -> ClipPosition {
     let q = p - b.mid
     let xy = vec2(dot(q, c.right), dot(q, c.up)) / b.half
+    let y = if c.rows == 64 { -xy.y } else {
+        -xy.y * (64.0 / f32(c.rows)) + (2.0 * f32(c.band) + f32(c.rows) - 64.0) / f32(c.rows)
+    }
     ClipPosition {
-        position: vec4(xy.x, -xy.y, saturate(0.5 - dot(q, c.direction) / (2.0 * b.half)), 1.0),
+        position: vec4(xy.x, y, saturate(0.5 - dot(q, c.direction) / (2.0 * b.half)), 1.0),
     }
 }
 
@@ -271,6 +276,8 @@ pub struct Source {
     parameters: GpuBuffer<u32>,
     pages: GpuBuffer<u32>,
     tile_slots: GpuBuffer<u32>,
+    hierarchy_nodes: GpuBuffer<vec4>,
+    hierarchy_response: GpuBuffer<vec2u>,
 }
 
 pub fn init(active: bool) -> Source {
@@ -286,19 +293,28 @@ pub fn init(active: bool) -> Source {
             parameters: buffer(1),
             pages: buffer(1),
             tile_slots: buffer(1),
+            hierarchy_nodes: buffer(1),
+            hierarchy_response: buffer(1),
         }
     }
     assert(!source_options::CACHE_RESPONSE || source_options::CACHE_DISTRIBUTION)
     let plant = great_tree()
     let n = plant.cards()
     var cards = buffer(1)
-    if !source_options::PROCEDURAL {
+    if !source_options::PROCEDURAL && !source_hierarchy::ENABLED {
         cards = buffer(n)
         dispatch(cook_cards.bind(plant, n, seed: 7, out: mut cards), over: n)
     }
     var wood_indices: Vec<u32> = Vec::new()
     if source_options::INDEXED {
         for i in 0..LIMB_VERTICES { wood_indices.push(limb_corner(i)) }
+    }
+    var hierarchy_nodes = buffer(1)
+    var hierarchy_response = buffer(1)
+    if source_hierarchy::ENABLED {
+        assert(!source_options::PROCEDURAL && !source_options::CACHE_DISTRIBUTION)
+        hierarchy_nodes = source_hierarchy::nodes(plant, n)
+        hierarchy_response = source_hierarchy::response(plant, n)
     }
     var pages = buffer(1)
     var tile_slots = buffer(1)
@@ -348,6 +364,8 @@ pub fn init(active: bool) -> Source {
         parameters,
         pages,
         tile_slots,
+        hierarchy_nodes,
+        hierarchy_response,
     }
 }
 
@@ -504,14 +522,61 @@ fn identity_card(
     b: Bake,
     c: Camera,
     cards: [Card],
+    nodes: [vec4],
 ) -> IdentityVertex {
-    let card = cards[i.index]
+    let which = if source_hierarchy::ENABLED { source_hierarchy::owner(i.index, nodes) } else { 0 }
+    if source_hierarchy::ENABLED && source_hierarchy::CULL && c.rows < 64 {
+        if source_hierarchy::outside_leaf(
+            which,
+            nodes,
+            b.mid,
+            b.half,
+            c.up,
+            c.band,
+            c.rows,
+            card_scale(c.level),
+        ) {
+            return IdentityVertex {
+                clip: ClipPosition { position: vec4(2.0, 2.0, 0.0, 1.0) },
+                uv: vec2(0.0),
+                surface: Flat { value: 0 },
+                seed: Flat { value: 0 },
+            }
+        }
+    }
+    let card = if source_hierarchy::ENABLED {
+        source_hierarchy::placed(i.index, which, nodes)
+    } else { cards[i.index] }
     let f = card_vertex_value(card, [0, 1, 2, 5][v.index], b, c)
     IdentityVertex { clip: f.clip, uv: f.uv, surface: Flat { value: i.index + 1 }, seed: f.seed }
 }
 
 @vertex
-fn identity_wood(v: VertexIndex, b: Bake, c: Camera, limbs: [Tube<4>]) -> IdentityVertex {
+fn identity_wood(
+    v: VertexIndex,
+    b: Bake,
+    c: Camera,
+    limbs: [Tube<4>],
+    nodes: [vec4],
+) -> IdentityVertex {
+    if source_hierarchy::ENABLED && source_hierarchy::CULL && c.rows < 64 {
+        if source_hierarchy::outside_wood(
+            v.index / LIMB_VERTICES,
+            nodes,
+            b.mid,
+            b.half,
+            c.up,
+            c.band,
+            c.rows,
+        ) {
+            return IdentityVertex {
+                clip: ClipPosition { position: vec4(2.0, 2.0, 0.0, 1.0) },
+                uv: vec2(0.0),
+                surface: Flat { value: 0 },
+                seed: Flat { value: 0 },
+            }
+        }
+    }
     let (p, _, _) = limb_vertex(limbs[v.index / LIMB_VERTICES], v.index % LIMB_VERTICES)
     IdentityVertex {
         clip: projected(p, b, c),
@@ -571,7 +636,7 @@ pub fn draw_identity(s: Source, p: DepthPass<R32Uint>, c: Camera) {
     let b = source_bake()
     draw(
         p,
-        identity_card.bind(b, c, s.cards.items()),
+        identity_card.bind(b, c, s.cards.items(), s.hierarchy_nodes.items()),
         identity_fragment.bind(
             s.atlas,
             s.filter,
@@ -586,7 +651,7 @@ pub fn draw_identity(s: Source, p: DepthPass<R32Uint>, c: Camera) {
     // Each triangle needs its own flat identity. This expanded draw is counted in the comparison.
     draw(
         p,
-        identity_wood.bind(b, c, s.wood.items()),
+        identity_wood.bind(b, c, s.wood.items(), s.hierarchy_nodes.items()),
         identity_fragment.bind(
             s.atlas,
             s.filter,
@@ -620,6 +685,8 @@ fn identity_value(
     c: Camera,
     illumination: u32,
     cards: [Card],
+    nodes: [vec4],
+    response: [vec2u],
     wood: [Tube<4>],
     parameters: [u32],
     atlas: Texture<Rgba8>,
@@ -629,10 +696,12 @@ fn identity_value(
     let light = relight::light(illumination)
     var rgb = vec3(0.0)
     if (key & 0x80000000) == 0 {
-        let card = cards[key - 1]
-        let n = normalize(card.normal.decode())
         let pixels = b.leaves.leaf_width() * 64.0 / (2.0 * b.half)
         let resolved = smoothstep(4.0, 12.0, pixels)
+        let card = if source_hierarchy::ENABLED {
+            source_hierarchy::shaded(key - 1, nodes, response, resolved > 0.0)
+        } else { cards[key - 1] }
+        let n = normalize(card.normal.decode())
         var tissue = vec2(1.0, 0.5)
         if resolved > 0.0 {
             let t = (sample_position(at, aa, b) - projected_xy(card.centre, b, c)) /
@@ -690,6 +759,8 @@ fn resolve_identity(
     c: Camera,
     illumination: u32,
     cards: [Card],
+    nodes: [vec4],
+    response: [vec2u],
     wood: [Tube<4>],
     parameters: [u32],
     atlas: Texture<Rgba8>,
@@ -697,20 +768,22 @@ fn resolve_identity(
     out: mut Slots<vec4>,
     id: GlobalId,
 ) {
-    if id.x >= 4096 { return }
+    if id.x >= 4096 || id.x / 64 < c.band || id.x / 64 >= c.band + c.rows { return }
     let base = vec2u(id.x % 64, id.x / 64) * aa
     var sum = vec4(0.0)
     for y in 0..aa {
         for x in 0..aa {
             let at = base + vec2u(x, y)
             sum += identity_value(
-                ids.load(at.x, at.y),
+                ids.load(at.x, at.y - c.band * aa),
                 at,
                 aa,
                 b,
                 c,
                 illumination,
                 cards,
+                nodes,
+                response,
                 wood,
                 parameters,
                 atlas,
@@ -737,6 +810,8 @@ pub fn finish_identity(
             c,
             illumination,
             s.cards.items(),
+            s.hierarchy_nodes.items(),
+            s.hierarchy_response.items(),
             s.wood.items(),
             s.parameters.items(),
             s.atlas,
