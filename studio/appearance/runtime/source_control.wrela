@@ -269,6 +269,8 @@ pub struct Source {
     card_indices: GpuBuffer<u32>,
     wood_indices: GpuBuffer<u32>,
     parameters: GpuBuffer<u32>,
+    pages: GpuBuffer<u32>,
+    tile_slots: GpuBuffer<u32>,
 }
 
 pub fn init(active: bool) -> Source {
@@ -282,6 +284,8 @@ pub fn init(active: bool) -> Source {
             card_indices: buffer(1),
             wood_indices: buffer(1),
             parameters: buffer(1),
+            pages: buffer(1),
+            tile_slots: buffer(1),
         }
     }
     assert(!source_options::CACHE_RESPONSE || source_options::CACHE_DISTRIBUTION)
@@ -296,6 +300,8 @@ pub fn init(active: bool) -> Source {
     if source_options::INDEXED {
         for i in 0..LIMB_VERTICES { wood_indices.push(limb_corner(i)) }
     }
+    var pages = buffer(1)
+    var tile_slots = buffer(1)
     var parameters = buffer(1)
     if source_options::CACHE_DISTRIBUTION {
         assert(source_options::PROCEDURAL && source_options::INDEXED)
@@ -303,13 +309,13 @@ pub fn init(active: bool) -> Source {
         parameters = buffer(size)
         dispatch(cook_parameters.bind(plant, n, mut parameters), over: size)
     }
-    if leaf_field::MODE == 5 {
+    if leaf_field::MODE == 5 || leaf_field::MODE == 6 {
         assert(!source_options::CACHE_DISTRIBUTION && !source_options::PROCEDURAL)
         parameters = leaf_program::parameters(plant.leaves.per_card)
     }
     var limbs: Vec<Tube<4>> = Vec::new()
     for i in 0..plant.limbs.len() { limbs.push(plant.limbs[i]) }
-    assert(leaf_field::MODE <= 5)
+    assert(leaf_field::MODE <= 6)
     var atlas = texture::<Rgba8>(width: 1, height: 1)
     var compressed = texture::<Bc7>(width: 4, height: 4)
     if leaf_field::MODE == 0 {
@@ -324,6 +330,13 @@ pub fn init(active: bool) -> Source {
     } else if (leaf_field::MODE == 3 || leaf_field::MODE == 4) {
         atlas = leaf_field::masks(plant.leaves.per_card)
     }
+    if leaf_field::MODE == 6 {
+        pages = leaf_tiles::page_buffer()
+        tile_slots = leaf_tiles::slot_buffer()
+        leaf_tiles::prepare(plant.leaves.per_card, parameters, mut pages, mut tile_slots)
+        atlas = leaf_tiles::target()
+        leaf_tiles::fill(plant.leaves.per_card, parameters, tile_slots, mut atlas)
+    }
     Source {
         cards,
         wood: buffer_of(limbs, at_least: 1),
@@ -333,6 +346,14 @@ pub fn init(active: bool) -> Source {
         card_indices: buffer_of([0, 1, 2, 0, 2, 3]),
         wood_indices: buffer_of(wood_indices, at_least: 1),
         parameters,
+        pages,
+        tile_slots,
+    }
+}
+
+pub fn refresh(s: mut Source) {
+    if leaf_field::MODE == 6 && leaf_tiles::REBUILD {
+        leaf_tiles::fill(great_tree().leaves.per_card, s.parameters, s.tile_slots, mut s.atlas)
     }
 }
 
@@ -462,6 +483,7 @@ fn draw_with_atlas<F: Format + Filtered>(
 }
 
 pub fn draw_source(s: Source, p: DepthPass<Rgba16Float>, c: Camera, illumination: u32) {
+    assert(leaf_field::MODE != 6, "coverage tiles require the identity path")
     if leaf_field::MODE == 1 { draw_with_atlas(s, p, c, illumination, s.compressed) } else {
         draw_with_atlas(s, p, c, illumination, s.atlas)
     }
@@ -506,9 +528,14 @@ fn identity_fragment(
     filter: Sampler,
     n: u32,
     parameters: [u32],
+    pages: [u32],
 ) -> u32 {
     if (f.surface.value & 0x80000000) == 0 {
-        if leaf_field::MODE == 3 {
+        if leaf_field::MODE == 6 {
+            if leaf_tiles::coverage(f.seed.value, f.uv, n, parameters, pages, atlas, filter) < 0.5 {
+                discard()
+            }
+        } else if leaf_field::MODE == 3 {
             let (uv, channel) = leaf_field::packed_uv(f.seed.value, f.uv)
             if atlas.sample_level(filter, uv)[channel] < 0.5 { discard() }
         } else {
@@ -533,14 +560,25 @@ fn source_bake() -> Bake {
 
 pub fn draw_identity(s: Source, p: DepthPass<R32Uint>, c: Camera) {
     assert(source_options::INDEXED && !source_options::PROCEDURAL)
-    assert(leaf_field::MODE == 0 || leaf_field::MODE == 3 || leaf_field::MODE == 5)
+    assert(
+        leaf_field::MODE == 0 ||
+            leaf_field::MODE == 3 ||
+            leaf_field::MODE == 5 ||
+            leaf_field::MODE == 6,
+    )
     let plant = great_tree()
     assert(plant.cards() < 0x80000000)
     let b = source_bake()
     draw(
         p,
         identity_card.bind(b, c, s.cards.items()),
-        identity_fragment.bind(s.atlas, s.filter, plant.leaves.per_card, s.parameters.items()),
+        identity_fragment.bind(
+            s.atlas,
+            s.filter,
+            plant.leaves.per_card,
+            s.parameters.items(),
+            s.pages.items(),
+        ),
         indices: s.card_indices,
         index_count: 6,
         instances: plant.cards(),
@@ -549,7 +587,13 @@ pub fn draw_identity(s: Source, p: DepthPass<R32Uint>, c: Camera) {
     draw(
         p,
         identity_wood.bind(b, c, s.wood.items()),
-        identity_fragment.bind(s.atlas, s.filter, plant.leaves.per_card, s.parameters.items()),
+        identity_fragment.bind(
+            s.atlas,
+            s.filter,
+            plant.leaves.per_card,
+            s.parameters.items(),
+            s.pages.items(),
+        ),
         vertices: plant.limbs.len() * LIMB_VERTICES,
         instances: 1,
     )

@@ -1,5 +1,5 @@
 // Leaf-atlas diagnostic: 0 = RGBA8, 1 = BC7, 2 = direct source,
-// 3 = independent128-texel masks, 4 = box-filtered64-texel masks, 5 = specialized source.
+// 3 = independent128-texel masks, 4 = box-filtered64-texel masks, 5 = specialized source, 6 = bounded coverage tiles.
 use engine::plant::{sprig_on, LEAF_TEXELS, LEAF_PATTERNS}
 use std::gpu::{Unorm8x4, FragCoord, Rgba8, Texture, begin_pass, draw, texture}
 use engine::frame::full
@@ -15,7 +15,9 @@ fn texel(k: u32, at: vec2u, n: u32) -> vec4 {
 }
 
 fn decoded_texel(k: u32, pixel: vec2u, n: u32, parameters: [u32]) -> vec4 {
-    if MODE == 5 { leaf_program::texel(k, pixel, n, parameters) } else { texel(k, pixel, n) }
+    if MODE == 5 || MODE == 6 { leaf_program::texel(k, pixel, n, parameters) } else {
+        texel(k, pixel, n)
+    }
 }
 
 pub fn sample(seed: u32, uv: vec2, n: u32, parameters: [u32]) -> vec4 {

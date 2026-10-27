@@ -18,18 +18,19 @@
 
 ## Immediate milestone
 
-The [compiled leaf-program experiment](neural-shaded-appearance.md#compiled-leaf-programs-quality-survives-repeated-decoding-does-not)
-preserves24/24 static numeric quality cases with a3,328-byte source table, but complete
-GPU95/99 exceeds every conventional control by more than2x. Complete requested memory
-falls only9.4–12.6% against packed masks; physical residency savings are unproved.
-Both conservative predicate-cache follow-ups preserve images and fail runtime.
-Retire per-fragment compiled field decoding as the G4 runtime direction.
+The [bounded source-tile comparison](neural-shaded-appearance.md#bounded-source-tiles-recover-speed-then-confront-the-memory-floor)
+recovers packed-mask images exactly at full capacity, with3.06x smaller leaf-subsystem
+storage and8.60% lower complete requested GPU memory. Physical residency savings remain
+unproved; paired warm tails fail1/3saturated comparisons and median is3.15% slower.
+Full-content rebuild cost is measured. Keep the cache as an equally informed
+conventional control; change G4 beyond leaf-only compression.
 
-Next unproven bet: compile fields into a bounded cache of hardware-filtered working
-tiles, using source visibility and sampling knowledge. Charge cache misses, rebuilds,
-scratch and fallback; compare equally informed conventional methods. No new material
-moment training. Frozen model remains unchanged and passes8/24 cases against the
-current controls. G1–G7 remain unchanged and unmet.
+The current dominant storage is849,920bytes of source cards and524,288bytes of
+visibility targets. Next unproven bet: a joint source-instance/visibility hierarchy,
+spending exact source work on boundaries and uncertain/newly exposed samples.
+Compare equally informed conventional selection and charge fallback/scratch.
+Frozen model remains unchanged,8/24cases vs current controls. No new material-moment
+fitting. G1–G7 remain unchanged and unmet.
 
 ## Evidence recorded so far
 
@@ -2344,3 +2345,19 @@ model and native memory unchanged; format/type pass; failures preserved.
 [Report](neural-shaded-appearance.md#compiled-leaf-programs-quality-survives-repeated-decoding-does-not).
 Evidence build/neural-evidence/g4-leaf-program-v1 on Pop!_OS.
 Manifest SHA-256: `7c7e26aba5b3016a8d84c372a7266508861413c6853dd717a8bbac4dec7dd1ff`.
+
+
+### Bounded source tiles recover speed but expose a larger memory floor
+
+Nine AMD variants, exactly two targeted optimizations. Full-capacity tile images
+match packed masks byte for byte;24/24 static cases vs all3controls. Compact
+leaf storage3.06x smaller, complete requested memory8.60% lower, no demonstrated
+physical residency saving. Warm paired tails fail1/3saturated pairs, median+3.15%;
+all12raw runs retained. Full rebuild and resolved material costs measured.
+Keep as conventional control; change G4 toward joint instance/visibility hierarchy.
+Initial assessment5m48s, decision19m10s; no training/newtruth. Frozen model8/24,
+unchanged;8frozen images unchanged; +8inactive buffer bytes; format/typepass.
+Failures preserved; G1–G7 unchanged/unmet.
+[Report](neural-shaded-appearance.md#bounded-source-tiles-recover-speed-then-confront-the-memory-floor).
+Evidence build/neural-evidence/g4-leaf-tiles-v1 on Pop!_OS.
+Manifest SHA-256: `dd1466ac0b5821aac90d9346223b1ca02c7d40a94ff16cb573cf4c3fdf1a3b30`.

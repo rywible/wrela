@@ -922,6 +922,7 @@ pub fn render(s: mut State) {
             over: 64 * 64,
         )
     } else if config::MODE == 10 {
+        source_control::refresh(mut s.source)
         let source_camera = source_control::Camera {
             direction: c.direction,
             right: c.right,

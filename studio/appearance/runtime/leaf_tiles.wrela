@@ -1,0 +1,178 @@
+// Bounded source-coverage tile diagnostic. Overflow retains the compiled source fallback.
+use engine::plant::{LEAF_PATTERNS, LEAF_TEXELS}
+use std::gpu::{
+    Atomics, FragCoord, GlobalId, GpuBuffer, Rgba8, Sampler, Slots, Texture, begin_pass, buffer,
+    dispatch, draw, texture,
+}
+use engine::frame::full
+
+pub const CAPACITY: u32 = 2560
+pub const REBUILD: bool = false
+pub const COMPACT: bool = true
+const CELL: u32 = 4
+const SIDE: u32 = LEAF_TEXELS / CELL
+const PAGES: u32 = LEAF_PATTERNS * SIDE * SIDE
+const EDGE: u32 = CELL + 1
+const COLUMNS: u32 = 16
+
+fn dimensions() -> vec2u {
+    vec2u(COLUMNS * EDGE, ((CAPACITY + 4 * COLUMNS - 1) / (4 * COLUMNS)) * EDGE)
+}
+
+fn classification(page: u32, n: u32, parameters: [u32]) -> u32 {
+    let k = page / (SIDE * SIDE)
+    let base = vec2u(page % SIDE, page / SIDE % SIDE) * CELL
+    var inside = false
+    var outside = false
+    for y in 0..EDGE {
+        for x in 0..EDGE {
+            let p = min(base + vec2u(x, y), vec2u(LEAF_TEXELS - 1))
+            if leaf_program::texel(k, p, n, parameters).r >= 0.5 {
+                inside = true
+            } else { outside = true }
+            if inside && outside { return 0 }
+        }
+    }
+    if inside { 2 } else { 1 }
+}
+
+@compute(64)
+fn classify(n: u32, parameters: [u32], pages: mut Slots<u32>, id: GlobalId) {
+    if COMPACT {
+        if id.x >= PAGES / 16 { return }
+        var packed = 0
+        for lane in 0..16 {
+            packed = packed | (classification(id.x * 16 + lane, n, parameters) << (lane * 2))
+        }
+        pages[id] = packed
+    } else {
+        if id.x >= PAGES / 2 { return }
+        pages[id] = classification(id.x * 2, n, parameters) |
+            (classification(id.x * 2 + 1, n, parameters) << 16)
+    }
+}
+
+// Stable source order makes cache residency independent of training/reference images.
+@compute(1)
+fn assign(pages: mut Atomics<u32>, slots: mut Atomics<u32>, id: GlobalId) {
+    var used = 0
+    if COMPACT {
+        for word in 0..PAGES / 16 {
+            let value = pages.load(word)
+            pages.store(i: PAGES / 16 + word, value: used)
+            for lane in 0..16 {
+                if ((value >> (lane * 2)) & 3) == 0 {
+                    if used < CAPACITY { slots.store(i: used, value: word * 16 + lane) }
+                    used += 1
+                }
+            }
+        }
+    } else {
+        for word in 0..PAGES / 2 {
+            let value = pages.load(word)
+            var packed = 0
+            for lane in 0..2 {
+                var entry = (value >> (lane * 16)) & 65535
+                if entry == 0 {
+                    if used < CAPACITY {
+                        slots.store(i: used, value: word * 2 + lane)
+                        entry = used + 3
+                    }
+                    used += 1
+                }
+                packed = packed | (entry << (lane * 16))
+            }
+            pages.store(i: word, value: packed)
+        }
+    }
+    for index in min(used, CAPACITY)..CAPACITY { slots.store(i: index, value: 0xffffffff) }
+    slots.store(i: CAPACITY, value: used)
+}
+
+pub fn entry(page: u32, pages: [u32]) -> u32 {
+    if !COMPACT { return (pages[page / 2] >> ((page % 2) * 16)) & 65535 }
+    let word = pages[page / 16]
+    let lane = page % 16
+    let kind = (word >> (lane * 2)) & 3
+    if kind != 0 { return kind }
+    let mixed = (0xffffffff ^ (word | (word >> 1))) & 0x55555555
+    let lower = (u32(1) << (lane * 2)) - 1
+    let rank = pages[PAGES / 16 + page / 16] + (mixed & lower).count_ones()
+    if rank >= CAPACITY { 0 } else { rank + 3 }
+}
+
+pub fn prepare(
+    n: u32,
+    parameters: GpuBuffer<u32>,
+    pages: mut GpuBuffer<u32>,
+    slots: mut GpuBuffer<u32>,
+) {
+    assert(CAPACITY > 0 && CAPACITY < 65533 && LEAF_TEXELS % CELL == 0)
+    dispatch(classify.bind(n, parameters.items(), mut pages), over: if COMPACT { PAGES / 16 } else {
+        PAGES / 2
+    })
+    dispatch(assign.bind(mut pages, mut slots), over: 1)
+}
+
+pub fn page_buffer() -> GpuBuffer<u32> {
+    buffer(if COMPACT { PAGES / 8 } else { PAGES / 2 })
+}
+
+pub fn slot_buffer() -> GpuBuffer<u32> {
+    buffer(CAPACITY + 1)
+}
+
+pub fn target() -> Texture<Rgba8> {
+    let size = dimensions()
+    texture(width: size.x, height: size.y)
+}
+
+@fragment
+fn cook(pixel: FragCoord, n: u32, parameters: [u32], slots: [u32]) -> vec4 {
+    let p = vec2u(pixel.position.xy)
+    let packed = (p.y / EDGE) * COLUMNS + p.x / EDGE
+    let local = p % EDGE
+    var result = vec4(0.0)
+    for channel in 0..4 {
+        let slot = packed * 4 + channel
+        if slot >= min(slots[CAPACITY], CAPACITY) { continue }
+        let page = slots[slot]
+        let base = vec2u(page % SIDE, page / SIDE % SIDE) * CELL
+        let at = min(base + local, vec2u(LEAF_TEXELS - 1))
+        result[channel] = leaf_program::texel(page / (SIDE * SIDE), at, n, parameters).r
+    }
+    result
+}
+
+pub fn fill(n: u32, parameters: GpuBuffer<u32>, slots: GpuBuffer<u32>, atlas: mut Texture<Rgba8>) {
+    let p = begin_pass(mut atlas)
+    draw(p, full.bind(z: 0.5), cook.bind(n, parameters.items(), slots.items()), vertices: 3)
+    p.end()
+}
+
+pub fn coverage(
+    seed: u32,
+    uv: vec2,
+    n: u32,
+    parameters: [u32],
+    pages: [u32],
+    atlas: Texture<Rgba8>,
+    filter: Sampler,
+) -> f32 {
+    let local = clamp(
+        uv * 0.5 + vec2(0.5),
+        vec2(0.5 / f32(LEAF_TEXELS)),
+        vec2(1.0 - 0.5 / f32(LEAF_TEXELS)),
+    )
+    let p = local * f32(LEAF_TEXELS) - vec2(0.5)
+    let cell = vec2u(p) / CELL
+    let page = (seed % LEAF_PATTERNS) * SIDE * SIDE + cell.y * SIDE + cell.x
+    let entry = entry(page, pages)
+    if entry == 0 { return leaf_field::sample(seed, uv, n, parameters).r }
+    if entry < 3 { return if entry == 1 { 0.0 } else { 1.0 } }
+    let slot = entry - 3
+    let packed = slot / 4
+    let origin = vec2u(packed % COLUMNS, packed / COLUMNS) * EDGE
+    let sample = (vec2(origin) + p - vec2(cell * CELL) + vec2(0.5)) / vec2(dimensions())
+    atlas.sample_level(filter, sample)[slot % 4]
+}

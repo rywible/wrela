@@ -2250,3 +2250,32 @@ Initial assessment6m27s; decision36m30s. Frozen model/eight images/native memory
 unchanged; format/type pass; no full suite. G1–G7 unchanged/unmet.
 [Full evidence](neural-shaded-appearance.md#compiled-leaf-programs-quality-survives-repeated-decoding-does-not).
 Evidence build/neural-evidence/g4-leaf-program-v1 on Pop!_OS.
+
+
+### 2026-10-27 — Bounded source coverage tiles
+
+AMD RADV RENOIR/Ryzen5 5500U, Mesa26.1.6, Chrome154.0.8037.57, Pop!_OS;
+Wrela0.9.0 compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23. Parent2d9016a9
+plus exact archived sources. Solo/sequential,64px,60warmup+240measuredframes.
+Nine variants:3conventional controls and3cache configurations, each warm/rebuilt.
+Exactly2targeted optimizations, no training or new shaded truth.
+
+All9pass24/24 numeric cases against each control. All32full-capacity tile images
+exactly match packed masks;24warm/rebuild pairs identical. Compact coverage storage
+85,764bytes vs262,156 for packed subsystem (3.06x), but complete live allocations
+1,875,636 vs2,052,028 (8.60% reduction). Physical residency savings remain unproved.
+
+Compact warm GPU95/99=1.034/1.091ms; full-rebuild1.167/1.212ms;
+packed control1.040/1.043ms. Three paired warm comparisons:0/3paced failures,
+1/3saturated95/99 failures; saturated median+3.15%. All12raw runs retained.
+Full-material stress GPU95/99=1.251/1.297ms vs forwardRGBA8 1.157/1.183ms;
+compact and packed RGBA identical, no actual close-up validation.
+
+Decision: change G4 beyond leaf-only caching; retain cache as conventional control.
+Cards849,920bytes and visibility targets524,288 dominate the current renderer.
+Next unproven bet: joint source-instance/visibility hierarchy with exact fallback.
+Initial assessment5m48s; decision19m10s. Frozen model8/24 vs controls, unchanged.
+Frozen8images unchanged; +8inactive buffer bytes counted; format/typepass.
+Failures preserved; no full suite; G1–G7 unchanged/unmet.
+[Full evidence](neural-shaded-appearance.md#bounded-source-tiles-recover-speed-then-confront-the-memory-floor).
+Evidence build/neural-evidence/g4-leaf-tiles-v1 on Pop!_OS.

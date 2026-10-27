@@ -2109,3 +2109,201 @@ All six source/build variants, raw frames, quality cases, conformance captures,
 requested allocations, DRM/PSS snapshots, decision and unsuccessful results are in
 build/neural-evidence/g4-leaf-program-v1 on Pop!_OS.
 Manifest SHA-256: `7c7e26aba5b3016a8d84c372a7266508861413c6853dd717a8bbac4dec7dd1ff`.
+
+
+## Bounded source tiles: recover speed, then confront the memory floor
+
+**Decision: change the G4 representation beyond leaf-only caching.** Retain bounded
+source tiles as an equally informed conventional control. All full-capacity tile
+variants reproduce the packed-mask control's eight RGBA images exactly. The compact
+cache reduces complete requested GPU memory 8.60%, but establishes no physical
+residency saving. Warm paired GPU tails fail one of three saturated comparisons;
+the saturated median is 3.15% slower. Neither memory nor runtime qualifies for G4.
+
+The useful result is concrete: 85,764 bytes of source parameters, coverage tiles,
+page metadata and reverse mapping replace 262,156 bytes for the packed leaf subsystem,
+including its inactive handles. That is 3.06x for this subsystem, not 16x whole-renderer
+compression. The frozen neural model remains unchanged and passes only 8/24 numeric
+cases against each current conventional control.
+
+Solo Pop!_OS work began 2026-10-27 22:30:18 UTC. Initial five-way comparison completed
+22:36:05 UTC, about 5m48s; decision22:49:28 UTC, about 19m10s. Exactly two targeted
+optimization experiments followed. No training, new shaded truth or reference
+infrastructure was added.
+
+### Executable cache and fair controls
+
+[leaf_tiles.wrela](../studio/appearance/runtime/leaf_tiles.wrela) divides each of
+16 authored leaf patterns into 4x4 bilinear-cell pages. A page whose 5x5 support
+texels are entirely above or below the coverage threshold stores a predicate.
+Mixed pages receive a hardware-filtered 5x5 tile. Four independent tile masks pack
+into RGBA channels; a two-dimensional atlas avoids a narrow texture layout.
+The 3,328-byte compiled source table supplies tile construction and exact source
+evaluation on capacity overflow. There is no hidden full atlas fallback.
+
+Pages are assigned in deterministic source order, independent of cameras and
+reference images. This is bounded source coverage storage, not a production demand
+scheduler. View-dependent demand selection and dynamic source edits are untested.
+
+The initial budget holds1,024 mixed pages in a25,600-byte texture, with32,768 bytes
+of16-bit page entries and4,100 bytes of reverse mapping/counter. The first follow-up
+raises capacity to2,560:64,000 texture bytes and10,244 reverse-map bytes. A GPU check
+finds2,360 mixed pages, so this budget has no overflow. The second follow-up reduces
+the page table to8,192 bytes: two-bit classes plus one prefix rank per16pages;
+count_ones locates a mixed tile. The engine already uses rank from bit counts in
+[light selection](../engine/lights.wrela); this cache implementation is our own.
+
+Each cache configuration has two workloads: warm content, and rebuilding every
+resident tile before every frame. The latter charges full tile-content eviction cost;
+static source page metadata stays resident. It does not measure source-topology
+invalidation or a page-request/eviction scheduler. Both keep the same memory budget.
+
+Three conventional controls receive identical useful source data:
+original forward fullRGBA8, fullRGBA8 behind the surface-ID renderer, and packed128
+coverage behind that renderer. All use the same stored cards, authored wood, materials,
+seed, cameras, lights and16visibility samples. No privileged learned inputs.
+
+### Shaded quality and silhouettes
+
+Reuse completed AA64 truth: two public views, four lights, three backgrounds,64px;
+established exposure0.62 tone mapping, sRGB, FLIP and LPIPS. These are static numeric
+cases, not motion, human judgments, unseen families or natural close-up validation.
+
+| Variant | Mean PSNR dB | FLIP | LPIPS | Coverage MAE | Cases vs each of3controls |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| tile-raster | 40.294314 | 0.01300185 | 0.00249142 | 0.01005954 | 24/24 |
+| tile-atlas | 40.294466 | 0.01300426 | 0.00249026 | 0.01005954 | 24/24 |
+| tile-masks | 40.295971 | 0.01300193 | 0.00249104 | 0.01005954 | 24/24 |
+| tile-warm1024 | 40.293435 | 0.01300814 | 0.00248110 | 0.01007283 | 24/24 |
+| tile-rebuild1024 | 40.293435 | 0.01300814 | 0.00248110 | 0.01007283 | 24/24 |
+| tile-warm2560 | 40.295971 | 0.01300193 | 0.00249104 | 0.01005954 | 24/24 |
+| tile-rebuild2560 | 40.295971 | 0.01300193 | 0.00249104 | 0.01005954 | 24/24 |
+| tile-compact-warm2560 | 40.295971 | 0.01300193 | 0.00249104 | 0.01005954 | 24/24 |
+| tile-compact-rebuild2560 | 40.295971 | 0.01300193 | 0.00249104 | 0.01005954 | 24/24 |
+
+Worst boundary p99 is2.0pixels for all variants. All32 full-capacity cache images
+match packed masks byte for byte. All24 warm/rebuild image pairs are identical.
+The three controls reproduce24 earlier images exactly. The smaller cache uses source
+fallback and has small measured differences from hardware-filtered coverage.
+
+Bounded verification of the compact2,560-slot cache checks every16,384 page entry and
+reverse mapping:11,562 outside,2,462 inside,2,360 cached, zero overflow or invalid entry.
+Four fractional phases across all262,144 bilinear cells produce zero threshold
+mismatches against the compiled source; maximum mixed-region difference is5.96e-8.
+This checks the new lookup/filtering implementation at those phases, not new truth
+or equality for every possible floating-point coordinate.
+
+### Complete cost and residency
+
+AMD RADV RENOIR/PCI1002:164c, Ryzen5 5500U, Mesa26.1.6, Chrome154.0.8037.57;
+Wrela0.9.0 compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23.
+Sequential builds, captures, scoring and GPU profiles; one worker,60warmup+240frames.
+
+GPU spans include source geometry, wood, cache/fallback decoding, depth ordering,
+visibility, attribute reconstruction, shading, resolve and final composite. Rebuild
+work is inside the same frame. CPU includes source/view/light updates, uploads and
+recording. Warm deferred paths upload768bytes/frame, rebuild paths1,024, original
+forward1,120. Depth supplies ordering; no optical-patch sort runs. Initialization is
+outside steady timing and inside allocation peaks. Completion includes driver/browser
+notification, not input-to-photon latency.
+
+| Variant | Paced GPU p95/p99 ms | Saturated GPU p95 ms | CPU p99 ms | CPU to final GPU p95/p99 ms | Engine appearance/scratch bytes | All requested live/peak GPU bytes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| tile-raster | 1.147/1.187 | 0.436 | 0.599 | 4.150/4.291 | 2,691,000 | 3,100,600/3,116,984 |
+| tile-atlas | 1.052/1.071 | 0.471 | 0.648 | 4.605/4.806 | 2,428,860 | 2,838,460/2,854,844 |
+| tile-masks | 1.040/1.043 | 0.367 | 0.731 | 4.306/4.597 | 1,642,428 | 2,052,028/2,068,412 |
+| tile-warm1024 | 1.416/2.106 | 1.298 | 0.688 | 4.451/4.936 | 1,446,068 | 1,855,668/1,872,052 |
+| tile-rebuild1024 | 2.177/2.230 | 1.330 | 0.720 | 4.555/4.839 | 1,446,068 | 1,855,668/1,872,052 |
+| tile-warm2560 | 1.053/1.056 | 0.486 | 0.688 | 4.486/4.693 | 1,490,612 | 1,900,212/1,916,596 |
+| tile-rebuild2560 | 1.159/1.205 | 0.443 | 0.729 | 4.350/4.510 | 1,490,612 | 1,900,212/1,916,596 |
+| tile-compact-warm2560 | 1.034/1.091 | 0.556 | 0.721 | 3.941/4.151 | 1,466,036 | 1,875,636/1,892,020 |
+| tile-compact-rebuild2560 | 1.167/1.212 | 0.454 | 0.664 | 4.316/4.450 | 1,466,036 | 1,875,636/1,892,020 |
+
+All requested bytes include source geometry, cache, page tables, reverse mappings,
+fallback data, scratch, dummy resources, rings and output. Engine-only excludes the
+same409,600 common bytes: output65,536, upload262,144, uniforms65,536, screen16,384.
+No workgroup shared array is declared. Registers/spills and driver caches are not
+attributed to individual assets; the whole-client physical observations below remain
+separate from requested allocation accounting.
+
+| Variant | DRM resident VRAM bytes | DRM resident GTT bytes | Browser-group PSS bytes |
+| --- | ---: | ---: | ---: |
+| tile-raster | 17,375,232 | 9,740,288 | 477,795,328 |
+| tile-atlas | 17,371,136 | 9,838,592 | 479,353,856 |
+| tile-masks | 17,387,520 | 9,838,592 | 484,413,440 |
+| tile-warm1024 | 17,670,144 | 9,936,896 | 486,490,112 |
+| tile-rebuild1024 | 17,670,144 | 9,936,896 | 486,781,952 |
+| tile-warm2560 | 17,670,144 | 9,936,896 | 485,765,120 |
+| tile-rebuild2560 | 17,670,144 | 9,936,896 | 485,760,000 |
+| tile-compact-warm2560 | 17,686,528 | 9,936,896 | 485,329,920 |
+| tile-compact-rebuild2560 | 17,403,904 | 10,035,200 | 484,701,184 |
+
+These are actual whole-client residency snapshots, not per-asset attribution or
+transient physical peaks. UMA counters can overlap and are not summed. No physical
+residency saving is established.
+
+### Paired warm tails and resolved-material branch
+
+The compact warm candidate receives three alternating pairs against a private copy
+of the packed-mask build. All12 completed raw runs are retained before profiler
+output reuse, including unfavorable tails. No power/clock settings are changed.
+
+| Phase | GPU p95 ratios, pairs1/2/3 | GPU p99 ratios, pairs1/2/3 | Pairs failing either1.1x limit |
+| --- | ---: | ---: | ---: |
+| paced | 0.466/0.290/0.276 | 0.757/0.469/0.427 | 0/3 |
+| saturated | 0.950/1.105/0.931 | 0.672/1.373/0.822 | 1/3 |
+
+The paced candidate is faster in these paired runs, while its saturated median is
+3.15% slower and one saturated pair fails both tail gates. In that pair p95/p99 is
+0.420/0.632ms versus control0.380/0.460ms. The initial unpaired warm candidate's p95
+was1.034ms; paired paced p95 ranges0.287–0.484ms. Preserve that variation and avoid
+a universal speedup claim. No power-state or driver cause is inferred.
+
+Raw reports use consistent NumPy linear quantiles on240post-warmup GPU spans;
+the CLI's upper median is separately reproduced against its aggregate for all
+saturated runs. Baseline copies preserve the original measured build.
+
+The established material-branch stress forces pixels=12 while keeping64px geometry.
+This exercises compiled tissue decoding after cached coverage without adding truth.
+Compact-cache and packed-mask RGBA match for all8images; both retain identical
+coverage versus original forwardRGBA8. Maximum RGB RMSE versus forward is0.00031976,
+maximum absolute RGBA difference0.02413559. Those discrepancies remain measured.
+
+| Full-material stress | Paced GPU p95/p99 ms |
+| --- | ---: |
+| tile-raster | 1.157/1.183 |
+| tile-masks | 1.330/1.449 |
+| tile-compact-warm2560 | 1.251/1.297 |
+
+These are single stress runs, not a repeated full-detail gate or natural close-up
+validation. The original full atlas remains a strong speed control.
+
+### Why the next bet must change the larger representation
+
+The compact cache uses85,764 bytes, but stored cards use849,920 and the visibility
+ID/depth targets524,288. Even deleting the entire leaf subsystem would leave
+1,789,872 requested live bytes, or1,380,272 excluding declared common resources.
+Against the current packed control's1,642,428 engine bytes, that hypothetical floor
+is only1.19x smaller. This is a floor for this fixture and accounting, not a general
+limit on neural rendering.
+
+Retire leaf-only cache tuning as the route to G4. The next unproven bet is a joint
+source-instance/visibility hierarchy: spend exact source work on boundaries and
+uncertain or newly exposed samples; use compact appearance where it is predictable.
+An equally informed conventional hierarchy must receive the same source, visibility
+and sampling information. Count exact fallback, selection, decoding and scratch.
+The shortest next experiment is one bounded hierarchy against the retained cached
+source control, guided by existing rendered silhouette errors. No new material-moment
+training is justified by this block.
+
+Defaults/model and all8 frozen images are restored unchanged. Two inactive handles
+add8 GPU buffer bytes; native accounting verifies this and unchanged texture counts.
+Format/type checks pass. Retained source matches the measured compact implementation,
+plus a CPU guard rejecting an unsupported forward/tile combination. A failed first
+compact build using unsupported bitwise-not syntax is preserved with its correction.
+No full-suite claim. G1–G7 remain unchanged and unmet.
+
+All9 variants,12raw paired runs, material checks, conformance captures, memory
+observations, failed results and exact source/build archives are preserved in
+build/neural-evidence/g4-leaf-tiles-v1 on Pop!_OS.
+Manifest SHA-256: `dd1466ac0b5821aac90d9346223b1ca02c7d40a94ff16cb573cf4c3fdf1a3b30`.
