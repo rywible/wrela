@@ -1,5 +1,5 @@
-// Conventional source-card control. Geometry and shading are copied without changes
-// from the established shaded reference; only sample count and accumulation precision differ.
+// Conventional source controls: raster shading and deferred shading from sample IDs.
+// Both use authored geometry, masks and material laws; measured differences are recorded.
 use engine::impostor::{BAKED, Bake, BakeVertex}
 use engine::plant::{
     Card, Plant, LIMB_VERTICES, card_at, limb_point, limb_corner, card_scale, card_tint, card_turn,
@@ -9,7 +9,7 @@ use engine::light::{Light, Lit, matte}
 use great_tree::tree::great_tree
 use std::gpu::{GlobalId, Slots, Oct32, Unorm8x4}
 use engine::noise::{direction, rand, pick}
-use std::gpu::{Bc7, Format, Filtered, copy_buffer_to_texture}
+use std::gpu::{Bc7, Format, Filtered, Half2, R32Uint, copy_buffer_to_texture}
 use engine::compress::encode_bc7
 use std::field::Tube
 use std::gpu::{
@@ -459,4 +459,216 @@ pub fn draw_source(s: Source, p: DepthPass<Rgba16Float>, c: Camera, illumination
     if leaf_field::MODE == 1 { draw_with_atlas(s, p, c, illumination, s.compressed) } else {
         draw_with_atlas(s, p, c, illumination, s.atlas)
     }
+}
+
+// A sample stores its exact source surface, not averaged material moments.
+struct IdentityVertex: Copy {
+    clip: ClipPosition,
+    uv: vec2,
+    surface: Flat<u32>,
+    seed: Flat<u32>,
+}
+
+@vertex
+fn identity_card(
+    v: VertexIndex,
+    i: InstanceIndex,
+    b: Bake,
+    c: Camera,
+    cards: [Card],
+) -> IdentityVertex {
+    let card = cards[i.index]
+    let f = card_vertex_value(card, [0, 1, 2, 5][v.index], b, c)
+    IdentityVertex { clip: f.clip, uv: f.uv, surface: Flat { value: i.index + 1 }, seed: f.seed }
+}
+
+@vertex
+fn identity_wood(v: VertexIndex, b: Bake, c: Camera, limbs: [Tube<4>]) -> IdentityVertex {
+    let (p, _, _) = limb_vertex(limbs[v.index / LIMB_VERTICES], v.index % LIMB_VERTICES)
+    IdentityVertex {
+        clip: projected(p, b, c),
+        uv: vec2(0.0),
+        surface: Flat { value: 0x80000000 | (v.index / 3) },
+        seed: Flat { value: 0 },
+    }
+}
+
+@fragment
+fn identity_fragment(f: IdentityVertex, atlas: Texture<Rgba8>, filter: Sampler) -> u32 {
+    if (f.surface.value & 0x80000000) == 0 {
+        let (uv, channel) = leaf_field::packed_uv(f.seed.value, f.uv)
+        if atlas.sample_level(filter, uv)[channel] < 0.5 { discard() }
+    }
+    f.surface.value
+}
+
+fn source_bake() -> Bake {
+    let plant = great_tree()
+    Bake {
+        mid: vec3(0.0, plant.top() * 0.5, 0.0),
+        half: plant.reach() + plant.leaves.size * 1.2 * card_scale(BAKED) * 0.5 * 1.415,
+        leaves: plant.leaves,
+        bark: plant.bark,
+    }
+}
+
+pub fn draw_identity(s: Source, p: DepthPass<R32Uint>, c: Camera) {
+    assert(source_options::INDEXED && !source_options::PROCEDURAL && leaf_field::MODE == 3)
+    let plant = great_tree()
+    assert(plant.cards() < 0x80000000)
+    let b = source_bake()
+    draw(
+        p,
+        identity_card.bind(b, c, s.cards.items()),
+        identity_fragment.bind(s.atlas, s.filter),
+        indices: s.card_indices,
+        index_count: 6,
+        instances: plant.cards(),
+    )
+    // Each triangle needs its own flat identity. This expanded draw is counted in the comparison.
+    draw(
+        p,
+        identity_wood.bind(b, c, s.wood.items()),
+        identity_fragment.bind(s.atlas, s.filter),
+        vertices: plant.limbs.len() * LIMB_VERTICES,
+        instances: 1,
+    )
+}
+
+fn sample_position(at: vec2u, aa: u32, b: Bake) -> vec2 {
+    ((vec2(at) + vec2(0.5)) / f32(64 * aa) * 2.0 - vec2(1.0)) * b.half
+}
+
+fn projected_xy(p: vec3, b: Bake, c: Camera) -> vec2 {
+    let q = p - b.mid
+    vec2(dot(q, c.right), dot(q, c.up))
+}
+
+fn cross2(a: vec2, b: vec2) -> f32 {
+    a.x * b.y - a.y * b.x
+}
+
+fn identity_value(
+    key: u32,
+    at: vec2u,
+    aa: u32,
+    b: Bake,
+    c: Camera,
+    illumination: u32,
+    cards: [Card],
+    wood: [Tube<4>],
+    parameters: [u32],
+) -> vec4 {
+    if key == 0 { return vec4(0.0) }
+    let light = relight::light(illumination)
+    var rgb = vec3(0.0)
+    if (key & 0x80000000) == 0 {
+        let card = cards[key - 1]
+        let n = normalize(card.normal.decode())
+        let pixels = b.leaves.leaf_width() * 64.0 / (2.0 * b.half)
+        let resolved = smoothstep(4.0, 12.0, pixels)
+        var tissue = vec2(1.0, 0.5)
+        if resolved > 0.0 {
+            let t = (sample_position(at, aa, b) - projected_xy(card.centre, b, c)) /
+                (card.size * card_scale(c.level) * 0.5)
+            let axis = card_turn(card, vec2(1.0, 0.0))
+            let uv = vec2(dot(t, axis), dot(t, vec2(-axis.y, axis.x)))
+            tissue = leaf_field::sample(card.seed, uv, b.leaves.per_card, parameters).ba
+        }
+        let transmission = mix(1.0, mix(0.4, 1.06, tissue.x), resolved)
+        let fold = mix(1.0, mix(0.92, 1.04, tissue.y), resolved)
+        rgb = relight::leaf(
+            light,
+            c.direction,
+            n,
+            tinted(leaf_age(b.leaves, n.y), card_tint(card)) * fold,
+            b.leaves.through * transmission,
+            card.depth,
+            pixels,
+        )
+    } else {
+        let vertex = (key & 0x7fffffff) * 3
+        let limb = wood[vertex / LIMB_VERTICES]
+        let k = vertex % LIMB_VERTICES
+        let (p0, n0, _) = limb_vertex(limb, k)
+        let (p1, n1, _) = limb_vertex(limb, k + 1)
+        let (p2, n2, _) = limb_vertex(limb, k + 2)
+        let q0 = projected_xy(p0, b, c)
+        let e1 = projected_xy(p1, b, c) - q0
+        let e2 = projected_xy(p2, b, c) - q0
+        let q = sample_position(at, aa, b) - q0
+        let determinant = cross2(e1, e2)
+        let u = if abs(determinant) > 1.0e-20 { cross2(q, e2) / determinant } else { 0.0 }
+        let v = if abs(determinant) > 1.0e-20 { cross2(e1, q) / determinant } else { 0.0 }
+        let n = normalize(n0 * (1.0 - u - v) + n1 * u + n2 * v)
+        let surface = Lit {
+            albedo: mix(b.bark.dark, b.bark.light, vec3(0.5)),
+            n,
+            sun: 1.0,
+            sky: relight::sky(n),
+            through: vec3(0.0),
+        }
+        rgb = matte(light, surface, world: vec3(0.0), eye: c.direction)
+    }
+    // Match the conventional Rgba16Float sample target before its float32 resolve.
+    vec4(Half2::encode(rgb.xy).decode(), Half2::encode(vec2(rgb.z, 1.0)).decode())
+}
+
+@compute(64)
+fn resolve_identity(
+    ids: Texture<R32Uint>,
+    aa: u32,
+    b: Bake,
+    c: Camera,
+    illumination: u32,
+    cards: [Card],
+    wood: [Tube<4>],
+    parameters: [u32],
+    out: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    if id.x >= 4096 { return }
+    let base = vec2u(id.x % 64, id.x / 64) * aa
+    var sum = vec4(0.0)
+    for y in 0..aa {
+        for x in 0..aa {
+            let at = base + vec2u(x, y)
+            sum += identity_value(
+                ids.load(at.x, at.y),
+                at,
+                aa,
+                b,
+                c,
+                illumination,
+                cards,
+                wood,
+                parameters,
+            )
+        }
+    }
+    out[id] = sum / f32(aa * aa)
+}
+
+pub fn finish_identity(
+    s: Source,
+    ids: Texture<R32Uint>,
+    aa: u32,
+    c: Camera,
+    illumination: u32,
+    out: mut GpuBuffer<vec4>,
+) {
+    dispatch(
+        resolve_identity.bind(
+            ids,
+            aa,
+            source_bake(),
+            c,
+            illumination,
+            s.cards.items(),
+            s.wood.items(),
+            s.parameters.items(),
+            mut out,
+        ),
+        over: 4096,
+    )
 }

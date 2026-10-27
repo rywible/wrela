@@ -18,18 +18,17 @@
 
 ## Immediate milestone
 
-The [source leaf storage comparison](neural-shaded-appearance.md#source-leaf-storage-a-useful-distant-control-not-an-all-scale-solution)
-keeps a stronger conventional distant-view control: independent 128-texel coverage
-masks save 25.36% of complete requested GPU allocation, pass all24 numeric cases
-against the original atlas, and keep paired GPU p95 within3.3%. Physical residency
-reduction is unproved. Full tissue evaluation costs3.366x control p95 in a branch
-stress check, so this is not an all-scale deployment solution.
+The [surface-identity comparison](neural-shaded-appearance.md#surface-identities-preserve-visibility-but-reject-the-tail-regressions)
+preserves all coverage and passes24/24 shaded numeric cases while reducing requested
+GPU allocations11.33% with stored cards, or38.86% with reconstructed source placement.
+Both fail repeated p95/p99 runtime comparisons; physical memory savings remain unproved.
+Direct identity avoids substantial full-material evaluation work, but the original
+larger RGBA8 atlas remains a strong speed control. No G4 promotion.
 
-Change the compact appearance architecture: frozen AA2 passes only8/24 cases
-against the stronger control. Next test sample-local surface identity and deferred
-source shading, with equal source/sampling knowledge for conventional methods.
-No more fitting until an actual rendered response problem or costly field is found.
-G1-G7 remain unchanged and unmet.
+Change the representation again: specialize source leaf/material programs into compact
+constant tables and decoders, sharing exact visibility. Move invariant computation
+and uniform uploads out of each frame. Any neural decoder must beat an equally
+informed analytic decoder. G1–G7 remain unchanged and unmet.
 
 ## Evidence recorded so far
 
@@ -2311,3 +2310,20 @@ with16 extra inactive texture bytes counted. Format/type pass; no full-suite cla
 [Report](neural-shaded-appearance.md#source-leaf-storage-a-useful-distant-control-not-an-all-scale-solution).
 Evidence build/neural-evidence/g4-leaf-storage-v1 on Pop!_OS.
 Manifest SHA-256: `c01382504fc39faeee1e12d68966e4b3a87c33fa0d4834ce5f2659010bba4503`.
+
+
+### Surface identities preserve quality but do not clear the runtime tails
+
+Four AMD variants, two optimization follow-ups. All3identity methods pass24/24 cases,
+preserve coverage, and the followups match direct RGBA exactly. Stored-card IDs save
+11.33% requested GPU memory; source reconstruction saves38.86%. Repeated GPU95/99
+comparisons fail, despite a9.64% saturated median improvement for direct identity.
+All24raw paired runs, actual residency observations and failed results remain recorded.
+Full-material stress is2.71x faster than packed-source evaluation, while the original
+larger RGBA8 atlas is still faster. Keep as conventional control; change G4 representation.
+Next: partial evaluation of source programs and compact invariant parameter storage.
+Initial assessment5m31s, decision21m58s; no training/newtruth; frozen8images/model unchanged,
++4inactive texture bytes counted. Format/type pass, no full-suite claim.
+[Report](neural-shaded-appearance.md#surface-identities-preserve-visibility-but-reject-the-tail-regressions).
+Evidence build/neural-evidence/g4-surface-identity-v1 on Pop!_OS.
+Manifest SHA-256: `7d8a6a58ed568e092da0264b6b5b770fd22235a276b6fc9cad69984277e5e285`.

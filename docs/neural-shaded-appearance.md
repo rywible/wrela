@@ -1746,3 +1746,210 @@ Motion, unseen views/lights/individuals, the 8-512-pixel range, families and G6
 sustained budgets remain unvalidated. G1-G7 are unchanged and unmet.
 Evidence: build/neural-evidence/g4-leaf-storage-v1 on Pop!_OS.
 Manifest SHA-256: `c01382504fc39faeee1e12d68966e4b3a87c33fa0d4834ce5f2659010bba4503`.
+
+
+## Surface identities: preserve visibility, but reject the tail regressions
+
+**Decision: change the G4 representation again.** Exact surface identity followed by
+source shading is a useful conventional control, but neither measured storage option
+qualifies as a G4 winner. The stored-card version saves 11.33% of complete requested
+GPU allocation and lowers paired saturated median time 9.64%, yet fails p95/p99
+tails in two of three saturated pairs and one paced pair. Regenerating source
+placement saves 38.86% of live allocations, but fails all three paced tail comparisons.
+Physical residency savings remain unproved; neither requested reduction approaches 16x.
+
+All three identity alternatives pass 24/24 numeric shaded-quality cases against the
+packed-mask source control, with byte-identical coverage. The two optimization
+follow-ups preserve the first identity path's eight RGBA outputs exactly.
+Per-pixel shading reuse increased GPU cost and is disabled. Per-frame source
+placement is retained as a measured memory tradeoff, not promoted for deployment.
+
+Solo Pop!_OS work began 2026-10-27 21:17:46 UTC. Initial assessment completed at
+21:23:17 UTC (5m31s); decision at 21:39:43 UTC (21m58s). Exactly two optimization
+experiments followed the initial comparison. No model training or new truth generation.
+
+### The complete executable representation
+
+The [engine already uses integer visibility IDs](../engine/virtual.wrela).
+This experiment applies that separation to the source foliage fixture:
+
+- Rasterize the same leaf masks and wood geometry into R32Uint IDs and depth.
+  Zero denotes background, positive low IDs identify leaf cards, and the top bit
+  marks a global wood-triangle index. Keep all 16 visibility samples per output pixel.
+- Resolve each winning ID from the original source attributes. For wood, reconstruct
+  the three source vertices and interpolate the normal using projected barycentrics.
+  The wood ID pass expands triangles to supply flat triangle IDs; that additional
+  vertex work is included in all timing.
+- Shade each visible sample with the established source material. Round each result
+  through Half2 to match the original RGBA16Float sample target, then sum in the
+  original sample order and composite.
+- The first follow-up reuses leaf radiance within one output pixel when material
+  detail is unresolved. It keeps a 16-entry private key/value cache, preserves sum
+  order and falls back to normal evaluation for wood, resolved tissue or a full cache.
+- The second follow-up removes stored card records and reuses the established
+  212,660-byte source-distribution/Oct32-normal/float32-depth cache. The vertex stage
+  reconstructs source placement. Distant shading reconstructs only seed/tint and
+  reads exact cached response; full placement is reconstructed when tissue needs UV.
+  This version disables the unsuccessful per-pixel reuse.
+
+Implementation: [source_control.wrela](../studio/appearance/runtime/source_control.wrela),
+[main.wrela](../studio/appearance/runtime/main.wrela). The retained code is the
+initial stored-card identity implementation; both failed optimization implementations
+remain in their exact evidence archives.
+Both sides receive the same authored fields, seeds, sampling and material information.
+No reference-derived visibility is supplied to any runtime path. These are conventional
+methods, and the learned 1,897-patch model stays frozen as a separate control.
+
+### Shaded quality and silhouette evidence
+
+Use only the completed AA64 shaded references, two public views, four lights and
+three backgrounds. Preprocessing and numeric thresholds are unchanged. These are
+static numeric comparisons, not a G3 motion or human-study result.
+
+| Variant | Mean PSNR dB | Mean FLIP | Mean LPIPS | Coverage MAE | Cases passing vs control |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| identity-control | 40.295825 | 0.01299942 | 0.00249220 | 0.01005954 | 24/24 |
+| identity-direct | 40.295971 | 0.01300193 | 0.00249104 | 0.01005954 | 24/24 |
+| identity-dedup | 40.295971 | 0.01300193 | 0.00249104 | 0.01005954 | 24/24 |
+| identity-source | 40.295971 | 0.01300193 | 0.00249104 | 0.01005954 | 24/24 |
+
+Worst boundary p99 is 2.0 pixels for every variant. All eight original control images
+match the previous mask128 captures byte for byte. All 24 alternative coverage images
+match the current control. The 16 follow-up RGBA images match the initial identity
+path exactly. Reconstructed shading is not bit-identical to raster shading: small
+normal/interpolation differences remain. Nothing averages material moments before
+visibility is resolved.
+
+### Complete cost, allocations and physical residency
+
+AMD RADV RENOIR/PCI1002:164c, Ryzen5 5500U, Mesa26.1.6, Chrome154.0.8037.57;
+Wrela0.9.0 compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23. One worker,
+64x64 output, 60 warmup and 240 measured frames. Builds, GPU runs and scoring
+are sequential. View and lighting change each frame.
+
+GPU spans include leaf-mask evaluation, source decoding, wood geometry, visibility,
+surface reconstruction, source shading, sample integration and final compositing.
+Depth testing supplies ordering; no optical-patch sort runs in these source paths.
+CPU calls include source parameters, view/light updates, uploads and recording.
+CPU-to-final-GPU completion includes browser/driver notification, not input-to-photon.
+Startup is outside steady-state time and inside requested memory peaks. Source edits
+and cache rebuilds are not exercised by this static-source workload.
+
+| Variant | Paced GPU p95/p99 ms | Saturated GPU p95 ms | CPU p99 ms | CPU to final GPU p95/p99 ms | Engine appearance/scratch bytes | All requested live/peak GPU bytes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| identity-control | 1.147/1.192 | 0.456 | 0.544 | 3.825/4.150 | 1,904,560 | 2,314,160/2,330,544 |
+| identity-direct | 1.041/1.044 | 0.466 | 0.639 | 4.620/4.741 | 1,642,420 | 2,052,020/2,068,404 |
+| identity-dedup | 1.112/1.165 | 0.506 | 0.563 | 4.001/4.281 | 1,642,420 | 2,052,020/2,068,404 |
+| identity-source | 1.183/1.232 | 0.462 | 0.670 | 4.600/4.746 | 1,005,188 | 1,414,788/1,431,172 |
+
+The direct path replaces the 524,288-byte RGBA sample texture with 262,144 bytes
+of integer IDs; depth stays 262,144 bytes. Dummy-resource differences make the
+complete allocation saving 262,140 bytes. The source-cache option saves another
+637,232 bytes. Source reconstruction uploads **17,088 bytes per frame**, versus
+768 for direct identity and 1,120 for the original control. The cost of rebinding
+invariant source data is included; no causal speedup from removing it is assumed.
+
+All requested live/peak bytes include source data, response caches, indices,
+textures, scratch, dummy/fallback resources, upload/uniform rings and output.
+The engine-only column excludes the same 409,600 common bytes: output65,536,
+upload262,144, uniforms65,536 and screen16,384. Workgroup shared storage is zero.
+The failed reuse experiment declares 320 bytes of private arrays per invocation;
+register placement or spills are compiler/driver decisions, not requested persistent
+buffer allocations. Their cost is included in timing and whole-client observations.
+
+| Variant | DRM resident VRAM bytes | DRM resident GTT bytes | Browser-group PSS bytes |
+| --- | ---: | ---: | ---: |
+| identity-control | 17,309,696 | 9,838,592 | 480,436,224 |
+| identity-direct | 17,735,680 | 9,838,592 | 483,664,896 |
+| identity-dedup | 17,371,136 | 9,838,592 | 481,551,360 |
+| identity-source | 17,387,520 | 9,838,592 | 484,860,928 |
+
+Whole-client physical snapshots include driver/browser effects but do not attribute
+them to individual assets or measure transient physical peaks. UMA counters overlap;
+do not add them. These observations do not demonstrate reduced physical residency.
+
+### Repeated tails reverse the tempting median result
+
+Each serious candidate receives three alternating pairs against a private copy
+of the original control build. Both saturated and 60Hz-paced phases are retained.
+A read-only result watcher copies completed measurements before the profiler reuses
+its output directory, preserving all 12 raw runs per comparison. This resolves the
+previous missing all-pair p99 evidence; it is measurement work, not a rendering win.
+Power/temperature sampling is read-only and no power setting changes.
+
+| Candidate | Phase | GPU p95 ratios, pairs1/2/3 | GPU p99 ratios, pairs1/2/3 | Pairs failing either1.1x limit |
+| --- | --- | ---: | ---: | ---: |
+| identity-direct | paced | 0.887/3.256/0.990 | 0.870/2.853/0.934 | 1/3 |
+| identity-direct | saturated | 0.864/1.124/1.258 | 0.848/1.261/1.167 | 2/3 |
+| identity-source | paced | 1.106/4.060/1.139 | 1.096/3.320/1.112 | 3/3 |
+| identity-source | saturated | 1.212/0.943/1.045 | 1.398/0.924/0.918 | 1/3 |
+
+Direct identity's saturated median improves9.64%, but its p95/p99 fail in two
+saturated pairs. Source reconstruction's median changes+0.47%, inconclusive, yet
+all paced p95 comparisons fail. CPU is not a demonstrated improvement either.
+
+The large second paced-pair ratios reflect an unusually fast control, not a 4ms
+candidate: in the source-cache comparison, control p95 is0.327ms and candidate
+p95 is1.328ms. Candidate p95 stays approximately1.326–1.328ms across all three
+paced pairs. Keep those observations; do not discard the unfavorable control run
+or substitute median timing for the required tails. No power-state cause is asserted.
+
+Raw summaries use NumPy linear quantiles consistently on240 post-warmup complete
+GPU spans. The profiler's upper median is separately reproduced for every saturated
+run. An initial assertion incorrectly equating the two median conventions failed;
+its calculation and correction are preserved. No measurement was changed.
+
+### Full material branch: useful work avoidance, not an all-scale claim
+
+Distant captures do not activate tissue detail, so a bounded verification forces
+pixels=12 in both original and deferred source shaders. This exercises reconstructed
+leaf UV, the source-cache full-placement branch, and wood reconstruction under the
+full source material. It does not create new truth or a third optimization.
+
+All16 alternative stress images have finite output and byte-identical coverage
+against the current packed-mask control. Worst RGB RMSE is0.00005326 and maximum
+absolute RGBA error0.00056458. The current packed control also matches all8
+previous packed-mask stress captures exactly.
+
+| Full-detail stress path | Paced GPU p95/p99 ms | Context |
+| --- | ---: | --- |
+| Original full RGBA8 atlas | 1.144/1.179 | Archived previous block; larger atlas; not newly paired |
+| identity-control | 3.862/3.927 | Current branch stress |
+| identity-direct | 1.426/1.491 | Current branch stress |
+| identity-source | 2.031/2.189 | Current branch stress |
+
+Direct identity is2.71x faster in p95 than the packed-mask field-evaluation control,
+because expensive shading is deferred until after visibility. The full RGBA8 atlas
+remains a faster, larger-memory conventional alternative in the archived check.
+Thus this is a tradeoff, not victory over the strongest conventional method at every
+budget. Stress runs do not add physical-memory snapshots or validate natural close-up
+coverage, unseen views, or dynamic geometry.
+
+### Next architecture-level bet
+
+Keep exact surface identity as an equally informed conventional control. Change
+the G4 representation: specialize the authored leaf/material program into compact
+constant tables and cheap decoders. Move invariant construction out of repeated
+field evaluation and per-frame uniform rebinding. Preserve exact source coverage,
+and retain the full RGBA8 atlas as the speed control. A neural decoder must beat a
+specialized analytic decoder with the same source information, rather than benefit
+from an unnecessarily expensive conventional implementation.
+
+The shortest next experiment compares those decoders under the same visibility
+path, with complete costs, scratch/caches/fallback memory and rendered silhouettes.
+No additional material-moment training is justified by this block.
+
+Defaults and frozen model are restored; all8 frozen outputs remain byte-identical.
+The new inactive R32Uint handle costs4 texture bytes, verified by native accounting.
+Format/type checks pass; no full-suite claim. The allocation observer needed the
+new format's4-byte size; its initial fail-closed run is preserved. A failed GPU build
+that called a CPU-only source builder is also retained; the working path binds
+authored source parameters from the CPU.
+
+All four variants, exact paired sources/builds,24 raw paired runs, stress images,
+allocation/DRM/PSS observations and failed results are preserved in
+build/neural-evidence/g4-surface-identity-v1 on Pop!_OS.
+One static64px tree, two public views, four known lights and three backgrounds:
+no motion, family, unseen-light/individual,8–512px or sustainedG6 result.
+G1–G7 remain unchanged and unmet.
+Manifest SHA-256: `7d8a6a58ed568e092da0264b6b5b770fd22235a276b6fc9cad69984277e5e285`.

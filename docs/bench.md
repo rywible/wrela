@@ -2184,3 +2184,40 @@ Preserve every failed result. Next: independent surface-ID visibility and deferr
 source shading, compared fairly before more fitting. G1-G7 unchanged/unmet.
 [Full evidence](neural-shaded-appearance.md#source-leaf-storage-a-useful-distant-control-not-an-all-scale-solution).
 Evidence build/neural-evidence/g4-leaf-storage-v1 on Pop!_OS.
+
+
+### 2026-10-27 — Surface identity and deferred source shading
+
+Pop!_OS Ryzen5 5500U / AMD RADV RENOIR, Mesa26.1.6, Chrome154.0.8037.57;
+Wrela0.9.0 compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23. Parent
+124bdc6976e6873d6eafddd6b43d6bfbbaf6d5f6 plus archived sources. Solo/sequential.
+Four conventional AMD variants, exactly two optimization follow-ups, no training/newtruth.
+Same completed AA64 references, two views/four lights/three backgrounds.
+
+Store exact leaf-card/wood-triangle IDs per sample, reconstruct source shading, round
+to the original half target, resolve16samples. All3alternatives pass24/24 numeric
+quality cases; all24coverage images identical to control. Both followups'16RGBA
+images identical to direct identity. Direct mean40.295971dB, FLIP.01300193,
+LPIPS.00249104, coverageMAE.01005954, worst boundaryp99=2px.
+
+Direct identity live/peak2,052,020/2,068,404 requested GPU bytes versus
+2,314,160/2,330,544 control:11.33% saving. Source reconstruction plus response cache
+uses1,414,788/1,431,172:38.86% saving. Physical DRM/PSS snapshots do not establish
+a residency saving. Invariant source upload17,088bytes/frame is fully counted.
+
+Direct paired saturated median-9.64%, but2/3saturated and1/3paced pairs fail GPU95/99
+1.1x limits. Source-cache variant fails all3paced pairs. All24raw paired runs retained,
+including unfavorable fast-control runs; no tailgate pass inferred from averages.
+Per-pixel reuse increased saturated cost with identical images and was rejected.
+
+Full-material branch stress: directGPU95/99=1.426/1.491ms versus packed-field
+control3.862/3.927ms, with identical coverage and maxRGB RMSE.00005326.
+Archived larger RGBA8 atlas remains faster at1.144/1.179ms. Not real close-up validation.
+
+Decision: change G4 representation again; keep identity as a conventional control.
+Next: specialized source constants/decoders, with equally informed analytic and neural
+methods. Initial assessment5m31s; decision21m58s. Defaults/model/frozen8images unchanged,
++4inactive texture bytes counted. Format/type pass; no full suite. Failures preserved.
+G1–G7 unchanged/unmet.
+[Full evidence](neural-shaded-appearance.md#surface-identities-preserve-visibility-but-reject-the-tail-regressions).
+Evidence build/neural-evidence/g4-surface-identity-v1 on Pop!_OS.
