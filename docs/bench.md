@@ -1923,3 +1923,54 @@ build/neural-evidence/g4-visibility-layers-v1 on Pop!_OS.
 Manifest SHA-256 814030755e130a9fd7a600643fbcef0f303cb6db94d4108f4916cbe7af44ef9e;
 source archive 0d143eed9030ee093a7192a7dcb596a5460f1c8bff9a0f09edb758ddc0bf1c68;
 external scripts d06f932c804ada03189e50427ab250cf36f4dc5f2daf5e546342f64a2b69b343.
+
+
+## 2026-10-27: ordered GPU appearance execution rejected on AMD
+
+Parent 8b50a6b7e40072ac12a99c8f51cc7cae702ecc23.
+[Full execution comparison](neural-shaded-appearance.md#ordered-gpu-execution-quality-recovered-cost-rejected).
+Ryzen 5 5500U / AMD RADV RENOIR, Mesa 26.1.6, Chrome 154.0.8037.57,
+Wrela 0.9.0 (de9b81e52a7747870dfbd5223cb8aeb41e584d23).
+One isolated run each: 240 frames after 60 warmups, one worker, 64×64.
+Frozen fitted/conventional calibrated parameters; zero training/new references.
+
+| Variant | Mean PSNR dB / FLIP | Paced GPU p95 / p99 ms | CPU p99 ms | Saturated GPU p95 ms | All requested live / peak GPU bytes | DRM VRAM / GTT MiB | Browser group PSS MiB |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| trained-tile512 | 40.120118 / 0.012470 | 1.586317 / 1.655851 | 0.573050 | 0.71412 | 714,656 / 731,040 | 16.555 / 9.289 | 449.797 |
+| calibrated-tile512 | 39.735748 / 0.013968 | 1.587522 / 1.643885 | 0.510000 | 0.72608 | 714,656 / 731,040 | 16.555 / 9.195 | 449.311 |
+| trained-cache512 | 40.120118 / 0.012470 | 1.296984 / 1.430936 | 0.500250 | 0.53696 | 836,064 / 852,448 | 16.566 / 9.398 | 455.268 |
+| trained-gpu-sort | 40.127682 / 0.012348 | 0.224052 / 0.260471 | 0.444150 | 0.22880 | 722,040 / 738,424 | 16.570 / 9.383 | 457.114 |
+| calibrated-gpu-sort | 39.739577 / 0.013921 | 0.915528 / 0.916725 | 0.533050 | 0.22452 | 722,040 / 738,424 | 16.824 / 9.383 | 456.738 |
+
+All 24 shaded cases per variant match their corresponding prior ordered control within
+the existing tolerances; the same two BC-relative cases still fail. GPU-global-sort
+images match all 16 fitted/calibrated originals byte for byte. Full time includes
+updates, projection/decoding, sorting, visibility, wood, compositing and resolve.
+GPU allocation includes cache/scratch, image targets, output, dummy/fallback data and
+executor rings. Declared workgroup-local storage is 10,244 B per tile group (64 groups)
+or 16,384 B for the one global-sort group, separate from global allocations.
+DRM/PSS are overlapping UMA snapshots, not additive per-asset memory or physical peaks.
+
+Conflicting initial paced/saturated results required three alternating pairs B,A,A,B,B,A,
+original CPU-sort versus GPU-sort/raster. Saturated GPU median 0.07824→0.21404 ms:
++173.57% paired cost, while paired CPU time falls 43.38%. Saturated GPU p95 ranges
+0.08100–0.09324→0.23092–0.23552 ms. The final pair's paced GPU p95/p99 is
+0.313842/0.315178→0.914434/0.916959 ms. Preserve the favorable initial paced run;
+it is not a robust improvement. Read-only 100 ms samples record unchanged auto power,
+400–1,800 MHz shader clocks and 35–43°C, without per-frame causal attribution.
+
+Complete CPU-start-to-GPU-completion p95/p99, including driver/browser notification:
+tile 4.340356/4.500298 ms; calibrated tile 4.340332/4.531252;
+cached 6.070813/6.339993; GPU sort 4.401636/4.547219;
+calibrated GPU sort 4.385754/4.539114. These are not input-to-photon times.
+
+Decision: **change representation; retire tile compute, do not promote GPU-global sort**.
+Exactly two targeted follow-ups used. Original CPU-sorted AA2 default restored,
+format/type checks and eight-image byte parity pass. New diagnostic defaults add
+72 dummy GPU bytes relative to parent; actual figures above include their allocations.
+No full-suite/PR-readiness claim. All failures, paired outputs, physical snapshots and
+source builds retained under build/neural-evidence/g4-tile-ordered-v1 on Pop!_OS.
+
+Manifest SHA-256 19998e152994f78f42b6e63c1b2e23668b66485cad005e5077c303677d6e604e;
+source archive 9b52d08a196ec92339a127a05deaef8da89acb2585f1c9621a53a2b26a5fb27d;
+external scripts 63616c9a91eebe7c3871e824db68e6289c7cd89a9bb3080213c1be3f933a170a.

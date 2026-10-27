@@ -212,3 +212,10 @@ provides prior work for a possible model predicting fragment transmittance from
 accumulated moment statistics. Only the authors' method description informs that
 proposed direction here; no implementation, assets, weights or performance results
 are imported or claimed.
+
+
+The [ordered GPU execution experiment](neural-shaded-appearance.md#ordered-gpu-execution-quality-recovered-cost-rejected)
+uses the standard bitonic sorting-network construction associated with [K. E. Batcher,
+Sorting Networks and Their Applications, AFIPS 1968, pp. 307–314](https://doi.org/10.1145/1468075.1468121).
+The Wrela workgroup implementation, source-derived culling, four-sample integration and
+measurements are our own. No implementation or hardware performance result is imported.

@@ -18,13 +18,15 @@
 
 ## Immediate milestone
 
-The [G4 viability experiment and replacement follow-up](neural-shaded-appearance.md)
-both reject promotion. The first block chooses **change representation**; the subsequent
-two-slab visibility mixture is **retired** after exactly two targeted follow-ups.
-No training or new references. The frozen ordered AA2 fit remains the diagnostic control.
-Next bet: ordered subpixel leaf/wood visibility with tile-local evaluation, then
-source-conditioned transmittance prediction against a conventional method with the
-same inputs if rendered evidence justifies it. All G1–G7 remain unchanged and unmet.
+The [G4 representation and execution experiments](neural-shaded-appearance.md) reject
+promotion. Ordered subpixel GPU evaluation restores quality; three alternating pairs
+show GPU global sorting trades 43% less CPU work for 2.74× saturated GPU cost, with
+essentially unchanged memory. Retire tile compute and keep original frozen CPU-sorted
+AA2 as the diagnostic control. Both targeted follow-ups are exhausted.
+
+Next bet: a compact source-conditioned joint visibility/shaded-response representation,
+against a conventional low-rank/basis fit with identical useful source inputs. Do not
+resume independent material-moment fitting. All G1–G7 remain unchanged and unmet.
 
 ## Evidence recorded so far
 
@@ -2157,3 +2159,18 @@ wood bounds (0.0001531 MAE), but shaded color and wood/leaf ordering still fail.
 The next representation must retain joint visibility. Zero training or new references;
 default outputs byte-identical after restoration; goals unchanged.
 Evidence manifest: `814030755e130a9fd7a600643fbcef0f303cb6db94d4108f4916cbe7af44ef9e`.
+
+
+## Ordered GPU execution rejected after paired verification
+
+[Full results](neural-shaded-appearance.md#ordered-gpu-execution-quality-recovered-cost-rejected).
+The tile-local path matches its ordered control in all 24 shaded cases but raises GPU
+p95 to 1.586 ms and saves only 1.0% of full requested GPU allocation. One projection-cache
+follow-up and one GPU-sort/raster follow-up do not meet the joint target.
+
+GPU sort reproduces all 16 fitted/calibrated images exactly. Its initially favorable
+paced timing is contradicted by three alternating pairs: saturated GPU median
+0.07824→0.21404 ms, with 43.38% less paired CPU time. Actual residency, cache/scratch,
+power snapshots and failed results are retained. Original default restored, eight
+outputs byte-identical; no training/new references or goal achievement.
+Manifest: `19998e152994f78f42b6e63c1b2e23668b66485cad005e5077c303677d6e604e`.

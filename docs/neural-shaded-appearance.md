@@ -448,3 +448,170 @@ Each variant retains actual source/payload, compiled build, raw images, profile,
 completion/allocation records and raw process/DRM records. The manifest references
 unchanged prior comparison/reference manifests and binds exact final source/scripts.
 Manifest SHA-256: `814030755e130a9fd7a600643fbcef0f303cb6db94d4108f4916cbe7af44ef9e`.
+
+
+## Ordered GPU execution: quality recovered, cost rejected
+
+**Decision: change the appearance representation. Retire tile-local compute execution;
+do not promote the GPU-global-sort alternative.** Keep the original frozen, CPU-sorted
+AA2 renderer as the diagnostic control. This block follows the rejected two-slab
+representation and uses exactly two targeted optimizations, zero training steps and
+zero new shaded references. G1–G7 are unchanged and unmet.
+
+The initial prototype assigns an 8×8 pixel tile to each 64-lane workgroup. It projects
+the frozen primitive stream, culls support bounds, compacts a 512-entry local list,
+sorts by float32 centre depth and descending primitive ID, and cooperatively evaluates
+four ordered subpixel contributions. Pixel colors stay in registers until their
+four-sample resolve. Source wood uses the existing 128×128 color/depth raster targets;
+these remain resident and counted. This tests ordered GPU execution, not a claim
+that all supersampled storage has been removed.
+
+The tile's declared workgroup-local storage is 10,244 bytes; 64 groups are dispatched.
+Count above 512 produces invalid negative coverage, making the result ineligible:
+there is no hidden dropped-leaf path or loaded conventional fallback. None of the
+eight captures overflows, for either fitted or calibrated parameters. This remains
+a bounded diagnostic, not a general production fallback.
+
+Both methods receive the same source support, materials, wood, camera, lights and
+sample positions. The conventionally calibrated source primitives retain their
+previously selected parameters. The fitted and calibrated hashes remain unchanged
+from the earlier sections. No new fitting advantage is introduced by the runtime.
+
+### Quality recovery and two consequential follow-ups
+
+| Path | Mean PSNR dB | Mean FLIP | Mean LPIPS | Cases matching its prior ordered control | BC quality gates passed |
+|---|---:|---:|---:|---:|---:|
+| Frozen fit, tile-local | 40.120118 | 0.012470 | 0.001883 | 24/24 | 22/24 |
+| Calibrated, tile-local | 39.735748 | 0.013968 | 0.002108 | 24/24 | 22/24 |
+| Follow-up 1: projection cache | 40.120118 | 0.012470 | 0.001883 | 24/24 | 22/24 |
+| Follow-up 2: GPU sort + raster | 40.127682 | 0.012348 | 0.001889 | 24/24 | 22/24 |
+| Calibrated, GPU sort + raster | 39.739577 | 0.013921 | 0.002116 | 24/24 | 22/24 |
+
+The original fitted AA2 control is 40.127682 dB / 0.012348 FLIP / 0.001889 LPIPS;
+the calibrated control is 39.739577 dB / 0.013921 FLIP / 0.002116 LPIPS.
+Tile integration uses f32 accumulation instead of rounding every blend through an
+RGBA16F attachment, so its pixels are close rather than identical. Every shaded
+case stays within the existing relative quality tolerances against its corresponding
+ordered control. The fitted tile path's coverage MAE is 0.008820 versus 0.008832;
+silhouette precision/recall are identical and worst boundary p99 remains 1.414 pixels.
+The same two BC-relative sky-only cases still fail. This is no G4 quality completion.
+
+1. **Project/shade once:** the first measurement's GPU p95 is 1.586 ms. Test whether
+   repeating projection in every tile causes that regression by caching all 1,897
+   projected/shaded records once per frame. The complete 121,408-byte cache and its
+   dispatch are counted. Quality is retained, but GPU p95 remains 1.297 ms, saturated
+   p95 0.537 ms, and total requested GPU allocations rise to 836,064 bytes.
+2. **GPU sorting plus hardware raster:** replace tile integration with one global
+   2,048-entry GPU sort followed by the established wood/leaf raster and four-sample
+   resolve. The source count is asserted at most 2,048; sort indices are stored and
+   counted. Its single workgroup declares 16,384 bytes of local storage. It reproduces
+   all eight fitted and all eight calibrated images **byte for byte**, yet costs more
+   GPU work in the alternating comparison below.
+
+The GPU sort uses a standard bitonic network; see [Batcher (1968)](https://doi.org/10.1145/1468075.1468121).
+This Wrela implementation and its rendering integration are our own, with no imported
+implementation or claimed novelty. No third optimization is taken.
+
+### Complete runtime, including the misleading first paced result
+
+Same Ryzen 5 5500U / hardware AMD RADV RENOIR, Mesa 26.1.6, Chrome 154.0.8037.57,
+Wrela 0.9.0 / compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23.
+Each initial run has 240 frames after 60 warmups, one worker, 64×64 output.
+All builds, scoring and GPU measurements run sequentially on Pop!_OS.
+
+| Path | Paced GPU p95 / p99 ms | CPU call p99 ms | Saturated GPU p95 ms | CPU start to completion p95 / p99 ms |
+|---|---:|---:|---:|---:|
+| Frozen fit, tile-local | 1.586317 / 1.655851 | 0.573050 | 0.71412 | 4.340356 / 4.500298 |
+| Calibrated, tile-local | 1.587522 / 1.643885 | 0.510000 | 0.72608 | 4.340332 / 4.531252 |
+| Follow-up 1: projection cache | 1.296984 / 1.430936 | 0.500250 | 0.53696 | 6.070813 / 6.339993 |
+| Follow-up 2: GPU sort + raster | 0.224052 / 0.260471 | 0.444150 | 0.22880 | 4.401636 / 4.547219 |
+| Calibrated, GPU sort + raster | 0.915528 / 0.916725 | 0.533050 | 0.22452 | 4.385754 / 4.539114 |
+
+These GPU spans include decoding/projection, sorting, visibility, source wood, ordered
+leaf composition, resolve and final display composite. CPU calls include view/light
+updates and uploads/recording; no new path does a CPU global sort or index upload.
+Initialization is outside steady-state timing, with peak/resident allocation counted.
+Completion includes every frame submission, plus browser scheduling and completion
+notification latency. It is not input-to-photon time.
+
+The first fitted GPU-sort run misleadingly suggests a paced improvement over the old
+CPU-sort p95 of 0.314113 ms: it reports 0.224052 ms. However, saturated performance
+worsens, and the calibrated GPU-sort run reports 0.915528 ms despite the same algorithm.
+This contradiction triggered a proportional verification run, not a new optimization:
+three alternating pairs against the archived CPU-sort build, in B,A,A,B,B,A order.
+
+| Alternating comparison | Original CPU sort | GPU sort + raster |
+|---|---:|---:|
+| Median of saturated GPU medians | 0.078240 ms | 0.214040 ms |
+| Saturated GPU p95, three runs | 0.08504 / 0.08100 / 0.09324 ms | 0.23452 / 0.23552 / 0.23092 ms |
+| Median CPU frame calls | 0.680000 ms | 0.380000 ms |
+| Final pair paced GPU p95 / p99 | 0.313842 / 0.315178 ms | 0.914434 / 0.916959 ms |
+| Final pair CPU p95 / p99 | 0.950750 / 1.043300 ms | 0.450250 / 0.538550 ms |
+
+The established paired estimator reports **43.38% lower CPU time but 173.57% higher
+saturated GPU time**. Every pair has the same direction. GPU cost is 2.74×, not a win.
+
+Read-only 100 ms power snapshots retain the unchanged automatic policy, reported
+shader clocks from 400–1,800 MHz and temperatures 35–43°C. These are not synchronized
+per-frame clock measurements, so they do not prove a specific spike's cause.
+No clock or power setting was changed. Preserve the initially favorable paced result
+alongside the contradictory repeats; do not cherry-pick it.
+
+### Resident storage and scratch
+
+| Path | Engine appearance/scratch bytes | All requested live / peak GPU bytes | DRM VRAM / GTT MiB | Browser group PSS MiB |
+|---|---:|---:|---:|---:|
+| Frozen fit, tile-local | 305,056 | 714,656 / 731,040 | 16.555 / 9.289 | 449.797 |
+| Calibrated, tile-local | 305,056 | 714,656 / 731,040 | 16.555 / 9.195 | 449.311 |
+| Follow-up 1: projection cache | 426,464 | 836,064 / 852,448 | 16.566 / 9.398 | 455.268 |
+| Follow-up 2: GPU sort + raster | 312,440 | 722,040 / 738,424 | 16.570 / 9.383 | 457.114 |
+| Calibrated, GPU sort + raster | 312,440 | 722,040 / 738,424 | 16.824 / 9.383 | 456.738 |
+
+The engine column excludes only the identical 65,536-byte output. Complete requested
+allocations include it, wood, sort indices, projected cache, all image/depth targets,
+fallback/dummy data, retained upload/uniform rings and screen storage. The initial tile
+path saves only 1.0% against the old fitted AA2 allocation of 721,852 bytes; caching
+increases storage by 15.8%. The GPU-sort variant has essentially the same storage.
+All remain far from 16× against the strongest same-source conventional control.
+
+GPU workgroup-local arrays are separate from persistent WebGPU buffer/texture bytes.
+Their declared sizes above affect occupancy; driver alignment and concurrent residency
+are not inferred by multiplying the size by every dispatched group. Physical DRM
+residency and browser PSS snapshots capture exposed retained driver/client allocations,
+including retained spill storage and caches where reported. Transient physical peaks and
+exact per-asset attribution are not established by these snapshots. On this UMA
+device these columns overlap: never sum PSS, VRAM and GTT.
+
+The restored default adds 72 dummy GPU bytes relative to the parent checkpoint.
+Together with the already documented 116-byte helper difference, that is 188 bytes
+above the original measured fitted AA2 build. The GPU-sort table counts the actual
+722,040 bytes, without subtracting these differences.
+
+### Next representation bet and preservation
+
+The useful result is that ordered subpixel visibility restores the shaded image.
+The failed bet is that moving this explicit 1,897-primitive stream's sorting and
+compositing to compute delivers the required joint quality/runtime/storage gain.
+No further optimization of this execution path is justified by these results.
+
+Next test a **small source-conditioned representation of joint visibility and shaded
+response**, replacing the explicit primitive stream. Keep source support and authored
+wood, and model the rendered contribution rather than independent averaged material
+moments. A deterministic low-rank/basis fit must receive the identical source-derived
+features, sample positions and supervision. The frozen ordered fitted and calibrated
+renderers remain controls; the completed shaded references still judge actual quality.
+This is an architecture hypothesis, not a learned rendering result. No new model was
+trained in this block.
+
+Exact source/payload, compiled builds, all five variants, quality/tails, complete runtime,
+DRM/PSS, allocation descriptors, three paired runs and power records are preserved in
+build/neural-evidence/g4-tile-ordered-v1 on Pop!_OS. The paired profiler writes into the
+compared build's results directory: its new baseline outputs were preserved separately,
+and the four overwritten original result files were restored from existing copies to
+their sealed-manifest hashes. No original evidence was lost; replay now copies the
+baseline first.
+
+The runtime preserves rejected diagnostics as modes 7–9 and restores mode 2 as default.
+Focused formatting/type checks pass, and all eight restored default images are
+byte-identical to the original measured AA2. No full-suite or PR-readiness claim.
+Manifest SHA-256: `19998e152994f78f42b6e63c1b2e23668b66485cad005e5077c303677d6e604e`.

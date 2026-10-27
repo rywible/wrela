@@ -1,0 +1,287 @@
+// Tile-local ordered four-sample diagnostic. Overflow is invalid, not a quality fallback.
+use std::gpu::{
+    Atomics, DepthTexture, GpuBuffer, Half2, LocalId, Rgba16Float, Shared, SharedAtomics, Texture,
+    WorkgroupId, barrier, dispatch,
+}
+use std::gpu::{GlobalId, Slots}
+use engine::neural::half_at
+
+pub struct Camera: Copy + GpuData {
+    pub direction: vec3,
+    pub right: vec3,
+    pub up: vec3,
+    pub illumination: u32,
+}
+
+pub struct Projected: Copy + GpuData {
+    position: vec4,
+    inverse: vec4,
+    radiance: vec4,
+    bounds: vec4,
+}
+
+fn value(w: [Half2], group: u32, k: u32) -> f32 {
+    half_at(w, group * 28 + k)
+}
+
+fn project(c: Camera, w: [Half2], group: u32, shaded: bool) -> Projected {
+    let centre = vec3(value(w, group, 0), value(w, group, 1), value(w, group, 2))
+    let mean = vec2(
+        dot(centre, c.right) + value(w, group, 3),
+        dot(centre, c.up) + value(w, group, 4),
+    )
+    var a = [0.0; 5]
+    var b = [0.0; 5]
+    for i in 0..5 {
+        let x = if i == 0 { value(w, group, 5) } else { 0.0 }
+        let y = if i < 2 { value(w, group, 6 + i) } else { 0.0 }
+        let z = if i < 3 { value(w, group, 8 + i) } else { 0.0 }
+        let lx = if i < 4 { value(w, group, 11 + i) } else { 0.0 }
+        let ly = value(w, group, 15 + i)
+        a[i] = dot(vec3(x, y, z), c.right) + lx
+        b[i] = dot(vec3(x, y, z), c.up) + ly
+    }
+    var xx = 0.0
+    var xy = 0.0
+    var yy = 0.0
+    for i in 0..5 {
+        xx += a[i] * a[i]
+        xy += a[i] * b[i]
+        yy += b[i] * b[i]
+    }
+    let determinant = xx * yy - xy * xy
+    let radii = sqrt(vec2(xx, yy) * 18.0)
+    let depth = saturate(0.5 + 0.5 * dot(centre, c.direction))
+    var rgb = vec3(0.0)
+    if shaded {
+        let colour = vec3(value(w, group, 21), value(w, group, 22), value(w, group, 23))
+        let raw = vec3(value(w, group, 24), value(w, group, 25), value(w, group, 26))
+        let n = if dot(raw, raw) > 1.0e-12 { normalize(raw) } else { c.direction }
+        let pixels = (0.25 / sqrt(6.0)) * 64.0 / (2.0 * data::HALF)
+        rgb = relight::leaf(
+            relight::light(c.illumination),
+            c.direction,
+            n,
+            colour * colour,
+            vec3(0.11, 0.16, 0.02),
+            value(w, group, 27) * 40.0,
+            pixels,
+        )
+    }
+    Projected {
+        position: vec4(
+            mean,
+            depth,
+            value(w, group, 20) / (6.283185307179586 * sqrt(determinant) * (1.0 - exp(-9.0))),
+        ),
+        inverse: vec4(vec3(yy, -xy, xx) / determinant, 0.0),
+        radiance: vec4(rgb, 0.0),
+        bounds: vec4(mean - radii, mean + radii),
+    }
+}
+
+fn before(a: vec2u, b: vec2u) -> bool {
+    a.x < b.x || a.x == b.x && a.y < b.y
+}
+
+fn alpha(p: Projected, at: vec2) -> f32 {
+    let delta = at - p.position.xy
+    let q = delta.x * delta.x * p.inverse.x +
+        2.0 * delta.x * delta.y * p.inverse.y +
+        delta.y * delta.y * p.inverse.z
+    if q > 18.0 { return 0.0 }
+    let t = p.position.w * exp(-0.5 * q)
+    if t < 0.01 { t * (1.0 - t * (0.5 - t / 6.0)) } else { 1.0 - exp(-t) }
+}
+
+@compute(64)
+fn ordered(
+    c: Camera,
+    model: [Half2],
+    cache: [Projected],
+    wood: Texture<Rgba16Float>,
+    depth: DepthTexture,
+    out: mut Atomics<u32>,
+    counts: mut Atomics<u32>,
+    list: mut SharedAtomics<513>,
+    keys: mut Shared<vec2u, 512>,
+    projected: mut Shared<Projected, 64>,
+    group: WorkgroupId,
+    lid: LocalId,
+) {
+    let tile = vec2u(group.x % 8, group.x / 8)
+    let lo = vec2(tile) * 0.25 - vec2(1.0)
+    let hi = lo + vec2(0.25)
+    for block in 0..((data::COUNT + 63) / 64) {
+        let i = block * 64 + lid.x
+        if i < data::COUNT {
+            let p = if config::MODE == 8 { cache[i] } else { project(c, model, i, shaded: false) }
+            if p.bounds.z >= lo.x &&
+                p.bounds.w >= lo.y &&
+                p.bounds.x <= hi.x &&
+                p.bounds.y <= hi.y {
+                let slot = list.add(i: 0, value: 1)
+                if slot < 512 { list.store(i: slot + 1, value: i) }
+            }
+        }
+    }
+    list.barrier()
+    let wanted = list.load(0)
+    let n = min(wanted, 512)
+    if lid.x == 0 { counts.store(i: group.x, value: wanted) }
+    let chunk = keys.chunk(lid)
+    for k in 0..8 {
+        let at = k * 64 + lid.x
+        var key = vec2u(4294967295)
+        if at < n {
+            let i = list.load(at + 1)
+            let centre = vec3(value(model, i, 0), value(model, i, 1), value(model, i, 2))
+            let d = if config::MODE == 8 { cache[i].position.z } else {
+                saturate(0.5 + 0.5 * dot(centre, c.direction))
+            }
+            key = vec2u(bitcast_u32(d), data::COUNT - 1 - i)
+        }
+        keys.write(chunk, k, key)
+    }
+    barrier(mut keys)
+    for stage in 1..10 {
+        let width = 1 << stage
+        for pass in 0..stage {
+            let stride = 1 << (stage - 1 - pass)
+            var next = [vec2u(0); 8]
+            for k in 0..8 {
+                let at = k * 64 + lid.x
+                let mine = keys.get(at)
+                let other = keys.get(at ^ stride)
+                let lesser = if before(mine, other) { mine } else { other }
+                let greater = if before(mine, other) { other } else { mine }
+                let small = ((at & width) == 0) == ((at & stride) == 0)
+                next[k] = if small { lesser } else { greater }
+            }
+            barrier(mut keys)
+            for k in 0..8 { keys.write(chunk, k, next[k]) }
+            barrier(mut keys)
+        }
+    }
+    let pixel = tile * 8 + vec2u(lid.x % 8, lid.x / 8)
+    var rgba = [vec4(0.0); 4]
+    var z = [0.0; 4]
+    for y in 0..2 {
+        for x in 0..2 {
+            let at = pixel * 2 + vec2u(x, y)
+            rgba[y * 2 + x] = wood.load(at.x, at.y)
+            z[y * 2 + x] = depth.load(at.x, at.y)
+        }
+    }
+    for block in 0..8 {
+        let k = block * 64 + lid.x
+        var p = Projected {
+            position: vec4(0.0),
+            inverse: vec4(0.0),
+            radiance: vec4(0.0),
+            bounds: vec4(0.0),
+        }
+        if k < n {
+            let i = data::COUNT - 1 - keys.get(k).y
+            p = if config::MODE == 8 { cache[i] } else { project(c, model, i, shaded: true) }
+        }
+        projected.write(projected.chunk(lid), 0, p)
+        barrier(mut projected)
+        for j in 0..64 {
+            if block * 64 + j < n {
+                let p = projected.get(j)
+                for y in 0..2 {
+                    for x in 0..2 {
+                        let sample = y * 2 + x
+                        if 1.0 - p.position.z <= z[sample] {
+                            let at = (vec2(pixel * 2 + vec2u(x, y)) + vec2(0.5)) / 64.0 - vec2(1.0)
+                            let a = alpha(p, at)
+                            rgba[sample] = vec4(p.radiance.rgb * a, a) + rgba[sample] * (1.0 - a)
+                        }
+                    }
+                }
+            }
+        }
+        barrier(mut projected)
+    }
+    var sum = (rgba[0] + rgba[1] + rgba[2] + rgba[3]) * 0.25
+    if wanted > 512 { sum = vec4(1.0, 0.0, 1.0, -1.0) }
+    let at = 4 * (pixel.y * 64 + pixel.x)
+    for k in 0..4 { out.store(i: at + k, value: bitcast_u32(sum[k])) }
+}
+
+@compute(64)
+fn project_all(c: Camera, model: [Half2], out: mut Slots<Projected>, id: GlobalId) {
+    if id.x < data::COUNT { out[id] = project(c, model, id.x, shaded: true) }
+}
+
+pub fn prepare(c: Camera, model: GpuBuffer<Half2>, cache: mut GpuBuffer<Projected>) {
+    dispatch(project_all.bind(c, model.items(), mut cache), over: data::COUNT)
+}
+
+pub fn render(
+    c: Camera,
+    model: GpuBuffer<Half2>,
+    cache: GpuBuffer<Projected>,
+    wood: Texture<Rgba16Float>,
+    depth: DepthTexture,
+    out: mut GpuBuffer<u32>,
+    counts: mut GpuBuffer<u32>,
+) {
+    dispatch(
+        ordered.bind(c, model.items(), cache.items(), wood, depth, mut out, mut counts),
+        groups: 64,
+    )
+}
+
+// Final execution control: one global GPU sort, then the established hardware rasterizer.
+// Exact float32 centre-depth ordering and descending primitive-id tie order.
+@compute(128)
+fn sort_global(
+    direction: vec3,
+    model: [Half2],
+    order: mut Atomics<u32>,
+    keys: mut Shared<vec2u, 2048>,
+    lid: LocalId,
+) {
+    let chunk = keys.chunk(lid)
+    for k in 0..16 {
+        let i = k * 128 + lid.x
+        var key = vec2u(4294967295)
+        if i < data::COUNT {
+            let centre = vec3(value(model, i, 0), value(model, i, 1), value(model, i, 2))
+            let d = saturate(0.5 + 0.5 * dot(centre, direction))
+            key = vec2u(bitcast_u32(d), data::COUNT - 1 - i)
+        }
+        keys.write(chunk, k, key)
+    }
+    barrier(mut keys)
+    for stage in 1..12 {
+        let width = 1 << stage
+        for pass in 0..stage {
+            let stride = 1 << (stage - 1 - pass)
+            var next = [vec2u(0); 16]
+            for k in 0..16 {
+                let at = k * 128 + lid.x
+                let mine = keys.get(at)
+                let other = keys.get(at ^ stride)
+                let lesser = if before(mine, other) { mine } else { other }
+                let greater = if before(mine, other) { other } else { mine }
+                let small = ((at & width) == 0) == ((at & stride) == 0)
+                next[k] = if small { lesser } else { greater }
+            }
+            barrier(mut keys)
+            for k in 0..16 { keys.write(chunk, k, next[k]) }
+            barrier(mut keys)
+        }
+    }
+    for k in 0..16 {
+        let i = k * 128 + lid.x
+        if i < data::COUNT { order.store(i: i, value: data::COUNT - 1 - keys.get(i).y) }
+    }
+}
+
+pub fn sort(direction: vec3, model: GpuBuffer<Half2>, order: mut GpuBuffer<u32>) {
+    assert(data::COUNT <= 2048)
+    dispatch(sort_global.bind(direction, model.items(), mut order), groups: 1)
+}

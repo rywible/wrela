@@ -59,7 +59,7 @@ fn optical_vertex(
     w: [Half2],
     order: [u32],
 ) -> OpticalVertex {
-    let group = if (config::MODE >= 4) { instance.index } else {
+    let group = if config::MODE >= 4 && config::MODE != 9 { instance.index } else {
         order[instance.index]
     }
     let centre = vec3(value(w, group, 0), value(w, group, 1), value(w, group, 2))
@@ -90,7 +90,7 @@ fn optical_vertex(
     let radii = sqrt(vec2(xx, yy) * 18.0)
     let qx = [-1.0, 1.0, 1.0, -1.0, 1.0, -1.0]
     let qy = [-1.0, -1.0, 1.0, -1.0, 1.0, 1.0]
-    let support = radii + if (config::MODE >= 4) {
+    let support = radii + if config::MODE >= 4 && config::MODE <= 6 {
         vec2(1.0 / f32(c.size))
     } else { vec2(0.0) }
     let delta = vec2(qx[v.index % 6], qy[v.index % 6]) * support
@@ -472,6 +472,18 @@ fn composite(pixel: FragCoord, source: [vec4]) -> vec4 {
     vec4(engine::light::tone(v.rgb + vec3(0.18) * (1.0 - v.a), 0.62), 1.0)
 }
 
+@fragment
+fn composite_tiles(pixel: FragCoord, source: [u32]) -> vec4 {
+    let at = 4 * ((u32(pixel.position.y) % 64) * 64 + u32(pixel.position.x) % 64)
+    let v = vec4(
+        bitcast_f32(source[at]),
+        bitcast_f32(source[at + 1]),
+        bitcast_f32(source[at + 2]),
+        bitcast_f32(source[at + 3]),
+    )
+    vec4(engine::light::tone(v.rgb + vec3(0.18) * (1.0 - v.a), 0.62), 1.0)
+}
+
 pub struct State {
     source: source_control::Source,
     view: u32,
@@ -492,10 +504,13 @@ pub struct State {
     bc_normal: Texture<Bc7>,
     bc_depth: Texture<Bc5>,
     out: GpuBuffer<vec4>,
+    tile_out: GpuBuffer<u32>,
+    tile_counts: GpuBuffer<u32>,
+    tile_cache: GpuBuffer<tiles::Projected>,
 }
 
 pub fn init() -> State {
-    assert(config::MODE <= 6 && config::AA > 0)
+    assert(config::MODE <= 9 && config::AA > 0)
     if config::MODE == 0 {
         assert(data::COLOUR.len() == 262144, "restore the archived BC payload first")
     }
@@ -520,6 +535,9 @@ pub fn init() -> State {
         bc_normal: texture(width: 4, height: 4),
         bc_depth: texture(width: 4, height: 4),
         out: buffer(1),
+        tile_out: buffer(1),
+        tile_counts: buffer(1),
+        tile_cache: buffer(1),
     }
     if config::MODE == 0 {
         s.bc_colour = texture(width: 1024, height: 1024)
@@ -537,6 +555,7 @@ pub fn init() -> State {
     } else {
         s.model = buffer_of(data::MODEL)
         s.wood = buffer_of(data::WOOD)
+        if config::MODE == 9 { s.order = buffer(data::COUNT) }
         if config::MODE < 4 {
             s.order = buffer(data::COUNT)
             for i in 0..data::COUNT {
@@ -545,7 +564,7 @@ pub fn init() -> State {
             }
         }
         s.colour = texture(width: 64 * aa, height: 64 * aa)
-        if config::MODE == 1 || (config::MODE >= 4) {
+        if config::MODE == 1 || (config::MODE >= 4 && config::MODE <= 6) {
             s.normal = texture(width: 64 * aa, height: 64 * aa)
             if config::MODE == 1 || config::MODE == 6 {
                 s.detail = texture(width: 64 * aa, height: 64 * aa)
@@ -553,7 +572,12 @@ pub fn init() -> State {
         }
         s.depth = depth_texture(width: 64 * aa, height: 64 * aa)
     }
-    s.out = buffer(64 * 64)
+    if config::MODE == 7 || config::MODE == 8 {
+        assert(aa == 2)
+        if config::MODE == 8 { s.tile_cache = buffer(data::COUNT) }
+        s.tile_counts = buffer(64)
+        s.tile_out = buffer(64 * 64 * 4)
+    } else { s.out = buffer(64 * 64) }
     take s
 }
 
@@ -581,6 +605,63 @@ pub fn render(s: mut State) {
         )
         p.end()
         dispatch(integrated_radiance.bind(c, s.colour, mut s.out), over: 64 * 64)
+    } else if config::MODE == 9 {
+        tiles::sort(c.direction, s.model, mut s.order)
+        let p = begin_pass_with_depth(mut s.colour, mut s.depth, clear: vec4(0.0), clear_depth: 1.0)
+        draw(
+            p,
+            wood_vertex.bind(c, s.wood.items()),
+            wood_radiance.bind(c),
+            vertices: data::WOOD.len() * LIMB_VERTICES,
+            instances: 1,
+        )
+        draw(
+            p,
+            optical_vertex.bind(c, s.model.items(), s.order.items()),
+            optical_radiance,
+            vertices: 6,
+            instances: data::COUNT,
+            blend: Blend::Premultiplied,
+            depth: Depth { compare: Compare::LessEqual, write: false },
+        )
+        p.end()
+        dispatch(integrated_radiance.bind(c, s.colour, mut s.out), over: 4096)
+    } else if config::MODE == 7 || config::MODE == 8 {
+        if config::MODE == 8 {
+            tiles::prepare(
+                tiles::Camera {
+                    direction: c.direction,
+                    right: c.right,
+                    up: c.up,
+                    illumination: c.illumination,
+                },
+                s.model,
+                mut s.tile_cache,
+            )
+        }
+        let p = begin_pass_with_depth(mut s.colour, mut s.depth, clear: vec4(0.0), clear_depth: 1.0)
+        draw(
+            p,
+            wood_vertex.bind(c, s.wood.items()),
+            wood_radiance.bind(c),
+            vertices: data::WOOD.len() * LIMB_VERTICES,
+            instances: 1,
+        )
+        p.end()
+        tiles::render(
+            tiles::Camera {
+                direction: c.direction,
+                right: c.right,
+                up: c.up,
+                illumination: c.illumination,
+            },
+            s.model,
+            s.tile_cache,
+            s.colour,
+            s.depth,
+            mut s.tile_out,
+            mut s.tile_counts,
+        )
     } else if (config::MODE >= 4) {
         assert(s.aa == 1)
         let wood = begin_pass_with_depth(
@@ -742,7 +823,9 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     s.illumination = (s.step / 2) % 4
     render(mut s)
     let screen = begin_screen_pass(vec4(0.0))
-    draw(screen, full, composite.bind(s.out.items()), vertices: 3)
+    if config::MODE == 7 || config::MODE == 8 {
+        draw(screen, full, composite_tiles.bind(s.tile_out.items()), vertices: 3)
+    } else { draw(screen, full, composite.bind(s.out.items()), vertices: 3) }
     screen.present()
     s.step += 1
 }

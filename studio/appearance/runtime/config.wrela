@@ -2,6 +2,8 @@
 // 2 = shade before blending, 3 = original source cards and wood.
 // Rejected diagnostic variants: 4 = two global visibility slabs, 5 = local front slab,
 // 6 = global slabs with four independent coverage samples. These require AA = 1.
+// Rejected execution diagnostics: 7 = tile sort/integrate, 8 = projected tile cache,
+// 9 = GPU global sort plus hardware raster. Modes 7-9 use AA = 2.
 // BC and calibrated controls require their archived payload; the checked-in data is frozen.
 pub const MODE: u32 = 2
 pub const AA: u32 = 2
