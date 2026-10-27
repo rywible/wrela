@@ -128,8 +128,10 @@ The lookdev rubric's "hero" anchor is a private set of 83 images, not in the rep
 
 [Pharr, Jakob and Humphreys, *Physically Based Rendering*, 4th ed., chapter 8](https://pbr-book.org/4ed/Sampling_and_Reconstruction)
 (2023) describes sampling a continuous radiance function and combining samples into pixels.
-`engine::supersample` uses f32 sums of scene-linear RGB; `studio/reconstruct` applies a regular
-spatial grid before any develop curve. This is our small quadrature instrument, not PBRT code
+`engine::supersample` uses f32 sums of scene-linear RGB; `studio/reconstruct` offers a regular
+spatial grid and a reference sampler that crosses spatial strata with all 64 shading phases.
+The latter follows [§8.5, stratified sampling](https://pbr-book.org/4ed/Sampling_and_Reconstruction/Stratified_Sampler): sample inside regions and separate sampling dimensions. It uses our existing hash
+for spatial offsets; no PBRT code was copied. Both accumulate before any develop curve. This is our small quadrature instrument, not PBRT code
 or a claim that the existing engine's lighting is physically unbiased. The temporary diagnostic
 view is explicitly `max(x,0)/(1+max(x,0))` at fixed exposure 1; its PSNR is not a perceptual gate.
 
@@ -137,3 +139,13 @@ The offline development-image evaluator uses [NVIDIA's FLIP 1.7](https://github.
 (BSD 3-Clause), installed as the external package `flip-evaluator==1.7`, with NumPy 2.2.6.
 The named LDR-FLIP viewing conditions and float preprocessing are in
 [neural-rendering-progress.md](neural-rendering-progress.md); no FLIP implementation is vendored.
+
+The continuous-clip evaluator uses Zhang et al., [“The Unreasonable Effectiveness of Deep
+Features as a Perceptual Metric” / LPIPS](https://github.com/richzhang/PerceptualSimilarity)
+(CVPR 2018; implementation BSD 2-Clause). External package `lpips==0.1.4`, AlexNet metric
+version 0.1 with learned calibration, runs on Pop!_OS's CPU using PyTorch 2.5.1+cpu and
+torchvision 0.20.1+cpu. RGB is the named exposure-1 Reinhard view, encoded as sRGB and scaled
+to [-1,1], without resizing. Effective weight hashes, software versions, controls and the
+complete evaluator are embedded in each result. No package code or pretrained metric weights
+are shipped in the engine. The pinned CPU combination follows [PyTorch's versioned installation
+instructions](https://pytorch.org/get-started/previous-versions/#v251).

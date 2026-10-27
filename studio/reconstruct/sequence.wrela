@@ -1,0 +1,109 @@
+// Continuous analytic clips, including cold starts and a declared scene cut. Truth and
+// visibility are separate observation passes after the causal reconstruction, never inputs.
+use main::{call, floats, frames, upload_model}
+use std::io::print
+use std::tool::{ToolError, drive, files}
+use std::tool::drive::{Scalar, Step}
+use toolkit::driven::untrapped
+use toolkit::whole::{chunked, data_bytes, joined, read_file, write_file}
+
+pub struct Spec: Copy {
+    pub width: u32,
+    pub height: u32,
+    pub warmup: u32,
+    pub start: u32,
+    pub length: u32,
+    pub shot: u32,
+    pub cut_at: u32,
+    pub reset_cut: u32,
+}
+
+fn save(b: drive::Build, path: str, count: u32) -> Result<(), ToolError> {
+    let ids = untrapped("clip buffers", drive::steps(b, [Step::Buffers]).wait()?)?
+    borrow buffers = ids.buffers[0]
+    let id = buffers[buffers.len() - 1]
+    var result = untrapped("clip readback", drive::steps(b, [Step::ReadBuffer(id)]).wait()?)?
+    let bytes = joined(data_bytes(result.bytes.remove(0))?)
+    let _ = floats(bytes, count * 4)?
+    write_file(path, chunked(take bytes))?
+    Ok(())
+}
+
+fn path(
+    b: drive::Build,
+    directory: str,
+    spec: Spec,
+    divisor: u32,
+    model: str,
+) -> Result<(), ToolError> {
+    let _ = untrapped("clip init", drive::steps(b, [Step::Init], timeout: 600.0).wait()?)?
+    let _ = call(
+        b,
+        "configure",
+        Vec::from([Scalar::I32(i32(divisor)), Scalar::I32(0), Scalar::I32(i32(spec.shot))]),
+    )?
+    let _ = call(
+        b,
+        "prepare_sequence",
+        Vec::from(
+            [
+                Scalar::I32(i32(spec.width)),
+                Scalar::I32(i32(spec.height)),
+                Scalar::I32(i32(spec.start)),
+            ],
+        ),
+    )?
+    if !model.is_empty() { upload_model(b, read_file(model, "clip model")?)? }
+    frames(b, spec.warmup)?
+    for frame in 0..spec.length {
+        if spec.cut_at > 0 && frame == spec.cut_at {
+            let _ = call(
+                b,
+                "cut",
+                Vec::from(
+                    [Scalar::I32(i32((spec.shot + 3) % 8)), Scalar::I32(i32(spec.reset_cut))],
+                ),
+            )?
+        }
+        let _ = call(
+            b,
+            "collect",
+            Vec::from([Scalar::I32(i32(spec.width)), Scalar::I32(i32(spec.height))]),
+        )?
+        frames(b, 1)?
+        if call(b, "publish", Vec::new())? != 1 { return Err(ToolError::new("clip capture count")) }
+        let stem = f"{directory}/scale-{divisor}/{frame}"
+        let count = spec.width * spec.height
+        save(b, f"{stem}.rgba32f", count)?
+        if call(b, "publish_truth", Vec::new())? != i32(count) {
+            return Err(ToolError::new("clip truth count"))
+        }
+        save(b, f"{stem}.truth32f", count)?
+        if call(b, "publish_visibility", Vec::new())? != i32(count) {
+            return Err(ToolError::new("clip visibility count"))
+        }
+        save(b, f"{stem}.visibility32f", count)?
+        if frame % 30 == 0 || frame + 1 == spec.length {
+            print(f"sequence: scale {divisor}, frame {frame + 1}/{spec.length}")
+        }
+    }
+    Ok(())
+}
+
+pub fn run(directory: str, spec: Spec, model: str) -> Result<(), ToolError> {
+    let metadata = f"scene=analytic/slats-checkerboard\nshot={spec.shot}\ncut_shot={(spec.shot + 3) % 8}\nwidth={spec.width}\nheight={spec.height}\nstart_frame={spec.start + spec.warmup}\nwarmup={spec.warmup}\nframes={spec.length}\nsimulation_fps=60\ncut_at={spec.cut_at}\nreset_cut={spec.reset_cut}\nmodel={model}\nformat=rgba32f_le_top_down_scene_linear_alpha1\nvisibility=foreground_area,horizontal_speed_output_pixels_per_frame,0,1\nreference=analytic_pixel_integral_after_reconstruction_never_decoder_input\ntrack=development_continuous_clip_not_sealed_test\n"
+    let _ = files::write(f"{directory}/sequence.txt", metadata.as_bytes()).wait()?
+    for divisor in 1..5 {
+        var load = drive::gpu()
+        load.width = spec.width
+        load.height = spec.height
+        load.workers = 1
+        load.timeout = 600.0
+        let b = drive::load(f"{directory}/fixture", load).wait()?.build
+        let result = path(b, directory, spec, divisor, model)
+        let closed = drive::close(b).wait()
+        (take result)?
+        let _ = (take closed)?
+    }
+    Ok(())
+}

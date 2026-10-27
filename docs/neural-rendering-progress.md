@@ -262,3 +262,131 @@ Next iteration: fix real-scene reference convergence, add continuous motion/cut 
 test field-derived footprint/coverage information against both a closed-form baseline and a
 learned reconstruction. The evidence argues against merely increasing the current rejector's
 size. Recurrence and perceptual checks must remain promotion gates; none of G1–G7 is achieved.
+
+
+### Separate spatial sampling from shading phase
+
+The former reference grid uses the same counter for pixel location and the renderer's
+16/64-phase dithering and stochastic shading. That couples integration dimensions. The new
+opt-in `--sampling phase64 --seed N` sampler crosses every spatial stratum with all 64
+shading phases and uses independently hashed coordinates inside each stratum, while simulation
+time stays fixed. A reference has `cells² × 64` samples. It follows stratification's principle
+from [PBRT §8.5](https://pbr-book.org/4ed/Sampling_and_Reconstruction/Stratified_Sampler);
+no published implementation was copied. Pure tests check the full stratum/phase product and
+a separable visibility/position integrand. Their centroid bound is the exact half-stratum
+bound, not an assumed probabilistic concentration threshold.
+
+The independent reference check uses seed N+1; it no longer mistakes identical reruns for
+accuracy. Regular-grid captures retain their old behavior. On the actual clearing, shot 0,
+192×108, fixed time, 240 warmup frames, seed 17:
+
+| Samples, coarse → fine | Coarse/fine mean FLIP | Independent fine-seed mean FLIP | Result |
+|---|---:|---:|---|
+| 256 → 1,024 | 0.012582 | 0.005576 | Both fail 0.003 |
+| 4,096 → 16,384 | 0.004613 | 0.001422 | Sample-count check still fails |
+
+Runs are `1793058183-330807687` and `1793058576-525722079`. The latter's lower-half
+coarse/fine discrepancy is 0.006978, so its detailed region particularly needs care. Candidate
+captures remain byte-identical across these sampler changes. The new reference's sampling
+variation is separated more honestly; this does **not** establish that all prior error came
+from the phase correlation or that production lighting is unbiased.
+
+A 16,384→65,536 run is in progress at this checkpoint:
+`build/reconstruct/runs/1793059465-54690141`, log
+`build/reconstruct/phase64-clearing-16384-65536.log`. Its command is the same as above with
+`--cells 16`. A live process was verified; the diagnostic record
+`/home/ryanwible/.local/state/wrela-neural-frontier/active-measurement.json` records its process
+identity, source archive and observation time. Recheck the process/tool handle before treating
+that record as current. No result is claimed for this pending run.
+
+### Continuous clips, independent targets and cut controls
+
+`--frames N` now drives an analytic sequence (up to 300 frames), retaining causal history
+between outputs. `--warmup 0` includes the cold start. `--start-frame N` changes the starting
+simulation time without inventing prior history. `--cut-at N` declares a change to case
+`(shot+3)%8`; `--reset-cut 0` deliberately suppresses the reset for a negative control.
+The normal default resets history. Reconstruction runs first. Separate passes then generate
+linear-RGB truth and foreground coverage/velocity masks from the captured moment. Neither
+target buffer is bound to a decoder. The capture holds the case and frame together so an
+observation cannot silently become the next scene's target.
+
+The eight-frame cut test, case 0→3 at frame 4, proves that the production resolver's declared
+reset removes history in this fixture. At 1×, 2×, 3× and 4×, the cut frame is **byte-identical**
+to a separately initialized case 3 at simulation frame 4. With reset suppressed, respectively
+**80.41%, 95.81%, 96.03% and 97.32%** of pixels differ from that fresh control by more than
+2/255 in named-view linear luminance. Their current-frame truth and visibility are identical,
+so the intervention isolates history. This tests the resolver under an explicit cut, not
+automatic cut detection throughout the game, all stale trails, or G3 as a whole.
+
+Evidence: reset run `1793058806-214392282` (`cut-check.json`), no-reset run
+`1793058999-631101207`, fresh control `1793059017-891068057`.
+The checker embeds its complete source, hashes and comparison conditions.
+
+The first five-second development clip runs **300 frames at a 60 Hz simulation cadence**,
+case 7 then case 2, cut at frame 150, cold start, 192×108. It is one constructed diagnostic
+clip, not a sealed 100-clip suite or a presentation-rate measurement. Command:
+
+`wrela tool reconstruct -- --scene edges --shot 7 --width 192 --height 108 --warmup 0
+--frames 300 --cut-at 150`
+
+The run is `build/reconstruct/runs/1793058998-313684639`. Every frame retains candidate,
+analytic colour target and visibility/velocity data. Targets hash-match across all four
+scales. An independent float64 rectangle-subdivision audit checked all pixels of frames
+0, 1, 149, 150, 151, 298 and 299, using the declared simulation time and case. Its maximum
+RGB discrepancy was 0.00002457; maximum coverage discrepancy was 0.00003052.
+This checks the capture's time/cut indexing as well as its integrals.
+
+### Perceptual and geometry-correspondence scoring
+
+The external sequence evaluator now computes FLIP, LPIPS, display PSNR and temporal residuals.
+LPIPS uses package 0.1.4, AlexNet metric version 0.1 with learned calibration, PyTorch 2.5.1+cpu
+and torchvision 0.20.1+cpu. It receives the fixed exposure-1 Reinhard linear RGB view encoded
+as sRGB, scaled to [-1,1], with no resizing. PSNR here uses that same **sRGB-encoded** view,
+range [0,1], so it differs intentionally from the earlier linear-view diagnostic PSNR.
+FLIP remains LDR-FLIP 1.7, 67 pixels/degree, linear input with `inputsRGB=false`.
+Effective LPIPS state hash:
+`cd2943aa26b6c7e7d100ab7e09a6c0975653ff57be42499de2ab48991fff82de`.
+
+For temporal residuals, first subtract reference from candidate in displayed **linear** RGB.
+Background correspondence is stationary; foreground correspondence uses the known horizontal
+velocity. Bilinear history is accepted only where both taps and the current pixel have full
+coverage of that same foreground. Visibility changes, unmatched/mixed pixels and newly exposed
+background are reported separately. Across the declared cut there is no surface correspondence.
+Empty masks are `null`, never a fabricated zero. The all-pixel unwarped residual remains
+visible, so a method cannot gain by excluding its hard edges.
+
+Identity images score zero in both perceptual metrics. A shifted-image negative control scores
+positive. A synthetic moving error field has zero compensated residual while its uncompensated
+residual is nonzero; a full reveal correctly has no valid old-surface correspondence.
+Controls, evaluator source/hash, versions, effective metric-weight hash and every input hash
+are embedded in `sequence-metrics.json`. Evaluation runs on the Pop!_OS CPU; AMD renders all
+source frames. No evaluation/model latency is claimed here.
+
+For the five-second clip, the existing temporal path scores:
+
+| Scale | Mean FLIP | Mean LPIPS | sRGB-view PSNR dB | Opaque temporal MAE | Visibility-change temporal MAE |
+|---|---:|---:|---:|---:|---:|
+| 1× | 0.422584 | 0.191405 | 17.0724 | 0.008312 | 0.149890 |
+| 2× | 0.453892 | 0.419704 | 14.7757 | 0.013122 | 0.179872 |
+| 3× | 0.466486 | 0.711902 | 14.5206 | 0.007735 | 0.182363 |
+| 4× | 0.467562 | 0.554060 | 14.4221 | 0.006435 | 0.185539 |
+
+Temporal columns average the 298 non-cut frame transitions. Conservative opaque correspondence
+covers only **36.53%** of pixels; visibility changes cover **63.47%**. This is a limitation of
+single-surface correspondence on this thin-layer test, not evidence that the rest is stable.
+The 4× path's small opaque temporal residual plainly does not compensate for its large spatial
+and changing-visibility errors. This is why the charter requires all gates together.
+There are no clip-level confidence intervals or population claims from this one clip.
+
+External utilities: `evaluate_sequence.py`, `check_sequence_cut.py` and
+`check_sequence_integrals.py` under the existing external state directory.
+Source archive: `build/neural-evidence/sequence-phase64/source.tar.gz`.
+Each completed run has a provenance file and retained built fixture. The renderer, sampler,
+capture protocol and model code remain Wrela; external packages are measurement tools only.
+
+The captured moment stores both tick and case. After that hardening, the eight-frame cut
+control was rerun as `1793060012-470941299`: all 96 candidate, truth and visibility buffers
+were byte-identical to `1793058806-214392282`. Six focused pure tests and the native
+capture controls pass. Whole-workspace formatting still reports the existing unrelated
+`examples/clearing/tests/checks/tests.wrela` issue; changed files are formatted. The 65,536
+sample convergence measurement is still running and is not counted as a passing result.

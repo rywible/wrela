@@ -10,7 +10,7 @@ use engine::temporal::{
     ReconstructionSample, Resolve, neighbourhoods, reconstruction_samples, resolve,
 }
 use engine::view::{Camera, camera, first_camera, jitter_of}
-use field::{Field, case, front_at, pixel, point}
+use field::{Field, case, front_at, front_coverage, pixel, point}
 use std::collections::swap
 use std::gpu::{
     Compare, Depth, DepthTexture, FragCoord, GlobalId, GpuBuffer, Half2, Rgba16Float, Sampler,
@@ -52,6 +52,10 @@ pub struct State {
     tick: u32,
     collecting: bool,
     captured_count: u32,
+    captured_tick: u32,
+    captured_shot: u32,
+    collect_rows: bool,
+    reset: bool,
     cam: Camera,
     scene: Texture<Rgba16Float>,
     depth: DepthTexture,
@@ -63,6 +67,8 @@ pub struct State {
     current: Texture<Rgba16Float>,
     last: Texture<Rgba16Float>,
     captured: GpuBuffer<vec4>,
+    truth: GpuBuffer<vec4>,
+    visibility: GpuBuffer<vec4>,
     no_net: GpuBuffer<Half2>,
     rgb_net: GpuBuffer<Half2>,
     rgb_words: u32,
@@ -82,6 +88,10 @@ pub fn init() -> State {
         tick: 0,
         collecting: false,
         captured_count: 0,
+        captured_tick: 0,
+        captured_shot: 0,
+        collect_rows: true,
+        reset: true,
         cam: first_camera(vec3(0.0), vec3(0.0, 0.0, -1.0), 1.0, width: 1, height: 1),
         scene: texture(width: 1, height: 1),
         depth: depth_texture(width: 1, height: 1),
@@ -93,6 +103,8 @@ pub fn init() -> State {
         current: texture(width: 1, height: 1),
         last: texture(width: 1, height: 1),
         captured: buffer(1),
+        truth: buffer(1),
+        visibility: buffer(1),
         no_net: buffer(1),
         rgb_net: buffer(1),
         rgb_words: 0,
@@ -124,6 +136,8 @@ pub fn collect(s: mut State, width: u32, height: u32) {
     assert(s.width == width && s.height == height, "capture changed image size")
     s.collecting = true
     s.captured_count = 0
+    s.captured_tick = s.tick
+    s.captured_shot = s.shot
 }
 
 fn resize(s: mut State, width: u32, height: u32) {
@@ -195,13 +209,13 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         cam: s.cam,
         out: vec2(f32(width), f32(height)),
         blend: 0.12,
-        fresh: u32(s.tick == 0),
+        fresh: u32(s.tick == 0 || s.reset),
         jitter,
         last_jitter: jitter_of(if s.tick == 0 { 0 } else { s.tick - 1 }),
         moving: vec4(0.0, 0.0, f32(width), f32(height)),
         settled: f32(s.tick),
     }
-    if s.collecting || s.rgb_enabled {
+    if (s.collecting && s.collect_rows) || s.rgb_enabled {
         s.samples = buffer(width * height)
         dispatch(
             reconstruction_samples.bind(
@@ -245,6 +259,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         )
     }
     p.end()
+    s.reset = false
     let screen = begin_screen_pass(clear: vec4(0.0))
     fullscreen(screen, shown.bind(s.current))
     screen.present()
@@ -259,7 +274,9 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
 }
 
 pub fn publish(s: mut State) -> u32 {
+    assert(s.collecting && s.captured_count == 1, "publish requires one captured frame")
     s.collecting = false
+    s.tick += 1
     s.captured_count
 }
 
@@ -307,4 +324,59 @@ fn corrected(
     let x = features(row, p.position.xy, vec2(f32(width), f32(height)), divisor, jitter)
     let out = eval_gpu(MODEL, weights, x)
     vec4(linear(view(base) + vec3(out[0], out[1], out[2])), row.v[23])
+}
+
+// A continuous instrument starts without consuming a frame. Its target and visibility are
+// computed only AFTER reconstruction, in separate buffers that no decoder can read.
+pub fn prepare_sequence(s: mut State, width: u32, height: u32, start: u32) {
+    resize(mut s, width, height)
+    s.tick = start
+    s.collect_rows = false
+}
+
+pub fn cut(s: mut State, shot: u32, reset: u32) {
+    assert(!s.collecting && shot < 8 && reset <= 1)
+    s.shot = shot
+    if reset == 1 { s.reset = true }
+}
+
+pub fn publish_truth(s: mut State) -> u32 {
+    assert(!s.collecting && s.captured_count == 1)
+    s.truth = buffer(s.width * s.height)
+    dispatch(
+        integrated.bind(
+            case(s.captured_shot),
+            tick: s.captured_tick,
+            width: s.width,
+            count: s.width * s.height,
+            out: mut s.truth,
+        ),
+        over: s.width * s.height,
+    )
+    s.width * s.height
+}
+
+@compute(64)
+fn visibility_at(f: Field, tick: u32, width: u32, count: u32, out: mut Slots<vec4>, id: GlobalId) {
+    if id.x < count {
+        let at = vec2(f32(id.x % width), f32(id.x / width))
+        // R: foreground area fraction; G: its horizontal velocity in output pixels/frame.
+        out[id] = vec4(front_coverage(f, at, tick), f.speed, 0.0, 1.0)
+    }
+}
+
+pub fn publish_visibility(s: mut State) -> u32 {
+    assert(!s.collecting && s.captured_count == 1)
+    s.visibility = buffer(s.width * s.height)
+    dispatch(
+        visibility_at.bind(
+            case(s.captured_shot),
+            tick: s.captured_tick,
+            width: s.width,
+            count: s.width * s.height,
+            out: mut s.visibility,
+        ),
+        over: s.width * s.height,
+    )
+    s.width * s.height
 }

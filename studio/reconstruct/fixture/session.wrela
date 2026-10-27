@@ -6,6 +6,7 @@ use engine::frame::{Aim, Frame, Off, Scene, Shared}
 use engine::supersample::{Moment, Reference}
 use engine::view::camera
 use std::gpu::{GpuBuffer, buffer}
+use sampling::{PHASES, stratified}
 
 pub struct Session<S: Scene> {
     pub frame: Frame<Shared>,
@@ -13,6 +14,8 @@ pub struct Session<S: Scene> {
     reference: Option<Reference>,
     captured: GpuBuffer<vec4>,
     cells: u32,
+    sampling: u32,
+    seed: u32,
     sample: u32,
     moment: Moment,
     collecting: bool,
@@ -26,6 +29,8 @@ impl<S: Scene> Session<S> {
             reference: None,
             captured: buffer(1),
             cells: 0,
+            sampling: 0,
+            seed: 0,
             sample: 0,
             moment: Moment { frame: 0, revision: 0 },
             collecting: false,
@@ -43,8 +48,16 @@ impl<S: Scene> Session<S> {
         self.frame.set(Off::History, on: cells == 0)
     }
 
+    pub fn sampling(mut self, scheme: u32, seed: u32) {
+        assert(scheme <= 1 && !self.collecting)
+        self.sampling = scheme
+        self.seed = seed
+    }
+
     pub fn sample_count(self) -> u32 {
-        max(self.cells * self.cells, 1)
+        if self.cells == 0 { 1 } else {
+            self.cells * self.cells * if self.sampling == 1 { PHASES } else { 1 }
+        }
     }
 
     pub fn ready(self) -> bool {
@@ -77,6 +90,16 @@ impl<S: Scene> Session<S> {
                 grid: true,
                 cells: self.cells,
             )
+            if self.sampling == 1 {
+                let (jitter, phase) = stratified(self.sample, self.cells, self.seed)
+                // The unjittered matrices stay unchanged. Scene passes read this explicit
+                // offset; temporal output is discarded for reference accumulation.
+                self.frame.cam.frame = phase
+                self.frame.cam.jitter = vec2(
+                    2.0 * jitter.x / f32(width),
+                    -2.0 * jitter.y / f32(height),
+                )
+            }
         }
         self.frame.draw(mut self.scene, aim)
         if self.collecting {

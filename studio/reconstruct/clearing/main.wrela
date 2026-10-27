@@ -113,3 +113,7 @@ pub fn publish(s: mut State) -> u32 {
 pub fn sample_count(s: State) -> u32 {
     s.capture.sample_count()
 }
+
+pub fn sampling(s: mut State, scheme: u32, seed: u32) {
+    s.capture.sampling(scheme, seed)
+}

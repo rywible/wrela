@@ -99,6 +99,9 @@ fn exact_pixel_preserves_fractional_coverage_hdr_and_negative_motion() {
     }
     // Quarter red slat over white; a full background pixel; then a quarter slat at x=-1.
     assert(pixel(f, vec2(0.0), 0) == vec4(1.75, 0.75, 0.75, 1.0))
+    assert(front_coverage(f, vec2(0.0), 0) == 0.25)
+    assert(front_coverage(f, vec2(-1.0, 0.0), 1) == 0.25)
+    assert(front_coverage(f, vec2(1.0, 0.0), 0) == 0.0)
     assert(pixel(f, vec2(1.0, 0.0), 0) == vec4(1.0))
     assert(pixel(f, vec2(-1.0, 0.0), 1) == vec4(1.0, 0.0, 0.0, 1.0))
     // Fractional checker split in both dimensions: half white, half black.
@@ -129,4 +132,10 @@ fn point_samples_converge_to_independent_integrals() {
             }
         }
     }
+}
+
+/// Exact foreground footprint for reference visibility masks, never a reconstruction input.
+pub fn front_coverage(f: Field, at: vec2, frame: u32) -> f32 {
+    let shift = f.offset + f.speed * f32(frame)
+    clamp(pulse(at.x - shift, at.x + 1.0 - shift, f.period, f.width), 0.0, 1.0)
 }

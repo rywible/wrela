@@ -1,0 +1,59 @@
+// Reference-only sampling, following stratification's principle (PBRT 4e §8.5).
+// The renderer uses frame %16/%64 for dither and shading choices. A regular pixel grid tied
+// to that same counter correlates visibility with position. Here every spatial stratum sees
+// all 64 phases, with separately hashed coordinates inside it. Simulation time never changes.
+use engine::noise::rand
+
+pub const PHASES: u32 = 64
+
+pub fn stratified(index: u32, cells: u32, seed: u32) -> (vec2, u32) {
+    assert(cells > 0 && index < cells * cells * PHASES)
+    let cell = index / PHASES
+    let offset = vec2(
+        rand(seed.wrapping_mul(2).wrapping_add(1), index),
+        rand(seed.wrapping_mul(2).wrapping_add(2), index),
+    )
+    let p = (vec2(f32(cell % cells), f32(cell / cells)) + offset) / f32(cells) - vec2(0.5)
+    (p, index % PHASES)
+}
+
+@test
+fn every_spatial_stratum_has_every_phase_without_locked_position() {
+    let cells = 4
+    var seen = [0; 1024]
+    var xmean = [0.0; 64]
+    var ymean = [0.0; 64]
+    for i in 0..cells * cells * PHASES {
+        let (p, phase) = stratified(i, cells, 17)
+        assert(p.x >= -0.5 && p.x < 0.5 && p.y >= -0.5 && p.y < 0.5)
+        let cell = vec2u(floor((p + vec2(0.5)) * f32(cells)))
+        seen[(cell.y * cells + cell.x) * PHASES + phase] += 1
+        xmean[phase] += p.x / f32(cells * cells)
+        ymean[phase] += p.y / f32(cells * cells)
+    }
+    for count in seen { assert(count == 1, "phase missing or duplicated in a stratum") }
+    // Exact bound from one sample in every stratum, not a probabilistic centroid threshold.
+    for phase in 0..PHASES {
+        assert(
+            abs(xmean[phase]) < 0.5 / f32(cells) && abs(ymean[phase]) < 0.5 / f32(cells),
+            f"phase {phase}: centroid {xmean[phase]}, {ymean[phase]}",
+        )
+    }
+    let (a, pa) = stratified(57, cells, 17)
+    let (b, pb) = stratified(57, cells, 18)
+    assert(a != b && pa == pb, "seed changed phase schedule or failed to change spatial samples")
+}
+
+@test
+fn a_correlated_visibility_and_spatial_integrand_has_the_right_mean() {
+    // Independent expected measure: half the phases times the left quarter of the pixel.
+    // A shading phase cannot choose which side of the pixel it samples.
+    for seed in [3, 17, 31] {
+        var sum = 0.0
+        for i in 0..16 * 16 * PHASES {
+            let (p, phase) = stratified(i, 16, seed)
+            if phase < 32 && p.x < -0.25 { sum += 1.0 }
+        }
+        assert(abs(sum / f32(16 * 16 * PHASES) - 0.125) < 0.001)
+    }
+}
