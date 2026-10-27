@@ -1,5 +1,7 @@
 // Diagnostic only: 0 = BC atlas, 1 = averaged material moments,
 // 2 = shade before blending, 3 = original source cards and wood.
+// Rejected diagnostic variants: 4 = two global visibility slabs, 5 = local front slab,
+// 6 = global slabs with four independent coverage samples. These require AA = 1.
 // BC and calibrated controls require their archived payload; the checked-in data is frozen.
 pub const MODE: u32 = 2
 pub const AA: u32 = 2

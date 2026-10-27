@@ -200,3 +200,15 @@ FLIP and LPIPS implementations with engine tone mapping at exposure 0.62, follow
 sRGB, rather than the earlier exposure-1 Reinhard diagnostic. Its source-conditioned
 optical primitives, reference shading, GPU renderer and allocation observer are our own
 implementations; no external model weights or rendering implementation are imported.
+
+
+The rejected [two-slab visibility experiment](neural-shaded-appearance.md#replacement-experiment-reject-two-visibility-slabs)
+uses an original optical-thickness/radiance mixture in the broad family of bounded
+commutative transparency approximations described by [McGuire and Bavoil, Weighted
+Blended Order-Independent Transparency (JCGT 2013)](https://www.jcgt.org/published/0002/02/09/).
+It is not a reproduction. [Tsopouridis, Vasilakis and Fudos, Neural Moment Transparency
+(Eurographics 2024 Short Papers, DOI 10.2312/egs.20241029)](https://cgrg.eu/publications/neural-moment-transparency)
+provides prior work for a possible model predicting fragment transmittance from
+accumulated moment statistics. Only the authors' method description informs that
+proposed direction here; no implementation, assets, weights or performance results
+are imported or claimed.

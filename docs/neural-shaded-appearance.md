@@ -273,3 +273,178 @@ The old bad projection baseline, initial build/capture failures, failed material
 path, failed two targeted optimizations and every quality tail remain preserved.
 A manifest binds this evidence, its reference dependency and exact source/script archives.
 Evidence digest: `44cc42b8607d0781958bbd4409c360cd7ab8a7288d5a8797dfa091d4f8ef46b6`.
+
+
+## Replacement experiment: reject two visibility slabs
+
+**Decision: retire the two-slab radiance mixture.** This subsequent experiment tests
+the replacement proposed above, with two targeted follow-ups after its initial result.
+It does not reopen the first block's optimization budget. The first block concluded
+within 67 minutes; this replacement's plan was recorded at 16:29:38 UTC and its decision
+at 16:46:09 UTC on 2026-10-27. Zero training steps and zero new references.
+G1–G7 remain unchanged and unmet.
+
+The frozen 1,897-primitive payload is unchanged, SHA-256
+dc329e4b4c4eaa8ad0bbbb93eeea90cb2a94f4a0f01b284487f344d4ee2ff71c.
+The conventional source-calibrated payload is unchanged, SHA-256
+065549765511b660a115519d86c2d307bf04c5d56bc2536f17d60d80bb111114.
+Both receive the same source geometry, materials, field support, authored wood
+triangles, lighting and four quarter-pixel sample locations. The strongest ordered
+calibrated control and established BC/depth control remain in the comparison.
+These are fitted explicit optical primitives, not an MLP runtime decoder.
+
+The initial replacement removes global CPU sorting and supersampled image targets.
+Each primitive averages four opacity samples, converts the result to optical
+thickness, and additively accumulates thickness-weighted shaded radiance in two
+depth slabs. Far then near slabs resolve over point-sampled source wood. Support
+quads expand to cover the four sample positions. Within each slab, colors are
+mixtures rather than ordered per-fragment compositing.
+
+This belongs to the general family of bounded-storage commutative transparency
+approximations discussed by [McGuire and Bavoil (2013)](https://www.jcgt.org/published/0002/02/09/).
+It is our own optical-depth/slab experiment, not a reproduction or novelty claim.
+
+The two follow-ups answer separate measured questions:
+
+1. **Local front anchor:** replace the global split with a per-pixel nearest contributing
+   primitive depth, using the source shader's 2.4 m attenuation length for the front
+   slab. An extra visibility pass recovers only 0.502 dB while raising paced GPU
+   p95 from 0.376 to 0.558 ms.
+2. **Independent coverage samples:** keep the original global split, but accumulate
+   four independent optical thicknesses before averaging final opacities. This retains
+   overlap correlations lost by per-primitive averaging. An extra 32,760 live scratch
+   bytes recovers only 0.101 dB. Point-sampled wood and slab color mixtures remain.
+
+No third follow-up is taken. All failed outputs, the local-front compile failure,
+exact source/builds and measurements are retained.
+
+### Rendered quality and silhouettes
+
+Same completed AA64 references, two views, four lights, three backgrounds and metric
+preprocessing as above; no crop, threshold or acceptance change.
+
+| Path | Mean PSNR dB | Mean FLIP | Mean LPIPS | BC quality gates passed |
+|---|---:|---:|---:|---:|
+| BC atlas + depth reprojection | 30.68527 | 0.062373 | 0.037719 | reference baseline |
+| Conventional calibrated, ordered AA2 | 39.73958 | 0.013921 | 0.002116 | 22/24 |
+| Frozen fit, ordered AA2 | 40.12768 | 0.012348 | 0.001889 | 22/24 |
+| Frozen fit, global two slabs | 32.84992 | 0.047489 | 0.018105 | 17/24 |
+| Conventional calibration, two slabs | 32.71395 | 0.048277 | 0.018490 | 17/24 |
+| Follow-up 1: local front | 33.35180 | 0.043010 | 0.016403 | 18/24 |
+| Follow-up 2: four coverage samples | 32.95052 | 0.047441 | 0.017916 | 17/24 |
+
+Global slabs have 9.58× the ordered fit's LPIPS; even the best local-front result
+passes only 18/24 public cases. The conventional slab control receives identical
+runtime inputs and costs, and tracks the fitted one closely. Its ordered version
+remains substantially stronger.
+
+Coverage MAE rises from 0.008832 for the ordered fit to 0.013472 for global slabs,
+0.013470 with the local front, and 0.012288 with independent coverage samples.
+Worst per-image coverage-error p99 rises from 0.113129 to 0.307728, 0.307730 and
+0.316566 respectively. Worst silhouette boundary p99 remains 1.414 pixels for
+all four; that metric alone hides substantial fractional-coverage damage.
+Per-case precision/recall, soft IoU and shaded tails remain in the evidence.
+
+![Ordered and two-slab appearance comparisons](figures/neural-visibility-layers.png)
+
+### Complete cost and actual residency
+
+Same Ryzen 5 5500U, hardware AMD RADV RENOIR, Mesa 26.1.6, Chrome
+154.0.8037.57, pinned Wrela 0.9.0 / compiler
+de9b81e52a7747870dfbd5223cb8aeb41e584d23.
+One isolated 240-frame run after 60 warmup frames per path, at 64×64, one worker.
+Captures, profiling and scoring run sequentially on Pop!_OS.
+
+GPU spans include decoding, wood, visibility, layer accumulation/resolution and screen
+compositing. CPU calls include view/light updates and command recording. No global CPU
+sort or index upload remains. These paths write 784 uniform bytes per frame; the
+local-front path writes 1,296 bytes. Initialization is outside steady-state time,
+but its peak allocation and retained upload capacity are counted.
+
+| Path | Paced GPU p95 / p99 ms | CPU call p99 ms | Saturated GPU p95 ms | CPU start to GPU completion p95 / p99 ms |
+|---|---:|---:|---:|---:|
+| Frozen fit, global two slabs | 0.375642 / 0.376428 | 0.553050 | 0.09548 | 4.220215 / 4.452451 |
+| Conventional calibration, two slabs | 0.375042 / 0.375649 | 0.538050 | 0.11424 | 4.365491 / 4.726450 |
+| Follow-up 1: local front | 0.558454 / 0.559950 | 0.702200 | 0.16740 | 4.490247 / 4.605481 |
+| Follow-up 2: four coverage samples | 0.390446 / 0.395628 | 0.538550 | 0.10452 | 4.204834 / 4.305229 |
+
+Ordered fitted AA2 has paced GPU p95/p99 0.314113/0.316113 ms, CPU p99 0.973050 ms
+and saturated GPU p95 0.09808 ms. BC has paced GPU p95/p99 0.103642/0.104649 ms
+and CPU p99 0.370000 ms. CPU sorting removal reduces CPU work, but no replacement
+establishes a complete GPU improvement.
+
+Completion uses the existing observer of submissions and completion notifications;
+every submission within each CPU frame is accounted for. This includes browser
+scheduling and driver notification latency, and is not input-to-photon timing.
+Ordered AA2 completion p95/p99 was 4.340100/4.527881 ms; BC was 1.906018/3.812336 ms.
+Small single-run differences are not a robust wall-time ranking.
+
+| Path | Engine appearance + scratch bytes | All live requested GPU bytes | Peak requested GPU bytes | DRM VRAM / GTT MiB | Browser group PSS MiB |
+|---|---:|---:|---:|---:|---:|
+| Frozen fit, global two slabs | 190,088 | 599,688 | 616,072 | 16.582 / 9.289 | 454.899 |
+| Conventional calibration, two slabs | 190,088 | 599,688 | 616,072 | 16.582 / 9.289 | 454.088 |
+| Follow-up 1: local front | 190,088 | 599,688 | 616,072 | 16.590 / 9.383 | 462.865 |
+| Follow-up 2: four coverage samples | 222,848 | 632,448 | 648,832 | 16.586 / 9.289 | 455.003 |
+
+The engine column excludes only the identical 65,536-byte output. Full requested
+allocations include that output, depth/coverage/radiance targets, wood, fallback/dummy
+resources, uniform/upload rings and screen storage. Only a dummy sort-index entry
+remains. No BC fallback atlas is retained. Global/local slabs save 16.9% against
+the measured ordered fit's 721,852 requested live GPU bytes.
+
+Against BC's 4,341,876 bytes, complete requested allocations save only **7.240×**
+(global/local) or **6.865×** (four coverage samples). The engine-only number appears
+to exceed 16× for global slabs, illustrating why it cannot substitute for residency.
+Actual DRM residency and whole-browser PSS include retained driver/browser storage
+not exposed by WebGPU descriptors. These are separate UMA observations: do not sum
+PSS, VRAM and GTT or attribute shared host overhead to one asset. The final-default
+116-byte helper difference remains as documented above.
+
+### What the failures identify
+
+Post-measurement attribution uses conservative bounding boxes of the already exported
+source wood triangles. No new reference or changed quality gate. Inside these boxes
+can include foliage: not all their error is established as wood-caused.
+
+Outside projected wood bounds, four independent opacity values reproduce ordered
+AA2 coverage within **0.0001531 mean absolute error**. This is agreement with the
+four-sample control, not with perfect coverage. Yet display squared error against
+the shaded reference rises from 0.9217 to 2.9194 on average over cases in that region.
+Within conservative wood bounds, coverage differs by 0.048656 and display squared
+error rises from 0.6505 to 5.0003. Raw masks and per-case values are retained.
+
+Compact coverage accumulation is useful, but does not retain joint depth, shaded
+color and wood/leaf visibility. More material-moment fitting would not repair this
+renderer's lost ordering. Reject the mixture on quality, full storage and complete
+runtime together; infrastructure progress is not a rendering win.
+
+### Next architecture-level bet
+
+Preserve **ordered subpixel visibility including wood**, while eliminating global CPU
+sorting and full supersampled radiance targets. The shortest discriminating prototype
+is tile-local ordered evaluation at the same four sample positions, with bounded lists,
+explicit overflow/fallback accounting and both frozen fitted and conventional
+source-calibrated inputs. Recover the ordered control's images before its CPU/storage
+savings count. Reuse these references and metrics.
+
+If transmittance reconstruction becomes the demonstrated bottleneck, test a small
+source-conditioned transmittance model against conventional moment reconstruction
+receiving the same moments, depths and coverage. [Tsopouridis, Vasilakis and Fudos,
+Neural Moment Transparency (2024)](https://cgrg.eu/publications/neural-moment-transparency)
+is prior work on learned fragment transmittance from accumulated moment statistics.
+This is a possible model target, not an implemented result or imported performance
+claim. Wrela's fields and source visibility can supply exact ordered supervision and
+support bounds to both methods.
+
+### Preservation and proportional verification
+
+The runtime keeps rejected methods as diagnostic modes 4–6; its default remains
+the frozen ordered AA2 renderer. Format/type checks pass; a final native capture
+reproduces all eight measured AA2 outputs byte for byte. Completed reference and
+response checks are reused. No full-suite/PR-readiness claim.
+
+Evidence on Pop!_OS: build/neural-evidence/g4-visibility-layers-v1 in the worktree.
+Each variant retains actual source/payload, compiled build, raw images, profile,
+completion/allocation records and raw process/DRM records. The manifest references
+unchanged prior comparison/reference manifests and binds exact final source/scripts.
+Manifest SHA-256: `814030755e130a9fd7a600643fbcef0f303cb6db94d4108f4916cbe7af44ef9e`.

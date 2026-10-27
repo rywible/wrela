@@ -7,9 +7,10 @@ use engine::plant::{LIMB_VERTICES, limb_vertex}
 use std::field::Tube
 use std::gpu::{
     Bc5, Bc7, Blend, ClipPosition, Compare, Depth, DepthTexture, Flat, FragCoord, GlobalId,
-    GpuBuffer, Half2, InstanceIndex, Memory, Rgba16Float, Rgba32Float, Slots, Targets3, Texture,
-    VertexIndex, begin_screen_pass, begin_pass_with_depth, begin_pass3_with_depth, buffer,
-    buffer_of, copy_buffer_to_texture, depth_texture, dispatch, draw, label, memory, texture, write,
+    GpuBuffer, Half2, InstanceIndex, Memory, Rgba16Float, Rgba32Float, Slots, Targets2, Targets3,
+    Texture, VertexIndex, begin_screen_pass, begin_pass_with_depth, begin_pass3_with_depth,
+    begin_pass2_with_depth, buffer, buffer_of, copy_buffer_to_texture, depth_texture, dispatch,
+    draw, label, memory, texture, write,
 }
 
 struct Camera: Copy + GpuData {
@@ -58,7 +59,9 @@ fn optical_vertex(
     w: [Half2],
     order: [u32],
 ) -> OpticalVertex {
-    let group = order[instance.index]
+    let group = if (config::MODE >= 4) { instance.index } else {
+        order[instance.index]
+    }
     let centre = vec3(value(w, group, 0), value(w, group, 1), value(w, group, 2))
     let mean = vec2(
         dot(centre, c.right) + value(w, group, 3),
@@ -87,7 +90,10 @@ fn optical_vertex(
     let radii = sqrt(vec2(xx, yy) * 18.0)
     let qx = [-1.0, 1.0, 1.0, -1.0, 1.0, -1.0]
     let qy = [-1.0, -1.0, 1.0, -1.0, 1.0, 1.0]
-    let delta = vec2(qx[v.index % 6], qy[v.index % 6]) * radii
+    let support = radii + if (config::MODE >= 4) {
+        vec2(1.0 / f32(c.size))
+    } else { vec2(0.0) }
+    let delta = vec2(qx[v.index % 6], qy[v.index % 6]) * support
     let at = mean + delta
     let depth = saturate(0.5 + 0.5 * dot(centre, c.direction))
     let colour = vec3(value(w, group, 21), value(w, group, 22), value(w, group, 23))
@@ -145,6 +151,119 @@ fn optical(v: OpticalVertex) -> Targets3<vec4, vec4, vec4> {
 fn optical_radiance(v: OpticalVertex) -> vec4 {
     let a = alpha_of(v)
     vec4(v.radiance.value * a, a)
+}
+
+// Effective opacity integrated over this pixel before commutative layer accumulation.
+// This is four-point quadrature, not exact integration; overlapping kernels within
+// each slab are mixed by optical depth, not an exact ordered surface calculation.
+
+fn footprint_samples(v: OpticalVertex, c: Camera) -> vec4 {
+    let h = 0.5 / f32(c.size)
+    var a = vec4(0.0)
+    for y in 0..2 {
+        for x in 0..2 {
+            let offset = vec2(if x == 0 { -h } else { h }, if y == 0 { -h } else { h })
+            let sample = OpticalVertex { delta: v.delta + offset, ..v }
+            a[y * 2 + x] = alpha_of(sample)
+        }
+    }
+    a
+}
+
+fn footprint_alpha(v: OpticalVertex, c: Camera) -> f32 {
+    dot(footprint_samples(v, c), vec4(0.25))
+}
+
+@fragment
+fn optical_front(v: OpticalVertex, c: Camera) -> vec4 {
+    let a = footprint_alpha(v, c)
+    if a >= 0.02 { vec4(v.detail.value.x, 0.0, 0.0, 0.0) } else { vec4(0.0) }
+}
+
+@compute(64)
+fn store_front(front: Texture<Rgba16Float>, out: mut Slots<vec4>, id: GlobalId) {
+    if id.x >= 4096 { return }
+    let wood = out[id]
+    out[id] = vec4(wood.rgb, 2.0 * wood.a + front.load(id.x % 64, id.x / 64).r)
+}
+
+@fragment
+fn optical_layers(
+    v: OpticalVertex,
+    c: Camera,
+    wood: [vec4],
+    at: FragCoord,
+) -> Targets2<vec4, vec4> {
+    let a = footprint_alpha(v, c)
+    let tau = -log(max(1.0 - a, 1.0e-6))
+    let value = vec4(v.radiance.value * tau, tau)
+    let pixel = u32(at.position.y) * 64 + u32(at.position.x)
+    let packed = wood[pixel].a
+    let nearest = packed - if packed >= 2.0 { 2.0 } else { 0.0 }
+    // A 2.4m front slice follows the source shader's crown attenuation length.
+    let split = if config::MODE == 5 { nearest - 2.4 / (2.0 * data::HALF) } else { 0.5 }
+    if v.detail.value.x >= split {
+        Targets2 { first: value, second: vec4(0.0) }
+    } else { Targets2 { first: vec4(0.0), second: value } }
+}
+
+@fragment
+fn optical_layers_quad(v: OpticalVertex, c: Camera) -> Targets3<vec4, vec4, vec4> {
+    let samples = footprint_samples(v, c)
+    let a = dot(samples, vec4(0.25))
+    let tau = -log(max(1.0 - a, 1.0e-6))
+    let value = vec4(v.radiance.value * tau, tau)
+    let coverage = -log(max(vec4(1.0) - samples, vec4(1.0e-6)))
+    if v.detail.value.x >= 0.5 {
+        Targets3 { first: value, second: vec4(0.0), third: coverage }
+    } else { Targets3 { first: vec4(0.0), second: value, third: coverage } }
+}
+
+@compute(64)
+fn resolve_layers_quad(
+    near: Texture<Rgba16Float>,
+    far: Texture<Rgba16Float>,
+    coverage: Texture<Rgba16Float>,
+    out: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    if id.x >= 4096 { return }
+    let x = id.x % 64
+    let y = id.x / 64
+    let wood = out[id]
+    let leaves = resolve_layer(near.load(x, y), resolve_layer(far.load(x, y), vec4(0.0)))
+    let a = dot(vec4(1.0) - exp(-max(coverage.load(x, y), vec4(0.0))), vec4(0.25))
+    let rgb = leaves.rgb * (a / max(leaves.a, 1.0e-6)) + wood.rgb * (1.0 - a)
+    out[id] = vec4(rgb, a + wood.a * (1.0 - a))
+}
+
+@compute(64)
+fn seed_wood(colour: Texture<Rgba16Float>, out: mut Slots<vec4>, id: GlobalId) {
+    if id.x >= 4096 { return }
+    out[id] = colour.load(id.x % 64, id.x / 64)
+}
+
+fn resolve_layer(moment: vec4, behind: vec4) -> vec4 {
+    let t = exp(-max(moment.a, 0.0))
+    let a = 1.0 - t
+    vec4(moment.rgb * (a / max(moment.a, 1.0e-6)) + behind.rgb * t, a + behind.a * t)
+}
+
+@compute(64)
+fn resolve_layers(
+    near: Texture<Rgba16Float>,
+    far: Texture<Rgba16Float>,
+    out: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    if id.x >= 4096 { return }
+    let x = id.x % 64
+    let y = id.x / 64
+    let raw = out[id]
+    let behind = if config::MODE == 5 { vec4(raw.rgb, if raw.a >= 2.0 { 1.0 } else { 0.0 }) } else {
+        raw
+    }
+    out[id] = resolve_layer(near.load(x, y), resolve_layer(far.load(x, y), behind))
 }
 
 struct WoodVertex: Copy {
@@ -376,7 +495,7 @@ pub struct State {
 }
 
 pub fn init() -> State {
-    assert(config::MODE <= 3 && config::AA > 0)
+    assert(config::MODE <= 6 && config::AA > 0)
     if config::MODE == 0 {
         assert(data::COLOUR.len() == 262144, "restore the archived BC payload first")
     }
@@ -418,15 +537,19 @@ pub fn init() -> State {
     } else {
         s.model = buffer_of(data::MODEL)
         s.wood = buffer_of(data::WOOD)
-        s.order = buffer(data::COUNT)
-        for i in 0..data::COUNT {
-            s.sorted.push(vec2(0.0, f32(i)))
-            s.indices.push(i)
+        if config::MODE < 4 {
+            s.order = buffer(data::COUNT)
+            for i in 0..data::COUNT {
+                s.sorted.push(vec2(0.0, f32(i)))
+                s.indices.push(i)
+            }
         }
         s.colour = texture(width: 64 * aa, height: 64 * aa)
-        if config::MODE == 1 {
+        if config::MODE == 1 || (config::MODE >= 4) {
             s.normal = texture(width: 64 * aa, height: 64 * aa)
-            s.detail = texture(width: 64 * aa, height: 64 * aa)
+            if config::MODE == 1 || config::MODE == 6 {
+                s.detail = texture(width: 64 * aa, height: 64 * aa)
+            }
         }
         s.depth = depth_texture(width: 64 * aa, height: 64 * aa)
     }
@@ -458,6 +581,82 @@ pub fn render(s: mut State) {
         )
         p.end()
         dispatch(integrated_radiance.bind(c, s.colour, mut s.out), over: 64 * 64)
+    } else if (config::MODE >= 4) {
+        assert(s.aa == 1)
+        let wood = begin_pass_with_depth(
+            mut s.colour,
+            mut s.depth,
+            clear: vec4(0.0),
+            clear_depth: 1.0,
+        )
+        draw(
+            wood,
+            wood_vertex.bind(c, s.wood.items()),
+            wood_radiance.bind(c),
+            vertices: data::WOOD.len() * LIMB_VERTICES,
+            instances: 1,
+        )
+        wood.end()
+        dispatch(seed_wood.bind(s.colour, mut s.out), over: 4096)
+        if config::MODE == 5 {
+            let front = begin_pass_with_depth(
+                mut s.colour,
+                mut s.depth,
+                clear: vec4(0.0),
+                keep_depth: true,
+            )
+            draw(
+                front,
+                optical_vertex.bind(c, s.model.items(), s.order.items()),
+                optical_front.bind(c),
+                vertices: 6,
+                instances: data::COUNT,
+                blend: Blend::Max,
+                depth: Depth { compare: Compare::LessEqual, write: false },
+            )
+            front.end()
+            dispatch(store_front.bind(s.colour, mut s.out), over: 4096)
+        }
+        if config::MODE == 6 {
+            let layers = begin_pass3_with_depth(
+                mut s.colour,
+                mut s.normal,
+                mut s.detail,
+                mut s.depth,
+                clear: vec4(0.0),
+                keep_depth: true,
+            )
+            draw(
+                layers,
+                optical_vertex.bind(c, s.model.items(), s.order.items()),
+                optical_layers_quad.bind(c),
+                vertices: 6,
+                instances: data::COUNT,
+                blends: [Blend::Add, Blend::Add, Blend::Add],
+                depth: Depth { compare: Compare::LessEqual, write: false },
+            )
+            layers.end()
+            dispatch(resolve_layers_quad.bind(s.colour, s.normal, s.detail, mut s.out), over: 4096)
+        } else {
+            let layers = begin_pass2_with_depth(
+                mut s.colour,
+                mut s.normal,
+                mut s.depth,
+                clear: vec4(0.0),
+                keep_depth: true,
+            )
+            draw(
+                layers,
+                optical_vertex.bind(c, s.model.items(), s.order.items()),
+                optical_layers.bind(c, s.out.items()),
+                vertices: 6,
+                instances: data::COUNT,
+                blends: [Blend::Add, Blend::Add],
+                depth: Depth { compare: Compare::LessEqual, write: false },
+            )
+            layers.end()
+            dispatch(resolve_layers.bind(s.colour, s.normal, mut s.out), over: 4096)
+        }
     } else {
         for i in 0..data::COUNT {
             let at = i * 28

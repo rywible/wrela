@@ -1883,3 +1883,43 @@ Decision: **change representation**, retain the frozen model and every failed re
 Next bet: source-compiled visibility layers and pixel-footprint coverage; train a residual
 only after a rendered comparison shows a reason. Original G1–G7 unchanged and unmet.
 Evidence manifest `44cc42b8607d0781958bbd4409c360cd7ab8a7288d5a8797dfa091d4f8ef46b6`.
+
+
+## 2026-10-27: two-slab appearance replacement rejected on AMD
+
+Parent ce779eb352e600d77021e8c988be10e6906f50c5.
+[Full comparison and explicit decision](neural-shaded-appearance.md#replacement-experiment-reject-two-visibility-slabs).
+Ryzen 5 5500U / hardware RADV RENOIR, Mesa 26.1.6, Chrome 154.0.8037.57,
+Wrela 0.9.0 (de9b81e52a7747870dfbd5223cb8aeb41e584d23).
+Sequential isolated 240-frame runs after 60 warmups, 64×64, one worker.
+Frozen fit and prior conventional calibration; zero training/new references.
+Quality uses the same eight AA64 shaded references and 24 background cases.
+
+| Variant | Mean PSNR dB / FLIP | Paced GPU p95 / p99 ms | CPU p99 ms | Saturated GPU p95 ms | Requested live / peak GPU bytes | DRM VRAM / GTT MiB | Browser group PSS MiB |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| trained-layers2 | 32.84992 / 0.047489 | 0.375642 / 0.376428 | 0.553050 | 0.09548 | 599,688 / 616,072 | 16.582 / 9.289 | 454.899 |
+| calibrated-layers2 | 32.71395 / 0.048277 | 0.375042 / 0.375649 | 0.538050 | 0.11424 | 599,688 / 616,072 | 16.582 / 9.289 | 454.088 |
+| trained-local2 | 33.35180 / 0.043010 | 0.558454 / 0.559950 | 0.702200 | 0.16740 | 599,688 / 616,072 | 16.590 / 9.383 | 462.865 |
+| trained-quad2 | 32.95052 / 0.047441 | 0.390446 / 0.395628 | 0.538550 | 0.10452 | 632,448 / 648,832 | 16.586 / 9.289 | 455.003 |
+
+GPU spans include decoding, wood, visibility, layer resolve and screen composite;
+CPU includes updates/uploads/recording, with no global sort. Initialization peak and
+retained upload/uniform rings, scratch, caches and dummy/fallback data are counted.
+DRM residency and PSS are separate UMA snapshots, not additive per-asset storage.
+
+Global slabs reduce CPU p99 from ordered AA2's 0.973 to 0.553 ms and requested
+GPU bytes from 721,852 to 599,688, but lose 7.278 dB and raise GPU p95 from
+0.314 to 0.376 ms. Two targeted follow-ups (local depth anchor, independent
+four-sample coverage) fail to recover quality. All fail G4; **retire the mixture**.
+Only 7.240× full requested allocation reduction versus BC, not 16× residency.
+Recorded CPU-start-to-GPU-completion p95/p99: global 4.220/4.452 ms,
+calibrated 4.365/4.726 ms, local 4.490/4.605 ms, four-sample 4.205/4.305 ms.
+These include host notification latency; small single-run changes are not a robust win.
+
+Focused format/type checks and restored-default eight-image byte parity pass.
+No full-suite/PR-readiness claim. Every failure retained in
+build/neural-evidence/g4-visibility-layers-v1 on Pop!_OS.
+
+Manifest SHA-256 814030755e130a9fd7a600643fbcef0f303cb6db94d4108f4916cbe7af44ef9e;
+source archive 0d143eed9030ee093a7192a7dcb596a5460f1c8bff9a0f09edb758ddc0bf1c68;
+external scripts d06f932c804ada03189e50427ab250cf36f4dc5f2daf5e546342f64a2b69b343.

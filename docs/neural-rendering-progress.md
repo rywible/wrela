@@ -18,12 +18,13 @@
 
 ## Immediate milestone
 
-The [time-boxed G4 experiment](neural-shaded-appearance.md) has an executable AMD path,
-complete shaded/silhouette scores, frame completion measurements and resident-memory
-accounting. Decision: **change the representation**. Keep the frozen fit as a control;
-no more moment-error training. The two allowed candidate optimizations are exhausted.
-Next bet: source-compiled visibility layers and pixel-footprint coverage, with identical
-useful inputs for conventional and learned controls. All G1–G7 remain unchanged and unmet.
+The [G4 viability experiment and replacement follow-up](neural-shaded-appearance.md)
+both reject promotion. The first block chooses **change representation**; the subsequent
+two-slab visibility mixture is **retired** after exactly two targeted follow-ups.
+No training or new references. The frozen ordered AA2 fit remains the diagnostic control.
+Next bet: ordered subpixel leaf/wood visibility with tile-local evaluation, then
+source-conditioned transmittance prediction against a conventional method with the
+same inputs if rendered evidence justifies it. All G1–G7 remain unchanged and unmet.
 
 ## Evidence recorded so far
 
@@ -2142,3 +2143,17 @@ The source-calibrated conventional primitive control is just 0.388 dB behind at 
 storage and algorithm. Physical DRM residency and browser PSS are recorded; packed size
 is no longer used as a substitute for residency. Choose **change representation**,
 preserve every failed result, and retain G1–G7 unchanged.
+
+
+## Two-slab visibility replacement rejected
+
+[Measured replacement and two targeted follow-ups](neural-shaded-appearance.md#replacement-experiment-reject-two-visibility-slabs):
+global CPU sort removal lowers CPU p99 from 0.973 to 0.553 ms and full requested GPU
+bytes from 721,852 to 599,688, but mean PSNR falls 40.128→32.850 dB and paced GPU
+p95 rises 0.314→0.376 ms. Neither follow-up recovers quality. Retire the mixture.
+
+Four independent opacity samples nearly reproduce ordered coverage outside source
+wood bounds (0.0001531 MAE), but shaded color and wood/leaf ordering still fail.
+The next representation must retain joint visibility. Zero training or new references;
+default outputs byte-identical after restoration; goals unchanged.
+Evidence manifest: `814030755e130a9fd7a600643fbcef0f303cb6db94d4108f4916cbe7af44ef9e`.
