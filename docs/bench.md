@@ -1130,3 +1130,49 @@ The retained `build-1080`/`build-4k` results are the paced run. No p99, stable t
 memory-budget, complete-frame or best-in-world claim follows. Independent replay and
 continuous scalar/optimized comparisons pass, but **quality rejects this model**:
 [development results and controls](neural-rendering-progress.md#input-resolution-neural-patch-model-faster-kernel-rejected-quality).
+
+
+## 2026-10-26 AMD direct history and source geometry
+
+Same AMD RENOIR / Ryzen 5 5500U, Mesa 26.1.6-1pop0~1787580452~24.04~a5619ea,
+Chrome 154.0.8037.57 and Wrela 0.9.0 compiler
+`de9b81e52a7747870dfbd5223cb8aeb41e584d23` as the patch-v1 measurements above.
+Analytic moving case 1, 4× linear scale, fixed patch-v1 half weights
+`4b9b969a9fd191f25f69cdc6f348f4464f0b2bb7b9d6bd9be687b64bee62fe18`.
+Maximum history share 90%, age-bounded cold start, vector encoder.
+Release default, no wasm-opt, Chrome, one worker, 240 warmup + 240 measured,
+fps 60 simulation, `serial=false`, sequential runs with no other owned GPU work.
+No feature/geometry/target export is active in the measured wrapper.
+
+The sampled variant loads low-resolution motion/depth to propose correspondence. The source
+variant instead performs two geometry-only authored-field queries per output pixel.
+That extra work is included in its output-stage time; it changes the information budget and
+is a **full-stack** ablation. No extra base-colour samples or reference-derived routes are used.
+
+| Geometry path | Output | Encode median / p95 ms | Output stage median / p95 ms | Fixture GPU span median / p95 ms |
+| --- | --- | ---: | ---: | ---: |
+| Sampled buffers | 1080p | 0.81924 / 0.93700 | 1.93696 / 2.18216 | 3.65532 / 3.87524 |
+| Authored source queries | 1080p | 0.82600 / 0.96784 | 1.49396 / 1.67916 | 3.25284 / 3.51024 |
+| Sampled buffers | 4K | 3.20168 / 3.59812 | 7.53120 / 8.69756 | 14.01756 / 15.06484 |
+| Authored source queries | 4K | 3.19400 / 3.60632 | 5.63992 / 6.51420 | 12.27856 / 12.87656 |
+
+The source variant's output-stage median is 22.9% / 25.1% lower here. This is not a claim about
+the cost of arbitrary 3D source queries, and these short measurements are not a stable-thermal
+or 120Hz/20-minute test. G6 is not met: even the output-stage p95 alone exceeds its budget.
+The fixture span also includes analytic base sampling and the diagnostic display transform;
+do not sum pass medians/p95s to invent reconstruction or complete-frame percentiles.
+
+Build SHA-256 (same for both output sizes within a variant):
+
+- Sampled: `32fcb4dbf1b3c0e1041902daf049ceb04b60c80573210a2e94039d0b69a7892f`.
+- Source: `ec4918718423470a0fb2c99c00860a5ae08152f97d7eae96b0fd60f54e066c49`.
+
+Artifacts are under `build/neural-evidence/patch-history-v1/timing-sampled` and
+`timing-source` on Pop!_OS: reports, exact wrappers, compiled WASM/shaders and paced results.
+Run `wrela profile <directory>/fixture --chrome --frames 240 --warmup 240 --workers 1 --size 1920x1080 --json`,
+then 3840x2160. Saved builds identify the original measurement; rebuilding after code changes
+does not. An initial wrapper dependency-path compile failure is retained separately and
+contributes no timing. Top-level GPU reports are from saturated execution; retained per-frame
+browser artifacts are from the separate paced run. No p99 or complete-memory claim follows.
+[Quality and controls](neural-rendering-progress.md#direct-history-and-source-geometry-ablations)
+reject all current variants for promotion.

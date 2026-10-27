@@ -244,16 +244,8 @@ fn polynomial(cell: Cell, delta: vec2) -> vec3 {
     vec3(dot(cell.red, b), dot(cell.green, b), dot(cell.blue, b))
 }
 
-@fragment
-pub fn reconstruct_fast(
-    p: FragCoord,
-    cells: [Cell],
-    width: u32,
-    height: u32,
-    divisor: u32,
-    tick: u32,
-) -> vec4 {
-    let q = p.position.xy / f32(divisor) + jitter_of(tick) - vec2(0.5)
+pub fn decoded(at: vec2, cells: [Cell], width: u32, height: u32, divisor: u32, tick: u32) -> vec4 {
+    let q = at / f32(divisor) + jitter_of(tick) - vec2(0.5)
     let base = floor(q)
     let f = q - base
     let limit = vec2(f32(width - 1), f32(height - 1))
@@ -275,6 +267,18 @@ pub fn reconstruct_fast(
         polynomial(cc, q - c) * wc +
         polynomial(cd, q - d) * wd
     vec4(linear(view(color) + residual), ca.color.a)
+}
+
+@fragment
+pub fn reconstruct_fast(
+    p: FragCoord,
+    cells: [Cell],
+    width: u32,
+    height: u32,
+    divisor: u32,
+    tick: u32,
+) -> vec4 {
+    decoded(p.position.xy, cells, width, height, divisor, tick)
 }
 
 @test

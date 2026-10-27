@@ -614,3 +614,97 @@ The next experiment should preserve full-resolution temporal detail and explicit
 motion consistency while retaining the measured small input-resolution encoder. On-policy
 training and a direct, validity-controlled history connection are hypotheses to test;
 neither is implemented or claimed to work here. No G1–G7 gate is satisfied or weakened.
+
+
+### Direct history and source-geometry ablations
+
+The patch model now has an optional direct full-resolution history connection. Its 1,260
+weights are **unchanged**: this round isolates the reconstruction architecture, not training.
+The fixed-input path proposes motion from the nearest current low-resolution geometry sample,
+checks previous depth and velocity, and blends the current neural prediction with reprojected
+previous output in the named view. Its maximum history share is explicit; cold-start share is
+bounded by age/(age+1), with age capped at 16. Both paths reset age on cuts and resize.
+Default history share is zero, preserving the previous experiment.
+
+Constant maximum shares 50% and 90% were tested on both 32-frame development clips at every
+scale, with zero-residual/90% controls. A separate **full-stack** path evaluates the authored
+analytic geometry at the output position and its previous position. It takes only each
+frame's geometry parameters (period, width, offset, speed), with no field colours, integrated
+coverage, reference data or future frame. There are two source-geometry queries per output
+pixel, in addition to the same low-resolution base-colour samples. Their work is inside the
+timed output pass. The fixed-input and source paths have separate shader entry points;
+the fixed-input binding does not receive the source parameters.
+
+This is the two-layer analytic field's visibility function, **not** a general 3D visibility
+solution. Point visibility also cannot describe a pixel's mixture of moving foreground and
+background. The broader authored-field advantage remains a hypothesis beyond this fixture.
+
+| Case | 4× variant | Mean FLIP | Mean LPIPS | Temporal residual / production | Newly exposed error / production |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 1 | 90% history, sampled geometry | 0.357252 | 0.479582 | 4.581× | 1.240× |
+| 1 | 90% history, source geometry **(full stack)** | 0.332059 | 0.424967 | 1.356× | 1.252× |
+| 1 | 90% history, zero neural residual | 0.472798 | 0.549568 | 10.071× | 1.540× |
+| 6 | 90% history, sampled geometry | 0.425954 | 0.399452 | 1.870× | 1.027× |
+| 6 | 90% history, source geometry **(full stack)** | 0.418722 | 0.439455 | 1.033× | 1.015× |
+| 6 | 90% history, zero neural residual | 0.480028 | 0.566561 | 3.420× | 1.309× |
+
+Ratios above one are worse. Production 4× FLIP/LPIPS are 0.359978/0.512431 (case 1) and
+0.464741/0.556551 (case 6). Against the previous unblended neural model, sampled-geometry
+90% history reduces the opaque temporal residual by **62.0% / 78.9%**. Source geometry then
+reduces that residual another **70.4% / 44.8%**. Both source variants still trail production
+temporally and lose PSNR (−0.216 / −0.236 dB). Case 1's newly exposed error remains 25.2%
+worse than production. Source geometry also worsens case 6 LPIPS relative to sampled geometry.
+No variant is promoted, and the extra-source result is not a G2 fixed-input tournament entry.
+
+At 1×, the 90% source variant's FLIP is 0.2726 / 0.3508 versus production's 0.3184 / 0.2574:
+the second case regresses substantially. More history is not a general quality improvement.
+All four scales, both shares and the zero-network controls remain in the manifest. Tuning on
+these clips makes them development feedback; none is a sealed-test observation.
+
+The 18-frame case 1→4 reset probe accepts history at 63.14% of 4× pixels with sampled geometry
+and 82.87% with source geometry. These include two cold/reset frames. In the complete uncut
+source clips, mean acceptance is 90.10% / 86.85%. Acceptance is not proof of correct transport:
+the quality and reveal metrics above remain the independent checks.
+
+Independent CPU replay reconstructs the current spatial model, reprojects prior output from
+captured geometry, and reproduces the blend. The source version reads the exact geometry-only
+parameters exported for each frame; it does not reconstruct them from the target. Maximum
+named-view disagreement is below **0.000244** across the cut probes and both complete source
+clips, consistent with the final half target. Reversing motion produces a failing negative
+control. Disabling the new option preserves the prior model byte-for-byte over 32 frames and
+all scales. Separating the source pipeline also preserves both complete clips byte-for-byte.
+
+For both geometry paths, reset frames 16/17 match fresh case 4 at the same times byte-for-byte.
+Suppressing reset changes 95.63–98.91% of cut-frame pixels by over 2/255 in at least one
+named-view channel. The geometry translation test passes, fails when motion's time sign is
+reversed, and passes after restoration. The spatial-only trainer now explicitly rejects
+history-enabled captures; that rejection was exercised. Its old feature-only datasets remain
+compatible. Geometry/source-parameter readbacks run only in requested diagnostic captures.
+
+An offline, **target-informed** best per-pixel blend of the same spatial prediction and
+already-captured history gives 4× view MSE 0.018053 / 0.015803 versus the deployed constant
+share's 0.025374 / 0.019828 (28.9% / 20.3% lower). This is a fixed-history headroom diagnostic,
+not a runnable model, a rollout, a temporal guarantee, or an acceptance score. It justifies
+testing learned confidence with causal inputs; it does not predict that training will realize
+that bound. Repeated resampling and mixed-layer visibility still need architectural attention.
+
+[AMD browser measurements](bench.md#2026-10-26-amd-direct-history-and-source-geometry)
+include the source queries. At 1080p, the sampled/source output stages cost 1.937/1.494 ms
+median; at 4K, 7.531/5.640 ms. Source queries are cheaper than the sampled-buffer variant in
+this small analytic case, but the full reconstruction budget is still missed. No claim is made
+that source queries are cheap for arbitrary 3D geometry or that this is a complete frame.
+
+Reproduce a fixed-input capture with the prior patch command plus `--patch-history 900`;
+add `--patch-source-geometry 1` for the explicitly separate full-stack path. Use
+`--training-inputs 1` to retain causal features, raw point geometry, and (for source mode)
+the exact two geometry parameter vectors. Sequence metadata declares the input track.
+
+Evidence: `build/neural-evidence/patch-history-v1/manifest.json` on Pop!_OS, with all capture
+IDs, source/weight/build hashes, complete comparisons, CPU checkers, cut controls, negative
+test logs and timing reports. Final source clips with diagnostic inputs are
+`1793067234-323531082` / `1793067245-571211036`; cut probes are
+`1793066205-146124167` (sampled) and `1793066780-629644561` (source).
+The final source archive SHA-256 is
+`59311b9573be49442090c04ab11622f65b3bc28abf4a6a2319f83e873dda7f5d`.
+Package checks, three focused patch tests, allow, changed-source formatting and diff checks
+pass. No full suite/PR or G1–G7 acceptance is claimed at this checkpoint.

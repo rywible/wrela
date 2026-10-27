@@ -66,6 +66,10 @@ fn add(data: mut Vec<Capture>, directory: str) -> Result<u32, ToolError> {
         number(meta.as_str(), "decoder")? != 2 {
         return Err(ToolError::new("patch training requires causal patch captures"))
     }
+    if meta.as_str().find("patch_history=").is_some() &&
+        number(meta.as_str(), "patch_history")? != 0 {
+        return Err(ToolError::new("spatial trainer cannot fit a temporal history decoder"))
+    }
     let width = number(meta.as_str(), "width")?
     let height = number(meta.as_str(), "height")?
     let shot = number(meta.as_str(), "shot")?

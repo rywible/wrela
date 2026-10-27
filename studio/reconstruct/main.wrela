@@ -17,6 +17,8 @@ struct Options: Clone {
     decoder: u32 = 0,
     training_inputs: u32 = 0,
     patch_fast: u32 = 0,
+    patch_history: u32 = 0,
+    patch_source: u32 = 0,
     seed: u32 = 17,
     length: u32 = 1,
     start: u32 = 0,
@@ -75,6 +77,8 @@ fn options(given: [String]) -> Option<Options> {
             "--frames" => o.length = v,
             "--training-inputs" => o.training_inputs = v,
             "--patch-fast" => o.patch_fast = v,
+            "--patch-history" => o.patch_history = v,
+            "--patch-source-geometry" => o.patch_source = v,
             "--start-frame" => o.start = v,
             "--cut-at" => o.cut_at = v,
             "--reset-cut" => o.reset_cut = v,
@@ -97,6 +101,10 @@ fn options(given: [String]) -> Option<Options> {
     // Bound their size; dedicated timing adapters measure the deployed scale separately.
     if o.decoder != 0 && (o.scene != 2 || o.width > 384 || o.height > 216) { return None }
     if o.scene == 2 && o.sampling != 0 { return None }
+    if o.patch_source > 1 || (o.patch_source == 1 && (o.decoder != 2 || o.patch_history == 0)) {
+        return None
+    }
+    if o.patch_history > 1000 || (o.patch_history > 0 && o.decoder != 2) { return None }
     if o.patch_fast > 1 || (o.patch_fast == 1 && o.decoder != 2) { return None }
     if o.training_inputs > 1 || (o.training_inputs == 1 && (o.decoder != 2 || o.length < 2)) {
         return None
@@ -181,6 +189,8 @@ fn captured(
     }
     if o.decoder == 2 {
         let _ = call(b, "patch_kernel", Vec::from([Scalar::I32(i32(o.patch_fast))]))?
+        let _ = call(b, "patch_history", Vec::from([Scalar::I32(i32(o.patch_history))]))?
+        let _ = call(b, "patch_source_geometry", Vec::from([Scalar::I32(i32(o.patch_source))]))?
     }
     if o.sampling != 0 && cells > 0 {
         let seed = o.seed.wrapping_add(if name == "reference-repeat" { 1 } else { 0 })
@@ -356,6 +366,8 @@ fn run(o: Options) -> Result<(), ToolError> {
                 decoder: o.decoder,
                 training_inputs: o.training_inputs,
                 patch_fast: o.patch_fast,
+                patch_history: o.patch_history,
+                patch_source: o.patch_source,
             },
             o.model.as_str(),
         )
@@ -388,7 +400,7 @@ fn run(o: Options) -> Result<(), ToolError> {
         "regular_grid_tied_to_frame"
     }
     let repeat = if o.sampling == 1 { "independent_seed_plus_one" } else { "identical_seed" }
-    let metadata = f"scene={scene}\nshot={o.shot}\nwidth={o.width}\nheight={o.height}\nwarmup={o.warmup}\nreference_samples={count}\nsimulation_frame={frame}\nsimulation_fps=60\ncamera=fixture_shot_at_time_0\nformat=rgba32f_le_top_down_scene_linear_alpha1\nreference={reference_kind}\nworkers=1\nquality=fixture_declared_quality_measured_false_pace_false\ntrack=development_smoke_not_validation_or_sealed_test\nmodel={o.model}\ndecoder={o.decoder}\npatch_fast={o.patch_fast}\nraw_layout=16_frames_of_32_byte_color_motion_depth_records_frame_stride_ceil_pixels_to_8\nsampling={sampling}\nseed={o.seed}\nrepeat={repeat}\n"
+    let metadata = f"scene={scene}\nshot={o.shot}\nwidth={o.width}\nheight={o.height}\nwarmup={o.warmup}\nreference_samples={count}\nsimulation_frame={frame}\nsimulation_fps=60\ncamera=fixture_shot_at_time_0\nformat=rgba32f_le_top_down_scene_linear_alpha1\nreference={reference_kind}\nworkers=1\nquality=fixture_declared_quality_measured_false_pace_false\ntrack=development_smoke_not_validation_or_sealed_test\nmodel={o.model}\ndecoder={o.decoder}\npatch_fast={o.patch_fast}\npatch_history={o.patch_history}\npatch_source_geometry={o.patch_source}\nraw_layout=16_frames_of_32_byte_color_motion_depth_records_frame_stride_ceil_pixels_to_8\nsampling={sampling}\nseed={o.seed}\nrepeat={repeat}\n"
     let _ = files::write(f"{directory}/capture.txt", metadata.as_bytes()).wait()?
     Ok(())
 }
@@ -401,7 +413,7 @@ pub fn tool() -> u32 {
     }
     let Some(o) = options(given) else {
         print(
-            "usage: wrela tool reconstruct -- [--scene bare|clearing|edges --shot 0 --width 192 --height 108 --warmup 240 --cells 8 --sampling grid|phase64 --seed 17 --frames 1 --start-frame 0 --cut-at 0 --reset-cut 1 --model out/models/.../weights.half --decoder production|raw|patch --training-inputs 0|1 --patch-fast 0|1] | train <manifest> <steps> <seed> | patch-train <manifest> <steps> <seed> [initial-f32]",
+            "usage: wrela tool reconstruct -- [--scene bare|clearing|edges --shot 0 --width 192 --height 108 --warmup 240 --cells 8 --sampling grid|phase64 --seed 17 --frames 1 --start-frame 0 --cut-at 0 --reset-cut 1 --model out/models/.../weights.half --decoder production|raw|patch --training-inputs 0|1 --patch-fast 0|1 --patch-history 0..1000 --patch-source-geometry 0|1] | train <manifest> <steps> <seed> | patch-train <manifest> <steps> <seed> [initial-f32]",
         )
         return 2
     }

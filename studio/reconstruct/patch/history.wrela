@@ -1,0 +1,135 @@
+// Direct output-resolution history controls. The fixed-input entry uses only renderer
+// buffers. The source-geometry entry is a separate full-stack pipeline with authored
+// geometry parameters, never source colours, integrated coverage or future input.
+use engine::view::jitter_of
+use network::{decoded, linear, view}
+use std::gpu::{DepthTexture, FragCoord, Rgba16Float, Sampler, Texture}
+
+pub fn share(age: u32, maximum: f32, valid: bool) -> f32 {
+    if !valid || age == 0 { 0.0 } else {
+        min(clamp(maximum, 0.0, 1.0), f32(age) / f32(age + 1))
+    }
+}
+
+// Analytic fixture's authored geometry only: period, width, offset, speed. No colours.
+// Two causal source queries per output pixel are extra full-stack work, not fixed input.
+pub fn source_geometry(at: vec2, tick: u32, shape: vec4) -> vec3 {
+    let x = at.x - shape.z - shape.w * f32(tick)
+    let front = x - floor(x / shape.x) * shape.x < shape.y
+    vec3(if front { shape.w } else { 0.0 }, 0.0, if front { 0.5 } else { 0.25 })
+}
+
+fn combine(
+    current: vec4,
+    at: vec2,
+    geometry: vec3,
+    old_geometry: vec3,
+    history: Texture<Rgba16Float>,
+    linear_sampler: Sampler,
+    age: u32,
+    maximum: f32,
+) -> vec4 {
+    let previous = at - geometry.xy
+    let size = vec2(f32(history.width()), f32(history.height()))
+    let valid = previous.x >= 0.0 &&
+        previous.y >= 0.0 &&
+        previous.x < size.x &&
+        previous.y < size.y &&
+        abs(geometry.z - old_geometry.z) / max(geometry.z, 1.0e-6) < 0.05 &&
+        length(geometry.xy - old_geometry.xy) < 0.05
+    let weight = share(age, maximum, valid)
+    let old_color = if weight > 0.0 {
+        view(history.sample_level(linear_sampler, previous / size).rgb)
+    } else { vec3(0.0) }
+    vec4(linear(mix(view(current.rgb), old_color, weight)), current.a)
+}
+
+@fragment
+pub fn reconstruct(
+    p: FragCoord,
+    cells: [network::Cell],
+    depth: DepthTexture,
+    previous_depth: DepthTexture,
+    motion: Texture<Rgba16Float>,
+    previous_motion: Texture<Rgba16Float>,
+    history: Texture<Rgba16Float>,
+    linear_sampler: Sampler,
+    divisor: u32,
+    tick: u32,
+    age: u32,
+    maximum: f32,
+) -> vec4 {
+    let width = depth.width()
+    let height = depth.height()
+    let current = decoded(p.position.xy, cells, width, height, divisor, tick)
+    let d = f32(divisor)
+    let limit = vec2i(i32(width) - 1, i32(height) - 1)
+    let near = clamp(vec2i(floor(p.position.xy / d + jitter_of(tick))), vec2i(0), limit)
+    let geometry = vec3(
+        motion.load(x: u32(near.x), y: u32(near.y)).xy * d,
+        depth.load(x: u32(near.x), y: u32(near.y)),
+    )
+    let previous = p.position.xy - geometry.xy
+    let last_jitter = jitter_of(if tick > 0 { tick - 1 } else { 0 })
+    let old = clamp(vec2i(floor(previous / d + last_jitter)), vec2i(0), limit)
+    let old_geometry = vec3(
+        previous_motion.load(x: u32(old.x), y: u32(old.y)).xy * d,
+        previous_depth.load(x: u32(old.x), y: u32(old.y)),
+    )
+    combine(current, p.position.xy, geometry, old_geometry, history, linear_sampler, age, maximum)
+}
+
+@fragment
+pub fn reconstruct_source(
+    p: FragCoord,
+    cells: [network::Cell],
+    history: Texture<Rgba16Float>,
+    linear_sampler: Sampler,
+    width: u32,
+    height: u32,
+    divisor: u32,
+    tick: u32,
+    age: u32,
+    maximum: f32,
+    current_shape: vec4,
+    previous_shape: vec4,
+) -> vec4 {
+    let current = decoded(p.position.xy, cells, width, height, divisor, tick)
+    let geometry = source_geometry(p.position.xy, tick, current_shape)
+    let old_geometry = source_geometry(
+        p.position.xy - geometry.xy,
+        if tick > 0 { tick - 1 } else { 0 },
+        previous_shape,
+    )
+    combine(current, p.position.xy, geometry, old_geometry, history, linear_sampler, age, maximum)
+}
+
+@test
+fn fresh_invalid_and_cold_history_weights_are_bounded() {
+    assert(share(0, 0.9, valid: true) == 0.0)
+    assert(share(7, 0.9, valid: false) == 0.0)
+    assert(share(1, 0.9, valid: true) == 0.5)
+    assert(share(16, 0.9, valid: true) == 0.9)
+    assert(share(16, -1.0, valid: true) == 0.0)
+    assert(share(3, 2.0, valid: true) == 0.75)
+}
+
+@test
+fn source_geometry_translation_preserves_visibility_and_motion() {
+    let shape = vec4(5.375, 0.9, 0.31, 0.375)
+    let front = vec2(1.11, 2.0)
+    let background = vec2(1.41, 2.0)
+    assert(source_geometry(front, 0, shape) == vec3(0.375, 0.0, 0.5))
+    assert(source_geometry(background, 0, shape) == vec3(0.0, 0.0, 0.25))
+    for tick in [1, 7, 37] {
+        let shift = vec2(shape.w * f32(tick), 0.0)
+        assert(source_geometry(front + shift, tick, shape) == source_geometry(front, 0, shape))
+        assert(
+            source_geometry(background + shift, tick, shape) ==
+                source_geometry(background, 0, shape),
+        )
+    }
+    assert(
+        source_geometry(front - vec2(shape.x, 0.0), 0, shape) == source_geometry(front, 0, shape),
+    )
+}
