@@ -1408,3 +1408,160 @@ prior control manifests are dependencies; no reference infrastructure was expand
 One static tree at 64 pixels cannot establish family, motion, unseen-light or
 8-512-pixel behavior. G1-G7 remain unchanged and unmet.
 Manifest SHA-256: `d67ea7938d2cc74c2834b2c49eca4d11124572149ee378e908e9eae3612a7139`.
+
+
+## Source-program reconstruction: a conventional memory tradeoff
+
+**Decision: continue exact source-program reconstruction with selective field caching
+as a conventional memory option; do not promote it as a G4 win.** Recomputing the
+entire crown field for every vertex is too expensive for this deployment path.
+
+The source program reconstructs the same visible leaves without storing complete
+cards. Keeping only exact crown normals/depth and the small sampling distribution
+saves 637,228 requested GPU bytes (20.55% of all live requested allocations) with
+byte-identical images. However, three alternating paired runs put its complete GPU
+p95 cost over 1.1x the stored-card control in two pairs. This is a real allocation/
+runtime tradeoff, not a neural or physical-memory victory.
+
+Solo work began 2026-10-27 20:24:43 UTC. The first assessment was recorded at
+20:36:03 UTC, and the architecture decision at 20:43:14 UTC: within the two-hour limit.
+Exactly two targeted optimization experiments followed the initial comparison.
+No fitting, model changes or new truth generation occurred.
+
+### Source knowledge, shared fairly
+
+[Plant card generation](../engine/plant.wrela) already defines every card through
+its global index, seed, source clumps and crown field. The ordinary card is 32 bytes:
+position, size, normal, crown depth, seed and tint. For this tree, 26,560 stored cards
+consume 849,920 bytes. A new shared card_at helper gives cooking and direct
+evaluation the identical source formula; the existing cook_cards API is unchanged.
+
+The stored and procedural methods use identical seed 7, authored fields, leaf atlas,
+lighting, shading and 4x4 independent visibility samples. Both use indexed card
+quads and indexed wood, as the production engine does. This corrects the source
+fixture's expanded geometry without claiming a new engine-wide optimization.
+No learned method receives privileged source inputs.
+
+Four actual AMD variants were measured:
+
+- Stored cards: materialize the established complete card records at initialization.
+- Procedural cards: reconstruct every card and its exact crown field in the vertex
+  shader. Remove 849,888 live requested bytes, but increase complete rendering cost.
+- First follow-up: cache the 44 authored clump areas and their total in 45 words
+  (180 bytes). Preserve the original selection arithmetic and seeded placements.
+  This avoids repeating area powers/sums in every vertex.
+- Second follow-up: also cache the exact Oct32 normal and float32 crown depth,
+  eight bytes per card. Geometry, size, seed and tint still come from source.
+  The combined distribution/response buffer is 212,660 bytes. Startup field evaluation,
+  its allocations and the source parameters remain counted.
+
+These are conventional alternatives. They use no neural inference, learned weights,
+future images or reference-derived visibility. The frozen 1,897-patch model remains
+unchanged as a separate learned control.
+
+### Quality and verification
+
+All 24 before/after GPU image pairs (three alternatives x two views x four lights)
+are byte-identical to stored cards. Each therefore has the same results against the
+completed AA64 shaded source references:
+
+| Mean over 24 shaded cases | Result |
+| --- | ---: |
+| PSNR | 40.294314 dB |
+| FLIP | 0.01300185 |
+| LPIPS | 0.00249142 |
+| Coverage MAE | 0.01005954 |
+| Worst boundary p99 | 2.000 pixels |
+
+Metric preprocessing, three backgrounds, known lights and reference convergence are
+unchanged. No new reference machinery was built. The source method's AA8 outputs also
+match all eight archived original source-AA8 images byte for byte, verifying the
+shared generator, indexed topology and cached response against the earlier control.
+
+This strengthens the comparison set: frozen AA2 passes only 8/24 numeric matched-
+quality cases against source AA4, and calibrated AA2 passes 5/24. Their mean metrics
+alone looked closer. The source method uses more samples and more time; those costs
+are explicit. It is a different point on the full rendering tradeoff, not a fixed-input
+G2 tournament result. Against BC, all source variants pass 22/24 numeric cases.
+
+### Complete cost and resident memory
+
+AMD RADV RENOIR/PCI 1002:164c, Ryzen 5 5500U, Mesa 26.1.6,
+Chrome 154.0.8037.57; Wrela 0.9.0 compiler
+de9b81e52a7747870dfbd5223cb8aeb41e584d23. One worker, 64x64 output, 60 warmup and
+240 measured frames. Builds, native captures, Chrome profiles and scoring run
+sequentially. Camera/light changes alternate each frame.
+
+GPU time includes source evaluation, wood, mask testing, visibility, shading,
+integration and display compositing. CPU time includes source/lighting parameters,
+uploads and command recording. Source cards use depth testing and do not run the
+optical-patch sort. CPU-to-final-GPU completion includes browser/driver notification,
+not input-to-photon. Initialization is outside steady-state time and inside allocation
+peaks. Dynamic edits requiring a new card/response cache are not measured by this
+static-source workload; view/light updates are.
+
+| Variant | Paced GPU p95/p99 ms | Saturated GPU p95 ms | CPU p99 ms | CPU to final GPU p95/p99 ms | Engine appearance/scratch bytes | All requested live/peak GPU bytes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| source-stored-aa4 | 1.087/1.144 | 0.435 | 0.496 | 4.295/4.467 | 2,690,968 | 3,100,568/3,116,952 |
+| source-procedural-aa4 | 1.979/2.009 | 1.118 | 0.671 | 4.531/4.774 | 1,841,080 | 2,250,680/2,267,064 |
+| source-distribution-aa4 | 1.687/1.748 | 0.858 | 0.716 | 4.535/4.695 | 1,841,260 | 2,250,860/2,267,244 |
+| source-response-aa4 | 1.191/1.252 | 0.468 | 0.682 | 4.535/4.745 | 2,053,740 | 2,463,340/2,479,724 |
+
+The response-cache option's standalone GPU p95/p99 ratios are 1.096/1.094,
+close enough to the limit to require a paired check. Three pairs run in order
+B,A,A,B,B,A, with read-only power/temperature sampling. Saturated median rises
+2.64% (individual pairs +2.47%, +4.72%, +2.64%). Its p95 ratios are **1.092,
+1.167 and 1.148**: two pairs fail the 1.1 limit. CPU median rises 7.45%, with
+wide per-pair variation; no CPU win is claimed. The final pair's raw paced p95/p99
+is 1.221/1.249 ms versus 0.861/1.096 ms. Median timing cannot hide tail failure.
+
+The profiler retains saturated median/p95 summaries for all pairs, but raw paced
+timings for only the last pair. Paired saturated p99 is unavailable and is not
+invented. Every standalone variant has measured paced p95/p99. The baseline build
+was copied before comparison; original controls were not overwritten.
+
+All requested allocations include source/card/response data, atlas, indices, scratch,
+dummy/fallback resources, uploads, output and screen. The engine-only column excludes
+409,600 identically sized bytes: output 65,536, upload ring 262,144, uniform ring
+65,536 and screen 16,384. The first two variants predate the extra four-byte inactive
+parameter buffer introduced in the follow-ups; actual totals retain that difference.
+Declared workgroup shared storage is zero. Driver caches and compiled programs are
+not represented by requested buffer sizes; physical snapshots are separate:
+
+| Variant | DRM resident VRAM bytes | DRM resident GTT bytes | Browser-group PSS bytes |
+| --- | ---: | ---: | ---: |
+| source-stored-aa4 | 17,395,712 | 9,740,288 | 478,806,016 |
+| source-procedural-aa4 | 17,403,904 | 9,936,896 | 476,436,480 |
+| source-distribution-aa4 | 17,330,176 | 10,035,200 | 480,390,144 |
+| source-response-aa4 | 17,326,080 | 9,936,896 | 478,759,936 |
+
+The UMA counters overlap and must not be added. They are whole-client snapshots,
+not per-asset physical attribution or transient physical peaks. The allocation
+saving does not establish a physical residency reduction, much less 16x.
+
+### Next architecture-level bet
+
+After caching only field response, the 1,048,576-byte leaf atlas and 786,432 bytes
+of sample colour/depth targets account for 89.35% of engine appearance/scratch
+allocations. Further compression of card records alone cannot meet G4.
+
+The next representation should evaluate or compress source leaf coverage at the
+actual footprint and retain independent visibility until resolve, with sample-local
+storage rather than a large permanent supersample image. Conventional analytic and
+texture controls must receive the same source definition and sampling information.
+The source program can supply exact, reproducible training signals if a learned
+coverage model is justified. No additional training is authorized by a better
+material-moment score alone.
+
+The established default remains selected. All eight frozen images and the model
+hash are unchanged. Three new inactive buffer handles cost exactly 12 bytes;
+native accounting verifies that increase and unchanged texture bytes. Format/type
+checks pass. No full-suite or PR-readiness claim is made. All four measured variants,
+including the slow full-procedural path and failed timing tails, remain preserved.
+
+Evidence: build/neural-evidence/g4-procedural-source-v1 on Pop!_OS, including exact
+runtime/plant sources, builds, float outputs, allocation/DRM/PSS records, power traces,
+paired results and the decision. This is one static tree at 64 pixels, two public
+views and four known lights. No family, motion, unseen-light or 8-512-pixel claim.
+G1-G7 remain unchanged and unmet.
+Manifest SHA-256: `a51c8f7e3a7021fd3675d7d5f0183e0f9b666cc63708930a2c57b2de0fcf0e0a`.

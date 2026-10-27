@@ -18,17 +18,16 @@
 
 ## Immediate milestone
 
-The [source-curve visibility assessment](neural-shaded-appearance.md#source-curve-wood-visibility-retire-the-two-group-path)
-retires analytic cones with two conditional visibility groups. After two targeted
-follow-ups, the frozen model loses0.435dB, uses605,808all-requested live GPUbytes
-versus726,068forAA2, and costs1.315ms pacedGPUp95 versus0.270ms. The candidate fails14of24 quality cases against the stronger
-source-calibrated AA2 control.
-No combined G4 advantage is demonstrated.
+The [source-program comparison](neural-shaded-appearance.md#source-program-reconstruction-a-conventional-memory-tradeoff)
+demonstrates exact reconstruction with 637,228 fewer requested GPU bytes (20.55%)
+when only crown normals/depth and the sampling distribution are cached. All 24 image
+pairs are byte-identical. But paired GPU p95 exceeds 1.1x in two of three pairs.
+Continue this as a conventional memory tradeoff, without G4 promotion.
 
-Keep frozen fine-patch AA2 as the control. The next bet must preserve independent
-subpixel coverage/depth/order until compositing, while sharing or compressing
-appearance work after visibility is known. No material-moment fitting is justified.
-All G1-G7 remain unchanged and unmet.
+The leaf atlas and sample colour/depth targets now account for 89.35% of appearance/
+scratch allocation. The next architecture bet is footprint-aware source coverage
+with independent visibility and sample-local storage. Keep equal-source conventional
+controls and the unchanged frozen model. G1-G7 remain unchanged and unmet.
 
 ## Evidence recorded so far
 
@@ -2280,3 +2279,17 @@ forcedoverflowrejectsall8frames. Raw failures, CPUdiagnostics and allresults ret
 [Detailed report](neural-shaded-appearance.md#source-curve-wood-visibility-retire-the-two-group-path).
 Evidence build/neural-evidence/g4-wood-visibility-v1 on Pop!_OS.
 Manifest SHA-256: `d67ea7938d2cc74c2834b2c49eca4d11124572149ee378e908e9eae3612a7139`.
+
+
+### Source programs preserve visibility while trading storage for work
+
+Four conventional source variants, two targeted follow-ups; first assessment within
+12 minutes and decision within19 minutes. Exact generated geometry and selectively
+cached field response save20.55% of total requested GPU memory. All24 comparison image
+pairs and the archived source-AA8 control's8 images are byte-identical. Paired tails
+still fail the1.1x runtime gate in2/3 pairs; no G4 or neural advantage claimed.
+Keep the memory tradeoff and target the dominant atlas/sample storage next.
+Frozen model/default8images unchanged, with12 extra inactive buffer bytes counted.
+[Report](neural-shaded-appearance.md#source-program-reconstruction-a-conventional-memory-tradeoff).
+Evidence build/neural-evidence/g4-procedural-source-v1 on Pop!_OS.
+Manifest SHA-256: `a51c8f7e3a7021fd3675d7d5f0183e0f9b666cc63708930a2c57b2de0fcf0e0a`.

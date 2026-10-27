@@ -533,19 +533,17 @@ pub fn card_centres(plant: Plant, seed: u32) -> Vec<vec4> {
     out
 }
 
-/// The plant's cards: each level's share spread over the clumps by their areas, each card on
-/// its clump's surface or a little inside, its normal the crown's there (its mass's, so a mass
-/// turns from light to shade as one form), its depth in the crown.
-@compute(64)
-pub fn cook_cards(plant: Plant, n: u32, seed: u32, out: mut Slots<Card>, id: GlobalId) {
-    let (which, p, k) = card_place(plant, n, seed, id.x)
+/// Reconstruct one authored leaf card from its source program and stable index.
+/// Cooking and direct evaluation share exactly the same placement and field response.
+pub fn card_at(plant: Plant, n: u32, seed: u32, index: u32) -> Card {
+    let (which, p, k) = card_place(plant, n, seed, index)
     let (d, g) = plant.crown(p)
     // The crown's normal alone: mixed with its own clump's, each clump read as its own lump of
     // light, a crown as confetti.
     let normal = normalize(g)
     let size = plant.leaves.size * pick(k, 6, lo: 0.8, hi: 1.2)
     let tint = vec4(rand(k, 7), rand(k, 8), rand(k, 9), rand(which, 10))
-    out[id] = Card {
+    Card {
         centre: p,
         size,
         normal: Oct32::encode(normal),
@@ -553,6 +551,12 @@ pub fn cook_cards(plant: Plant, n: u32, seed: u32, out: mut Slots<Card>, id: Glo
         seed: k,
         tint: Unorm8x4::encode(tint),
     }
+}
+
+/// The plant's cards, materialized once on the GPU from the same source evaluation.
+@compute(64)
+pub fn cook_cards(plant: Plant, n: u32, seed: u32, out: mut Slots<Card>, id: GlobalId) {
+    out[id] = card_at(plant, n, seed, id.x)
 }
 
 /// A card's corner `q` (on its square, each in [-1, 1]) turned by the card's own turn, a draw of

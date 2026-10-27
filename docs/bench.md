@@ -2120,3 +2120,34 @@ format/type pass. Initial parse failure and nonidentical cached RGB results reta
 No full-suite claim. G1-G7 unchanged and unmet.
 [Full evidence and limits](neural-shaded-appearance.md#source-curve-wood-visibility-retire-the-two-group-path).
 Evidence build/neural-evidence/g4-wood-visibility-v1 on Pop!_OS.
+
+
+### 2026-10-27 — Exact source-program reconstruction with selective field caching
+
+Pop!_OS Ryzen 5 5500U / AMD RADV RENOIR, Mesa 26.1.6, Chrome 154.0.8037.57;
+Wrela 0.9.0 compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23. Parent
+d66971c02ea6268d4b9d444332a4541ac0e63b60 plus archived source. Solo/sequential.
+Same completed AA64 truth, 2 public views x 4 lights x 3 backgrounds. No training.
+Frozen learned model unchanged; all new methods are conventional and share source inputs.
+
+Reconstruct 26,560 cards from authored source; cache either nothing, 180 bytes of sampling
+distribution, or distribution plus exact normal/depth (212,660 bytes). Indexed source
+geometry in every compared variant. Four variants, two targeted follow-ups.
+All 24 image pairs byte-identical: 40.294314dB, FLIP .01300185, LPIPS .00249142,
+coverage MAE .01005954. Archived source-AA8 control also matches all 8 images.
+
+Selective response cache saves 637,228 requested GPU bytes (20.55%): live/peak
+2,463,340/2,479,724 versus stored cards 3,100,568/3,116,952. Actual DRM/PSS snapshots
+recorded separately; no per-asset physical reduction proved. Atlas plus sample targets
+are 89.35% of remaining engine appearance/scratch. No 16x claim.
+
+Standalone full GPU95/99 1.191/1.252ms versus 1.087/1.144ms. Three paired saturated
+median changes +2.47%,+4.72%,+2.64%; p95 ratios 1.092,1.167,1.148 fail 1.1 in two pairs.
+CPU median +7.45%, variable; no CPU win. Keep as conventional memory tradeoff, not G4 promotion.
+Next bet: footprint-aware source coverage and sample-local visibility storage.
+
+First assessment within 12 minutes; decision within 19 minutes. Default frozen8images
+unchanged; +12 inactive buffer bytes verified. Format/type pass; no full-suite claim.
+All variants and failed timing tails preserved. G1-G7 unchanged and unmet.
+[Full evidence](neural-shaded-appearance.md#source-program-reconstruction-a-conventional-memory-tradeoff).
+Evidence build/neural-evidence/g4-procedural-source-v1 on Pop!_OS.

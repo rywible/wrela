@@ -1,0 +1,6 @@
+// Measured source-program alternatives; the established control remains the default.
+// See docs/neural-shaded-appearance.md for their quality, memory and runtime tradeoffs.
+pub const PROCEDURAL: bool = false
+pub const INDEXED: bool = false
+pub const CACHE_DISTRIBUTION: bool = false
+pub const CACHE_RESPONSE: bool = false

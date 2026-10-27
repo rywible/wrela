@@ -2,15 +2,17 @@
 // from the established shaded reference; only sample count and accumulation precision differ.
 use engine::impostor::{BAKED, Bake, BakeVertex}
 use engine::plant::{
-    Card, LIMB_VERTICES, card_scale, card_tint, card_turn, cook_cards, leaf_age, leaf_at,
-    leaf_atlas, leaf_uv, limb_vertex, tinted,
+    Card, Plant, LIMB_VERTICES, card_at, limb_point, limb_corner, card_scale, card_tint, card_turn,
+    cook_cards, leaf_age, leaf_at, leaf_atlas, leaf_uv, limb_vertex, tinted,
 }
 use engine::light::{Light, Lit, matte}
 use great_tree::tree::great_tree
+use std::gpu::{GlobalId, Slots, Oct32, Unorm8x4}
+use engine::noise::{direction, rand, pick}
 use std::field::Tube
 use std::gpu::{
-    ClipPosition, Flat, GpuBuffer, Rgba8, Rgba16Float, Texture, Sampler, VertexIndex, DepthPass,
-    buffer, buffer_of, texture, sampler, dispatch, discard, draw,
+    ClipPosition, Flat, GpuBuffer, Rgba8, Rgba16Float, Texture, Sampler, VertexIndex, InstanceIndex,
+    DepthPass, buffer, buffer_of, texture, sampler, dispatch, discard, draw,
 }
 
 pub struct Camera: Copy + GpuData {
@@ -36,10 +38,7 @@ fn projected(p: vec3, b: Bake, c: Camera) -> ClipPosition {
     }
 }
 
-@vertex
-fn card_vertex(v: VertexIndex, b: Bake, c: Camera, cards: [Card]) -> BakeVertex {
-    let card = cards[v.index / 6]
-    let k = v.index % 6
+fn card_vertex_value(card: Card, k: u32, b: Bake, c: Camera) -> BakeVertex {
     let qx = [-1.0, 1.0, 1.0, -1.0, 1.0, -1.0]
     let qy = [-1.0, -1.0, 1.0, -1.0, 1.0, 1.0]
     let q = vec2(qx[k], qy[k])
@@ -60,8 +59,136 @@ fn card_vertex(v: VertexIndex, b: Bake, c: Camera, cards: [Card]) -> BakeVertex 
 }
 
 @vertex
+fn card_vertex(v: VertexIndex, b: Bake, c: Camera, cards: [Card]) -> BakeVertex {
+    card_vertex_value(cards[v.index / 6], v.index % 6, b, c)
+}
+
+@vertex
+fn indexed_card(v: VertexIndex, i: InstanceIndex, b: Bake, c: Camera, cards: [Card]) -> BakeVertex {
+    // Index buffer addresses the original six-corner sequence's four distinct points.
+    let corner = [0, 1, 2, 5][v.index]
+    card_vertex_value(cards[i.index], corner, b, c)
+}
+
+@vertex
+fn procedural_card(
+    v: VertexIndex,
+    i: InstanceIndex,
+    b: Bake,
+    c: Camera,
+    plant: Plant,
+    count: u32,
+) -> BakeVertex {
+    let corner = [0, 1, 2, 5][v.index]
+    card_vertex_value(card_at(plant, count, seed: 7, index: i.index), corner, b, c)
+}
+
+// Same source sampling law as engine::plant::card_at. Cache only source constants
+// and optionally its exact field response; visibility and seeds remain unchanged.
+fn cached_card(plant: Plant, n: u32, index: u32, parameters: [u32]) -> Card {
+    let n2 = n >> 2
+    let n1 = n >> 1
+    let range = if index < n2 { vec2u(0, n2) } else if index < n1 { vec2u(n2, n1) } else {
+        vec2u(n1, n)
+    }
+    let f = (f32(index - range.x) + 0.5) / f32(range.y - range.x)
+    var at = f * bitcast_f32(parameters[0])
+    var which = plant.clumps.len() - 1
+    for i in 0..plant.clumps.len() {
+        let area = bitcast_f32(parameters[i + 1])
+        if at < area {
+            which = i
+            break
+        }
+        at -= area
+    }
+    let clump = plant.clumps[which]
+    let k = u32(7).wrapping_mul(7919) ^ index.wrapping_mul(2654435761)
+    let dir = direction(rand(k, 3), rand(k, 4))
+    let p = clump.point(dir, 0.72 + 0.28 * sqrt(rand(k, 5)))
+    var normal = Oct32::encode(vec3(0.0, 1.0, 0.0))
+    var depth = 0.0
+    if source_options::CACHE_RESPONSE {
+        let offset = plant.clumps.len() + 1 + index * 2
+        normal = Oct32 { bits: parameters[offset] }
+        depth = bitcast_f32(parameters[offset + 1])
+    } else {
+        let (d, g) = plant.crown(p)
+        normal = Oct32::encode(normalize(g))
+        depth = max(-d, 0.0)
+    }
+    Card {
+        centre: p,
+        size: plant.leaves.size * pick(k, 6, lo: 0.8, hi: 1.2),
+        normal,
+        depth,
+        seed: k,
+        tint: Unorm8x4::encode(vec4(rand(k, 7), rand(k, 8), rand(k, 9), rand(which, 10))),
+    }
+}
+
+@compute(64)
+fn cook_parameters(plant: Plant, count: u32, out: mut Slots<u32>, id: GlobalId) {
+    let offset = plant.clumps.len() + 1
+    if id.x >= offset + if source_options::CACHE_RESPONSE { count * 2 } else { 0 } { return }
+    if id.x == 0 {
+        var total = 0.0
+        for i in 0..plant.clumps.len() {
+            let r = plant.clumps[i].radius
+            total += r * r * plant.clumps[i].area_share()
+        }
+        out[id] = bitcast_u32(total)
+    } else if id.x < offset {
+        let c = plant.clumps[id.x - 1]
+        out[id] = bitcast_u32(c.radius * c.radius * c.area_share())
+    } else {
+        let index = (id.x - offset) / 2
+        let c = card_at(plant, count, seed: 7, index: index)
+        out[id] = if (id.x - offset) % 2 == 0 { c.normal.bits } else { bitcast_u32(c.depth) }
+    }
+}
+
+@vertex
+fn cached_procedural_card(
+    v: VertexIndex,
+    i: InstanceIndex,
+    b: Bake,
+    c: Camera,
+    plant: Plant,
+    count: u32,
+    parameters: [u32],
+) -> BakeVertex {
+    let corner = [0, 1, 2, 5][v.index]
+    card_vertex_value(cached_card(plant, count, i.index, parameters), corner, b, c)
+}
+
+@vertex
 fn limb_vertex_at(v: VertexIndex, b: Bake, c: Camera, limbs: [Tube<4>]) -> BakeVertex {
     let (p, n, along) = limb_vertex(limbs[v.index / LIMB_VERTICES], v.index % LIMB_VERTICES)
+    BakeVertex {
+        clip: projected(p, b, c),
+        uv: along,
+        normal: n,
+        depth: 0.0,
+        toward: dot(p - b.mid, c.direction) / b.half,
+        albedo: mix(b.bark.dark, b.bark.light, vec3(0.5)),
+        tint: vec3(0.0),
+        seed: Flat { value: 0 },
+        view: Flat { value: 0 },
+        leaf: Flat { value: 0 },
+    }
+}
+
+@vertex
+fn indexed_limb(
+    v: VertexIndex,
+    i: InstanceIndex,
+    b: Bake,
+    c: Camera,
+    limbs: [Tube<4>],
+) -> BakeVertex {
+    let (centre, n, radius, along) = limb_point(limbs[i.index], v.index)
+    let p = centre + n * radius
     BakeVertex {
         clip: projected(p, b, c),
         uv: along,
@@ -130,6 +257,9 @@ pub struct Source {
     wood: GpuBuffer<Tube<4>>,
     atlas: Texture<Rgba8>,
     filter: Sampler,
+    card_indices: GpuBuffer<u32>,
+    wood_indices: GpuBuffer<u32>,
+    parameters: GpuBuffer<u32>,
 }
 
 pub fn init(active: bool) -> Source {
@@ -139,12 +269,30 @@ pub fn init(active: bool) -> Source {
             wood: buffer(1),
             atlas: texture(width: 1, height: 1),
             filter: sampler(),
+            card_indices: buffer(1),
+            wood_indices: buffer(1),
+            parameters: buffer(1),
         }
     }
+    assert(!source_options::CACHE_RESPONSE || source_options::CACHE_DISTRIBUTION)
     let plant = great_tree()
     let n = plant.cards()
-    var cards = buffer(n)
-    dispatch(cook_cards.bind(plant, n, seed: 7, out: mut cards), over: n)
+    var cards = buffer(1)
+    if !source_options::PROCEDURAL {
+        cards = buffer(n)
+        dispatch(cook_cards.bind(plant, n, seed: 7, out: mut cards), over: n)
+    }
+    var wood_indices: Vec<u32> = Vec::new()
+    if source_options::INDEXED {
+        for i in 0..LIMB_VERTICES { wood_indices.push(limb_corner(i)) }
+    }
+    var parameters = buffer(1)
+    if source_options::CACHE_DISTRIBUTION {
+        assert(source_options::PROCEDURAL && source_options::INDEXED)
+        let size = plant.clumps.len() + 1 + if source_options::CACHE_RESPONSE { n * 2 } else { 0 }
+        parameters = buffer(size)
+        dispatch(cook_parameters.bind(plant, n, mut parameters), over: size)
+    }
     var limbs: Vec<Tube<4>> = Vec::new()
     for i in 0..plant.limbs.len() { limbs.push(plant.limbs[i]) }
     Source {
@@ -152,6 +300,9 @@ pub fn init(active: bool) -> Source {
         wood: buffer_of(limbs, at_least: 1),
         atlas: leaf_atlas(plant.leaves.per_card),
         filter: sampler(),
+        card_indices: buffer_of([0, 1, 2, 0, 2, 3]),
+        wood_indices: buffer_of(wood_indices, at_least: 1),
+        parameters,
     }
 }
 
@@ -164,34 +315,106 @@ pub fn draw_source(s: Source, p: DepthPass<Rgba16Float>, c: Camera, illumination
         bark: plant.bark,
     }
     let pixels = plant.leaves.leaf_width() * 64.0 / (2.0 * b.half)
-    draw(
-        p,
-        card_vertex.bind(b, c, s.cards.items()),
-        radiance.bind(
-            b,
-            c,
-            relight::light(illumination),
-            pixels,
-            detailed: 1,
-            atlas: s.atlas,
-            filter: s.filter,
-        ),
-        vertices: plant.cards() * 6,
-        instances: 1,
-    )
-    draw(
-        p,
-        limb_vertex_at.bind(b, c, s.wood.items()),
-        radiance.bind(
-            b,
-            c,
-            relight::light(illumination),
-            pixels,
-            detailed: 1,
-            atlas: s.atlas,
-            filter: s.filter,
-        ),
-        vertices: plant.limbs.len() * LIMB_VERTICES,
-        instances: 1,
-    )
+    if source_options::CACHE_DISTRIBUTION {
+        draw(
+            p,
+            cached_procedural_card.bind(b, c, plant, plant.cards(), s.parameters.items()),
+            radiance.bind(
+                b,
+                c,
+                relight::light(illumination),
+                pixels,
+                detailed: 1,
+                atlas: s.atlas,
+                filter: s.filter,
+            ),
+            indices: s.card_indices,
+            index_count: 6,
+            instances: plant.cards(),
+        )
+    } else if source_options::PROCEDURAL {
+        draw(
+            p,
+            procedural_card.bind(b, c, plant, plant.cards()),
+            radiance.bind(
+                b,
+                c,
+                relight::light(illumination),
+                pixels,
+                detailed: 1,
+                atlas: s.atlas,
+                filter: s.filter,
+            ),
+            indices: s.card_indices,
+            index_count: 6,
+            instances: plant.cards(),
+        )
+    } else if source_options::INDEXED {
+        draw(
+            p,
+            indexed_card.bind(b, c, s.cards.items()),
+            radiance.bind(
+                b,
+                c,
+                relight::light(illumination),
+                pixels,
+                detailed: 1,
+                atlas: s.atlas,
+                filter: s.filter,
+            ),
+            indices: s.card_indices,
+            index_count: 6,
+            instances: plant.cards(),
+        )
+    } else {
+        draw(
+            p,
+            card_vertex.bind(b, c, s.cards.items()),
+            radiance.bind(
+                b,
+                c,
+                relight::light(illumination),
+                pixels,
+                detailed: 1,
+                atlas: s.atlas,
+                filter: s.filter,
+            ),
+            vertices: plant.cards() * 6,
+            instances: 1,
+        )
+    }
+    if source_options::INDEXED {
+        draw(
+            p,
+            indexed_limb.bind(b, c, s.wood.items()),
+            radiance.bind(
+                b,
+                c,
+                relight::light(illumination),
+                pixels,
+                detailed: 1,
+                atlas: s.atlas,
+                filter: s.filter,
+            ),
+            indices: s.wood_indices,
+            index_count: LIMB_VERTICES,
+            instances: plant.limbs.len(),
+        )
+    } else {
+        draw(
+            p,
+            limb_vertex_at.bind(b, c, s.wood.items()),
+            radiance.bind(
+                b,
+                c,
+                relight::light(illumination),
+                pixels,
+                detailed: 1,
+                atlas: s.atlas,
+                filter: s.filter,
+            ),
+            vertices: plant.limbs.len() * LIMB_VERTICES,
+            instances: 1,
+        )
+    }
 }
