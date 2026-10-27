@@ -752,6 +752,122 @@ scripts `7f2aedaab046238caf435164bbe5d364d4a69ccf9af6139b3a680d6ed0c3a7ab`.
 No Wrela runtime or shipped weights change. Focused allow-list and diff
 checks pass; no full-suite or PR-readiness claim.
 
+## Controlled smaller optimizer steps
+
+Reducing every optimizer step tenfold reverses the previous regression.
+At the same 107,672-byte capacity, all-256-view coverage MAE falls to
+0.006437867: 6.07% below global calibration,
+17.41% below the original-step local fit and 41.24% below the
+older prefix fit. All five stored and off-grid mean errors improve versus
+calibration. **Retain this as the best development model at this budget;
+it still fails the fixed material quality gate.**
+
+### One changed variable
+
+The starting half records, common header and wood description are byte
+identical to the prior fit. Seed 5483, 4,096 steps, view/pixel/4×4 jitter
+sampling, importance correction, loss weights, parameter bounds, decoder
+and half packing are unchanged.
+
+The external source audit compares syntax trees against the archived
+original trainer. The model, sampler and loss are identical; the training
+function differs only by multiplying every initial Adam rate by 0.1
+before optimizer construction. The same linear schedule then decays those
+scaled rates to 10% of their initial values. This isolates step size
+within this fixed public diagnostic; it does not establish a generally
+optimal learning rate.
+
+Initial Torch point outputs repeat the recorded original outputs byte
+for byte, and independent NumPy differences remain below 2e-5.
+The existing eight smooth-gradient and wood controls are inherited through
+verified source/data hashes. They are not needlessly rerun for unchanged
+decoder code.
+
+Actual final packed Torch/NumPy point checks are at most
+3.39e-06;
+the independent NumPy-versus-CPU-raster check is at most
+3.98e-08.
+All 256 projected covariances are positive definite, with minimum
+eigenvalue 9e-06
+and maximum condition number
+35.295. Physical moment
+bounds and zero-mass controls pass.
+
+The run changes 51,813 of 53,116 half values.
+Fitting takes 138.226 s elapsed
+wall time on the Pop!_OS Ryzen 5 5500U, PyTorch 2.5.1+cpu and four threads.
+It includes lazy wood-query acceleration and excludes earlier calibration,
+source/reference generation and validation. All-256 nominal CPU
+wood/raster/scoring/writes take
+177.666 s. No GPU model runtime,
+resident-memory measurement or complete G7 generation-time result is
+claimed.
+
+### Complete quality comparison
+
+All 256 stored directions are scored at nominal 16×16 integration.
+Public sampling checks: 8/8 16to32; public quality uses
+32×32 samples. The eight-direction check
+does not prove convergence for the full nominal corpus.
+
+All stored directions, mean absolute moment errors:
+
+| Control | Coverage | Linear RGB moment | Normal moment | Toward moment | Crown-depth moment |
+|---|---:|---:|---:|---:|---:|
+| Fixed BC | 0.003059909 | 0.001120013 | 0.028233120 | 0.002727373 | 0.000138883 |
+| Source optical | 0.008003161 | 0.000852460 | 0.010762640 | 0.005510278 | 0.000251127 |
+| Global calibration | 0.006854065 | 0.000733637 | 0.009609885 | 0.004511756 | 0.000249948 |
+| Original-step fit | 0.007795158 | 0.000847792 | 0.010233790 | 0.005143842 | 0.000276841 |
+| Smaller-step fit | 0.006437867 | 0.000688542 | 0.008956829 | 0.004226762 | 0.000223633 |
+
+Four public off-grid directions, denser integration:
+
+| Control | Coverage | Linear RGB moment | Normal moment | Toward moment | Crown-depth moment |
+|---|---:|---:|---:|---:|---:|
+| Fixed BC | 0.025882901 | 0.002766674 | 0.034725454 | 0.015425762 | 0.000571803 |
+| Source optical | 0.008965747 | 0.000963805 | 0.011689313 | 0.006073518 | 0.000276902 |
+| Global calibration | 0.007715352 | 0.000822936 | 0.010396534 | 0.004986157 | 0.000279038 |
+| Original-step fit | 0.008942803 | 0.000970206 | 0.011246962 | 0.005778944 | 0.000313521 |
+| Smaller-step fit | 0.007350622 | 0.000779151 | 0.009766458 | 0.004743750 | 0.000250782 |
+
+Only 2/5 stored screens pass: albedo and normals.
+Coverage is still 2.1039× BC on the stored mean and 2.9607×
+in the worst direction. Toward and crown-depth screens also fail.
+All 5/5 off-grid screens pass; off-grid coverage is
+4.73% below calibration. Mean≤1.05×BC and worst-view≤1.10×BC
+limits remain unchanged.
+
+The densely evaluated, all-256 weighted training objective is
+0.012722495 for calibration,
+0.015157969 for the original-step fit and
+0.011191350 for smaller steps. Thus this result
+improves both the measured objective and the reported moment MAEs,
+instead of relying on sampled training losses.
+
+![Identical source and training budget with different optimizer step sizes](figures/neural-appearance-spatial-smallstep.png)
+
+The next bounded diagnostic should test additional optimization at the
+successful step size. Replay the same first 4,096 steps and require its
+packed checkpoint to match this one before continuing. Keep the optimizer
+and sampling state, hold the final learning rates and stop at a fixed
+total of 16,384 steps. Save intermediate master/optimizer/RNG states for
+future exact continuations. This is a training-budget experiment, not a
+relaxation of G7's complete five-minute generation requirement.
+
+All original G1–G7 requirements remain: production materials and lighting,
+temporal behavior, footprints, unseen asset families, resident memory
+and AMD browser whole-pass measurements. The new best development model
+is not promoted into the renderer.
+
+Evidence: `build/neural-evidence/appearance-spatial-smallstep-v1/manifest.json`,
+SHA-256 `fea09f2254859efa9e1f378ce476c610ab8360847c538f847eb684bf68a9c172`;
+source `b333ba10f3c1fb3902c52a47ec7e1c21343b9d45af25cdb90bc2640003e7a453`;
+scripts `687a7f5d1c8f8c8e07329f8f412f2d404132d9ebb4659183d1e9a5db10f66947`.
+The record retains the controlled trainer difference, both initial/final
+packed models, complete nominal/public outputs and all failures.
+Focused allow-list and diff checks pass; no full-suite or PR-readiness
+claim.
+
 ## Earlier untrained checkpoint: decision and reproducibility
 
 Retain these source-derived controls when fitting any compact learned

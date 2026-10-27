@@ -1800,3 +1800,27 @@ only 1/5 stored screens pass. 8/8 16to32 public sampling checks pass.
 Dense weighted MSE also worsens. Reject the local fit and retain calibration.
 
 Manifest `7d534b610dfb2e276b0abe814ed0ca0916e732c6f1be160cc9ed25ebd8ee1ea8`. No runtime, resident-memory or G1–G7 success.
+
+
+## Controlled smaller optimizer steps (Pop!_OS AMD, 2026-10-27)
+
+[Controlled change, full results and limitations](neural-source-primitives.md#controlled-smaller-optimizer-steps).
+Ryzen 5 5500U, PyTorch 2.5.1+cpu four threads; checked C++17/OpenMP and
+NumPy 2.2.6 evaluator. Reused Radeon/RADV source references. No GPU model
+runtime or resident-memory timing.
+
+Actual packed size stays 107,672 bytes. Identical seed 5483, 4,096-step
+sampler/loss/decoder/initial data; only every optimizer rate scales by 0.1.
+Fit: 138.226 s elapsed wall time including lazy wood queries,
+excluding calibration/source/reference generation and validation.
+All-256 nominal CPU wood/raster/scoring/writes:
+177.666 s.
+
+Stored coverage MAE 0.006437867, 6.07% below calibration
+and 17.41% below the original-step fit. All five stored/off-grid means
+improve. Dense weighted MSE 0.011191350.
+Still 2.1039× BC stored coverage; 2/5 stored and 5/5
+off-grid screens pass. Public integration: 8/8 16to32. Best development
+model at this budget; no runtime promotion or G1–G7 achievement.
+
+Manifest `fea09f2254859efa9e1f378ce476c610ab8360847c538f847eb684bf68a9c172`.

@@ -335,12 +335,26 @@ A fixed noisy-loss diagnostic finds both self and independent-pair losses
 worsen, with only a small variance-penalty reduction. That evidence does
 not support blaming sampling variance alone.
 
+## Smaller-step optical fitting
+
+[A controlled tenfold step reduction](neural-source-primitives.md#controlled-smaller-optimizer-steps)
+improves all five stored/off-grid means versus calibration at unchanged
+107,672-byte capacity. Stored coverage MAE is
+0.006437867: 6.07% below calibration and
+17.41% below the original-step fit. Decoder/sampler/loss code and
+initial data are verified unchanged.
+
+Retain it as the best development model at this budget. It still has
+2.10× BC stored coverage error; only albedo and normals pass the
+stored quality screen. Dense weighted MSE improves as well. No promotion.
+
 ## Next decision
 
-Repeat the calibrated initialization, seed, samples and 4,096-step
-budget with tenfold smaller optimizer steps. This isolates step size;
-retain the current failed fit and source/calibrated controls. Require
-actual packed quality gains before spending more on this training path.
+Test additional optimization with a fixed 16,384-step budget: reproduce
+the successful 4,096-step packed checkpoint exactly, retain optimizer/RNG
+state, then hold its final rates for the remaining steps. Save resumable
+states and score the fixed endpoint against all existing controls.
+Report the longer fitting cost without weakening G7's end-to-end limit.
 Full source geometry, wood, sorting, tiling, caches and scratch remain
 part of eventual runtime accounting.
 

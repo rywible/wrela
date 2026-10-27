@@ -2076,3 +2076,30 @@ source `b333ba10f3c1fb3902c52a47ec7e1c21343b9d45af25cdb90bc2640003e7a453`;
 scripts `7f2aedaab046238caf435164bbe5d364d4a69ccf9af6139b3a680d6ed0c3a7ab`, under
 `build/neural-evidence/appearance-learned-spatial-v1/` on Pop!_OS.
 All original goals remain intact; no full-suite/PR readiness claim.
+
+
+## Smaller optimizer steps establish a better development model
+
+[The controlled rate reduction](neural-source-primitives.md#controlled-smaller-optimizer-steps)
+uses identical initialization, seed, 4,096 steps, sampler, loss, decoder
+and 107,672-byte format. Only initial rates and their entire schedule scale
+by 0.1. Source syntax-tree comparison and bitwise initial-output repeats
+verify the control.
+
+Stored coverage MAE becomes 0.006437867
+(6.07% below calibration, 17.41% below original-step fit).
+All five stored/off-grid means improve. Dense weighted MSE improves to
+0.011191350. Retain it as best development model at this budget;
+coverage remains 2.1039× BC and only 2/5 stored screens pass.
+All off-grid screens and 8/8 16to32 public integration checks pass.
+
+Fit 138.226 s; all-256 nominal CPU evaluation
+177.666 s. No complete G7, GPU runtime or G1–G7 success.
+Next is a fixed longer-budget experiment that exactly reproduces this
+prefix before continuing at the final rates; retain optimizer/RNG states.
+
+Manifest `fea09f2254859efa9e1f378ce476c610ab8360847c538f847eb684bf68a9c172`;
+source `b333ba10f3c1fb3902c52a47ec7e1c21343b9d45af25cdb90bc2640003e7a453`;
+scripts `687a7f5d1c8f8c8e07329f8f412f2d404132d9ebb4659183d1e9a5db10f66947`, under
+`build/neural-evidence/appearance-spatial-smallstep-v1/` on Pop!_OS.
+Original targets remain unchanged; no full-suite/PR readiness claim.
