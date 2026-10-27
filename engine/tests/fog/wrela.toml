@@ -1,0 +1,7 @@
+# The air's froxels (engine/fog.wrela, B10) on the GPU: a uniform fog's transmittance, a step in
+# its density, and a column in full shadow, drawn through the real frame.
+[package]
+name = "fog_tests"
+
+[dependencies]
+engine = { workspace = true }

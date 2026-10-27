@@ -16,6 +16,7 @@ use creature::{Bone, MAX_BONES, Parts, Skeleton}
 use light::{Light, Lit, clay_or, gloss}
 use lit::{Lighting, sun_and_gloss, through_air}
 use realize::{Mesh, SkinVertex, Tally}
+use std::mem::size_of
 use std::gpu::{
     ClipPosition, Cull, Flat, FragCoord, GlobalId, GpuBuffer, LocalId, RenderPass, Slots, Unorm8x4,
     VertexIndex, WorkgroupId, buffer, copy, discard, dispatch, draw, write,
@@ -479,6 +480,17 @@ pub fn cast<C, K: creature::Creature<C>, L: Look<C>>(
 }
 
 impl<C, K: creature::Creature<C>, L: Look<C>> Cast<C, K, L> {
+    /// The GPU bytes it holds: its mesh and materials once realized, and its bones' palettes.
+    pub fn bytes(self) -> u64 {
+        let palettes = 2 * u64(creature::MAX_BONES) * 64
+        match self.realized {
+            Some(r) => r.mesh.bytes() +
+                u64(r.materials.len()) * u64(size_of::<Material>()) +
+                palettes,
+            None => palettes,
+        }
+    }
+
     /// A frame's slice of its realization (started the first time); nothing once it's realized.
     pub fn realize(mut self) {
         if self.realized.is_some() {

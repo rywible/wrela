@@ -11,7 +11,7 @@ use std::tool::browser
 use std::tool::browser::{Browser, Script, Until}
 use std::tool::files
 use std::tool::serve
-use whole::{chunked, write_file}
+use whole::{chunked, read_file, write_file}
 
 /// The longest one wait for the page's result is (a request's most), in seconds.
 const SLICE: f64 = 600.0
@@ -19,12 +19,15 @@ const SLICE: f64 = 600.0
 /// Runs the page in `dir` (a root path in a write root) at `width` × `height`, with `hash` (as
 /// `#test&frames=...`), until it writes `results/DONE` or `timeout` seconds pass: whether it
 /// wrote `ok`, or why not. The console's last 20 lines are printed, as is how long it took.
+/// With `again`, the page is opened a second time once it's done, in the same tab and profile
+/// (`browser::navigate`), so its caches are warm: `results/` then holds the second run's.
 pub fn run_page(
     dir: str,
     hash: str,
     width: u32,
     height: u32,
     timeout: f64,
+    again: bool = false,
 ) -> Result<(), ToolError> {
     let results = String::from(f"{dir}/results")
     // What an earlier run left, a stale DONE above all, isn't this run's.
@@ -32,8 +35,21 @@ pub fn run_page(
     let _ = files::make_dirs(results.as_str()).wait()?
     let started = serve::start(dir).wait()?
     let start = now()
-    let b = browser::open(f"{started.origin}/{hash}", width, height, timeout: 120.0).wait()?
-    let result = finished(b, start, timeout)
+    let url = String::from(f"{started.origin}/{hash}")
+    let b = browser::open(url.as_str(), width, height, timeout: 120.0).wait()?
+    var result = finished(b, start, timeout)
+    if again && result.is_ok() {
+        // The second open's results alone: the first's DONE isn't its.
+        let _ = files::remove_all(results.as_str()).wait()
+        let _ = files::make_dirs(results.as_str()).wait()?
+        let warm = now()
+        // A query of its own: the same URL again would only move to its fragment, not load.
+        let second = String::from(f"{started.origin}/?again=1{hash}")
+        result = match browser::navigate(b, second.as_str(), timeout: 120.0).wait() {
+            Ok(_) => finished(b, warm, timeout),
+            Err(e) => Err(take e),
+        }
+    }
     let lines = match browser::console(b).wait() {
         Ok(l) => take l,
         Err(e) => Vec::from([String::from(f"(the console couldn't be read: {e.message()})")]),
@@ -80,4 +96,17 @@ fn finished(b: Browser, start: f64, timeout: f64) -> Result<(), ToolError> {
     }
     let text = body.as_str().trim()
     if text == "ok" { Ok(()) } else { Err(ToolError::new(f"page failed: {text}")) }
+}
+
+/// Copies the page in `dir`'s `results/` to `to` (made if it isn't there): a run's files, kept
+/// before the next run empties them.
+pub fn keep_results(dir: str, to: str) -> Result<(), ToolError> {
+    let _ = files::make_dirs(to).wait()?
+    for e in files::list(f"{dir}/results").wait()? {
+        if e.kind == files::Kind::File {
+            let bytes = read_file(f"{dir}/results/{e.name}", e.name.as_str())?
+            write_file(f"{to}/{e.name}", chunked(take bytes))?
+        }
+    }
+    Ok(())
 }

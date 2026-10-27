@@ -1213,7 +1213,7 @@ pub const FAR: f32 = 1000000.0
 /// Which of a creature's items (its top-level parts, groups and modifiers, in fold order) can
 /// matter somewhere: a bit for each of the first 64. An item past the 64th has none, and
 /// is always in (it's never culled), so a creature may have any number of items.
-pub struct PartMask: Copy + GpuData + Eq {
+pub struct PartMask: Copy + GpuData + Eq + Plain {
     pub lo: u32,
     pub hi: u32,
 }

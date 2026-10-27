@@ -1,7 +1,7 @@
 // A driven build's steps (`std::tool::drive`), checked for a trap.
 
 use std::tool::ToolError
-use std::tool::drive::Seen
+use std::tool::drive::{Scalar, Seen}
 
 /// What `seen`'s steps saw, or the build's trap, said with `what`, as a failure.
 pub fn untrapped(what: str, seen: take Seen) -> Result<Seen, ToolError> {
@@ -9,4 +9,27 @@ pub fn untrapped(what: str, seen: take Seen) -> Result<Seen, ToolError> {
         Some(t) => Err(ToolError::new(f"{what}: {t.message} {t.panic}")),
         None => Ok(take seen),
     }
+}
+
+/// An export's result as a number.
+pub fn number(s: Scalar) -> f64 {
+    match s {
+        Scalar::F32(x) => f64(x),
+        Scalar::I32(x) => f64(x),
+        Scalar::F64(x) => x,
+        Scalar::I64(x) => f64(x),
+    }
+}
+
+/// A package's path as one name, its slashes dashes (`games/last-green` → `games-last-green`):
+/// where a tool builds it.
+pub fn dashed(pkg: str) -> String {
+    var out = String::new()
+    for (a, b) in pkg.split("/") {
+        if out.len() > 0 {
+            out.push_str("-")
+        }
+        out.push_str(pkg.slice(a, b))
+    }
+    out
 }

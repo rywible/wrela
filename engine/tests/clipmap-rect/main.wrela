@@ -1,0 +1,54 @@
+// A field write cooks its own texels (engine::terrain's `Clipmap::touched`, docs/plan-world-class-2.md
+// §B3): a 4 m tile's fields (1 m field texels) at a level of 1 m texels cook the texels within
+// a field texel of it and one more round them, 9 × 9 = 81, where the level (16,641 texels)
+// cooked whole before; the coarser level over it (2 m texels), 7 × 7 = 49. A two-cell move
+// still cooks the two columns it brings in, 258 texels.
+
+use engine::terrain::{Clipmap, Flat, SIDE}
+
+pub struct State {
+    clip: Clipmap,
+    pub whole: u32,
+    pub written: u32,
+    pub levels_written: u32,
+    pub moved: u32,
+    pub still: u32,
+}
+
+pub fn init() -> State {
+    State {
+        clip: Clipmap::new(2, 1.0),
+        whole: 0,
+        written: 0,
+        levels_written: 0,
+        moved: 0,
+        still: 0,
+    }
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    let eye = vec3(64.0, 0.0, 64.0)
+    s.clip.fields_on(tile: 4.0, side: 4, blocks: 4)
+    let _ = s.clip.follow(Flat {}, eye, again: false)
+    s.whole = s.clip.cooked_texels()
+    s.clip.write_fields(vec2i(10, 10), Vec::filled(4 * 4 * 4, 255))
+    s.levels_written = s.clip.follow(Flat {}, eye, again: false)
+    s.written = s.clip.cooked_texels()
+    let _ = s.clip.follow(Flat {}, eye + vec3(2.0, 0.0, 0.0), again: false)
+    s.moved = s.clip.cooked_texels()
+    let _ = s.clip.follow(Flat {}, eye + vec3(2.0, 0.0, 0.0), again: false)
+    s.still = s.clip.cooked_texels()
+}
+
+/// The first cook is every texel of both levels; the 4 m tile's write, 81 texels of the fine
+/// level and 49 of the coarse one; a move of two
+/// cells, two columns of the fine level (the coarse one, snapped to 4 m, stays); nothing moved
+/// or written, none.
+@test(frames: 1)
+fn a_field_write_cooks_its_own_texels(s: State) {
+    assert(s.whole == 2 * SIDE * SIDE, f"the first cook: {s.whole}")
+    assert(s.levels_written == 2, f"{s.levels_written} levels cooked for the write")
+    assert(s.written == 81 + 49, f"the write cooked {s.written} texels")
+    assert(s.moved == 2 * SIDE, f"the move cooked {s.moved} texels")
+    assert(s.still == 0, f"nothing moved, and {s.still} texels cooked")
+}

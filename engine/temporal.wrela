@@ -19,7 +19,10 @@
 // nearest's (`resolve`): at half the output's size four of them share each one. At the output's
 // size each output pixel has its own, and gathers it itself (`resolve_gathered`).
 
-use std::gpu::{DepthTexture, FragCoord, GlobalId, Rgba16Float, Sampler, Texels, Texture}
+use neural::{Model, eval_gpu}
+use std::gpu::{
+    DepthTexture, FragCoord, GlobalId, Half2, Rgba16Float, Sampler, Slots, Texels, Texture,
+}
 use view::{Camera, class_of, thin}
 
 /// What the resolve reads besides the textures: the scene camera (at the scene's size), the
@@ -42,6 +45,26 @@ pub struct Resolve: Copy + GpuData {
     /// How many frames the camera has held still before this one (`held`; 0 when it moved):
     /// a settled view's history gathers more frames (`SETTLED`).
     pub settled: f32 = 0.0,
+    /// The history kept whole, not clipped to the frame's neighbourhood: the lookdev
+    /// instrument's ghost control alone (`Frame::ghost`).
+    pub unclipped: u32 = 0,
+    /// Whether this frame's share comes from the learned rejector (`learned_share`, B14.3:
+    /// `Quality::learned_resolve`, its net `REJECTOR`), not from the heuristics.
+    pub learned: u32 = 0,
+}
+
+/// The learned rejector's net (§B14.3c's rung A): the 14 inputs `rejector_inputs` makes, two
+/// hidden layers, and the share's logit.
+pub const REJECTOR = Model { inputs: 14, h1: 16, h2: 8, outputs: 1 }
+
+/// The floats of a row `found_rows` writes: the rejector's 14 inputs, this frame's luma and the
+/// clipped history's, the heuristics' share, whether the share is forced to this frame's, the
+/// settled view's cap, and the learned share (0 unless `Resolve::learned`).
+pub const FOUND_FLOATS: u32 = 20
+
+/// A row of `found_rows`.
+pub struct FoundRow: Copy + GpuData {
+    pub v: [f32; FOUND_FLOATS],
 }
 
 /// The least share of a frame a settled view's pixel takes: its history is the mean of about
@@ -179,10 +202,10 @@ fn history_at(history: Texture<Rgba16Float>, s: Sampler, px: vec2, size: vec2) -
     max(r / total, vec3(0.0))
 }
 
-/// The scene pixel whose sample falls nearest the output pixel at `pixel`'s centre.
-fn nearest(r: Resolve, pixel: FragCoord) -> vec2i {
+/// The scene pixel whose sample falls nearest the output pixel whose centre is `px`.
+fn nearest(r: Resolve, px: vec2) -> vec2i {
     let in_size = r.cam.screen
-    let q = pixel.position.xy * (in_size / r.out)
+    let q = px * (in_size / r.out)
     let lim = vec2i(i32(in_size.x) - 1, i32(in_size.y) - 1)
     clamp(vec2i(floor(q + r.jitter)), vec2i(0), lim)
 }
@@ -205,11 +228,14 @@ pub fn resolve(
     means: Texture<Rgba16Float>,
     spreads: Texture<Rgba16Float>,
     s: Sampler,
+    net: [Half2],
 ) -> vec4 {
-    let near = nearest(r, pixel)
+    let px = pixel.position.xy
+    let near = nearest(r, px)
     let hood = means.load(x: u32(near.x), y: u32(near.y))
     let spread = spreads.load(x: u32(near.x), y: u32(near.y))
-    resolved(pixel, r, scene, depth, last_depth, motion, last_motion, history, hood, spread, s)
+    let f = found(px, r, scene, depth, last_depth, motion, last_motion, history, hood, spread, s)
+    blended(f, r, scene, net)
 }
 
 /// `resolve` for a scene drawn at the output's size, which finds its nearest sample's
@@ -228,17 +254,42 @@ pub fn resolve_gathered(
     last_motion: Texture<Rgba16Float>,
     history: Texture<Rgba16Float>,
     s: Sampler,
+    net: [Half2],
 ) -> vec4 {
-    let (hood, spread) = neighbourhood(scene, nearest(r, pixel))
-    resolved(pixel, r, scene, depth, last_depth, motion, last_motion, history, hood, spread, s)
+    let px = pixel.position.xy
+    let (hood, spread) = neighbourhood(scene, nearest(r, px))
+    let f = found(px, r, scene, depth, last_depth, motion, last_motion, history, hood, spread, s)
+    blended(f, r, scene, net)
 }
 
-/// The output pixel at `pixel` (`resolve`), its nearest sample's neighbourhood `hood` and
+/// What a resolve finds at an output pixel before it blends (`blended`): this frame's samples
+/// reconstructed there and the history reprojected and clipped (both tamed), this frame's share
+/// as the heuristics give it (`forced` where it's this frame's alone: no history there, the history
+/// rejected by depth, or left behind by something that moved off), a settled view's cap on it,
+/// the nearest sample's tag; and what the learned rejector reads besides the scene
+/// (`rejector_inputs`): the nearest sample, the history's luma there unclipped, how far the point
+/// moved (output pixels), how far the old depth is from where it should be (relative; 0 where it
+/// isn't checked), and whether thin geometry covers part of it.
+struct Found: Copy {
+    current: vec3,
+    clipped: vec3,
+    a: f32,
+    forced: u32,
+    settle: f32,
+    tag: f32,
+    near: vec2i,
+    was: f32,
+    moved: f32,
+    depth_off: f32,
+    thin: f32,
+}
+
+/// The output pixel whose centre is `px` (`resolve`), its nearest sample's neighbourhood `hood` and
 /// `spread` (`neighbourhood`): this frame's samples reconstructed there, blended with the
 /// history reprojected and clipped. Its alpha is the nearest sample's tag. `motion` is this
 /// frame's motion target and `last_motion` the frame before's (`motion_of`).
-fn resolved(
-    pixel: FragCoord,
+fn found(
+    px: vec2,
     r: Resolve,
     scene: Texture<Rgba16Float>,
     depth: DepthTexture,
@@ -249,19 +300,19 @@ fn resolved(
     hood: vec4,
     spread: vec4,
     s: Sampler,
-) -> vec4 {
+) -> Found {
     let cam = r.cam
     let in_size = cam.screen
     let scale = in_size / r.out
     // This output pixel's centre in the scene's pixels.
-    let q = pixel.position.xy * scale
+    let q = px * scale
     // The samples were taken at their pixels' centres, the image shifted by the jitter: sample
     // (i, j) shows what's at (i + 0.5, j + 0.5) - jitter, unjittered.
     let j = r.jitter
     // The four samples round the point, which a bilinear reconstruction would read.
     let base = vec2i(floor(q + j - vec2(0.5)))
     let lim = vec2i(i32(in_size.x) - 1, i32(in_size.y) - 1)
-    let near = nearest(r, pixel)
+    let near = nearest(r, px)
     let z = depth.load(x: u32(near.x), y: u32(near.y))
     // Thin geometry and silhouettes against the sky represent coverage, not one opaque
     // surface. Their jittered samples must include the background and retain that history:
@@ -372,25 +423,42 @@ fn resolved(
         last = cam.last_pixel(cam.eye + cam.unjittered().ray(q) * 1.0e5) / scale
     }
     let inside = last.x >= 0.0 && last.y >= 0.0 && last.x < r.out.x && last.y < r.out.y
+    // This frame's alone: no history to blend.
+    let alone = Found {
+        current,
+        clipped: current,
+        a: 1.0,
+        forced: 1,
+        settle: 1.0,
+        tag,
+        near,
+        was: to_ycocg(current).x,
+        moved: length(px - last),
+        depth_off: 0.0,
+        thin: if coverage { 1.0 } else { 0.0 },
+    }
     if r.fresh != 0 || !inside {
-        return vec4(untamed(current), tag)
+        return alone
     }
     // Colour clipping alone cannot reject an old surface whose colour still occurs in the
     // neighbourhood. Check the old depths at the reprojected point first. Any of its four
     // jittered samples may represent this surface at an edge; a two-percent tolerance lets
     // a sloped surface move within a pixel. Explicit object motion owns its reprojection.
+    var depth_off = 0.0
     if !moving && !coverage {
         let old_base = vec2i(floor(last * scale + r.last_jitter - vec2(0.5)))
         var matches = false
+        depth_off = 1.0e9
         for dy in 0..2 {
             for dx in 0..2 {
                 let p = clamp(old_base + vec2i(dx, dy), vec2i(0), lim)
                 let old = last_depth.load(x: u32(p.x), y: u32(p.y))
                 matches = matches || abs(old - expected_depth) <= max(expected_depth * 0.02, 1.0e-7)
+                depth_off = min(depth_off, abs(old - expected_depth) / max(expected_depth, 1.0e-7))
             }
         }
         if !matches {
-            return vec4(untamed(current), tag)
+            return Found { depth_off, ..alone }
         }
     }
     let prev = tamed(history_at(history, s, last, r.out))
@@ -411,7 +479,7 @@ fn resolved(
     let off = h - centre
     let unit = abs(off / extent)
     let most = max(unit.x, max(unit.y, unit.z))
-    let clipped = if most > 1.0 { centre + off / most } else { h }
+    let clipped = if most > 1.0 && r.unclipped == 0 { centre + off / most } else { h }
     // This frame's share: more where a sample fell near the pixel's centre. Where the history
     // showed something moving and the pixel doesn't move now, it moved off: this frame's alone
     // (the box round an edge holds its colours, which would let it trail). The history showed
@@ -420,7 +488,6 @@ fn resolved(
     // `tag` here), so last frame's motion there says whether that moved. Only where something
     // moving can be (`Resolve::moving`), so the other pixels don't pay for the loads.
     var left = false
-    let px = pixel.position.xy
     let c = r.moving
     let inside = px.x >= c.x && px.y >= c.y && px.x <= c.z && px.y <= c.w
     if inside && !moving {
@@ -443,8 +510,92 @@ fn resolved(
     let a = if left { 1.0 } else {
         min(clamp(r.blend * nearest * 1.6, r.blend * 0.25, 0.5), settling)
     }
-    let out = mix(from_ycocg(clipped), current, vec3(a))
-    vec4(untamed(max(out, vec3(0.0))), tag)
+    Found {
+        current,
+        clipped: from_ycocg(clipped),
+        a,
+        forced: if left { 1 } else { 0 },
+        settle: settling,
+        tag,
+        near,
+        was: h.x,
+        moved: length(px - last),
+        depth_off,
+        thin: if coverage { 1.0 } else { 0.0 },
+    }
+}
+
+/// The learned rejector's inputs at what `f` found (`REJECTOR`'s 14, the rest 0): the luma of
+/// this frame's 3 × 3 samples round the nearest (tamed), the history's luma there unclipped,
+/// how far the point moved (over 8 output pixels, at most 4), how far its old depth is (over a
+/// tenth, at most 4), whether thin geometry covers part of it, and its class (over 9).
+fn rejector_inputs(f: Found, scene: Texture<Rgba16Float>) -> [f32; 48] {
+    let size = vec2i(i32(scene.width()), i32(scene.height()))
+    var x = [0.0; 48]
+    for k in 0..9 {
+        let p = clamp(f.near + vec2i(i32(k % 3) - 1, i32(k / 3) - 1), vec2i(0), size - vec2i(1))
+        x[k] = to_ycocg(tamed(max(scene.load(x: u32(p.x), y: u32(p.y)).rgb, vec3(0.0)))).x
+    }
+    x[9] = f.was
+    x[10] = min(f.moved / 8.0, 4.0)
+    x[11] = min(f.depth_off * 10.0, 4.0)
+    x[12] = f.thin
+    x[13] = f32(class_of(f.tag)) / 9.0
+    x
+}
+
+/// This frame's share as the learned rejector gives it at what `f` found: the sigmoid of its
+/// net's output (`net`, half floats).
+fn learned_share(f: Found, r: Resolve, scene: Texture<Rgba16Float>, net: [Half2]) -> f32 {
+    1.0 / (1.0 + exp(-eval_gpu(REJECTOR, net, rejector_inputs(f, scene))[0]))
+}
+
+/// What `f` found blended: the clipped history and this frame's by this frame's share (the
+/// heuristics', or the learned rejector's under `Resolve::learned`, capped as a settled view's
+/// is), brought back from tamed; its alpha the nearest sample's tag.
+fn blended(f: Found, r: Resolve, scene: Texture<Rgba16Float>, net: [Half2]) -> vec4 {
+    let a = if f.forced != 0 { 1.0 } else if r.learned != 0 {
+        min(learned_share(f, r, scene, net), f.settle)
+    } else { f.a }
+    vec4(untamed(max(mix(f.clipped, f.current, vec3(a)), vec3(0.0))), f.tag)
+}
+
+/// At each output pixel of `pixels`, what the resolve finds there (`FoundRow`'s floats): the
+/// learned rejector's dataset (§B14.3a) and its shader's check (3d). It reads what `resolve`
+/// reads, the neighbourhood its own (as `resolve_gathered`'s).
+@compute(64)
+pub fn found_rows(
+    r: Resolve,
+    scene: Texture<Rgba16Float>,
+    depth: DepthTexture,
+    last_depth: DepthTexture,
+    motion: Texture<Rgba16Float>,
+    last_motion: Texture<Rgba16Float>,
+    history: Texture<Rgba16Float>,
+    s: Sampler,
+    net: [Half2],
+    pixels: [vec2u],
+    out: mut Slots<FoundRow>,
+    id: GlobalId,
+) {
+    if id.x >= pixels.len() {
+        return
+    }
+    let px = vec2(pixels[id.x]) + vec2(0.5)
+    let (hood, spread) = neighbourhood(scene, nearest(r, px))
+    let f = found(px, r, scene, depth, last_depth, motion, last_motion, history, hood, spread, s)
+    let x = rejector_inputs(f, scene)
+    var row = FoundRow { v: [0.0; FOUND_FLOATS] }
+    for k in 0..REJECTOR.inputs {
+        row.v[k] = x[k]
+    }
+    row.v[14] = to_ycocg(f.current).x
+    row.v[15] = to_ycocg(f.clipped).x
+    row.v[16] = f.a
+    row.v[17] = f32(f.forced)
+    row.v[18] = f.settle
+    row.v[19] = if r.learned != 0 { learned_share(f, r, scene, net) } else { 0.0 }
+    out[id] = row
 }
 
 /// What the motion target holds: in a pixel something moved in, where it was last frame

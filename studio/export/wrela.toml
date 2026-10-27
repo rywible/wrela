@@ -1,0 +1,9 @@
+# The export tool (`wrela tool export`): what Part C's brief (docs/plan-world-class-2.md) takes
+# from a game, so the other engines' scenes stand on the same land and walk the same path
+# (main.wrela says how).
+[package]
+name = "export_tool"
+
+[dependencies]
+toolkit = { workspace = true }
+bench_tool = { workspace = true }

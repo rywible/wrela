@@ -18,6 +18,16 @@
 //    and to the program's `playable` print, the pipelines' ms, and the bytes loaded;
 // 4. natively, on the native host's GPU (`std::tool::drive`): each frame call's time.
 //
+// With `--lan` the builds are served to the LAN (`serve::start(dir, lan: true)`) instead, scene by
+// scene: the tool prints each scene's four pages' URLs (their hashes with `show=1`, so a device
+// that can't put its results shows them), waits for each run's results to be put into the
+// scene's `results/` by a device a person opened it on, and reports as above, the machine named by
+// the device's `device.json` (its adapter and its browser's user agent), under docs/bench.md's
+// "Devices"; the native run is this machine's, so it's skipped. `--row "<machine>;<scene>;<p50>;
+// <p95>;<p99>;<over 33>;<playable ms>"` adds a row typed by hand from such a page's summary
+// under "Devices" and runs nothing; `--row <file.json>` (a workspace path) adds another engine's
+// report, as rywible/wrela-others' harness writes it, under "Other engines on this machine".
+//
 // The warmup (60 frames unless `--warmup` says) isn't counted. `--frames` cuts every scene's
 // measured frames to that many (to try the tool). The report is written to
 // `build/bench/<machine>-<date>.json` and printed as a Markdown table, which is added to
@@ -26,22 +36,25 @@
 // (`out/<report>.json` for one in build/bench).
 
 use report::{
-    Measured, compared, date_of, doc, intervals, markdown, number_at, numbers, report_json, spans,
-    time_of, stats,
+    Measured, compared, date_of, doc, hitches, intervals, markdown, number_at, numbers, report_json,
+    shares_of, spans, stats, time_of,
 }
 use scenes::{SCENES, Scene, script}
 use std::io::print
-use std::json::TOP
+use std::json::{Doc, TOP}
 use std::tool::{ToolError, args}
 use std::tool::drive
 use std::tool::drive::Step
 use std::tool::files
+use std::tool::time
+use std::time::now
+use std::tool::serve
 use std::tool::toolchain
-use toolkit::driven::untrapped
-use toolkit::page::run_page
+use toolkit::driven::{dashed, untrapped}
+use toolkit::page::{keep_results, run_page}
 use toolkit::whole::{chunked, read_file, write_file}
 
-pub const USAGE: Text = "usage: wrela tool bench -- [--scene <name>]... [--frames <n>] [--warmup <n>] [--workers <n>] [--compare <report.json>] [--no-native] [--no-docs]"
+pub const USAGE: Text = "usage: wrela tool bench -- [--scene <name>]... [--frames <n>] [--warmup <n>] [--workers <n>] [--compare <report.json>] [--no-native] [--no-docs] [--lan] | --row \"<machine>;<scene>;<p50>;<p95>;<p99>;<over 33>;<playable ms>\" | --row <others-report.json>"
 
 /// What a run of the bench does.
 pub struct Options: Clone {
@@ -52,6 +65,10 @@ pub struct Options: Clone {
     pub compare: String,
     pub native: bool,
     pub docs: bool,
+    /// Served to the LAN, for a device a person opens the pages on.
+    pub lan: bool,
+    /// A row typed by hand (`--row`), or empty.
+    pub row: String,
 }
 
 /// The options the command line gives, or `None` for a usage error.
@@ -64,6 +81,8 @@ pub fn parse_args(given: [String]) -> Option<Options> {
         compare: String::new(),
         native: true,
         docs: true,
+        lan: false,
+        row: String::new(),
     }
     var k = 0
     while k < given.len() {
@@ -102,6 +121,13 @@ pub fn parse_args(given: [String]) -> Option<Options> {
         } else if a == "--no-docs" {
             o.docs = false
             k += 1
+        } else if a == "--lan" {
+            o.lan = true
+            o.native = false
+            k += 1
+        } else if a == "--row" {
+            o.row = value(k)?
+            k += 2
         } else {
             return None
         }
@@ -142,9 +168,14 @@ fn json_of(path: str) -> Result<std::json::Doc, ToolError> {
     doc(text_of(path)?.as_str(), path).map_err(|e| ToolError::new(e.as_str()))
 }
 
-/// The adapter a page ran on (`device.json`), for the report's machine.
-fn machine_of(dir: str) -> Result<String, ToolError> {
-    let d = json_of(f"{dir}/results/device.json")?
+/// The adapter a page ran on (`device.json`), for the report's machine; with `agent`, its
+/// browser's user agent too (a device on the LAN).
+fn machine_of(dir: str, agent: bool) -> Result<String, ToolError> {
+    Ok(machine_in(json_of(f"{dir}/results/device.json")?, agent))
+}
+
+/// The adapter a `device.json` names, and with `agent` its browser's user agent in parentheses.
+pub fn machine_in(d: std::json::Doc, agent: bool) -> String {
     var out = String::new()
     for key in ["vendor", "architecture", "description"] {
         if let Some(k) = d.get(TOP, key) {
@@ -158,24 +189,39 @@ fn machine_of(dir: str) -> Result<String, ToolError> {
             }
         }
     }
-    Ok(out)
-}
-
-/// `text`'s parts between `sep`s, joined by dashes.
-fn dashed(text: str, sep: str) -> String {
-    var out = String::new()
-    for (a, b) in text.split(sep) {
-        if out.len() > 0 {
-            out.push_str("-")
+    if agent {
+        if let Some(k) = d.get(TOP, "agent") {
+            if let Some(t) = d.text(k) {
+                out.push_str(f" ({t})")
+            }
         }
-        out.push_str(text.slice(a, b))
     }
     out
 }
 
-/// Where package `pkg` (the workspace's) is built for the bench.
-fn build_dir(pkg: str) -> String {
-    String::from(f"out/builds/{dashed(pkg, "/")}")
+/// `text` as a file's name: its letters, digits and dots, each run of anything else one dash.
+pub fn slug_of(text: str) -> String {
+    var out = String::new()
+    var dash = false
+    for i in 0..text.len() {
+        let b = text.byte(i)
+        let kept = (b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || b == 46
+        if kept {
+            if dash && out.len() > 0 {
+                out.push_str("-")
+            }
+            dash = false
+            out.push_str(text.slice(i, i + 1))
+        } else {
+            dash = true
+        }
+    }
+    out
+}
+
+/// Where package `pkg` (the workspace's) is built for the bench, in the write root `out`.
+fn build_dir(out: str, pkg: str) -> String {
+    String::from(f"{out}/builds/{dashed(pkg)}")
 }
 
 /// A test-mode page's hash: `frames` frames at `w` × `h` on `workers` workers, its input
@@ -186,20 +232,89 @@ fn page_hash(frames: u32, w: u32, h: u32, workers: u32, input: str) -> String {
     )
 }
 
-/// Scene `s` measured, its package built first unless an earlier scene's was (`build`); the
-/// page's date (ms since the epoch) and the machine.
-fn measure(
+/// A scene's runs, in the order they're made.
+const RUNS: [Text; 4] = ["gpu", "play", "cold", "warm"]
+
+/// Where a device on the LAN opens run `run` of a scene served at `origin` (its `/`): a query of
+/// its own, so opening it after another run's page loads it rather than moving to its fragment,
+/// and `show=1`, so a device that can't put its results shows their summary.
+pub fn lan_url(origin: str, run: str, hash: str) -> String {
+    String::from(f"{origin}?run={run}{hash}&show=1")
+}
+
+/// How long a person has to open a page on a device, in seconds, over the run's own time.
+const OPENING: f64 = 1800.0
+
+/// Run `k` (`RUNS`) of the page in `dir` with `hash`: in headless Chrome here, the warm start
+/// opened twice in the same tab; or, served to the LAN (`urls`, the runs' URLs there), waited
+/// for until a device has put its results, the warm start's second.
+fn run(
+    dir: str,
+    hash: str,
+    w: u32,
+    h: u32,
+    timeout: f64,
+    urls: [String],
+    k: u32,
+) -> Result<(), ToolError> {
+    let warm = k == 3
+    if urls.is_empty() {
+        return run_page(dir, hash, w, h, timeout, again: warm)
+    }
+    let opens = if warm { 2 } else { 1 }
+    for n in 0..opens {
+        let results = String::from(f"{dir}/results")
+        let _ = files::remove_all(results.as_str()).wait()
+        let _ = files::make_dirs(results.as_str()).wait()?
+        let again = if n > 0 { ", again (its caches warm now)" } else { "" }
+        print(f"bench: waiting for {RUNS[k]}{again}: {urls[k]}")
+        posted(dir, timeout + OPENING)?
+    }
+    Ok(())
+}
+
+/// Waits until a device has put the page in `dir`'s `results/DONE`, or `timeout` seconds pass:
+/// whether it wrote `ok`, or why not.
+pub fn posted(dir: str, timeout: f64) -> Result<(), ToolError> {
+    let start = now()
+    loop {
+        if let Ok(body) = files::read(f"{dir}/results/DONE").wait() {
+            let text = String::from_utf8(take body).unwrap_or(String::new())
+            if text.as_str().trim() == "ok" {
+                return Ok(())
+            }
+            return Err(ToolError::new(f"page failed: {text.as_str().trim()}"))
+        }
+        if now() - start > timeout {
+            return Err(ToolError::new(f"no device put its results in {timeout:.0}s"))
+        }
+        let _ = time::after(1.0).wait()?
+    }
+}
+
+/// Scene `s` measured, its package (in the root `ws`) built first into the write root `out`
+/// unless an earlier scene's was (`build`), each run's results kept in `kept`; the page's date
+/// (ms since the epoch) and the machine.
+pub fn measure(
     s: Scene,
     o: Options,
     salt: u32,
     build: bool,
+    ws: str,
+    out: str,
+    kept: str,
 ) -> Result<(Measured, f64, String), ToolError> {
-    let dir = build_dir(s.pkg)
+    let dir = build_dir(out, s.pkg)
+    // Each run's results, kept before the next run empties them.
+    var runs: Vec<String> = Vec::new()
+    for r in RUNS {
+        runs.push(String::from(f"{kept}/{s.name}/{r}"))
+    }
     if build {
         var options = toolchain::options()
         options.optimize = true
         options.timeout = 600.0
-        let built = toolchain::build(f"ws/{s.pkg}", dir.as_str(), options).wait()?
+        let built = toolchain::build(f"{ws}/{s.pkg}", dir.as_str(), options).wait()?
         if !built.ok {
             for d in built.diagnostics {
                 if d.error {
@@ -219,13 +334,38 @@ fn measure(
     let (w, h) = (s.width, s.height)
     let timeout = f64(frames) / 60.0 * 10.0 + 240.0
     let common = page_hash(frames, w, h, o.workers, input_file.as_str())
+    let cold_hash = page_hash(min(frames, 300), w, h, o.workers, input_file.as_str())
+    let hashes = [
+        String::from(f"{common}&timestamps=1&saturate=1&nohash=1"),
+        String::from(f"{common}&paced=1&inflight=2&nohash=1&timestamps=1"),
+        String::from(f"{cold_hash}&nohash=1&salt={salt}"),
+        String::from(f"{cold_hash}&nohash=1"),
+    ]
+    // Served to the LAN: the scene's four pages, which a person opens on the device in order.
+    let lan = if o.lan { Some(serve::start(dir.as_str(), lan: true).wait()?) } else { None }
+    var urls: Vec<String> = Vec::new()
+    if let Some(l) = lan {
+        if l.lan.is_empty() {
+            return Err(ToolError::new("this machine has no address on a LAN"))
+        }
+        print(
+            f"bench: open {s.name}'s pages on the device, in order, each once the one before is done:",
+        )
+        for k in 0..4 {
+            urls.push(lan_url(l.lan[0].as_str(), RUNS[k], hashes[k].as_str()))
+            print(f"  {RUNS[k]}: {urls[k]}")
+        }
+    }
     // 1. The GPU.
-    run_page(dir.as_str(), f"{common}&timestamps=1&saturate=1&nohash=1", w, h, timeout)?
+    run(dir.as_str(), hashes[0].as_str(), w, h, timeout, urls, 0)?
+    keep_results(dir.as_str(), runs[0].as_str())?
     let span = stats(spans(json_of(f"{dir}/results/timings.json")?, o.warmup))
-    let machine = machine_of(dir.as_str())?
-    // 2. Play.
-    run_page(dir.as_str(), f"{common}&paced=1&inflight=2&nohash=1", w, h, timeout)?
+    let machine = machine_of(dir.as_str(), o.lan)?
+    // 2. Play, each frame's labels timed (what a hitch held).
+    run(dir.as_str(), hashes[1].as_str(), w, h, timeout, urls, 1)?
+    keep_results(dir.as_str(), runs[1].as_str())?
     let framed = json_of(f"{dir}/results/frames.json")?
+    let held = hitches(framed, json_of(f"{dir}/results/counters.json")?, o.warmup)
     let began = match framed.get(TOP, "began_ms") {
         Some(n) => numbers(framed, n, 0),
         None => Vec::new(),
@@ -251,41 +391,25 @@ fn measure(
         None => (0.0, 0.0),
     }
     // 3. A cold start.
-    let cold_frames = min(frames, 300)
-    let cold_hash = page_hash(cold_frames, w, h, o.workers, input_file.as_str())
-    run_page(dir.as_str(), f"{cold_hash}&nohash=1&salt={salt}", w, h, timeout)?
-    let load = json_of(f"{dir}/results/load.json")?
-    let opened = number_at(load, TOP, "opened_ms")
-    let first_frame_ms = number_at(load, TOP, "first_frame_ms") - opened
-    var loaded_bytes = 0.0
-    if let Some(r) = load.get(TOP, "resources") {
-        for i in 0..load.count(r) {
-            if let Some(e) = load.at(r, i) {
-                loaded_bytes += number_at(load, e, "bytes")
-            }
-        }
-    }
+    run(dir.as_str(), hashes[2].as_str(), w, h, timeout, urls, 2)?
+    keep_results(dir.as_str(), runs[2].as_str())?
+    let (opened, first_frame_ms, loaded_bytes, playable_ms, shares) = started(dir.as_str())?
     let pipelines = json_of(f"{dir}/results/pipelines.json")?
     let pipelines_ms = number_at(pipelines, TOP, "ms")
-    let cold = json_of(f"{dir}/results/frames.json")?
-    let log = text_of(f"{dir}/results/log.txt")?
-    var playable_ms = 0.0
-    if let (Some(pi), Some(bi)) = (cold.get(TOP, "printed_in"), cold.get(TOP, "began_ms")) {
-        let printed_in = numbers(cold, pi, 0)
-        let began_cold = numbers(cold, bi, 0)
-        var line = 0
-        for (a, b) in log.lines() {
-            let l = log.as_str().slice(a, b)
-            if playable_ms == 0.0 && l.find("playable").is_some() && line < printed_in.len() {
-                let f = u32(printed_in[line])
-                if f < began_cold.len() {
-                    playable_ms = began_cold[f] - opened
-                }
-            }
-            line += 1
-        }
+    let compiles = slowest_compiles(dir.as_str(), pipelines)?
+    // 4. A warm start: opened again in the same profile, no salt, so its caches serve it.
+    run(dir.as_str(), hashes[3].as_str(), w, h, timeout, urls, 3)?
+    keep_results(dir.as_str(), runs[3].as_str())?
+    if let Some(l) = lan {
+        let _ = serve::close(l.server).wait()
     }
-    // 4. Natively.
+    let (_, _, warm_loaded_bytes, warm_playable_ms, _) = started(dir.as_str())?
+    // Where the page timed its pipelines (a salted run alone does, today).
+    let warm_pipelines_ms = match files::read(f"{dir}/results/pipelines.json").wait() {
+        Ok(_) => number_at(json_of(f"{dir}/results/pipelines.json")?, TOP, "ms"),
+        Err(_) => 0.0,
+    }
+    // 5. Natively.
     var native = stats(Vec::new())
     if o.native {
         let native_timeout = min(timeout, 600.0)
@@ -328,14 +452,235 @@ fn measure(
         loaded_bytes,
         gpu_bytes,
         gpu_peak,
+        warm_playable_ms,
+        warm_pipelines_ms,
+        warm_loaded_bytes,
+        hitches: held,
+        compiles,
+        runs,
+        shares,
     }
     Ok((m, opened, machine))
+}
+
+/// A start's numbers, from the page in `dir`'s `load.json`, `frames.json` and `log.txt`: when the
+/// page opened (ms since the epoch), ms from then to its first frame, the bytes it loaded, and
+/// ms to the program's first line that says `playable` (0 if none did).
+fn started(dir: str) -> Result<(f64, f64, f64, f64, Vec<(String, f64)>), ToolError> {
+    let load = json_of(f"{dir}/results/load.json")?
+    let opened = number_at(load, TOP, "opened_ms")
+    let first_frame_ms = number_at(load, TOP, "first_frame_ms") - opened
+    var loaded_bytes = 0.0
+    if let Some(r) = load.get(TOP, "resources") {
+        for i in 0..load.count(r) {
+            if let Some(e) = load.at(r, i) {
+                loaded_bytes += number_at(load, e, "bytes")
+            }
+        }
+    }
+    let framed = json_of(f"{dir}/results/frames.json")?
+    let log = text_of(f"{dir}/results/log.txt")?
+    var playable_ms = 0.0
+    var shares: Vec<(String, f64)> = Vec::new()
+    for (a, b) in log.lines() {
+        if shares.is_empty() {
+            shares = shares_of(log.as_str().slice(a, b))
+        }
+    }
+    if let (Some(pi), Some(bi)) = (framed.get(TOP, "printed_in"), framed.get(TOP, "began_ms")) {
+        let printed_in = numbers(framed, pi, 0)
+        let began = numbers(framed, bi, 0)
+        var line = 0
+        for (a, b) in log.lines() {
+            let l = log.as_str().slice(a, b)
+            if playable_ms == 0.0 && l.find("playable").is_some() && line < printed_in.len() {
+                let f = u32(printed_in[line])
+                if f < began.len() {
+                    playable_ms = began[f] - opened
+                }
+            }
+            line += 1
+        }
+    }
+    Ok((opened, first_frame_ms, loaded_bytes, playable_ms, take shares))
+}
+
+/// The ten slowest pipelines to compile, from a cold run's `pipelines.json` (`each`, each one
+/// built again alone): their names, ms and WGSL bytes (from the build in `dir`).
+fn slowest_compiles(
+    dir: str,
+    pipelines: std::json::Doc,
+) -> Result<Vec<(String, f64, f64)>, ToolError> {
+    var each: Vec<(String, f64)> = Vec::new()
+    if let Some(e) = pipelines.get(TOP, "each") {
+        for i in 0..pipelines.count(e) {
+            let Some(p) = pipelines.at(e, i) else { continue }
+            let name = match pipelines.get(p, "name") {
+                Some(n) => pipelines.text(n).unwrap_or(String::new()),
+                None => String::new(),
+            }
+            each.push((take name, number_at(pipelines, p, "ms")))
+        }
+    }
+    each.sort_by(slower)
+    let manifest = json_of(f"{dir}/manifest.json")?
+    var out = Vec::new()
+    for k in 0..min(each.len(), 10) {
+        var bytes = 0.0
+        if let Some(list) = manifest.get(TOP, "pipelines") {
+            for i in 0..manifest.count(list) {
+                let Some(p) = manifest.at(list, i) else { continue }
+                let (Some(n), Some(sh)) = (
+                    manifest.get(p, "name"),
+                    manifest.get(p, "shader"),
+                ) else { continue }
+                if manifest.text(n).unwrap_or(String::new()).as_str() == each[k].0.as_str() {
+                    let shader = manifest.text(sh).unwrap_or(String::new())
+                    bytes = match files::stat(f"{dir}/{shader}").wait() {
+                        Ok(e) => f64(e.size),
+                        Err(_) => 0.0,
+                    }
+                }
+            }
+        }
+        out.push((each[k].0.clone(), each[k].1, bytes))
+    }
+    Ok(out)
+}
+
+fn slower(a: (String, f64), b: (String, f64)) -> bool {
+    a.1 > b.1
 }
 
 /// The heading and introduction `docs/bench.md` starts with, when the bench writes it first.
 const BENCH_HEAD: Text = "# Benchmarks\n\nWhat the engine's scenes cost, measured by `wrela tool bench` (studio/bench): each scene's GPU span (saturated, timestamped), the intervals between paced frames as a player sees them, each frame's CPU time, a cold start's time to first frame and to playable, and the GPU memory at its most, in headless Chrome stable, and each frame call natively. Each run adds a table under its date and machine; compare a change with the run before it on the same machine (`--compare out/<report>.json`: a report in build/bench, the tool's `out` root).\n\n## Other engines on this machine\n\nMeasured by hand in a sibling repository (this one holds only Wrela), with the command and date beside each number. None yet.\n\n"
 
+/// `text` (docs/bench.md) with `add` at the end of its "Devices" section, which is made at the end
+/// if it isn't there.
+pub fn into_devices(text: str, add: str) -> String {
+    into_section(text, add, "Devices")
+}
+
+/// `text` (docs/bench.md) with `add` at the end of its section `name`, made at the end if it
+/// isn't there.
+pub fn into_section(text: str, add: str, name: str) -> String {
+    let heading = f"\n## {name}\n"
+    var out = String::new()
+    match text.find(heading) {
+        Some(at) => {
+            let body = at + heading.len()
+            let end = match text.slice(body, text.len()).find("\n## ") {
+                Some(i) => body + i + 1,
+                None => text.len(),
+            }
+            out.push_str(text.slice(0, end))
+            out.push_str(add)
+            out.push_str(text.slice(end, text.len()))
+        },
+        None => {
+            out.push_str(text)
+            out.push_str(f"## {name}\n\n")
+            out.push_str(add)
+        },
+    }
+    out
+}
+
+/// A row typed by hand from a page's `show=1` summary, `"<machine>;<scene>;<p50>;<p95>;<p99>;<over
+/// 33>;<playable ms>"`, as docs/bench.md lists it on `date`; `None` if it isn't one.
+pub fn by_hand(row: str, date: str) -> Option<String> {
+    var parts: Vec<String> = Vec::new()
+    for (a, b) in row.split(";") {
+        parts.push(String::from(row.slice(a, b).trim()))
+    }
+    if parts.len() != 7 || parts[0].is_empty() || parts[1].is_empty() {
+        return None
+    }
+    var n: Vec<f64> = Vec::new()
+    for k in 2..7 {
+        n.push(parts[k].as_str().parse_f64()?)
+    }
+    Some(
+        String::from(
+            f"- {date}, {parts[0]}, {parts[1]}: intervals p50 {n[0]:.1} / p95 {n[1]:.1} / p99 {n[2]:.1} ms, {n[3]:.0} over 33 ms, playable {n[4]:.0} ms (by hand, from the page's `show=1` summary: `wrela tool bench -- --row \"{row}\"`)\n",
+        ),
+    )
+}
+
+/// Another engine's report (rywible/wrela-others' harness, `doc`) as docs/bench.md's rows under
+/// "Other engines on this machine": each scene's engine and version, its GPU span (where the engine
+/// timed it), its intervals, how many over 33 ms, its cold and warm first frames and its bytes, with
+/// the command and the date; `None` if it isn't one.
+pub fn other_rows(d: Doc, path: str) -> Option<String> {
+    let machine = d.text(d.get(TOP, "machine")?)?
+    let date = d.text(d.get(TOP, "date")?)?
+    let command = d.text(d.get(TOP, "command")?)?
+    let scenes = d.get(TOP, "scenes")?
+    var out = String::new()
+    for i in 0..d.count(scenes) {
+        let sc = d.at(scenes, i)?
+        let stat = |key: str, q: str| match d.get(sc, key) {
+            Some(o) => number_at(d, o, q),
+            None => 0.0,
+        }
+        let engine = d.text(d.get(sc, "engine")?)?
+        let version = d.text(d.get(sc, "version")?)?
+        let scene = d.text(d.get(sc, "scene")?)?
+        let timed = match d.get(sc, "gpu_timed") {
+            Some(t) => d.is_true(t),
+            None => false,
+        }
+        let gpu = if timed {
+            String::from(
+                f"{stat("span", "p50"):.2} / {stat("span", "p95"):.2} / {stat("span", "p99"):.2}",
+            )
+        } else {
+            String::from("not exposed")
+        }
+        out.push_str(
+            f"| {engine} {version} | {scene} | {gpu} | {stat("interval", "p50"):.2} / {stat("interval", "p95"):.2} / {stat("interval", "p99"):.2} | {number_at(d, sc, "over_33"):.0} | {number_at(d, sc, "first_frame_ms"):.0} | {number_at(d, sc, "warm_first_frame_ms"):.0} | {number_at(d, sc, "loaded_bytes") / 1048576.0:.1} | {date}, {machine}: `{command}` ({path}) |\n",
+        )
+    }
+    Some(out)
+}
+
+/// docs/bench.md, or its head if it isn't there yet.
+fn bench_md() -> String {
+    match files::read("ws/docs/bench.md").wait() {
+        Ok(b) => String::from_utf8(take b).unwrap_or(String::new()),
+        Err(_) => String::from(BENCH_HEAD),
+    }
+}
+
 fn bench(o: Options) -> Result<(), ToolError> {
+    if o.row.as_str().ends_with(".json") {
+        let path = o.row.as_str()
+        let Some(rows) = other_rows(json_of(f"ws/{path}")?, path) else {
+            return Err(
+                ToolError::new(f"{path} isn't another engine's report (rywible/wrela-others)"),
+            )
+        }
+        print(rows.as_str())
+        let text = into_section(bench_md().as_str(), rows.as_str(), "Other engines on this machine")
+        write_file("ws/docs/bench.md", chunked(Vec::from(text.as_bytes())))?
+        print("bench: the rows are added to docs/bench.md's Other engines on this machine")
+        return Ok(())
+    }
+    if !o.row.is_empty() {
+        let now = time::utc_now().wait()?
+        let Some(line) = by_hand(o.row.as_str(), date_of(f64(now.seconds) * 1000.0).as_str()) else {
+            return Err(
+                ToolError::new(
+                    f"a row is <machine>;<scene>;<p50>;<p95>;<p99>;<over 33>;<playable ms>, not {o.row}",
+                ),
+            )
+        }
+        print(line.as_str())
+        let text = into_devices(bench_md().as_str(), line.as_str())
+        write_file("ws/docs/bench.md", chunked(Vec::from(text.as_bytes())))?
+        print("bench: the row is added to docs/bench.md's Devices")
+        return Ok(())
+    }
     let _ = files::make_dirs("out/builds").wait()?
     // The earlier report, read before this run writes its own.
     let earlier = if o.compare.len() > 0 { Some(json_of(o.compare.as_str())?) } else { None }
@@ -344,6 +689,10 @@ fn bench(o: Options) -> Result<(), ToolError> {
     var opened_at = 0.0
     var machine = String::new()
     var salt = 1
+    // Where the runs' results are kept: `out/<date>-<time>/<scene>/<run>/`, the bench's start.
+    let now = time::utc_now().wait()?
+    let at = f64(now.seconds) * 1000.0
+    let kept = String::from(f"out/{date_of(at)}-{time_of(at)}")
     // The packages built so far: each once, for all the scenes that share it.
     var built: Vec<String> = Vec::new()
     for s in chosen(o.clone()) {
@@ -357,7 +706,7 @@ fn bench(o: Options) -> Result<(), ToolError> {
         if build {
             built.push(String::from(s.pkg))
         }
-        let (m, opened, mach) = measure(s, o.clone(), salt, build)?
+        let (m, opened, mach) = measure(s, o.clone(), salt, build, "ws", "out", kept.as_str())?
         salt += 1
         date = date_of(opened)
         opened_at = opened
@@ -366,7 +715,7 @@ fn bench(o: Options) -> Result<(), ToolError> {
     }
     let table = markdown(machine.as_str(), date.as_str(), all)
     print(table.as_str())
-    let slug = dashed(machine.as_str(), " ")
+    let slug = slug_of(machine.as_str())
     // A run of its own: the machine, the date and the time of day (UTC) its last page opened.
     let path = String::from(f"out/{slug}-{date}-{time_of(opened_at)}.json")
     write_file(
@@ -378,12 +727,15 @@ fn bench(o: Options) -> Result<(), ToolError> {
         print(compared(e, all).as_str())
     }
     if o.docs {
-        let existing = match files::read("ws/docs/bench.md").wait() {
-            Ok(b) => String::from_utf8(take b).unwrap_or(String::new()),
-            Err(_) => String::from(BENCH_HEAD),
+        var text = bench_md()
+        if o.lan {
+            // A device's table, demoted under "Devices".
+            var demoted = String::from("#")
+            demoted.push_str(table.as_str())
+            text = into_devices(text.as_str(), demoted.as_str())
+        } else {
+            text.push_str(table.as_str())
         }
-        var text = take existing
-        text.push_str(table.as_str())
         write_file("ws/docs/bench.md", chunked(Vec::from(text.as_bytes())))?
         print("bench: the table is added to docs/bench.md")
     }

@@ -6,14 +6,41 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 
 ## Open
 
-### A branch under a false constant still makes its pipelines
+### A driven frame doesn't say its passes' targets or GPU times
 
-- **Needed:** an experimental path behind a switch that costs a build without it nothing: the Last Green's banks drawn through clusters (`games/last-green/stage.wrela` `CLUSTERED`, false), whose 17 pipelines a player without it shouldn't build.
-- **What happens:** toolchain 0.6.3's pipeline reachability doesn't fold constants: code under `if CLUSTERED { ... }` with `CLUSTERED` false still reaches its kernels, so the build lists their pipelines (`wrela pipelines games/last-green`: 171 with the path, 154 without) and the page builds them at load.
-- **Found:** 2026-10-25, the council's third round on B7c.
-- **Evidence:** the Last Green's opening, cold, in Chrome, two alternating pairs: playable 9.90 and 10.08 s without the path's code, 10.14 and 10.12 s with it switched off (+0.14 s); its pipelines 4.44 and 4.39 s against 4.49 and 4.33 s; its first frame +35 ms.
-- **Meanwhile:** the cost is measured and kept: the path stays in the build, off.
-- **Status:** open: fold a `const` condition before finding what a build reaches (or build a pipeline on its first use).
+- **Needed:** `wrela tool passes` (docs/plan-world-class-2.md §B1.5) shows a frame's passes with their targets (name, format, size), their GPU time, and a thumbnail of what each drew.
+- **What happens:** toolchain 0.8.0's `std::tool::drive` records a frame's commands (`Step::Commands`) with each draw's and dispatch's pipeline and bindings, but a `BeginPass` carries no targets and a `CreateTexture` no format or size. A driven build's GPU timings (its `Load::timing`) aren't given back to the tool, and `Step::Capture` gives only the screen, not a labelled pass's target.
+- **Found:** 2026-10-26, writing `studio/passes`.
+- **Evidence:** `runtime/native/src/tool/drive/child.rs` `Recorded`: only `Dispatch`, `Draw` and the indirect draws fill `pipeline` and `bindings`, and paths fill `target`.
+- **Meanwhile:** the viewer lists each pass's label, its pipelines and its draws or dispatches, with the frame's screen. `wrela profile --worst` gives the labels' GPU times.
+- **Status:** open: a pass's targets in its record, the timings beside the spans (`Ran`), and a `Capture` of a labelled pass.
+
+### A tool can't read an input script from its JSON
+
+- **Needed:** `wrela tool passes -- games/last-green --frame 300 --input build/gates/LG_WALK.json`: a gate script's file as a driven build's input.
+- **What happens:** `std::input::Script`'s fields are private and std has no parser for its JSON (runtime/abi `input`'s format), so a tool can only drive a build with a `Script` constant it was compiled with.
+- **Found:** 2026-10-26, writing `studio/passes`.
+- **Evidence:** compiler/std/input.wrela: `Script { json, ticks, last, count }`, built only by its methods.
+- **Meanwhile:** `--input` names one of the bench's scenes (`last-green-walk` is `LG_WALK`), whose script `studio/bench/scenes.wrela` holds.
+- **Status:** open: `Script::from_json(text) -> Option<Script>`.
+
+### A warm page doesn't time its pipelines
+
+- **Needed:** the bench's warm run (§B1.4) reports `warm_pipelines_ms` beside `warm_playable_ms`.
+- **What happens:** test mode writes `results/pipelines.json` only for a salted run (`salt=<n>`), so a warm run, which mustn't be salted, has no pipelines' time.
+- **Found:** 2026-10-26, adding the warm run.
+- **Evidence:** runtime/browser `worker.ts`: `params.salt > 0 ? putResult(base, "pipelines.json", ...) : null`.
+- **Meanwhile:** the warm row's pipelines column is 0, and the report says so.
+- **Status:** open: write `pipelines.json` on every run, its `each` only when salted.
+
+### A fragment can't say its depth only grows
+
+- **Needed:** the early depth test kept on for a fragment that writes its own depth only further away (or only nearer) than its triangle's: the impostors' leaves and the soft raster's merge (docs/plan-world-class-2.md §A11, §B5.6), which turn early-Z off for their draws today.
+- **What happens:** toolchain 0.8.0 has `std::gpu::WithDepthGreater<C>` and `WithDepthLess<C>` to name the intent, but they are `WithDepth<C>`: naga 30.0.1's WGSL writer emits no conservative-depth attribute (its IR has `EarlyDepthTest::Allow { conservative: ConservativeDepth::GreaterEqual }`, which its WGSL front end parses from `@early_depth_test(greater_equal)` and its WGSL back end never writes), and Chrome 155 accepts none either.
+- **Found:** 2026-10-25, 0.8.0's §A11.
+- **Evidence:** Chrome 155.0.8059.86 on the M4: `@fragment @early_depth_test(greater_equal) fn f() -> @builtin(frag_depth) f32` fails with "expected attribute" (its attributes are `align`, `binding`, `blend_src`, `builtin`, `color`, `compute`, `diagnostic`, `fragment`, `group`, `id`, `input_attachment_index`, `interpolate`, `invariant`, `location`, `must_use`, `size`, `subgroup_size`, `vertex`, `workgroup_size`), and `navigator.gpu.wgslLanguageFeatures` has no depth feature.
+- **Meanwhile:** the engine writes `WithDepthGreater` where its depth only grows, and draws as `WithDepth` does.
+- **Status:** open: when WGSL and naga can say it, the types emit it and the host asks for it.
 
 ### A struct update from a borrowed struct doesn't compile
 
@@ -48,7 +75,83 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Meanwhile:** the engine's kernels keep to seven storage buffers (the soft rasterizer's depth and id are one buffer).
 - **Status:** open: bind the table only in pipelines whose code reads a lifted literal, or say in E0602 that one of the buffers is the lifted table.
 
+### A kernel can't start its dispatch at an offset
+
+- **Needed:** a cook that writes part of a texture or a buffer: a slab of the distance volume (docs/plan-world-class-2.md §B9b), the sights of a strip of probes (§B9a), a band of a fixture's readback (§B14.2).
+- **What happens:** `Texels` and `Texels3d` store only the invocation's own texel, and `Slots` only its own element (by `GlobalId`); a dispatch's ids start at 0. A slab of z from 168 to 192 is a dispatch over z from 0 to 192 whose first 168 slices return at once; a buffer's part is a `span_mut` at a 256-byte-aligned offset, which a texture has no counterpart of.
+- **Found:** 2026-10-26, writing `engine/distance.wrela` and `engine/probes.wrela`'s sights.
+- **Meanwhile:** the distance volume's slab dispatches reach from z 0 (its earlier slices return); the probes' sights live in a buffer, not the maps texture, partly for this.
+- **Status:** open: a dispatch's id offset (`dispatch(k, over: n, from: (x, y, z))`), or a store at a computed texel.
+
+### No 4 × 4 matrix inverse in std
+
+- **Needed:** a built thing's tape read in its own space from render space (§B9b's `Shape::to_local`).
+- **What happens:** `std` has `Quat::inverse` but no `mat4` inverse.
+- **Found:** 2026-10-26, writing `engine/distance.wrela`.
+- **Meanwhile:** `distance::rigid_inverse` inverts a rotation and a translation by hand (the built things' transforms are rigid).
+- **Status:** open.
+
+### A closure can't capture a function-typed parameter
+
+- **Needed:** a helper inside `blockouts::realize` that reads the ground through the `height` function it was given (§B11d).
+- **What happens:** E0702 "a closure can't capture a function-typed parameter yet".
+- **Found:** 2026-10-26.
+- **Meanwhile:** a plain function taking what the closure would have captured (`rock_look(height(at), water, seed)`).
+- **Status:** open.
+
+### A texture can't be a field's data
+
+- **Needed:** the cascades' march (§B14.4) generic over `std::field::Surface`, the distance volume one such field.
+- **What happens:** `Surface` needs `Copy + GpuData`, and a `Texture3d` is neither; a `borrow` field can't be part of an ordinary struct (E0519).
+- **Found:** 2026-10-26, writing `engine/cascades.wrela`.
+- **Meanwhile:** the march is generic over analytic fields (its tests); the volume's march repeats its steps over `distance::distance_at`.
+- **Status:** open.
+
+### A struct update of the floor's stage is malformed IR
+
+- **Needed:** the Last Green's `init` builds its stage with one field changed: `Stage { neural: quality().neural, ..stage() }`.
+- **What happens:** toolchain 0.9.0's build stops with an internal error: "the CPU module's IR is malformed: fn0 `init_0_export`: v1862 is a `Cast<Coat, Body<…>>`, not a `Cast<Coat, Grown, FawnLook>`": the update's copied fields reach a cast of another field's type.
+- **Found:** 2026-10-26, adding `Quality::neural` (B14.2c).
+- **Evidence:** `wrela build games/last-green` with that line in `games/last-green/main.wrela`'s `init` (the stage holds the floor's creatures' generic bodies).
+- **Meanwhile:** `init` makes the stage and sets the field after (`var staged = stage()`, `staged.neural = …`).
+- **Status:** open: not yet cut down to a small program.
+
+### A package's const cache can outlive what it was computed from
+
+- **Needed:** a test run that reads what the sources say now.
+- **What happens:** with toolchain 0.9.0, `studio/tool`'s `the_server_serves_chrome` failed twice in this checkout ("a page opened after the failed build has the last good one") and passed in a fresh worktree of the same commit. Removing the package's `build/consts/` (512 `.wcv` entries, some from 2026-10-21, before the 0.9.0 pin) made it pass here too. A cached constant from an older build seems to have been read in place of the one the current sources give.
+- **Found:** 2026-10-26, in the final `wrela suite` of plan-world-class-2's Part B.
+- **Evidence:** `wrela test studio/tool the_server_serves_chrome` before and after `rm -rf studio/tool/build`, on commit cab08093.
+- **Meanwhile:** clear a package's `build/` when a test fails here and passes in a clean checkout.
+- **Status:** open: not yet cut down (which entry was stale, and why its key matched).
+
 ## Fixed
+
+### A loop body's last call leaked its temporaries
+
+- **Needed:** the lookdev instrument (`wrela tool lookbook --quality`) adds each of a run's thousand frames to running sums: `for _ in 0..SAMPLES { still.add(luma(d.screen()?)) }`.
+- **What happens:** toolchains up to 0.8.0 never freed the temporaries of a call that ends a loop's body (its value): each pass kept its `luma` and its screen, about 400 MB a run at 320x180, and the tool ran out of its heap after one shot. Every `for ... { print(f"...") }` leaked its string the same way.
+- **Found:** 2026-10-26, the first `--controls` run.
+- **Evidence:** the MIR of a loop ending in `sum_into(mut t, made(n))` has no `Drop` of `made(n)`; `end_loop` popped the loop's scope, which held it, without dropping.
+- **Status:** fixed in 0.8.1 (rywible/wrela-compiler#37): a loop's body has its own temporaries' scope, ended with each pass.
+
+### A recorded indexed or multi-draw names no pipeline
+
+- **Needed:** the pass viewer names each pass's pipelines (§B1.5).
+- **What happens:** toolchain 0.8.0's recorder (`Recorded::of`) fills `pipeline` and `bindings` for `Draw`, `DispatchIndirect`, `DrawIndirect` and `DrawIndexedIndirect` only; a `DrawIndexed` or `MultiDrawIndirect` comes with an empty pipeline, so the Last Green's terrain and late vegetation passes list none.
+- **Found:** 2026-10-26, the first `wrela tool passes` of the Last Green's frame 300.
+- **Evidence:** `runtime/native/src/tool/drive/child.rs` `Recorded::of`'s match.
+- **Meanwhile:** those passes show their draws with no pipeline.
+- **Status:** fixed in 0.8.1 (rywible/wrela-compiler#37): `Command::pipeline()` names every draw's and dispatch's pipeline, and the recorder reads it.
+
+### A branch under a false constant still makes its pipelines
+
+- **Needed:** an experimental path behind a switch that costs a build without it nothing: the Last Green's banks drawn through clusters (`games/last-green/stage.wrela` `CLUSTERED`, false), whose 17 pipelines a player without it shouldn't build.
+- **What happens:** toolchain 0.6.3's pipeline reachability doesn't fold constants: code under `if CLUSTERED { ... }` with `CLUSTERED` false still reaches its kernels, so the build lists their pipelines (`wrela pipelines games/last-green`: 171 with the path, 154 without) and the page builds them at load.
+- **Found:** 2026-10-25, the council's third round on B7c.
+- **Evidence:** the Last Green's opening, cold, in Chrome, two alternating pairs: playable 9.90 and 10.08 s without the path's code, 10.14 and 10.12 s with it switched off (+0.14 s); its pipelines 4.44 and 4.39 s against 4.49 and 4.33 s; its first frame +35 ms.
+- **Meanwhile:** the cost is measured and kept: the path stays in the build, off.
+- **Status:** fixed in 0.8.0 (rywible/wrela-compiler#36, §A6): constants fold after inlining, so what only a false constant's branch reaches isn't built. The Last Green's build went from 130 pipelines to 115 (the 15 behind `CLUSTERED` gone, as `wrela pipelines` counts them), and a pipeline reached only under a runtime condition is built second (§A5).
 
 ### A timed ask timed all of a program's work
 

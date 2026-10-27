@@ -1,0 +1,7 @@
+# The radiance cascades (engine/cascades.wrela, B14.4): their march through a cooked distance
+# volume at each cascade's interval, and their light over open ground against the sky's.
+[package]
+name = "cascades_tests"
+
+[dependencies]
+engine = { workspace = true }

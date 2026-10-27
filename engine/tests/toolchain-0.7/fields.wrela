@@ -1,0 +1,8 @@
+// The corpus field the tests tape, as a function of a point: what `wrela precision` reads (A9).
+use round1::shapes::ell
+use std::field::Surface
+
+/// Round 1's ellipsoid, 0.5 by 0.3 by 0.4.
+pub fn ell_distance(p: vec3) -> f32 {
+    ell(vec3(0.5, 0.3, 0.4)).distance(p)
+}

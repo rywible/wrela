@@ -1,0 +1,177 @@
+// Rock as a material (`engine::rock`, B11d): a 2 m cube of rock (a bed's prism: six planes)
+// realized through `engine::stone::realize_rock` with a `RockLook` (bands 0.5 m deep along +y,
+// the water's level 0.3 m over its foot), its vertices and colours read back: its sides' colour
+// in bands along the bedding, and darker within 0.6 m of the water.
+
+use engine::look::Mesh as Tolerance
+use engine::realize::{SkinVertex, Tally}
+use engine::rock::RockLook
+use engine::stone::{Bed, Realized, bed, realize_rock}
+use std::gpu::{GlobalId, GpuBuffer, Slots, Unorm8x4, buffer, dispatch, read}
+use std::io::{Pending, print}
+use std::transform::translate
+
+/// The cube's foot (y), the water's level, and where it stands.
+const FOOT: f32 = -1.0
+const WATER: f32 = -0.7
+const AT = vec3(3.0, 1.0, -2.0)
+
+fn cube() -> Bed {
+    Bed {
+        planes: [
+            vec4(1.0, 0.0, 0.0, 1.0),
+            vec4(-1.0, 0.0, 0.0, 1.0),
+            vec4(0.0, 0.0, 1.0, 1.0),
+            vec4(0.0, 0.0, -1.0, 1.0),
+            vec4(0.0, 1.0, 0.0, 1.0),
+            vec4(0.0, -1.0, 0.0, 1.0),
+            vec4(1.0, 0.0, 0.0, 1.0),
+            vec4(1.0, 0.0, 0.0, 1.0),
+            vec4(0.0, -1.0, 0.0, 1.0),
+        ],
+        lo: vec3(-1.1),
+        hi: vec3(1.1),
+        seed: 5,
+    }
+}
+
+/// Each vertex's colour, decoded (its albedo and roughness).
+@compute(64)
+fn decoded(colours: [Unorm8x4], out: mut Slots<vec4>, id: GlobalId) {
+    if id.x < colours.len() {
+        out[id] = colours[id.x].decode()
+    }
+}
+
+pub struct State {
+    rock: Option<Realized>,
+    verts: Option<Pending<SkinVertex>>,
+    colours: Option<Pending<vec4>>,
+    tally: Option<Pending<Tally>>,
+    pub got_verts: Vec<SkinVertex>,
+    pub got_colours: Vec<vec4>,
+    pub count: u32,
+}
+
+pub fn init() -> State {
+    State {
+        rock: None,
+        verts: None,
+        colours: None,
+        tally: None,
+        got_verts: Vec::new(),
+        got_colours: Vec::new(),
+        count: 0,
+    }
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    let f = u32(round(time * 60.0))
+    if f == 0 {
+        let at = translate(AT)
+        let look = RockLook {
+            to_world: at,
+            band: 0.5,
+            ground: AT.y + FOOT - 0.2,
+            water: AT.y + WATER,
+            seed: 11,
+        }
+        let r = realize_rock(
+            bed(cube()),
+            Tolerance { tolerance: 2cm, largest: 6cm },
+            2cm,
+            at,
+            seed: 5,
+            look: look,
+        )
+        s.tally = Some(read(r.mesh.tally.items()))
+        s.verts = Some(read(r.mesh.verts.items()))
+        var out: GpuBuffer<vec4> = buffer(r.colours.len())
+        dispatch(decoded.bind(r.colours.items(), out: mut out), over: r.colours.len())
+        s.colours = Some(read(out.items()))
+        s.rock = Some(take r)
+    }
+    if s.count == 0 {
+        match mut s.tally {
+            Some(t) => match t.poll() {
+                Some(Ok(v)) => s.count = v[0].vertices,
+                _ => {},
+            },
+            None => {},
+        }
+    }
+    if s.got_verts.is_empty() {
+        match mut s.verts {
+            Some(p) => match p.poll() {
+                Some(Ok(v)) => s.got_verts = take v,
+                _ => {},
+            },
+            None => {},
+        }
+    }
+    if s.got_colours.is_empty() {
+        match mut s.colours {
+            Some(p) => match p.poll() {
+                Some(Ok(v)) => s.got_colours = take v,
+                _ => {},
+            },
+            None => {},
+        }
+    }
+}
+
+fn luma(v: vec4) -> f32 {
+    let a = v.rgb * v.rgb
+    a.x * 0.2126 + a.y * 0.7152 + a.z * 0.0722
+}
+
+/// Its sides (normals within 20° of level), above the wet band: the mean colour in each 10 cm of
+/// height; how many distinct tones those steps hold (each at least 6% from the last tone kept).
+@test(frames: 8, gpu: true)
+fn a_rock_cube_has_bands_along_its_bedding_and_a_wet_foot(s: State) {
+    assert(
+        s.count > 0 && s.got_verts.len() >= s.count && s.got_colours.len() >= s.count,
+        "read back",
+    )
+    var sums = [0.0; 20]
+    var ns = [0; 20]
+    var wet = 0.0
+    var wet_n = 0
+    var dry = 0.0
+    var dry_n = 0
+    for i in 0..s.count {
+        let v = s.got_verts[i]
+        if abs(v.normal.y) > 0.34 {
+            continue
+        }
+        let y = v.pos.y
+        let l = luma(s.got_colours[i])
+        if y < WATER + 0.4 {
+            wet += l
+            wet_n += 1
+        } else if y < WATER + 0.9 {
+            dry += l
+            dry_n += 1
+        }
+        if y > WATER + 0.7 {
+            let k = min(u32(floor((y - FOOT) * 10.0)), 19)
+            sums[k] += l
+            ns[k] += 1
+        }
+    }
+    var tones: Vec<f32> = Vec::new()
+    for k in 0..20 {
+        if ns[k] > 4 {
+            let m = sums[k] / f32(ns[k])
+            if tones.is_empty() || abs(m - tones[tones.len() - 1]) > 0.06 * m {
+                tones.push(m)
+            }
+        }
+    }
+    let (w, d) = (wet / f32(max(wet_n, 1)), dry / f32(max(dry_n, 1)))
+    print(
+        f"{s.count} vertices; the sides' tones up their height: {tones.len()}; the wet foot {w:.4}, just over it {d:.4}",
+    )
+    assert(tones.len() >= 3, f"{tones.len()} bands")
+    assert(wet_n > 0 && dry_n > 0 && w < 0.8 * d, f"the wet foot {w}, over it {d}")
+}

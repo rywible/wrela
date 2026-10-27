@@ -1,0 +1,384 @@
+// The fit tool (`wrela tool fit`, docs/plan-world-class-2.md §B14.1c): trains one of the
+// engine's small networks (`engine::neural`) and writes its weights as source, a `Model` and its
+// half floats (two a word) as `const`s, with a doc comment naming the dataset, the steps, the
+// held-out error and the date.
+//
+// ```text
+// wrela tool fit -- --net sine --out <file.wrela> [--steps n] [--report]
+// wrela tool fit -- --net impostor [--rungs ABCD] [--steps n] [--batch n] [--seeds n] [--out <file.wrela>]
+// wrela tool fit -- --net rejector [--frames n] [--steps n] [--out <file.wrela>]
+// ```
+//
+// `impostor` (§B14.2b): its fixture (studio/fit/fixtures/impostor) built with its testing exports
+// and run on the native host with the GPU: the great tree's impostor baked and read back as rows,
+// and each rung trained from each seed on the program's helpers, its held-out PSNR measured; a
+// row a rung and seed printed, and the curve's loss every 500 steps. With `--out`, the best run's
+// net and grid are written as source (`GREAT_TREE`: the net's weights, then its grid's).
+//
+// `rejector` (§B14.3: the truth renderer, the dataset, the baseline and rung A): the floor
+// (games/last-green) built with its testing exports and driven on the native host's GPU at
+// 1280 × 720, its lookbook's shot 2 chosen and settled, time frozen (F10) and the eye dollied
+// along its look (F11, 0.5 m/s): every `GAP` frames, what temporal AA's resolve found at 20,000
+// random pixels (`test_found`: the rejector's 14 inputs, this frame's luma and the clipped
+// history's, the heuristics' share), then the dolly paused and the reference drawn there (F12:
+// every knob at its most, no history, the jitter on an 8 × 8 grid), whose 64 frames' mean of
+// this frame's luma at the same pixels is the truth. Of each frame's rows, up to 5,000 the
+// heuristics clipped and 5,000 they didn't (those whose share is this frame's alone aside).
+// The last fifth of the frames are held out. The baseline is the heuristics' blend against the
+// truth; the rung (`engine::temporal::REJECTOR`) is trained on `|mix(history, current, a) −
+// truth|` with `a` its sigmoid, and scored the same way on the held-out frames. With `--out`
+// its weights are written as source (`REJECTOR_NET`); `--check` then builds the floor with them and
+// compares the shader's share at 1,000 pixels with the CPU's.
+//
+// `sine`: a 1 → 32 → 32 → 1 net on `sin` over [-π, π] (1,024 samples a step, held out: 200 points
+// evenly over it). `--report` prints the loss every 100 steps. It writes only under `content/`
+// or `build/` (workspace paths), and refuses anything else.
+
+use engine::neural::{Adam, Loss, Model, eval, halves, start, train_step}
+use bench_tool::report::date_of
+use engine::noise::rand
+use std::io::print
+use std::tool::{ToolError, args}
+use std::tool::time
+use std::tool::drive
+use std::input::Script
+use std::tool::drive::{Scalar, Step}
+use std::tool::toolchain
+use toolkit::driven::{number, untrapped}
+use toolkit::whole::{chunked, read_file, write_file}
+
+pub const USAGE: Text = "usage: wrela tool fit -- --net sine --out <content/... or build/....wrela> [--steps n] [--report] | --net impostor [--rungs ABCD] [--steps n] [--batch n] [--seeds n] [--out <content/... or build/....wrela>] | --net rejector [--frames n] [--steps n] [--out <content/... or build/....wrela>] [--check]"
+
+/// A run of the tool: the net, where its source goes (a workspace path), how many steps, and
+/// whether to print the curve.
+pub struct Options: Clone {
+    pub net: String,
+    pub out: String,
+    pub steps: u32 = 2000,
+    pub report: bool = false,
+    pub rungs: String = String::new(),
+    pub batch: u32 = 16384,
+    pub seeds: u32 = 3,
+    pub frames: u32 = 50,
+    pub check: bool = false,
+}
+
+pub fn parse_args(given: [String]) -> Option<Options> {
+    var o = Options { net: String::new(), out: String::new() }
+    var k = 0
+    while k < given.len() {
+        let a = given[k].as_str()
+        if a == "--report" {
+            o.report = true
+            k += 1
+            continue
+        }
+        if a == "--check" {
+            o.check = true
+            k += 1
+            continue
+        }
+        if k + 1 >= given.len() {
+            return None
+        }
+        let v = given[k + 1].clone()
+        if a == "--net" {
+            o.net = take v
+        } else if a == "--out" {
+            o.out = take v
+        } else if a == "--steps" {
+            o.steps = v.as_str().parse_u32()?
+        } else if a == "--batch" {
+            o.batch = v.as_str().parse_u32()?
+        } else if a == "--seeds" {
+            o.seeds = v.as_str().parse_u32()?
+        } else if a == "--frames" {
+            o.frames = v.as_str().parse_u32()?
+        } else if a == "--rungs" {
+            o.rungs = take v
+        } else {
+            return None
+        }
+        k += 2
+    }
+    if o.net.as_str() == "rejector" {
+        if !o.out.is_empty() && !writable(o.out.as_str()) {
+            return None
+        }
+        return Some(o)
+    }
+    if o.net.as_str() == "impostor" {
+        if o.rungs.is_empty() {
+            o.rungs = String::from("ABCD")
+        }
+        if !o.out.is_empty() && !writable(o.out.as_str()) {
+            return None
+        }
+        return Some(o)
+    }
+    if o.net.as_str() != "sine" || !writable(o.out.as_str()) {
+        return None
+    }
+    Some(o)
+}
+
+/// Whether a source may be written at workspace path `p`: under `content/` or `build/`, a
+/// `.wrela`, no step up.
+pub fn writable(p: str) -> bool {
+    (p.starts_with("content/") || p.starts_with("build/")) &&
+        p.ends_with(".wrela") &&
+        p.find("..").is_none()
+}
+
+/// A trained net's source: its model and weights as `const`s named `name`, and a doc comment;
+/// `extra`, more `const`s, after the model.
+pub fn source(name: str, m: Model, w: [f32], about: str, extra: str) -> String {
+    var s = String::from(
+        f"// {about}\n// Written by `wrela tool fit` (studio/fit): don't edit by hand.\n\nuse engine::neural::Model\nuse std::gpu::Half2\n\n",
+    )
+    s.push_str(
+        f"/// The net's shape.\npub const {name}_MODEL = Model {{ inputs: {m.inputs}, h1: {m.h1}, h2: {m.h2}, outputs: {m.outputs} }}\n\n",
+    )
+    s.push_str(extra)
+    let h = halves(w)
+    s.push_str(
+        f"/// Its weights, half floats two a word (`engine::neural::halves`).\npub const {name}: [Half2; {h.len()}] = [\n",
+    )
+    for i in 0..h.len() {
+        s.push_str(f"    Half2 {{ bits: {h[i].bits} }},\n")
+    }
+    s.push_str("]\n")
+    s
+}
+
+/// The samples a step takes.
+const BATCH: u32 = 1024
+
+/// The sine: trained, and its held-out error.
+fn sine(o: Options) -> (Vec<f32>, f32) {
+    let m = Model { inputs: 1, h1: 32, h2: 32, outputs: 1 }
+    var w = start(m, seed: 1)
+    var adam = Adam::new(m.size(), rate: 3.0e-3)
+    for step in 0..o.steps {
+        // The rate falls to a tenth over the run: the last steps settle what the first found.
+        adam.rate = 3.0e-3 * (1.0 - 0.9 * f32(step) / f32(o.steps))
+        var xs: Vec<f32> = Vec::with_capacity(BATCH)
+        var ys: Vec<f32> = Vec::with_capacity(BATCH)
+        for k in 0..BATCH {
+            let x = (rand(step * 977 + 11, k) * 2.0 - 1.0) * 3.14159265
+            xs.push(x)
+            ys.push(sin(x))
+        }
+        let l = train_step(m, mut w, mut adam, xs, ys, BATCH, Loss::Mse)
+        if o.report && step % 100 == 0 {
+            print(f"fit: step {step}, loss {l:.6}")
+        }
+    }
+    var held = 0.0
+    for k in 0..200 {
+        let x = -3.14159265 + (f32(k) + 0.5) / 200.0 * 6.2831853
+        let e = eval(m, w, [x])[0] - sin(x)
+        held += e * e
+    }
+    (take w, held / 200.0)
+}
+
+/// Export `name` called with `args` on `d`: its results.
+fn call(d: drive::Build, name: str, args: take Vec<Scalar>) -> Result<Vec<f64>, ToolError> {
+    let seen = untrapped(
+        name,
+        drive::steps(d, [Step::Call(String::from(name), take args)], timeout: 600.0).wait()?,
+    )?
+    var out: Vec<f64> = Vec::new()
+    for x in seen.ran[0].results {
+        out.push(number(x))
+    }
+    Ok(out)
+}
+
+/// The impostor's ladder (§B14.2b): each rung from each seed, `o.steps` steps of `o.batch` rows
+/// (Adam at 1e-3), its held-out PSNR; printed as rows.
+fn impostor(o: Options) -> Result<(), ToolError> {
+    let dir = "out/fixtures/impostor"
+    var options = toolchain::options()
+    options.testing = true
+    options.optimize = true
+    options.timeout = 600.0
+    let b = toolchain::build("ws/studio/fit/fixtures/impostor", dir, options).wait()?
+    if !b.ok {
+        for d in b.diagnostics {
+            if d.error {
+                print(d.rendered.as_str())
+            }
+        }
+        return Err(ToolError::new("the impostor fixture didn't build"))
+    }
+    var load = drive::gpu()
+    load.workers = HELPERS
+    load.timeout = 600.0
+    let d = drive::load(dir, load).wait()?.build
+    let _ = untrapped("init", drive::steps(d, [Step::Init], timeout: 600.0).wait()?)?
+    // Frames until the atlases are read back and laid out as rows.
+    var ready = call(d, "test_ready", Vec::new())?
+    while ready[0] < 0.5 {
+        let _ = untrapped(
+            "frames",
+            drive::steps(d, [Step::Frames(4, Script::frames())], timeout: 600.0).wait()?,
+        )?
+        ready = call(d, "test_ready", Vec::new())?
+    }
+    print(f"fit: the great tree's impostor: {ready[1]:.0} rows to train on, {ready[2]:.0} held out")
+    var best_db = -1.0e9
+    var best: Option<String> = None
+    print("| rung | seed | PSNR dB | colour MSE | coverage MSE | final loss | s |")
+    print("|---|---|---|---|---|---|---|")
+    for k in 0..o.rungs.len() {
+        let r = u32(o.rungs.as_str().byte(k)) - 65
+        for seed in 0..o.seeds {
+            let t0 = std::time::now()
+            let _ = call(
+                d,
+                "test_start",
+                Vec::from([Scalar::I32(i32(r)), Scalar::I32(i32(seed + 1)), Scalar::F32(1.0e-3)]),
+            )?
+            var done = 0
+            var loss = 0.0
+            var curve = String::new()
+            while done < o.steps {
+                let n = min(CHUNK, o.steps - done)
+                loss = call(
+                    d,
+                    "test_train",
+                    Vec::from(
+                        [Scalar::I32(i32(n)), Scalar::I32(i32(o.batch)), Scalar::I32(i32(HELPERS))],
+                    ),
+                )?[0]
+                done += n
+                curve.push_str(f" {loss:.5}")
+            }
+            let score = call(d, "test_score", Vec::from([]))?
+            let secs = std::time::now() - t0
+            print(
+                f"| {o.rungs.as_str().slice(k, k + 1)} | {seed + 1} | {score[0]:.2} | {score[1]:.5} | {score[2]:.5} | {loss:.5} | {secs:.0} |",
+            )
+            print(f"fit:   the loss every {CHUNK} steps:{curve}")
+            if !o.out.is_empty() && score[0] > best_db {
+                best_db = score[0]
+                best = Some(trained(d, r, seed + 1, score[0], o.clone())?)
+            }
+        }
+    }
+    let _ = drive::close(d).wait()
+    if let Some(src) = best {
+        write_file(f"ws/{o.out}", chunked(Vec::from(src.as_bytes())))?
+        print(f"fit: the best run ({best_db:.2} dB) to {o.out}")
+    }
+    Ok(())
+}
+
+/// The run just trained on `d` (rung `r`, from `seed`, `db` held out) as source: its weights read
+/// back 32 at a time (the net's, then its grid's).
+fn trained(d: drive::Build, r: u32, seed: u32, db: f64, o: Options) -> Result<String, ToolError> {
+    var w: Vec<f32> = Vec::new()
+    var first = call(d, "test_weights", Vec::from([Scalar::I32(0)]))?
+    let (count, grid, features) = (u32(first[32]), u32(first[33]), u32(first[34]))
+    while w.len() < count {
+        let got = if w.is_empty() { take first } else {
+            call(d, "test_weights", Vec::from([Scalar::I32(i32(w.len()))]))?
+        }
+        for k in 0..32 {
+            if w.len() < count {
+                w.push(f32(got[k]))
+            }
+        }
+        first = Vec::new()
+    }
+    let m = impostor_model(r)
+    let all = call(d, "test_score_all", Vec::new())?
+    print(
+        f"fit: the best run so far over all 256 views (the net against the atlas): {all[0]:.2} dB",
+    )
+    let now = time::utc_now().wait()?
+    let date = date_of(f64(now.seconds) * 1000.0)
+    let rung = "ABCD".slice(r, r + 1)
+    let about = f"The great tree's impostor (`engine::impostor`: 16 × 16 views of 64², (view_uv, texel_uv) → (rgb, coverage, oct normal, toward, depth)): rung {rung}, a {m.inputs} → {m.h1} → {m.h2} → {m.outputs} net and a {grid} × {grid} × {features} grid over texel_uv, {o.steps} steps of {o.batch} rows from seed {seed} (Adam at 1e-3), {db:.2} dB held out (every 16th view), {all[0]:.2} dB over all 256 views; {date}."
+    let extra = f"/// Its grid's side over texel_uv (0: none) and features a cell, after the net's weights.\npub const GREAT_TREE_GRID: u32 = {grid}\npub const GREAT_TREE_FEATURES: u32 = {features}\n\n"
+    Ok(source("GREAT_TREE", m, w, about, extra.as_str()))
+}
+
+/// The impostor's rung `r`'s net (the fixture's `rung`).
+fn impostor_model(r: u32) -> Model {
+    match r {
+        0 => Model { inputs: 4, h1: 16, h2: 16, outputs: 8 },
+        1 => Model { inputs: 4, h1: 32, h2: 32, outputs: 8 },
+        2 => Model { inputs: 12, h1: 16, h2: 16, outputs: 8 },
+        _ => Model { inputs: 12, h1: 48, h2: 48, outputs: 8 },
+    }
+}
+
+/// The learned rejector (§B14.3): its dataset, baseline and rung, its source written if `--out`.
+fn rejector(o: Options) -> Result<(), ToolError> {
+    if o.check {
+        // The floor builds with the game's net: a check of another file would compare two nets.
+        if o.out.as_str() != "content/kit/rejector_net.wrela" {
+            return Err(
+                ToolError::new(
+                    "--check checks the game's net: --out content/kit/rejector_net.wrela",
+                ),
+            )
+        }
+        let bytes = read_file(f"ws/{o.out}", shown: o.out.as_str())?
+        let Some(src) = String::from_utf8(take bytes) else {
+            return Err(ToolError::new(f"{o.out} isn't text"))
+        }
+        let _ = rejector::check(src.as_str())?
+        return Ok(())
+    }
+    let (_, w, about) = rejector::rejector(o.frames, o.steps)?
+    if !o.out.is_empty() {
+        let now = time::utc_now().wait()?
+        let dated = f"{about} {date_of(f64(now.seconds) * 1000.0)}."
+        let src = source("REJECTOR_NET", engine::temporal::REJECTOR, w, dated.as_str(), "")
+        write_file(f"ws/{o.out}", chunked(Vec::from(src.as_bytes())))?
+        print(f"fit: the rejector to {o.out}")
+    }
+    Ok(())
+}
+
+/// The helpers a step's batch is split across, and the steps a call trains.
+const HELPERS: u32 = 8
+const CHUNK: u32 = 500
+
+fn fit(o: Options) -> Result<(), ToolError> {
+    if o.net.as_str() == "impostor" {
+        return impostor(o)
+    }
+    if o.net.as_str() == "rejector" {
+        return rejector(o)
+    }
+    let started = std::time::now()
+    let now = time::utc_now().wait()?
+    let date = date_of(f64(now.seconds) * 1000.0)
+    let m = Model { inputs: 1, h1: 32, h2: 32, outputs: 1 }
+    let (w, held) = sine(o.clone())
+    let about = f"`sin` over [-π, π]: a 1 → 32 → 32 → 1 net, {o.steps} steps of {BATCH} samples (Adam from 3e-3 falling to 3e-4), its held-out squared error {held:.6} at 200 points; {date}."
+    write_file(f"ws/{o.out}", chunked(Vec::from(source("SINE", m, w, about, "").as_bytes())))?
+    print(
+        f"fit: the sine to {o.out}, held-out squared error {held:.6}, in {std::time::now() - started:.1} s",
+    )
+    Ok(())
+}
+
+pub fn tool() -> u32 {
+    let Some(o) = parse_args(args()) else {
+        print(USAGE)
+        return 2
+    }
+    match fit(o) {
+        Ok(()) => 0,
+        Err(e) => {
+            print(f"fit: {e.message()}")
+            1
+        },
+    }
+}

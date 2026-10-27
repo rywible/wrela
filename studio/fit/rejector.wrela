@@ -1,0 +1,334 @@
+// The learned history rejector's dataset, baseline and rung (§B14.3; main.wrela says how).
+
+use engine::neural::{Adam, Model, backward, forward, halves, start}
+use engine::noise::rand
+use engine::temporal::{FOUND_FLOATS, REJECTOR}
+use lookbook_tool::quality::{Driven, SAMPLES, SETTLE}
+use lookbook_tool::shots::{PLAY, REFERENCE, SETTLE_FRAMES, choose}
+use std::input::{Key, Script}
+use std::io::print
+use std::tool::ToolError
+use std::tool::drive
+use std::tool::drive::{Scalar, Step}
+use std::tool::toolchain
+use toolkit::driven::untrapped
+use toolkit::whole::{data_bytes, joined}
+
+/// The size the floor is driven at, its lookbook's shot, the frames between two samples, the
+/// pixels asked for a sample and the rows kept of each kind (the reference's settling and frames
+/// are the lookbook instrument's, `SETTLE` and `SAMPLES`).
+const WIDTH: u32 = 1280
+const HEIGHT: u32 = 720
+const SHOT: u32 = 2
+const GAP: u32 = 32
+const ASKED: u32 = 20000
+const KEPT: u32 = 5000
+
+/// A row: the rejector's 14 inputs, this frame's luma, the clipped history's, the heuristics'
+/// share, the settled view's cap, the truth; and the frame it's of.
+pub const ROW: u32 = 20
+
+/// Export `name` called with `args` on the driven floor.
+fn call(d: Driven, name: str, args: take Vec<Scalar>) -> Result<(), ToolError> {
+    let seen = drive::steps(d.b, [Step::Call(String::from(name), take args)]).wait()?
+    let _ = untrapped(name, take seen)?
+    Ok(())
+}
+
+/// What the resolve found the last frame at the pixels asked for: `FOUND_FLOATS` a row.
+fn found(d: Driven) -> Result<Vec<f32>, ToolError> {
+    let seen = drive::steps(
+        d.b,
+        [Step::Call(String::from("test_found"), Vec::new()), Step::Buffers],
+    )
+        .wait()?
+    let saw = untrapped("test_found", take seen)?
+    borrow held = saw.buffers[0]
+    let newest = held[held.len() - 1]
+    let read = drive::steps(d.b, [Step::ReadBuffer(newest)]).wait()?
+    var got = untrapped("its rows", take read)?
+    let bytes = joined(data_bytes(got.bytes.remove(0))?)
+    var out: Vec<f32> = Vec::with_capacity(bytes.len() / 4)
+    var i = 0
+    while i + 4 <= bytes.len() {
+        let w = u32(bytes[i]) |
+            (u32(bytes[i + 1]) << 8) |
+            (u32(bytes[i + 2]) << 16) |
+            (u32(bytes[i + 3]) << 24)
+        out.push(bitcast_f32(w))
+        i += 4
+    }
+    Ok(out)
+}
+
+/// The floor built with its testing exports and driven at `WIDTH` × `HEIGHT`, its shot `SHOT`
+/// chosen and settled, time frozen (F10) and the eye dollying along its look (F11): the
+/// rejector's run's and its check's start.
+fn drive_floor() -> Result<Driven, ToolError> {
+    let dir = "out/fixtures/rejector"
+    var options = toolchain::options()
+    options.testing = true
+    options.optimize = true
+    options.timeout = 600.0
+    let b = toolchain::build("ws/games/last-green", dir, options).wait()?
+    if !b.ok {
+        for d in b.diagnostics {
+            if d.error {
+                print(d.rendered.as_str())
+            }
+        }
+        return Err(ToolError::new("the floor didn't build"))
+    }
+    var load = drive::gpu()
+    load.width = WIDTH
+    load.height = HEIGHT
+    load.timeout = 600.0
+    var d = Driven {
+        b: drive::load(dir, load).wait()?.build,
+        script: choose(Script::frames(), 1, SHOT),
+        frame: 0,
+        width: WIDTH,
+    }
+    let _ = untrapped("init", drive::steps(d.b, [Step::Init], timeout: 600.0).wait()?)?
+    let _ = d.run(SETTLE_FRAMES + 1)?
+    d.press(Key::F10)
+    d.press(Key::F11)
+    let _ = d.run(SETTLE)?
+    d.press(Key::F11)
+    Ok(d)
+}
+
+/// A sample's rows: of the play frame's found rows, those not forced, up to `KEPT` the
+/// heuristics clipped (their clipped history's luma isn't the unclipped) and `KEPT` they didn't,
+/// each with its truth (`truth`, a row's) and its frame (`k`).
+fn kept(play: [f32], truth: [f32], k: u32, rows: mut Vec<f32>) -> (u32, u32) {
+    var clipped = 0
+    var kept_else = 0
+    for r in 0..play.len() / FOUND_FLOATS {
+        let v = r * FOUND_FLOATS
+        if play[v + 17] > 0.5 {
+            continue
+        }
+        let was_clipped = abs(play[v + 15] - play[v + 9]) > 1.0e-4
+        if was_clipped && clipped >= KEPT || !was_clipped && kept_else >= KEPT {
+            continue
+        }
+        if was_clipped {
+            clipped += 1
+        } else {
+            kept_else += 1
+        }
+        for c in 0..14 {
+            rows.push(play[v + c])
+        }
+        rows.push(play[v + 14])
+        rows.push(play[v + 15])
+        rows.push(play[v + 16])
+        rows.push(play[v + 18])
+        rows.push(truth[r])
+        rows.push(f32(k))
+    }
+    (clipped, kept_else)
+}
+
+/// The PSNR (dB) of rows' blends against their truth, each blended by `a_of(row)`.
+fn psnr_of(rows: [f32], from: u32, to: u32, m: Model, w: [f32], learned: bool) -> f64 {
+    var se = 0.0
+    var n = 0
+    for r in from..to {
+        let v = r * ROW
+        let a = if learned {
+            var x: Vec<f32> = Vec::with_capacity(14)
+            for c in 0..14 {
+                x.push(rows[v + c])
+            }
+            let z = forward(m, w, x).out[0]
+            min(1.0 / (1.0 + exp(-z)), rows[v + 17])
+        } else {
+            min(rows[v + 16], rows[v + 17])
+        }
+        let out = rows[v + 15] + (rows[v + 14] - rows[v + 15]) * a
+        let e = f64(out - rows[v + 18])
+        se += e * e
+        n += 1
+    }
+    f64(10.0 * log(1.0 / f32(max(se / f64(max(n, 1)), 1.0e-12))) / log(10.0))
+}
+
+/// The rows' first row of frame `k` or later.
+fn first_of(rows: [f32], k: u32) -> u32 {
+    let n = rows.len() / ROW
+    for r in 0..n {
+        if u32(rows[r * ROW + 19]) >= k {
+            return r
+        }
+    }
+    n
+}
+
+/// The rejector trained on rows `0..to`: `steps` steps of 4,096 rows at random, Adam from 1e-3,
+/// on `|mix(history, current, a) − truth|`, `a` the net's sigmoid capped by the settled view's.
+fn trained(rows: [f32], to: u32, steps: u32) -> Vec<f32> {
+    let m = REJECTOR
+    var w = start(m, seed: 3)
+    var adam = Adam::new(m.size(), rate: 1.0e-3)
+    for step in 0..steps {
+        adam.rate = 1.0e-3 * (1.0 - 0.9 * f32(step) / f32(steps))
+        var g: Vec<f32> = Vec::filled(m.size(), 0.0)
+        for k in 0..4096 {
+            let r = u32(rand(step * 7919 + 13, k) * f32(to)) % max(to, 1)
+            let v = r * ROW
+            var x: Vec<f32> = Vec::with_capacity(14)
+            for c in 0..14 {
+                x.push(rows[v + c])
+            }
+            let p = forward(m, w, x)
+            let s = 1.0 / (1.0 + exp(-p.out[0]))
+            let capped = s > rows[v + 17]
+            let a = min(s, rows[v + 17])
+            let (c, h, t) = (rows[v + 14], rows[v + 15], rows[v + 18])
+            let out = h + (c - h) * a
+            // d|out − t|/dz: its sign, times (c − h), times the sigmoid's slope (none where capped).
+            let d = if capped { 0.0 } else { sign(out - t) * (c - h) * s * (1.0 - s) / 4096.0 }
+            var dx: Vec<f32> = Vec::new()
+            backward(m, w, x, p, [d], mut g, mut dx)
+        }
+        adam.step(mut w, g)
+    }
+    w
+}
+
+/// The rejector's run (main.wrela says how): its rows, the baseline, the rung, and its source if
+/// `out` names a file.
+pub fn rejector(frames: u32, steps: u32) -> Result<(Vec<f32>, Vec<f32>, String), ToolError> {
+    let started = std::time::now()
+    var d = drive_floor()?
+    var rows: Vec<f32> = Vec::new()
+    for k in 0..frames {
+        let _ = d.run(GAP)?
+        call(
+            d,
+            "test_found_ask",
+            Vec::from(
+                [
+                    Scalar::I32(i32(ASKED)),
+                    Scalar::I32(i32(k + 1)),
+                    Scalar::I32(i32(WIDTH)),
+                    Scalar::I32(i32(HEIGHT)),
+                ],
+            ),
+        )?
+        let _ = d.run(1)?
+        let play = found(d)?
+        // The truth there: the dolly paused, the reference's mean of this frame's luma.
+        d.press(Key::Backquote)
+        d.press(Key::F12)
+        d.until(REFERENCE)?
+        let _ = d.run(SETTLE)?
+        var truth: Vec<f32> = Vec::filled(ASKED, 0.0)
+        for _ in 0..SAMPLES {
+            let _ = d.run(1)?
+            let r = found(d)?
+            for i in 0..ASKED {
+                truth[i] += r[i * FOUND_FLOATS + 14] / f32(SAMPLES)
+            }
+        }
+        d.press(Key::F12)
+        d.until(PLAY)?
+        let _ = d.run(SETTLE)?
+        d.press(Key::Backquote)
+        let (c, e) = kept(play, truth, k, mut rows)
+        print(
+            f"fit: frame {k + 1} of {frames} (driven frame {d.frame}): {c} clipped and {e} other rows, {std::time::now() - started:.0} s",
+        )
+    }
+    let _ = drive::close(d.b).wait()
+    print(f"fit: {frames} frames' truth and rows in {std::time::now() - started:.0} s")
+    let n = rows.len() / ROW
+    let held = first_of(rows, frames - frames / 5)
+    // The baseline per frame, and over the held-out frames.
+    var per = String::new()
+    for k in 0..frames {
+        let (a, b) = (first_of(rows, k), first_of(rows, k + 1))
+        per.push_str(f" {psnr_of(rows, a, b, REJECTOR, [], learned: false):.2}")
+    }
+    print(f"fit: the heuristics against the truth, per frame (dB):{per}")
+    let base = psnr_of(rows, held, n, REJECTOR, [], learned: false)
+    let t0 = std::time::now()
+    let w = trained(rows, held, steps)
+    let learned = psnr_of(rows, held, n, REJECTOR, w, learned: true)
+    let fit_all = psnr_of(rows, 0, held, REJECTOR, w, learned: true)
+    let base_fit = psnr_of(rows, 0, held, REJECTOR, [], learned: false)
+    print(
+        "| rung | rows (trained, held out) | heuristics held out dB | learned held out dB | gain dB | learned trained-on dB (heuristics) | s |",
+    )
+    print("|---|---|---|---|---|---|---|")
+    print(
+        f"| A | {held}, {n - held} | {base:.2} | {learned:.2} | {learned - base:.2} | {fit_all:.2} ({base_fit:.2}) | {std::time::now() - t0:.0} |",
+    )
+    let about = f"The learned history rejector (`engine::temporal::REJECTOR`, §B14.3 rung A): {frames} frames of the floor's shot 2 dollied with time frozen, each pixel's rows against the reference's 64-frame mean there; {steps} steps of 4,096 rows on |mix(history, current, a) − truth|; held out (the last fifth of the frames) {learned:.2} dB against the heuristics' {base:.2}."
+    Ok((take rows, take w, about))
+}
+
+/// The learned rejector's shader against its CPU evaluation (§B14.3d): the floor built with its
+/// net (`content/kit/rejector_net.wrela`, its half floats read back from the source), the learned
+/// share turned on, and at 1,000 pixels of a dollied frame the share the shader found
+/// (`FoundRow`'s last float) against the CPU's of the same inputs: its worst difference, an
+/// error if no pixel was checked, a share wasn't finite or the worst is over 1/255. The floor
+/// builds with the game's compiled net, so `source` is that net's.
+pub fn check(source: str) -> Result<f32, ToolError> {
+    // The net's half floats, from its source's `Half2 { bits: n }` lines.
+    var halves_read: Vec<std::gpu::Half2> = Vec::new()
+    for (a, b) in source.split("\n") {
+        let line = source.slice(a, b)
+        let Some(at) = line.find("bits: ") else { continue }
+        let rest = line.slice(at + 6, line.len())
+        let Some(end) = rest.find(" ") else { continue }
+        let Some(bits) = rest.slice(0, end).parse_u32() else { continue }
+        halves_read.push(std::gpu::Half2 { bits })
+    }
+    let w = engine::neural::unhalves(halves_read, REJECTOR.size())
+    var d = drive_floor()?
+    call(d, "test_learned", Vec::from([Scalar::I32(1)]))?
+    let _ = d.run(GAP)?
+    call(
+        d,
+        "test_found_ask",
+        Vec::from(
+            [Scalar::I32(1000), Scalar::I32(7), Scalar::I32(i32(WIDTH)), Scalar::I32(i32(HEIGHT))],
+        ),
+    )?
+    let _ = d.run(1)?
+    let rows = found(d)?
+    let _ = drive::close(d.b).wait()
+    var worst = 0.0
+    var checked = 0
+    for r in 0..rows.len() / FOUND_FLOATS {
+        let v = r * FOUND_FLOATS
+        if rows[v + 17] > 0.5 {
+            continue
+        }
+        var x: Vec<f32> = Vec::with_capacity(14)
+        for c in 0..14 {
+            x.push(rows[v + c])
+        }
+        let z = forward(REJECTOR, w, x).out[0]
+        let cpu = 1.0 / (1.0 + exp(-z))
+        let off = abs(cpu - rows[v + 19])
+        if !std::math::is_finite(off) {
+            return Err(ToolError::new(f"fit: the share at row {r} isn't finite"))
+        }
+        worst = max(worst, off)
+        checked += 1
+    }
+    print(
+        f"fit: the shader's share at {checked} pixels (those not forced) within {worst * 255.0:.3}/255 of the CPU's",
+    )
+    if checked == 0 {
+        return Err(ToolError::new("fit: no pixel's share was checked (all forced)"))
+    }
+    if worst > 1.0 / 255.0 {
+        return Err(ToolError::new("fit: the shader's share is over 1/255 from the CPU's"))
+    }
+    Ok(worst)
+}

@@ -1,0 +1,337 @@
+// The lookdev instrument's measures (`wrela tool lookbook --quality`, docs/lookdev.md): images as
+// RGBA8, rows top to bottom, compared on their luma (Rec. 709's weights over the 8-bit values,
+// 0 to 1). Each is a pure function of the pixels, so its tests can make the images it judges.
+
+/// An image's luma: Rec. 709's weights on each pixel's red, green and blue, over 255.
+pub fn luma(rgba: [u8]) -> Vec<f32> {
+    let n = rgba.len() / 4
+    var out = Vec::with_capacity(n)
+    for i in 0..n {
+        let (r, g, b) = (f32(rgba[4 * i]), f32(rgba[4 * i + 1]), f32(rgba[4 * i + 2]))
+        out.push((0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0)
+    }
+    out
+}
+
+/// A running mean of images, each RGBA8 of one size: a reference's 64 frames, added as they come.
+pub struct Mean {
+    pub n: u32,
+    pub sum: Vec<u32>,
+}
+
+impl Mean {
+    pub fn new() -> Mean {
+        Mean { n: 0, sum: Vec::new() }
+    }
+
+    pub fn add(mut self, rgba: [u8]) {
+        if self.n == 0 {
+            for _ in 0..rgba.len() {
+                self.sum.push(0)
+            }
+        }
+        for i in 0..min(self.sum.len(), rgba.len()) {
+            self.sum[i] += u32(rgba[i])
+        }
+        self.n += 1
+    }
+
+    /// The mean so far, each channel rounded.
+    pub fn image(self) -> Vec<u8> {
+        var out = Vec::with_capacity(self.sum.len())
+        for s in self.sum {
+            out.push(u8((s + self.n / 2) / max(self.n, 1)))
+        }
+        out
+    }
+}
+
+/// The mean of images `frames`, each RGBA8 of one size.
+pub fn mean_of(frames: [Vec<u8>]) -> Vec<u8> {
+    var m = Mean::new()
+    for f in frames {
+        m.add(f)
+    }
+    m.image()
+}
+
+/// Peak signal to noise, in dB, of `a` against the reference `b` (lumas of one size): 100 for
+/// equal images.
+pub fn psnr(a: [f32], b: [f32]) -> f64 {
+    var sq = 0.0
+    for i in 0..a.len() {
+        let d = f64(a[i] - b[i])
+        sq += d * d
+    }
+    let mse = sq / f64(max(a.len(), 1))
+    if mse <= 0.0 {
+        return 100.0
+    }
+    10.0 * f64(log(f32(1.0 / mse)) / log(10.0))
+}
+
+/// The structural similarity of `a` and `b` (lumas, `w` wide), Wang et al. 2004: its mean over
+/// 8 × 8 windows, side by side, with its constants for a range of 1.
+pub fn ssim(a: [f32], b: [f32], w: u32) -> f64 {
+    let h = a.len() / max(w, 1)
+    let (c1, c2) = (0.0001, 0.0009)
+    var total = 0.0
+    var windows = 0
+    var y = 0
+    while y + 8 <= h {
+        var x = 0
+        while x + 8 <= w {
+            var sa = 0.0
+            var sb = 0.0
+            var saa = 0.0
+            var sbb = 0.0
+            var sab = 0.0
+            for dy in 0..8 {
+                for dx in 0..8 {
+                    let i = (y + dy) * w + x + dx
+                    let (p, q) = (f64(a[i]), f64(b[i]))
+                    sa += p
+                    sb += q
+                    saa += p * p
+                    sbb += q * q
+                    sab += p * q
+                }
+            }
+            let (ma, mb) = (sa / 64.0, sb / 64.0)
+            let (va, vb) = (saa / 64.0 - ma * ma, sbb / 64.0 - mb * mb)
+            let cov = sab / 64.0 - ma * mb
+            total += ((2.0 * ma * mb + c1) * (2.0 * cov + c2)) /
+                ((ma * ma + mb * mb + c1) * (va + vb + c2))
+            windows += 1
+            x += 8
+        }
+        y += 8
+    }
+    if windows == 0 { 1.0 } else { total / f64(windows) }
+}
+
+/// Lumas of one size added as they come, for their flicker (each pixel's variance over them)
+/// and their pop (the largest mean absolute difference between two in a row).
+pub struct Spread {
+    pub n: u32,
+    pub sum: Vec<f64>,
+    pub sq: Vec<f64>,
+    pub last: Vec<f32>,
+    pub pop: f64,
+}
+
+impl Spread {
+    pub fn new() -> Spread {
+        Spread { n: 0, sum: Vec::new(), sq: Vec::new(), last: Vec::new(), pop: 0.0 }
+    }
+
+    pub fn add(mut self, l: [f32]) {
+        if self.n == 0 {
+            for _ in 0..l.len() {
+                self.sum.push(0.0)
+                self.sq.push(0.0)
+            }
+        } else {
+            var d = 0.0
+            for i in 0..min(l.len(), self.last.len()) {
+                d += f64(abs(l[i] - self.last[i]))
+            }
+            self.pop = max(self.pop, d / f64(max(l.len(), 1)))
+        }
+        for i in 0..min(l.len(), self.sum.len()) {
+            let x = f64(l[i])
+            self.sum[i] += x
+            self.sq[i] += x * x
+        }
+        self.last = Vec::from(l)
+        self.n += 1
+    }
+
+    /// The mean over pixels of luma's variance over what was added.
+    pub fn flicker(self) -> f64 {
+        if self.n < 2 {
+            return 0.0
+        }
+        let k = f64(self.n)
+        var total = 0.0
+        for i in 0..self.sum.len() {
+            let m = self.sum[i] / k
+            total += max(self.sq[i] / k - m * m, 0.0)
+        }
+        total / f64(max(self.sum.len(), 1))
+    }
+}
+
+/// Sharpness: the mean absolute luma step between neighbours (across and down) of `play`, over
+/// the reference's (lumas, `w` wide). Under 1 is softer than the reference. A blur lowers it
+/// whatever else differs, where PSNR, which also counts the noise a blur takes away, may not move.
+pub fn sharpness(play: [f32], reference: [f32], w: u32) -> f64 {
+    let steps = |l: [f32]| -> f64 {
+        let h = l.len() / max(w, 1)
+        var total = 0.0
+        if w < 2 || h < 2 {
+            return total
+        }
+        for y in 0..h - 1 {
+            for x in 0..w - 1 {
+                let at = l[y * w + x]
+                total += f64(abs(l[y * w + x + 1] - at) + abs(l[(y + 1) * w + x] - at))
+            }
+        }
+        total
+    }
+    steps(play) / max(steps(reference), 1.0e-9)
+}
+
+/// Flicker: the mean over pixels of luma's variance over `frames` (lumas of one size).
+pub fn flicker(frames: [Vec<f32>]) -> f64 {
+    var s = Spread::new()
+    for f in frames {
+        s.add(f)
+    }
+    s.flicker()
+}
+
+/// Pop: the largest mean absolute luma difference between two frames in a row of `frames`.
+pub fn pop(frames: [Vec<f32>]) -> f64 {
+    var s = Spread::new()
+    for f in frames {
+        s.add(f)
+    }
+    s.pop
+}
+
+/// The share of `rgba`'s pixels at 255 in any channel.
+pub fn clipped(rgba: [u8]) -> f64 {
+    let n = rgba.len() / 4
+    var at = 0
+    for i in 0..n {
+        if rgba[4 * i] == 255 || rgba[4 * i + 1] == 255 || rgba[4 * i + 2] == 255 {
+            at += 1
+        }
+    }
+    f64(at) / f64(max(n, 1))
+}
+
+/// Trail: in each row (`w` wide), from the sharpest edge of `reference` (its largest step across
+/// one pixel), how many pixels on either side `play` differs from it by more than 2/255 without a
+/// break; the median over the rows that have an edge. The instrument's reference here is play
+/// settled where the moving frame was taken, so only the history's lag counts: a history that
+/// drags behind a moving edge lengthens it, which frame-to-frame differences can't show, since a
+/// dragging history lowers them.
+pub fn trail(play: [f32], reference: [f32], w: u32) -> f64 {
+    let h = play.len() / max(w, 1)
+    var runs: Vec<f64> = Vec::new()
+    for y in 0..h {
+        let row = y * w
+        var edge = 0
+        var largest = 0.0
+        for x in 1..w {
+            let s = abs(reference[row + x] - reference[row + x - 1])
+            if s > largest {
+                edge = x
+                largest = s
+            }
+        }
+        if largest < 0.1 {
+            continue
+        }
+        let off = |x: u32| abs(play[row + x] - reference[row + x]) > 2.0 / 255.0
+        var right = 0
+        var x = edge
+        while x < w && off(x) {
+            right += 1
+            x += 1
+        }
+        var left = 0
+        var x = edge
+        while x > 0 && off(x - 1) {
+            left += 1
+            x -= 1
+        }
+        runs.push(f64(max(left, right)))
+    }
+    if runs.len() == 0 {
+        return 0.0
+    }
+    runs.sort_by(lower)
+    runs[runs.len() / 2]
+}
+
+fn lower(a: f64, b: f64) -> bool {
+    a < b
+}
+
+/// An edge's width: in the row of the largest step (`w` wide), how many pixels the luma takes to
+/// go from 10% to 90% of the way across that step.
+pub fn edge_width(l: [f32], w: u32) -> u32 {
+    let h = l.len() / max(w, 1)
+    var row = 0
+    var at = 0
+    var largest = 0.0
+    for y in 0..h {
+        for x in 1..w {
+            let s = abs(l[y * w + x] - l[y * w + x - 1])
+            if s > largest {
+                row = y
+                at = x
+                largest = s
+            }
+        }
+    }
+    let r = row * w
+    // The plateaus either side: 4 pixels out, or the row's end.
+    let (lo_x, hi_x) = (if at >= 4 { at - 4 } else { 0 }, min(at + 4, w - 1))
+    let (a, b) = (l[r + lo_x], l[r + hi_x])
+    let (t1, t2) = (a + 0.1 * (b - a), a + 0.9 * (b - a))
+    var first = hi_x
+    var last = lo_x
+    for x in lo_x..hi_x + 1 {
+        let v = l[r + x]
+        let between = (v - t1) * (b - a) > 0.0 && (t2 - v) * (b - a) > 0.0
+        if between {
+            first = min(first, x)
+            last = max(last, x)
+        }
+    }
+    if last < first { 1 } else { last - first + 1 }
+}
+
+/// `rgba` (`w` × `h`) blurred by a 3 × 3 box: the negative control's (docs/lookdev.md).
+pub fn blurred(rgba: [u8], w: u32, h: u32) -> Vec<u8> {
+    var out = Vec::with_capacity(rgba.len())
+    for y in 0..h {
+        for x in 0..w {
+            for c in 0..4 {
+                var s = 0
+                var n = 0
+                for dy in 0..3 {
+                    for dx in 0..3 {
+                        let (yy, xx) = (i32(y) + i32(dy) - 1, i32(x) + i32(dx) - 1)
+                        if yy >= 0 && xx >= 0 && u32(yy) < h && u32(xx) < w {
+                            s += u32(rgba[(u32(yy) * w + u32(xx)) * 4 + c])
+                            n += 1
+                        }
+                    }
+                }
+                out.push(u8((s + n / 2) / n))
+            }
+        }
+    }
+    out
+}
+
+/// `rgba` (`w` × `h`) at a quarter of its resolution each way, scaled back up by repeating each
+/// pixel: what a quarter-resolution render looks like (an instrument's reaction test).
+pub fn quartered(rgba: [u8], w: u32, h: u32) -> Vec<u8> {
+    var out = Vec::with_capacity(rgba.len())
+    for y in 0..h {
+        for x in 0..w {
+            let (sy, sx) = (y / 4 * 4, x / 4 * 4)
+            for c in 0..4 {
+                out.push(rgba[(sy * w + sx) * 4 + c])
+            }
+        }
+    }
+    out
+}

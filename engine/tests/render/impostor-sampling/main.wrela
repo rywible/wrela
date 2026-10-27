@@ -3,7 +3,7 @@
 use engine::compress::halves
 use engine::frame::fullscreen
 use engine::impostor::{
-    ATLAS, CELL, VIEWS, Bake, FarVertex, KindDesc, far_cut, far_cut_flat, far_shade,
+    ATLAS, CELL, VIEWS, Bake, FarVertex, KindDesc, far_cut, far_cut_flat, far_shade, NO_NET,
 }
 use engine::light::Light
 use engine::lit::Lighting
@@ -17,7 +17,7 @@ use std::gpu::{
     Rgba8, Rgba16Float, Texels, Texels3d, Texture, VertexIndex, begin_depth_pass, begin_pass,
     begin_pass_with_depth, begin_screen_pass, buffer_of, comparison_sampler, depth_texture,
     GpuBuffer, Rg16Float, buffer, copy_buffer_to_texture, copy_texture, dispatch, draw, sampler,
-    texture, texture3d, texture_array, writable_texture,
+    texture, texture3d, texture_array, writable_texture, Half2,
 }
 
 const WIDTH: u32 = 192
@@ -143,6 +143,7 @@ fn report(
 }
 
 pub fn frame(time: f32, width: u32, height: u32) {
+    let no_net: GpuBuffer<Half2> = buffer(1)
     var colour = writable_texture::<Rgba8>(width: ATLAS, height: ATLAS)
     var normal = writable_texture::<Rgba16Float>(width: ATLAS, height: ATLAS)
     dispatch(atlas.bind(mut colour, mut normal), over: colour)
@@ -192,7 +193,7 @@ pub fn frame(time: f32, width: u32, height: u32) {
     draw(
         p,
         sample_quad.bind(),
-        far_cut_flat.bind(kinds, colours, s, cell: 1.0),
+        far_cut_flat.bind(kinds, colours, s, cell: 1.0, nn: NO_NET, net: no_net.items()),
         vertices: 6,
         instances: 12,
     )
@@ -203,7 +204,17 @@ pub fn frame(time: f32, width: u32, height: u32) {
     draw(
         p,
         sample_quad.bind(),
-        far_cut.bind(cam, kinds, colours, normals, depths, s, cell: 1.0),
+        far_cut.bind(
+            cam,
+            kinds,
+            colours,
+            normals,
+            depths,
+            s,
+            cell: 1.0,
+            nn: NO_NET,
+            net: no_net.items(),
+        ),
         vertices: 6,
         instances: 12,
         depth: Depth { compare: Compare::Always, write: true },
@@ -226,6 +237,9 @@ pub fn frame(time: f32, width: u32, height: u32) {
     let no_lights = buffer_of([0])
     let no_screen = std::gpu::texture::<Rgba16Float>(width: 1, height: 1)
     let no_spec = std::gpu::cubemap::<Rgba16Float>(side: 1)
+    let no_volume = std::gpu::texture3d::<std::gpu::R32Float>(width: 1, height: 1, depth: 1)
+    let no_fog = std::gpu::texture3d::<Rgba16Float>(width: 1, height: 1, depth: 1)
+    let no_sights: GpuBuffer<u32> = buffer(1)
     let lt = Lighting {
         cam,
         light: Light {
@@ -261,6 +275,7 @@ pub fn frame(time: f32, width: u32, height: u32) {
         cmp,
         probes: cloud,
         grounds: grounds.items(),
+        seen: no_sights.items(),
         cloud,
         air,
         // No ambient occlusion built: everything open.
@@ -272,6 +287,10 @@ pub fn frame(time: f32, width: u32, height: u32) {
         spec: no_spec,
         ao: cloud,
         s,
+        distance: engine::distance::NO_DISTANCE,
+        volume: no_volume,
+        fog: engine::fog::NO_FOG,
+        fogged: no_fog,
     }
     var shade = texture::<Rgba16Float>(width: WIDTH, height: SIDE)
     let p = begin_pass(mut shade)
@@ -286,6 +305,8 @@ pub fn frame(time: f32, width: u32, height: u32) {
             normal: normals,
             depth: depths,
             grid: volume,
+            nn: NO_NET,
+            net: no_net.items(),
         ),
         vertices: 6,
         instances: 12,

@@ -5,6 +5,10 @@ use shots::{
     PROGRAM, VIEWS, WS, build_of, check_line, keys, lookbook_of, names_in, names_listed, parse_args,
     shown_path, stem,
 }
+use measures::{
+    sharpness, blurred, clipped, edge_width, flicker, luma, mean_of, pop, psnr, quartered, ssim,
+    trail,
+}
 use std::json::parse
 use std::tool::blob::Data
 use std::tool::files
@@ -156,4 +160,83 @@ fn files_and_pngs_go_whole_through_the_toolkit() {
     let Ok(chunks) = data_bytes(decoded.rgba.clone()) else { panic("its pixels") }
     let got = joined(take chunks)
     assert(decoded.width == 3 && decoded.height == 2 && got.len() == 24 && got[23] == 230)
+}
+
+// ---- the lookdev measures (measures.wrela) -----------------------------------------------------
+
+/// A `w` × `h` test image: a soft gradient with a sharp vertical edge at `edge` and fine stripes
+/// (the detail a blur or a lower resolution loses).
+fn scene_image(w: u32, h: u32, edge: u32) -> Vec<u8> {
+    var out = Vec::new()
+    for y in 0..h {
+        for x in 0..w {
+            let base = 40 + (x * 100) / w + (y * 40) / h
+            let stripe = if (x / 2 + y / 3) % 2 == 0 { 30 } else { 0 }
+            let v = if x >= edge { base + 60 + stripe } else { base + stripe }
+            for c in 0..3 {
+                out.push(u8(min(v + c * 5, 254)))
+            }
+            out.push(255)
+        }
+    }
+    out
+}
+
+/// `rgba` with each pixel's channels moved by a hashed amount up to `amp`, for `seed`.
+fn noisy(rgba: [u8], seed: u32, amp: u32) -> Vec<u8> {
+    var out = Vec::new()
+    for i in 0..rgba.len() {
+        var hsh = (u32(i) ^ seed.wrapping_mul(747796405)).wrapping_mul(2654435761)
+        hsh = hsh ^ (hsh >> 15)
+        let d = i32(hsh % (2 * amp + 1)) - i32(amp)
+        out.push(if i % 4 == 3 { rgba[i] } else { u8(clamp(i32(rgba[i]) + d, 0, 254)) })
+    }
+    out
+}
+
+@test
+fn the_measures_react_as_the_instrument_needs() {
+    let (w, h) = (64, 48)
+    let reference = scene_image(w, h, 32)
+    let rl = luma(reference)
+    // Equal images: the best scores.
+    assert(psnr(rl, rl) == 100.0 && abs(ssim(rl, rl, w) - 1.0) < 1.0e-9)
+    // A quarter-resolution render loses at least 3 dB.
+    let quarter = luma(quartered(reference, w, h))
+    let play = luma(noisy(reference, seed: 1, amp: 2))
+    assert(psnr(play, rl) - psnr(quarter, rl) >= 3.0)
+    // A 3 × 3 blur (the negative control) loses at least 1 dB, although its flicker falls.
+    let blur = luma(blurred(noisy(reference, seed: 1, amp: 2), w, h))
+    assert(psnr(play, rl) - psnr(blur, rl) >= 1.0)
+    // And it's softer than the reference, which an image of the reference isn't.
+    assert(abs(sharpness(rl, rl, w) - 1.0) < 1.0e-9 && sharpness(blur, rl, w) < 0.9)
+    var frames: Vec<Vec<f32>> = Vec::new()
+    var blurred_frames: Vec<Vec<f32>> = Vec::new()
+    for k in 0..8 {
+        let f = noisy(reference, seed: k + 2, amp: 6)
+        blurred_frames.push(luma(blurred(f, w, h)))
+        frames.push(luma(f))
+    }
+    assert(flicker(blurred_frames) < flicker(frames))
+    // Per-frame noise raises flicker; a still image has none, and no pop.
+    var still: Vec<Vec<f32>> = Vec::new()
+    for _ in 0..8 {
+        still.push(rl.clone())
+    }
+    assert(flicker(still) == 0.0 && pop(still) == 0.0 && flicker(frames) > 1.0e-5)
+    // A frame shifted by a pixel pops more than the noise does.
+    let shifted = luma(scene_image(w, h, 33))
+    assert(pop([rl.clone(), shifted.clone()]) > 0.0)
+    // A history dragging 6 pixels behind the edge is a 6-pixel trail; the reference has none.
+    let ghost = luma(scene_image(w, h, 38))
+    assert(trail(rl, rl, w) == 0.0 && trail(ghost, rl, w) >= 4.0)
+    // The edge stays sharp in a mean of jittered frames of it.
+    let mean = mean_of([reference.clone(), reference.clone()])
+    assert(edge_width(luma(mean), w) <= edge_width(rl, w) + 1)
+    // Clipping: an image of 255s is all clipped; the scene isn't.
+    var white = Vec::new()
+    for _ in 0..w * h * 4 {
+        white.push(255)
+    }
+    assert(clipped(white) == 1.0 && clipped(reference) == 0.0)
 }

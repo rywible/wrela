@@ -26,11 +26,12 @@ use light::{LUMA, Light, sky}
 use sky::{Clouds, cloud_shadow, clouded_sky}
 use shadow::{Shadows, statically_sunlit}
 use std::gpu::{
-    Atomics, ComparisonSampler, DepthTexture, GlobalId, GpuBuffer, GpuSpan, Rgba16Float, Sampler,
-    Slots, Texels, Texels3d, Texture, Texture3d, buffer, buffer_of, dispatch, label, texture3d,
-    writable_texture, write,
+    Atomics, ComparisonSampler, DepthTexture, GlobalId, GpuBuffer, GpuSpan, R32Float, Rgba16Float,
+    Sampler, Slots, Texels, Texels3d, Texture, Texture3d, buffer, buffer_of, dispatch, label,
+    texture3d, writable_texture, write,
 }
 use std::math::PI
+use distance::{DistanceGrid, NO_DISTANCE, distance_at, distance_normal}
 use terrain::{Levels, Texel, ground_at, height_at}
 use view::Camera
 
@@ -117,6 +118,9 @@ pub struct ProbeGrid: Copy + GpuData {
     pub voxel: f32,
     pub volume_dims: vec3u,
     pub extinction: f32,
+    /// Whether a lookup weighs each probe by what it can see of the point (its sight, B9a: 1), or
+    /// by nearness alone (0: `ProbeQuality::visibility` off).
+    pub visibility: u32 = 1,
 }
 
 /// A grid of `cols` × `cols` columns `spacing` apart round `centre`, and its occluder volume
@@ -273,6 +277,55 @@ pub struct Trace: Copy + GpuData {
     pub reach: f32,
     pub leaf: vec3,
     pub bounced: u32,
+    /// The solids' distance volume a ray steps through (`distance`, B9b; none: the frame sets
+    /// it).
+    pub solids: DistanceGrid = NO_DISTANCE,
+}
+
+/// How near a ray comes to a solid in the distance volume before it's met it (m).
+const SOLID_HIT: f32 = 0.1
+
+/// What a solid a ray meets reflects (bark and stone, near enough).
+const SOLID_ALBEDO = vec3(0.18, 0.16, 0.14)
+
+/// The light round the point over `xz`, `above` metres up, averaged over every facing (the light
+/// a mote of air scatters, each way alike), its sun's part times `sun`: from the nearer layer's
+/// probes' constant terms alone (four samples of the maps, where `held_at` takes ten), or the
+/// open sky outside the grid. For the air's froxels (`fog`), a million a frame.
+pub fn mean_near(
+    grid: ProbeGrid,
+    maps: Texture<Rgba16Float>,
+    s: Sampler,
+    xz: vec2,
+    above: f32,
+    sun: f32,
+) -> vec3 {
+    let g = (xz - grid.corner) / grid.spacing
+    let last = f32(max(grid.cols, 2) - 1)
+    if grid.cols < 2 || g.x < 0.0 || g.y < 0.0 || g.x >= last || g.y >= last {
+        return mean_held(open_probe(maps), sun)
+    }
+    let (k, lo, hi) = layers_round(above)
+    let layer = if above - lo > (hi - lo) * 0.5 { k + 1 } else { k }
+    let size = vec2(f32(PLANES * grid.cols), f32(grid.cols * LAYERS + 1))
+    let plane = vec2(f32(grid.cols), 0.0) / size
+    let at = (g + vec2(0.5, 0.5 + f32(layer * grid.cols))) / size
+    let constant = maps.sample_level(s, at + 3.0 * plane)
+    if constant.w <= 1.0e-4 {
+        return mean_held(open_probe(maps), sun)
+    }
+    let sky = vec3(
+        maps.sample_level(s, at).x,
+        maps.sample_level(s, at + plane).x,
+        maps.sample_level(s, at + 2.0 * plane).x,
+    )
+    max((sky + constant.rgb * sun) / constant.w * (0.282095 / PI), vec3(0.0))
+}
+
+/// What a probe holds averaged over every facing (the light a mote of air scatters, each way
+/// alike): its sky's part and its sun's times `sun` (how much reaches it past the clouds).
+pub fn mean_held(h: Held, sun: f32) -> vec3 {
+    mean_light(h.sky) + mean_light(h.sun) * sun
 }
 
 /// A part's light averaged over every facing: what scatters off leaves that face every way
@@ -287,10 +340,15 @@ fn mean_light(p: Probe) -> vec3 {
 /// `maps`, and by the sun), or scattered by the crowns on the way (their dim green). The sun's
 /// own light is the shadows' business; this is the rest. From a surface (`from_surface`), a ray
 /// leaves the solid it starts in (a stone or a limb, whose occluder holds its surface) before
-/// solids stop it: the surface's own back is its cosine's business.
+/// solids stop it: the surface's own back is its cosine's business. Third, how far it went: to
+/// the ground, or to where what it passed hid all but a hundredth of what's beyond; `t.reach`
+/// for one that reached the sky (a probe's sight). With the solids' distance volume
+/// (`t.solids`, `volume`), it steps through open air as far as no solid is (two steps at most:
+/// the leaves aren't in it), and a solid it meets ends it as the ground does.
 pub fn trace(
     t: Trace,
     density: Texture3d<Rgba16Float>,
+    volume: Texture3d<R32Float>,
     levels: Levels,
     texels: [Texel],
     from: vec3,
@@ -303,16 +361,21 @@ pub fn trace(
     dome: Texture<Rgba16Float>,
     maps: Texture<Rgba16Float>,
     s: Sampler,
+    seen: [u32],
     from_surface: bool = false,
-) -> (vec3, vec3) {
+) -> (vec3, vec3, f32) {
     let step = t.grid.voxel * 0.75
     var trans = 1.0
     var light = vec3(0.0)
     var sun_light = vec3(0.0)
     var x = step * 0.5
+    // At least a step each: as many as a march of fixed steps takes.
     let steps = u32(t.reach / step)
     var leaving = from_surface
     for _ in 0..steps {
+        if x >= t.reach {
+            break
+        }
         let p = from + dir * x
         let ground = height_at(levels, texels, p.xz)
         if p.y <= ground {
@@ -323,13 +386,14 @@ pub fn trace(
             if t.bounced != 0 {
                 // Lit by the probes there: the sky round it, occluded, and the light off what's
                 // round it.
-                let h = held_at(t.grid, maps, s, p.xz, LAYER_HEIGHTS[0])
+                let h = held_at(t.grid, maps, s, seen, p.xz, LAYER_HEIGHTS[0], n: n)
                 return (
                     light + trans * albedo * probe_light(h.sky, n),
                     sun_light + trans * albedo * (sun + probe_light(h.sun, n)),
+                    x,
                 )
             }
-            return (light + trans * albedo * open_light(maps, n), trans * albedo * sun)
+            return (light + trans * albedo * open_light(maps, n), trans * albedo * sun, x)
         }
         var d = density_at(t.grid, density, s, p)
         if leaving && d > SOLID {
@@ -343,7 +407,7 @@ pub fn trace(
                 // The leaves' light: their albedo times the light round them (the probes', each
                 // part's mean over every facing) and the sun's through the shadows (half of it:
                 // a crown's leaves face every way).
-                let h = held_at(t.grid, maps, s, p.xz, p.y - ground)
+                let h = held_at(t.grid, maps, s, seen, p.xz, p.y - ground)
                 let lit = statically_sunlit(sh, p, t.light.sun, near, far, cmp, 1.0)
                 light += t.leaf * mean_light(h.sky) * (a * trans)
                 sun_light += t.leaf *
@@ -354,13 +418,47 @@ pub fn trace(
             }
             trans *= 1.0 - a
             if trans < 0.01 {
-                return (light, sun_light)
+                return (light, sun_light, x)
             }
+            x += step
+            continue
         }
-        x += step
+        if t.solids.on == 0 {
+            x += step
+            continue
+        }
+        let free = distance_at(t.solids, volume, p)
+        if free < SOLID_HIT && !from_surface {
+            // A solid: its surface lit as the ground's is.
+            let n = distance_normal(t.solids, volume, p)
+            let lit = statically_sunlit(sh, p, n, near, far, cmp, 1.0)
+            let sun = t.light.sun_colour * (max(dot(n, t.light.sun), 0.0) * lit)
+            if t.bounced != 0 {
+                let h = held_at(
+                    t.grid,
+                    maps,
+                    s,
+                    seen,
+                    p.xz,
+                    max(p.y - ground, LAYER_HEIGHTS[0]),
+                    n: n,
+                )
+                return (
+                    light + trans * SOLID_ALBEDO * probe_light(h.sky, n),
+                    sun_light + trans * SOLID_ALBEDO * (sun + probe_light(h.sun, n)),
+                    x,
+                )
+            }
+            return (
+                light + trans * SOLID_ALBEDO * open_light(maps, n),
+                sun_light + trans * SOLID_ALBEDO * sun,
+                x,
+            )
+        }
+        x += clamp(free, step, 2.0 * step)
     }
     // The sky and its clouds, without the sun's disc (the sun's light is the shadows').
-    (light + trans * min(clouded_sky(view, t.light, dir, dome, s), SKY_MOST), sun_light)
+    (light + trans * min(clouded_sky(view, t.light, dir, dome, s), SKY_MOST), sun_light, t.reach)
 }
 
 /// Directions over the sphere for baking: a Fibonacci spiral of `n`.
@@ -395,6 +493,125 @@ pub struct Strip: Copy + GpuData {
     pub rays: u32,
     pub turn: f32,
     pub keep: f32,
+    /// The columns a shift kept (`Baked::shifted`: from `kept.xy` to `kept.zw`, inclusive), which
+    /// the bake leaves as they are: none by default.
+    pub kept: vec4u = vec4u(1, 1, 0, 0),
+}
+
+/// Whether column (i, j) is in `kept` (`Strip::kept`).
+fn kept_column(kept: vec4u, i: u32, j: u32) -> bool {
+    i >= kept.x && i <= kept.z && j >= kept.y && j <= kept.w
+}
+
+// ---- what a probe sees (B9a) -------------------------------------------------------------------
+
+/// A probe's sight (`Baked::seen`; DDGI's depth, Majercik et al. 2019): over its sphere, octahedral, `VIS` ×
+/// `VIS` texels, each how far its rays went that way: their mean and their deviation, 16 bits
+/// each (`SEEN_FAR`). Shading reads it from its buffer (four reads a lookup). A lookup weighs the probe by how likely the point
+/// is to be in its sight (Chebyshev's bound), so light doesn't leak through a trunk or a wall.
+/// A probe inside a solid sees nothing: its texels hold 0. DDGI's tiles are 16 × 16 with a
+/// border, refreshed by 256 rays a frame; these are 6 × 6, nearest, refreshed by a strip's 32 to
+/// 128 rays, so a ray's share of a texel is broader (`see`). The rays write how far they went
+/// (`hits`), and `see` makes the texels from them, a texel an invocation.
+pub const VIS: u32 = 6
+pub const VIS_TEXELS: u32 = 36
+
+// A ray's share of a texel is the cosine between them to the eighth power (`see`): DDGI's 50
+// suits its tiles; 8 reaches a texel's neighbours about 30° off, which 32 rays a probe need.
+
+/// A unit vector folded onto the octahedron and unfolded onto a square, each in [-1, 1].
+pub fn oct_of(n: vec3) -> vec2 {
+    let p = n.xz / (abs(n.x) + abs(n.y) + abs(n.z))
+    if n.y >= 0.0 {
+        return p
+    }
+    (vec2(1.0) - abs(vec2(p.y, p.x))) * vec2(if p.x >= 0.0 { 1.0 } else { -1.0 }, if p.y >= 0.0 {
+        1.0
+    } else {
+        -1.0
+    })
+}
+
+/// The unit vector folded at `e` (`oct_of`'s inverse).
+pub fn oct_dir(e: vec2) -> vec3 {
+    let y = 1.0 - abs(e.x) - abs(e.y)
+    let t = max(-y, 0.0)
+    normalize(vec3(e.x + (if e.x >= 0.0 { -t } else { t }), y, e.y + (if e.y >= 0.0 { -t } else {
+        t
+    })))
+}
+
+/// The direction texel `t` of a sight looks along.
+fn texel_dir(t: u32) -> vec3 {
+    oct_dir((vec2(f32(t % VIS), f32(t / VIS)) + vec2(0.5)) / f32(VIS) * 2.0 - vec2(1.0))
+}
+
+/// The texel of a sight that looks along `d`.
+pub fn texel_of(d: vec3) -> u32 {
+    let e = (oct_of(d) * 0.5 + vec2(0.5)) * f32(VIS)
+    let c = min(vec2u(max(e, vec2(0.0))), vec2u(VIS - 1))
+    c.y * VIS + c.x
+}
+
+/// The farthest a sight's texel says (m): its 16 bits each a millimetre apart.
+const SEEN_FAR: f32 = 64.0
+
+/// A texel's mean distance and its deviation (m) from its 32 bits.
+fn unpacked(v: u32) -> vec2 {
+    vec2(f32(v & 0xffff), f32(v >> 16)) / 65535.0 * SEEN_FAR
+}
+
+fn packed(m: vec2) -> u32 {
+    let q = vec2u(round(saturate(m / SEEN_FAR) * 65535.0))
+    q.x | (q.y << 16)
+}
+
+/// Texel `id.x % VIS_TEXELS` of the sight of a strip's probe `id.x / VIS_TEXELS`, from its rays'
+/// hit distances (`hits`, `strip.rays` a probe, as `bake` and `trace_again` write them: 0 for a
+/// probe inside a solid, which sees nothing), each ray's share of the texel its cosine to the
+/// eighth power, blended with what it held (keeping `strip.keep`); one a shift kept is left. A
+/// texel no ray reached keeps what it held.
+@compute(64)
+pub fn see(
+    grid: ProbeGrid,
+    strip: Strip,
+    count: u32,
+    hits: [u32],
+    seen: mut Slots<u32>,
+    id: GlobalId,
+) {
+    let probe = id.x / VIS_TEXELS
+    let col = strip.first + probe / LAYERS
+    if probe >= count ||
+        col >= grid.cols * grid.cols ||
+        kept_column(strip.kept, col % grid.cols, col / grid.cols) {
+        return
+    }
+    let first = probe * strip.rays
+    if bitcast_f32(hits[first]) <= 0.0 {
+        seen[id] = 0
+        return
+    }
+    let along = texel_dir(id.x % VIS_TEXELS)
+    var w = 0.0
+    var d = vec2(0.0)
+    for n in 0..strip.rays {
+        let c = dot(along, turned_ray(n, strip))
+        if c > 0.0 {
+            let c2 = c * c
+            let c4 = c2 * c2
+            let k = c4 * c4
+            let h = bitcast_f32(hits[first + n])
+            w += k
+            d += vec2(h, h * h) * k
+        }
+    }
+    if w > 1.0e-8 {
+        // Blended as moments (the mean and the mean square), kept as the mean and deviation.
+        let old = unpacked(seen[id])
+        let m = mix(d / w, vec2(old.x, old.y * old.y + old.x * old.x), strip.keep)
+        seen[id] = packed(vec2(m.x, sqrt(max(m.y - m.x * m.x, 0.0))))
+    }
 }
 
 /// The probes of a strip of columns: each traces its rays and projects their light to
@@ -406,6 +623,7 @@ pub fn bake(
     sh: Shadows,
     strip: Strip,
     density: Texture3d<Rgba16Float>,
+    volume: Texture3d<R32Float>,
     levels: Levels,
     texels: [Texel],
     near: DepthTexture,
@@ -415,9 +633,11 @@ pub fn bake(
     dome: Texture<Rgba16Float>,
     maps: Texture<Rgba16Float>,
     s: Sampler,
+    seen: [u32],
     probes: mut Slots<Probe>,
     bounces: mut Slots<Probe>,
     grounds: mut Slots<f32>,
+    hits: mut Atomics<u32>,
     id: GlobalId,
 ) {
     let g = t.grid
@@ -428,6 +648,10 @@ pub fn bake(
         return
     }
     let (i, j) = (col % g.cols, col / g.cols)
+    // A column a shift kept holds its light already.
+    if kept_column(strip.kept, i, j) {
+        return
+    }
     let p = probe_at(g, levels, texels, i, j, k)
     // Each probe's slot holds its column's ground height too (a layer's, all alike).
     grounds[id] = p.y - LAYER_HEIGHTS[k]
@@ -436,15 +660,17 @@ pub fn bake(
     if density_at(g, density, s, p) > SOLID {
         probes[id] = NONE
         bounces[id] = NONE
+        hits.store(id.x * strip.rays, 0)
         return
     }
     var sky_part = NONE
     var sun_part = NONE
     for n in 0..strip.rays {
         let dir = turned_ray(n, strip)
-        let (l, sun) = trace(
+        let (l, sun, hit) = trace(
             t,
             density,
+            volume,
             levels,
             texels,
             p,
@@ -457,10 +683,12 @@ pub fn bake(
             dome,
             maps,
             s,
+            seen,
         )
         let basis = sh_basis(dir)
         sky_part = plus(sky_part, projected(basis, l))
         sun_part = plus(sun_part, projected(basis, sun))
+        hits.store(id.x * strip.rays + n, bitcast_u32(hit))
     }
     // Slot: the strip's probes in order of their invocation.
     probes[id] = blend(probes[id], convolved(sky_part, strip.rays), strip.keep)
@@ -483,6 +711,7 @@ pub fn trace_again(
     sh: Shadows,
     strip: Strip,
     density: Texture3d<Rgba16Float>,
+    volume: Texture3d<R32Float>,
     levels: Levels,
     texels: [Texel],
     near: DepthTexture,
@@ -492,7 +721,9 @@ pub fn trace_again(
     dome: Texture<Rgba16Float>,
     maps: Texture<Rgba16Float>,
     s: Sampler,
+    seen: [u32],
     rays: mut Slots<Ray>,
+    hits: mut Slots<u32>,
     id: GlobalId,
 ) {
     let g = t.grid
@@ -505,12 +736,14 @@ pub fn trace_again(
     let p = probe_at(g, levels, texels, col % g.cols, col / g.cols, k)
     if density_at(g, density, s, p) > SOLID {
         rays[id] = Ray { sky: NONE, sun: NONE }
+        hits[id] = 0
         return
     }
     let dir = turned_ray(id.x % strip.rays, strip)
-    let (l, sun) = trace(
+    let (l, sun, hit) = trace(
         t,
         density,
+        volume,
         levels,
         texels,
         p,
@@ -523,9 +756,11 @@ pub fn trace_again(
         dome,
         maps,
         s,
+        seen,
     )
     let basis = sh_basis(dir)
     rays[id] = Ray { sky: projected(basis, l), sun: projected(basis, sun) }
+    hits[id] = bitcast_u32(hit)
 }
 
 /// A strip's probes baked again, from their rays (`trace_again`): summed, convolved, and
@@ -678,6 +913,7 @@ pub fn map_probes(
     columns: vec2u,
     probes: [Probe],
     bounces: [Probe],
+    seen: [u32],
     open: [Probe],
     out: mut Texels<Rgba16Float>,
     id: GlobalId,
@@ -689,13 +925,16 @@ pub fn map_probes(
         return
     }
     let plane = id.x / cols
-    let (p, q) = if open_row {
-        (open[0], open[1])
+    let (p, q, traced) = if open_row {
+        (open[0], open[1], false)
     } else {
         let i = grid.index(id.x % cols, id.y % cols, id.y / cols)
-        (probes[i], bounces[i])
+        (probes[i], bounces[i], seen[i * VIS_TEXELS] != 0)
     }
-    let held = if p.r.x + p.g.x + p.b.x + q.r.x + q.g.x + q.b.x > 0.0 { 1.0 } else { 0.0 }
+    // A probe holds light if it has any, or if it traced its rays (its sight: one in a closed
+    // room holds none, and is still the room's); not one inside a solid, nor one not yet baked.
+    let lit = p.r.x + p.g.x + p.b.x + q.r.x + q.g.x + q.b.x > 0.0
+    let held = if lit || traced { 1.0 } else { 0.0 }
     let luma = q.r * LUMA.x + q.g * LUMA.y + q.b * LUMA.z
     let v = if plane == 0 { p.r * held } else if plane == 1 { p.g * held } else if plane == 2 {
         p.b * held
@@ -707,6 +946,69 @@ pub fn map_probes(
     out.store(id, v)
 }
 
+/// Probe (i, j, k)'s sight along `d` (`seen`, the probes' sights): the mean distance its rays
+/// went that way, and their deviation (m).
+fn seen_at(grid: ProbeGrid, seen: [u32], i: u32, j: u32, k: u32, d: vec3) -> vec2 {
+    unpacked(seen[grid.index(i, j, k) * VIS_TEXELS + texel_of(d)])
+}
+
+/// How far a point is pushed off its surface, along its normal, before the probes' sights test
+/// it (DDGI's normal bias: a surface's own point would sit at its probes' hit distance).
+const SEEN_BIAS: f32 = 0.3
+
+/// A layer's four columns round a point weighed by what each probe sees of it (DDGI's
+/// Chebyshev and backface terms, times the bilinear weight): as the fraction a bilinear sample
+/// at which weighs them nearest that (exactly where the weights part by x and by z, as a wall's
+/// do), and how much of the layer's weight is left (the Chebyshev term's alone: the backface
+/// term moves the sample within a layer, not the light between layers, which an open meadow's
+/// points would read off by more than 1/255). The cell's corner `c`, the point's fraction `f` of
+/// it; the layer `k`, `height` above the ground; the point `above` metres up, facing `n` (none:
+/// 0).
+fn sighted_cell(
+    grid: ProbeGrid,
+    seen: [u32],
+    c: vec2,
+    f: vec2,
+    k: u32,
+    height: f32,
+    above: f32,
+    n: vec3,
+) -> (vec2, f32) {
+    var w = vec4(0.0)
+    var sees = 0.0
+    for q in 0..4 {
+        let (di, dj) = (q % 2, q / 2)
+        let bx = if di == 0 { 1.0 - f.x } else { f.x }
+        let bz = if dj == 0 { 1.0 - f.y } else { f.y }
+        // From the point (pushed off its surface) to the probe.
+        let off = vec3(
+            (f32(di) - f.x) * grid.spacing,
+            height - above,
+            (f32(dj) - f.y) * grid.spacing,
+        ) -
+            n * SEEN_BIAS
+        let dist = max(length(off), 1.0e-4)
+        let to_probe = off / dist
+        let facing = if dot(n, n) > 0.0 {
+            let b = (dot(n, to_probe) + 1.0) * 0.5
+            b * b + 0.2
+        } else { 1.0 }
+        let m = seen_at(grid, seen, u32(c.x) + di, u32(c.y) + dj, k, -to_probe)
+        let chebyshev = if dist <= m.x { 1.0 } else {
+            let v = max(m.y * m.y, 1.0e-4)
+            let p = v / (v + (dist - m.x) * (dist - m.x))
+            p * p * p
+        }
+        w[q] = bx * bz * facing * chebyshev
+        sees += bx * bz * chebyshev
+    }
+    let sum = w.x + w.y + w.z + w.w
+    if sum <= 1.0e-6 {
+        return (f, 0.0)
+    }
+    (vec2((w.y + w.w) / sum, (w.z + w.w) / sum), sees)
+}
+
 /// The light round `world` as a probe there would hold it: the probes round it, trilinear
 /// (between columns, and between layers by its height above the ground), from the probes' maps
 /// (`maps`, read through `s`, a linear sampler), or the open sky outside the grid, faded to it at
@@ -716,15 +1018,66 @@ pub fn sky_sh(
     maps: Texture<Rgba16Float>,
     s: Sampler,
     grounds: [f32],
+    seen: [u32],
     world: vec3,
+    n: vec3 = vec3(0.0),
 ) -> Held {
     // Outside the grid, its height above the ground isn't read (`held_at`).
-    held_at(grid, maps, s, world.xz, world.y - ground_under(grid, grounds, world.xz))
+    held_at(grid, maps, s, seen, world.xz, world.y - ground_under(grid, grounds, world.xz), n: n)
 }
 
 /// The light round the point over `xz`, `above` metres above the ground, as a probe there
-/// would hold it (`sky_sh`, given its height above the ground).
+/// would hold it (`sky_sh`, given its height above the ground). With the grid's `visibility`,
+/// each probe weighed by what it sees of the point too (its sight, from `seen`), the point
+/// facing `n` (a surface's normal; none, 0, for a point in the air).
 pub fn held_at(
+    grid: ProbeGrid,
+    maps: Texture<Rgba16Float>,
+    s: Sampler,
+    seen: [u32],
+    xz: vec2,
+    above: f32,
+    n: vec3 = vec3(0.0),
+) -> Held {
+    let g = (xz - grid.corner) / grid.spacing
+    let last = f32(max(grid.cols, 2) - 1)
+    if grid.cols < 2 || g.x < 0.0 || g.y < 0.0 || g.x >= last || g.y >= last {
+        return open_probe(maps)
+    }
+    // The layer coordinate: between which two layers it is.
+    let (k, lo, hi) = layers_round(above)
+    let fk = saturate((above - lo) / (hi - lo))
+    // The sample within the cell, and the weight: by nearness, or by what the probes of the
+    // nearer layer see of the point too (four reads, not eight: the layers' columns stand one over
+    // another, and a wall between a point and a column stands between it and both its layers);
+    // nearness alone where none of them sees it (open sky round a probe inside a solid, or sights
+    // not yet traced).
+    let c = floor(g)
+    var f = g - c
+    var weight = 1.0
+    if grid.visibility != 0 {
+        let upper = fk >= 0.5
+        let (fs, w) = sighted_cell(
+            grid,
+            seen,
+            c,
+            g - c,
+            if upper { k + 1 } else { k },
+            if upper { hi } else { lo },
+            above,
+            n,
+        )
+        if w > 1.0e-3 {
+            f = fs
+            weight = w
+        }
+    }
+    held_in(grid, maps, s, g, c, f, weight, k, fk)
+}
+
+/// `held_at` by nearness alone, whatever the grid's `visibility`: what a lookup that can't bind
+/// the sights reads (the grass's placement, whose blades' colour is all it lights).
+pub fn held_near(
     grid: ProbeGrid,
     maps: Texture<Rgba16Float>,
     s: Sampler,
@@ -736,9 +1089,25 @@ pub fn held_at(
     if grid.cols < 2 || g.x < 0.0 || g.y < 0.0 || g.x >= last || g.y >= last {
         return open_probe(maps)
     }
-    // The layer coordinate: between which two layers it is.
     let (k, lo, hi) = layers_round(above)
-    let fk = saturate((above - lo) / (hi - lo))
+    let c = floor(g)
+    held_in(grid, maps, s, g, c, g - c, 1.0, k, saturate((above - lo) / (hi - lo)))
+}
+
+/// The light at grid point `g` (cell `c`, its sample `f` within it, weighed by `weight`) between
+/// layers `k` and `k + 1` (`fk` of the way): `held_at`'s and `held_near`'s.
+fn held_in(
+    grid: ProbeGrid,
+    maps: Texture<Rgba16Float>,
+    s: Sampler,
+    g: vec2,
+    c: vec2,
+    f: vec2,
+    weight: f32,
+    k: u32,
+    fk: f32,
+) -> Held {
+    let last = f32(max(grid.cols, 2) - 1)
     // The eight round it, weighted by nearness; one inside a solid (which holds no light) left
     // out, and the others' weights grown to make up for it: each layer's four columns, a
     // bilinear sample of each plane of the maps.
@@ -748,8 +1117,8 @@ pub fn held_at(
     let size = vec2(f32(PLANES * grid.cols), f32(grid.cols * LAYERS + 1))
     let plane = vec2(f32(grid.cols), 0.0) / size
     for dk in 0..2 {
-        let wk = if dk == 0 { 1.0 - fk } else { fk }
-        let at = (g + vec2(0.5, 0.5 + f32((k + dk) * grid.cols))) / size
+        let wk = (if dk == 0 { 1.0 - fk } else { fk }) * weight
+        let at = (c + f + vec2(0.5, 0.5 + f32((k + dk) * grid.cols))) / size
         let p = Probe {
             r: maps.sample_level(s, at),
             g: maps.sample_level(s, at + plane),
@@ -781,10 +1150,8 @@ pub fn held_at(
     }
 }
 
-/// The sky light at `world` for a surface facing `n`: what a probe there holds (`sky_sh`), its
-/// sun's part times `sun` (how much of the sun reaches the ground there past the clouds); or,
-/// for a test of it, the light's own (`Light::sky_test`).
-pub fn sky_light(
+/// `sky_light` by nearness alone (`held_near`): no sights bound.
+pub fn sky_light_near(
     grid: ProbeGrid,
     maps: Texture<Rgba16Float>,
     s: Sampler,
@@ -797,7 +1164,28 @@ pub fn sky_light(
     if light.sky_test == 1 {
         return vec3(dot(light.sky_sh, sh_basis(n)))
     }
-    let h = sky_sh(grid, maps, s, grounds, world)
+    let h = held_near(grid, maps, s, world.xz, world.y - ground_under(grid, grounds, world.xz))
+    probe_light(h.sky, n) + probe_light(h.sun, n) * sun
+}
+
+/// The sky light at `world` for a surface facing `n`: what a probe there holds (`sky_sh`), its
+/// sun's part times `sun` (how much of the sun reaches the ground there past the clouds); or,
+/// for a test of it, the light's own (`Light::sky_test`).
+pub fn sky_light(
+    grid: ProbeGrid,
+    maps: Texture<Rgba16Float>,
+    s: Sampler,
+    grounds: [f32],
+    seen: [u32],
+    light: Light,
+    world: vec3,
+    n: vec3,
+    sun: f32,
+) -> vec3 {
+    if light.sky_test == 1 {
+        return vec3(dot(light.sky_sh, sh_basis(n)))
+    }
+    let h = sky_sh(grid, maps, s, grounds, seen, world, n: n)
     probe_light(h.sky, n) + probe_light(h.sun, n) * sun
 }
 
@@ -808,6 +1196,7 @@ pub fn sky_lights(
     maps: Texture<Rgba16Float>,
     s: Sampler,
     grounds: [f32],
+    seen: [u32],
     light: Light,
     world: vec3,
     n: vec3,
@@ -817,7 +1206,7 @@ pub fn sky_lights(
     if light.sky_test == 1 {
         return (vec3(dot(light.sky_sh, sh_basis(n))), vec3(0.0))
     }
-    let h = sky_sh(grid, maps, s, grounds, world)
+    let h = sky_sh(grid, maps, s, grounds, seen, world, n: n)
     let light_at = |d: vec3| probe_light(h.sky, d) + probe_light(h.sun, d) * sun
     // A test of the sky light alone (`Light::sky_test` 2): no gloss of it.
     let gloss = if light.sky_test == 2 { vec3(0.0) } else { light_at(r) }
@@ -835,10 +1224,16 @@ pub struct Baked {
     /// each frame after.
     pub maps: Texture<Rgba16Float>,
     pub grounds: GpuBuffer<f32>,
+    /// What each probe sees (its sight: `VIS_TEXELS` a probe), which shading reads (`held_at`).
+    pub seen: GpuBuffer<u32>,
+    /// A strip's rays' hit distances (`bake`, `trace_again`), which `see` makes the sight of:
+    /// held while the first bake is under way, and a strip baked again's after.
+    hits: GpuBuffer<u32>,
     /// The open sky's probe (`open_sky`): its sky's part, then its sun's.
     pub open: GpuBuffer<Probe>,
     pub density: Texture3d<Rgba16Float>,
-    /// The voxels the occluders are cooked into (`cook_occluders`), cleared before each cook.
+    /// The voxels the occluders are cooked into (`cook_occluders`), cleared before each cook and
+    /// given back after it (a texel until the next).
     volume: GpuBuffer<u32>,
     pub occluders: GpuBuffer<Occluder>,
     pub occluder_count: u32,
@@ -847,6 +1242,9 @@ pub struct Baked {
     pub baked: u32,
     pub again: u32,
     pub agains: u32,
+    /// When each strip was last traced again, and under what (`next_strip`): empty until the
+    /// first is, steered.
+    pub traced: Vec<Traced> = Vec::new(),
     /// A strip baked again's rays (`trace_again`).
     pub rays: GpuBuffer<Ray>,
     /// Columns a strip of baking traces, a frame each, and the rays it traces a probe
@@ -855,6 +1253,98 @@ pub struct Baked {
     /// and baking again (`AGAIN_RAYS` a strip) fills the rest in).
     pub strip_columns: u32,
     pub strip_rays: u32,
+    /// The columns a shift kept (`shifted`; `Strip::kept`), and whether its volume holds what
+    /// it kept (its cook adds the new band's occluders to it, clearing nothing).
+    pub kept: vec4u = vec4u(1, 1, 0, 0),
+    pub shifted: bool = false,
+}
+
+/// Of `occluders`, those a grid shifted by `d` columns from `g` must cook: all but those wholly
+/// inside the columns it keeps (in the voxels it keeps), with a column's margin for the filter.
+pub fn band(occluders: [Occluder], g: ProbeGrid, d: vec2i) -> Vec<Occluder> {
+    let span = f32(g.cols - 1) * g.spacing
+    let corner = g.corner + vec2(d) * g.spacing
+    // The kept square: the old grid's and the new one's overlap.
+    let lo = max(g.corner, corner) + vec2(g.spacing)
+    let hi = min(g.corner, corner) + vec2(span - g.spacing)
+    var out: Vec<Occluder> = Vec::new()
+    for o in occluders {
+        let a = min(o.a.xz, o.b.xz) - vec2(o.radius)
+        let b = max(o.a.xz, o.b.xz) + vec2(o.radius)
+        let inside = a.x >= lo.x && a.y >= lo.y && b.x <= hi.x && b.y <= hi.y
+        if !inside {
+            out.push(o)
+        }
+    }
+    out
+}
+
+/// Probe (column `id.x / LAYERS`, layer) of a grid shifted by `d` columns (its new place), from
+/// where it was (`d` further): copied if it was in the grid, else left to be baked.
+@compute(64)
+fn shift_probes(
+    cols: u32,
+    d: vec2i,
+    probes: [Probe],
+    bounces: [Probe],
+    grounds: [f32],
+    out_probes: mut Slots<Probe>,
+    out_bounces: mut Slots<Probe>,
+    out_grounds: mut Slots<f32>,
+    id: GlobalId,
+) {
+    let col = id.x / LAYERS
+    if col >= cols * cols {
+        return
+    }
+    let from = vec2i(i32(col % cols), i32(col / cols)) + d
+    if from.x < 0 || from.y < 0 || from.x >= i32(cols) || from.y >= i32(cols) {
+        return
+    }
+    let at = (u32(from.y) * cols + u32(from.x)) * LAYERS + id.x % LAYERS
+    out_probes[id] = probes[at]
+    out_bounces[id] = bounces[at]
+    out_grounds[id] = grounds[at]
+}
+
+/// Texel `id` of the sights of a grid shifted by `d` columns, from where its probe was
+/// (`shift_probes`).
+@compute(64)
+fn shift_seen(cols: u32, d: vec2i, seen: [u32], out: mut Slots<u32>, id: GlobalId) {
+    let probe = id.x / VIS_TEXELS
+    let col = probe / LAYERS
+    if col >= cols * cols {
+        return
+    }
+    let from = vec2i(i32(col % cols), i32(col / cols)) + d
+    if from.x < 0 || from.y < 0 || from.x >= i32(cols) || from.y >= i32(cols) {
+        return
+    }
+    let at = (u32(from.y) * cols + u32(from.x)) * LAYERS + probe % LAYERS
+    out[id] = seen[at * VIS_TEXELS + id.x % VIS_TEXELS]
+}
+
+/// Voxel `id` of a volume shifted by `d` voxels (x and z), from where it was (its density, the
+/// cooked voxels' own: `filterable`): kept if it was in the volume, else cleared for the new
+/// band's occluders.
+@compute(4, 4, 4)
+fn shift_voxels(
+    grid: ProbeGrid,
+    d: vec3i,
+    density: Texture3d<Rgba16Float>,
+    out: mut Atomics<u32>,
+    id: GlobalId,
+) {
+    let dims = grid.volume_dims
+    if id.x >= dims.x || id.y >= dims.y || id.z >= dims.z {
+        return
+    }
+    let from = vec3i(id.xyz()) + d
+    let inside = from.x >= 0 && from.z >= 0 && from.x < i32(dims.x) && from.z < i32(dims.z)
+    let v = if inside {
+        u32(round(density.load(x: u32(from.x), y: u32(from.y), z: u32(from.z)).r * 1000.0))
+    } else { 0 }
+    out.store(grid.voxel_index(id.xyz()), v)
 }
 
 /// Columns a strip of baking traces, a frame each (a short submission), with `RAYS` rays a
@@ -870,12 +1360,91 @@ pub const AGAIN_COLUMNS: u32 = 32
 pub const AGAIN_RAYS: u32 = 64
 pub const AGAIN_KEEP: f32 = 0.5
 
+// ---- which strip is traced again (B9c) ----------------------------------------------------------
+
+/// When a strip of columns (`AGAIN_COLUMNS` from its index's) was last traced, and under which
+/// sun and weather (the sky's version).
+pub struct Traced: Copy {
+    pub at: u32,
+    pub sun: vec3,
+    pub weather: u32,
+}
+
+/// What steers which strip is traced again: the frame's count (0: none, each strip in turn as
+/// before), the sun and the sky's version now, and the eye (render space) and where it looks
+/// (a unit vector, flat).
+pub struct Steer: Copy {
+    pub frame: u32 = 0,
+    pub sun: vec3 = vec3(0.0, 1.0, 0.0),
+    pub weather: u32 = 0,
+    pub eye: vec2 = vec2(0.0),
+    pub ahead: vec2 = vec2(0.0, 1.0),
+}
+
+/// How near the eye a column is for its strip to be first after a change (m), and how far ahead
+/// of it a column is in view (m, within about 37° of where it looks).
+const AGAIN_NEAR: f32 = 12.0
+const AGAIN_AHEAD: f32 = 40.0
+
+/// How much strip `k`'s columns of `grid` light what the eye sees: its nearest column that's near
+/// the eye or ahead of it, 1 at the eye to 0 at `AGAIN_AHEAD`; 0 if it has none.
+fn seen_share(grid: ProbeGrid, k: u32, st: Steer) -> f32 {
+    let total = grid.cols * grid.cols
+    let first = k * AGAIN_COLUMNS
+    let n = min(AGAIN_COLUMNS, total - first)
+    var best = 0.0
+    for c in first..first + n {
+        let d = grid.corner + vec2(f32(c % grid.cols), f32(c / grid.cols)) * grid.spacing - st.eye
+        let far = length(d)
+        if far < AGAIN_NEAR || (far < AGAIN_AHEAD && dot(d, st.ahead) > 0.8 * far) {
+            best = max(best, 1.0 - far / AGAIN_AHEAD)
+        }
+    }
+    best
+}
+
+/// The strip to trace again (Infinity Ward's variable-rate tracing, SIGGRAPH 2026: a fixed count
+/// of rays steered to where the image changed): one that two rounds of strips haven't traced first
+/// (the oldest: none waits longer, and with nothing changing none waits longer than a round, as
+/// when each was taken in turn); else the
+/// one the sun or the weather changed most since it was traced, up to five times as much the
+/// nearer it lights what the eye sees (`seen_share`), its age over a round past that (so, nothing
+/// changing, the oldest).
+pub fn next_strip(grid: ProbeGrid, traced: [Traced], st: Steer) -> u32 {
+    let n = traced.len()
+    var best = 0
+    var best_score = -1.0
+    for k in 0..n {
+        let t = traced[k]
+        let age = st.frame - min(t.at, st.frame)
+        let score = if age >= 2 * n { 1.0e6 + f32(age) } else {
+            // (The same sun is no turn: its dot with itself rounds below 1.)
+            let turn = if t.sun == st.sun { 0.0 } else {
+                acos(clamp(dot(st.sun, t.sun), -1.0, 1.0)) * (180.0 / PI)
+            }
+            let change = turn + f32(st.weather - min(t.weather, st.weather))
+            let steer = if change > 0.0 {
+                4.0 * change * (1.0 + 4.0 * seen_share(grid, k, st))
+            } else {
+                0.0
+            }
+            steer + f32(age) / f32(n)
+        }
+        if score > best_score {
+            best = k
+            best_score = score
+        }
+    }
+    best
+}
+
 impl Baked {
     /// The GPU bytes its probes, their maps, its volume and its occluders take.
     pub fn bytes(self) -> u64 {
         let d = self.grid.volume_dims
         u64(self.probes.len() + self.bounces.len() + self.open.len()) * u64(size_of::<Probe>()) +
             u64(self.grounds.len()) * 4 +
+            u64(self.seen.len() + self.hits.len()) * 4 +
             memory::texels(self.maps.width(), self.maps.height(), 8) +
             memory::texels(d.x, d.y, 8, d: d.z) +
             u64(self.volume.len()) * 4 +
@@ -903,13 +1472,15 @@ impl Baked {
                 height: grid.cols * LAYERS + 1,
             ),
             grounds: buffer(grid.probes()),
+            seen: buffer(grid.probes() * VIS_TEXELS),
+            hits: buffer(AGAIN_COLUMNS * LAYERS * AGAIN_RAYS),
             open: buffer(2),
             density: texture3d::<Rgba16Float>(
                 grid.volume_dims.x,
                 grid.volume_dims.y,
                 grid.volume_dims.z,
             ),
-            volume: buffer(grid.voxels()),
+            volume: buffer(1),
             occluders: o,
             occluder_count: occluders.len(),
             baked: 0,
@@ -940,7 +1511,97 @@ impl Baked {
         b.baked = 0
         b.again = 0
         b.agains = 0
+        b.traced = Vec::new()
+        b.kept = vec4u(1, 1, 0, 0)
+        b.shifted = false
         b
+    }
+
+    /// Whether `old`'s buffers can hold `from`'s probes shifted (`shifted`): the same shape, a
+    /// column a whole number of voxels, and `from` baked.
+    pub fn shifts(old: Baked, from: Baked) -> bool {
+        let g = from.grid
+        let step = g.spacing / g.voxel
+        old.grid.cols == g.cols &&
+            old.grid.volume_dims == g.volume_dims &&
+            abs(step - round(step)) < 1.0e-4 &&
+            from.done()
+    }
+
+    /// `old`'s buffers and textures (`shifts`) made `from`'s probes shifted by `d` whole columns
+    /// (its grid moved `d` spacings, its volume as many voxels; its vertical as it was): the
+    /// columns both hold and the voxels both hold copied, the rest to bake and to cook from
+    /// `occluders` (those of the new band are enough, `band`: an occluder the kept voxels hold
+    /// already is cooked into them again by its max).
+    pub fn shifted(old: take Baked, from: Baked, d: vec2i, occluders: [Occluder]) -> Baked {
+        let g = from.grid
+        let step = g.spacing / g.voxel
+        var b = Baked::renew(take old, g, occluders)
+        let moved = vec2(d) * g.spacing
+        b.grid.corner += moved
+        b.grid.volume_corner += vec3(moved.x, 0.0, moved.y)
+        let n = g.probes()
+        dispatch(
+            shift_probes.bind(
+                cols: g.cols,
+                d: d,
+                probes: from.probes.span(start: 0, count: n),
+                bounces: from.bounces.span(start: 0, count: n),
+                grounds: from.grounds.span(start: 0, count: n),
+                out_probes: b.probes.span_mut(start: 0, count: n),
+                out_bounces: b.bounces.span_mut(start: 0, count: n),
+                out_grounds: b.grounds.span_mut(start: 0, count: n),
+            ),
+            groups: (n + 63) / 64,
+        )
+        dispatch(
+            shift_seen.bind(
+                cols: g.cols,
+                d: d,
+                seen: from.seen.span(start: 0, count: n * VIS_TEXELS),
+                out: b.seen.span_mut(start: 0, count: n * VIS_TEXELS),
+            ),
+            over: n * VIS_TEXELS,
+        )
+        let s = i32(round(step))
+        if b.volume.len() < g.voxels() {
+            b.volume = buffer(g.voxels())
+        }
+        dispatch(
+            shift_voxels.bind(
+                grid: b.grid,
+                d: vec3i(d.x * s, 0, d.y * s),
+                density: from.density,
+                out: mut b.volume,
+            ),
+            over: (g.volume_dims.x, g.volume_dims.y, g.volume_dims.z),
+        )
+        // The columns both grids hold, in the new grid's numbering.
+        let c = i32(g.cols)
+        let lo = vec2i(max(-d.x, 0), max(-d.y, 0))
+        let hi = vec2i(min(c - 1 - d.x, c - 1), min(c - 1 - d.y, c - 1))
+        b.kept = if hi.x < lo.x || hi.y < lo.y { vec4u(1, 1, 0, 0) } else {
+            vec4u(u32(lo.x), u32(lo.y), u32(hi.x), u32(hi.y))
+        }
+        b.shifted = true
+        b
+    }
+
+    /// Whether every column from `first`, `n` of them, is one a shift kept.
+    fn kept_whole(self, first: u32, n: u32) -> bool {
+        for c in first..first + n {
+            if !kept_column(self.kept, c % self.grid.cols, c / self.grid.cols) {
+                return false
+            }
+        }
+        true
+    }
+
+    /// How many columns a bake traces: those a shift didn't keep.
+    pub fn fresh(self) -> u32 {
+        let k = self.kept
+        let held = if k.z < k.x || k.w < k.y { 0 } else { (k.z - k.x + 1) * (k.w - k.y + 1) }
+        self.grid.cols * self.grid.cols - held
     }
 
     /// Whether every column is baked.
@@ -953,7 +1614,14 @@ impl Baked {
     pub fn cook(mut self) {
         label("probes occluders")
         let n = self.grid.voxels()
-        dispatch(clear_voxels.bind(n, volume: mut self.volume), over: n)
+        // The voxels are held only while they're cooked (a shift makes them first).
+        if self.volume.len() < n {
+            self.volume = buffer(n)
+        }
+        // A shifted volume holds what it kept, and nothing in its new band (`shift_voxels`).
+        if !self.shifted {
+            dispatch(clear_voxels.bind(n, volume: mut self.volume), over: n)
+        }
         // With none, the volume stays clear: a renewed buffer still holds the old occluders.
         if self.occluder_count > 0 {
             dispatch(
@@ -973,6 +1641,8 @@ impl Baked {
             filterable.bind(self.grid, self.volume.items(), density: mut self.density),
             over: self.density,
         )
+        // Cooked: what's read is the density; the voxels go (B7.5: 7 MiB a grid of the floor's).
+        self.volume = buffer(1)
     }
 
     /// The open sky's probe, from the air's sky table (`view`, through `s`, a linear sampler)
@@ -984,6 +1654,21 @@ impl Baked {
         self.map(0, self.grid.cols * self.grid.cols)
     }
 
+    /// The sights of `count` probes of `strip` (from its first column's), from their rays' hits.
+    fn see(mut self, strip: Strip, count: u32) {
+        let at = strip.first * LAYERS * VIS_TEXELS
+        dispatch(
+            see.bind(
+                self.grid,
+                strip,
+                count: count,
+                hits: self.hits.span(start: 0, count: count * strip.rays),
+                seen: self.seen.span_mut(start: at, count: count * VIS_TEXELS),
+            ),
+            over: count * VIS_TEXELS,
+        )
+    }
+
     /// The probes' maps, from the probes and the open sky's probe: their columns `from` to `to`.
     fn map(mut self, from: u32, to: u32) {
         let n = self.grid.probes()
@@ -993,6 +1678,7 @@ impl Baked {
                 vec2u(from, to),
                 self.probes.span(start: 0, count: n),
                 self.bounces.span(start: 0, count: n),
+                seen: self.seen.span(start: 0, count: n * VIS_TEXELS),
                 open: self.open.span(start: 0, count: 2),
                 out: mut self.maps,
             ),
@@ -1017,19 +1703,41 @@ impl Baked {
         view: Texture<Rgba16Float>,
         dome: Texture<Rgba16Float>,
         s: Sampler,
+        volume: Texture3d<R32Float>,
+        steer: Steer = Steer {},
     ) {
         let total = self.grid.cols * self.grid.cols
+        // Strips whose columns a shift kept, all of them, aren't dispatched.
+        while !self.done() &&
+            self.kept_whole(self.baked, min(self.strip_columns, total - self.baked)) {
+            self.baked += min(self.strip_columns, total - self.baked)
+            if self.done() {
+                self.map(0, total)
+                return
+            }
+        }
         if !self.done() {
             label("probes bake")
             let n = min(self.strip_columns, total - self.baked)
-            let strip = Strip { first: self.baked, rays: self.strip_rays, turn: 0.0, keep: 0.0 }
+            let strip = Strip {
+                first: self.baked,
+                rays: self.strip_rays,
+                turn: 0.0,
+                keep: 0.0,
+                kept: self.kept,
+            }
             let at = self.baked * LAYERS
+            // Room for the strip's rays' hits (given back once every column is baked).
+            if self.hits.len() < n * LAYERS * self.strip_rays {
+                self.hits = buffer(n * LAYERS * self.strip_rays)
+            }
             dispatch(
                 bake.bind(
                     t,
                     sh,
                     strip,
                     density: self.density,
+                    volume: volume,
                     levels: levels,
                     texels: texels,
                     near: near,
@@ -1039,19 +1747,38 @@ impl Baked {
                     dome: dome,
                     maps: self.maps,
                     s: s,
+                    seen: self.seen.items(),
                     probes: self.probes.span_mut(start: at, count: n * LAYERS),
                     bounces: self.bounces.span_mut(start: at, count: n * LAYERS),
                     grounds: self.grounds.span_mut(start: at, count: n * LAYERS),
+                    hits: mut self.hits,
                 ),
                 groups: (n * LAYERS + 63) / 64,
             )
+            self.see(strip, n * LAYERS)
             self.baked += n
             if self.done() {
+                self.hits = buffer(AGAIN_COLUMNS * LAYERS * AGAIN_RAYS)
                 self.map(0, total)
             }
             return
         }
         label("probes again")
+        // Steered (`next_strip`), or each strip in turn.
+        if steer.frame > 0 {
+            let strips = (total + AGAIN_COLUMNS - 1) / AGAIN_COLUMNS
+            if self.traced.len() != strips {
+                self.traced = Vec::new()
+                for _ in 0..strips {
+                    self.traced.push(
+                        Traced { at: steer.frame, sun: steer.sun, weather: steer.weather },
+                    )
+                }
+            }
+            let k = next_strip(self.grid, self.traced, steer)
+            self.again = k * AGAIN_COLUMNS
+            self.traced[k] = Traced { at: steer.frame, sun: steer.sun, weather: steer.weather }
+        }
         let n = min(AGAIN_COLUMNS, total - self.again)
         // Each strip's spiral turned by the golden angle from the last's.
         let turn = f32(self.agains % 1024) * 2.399963
@@ -1063,6 +1790,7 @@ impl Baked {
                 sh,
                 strip,
                 density: self.density,
+                volume: volume,
                 levels: levels,
                 texels: texels,
                 near: near,
@@ -1072,10 +1800,13 @@ impl Baked {
                 dome: dome,
                 maps: self.maps,
                 s: s,
+                seen: self.seen.items(),
                 rays: mut self.rays,
+                hits: self.hits.span_mut(start: 0, count: count * AGAIN_RAYS),
             ),
             groups: (count * AGAIN_RAYS + 63) / 64,
         )
+        self.see(strip, count)
         let at = self.again * LAYERS
         dispatch(
             gather.bind(
@@ -1136,11 +1867,13 @@ pub fn reference(
     depth: DepthTexture,
     scene: Texture<Rgba16Float>,
     density: Texture3d<Rgba16Float>,
+    volume: Texture3d<R32Float>,
     levels: Levels,
     texels: [Texel],
     maps: Texture<Rgba16Float>,
     s: Sampler,
     grounds: [f32],
+    seen: [u32],
     near: DepthTexture,
     far: DepthTexture,
     cmp: ComparisonSampler,
@@ -1192,9 +1925,10 @@ pub fn reference(
     for i in 0..at.rays {
         let dir = fibonacci(i, at.rays)
         let front = dot(dir, n) > 0.0
-        let (sky_part, sun_part) = trace(
+        let (sky_part, sun_part, _) = trace(
             at.t,
             density,
+            volume,
             levels,
             texels,
             from,
@@ -1207,16 +1941,135 @@ pub fn reference(
             dome,
             maps,
             s,
+            seen,
             from_surface: front,
         )
         sum = plus(sum, projected(sh_basis(dir), sky_part + sun_part * shade))
     }
     let traced = convolved(sum, at.rays)
     let class = f32(view::class_of(scene.load(x: u32(p.x), y: u32(p.y)).a))
-    let h = sky_sh(at.t.grid, maps, s, grounds, w)
+    let h = sky_sh(at.t.grid, maps, s, grounds, seen, w, n: n)
     out[id] = Reference {
         probes: plus(h.sky, scaled(h.sun, shade)),
         traced,
         at: vec4(class + 1.0, length(w - at.cam.eye), 0.0, 0.0),
     }
+}
+
+// ---- tests ----------------------------------------------------------------------------------
+
+fn holds(xs: [u32], x: u32) -> bool {
+    for y in xs {
+        if y == x {
+            return true
+        }
+    }
+    false
+}
+
+/// The Last Green's grid (81 × 81 columns 2 m apart): 206 strips of `AGAIN_COLUMNS`.
+fn floor_grid() -> ProbeGrid {
+    grid(vec2(0.0), cols: 81, spacing: 2.0, low: -8.0, high: 24.0, voxel: 1.0)
+}
+
+/// Strips steered from frame `from` for `frames` frames under `st` (its frame set each frame):
+/// each frame's choice, the strips' last traces updated.
+fn steered(g: ProbeGrid, traced: mut Vec<Traced>, st: Steer, from: u32, frames: u32) -> Vec<u32> {
+    var picks: Vec<u32> = Vec::new()
+    for f in from..from + frames {
+        let s = Steer { frame: f, ..st }
+        let k = next_strip(g, traced, s)
+        traced[k] = Traced { at: f, sun: s.sun, weather: s.weather }
+        picks.push(k)
+    }
+    picks
+}
+
+/// The strips holding the eye's column and the eight round it (`eye` render space).
+fn under(g: ProbeGrid, eye: vec2) -> Vec<u32> {
+    var out: Vec<u32> = Vec::new()
+    let c = vec2i(round((eye - g.corner) / g.spacing))
+    for dj in -1..2 {
+        for di in -1..2 {
+            let col = u32((c.y + dj) * i32(g.cols) + c.x + di)
+            let k = col / AGAIN_COLUMNS
+            if !holds(out, k) {
+                out.push(k)
+            }
+        }
+    }
+    out
+}
+
+/// With nothing changing, steering takes each strip within a round of its last trace, as taking
+/// them in turn did.
+@test
+fn steered_with_nothing_changing_every_strip_is_traced_within_a_round() {
+    let g = floor_grid()
+    let n = (g.cols * g.cols + AGAIN_COLUMNS - 1) / AGAIN_COLUMNS
+    let st = Steer { sun: normalize(vec3(0.3, 0.8, 0.2)), eye: vec2(10.0, -6.0) }
+    var traced: Vec<Traced> = Vec::new()
+    for _ in 0..n {
+        traced.push(Traced { at: 1, sun: st.sun, weather: 0 })
+    }
+    var last: Vec<u32> = Vec::from([1; 206])
+    var worst = 0
+    for f in 2..2 + 3 * n {
+        let k = steered(g, mut traced, st, f, 1)[0]
+        worst = max(worst, f - last[k])
+        last[k] = f
+    }
+    assert(n == 206, f"{n} strips")
+    assert(worst <= n, f"a strip waited {worst} frames of a round's {n}")
+}
+
+/// After a 5° step of the sun, the strips under the eye are traced again within 12 frames, and
+/// every strip the eye sees (near it or ahead) within half the frames taking them in turn would
+/// (the `Sun` fixture's convergence: B9c's gate).
+@test
+fn a_sun_step_traces_the_strips_under_the_eye_first() {
+    let g = floor_grid()
+    let n = (g.cols * g.cols + AGAIN_COLUMNS - 1) / AGAIN_COLUMNS
+    let before = normalize(vec3(0.3, 0.8, 0.2))
+    let st = Steer { sun: before, eye: vec2(10.0, -6.0), ahead: normalize(vec2(1.0, 1.0)) }
+    var traced: Vec<Traced> = Vec::new()
+    for _ in 0..n {
+        traced.push(Traced { at: 1, sun: before, weather: 0 })
+    }
+    // Two rounds steady, then the sun steps 5° about the vertical.
+    let _ = steered(g, mut traced, st, 2, 2 * n)
+    let a = 5.0 * PI / 180.0
+    let after = vec3(
+        before.x * cos(a) - before.z * sin(a),
+        before.y,
+        before.x * sin(a) + before.z * cos(a),
+    )
+    let picks = steered(g, mut traced, Steer { sun: after, ..st }, 2 + 2 * n, n)
+    // When the strips under the eye, and every strip it sees, were all traced again.
+    let near = under(g, st.eye)
+    var seen: Vec<u32> = Vec::new()
+    for k in 0..n {
+        if seen_share(g, k, st) > 0.0 {
+            seen.push(k)
+        }
+    }
+    let done_by = |want: [u32]| -> u32 {
+        var left = want.len()
+        for i in 0..picks.len() {
+            if holds(want, picks[i]) {
+                left -= 1
+                if left == 0 {
+                    return u32(i) + 1
+                }
+            }
+        }
+        picks.len() + 1
+    }
+    // Taken in turn from where the round was, the last of them comes as late as a round allows.
+    let (under_eye, all_seen) = (done_by(near), done_by(seen))
+    std::io::print(
+        f"after a 5° sun step: the strips under the eye ({near.len()}) traced within {under_eye} frames, every strip it sees ({seen.len()}) within {all_seen}; in turn, within {n}",
+    )
+    assert(under_eye <= 12, f"under the eye: {under_eye} frames")
+    assert(all_seen * 2 <= n, f"every strip it sees: {all_seen} frames of {n}")
 }

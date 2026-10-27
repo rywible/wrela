@@ -1,12 +1,17 @@
 // The bench tool's tests: its command line, its statistics, its reading of a page's GPU timings
 // and its report, written as a later `--compare` reads it and as docs/bench.md shows it.
 
-use main::{chosen, parse_args}
-use report::{
-    Measured, Stats, compared, date_of, doc, intervals, markdown, report_json, spans, stats,
-    time_of,
+use main::{
+    by_hand, chosen, into_devices, lan_url, machine_in, measure, other_rows, parse_args, posted,
+    slug_of,
 }
-use scenes::{SCENES, script}
+use report::{
+    hitches, Measured, Stats, compared, date_of, doc, intervals, markdown, report_json, spans,
+    stats, time_of,
+}
+use scenes::{SCENES, Scene, script}
+use std::tool::files
+use std::tool::serve
 
 fn texts(lines: [Text]) -> Vec<String> {
     var out: Vec<String> = Vec::new()
@@ -94,6 +99,12 @@ fn a_report_reads_back_for_a_comparison_and_shows_as_a_table() {
         loaded_bytes: 1048576.0,
         gpu_bytes: 2097152.0,
         gpu_peak: 2097152.0,
+        warm_playable_ms: 40.0,
+        warm_pipelines_ms: 0.0,
+        warm_loaded_bytes: 1024.0,
+        hitches: Vec::new(),
+        compiles: Vec::new(),
+        runs: Vec::new(),
     }
     let all = Vec::from([m.clone()])
     let text = report_json("Apple M4", "2026-10-25", all)
@@ -105,7 +116,7 @@ fn a_report_reads_back_for_a_comparison_and_shows_as_a_table() {
     let table = markdown("Apple M4", "2026-10-25", Vec::from([take m]))
     assert(contains(table.as_str(), "## 2026-10-25, Apple M4"))
     assert(contains(table.as_str(), "| herd | 2.00 / 3.00 / 4.00 |"))
-    assert(contains(table.as_str(), "| 1.0 | 2.0 |"))
+    assert(contains(table.as_str(), "| 1.0 | 40.00 | 0.0 | 2.0 |"), table.as_str())
 }
 
 @test
@@ -115,4 +126,210 @@ fn a_date_is_the_civil_day_of_its_milliseconds() {
     assert(date_of(951782400000.0) == "2000-02-29")
     // Two runs on one day are two reports.
     assert(time_of(1792886400000.0 + 3723000.0) == "010203")
+}
+
+@test
+fn a_paced_runs_hitches_name_their_heaviest_labels() {
+    // Frames 0..4 begin 16.6 ms apart but frame 2 runs 40 ms to frame 3: one hitch, frame 2's
+    // work; frame 3's 50 ms has no label over 2 ms and 1 ms of CPU, so it's the browser's.
+    let frames = "{\"began_ms\": [0, 16.6, 33.2, 73.2, 123.2], \"cpu_ms\": [1, 1, 9, 1, 1], \"phases\": [{}, {}, {\"cook\": 6, \"passes\": 2}, {}, {}], \"labels\": [[], [], [[\"terrain cook\", 4.5], [\"sky\", 12.25]], [[\"sky\", 0.5]], []]}"
+    let counters = "[{}, {}, {\"draws\": 31, \"write_buffer_bytes\": 4096}, {}, {}]"
+    let (Ok(f), Ok(c)) = (doc(frames, "frames"), doc(counters, "counters")) else { panic("JSON") }
+    let h = hitches(f, c, 1)
+    assert(h.len() == 2 && h[0].frame == 2 && h[1].frame == 3)
+    assert(h[0].labels[0].0.as_str() == "sky" && h[0].phases[0].0.as_str() == "cook")
+    assert(h[0].draws == 31 && h[0].written == 4096.0 && !h[0].unattributed())
+    assert(h[1].unattributed())
+}
+
+/// The bench of a small scene (examples/hello-field, 30 frames after 10 of warmup, at 640 × 360)
+/// keeps each run's results where the report names them, and its report has the warm start and
+/// the hitch table, an empty one or not.
+@test(tool, read: [("ws", "../..")], browser: true, budget: 600)
+fn a_bench_keeps_its_runs_and_reports_the_warm_start_and_the_hitches() {
+    let s = Scene {
+        name: "hello-field",
+        pkg: "examples/hello-field",
+        frames: 30,
+        width: 640,
+        height: 360,
+    }
+    let Some(o) = parse_args(texts(["--warmup", "10", "--no-docs"])) else { panic("the options") }
+    let Ok((m, _, machine)) = measure(
+        s,
+        o,
+        salt: 1,
+        build: true,
+        ws: "ws",
+        out: "scratch",
+        kept: "scratch/kept",
+    ) else {
+        panic("the bench of hello-field")
+    }
+    assert(m.runs.len() == 4)
+    let named = ["gpu", "play", "cold", "warm"]
+    for k in 0..4 {
+        let run = named[k]
+        assert(m.runs[k].as_str() == f"scratch/kept/hello-field/{run}", m.runs[k].as_str())
+        for file in ["frames.json", "counters.json", "memory.json", "log.txt"] {
+            assert(files::stat(f"{m.runs[k]}/{file}").wait().is_ok(), f"{run}'s {file}")
+        }
+    }
+    // The timed runs' GPU timings (a start isn't timed: its timestamps would cost it), and the
+    // starts' loads.
+    for k in 0..2 {
+        assert(files::stat(f"{m.runs[k]}/timings.json").wait().is_ok(), "a timed run's timings")
+    }
+    for k in 2..4 {
+        assert(files::stat(f"{m.runs[k]}/load.json").wait().is_ok(), "a start's load.json")
+    }
+    assert(m.warm_playable_ms >= 0.0 && m.warm_loaded_bytes > 0.0, "the warm start's numbers")
+    let table = markdown(machine.as_str(), "2026-01-01", [m.clone()])
+    assert(contains(table.as_str(), "Warm playable") && contains(table.as_str(), "Hitches"))
+    let json = report_json(machine.as_str(), "2026-01-01", [take m])
+    for key in [
+        "\"hitches\"",
+        "\"unattributed\"",
+        "\"warm_playable_ms\"",
+        "\"runs\"",
+        "\"compiles\"",
+    ] {
+        assert(contains(json.as_str(), key), key)
+    }
+}
+
+/// A program's `memory shares:` line, its names' spaces kept: what's held, then each share.
+@test
+fn the_memory_shares_line_is_read() {
+    let line = "wrela: memory shares: held 902000000, targets 120000000, leaves' atlas 4194304"
+    let sh = report::shares_of(line)
+    assert(sh.len() == 3, f"{sh.len()} shares")
+    assert(sh[0].0.as_str() == "held" && sh[0].1 == 902000000.0)
+    assert(sh[2].0.as_str() == "leaves' atlas" && sh[2].1 == 4194304.0)
+    assert(report::shares_of("playable at frame 80").is_empty())
+}
+
+/// `--lan` serves the pages to a device instead of running them here, so the native run, this
+/// machine's, is skipped; `--row` takes its row whole.
+@test
+fn the_command_line_serves_the_lan_and_takes_a_row() {
+    let Some(o) = parse_args(texts(["--lan", "--scene", "last-green-walk"])) else { panic("--lan") }
+    assert(o.lan && !o.native && o.row.is_empty())
+    let Some(r) = parse_args(
+        texts(["--row", "M1 Air;last-green-walk;16.7;17.1;33.4;2;5400"]),
+    ) else {
+        panic("--row")
+    }
+    assert(r.row.as_str() == "M1 Air;last-green-walk;16.7;17.1;33.4;2;5400" && !r.lan)
+    assert(parse_args(texts(["--row"])).is_none())
+}
+
+/// A device's page has a query of its own for each run, and asks to show its summary.
+@test
+fn a_lan_page_has_its_runs_query_and_shows_its_summary() {
+    let u = lan_url("http://10.0.0.5:8123/", "cold", "#test&frames=360&salt=2")
+    assert(u.as_str() == "http://10.0.0.5:8123/?run=cold#test&frames=360&salt=2&show=1", u.as_str())
+}
+
+/// A row typed from a page's summary lists its machine, scene and five numbers, marked by hand;
+/// one with a number missing or not a number isn't a row.
+@test
+fn a_row_by_hand_has_its_five_numbers_and_says_so() {
+    let Some(line) = by_hand(
+        "Iris Xe laptop; last-green-opening; 16.7; 18.2; 34.0; 3; 6100",
+        "2026-10-26",
+    ) else {
+        panic("the row")
+    }
+    assert(
+        contains(
+            line.as_str(),
+            "- 2026-10-26, Iris Xe laptop, last-green-opening: intervals p50 16.7 / p95 18.2 / p99 34.0 ms, 3 over 33 ms, playable 6100 ms (by hand",
+        ),
+        line.as_str(),
+    )
+    assert(by_hand("M1 Air;walk;16.7;17;33;2", "2026-10-26").is_none())
+    assert(by_hand("M1 Air;walk;16.7;17;fast;2;5400", "2026-10-26").is_none())
+}
+
+/// Another engine's report (rywible/wrela-others' harness) is a row a scene: its engine and
+/// version, its GPU span or that the engine doesn't expose one, its intervals and cold and warm
+/// first frames, with the command and the date; JSON of another shape isn't one.
+@test
+fn another_engines_report_is_a_row_a_scene() {
+    let json = "{\"machine\": \"Apple M4\", \"date\": \"2026-10-26\", \"command\": \"npm run bench -- --engine three\", \"scenes\": [{\"scene\": \"three-walk\", \"engine\": \"three.js\", \"version\": \"0.186.1\", \"span\": {\"p50\": 0, \"p95\": 0, \"p99\": 0}, \"gpu_timed\": false, \"interval\": {\"p50\": 16.7, \"p95\": 18.1, \"p99\": 33.4}, \"over_33\": 2, \"first_frame_ms\": 1800, \"warm_first_frame_ms\": 900, \"loaded_bytes\": 2097152}]}"
+    let Some(d) = std::json::parse(json) else { panic("the JSON") }
+    let Some(rows) = other_rows(d, "build/others/three.json") else { panic("the rows") }
+    assert(
+        rows.as_str() ==
+            "| three.js 0.186.1 | three-walk | not exposed | 16.70 / 18.10 / 33.40 | 2 | 1800 | 900 | 2.0 | 2026-10-26, Apple M4: `npm run bench -- --engine three` (build/others/three.json) |\n",
+        rows.as_str(),
+    )
+    let Some(other) = std::json::parse("{\"scenes\": []}") else { panic("the JSON") }
+    assert(other_rows(other, "x.json").is_none())
+}
+
+/// A device's table goes at the end of "Devices", before the next section; with no "Devices",
+/// one is made at the end.
+@test
+fn a_devices_row_goes_under_devices() {
+    let text = "# Benchmarks\n\n## Devices\n\n- one\n\n## Browsers\n\nChrome\n"
+    let added = into_devices(text, "- two\n")
+    assert(
+        added.as_str() == "# Benchmarks\n\n## Devices\n\n- one\n\n- two\n## Browsers\n\nChrome\n",
+        added.as_str(),
+    )
+    let made = into_devices("# Benchmarks\n", "- two\n")
+    assert(made.as_str() == "# Benchmarks\n## Devices\n\n- two\n", made.as_str())
+}
+
+/// A device's `device.json` names its adapter, and on the LAN its browser too.
+@test
+fn a_device_is_named_by_its_adapter_and_its_browser() {
+    let Ok(d) = doc(
+        "{\"vendor\": \"intel\", \"architecture\": \"xe\", \"description\": \"\", \"agent\": \"Mozilla/5.0 (Windows NT 10.0) Chrome/141.0\"}",
+        "device.json",
+    ) else {
+        panic("the json")
+    }
+    assert(machine_in(d.clone(), agent: false).as_str() == "intel xe")
+    let m = machine_in(d, agent: true)
+    assert(m.as_str() == "intel xe (Mozilla/5.0 (Windows NT 10.0) Chrome/141.0)", m.as_str())
+    // Its report's file is named by it, a slash or a space no more than a dash.
+    let slug = slug_of(m.as_str())
+    assert(slug.as_str() == "intel-xe-Mozilla-5.0-Windows-NT-10.0-Chrome-141.0", slug.as_str())
+    assert(slug_of("apple metal-3 Apple M4").as_str() == "apple-metal-3-Apple-M4")
+}
+
+/// Served to the LAN, a fake site has a URL there; the bench waits until a device has put the
+/// page's `results/DONE`, and reads the run's results and its machine from what was put.
+@test(tool, budget: 60)
+fn the_lan_bench_serves_a_site_and_reads_what_a_device_put() {
+    let dir = "scratch/site"
+    let _ = files::remove_all(dir).wait()
+    let _ = files::make_dirs(f"{dir}/results").wait()
+    let _ = files::write(f"{dir}/index.html", String::from("<!doctype html>").as_bytes()).wait()
+    let Ok(started) = serve::start(dir, lan: true).wait() else { panic("served") }
+    for url in started.lan {
+        assert(url.as_str().starts_with("http://") && url.as_str().ends_with("/"), url.as_str())
+        assert(!contains(url.as_str(), "127.0.0.1"), url.as_str())
+    }
+    // What a device puts: its device and its DONE.
+    let _ = files::write(
+        f"{dir}/results/device.json",
+        String::from(
+            "{\"vendor\": \"apple\", \"architecture\": \"metal-3\", \"description\": \"\", \"agent\": \"Safari\"}",
+        ).as_bytes(),
+    ).wait()
+    let _ = files::write(f"{dir}/results/DONE", String::from("ok").as_bytes()).wait()
+    assert(posted(dir, 5.0).is_ok(), "the device's results")
+    let _ = files::write(
+        f"{dir}/results/DONE",
+        String::from("the adapter was lost").as_bytes(),
+    ).wait()
+    let Err(e) = posted(dir, 5.0) else { panic("a failed page is a failure") }
+    assert(contains(e.message(), "the adapter was lost"), e.message())
+    let _ = files::remove_all(f"{dir}/results").wait()
+    assert(posted(dir, 1.0).is_err(), "no device put anything")
+    let _ = serve::close(started.server).wait()
 }

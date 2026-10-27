@@ -1,0 +1,118 @@
+// An impostor read through a net (`engine::impostor::net_texel`): a 12 → 48 → 48 → 8 net with a
+// 32 × 32 × 8 grid (the ladder's rung D), its weights half floats, evaluated in a kernel at 1,000
+// points of the views, against the CPU's `eval` of the same net (its half floats read back) with
+// the grid's features bilinear as the fit fixture takes them.
+
+use engine::impostor::{Neural, VIEWS, net_texel}
+use engine::neural::{Model, eval, halves, start, unhalves}
+use engine::noise::rand
+use std::gpu::{GlobalId, GpuBuffer, Half2, Slots, buffer, buffer_of, dispatch, read}
+use std::io::{Pending, print}
+
+const M = Model { inputs: 12, h1: 48, h2: 48, outputs: 8 }
+const GRID: u32 = 32
+const FEATURES: u32 = 8
+const POINTS: u32 = 1000
+
+/// The net's weights, then its grid's.
+fn weights() -> Vec<f32> {
+    var w = start(M, seed: 5)
+    for c in 0..GRID * GRID * FEATURES {
+        w.push((rand(77, c) - 0.5) * 0.6)
+    }
+    w
+}
+
+/// Point `i`: its place on the atlas and its view.
+fn point(i: u32) -> vec4 {
+    let view = u32(rand(3, i) * f32(VIEWS * VIEWS)) % (VIEWS * VIEWS)
+    let uv = vec2(rand(4, i), rand(5, i))
+    let at = (vec2(f32(view % VIEWS), f32(view / VIEWS)) + uv) / f32(VIEWS)
+    vec4(at.x, at.y, f32(view), 0.0)
+}
+
+@compute(64)
+fn texels(nn: Neural, w: [Half2], points: [vec4], out: mut Slots<f32>, id: GlobalId) {
+    let row = id.x / 8
+    if row >= points.len() {
+        return
+    }
+    let p = points[row]
+    out[id] = net_texel(nn, w, p.xy, u32(p.z))[id.x % 8]
+}
+
+pub struct State {
+    asked: Option<Pending<f32>>,
+    pub got: Vec<f32>,
+}
+
+pub fn init() -> State {
+    State { asked: None, got: Vec::new() }
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    if s.asked.is_none() {
+        let nn = Neural { model: M, grid: GRID, features: FEATURES, on: 1 }
+        let w = buffer_of(halves(weights()), at_least: 1)
+        var ps: Vec<vec4> = Vec::new()
+        for i in 0..POINTS {
+            ps.push(point(i))
+        }
+        let points = buffer_of(ps, at_least: 1)
+        var out: GpuBuffer<f32> = buffer(POINTS * 8)
+        dispatch(texels.bind(nn, w.items(), points.items(), out: mut out), over: POINTS * 8)
+        s.asked = Some(read(out.items()))
+    }
+    if s.got.is_empty() {
+        match mut s.asked {
+            Some(p) => match p.poll() {
+                Some(Ok(v)) => s.got = take v,
+                _ => {},
+            },
+            None => {},
+        }
+    }
+}
+
+/// The CPU's eight values at point `p`: the fit fixture's inputs (the view's place, the point's
+/// in its cell, the grid's features bilinear) through `eval`.
+fn cpu(w: [f32], p: vec4) -> Vec<f32> {
+    let view = u32(p.z)
+    let v = vec2(f32(view % VIEWS), f32(view / VIEWS))
+    let uv = p.xy * f32(VIEWS) - v
+    var x: Vec<f32> = Vec::from([(v.x + 0.5) / f32(VIEWS), (v.y + 0.5) / f32(VIEWS), uv.x, uv.y])
+    let g = uv * f32(GRID - 1)
+    let c = vec2u(min(floor(g), vec2(f32(GRID - 2))))
+    let t = g - vec2(c)
+    let at = |x: u32, y: u32, k: u32| w[M.size() + (y * GRID + x) * FEATURES + k]
+    for k in 0..FEATURES {
+        let lo = mix(at(c.x, c.y, k), at(c.x + 1, c.y, k), t.x)
+        let hi = mix(at(c.x, c.y + 1, k), at(c.x + 1, c.y + 1, k), t.x)
+        x.push(mix(lo, hi, t.y))
+    }
+    eval(M, w, x)
+}
+
+/// Scaled to [0, 1] by the CPU's outputs' range, the shader's are within 1/255 of them.
+@test(frames: 4, gpu: true)
+fn the_shaders_net_texel_is_the_cpus(s: State) {
+    assert(s.got.len() == POINTS * 8, f"{s.got.len()} read back")
+    let all = weights()
+    let w = unhalves(halves(all), all.len())
+    var want: Vec<f32> = Vec::new()
+    var lo = 1.0e9
+    var hi = -1.0e9
+    for i in 0..POINTS {
+        for v in cpu(w, point(i)) {
+            want.push(v)
+            lo = min(lo, v)
+            hi = max(hi, v)
+        }
+    }
+    var worst = 0.0
+    for i in 0..want.len() {
+        worst = max(worst, abs(s.got[i] - want[i]) / max(hi - lo, 1.0e-6))
+    }
+    print(f"the shader's values within {worst * 255.0:.3}/255 of the CPU's ({lo:.3} to {hi:.3})")
+    assert(worst < 1.0 / 255.0, f"{worst * 255.0}/255")
+}

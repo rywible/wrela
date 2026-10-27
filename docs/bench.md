@@ -90,7 +90,403 @@ Over the three runs a side, the clearing's and the capybara's intervals didn't c
 Green's walk has 57 to 111 of its 1,200 intervals over 16.7 ms where B1 had 382 to 397, and a
 p99 of 29 ms where B1's was 33.
 
-## Whether §0.1's claim holds on the M4 Air
+## 2026-10-26: the B1 attribution (world-class 2, toolchain 0.8.0)
+
+The Last Green's walk, measured by `wrela tool bench -- --scene last-green-walk --no-docs` on the
+M4 Air at `2b922010` with B1's bench in the tree (its pages keep their runs in
+`build/bench/<date>-<time>/<scene>/{gpu,play,cold,warm}/`, the play run times each frame's
+labels, the fourth run opens the cold build again in the same profile). The machine was also
+running other work for part of the run, so these intervals are the hitches' evidence, not a
+baseline.
+
+| Scene | GPU span p50 / p95 / p99 ms | Interval p50 / p95 / p99 ms | Over 16.7 / 33 ms | CPU p50 / p95 ms | Native p50 / p95 ms | First frame ms | Playable ms | Pipelines ms | Loaded MiB | Warm playable ms | Warm loaded MiB | GPU peak MiB |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| last-green-walk | 12.72 / 15.00 / 18.28 | 14.73 / 23.35 / 28.83 | 218 / 6 | 4.18 / 4.97 | 10.82 / 14.46 | 619.59 | 10406.02 | 3897.22 | 4.6 | 8706.17 | 0.1 | 780.8 |
+
+Hitches (frames over 33 ms, the five heaviest labels each; phases are `engine::frame::PHASES`,
+each from its mark to the next, so `sim` holds the game's frame code before `draw` too):
+
+| Frame | Interval ms | CPU ms | Labels, GPU ms | Phases, ms | Draws | Written KiB |
+|---|---|---|---|---|---|---|
+| 61 | 59.44 | 4.94 | vegetation 3.16, creature 2.91, terrain 2.83, clouds 2.36, temporal 2.04 | sim 3.51, cook 0.25, finish 0.14, passes 0.06, choose 0.05 | 939 | 541 |
+| 203 | 33.52 | 5.46 | shadows far 18.82, vegetation 3.21, creature 2.90, clouds 2.89, terrain 2.79 | sim 4.81, cook 0.17, finish 0.07, passes 0.05, choose 0.01 | 1005 | 114 |
+| 210 | 90.96 | 4.76 | vegetation 3.23, creature 3.02, terrain 2.89, clouds 2.69, probes bake 2.61 | sim 3.74, cook 0.38, finish 0.07, passes 0.04, choose 0.01 | 939 | 113 |
+| 546 | 55.48 | 4.13 | bloom 15.86, clouds 2.65, creature 2.33, vegetation 2.31, terrain 2.28 | sim 3.57, cook 0.13, present 0.06, passes 0.04, choose 0.01 | 945 | 113 |
+| 822 | 46.18 | 4.08 | bloom 15.46, vegetation 2.36, creature 2.01, temporal 1.92, look 1.92 | sim 3.59, cook 0.13, present 0.05, passes 0.03, choose 0.01 | 945 | 114 |
+| 1106 | 37.65 | 4.00 | bloom 14.55, clouds 2.54, vegetation 2.39, creature 2.22, terrain 2.18 | sim 3.46, cook 0.13, present 0.06, passes 0.03, choose 0.01 | 945 | 113 |
+
+0 of 6 unattributed (no label over 2 ms and a CPU time under 2 ms). Read as B4's evidence: the
+far cascade's redraw lands whole on one frame (203); the bloom's chain takes 15 ms on three
+frames of the walk where it takes about 1 ms on the others; frames 61 and 210 hold no label
+heavier than the frame's usual, so their time is outside the timed passes (the first frames'
+uploads at 61, 541 KiB written; at 210 the probes' bake starting).
+
+The ten slowest pipelines to compile in the cold run (each built again alone; a name twice is
+two variants):
+
+| Pipeline | ms | WGSL KiB |
+|---|---|---|
+| cook_materials | 1197.15 | 165.2 |
+| skin_vertices | 1177.58 | 103.0 |
+| place_vertices | 828.38 | 92.2 |
+| cull_blocks | 704.77 | 114.6 |
+| cull_blocks | 641.54 | 114.6 |
+| cook_level | 589.23 | 165.2 |
+| cook_materials | 498.91 | 165.2 |
+| place | 311.97 | 59.3 |
+| skin_vertices | 266.66 | 103.0 |
+| cull_blocks | 248.89 | 114.6 |
+
+The pass viewer on the same frame the gates read (`wrela tool passes -- games/last-green --frame
+300 --input last-green-walk`): 29 passes, 24 render and 5 compute, in order: shadow moving,
+clouds, vegetation prepass, vegetation, terrain, creature, occlusion pyramid, vegetation late
+(two), ambient occlusion, sky, water (three), reflections copy, motion, lines, temporal (a
+dispatch and a pass), look (a dispatch and a pass), bloom (eight). The plan's "22" counted
+another frame's passes; this is the recorded count.
+
+## 2026-10-26: B2, the cold start (world-class 2, toolchain 0.8.1 and the 0.9.0 checkout)
+
+What each item found or changed, on the M4 Air:
+
+- **B2.1, compressed at the edge.** No test Worker could be deployed from this machine (no
+  Cloudflare credentials here), so the live site, whose Worker serves the same `CONTENT_TYPES`
+  as this branch, was asked (`curl -sI -H 'Accept-Encoding: br, gzip'`, release
+  `3676b81c1276de005613`, `last-green/`): `game.wasm` answers `content-encoding: br`, 8,319,320
+  bytes as 2,817,252 on the wire; `manifest.json` `br`, 148,534 as 6,558; `pipeline_0.wgsl` `br`,
+  1,326 as 575. Cloudflare compresses every type the release serves: nothing to change.
+- **B2.2, the big constants.** `wrela build games/last-green --report data`: 4,357,984 bytes in
+  1,402 constants. The three over 256 KB: `OBSTACLES` (1,000,248 in two) and the fallen trees'
+  per-tile lists (`FALLEN`, 934,736 in its fifteen largest), both read by the sim from its first
+  ticks (the player's and the fawn's collisions), which the plan's own rule keeps in the module;
+  and `LAND` (782,896), the bare and grown views' land, whose readers are functions passed by
+  value to the jobs that place those views' trees. Shipping `LAND` needs those views' streaming
+  to carry the land as data: not done. The section stays 4.36 MB.
+- **B2.3, tiers.** 152 pipelines, 94 in tier 0 and 58 in tier 1; none of the 17 `CLUSTERED`
+  ones (B2.4 had brought seven back; `838d1e60` keeps them out); `lights::bin`,
+  `probes::trace_again`, the shafts, `particles::admit` and the map's overlay are tier 1 already.
+- **B2.4, the load chain.** All 26 kinds cook by frame 2 (12 before); the built things and the
+  banks' prototypes no longer wait for the wood, and come as many a frame as the budget allows.
+  Native, 960×540, one worker: playable at frame 204 with the kinds alone moved, then 81.
+- **B2.5, the realizer through tapes.** Through their tapes (box-filtered noise is one tape
+  operation in 0.9.0), the built things' meshes match their compiled ones to 0.01 mm, but the
+  load took 38 s to playable in Chrome, cold and warm alike (the GPU's time interpreting
+  unpruned tapes at every corner, not the pipelines'), against 9.2 s compiled: the load keeps
+  the compiled kernels. Pipeline tiers that follow calls were tried in the toolchain and
+  reverted: 129 pipelines went to tier 1, many needed at load, and Chrome made those one at a
+  time, 58 s to playable.
+
+The step's gate, three runs each (`wrela tool bench -- --scene last-green-walk --scene
+clearing-path --no-native`, the 0.9.0 checkout):
+
+| Scene | Cold playable ms | Pipelines ms (tier 0) | Warm playable ms | Playable at frame |
+|---|---|---|---|---|
+| last-green-walk | 13,475 / 7,490 / 7,612: median **7,612** (G-cold 5,000: misses) | 6,746 / 3,695 / 3,239 | 6,323 / 5,316 / 5,613: median **5,613** (G-warm 3,000: misses) | 83 to 89 (220 at B1) |
+| clearing-path | 4,794 / 4,785 / 5,168: median **4,794** (2,500: misses) | 3,964 / 3,305 / 3,503 | 1,420 / 1,417 / 1,444 | 47 |
+
+The first run's walk shared the machine with a compile. What's left of the walk's cold start is
+its pipelines (3.2 to 3.7 s in tier 0, frame 1 waiting for them) and its first frames' work
+(the first frame alone holds 587 ms of CPU and 142 ms of its first render pass).
+
+**The B1 attribution, read again.** In a paced run (`paced=1`), the frame's last labelled pass,
+the bloom's, reads about 24 ms of GPU time on every frame: its end waits for the screen, so it
+says nothing of the bloom. The walk's three late hitches (frames 550, 836 and 1129 of this run,
+546, 822 and 1106 of B1's) show *less* bloom than the frames round them; each comes a frame or two
+before a probe replacement starts (`probes occluders` and `probes open sky`, then `probes bake`
+two frames later). B4 works against those, not against the bloom.
+
+## 2026-10-26: B4, the hitch sources (world-class 2, the 0.9.0 checkout)
+
+What each item found or changed (`wrela tool bench -- --scene last-green-walk --scene
+last-green-shot --no-native`, the M4 Air, the playing run's labels):
+
+- **B4.1, the far layer.** The 65 baked tiles' crowns land `FAR_PER_FRAME` (8) a frame, nearest
+  first, each under `may(Work::Tile)`; the far cascade waits for the last. Natively, with the
+  far layer's file held to frame 200: the layer over 11 frames, playable at frame 263.
+- **B4.2, the sky.** The clouds' noise cooks in 9 slices (`sky::NOISE_SLICES`), the weather and
+  shadow maps in 4 bands each (`sky::MAP_BANDS`), each slice asked of the planner, and at most
+  4 ms of them planned a frame (`SKY_FRAME_US`). Measured with a 6 ms cap, the heaviest frame's
+  sky labels (`clouds noise`, `clouds weather`, the dome's `clouds` and the `air`): **5.42 ms**
+  in the opening (frame 268), 6.74 in the walk (frame 42); before the cap a loading frame cooked
+  12.2 ms of noise. At 6 ms the load's noise and weather took 6 frames; at 4, the frame fixture
+  cooks the load's 9 slices of noise and its weather over 10 frames, and a weather change in
+  play its 8 bands in one frame (a band is 0.36 ms).
+- **B4.3, built things as jobs: not needed.** A built thing's tally is already a `Pending`
+  polled on a later frame, and they're realized only while loading (B2.4): the heaviest frame's
+  `built things` is 46.7 ms (walk frame 8), under twice the loading budget (60 ms).
+- **B4.4, one field write a frame** once playable (all of them while loading or capturing), the
+  neighbours' refreshes counted against `IN_FLIGHT`.
+- **B4.5, the far strips** (`shadows far`, 20.8 ms at most) are listed, not counted: B6.
+- **B4.6, measured costs.** `MEASURED` times 12 kinds by their labels (`air`, `clouds noise`,
+  `clouds weather`, `kind`, `built things`, `terrain cook`, `tile` added), each time divided by
+  the steps the timed frame ran. `cook::costs()` holds the walk's running averages at frame
+  1,200 (µs, the ladder's step / the average): air slice 291/289, noise slice 2,711/2,412,
+  weather band 364/363, dome phase 3,388/2,723, ground level 455/394, near strip 2,168/1,810,
+  far strip 1,388/1,312, occluders 455/408, probe strip 4,235/4,118, kind 64,841, built thing
+  8,000/7,542, tile 364/292 (the creature's mesh slice is timed by no label: its record stays).
+  A kind's 65 ms stays an estimate (4 ms) in the table: planned at its cost, the load would cook
+  one a frame and repeat each loading frame's own 25 ms 26 times.
+- **B4.7, the first optional step, bounded**: once playable, a step planned past twice the
+  playing budget panics in a debug build (`Planner::may`). It never fired in the Last Green's
+  tests or the frame fixture.
+
+The step's gate (one run each, the 0.9.0 checkout):
+
+| Scene | GPU span p50 / p95 / p99 ms | Interval p50 / p95 / p99 ms | Over 33 ms | Cold / warm playable ms |
+|---|---|---|---|---|
+| last-green-shot (480 frames) | 17.56 / 19.09 / 24.10 | 20.44 / 22.41 / 31.98 | **2** (8 at B1: meets) | 7,832 / 6,700 |
+| last-green-walk (1,200 frames) | 12.50 / 14.42 / 17.89 | 14.89 / 23.14 / **26.47** (22: misses) | **5**, 4 without `shadows far` (9 at B1; 2: misses) | 11,880 / 6,606 |
+
+The walk's cold start shared the machine with a compile (7,675 ms the run before). Pixels at
+frame 600 against B3: the clearing's path 16.6% differ, 99% of them by 1 or 2/255 and 0.2% of
+the screen by more (at most 32/255, over the crowns: the sky's and the probes' work lands on
+other frames); the Last Green 14.7%, 97% by 1 or 2/255, at most 22 (its run-to-run noise is
+about 10%). Its hitches:
+
+| Frame | Interval ms | Heaviest label, GPU ms | What it is |
+|---|---|---|---|
+| 88 | 33.47 | shadows far 18.94 | a far strip (B6) |
+| 95 | 126.54 | probes bake 5.05 | the first frame lit by the probes: its labels sum to about 20 ms, the rest is the frame's new pipelines being made |
+| 552 | 56.97 | bloom 16.04 | |
+| 833 | 62.04 | bloom 24.19 | |
+| 1114 | 44.58 | bloom 13.25 | |
+
+None is the ground's cook, a built thing, a kind, the sky's noise or weather, or a tile's
+placement. The last three are the B2 reading's: a frame or two before a probe replacement
+starts (`probes occluders`, `probes open sky`, then `probes bake`), the bloom's label holding
+the wait for the screen. B5.5 shifts the probes rather than replacing them.
+
+## 2026-10-26: B5, the frame (world-class 2, the 0.9.0 checkout)
+
+Each item's numbers: label p50s from the saturated run's timings (`wrela tool bench -- --scene
+last-green-shot --scene last-green-walk --no-native`), the M4 Air, Chrome; pixels native at
+640×360 against the step before at frame 600 (`wrela-host --rgba`).
+
+- **B5.1, the grass.** Blades are drawn in the depth prepass (cut to their fronds there, shaded
+  at equal depth after), a blade the last frame's pyramid hides isn't placed while the camera
+  moves, and each of the five rings keeps its placement until its cells, the render origin, the
+  probes' grid or the thinning change, or `KEPT_FRAMES` (8) pass (the pyramid tests the rings
+  past the first: near, what hides a blade is mostly what moves). One bench of all three: the
+  opening's `vegetation` 3.95 → **3.50 ms** (2.4 asked: misses), `vegetation prepass` 1.40 →
+  1.88, the placement (in `cull`) 1.33 → 0.31, `terrain` 2.28 → 1.84 (the blades' depth hides
+  ground it shaded); its GPU span p50 17.56 → 17.12. The walk: `vegetation` 2.44 → 2.04,
+  `terrain` 2.22 → 1.85, the prepass 1.61 → 1.79, `cull` 1.45 → 1.48. The clearing's still
+  camera: 40 placements in 64 frames (the test's limit, 5 × 8). Pixels: the clearing's path
+  0.23% differ, all but 4 by 1/255.
+
+- **B5.2, one bounds list.** `engine::cull` has `Bound`, a frustum test (`in_frustum`, the
+  planes after Gribb and Hartmann 2001) and `cull_bounds`/`bound_draws`: a bound's kind is the
+  draw it's an instance of, the pyramid hides what last frame's depth hid, and each kind's list
+  and draw come out (`engine/tests/cull`: 10,000 bounds of four kinds, 2,211 drawn, each kind's
+  list exactly what the CPU's test sees). `engine::pool` copies the built things' and the banks'
+  stones' meshes into one set of buffers (each thing's own given back): they're drawn with one
+  multi-draw (a mesh's draw's instances what was culled; a vertex finds its mesh by its vertex,
+  its item by the mesh's room and the instance, needing no first instance) and cast with
+  another; the tower's near and far meshes hand over by their items' coverage. The water is laid
+  in 64 m tiles (`engine::water::tiled`), the tiles the frustum meets drawn by one multi-draw,
+  and its copy is made only over the screen they cover, or not at all (the mist's copy stays
+  whole; a test on the floor's water). Not done: the characters (their CPU test stays) and the
+  rocks (their own GPU culling) through the one kernel. The walk's frame 600 records **78
+  logical draws** (30 asked: misses): the wood's ways and phases, the grass's rings (B5.1's
+  kept rings are a draw each, prepass and shading), the characters' parts. The Last Green's
+  pixels at frame 600: 11.4% differ, at most 28/255 (its noise).
+- **B5.3, fewer passes.** `wrela tool passes` now counts a pass that joins the one before it
+  (`std::gpu`'s `join`, which the host runs as one: the recorder says so in 0.9.0) with that
+  one, and the full-screen ones. The Last Green's walk at frame 300: 28 GPU passes, 15
+  full-screen → **26 and 13** (20 and 11 asked: misses). The sky joins the pass before it (the
+  ambient occlusion's dispatch moves after it); the develop brings the bloom's second level up
+  itself (`bloom_up`'s tent, where a pass added it to the first); levels narrower than 64 texels
+  aren't drawn (none at 1080p). Not done: the lines into the resolve (the resolve reconstructs
+  from four samples an output pixel, each of which would need its line test, at the output's
+  size: four times the lines pass's 0.4 ms), the mist into the froxels (B10), the water's copy
+  scissored (B5.2). The clearing's pixels: one differs, by 1/255.
+- **B5.4, cloud rays (D17): off.** The march at half the dome's size each way (2048 × 640, a
+  frame's share 40,960 rays where it was 163,840), put in the dome bilinearly, moves the
+  clearing's frame 600 by up to 28/255 (15.5% of pixels differ, 1.2% by more than 2/255: the
+  clouds' edges); the light loop's early exit at an optical depth of 4 with its last four
+  samples at twice the step moves it by up to 45/255 (87% differ: the faint scattering octaves
+  see past an optical depth of 4, `exp(-od · 0.3³)`, so they brighten), and an exit that keeps
+  every octave under 2% (an optical depth of 145) never comes before the last sample. Neither
+  holds 2/255, so the frame marches whole as before and the half march is
+  `Quality::clouds_halved`, off, for a device that needs the time (B8). With it off, the
+  clearing's frame 600 still moves (4.1% of pixels, at most 21/255, from frame 40 on), where
+  the step before rebuilt moves 3 pixels by 1/255: the build has one pipeline more (the
+  upsample's), and the load's schedule shifts with it.
+
+- **B5.5, the probes shift, and their occluders off the main thread.** The walk's three late
+  hitches (B4) went with probe replacement: with it off, the walk had 2 frames over 33 ms, not
+  5. A replacement now shifts the grid by whole columns when only the eye moved
+  (`Baked::shifted`: the columns both grids hold and their voxels copied into the spare, the new
+  band's occluders cooked into the kept volume, only the new columns baked: 144 of 648 probes
+  for a two-column shift in `engine/tests/probes-renew`, the held light and the occluders'
+  density where both grids reach unchanged). That alone left the hitches: a print showed the
+  Last Green gathering the grid's occluders on the frame that starts it, 33 to 40 ms in Chrome
+  (65 natively for the first bake), fitting each limb's capsule to its mesh's planes. The stage
+  now gathers them on a helper as the eye moves (`gather_occluders`, a job round a place each 8
+  m, used within 12 m), and the frame takes them when it wants them. Walk: **1 frame over 33
+  ms of 1,200** (33.9 ms; 5 before; G-hitch's 2: meets), paced p99 25.9 ms; opening: **none of
+  480** (2 before), and the first probe-lit frame's 100 ms is gone. GPU span p50: opening 17.12
+  → 13.27 ms (B5.2's water copy 1.74 → 0.63 ms, the pool's culling), walk 12.49 → 13.31; the
+  walk's labels' p50s sum 23.09 → 19.33 ms (bloom's wait aside): the span rose where the work
+  fell (not explained yet).
+- **B5.6, early-Z for depth-writing fragments: nothing to do yet.** A11 recorded the gap
+  (docs/toolchain-gaps.md, "A fragment can't say its depth only grows": no conservative-depth
+  attribute in Chrome's WGSL or naga's writer), so `WithDepthGreater` is still `WithDepth`. One
+  correction for when it lands: with reversed depth the depth test passes the greater value,
+  so an early rejection needs a fragment's written depth never *greater* than its rasterized
+  one (`WithDepthLess`), the draw at its bound's nearest point (an impostor's card at its
+  sphere's near side), not at its farthest: a merge triangle at the far plane (z = 0) fails the
+  early test everywhere and still can't be rejected.
+
+The step's gate (one run each, the 0.9.0 checkout, after B5.5):
+
+| Gate | Asked | Measured |
+|---|---|---|
+| G-profile, the opening's GPU span p50 | 12.0 ms (18.9 at B1) | **13.27** (misses by 1.27; its heaviest label `vegetation` 3.04) |
+| G-profile, the walk's | 9.0 ms (12.6) | **13.31** (misses; the labels' work fell 3.8 ms, the span rose 0.8) |
+| G-draws, the walk's frame 600 | under 30 logical draws | **78** (misses) |
+| G-hitch | at most 2 frames over 33 ms | walk **1** of 1,200, opening **0** of 480 (meet) |
+| G-pixels | within 2/255 | B5.1 and B5.3 hold it on the clearing (4 and 1 pixels past 1/255); B5.2 within the Last Green's noise; B5.4's switch is off, its build's schedule moves 4.1% of the clearing's pixels by up to 21/255 |
+| G-stills | | not run per step: the final gate's (B16) |
+
+## 2026-10-26: B6, shadow pages (world-class 2, the 0.9.0 checkout)
+
+**B6a and B6b: built, measured, and set aside** (branch `b6-virtual-shadow-pages`, commit
+`a4c1e9ce`). The static shadows as a virtual shadow map: ten clipmap levels (8 m to 4 km, level
+0 left out: its half-metre pages were drawn again every few steps) of 16 × 16 pages of 128
+texels in a 4096² pool (1,024 pages), pages asked for by the last frame's depth (a marking pass,
+read back) and 384 reserved (the coarsest level whole, each finer level's middle 4 × 4), at most
+16 drawn a frame (64 loading), a tile's box invalidating its pages, two sets so a moving sun's
+next set is drawn beside the one read. Its tests passed (bookkeeping, shadow-stability on a page,
+the frame fixture, the clearing's), and the walk's `shadow pages` p50 was **0.57 ms** (1.5
+asked). It didn't ship, measured in Chrome on the Last Green against B5:
+
+| | B5 | Pages (best of four tunings) |
+|---|---|---|
+| Opening GPU span p50 | 13.27 ms | 16.8 to 18.1 |
+| Walk GPU span p50 | 13.31 | 17.9 to 18.3 |
+| Walk frames over 33 ms of 1,200 | 1 | 56 to 114 |
+| Cold start to playable | 7.3 s | 14 to 25 s |
+
+Two costs, each found by taking the other away: the page table's lookup in every lit pixel (a
+dependent read before the depth samples) took about 3 ms of the opening's frame (with the static
+lookups skipped: vegetation 5.45 → 3.77 ms, terrain 4.83 → 2.94, span 18.1 → 14.8); and a
+page's drawing draws the built things, the banks and the ground whole into every page, and a
+coarse page kilometres of trees, so the reserved set's 384 pages cost several times the
+cascades' 60 strips (choosing the casters once a level or once a 4 × 4 block only moved the cost
+from the choice into the casting). What the plan names for both is what this attempt lacked:
+per-page caster lists from the one bounds list (B5.2's kernel testing each caster against the
+pages to draw), and a lookup cheap enough for a forward renderer's every pixel (a shadow mask
+from the depth, or the table where the fragment's own page is known). The engine keeps its
+cascades.
+
+**B6c, PCSS: a switch, off.** `ShadowQuality::soft` (`Soft::Pcf`, **proposed** default, or
+`Soft::Pcss`): an 8-texel blocker search in the near cascade, the penumbra the sun's 0.53° disc
+(`Light::sun_size`) spreads at the blockers' distance, then 12 taps that wide (Fernando 2005).
+`engine/tests/shadow-pcss`: a blocker 16 m over its receiver casts a 13-texel penumbra, one 1 m
+over it 2 (PCF: 2 and 2). In the opening it costs **0.71 ms** more over the lit passes' p50s
+(vegetation 3.04 → 3.23, terrain 1.99 → 2.26, the creature 1.82 → 2.09; the span 13.27 →
+13.54): over the 0.4 ms asked, so it stays a switch with that number. With `Pcf` the shaders
+compute what they did.
+
+## 2026-10-26: B7, memory (world-class 2, the 0.9.0 checkout)
+
+The frame prints `memory shares:` once at `playable`, and the bench reads it into a table (the
+program's own counts: what's held, then each share). The Last Green's walk at 1080p in Chrome:
+
+| Share | MiB at playable |
+|---|---|
+| held (buffers and textures) | 584.5 |
+| targets | 92.6 |
+| impostors | 78.0 |
+| sky (the dome 4096 × 1280 half floats: 40.0; the shape noise 16.0; the weather and its shadow 16.0) | 74.8 |
+| shadows (two cascades' two 2048² maps: 64.0; the moving map 4.0) | 68.0 |
+| wood | 58.1 |
+| built (B5.2's pool: 177.3 before these items) | 57.4 |
+| wood lists | 41.5 |
+| probes (30.1 before item 5) | 23.1 |
+| realizer (the fawn's and the wolf's meshes) | 18.3 |
+| terrain | 10.8 |
+| reflections | 7.5 |
+
+- **B7.1.** The breakdown above; the game's shares add `realizer` (the casts' meshes, against
+  `memory::REALIZER`, so `evict_after` can fire).
+- **B7.2, impostor kinds streamed: not done.** The impostors are one array texture a kind a
+  layer (26 × 1024² compressed: 78 MiB); streaming them needs a kind-to-layer indirection in the
+  wood's choosing and shading.
+- **B7.3.** The herd's close-up test: the realizer's bytes 225 MiB as the close-up begins, 68
+  after 1,000 frames with the other grazers unseen.
+- **B7.4.** The dome stays 4096 × 1280 (D17 off): 40 MiB of the sky's 75.
+- **B7.5.** The probes' voxels are given back once cooked (a shift reads the density texture):
+  the probes' share 30.1 → 23.1 MiB.
+- **B7.6, a pool for transient targets: one texture.** The dabs are drawn into the texture the
+  water's copy held (the water and the mist read it before the look writes the dabs): 7 MiB at
+  1080p. The plan's general pool (the shafts, the see-through targets, the glow's chain) isn't
+  built.
+- **The pool fitted, its vertices packed.** B5.2's pool grew by doubling: once everything built
+  is in it's fitted to what it holds (177 → 100 MiB), and its vertices are a place and an
+  oct-encoded normal (16 bytes, where a skinned vertex is 48): 57 MiB.
+- **B7.7.** `Targets`' notes say what each costs at 1080p (84 MiB in all).
+
+The gate: the walk's `gpu_peak` **857.7 MiB** (512 asked: misses; about 890 before), the
+opening's **819.1** (560: misses). What's held at `playable` is 585 MiB: the peak's other 270
+MiB come and go during the load (built things realized into room for their whole grid until
+their counts come, the pool's copies as it grew). The walk had no frame over 33 ms (GPU span
+p50 13.27 ms), and the opening none (13.19).
+
+G-pixels (native host, 640×360, B6's `c4df4f16` against B7's `8f49f88c`): the clearing's frames
+are byte for byte the same; the Last Green's differ in 12.9% of pixels by at most 28/255, most by
+1, which is its run-to-run noise (two runs of one build differ by 10 to 12%, at most 28).
+
+## Whether D10 holds
+
+The claim (docs/plan-world-class-2.md §0.1, D10, **proposed**): on a MacBook Air M4 in Chrome at
+1080p, every flagship scene's GPU frame is under 12 ms at the median with every `Quality`
+switch on, no frame of 1,200 paced frames is over 33 ms and the paced 99th percentile is under
+20 ms; each is playable within 5 s of a cold page open and 3 s of a warm one; the Last Green's
+floor keeps its GPU memory under 512 MiB. On a MacBook Air M1 with 8 GB the floor holds 60 fps
+with the same switches and is playable within 8 s cold. On an Intel Iris Xe laptop in Chrome the
+floor's GPU frame is under 25 ms with no frame over 50 ms. The other engines' scenes are recorded
+beside these numbers, whatever they show. §B16 fills each cell from its own bench run; a cell
+says "holds", "misses by …" or "not measured: why".
+
+| Device | Scene | GPU p50 < 12 ms | Frames over 33 ms of 1,200 = 0 | Paced p99 < 20 ms | Cold playable | Warm playable < 3 s | Memory |
+|---|---|---|---|---|---|---|---|
+| M4 Air | the Last Green's opening | misses by 4.6 (16.62) | misses: 5 of 480 | misses by 13.7 (33.73) | < 5 s: misses by 10.5 (15.5 s; 7.6 to 8.9 s in B14's quieter runs) | misses by 4.8 (7.8 s) | < 512 MiB: misses by 376 (887.9 MiB at its peak) |
+| M4 Air | the Last Green's walk | misses by 6.1 (18.14) | misses: 5 | misses by 5.9 (25.94) | < 5 s: misses by 11.0 (16.0 s) | misses by 5.0 (8.0 s) | < 512 MiB: misses by 350 (861.8 MiB) |
+| M4 Air | the clearing's path | misses by 0.43 to 0.65 (12.43 with its volumes off, 12.65 before) | misses: 45 to 46 of 600 | misses by 21.4 (41.42) | < 5 s: holds in the A/B runs (4.5 to 5.0 s), misses in the full bench's (9.0 s) | holds (1.9 s) | |
+| M4 Air | the capybara's run | holds (1.12) | holds (0) | misses by 0.33 (20.33) | < 5 s: holds (first frame 0.17 s; it prints no playable) | holds | |
+| M1 Air 8 GB | the floor | 60 fps: not measured: no M1 to hand | | | < 8 s: not measured | | |
+| Iris Xe laptop | the floor | < 25 ms: not measured: no laptop to hand | over 50 ms = 0: not measured | | | | |
+
+What B16 measured (`wrela tool bench` against B1's report, 2026-10-26, toolchain 0.9.0; the
+table is under "2026-10-26: B16" at the end), a sentence each:
+
+- **The Last Green's opening misses everywhere but its first frame.** Its GPU frame is 16.6 ms,
+  4.6 over D10's 12 (B13 left it at 14.25; B14's switches are off, and the rest of the rise is
+  the machine's: the same build measured 16.5 to 16.7 in B14's runs); 5 of 480 frames over
+  33 ms; playable in 7.6 to 15.5 s cold and 7.8 s warm; 888 MiB of GPU memory at its peak. The
+  levers, by its labels: the vegetation (5.4 ms), the terrain (4.4), the clouds and the look; for
+  the start, the pipelines (7.5 s: 103 in tier 0, 72 in tier 1, and the cascades' three kernels
+  in tier 0 though they run only when switched on); for memory, the shadows (71 MB), the sky
+  (78 MB), the impostors (82 MB) and the wood's lists (33 MB).
+- **The walk misses the same way** (18.1 ms, 5 of 1,200 frames over 33 ms, p99 25.9 ms), its
+  hitches what a frame cooks (the hitch table under B16).
+- **The clearing's path misses its GPU frame by 0.65 ms and its hitches by 46.** Bisected
+  (B5 10.2 ms with no frame over 33, B7 10.8, B9c 11.9, B10 12.4, B15 and B16 12.6). Its own
+  switches explain little of it: with the froxel and distance volumes off (it has neither fog nor
+  solids; a950ec70 turns them off for it) it measures 12.43 ms and 45 frames over 33, and with
+  the probes' sight lookups off too, 12.26 and 50. The rest is in code every frame runs whatever
+  the switches say: the shading passes now carry the sight, fog and distance paths and their
+  bindings. The next lever is to build those paths only where a scene's quality asks for them
+  (a `const` per switch, as B11c showed a false constant builds none of a path).
+- **The capybara's run holds** but for a p99 0.33 ms over (the leapling's, a 2 ms frame, is 19.4:
+  headless Chrome's pacing).
+- **The M1 Air and the Iris Xe laptop are not measured:** neither was to hand (B8, "Devices").
+- **The other engines** (Part C, "Other engines on this machine"): three.js, Babylon.js and
+  PlayCanvas keep up at 60 Hz with the brief's far sparser content (no frame over 33 ms in
+  1,200); three.js's own GPU timing reads 36 ms a sample.
+
+What B13 left (toolchain 0.6.3), against §0.1's first wording, kept for the record:
 
 The claim (docs/plan-world-class.md §0.1, **proposed**): at 1080p in Chrome, each flagship scene
 holds 60 fps with a 99th-percentile frame interval under 16.7 ms, no shader or streaming hitch,
@@ -119,10 +515,527 @@ below are judged by their GPU frame against 16.7 ms and their frames over 33 ms.
   scenes (§0.6) are in a sibling repository that doesn't exist yet, so there is no number to
   compare with.
 
+## 2026-10-26: B9, light with visibility (world-class 2, the 0.9.0 checkout)
+
+Each scene's labels below are the medians over the frames each ran in (`probes again` runs on
+some frames only), from the bench's GPU run of the Last Green at 1080p in Chrome on the M4 Air,
+against B7's run (`build/bench/2026-10-26-154945`).
+
+**B9a, the probes' sight.** Each probe keeps what it sees (DDGI's depth, Majercik et al. 2019):
+6 × 6 octahedral texels of the mean and deviation of its rays' hit distances, made by a kernel of
+their own (`probes::see`, a texel an invocation) from the hits the bake and the re-trace write. A
+lookup weighs the four columns of the nearer layer by Chebyshev's bound and DDGI's backface term,
+and turns those weights into where its bilinear samples fall (four reads, not eight: a wall
+between a point and a column stands between it and both of its layers).
+`ProbeQuality::visibility` (on) switches the lookup; off, it's the last one's.
+
+- **The tests** (engine/tests/probes-visibility, the frame's probes after 20 rounds of re-tracing):
+  a point 1 m inside a closed room beside open ground gets **0.0%** of the open side's sky light
+  (34.7% without the sight); a point 1 m inside a closed box **1.05%** of the meadow's (9.9%);
+  the meadow's 50 points move by at most **0.61/255** of their light.
+- **Off is the last lookup:** the clearing, native, 640 × 360, 240 frames, against B8: **1 pixel by
+  1/255** (the new kernels' pipelines move the schedule), with the re-trace's planning as it was
+  (the next item changes it, and with it the clearing's light in 33% of pixels by up to 17/255).
+- **The re-trace planned at its own cost.** A strip traced again (32 columns, 64 rays) was planned
+  at a bake strip's measured cost (4.2 ms on the ladder at B7; 0.57 ms is what it takes); the
+  sight made the bake strip 20% dearer, its rung 5.3 ms, and no playable frame had room for it.
+  `Work::ProbeAgain` now has its own cost (B7's 600 µs to start, then measured by its label).
+  The walk traces again on 720 frames of 1,260 (443 at B7).
+- **G-profile** (one run each; the plan's estimate: under 0.3 ms together):
+
+| Label, p50 ms | walk B7 | walk B9a | shot B7 | shot B9a |
+|---|---|---|---|---|
+| probes again (a strip) | 0.57 | 0.75 | 0.66 | 0.83 |
+| probes bake (a strip, at load) | 3.01 | 3.72 | 2.72 | 3.14 |
+| vegetation | 2.01 | 2.03 | 2.95 | 3.08 |
+| terrain | 1.83 | 1.86 | 1.98 | 2.17 |
+| creature | 0.51 | 0.55 | 1.84 | 2.03 |
+| GPU span | 13.27 | 13.80 | 13.19 | 13.71 |
+
+  The walk's re-trace and lookups rise 0.28 ms together on a frame that traces (meets); the
+  shot's, close to the fawn, 0.68 (misses: its pixels read the probes four times as often). The
+  span rises 0.5 ms in both, the re-trace running on more frames among it.
+- **G-memory:** the probes' share 24.2 → 31.8 MB: the sights' 7.6 MB (52,488 probes × 36 texels ×
+  4 bytes), nothing else.
+
+**B9b, the solids' distance volume** (`engine::distance`). 192 × 64 × 192 voxels of 0.5 m round
+the eye (a 3D texture of 32-bit floats: as a storage buffer it took a shading pass past WebGPU's
+eight), toroidal, moved by whole 8 m bins; each voxel the distance to the ground (the clipmap's
+relief) and to the solids its bin lists, at most 4 m. `Scene::solids` (new) gives them: the Last
+Green's are its occluders that are solid (5,928 capsules of trunks, limbs and stones) and its
+built things as tapes (134 of 135: the tower's 1,575 operations are past a `ShapeTape`), each
+landing a new version. A cook is eight slabs, one a frame (`Work::Distance`). Its users: the
+probes' rays step through open air by it (two steps at most: the leaves aren't in it) and end at
+a solid as at the ground; the contact shadow marches it toward the sun (nearest voxels, a read a
+step, as the screen's march did) and so doesn't fail at the screen's edge; the ambient occlusion
+adds four cones read at 1.5 and 4 m past GTAO's metre.
+
+- **The tests** (engine/tests/distance): a sphere's volume within 0.233 m of its distance at 1,000
+  points, a cuboid's tape within 0.239 (half a voxel is 0.25); a probe's ray toward a trunk stops
+  3.51 m on (its surface is 3.5) with the trunk's light, one beside it reaches the sky; a contact
+  shadow beside a post at the screen's edge is the one beside a post in its middle (0 and 0).
+  A post thinner than a voxel (0.3 m round) shadows only half: its middle lies between voxels'
+  middles, which never see inside it. The Last Green's test counts its solids after the load.
+- **G-profile** (one run each, steering on: B9c's commit follows):
+
+| Label, p50 ms | walk B9a | walk B9b | shot B9a | shot B9b |
+|---|---|---|---|---|
+| probes again (a strip) | 0.75 | 0.76 | 0.83 | 0.87 |
+| distance (a slab; 197 of 1,260 frames, 34 of 540) | | 0.32 | | 0.43 |
+| ambient occlusion (B7: 0.53, 0.31) | 0.53 | 0.69 | | 0.59 |
+| terrain | 1.86 | 1.90 | 2.17 | 2.23 |
+| creature | 0.55 | 0.53 | 2.03 | 2.09 |
+| GPU span | 13.80 | 13.97 | 13.71 | 13.88 |
+
+  `probes again` doesn't fall (asked: 30%): its rays spend their steps in crowns, lit by the
+  probes there, which the volume can't skip, not in open air. The contact march through the
+  volume costs what the screen's did once it reads a voxel a step (trilinear, it cost 0.5 ms
+  more in the shot's terrain and creature). A slab costs 0.32 ms (asked: 0.25); a frame cooks
+  one on a sixth of the walk's frames, the volume moving every 8 m.
+- **G-memory:** a new `distance` share, 10.9 MB (the volume's 9.4 and its solids' lists).
+
+**B9c, the re-trace steered** (`probes::next_strip`). A strip of 32 columns is still traced a
+frame; which one is chosen on the CPU, which knows what changed: the oldest if two rounds haven't
+traced it, else the one the sun turned most (degrees) and the sky's version moved most since it
+was, up to five times as much the nearer it lights what the eye sees (its nearest column within
+12 m, or ahead within 40 m), its age over a round past that. The plan's GPU bucket select of 32
+columns anywhere would need the probes' buffers written out of order, which a kernel's slots
+aren't; the strip is the unit the re-trace already has.
+
+- **The tests** (CPU, the Last Green's 81 × 81 grid, 206 strips): with nothing changing, every
+  strip within a round, as in turn; after a 5° step of the sun, the strips under the eye within
+  **3 frames** and every strip the eye sees (34) within **34**: in turn, within 206 (the `Sun`
+  fixture's frames to convergence: a sixth).
+- **G-pixels** (the clearing, native, 640 × 360, 600 frames, steered against in turn): 21.8% of
+  pixels differ, 96% of them by 1/255, at most 27/255 (misses 2/255). The clearing's sky changes
+  version as its air and weather finish cooking; steered, the near strips are traced first after
+  each, and from then the two runs trace strips in different orders, each probe's last traces
+  with other turns of the spiral (kept half of): they differ by those traces' noise. Steady
+  state, with nothing changing, is the order taken in turn again, a round later.
+
+## 2026-10-26: B10, light in the air (world-class 2, the 0.9.0 checkout)
+
+`engine::fog` (Wronski 2014; Hillaire 2015): 160 × 90 froxels over the frustum, 48 slices from
+0.5 to 200 m (exponential), jittered along their rays each frame. Each frame a froxel takes its
+density (the scene's `FogField`: the engine's height fog, spheres of mist, the crowns' density
+from the probes' volume times 0.02) and the light it scatters toward the eye (the sun through
+the static cascades and the clouds' shadow, Henyey-Greenstein g 0.5; the sky, from the nearer
+probe layer's constant terms), blended with the last frame's reprojected (0.9) unless its density
+moved by more than a fifth. A workgroup a column integrates it (Hillis-Steele's scan in workgroup
+memory), and `lit::through_air` applies it before the air's aerial table; the sky pass applies
+its last slice. `Scene::fog` (new; none by default); the Last Green's: the height fog, a sphere
+of mist at each fall (`history::MISTS`), the canopy's haze (B switches it). The shafts
+(`engine/shafts.wrela`) and the falls' mist pass (`water::mist_over`) are gone: `wrela pipelines
+games/last-green` names neither `march_shafts`, `add_shafts` nor `mist_over`.
+
+- **The tests** (engine/tests/fog): a uniform fog of 0.02 per metre shows 0.9048, 0.6699 and
+  0.3015 of points 5, 20 and 60 m ahead (`exp(-σd)`: 0.9048, 0.6703, 0.3012); a step to 0.04
+  settles in **1 frame** (asked: 16); with the eye 10 m under the ground, every froxel in its
+  shadow, the light in front of those points is the same with the sun's in-scatter and without
+  (within 0.0005).
+- **G-profile** (one run each; asked: the fog at most 1.0 ms in the opening and the frame's net
+  rise at most 0.6 ms, the shafts and the mist gone): the first run, 64 slices, each slice's
+  integral a loop over those before it and the sky from `held_at`'s ten samples, took **2.93 ms**
+  on the walk and 1.79 in the opening, the walk's span +1.31 ms. With 48 slices (the plan's first
+  lever), the scan, and four samples for the sky:
+
+| | walk B9 | walk B10 | opening B9 | opening B10 |
+|---|---|---|---|---|
+| fog, p50 ms | | 1.91 | | **0.78** |
+| water (the mist pass was its) | 0.73 | none | 0.62 | 0.20 (296 frames) |
+| GPU span p50 | 13.97 | 14.24 (**+0.27**) | 13.88 | 14.17 (**+0.29**) |
+
+  The opening meets both; the walk's fog is 1.9 ms (the wood: its canopy's haze on most froxels).
+- **G-memory:** a `fog` share of 16.6 MB (three volumes of 160 × 90 × 48 half floats); the shafts'
+  1.8 MB target is gone.
+- **Off is B9's image:** the clearing, which has no fog: 2 pixels by 1/255 against B9c (native,
+  640 × 360, 240 frames).
+
+## 2026-10-26: B11, geometry from the field (world-class 2, the 0.9.0 checkout)
+
+**B11c, the cluster path leaves the game (D14).** `engine::stone::ClusterStones` and its shading
+are gone, and with them the Last Green's `CLUSTERED` switch and its branches in its choosing, its
+prepass, its shading, its load and its readiness (the stage's lines went with B10's commit, the
+same file). `engine/virtual.wrela` stays for `examples/clusters`, the soft rasterizer and its
+tests, with a note that no game draws through it. `wrela pipelines games/last-green`: **93
+pipelines before and after**: since toolchain 0.8.0 (A6) the false constant built none of the
+path's 17. The path was off, so nothing the Last Green ran changed.
+
+**B11d, rock as a material** (`engine::rock`). A stone's colour and roughness cooked per vertex
+at realization by where the vertex is (`cook_rock`, a `RockLook` through `stone::realize_rock`):
+strata (bands about 0.3 to 1.2 m deep along a bedding direction, warped by a noise, each its tone
+between 0.72 and 1.18 of the rock's), cracks (Worley's edge distance on 1.6 m cells, darkened by
+up to 0.45), lichen (faces under 30°, over half a metre above the ground, in patches: a grey-green,
+a fifth at most) and wetness (within 0.6 m of the nearest water's level: 0.6 of the colour,
+roughness 0.35). The colour's alpha holds the roughness, which `lit_stone` and the pool's stones
+now read (it was a constant 0.8; a rock cooked from its field alone still says 0.8). The plan's
+`Material.rough` and `.wet` aren't needed: stones keep their four-byte colours, the wet band in
+the colour and the roughness. The Last Green's stones, standing slabs, waystones, crag beds and
+bank stones are rock (its dressed masonry, the blocks, the walls and the tower, keeps its look);
+each built thing's water is the nearest water tile's level, a bank stone's its own lowest 0.3 m.
+Its parameters are proposed.
+
+- **The test** (engine/tests/rock): a 2 m cube of rock, bands 0.5 m deep, the water 0.3 m over its
+  foot: **4** distinct tones up its sides; its wet foot 0.14 of luma against 0.26 just above.
+- **G-profile:** a frame's `built things` (its realizing and colours, at load) p50 4.80 ms on the
+  walk and 7.85 in the opening, against 4.77 and 5.92 at B10 (asked: at most 2×).
+
+**B11a, levels of a built thing from its field.** Every built thing but a crag's beds now has a
+far level: its field extracted again with four times the cell and tolerance
+(`blockouts::realize_far`, `FAR_COARSER`), which takes over across a band where its largest cell
+covers about four pixels (`far_band`: a stone's and a slab's middle 50 m, a waystone's 37, a
+block's 75, a wall's 124; the tower keeps its 64 to 96 m), each level drawn over its share of the
+pixels (the dithered coverage the tower's two levels had). The Last Green's 115 such things hold
+760,361 vertices near and **132,522 far (17.4%)**.
+
+- **Measured:** the GPU span doesn't move (walk 14.24 ms, opening 14.30; 14.15 and 14.27 at B11d):
+  the built things are a small share of the frame. A load frame's `built things` p50 7.70 ms (the
+  far level realized too; 4.80 before), the `built` share 60.2 → 64.7 MB; playable 7.5 and 7.4 s.
+- **Not done:** the plan's continuous blend (each fine vertex's coarse normal from the filtered
+  field and its presence from the coarse level's occupancy, the shading normal and a dithered
+  fade blended per instance), its prototype's switch sweep on the tower, a crag, a post and a
+  bank stone from four views (B11a.0's acceptance number), the thin-rod and coarse-normal tests,
+  and levels for the banks' placements, the rocks and the herd. The sweep needs a capture tool
+  with each instance's level pinned (none exists yet); the herd's realizer has dithered levels of
+  its own; the banks and the rocks are a few prototypes placed many times, each level another
+  prototype in the pool. What draws now is the tower's dithered cross-fade, for everything built.
+
+**B11b, the crags as solids: already so.** Since the land's re-architecture (#330) a crag of two
+tiers or more (`land::place::bedded`, 20 m and up) stands as beds of rock (`crag_slabs`): built
+things realized from their fields, the ground's substrate leaving their volume out
+(`Ground::substrate_height`), collision reading the full ground. B11d gives them rock's look.
+What stays a heightfield is a lower crag, an outcrop, by design (one rounded mass, soil in its
+pockets: the land's note says a 4 m rock cut as one slab reads as a blank sheet). Nothing in the
+ground changed, so `height_at` and the sim are as they were. The beds' realized surface against
+their field (the realizer's `measured_error`) wasn't measured here.
+
+## 2026-10-26: B12, water (world-class 2, the 0.9.0 checkout)
+
+1. **Flow.** The water's mesh already carries a flow per point (`WaterVert.flow`, a course's
+   direction times a speed from its slope: `land::water`'s 0.35 + 2.5 × slope, close to the
+   plan's), so no field layer is cooked for it. What was missing is bounded advection: the
+   ripples drifted as `p − flow × t`, which draws them out without end where the flow varies.
+   They're now carried in two phases half a 2 s period apart, each started again when its
+   weight is none (`water::advected`; Vlachos 2010). Test: a marker on a 1.2 m/s course moves
+   6 cm in 0.05 s in either phase, the weights a whole at every time.
+2. **Falls.** The mist is the air's (B10: `mist_over` is gone). Each fall within 60 m of the eye
+   throws spray each frame (soft, the foam's colour at 0.6, 0.3 to 0.8 m, 1.5 s: about 200 a
+   second) and a column of foam at its foot (light that adds, 0.8 s): `stage::spray`, the floor's
+   `Scene::emit`, the frame's particles' first use. The foam is the additive kind the particles
+   have (`SPARK`), not a new one. Test: a fall in view throws spray and foam each frame, one past
+   60 m none. Neither benched scene passes within 60 m of a fall.
+3. **Wet margins: already so.** The baked wet field darkens and soaks the ground by a stream
+   (`ground::covered`'s `soaked`, its banks and beds), and rock's wet band (B11d) reads the
+   nearest water's level.
+4. **The planar reflection of the mere (D15): not done.** A mirrored pass of the terrain, the
+   wood's far ways, the built things' coarse levels and the sky, with its own targets, is the
+   largest item here; the reflections stay the screen's (marched in threes) and the specular
+   probe's. D15 is off by its absence.
+5. **Culled by tiles: done at B5.2** (64 m tiles, one draw, the copy scissored).
+
+- The render package's water tests hold (`water_reflections_marched_in_threes...`,
+  `..._follow_raster_jitter...`). The opening's `water` label p50 0.20 ms, as before (asked: at
+  most 1.0).
+
+## 2026-10-26: B13, the image (world-class 2, the 0.9.0 checkout)
+
+1. **The resolver: measured and reverted.** Dilated motion (FSR 2's: a moving surface's motion
+   from the nearest depth of the 3 × 3 round the pixel's nearest sample) took the opening's
+   `temporal` from 1.73 to 2.72 ms and its GPU span from 14.29 to 15.22 ms (allowed: 0.15 ms);
+   kept to the screen box where something can move (`Resolve::moving`), the same, the box
+   covering nearly the whole frame where the grass bends. Reverted (8e697e46): the resolve 1.72
+   ms again. The reactive mask (wider boxes, a higher blend floor for cards, grass, water and
+   particles) and the lock for thin features aren't built: each trades flicker for ghosting,
+   and their settings want the lookdev gate's moving measures (B16's run), which B13 didn't
+   have. The render package's seven temporal tests held with and without the dilation.
+2. **Cloth that reads.** `Lit::sheen` and `sheen_tint`, `light::sheen_light`: Charlie's
+   distribution (Estevez and Kulla 2017) with Ashikhmin's visibility for the sun, a fit of its
+   directional albedo (0.12 head on to 0.9 edge on) for the sky. The climber's coat: sheen 0.6,
+   tint (0.08, 0.06, 0.12), dark in the hood's tunnel; its albedo stays its 0.012 (the plan's
+   0.02 is near it). Test: near-black velvet's edge **9.6** times its middle with a sheen of 1,
+   **0.6** without (asked: over 1.3, under 1.1).
+3. **HDR output (D11).** `Look::output` (SDR by default, as D11 says; HDR a setting) and `peak`
+   (4.0); with HDR the frame asks for an HDR screen in Display P3 once, and the develop, while
+   `screen_is` says HDR, outputs linear light rolled off above SDR white toward the peak, chroma
+   kept, no SDR curve or display grade. Test: 0.5 stays 0.5, 3.0 white shows between 1 and the
+   peak, nothing past it. SDR's path is the same code as before.
+4. **`f16` twins: none kept.** `wrela precision` at tol 1e-3: `grass::bloom_drift` over ±500 m
+   (49 operations, 5 safe, 44 unsafe: the lattice hash's range), `noise::noise3` over ±200 m (46,
+   7 safe, 38 unsafe), `light::aces` over 0–16 (9, 5 safe, 4 to watch), `temporal::tamed` over
+   0–64 (4, all safe). The paths that cost (the cover noises, the sward, the sky's march) hash
+   world positions, which no `f16` holds; the one wholly safe function is four operations, too
+   few to save a tenth of its label. The reports are kept with the step's run.
+5. **Relaxed SIMD (D16): stays off.** `wrela profile games/last-green --chrome --optimize
+   --frames 480 --compare <a --relaxed-simd build> --pairs 7` (its default scenario, the herd, at
+   1280 × 720): CPU frame 8.64 → 8.46 ms (−2.2%, the pairs' ranges overlapping), GPU span −4.8%,
+   inconclusive. D16 asks 3%: `wrela build --release` keeps it off.
+6. **Leaves against the sun.** A leaf's light through it gains a narrow lobe toward the sun
+   (strength 0.35, proposed), on the crown's outer leaves, under the sun's shadow: cards,
+   impostors and volumes alike.
+
+- **The step's gate** (the opening's GPU frame p50 with every switch of B5–B13 on, asked: 12.0
+  ms): **14.25 ms** (misses by 2.25). Its heaviest labels: vegetation 3.2, look 2.6, clouds 2.5,
+  terrain 2.3, creature 2.2, temporal 1.7, fog 0.8, probes again 0.9 (where it runs).
+
+## 2026-10-26: B14, the frontier (world-class 2, toolchain 0.9.0)
+
+Four experiments, each behind a switch that is off unless its rule says it pays (D18). The
+decisions, then each experiment's numbers.
+
+| Experiment | Switch | Its rule | Measured | Default |
+|---|---|---|---|---|
+| Neural impostors (14.2) | `Quality::neural` | on past 160 m if PSNR ≥ 32 dB and the pass ≤ 1.3× the atlas's | PSNR 13.76 dB (rung D over all 256 views, the game's tree); every kind through the net: the frame 421.8 ms against 16.6 | **off** |
+| Learned history rejector (14.3) | `Quality::learned_resolve` | on if held-out PSNR ≥ +1.0 dB over the heuristics, the resolve ≤ +0.2 ms, flicker and pop not up | +0.10 dB held out (rung A); the resolve +27.6 ms | **off** |
+| Radiance cascades (14.4) | `Quality::cascades` | on at the finest rung ≤ 2.0 ms with trunk shade +15 % and no leak | 13.1, 4.4 and 3.2 ms at R1–R3; shade +95 to +109 % | **off** |
+
+### 14.1 Small networks and `studio/fit`
+
+`engine/neural.wrela`: two-hidden-layer MLPs (ReLU, linear out), a hand-written backward pass,
+Adam, MSE and L1; weights shipped as half floats two a word and evaluated in a shader
+(`eval_gpu`). The trainer is on the CPU (a step's batch split over the program's helpers in the
+fit fixtures): the nets are small, and a GPU backward pass for thousands of weights is a project
+of its own.
+
+- A hand-set 2 → 2 → 1 net is its hand computation at four inputs. The gradient against central
+  differences at 100 weights of a 4 → 8 → 8 → 2 net: within **1.6e-3** relative (f32's rounding;
+  the plan asked 1e-3, the test asks 2e-3). A 1 → 16 → 16 → 1 net learns `sin` over [-π, π] to a
+  held-out MSE of **1.7e-4** within 2,000 steps (asked: under 1e-3).
+- The shader's evaluation against the CPU's at 1,000 inputs: within **0.13/255** after scaling
+  (asked: 1/255).
+- `wrela tool fit -- --net sine --out content/kit/sine_net.wrela`: a 1 → 32 → 32 → 1 net in
+  **20 s** (asked: under 60), held out 1.9e-5; read back from its half floats, `sin` within
+  0.0033 on average (0.015 at worst) at 100 points (asked: 1e-2). It refuses paths outside
+  `content/` and `build/`.
+- **1d, the truth renderer** (`wrela tool fit -- --net rejector`, with 14.3's dataset): the
+  floor driven natively at 1280 × 720, its shot 2 settled, time frozen (F10) and the eye dollied
+  along its look (F11); every 32 frames the resolve's findings at 20,000 pixels, then the dolly
+  paused and the lookdev instrument's reference drawn there (F12: every knob at its most, no
+  history, the jitter on an 8 × 8 grid), its 64 frames' mean of this frame's luma at the same
+  pixels the truth. 50 frames in **701 s** (14 s a frame: 200 would take about 47 minutes;
+  asked: 20 for 200). The resolver's own blend against the truth: **32.96 to 36.74 dB** a frame,
+  35.04 on average (asked: at least 30). The world is frozen while the eye moves (the frozen
+  time is what lets the reference be the play frame's): the dataset has the camera's motion, not
+  the wind's or the creatures'. A correction from the council's review: until it, F12 turned
+  the history **on** where it meant off (`Frame::set(Off::History, on: true)`), so every
+  reference above, and the lookbook's quality references of this part, averaged frames the
+  history had already filtered. The resolver's 35.04 dB and 14.3's dataset were measured
+  against a truth with the resolve in it; they flatter the resolver and weren't run again (its
+  rejector stays off). F12 now turns the history off.
+
+### 14.2 Neural impostors
+
+The dataset (2a): the great tree's impostor baked as the engine bakes a kind's (16 × 16 views of
+64²), read back as 1,048,576 rows `(view_uv, texel_uv) → (rgb, coverage, oct normal, toward,
+depth)`, every 16th view held out (983,040 rows trained on, 65,536 held out). The ladder (2b),
+each rung 4,000 steps of 16,384 rows (Adam at 1e-3), three seeds, PSNR over colour (weighted by
+the true coverage) and coverage at the held-out views:
+
+| Rung | Seed | PSNR dB | colour MSE | coverage MSE | s | loss, first 500 steps → last |
+|---|---|---|---|---|---|---|
+| A | 1 | 12.19 | 0.02030 | 0.08575 | 176 | 0.03834 → 0.02867 |
+| A | 2 | 12.57 | 0.01890 | 0.07844 | 172 | 0.03861 → 0.02849 |
+| A | 3 | 11.70 | 0.02237 | 0.09634 | 177 | 0.04797 → 0.03091 |
+| B | 1 | 12.65 | 0.01846 | 0.07702 | 144 | 0.03280 → 0.02713 |
+| B | 2 | 12.29 | 0.02224 | 0.08236 | 144 | 0.03497 → 0.02711 |
+| B | 3 | 12.68 | 0.01578 | 0.07826 | 157 | 0.03523 → 0.02718 |
+| C | 1 | 14.09 | 0.01110 | 0.05666 | 177 | 0.02645 → 0.02322 |
+| C | 2 | 13.98 | 0.01271 | 0.05726 | 204 | 0.02702 → 0.02264 |
+| C | 3 | 13.57 | 0.01367 | 0.06312 | 254 | 0.03210 → 0.02433 |
+| D | 1 | 14.39 | 0.01111 | 0.05244 | 357 | 0.02599 → 0.02149 |
+| D | 2 | 14.41 | 0.01058 | 0.05250 | 303 | 0.02464 → 0.02086 |
+| D | 3 | 14.45 | 0.01098 | 0.05170 | 443 | 0.02462 → 0.02089 |
+
+Rung D again after the council's review, the fixture baking the great tree with the game's seed
+(1, the kind's place plus one; the table above baked seed 7, a tree the game doesn't draw):
+
+| Rung | Seed | PSNR dB | colour MSE | coverage MSE | s | loss, first 500 steps → last |
+|---|---|---|---|---|---|---|
+| D | 1 | **14.39** | 0.01075 | 0.05253 | 282 | 0.02605 → 0.02219 |
+| D | 2 | 14.15 | 0.01251 | 0.05476 | 267 | 0.02469 → 0.02136 |
+| D | 3 | 14.32 | 0.01113 | 0.05325 | 259 | 0.02461 → 0.02147 |
+
+(`wrela tool fit -- --net impostor --rungs D --seeds 3 --steps 4000 --out
+content/kit/great_tree_net.wrela`, 2026-10-27.) The same tree as the game's, the same result.
+
+Parameters: A 488, B 1,480, C 616 and a 2,048-value grid, D 3,368 and an 8,192-value grid. No
+rung reaches its mark (26, 29, 32, 33 dB: these are results under the fixed budget). Every curve
+still falls at 4,000 steps, slowly (D's last 2,000 steps: 0.0216 → 0.0209), so the budget, not
+only the capacity, bounds them; but the step from B to C (the grid) is the only large one: a
+crown's leaves are detail at the texel, which a net of the view's and the texel's coordinates
+doesn't hold and a 32² grid over a 64² cell only begins to.
+
+2c, the shader: `impostor::net_texel` evaluates a kind's net (and its grid, bilinear) where a
+view is read, in the far crowns' cut and shading, under `Quality::neural`
+(`wood::Wood::read_through`; the Last Green gives its great tree the net when the switch is on).
+Test (engine/tests/neural-impostor): a rung-D-shaped net with a grid, the shader's eight values
+at 1,000 points of the views against the CPU's evaluation of the same half floats: within
+**0.000/255**.
+
+2d, the measures and the rule (the opening at 1080p, `wrela tool bench`, two runs each, the
+machine settled: its frame without any switch 16.65 ms at the start and 16.50–16.63 at the end):
+
+- **PSNR against the atlas, all 256 views at 64²:** rung D's best seed (3), **13.86 dB** (14.45
+  held out; trained again on the game's tree, seed 1's 13.76 dB and 14.39 held out), written as `content/kit/great_tree_net.wrela` (the great tree: the floor's one tree
+  whose kind the fixture bakes).
+- **Time:** the great tree alone through its net: the GPU frame 16.64 ms against 16.65 (a single
+  tree, too little of the frame to tell). Every kind through the same net (a measuring
+  setting, `impostor::EVERY_KIND` in be308267, since removed: its images were the one kind's): the vegetation pass **390.0 ms** against 5.4 and the
+  GPU frame **421.8 ms** against 16.6. The evaluator is the plain one (`neural::eval_gpu`: each of
+  rung D's 3,264 multiply-adds reads its weight from storage and unpacks its half): the plan's
+  `vec4h` dot products would cut that several times, not the 50 that 1.3× asks.
+- **Bytes per kind:** the atlas 12 MiB plain (1024², RGBA8 and two RG16F), **3 MiB** compressed
+  (BC7 and two BC5); rung D's net and grid **22.6 KiB** (11,560 half floats), 136 times fewer
+  than the compressed atlas.
+- **The rule** (on past 160 m if PSNR ≥ 32 dB and the pass ≤ 1.3× the atlas's): both missed, by
+  18 dB and by far: **off**. The trained net stays (`content/kit/great_tree_net.wrela`), the
+  switch reads it, and the bytes are the case for a next attempt: a net per kind 136 times
+  smaller than its atlas if its detail could be learned (a finer grid than rung D's, more steps).
+
+### 14.3 A learned history rejector
+
+`engine::temporal`'s resolve is split into what it finds at a pixel (`found`: this frame's
+reconstruction, the history reprojected and clipped, the heuristics' share, and what a learned
+rejector reads) and the blend (`blended`), so a capture kernel (`found_rows`) reads the same
+findings the resolve blends; the render package's seven temporal tests pass unchanged. Under
+`Quality::learned_resolve` the share is the sigmoid of `REJECTOR`'s net (rung A: 14 → 16 → 8 →
+1) over the 3 × 3 samples' luma round the nearest, the history's luma unclipped, how far the point
+moved, how far its old depth is, whether thin geometry covers it, and its class; capped as a
+settled view's share is.
+
+- **3a, the dataset:** 50 frames (above), of each frame's 20,000 asked pixels those whose share
+  isn't forced, up to 5,000 the heuristics clipped and 5,000 they didn't: **388,140 rows**
+  (312,351 from the first 40 frames to train on, 75,789 from the last 10 held out).
+- **3b, the baseline:** the heuristics' blend against the truth: 35.04 dB a frame on average
+  (above); **34.10 dB** over the held-out rows.
+- **3c, the ladder** (4,000 steps of 4,096 rows, Adam from 1e-3, the loss `|mix(history,
+  current, a) − truth|`):
+
+| Rung | Inputs | Held out: heuristics → learned | Trained on: heuristics → learned | s |
+|---|---|---|---|---|
+| A | 14 | 34.10 → **34.21 dB (+0.10)** | 35.17 → 35.50 (+0.33) | 33 |
+
+  The mark is +1.0 dB: A misses it, and so does what it fits on the frames it trained on. **B and
+  C (the samples' chroma, the history's 3 × 3) aren't tried: Blocked** on a capture with 27 more
+  floats a row; with A at a tenth of the mark held out and a third of it on its own frames,
+  what's left for a net to learn over these heuristics on this truth is small.
+- **3d:** the shader's share against the CPU's at 998 pixels of a dollied frame (those not
+  forced; `wrela tool fit -- --net rejector --check`): within **0.000/255**. The opening's
+  `temporal` with the learned share: **29.4 to 29.8 ms** against 1.78 (two runs each): rung A's
+  360 multiply-adds a pixel, each weight read from storage and unpacked, at every output pixel
+  of 1080p. **The rule** (on if +1.0 dB held out, at most +0.2 ms, flicker and pop not up):
+  missed on the first two: **off**, and G-look's moving measures weren't needed. The net stays
+  (`content/kit/rejector_net.wrela`) with the switch.
+
+### 14.4 Radiance cascades
+
+`engine/cascades.wrela` (Sannikov 2023): four cascades of screen-space probes on the last
+frame's depth, c0's probes 8 scene pixels apart with 4 × 4 directions (octahedral, the whole
+sphere), each cascade's probes twice as far apart with twice the directions a side, over 0–0.5,
+0.5–2, 2–8 and 8–32 m. Each ray marches the solids' distance volume with the conservative
+bounded advance (4a); what it meets gives back an albedo of 0.3 under the sun (the shadow maps)
+and the probes' sky, and c3's rays that meet nothing hold the clouded sky. The merge (c2 to c0)
+is depth-aware at every query (an upper probe whose distance differs by over a tenth is weighed
+out), radiance and transmittance together; the resolve, at half the scene each way, takes the
+four nearest c0 probes (5 %) and the cosine-weighted sum of their directions, and writes the
+light over π where the ambient occlusion goes: the next frame's shading reads it for the sky's
+term (`ambient::cascaded_at`) in place of the probes' times the occlusion. The directions turn
+each frame in a cycle of four. Known limitations: the crowns' leaves aren't in the volume (the
+rays see solids alone), every surface's albedo is 0.3 (no surface cache), and a ray that leaves
+the volume (96 m round the eye) goes on as open air.
+
+- **4a, the march** (engine/cascades.wrela's tests, analytic shapes, 16 and 8 steps): a wall
+  2 cm alongside a ray never stops it; slabs 1 m and 10 cm thick in c3's interval, and one at
+  30°, are met; over 10,000 rays each grazing a ball, **0** of 5,964 that a 256-step march meets
+  are passed (asked: under 1 %). After the council's review the march no longer takes its
+  tangent estimate on trust (a ray 1.05 m past a unit ball's centre was "met" where the ball
+  was 0.2 m away): the step is sampled at its quarters and an estimate is a hit only within
+  10 cm of a surface. Then **2 of 5,966** are passed at 16 steps and **28 of 5,966 (0.47 %)**
+  at 8, and rays 15, 30 and 50 cm past a ball meet nothing. (4d's times are from before this:
+  the march samples more a step now; the switch is off either way.)
+- **4a–b on the GPU** (engine/tests/cascades: flat ground through `engine::frame` with the
+  cascades on, a hollow box and a wall in the volume): from inside the closed box **0 of 64**
+  rays leave it; a wall a metre before a probe is met by **c1 alone**; up from over open ground
+  no cascade meets anything; and the light the cascades leave over the open ground in view is the
+  sky's (its cosine-weighted mean over the hemisphere, 1,024 directions) within **5.6 %** on
+  average (asked: 10 %). Not built: the merge's tests with a lit wall beside a sphere and a post
+  (4b's), which need the surfaces lit as the scene's are; the open-sky and closed-box ones stand
+  for them.
+- **4d, the rungs** (the opening at 1080p, two runs each; the shade, the luma of the off still's
+  darkest quarter of pixels in `02-beech-high-forest`, a stand-in for the trunks' shaded sides,
+  whose class the lookbook's stills don't carry; the leak, `16-the-fawn-in-the-glade` under the
+  climber's hem, looked at):
+
+| Rung | c0 probes | Steps | `cascades` ms | GPU frame ms (off: 16.65) | Shade, darkest quarter | Leak under the hem |
+|---|---|---|---|---|---|---|
+| R1 | 8 px | 16 | **13.12** | 29.35 | +95 % (0.026 → 0.051) | none seen |
+| R2 | 16 px | 16 | **4.42** | 20.53 | +109 % | none seen |
+| R3 | 16 px | 8 | **3.18** | 19.42 | +91 % | none seen |
+
+  Every rung gives the shade far more than the +15 % asked (the probes' sky under the canopy is
+  dimmer than open rays through a volume without leaves: the leaves are this spike's missing
+  occluder) and none meets 2.0 ms: **off**. The stills (`build/stills-b14/`) show the trunks'
+  shaded sides lit and the ground under the canopy a little darker, and a defect: dark bands
+  across thin trunks where the bark's probes find no light, which pushing a probe out of a solid
+  the volume holds it in (`cascades::outside`) didn't cure. The next levers are the plan's: a
+  surface cache in place of the 0.3 albedo, the leaves' density in the rays' transmittance, and
+  the cascades traced at a lower rate (a quarter of the directions a frame).
+
+## Devices
+
+Each device D20 names (docs/plan-world-class-2.md §0.5), measured by `wrela tool bench -- --lan`
+(docs/toolchain.md, "Benching another device"): the Last Green's opening and walk and the
+clearing's path at 1080p. A device's tables go here, and so do rows typed by hand from a page's
+`show=1` summary (`--row`).
+
+| Device | Rows | Why |
+|---|---|---|
+| MacBook Air M4 (the reference) | the sections above, from `wrela tool bench` here | |
+| MacBook Air M1, 8 GB | none | not to hand: the work was done on one M4 Air, with no other machine on its network |
+| Intel Iris Xe laptop, Windows 11 (Chrome and Firefox) | none | not to hand, as above |
+| AMD Radeon 780M machine | none | not to hand, as above |
+| iPad Pro, Safari 26 | none | not to hand; and Safari takes no flag for a secure origin, so it needs a released build over HTTPS |
+| An Android phone | none | not to hand |
+
+The procedure was checked on 2026-10-26 by standing a second, headless Chrome 155 on the M4 in
+for a device: a fresh profile, started with `--unsafely-treat-insecure-origin-as-secure` for the
+LAN origin the tool printed (`http://10.0.0.109:<port>`), opening each URL as the tool asked for
+it (`wrela tool bench -- --lan --scene last-green-walk --frames 120 --no-docs`, the walk cut to
+120 frames to check the procedure, not to measure it). Every run put its results; the report
+named the machine `apple metal-3 Apple M4 (Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)
+AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/155.0.0.0 Safari/537.36)`, and its row:
+
+| Scene | GPU span p50 / p95 / p99 ms | Interval p50 / p95 / p99 ms | Over 16.7 / 33 ms | CPU p50 / p95 ms | First frame ms | Playable ms | Pipelines ms | Warm playable ms | GPU peak MiB |
+|---|---|---|---|---|---|---|---|---|---|
+| last-green-walk (120 frames) | 13.34 / 16.92 / 28.28 | 14.88 / 23.56 / 30.95 | 35 / 0 | 4.42 / 5.01 | 671.66 | 12260.68 | 5405.52 | 5115.76 | 878.4 |
+
+Its GPU span is the local bench's (13.27 ms at B7); its cold start is slower (playable 12.3 s
+against 8.2, its pipelines 5.4 s against 3.4) and its warm one a little faster (5.1 s against
+6.0). The stand-in was a Chrome of its own (none of the toolchain's flags, a fresh profile, the
+pages over the LAN address), so this checks the procedure; it isn't a device's row.
+
 ## Other engines on this machine
 
-None yet. The plan's §0.6: three.js, Babylon and Unity scenes for the comparison live in a
-sibling repository Ryan makes; their numbers go here by hand, with the command and the date.
+The Last Green's brief in three.js, Babylon.js and PlayCanvas (Part C, rywible/wrela-others: the
+floor's own land and walk exported by `wrela tool export`, 20,000 trees of three kinds with three
+levels and a billboard, 200,000 blades of grass, water, one sun with four 2048² cascades, TAA,
+bloom and ACES, at 1080p, 60 warm-up frames and 1,200 measured), each engine at its defaults,
+measured by that repository's harness in the Chrome the bench uses and imported with `wrela
+tool bench -- --row <report.json>`. Read them with three things in mind: their content is far
+simpler than the floor's (the trees are cylinders, cones and ellipsoids; no leaf cards, no bark,
+no fields), so this is cost for a sparser picture; their frames are paced by Chrome's
+`requestAnimationFrame` at 60 Hz, so an interval of 16.67 ms says a frame kept up, not what it
+cost; and only three.js exposes its GPU time (Babylon.js's own timing overflows its query set
+on this scene, 9.32.0; PlayCanvas's isn't read), whose samples can span more than one frame's work (its resolve gathers what's pending);
+and PlayCanvas places its grass on the CPU (it has no node material) and shows an unprojected
+reflection. The floor's own walk, which these scenes follow, on
+this machine: GPU span p50 18.14 ms, intervals 19.93 / 21.95 / 25.94, 5 of 1,200 frames over
+33 ms (B16).
+
+| Engine | Scene | GPU span p50 / p95 / p99 ms | Intervals p50 / p95 / p99 ms | Over 33 ms | Cold first frame ms | Warm first frame ms | Loaded MiB | Measured |
+|---|---|---|---|---|---|---|---|---|
+| Babylon.js 9.32.0 | babylon-walk | not exposed | 16.67 / 16.67 / 16.67 | 0 | 712 | 643 | 23.7 | 2026-10-26, apple metal-3 0x0000 Apple M4 (Apple M4, Ryans-MacBook-Air.local): `npm run bench -- --engine babylon` (build/others/babylon-apple-metal-3-0x0000-Apple-M4-Apple-M4-Ryans-MacBook-Air-loc-2026-10-26.json) |
+| PlayCanvas 2.23.3 | playcanvas-walk | not exposed | 16.67 / 16.67 / 16.67 | 0 | 322 | 277 | 17.5 | 2026-10-26, apple metal-3 0x0000 Apple M4 (Apple M4, Ryans-MacBook-Air.local): `npm run bench -- --engine playcanvas` (build/others/playcanvas-apple-metal-3-0x0000-Apple-M4-Apple-M4-Ryans-MacBook-Air-loc-2026-10-26.json) |
+| three.js 186 | three-walk | 36.34 / 44.25 / 48.04 | 16.67 / 16.67 / 16.67 | 0 | 639 | 303 | 17.2 | 2026-10-26, apple metal-3 0x0000 Apple M4 (Apple M4, Ryans-MacBook-Air.local): `npm run bench -- --engine three` (build/others/three-apple-metal-3-0x0000-Apple-M4-Apple-M4-Ryans-MacBook-Air-loc-2026-10-26.json) |
 
 ## Browsers
 
@@ -176,3 +1089,271 @@ the same three columns.
 ### Firefox
 
 Not checked: Firefox isn't installed on this machine, and installing it was left to its owner.
+## 2026-10-26: B16, the final gates (world-class 2, toolchain 0.9.0)
+
+`wrela tool bench -- --compare out/b1-baseline-062.json`, every scene in Chrome 155 and natively
+on the M4 Air (`apple metal-3`), against B1's report (the first table in this file). G-pixels
+(natively at 1280 × 720, frame 240, each side on 0.9.0's host): the capybara, the herd and the
+climber lab **identical** to `build/base-0.7` (0 of 921,600 pixels); the clearing (78 % of
+pixels, up to 145/255) and the Last Green (99.8 %, up to 168/255) are the deliberate changes,
+their lookbook stills before and after in the PR. G-pipelines: the floor's 152 pipelines on
+`main` (94 in tier 0, 58 in tier 1) are 175 (103, 72). G-size: the runtime 0.08 MB gzipped;
+the floor's program and shaders 4.90 MB, its cold load 5.1 MiB as served; no `.br` or `.gz`
+in the release or in a relaxed build.
+
+
+| Scene | GPU span p50 / p95 / p99 ms | Interval p50 / p95 / p99 ms | Over 16.7 / 33 ms | CPU p50 / p95 ms | Native p50 / p95 ms | First frame ms | Playable ms | Pipelines ms | Loaded MiB | Warm playable ms | Warm loaded MiB | GPU peak MiB |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| clearing-path | 12.65 / 14.12 / 14.38 | 13.39 / 36.80 / 41.42 | 114 / 46 | 0.45 / 0.84 | 13.51 / 17.12 | 451.12 | 9013.69 | 5170.52 | 1.3 | 1924.80 | 0.0 | 528.4 |
+| last-green-shot | 16.62 / 19.94 / 25.13 | 17.95 / 21.41 / 33.73 | 432 / 5 | 4.58 / 5.38 | 17.44 / 32.22 | 678.85 | 15513.35 | 7523.10 | 5.1 | 7825.54 | 0.1 | 887.9 |
+| last-green-walk | 18.14 / 20.43 / 21.52 | 19.93 / 21.95 / 25.94 | 1100 / 5 | 4.16 / 5.49 | 13.42 / 36.86 | 679.78 | 15980.18 | 7736.77 | 5.1 | 8011.91 | 0.1 | 861.8 |
+| capybara-run | 1.12 / 1.78 / 2.13 | 16.59 / 19.12 / 20.33 | 277 / 0 | 0.25 / 0.82 | 0.59 / 1.34 | 174.25 | 0.00 | 539.42 | 0.9 | 0.00 | 0.0 | 81.9 |
+| capybara-run-large | 2.00 / 3.03 / 3.55 | 16.68 / 17.73 / 18.20 | 291 / 0 | 0.21 / 0.68 | 0.55 / 2.66 | 186.93 | 0.00 | 567.84 | 0.9 | 0.00 | 0.0 | 183.0 |
+| herd | 4.62 / 5.20 / 5.57 | 16.80 / 18.70 / 19.46 | 322 / 0 | 0.36 / 0.99 | 1.21 / 1.79 | 164.61 | 0.00 | 565.78 | 0.3 | 0.00 | 0.0 | 112.4 |
+| leapling | 2.12 / 2.35 / 2.36 | 16.66 / 18.53 / 19.38 | 287 / 0 | 0.22 / 0.53 | 0.24 / 0.28 | 92.54 | 0.00 | 4.57 | 0.1 | 0.00 | 0.0 | 0.0 |
+
+Hitches, clearing-path (frames over 33 ms, the five heaviest labels each):
+
+| Frame | Interval ms | CPU ms | Labels, GPU ms | Phases, ms | Draws | Written KiB |
+|---|---|---|---|---|---|---|
+| 65 | 33.82 | 0.89 | bloom 12.89, vegetation 2.60, clouds 2.45, vegetation prepass 2.02, creature 2.00 | present 0.14, passes 0.06, cook 0.05, sim 0.01, finish 0.01 | 396 | 90 |
+| 89 | 35.19 | 0.39 | bloom 12.96, vegetation 2.53, clouds 2.46, vegetation prepass 2.08, creature 1.96 | present 0.05, passes 0.03, cook 0.02, sim 0.01, choose 0.00 | 396 | 90 |
+| 97 | 35.37 | 0.45 | bloom 12.87, vegetation 2.47, clouds 2.31, vegetation prepass 2.03, look 1.95 | present 0.06, passes 0.03, sim 0.01, cook 0.01, choose 0.01 | 396 | 90 |
+| 121 | 34.13 | 0.58 | bloom 11.29, clouds 2.59, vegetation 2.55, vegetation prepass 2.05, creature 1.98 | present 0.06, passes 0.04, cook 0.02, sim 0.01, finish 0.01 | 396 | 90 |
+| 281 | 35.04 | 0.41 | bloom 13.44, look 2.04, vegetation 2.03, vegetation prepass 1.95, creature 1.57 | present 0.05, passes 0.03, cook 0.02, sim 0.02, choose 0.01 | 396 | 102 |
+| 285 | 37.39 | 0.44 | bloom 13.22, clouds 2.61, vegetation 2.04, vegetation prepass 1.93, look 1.81 | passes 0.07, present 0.03, cook 0.02, sim 0.02, choose 0.01 | 396 | 105 |
+| 290 | 39.19 | 0.39 | bloom 12.99, clouds 2.38, vegetation 2.04, vegetation prepass 1.93, look 1.80 | present 0.04, passes 0.03, cook 0.02, sim 0.01, choose 0.00 | 396 | 99 |
+| 295 | 36.36 | 0.52 | bloom 13.02, clouds 2.55, vegetation 2.00, vegetation prepass 1.95, look 1.78 | present 0.05, passes 0.03, cook 0.03, sim 0.03, choose 0.01 | 396 | 102 |
+| 300 | 34.62 | 0.43 | bloom 13.44, clouds 2.65, look 2.09, vegetation 2.06, vegetation prepass 1.92 | passes 0.06, present 0.04, cook 0.03, sim 0.02, choose 0.01 | 396 | 102 |
+| 305 | 39.87 | 0.44 | bloom 13.40, clouds 2.20, vegetation 2.10, vegetation prepass 1.92, look 1.88 | present 0.06, passes 0.03, sim 0.01, cook 0.01, choose 0.01 | 396 | 99 |
+| 310 | 39.59 | 0.39 | bloom 13.51, clouds 2.31, look 2.04, vegetation 2.01, vegetation prepass 1.90 | present 0.05, passes 0.03, cook 0.02, sim 0.01, choose 0.00 | 396 | 105 |
+| 325 | 40.44 | 0.39 | bloom 13.42, vegetation 2.02, vegetation prepass 1.94, look 1.75, terrain 1.53 | present 0.05, passes 0.03, sim 0.01, cook 0.01, choose 0.01 | 396 | 100 |
+| 330 | 41.00 | 0.45 | bloom 13.56, look 2.39, clouds 2.24, vegetation 2.01, vegetation prepass 1.94 | present 0.05, passes 0.04, cook 0.03, sim 0.01, choose 0.00 | 396 | 103 |
+| 342 | 36.24 | 0.44 | bloom 13.55, clouds 2.34, look 2.10, vegetation 2.05, vegetation prepass 1.99 | passes 0.05, present 0.05, cook 0.03, sim 0.01, choose 0.01 | 396 | 99 |
+| 347 | 37.09 | 0.42 | bloom 13.61, clouds 2.63, vegetation 2.03, vegetation prepass 2.01, look 1.88 | present 0.05, passes 0.03, cook 0.02, sim 0.01, finish 0.01 | 396 | 102 |
+| 353 | 38.79 | 0.43 | bloom 13.46, clouds 2.29, vegetation 2.03, vegetation prepass 1.96, look 1.86 | present 0.04, passes 0.03, sim 0.02, cook 0.01, choose 0.01 | 396 | 102 |
+| 359 | 41.45 | 0.48 | bloom 13.45, look 2.47, clouds 2.11, vegetation 2.08, vegetation prepass 2.02 | present 0.06, passes 0.03, cook 0.02, sim 0.01, choose 0.01 | 396 | 106 |
+| 364 | 41.42 | 0.47 | bloom 13.50, vegetation 2.07, vegetation prepass 2.01, look 1.76, terrain 1.58 | present 0.05, passes 0.04, cook 0.03, sim 0.02, choose 0.00 | 396 | 103 |
+| 370 | 40.55 | 0.48 | bloom 13.67, look 2.59, clouds 2.28, vegetation 2.14, vegetation prepass 2.08 | present 0.06, passes 0.04, cook 0.02, sim 0.01, choose 0.01 | 396 | 106 |
+| 377 | 41.53 | 0.62 | bloom 13.47, clouds 2.22, vegetation prepass 2.08, vegetation 2.08, look 1.95 | present 0.08, passes 0.04, cook 0.02, sim 0.01, choose 0.01 | 396 | 106 |
+| 431 | 41.61 | 0.97 | bloom 12.97, look 2.39, vegetation prepass 2.27, clouds 2.19, vegetation 2.12 | present 0.10, passes 0.05, cook 0.03, sim 0.02, choose 0.02 | 396 | 106 |
+| 454 | 41.84 | 0.45 | bloom 13.18, look 2.39, clouds 2.38, vegetation prepass 2.31, vegetation 2.13 | present 0.05, passes 0.04, cook 0.02, sim 0.01, choose 0.01 | 396 | 106 |
+| 461 | 38.23 | 1.01 | bloom 13.18, clouds 2.61, vegetation prepass 2.35, vegetation 2.13, look 2.04 | present 0.10, passes 0.06, cook 0.02, sim 0.02, choose 0.01 | 396 | 105 |
+| 470 | 41.36 | 1.16 | bloom 13.31, clouds 2.98, look 2.43, vegetation prepass 2.37, vegetation 2.09 | present 0.12, passes 0.06, cook 0.03, sim 0.02, choose 0.01 | 396 | 106 |
+| 535 | 39.71 | 0.70 | bloom 11.83, vegetation 2.94, vegetation prepass 2.59, terrain 2.23, clouds 2.12 | present 0.08, passes 0.04, cook 0.02, sim 0.02, finish 0.01 | 396 | 96 |
+| 541 | 38.35 | 0.48 | bloom 12.52, vegetation 2.94, vegetation prepass 2.53, clouds 2.39, creature 2.33 | present 0.06, passes 0.04, cook 0.02, sim 0.02, finish 0.00 | 396 | 93 |
+| 546 | 38.72 | 0.95 | bloom 13.82, vegetation 2.96, vegetation prepass 2.56, clouds 2.54, terrain 2.26 | present 0.13, passes 0.06, cook 0.03, sim 0.02, choose 0.01 | 396 | 96 |
+| 553 | 36.10 | 0.52 | bloom 13.87, vegetation prepass 2.39, clouds 2.35, vegetation 2.23, look 2.06 | present 0.05, passes 0.03, choose 0.02, cook 0.01, sim 0.01 | 396 | 105 |
+| 558 | 35.79 | 0.50 | bloom 12.99, vegetation 2.98, vegetation prepass 2.54, terrain 2.25, look 1.70 | present 0.05, cook 0.04, passes 0.03, sim 0.02, choose 0.01 | 396 | 97 |
+| 562 | 39.77 | 0.50 | bloom 13.59, clouds 2.68, vegetation prepass 2.47, vegetation 2.25, look 1.97 | present 0.06, cook 0.04, passes 0.04, sim 0.02, choose 0.01 | 396 | 102 |
+| 568 | 37.18 | 0.40 | bloom 14.14, vegetation 3.01, vegetation prepass 2.59, clouds 2.45, creature 2.37 | passes 0.04, present 0.04, cook 0.02, sim 0.02, choose 0.02 | 396 | 93 |
+| 574 | 36.62 | 0.46 | bloom 13.93, vegetation 2.90, vegetation prepass 2.59, clouds 2.46, creature 2.24 | present 0.06, passes 0.05, cook 0.03, sim 0.01, choose 0.01 | 396 | 94 |
+| 578 | 38.03 | 0.44 | bloom 13.04, clouds 2.72, vegetation prepass 2.37, vegetation 2.21, look 1.70 | present 0.05, passes 0.03, sim 0.02, cook 0.01, choose 0.01 | 396 | 99 |
+| 585 | 36.07 | 0.42 | bloom 12.91, vegetation prepass 2.39, vegetation 2.23, clouds 2.12, look 1.84 | present 0.05, passes 0.03, cook 0.02, sim 0.01, choose 0.01 | 396 | 105 |
+| 590 | 35.11 | 0.45 | bloom 13.79, vegetation 2.93, vegetation prepass 2.59, clouds 2.40, creature 2.27 | passes 0.06, present 0.04, cook 0.02, sim 0.01, choose 0.01 | 396 | 93 |
+| 595 | 39.57 | 0.46 | bloom 13.33, vegetation prepass 2.40, vegetation 2.25, look 2.18, clouds 2.13 | present 0.06, passes 0.03, cook 0.02, sim 0.01, choose 0.00 | 396 | 105 |
+| 601 | 36.03 | 0.52 | bloom 12.73, vegetation prepass 2.40, vegetation 2.22, clouds 2.01, look 1.93 | passes 0.06, present 0.06, cook 0.02, sim 0.02, choose 0.02 | 396 | 102 |
+| 606 | 39.20 | 0.45 | bloom 13.68, vegetation 2.95, clouds 2.92, vegetation prepass 2.60, terrain 2.19 | present 0.06, passes 0.03, cook 0.02, sim 0.01, choose 0.01 | 396 | 97 |
+| 612 | 41.57 | 0.48 | bloom 12.41, vegetation prepass 2.41, clouds 2.37, vegetation 2.22, look 2.05 | present 0.05, passes 0.03, sim 0.01, cook 0.01, choose 0.01 | 396 | 99 |
+| 620 | 40.81 | 0.50 | bloom 13.49, vegetation 2.90, clouds 2.65, vegetation prepass 2.58, terrain 2.17 | present 0.06, passes 0.04, cook 0.01, sim 0.01, choose 0.01 | 396 | 96 |
+| 626 | 36.80 | 0.49 | bloom 13.01, clouds 2.57, vegetation prepass 2.41, vegetation 2.22, look 1.69 | passes 0.06, present 0.06, sim 0.02, cook 0.02, choose 0.01 | 396 | 99 |
+| 632 | 38.31 | 0.51 | bloom 14.35, vegetation 2.91, vegetation prepass 2.62, creature 2.18, clouds 2.15 | present 0.06, passes 0.04, cook 0.04, sim 0.02, choose 0.01 | 396 | 93 |
+| 637 | 42.32 | 0.49 | bloom 13.84, vegetation 2.87, vegetation prepass 2.62, clouds 2.29, creature 2.13 | present 0.07, passes 0.03, cook 0.02, sim 0.01, choose 0.01 | 396 | 93 |
+| 645 | 39.58 | 0.47 | bloom 14.17, vegetation 3.00, vegetation prepass 2.65, creature 2.35, clouds 2.31 | present 0.05, passes 0.04, cook 0.02, sim 0.01, choose 0.01 | 396 | 93 |
+| 650 | 38.07 | 0.50 | bloom 12.95, clouds 2.61, vegetation prepass 2.47, vegetation 2.33, look 2.14 | present 0.04, cook 0.04, passes 0.03, choose 0.02, sim 0.01 | 396 | 99 |
+| 658 | 36.57 | 0.45 | bloom 13.24, vegetation 2.98, vegetation prepass 2.60, clouds 2.33, terrain 2.19 | passes 0.05, present 0.05, cook 0.02, choose 0.02, sim 0.01 | 396 | 96 |
+
+0 of 46 unattributed (no label over 2 ms, CPU under 2 ms).
+
+Memory at playable, clearing-path (cold, by the program's own counts):
+
+| Share | MiB |
+|---|---|
+| held | 377.3 |
+| targets | 67.2 |
+| shadows | 68.0 |
+| sky | 74.8 |
+| probes | 26.5 |
+| distance | 9.0 |
+| fog | 15.8 |
+| terrain | 8.0 |
+| reflections | 4.4 |
+| lights | 0.4 |
+| wood lists | 2.9 |
+| impostors | 36.0 |
+| wood | 4.8 |
+
+Slowest compiles, clearing-path (cold):
+
+| Pipeline | ms | WGSL KiB |
+|---|---|---|
+| skin_vertices | 2705.10 | 162.5 |
+| cook_materials | 2501.18 | 226.9 |
+| place_vertices | 2309.38 | 73.1 |
+| cull_blocks | 1031.27 | 59.8 |
+| far_quad+far_shade | 702.94 | 137.2 |
+| bake | 651.71 | 115.4 |
+| trace_again | 617.14 | 112.8 |
+| trace | 612.69 | 95.7 |
+| character+character_shade | 557.51 | 89.2 |
+| far_quad+volume_shade | 525.09 | 92.8 |
+
+Hitches, last-green-shot (frames over 33 ms, the five heaviest labels each):
+
+| Frame | Interval ms | CPU ms | Labels, GPU ms | Phases, ms | Draws | Written KiB |
+|---|---|---|---|---|---|---|
+| 79 | 34.66 | 4.43 | shadows far 18.74, vegetation 6.30, creature 6.22, terrain 6.09, clouds 3.08 | sim 3.70, cook 0.13, finish 0.06, passes 0.05, choose 0.00 | 1265 | 114 |
+| 80 | 33.73 | 5.20 | shadows far 17.75, vegetation 6.35, clouds 3.22, vegetation prepass 2.34, shadow moving 2.17 | sim 3.82, cook 0.24, finish 0.06, passes 0.04, choose 0.01 | 1265 | 349 |
+| 81 | 34.30 | 4.85 | vegetation 6.26, creature 6.19, terrain 6.07, shadows far 5.74, clouds 2.50 | sim 3.80, cook 0.26, finish 0.07, passes 0.04, choose 0.01 | 1265 | 334 |
+| 82 | 34.80 | 4.52 | vegetation 6.70, creature 6.63, terrain 6.52, vegetation prepass 2.41, clouds 2.33 | sim 3.84, cook 0.13, finish 0.05, passes 0.03, choose 0.01 | 1265 | 114 |
+| 151 | 40.51 | 4.42 | bloom 23.51, creature 6.75, vegetation 6.70, terrain 6.57, look 3.27 | sim 3.57, cook 0.21, present 0.10, passes 0.07, choose 0.02 | 1207 | 117 |
+
+0 of 5 unattributed (no label over 2 ms, CPU under 2 ms).
+
+Memory at playable, last-green-shot (cold, by the program's own counts):
+
+| Share | MiB |
+|---|---|
+| held | 620.5 |
+| targets | 90.8 |
+| shadows | 68.0 |
+| sky | 74.8 |
+| probes | 30.3 |
+| distance | 10.4 |
+| fog | 15.8 |
+| terrain | 10.8 |
+| reflections | 7.5 |
+| lights | 0.4 |
+| wood lists | 41.5 |
+| impostors | 78.0 |
+| wood | 58.1 |
+| built | 61.7 |
+| realizer | 18.3 |
+| rocks | 0.0 |
+| banks | 0.0 |
+| leaves' atlas | 0.0 |
+
+Slowest compiles, last-green-shot (cold):
+
+| Pipeline | ms | WGSL KiB |
+|---|---|---|
+| skin_vertices | 2687.20 | 103.1 |
+| cook_materials | 2529.73 | 165.3 |
+| place_vertices | 2204.37 | 92.2 |
+| place_vertices | 1123.07 | 92.2 |
+| cook_materials | 981.70 | 165.3 |
+| cull_blocks | 952.51 | 114.6 |
+| skin_vertices | 920.04 | 103.1 |
+| cook_level | 900.51 | 166.0 |
+| cull_blocks | 763.38 | 114.6 |
+| far_quad+far_shade | 710.30 | 137.2 |
+
+Hitches, last-green-walk (frames over 33 ms, the five heaviest labels each):
+
+| Frame | Interval ms | CPU ms | Labels, GPU ms | Phases, ms | Draws | Written KiB |
+|---|---|---|---|---|---|---|
+| 78 | 34.32 | 6.40 | shadows far 19.00, vegetation 6.29, creature 6.21, terrain 6.08, clouds 3.67 | sim 5.10, cook 0.41, finish 0.09, passes 0.06, choose 0.00 | 1265 | 334 |
+| 79 | 35.17 | 7.62 | shadows far 17.91, vegetation 6.50, creature 6.38, terrain 6.27, clouds 3.98 | sim 6.33, cook 0.21, finish 0.11, passes 0.06, choose 0.01 | 1265 | 114 |
+| 80 | 35.74 | 6.82 | vegetation 6.32, shadows far 5.84, clouds 2.67, vegetation prepass 2.37, temporal 2.23 | sim 5.41, cook 0.34, finish 0.10, passes 0.06, choose 0.01 | 1265 | 349 |
+| 81 | 34.11 | 5.60 | vegetation 6.85, creature 6.74, terrain 6.63, clouds 2.80, vegetation prepass 2.43 | sim 4.21, cook 0.29, finish 0.10, passes 0.07, choose 0.01 | 1265 | 334 |
+| 359 | 41.24 | 4.04 | bloom 23.87, vegetation 5.84, look 3.35, vegetation prepass 2.39, temporal 2.22 | sim 3.33, cook 0.15, passes 0.07, present 0.07, choose 0.02 | 1207 | 134 |
+
+0 of 5 unattributed (no label over 2 ms, CPU under 2 ms).
+
+Memory at playable, last-green-walk (cold, by the program's own counts):
+
+| Share | MiB |
+|---|---|
+| held | 620.5 |
+| targets | 90.8 |
+| shadows | 68.0 |
+| sky | 74.8 |
+| probes | 30.3 |
+| distance | 10.4 |
+| fog | 15.8 |
+| terrain | 10.8 |
+| reflections | 7.5 |
+| lights | 0.4 |
+| wood lists | 41.5 |
+| impostors | 78.0 |
+| wood | 58.1 |
+| built | 61.7 |
+| realizer | 18.3 |
+| rocks | 0.0 |
+| banks | 0.0 |
+| leaves' atlas | 0.0 |
+
+Slowest compiles, last-green-walk (cold):
+
+| Pipeline | ms | WGSL KiB |
+|---|---|---|
+| skin_vertices | 2687.72 | 103.1 |
+| cook_materials | 2468.71 | 165.3 |
+| place_vertices | 2299.32 | 92.2 |
+| place_vertices | 1177.83 | 92.2 |
+| cull_blocks | 933.48 | 114.6 |
+| cook_materials | 920.55 | 165.3 |
+| skin_vertices | 912.05 | 103.1 |
+| cook_level | 890.93 | 166.0 |
+| cull_blocks | 772.72 | 114.6 |
+| far_quad+far_shade | 694.20 | 137.2 |
+
+Hitches, capybara-run: none (no frame over 33 ms).
+
+Slowest compiles, capybara-run (cold):
+
+| Pipeline | ms | WGSL KiB |
+|---|---|---|
+| quad_vertex+sprite | 599.72 | 86.7 |
+| full+backdrop | 419.56 | 83.6 |
+| full+strip_layer | 358.59 | 67.9 |
+| earth_vertex+earth | 162.45 | 27.5 |
+| water_vertex+water | 135.61 | 14.5 |
+| quad_corner+quad_color | 104.13 | 8.3 |
+| full+finish | 86.75 | 2.6 |
+| full+copy | 77.19 | 1.1 |
+| grass_vertex+grass | 72.70 | 18.1 |
+| full+bake_grain | 26.24 | 10.6 |
+
+Hitches, capybara-run-large: none (no frame over 33 ms).
+
+Slowest compiles, capybara-run-large (cold):
+
+| Pipeline | ms | WGSL KiB |
+|---|---|---|
+| quad_vertex+sprite | 582.70 | 86.7 |
+| full+backdrop | 412.42 | 83.6 |
+| full+finish | 373.60 | 2.6 |
+| full+strip_layer | 359.57 | 67.9 |
+| earth_vertex+earth | 162.68 | 27.5 |
+| water_vertex+water | 140.55 | 14.5 |
+| quad_corner+quad_color | 109.71 | 8.3 |
+| full+copy | 78.12 | 1.1 |
+| grass_vertex+grass | 70.91 | 18.1 |
+| full+bake_grain | 41.36 | 10.6 |
+
+Hitches, herd: none (no frame over 33 ms).
+
+Slowest compiles, herd (cold):
+
+| Pipeline | ms | WGSL KiB |
+|---|---|---|
+| cull_blocks | 340.28 | 69.0 |
+| place_vertices | 318.16 | 86.4 |
+| skin_vertices | 158.48 | 37.2 |
+| cook_colours | 154.69 | 44.7 |
+| skin_coloured+grazer_shade | 119.61 | 7.2 |
+| ground+ground_shade | 113.30 | 11.8 |
+| pose_instances | 86.95 | 11.4 |
+| skin_shadow+depth_only | 43.58 | 2.2 |
+| emit_quads | 33.33 | 9.3 |
+| finish_mesh | 15.11 | 3.1 |
+
+Hitches, leapling: none (no frame over 33 ms).
+
+Slowest compiles, leapling (cold):
+
+| Pipeline | ms | WGSL KiB |
+|---|---|---|
+| full+shade | 137.83 | 45.4 |
+

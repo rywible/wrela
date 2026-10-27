@@ -13,6 +13,7 @@ use climber::figure::{Figure, figure}
 use climber::moves::{drift_rate, locomotion}
 use climber::sounds::{Heard, cues, heard}
 use engine::frame::{Aim, Change, Frame, Off, Quality, ShadowQuality, Shared}
+use kit::rejector_net::REJECTOR_NET
 use engine::shot::{MOVE, NO_CAST, SETTLE, Shots, place, shot_clock}
 use land::stream::tile_distance
 use tower::door::Exit
@@ -20,6 +21,7 @@ use engine::grass::Contact
 use land::player::{Arm, Focus, Framing, follow}
 use engine::present::Snapshots
 use engine::run::run
+use engine::cook::{Evidence, Planner}
 use engine::shadow::Cascade
 use engine::view::first_camera
 use history::{BAKED, OBSTACLES}
@@ -30,6 +32,7 @@ use stage::{
     air_for, air_of, bare_at, fields_clipmap, grown_at, height_at, level_at, look_of, look_view,
     of_world, origin_of, probe_grid, shot_count, source_of, stage, sun_light,
 }
+use std::time::phase
 use std::collections::replace
 use std::gpu::{GpuBuffer, buffer, dispatch, write}
 use std::input::{Button, Event, Key, events}
@@ -84,6 +87,8 @@ pub struct Floor {
     /// What a test captured of the last frame (`test_capture`).
     captured: GpuBuffer<f32>,
     captured_exposure: GpuBuffer<engine::paint::Exposure>,
+    /// What temporal AA's resolve found at the pixels a test asked for (`test_found`).
+    captured_found: GpuBuffer<engine::temporal::FoundRow>,
     framing: Framing,
     /// The camera's arm as it was last frame (`land::player::follow`).
     arm: Arm,
@@ -131,6 +136,9 @@ pub struct Floor {
     hearing: sound::Hearing,
     /// What the fight has sounded so far (`climber::sounds`).
     fight_heard: Heard,
+    /// The camera each frame drew from (its eye and where it looks, the world's), once a test
+    /// asks for it (`test_record_path`): the walk's path for `wrela tool export -- path`.
+    path: Option<Vec<(vec3, vec3)>> = None,
 }
 
 pub fn init() -> Floor {
@@ -140,7 +148,9 @@ pub fn init() -> Floor {
     let latest = run(take world, hz: 60, step: tick, present: snapshot)
     print(f"the floor: {BAKED.len()} files baked, {OBSTACLES.len()} obstacles")
     let eye = vec3(start.x, height_at(start) + 2.0, start.y)
-    Floor {
+    var staged = stage()
+    staged.neural = quality().neural
+    var floor = Floor {
         console: Link::new(),
         exit: Exit::begin(WORLD, WORLDS, SAVE, STAIR_BUILD, DOOR),
         snaps: Snapshots::new(take latest, hz: 60),
@@ -153,10 +163,11 @@ pub fn init() -> Floor {
             probe_grid(start, vec2(0.0), FLOOR),
             start,
         ),
-        stage: stage(),
+        stage: staged,
         ready: false,
         captured: buffer(1),
         captured_exposure: buffer(1),
+        captured_found: buffer(1),
         // Far enough back that the whole robe, its train and the licks at its hem are seen.
         framing: Framing { target: 1.4, behind: 5.0 },
         arm: Arm {},
@@ -186,6 +197,11 @@ pub fn init() -> Floor {
         hearing: sound::start(),
         fight_heard,
     }
+    // The learned history rejector's net, read under `Quality::learned_resolve` (B14.3).
+    if quality().learned_resolve {
+        floor.frame.reject_by(REJECTOR_NET)
+    }
+    floor
 }
 
 /// The world's source changed to `source` (`source_of`): the stage's part (its tiles' trees and
@@ -218,7 +234,7 @@ fn recentre(s: mut Floor, to: vec2i) {
 }
 
 /// The keys the frames read (the sim reads the player's): F1–F5 leave a system out, F6 draws the
-/// water's next look, F7 captures stills, F8 the next debug view of form, B the sun shafts, V
+/// water's next look, F7 captures stills, F8 the next debug view of form, B the air's fog, V
 /// the frame as plain rendering; L, a shot's number and Enter hold the camera on a lookbook shot
 /// (Escape lets it go).
 fn keys(s: mut Floor, time: f32) {
@@ -264,7 +280,7 @@ fn keys(s: mut Floor, time: f32) {
                 s.stage.water_look = (s.stage.water_look + 1) % engine::water::LOOKS.len()
             }
             if key == Key::B {
-                s.stage.shafts_on = !s.stage.shafts_on
+                s.stage.fog_on = !s.stage.fog_on
             }
             // F7 stills and V plain rendering (no look, to tell the look's work from the
             // scene's): the frame's own keys.
@@ -311,9 +327,16 @@ fn keys(s: mut Floor, time: f32) {
 
 pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     keys(mut s, time)
+    // Its clocks held while the frame's time is (the lookdev instrument's F10, F12).
+    let time = s.frame.held_time(time)
     hash_bake(mut s)
     s.stage.map.poll()
-    s.snaps.update()
+    // The sim's part of the frame: its snapshots read (engine::frame `PHASES`), none while the
+    // frame's time is frozen (the lookdev instrument's F10, F12).
+    phase("sim")
+    if !s.frame.frozen() {
+        s.snaps.update()
+    }
     // The play harness's report, each 2 s of the sim's time (`world::report`).
     let newest = s.snaps.newest()
     // The frames since the last report, beside it: the longest between two frames' times, and
@@ -598,6 +621,13 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
     s.stage.feet = feet.xz + o2
     s.stage.heading = heading
     s.frame.draw(mut s.stage, aim)
+    match mut s.path {
+        Some(p) => {
+            let c = s.frame.cam
+            p.push((c.eye + c.origin, c.eye + c.origin + c.forward))
+        },
+        None => {},
+    }
     if !s.ready &&
         s.stage.wood.is_some() &&
         s.stage.fetching.is_empty() &&
@@ -614,6 +644,9 @@ pub fn frame(s: mut Floor, time: f32, width: u32, height: u32) {
         print(
             f"frame {s.frame.frames - 1}: the player at {feet.x + o.x:.1}, {feet.z + o.z:.1}; {s.stage.tiles_in} tiles come, {loaded} instances loaded",
         )
+        if (s.frame.frames - 1) % 600 == 0 {
+            print(costs_said(s.frame.cooks.planner))
+        }
     }
     // A tile the player can see whose own trees aren't placed yet (#55 AC7's tiles on time):
     // within the cards' reach of the eye (past it, the far layer's crowns stand for them). Not
@@ -735,10 +768,10 @@ pub fn test_leave(s: mut Floor, x: f32, z: f32) -> f32 {
     if s.exit.leave(vec2(x, z)) { 1.0 } else { 0.0 }
 }
 
-/// Sun shafts on (`on` 1) or off.
+/// The air's fog, mists and canopy haze on (`on` 1) or off.
 @testing
-pub fn test_shafts(s: mut Floor, on: u32) {
-    s.stage.shafts_on = on != 0
+pub fn test_fog(s: mut Floor, on: u32) {
+    s.stage.fog_on = on != 0
 }
 
 /// Frames drawn as plain rendering (`on` 1: the scene at the output's size, no jitter, no
@@ -746,6 +779,16 @@ pub fn test_shafts(s: mut Floor, on: u32) {
 @testing
 pub fn test_plain(s: mut Floor, on: u32) {
     s.frame.debug.plain = on != 0
+}
+
+/// The lookdev instrument's negative controls (`wrela tool lookbook --quality --controls`,
+/// docs/lookdev.md): temporal AA's blend forced to `blend` and its history unclipped (0 leaves
+/// both), and `thin` of the grass's cover placed (1 all of it).
+pub fn lookdev(s: mut Floor, blend: f32, thin: f32) {
+    if blend > 0.0 {
+        s.frame.ghost(blend)
+    }
+    s.stage.grass.thin = thin
 }
 
 /// The wind blowing (`on` 1) or still.
@@ -794,6 +837,43 @@ pub fn test_capture(s: mut Floor, what: testing::Capture) -> u32 {
     }
 }
 
+/// From the next frame on, what temporal AA's resolve finds at `n` pixels of a `width` ×
+/// `height` output, random from `seed` (`engine::frame::Frame::ask_found`: the learned
+/// rejector's dataset, §B14.3).
+@testing
+pub fn test_found_ask(s: mut Floor, n: u32, seed: u32, width: u32, height: u32) {
+    var pixels: Vec<vec2u> = Vec::with_capacity(n)
+    for i in 0..n {
+        let u = vec2(engine::noise::rand(seed, 2 * i), engine::noise::rand(seed, 2 * i + 1))
+        pixels.push(min(vec2u(u * vec2(f32(width), f32(height))), vec2u(width - 1, height - 1)))
+    }
+    s.frame.ask_found(pixels)
+}
+
+/// Temporal AA's share of this frame from the learned rejector (`Quality::learned_resolve`, its
+/// net the floor's: `REJECTOR_NET`), or from the heuristics (§B14.3d's check).
+@testing
+pub fn test_learned(s: mut Floor, on: u32) {
+    s.frame.reject_by(REJECTOR_NET)
+    var q = s.frame.quality()
+    q.learned_resolve = on != 0
+    s.frame.requality(q)
+}
+
+/// What the resolve found the last frame at the pixels `test_found_ask` asked for, copied into
+/// a new buffer (the newest), and how many rows (`engine::temporal::FOUND_FLOATS` floats each).
+@testing
+pub fn test_found(s: mut Floor) -> u32 {
+    match s.frame.found() {
+        Some(b) => {
+            let n = b.len()
+            s.captured_found = take b
+            n
+        },
+        None => 0,
+    }
+}
+
 /// The camera the last frame was drawn by.
 pub struct CameraReport: Copy {
     pub eye: vec3,
@@ -828,6 +908,50 @@ pub fn test_camera(s: Floor) -> CameraReport {
 @testing
 pub fn test_ground(x: f32, z: f32) -> f32 {
     height_at(vec2(x, z))
+}
+
+/// How many heights a row of `test_heights` holds.
+pub const HEIGHT_ROW: u32 = 64
+
+/// A row of the ground's heights (`test_heights`).
+pub struct HeightRow: Copy {
+    pub h: [f32; HEIGHT_ROW],
+}
+
+/// `HEIGHT_ROW` of the ground's heights from (x, z), `step` metres apart along x: a row of the
+/// heightmap `wrela tool export -- height` writes (Part C's brief).
+@testing
+pub fn test_heights(x: f32, z: f32, step: f32) -> HeightRow {
+    var row = HeightRow { h: [0.0; HEIGHT_ROW] }
+    for i in 0..HEIGHT_ROW {
+        row.h[i] = height_at(vec2(x + f32(i) * step, z))
+    }
+    row
+}
+
+/// From now on, each frame's camera kept (`test_path_at`).
+@testing
+pub fn test_record_path(s: mut Floor) {
+    s.path = Some(Vec::new())
+}
+
+/// The camera of the `i`th frame kept (`test_record_path`): its eye, then where it looks (a
+/// metre along its view), the world's; and how many frames were kept (all 0 past the last).
+@testing
+pub fn test_path_at(s: Floor, i: u32) -> PathPoint {
+    match s.path {
+        Some(p) => if i < p.len() {
+            PathPoint { eye: p[i].0, at: p[i].1, kept: p.len() }
+        } else { PathPoint { eye: vec3(0.0), at: vec3(0.0), kept: p.len() } },
+        None => PathPoint { eye: vec3(0.0), at: vec3(0.0), kept: 0 },
+    }
+}
+
+/// A frame's camera on the recorded path (`test_path_at`).
+pub struct PathPoint: Copy {
+    pub eye: vec3,
+    pub at: vec3,
+    pub kept: u32,
 }
 
 /// Whether the floor round the camera's eye has settled: the light round it drawn (`lit`: a
@@ -877,6 +1001,82 @@ pub fn test_crown(s: Floor, i: u32) -> vec4 {
 fn the_first_frames_run(s: Floor) {
     assert(s.frame.frames == 40, f"{s.frame.frames} frames drawn")
 }
+
+/// The load's chain (`stage::cook_load`): with the far layer held to frame 200, the wood and the
+/// built things don't wait for it (nor the built things for the wood), the far layer lands over
+/// eight frames or more (`FAR_PER_FRAME` a frame), and the floor is playable soon after.
+@test(frames: 400, gpu: true, hold: [("files/floor/far.bin", 200)])
+fn the_load_chain_runs_its_links_side_by_side(s: Floor) {
+    let (Some(built), Some(wood)) = (s.stage.first_built_at, s.stage.wood_at) else {
+        panic("the wood and the built things came")
+    }
+    assert(
+        built < 20 && wood < 20,
+        f"the first built thing stood at frame {built}, the wood at {wood}",
+    )
+    let Some(playable) = s.frame.ready.playable_at else { panic("playable within 400 frames") }
+    print(
+        f"built from frame {built}, the wood at {wood}, playable at frame {playable}, the far layer over {s.stage.far_frames} frames",
+    )
+    print(costs_said(s.frame.cooks.planner))
+    // The far layer's 65 tiles, `FAR_PER_FRAME` a frame.
+    assert(s.stage.far_frames >= 8, f"the far layer landed over {s.stage.far_frames} frames")
+    assert(playable <= PLAYABLE_HELD, f"playable at frame {playable}")
+}
+
+/// What's solid round the eye once the floor is playable (`Scene::solids`, B9b): the trunks',
+/// limbs' and stones' capsules (the probes' occluders that are solid) and the built things'
+/// tapes, and the distance volume cooked from them; and the built things' far levels (B11a), a
+/// small share of their near levels' vertices.
+@test(frames: 400, gpu: true)
+fn the_floors_solids_land_with_its_wood_and_built_things(s: Floor) {
+    let Some(solids) = engine::frame::Scene::solids(s.stage, s.frame.origin, 0xfffffffe) else {
+        panic("the floor said nothing is solid")
+    }
+    let (capsules, shapes) = (solids.capsules.len(), solids.shapes.len())
+    print(
+        f"{capsules} capsules, {shapes} shapes of {s.stage.built.len()} built things; the volume cooked: {s.frame.distance.cooked}",
+    )
+    assert(capsules > 100 && shapes > 10, f"{capsules} capsules, {shapes} shapes")
+    assert(s.frame.distance.cooked, "the distance volume isn't cooked")
+    // The built things' levels (B11a): the far level's vertices against the near's.
+    var near = 0
+    var far = 0
+    var both = 0
+    for t in s.stage.built {
+        let f = match t.far {
+            Some(r) => r.counted,
+            None => None,
+        }
+        if let (Some(n), Some(c)) = (t.near.counted, f) {
+            near += n.0
+            far += c.0
+            both += 1
+        }
+    }
+    print(
+        f"{both} built things with two levels: {near} vertices near, {far} far ({f32(far) / f32(max(near, 1)) * 100.0:.1}%)",
+    )
+    assert(both > 100 && far * 4 < near, f"{near} near, {far} far")
+}
+
+/// The planner's costs as this device measured them, for docs/bench.md: `cook::costs()`'s
+/// order, µs, the ladder's step then the running average (`e`: still the estimate).
+fn costs_said(planner: Planner) -> String {
+    var costs = String::from("costs:")
+    for c in planner.costs() {
+        if c.evidence == Evidence::Measured {
+            costs.push_str(f" {c.us:.0}/{c.raw:.0}")
+        } else {
+            costs.push_str(f" e{c.us:.0}")
+        }
+    }
+    costs
+}
+
+/// The frame the load-chain test's floor is playable by, its far layer held to frame 200: what
+/// it measured, and 20 frames' room.
+const PLAYABLE_HELD: u32 = 273
 
 /// The fight's ground (`fought`) is worn over its disc and the wolf's way out to the trail, and
 /// nowhere else; its edge is ragged, not a circle.

@@ -5,6 +5,7 @@
 //
 // ```text
 // wrela tool lookbook -- <out-dir> [--package <dir>] [--stills] [--capture]
+//     [--quality [--controls]] [--shots a,b,c]
 //     [--view clay|silhouette|bare|grown|specimens] [--size WxH] [--jobs N] [--workers N]
 //     [shot-number ...]
 // ```
@@ -34,10 +35,17 @@
 // `--capture` takes each still in capture mode (F7, `engine::frame::Frame::key`): the program does
 // its load in a few frames, and the still is the frame it prints `still at frame N` on, a
 // 16-frame resolve once the light round the eye is in, not the frame 5 s in.
+//
+// `--quality` measures each shot instead, as the lookdev instrument (quality.wrela,
+// docs/lookdev.md): play against a frozen-time reference, its flicker, pop and trail, into
+// `quality.json`; `--controls` adds the instrument's negative controls (`controls.json`).
 
 use shots::{
     CAPTURE_FRAMES, MOVE_FRAMES, Options, SETTLE_FRAMES, STILL, VIEWS, build_of, check_line, keys,
     lookbook_of, names_in, names_listed, parse_args, shown_path, stem,
+}
+use quality::{
+    CONTROL_SHOT, Control, DETAIL_SHOT, HEADER, json_list, judged, measure, measured_json, row,
 }
 use std::input::Script
 use std::io::print
@@ -151,6 +159,9 @@ pub fn lookbook(o: Options) -> Result<(), ToolError> {
         }
     }
     let _ = files::make_dirs(o.out.as_str()).wait()?
+    if o.quality {
+        return lookdev(o, build.as_str(), presses, shots)
+    }
     // The interest check's numbers, for the look and its debug views of form.
     var check: Option<Doc> = None
     if listed.is_empty() {
@@ -198,6 +209,95 @@ pub fn lookbook(o: Options) -> Result<(), ToolError> {
         }
     }
     Ok(())
+}
+
+/// The lookdev instrument's measures of `o`'s shots (`shots`, drawn with `presses` of F8) from
+/// the build in `build`, as a table and `quality.json`; with `--controls`, its negative controls
+/// too, as `controls.json` (docs/lookdev.md): on `CONTROL_SHOT`, and the detail removal on
+/// `DETAIL_SHOT`.
+fn lookdev(o: Options, build: str, presses: u32, shots: Vec<String>) -> Result<(), ToolError> {
+    var picks = o.picks.clone()
+    if picks.is_empty() {
+        for i in 0..shots.len() {
+            picks.push(i)
+        }
+    }
+    let out = o.out.as_str()
+    // Shot `i`'s run (`what` names its files after the shot's), with the blurred play's measures
+    // if `blurs`, changed as `c` says.
+    let run = |i: u32, what: str, blurs: bool, c: Control| -> Result<quality::Measured, ToolError> {
+        let name = stem(i, shots[i].as_str())
+        let m = measure(f"{out}/{name}{what}", build, i, presses, o.width, o.height, blurs, c)?
+        print(row(f"{name}{what}", m.clone()).as_str())
+        Ok(take m)
+    }
+    print(HEADER)
+    var entries: Vec<String> = Vec::new()
+    var ran: Vec<(u32, quality::Measured)> = Vec::new()
+    for i in picks {
+        let m = run(i, "", o.controls && i == CONTROL_SHOT, Control {})?
+        entries.push(measured_json(stem(i, shots[i].as_str()).as_str(), m.clone(), "measured"))
+        ran.push((i, take m))
+    }
+    write_file(f"{out}/quality.json", Vec::from([Vec::from(json_list(entries).as_bytes())]))?
+    if !o.controls {
+        return Ok(())
+    }
+    // The plain runs the controls compare with: the table's, or their own.
+    let plain = match ran_of(ran, CONTROL_SHOT) {
+        Some(m) => take m,
+        None => run(CONTROL_SHOT, "", true, Control {})?,
+    }
+    let ghost = run(CONTROL_SHOT, "-ghost", false, Control { blend: 0.02 })?
+    let detail = match ran_of(ran, DETAIL_SHOT) {
+        Some(m) => take m,
+        None => run(DETAIL_SHOT, "", false, Control {})?,
+    }
+    let thinned = run(DETAIL_SHOT, "-thinned", false, Control { thin: 0.5 })?
+    var lines: Vec<String> = Vec::new()
+    var all = true
+    for (control, passed, saw) in judged(plain, ghost.clone()) {
+        print(f"{control}: {if passed { "passes" } else { "FAILS" }}: {saw}")
+        lines.push(
+            String::from(
+                f"{{\"control\": \"{control}\", \"passed\": {passed}, \"saw\": \"{saw}\"}}",
+            ),
+        )
+        all = all && passed
+    }
+    let (control_name, detail_name) = (
+        stem(CONTROL_SHOT, shots[CONTROL_SHOT].as_str()),
+        stem(DETAIL_SHOT, shots[DETAIL_SHOT].as_str()),
+    )
+    lines.push(
+        String::from(
+            f"{{\"control\": \"ghost run\", \"measured\": {measured_json(control_name.as_str(), ghost, "control")}}}",
+        ),
+    )
+    // Degraded whatever its PSNR says: the blind judge's calibration pair.
+    print(
+        f"detail removal: degraded (PSNR {detail.psnr:.2} → {thinned.psnr:.2} dB with half the grass)",
+    )
+    lines.push(
+        String::from(
+            f"{{\"control\": \"detail removal\", \"plain\": {measured_json(detail_name.as_str(), detail, "measured")}, \"measured\": {measured_json(detail_name.as_str(), thinned, "degraded")}}}",
+        ),
+    )
+    write_file(f"{out}/controls.json", Vec::from([Vec::from(json_list(lines).as_bytes())]))?
+    if !all {
+        return Err(ToolError::new("a negative control failed (controls.json)"))
+    }
+    Ok(())
+}
+
+/// Shot `i`'s measures in `ran`, if it was measured.
+fn ran_of(ran: [(u32, quality::Measured)], i: u32) -> Option<quality::Measured> {
+    for (k, m) in ran {
+        if k == i {
+            return Some(m.clone())
+        }
+    }
+    None
 }
 
 pub fn tool() -> u32 {

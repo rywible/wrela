@@ -1,0 +1,405 @@
+// The fit tool's impostor fixture (§B14.2): the great tree's impostor atlases baked as the engine
+// bakes a kind's (`engine::vegetation::kind`: 16 × 16 hemi-octahedral views of 64² texels),
+// read back as 1,048,576 rows, `(view_uv, texel_uv) → (rgb, coverage, oct normal, toward,
+// depth)`, every 16th view held out; and a ladder's rung trained on the rest when the tool asks
+// (`test_start`, `test_train`, `test_score`), on the program's helpers, a slice of each batch a
+// helper (`std::par::spawn`).
+//
+// Rungs (`engine::neural::Model`s): A 4 → 16 → 16 → 8; B 4 → 32 → 32 → 8; C A's inputs and 8
+// features from a learned 16 × 16 × 8 grid over `texel_uv` (bilinear, trained with the net: 12
+// inputs); D C with a 32 × 32 × 8 grid and hidden 48. The measure: PSNR over the colour and the
+// coverage at the held-out views, the colour's error weighted by the true coverage.
+
+use engine::impostor::{ATLAS, CELL, VIEWS}
+use engine::neural::{Adam, Model, backward, forward, start}
+use engine::noise::rand
+use engine::plant::leaf_atlas
+use engine::vegetation::kind
+use great_tree::tree::great_tree
+use std::gpu::{
+    GlobalId, GpuBuffer, Rgba16Float, Rgba8, Slots, Texture, buffer, dispatch, read, sampler,
+}
+use std::io::Pending
+use std::par::spawn
+
+/// A row's inputs and outputs.
+const INPUTS: u32 = 4
+const OUTPUTS: u32 = 8
+const ROW: u32 = 12
+
+/// Every `HELD`th view is held out.
+const HELD: u32 = 16
+
+/// Texel `i` of the atlases from row `first` (row-major), colour and normal, flattened: eight
+/// floats.
+@compute(64)
+fn flat(
+    colour: Texture<Rgba8>,
+    normal: Texture<Rgba16Float>,
+    first: u32,
+    out: mut Slots<f32>,
+    id: GlobalId,
+) {
+    let t = first * ATLAS + id.x / 8
+    if t >= ATLAS * ATLAS {
+        return
+    }
+    let (x, y) = (t % ATLAS, t / ATLAS)
+    let k = id.x % 8
+    let c = colour.load(x: x, y: y)
+    let n = normal.load(x: x, y: y)
+    out[id] = if k < 4 { c[k] } else { n[k - 4] }
+}
+
+/// A rung: its net's shape, and its grid's side (0: none) and channels.
+pub struct Rung: Copy {
+    pub model: Model,
+    pub grid: u32,
+    pub features: u32,
+}
+
+pub fn rung(i: u32) -> Rung {
+    match i {
+        0 => Rung { model: Model { inputs: 4, h1: 16, h2: 16, outputs: 8 }, grid: 0, features: 0 },
+        1 => Rung { model: Model { inputs: 4, h1: 32, h2: 32, outputs: 8 }, grid: 0, features: 0 },
+        2 => Rung {
+            model: Model { inputs: 12, h1: 16, h2: 16, outputs: 8 },
+            grid: 16,
+            features: 8,
+        },
+        _ => Rung {
+            model: Model { inputs: 12, h1: 48, h2: 48, outputs: 8 },
+            grid: 32,
+            features: 8,
+        },
+    }
+}
+
+/// The inputs of row `r` of `rows` through rung `g`'s grid (`grid`, from `at` in `w`): the row's
+/// four, then the grid's features at its `texel_uv`, bilinear; with each corner's cell and weight.
+fn inputs_of(g: Rung, w: [f32], at: u32, rows: [f32], r: u32) -> (Vec<f32>, [u32; 4], vec4) {
+    var x: Vec<f32> = Vec::with_capacity(g.model.inputs)
+    for c in 0..INPUTS {
+        x.push(rows[r * ROW + c])
+    }
+    if g.grid == 0 {
+        return (take x, [0, 0, 0, 0], vec4(0.0))
+    }
+    let uv = vec2(rows[r * ROW + 2], rows[r * ROW + 3]) * f32(g.grid - 1)
+    let c0 = vec2u(min(floor(uv), vec2(f32(g.grid - 2))))
+    let f = uv - vec2(c0)
+    let cells = [
+        c0.y * g.grid + c0.x,
+        c0.y * g.grid + c0.x + 1,
+        (c0.y + 1) * g.grid + c0.x,
+        (c0.y + 1) * g.grid + c0.x + 1,
+    ]
+    let ws = vec4((1.0 - f.x) * (1.0 - f.y), f.x * (1.0 - f.y), (1.0 - f.x) * f.y, f.x * f.y)
+    for k in 0..g.features {
+        var v = 0.0
+        for q in 0..4 {
+            v += w[at + cells[q] * g.features + k] * ws[q]
+        }
+        x.push(v)
+    }
+    (take x, cells, ws)
+}
+
+/// A batch's slice for a helper: the rung, the weights (the net's, then its grid's), the rows
+/// and which of them.
+pub struct Slice: Clone {
+    rung: Rung,
+    w: Vec<f32>,
+    rows: Vec<f32>,
+    count: u32,
+    scale: f32,
+}
+
+/// A slice's gradient (the net's and its grid's, `w`'s order) and its summed squared error.
+fn gradient(s: take Slice) -> (Vec<f32>, f32) {
+    let g = s.rung
+    let m = g.model
+    let net = m.size()
+    var grad: Vec<f32> = Vec::with_capacity(s.w.len())
+    for _ in 0..s.w.len() {
+        grad.push(0.0)
+    }
+    var dx: Vec<f32> = Vec::with_capacity(m.inputs)
+    for _ in 0..m.inputs {
+        dx.push(0.0)
+    }
+    var dout: Vec<f32> = Vec::from([0.0; 8])
+    var loss = 0.0
+    for r in 0..s.count {
+        let (x, cells, ws) = inputs_of(g, s.w, net, s.rows, r)
+        let p = forward(m, s.w, x)
+        for k in 0..OUTPUTS {
+            let e = p.out[k] - s.rows[r * ROW + INPUTS + k]
+            loss += e * e
+            dout[k] = 2.0 * e * s.scale
+        }
+        for k in 0..m.inputs {
+            dx[k] = 0.0
+        }
+        backward(m, s.w, x, p, dout, mut grad, mut dx)
+        // Into the grid's corners, by their weights.
+        for f in 0..g.features {
+            for q in 0..4 {
+                grad[net + cells[q] * g.features + f] += dx[INPUTS + f] * ws[q]
+            }
+        }
+    }
+    (take grad, loss)
+}
+
+pub struct State {
+    rows: Vec<f32>,
+    held: Vec<f32>,
+    asked: Option<Pending<f32>>,
+    /// The rung training, its weights, Adam's state, and the steps taken.
+    rung: Rung,
+    w: Vec<f32>,
+    adam: Adam,
+    pub steps: u32,
+}
+
+pub fn init() -> State {
+    // The great tree as the Last Green bakes it: its kinds' seeds are their places plus one
+    // (`stage::cook_load`), and the great tree's is the first (`trees::GREAT`).
+    let k = kind(great_tree(), 1, leaf_atlas(6), sampler())
+    var out: GpuBuffer<f32> = buffer(ATLAS * ATLAS * 8)
+    // Sixty-four rows a dispatch (a dispatch has at most 65,535 workgroups a side).
+    let band = 64 * ATLAS * 8
+    for b in 0..ATLAS / 64 {
+        dispatch(
+            flat.bind(
+                k.impostor.colour,
+                k.impostor.normal,
+                first: b * 64,
+                out: out.span_mut(start: b * band, count: band),
+            ),
+            over: band,
+        )
+    }
+    State {
+        rows: Vec::new(),
+        held: Vec::new(),
+        asked: Some(read(out.items())),
+        rung: rung(0),
+        w: Vec::new(),
+        adam: Adam::new(1, rate: 1.0e-3),
+        steps: 0,
+    }
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    if !s.rows.is_empty() {
+        return
+    }
+    let got = match mut s.asked {
+        Some(p) => match p.poll() {
+            Some(Ok(v)) => Some(take v),
+            _ => None,
+        },
+        None => None,
+    }
+    let Some(t) = got else { return }
+    // Each texel a row: its view's place on the views' grid and its own in its view's cell
+    // (each 0 to 1), then its eight values; the held-out views' apart.
+    for y in 0..ATLAS {
+        for x in 0..ATLAS {
+            let view = (y / CELL) * VIEWS + x / CELL
+            let i = (y * ATLAS + x) * 8
+            var r: Vec<f32> = Vec::from(
+                [
+                    (f32(x / CELL) + 0.5) / f32(VIEWS),
+                    (f32(y / CELL) + 0.5) / f32(VIEWS),
+                    (f32(x % CELL) + 0.5) / f32(CELL),
+                    (f32(y % CELL) + 0.5) / f32(CELL),
+                ],
+            )
+            for k in 0..8 {
+                r.push(t[i + k])
+            }
+            if view % HELD == HELD - 1 {
+                s.held.append(mut r)
+            } else {
+                s.rows.append(mut r)
+            }
+        }
+    }
+}
+
+/// Whether the rows are in (1), and how many: training, held out.
+@testing
+pub fn test_ready(s: State) -> vec3 {
+    vec3(if s.rows.is_empty() { 0.0 } else {
+        1.0
+    }, f32(s.rows.len() / ROW), f32(s.held.len() / ROW))
+}
+
+/// The atlases' texel `(x, y)`'s eight values, as its row holds them (the dataset's test).
+@testing
+pub fn test_row(s: State, view: u32, texel: u32) -> RowValues {
+    let x = (view % VIEWS) * CELL + texel % CELL
+    let y = (view / VIEWS) * CELL + texel / CELL
+    let (rows, train_view) = if view % HELD == HELD - 1 { (s.held.clone(), false) } else {
+        (s.rows.clone(), true)
+    }
+    // Rows are in the atlas's order, the held-out views' apart.
+    var n = 0
+    for yy in 0..ATLAS {
+        for xx in 0..ATLAS {
+            let v = (yy / CELL) * VIEWS + xx / CELL
+            if (v % HELD == HELD - 1) != !train_view {
+                continue
+            }
+            if xx == x && yy == y {
+                var out = RowValues { v: [0.0; 12] }
+                for k in 0..ROW {
+                    out.v[k] = rows[n * ROW + k]
+                }
+                return out
+            }
+            n += 1
+        }
+    }
+    RowValues { v: [0.0; 12] }
+}
+
+pub struct RowValues: Copy {
+    pub v: [f32; 12],
+}
+
+/// The rung training's weights from `from`: 32 of them (0 past the last), how many there are,
+/// the rung's grid side and its features.
+pub struct Weights: Copy {
+    pub v: [f32; 32],
+    pub count: u32,
+    pub grid: u32,
+    pub features: u32,
+}
+
+/// The rung's weights from `from` (`Weights`): the tool reads the best seed's back to write.
+@testing
+pub fn test_weights(s: State, from: u32) -> Weights {
+    var out = Weights {
+        v: [0.0; 32],
+        count: s.w.len(),
+        grid: s.rung.grid,
+        features: s.rung.features,
+    }
+    for k in 0..32 {
+        if from + k < s.w.len() {
+            out.v[k] = s.w[from + k]
+        }
+    }
+    out
+}
+
+/// Rung `i` started from `seed` (He's weights, the grid's small and random), Adam at `rate`.
+@testing
+pub fn test_start(s: mut State, i: u32, seed: u32, rate: f32) {
+    let g = rung(i)
+    var w = start(g.model, seed)
+    let cells = g.grid * g.grid * g.features
+    for c in 0..cells {
+        w.push((rand(seed * 31 + 5, c) - 0.5) * 0.2)
+    }
+    s.rung = g
+    s.adam = Adam::new(w.len(), rate)
+    s.w = take w
+    s.steps = 0
+}
+
+/// `steps` steps of `batch` rows (each step's rows drawn at random), a slice each to `helpers`
+/// helpers: the last step's mean squared error.
+@testing
+pub fn test_train(s: mut State, steps: u32, batch: u32, helpers: u32) -> f32 {
+    let n = s.rows.len() / ROW
+    var last = 0.0
+    for _ in 0..steps {
+        let per = batch / helpers
+        var tasks: Vec<std::par::Task<(Vec<f32>, f32)>> = Vec::new()
+        for h in 0..helpers {
+            var rows: Vec<f32> = Vec::with_capacity(per * ROW)
+            for k in 0..per {
+                let r = u32(rand(s.steps * 131 + h, k) * f32(n)) % n
+                for c in 0..ROW {
+                    rows.push(s.rows[r * ROW + c])
+                }
+            }
+            let slice = Slice {
+                rung: s.rung,
+                w: s.w.clone(),
+                rows,
+                count: per,
+                scale: 1.0 / f32(per * helpers * OUTPUTS),
+            }
+            tasks.push(spawn(take slice, gradient))
+        }
+        var grad: Vec<f32> = Vec::new()
+        var loss = 0.0
+        while !tasks.is_empty() {
+            let t = tasks.pop().unwrap()
+            let (g, l) = take t.join()
+            if grad.is_empty() {
+                grad = g.clone()
+            } else {
+                for i in 0..grad.len() {
+                    grad[i] += g[i]
+                }
+            }
+            loss += l
+        }
+        s.adam.step(mut s.w, grad)
+        s.steps += 1
+        last = loss / f32(per * helpers * OUTPUTS)
+    }
+    last
+}
+
+/// Over `rows` through the rung: the colour's squared error weighted by the true coverage, that
+/// weight, the coverage's squared error, and the rows.
+fn sums(s: State, rows: [f32]) -> vec4 {
+    let g = s.rung
+    let net = g.model.size()
+    let n = rows.len() / ROW
+    var colour = 0.0
+    var covered = 0.0
+    var coverage = 0.0
+    for r in 0..n {
+        let (x, _, _) = inputs_of(g, s.w, net, rows, r)
+        let out = forward(g.model, s.w, x).out
+        let truth_cover = rows[r * ROW + INPUTS + 3]
+        for k in 0..3 {
+            let e = out[k] - rows[r * ROW + INPUTS + k]
+            colour += truth_cover * e * e
+        }
+        covered += truth_cover * 3.0
+        let e = out[3] - truth_cover
+        coverage += e * e
+    }
+    vec4(colour, covered, coverage, f32(n))
+}
+
+/// The PSNR (dB) of `sums` over colour and coverage, and the colour's and coverage's mean squared
+/// errors.
+fn psnr(t: vec4) -> vec3 {
+    let mse = (t.x + t.z) / max(t.y + t.w, 1.0)
+    vec3(10.0 * log(1.0 / max(mse, 1.0e-12)) / log(10.0), t.x / max(t.y, 1.0), t.z / max(t.w, 1.0))
+}
+
+/// The rung's PSNR (dB) over the held-out views' colour and coverage (the colour's error weighted
+/// by the true coverage), and the colour's and coverage's mean squared errors.
+@testing
+pub fn test_score(s: State) -> vec3 {
+    psnr(sums(s, s.held))
+}
+
+/// `test_score` over all 256 views, those it trained on and those held out: the net against the
+/// atlas (§B14.2d).
+@testing
+pub fn test_score_all(s: State) -> vec3 {
+    psnr(sums(s, s.held) + sums(s, s.rows))
+}

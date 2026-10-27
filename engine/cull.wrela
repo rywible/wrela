@@ -16,8 +16,8 @@
 // against it (phase 2): what's revealed this frame is drawn this frame.
 
 use std::gpu::{
-    DepthTexture, GlobalId, MipStep, R32Float, Texels, Texture, dispatch, label, mip_levels,
-    writable_texture,
+    Atomics, DepthTexture, DrawIndexedArgs, GlobalId, MipStep, R32Float, Slots, Texels, Texture,
+    dispatch, label, mip_levels, writable_texture,
 }
 use view::Camera
 
@@ -214,4 +214,114 @@ pub fn occluded(pyramid: Texture<R32Float>, h: Hzb, centre: vec3, radius: f32) -
         }
     }
     h.near / ahead < farthest
+}
+
+// ---- one bounds list ----------------------------------------------------------------------------
+
+/// A thing's bound for the frame's culling (`cull_bounds`): a sphere (render space; a negative
+/// radius is drawn by no frame), which of the culling's draws it's an instance of (`kind`), and
+/// what that draw's instance reads for it (`payload`).
+pub struct Bound: Copy + GpuData {
+    pub centre: vec3,
+    pub radius: f32,
+    pub kind: u32,
+    pub payload: u32,
+}
+
+/// What the culling reads: the camera's view and projection (its frustum's planes), the last
+/// frame's pyramid's test (`Hzb`; off: the frustum alone), and how many bounds there are.
+pub struct BoundCull: Copy + GpuData {
+    pub view_proj: mat4,
+    pub hzb: Hzb,
+    pub total: u32,
+}
+
+/// Row `i` of `m` (a plane of the frustum is a sum of two rows).
+fn row(m: mat4, i: u32) -> vec4 {
+    vec4(m[0][i], m[1][i], m[2][i], m[3][i])
+}
+
+/// Whether a sphere at `centre` of `radius` meets the frustum of `view_proj` (reversed depth,
+/// its far plane at infinity): the left, right, bottom, top and near planes (Gribb and
+/// Hartmann, Fast Extraction of Viewing Frustum Planes from the World-View-Projection Matrix,
+/// 2001).
+pub fn in_frustum(view_proj: mat4, centre: vec3, radius: f32) -> bool {
+    let w = row(view_proj, 3)
+    let planes = [
+        w + row(view_proj, 0),
+        w - row(view_proj, 0),
+        w + row(view_proj, 1),
+        w - row(view_proj, 1),
+        w - row(view_proj, 2),
+    ]
+    for p in planes {
+        if dot(p.xyz, centre) + p.w < -radius * length(p.xyz) {
+            return false
+        }
+    }
+    true
+}
+
+/// Bound `id` into its kind's list if the frustum meets it and the pyramid doesn't hide it: a
+/// place taken from its kind's count (`counts`), from where its kind's room starts (`rooms`).
+@compute(64)
+pub fn cull_bounds(
+    c: BoundCull,
+    pyramid: Texture<R32Float>,
+    bounds: [Bound],
+    rooms: [u32],
+    counts: mut Atomics<u32>,
+    lists: mut Atomics<u32>,
+    id: GlobalId,
+) {
+    if id.x >= c.total {
+        return
+    }
+    let b = bounds[id.x]
+    if b.radius < 0.0 ||
+        !in_frustum(c.view_proj, b.centre, b.radius) ||
+        occluded(pyramid, c.hzb, b.centre, b.radius) {
+        return
+    }
+    let at = counts.add(b.kind, 1)
+    lists.store(rooms[b.kind] + at, b.payload)
+}
+
+/// Each kind's draw of what its list holds (`counts`), its count made 0 for the next culling.
+@compute(64)
+pub fn bound_draws(
+    templates: [DrawIndexedArgs],
+    counts: mut Atomics<u32>,
+    out: mut Slots<DrawIndexedArgs>,
+    n: u32,
+    id: GlobalId,
+) {
+    if id.x >= n {
+        return
+    }
+    out[id] = DrawIndexedArgs { instances: counts.load(id.x), ..templates[id.x] }
+    counts.store(id.x, 0)
+}
+
+@test
+fn a_sphere_meets_the_frustum_where_it_reaches_into_it() {
+    let cam = view::first_camera(
+        eye: vec3(0.0, 1.0, 0.0),
+        at: vec3(0.0, 1.0, 10.0),
+        fovy: 1.0,
+        width: 1920,
+        height: 1080,
+    )
+    let vp = cam.view_proj
+    assert(in_frustum(vp, vec3(0.0, 1.0, 20.0), 1.0), "ahead")
+    assert(!in_frustum(vp, vec3(0.0, 1.0, -20.0), 1.0), "behind")
+    assert(!in_frustum(vp, vec3(200.0, 1.0, 20.0), 1.0), "far to the side")
+    assert(in_frustum(vp, vec3(0.0, 1.0, 1.0e6), 1.0), "past any far plane: there's none")
+    // At a side's edge 20 m ahead: a sphere a metre past it reaching two back in meets it, one
+    // five past doesn't (on both sides: which side is +x is the camera's).
+    let edge = 20.0 * cam.tan_half * cam.aspect
+    for side in [-1.0, 1.0] {
+        assert(in_frustum(vp, vec3(side * (edge + 1.0), 1.0, 20.0), 2.0), "an edge's sphere")
+        assert(!in_frustum(vp, vec3(side * (edge + 5.0), 1.0, 20.0), 2.0), "past an edge")
+    }
 }

@@ -21,6 +21,7 @@ use path::{Shot, shot}
 use rocks::{boulders, footprints}
 use scene::{FOVY, Ground, LOOK_AT, MEADOW, SUN, on_ground, start_eye}
 use stage::{Stage, System, on, stage, wind}
+use std::time::phase
 use std::collections::Flags
 use std::gpu::{GpuBuffer, Rgba16Float, Texture, buffer, buffer_of, dispatch}
 use std::input::{Event, Key, events}
@@ -72,6 +73,10 @@ fn quality(scale: u32) -> Quality {
         },
         probes: ProbeQuality { moves: 1.0e9, rays: engine::probes::RAYS, again: true },
         arrival: Arrival { on: false },
+        // No fog and no solids of its own: neither the froxel volume nor the distance volume
+        // (each cost it in the frame, B16's bisect, for nothing it shows).
+        fog: false,
+        distance: false,
     }
 }
 
@@ -304,6 +309,8 @@ fn keep_carried(s: Clearing) {
 
 pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
     keys(mut s, time)
+    // Its clocks held while the frame's time is (the lookdev instrument's F10, F12).
+    let time = s.frame.held_time(time)
     let off = s.carried.off
     // The systems the frame itself leaves out, and the scale the scene is drawn at.
     s.frame.set(Off::Shadows, on: on(off, System::Shadows))
@@ -319,7 +326,12 @@ pub fn frame(s: mut Clearing, time: f32, width: u32, height: u32) {
         s.frame.requality(quality(s.carried.scale))
     }
     // The creature, between the two ticks round the frame's sim time, and its palette.
-    s.snaps.update()
+    // The sim's part of the frame: its snapshots read (engine::frame `PHASES`), none while the
+    // frame's time is frozen (the lookdev instrument's F10, F12).
+    phase("sim")
+    if !s.frame.frozen() {
+        s.snaps.update()
+    }
     let b = s.snaps.at(s.snaps.sim_time(time))
     let walker = between(b.a.walker, b.b.walker, b.alpha)
     s.stage.walker = walker
@@ -508,6 +520,14 @@ pub fn test_capture(s: mut Clearing, what: Capture) -> u32 {
     }
 }
 
+/// How many of the grass's rings have been placed so far (`Grass::placed`), and the probes'
+/// grid it was lit by (its corner and its columns: a change places every ring again).
+@testing
+pub fn test_placed(s: Clearing) -> vec4 {
+    let g = s.frame.probes.using.grid
+    vec4(f32(s.stage.grass.placed), g.corner, f32(g.cols))
+}
+
 /// The camera the last frame was drawn by.
 pub struct CameraReport: Copy {
     pub eye: vec3,
@@ -597,6 +617,8 @@ pub fn test_reference(s: mut Clearing, first: u32, count: u32, step: u32, rays: 
             f.targets.depth,
             f.targets.scene,
             density: probes.density,
+            volume: f.distance.volume,
+            seen: probes.seen.items(),
             levels: f.clipmap.levels(),
             texels: f.clipmap.texels(),
             maps: probes.maps,
@@ -627,18 +649,18 @@ pub fn test_clip_layout() -> vec4 {
 @testing
 pub fn test_under_boulders(s: mut Clearing) {
     s.captured_counts = buffer(1)
-    count_under_boulders(s.stage.grass.near, mut s.captured_counts)
-    count_under_boulders(s.stage.grass.middle, mut s.captured_counts)
-    count_under_boulders(s.stage.grass.far, mut s.captured_counts)
+    for ring in s.stage.grass.rings {
+        count_under_boulders(ring, mut s.captured_counts)
+    }
 }
 
 fn count_under_boulders(
-    tier: std::gpu::AppendBuffer<engine::grass::Blade>,
+    ring: std::gpu::AppendBuffer<engine::grass::Blade>,
     out: mut GpuBuffer<u32>,
 ) {
     dispatch(
-        testing::under_boulders.bind(blades: tier.items(), count: tier.count(), out: mut out),
-        over: tier.capacity(),
+        testing::under_boulders.bind(blades: ring.items(), count: ring.count(), out: mut out),
+        over: ring.capacity(),
     )
 }
 

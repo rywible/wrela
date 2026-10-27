@@ -257,8 +257,14 @@ pub struct Clipmap {
     finest: f32,
     /// Whether each level holds what its place asks (false until it's cooked).
     cooked: [bool; MAX_LEVELS],
+    /// Each level's texels its fields changed since it was cooked (`touched`): a rectangle,
+    /// lowest (x, y) and highest, in its texel grid; empty (`NO_RECT`) for none. Only these are
+    /// cooked again, not the level.
+    dirty: [vec4i; MAX_LEVELS],
     /// Levels cooked since the clipmap was made (each time a level moved).
     pub cooks: u32,
+    /// The texels the last `follow` cooked (`cooked_texels`).
+    cooked_now: u32,
     /// The ground's fields (`fields_on`): the texture, how it's read and lies, and which tile
     /// each block holds (x, z, and 1 if any), on the GPU and here.
     fields: Texture<Rgba8>,
@@ -308,7 +314,9 @@ impl Clipmap {
             laid: false,
             finest,
             cooked: [false; MAX_LEVELS],
+            dirty: [NO_RECT; MAX_LEVELS],
             cooks: 0,
+            cooked_now: 0,
             fields: texture::<Rgba8>(width: 1, height: 1),
             fields_s: sampler(),
             fields_at: FieldsAt { period: 1.0, texel: 1.0, tile: 1.0, blocks: 1, on: 0 },
@@ -394,16 +402,32 @@ impl Clipmap {
         }
     }
 
-    /// The levels whose squares reach from `lo` to `hi` (the world's) cook again whole.
+    /// The texels of each level whose squares reach from `lo` to `hi` (the world's) cook again:
+    /// those within a field texel of it (a texel's fields are read between the four round its
+    /// point), and one more each way (its cover is seen a texel wide). Their rectangle joins the
+    /// level's `dirty` one.
     fn touched(mut self, lo: vec2, hi: vec2) {
-        let (lo, hi) = (lo - self.origin, hi - self.origin)
+        let reach = vec2(self.fields_at.texel)
+        let (lo, hi) = (lo - self.origin - reach, hi - self.origin + reach)
         for l in 0..self.levels.count {
+            // A level not cooked yet will be, whole.
+            if !self.cooked[l] {
+                continue
+            }
             let a = self.levels.at[l]
             let end = a.xy + vec2(f32(QUADS) * a.z)
             if a.x < hi.x && a.y < hi.y && end.x >= lo.x && end.y >= lo.y {
-                self.cooked[l] = false
+                let t_lo = max(vec2i(floor((lo - a.xy) / a.z)) - vec2i(1), vec2i(0))
+                let t_hi = min(vec2i(ceil((hi - a.xy) / a.z)) + vec2i(1), vec2i(i32(SIDE) - 1))
+                self.dirty[l] = joined(self.dirty[l], vec4i(t_lo.x, t_lo.y, t_hi.x, t_hi.y))
             }
         }
+    }
+
+    /// The texels the last `follow` cooked, its levels' and its rectangles' (a level that moved
+    /// two cells, 258; a tile's fields written, its texels'): what a frame's terrain cook costs.
+    pub fn cooked_texels(self) -> u32 {
+        self.cooked_now
     }
 
     /// Where the levels are, for the shaders.
@@ -433,46 +457,58 @@ impl Clipmap {
     /// when `again`). Records the cooking passes; returns how many levels were cooked.
     pub fn follow<T: Terrain>(mut self, terrain: T, eye: vec3, again: bool) -> u32 {
         var cooked = 0
+        var moved_any = false
+        self.cooked_now = 0
         self.levels.eye = eye.xz
         for l in 0..self.levels.count {
             let at = self.place(l, eye)
             let old = self.levels.at[l]
-            if again || !self.cooked[l] || old.x != at.x || old.y != at.y {
-                let s = self.spacing(l)
-                self.levels.at[l] = vec4(at.x, at.y, s, 0.0)
-                // How many cells it moved, each way: what it kept is that far back in its old
-                // texels (all of it is cooked, for a level not cooked yet).
-                let moved = if again || !self.cooked[l] {
-                    vec2i(i32(SIDE))
-                } else { vec2i(round((at - old.xy) / s)) }
-                label("terrain cook")
-                dispatch(
-                    cook_level.bind(
-                        terrain,
-                        fields: self.fields,
-                        fs: self.fields_s,
-                        fields_at: self.fields_at,
-                        tiles: self.field_tiles,
-                        at: vec4(at.x, at.y, s, 0.0),
-                        origin: self.origin,
-                        moved: moved,
-                        from: self.texels.span(start: l * STRIDE, count: STRIDE),
-                        out: mut self.moving,
-                    ),
-                    groups: (ROW / 8, ROW / 8, 1),
-                )
-                std::gpu::copy(
-                    from: self.moving.span(start: 0, count: STRIDE),
-                    to: self.texels.span_mut(start: l * STRIDE, count: STRIDE),
-                )
-                self.cooked[l] = true
-                cooked += 1
+            let whole = again || !self.cooked[l]
+            let moves = whole || old.x != at.x || old.y != at.y
+            if !moves && self.dirty[l] == NO_RECT {
+                continue
             }
+            let s = self.spacing(l)
+            self.levels.at[l] = vec4(at.x, at.y, s, 0.0)
+            // How many cells it moved, each way: what it kept is that far back in its old
+            // texels (all of it is cooked, for a level not cooked yet).
+            let moved = if whole { vec2i(i32(SIDE)) } else { vec2i(round((at - old.xy) / s)) }
+            // Its fields' rectangle, where it now lies.
+            let d = self.dirty[l]
+            let dirty = if d == NO_RECT { NO_RECT } else {
+                vec4i(d.x - moved.x, d.y - moved.y, d.z - moved.x, d.w - moved.y)
+            }
+            label("terrain cook")
+            dispatch(
+                cook_level.bind(
+                    terrain,
+                    fields: self.fields,
+                    fs: self.fields_s,
+                    fields_at: self.fields_at,
+                    tiles: self.field_tiles,
+                    at: vec4(at.x, at.y, s, 0.0),
+                    origin: self.origin,
+                    moved: moved,
+                    dirty: dirty,
+                    from: self.texels.span(start: l * STRIDE, count: STRIDE),
+                    out: mut self.moving,
+                ),
+                groups: (ROW / 8, ROW / 8, 1),
+            )
+            std::gpu::copy(
+                from: self.moving.span(start: 0, count: STRIDE),
+                to: self.texels.span_mut(start: l * STRIDE, count: STRIDE),
+            )
+            self.cooked_now += cooked_in(moved, dirty)
+            self.cooked[l] = true
+            self.dirty[l] = NO_RECT
+            moved_any = moved_any || moves
+            cooked += 1
         }
         self.cooks += cooked
         // Each level's draw: its run of the indices, by where its hole is; and its sides'. Each
         // lies where its level is, so it's laid again only once a level is somewhere else.
-        if cooked > 0 || !self.laid {
+        if moved_any || !self.laid {
             var args: Vec<DrawIndexedArgs> = Vec::new()
             var sides: Vec<DrawIndexedArgs> = Vec::new()
             for l in 0..self.levels.count {
@@ -508,8 +544,9 @@ impl Clipmap {
             write(mut self.side_template, 0, sides)
             self.laid = true
         }
-        // A cooked level changes its sides' heights, and the finer level's (it morphs to them).
-        if cooked > 0 {
+        // A level cooked where it moved to changes its sides' heights, and the finer level's (it
+        // morphs to them); its fields change none.
+        if moved_any {
             label("terrain cook")
             write(mut self.bounds, 0, Vec::filled(2 * self.levels.count * SIDES, 0))
             dispatch(
@@ -820,8 +857,9 @@ fn cull_sides(
 
 /// A level's texels: the terrain's height, normal and cover at each point of its grid. A
 /// level that moved `moved` cells keeps the texels of the points it held, from where they were
-/// in `from` (its texels before), and cooks only those it brings in: a move of two cells cooks
-/// 258 texels, not 16641.
+/// in `from` (its texels before), and cooks only those it brings in, and those of `dirty` (the
+/// rectangle its fields changed): a move of two cells cooks 258 texels, not 16641, and a tile's
+/// fields written cook the tile's texels.
 @compute(8, 8)
 pub fn cook_level<T: Terrain>(
     terrain: T,
@@ -832,6 +870,7 @@ pub fn cook_level<T: Terrain>(
     at: vec4,
     origin: vec2,
     moved: vec2i,
+    dirty: vec4i,
     from: [Texel],
     out: mut Slots<Texel>,
     id: GlobalId,
@@ -839,8 +878,10 @@ pub fn cook_level<T: Terrain>(
     if id.x >= SIDE || id.y >= SIDE {
         return
     }
-    let was = vec2i(i32(id.x), i32(id.y)) + moved
-    if was.x >= 0 && was.x < i32(SIDE) && was.y >= 0 && was.y < i32(SIDE) {
+    let here = vec2i(i32(id.x), i32(id.y))
+    let was = here + moved
+    let changed = here.x >= dirty.x && here.y >= dirty.y && here.x <= dirty.z && here.y <= dirty.w
+    if !changed && was.x >= 0 && was.x < i32(SIDE) && was.y >= 0 && was.y < i32(SIDE) {
         out[id] = from[u32(was.y) * ROW + u32(was.x)]
         return
     }
@@ -863,6 +904,29 @@ pub fn cook_level<T: Terrain>(
         flora: Unorm8x4::encode(saturate(c.flora)),
         materials: Unorm8x4::encode(saturate(c.materials)),
     }
+}
+
+/// No texels: a level's `dirty` rectangle when its fields haven't changed.
+pub const NO_RECT: vec4i = vec4i(0, 0, -1, -1)
+
+/// Rectangles `a` and `b` together: the least that holds both.
+fn joined(a: vec4i, b: vec4i) -> vec4i {
+    if a == NO_RECT { b } else if b == NO_RECT { a } else {
+        vec4i(min(a.x, b.x), min(a.y, b.y), max(a.z, b.z), max(a.w, b.w))
+    }
+}
+
+/// The texels `cook_level` cooks of a level that moved `moved` cells with `dirty` changed: those
+/// it brings in, and those of `dirty` it keeps.
+fn cooked_in(moved: vec2i, dirty: vec4i) -> u32 {
+    let n = i32(SIDE)
+    // What it keeps: the square less `moved` each way.
+    let kept = max(n - abs(moved.x), 0) * max(n - abs(moved.y), 0)
+    // Of `dirty` (within the square), what lies in what it keeps.
+    let lo = max(dirty.xy, max(-moved, vec2i(0)))
+    let hi = min(dirty.zw, min(vec2i(n - 1) - moved, vec2i(n - 1)))
+    let again = if hi.x < lo.x || hi.y < lo.y { 0 } else { (hi.x - lo.x + 1) * (hi.y - lo.y + 1) }
+    u32(n * n - kept + again)
 }
 
 /// Texel (i, j) of level `l`, as its cook dispatch wrote it (`ROW` to a row).

@@ -7,6 +7,7 @@
 
 use hosts::steps::{call, recorded, text_of}
 use std::input::Script
+use std::io::print
 use std::json::{Doc, TOP, parse}
 use std::tool::drive
 use std::tool::drive::{Recorded, Scalar, Seen, Stage, Step}
@@ -403,7 +404,8 @@ fn the_sky_pass_reads_the_cooked_clouds_and_marches_nothing() {
     var sky: Option<Pipeline> = None
     var march: Option<Pipeline> = None
     for k in 0..ps.len() {
-        if sky.is_none() && ps[k].fragment.as_str() == "sky_shade" {
+        // The sky through the air's froxels (`fog::sky_fogged`, B10).
+        if sky.is_none() && ps[k].fragment.as_str() == "sky_fogged" {
             sky = Some(ps[k].clone())
         }
         // A kernel's entry is its pipeline's first.
@@ -422,27 +424,29 @@ fn the_sky_pass_reads_the_cooked_clouds_and_marches_nothing() {
 /// where it left the depth (equal, no writes), and placed with the grass (the grass's placing
 /// kernel appends them).
 @test(tool, read: [("repo", "../../../..")], budget: 300)
-fn flowers_are_cut_cards_in_the_prepass_placed_with_the_grass() {
+fn blades_and_flowers_are_cut_in_the_prepass_placed_with_the_grass() {
     let ps = pipelines()
-    var cut: Option<Pipeline> = None
-    var shade: Option<Pipeline> = None
-    for k in 0..ps.len() {
-        if cut.is_none() && ps[k].fragment.as_str() == "flower_cut" {
-            cut = Some(ps[k].clone())
+    for (cut_name, shade_name) in [("flower_cut", "flower_shade"), ("blade_cut", "blade_shade")] {
+        var cut: Option<Pipeline> = None
+        var shade: Option<Pipeline> = None
+        for k in 0..ps.len() {
+            if cut.is_none() && ps[k].fragment.as_str() == cut_name {
+                cut = Some(ps[k].clone())
+            }
+            if shade.is_none() && ps[k].fragment.as_str() == shade_name {
+                shade = Some(ps[k].clone())
+            }
         }
-        if shade.is_none() && ps[k].fragment.as_str() == "flower_shade" {
-            shade = Some(ps[k].clone())
-        }
+        let Some(c) = cut else { panic(f"no pipeline shades with {cut_name}") }
+        let Some(s) = shade else { panic(f"no pipeline shades with {shade_name}") }
+        assert(has(c.wgsl.as_str(), "discard"), f"{cut_name} doesn't discard")
+        assert(!has(s.wgsl.as_str(), "discard"), f"{shade_name} discards")
+        assert(c.depth_write, f"{cut_name} writes no depth")
+        assert(
+            !s.depth_write && s.depth_compare.as_str() == "equal",
+            f"{shade_name} isn't at equal depth without writes: {s.depth_compare.as_str()}, write {s.depth_write}",
+        )
     }
-    let Some(c) = cut else { panic("no pipeline shades with flower_cut") }
-    let Some(s) = shade else { panic("no pipeline shades with flower_shade") }
-    assert(has(c.wgsl.as_str(), "discard"), "the flowers' cut doesn't discard")
-    assert(!has(s.wgsl.as_str(), "discard"), "the flowers' shading discards")
-    assert(c.depth_write, "the cut writes no depth")
-    assert(
-        !s.depth_write && s.depth_compare.as_str() == "equal",
-        f"the shading isn't at equal depth without writes: {s.depth_compare.as_str()}, write {s.depth_write}",
-    )
     let grass = text_of("repo/engine/grass.wrela")
     assert(has(grass.as_str(), "flowers.push("), "the grass's placing appends no flowers")
     let gr = calls()
@@ -656,6 +660,31 @@ fn static_shadows_are_drawn_once_and_again_when_the_sun_moves() {
     counts.push(statics_after(h, Vec::from([lockstep(5)])))
     assert(counts[0] == first, f"moving the sun drew {counts[0]} times, the load {first}")
     assert(counts[1] == 0, "frames after the sun moved still draw static shadows")
+}
+
+/// A still camera's grass is kept (B5.1): over 64 frames each of its five rings is placed again
+/// at most every `KEPT_FRAMES` (8), and once more for each change of the probes' grid.
+@test(tool, read: [("repo", "../../../..")], budget: 600)
+fn a_still_cameras_grass_is_placed_again_only_every_eight_frames() {
+    let h = driven(false)
+    until_ready(h, frame: 0, settle: 2)
+    let c = called(h, "test_camera", Vec::new())
+    var args: Vec<Scalar> = Vec::new()
+    for x in [c[0], c[1], c[2], c[0] + c[3], c[1] + c[4], c[2] + c[5]] {
+        args.push(Scalar::F32(f32(x)))
+    }
+    stepped(h, [call("test_hold", take args), lockstep(4)], "the held camera")
+    let before = called(h, "test_placed", Vec::new())
+    stepped(h, [lockstep(64)], "the still frames")
+    let after = called(h, "test_placed", Vec::new())
+    let placed = u32(after[0] - before[0])
+    let regridded = after[1] != before[1] || after[2] != before[2] || after[3] != before[3]
+    let most = 5 * 8 + if regridded { 5 } else { 0 }
+    print(
+        f"a still camera's grass: {placed} placements in 64 frames (the probes' grid moved: {regridded})",
+    )
+    assert(placed <= most, f"{placed} placements in 64 still frames (at most {most})")
+    assert(placed >= 5 * 7, f"{placed} placements in 64 still frames: the rings aren't refreshed")
 }
 
 /// The camera held inside a crown, exactly at a plant's middle (where its levels' patterns are

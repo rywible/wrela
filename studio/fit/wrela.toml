@@ -1,0 +1,10 @@
+# The fit tool (`wrela tool fit`): trains a small network (`engine::neural`) and writes its
+# weights as source (main.wrela says how).
+[package]
+name = "fit_tool"
+
+[dependencies]
+toolkit = { workspace = true }
+engine = { workspace = true }
+bench_tool = { workspace = true }
+lookbook_tool = { workspace = true }

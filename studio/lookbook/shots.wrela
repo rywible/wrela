@@ -35,6 +35,11 @@ pub const SETTLE_FRAMES: u32 = 300
 pub const CAPTURE_FRAMES: u32 = 900
 pub const STILL: Text = "still at frame"
 
+/// What the frame prints once the reference (F12) is drawn round the eye, and once play is
+/// again (`engine::frame::REFERENCE`, `PLAY`).
+pub const REFERENCE: Text = "reference at frame"
+pub const PLAY: Text = "play at frame"
+
 /// A shot's move, in frames: its clip's length.
 pub const MOVE_FRAMES: u32 = 600
 
@@ -190,12 +195,16 @@ pub fn check_line(doc: Doc, i: u32) -> Option<String> {
 /// What a run of the tool does: the program whose lookbook it renders and where its files go
 /// (root paths), whether it makes the stills alone, whether in capture mode, its view (an index in
 /// `VIEWS`), the stills' size, how many stills render at once, how many threads the clips' pages
-/// run their jobs on, and the shots (none: every one).
+/// run their jobs on, and the shots (none: every one); with `quality`, the lookdev instrument's
+/// measures instead of stills and clips (docs/lookdev.md), and with `controls` its negative
+/// controls too.
 pub struct Options: Clone {
     pub program: String,
     pub out: String,
     pub stills: bool,
     pub capture: bool,
+    pub quality: bool,
+    pub controls: bool,
     pub view: u32,
     pub width: u32,
     pub height: u32,
@@ -204,7 +213,7 @@ pub struct Options: Clone {
     pub picks: Vec<u32>,
 }
 
-pub const USAGE: Text = "usage: wrela tool lookbook -- <out-dir> [--package <dir>] [--stills] [--capture] [--view clay|silhouette|bare|grown|specimens] [--size WxH] [--jobs N] [--workers N] [shot-number ...]"
+pub const USAGE: Text = "usage: wrela tool lookbook -- <out-dir> [--package <dir>] [--stills] [--capture] [--quality [--controls]] [--shots a,b,c] [--view clay|silhouette|bare|grown|specimens] [--size WxH] [--jobs N] [--workers N] [shot-number ...]"
 
 /// The options the command line gives, or what's wrong with it.
 pub fn parse_args(given: [String]) -> Result<Options, String> {
@@ -213,6 +222,8 @@ pub fn parse_args(given: [String]) -> Result<Options, String> {
         out: String::new(),
         stills: false,
         capture: false,
+        quality: false,
+        controls: false,
         view: 0,
         width: 1920,
         height: 1080,
@@ -236,6 +247,18 @@ pub fn parse_args(given: [String]) -> Result<Options, String> {
             o.stills = true
         } else if a == "--capture" {
             o.capture = true
+        } else if a == "--quality" {
+            o.quality = true
+        } else if a == "--controls" {
+            o.controls = true
+        } else if a == "--shots" {
+            for (from, to) in value.split(",") {
+                let Some(n) = value.slice(from, to).parse_u32() else {
+                    return Err(String::from("--shots takes shot numbers, as 2,7,11"))
+                }
+                o.picks.push(n)
+            }
+            k += 1
         } else if a == "--view" {
             var found = false
             for v in 0..VIEWS.len() {

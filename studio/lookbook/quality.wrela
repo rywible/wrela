@@ -1,0 +1,376 @@
+// The lookdev instrument (`wrela tool lookbook -- <out> --quality`, docs/lookdev.md): each shot
+// driven on the native host's GPU with the frame's own keys for it (`engine::frame::Frame::key`):
+// F10 freezes the frame's time (and the game's clocks and sim with it), F11 holds the eye, then
+// dollies it along its look at 0.5 m/s, and F12 draws the reference (every knob at its most,
+// temporal AA's history off, the jitter on an 8 × 8 grid), whose mean of 64 frames is a
+// 64-sample supersample. The measures are `measures.wrela`'s, on luma.
+//
+// A shot's run: chosen, settled `SETTLE_FRAMES`; time frozen and the eye held; 64 frames to
+// settle the still view, the play still, and 64 more for flicker and still_pop; the reference
+// and PSNR, SSIM and the edges' widths against it; play again, and a 600-frame dolly for pop;
+// the eye back at the start, and the dolly again, stopped at each quarter for a reference there
+// and the trail behind its sharpest edge.
+//
+// `--controls` adds the negative controls on `02-beech-high-forest` (`CONTROL_SHOT`): the play
+// still blurred 3 × 3 (PSNR must fall by 1 dB, flicker fall), a ghost (temporal AA's blend
+// forced to 0.02, the game's `lookdev` export: trail at least 4 px and PSNR lower at the dolly's
+// stops), the sharp edge (the reference's within 1 px of play's), and detail removal (the grass
+// halved in play and reference: "degraded" whatever its PSNR).
+
+use measures::{
+    Mean, Spread, blurred, clipped, edge_width, luma, psnr, quartered, sharpness, ssim, trail,
+}
+use shots::{PLAY, REFERENCE, SETTLE_FRAMES, keys}
+use std::collections::replace
+use std::input::{Key, Script}
+use std::tool::ToolError
+use std::tool::drive
+use std::tool::drive::{Scalar, Step}
+use toolkit::driven::untrapped
+use std::tool::image
+use std::tool::blob::Data
+use toolkit::whole::{blob_of, chunked, data_bytes, joined, write_png}
+
+/// Frames a view settles for before it's measured, and the frames of each measure's run.
+pub const SETTLE: u32 = 64
+pub const SAMPLES: u32 = 64
+
+/// The dolly's frames (10 s at 60 a second) and its stops for the trail: each quarter.
+pub const DOLLY_FRAMES: u32 = 600
+pub const STOPS: u32 = 4
+
+/// The most frames a reference or play may take to be drawn round the eye again.
+pub const ARRIVAL_FRAMES: u32 = 1200
+
+/// The negative controls' shot, by its number: a detail-rich one, so a blur can't hide on flat
+/// ground (docs/lookdev.md).
+pub const CONTROL_SHOT: u32 = 2
+
+/// The detail-removal control's shot: one with grass to halve (`01-wood-pasture`).
+pub const DETAIL_SHOT: u32 = 1
+
+/// What changes a run for a control: temporal AA's blend forced (0 leaves it) from the dolly
+/// on, and the share of the grass placed from the start.
+pub struct Control: Copy {
+    pub blend: f32 = 0.0,
+    pub thin: f32 = 1.0,
+}
+
+/// A shot's measures (docs/lookdev.md's table), and what the controls read beside them: the
+/// edges' widths, the blurred play still's PSNR, SSIM, sharpness and flicker, a quarter-resolution
+/// play still's PSNR, and at each of the dolly's stops the moving frame's PSNR against the
+/// reference there and against play settled there (`lag_psnr`).
+pub struct Measured: Clone {
+    pub psnr: f64,
+    pub ssim: f64,
+    pub sharpness: f64,
+    pub flicker: f64,
+    pub pop: f64,
+    pub still_pop: f64,
+    pub trail: f64,
+    pub clipped: f64,
+    pub edge_reference: u32,
+    pub edge_play: u32,
+    pub blurred_psnr: f64,
+    pub blurred_ssim: f64,
+    pub blurred_sharpness: f64,
+    pub blurred_flicker: f64,
+    pub quarter_psnr: f64,
+    pub stops_psnr: Vec<f64>,
+    pub lag_psnr: Vec<f64>,
+}
+
+/// A driven build, the frames it has run, and the keys pressed so far (a script's frames count
+/// from the build's first: each step is given all of them).
+pub struct Driven {
+    pub b: drive::Build,
+    pub script: Script,
+    pub frame: u32,
+    pub width: u32,
+}
+
+impl Driven {
+    /// `key` pressed on the next frame.
+    pub fn press(mut self, key: Key) {
+        let script = replace(mut self.script, Script::frames())
+        self.script = (take script).press(self.frame + 1, key)
+    }
+
+    /// The next `n` frames, and the lines they printed.
+    pub fn run(mut self, n: u32) -> Result<Vec<String>, ToolError> {
+        let seen = drive::steps(self.b, [Step::Frames(n, self.script.clone())], timeout: 600.0)
+            .wait()?
+        self.frame += n
+        var saw = untrapped(f"frame {self.frame}", take seen)?
+        drive::lines(mut saw)
+    }
+
+    /// The next frame, and its screen (RGBA8).
+    fn screen(mut self) -> Result<Vec<u8>, ToolError> {
+        let steps = [Step::Frames(1, self.script.clone()), Step::Capture]
+        let seen = drive::steps(self.b, steps, timeout: 600.0).wait()?
+        self.frame += 1
+        var saw = untrapped(f"frame {self.frame}", take seen)?
+        let screen = saw.captures.remove(0)
+        Ok(joined(data_bytes(take screen.rgba)?))
+    }
+
+    /// Frames until one prints `said` (`REFERENCE`, `PLAY`).
+    pub fn until(mut self, said: str) -> Result<(), ToolError> {
+        for _ in 0..ARRIVAL_FRAMES {
+            for line in self.run(1)? {
+                if line.as_str().find(said).is_some() {
+                    return Ok(())
+                }
+            }
+        }
+        Err(ToolError::new(f"it didn't print \"{said}\" within {ARRIVAL_FRAMES} frames"))
+    }
+
+    /// The reference here: F12, drawn round the eye, settled, and the mean of `SAMPLES` frames
+    /// of its jitter's grid; then F12 again, and play drawn round the eye again.
+    fn reference(mut self) -> Result<Vec<u8>, ToolError> {
+        self.press(Key::F12)
+        self.until(REFERENCE)?
+        let _ = self.run(SETTLE)?
+        var mean = Mean::new()
+        for _ in 0..SAMPLES {
+            mean.add(self.screen()?)
+        }
+        self.press(Key::F12)
+        self.until(PLAY)?
+        Ok(mean.image())
+    }
+
+    /// The game's `lookdev` export (the controls'), if `c` changes anything.
+    fn control(self, c: Control) -> Result<(), ToolError> {
+        let args = Vec::from([Scalar::F32(c.blend), Scalar::F32(c.thin)])
+        let seen = drive::steps(self.b, [Step::Call(String::from("lookdev"), take args)])
+            .wait()?
+        let _ = untrapped("lookdev", take seen)?
+        Ok(())
+    }
+}
+
+/// Shot `i`'s measures (drawn with `presses` of F8), from the build in `build` at `width` ×
+/// `height`; with `controls`, the blurred play's too; `c` as a control asks. Its play still and
+/// its reference are written beside `stills` (`<stills>-play.png`, `<stills>-reference.png`).
+pub fn measure(
+    stills: str,
+    build: str,
+    i: u32,
+    presses: u32,
+    width: u32,
+    height: u32,
+    controls: bool,
+    c: Control,
+) -> Result<Measured, ToolError> {
+    var options = drive::gpu()
+    options.width = width
+    options.height = height
+    options.timeout = 600.0
+    let b = drive::load(build, options).wait()?.build
+    var d = Driven { b, script: keys(i, presses, capture: false), frame: 0, width }
+    let measured = shot(mut d, stills, height, controls, c)
+    let _ = drive::close(b).wait()
+    measured
+}
+
+fn shot(
+    d: mut Driven,
+    stills: str,
+    height: u32,
+    controls: bool,
+    c: Control,
+) -> Result<Measured, ToolError> {
+    let w = d.width
+    let _ = untrapped("init", drive::steps(d.b, [Step::Init], timeout: 600.0).wait()?)?
+    if c.thin != 1.0 {
+        d.control(Control { blend: 0.0, thin: c.thin })?
+    }
+    let _ = d.run(SETTLE_FRAMES + 1)?
+    // Time frozen and the eye held; the still view settled; the play still, and the frames after
+    // it for flicker and still_pop (and the blurred ones' flicker, for the blur control).
+    d.press(Key::F10)
+    d.press(Key::F11)
+    let _ = d.run(SETTLE)?
+    let play = d.screen()?
+    var still = Spread::new()
+    var blurred_still = Spread::new()
+    for _ in 0..SAMPLES {
+        let f = d.screen()?
+        if controls {
+            blurred_still.add(luma(blurred(f, w, height)))
+        }
+        still.add(luma(f))
+    }
+    let reference = d.reference()?
+    for (name, rgba) in [("play", play.clone()), ("reference", reference.clone())] {
+        let img = image::Image {
+            width: w,
+            height,
+            rgba: Data::Blob(blob_of(chunked(rgba.clone()))?),
+        }
+        write_png(take img, f"{stills}-{name}.png")?
+    }
+    let (pl, rl) = (luma(play), luma(reference))
+    let (blurred_psnr, blurred_ssim, blurred_sharpness) = if controls {
+        let bl = luma(blurred(play, w, height))
+        (psnr(bl, rl), ssim(bl, rl, w), sharpness(bl, rl, w))
+    } else {
+        (0.0, 0.0, 0.0)
+    }
+    let quarter_psnr = if controls { psnr(luma(quartered(play, w, height)), rl) } else { 0.0 }
+    if c.blend > 0.0 {
+        d.control(Control { blend: c.blend, thin: c.thin })?
+    }
+    // The dolly, unbroken, for pop.
+    let _ = d.run(SETTLE)?
+    d.press(Key::F11)
+    var dolly = Spread::new()
+    for _ in 0..DOLLY_FRAMES {
+        dolly.add(luma(d.screen()?))
+    }
+    // Back to the dolly's start (F11 lets the eye go, and holds the game's frozen aim again),
+    // and the dolly again, paused at each quarter (the backquote): the moving frame there against
+    // play settled there (the history's lag alone, whatever the reference's light does), and
+    // against the reference there.
+    d.press(Key::F11)
+    d.press(Key::F11)
+    let _ = d.run(SETTLE)?
+    d.press(Key::F11)
+    var trails: Vec<f64> = Vec::new()
+    var stops_psnr: Vec<f64> = Vec::new()
+    var lag_psnr: Vec<f64> = Vec::new()
+    for _ in 0..STOPS {
+        let _ = d.run(DOLLY_FRAMES / STOPS - 1)?
+        let moving = luma(d.screen()?)
+        d.press(Key::Backquote)
+        let _ = d.run(SETTLE)?
+        let settled = luma(d.screen()?)
+        let at = luma(d.reference()?)
+        trails.push(trail(moving, settled, w))
+        lag_psnr.push(psnr(moving, settled))
+        stops_psnr.push(psnr(moving, at))
+        // Play's caches made again after the reference, and settled, before the dolly goes on.
+        let _ = d.run(SETTLE)?
+        d.press(Key::Backquote)
+    }
+    var most_trail = 0.0
+    for t in trails {
+        most_trail = max(most_trail, t)
+    }
+    Ok(
+        Measured {
+            psnr: psnr(pl, rl),
+            sharpness: sharpness(pl, rl, w),
+            ssim: ssim(pl, rl, w),
+            flicker: still.flicker(),
+            pop: dolly.pop,
+            still_pop: still.pop,
+            trail: most_trail,
+            clipped: clipped(play),
+            edge_reference: edge_width(rl, w),
+            edge_play: edge_width(pl, w),
+            blurred_psnr,
+            blurred_ssim,
+            blurred_sharpness,
+            blurred_flicker: blurred_still.flicker(),
+            quarter_psnr,
+            stops_psnr,
+            lag_psnr,
+        },
+    )
+}
+
+fn mean(xs: [f64]) -> f64 {
+    var total = 0.0
+    for x in xs {
+        total += x
+    }
+    total / f64(max(xs.len(), 1))
+}
+
+/// `xs` as a JSON list of numbers.
+fn numbers(xs: [f64]) -> String {
+    var out = String::new()
+    for k in 0..xs.len() {
+        out.push_str(if k > 0 { ", " } else { "" })
+        out.push_str(f"{xs[k]:.3}")
+    }
+    String::from(f"[{out}]")
+}
+
+/// `m` as `quality.json`'s entry for shot `stem`, standing as `standing` ("measured", or a
+/// control's "degraded").
+pub fn measured_json(stem: str, m: Measured, standing: str) -> String {
+    String::from(
+        f"{{\"shot\": \"{stem}\", \"standing\": \"{standing}\", \"psnr\": {m.psnr:.3}, \"ssim\": {m.ssim:.5}, \"sharpness\": {m.sharpness:.4}, \"flicker\": {m.flicker}, \"pop\": {m.pop:.5}, \"still_pop\": {m.still_pop:.5}, \"trail\": {m.trail:.1}, \"clipped\": {m.clipped:.5}, \"edge_reference\": {m.edge_reference}, \"edge_play\": {m.edge_play}, \"stops_psnr\": {numbers(m.stops_psnr)}, \"lag_psnr\": {numbers(m.lag_psnr)}}}",
+    )
+}
+
+/// `items` as a JSON list, one to a line.
+pub fn json_list(items: [String]) -> String {
+    var out = String::from("[")
+    for k in 0..items.len() {
+        out.push_str(if k == 0 { "\n  " } else { ",\n  " })
+        out.push_str(items[k].as_str())
+    }
+    out.push_str("\n]\n")
+    out
+}
+
+/// The table row the tool prints for shot `stem`.
+pub fn row(stem: str, m: Measured) -> String {
+    String::from(
+        f"| {stem} | {m.psnr:.2} | {m.ssim:.4} | {m.sharpness:.3} | {m.flicker * 1.0e6:.2} | {m.pop:.4} | {m.still_pop:.4} | {m.trail:.0} | {m.clipped:.4} |",
+    )
+}
+
+pub const HEADER: Text = "| Shot | PSNR dB | SSIM | sharpness | flicker ×10⁻⁶ | pop | still_pop | trail px | clipped |\n|---|---|---|---|---|---|---|---|---|"
+
+/// The negative controls (docs/lookdev.md) judged: each one's name, whether it passed, and what
+/// it saw. `plain` is the control shot's own run, `ghost` its run with the ghost.
+pub fn judged(plain: Measured, ghost: Measured) -> Vec<(String, bool, String)> {
+    var out: Vec<(String, bool, String)> = Vec::new()
+    // A blur takes play's jitter noise away as well as its detail, so PSNR may not move: it's
+    // judged on what it does to the image's structure (SSIM) and its steps (sharpness).
+    let softer = plain.blurred_sharpness <= 0.9 * plain.sharpness
+    out.push(
+        (
+            String::from("blur"),
+            softer && plain.blurred_ssim < plain.ssim && plain.blurred_flicker < plain.flicker,
+            String::from(
+                f"sharpness {plain.sharpness:.3} → {plain.blurred_sharpness:.3}; SSIM {plain.ssim:.4} → {plain.blurred_ssim:.4}; PSNR {plain.psnr:.2} → {plain.blurred_psnr:.2} dB; flicker ×10⁻⁶ {plain.flicker * 1.0e6:.2} → {plain.blurred_flicker * 1.0e6:.2}",
+            ),
+        ),
+    )
+    // Against play settled at each stop, so only the history's lag counts: lower over the stops
+    // (one stop may move too little to show it).
+    let lower = mean(ghost.lag_psnr) < mean(plain.lag_psnr)
+    out.push(
+        (
+            String::from("ghost"),
+            ghost.trail >= 4.0 && ghost.trail > plain.trail && lower,
+            String::from(
+                f"trail {plain.trail:.0} → {ghost.trail:.0} px; lag PSNR {numbers(plain.lag_psnr)} → {numbers(ghost.lag_psnr)}; pop {plain.pop:.4} → {ghost.pop:.4}",
+            ),
+        ),
+    )
+    let (er, ep) = (plain.edge_reference, plain.edge_play)
+    out.push(
+        (
+            String::from("sharp"),
+            er <= ep + 1 && ep <= er + 1,
+            String::from(f"edge {er} px in the reference, {ep} px in play"),
+        ),
+    )
+    out.push(
+        (
+            String::from("quarter"),
+            plain.psnr - plain.quarter_psnr >= 3.0,
+            String::from(f"PSNR {plain.psnr:.2} → {plain.quarter_psnr:.2} dB"),
+        ),
+    )
+    out
+}

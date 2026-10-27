@@ -2,10 +2,13 @@
 // the GPU each frame so they follow the camera. Beyond them, the terrain's shading is the grass
 // (its cover's colour).
 //
-// Make one `Grass` (`Grass::new`). Each frame, `Grass::place` runs a kernel that places the
-// blades and flowers round the camera into `Append` buffers, and an indirect draw draws them. A
-// blade's root, height, colour and ground normal come from the terrain's clipmap when it is
-// placed, never from the terrain's field.
+// Make one `Grass` (`Grass::new`). Each frame, `Grass::place` runs a kernel that places a
+// level's (a ring's) blades and flowers round the camera into its `Append` buffers, and indirect
+// draws draw them: a ring is placed again only when its cells moved, every `KEPT_FRAMES`, or when
+// the probes it was lit by changed. A blade's root, height, colour and ground normal come from
+// the terrain's clipmap when it is placed, never from the terrain's field. Blades join the depth
+// prepass (cut to their fronds there) and are shaded at the depth it left; a blade the last
+// frame's depth pyramid hides isn't placed while the camera moves.
 //
 // Placement is nested, so the density never thins at a ring's edge as the eye moves:
 // - Level k is a world-anchored grid of cells `FINEST · 2^k` apart. A blade's spacing grows with
@@ -21,12 +24,13 @@ use light::{Light, Lit}
 use lit::{Lighting, shown, sun_and_gloss, sun_at}
 use noise::{hash2, hash2u, rand}
 use plant::{Wind, sway}
-use probes::{ProbeGrid, sky_light}
+use probes::{ProbeGrid, sky_light_near}
 use sky::{Clouds, cloud_shadow}
+use cull::{Hzb, occluded}
 use std::gpu::{
     Append, AppendBuffer, ClipPosition, DrawArgs, DrawIndexedArgs, Flat, FragCoord, GlobalId,
-    GpuBuffer, InstanceIndex, One, RenderPass, Rgba16Float, Sampler, Slots, Texture, Unorm8x4,
-    VertexIndex, append_buffer, buffer, buffer_of, discard, dispatch, draw,
+    GpuBuffer, InstanceIndex, R32Float, RenderPass, Rgba16Float, Sampler, Slots, Texture, Unorm8x4,
+    VertexIndex, append_buffer, buffer, buffer_of, copy, discard, dispatch, draw,
 }
 use std::derive::Box2
 use std::math::TAU
@@ -85,9 +89,21 @@ pub fn tier_end(t: u32) -> f32 {
     if t == 0 { ring(0) } else if t == 1 { ring(2) } else { 1.0e9 }
 }
 
-/// The most blades and flowers a frame places.
+/// The most blades and flowers a frame places: each ring holds a quarter of the blades (a
+/// level's blades are about as many as another's: its cells are four times as wide over a ring
+/// four times the area), and each of the four rings with flowers a quarter of the flowers.
 pub const MAX_BLADES: u32 = 196608
 pub const MAX_FLOWERS: u32 = 32768
+
+/// How many frames a ring's placement is kept for while nothing it was placed from moves: its
+/// blades' sky light and cloud shadow are sampled when it's placed (D21), so it follows the
+/// clouds and the sun this often.
+pub const KEPT_FRAMES: u32 = 8
+
+/// How high a placed plant's bound reaches from its root, and its radius, for the pyramid's test
+/// (m: the tallest blade is 1.3 m, the wood's floor's plants no taller, and they lean).
+const PLANT_MIDDLE: f32 = 0.9
+const PLANT_RADIUS: f32 = 1.3
 
 /// The spacing wanted between blades `d` metres from the eye.
 pub fn spacing_at(d: f32) -> f32 {
@@ -112,6 +128,10 @@ pub struct Place: Copy + GpuData {
     pub level: u32,
     pub cols: u32,
     pub ahead: f32,
+    /// The share of the cover's grass placed (`Grass::thin`).
+    pub thin: f32,
+    /// The last frame's depth pyramid (`cull`): a plant it hides isn't placed (off: all are).
+    pub hzb: Hzb,
 }
 
 /// The cells level `k` covers when the eye is at `eye`, looking along `forward`: its first
@@ -212,6 +232,7 @@ pub fn place(
     grounds: [f32],
     stones: [vec4],
     flora: Flora,
+    pyramid: Texture<R32Float>,
     blades: mut Append<Blade>,
     flowers: mut Append<Flower>,
     id: GlobalId,
@@ -260,6 +281,10 @@ pub fn place(
         trodden = min(trodden, mix(0.3, 1.0, smoothstep(0.0, 1.6, past)))
     }
     let t = ground_cover_at(levels, texels, xz)
+    // Hidden behind what the last frame drew (a hill, a trunk): not placed.
+    if occluded(pyramid, at.hzb, vec3(xz.x, t.height + PLANT_MIDDLE, xz.y), PLANT_RADIUS) {
+        return
+    }
     let cover = t.cover
     let meadow = t.meadow
     let n = (f.x * 73856093) ^ (f.y * 19349663)
@@ -269,7 +294,7 @@ pub fn place(
     // grass's reach, into the meadow's ground: nothing pops.
     let dropped = density_scale(keep, k)
     let shrink = dropped * trodden * (1.0 - smoothstep(REACH - 12.0, REACH, d))
-    let grass = rand(seed, 3) < cover.a
+    let grass = rand(seed, 3) < cover.a * at.thin
     // In the grass, a share of forbs (a meadow is not grass alone: `FORBS`), most of them in
     // the meadow's drifts of flowers (`bloom_drift`).
     let wxz = xz + keyed
@@ -331,7 +356,9 @@ pub fn place(
     let ground_n = t.normal
     let root = vec3(xz.x, y + 0.1, xz.y)
     let shade = cloud_shadow(at.clouds, cloud, linear, root)
-    let sky = sky_light(at.grid, probes, linear, grounds, at.light, root, ground_n, shade)
+    // By nearness alone: the sights would be a ninth storage buffer (a lifted build's parameters
+    // take one), and a blade's colour needn't see round a trunk.
+    let sky = sky_light_near(at.grid, probes, linear, grounds, at.light, root, ground_n, shade)
     let _ = blades.push(
         Blade {
             root: vec3(xz.x, y - 0.02, xz.y),
@@ -1094,7 +1121,7 @@ fn under_plant(
     }
     let root = vec3(xz.x, y - 0.02, xz.y)
     let shade = cloud_shadow(at.clouds, cloud, linear, root)
-    let sky = sky_light(at.grid, probes, linear, grounds, at.light, root, t.normal, shade)
+    let sky = sky_light_near(at.grid, probes, linear, grounds, at.light, root, t.normal, shade)
     let _ = blades.push(
         Blade {
             root,
@@ -1145,32 +1172,36 @@ fn under_plant(
     }
 }
 
-/// The blades' and flowers' indirect draws' arguments, from what was placed: a tier's blades
-/// in groups of `GROUP`, an instance each, drawn indexed (an invocation a tier); and a flower
-/// card's vertices with the flowers placed as instances.
-@compute(4)
-pub fn draw_counts(
-    near: [u32],
-    middle: [u32],
-    far: [u32],
-    flowers: [u32],
-    tiers: mut Slots<DrawIndexedArgs>,
-    blooms: mut One<DrawArgs>,
+/// Each ring's blades' and flowers' indirect draws' arguments, from what was placed (`counts`:
+/// each ring's blades' `AppendBuffer::count`, then each ring's flowers'): its blades in groups
+/// of `GROUP`, an instance each, drawn indexed with its tier's indices; and a flower card's
+/// vertices with its flowers as instances. An invocation a ring.
+@compute(8)
+pub fn ring_draws(
+    counts: [u32],
+    blades: mut Slots<DrawIndexedArgs>,
+    blooms: mut Slots<DrawArgs>,
     id: GlobalId,
 ) {
-    let which = id.x
-    let count = if which == 0 { min(near[0], MAX_BLADES) } else if which == 1 {
-        min(middle[0], MAX_BLADES)
-    } else { min(far[0], MAX_BLADES) }
-    tiers[id] = DrawIndexedArgs {
-        indices: GROUP * blade_indices(SEGMENTS[which]),
-        instances: (count + GROUP - 1) / GROUP,
-        first_index: first_index(which),
+    let k = id.x
+    if k >= LEVELS {
+        return
+    }
+    let t = tier_of(k)
+    let n = min(counts[3 * k], MAX_BLADES / 4)
+    blades[id] = DrawIndexedArgs {
+        indices: GROUP * blade_indices(SEGMENTS[t]),
+        instances: (n + GROUP - 1) / GROUP,
+        first_index: first_index(t),
         base_vertex: 0,
         first_instance: 0,
     }
-    let n = min(flowers[0], MAX_FLOWERS)
-    blooms.set(id, DrawArgs { vertices: 6, instances: n, first_vertex: 0, first_instance: 0 })
+    blooms[id] = DrawArgs {
+        vertices: 6,
+        instances: min(counts[3 * (LEVELS + k)], MAX_FLOWERS / 4),
+        first_vertex: 0,
+        first_instance: 0,
+    }
 }
 
 /// Blades a group: an instance of a tier's draw. A blade's few points an instance left most of
@@ -1234,17 +1265,27 @@ pub struct Blooms: Copy + GpuData {
     ],
 }
 
-/// The grass of a frame: what places it, and what it placed (each tier's blades).
+/// The grass of a frame: what places it, and what it placed (each ring's blades and flowers,
+/// kept between placements).
 pub struct Grass {
     /// A cloth's contact (`Contact`); none by default.
     pub contact: Contact,
-    pub near: AppendBuffer<Blade>,
-    pub middle: AppendBuffer<Blade>,
-    pub far: AppendBuffer<Blade>,
-    pub flowers: AppendBuffer<Flower>,
-    /// Each tier's blades' draw, and the flowers'.
+    /// The share of the cover's grass placed: 1, or less for the lookdev instrument's
+    /// detail-removal control (docs/lookdev.md).
+    pub thin: f32,
+    /// Each ring's (level's) blades and flowers.
+    pub rings: Vec<AppendBuffer<Blade>>,
+    pub flowers: Vec<AppendBuffer<Flower>>,
+    /// Each ring's blades' draw, and its flowers'; and what they're drawn from: each ring's
+    /// blades' count (an `AppendBuffer`'s three `u32`s), then each ring's flowers'.
     pub tiers: GpuBuffer<DrawIndexedArgs>,
     pub blooms: GpuBuffer<DrawArgs>,
+    counts: GpuBuffer<u32>,
+    /// The `place` dispatches so far (a ring's each), and the calls of `place`.
+    pub placed: u32,
+    calls: u32,
+    /// What each ring was last placed from (`Kept`).
+    kept: Vec<Kept>,
     /// Each tier's group of blades' indices (`group_indices`).
     indices: GpuBuffer<u32>,
     /// The wood's floor's species (`SPECIES`), where kernels and shaders read them: a constant
@@ -1252,24 +1293,66 @@ pub struct Grass {
     species: GpuBuffer<Species>,
 }
 
+/// What a ring's placement was made from: its cells, the render origin's offset (`keyed`), the
+/// probes' grid it was lit by, the share thinned, when (`Grass::place`'s count of calls), and
+/// whether the pyramid culled it (a culled ring is placed again, whole, once the camera stops:
+/// what the pyramid hid may come out from behind something that moves).
+struct Kept: Copy {
+    first: vec2,
+    cols: u32,
+    rows: u32,
+    keyed: vec3,
+    grid: vec4,
+    thin: f32,
+    at: u32,
+    culled: bool,
+}
+
+/// No placement yet.
+const UNPLACED = Kept {
+    first: vec2(0.0),
+    cols: 0,
+    rows: 0,
+    keyed: vec3(0.0),
+    grid: vec4(0.0),
+    thin: -1.0,
+    at: 0,
+    culled: false,
+}
+
 impl Grass {
     pub fn new() -> Grass {
+        var rings: Vec<AppendBuffer<Blade>> = Vec::new()
+        var flowers: Vec<AppendBuffer<Flower>> = Vec::new()
+        var kept: Vec<Kept> = Vec::new()
+        for k in 0..LEVELS {
+            rings.push(append_buffer(MAX_BLADES / 4))
+            // The last ring is past `FLOWERS_TO`.
+            flowers.push(append_buffer(if k + 1 < LEVELS { MAX_FLOWERS / 4 } else { 1 }))
+            kept.push(UNPLACED)
+        }
         Grass {
             contact: Contact {},
-            near: append_buffer(MAX_BLADES / 4),
-            middle: append_buffer(MAX_BLADES / 2),
-            far: append_buffer(MAX_BLADES / 2),
-            flowers: append_buffer(MAX_FLOWERS),
-            tiers: buffer(TIERS),
-            blooms: buffer(1),
+            thin: 1.0,
+            rings,
+            flowers,
+            tiers: buffer(LEVELS),
+            blooms: buffer(LEVELS),
+            counts: buffer(6 * LEVELS),
+            placed: 0,
+            calls: 0,
+            kept,
             indices: buffer_of(group_indices()),
             species: buffer_of(SPECIES),
         }
     }
 
-    /// Places this frame's blades and flowers round `cam`, on the clipmap, out of `stones`
-    /// (each its centre's x and z, and its reach: as many as there are, each blade tested
-    /// against every one).
+    /// Places the blades and flowers round `cam` of each ring whose placement is stale, on the
+    /// clipmap, out of `stones` (each its centre's x and z, and its reach: as many as there are,
+    /// each blade tested against every one), and not where `pyramid` (the last frame's, `hzb`)
+    /// hides them. A ring is placed again when its cells or the render origin moved, when the
+    /// probes' grid or the thinning changed, after `KEPT_FRAMES`, and once, whole, when the
+    /// camera stops after a culled placement.
     pub fn place(
         mut self,
         cam: Camera,
@@ -1283,63 +1366,95 @@ impl Grass {
         linear: Sampler,
         grounds: std::gpu::GpuSpan<f32>,
         stones: std::gpu::GpuSpan<vec4>,
+        pyramid: Texture<R32Float>,
+        hzb: Hzb,
     ) {
-        self.near.clear()
-        self.middle.clear()
-        self.far.clear()
-        self.flowers.clear()
         let half = atan(cam.tan_half * cam.aspect) + 0.15
         let ahead = cos(half + 0.35)
         let flora = Flora { species: SPECIES }
+        let keyed = cam.keyed()
+        let probed = vec4(grid.corner, grid.spacing, f32(grid.cols))
+        var changed = false
         for k in 0..LEVELS {
             let (first, cols, rows) = cells(k, cam)
-            if cols == 0 || rows == 0 {
+            let was = self.kept[k]
+            let moved = was.first != first ||
+                was.cols != cols ||
+                was.rows != rows ||
+                was.keyed != keyed
+            let stale = moved ||
+                was.grid != probed ||
+                was.thin != self.thin ||
+                self.calls - was.at >= KEPT_FRAMES ||
+                was.culled
+            if !stale {
                 continue
             }
-            let at = Place {
-                cam,
-                light,
-                grid,
-                clouds,
+            // Culled only while the camera moves (a still camera's placement is whole), and past
+            // the first ring: what hides the nearest blades is mostly what moves (the player),
+            // and a blade it uncovers would come a frame late.
+            let culled = moved && hzb.on != 0 && k > 0
+            self.kept[k] = Kept {
                 first,
-                level: k,
                 cols,
-                ahead,
+                rows,
+                keyed,
+                grid: probed,
+                thin: self.thin,
+                at: self.calls,
+                culled,
             }
-            let groups = ((cols + 7) / 8, (rows + 7) / 8, 1)
-            // The level's blades go to its tier's buffer.
-            let tier = tier_of(k)
-            mut blades = if tier == 0 { self.near } else if tier == 1 { self.middle } else {
-                self.far
+            mut blades = self.rings[k]
+            mut flowers = self.flowers[k]
+            blades.clear()
+            flowers.clear()
+            if cols > 0 && rows > 0 {
+                let at = Place {
+                    cam,
+                    light,
+                    grid,
+                    clouds,
+                    first,
+                    level: k,
+                    cols,
+                    ahead,
+                    thin: self.thin,
+                    hzb: if culled { hzb } else { Hzb { on: 0, ..hzb } },
+                }
+                dispatch(
+                    place.bind(
+                        at,
+                        levels,
+                        texels,
+                        probes,
+                        cloud,
+                        linear,
+                        grounds,
+                        stones,
+                        flora: flora,
+                        pyramid: pyramid,
+                        blades: mut blades,
+                        flowers: mut flowers,
+                    ),
+                    groups: ((cols + 7) / 8, (rows + 7) / 8, 1),
+                )
+                self.placed += 1
             }
+            copy(from: blades.count(), to: self.counts.span_mut(start: 3 * k, count: 3))
+            copy(from: flowers.count(), to: self.counts.span_mut(start: 3 * (LEVELS + k), count: 3))
+            changed = true
+        }
+        if changed {
             dispatch(
-                place.bind(
-                    at,
-                    levels,
-                    texels,
-                    probes,
-                    cloud,
-                    linear,
-                    grounds,
-                    stones,
-                    flora: flora,
-                    blades: mut blades,
-                    flowers: mut self.flowers,
+                ring_draws.bind(
+                    counts: self.counts.items(),
+                    blades: mut self.tiers,
+                    blooms: mut self.blooms,
                 ),
-                groups: groups,
+                over: LEVELS,
             )
         }
-        dispatch(
-            draw_counts.bind(
-                near: self.near.count(),
-                middle: self.middle.count(),
-                far: self.far.count(),
-                flowers: self.flowers.count(),
-                tiers: mut self.tiers,
-                blooms: mut self.blooms,
-            ),
-            over: TIERS,
-        )
+        self.calls += 1
     }
 }
 
@@ -1604,7 +1719,29 @@ pub fn grass_colour(look: GrassLook, t: f32, tint: f32, dry: f32, deep: f32) -> 
     mix(c, c * vec3(0.7, 0.95, 1.1), vec3(deep)) * (0.8 + 0.4 * tint)
 }
 
-/// A blade's pixel: lit mostly by its ground's normal, so the meadow shades as one soft
+/// A blade cut to its frond: the depth prepass's (its id 0, as a flower's). A frond is cut into
+/// its leaflets: solid along its stalk, round lobes toward its edges, shallow notches between
+/// them (a herb's leaf is whole). A triangle wave's cut read as a sawtooth band; where a leaflet
+/// is under a few pixels the cut fades, so a far frond is a whole soft leaf, never a row of
+/// teeth.
+@fragment
+pub fn blade_cut(v: BladeVertex, blades: [Blade]) -> u32 {
+    let kind = blades[v.which.value].colour.decode().w
+    // How far up the blade a pixel spans (taken before any branch: a derivative).
+    let dv = fwidth(v.uv.y)
+    if kind > 0.25 && kind < 0.8 {
+        let n = if kind < 0.5 { 11.0 } else { 8.0 }
+        let x = 2.0 * fract(v.uv.y * n) - 1.0
+        let lobe = sqrt(saturate(1.0 - x * x))
+        let seen = 1.0 - smoothstep(0.15, 0.4, dv * n)
+        if abs(v.uv.x) > 1.0 - seen * 0.55 * (1.0 - lobe) {
+            discard()
+        }
+    }
+    0
+}
+
+/// A blade's pixel, where the prepass left its depth: lit mostly by its ground's normal, so the meadow shades as one soft
 /// surface that the blades break up; darker at the root; the light through it.
 @fragment
 pub fn blade_shade(
@@ -1618,21 +1755,6 @@ pub fn blade_shade(
     let b = blades[v.which.value]
     let colour = b.colour.decode()
     let kind = colour.w
-    // How far up the blade a pixel spans (taken before any branch: a derivative).
-    let dv = fwidth(v.uv.y)
-    // A frond is cut into its leaflets: solid along its stalk, round lobes toward its edges,
-    // shallow notches between them (a herb's leaf is whole). A triangle wave's cut read as a
-    // sawtooth band; where a leaflet is under a few pixels
-    // the cut fades, so a far frond is a whole soft leaf, never a row of teeth.
-    if kind > 0.25 && kind < 0.8 {
-        let n = if kind < 0.5 { 11.0 } else { 8.0 }
-        let x = 2.0 * fract(v.uv.y * n) - 1.0
-        let lobe = sqrt(saturate(1.0 - x * x))
-        let seen = 1.0 - smoothstep(0.15, 0.4, dv * n)
-        if abs(v.uv.x) > 1.0 - seen * 0.55 * (1.0 - lobe) {
-            discard()
-        }
-    }
     let world = lt.cam.world_at(pixel.position.xy, pixel.position.z)
     let ground = normalize(b.ground.decode())
     let n = normalize(ground * 0.75 + blade_normal(b, v.uv.x, v.uv.y) * 0.25)
@@ -1640,8 +1762,8 @@ pub fn blade_shade(
     let sun = sun_at(lt, world, ground, soft: 1.5)
     // Darker down in the sward, but not so much that each blade reads as a dark-rooted spike.
     let ao = 0.5 + 0.5 * smoothstep(0.0, 0.8, t)
-    // And by what's near it beyond its own sward (`lit::ambient_at`).
-    let sky = b.sky.decode().xyz * 2.0 * ao * lit::ambient_at(lt, world)
+    // And by what's near it beyond its own sward (`lit::sky_at`: or the cascades' light).
+    let sky = lit::sky_at(lt, world, b.sky.decode().xyz * 2.0) * ao
     // (A wood's floor plant's species; a meadow blade's third part is how deep a green it is.)
     let sp = if kind > 0.1 { u32(round(colour.z * 255.0)) } else { 0 }
     let albedo = if sp > 0 {
@@ -1766,20 +1888,41 @@ pub fn flower_shade(b: BloomVertex, lt: Lighting, blooms: Blooms) -> vec4 {
 }
 
 impl Grass {
-    /// The flowers' prepass draw: cut, depth only.
+    /// The prepass's draws: each ring's blades cut to their fronds, and its flowers cut to their
+    /// petals, depth and ids only.
     pub fn prepass<P: RenderPass>(self, pass: P, cam: Camera, wind: Wind) {
-        draw(
-            pass,
-            flower.bind(cam, wind, flowers: self.flowers.items(), contact: self.contact),
-            flower_cut,
-            indirect: self.blooms.items(),
-            depth: view::NEAREST,
-        )
+        for k in 0..LEVELS {
+            borrow blades = self.rings[k]
+            draw(
+                pass,
+                blade.bind(
+                    cam,
+                    wind,
+                    contact: self.contact,
+                    tier: tier(tier_of(k)),
+                    blades: blades.items(),
+                    count: blades.count(),
+                ),
+                blade_cut.bind(blades.items()),
+                indices: self.indices,
+                indirect: self.tiers.span(start: k, count: 1),
+                depth: view::NEAREST,
+            )
+        }
+        for k in 0..LEVELS - 1 {
+            draw(
+                pass,
+                flower.bind(cam, wind, flowers: self.flowers[k].items(), contact: self.contact),
+                flower_cut,
+                indirect: self.blooms.span(start: k, count: 1),
+                depth: view::NEAREST,
+            )
+        }
     }
 
     /// The near blades' motion, where the shading drew them (the depth equal to theirs): bent by
-    /// `wind` and the contact now, by `last_wind` and `last_contact` last frame. Only the near
-    /// tier's: farther, a blade's sway is a fraction of a pixel.
+    /// `wind` and the contact now, by `last_wind` and `last_contact` last frame. Only the first
+    /// ring's: farther, a blade's sway is a fraction of a pixel.
     pub fn motion<P: RenderPass>(
         self,
         pass: P,
@@ -1788,6 +1931,7 @@ impl Grass {
         last_wind: Wind,
         last_contact: Contact,
     ) {
+        borrow near = self.rings[0]
         draw(
             pass,
             blade_motion.bind(
@@ -1797,8 +1941,8 @@ impl Grass {
                 contact: self.contact,
                 last_contact: last_contact,
                 tier: tier(0),
-                blades: self.near.items(),
-                count: self.near.count(),
+                blades: near.items(),
+                count: near.count(),
             ),
             blade_moved.bind(cam),
             indices: self.indices,
@@ -1807,7 +1951,7 @@ impl Grass {
         )
     }
 
-    /// The blades' and flowers' shading draws.
+    /// The blades' and flowers' shading draws, at the depth the prepass left.
     pub fn shade<P: RenderPass>(
         self,
         pass: P,
@@ -1816,33 +1960,33 @@ impl Grass {
         look: GrassLook,
         blooms: Blooms,
     ) {
-        for t in 0..TIERS {
-            borrow blades = if t == 0 { self.near } else if t == 1 { self.middle } else {
-                self.far
-            }
+        for k in 0..LEVELS {
+            borrow blades = self.rings[k]
             draw(
                 pass,
                 blade.bind(
                     lt.cam,
                     wind,
                     contact: self.contact,
-                    tier: tier(t),
+                    tier: tier(tier_of(k)),
                     blades: blades.items(),
                     count: blades.count(),
                 ),
                 blade_shade.bind(blades.items(), lt, look, species: self.species.items()),
                 indices: self.indices,
-                indirect: self.tiers.span(start: t, count: 1),
-                depth: view::NEAREST,
+                indirect: self.tiers.span(start: k, count: 1),
+                depth: view::PREPASSED,
             )
         }
-        draw(
-            pass,
-            flower.bind(lt.cam, wind, flowers: self.flowers.items(), contact: self.contact),
-            flower_shade.bind(lt, blooms),
-            indirect: self.blooms.items(),
-            depth: view::PREPASSED,
-        )
+        for k in 0..LEVELS - 1 {
+            draw(
+                pass,
+                flower.bind(lt.cam, wind, flowers: self.flowers[k].items(), contact: self.contact),
+                flower_shade.bind(lt, blooms),
+                indirect: self.blooms.span(start: k, count: 1),
+                depth: view::PREPASSED,
+            )
+        }
     }
 }
 

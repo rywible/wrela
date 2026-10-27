@@ -7,27 +7,31 @@
 // `sun_and_sky` and `sun_and_gloss` for more), and `shown` for a lit surface's colour as the
 // eye sees it through the air.
 
-use ambient::{Ambient, ao_at}
+use ambient::{Ambient, ao_at, cascaded_at}
 use light::{Light, Lit}
 use lights::{Froxels, shed}
+use distance::{DistanceGrid, contact_through}
+use fog::{FogGrid, fog_at}
 use reflect::{Mirror, contact_shadow, reflected}
 use probes::{ProbeGrid, sky_light, sky_lights}
 use shadow::{Shadows, sunlit}
 use sky::{Clouds, cloud_shadow}
 use std::gpu::{
-    ComparisonSampler, Cubemap, DepthTexture, GpuSpan, Rgba16Float, Sampler, Texture, Texture3d,
+    ComparisonSampler, Cubemap, DepthTexture, GpuSpan, R32Float, Rgba16Float, Sampler, Texture,
+    Texture3d,
 }
 use terrain::Levels
 use view::Camera
 
 /// The frame's lighting: the camera, the light, the sun's shadows and their maps (`near`,
 /// `far`, `moving`, read through `cmp`), the probes' grid, maps (`probes`) and their columns'
-/// `grounds`, the clouds (where their field has drifted) and their shadow map (`cloud`), the
+/// `grounds` and their sights (`seen`), the clouds (where their field has drifted) and their shadow map (`cloud`), the
 /// clipmap's levels, the air's aerial perspective (`air`), and the ambient occlusion (`ao`, as
 /// `ambient` says it was built: `ambient::ao_at`), and the local lights and their froxels'
 /// lists (`lights`, as `froxels` says: `lights::shed`), and what glossy surfaces reflect: the last
-/// frame's screen (`screen`, as `mirror` says) and the specular probe (`spec`: `reflect`);
-/// textures read through `s`, a linear sampler.
+/// frame's screen (`screen`, as `mirror` says) and the specular probe (`spec`: `reflect`), and the
+/// solids' distance volume (`distance`, `volume`: `distance`, which the contact shadows march
+/// once it's cooked); textures read through `s`, a linear sampler.
 pub borrow struct Lighting {
     pub cam: Camera,
     pub light: Light,
@@ -41,6 +45,7 @@ pub borrow struct Lighting {
     pub cmp: borrow ComparisonSampler,
     pub probes: borrow Texture<Rgba16Float>,
     pub grounds: GpuSpan<f32>,
+    pub seen: GpuSpan<u32>,
     pub cloud: borrow Texture<Rgba16Float>,
     pub air: borrow Texture3d<Rgba16Float>,
     pub ambient: Ambient,
@@ -51,6 +56,10 @@ pub borrow struct Lighting {
     pub screen: borrow Texture<Rgba16Float>,
     pub spec: borrow Cubemap<Rgba16Float>,
     pub s: borrow Sampler,
+    pub distance: DistanceGrid,
+    pub volume: borrow Texture3d<R32Float>,
+    pub fog: FogGrid,
+    pub fogged: borrow Texture3d<Rgba16Float>,
 }
 
 /// How much sun reaches `world` (0 to 1), its normal `n`: the shadow maps', `soft` texels of
@@ -65,12 +74,16 @@ fn sun_through(l: Lighting, world: vec3, n: vec3, soft: f32, shade: f32) -> f32 
 }
 
 /// `sun_through`, and where the maps let it through, past what's within a couple of metres
-/// toward the sun (`reflect::contact_shadow`): a solid surface's (a grass blade's sward darkens
-/// it its own way).
+/// toward the sun: through the solids' distance volume once it's cooked
+/// (`distance::contact_through`), else through the last frame's screen
+/// (`reflect::contact_shadow`); a solid surface's (a grass blade's sward darkens it its own way).
 fn sun_past(l: Lighting, world: vec3, n: vec3, soft: f32, shade: f32) -> f32 {
     let sun = sun_through(l, world, n, soft, shade)
     if sun <= 0.0 {
         return 0.0
+    }
+    if l.distance.on != 0 && l.mirror.contact != 0 {
+        return sun * contact_through(l.distance, l.volume, world, n, l.light.sun)
     }
     // The march turned a pixel's own way each frame (interleaved gradient noise), so temporal AA
     // gathers its steps.
@@ -83,16 +96,27 @@ fn sun_past(l: Lighting, world: vec3, n: vec3, soft: f32, shade: f32) -> f32 {
 
 /// How much sun reaches `world` (as `sun_at`), and the sky light (and bounce) there for a
 /// surface facing `sky_n`, from the probes: the bounce of the sun dimmed by the clouds' shadow
-/// there, which is read once for both; and by what's near it (`ambient_at`); and the local
-/// lights' on a surface facing `n` (`local_at`).
+/// there, which is read once for both; and by what's near it (`ambient_at`), or the radiance
+/// cascades' where they left it (`ambient::cascaded_at`); and the local lights' on a surface
+/// facing `n` (`local_at`).
 pub fn sun_and_sky(l: Lighting, world: vec3, n: vec3, sky_n: vec3, soft: f32) -> (f32, vec3) {
     let shade = cloud_shadow(l.clouds, l.cloud, l.s, world)
-    (
-        sun_past(l, world, n, soft, shade),
-        sky_light(l.grid, l.probes, l.s, l.grounds, l.light, world, sky_n, shade) *
-            ambient_at(l, world) +
-            local_at(l, world, n),
+    let sky = sky_at(
+        l,
+        world,
+        sky_light(l.grid, l.probes, l.s, l.grounds, l.seen, l.light, world, sky_n, shade),
     )
+    (sun_past(l, world, n, soft, shade), sky + local_at(l, world, n))
+}
+
+/// The sky's light that reaches `world`, the probes' being `sky`: the radiance cascades', where
+/// they left it (`ambient::cascaded_at`: it holds its own occlusion), or `sky` dimmed by what's
+/// near it (`ambient_at`). Every surface's sky term goes through here.
+pub fn sky_at(l: Lighting, world: vec3, sky: vec3) -> vec3 {
+    match cascaded_at(l.ambient, l.ao, world) {
+        Some(e) => e,
+        None => sky * ambient_at(l, world),
+    }
 }
 
 /// The local lights' light on a surface at `world` facing `n` (`lights::shed`).
@@ -133,6 +157,7 @@ pub fn sun_sky_and_gloss(
         l.probes,
         l.s,
         l.grounds,
+        l.seen,
         l.light,
         world,
         sky_n,
@@ -141,7 +166,7 @@ pub fn sun_sky_and_gloss(
     )
     (
         sun_past(l, shadow_at, n, soft, shade),
-        sky * ambient_at(l, world) + local_at(l, world, n),
+        sky_at(l, world, sky) + local_at(l, world, n),
         reflected,
     )
 }
@@ -158,7 +183,9 @@ pub fn reflect(l: Lighting, world: vec3, n: vec3, rough: f32, toward: vec3) -> v
 
 /// `colour`, at `world`, as the eye sees it through the air between them (`light::hazed`).
 pub fn through_air(l: Lighting, colour: vec3, world: vec3) -> vec3 {
-    light::hazed(l.air, l.s, l.light, colour, world, l.cam.eye)
+    // The froxels' fog first (`fog::fog_at`): what shows of the surface, and the light in front.
+    let f = fog_at(l.fog, l.fogged, l.s, world)
+    light::hazed(l.air, l.s, l.light, colour * f.a + f.rgb, world, l.cam.eye)
 }
 
 /// What a surface at `world` shows: lit as `lit` says (`light::world`), through the air.

@@ -53,8 +53,9 @@ pub struct Camera: Copy + GpuData {
     pub jitter: vec2,
     /// The target's size, in pixels.
     pub screen: vec2,
-    /// 1 when the frame is one of a still's (`camera`'s `grid`): its jitter a cell of a 4 × 4
-    /// grid, tied to its place in the dithers' 16 (`jitter_of`, `lod::anchor`); 0 in play.
+    /// The cells each way of a still's grid when the frame is one of a still's (`camera`'s
+    /// `grid`): its jitter a cell of a 4 × 4 grid (8 × 8, a reference's), tied to its place in
+    /// the dithers' 16 (`jitter_of`, `lod::anchor`); 0 in play.
     pub grid: u32,
 }
 
@@ -76,14 +77,15 @@ pub fn halton(i: u32, b: u32) -> f32 {
 
 /// The offset of frame `frame` within its pixel, in [-0.5, 0.5) pixels each way: Halton (2, 3)
 /// from its second point; or, on a still's `grid`, the middle of cell (k % 4, k / 4) of a 4 × 4
-/// grid, where k is the frame's place in the dithers' 16 (`lod::anchor`). Then any 16 frames in
+/// grid, where k is the frame's place in the dithers' 16 (`lod::anchor`); or with `cells` 8 (a
+/// reference's, `Frame::key`'s F12), of an 8 × 8 grid, a cell a frame of every 64. Then any 16 frames in
 /// a row take each cell once and each place once, and the dither's step and the jitter's cell
 /// move together: a pixel kept at some of the places is kept at cells spread over its whole
 /// pixel (the Bayer matrix's thresholds are spread so), and its mean is a 256-frame mean's.
-pub fn jitter_of(frame: u32, grid: bool = false) -> vec2 {
+pub fn jitter_of(frame: u32, grid: bool = false, cells: u32 = 4) -> vec2 {
     if grid {
-        let k = frame % 16
-        return (vec2(f32(k % 4), f32(k / 4)) + vec2(0.5)) / 4.0 - vec2(0.5)
+        let k = frame % (cells * cells)
+        return (vec2(f32(k % cells), f32(k / cells)) + vec2(0.5)) / f32(cells) - vec2(0.5)
     }
     let k = frame % JITTER_CYCLE + 1
     vec2(halton(k, 2) - 0.5, halton(k, 3) - 0.5)
@@ -117,6 +119,7 @@ pub fn camera(
     still: bool = false,
     origin: vec3 = vec3(0.0),
     grid: bool = false,
+    cells: u32 = 4,
 ) -> Camera {
     let aspect = f32(width) / f32(height)
     let near = 0.1
@@ -125,7 +128,7 @@ pub fn camera(
     let forward = normalize(at - eye)
     let right = normalize(cross(forward, vec3(0.0, 1.0, 0.0)))
     let up = cross(right, forward)
-    let j = if still { vec2(0.0) } else { jitter_of(frame, grid) }
+    let j = if still { vec2(0.0) } else { jitter_of(frame, grid, cells) }
     // Last frame's matrix takes this frame's render space: a point here was `moved` further
     // from the last frame's origin.
     let moved = origin - last.origin
@@ -147,7 +150,7 @@ pub fn camera(
         screen: vec2(f32(width), f32(height)),
         frame,
         origin,
-        grid: if grid { 1 } else { 0 },
+        grid: if grid { cells } else { 0 },
     }
 }
 

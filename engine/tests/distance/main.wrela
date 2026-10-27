@@ -1,0 +1,376 @@
+// The solids' distance volume (`engine::distance`, B9b): a scene whose solids are a sphere (a
+// capsule of no length), a cuboid (a tape of its field), a trunk and two short posts, on flat
+// ground, drawn through `engine::frame` until its volume is cooked. Then the volume is read at
+// points round the sphere and the cuboid, against their own distances; a probe's ray toward the
+// trunk is traced (`probes::trace`); and the contact shadow is marched beside each post, one at
+// the screen's edge and one at its middle.
+
+use engine::air::hazy
+use engine::distance::{
+    Capsule, DISTANCE_FAR, DistanceGrid, Shape, Solids, distance_at, contact_through,
+}
+use engine::frame::{Aim, Frame, Gathered, Quality, Scene}
+use engine::light::{Light, SUN_TOP, sunlight}
+use engine::plant::Wind
+use engine::probes::{Occluder, ProbeGrid, Trace, grid, trace}
+use engine::shadow::{Shadows, shadows}
+use engine::sky::{Gap, Weather}
+use engine::stone::ShapeTape
+use engine::terrain::{Clipmap, Flat, Levels, Texel}
+use engine::view::{Camera, first_camera}
+use std::derive::tape
+use std::field::{Surface, cuboid}
+use std::gpu::{
+    ComparisonSampler, DepthTexture, GlobalId, GpuBuffer, R32Float, Rgba16Float, Sampler, Slots,
+    Texture, Texture3d, buffer, buffer_of, dispatch, read,
+}
+use std::io::{Pending, print}
+
+const SUN = vec3(0.3, 0.8, 0.5)
+const EYE = vec3(0.0, 1.6, 0.0)
+
+/// The sphere's middle and radius; the cuboid's middle and half its size; the trunk.
+const SPHERE = vec3(-20.0, 10.0, 0.0)
+const RADIUS: f32 = 3.0
+const BOX = vec3(20.0, 6.0, 0.0)
+const HALF = vec3(2.0, 3.0, 1.5)
+const TRUNK = Capsule { a: vec3(0.0, -1.0, 12.0), radius: 0.5, b: vec3(0.0, 12.0, 12.0) }
+
+/// The posts, each a metre tall and 0.5 m round (a voxel: a thinner one is thinner than the
+/// volume can hold, its middle between voxels' middles): one at the screen's left edge, one in
+/// its middle (the eye looks along -z from the origin).
+const POSTS = [vec3(-11.5, 0.0, -12.0), vec3(0.0, 0.0, -12.0)]
+
+/// The points each test reads.
+const ROUND: u32 = 1000
+
+pub struct Solid {
+    weather: Weather,
+}
+
+/// The cuboid as a tape, in its own space (its middle the origin).
+fn box_tape() -> ShapeTape {
+    let t = tape(|p: vec3| cuboid(HALF).distance(p))
+    let Some(r) = t.resized() else { panic("the cuboid's tape is too long") }
+    r
+}
+
+impl Scene for Solid {
+    fn wind(self, cam: Camera, time: f32) -> Wind {
+        Wind { time, dir: vec2(1.0, 0.0), strength: 0.0 }
+    }
+
+    fn weather(self) -> Weather {
+        self.weather.clone()
+    }
+
+    fn trace(self, light: Light, grid: ProbeGrid) -> Trace {
+        Trace { light, grid, foliage: vec3(0.0), reach: 24.0, leaf: vec3(0.0), bounced: 0 }
+    }
+
+    fn probe_grid(self, at: vec2, origin: vec3) -> ProbeGrid {
+        grid(at, cols: 9, spacing: 4.0, low: -8.0, high: 24.0, voxel: 2.0)
+    }
+
+    fn occluders(self, at: vec2, origin: vec3) -> Option<Vec<Occluder>> {
+        Some(Vec::new())
+    }
+
+    fn height_at(self, world: vec2) -> f32 {
+        0.0
+    }
+
+    fn cook_ground(mut self, clipmap: mut Clipmap, eye: vec3, again: bool) -> u32 {
+        clipmap.follow(Flat {}, eye, again)
+    }
+
+    fn solids(self, origin: vec3, since: u32) -> Option<Solids> {
+        if since == 1 {
+            return None
+        }
+        var capsules = Vec::from(
+            [
+                Capsule { a: SPHERE - origin, radius: RADIUS, b: SPHERE - origin },
+                Capsule { a: TRUNK.a - origin, b: TRUNK.b - origin, ..TRUNK },
+            ],
+        )
+        for p in POSTS {
+            capsules.push(
+                Capsule { a: p - origin, radius: 0.5, b: p + vec3(0.0, 1.0, 0.0) - origin },
+            )
+        }
+        let to_local = mat4(
+            vec4(1.0, 0.0, 0.0, 0.0),
+            vec4(0.0, 1.0, 0.0, 0.0),
+            vec4(0.0, 0.0, 1.0, 0.0),
+            vec4(origin - BOX, 1.0),
+        )
+        let shape = Shape { tape: box_tape(), to_local, centre: BOX - origin, radius: length(HALF) }
+        Some(Solids { capsules, shapes: Vec::from([shape]), version: 1 })
+    }
+}
+
+/// Point `i` of a test round a middle `m`: in a shell from 0 to 5 m off a solid `r` round.
+fn round_point(i: u32, m: vec3, r: f32) -> vec3 {
+    let y = 1.0 - (f32(i) + 0.5) / f32(ROUND) * 2.0
+    let a = f32(i) * 2.399963
+    let s = sqrt(max(1.0 - y * y, 0.0))
+    let d = vec3(s * cos(a), y, s * sin(a))
+    m + d * (r + 5.0 * fract(f32(i) * 0.618034))
+}
+
+/// The volume's distance at each test point: round the sphere, then round the cuboid.
+@compute(64)
+fn distances(
+    g: DistanceGrid,
+    volume: Texture3d<R32Float>,
+    origin: vec3,
+    out: mut Slots<f32>,
+    id: GlobalId,
+) {
+    if id.x >= 2 * ROUND {
+        return
+    }
+    let p = if id.x < ROUND { round_point(id.x, SPHERE, RADIUS) } else {
+        round_point(id.x - ROUND, BOX, length(HALF))
+    }
+    out[id] = distance_at(g, volume, p - origin)
+}
+
+/// A ray from 4 m in front of the trunk toward it: its light (the sky's part, then the sun's) and
+/// how far it went; then a ray beside it, past the trunk, to the sky.
+@compute(2)
+fn toward_trunk(
+    t: Trace,
+    density: Texture3d<Rgba16Float>,
+    volume: Texture3d<R32Float>,
+    levels: Levels,
+    texels: [Texel],
+    sh: Shadows,
+    near: DepthTexture,
+    far: DepthTexture,
+    cmp: ComparisonSampler,
+    view: Texture<Rgba16Float>,
+    dome: Texture<Rgba16Float>,
+    maps: Texture<Rgba16Float>,
+    s: Sampler,
+    seen: [u32],
+    origin: vec3,
+    out: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    let from = vec3(0.0, 4.0, 8.0) - origin
+    let dir = if id.x == 0 { vec3(0.0, 0.0, 1.0) } else { normalize(vec3(1.0, 0.6, 1.0)) }
+    let (l, sun, hit) = trace(
+        t,
+        density,
+        volume,
+        levels,
+        texels,
+        from,
+        dir,
+        sh,
+        near,
+        far,
+        cmp,
+        view,
+        dome,
+        maps,
+        s,
+        seen,
+    )
+    out[id] = vec4(l + sun, hit)
+}
+
+/// The contact shadow beside each post (0.8 m from its axis, on its side away from the sun: in
+/// its shadow), at its foot.
+@compute(2)
+fn contacts(
+    g: DistanceGrid,
+    volume: Texture3d<R32Float>,
+    sun: vec3,
+    origin: vec3,
+    out: mut Slots<f32>,
+    id: GlobalId,
+) {
+    let toward = normalize(vec3(sun.x, 0.0, sun.z))
+    let p = POSTS[id.x] - toward * 0.8 + vec3(0.0, 0.05, 0.0) - origin
+    out[id] = contact_through(g, volume, p, vec3(0.0, 1.0, 0.0), normalize(sun))
+}
+
+pub struct State {
+    frame: Frame<Gathered>,
+    scene: Solid,
+    asked: Vec<Pending<f32>>,
+    traced: Vec<Pending<vec4>>,
+    pub got: Vec<f32>,
+    pub contact: Vec<f32>,
+    pub rays: Vec<vec4>,
+    pub origin: vec3,
+    pub cooked_at: u32,
+}
+
+pub fn init() -> State {
+    let air = hazy(SUN, SUN_TOP, eye: EYE.y)
+    let frame: Frame<Gathered> = Frame::new(
+        Quality { measured: false, distance: true },
+        sunlight(air),
+        air,
+        Clipmap::new(levels: 6, finest: 0.5),
+        first_camera(EYE, EYE + vec3(0.0, 0.0, -20.0), 0.82, width: 320, height: 180),
+        grid(EYE.xz, cols: 9, spacing: 4.0, low: -8.0, high: 24.0, voxel: 2.0),
+        EYE.xz,
+    )
+    State {
+        frame,
+        scene: Solid {
+            weather: Weather {
+                clouds: Vec::new(),
+                fair: 0.0,
+                gap: Gap { a: vec2(3300.0, -590.0), b: vec2(12200.0, -2150.0), radius: 2500.0 },
+                wind: vec2(0.0),
+            },
+        },
+        asked: Vec::new(),
+        traced: Vec::new(),
+        got: Vec::new(),
+        contact: Vec::new(),
+        rays: Vec::new(),
+        origin: vec3(0.0),
+        cooked_at: 0,
+    }
+}
+
+fn ask(s: mut State) {
+    borrow f = s.frame
+    let g = f.distance.read()
+    let o = f.origin
+    var out: GpuBuffer<f32> = buffer(2 * ROUND)
+    dispatch(distances.bind(g, f.distance.volume, o, out: mut out), over: 2 * ROUND)
+    s.asked.push(read(out.items()))
+    var c: GpuBuffer<f32> = buffer(2)
+    dispatch(contacts.bind(g, f.distance.volume, f.light.sun, o, out: mut c), over: 2)
+    s.asked.push(read(c.items()))
+    let q = f.quality().shadows
+    let sh = shadows(
+        f.light.sun,
+        f.near.cascade(),
+        f.far.cascade(),
+        moving_at: EYE,
+        moving_span: q.moving_span,
+        moving_side: q.moving_side,
+    )
+    borrow probes = f.probes.using
+    let t = Trace { solids: g, ..s.scene.trace(f.light, probes.grid) }
+    var r: GpuBuffer<vec4> = buffer(2)
+    dispatch(
+        toward_trunk.bind(
+            t,
+            density: probes.density,
+            volume: f.distance.volume,
+            levels: f.clipmap.levels(),
+            texels: f.clipmap.texels(),
+            sh: sh,
+            near: f.near.front,
+            far: f.far.front,
+            cmp: f.cmp,
+            view: f.tables.view,
+            dome: f.sky.dome,
+            maps: probes.maps,
+            s: f.linear,
+            seen: probes.seen.items(),
+            origin: o,
+            out: mut r,
+        ),
+        over: 2,
+    )
+    s.traced.push(read(r.items()))
+    s.origin = o
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    let aim = Aim { eye: EYE, at: EYE + vec3(0.0, 0.0, -20.0), fovy: 0.82, moving_at: EYE }
+    let _ = s.frame.begin(mut s.scene, aim, time, width, height)
+    s.frame.draw(mut s.scene, aim)
+    if s.cooked_at == 0 && s.frame.distance.cooked && s.frame.probes.done() {
+        s.cooked_at = s.frame.ran
+        ask(mut s)
+    }
+    if s.asked.len() == 2 && s.got.is_empty() {
+        match s.asked[0].poll() {
+            Some(Ok(v)) => s.got = take v,
+            _ => {},
+        }
+    }
+    if s.asked.len() == 2 && s.contact.is_empty() {
+        match s.asked[1].poll() {
+            Some(Ok(v)) => s.contact = take v,
+            _ => {},
+        }
+    }
+    if s.traced.len() == 1 && s.rays.is_empty() {
+        match s.traced[0].poll() {
+            Some(Ok(v)) => s.rays = take v,
+            _ => {},
+        }
+    }
+}
+
+/// The true distance at a test point: to its solid, to the ground (flat, at 0), at most
+/// `DISTANCE_FAR`.
+fn truth(p: vec3, solid: f32) -> f32 {
+    min(min(solid, p.y), DISTANCE_FAR)
+}
+
+fn worst(s: State, from: u32, solid: fn(vec3) -> f32) -> f32 {
+    var w = 0.0
+    for i in 0..ROUND {
+        let p = if from == 0 { round_point(i, SPHERE, RADIUS) } else {
+            round_point(i, BOX, length(HALF))
+        }
+        w = max(w, abs(s.got[from + i] - truth(p, solid(p))))
+    }
+    w
+}
+
+/// Round the sphere, the volume's distance is the sphere's (or the ground's, or the farthest it
+/// says) within half a voxel at 1,000 points.
+@test(frames: 200, gpu: true)
+fn a_spheres_volume_is_its_distance(s: State) {
+    assert(s.got.len() == 2 * ROUND, f"cooked at frame {s.cooked_at}: {s.got.len()} read back")
+    let w = worst(s, 0, |p: vec3| length(p - SPHERE) - RADIUS)
+    print(f"cooked at frame {s.cooked_at}; the sphere's worst point {w:.3} m off")
+    assert(w <= 0.25, f"{w} m off")
+}
+
+/// Round the cuboid (a tape), likewise.
+@test(frames: 200, gpu: true)
+fn a_tapes_volume_is_its_distance(s: State) {
+    assert(s.got.len() == 2 * ROUND, f"{s.got.len()} read back")
+    let w = worst(s, ROUND, |p: vec3| cuboid(HALF).distance(p - BOX))
+    print(f"the cuboid's worst point {w:.3} m off")
+    assert(w <= 0.25, f"{w} m off")
+}
+
+/// A probe's ray toward the trunk stops at it (3.5 m on: its surface), its light the trunk's, a
+/// small part of the sky's beside it.
+@test(frames: 200, gpu: true)
+fn a_probes_ray_stops_at_a_trunk(s: State) {
+    assert(s.rays.len() == 2, f"{s.rays.len()} rays read back")
+    let (at, past) = (s.rays[0], s.rays[1])
+    print(
+        f"toward the trunk: went {at.w:.2} m, light {at.xyz}; beside it {past.w:.1} m, {past.xyz}",
+    )
+    assert(abs(at.w - 3.5) < 0.3, f"stopped {at.w} m on")
+    assert(past.w >= 23.9, f"the ray past it stopped {past.w} m on")
+    assert(at.y < 0.5 * past.y, "the trunk's light is the sky's")
+}
+
+/// A contact shadow beside a post at the screen's edge is the one beside a post in its middle.
+@test(frames: 200, gpu: true)
+fn a_contact_shadow_at_the_screens_edge_is_the_one_in_its_middle(s: State) {
+    assert(s.contact.len() == 2, f"{s.contact.len()} read back")
+    print(f"the edge's contact {s.contact[0]:.3}, the middle's {s.contact[1]:.3}")
+    assert(s.contact[1] < 0.5, f"the middle's post casts none: {s.contact[1]}")
+    assert(abs(s.contact[0] - s.contact[1]) < 1.0e-3, "the edge's differs")
+}

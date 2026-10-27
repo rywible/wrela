@@ -109,7 +109,12 @@ pub struct Game {
     /// What the realizer's last live frame allocated (it keeps what it needs from frame to
     /// frame).
     realizer_allocations: u32,
+    /// The realizer's GPU bytes as a close-up began (`CLOSE_UP_AT`), for the eviction's test.
+    close_up_bytes: u64,
 }
+
+/// The frame `CLOSE_UP_AFTER_HERD`'s close-up begins at, and its bytes are read at.
+const CLOSE_UP_AT: u32 = 452
 
 pub fn init() -> Game {
     let world = spawn()
@@ -153,6 +158,7 @@ pub fn init() -> Game {
         at_level_yet: Vec::new(),
         posed: Vec::filled(HERD, 0),
         realizer_allocations: 0,
+        close_up_bytes: 0,
     }
 }
 
@@ -258,6 +264,9 @@ pub fn frame(game: mut Game, time: f32, width: u32, height: u32) {
             placed,
         )
         game.realizer_allocations = std::alloc::allocations() - before
+        if u32(round(time * 60.0)) == CLOSE_UP_AT {
+            game.close_up_bytes = game.realizer.bytes()
+        }
         // When each grazer is first drawn, and first has the level it should (#42 AC4).
         while game.drawn_yet.len() < HERD {
             game.drawn_yet.push(false)
@@ -525,13 +534,19 @@ const CLOSE_UP_AFTER_HERD: Script = Script::frames()
     .press(451, Key::C)
 
 /// The grazers the close-up leaves out are unseen, as long as one off screen is: each drops its
-/// finer levels as an unseen one does (`Realizer::frame`, `engine::realize::evicts`).
+/// finer levels as an unseen one does (`Realizer::frame`, `engine::realize::evicts`), and the
+/// realizer's bytes fall with them (B7.3: over 1,000 frames, past `EVICT_AFTER`).
 @test(frames: 1500, gpu: true, input: CLOSE_UP_AFTER_HERD)
 fn the_grazers_a_close_up_leaves_out_drop_their_finer_levels(game: Game) {
     for i in 1..game.realizer.len() {
         let d = game.realizer.drawn(i)
         assert(d == 0 || d == NO_LEVEL, f"grazer {i}, left out of the close-up, still draws {d}")
     }
+    let (before, after) = (game.close_up_bytes, game.realizer.bytes())
+    print(
+        f"the realizer's bytes: {before / 1048576} MiB as the close-up began, {after / 1048576} after",
+    )
+    assert(before > 0 && after < before, f"the realizer held {after} bytes after, {before} before")
 }
 
 /// Once the herd is drawn at its levels, the realizer's frame allocates nothing: it keeps its

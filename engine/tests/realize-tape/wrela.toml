@@ -1,0 +1,7 @@
+# A rock realized through its tapes (engine::stone::RockTape, docs/plan-world-class-2.md §B2.5)
+# and through its own compiled kernels: the same mesh, within a tenth of a millimetre.
+[package]
+name = "realize_tape"
+
+[dependencies]
+engine = { workspace = true }

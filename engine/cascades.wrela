@@ -1,0 +1,615 @@
+// Radiance cascades over the distance volume (B14.4: Sannikov 2023): screen-space probes on the
+// last frame's depth, each cascade's rays an interval of distance, merged from the farthest down
+// and resolved into the light the sky's term reads (`ambient::cascaded_at`).
+//
+// **The march** (4a): `march` steps from `t0` to `t1` along a ray. Its least step is the interval
+// over the step count. Where the field says no surface is within that (`d ≥ least`), it steps
+// `d`; nearer, it looks at how fast the ray closes on the surface (`a = −∇d · dir`): if it closes
+// within the least step (`d / a ≤ least`) the ray hits there; else it steps the least step, and a
+// negative or sub-threshold field at one of the step's quarters is a hit at the first. Every step
+// advances at least the least step or ends the ray, so a ray reaches `t1` or a hit in its step
+// count. Generic over what it steps through (`Distances`): the tests' analytic shapes on the CPU,
+// the solids' volume on the GPU (`Volume`).
+//
+// **The cascades** (4b): four, c0 to c3, over `[0, 0.5]`, `[0.5, 2]`, `[2, 8]` and `[8, 32]` m;
+// c0's probes `spacing` scene pixels apart with 4 × 4 directions (octahedral, the whole sphere),
+// each cascade's probes twice as far apart with twice the directions a side, so each is a texture
+// of about half the scene each way. A probe's origin is its pixel's point pushed 2 cm off its
+// surface. A ray that meets a solid holds the light that leaves it: an albedo of 0.3 for every
+// surface (this spike's: no surface cache) under the sun through the shadow maps and the probes'
+// sky; c3's rays that meet nothing hold the clouded sky. Each holds `(radiance, transmittance)`.
+// `merge`, from c2 down to c0: each direction takes its upper cascade's four probes round it
+// (bilinear, an upper probe whose distance differs by over a tenth weighed out, the nearest valid
+// one where all are), each the mean of its four child directions: `R += T × R'`, `T *= T'`.
+// `resolve` (half the scene each way, where the ambient occlusion goes): the four nearest c0
+// probes (bilinear, a probe whose distance differs by over 5 % dropped), the cosine-weighted
+// sum of their sixteen directions: the irradiance over π, with the texel's distance for its
+// reader (`ambient::cascaded_at`). The directions turn each frame, in a cycle of four, so the
+// temporal resolve gathers them. Known limitations: the crowns' leaves aren't in the volume (the
+// rays see solids alone); a ray that leaves the volume (96 m round the eye) goes on as open air.
+
+use ambient::{Ambient, facing_at, point_at}
+use distance::{DistanceGrid, distance_at, distance_normal}
+use lit::{Lighting, sun_at}
+use probes::{oct_dir, sky_light}
+use sky::{cloud_shadow, clouded_sky}
+use std::gpu::{
+    DepthTexture, GlobalId, R32Float, Rgba16Float, Texels, Texture, Texture3d, dispatch, label,
+    writable_texture,
+}
+use view::Camera
+
+/// What a march steps through: the distance to the nearest surface at a point.
+pub trait Distances {
+    fn distance(self, p: vec3) -> f32
+}
+
+/// The solids' distance volume (`distance::Distance`) as a march reads it.
+pub borrow struct Volume {
+    pub g: DistanceGrid,
+    pub volume: borrow Texture3d<R32Float>,
+}
+
+impl Distances for Volume {
+    fn distance(self, p: vec3) -> f32 {
+        distance_at(self.g, self.volume, p)
+    }
+}
+
+/// How near a surface a ray is before it's met it (m); and how near the point a closing ray's
+/// estimate puts it at (or the way there) must be for the estimate to be a hit.
+pub const HIT: f32 = 0.01
+const CLOSE: f32 = 0.1
+
+/// What a march found: whether it hit, and where along the ray (`t1` if it didn't), and the
+/// steps it took.
+pub struct Marched: Copy {
+    pub hit: bool,
+    pub t: f32,
+    pub steps: u32,
+}
+
+/// The field's gradient at `p` (central differences `e` apart).
+fn gradient<S: Distances>(s: S, p: vec3, e: f32) -> vec3 {
+    vec3(
+        s.distance(p + vec3(e, 0.0, 0.0)) - s.distance(p - vec3(e, 0.0, 0.0)),
+        s.distance(p + vec3(0.0, e, 0.0)) - s.distance(p - vec3(0.0, e, 0.0)),
+        s.distance(p + vec3(0.0, 0.0, e)) - s.distance(p - vec3(0.0, 0.0, e)),
+    ) /
+        (2.0 * e)
+}
+
+/// The ray from `o` along `dir` (a unit vector) through field `s`, from `t0` to `t1`, in at most
+/// `steps` steps (the module's conservative bounded advance).
+pub fn march<S: Distances>(s: S, o: vec3, dir: vec3, t0: f32, t1: f32, steps: u32) -> Marched {
+    let least = (t1 - t0) / f32(steps)
+    var t = t0
+    for k in 0..steps + 1 {
+        if t >= t1 {
+            return Marched { hit: false, t: t1, steps: k }
+        }
+        let p = o + dir * t
+        let d = s.distance(p)
+        if d < HIT {
+            return Marched { hit: true, t, steps: k }
+        }
+        if d >= least {
+            t = min(t + d, t1)
+            continue
+        }
+        // Nearer than a least step: how fast the ray closes on the surface. Where it closes
+        // within the step, the point it would meet the surface at is a hit if the field there
+        // says so (a ray that grazes past bends away from it: the estimate isn't a hit by
+        // itself); else the least step below goes on.
+        let a = -dot(gradient(s, p, max(least * 0.05, 1.0e-3)), dir)
+        if a > 0.0 && d / a <= least {
+            let at = min(t + d / a, t1)
+            if s.distance(o + dir * at) < CLOSE || s.distance(o + dir * (0.5 * (t + at))) < CLOSE {
+                return Marched { hit: true, t: at, steps: k + 1 }
+            }
+        }
+        let next = min(t + least, t1)
+        // The step read at its quarters: a thin solid's chord can fall between halves.
+        for q in 1..5 {
+            let at = t + (next - t) * f32(q) * 0.25
+            if s.distance(o + dir * at) < HIT {
+                return Marched { hit: true, t: at, steps: k + 1 }
+            }
+        }
+        t = next
+    }
+    Marched { hit: false, t: t1, steps: steps + 1 }
+}
+
+// ---- the cascades ------------------------------------------------------------------------------
+
+/// The cascades, and c0's directions a side (each cascade's twice its last's).
+pub const CASCADES: u32 = 4
+const C0_DIRS: u32 = 4
+
+/// Every surface's albedo to a ray that meets it, and a probe's push off its surface (m).
+const BOUNCE_ALBEDO: f32 = 0.3
+const PUSH: f32 = 0.02
+
+/// Cascade `i`'s interval (m): c0 `[0, 0.5]`, then each four times the last's end.
+pub fn interval_of(i: u32) -> vec2 {
+    if i == 0 { vec2(0.0, 0.5) } else { vec2(0.5 * pow(4.0, f32(i - 1)), 0.5 * pow(4.0, f32(i))) }
+}
+
+/// What a cascade's kernels are told: which cascade, its probes' spacing (scene pixels) and
+/// count each way, its directions a side, its rays' steps, the frame (the directions' turn) and
+/// the scene's size.
+pub struct Level: Copy + GpuData {
+    pub i: u32,
+    pub spacing: u32,
+    pub probes: vec2u,
+    pub dirs: u32,
+    pub steps: u32,
+    pub frame: u32,
+    pub scene: vec2u,
+}
+
+/// Cascade `i` over a scene `scene` pixels, c0's probes `spacing` apart, `steps` a ray.
+pub fn level(i: u32, spacing: u32, steps: u32, scene: vec2u, frame: u32) -> Level {
+    let s = spacing << i
+    Level {
+        i,
+        spacing: s,
+        probes: (scene + vec2u(s - 1)) / s,
+        dirs: C0_DIRS << i,
+        steps,
+        frame,
+        scene,
+    }
+}
+
+impl Level {
+    /// Its texture's size: its probes, each its directions a side.
+    pub fn size(self) -> vec2u {
+        self.probes * self.dirs
+    }
+}
+
+/// Probe `probe`'s pixel (its middle, within the scene).
+fn probe_pixel(lv: Level, probe: vec2u) -> vec2i {
+    vec2i(min(probe * lv.spacing + vec2u(lv.spacing / 2), lv.scene - vec2u(1)))
+}
+
+/// Probe `probe`'s origin (its pixel's point pushed off its surface), its distance from the eye
+/// (0: the sky), and the way it was pushed (its surface's normal, or toward the eye).
+fn probe_at(lv: Level, depth: DepthTexture, cam: Camera, probe: vec2u) -> (vec3, f32, vec3) {
+    let c = probe_pixel(lv, probe)
+    let (p, d) = point_at(depth, cam, c)
+    if d <= 0.0 {
+        return (p, 0.0, vec3(0.0))
+    }
+    let n = facing_at(depth, cam, c, p)
+    let off = if dot(n, n) > 0.0 { n } else { normalize(cam.eye - p) }
+    (p + off * PUSH, length(p - cam.eye), off)
+}
+
+/// How far a probe's origin is pushed out of a solid the volume says it's in, at most (m): the
+/// volume's solids are as coarse as its voxels, so a thin trunk's is fatter than the trunk.
+const MOST_PUSH: f32 = 1.0
+
+/// Origin `o` (pushed along `off`) moved out of any solid the volume holds it in, so its rays
+/// don't all meet what they start inside.
+fn outside(v: Volume, o: vec3, off: vec3) -> vec3 {
+    let d = v.distance(o)
+    if d >= HIT {
+        return o
+    }
+    o + off * min(HIT - d + 0.05, MOST_PUSH)
+}
+
+/// Direction `d` of a cascade of `dirs` a side, turned within its cell by the frame (four places
+/// a cycle).
+fn direction(dirs: u32, d: vec2u, frame: u32) -> vec3 {
+    let k = frame % 4
+    let within = vec2(0.25 + 0.5 * f32(k % 2), 0.25 + 0.5 * f32(k / 2))
+    oct_dir((vec2(d) + within) / f32(dirs) * 2.0 - vec2(1.0))
+}
+
+/// The light leaving the solid a ray met at `p`: an albedo of `BOUNCE_ALBEDO` under the sun (the
+/// shadow maps' and the clouds') and the probes' sky.
+fn met_light(lt: Lighting, p: vec3) -> vec3 {
+    let n = distance_normal(lt.distance, lt.volume, p)
+    let shade = cloud_shadow(lt.clouds, lt.cloud, lt.s, p)
+    let sun = sun_at(lt, p, n, 1.0) * max(dot(n, lt.light.sun), 0.0)
+    let sky = sky_light(lt.grid, lt.probes, lt.s, lt.grounds, lt.seen, lt.light, p, n, shade)
+    BOUNCE_ALBEDO * (lt.light.sun_colour * sun + sky)
+}
+
+/// Each (probe, direction) of cascade `lv`: its ray over the cascade's interval through the
+/// solids (`march`): the light of what it met and 0, or none and 1; c3's that met nothing, the
+/// clouded sky (`view`, `dome`) and 1. A probe on the sky holds none and 1.
+@compute(8, 8)
+pub fn trace(
+    lv: Level,
+    cam: Camera,
+    depth: DepthTexture,
+    lt: Lighting,
+    view: Texture<Rgba16Float>,
+    dome: Texture<Rgba16Float>,
+    out: mut Texels<Rgba16Float>,
+    id: GlobalId,
+) {
+    let size = lv.size()
+    if id.x >= size.x || id.y >= size.y {
+        return
+    }
+    let (at, dist, off) = probe_at(lv, depth, cam, vec2u(id.x, id.y) / lv.dirs)
+    if dist <= 0.0 {
+        out.store(id, vec4(0.0, 0.0, 0.0, 1.0))
+        return
+    }
+    let v = Volume { g: lt.distance, volume: lt.volume }
+    let o = outside(v, at, off)
+    let dir = direction(lv.dirs, vec2u(id.x, id.y) % lv.dirs, lv.frame)
+    let iv = interval_of(lv.i)
+    let m = march(v, o, dir, iv.x, iv.y, lv.steps)
+    if m.hit {
+        out.store(id, vec4(met_light(lt, o + dir * m.t), 0.0))
+    } else if lv.i == CASCADES - 1 {
+        out.store(id, vec4(clouded_sky(view, lt.light, dir, dome, lt.s), 1.0))
+    } else {
+        out.store(id, vec4(0.0, 0.0, 0.0, 1.0))
+    }
+}
+
+/// Of cascade `lv`'s probe at `pixel` and distance `dist`, the upper cascade's (`up`) four probes
+/// round it with their bilinear weights, each weighed out where its distance differs by over
+/// `apart` of this one's; the nearest valid one alone where all are (none: all weights 0).
+fn upper_probes(
+    up: Level,
+    depth: DepthTexture,
+    cam: Camera,
+    pixel: vec2,
+    dist: f32,
+    apart: f32,
+) -> ([vec2u; 4], vec4) {
+    let g = pixel / f32(up.spacing) - vec2(0.5)
+    let c = clamp(floor(g), vec2(0.0), vec2(up.probes) - vec2(1.0))
+    let t = clamp(g - c, vec2(0.0), vec2(1.0))
+    let last = up.probes - vec2u(1)
+    let at = [
+        min(vec2u(c), last),
+        min(vec2u(c) + vec2u(1, 0), last),
+        min(vec2u(c) + vec2u(0, 1), last),
+        min(vec2u(c) + vec2u(1, 1), last),
+    ]
+    var w = vec4((1.0 - t.x) * (1.0 - t.y), t.x * (1.0 - t.y), (1.0 - t.x) * t.y, t.x * t.y)
+    var nearest = 0
+    var best = 1.0e30
+    for k in 0..4 {
+        let (_, d, _) = probe_at(up, depth, cam, at[k])
+        let off = abs(d - dist)
+        if off < best {
+            best = off
+            nearest = k
+        }
+        if d <= 0.0 || off > apart * dist {
+            w[k] = 0.0
+        }
+    }
+    let total = w.x + w.y + w.z + w.w
+    if total > 0.0 {
+        return (at, w / total)
+    }
+    var only = vec4(0.0)
+    if best <= apart * dist * 4.0 {
+        only[nearest] = 1.0
+    }
+    (at, only)
+}
+
+/// Each (probe, direction) of cascade `lv` merged with the upper cascade's merged (`above`, of
+/// `up`): its four child directions' mean at the upper probes round it (`upper_probes`), `R + T ×
+/// R'` and `T × T'`.
+@compute(8, 8)
+pub fn merge(
+    lv: Level,
+    up: Level,
+    cam: Camera,
+    depth: DepthTexture,
+    own: Texture<Rgba16Float>,
+    above: Texture<Rgba16Float>,
+    out: mut Texels<Rgba16Float>,
+    id: GlobalId,
+) {
+    let size = lv.size()
+    if id.x >= size.x || id.y >= size.y {
+        return
+    }
+    let here = own.load(x: id.x, y: id.y)
+    let probe = vec2u(id.x, id.y) / lv.dirs
+    let (_, dist, _) = probe_at(lv, depth, cam, probe)
+    if dist <= 0.0 || here.a <= 0.0 {
+        out.store(id, here)
+        return
+    }
+    let (at, w) = upper_probes(up, depth, cam, vec2(probe_pixel(lv, probe)) + vec2(0.5), dist, 0.1)
+    let child = (vec2u(id.x, id.y) % lv.dirs) * 2
+    var far = vec4(0.0)
+    for k in 0..4 {
+        if w[k] > 0.0 {
+            let base = at[k] * up.dirs + child
+            let mean = (above.load(x: base.x, y: base.y) +
+                above.load(x: base.x + 1, y: base.y) +
+                above.load(x: base.x, y: base.y + 1) +
+                above.load(x: base.x + 1, y: base.y + 1)) *
+                0.25
+            far += mean * w[k]
+        }
+    }
+    // No upper probe of this surface: what lies past this interval is unknown, taken as open.
+    if w.x + w.y + w.z + w.w <= 0.0 {
+        far = vec4(0.0, 0.0, 0.0, 1.0)
+    }
+    out.store(id, vec4(here.rgb + here.a * far.rgb, here.a * far.a))
+}
+
+/// Each texel of a target half the scene each way: the irradiance over π at its pixel from c0's
+/// merged directions (`c0`, of `lv`) at the four probes round it (bilinear, those whose distance
+/// differs by over 5 % dropped), facing its normal; and its distance from the eye.
+@compute(8, 8)
+pub fn resolve(
+    lv: Level,
+    cam: Camera,
+    depth: DepthTexture,
+    c0: Texture<Rgba16Float>,
+    size: vec2u,
+    out: mut Texels<Rgba16Float>,
+    id: GlobalId,
+) {
+    if id.x >= size.x || id.y >= size.y {
+        return
+    }
+    let c = vec2i(i32(id.x), i32(id.y)) * 2
+    let (p, d) = point_at(depth, cam, c)
+    if d <= 0.0 {
+        out.store(id, vec4(0.0))
+        return
+    }
+    let dist = length(p - cam.eye)
+    var n = facing_at(depth, cam, c, p)
+    if dot(n, n) == 0.0 {
+        n = normalize(cam.eye - p)
+    }
+    // c0's probes, as an upper cascade's are found, at 5 %.
+    let (at, w) = upper_probes(lv, depth, cam, vec2(c) + vec2(0.5), dist, 0.05)
+    // The weights are normalized: all 0 where no probe is of this surface.
+    var e = vec3(0.0)
+    var any = false
+    for k in 0..4 {
+        if w[k] > 0.0 {
+            var sum = vec3(0.0)
+            for j in 0..lv.dirs * lv.dirs {
+                let dj = vec2u(j % lv.dirs, j / lv.dirs)
+                let t = at[k] * lv.dirs + dj
+                let cosine = max(dot(n, direction(lv.dirs, dj, lv.frame)), 0.0)
+                sum += c0.load(x: t.x, y: t.y).rgb * cosine
+            }
+            e += sum * w[k]
+            any = true
+        }
+    }
+    // Each direction's share of the sphere (4π over their count) over π.
+    let k = 4.0 / f32(lv.dirs * lv.dirs)
+    out.store(id, if any { vec4(e * k, dist) } else { vec4(-1.0) })
+}
+
+/// The cascades' textures, three used in turn (each cascade's is about half the scene each way,
+/// so one size holds any): a cascade traced into `traced`, merged with the one above (`upper`)
+/// into `merged`, which becomes the one above for the next.
+pub struct Cascades {
+    traced: Texture<Rgba16Float>,
+    upper: Texture<Rgba16Float>,
+    merged: Texture<Rgba16Float>,
+    /// c0's probes' spacing (scene pixels) and the rays' steps (§B14.4d's rungs).
+    pub spacing: u32,
+    pub steps: u32,
+    scene: vec2u,
+}
+
+impl Cascades {
+    /// The cascades for a scene `scene` pixels, c0's probes `spacing` apart, `steps` a ray.
+    pub fn new(scene: vec2u, spacing: u32, steps: u32) -> Cascades {
+        var s = vec2u(1)
+        for i in 0..CASCADES {
+            s = max(s, level(i, spacing, steps, scene, 0).size())
+        }
+        Cascades {
+            traced: writable_texture::<Rgba16Float>(width: s.x, height: s.y),
+            upper: writable_texture::<Rgba16Float>(width: s.x, height: s.y),
+            merged: writable_texture::<Rgba16Float>(width: s.x, height: s.y),
+            spacing,
+            steps,
+            scene,
+        }
+    }
+
+    /// The GPU bytes its textures take (half floats).
+    pub fn bytes(self) -> u64 {
+        3 * memory::texels(self.traced.width(), self.traced.height(), 8)
+    }
+
+    /// The cascades from `depth` (this frame's, as `cam` drew it): traced and merged from c3
+    /// down, and resolved into `next` (the ambient's texture, half the scene each way), which the
+    /// next frame's shading reads as the `Ambient` returned says.
+    pub fn build(
+        mut self,
+        next: mut Texture<Rgba16Float>,
+        depth: DepthTexture,
+        cam: Camera,
+        lt: Lighting,
+        view: Texture<Rgba16Float>,
+        dome: Texture<Rgba16Float>,
+    ) -> Ambient {
+        let frame = cam.frame
+        // c3's traced light is its merged: nothing lies past it.
+        let top = level(CASCADES - 1, self.spacing, self.steps, self.scene, frame)
+        label("cascades")
+        dispatch(
+            trace.bind(top, cam, depth, lt, view, dome, out: mut self.upper),
+            over: (top.size().x, top.size().y),
+        )
+        var i = CASCADES - 1
+        while i > 0 {
+            i -= 1
+            let lv = level(i, self.spacing, self.steps, self.scene, frame)
+            let up = level(i + 1, self.spacing, self.steps, self.scene, frame)
+            let s = lv.size()
+            dispatch(
+                trace.bind(lv, cam, depth, lt, view, dome, out: mut self.traced),
+                over: (s.x, s.y),
+            )
+            dispatch(
+                merge.bind(
+                    lv,
+                    up,
+                    cam,
+                    depth,
+                    own: self.traced,
+                    above: self.upper,
+                    out: mut self.merged,
+                ),
+                over: (s.x, s.y),
+            )
+            swap(mut self.upper, mut self.merged)
+        }
+        let size = vec2u(next.width(), next.height())
+        let lv = level(0, self.spacing, self.steps, self.scene, frame)
+        dispatch(
+            resolve.bind(lv, cam, depth, c0: self.upper, size: size, out: mut next),
+            over: (size.x, size.y),
+        )
+        Ambient {
+            view_proj: cam.view_proj,
+            eye: cam.eye,
+            on: 1,
+            size: vec2(size),
+            cascades: 1,
+        }
+    }
+}
+
+// ---- tests ------------------------------------------------------------------------------------
+
+/// A slab between two planes across x, from `lo` to `hi`.
+struct Slab: Copy {
+    lo: f32,
+    hi: f32,
+}
+
+impl Distances for Slab {
+    fn distance(self, p: vec3) -> f32 {
+        max(self.lo - p.x, p.x - self.hi)
+    }
+}
+
+/// A wall along the ray, `off` from its line (a plane z = off, solid past it).
+struct Wall: Copy {
+    off: f32,
+}
+
+impl Distances for Wall {
+    fn distance(self, p: vec3) -> f32 {
+        self.off - p.z
+    }
+}
+
+/// The step counts the rungs take (§B14.4d).
+const STEPS: [u32; 2] = [16, 8]
+
+/// A wall alongside the ray, nearer than a least step all along it (2 cm off: c3's least step is
+/// 1.5 m), never stops it: every ray ends at `t1` within its step count, with no false hit.
+@test
+fn a_wall_alongside_a_ray_never_stops_it() {
+    for n in STEPS {
+        let m = march(
+            Wall { off: 0.02 },
+            vec3(0.0),
+            vec3(1.0, 0.0, 0.0),
+            t0: 8.0,
+            t1: 32.0,
+            steps: n,
+        )
+        assert(
+            !m.hit && m.t == 32.0 && m.steps <= n + 1,
+            f"{n} steps: {m.hit} at {m.t} in {m.steps}",
+        )
+    }
+}
+
+/// Slabs across c3's interval (8 to 32 m), a metre thick and 10 cm thick, are hit, never passed;
+/// and one entered at 30°.
+@test
+fn a_slab_in_the_interval_is_hit() {
+    for n in STEPS {
+        for slab in [Slab { lo: 8.2, hi: 9.2 }, Slab { lo: 8.6, hi: 8.7 }] {
+            let m = march(slab, vec3(0.0), vec3(1.0, 0.0, 0.0), t0: 8.0, t1: 32.0, steps: n)
+            assert(m.hit && m.t <= slab.hi, f"{n} steps: the slab {slab.lo}-{slab.hi} at {m.t}")
+        }
+        let at30 = normalize(vec3(cos(0.5236), sin(0.5236), 0.0))
+        let m = march(Slab { lo: 12.0, hi: 12.1 }, vec3(0.0), at30, t0: 8.0, t1: 32.0, steps: n)
+        assert(m.hit, f"{n} steps: the slab at 30° passed")
+    }
+}
+
+/// A sphere of radius `r` at `c`.
+struct Ball: Copy {
+    c: vec3,
+    r: f32,
+}
+
+impl Distances for Ball {
+    fn distance(self, p: vec3) -> f32 {
+        length(p - self.c) - self.r
+    }
+}
+
+/// A ray that passes a ball by (a unit ball 1.15 m or more off its line: 15 cm or more past it, in
+/// c3's interval) is never said to meet it: the closing rate's estimate is a hit only where the
+/// field agrees.
+@test
+fn a_ray_passing_a_ball_doesnt_meet_it() {
+    for n in STEPS {
+        for off in [1.15, 1.3, 1.5] {
+            let b = Ball { c: vec3(10.0, off, 0.0), r: 1.0 }
+            let m = march(b, vec3(0.0), vec3(1.0, 0.0, 0.0), t0: 8.0, t1: 32.0, steps: n)
+            assert(!m.hit, f"{n} steps: met a ball {off} m off at {m.t}")
+        }
+    }
+}
+
+/// Over 10,000 rays, each with a ball 0.05 to 1 m round somewhere in c3's interval, set off its
+/// line by up to 1.2 of its radius (so a share of them graze it or just miss), the share that pass
+/// a ball a 256-step march meets is under 1% (at 16 steps and at 8: the approximation measured).
+@test
+fn the_march_leaks_under_a_percent() {
+    for n in STEPS {
+        var leaked = 0
+        var met = 0
+        for k in 0..10000 {
+            let r = 0.05 + 0.95 * noise::rand(91, k * 4)
+            let along = 8.5 + 23.0 * noise::rand(91, k * 4 + 1)
+            let side = (noise::rand(91, k * 4 + 2) * 2.0 - 1.0) * 1.2 * r
+            let up = (noise::rand(91, k * 4 + 3) * 2.0 - 1.0) * 1.2 * r
+            let b = Ball { c: vec3(along, side, up), r }
+            let dir = vec3(1.0, 0.0, 0.0)
+            let truth = march(b, vec3(0.0), dir, t0: 8.0, t1: 32.0, steps: 256)
+            if truth.hit {
+                met += 1
+                if !march(b, vec3(0.0), dir, t0: 8.0, t1: 32.0, steps: n).hit {
+                    leaked += 1
+                }
+            }
+        }
+        let share = f32(leaked) / f32(max(met, 1))
+        std::io::print(
+            f"{n} steps: {leaked} of {met} rays a 256-step march meets pass ({share * 100.0:.2}%)",
+        )
+        assert(met > 5000 && share < 0.01, f"{share} of {met}")
+    }
+}

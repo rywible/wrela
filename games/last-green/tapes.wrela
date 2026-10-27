@@ -1,0 +1,119 @@
+// Every creature and built thing of the floor as a tape (`std::derive::tape`, toolchain 0.8):
+// the fawn, the wolf, and each kind `stage::to_build` builds (the ring's slabs, the egg stones,
+// the door's posts, the waystones, the stones, the tower and its fallen blocks, the ruin's walls,
+// the crags' beds), and the banks' three prototypes. Each row is the kind's longest tape over
+// every one built: its operations and its table's constants, against a `Tape`'s 4,096 and 2,048.
+use blockouts::{
+    BANK_PROTOTYPES, Block, Built, Slab, Wall, Waystone, bank_creature, block_creature,
+    slab_creature, tower, tower_creature, wall_creature, waystone_creature,
+}
+use engine::creature::Creature
+use engine::noise::rand
+use engine::stone::{bed, stone}
+use std::field::Surface
+use std::io::print
+use std::derive::tape_sized
+use std::stage::{TAPE_CONSTS, TAPE_LEN, Taped}
+
+/// A kind's row: how many were taped, and the longest tape's operations and constants.
+struct Row: Copy {
+    count: u32,
+    ops: u32,
+    consts: u32,
+}
+
+/// The tape of `k`'s field at rest: its operations and constants, in a tape with room past a
+/// `Tape`'s, so one too long for it still counts.
+fn taped<C, K: Creature<C>>(k: K) -> (u32, u32) {
+    let f = k.field()
+    let t: Taped<16384, 4096> = tape_sized(|q| f.distance(q))
+    (t.len(), t.consts_len())
+}
+
+fn note(row: mut Row, counts: (u32, u32)) {
+    row.count += 1
+    row.ops = max(row.ops, counts.0)
+    row.consts = max(row.consts, counts.1)
+}
+
+/// The tape of built thing `b`'s creature, as `blockouts::realize` builds it.
+fn built_tape(b: Built) -> (u32, u32) {
+    match b {
+        Built::Stone { radius, squash, seed, .. } => taped(stone(radius, squash, seed)),
+        Built::Standing { half, seed, .. } => {
+            taped(slab_creature(Slab { half, seed: f32(seed % 97) * 0.37 }))
+        },
+        Built::Block { half, seed, .. } => {
+            let tilt = vec2(rand(seed, 6) - 0.5, rand(seed, 7) - 0.5) * 0.5
+            taped(block_creature(Block { half, tilt, seed }))
+        },
+        Built::Waystone { tall, seed, .. } => {
+            taped(waystone_creature(Waystone { tall, seed: f32(seed % 97) * 0.37 }))
+        },
+        Built::Tower { .. } => taped(tower_creature(tower())),
+        Built::Wall { a, b, tall, .. } => {
+            let w = Wall { half: vec3(length(b - a) * 0.5 + 0.4, tall * 0.5, 0.45) }
+            taped(wall_creature(w, tall))
+        },
+        Built::Rock { bed: r, .. } => taped(bed(r)),
+    }
+}
+
+/// Which row built thing `b` is: `stage::to_build`'s egg stones are slabs seeded from 900, its
+/// door's posts from 950.
+fn kind_of(b: Built) -> u32 {
+    match b {
+        Built::Standing { seed, .. } => if seed >= 950 && seed < 960 {
+            2
+        } else if seed >= 900 && seed < 950 {
+            1
+        } else {
+            0
+        },
+        Built::Waystone { .. } => 3,
+        Built::Stone { .. } => 4,
+        Built::Tower { .. } => 5,
+        Built::Block { .. } => 6,
+        Built::Wall { .. } => 7,
+        Built::Rock { .. } => 8,
+    }
+}
+
+const BUILT: [Text; 9] = [
+    "ring slabs",
+    "egg stones",
+    "door posts",
+    "waystones",
+    "stones",
+    "tower",
+    "fallen blocks",
+    "walls",
+    "crag beds",
+]
+
+@test
+fn every_kind_tapes() {
+    var rows = [Row { count: 0, ops: 0, consts: 0 }; 12]
+    note(mut rows[0], taped(fawns::grown()))
+    note(mut rows[1], taped(wolf::creature::wolf()))
+    for k in 0..BANK_PROTOTYPES {
+        note(mut rows[2], taped(bank_creature(k)))
+    }
+    for b in stage::to_build() {
+        note(mut rows[3 + kind_of(b)], built_tape(b))
+    }
+    print("| kind | taped | operations | constants |")
+    print("|---|---:|---:|---:|")
+    var longest = 0
+    for i in 0..12 {
+        let name = if i == 0 { "fawn" } else if i == 1 { "wolf" } else if i == 2 {
+            "bank prototypes"
+        } else { BUILT[i - 3] }
+        let r = rows[i]
+        print(f"| {name} | {r.count} | {r.ops} | {r.consts} |")
+        assert(r.count > 0, f"no {name} was taped")
+        assert(r.ops <= TAPE_LEN && r.consts <= TAPE_CONSTS, f"{name}'s tape is past a Tape's room")
+        longest = max(longest, r.ops)
+    }
+    print(f"longest: {longest} operations")
+}

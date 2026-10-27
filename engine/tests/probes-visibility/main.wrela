@@ -1,0 +1,291 @@
+// The probes' sight (`engine::probes::Seen`, B9a) on a scene of walls, drawn through
+// `engine::frame` on the GPU until its probes are baked: the sky light read at points beside
+// the walls with each probe weighed by what it sees (`ProbeQuality::visibility`) and without.
+//
+// The walls are solid capsules (the probes' occluders), on flat ground, in a grid of columns 4 m
+// apart at multiples of 4:
+//
+// - a closed room (x -23 to -10, z -12 to 12, 10 m tall) on open ground: a point 1 m inside its
+//   west wall (x -21.5) lies between a column outside (x -24, which sees the sky) and one inside
+//   (x -20); a point 1 m outside it (x -24.5), the open side's.
+// - a closed box (x 9 to 35, roofed): a point 1 m inside its west wall (x 10.5) lies between a
+//   column outside (x 8) and one inside (x 12).
+// - open meadow north of both (z 24 to 44).
+//
+// The walls are the probes' alone (the frame draws nothing of them, so they cast no shadow):
+// the light read is the sky's part, whose occlusion is the probes' (`sky_light`'s `sun` 0).
+
+use engine::air::hazy
+use engine::frame::{Aim, Frame, Gathered, ProbeQuality, Quality, Scene}
+use engine::light::{Light, SUN_TOP, sunlight}
+use engine::plant::Wind
+use engine::probes::{Occluder, ProbeGrid, Trace, grid, sky_light}
+use engine::sky::{Gap, Weather}
+use engine::terrain::{Clipmap, Flat}
+use engine::view::{Camera, first_camera}
+use std::gpu::{GlobalId, GpuBuffer, Rgba16Float, Sampler, Slots, Texture, buffer, dispatch, read}
+use std::io::{Pending, print}
+
+const SUN = vec3(0.6, 0.7, 0.3)
+const EYE = vec3(0.0, 1.6, 30.0)
+
+/// The points read: the east half's, the west half's beside it, the closed box's, the meadow's
+/// (as the open sky's for the box), then `MEADOW` more of the meadow's.
+const POINTS: u32 = 4
+
+/// The strips traced again before the light is read: twenty rounds of the grid's 625 columns,
+/// so what the load's bake lit the floors inside by (the open sky: `Trace::bounced` 0) has gone.
+const READ_AFTER: u32 = 20 * 625 / 32
+const MEADOW: u32 = 50
+
+pub struct Walls {
+    weather: Weather,
+}
+
+/// A wall of capsules from `a` to `b` (x, z), 0 to 10 m tall, a metre thick, half a metre apart
+/// up its height.
+fn wall(out: mut Vec<Occluder>, a: vec2, b: vec2) {
+    for k in 0..21 {
+        let y = f32(k) * 0.5
+        out.push(Occluder { a: vec3(a.x, y, a.y), radius: 0.5, b: vec3(b.x, y, b.y), solid: 1.0 })
+    }
+}
+
+/// A roof 10 m up over x `from` to `to` (z -12 to 12): capsules along z half a metre apart.
+fn roof(out: mut Vec<Occluder>, from: f32, to: f32) {
+    var x = from
+    while x <= to {
+        out.push(
+            Occluder { a: vec3(x, 10.0, -12.0), radius: 0.5, b: vec3(x, 10.0, 12.0), solid: 1.0 },
+        )
+        x += 0.5
+    }
+}
+
+/// The walls, in render space (the world's less `origin`).
+fn walls(origin: vec3) -> Vec<Occluder> {
+    var o: Vec<Occluder> = Vec::new()
+    // The split: its west half open ground, its east half a closed room.
+    wall(mut o, vec2(-23.0, -12.0), vec2(-23.0, 12.0))
+    wall(mut o, vec2(-10.0, -12.0), vec2(-10.0, 12.0))
+    wall(mut o, vec2(-23.0, -12.0), vec2(-10.0, -12.0))
+    wall(mut o, vec2(-23.0, 12.0), vec2(-10.0, 12.0))
+    roof(mut o, from: -23.0, to: -10.0)
+    // The closed box.
+    wall(mut o, vec2(9.0, -12.0), vec2(9.0, 12.0))
+    wall(mut o, vec2(35.0, -12.0), vec2(35.0, 12.0))
+    wall(mut o, vec2(9.0, -12.0), vec2(35.0, -12.0))
+    wall(mut o, vec2(9.0, 12.0), vec2(35.0, 12.0))
+    roof(mut o, from: 9.0, to: 35.0)
+    for i in 0..o.len() {
+        o[i].a -= origin
+        o[i].b -= origin
+    }
+    o
+}
+
+impl Scene for Walls {
+    fn wind(self, cam: Camera, time: f32) -> Wind {
+        Wind { time, dir: vec2(1.0, 0.0), strength: 0.0 }
+    }
+
+    fn weather(self) -> Weather {
+        self.weather.clone()
+    }
+
+    fn trace(self, light: Light, grid: ProbeGrid) -> Trace {
+        Trace { light, grid, foliage: vec3(0.0), reach: 24.0, leaf: vec3(0.0), bounced: 0 }
+    }
+
+    fn probe_grid(self, at: vec2, origin: vec3) -> ProbeGrid {
+        grid(vec2(0.0) - origin.xz, cols: 25, spacing: 4.0, low: -8.0, high: 24.0, voxel: 0.5)
+    }
+
+    fn occluders(self, at: vec2, origin: vec3) -> Option<Vec<Occluder>> {
+        Some(walls(origin))
+    }
+
+    fn height_at(self, world: vec2) -> f32 {
+        0.0
+    }
+
+    fn cook_ground(mut self, clipmap: mut Clipmap, eye: vec3, again: bool) -> u32 {
+        clipmap.follow(Flat {}, eye, again)
+    }
+}
+
+/// Point `i` (`POINTS`, then the meadow's).
+fn point(i: u32) -> vec3 {
+    if i == 0 {
+        return vec3(-21.5, 1.6, 0.0)
+    }
+    if i == 1 {
+        return vec3(-24.5, 1.6, 0.0)
+    }
+    if i == 2 {
+        return vec3(10.5, 1.6, 0.0)
+    }
+    if i == 3 {
+        return vec3(0.0, 1.6, 30.0)
+    }
+    let m = i - POINTS
+    vec3(-36.0 + f32(m % 10) * 8.0 + 0.7, 0.4 + f32(m % 3) * 1.1, 24.5 + f32(m / 10) * 4.3)
+}
+
+/// The sky light at each point, facing up, by the probes `grid` (with or without its
+/// visibility) holds: its sky's part.
+@compute(64)
+fn lights(
+    grid: ProbeGrid,
+    maps: Texture<Rgba16Float>,
+    s: Sampler,
+    grounds: [f32],
+    seen: [u32],
+    light: Light,
+    origin: vec3,
+    out: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    if id.x >= POINTS + MEADOW {
+        return
+    }
+    let l = sky_light(
+        grid,
+        maps,
+        s,
+        grounds,
+        seen,
+        light,
+        point(id.x) - origin,
+        vec3(0.0, 1.0, 0.0),
+        0.0,
+    )
+    out[id] = vec4(l, 0.0)
+}
+
+pub struct State {
+    frame: Frame<Gathered>,
+    scene: Walls,
+    asked: Vec<Pending<vec4>>,
+    pub seen: Vec<vec4>,
+    pub unseen: Vec<vec4>,
+    /// The frame the probes were baked whole at.
+    pub baked: u32,
+}
+
+pub fn init() -> State {
+    let air = hazy(SUN, SUN_TOP, eye: EYE.y)
+    let frame: Frame<Gathered> = Frame::new(
+        Quality { measured: false, probes: ProbeQuality { rays: 128 } },
+        sunlight(air),
+        air,
+        Clipmap::new(levels: 6, finest: 0.5),
+        first_camera(EYE, EYE + vec3(0.0, 0.0, -40.0), 0.82, width: 320, height: 180),
+        grid(vec2(0.0), cols: 25, spacing: 4.0, low: -8.0, high: 24.0, voxel: 0.5),
+        EYE.xz,
+    )
+    State {
+        frame,
+        scene: Walls {
+            weather: Weather {
+                clouds: Vec::new(),
+                fair: 0.0,
+                gap: Gap { a: vec2(3300.0, -590.0), b: vec2(12200.0, -2150.0), radius: 2500.0 },
+                wind: vec2(0.0),
+            },
+        },
+        asked: Vec::new(),
+        seen: Vec::new(),
+        unseen: Vec::new(),
+        baked: 0,
+    }
+}
+
+fn ask(s: mut State, visibility: u32) {
+    var out: GpuBuffer<vec4> = buffer(POINTS + MEADOW)
+    borrow b = s.frame.probes.using
+    dispatch(
+        lights.bind(
+            ProbeGrid { visibility, ..b.grid },
+            b.maps,
+            s.frame.linear,
+            b.grounds.items(),
+            b.seen.items(),
+            s.frame.light,
+            s.frame.origin,
+            out: mut out,
+        ),
+        over: POINTS + MEADOW,
+    )
+    s.asked.push(read(out.items()))
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    let aim = Aim { eye: EYE, at: EYE + vec3(0.0, 0.0, -40.0), fovy: 0.82, moving_at: EYE }
+    let _ = s.frame.begin(mut s.scene, aim, time, width, height)
+    s.frame.draw(mut s.scene, aim)
+    if s.baked == 0 && s.frame.probes.cooked && s.frame.probes.done() {
+        s.baked = s.frame.ran
+    }
+    // Read once the probes have been traced again a few rounds (their bounces lit by the probes,
+    // not the open sky: `Trace::bounced`).
+    if s.baked > 0 && s.asked.is_empty() && s.frame.probes.using.agains >= READ_AFTER {
+        ask(mut s, 1)
+        ask(mut s, 0)
+    }
+    for k in 0..s.asked.len() {
+        if (k == 0 && s.seen.is_empty()) || (k == 1 && s.unseen.is_empty() && !s.seen.is_empty()) {
+            match s.asked[k].poll() {
+                Some(Ok(v)) => if k == 0 { s.seen = take v } else { s.unseen = take v },
+                _ => {},
+            }
+        }
+    }
+}
+
+fn luma(c: vec4) -> f32 {
+    c.x * 0.2126 + c.y * 0.7152 + c.z * 0.0722
+}
+
+/// A point 1 m into the closed room receives under a tenth of the light the open ground beside
+/// its wall does, with the probes' sight; without it, the open side's column leaks into it.
+@test(frames: 900, gpu: true)
+fn a_wall_keeps_the_open_sides_light_out_of_the_room(s: State) {
+    assert(s.seen.len() == POINTS + MEADOW && s.unseen.len() == POINTS + MEADOW, "read back")
+    let (dark, lit) = (luma(s.seen[0]), luma(s.seen[1]))
+    let (dark_before, lit_before) = (luma(s.unseen[0]), luma(s.unseen[1]))
+    print(
+        f"baked at frame {s.baked}; the room {dark:.4} of the open side's {lit:.4} ({dark / lit * 100.0:.1}%); without sight {dark_before:.4} of {lit_before:.4} ({dark_before / lit_before * 100.0:.1}%)",
+    )
+    assert(
+        dark < 0.1 * lit,
+        f"the room gets {dark / lit * 100.0:.1}% of the open side's light",
+    )
+}
+
+/// A point 1 m inside the closed box receives under 2% of the open meadow's light.
+@test(frames: 900, gpu: true)
+fn a_closed_boxs_inside_is_dark(s: State) {
+    assert(s.seen.len() == POINTS + MEADOW && s.unseen.len() == POINTS + MEADOW, "read back")
+    let (inside, outside) = (luma(s.seen[2]), luma(s.seen[3]))
+    print(
+        f"inside {inside:.4} of outside {outside:.4} ({inside / outside * 100.0:.2}%); without sight {luma(s.unseen[2]) / luma(s.unseen[3]) * 100.0:.2}%",
+    )
+    assert(inside < 0.02 * outside, f"the box's inside gets {inside / outside * 100.0:.2}%")
+}
+
+/// On open meadow, where every probe sees every point, the sight changes the light by under
+/// 1/255 of it.
+@test(frames: 900, gpu: true)
+fn the_meadows_light_is_its_light_without_sight(s: State) {
+    assert(s.seen.len() == POINTS + MEADOW && s.unseen.len() == POINTS + MEADOW, "read back")
+    var worst = 0.0
+    for i in POINTS..POINTS + MEADOW {
+        let (a, b) = (s.seen[i], s.unseen[i])
+        for c in 0..3 {
+            worst = max(worst, abs(a[c] - b[c]) / max(b[c], 1.0e-6))
+        }
+    }
+    print(f"the meadow's light with sight differs by at most {worst * 255.0:.3}/255 of it")
+    assert(worst < 1.0 / 255.0, f"{worst * 255.0:.3}/255")
+}

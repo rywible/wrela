@@ -1,0 +1,116 @@
+// Rock as a material (B11d): a stone's colour and roughness cooked per vertex at realization
+// from where the vertex is, not from its field's channels alone (`stone::realize_rock` with a
+// `RockLook`):
+//
+// - **strata**: the rock was laid down in beds along a bedding direction; along it, bands 0.3 to
+//   1.2 m deep (a band's depth warped by a noise), each its own tone between two;
+// - **cracks**: Worley's edge distance (Worley, A Cellular Texture Basis Function, 1996): the
+//   joints between cells darkened where a vertex lies near one;
+// - **lichen**: on faces less steep than 30°, more than half a metre above the ground, in
+//   patches: a grey-green, a fifth of the colour at most;
+// - **wetness**: within 0.6 m of the nearest water's level: darker (0.6 of it) and glossier
+//   (roughness 0.35).
+//
+// The colour's alpha holds the roughness, which `stone::lit_stone` reads. Its parameters are
+// **proposed** (docs/plan-world-class-2.md §B11d).
+
+use character::Shaded
+use creature::Parts
+use noise::{hash3, noise3}
+use realize::{SkinVertex, Tally}
+use stone::Rock
+use std::gpu::{GlobalId, Slots, Unorm8x4}
+
+/// A rock's look: where its vertices are in the world (`to_world`, the realized mesh's own space
+/// to render space), its bedding (a unit vector, in render space), its bands' mean depth (m),
+/// the ground's and the nearest water's level there (render space; the water's far below for
+/// none), and its seed; `on` 0 cooks the field's own colour (`stone::PLAIN_ROCK`).
+pub struct RockLook: Copy + GpuData {
+    pub to_world: mat4,
+    pub bedding: vec3 = vec3(0.0, 1.0, 0.0),
+    pub band: f32 = 0.7,
+    pub ground: f32 = -1.0e9,
+    pub water: f32 = -1.0e9,
+    pub seed: u32 = 0,
+    pub on: u32 = 1,
+}
+
+/// The two tones a band lies between (times the rock's own colour), the darkening along a crack,
+/// lichen's grey-green and how much of the colour it takes at most, a wet band's darkening and
+/// its roughness, and a dry rock's.
+const DARK_BAND: f32 = 0.72
+const LIGHT_BAND: f32 = 1.18
+const CRACK: f32 = 0.45
+const LICHEN = vec3(0.42, 0.46, 0.34)
+const LICHEN_MOST: f32 = 0.2
+const WET: f32 = 0.6
+const WET_ROUGH: f32 = 0.35
+const DRY_ROUGH: f32 = 0.8
+
+/// Worley's edge distance at `p` (in cells): the nearest feature point's distance from the
+/// second nearest's (F2 - F1), 0 on a joint between two cells.
+pub fn worley_edge(p: vec3, seed: u32) -> f32 {
+    let c = floor(p)
+    var f1 = 1.0e9
+    var f2 = 1.0e9
+    for k in 0..27 {
+        let o = vec3(f32(k % 3), f32((k / 3) % 3), f32(k / 9)) - vec3(1.0)
+        let cell = c + o
+        let (x, y, z) = (i32(cell.x), i32(cell.y), i32(cell.z) + i32(seed % 1024) * 977)
+        let jitter = vec3(hash3(x, y, z), hash3(x + 7919, y, z), hash3(x, y + 6271, z))
+        let d = length(cell + jitter - p)
+        if d < f1 {
+            f2 = f1
+            f1 = d
+        } else if d < f2 {
+            f2 = d
+        }
+    }
+    f2 - f1
+}
+
+/// The rock's colour and roughness at `w` (render space) facing `n`, its field's own colour
+/// `base`, as `look` says.
+pub fn rock_surface(look: RockLook, base: vec3, w: vec3, n: vec3) -> (vec3, f32) {
+    // Strata: the band along the bedding (its depth warped), its own tone.
+    let s = f32(look.seed % 1024)
+    let along = dot(w, look.bedding) + noise3(w * 0.15 + vec3(s)) * 0.6
+    let band = i32(floor(along / look.band))
+    let tone = hash3(band, i32(look.seed % 1024), 37)
+    var a = base * mix(DARK_BAND, LIGHT_BAND, tone)
+    // Cracks: the joints of 1.6 m cells.
+    let edge = worley_edge(w / 1.6, look.seed)
+    a *= 1.0 - CRACK * (1.0 - smoothstep(0.0, 0.06, edge))
+    // Lichen: gentle faces above the ground, in patches.
+    let gentle = smoothstep(0.82, 0.9, n.y)
+    let high = smoothstep(0.4, 0.6, w.y - look.ground)
+    let patch = smoothstep(0.45, 0.75, noise3(w * 0.8 + vec3(s * 3.0)))
+    a = mix(a, LICHEN, LICHEN_MOST * gentle * high * patch)
+    // Wetness: near the water's level.
+    let wet = 1.0 - smoothstep(0.5, 0.6, w.y - look.water)
+    a *= mix(1.0, WET, wet)
+    (a, mix(DRY_ROUGH, WET_ROUGH, wet))
+}
+
+/// Vertex `id`'s colour (its square root) and roughness (alpha), cooked from `field`'s colour
+/// there through `look` (`rock_surface`); cells `fp` wide.
+@compute(64)
+pub fn cook_rock<F: Parts<Rock>>(
+    field: F,
+    look: RockLook,
+    fp: f32,
+    tally: [Tally],
+    verts: [SkinVertex],
+    colours: mut Slots<Unorm8x4>,
+    id: GlobalId,
+) {
+    if id.x >= tally[0].vertices {
+        return
+    }
+    let v = verts[id.x]
+    let (_, _, c) = field.sample_masked(v.pos, v.mask, fp)
+    let w = (look.to_world * vec4(v.pos, 1.0)).xyz
+    let n = normalize((look.to_world * vec4(v.normal, 0.0)).xyz)
+    let (albedo, rough) = rock_surface(look, c.albedo(), w, n)
+    colours[id] = Unorm8x4::encode(vec4(sqrt(saturate(albedo)), saturate(rough)))
+}

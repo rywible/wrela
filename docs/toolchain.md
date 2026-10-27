@@ -39,12 +39,14 @@ wrela suite                               # everything, before a PR: fmt, allow,
 
 ```bash
 wrela build games/capybara -o build/cand/capybara
-~/.wrela/toolchains/0.6.3/bin/wrela-host build/cand/capybara --frames 600 --size 640x360 \
+~/.wrela/toolchains/0.8.1/bin/wrela-host build/cand/capybara --frames 600 --size 640x360 \
     --workers 1 --rgba out.rgba                        # prints the state hash last
 wrela run games/capybara                               # serve it to a browser
 ```
 
 - `--input <script.json>` plays input events; `wrela script docsite scripts::KEYS -o keys.json` writes one from a `Script` constant.
+- `wrela run --lan` (and a tool's `serve::start(..., lan: true)`) serves the LAN too, and prints each of this machine's addresses (`http://<ip>:<port>/`): a phone or a tablet opens the page there, and a test-mode run there may `PUT` its results back. Over plain HTTP a browser elsewhere gives the page no WebGPU nor `SharedArrayBuffer` (they need a secure context): start that device's Chrome with `--unsafely-treat-insecure-origin-as-secure=http://<ip>:<port>`, or serve a release page over HTTPS (Safari has no such flag: use the release page). Test mode runs on a private network's address as on `localhost`; `#test&...&show=1` draws the run's summary over the canvas at its end (the intervals' 50th, 95th and 99th percentiles, the frames over 33 ms, when it said `playable`, its first frame, its pipelines, the adapter), for a device that can't put its results.
+- A tool's `browser::navigate(b, url)` takes an open browser to a page again, in the same tab and profile, so its caches are warm: a page's warm run, after which `run(b, Script::new().wait(Until::done(), ...))` waits for that page's own result.
 - `--workers 1` makes a run repeat exactly. With more workers, work that streams or runs in parallel can land on other frames.
 - The hash covers every command byte submitted. Equal hashes mean equal commands; GPU pixels can still differ by a step or two between runs of one build.
 - A build keeps its storage beside it (`<build>/storage`). A game that stores settings (the capybara) draws differently once they're there, so start each comparison from the same storage.
@@ -67,7 +69,11 @@ wrela-host --compare-ticks a.ticks b.ticks   # two builds' tick logs: equal, or 
 - `profile --serial` runs each pass alone, so its times add up; in the default mode passes overlap on the GPU, and only the frame's span is the whole. `--serial` doesn't combine with `--compare`: write a report with `--json`, then compare with `--baseline <report.json>`.
 - `same` builds the package now (into `<package>/build/same`) and runs it beside a saved build made outside it (`wrela build ... -o`), each with one worker, its own empty storage and the same `--input`. It compares each frame's hash, the last screens (`--within`, 0.5 by default) and the pipelines, and exits 0 when they behave the same, 1 when they differ and 2 on an error. With `--no-gpu` the commands are checked but not run, so the screens aren't compared. Use it to show a refactor or a pin move changed nothing.
 - `profile --chrome` measures in headless Chrome: GPU spans and the executor's counters from a saturated run, then CPU frame times, phases and frame intervals from a paced run (two frames in flight), as a player's are. The command checker is off, as in a release build (`--checked` keeps it); `--features none` hides the device's optional features, so a program's fallback paths are measured; `--optimize size|speed` profiles the shipped `wasm-opt` build. Every profile reports the executor's counters a frame: passes, dispatches, draws and draw calls, writes, bind groups and pipelines set.
+- `profile --worst n` (5 by default) names the slowest frames: in Chrome by their paced interval (the paced run now asks for timestamps, so each frame's labels are timed too), natively by their call. Each shows its interval, its call, its GPU span, its phases and its labels' GPU ms, largest first; `--json` has them as `"worst"`. A paced run's `results/frames.json` carries each frame's `labels` (`[[name, ms], ...]`) beside its `cpu_ms` and `phases`.
 - `wrela-host <build> ... --log out.ticks` writes a ticked program's tick log; `--compare-ticks` compares two builds' logs on the same input (the sim unchanged) without checking their WASM hashes, which `--replay` does.
+- `wrela precision <pkg> <module>::<fn> --box lo..hi,lo..hi,...` says, operation by operation, where a half-float twin of a function of a point would be safe: it walks the function's interval as an `f32` rounds and as a half float rounds, over each `--box` (several are a sampled domain), and gives each operation `safe`, `watch` or `unsafe` (by its extra width beside its magnitude, `--tol`, 1e-3 by default; past 65504, or an integer past 2048, by range), and the first that isn't safe. It's advice: a twin written where it says `safe` is proven by measuring it.
+- `wrela build --relaxed-simd` (release only) writes `game.relaxed.wasm` beside `game.wasm`: the code only `frame` reaches fuses its vector multiply-adds. Chrome loads it, Safari the standard one; `wrela-host --relaxed` and `wrela profile --relaxed-simd` run it natively. Both modules run the same ticks (`--compare-ticks`).
+- `wrela build <pkg> --report data` lists the twenty largest constants by their laid-out size, with each one's share of zero bytes, and the data section's total: a large constant read only at load is better shipped as a file (`std::io::Shipped`).
 - `WRELA_FEATURES=none` (or a comma list to keep) hides optional GPU features from a program on the native host, and `wrela test` passes the same mask to Chrome.
 - Run profiles with nothing else building or using the GPU. Report GPU span, CPU frame call and Chrome frame rate as the separate things they are.
 
@@ -105,7 +111,19 @@ wrela-host --compare-ticks a.ticks b.ticks   # two builds' tick logs: equal, or 
 | `reference`          | Replicas of reference meshes, and how far a surface is from one                                           |
 | `route`, `keys`      | The capybara's fastest runs; its piano keys page                                                          |
 | `release`, `deploy`  | A release, and its deploy (CI does these from `main`)                                                     |
-| `bench`              | What the engine's scenes cost on this machine, in Chrome and natively, added to `docs/bench.md` (`--scene herd`, `--compare out/<report>.json` for a report in build/bench) |
+| `bench`              | What the engine's scenes cost on this machine, in Chrome and natively, added to `docs/bench.md` (`--scene herd`, `--compare out/<report>.json` for a report in build/bench); `--lan` for another device |
+| `export`             | A floor's ground as a 16-bit PNG and its JSON (`height games/last-green --out <file.png>`), a scene's camera path as JSON (`path ... --out <file.json>`): what the other engines' scenes take |
+| `passes`             | A frame's passes and dispatches, in order, as a page |
+| `fit`                | A small network trained and its weights written as source (`--net sine --out content/...`); the impostor's ladder run and printed (`--net impostor --rungs ABCD`, the best run written with `--out`); or the learned rejector's truth, dataset, baseline and rung (`--net rejector --frames n [--out ...]`): `engine::neural` |
+
+## Benching another device
+
+`wrela tool bench -- --lan [--scene <name>]...` measures the scenes on a device on this machine's network instead of here. It builds each scene, serves it to the LAN, and prints its four pages' URLs (gpu, play, cold, warm, each with `show=1`); a person opens them on the device in that order, each once the one before has finished, and the warm one twice (the tool says when). The device puts each run's results back, and the report names it by its adapter and its browser's user agent, under `docs/bench.md`'s "Devices". The native run is skipped: it would be this machine's.
+
+1. The device and this machine on one network; note the device's OS, its browser and its version.
+2. WebGPU and `SharedArrayBuffer` need a secure context, which plain HTTP to another machine's address isn't. On Chrome (Windows, Linux, macOS, Android with a desktop's flags page) start it with `--unsafely-treat-insecure-origin-as-secure=http://<ip>:<port>` (the origin the tool printed) and a fresh profile (`--user-data-dir=<dir>`), so the cold start is cold; Safari, iOS and a phone where flags can't be set need the page over HTTPS: a released build is, at the release's worker (CI deploys `main`), and the same hashes open it there with `show=1`, its numbers typed in as step 4 says; a bench build of a branch has no HTTPS serving in this workspace yet.
+3. Open each URL as the tool prints it and let it finish (the page draws its summary when it's done). Run each scene three times; keep the median cold start, as the plan's §B8 says.
+4. A device that can't put its results (a tablet, a phone on a served release page) still shows its summary on the page: type its numbers in, `wrela tool bench -- --row "<machine>;<scene>;<p50>;<p95>;<p99>;<over 33>;<playable ms>"`, which adds a line marked "by hand" under "Devices".
 
 ## What trips agents up
 

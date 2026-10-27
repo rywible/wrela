@@ -46,6 +46,24 @@ pub struct Look: Copy + GpuData {
     pub line_dark: f32 = 0.65,
     pub sharpen: f32 = 0.2,
     pub vignette: f32 = 0.28,
+    /// The screen it's for (B13, D11): SDR (0: the tone curve to [0, 1], sRGB) or HDR (1: linear
+    /// light, rolled off above SDR white toward `peak`, where the display shows it so).
+    pub output: u32 = 0,
+    pub peak: f32 = 4.0,
+}
+
+/// An HDR screen's light from the scene's (`c`, exposed): linear, as it is up to SDR white
+/// (1.0); its luminance above it rolled off toward `peak` (`e / (1 + e / (peak − 1))` of its
+/// excess `e`), its chroma kept.
+pub fn hdr_tone(c: vec3, peak: f32) -> vec3 {
+    let c = max(c, vec3(0.0))
+    let y = dot(c, vec3(0.2126, 0.7152, 0.0722))
+    if y <= 1.0 {
+        return c
+    }
+    let e = y - 1.0
+    let rolled = 1.0 + e / (1.0 + e / max(peak - 1.0, 1.0e-3))
+    c * (rolled / y)
 }
 
 /// A pixel `e` sharpened against its cross (`b`, `d`, `f`, `h`), as AMD's robust contrast-adaptive
@@ -338,6 +356,9 @@ pub struct Develop: Copy + GpuData {
     pub look: Look,
     pub out: vec2,
     pub view: u32 = 0,
+    /// Whether the screen is shown HDR now (`std::gpu::screen_is`): the look's `output` asks,
+    /// the host and the display decide.
+    pub hdr: u32 = 0,
 }
 
 /// The silhouette view's value at an output pixel (display-referred) whose depth is `z` and tag
@@ -606,6 +627,8 @@ pub fn develop(
     image: Texture<Rgba16Float>,
     depth: DepthTexture,
     glow: Texture<Rgba16Float>,
+    below: Texture<Rgba16Float>,
+    levels: u32,
     dabs: Texture<Rgba16Float>,
     lut: Texture3d<Rgba8>,
     s: Sampler,
@@ -632,9 +655,28 @@ pub fn develop(
     let q = px * (d.cam.screen / d.out)
     let m = if clay { vec4(0.0) } else { dabs.sample_level(s, q / d.cam.screen) }
     paint = paint * (1.0 + m.r) * vec3(1.0 + 0.25 * m.r, 1.0, 1.0 - 0.3 * m.r) * (1.0 + m.g)
-    // Bloom: the pyramid's top, which holds its levels' light each once (a quarter of it, so as
+    // Bloom: the pyramid's top and the level under it brought up (`bloom_up`'s tent, here rather
+    // than in a pass of its own), which hold the levels' light each once (a quarter of it, so as
     // much light is spread as before).
-    paint += glow.sample_level(s, px / d.out).rgb * (look.bloom / f32(BLOOM_LEVELS))
+    let glow_at = px / d.out
+    var bloom = glow.sample_level(s, glow_at).rgb
+    if levels > 1 {
+        let size = vec2(f32(below.width()), f32(below.height()))
+        let at = glow_at * size
+        let t = |dx: f32, dy: f32| below.sample_level(s, (at + vec2(dx, dy)) / size).rgb
+        bloom += (t(-1.0, -1.0) + t(1.0, -1.0) + t(-1.0, 1.0) + t(1.0, 1.0)) * 0.0625 +
+            (t(0.0, -1.0) + t(-1.0, 0.0) + t(1.0, 0.0) + t(0.0, 1.0)) * 0.125 +
+            t(0.0, 0.0) * 0.25
+    }
+    paint += bloom * (look.bloom / f32(BLOOM_LEVELS))
+    if d.hdr != 0 && !clay {
+        // Linear light with headroom (`hdr_tone`): no SDR curve, no display grade.
+        let uv = px / d.out - vec2(0.5)
+        return vec4(
+            hdr_tone(paint * exposure[0].value, look.peak) * (1.0 - look.vignette * dot(uv, uv)),
+            1.0,
+        )
+    }
     var c = graded(tone(paint, exposure[0].value), lut, s, look.grade)
     if clay {
         return vec4(c, 1.0)
@@ -665,6 +707,18 @@ fn terrain_rock_rejects_paint_on_flat_and_sloping_surfaces() {
         ground_grain(up: 0.4, material: vec4(0.0, 1.0, 0.0, 0.0)) == 0.0,
         "steep soil took ovals",
     )
+}
+
+/// HDR keeps SDR's range as it is, and rolls a white three times SDR's off above 1 and under the
+/// peak.
+@test
+fn hdr_rolls_off_above_sdr_white() {
+    let mid = hdr_tone(vec3(0.5), peak: 4.0)
+    assert(length(mid - vec3(0.5)) < 1.0e-6, f"{mid}")
+    let white = hdr_tone(vec3(3.0), peak: 4.0)
+    assert(white.x > 1.0 && white.x < 4.0, f"3.0 white shows as {white.x}")
+    let far = hdr_tone(vec3(1000.0), peak: 4.0)
+    assert(far.x < 4.0, f"{far.x} past the peak")
 }
 
 /// The sharpening leaves a flat neighbourhood as it is, stays within its cross's range at an

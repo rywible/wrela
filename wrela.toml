@@ -5,7 +5,7 @@
 [workspace]
 # The toolchain release the workspace runs: a `wrela` of another release runs this one instead,
 # downloading it to ~/.wrela/toolchains (`wrela toolchain` says which runs and why).
-toolchain = "0.7.0"
+toolchain = "0.9.0"
 members = [
     "console",
     "console/tests/shader-budget",
@@ -45,6 +45,9 @@ members = [
     "studio/courselens/glue",
     "studio/audio",
     "studio/bench",
+    "studio/passes",
+    "studio/export",
+    "studio/fit",
     "studio/toolkit",
     "studio/listening",
     "studio/lookbook",
@@ -87,6 +90,7 @@ allow = [
     "docs/bench.md",
     "docs/world-class-next.md",
     "docs/plan-world-class-2.md",
+    "docs/lookdev.md",
     "games/*/design.md",
     ".gitignore",
     ".github/workflows/deploy.yml",
@@ -154,6 +158,28 @@ browser = true
 package = "studio/bench"
 write = ["ws=.", "out=build/bench"]
 browser = true
+
+# The pass viewer (studio/passes): a frame's passes and dispatches, in order, as a page served on
+# this machine (`wrela tool passes -- <pkg> --frame <n>`).
+[tools.passes]
+package = "studio/passes"
+read = ["ws=."]
+write = ["out=build/passes"]
+browser = true
+
+# The export tool (studio/export): what Part C's brief takes from a game (`wrela tool export --
+# height|path <pkg> --out <file>`): the floor's ground as a 16-bit PNG, the walk's camera as JSON.
+# It builds the package into build/export and writes where its command line says, in the
+# workspace.
+[tools.export]
+package = "studio/export"
+write = ["ws=.", "out=build/export"]
+
+# The fit tool (studio/fit): a small network trained and written as source (`wrela tool fit --
+# --net sine --out content/...`), for the engine's experiments (docs/plan-world-class-2.md §B14).
+[tools.fit]
+package = "studio/fit"
+write = ["ws=.", "out=build/fit"]
 
 # The serve tool (studio/serve): a directory of the workspace served to a browser on this
 # machine, its pages' results written into its `results/`.

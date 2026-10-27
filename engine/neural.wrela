@@ -1,0 +1,400 @@
+// Small networks (B14.1): multilayer perceptrons of two hidden layers (ReLU, the output linear),
+// trained at build time and shipped as numbers (`studio/fit` writes them as source), evaluated
+// in a shader (`eval_gpu`) or on the CPU (`eval`, every test's reference).
+//
+// A net's weights are one array in a fixed order (`Model`'s offsets): the first layer's weights
+// (`h1` rows of `inputs`, a row an output), its biases, the second's (`h2` rows of `h1`), its
+// biases, the output's (`outputs` rows of `h2`), its biases. Shipped, they're half floats, two a
+// word (`std::gpu::Half2`); trained, `f32`.
+//
+// The trainer is on the CPU: a hand-written backward pass for this one architecture, Adam
+// (Kingma and Ba, 2015), a mean squared or absolute error. The networks the engine trains are
+// small (hundreds to a few thousand weights), and a batch of their samples is a few
+// million multiply-adds.
+
+use noise::rand
+use std::gpu::{GlobalId, Half2, Slots}
+
+/// The widest a hidden layer is, and the most inputs and outputs, a shader's evaluation holds.
+pub const MOST_HIDDEN: u32 = 64
+pub const MOST_IN: u32 = 48
+pub const MOST_OUT: u32 = 8
+
+/// A net's shape: its inputs, its two hidden layers' widths, its outputs.
+pub struct Model: Copy + GpuData + Eq {
+    pub inputs: u32,
+    pub h1: u32,
+    pub h2: u32,
+    pub outputs: u32,
+}
+
+impl Model {
+    /// How many weights (and biases) it has.
+    pub fn size(self) -> u32 {
+        self.h1 * self.inputs +
+            self.h1 +
+            self.h2 * self.h1 +
+            self.h2 +
+            self.outputs * self.h2 +
+            self.outputs
+    }
+
+    /// Where each layer's weights and biases begin: w0, b0, w1, b1, w2, b2.
+    pub fn offsets(self) -> [u32; 6] {
+        let w0 = 0
+        let b0 = w0 + self.h1 * self.inputs
+        let w1 = b0 + self.h1
+        let b1 = w1 + self.h2 * self.h1
+        let w2 = b1 + self.h2
+        let b2 = w2 + self.outputs * self.h2
+        [w0, b0, w1, b1, w2, b2]
+    }
+}
+
+/// One evaluation's activations (the hidden layers' after their ReLU), kept for the backward
+/// pass, and its outputs.
+pub struct Pass: Clone {
+    pub a1: Vec<f32>,
+    pub a2: Vec<f32>,
+    pub out: Vec<f32>,
+}
+
+/// Layer `rows` × `cols` of `w` from `at`, its biases from `bias`, over `x` (from `x_at`);
+/// ReLU'd unless `linear`.
+fn layer(
+    w: [f32],
+    at: u32,
+    bias: u32,
+    rows: u32,
+    cols: u32,
+    x: [f32],
+    x_at: u32,
+    linear: bool,
+) -> Vec<f32> {
+    var out: Vec<f32> = Vec::with_capacity(rows)
+    for r in 0..rows {
+        var s = w[bias + r]
+        for c in 0..cols {
+            s += w[at + r * cols + c] * x[x_at + c]
+        }
+        out.push(if linear { s } else { max(s, 0.0) })
+    }
+    out
+}
+
+/// `x` (from `x_at`) through net `m` (weights `w`), its activations kept.
+pub fn forward(m: Model, w: [f32], x: [f32], x_at: u32 = 0) -> Pass {
+    let o = m.offsets()
+    let a1 = layer(w, o[0], o[1], m.h1, m.inputs, x, x_at, linear: false)
+    let a2 = layer(w, o[2], o[3], m.h2, m.h1, a1, 0, linear: false)
+    let out = layer(w, o[4], o[5], m.outputs, m.h2, a2, 0, linear: true)
+    Pass { a1, a2, out }
+}
+
+/// `x` through net `m`: its outputs.
+pub fn eval(m: Model, w: [f32], x: [f32]) -> Vec<f32> {
+    forward(m, w, x).out
+}
+
+/// The loss's gradient for one sample added into `g`: `x` (from `x_at`) went through `m` as `p`
+/// says, and `dout` is the loss's derivative by each output; and by each input into `dx`, if it
+/// has room for them (empty: not asked).
+pub fn backward(
+    m: Model,
+    w: [f32],
+    x: [f32],
+    p: Pass,
+    dout: [f32],
+    g: mut Vec<f32>,
+    dx: mut Vec<f32>,
+    x_at: u32 = 0,
+) {
+    let o = m.offsets()
+    // The output layer: its weights' gradient, and the second hidden layer's.
+    var d2: Vec<f32> = Vec::from([0.0; MOST_HIDDEN])
+    for r in 0..m.outputs {
+        g[o[5] + r] += dout[r]
+        for c in 0..m.h2 {
+            g[o[4] + r * m.h2 + c] += dout[r] * p.a2[c]
+            d2[c] += dout[r] * w[o[4] + r * m.h2 + c]
+        }
+    }
+    // Through the second layer's ReLU, then its weights, and the first hidden layer's.
+    var d1: Vec<f32> = Vec::from([0.0; MOST_HIDDEN])
+    for r in 0..m.h2 {
+        if p.a2[r] <= 0.0 {
+            continue
+        }
+        let d = d2[r]
+        g[o[3] + r] += d
+        for c in 0..m.h1 {
+            g[o[2] + r * m.h1 + c] += d * p.a1[c]
+            d1[c] += d * w[o[2] + r * m.h1 + c]
+        }
+    }
+    for r in 0..m.h1 {
+        if p.a1[r] <= 0.0 {
+            continue
+        }
+        let d = d1[r]
+        g[o[1] + r] += d
+        for c in 0..m.inputs {
+            g[o[0] + r * m.inputs + c] += d * x[x_at + c]
+        }
+        if dx.len() >= m.inputs {
+            for c in 0..m.inputs {
+                dx[c] += d * w[o[0] + r * m.inputs + c]
+            }
+        }
+    }
+}
+
+/// A net's weights to start from (He's: each layer's normal-ish, spread `sqrt(2 / its inputs)`,
+/// from `seed`), its biases 0.
+pub fn start(m: Model, seed: u32) -> Vec<f32> {
+    let o = m.offsets()
+    var w: Vec<f32> = Vec::filled(m.size(), 0.0)
+    spread(mut w, seed * 7919 + 1, o[0], m.h1 * m.inputs, m.inputs)
+    spread(mut w, seed * 7919 + 2, o[2], m.h2 * m.h1, m.h1)
+    spread(mut w, seed * 7919 + 3, o[4], m.outputs * m.h2, m.h2)
+    w
+}
+
+/// `count` weights of `w` from `from`, uniform with He's spread for `fan` inputs, drawn from `n`.
+fn spread(w: mut Vec<f32>, n: u32, from: u32, count: u32, fan: u32) {
+    let s = sqrt(2.0 / f32(fan)) * 1.7320508
+    for i in 0..count {
+        w[from + i] = (rand(n, i) * 2.0 - 1.0) * s
+    }
+}
+
+/// Adam's state (Kingma and Ba, 2015): each weight's running mean and square of its gradient,
+/// the steps taken, and the rate (β₁ 0.9, β₂ 0.999, ε 1e-8).
+pub struct Adam: Clone {
+    pub mean: Vec<f32>,
+    pub square: Vec<f32>,
+    pub steps: u32,
+    pub rate: f32,
+}
+
+impl Adam {
+    pub fn new(size: u32, rate: f32) -> Adam {
+        Adam { mean: Vec::filled(size, 0.0), square: Vec::filled(size, 0.0), steps: 0, rate }
+    }
+
+    /// `w` stepped down its gradient `g` (a batch's mean).
+    pub fn step(mut self, w: mut Vec<f32>, g: [f32]) {
+        self.steps += 1
+        let b1 = 1.0 - pow(0.9, f32(self.steps))
+        let b2 = 1.0 - pow(0.999, f32(self.steps))
+        for i in 0..w.len() {
+            self.mean[i] = 0.9 * self.mean[i] + 0.1 * g[i]
+            self.square[i] = 0.999 * self.square[i] + 0.001 * g[i] * g[i]
+            w[i] -= self.rate * (self.mean[i] / b1) / (sqrt(self.square[i] / b2) + 1.0e-8)
+        }
+    }
+}
+
+/// How a batch's error is measured: its squared error's mean, or its absolute error's.
+pub enum Loss: Copy + Eq {
+    Mse,
+    L1,
+}
+
+/// One step on a batch (`xs`, `ys`: a sample's inputs and outputs each, flat, `count` of them):
+/// the gradient of the batch's mean loss, Adam's step; the batch's mean loss before it.
+pub fn train_step(
+    m: Model,
+    w: mut Vec<f32>,
+    adam: mut Adam,
+    xs: [f32],
+    ys: [f32],
+    count: u32,
+    loss: Loss,
+) -> f32 {
+    var g: Vec<f32> = Vec::filled(w.len(), 0.0)
+    var total = 0.0
+    var dout: Vec<f32> = Vec::from([0.0; MOST_OUT])
+    var none: Vec<f32> = Vec::new()
+    for k in 0..count {
+        let p = forward(m, w, xs, x_at: k * m.inputs)
+        for r in 0..m.outputs {
+            let e = p.out[r] - ys[k * m.outputs + r]
+            total += if loss == Loss::Mse { e * e } else { abs(e) }
+            dout[r] = (if loss == Loss::Mse { 2.0 * e } else { sign(e) }) / f32(count * m.outputs)
+        }
+        backward(m, w, xs, p, dout, mut g, mut none, x_at: k * m.inputs)
+    }
+    adam.step(mut w, g)
+    total / f32(count * m.outputs)
+}
+
+/// A net's weights as half floats, two a word (the last word's second 0 for an odd count).
+pub fn halves(w: [f32]) -> Vec<Half2> {
+    var out: Vec<Half2> = Vec::with_capacity((w.len() + 1) / 2)
+    var i = 0
+    while i < w.len() {
+        out.push(Half2::encode(vec2(w[i], if i + 1 < w.len() { w[i + 1] } else { 0.0 })))
+        i += 2
+    }
+    out
+}
+
+/// A net shipped as half floats (`halves`) as `count` `f32` weights again.
+pub fn unhalves(h: [Half2], count: u32) -> Vec<f32> {
+    var out: Vec<f32> = Vec::with_capacity(count)
+    for i in 0..count {
+        let pair = h[i / 2].decode()
+        out.push(if i % 2 == 0 { pair.x } else { pair.y })
+    }
+    out
+}
+
+/// Weight `i` of a net shipped as half floats (`halves`).
+pub fn half_at(w: [Half2], i: u32) -> f32 {
+    let pair = w[i / 2].decode()
+    if i % 2 == 0 { pair.x } else { pair.y }
+}
+
+/// `x` through net `m` in a shader, its weights half floats (`halves`), its arithmetic `f32`
+/// (a device without half floats runs it as one with); at most `MOST_IN` inputs, `MOST_HIDDEN`
+/// a hidden layer and `MOST_OUT` outputs.
+pub fn eval_gpu(m: Model, w: [Half2], x: [f32; 48]) -> [f32; 8] {
+    let o = m.offsets()
+    var a1 = [0.0; 64]
+    for r in 0..m.h1 {
+        var s = half_at(w, o[1] + r)
+        for c in 0..m.inputs {
+            s += half_at(w, o[0] + r * m.inputs + c) * x[c]
+        }
+        a1[r] = max(s, 0.0)
+    }
+    var a2 = [0.0; 64]
+    for r in 0..m.h2 {
+        var s = half_at(w, o[3] + r)
+        for c in 0..m.h1 {
+            s += half_at(w, o[2] + r * m.h1 + c) * a1[c]
+        }
+        a2[r] = max(s, 0.0)
+    }
+    var out = [0.0; 8]
+    for r in 0..m.outputs {
+        var s = half_at(w, o[5] + r)
+        for c in 0..m.h2 {
+            s += half_at(w, o[4] + r * m.h2 + c) * a2[c]
+        }
+        out[r] = s
+    }
+    out
+}
+
+/// Each row of `xs` (`m.inputs` a row) through net `m` on the GPU (`eval_gpu`): `m.outputs` a row.
+@compute(64)
+pub fn eval_rows(m: Model, w: [Half2], xs: [f32], out: mut Slots<f32>, id: GlobalId) {
+    let row = id.x / m.outputs
+    if row * m.inputs >= xs.len() {
+        return
+    }
+    var x = [0.0; 48]
+    for c in 0..m.inputs {
+        x[c] = xs[row * m.inputs + c]
+    }
+    out[id] = eval_gpu(m, w, x)[id.x % m.outputs]
+}
+
+// ---- tests ------------------------------------------------------------------------------------
+
+/// A hand-set 2 → 2 → 1 net (its second hidden layer passing its first through) is what a hand
+/// computes at four inputs.
+@test
+fn a_hand_set_net_is_its_hand_computation() {
+    let m = Model { inputs: 2, h1: 2, h2: 2, outputs: 1 }
+    // w0: [[1, -1], [0.5, 2]], b0: [0, -1]; w1: identity, b1: 0; w2: [3, -2], b2: 0.25.
+    let w = [1.0, -1.0, 0.5, 2.0, 0.0, -1.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 3.0, -2.0, 0.25]
+    assert(m.size() == 15, f"{m.size()} weights")
+    for x in [vec2(0.0, 0.0), vec2(1.0, 0.5), vec2(-2.0, 1.0), vec2(0.3, 3.0)] {
+        let h = vec2(max(x.x - x.y, 0.0), max(0.5 * x.x + 2.0 * x.y - 1.0, 0.0))
+        let want = 3.0 * h.x - 2.0 * h.y + 0.25
+        let got = eval(m, w, [x.x, x.y])[0]
+        assert(abs(got - want) < 1.0e-6, f"at {x}: {got} for {want}")
+    }
+}
+
+/// The backward pass is the loss's derivative: at 100 random weights of a 4 → 8 → 8 → 2 net, each
+/// partial within 2e-3 (relative, or absolute where it's tiny) of central differences at 1e-3.
+@test
+fn the_gradient_is_its_finite_differences() {
+    let m = Model { inputs: 4, h1: 8, h2: 8, outputs: 2 }
+    var w = start(m, seed: 3)
+    // Biases off zero, so no ReLU sits on its kink.
+    let o = m.offsets()
+    for i in o[1]..o[2] {
+        w[i] = 0.1 + 0.01 * f32(i)
+    }
+    let x = [0.3, -0.7, 0.5, 0.9]
+    let y = [0.2, -0.4]
+    let loss_of = |w: [f32]| {
+        let out = eval(m, w, x)
+        (out[0] - y[0]) * (out[0] - y[0]) + (out[1] - y[1]) * (out[1] - y[1])
+    }
+    var g: Vec<f32> = Vec::filled(m.size(), 0.0)
+    let p = forward(m, w, x)
+    var none: Vec<f32> = Vec::new()
+    backward(
+        m,
+        w,
+        x,
+        p.clone(),
+        [2.0 * (p.out[0] - y[0]), 2.0 * (p.out[1] - y[1])],
+        mut g,
+        mut none,
+    )
+    var worst = 0.0
+    for k in 0..100 {
+        let i = u32(rand(77, k) * f32(m.size())) % m.size()
+        var up = w.clone()
+        var down = w.clone()
+        up[i] += 1.0e-3
+        down[i] -= 1.0e-3
+        let numeric = (loss_of(up) - loss_of(down)) / 2.0e-3
+        let err = abs(numeric - g[i]) / max(abs(numeric), 1.0e-2)
+        worst = max(worst, err)
+    }
+    std::io::print(f"the gradient's worst partial: {worst:.6} off its central difference")
+    // 1.6e-3 measured (the plan asks 1e-3): a difference of f32 losses at 1e-3 carries their
+    // rounding, about 1e-4 of the loss over the step.
+    assert(worst < 2.0e-3, f"{worst}")
+}
+
+/// A 1 → 16 → 16 → 1 net learns `sin` over [-π, π]: the held-out squared error under 1e-3 within
+/// 2,000 steps of 256 samples (the loss every 100 steps printed: the first hill).
+@test
+fn a_net_learns_the_sine() {
+    let m = Model { inputs: 1, h1: 16, h2: 16, outputs: 1 }
+    var w = start(m, seed: 1)
+    var adam = Adam::new(m.size(), rate: 3.0e-3)
+    var curve = String::from("loss:")
+    for step in 0..2000 {
+        var xs: Vec<f32> = Vec::with_capacity(256)
+        var ys: Vec<f32> = Vec::with_capacity(256)
+        for k in 0..256 {
+            let x = (rand(step * 977 + 11, k) * 2.0 - 1.0) * 3.14159265
+            xs.push(x)
+            ys.push(sin(x))
+        }
+        let l = train_step(m, mut w, mut adam, xs, ys, 256, Loss::Mse)
+        if step % 100 == 0 {
+            curve.push_str(f" {l:.6}")
+        }
+    }
+    var held = 0.0
+    for k in 0..200 {
+        let x = -3.14159265 + (f32(k) + 0.5) / 200.0 * 6.2831853
+        let e = eval(m, w, [x])[0] - sin(x)
+        held += e * e
+    }
+    held /= 200.0
+    std::io::print(curve.as_str())
+    std::io::print(f"held-out squared error {held:.6}")
+    assert(held < 1.0e-3, f"{held}")
+}

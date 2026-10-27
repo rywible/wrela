@@ -21,7 +21,9 @@
 
 use compress::{encode_bc5, encode_bc7, halves}
 use cull::{Hzb, NO_HZB, occluded}
-use impostor::{KindDesc, far_cut_flat, far_quad, far_shade, of_kind, volume_cut, volume_shade}
+use impostor::{
+    KindDesc, NO_NET, Neural, far_cut_flat, far_quad, far_shade, of_kind, volume_cut, volume_shade,
+}
 use lit::Lighting
 use lod::{IMPOSTOR, Lod, VOLUME, ways}
 use memory::{Share, Usage}
@@ -33,7 +35,7 @@ use std::field::Tube
 use std::mem::size_of
 use std::gpu::{
     Atomics, Bc5, Bc7, DepthTexture, DrawArgs, DrawIndexedArgs, Filtered, Format, GlobalId,
-    GpuBuffer, GpuSpan, R32Float, Rg16Float, copy_buffer_to_texture, R32Uint, RenderPass,
+    GpuBuffer, GpuSpan, Half2, R32Float, Rg16Float, copy_buffer_to_texture, R32Uint, RenderPass,
     Rgba16Float, Rgba8, Sampler, Slots, Texels3d, Texture, Texture3d, TextureArray, buffer,
     buffer_of, copy, copy_texture, dispatch, draw, draw_multi, label, texture, texture3d,
     texture_array, writable_texture, write,
@@ -873,6 +875,10 @@ pub struct Wood {
     /// Frames a choosing's room stays under half full before it's given back (`shrinks`): fewer
     /// while memory is over its budget (`engine::memory::shrink_after`).
     pub shrink_after: u32,
+    /// A kind's impostor read through a net, and its weights (`read_through`: none unless a game
+    /// gives one, `Quality::neural`).
+    neural: Neural,
+    net: GpuBuffer<Half2>,
 }
 
 impl Wood {
@@ -945,6 +951,8 @@ impl Wood {
             cell: 1.0,
             clear: vec4(0.0),
             shrink_after: SHRINK_AFTER,
+            neural: NO_NET,
+            net: buffer(1),
         }
         w.write_lods()
         w
@@ -992,6 +1000,13 @@ impl Wood {
                 Share { name: "wood", bytes: self.pool_bytes(), budget: memory::TOTAL },
             ],
         )
+    }
+
+    /// Its kind `k`'s impostor read through net `nn` (its weights then its grid's, `w`) in place
+    /// of its atlas (§B14.2); every kind's if `k` is `impostor::EVERY_KIND`.
+    pub fn read_through(mut self, k: u32, nn: Neural, w: [Half2]) {
+        self.net = buffer_of(w)
+        self.neural = Neural { layer: k, on: 1, ..nn }
     }
 
     /// Over its budget (`usage`), it gives back its choosings' room sooner (`shrink_after`).
@@ -1379,7 +1394,14 @@ impl Wood {
                 bounds: self.pool.bounds,
                 front: 0,
             ),
-            far_cut_flat.bind(kinds: self.pool.kinds, colour: c, s: s, cell: self.cell),
+            far_cut_flat.bind(
+                kinds: self.pool.kinds,
+                colour: c,
+                s: s,
+                cell: self.cell,
+                nn: self.neural,
+                net: self.net,
+            ),
             indirect: self.of_way(ph.far, IMPOSTOR),
             count: n,
             depth: NEAREST,
@@ -1542,6 +1564,8 @@ impl Wood {
                 normal: nm,
                 depth: d,
                 grid: self.pool.grid,
+                nn: self.neural,
+                net: self.net,
             ),
             indirect: self.of_way(ph.far, IMPOSTOR),
             count: n,

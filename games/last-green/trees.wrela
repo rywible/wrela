@@ -1858,18 +1858,33 @@ pub fn occluders(
     hi: vec2,
 ) -> Vec<engine::probes::Occluder> {
     var out: Vec<engine::probes::Occluder> = Vec::new()
+    occluders_into(placed, plants, vec3(0.0), lo, hi, mut out)
+    out
+}
+
+/// `occluders`'s, of trees placed in the world moved by `d` (into render space), added to `out`:
+/// a tree outside the square is skipped before anything of it is read, and its kind's plant is
+/// read where it is (a copy a tree cost the Last Green's walk 40 ms a probe replacement).
+pub fn occluders_into(
+    placed: [Placed],
+    plants: [Plant],
+    d: vec3,
+    lo: vec2,
+    hi: vec2,
+    out: mut Vec<engine::probes::Occluder>,
+) {
     for p in placed {
-        let at = p.at
+        let x = p.at.at + d
         if p.kind >= KINDS ||
-            at.at.x < lo.x - 20.0 ||
-            at.at.z < lo.y - 20.0 ||
-            at.at.x > hi.x + 20.0 ||
-            at.at.z > hi.y + 20.0 {
+            x.x < lo.x - 20.0 ||
+            x.z < lo.y - 20.0 ||
+            x.x > hi.x + 20.0 ||
+            x.z > hi.y + 20.0 {
             continue
         }
-        let plant = plants[p.kind]
-        for i in 0..plant.clumps.len() {
-            let c = plant.clumps[i]
+        let at = engine::plant::Instance { at: x, ..p.at }
+        borrow plant = plants[p.kind]
+        for c in plant.clumps {
             // A cushion (`Clump::squash`) as two capsules crossed in its plane, as tall as it.
             let r = c.radius * c.squash
             let reach = c.radius - r
@@ -1887,24 +1902,15 @@ pub fn occluders(
                 }
             }
         }
-        for i in 0..plant.limbs.len() {
-            let l = plant.limbs[i]
+        for l in plant.limbs {
             for k in 0..3 {
                 let (a, b, radius) = inner_wood_capsule(l, k, at)
                 if radius > 0.0 {
-                    out.push(
-                        engine::probes::Occluder {
-                            a,
-                            radius,
-                            b,
-                            solid: 1.0,
-                        },
-                    )
+                    out.push(engine::probes::Occluder { a, radius, b, solid: 1.0 })
                 }
             }
         }
     }
-    out
 }
 
 /// Every new limb starts inside older wood. This catches chord-based attachments that leave

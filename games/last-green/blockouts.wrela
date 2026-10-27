@@ -11,7 +11,12 @@ use engine::look::Mesh as Tolerance
 use engine::realize::solid
 use engine::noise::{noise3, rand}
 use land::place::{Feature, Map, SiteKind}
-use engine::stone::{Bed, Realized, Rock, grain, realize_bed, realize_rock, realize_stone}
+use engine::rock::RockLook
+use engine::stone::{
+    Bed, PLAIN_ROCK, Realized, Rock, ShapeTape, bed, grain, realize_bed, realize_rock,
+    realize_stone, realize_stone_within, stone,
+}
+use std::derive::tape
 use engine::sweep::wrap
 use std::derive::Box3
 use std::field::{Surface, cuboid}
@@ -475,8 +480,11 @@ fn realized<K: Creature<Rock>>(
     cell: f32,
     at: mat4,
     seed: u32,
+    look: RockLook = PLAIN_ROCK,
+    coarser: f32 = 1.0,
 ) -> Realized {
-    realize_rock(c, Tolerance { tolerance, largest }, cell, at, seed)
+    let t = Tolerance { tolerance: tolerance * coarser, largest: largest * coarser }
+    realize_rock(c, t, cell * coarser, at, seed, look: look)
 }
 
 // ---- rubble -------------------------------------------------------------------------------------
@@ -546,7 +554,7 @@ pub fn block_creature(b: Block) -> Creature<Rock> {
 }
 
 /// A fallen block lying at `at` on the ground (sunk a third into it), turned by `turn`, realized.
-pub fn realize_block(at: vec3, half: vec3, seed: u32, turn: f32) -> Realized {
+pub fn realize_block(at: vec3, half: vec3, seed: u32, turn: f32, coarser: f32 = 1.0) -> Realized {
     let tilt = vec2(rand(seed, 6) - 0.5, rand(seed, 7) - 0.5) * 0.5
     realized(
         block_creature(Block { half, tilt, seed }),
@@ -555,6 +563,7 @@ pub fn realize_block(at: vec3, half: vec3, seed: u32, turn: f32) -> Realized {
         cell: 2cm,
         at: translate(at + vec3(0.0, 0.6 * half.y, 0.0)) * rotate_y(turn),
         seed: seed,
+        coarser: coarser,
     )
 }
 
@@ -633,7 +642,14 @@ pub fn waystone_creature(w: Waystone) -> Creature<Rock> {
 }
 
 /// A waystone `tall` high standing at `at`, its road face turned by `turn`, realized.
-pub fn realize_waystone(at: vec3, tall: f32, seed: u32, turn: f32) -> Realized {
+pub fn realize_waystone(
+    at: vec3,
+    tall: f32,
+    seed: u32,
+    turn: f32,
+    look: RockLook = PLAIN_ROCK,
+    coarser: f32 = 1.0,
+) -> Realized {
     realized(
         waystone_creature(Waystone { tall, seed: f32(seed % 97) * 0.37 }),
         tolerance: 5mm,
@@ -641,6 +657,8 @@ pub fn realize_waystone(at: vec3, tall: f32, seed: u32, turn: f32) -> Realized {
         cell: 1cm,
         at: translate(at - vec3(0.0, 0.1, 0.0)) * rotate_y(turn),
         seed: seed,
+        look: look,
+        coarser: coarser,
     )
 }
 
@@ -705,7 +723,14 @@ pub fn slab_creature(s: Slab) -> Creature<Rock> {
 
 /// A slab standing at `at` (its foot on the ground, sunk a little: a lying one less), turned by
 /// `turn`, realized.
-pub fn realize_slab(at: vec3, half: vec3, seed: u32, turn: f32) -> Realized {
+pub fn realize_slab(
+    at: vec3,
+    half: vec3,
+    seed: u32,
+    turn: f32,
+    look: RockLook = PLAIN_ROCK,
+    coarser: f32 = 1.0,
+) -> Realized {
     realized(
         slab_creature(Slab { half, seed: f32(seed % 97) * 0.37 }),
         tolerance: 8mm,
@@ -713,6 +738,8 @@ pub fn realize_slab(at: vec3, half: vec3, seed: u32, turn: f32) -> Realized {
         cell: 1cm,
         at: translate(at - vec3(0.0, min(0.25, 0.4 * half.y), 0.0)) * rotate_y(turn),
         seed: seed,
+        look: look,
+        coarser: coarser,
     )
 }
 
@@ -759,7 +786,7 @@ pub fn wall_creature(w: Wall, tall: f32) -> Creature<Rock> {
 
 /// A wall from `a` to `b` on the ground (x, z; `ya` and `yb` its ends' ground), `tall` high,
 /// realized.
-pub fn realize_wall(a: vec3, b: vec3, tall: f32, seed: u32) -> Realized {
+pub fn realize_wall(a: vec3, b: vec3, tall: f32, seed: u32, coarser: f32 = 1.0) -> Realized {
     let along = b.xz - a.xz
     let len = length(along)
     let w = Wall { half: vec3(len * 0.5 + 0.4, tall * 0.5, 0.45) }
@@ -772,6 +799,7 @@ pub fn realize_wall(a: vec3, b: vec3, tall: f32, seed: u32) -> Realized {
         cell: 4cm,
         at: translate(vec3(mid.x, min(a.y, b.y) - 0.15, mid.z)) * rotate_y(turn),
         seed: seed,
+        coarser: coarser,
     )
 }
 
@@ -788,6 +816,43 @@ pub enum Built: Copy {
     Tower { at: vec2 },
     Wall { a: vec2, b: vec2, tall: f32, seed: u32 },
     Rock { at: vec3, bed: Bed },
+}
+
+/// `b`'s shape as a tape (`engine::stone::ShapeTape`): its creature's field at rest, in its own
+/// space (what `realize` places by its `at`), for the distance volume
+/// (`engine::distance::Shape`); `None` for one too long for a tape (the tower's 1,575
+/// operations: tapes.wrela's table).
+pub fn shape_tape(b: Built) -> Option<ShapeTape> {
+    match b {
+        Built::Stone { radius, squash, seed, .. } => taped_shape(stone(radius, squash, seed)),
+        Built::Standing { half, seed, .. } => {
+            taped_shape(slab_creature(Slab { half, seed: f32(seed % 97) * 0.37 }))
+        },
+        Built::Block { half, seed, .. } => {
+            let tilt = vec2(rand(seed, 6) - 0.5, rand(seed, 7) - 0.5) * 0.5
+            taped_shape(block_creature(Block { half, tilt, seed }))
+        },
+        Built::Waystone { tall, seed, .. } => {
+            taped_shape(waystone_creature(Waystone { tall, seed: f32(seed % 97) * 0.37 }))
+        },
+        Built::Tower { .. } => None,
+        Built::Wall { a, b, tall, .. } => {
+            let w = Wall { half: vec3(length(b - a) * 0.5 + 0.4, tall * 0.5, 0.45) }
+            taped_shape(wall_creature(w, tall))
+        },
+        Built::Rock { bed: r, .. } => taped_shape(bed(r)),
+    }
+}
+
+fn taped_shape<C, K: Creature<C>>(k: K) -> Option<ShapeTape> {
+    let f = k.field()
+    tape(|q: vec3| f.distance(q)).resized()
+}
+
+/// Rock's look (`engine::rock`) for what's rough stone, its ground and the water near it (the
+/// realizer sets where it is).
+fn rock_look(ground: f32, water: f32, seed: u32) -> RockLook {
+    RockLook { to_world: translate(vec3(0.0)), ground, water, seed }
 }
 
 /// A standing slab `half` its size each way, turned at random.
@@ -973,12 +1038,21 @@ pub const BANK_CELL: f32 = 1.5cm
 /// Bank prototype `index`'s stone (`bank_creature`) realized to a 2 cm tolerance, its colours
 /// cooked a centimetre apart, unmoved (as `engine::stone::realize_stone_within` places it).
 pub fn bank_prototype(index: u32) -> Realized {
+    // As rock, in its own space: a bank's stones stand at the water, their lowest 0.3 m wet.
+    let c = bank_creature(index)
+    let foot = c.bounds().lo.y
     realize_rock(
-        bank_creature(index),
+        c,
         Tolerance { tolerance: 2cm, largest: 8cm },
         1cm,
         translate(vec3(0.0)) * rotate_y(0.0),
         bank_seed(index),
+        look: RockLook {
+            to_world: translate(vec3(0.0)),
+            ground: foot,
+            water: foot + 0.3 - 0.6,
+            seed: bank_seed(index),
+        },
     )
 }
 
@@ -1156,16 +1230,117 @@ pub fn reach(b: Built) -> f32 {
     }
 }
 
-/// A coarser mesh of a built thing to draw from far off, for the tower alone.
-pub fn realize_far(b: Built, height: fn(vec2) -> f32) -> Option<Realized> {
+/// A built thing's far level: its field extracted again, `FAR_COARSER` times coarser (B11a), for
+/// past its band (`far_band`); the tower's own; none for a crag's beds.
+pub fn realize_far(b: Built, height: fn(vec2) -> f32, water: f32 = -1.0e9) -> Option<Realized> {
+    let c = FAR_COARSER
     match b {
         Built::Tower { at } => Some(realize_tower_far(vec3(at.x, height(at), at.y))),
-        _ => None,
+        Built::Stone { at, radius, squash, seed } => {
+            let y = height(at) + radius * squash.y * (if squash.y > 1.5 { 0.85 } else { 0.35 })
+            Some(
+                realize_stone_within(
+                    radius,
+                    squash,
+                    seed,
+                    vec3(at.x, y, at.y),
+                    TAU * rand(seed, 4),
+                    Tolerance { tolerance: 8mm * c, largest: 4cm * c },
+                    look: rock_look(height(at), water, seed),
+                ),
+            )
+        },
+        Built::Standing { at, half, turn, seed } => Some(
+            realize_slab(
+                vec3(at.x, height(at), at.y),
+                half,
+                seed,
+                turn,
+                look: rock_look(height(at), water, seed),
+                coarser: c,
+            ),
+        ),
+        Built::Block { at, half, seed } => Some(
+            realize_block(
+                vec3(at.x, height(at), at.y),
+                half,
+                seed,
+                TAU * rand(seed, 5),
+                coarser: c,
+            ),
+        ),
+        Built::Waystone { at, tall, seed } => Some(
+            realize_waystone(
+                vec3(at.x, height(at), at.y),
+                tall,
+                seed,
+                TAU * rand(seed, 5),
+                look: rock_look(height(at), water, seed),
+                coarser: c,
+            ),
+        ),
+        Built::Wall { a, b, tall, seed } => Some(
+            realize_wall(
+                vec3(a.x, height(a), a.y),
+                vec3(b.x, height(b), b.y),
+                tall,
+                seed,
+                coarser: c,
+            ),
+        ),
+        // A crag's beds are cells 45 cm wide already: a coarser one would take over past a
+        // kilometre.
+        Built::Rock { .. } => None,
     }
 }
 
+/// How much coarser a built thing's far level is than its near one (its tolerance and cells:
+/// the same field extracted at four times the cell).
+pub const FAR_COARSER: f32 = 4.0
+
+/// The pixels the far level's largest cell covers in the middle of its band, and a metre's
+/// pixels a metre away (1,080 rows over the floor's 0.82 rad).
+const FAR_PIXELS: f32 = 4.0
+const PER_METRE: f32 = 1242.4
+
+/// The distances (m) over which `b`'s far level takes over from its near one: where its largest
+/// cell (the near's, `FAR_COARSER` times) covers `FAR_PIXELS` at the band's middle, ±20%; the
+/// tower's own band.
+pub fn far_band(b: Built) -> vec2 {
+    let largest = match b {
+        Built::Tower { .. } => return TOWER_BLEND,
+        Built::Stone { .. } => 4cm,
+        Built::Standing { .. } => 4cm,
+        Built::Block { .. } => 6cm,
+        Built::Waystone { .. } => 3cm,
+        Built::Wall { .. } => 10cm,
+        Built::Rock { .. } => return vec2(1.0e9, 2.0e9),
+    }
+    let mid = largest * FAR_COARSER * PER_METRE / FAR_PIXELS
+    vec2(mid * 0.8, mid * 1.2)
+}
+
+/// How much of `b`'s far level shows `distance` m from the eye (`far_band`): 0 near, 1 past its
+/// band, smooth across it.
+pub fn far_share(band: vec2, distance: f32) -> f32 {
+    smoothstep(band.x, band.y, distance)
+}
+
+/// A slab's far level takes over across its band: none of it nearer, half at the band's middle,
+/// all past it; the tower's band is its own.
+@test
+fn a_built_things_far_level_takes_over_across_its_band() {
+    let slab = Built::Standing { at: vec2(0.0), half: vec3(0.5, 1.2, 0.2), turn: 0.0, seed: 3 }
+    let band = far_band(slab)
+    let mid = (band.x + band.y) * 0.5
+    assert(abs(mid - 4cm * FAR_COARSER * PER_METRE / FAR_PIXELS) < 0.01, f"the band {band}")
+    assert(far_share(band, band.x - 1.0) == 0.0 && far_share(band, band.y + 1.0) == 1.0)
+    assert(abs(far_share(band, mid) - 0.5) < 1.0e-4, f"{far_share(band, mid)} at its middle")
+    assert(far_band(Built::Tower { at: vec2(0.0) }) == TOWER_BLEND)
+}
+
 /// Built thing `b` realized, standing on the ground (`height`).
-pub fn realize(b: Built, height: fn(vec2) -> f32) -> Realized {
+pub fn realize(b: Built, height: fn(vec2) -> f32, water: f32 = -1.0e9) -> Realized {
     match b {
         Built::Stone { at, radius, squash, seed } => {
             let y = height(at) + radius * squash.y * (if squash.y > 1.5 { 0.85 } else { 0.35 })
@@ -1175,6 +1350,7 @@ pub fn realize(b: Built, height: fn(vec2) -> f32) -> Realized {
                 seed: seed,
                 at: vec3(at.x, y, at.y),
                 turn: TAU * rand(seed, 4),
+                look: rock_look(height(at), water, seed),
             )
         },
         Built::Standing { at, half, turn, seed } => realize_slab(
@@ -1182,6 +1358,7 @@ pub fn realize(b: Built, height: fn(vec2) -> f32) -> Realized {
             half,
             seed,
             turn,
+            look: rock_look(height(at), water, seed),
         ),
         Built::Block { at, half, seed } => realize_block(
             vec3(at.x, height(at), at.y),
@@ -1194,6 +1371,7 @@ pub fn realize(b: Built, height: fn(vec2) -> f32) -> Realized {
             tall,
             seed,
             TAU * rand(seed, 5),
+            look: rock_look(height(at), water, seed),
         ),
         Built::Tower { at } => realize_tower(vec3(at.x, height(at), at.y)),
         Built::Wall { a, b, tall, seed } => realize_wall(
@@ -1202,7 +1380,11 @@ pub fn realize(b: Built, height: fn(vec2) -> f32) -> Realized {
             tall,
             seed,
         ),
-        Built::Rock { at, bed } => realize_bed(bed, at),
+        Built::Rock { at, bed } => realize_bed(
+            bed,
+            at,
+            look: rock_look(height(at.xz), water, bed.seed),
+        ),
     }
 }
 
