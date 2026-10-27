@@ -17,6 +17,7 @@ struct Options: Clone {
     scene: u32 = 0,
     sampling: u32 = 0,
     decoder: u32 = 0,
+    raw_specialize: u32 = 0,
     training_inputs: u32 = 0,
     patch_fast: u32 = 0,
     patch_history: u32 = 0,
@@ -93,6 +94,7 @@ fn options(given: [String]) -> Option<Options> {
             "--patch-fast" => o.patch_fast = v,
             "--patch-history" => o.patch_history = v,
             "--patch-source-geometry" => o.patch_source = v,
+            "--raw-specialize" => o.raw_specialize = v,
             "--start-frame" => o.start = v,
             "--cut-at" => o.cut_at = v,
             "--reset-cut" => o.reset_cut = v,
@@ -111,6 +113,7 @@ fn options(given: [String]) -> Option<Options> {
         return None
     }
     if !o.raw_model.is_empty() && o.decoder < 3 { return None }
+    if o.raw_specialize > 1 || (o.raw_specialize == 1 && o.decoder < 3) { return None }
     if !o.gate_model.is_empty() && (o.scene != 2 || o.decoder != 2 || o.patch_history == 0) {
         return None
     }
@@ -205,6 +208,9 @@ fn captured(
     if o.scene == 2 {
         let _ = call(b, "decoder", Vec::from([Scalar::I32(i32(o.decoder))]))?
     }
+    if o.raw_specialize == 1 {
+        let _ = call(b, "raw_kernel_specialize", Vec::from([Scalar::I32(1)]))?
+    }
     if o.decoder == 2 {
         let _ = call(b, "patch_kernel", Vec::from([Scalar::I32(i32(o.patch_fast))]))?
         let _ = call(b, "patch_history", Vec::from([Scalar::I32(i32(o.patch_history))]))?
@@ -274,6 +280,17 @@ fn captured(
         let _ = finite_floats(bytes, count * 8)?
         write_file(f"{directory}/{name}.raw32f", chunked(take bytes))?
     }
+    if cells == 0 && o.raw_specialize == 1 && !o.raw_model.is_empty() {
+        let count = u32(call(b, "publish_raw_prepared", Vec::new())?)
+        if count != 288 { return Err(ToolError::new("wrong prepared kernel row count")) }
+        let ids = untrapped("kernel buffers", drive::steps(b, [Step::Buffers]).wait()?)?
+        borrow buffers = ids.buffers[0]
+        let id = buffers[buffers.len() - 1]
+        var read = untrapped("prepared kernel", drive::steps(b, [Step::ReadBuffer(id)]).wait()?)?
+        let bytes = joined(data_bytes(read.bytes.remove(0))?)
+        let _ = finite_floats(bytes, count * 4)?
+        write_file(f"{directory}/{name}.kernel32f", chunked(take bytes))?
+    }
     if o.scene == 2 && cells == 0 && o.decoder == 4 {
         let count = u32(call(b, "publish_raw_index", Vec::new())?)
         let ids = untrapped("index buffers", drive::steps(b, [Step::Buffers]).wait()?)?
@@ -283,6 +300,8 @@ fn captured(
         let bytes = joined(data_bytes(read.bytes.remove(0))?)
         if bytes.len() != count * 4 { return Err(ToolError::new("wrong index byte count")) }
         write_file(f"{directory}/{name}.index32u", chunked(take bytes))?
+    }
+    if o.scene == 2 && cells == 0 && o.decoder >= 3 {
         if call(b, "publish_patch_source", Vec::new())? != 2 {
             return Err(ToolError::new("wrong source parameter count"))
         }
@@ -408,6 +427,7 @@ fn run(o: Options) -> Result<(), ToolError> {
                 cut_at: o.cut_at,
                 reset_cut: o.reset_cut,
                 decoder: o.decoder,
+                raw_specialize: o.raw_specialize,
                 training_inputs: o.training_inputs,
                 patch_fast: o.patch_fast,
                 patch_history: o.patch_history,
@@ -454,7 +474,7 @@ fn run(o: Options) -> Result<(), ToolError> {
     } else if o.decoder == 1 { "32_byte_f32_color_motion_depth_stride_ceil_pixels_to_8" } else {
         "unused"
     }
-    let metadata = f"scene={scene}\nshot={o.shot}\nwidth={o.width}\nheight={o.height}\nwarmup={o.warmup}\nreference_samples={count}\nsimulation_frame={frame}\nsimulation_fps=60\ncamera=fixture_shot_at_time_0\nformat=rgba32f_le_top_down_scene_linear_alpha1\nreference={reference_kind}\nworkers=1\nquality=fixture_declared_quality_measured_false_pace_false\ntrack=development_smoke_not_validation_or_sealed_test\nmodel={o.model}\ngate_model={o.gate_model}\nraw_model={o.raw_model}\nraw_storage={raw_storage}\nraw_index_layout={raw_index_layout}\ndecoder={o.decoder}\npatch_fast={o.patch_fast}\npatch_history={o.patch_history}\npatch_source_geometry={o.patch_source}\nraw_layout=16_frames_of_32_byte_color_motion_depth_records_frame_stride_ceil_pixels_to_8\nsampling={sampling}\nseed={o.seed}\nrepeat={repeat}\n"
+    let metadata = f"scene={scene}\nshot={o.shot}\nwidth={o.width}\nheight={o.height}\nwarmup={o.warmup}\nreference_samples={count}\nsimulation_frame={frame}\nsimulation_fps=60\ncamera=fixture_shot_at_time_0\nformat=rgba32f_le_top_down_scene_linear_alpha1\nreference={reference_kind}\nworkers=1\nquality=fixture_declared_quality_measured_false_pace_false\ntrack=development_smoke_not_validation_or_sealed_test\nmodel={o.model}\ngate_model={o.gate_model}\nraw_model={o.raw_model}\nraw_specialize={o.raw_specialize}\nraw_storage={raw_storage}\nraw_index_layout={raw_index_layout}\ndecoder={o.decoder}\npatch_fast={o.patch_fast}\npatch_history={o.patch_history}\npatch_source_geometry={o.patch_source}\nraw_layout=16_frames_of_32_byte_color_motion_depth_records_frame_stride_ceil_pixels_to_8\nsampling={sampling}\nseed={o.seed}\nrepeat={repeat}\n"
     let _ = files::write(f"{directory}/capture.txt", metadata.as_bytes()).wait()?
     Ok(())
 }
@@ -468,7 +488,7 @@ pub fn tool() -> u32 {
     }
     let Some(o) = options(given) else {
         print(
-            "usage: wrela tool reconstruct -- [--scene bare|clearing|edges --shot 0..71(edges) --width 192 --height 108 --warmup 240 --cells 8 --sampling grid|phase64 --seed 17 --frames 1 --start-frame 0 --cut-at 0 --reset-cut 1 --model out/models/.../weights.half --decoder production|raw|raw-source|raw-index|patch --training-inputs 0|1 --patch-fast 0|1 --patch-history 0..1000 --patch-source-geometry 0|1 --gate-model out/models/.../weights.f32 --raw-model out/models/.../weights.f32] | train <manifest> <steps> <seed> | patch-train <manifest> <steps> <seed> [initial-f32] | gate-train <manifest> <steps> <seed> <temporal-permille>",
+            "usage: wrela tool reconstruct -- [--scene bare|clearing|edges --shot 0..71(edges) --width 192 --height 108 --warmup 240 --cells 8 --sampling grid|phase64 --seed 17 --frames 1 --start-frame 0 --cut-at 0 --reset-cut 1 --model out/models/.../weights.half --decoder production|raw|raw-source|raw-index|patch --training-inputs 0|1 --patch-fast 0|1 --patch-history 0..1000 --patch-source-geometry 0|1 --gate-model out/models/.../weights.f32 --raw-model out/models/.../weights.f32 --raw-specialize 0|1] | train <manifest> <steps> <seed> | patch-train <manifest> <steps> <seed> [initial-f32] | gate-train <manifest> <steps> <seed> <temporal-permille>",
         )
         return 2
     }

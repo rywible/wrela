@@ -1412,3 +1412,60 @@ Capture source `10b9de7e24f8551617955108249f63c047fe748d91de66237d35cd368f69b049
 `f4ab59a7c12a781611d910d7ea5dc765e861111c6fbdac21cb44cb0307146205`. Reports retain commands, build/environment
 hashes, individual retain/display times, all allocations and the initial failed
 diagnostic source export. G1–G7 remain unchanged and unmet.
+
+
+## 2026-10-27 UTC AMD neural kernel context preparation
+
+Pop!_OS AMD Ryzen 5 5500U / Radeon Graphics (RADV RENOIR, PCI 1002:164c),
+Mesa 26.1.6-1pop0~1787580452~24.04~a5619ea, Chrome 154.0.8037.57,
+Wrela 0.9.0/compiler `de9b81e52a7747870dfbd5223cb8aeb41e584d23`.
+Base `6d769911`. Same analytic case 1, 4× linear reduction and frozen λ0.25
+kernel. Eight sequential Chrome profiles, one worker, 240 measured frames,
+240 warmup at 1080p and 32 at 4K. No owned training, scoring, capture, build or
+other profile job overlaps a profile. Each decoder/resolution runs disabled
+then enabled; these are short unpaired observations, not a confidence interval.
+
+`--raw-specialize 1` precomputes the six distance-independent MLP inputs for
+each age/layer into 288 vec4 rows (4,608 bytes). Per-contribution evaluation
+reads the same model's transposed distance coefficients, prepared biases and
+output head. No new fitting or source-colour/target inputs are used.
+The table is rebuilt every frame, including cold starts and cuts. Both
+disabled and enabled profiles use the current source; the old shader is not
+substituted for the new disabled-path control.
+
+| Decoder / output | Disabled fixture median / p95 ms | Prepared fixture median / p95 ms | Prepare median / p95 ms | Prepared gather median / p95 ms | GPU MiB, disabled → prepared |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| source-1920x1080 | 28.431 / 28.729 | 25.336 / 25.643 | 0.006 / 0.006 | 24.190 / 24.519 | 77.125 → 77.130 |
+| source-3840x2160 | 113.441 / 114.739 | 101.052 / 102.308 | 0.006 / 0.006 | 96.700 / 98.001 | 308.497 → 308.502 |
+| index-1920x1080 | 27.158 / 29.431 | 25.426 / 27.318 | 0.006 / 0.006 | 21.483 / 23.373 | 87.059 → 87.063 |
+| index-3840x2160 | 109.438 / 118.073 | 103.471 / 110.945 | 0.006 / 0.006 | 88.020 / 95.485 | 348.140 → 348.144 |
+
+The prepared source decoder reduces median span by 10.89% at 1080p and 10.92%
+at 4K; the indexed decoder improves by 6.38% and 5.45%. All four p95 values
+also decrease. Preparation adds 4,592 instrumented resident bytes over the
+existing 16-byte placeholder. With preparation enabled, the direct decoder has
+the lower median and p95 at both resolutions in these runs, with less memory
+than the index. The index is not promoted on these results.
+
+The fixture span includes sampling, retention, preparation, reconstruction and
+display, plus index clear/build for the indexed decoder. Label p95 values are
+not summed. Resident byte deltas and complete label reports are retained in
+`summary.json`; instrumented allocations are a floor and exclude unmeasured
+browser/driver overhead. Linux `7.1.5-76070105-generic`
+and a performance CPU governor were observed mid-run; the snapshot is not a
+continuous thermal/power trace or proof of thermal settling. No p99,
+twenty-minute stability, production-scene or presentation-rate claim is made.
+
+Eight final native displayed screens match the immutable previous full-size
+builds exactly; the whole command/pipeline comparison may differ. Continuous
+192×108 HDR and perceptual comparisons pass the predeclared implementation
+bounds, including cuts and zero-head controls. These are tests of the
+evaluation rewrite, not improved model quality. Both learned models retain
+their previous stress-case rejections; G1–G7 remain unchanged and unmet.
+
+Evidence: `build/neural-evidence/raw-kernel-context-v1/manifest.json` on Pop!_OS.
+Capture source `525dcd47275091ab034c62b1ee0dafec819f43c117c262c5a2276c4646a1fdc7`; timing source
+`729e9b0cdaecf8bb55e1270cf6d0752eed691079c3c2e3b8b3149833b24cbb8f`; external scripts
+`ebb6849cc253588fce6bae0203515af41fbb100f20e453ae25dd953a1ab87f04`.
+[The development record](neural-rendering-progress.md#preparing-the-kernels-shared-geometry-terms)
+details independent table checks, controls, numerical bounds and limitations.

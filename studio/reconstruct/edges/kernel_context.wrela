@@ -1,0 +1,96 @@
+// Partial evaluation of the geometry-only 8->8->1 kernel. Exactly the same weights;
+// six features are constant for (age, layer, divisor, count, source velocity).
+// f32 regrouping is not assumed bit-identical to the original dense evaluation.
+use raw::HISTORY
+use std::gpu::{GlobalId, Slots}
+
+pub const ROWS: u32 = 9
+pub const CONTEXTS: u32 = HISTORY * 2
+
+// Rows: x0, y0, bias0, x1, y1, bias1, output0, output1, output bias.
+pub fn row(w: [vec4], index: u32, divisor: u32, count: u32, speed: f32) -> vec4 {
+    let context = index / ROWS
+    let age = context % HISTORY
+    let layer = context / HISTORY
+    let d = f32(divisor)
+    let radius = max(0.8, 1.25 * d / sqrt(f32(count)))
+    let a = vec4(0.0, 0.0, f32(age) / 15.0, f32(count) / 16.0)
+    let b = vec4(1.0 / d, f32(layer), if layer == 1 { abs(speed) / 32.0 } else { 0.0 }, radius / d)
+    match index % ROWS {
+        0 => vec4(w[0].x, w[2].x, w[4].x, w[6].x),
+        1 => vec4(w[0].y, w[2].y, w[4].y, w[6].y),
+        2 => vec4(
+            dot(w[0], a) + dot(w[1], b),
+            dot(w[2], a) + dot(w[3], b),
+            dot(w[4], a) + dot(w[5], b),
+            dot(w[6], a) + dot(w[7], b),
+        ) +
+            w[16],
+        3 => vec4(w[8].x, w[10].x, w[12].x, w[14].x),
+        4 => vec4(w[8].y, w[10].y, w[12].y, w[14].y),
+        5 => vec4(
+            dot(w[8], a) + dot(w[9], b),
+            dot(w[10], a) + dot(w[11], b),
+            dot(w[12], a) + dot(w[13], b),
+            dot(w[14], a) + dot(w[15], b),
+        ) +
+            w[17],
+        6 => w[18],
+        7 => w[19],
+        _ => w[20],
+    }
+}
+
+@compute(64)
+pub fn prepare(
+    w: [vec4],
+    divisor: u32,
+    count: u32,
+    speed: f32,
+    out: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    if id.x < CONTEXTS * ROWS { out[id] = row(w, id.x, divisor, count, speed) }
+}
+
+pub fn factor(distance: vec2, context: u32, w: [vec4]) -> f32 {
+    let at = context * ROWS
+    let h0 = max(w[at] * distance.x + w[at + 1] * distance.y + w[at + 2], vec4(0.0))
+    let h1 = max(w[at + 3] * distance.x + w[at + 4] * distance.y + w[at + 5], vec4(0.0))
+    exp(clamp(dot(h0, w[at + 6]) + dot(h1, w[at + 7]) + w[at + 8].x, -5.0, 5.0))
+}
+
+@test
+fn prepared_kernel_matches_dense_across_geometry_contexts() {
+    var w = [vec4(0.0); 21]
+    for i in 0..20 {
+        let x = f32(i32(i % 7) - 3) * 0.07
+        w[i] = vec4(x, -x * 0.7, x * 0.5 + 0.02, -x * 0.3 - 0.03)
+    }
+    w[18] = vec4(0.3, -0.2, 0.1, 0.05)
+    w[19] = vec4(-0.1, 0.2, 0.15, -0.05)
+    w[20] = vec4(0.13, 0.0, 0.0, 0.0)
+    for divisor in 1..5 {
+        let d = f32(divisor)
+        for count in [1, 2, 4, 8, 16] {
+            let radius = max(0.8, 1.25 * d / sqrt(f32(count)))
+            for speed in [-32.0, -0.625, 0.0, 0.375, 32.0] {
+                var prepared = [vec4(0.0); 288]
+                for i in 0..288 { prepared[i] = row(w, i, divisor, count, speed) }
+                for layer in 0..2 {
+                    for age in 0..count {
+                        for distance in [vec2(0.0), vec2(0.2, 0.8), vec2(0.9, 0.1), vec2(0.999)] {
+                            let a = vec4(distance, f32(age) / 15.0, f32(count) / 16.0)
+                            let b = vec4(1.0 / d, f32(layer), if layer == 1 {
+                                abs(speed) / 32.0
+                            } else { 0.0 }, radius / d)
+                            let dense = raw::kernel_factor(a, b, w)
+                            let fast = factor(distance, layer * HISTORY + age, prepared)
+                            assert(abs(dense - fast) <= 1.0e-5 * max(1.0, abs(dense)))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

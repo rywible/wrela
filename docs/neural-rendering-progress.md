@@ -1234,3 +1234,61 @@ timing source `272732e5702330b51a4ec0118ca37e4b743b0a2ce7788840512216367e91d3e7`
 external scripts `f4ab59a7c12a781611d910d7ea5dc765e861111c6fbdac21cb44cb0307146205`.
 Focused source/halo checks, formatting, allow-list and diff checks pass.
 This checkpoint does not claim the full suite or PR readiness.
+
+
+## Preparing the kernel's shared geometry terms
+
+At base `6d769911`, the explicit `--raw-specialize 1` ablation partially
+evaluates the same 8→8→1 MLP for each retained age and authored layer.
+Six inputs are constant in that context; only normalized x/y distance varies
+per observation. A 4,608-byte table contains transposed distance coefficients,
+hidden biases and the unchanged output head. One compute dispatch prepares it
+every frame. This is manual algebraic specialization in the analytic fixture,
+not automatic whole-program optimization or a new trained model. Both
+`raw-source` and `raw-index` support it; default behavior stays disabled.
+
+The pure rule matches dense evaluation over four scales, five history counts,
+five signed velocities, both layers, live ages and four distances. Removing
+the age term makes the test fail. Independent NumPy reconstruction checks
+40 AMD-exported tables from both frozen models across cold/partial/full
+histories and signed-motion cases. The largest coefficient difference is
+2.38418579e-07; copied/transposed coefficient rows are bit-exact.
+Swapping layers fails the independent check. An indexed snapshot exports the
+same four tables as the source decoder and passes complete graph checks.
+
+The 38 continuous clips/cut controls compare 13,200 image/reference/mask
+files. RGB changes are at most 1 positive finite half-float code step
+(predeclared limit two); alpha, references and masks are exact. Each decoder's
+eight cut/fresh images match exactly and eight no-reset negative images differ.
+Disabled-path, zero-output-head and repeat controls are retained. The source
+decoder's disabled and zero-head controls match their old comparators byte for
+byte, as does the repeated prepared source run. The indexed versions have at
+most one half-float-step changes from atomic insertion order. No deterministic
+indexed-output claim is made.
+
+All 32 learned clips are rescored at every frame/scale against matching dense
+baselines. Maximum absolute per-frame changes are FLIP
+0.00004624, LPIPS
+0.00009346 and PSNR
+0.00015197 dB. Maximum aggregate opaque
+temporal MAE change is 0.000001150.
+The limits remain 0.0001 FLIP/LPIPS, 0.01 dB PSNR and 0.00001 opaque temporal
+MAE. Target/mask hashes, metric conditions and LPIPS weight hashes match;
+other temporal categories remain published. None of these tolerances changes
+a frontier goal.
+
+All eight final native full-size displays match the earlier saved builds.
+They are final 8-bit screens, not full-resolution continuous HDR validation.
+[The browser matrix](bench.md#2026-10-27-utc-amd-neural-kernel-context-preparation)
+compares disabled and enabled code in this revision and charges preparation,
+all other passes and memory. It remains a small public analytic experiment;
+neither model is promoted and G1–G7 remain unmet. Fixed-filter cost and
+candidate search still dominate, so arithmetic specialization alone cannot
+close G6. Real authored appearance/field experiments remain necessary for
+G4/G7; faster rejected toy models cannot establish a frontier claim.
+
+Evidence: `build/neural-evidence/raw-kernel-context-v1/manifest.json`.
+Capture source `525dcd47275091ab034c62b1ee0dafec819f43c117c262c5a2276c4646a1fdc7`; timing source
+`729e9b0cdaecf8bb55e1270cf6d0752eed691079c3c2e3b8b3149833b24cbb8f`; external scripts
+`ebb6849cc253588fce6bae0203515af41fbb100f20e453ae25dd953a1ab87f04`. Focused checks, formatting, allow-list
+and diff checks pass. This is not a full-suite or PR-readiness claim.

@@ -1,7 +1,7 @@
 // Full-stack spatial index over the same retained observations. Lists have no per-bin
 // capacity and discard no collisions. Rebuilt each frame; no reference/colour source queries.
 use engine::view::jitter_of
-use raw::{HISTORY, PackedSample, kernel_factor, packed_stride, unpack, visible, weight}
+use raw::{HISTORY, PackedSample, packed_stride, unpack, visible, weight}
 use std::gpu::{Atomics, FragCoord, GlobalId, Slots}
 
 pub const BIN: u32 = 2
@@ -111,11 +111,17 @@ pub fn reconstruct(
                     let distance = position - p.position.xy
                     let base = weight(distance, radius)
                     if base > 0.0 {
-                        let factor = if trained == 1 {
-                            kernel_factor(
-                                vec4(abs(distance) / radius, f32(age) / 15.0, f32(count) / 16.0),
-                                vec4(1.0 / d, f32(layer), abs(velocity.x) / 32.0, radius / d),
+                        let factor = if trained != 0 {
+                            raw::source_factor(
+                                abs(distance) / radius,
+                                age,
+                                count,
+                                divisor,
+                                u32(layer),
+                                velocity.x,
+                                radius,
                                 kernel,
+                                trained,
                             )
                         } else { 1.0 }
                         let w = base * factor

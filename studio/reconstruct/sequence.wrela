@@ -17,6 +17,7 @@ pub struct Spec: Copy {
     pub cut_at: u32,
     pub reset_cut: u32,
     pub decoder: u32,
+    pub raw_specialize: u32,
     pub training_inputs: u32,
     pub patch_fast: u32,
     pub patch_history: u32,
@@ -58,6 +59,9 @@ fn path(
         Vec::from([Scalar::I32(i32(divisor)), Scalar::I32(0), Scalar::I32(i32(spec.shot))]),
     )?
     let _ = call(b, "decoder", Vec::from([Scalar::I32(i32(spec.decoder))]))?
+    if spec.raw_specialize == 1 {
+        let _ = call(b, "raw_kernel_specialize", Vec::from([Scalar::I32(1)]))?
+    }
     if spec.decoder == 2 {
         let _ = call(b, "patch_kernel", Vec::from([Scalar::I32(i32(spec.patch_fast))]))?
         let _ = call(b, "patch_history", Vec::from([Scalar::I32(i32(spec.patch_history))]))?
@@ -161,7 +165,7 @@ pub fn run(
     } else if spec.decoder == 1 { "32_byte_f32_color_motion_depth_stride_ceil_pixels_to_8" } else {
         "unused"
     }
-    let metadata = f"scene=analytic/slats-checkerboard\ncase_catalog=legacy8_and_stress64_v1\nshot={spec.shot}\ncut_shot={(spec.shot + 3) % 8}\nwidth={spec.width}\nheight={spec.height}\nstart_frame={spec.start + spec.warmup}\nwarmup={spec.warmup}\nframes={spec.length}\nsimulation_fps=60\ncut_at={spec.cut_at}\nreset_cut={spec.reset_cut}\nmodel={model}\ngate_model={gate}\nraw_model={raw_model}\ngate_input_version=1\nraw_input_version=1\nraw_storage={raw_storage}\nraw_index_layout={raw_index_layout}\ndecoder={spec.decoder}\npatch_fast={spec.patch_fast}\npatch_history={spec.patch_history}\npatch_source_geometry={spec.patch_source}\ninput_track={input_track}\ntraining_inputs={spec.training_inputs}\nformat=rgba32f_le_top_down_scene_linear_alpha1\nvisibility=foreground_area,horizontal_speed_output_pixels_per_frame,0,1\nreference=analytic_pixel_integral_after_reconstruction_never_decoder_input\ntrack=development_continuous_clip_not_sealed_test\n"
+    let metadata = f"scene=analytic/slats-checkerboard\ncase_catalog=legacy8_and_stress64_v1\nshot={spec.shot}\ncut_shot={(spec.shot + 3) % 8}\nwidth={spec.width}\nheight={spec.height}\nstart_frame={spec.start + spec.warmup}\nwarmup={spec.warmup}\nframes={spec.length}\nsimulation_fps=60\ncut_at={spec.cut_at}\nreset_cut={spec.reset_cut}\nmodel={model}\ngate_model={gate}\nraw_model={raw_model}\nraw_specialize={spec.raw_specialize}\ngate_input_version=1\nraw_input_version=1\nraw_storage={raw_storage}\nraw_index_layout={raw_index_layout}\ndecoder={spec.decoder}\npatch_fast={spec.patch_fast}\npatch_history={spec.patch_history}\npatch_source_geometry={spec.patch_source}\ninput_track={input_track}\ntraining_inputs={spec.training_inputs}\nformat=rgba32f_le_top_down_scene_linear_alpha1\nvisibility=foreground_area,horizontal_speed_output_pixels_per_frame,0,1\nreference=analytic_pixel_integral_after_reconstruction_never_decoder_input\ntrack=development_continuous_clip_not_sealed_test\n"
     let _ = files::write(f"{directory}/sequence.txt", metadata.as_bytes()).wait()?
     for divisor in 1..5 {
         var load = drive::gpu()

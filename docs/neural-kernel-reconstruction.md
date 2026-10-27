@@ -198,3 +198,29 @@ features are constant for an age/layer/scale/history-count/source-velocity combi
 those features into hidden biases could reduce repeated work. This is an algebraic
 proposal, not a measured speedup or a claim that deployed f32 arithmetic is unchanged.
 Any variant still needs numerical/temporal checks and a complete cost comparison.
+
+
+## Partially evaluating shared inputs
+
+The opt-in `--raw-specialize 1` path supports both `raw-source` and `raw-index`.
+For each of sixteen ages and two source layers, six MLP inputs are constant.
+`edges/kernel_context.wrela` computes their hidden-layer contribution once per
+frame, transposes the two varying distance coefficients into vector rows, and
+copies the unchanged output head. Each contribution then evaluates only the
+two distance inputs, ReLU and output head. All 81 coefficients remain the same;
+there is no retraining or extra source appearance information.
+
+The 288 vec4 rows use 4,608 bytes and are rebuilt as history count and scene
+parameters change, including cold starts/cuts. Regrouping f32 arithmetic can
+change half-float output by a step, so algebra alone is insufficient validation.
+Independent table reconstruction, continuous clips, zero-head, repeat and
+cut-reset controls are recorded in
+[the development record](neural-rendering-progress.md#preparing-the-kernels-shared-geometry-terms).
+Complete browser timing and extra memory are charged in
+[the benchmark record](bench.md#2026-10-27-utc-amd-neural-kernel-context-preparation).
+
+This is a useful example of source geometry exposing reusable neural terms,
+but remains manual specialization of a two-layer analytic fixture. It does
+not imply equivalent reuse across arbitrary motion, deforming surfaces,
+lighting or production scenes. Both frozen models remain rejected on quality;
+the explicit switch defaults off.
