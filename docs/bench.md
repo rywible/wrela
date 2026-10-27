@@ -784,7 +784,7 @@ decisions, then each experiment's numbers.
 
 | Experiment | Switch | Its rule | Measured | Default |
 |---|---|---|---|---|
-| Neural impostors (14.2) | `Quality::neural` | on past 160 m if PSNR ≥ 32 dB and the pass ≤ 1.3× the atlas's | PSNR 13.86 dB (rung D over all 256 views); every kind through the net: the frame 421.8 ms against 16.6 | **off** |
+| Neural impostors (14.2) | `Quality::neural` | on past 160 m if PSNR ≥ 32 dB and the pass ≤ 1.3× the atlas's | PSNR 13.76 dB (rung D over all 256 views, the game's tree); every kind through the net: the frame 421.8 ms against 16.6 | **off** |
 | Learned history rejector (14.3) | `Quality::learned_resolve` | on if held-out PSNR ≥ +1.0 dB over the heuristics, the resolve ≤ +0.2 ms, flicker and pop not up | +0.10 dB held out (rung A); the resolve +27.6 ms | **off** |
 | Radiance cascades (14.4) | `Quality::cascades` | on at the finest rung ≤ 2.0 ms with trunk shade +15 % and no leak | 13.1, 4.4 and 3.2 ms at R1–R3; shade +95 to +109 % | **off** |
 
@@ -845,6 +845,18 @@ the true coverage) and coverage at the held-out views:
 | D | 2 | 14.41 | 0.01058 | 0.05250 | 303 | 0.02464 → 0.02086 |
 | D | 3 | 14.45 | 0.01098 | 0.05170 | 443 | 0.02462 → 0.02089 |
 
+Rung D again after the council's review, the fixture baking the great tree with the game's seed
+(1, the kind's place plus one; the table above baked seed 7, a tree the game doesn't draw):
+
+| Rung | Seed | PSNR dB | colour MSE | coverage MSE | s | loss, first 500 steps → last |
+|---|---|---|---|---|---|---|
+| D | 1 | **14.39** | 0.01075 | 0.05253 | 282 | 0.02605 → 0.02219 |
+| D | 2 | 14.15 | 0.01251 | 0.05476 | 267 | 0.02469 → 0.02136 |
+| D | 3 | 14.32 | 0.01113 | 0.05325 | 259 | 0.02461 → 0.02147 |
+
+(`wrela tool fit -- --net impostor --rungs D --seeds 3 --steps 4000 --out
+content/kit/great_tree_net.wrela`, 2026-10-27.) The same tree as the game's, the same result.
+
 Parameters: A 488, B 1,480, C 616 and a 2,048-value grid, D 3,368 and an 8,192-value grid. No
 rung reaches its mark (26, 29, 32, 33 dB: these are results under the fixed budget). Every curve
 still falls at 4,000 steps, slowly (D's last 2,000 steps: 0.0216 → 0.0209), so the budget, not
@@ -863,7 +875,7 @@ at 1,000 points of the views against the CPU's evaluation of the same half float
 machine settled: its frame without any switch 16.65 ms at the start and 16.50–16.63 at the end):
 
 - **PSNR against the atlas, all 256 views at 64²:** rung D's best seed (3), **13.86 dB** (14.45
-  held out), written as `content/kit/great_tree_net.wrela` (the great tree: the floor's one tree
+  held out; trained again on the game's tree, seed 1's 13.76 dB and 14.39 held out), written as `content/kit/great_tree_net.wrela` (the great tree: the floor's one tree
   whose kind the fixture bakes).
 - **Time:** the great tree alone through its net: the GPU frame 16.64 ms against 16.65 (a single
   tree, too little of the frame to tell). Every kind through the same net (a measuring
