@@ -3,7 +3,7 @@
 // geometry parameters, never source colours, integrated coverage or future input.
 use engine::view::jitter_of
 use network::{decoded, linear, view}
-use std::gpu::{DepthTexture, FragCoord, Rgba16Float, Sampler, Texture}
+use std::gpu::{DepthTexture, FragCoord, GlobalId, Rgba16Float, Sampler, Slots, Texture}
 
 pub fn share(age: u32, maximum: f32, valid: bool) -> f32 {
     if !valid || age == 0 { 0.0 } else {
@@ -19,7 +19,7 @@ pub fn source_geometry(at: vec2, tick: u32, shape: vec4) -> vec3 {
     vec3(if front { shape.w } else { 0.0 }, 0.0, if front { 0.5 } else { 0.25 })
 }
 
-fn combine(
+fn observe(
     current: vec4,
     at: vec2,
     geometry: vec3,
@@ -28,7 +28,8 @@ fn combine(
     linear_sampler: Sampler,
     age: u32,
     maximum: f32,
-) -> vec4 {
+    divisor: u32,
+) -> confidence::Input {
     let previous = at - geometry.xy
     let size = vec2(f32(history.width()), f32(history.height()))
     let valid = previous.x >= 0.0 &&
@@ -41,7 +42,69 @@ fn combine(
     let old_color = if weight > 0.0 {
         view(history.sample_level(linear_sampler, previous / size).rgb)
     } else { vec3(0.0) }
-    vec4(linear(mix(view(current.rgb), old_color, weight)), current.a)
+    confidence::Input {
+        current: vec4(view(current.rgb), weight),
+        old: vec4(old_color, 1.0 / f32(divisor)),
+        context: vec4(geometry.xy, f32(min(age, 16)) / 16.0, current.a),
+    }
+}
+
+fn sampled_input(
+    at: vec2,
+    cells: [network::Cell],
+    depth: DepthTexture,
+    previous_depth: DepthTexture,
+    motion: Texture<Rgba16Float>,
+    previous_motion: Texture<Rgba16Float>,
+    history: Texture<Rgba16Float>,
+    linear_sampler: Sampler,
+    divisor: u32,
+    tick: u32,
+    age: u32,
+    maximum: f32,
+) -> confidence::Input {
+    let width = depth.width()
+    let height = depth.height()
+    let current = decoded(at, cells, width, height, divisor, tick)
+    let d = f32(divisor)
+    let limit = vec2i(i32(width) - 1, i32(height) - 1)
+    let near = clamp(vec2i(floor(at / d + jitter_of(tick))), vec2i(0), limit)
+    let geometry = vec3(
+        motion.load(x: u32(near.x), y: u32(near.y)).xy * d,
+        depth.load(x: u32(near.x), y: u32(near.y)),
+    )
+    let previous = at - geometry.xy
+    let last_jitter = jitter_of(if tick > 0 { tick - 1 } else { 0 })
+    let old = clamp(vec2i(floor(previous / d + last_jitter)), vec2i(0), limit)
+    let old_geometry = vec3(
+        previous_motion.load(x: u32(old.x), y: u32(old.y)).xy * d,
+        previous_depth.load(x: u32(old.x), y: u32(old.y)),
+    )
+    observe(current, at, geometry, old_geometry, history, linear_sampler, age, maximum, divisor)
+}
+
+fn source_input(
+    at: vec2,
+    cells: [network::Cell],
+    history: Texture<Rgba16Float>,
+    linear_sampler: Sampler,
+    width: u32,
+    height: u32,
+    divisor: u32,
+    tick: u32,
+    age: u32,
+    maximum: f32,
+    current_shape: vec4,
+    previous_shape: vec4,
+) -> confidence::Input {
+    let current = decoded(at, cells, width, height, divisor, tick)
+    let geometry = source_geometry(at, tick, current_shape)
+    let old_geometry = source_geometry(
+        at - geometry.xy,
+        if tick > 0 { tick - 1 } else { 0 },
+        previous_shape,
+    )
+    observe(current, at, geometry, old_geometry, history, linear_sampler, age, maximum, divisor)
 }
 
 @fragment
@@ -58,25 +121,24 @@ pub fn reconstruct(
     tick: u32,
     age: u32,
     maximum: f32,
+    gate: [vec4],
+    trained: u32,
 ) -> vec4 {
-    let width = depth.width()
-    let height = depth.height()
-    let current = decoded(p.position.xy, cells, width, height, divisor, tick)
-    let d = f32(divisor)
-    let limit = vec2i(i32(width) - 1, i32(height) - 1)
-    let near = clamp(vec2i(floor(p.position.xy / d + jitter_of(tick))), vec2i(0), limit)
-    let geometry = vec3(
-        motion.load(x: u32(near.x), y: u32(near.y)).xy * d,
-        depth.load(x: u32(near.x), y: u32(near.y)),
+    let row = sampled_input(
+        p.position.xy,
+        cells,
+        depth,
+        previous_depth,
+        motion,
+        previous_motion,
+        history,
+        linear_sampler,
+        divisor,
+        tick,
+        age,
+        maximum,
     )
-    let previous = p.position.xy - geometry.xy
-    let last_jitter = jitter_of(if tick > 0 { tick - 1 } else { 0 })
-    let old = clamp(vec2i(floor(previous / d + last_jitter)), vec2i(0), limit)
-    let old_geometry = vec3(
-        previous_motion.load(x: u32(old.x), y: u32(old.y)).xy * d,
-        previous_depth.load(x: u32(old.x), y: u32(old.y)),
-    )
-    combine(current, p.position.xy, geometry, old_geometry, history, linear_sampler, age, maximum)
+    vec4(linear(confidence::prediction(row, gate, trained)), row.context.w)
 }
 
 @fragment
@@ -93,15 +155,61 @@ pub fn reconstruct_source(
     maximum: f32,
     current_shape: vec4,
     previous_shape: vec4,
+    gate: [vec4],
+    trained: u32,
 ) -> vec4 {
-    let current = decoded(p.position.xy, cells, width, height, divisor, tick)
-    let geometry = source_geometry(p.position.xy, tick, current_shape)
-    let old_geometry = source_geometry(
-        p.position.xy - geometry.xy,
-        if tick > 0 { tick - 1 } else { 0 },
+    let row = source_input(
+        p.position.xy,
+        cells,
+        history,
+        linear_sampler,
+        width,
+        height,
+        divisor,
+        tick,
+        age,
+        maximum,
+        current_shape,
         previous_shape,
     )
-    combine(current, p.position.xy, geometry, old_geometry, history, linear_sampler, age, maximum)
+    vec4(linear(confidence::prediction(row, gate, trained)), row.context.w)
+}
+
+// Export before reconstruction, only for requested diagnostic/training captures.
+// These records contain no target; truth is a separate pass after reconstruction.
+@compute(64)
+pub fn export_source(
+    cells: [network::Cell],
+    history: Texture<Rgba16Float>,
+    linear_sampler: Sampler,
+    width: u32,
+    height: u32,
+    divisor: u32,
+    tick: u32,
+    age: u32,
+    maximum: f32,
+    current_shape: vec4,
+    previous_shape: vec4,
+    out: mut Slots<confidence::Input>,
+    id: GlobalId,
+) {
+    let w = history.width()
+    if id.x < w * history.height() {
+        out[id] = source_input(
+            vec2(f32(id.x % w) + 0.5, f32(id.x / w) + 0.5),
+            cells,
+            history,
+            linear_sampler,
+            width,
+            height,
+            divisor,
+            tick,
+            age,
+            maximum,
+            current_shape,
+            previous_shape,
+        )
+    }
 }
 
 @test

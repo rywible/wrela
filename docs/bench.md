@@ -1176,3 +1176,50 @@ contributes no timing. Top-level GPU reports are from saturated execution; retai
 browser artifacts are from the separate paced run. No p99 or complete-memory claim follows.
 [Quality and controls](neural-rendering-progress.md#direct-history-and-source-geometry-ablations)
 reject all current variants for promotion.
+
+
+## 2026-10-26 AMD learned history confidence
+
+Same Pop!_OS AMD Ryzen 5 5500U / Radeon Graphics (RADV RENOIR, PCI 1002:164c),
+Mesa 26.1.6-1pop0~1787580452~24.04~a5619ea, Chrome 154.0.8037.57 and
+Wrela 0.9.0 compiler `de9b81e52a7747870dfbd5223cb8aeb41e584d23`.
+The browser's `rdna-2` adapter text is not used to identify the hardware architecture.
+Moving analytic case 1, 4× linear scale, vector patch encoder and two source-geometry queries
+per output pixel. Same frozen 2,520-byte patch weights as above, maximum history share 90%.
+The candidate adds a 13-parameter logistic confidence gate (64 stored bytes), model
+`gate-1793068787-531418279`, SHA-256
+`1742bb47661055d0f53c48fc3b7445d28cc442b76951947f877c5bdd9f413495`.
+
+Release default, no wasm-opt, Chrome, one worker, 240 warmup + 240 measured frames,
+fps 60 simulation, `serial=false`. Sequential order: 1080p control/candidate, 4K
+control/candidate, with no other owned GPU, build or scorer work. No target or diagnostic
+feature export runs in the measured wrappers.
+
+| Variant | Output | Encode median / p95 ms | Output stage median / p95 ms | Fixture GPU span median / p95 ms |
+| --- | --- | ---: | ---: | ---: |
+| Constant history | 1080p | 0.81924 / 0.92980 | 1.45064 / 1.68872 | 3.18172 / 3.45120 |
+| Learned confidence | 1080p | 0.81936 / 0.93996 | 1.46980 / 1.66556 | 3.19852 / 3.43820 |
+| Constant history | 4K | 3.19540 / 3.57844 | 5.63216 / 6.50976 | 12.25172 / 12.92108 |
+| Learned confidence | 4K | 3.18816 / 3.57220 | 5.73032 / 6.50288 | 12.35944 / 12.87544 |
+
+Median output-stage deltas are +0.01916 / +0.09816 ms; the slightly lower candidate p95s
+illustrate why these short unpaired runs are not a precise overhead or significance bound.
+This is a reconstruction fixture, not a complete game frame. Source queries are included
+in the output stage, and analytic sampling/display are included in the fixture span.
+Pass percentiles are not additive. Both variants miss G6 even on output-stage p95 alone;
+no 120Hz/20-minute, p99, thermal or complete-memory result is claimed.
+
+Build SHA-256 (identical across the two output sizes within each variant):
+
+- Constant: `2f44ed7c0cec00479c70a1fbe055a4c0a07664e35182cfae1c343ebce320ca7e`.
+- Learned: `655823ae868ce82def55c3338a48d768efe6d9b09f6792c1cadd393934445972`.
+
+Artifacts: `build/neural-evidence/gate-v1/timing-control` and `timing-gated` on Pop!_OS,
+including exact wrappers, reports, compiled builds and paced browser artifacts.
+Profile source archive SHA-256:
+`4b4a798e869a65707547b63081508a87f50fd551eb45f880776e09ad0e39f503`.
+Reproduce with `wrela profile <directory>/fixture --chrome --frames 240 --warmup 240 --workers 1 --size 1920x1080 --json`,
+then 3840x2160; retained builds identify the original measurements. Top-level GPU data comes
+from saturated execution, CPU/frame intervals from a separate paced population.
+[Full recurrent quality and controls](neural-rendering-progress.md#learned-history-confidence-one-step-gains-recurrent-rejection)
+reject all three trained gates; the profiled model was not selected for deployment.

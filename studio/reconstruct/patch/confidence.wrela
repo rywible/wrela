@@ -1,0 +1,36 @@
+// A separate 13-parameter logistic history-confidence model. Twelve causal features,
+// one bias; the last three stored floats are zero padding. No reference enters inference.
+pub struct Input: Copy + GpuData {
+    // Current named-view RGB, maximum eligible history share.
+    pub current: vec4,
+    // Reprojected previous named-view RGB, inverse render divisor.
+    pub old: vec4,
+    // Output-pixel velocity xy, normalized history age, current semantic tag.
+    pub context: vec4,
+}
+
+pub fn features(row: Input) -> [vec4; 3] {
+    let delta = abs(row.current.rgb - row.old.rgb)
+    [
+        vec4(row.current.rgb, row.old.x),
+        vec4(row.old.y, row.old.z, delta.x, delta.y),
+        vec4(delta.z, row.old.w, row.context.z, min(length(row.context.xy) / 32.0, 1.0)),
+    ]
+}
+
+pub fn logit(row: Input, weights: [vec4]) -> f32 {
+    let x = features(row)
+    dot(weights[0], x[0]) + dot(weights[1], x[1]) + dot(weights[2], x[2]) + weights[3].x
+}
+
+pub fn probability(z: f32) -> f32 {
+    1.0 / (1.0 + exp(-clamp(z, -20.0, 20.0)))
+}
+
+pub fn weight(row: Input, weights: [vec4], enabled: u32) -> f32 {
+    row.current.w * (if enabled == 1 { probability(logit(row, weights)) } else { 1.0 })
+}
+
+pub fn prediction(row: Input, weights: [vec4], enabled: u32) -> vec3 {
+    mix(row.current.rgb, row.old.rgb, weight(row, weights, enabled))
+}

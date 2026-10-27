@@ -708,3 +708,113 @@ The final source archive SHA-256 is
 `59311b9573be49442090c04ab11622f65b3bc28abf4a6a2319f83e873dda7f5d`.
 Package checks, three focused patch tests, allow, changed-source formatting and diff checks
 pass. No full suite/PR or G1–G7 acceptance is claimed at this checkpoint.
+
+
+### Learned history confidence: one-step gains, recurrent rejection
+
+A separate 13-parameter logistic model now predicts history confidence: current and previous
+named-view RGB, their absolute difference, inverse render divisor, history age and motion
+magnitude (12 features plus bias). Its sigmoid multiplies the existing geometric eligibility
+and age-bounded 90% maximum. The 1,260-weight spatial model is frozen. The gate occupies
+64 bytes (13 f32 parameters and three checked zero-padding values); inference uses no truth,
+integrated coverage, future frame or case identity. It is an optional experiment, disabled
+by default. Source-geometry runs remain **full-stack** entries, not fixed-input G2 entries.
+
+The diagnostic capture exports the exact causal inputs before reconstruction; targets remain
+a separate later pass. The Wrela trainer samples 512 pixels per frame/scale from four complete
+cold-start cases (0/3/5/7), and checks every pixel of validation cases 1/6. Each clip has 32
+frames at 192×108, all four scales, and every jitter phase twice: 262,144 training rows and
+5,308,416 validation rows. These cases are development data, not a sealed test.
+
+Training uses Adam, seed 3, 4,000 steps, batches of 512 and rate 0.02 decaying toward 0.002.
+The loss is mean squared RGB error in the named view plus a weighted warped previous-error
+consistency term on eligible history. That term has different masks and a different norm
+from the acceptance evaluator; it is **not** the acceptance temporal metric. Inputs and
+previous errors come from the constant-history control, rather than the learned model's
+rollout. The three temporal coefficients are 0, 0.25 and 1.
+
+| Temporal coefficient | One-step validation view MSE | One-step warped-error MSE |
+| --- | ---: | ---: |
+| Constant-history control | 0.018003379 | 0.004445967 |
+| 0 | 0.015357259 | 0.005375419 |
+| 0.25 | 0.015550814 | 0.004945132 |
+| 1 | 0.016063972 | 0.004481103 |
+
+The best one-step image improvement is 14.7%, but complete recurrent AMD captures reject
+**all three models**. The following uses the same two complete clips, exact reference/mask
+hashes, exposure-1 view, FLIP 67 ppd and LPIPS AlexNet v0.1 as the preceding experiment.
+Temporal and reveal ratios are relative to that experiment's 90% source-geometry control.
+
+| Case | Coefficient | 4× FLIP | 4× LPIPS | Opaque temporal ratio | Newly exposed error ratio |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 0 | 0.320997 | 0.514685 | 2.216× | 0.942× |
+| 1 | 0.25 | 0.317203 | 0.512338 | 1.960× | 0.946× |
+| 1 | 1 | 0.311932 | 0.493491 | 1.655× | 0.959× |
+| 6 | 0 | 0.415276 | 0.422297 | 1.521× | 0.994× |
+| 6 | 0.25 | 0.415408 | 0.426585 | 1.431× | 0.995× |
+| 6 | 1 | 0.415843 | 0.430968 | 1.352× | 0.996× |
+
+Control FLIP/LPIPS are 0.332059/0.424967 and 0.418722/0.439455. At 4× the gates reduce
+FLIP by 0.7–6.1%, while case 1 LPIPS rises 16–21% and opaque temporal error rises 35–122%.
+At 1×, FLIP improves 11–27% and LPIPS improves 31–51%, yet temporal error rises 66–175%.
+All four scales and comparisons against both the constant-history and production controls
+are retained. Single-image fitting is insufficient here. Off-policy inputs and the loss's
+different temporal definition are hypotheses to investigate, not established sole causes.
+
+Correctness controls distinguish training failure from an obvious execution mismatch:
+
+- The analytic gradient matches finite differences for all 13 active parameters; invalid
+  history is inert. Deliberately zeroing the derivative fails the test, then restoration
+  passes. The first test probe was too close to stationary to witness a broken gradient;
+  a nonstationary probe fixed the test without relaxing its error tolerance.
+- Disabling the gate preserves both full 32-frame controls byte-for-byte at every scale.
+- A CPU replay of only the captured causal gate inputs and weights matches the GPU within
+  0.000244 in the named view; bias perturbation provides a failing negative control.
+  A separate replay reconstructs the spatial network, source geometry, reprojection and
+  gate independently, with maximum final-view disagreement 0.000244141.
+- The full replay initially exceeded a 4e-6 bound on the **pre-quantization spatial
+  intermediate** at 3× (observed 1.049798e-5). Investigation is retained; the exact
+  arithmetic cause is not established. Its retained intermediate bound is 2e-5, while
+  independent geometry/history bounds and the final-view 0.00035 bound are unchanged.
+  This numerical probe does not alter any G1–G7 threshold or rescue the rejected models.
+- Reset frames 16/17 match fresh case 4 at the same times byte-for-byte. Suppressing reset
+  changes 96.92–98.83% of first-cut pixels by more than 2/255 in a view channel.
+
+The new offline oracle diagnostic respects the actual age/eligibility cap. The preceding
+experiment's target-informed oracle allowed a maximum of 0.9 even during early cold start;
+neither oracle was used for inference or constitutes a realizable-model result.
+
+The coefficient-1 model was selected only for execution and runtime checks, not promotion.
+[AMD Chrome timing](bench.md#2026-10-26-amd-learned-history-confidence) measures its complete
+source-geometry output stage at 1.470/5.730 ms median (1080p/4K), compared with 1.451/5.632 ms
+for the contemporaneous disabled-gate control. Short unpaired timings do not establish a
+precise overhead bound. Both still miss the reconstruction budget.
+
+Reproduce capture with the preceding source-geometry command and `--training-inputs 1`.
+Train with `wrela tool reconstruct --timeout 3600 --blob-budget 3221225472 -- gate-train out/datasets/gate-v1/manifest.txt 4000 3 1000`
+(change the last value to 0 or 250 for the other objectives). Capture the recurrent candidate
+with `--gate-model out/models/gate-1793068787-531418279/weights.f32`. The exported gate-input
+format is version 1. Training and validation clips must have disjoint case identities.
+
+Evidence: `build/neural-evidence/gate-v1/manifest.json` on Pop!_OS embeds source/version/
+weight hashes, capture IDs, all paired comparisons, replay code and results, cut controls,
+negative-test logs and timings. Dataset IDs and the manifest are also under
+`build/reconstruct/datasets/gate-v1`. Model directories and 64-byte weight hashes:
+
+| Coefficient | Model directory | SHA-256 |
+| --- | --- | --- |
+| 0 | `gate-1793068769-126677887` | `920f33c0e0924d75ba4e1fa598907070decc565e8ca124dcf03ca16775dd9958` |
+| 0.25 | `gate-1793068778-327079336` | `31f475866b44b9f7884b478eb03589f801f45f067a71085d1a4c142b2d8cf376` |
+| 1 | `gate-1793068787-531418279` | `1742bb47661055d0f53c48fc3b7445d28cc442b76951947f877c5bdd9f413495` |
+
+Training/profile source archive SHA-256:
+`4b4a798e869a65707547b63081508a87f50fd551eb45f880776e09ad0e39f503`.
+Capture source archive SHA-256:
+`e1d2867af32346ab33a1d6ad35e1bd10378ce7c52adb66812358df971415c77b`.
+The CPU trainer took 11.25/9.19/9.17 seconds including tool startup, loading and validation;
+cache conditions were not controlled. Dataset capture/readback/file work took approximately
+12.0–12.4 seconds per clip from run timestamp to final gate file, excluding teardown.
+These small-fixture costs do not establish G7's source-to-validated-asset requirement.
+
+Package checks, the focused gradient test, allow, changed-source formatting and diff checks
+pass. No full suite/PR, model promotion or G1–G7 acceptance is claimed at this checkpoint.

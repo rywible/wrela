@@ -1,0 +1,334 @@
+// A causal confidence unit, with the spatial model frozen. Truth and previous reference
+// errors are offline labels, never inference features. Full rollout remains mandatory.
+use engine::neural::Adam
+use engine::noise::rand
+use reconstruction_patch::confidence::{Input, features, logit, prediction, probability}
+use reconstruction_patch::history::share
+use reconstruction_patch::network::view
+use std::io::print
+use std::tool::{ToolError, files, time}
+use toolkit::whole::{chunked, read_file, write_file}
+use training::{floats, number, text_file, word}
+
+struct Example: Copy { input: Input, truth: vec3, stable: vec3 }
+
+fn vectors(w: [f32]) -> [vec4; 4] {
+    [
+        vec4(w[0], w[1], w[2], w[3]),
+        vec4(w[4], w[5], w[6], w[7]),
+        vec4(w[8], w[9], w[10], w[11]),
+        vec4(w[12], 0.0, 0.0, 0.0),
+    ]
+}
+
+fn color(image: [f32], i: u32) -> vec3 {
+    view(vec3(image[i * 4], image[i * 4 + 1], image[i * 4 + 2]))
+}
+
+fn input(rows: [f32], i: u32) -> Input {
+    let k = i * 12
+    Input {
+        current: vec4(rows[k], rows[k + 1], rows[k + 2], rows[k + 3]),
+        old: vec4(rows[k + 4], rows[k + 5], rows[k + 6], rows[k + 7]),
+        context: vec4(rows[k + 8], rows[k + 9], rows[k + 10], rows[k + 11]),
+    }
+}
+
+fn warped_error(previous: [f32], truth: [f32], width: u32, height: u32, at: vec2) -> vec3 {
+    let q = at - vec2(0.5)
+    let base = floor(q)
+    let f = q - base
+    var out = vec3(0.0)
+    for k in 0..4 {
+        let ox = k % 2
+        let oy = k / 2
+        let xy = clamp(
+            base + vec2(f32(ox), f32(oy)),
+            vec2(0.0),
+            vec2(f32(width - 1), f32(height - 1)),
+        )
+        let index = u32(xy.y) * width + u32(xy.x)
+        let weight = (if ox == 0 { 1.0 - f.x } else { f.x }) * (if oy == 0 { 1.0 - f.y } else {
+            f.y
+        })
+        out += (color(previous, index) - color(truth, index)) * weight
+    }
+    out
+}
+
+fn image(path: str, count: u32) -> Result<Vec<f32>, ToolError> {
+    let data = floats(read_file(path, "confidence image")?)?
+    if data.len() != count * 4 { return Err(ToolError::new("confidence image size")) }
+    for i in 0..count {
+        if data[i * 4 + 3] != 1.0 { return Err(ToolError::new("confidence image alpha")) }
+    }
+    Ok(take data)
+}
+
+fn add(data: mut Vec<Example>, directory: str, validation: bool) -> Result<u32, ToolError> {
+    let meta = text_file(f"{directory}/sequence.txt")?
+    if meta.as_str().find("scene=analytic/slats-checkerboard\n").is_none() ||
+        meta
+            .as_str()
+            .find("reference=analytic_pixel_integral_after_reconstruction_never_decoder_input\n")
+            .is_none() ||
+        number(meta.as_str(), "decoder")? != 2 ||
+        number(meta.as_str(), "gate_input_version")? != 1 ||
+        number(meta.as_str(), "patch_source_geometry")? != 1 ||
+        number(meta.as_str(), "training_inputs")? != 1 ||
+        number(meta.as_str(), "cut_at")? != 0 ||
+        number(meta.as_str(), "start_frame")? != 0 ||
+        number(meta.as_str(), "warmup")? != 0 {
+        return Err(
+            ToolError::new("confidence training needs whole cold-start source-geometry clips"),
+        )
+    }
+    let width = number(meta.as_str(), "width")?
+    let height = number(meta.as_str(), "height")?
+    let frames = number(meta.as_str(), "frames")?
+    let shot = number(meta.as_str(), "shot")?
+    let maximum = f32(number(meta.as_str(), "patch_history")?) / 1000.0
+    if width == 0 ||
+        height == 0 ||
+        width % 12 != 0 ||
+        height % 12 != 0 ||
+        frames == 0 ||
+        frames > 300 ||
+        shot >= 8 ||
+        maximum <= 0.0 ||
+        maximum > 1.0 {
+        return Err(ToolError::new("confidence clip dimensions, time or share"))
+    }
+    let count = width * height
+    for divisor in 1..5 {
+        var previous: Vec<f32> = Vec::new()
+        var previous_truth: Vec<f32> = Vec::new()
+        for frame in 0..frames {
+            let stem = f"{directory}/scale-{divisor}/{frame}"
+            let rows = floats(read_file(f"{stem}.gate32f", "causal confidence inputs")?)?
+            if rows.len() != count * 12 {
+                return Err(ToolError::new("confidence observation layout"))
+            }
+            let truth = image(f"{stem}.truth32f", count)?
+            let output = image(f"{stem}.rgba32f", count)?
+            let eligible = share(min(frame, 16), maximum, valid: true)
+            for pixel in 0..count {
+                let row = input(rows, pixel)
+                if row.current.w < 0.0 ||
+                    (row.current.w != 0.0 && abs(row.current.w - eligible) > 1.0e-6) ||
+                    abs(row.old.w - 1.0 / f32(divisor)) > 1.0e-6 ||
+                    abs(row.context.z - f32(min(frame, 16)) / 16.0) > 1.0e-6 {
+                    return Err(ToolError::new("confidence timing/scale/eligibility mismatch"))
+                }
+                for c in 0..3 {
+                    if row.current[c] < 0.0 ||
+                        row.current[c] > 1.0 ||
+                        row.old[c] < 0.0 ||
+                        row.old[c] > 1.0 ||
+                        (row.current.w == 0.0 && row.old[c] != 0.0) {
+                        return Err(ToolError::new("confidence colour or invalid history"))
+                    }
+                }
+            }
+            // Sample training compute; retain every validation pixel.
+            let samples = if validation { count } else { min(count, 512) }
+            for k in 0..samples {
+                let pixel = if validation { k } else {
+                    u32(rand(7919 * (shot + 1) + frame * 5 + divisor, k) * f32(count)) % count
+                }
+                let row = input(rows, pixel)
+                let t = color(truth, pixel)
+                let stable = if row.current.w > 0.0 {
+                    let at = vec2(f32(pixel % width) + 0.5, f32(pixel / width) + 0.5) -
+                        row.context.xy
+                    t + warped_error(previous, previous_truth, width, height, at)
+                } else { t }
+                data.push(Example { input: row, truth: t, stable })
+            }
+            previous = take output
+            previous_truth = take truth
+        }
+    }
+    Ok(shot)
+}
+
+fn loss_gradient(e: Example, weights: [f32], temporal: f32, g: mut Vec<f32>) -> f32 {
+    let w = vectors(weights)
+    let z = logit(e.input, w)
+    let p = probability(z)
+    let predicted = prediction(e.input, w, enabled: 1)
+    let error = predicted - e.truth
+    let temporal_error = predicted - e.stable
+    let coefficient = if e.input.current.w > 0.0 { temporal } else { 0.0 }
+    let dz = if z > -20.0 && z < 20.0 {
+        (2.0 / 3.0) *
+            dot(error + coefficient * temporal_error, e.input.old.rgb - e.input.current.rgb) *
+            e.input.current.w *
+            p *
+            (1.0 - p)
+    } else { 0.0 }
+    let x = features(e.input)
+    for i in 0..12 { g[i] += dz * x[i / 4][i % 4] }
+    g[12] += dz
+    (dot(error, error) + coefficient * dot(temporal_error, temporal_error)) / 3.0
+}
+
+fn score(data: [Example], weights: [f32]) -> (f64, f64, f64, f64) {
+    let w = vectors(weights)
+    var base: f64 = 0.0
+    var learned: f64 = 0.0
+    var base_temporal: f64 = 0.0
+    var learned_temporal: f64 = 0.0
+    var temporal_count: u32 = 0
+    for e in data {
+        let a = prediction(e.input, w, enabled: 0)
+        let b = prediction(e.input, w, enabled: 1)
+        let da = a - e.truth
+        let db = b - e.truth
+        base += f64(dot(da, da))
+        learned += f64(dot(db, db))
+        if e.input.current.w > 0.0 {
+            let ta = a - e.stable
+            let tb = b - e.stable
+            base_temporal += f64(dot(ta, ta))
+            learned_temporal += f64(dot(tb, tb))
+            temporal_count += 3
+        }
+    }
+    (
+        base / f64(data.len() * 3),
+        learned / f64(data.len() * 3),
+        base_temporal / f64(max(temporal_count, 1)),
+        learned_temporal / f64(max(temporal_count, 1)),
+    )
+}
+
+fn run(manifest: str, steps: u32, seed: u32, temporal_permille: u32) -> Result<(), ToolError> {
+    let text = text_file(manifest)?
+    var train: Vec<Example> = Vec::new()
+    var validation: Vec<Example> = Vec::new()
+    var train_mask: u32 = 0
+    var validation_mask: u32 = 0
+    for (a, b) in text.as_str().split("\n") {
+        let line = text.as_str().slice(a, b)
+        if line.is_empty() { continue }
+        let Some(at) = line.find(",") else {
+            return Err(ToolError::new("gate manifest role,run-id"))
+        }
+        let role = line.slice(0, at)
+        let id = line.slice(at + 1, line.len())
+        if id.is_empty() || id.find("/").is_some() || id.find("..").is_some() {
+            return Err(ToolError::new("invalid confidence run id"))
+        }
+        print(f"gate load: {role} {id}")
+        if role == "train" {
+            train_mask |= 1 << add(mut train, f"out/runs/{id}", validation: false)?
+        } else if role == "validate" {
+            validation_mask |= 1 << add(mut validation, f"out/runs/{id}", validation: true)?
+        } else { return Err(ToolError::new("unknown confidence dataset role")) }
+    }
+    if train_mask == 0 || validation_mask == 0 || (train_mask & validation_mask) != 0 {
+        return Err(ToolError::new("confidence training/validation need disjoint complete cases"))
+    }
+    let temporal = f32(temporal_permille) / 1000.0
+    var weights = Vec::from([0.0; 16])
+    weights[12] = 2.1972246
+    var adam = Adam::new(16, rate: 0.02)
+    var curve = String::from("step,batch_loss\n")
+    print(
+        f"gate train: {train.len()} sampled training rows, {validation.len()} full validation rows",
+    )
+    for step in 0..steps {
+        adam.rate = 0.02 * (1.0 - 0.9 * f32(step) / f32(steps))
+        var g = Vec::from([0.0; 16])
+        var loss = 0.0
+        for k in 0..512 {
+            let i = u32(rand(seed * 7919 + step, k) * f32(train.len())) % train.len()
+            loss += loss_gradient(train[i], weights, temporal, mut g) / 512.0
+        }
+        for i in 0..13 { g[i] /= 512.0 }
+        adam.step(mut weights, g)
+        if step % 200 == 0 || step + 1 == steps {
+            print(f"gate train: step {step + 1}/{steps}, loss {loss:.9}")
+            curve.push_str(f"{step + 1},{loss:.12}\n")
+        }
+    }
+    for v in weights {
+        if (bitcast_u32(v) & 0x7f800000) == 0x7f800000 {
+            return Err(ToolError::new("non-finite gate"))
+        }
+    }
+    print("gate train: evaluating all validation pixels")
+    let (base, learned, base_temporal, learned_temporal) = score(validation, weights)
+    let now = time::utc_now().wait()?
+    let directory = f"out/models/gate-{now.seconds}-{now.nanos}"
+    if files::stat(directory.as_str()).wait().is_ok() {
+        return Err(ToolError::new("gate model exists"))
+    }
+    let about = f"architecture=12 causal inputs plus bias, scalar logistic confidence\nparameters=13\nstored_f32=16\ntraining_case_mask={train_mask}\nvalidation_case_mask={validation_mask}\nsteps={steps}\nseed={seed}\nbatch=512\ntraining_pixels_per_capture=512 deterministic samples\nvalidation=all output pixels\ninitial_bias=2.1972246\nrate=0.02 linearly decaying to 0.002\ntemporal_lambda={temporal}\nloss=mean RGB squared error plus lambda times warped previous-error consistency on eligible history\nscope=one-step development only; temporal training loss is not the acceptance metric; recurrent GPU rollout required\n"
+    let _ = files::write(f"{directory}/model.txt", about.as_bytes()).wait()?
+    let _ = files::write(f"{directory}/dataset.txt", text.as_bytes()).wait()?
+    let _ = files::write(f"{directory}/curve.csv", curve.as_bytes()).wait()?
+    var bytes: Vec<u8> = Vec::new()
+    for v in weights { word(mut bytes, bitcast_u32(v)) }
+    write_file(f"{directory}/weights.f32", chunked(take bytes))?
+    let result = f"baseline_view_mse,gate_view_mse,baseline_warped_error_mse,gate_warped_error_mse\n{base:.12},{learned:.12},{base_temporal:.12},{learned_temporal:.12}\n"
+    let _ = files::write(f"{directory}/one-step.csv", result.as_bytes()).wait()?
+    print(
+        f"gate train: {directory}, view MSE {base:.9} -> {learned:.9}, training-temporal MSE {base_temporal:.9} -> {learned_temporal:.9}",
+    )
+    Ok(())
+}
+
+pub fn tool(given: [String]) -> u32 {
+    if given.len() != 5 { return 2 }
+    let Some(steps) = given[2].as_str().parse_u32() else { return 2 }
+    let Some(seed) = given[3].as_str().parse_u32() else { return 2 }
+    let Some(temporal) = given[4].as_str().parse_u32() else { return 2 }
+    if steps == 0 || steps > 100000 || seed > 10000 || temporal > 4000 { return 2 }
+    match run(given[1].as_str(), steps, seed, temporal) {
+        Ok(()) => 0,
+        Err(e) => {
+            print(f"gate train: {e.message()}")
+            1
+        },
+    }
+}
+
+@test
+fn confidence_gradient_matches_finite_differences_and_invalid_history_is_inert() {
+    let row = Input {
+        current: vec4(0.2, 0.5, 0.8, 0.9),
+        old: vec4(0.7, 0.3, 0.4, 0.25),
+        context: vec4(1.25, 0.0, 0.75, 1.0),
+    }
+    let e = Example { input: row, truth: vec3(0.1, 0.6, 0.9), stable: vec3(0.2, 0.6, 0.8) }
+    var w = Vec::from([0.1; 16])
+    var g = Vec::from([0.0; 16])
+    let _ = loss_gradient(e, w, 0.25, mut g)
+    var witnessed = false
+    for i in 0..13 {
+        let was = w[i]
+        var scratch = Vec::from([0.0; 16])
+        w[i] = was + 0.001
+        let a = loss_gradient(e, w, 0.25, mut scratch)
+        w[i] = was - 0.001
+        let b = loss_gradient(e, w, 0.25, mut scratch)
+        w[i] = was
+        let estimate = (a - b) / 0.002
+        assert(abs(g[i] - estimate) < 0.00002, f"confidence derivative {i}: {g[i]} vs {estimate}")
+        if abs(estimate) > 0.001 { witnessed = true }
+    }
+    assert(witnessed)
+    var cold = row
+    cold.current.w = 0.0
+    var zero = Vec::from([0.0; 16])
+    let _ = loss_gradient(
+        Example { input: cold, truth: e.truth, stable: e.stable },
+        w,
+        1.0,
+        mut zero,
+    )
+    for d in zero { assert(d == 0.0) }
+    assert(prediction(cold, vectors(w), enabled: 1) == cold.current.rgb)
+}
