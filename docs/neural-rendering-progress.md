@@ -2103,3 +2103,28 @@ source `b333ba10f3c1fb3902c52a47ec7e1c21343b9d45af25cdb90bc2640003e7a453`;
 scripts `687a7f5d1c8f8c8e07329f8f412f2d404132d9ebb4659183d1e9a5db10f66947`, under
 `build/neural-evidence/appearance-spatial-smallstep-v1/` on Pop!_OS.
 Original targets remain unchanged; no full-suite/PR readiness claim.
+
+
+## Fixed continuation establishes resumable experiments
+
+[The fixed 16,384-step run](neural-source-primitives.md#fixed-longer-optimization-with-exact-continuation)
+repeats the successful 4,096-step prefix byte for byte and saves full
+model/optimizer/RNG state. Reloading reproduces the next actual step;
+resetting momentum changes the result.
+
+Stored coverage MAE 0.006235107
+(3.15% below the shorter fit), 2.0377× BC.
+2/5 stored and 5/5 off-grid diagnostic screens pass.
+Fit 485.724 s CPU wall: already above G7's complete five-minute limit.
+All-256 evaluation 180.499 s CPU wall.
+No renderer promotion or G1–G7 achievement.
+
+Move next to source-sample shaded truth and representation rendering,
+then AMD GPU runtime. Moment screens remain diagnostics with unchanged
+thresholds; they do not replace G4's actual perceptual/motion/memory/time
+acceptance criteria. Original G1–G7 remain intact and unmet.
+
+Manifest `c2e2a06ab9d44c08db09dedbc983ab9371b4d154ef7cd211f37dbf9c3589aa28`;
+source `b333ba10f3c1fb3902c52a47ec7e1c21343b9d45af25cdb90bc2640003e7a453`;
+scripts `42fecda0d6ce19b73315a7ef764b318f26a075c32df6d41c59b5b2011afde279`, under
+`build/neural-evidence/appearance-spatial-continuation-v1/` on Pop!_OS.

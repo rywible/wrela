@@ -348,15 +348,31 @@ Retain it as the best development model at this budget. It still has
 2.10× BC stored coverage error; only albedo and normals pass the
 stored quality screen. Dense weighted MSE improves as well. No promotion.
 
+## Verified longer optical fit
+
+[The fixed continuation](neural-source-primitives.md#fixed-longer-optimization-with-exact-continuation)
+reproduces the 4,096-step packed prefix exactly, then continues to 16,384
+steps. Saved full optimizer and random states reproduce a subsequent
+step exactly. Stored coverage MAE is
+0.006235107, 3.15% below the shorter fit,
+at unchanged 107,672 packed bytes. Stored coverage remains 2.0377× BC;
+2/5 stored and 5/5 off-grid diagnostic screens pass.
+
+Fitting takes 485.724 seconds: the fit alone fails G7's complete
+five-minute limit. No renderer promotion or G1–G7 achievement.
+
 ## Next decision
 
-Test additional optimization with a fixed 16,384-step budget: reproduce
-the successful 4,096-step packed checkpoint exactly, retain optimizer/RNG
-state, then hold its final rates for the remaining steps. Save resumable
-states and score the fixed endpoint against all existing controls.
-Report the longer fitting cost without weakening G7's end-to-end limit.
-Full source geometry, wood, sorting, tiling, caches and scratch remain
-part of eventual runtime accounting.
+Implement the rendered comparison next: shade visible source samples before
+integration and compare the conventional representation and packed models
+under the same declared lights. Record production-material differences and
+then measure actual AMD GPU execution, resident memory and complete pass
+cost. Shading already averaged moments cannot serve as reference truth.
+
+The moment-error thresholds remain unchanged development screens, with
+their failures retained. G4 acceptance instead requires its original
+shaded perceptual, motion, memory and runtime criteria. Passing a moment
+screen would not establish G4. Keep all G1–G7 thresholds intact.
 
 Keep fitted-view quality, unseen views and sampling/footprint tests separate.
 A small packed payload alone does not meet G4. Complete production materials,

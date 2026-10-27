@@ -1824,3 +1824,27 @@ off-grid screens pass. Public integration: 8/8 16to32. Best development
 model at this budget; no runtime promotion or G1–G7 achievement.
 
 Manifest `fea09f2254859efa9e1f378ce476c610ab8360847c538f847eb684bf68a9c172`.
+
+
+## Fixed optical continuation (Pop!_OS AMD, 2026-10-27)
+
+[Exact continuation and complete result](neural-source-primitives.md#fixed-longer-optimization-with-exact-continuation).
+Ryzen 5 5500U, PyTorch 2.5.1+cpu four threads, checked C++17/OpenMP evaluator;
+reused Radeon/RADV source references. No GPU model runtime measurement.
+
+16,384 steps, seed 5483, 107,672 packed inference bytes. First 4,096 packed
+steps exactly reproduce the previous shorter fit. Full state resumes
+exactly; negative momentum-reset control changes the result.
+Fit elapsed CPU wall time 485.724 s, including checkpoint writes and
+lazy wood queries, excluding calibration/source generation/validation.
+The fit alone exceeds G7's five-minute complete generation limit.
+All-256 nominal wood/raster/scoring/writes
+180.499 s CPU wall.
+
+Coverage MAE 0.006235107,
+3.15% below the shorter fit; still 2.0377× BC.
+2/5 stored and 5/5 off-grid diagnostic screens pass.
+Integration: 8/8 16to32. Material screens are diagnostics, not G4 acceptance.
+All original targets remain intact and unmet.
+
+Manifest `c2e2a06ab9d44c08db09dedbc983ab9371b4d154ef7cd211f37dbf9c3589aa28`.

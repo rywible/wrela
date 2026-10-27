@@ -868,6 +868,116 @@ packed models, complete nominal/public outputs and all failures.
 Focused allow-list and diff checks pass; no full-suite or PR-readiness
 claim.
 
+## Fixed longer optimization with exact continuation
+
+The 16,384-step endpoint has stored coverage MAE
+0.006235107, a 3.15% reduction versus
+the 4,096-step smaller-rate checkpoint at the same 107,672 packed bytes.
+It improves 5/5 stored and 5/5 off-grid mean
+diagnostics versus that checkpoint. **Retain as an additional development checkpoint; no renderer promotion.**
+
+### Verified prefix and saved state
+
+Seed 5483, initial packed data, model, sampler, loss, parameter bounds,
+packing and the first 4,096 optimizer steps are unchanged. Their final
+three packed files match the previous smaller-rate run byte for byte.
+The remaining steps hold that prefix's final learning rates. The total
+budget and final endpoint were fixed before running, with no endpoint
+selection using the evaluation corpus.
+
+Checkpoints at 4,096, 4,097, 8,192, 12,288 and 16,384 retain float32 master
+parameters, Adam state, NumPy/Torch random state, plan hash and packed
+inference data. Reloading step 4,096 reproduces the actual step 4,097 model,
+optimizer, random state, loss and packed files exactly. Resetting momentum
+is the negative control: it changes master and packed values. This tests
+resuming the optimizer, not merely reconstructing already packed output.
+
+The unchanged decoder inherits the prior verified gradient controls.
+Initial/final packed Torch, independent NumPy and C++ raster checks pass;
+all 256 covariance projections remain positive definite. The post-fit
+maximum covariance condition number is
+34.984. Physical moment
+bounds and zero-mass controls pass.
+
+### Fixed endpoint quality and cost
+
+All stored directions use nominal 16×16 integration. Public convergence
+checks: 8/8 16to32; public scores use 32×32.
+Those eight-direction checks do not prove convergence for all 256 views.
+
+| Control | Coverage | Linear RGB moment | Normal moment | Toward moment | Crown-depth moment |
+|---|---:|---:|---:|---:|---:|
+| Fixed BC | 0.003059909 | 0.001120013 | 0.028233120 | 0.002727373 | 0.000138883 |
+| Global calibration | 0.006854065 | 0.000733637 | 0.009609885 | 0.004511756 | 0.000249948 |
+| Original-step fit | 0.007795158 | 0.000847792 | 0.010233790 | 0.005143842 | 0.000276841 |
+| Smaller steps, 4,096 | 0.006437867 | 0.000688542 | 0.008956829 | 0.004226762 | 0.000223633 |
+| Continued, 16,384 | 0.006235107 | 0.000662695 | 0.008667660 | 0.004081219 | 0.000215241 |
+
+Four public off-grid directions:
+
+| Control | Coverage | Linear RGB moment | Normal moment | Toward moment | Crown-depth moment |
+|---|---:|---:|---:|---:|---:|
+| Fixed BC | 0.025882901 | 0.002766674 | 0.034725454 | 0.015425762 | 0.000571803 |
+| Global calibration | 0.007715352 | 0.000822936 | 0.010396534 | 0.004986157 | 0.000279038 |
+| Original-step fit | 0.008942803 | 0.000970206 | 0.011246962 | 0.005778944 | 0.000313521 |
+| Smaller steps, 4,096 | 0.007350622 | 0.000779151 | 0.009766458 | 0.004743750 | 0.000250782 |
+| Continued, 16,384 | 0.007205392 | 0.000754479 | 0.009474676 | 0.004635047 | 0.000243360 |
+
+The unchanged diagnostic screens pass 2/5 stored and
+5/5 off-grid measures. Stored coverage remains
+2.0377× BC on average and 2.8662× BC in the worst direction.
+No failed screen is waived. The complete seed-11 stress results remain
+in the evidence; they do not demonstrate a newly generated individual's
+model.
+
+Dense all-256 weighted MSE:
+
+- calibrated: 0.012722495.
+- original_steps: 0.015157969.
+- smaller_steps: 0.011191350.
+- continued: 0.010456740.
+
+Training takes 485.724 seconds elapsed CPU wall time on the Pop!_OS
+Ryzen 5 5500U, PyTorch 2.5.1+cpu, four threads. This includes lazy wood
+queries and checkpoint writes. **Training alone exceeds G7's five-minute
+end-to-end limit**, before calibration, source/reference generation or
+validation. Nominal all-256 wood/raster/scoring/writes take
+180.499 seconds.
+These are not GPU inference or browser frame times.
+
+![Fixed 16,384-step endpoint versus earlier controls](figures/neural-appearance-spatial-continuation.png)
+
+### Measure the actual G4 objective next
+
+The five moment-error screens are development diagnostics. They are
+**not** the acceptance criteria in [G4](neural-rendering-goals.md#g4--sixteen-times-less-foliagematerial-representation-memory-at-matched-quality).
+G4 requires shaded PSNR/FLIP/LPIPS, applicable silhouette/motion quality,
+resident memory and complete foliage-pass p95/p99 on AMD. The diagnostic
+thresholds and their failures remain recorded; passing them would not
+establish G4, and evaluating rendered quality does not waive them.
+
+The next implementation should compare source geometry, the conventional
+representation and packed development models under lighting. Reference
+shading must run per visible source sample before integration: shading
+averaged material moments is not independent rendered truth. Include
+the production leaf response and explicitly identify differences such
+as hard-cut geometry, bark detail, wind, shadows or atmospheric lighting.
+Then test actual GPU execution and account for sorting, tiling, caches,
+wood and scratch. Do not substitute another moment-only optimizer sweep
+for the missing rendered comparison.
+
+All G1–G7 targets remain intact and unmet. This public single-asset
+specialization still lacks the required unseen lights/assets, motion,
+footprints, richness experiment, resident-memory and AMD browser evidence.
+
+Evidence: `build/neural-evidence/appearance-spatial-continuation-v1/manifest.json`,
+SHA-256 `c2e2a06ab9d44c08db09dedbc983ab9371b4d154ef7cd211f37dbf9c3589aa28`;
+source `b333ba10f3c1fb3902c52a47ec7e1c21343b9d45af25cdb90bc2640003e7a453`;
+scripts `42fecda0d6ce19b73315a7ef764b318f26a075c32df6d41c59b5b2011afde279`.
+All fixed checkpoints, resume controls, raw scores and failures are
+retained on Pop!_OS. Focused allow-list and diff checks pass; no full-suite
+or PR-readiness claim.
+
 ## Earlier untrained checkpoint: decision and reproducibility
 
 Retain these source-derived controls when fitting any compact learned
