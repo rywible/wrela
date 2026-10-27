@@ -28,7 +28,7 @@ No production rendering code or shipped weights change.
 ## Primary-source guidance
 
 [Vaidyanathan et al., Random-Access Neural Compression of Material Textures
-(SIGGRAPH 2023, ``4.1–4.5)](https://research.nvidia.com/labs/rtr/neural_texture_compression/assets/ntc_small_size.pdf)
+(SIGGRAPH 2023, sections 4.1–4.5)](https://research.nvidia.com/labs/rtr/neural_texture_compression/assets/ntc_small_size.pdf)
 jointly optimize material-specific quantized feature grids and a decoder.
 Their finer grid concatenates four neighbouring feature vectors, while the
 coarser grid uses bilinear interpolation. Positional phase helps reconstruct
@@ -37,13 +37,13 @@ multi-view attribute atlas; their texture results do not prove foliage
 silhouette quality, unseen-view quality or performance on this AMD browser.
 
 [Belcour and Benyoub, Hardware Accelerated Neural Block Texture Compression
-with Cooperative Vectors (HPG 2025, ``3–4)](https://arxiv.org/html/2506.06040v1)
+with Cooperative Vectors (HPG 2025, sections 3–4)](https://arxiv.org/html/2506.06040v1)
 use block-compressed latent textures and organize inference by tiles/material.
 Their reported runtime uses hardware matrix acceleration on different GPUs;
 it cannot be transferred to this adapter. Grouping work and using hardware
 texture decoding remain ideas to measure. We do not copy their code or weights.
 
-[Khronos Data Format Specification v1.3.1, `19](https://registry.khronos.org/DataFormat/specs/1.3/dataformat.1.3.html)
+[Khronos Data Format Specification v1.3.1, section 19](https://registry.khronos.org/DataFormat/specs/1.3/dataformat.1.3.html)
 describes BC4/BC5 endpoints and interpolation indices. Our independent ideal
 decoder and the actual AMD decoder differ in interpolated values. An exhaustive
 controlled probe identifies a six-bit-weight replay for this device/environment;
@@ -75,14 +75,88 @@ contains results and failures. The trial improves the training reconstruction
 but still loses coverage and grossly mispredicts normals. It is rejected.
 A normal/depth error cannot be repaired by reporting colour PSNR alone.
 
+## Source material captures between stored views
+
+`studio/appearance` now has a `source` command:
+
+```bash
+wrela tool appearance --timeout 900 --blob-budget 3221225472 -- source 7 0.5 0.4375 64 0 64
+```
+
+Append `--pixel X Y` to also export that pixel's individual, unquantized
+spatial samples for an independent accumulator check.
+
+The positional arguments are seed, hemi-octahedral view coordinates, output
+size, card level and spatial grid width. This example renders the full card
+set at an angle between atlas views, at 4096×4096, then box-averages 64×64
+samples into each of the 64×64 output pixels. Level 2 selects the bake's
+quarter-density card set with twice the card width. Both levels use the
+same bounds, material parameters, limbs and camera.
+
+The source is cooked directly from the authored plant and rerasterized. It
+does not read either the compressed atlas or neural predictions. It retains
+the existing finite leaf-pattern texture and the bake's hard leaf cut,
+crown normal, flat bark and quantized material targets. This isolates
+geometry, view sampling and representation errors. It is **not** the complete
+production leaf/bark shader or a converged light-transport reference. Wind,
+lighting, temporal filtering, lower-hemisphere views and the full G4 footprint
+range remain untested here.
+
+`source.f32` contains twelve little-endian floats per pixel: linear albedo
+times coverage (RGB), coverage, decoded world-normal times coverage (XYZ),
+normalized toward times coverage, normalized crown depth times coverage,
+and three reserved zeros. Normals are decoded before integration.
+The final accumulator rounds each component to Q20, with nearest ties toward
+positive infinity (at most 2^-21 absolute error per sample), and adds it
+exactly using two integer words. It converts the final signed magnitude to
+f32 and divides by the sample count. This precision is part of the reference
+definition, not an unreported model error. Empty samples contribute zero to
+every moment. Averaged normals are deliberately
+not normalized: their length carries the variation within a pixel. These
+moments cannot reproduce arbitrary nonlinear shading after averaging.
+
+The fixed public diagnostic uses four atlas directions and four directions
+between them, two card-placement seeds, both card levels, and 8×8, 16×16
+and 32×32 spatial grids. The convergence limits were recorded before
+capture. The initial grids did not pass; larger grids use the same limits.
+A naive f32 accumulator also failed a physical normal-length invariant.
+A compensated-summation trial retained its arithmetic in the generated WGSL
+but returned exactly the naive results on this environment. The cause of
+the unchanged GPU output is not established. The exact integer
+accumulator is independently checked against CPU int64 sums and f64 means;
+the failed trials and their source snapshots remain in the evidence.
+
+A matching atlas-direction control checks the material adapter;
+a high-resolution direct export independently checks the GPU's box reduction.
+Repeated captures and wrong-orientation/wrong-view controls check the data
+path. Results are recorded in `neural-rendering-progress.md`; an unconverged
+case is retained as such rather than relabeled as truth.
+
+The repaired 32×32→64×64 check passes all 32 fixed seed/view/level cases.
+The coverage MAE limit is 0.001, coverage p99 absolute-error limit 0.01,
+linear-albedo moment MAE limit 0.0005 and normal-vector moment MAE limit
+0.002. Passing this finite sampling check establishes a useful material
+diagnostic at this footprint; it does not establish general convergence of
+production rendering.
+
+![Full and coarse source crowns at a fixed off-grid angle](figures/neural-appearance-source.png)
+
 ## Next decision
 
 Before integrating a decoder into production, test whether a representation
 that shares information through the crown's source geometry can preserve the
 normal/depth/silhouette relationship at the full memory budget. Independently
 storing all views is expensive; a coordinate MLP alone is too lossy in these
-experiments. Source-generated off-grid views and changed individuals must
-validate any proposed sharing.
+experiments. The source-generated off-grid views now expose changes before
+compression. They must validate any proposed sharing, alongside changed individuals and
+the production lighting and motion checks still missing.
+
+The new area reference also changes the interpretation of the old grid trial:
+its smooth coverage is closer to integrated coverage than the point-sampled
+BC atlas on the tested stored views, but its normal moments remain much worse.
+It stays rejected. Train future representations against the source footprint,
+and preserve coverage, normals, position and depth together; do not optimize
+only the old point-atlas reconstruction loss.
 
 A view-page cache remains a possible runtime strategy, not an implementation
 or success claim. Its decoded pages, compression/decode scratch, cache misses,

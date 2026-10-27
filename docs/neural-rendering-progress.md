@@ -1359,3 +1359,92 @@ and `appearance-grid-v1/manifest.json`. Final source archive
 `ad3de7bf4ac0e9188028179157d8c48124cb6173d2153f1f9afb6a09923d2954`. Focused tool/fixture checks,
 formatting, allow-list and diff checks pass. No full-suite or PR-readiness claim.
 G1–G7 remain unchanged and unmet.
+
+
+## Foliage source views, spatial convergence and loss before compression
+
+The new `appearance source` path cooks the authored great-tree cards and limbs
+directly, at arbitrary upper-hemisphere view coordinates. It exports coverage,
+linear-albedo moments, decoded normal moments and normalized toward/depth
+moments. Four stored atlas directions and four directions between them are
+fixed in advance, for seeds 7 and 11 and card levels 0 and 2, at 64×64 output.
+Level 2 uses one quarter of the cards at twice their width; both levels share
+bounds, limbs and material settings. No neural output enters source generation.
+
+The initial 16×16→32×32 spatial-sample comparison passes **0/32** cases.
+The final 32×32→64×64 comparison passes **32/32**, with unchanged limits:
+
+| Successive-resolution diagnostic | Limit | Worst of 32 final cases |
+| --- | ---: | ---: |
+| Coverage mean absolute difference | 0.001 | 0.000895917 |
+| Coverage p99 absolute difference | 0.01 | 0.009033203 |
+| Linear-albedo moment mean absolute difference | 0.0005 | 0.000085693 |
+| Normal-vector moment mean absolute difference | 0.002 | 0.000856251 |
+
+A numerical failure is retained: naive f32 summation at 4,096 samples makes
+one normal's length exceed coverage by 2.38471033e-6, beyond the 2e-6 invariant.
+A compensated-summation trial is present in its emitted WGSL but all 32 GPU
+outputs equal the naive outputs byte for byte. The cause of the unchanged
+GPU output is not established. The final Wrela accumulator rounds each
+component to Q20 (nearest, ties toward positive infinity; at most 2^-21
+absolute error), adds with exact signed two-word integer arithmetic and
+converts the final mean to f32. Its maximum normal-length excess is 1.029e-7.
+
+Independent CPU int64 reduction of the same 512×512 source raster into
+8×8 and 4×4 outputs, respectively 4,096 and 16,384 samples per pixel, matches
+the GPU exactly. Differences from unquantized f64 means are 1.604e-7 and
+9.486e-8. A predeclared 2e-5 old-versus-new closeness check still fails all
+32 cases; these failures remain recorded. Individual-sample probes at the
+three greatest deviations establish that the new outputs match CPU int64
+exactly and f64 means within 3.193e-7, while the old sums differ from f64
+by 4.192e-5–4.729e-5. The inaccurate accumulator is not the acceptance target.
+
+The final repeated capture is byte identical, including after the sample
+probe and precision metadata are added. Wrong vertical orientation and wrong
+view controls fail by coverage MAE 0.22555 and 0.21186. Changing the placement
+seed changes source coverage. The four single-sample atlas-direction controls
+have identical coverage to the existing bake at all 16,384 pixels, but their
+attributes are not bit-exact: 21 pixels differ by more than 1e-4, with a
+maximum normal-component difference of 0.691660. The localized discrepancies
+are retained; exact attribute parity is not claimed.
+
+At the final sample count, switching the source from full to coarse cards
+changes coverage MAE by 0.010893–0.025371 across the sixteen seed/view pairs
+(mean 0.017854). Directions of mean normals differ by 8.481–12.860 degrees
+(mean 10.514) where both cover at least half the pixel. These are material
+and geometry differences before either BC or neural compression.
+
+A descriptive comparison of the frozen representations at the four stored
+directions, across both seeds, uses the full-card area reference:
+
+| Frozen texel-centre representation | Coverage MAE | Normal-moment MAE | Mean normal angle on mutually covered pixels |
+| --- | ---: | ---: | ---: |
+| Uncompressed point bake | 0.050208 | 0.063891 | 24.41 degrees |
+| Existing BC7 + two BC5 | 0.049585 | 0.065647 | 25.85 degrees |
+| Shipped MLP | 0.109687 | 0.115022 | 53.13 degrees |
+| Earlier quantized-grid trial | 0.040196 | 0.103385 | 51.36 degrees |
+
+The grid trial's smoother coverage is closer to the integrated reference, but
+its normal moments remain substantially worse. **Still rejected.** This is
+not a full rendered-image comparison: these stored directions were used in
+fitting, both frozen networks specialize seed 7, and the grid trial fitted
+all atlas views. No prediction at the new between-view directions is scored
+yet. No production shader, shipped weight, G1–G7 threshold or promotion changes.
+
+The reference retains the finite leaf-pattern atlas, hard bake cut, crown
+normals, flat bark and quantized targets. It omits production leaf/bark
+shading, light transport, wind and temporal filtering. Only two public
+placement seeds and one footprint are covered. Passing the stated finite
+sampling test is not full production convergence, a G4 compression result
+or a G7 held-out-asset success rate. There are no browser/renderer timings
+in this record; capture elapsed times include compilation, cooking and readback.
+
+Evidence: `build/neural-evidence/appearance-source-v1/manifest.json`,
+SHA-256 `18ecd3ef083820e855b80822914d5895eb78503f96b1e27ad7ceb8a8c61570b7`; 211 unique capture runs.
+Final source `3fc23e8e9a709bb1cf6bc68fb5cd7217c54c657293b6cece0ed1c3b604927134`; external scripts
+`4d82762514accd10faeae3135e1590f509b161d1f17eeb6decb0c4458c9a2167`. Source snapshots, failed trials, individual
+samples, full per-case metrics, plans, environment and hashes are retained.
+Focused tool/fixture checks, formatting, allow-list and diff checks pass.
+No full-suite or PR-readiness claim. The next model should learn footprint
+integrals while preserving the geometry/normal/depth relationship; matching
+the old point-atlas labels alone is insufficient.

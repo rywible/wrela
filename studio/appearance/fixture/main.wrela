@@ -69,6 +69,7 @@ pub struct State {
     words: GpuBuffer<u32>,
     model: GpuBuffer<Half2>,
     probe: GpuBuffer<vec4>,
+    source: source::Source,
 }
 
 pub fn init() -> State {
@@ -87,6 +88,7 @@ pub fn init() -> State {
         words: buffer(1),
         model: buffer(1),
         probe: buffer(1),
+        source: source::init(),
     }
 }
 
@@ -182,4 +184,24 @@ pub fn bc_probe(s: mut State) -> u32 {
     dispatch(probe_decode.bind(s.bc_normal, mut s.probe), over: ATLAS * ATLAS)
     s.ready = true
     ATLAS * ATLAS * 16
+}
+
+pub fn source_capture(
+    s: mut State,
+    seed: u32,
+    gx: f32,
+    gy: f32,
+    size: u32,
+    level: u32,
+    grid: u32,
+) -> u32 {
+    assert(!s.ready)
+    let bytes = source::capture(mut s.source, seed, gx, gy, size, level, grid)
+    s.ready = true
+    bytes
+}
+
+pub fn source_probe(s: mut State, x: u32, y: u32, grid: u32) -> u32 {
+    assert(s.ready)
+    source::probe(mut s.source, x, y, grid)
 }

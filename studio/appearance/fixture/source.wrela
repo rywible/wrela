@@ -1,0 +1,332 @@
+// Public diagnostic of the authored card/limb geometry, before view-atlas lookup.
+// Uses the bake's material semantics (hard leaf cut, crown normals, flat bark),
+// not the complete production shader, wind, lighting, or a continuous leaf field.
+use engine::impostor::{BAKED, Bake, BakeVertex, hemi_dir}
+use engine::plant::{
+    Card, LIMB_VERTICES, card_scale, card_tint, card_turn, cook_cards, leaf_age, leaf_at,
+    leaf_atlas, level_cards, limb_vertex, tinted,
+}
+use great_tree::tree::great_tree
+use std::field::Tube
+use std::gpu::{
+    ClipPosition, DepthTexture, Flat, GlobalId, GpuBuffer, Rgba8, Rgba16Float, Sampler, Slots,
+    Texture, VertexIndex, begin_pass_with_depth, buffer, buffer_of, depth_texture, discard,
+    dispatch, draw, sampler, texture,
+}
+
+pub struct Camera: Copy + GpuData {
+    direction: vec3,
+    right: vec3,
+    up: vec3,
+    level: u32,
+}
+
+// Three coverage-weighted moments. Normal components are decoded before averaging;
+// no division by coverage or renormalization happens during integration.
+pub struct Moments: Copy + GpuData {
+    colour: vec4, // linear albedo * coverage, coverage
+    geometry: vec4, // world normal * coverage, normalized toward * coverage
+    detail: vec4, // normalized crown depth * coverage, three reserved zeros
+}
+
+fn projected(p: vec3, b: Bake, c: Camera) -> ClipPosition {
+    let q = p - b.mid
+    let xy = vec2(dot(q, c.right), dot(q, c.up)) / b.half
+    ClipPosition {
+        position: vec4(xy.x, -xy.y, saturate(0.5 - dot(q, c.direction) / (2.0 * b.half)), 1.0),
+    }
+}
+
+@vertex
+fn card_vertex(v: VertexIndex, b: Bake, c: Camera, cards: [Card]) -> BakeVertex {
+    let card = cards[v.index / 6]
+    let k = v.index % 6
+    let qx = [-1.0, 1.0, 1.0, -1.0, 1.0, -1.0]
+    let qy = [-1.0, -1.0, 1.0, -1.0, 1.0, 1.0]
+    let q = vec2(qx[k], qy[k])
+    let t = card_turn(card, q)
+    let world = card.centre + (c.right * t.x + c.up * t.y) * (card.size * card_scale(c.level) * 0.5)
+    BakeVertex {
+        clip: projected(world, b, c),
+        uv: q,
+        normal: card.normal.decode(),
+        depth: card.depth,
+        toward: dot(world - b.mid, c.direction) / b.half,
+        albedo: vec3(0.0),
+        tint: card_tint(card),
+        seed: Flat { value: card.seed },
+        view: Flat { value: 0 },
+        leaf: Flat { value: 1 },
+    }
+}
+
+@vertex
+fn limb_vertex_at(v: VertexIndex, b: Bake, c: Camera, limbs: [Tube<4>]) -> BakeVertex {
+    let (p, n, along) = limb_vertex(limbs[v.index / LIMB_VERTICES], v.index % LIMB_VERTICES)
+    BakeVertex {
+        clip: projected(p, b, c),
+        uv: along,
+        normal: n,
+        depth: 0.0,
+        toward: dot(p - b.mid, c.direction) / b.half,
+        albedo: mix(b.bark.dark, b.bark.light, vec3(0.5)),
+        tint: vec3(0.0),
+        seed: Flat { value: 0 },
+        view: Flat { value: 0 },
+        leaf: Flat { value: 0 },
+    }
+}
+
+// Matches engine::impostor's bake material, without its fixed atlas-cell clip.
+fn material(f: BakeVertex, b: Bake, atlas: Texture<Rgba8>, s: Sampler) -> (vec3, vec3) {
+    if f.leaf.value != 1 { return (normalize(f.normal), f.albedo) }
+    let (m, which) = leaf_at(atlas, s, f.seed.value, f.uv)
+    if m < 0.5 || which >= b.leaves.per_card { discard() }
+    let n = normalize(f.normal)
+    (n, tinted(leaf_age(b.leaves, n.y), f.tint))
+}
+
+fn oct_encoded(n: vec3) -> vec2 {
+    let p = n.xz / (abs(n.x) + abs(n.y) + abs(n.z))
+    if n.y >= 0.0 { return p }
+    (vec2(1.0) - abs(vec2(p.y, p.x))) * vec2(
+        if p.x >= 0.0 { 1.0 } else { -1.0 },
+        if p.y >= 0.0 { 1.0 } else { -1.0 },
+    )
+}
+
+fn oct_decoded(e: vec2) -> vec3 {
+    let y = 1.0 - abs(e.x) - abs(e.y)
+    let t = max(-y, 0.0)
+    normalize(vec3(e.x + if e.x >= 0.0 { -t } else { t }, y, e.y + if e.y >= 0.0 { -t } else { t }))
+}
+
+@fragment
+fn colour(f: BakeVertex, b: Bake, atlas: Texture<Rgba8>, s: Sampler) -> vec4 {
+    let (_, albedo) = material(f, b, atlas, s)
+    vec4(sqrt(saturate(albedo)), 1.0)
+}
+
+@fragment
+fn normal(f: BakeVertex, b: Bake, atlas: Texture<Rgba8>, s: Sampler) -> vec4 {
+    let (n, _) = material(f, b, atlas, s)
+    vec4(oct_encoded(n), saturate(f.toward * 0.5 + 0.5), saturate(f.depth / 40.0))
+}
+
+// Each bounded sample is rounded to Q20, ties toward +infinity (at most 2^-21 error).
+// A signed high word and unsigned low word accumulate exactly, without relying
+// on floating-point reassociation rules. Decode magnitude before applying sign
+// so negative small sums do not subtract two large rounded floats.
+struct Wide: Copy {
+    low: vec4u,
+    high: vec4i,
+}
+
+fn exact_add(sum: Wide, value: vec4) -> Wide {
+    let signed = vec4i(floor(value * 1048576.0 + vec4(0.5)))
+    let bits = vec4u(signed)
+    let low = vec4u(
+        sum.low.x.wrapping_add(bits.x),
+        sum.low.y.wrapping_add(bits.y),
+        sum.low.z.wrapping_add(bits.z),
+        sum.low.w.wrapping_add(bits.w),
+    )
+    let carry = vec4i(
+        i32(low.x < sum.low.x),
+        i32(low.y < sum.low.y),
+        i32(low.z < sum.low.z),
+        i32(low.w < sum.low.w),
+    )
+    let sign = vec4i(
+        if signed.x < 0 { -1 } else { 0 },
+        if signed.y < 0 { -1 } else { 0 },
+        if signed.z < 0 { -1 } else { 0 },
+        if signed.w < 0 { -1 } else { 0 },
+    )
+    Wide { low, high: sum.high + sign + carry }
+}
+
+fn signed_value(low: u32, high: i32) -> f32 {
+    if high >= 0 { return f32(high) * 4294967296.0 + f32(low) }
+    let magnitude = (!low).wrapping_add(1)
+    let upper = u32(-high - 1) + u32(magnitude == 0)
+    -(f32(upper) * 4294967296.0 + f32(magnitude))
+}
+
+fn mean(sum: Wide, count: u32) -> vec4 {
+    vec4(
+        signed_value(sum.low.x, sum.high.x),
+        signed_value(sum.low.y, sum.high.y),
+        signed_value(sum.low.z, sum.high.z),
+        signed_value(sum.low.w, sum.high.w),
+    ) /
+        (1048576.0 * f32(count))
+}
+
+@compute(64)
+fn integrate(
+    colour: Texture<Rgba8>,
+    normal: Texture<Rgba16Float>,
+    size: u32,
+    grid: u32,
+    out: mut Slots<Moments>,
+    id: GlobalId,
+) {
+    if id.x >= size * size { return }
+    let x = (id.x % size) * grid
+    let y = (id.x / size) * grid
+    let zero = Wide { low: vec4u(0), high: vec4i(0) }
+    var a = zero
+    var b = zero
+    var d = zero
+    for j in 0..grid {
+        for i in 0..grid {
+            let c = colour.load(x + i, y + j)
+            let g = normal.load(x + i, y + j)
+            a = exact_add(a, vec4(c.rgb * c.rgb, c.a))
+            b = exact_add(b, vec4(oct_decoded(g.xy), g.z) * c.a)
+            d = exact_add(d, vec4(g.w * c.a, 0.0, 0.0, 0.0))
+        }
+    }
+    let n = grid * grid
+    out[id] = Moments { colour: mean(a, n), geometry: mean(b, n), detail: mean(d, n) }
+}
+
+pub struct Source {
+    cards: GpuBuffer<Card>,
+    limbs: GpuBuffer<Tube<4>>,
+    pattern: Texture<Rgba8>,
+    colour: Texture<Rgba8>,
+    normal: Texture<Rgba16Float>,
+    depth: DepthTexture,
+    moments: GpuBuffer<Moments>,
+    probe: GpuBuffer<Moments>,
+}
+
+pub fn init() -> Source {
+    Source {
+        cards: buffer(1),
+        limbs: buffer(1),
+        pattern: texture(width: 1, height: 1),
+        colour: texture(width: 1, height: 1),
+        normal: texture(width: 1, height: 1),
+        depth: depth_texture(width: 1, height: 1),
+        moments: buffer(1),
+        probe: buffer(1),
+    }
+}
+
+pub fn capture(
+    s: mut Source,
+    seed: u32,
+    gx: f32,
+    gy: f32,
+    size: u32,
+    level: u32,
+    grid: u32,
+) -> u32 {
+    assert(size > 0 && size <= 512 && grid > 0 && grid <= 128 && size * grid <= 8192)
+    assert(gx >= 0.0 && gx <= 1.0 && gy >= 0.0 && gy <= 1.0 && level <= BAKED)
+    let plant = great_tree()
+    let n = plant.cards()
+    let limbs = plant.limbs.len()
+    s.cards = buffer(n)
+    dispatch(cook_cards.bind(plant, n, seed, mut s.cards), over: n)
+    var list: Vec<Tube<4>> = Vec::new()
+    for i in 0..limbs { list.push(plant.limbs[i]) }
+    s.limbs = buffer_of(list, at_least: 1)
+    s.pattern = leaf_atlas(plant.leaves.per_card)
+    let b = Bake {
+        mid: vec3(0.0, plant.top() * 0.5, 0.0),
+        half: plant.reach() + plant.leaves.size * 1.2 * card_scale(BAKED) * 0.5 * 1.415,
+        leaves: plant.leaves,
+        bark: plant.bark,
+    }
+    let d = hemi_dir(vec2(gx, gy))
+    let up0 = if d.y > 0.99 { vec3(0.0, 0.0, 1.0) } else { vec3(0.0, 1.0, 0.0) }
+    let right = normalize(cross(up0, d))
+    let c = Camera { direction: d, right, up: cross(d, right), level }
+    let nearest = level_cards(n, level)
+    let high = size * grid
+    s.colour = texture(width: high, height: high)
+    s.normal = texture(width: high, height: high)
+    s.depth = depth_texture(width: high, height: high)
+    let filter = sampler()
+    {
+        let p = begin_pass_with_depth(mut s.colour, mut s.depth, clear: vec4(0.0), clear_depth: 1.0)
+        draw(
+            p,
+            card_vertex.bind(b, c, s.cards.items()),
+            colour.bind(b, s.pattern, filter),
+            vertices: nearest * 6,
+            instances: 1,
+        )
+        draw(
+            p,
+            limb_vertex_at.bind(b, c, s.limbs.items()),
+            colour.bind(b, s.pattern, filter),
+            vertices: limbs * LIMB_VERTICES,
+            instances: 1,
+        )
+        p.end()
+    }
+    {
+        let p = begin_pass_with_depth(
+            mut s.normal,
+            mut s.depth,
+            clear: vec4(0.0, 0.0, 0.5, 0.0),
+            clear_depth: 1.0,
+        )
+        draw(
+            p,
+            card_vertex.bind(b, c, s.cards.items()),
+            normal.bind(b, s.pattern, filter),
+            vertices: nearest * 6,
+            instances: 1,
+        )
+        draw(
+            p,
+            limb_vertex_at.bind(b, c, s.limbs.items()),
+            normal.bind(b, s.pattern, filter),
+            vertices: limbs * LIMB_VERTICES,
+            instances: 1,
+        )
+        p.end()
+    }
+    s.moments = buffer(size * size)
+    dispatch(integrate.bind(s.colour, s.normal, size, grid, mut s.moments), over: size * size)
+    size * size * 48
+}
+
+// Unquantized samples from one output pixel, before any reduction. This lets an
+// independent CPU calculation distinguish accumulation error from rasterization.
+@compute(64)
+fn probe_pixel(
+    colour: Texture<Rgba8>,
+    normal: Texture<Rgba16Float>,
+    x: u32,
+    y: u32,
+    grid: u32,
+    out: mut Slots<Moments>,
+    id: GlobalId,
+) {
+    if id.x >= grid * grid { return }
+    let px = x * grid + id.x % grid
+    let py = y * grid + id.x / grid
+    let c = colour.load(px, py)
+    let g = normal.load(px, py)
+    out[id] = Moments {
+        colour: vec4(c.rgb * c.rgb, c.a),
+        geometry: vec4(oct_decoded(g.xy), g.z) * c.a,
+        detail: vec4(g.w * c.a, 0.0, 0.0, 0.0),
+    }
+}
+
+pub fn probe(s: mut Source, x: u32, y: u32, grid: u32) -> u32 {
+    assert(grid > 0 && grid <= 128 && s.colour.width() % grid == 0)
+    let size = s.colour.width() / grid
+    assert(x < size && y < size)
+    s.probe = buffer(grid * grid)
+    dispatch(probe_pixel.bind(s.colour, s.normal, x, y, grid, mut s.probe), over: grid * grid)
+    grid * grid * 48
+}

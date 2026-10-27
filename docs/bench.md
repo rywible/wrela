@@ -1516,3 +1516,42 @@ Evidence: `build/neural-evidence/appearance-baseline-v1/manifest.json` and
 `ad3de7bf4ac0e9188028179157d8c48124cb6173d2153f1f9afb6a09923d2954`.
 [Audit, calibration and limitations](neural-rendering-progress.md#authored-foliage-audits-and-a-rejected-quantized-grid).
 G1–G7 remain unchanged and unmet.
+
+
+## Neural foliage source diagnostics — Pop!_OS AMD, 2026-10-27
+
+`studio/appearance` now rerasterizes authored card/limb material at off-grid
+view angles. The fixed public matrix is two placement seeds × eight views
+× two card levels, 64×64 output. The 16×16→32×32 spatial-grid comparison fails
+all 32 cases. The repaired 32×32→64×64 comparison passes all 32 unchanged
+limits: coverage MAE ≤0.001 and p99 ≤0.01, linear-albedo moment MAE ≤0.0005,
+normal-vector moment MAE ≤0.002. Observed maxima are 0.000895917,
+0.009033203, 0.000085693 and 0.000856251.
+
+Naive f32 summation fails a normal-length invariant; the tested compensation
+does not change GPU outputs. Exact sums of Q20 samples replace it. Independent
+CPU int64 reductions match exactly at 4,096 and 16,384 samples per pixel;
+f64 mean differences are at most 1.604e-7 in those block checks. At the three
+worst old/new pixels, directly exported samples identify old sum errors of
+4.192e-5–4.729e-5 versus new errors ≤3.193e-7. The failed 2e-5 closeness checks
+remain recorded. Full details, including localized atlas-control attribute
+differences, are in `neural-rendering-progress.md`.
+
+Full versus coarse source cards differ in coverage MAE by 0.010893–0.025371
+and in mutually covered mean-normal direction by 8.481–12.860 degrees.
+At stored directions, the earlier grid model improves area-coverage error
+relative to the current point BC atlas but still has much worse normal error.
+No model is promoted. These unlit material moments, two public seeds and one
+footprint do not establish G4/G7, production truth, or a renderer speedup.
+
+Native Vulkan on the Pop!_OS Ryzen 5 5500U / Radeon Graphics (RADV RENOIR,
+PCI 1002:164c), Mesa 26.1.6-1pop0~1787580452~24.04~a5619ea,
+Linux 7.1.5-76070105-generic; Wrela 0.9.0, compiler
+`de9b81e52a7747870dfbd5223cb8aeb41e584d23`. All capture/audit work ran on
+Pop!_OS. No browser timings were measured. Capture elapsed includes builds,
+cooking and readback and must not be reported as rendering latency.
+
+Evidence `build/neural-evidence/appearance-source-v1/manifest.json`,
+SHA-256 `18ecd3ef083820e855b80822914d5895eb78503f96b1e27ad7ceb8a8c61570b7`.
+Final source `3fc23e8e9a709bb1cf6bc68fb5cd7217c54c657293b6cece0ed1c3b604927134`; external scripts
+`4d82762514accd10faeae3135e1590f509b161d1f17eeb6decb0c4458c9a2167`. Focused checks pass; no full-suite/PR-ready claim.

@@ -88,7 +88,116 @@ fn probe(b: drive::Build, directory: str) -> Result<(), ToolError> {
     Ok(())
 }
 
-fn run(seed: u32, only_probe: bool) -> Result<(), ToolError> {
+struct SourceConfig: Copy {
+    enabled: bool = false,
+    probe: bool = false,
+    px: u32 = 0,
+    py: u32 = 0,
+    gx: f32 = 0.0,
+    gy: f32 = 0.0,
+    size: u32 = 64,
+    level: u32 = 0,
+    grid: u32 = 1,
+}
+
+fn capture_source(
+    b: drive::Build,
+    directory: str,
+    seed: u32,
+    c: SourceConfig,
+) -> Result<(), ToolError> {
+    let _ = untrapped("init", drive::steps(b, [Step::Init]).wait()?)?
+    let saw = untrapped(
+        "source",
+        drive::steps(
+            b,
+            [
+                Step::Call(
+                    String::from("source_capture"),
+                    Vec::from(
+                        [
+                            Scalar::I32(i32(seed)),
+                            Scalar::F32(c.gx),
+                            Scalar::F32(c.gy),
+                            Scalar::I32(i32(c.size)),
+                            Scalar::I32(i32(c.level)),
+                            Scalar::I32(i32(c.grid)),
+                        ],
+                    ),
+                ),
+            ],
+            timeout: 600.0,
+        ).wait()?,
+    )?
+    let expected = c.size * c.size * 48
+    match saw.ran[0].results[0] {
+        Scalar::I32(n) => if u32(n) != expected {
+            return Err(ToolError::new("wrong source byte count"))
+        },
+        _ => return Err(ToolError::new("source did not return a byte count")),
+    }
+    let ids = untrapped("buffers", drive::steps(b, [Step::Buffers]).wait()?)?
+    borrow buffers = ids.buffers[0]
+    var read = untrapped(
+        "source read",
+        drive::steps(b, [
+            Step::ReadBuffer(buffers[buffers.len() - 1]),
+        ], timeout: 600.0).wait()?,
+    )?
+    let bytes = joined(data_bytes(read.bytes.remove(0))?)
+    if bytes.len() != expected { return Err(ToolError::new("wrong source read size")) }
+    for k in 0..bytes.len() / 4 {
+        let word = u32(bytes[k * 4]) |
+            (u32(bytes[k * 4 + 1]) << 8) |
+            (u32(bytes[k * 4 + 2]) << 16) |
+            (u32(bytes[k * 4 + 3]) << 24)
+        if (word & 0x7f800000) == 0x7f800000 {
+            return Err(ToolError::new("non-finite source moment"))
+        }
+    }
+    write_file(f"{directory}/source.f32", chunked(take bytes))?
+    let metadata = f"asset=great_tree\nseed={seed}\nview_grid_x={c.gx}\nview_grid_y={c.gy}\nsize={c.size}\ncard_level={c.level}\nspatial_grid={c.grid}\nlayout=row_major_12_f32_le\nchannels=linear_albedo_rgb_times_coverage,coverage,world_normal_xyz_times_coverage,normalized_toward_times_coverage,normalized_depth_times_coverage,reserved_zero_3\nspatial_sampling=regular_grid_pixel_centres_rendered_at_size_times_grid_then_box_averaged\naccumulation=nearest_Q20_ties_positive_infinity_exact_signed_two_word_sum_then_f32_mean\nreference=source_card_limb_material_diagnostic_not_full_production_lighting_or_G4_truth\nmaterial=existing_bake_hard_leaf_cut_crown_normal_flat_bark\nbounds=existing_bake_bounds_shared_between_card_levels\n"
+    let _ = files::write(f"{directory}/capture.txt", metadata.as_bytes()).wait()?
+    print(f"appearance: exported source.f32 ({expected} bytes)")
+    if c.probe {
+        let _ = untrapped(
+            "source pixel probe",
+            drive::steps(
+                b,
+                [
+                    Step::Call(
+                        String::from("source_probe"),
+                        Vec::from(
+                            [
+                                Scalar::I32(i32(c.px)),
+                                Scalar::I32(i32(c.py)),
+                                Scalar::I32(i32(c.grid)),
+                            ],
+                        ),
+                    ),
+                ],
+            ).wait()?,
+        )?
+        let ids = untrapped("probe buffers", drive::steps(b, [Step::Buffers]).wait()?)?
+        borrow buffers = ids.buffers[0]
+        var read = untrapped(
+            "pixel read",
+            drive::steps(b, [
+                Step::ReadBuffer(buffers[buffers.len() - 1]),
+            ]).wait()?,
+        )?
+        let bytes = joined(data_bytes(read.bytes.remove(0))?)
+        if bytes.len() != c.grid * c.grid * 48 {
+            return Err(ToolError::new("wrong pixel probe size"))
+        }
+        write_file(f"{directory}/pixel.f32", chunked(take bytes))?
+        let metadata = f"pixel_x={c.px}\npixel_y={c.py}\nspatial_grid={c.grid}\nlayout=sample_row_major_12_f32_le\naccumulation=none_unquantized_individual_samples\n"
+        let _ = files::write(f"{directory}/pixel.txt", metadata.as_bytes()).wait()?
+    }
+    Ok(())
+}
+
+fn run(seed: u32, only_probe: bool, source: SourceConfig) -> Result<(), ToolError> {
     let now = time::utc_now().wait()?
     let directory = f"out/runs/{now.seconds}-{now.nanos}"
     if files::stat(directory.as_str()).wait().is_ok() { return Err(ToolError::new("run exists")) }
@@ -109,7 +218,9 @@ fn run(seed: u32, only_probe: bool) -> Result<(), ToolError> {
     load.workers = 1
     load.timeout = 600.0
     let b = drive::load(f"{directory}/fixture", load).wait()?.build
-    let result = if only_probe { probe(b, directory.as_str()) } else {
+    let result = if source.enabled {
+        capture_source(b, directory.as_str(), seed, source)
+    } else if only_probe { probe(b, directory.as_str()) } else {
         capture(b, directory.as_str(), seed)
     }
     let closed = drive::close(b).wait()
@@ -121,8 +232,44 @@ fn run(seed: u32, only_probe: bool) -> Result<(), ToolError> {
 pub fn tool() -> u32 {
     let given = args()
     var seed = 7
+    var source = SourceConfig {}
     let only_probe = given.len() == 1 && given[0].as_str() == "bc-probe"
-    if given.len() != 0 && !only_probe {
+    if given.len() > 0 && given[0].as_str() == "source" {
+        if given.len() != 7 && given.len() != 10 {
+            print("usage: appearance source SEED GX GY SIZE LEVEL GRID [--pixel X Y]")
+            return 2
+        }
+        let Some(n) = given[1].as_str().parse_u32() else { return 2 }
+        let Some(gx) = given[2].as_str().parse_f32() else { return 2 }
+        let Some(gy) = given[3].as_str().parse_f32() else { return 2 }
+        let Some(size) = given[4].as_str().parse_u32() else { return 2 }
+        let Some(level) = given[5].as_str().parse_u32() else { return 2 }
+        let Some(grid) = given[6].as_str().parse_u32() else { return 2 }
+        if !(gx >= 0.0 &&
+            gx <= 1.0 &&
+            gy >= 0.0 &&
+            gy <= 1.0 &&
+            size > 0 &&
+            size <= 512 &&
+            grid > 0 &&
+            grid <= 128 &&
+            size * grid <= 8192 &&
+            level <= 2) {
+            print("invalid source view, size, card level, or spatial grid")
+            return 2
+        }
+        seed = n
+        source = SourceConfig { enabled: true, gx, gy, size, level, grid }
+        if given.len() == 10 {
+            if given[7].as_str() != "--pixel" { return 2 }
+            let Some(px) = given[8].as_str().parse_u32() else { return 2 }
+            let Some(py) = given[9].as_str().parse_u32() else { return 2 }
+            if px >= size || py >= size { return 2 }
+            source.probe = true
+            source.px = px
+            source.py = py
+        }
+    } else if given.len() != 0 && !only_probe {
         if given.len() != 2 || given[0].as_str() != "--seed" {
             print("usage: wrela tool appearance -- [--seed 7] | bc-probe")
             return 2
@@ -130,7 +277,7 @@ pub fn tool() -> u32 {
         let Some(n) = given[1].as_str().parse_u32() else { return 2 }
         seed = n
     }
-    match run(seed, only_probe) {
+    match run(seed, only_probe, source) {
         Ok(()) => 0,
         Err(e) => {
             print(f"appearance: {e.message()}")
