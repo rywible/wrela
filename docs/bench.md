@@ -1706,3 +1706,28 @@ include compilation/cooking/readback or evaluator/file work.
 Evidence manifests: `2a232b363a4f279ae0cb3a70d9c000e327933436989d262d8b223220883e2d39` (source controls),
 `7d55fc50d287fc0457b4d2ff2026f9cf91063bb2c4abda015d260238e34bc55c` (count controls).
 No learned primitive model, production promotion or G1–G7 success.
+
+
+## Fixed-capacity learned primitive aggregation (Pop!_OS AMD, 2026-10-27)
+
+[Model, controls and complete failures](neural-source-primitives.md#fitted-aggregation-at-fixed-packed-capacity).
+Ryzen 5 5500U; source references from its Radeon/RADV GPU; fit uses
+PyTorch 2.5.1+cpu with four threads, evaluation NumPy 2.2.6 plus an
+independently checked C++17/OpenMP CPU raster. No GPU model timing.
+
+Both unfitted/fitted models occupy 107,680 packed bytes before runtime
+sorting, tiling, caches, scratch and fallback. Fixed 4,096-step fit:
+255.939 s including wood-query acceleration,
+excluding pre-existing source reference generation. All-256 paired
+16×16 CPU decode/scoring/writes: 200.232 s.
+These are CPU observations, not full rendering or G7 pipeline times.
+
+Coverage MAE over all 256 stored views falls
+0.021473852→0.010956385
+(48.98%), still 3.58× BC. Four off-grid views improve
+0.024310225→0.012674492;
+all five off-grid material screens pass, but only the stored normal screen
+passes. All sixteen public 16→32 integration checks pass. No promotion.
+
+Evidence: `56fe9d315bdc182559753f30a1a6091f3426b1b6c2dfb63c17adaef30e863f83`. This is a learned explicit
+primitive model, not an MLP decoder; no G1–G7 success.

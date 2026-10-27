@@ -175,7 +175,7 @@ The external source-position visibility study is informed by [Kerbl et al.,
 3D Gaussian Splatting for Real-Time Radiance Field Rendering (SIGGRAPH
 2023), author method description](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/):
 optimized 3D Gaussian primitives and visibility-aware splatting. Our own
-untrained controls use source-pattern moments, view-facing two-dimensional
-kernels and Wrela's actual wood triangles; they do not reproduce that
-paper. No implementation, assets, weights or hardware performance claim
+untrained and fitted controls use source-pattern moment initialization,
+view-facing two-dimensional kernels and Wrela's actual wood triangles;
+they do not reproduce that paper. No implementation, assets, weights or hardware performance claim
 is imported. See [the measured controls and limits](neural-source-primitives.md).

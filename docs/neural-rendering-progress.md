@@ -1969,3 +1969,37 @@ Evidence: `appearance-primitives-v1/manifest.json`, SHA-256
 `b333ba10f3c1fb3902c52a47ec7e1c21343b9d45af25cdb90bc2640003e7a453`; external scripts
 `54933ac1ce22ba48aaf2cd7d1a9cc034263bc6128130f6509f77d79e3d72490d`. All reside below `build/neural-evidence/` on Pop!_OS.
 Focused source checks pass; no full-suite/PR readiness or G1–G7 pass.
+
+
+## Fixed-capacity learned primitive aggregation
+
+A [3,320-primitive packed fit](neural-source-primitives.md#fitted-aggregation-at-fixed-packed-capacity)
+reduces all-256-view coverage MAE from
+0.021473852 to
+0.010956385, a 48.98%
+improvement at identical 107,680-byte packed capacity. Mean errors of all
+five material moments improve. All five off-grid material screens pass;
+only one of five stored-view screens passes. Coverage remains
+3.58× BC on the stored mean and 5.0905× in the worst view.
+**The candidate remains rejected.**
+
+The seed-4031, 4,096-step CPU fit learns explicit primitive positions,
+shape, opacity and material values with half packing from the first step.
+It takes 255.939 s including
+wood-query acceleration, excluding pre-existing reference generation.
+No neural-network decoder or GPU primitive runtime is claimed.
+
+Independent packed point decoders, wood point visibility and smooth
+finite-difference gradients pass; a separately checked C++ CPU evaluator
+scores all 256 nominal images and all 16 public cases. Every public
+16→32 integration check passes. Complete production/temporal/perceptual,
+resident-memory and browser timing requirements remain. Next is a
+source-derived spatial aggregation control, replacing prefix thinning
+with geometric moments before another equal-budget fit.
+
+Evidence manifest `56fe9d315bdc182559753f30a1a6091f3426b1b6c2dfb63c17adaef30e863f83`;
+source `b333ba10f3c1fb3902c52a47ec7e1c21343b9d45af25cdb90bc2640003e7a453`;
+scripts `52dba28f362738b71fea246768421c947d703dfc9238345681b1a423ad32f1f5`, under
+`build/neural-evidence/appearance-learned-primitives-v1/` on Pop!_OS.
+No Wrela implementation or default weights change. All G1–G7 targets
+remain intact; no full-suite or PR-readiness claim.

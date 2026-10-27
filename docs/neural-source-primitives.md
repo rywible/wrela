@@ -189,7 +189,147 @@ work or whole-renderer latency.
 
 ![Source count ladder and native hard-cut controls at the same stored direction](figures/neural-appearance-primitive-counts.png)
 
-## Decision and reproducibility
+## Fitted aggregation at fixed packed capacity
+
+The next experiment fits 3,320 explicit Gaussian primitives initialized
+from the source control. It lowers mean coverage error by 48.98%
+across all 256 stored directions and 47.86% on the four public off-grid
+directions, relative to the unfitted model at identical packed capacity.
+All five off-grid material screens pass after fitting. The stored-view
+coverage mean remains 3.58× BC and four of five stored-view screens
+fail. **The fitted model remains rejected.**
+
+This is a learned explicit representation, not an MLP or neural-network
+decoder. It tests whether optimization can recover information lost by
+source-card reduction. It does not demonstrate a neural advantage over
+the strongest conventional method, a runtime win, or any G1–G7 pass.
+
+### Packed model and training
+
+Both initial and final models have exactly 107,680 packed bytes:
+
+| Data | Bytes |
+|---|---:|
+| 3,320 records × 16 half values | 106,240 |
+| Common f32 bounds/material/count header | 32 |
+| Authored wood control points | 1,408 |
+
+Each record stores position XYZ relative to the common bounds, local
+offset XY, three lower-Cholesky entries, opacity, square-root linear
+albedo RGB, normal XYZ and normalized crown depth. Decoded normals are
+capped to unit length. The source wood is regenerated from its authored
+control points; a pre-expanded wood triangle buffer is not an input to
+the packed decoder. GPU generation, sorting, tile lists, caches, scratch,
+fallback and metadata allocations are still additional and unmeasured.
+
+The fixed seed-4031 run uses 4,096 Adam steps. It optimizes positions,
+offsets, Cholesky shape, opacity and all material attributes. Packing to
+half is active from the first step; the toward attribute follows the
+measured half-target rounding. Parameters stay inside the predeclared
+physical bounds. The final checkpoint is selected by step count alone.
+
+One of all 256 seed-7 stored directions is drawn uniformly each step.
+Within it, eight pixels are uniform and eight come from coverage above
+0.01, with exact mixture importance correction. Each pixel uses a 4×4
+independently jittered spatial grid. Wood intersections are computed
+against its actual triangles at those points, without interpolating a
+depth map. The loss weights coverage, RGB, normals, toward and crown
+depth by 8, 64, 8, 16 and 1600 respectively. No off-grid or changed-seed
+reference enters training.
+
+This stochastic squared-error objective and its straight-through
+quantization gradients are training approximations. The smooth-gradient
+audit disables packing and target rounding; it does not claim that
+discrete half conversion is differentiable.
+
+Training takes 255.939 s on the
+Ryzen 5 5500U with PyTorch 2.5.1+cpu and four threads, including lazily
+constructed wood-query acceleration. It excludes the pre-existing source
+reference generation. One asset's fitting time does not establish G7's
+complete source-to-validated-model deadline or held-out success rate.
+
+### Independent controls and complete scoring
+
+Packed wood regeneration differs from the earlier GPU vertices by at
+most 1.91e-06. All 32,768 predeclared wood point queries
+across four directions agree on visibility; depth and encoded-normal
+differences pass their fixed limits. The initial independent NumPy and
+Torch point decoders differ by at most
+2.96e-06, below 2e-5. All eight smooth,
+double-precision central-difference gradient checks pass; the largest
+absolute gradient discrepancy is 6.03e-10. A zeroed opacity
+gradient fails the same check.
+
+The CPU rasterizer is our own external C++17 evaluator, compiled without
+fast-math and using four OpenMP threads. It is not a shipping Wrela
+renderer or GPU measurement. Its initial/fitted output checks against
+independent NumPy point integration have maximum absolute difference
+4.77e-08; the post-fit Torch point check is at most
+6.15e-06, both below 2e-5. Wrong world-axis and zero-opacity
+controls produce large coverage changes. All decoded images satisfy
+the physical moment bounds.
+
+Both packed models are evaluated on every one of the 256 stored views
+at 16×16 spatial samples per output pixel. The paired corpus decode,
+wood raster, scoring and writes take
+200.232 s; this observation
+is not GPU latency. All sixteen initial/fitted public 16→32 integration
+checks pass, so public quality uses 32×32 samples. That eight-direction
+integration check does not establish convergence for all 256 nominal
+images.
+
+All 256 stored directions, nominal mean absolute moment errors:
+
+| Control | Coverage | Linear RGB moment | Normal moment | Toward moment | Crown-depth moment |
+|---|---:|---:|---:|---:|---:|
+| Fixed BC | 0.003059909 | 0.001120013 | 0.028233120 | 0.002727373 | 0.000138883 |
+| Unfitted packed primitives | 0.021473852 | 0.002227915 | 0.025598879 | 0.014859017 | 0.000687627 |
+| Fitted packed primitives | 0.010956385 | 0.001180598 | 0.013913842 | 0.007334720 | 0.000369860 |
+
+Four public off-grid directions at the selected denser integration:
+
+| Control | Coverage | Linear RGB moment | Normal moment | Toward moment | Crown-depth moment |
+|---|---:|---:|---:|---:|---:|
+| Fixed BC | 0.025882901 | 0.002766674 | 0.034725454 | 0.015425762 | 0.000571803 |
+| Unfitted packed primitives | 0.024310225 | 0.002578289 | 0.028003841 | 0.016593909 | 0.000761315 |
+| Fitted packed primitives | 0.012674492 | 0.001354021 | 0.015474488 | 0.008360843 | 0.000417555 |
+
+Stored-view fitted/BC mean ratios are 3.5806 for coverage, 1.0541 for
+albedo, 0.4928 for normals, 2.6893 for toward and 2.6631 for crown depth.
+The worst coverage ratio is 5.0905 at view 153. Only the normal screen
+passes over all stored views; every screen still requires mean≤1.05×BC
+and worst-view≤1.10×BC.
+
+For changed seed 11, mean coverage error falls from
+0.025318539 to
+0.016091140. The model remains the
+unchanged seed-7 representation, so this is a stress test, not generation
+of a new individual's appearance. Full-source primitives, the count
+ladder, native hard-cut LODs and the previous volume remain in the
+public comparison record.
+
+![Fitted and unfitted packed primitives at the same fixed stored direction](figures/neural-appearance-learned-primitives.png)
+
+The next useful source control should aggregate neighbouring cards in
+three dimensions, including their spatial covariance and material moments.
+The current initialization thins a source prefix and enlarges view-facing
+kernels. A moment-preserving spatial aggregation can test whether a
+better source-derived representation helps before another fit. This is
+a hypothesis, not a measured result or a replacement for the original
+goals. Production light response, motion, footprints, runtime and all
+other G1–G7 requirements remain.
+
+Evidence: `build/neural-evidence/appearance-learned-primitives-v1/manifest.json`,
+SHA-256 `56fe9d315bdc182559753f30a1a6091f3426b1b6c2dfb63c17adaef30e863f83`.
+Source snapshot `b333ba10f3c1fb3902c52a47ec7e1c21343b9d45af25cdb90bc2640003e7a453`;
+external scripts `52dba28f362738b71fea246768421c947d703dfc9238345681b1a423ad32f1f5`.
+The manifest retains both packed models, complete nominal images, all
+public outputs, training/gradient/decoder controls, compiler details and
+source dependencies. No Wrela runtime or shipped-model edits occur.
+Focused allow-list and diff checks pass; no full-suite or PR readiness
+claim is made.
+
+## Earlier untrained checkpoint: decision and reproducibility
 
 Retain these source-derived controls when fitting any compact learned
 representation. The next meaningful candidate must beat the unfitted

@@ -284,14 +284,28 @@ hard-cut LOD comparisons. Source-derived positions, areas and materials
 give useful information. All six reduced-count controls fail the joint
 stored-view quality screen despite converged sampling.
 
+## Compact fitted source primitives
+
+Fitting an explicit 3,320-Gaussian representation at a fixed 107,680-byte
+packed capacity reduces mean coverage error by 48.98% across all
+256 stored views relative to its unfitted initialization. It passes all
+five public off-grid material screens, but stored coverage is still
+3.58× BC and four stored-view screens fail. The candidate is rejected.
+
+[The packed model, fitting procedure and independent checks](neural-source-primitives.md#fitted-aggregation-at-fixed-packed-capacity)
+retain both models, all 256 nominal images, all public sampling checks and
+the failed quality ratios. It is a learned explicit representation, not
+an MLP decoder; packed size and CPU fitting time establish neither runtime
+cost nor G4/G7 success.
+
 ## Next decision
 
-Use the verified source primitive controls to fit an aggregation at a fixed
-capacity. Compare the learned variant with the unfitted representation
-using the same primitive budget and with native hard-cut LODs, then with
-the strongest practical conventional control. Full source geometry is
-not a free runtime input. Primitive records, wood geometry, sorting/tiling,
-updates and scratch all count.
+Test source-derived spatial aggregation before another fit: group
+neighbouring cards in three dimensions and preserve their spatial and
+material moments. Compare that unfitted representation and its fitted
+variant at equal capacity against the current prefix-thinning controls,
+native LODs and the strongest practical atlas. Full source geometry,
+wood, sorting, tiling, caches and scratch are not free runtime inputs.
 
 Keep fitted-view quality, unseen views and sampling/footprint tests separate.
 A small packed payload alone does not meet G4. Complete production materials,
