@@ -1228,3 +1228,183 @@ allocation/DRM/PSS records, failed compile log and decision are preserved.
 This remains one static tree at 64 pixels with known lights. No family, unseen-light,
 motion or 8-512-pixel claim; G1-G7 remain unchanged and unmet.
 Manifest SHA-256: `62aeb743a297c6734bb92f9894bbd17c47a5871fb4881e537e89a823f4c651c5`.
+
+
+## Source-curve wood visibility: retire the two-group path
+
+**Decision: retire this experimental analytic-cone/two-group renderer for G4.**
+The current compact appearance representation still has no demonstrated joint
+quality, runtime and memory advantage. Keep the frozen fine-patch AA2 renderer as
+the quality control; change how visibility is represented before further fitting.
+
+The best new path uses 196,208 engine appearance/scratch bytes instead of 316,468,
+but complete requested live GPU allocations fall only from 726,068 to 605,808 bytes
+(16.56%, or 1.20x). It loses 0.435 dB against the frozen renderer, increases FLIP
+9.97% and LPIPS 13.30%, and has paced full-GPU p95/p99 of 1.315/1.356 ms versus
+0.270/0.272 ms. The equally informed conventional AA2 control is also stronger than
+a BC-only comparison suggests: the candidate passes only 10/24 numeric quality cases
+against it. This is a failed combined comparison, not a rendering win.
+
+### Fixed inputs and bounded experiment
+
+Solo on Pop!_OS. Work started 2026-10-27 19:48:18 UTC; the first complete assessment
+was recorded at 20:10:56 UTC, and the final decision at 20:14:53 UTC. Both are within
+the two-hour limit. Exactly two targeted follow-ups followed the first measurement.
+No new references, material-moment fitting, other training or model-selection sweep.
+
+The 1,897-patch best model remained frozen. The source-calibrated conventional
+1,897-patch model receives the same authored geometry, source materials, camera,
+lighting, sorting, footprint samples and new wood implementation. Its AA2 path is
+the strongest previously measured conventional compact control in this fixture;
+the lower-quality BC control is retained separately. Existing source-AA8 results
+remain the higher-cost source-quality control. None is denied useful source inputs.
+
+The new representation uses 264 closed circular frusta, one per existing source
+wood ring interval: 12 intervals per limb, 22 limbs. Endpoints and radii are derived
+from the [authored ring geometry](../engine/plant.wrela) and occupy 4,224 half-packed
+bytes appended to either unchanged patch payload. Circular frusta approximate the
+original angled polygonal rings; they are not exact source geometry. Conservative
+screen tiles cull cones; four ray samples find nearest wood, depth and radial shading
+normal. Sparse storage admits at most 512 wood-covered pixels and rejects overflow.
+
+Leaf fragments blend into two 64x64 RGBA16F targets, conditioned on samples that hit
+wood or remain open. This preserves partial wood occlusion but averages leaf
+transmittance within each group before compositing. It does not retain independent
+visibility samples. The complete output remains four-channel float32.
+
+A nondeployable CPU diagnostic using already-completed exact source-wood samples
+scores 39.545 dB; replacing that wood with quantized cones scores 39.428 dB.
+The AMD cone path scores 39.428 dB as well. Thus exact wood alone would not recover
+the frozen renderer's 40.128 dB. GPU-versus-CPU display discrepancy is less than
+0.09% of reference MSE in these diagnostic cases; raw RGBA agreement is not exact.
+This oracle is quality diagnosis only, with no runtime or memory advantage claimed.
+
+### Two follow-ups and rendered quality
+
+1. **Reuse the idle target away from wood.** In pixels where all four wood samples
+   miss, split foliage samples into left/right pairs instead of averaging all four.
+   This follows the measured error: 67.7% of excess neutral-background display MSE
+   lies outside a one-pixel-dilated source-wood mask. No new allocation or fitting.
+   Frozen quality improves 0.265 dB, but still misses tolerance.
+2. **Share cone geometry work.** Project cones once per workgroup into shared
+   camera-space records and reject individual rays by conservative bounds before
+   intersection. Preserve the first follow-up's filtering. Separate profiles show
+   substantially lower saturated GPU time, but it remains over six times the AA2
+   control's saturated p95. Paced tails still fail. No precise causal speedup or
+   promotion claim is made from separate, unpaired profiles.
+
+All quality rows use the completed AA64 shaded references: two public views,
+four known analytic lights and three backgrounds. FLIP uses the established 67-pixel-
+per-degree LDR pipeline; LPIPS uses the pinned AlexNet configuration. Coverage and
+boundary errors are measured against the same source images.
+
+| Variant | PSNR dB | FLIP | LPIPS | Coverage MAE | Worst boundary p99 px |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| bc-chunk | 30.685 | 0.06237 | 0.037719 | 0.016777 | 2.038 |
+| frozen-aa2-indexed | 40.128 | 0.01235 | 0.001889 | 0.008832 | 1.414 |
+| calibrated-aa2-indexed | 39.740 | 0.01392 | 0.002116 | 0.009348 | 1.414 |
+| frozen-cones | 39.428 | 0.01457 | 0.002298 | 0.010020 | 1.414 |
+| calibrated-cones | 38.939 | 0.01666 | 0.002662 | 0.010877 | 1.414 |
+| frozen-open-split | 39.693 | 0.01358 | 0.002141 | 0.009403 | 1.414 |
+| calibrated-open-split | 39.245 | 0.01549 | 0.002464 | 0.010133 | 1.414 |
+| frozen-cached-cones | 39.693 | 0.01358 | 0.002141 | 0.009403 | 1.414 |
+| calibrated-cached-cones | 39.245 | 0.01549 | 0.002464 | 0.010133 | 1.414 |
+
+The final candidate's mean quality is close to conventional AA2 (-0.047 dB,
+FLIP -2.45%, LPIPS +1.15%), yet only 10/24 individual cases satisfy all three
+numeric tolerances. Against frozen AA2 it passes 1/24; against the lower-quality BC
+control it passes 22/24. Mean scores and favorable BC ratios do not establish G4.
+The frozen model is 0.448 dB better than the calibrated model on the same final cone
+path, but this quality difference does not overcome its cost or prove a neural
+architecture advantage.
+
+![Source, frozen and conventional AA2, initial and final cone comparisons](figures/neural-wood-visibility.png)
+
+Images are nearest-neighbor enlargements of actual 64-pixel captures. The final row
+shows absolute display error multiplied by ten. Numerical evaluation uses float
+captures, not these quantized illustrations.
+
+### Complete rendering cost and memory
+
+Same AMD RADV RENOIR/PCI 1002:164c, Ryzen 5 5500U, Mesa 26.1.6,
+Chrome 154.0.8037.57; Wrela 0.9.0 compiler
+de9b81e52a7747870dfbd5223cb8aeb41e584d23. One worker, 60 warmup and 240 measured
+frames. View/light updates alternate every frame. Builds, captures, profiles and
+metric scoring run sequentially.
+
+GPU spans include cone decoding/projection/intersection, leaf decoding and shading,
+visibility blending, integration and final display composite. CPU frame time includes
+sorting, index/parameter uploads and command recording. CPU-start-to-final-GPU
+completion also includes browser/driver notification; it is not input-to-photon.
+Initialization is excluded from steady-state time but included in allocation peaks.
+
+| Variant | Paced GPU p95/p99 ms | Saturated GPU p95 ms | CPU frame p99 ms | CPU to final GPU p95/p99 ms | Engine appearance/scratch bytes | All requested live/peak GPU bytes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| bc-chunk | 0.105/0.105 | 0.027 | 0.404 | 4.495/4.832 | 3,146,032 | 3,555,632/6,701,376 |
+| frozen-aa2-indexed | 0.270/0.272 | 0.071 | 1.053 | 4.936/5.191 | 316,468 | 726,068/742,452 |
+| calibrated-aa2-indexed | 0.272/0.274 | 0.071 | 1.001 | 4.231/4.326 | 316,468 | 726,068/742,452 |
+| frozen-cones | 1.847/1.922 | 0.968 | 1.078 | 4.851/5.133 | 196,208 | 605,808/622,192 |
+| calibrated-cones | 1.846/1.906 | 0.968 | 1.005 | 5.740/5.959 | 196,208 | 605,808/622,192 |
+| frozen-open-split | 1.313/1.639 | 0.969 | 1.007 | 6.456/6.659 | 196,208 | 605,808/622,192 |
+| calibrated-open-split | 1.990/2.189 | 0.968 | 1.057 | 5.761/5.956 | 196,208 | 605,808/622,192 |
+| frozen-cached-cones | 1.315/1.356 | 0.442 | 1.080 | 4.801/4.985 | 196,208 | 605,808/622,192 |
+| calibrated-cached-cones | 1.293/1.369 | 0.441 | 1.019 | 4.821/4.973 | 196,208 | 605,808/622,192 |
+
+The AA2 and BC rows reuse sealed controls from the preceding block; they are not
+new paired runs. The large runtime failure plus quality failure is sufficient to
+reject the candidate, without repeatedly profiling unchanged controls.
+
+All requested bytes count weights, cone geometry, indices, scratch, maps, inactive/
+fallback resources, output, staging, upload/uniform rings and screen allocations.
+The engine-only column excludes 409,600 identically sized bytes: 65,536 output,
+262,144 upload ring, 65,536 uniform ring and 16,384 screen. Its 16.03x ratio against
+BC becomes 5.87x when all requested allocations are included. Neither establishes
+the G4 target, especially against the stronger source-calibrated control.
+
+Shared workgroup storage is also explicit: the initial/split path declares 1,060
+bytes for its cone list; the cached path declares 14,884 bytes, including 13,824
+geometry bytes. These are per-workgroup shader storage, not persistent buffers.
+Register spills, compiler caches and driver storage cannot be assigned to this asset
+from requested-buffer counts. Actual resident snapshots follow:
+
+| Variant | DRM resident VRAM bytes | DRM resident GTT bytes | Browser-group PSS bytes |
+| --- | ---: | ---: | ---: |
+| bc-chunk | 25,747,456 | 9,756,672 | 486,687,744 |
+| frozen-aa2-indexed | 17,367,040 | 9,838,592 | 477,849,600 |
+| calibrated-aa2-indexed | 17,387,520 | 9,838,592 | 477,125,632 |
+| frozen-cones | 17,637,376 | 9,838,592 | 483,670,016 |
+| calibrated-cones | 17,375,232 | 9,854,976 | 483,975,168 |
+| frozen-open-split | 17,653,760 | 9,953,280 | 483,088,384 |
+| calibrated-open-split | 17,375,232 | 9,854,976 | 483,990,528 |
+| frozen-cached-cones | 17,371,136 | 9,838,592 | 480,525,312 |
+| calibrated-cached-cones | 17,637,376 | 9,838,592 | 481,431,552 |
+
+These UMA counters overlap and must not be added. They expose whole-client physical
+residency including retained driver storage where reported, not per-asset attribution
+or transient physical peaks. No physical 16x reduction is demonstrated. All raw
+allocation, completion, DRM and PSS records are retained.
+
+### Next architecture bet and checks
+
+Preserve independent subpixel coverage, depth and order through compositing. Use
+hardware indexed source wood as the control, and investigate compressing visibility
+records or sharing appearance work after visibility is known. Wrela's source fields
+can guide which samples and surfaces deserve work; the next representation must
+preserve their occlusion, rather than merge visibility groups early. A learned
+radiance model is only justified by a specific remaining shaded error.
+
+The retired diagnostic is disabled by default. The original model hash and all eight
+frozen outputs remain byte-identical, with unchanged native resource counts.
+A forced one-record capacity makes all pixels in all eight captures explicitly invalid:
+no dropped wood or implicit fallback is accepted. Cached geometry changes individual
+RGB values by less than 0.000003; all 16 before/after image pairs and actual scores are
+retained without claiming byte identity. Format/type checks pass. The initial cached
+shader parse failure and corrected reporting-bound check are preserved. No full-suite or PR-readiness claim is made.
+
+Evidence: build/neural-evidence/g4-wood-visibility-v1 on Pop!_OS. Six measured
+candidate/control variants, both follow-ups, CPU diagnostics, failed and successful
+sources, builds, float images and measurements are preserved. Existing truth and
+prior control manifests are dependencies; no reference infrastructure was expanded.
+One static tree at 64 pixels cannot establish family, motion, unseen-light or
+8-512-pixel behavior. G1-G7 remain unchanged and unmet.
+Manifest SHA-256: `d67ea7938d2cc74c2834b2c49eca4d11124572149ee378e908e9eae3612a7139`.

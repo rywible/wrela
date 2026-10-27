@@ -2089,3 +2089,34 @@ error is near wood in12% of pixels; next bet is filtered joint wood/leaf visibil
 initial helper-borrow compiler error retained. No full-suite claim. G1-G7 unchanged.
 [Full evidence and limits](neural-shaded-appearance.md#fine-visibility-patches-change-wood-sampling).
 Evidence build/neural-evidence/g4-footprint-visibility-v1 on Pop!_OS.
+
+
+### 2026-10-27 — G4 source-curve visibility: retire conditional two-group rendering
+
+Pop!_OS Ryzen 5 5500U / AMD RADV RENOIR, Mesa 26.1.6, Chrome 154.0.8037.57;
+Wrela 0.9.0 compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23. Parent
+7aa4ee338d714e9acf736970fe557afe3e61889b plus archived experimental sources. Solo/sequential.
+Frozen 1,897-patch model and equally informed source-calibrated control; same completed
+AA64 references, 2 views x 4 lights x 3 backgrounds. No training or new references.
+
+264 half-packed source-derived wood frusta (4,224 bytes), four rays per pixel,
+bounded sparse depth records, wood/open conditional foliage blending. Initial frozen
+39.428dB. Follow-up1 reuses the idle target in wood-free pixels:39.693dB.
+Follow-up2 shares cone projection per workgroup; six measured variants retained.
+Final frozen39.693dB vsAA2 40.128dB, FLIP+9.97%,LPIPS+13.30%,coverageMAE.009403vs.008832.
+Only10/24 quality cases pass versus conventional AA2;1/24 versus frozenAA2.
+
+Full paced GPU95/99 1.315/1.356ms vsAA2 .270/.272ms; saturated95 .442vs.071ms.
+CPU99 1.080ms; CPU-to-finalGPU95/99 4.801/4.985ms. All requested GPUlive/peak
+605,808/622,192bytes vsAA2 726,068/742,452; engine-only196,208vs316,468.
+Cached workgroup shared storage14,884bytes. Actual DRM residentVRAM17,371,136,
+GTT9,838,592, browserPSS480,525,312bytes recorded separately; UMAoverlapnot summed.
+No16xphysical or combinedG4advantage. Prior sealed controls reused; no paired speedup claim.
+
+First assessment22m38s afterstart; finaldecision26m36s afterstart, within2h.
+Retire this path; next representation must retain independent subpixel visibility.
+Default8images byte-identical and nativecounts unchanged; forced overflow8frames invalid;
+format/type pass. Initial parse failure and nonidentical cached RGB results retained.
+No full-suite claim. G1-G7 unchanged and unmet.
+[Full evidence and limits](neural-shaded-appearance.md#source-curve-wood-visibility-retire-the-two-group-path).
+Evidence build/neural-evidence/g4-wood-visibility-v1 on Pop!_OS.

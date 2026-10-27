@@ -18,15 +18,17 @@
 
 ## Immediate milestone
 
-The [G4 representation and execution experiments](neural-shaded-appearance.md) reject
-promotion. Ordered subpixel GPU evaluation restores quality; three alternating pairs
-show GPU global sorting trades 43% less CPU work for 2.74× saturated GPU cost, with
-essentially unchanged memory. Retire tile compute and keep original frozen CPU-sorted
-AA2 as the diagnostic control. Both targeted follow-ups are exhausted.
+The [source-curve visibility assessment](neural-shaded-appearance.md#source-curve-wood-visibility-retire-the-two-group-path)
+retires analytic cones with two conditional visibility groups. After two targeted
+follow-ups, the frozen model loses0.435dB, uses605,808all-requested live GPUbytes
+versus726,068forAA2, and costs1.315ms pacedGPUp95 versus0.270ms. The candidate fails14of24 quality cases against the stronger
+source-calibrated AA2 control.
+No combined G4 advantage is demonstrated.
 
-Next bet: a compact source-conditioned joint visibility/shaded-response representation,
-against a conventional low-rank/basis fit with identical useful source inputs. Do not
-resume independent material-moment fitting. All G1–G7 remain unchanged and unmet.
+Keep frozen fine-patch AA2 as the control. The next bet must preserve independent
+subpixel coverage/depth/order until compositing, while sharing or compressing
+appearance work after visibility is known. No material-moment fitting is justified.
+All G1-G7 remain unchanged and unmet.
 
 ## Evidence recorded so far
 
@@ -2264,3 +2266,17 @@ No training or new references. All eleven variants/failures preserved; default e
 images unchanged. G1-G7 unchanged and unmet.
 [Full result](neural-shaded-appearance.md#fine-visibility-patches-change-wood-sampling).
 Evidence build/neural-evidence/g4-footprint-visibility-v1; manifest `62aeb743a297c6734bb92f9894bbd17c47a5871fb4881e537e89a823f4c651c5`.
+
+
+### Source-curve wood visibility: decisive rejection
+
+First complete AMD assessment within23minutes; final decision within27minutes.
+Six measured variants preserve frozen/conventional parity of inputs. Both targeted
+follow-ups used: reuse otherwise idle foliage filtering capacity, then shared
+cone geometry projection. No training or new reference captures.
+Retire this diagnostic: quality, complete cost and all requested/physical residency
+do not jointly satisfyG4. Original model/default8images and nativecounts unchanged;
+forcedoverflowrejectsall8frames. Raw failures, CPUdiagnostics and allresults retained.
+[Detailed report](neural-shaded-appearance.md#source-curve-wood-visibility-retire-the-two-group-path).
+Evidence build/neural-evidence/g4-wood-visibility-v1 on Pop!_OS.
+Manifest SHA-256: `d67ea7938d2cc74c2834b2c49eca4d11124572149ee378e908e9eae3612a7139`.

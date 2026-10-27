@@ -1,0 +1,308 @@
+// Retired G4 source-curve/two-group visibility diagnostic; disabled by default.
+// See docs/neural-shaded-appearance.md. Kept to reproduce the failed comparison.
+// Cones use authored geometry only; no learned or reference-image inputs.
+use std::gpu::{
+    Atomics, GpuBuffer, Half2, LocalId, SharedAtomics, Shared, WorkgroupId, Texture, Rgba16Float,
+    GlobalId, dispatch, write, barrier,
+}
+use engine::neural::half_at
+use engine::light::{Lit, matte}
+
+pub const ENABLED: bool = false
+pub const CACHE_GEOMETRY: bool = false
+pub const OPEN_SPLIT: bool = false
+pub const SEGMENTS: u32 = 264
+pub const CAPACITY: u32 = 512
+pub const MAP_WORDS: u32 = 2049
+pub const STORAGE_WORDS: u32 = MAP_WORDS + CAPACITY * 2
+
+pub struct Camera: Copy + GpuData {
+    pub direction: vec3,
+    pub right: vec3,
+    pub up: vec3,
+    pub illumination: u32,
+}
+
+struct Segment: Copy {
+    a: vec4,
+    b: vec4,
+}
+
+struct Hit: Copy {
+    toward: f32,
+    normal: vec3,
+}
+
+struct Projected: Copy + GpuData {
+    centre: vec4,
+    axis: vec4,
+    shape: vec4,
+}
+
+fn project(c: Camera, s: Segment) -> Projected {
+    let middle = (s.a.xyz + s.b.xyz) * 0.5
+    let length = length(s.b.xyz - s.a.xyz)
+    let axis = (s.b.xyz - s.a.xyz) / length
+    Projected {
+        centre: vec4(dot(middle, c.right), dot(middle, c.up), dot(middle, c.direction), s.a.w),
+        axis: vec4(dot(axis, c.right), dot(axis, c.up), dot(axis, c.direction), length),
+        shape: vec4((s.b.w - s.a.w) / length, s.b.w, 0.0, 0.0),
+    }
+}
+
+fn intersect_projected(c: Camera, s: Projected, xy: vec2) -> Hit {
+    let extent = abs(s.axis.xy) * (s.axis.w * 0.5) + vec2(max(s.centre.w, s.shape.y))
+    let delta = xy - s.centre.xy
+    if abs(delta.x) > extent.x || abs(delta.y) > extent.y {
+        return Hit { toward: -1.0, normal: c.direction }
+    }
+    let axis = s.axis.xyz
+    let p = vec3(delta, 0.0)
+    let along = dot(p, axis)
+    let z = along + s.axis.w * 0.5
+    let dz = -axis.z
+    let radial = p - axis * along
+    let radial_ray = vec3(0.0, 0.0, -1.0) - axis * dz
+    let radius = s.centre.w + s.shape.x * z
+    let a = dot(radial_ray, radial_ray) - (s.shape.x * dz) * (s.shape.x * dz)
+    let b = dot(radial, radial_ray) - radius * s.shape.x * dz
+    let cc = dot(radial, radial) - radius * radius
+    var best = 1.0e9
+    let discriminant = b * b - a * cc
+    if discriminant >= 0.0 {
+        if abs(a) > 1.0e-8 {
+            let root = sqrt(discriminant)
+            for i in 0..2 {
+                let t = (-b + if i == 0 { -root } else { root }) / a
+                let at = z + t * dz
+                if at >= 0.0 && at <= s.axis.w { best = min(best, t) }
+            }
+        } else if abs(b) > 1.0e-8 {
+            let t = -cc / (2.0 * b)
+            let at = z + t * dz
+            if at >= 0.0 && at <= s.axis.w { best = min(best, t) }
+        }
+    }
+    if abs(dz) > 1.0e-8 {
+        for i in 0..2 {
+            let at = if i == 0 { 0.0 } else { s.axis.w }
+            let r = if i == 0 { s.centre.w } else { s.shape.y }
+            let t = (at - z) / dz
+            let local = radial + t * radial_ray
+            if dot(local, local) <= r * r { best = min(best, t) }
+        }
+    }
+    if best == 1.0e9 { return Hit { toward: -1.0, normal: c.direction } }
+    let local = radial + best * radial_ray
+    let n = if dot(local, local) > 1.0e-12 { normalize(local) } else { vec3(0.0, 0.0, 1.0) }
+    Hit {
+        toward: 0.5 + 0.5 * (s.centre.z - best),
+        normal: c.right * n.x + c.up * n.y + c.direction * n.z,
+    }
+}
+
+fn segment(w: [Half2], i: u32) -> Segment {
+    let at = data::COUNT * 28 + i * 8
+    Segment {
+        a: vec4(half_at(w, at), half_at(w, at + 1), half_at(w, at + 2), half_at(w, at + 3)),
+        b: vec4(half_at(w, at + 4), half_at(w, at + 5), half_at(w, at + 6), half_at(w, at + 7)),
+    }
+}
+
+fn intersect(c: Camera, s: Segment, xy: vec2) -> Hit {
+    let axis_length = length(s.b.xyz - s.a.xyz)
+    let axis = (s.b.xyz - s.a.xyz) / axis_length
+    let slope = (s.b.w - s.a.w) / axis_length
+    // Rebase the infinite orthographic ray near this segment to avoid cancellation
+    // for small radii at a camera origin far from the tree.
+    let middle_depth = dot((s.a.xyz + s.b.xyz) * 0.5, c.direction)
+    let origin = c.right * xy.x + c.up * xy.y + c.direction * middle_depth
+    let ray = -c.direction
+    let p = origin - s.a.xyz
+    let z = dot(p, axis)
+    let dz = dot(ray, axis)
+    let radial = p - axis * z
+    let radial_ray = ray - axis * dz
+    let radius = s.a.w + slope * z
+    let a = dot(radial_ray, radial_ray) - (slope * dz) * (slope * dz)
+    let b = dot(radial, radial_ray) - radius * slope * dz
+    let cc = dot(radial, radial) - radius * radius
+    var best = 1.0e9
+    let discriminant = b * b - a * cc
+    if discriminant >= 0.0 {
+        if abs(a) > 1.0e-8 {
+            let root = sqrt(discriminant)
+            for i in 0..2 {
+                let t = (-b + if i == 0 { -root } else { root }) / a
+                let at = z + t * dz
+                if at >= 0.0 && at <= axis_length { best = min(best, t) }
+            }
+        } else if abs(b) > 1.0e-8 {
+            let t = -cc / (2.0 * b)
+            let at = z + t * dz
+            if at >= 0.0 && at <= axis_length { best = min(best, t) }
+        }
+    }
+    if abs(dz) > 1.0e-8 {
+        for i in 0..2 {
+            let at = if i == 0 { 0.0 } else { axis_length }
+            let r = if i == 0 { s.a.w } else { s.b.w }
+            let t = (at - z) / dz
+            let local = radial + t * radial_ray
+            if dot(local, local) <= r * r { best = min(best, t) }
+        }
+    }
+    if best == 1.0e9 { return Hit { toward: -1.0, normal: c.direction } }
+    let local = radial + best * radial_ray
+    let n = if dot(local, local) > 1.0e-12 { normalize(local) } else { c.direction }
+    // The authored wood shader uses radial normals rather than taper-adjusted normals.
+    Hit { toward: 0.5 + 0.5 * (middle_depth - best), normal: n }
+}
+
+@compute(32)
+fn prepare(
+    c: Camera,
+    w: [Half2],
+    map: mut Atomics<u32>,
+    out: mut Atomics<u32>,
+    list: mut SharedAtomics<265>,
+    projected: mut Shared<Projected, 288>,
+    group: WorkgroupId,
+    lid: LocalId,
+) {
+    let tile = vec2u(group.x % 8, group.x / 8)
+    let lo = vec2(tile) * 0.25 - vec2(1.0)
+    let hi = lo + vec2(0.25)
+    if lid.x == 0 { list.store(i: 0, value: 0) }
+    list.barrier()
+    for block in 0..9 {
+        let i = block * 32 + lid.x
+        if i < SEGMENTS {
+            let s = segment(w, i)
+            if CACHE_GEOMETRY { projected.write(projected.chunk(lid), block, project(c, s)) }
+            let a = vec2(dot(s.a.xyz, c.right), dot(s.a.xyz, c.up))
+            let b = vec2(dot(s.b.xyz, c.right), dot(s.b.xyz, c.up))
+            let r = max(s.a.w, s.b.w)
+            let lower = min(a, b) - vec2(r)
+            let upper = max(a, b) + vec2(r)
+            if upper.x >= lo.x && upper.y >= lo.y && lower.x <= hi.x && lower.y <= hi.y {
+                let slot = list.add(i: 0, value: 1)
+                list.store(i: slot + 1, value: i)
+            }
+        }
+    }
+    list.barrier()
+    barrier(mut projected)
+    let n = list.load(0)
+    let base_pixel = tile * 8 + vec2u((lid.x % 4) * 2, lid.x / 4)
+    var packed_map = 0
+    let light = relight::light(c.illumination)
+    for side in 0..2 {
+        let pixel = base_pixel + vec2u(side, 0)
+        var depth = vec4(0.0)
+        var sum = vec4(0.0)
+        for sample in 0..4 {
+            let offset = vec2(if sample % 2 == 0 { 0.25 } else { 0.75 }, if sample / 2 == 0 {
+                0.25
+            } else { 0.75 })
+            let xy = (vec2(pixel) + offset) / 32.0 - vec2(1.0)
+            var best = Hit { toward: -1.0, normal: c.direction }
+            var selected = SEGMENTS
+            for j in 0..n {
+                let i = list.load(j + 1)
+                let h = if CACHE_GEOMETRY { intersect_projected(c, projected.get(i), xy) } else {
+                    intersect(c, segment(w, i), xy)
+                }
+                if h.toward > best.toward || (h.toward == best.toward && i < selected) {
+                    best = h
+                    selected = i
+                }
+            }
+            if best.toward >= 0.0 {
+                depth[sample] = best.toward
+                let surface = Lit {
+                    albedo: data::BARK,
+                    n: best.normal,
+                    sun: 1.0,
+                    sky: relight::sky(best.normal),
+                    through: vec3(0.0),
+                }
+                sum += vec4(matte(light, surface, world: vec3(0.0), eye: c.direction), 1.0)
+            }
+        }
+        var id = 0
+        if sum.a > 0.0 {
+            let slot = map.add(i: 2048, value: 1)
+            if slot < CAPACITY {
+                id = slot + 1
+                map.store(i: MAP_WORDS + 2 * slot, value: Half2::encode(depth.xy).bits)
+                map.store(i: MAP_WORDS + 2 * slot + 1, value: Half2::encode(depth.zw).bits)
+            } else { id = 65535 }
+        }
+        packed_map |= id << (side * 16)
+        let at = 4 * (pixel.y * 64 + pixel.x)
+        let value = sum * 0.25
+        for k in 0..4 { out.store(i: at + k, value: bitcast_u32(value[k])) }
+    }
+    map.store(i: base_pixel.y * 32 + base_pixel.x / 2, value: packed_map)
+}
+
+pub fn depths(map: [u32], pixel: u32) -> vec4 {
+    let id = (map[pixel / 2] >> ((pixel % 2) * 16)) & 65535
+    if id == 0 || id == 65535 { return vec4(0.0) }
+    let a = Half2 { bits: map[MAP_WORDS + 2 * (id - 1)] }.decode()
+    let b = Half2 { bits: map[MAP_WORDS + 2 * (id - 1) + 1] }.decode()
+    vec4(a, b)
+}
+
+pub fn render(
+    c: Camera,
+    model: GpuBuffer<Half2>,
+    map: mut GpuBuffer<u32>,
+    out: mut GpuBuffer<u32>,
+) {
+    write(mut map, 2048, [0])
+    dispatch(prepare.bind(c, model.items(), mut map, mut out), groups: 64)
+}
+
+@compute(64)
+fn resolve(
+    open: Texture<Rgba16Float>,
+    covered: Texture<Rgba16Float>,
+    map: [u32],
+    out: mut Atomics<u32>,
+    id: GlobalId,
+) {
+    if id.x >= 4096 { return }
+    let at = id.x * 4
+    if map[2048] > CAPACITY {
+        out.store(i: at, value: bitcast_u32(1.0))
+        out.store(i: at + 1, value: bitcast_u32(0.0))
+        out.store(i: at + 2, value: bitcast_u32(1.0))
+        out.store(i: at + 3, value: bitcast_u32(-1.0))
+        return
+    }
+    let wood = vec4(
+        bitcast_f32(out.load(at)),
+        bitcast_f32(out.load(at + 1)),
+        bitcast_f32(out.load(at + 2)),
+        bitcast_f32(out.load(at + 3)),
+    )
+    let a = open.load(id.x % 64, id.x / 64)
+    let b = covered.load(id.x % 64, id.x / 64)
+    var value = vec4(
+        a.rgb * (1.0 - wood.a) + b.rgb * wood.a + wood.rgb * (1.0 - b.a),
+        a.a * (1.0 - wood.a) + wood.a,
+    )
+    if OPEN_SPLIT && wood.a == 0.0 { value = (a + b) * 0.5 }
+    for i in 0..4 { out.store(i: at + i, value: bitcast_u32(value[i])) }
+}
+
+pub fn finish(
+    open: Texture<Rgba16Float>,
+    covered: Texture<Rgba16Float>,
+    map: GpuBuffer<u32>,
+    out: mut GpuBuffer<u32>,
+) {
+    dispatch(resolve.bind(open, covered, map.items(), mut out), over: 4096)
+}
