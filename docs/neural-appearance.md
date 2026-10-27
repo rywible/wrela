@@ -141,29 +141,59 @@ production rendering.
 
 ![Full and coarse source crowns at a fixed off-grid angle](figures/neural-appearance-source.png)
 
+## Batched source corpus and two cooperating models
+
+Capture a fixed range of hemisphere views with one build/load:
+
+```bash
+wrela tool appearance --timeout 1800 --blob-budget 3221225472 -- source-grid 7 64 0 64 0 256 --bc
+```
+
+The arguments are seed, output size, card level, spatial grid, first view
+and count. View i uses ((i mod 16 + 0.5)/16, (floor(i/16) + 0.5)/16).
+Each view has its own directory. Optional `--bc` requires a size divisible
+by four and exports actual GPU-decoded material moments and raw compressed
+blocks. `area-bc.txt` identifies the layout: BC7 colour holds sqrt conditional
+linear albedo times coverage and coverage; BC7 geometry holds mapped mean
+normal XYZ and one; BC5 holds conditional toward and crown depth. Decode
+caps mean-normal length at one without forcing unit length.
+
+The full 256-view source corpus passes the same 32²→64² convergence checks.
+A fixed two-model trial learns view-local coverage/toward and a shared 3D
+material field conditioned on reconstructed position and viewing direction.
+Quantized latents plus half weights occupy 161,522 bytes before runtime
+overhead. The independently replayed model remains rejected: it loses to
+the 3 MiB source-integrated conventional control. Source, fitting, model
+bytes and all comparisons are in the
+[measured record](neural-rendering-progress.md#source-integrated-visibility-and-shared-material-field-trial).
+
+Offline depth reprojection helps both representations at unseen camera
+directions. Moving conventional toward into an independent BC5 channel
+also improves the control without increasing its payload. After one
+reprojection step the neural trial still has 41% higher coverage error and
+87% higher crown-depth error. Public validation on four between-view
+directions and a second placement seed is useful for development, not a
+sealed G4 or G7 result. No production model or shader changes.
+
+![Stored and unseen directions: source, stronger BC control, rejected neural field and errors](figures/neural-appearance-field.png)
+
 ## Next decision
 
-Before integrating a decoder into production, test whether a representation
-that shares information through the crown's source geometry can preserve the
-normal/depth/silhouette relationship at the full memory budget. Independently
-storing all views is expensive; a coordinate MLP alone is too lossy in these
-experiments. The source-generated off-grid views now expose changes before
-compression. They must validate any proposed sharing, alongside changed individuals and
-the production lighting and motion checks still missing.
+Visibility and position remain the limiting errors in this trial. Increasing
+a material decoder's capacity alone would not address the observed coverage
+loss. The next representation should be conditioned on authored geometry
+and the pixel footprint, and should preserve position/coverage together
+under view changes. The view-facing source cards themselves change with
+camera direction; a single fixed 3D surface is an approximation. Test that
+assumption explicitly before treating a mean position as sufficient.
 
-The new area reference also changes the interpretation of the old grid trial:
-its smooth coverage is closer to integrated coverage than the point-sampled
-BC atlas on the tested stored views, but its normal moments remain much worse.
-It stays rejected. Train future representations against the source footprint,
-and preserve coverage, normals, position and depth together; do not optimize
-only the old point-atlas reconstruction loss.
-
-A view-page cache remains a possible runtime strategy, not an implementation
-or success claim. Its decoded pages, compression/decode scratch, cache misses,
-fallback and update spikes must all count. Compare against stronger conventional
-compression and the engine's volume representation before claiming G4.
-The current two individuals are public diagnostics; they do not constitute
-G7's twenty held-out assets or its five-minute validated-build requirement.
+The source pipeline can generate these targets and controlled variations,
+but the complete production material, lights, wind, motion, unseen assets,
+footprint range and strongest conventional alternatives are still required.
+A view-page cache remains a possible runtime strategy; decoded pages,
+scratch, misses, fallback and update spikes must all count. Neither the
+packed payload nor this CPU fit satisfies G4's resident memory/timing
+requirements or G7's twenty-asset validated-build requirement.
 
 ![Fixed view 103: albedo, coverage and decoded normals for the bake, BC, shipped MLP and quantized grid](figures/neural-appearance-view103.png)
 

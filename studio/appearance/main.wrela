@@ -90,6 +90,10 @@ fn probe(b: drive::Build, directory: str) -> Result<(), ToolError> {
 
 struct SourceConfig: Copy {
     enabled: bool = false,
+    batch: bool = false,
+    compress: bool = false,
+    first: u32 = 0,
+    count: u32 = 1,
     probe: bool = false,
     px: u32 = 0,
     py: u32 = 0,
@@ -105,8 +109,9 @@ fn capture_source(
     directory: str,
     seed: u32,
     c: SourceConfig,
+    initialize: bool,
 ) -> Result<(), ToolError> {
-    let _ = untrapped("init", drive::steps(b, [Step::Init]).wait()?)?
+    if initialize { let _ = untrapped("init", drive::steps(b, [Step::Init]).wait()?)? }
     let saw = untrapped(
         "source",
         drive::steps(
@@ -159,6 +164,39 @@ fn capture_source(
     let metadata = f"asset=great_tree\nseed={seed}\nview_grid_x={c.gx}\nview_grid_y={c.gy}\nsize={c.size}\ncard_level={c.level}\nspatial_grid={c.grid}\nlayout=row_major_12_f32_le\nchannels=linear_albedo_rgb_times_coverage,coverage,world_normal_xyz_times_coverage,normalized_toward_times_coverage,normalized_depth_times_coverage,reserved_zero_3\nspatial_sampling=regular_grid_pixel_centres_rendered_at_size_times_grid_then_box_averaged\naccumulation=nearest_Q20_ties_positive_infinity_exact_signed_two_word_sum_then_f32_mean\nreference=source_card_limb_material_diagnostic_not_full_production_lighting_or_G4_truth\nmaterial=existing_bake_hard_leaf_cut_crown_normal_flat_bark\nbounds=existing_bake_bounds_shared_between_card_levels\n"
     let _ = files::write(f"{directory}/capture.txt", metadata.as_bytes()).wait()?
     print(f"appearance: exported source.f32 ({expected} bytes)")
+    if c.compress {
+        let names = ["area-bc.f32", "area-colour.bc7", "area-geometry.bc7", "area-depth.bc5"]
+        for mode in 0..4 {
+            let _ = untrapped(
+                "area compression",
+                drive::steps(
+                    b,
+                    [
+                        Step::Call(
+                            String::from("source_compress"),
+                            Vec::from([Scalar::I32(i32(mode))]),
+                        ),
+                    ],
+                ).wait()?,
+            )?
+            let ids = untrapped("area buffers", drive::steps(b, [Step::Buffers]).wait()?)?
+            borrow buffers = ids.buffers[0]
+            var read = untrapped(
+                "area readback",
+                drive::steps(b, [
+                    Step::ReadBuffer(buffers[buffers.len() - 1]),
+                ]).wait()?,
+            )?
+            let bytes = joined(data_bytes(read.bytes.remove(0))?)
+            let expected = c.size * c.size * if mode == 0 { 48 } else { 1 }
+            if bytes.len() != expected {
+                return Err(ToolError::new("wrong area compression byte count"))
+            }
+            write_file(f"{directory}/{names[mode]}", chunked(take bytes))?
+        }
+        let description = f"layout=area_independent_depth_v2\ncolour_bc7=sqrt_conditional_linear_albedo_times_coverage_rgb,coverage\ngeometry_bc7=conditional_mean_world_normal_xyz_mapped_to_0_1,one\ndepth_bc5=conditional_normalized_toward,conditional_normalized_crown_depth\ndecoded=source_12_f32_le_moment_layout\nnormal_decode=cap_length_at_one_without_unit_normalization\ncodec=existing_mode6_bc7_and_bc5_encoders\npayload=three_bytes_per_texel\n"
+        let _ = files::write(f"{directory}/area-bc.txt", description.as_bytes()).wait()?
+    }
     if c.probe {
         let _ = untrapped(
             "source pixel probe",
@@ -197,6 +235,27 @@ fn capture_source(
     Ok(())
 }
 
+fn capture_views(
+    b: drive::Build,
+    directory: str,
+    seed: u32,
+    c: SourceConfig,
+) -> Result<(), ToolError> {
+    for offset in 0..c.count {
+        let view = c.first + offset
+        let sample = SourceConfig {
+            gx: (f32(view % 16) + 0.5) / 16.0,
+            gy: (f32(view / 16) + 0.5) / 16.0,
+            ..c,
+        }
+        let destination = f"{directory}/view-{view}"
+        let _ = files::make_dirs(destination.as_str()).wait()?
+        capture_source(b, destination.as_str(), seed, sample, initialize: offset == 0)?
+        print(f"appearance: completed source view {view}")
+    }
+    Ok(())
+}
+
 fn run(seed: u32, only_probe: bool, source: SourceConfig) -> Result<(), ToolError> {
     let now = time::utc_now().wait()?
     let directory = f"out/runs/{now.seconds}-{now.nanos}"
@@ -218,8 +277,10 @@ fn run(seed: u32, only_probe: bool, source: SourceConfig) -> Result<(), ToolErro
     load.workers = 1
     load.timeout = 600.0
     let b = drive::load(f"{directory}/fixture", load).wait()?.build
-    let result = if source.enabled {
-        capture_source(b, directory.as_str(), seed, source)
+    let result = if source.batch {
+        capture_views(b, directory.as_str(), seed, source)
+    } else if source.enabled {
+        capture_source(b, directory.as_str(), seed, source, initialize: true)
     } else if only_probe { probe(b, directory.as_str()) } else {
         capture(b, directory.as_str(), seed)
     }
@@ -234,7 +295,36 @@ pub fn tool() -> u32 {
     var seed = 7
     var source = SourceConfig {}
     let only_probe = given.len() == 1 && given[0].as_str() == "bc-probe"
-    if given.len() > 0 && given[0].as_str() == "source" {
+    if given.len() > 0 && given[0].as_str() == "source-grid" {
+        if given.len() != 7 && given.len() != 8 {
+            print("usage: appearance source-grid SEED SIZE LEVEL GRID FIRST COUNT [--bc]")
+            return 2
+        }
+        let Some(n) = given[1].as_str().parse_u32() else { return 2 }
+        let Some(size) = given[2].as_str().parse_u32() else { return 2 }
+        let Some(level) = given[3].as_str().parse_u32() else { return 2 }
+        let Some(grid) = given[4].as_str().parse_u32() else { return 2 }
+        let Some(first) = given[5].as_str().parse_u32() else { return 2 }
+        let Some(count) = given[6].as_str().parse_u32() else { return 2 }
+        if size == 0 ||
+            size > 512 ||
+            grid == 0 ||
+            grid > 128 ||
+            size * grid > 8192 ||
+            level > 2 ||
+            first >= 256 ||
+            count == 0 ||
+            count > 256 - first {
+            print("invalid source-grid size, card level, sampling grid, or view range")
+            return 2
+        }
+        seed = n
+        source = SourceConfig { enabled: true, batch: true, first, count, size, level, grid }
+        if given.len() == 8 {
+            if given[7].as_str() != "--bc" || size % 4 != 0 { return 2 }
+            source.compress = true
+        }
+    } else if given.len() > 0 && given[0].as_str() == "source" {
         if given.len() != 7 && given.len() != 10 {
             print("usage: appearance source SEED GX GY SIZE LEVEL GRID [--pixel X Y]")
             return 2

@@ -1555,3 +1555,36 @@ Evidence `build/neural-evidence/appearance-source-v1/manifest.json`,
 SHA-256 `18ecd3ef083820e855b80822914d5895eb78503f96b1e27ad7ceb8a8c61570b7`.
 Final source `3fc23e8e9a709bb1cf6bc68fb5cd7217c54c657293b6cece0ed1c3b604927134`; external scripts
 `4d82762514accd10faeae3135e1590f509b161d1f17eeb6decb0c4458c9a2167`. Focused checks pass; no full-suite/PR-ready claim.
+
+## Source-integrated appearance-field experiment (Pop!_OS AMD)
+
+Public authored great-tree material diagnostics at 64×64 pixels/view; native
+RADV RENOIR (Ryzen 5 5500U integrated Radeon, PCI 1002:164c), Mesa
+26.1.6-1pop0~1787580452~24.04~a5619ea, Wrela 0.9.0 compiler
+`de9b81e52a7747870dfbd5223cb8aeb41e584d23`. All 256 stored directions
+pass the fixed 32²→64² spatial convergence check. CPU PyTorch 2.5.1+cpu,
+four threads, fits the fixed 8,192-step two-model checkpoint in 160.781 s;
+full prediction plus reference-assisted ablation export takes 2.936 s.
+
+The 161,522-byte neural payload is rejected by the material-quality screen.
+At four public off-grid directions, with one identical depth-reprojection
+step, mean coverage/normal/toward/crown-depth moment errors are
+0.036517/0.037720/0.023352/0.001071 for the candidate and
+0.025883/0.034725/0.015426/0.000572 for the 3 MiB conventional control.
+The revised control stores toward and crown depth in independent BC5 channels;
+normal error falls 6.09% and toward error 68.91% at the fitted directions
+versus its earlier same-size layout, with identical colour/coverage and
+crown-depth outputs. No best-encoder claim.
+
+Reference batches take 11.605 s (grid 32) and 21.148 s (grid 64);
+the final full conventional capture takes 36.657 s. These include
+compilation, source cooking, capture/encoding and readback; they are not
+renderer latency. Packed payloads exclude resident scratch/cache/fallback.
+No browser timing, G4/G7 success, sealed score or human result is claimed.
+Model replay, actual AMD BC readbacks, all-view projection identities and
+the final byte-identical repeated capture are checked.
+
+See [the complete experiment and limitations](neural-rendering-progress.md#source-integrated-visibility-and-shared-material-field-trial).
+Evidence manifest SHA-256 `9d41ea7cec470cada043f4bfdf7a5b2b6686d79c12dc410a32d9dea57c4d9339`; final source
+`e8a82d12be929d625eb4aeda4cb11b0335fe9ce8ccca2fbb636a8f4aa11b16bf`; scripts
+`fad0c5185d5ddcdb8ba70ae11c6b27a2a029e286bd199e15f01ab29f57f65fa3`. Earlier failed layouts/evaluators are retained.

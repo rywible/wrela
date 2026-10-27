@@ -1448,3 +1448,127 @@ Focused tool/fixture checks, formatting, allow-list and diff checks pass.
 No full-suite or PR-readiness claim. The next model should learn footprint
 integrals while preserving the geometry/normal/depth relationship; matching
 the old point-atlas labels alone is insufficient.
+
+## Source-integrated visibility and shared material-field trial
+
+The candidate is **rejected**. A stronger conventional layout is retained for
+future comparisons. This record runs on the Pop!_OS Ryzen 5 5500U/Radeon
+Graphics (RADV RENOIR, PCI 1002:164c), Wrela 0.9.0 compiler
+`de9b81e52a7747870dfbd5223cb8aeb41e584d23`, Mesa
+`26.1.6-1pop0~1787580452~24.04~a5619ea`. Neural fitting is CPU PyTorch
+2.5.1+cpu with four threads. Native material captures and BC decoding use
+the AMD GPU. No Mac or NVIDIA measurements are used.
+
+The source corpus now covers all 256 stored hemisphere directions of the
+full-card seed-7 tree at 64×64 output pixels. Every 32×32→64×64 spatial-grid
+comparison passes the previous convergence limits; no 128×128 escalation
+is needed. Four anchors match the previous individual captures exactly.
+A batched first/last-view control matches fresh captures, and all 256
+source outputs remain byte identical when compressed in both layout trials.
+These checks establish this finite source-material diagnostic, not production
+light-transport convergence.
+
+Two networks cooperate: a 16→32→32→2 visibility decoder predicts coverage
+and toward from per-view 16×16×2 fine and 8×8×2 coarse features; a
+12→48→48→7 material decoder uses the reconstructed position, viewing
+direction and shared 32³×4 plus 16³×2 trilinear grids. It predicts linear
+albedo, a mean normal bounded to the unit ball, and crown depth. The final
+prediction uses its own toward; a named reference-assisted ablation uses
+true toward only to diagnose coupling. The first 1,024 training steps use
+true toward, the next 2,048 transition to predicted toward, and the remaining
+steps use prediction alone. The fixed 8,192-step fit uses seed 941 and
+batch 4,096; no off-grid or seed-11 target enters fitting.
+
+Four-bit grids and f16 weights total 161,522 bytes (151,552 + 9,970).
+This excludes runtime scratch, cache, fallback and metadata: it is **not**
+a G4 resident-memory ratio. Fitting takes 160.781 s and exporting the full
+prediction plus oracle takes 2.936 s on the CPU. Batched reference captures
+take 11.605 s at grid 32 and 21.148 s at grid 64, including compilation,
+cooking and readback. None of these numbers is renderer latency or a
+validated G7 source-to-shipping result.
+
+Independent NumPy decoding of the packed model agrees with the trainer at
+8,192 predetermined samples within 4.424e-6; the oracle variant agrees
+within 5.961e-7. Swapping the shared field's axes changes output by 1.5823.
+Actual AMD BC readbacks agree with independent bit decoders within
+1.789e-7. The BC5 replay retains the earlier device-specific calibration.
+
+The initial conventional control places normal XYZ and toward together in
+BC7 and crown depth in one BC5 channel. Moving toward into the unused BC5
+channel keeps the payload at 3,145,728 bytes, makes toward independent of
+the normal interpolation index, and reduces mean toward error by 68.91%
+and normal-moment error by 6.09%. Coverage/albedo and crown-depth outputs
+are byte identical. Every training view improves normal and toward errors;
+the new layout passes its fixed per-view/mean comparison screen.
+It uses the available encoders and is not a demonstrated strongest
+conventional compressor.
+
+At the 256 fitted directions, using the independent-depth control:
+
+| Representation | Coverage MAE | Linear-albedo moment MAE | Normal-moment MAE | Toward-moment MAE | Crown-depth moment MAE |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Available area BC, independent-depth layout | 0.003060 | 0.001120 | 0.028233 | 0.002727 | 0.000139 |
+| Two-model candidate | 0.028702 | 0.003173 | 0.035664 | 0.021020 | 0.001019 |
+| Reference-assisted toward ablation | 0.028702 | 0.003061 | 0.031124 | 0.021020 | 0.000855 |
+
+These are attribute moments, not display PSNR, FLIP or LPIPS. The oracle
+retains predicted coverage and reported toward; only its material-query
+position uses reference toward. Its better normal result does not make it
+deployable.
+
+Four seed-7 directions between stored views form a public validation
+diagnostic. Each queries four neighbouring camera planes. A separate fixed
+ablation applies zero, one or two depth-reprojection steps equally to each
+representation, without target data. It solves the source plane's conditional
+toward against the current camera ray, queries revised UVs, and then blends
+coverage-weighted moments with the original view weights. Full per-case
+results also retain eight seed-11 perturbation cases using the same seed-7
+representations, not retrained individuals.
+
+| Representation | Coverage MAE | Linear-albedo moment MAE | Normal-moment MAE | Toward-moment MAE | Crown-depth moment MAE |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Uncompressed area atlas, zero steps | 0.036040 | 0.003676 | 0.033635 | 0.021091 | 0.000739 |
+| Uncompressed area atlas, one step | 0.022664 | 0.002271 | 0.021123 | 0.013724 | 0.000508 |
+| Independent-depth BC, zero steps | 0.036378 | 0.003867 | 0.042651 | 0.021157 | 0.000749 |
+| Independent-depth BC, one step | 0.025883 | 0.002767 | 0.034725 | 0.015426 | 0.000572 |
+| Two-model candidate, zero steps | 0.044610 | 0.004653 | 0.044015 | 0.027657 | 0.001191 |
+| Two-model candidate, one step | 0.036517 | 0.003826 | 0.037720 | 0.023352 | 0.001071 |
+
+At one reprojection step the candidate has 41.09% greater coverage error,
+38.29% greater albedo error, 8.62% greater normal error, 51.38% greater toward
+error and 87.35% greater crown-depth error than the same-step stronger BC
+control. Two steps do not reverse the rejection. The original model screen
+(required mean ratios ≤1.05 and no view above 1.10 for five moment MAEs)
+already failed against the weaker control. That screen is an experimental
+rejection rule, not a replacement for G4's unchanged quality/memory/runtime
+gates.
+
+The one-step ablation improves the candidate's five mean errors over its own
+zero-step result, but cannot establish a neural advantage. The first BC
+layout has tail regressions and fails the ablation's no-regression screen;
+all variants remain recorded. Geometry, compression and inference errors
+must be compared jointly rather than credited to the model alone.
+
+The offline projector's initial f32 identity error (2.0644e-6) exceeds the
+fixed 2e-6 control. Recomputing its analytic camera basis and transforms in
+f64 brings all 256 stored-view identities, at all three step counts, within
+1.491e-8. Candidate network arithmetic remains f32 with f16 weights.
+The intersection residual is below 1e-12 and a wrong-depth-sign control
+fails. The original evaluator and failure remain retained. An initial
+non-writable compute texture failure and metadata type-check failure are
+also retained with the repaired sources.
+
+The final rebuilt view-103 capture matches all five prior payloads exactly.
+Focused tool/fixture type checks, changed-file formatting, allow-list and
+diff checks pass. No full-suite or PR-readiness claim. There is no production
+model integration, no new browser timing, no sealed result, no human study
+and no G1–G7 success. The single footprint, bake-material semantics and
+view-facing cards remain limitations.
+
+Evidence: `build/neural-evidence/appearance-field-v1/manifest.json`,
+SHA-256 `9d41ea7cec470cada043f4bfdf7a5b2b6686d79c12dc410a32d9dea57c4d9339`; final source `e8a82d12be929d625eb4aeda4cb11b0335fe9ce8ccca2fbb636a8f4aa11b16bf`;
+external scripts `fad0c5185d5ddcdb8ba70ae11c6b27a2a029e286bd199e15f01ab29f57f65fa3`. Plans, model bytes, source targets,
+capture/decoder hashes, per-view metrics, failed trials, projected outputs
+and an illustrated comparison are retained. The next experiment should
+resolve visibility and position under view changes before adding decoder
+capacity or claiming appearance compression.

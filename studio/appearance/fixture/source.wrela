@@ -1,6 +1,7 @@
 // Public diagnostic of the authored card/limb geometry, before view-atlas lookup.
 // Uses the bake's material semantics (hard leaf cut, crown normals, flat bark),
 // not the complete production shader, wind, lighting, or a continuous leaf field.
+use engine::compress::{encode_bc5, encode_bc7}
 use engine::impostor::{BAKED, Bake, BakeVertex, hemi_dir}
 use engine::plant::{
     Card, LIMB_VERTICES, card_scale, card_tint, card_turn, cook_cards, leaf_age, leaf_at,
@@ -9,9 +10,9 @@ use engine::plant::{
 use great_tree::tree::great_tree
 use std::field::Tube
 use std::gpu::{
-    ClipPosition, DepthTexture, Flat, GlobalId, GpuBuffer, Rgba8, Rgba16Float, Sampler, Slots,
-    Texture, VertexIndex, begin_pass_with_depth, buffer, buffer_of, depth_texture, discard,
-    dispatch, draw, sampler, texture,
+    Bc5, Bc7, ClipPosition, DepthTexture, Flat, GlobalId, GpuBuffer, Rgba8, Rgba16Float, Sampler,
+    Slots, Texels, Texture, VertexIndex, begin_pass_with_depth, buffer, buffer_of, depth_texture,
+    discard, copy, copy_buffer_to_texture, dispatch, draw, sampler, texture, writable_texture,
 }
 
 pub struct Camera: Copy + GpuData {
@@ -193,6 +194,19 @@ fn integrate(
 }
 
 pub struct Source {
+    size: u32,
+    area_ready: bool,
+    area_colour: Texture<Rgba8>,
+    area_geometry: Texture<Rgba8>,
+    area_depth: Texture<Rgba16Float>,
+    bc_colour: Texture<Bc7>,
+    bc_geometry: Texture<Bc7>,
+    bc_depth: Texture<Bc5>,
+    colour_words: GpuBuffer<u32>,
+    geometry_words: GpuBuffer<u32>,
+    depth_words: GpuBuffer<u32>,
+    decoded: GpuBuffer<Moments>,
+    words: GpuBuffer<u32>,
     cards: GpuBuffer<Card>,
     limbs: GpuBuffer<Tube<4>>,
     pattern: Texture<Rgba8>,
@@ -205,6 +219,19 @@ pub struct Source {
 
 pub fn init() -> Source {
     Source {
+        size: 0,
+        area_ready: false,
+        area_colour: texture(width: 1, height: 1),
+        area_geometry: texture(width: 1, height: 1),
+        area_depth: texture(width: 1, height: 1),
+        bc_colour: texture(width: 4, height: 4),
+        bc_geometry: texture(width: 4, height: 4),
+        bc_depth: texture(width: 4, height: 4),
+        colour_words: buffer(1),
+        geometry_words: buffer(1),
+        depth_words: buffer(1),
+        decoded: buffer(1),
+        words: buffer(1),
         cards: buffer(1),
         limbs: buffer(1),
         pattern: texture(width: 1, height: 1),
@@ -293,6 +320,8 @@ pub fn capture(
         )
         p.end()
     }
+    s.size = size
+    s.area_ready = false
     s.moments = buffer(size * size)
     dispatch(integrate.bind(s.colour, s.normal, size, grid, mut s.moments), over: size * size)
     size * size * 48
@@ -329,4 +358,104 @@ pub fn probe(s: mut Source, x: u32, y: u32, grid: u32) -> u32 {
     s.probe = buffer(grid * grid)
     dispatch(probe_pixel.bind(s.colour, s.normal, x, y, grid, mut s.probe), over: grid * grid)
     grid * grid * 48
+}
+
+// Conventional control fitted to the same integrated source moments.
+// Two mode-6 BC7 blocks plus one BC5 block encode nine conditional attributes
+// with coverage. BC5 keeps toward and depth independent of the normal index.
+// This available encoder is not asserted to be strongest.
+@compute(8, 8)
+fn encode_area(
+    source: [Moments],
+    size: u32,
+    colour: mut Texels<Rgba8>,
+    geometry: mut Texels<Rgba8>,
+    depth: mut Texels<Rgba16Float>,
+    id: GlobalId,
+) {
+    if id.x >= size || id.y >= size { return }
+    let f = source[id.y * size + id.x]
+    let c = f.colour.a
+    let inv = 1.0 / max(c, 1.0e-6)
+    let albedo = saturate(f.colour.rgb * inv)
+    let n = clamp(f.geometry.xyz * inv, vec3(-1.0), vec3(1.0))
+    colour.store(id, vec4(sqrt(albedo) * c, c))
+    geometry.store(id, vec4(n * 0.5 + vec3(0.5), 1.0))
+    depth.store(id, vec4(0.0, 0.0, saturate(f.geometry.w * inv), saturate(f.detail.x * inv)))
+}
+
+@compute(64)
+fn decode_area(
+    colour: Texture<Bc7>,
+    geometry: Texture<Bc7>,
+    depth: Texture<Bc5>,
+    size: u32,
+    out: mut Slots<Moments>,
+    id: GlobalId,
+) {
+    if id.x >= size * size { return }
+    let x = id.x % size
+    let y = id.x / size
+    let c = colour.load(x, y)
+    let g = geometry.load(x, y)
+    let z: vec2 = depth.load(x, y)
+    let albedo = saturate(c.rgb / max(c.a, 1.0e-6))
+    let raw = g.rgb * 2.0 - vec3(1.0)
+    let n = raw / max(length(raw), 1.0)
+    out[id] = Moments {
+        colour: vec4(albedo * albedo * c.a, c.a),
+        geometry: vec4(n * c.a, z.x * c.a),
+        detail: vec4(z.y * c.a, 0.0, 0.0, 0.0),
+    }
+}
+
+pub fn compress(s: mut Source, mode: u32) -> u32 {
+    assert(s.size > 0 && s.size % 4 == 0 && mode <= 3)
+    let size = s.size
+    let blocks = vec2u(size / 4)
+    let count = blocks.x * blocks.y
+    if mode == 0 {
+        s.area_colour = writable_texture(width: size, height: size)
+        s.area_geometry = writable_texture(width: size, height: size)
+        s.area_depth = writable_texture(width: size, height: size)
+        dispatch(
+            encode_area.bind(
+                s.moments.items(),
+                size,
+                mut s.area_colour,
+                mut s.area_geometry,
+                mut s.area_depth,
+            ),
+            over: s.area_colour,
+        )
+        s.bc_colour = texture(width: size, height: size)
+        s.bc_geometry = texture(width: size, height: size)
+        s.bc_depth = texture(width: size, height: size)
+        s.colour_words = buffer(count * 4)
+        s.geometry_words = buffer(count * 4)
+        s.depth_words = buffer(count * 4)
+        dispatch(encode_bc7.bind(s.area_colour, blocks, mut s.colour_words), over: count)
+        dispatch(encode_bc7.bind(s.area_geometry, blocks, mut s.geometry_words), over: count)
+        dispatch(
+            encode_bc5.bind(s.area_depth, which: 1, blocks: blocks, out: mut s.depth_words),
+            over: count,
+        )
+        copy_buffer_to_texture(s.colour_words.items(), s.bc_colour.level_mut(0))
+        copy_buffer_to_texture(s.geometry_words.items(), s.bc_geometry.level_mut(0))
+        copy_buffer_to_texture(s.depth_words.items(), s.bc_depth.level_mut(0))
+        s.decoded = buffer(size * size)
+        dispatch(
+            decode_area.bind(s.bc_colour, s.bc_geometry, s.bc_depth, size, mut s.decoded),
+            over: size * size,
+        )
+        s.area_ready = true
+        return size * size * 48
+    }
+    assert(s.area_ready)
+    s.words = buffer(count * 4)
+    let from = if mode == 1 { s.colour_words.items() } else if mode == 2 {
+        s.geometry_words.items()
+    } else { s.depth_words.items() }
+    copy(from, s.words.items_mut())
+    count * 16
 }

@@ -195,7 +195,7 @@ pub fn source_capture(
     level: u32,
     grid: u32,
 ) -> u32 {
-    assert(!s.ready)
+    // A batch may replace the prior source snapshot after its readback.
     let bytes = source::capture(mut s.source, seed, gx, gy, size, level, grid)
     s.ready = true
     bytes
@@ -204,4 +204,9 @@ pub fn source_capture(
 pub fn source_probe(s: mut State, x: u32, y: u32, grid: u32) -> u32 {
     assert(s.ready)
     source::probe(mut s.source, x, y, grid)
+}
+
+pub fn source_compress(s: mut State, mode: u32) -> u32 {
+    assert(s.ready)
+    source::compress(mut s.source, mode)
 }
