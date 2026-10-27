@@ -116,6 +116,15 @@ Each entry says what was needed, what happens instead, how it was found, the evi
 - **Meanwhile:** `init` makes the stage and sets the field after (`var staged = stage()`, `staged.neural = …`).
 - **Status:** open: not yet cut down to a small program.
 
+### A package's const cache can outlive what it was computed from
+
+- **Needed:** a test run that reads what the sources say now.
+- **What happens:** with toolchain 0.9.0, `studio/tool`'s `the_server_serves_chrome` failed twice in this checkout ("a page opened after the failed build has the last good one") and passed in a fresh worktree of the same commit. Removing the package's `build/consts/` (512 `.wcv` entries, some from 2026-10-21, before the 0.9.0 pin) made it pass here too. A cached constant from an older build seems to have been read in place of the one the current sources give.
+- **Found:** 2026-10-26, in the final `wrela suite` of plan-world-class-2's Part B.
+- **Evidence:** `wrela test studio/tool the_server_serves_chrome` before and after `rm -rf studio/tool/build`, on commit cab08093.
+- **Meanwhile:** clear a package's `build/` when a test fails here and passes in a clean checkout.
+- **Status:** open: not yet cut down (which entry was stale, and why its key matched).
+
 ## Fixed
 
 ### A loop body's last call leaked its temporaries
