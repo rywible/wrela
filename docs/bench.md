@@ -1020,3 +1020,61 @@ the same three columns.
 ### Firefox
 
 Not checked: Firefox isn't installed on this machine, and installing it was left to its owner.
+
+## 2026-10-26: AMD neural-rendering budget baseline (a3ff61a4)
+
+Ryzen 5 5500U, AMD Radeon Graphics **RADV RENOIR** (1002:164c), Pop!_OS,
+Mesa 26.1.6-1pop0~1787580452~24.04~a5619ea. Wrela 0.9.0
+(compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23), Google Chrome 154.0.8037.57.
+All work ran on Pop, sequentially, after the reference and model experiments had stopped.
+
+These are fixed-pose clearing renderer fixtures, with simulation time held at zero,
+production heuristic reconstruction, and neural paths off. Scale and planned quality are
+fixed (pace=false, measured=false). They include the renderer and presentation passes,
+not gameplay simulation. Each run has 240 warmup and 240 measured frames, workers=1,
+release defaults. Chrome uses a saturated GPU run and a separate paced run with two frames
+in flight; its simulation rate is 60. **This is not the G6 120Hz, 20-minute protocol.**
+The 1× fixture uses its initial camera; the 4× adapter selects clearing shot 0. Do not infer
+a pure scale speedup from these different views. The 1080p and 4K 4× runs use the same build.
+
+| Run | GPU span median / p95 ms | Frame call median / p95 ms | Paced interval median / p95 ms |
+| --- | ---: | ---: | ---: |
+| Native, 1080p, native input | 48.474 / 51.424 | 51.592 / 54.403 | — |
+| Chrome, 1080p, native input | 46.155 / 48.670 | 1.730 / 2.035 | 47.980 / 95.190 |
+| Chrome, 1080p, 4× | 21.696 / 24.226 | 1.740 / 2.090 | 23.550 / 45.540 |
+| Chrome, 4K, 4× | 47.487 / 49.936 | 1.715 / 2.015 | 52.095 / 102.610 |
+
+Native frame calls include GPU waits. Chrome CPU calls, GPU spans and paced intervals
+are separate quantities; their medians are not added. The profiler’s p95 is nearest rank.
+These short, single diagnostic runs establish no confidence interval or sustained tail bound.
+
+| Production pass | Chrome 1080p 4× median / p95 ms | Chrome 4K 4× median / p95 ms |
+| --- | ---: | ---: |
+| temporal | 4.427 / 4.460 | 17.773 / 17.866 |
+| clouds | 6.319 / 7.109 | 6.415 / 7.320 |
+| vegetation prepass | 2.153 / 2.212 | 4.376 / 4.411 |
+| vegetation | 2.454 / 2.473 | 4.006 / 4.029 |
+| bloom | 2.039 / 2.064 | 8.206 / 8.258 |
+| probes again | 1.934 / 4.099 | 1.944 / 4.088 |
+| look | 0.470 / 0.475 | 1.480 / 1.487 |
+
+Labels may overlap and their medians are not additive. At 4K the temporal pass alone is
+17.773 ms median, versus G6’s reconstruction p95/p99 targets of 2/3 ms. Both 4× complete
+GPU spans are also well above the 8.33 ms complete-frame target. No acceptance gate passes.
+The measurements make temporal reconstruction, clouds and bloom concrete targets for
+whole-pipeline optimization; quality must be checked alongside any cost reduction.
+
+The native and Chrome 1× builds both hash to `45b6fdf16ebc84ced56f5d8b7a94f8f76dd29a4e9779ea1d8f620242d735fae2`.
+The 4× timing adapter builds hash to `34d728b94e7ad4f118ff3cb9a4afd8bb7fe17983ba68cb16e29a2aa687cf6e65`.
+The adapter only calls the existing clearing fixture’s configure(4,0,0), then its frame.
+Its complete source and manifest, commands’ workload fields, adapter reports and artifact hashes
+are retained at `build/neural-evidence/amd-budget-baseline.json` on Pop. Reports and retained
+builds/results are under `amd-native-1080`, `amd-chrome-1080`, `profile-4x` and
+`profile-4x-4k` in that evidence directory. Native 1× shares Chrome 1×’s retained build.
+The retained browser results contain the paced run’s timestamps; the top-level profile
+contains the saturated run’s summary. Do not silently mix those populations.
+
+Reproduction: `VK_DRIVER_FILES=/usr/share/vulkan/icd.d/radeon_icd.json wrela profile <fixture> --frames 240 --warmup 240 --workers 1 --size 1920x1080 --json`,
+adding `--chrome` for the browser, and `--size 3840x2160` for 4K.
+Use `studio/reconstruct/clearing` for the native-input fixture and the retained
+`build/neural-evidence/profile-4x/fixture` adapter for 4×.

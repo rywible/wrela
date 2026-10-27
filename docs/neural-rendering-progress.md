@@ -496,3 +496,21 @@ The run's `flip.json` embeds the scorer and records image hashes; `provenance.js
 the exact execution-source archive, compiler and AMD driver. The active measurement record
 outside the repository now marks this job completed. No elapsed capture time is used as a
 frame-rate or latency claim.
+
+### AMD browser budget baseline recorded
+
+With all earlier GPU experiments completed, fixed-quality production fixtures were profiled
+sequentially on the AMD. See the full conditions and evidence in
+[the budget baseline](bench.md#2026-10-26-amd-neural-rendering-budget-baseline-a3ff61a4).
+At 4×, browser GPU span is **21.696 / 24.226 ms median/p95 at 1080p** and
+**47.487 / 49.936 ms at 4K**. Temporal reconstruction alone is **4.427 / 4.460 ms**
+and **17.773 / 17.866 ms**, respectively. Clouds and bloom are additional large costs.
+These fixed-pose, short profiles are diagnostic; they are not the 120Hz/20-minute G6 protocol.
+They use the production heuristic decoder, not the raw control or the rejected neural model.
+
+The next model must therefore improve both the information retained for quality and the
+cost of reconstruction. A larger per-output-pixel residual MLP without a computation budget
+would ignore the measured constraint. Spatial feature work at input resolution, a small
+output decoder, and separately measured visibility/coverage handling are justified next
+experiments. Cloud and presentation work also require attention for the complete-frame goal.
+No claim is made that any proposed architecture will meet the gates.
