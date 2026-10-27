@@ -2060,3 +2060,32 @@ Strict conventional cache byte parity failure retained; actual cached quality sc
 No full-suite claim. G1-G7 unchanged and unmet.
 [Full evidence and limits](neural-shaded-appearance.md#local-response-decoder-retired).
 Evidence build/neural-evidence/g4-local-response-v1 on Pop!_OS.
+
+
+### 2026-10-27 — G4 footprint visibility: integration tradeoff, two fixture corrections
+
+Pop!_OS Ryzen 5 5500U / AMD RADV RENOIR, Mesa 26.1.6, Chrome 154.0.8037.57;
+Wrela 0.9.0 compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23. Parent
+8ba904a9936d92b8c9476e46d8fb6142c5a48182 plus archived source. Solo/sequential.
+Same AA64 truth: 2 public views x 4 analytic lights x 3 backgrounds. No new reference
+generation or training. Frozen 1,897 patches and conventional source-calibrated patches.
+
+Direct four-sample alpha averaging: 35.042 dB versus frozen AA2 40.128 dB.
+Follow-up1 streams four complete subpixel passes through reused 64px targets:
+40.163 dB, but more complete rendering cost. Follow-up2 reuses exact wood vertices
+through indexed drawing, already used in production engine::wood. Eleven variants retained.
+Indexed stream GPU95/99 0.948/0.950ms; AA2 0.270/0.272ms; BC 0.105/0.105ms.
+Indexed stream169,012 engine appearance/scratch bytes;578,612 live/594,996 peak all
+requested GPU bytes. Engine-only18.61x vs BC becomes6.15x with all allocations.
+Actual DRM/PSS snapshots recorded separately; overlapping UMA counters not summed.
+
+Retain fixture indexing: paired B,A,A,B,B,A saturated GPU median0.07840 ->0.06836ms,
+-12.76%; all3pairs improve12.64-13.01%; CPU inconclusive; +4,028 live index bytes.
+Retain bounded BC startup uploads: upload ring1MiB ->256KiB, identical images.
+No new neural or engine-wide win claimed. 93.91% of direct filtering's added displayed
+error is near wood in12% of pixels; next bet is filtered joint wood/leaf visibility.
+
+56 implementation-control images and default8images byte-identical. Format/type pass;
+initial helper-borrow compiler error retained. No full-suite claim. G1-G7 unchanged.
+[Full evidence and limits](neural-shaded-appearance.md#fine-visibility-patches-change-wood-sampling).
+Evidence build/neural-evidence/g4-footprint-visibility-v1 on Pop!_OS.

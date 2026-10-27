@@ -1063,3 +1063,168 @@ all six measured variants, checkpoints, optimizer curves, raw images, complete t
 allocation and physical-residency records, the failed parity check and the decision.
 Replay archives include the Wrela sources and external fitting/evaluation scripts.
 Manifest SHA-256: `ce4b84b4b62bd5d5a5f2b969d8bd62f265e1842fc79ecc37ad0bb816ba94e05b`.
+
+
+## Fine visibility patches: change wood sampling
+
+**Decision: change the wood/leaf visibility representation.** Retain the frozen fine
+patches and their AA2 quality path. Direct per-patch filtering loses too much quality;
+streaming all four complete visibility samples recovers quality but costs too much.
+Neither is promoted. No new G4 rendering architecture win is established.
+
+Two fixture corrections are retained: exact indexed wood drawing, already used in the
+production engine, and bounded conventional-atlas uploads. They improve the comparison's
+execution path; they are not a new neural advantage or an engine-wide speed claim.
+
+This block began 2026-10-27 at 19:18:23 UTC. Initial complete measurements finished at
+19:24:49; the decision was recorded at 19:42:52. Exactly two follow-ups were used.
+No training, new references or changes to G1-G7.
+
+### Frozen source knowledge and the consequential questions
+
+Reuse all 1,897 fine optical patches of the frozen best model, and the equally informed
+conventional source-calibrated patches. Positions, covariance, opacity and material
+parameters stay unchanged. Both retain the authored wood and receive identical filtering
+and execution changes. The 88-element neural decoder remains retired.
+
+The first path samples each patch's opacity four times across an output pixel, then
+blends the mean in depth order. It uses 64x64 color/depth targets instead of 128x128,
+saving 147,456 target bytes. Its wood remains point sampled. This deliberately tests an
+approximation: averaging each opacity before composing does not preserve every subpixel
+visibility correlation.
+
+Follow-up 1 renders all four jittered subpixel views, including wood and ordered leaves,
+through the same 64x64 targets, accumulating linear RGBA in the existing output buffer.
+Sort and upload once per frame. All four draws/passes and updates count. This preserves
+visibility sampling but can differ slightly from the AA2 rasterizer's subpixel precision.
+
+Follow-up 2 uses the existing [limb_corner/limb_point source geometry](../engine/plant.wrela)
+in an indexed instanced wood draw. Each limb's 1,008 triangle indices address 225 shared
+points; triangles, normals, curve samples and order are unchanged. The 4,032-byte index
+buffer replaces a 4-byte inactive buffer. The production [wood renderer](../engine/wood.wrela)
+already uses this approach; the diagnostic's expanded-vertex path was less efficient.
+Both the frozen and conventional models receive the correction.
+
+The BC atlas keeps every texel and shader equation. Initializing its buffers in 128 KiB
+chunks reduces the observed retained upload ring from 1 MiB to 256 KiB, matching the
+candidate's ring size. All eight BC images are byte-identical to the prior control.
+The older fixture differs by 188 inactive bytes; report the ring change directly rather
+than attributing that unrelated difference to the upload correction.
+
+### Shaded quality, including silhouettes
+
+The same completed AA64 source references, two public views, four analytic lights and
+three backgrounds supply the 24 shaded cases. The table includes every measured variant.
+
+| Variant | PSNR dB | FLIP | LPIPS | Mean coverage error | Worst boundary p99 px |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| bc-chunk | 30.685 | 0.06237 | 0.03772 | 0.01678 | 2.038 |
+| frozen-aa2-control | 40.128 | 0.01235 | 0.00189 | 0.00883 | 1.414 |
+| frozen-aa2-indexed | 40.128 | 0.01235 | 0.00189 | 0.00883 | 1.414 |
+| calibrated-aa2-indexed | 39.740 | 0.01392 | 0.00212 | 0.00935 | 1.414 |
+| frozen-direct4 | 35.042 | 0.01789 | 0.01158 | 0.01351 | 1.414 |
+| calibrated-direct4 | 34.858 | 0.01989 | 0.01191 | 0.01433 | 1.414 |
+| frozen-direct4-indexed | 35.042 | 0.01789 | 0.01158 | 0.01351 | 1.414 |
+| frozen-stream4 | 40.163 | 0.01234 | 0.00190 | 0.00882 | 1.414 |
+| calibrated-stream4 | 39.774 | 0.01391 | 0.00213 | 0.00933 | 1.414 |
+| frozen-stream4-indexed | 40.163 | 0.01234 | 0.00190 | 0.00882 | 1.414 |
+| calibrated-stream4-indexed | 39.774 | 0.01391 | 0.00213 | 0.00933 | 1.414 |
+
+Direct filtering reaches 35.042 dB versus 40.128 dB for frozen AA2. Streaming recovers
+40.163 dB; the small difference is not a trained improvement. Both source-calibrated
+controls show the same qualitative tradeoff. Each patch variant passes only 22/24
+numeric quality cases against the BC atlas; no full G4 quality pass is established.
+
+Using the existing source-wood sample masks on the neutral-gray background, 93.91% of
+direct filtering's extra displayed MSE against frozen AA2 lies within one pixel of projected wood. That region covers
+12.00% of the image. The mask includes foliage in front of and behind wood, so it does
+not prove that every masked error comes from wood alone. It does identify joint wood/
+leaf visibility as the next specific target. Remaining errors outside the mask still
+count in every whole-image quality score.
+
+![Completed reference, frozen fine patches, direct filtering and streamed visibility](figures/neural-footprint-visibility.png)
+
+### Complete rendering cost and residency
+
+Same Pop!_OS AMD RADV RENOIR/1002:164c, Ryzen 5 5500U, Mesa 26.1.6,
+Chrome 154.0.8037.57; Wrela 0.9.0 compiler
+de9b81e52a7747870dfbd5223cb8aeb41e584d23. One worker, 64x64 output, 60 warmup and
+240 measured frames. Solo, sequential builds/captures/profiles/scoring.
+
+GPU timing includes decoding, wood, visibility, integration and final compositing.
+CPU timing includes view/light changes, sorting, uploads and command recording.
+CPU-start-to-final-GPU completion includes browser/driver notification; it is not
+input-to-photon latency. Initialization contributes to peak memory, not steady-state time.
+
+| Variant | Paced GPU p95/p99 ms | CPU frame p99 ms | CPU to final GPU p95/p99 ms | Engine appearance/scratch bytes | All requested live/peak GPU bytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| bc-chunk | 0.105/0.105 | 0.404 | 4.495/4.832 | 3,146,032 | 3,555,632/6,701,376 |
+| frozen-aa2-control | 0.317/0.318 | 0.983 | 5.306/5.610 | 312,440 | 722,040/738,424 |
+| frozen-aa2-indexed | 0.270/0.272 | 1.053 | 4.936/5.191 | 316,468 | 726,068/742,452 |
+| calibrated-aa2-indexed | 0.272/0.274 | 1.001 | 4.231/4.326 | 316,468 | 726,068/742,452 |
+| frozen-direct4 | 0.309/0.315 | 0.970 | 4.771/4.851 | 164,984 | 574,584/590,968 |
+| calibrated-direct4 | 0.309/0.312 | 1.037 | 4.655/4.883 | 164,984 | 574,584/590,968 |
+| frozen-direct4-indexed | 0.265/0.269 | 1.016 | 4.800/5.000 | 169,012 | 578,612/594,996 |
+| frozen-stream4 | 1.125/1.128 | 1.021 | 4.861/5.089 | 164,984 | 574,584/590,968 |
+| calibrated-stream4 | 1.121/1.123 | 1.043 | 5.051/5.186 | 164,984 | 574,584/590,968 |
+| frozen-stream4-indexed | 0.948/0.950 | 1.075 | 4.921/5.187 | 169,012 | 578,612/594,996 |
+| calibrated-stream4-indexed | 0.950/0.951 | 1.047 | 4.766/4.995 | 169,012 | 578,612/594,996 |
+
+The indexed stream uses 169,012 engine appearance/scratch bytes, versus 316,468 for
+indexed AA2. Yet its complete paced GPU p95 is 0.948 ms versus 0.270 ms; BC is 0.105 ms.
+The engine-only ratio against BC is 18.61x, but it excludes the output and host-managed
+rings/screen. Including every requested allocation reduces the ratio to 6.15x.
+Even with identical-sized common rings, exclusions must remain explicit; this is not
+proof of the complete G4 residency target.
+
+Three paired runs of indexed versus expanded wood drawing on the unchanged AA2 path
+use order B,A,A,B,B,A and read-only power/temperature sampling. Median saturated full-GPU
+time falls from 0.07840 to 0.06836 ms: -12.76%, with individual pair changes from -13.01%
+to -12.64%. CPU timing is inconclusive. Standalone paced p95/p99 falls from
+0.317/0.318 to 0.270/0.272 ms, at 4,028 extra live index bytes. Retain this fixture
+correction, without claiming a CPU or whole-engine throughput improvement. The paired
+baseline is a private copy; archived measurements were not overwritten.
+
+Actual physical residency snapshots are separate from requested buffer/texture sizes:
+
+| Variant | DRM resident VRAM bytes | DRM resident GTT bytes | Browser-group PSS bytes |
+| --- | ---: | ---: | ---: |
+| bc-chunk | 25,747,456 | 9,756,672 | 486,687,744 |
+| frozen-aa2-control | 17,301,504 | 9,854,976 | 477,434,880 |
+| frozen-aa2-indexed | 17,367,040 | 9,838,592 | 477,849,600 |
+| calibrated-aa2-indexed | 17,387,520 | 9,838,592 | 477,125,632 |
+| frozen-direct4 | 17,367,040 | 9,838,592 | 478,234,624 |
+| calibrated-direct4 | 17,367,040 | 9,854,976 | 477,139,968 |
+| frozen-direct4-indexed | 17,633,280 | 9,838,592 | 478,456,832 |
+| frozen-stream4 | 17,371,136 | 9,838,592 | 479,877,120 |
+| calibrated-stream4 | 17,371,136 | 9,838,592 | 479,728,640 |
+| frozen-stream4-indexed | 17,371,136 | 9,838,592 | 479,994,880 |
+| calibrated-stream4-indexed | 17,367,040 | 9,854,976 | 480,855,040 |
+
+These overlapping UMA counters must not be added. They include retained driver/client
+storage and caches where exposed, but do not isolate per-asset residency or prove
+transient physical peaks. No physical 16x saving is established. Raw allocation records
+include scratch, indices, inactive/fallback data, output, staging, upload/uniform rings
+and screen resources; the physical snapshots and all completion records are retained.
+
+### Next architecture-level bet and verification
+
+Keep fine foliage detail. Test a source-derived analytic or sparse wood coverage/depth
+representation that filters the pixel footprint directly, while preserving partial
+wood/leaf occlusion. It must avoid four complete repeated wood draws, pass the whole
+shaded image and silhouettes, and use the same authored curve/source information for
+its conventional control. This is the next hypothesis, not an achieved rendering win.
+
+No material-moment or other training was performed. Fifty-six implementation-control
+images prove that indexed topology and bounded BC uploads preserve the corresponding
+outputs byte for byte. The promoted default keeps the original model and AA2 quality;
+all eight images remain identical, and the extra 4,028 live index bytes are verified.
+Format/type checks pass. An initial helper-borrow compile failure is retained. No full
+suite or PR-readiness claim is made.
+
+Evidence: build/neural-evidence/g4-footprint-visibility-v1 on Pop!_OS. All eleven variants,
+the two follow-ups, paired timing and power samples, source/build archives, raw images,
+allocation/DRM/PSS records, failed compile log and decision are preserved.
+This remains one static tree at 64 pixels with known lights. No family, unseen-light,
+motion or 8-512-pixel claim; G1-G7 remain unchanged and unmet.
+Manifest SHA-256: `62aeb743a297c6734bb92f9894bbd17c47a5871fb4881e537e89a823f4c651c5`.

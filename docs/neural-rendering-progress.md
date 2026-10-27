@@ -2239,3 +2239,28 @@ strict conventional cache parity retained. Frozen default images and native allo
 counts unchanged. G1-G7 unchanged and unmet.
 [Full result](neural-shaded-appearance.md#local-response-decoder-retired).
 Evidence build/neural-evidence/g4-local-response-v1; manifest `ce4b84b4b62bd5d5a5f2b969d8bd62f265e1842fc79ecc37ad0bb816ba94e05b`.
+
+
+### 2026-10-27: fine-patch filtering exposes wood visibility as the next target
+
+No new G4 rendering win. Direct footprint filtering reduces engine appearance/scratch
+allocation to 164,984 bytes but drops frozen quality from 40.128 to 35.042 dB. Full
+sample streaming recovers 40.163 dB; after exact indexed wood reuse it still costs
+GPU p95 0.948 ms versus 0.270 ms for AA2 and 0.105 ms for BC. All requested allocations
+give only a 6.15x saving versus BC, despite the 18.61x engine-only ratio.
+
+Two follow-ups completed; decision in 25 minutes: change joint wood/leaf visibility
+representation, retain fine foliage patches and frozen AA2 as the quality control.
+93.91% of direct filtering's added error lies in/adjacent to wood, covering 12% of pixels;
+this is localization, not complete causal attribution. Next bet: directly filtered
+source-curve coverage/depth, with equally informed conventional controls.
+
+Retain two fixture corrections: indexed exact wood, already used in production, lowers
+paired complete GPU median 12.76% with unchanged pixels (+4,028 live bytes; CPU inconclusive).
+Bounded BC uploads reduce its retained ring from 1 MiB to 256 KiB with identical pixels.
+These correct the comparison; they are not a new neural or engine-wide performance win.
+
+No training or new references. All eleven variants/failures preserved; default eight
+images unchanged. G1-G7 unchanged and unmet.
+[Full result](neural-shaded-appearance.md#fine-visibility-patches-change-wood-sampling).
+Evidence build/neural-evidence/g4-footprint-visibility-v1; manifest `62aeb743a297c6734bb92f9894bbd17c47a5871fb4881e537e89a823f4c651c5`.

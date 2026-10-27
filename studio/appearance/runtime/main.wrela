@@ -3,14 +3,14 @@
 use engine::impostor::{hemi_dir, view_basis}
 use engine::neural::half_at
 use engine::light::{Lit, matte}
-use engine::plant::{LIMB_VERTICES, limb_vertex}
+use engine::plant::{LIMB_VERTICES, limb_vertex, limb_corner, limb_point}
 use std::field::Tube
 use std::gpu::{
     Bc5, Bc7, Blend, ClipPosition, Compare, Depth, DepthTexture, Flat, FragCoord, GlobalId,
-    GpuBuffer, Half2, InstanceIndex, Memory, Rgba16Float, Rgba32Float, Slots, Targets2, Targets3,
-    Texture, VertexIndex, begin_screen_pass, begin_pass_with_depth, begin_pass3_with_depth,
-    begin_pass2_with_depth, buffer, buffer_of, copy_buffer_to_texture, depth_texture, dispatch,
-    draw, label, memory, texture, write,
+    GpuBuffer, Half2, InstanceIndex, DepthPass, Memory, Rgba16Float, Rgba32Float, Slots, Targets2,
+    Targets3, Texture, VertexIndex, begin_screen_pass, begin_pass_with_depth,
+    begin_pass3_with_depth, begin_pass2_with_depth, buffer, buffer_of, copy_buffer_to_texture,
+    depth_texture, dispatch, draw, label, memory, texture, write,
 }
 
 struct Camera: Copy + GpuData {
@@ -21,6 +21,7 @@ struct Camera: Copy + GpuData {
     size: u32,
     aa: u32,
     illumination: u32,
+    jitter: vec2,
 }
 
 fn camera(view: u32, light: u32, aa: u32) -> Camera {
@@ -33,7 +34,16 @@ fn camera(view: u32, light: u32, aa: u32) -> Camera {
     let d = hemi_dir(g)
     let up0 = if d.y > 0.99 { vec3(0.0, 0.0, 1.0) } else { vec3(0.0, 1.0, 0.0) }
     let right = normalize(cross(up0, d))
-    Camera { direction: d, right, up: cross(d, right), grid: g, size: 64, aa, illumination: light }
+    Camera {
+        direction: d,
+        right,
+        up: cross(d, right),
+        grid: g,
+        size: 64,
+        aa,
+        illumination: light,
+        jitter: vec2(0.0),
+    }
 }
 
 struct OpticalVertex: Copy {
@@ -102,7 +112,7 @@ fn optical_vertex(
     let radii = sqrt(vec2(xx, yy) * 18.0)
     let qx = [-1.0, 1.0, 1.0, -1.0, 1.0, -1.0]
     let qy = [-1.0, -1.0, 1.0, -1.0, 1.0, 1.0]
-    let support = radii + if config::MODE >= 4 && config::MODE <= 6 {
+    let support = radii + if (config::MODE >= 4 && config::MODE <= 6) || footprint::SAMPLES > 0 {
         vec2(1.0 / f32(c.size))
     } else { vec2(0.0) }
     let delta = vec2(qx[v.index % 6], qy[v.index % 6]) * support
@@ -143,7 +153,9 @@ fn optical_vertex(
         local3: Flat { value: coefficients.c3 },
         local4: Flat { value: coefficients.c4 },
         local5: Flat { value: coefficients.c5 },
-        clip: ClipPosition { position: vec4(at.x, -at.y, 1.0 - depth, 1.0) },
+        clip: ClipPosition {
+            position: vec4(at.x - c.jitter.x, -(at.y - c.jitter.y), 1.0 - depth, 1.0),
+        },
         delta,
         radiance: Flat { value: radiance },
         inverse: Flat { value: vec3(yy, -xy, xx) / determinant },
@@ -205,7 +217,18 @@ fn optical(v: OpticalVertex) -> Targets3<vec4, vec4, vec4> {
 @fragment
 fn optical_radiance(v: OpticalVertex) -> vec4 {
     if local_data::KIND == 0 {
-        let a = alpha_of(v)
+        var a = 0.0
+        if footprint::SAMPLES == 0 { a = alpha_of(v) } else {
+            for y in 0..footprint::SAMPLES {
+                for x in 0..footprint::SAMPLES {
+                    let offset = ((vec2(f32(x), f32(y)) + vec2(0.5)) / f32(footprint::SAMPLES) -
+                        vec2(0.5)) *
+                        (2.0 / 64.0)
+                    a += alpha_of(OpticalVertex { delta: v.delta + offset, ..v })
+                }
+            }
+            a /= f32(footprint::SAMPLES * footprint::SAMPLES)
+        }
         return vec4(v.radiance.value * a, a)
     }
     let correction = local_response(v)
@@ -340,7 +363,24 @@ fn wood_vertex(v: VertexIndex, c: Camera, wood: [Tube<4>]) -> WoodVertex {
     let xy = vec2(dot(p, c.right), dot(p, c.up))
     let toward = saturate(0.5 + 0.5 * dot(p, c.direction))
     WoodVertex {
-        clip: ClipPosition { position: vec4(xy.x, -xy.y, 1.0 - toward, 1.0) },
+        clip: ClipPosition {
+            position: vec4(xy.x - c.jitter.x, -(xy.y - c.jitter.y), 1.0 - toward, 1.0),
+        },
+        normal: n,
+        toward,
+    }
+}
+
+@vertex
+fn wood_indexed(v: VertexIndex, instance: InstanceIndex, c: Camera, wood: [Tube<4>]) -> WoodVertex {
+    let (centre, n, radius, _) = limb_point(wood[instance.index], v.index)
+    let p = (centre + n * radius - data::MID) / data::HALF
+    let xy = vec2(dot(p, c.right), dot(p, c.up))
+    let toward = saturate(0.5 + 0.5 * dot(p, c.direction))
+    WoodVertex {
+        clip: ClipPosition {
+            position: vec4(xy.x - c.jitter.x, -(xy.y - c.jitter.y), 1.0 - toward, 1.0),
+        },
         normal: n,
         toward,
     }
@@ -366,6 +406,19 @@ fn wood_radiance(v: WoodVertex, c: Camera) -> vec4 {
         through: vec3(0.0),
     }
     vec4(matte(relight::light(c.illumination), surface, world: vec3(0.0), eye: c.direction), 1.0)
+}
+
+@compute(64)
+fn accumulate_stream(
+    sample: u32,
+    colour: Texture<Rgba16Float>,
+    out: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    if id.x >= 4096 { return }
+    let value = colour.load(id.x % 64, id.x / 64)
+    let sum = if sample == 0 { value } else { out[id] + value }
+    out[id] = if sample == 3 { sum * 0.25 } else { sum }
 }
 
 @compute(64)
@@ -570,9 +623,61 @@ pub struct State {
     tile_cache: GpuBuffer<tiles::Projected>,
 }
 
+// Identical source triangles; indexed drawing can reuse their shared vertex results.
+fn draw_wood(
+    wood: GpuBuffer<Tube<4>>,
+    indices: GpuBuffer<u32>,
+    p: DepthPass<Rgba16Float>,
+    c: Camera,
+) {
+    if footprint::INDEXED_WOOD && config::MODE == 2 {
+        draw(
+            p,
+            wood_indexed.bind(c, wood.items()),
+            wood_radiance.bind(c),
+            indices: indices,
+            index_count: LIMB_VERTICES,
+            instances: data::WOOD.len(),
+        )
+    } else {
+        draw(
+            p,
+            wood_vertex.bind(c, wood.items()),
+            wood_radiance.bind(c),
+            vertices: data::WOOD.len() * LIMB_VERTICES,
+            instances: 1,
+        )
+    }
+}
+
+// Keep conventional startup uploads bounded; measure the retained host ring.
+fn bc_upload(words: [u32]) -> GpuBuffer<u32> {
+    if !footprint::CHUNK_BC { return buffer_of(words) }
+    assert(words.len() % 32768 == 0)
+    var out = buffer(words.len())
+    var part = Vec::filled(32768, 0)
+    for chunk in 0..words.len() / 32768 {
+        for i in 0..32768 { part[i] = words[chunk * 32768 + i] }
+        write(mut out, chunk * 32768, part)
+    }
+    take out
+}
+
 pub fn init() -> State {
     assert(config::MODE <= 9 && config::AA > 0 && profile::SHAPE <= 1)
     assert(local_data::KIND <= 3)
+    assert(footprint::SAMPLES == 0 || footprint::SAMPLES == 2 || footprint::SAMPLES == 4)
+    if footprint::STREAM {
+        assert(
+            config::MODE == 2 &&
+                config::AA == 1 &&
+                footprint::SAMPLES == 0 &&
+                local_data::KIND == 0,
+        )
+    }
+    if footprint::SAMPLES > 0 {
+        assert(config::MODE == 2 && config::AA == 1 && local_data::KIND == 0)
+    }
     assert(!local_data::CACHED || local_data::KIND > 0)
     if local_data::KIND > 0 {
         assert(config::MODE == 2 && config::AA == 2 && profile::SHAPE == 1 && data::COUNT == 88)
@@ -609,9 +714,9 @@ pub fn init() -> State {
         s.bc_colour = texture(width: 1024, height: 1024)
         s.bc_normal = texture(width: 1024, height: 1024)
         s.bc_depth = texture(width: 1024, height: 1024)
-        let a = buffer_of(data::COLOUR)
-        let b = buffer_of(data::NORMAL)
-        let c = buffer_of(data::DEPTH)
+        let a = bc_upload(data::COLOUR)
+        let b = bc_upload(data::NORMAL)
+        let c = bc_upload(data::DEPTH)
         copy_buffer_to_texture(a.items(), s.bc_colour.level_mut(0))
         copy_buffer_to_texture(b.items(), s.bc_normal.level_mut(0))
         copy_buffer_to_texture(c.items(), s.bc_depth.level_mut(0))
@@ -638,6 +743,11 @@ pub fn init() -> State {
         }
         s.depth = depth_texture(width: 64 * aa, height: 64 * aa)
     }
+    if footprint::INDEXED_WOOD && config::MODE == 2 {
+        var indices: Vec<u32> = Vec::new()
+        for i in 0..LIMB_VERTICES { indices.push(limb_corner(i)) }
+        s.tile_counts = buffer_of(indices)
+    }
     if local_data::CACHED { s.tile_out = buffer(data::COUNT * 24) }
     if config::MODE == 7 || config::MODE == 8 {
         assert(aa == 2)
@@ -654,9 +764,53 @@ pub fn configure(s: mut State, view: u32, illumination: u32) {
     s.illumination = illumination
 }
 
+// Preserve all four visibility samples while reusing one low-resolution target pair.
+fn render_stream(s: mut State, base: Camera) {
+    for i in 0..data::COUNT {
+        let at = i * 28
+        let p = vec3(
+            half_at(data::MODEL, at),
+            half_at(data::MODEL, at + 1),
+            half_at(data::MODEL, at + 2),
+        )
+        s.sorted[i] = vec2(saturate(0.5 + 0.5 * dot(p, base.direction)), f32(i))
+    }
+    s.sorted.sort_by_in(|a, b| a.x < b.x || a.x == b.x && a.y > b.y, mut s.room)
+    for i in 0..data::COUNT { s.indices[i] = u32(s.sorted[i].y) }
+    write(mut s.order, 0, s.indices)
+    for y in 0..2 {
+        for x in 0..2 {
+            let jitter = (vec2(f32(x), f32(y)) - vec2(0.5)) / 64.0
+            let c = Camera { jitter, ..base }
+            let p = begin_pass_with_depth(
+                mut s.colour,
+                mut s.depth,
+                clear: vec4(0.0),
+                clear_depth: 1.0,
+            )
+            draw_wood(s.wood, s.tile_counts, p, c)
+            draw(
+                p,
+                optical_vertex.bind(c, s.model.items(), s.order.items(), s.tile_out.items()),
+                optical_radiance,
+                vertices: 6,
+                instances: data::COUNT,
+                blend: Blend::Premultiplied,
+                depth: Depth { compare: Compare::LessEqual, write: false },
+            )
+            p.end()
+            dispatch(accumulate_stream.bind(y * 2 + x, s.colour, mut s.out), over: 4096)
+        }
+    }
+}
+
 pub fn render(s: mut State) {
     let c = camera(s.view, s.illumination, s.aa)
     label("complete appearance")
+    if footprint::STREAM {
+        render_stream(mut s, c)
+        return
+    }
     if local_data::CACHED {
         local::prepare(
             local::Camera {
@@ -687,13 +841,7 @@ pub fn render(s: mut State) {
     } else if config::MODE == 9 {
         tiles::sort(c.direction, s.model, mut s.order)
         let p = begin_pass_with_depth(mut s.colour, mut s.depth, clear: vec4(0.0), clear_depth: 1.0)
-        draw(
-            p,
-            wood_vertex.bind(c, s.wood.items()),
-            wood_radiance.bind(c),
-            vertices: data::WOOD.len() * LIMB_VERTICES,
-            instances: 1,
-        )
+        draw_wood(s.wood, s.tile_counts, p, c)
         draw(
             p,
             optical_vertex.bind(c, s.model.items(), s.order.items(), s.tile_out.items()),
@@ -719,13 +867,7 @@ pub fn render(s: mut State) {
             )
         }
         let p = begin_pass_with_depth(mut s.colour, mut s.depth, clear: vec4(0.0), clear_depth: 1.0)
-        draw(
-            p,
-            wood_vertex.bind(c, s.wood.items()),
-            wood_radiance.bind(c),
-            vertices: data::WOOD.len() * LIMB_VERTICES,
-            instances: 1,
-        )
+        draw_wood(s.wood, s.tile_counts, p, c)
         p.end()
         tiles::render(
             tiles::Camera {
@@ -749,13 +891,7 @@ pub fn render(s: mut State) {
             clear: vec4(0.0),
             clear_depth: 1.0,
         )
-        draw(
-            wood,
-            wood_vertex.bind(c, s.wood.items()),
-            wood_radiance.bind(c),
-            vertices: data::WOOD.len() * LIMB_VERTICES,
-            instances: 1,
-        )
+        draw_wood(s.wood, s.tile_counts, wood, c)
         wood.end()
         dispatch(seed_wood.bind(s.colour, mut s.out), over: 4096)
         if config::MODE == 5 {
@@ -864,13 +1000,7 @@ pub fn render(s: mut State) {
                 clear: vec4(0.0),
                 clear_depth: 1.0,
             )
-            draw(
-                p,
-                wood_vertex.bind(c, s.wood.items()),
-                wood_radiance.bind(c),
-                vertices: data::WOOD.len() * LIMB_VERTICES,
-                instances: 1,
-            )
+            draw_wood(s.wood, s.tile_counts, p, c)
             draw(
                 p,
                 optical_vertex.bind(c, s.model.items(), s.order.items(), s.tile_out.items()),

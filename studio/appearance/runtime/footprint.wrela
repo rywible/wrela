@@ -1,0 +1,6 @@
+// Direct per-patch filtering and serial visibility remain diagnostic only.
+// Keep the frozen AA2 quality path; reuse exact wood vertices and bounded atlas uploads.
+pub const SAMPLES: u32 = 0
+pub const CHUNK_BC: bool = true
+pub const STREAM: bool = false
+pub const INDEXED_WOOD: bool = true
