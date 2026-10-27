@@ -1625,3 +1625,57 @@ See [the complete record](neural-rendering-progress.md#source-initialized-neural
 Manifest SHA-256 `e0306b6c44d957a6fbca9a80191474b1b1c83e7bcec103b4ffa0e54ca3e73486`; source
 `7474c288dc082b72d9cd94423efc5f61cc446c283ccc8eb01a53aa9375c132c3`; scripts
 `d9252c27d0d3a66592667340c4c84afcb1064c89be73eaea4ea550e468d9083a`.
+
+## Crown-depth repair and dense integration (Pop!_OS AMD)
+
+Same Ryzen 5 5500U / Radeon Graphics RADV RENOIR machine, Wrela 0.9.0
+compiler `de9b81e52a7747870dfbd5223cb8aeb41e584d23`, Mesa
+26.1.6-1pop0~1787580452~24.04~a5619ea, PyTorch 2.5.1+cpu/four threads.
+A fixed 2,048-step fit of the existing 33 depth parameters takes 41.366 s;
+complete 256-view packed CPU decode 65.315 s. Payload stays 141,748 bytes
+before overhead; non-depth moments and unrelated packed parameters are
+byte identical. These are observations, not GPU/browser timings.
+
+Off-grid crown-depth moment MAE improves 0.001018→0.000974 at 32 ray
+steps / 2×2 spatial samples, still 70.26% above the strong BC control.
+All 16 public cases fail 64→128 rays at 4×4, then pass 128→256 rays
+and 4×4→8×8 at 256. Dense repaired depth MAE is 0.000920, still 60.88%
+above BC. Dense query count is 16,384/pixel versus nominal 128/pixel.
+The model remains rejected; no production quality, temporal or runtime claim.
+
+Source-field reconstruction checks all 53,120 exported leaf-card centres
+across two seeds within 6.392e-7 m. A 32³ u8 source scalar grid occupies
+32,772 bytes and has about 3.6 cm mean card-centre depth error. This is
+a source-teacher diagnostic, not integrated image quality or compression.
+
+See [complete controls and per-setting results](neural-rendering-progress.md#isolated-crown-depth-repair-and-dense-integration-audit).
+Manifest `76ad089bd8a195fdc8d64933ddb84b91f9c55202e39ba8ed4e74b36ffdf6e6e3`; source `7474c288dc082b72d9cd94423efc5f61cc446c283ccc8eb01a53aa9375c132c3`;
+scripts `4c4cf117c7bbe1bb90cb3a8f9ae015131abe7bef26674615a3abff38c8083db7`.
+
+## Independent source scalar depth model (Pop!_OS AMD)
+
+Same Ryzen 5 5500U / Radeon Graphics RADV RENOIR, Mesa
+26.1.6-1pop0~1787580452~24.04~a5619ea, Wrela 0.9.0 compiler
+`de9b81e52a7747870dfbd5223cb8aeb41e584d23`, PyTorch 2.5.1+cpu/four threads.
+A source-initialized 32³ scalar u8 field adds 32,772 packed bytes to the
+unchanged 141,748-byte learned volume: 174,520 total before runtime overhead.
+It replaces only crown depth. All other stored and dense outputs stay
+byte identical. Fitting 4,096 fixed steps takes 49.586 s; full packed CPU
+decodes take 73.732 s fitted and 73.536 s unfitted. No renderer timing claim.
+
+At four public unseen directions, crown-depth moment MAE is 0.000419
+fitted / 0.000473 unfitted / 0.000974 repaired neural head / 0.000572 BC.
+The fitted model beats BC in all five material diagnostics in each of those
+four views. It still fails several stored-view gates (coverage 5.02× BC,
+depth 2.77× BC), and remains rejected. Single public asset, no sealed result.
+
+All 16 cases pass 128→256 ray and 4×4→8×8 spatial finite-difference checks
+after failing the 64→128 step. Dense fitted off-grid depth MAE is
+0.000389473, 31.89% below BC; 5/5 dense off-grid screens pass.
+Nominal sampling needs 128 volume-network queries plus 128 scalar lookups
+per output pixel; dense sampling 16,384 of each. No GPU integration,
+resident compression, whole-foliage performance or G1–G7 pass follows.
+
+See [full controls and limitations](neural-rendering-progress.md#independent-source-material-field-beside-learned-visibility).
+Manifest `f365b7ae83243e450cf225fdad8a33913a07c083e9a14fee77d56297cd7806b6`; source `7474c288dc082b72d9cd94423efc5f61cc446c283ccc8eb01a53aa9375c132c3`;
+scripts `99620c89af3d8cc0250d19de944873ddc3a7e82c3fccaac14376fa0a750dd36f`.

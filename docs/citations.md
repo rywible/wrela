@@ -170,3 +170,11 @@ Our implementation predicts unlit material moments from quantized features
 initialized using Wrela's source geometry; it is neither paper's reproduction.
 No paper implementation, dataset or pretrained weights are copied. See
 [the actual experiment and limitations](neural-appearance.md#source-initialized-volume-field).
+
+The next source-position visibility study is informed by [Kerbl et al.,
+3D Gaussian Splatting for Real-Time Radiance Field Rendering (SIGGRAPH
+2023), author method description](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/):
+optimized 3D Gaussian primitives and visibility-aware splatting. This is
+method context for a proposed Wrela experiment; no implementation, assets,
+weights, license grant or hardware performance claim is imported. See
+[the current evidence and next decision](neural-appearance.md#next-decision).

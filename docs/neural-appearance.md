@@ -223,21 +223,67 @@ retains all cases, failures, sampling variants and independent replays.
 
 ![Unseen view: source, BC, source-initialized neural volume and matched random-grid ablation](figures/neural-appearance-volume.png)
 
+## Depth repair and source teacher
+
+Fitting only the existing 33 depth-output parameters improves crown-depth
+error by 4.32% on the four public unseen directions; all other material
+outputs stay byte identical. Depth still loses to BC by 70.26%, so the model
+remains rejected. Raising sampling to 256 ray steps and 8×8 spatial samples
+passes the fixed finite-increment integration checks in all sixteen public
+cases, but requires 16,384 field queries per output pixel. No runtime or
+temporal-quality claim follows.
+
+The authored crown field independently reproduces every exported leaf card's
+depth across two placement seeds within 6.392e-7 metres. A source-sampled 32³
+u8 scalar grid has about 3.6 cm mean error at those card centres, versus
+19–24 cm for the learned heads. This is useful teacher evidence, not an image
+result: billboard attributes and wood still need proper handling.
+
+[The complete measured record](neural-rendering-progress.md#isolated-crown-depth-repair-and-dense-integration-audit)
+retains the frozen plans, models, failed screens, independent controls and
+all dense outputs.
+
+![Depth-only repair and dense integration at one fixed public unseen view](figures/neural-appearance-depth.png)
+
+## Separate source material model
+
+An independent 32³ u8 crown-depth grid, initialized from the authored field
+and then fitted, lowers depth error 56.97% relative to the repaired neural
+head on the four public unseen directions. It beats the fixed BC control
+by 26.74% on that mean; all five diagnostics beat BC in each of those four
+views. Even the unfitted source grid improves mean depth error, showing
+that directly supplying source information matters in this experiment.
+
+The combined packed model occupies 174,520 bytes before scratch, caches,
+fallbacks and metadata. All non-depth outputs remain unchanged. Stored-view
+coverage is still 5.02× BC error, and several other stored-view diagnostics
+also fail. **The model remains rejected**, with no production, temporal,
+runtime, sealed or G1–G7 success claim.
+
+[The complete scalar-field record](neural-rendering-progress.md#independent-source-material-field-beside-learned-visibility)
+includes the unfitted control, both packed models, source and decoder audits,
+all 256 stored views and every public dense-integration case.
+
+![Separate source scalar material before and after fitting](figures/neural-appearance-source-depth.png)
+
 ## Next decision
 
-Source geometry supplies a useful measured initialization in this experiment.
-Preserve that advantage while correcting crown depth and resolving the
-ray/spatial sampling sensitivity. The current direct integrator performs
-128 field evaluations per output pixel and has no GPU/runtime result.
-Crown depth is normalized by 40 in the target; inspect its loss scaling
-against the larger coverage/normal errors before increasing model capacity.
+Preserve the useful source material model while attacking visibility and
+inference cost. Test a compact source-position primitive representation
+with explicit visibility ordering, starting from authored card geometry.
+Compare its unfitted source aggregation with a fitted variant at the same
+capacity, then with the strongest practical conventional control.
 
-After quality is established, compare a cheaper direct decoder, integration
-method or cache against the full-cost conventional pipeline. Count every
-cache page, decode/update buffer, fallback and miss. The packed 141,748-byte
-payload alone does not meet G4. Complete production materials, motion,
-lighting, 8–512-pixel footprints, unseen asset families and the full G1–G7
-validation still remain.
+[Kerbl et al.'s Gaussian-splatting author description](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/)
+is relevant method context, not evidence that Wrela will meet the budget.
+No external code or performance result is imported. Primitive records,
+sorting/tiling, update work and scratch count as representation costs;
+source geometry is not a free runtime input to this comparison.
+
+Keep fitted-view quality, unseen views and sampling/footprint tests separate.
+A small packed payload alone does not meet G4. Complete production materials,
+motion, lighting, 8–512-pixel footprints, unseen asset families, whole-pass
+AMD measurements and the full G1–G7 validation remain.
 
 ![Fixed view 103: albedo, coverage and decoded normals for the bake, BC, shipped MLP and quantized grid](figures/neural-appearance-view103.png)
 

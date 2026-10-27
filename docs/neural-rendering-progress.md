@@ -1713,3 +1713,225 @@ SHA-256 `e0306b6c44d957a6fbca9a80191474b1b1c83e7bcec103b4ffa0e54ca3e73486`; fina
 external scripts `d9252c27d0d3a66592667340c4c84afcb1064c89be73eaea4ea550e468d9083a`. Model payloads, trained ablation,
 original numerical failures, source exports, complete per-view metrics and
 sampling variants are retained.
+
+## Isolated crown-depth repair and dense integration audit
+
+The 33-parameter depth-row repair lowers mean crown-depth error by 4.32%
+on the four public unseen directions, with every other stored material
+moment byte identical. It still has 70.26% higher depth error than the
+stronger BC control at the nominal setting. **The model remains rejected.**
+This is one asset and public development data, not a sealed or G1–G7 result.
+
+A fixed gradient audit uses 16 uniform batches of 256 pixels, seed 982,
+at 64 ray steps and 2×2 spatial sampling. Crown depth contributes about
+0.50% of the joint weighted loss; its mean squared gradient norm is
+3.703e-7 versus 0.01245 for coverage. This motivates an isolated test;
+it does not prove loss scaling is the only limitation.
+
+The repair freezes every grid and network parameter except the final
+depth-output row and bias. Fixed seed 319, 2,048 Adam steps, batch 256,
+half uniform / half foreground importance sampling and a 1600× squared
+normalized-depth-moment loss optimize those existing 33 values. Original
+32 jittered ray strata and 2×2 spatial sampling stay fixed. No off-grid
+label or validation stopping is used. Fitting takes 41.366 s and complete
+packed CPU decoding 65.315 s on the same Pop!_OS Ryzen 5 5500U, PyTorch
+2.5.1+cpu / four threads. These are observations, not renderer latency.
+
+Thirty-two of the allowed 33 half values change after packing. Every
+other weight, both latent grids and material constants remain byte
+identical. The payload remains 141,748 bytes before runtime overhead.
+Independent NumPy point evaluation passes 3e-5 absolute plus 1e-4
+relative tolerance over 8,192 points. Maximum full-ray disagreement
+against the saved Torch decode is 1.938e-6 over 512 uniform/foreground
+rays, within 2e-5. Both ordinary decoders agree exactly with the shared
+two-head decoder in that check. Swapping the head changes depth by
+0.003327; other moment outputs remain unchanged. Physical bounds pass.
+
+| Cases / setting | Representation | Coverage MAE | Albedo moment MAE | Normal moment MAE | Toward moment MAE | Crown depth moment MAE |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 256 fitted, 32 / 2×2 | BC control | 0.003060 | 0.001120 | 0.028233 | 0.002727 | 0.000139 |
+| 256 fitted, 32 / 2×2 | Original volume | 0.015374 | 0.001927 | 0.022706 | 0.009653 | 0.000941 |
+| 256 fitted, 32 / 2×2 | Depth-row fit | 0.015374 | 0.001927 | 0.022706 | 0.009653 | 0.000890 |
+| 4 unseen, 32 / 2×2 | BC control | 0.025883 | 0.002767 | 0.034725 | 0.015426 | 0.000572 |
+| 4 unseen, 32 / 2×2 | Original volume | 0.016379 | 0.002008 | 0.023660 | 0.010109 | 0.001018 |
+| 4 unseen, 32 / 2×2 | Depth-row fit | 0.016379 | 0.002008 | 0.023660 | 0.010109 | 0.000974 |
+| 4 unseen, 256 / 8×8 | Original volume | 0.015529 | 0.001883 | 0.021652 | 0.009441 | 0.000973 |
+| 4 unseen, 256 / 8×8 | Depth-row fit | 0.015529 | 0.001883 | 0.021652 | 0.009441 | 0.000920 |
+
+Sampling is escalated under the predeclared unchanged limits: coverage
+MAE ≤0.001 and p99 ≤0.01, albedo-moment MAE ≤0.0005, normal-moment
+MAE ≤0.002. All sixteen public cases fail 64→128 ray steps at 4×4 spatial
+sampling. All sixteen pass 128→256 at 4×4, and all sixteen pass 4×4→8×8
+at 256 steps. The two heads share all quantities in these four checks.
+These finite differences concern this model integrator, not production
+temporal stability or a mathematical convergence proof.
+
+For 128→256, coverage MAE ranges 0.000206–0.000618 and p99
+0.004058–0.009591. For 4×4→8×8, coverage MAE ranges
+0.000227–0.000337 and p99 0.003192–0.003943. At each setting, 128
+deterministic complete rays independently replay through NumPy; the largest
+discrepancy is 4.769e-7, below the fixed 2e-5 tolerance. All 16 source hashes,
+all outputs and scores are retained. At 256 / 8×8, depth-row fitting reduces
+off-grid depth error 5.49% versus the same dense original model; error is
+still 60.88% above BC. More sampling does not solve the material mismatch.
+
+Dense evaluation needs 16,384 field queries per output pixel, versus 128
+at the nominal setting. No GPU implementation, full foliage cost, resident
+memory ratio or production-image win follows. CPU elapsed values include
+controls/readback files; a brief installed-toolchain documentation query
+overlaps dense decoding, so they are not comparative timings.
+
+A separate source audit reconstructs the authored crown's smooth union
+independently in f64 at every actual GPU leaf-card centre for seeds 7 and
+11 (26,560 cards each). Maximum depth discrepancy is 6.392e-7 metres.
+A second stable formula agrees within 5.552e-16 on 256 points per seed.
+Swapping world x/z causes >2.20 m error. The maximum normal component
+discrepancy is 5.447e-5, within the predeclared 1.6e-4 bound derived from
+the installed Wrela 0.9.0 `Oct32` documentation's 1.5e-4-radian packing
+bound plus arithmetic margin. This uses actual GPU exports, not a neural
+prediction as truth.
+
+A 32³ scalar grid sampled directly from that source, quantized to u8 with
+one f32 range, occupies 32,772 bytes. Its mean error at leaf centres is
+3.570 cm / 3.585 cm for seeds 7 / 11. Original learned-depth mean errors
+span 20.01–23.87 cm across the four fixed directions and two seeds; the
+row repair spans 19.00–21.88 cm. This is a teacher-feasibility diagnostic,
+not a pixel-quality result: source attributes stay constant across each
+billboard, and wood has zero crown depth. The compact field still needs
+proper visibility integration, wood handling and pixel validation.
+
+![Source, conventional control, original depth, repaired depth and dense repaired depth](figures/neural-appearance-depth.png)
+
+No Wrela implementation changes in this experiment. Allow-list and diff
+checks pass; no full-suite or PR-readiness claim. Source/geometry/compiler
+remain those of the previous volume experiment. The next test is an
+independent scalar material model initialized from the authored field,
+while preserving the frozen visibility outputs for diagnosis.
+
+Evidence: `build/neural-evidence/appearance-depth-v1/manifest.json`,
+SHA-256 `76ad089bd8a195fdc8d64933ddb84b91f9c55202e39ba8ed4e74b36ffdf6e6e3`; source `7474c288dc082b72d9cd94423efc5f61cc446c283ccc8eb01a53aa9375c132c3`;
+external scripts `4c4cf117c7bbe1bb90cb3a8f9ae015131abe7bef26674615a3abff38c8083db7`. Original failed nominal quality/sampling
+checks remain intact, and no acceptance threshold is relaxed.
+
+## Independent source material field beside learned visibility
+
+A separate scalar crown-depth field fixes the previous model's remaining
+public off-grid material failure: the fitted variant beats the fixed BC
+control in all five diagnostics in each of the four unseen directions.
+**It remains rejected overall**, because stored-view coverage, colour,
+toward and depth still fail. This is one asset, sixteen public seed/view
+cases and public development selection, not sealed generalization or G4.
+
+[`Plant::crown` and `cook_cards`](../engine/plant.wrela) supply the field:
+the smooth crown union determines each leaf card's depth at its centre.
+The preceding independent audit validates that equation against GPU exports.
+A sampled 32³ scalar grid, stored as u8 plus one f32 range, is an explicit
+learned material model; its depth lookup needs no extra neural network.
+The original neural volume still determines visibility and all other
+attributes. Every original byte remains counted, including its now-unused
+depth output row.
+
+The unfitted variant copies the checked source grid byte for byte. The
+fitted variant starts there and optimizes only the scalar grid for a fixed
+4,096 Adam steps, seed 793, batch 128, learning rate 0.01→0.001. It uses
+eight-bit quantization from the first step, the fixed source-derived range
+2.174512 m, the same half-uniform/half-foreground importance correction,
+32 jittered ray strata and 2×2 spatial samples. The loss is 1600 times
+normalized crown-depth-moment squared error. No off-grid label or validation
+stopping enters fitting. This adds capacity compared with the preceding
+33-parameter repair; it is not a matched-capacity ablation.
+
+The scalar field is 32,772 bytes. Including the entire frozen volume's
+141,748-byte payload gives **174,520 packed bytes before runtime overhead**.
+A decoder must still read the original volume's grids, network weights and
+material constants. Every scalar lookup and its storage count in any future
+runtime measurement. No resident-memory or speed claim follows.
+
+At the nominal 32-ray / 2×2 setting:
+
+| Cases | Representation | Coverage MAE | Albedo moment MAE | Normal moment MAE | Toward moment MAE | Crown depth moment MAE |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 256 fitted directions | BC control | 0.003060 | 0.001120 | 0.028233 | 0.002727 | 0.000139 |
+| 256 fitted directions | Repaired neural depth head | 0.015374 | 0.001927 | 0.022706 | 0.009653 | 0.000890 |
+| 256 fitted directions | Unfitted source scalar grid | 0.015374 | 0.001927 | 0.022706 | 0.009653 | 0.000435 |
+| 256 fitted directions | Fitted scalar grid | 0.015374 | 0.001927 | 0.022706 | 0.009653 | 0.000385 |
+| 4 public unseen directions | BC control | 0.025883 | 0.002767 | 0.034725 | 0.015426 | 0.000572 |
+| 4 public unseen directions | Repaired neural depth head | 0.016379 | 0.002008 | 0.023660 | 0.010109 | 0.000974 |
+| 4 public unseen directions | Unfitted source scalar grid | 0.016379 | 0.002008 | 0.023660 | 0.010109 | 0.000473 |
+| 4 public unseen directions | Fitted scalar grid | 0.016379 | 0.002008 | 0.023660 | 0.010109 | 0.000419 |
+
+Relative to the repaired neural head, fitted scalar-grid crown-depth MAE
+drops 56.97% on the four public unseen directions. It is 26.74% below BC.
+Even the unfitted source grid is 17.22% below BC on the four-view mean,
+although its worst view is 6.97% above BC. Fitting improves the source
+grid's four-view mean depth error by 11.50%, and its worst-view error ratio
+to BC becomes 0.9294. This shows both useful direct source information and
+an additional fitting gain in this fixed experiment.
+
+On the eight seed-11 public cases, the unchanged seed-7 fitted grid gives
+depth MAE 0.000494, versus 0.000575 BC and 0.001006 repaired neural head.
+Those cases are a placement perturbation of the same authored tree, not
+a held-out asset family. Stored-view fitted depth is still 2.77× BC;
+coverage remains 5.02×, albedo 1.72× and toward 3.54×. The visibility
+bottleneck is unchanged.
+
+A source-defined coverage partition across all 1,048,576 stored-view pixels
+locates the remaining error. Partially covered reference pixels occupy
+25.55% of the corpus but contribute 94.59% of the volume's absolute coverage
+error. Their MAE is 0.056924 versus 0.011222 BC; their p99 error is
+0.308567 versus 0.040040 BC. Empty pixels contribute only 3.85% of the
+volume error, and fully covered pixels 1.57%. At the diagnostic coverage
+threshold 0.5, the volume has 6,722 false positives and 4,000 false negatives,
+versus BC's 503 and 499. These are ordinary coverage classifications, not
+G3 strand/hole precision or recall. They motivate resolving partial coverage
+rather than hiding error in the 70.21% empty background.
+
+Independent NumPy replay checks 8,192 packed point queries for both scalar
+grids. Depth values match the Torch lookup exactly in that check; complete
+point outputs pass the original 3e-5 absolute plus 1e-4 relative tolerance.
+Full-ray comparisons on 512 uniform/foreground pixels disagree by at most
+3.219e-6, below 2e-5. Wrong x/z grid orientation changes depth by more
+than 0.0502 normalized units. Physical bounds and source hashes pass.
+Across all 256 stored views, every non-depth moment is byte identical to
+the earlier models.
+
+Both scalar variants undergo the same dense sampling escalation. All
+sixteen cases fail 64→128 rays at 4×4; all sixteen pass 128→256 at 4×4 and
+4×4→8×8 at 256 under the unchanged four integration limits. All non-depth
+moments are byte identical to the preceding experiment in all 64 dense
+paired files. These checks do not turn the failed nominal operating point
+into a converged or temporally validated renderer. Dense fitted off-grid
+depth MAE is 0.000389473, 31.89% below BC; 5/5 dense off-grid
+diagnostic screens pass. All raw per-case results remain available.
+
+The scalar model still inherits 128 base-volume network queries per output
+pixel at nominal sampling, and adds 128 scalar-grid lookups. Dense sampling
+requires 16,384 of each. Fitting takes 49.586 s on the same four-thread
+PyTorch 2.5.1+cpu / Ryzen 5 5500U setup; complete packed CPU decodes take
+73.732 s fitted and 73.536 s unfitted. They are observational CPU values,
+not GPU model performance, full foliage cost, browser timing or validated
+G7 source-to-shipping latency.
+
+![Source scalar material before and after fitting, compared with BC and the repaired neural head](figures/neural-appearance-source-depth.png)
+
+No Wrela code or default rendering model changes. Focused evidence checks,
+allow-list and diff checks pass; no full-suite or PR-readiness claim.
+The next useful bottleneck is visibility at stored directions and the
+direct integrator's cost, while preserving the source material information.
+
+For that next experiment, [Kerbl et al., 3D Gaussian Splatting (SIGGRAPH
+2023), author method description](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/)
+provides primary-source context: optimized 3D Gaussian primitives and a
+visibility-aware splatting renderer can avoid evaluating empty space.
+A source-position primitive trial in Wrela is only a proposed alternative
+to the current dense march. Count all primitive positions, shapes, material
+parameters, sorting/tiles and scratch; compare an equally budgeted untrained
+source aggregation and conventional rendering before claiming a learned
+benefit. No paper code, data, weights or hardware performance result is
+imported or extrapolated.
+
+Evidence: `build/neural-evidence/appearance-source-depth-v1/manifest.json`,
+SHA-256 `f365b7ae83243e450cf225fdad8a33913a07c083e9a14fee77d56297cd7806b6`; source `7474c288dc082b72d9cd94423efc5f61cc446c283ccc8eb01a53aa9375c132c3`;
+scripts `99620c89af3d8cc0250d19de944873ddc3a7e82c3fccaac14376fa0a750dd36f`. The independent scalar model, unfitted initialization,
+original volume dependencies, complete corpora and dense comparisons are
+retained. Every G1–G7 threshold and prior failure remains intact.
