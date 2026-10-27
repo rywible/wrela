@@ -2216,3 +2216,26 @@ byte-identical. G1–G7 remain unchanged.
 
 [Full result](neural-shaded-appearance.md#source-anchors-preserve-order-change-local-appearance).
 Evidence: build/neural-evidence/g4-source-anchors-v1; manifest `bd5636383b51a19ff6f258290ad5608294e9112b58b5518bbb7880c9a36b01dd`.
+
+
+### 2026-10-27: local neural response retired after full AMD comparison
+
+Frozen 88-element geometry plus a shared local opacity/radiance head gains only 0.285 dB
+over the compact base, slightly worsens LPIPS, and leaves silhouette error unchanged.
+Neural: 32.708 dB, FLIP 0.03924, LPIPS 0.04209; complete GPU p95/p99 0.715/0.716 ms;
+615,668 live/632,052 peak requested GPU bytes. Conventional affine reaches 32.796 dB;
+quadratic reaches 33.009 dB. All fail the frozen-quality/G4 frontier. Only13/24 neural
+quality cases pass against the existing BC atlas.
+
+One follow-up caches an unchanged decode per element. It adds 8,444 net live bytes and
+produces no saturated runtime win. Stop; no second optimization or further training.
+Decision: retire this tested local-polynomial architecture. Next bet: source-derived sparse
+visibility patches, direct pixel-footprint filtering, and separately modeled radiance.
+The 196,608-byte AA2 targets themselves nearly consume the optimistic 16x engine allowance.
+
+First complete comparison 17 minutes after start; decision 23 minutes after start.
+No new references or material-moment training. Physical DRM/PSS snapshots and failed
+strict conventional cache parity retained. Frozen default images and native allocation
+counts unchanged. G1-G7 unchanged and unmet.
+[Full result](neural-shaded-appearance.md#local-response-decoder-retired).
+Evidence build/neural-evidence/g4-local-response-v1; manifest `ce4b84b4b62bd5d5a5f2b969d8bd62f265e1842fc79ecc37ad0bb816ba94e05b`.

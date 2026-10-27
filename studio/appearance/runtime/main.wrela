@@ -45,6 +45,12 @@ struct OpticalVertex: Copy {
     normal: Flat<vec3>,
     detail: Flat<vec2>,
     radiance: Flat<vec3>,
+    local0: Flat<vec4>,
+    local1: Flat<vec4>,
+    local2: Flat<vec4>,
+    local3: Flat<vec4>,
+    local4: Flat<vec4>,
+    local5: Flat<vec4>,
 }
 
 fn value(w: [Half2], group: u32, k: u32) -> f32 {
@@ -63,6 +69,7 @@ fn optical_vertex(
     c: Camera,
     w: [Half2],
     order: [u32],
+    cache: [u32],
 ) -> OpticalVertex {
     let group = if config::MODE >= 4 && config::MODE != 9 { instance.index } else {
         order[instance.index]
@@ -116,7 +123,26 @@ fn optical_vertex(
             pixels,
         )
     } else { vec3(0.0) }
+    let coefficients = if local_data::CACHED { local::cached(cache, group) } else {
+        local::decode(
+            w,
+            group,
+            c.direction,
+            centre,
+            n,
+            value(w, group, 27),
+            sqrt(vec2(xx, yy)),
+            xy / sqrt(xx * yy),
+            c.illumination,
+        )
+    }
     OpticalVertex {
+        local0: Flat { value: coefficients.c0 },
+        local1: Flat { value: coefficients.c1 },
+        local2: Flat { value: coefficients.c2 },
+        local3: Flat { value: coefficients.c3 },
+        local4: Flat { value: coefficients.c4 },
+        local5: Flat { value: coefficients.c5 },
         clip: ClipPosition { position: vec4(at.x, -at.y, 1.0 - depth, 1.0) },
         delta,
         radiance: Flat { value: radiance },
@@ -131,7 +157,7 @@ fn optical_vertex(
     }
 }
 
-fn alpha_of(v: OpticalVertex) -> f32 {
+fn density_of(v: OpticalVertex) -> f32 {
     let inverse = v.inverse.value
     let q = v.delta.x * v.delta.x * inverse.x +
         2.0 * v.delta.x * v.delta.y * inverse.y +
@@ -140,11 +166,30 @@ fn alpha_of(v: OpticalVertex) -> f32 {
     // The squared-q profile has integral pi^2*sqrt(det) and the same
     // nominal untruncated covariance. At q<=18 its covariance is 0.1112% larger.
     // Account for the Gaussian's finite-support mass normalization.
-    let t = if profile::SHAPE == 0 { v.tau.value * exp(-0.5 * q) } else {
+    if profile::SHAPE == 0 { v.tau.value * exp(-0.5 * q) } else {
         v.tau.value * 0.636541206 * exp(-q * q / 12.566370614)
     }
+}
+
+fn opacity(t: f32) -> f32 {
     // Avoid cancellation for the very small optical tail.
     if t < 0.01 { t * (1.0 - t * (0.5 - t / 6.0)) } else { 1.0 - exp(-t) }
+}
+
+fn alpha_of(v: OpticalVertex) -> f32 {
+    opacity(density_of(v))
+}
+
+fn local_response(v: OpticalVertex) -> vec4 {
+    let inv = v.inverse.value
+    let u = v.delta.x * sqrt(max(inv.x - inv.y * inv.y / inv.z, 0.0)) / 3.0
+    let z = (v.delta.x * inv.y / sqrt(inv.z) + v.delta.y * sqrt(inv.z)) / 3.0
+    v.local0.value +
+        u * v.local1.value +
+        z * v.local2.value +
+        u * u * v.local3.value +
+        u * z * v.local4.value +
+        z * z * v.local5.value
 }
 
 @fragment
@@ -159,8 +204,14 @@ fn optical(v: OpticalVertex) -> Targets3<vec4, vec4, vec4> {
 
 @fragment
 fn optical_radiance(v: OpticalVertex) -> vec4 {
-    let a = alpha_of(v)
-    vec4(v.radiance.value * a, a)
+    if local_data::KIND == 0 {
+        let a = alpha_of(v)
+        return vec4(v.radiance.value * a, a)
+    }
+    let correction = local_response(v)
+    let a = opacity(density_of(v) * exp(clamp(correction.x, -2.0, 2.0)))
+    let radiance = v.radiance.value * exp(clamp(correction.yzw, vec3(-1.5), vec3(1.5)))
+    vec4(radiance * a, a)
 }
 
 // Effective opacity integrated over this pixel before commutative layer accumulation.
@@ -521,6 +572,11 @@ pub struct State {
 
 pub fn init() -> State {
     assert(config::MODE <= 9 && config::AA > 0 && profile::SHAPE <= 1)
+    assert(local_data::KIND <= 3)
+    assert(!local_data::CACHED || local_data::KIND > 0)
+    if local_data::KIND > 0 {
+        assert(config::MODE == 2 && config::AA == 2 && profile::SHAPE == 1 && data::COUNT == 88)
+    }
     if config::MODE == 0 {
         assert(data::COLOUR.len() == 262144, "restore the archived BC payload first")
     }
@@ -582,6 +638,7 @@ pub fn init() -> State {
         }
         s.depth = depth_texture(width: 64 * aa, height: 64 * aa)
     }
+    if local_data::CACHED { s.tile_out = buffer(data::COUNT * 24) }
     if config::MODE == 7 || config::MODE == 8 {
         assert(aa == 2)
         if config::MODE == 8 { s.tile_cache = buffer(data::COUNT) }
@@ -600,6 +657,18 @@ pub fn configure(s: mut State, view: u32, illumination: u32) {
 pub fn render(s: mut State) {
     let c = camera(s.view, s.illumination, s.aa)
     label("complete appearance")
+    if local_data::CACHED {
+        local::prepare(
+            local::Camera {
+                direction: c.direction,
+                right: c.right,
+                up: c.up,
+                illumination: c.illumination,
+            },
+            s.model,
+            mut s.tile_out,
+        )
+    }
     if config::MODE == 0 {
         dispatch(
             conventional.bind(c, s.bc_colour, s.bc_normal, s.bc_depth, mut s.out),
@@ -627,7 +696,7 @@ pub fn render(s: mut State) {
         )
         draw(
             p,
-            optical_vertex.bind(c, s.model.items(), s.order.items()),
+            optical_vertex.bind(c, s.model.items(), s.order.items(), s.tile_out.items()),
             optical_radiance,
             vertices: 6,
             instances: data::COUNT,
@@ -698,7 +767,7 @@ pub fn render(s: mut State) {
             )
             draw(
                 front,
-                optical_vertex.bind(c, s.model.items(), s.order.items()),
+                optical_vertex.bind(c, s.model.items(), s.order.items(), s.tile_out.items()),
                 optical_front.bind(c),
                 vertices: 6,
                 instances: data::COUNT,
@@ -719,7 +788,7 @@ pub fn render(s: mut State) {
             )
             draw(
                 layers,
-                optical_vertex.bind(c, s.model.items(), s.order.items()),
+                optical_vertex.bind(c, s.model.items(), s.order.items(), s.tile_out.items()),
                 optical_layers_quad.bind(c),
                 vertices: 6,
                 instances: data::COUNT,
@@ -738,7 +807,7 @@ pub fn render(s: mut State) {
             )
             draw(
                 layers,
-                optical_vertex.bind(c, s.model.items(), s.order.items()),
+                optical_vertex.bind(c, s.model.items(), s.order.items(), s.tile_out.items()),
                 optical_layers.bind(c, s.out.items()),
                 vertices: 6,
                 instances: data::COUNT,
@@ -779,7 +848,7 @@ pub fn render(s: mut State) {
             )
             draw(
                 p,
-                optical_vertex.bind(c, s.model.items(), s.order.items()),
+                optical_vertex.bind(c, s.model.items(), s.order.items(), s.tile_out.items()),
                 optical,
                 vertices: 6,
                 instances: data::COUNT,
@@ -804,7 +873,7 @@ pub fn render(s: mut State) {
             )
             draw(
                 p,
-                optical_vertex.bind(c, s.model.items(), s.order.items()),
+                optical_vertex.bind(c, s.model.items(), s.order.items(), s.tile_out.items()),
                 optical_radiance,
                 vertices: 6,
                 instances: data::COUNT,

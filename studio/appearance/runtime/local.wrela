@@ -1,0 +1,193 @@
+// Shared local response decoder: fixed geometry and identical source features.
+// 1 = neural width12; 2 = affine; 3 = quadratic conventional control.
+// All weights and four per-primitive coordinates reside in the counted model buffer.
+use std::gpu::{Half2, Atomics, GlobalId, GpuBuffer, dispatch}
+use engine::neural::half_at
+
+pub struct Coefficients: Copy {
+    pub c0: vec4,
+    pub c1: vec4,
+    pub c2: vec4,
+    pub c3: vec4,
+    pub c4: vec4,
+    pub c5: vec4,
+}
+
+fn weight(w: [Half2], at: u32) -> f32 {
+    half_at(w, data::COUNT * 32 + at)
+}
+
+pub fn decode(
+    w: [Half2],
+    group: u32,
+    direction: vec3,
+    centre: vec3,
+    normal: vec3,
+    crown: f32,
+    sigma: vec2,
+    correlation: f32,
+    illumination: u32,
+) -> Coefficients {
+    if local_data::KIND == 0 {
+        return Coefficients {
+            c0: vec4(0.0),
+            c1: vec4(0.0),
+            c2: vec4(0.0),
+            c3: vec4(0.0),
+            c4: vec4(0.0),
+            c5: vec4(0.0),
+        }
+    }
+    var context = [0.0; 17]
+    for i in 0..3 {
+        context[i] = centre[i]
+        context[3 + i] = normal[i]
+        context[7 + i] = direction[i]
+    }
+    context[6] = crown * 10.0
+    context[10] = sigma.x * 8.0
+    context[11] = sigma.y * 8.0
+    context[12] = correlation
+    for i in 0..4 {
+        context[13 + i] = half_at(w, data::COUNT * 28 + group * 4 + i)
+    }
+    let on = if illumination == 3 { 0.0 } else { 1.0 }
+    let sun = relight::light(illumination).sun
+    let light = [1.0, on, on * sun.x, on * sun.y, on * sun.z]
+    var result = [vec4(0.0); 6]
+    if local_data::KIND == 1 {
+        var hidden = [0.0; 12]
+        for i in 0..12 {
+            var x = weight(w, 204 + i)
+            for j in 0..17 { x += context[j] * weight(w, i * 17 + j) }
+            hidden[i] = max(x, 0.0)
+        }
+        for i in 0..6 {
+            var x = weight(w, 288 + i)
+            for j in 0..12 { x += hidden[j] * weight(w, 216 + i * 12 + j) }
+            result[i].x = x
+        }
+        var colour_hidden = [0.0; 12]
+        for i in 0..12 {
+            var x = weight(w, 486 + i)
+            for j in 0..12 { x += hidden[j] * weight(w, 294 + i * 16 + j) }
+            for j in 0..4 { x += light[j + 1] * weight(w, 294 + i * 16 + 12 + j) }
+            colour_hidden[i] = max(x, 0.0)
+        }
+        for i in 0..18 {
+            var x = weight(w, 714 + i)
+            for j in 0..12 { x += colour_hidden[j] * weight(w, 498 + i * 12 + j) }
+            result[i / 3][1 + i % 3] = x
+        }
+    } else {
+        var features = [0.0; 171]
+        features[0] = 1.0
+        for i in 0..17 { features[1 + i] = context[i] }
+        if local_data::KIND == 3 {
+            var at = 18
+            for i in 0..17 {
+                for j in i..17 {
+                    features[at] = context[i] * context[j]
+                    at += 1
+                }
+            }
+        }
+        let count = if local_data::KIND == 3 { 171 } else { 18 }
+        for i in 0..6 {
+            var x = 0.0
+            for j in 0..count { x += features[j] * weight(w, i * count + j) }
+            result[i].x = x
+        }
+        for i in 0..18 {
+            var x = 0.0
+            for k in 0..5 {
+                var term = 0.0
+                for j in 0..count {
+                    term += features[j] * weight(w, 6 * count + (i * 5 + k) * count + j)
+                }
+                x += light[k] * term
+            }
+            result[i / 3][1 + i % 3] = x
+        }
+    }
+    Coefficients {
+        c0: result[0],
+        c1: result[1],
+        c2: result[2],
+        c3: result[3],
+        c4: result[4],
+        c5: result[5],
+    }
+}
+
+pub struct Camera: Copy + GpuData {
+    pub direction: vec3,
+    pub right: vec3,
+    pub up: vec3,
+    pub illumination: u32,
+}
+
+@compute(64)
+fn prepare_all(c: Camera, w: [Half2], out: mut Atomics<u32>, id: GlobalId) {
+    if id.x >= data::COUNT { return }
+    let group = id.x
+    let base = group * 28
+    let centre = vec3(half_at(w, base), half_at(w, base + 1), half_at(w, base + 2))
+    var a = [0.0; 5]
+    var b = [0.0; 5]
+    for i in 0..5 {
+        let x = if i == 0 { half_at(w, base + 5) } else { 0.0 }
+        let y = if i < 2 { half_at(w, base + 6 + i) } else { 0.0 }
+        let z = if i < 3 { half_at(w, base + 8 + i) } else { 0.0 }
+        let lx = if i < 4 { half_at(w, base + 11 + i) } else { 0.0 }
+        let ly = half_at(w, base + 15 + i)
+        a[i] = dot(vec3(x, y, z), c.right) + lx
+        b[i] = dot(vec3(x, y, z), c.up) + ly
+    }
+    var xx = 0.0
+    var xy = 0.0
+    var yy = 0.0
+    for i in 0..5 {
+        xx += a[i] * a[i]
+        xy += a[i] * b[i]
+        yy += b[i] * b[i]
+    }
+    let raw = vec3(half_at(w, base + 24), half_at(w, base + 25), half_at(w, base + 26))
+    let normal = if dot(raw, raw) > 1.0e-12 { normalize(raw) } else { c.direction }
+    let coeff = decode(
+        w,
+        group,
+        c.direction,
+        centre,
+        normal,
+        half_at(w, base + 27),
+        sqrt(vec2(xx, yy)),
+        xy / sqrt(xx * yy),
+        c.illumination,
+    )
+    let values = [coeff.c0, coeff.c1, coeff.c2, coeff.c3, coeff.c4, coeff.c5]
+    for i in 0..6 {
+        for j in 0..4 {
+            out.store(i: group * 24 + i * 4 + j, value: bitcast_u32(values[i][j]))
+        }
+    }
+}
+
+pub fn prepare(c: Camera, model: GpuBuffer<Half2>, cache: mut GpuBuffer<u32>) {
+    dispatch(prepare_all.bind(c, model.items(), mut cache), over: data::COUNT)
+}
+
+pub fn cached(cache: [u32], group: u32) -> Coefficients {
+    var values = [vec4(0.0); 6]
+    for i in 0..6 {
+        for j in 0..4 { values[i][j] = bitcast_f32(cache[group * 24 + i * 4 + j]) }
+    }
+    Coefficients {
+        c0: values[0],
+        c1: values[1],
+        c2: values[2],
+        c3: values[3],
+        c4: values[4],
+        c5: values[5],
+    }
+}

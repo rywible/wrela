@@ -2030,3 +2030,33 @@ Decision: change local opacity/radiance representation, retaining order and exac
 wood. Default unchanged; G1–G7 unmet. All six results are preserved.
 [Full comparison and limits](neural-shaded-appearance.md#source-anchors-preserve-order-change-local-appearance).
 Evidence: build/neural-evidence/g4-source-anchors-v1 on Pop!_OS.
+
+
+### 2026-10-27 — G4 local response heads retired
+
+Pop!_OS Ryzen 5 5500U / AMD RADV RENOIR,Mesa 26.1.6,Chrome 154.0.8037.57;
+Wrela 0.9.0 compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23. Parent
+90b629584505b5a8e41dc2a870aaedfce8c92178 plus archived experimental sources.
+Solo; sequential fitting/build/native capture/Chrome profiling/metric evaluation.
+
+Frozen 88-element compact geometry; neural12, affine and quadratic local response heads
+receive identical source/view/light features and per-element latent dimensions.
+Three fixed 2,048-step shaded-image/coverage fits on existing 128 AA8 teacher poses;
+16 validation poses; public 2 views excluded. No moment loss or new reference captures.
+Six measured variants include one follow-up caching the unchanged decoder per primitive.
+
+24 AA64 reference shaded cases. Neural 32.708 dB, FLIP 0.03924, LPIPS 0.04209, coverage MAE 0.023997,
+worst boundary p99 2.864px;13/24 numeric cases pass versusBC. Full pacedGPU p95/p99
+0.715/0.716 ms,CPU p99 0.516 ms,CPU-to-finalGPUcompletion p95/p99 4.470/4.584 ms.
+8,536 packed bytes become615,668 live / 632,052 peak requested GPU bytes. Actual DRM resident
+VRAM 17,367,040 / GTT 9,740,288 bytes and browser PSS 480,005,120 bytes recorded separately;
+overlapping UMA counters are not summed. No physical 16x saving established.
+Affine 32.796 dB; quadratic 33.009 dB. Cached decode has no saturated runtime win.
+
+Decision: retire the tested local-polynomial architecture; next change visibility/coverage
+representation and avoid AA2 image-target cost. Frozen default 8 GPU images and native
+resource counts unchanged. New gradient/opacity/zero-head checks and format/type pass.
+Strict conventional cache byte parity failure retained; actual cached quality scored.
+No full-suite claim. G1-G7 unchanged and unmet.
+[Full evidence and limits](neural-shaded-appearance.md#local-response-decoder-retired).
+Evidence build/neural-evidence/g4-local-response-v1 on Pop!_OS.

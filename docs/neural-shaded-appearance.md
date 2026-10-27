@@ -892,3 +892,174 @@ wood training caches, failed and successful checks, source builds, raw GPU pixel
 metrics, allocation/completion logs, physical-residency snapshots and the decision.
 First measurements and both follow-ups finished within the two-hour block.
 Manifest SHA-256: `bd5636383b51a19ff6f258290ad5608294e9112b58b5518bbb7880c9a36b01dd`.
+
+
+## Local response decoder: retired
+
+**Decision: retire the tested 88-element representation with shared quadratic local
+opacity/radiance corrections for G4.** Keep the frozen 1,897-element renderer as the quality
+control. A neural decoder improves compact-base PSNR by only 0.285 dB, reduces FLIP 2.21%,
+worsens LPIPS 1.07%, and leaves silhouette errors essentially unchanged. Its paced GPU
+p95 is 0.715 ms versus 0.210 ms for the compact base. These are complete-render measurements,
+not decoder-only timing. No new model is promoted.
+
+This block started 2026-10-27 at 18:48:56 UTC. The first three complete comparisons finished
+at 19:06:03; the decision was recorded at 19:11:53, within the two-hour limit. One targeted
+follow-up was used. A second execution optimization would not resolve the measured
+visibility/quality gap, so its budget was left unused.
+
+### Frozen inputs and equally informed controls
+
+The preceding [source-anchor experiment](#source-anchors-preserve-order-change-local-appearance)
+identified missing shaded color detail in its strongest compact 88-element model.
+Freeze all 88 positions, projected covariance parameters, masses, base colors, normals
+and crown depths. Preserve exact authored wood, CPU depth sorting and 2x2 pixel sampling.
+
+All three heads receive the same 17 context values: center, unit source normal, crown
+depth, view direction, projected ellipse scales/correlation and four trainable half
+coordinates per element. Color also receives the same known light direction and sun
+presence; opacity is light independent. Each predicts six coefficients for a local
+quadratic basis, separately correcting log optical density and three log-radiance
+channels. Corrections are bounded. Zero heads reproduce the compact GPU images exactly.
+
+- Neural: width 12 shared stem, opacity head and width 12 color branch; 732 half weights.
+- Conventional affine: 18 context terms and five light terms; 1,728 half weights.
+- Conventional quadratic: 171 context terms and the same light basis; 16,416 half weights.
+
+Each also stores the same 704-byte per-element coordinate array and 4,928-byte frozen
+geometry/base array. Packed totals including common parameters and serialized wood are
+8,536/10,528/39,904 bytes. None has privileged source features or targets. These bounded
+controls supplement the existing engine BC atlas, compact spatial model and frozen
+quality model; they are not a claim to exhaust all conventional methods.
+
+Fit each head for exactly 2,048 steps, 256 sampled pixels/step and four spatial samples,
+with identical sampled view/light/pixel sequences and the same shaded-display plus
+coverage loss. Use the existing 128 AA8 training poses and 16 separate validation poses;
+exclude both public test views. Select the fixed endpoint. No material-moment loss,
+geometry update, new teacher capture or reference-infrastructure expansion was used.
+Source derivation remains [engine/plant.wrela](../engine/plant.wrela), the authored
+[great-tree fields](../content/great-tree), and the completed references documented
+[above](#reused-shaded-references-and-proportional-verification).
+
+### Rendered result and full execution cost
+
+Means cover the same 24 shaded cases: two public views, four controlled lights and three
+backgrounds against the completed AA64 source. Actual AMD GPU images decide quality.
+
+| Model | PSNR dB | FLIP | LPIPS | Paced GPU p95/p99 ms | All live requested GPU bytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| BC atlas control (reused) | 30.685 | 0.06237 | 0.03772 | 0.104/0.105 | 4,341,876 |
+| Frozen 1,897 elements (reused) | 40.128 | 0.01235 | 0.00189 | 0.314/0.316 | 721,852 |
+| Compact 88 base (reused) | 32.424 | 0.04013 | 0.04164 | 0.210/0.211 | 613,500 |
+| neural12 | 32.708 | 0.03924 | 0.04209 | 0.715/0.716 | 615,668 |
+| linear | 32.796 | 0.03949 | 0.04217 | 1.343/1.405 | 617,660 |
+| quadratic | 33.009 | 0.03804 | 0.04097 | 4.650/4.708 | 647,036 |
+
+The neural head passes only 13/24 numeric quality cases against the BC atlas, unchanged
+from the compact base. The affine control reaches 32.796 dB; the quadratic control reaches
+33.009 dB and beats the neural head on all three mean metrics. Both still fail the required
+quality frontier. Neural remains 7.419 dB below the frozen model, with 3.18x its FLIP and
+22.28x its LPIPS. There is no useful neural rendering advantage demonstrated here.
+
+Neural mean coverage error is 0.023997 and worst boundary p99 is 2.864 pixels, compared with
+0.023601/2.863 for the compact base and 0.008832/1.414 for the frozen model. High-frequency
+coverage, holes and shading remain visibly smoothed. A low-order local correction
+does not recover the missing visibility structure in this tested representation.
+
+![Source, frozen quality control, compact base and both local decoders](figures/neural-local-response.png)
+
+The image shows two shaded cases and coverage, enlarged without interpolation.
+The runtime includes view/light updates, CPU sorting, index uploads, exact wood,
+decoder execution, visibility, integration and final compositing. Profiles use 240
+measured frames after 60 warmup,64x64, one Chrome worker. AMD RADV RENOIR/1002:164c,
+Ryzen 5 5500U, Mesa 26.1.6, Chrome 154.0.8037.57; Wrela 0.9.0 compiler
+de9b81e52a7747870dfbd5223cb8aeb41e584d23. All work ran sequentially on Pop!_OS.
+
+### One execution follow-up, no promotion
+
+Evaluate the unchanged decoder once per primitive in a compute pass, store six float4
+coefficients, and read them in rasterization. This adds an 8,448-byte cache replacing an
+existing 4-byte inactive buffer, plus the measured dispatch/update costs. Apply this
+identically to all three heads; no retraining. It produced no saturated GPU improvement.
+Paced results also do not establish a useful win; do not infer small speed ratios across
+these unpaired runs. Prior AMD paired experiments already documented clock sensitivity.
+
+| Head | Original saturated GPU p95 ms | Cached saturated GPU p95 ms | Cached paced GPU p95/p99 ms | Cached all live requested GPU bytes |
+| --- | ---: | ---: | ---: | ---: |
+| neural12 | 0.17152 | 0.18480 | 0.772/0.773 | 624,112 |
+| linear | 0.45756 | 0.46276 | 1.299/1.363 | 626,104 |
+| quadratic | 3.78684 | 3.83204 | 5.098/5.231 | 655,480 |
+
+All neural cached images are byte-identical. A strict all-model byte-parity check failed:
+moving the conventional arithmetic between shader stages changes rounding, with a
+maximum RGBA difference 0.000122071. Preserve that failure. Cached variants have their own
+full quality scores; the largest display discrepancy is 7.62e-9 of reference-error MSE.
+This is not an exact-equivalence claim.
+
+| Variant | CPU frame p99 ms | CPU start to final GPU completion p95/p99 ms | Engine appearance plus scratch bytes | All requested GPU peak bytes |
+| --- | ---: | ---: | ---: | ---: |
+| neural12 | 0.516 | 4.470/4.584 | 206,068 | 632,052 |
+| linear | 0.507 | 4.305/4.548 | 208,060 | 634,044 |
+| quadratic | 0.500 | 7.712/8.021 | 237,436 | 663,420 |
+| neural12-cache | 0.661 | 4.441/4.669 | 214,512 | 640,496 |
+| linear-cache | 0.563 | 5.977/6.333 | 216,504 | 642,488 |
+| quadratic-cache | 0.544 | 7.432/7.847 | 245,880 | 671,864 |
+
+Completion includes browser/driver notification, not input-to-photon latency. Engine
+appearance/scratch excludes the identical 65,536-byte output and host-managed rings;
+all-requested columns include output, upload rings, uniform rings, screen allocations,
+inactive/fallback resources and decoded caches. Initialization is included in peak
+memory and excluded from steady-state runtime.
+
+### Residency is the second architectural constraint
+
+For neural, 206,068 engine appearance/scratch bytes include 196,608 bytes of AA2 color/depth
+targets,7,096 model bytes,1,760 live wood bytes,352 sort-index bytes and 252 inactive bytes.
+All live requested allocations total 615,668, with 632,052 peak. This is only 7.05x below the
+BC control's 4,341,876 live bytes, before any quality matching requirement is satisfied.
+The optimistic engine-only ratio is 15.27x; it omits differing host upload rings and is
+not an acceptable complete G4 residency result.
+
+Against this measured BC control, 196,608 bytes of supersampling targets alone nearly
+consume an optimistic 16x engine-only allowance of 196,615.25 bytes. Wood, indices and the
+decoder still need storage. This bound concerns this particular control and allocation
+scheme, not all possible conventional representations.
+
+Actual physical snapshots from each isolated browser run are preserved separately:
+
+| Variant | DRM resident VRAM bytes | DRM resident GTT bytes | Browser process-group PSS bytes |
+| --- | ---: | ---: | ---: |
+| neural12 | 17,367,040 | 9,740,288 | 480,005,120 |
+| linear | 27,254,784 | 9,838,592 | 480,647,168 |
+| quadratic | 27,242,496 | 10,149,888 | 480,657,408 |
+| neural12-cache | 17,641,472 | 9,838,592 | 484,811,776 |
+| linear-cache | 27,246,592 | 9,854,976 | 485,233,664 |
+| quadratic-cache | 27,525,120 | 10,133,504 | 486,026,240 |
+
+Requested bytes are not physical residency. DRM/PSS include retained driver/client
+allocations, compiled code and caches where exposed; they do not prove transient
+physical peaks or per-asset attribution. These UMA views overlap and must not be added.
+No physical 16x saving is established.
+
+### Next bet, verification and preserved evidence
+
+Change visibility representation: source-derived sparse patches with direct filtering
+over the output-pixel footprint and ordered wood/leaf visibility. Preserve fine coverage
+explicitly, then model lower-frequency radiance separately. Start with conventional
+patch compression using the same field/source information; add a learned model only if
+it improves the joint quality, runtime and residency frontier. This is a proposed next
+experiment, not a demonstrated rendering win.
+
+Focused checks cover new decoder gradients, zero-head recovery and light-independent
+opacity. The trained CPU surrogate's largest display discrepancy is 0.01415% of actual
+GPU reference-error MSE; actual GPU outputs remain authoritative. Format/type checks
+pass. Restoring KIND0/CACHEDfalse reproduces all eight frozen images and native resource
+counts exactly. No full-suite or PR-readiness claim is made.
+
+G1-G7 remain unchanged and unmet. Scope is still one static tree at 64 pixels with four
+known analytic lights: no wind, unseen-light, new-individual, family, 8-512-pixel or full
+transport claim. Evidence at build/neural-evidence/g4-local-response-v1 on Pop!_OS retains
+all six measured variants, checkpoints, optimizer curves, raw images, complete timing,
+allocation and physical-residency records, the failed parity check and the decision.
+Replay archives include the Wrela sources and external fitting/evaluation scripts.
+Manifest SHA-256: `ce4b84b4b62bd5d5a5f2b969d8bd62f265e1842fc79ecc37ad0bb816ba94e05b`.
