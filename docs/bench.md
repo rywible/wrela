@@ -1755,3 +1755,27 @@ All four spatial models fail the joint stored gate. Every public 16→32
 integration check passes. No runtime promotion or G1–G7 pass.
 
 Evidence manifest `d5910f77992f6870134c09bf3faaa2be6c0a033a33189b615b8ec5481194140a`.
+
+
+## Global optical calibration (Pop!_OS AMD, 2026-10-27)
+
+[Method, full results and limitations](neural-source-primitives.md#global-optical-calibration-before-a-local-fit).
+Ryzen 5 5500U, NumPy 2.2.6 and C++17/OpenMP four-thread CPU evaluation;
+source targets were captured on the same machine's Radeon/RADV GPU.
+No new GPU primitive runtime or timing.
+
+49 fixed area/shape candidates, 32 stored selection views, same actual
+107,672-byte format. Selection chooses 1.15× density and unchanged shape.
+Selection elapsed wall time including wood/raster/scoring/writes:
+142.385 s; all-256 final
+nominal evaluation: 178.036 s.
+Both exclude pre-existing source/reference generation; neither is G7
+pipeline timing or resident-memory measurement.
+
+All-256 coverage MAE 0.006854065:
+14.36% below source optical, 37.44% below the prior prefix fit,
+but 2.2400× BC. Stored/off-grid screens: 2/5 and
+5/5. Public integration: 8/8 16to32.
+The calibrated model remains rejected. No G1–G7 success.
+
+Evidence manifest `fd84699ae12d2f5a4cc49e3ad89f13bc0a57e17f46ef7627197f1697845a891b`.

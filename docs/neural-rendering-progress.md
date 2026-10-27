@@ -2027,3 +2027,25 @@ scripts `f1f48fbfd11a892b2d56cb460a4a4e940466caf956b6a0b8e6355253c55514b6`, unde
 `build/neural-evidence/appearance-spatial-primitives-v1/` on Pop!_OS.
 No GPU primitive runtime, resident-memory or G1–G7 achievement. All original
 goals remain intact; no full-suite or PR-readiness claim.
+
+
+## Global optical calibration control
+
+A [fixed 49-candidate calibration](neural-source-primitives.md#global-optical-calibration-before-a-local-fit)
+selects 1.15× density and unchanged shape at the same 107,672 packed bytes.
+All-256 coverage MAE is 0.006854065
+(14.36% below source optical, 37.44% below the older prefix fit).
+It remains 2.2400× BC; 2/5 stored and 5/5
+off-grid screens pass. The calibrated model remains rejected.
+
+All 49 packed candidates/images/losses are retained, with independent loss
+recomputation and byte-exact unchanged-model control. Public sampling:
+8/8 16to32. Final all-256 and public outputs are retained separately from
+the 32 selection views. No new GPU model runtime or G1–G7 success.
+
+Evidence manifest `fd84699ae12d2f5a4cc49e3ad89f13bc0a57e17f46ef7627197f1697845a891b`;
+source `b333ba10f3c1fb3902c52a47ec7e1c21343b9d45af25cdb90bc2640003e7a453`;
+scripts `9aacd3d0f9b0ac115e82a5ce99d1a2b4b9be2f5c081042a6f2da11a032cfc41a`, under
+`build/neural-evidence/appearance-spatial-calibration-v1/` on Pop!_OS.
+Next is a local packed fit against both source-only and calibration
+controls. All original targets remain intact.

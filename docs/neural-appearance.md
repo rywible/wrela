@@ -312,14 +312,24 @@ retains both opacity kernels, every stored view, public sampling checks
 and all failures. Adding 74.01% more packed data improves optical coverage
 only 1.23%; larger capacity alone is not an adequate next step.
 
+## Optical calibration control
+
+[A fixed global calibration](neural-source-primitives.md#global-optical-calibration-before-a-local-fit)
+selects 1.15× optical density and unchanged shape at the same 107,672-byte
+capacity. All-256 coverage MAE becomes
+0.006854065, 14.36% below the source optical
+model and 37.44% below the older fitted prefix model. Stored coverage
+is still 2.24× BC; 2/5 stored screens pass.
+The calibrated model remains rejected. This supplies a stronger conventional baseline for a local fit.
+
 ## Next decision
 
-Compare a low-dimensional opacity/shape calibration with a complete
-packed fit of the 1,897-group optical model. The unfitted source model
-is a fixed control; fit and selection use stored directions only.
-Measure the learned gain beyond calibration at the same packed capacity.
-Full source geometry, wood, sorting, tiling, caches and scratch remain
-part of the eventual runtime accounting.
+Fit local position, covariance, density and material parameters from
+the calibrated 1,897-group optical model at the same actual packed
+capacity. Keep both source-only and calibrated controls. Use stored
+directions for fitting and a fixed training budget; report every
+stored/public failure. Full source geometry, wood, sorting, tiling,
+caches and scratch remain part of eventual runtime accounting.
 
 Keep fitted-view quality, unseen views and sampling/footprint tests separate.
 A small packed payload alone does not meet G4. Complete production materials,

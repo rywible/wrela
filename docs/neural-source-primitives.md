@@ -497,6 +497,109 @@ compiler details, figure and immutable dependencies. No Wrela runtime or
 shipped weights change. Focused allow-list and diff checks pass; no
 full-suite or PR-readiness claim.
 
+## Global optical calibration before a local fit
+
+A fixed two-parameter search selects 15% greater optical density and no
+shape change. The calibrated 1,897-group model still occupies 107,672
+packed bytes. Its all-256-view coverage MAE is
+0.006854065, 14.36% below the source-only
+optical model and 37.44% below the older fitted prefix model.
+**The calibrated model remains rejected.** Stored coverage remains 2.2400× BC on the mean
+and 3.1722× in its worst view.
+
+This is image-based calibration of a conventional model, not a neural
+network. It prevents a later local fit from claiming a learned advantage
+that a simple global adjustment already supplies.
+
+### Fixed search and independent checks
+
+The 49-candidate Cartesian search uses area multipliers
+[0.7, 0.85, 1, 1.15, 1.3, 1.5, 1.75] and linear Cholesky scales
+[0.7, 0.8, 0.9, 1, 1.1, 1.2, 1.35]. Both transformations are baked into
+the half records before any scoring. Position, local pattern centroid,
+material values, common header and authored wood stay fixed. There are
+no additional runtime parameters. After calibration, the original source
+area/covariance preservation claims no longer apply.
+
+Selection uses the 32 evenly spaced stored directions 4, 12, …, 252,
+every pixel, and 16×16 point integration. The fixed loss is
+8×coverage MSE + 64×mean RGB MSE + 8×mean normal MSE +
+16×toward MSE + 1600×crown-depth MSE. Minimum mean loss wins;
+lowest candidate index breaks an exact tie. All 49 models, selection
+images and per-view losses are retained. Off-grid labels do not enter
+selection. These are development views, not a sealed test.
+
+Candidate 24 wins with loss 0.013224926,
+19.81% below the unchanged source candidate. Independent
+recomputation from all 49 saved image sets agrees within
+1.39e-17. The unchanged candidate repeats the
+earlier 32 images byte for byte. Selected packed bytes match the declared
+transform exactly. Independent NumPy point integration and the CPU raster
+differ by at most 4.6e-08,
+below 2e-5; zero-mass negative controls produce large coverage errors.
+All outputs satisfy physical moment bounds.
+
+### Full corpus and remaining failure
+
+The frozen selected model is scored on all 256 stored directions at
+nominal 16×16 sampling and all 16 public seed/view cases. Public sampling
+checks pass as follows: 8/8 16to32. Public quality uses
+32×32 spatial samples. The eight-direction sampling
+check does not establish convergence for all 256 nominal images.
+
+All stored directions, mean absolute moment errors:
+
+| Control | Coverage | Linear RGB moment | Normal moment | Toward moment | Crown-depth moment |
+|---|---:|---:|---:|---:|---:|
+| Fixed BC | 0.003059909 | 0.001120013 | 0.028233120 | 0.002727373 | 0.000138883 |
+| Prior fitted prefix | 0.010956385 | 0.001180598 | 0.013913842 | 0.007334720 | 0.000369860 |
+| Source optical | 0.008003161 | 0.000852460 | 0.010762640 | 0.005510278 | 0.000251127 |
+| Calibrated optical | 0.006854065 | 0.000733637 | 0.009609885 | 0.004511756 | 0.000249948 |
+
+Four public off-grid directions, denser integration:
+
+| Control | Coverage | Linear RGB moment | Normal moment | Toward moment | Crown-depth moment |
+|---|---:|---:|---:|---:|---:|
+| Fixed BC | 0.025882901 | 0.002766674 | 0.034725454 | 0.015425762 | 0.000571803 |
+| Prior fitted prefix | 0.012674492 | 0.001354021 | 0.015474488 | 0.008360843 | 0.000417555 |
+| Source optical | 0.008965747 | 0.000963805 | 0.011689313 | 0.006073518 | 0.000276902 |
+| Calibrated optical | 0.007715352 | 0.000822936 | 0.010396534 | 0.004986157 | 0.000279038 |
+
+The calibrated model passes 2/5 stored material screens and
+5/5 off-grid screens. Limits remain mean≤1.05×BC and
+worst-view≤1.10×BC. On the 32 selection directions, mean coverage error
+changes 0.008317106→
+0.007113399; on the remaining 224
+development directions it changes
+0.007958311→
+0.006817018. All five moments and
+tails for both groups are in the record. Earlier experiments have already
+examined this asset and its directions; the latter group is not held out
+from the overall research process.
+
+![Fixed direction 103 before and after global optical calibration](figures/neural-appearance-spatial-calibration.png)
+
+Selection takes
+142.385 s elapsed CPU-work
+wall time including wood, rasterization, scoring and writes; final
+all-256 evaluation takes
+178.036 s. These exclude
+pre-existing source/reference generation. They do not measure GPU
+latency, resident memory or complete G7 time.
+
+Next, fit local position, covariance, density and material parameters
+starting from this calibrated model, at the same actual half-record
+capacity. Compare against both source-only and globally calibrated
+controls. That experiment must exceed the calibration gain and still
+satisfy the original stored/unseen-view and full G1–G7 requirements.
+
+Evidence: `build/neural-evidence/appearance-spatial-calibration-v1/manifest.json`,
+SHA-256 `fd84699ae12d2f5a4cc49e3ad89f13bc0a57e17f46ef7627197f1697845a891b`;
+source `b333ba10f3c1fb3902c52a47ec7e1c21343b9d45af25cdb90bc2640003e7a453`;
+scripts `9aacd3d0f9b0ac115e82a5ce99d1a2b4b9be2f5c081042a6f2da11a032cfc41a`.
+No Wrela runtime or shipped weights change. Focused allow-list and diff
+checks pass; no full-suite or PR-readiness claim. All original goals remain.
+
 ## Earlier untrained checkpoint: decision and reproducibility
 
 Retain these source-derived controls when fitting any compact learned
