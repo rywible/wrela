@@ -1,0 +1,74 @@
+// Leaf-atlas diagnostic: 0 = RGBA8, 1 = BC7, 2 = direct source,
+// 3 = independent128-texel masks, 4 = box-filtered64-texel masks.
+use engine::plant::{sprig_on, LEAF_TEXELS, LEAF_PATTERNS}
+use std::gpu::{Unorm8x4, FragCoord, Rgba8, Texture, begin_pass, draw, texture}
+use engine::frame::full
+
+pub const MODE: u32 = 0
+
+fn texel(k: u32, at: vec2u, n: u32) -> vec4 {
+    let uv = (vec2(at) + vec2(0.5)) / f32(LEAF_TEXELS) * 2.0 - vec2(1.0)
+    // Same authored pattern seed and texel law as engine::plant::cook_leaves.
+    let seed = k.wrapping_mul(2246822519) ^ 3266489917
+    let (m, which, tissue) = sprig_on(uv, seed, w: 2.0 / f32(LEAF_TEXELS), n: n)
+    Unorm8x4::encode(vec4(m, (f32(which) + 0.5) / 8.0, tissue.x, tissue.y)).decode()
+}
+
+pub fn sample(seed: u32, uv: vec2, n: u32, parameters: [u32]) -> vec4 {
+    let local = clamp(
+        uv * 0.5 + vec2(0.5),
+        vec2(0.5 / f32(LEAF_TEXELS)),
+        vec2(1.0 - 0.5 / f32(LEAF_TEXELS)),
+    )
+    let p = local * f32(LEAF_TEXELS) - vec2(0.5)
+    let lo = vec2u(p)
+    let hi = min(lo + vec2u(1), vec2u(LEAF_TEXELS - 1))
+    let f = p - vec2(lo)
+    let k = seed % LEAF_PATTERNS
+    let a = mix(texel(k, lo, n), texel(k, vec2u(hi.x, lo.y), n), vec4(f.x))
+    let b = mix(texel(k, vec2u(lo.x, hi.y), n), texel(k, hi, n), vec4(f.x))
+    mix(a, b, vec4(f.y))
+}
+
+pub fn mask_size() -> u32 {
+    if MODE == 4 { 64 } else { LEAF_TEXELS }
+}
+
+@fragment
+fn cook_masks(pixel: FragCoord, n: u32) -> vec4 {
+    let size = mask_size()
+    let p = vec2u(pixel.position.xy)
+    let row = p.y / size
+    let local = vec2u(p.x, p.y % size)
+    var value = vec4(0.0)
+    for channel in 0..4 {
+        let k = row * 4 + channel
+        if size == LEAF_TEXELS {
+            value[channel] = texel(k, local, n).r
+        } else {
+            let at = local * 2
+            value[channel] = (texel(k, at, n).r +
+                texel(k, at + vec2u(1, 0), n).r +
+                texel(k, at + vec2u(0, 1), n).r +
+                texel(k, at + vec2u(1), n).r) *
+                0.25
+        }
+    }
+    value
+}
+
+pub fn masks(n: u32) -> Texture<Rgba8> {
+    assert(n > 0)
+    var atlas = texture::<Rgba8>(width: mask_size(), height: mask_size() * 4)
+    let pass = begin_pass(mut atlas)
+    draw(pass, full.bind(z: 0.5), cook_masks.bind(n), vertices: 3)
+    pass.end()
+    take atlas
+}
+
+pub fn packed_uv(seed: u32, uv: vec2) -> (vec2, u32) {
+    let k = seed % LEAF_PATTERNS
+    let size = f32(mask_size())
+    let local = clamp(uv * 0.5 + vec2(0.5), vec2(0.5 / size), vec2(1.0 - 0.5 / size))
+    (vec2(local.x, (f32(k / 4) + local.y) / 4.0), k % 4)
+}

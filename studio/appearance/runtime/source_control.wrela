@@ -9,6 +9,8 @@ use engine::light::{Light, Lit, matte}
 use great_tree::tree::great_tree
 use std::gpu::{GlobalId, Slots, Oct32, Unorm8x4}
 use engine::noise::{direction, rand, pick}
+use std::gpu::{Bc7, Format, Filtered, copy_buffer_to_texture}
+use engine::compress::encode_bc7
 use std::field::Tube
 use std::gpu::{
     ClipPosition, Flat, GpuBuffer, Rgba8, Rgba16Float, Texture, Sampler, VertexIndex, InstanceIndex,
@@ -203,39 +205,45 @@ fn indexed_limb(
     }
 }
 
-// Matches engine::impostor's bake material, without its fixed atlas-cell clip.
-fn material(f: BakeVertex, b: Bake, atlas: Texture<Rgba8>, s: Sampler) -> (vec3, vec3) {
-    if f.leaf.value != 1 { return (normalize(f.normal), f.albedo) }
-    let (m, which) = leaf_at(atlas, s, f.seed.value, f.uv)
-    if m < 0.5 || which >= b.leaves.per_card { discard() }
-    let n = normalize(f.normal)
-    (n, tinted(leaf_age(b.leaves, n.y), f.tint))
-}
-
+// Shade the source material once, with the same visibility test for each representation.
 @fragment
-fn radiance(
+fn radiance<F: Format + Filtered>(
     f: BakeVertex,
     b: Bake,
     c: Camera,
     light: Light,
     pixels: f32,
     detailed: u32,
-    atlas: Texture<Rgba8>,
+    atlas: Texture<F>,
     filter: Sampler,
+    parameters: [u32],
 ) -> vec4 {
-    let (n, albedo) = material(f, b, atlas, filter)
-    if f.leaf.value != 1 {
-        let surface = Lit {
-            albedo,
-            n,
-            sun: 1.0,
-            sky: relight::sky(n),
-            through: vec3(0.0),
+    let n = normalize(f.normal)
+    let resolved = if detailed != 0 { smoothstep(4.0, 12.0, pixels) } else { 0.0 }
+    var albedo = f.albedo
+    var tissue = vec2(1.0, 0.5)
+    if f.leaf.value == 1 {
+        if leaf_field::MODE >= 3 {
+            // The atlas is generated with this exact leaf count. Its label is always in
+            // range; retain coverage alone and evaluate tissue only when it contributes.
+            let (uv, channel) = leaf_field::packed_uv(f.seed.value, f.uv)
+            let mask = F::rgba(atlas.sample_level(filter, uv))[channel]
+            if mask < 0.5 { discard() }
+            if resolved > 0.0 {
+                tissue = leaf_field::sample(f.seed.value, f.uv, b.leaves.per_card, parameters).ba
+            }
+        } else {
+            let t = if leaf_field::MODE == 2 {
+                leaf_field::sample(f.seed.value, f.uv, b.leaves.per_card, parameters)
+            } else { F::rgba(atlas.sample_level(filter, leaf_uv(f.seed.value, f.uv))) }
+            if t.r < 0.5 || u32(t.g * 8.0) >= b.leaves.per_card { discard() }
+            tissue = t.ba
         }
+        albedo = tinted(leaf_age(b.leaves, n.y), f.tint)
+    } else {
+        let surface = Lit { albedo, n, sun: 1.0, sky: relight::sky(n), through: vec3(0.0) }
         return vec4(matte(light, surface, world: vec3(0.0), eye: c.direction), 1.0)
     }
-    let tissue = atlas.sample_level(filter, leaf_uv(f.seed.value, f.uv)).ba
-    let resolved = if detailed != 0 { smoothstep(4.0, 12.0, pixels) } else { 0.0 }
     let transmission = mix(1.0, mix(0.4, 1.06, tissue.x), resolved)
     let fold = mix(1.0, mix(0.92, 1.04, tissue.y), resolved)
     vec4(
@@ -256,6 +264,7 @@ pub struct Source {
     cards: GpuBuffer<Card>,
     wood: GpuBuffer<Tube<4>>,
     atlas: Texture<Rgba8>,
+    compressed: Texture<Bc7>,
     filter: Sampler,
     card_indices: GpuBuffer<u32>,
     wood_indices: GpuBuffer<u32>,
@@ -268,6 +277,7 @@ pub fn init(active: bool) -> Source {
             cards: buffer(1),
             wood: buffer(1),
             atlas: texture(width: 1, height: 1),
+            compressed: texture(width: 4, height: 4),
             filter: sampler(),
             card_indices: buffer(1),
             wood_indices: buffer(1),
@@ -295,10 +305,24 @@ pub fn init(active: bool) -> Source {
     }
     var limbs: Vec<Tube<4>> = Vec::new()
     for i in 0..plant.limbs.len() { limbs.push(plant.limbs[i]) }
+    assert(leaf_field::MODE <= 4)
+    var atlas = texture::<Rgba8>(width: 1, height: 1)
+    var compressed = texture::<Bc7>(width: 4, height: 4)
+    if leaf_field::MODE == 0 {
+        atlas = leaf_atlas(plant.leaves.per_card)
+    } else if leaf_field::MODE == 1 {
+        let plain = leaf_atlas(plant.leaves.per_card)
+        let blocks = vec2u(128)
+        var scratch = buffer(128 * 128 * 4)
+        compressed = texture(width: 512, height: 512)
+        dispatch(encode_bc7.bind(plain, blocks, mut scratch), over: 128 * 128)
+        copy_buffer_to_texture(scratch.items(), compressed.level_mut(0))
+    } else if leaf_field::MODE >= 3 { atlas = leaf_field::masks(plant.leaves.per_card) }
     Source {
         cards,
         wood: buffer_of(limbs, at_least: 1),
-        atlas: leaf_atlas(plant.leaves.per_card),
+        atlas,
+        compressed,
         filter: sampler(),
         card_indices: buffer_of([0, 1, 2, 0, 2, 3]),
         wood_indices: buffer_of(wood_indices, at_least: 1),
@@ -306,7 +330,13 @@ pub fn init(active: bool) -> Source {
     }
 }
 
-pub fn draw_source(s: Source, p: DepthPass<Rgba16Float>, c: Camera, illumination: u32) {
+fn draw_with_atlas<F: Format + Filtered>(
+    s: Source,
+    p: DepthPass<Rgba16Float>,
+    c: Camera,
+    illumination: u32,
+    atlas: Texture<F>,
+) {
     let plant = great_tree()
     let b = Bake {
         mid: vec3(0.0, plant.top() * 0.5, 0.0),
@@ -325,8 +355,9 @@ pub fn draw_source(s: Source, p: DepthPass<Rgba16Float>, c: Camera, illumination
                 relight::light(illumination),
                 pixels,
                 detailed: 1,
-                atlas: s.atlas,
+                atlas: atlas,
                 filter: s.filter,
+                parameters: s.parameters.items(),
             ),
             indices: s.card_indices,
             index_count: 6,
@@ -342,8 +373,9 @@ pub fn draw_source(s: Source, p: DepthPass<Rgba16Float>, c: Camera, illumination
                 relight::light(illumination),
                 pixels,
                 detailed: 1,
-                atlas: s.atlas,
+                atlas: atlas,
                 filter: s.filter,
+                parameters: s.parameters.items(),
             ),
             indices: s.card_indices,
             index_count: 6,
@@ -359,8 +391,9 @@ pub fn draw_source(s: Source, p: DepthPass<Rgba16Float>, c: Camera, illumination
                 relight::light(illumination),
                 pixels,
                 detailed: 1,
-                atlas: s.atlas,
+                atlas: atlas,
                 filter: s.filter,
+                parameters: s.parameters.items(),
             ),
             indices: s.card_indices,
             index_count: 6,
@@ -376,8 +409,9 @@ pub fn draw_source(s: Source, p: DepthPass<Rgba16Float>, c: Camera, illumination
                 relight::light(illumination),
                 pixels,
                 detailed: 1,
-                atlas: s.atlas,
+                atlas: atlas,
                 filter: s.filter,
+                parameters: s.parameters.items(),
             ),
             vertices: plant.cards() * 6,
             instances: 1,
@@ -393,8 +427,9 @@ pub fn draw_source(s: Source, p: DepthPass<Rgba16Float>, c: Camera, illumination
                 relight::light(illumination),
                 pixels,
                 detailed: 1,
-                atlas: s.atlas,
+                atlas: atlas,
                 filter: s.filter,
+                parameters: s.parameters.items(),
             ),
             indices: s.wood_indices,
             index_count: LIMB_VERTICES,
@@ -410,11 +445,18 @@ pub fn draw_source(s: Source, p: DepthPass<Rgba16Float>, c: Camera, illumination
                 relight::light(illumination),
                 pixels,
                 detailed: 1,
-                atlas: s.atlas,
+                atlas: atlas,
                 filter: s.filter,
+                parameters: s.parameters.items(),
             ),
             vertices: plant.limbs.len() * LIMB_VERTICES,
             instances: 1,
         )
+    }
+}
+
+pub fn draw_source(s: Source, p: DepthPass<Rgba16Float>, c: Camera, illumination: u32) {
+    if leaf_field::MODE == 1 { draw_with_atlas(s, p, c, illumination, s.compressed) } else {
+        draw_with_atlas(s, p, c, illumination, s.atlas)
     }
 }

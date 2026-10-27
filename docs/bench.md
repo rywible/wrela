@@ -2151,3 +2151,36 @@ unchanged; +12 inactive buffer bytes verified. Format/type pass; no full-suite c
 All variants and failed timing tails preserved. G1-G7 unchanged and unmet.
 [Full evidence](neural-shaded-appearance.md#source-program-reconstruction-a-conventional-memory-tradeoff).
 Evidence build/neural-evidence/g4-procedural-source-v1 on Pop!_OS.
+
+
+### 2026-10-27 — Source leaf storage and conditional material reconstruction
+
+Pop!_OS Ryzen 5 5500U / AMD RADV RENOIR, Mesa 26.1.6, Chrome 154.0.8037.57;
+Wrela 0.9.0 compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23. Parent
+1326773e9fd21b14cc12f7e54b65cd65b7a8bc35 plus archived source. Solo/sequential.
+Five conventional AMD paths, two targeted follow-ups. Existing AA64 truth, two views,
+four lights, three backgrounds; unchanged frozen model, zero training/new truth.
+
+Independent 128-texel coverage masks with conditional source tissue reconstruction
+pass 24/24 numeric cases versus the raw atlas, preserve all eight coverage outputs
+and save 786,432 requested GPU bytes (25.36%): live/peak 2,314,156/2,330,540 versus
+3,100,588/3,116,972. Mean PSNR40.295825, FLIP.01299942, LPIPS.00249220,
+coverageMAE.01005954, worst boundaryp99 2px. RGBA is not fully bit-identical.
+
+Standalone complete GPU95/99 1.204/1.219ms versus1.207/1.208ms. Three paired
+saturated p95 ratios1.027,.999,1.032; median change-16.23%. Last paced pair
+1.164/1.202ms versus1.150/1.180ms. No paired saturatedp99 available.
+Actual DRM/PSS snapshots show no established physical residency reduction.
+
+BC7 fails8/24 cases; 64-texel masks fail2/24 despite improved average metrics.
+Direct field evaluation passes24/24 but GPU95=4.180ms. Forcing full material detail
+in both raw and mask128 controls raises hybridGPU95 to3.849ms versus1.144ms.
+Keep mask128 as a distant control, not all-scale deployment. Frozen learned
+representation passes8/24 cases against it: change architecture, no G4 promotion.
+
+First complete assessment8min13s; decision21min18s. Defaults/model/frozen8images
+unchanged; +16 inactive texture bytes accounted. Format/type pass; no full suite.
+Preserve every failed result. Next: independent surface-ID visibility and deferred
+source shading, compared fairly before more fitting. G1-G7 unchanged/unmet.
+[Full evidence](neural-shaded-appearance.md#source-leaf-storage-a-useful-distant-control-not-an-all-scale-solution).
+Evidence build/neural-evidence/g4-leaf-storage-v1 on Pop!_OS.

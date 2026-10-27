@@ -1565,3 +1565,184 @@ paired results and the decision. This is one static tree at 64 pixels, two publi
 views and four known lights. No family, motion, unseen-light or 8-512-pixel claim.
 G1-G7 remain unchanged and unmet.
 Manifest SHA-256: `a51c8f7e3a7021fd3675d7d5f0183e0f9b666cc63708930a2c57b2de0fcf0e0a`.
+
+
+## Source leaf storage: a useful distant control, not an all-scale solution
+
+**Decision: change the compact appearance architecture.** Keep independently packed
+128-texel source coverage as a stronger conventional distant-view control. It saves
+786,432 requested GPU bytes (25.36% of the complete live allocation) while passing
+all 24 numeric shaded-quality comparisons against the original source atlas.
+All captured coverage values are identical. Three paired GPU p95 ratios are within
+3.3% of the control. This establishes a useful conventional allocation tradeoff,
+not a neural advantage or a reduction in physical residency.
+
+The hybrid does not solve all scales: forcing its full material-detail branch on
+raises complete GPU p95 from 1.144 to 3.849 ms. The frozen compact model still passes
+only 8/24 numeric quality cases against this stronger source control. G4 is unmet.
+
+Solo Pop!_OS work began 2026-10-27 20:52:20 UTC. The complete initial assessment was
+recorded at 21:00:32 UTC and the decision at 21:13:37 UTC: about 8 and 21 minutes.
+Exactly two targeted optimization experiments followed the initial comparison.
+No training, model changes or new shaded truth generation occurred.
+
+### Equal source information and the five executable paths
+
+All variants render the same 26,560 stored source cards and indexed wood, seed 7,
+source materials, lights and 4x4 independent visibility samples per output pixel.
+The conventional methods have the authored fields, source code and sampling knowledge.
+The frozen 1,897-patch model remains a separate, unchanged learned control.
+
+The [source leaf definition](../engine/plant.wrela) generates 16 patterns with
+128x128 texels each. The original 512x512 RGBA8 atlas stores coverage, leaf label
+and two tissue-response channels. The experiment changes its storage/evaluation:
+
+- Original atlas: 1,048,576 bytes, with hardware bilinear filtering.
+- Existing engine BC7 mode-6 encoder: 262,144 bytes. Its startup source atlas and
+  compression scratch count toward peak memory. This is the available engine
+  encoder, not a claim about the best possible BC7 encoder.
+- Direct source: reconstruct four original, quantized RGBA8 texels from the
+  authored field and interpolate in float32 at every sample. Hardware and float32
+  interpolation need not be bit-identical; measure the resulting images.
+- First follow-up, mask128: pack four independent coverage patterns into RGBA
+  channels of a 128x512 texture, 262,144 bytes. Atlas generation and shading use
+  the same positive leaf count, making the old leaf-label range check redundant.
+  Reconstruct the original tissue channels only when material detail contributes.
+- Second follow-up, mask64: a 64x256 texture, 65,536 bytes, with each texel averaging
+  2x2 original quantized coverage values. The threshold stays 0.5; no fitting or
+  threshold tuning. Tissue still uses the original 128-texel source law.
+
+Implementation: [leaf_field.wrela](../studio/appearance/runtime/leaf_field.wrela)
+and [source_control.wrela](../studio/appearance/runtime/source_control.wrela).
+These are conventional methods, with no reference-derived runtime inputs or neural
+inference. The two mask follow-ups are the only optimization experiments.
+
+### Shaded quality and silhouettes
+
+Reuse the completed AA64 shaded references, two public views, four lights and three
+backgrounds. Metric preprocessing is unchanged. A numeric case passes with PSNR
+loss at most 0.25 dB and FLIP/LPIPS increases at most 5%, using the established
+near-zero floors. These static numeric gates do not establish G3 or a human result.
+
+| Variant | Mean PSNR dB | Mean FLIP | Mean LPIPS | Coverage MAE | Cases passing vs original |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| leaf-raw | 40.294314 | 0.01300185 | 0.00249142 | 0.01005954 | 24/24 |
+| leaf-bc7 | 40.279616 | 0.01300866 | 0.00249364 | 0.01007199 | 16/24 |
+| leaf-field | 40.293732 | 0.01303561 | 0.00247795 | 0.01007283 | 24/24 |
+| leaf-mask128 | 40.295825 | 0.01299942 | 0.00249220 | 0.01005954 | 24/24 |
+| leaf-mask64 | 40.321734 | 0.01301385 | 0.00229899 | 0.01004040 | 22/24 |
+
+All variants have worst boundary p99 of 2.0 pixels. The initial raw control matches
+all eight prior stored-source images byte for byte. Mask128 preserves coverage in
+all eight images and matches complete RGBA in four; the other four have maximum
+absolute differences up to 0.016495 in linear RGBA. Matching aggregate coverage
+does not imply identical frontmost leaf selection or radiance.
+
+BC7 fails eight cases despite similar averages; its worst LPIPS ratio is 1.286.
+Mask64 improves mean PSNR and LPIPS yet fails two cases, with worst LPIPS ratio
+1.114. It changes coverage at 89 pixels in view 0 and 49 pixels in view 1,
+up to 0.125 absolute coverage. Neither is promoted by averaging away failures.
+Direct field evaluation passes all numeric cases but is much slower.
+
+Against mask128, frozen AA2 passes 8/24 cases, calibrated AA2 5/24 and the old
+BC appearance control 1/24. Sampling counts and runtime differ and are explicit;
+this is a full-rendering tradeoff, not a fixed-input G2 tournament.
+
+### Complete rendering cost and actual memory observations
+
+AMD RADV RENOIR, PCI 1002:164c, Ryzen 5 5500U, Mesa 26.1.6,
+Chrome 154.0.8037.57; Wrela 0.9.0 compiler
+de9b81e52a7747870dfbd5223cb8aeb41e584d23. One worker, 64x64 output,
+60 warmup and 240 measured frames. Builds, captures, GPU runs and scoring are
+sequential. Camera/light updates alternate each frame.
+
+GPU measurements include source geometry, wood, mask decoding or field evaluation,
+independent visibility, shading, sample integration and final display compositing.
+Source cards use depth testing, so no optical-patch sort runs in these variants.
+CPU time includes view/light updates, parameters, uploads and command recording.
+CPU-to-final-GPU completion includes browser/driver notification and is not
+input-to-photon. Initialization is excluded from steady-state timing but included
+in requested allocation peaks. Source edits/cache rebuilds are not exercised.
+
+| Variant | Paced GPU p95/p99 ms | Saturated GPU p95 ms | CPU p99 ms | CPU to final GPU p95/p99 ms | Engine appearance/scratch bytes | All requested live/peak GPU bytes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| leaf-raw | 1.207/1.208 | 0.411 | 0.584 | 3.990/4.294 | 2,690,988 | 3,100,588/3,116,972 |
+| leaf-bc7 | 1.151/1.190 | 0.430 | 0.647 | 4.540/4.590 | 1,904,544 | 2,314,144/3,624,908 |
+| leaf-field | 4.180/4.410 | 3.007 | 0.584 | 6.675/6.904 | 1,642,416 | 2,052,016/2,068,400 |
+| leaf-mask128 | 1.204/1.219 | 0.445 | 0.684 | 4.417/4.578 | 1,904,556 | 2,314,156/2,330,540 |
+| leaf-mask64 | 1.196/1.211 | 0.408 | 0.668 | 3.732/3.873 | 1,707,948 | 2,117,548/2,133,932 |
+
+Three alternating pairs compare mask128 against an untouched copy of the raw build.
+Saturated GPU median changes are -16.23%, -22.04% and -10.69%; p95 ratios are
+**1.027, 0.999 and 1.032**. The last pair's raw paced p95/p99 is 1.164/1.202 ms
+versus 1.150/1.180 ms. CPU median is +1.06%, inconclusive. Read-only power and
+temperature traces are preserved; no power settings were changed. All-pair saturated
+median/p95 summaries exist, but only the last pair's raw paced timings remain.
+Paired saturated p99 is unavailable; do not infer it from median results.
+
+All requested live/peak allocations include source records, indices, textures,
+scratch, dummy/fallback data, caches, rings and output. The engine-only column
+excludes 409,600 identical bytes: output 65,536, upload ring 262,144, uniform ring
+65,536 and screen 16,384. Declared workgroup shared storage is zero; private spills
+and driver caches are not exposed by this counter. BC7's lower steady allocation
+comes with a higher 3,624,908-byte initialization peak.
+
+| Variant | DRM resident VRAM bytes | DRM resident GTT bytes | Browser-group PSS bytes |
+| --- | ---: | ---: | ---: |
+| leaf-raw | 17,375,232 | 9,740,288 | 478,342,144 |
+| leaf-bc7 | 17,657,856 | 9,838,592 | 482,942,976 |
+| leaf-field | 17,379,328 | 10,133,504 | 483,489,792 |
+| leaf-mask128 | 17,313,792 | 9,838,592 | 481,591,296 |
+| leaf-mask64 | 17,395,712 | 9,838,592 | 481,886,208 |
+
+These are whole-client physical snapshots, not per-asset attribution or transient
+physical peaks. UMA counters overlap and must not be added. They do not establish
+a physical residency saving. The requested-byte reduction is not a 16x memory result.
+
+### Material-detail uncertainty resolved without new truth infrastructure
+
+At the measured distant footprint, the original shader's detail blend is zero.
+That means normal captures cannot verify conditional tissue reconstruction. A
+bounded implementation stress check forces pixels=12 in both original and hybrid
+shaders while keeping the same geometry and samples. It activates full tissue
+response without introducing a new reference, retraining, or third optimization.
+
+All outputs are finite and coverage stays byte-identical. Maximum RGB RMSE across
+the eight raw/hybrid pairs is 0.000315; maximum absolute RGBA difference is 0.024067.
+This is measured implementation agreement, not bit-exact material reproduction.
+Paced full GPU p95/p99 becomes **3.849/3.918 ms versus 1.144/1.179 ms**: a 3.366x
+p95 cost. That rejects unconditional field reconstruction as an all-scale replacement.
+This stress check does not validate actual close-up visibility or natural close-up
+performance; it exposes the cost of the newly introduced conditional branch.
+
+### Architecture decision and next experiment
+
+Keep mask128 as a distant-view conventional control. Retire the tested coarse mask,
+BC7 encoding and unconditional field evaluation for this quality/runtime target.
+Do not train the current compact representation harder: its 8/24 result against
+the stronger control still fails G4, and physical memory reduction is unproved.
+
+Stored cards (849,920 bytes) plus sample colour/depth targets (786,432 bytes) now
+account for 85.92% of mask128's engine appearance/scratch allocation. The next bet
+is a visibility-first representation: preserve source coverage and the identity
+of each independently visible surface, then shade surviving surfaces rather than
+keep a full supersample RGBA image. The conventional comparator must receive the
+same source IDs, sampling and field knowledge.
+
+The shortest consequential experiment is one AMD surface-ID visibility path against
+mask128, using identical source shading and samples, and measuring shaded errors,
+whole GPU tails, allocations and physical residency together. Only a demonstrated
+response error or expensive field evaluation should justify a learned residual.
+No further material-moment fitting is supported by this block.
+
+The default configuration and frozen model are restored. All eight frozen outputs
+are byte-identical; the new inactive BC7 handle costs exactly 16 texture bytes,
+verified by native accounting. Format/type checks pass. No full-suite claim.
+All five measured alternatives, failed quality cases, slow material stress results,
+initial generic-format compilation failure and exact builds/sources are preserved.
+
+Scope remains one static 64-pixel tree, two public views and four known lights.
+Motion, unseen views/lights/individuals, the 8-512-pixel range, families and G6
+sustained budgets remain unvalidated. G1-G7 are unchanged and unmet.
+Evidence: build/neural-evidence/g4-leaf-storage-v1 on Pop!_OS.
+Manifest SHA-256: `c01382504fc39faeee1e12d68966e4b3a87c33fa0d4834ce5f2659010bba4503`.

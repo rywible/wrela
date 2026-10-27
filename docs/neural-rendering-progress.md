@@ -18,16 +18,18 @@
 
 ## Immediate milestone
 
-The [source-program comparison](neural-shaded-appearance.md#source-program-reconstruction-a-conventional-memory-tradeoff)
-demonstrates exact reconstruction with 637,228 fewer requested GPU bytes (20.55%)
-when only crown normals/depth and the sampling distribution are cached. All 24 image
-pairs are byte-identical. But paired GPU p95 exceeds 1.1x in two of three pairs.
-Continue this as a conventional memory tradeoff, without G4 promotion.
+The [source leaf storage comparison](neural-shaded-appearance.md#source-leaf-storage-a-useful-distant-control-not-an-all-scale-solution)
+keeps a stronger conventional distant-view control: independent 128-texel coverage
+masks save 25.36% of complete requested GPU allocation, pass all24 numeric cases
+against the original atlas, and keep paired GPU p95 within3.3%. Physical residency
+reduction is unproved. Full tissue evaluation costs3.366x control p95 in a branch
+stress check, so this is not an all-scale deployment solution.
 
-The leaf atlas and sample colour/depth targets now account for 89.35% of appearance/
-scratch allocation. The next architecture bet is footprint-aware source coverage
-with independent visibility and sample-local storage. Keep equal-source conventional
-controls and the unchanged frozen model. G1-G7 remain unchanged and unmet.
+Change the compact appearance architecture: frozen AA2 passes only8/24 cases
+against the stronger control. Next test sample-local surface identity and deferred
+source shading, with equal source/sampling knowledge for conventional methods.
+No more fitting until an actual rendered response problem or costly field is found.
+G1-G7 remain unchanged and unmet.
 
 ## Evidence recorded so far
 
@@ -2293,3 +2295,19 @@ Frozen model/default8images unchanged, with12 extra inactive buffer bytes counte
 [Report](neural-shaded-appearance.md#source-program-reconstruction-a-conventional-memory-tradeoff).
 Evidence build/neural-evidence/g4-procedural-source-v1 on Pop!_OS.
 Manifest SHA-256: `a51c8f7e3a7021fd3675d7d5f0183e0f9b666cc63708930a2c57b2de0fcf0e0a`.
+
+
+### Leaf coverage packing strengthens the conventional comparator
+
+Five AMD alternatives, two targeted follow-ups; first assessment8min13s and decision
+21min18s. Independent128-texel masks pass24/24 numeric cases and save786,432 requested
+GPU bytes (25.36%); all8coverage images identical. Paired GPU p95 ratios1.027,.999,1.032.
+Actual physical residency does not demonstrate a saving. Full material branch
+stress costs3.366x control p95; retain only as a distant-view conventional control.
+BC7 and64-texel masks fail per-case quality; full field evaluation fails runtime.
+Frozen learned method passes8/24 against the stronger control: change representation.
+All failures preserved; no training/newtruth; defaults/frozen8images unchanged,
+with16 extra inactive texture bytes counted. Format/type pass; no full-suite claim.
+[Report](neural-shaded-appearance.md#source-leaf-storage-a-useful-distant-control-not-an-all-scale-solution).
+Evidence build/neural-evidence/g4-leaf-storage-v1 on Pop!_OS.
+Manifest SHA-256: `c01382504fc39faeee1e12d68966e4b3a87c33fa0d4834ce5f2659010bba4503`.
