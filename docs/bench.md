@@ -1848,3 +1848,38 @@ Integration: 8/8 16to32. Material screens are diagnostics, not G4 acceptance.
 All original targets remain intact and unmet.
 
 Manifest `c2e2a06ab9d44c08db09dedbc983ab9371b4d154ef7cd211f37dbf9c3589aa28`.
+
+
+## G4 shaded/runtime/residency viability (Pop!_OS AMD, 2026-10-27)
+
+[Complete comparison, failed tails, physical residency and decision](neural-shaded-appearance.md).
+Ryzen 5 5500U, hardware Radeon/RADV RENOIR, Mesa 26.1.6, Chrome 154.0.8037.57,
+Wrela 0.9.0. Solo; frozen 107,672-byte fitted representation; zero new training or references.
+Two public views, four controlled lights, three backgrounds; 64×64 pixels.
+The first viability assessment finished in 67 minutes 26 seconds of the two-hour box.
+
+Two candidate optimizations only: shade leaf/wood before blending, then 2×2 sampling.
+Final mean PSNR 40.128 dB, FLIP 0.01235, LPIPS 0.001889 versus source-informed BC's
+30.685 dB / 0.06237 / 0.037719. Two of 24 cases still fail (worst PSNR loss 5.980 dB).
+Conventional calibrated primitives using the same renderer reach 39.740 dB /
+0.01392 / 0.002116 at essentially identical storage and algorithm.
+
+60 warmup, 240 measured frames. Final/BC paced GPU p95: 0.3141/0.1036 ms;
+p99: 0.3161/0.1046 ms. Saturated p95: 0.09808/0.02688 ms.
+Separate CPU-start-to-GPU-complete observer (includes updates and compositor commands,
+plus browser/driver notification) p95: 4.340/1.906 ms; p99: 4.528/3.812 ms.
+Sort/upload, decoding, wood, visibility, integration and final composite included.
+This is not a production whole-scene benchmark; initialization is outside steady-state timing.
+
+All requested live GPU buffers/textures: 721,852 versus 4,341,876 bytes, only 6.015×.
+Includes output, intermediate images, sort data, wood, retained upload/uniform rings
+and fallback/dummy resources. Calibrated control: 721,968 bytes.
+Actual DRM residency and process PSS are separately recorded in the report; these
+UMA values are not added together or claimed as per-asset ownership.
+The final checked-in default adds the same 116-byte inactive source-control helper;
+all eight outputs remain byte-identical to the measured candidate.
+
+Decision: **change representation**, retain the frozen model and every failed result.
+Next bet: source-compiled visibility layers and pixel-footprint coverage; train a residual
+only after a rendered comparison shows a reason. Original G1–G7 unchanged and unmet.
+Evidence manifest `44cc42b8607d0781958bbd4409c360cd7ab8a7288d5a8797dfa091d4f8ef46b6`.

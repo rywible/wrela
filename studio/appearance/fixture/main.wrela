@@ -231,3 +231,30 @@ pub fn source_compress(s: mut State, mode: u32) -> u32 {
 pub fn geometry_export(s: mut State, seed: u32, mode: u32) -> u32 {
     geometry::publish(mut s.geometry, seed, mode)
 }
+
+pub fn response_probe(s: mut State) -> u32 {
+    s.probe = buffer(4096)
+    dispatch(relight::probe.bind(mut s.probe), over: 4096)
+    4096 * 16
+}
+
+pub fn shaded_capture(
+    s: mut State,
+    seed: u32,
+    gx: f32,
+    gy: f32,
+    size: u32,
+    grid: u32,
+    illumination: u32,
+    detailed: u32,
+) -> u32 {
+    source::shaded(mut s.source, seed, gx, gy, size, grid, illumination, detailed)
+}
+
+pub fn shaded_average(s: mut State, gx: f32, gy: f32, illumination: u32, compressed: u32) -> u32 {
+    source::shaded_average(mut s.source, gx, gy, illumination, compressed)
+}
+
+pub fn shaded_probe(s: mut State, x: u32, y: u32, grid: u32) -> u32 {
+    source::shaded_probe(mut s.source, x, y, grid)
+}

@@ -1,18 +1,21 @@
 // Public diagnostic of the authored card/limb geometry, before view-atlas lookup.
-// Uses the bake's material semantics (hard leaf cut, crown normals, flat bark),
-// not the complete production shader, wind, lighting, or a continuous leaf field.
+// Base material captures use bake semantics: hard leaf cut, crown normals, flat bark.
+// Controlled shaded captures add the production leaf response before integration;
+// neither path includes wind, full scene transport or a continuous leaf field.
 use engine::compress::{encode_bc5, encode_bc7}
 use engine::impostor::{BAKED, Bake, BakeVertex, hemi_dir}
 use engine::plant::{
     Card, LIMB_VERTICES, card_scale, card_tint, card_turn, cook_cards, leaf_age, leaf_at,
-    leaf_atlas, level_cards, limb_vertex, tinted,
+    leaf_atlas, leaf_uv, level_cards, limb_vertex, tinted,
 }
+use engine::light::{Light, Lit, matte}
 use great_tree::tree::great_tree
 use std::field::Tube
 use std::gpu::{
     Bc5, Bc7, ClipPosition, DepthTexture, Flat, GlobalId, GpuBuffer, Rgba8, Rgba16Float, Sampler,
-    Slots, Texels, Texture, VertexIndex, begin_pass_with_depth, buffer, buffer_of, depth_texture,
-    discard, copy, copy_buffer_to_texture, dispatch, draw, sampler, texture, writable_texture,
+    Rgba32Float, Slots, Texels, Texture, VertexIndex, begin_pass_with_depth, buffer, buffer_of,
+    depth_texture, discard, copy, copy_buffer_to_texture, dispatch, draw, sampler, texture,
+    writable_texture,
 }
 
 pub struct Camera: Copy + GpuData {
@@ -215,6 +218,8 @@ pub struct Source {
     depth: DepthTexture,
     moments: GpuBuffer<Moments>,
     probe: GpuBuffer<Moments>,
+    radiance: Texture<Rgba32Float>,
+    shaded: GpuBuffer<vec4>,
 }
 
 pub fn init() -> Source {
@@ -240,6 +245,8 @@ pub fn init() -> Source {
         depth: depth_texture(width: 1, height: 1),
         moments: buffer(1),
         probe: buffer(1),
+        radiance: texture(width: 1, height: 1),
+        shaded: buffer(1),
     }
 }
 
@@ -482,4 +489,195 @@ pub fn compress(s: mut Source, mode: u32) -> u32 {
     } else { s.depth_words.items() }
     copy(from, s.words.items_mut())
     count * 16
+}
+
+// Controlled shaded reference: production leaf response, unquantized source material,
+// per visible source fragment before integration. Static hard-cut geometry and flat bark;
+// no scene shadows, wind, fog, atmospheric tables or indirect-transport truth.
+@fragment
+fn radiance(
+    f: BakeVertex,
+    b: Bake,
+    c: Camera,
+    light: Light,
+    pixels: f32,
+    detailed: u32,
+    atlas: Texture<Rgba8>,
+    filter: Sampler,
+) -> vec4 {
+    let (n, albedo) = material(f, b, atlas, filter)
+    if f.leaf.value != 1 {
+        let surface = Lit {
+            albedo,
+            n,
+            sun: 1.0,
+            sky: relight::sky(n),
+            through: vec3(0.0),
+        }
+        return vec4(matte(light, surface, world: vec3(0.0), eye: c.direction), 1.0)
+    }
+    let tissue = atlas.sample_level(filter, leaf_uv(f.seed.value, f.uv)).ba
+    let resolved = if detailed != 0 { smoothstep(4.0, 12.0, pixels) } else { 0.0 }
+    let transmission = mix(1.0, mix(0.4, 1.06, tissue.x), resolved)
+    let fold = mix(1.0, mix(0.92, 1.04, tissue.y), resolved)
+    vec4(
+        relight::leaf(
+            light,
+            c.direction,
+            n,
+            albedo * fold,
+            b.leaves.through * transmission,
+            f.depth,
+            pixels,
+        ),
+        1.0,
+    )
+}
+
+@compute(64)
+fn integrate_radiance(
+    source: Texture<Rgba32Float>,
+    size: u32,
+    grid: u32,
+    out: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    if id.x >= size * size { return }
+    let x = (id.x % size) * grid
+    let y = (id.x / size) * grid
+    var sum = Wide { low: vec4u(0), high: vec4i(0) }
+    for j in 0..grid {
+        for i in 0..grid { sum = exact_add(sum, source.load(x + i, y + j)) }
+    }
+    out[id] = mean(sum, grid * grid)
+}
+
+// Calls capture first so geometry and uncompressed moment controls share one source state.
+pub fn shaded(
+    s: mut Source,
+    seed: u32,
+    gx: f32,
+    gy: f32,
+    size: u32,
+    grid: u32,
+    illumination: u32,
+    detailed: u32,
+) -> u32 {
+    assert(illumination < 4 && detailed <= 1)
+    let _ = capture(mut s, seed, gx, gy, size, level: 0, grid: grid)
+    let plant = great_tree()
+    let b = Bake {
+        mid: vec3(0.0, plant.top() * 0.5, 0.0),
+        half: plant.reach() + plant.leaves.size * 1.2 * card_scale(BAKED) * 0.5 * 1.415,
+        leaves: plant.leaves,
+        bark: plant.bark,
+    }
+    let d = hemi_dir(vec2(gx, gy))
+    let up0 = if d.y > 0.99 { vec3(0.0, 0.0, 1.0) } else { vec3(0.0, 1.0, 0.0) }
+    let right = normalize(cross(up0, d))
+    let c = Camera { direction: d, right, up: cross(d, right), level: 0 }
+    let pixels = plant.leaves.leaf_width() * f32(size) / (2.0 * b.half)
+    let filter = sampler()
+    s.radiance = texture(width: size * grid, height: size * grid)
+    {
+        let p = begin_pass_with_depth(
+            mut s.radiance,
+            mut s.depth,
+            clear: vec4(0.0),
+            clear_depth: 1.0,
+        )
+        draw(
+            p,
+            card_vertex.bind(b, c, s.cards.items()),
+            radiance.bind(b, c, relight::light(illumination), pixels, detailed, s.pattern, filter),
+            vertices: plant.cards() * 6,
+            instances: 1,
+        )
+        draw(
+            p,
+            limb_vertex_at.bind(b, c, s.limbs.items()),
+            radiance.bind(b, c, relight::light(illumination), pixels, detailed, s.pattern, filter),
+            vertices: plant.limbs.len() * LIMB_VERTICES,
+            instances: 1,
+        )
+        p.end()
+    }
+    s.shaded = buffer(size * size)
+    dispatch(integrate_radiance.bind(s.radiance, size, grid, mut s.shaded), over: size * size)
+    size * size * 16
+}
+
+// Representation control only: condition the stored moments, normalize the normal as
+// production far shading does, and shade once. This is deliberately not reference truth.
+@compute(64)
+fn average_radiance(
+    moments: [Moments],
+    count: u32,
+    light: Light,
+    view: vec3,
+    through: vec3,
+    pixels: f32,
+    out: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    if id.x >= count { return }
+    let m = moments[id.x]
+    let cover = m.colour.a
+    let inv = 1.0 / max(cover, 1.0e-6)
+    let raw = m.geometry.xyz * inv
+    let n = if dot(raw, raw) > 1.0e-12 { normalize(raw) } else { view }
+    let lit = relight::leaf(
+        light,
+        view,
+        n,
+        m.colour.rgb * inv,
+        through,
+        m.detail.x * inv * 40.0,
+        pixels,
+    )
+    out[id] = vec4(lit * cover, cover)
+}
+
+pub fn shaded_average(s: mut Source, gx: f32, gy: f32, illumination: u32, compressed: u32) -> u32 {
+    assert(s.size > 0 && illumination < 4 && compressed <= 1)
+    if compressed != 0 { let _ = compress(mut s, mode: 0) }
+    let plant = great_tree()
+    let half = plant.reach() + plant.leaves.size * 1.2 * card_scale(BAKED) * 0.5 * 1.415
+    let pixels = plant.leaves.leaf_width() * f32(s.size) / (2.0 * half)
+    let moments = if compressed != 0 { s.decoded.items() } else { s.moments.items() }
+    s.shaded = buffer(s.size * s.size)
+    dispatch(
+        average_radiance.bind(
+            moments,
+            s.size * s.size,
+            relight::light(illumination),
+            hemi_dir(vec2(gx, gy)),
+            plant.leaves.through,
+            pixels,
+            mut s.shaded,
+        ),
+        over: s.size * s.size,
+    )
+    s.size * s.size * 16
+}
+
+@compute(64)
+fn radiance_pixel(
+    source: Texture<Rgba32Float>,
+    x: u32,
+    y: u32,
+    grid: u32,
+    out: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    if id.x >= grid * grid { return }
+    out[id] = source.load(x * grid + id.x % grid, y * grid + id.x / grid)
+}
+
+pub fn shaded_probe(s: mut Source, x: u32, y: u32, grid: u32) -> u32 {
+    assert(grid > 0 && grid <= 128 && s.radiance.width() == s.size * grid)
+    assert(x < s.size && y < s.size)
+    s.shaded = buffer(grid * grid)
+    dispatch(radiance_pixel.bind(s.radiance, x, y, grid, mut s.shaded), over: grid * grid)
+    grid * grid * 16
 }

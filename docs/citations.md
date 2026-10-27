@@ -193,3 +193,10 @@ sampling diagnostic uses the elementary variance decomposition and an
 independent-pair product to compare losses. It does not implement that
 paper's recursive control variate or copy code, assets, weights or hardware
 claims. See [the diagnostic and its limits](neural-source-primitives.md#training-objective-diagnostic).
+
+
+The [G4 shaded viability experiment](neural-shaded-appearance.md) reuses these pinned
+FLIP and LPIPS implementations with engine tone mapping at exposure 0.62, followed by
+sRGB, rather than the earlier exposure-1 Reinhard diagnostic. Its source-conditioned
+optical primitives, reference shading, GPU renderer and allocation observer are our own
+implementations; no external model weights or rendering implementation are imported.

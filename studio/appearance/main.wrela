@@ -153,6 +153,11 @@ fn capture_geometry(
 struct SourceConfig: Copy {
     enabled: bool = false,
     geometry: bool = false,
+    response: bool = false,
+    runtime: bool = false,
+    shaded: bool = false,
+    illumination: u32 = 0,
+    detailed: u32 = 1,
     primitives: bool = false,
     batch: bool = false,
     compress: bool = false,
@@ -324,6 +329,158 @@ fn capture_views(
     Ok(())
 }
 
+fn capture_shaded(
+    b: drive::Build,
+    directory: str,
+    seed: u32,
+    c: SourceConfig,
+) -> Result<(), ToolError> {
+    let _ = untrapped("init", drive::steps(b, [Step::Init]).wait()?)?
+    let names = ["source-lit.f32", "averaged-lit.f32", "same-view-bc-lit.f32", "pixel-lit.f32"]
+    for mode in 0..4 {
+        let entry = if mode == 0 { "shaded_capture" } else if mode < 3 { "shaded_average" } else {
+            "shaded_probe"
+        }
+        let parameters = if mode == 0 {
+            Vec::from(
+                [
+                    Scalar::I32(i32(seed)),
+                    Scalar::F32(c.gx),
+                    Scalar::F32(c.gy),
+                    Scalar::I32(i32(c.size)),
+                    Scalar::I32(i32(c.grid)),
+                    Scalar::I32(i32(c.illumination)),
+                    Scalar::I32(i32(c.detailed)),
+                ],
+            )
+        } else if mode < 3 {
+            Vec::from(
+                [
+                    Scalar::F32(c.gx),
+                    Scalar::F32(c.gy),
+                    Scalar::I32(i32(c.illumination)),
+                    Scalar::I32(i32(mode - 1)),
+                ],
+            )
+        } else {
+            Vec::from(
+                [
+                    Scalar::I32(i32(c.size / 2)),
+                    Scalar::I32(i32(c.size * 3 / 8)),
+                    Scalar::I32(i32(c.grid)),
+                ],
+            )
+        }
+        let saw = untrapped(
+            "shaded source",
+            drive::steps(
+                b,
+                [Step::Call(String::from(entry), take parameters)],
+                timeout: 600.0,
+            ).wait()?,
+        )?
+        let expected = if mode < 3 { c.size * c.size * 16 } else { c.grid * c.grid * 16 }
+        match saw.ran[0].results[0] {
+            Scalar::I32(n) => if u32(n) != expected {
+                return Err(ToolError::new("wrong shaded bytes"))
+            },
+            _ => return Err(ToolError::new("shaded capture did not return bytes")),
+        }
+        let ids = untrapped("shaded buffers", drive::steps(b, [Step::Buffers]).wait()?)?
+        borrow buffers = ids.buffers[0]
+        var read = untrapped(
+            "shaded read",
+            drive::steps(b, [Step::ReadBuffer(buffers[buffers.len() - 1])], timeout: 600.0).wait()?,
+        )?
+        let bytes = joined(data_bytes(read.bytes.remove(0))?)
+        if bytes.len() != expected { return Err(ToolError::new("wrong shaded read size")) }
+        write_file(f"{directory}/{names[mode]}", chunked(take bytes))?
+    }
+    let metadata = f"asset=great_tree\nseed={seed}\ngx={c.gx}\ngy={c.gy}\nsize={c.size}\ngrid={c.grid}\nlight={c.illumination}\nleaf_tissue={c.detailed}\nprobe_x={c.size / 2}\nprobe_y={c.size * 3 / 8}\nlayout=row_major_linear_rgb_times_coverage_coverage_f32\nreference=source_visible_fragment_production_leaf_response_before_Q20_integration\nlimitations=static_hard_cut_geometry_flat_bark_analytic_sky_no_scene_shadows_wind_fog_or_full_G4\ncontrol=averaged_material_shading_and_same_view_BC_not_fixed_view_atlas\n"
+    let _ = files::write(f"{directory}/shaded.txt", metadata.as_bytes()).wait()?
+    Ok(())
+}
+
+fn runtime_word(values: [Scalar], i: u32) -> u32 {
+    match values[i] {
+        Scalar::I32(n) => u32(n),
+        _ => panic("runtime returned a non-integer"),
+    }
+}
+
+fn capture_runtime(b: drive::Build, directory: str) -> Result<(), ToolError> {
+    let _ = untrapped("init", drive::steps(b, [Step::Init]).wait()?)?
+    for view in 0..2 {
+        for light in 0..4 {
+            let _ = untrapped(
+                "runtime configuration",
+                drive::steps(
+                    b,
+                    [
+                        Step::Call(
+                            String::from("configure"),
+                            Vec::from([Scalar::I32(i32(view)), Scalar::I32(i32(light))]),
+                        ),
+                    ],
+                ).wait()?,
+            )?
+            let saw = untrapped(
+                "runtime render",
+                drive::steps(
+                    b,
+                    [Step::Call(String::from("publish"), Vec::new())],
+                    timeout: 600.0,
+                ).wait()?,
+            )?
+            if runtime_word(saw.ran[0].results, 0) != 65536 {
+                return Err(ToolError::new("wrong runtime bytes"))
+            }
+            let ids = untrapped("runtime buffers", drive::steps(b, [Step::Buffers]).wait()?)?
+            borrow buffers = ids.buffers[0]
+            var read = untrapped(
+                "runtime pixels",
+                drive::steps(
+                    b,
+                    [Step::ReadBuffer(buffers[buffers.len() - 1])],
+                    timeout: 600.0,
+                ).wait()?,
+            )?
+            let bytes = joined(data_bytes(read.bytes.remove(0))?)
+            if bytes.len() != 65536 { return Err(ToolError::new("wrong runtime read size")) }
+            write_file(f"{directory}/runtime-v{view}-l{light}.f32", chunked(take bytes))?
+            let got = untrapped(
+                "resident",
+                drive::steps(b, [Step::Call(String::from("resident"), Vec::new())]).wait()?,
+            )?
+            borrow values = got.ran[0].results
+            let text = f"buffers={runtime_word(values, 0)}\ntextures={runtime_word(values, 1)}\npeak_buffers={runtime_word(values, 2)}\npeak_textures={runtime_word(values, 3)}\n"
+            let _ = files::write(
+                f"{directory}/runtime-v{view}-l{light}.memory.txt",
+                text.as_bytes(),
+            ).wait()?
+        }
+    }
+    Ok(())
+}
+
+fn capture_response(b: drive::Build, directory: str) -> Result<(), ToolError> {
+    let _ = untrapped("init", drive::steps(b, [Step::Init]).wait()?)?
+    let _ = untrapped(
+        "response probe",
+        drive::steps(b, [Step::Call(String::from("response_probe"), Vec::new())]).wait()?,
+    )?
+    let ids = untrapped("response buffers", drive::steps(b, [Step::Buffers]).wait()?)?
+    borrow buffers = ids.buffers[0]
+    var read = untrapped(
+        "response read",
+        drive::steps(b, [Step::ReadBuffer(buffers[buffers.len() - 1])]).wait()?,
+    )?
+    let bytes = joined(data_bytes(read.bytes.remove(0))?)
+    if bytes.len() != 4096 * 16 { return Err(ToolError::new("wrong response probe size")) }
+    write_file(f"{directory}/response.f32", chunked(take bytes))?
+    Ok(())
+}
+
 fn run(seed: u32, only_probe: bool, source: SourceConfig) -> Result<(), ToolError> {
     let now = time::utc_now().wait()?
     let directory = f"out/runs/{now.seconds}-{now.nanos}"
@@ -333,7 +490,9 @@ fn run(seed: u32, only_probe: bool, source: SourceConfig) -> Result<(), ToolErro
     opt.optimize = true
     opt.timeout = 600.0
     let built = toolchain::build(
-        "ws/studio/appearance/fixture",
+        if source.runtime { "ws/studio/appearance/runtime" } else {
+            "ws/studio/appearance/fixture"
+        },
         f"{directory}/fixture",
         opt,
     ).wait()?
@@ -345,7 +504,13 @@ fn run(seed: u32, only_probe: bool, source: SourceConfig) -> Result<(), ToolErro
     load.workers = 1
     load.timeout = 600.0
     let b = drive::load(f"{directory}/fixture", load).wait()?.build
-    let result = if source.geometry {
+    let result = if source.runtime {
+        capture_runtime(b, directory.as_str())
+    } else if source.shaded {
+        capture_shaded(b, directory.as_str(), seed, source)
+    } else if source.response {
+        capture_response(b, directory.as_str())
+    } else if source.geometry {
         capture_geometry(b, directory.as_str(), seed, source.primitives)
     } else if source.batch {
         capture_views(b, directory.as_str(), seed, source)
@@ -365,7 +530,35 @@ pub fn tool() -> u32 {
     var seed = 7
     var source = SourceConfig {}
     let only_probe = given.len() == 1 && given[0].as_str() == "bc-probe"
-    if given.len() > 0 && (given[0].as_str() == "geometry" || given[0].as_str() == "primitives") {
+    if given.len() == 1 && given[0].as_str() == "runtime" {
+        source.runtime = true
+    } else if given.len() > 0 && given[0].as_str() == "shaded" {
+        if given.len() != 8 {
+            print("usage: appearance shaded SEED GX GY SIZE GRID LIGHT TISSUE")
+            return 2
+        }
+        let Some(n) = given[1].as_str().parse_u32() else { return 2 }
+        let Some(gx) = given[2].as_str().parse_f32() else { return 2 }
+        let Some(gy) = given[3].as_str().parse_f32() else { return 2 }
+        let Some(size) = given[4].as_str().parse_u32() else { return 2 }
+        let Some(grid) = given[5].as_str().parse_u32() else { return 2 }
+        let Some(illumination) = given[6].as_str().parse_u32() else { return 2 }
+        let Some(detailed) = given[7].as_str().parse_u32() else { return 2 }
+        if !(gx >= 0.0 && gx <= 1.0 && gy >= 0.0 && gy <= 1.0) ||
+            size == 0 ||
+            size > 512 ||
+            size % 4 != 0 ||
+            grid == 0 ||
+            grid > 128 ||
+            size * grid > 8192 ||
+            illumination >= 4 ||
+            detailed > 1 { return 2 }
+        seed = n
+        source = SourceConfig { shaded: true, gx, gy, size, grid, illumination, detailed }
+    } else if given.len() == 1 && given[0].as_str() == "response-probe" {
+        source.response = true
+    } else if given.len() > 0 &&
+        (given[0].as_str() == "geometry" || given[0].as_str() == "primitives") {
         if given.len() != 2 {
             print("usage: appearance geometry SEED | primitives SEED")
             return 2

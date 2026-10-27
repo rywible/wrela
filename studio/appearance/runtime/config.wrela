@@ -1,0 +1,5 @@
+// Diagnostic only: 0 = BC atlas, 1 = averaged material moments,
+// 2 = shade before blending, 3 = original source cards and wood.
+// BC and calibrated controls require their archived payload; the checked-in data is frozen.
+pub const MODE: u32 = 2
+pub const AA: u32 = 2

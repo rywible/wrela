@@ -15,7 +15,7 @@
 //   game turns it on): `(view_uv, texel_uv)` and a learned grid's features → the eight values
 //   its atlases hold, evaluated where a view is read (`net_texel`).
 
-use light::{Lit, gloss, gloss_occlusion, matte}
+use light::{Light, Lit, gloss, gloss_occlusion, matte}
 use neural::{Model, eval_gpu, half_at}
 use lod::{draw_packed, keeps_packed}
 use lit::{Lighting, sun_sky_and_gloss, through_air}
@@ -87,9 +87,6 @@ pub fn leaf_light(
     through: vec3,
     leaf: f32,
 ) -> vec3 {
-    // Over 2.4 m: a crown's masses are deeper than its old clumps, and over 1.6 m their lit
-    // tops went murk.
-    let ao = exp(-depth / 2.4)
     let v = normalize(lt.cam.eye - at)
     let facing = if dot(n, v) < 0.0 { -n } else { n }
     // The sun is read from `SELF_SHADE` m toward it, past the leaves of its own mass: each leaf
@@ -104,11 +101,34 @@ pub fn leaf_light(
         soft: 1.5,
         shadow_at: at + lt.light.sun * SELF_SHADE,
     )
+    let rough = leaf_rough(leaf / lt.cam.footprint(max(dot(at - lt.cam.eye, lt.cam.forward), 0.1)))
+    let surface = Lit { albedo, n, sun, sky, through, rough, reflected }
+    through_air(lt, leaf_response(lt.light, surface, at, lt.cam.eye, depth), at)
+}
+
+/// The production leaf material response after its incident sun, sky and reflection are
+/// known, before air/fog. `surface` holds a unit normal, the unattenuated incident light,
+/// albedo/transmission and footprint-dependent roughness. Crown depth is in metres.
+/// Shared by production shading and controlled source-sample rendering diagnostics.
+/// The material always uses dielectric leaf gloss; other `Lit` material options are ignored.
+pub fn leaf_response(light: Light, surface: Lit, at: vec3, eye: vec3, depth: f32) -> vec3 {
+    let albedo = surface.albedo
+    let n = surface.n
+    let sun = surface.sun
+    let sky = surface.sky
+    let through = surface.through
+    let reflected = surface.reflected
+    let rough = surface.rough
+    // Over 2.4 m: a crown's masses are deeper than its old clumps, and over 1.6 m their lit
+    // tops went murk.
+    let ao = exp(-depth / 2.4)
+    let v = normalize(eye - at)
+    let facing = if dot(n, v) < 0.0 { -n } else { n }
     let inside = 0.25 + 0.75 * ao
     // Leaves against the sun (B13): a narrow lobe toward it, over the light through them that
     // `light::matte` gives, where the eye looks toward the sun through the crown's edge (its
     // outer leaves, the least shaded: `ao`); the sun's shadow keeps it to the lit leaves.
-    let against = AGAINST_SUN * pow(max(dot(-v, lt.light.sun), 0.0), 8.0) * ao
+    let against = AGAINST_SUN * pow(max(dot(-v, light.sun), 0.0), 8.0) * ao
     let lit = Lit {
         albedo,
         n,
@@ -116,7 +136,6 @@ pub fn leaf_light(
         sky: sky * inside,
         through: through * (0.4 + 0.6 * ao) * (1.0 + against),
     }
-    let rough = leaf_rough(leaf / lt.cam.footprint(max(dot(at - lt.cam.eye, lt.cam.forward), 0.1)))
     let glossy = Lit {
         n: facing,
         rough,
@@ -124,7 +143,7 @@ pub fn leaf_light(
         reflected: reflected * inside * gloss_occlusion(inside, dot(facing, v), rough),
         ..lit,
     }
-    through_air(lt, matte(lt.light, lit, at, lt.cam.eye) + gloss(lt.light, glossy, v), at)
+    matte(light, lit, at, eye) + gloss(light, glossy, v)
 }
 
 /// The direction a hemi-octahedral grid's point `g` (each in [0, 1]) looks from (unit, y ≥ 0).

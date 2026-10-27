@@ -18,12 +18,12 @@
 
 ## Immediate milestone
 
-A synchronized linear-HDR instrument, real clearing capture and exact analytic motion reference
-now run on the hardware AMD GPU. The first RGB residual model has been trained, evaluated
-recurrently and rejected. Improve field/coverage information and real-scene reference quality
-before promoting any reconstruction change. Keep capture time fixed while spatial
-samples accumulate; advance simulation only between output frames. Do not reuse the existing
-post-developed RGBA8 average as radiometric truth.
+The [time-boxed G4 experiment](neural-shaded-appearance.md) has an executable AMD path,
+complete shaded/silhouette scores, frame completion measurements and resident-memory
+accounting. Decision: **change the representation**. Keep the frozen fit as a control;
+no more moment-error training. The two allowed candidate optimizations are exhausted.
+Next bet: source-compiled visibility layers and pixel-footprint coverage, with identical
+useful inputs for conventional and learned controls. All G1–G7 remain unchanged and unmet.
 
 ## Evidence recorded so far
 
@@ -2128,3 +2128,17 @@ Manifest `c2e2a06ab9d44c08db09dedbc983ab9371b4d154ef7cd211f37dbf9c3589aa28`;
 source `b333ba10f3c1fb3902c52a47ec7e1c21343b9d45af25cdb90bc2640003e7a453`;
 scripts `42fecda0d6ce19b73315a7ef764b318f26a075c32df6d41c59b5b2011afde279`, under
 `build/neural-evidence/appearance-spatial-continuation-v1/` on Pop!_OS.
+
+
+## Decisive G4 viability block
+
+[Full evidence, failures and decision](neural-shaded-appearance.md).
+Frozen weights; zero training steps and zero new reference captures. Both candidate
+optimizations were measured on AMD: pre-blend shading, then four spatial samples.
+
+The final compact path improves mean quality over BC substantially, but two silhouette
+cases fail, GPU p99 is 3.021× BC, and complete requested GPU allocation saves only 6.015×.
+The source-calibrated conventional primitive control is just 0.388 dB behind at the same
+storage and algorithm. Physical DRM residency and browser PSS are recorded; packed size
+is no longer used as a substitute for residency. Choose **change representation**,
+preserve every failed result, and retain G1–G7 unchanged.

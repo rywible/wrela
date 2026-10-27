@@ -1,0 +1,75 @@
+// Controlled illumination for appearance diagnostics, using the production leaf response.
+use engine::light::{Light, Lit}
+use engine::impostor::{leaf_response, leaf_rough, leaf_sky_normal}
+use std::gpu::{GlobalId, Slots}
+
+pub fn light(index: u32) -> Light {
+    let direction = [
+        vec3(0.3, 0.8, 0.5),
+        vec3(-0.8, 0.2, -0.3),
+        vec3(0.1, 0.2, -0.9),
+        vec3(-0.2, 0.95, 0.1),
+    ]
+    Light {
+        sun: normalize(direction[index]),
+        sun_colour: if index == 3 { vec3(0.0) } else { vec3(3.3, 2.75, 2.05) },
+        exposure: 0.62,
+        eye: 0.0,
+        horizon: 0.0,
+    }
+}
+
+// An analytic upper/lower hemisphere environment. No scene transport is implied.
+pub fn sky(n: vec3) -> vec3 {
+    mix(vec3(0.07, 0.06, 0.04), vec3(0.3, 0.4, 0.6), vec3(saturate(n.y * 0.5 + 0.5)))
+}
+
+pub fn leaf(
+    light: Light,
+    view: vec3,
+    n: vec3,
+    albedo: vec3,
+    through: vec3,
+    depth: f32,
+    pixels: f32,
+) -> vec3 {
+    let facing = if dot(n, view) < 0.0 { -n } else { n }
+    let reflection = facing * (2.0 * dot(facing, view)) - view
+    leaf_response(
+        light,
+        Lit {
+            albedo,
+            n,
+            sun: 1.0,
+            sky: sky(leaf_sky_normal(n)),
+            through,
+            rough: leaf_rough(pixels),
+            reflected: sky(reflection),
+        },
+        at: vec3(0.0),
+        eye: view,
+        depth: depth,
+    )
+}
+
+// Stable cases cover both sides, crown depths, roughness, sun directions and colours.
+// The capture compares the original expression to its shared engine implementation.
+@compute(64)
+pub fn probe(out: mut Slots<vec4>, id: GlobalId) {
+    if id.x >= 4096 { return }
+    let i = id.x
+    let y = (f32(i % 31) + 0.5) / 31.0 * 2.0 - 1.0
+    let a = f32((i * 13) % 257) * 0.024448191
+    let n = vec3(sqrt(1.0 - y * y) * cos(a), y, sqrt(1.0 - y * y) * sin(a))
+    let v = normalize(vec3(f32(i % 17) - 8.0, 0.3, f32((i * 7) % 19) - 9.0))
+    let c = leaf(
+        light(i % 4),
+        v,
+        n,
+        vec3(0.03, 0.11, 0.02) + vec3(f32(i % 7) * 0.02),
+        vec3(0.11, 0.16, 0.02),
+        depth: f32(i % 16) * 0.3,
+        pixels: f32((i / 16) % 16),
+    )
+    out[id] = vec4(c, 1.0)
+}

@@ -1,0 +1,197 @@
+// Conventional source-card control. Geometry and shading are copied without changes
+// from the established shaded reference; only sample count and accumulation precision differ.
+use engine::impostor::{BAKED, Bake, BakeVertex}
+use engine::plant::{
+    Card, LIMB_VERTICES, card_scale, card_tint, card_turn, cook_cards, leaf_age, leaf_at,
+    leaf_atlas, leaf_uv, limb_vertex, tinted,
+}
+use engine::light::{Light, Lit, matte}
+use great_tree::tree::great_tree
+use std::field::Tube
+use std::gpu::{
+    ClipPosition, Flat, GpuBuffer, Rgba8, Rgba16Float, Texture, Sampler, VertexIndex, DepthPass,
+    buffer, buffer_of, texture, sampler, dispatch, discard, draw,
+}
+
+pub struct Camera: Copy + GpuData {
+    pub direction: vec3,
+    pub right: vec3,
+    pub up: vec3,
+    pub level: u32,
+}
+
+// Three coverage-weighted moments. Normal components are decoded before averaging;
+// no division by coverage or renormalization happens during integration.
+pub struct Moments: Copy + GpuData {
+    colour: vec4, // linear albedo * coverage, coverage
+    geometry: vec4, // world normal * coverage, normalized toward * coverage
+    detail: vec4, // normalized crown depth * coverage, three reserved zeros
+}
+
+fn projected(p: vec3, b: Bake, c: Camera) -> ClipPosition {
+    let q = p - b.mid
+    let xy = vec2(dot(q, c.right), dot(q, c.up)) / b.half
+    ClipPosition {
+        position: vec4(xy.x, -xy.y, saturate(0.5 - dot(q, c.direction) / (2.0 * b.half)), 1.0),
+    }
+}
+
+@vertex
+fn card_vertex(v: VertexIndex, b: Bake, c: Camera, cards: [Card]) -> BakeVertex {
+    let card = cards[v.index / 6]
+    let k = v.index % 6
+    let qx = [-1.0, 1.0, 1.0, -1.0, 1.0, -1.0]
+    let qy = [-1.0, -1.0, 1.0, -1.0, 1.0, 1.0]
+    let q = vec2(qx[k], qy[k])
+    let t = card_turn(card, q)
+    let world = card.centre + (c.right * t.x + c.up * t.y) * (card.size * card_scale(c.level) * 0.5)
+    BakeVertex {
+        clip: projected(world, b, c),
+        uv: q,
+        normal: card.normal.decode(),
+        depth: card.depth,
+        toward: dot(world - b.mid, c.direction) / b.half,
+        albedo: vec3(0.0),
+        tint: card_tint(card),
+        seed: Flat { value: card.seed },
+        view: Flat { value: 0 },
+        leaf: Flat { value: 1 },
+    }
+}
+
+@vertex
+fn limb_vertex_at(v: VertexIndex, b: Bake, c: Camera, limbs: [Tube<4>]) -> BakeVertex {
+    let (p, n, along) = limb_vertex(limbs[v.index / LIMB_VERTICES], v.index % LIMB_VERTICES)
+    BakeVertex {
+        clip: projected(p, b, c),
+        uv: along,
+        normal: n,
+        depth: 0.0,
+        toward: dot(p - b.mid, c.direction) / b.half,
+        albedo: mix(b.bark.dark, b.bark.light, vec3(0.5)),
+        tint: vec3(0.0),
+        seed: Flat { value: 0 },
+        view: Flat { value: 0 },
+        leaf: Flat { value: 0 },
+    }
+}
+
+// Matches engine::impostor's bake material, without its fixed atlas-cell clip.
+fn material(f: BakeVertex, b: Bake, atlas: Texture<Rgba8>, s: Sampler) -> (vec3, vec3) {
+    if f.leaf.value != 1 { return (normalize(f.normal), f.albedo) }
+    let (m, which) = leaf_at(atlas, s, f.seed.value, f.uv)
+    if m < 0.5 || which >= b.leaves.per_card { discard() }
+    let n = normalize(f.normal)
+    (n, tinted(leaf_age(b.leaves, n.y), f.tint))
+}
+
+@fragment
+fn radiance(
+    f: BakeVertex,
+    b: Bake,
+    c: Camera,
+    light: Light,
+    pixels: f32,
+    detailed: u32,
+    atlas: Texture<Rgba8>,
+    filter: Sampler,
+) -> vec4 {
+    let (n, albedo) = material(f, b, atlas, filter)
+    if f.leaf.value != 1 {
+        let surface = Lit {
+            albedo,
+            n,
+            sun: 1.0,
+            sky: relight::sky(n),
+            through: vec3(0.0),
+        }
+        return vec4(matte(light, surface, world: vec3(0.0), eye: c.direction), 1.0)
+    }
+    let tissue = atlas.sample_level(filter, leaf_uv(f.seed.value, f.uv)).ba
+    let resolved = if detailed != 0 { smoothstep(4.0, 12.0, pixels) } else { 0.0 }
+    let transmission = mix(1.0, mix(0.4, 1.06, tissue.x), resolved)
+    let fold = mix(1.0, mix(0.92, 1.04, tissue.y), resolved)
+    vec4(
+        relight::leaf(
+            light,
+            c.direction,
+            n,
+            albedo * fold,
+            b.leaves.through * transmission,
+            f.depth,
+            pixels,
+        ),
+        1.0,
+    )
+}
+
+pub struct Source {
+    cards: GpuBuffer<Card>,
+    wood: GpuBuffer<Tube<4>>,
+    atlas: Texture<Rgba8>,
+    filter: Sampler,
+}
+
+pub fn init(active: bool) -> Source {
+    if !active {
+        return Source {
+            cards: buffer(1),
+            wood: buffer(1),
+            atlas: texture(width: 1, height: 1),
+            filter: sampler(),
+        }
+    }
+    let plant = great_tree()
+    let n = plant.cards()
+    var cards = buffer(n)
+    dispatch(cook_cards.bind(plant, n, seed: 7, out: mut cards), over: n)
+    var limbs: Vec<Tube<4>> = Vec::new()
+    for i in 0..plant.limbs.len() { limbs.push(plant.limbs[i]) }
+    Source {
+        cards,
+        wood: buffer_of(limbs, at_least: 1),
+        atlas: leaf_atlas(plant.leaves.per_card),
+        filter: sampler(),
+    }
+}
+
+pub fn draw_source(s: Source, p: DepthPass<Rgba16Float>, c: Camera, illumination: u32) {
+    let plant = great_tree()
+    let b = Bake {
+        mid: vec3(0.0, plant.top() * 0.5, 0.0),
+        half: plant.reach() + plant.leaves.size * 1.2 * card_scale(BAKED) * 0.5 * 1.415,
+        leaves: plant.leaves,
+        bark: plant.bark,
+    }
+    let pixels = plant.leaves.leaf_width() * 64.0 / (2.0 * b.half)
+    draw(
+        p,
+        card_vertex.bind(b, c, s.cards.items()),
+        radiance.bind(
+            b,
+            c,
+            relight::light(illumination),
+            pixels,
+            detailed: 1,
+            atlas: s.atlas,
+            filter: s.filter,
+        ),
+        vertices: plant.cards() * 6,
+        instances: 1,
+    )
+    draw(
+        p,
+        limb_vertex_at.bind(b, c, s.wood.items()),
+        radiance.bind(
+            b,
+            c,
+            relight::light(illumination),
+            pixels,
+            detailed: 1,
+            atlas: s.atlas,
+            filter: s.filter,
+        ),
+        vertices: plant.limbs.len() * LIMB_VERTICES,
+        instances: 1,
+    )
+}

@@ -1,0 +1,549 @@
+// Bounded G4 viability fixture: all view updates, sort/upload, wood, optical visibility,
+// moment integration, material shading and compositing belong to the measured frame.
+use engine::impostor::{hemi_dir, view_basis}
+use engine::neural::half_at
+use engine::light::{Lit, matte}
+use engine::plant::{LIMB_VERTICES, limb_vertex}
+use std::field::Tube
+use std::gpu::{
+    Bc5, Bc7, Blend, ClipPosition, Compare, Depth, DepthTexture, Flat, FragCoord, GlobalId,
+    GpuBuffer, Half2, InstanceIndex, Memory, Rgba16Float, Rgba32Float, Slots, Targets3, Texture,
+    VertexIndex, begin_screen_pass, begin_pass_with_depth, begin_pass3_with_depth, buffer,
+    buffer_of, copy_buffer_to_texture, depth_texture, dispatch, draw, label, memory, texture, write,
+}
+
+struct Camera: Copy + GpuData {
+    direction: vec3,
+    right: vec3,
+    up: vec3,
+    grid: vec2,
+    size: u32,
+    aa: u32,
+    illumination: u32,
+}
+
+fn camera(view: u32, light: u32, aa: u32) -> Camera {
+    let g = if view == 0 { vec2(0.46875, 0.40625) } else { vec2(0.375, 0.1875) }
+    let d = hemi_dir(g)
+    let up0 = if d.y > 0.99 { vec3(0.0, 0.0, 1.0) } else { vec3(0.0, 1.0, 0.0) }
+    let right = normalize(cross(up0, d))
+    Camera { direction: d, right, up: cross(d, right), grid: g, size: 64, aa, illumination: light }
+}
+
+struct OpticalVertex: Copy {
+    clip: ClipPosition,
+    delta: vec2,
+    inverse: Flat<vec3>,
+    tau: Flat<f32>,
+    albedo: Flat<vec3>,
+    normal: Flat<vec3>,
+    detail: Flat<vec2>,
+    radiance: Flat<vec3>,
+}
+
+fn value(w: [Half2], group: u32, k: u32) -> f32 {
+    half_at(w, group * 28 + k)
+}
+
+fn toward_half(t: f32) -> f32 {
+    let h = Half2::encode(vec2(t, 0.0))
+    if h.decode().x > t { Half2 { bits: h.bits - 1 }.decode().x } else { h.decode().x }
+}
+
+@vertex
+fn optical_vertex(
+    v: VertexIndex,
+    instance: InstanceIndex,
+    c: Camera,
+    w: [Half2],
+    order: [u32],
+) -> OpticalVertex {
+    let group = order[instance.index]
+    let centre = vec3(value(w, group, 0), value(w, group, 1), value(w, group, 2))
+    let mean = vec2(
+        dot(centre, c.right) + value(w, group, 3),
+        dot(centre, c.up) + value(w, group, 4),
+    )
+    var a = [0.0; 5]
+    var b = [0.0; 5]
+    for i in 0..5 {
+        let x = if i == 0 { value(w, group, 5) } else { 0.0 }
+        let y = if i < 2 { value(w, group, 6 + i) } else { 0.0 }
+        let z = if i < 3 { value(w, group, 8 + i) } else { 0.0 }
+        let lx = if i < 4 { value(w, group, 11 + i) } else { 0.0 }
+        let ly = value(w, group, 15 + i)
+        a[i] = dot(vec3(x, y, z), c.right) + lx
+        b[i] = dot(vec3(x, y, z), c.up) + ly
+    }
+    var xx = 0.0
+    var xy = 0.0
+    var yy = 0.0
+    for i in 0..5 {
+        xx += a[i] * a[i]
+        xy += a[i] * b[i]
+        yy += b[i] * b[i]
+    }
+    let determinant = xx * yy - xy * xy
+    let radii = sqrt(vec2(xx, yy) * 18.0)
+    let qx = [-1.0, 1.0, 1.0, -1.0, 1.0, -1.0]
+    let qy = [-1.0, -1.0, 1.0, -1.0, 1.0, 1.0]
+    let delta = vec2(qx[v.index % 6], qy[v.index % 6]) * radii
+    let at = mean + delta
+    let depth = saturate(0.5 + 0.5 * dot(centre, c.direction))
+    let colour = vec3(value(w, group, 21), value(w, group, 22), value(w, group, 23))
+    let raw = vec3(value(w, group, 24), value(w, group, 25), value(w, group, 26))
+    let n = if dot(raw, raw) > 1.0e-12 { normalize(raw) } else { c.direction }
+    let pixels = (0.25 / sqrt(6.0)) * f32(c.size) / (2.0 * data::HALF)
+    let radiance = if config::MODE >= 2 {
+        relight::leaf(
+            relight::light(c.illumination),
+            c.direction,
+            n,
+            colour * colour,
+            vec3(0.11, 0.16, 0.02),
+            value(w, group, 27) * 40.0,
+            pixels,
+        )
+    } else { vec3(0.0) }
+    OpticalVertex {
+        clip: ClipPosition { position: vec4(at.x, -at.y, 1.0 - depth, 1.0) },
+        delta,
+        radiance: Flat { value: radiance },
+        inverse: Flat { value: vec3(yy, -xy, xx) / determinant },
+        tau: Flat {
+            value: value(w, group, 20) /
+                (6.283185307179586 * sqrt(determinant) * (1.0 - exp(-9.0))),
+        },
+        albedo: Flat { value: colour * colour },
+        normal: Flat { value: raw / max(length(raw), 1.0) },
+        detail: Flat { value: vec2(toward_half(depth), value(w, group, 27)) },
+    }
+}
+
+fn alpha_of(v: OpticalVertex) -> f32 {
+    let inverse = v.inverse.value
+    let q = v.delta.x * v.delta.x * inverse.x +
+        2.0 * v.delta.x * v.delta.y * inverse.y +
+        v.delta.y * v.delta.y * inverse.z
+    if q > 18.0 { return 0.0 }
+    let t = v.tau.value * exp(-0.5 * q)
+    // Avoid cancellation for the very small optical tail.
+    if t < 0.01 { t * (1.0 - t * (0.5 - t / 6.0)) } else { 1.0 - exp(-t) }
+}
+
+@fragment
+fn optical(v: OpticalVertex) -> Targets3<vec4, vec4, vec4> {
+    let a = alpha_of(v)
+    Targets3 {
+        first: vec4(v.albedo.value * a, a),
+        second: vec4(v.normal.value * a, a),
+        third: vec4(v.detail.value * a, 0.0, a),
+    }
+}
+
+@fragment
+fn optical_radiance(v: OpticalVertex) -> vec4 {
+    let a = alpha_of(v)
+    vec4(v.radiance.value * a, a)
+}
+
+struct WoodVertex: Copy {
+    clip: ClipPosition,
+    normal: vec3,
+    toward: f32,
+}
+
+@vertex
+fn wood_vertex(v: VertexIndex, c: Camera, wood: [Tube<4>]) -> WoodVertex {
+    let (world, n, _) = limb_vertex(wood[v.index / LIMB_VERTICES], v.index % LIMB_VERTICES)
+    let p = (world - data::MID) / data::HALF
+    let xy = vec2(dot(p, c.right), dot(p, c.up))
+    let toward = saturate(0.5 + 0.5 * dot(p, c.direction))
+    WoodVertex {
+        clip: ClipPosition { position: vec4(xy.x, -xy.y, 1.0 - toward, 1.0) },
+        normal: n,
+        toward,
+    }
+}
+
+@fragment
+fn wood_moments(v: WoodVertex) -> Targets3<vec4, vec4, vec4> {
+    Targets3 {
+        first: vec4(data::BARK, 1.0),
+        second: vec4(normalize(v.normal), 1.0),
+        third: vec4(v.toward, 0.0, 0.0, 1.0),
+    }
+}
+
+@fragment
+fn wood_radiance(v: WoodVertex, c: Camera) -> vec4 {
+    let n = normalize(v.normal)
+    let surface = Lit {
+        albedo: data::BARK,
+        n,
+        sun: 1.0,
+        sky: relight::sky(n),
+        through: vec3(0.0),
+    }
+    vec4(matte(relight::light(c.illumination), surface, world: vec3(0.0), eye: c.direction), 1.0)
+}
+
+@compute(64)
+fn integrated_radiance(
+    c: Camera,
+    colour: Texture<Rgba16Float>,
+    out: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    if id.x >= c.size * c.size { return }
+    let base = vec2u(id.x % c.size, id.x / c.size) * c.aa
+    var sum = vec4(0.0)
+    for y in 0..c.aa {
+        for x in 0..c.aa {
+            let at = base + vec2u(x, y)
+            sum += colour.load(at.x, at.y)
+        }
+    }
+    out[id] = sum / f32(c.aa * c.aa)
+}
+
+fn shade(c: Camera, colour: vec4, normal: vec3, depth: f32) -> vec4 {
+    let inv = 1.0 / max(colour.a, 1.0e-6)
+    let raw = normal * inv
+    let n = if dot(raw, raw) > 1.0e-12 { normalize(raw) } else { c.direction }
+    let pixels = (0.25 / sqrt(6.0)) * f32(c.size) / (2.0 * data::HALF)
+    let light = relight::leaf(
+        relight::light(c.illumination),
+        c.direction,
+        n,
+        colour.rgb * inv,
+        vec3(0.11, 0.16, 0.02),
+        depth * inv * 40.0,
+        pixels,
+    )
+    vec4(light * colour.a, colour.a)
+}
+
+@compute(64)
+fn integrated(
+    c: Camera,
+    colour: Texture<Rgba16Float>,
+    normal: Texture<Rgba16Float>,
+    detail: Texture<Rgba16Float>,
+    out: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    if id.x >= c.size * c.size { return }
+    let base = vec2u(id.x % c.size, id.x / c.size) * c.aa
+    var sum = vec4(0.0)
+    var n = vec3(0.0)
+    var depth = 0.0
+    for y in 0..c.aa {
+        for x in 0..c.aa {
+            let at = base + vec2u(x, y)
+            sum += colour.load(at.x, at.y)
+            n += normal.load(at.x, at.y).xyz
+            depth += detail.load(at.x, at.y).y
+        }
+    }
+    let inv = 1.0 / f32(c.aa * c.aa)
+    out[id] = shade(c, sum * inv, n * inv, depth * inv)
+}
+
+struct Moments: Copy {
+    colour: vec4,
+    normal: vec3,
+    depth: f32,
+    toward: f32,
+}
+
+fn bc_at(colour: Texture<Bc7>, normal: Texture<Bc7>, depth: Texture<Bc5>, at: vec2u) -> Moments {
+    let a = colour.load(at.x, at.y)
+    let g = normal.load(at.x, at.y)
+    let z: vec2 = depth.load(at.x, at.y)
+    let rgb = saturate(a.rgb / max(a.a, 1.0e-6))
+    let raw = g.rgb * 2.0 - vec3(1.0)
+    Moments {
+        colour: vec4(rgb * rgb * a.a, a.a),
+        normal: raw / max(length(raw), 1.0) * a.a,
+        depth: z.y * a.a,
+        toward: z.x * a.a,
+    }
+}
+
+fn bc_sample(
+    colour: Texture<Bc7>,
+    normal: Texture<Bc7>,
+    depth: Texture<Bc5>,
+    cell: vec2u,
+    uv: vec2,
+) -> Moments {
+    var result = Moments { colour: vec4(0.0), normal: vec3(0.0), depth: 0.0, toward: 0.0 }
+    let p = clamp(uv * 64.0 - vec2(0.5), vec2(0.0), vec2(63.0))
+    let base = vec2u(floor(p))
+    let t = fract(p)
+    for y in 0..2 {
+        for x in 0..2 {
+            let w = (if x == 0 { 1.0 - t.x } else { t.x }) * (if y == 0 { 1.0 - t.y } else { t.y })
+            let at = cell * 64 + min(base + vec2u(x, y), vec2u(63))
+            let v = bc_at(colour, normal, depth, at)
+            result.colour += v.colour * w
+            result.normal += v.normal * w
+            result.depth += v.depth * w
+            result.toward += v.toward * w
+        }
+    }
+    result
+}
+
+@compute(64)
+fn conventional(
+    c: Camera,
+    colour: Texture<Bc7>,
+    normal: Texture<Bc7>,
+    depth: Texture<Bc5>,
+    out: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    if id.x >= c.size * c.size { return }
+    let uv = (vec2(f32(id.x % c.size), f32(id.x / c.size)) + vec2(0.5)) / f32(c.size)
+    let p = c.right * (uv.x * 2.0 - 1.0) + c.up * (uv.y * 2.0 - 1.0)
+    let grid = c.grid * 16.0 - vec2(0.5)
+    let base = floor(grid)
+    let t = fract(grid)
+    var sum = Moments { colour: vec4(0.0), normal: vec3(0.0), depth: 0.0, toward: 0.0 }
+    for y in 0..2 {
+        for x in 0..2 {
+            let w = (if x == 0 { 1.0 - t.x } else { t.x }) * (if y == 0 { 1.0 - t.y } else { t.y })
+            if w > 0.0 {
+                let cell = vec2u(clamp(base + vec2(f32(x), f32(y)), vec2(0.0), vec2(15.0)))
+                let (direction, right, up) = view_basis(cell.y * 16 + cell.x)
+                var local = vec2(dot(p, right), dot(p, up)) * 0.5 + vec2(0.5)
+                let initial = bc_sample(colour, normal, depth, cell, local)
+                let toward = if initial.colour.a > 1.0e-6 {
+                    initial.toward / initial.colour.a
+                } else { 0.5 }
+                let z = (2.0 * toward - 1.0 - dot(p, direction)) / dot(c.direction, direction)
+                let corrected = p + c.direction * z
+                local = vec2(dot(corrected, right), dot(corrected, up)) * 0.5 + vec2(0.5)
+                if local.x >= 0.0 && local.y >= 0.0 && local.x < 1.0 && local.y < 1.0 {
+                    let m = bc_sample(colour, normal, depth, cell, local)
+                    sum.colour += m.colour * w
+                    sum.normal += m.normal * w
+                    sum.depth += m.depth * w
+                }
+            }
+        }
+    }
+    out[id] = shade(c, sum.colour, sum.normal, sum.depth)
+}
+
+@vertex
+fn full(v: VertexIndex) -> ClipPosition {
+    ClipPosition {
+        position: vec4(f32((v.index << 1) & 2) * 2.0 - 1.0, f32(v.index & 2) * 2.0 - 1.0, 0.0, 1.0),
+    }
+}
+
+@fragment
+fn composite(pixel: FragCoord, source: [vec4]) -> vec4 {
+    let x = u32(pixel.position.x) % 64
+    let y = u32(pixel.position.y) % 64
+    let v = source[y * 64 + x]
+    vec4(engine::light::tone(v.rgb + vec3(0.18) * (1.0 - v.a), 0.62), 1.0)
+}
+
+pub struct State {
+    source: source_control::Source,
+    view: u32,
+    illumination: u32,
+    aa: u32,
+    step: u32,
+    model: GpuBuffer<Half2>,
+    wood: GpuBuffer<Tube<4>>,
+    order: GpuBuffer<u32>,
+    sorted: Vec<vec2>,
+    room: Vec<u8>,
+    indices: Vec<u32>,
+    colour: Texture<Rgba16Float>,
+    normal: Texture<Rgba16Float>,
+    detail: Texture<Rgba16Float>,
+    depth: DepthTexture,
+    bc_colour: Texture<Bc7>,
+    bc_normal: Texture<Bc7>,
+    bc_depth: Texture<Bc5>,
+    out: GpuBuffer<vec4>,
+}
+
+pub fn init() -> State {
+    assert(config::MODE <= 3 && config::AA > 0)
+    if config::MODE == 0 {
+        assert(data::COLOUR.len() == 262144, "restore the archived BC payload first")
+    }
+    let aa = config::AA
+    var s = State {
+        source: source_control::init(config::MODE == 3),
+        view: 0,
+        illumination: 0,
+        aa,
+        step: 0,
+        model: buffer(1),
+        wood: buffer(1),
+        order: buffer(1),
+        sorted: Vec::new(),
+        room: Vec::new(),
+        indices: Vec::new(),
+        colour: texture(width: 1, height: 1),
+        normal: texture(width: 1, height: 1),
+        detail: texture(width: 1, height: 1),
+        depth: depth_texture(width: 1, height: 1),
+        bc_colour: texture(width: 4, height: 4),
+        bc_normal: texture(width: 4, height: 4),
+        bc_depth: texture(width: 4, height: 4),
+        out: buffer(1),
+    }
+    if config::MODE == 0 {
+        s.bc_colour = texture(width: 1024, height: 1024)
+        s.bc_normal = texture(width: 1024, height: 1024)
+        s.bc_depth = texture(width: 1024, height: 1024)
+        let a = buffer_of(data::COLOUR)
+        let b = buffer_of(data::NORMAL)
+        let c = buffer_of(data::DEPTH)
+        copy_buffer_to_texture(a.items(), s.bc_colour.level_mut(0))
+        copy_buffer_to_texture(b.items(), s.bc_normal.level_mut(0))
+        copy_buffer_to_texture(c.items(), s.bc_depth.level_mut(0))
+    } else if config::MODE == 3 {
+        s.colour = texture(width: 64 * aa, height: 64 * aa)
+        s.depth = depth_texture(width: 64 * aa, height: 64 * aa)
+    } else {
+        s.model = buffer_of(data::MODEL)
+        s.wood = buffer_of(data::WOOD)
+        s.order = buffer(data::COUNT)
+        for i in 0..data::COUNT {
+            s.sorted.push(vec2(0.0, f32(i)))
+            s.indices.push(i)
+        }
+        s.colour = texture(width: 64 * aa, height: 64 * aa)
+        if config::MODE == 1 {
+            s.normal = texture(width: 64 * aa, height: 64 * aa)
+            s.detail = texture(width: 64 * aa, height: 64 * aa)
+        }
+        s.depth = depth_texture(width: 64 * aa, height: 64 * aa)
+    }
+    s.out = buffer(64 * 64)
+    take s
+}
+
+pub fn configure(s: mut State, view: u32, illumination: u32) {
+    assert(view < 2 && illumination < 4)
+    s.view = view
+    s.illumination = illumination
+}
+
+pub fn render(s: mut State) {
+    let c = camera(s.view, s.illumination, s.aa)
+    label("complete appearance")
+    if config::MODE == 0 {
+        dispatch(
+            conventional.bind(c, s.bc_colour, s.bc_normal, s.bc_depth, mut s.out),
+            over: 64 * 64,
+        )
+    } else if config::MODE == 3 {
+        let p = begin_pass_with_depth(mut s.colour, mut s.depth, clear: vec4(0.0), clear_depth: 1.0)
+        source_control::draw_source(
+            s.source,
+            p,
+            source_control::Camera { direction: c.direction, right: c.right, up: c.up, level: 0 },
+            c.illumination,
+        )
+        p.end()
+        dispatch(integrated_radiance.bind(c, s.colour, mut s.out), over: 64 * 64)
+    } else {
+        for i in 0..data::COUNT {
+            let at = i * 28
+            let p = vec3(
+                half_at(data::MODEL, at),
+                half_at(data::MODEL, at + 1),
+                half_at(data::MODEL, at + 2),
+            )
+            s.sorted[i] = vec2(saturate(0.5 + 0.5 * dot(p, c.direction)), f32(i))
+        }
+        s.sorted.sort_by_in(|a, b| a.x < b.x || a.x == b.x && a.y > b.y, mut s.room)
+        for i in 0..data::COUNT { s.indices[i] = u32(s.sorted[i].y) }
+        write(mut s.order, 0, s.indices)
+        if config::MODE == 1 {
+            let p = begin_pass3_with_depth(
+                mut s.colour,
+                mut s.normal,
+                mut s.detail,
+                mut s.depth,
+                clear: vec4(0.0),
+                clear_depth: 1.0,
+            )
+            draw(
+                p,
+                wood_vertex.bind(c, s.wood.items()),
+                wood_moments,
+                vertices: data::WOOD.len() * LIMB_VERTICES,
+                instances: 1,
+            )
+            draw(
+                p,
+                optical_vertex.bind(c, s.model.items(), s.order.items()),
+                optical,
+                vertices: 6,
+                instances: data::COUNT,
+                blends: [Blend::Premultiplied, Blend::Premultiplied, Blend::Premultiplied],
+                depth: Depth { compare: Compare::LessEqual, write: false },
+            )
+            p.end()
+            dispatch(integrated.bind(c, s.colour, s.normal, s.detail, mut s.out), over: 64 * 64)
+        } else {
+            let p = begin_pass_with_depth(
+                mut s.colour,
+                mut s.depth,
+                clear: vec4(0.0),
+                clear_depth: 1.0,
+            )
+            draw(
+                p,
+                wood_vertex.bind(c, s.wood.items()),
+                wood_radiance.bind(c),
+                vertices: data::WOOD.len() * LIMB_VERTICES,
+                instances: 1,
+            )
+            draw(
+                p,
+                optical_vertex.bind(c, s.model.items(), s.order.items()),
+                optical_radiance,
+                vertices: 6,
+                instances: data::COUNT,
+                blend: Blend::Premultiplied,
+                depth: Depth { compare: Compare::LessEqual, write: false },
+            )
+            p.end()
+            dispatch(integrated_radiance.bind(c, s.colour, mut s.out), over: 64 * 64)
+        }
+    }
+}
+
+pub fn publish(s: mut State) -> u32 {
+    render(mut s)
+    64 * 64 * 16
+}
+
+pub fn resident(s: State) -> (u32, u32, u32, u32) {
+    let m = memory()
+    (u32(m.buffers), u32(m.textures), u32(m.peak_buffers), u32(m.peak_textures))
+}
+
+pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
+    // Alternating reference views forces the candidate's sorting and updates every frame.
+    s.view = s.step % 2
+    s.illumination = (s.step / 2) % 4
+    render(mut s)
+    let screen = begin_screen_pass(vec4(0.0))
+    draw(screen, full, composite.bind(s.out.items()), vertices: 3)
+    screen.present()
+    s.step += 1
+}
