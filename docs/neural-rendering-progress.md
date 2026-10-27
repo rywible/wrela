@@ -514,3 +514,103 @@ would ignore the measured constraint. Spatial feature work at input resolution, 
 output decoder, and separately measured visibility/coverage handling are justified next
 experiments. Cloud and presentation work also require attention for the complete-frame goal.
 No claim is made that any proposed architecture will meet the gates.
+
+
+### Input-resolution neural patch model: faster kernel, rejected quality
+
+The next experiment is a **48→16→16→12** shared encoder evaluated once per input pixel.
+Its twelve outputs describe three local bilinear RGB residual polynomials. Each output
+pixel blends four overlapping polynomials over a bilinearly reconstructed current colour.
+The baseline interpolation happens in scene-linear RGB; residuals use the fixed exposure-1
+Reinhard linear view. The inverse view and final half-float target match the capture protocol.
+There are **1,260 weights / 2,520 shipped half-weight bytes**. The model is fixture-only and
+is not enabled in a game or the engine's production temporal path.
+
+Inputs comprise a 3×3 current RGB neighbourhood, relative depth neighbourhood, motion,
+jitter and scale, one reprojected previous-output RGB sample, validity, depth disagreement,
+semantic tag and history age. No case identity, absolute image position, field parameters,
+target or future frame enters inference. History is resampled down into the encoder: it
+does **not** yet have a direct full-resolution history connection. Each encoded cell occupies
+64 bytes; optional training observations occupy 208 bytes and are exported only when requested.
+The fixture skips the production neighbourhood and resolve dispatches for this decoder,
+but still allocates some unused production resources. This is not a production memory audit.
+
+Training uses whole cases 0/3/5/7; validation uses disjoint cases 1/6. Each contributes
+32 consecutive cold-start frames at 192×108 and all four scales, covering all 16 jitter phases
+twice. This fixes a coverage weakness in the earlier RGB dataset's frames 7/31/55: modulo 16,
+those cover only phases 7/15/7. The new set contains 512 training and 256 validation captures.
+History features in this first round come from the zero-residual patch decoder, not from
+the learned model's rollout. This distribution difference remains a limitation.
+
+The Wrela trainer differentiates mean RGB squared error through all four overlapping encoders,
+using Adam, batch 128, seed 3 and 2,000 steps. It trains unclamped predictions so out-of-range
+outputs still receive gradients; validation uses deployed clamping and half-quantized weights.
+Full-pixel one-step validation MSE improves **0.020631230 → 0.016081713 (22.05%)** relative
+to zero residual. This is not a recurrent quality result.
+
+Continuous AMD rollout of the learned model, paired against production with identical targets,
+masks, timing and pinned metric versions, gives:
+
+| Development case | Scale | FLIP change | LPIPS change | PSNR change, dB | Opaque temporal residual, candidate / production |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 1× | −35.81% | −48.27% | +2.769 | 5.056× |
+| 1 | 2× | −5.96% | −32.09% | −0.021 | 12.634× |
+| 1 | 3× | −4.04% | −2.65% | +0.256 | 11.175× |
+| 1 | 4× | +1.61% | −11.22% | −0.457 | 12.058× |
+| 6 | 1× | +11.46% | +1.27% | +0.927 | 2.196× |
+| 6 | 2× | −9.71% | −71.91% | +0.983 | 4.410× |
+| 6 | 3× | −14.14% | −41.50% | +0.220 | 7.586× |
+| 6 | 4× | −8.82% | −18.37% | −0.646 | 8.872× |
+
+Negative error changes are better. The temporal column is worse in every row. At 4×,
+candidate mean FLIP is 0.365786 / 0.423756 for cases 1/6, far from G1. Both cases also lose
+PSNR; newly exposed errors increase at 4×. The opaque temporal mask covers 58.11% / 61.81%
+of pixels, with changed/mixed visibility scored separately. These 32-frame development clips
+are not five-second acceptance clips, not a sealed population and not external comparators.
+The model is **rejected for promotion**, despite its one-step loss and some perceptual gains.
+
+Correctness and runtime evidence:
+
+- The polynomial-coordinate test passes. Exact backpropagated derivatives match finite
+  differences across twelve weights spanning the layers; deliberately zeroing the derivative
+  makes the test fail, then restoring it passes.
+- Independent CPU replay uses only captured causal inputs and packed weights. The largest
+  coefficient difference is below 7.4e−7 and final named-view difference below 0.000243.
+  Reversing the jitter sign gives mean errors of 0.069–0.108 on the learned-model probe.
+- A fixed-shape vector kernel unpacks weights once into 315 vec4 values (5,040 bytes),
+  uses constant indices and vector dot products, and retains the scalar implementation as
+  a control. Across both 32-frame clips and all scales, final optimized versus scalar maximum
+  named-view difference is 0.000242; mean differences are below 1.6e−8. Targets and masks
+  remain byte-identical. This does not make floating-point execution bit-identical.
+- A case 1→4 cut at frame 16 matches fresh case 4 rendering byte-for-byte on frames 16/17,
+  at every scale. Suppressing reset changes 95.24–99.27% of cut-frame pixels by over 2/255
+  in at least one named-view RGB channel. This checks reset causality, not all G3 artifacts.
+- AMD Chrome encoder median drops from **10.605 to 0.814 ms at 4× 1080p**, and from
+  **41.863 to 3.186 ms at 4× 4K**, with unchanged trained weights. The final output stage
+  still costs **1.090 / 4.301 ms**. An explicit four-gather decoder rewrite does not materially
+  improve its p95. See [conditions and all three kernels](bench.md#2026-10-26-amd-neural-patch-v1).
+  These are reconstruction-fixture timings, not complete game-frame or G6 results.
+
+Reproduction: capture with
+`wrela tool reconstruct -- --scene edges --shot 1 --width 192 --height 108 --warmup 0 --frames 32 --decoder patch --patch-fast 1 --model out/models/patch-1793063898-289696714/weights.half`.
+Use `--training-inputs 1` for causal per-frame inputs, and omit the model for the initial
+zero-residual dataset. Train with
+`wrela tool reconstruct --timeout 3600 --blob-budget 3221225472 -- patch-train out/datasets/patch-v1/manifest.txt 2000 3`.
+`--patch-fast 0` retains scalar inference; both are explicitly experimental options.
+
+All evidence remains on Pop!_OS under `build/neural-evidence/patch-v1/manifest.json`, including
+the source archive hash, training source hash, exact model hashes, paired reports, CPU replay,
+reset/negative control and all timing reports. Model: `patch-1793063898-289696714`;
+packed weights SHA-256 `4b9b969a9fd191f25f69cdc6f348f4464f0b2bb7b9d6bd9be687b64bee62fe18`.
+Production clips are `1793063890-927028191` / `1793063897-608218538`; scalar learned clips are
+`1793063995-411379862` / `1793064001-819925230`; final optimized clips are
+`1793065513-190478045` / `1793065519-546747103`.
+The external `audit_patch_v1.py`, `replay_patch.py` and `summarize_patch_v1.py` scripts are
+embedded with their hashes in their results. New package checks, the two focused pure tests,
+workspace allow and changed-source formatting pass. Full workspace suite remains required
+before a PR; it was not run for this development checkpoint.
+
+The next experiment should preserve full-resolution temporal detail and explicitly optimize
+motion consistency while retaining the measured small input-resolution encoder. On-policy
+training and a direct, validity-controlled history connection are hypotheses to test;
+neither is implemented or claimed to work here. No G1–G7 gate is satisfied or weakened.

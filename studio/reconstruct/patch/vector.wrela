@@ -1,0 +1,486 @@
+// Fixed-shape vector form of the scalar encoder, generated from MODEL's row-major layout.
+// Weights are unpacked once at load time. Constant indices avoid private-array dynamic indexing
+// and repeated half unpacking in the inner products. This is the SAME trained network.
+use std::gpu::{GlobalId, Half2, Slots}
+use engine::neural::half_at
+
+@compute(64)
+pub fn expand(weights: [Half2], out: mut Slots<vec4>, id: GlobalId) {
+    if id.x < 315 {
+        let k = id.x * 4
+        out[id] = vec4(
+            half_at(weights, k),
+            half_at(weights, k + 1),
+            half_at(weights, k + 2),
+            half_at(weights, k + 3),
+        )
+    }
+}
+
+pub fn eval(weights: [vec4], x: [f32; 48]) -> [vec4; 3] {
+    let x0 = vec4(x[0], x[1], x[2], x[3])
+    let x1 = vec4(x[4], x[5], x[6], x[7])
+    let x2 = vec4(x[8], x[9], x[10], x[11])
+    let x3 = vec4(x[12], x[13], x[14], x[15])
+    let x4 = vec4(x[16], x[17], x[18], x[19])
+    let x5 = vec4(x[20], x[21], x[22], x[23])
+    let x6 = vec4(x[24], x[25], x[26], x[27])
+    let x7 = vec4(x[28], x[29], x[30], x[31])
+    let x8 = vec4(x[32], x[33], x[34], x[35])
+    let x9 = vec4(x[36], x[37], x[38], x[39])
+    let x10 = vec4(x[40], x[41], x[42], x[43])
+    let x11 = vec4(x[44], x[45], x[46], x[47])
+    let h1_0 = max(
+        weights[192].x +
+            dot(weights[0], x0) +
+            dot(weights[1], x1) +
+            dot(weights[2], x2) +
+            dot(weights[3], x3) +
+            dot(weights[4], x4) +
+            dot(weights[5], x5) +
+            dot(weights[6], x6) +
+            dot(weights[7], x7) +
+            dot(weights[8], x8) +
+            dot(weights[9], x9) +
+            dot(weights[10], x10) +
+            dot(weights[11], x11),
+        0.0,
+    )
+    let h1_1 = max(
+        weights[192].y +
+            dot(weights[12], x0) +
+            dot(weights[13], x1) +
+            dot(weights[14], x2) +
+            dot(weights[15], x3) +
+            dot(weights[16], x4) +
+            dot(weights[17], x5) +
+            dot(weights[18], x6) +
+            dot(weights[19], x7) +
+            dot(weights[20], x8) +
+            dot(weights[21], x9) +
+            dot(weights[22], x10) +
+            dot(weights[23], x11),
+        0.0,
+    )
+    let h1_2 = max(
+        weights[192].z +
+            dot(weights[24], x0) +
+            dot(weights[25], x1) +
+            dot(weights[26], x2) +
+            dot(weights[27], x3) +
+            dot(weights[28], x4) +
+            dot(weights[29], x5) +
+            dot(weights[30], x6) +
+            dot(weights[31], x7) +
+            dot(weights[32], x8) +
+            dot(weights[33], x9) +
+            dot(weights[34], x10) +
+            dot(weights[35], x11),
+        0.0,
+    )
+    let h1_3 = max(
+        weights[192].w +
+            dot(weights[36], x0) +
+            dot(weights[37], x1) +
+            dot(weights[38], x2) +
+            dot(weights[39], x3) +
+            dot(weights[40], x4) +
+            dot(weights[41], x5) +
+            dot(weights[42], x6) +
+            dot(weights[43], x7) +
+            dot(weights[44], x8) +
+            dot(weights[45], x9) +
+            dot(weights[46], x10) +
+            dot(weights[47], x11),
+        0.0,
+    )
+    let h1_4 = max(
+        weights[193].x +
+            dot(weights[48], x0) +
+            dot(weights[49], x1) +
+            dot(weights[50], x2) +
+            dot(weights[51], x3) +
+            dot(weights[52], x4) +
+            dot(weights[53], x5) +
+            dot(weights[54], x6) +
+            dot(weights[55], x7) +
+            dot(weights[56], x8) +
+            dot(weights[57], x9) +
+            dot(weights[58], x10) +
+            dot(weights[59], x11),
+        0.0,
+    )
+    let h1_5 = max(
+        weights[193].y +
+            dot(weights[60], x0) +
+            dot(weights[61], x1) +
+            dot(weights[62], x2) +
+            dot(weights[63], x3) +
+            dot(weights[64], x4) +
+            dot(weights[65], x5) +
+            dot(weights[66], x6) +
+            dot(weights[67], x7) +
+            dot(weights[68], x8) +
+            dot(weights[69], x9) +
+            dot(weights[70], x10) +
+            dot(weights[71], x11),
+        0.0,
+    )
+    let h1_6 = max(
+        weights[193].z +
+            dot(weights[72], x0) +
+            dot(weights[73], x1) +
+            dot(weights[74], x2) +
+            dot(weights[75], x3) +
+            dot(weights[76], x4) +
+            dot(weights[77], x5) +
+            dot(weights[78], x6) +
+            dot(weights[79], x7) +
+            dot(weights[80], x8) +
+            dot(weights[81], x9) +
+            dot(weights[82], x10) +
+            dot(weights[83], x11),
+        0.0,
+    )
+    let h1_7 = max(
+        weights[193].w +
+            dot(weights[84], x0) +
+            dot(weights[85], x1) +
+            dot(weights[86], x2) +
+            dot(weights[87], x3) +
+            dot(weights[88], x4) +
+            dot(weights[89], x5) +
+            dot(weights[90], x6) +
+            dot(weights[91], x7) +
+            dot(weights[92], x8) +
+            dot(weights[93], x9) +
+            dot(weights[94], x10) +
+            dot(weights[95], x11),
+        0.0,
+    )
+    let h1_8 = max(
+        weights[194].x +
+            dot(weights[96], x0) +
+            dot(weights[97], x1) +
+            dot(weights[98], x2) +
+            dot(weights[99], x3) +
+            dot(weights[100], x4) +
+            dot(weights[101], x5) +
+            dot(weights[102], x6) +
+            dot(weights[103], x7) +
+            dot(weights[104], x8) +
+            dot(weights[105], x9) +
+            dot(weights[106], x10) +
+            dot(weights[107], x11),
+        0.0,
+    )
+    let h1_9 = max(
+        weights[194].y +
+            dot(weights[108], x0) +
+            dot(weights[109], x1) +
+            dot(weights[110], x2) +
+            dot(weights[111], x3) +
+            dot(weights[112], x4) +
+            dot(weights[113], x5) +
+            dot(weights[114], x6) +
+            dot(weights[115], x7) +
+            dot(weights[116], x8) +
+            dot(weights[117], x9) +
+            dot(weights[118], x10) +
+            dot(weights[119], x11),
+        0.0,
+    )
+    let h1_10 = max(
+        weights[194].z +
+            dot(weights[120], x0) +
+            dot(weights[121], x1) +
+            dot(weights[122], x2) +
+            dot(weights[123], x3) +
+            dot(weights[124], x4) +
+            dot(weights[125], x5) +
+            dot(weights[126], x6) +
+            dot(weights[127], x7) +
+            dot(weights[128], x8) +
+            dot(weights[129], x9) +
+            dot(weights[130], x10) +
+            dot(weights[131], x11),
+        0.0,
+    )
+    let h1_11 = max(
+        weights[194].w +
+            dot(weights[132], x0) +
+            dot(weights[133], x1) +
+            dot(weights[134], x2) +
+            dot(weights[135], x3) +
+            dot(weights[136], x4) +
+            dot(weights[137], x5) +
+            dot(weights[138], x6) +
+            dot(weights[139], x7) +
+            dot(weights[140], x8) +
+            dot(weights[141], x9) +
+            dot(weights[142], x10) +
+            dot(weights[143], x11),
+        0.0,
+    )
+    let h1_12 = max(
+        weights[195].x +
+            dot(weights[144], x0) +
+            dot(weights[145], x1) +
+            dot(weights[146], x2) +
+            dot(weights[147], x3) +
+            dot(weights[148], x4) +
+            dot(weights[149], x5) +
+            dot(weights[150], x6) +
+            dot(weights[151], x7) +
+            dot(weights[152], x8) +
+            dot(weights[153], x9) +
+            dot(weights[154], x10) +
+            dot(weights[155], x11),
+        0.0,
+    )
+    let h1_13 = max(
+        weights[195].y +
+            dot(weights[156], x0) +
+            dot(weights[157], x1) +
+            dot(weights[158], x2) +
+            dot(weights[159], x3) +
+            dot(weights[160], x4) +
+            dot(weights[161], x5) +
+            dot(weights[162], x6) +
+            dot(weights[163], x7) +
+            dot(weights[164], x8) +
+            dot(weights[165], x9) +
+            dot(weights[166], x10) +
+            dot(weights[167], x11),
+        0.0,
+    )
+    let h1_14 = max(
+        weights[195].z +
+            dot(weights[168], x0) +
+            dot(weights[169], x1) +
+            dot(weights[170], x2) +
+            dot(weights[171], x3) +
+            dot(weights[172], x4) +
+            dot(weights[173], x5) +
+            dot(weights[174], x6) +
+            dot(weights[175], x7) +
+            dot(weights[176], x8) +
+            dot(weights[177], x9) +
+            dot(weights[178], x10) +
+            dot(weights[179], x11),
+        0.0,
+    )
+    let h1_15 = max(
+        weights[195].w +
+            dot(weights[180], x0) +
+            dot(weights[181], x1) +
+            dot(weights[182], x2) +
+            dot(weights[183], x3) +
+            dot(weights[184], x4) +
+            dot(weights[185], x5) +
+            dot(weights[186], x6) +
+            dot(weights[187], x7) +
+            dot(weights[188], x8) +
+            dot(weights[189], x9) +
+            dot(weights[190], x10) +
+            dot(weights[191], x11),
+        0.0,
+    )
+    let a0 = vec4(h1_0, h1_1, h1_2, h1_3)
+    let a1 = vec4(h1_4, h1_5, h1_6, h1_7)
+    let a2 = vec4(h1_8, h1_9, h1_10, h1_11)
+    let a3 = vec4(h1_12, h1_13, h1_14, h1_15)
+    let h2_0 = max(
+        weights[260].x +
+            dot(weights[196], a0) +
+            dot(weights[197], a1) +
+            dot(weights[198], a2) +
+            dot(weights[199], a3),
+        0.0,
+    )
+    let h2_1 = max(
+        weights[260].y +
+            dot(weights[200], a0) +
+            dot(weights[201], a1) +
+            dot(weights[202], a2) +
+            dot(weights[203], a3),
+        0.0,
+    )
+    let h2_2 = max(
+        weights[260].z +
+            dot(weights[204], a0) +
+            dot(weights[205], a1) +
+            dot(weights[206], a2) +
+            dot(weights[207], a3),
+        0.0,
+    )
+    let h2_3 = max(
+        weights[260].w +
+            dot(weights[208], a0) +
+            dot(weights[209], a1) +
+            dot(weights[210], a2) +
+            dot(weights[211], a3),
+        0.0,
+    )
+    let h2_4 = max(
+        weights[261].x +
+            dot(weights[212], a0) +
+            dot(weights[213], a1) +
+            dot(weights[214], a2) +
+            dot(weights[215], a3),
+        0.0,
+    )
+    let h2_5 = max(
+        weights[261].y +
+            dot(weights[216], a0) +
+            dot(weights[217], a1) +
+            dot(weights[218], a2) +
+            dot(weights[219], a3),
+        0.0,
+    )
+    let h2_6 = max(
+        weights[261].z +
+            dot(weights[220], a0) +
+            dot(weights[221], a1) +
+            dot(weights[222], a2) +
+            dot(weights[223], a3),
+        0.0,
+    )
+    let h2_7 = max(
+        weights[261].w +
+            dot(weights[224], a0) +
+            dot(weights[225], a1) +
+            dot(weights[226], a2) +
+            dot(weights[227], a3),
+        0.0,
+    )
+    let h2_8 = max(
+        weights[262].x +
+            dot(weights[228], a0) +
+            dot(weights[229], a1) +
+            dot(weights[230], a2) +
+            dot(weights[231], a3),
+        0.0,
+    )
+    let h2_9 = max(
+        weights[262].y +
+            dot(weights[232], a0) +
+            dot(weights[233], a1) +
+            dot(weights[234], a2) +
+            dot(weights[235], a3),
+        0.0,
+    )
+    let h2_10 = max(
+        weights[262].z +
+            dot(weights[236], a0) +
+            dot(weights[237], a1) +
+            dot(weights[238], a2) +
+            dot(weights[239], a3),
+        0.0,
+    )
+    let h2_11 = max(
+        weights[262].w +
+            dot(weights[240], a0) +
+            dot(weights[241], a1) +
+            dot(weights[242], a2) +
+            dot(weights[243], a3),
+        0.0,
+    )
+    let h2_12 = max(
+        weights[263].x +
+            dot(weights[244], a0) +
+            dot(weights[245], a1) +
+            dot(weights[246], a2) +
+            dot(weights[247], a3),
+        0.0,
+    )
+    let h2_13 = max(
+        weights[263].y +
+            dot(weights[248], a0) +
+            dot(weights[249], a1) +
+            dot(weights[250], a2) +
+            dot(weights[251], a3),
+        0.0,
+    )
+    let h2_14 = max(
+        weights[263].z +
+            dot(weights[252], a0) +
+            dot(weights[253], a1) +
+            dot(weights[254], a2) +
+            dot(weights[255], a3),
+        0.0,
+    )
+    let h2_15 = max(
+        weights[263].w +
+            dot(weights[256], a0) +
+            dot(weights[257], a1) +
+            dot(weights[258], a2) +
+            dot(weights[259], a3),
+        0.0,
+    )
+    let b0 = vec4(h2_0, h2_1, h2_2, h2_3)
+    let b1 = vec4(h2_4, h2_5, h2_6, h2_7)
+    let b2 = vec4(h2_8, h2_9, h2_10, h2_11)
+    let b3 = vec4(h2_12, h2_13, h2_14, h2_15)
+    let y0 = weights[312].x +
+        dot(weights[264], b0) +
+        dot(weights[265], b1) +
+        dot(weights[266], b2) +
+        dot(weights[267], b3)
+    let y1 = weights[312].y +
+        dot(weights[268], b0) +
+        dot(weights[269], b1) +
+        dot(weights[270], b2) +
+        dot(weights[271], b3)
+    let y2 = weights[312].z +
+        dot(weights[272], b0) +
+        dot(weights[273], b1) +
+        dot(weights[274], b2) +
+        dot(weights[275], b3)
+    let y3 = weights[312].w +
+        dot(weights[276], b0) +
+        dot(weights[277], b1) +
+        dot(weights[278], b2) +
+        dot(weights[279], b3)
+    let y4 = weights[313].x +
+        dot(weights[280], b0) +
+        dot(weights[281], b1) +
+        dot(weights[282], b2) +
+        dot(weights[283], b3)
+    let y5 = weights[313].y +
+        dot(weights[284], b0) +
+        dot(weights[285], b1) +
+        dot(weights[286], b2) +
+        dot(weights[287], b3)
+    let y6 = weights[313].z +
+        dot(weights[288], b0) +
+        dot(weights[289], b1) +
+        dot(weights[290], b2) +
+        dot(weights[291], b3)
+    let y7 = weights[313].w +
+        dot(weights[292], b0) +
+        dot(weights[293], b1) +
+        dot(weights[294], b2) +
+        dot(weights[295], b3)
+    let y8 = weights[314].x +
+        dot(weights[296], b0) +
+        dot(weights[297], b1) +
+        dot(weights[298], b2) +
+        dot(weights[299], b3)
+    let y9 = weights[314].y +
+        dot(weights[300], b0) +
+        dot(weights[301], b1) +
+        dot(weights[302], b2) +
+        dot(weights[303], b3)
+    let y10 = weights[314].z +
+        dot(weights[304], b0) +
+        dot(weights[305], b1) +
+        dot(weights[306], b2) +
+        dot(weights[307], b3)
+    let y11 = weights[314].w +
+        dot(weights[308], b0) +
+        dot(weights[309], b1) +
+        dot(weights[310], b2) +
+        dot(weights[311], b3)
+    [vec4(y0, y1, y2, y3), vec4(y4, y5, y6, y7), vec4(y8, y9, y10, y11)]
+}

@@ -1078,3 +1078,55 @@ Reproduction: `VK_DRIVER_FILES=/usr/share/vulkan/icd.d/radeon_icd.json wrela pro
 adding `--chrome` for the browser, and `--size 3840x2160` for 4K.
 Use `studio/reconstruct/clearing` for the native-input fixture and the retained
 `build/neural-evidence/profile-4x/fixture` adapter for 4×.
+
+
+## 2026-10-26 AMD neural patch v1
+
+Development reconstruction-only fixture, moving analytic case 1 at 4× linear scale.
+This is not the clearing renderer, a complete game frame, or G6's 120Hz/20-minute protocol.
+Pop!_OS AMD Ryzen 5 5500U / Radeon Graphics (RADV RENOIR, PCI 1002:164c);
+Mesa 26.1.6-1pop0~1787580452~24.04~a5619ea; Chrome 154.0.8037.57.
+Wrela 0.9.0 compiler `de9b81e52a7747870dfbd5223cb8aeb41e584d23`.
+The browser's adapter string says `rdna-2`; that string is not a verified hardware architecture.
+
+Each run: release default, no wasm-opt, Chrome, one worker, 240 warmup + 240 measured frames,
+fps 60 simulation, `serial=false`, no other owned GPU work. A generated wrapper loads the
+same 2,520-byte trained half weights before warmup. No truth or feature export runs in this
+profile. Input sizes: 480×270→1920×1080 and 960×540→3840×2160. The source model is
+`patch-1793063898-289696714`, packed weights SHA-256
+`4b9b969a9fd191f25f69cdc6f348f4464f0b2bb7b9d6bd9be687b64bee62fe18`.
+
+| Kernel | Output | Encode median / p95 ms | Decode median / p95 ms | Fixture GPU span median / p95 ms |
+| --- | --- | ---: | ---: | ---: |
+| Scalar | 1080p | 10.60496 / 10.61512 | 1.11408 / 1.49572 | 12.57280 / 12.98068 |
+| Vector encoder | 1080p | 0.82620 / 0.94400 | 1.12740 / 1.50280 | 2.89168 / 3.21676 |
+| Vector encoder, explicit decoder | 1080p | 0.81444 / 0.92116 | 1.09000 / 1.49432 | 2.81808 / 3.15860 |
+| Scalar | 4K | 41.86348 / 41.90168 | 4.42908 / 5.96628 | 49.45508 / 51.04964 |
+| Vector encoder | 4K | 3.17796 / 3.58136 | 4.42456 / 5.96656 | 11.02012 / 12.33172 |
+| Vector encoder, explicit decoder | 4K | 3.18584 / 3.60024 | 4.30096 / 5.96528 | 10.88888 / 12.32988 |
+
+GPU span also contains analytic sample rendering and the diagnostic display transform.
+Pass medians/p95s are not summed to invent a reconstruction or frame percentile. The
+encoder improvement is about 13× in these short runs. The extra decoder rewrite provides
+no material p95 improvement; it is not reported as a new speedup. G6's reconstruction budget
+is not met: the output pass alone exceeds its p95 limit, before encoding.
+
+Build SHA-256, equal across the two output sizes for each kernel:
+
+- Scalar: `3e2c82996aa84ca67a0b08e476cef5ad30c97fa0700da7dee7e8aa3fa10b42c0`.
+- Vector encoder: `6a6b9ca0bf6eda00940ed48efa82a9db9097c28196013d33477becd986532ec8`.
+- Vector encoder, explicit decoder: `48f381471b81f4445bf74619366ae275fdf8cc7f99c88c49aa4cb5663fd6244c`.
+
+Reports, generated wrappers, compiled shaders/WASM and paced browser artifacts are retained
+in `build/neural-evidence/patch-v1-timing`, `patch-v1-vector-timing` and
+`patch-v1-unrolled-timing` on Pop!_OS. Reproduction for each retained wrapper:
+`wrela profile <directory>/fixture --chrome --frames 240 --warmup 240 --workers 1 --size 1920x1080 --json`;
+repeat at 3840x2160. Rebuilding a wrapper after source changes is not the original build:
+the saved build directories and hashes identify the measured artifacts.
+
+The profiler's top-level GPU data comes from its saturated run. CPU frame-call and interval
+data come from a separate paced run with two frames in flight; do not mix those sample sets.
+The retained `build-1080`/`build-4k` results are the paced run. No p99, stable thermal,
+memory-budget, complete-frame or best-in-world claim follows. Independent replay and
+continuous scalar/optimized comparisons pass, but **quality rejects this model**:
+[development results and controls](neural-rendering-progress.md#input-resolution-neural-patch-model-faster-kernel-rejected-quality).

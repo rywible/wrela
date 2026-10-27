@@ -11,11 +11,12 @@ use engine::temporal::{
 }
 use engine::view::{Camera, camera, first_camera, jitter_of}
 use field::{Field, case, front_at, front_coverage, pixel, point}
+use reconstruction_patch::network as patch
 use std::collections::swap
 use std::gpu::{
     Compare, Depth, DepthTexture, FragCoord, GlobalId, GpuBuffer, Half2, Rgba16Float, Sampler,
     Slots, Texture, WithDepth, begin_pass, begin_pass_with_depth, begin_screen_pass, buffer,
-    depth_texture, dispatch, draw, sampler, texture, writable_texture, copy, write,
+    depth_texture, dispatch, draw, label, sampler, texture, writable_texture, copy, write,
 }
 
 @fragment
@@ -73,6 +74,17 @@ pub struct State {
     rgb_net: GpuBuffer<Half2>,
     rgb_words: u32,
     rgb_enabled: bool,
+    patch_enabled: bool,
+    patch_trained: bool,
+    patch_fast: bool,
+    patch_expanded: GpuBuffer<vec4>,
+    patch_words: u32,
+    patch_frames: u32,
+    patch_net: GpuBuffer<Half2>,
+    patch_cells: GpuBuffer<patch::Cell>,
+    patch_inputs: GpuBuffer<patch::Input>,
+    exported_patch: GpuBuffer<patch::Input>,
+    exported_cells: GpuBuffer<patch::Cell>,
     raw_enabled: bool,
     raw_count: u32,
     raw_history: GpuBuffer<raw::Sample>,
@@ -113,6 +125,17 @@ pub fn init() -> State {
         rgb_net: buffer(1),
         rgb_words: 0,
         rgb_enabled: false,
+        patch_enabled: false,
+        patch_trained: false,
+        patch_fast: false,
+        patch_expanded: buffer(1),
+        patch_words: 0,
+        patch_frames: 0,
+        patch_net: buffer(1),
+        patch_cells: buffer(1),
+        patch_inputs: buffer(1),
+        exported_patch: buffer(1),
+        exported_cells: buffer(1),
         raw_enabled: false,
         raw_count: 0,
         raw_history: buffer(1),
@@ -164,6 +187,8 @@ fn resize(s: mut State, width: u32, height: u32) {
     s.spreads = writable_texture(width: w, height: h)
     if s.raw_enabled { s.raw_history = buffer(raw::stride(w, h) * raw::HISTORY) }
     s.raw_count = 0
+    s.patch_frames = 0
+    if s.patch_enabled { s.patch_cells = buffer(w * h) }
     s.current = texture(width, height)
     s.last = texture(width, height)
 }
@@ -202,6 +227,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     swap(mut s.depth, mut s.last_depth)
     swap(mut s.motion, mut s.last_motion)
     swap(mut s.current, mut s.last)
+    label("analytic samples")
     let p = begin_pass_with_depth(mut s.scene, mut s.depth)
     draw(
         p,
@@ -228,7 +254,50 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             over: w * h,
         )
     }
-    dispatch(neighbourhoods.bind(s.scene, mut s.means, mut s.spreads), over: s.scene)
+    if s.patch_enabled {
+        label("patch encode")
+        if s.reset { s.patch_frames = 0 }
+        dispatch(
+            patch::encode.bind(
+                s.scene,
+                s.depth,
+                s.motion,
+                s.last_depth,
+                s.last,
+                s.linear,
+                s.divisor,
+                s.tick,
+                s.patch_frames,
+                u32(s.patch_trained),
+                u32(s.patch_fast),
+                s.patch_net.items(),
+                s.patch_expanded.items(),
+                mut s.patch_cells,
+            ),
+            over: w * h,
+        )
+        if s.collecting && s.collect_rows {
+            s.patch_inputs = buffer(w * h)
+            dispatch(
+                patch::export_inputs.bind(
+                    s.scene,
+                    s.depth,
+                    s.motion,
+                    s.last_depth,
+                    s.last,
+                    s.linear,
+                    s.divisor,
+                    s.tick,
+                    s.patch_frames,
+                    mut s.patch_inputs,
+                ),
+                over: w * h,
+            )
+        }
+        s.patch_frames = min(s.patch_frames + 1, 16)
+    } else {
+        dispatch(neighbourhoods.bind(s.scene, mut s.means, mut s.spreads), over: s.scene)
+    }
     let r = Resolve {
         cam: s.cam,
         out: vec2(f32(width), f32(height)),
@@ -239,7 +308,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
         moving: vec4(0.0, 0.0, f32(width), f32(height)),
         settled: f32(s.tick),
     }
-    if (s.collecting && s.collect_rows) || s.rgb_enabled {
+    if !s.patch_enabled && ((s.collecting && s.collect_rows) || s.rgb_enabled) {
         s.samples = buffer(width * height)
         dispatch(
             reconstruction_samples.bind(
@@ -258,8 +327,18 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             over: width * height,
         )
     }
+    label(if s.patch_enabled { "patch decode" } else { "temporal control" })
     let p = begin_pass(mut s.current)
-    if s.raw_enabled {
+    if s.patch_enabled {
+        if s.patch_fast {
+            fullscreen(
+                p,
+                patch::reconstruct_fast.bind(s.patch_cells.items(), w, h, s.divisor, s.tick),
+            )
+        } else {
+            fullscreen(p, patch::reconstruct.bind(s.patch_cells.items(), w, h, s.divisor, s.tick))
+        }
+    } else if s.raw_enabled {
         fullscreen(
             p,
             raw::reconstruct.bind(s.raw_history.items(), w, h, s.divisor, s.tick, s.raw_count),
@@ -289,6 +368,7 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     }
     p.end()
     s.reset = false
+    label("diagnostic view")
     let screen = begin_screen_pass(clear: vec4(0.0))
     fullscreen(screen, shown.bind(s.current))
     screen.present()
@@ -319,7 +399,7 @@ pub fn publish_samples(s: mut State) -> u32 {
 
 // Weight upload is explicit and complete before any rendering; a half-written net cannot run.
 pub fn model_begin(s: mut State, words: u32) {
-    assert(!s.raw_enabled && words == (MODEL.size() + 1) / 2)
+    assert(!s.raw_enabled && !s.patch_enabled && words == (MODEL.size() + 1) / 2)
     s.rgb_enabled = false
     s.rgb_words = 0
     s.rgb_net = buffer(words)
@@ -357,10 +437,11 @@ fn corrected(
 
 // A continuous instrument starts without consuming a frame. Its target and visibility are
 // computed only AFTER reconstruction, in separate buffers that no decoder can read.
-pub fn prepare_sequence(s: mut State, width: u32, height: u32, start: u32) {
+pub fn prepare_sequence(s: mut State, width: u32, height: u32, start: u32, inputs: u32) {
+    assert(inputs <= 1 && (inputs == 0 || s.patch_enabled))
     resize(mut s, width, height)
     s.tick = start
-    s.collect_rows = false
+    s.collect_rows = inputs == 1
 }
 
 pub fn cut(s: mut State, shot: u32, reset: u32) {
@@ -412,8 +493,9 @@ pub fn publish_visibility(s: mut State) -> u32 {
 
 /// An explicit fixture-only control. Never silently combines with a trained RGB correction.
 pub fn decoder(s: mut State, mode: u32) {
-    assert(mode <= 1 && !s.rgb_enabled && s.width == 0)
+    assert(mode <= 2 && !s.rgb_enabled && s.width == 0)
     s.raw_enabled = mode == 1
+    s.patch_enabled = mode == 2
     if s.raw_enabled { s.collect_rows = false }
 }
 
@@ -423,4 +505,49 @@ pub fn publish_raw(s: mut State) -> u32 {
     s.exported_raw = buffer(s.raw_history.len())
     copy(from: s.raw_history.items(), to: s.exported_raw.items_mut())
     s.raw_history.len()
+}
+
+pub fn patch_begin(s: mut State, words: u32) {
+    assert(s.patch_enabled && words == (patch::MODEL.size() + 1) / 2)
+    s.patch_trained = false
+    s.patch_words = 0
+    s.patch_net = buffer(words)
+    s.patch_expanded = buffer(patch::MODEL.size() / 4)
+}
+
+pub fn patch_word(s: mut State, index: u32, bits: u32) {
+    assert(index == s.patch_words && index < s.patch_net.len())
+    assert((bits & 0x7c00) != 0x7c00 && ((bits >> 16) & 0x7c00) != 0x7c00)
+    write(mut s.patch_net, index, [Half2 { bits }])
+    s.patch_words += 1
+}
+
+pub fn patch_end(s: mut State) {
+    assert(s.patch_enabled && s.patch_words == (patch::MODEL.size() + 1) / 2)
+    dispatch(
+        reconstruction_patch::vector::expand.bind(s.patch_net.items(), mut s.patch_expanded),
+        over: s.patch_expanded.len(),
+    )
+    s.patch_trained = true
+}
+
+pub fn publish_patch(s: mut State) -> u32 {
+    assert(
+        s.patch_enabled && s.collect_rows && s.cells == 0 && !s.collecting && s.captured_count == 1,
+    )
+    s.exported_patch = buffer(s.patch_inputs.len())
+    copy(from: s.patch_inputs.items(), to: s.exported_patch.items_mut())
+    s.patch_inputs.len()
+}
+
+pub fn publish_cells(s: mut State) -> u32 {
+    assert(s.patch_enabled && s.cells == 0 && !s.collecting && s.captured_count == 1)
+    s.exported_cells = buffer(s.patch_cells.len())
+    copy(from: s.patch_cells.items(), to: s.exported_cells.items_mut())
+    s.patch_cells.len()
+}
+
+pub fn patch_kernel(s: mut State, fast: u32) {
+    assert(s.patch_enabled && fast <= 1 && s.width == 0)
+    s.patch_fast = fast == 1
 }

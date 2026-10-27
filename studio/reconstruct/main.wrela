@@ -15,6 +15,8 @@ struct Options: Clone {
     scene: u32 = 0,
     sampling: u32 = 0,
     decoder: u32 = 0,
+    training_inputs: u32 = 0,
+    patch_fast: u32 = 0,
     seed: u32 = 17,
     length: u32 = 1,
     start: u32 = 0,
@@ -36,6 +38,7 @@ fn options(given: [String]) -> Option<Options> {
             o.decoder = match given[i + 1].as_str() {
                 "production" => 0,
                 "raw" => 1,
+                "patch" => 2,
                 _ => return None,
             }
             i += 2
@@ -70,6 +73,8 @@ fn options(given: [String]) -> Option<Options> {
             "--shot" => o.shot = v,
             "--seed" => o.seed = v,
             "--frames" => o.length = v,
+            "--training-inputs" => o.training_inputs = v,
+            "--patch-fast" => o.patch_fast = v,
             "--start-frame" => o.start = v,
             "--cut-at" => o.cut_at = v,
             "--reset-cut" => o.reset_cut = v,
@@ -87,11 +92,15 @@ fn options(given: [String]) -> Option<Options> {
     }) || o.width == 0 || o.height == 0 || o.width % 12 != 0 || o.height % 12 != 0 || o.width > 3840 || o.height > 2160 || (o.warmup < 1 && (o.scene != 2 || o.length == 1)) || o.warmup > 4096 || o.cells < 2 || o.cells > 16 {
         return None
     }
-    if !o.model.is_empty() && (o.scene != 2 || o.decoder != 0) { return None }
-    // The diagnostic retains 16 uncompressed frames. Refuse sizes beyond its instrument
-    // budget; this is not a production memory design or a G6 resolution claim.
+    if !o.model.is_empty() && (o.scene != 2 || o.decoder == 1) { return None }
+    // Diagnostic captures export raw histories or per-input features at every scale.
+    // Bound their size; dedicated timing adapters measure the deployed scale separately.
     if o.decoder != 0 && (o.scene != 2 || o.width > 384 || o.height > 216) { return None }
     if o.scene == 2 && o.sampling != 0 { return None }
+    if o.patch_fast > 1 || (o.patch_fast == 1 && o.decoder != 2) { return None }
+    if o.training_inputs > 1 || (o.training_inputs == 1 && (o.decoder != 2 || o.length < 2)) {
+        return None
+    }
     if o.start > 100000 || (o.start != 0 && o.length == 1) { return None }
     if o.length == 0 ||
         o.length > 300 ||
@@ -127,7 +136,7 @@ pub fn frames(b: drive::Build, n: u32) -> Result<(), ToolError> {
 }
 
 /// Decode without changing range; reject a broken capture before it becomes a good score.
-fn finite_floats(bytes: [u8], expected: u32) -> Result<Vec<f32>, ToolError> {
+pub fn finite_floats(bytes: [u8], expected: u32) -> Result<Vec<f32>, ToolError> {
     if bytes.len() != expected * 4 { return Err(ToolError::new("wrong capture byte count")) }
     var out: Vec<f32> = Vec::with_capacity(expected)
     for i in 0..expected {
@@ -170,6 +179,9 @@ fn captured(
     if o.scene == 2 {
         let _ = call(b, "decoder", Vec::from([Scalar::I32(i32(o.decoder))]))?
     }
+    if o.decoder == 2 {
+        let _ = call(b, "patch_kernel", Vec::from([Scalar::I32(i32(o.patch_fast))]))?
+    }
     if o.sampling != 0 && cells > 0 {
         let seed = o.seed.wrapping_add(if name == "reference-repeat" { 1 } else { 0 })
         let _ = call(
@@ -180,7 +192,7 @@ fn captured(
     }
     if !o.model.is_empty() && cells == 0 {
         let bytes = read_file(o.model.as_str(), "RGB model")?
-        upload_model(b, bytes)?
+        upload_model(b, bytes, patch: o.decoder == 2)?
     }
     frames(b, o.warmup)?
     if call(b, "ready", Vec::new())? != 1 {
@@ -227,6 +239,27 @@ fn captured(
         let bytes = joined(data_bytes(read.bytes.remove(0))?)
         let _ = finite_floats(bytes, count * 8)?
         write_file(f"{directory}/{name}.raw32f", chunked(take bytes))?
+    }
+    if o.scene == 2 && cells == 0 && o.decoder == 2 {
+        for kind in 0..2 {
+            let export = if kind == 0 { "publish_patch" } else { "publish_cells" }
+            let suffix = if kind == 0 { "patch32f" } else { "cells32f" }
+            let stride = if kind == 0 { 52 } else { 16 }
+            let count = u32(call(b, export, Vec::new())?)
+            if count != (o.width / divisor) * (o.height / divisor) {
+                return Err(ToolError::new("wrong patch observation count"))
+            }
+            let ids = untrapped("patch buffers", drive::steps(b, [Step::Buffers]).wait()?)?
+            borrow buffers = ids.buffers[0]
+            let id = buffers[buffers.len() - 1]
+            var read = untrapped(
+                "patch observations",
+                drive::steps(b, [Step::ReadBuffer(id)]).wait()?,
+            )?
+            let bytes = joined(data_bytes(read.bytes.remove(0))?)
+            let _ = finite_floats(bytes, count * stride)?
+            write_file(f"{directory}/{name}.{suffix}", chunked(take bytes))?
+        }
     }
 
     Ok(out)
@@ -321,6 +354,8 @@ fn run(o: Options) -> Result<(), ToolError> {
                 cut_at: o.cut_at,
                 reset_cut: o.reset_cut,
                 decoder: o.decoder,
+                training_inputs: o.training_inputs,
+                patch_fast: o.patch_fast,
             },
             o.model.as_str(),
         )
@@ -353,19 +388,20 @@ fn run(o: Options) -> Result<(), ToolError> {
         "regular_grid_tied_to_frame"
     }
     let repeat = if o.sampling == 1 { "independent_seed_plus_one" } else { "identical_seed" }
-    let metadata = f"scene={scene}\nshot={o.shot}\nwidth={o.width}\nheight={o.height}\nwarmup={o.warmup}\nreference_samples={count}\nsimulation_frame={frame}\nsimulation_fps=60\ncamera=fixture_shot_at_time_0\nformat=rgba32f_le_top_down_scene_linear_alpha1\nreference={reference_kind}\nworkers=1\nquality=fixture_declared_quality_measured_false_pace_false\ntrack=development_smoke_not_validation_or_sealed_test\nmodel={o.model}\ndecoder={o.decoder}\nraw_layout=16_frames_of_32_byte_color_motion_depth_records_frame_stride_ceil_pixels_to_8\nsampling={sampling}\nseed={o.seed}\nrepeat={repeat}\n"
+    let metadata = f"scene={scene}\nshot={o.shot}\nwidth={o.width}\nheight={o.height}\nwarmup={o.warmup}\nreference_samples={count}\nsimulation_frame={frame}\nsimulation_fps=60\ncamera=fixture_shot_at_time_0\nformat=rgba32f_le_top_down_scene_linear_alpha1\nreference={reference_kind}\nworkers=1\nquality=fixture_declared_quality_measured_false_pace_false\ntrack=development_smoke_not_validation_or_sealed_test\nmodel={o.model}\ndecoder={o.decoder}\npatch_fast={o.patch_fast}\nraw_layout=16_frames_of_32_byte_color_motion_depth_records_frame_stride_ceil_pixels_to_8\nsampling={sampling}\nseed={o.seed}\nrepeat={repeat}\n"
     let _ = files::write(f"{directory}/capture.txt", metadata.as_bytes()).wait()?
     Ok(())
 }
 
 pub fn tool() -> u32 {
     let given = args()
+    if given.len() > 0 && given[0].as_str() == "patch-train" { return patch_training::tool(given) }
     if given.len() > 0 && given[0].as_str() == "train" {
         return training::tool(given)
     }
     let Some(o) = options(given) else {
         print(
-            "usage: wrela tool reconstruct -- [--scene bare|clearing|edges --shot 0 --width 192 --height 108 --warmup 240 --cells 8 --sampling grid|phase64 --seed 17 --frames 1 --start-frame 0 --cut-at 0 --reset-cut 1 --model out/models/.../weights.half --decoder production|raw] | train <manifest> <steps> <seed>",
+            "usage: wrela tool reconstruct -- [--scene bare|clearing|edges --shot 0 --width 192 --height 108 --warmup 240 --cells 8 --sampling grid|phase64 --seed 17 --frames 1 --start-frame 0 --cut-at 0 --reset-cut 1 --model out/models/.../weights.half --decoder production|raw|patch --training-inputs 0|1 --patch-fast 0|1] | train <manifest> <steps> <seed> | patch-train <manifest> <steps> <seed> [initial-f32]",
         )
         return 2
     }
@@ -395,10 +431,15 @@ fn capture_decoding_keeps_hdr_and_rejects_invalid_images() {
     assert(errors(good, good) == (0.0, 0.0), "an identical image has error")
 }
 
-pub fn upload_model(b: drive::Build, bytes: [u8]) -> Result<(), ToolError> {
-    let words = (reconstruction_model::main::MODEL.size() + 1) / 2
+pub fn upload_model(b: drive::Build, bytes: [u8], patch: bool = false) -> Result<(), ToolError> {
+    let model = if patch { reconstruction_patch::network::MODEL } else {
+        reconstruction_model::main::MODEL
+    }
+    let words = (model.size() + 1) / 2
     if bytes.len() != words * 4 { return Err(ToolError::new("wrong model weight count")) }
-    let _ = call(b, "model_begin", Vec::from([Scalar::I32(i32(words))]))?
+    let _ = call(b, if patch { "patch_begin" } else {
+        "model_begin"
+    }, Vec::from([Scalar::I32(i32(words))]))?
     var steps: Vec<Step> = Vec::new()
     for i in 0..words {
         let k = i * 4
@@ -411,7 +452,7 @@ pub fn upload_model(b: drive::Build, bytes: [u8]) -> Result<(), ToolError> {
         }
         steps.push(
             Step::Call(
-                String::from("model_word"),
+                String::from(if patch { "patch_word" } else { "model_word" }),
                 Vec::from([Scalar::I32(i32(i)), Scalar::I32(i32(bits))]),
             ),
         )
@@ -420,6 +461,6 @@ pub fn upload_model(b: drive::Build, bytes: [u8]) -> Result<(), ToolError> {
             steps = Vec::new()
         }
     }
-    let _ = call(b, "model_end", Vec::new())?
+    let _ = call(b, if patch { "patch_end" } else { "model_end" }, Vec::new())?
     Ok(())
 }

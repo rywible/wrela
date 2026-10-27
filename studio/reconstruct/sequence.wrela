@@ -1,6 +1,6 @@
 // Continuous analytic clips, including cold starts and a declared scene cut. Truth and
 // visibility are separate observation passes after the causal reconstruction, never inputs.
-use main::{call, floats, frames, upload_model}
+use main::{call, finite_floats, floats, frames, upload_model}
 use std::io::print
 use std::tool::{ToolError, drive, files}
 use std::tool::drive::{Scalar, Step}
@@ -17,15 +17,25 @@ pub struct Spec: Copy {
     pub cut_at: u32,
     pub reset_cut: u32,
     pub decoder: u32,
+    pub training_inputs: u32,
+    pub patch_fast: u32,
 }
 
-fn save(b: drive::Build, path: str, count: u32) -> Result<(), ToolError> {
+fn save(
+    b: drive::Build,
+    path: str,
+    count: u32,
+    stride: u32 = 4,
+    records: bool = false,
+) -> Result<(), ToolError> {
     let ids = untrapped("clip buffers", drive::steps(b, [Step::Buffers]).wait()?)?
     borrow buffers = ids.buffers[0]
     let id = buffers[buffers.len() - 1]
     var result = untrapped("clip readback", drive::steps(b, [Step::ReadBuffer(id)]).wait()?)?
     let bytes = joined(data_bytes(result.bytes.remove(0))?)
-    let _ = floats(bytes, count * 4)?
+    if records { let _ = finite_floats(bytes, count * stride)? } else {
+        let _ = floats(bytes, count * stride)?
+    }
     write_file(path, chunked(take bytes))?
     Ok(())
 }
@@ -44,6 +54,9 @@ fn path(
         Vec::from([Scalar::I32(i32(divisor)), Scalar::I32(0), Scalar::I32(i32(spec.shot))]),
     )?
     let _ = call(b, "decoder", Vec::from([Scalar::I32(i32(spec.decoder))]))?
+    if spec.decoder == 2 {
+        let _ = call(b, "patch_kernel", Vec::from([Scalar::I32(i32(spec.patch_fast))]))?
+    }
     let _ = call(
         b,
         "prepare_sequence",
@@ -52,10 +65,13 @@ fn path(
                 Scalar::I32(i32(spec.width)),
                 Scalar::I32(i32(spec.height)),
                 Scalar::I32(i32(spec.start)),
+                Scalar::I32(i32(spec.training_inputs)),
             ],
         ),
     )?
-    if !model.is_empty() { upload_model(b, read_file(model, "clip model")?)? }
+    if !model.is_empty() {
+        upload_model(b, read_file(model, "clip model")?, patch: spec.decoder == 2)?
+    }
     frames(b, spec.warmup)?
     for frame in 0..spec.length {
         if spec.cut_at > 0 && frame == spec.cut_at {
@@ -85,6 +101,13 @@ fn path(
             return Err(ToolError::new("clip visibility count"))
         }
         save(b, f"{stem}.visibility32f", count)?
+        if spec.training_inputs == 1 {
+            let n = (spec.width / divisor) * (spec.height / divisor)
+            if call(b, "publish_patch", Vec::new())? != i32(n) {
+                return Err(ToolError::new("clip patch input count"))
+            }
+            save(b, f"{stem}.patch32f", n, stride: 52, records: true)?
+        }
         if frame % 30 == 0 || frame + 1 == spec.length {
             print(f"sequence: scale {divisor}, frame {frame + 1}/{spec.length}")
         }
@@ -93,7 +116,7 @@ fn path(
 }
 
 pub fn run(directory: str, spec: Spec, model: str) -> Result<(), ToolError> {
-    let metadata = f"scene=analytic/slats-checkerboard\nshot={spec.shot}\ncut_shot={(spec.shot + 3) % 8}\nwidth={spec.width}\nheight={spec.height}\nstart_frame={spec.start + spec.warmup}\nwarmup={spec.warmup}\nframes={spec.length}\nsimulation_fps=60\ncut_at={spec.cut_at}\nreset_cut={spec.reset_cut}\nmodel={model}\ndecoder={spec.decoder}\nformat=rgba32f_le_top_down_scene_linear_alpha1\nvisibility=foreground_area,horizontal_speed_output_pixels_per_frame,0,1\nreference=analytic_pixel_integral_after_reconstruction_never_decoder_input\ntrack=development_continuous_clip_not_sealed_test\n"
+    let metadata = f"scene=analytic/slats-checkerboard\nshot={spec.shot}\ncut_shot={(spec.shot + 3) % 8}\nwidth={spec.width}\nheight={spec.height}\nstart_frame={spec.start + spec.warmup}\nwarmup={spec.warmup}\nframes={spec.length}\nsimulation_fps=60\ncut_at={spec.cut_at}\nreset_cut={spec.reset_cut}\nmodel={model}\ndecoder={spec.decoder}\npatch_fast={spec.patch_fast}\ntraining_inputs={spec.training_inputs}\nformat=rgba32f_le_top_down_scene_linear_alpha1\nvisibility=foreground_area,horizontal_speed_output_pixels_per_frame,0,1\nreference=analytic_pixel_integral_after_reconstruction_never_decoder_input\ntrack=development_continuous_clip_not_sealed_test\n"
     let _ = files::write(f"{directory}/sequence.txt", metadata.as_bytes()).wait()?
     for divisor in 1..5 {
         var load = drive::gpu()

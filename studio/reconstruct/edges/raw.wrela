@@ -109,7 +109,7 @@ fn point_support_is_symmetric_bounded_and_interpolates() {
 
 @test
 fn retained_frame_offsets_obey_storage_alignment() {
-    assert(stride(6, 6) == 40 && stride(3, 3) == 16)
+    assert(stride(width: 6, height: 6) == 40 && stride(width: 3, height: 3) == 16)
     for divisor in 1..5 {
         let n = (12 / divisor) * (12 / divisor)
         let size = stride(12 / divisor, 12 / divisor)

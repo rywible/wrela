@@ -26,14 +26,14 @@ fn fail(message: str) -> ToolError {
     ToolError::new(message)
 }
 
-fn text_file(path: str) -> Result<String, ToolError> {
+pub fn text_file(path: str) -> Result<String, ToolError> {
     let Some(text) = String::from_utf8(read_file(path, path)?) else {
         return Err(fail("text is not UTF-8"))
     }
     Ok(text)
 }
 
-fn number(meta: str, key: str) -> Result<u32, ToolError> {
+pub fn number(meta: str, key: str) -> Result<u32, ToolError> {
     let prefix = f"{key}="
     for (a, b) in meta.split("\n") {
         let line = meta.slice(a, b)
@@ -47,7 +47,7 @@ fn number(meta: str, key: str) -> Result<u32, ToolError> {
     Err(fail("missing metadata number"))
 }
 
-fn floats(bytes: [u8]) -> Result<Vec<f32>, ToolError> {
+pub fn floats(bytes: [u8]) -> Result<Vec<f32>, ToolError> {
     if bytes.len() % 4 != 0 { return Err(fail("misaligned floats")) }
     var out: Vec<f32> = Vec::with_capacity(bytes.len() / 4)
     for k in 0..bytes.len() / 4 {
@@ -125,7 +125,7 @@ fn scores(data: Data, weights: [f32]) -> (f64, f64) {
     (base / n, learned / n)
 }
 
-fn word(out: mut Vec<u8>, bits: u32) {
+pub fn word(out: mut Vec<u8>, bits: u32) {
     for shift in [0, 8, 16, 24] { out.push(u8((bits >> shift) & 255)) }
 }
 

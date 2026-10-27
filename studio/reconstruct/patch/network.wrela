@@ -1,0 +1,293 @@
+// Experimental input-resolution spatial encoder. A small shared network describes an
+// overlapping RGB polynomial at each current sample; output pixels only gather/evaluate.
+// No absolute position, case identity, field parameter or target reaches the encoder.
+use engine::neural::{Model, half_at}
+use engine::view::jitter_of
+use std::gpu::{DepthTexture, FragCoord, GlobalId, Half2, Rgba16Float, Sampler, Slots, Texture}
+
+pub const MODEL = Model { inputs: 48, h1: 16, h2: 16, outputs: 12 }
+
+pub struct Input: Copy + GpuData {
+    pub v: [f32; 48],
+    pub color: vec4,
+}
+
+pub struct Cell: Copy + GpuData {
+    pub color: vec4,
+    pub red: vec4,
+    pub green: vec4,
+    pub blue: vec4,
+}
+
+pub struct Query: Copy {
+    pub indices: [u32; 4],
+    pub weights: [f32; 4],
+    pub basis: [vec4; 4],
+}
+
+pub fn view(c: vec3) -> vec3 {
+    let x = max(c, vec3(0.0))
+    x / (vec3(1.0) + x)
+}
+
+pub fn linear(c: vec3) -> vec3 {
+    let x = clamp(c, vec3(0.0), vec3(0.9999))
+    x / (vec3(1.0) - x)
+}
+
+/// Four overlapping local polynomials. Basis coordinates are relative to their actual
+/// clamped sample centres, including image edges, not the unclamped address.
+pub fn query(at: vec2, width: u32, height: u32, divisor: u32, jitter: vec2) -> Query {
+    let q = at / f32(divisor) + jitter - vec2(0.5)
+    let base = floor(q)
+    let f = q - base
+    var out = Query { indices: [0; 4], weights: [0.0; 4], basis: [vec4(0.0); 4] }
+    for k in 0..4 {
+        let x = k % 2
+        let y = k / 2
+        let at = clamp(
+            base + vec2(f32(x), f32(y)),
+            vec2(0.0),
+            vec2(f32(width - 1), f32(height - 1)),
+        )
+        let delta = q - at
+        out.indices[k] = u32(at.y) * width + u32(at.x)
+        out.weights[k] = (if x == 0 { 1.0 - f.x } else { f.x }) * (if y == 0 { 1.0 - f.y } else {
+            f.y
+        })
+        out.basis[k] = vec4(1.0, delta.x, delta.y, delta.x * delta.y)
+    }
+    out
+}
+
+fn features(
+    scene: Texture<Rgba16Float>,
+    depth: DepthTexture,
+    motion: Texture<Rgba16Float>,
+    previous_depth: DepthTexture,
+    history: Texture<Rgba16Float>,
+    linear_sampler: Sampler,
+    x: u32,
+    y: u32,
+    divisor: u32,
+    tick: u32,
+    history_frames: u32,
+) -> Input {
+    let center = scene.load(x, y)
+    let z = depth.load(x, y)
+    let limit = vec2i(i32(scene.width()) - 1, i32(scene.height()) - 1)
+    var v = [0.0; 48]
+    for k in 0..9 {
+        let at = clamp(
+            vec2i(i32(x), i32(y)) + vec2i(i32(k % 3) - 1, i32(k / 3) - 1),
+            vec2i(0),
+            limit,
+        )
+        let c = view(scene.load(x: u32(at.x), y: u32(at.y)).rgb)
+        for channel in 0..3 { v[k * 3 + channel] = c[channel] }
+        v[27 + k] = clamp((depth.load(x: u32(at.x), y: u32(at.y)) - z) / max(z, 1.0e-6), -1.0, 1.0)
+    }
+    let jitter = jitter_of(tick)
+    let speed = motion.load(x, y).xy * f32(divisor)
+    let current = (vec2(f32(x), f32(y)) + vec2(0.5) - jitter) * f32(divisor)
+    let previous = current - speed
+    let size = vec2(f32(history.width()), f32(history.height()))
+    let valid = history_frames > 0 &&
+        previous.x >= 0.0 &&
+        previous.y >= 0.0 &&
+        previous.x < size.x &&
+        previous.y < size.y
+    let last_jitter = jitter_of(if tick > 0 { tick - 1 } else { 0 })
+    let near = clamp(vec2i(floor(previous / f32(divisor) + last_jitter)), vec2i(0), limit)
+    let old_z = previous_depth.load(x: u32(near.x), y: u32(near.y))
+    let h = if valid { view(history.sample_level(linear_sampler, previous / size).rgb) } else {
+        vec3(0.0)
+    }
+    v[36] = clamp(speed.x / 32.0, -1.0, 1.0)
+    v[37] = clamp(speed.y / 32.0, -1.0, 1.0)
+    v[38] = jitter.x
+    v[39] = jitter.y
+    v[40] = 1.0 / f32(divisor)
+    for channel in 0..3 { v[41 + channel] = h[channel] }
+    v[44] = f32(u32(valid))
+    v[45] = if valid { min(abs(old_z - z) / max(z, 1.0e-6), 1.0) } else { 0.0 }
+    v[46] = center.a / 9.0
+    v[47] = f32(min(history_frames, 16)) / 16.0
+    Input { v, color: center }
+}
+
+/// Fixed 12-output head; the existing engine evaluator's eight-output contract is unchanged.
+fn coefficients(weights: [Half2], x: [f32; 48]) -> [vec4; 3] {
+    let o = MODEL.offsets()
+    var h1 = [0.0; 16]
+    var h2 = [0.0; 16]
+    var out = [0.0; 12]
+    for r in 0..16 {
+        var s = half_at(weights, o[1] + r)
+        for c in 0..48 { s += half_at(weights, o[0] + r * 48 + c) * x[c] }
+        h1[r] = max(s, 0.0)
+    }
+    for r in 0..16 {
+        var s = half_at(weights, o[3] + r)
+        for c in 0..16 { s += half_at(weights, o[2] + r * 16 + c) * h1[c] }
+        h2[r] = max(s, 0.0)
+    }
+    for r in 0..12 {
+        var s = half_at(weights, o[5] + r)
+        for c in 0..16 { s += half_at(weights, o[4] + r * 16 + c) * h2[c] }
+        out[r] = s
+    }
+    [
+        vec4(out[0], out[1], out[2], out[3]),
+        vec4(out[4], out[5], out[6], out[7]),
+        vec4(out[8], out[9], out[10], out[11]),
+    ]
+}
+
+@compute(64)
+pub fn encode(
+    scene: Texture<Rgba16Float>,
+    depth: DepthTexture,
+    motion: Texture<Rgba16Float>,
+    previous_depth: DepthTexture,
+    history: Texture<Rgba16Float>,
+    linear_sampler: Sampler,
+    divisor: u32,
+    tick: u32,
+    history_frames: u32,
+    trained: u32,
+    fast: u32,
+    weights: [Half2],
+    expanded: [vec4],
+    out: mut Slots<Cell>,
+    id: GlobalId,
+) {
+    if id.x < scene.width() * scene.height() {
+        let input = features(
+            scene,
+            depth,
+            motion,
+            previous_depth,
+            history,
+            linear_sampler,
+            id.x % scene.width(),
+            id.x / scene.width(),
+            divisor,
+            tick,
+            history_frames,
+        )
+        let c = if trained == 1 {
+            if fast == 1 { vector::eval(expanded, input.v) } else {
+                coefficients(weights, input.v)
+            }
+        } else { [vec4(0.0); 3] }
+        out[id] = Cell { color: input.color, red: c[0], green: c[1], blue: c[2] }
+    }
+}
+
+@compute(64)
+pub fn export_inputs(
+    scene: Texture<Rgba16Float>,
+    depth: DepthTexture,
+    motion: Texture<Rgba16Float>,
+    previous_depth: DepthTexture,
+    history: Texture<Rgba16Float>,
+    linear_sampler: Sampler,
+    divisor: u32,
+    tick: u32,
+    history_frames: u32,
+    out: mut Slots<Input>,
+    id: GlobalId,
+) {
+    if id.x < scene.width() * scene.height() {
+        out[id] = features(
+            scene,
+            depth,
+            motion,
+            previous_depth,
+            history,
+            linear_sampler,
+            id.x % scene.width(),
+            id.x / scene.width(),
+            divisor,
+            tick,
+            history_frames,
+        )
+    }
+}
+
+@fragment
+pub fn reconstruct(
+    p: FragCoord,
+    cells: [Cell],
+    width: u32,
+    height: u32,
+    divisor: u32,
+    tick: u32,
+) -> vec4 {
+    let q = query(p.position.xy, width, height, divisor, jitter_of(tick))
+    var color = vec3(0.0)
+    var residual = vec3(0.0)
+    for k in 0..4 {
+        let cell = cells[q.indices[k]]
+        let b = q.basis[k]
+        color += cell.color.rgb * q.weights[k]
+        residual += vec3(dot(cell.red, b), dot(cell.green, b), dot(cell.blue, b)) * q.weights[k]
+    }
+    vec4(linear(view(color) + residual), cells[q.indices[0]].color.a)
+}
+
+// Equivalent to reconstruct, with four explicit gathers so shader compilers need not
+// dynamically index private Query arrays at every output pixel. Keep the scalar control.
+fn polynomial(cell: Cell, delta: vec2) -> vec3 {
+    let b = vec4(1.0, delta.x, delta.y, delta.x * delta.y)
+    vec3(dot(cell.red, b), dot(cell.green, b), dot(cell.blue, b))
+}
+
+@fragment
+pub fn reconstruct_fast(
+    p: FragCoord,
+    cells: [Cell],
+    width: u32,
+    height: u32,
+    divisor: u32,
+    tick: u32,
+) -> vec4 {
+    let q = p.position.xy / f32(divisor) + jitter_of(tick) - vec2(0.5)
+    let base = floor(q)
+    let f = q - base
+    let limit = vec2(f32(width - 1), f32(height - 1))
+    let a = clamp(base, vec2(0.0), limit)
+    let b = clamp(base + vec2(1.0, 0.0), vec2(0.0), limit)
+    let c = clamp(base + vec2(0.0, 1.0), vec2(0.0), limit)
+    let d = clamp(base + vec2(1.0), vec2(0.0), limit)
+    let ca = cells[u32(a.y) * width + u32(a.x)]
+    let cb = cells[u32(b.y) * width + u32(b.x)]
+    let cc = cells[u32(c.y) * width + u32(c.x)]
+    let cd = cells[u32(d.y) * width + u32(d.x)]
+    let wa = (1.0 - f.x) * (1.0 - f.y)
+    let wb = f.x * (1.0 - f.y)
+    let wc = (1.0 - f.x) * f.y
+    let wd = f.x * f.y
+    let color = ca.color.rgb * wa + cb.color.rgb * wb + cc.color.rgb * wc + cd.color.rgb * wd
+    let residual = polynomial(ca, q - a) * wa +
+        polynomial(cb, q - b) * wb +
+        polynomial(cc, q - c) * wc +
+        polynomial(cd, q - d) * wd
+    vec4(linear(view(color) + residual), ca.color.a)
+}
+
+@test
+fn local_basis_and_bilinear_partition_match_clamped_centres() {
+    let q = query(vec2(0.5), width: 2, height: 2, divisor: 4, jitter: vec2(-0.25))
+    var sum = 0.0
+    for k in 0..4 {
+        sum += q.weights[k]
+        assert(q.indices[k] == 0, "edge did not clamp to the same sample")
+        assert(q.basis[k] == vec4(1.0, -0.625, -0.625, 0.390625))
+    }
+    assert(abs(sum - 1.0) < 1.0e-6)
+    let q2 = query(vec2(6.0), width: 4, height: 4, divisor: 4, jitter: vec2(0.0))
+    assert(q2.indices[0] == 5 && q2.weights[0] == 1.0)
+    assert(q2.basis[0] == vec4(1.0, 0.0, 0.0, 0.0))
+}
