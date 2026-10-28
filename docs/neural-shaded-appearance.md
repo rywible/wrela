@@ -5533,3 +5533,163 @@ G1–G7 remain active and unmet.
 
 Evidence: `build/neural-evidence/g4-sparse-field-v1` on Pop!_OS.
 Manifest SHA-256: `3671d01d79187eb46ee8b6a2dc038e184df80525c28b7db9d074799db9b45713`.
+
+## Neighbor-field residuals: retire compact owner-local response fitting
+
+**Decision: retire both the 7,040-byte neural and equal-byte conventional
+neighbor-field fits.** Each preserves exact source coverage but fails all 24 shaded
+numeric cases. The neural model costs 0.44136 ms versus the exact field's 0.64056 ms,
+but loses 3.55 dB and adds 7,032 requested live bytes. The fastest conventional source
+cache remains faster at 0.27780 ms. This is no qualified neural rendering advantage.
+
+First complete comparison: 4.20 minutes; decision:
+7.21 minutes at 2026-10-28T16:01:24.820150+00:00, within two hours.
+Zero optimization follow-ups. Failed models, fits, images and all measurements
+are preserved. Appearance runtime restored byte-for-byte to parent 76b78aab.
+G1–G7 and frozen optical/reconstruction weights remain unchanged and unmet.
+
+### Question, representation and equal information
+
+The prior exact-visibility material ablation improved 4/24 to 21/24 when source
+normal/depth were restored. An earlier 12,320-byte owner-local codec failed after
+fitting already-normalized response. This experiment tests a distinct target:
+neighbor contributions before normalization, plus the log partition. The rendered
+failure justifies this source fitting; a lower fitting loss alone cannot qualify it.
+
+For source owner o, retain analytic distance d_o and normal n_o. Define
+w_j=exp(k×(d_o−d_j)), S=Σw_j and G=Σw_j n_j. The owner contributes 1 to S
+and n_o to G. Both fits predict (G−n_o, log S) from normalized owner-local position.
+Reconstruct normalize(n_o+prediction.xyz) and
+max(−d_o+max(prediction.w,0)/k,0), using owner-normal fallback below gradient
+length 1e−8, then the same Oct32 packing.
+
+Both candidates and conventional controls receive the same source fields, owner
+IDs, deterministic samples, exact geometry, visibility, wood, material law and
+lighting. No reference RGB, camera or light enters fitting. Conventional controls
+may exploit the full source field and cache; neither is denied useful information.
+
+Each of 44 owners stores 80 half values, 7,040 bytes total. The cubic polynomial has
+20 monomials times 4 outputs. The 3→8 SiLU→4 network has 32 input weights/biases,
+36 output weights/biases, 8 mean/scale values and 4 padding halfs. Both replace an
+8-byte inactive response buffer and retain existing source nodes/visibility.
+
+### Fixed fitting and decoder verification
+
+Use existing 26,560 source card centres: source ID modulo 5 equal to 0 is held out,
+the remaining 21,248 points train both. Means/scales use training points, scale
+floor 0.05, half-quantized. Polynomial starts from least squares with rcond 1e−5.
+Both refine 2,400 fixed Adam steps, 32 training samples/owner/step, seed 19743,
+half-quantized forward parameters and straight-through gradients. Cosine learning
+rate: polynomial 0.001→0.0001; neural 0.004→0.0004; gradient norm limit 10.
+
+Loss is mean squared normalized-direction error plus squared depth error plus
+0.05 standardized target error. Every 100 steps select by full training loss;
+both selected step 2400. Held-out scores are reported, never used for selection.
+No sweep, extra fitting after rendered results or new reference infrastructure.
+
+Held-out normal-angle mean/p99: polynomial 6.07°/32.74°, neural 7.47°/42.55°.
+Held-out depth MAE: 0.01893 m/0.04119 m. These are fitting diagnostics, not wins.
+The established all-card GPU probe checks all 26,560 actual reconstructed positions
+and owners against NumPy/Torch predictions: maximum residual error 6.32e−6
+polynomial and 3.58e−6 neural. The output matrix is transposed for vec4 accumulation
+without changing any quantized value; both layouts are archived.
+
+### Shaded quality and silhouettes
+
+| Method | Cases passed | Mean PSNR dB | FLIP | LPIPS |
+| --- | ---: | ---: | ---: | ---: |
+| Native source cache | 24/24 | 40.295971 | 0.01300193 | 0.00249104 |
+| Compact exact source field | 24/24 | 40.295900 | 0.01300320 | 0.00249059 |
+| Frozen optical model | 8/24 | 40.127682 | 0.01234846 | 0.00188937 |
+| Cubic neighbor-field polynomial | 0/24 | 36.771981 | 0.03701424 | 0.00606407 |
+| SiLU8 neighbor-field network | 0/24 | 36.750636 | 0.03714214 | 0.00603804 |
+
+Unchanged joint tolerances: PSNR loss≤0.25 dB, FLIP/LPIPS≤1.05×, denominator
+floor 1e−4. Counts above compare against compact exact field; both candidates also
+fail all 24 against native cache. Existing AA64 references: static 64×64 tree,
+two public views, four lights, three backgrounds. Exposure 0.62, ACES→sRGB,
+FLIP 67 ppd and AlexNet LPIPS v0.1 unchanged.
+
+Both candidates' 16 alpha images match exact source byte-for-byte. Worst boundary
+p99 remains 2 px; worst half-coverage precision 0.983065 and recall 0.994007.
+All ten method/view coverage sequences are light-independent. The failure is
+shaded response. Frozen optical stays 8/24 despite a better aggregate FLIP:
+an average cannot replace per-case gates.
+
+### Complete fixed-asset cost and actual resident observations
+
+RADV RENOIR PCI 1002:164c, Ryzen 5 5500U, Mesa 26.1.6, Chrome 154.0.8037.57,
+Pop!_OS; Wrela 0.9.0/compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23.
+Parent 76b78aab plus archived variants. Sequential 64×64 profiles, 60 warm-up plus
+240 measured frames; separate 300-frame memory/completion runs discard 60.
+Fitting/scoring never overlaps timed GPU work.
+
+| Method | Saturated GPU median/p95 ms | Paced GPU p95/p99 ms | CPU call p99 ms | Start-to-completion p95/p99 ms |
+| --- | ---: | ---: | ---: | ---: |
+| Native source cache | 0.27780/0.39636 | 1.0772/1.0873 | 0.7413 | 4.6707/4.7891 |
+| Compact exact source field | 0.64056/0.79476 | 1.8403/2.0404 | 0.7061 | 4.5603/4.6746 |
+| Frozen optical model | 0.06856/0.07240 | 0.2714/0.2739 | 1.0995 | 4.5349/4.6492 |
+| Cubic neighbor-field polynomial | 0.49820/0.55848 | 1.3697/1.3919 | 0.6400 | 4.9854/5.2356 |
+| SiLU8 neighbor-field network | 0.44136/0.66144 | 1.2336/1.3185 | 0.7592 | 4.5816/4.7861 |
+
+The neural saturated median is 31.10% below exact field and 58.88% above fastest
+source cache. These are descriptive single-run differences, not paired confidence
+or sustained performance claims. No repeat campaign is needed to retire a model
+that fails every shaded case.
+
+Costs include source placement, cutouts, visibility rebuild, wood, field/model
+decoding, material shading, view/light updates, uploads, resolve and composite.
+Source paths need no optical sort; the frozen optical path includes its CPU depth
+sort and indexed wood. Initialization is outside steady timing; allocation peaks
+include it. Dynamic source edits/deformation/recompilation, startup latency and
+20-minute G6 stability remain unmeasured. None can rescue this static quality failure.
+Start-to-completion includes browser/driver notification, not photon latency.
+
+| Method | Engine representation/scratch B | All requested live/peak B | Actual DRM VRAM/GTT B | Browser-group PSS B |
+| --- | ---: | ---: | ---: | ---: |
+| Native source cache | 1,466,060 | 1,875,660/1,892,044 | 17,670,144/9,936,896 | 484,872,192 |
+| Compact exact source field | 420,980 | 830,580/846,964 | 17,670,144/9,936,896 | 486,126,592 |
+| Frozen optical model | 316,532 | 726,132/742,516 | 17,633,280/9,838,592 | 471,243,776 |
+| Cubic neighbor-field polynomial | 428,012 | 837,612/853,996 | 17,403,904/10,051,584 | 485,839,872 |
+| SiLU8 neighbor-field network | 428,012 | 837,612/853,996 | 17,408,000/10,035,200 | 487,565,312 |
+
+Engine totals exclude the common 65,536-byte output. All-requested totals include
+409,600 bytes of common output/screen/upload/uniform resources, source geometry,
+wood, cutouts, nodes, visibility scratch, coefficients, caches and fallback/dummy
+data. Both candidates add 7,032 live/peak bytes versus compact exact field.
+A 7 KB model is not a 7 KB renderer.
+
+DRM/PSS are actual whole-client snapshots, including resident driver/cache overhead,
+not per-asset attribution or transient physical peaks. UMA pools may overlap;
+do not sum them. Register/spill storage and compiled shaders are not separately
+attributable. No 16× quality-matched resident appearance win is demonstrated.
+
+### Decision, failures and next architecture bet
+
+No optimization follow-up: correct decoding and large quality failures in both
+fits identify a losing representation. More steps/neurons/degree would be another
+tuning sweep, not resolution of a consequential implementation uncertainty.
+Both rejected payloads, training histories, archived sources, 40 shaded captures,
+16 decoder captures, physical observations and per-case failures are preserved.
+
+All 24 control RGBA images reproduce prior sealed evidence byte-for-byte. Source
+geometry, visibility, wood and shading bodies are unchanged; only candidate
+response evaluation changed. Runtime is restored exactly to parent 76b78aab.
+No broad unchanged tests were rerun.
+
+**Next architecture bet: exact coverage/identity with shared per-surface radiance.**
+Build on retained coverage/radiance reconstruction: keep cheap deterministic
+appearance fields and remove redundant shading/history queries across covered
+samples and time. Start conventional, with the same source information. Only then
+fit a learned radiance residual if measured rendered error and whole-frame cost
+justify it. Charge visibility scratch, history, fallback, updates and compositing.
+
+Source definitions: [plant field](../engine/plant.wrela) and
+[source hierarchy](../studio/appearance/runtime/source_hierarchy.wrela).
+The SiLU formula follows [PyTorch documentation](https://docs.pytorch.org/docs/2.14/generated/torch.nn.SiLU.html);
+fitting used recorded Torch 2.5.1 CPU, not that documentation version. Other method
+and metric sources remain in [citations](citations.md#neural-reconstruction-instrument).
+Own Wrela decoder; no external code/weights/assets imported.
+
+Evidence: build/neural-evidence/g4-field-residual-v1 on Pop!_OS.
+Manifest SHA-256: `aa48d2889f0363c44788c4c306fccce64383f8328c6a7744177f43f436fb46c6`.

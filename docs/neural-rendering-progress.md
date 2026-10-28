@@ -18,18 +18,17 @@
 
 ## Immediate milestone
 
-[Sparse source field evaluation](neural-shaded-appearance.md#sparse-source-field-evaluation-quality-preserved-execution-retired)
-is retired. All source variants pass24/24 existing shaded numeric cases with
-exact source alpha, but cutoff8's0.620ms is nearly matched by exact-owner0.62396ms.
-A conservative owner list preserves images yet costs0.74136ms and2,104 extra bytes.
-One follow-up; no training/newreferences. Runtime restored; G1–G7 remain unmet.
+[Compact neighbor-field residuals](neural-shaded-appearance.md#neighbor-field-residuals-retire-compact-owner-local-response-fitting)
+are retired. Neural and equal-byte polynomial both fail all 24 shaded cases with
+exact source alpha. Neural 36.75 dB/0.44136 ms/837,612 live B versus exact field
+40.30 dB/0.64056 ms/830,580 B; fastest cache 0.27780 ms. No joint rendering advantage.
+First comparison 4.20 minutes, decision 7.21 minutes; zero follow-ups/new references.
+Frozen models/runtime restored; G1–G7 unchanged and unmet.
 
-Next test a source-conditioned directional residual: keep exact source visibility,
-owner geometry and analytic owner contribution, and predict remaining normal-
-gradient/crown-depth contribution from source-local coordinates/owner context.
-Compare learned and equal-byte local polynomial residuals with identical source
-information. The prior rendered normal/depth ablation justifies this target;
-promote only on shaded quality, complete AMD cost and residency together.
+Next: exact source coverage/identity, deterministic appearance fields and shared
+per-surface radiance across samples/time. Build on retained coverage/radiance
+reconstruction; remove redundant shading/history queries conventionally before
+fitting a learned residual. Require quality, complete AMD runtime and residency.
 
 ## Evidence recorded so far
 
@@ -2683,3 +2682,12 @@ ownerlist .74136ms/832,684liveB vs exactfield .63800ms/830,580B. Retire sparse
 execution; preserve source-point bounds, failed initialization and all measurements.
 [Full comparison](neural-shaded-appearance.md#sparse-source-field-evaluation-quality-preserved-execution-retired).
 Evidence manifest: `3671d01d79187eb46ee8b6a2dc038e184df80525c28b7db9d074799db9b45713`.
+
+### Neighbor-field residual checkpoint (2026-10-28)
+
+First complete 4.20 minutes; decision 7.21 minutes.
+Zero follow-ups. Both 7,040 B fits 0/24 versus exact 24/24. Neural 36.7506 dB/0.44136 ms/
+837,612 live B; exact 40.2959 dB/0.64056 ms/830,580 B; fastest cache 0.27780 ms/1,875,660 B.
+Retire both; all-card decoder checks pass, source alpha exact, all failures retained.
+[Comparison and next bet](neural-shaded-appearance.md#neighbor-field-residuals-retire-compact-owner-local-response-fitting).
+Manifest: `aa48d2889f0363c44788c4c306fccce64383f8328c6a7744177f43f436fb46c6`.

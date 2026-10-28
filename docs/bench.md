@@ -2664,3 +2664,15 @@ Pointcutoff8 omits70.69%normal/exponential terms butGPU.62000ms is nearlyexact-o
 no training/newreferences. Source-pointbounds,completeGPU/CPU/completion,DRM/PSS
 andfailedinit preserved. Appearance runtime restored exactly toparent.
 [Full comparison and decision](neural-shaded-appearance.md#sparse-source-field-evaluation-quality-preserved-execution-retired).
+
+### AMD compact neighbor-field residuals (2026-10-28)
+
+RADV RENOIR 1002:164c/Ryzen 5 5500U, Mesa 26.1.6, Chrome 154.0.8037.57,
+Wrela 0.9.0/compiler de9b81e5; parent 76b78aab plus archived variants.
+Existing 64 px tree, 2 views×4 lights×3 backgrounds. Both 7,040 B fits fail all 24 cases with
+exact source alpha. Neural 36.7506 dB/0.44136 ms/837,612 live B versus exact field
+40.2959 dB/0.64056 ms/830,580 B; fastest cache 0.27780 ms/1,875,660 B.
+First comparison 4.20 minutes, decision 7.21 minutes; zero follow-ups/new references.
+Retired after all-card GPU agreement. Complete CPU/GPU/completion and actual DRM/PSS
+preserved. No paired speedup/16× physical memory/G4 claim. Runtime restored.
+[Full comparison](neural-shaded-appearance.md#neighbor-field-residuals-retire-compact-owner-local-response-fitting).
