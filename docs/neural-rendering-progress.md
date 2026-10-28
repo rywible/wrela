@@ -18,26 +18,25 @@
 
 ## Immediate milestone
 
-The [packed visibility experiment](neural-shaded-appearance.md#packed-visibility-smaller-allocations-little-response-reuse) retains
-another conventional memory control: a packed depth/source-ID word per sample.
-All 24 quality cases pass against all three source controls and coverage is unchanged.
-Six sample identities change across the two views, producing 20 changed shaded pixels
-across eight captures; this is matched quality, not exact depth.
+The [fused source-visibility experiment](neural-shaded-appearance.md#fused-source-visibility-exact-images-recover-complete-cost-fails) is retired.
+Source binning removes the full-frame sample image. Initial analytic rasterization
+passes only 20/24; snapping both coverage and interpolation to the measured AMD
+subpixel grid recovers all 24 cases and sixteen exact packed-control images.
 
-Packed full-field live allocations are 830,580 bytes versus native-field 1,027,185;
-complete saturated medians are 0.63764 versus 0.60912 ms. Fast stored-source is still
-0.27540 ms. Actual 16x residency reduction is unproved; no learned model is promoted.
+The repaired full-field path still costs 1.49664 ms saturated versus 0.64160 ms
+for packed hardware visibility. Requested live allocations fall only 7.80%:
+765,816 versus 830,580 bytes. Physical 16x savings remain unproved. Local visibility
+and shading dominate cost; worklists themselves are valid and avoid whole-source
+scans per tile. One quality-repair follow-up; no second memory-only trial is justified.
 
-Two follow-ups are rejected: discarding the attachment writes has no consistent
-benefit, and a 12 KB visible-response cache is slower with only 9–12% sample hits.
-No training or new shaded references. Failed code/results are preserved; the optional
-packed path defaults off and adds no default allocations. Native image/allocation
-parity and format/type checks pass.
+All runtime files are restored exactly to verified parent 9487c46b; failed sources,
+measurements and the corrected stable-list diagnostic are preserved. No training,
+new references, default allocations or redundant runtime checks.
 
-Next: fuse tile-local visibility and shading, removing the full-frame sample image
-without repeating source geometry. Compare against the stronger conventional controls.
-Do not repeat small response caches or material-moment fitting. G1–G7 remain unchanged
-and unmet.
+Next: keep hardware visibility and test source-conditioned footprint integration
+that reduces shaded-sample demand. Conventional integration receives the same source
+coverage/depth features. Do not repeat generic postfilters, scalar-opacity heads,
+small response caches or material-moment fitting. G1–G7 remain unchanged and unmet.
 
 ## Evidence recorded so far
 
@@ -2467,3 +2466,19 @@ Default eight images/allocations and retained sixteen packed images/live allocat
 match, format/type checks pass. Next: fused tile-local visibility/shading.
 [Report](neural-shaded-appearance.md#packed-visibility-smaller-allocations-little-response-reuse).
 Manifest SHA-256: `4751fab541729bea59183f12548cc97e5ffc3cf513f67c22b03dd9c4d6139a72`.
+
+### Fused compute visibility is retired after exact quality recovery
+
+Initial fused paths pass 20/24. Matching snapped coverage and interpolation gives
+all 24/24 against four controls and sixteen byte-identical packed-control captures.
+Full-field saturated GPU cost is 1.49664 versus 0.64160 ms, for only 7.80% fewer
+requested live bytes. Worklists contain 52,714/52,760 entries and are consistent;
+local visibility/shading dominates cost. No G4/physical-memory/neural win.
+
+One targeted follow-up; no second memory-only optimization, training or new shaded
+references. All runtime files restored to verified 9487c46b and prior checks reused.
+Failed results and the initially invalid chunk-splicing diagnostic are preserved.
+Next: source-conditioned integration with fewer shaded samples, keeping hardware
+visibility and equally informed conventional estimators.
+[Report](neural-shaded-appearance.md#fused-source-visibility-exact-images-recover-complete-cost-fails).
+Manifest SHA-256: `373bbe2f9d059a8d249c59b05fd7218198046345c1f1bb8cfcbc16693358bae9`.

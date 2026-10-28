@@ -3431,3 +3431,181 @@ unseen-family/scale performance. G1–G7 remain unmet.
 
 Evidence on Pop!_OS: build/neural-evidence/g4-packed-visibility-v1.
 Manifest SHA-256: `4751fab541729bea59183f12548cc97e5ffc3cf513f67c22b03dd9c4d6139a72`.
+
+
+## Fused source visibility: exact images recover, complete cost fails
+
+**Decision: retire this fused compute visibility architecture for G4.**
+Restoring hardware-compatible sample setup recovers exact packed-control images,
+but complete cost fails: full-field saturated GPU median is 1.49664 ms versus
+0.64160 ms for packed hardware visibility, a 2.33x cost. All requested live bytes
+fall only 7.80%, from 830,580 to 765,816. Paced GPU p95/p99 rise from
+1.490/1.542 to 2.337/2.418 ms. No neural model is promoted and no G4 win is claimed.
+
+The solo Pop!_OS block began 2026-10-28T01:38:30.945020+00:00. Initial six-way comparison
+finished 2026-10-28T01:41:14.566442+00:00 (163.6 seconds).
+Decision recorded 2026-10-28T01:57:52.277531+00:00 (1161.3 seconds).
+One targeted follow-up repaired the demonstrated quality problem, with its selected
+setup then measured on the full-field path. No second optimization was justified.
+Zero training steps, zero new shaded references; frozen model and G1–G7 unchanged.
+
+### Replace the sample image with source worklists and local visibility
+
+The [retained source renderer](../studio/appearance/runtime/source_control.wrela)
+provides the same 26,560 leaf cards, 7,392 wood triangles, source ownership/seeds,
+coverage tiles, authored response and shading to every candidate. Controls include
+fast native stored-source rendering, packed stored-source rendering, and the
+memory-efficient packed full-field path. Nothing useful is withheld from them.
+
+The candidate counts surface overlaps with 64 row tiles, builds prefix offsets,
+then scatters source IDs into a fixed-capacity worklist. Count and fill each project
+the source; the final pass reconstructs only surfaces listed in that row. This
+avoids scanning the entire source in every tile, but does not pretend projection
+happens only once. Actual worklist entries are 52,714 and 52,760 for the two views,
+about 1.55 listed rows per authored surface, in addition to the count/fill passes.
+
+Each 64-invocation workgroup handles one 64x1 output tile with 16 samples per pixel.
+Its 1,024 packed depth/source-ID words occupy 4,096 declared shared bytes. It computes
+coverage, selects nearest surfaces by atomic minimum, evaluates the same shading,
+and resolves directly into the existing output buffer. The full-frame sample image
+and its R8 raster attachment disappear; visibility dies with the workgroup.
+
+A 65,536-entry u32 worklist plus 193 metadata words takes 262,916 requested bytes.
+The prototype rejects overflow by producing invalid negative coverage, not dropping
+surfaces silently or loading an uncounted fallback. Both views fit. Stable-list
+readback verifies valid IDs, duplicate-free rows, prefix/cursor agreement and maximum
+row counts of 1,882 and 2,768. This is a bounded fixture, not a production overflow policy.
+
+### First measurement fails quality; one targeted follow-up repairs it
+
+The initial compute test uses analytic inverse card coordinates and float triangle
+coverage. All three response-storage variants produce the same images, but only
+20/24 shaded cases pass against every conventional control. Mean PSNR actually
+improves slightly; four cases in the second view fail LPIPS, with a worst relative
+increase of 9.70%. A better mean is insufficient. Coverage also differs.
+
+The observed AMD adapter reports subPixelPrecisionBits=8, saved in
+vulkan-raster-properties.txt. Vulkan defines that property as precision in framebuffer
+coordinates; see the primary [limits specification](https://docs.vulkan.org/spec/latest/chapters/limits.html).
+The follow-up reconstructs the original card triangles and rounds projected coordinates
+to a 1/256 grid in the 256x256 sample framebuffer. It compares:
+
+- Snapped coverage with original floating-point interpolation: still 20/24.
+- Snapped coverage and snapped barycentric interpolation: all 24/24, with all eight
+  stored-source images byte-identical to the packed hardware control.
+
+The selected rule is then measured with the full authored field: all eight images
+also match the packed full-field control exactly. This is evidence for this AMD
+fixture, not a universal rasterizer-conformance result or a claim about other GPUs,
+projection types, edge cases or scenes.
+
+| Output family | Mean PSNR dB | FLIP | LPIPS | Cases versus each of four controls |
+| --- | ---: | ---: | ---: | ---: |
+| Native stored source | 40.295971 | 0.01300193 | 0.00249104 | 24/24 |
+| Packed hardware controls | 40.295900 | 0.01300320 | 0.00249059 | 24/24 |
+| Initial fused paths | 40.301640 | 0.01290842 | 0.00249368 | 20/24 |
+| Snapped coverage only | 40.301632 | 0.01290854 | 0.00249371 | 20/24 |
+| Snapped coverage and interpolation | 40.295900 | 0.01300320 | 0.00249059 | 24/24 |
+
+The four controls are current native stored source, current packed full field, and
+the established forward-source/packed-mask controls. Use unchanged per-case thresholds:
+PSNR loss <=0.25 dB and FLIP/LPIPS increase <=5%, denominator floor 1e-4.
+
+The repaired paths have byte-identical coverage to native/packed controls. Their
+coverage MAE against truth is 0.01005954 and worst boundary p99 is 2 pixels; exact
+control agreement does not mean perfect silhouettes. Initial fused coverage MAE is
+0.01005667, with the same boundary p99, but this does not override the shaded failures.
+All 72 measured captures are finite and within the valid coverage range.
+
+The completed 64x64 AA64 references are reused: two public views, four lights, three
+backgrounds, exposure 0.62, sRGB, LDR FLIP at 67 pixels/degree and AlexNet LPIPS v0.1.
+No new reference or metric machinery. These known views are not a sealed holdout.
+
+### Complete cost defeats the memory reduction
+
+AMD RADV RENOIR PCI 1002:164c, Ryzen 5 5500U, Mesa 26.1.6,
+Chrome 154.0.8037.57, Pop!_OS; Wrela 0.9.0 compiler
+de9b81e52a7747870dfbd5223cb8aeb41e584d23. Parent 9487c46b plus exact archived sources.
+Sequential runs, 60 warmup and 240 measured frames at 64x64.
+
+GPU spans include worklist clear/count/prefix/fill, all source projection and
+reconstruction, wood triangles, coverage lookup, shared visibility selection,
+field/response evaluation, shading, resolve and final composite. CPU includes
+view/light/source setup, uploads and commands. Source IDs and depth selection replace
+optical sorting. Initialization is outside steady timing but included in requested
+allocation peaks; dynamic source edits remain untested. No neural payload is active.
+
+| Candidate | Quality cases /24 | Paced GPU p95/p99 ms | Saturated GPU median/p95 ms | CPU p99 ms | CPU start to GPU completion p95/p99 ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Native stored source | 24 | 1.064/1.088 | 0.281/0.502 | 0.617 | 4.465/4.587 |
+| Packed stored source | 24 | 1.107/1.166 | 0.308/0.389 | 0.741 | 4.251/5.053 |
+| Packed full field | 24 | 1.490/1.542 | 0.642/0.834 | 0.707 | 4.837/5.008 |
+| Fused stored source | 20 | 1.554/1.620 | 0.732/0.754 | 0.593 | 4.345/4.550 |
+| Fused cached hierarchy | 20 | 1.980/2.169 | 0.792/0.816 | 0.583 | 5.327/5.530 |
+| Fused full field | 20 | 1.761/1.925 | 0.997/1.010 | 0.638 | 5.555/5.739 |
+| Snapped coverage only, stored source | 20 | 1.358/1.539 | 1.252/1.284 | 0.538 | 4.206/4.730 |
+| Snapped coverage/interpolation, stored source | 24 | 1.548/2.068 | 1.226/1.255 | 0.543 | 4.480/4.643 |
+| Snapped coverage/interpolation, full field | 24 | 2.337/2.418 | 1.497/1.514 | 0.541 | 5.826/5.962 |
+
+The current paced timestamps show median component durations for the repaired
+full-field path of 0.01348 ms clear, 0.13840 count, 0.06776 prefix, 0.14668 fill,
+1.54555 local visibility/shading and 0.00460 composite. Component quantiles do not
+add to frame-span quantiles; saturated and paced measurements are distinct.
+The local kernel dominates the observed cost. Even packing the worklist more
+tightly would not remove it, so a second memory-only optimization is not warranted.
+
+Single runs do not prove paired speedups or identify a hardware cause. Completion
+includes browser/driver notification, not photon latency. All timings apply to the
+archived experimental binaries. No production/default path is changed.
+
+| Candidate | Engine representation/scratch bytes | All requested live/peak bytes | DRM resident VRAM/GTT bytes | Browser group PSS bytes |
+| --- | ---: | ---: | ---: | ---: |
+| Native stored source | 1,466,060 | 1,875,660/1,892,044 | 17,420,288/9,936,896 | 501,754,880 |
+| Packed stored source | 1,269,460 | 1,679,060/1,695,444 | 17,403,904/10,051,584 | 504,273,920 |
+| Packed full field | 420,980 | 830,580/846,964 | 17,670,144/10,051,584 | 504,855,552 |
+| Fused stored source | 1,204,696 | 1,614,296/1,630,680 | 17,424,384/9,936,896 | 502,244,352 |
+| Fused cached hierarchy | 568,688 | 978,288/994,672 | 17,424,384/9,936,896 | 504,078,336 |
+| Fused full field | 356,216 | 765,816/782,200 | 17,424,384/9,953,280 | 502,922,240 |
+| Snapped coverage only, stored source | 1,204,696 | 1,614,296/1,630,680 | 17,424,384/10,035,200 | 504,845,312 |
+| Snapped coverage/interpolation, stored source | 1,204,696 | 1,614,296/1,630,680 | 17,674,240/9,936,896 | 504,760,320 |
+| Snapped coverage/interpolation, full field | 356,216 | 765,816/782,200 | 17,674,240/10,149,888 | 502,458,368 |
+
+Engine bytes exclude the same 409,600 common output/upload/uniform/screen bytes;
+all-live includes them. Source geometry, wood, coverage cache, nodes, response,
+worklist capacity/metadata, inactive/fallback buffers and all image targets count.
+The declared 4,096 shared bytes are per active workgroup; 64 workgroups are dispatched.
+They are not persistent VRAM/GTT allocations or a separately measured physical peak.
+Private registers/spills, compiled shaders and driver caches are not attributable.
+
+The repaired full field reduces engine allocations 15.38% versus packed full field,
+but only 7.80% across all live allocations. It is only 4.12x smaller in requested
+engine bytes than the fast native source control, while costing 5.32x its saturated
+GPU time. Actual whole-client DRM/PSS snapshots do not establish a 16x per-asset
+resident reduction. Do not sum UMA pools. Per-asset physical transient peaks remain
+unmeasured; none of these limitations turns the joint result into a G4 pass.
+
+### Preserve the failure and change the architectural bet
+
+All runtime files are restored byte-for-byte to parent 9487c46b. The previously
+retained hardware native/packed options remain intact. Their existing default and
+packed image/allocation checks are reused because the source is identical; no
+unchanged machinery is re-audited. All nine experimental builds/captures ran, and
+the initial type check passed. No broad suite or new default allocation.
+
+The complete experimental sources, builds, images, timing traces, actual memory
+snapshots, worklists and failures are preserved. The first diagnostic spliced
+chunks from separately rebuilt atomic-insertion lists and reported duplicates.
+That observation was invalid because list order may change between frames.
+The failed script/capture is retained; the corrected diagnostic builds once per
+view and reads all four chunks from that same list. It verifies duplicate-free
+rows without changing measured execution, which still rebuilds each frame.
+
+Next: retain hardware visibility and investigate source-conditioned footprint
+integration that reduces the number of shaded samples. Give the conventional
+integrator the same causal source coverage/depth information. This is a new
+architecture question, not permission to repeat generic RGBA postfilters,
+scalar-opacity heads or material-moment training. The complete-quality/cost gate
+must decide before more fitting. G1–G7 remain unchanged and unmet.
+
+Evidence on Pop!_OS: build/neural-evidence/g4-fused-source-v1.
+Manifest SHA-256: `373bbe2f9d059a8d249c59b05fd7218198046345c1f1bb8cfcbc16693358bae9`.

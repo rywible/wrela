@@ -2463,3 +2463,27 @@ Next: fuse tile-local visibility/shading rather than cache low-reuse responses.
 G1–G7 unchanged and unmet.
 [Full report](neural-shaded-appearance.md#packed-visibility-smaller-allocations-little-response-reuse).
 Evidence build/neural-evidence/g4-packed-visibility-v1 on Pop!_OS.
+
+
+### 2026-10-28 — Retire fused compute visibility after exact quality recovery
+
+AMD RADV RENOIR/Ryzen 5 5500U, Mesa 26.1.6, Chrome 154.0.8037.57, Pop!_OS;
+Wrela 0.9.0 compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23.
+Parent 9487c46b plus archived sources; sequential, 64x64, 60 warmup + 240 measured.
+Initial assessment 163.6s; decision 1161.3s. One follow-up, no training/new references.
+
+Source worklists and 4,096 shared bytes per workgroup remove the full-frame sample
+image. Initial analytic paths pass 20/24; snapped coverage plus interpolation
+recovers 24/24 against four controls and sixteen exact packed-control images.
+Full-field saturated median 1.49664 versus packed hardware 0.64160 ms; paced p95/p99
+2.337/2.418 versus 1.490/1.542 ms. Requested live bytes 765,816 versus 830,580,
+only 7.80% less; engine bytes 356,216 versus 420,980. No 16x physical-memory claim.
+
+Worklists contain 52,714/52,760 entries within 65,536 capacity, with valid IDs,
+duplicate-free rows and consistent prefixes/cursors. The local visibility/shading
+kernel dominates paced cost. Skip a second memory-only trial and retire this path.
+Restore all runtime sources byte-for-byte to 9487c46b; reuse verified default checks.
+Preserve failed quality results and the corrected stable-list readback diagnostic.
+G1–G7 unchanged and unmet.
+[Full report](neural-shaded-appearance.md#fused-source-visibility-exact-images-recover-complete-cost-fails).
+Evidence build/neural-evidence/g4-fused-source-v1 on Pop!_OS.
