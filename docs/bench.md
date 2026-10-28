@@ -2625,3 +2625,17 @@ All1024pairedRGBA and1152finalfixed/frozenimage/reference/mask files exact.
 Whole-clientDRM/PSS andcompleteCPU/completionrecorded;singlecomparisons,not
 sustainedG6or16xappearance-memoryclaims. Goals unchanged/unmet.
 [Full quality, costs, failures and verification](neural-surface-cache.md).
+
+### AMD coverage/radiance factorization (2026-10-28)
+
+RADV RENOIR1002:164c/Ryzen5 5500U, Mesa26.1.6, Chrome154.0.8037.57,
+Wrela0.9.0/compilerde9b81e5; parent6a102762 plus archived sources.
+Four public192x10832-frameclips at1x–4x; timing1080p4xcase1.
+Regular4xFLIP .24324395/LPIPS .25324590/opaque temporal .02631498;
+selected factorization .17217554/.19584559/.01482404. Same source parameters,
+colour budget and history. Complete GPU18.49432→15.97144ms; final explicit
+raw-factor 15.95700/18.09632ms median/p95.
+Live/peak 89,493,784/97,788,184B unchanged. Physical DRM/PSS and
+CPU/completion recorded separately. No16x compression, shadedG4, general3D,
+sealed validation or sustainedG6 claim. One follow-up; no training/newreferences.
+[Full quality, boundary errors, costs and failures](neural-coverage-radiance.md).

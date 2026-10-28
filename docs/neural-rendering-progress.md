@@ -18,19 +18,19 @@
 
 ## Immediate milestone
 
-[The fixed-slot persistent surface cache](neural-surface-cache.md) is retired.
-It reduces history-search cost but loses too many observations, particularly at
-2x/3x. Four slots recover most 4x quality at a memory cost. Shared preparation of
-the sixteen jitter phases is retained in the fixed conventional source decoder:
-measured 21.96008→18.49648 ms with byte-identical output and 240 added bytes.
-This component improvement still fails G6 and establishes no neural advantage.
+[Source coverage and per-surface radiance](neural-coverage-radiance.md) is retained
+as explicit conventional `raw-factor` baseline. Four existing public clips at4x:
+FLIP .24324→.17218, opaque temporal MAE .026315→.014824; complete AMD GPU median
+18.49432→15.95700ms after final integration, with identical requested allocation.
+One targeted same-surface fallback follow-up; no training or new references.
+All G1–G7 remain active/unmet; this is not a G4 or neural-model success.
 
-Next change reconstruction representation: separate source-derived geometric
-coverage from per-surface radiance. Test the equally informed conventional
-factorization first, charging coverage queries and radiance-history work under
-the unchanged colour-sample budget. Reuse existing clips/references. Do not
-refit kernel or material moments without a rendered-error justification.
-Frozen appearance models remain unchanged; all G1–G7 remain active and unmet.
+Next transfer the coverage/radiance separation to the existing shaded G4
+references. Preserve source visibility and per-surface identity while testing a
+source-coordinate radiance hierarchy against the equally informed conventional
+renderer. Charge wood, visibility, sorting, updates, decode, compositing and
+resident scratch/fallback. Keep frozen appearance models and reference methods;
+do not fit material moments unless rendered errors justify it.
 
 ## Evidence recorded so far
 
@@ -2655,3 +2655,13 @@ G1–G7 unchanged/unmet. Next: separate geometric coverage and per-surface radia
 with equal information and complete costs before another learned residual.
 [Full comparison](neural-surface-cache.md).
 Manifest SHA-256: `474d249e9b36b99fc35a0d353f93697214222189bb4a3d5a4d1a139369a2d094`.
+
+### Source coverage and per-surface radiance checkpoint (2026-10-28)
+
+The initial full comparison completed in6.96minutes; decision at31.62minutes.
+One follow-up repairs demonstrated wrong-surface fallback using causal retained
+observations. Keep explicit raw-factor control; current compact G4 appearance
+representation remains unqualified. Final outputs/frozen controls/cuts verified;
+failures and actual DRM/PSS snapshots preserved. No goal thresholds changed.
+[Quality, memory, runtime, limitations and replay](neural-coverage-radiance.md).
+Evidence manifest: `1376a43a3faef8f1e258cb31ae9aa68547e1aea8b776b134d774e420072a2bc5`.

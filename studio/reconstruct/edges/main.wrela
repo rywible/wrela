@@ -98,6 +98,7 @@ pub struct State {
     raw_enabled: bool,
     raw_source: bool,
     raw_indexed: bool,
+    raw_factorized: bool,
     raw_heads: GpuBuffer<u32>,
     raw_links: GpuBuffer<u32>,
     exported_raw_index: GpuBuffer<u32>,
@@ -171,6 +172,7 @@ pub fn init() -> State {
         raw_enabled: false,
         raw_source: false,
         raw_indexed: false,
+        raw_factorized: false,
         raw_heads: buffer(1),
         raw_links: buffer(1),
         exported_raw_index: buffer(1),
@@ -523,22 +525,38 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             ),
         )
     } else if s.raw_source {
-        fullscreen(
-            p,
-            raw::reconstruct_source.bind(
-                s.raw_packed.items(),
-                w,
-                h,
-                s.divisor,
-                s.tick,
-                s.raw_count,
-                vec4(f.period, f.width, f.offset, f.speed),
-                if s.raw_specialized { s.raw_prepared.items() } else { s.raw_kernel.items() },
-                if !s.raw_trained { 0 } else if s.raw_specialized { 2 } else { 1 },
-                s.raw_prepared.items(),
-                if s.raw_trained { 0 } else { 1 },
-            ),
-        )
+        if s.raw_factorized {
+            fullscreen(
+                p,
+                coverage_radiance::reconstruct.bind(
+                    s.raw_packed.items(),
+                    w,
+                    h,
+                    s.divisor,
+                    s.tick,
+                    s.raw_count,
+                    vec4(f.period, f.width, f.offset, f.speed),
+                    s.raw_prepared.items(),
+                ),
+            )
+        } else {
+            fullscreen(
+                p,
+                raw::reconstruct_source.bind(
+                    s.raw_packed.items(),
+                    w,
+                    h,
+                    s.divisor,
+                    s.tick,
+                    s.raw_count,
+                    vec4(f.period, f.width, f.offset, f.speed),
+                    if s.raw_specialized { s.raw_prepared.items() } else { s.raw_kernel.items() },
+                    if !s.raw_trained { 0 } else if s.raw_specialized { 2 } else { 1 },
+                    s.raw_prepared.items(),
+                    if s.raw_trained { 0 } else { 1 },
+                ),
+            )
+        }
     } else if s.raw_enabled {
         fullscreen(
             p,
@@ -697,10 +715,11 @@ pub fn publish_visibility(s: mut State) -> u32 {
 
 /// An explicit fixture-only control. Never silently combines with a trained RGB correction.
 pub fn decoder(s: mut State, mode: u32) {
-    assert(mode <= 4 && !s.rgb_enabled && s.width == 0)
+    assert(mode <= 5 && !s.rgb_enabled && s.width == 0)
     s.raw_enabled = mode == 1 || mode >= 3
     s.raw_source = mode >= 3
     s.raw_indexed = mode == 4
+    s.raw_factorized = mode == 5
     s.patch_enabled = mode == 2
     if s.raw_enabled { s.collect_rows = false }
 }
@@ -856,7 +875,7 @@ pub fn publish_gate(s: mut State) -> u32 {
 
 // Fixture-only model upload: source raw kernel, 81 finite f32 coefficients and zero padding.
 pub fn raw_kernel_begin(s: mut State) {
-    assert(s.raw_source)
+    assert(s.raw_source && !s.raw_factorized)
     s.raw_kernel = buffer(21)
     if s.raw_specialized {
         s.raw_prepared = buffer(kernel_context::CONTEXTS * kernel_context::ROWS)
@@ -896,7 +915,7 @@ pub fn publish_raw_index(s: mut State) -> u32 {
 
 // Explicit evaluation ablation, set before model upload and the first frame.
 pub fn raw_kernel_specialize(s: mut State, enabled: u32) {
-    assert(s.raw_source && s.width == 0 && !s.raw_trained && enabled <= 1)
+    assert(s.raw_source && !s.raw_factorized && s.width == 0 && !s.raw_trained && enabled <= 1)
     s.raw_specialized = enabled == 1
 }
 

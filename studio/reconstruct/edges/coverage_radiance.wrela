@@ -1,0 +1,140 @@
+// Fixture-only conventional factorization. Geometry-only coverage; observed RGB only.
+use engine::view::jitter_of
+use std::gpu::FragCoord
+use raw::{PackedSample, HISTORY, packed_stride, unpack}
+
+// Intersect this output pixel with the authored periodic slats. No reference data or
+// material inputs. This analytic fixture has period>1, so at most two slats intersect.
+pub fn coverage(left: f32, tick: u32, shape: vec4) -> f32 {
+    let shift = shape.z + shape.w * f32(tick)
+    let first = floor((left - shift) / shape.x)
+    var area = 0.0
+    for k in 0..2 {
+        let start = (first + f32(k)) * shape.x + shift
+        area += max(min(left + 1.0, start + shape.y) - max(left, start), 0.0)
+    }
+    clamp(area, 0.0, 1.0)
+}
+
+// Only invoked when this surface has no tent support. Search newest observations
+// first; choose the closest compatible observation in that frame's 3x3 neighbourhood.
+fn fill(
+    at: vec2,
+    samples: [PackedSample],
+    width: u32,
+    height: u32,
+    divisor: u32,
+    tick: u32,
+    count: u32,
+    velocity: vec2,
+    depth: f32,
+    jitter_table: [vec4],
+    fallback: vec3,
+) -> vec3 {
+    let d = f32(divisor)
+    let size = packed_stride(width, height)
+    let limit = vec2i(i32(width) - 1, i32(height) - 1)
+    for age in 0..HISTORY {
+        if age >= count { break }
+        let frame = tick - age
+        let jitter = jitter_table[frame % HISTORY].xy
+        let center = vec2i(floor((at - velocity * f32(age)) / d + jitter))
+        let lo = max(center - vec2i(1), vec2i(0))
+        let hi = min(center + vec2i(1), limit)
+        var distance = 1.0e30
+        var closest = fallback
+        for y in lo.y..(hi.y + 1) {
+            for x in lo.x..(hi.x + 1) {
+                let sample = unpack(samples[(frame % HISTORY) * size + u32(y) * width + u32(x)])
+                if abs(sample.geometry.z - depth) >= 0.01 ||
+                    length(sample.geometry.xy - velocity) >= 0.05 { continue }
+                let point = (vec2(f32(x), f32(y)) + vec2(0.5) - jitter) * d +
+                    sample.geometry.xy * f32(age)
+                let delta = point - at
+                let next = dot(delta, delta)
+                if next < distance {
+                    distance = next
+                    closest = max(sample.color.rgb, vec3(0.0))
+                }
+            }
+        }
+        if distance < 1.0e30 { return closest }
+    }
+    fallback
+}
+
+@fragment
+pub fn reconstruct(
+    p: FragCoord,
+    samples: [PackedSample],
+    width: u32,
+    height: u32,
+    divisor: u32,
+    tick: u32,
+    count: u32,
+    shape: vec4,
+    jitter_table: [vec4],
+) -> vec4 {
+    let d = f32(divisor)
+    let size = packed_stride(width, height)
+    let limit = vec2i(i32(width) - 1, i32(height) - 1)
+    let near = clamp(vec2i(floor(p.position.xy / d + jitter_of(tick))), vec2i(0), limit)
+    let current = unpack(samples[(tick % HISTORY) * size + u32(near.y) * width + u32(near.x)])
+    let radius = max(0.8, 1.25 * d / sqrt(f32(count)))
+    let front = coverage(p.position.x - 0.5, tick, shape)
+    var result = vec3(0.0)
+    for layer in 0..2 {
+        let area = if layer == 1 { front } else { 1.0 - front }
+        if area <= 0.0 { continue }
+        let velocity = vec2(if layer == 1 { shape.w } else { 0.0 }, 0.0)
+        let depth = if layer == 1 { 0.5 } else { 0.25 }
+        var sum = vec3(0.0)
+        var total = 0.0
+        for age in 0..HISTORY {
+            if age >= count { continue }
+            let frame = tick - age
+            let jitter = jitter_table[frame % HISTORY].xy
+            let (lo, hi) = raw::sample_bounds(
+                p.position.xy,
+                velocity,
+                jitter,
+                divisor,
+                radius,
+                age,
+                limit,
+            )
+            for y in lo.y..(hi.y + 1) {
+                for x in lo.x..(hi.x + 1) {
+                    let proposed = (vec2(f32(x), f32(y)) + vec2(0.5) - jitter) * d +
+                        velocity * f32(age)
+                    if !raw::possible_support(proposed, p.position.xy, radius, age) { continue }
+                    let sample = unpack(samples[(frame % HISTORY) * size + u32(y) * width + u32(x)])
+                    if abs(sample.geometry.z - depth) >= 0.01 ||
+                        length(sample.geometry.xy - velocity) >= 0.05 { continue }
+                    let position = (vec2(f32(x), f32(y)) + vec2(0.5) - jitter) * d +
+                        sample.geometry.xy * f32(age)
+                    let w = raw::weight(position - p.position.xy, radius)
+                    sum += max(sample.color.rgb, vec3(0.0)) * w
+                    total += w
+                }
+            }
+        }
+        let fallback = max(current.color.rgb, vec3(0.0))
+        result += area * if total > 1.0e-5 { sum / total } else {
+            fill(
+                p.position.xy,
+                samples,
+                width,
+                height,
+                divisor,
+                tick,
+                count,
+                velocity,
+                depth,
+                jitter_table,
+                fallback,
+            )
+        }
+    }
+    vec4(result, current.color.a)
+}

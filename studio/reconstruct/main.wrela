@@ -45,6 +45,7 @@ fn options(given: [String]) -> Option<Options> {
                 "raw" => 1,
                 "raw-source" => 3,
                 "raw-index" => 4,
+                "raw-factor" => 5,
                 "patch" => 2,
                 _ => return None,
             }
@@ -112,8 +113,10 @@ fn options(given: [String]) -> Option<Options> {
     }) || o.width == 0 || o.height == 0 || o.width % 12 != 0 || o.height % 12 != 0 || o.width > 3840 || o.height > 2160 || (o.warmup < 1 && (o.scene != 2 || o.length == 1)) || o.warmup > 4096 || o.cells < 2 || o.cells > 16 {
         return None
     }
-    if !o.raw_model.is_empty() && o.decoder < 3 { return None }
-    if o.raw_specialize > 1 || (o.raw_specialize == 1 && o.decoder < 3) { return None }
+    if !o.raw_model.is_empty() && (o.decoder < 3 || o.decoder == 5) { return None }
+    if o.raw_specialize > 1 || (o.raw_specialize == 1 && (o.decoder < 3 || o.decoder == 5)) {
+        return None
+    }
     if !o.gate_model.is_empty() && (o.scene != 2 || o.decoder != 2 || o.patch_history == 0) {
         return None
     }
@@ -488,7 +491,7 @@ pub fn tool() -> u32 {
     }
     let Some(o) = options(given) else {
         print(
-            "usage: wrela tool reconstruct -- [--scene bare|clearing|edges --shot 0..71(edges) --width 192 --height 108 --warmup 240 --cells 8 --sampling grid|phase64 --seed 17 --frames 1 --start-frame 0 --cut-at 0 --reset-cut 1 --model out/models/.../weights.half --decoder production|raw|raw-source|raw-index|patch --training-inputs 0|1 --patch-fast 0|1 --patch-history 0..1000 --patch-source-geometry 0|1 --gate-model out/models/.../weights.f32 --raw-model out/models/.../weights.f32 --raw-specialize 0|1] | train <manifest> <steps> <seed> | patch-train <manifest> <steps> <seed> [initial-f32] | gate-train <manifest> <steps> <seed> <temporal-permille>",
+            "usage: wrela tool reconstruct -- [--scene bare|clearing|edges --shot 0..71(edges) --width 192 --height 108 --warmup 240 --cells 8 --sampling grid|phase64 --seed 17 --frames 1 --start-frame 0 --cut-at 0 --reset-cut 1 --model out/models/.../weights.half --decoder production|raw|raw-source|raw-index|raw-factor|patch --training-inputs 0|1 --patch-fast 0|1 --patch-history 0..1000 --patch-source-geometry 0|1 --gate-model out/models/.../weights.f32 --raw-model out/models/.../weights.f32 --raw-specialize 0|1] | train <manifest> <steps> <seed> | patch-train <manifest> <steps> <seed> [initial-f32] | gate-train <manifest> <steps> <seed> <temporal-permille>",
         )
         return 2
     }
