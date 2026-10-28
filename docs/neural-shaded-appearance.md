@@ -5346,3 +5346,190 @@ implementation, weights or assets were added. G1–G7 remain active and unmet.
 
 Evidence: `build/neural-evidence/g4-surface-material-v1` on Pop!_OS.
 Manifest SHA-256: `f82d5df92e0f8a760aa4c4ae136c38cff8b72bd4999b168d0f6980fd96f1d402`.
+
+## Sparse source field evaluation: quality preserved, execution retired
+
+**Decision: retire dynamic threshold and owner-list sparse field execution.**
+All source-field variants pass24/24 shaded numeric cases with identical source
+coverage, but reducing field terms does not deliver a useful complete rendering
+advantage. Cutoff8 costs0.62000ms versus0.62396ms for an exact owner-initialized
+control. The conservative owner list returns identical images yet costs0.74136ms
+and adds2,104 bytes. No neural model or G1–G7 goal is promoted.
+
+First full comparison: 2.13 minutes. Decision:
+12.60 minutes, 2026-10-28T15:37:42.673452+00:00, within two hours. One
+targeted follow-up, no second threshold/list sweep, training or new reference.
+Restore the appearance runtime byte-for-byte to parent250fcd5c. Frozen models,
+source visibility and the retained reconstruction improvement remain unchanged.
+
+### Source knowledge, bounds and equal inputs
+
+The previous rendered ablation isolated normal/depth approximation as a major
+quality problem. This test evaluates the same authored field with less work,
+without replacing its response by aggregate material means. All methods receive
+the same source clumps, geometry, surface IDs, exact cutouts, material laws and
+lights. The conventional controls are given the same owner information; no
+reference image or new learned input is supplied to a candidate.
+
+The source field is a stabilized exponential union of44 clump distances. Its
+normal is a normalized weighted sum of clump normals; crown depth comes from
+its smooth minimum. The exact owner control starts stabilization at the known
+owner clump instead of clump0 and retains every term in the original order.
+This algebraically equivalent evaluation can differ by floating-point rounding.
+
+Point pruning skips a clump when k×(distance−current nearest)>T, before its
+exponential and normal are evaluated. Current nearest is an upper bound on the
+final minimum. In exact arithmetic, each omitted term therefore contributes less
+than exp(−T) to both the final normalized weight sum and the magnitude of the
+unnormalized gradient. With omitted-mass bound B and retained sum S, depth error
+is bounded by log(1+B/S)/k. Normalizing the gradient can amplify error near
+cancellation, so the bound alone is not a universal angular guarantee.
+
+The independent float64 audit evaluates all26,560 existing captured source card
+centres, preserving the same source-owner assignment. It verifies the omitted
+mass/vector/depth inequalities and records direction errors:
+
+| Cutoff | Mean retained terms /44 | Omitted terms | Maximum normal angle | Maximum depth error |
+| --- | ---: | ---: | ---: | ---: |
+| 16 | 35.8658 | 18.49% | 0.00008031° | 0.0000004263m |
+| 8 | 12.8973 | 70.69% | 0.252477° | 0.00131839m |
+
+At cutoff8, normal-angle p99 is0.067334°. Minimum retained gradient magnitude
+is0.112046, so this source population does not approach zero-gradient cancellation.
+The audit is mathematical/source-point evidence, not GPU bit parity, unseen-asset
+coverage or a replacement for rendered checks.
+
+### One follow-up moves rejection before distance evaluation
+
+Direct pruning still computes all44 distances. The follow-up builds a conservative
+candidate list for each owner clump using only authored geometry. A generated
+card centre lies inside its owner's ellipsoid and hence its bounding sphere Ri.
+For any other clump j, distance_j(p)≥|p−centre_j|−Rj, so it is at least
+|centre_i−centre_j|−Ri−Rj. The owner's distance is nonpositive. Thus a pair whose
+lower bound exceeds8/k can be rejected before evaluating the card's distance.
+The implementation adds a0.001m conservative margin and keeps original clump order.
+The point cutoff still runs on the remaining candidates.
+
+The list retains20.87 of44 distance candidates on average across source cards
+(max33). Each of44 owners stores a count plus44 packed8-bit indices in12u32
+words:2,112 bytes replacing an8-byte unused response buffer, net2,104 bytes.
+Lists are computed once at initialization from current source parameters; this
+is not a view-dependent cache or an uncounted predecoded appearance image.
+The bound applies to authored card centres inside their owner, not arbitrary
+world points or unsupported dynamic edits.
+
+### Shaded quality and silhouettes
+
+| Method | Numeric cases passed | PSNR dB | FLIP | LPIPS |
+| --- | ---: | ---: | ---: | ---: |
+| Native source cache | 24/24 | 40.295971 | 0.01300193 | 0.00249104 |
+| Compact source cache + exact field | 24/24 | 40.295900 | 0.01300320 | 0.00249059 |
+| Frozen optical primitives | 8/24 | 40.127682 | 0.01234846 | 0.00188937 |
+| Exact field, owner initialization | 24/24 | 40.295901 | 0.01300319 | 0.00249059 |
+| Point cutoff16 | 24/24 | 40.295901 | 0.01300319 | 0.00249059 |
+| Point cutoff8 | 24/24 | 40.295117 | 0.01300917 | 0.00249639 |
+| Owner list + point cutoff8 | 24/24 | 40.295117 | 0.01300917 | 0.00249639 |
+
+Numeric counts use the unchanged joint PSNR/FLIP/LPIPS gate against compact source;
+all other informed controls remain recorded. The existing AA64 references cover
+one static64px tree, two public views, four lights and three backgrounds. Exposure
+0.62, ACES→sRGB, FLIP67ppd and AlexNet LPIPS v0.1 stay fixed. These public numeric
+checks are not a full G4 pass.
+
+All32 candidate alpha images are byte-identical to compact source. Worst boundary
+p99 remains2 pixels; worst half-coverage precision0.983065 and recall0.994007.
+All14 method/view coverage sequences are light-independent. The owner list and
+point-cutoff8 outputs are byte-identical in all eight RGBA images, confirming
+that its conservative earlier rejection preserves this measured result.
+
+### Complete runtime and actual resident observations
+
+RADV RENOIR PCI1002:164c, Ryzen5 5500U, Mesa26.1.6,
+Chrome154.0.8037.57, Pop!_OS; Wrela0.9.0/compiler
+`de9b81e52a7747870dfbd5223cb8aeb41e584d23`. Parent250fcd5c plus archived variants.
+Sequential64×64 profiles:60 warm-up and240 measured frames; separate300-frame
+paced completion/memory runs discard60. No concurrent CPU scoring/training.
+
+| Method | Saturated GPU median/p95 ms | Paced GPU p95/p99 ms | CPU call p99 ms | Start-to-completion p95/p99 ms |
+| --- | ---: | ---: | ---: | ---: |
+| Native source cache | 0.27728/0.42960 | 1.0889/1.0907 | 0.7405 | 4.5611/4.8160 |
+| Compact source cache + exact field | 0.63800/0.67180 | 1.5047/1.5616 | 0.7361 | 4.5508/4.8317 |
+| Frozen optical primitives | 0.06852/0.07276 | 0.2719/0.2773 | 1.0031 | 4.8904/5.2934 |
+| Exact field, owner initialization | 0.62396/0.69520 | 1.4537/1.5559 | 0.7131 | 4.5369/4.7422 |
+| Point cutoff16 | 0.66836/0.67980 | 1.5450/1.5944 | 0.7014 | 5.4307/5.7273 |
+| Point cutoff8 | 0.62000/0.74328 | 1.4601/1.5272 | 0.7894 | 5.2500/5.4932 |
+| Owner list + point cutoff8 | 0.74136/0.75716 | 1.5804/1.6767 | 0.7525 | 6.3467/6.7590 |
+
+Cutoff16 is slower than the exact compact field. Cutoff8 improves the initial
+median0.63800→0.62000ms, but nearly all that difference is matched by the exact
+owner control0.62396ms. The0.64% difference between cutoff8 and owner-exact does
+not justify a claimed rendering win. The owner list is19.57% slower than direct
+cutoff8 and needs extra storage. No hardware-counter evidence attributes the
+slowdown to a specific compiler or GPU mechanism; fewer arithmetic contributions
+alone did not predict the measured complete cost.
+
+Source placement, cutouts, visibility rebuild, wood, field queries, normal/depth
+decode, shading, uploads, view/light updates, resolve and final composite are
+included. Source paths have no optical sort; frozen optical retains its own sort
+and indexed wood. Initialization is outside steady timing and inside requested
+allocation peaks. Startup time, dynamic source edits and20-minute G6 stability
+are not certified. Completion includes browser/driver notification and queueing.
+
+| Method | Engine + scratch B | All requested live/peak B | DRM VRAM/GTT B | Browser-group PSS B |
+| --- | ---: | ---: | ---: | ---: |
+| Native source cache | 1,466,060 | 1,875,660/1,892,044 | 17,408,000/9,953,280 | 484,467,712 |
+| Compact source cache + exact field | 420,980 | 830,580/846,964 | 17,670,144/9,936,896 | 485,399,552 |
+| Frozen optical primitives | 316,532 | 726,132/742,516 | 17,367,040/9,756,672 | 470,515,712 |
+| Exact field, owner initialization | 420,980 | 830,580/846,964 | 17,670,144/9,936,896 | 486,972,416 |
+| Point cutoff16 | 420,980 | 830,580/846,964 | 17,408,000/10,051,584 | 485,883,904 |
+| Point cutoff8 | 420,980 | 830,580/846,964 | 17,408,000/9,953,280 | 485,831,680 |
+| Owner list + point cutoff8 | 423,084 | 832,684/849,068 | 17,416,192/10,051,584 | 487,272,448 |
+
+Engine totals exclude the common65,536-byte output. All-requested totals include
+409,600 bytes of common output/screen/upload/uniform resources, plus all geometry,
+field nodes, masks, visibility scratch, lists, caches and fallback data. Initial
+owner/point variants add no allocation. Owner lists add exactly2,104 live/peak
+requested bytes. There is no appearance compression claim.
+
+DRM/PSS snapshots are actual whole-client residency, not asset-attributed appearance
+memory or transient physical peaks. UMA pools may overlap; do not sum them. No
+16× quality-matched physical memory reduction follows from these measurements.
+
+### Verification, preserved failures and the next architecture bet
+
+All24 original control RGBA images reproduce prior sealed evidence. Source control
+function bodies, geometry, visibility, wood and shading are unchanged; only field
+evaluation and its initialization change in candidates. Independent source-point
+bounds and all rendered metrics are preserved. No broad unchanged tests or new
+reference infrastructure were needed for this retirement decision.
+
+The first list builder failed before GPU execution because a `Slots` invocation
+may write only its own record. The repair dispatches six invocations per owner,
+each rebuilding the same small list and writing its own vec2u record. The failed
+source/logs are preserved; the same payload/steady algorithm is measured afterward.
+An audit also initially compared the active packed-visibility flag to its default
+disabled setting. It was corrected to permit exactly that existing variant flag;
+all source-control function bodies remained byte-identical. No measurement was
+changed to make either check pass.
+
+All candidate sources, raw images, physical observations and failures are archived;
+restored runtime files match250fcd5c exactly. The small single-run owner-exact
+difference is not promoted through a new configuration or a repeated timing campaign.
+
+**Next learned bet: a source-conditioned directional residual.** Preserve exact
+source visibility, owner geometry and the analytic owner contribution; predict
+only the remaining normal-gradient/crown-depth contribution from source-local
+coordinates and owner context. Compare a small learned residual with an equal-byte
+conventional local polynomial using identical source data. The previous4/24→21/24
+normal/depth ablation identifies the rendered problem worth targeting. Require the
+unchanged shaded gates, complete AMD cost and full residency before promotion;
+material-loss improvement alone is insufficient.
+
+Existing source-field and evaluator citations are in
+[the citation register](citations.md#neural-reconstruction-instrument). The bounds
+follow directly from the authored clump distance and triangle inequality; the
+implementation is original Wrela code. No external code, weights or assets added.
+G1–G7 remain active and unmet.
+
+Evidence: `build/neural-evidence/g4-sparse-field-v1` on Pop!_OS.
+Manifest SHA-256: `3671d01d79187eb46ee8b6a2dc038e184df80525c28b7db9d074799db9b45713`.

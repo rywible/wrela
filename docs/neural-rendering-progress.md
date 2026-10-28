@@ -18,19 +18,18 @@
 
 ## Immediate milestone
 
-[Exact surface visibility with compact materials](neural-shaded-appearance.md#exact-surface-visibility-with-compact-materials-retire-aggregate-response-lookup)
-is retired after one follow-up. Frozen and conventional aggregate material each
-pass4/24 shaded cases despite exact source coverage. Restoring authored normals
-and depth raises both to21/24, but adds memory and provides no useful runtime
-saving. All payloads, failed results and actual physical observations are preserved.
-No new training or shaded references; G1–G7 remain active and unmet.
+[Sparse source field evaluation](neural-shaded-appearance.md#sparse-source-field-evaluation-quality-preserved-execution-retired)
+is retired. All source variants pass24/24 existing shaded numeric cases with
+exact source alpha, but cutoff8's0.620ms is nearly matched by exact-owner0.62396ms.
+A conservative owner list preserves images yet costs0.74136ms and2,104 extra bytes.
+One follow-up; no training/newreferences. Runtime restored; G1–G7 remain unmet.
 
-Next test sparse evaluation of the authored normal/depth field at exact visible
-source points. Use source-derived geometric bounds to reject negligible smooth-
-union contributions, comparing a conventional implementation with the exact
-field on existing shaded references. Preserve coverage and surface identity;
-count all wood, visibility, decoding, updates, compositing and resident storage.
-Consider a learned residual only after rendered error and complete cost justify it.
+Next test a source-conditioned directional residual: keep exact source visibility,
+owner geometry and analytic owner contribution, and predict remaining normal-
+gradient/crown-depth contribution from source-local coordinates/owner context.
+Compare learned and equal-byte local polynomial residuals with identical source
+information. The prior rendered normal/depth ablation justifies this target;
+promote only on shaded quality, complete AMD cost and residency together.
 
 ## Evidence recorded so far
 
@@ -2675,3 +2674,12 @@ Colour-only0.64276ms/898,868B still fails3cases and paced cost. Retire both;
 restore appearance runtime exactly to83a2f998, retaining reconstruction work.
 [Full comparison](neural-shaded-appearance.md#exact-surface-visibility-with-compact-materials-retire-aggregate-response-lookup).
 Evidence manifest: `f82d5df92e0f8a760aa4c4ae136c38cff8b72bd4999b168d0f6980fd96f1d402`.
+
+### Sparse directional field checkpoint (2026-10-28)
+
+First complete comparison2.13minutes; decision12.60minutes. One owner-list follow-up.
+All source variants24/24; directcutoff8 .62000ms vs exact-owner .62396ms;
+ownerlist .74136ms/832,684liveB vs exactfield .63800ms/830,580B. Retire sparse
+execution; preserve source-point bounds, failed initialization and all measurements.
+[Full comparison](neural-shaded-appearance.md#sparse-source-field-evaluation-quality-preserved-execution-retired).
+Evidence manifest: `3671d01d79187eb46ee8b6a2dc038e184df80525c28b7db9d074799db9b45713`.

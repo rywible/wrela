@@ -2652,3 +2652,15 @@ Colour-only.64276ms/898,868B stillfails3cases andpacedcost. No16x quality-matche
 memory or neuralwin. All56captures,24exactpriorcontrols,32exactcandidatealpha,
 complete CPU/GPU/completion,DRM/PSS andfailedvariants preserved. Runtime restored.
 [Decision and full measurements](neural-shaded-appearance.md#exact-surface-visibility-with-compact-materials-retire-aggregate-response-lookup).
+
+### AMD sparse source directional field (2026-10-28)
+
+RADV RENOIR1002:164c/Ryzen5 5500U, Mesa26.1.6, Chrome154.0.8037.57,
+Wrela0.9.0/compilerde9b81e5; parent250fcd5c plus archived variants.
+Existing64px tree,2views×4lights×3backgrounds; allsourcevariants24/24 numericcases.
+Pointcutoff8 omits70.69%normal/exponential terms butGPU.62000ms is nearlyexact-owner
+.62396ms; exactfield.63800ms. Ownerlist imagesexact vs cutoff8 but.74136ms and
+832,684liveB vs830,580B. No worthwhile jointwin or16xmemoryclaim. One follow-up;
+no training/newreferences. Source-pointbounds,completeGPU/CPU/completion,DRM/PSS
+andfailedinit preserved. Appearance runtime restored exactly toparent.
+[Full comparison and decision](neural-shaded-appearance.md#sparse-source-field-evaluation-quality-preserved-execution-retired).
