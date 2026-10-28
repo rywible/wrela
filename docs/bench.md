@@ -484,7 +484,8 @@ table is under "2026-10-26: B16" at the end), a sentence each:
 - **The M1 Air and the Iris Xe laptop are not measured:** neither was to hand (B8, "Devices").
 - **The other engines** (Part C, "Other engines on this machine"): three.js, Babylon.js and
   PlayCanvas keep up at 60 Hz with the brief's far sparser content (no frame over 33 ms in
-  1,200); three.js's own GPU timing reads 36 ms a sample.
+  1,200); three.js's own GPU timing reads 36 ms a sample. (Plan three's B7 found those samples
+  each gathered several frames' work, and re-measured: 9.05 ms a frame; see that section.)
 
 What B13 left (toolchain 0.6.3), against §0.1's first wording, kept for the record:
 
@@ -1163,6 +1164,12 @@ The references (each credited in docs/citations.md):
 - `vale-e11-deadwood`: https://commons.wikimedia.org/wiki/File:Bracket_fungi_on_fallen_log_Border_Track_Lamington_National_Park_Queensland_IMGP2516.jpg
 - `vale-e12-overcast`: https://commons.wikimedia.org/wiki/File:Kitschentalrangen-20200629-RM-155854.jpg
 
+## Public Unreal benchmarks (context only)
+
+None recorded. This subsection is optional (docs/plan-world-class-3.md §B3.3), and plan three
+didn't search for one: its gates are local measurements on the M4 Air, and a public benchmark
+from another machine can't stand in for one.
+
 ## Devices
 
 Each device D20 names (docs/plan-world-class-2.md §0.5), measured by `wrela tool bench -- --lan`
@@ -1199,26 +1206,45 @@ pages over the LAN address), so this checks the procedure; it isn't a device's r
 ## Other engines on this machine
 
 The Last Green's brief in three.js, Babylon.js and PlayCanvas (Part C, rywible/wrela-others: the
-floor's own land and walk exported by `wrela tool export`, 20,000 trees of three kinds with three
-levels and a billboard, 200,000 blades of grass, water, one sun with four 2048² cascades, TAA,
-bloom and ACES, at 1080p, 60 warm-up frames and 1,200 measured), each engine at its defaults,
+floor's own land, water and walk exported by `wrela tool export`, 20,000 trees of three kinds with
+three levels and a billboard, 200,000 blades of grass, water, one sun with four 2048² cascades,
+TAA, bloom and ACES, at 1080p, 60 warm-up frames and 1,200 measured), each engine at its defaults,
 measured by that repository's harness in the Chrome the bench uses and imported with `wrela
 tool bench -- --row <report.json>`. Read them with three things in mind: their content is far
 simpler than the floor's (the trees are cylinders, cones and ellipsoids; no leaf cards, no bark,
 no fields), so this is cost for a sparser picture; their frames are paced by Chrome's
 `requestAnimationFrame` at 60 Hz, so an interval of 16.67 ms says a frame kept up, not what it
-cost; and only three.js exposes its GPU time (Babylon.js's own timing overflows its query set
-on this scene, 9.32.0; PlayCanvas's isn't read), whose samples can span more than one frame's work (its resolve gathers what's pending);
-and PlayCanvas places its grass on the CPU (it has no node material) and shows an unprojected
-reflection. The floor's own walk, which these scenes follow, on
-this machine: GPU span p50 18.14 ms, intervals 19.93 / 21.95 / 25.94, 5 of 1,200 frames over
-33 ms (B16).
+cost; and PlayCanvas's reflection is a mirror camera's image on the plane's own UVs, not
+projected. The floor's own walk, which these scenes follow, on this machine: GPU span p50
+18.14 ms, intervals 19.93 / 21.95 / 25.94, 5 of 1,200 frames over 33 ms (B16).
+
+Plan three's B7 fixed what the council found in these scenes (rywible/wrela-others#1's review),
+and these rows replace the 2026-10-26 ones it invalidated. Each engine's GPU span is now the
+same measurement as wrela's own: one timer under all three (`GpuTimer`) gives every pass of a
+frame timestamp writes and takes the frame's first start to its last end, each sample tagged
+with its frame. three.js's own timing had resolved whatever frames were pending into one sample,
+which is why it read 36 ms; Babylon.js's and PlayCanvas's weren't read at all. Each scene's land
+is now sampled at the export's texel centres; its mere is at the export's level (`wrela tool
+export -- water`: −0.482 m, where the scenes had derived −1.09); PlayCanvas's grass is set on the
+land in its vertex shader; and each run is rejected unless it holds the harness's checks (1,201
+frame boundaries, WebGPU, one sample a measured frame, no WebGPU error, and each scene's own:
+the trees upright, the forest in Babylon.js's reflection and refraction, PlayCanvas's 4096² atlas
+of four 2048² cascades and its water out of its own mirror, three.js's normal map uploaded, the
+billboards' bases on the ground, the terrain receiving shadows and casting none).
+
+Each row is the second of two sustained runs on a warm machine (2026-10-28, toolchain 0.10.0,
+wrela-others `wc3-b7`), in one session, nothing else building. The first runs: three.js 10.20 /
+21.26 / 22.10 ms, 0 over 33 ms; Babylon.js 13.95 / 14.78 / 15.04, 0 over 33; PlayCanvas 12.73 /
+15.94 / 17.25, 44 over 33. PlayCanvas's frames over 33 ms (28 and 44 of 1,200) go with its GPU
+span's tail: its p99 (17.10 and 17.25 ms) is over a refresh, so more than 1 % of its frames can't
+be presented at the next one; which frames those are isn't recorded (the report keeps the
+spans' percentiles).
 
 | Engine | Scene | GPU span p50 / p95 / p99 ms | Intervals p50 / p95 / p99 ms | Over 33 ms | Cold first frame ms | Warm first frame ms | Loaded MiB | Measured |
 |---|---|---|---|---|---|---|---|---|
-| Babylon.js 9.32.0 | babylon-walk | not exposed | 16.67 / 16.67 / 16.67 | 0 | 712 | 643 | 23.7 | 2026-10-26, apple metal-3 0x0000 Apple M4 (Apple M4, Ryans-MacBook-Air.local): `npm run bench -- --engine babylon` (build/others/babylon-apple-metal-3-0x0000-Apple-M4-Apple-M4-Ryans-MacBook-Air-loc-2026-10-26.json) |
-| PlayCanvas 2.23.3 | playcanvas-walk | not exposed | 16.67 / 16.67 / 16.67 | 0 | 322 | 277 | 17.5 | 2026-10-26, apple metal-3 0x0000 Apple M4 (Apple M4, Ryans-MacBook-Air.local): `npm run bench -- --engine playcanvas` (build/others/playcanvas-apple-metal-3-0x0000-Apple-M4-Apple-M4-Ryans-MacBook-Air-loc-2026-10-26.json) |
-| three.js 186 | three-walk | 36.34 / 44.25 / 48.04 | 16.67 / 16.67 / 16.67 | 0 | 639 | 303 | 17.2 | 2026-10-26, apple metal-3 0x0000 Apple M4 (Apple M4, Ryans-MacBook-Air.local): `npm run bench -- --engine three` (build/others/three-apple-metal-3-0x0000-Apple-M4-Apple-M4-Ryans-MacBook-Air-loc-2026-10-26.json) |
+| Babylon.js 9.32.0 | babylon-walk | 13.76 / 14.90 / 15.34 | 16.67 / 16.67 / 16.67 | 0 | 789 | 761 | 23.7 | 2026-10-28, apple metal-3 0x0000 Apple M4 (Apple M4, Ryans-MacBook-Air.local): `npm run bench -- --engine babylon` (build/others/babylon-apple-metal-3-0x0000-Apple-M4-Apple-M4-Ryans-MacBook-Air-loc-2026-10-28.json) |
+| PlayCanvas 2.23.3 | playcanvas-walk | 10.32 / 15.51 / 17.10 | 16.67 / 16.67 / 33.34 | 28 | 274 | 257 | 17.5 | 2026-10-28, apple metal-3 0x0000 Apple M4 (Apple M4, Ryans-MacBook-Air.local): `npm run bench -- --engine playcanvas` (build/others/playcanvas-apple-metal-3-0x0000-Apple-M4-Apple-M4-Ryans-MacBook-Air-loc-2026-10-28.json) |
+| three.js 186 | three-walk | 9.05 / 20.43 / 21.09 | 16.67 / 16.67 / 16.67 | 0 | 407 | 338 | 17.2 | 2026-10-28, apple metal-3 0x0000 Apple M4 (Apple M4, Ryans-MacBook-Air.local): `npm run bench -- --engine three` (build/others/three-apple-metal-3-0x0000-Apple-M4-Apple-M4-Ryans-MacBook-Air-loc-2026-10-28.json) |
 
 ## Browsers
 

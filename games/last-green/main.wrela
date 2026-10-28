@@ -954,6 +954,74 @@ pub struct PathPoint: Copy {
     pub kept: u32,
 }
 
+// The water, for `wrela tool export -- water`: the map's meres and the courses the water lays
+// (`history::COURSES`), in the world's metres.
+
+/// How many meres the map has room for (one of radius 0 is none) and how many courses the water
+/// lays.
+pub struct WaterCount: Copy {
+    pub meres: u32,
+    pub courses: u32,
+}
+
+@testing
+pub fn test_water_count() -> WaterCount {
+    WaterCount { meres: map::map().water.meres.len(), courses: history::COURSES.courses.len() }
+}
+
+/// Mere `i`: its middle (x, z), its radius and its water's level.
+@testing
+pub fn test_mere(i: u32) -> vec4 {
+    map::map().water.meres[i]
+}
+
+/// Mere `i`'s shore toward the `k`th of `n` bearings round it (x, z): the first point out from
+/// its middle, a quarter metre at a time, where the ground stands above its water.
+@testing
+pub fn test_shore(i: u32, k: u32, n: u32) -> vec2 {
+    let m = map::map().water.meres[i]
+    let a = std::math::TAU * f32(k) / f32(n)
+    let toward = vec2(cos(a), sin(a))
+    var r = 0.0
+    while r < m.z * 2.0 && height_at(m.xy + toward * r) <= m.w {
+        r += 0.25
+    }
+    m.xy + toward * r
+}
+
+/// How many points `test_course_points` gives a call.
+pub const COURSE_ROW: u32 = 16
+
+/// Course `c`: how many points it has, and whether it falls (1) or flows (0).
+pub struct CourseHead: Copy {
+    pub points: u32,
+    pub falls: u32,
+}
+
+@testing
+pub fn test_course(c: u32) -> CourseHead {
+    borrow course = history::COURSES.courses[c]
+    CourseHead { points: course.points.len(), falls: if course.falls { 1 } else { 0 } }
+}
+
+/// `COURSE_ROW` of course `c`'s points from its `from`th (x, z, width, depth: its water a skin
+/// over the ground, its bed `depth` under it), 0s past its last.
+pub struct CourseRow: Copy {
+    pub p: [vec4; COURSE_ROW],
+}
+
+@testing
+pub fn test_course_points(c: u32, from: u32) -> CourseRow {
+    borrow points = history::COURSES.courses[c].points
+    var row = CourseRow { p: [vec4(0.0); COURSE_ROW] }
+    for k in 0..COURSE_ROW {
+        if from + k < points.len() {
+            row.p[k] = points[from + k]
+        }
+    }
+    row
+}
+
 /// Whether the floor round the camera's eye has settled: the light round it drawn (`lit`: a
 /// full frame there, the tiles round it placed, the near shadows drawn, the probes baked round
 /// where the eye is, not where it was), nothing streaming in, the characters shown realized, and

@@ -5,6 +5,7 @@
 // ```text
 // wrela tool export -- height <pkg> --out <file.png> [--size <texels>] [--span <m>] [--at <x>,<z>]
 // wrela tool export -- path <pkg> --out <file.json> [--scene <name>] [--frames <n>]
+// wrela tool export -- water <pkg> --out <file.json>
 // ```
 //
 // `height` writes the game's ground (its `test_heights` export: the floor's `height_at`) over a
@@ -13,6 +14,10 @@
 // `.json`) saying the square's corner, span and the heights black and white stand for. `path`
 // runs the game on the bench's script for `scene` (studio/bench's scenes) and writes each frame's
 // camera (its eye and a point a metre along its view, the world's: `test_path_at`) as JSON.
+// `water` writes the game's water as JSON (`test_water_count` and the exports beside it): each
+// mere's middle, radius, level and shore round it, each course's points (x, z, width, depth) and
+// whether it falls, and each fall's lip and foot, in the world's metres (x and z along the
+// ground, y up: the game's own axes, as `height` and `path` give them; heights its ground's).
 //
 // The package is built into the tool's `out` root with its testing exports and driven on the
 // CPU (`std::tool::drive`): a height is the field's, a camera the game's own, no GPU needed.
@@ -26,9 +31,9 @@ use std::tool::toolchain
 use toolkit::driven::{dashed, number, untrapped}
 use toolkit::whole::{chunked, write_file}
 
-pub const USAGE: Text = "usage: wrela tool export -- height <pkg> --out <file.png> [--size <texels>] [--span <m>] [--at <x>,<z>] | path <pkg> --out <file.json> [--scene <name>] [--frames <n>]"
+pub const USAGE: Text = "usage: wrela tool export -- height <pkg> --out <file.png> [--size <texels>] [--span <m>] [--at <x>,<z>] | path <pkg> --out <file.json> [--scene <name>] [--frames <n>] | water <pkg> --out <file.json>"
 
-/// What a run exports: `height` or `path`, of a package, where.
+/// What a run exports: `height`, `path` or `water`, of a package, where.
 pub struct Options: Clone {
     pub what: String,
     pub pkg: String,
@@ -46,7 +51,8 @@ pub fn parse_args(given: [String]) -> Option<Options> {
         return None
     }
     var o = Options { what: given[0].clone(), pkg: given[1].clone(), out: String::new() }
-    if o.what.as_str() != "height" && o.what.as_str() != "path" {
+    let what = o.what.as_str()
+    if what != "height" && what != "path" && what != "water" {
         return None
     }
     var k = 2
@@ -330,14 +336,161 @@ fn path(o: Options, ws: str, root: str) -> Result<(), ToolError> {
     Ok(())
 }
 
+/// `calls`' results, `BATCH` calls a request.
+fn batched(d: drive::Build, calls: take Vec<Step>, what: str) -> Result<Vec<Vec<f64>>, ToolError> {
+    var out: Vec<Vec<f64>> = Vec::new()
+    var batch: Vec<Step> = Vec::new()
+    for c in calls {
+        batch.push(c.clone())
+        if batch.len() == BATCH {
+            for r in called(d, take batch, what)? {
+                out.push(r.clone())
+            }
+            batch = Vec::new()
+        }
+    }
+    if !batch.is_empty() {
+        for r in called(d, take batch, what)? {
+            out.push(r.clone())
+        }
+    }
+    Ok(out)
+}
+
+/// A call of export `name` with `u32` arguments.
+fn call(name: str, given: [u32]) -> Step {
+    var a: Vec<Scalar> = Vec::new()
+    for x in given {
+        a.push(Scalar::I32(i32(x)))
+    }
+    Step::Call(String::from(name), take a)
+}
+
+/// How many shore points round each mere, and how many points a `test_course_points` call gives
+/// (the game's `COURSE_ROW`).
+const SHORE: u32 = 96
+const COURSE_ROW: u32 = 16
+
+/// `xs` as a JSON array of numbers, to the millimetre.
+fn numbers(xs: [f64]) -> String {
+    var s = String::from("[")
+    for k in 0..xs.len() {
+        s.push_str(if k > 0 { ", " } else { "" })
+        s.push_str(f"{xs[k]:.3}")
+    }
+    s.push_str("]")
+    s
+}
+
+fn water(o: Options, ws: str, root: str) -> Result<(), ToolError> {
+    let d = driven(o.pkg.as_str(), ws, root)?
+    let count = called(d, Vec::from([call("test_water_count", [])]), "the water's count")?
+    let (slots, courses) = (u32(count[0][0]), u32(count[0][1]))
+    var s = String::from(
+        f"{{\"package\": \"{o.pkg}\", \"axes\": \"metres: x and z along the ground, y up, as the height and path exports give them\", \"meres\": [",
+    )
+    // The meres: each its middle, radius and level, then its shore.
+    var meres = 0
+    for i in 0..slots {
+        let m = called(d, Vec::from([call("test_mere", [i])]), "a mere")?[0].clone()
+        if m[2] <= 0.0 {
+            continue
+        }
+        var shore: Vec<Step> = Vec::new()
+        for k in 0..SHORE {
+            shore.push(call("test_shore", [i, k, SHORE]))
+        }
+        s.push_str(if meres > 0 { ",\n" } else { "\n" })
+        s.push_str(
+            f"{{\"centre\": [{m[0]:.3}, {m[1]:.3}], \"radius\": {m[2]:.3}, \"level\": {m[3]:.3}, \"shore\": [",
+        )
+        let points = batched(d, take shore, "a mere's shore")?
+        for k in 0..points.len() {
+            s.push_str(if k > 0 { ", " } else { "" })
+            s.push_str(numbers(points[k]).as_str())
+        }
+        s.push_str("]}")
+        meres += 1
+    }
+    // The courses: each its points (x, z, width, depth), then the falls' lips and feet.
+    s.push_str("\n], \"courses\": [")
+    var asks: Vec<Step> = Vec::new()
+    for c in 0..courses {
+        asks.push(call("test_course", [c]))
+    }
+    let heads = batched(d, take asks, "the courses")?
+    var falls: Vec<(vec2, vec2)> = Vec::new()
+    for c in 0..courses {
+        let n = u32(heads[c][0])
+        var rows: Vec<Step> = Vec::new()
+        var from = 0
+        while from < n {
+            rows.push(call("test_course_points", [c, from]))
+            from += COURSE_ROW
+        }
+        var points: Vec<vec4> = Vec::new()
+        for r in batched(d, take rows, "a course's points")? {
+            for k in 0..COURSE_ROW {
+                if points.len() < n {
+                    let at = k * 4
+                    points.push(vec4(f32(r[at]), f32(r[at + 1]), f32(r[at + 2]), f32(r[at + 3])))
+                }
+            }
+        }
+        let fell = heads[c][1] > 0.5
+        s.push_str(if c > 0 { ",\n" } else { "\n" })
+        s.push_str(f"{{\"falls\": {fell}, \"points\": [")
+        for k in 0..points.len() {
+            let p = points[k]
+            s.push_str(if k > 0 { ", " } else { "" })
+            s.push_str(f"[{p.x:.3}, {p.y:.3}, {p.z:.3}, {p.w:.3}]")
+        }
+        s.push_str("]}")
+        if fell && !points.is_empty() {
+            falls.push((points[0].xy, points[points.len() - 1].xy))
+        }
+    }
+    // A fall's lip is its course's first point, its foot its last, each on the ground.
+    var grounds: Vec<Step> = Vec::new()
+    for f in falls {
+        for p in [f.0, f.1] {
+            grounds.push(
+                Step::Call(
+                    String::from("test_ground"),
+                    Vec::from([Scalar::F32(p.x), Scalar::F32(p.y)]),
+                ),
+            )
+        }
+    }
+    let ys = batched(d, take grounds, "the falls' ground")?
+    let _ = drive::close(d).wait()
+    s.push_str("\n], \"falls\": [")
+    for k in 0..falls.len() {
+        let (lip, foot) = falls[k]
+        s.push_str(if k > 0 { ",\n" } else { "\n" })
+        s.push_str(
+            f"{{\"lip\": [{lip.x:.3}, {ys[2 * k][0]:.3}, {lip.y:.3}], \"foot\": [{foot.x:.3}, {ys[2 * k + 1][0]:.3}, {foot.y:.3}]}}",
+        )
+    }
+    s.push_str(
+        "\n], \"course\": \"each point x, z, width, depth: the water a skin over the ground, its bed depth under it\"}\n",
+    )
+    write_file(f"ws/{o.out}", chunked(Vec::from(s.as_bytes())))?
+    print(
+        f"export: {meres} meres, {courses} courses ({falls.len()} falling) of {o.pkg}'s water to {o.out}",
+    )
+    Ok(())
+}
+
 pub fn tool() -> u32 {
     let Some(o) = parse_args(args()) else {
         print(USAGE)
         return 2
     }
-    let done = if o.what.as_str() == "height" { height(o, "ws", "out") } else {
+    let what = o.what.as_str()
+    let done = if what == "height" { height(o, "ws", "out") } else if what == "path" {
         path(o, "ws", "out")
-    }
+    } else { water(o, "ws", "out") }
     match done {
         Ok(()) => 0,
         Err(e) => {
