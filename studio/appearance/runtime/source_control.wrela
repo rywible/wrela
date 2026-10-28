@@ -7,7 +7,7 @@ use engine::plant::{
 }
 use engine::light::{Light, Lit, matte}
 use great_tree::tree::great_tree
-use std::gpu::{GlobalId, Slots, Oct32, Unorm8x4}
+use std::gpu::{GlobalId, Slots, Oct32, Unorm8x4, Atomics, FragCoord, Pass, R8}
 use engine::noise::{direction, rand, pick}
 use std::gpu::{Bc7, Format, Filtered, Half2, R32Uint, copy_buffer_to_texture}
 use engine::compress::encode_bc7
@@ -15,6 +15,38 @@ use std::field::Tube
 use std::gpu::{
     ClipPosition, Flat, GpuBuffer, Rgba8, Rgba16Float, Texture, Sampler, VertexIndex, InstanceIndex,
     DepthPass, buffer, buffer_of, texture, sampler, dispatch, discard, draw,
+}
+
+pub const PACKED_VISIBILITY: bool = false
+
+// Experimental memory control. Depth quantization may select another nearly tied surface.
+// This fixture supports fewer than 65,535 source surfaces and full 64-row views only.
+pub struct Packed {
+    target: Texture<R8>,
+    words: GpuBuffer<u32>,
+}
+
+pub fn packed(aa: u32) -> Packed {
+    Packed {
+        target: texture(width: 64 * aa, height: 64 * aa),
+        words: buffer(64 * 64 * aa * aa),
+    }
+}
+
+pub fn render_packed(
+    s: Source,
+    packed: mut Packed,
+    ids: Texture<R32Uint>,
+    aa: u32,
+    c: Camera,
+    illumination: u32,
+    out: mut GpuBuffer<vec4>,
+) {
+    prepare_packed(mut packed.words)
+    let p = std::gpu::begin_pass(mut packed.target, clear: vec4(0.0))
+    draw_packed(s, p, c, aa, mut packed.words)
+    p.end()
+    finish_identity(s, ids, packed.words, aa, c, illumination, mut out)
 }
 
 pub struct Camera: Copy + GpuData {
@@ -586,8 +618,7 @@ fn identity_wood(
     }
 }
 
-@fragment
-fn identity_fragment(
+fn identity_key(
     f: IdentityVertex,
     atlas: Texture<Rgba8>,
     filter: Sampler,
@@ -611,6 +642,106 @@ fn identity_fragment(
         }
     }
     f.surface.value
+}
+
+@fragment
+fn identity_fragment(
+    f: IdentityVertex,
+    atlas: Texture<Rgba8>,
+    filter: Sampler,
+    n: u32,
+    parameters: [u32],
+    pages: [u32],
+) -> u32 {
+    identity_key(f, atlas, filter, n, parameters, pages)
+}
+
+// A single atomic word holds quantized depth and stable draw-order identity.
+// The R8 attachment establishes the same raster dimensions; it is fully counted.
+@fragment
+fn packed_fragment(
+    f: IdentityVertex,
+    at: FragCoord,
+    atlas: Texture<Rgba8>,
+    filter: Sampler,
+    n: u32,
+    parameters: [u32],
+    pages: [u32],
+    card_count: u32,
+    width: u32,
+    words: mut Atomics<u32>,
+) -> f32 {
+    let key = identity_key(f, atlas, filter, n, parameters, pages)
+    let order = if (key & 0x80000000) == 0 { key } else {
+        card_count + 1 + (key & 0x7fffffff)
+    }
+    let depth = u32(saturate(at.position.z) * 65534.0 + 0.5)
+    let packed = (depth << 16) | order
+    let _ = words.min(u32(at.position.y) * width + u32(at.position.x), packed)
+    0.0
+}
+
+@compute(64)
+fn clear_packed(count: u32, words: mut Slots<u32>, id: GlobalId) {
+    if id.x < count { words[id] = 0xffffffff }
+}
+
+fn prepare_packed(words: mut GpuBuffer<u32>) {
+    let count = words.len()
+    dispatch(clear_packed.bind(count, mut words), over: count)
+}
+
+fn unpack_identity(word: u32, count: u32) -> u32 {
+    if word == 0xffffffff { return 0 }
+    let order = word & 65535
+    if order <= count { order } else { 0x80000000 | (order - count - 1) }
+}
+
+fn draw_packed(s: Source, p: Pass<R8>, c: Camera, aa: u32, words: mut GpuBuffer<u32>) {
+    assert(source_options::INDEXED && !source_options::PROCEDURAL)
+    assert(
+        leaf_field::MODE == 0 ||
+            leaf_field::MODE == 3 ||
+            leaf_field::MODE == 5 ||
+            leaf_field::MODE == 6,
+    )
+    assert(c.rows == 64)
+    let plant = great_tree()
+    assert(plant.cards() + plant.limbs.len() * LIMB_VERTICES / 3 < 65535)
+    let b = source_bake()
+    draw(
+        p,
+        identity_card.bind(b, c, s.cards.items(), s.hierarchy_nodes.items()),
+        packed_fragment.bind(
+            s.atlas,
+            s.filter,
+            plant.leaves.per_card,
+            s.parameters.items(),
+            s.pages.items(),
+            plant.cards(),
+            64 * aa,
+            mut words,
+        ),
+        indices: s.card_indices,
+        index_count: 6,
+        instances: plant.cards(),
+    )
+    draw(
+        p,
+        identity_wood.bind(b, c, s.wood.items(), s.hierarchy_nodes.items()),
+        packed_fragment.bind(
+            s.atlas,
+            s.filter,
+            plant.leaves.per_card,
+            s.parameters.items(),
+            s.pages.items(),
+            plant.cards(),
+            64 * aa,
+            mut words,
+        ),
+        vertices: plant.limbs.len() * LIMB_VERTICES,
+        instances: 1,
+    )
 }
 
 fn source_bake() -> Bake {
@@ -754,6 +885,8 @@ fn identity_value(
 @compute(64)
 fn resolve_identity(
     ids: Texture<R32Uint>,
+    packed: [u32],
+    card_count: u32,
     aa: u32,
     b: Bake,
     c: Camera,
@@ -775,7 +908,9 @@ fn resolve_identity(
         for x in 0..aa {
             let at = base + vec2u(x, y)
             sum += identity_value(
-                ids.load(at.x, at.y - c.band * aa),
+                if PACKED_VISIBILITY {
+                    unpack_identity(packed[at.y * 64 * aa + at.x], card_count)
+                } else { ids.load(at.x, at.y - c.band * aa) },
                 at,
                 aa,
                 b,
@@ -797,6 +932,7 @@ fn resolve_identity(
 pub fn finish_identity(
     s: Source,
     ids: Texture<R32Uint>,
+    packed: GpuBuffer<u32>,
     aa: u32,
     c: Camera,
     illumination: u32,
@@ -805,6 +941,8 @@ pub fn finish_identity(
     dispatch(
         resolve_identity.bind(
             ids,
+            packed.items(),
+            great_tree().cards(),
             aa,
             source_bake(),
             c,

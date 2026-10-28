@@ -645,6 +645,7 @@ pub struct State {
     detail: Texture<Rgba16Float>,
     depth: DepthTexture,
     surface_ids: Texture<R32Uint>,
+    packed_visibility: Option<source_control::Packed>,
     bc_colour: Texture<Bc7>,
     bc_normal: Texture<Bc7>,
     bc_depth: Texture<Bc5>,
@@ -748,6 +749,7 @@ pub fn init() -> State {
         detail: texture(width: 1, height: 1),
         depth: depth_texture(width: 1, height: 1),
         surface_ids: texture(width: 1, height: 1),
+        packed_visibility: None,
         bc_colour: texture(width: 4, height: 4),
         bc_normal: texture(width: 4, height: 4),
         bc_depth: texture(width: 4, height: 4),
@@ -767,8 +769,13 @@ pub fn init() -> State {
         copy_buffer_to_texture(b.items(), s.bc_normal.level_mut(0))
         copy_buffer_to_texture(c.items(), s.bc_depth.level_mut(0))
     } else if config::MODE == 10 {
-        s.surface_ids = texture(width: 64 * aa, height: source_hierarchy::rows() * aa)
-        s.depth = depth_texture(width: 64 * aa, height: source_hierarchy::rows() * aa)
+        if source_control::PACKED_VISIBILITY {
+            assert(source_hierarchy::rows() == 64)
+            s.packed_visibility = Some(source_control::packed(aa))
+        } else {
+            s.surface_ids = texture(width: 64 * aa, height: source_hierarchy::rows() * aa)
+            s.depth = depth_texture(width: 64 * aa, height: source_hierarchy::rows() * aa)
+        }
     } else if config::MODE == 3 {
         s.colour = texture(width: 64 * aa, height: 64 * aa)
         s.depth = depth_texture(width: 64 * aa, height: 64 * aa)
@@ -935,22 +942,38 @@ pub fn render(s: mut State) {
                 band: band * rows,
                 rows,
             }
-            let p = begin_pass_with_depth(
-                mut s.surface_ids,
-                mut s.depth,
-                clear: vec4(0.0),
-                clear_depth: 1.0,
-            )
-            source_control::draw_identity(s.source, p, source_camera)
-            p.end()
-            source_control::finish_identity(
-                s.source,
-                s.surface_ids,
-                s.aa,
-                source_camera,
-                c.illumination,
-                mut s.out,
-            )
+            match mut s.packed_visibility {
+                Some(packed) => {
+                    source_control::render_packed(
+                        s.source,
+                        mut packed,
+                        s.surface_ids,
+                        s.aa,
+                        source_camera,
+                        c.illumination,
+                        mut s.out,
+                    )
+                },
+                None => {
+                    let p = begin_pass_with_depth(
+                        mut s.surface_ids,
+                        mut s.depth,
+                        clear: vec4(0.0),
+                        clear_depth: 1.0,
+                    )
+                    source_control::draw_identity(s.source, p, source_camera)
+                    p.end()
+                    source_control::finish_identity(
+                        s.source,
+                        s.surface_ids,
+                        s.tile_counts,
+                        s.aa,
+                        source_camera,
+                        c.illumination,
+                        mut s.out,
+                    )
+                },
+            }
         }
     } else if config::MODE == 3 {
         let p = begin_pass_with_depth(mut s.colour, mut s.depth, clear: vec4(0.0), clear_depth: 1.0)

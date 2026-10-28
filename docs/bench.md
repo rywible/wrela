@@ -2436,3 +2436,30 @@ next architecture question is visibility storage, not another response model.
 G1–G7 unchanged/unmet.
 [Full report](neural-shaded-appearance.md#authored-response-after-visibility-exact-reconstruction-beats-the-tested-codecs).
 Evidence build/neural-evidence/g4-source-response-v1 on Pop!_OS.
+
+
+### 2026-10-28 — Packed visibility reduces allocations; visible responses rarely repeat
+
+AMD RADV RENOIR/Ryzen 5 5500U, Mesa 26.1.6, Chrome 154.0.8037.57, Pop!_OS;
+Wrela 0.9.0 compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23.
+Parent c77aff17 plus archived sources; solo, sequential, 64x64, 60 warmup + 240 measured.
+Initial assessment 166.9s; decision 711.7s. Two follow-ups; no training/new shaded references.
+
+Packed depth16/source-ID16 retains hardware coverage and passes 24/24 against three
+controls. Six sample winners change across two views; all 88 coverage captures match.
+Mean PSNR 40.295900 dB versus native 40.295971 dB. Packed full field uses 420,980 engine
+bytes / 830,580 all-live versus native-field 617,585 / 1,027,185. Complete saturated
+median 0.63764 versus 0.60912 ms; fast stored-source 0.27540 ms. Paced packed-field
+p95/p99 1.499/1.566 ms. No demonstrated 16x physical saving.
+
+Discard after atomic update has no consistent full-cost benefit. A 12,288-byte visible
+response cache hits only 9–12% of leaf samples and worsens full-frame medians to
+0.66764 ms native / 0.69588 ms packed. Both optimizations are retired and preserved.
+
+Retain packed visibility as an optional conventional control, disabled by default;
+zero new default allocations. Default eight images/allocations and retained sixteen
+packed images/live allocations match prior measurements; format/type checks pass.
+Next: fuse tile-local visibility/shading rather than cache low-reuse responses.
+G1–G7 unchanged and unmet.
+[Full report](neural-shaded-appearance.md#packed-visibility-smaller-allocations-little-response-reuse).
+Evidence build/neural-evidence/g4-packed-visibility-v1 on Pop!_OS.

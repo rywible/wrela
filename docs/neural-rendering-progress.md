@@ -18,25 +18,26 @@
 
 ## Immediate milestone
 
-The [authored-response comparison](neural-shaded-appearance.md#authored-response-after-visibility-exact-reconstruction-beats-the-tested-codecs) retains
-an exact conventional alternative: compute the authored44clump field after source
-visibility, removing212,472requestedGPUbytes and matching all8RGBA images.
-Its full-frame saturated median0.608ms exceeds fastsource0.280ms; actual16x
-resident savings remain unproved. Optional FIELD_RESPONSE defaultsfalse.
+The [packed visibility experiment](neural-shaded-appearance.md#packed-visibility-smaller-allocations-little-response-reuse) retains
+another conventional memory control: a packed depth/source-ID word per sample.
+All 24 quality cases pass against all three source controls and coverage is unchanged.
+Six sample identities change across the two views, producing 20 changed shaded pixels
+across eight captures; this is matched quality, not exact depth.
 
-Two follow-ups rejected: per-pixel reuse made every matched path slower; equal
-12,320byte polynomial/neural local codecs pass only7/24and5/24(neural4/24against
-forwardsource), despite exact geometry/coverage. No learned model promoted.
-No new shaded references; one polynomial solve perclump and2400neuralsteps.
-Retained field and frozen defaults pass image/allocation parity, format/type;
-no new default allocation, all failed code/models/results archived.
+Packed full-field live allocations are 830,580 bytes versus native-field 1,027,185;
+complete saturated medians are 0.63764 versus 0.60912 ms. Fast stored-source is still
+0.27540 ms. Actual 16x residency reduction is unproved; no learned model is promoted.
 
-VisibilityID/depth alone is524,288requested bytes,84.9% of the exact-field path's
-remaining617,580enginebytes. Next: reduce full-frame multisample visibility
-storage while preserving source support and avoiding repeated geometry work.
-A source-aware tile-local visibility experiment must beat the stronger conventional
-controls now available. More response/material fitting does not solve this memory
-structure. G1–G7 remain unchanged and unmet.
+Two follow-ups are rejected: discarding the attachment writes has no consistent
+benefit, and a 12 KB visible-response cache is slower with only 9–12% sample hits.
+No training or new shaded references. Failed code/results are preserved; the optional
+packed path defaults off and adds no default allocations. Native image/allocation
+parity and format/type checks pass.
+
+Next: fuse tile-local visibility and shading, removing the full-frame sample image
+without repeating source geometry. Compare against the stronger conventional controls.
+Do not repeat small response caches or material-moment fitting. G1–G7 remain unchanged
+and unmet.
 
 ## Evidence recorded so far
 
@@ -2453,3 +2454,16 @@ all26560codec predictions independently verified. Two followups,2400steps,
 no new shaded truth. Nextvisibility-storagearchitecture; G1–G7unmet.
 [Report](neural-shaded-appearance.md#authored-response-after-visibility-exact-reconstruction-beats-the-tested-codecs).
 Manifest SHA-256: `392362f94b0c798d26e7b36f9d21372973c7ef80ad4a3b65d06549caa1b573e4`.
+
+### Packed visibility passes quality; response memoization is rejected
+
+All eleven variants pass 24/24 against three source controls; all 88 coverage images
+match. Packed visibility changes six sample winners, with negligible measured shading
+error. Full-field requested live bytes 830,580 versus 1,027,185; saturated medians
+0.63764 versus 0.60912 ms, with fast stored-source still 0.27540 ms.
+Retain optional packed visibility; retire discard and the 12 KB memo. No physical
+16x reduction or neural/G4 win. Two follow-ups, no training or new shaded references.
+Default eight images/allocations and retained sixteen packed images/live allocations
+match, format/type checks pass. Next: fused tile-local visibility/shading.
+[Report](neural-shaded-appearance.md#packed-visibility-smaller-allocations-little-response-reuse).
+Manifest SHA-256: `4751fab541729bea59183f12548cc97e5ffc3cf513f67c22b03dd9c4d6139a72`.

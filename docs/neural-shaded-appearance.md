@@ -3249,3 +3249,185 @@ motion or human gates. G1–G7 remain unchanged and unmet.
 
 Evidence on Pop!_OS: build/neural-evidence/g4-source-response-v1.
 Manifest SHA-256: `392362f94b0c798d26e7b36f9d21372973c7ef80ad4a3b65d06549caa1b573e4`.
+
+
+## Packed visibility: smaller allocations, little response reuse
+
+**Decision: change the G4 architecture. Retain packed visibility as an optional
+conventional control; reject attachment discard and visible-response memoization.**
+No learned model is promoted. The useful result is a smaller measured allocation
+footprint at matched fixture quality, not a G4 rendering win or a physical-memory claim.
+
+Packed depth/ID plus the full authored field uses 420,980 requested engine bytes,
+versus 617,585 in the measured native-field prototype. All requested live bytes fall
+from 1,027,185 to 830,580 (19.14%). Complete saturated GPU median rises from
+0.60912 to 0.63764 ms (4.68%). The fastest stored-source control is still 0.27540 ms.
+The packed field is 2.32x slower than that control and only 3.48x smaller in
+requested engine bytes, far from G4's joint 16x resident-memory / 1.1x tail-time goals.
+
+The solo Pop!_OS block began 2026-10-28T01:10:37.935655+00:00. The initial six-way comparison
+finished 2026-10-28T01:13:24.883019+00:00 (166.9 seconds).
+The explicit decision was recorded 2026-10-28T01:22:29.650959+00:00
+(711.7 seconds). Exactly two follow-up experiments;
+zero training steps and zero new shaded references. G1–G7 and the frozen model are unchanged.
+
+### One word per sample, with equally informed controls
+
+The native path stores a 32-bit surface ID and a 32-bit depth for each of 65,536
+samples. The candidate keeps hardware rasterization and the same authored card
+geometry, leaf coverage tiles, wood triangles, sample locations and deferred shading.
+Each covered fragment combines rounded 16-bit depth with a 16-bit source-order ID,
+then uses atomic minimum to select a winner. IDs include both leaves and wood.
+The lowest source-order ID wins a quantized tie, consistent with first-drawn tie
+preference; quantization can still change the nearest surface.
+
+The word is round(depth*65534) in its high bits and source order in its low bits.
+0xffffffff is the clear sentinel; source orders are 1 through 33,952 in this fixture.
+The CPU rejects 65,535 or more surfaces and non-full-row views. This is an explicitly
+bounded experiment, not a general production fallback. A counted R8 target provides
+the raster dimensions. Thus visibility storage drops from 524,288 to 327,680 bytes:
+a 262,144-byte word array plus the 65,536-byte R8 attachment.
+
+This uses standard [WGSL atomic minimum semantics](https://www.w3.org/TR/2026/CRD-WGSL-20261026/#atomic-min).
+The implementation is our own Wrela code; no novel atomic or rasterization claim.
+Existing visibility-buffer references remain in [citations](citations.md).
+
+The same change is tested with stored source cards, exact procedural source placement
+plus a response cache, and the full authored field after visibility. All receive the
+same useful source, sampling and visibility information. Packed visibility is a
+conventional alternative, not a learned method with privileged inputs.
+
+### Quality, silhouettes and the two rejected follow-ups
+
+Use the completed 64x64 AA64 shaded references, two known views, four lights and
+three backgrounds. Keep exposure 0.62, sRGB, LDR FLIP at 67 pixels/degree, and AlexNet
+LPIPS v0.1. No metric or reference re-audit. All eleven variants pass 24/24 quality
+cases against each of the stored-cache, forward-source and packed-mask controls.
+
+| Output family | Mean PSNR dB | FLIP | LPIPS | Changed shaded pixels across eight captures |
+| --- | ---: | ---: | ---: | ---: |
+| Native visibility, including its memo variant | 40.295971 | 0.01300193 | 0.00249104 | 0 |
+| Packed visibility, including discard and memo variants | 40.295900 | 0.01300320 | 0.00249059 | 20 |
+
+All 88 captures have byte-identical coverage to the native control. This means
+unchanged measured silhouettes, not perfect agreement with truth: coverage MAE is
+0.01005954 and worst boundary p99 is 2 pixels. Native GPU readback of every sample
+ID finds four changed leaf winners in view 0 and two in view 1, with no occupancy
+changes. This accounts for the small shading differences; depth quantization is
+not presented as exact visibility.
+
+1. **Discard after the atomic update.** Avoid writing the otherwise unused R8
+   attachment while preserving the atomic result. WGSL specifies that effects before
+   [discard](https://www.w3.org/TR/2026/CRD-WGSL-20261026/#discard-statement) remain observable.
+   All images stay identical to the packed path. Stored-source median changes from
+   0.31684 to 0.30780 ms, but hierarchy/cache worsens from 0.34860 to 0.35872 ms and
+   hierarchy/field from 0.63764 to 0.63952 ms; paced tails worsen. Reject it as an
+   unsupported general optimization, without inferring a hardware cause.
+2. **Cache only visible field responses.** A fixed 1,024-slot table stores a source ID,
+   packed normal and depth: 12,288 bytes. Each frame clears keys, gathers IDs with
+   atomic minimum, evaluates the selected authored responses, then uses exact field
+   evaluation for collisions. Apply it to both native and packed visibility.
+   Images remain exact relative to their corresponding controls, but complete
+   medians worsen to 0.66764 and 0.69588 ms. Reject the cache.
+
+The ID readback explains the limited opportunity for memoization: view 0 contains
+15,928 visible leaf samples from about 10,934 distinct leaves, and view 1 contains
+11,772 samples from about 8,183 leaves. The fixed cache hits only 9.1% and 12.5% of
+leaf samples. Including table fills, predicted field evaluations fall only about
+3–4%; the added dispatches, clears, gathers, lookups and storage are all charged.
+These counts come from actual GPU visibility and deterministic slot selection;
+they are not a hardware timing attribution. No third optimization is attempted.
+
+### Complete AMD cost and memory
+
+AMD RADV RENOIR PCI 1002:164c, Ryzen 5 5500U, Mesa 26.1.6,
+Chrome 154.0.8037.57, Pop!_OS; Wrela 0.9.0 compiler
+de9b81e52a7747870dfbd5223cb8aeb41e584d23. Parent c77aff17 plus archived sources.
+Runs are sequential, with 60 warmup and 240 measured frames at 64x64.
+
+GPU spans include visibility clear, procedural reconstruction or stored geometry,
+coverage lookup, wood reconstruction and expanded-triangle rasterization, visibility
+selection, field/response decoding, optional memo work, shading, resolve and final
+composite. CPU includes view/light updates, source setup, uploads and command recording.
+Stable source order and depth selection replace optical sorting. Initialization is
+outside steady timing but included in requested allocation peaks; dynamic source edits
+are untested. No frozen neural work is active in these source-control variants.
+
+| Candidate | Paced GPU p95/p99 ms | Saturated GPU median/p95 ms | CPU p99 ms | CPU start to GPU completion p95/p99 ms |
+| --- | ---: | ---: | ---: | ---: |
+| Stored source | 1.082/1.088 | 0.275/0.431 | 0.690 | 4.525/4.632 |
+| Hierarchy + response cache | 1.165/1.201 | 0.316/0.423 | 0.699 | 4.186/4.468 |
+| Hierarchy + full field | 1.562/1.638 | 0.609/0.711 | 0.700 | 4.640/5.132 |
+| Packed stored source | 1.136/1.223 | 0.317/0.473 | 0.750 | 4.535/4.643 |
+| Packed hierarchy/cache | 1.174/1.234 | 0.349/0.459 | 0.703 | 5.976/6.193 |
+| Packed hierarchy/field | 1.499/1.566 | 0.638/0.650 | 0.744 | 4.675/4.829 |
+| Discard stored source | 1.232/1.237 | 0.308/0.404 | 0.720 | 5.811/6.065 |
+| Discard hierarchy/cache | 1.227/1.274 | 0.359/0.495 | 0.648 | 4.641/4.813 |
+| Discard hierarchy/field | 1.775/1.845 | 0.640/0.751 | 0.701 | 5.550/5.778 |
+| Visible memo, native field | 1.494/1.558 | 0.668/0.767 | 0.728 | 4.365/4.499 |
+| Visible memo, packed field | 1.528/1.590 | 0.696/0.704 | 0.765 | 4.605/4.771 |
+
+Single runs do not establish paired speedups. Completion includes browser/driver
+notification and is not photon latency. Timings belong to the archived measured
+implementations. The retained optional-resource refactor has separate image/allocation
+parity checks; it has no newly claimed timing result.
+
+| Candidate | Engine representation/scratch bytes | All requested live/peak bytes | DRM resident VRAM/GTT bytes | Browser group PSS bytes |
+| --- | ---: | ---: | ---: | ---: |
+| Stored source | 1,466,065 | 1,875,665/1,892,049 | 17,338,368/9,936,896 | 486,513,664 |
+| Hierarchy + response cache | 830,057 | 1,239,657/1,256,041 | 17,408,000/10,035,200 | 488,953,856 |
+| Hierarchy + full field | 617,585 | 1,027,185/1,043,569 | 17,670,144/9,953,280 | 487,975,936 |
+| Packed stored source | 1,269,460 | 1,679,060/1,695,444 | 17,670,144/9,936,896 | 486,685,696 |
+| Packed hierarchy/cache | 633,452 | 1,043,052/1,059,436 | 17,403,904/9,953,280 | 490,297,344 |
+| Packed hierarchy/field | 420,980 | 830,580/846,964 | 17,420,288/9,953,280 | 488,064,000 |
+| Discard stored source | 1,269,460 | 1,679,060/1,695,444 | 17,403,904/9,953,280 | 486,779,904 |
+| Discard hierarchy/cache | 633,452 | 1,043,052/1,059,436 | 17,424,384/9,936,896 | 489,540,608 |
+| Discard hierarchy/field | 420,980 | 830,580/846,964 | 17,424,384/9,953,280 | 487,274,496 |
+| Visible memo, native field | 629,873 | 1,039,473/1,055,857 | 17,698,816/9,936,896 | 490,078,208 |
+| Visible memo, packed field | 433,268 | 842,868/859,252 | 17,698,816/9,936,896 | 490,328,064 |
+
+Engine bytes exclude the same 409,600 common output/upload/uniform/screen bytes;
+all-live includes them. Representation, source geometry, wood, indices, coverage
+cache, field nodes, inactive/fallback resources, all visibility storage and memo data
+are counted. No explicit workgroup arrays are introduced. Private spills, compiled
+shader storage and driver caches are not separately attributable.
+
+The first prototype includes five inactive bytes in native controls; memo prototypes
+add a four-byte inactive memo before replacing it. These are included in the table.
+The retained option allocates resources only when enabled, so default allocations
+stay exactly unchanged. Packed live counts match the measured packed implementation.
+
+Whole-client DRM and process PSS snapshots are actual observations, but their variation
+does not prove a per-asset physical saving or a 16x reduction. Do not sum UMA pools.
+Per-asset physical transient peaks remain unmeasured. The shortest later attribution
+experiment is a fixed multi-crown workload with independent live resource sets,
+alternating methods and measuring residency versus instance count; it needs no new
+shaded references. That measurement cannot turn the present runtime/allocation ratios
+into a G4 pass.
+
+### Retained code, verification and the next bet
+
+Only PACKED_VISIBILITY=false by default is retained in
+[source_control](../studio/appearance/runtime/source_control.wrela), with optional
+resources routed by [main](../studio/appearance/runtime/main.wrela).
+The earlier authored-field option is unchanged. Attachment discard and the response
+cache are archived and removed. The default eight images and allocations match prior
+evidence exactly; sixteen retained packed images and live allocation counts match
+the measured stored-source/full-field variants. Format/type checks pass. No full suite
+or repeat audit of unchanged metrics, source sampling or reference convergence.
+
+Preserve all eleven variants, raw images, builds, timing traces, memory snapshots,
+visibility readbacks and failed source variants. Initial compiler diagnostics and the
+optional-resource borrowing fix are retained. A descriptor correction replaces an
+inherited claim of indexed wood with the actual expanded-triangle identity draw;
+numerical results are unchanged.
+
+Next: fuse tile-local visibility and shading to remove the full-frame sample image,
+with source-aware scheduling that avoids repeating geometry. Small response caches
+have too little reuse here; another material fit cannot remove sample storage.
+The packed control strengthens the conventional comparison for that experiment.
+One asset at 64 pixels and two public views establishes neither motion stability nor
+unseen-family/scale performance. G1–G7 remain unmet.
+
+Evidence on Pop!_OS: build/neural-evidence/g4-packed-visibility-v1.
+Manifest SHA-256: `4751fab541729bea59183f12548cc97e5ffc3cf513f67c22b03dd9c4d6139a72`.
