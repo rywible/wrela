@@ -205,3 +205,168 @@ code; no external implementation, model weights or assets were imported.
 
 Evidence: `build/neural-evidence/coverage-radiance-v1` on Pop!_OS.
 Manifest SHA-256: `1376a43a3faef8f1e258cb31ae9aa68547e1aea8b776b134d774e420072a2bc5`.
+
+## Shared support tables: retain exact output with lower complete GPU cost
+
+**Decision: retain shared support tables and masks in the explicit raw-factor
+diagnostic.** Three alternating pairs reduce complete 1080p GPU time from
+15.95852 to 10.77440 ms, a 32.52% median saving, with identical tested images.
+Requested live memory rises by 2,519,280 bytes, from 89,493,784 to 92,013,064.
+This is a conventional execution improvement, not a neural win or a G4 pass.
+
+First complete comparison: 3.31 minutes. Decision:
+19.16 minutes, 2026-10-28T16:34:49.839417+00:00. Exactly two targeted
+follow-ups, no training, material-moment fitting or new reference cases.
+The frozen models and G1–G7 thresholds remain unchanged and unmet.
+
+### Share source-derived work without changing available information
+
+The original factorization repeats coordinate bounds, motion correspondence and
+tent-support work per output pixel, surface and history frame. The selected path
+shares those calculations per column/surface/history age and per row/history age.
+All RGB still comes from the same retained point observations. Both the original
+and selected conventional methods have the same source geometry, visibility,
+motion, sampling knowledge and history; no reference colour or extra sample is
+introduced.
+
+The first variant stores four bounds per axis query: low/high for tent support
+and low/high for the existing fallback's 3×3 search. The roundoff margin uses the
+maximum image extent and foreground displacement, conservatively covering the
+original pixel-dependent bound. Acceptance and final weight calculations remain
+unchanged. All 512 output frames match exactly, but complete GPU time only falls
+15.96936→15.69360 ms while storage increases 1,259,520 bytes.
+
+The first follow-up adds three scalar tent weights per axis query. It predicts
+stored motion by packing the authored speed to half precision. This is incorrect
+for the measured AMD render target at case 6, 3×: actual stored foreground motion
+is 0.87451171875 pixels/frame, while the prediction is 0.875244140625.
+An existing raw-history snapshot establishes the discrepancy directly.
+Thirty-one output frames change, with maximum RGB difference 0.0009765625.
+The small metric change does not make the failed equality assumption acceptable;
+this variant and its observations are preserved and rejected.
+
+The second and final follow-up reads actual encoded depth/motion observations.
+This analytic fixture's vertical slats have row-invariant geometry and motion,
+so each history age scans the first source row until it finds both surfaces or
+reaches the end. It stores foreground motion and two surface-presence bits.
+This source-specific fact is not a general 3D assumption.
+
+The shared tables use that observed motion, and each column/row stores a mask
+of history ages with positive support. The pixel intersects the two masks and
+visits set bits from lowest to highest age. Positive contributions retain the
+original age/y/x order, compatibility checks, normalization and causal same-surface
+fallback. Missing surfaces contribute no unsupported samples. This removes work
+for history frames that cannot contribute, beyond merely replacing arithmetic
+with table reads.
+
+### Shaded output, boundaries and temporal quality
+
+The existing four public cases 1, 6, 13 and 23, each 32 cold-start frames at
+192×108 and all four scales, remain the quality comparison. The selected masks
+match all 512 RGBA frames and all 1,024 reference/mask files byte-for-byte.
+Thus the existing spatial, mixed-boundary and temporal scores are unchanged:
+
+| Scale | Mean FLIP | LPIPS | Mean clip PSNR dB | Opaque temporal MAE |
+| --- | ---: | ---: | ---: | ---: |
+| 1× | 0.05428683 | 0.02647699 | 27.03800 | 0.00617403 |
+| 2× | 0.08432950 | 0.05266853 | 22.75674 | 0.00951335 |
+| 3× | 0.13477913 | 0.12168463 | 19.67669 | 0.01315467 |
+| 4× | 0.17217554 | 0.19584559 | 18.10427 | 0.01482404 |
+
+Quality scores are reused only after exact image/reference parity. The changed
+case in the rejected weight variant was rescored with the established evaluator.
+No unchanged metric machinery was repeatedly audited. These public mean scores
+are not the G1 median/worst-decile gates; geometric coverage is not a new G3
+precision/recall proof. In particular, 4× mean FLIP remains 0.17218.
+
+### Complete AMD runtime and resident memory
+
+RADV RENOIR PCI1002:164c, Ryzen 5 5500U, Mesa 26.1.6, Chrome 154.0.8037.57,
+Pop!_OS; Wrela 0.9.0/compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23.
+Parent 5c61df01 plus archived variants. Timing is 1920×1080, 4×, case 1:
+32 warm-up plus 240 measured frames. Separate completion/memory runs use
+300 paced frames, discarding 60. GPU runs are sequential; fitting/scoring does
+not overlap them.
+
+| Method | GPU median/p95 ms | CPU call p99 ms | Start-to-completion p95/p99 ms |
+| --- | ---: | ---: | ---: |
+| Original factorization | 15.96936/18.17032 | 0.6261 | 67.7839/75.2589 |
+| Shared bounds | 15.69360/17.47324 | 0.6500 | 64.8693/71.8246 |
+| Predicted-motion weights (rejected) | 15.45744/17.03120 | 0.6992 | 56.3141/67.2709 |
+| Observed-motion support masks | 10.77908/12.04344 | 0.6988 | 16.4323/19.9065 |
+
+The complete frame includes sample/guide generation, retention, surface-motion
+scan, table construction, support masks, gather, fallback, updates and display/
+compositing. The two added preparations cost about 0.2555 ms combined in the
+selected initial run. This fixture has no wood or primitive sorting; their G4
+costs remain measured in the shaded appearance report. No transfer of this speedup
+to the full tree renderer is claimed.
+
+Three alternating baseline/candidate pairs show savings of
+32.589%, 32.517% and 32.458%. The exact bootstrap over the 27 resamples of those
+three paired run-median savings gives a descriptive 95% interval of
+32.471–32.574%.
+This small fixed-workload sample does not establish cross-scene or sustained
+performance. CPU changes are inconclusive. Do not interpret completion time,
+which includes queueing and browser notification, as GPU time or photon latency.
+
+| Method | Requested live/peak B | Actual DRM VRAM/GTT B | Browser-group PSS B |
+| --- | ---: | ---: | ---: |
+| Original factorization | 89,493,784/97,788,184 | 174,583,808/18,706,432 | 543,005,696 |
+| Shared bounds | 90,753,304/99,047,704 | 182,980,608/18,706,432 | 558,830,592 |
+| Predicted-motion weights (rejected) | 92,012,824/100,307,224 | 186,445,824/18,706,432 | 573,922,304 |
+| Observed-motion support masks | 92,013,064/100,307,464 | 186,388,480/18,706,432 | 558,789,632 |
+
+The selected two tables occupy 32×16×(2×width+height) bytes: 2,519,040 at 1080p.
+The 16-record observed-motion table replaces a 16-byte inactive buffer, net
+240 bytes. No additional RGB history or output feature map is allocated.
+All requested totals include history, output, scratch, upload/uniform buffers,
+inactive fixture resources, fallback and caches. The new work applies only to
+explicit raw-factor; ordinary, raw-source and frozen learned paths retain their
+previous allocation logic.
+
+DRM/PSS are actual whole-client resident snapshots, including resident driver/
+cache overhead, not per-asset physical attribution or transient physical peaks.
+UMA pools may overlap and must not be added. No resident-memory compression is
+demonstrated. The runtime gain costs extra storage.
+
+After removing the rejected branches, final retained GPU median/p95 is
+10.77568/12.12456 ms,
+requested live/peak 92,013,064/100,307,464 bytes,
+DRM VRAM/GTT 186,318,848/18,706,432 bytes,
+and browser-group PSS 542,895,104 bytes. Final completion p95/p99 is
+15.4966/16.8737 ms.
+
+### Verification, failures and architecture decision
+
+The final simplified implementation reproduces all 2,688 selected/conventional/
+frozen-model image, reference and mask files exactly. Cut/reset matches a fresh
+start for two frames at every scale; the established no-reset negative changes
+pixels. Source/type checking passes. No broad unchanged test suite is repeated.
+The initial span binding incorrectly applied an extra mutable marker; its compiler
+failure and source are preserved. The correction changes no experiment semantics.
+
+All experiment sources, rejected weight assumptions, raw observations, rendered
+files, physical memory observations, timing samples and final sources are sealed.
+The result supports retaining this execution strategy in the existing diagnostic.
+It does not qualify the compact G4 appearance representation, which remains retired.
+
+**Remaining gap:** complete GPU time still exceeds G6's 8.33 ms frame budget and
+is far above its 1080p reconstruction allowance. No 20-minute tail/latency,
+unseen-family, richness-scaling or 16× appearance-residency claim is established.
+Exact image parity is measured at 192×108; cost is measured at 1920×1080.
+
+**Next architecture bet:** share loaded observations and radiance accumulation
+across output pixels with a cooperative tiled gather. Preserve exact coverage,
+surface identity and observed motion; charge shared storage, history, fallback
+and compositing. First compare an informed conventional implementation. A learned
+residual needs a specific rendered error and a complete cost advantage to justify it.
+
+Implementation sources: [axis support](../studio/reconstruct/edges/factor_queries.wrela),
+[observed surface motion](../studio/reconstruct/edges/factor_surface_motion.wrela)
+and [factorized gather](../studio/reconstruct/edges/coverage_radiance.wrela).
+Existing evaluator and method citations above remain applicable. Original Wrela
+code; no external code, weights or assets added.
+
+Evidence: build/neural-evidence/factor-query-tables-v1 on Pop!_OS.
+Manifest SHA-256: `2080ba5dd69ffe0d45e5b9bdd68cc35fe93ef41d3fab97ce807a155e6ba6c2c7`.

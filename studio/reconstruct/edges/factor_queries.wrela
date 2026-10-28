@@ -1,0 +1,139 @@
+// Shared separable support for the explicit coverage/radiance diagnostic.
+// Source geometry is row-invariant; all RGB still comes from retained observations.
+use engine::view::jitter_of
+use std::gpu::{GlobalId, Slots}
+
+pub fn rows(width: u32, height: u32) -> u32 {
+    16 * (2 * width + height)
+}
+
+pub fn storage_rows(width: u32, height: u32) -> u32 {
+    rows(width, height) * 2
+}
+
+pub fn column(pixel: u32, layer: u32, age: u32, width: u32) -> u32 {
+    16 + (layer * 16 + age) * width + pixel
+}
+
+pub fn row(pixel: u32, age: u32, width: u32, height: u32) -> u32 {
+    16 + 32 * width + age * height + pixel
+}
+
+fn bounds(
+    query: u32,
+    width: u32,
+    height: u32,
+    divisor: u32,
+    tick: u32,
+    count: u32,
+    shape: vec4,
+) -> vec4 {
+    let horizontal = query < 32 * width
+    let index = if horizontal { query } else { query - 32 * width }
+    let axis_size = if horizontal { width } else { height }
+    let age = (index / axis_size) % 16
+    if age >= count { return vec4(0.0) }
+    let pixel = index % axis_size
+    let layer = if horizontal { index / (16 * width) } else { 1 }
+    let velocity = vec2(if layer == 1 { shape.w } else { 0.0 }, 0.0)
+    let extent = f32(max(width, height))
+    let at = if horizontal { vec2(f32(pixel) + 0.5, extent) } else {
+        vec2(extent, f32(pixel) + 0.5)
+    }
+    let d = f32(divisor)
+    let jitter = jitter_of(tick - age)
+    let limit = vec2i(i32(width / divisor) - 1, i32(height / divisor) - 1)
+    let radius = max(0.8, 1.25 * d / sqrt(f32(count)))
+    let (lo, hi) = raw::sample_bounds(at, velocity, jitter, divisor, radius, age, limit)
+    let center = vec2i(floor((at - velocity * f32(age)) / d + jitter))
+    let a = max(center - vec2i(1), vec2i(0))
+    let b = min(center + vec2i(1), limit)
+    if horizontal { vec4(f32(lo.x), f32(hi.x), f32(a.x), f32(b.x)) } else {
+        vec4(f32(lo.y), f32(hi.y), f32(a.y), f32(b.y))
+    }
+}
+
+fn weights(
+    query: u32,
+    width: u32,
+    height: u32,
+    divisor: u32,
+    tick: u32,
+    count: u32,
+    shape: vec4,
+    source: [vec4],
+) -> vec4 {
+    let horizontal = query < 32 * width
+    let index = if horizontal { query } else { query - 32 * width }
+    let axis_size = if horizontal { width } else { height }
+    let age = (index / axis_size) % 16
+    if age >= count { return vec4(0.0) }
+    let pixel = index % axis_size
+    let layer = if horizontal { index / (16 * width) } else { 1 }
+    // A shared row is valid when either layer occurs; columns check their own layer.
+    if (u32(source[age].y) & if horizontal { u32(1) << layer } else { 3 }) == 0 {
+        return vec4(0.0)
+    }
+    let b = bounds(query, width, height, divisor, tick, count, shape)
+    let first = i32(b.x)
+    let last = i32(b.y)
+    let d = f32(divisor)
+    let encoded = source[age].x
+    let motion = if horizontal && layer == 1 { encoded } else { 0.0 }
+    let jitter = jitter_of(tick - age)
+    let j = if horizontal { jitter.x } else { jitter.y }
+    let position = f32(pixel) + 0.5
+    let radius = max(0.8, 1.25 * d / sqrt(f32(count)))
+    var w = vec4(0.0)
+    for n in 0..3 {
+        let coordinate = first + i32(n)
+        if coordinate <= last {
+            let proposed = (f32(coordinate) + 0.5 - j) * d + motion * f32(age)
+            w[n] = max(1.0 - abs(proposed - position) / radius, 0.0)
+        }
+    }
+    w
+}
+
+@compute(64)
+pub fn prepare(
+    width: u32,
+    height: u32,
+    divisor: u32,
+    tick: u32,
+    count: u32,
+    shape: vec4,
+    source: [vec4],
+    out: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    if id.x >= storage_rows(width, height) { return }
+    let query = id.x % rows(width, height)
+    if id.x < rows(width, height) {
+        out[id] = bounds(query, width, height, divisor, tick, count, shape)
+        return
+    }
+    var w = weights(query, width, height, divisor, tick, count, shape, source)
+    let horizontal = query < 32 * width
+    let index = if horizontal { query } else { query - 32 * width }
+    let axis_size = if horizontal { width } else { height }
+    let age = (index / axis_size) % 16
+    if age == 0 {
+        var mask = u32(0)
+        for a in 0..count {
+            let v = weights(
+                query + a * axis_size,
+                width,
+                height,
+                divisor,
+                tick,
+                count,
+                shape,
+                source,
+            )
+            if max(v.x, max(v.y, v.z)) > 0.0 { mask |= u32(1) << a }
+        }
+        w.w = f32(mask)
+    }
+    out[id] = w
+}

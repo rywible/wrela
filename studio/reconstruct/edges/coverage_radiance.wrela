@@ -30,17 +30,23 @@ fn fill(
     depth: f32,
     jitter_table: [vec4],
     fallback: vec3,
+    layer: u32,
 ) -> vec3 {
     let d = f32(divisor)
     let size = packed_stride(width, height)
-    let limit = vec2i(i32(width) - 1, i32(height) - 1)
     for age in 0..HISTORY {
         if age >= count { break }
         let frame = tick - age
         let jitter = jitter_table[frame % HISTORY].xy
-        let center = vec2i(floor((at - velocity * f32(age)) / d + jitter))
-        let lo = max(center - vec2i(1), vec2i(0))
-        let hi = min(center + vec2i(1), limit)
+        let bx = jitter_table[factor_queries::column(u32(at.x), layer, age, width * divisor)]
+        let by = jitter_table[factor_queries::row(
+            u32(at.y),
+            age,
+            width * divisor,
+            height * divisor,
+        )]
+        let lo = vec2i(i32(bx.z), i32(by.z))
+        let hi = vec2i(i32(bx.w), i32(by.w))
         var distance = 1.0e30
         var closest = fallback
         for y in lo.y..(hi.y + 1) {
@@ -80,7 +86,6 @@ pub fn reconstruct(
     let limit = vec2i(i32(width) - 1, i32(height) - 1)
     let near = clamp(vec2i(floor(p.position.xy / d + jitter_of(tick))), vec2i(0), limit)
     let current = unpack(samples[(tick % HISTORY) * size + u32(near.y) * width + u32(near.x)])
-    let radius = max(0.8, 1.25 * d / sqrt(f32(count)))
     let front = coverage(p.position.x - 0.5, tick, shape)
     var result = vec3(0.0)
     for layer in 0..2 {
@@ -90,30 +95,48 @@ pub fn reconstruct(
         let depth = if layer == 1 { 0.5 } else { 0.25 }
         var sum = vec3(0.0)
         var total = 0.0
-        for age in 0..HISTORY {
-            if age >= count { continue }
+
+        let offset = factor_queries::rows(width * divisor, height * divisor)
+        let x = jitter_table[offset +
+            factor_queries::column(u32(p.position.x), layer, 0, width * divisor)].w
+        let y = jitter_table[offset +
+            factor_queries::row(u32(p.position.y), 0, width * divisor, height * divisor)].w
+        var active = u32(x) & u32(y)
+
+        while active != 0 {
+            let age = active.trailing_zeros()
+            active &= active - 1
             let frame = tick - age
-            let jitter = jitter_table[frame % HISTORY].xy
-            let (lo, hi) = raw::sample_bounds(
-                p.position.xy,
-                velocity,
-                jitter,
-                divisor,
-                radius,
+
+            let bx = jitter_table[factor_queries::column(
+                u32(p.position.x),
+                layer,
                 age,
-                limit,
-            )
+                width * divisor,
+            )]
+            let by = jitter_table[factor_queries::row(
+                u32(p.position.y),
+                age,
+                width * divisor,
+                height * divisor,
+            )]
+            let lo = vec2i(i32(bx.x), i32(by.x))
+            let hi = vec2i(i32(bx.y), i32(by.y))
+
+            let offset = factor_queries::rows(width * divisor, height * divisor)
+            let wx = jitter_table[offset +
+                factor_queries::column(u32(p.position.x), layer, age, width * divisor)]
+            let wy = jitter_table[offset +
+                factor_queries::row(u32(p.position.y), age, width * divisor, height * divisor)]
             for y in lo.y..(hi.y + 1) {
                 for x in lo.x..(hi.x + 1) {
-                    let proposed = (vec2(f32(x), f32(y)) + vec2(0.5) - jitter) * d +
-                        velocity * f32(age)
-                    if !raw::possible_support(proposed, p.position.xy, radius, age) { continue }
-                    let sample = unpack(samples[(frame % HISTORY) * size + u32(y) * width + u32(x)])
+                    let w = wx[u32(x - lo.x)] * wy[u32(y - lo.y)]
+                    if w <= 0.0 { continue }
+                    let sample = unpack(
+                        samples[(frame % HISTORY) * size + u32(y) * width + u32(x)],
+                    )
                     if abs(sample.geometry.z - depth) >= 0.01 ||
                         length(sample.geometry.xy - velocity) >= 0.05 { continue }
-                    let position = (vec2(f32(x), f32(y)) + vec2(0.5) - jitter) * d +
-                        sample.geometry.xy * f32(age)
-                    let w = raw::weight(position - p.position.xy, radius)
                     sum += max(sample.color.rgb, vec3(0.0)) * w
                     total += w
                 }
@@ -133,6 +156,7 @@ pub fn reconstruct(
                 depth,
                 jitter_table,
                 fallback,
+                layer,
             )
         }
     }

@@ -18,17 +18,17 @@
 
 ## Immediate milestone
 
-[Compact neighbor-field residuals](neural-shaded-appearance.md#neighbor-field-residuals-retire-compact-owner-local-response-fitting)
-are retired. Neural and equal-byte polynomial both fail all 24 shaded cases with
-exact source alpha. Neural 36.75 dB/0.44136 ms/837,612 live B versus exact field
-40.30 dB/0.64056 ms/830,580 B; fastest cache 0.27780 ms. No joint rendering advantage.
-First comparison 4.20 minutes, decision 7.21 minutes; zero follow-ups/new references.
-Frozen models/runtime restored; G1–G7 unchanged and unmet.
+[Shared support masks](neural-coverage-radiance.md#shared-support-tables-retain-exact-output-with-lower-complete-gpu-cost)
+are retained in explicit raw-factor. Three paired AMD runs reduce complete 1080p
+GPU time 15.95852→10.77440 ms (32.52%), with all tested images exact.
+Requested live memory rises 2,519,280 bytes to 92,013,064. Two follow-ups;
+the failed predicted-half-motion variant is preserved. No training/new references.
+Final source, frozen controls and cuts pass. G1–G7 remain unchanged and unmet.
 
-Next: exact source coverage/identity, deterministic appearance fields and shared
-per-surface radiance across samples/time. Build on retained coverage/radiance
-reconstruction; remove redundant shading/history queries conventionally before
-fitting a learned residual. Require quality, complete AMD runtime and residency.
+Next share loaded observations and radiance accumulation across output pixels,
+using a conventional cooperative gather with exact source coverage/identity and
+observed motion. Count shared storage, history, fallback and compositing.
+A neural residual requires a demonstrated rendered-quality problem and full cost win.
 
 ## Evidence recorded so far
 
@@ -2691,3 +2691,13 @@ Zero follow-ups. Both 7,040 B fits 0/24 versus exact 24/24. Neural 36.7506 dB/0.
 Retire both; all-card decoder checks pass, source alpha exact, all failures retained.
 [Comparison and next bet](neural-shaded-appearance.md#neighbor-field-residuals-retire-compact-owner-local-response-fitting).
 Manifest: `aa48d2889f0363c44788c4c306fccce64383f8328c6a7744177f43f436fb46c6`.
+
+### Shared support-table checkpoint (2026-10-28)
+
+First complete comparison 3.31 minutes; decision
+19.16 minutes, exactly two follow-ups. Retain observed-motion
+support masks: paired GPU 15.95852→10.77440 ms, +2,519,280 live bytes; 512 original
+and final selected frames exact, frozen controls unchanged, cut/reset checked.
+Final GPU 10.77568 ms, 92,013,064 live bytes.
+No neural/G4/sustained-G6 claim. [Full evidence and next bet](neural-coverage-radiance.md#shared-support-tables-retain-exact-output-with-lower-complete-gpu-cost).
+Manifest: `2080ba5dd69ffe0d45e5b9bdd68cc35fe93ef41d3fab97ce807a155e6ba6c2c7`.

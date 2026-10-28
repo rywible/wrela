@@ -234,8 +234,11 @@ fn resize(s: mut State, width: u32, height: u32) {
     if s.raw_source {
         s.raw_packed = buffer(raw::packed_stride(w, h) * raw::HISTORY)
         if !s.raw_indexed && !s.raw_trained {
-            // Reuse the inactive model-context buffer. Fixed geometry needs only16phases.
-            s.raw_prepared = buffer(16)
+            // Fixed source filtering shares jitter phases. Factorized filtering also
+            // rebuilds source-derived axis support after those first sixteen rows.
+            s.raw_prepared = buffer(16 + if s.raw_factorized {
+                factor_queries::storage_rows(width, height)
+            } else { 0 })
             label("raw jitter prepare")
             dispatch(raw_jitter::prepare.bind(mut s.raw_prepared), over: 16)
         }
@@ -245,6 +248,7 @@ fn resize(s: mut State, width: u32, height: u32) {
         s.raw_heads = buffer(grid.x * grid.y)
         s.raw_links = buffer(w * h * raw::HISTORY)
     }
+    if s.raw_factorized { s.raw_kernel = buffer(16) }
     s.raw_count = 0
     s.patch_frames = 0
     if s.patch_enabled { s.patch_cells = buffer(w * h) }
@@ -329,6 +333,36 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
                 over: w * h,
             )
         }
+    }
+    if s.raw_factorized {
+        label("factor surface motion")
+        dispatch(
+            factor_surface_motion::prepare.bind(
+                s.raw_packed.items(),
+                w,
+                h,
+                s.tick,
+                s.raw_count,
+                mut s.raw_kernel,
+            ),
+            over: 16,
+        )
+    }
+    if s.raw_factorized {
+        label("factor query tables")
+        dispatch(
+            factor_queries::prepare.bind(
+                width,
+                height,
+                s.divisor,
+                s.tick,
+                s.raw_count,
+                vec4(f.period, f.width, f.offset, f.speed),
+                s.raw_kernel.items(),
+                s.raw_prepared.span_mut(16, factor_queries::storage_rows(width, height)),
+            ),
+            over: factor_queries::storage_rows(width, height),
+        )
     }
     if s.patch_enabled {
         label("patch encode")

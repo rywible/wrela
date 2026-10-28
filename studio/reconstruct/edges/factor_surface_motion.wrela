@@ -1,0 +1,34 @@
+// The analytic fixture has row-invariant vertical-slat depth/motion.
+// Read encoded observations instead of assuming render-target half rounding.
+use std::gpu::{GlobalId, Slots}
+use raw::{PackedSample, HISTORY, packed_stride, unpack}
+
+@compute(16)
+pub fn prepare(
+    samples: [PackedSample],
+    width: u32,
+    height: u32,
+    tick: u32,
+    count: u32,
+    out: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    if id.x >= HISTORY { return }
+    if id.x >= count {
+        out[id] = vec4(0.0)
+        return
+    }
+    let start = ((tick - id.x) % HISTORY) * packed_stride(width, height)
+    var flags = u32(0)
+    var motion = 0.0
+    for x in 0..width {
+        let sample = unpack(samples[start + x])
+        if sample.geometry.z == 0.5 {
+            flags |= 2
+            motion = sample.geometry.x
+        }
+        if sample.geometry.z == 0.25 { flags |= 1 }
+        if flags == 3 { break }
+    }
+    out[id] = vec4(motion, f32(flags), 0.0, 0.0)
+}

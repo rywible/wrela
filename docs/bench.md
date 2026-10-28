@@ -2676,3 +2676,16 @@ First comparison 4.20 minutes, decision 7.21 minutes; zero follow-ups/new refere
 Retired after all-card GPU agreement. Complete CPU/GPU/completion and actual DRM/PSS
 preserved. No paired speedup/16× physical memory/G4 claim. Runtime restored.
 [Full comparison](neural-shaded-appearance.md#neighbor-field-residuals-retire-compact-owner-local-response-fitting).
+
+### AMD shared coverage/radiance support tables (2026-10-28)
+
+RADV RENOIR1002:164c/Ryzen 5 5500U, Mesa26.1.6, Chrome154.0.8037.57,
+Wrela0.9.0/compilerde9b81e5; parent5c61df01 plus archived variants.
+1080p,4×,case1,32 warm-up/240 measured frames; three alternating pairs.
+GPU median15.95852→10.77440ms (32.52% saving); same512 tested RGBA frames.
+Requested live89,493,784→92,013,064B; all tables/motion/scratch/fallback counted.
+Final cleaned implementation10.77568ms; actual DRM/PSS and
+completion recorded separately. Two follow-ups, no training/new reference cases.
+Predicted-half-motion failure preserved; final selected/frozen/cut checks pass.
+Conventional fixture gain only; G4 and sustained G6 remain unqualified.
+[Full measurements](neural-coverage-radiance.md#shared-support-tables-retain-exact-output-with-lower-complete-gpu-cost).
