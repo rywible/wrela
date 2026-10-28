@@ -51,7 +51,8 @@ pub struct Vale {
     /// The hour and the weather the frame is lit in (`day`).
     hour: f32,
     skies: Skies,
-    /// How many frames the walk has run (none: it hasn't begun; W begins it).
+    /// How many frames the walk has run (none: it hasn't begun; W begins it, and it steps once the
+    /// vale's playable).
     walked: Option<u32>,
 }
 
@@ -152,8 +153,11 @@ pub fn frame(s: mut Vale, time: f32, width: u32, height: u32) {
     let aim = Aim { eye, at, fovy, moving_at: eye }
     let _ = s.frame.begin(mut s.stage, aim, time, width, height)
     s.frame.draw(mut s.stage, aim)
+    // The walk steps once the vale is playable: what the frame round the eye needs is in.
     if let Some(n) = s.walked {
-        s.walked = Some(min(n + 1, walk::FRAMES))
+        if s.ready {
+            s.walked = Some(min(n + 1, walk::FRAMES))
+        }
     }
     if !s.ready && s.frame.ready.playable_at.is_some() {
         s.ready = true

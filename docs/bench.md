@@ -1357,3 +1357,61 @@ Slowest compiles, leapling (cold):
 |---|---|---|
 | full+shade | 137.83 | 45.4 |
 
+## 2026-10-28, apple metal-3 Apple M4
+
+| Scene | GPU span p50 / p95 / p99 ms | Interval p50 / p95 / p99 ms | Over 16.7 / 33 ms | CPU p50 / p95 ms | Native p50 / p95 ms | First frame ms | Playable ms | Pipelines ms | Loaded MiB | Warm playable ms | Warm loaded MiB | GPU peak MiB |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| vale-walk | 15.86 / 19.85 / 21.93 | 17.68 / 23.77 / 32.22 | 774 / 11 | 0.81 / 2.51 | 17.68 / 27.94 | 460.80 | 4340.27 | 959.14 | 3.1 | 4203.70 | 0.0 | 781.8 |
+
+Hitches, vale-walk (frames over 33 ms, the five heaviest labels each):
+
+| Frame | Interval ms | CPU ms | Labels, GPU ms | Phases, ms | Draws | Written KiB |
+|---|---|---|---|---|---|---|
+| 299 | 34.65 | 0.74 | bloom 13.93, vegetation 3.40, vegetation prepass 2.97, terrain 2.37, creature 2.21 | present 0.10, cook 0.09, passes 0.03, choose 0.00, finish 0.00 | 962 | 670 |
+| 303 | 37.40 | 0.73 | bloom 32.61, vegetation late 4.73, look 4.54, water 3.65, temporal 3.62 | present 0.10, cook 0.09, passes 0.02, finish 0.01, choose 0.00 | 962 | 957 |
+| 317 | 39.75 | 1.09 | bloom 19.48, vegetation 3.52, vegetation prepass 3.02, terrain 2.70, look 2.66 | cook 0.20, present 0.08, passes 0.02, choose 0.01, finish 0.00 | 962 | 1534 |
+| 323 | 36.41 | 0.93 | bloom 23.40, vegetation 3.60, look 3.16, vegetation prepass 2.97, terrain 2.86 | cook 0.18, present 0.05, passes 0.02, choose 0.01, finish 0.01 | 962 | 1245 |
+| 389 | 40.12 | 0.45 | bloom 20.24, vegetation 2.82, look 2.82, vegetation prepass 2.32, clouds 2.18 | cook 0.05, present 0.05, passes 0.02, finish 0.01, choose 0.00 | 959 | 382 |
+| 404 | 46.48 | 0.79 | bloom 25.26, look 3.43, terrain 2.98, creature 2.84, vegetation 2.78 | cook 0.10, present 0.10, passes 0.02, choose 0.01, finish 0.00 | 958 | 957 |
+| 441 | 40.47 | 0.48 | bloom 21.31, look 3.03, terrain 2.97, creature 2.83, vegetation 2.59 | present 0.06, cook 0.05, passes 0.03, choose 0.01, finish 0.00 | 967 | 381 |
+| 690 | 44.86 | 0.51 | bloom 22.96, look 5.21, vegetation 3.23, terrain 2.82, temporal 2.79 | cook 0.07, present 0.06, passes 0.02, choose 0.01, finish 0.01 | 959 | 381 |
+| 755 | 39.48 | 0.90 | bloom 19.90, vegetation 8.14, terrain 6.99, creature 6.84, vegetation prepass 6.52 | present 0.13, cook 0.11, passes 0.04, choose 0.01, finish 0.00 | 958 | 669 |
+| 1070 | 43.25 | 1.06 | bloom 23.22, look 3.98, vegetation 3.79, vegetation prepass 3.31, terrain 2.39 | cook 0.20, present 0.08, passes 0.02, choose 0.01, finish 0.00 | 957 | 1534 |
+| 1114 | 46.56 | 1.09 | bloom 23.46, vegetation 4.19, look 3.37, vegetation prepass 3.14, terrain 3.06 | cook 0.21, present 0.08, passes 0.02, finish 0.01, choose 0.00 | 957 | 1534 |
+
+0 of 11 unattributed (no label over 2 ms, CPU under 2 ms).
+
+Memory at playable, vale-walk (cold, by the program's own counts):
+
+| Share | MiB |
+|---|---|
+| held | 528.1 |
+| targets | 90.8 |
+| shadows | 68.0 |
+| sky | 74.8 |
+| probes | 34.0 |
+| distance | 10.0 |
+| fog | 15.8 |
+| terrain | 10.8 |
+| reflections | 7.5 |
+| lights | 0.4 |
+| wood lists | 18.3 |
+| impostors | 78.0 |
+| wood | 58.1 |
+| leaves' atlas | 0.0 |
+
+Slowest compiles, vale-walk (cold):
+
+| Pipeline | ms | WGSL KiB |
+|---|---|---|
+| ground+ground_shade | 37.90 | 103.7 |
+| trace_again | 33.88 | 112.0 |
+| bake | 33.54 | 114.6 |
+| far_quad+volume_shade | 32.86 | 98.4 |
+| water_vertex+water_shade | 29.41 | 86.3 |
+| far_quad+far_shade | 28.34 | 95.3 |
+| limb+bark_shade | 27.47 | 91.7 |
+| card+leaf_shade | 27.02 | 93.6 |
+| trace | 26.46 | 95.6 |
+| full+dab_map | 26.38 | 83.9 |
+

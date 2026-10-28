@@ -8,18 +8,18 @@ use landscape::height_at
 /// The walk's frames.
 pub const FRAMES: u32 = 1200
 
-/// Its way, on the plane: the points it passes through, in order (**proposed**).
+/// Its way, on the plane: the points it passes through, in order (**proposed**): from the fallen
+/// beech's place down the trail to the meadow, round its edge, and up to the old oak's and the
+/// canopy shot's places, 340 m in all.
 pub const WAY = [
-    vec2(-124.0, -36.0),
-    vec2(-70.0, -10.0),
-    vec2(-12.0, -6.0),
-    vec2(-18.0, 30.0),
-    vec2(20.0, 44.0),
-    vec2(80.0, 20.0),
-    vec2(114.0, -4.0),
-    vec2(90.0, -90.0),
-    vec2(40.0, -150.0),
-    vec2(32.0, -180.0),
+    vec2(-123.0, -38.0),
+    vec2(-60.0, -25.0),
+    vec2(-10.0, -12.0),
+    vec2(-20.0, 26.0),
+    vec2(24.0, 42.0),
+    vec2(70.0, 25.0),
+    vec2(114.0, -6.0),
+    vec2(96.0, -22.0),
 ]
 
 /// How high the eye goes over the ground, and how far ahead it looks (m).
