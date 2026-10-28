@@ -370,3 +370,142 @@ code; no external code, weights or assets added.
 
 Evidence: build/neural-evidence/factor-query-tables-v1 on Pop!_OS.
 Manifest SHA-256: `2080ba5dd69ffe0d45e5b9bdd68cc35fe93ef41d3fab97ce807a155e6ba6c2c7`.
+
+## Cooperative observation gather: retire shared decoding
+
+**Decision: retire the direct-compute and cooperative-gather variants.** Both
+preserve every tested image but increase complete GPU time, with no requested
+persistent-memory saving. Restore the parent fragment renderer byte-for-byte.
+This block demonstrates no new rendering advantage.
+
+First complete comparison: 7.10 minutes. Decision:
+8.87 minutes at 2026-10-28T16:58:50.737476+00:00. Zero optimization
+follow-ups, training steps or new reference cases. Frozen weights and G1–G7 remain
+unchanged and unmet. The previous shared-support improvement remains retained.
+
+### Consequential question and equal inputs
+
+The previous block removed redundant support calculations; gathering observations
+still dominated the frame. This experiment asks whether nearby output pixels can
+profitably share loaded and decoded observations. All three conventional methods
+receive identical source geometry, coverage, retained RGB/depth/motion, sample
+positions, support weights, history and fallback. No reference RGB, future frame
+or extra colour query enters either candidate.
+
+Direct compute copies the retained gather into an 8×8 kernel, separating the
+execution-stage change from cooperation. Cooperative compute loads 5×5 windows
+for two surfaces and 16 history ages, decodes/clamps RGB and computes the same
+geometry compatibility once per cached record. Its 800 useful vec4 records are
+padded to 832, with 13 writes per invocation and one workgroup barrier. Each output
+retains ascending age/y/x accumulation and the original source coverage and causal
+same-surface fallback. Any positive query outside the small window uses the original
+global read. This is shared loading, not a different radiance estimator.
+
+Both candidates write the existing RGBA16Float output; both swapped output
+textures gain storage usage without changing dimensions or adding a persistent
+RGB cache. Only explicit raw-factor at 3× and 4× uses compute. Scales 1× and 2×
+retain the fragment path. The initial 6×6 design declared 18,432 shared bytes and
+failed the toolchain's 16,384-byte default limit before measurements. Its source
+and compiler log are preserved. Reducing the window to 5×5 gives 13,312 bytes,
+with exact global fallback; this was a compatibility repair before assessment.
+
+### Rendered quality, silhouettes and temporal output
+
+Existing public cases 1, 6, 13 and 23, each 32 cold-start frames at 192×108 and
+scales 1–4, provide 512 RGBA frames per method. Each candidate matches every
+control frame and all 1,024 reference/mask files byte-for-byte. The control also
+matches the preceding sealed block exactly. Quality, boundary colours, silhouettes
+and temporal outputs therefore remain unchanged on these clips. Metrics are
+reused only after exact parity; unchanged evaluation machinery is not rerun.
+
+At 4×, mean clip FLIP remains 0.17217554, LPIPS 0.19584559, PSNR 18.10427 dB,
+opaque temporal MAE 0.01482404 and newly exposed colour error 0.07490307.
+These diagnostic averages do not establish G1/G3 thresholds. Exact parity was
+measured at 192×108; no 1080p image-parity claim is made.
+
+### Complete AMD cost and actual resident observations
+
+RADV RENOIR PCI1002:164c, Ryzen 5 5500U, Mesa 26.1.6, Chrome 154.0.8037.57,
+Pop!_OS; Wrela 0.9.0/compiler de9b81e52a7747870dfbd5223cb8aeb41e584d23.
+Parent 147049ed plus archived variants. Timing is 1920×1080, 4×, case 1:
+32 warm-up and 240 measured frames. Separate completion/memory runs use 300
+frames, discarding 60. All GPU runs are sequential; no fitting/scoring overlaps.
+
+| Method | GPU median/p95 ms | CPU call p99 ms | Start-to-completion p95/p99 ms |
+| --- | ---: | ---: | ---: |
+| Retained fragment control | 10.78208/12.14824 | 0.6946 | 17.1120/33.6807 |
+| Direct compute | 13.10052/13.93748 | 0.9044 | 45.7222/46.9681 |
+| Cooperative 8×8 | 47.71356/50.73932 | 0.7547 | 190.3464/203.9479 |
+
+Direct compute increases complete GPU median 21.50%; cooperation increases it
+342.53%. The gather-labelled span itself rises from 9.48720 to 11.84992 and
+46.43376 ms. These are descriptive single-run comparisons. There is no promotion
+claim requiring a paired speedup campaign; the large regressions, identical
+quality and unchanged allocations suffice to retire these tested implementations.
+The data do not isolate occupancy, cache traffic or synchronization as the cause,
+and do not imply that every cooperative algorithm is slower.
+
+The complete cost includes analytic sample/guide generation, retained-history
+updates, source-motion scan, shared support tables, decoding, visibility
+compatibility, source coverage, gather, fallback, output and display/compositing.
+This two-layer diagnostic has no wood or primitive sorting. Their complete G4
+costs remain in the [shaded appearance comparison](neural-shaded-appearance.md);
+this experiment cannot substitute for that renderer or demonstrate a G4 win.
+Start-to-completion includes browser/driver notification and queueing, not photon
+latency. Cooperative execution's very large completion tails are retained.
+
+| Method | All requested live/peak B | Actual DRM VRAM/GTT B | Browser-group PSS B |
+| --- | ---: | ---: | ---: |
+| Retained fragment control | 92,013,064/100,307,464 | 186,318,848/18,706,432 | 543,377,408 |
+| Direct compute | 92,013,064/100,307,464 | 186,257,408/18,706,432 | 559,902,720 |
+| Cooperative 8×8 | 92,013,064/100,307,464 | 182,861,824/18,804,736 | 563,571,712 |
+
+Requested totals include history, output, query tables, upload/uniform resources,
+inactive fixture allocations, scratch, fallback and caches. They are identical.
+The cooperative shader additionally declares 13,312 bytes of hardware-local
+shared storage per workgroup; this is not counted by persistent-buffer allocation
+counters. The experiment does not separately attribute compiled code, registers,
+spills or physical local-storage occupancy.
+
+DRM/PSS are actual whole-client resident snapshots, including observable
+driver/cache overhead. They are not asset-attributed residency or transient
+physical peaks; overlapping UMA pools must not be added. The small variations in
+DRM do not establish memory compression. There is no joint quality/runtime/memory
+advantage.
+
+### Retirement, verification and next architecture bet
+
+No targeted optimization follow-up was needed. The direct control already loses
+without shared-memory work; the cooperative implementation has a much larger
+runtime loss. Spending two optional attempts is not required to make this bounded
+decision. All three builds, 12 clips, timing samples, allocation/physical-memory
+records, source variants and failed shared-limit build are preserved.
+
+The repaired experiment passes source/type checking. Each measured clip is checked
+against established image/reference bytes. After archiving the experiment, all
+engine and studio files are restored exactly to 147049ed, with no new runtime
+files; the parent's frozen-model and cut/reset checks therefore remain applicable.
+No unchanged test suite or redundant restored-renderer benchmark is repeated.
+
+**Remaining gap:** the retained reconstruction is still above G6's frame and
+reconstruction budgets. The compact G4 appearance representation remains
+unqualified: the frozen optical control passes only 8/24 existing shaded cases;
+no 16× quality-matched resident-appearance reduction has been shown. Neither
+execution infrastructure nor exact parity constitutes a rendering win.
+
+**Next architecture bet:** return to G4 with an adaptive source-space response
+representation that bounds approximation error while preserving exact cutouts
+and surface identity. Start with the completed source samples and existing
+scratch accounting: reject it before fitting if its size/error budget cannot
+support a credible joint improvement. Compare a conventional adaptive lookup
+with any learned alternative using the same source information and completed
+shaded references. Charge refinement/fallback, wood, visibility, updates and
+compositing. A model is justified only by a specific rendered failure and a
+plausible complete cost advantage; another material-moment sweep is not justified.
+
+The code is an original Wrela experiment. Existing evaluator
+[citations](citations.md#neural-reconstruction-instrument) apply; no external
+implementation, model, asset or hardware result is imported.
+
+Evidence on Pop!_OS: build/neural-evidence/factor-cooperative-v1.
+Manifest SHA-256: `6b57efb2553344a1646e0553f64e0d1d94065d19afe7166378a470ebcdee5ace`.

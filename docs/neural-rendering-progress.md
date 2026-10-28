@@ -18,17 +18,17 @@
 
 ## Immediate milestone
 
-[Shared support masks](neural-coverage-radiance.md#shared-support-tables-retain-exact-output-with-lower-complete-gpu-cost)
-are retained in explicit raw-factor. Three paired AMD runs reduce complete 1080p
-GPU time 15.95852→10.77440 ms (32.52%), with all tested images exact.
-Requested live memory rises 2,519,280 bytes to 92,013,064. Two follow-ups;
-the failed predicted-half-motion variant is preserved. No training/new references.
-Final source, frozen controls and cuts pass. G1–G7 remain unchanged and unmet.
+[Cooperative observation gathering](neural-coverage-radiance.md#cooperative-observation-gather-retire-shared-decoding)
+is retired. All tested images match, but direct compute costs 13.10052 ms and
+cooperative compute 47.71356 ms versus the retained fragment path's 10.78208 ms,
+with identical requested live memory. Zero follow-ups/training/new references.
+Runtime restored exactly; the prior 32.52% shared-support improvement remains.
 
-Next share loaded observations and radiance accumulation across output pixels,
-using a conventional cooperative gather with exact source coverage/identity and
-observed motion. Count shared storage, history, fallback and compositing.
-A neural residual requires a demonstrated rendered-quality problem and full cost win.
+Return to G4: first test the size/error budget for an adaptive source-space
+response representation with exact cutouts and surface identity. Use completed
+source samples, the existing shaded references and equally informed conventional
+controls. Charge all scratch, fallback, wood, updates and compositing before
+considering another learned residual. G1–G7 remain unchanged and unmet.
 
 ## Evidence recorded so far
 
@@ -2701,3 +2701,15 @@ and final selected frames exact, frozen controls unchanged, cut/reset checked.
 Final GPU 10.77568 ms, 92,013,064 live bytes.
 No neural/G4/sustained-G6 claim. [Full evidence and next bet](neural-coverage-radiance.md#shared-support-tables-retain-exact-output-with-lower-complete-gpu-cost).
 Manifest: `2080ba5dd69ffe0d45e5b9bdd68cc35fe93ef41d3fab97ce807a155e6ba6c2c7`.
+
+### Cooperative gather checkpoint (2026-10-28)
+
+First complete comparison 7.10 minutes; decision
+8.87 minutes. Zero follow-ups, training or new reference cases.
+Each candidate's 512 RGBA frames and 1,024 reference/mask files are exact.
+Complete GPU: fragment 10.78208 ms, direct compute 13.10052 ms, cooperative
+47.71356 ms. All request 92,013,064 live bytes; cooperation also declares
+13,312 shared bytes per group. Actual DRM/PSS and completion tails preserved.
+No new rendering advantage. Retire both, restore runtime exactly to 147049ed.
+[Decision and next G4 bet](neural-coverage-radiance.md#cooperative-observation-gather-retire-shared-decoding).
+Manifest: `6b57efb2553344a1646e0553f64e0d1d94065d19afe7166378a470ebcdee5ace`.

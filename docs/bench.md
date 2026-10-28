@@ -2689,3 +2689,17 @@ completion recorded separately. Two follow-ups, no training/new reference cases.
 Predicted-half-motion failure preserved; final selected/frozen/cut checks pass.
 Conventional fixture gain only; G4 and sustained G6 remain unqualified.
 [Full measurements](neural-coverage-radiance.md#shared-support-tables-retain-exact-output-with-lower-complete-gpu-cost).
+
+### AMD cooperative observation-gather retirement (2026-10-28)
+
+RADV RENOIR1002:164c/Ryzen 5 5500U, Mesa26.1.6, Chrome154.0.8037.57,
+Wrela0.9.0/compilerde9b81e5; parent147049ed plus archived variants.
+Four existing 192×108 clips, 32 frames, all scales: both candidates' images exact.
+Complete 1080p/4×/case1 GPU median/p95: fragment10.78208/12.14824 ms,
+direct compute13.10052/13.93748 ms, cooperative47.71356/50.73932 ms.
+All live/peak requested92,013,064/100,307,464B; cooperative adds13,312B shared/group.
+Actual whole-client DRM/PSS and completion tails preserved. No joint advantage.
+First comparison7.10min; decision8.87min.
+Zero follow-ups/training/new references. Failed build and variants preserved;
+runtime restored exactly. No neural/G4/sustained-G6 claim.
+[Full comparison](neural-coverage-radiance.md#cooperative-observation-gather-retire-shared-decoding).
