@@ -18,19 +18,20 @@
 
 ## Immediate milestone
 
-The [clump visibility experiment](neural-shaded-appearance.md#clump-visibility-tiles-exact-silhouettes-insufficient-surface-information) is retired.
-Exact coverage survives, but sharing depth/material representatives fails every
-shaded quality case. Four layers recover some quality while losing the memory
-saving; complete GPU cost also exceeds the conventional control. The preceding
-compact neural coverage decoder was likewise dominated by an informed source
-program. Frozen optical remains unchanged and fails the G4 quality gate.
+[Source-guided scattered sampling](neural-adaptive-sampling.md) is retired:
+aggregate spatial/temporal quality regresses, complete GPU time rises and memory
+is unchanged. G4's compact optical model remains frozen and fails its quality
+gate; exact coverage with shared material/depth representatives also failed.
+There is no new neural rendering advantage.
 
-Next test source-guided sample placement under G1's unchanged full-stack colour
-budget, preserving exact surface ownership and causal observations. Begin with an
-informed conventional adaptive sampler/reconstructor on existing clips/references;
-count every guide query, selection, shading, history and reconstruction step.
-Do not repeat fixed-sample raw-kernel training or material-moment fitting without
-a new rendered-error justification. All G1–G7 remain active, unchanged and unmet.
+Next test a bounded persistent cache in surface coordinates with the regular
+sampler fixed. Insert only new raw observations and reconstruct from small local
+support; retain exact positions, surface identity and age. Charge collisions,
+expiry, visibility, insertion and fallback. Compare the conventional version on
+existing clips/references before any learned routing. This changes state
+organization, unlike the previous index that rebuilt all sixteen frames in
+current output coordinates. Do not repeat fixed-sample kernel or material-moment
+fits. All G1–G7 remain active, unchanged and unmet.
 
 ## Evidence recorded so far
 
@@ -2621,3 +2622,19 @@ preserving exact surface ownership; conventional adaptive control first, with
 equal source inputs and all query/selection/shading/history/reconstruction cost.
 [Full decision and evidence](neural-shaded-appearance.md#clump-visibility-tiles-exact-silhouettes-insufficient-surface-information).
 Manifest SHA-256: `ade37d69564e890e972d7b3f2c01efbb7560ade6192c7c048dbeb656194a68bb`.
+
+### Source-guided scattered sampling is retired
+
+Four existing 32-frame clips, all four scales; first complete comparison
+7.95 minutes, decision 20.46 minutes.
+At 4x, balanced FLIP 0.265405 vs regular 0.243244; LPIPS 0.317812 vs 0.253246;
+opaque temporal error +40.0%. Complete 1080p GPU 33.42048 vs 21.97056 ms,
+identical 89,493,544 requested live bytes. Uniform scattering also regresses.
+Whole-client DRM/PSS recorded; no joint or neural rendering advantage.
+
+No follow-up, training or reference expansion. Independent position/class/weight/
+gather replay passed; failed half-rounding audit preserved. Runtime restored;
+G1–G7 unchanged and unmet. Next: regular samples in a bounded persistent surface
+coordinate cache, charging insertion/expiry/collisions/visibility/fallback before
+considering learned routing. [Full evidence](neural-adaptive-sampling.md).
+Manifest SHA-256: `0647b783a3aa74993eaef0a3d50b3ad2170b6270340535bc8fbf9ebb041e6855`.

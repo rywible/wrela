@@ -2593,3 +2593,18 @@ Four layers: 0/24, 0.86428 ms, 919,908 bytes. Compact source: 24/24, 0.63828 ms,
 Rebuild every frame included; actual DRM/PSS snapshots recorded. Retire after one
 follow-up; no training/new references. Failed results preserved, runtime restored.
 [Full quality, cost and memory evidence](neural-shaded-appearance.md#clump-visibility-tiles-exact-silhouettes-insufficient-surface-information).
+
+### AMD source-guided sampling retirement (2026-10-28)
+
+RADV RENOIR 1002:164c / Ryzen 5 5500U, Mesa 26.1.6, Chrome 154.0.8037.57,
+Wrela 0.9.0 compiler de9b81e5; parent b8e8a036 plus archived sources.
+Four 32-frame analytic clips, 192x108, all scales. At 4x balanced FLIP 0.265405,
+LPIPS 0.317812, PSNR 15.556 dB vs regular 0.243244/0.253246/16.369 dB;
+opaque temporal error +40.0%. 1080p case1 complete GPU median/p95:
+regular 21.97056/22.26636 ms, uniform 31.57704/31.72848, balanced 33.42048/33.57992.
+All methods requested live/peak 89,493,544/97,787,944 bytes. Actual whole-client
+DRM/PSS and completion costs recorded; no asset-specific physical saving.
+First assessment 7.95 minutes; decision 20.46 minutes. No follow-up, training or
+reference expansion. Retire both scattered paths; preserve all failed results and
+restore exact prior runtime. G1–G7 unchanged/unmet.
+[Complete comparison and limitations](neural-adaptive-sampling.md).
