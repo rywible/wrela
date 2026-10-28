@@ -7004,3 +7004,156 @@ apply; no external implementation or model imported.
 
 Evidence on Pop!_OS: build/neural-evidence/g4-response-grid-v1.
 Manifest SHA-256: `ee6b70a01567ab7f25a2dbe606a1e20fe67b0b441dda385da9c2227b91dd36c3`.
+
+
+## Source-domain field bounds: retain a conventional GPU speed tradeoff
+
+**Decision: continue source-domain partial evaluation as an opt-in conventional
+field mode.** Five paired AMD runs show a **21.53% median reduction in complete
+GPU time** versus the original uncached field path. The retained cutoff4 passes
+all24 existing shaded comparisons against each exact source control and keeps
+their silhouettes exactly, adding344requested live bytes. The exact cached
+control remains faster and uses212,128more requested bytes. This is a useful
+tradeoff, not joint dominance, G4 completion or world-leading rendering.
+
+First joint assessment7.09minutes; decision14.99minutes. Exactly two targeted
+follow-ups, no training and no new references. G1–G7 and all frozen models are
+unchanged. Conventional wins count as successful research outcomes; that does
+not lower any numbered acceptance gate.
+
+### What source knowledge removes
+
+The [authored source](../engine/plant.wrela) places26,560leaf cards inside44known
+spawning clumps. The compact source renderer normally evaluates every clump's
+distance, normal and stabilized exponential union at each visible leaf. The new
+[source-bound option](../studio/appearance/runtime/source_hierarchy.wrela) uses
+two properties of that program:
+
+- Every query lies inside its spawning clump, so at least one unshifted
+  exponential weight is at least1. Each distance is bounded below by
+  minus radius×max(squash,1). The source's maximum positive exponent is2.08887;
+  runtime initialization validates a conservative finite range. This permits
+  exp(-k×distance) without repeatedly changing the nearest-distance origin.
+- An inflated bounding sphere encloses each spawning ellipsoid. Its distance
+  from another clump gives a lower bound over the entire spawning region.
+  A64bitmask retains every clump whose possible weight exceeds exp(-cutoff).
+  Cutoff4 retains8–26clumps,16.43on average, versus44originally. The44masks
+  occupy352bytes, replacing an8byte inactive response allocation.
+
+The bound is source-derived, not fitted to rendered labels or source responses.
+The focused test covers boundary/interior points; all1,168,640existing
+source-point/clump pairs satisfy the bound. This is an influence bound, **not
+a guarantee that omitted shading error is negligible**: the loose worst-case
+omitted-weight sum at cutoff4 is0.65936 and its distance-error bound is0.46040m.
+Normal direction can be sensitive near a vanishing summed gradient. Actual
+per-case shaded quality remains the deciding test.
+
+Every method receives the same source geometry, coverage program, material
+laws, useful source information, views and lights. All26,560cards,7,392wood
+triangles, original cutouts and packed visibility ordering remain. Native
+stored source, compact exact cache, compact full field and frozen optical
+fit are included; earlier forward/mask controls also participate in quality
+gates. No learned method receives privileged inputs.
+
+### Shaded quality and the two follow-ups
+
+Reuse the completed64×64 AA64 references: two views, four lights and three
+backgrounds, with the existing exposure0.62/sRGB/FLIP/LPIPS evaluator. Numeric
+gates remain PSNR loss≤0.25dB and FLIP/LPIPS ratios≤1.05 with1e-4 floors.
+
+| Method | Passing cases vs exact cache | Mean PSNR dB | FLIP | LPIPS |
+|---|---:|---:|---:|---:|
+| Native stored source | 24 | 40.29597 | 0.01300193 | 0.00249104 |
+| Compact exact cache/full field | 24 | 40.29590 | 0.01300320 | 0.00249059 |
+| Frozen optical | 8 | 40.12768 | 0.01234846 | 0.00188937 |
+| Unshifted weights, all44clumps | 24 | 40.29590 | 0.01300319 | 0.00249059 |
+| Region mask, cutoff6 | 24 | 40.29545 | 0.01301058 | 0.00249058 |
+| Region mask, cutoff4 | 24 | 40.28407 | 0.01312640 | 0.00248835 |
+| Same cutoff4, uniform loop | 24 | 40.28407 | 0.01312640 | 0.00248835 |
+
+Initial cutoff6 passes quality but is slower than all44unshifted weights.
+Follow-up1 tests cutoff4, reducing retained terms enough to overcome mask
+selection cost. It passes24/24 against native, exact cache, exact field and the
+earlier forward/mask controls. Its worst case loses0.06403dB; maximum FLIP and
+LPIPS ratios are1.027861 and1.045433. That LPIPS margin is narrow and warrants
+broader validation before production promotion.
+
+Follow-up2 executes the same mask with a uniform44iteration loop instead of
+visiting set bits. Its eight RGBA images are byte-identical, but it is slower.
+Retire that implementation; no third optimization or further cutoff sweep.
+
+All32candidate alpha captures are byte-identical to exact source visibility.
+Against truth, unchanged source coverage MAE is0.01005954; worst boundary p99
+is2pixels, half-coverage precision0.983065 and recall0.994007. Matching the
+control does not make these silhouettes perfect.
+
+### Complete AMD cost and actual resident observations
+
+RADV RENOIR1002:164c / Ryzen5 5500U, Mesa26.1.6, Chrome154.0.8037.57,
+Wrela0.9.0/compilerde9b81e5. Parentdfef2053 plus archived variants.
+This is the complete64px tree fixture, not a1080p game scene.
+Each profile measures240frames after60warmup; views/lights change every frame.
+All geometry generation, decoding, cutouts, visibility/order, wood, field or
+cache lookup, shading, updates and final composite are charged. Static mask
+cooking is outside steady time but inside resident/peak accounting; dynamic
+edit/rebuild latency is unmeasured. No scoring overlaps GPU timing.
+
+| Method | Saturated GPU median / p95 ms | Paced GPU p95 / p99 ms | Requested live / peak B |
+|---|---:|---:|---:|
+| Native cached source | 0.27432 / 0.42600 | 0.80001 / 1.00870 | 1,875,660 / 1,892,044 |
+| Compact exact cache | 0.34760 / 0.47116 | 1.20235 / 1.23112 | 1,043,052 / 1,059,436 |
+| Compact full field | 0.63832 / 0.67760 | 1.50256 / 1.52333 | 830,580 / 846,964 |
+| Frozen optical | 0.06820 / 0.07244 | 0.27097 / 0.27332 | 726,132 / 742,516 |
+| Unshifted, all44 | 0.58960 / 0.61952 | 1.49714 / 1.55738 | 830,580 / 846,964 |
+| Cutoff6 mask | 0.61664 / 0.66124 | 1.82881 / 1.95473 | 830,924 / 847,308 |
+| Cutoff4 mask | 0.50308 / 0.63136 | 1.36733 / 1.40551 | 830,924 / 847,308 |
+| Cutoff4 uniform loop | 0.59984 / 0.65660 | 1.45453 / 1.51372 | 830,924 / 847,308 |
+
+Five alternating baseline/cutoff4 GPU median pairs in ms:
+(0.63772,0.50040),(0.63892,0.50672),(0.63852,0.51168),
+(0.63780,0.50040),(0.64044,0.50064).
+Median paired saving21.53%; geometric-mean saving21.10%, with a conditional
+95% paired bootstrap interval20.37–21.66%. The interval enumerates all3,125
+resamples of five paired log-ratios; individual frames are not treated as
+independent runs. The tool reports GPU faster, CPU inconclusive. This is a
+narrow workload result, not a hardware/general-scene guarantee.
+
+| Method | Actual DRM resident VRAM / GTT B | Browser-group PSS B |
+|---|---:|---:|
+| Compact full field | 17,424,384 / 9,953,280 | 487,916,544 |
+| Compact exact cache | 17,670,144 / 9,936,896 | 489,934,848 |
+| Cutoff4 mask | 17,678,336 / 10,035,200 | 487,397,376 |
+
+Requested totals include source/wood buffers, coverage cache, masks, complete
+visibility scratch, output, upload/uniform resources and inactive allocations.
+There is no response fallback cache or new explicit shared scratch. Private
+shader spills and driver caches are not separately attributed. Actual DRM/PSS
+snapshots include observable whole-client residency; their variation does not
+establish per-asset physical savings. UMA pools must not be summed.
+
+### Retention and next decision
+
+Retain source_bounds MODE0(original),MODE1(unshifted),MODE2(masked), with MODE0
+and FIELD_RESPONSE=false still default. The cutoff is4for the explicit masked
+option. The rejected uniform loop is removed from live code and preserved in
+its source archive. A postmeasurement cleanup stopped on an incorrect text
+matcher; recovery used the archived source, without replacing measured results.
+
+Default and retained captures match16measured RGBA files exactly.24prior-control
+images are exact, the bound test passes, and final format/type checks pass.
+Other appearance files, the engine and reconstruction remain unchanged.
+All64experiment captures, failures, paired builds/traces, physical observations
+and source masks' construction are preserved. No broad unchanged test suite
+or new reference infrastructure was run.
+
+**Next bet:** compile source-domain influence bounds into procedural field
+evaluation, retaining exact visibility. Validate additional existing views and
+source families before production promotion. If omitted smooth contributions
+cause a specific rendered failure, compare a small conventional correction
+against exact fallback before considering a learned residual. G4's16× resident
+target, unseen-content requirements and sustainedG6 requirements remain unmet.
+
+Original Wrela implementation; existing evaluator
+[citations](citations.md#neural-reconstruction-instrument) apply.
+Evidence on Pop!_OS: build/neural-evidence/g4-source-bounds-v1.
+Manifest SHA-256: `301ffc8d04fa9596474aab01b802b9210ae4c762eff61271c1dadfca13f6ba17`.

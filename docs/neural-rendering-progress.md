@@ -2830,3 +2830,17 @@ cached or learned approximations for demonstrably expensive residuals.
 Conventional wins also count as successful outcomes; G1–G7 stay unchanged/unmet.
 [Complete quality, cost, residency and decision](neural-coverage-radiance.md#spatial-radiance-compile-known-formulas-before-estimating-coefficients).
 Manifest: `5d13eae5c91ce64f0e45e5f8020d4eaadfdde7754add4e9f0c1da02081b62530`.
+
+
+### Source-domain field bounds checkpoint (2026-10-28)
+
+Firstassessment7.09min; decision14.99min. Two follow-ups, no training or references.
+Cutoff4source masks pass24/24shaded comparisons with exact source silhouettes.
+Five paired complete64pxtree GPUruns show21.53%median saving versus fullfield;
+geometricmean21.10%,95%pairedbootstrap20.37–21.66%. CPU inconclusive.
+Requestedlive830,924B,344Babove fullfield; exactcache1,043,052B remains faster.
+Whole-clientDRM/PSS preserved. Retain explicit conventional mode; default unchanged.
+Uniform-loop follow-up is slower and retired.64captures,24priorcontrols,
+32candidatealpha and16retained RGBA checks preserved. G1–G7 unchanged/unmet.
+[Complete quality/runtime/residency and scope](neural-shaded-appearance.md#source-domain-field-bounds-retain-a-conventional-gpu-speed-tradeoff).
+Manifest: `301ffc8d04fa9596474aab01b802b9210ae4c762eff61271c1dadfca13f6ba17`.

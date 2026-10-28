@@ -2881,3 +2881,24 @@ Direct integration exploits the same authored source; no privileged neural input
 Retain opt-in diagnostic controls; change architecture toward exact source terms
 plus only expensive residual approximation. No paired/G4/worldleadership claim.
 [Full evidence and limitations](neural-coverage-radiance.md#spatial-radiance-compile-known-formulas-before-estimating-coefficients).
+
+
+### AMD source-domain field bounds (2026-10-28)
+
+RADV RENOIR1002:164c / Ryzen5 5500U, Mesa26.1.6, Chrome154.0.8037.57,
+Wrela0.9.0/compilerde9b81e5; parentdfef2053 plus archived variants.
+Existing64pxtree,2views×4lights×3backgrounds,AA64references. Source-region
+cutoff4mask retains16.43of44clumps onaverage;24/24shaded numeric gates.
+PSNR40.28407dB,FLIP0.01312640,LPIPS0.00248835 versus fullfield40.29590/
+0.01300320/0.00249059. All32candidatealpha images exact to source.
+Five paired completeGPU median changes:-21.53,-20.69,-19.86,-21.54,-21.83%.
+Geometricmean saving21.10%,95%exact pairedbootstrap20.37–21.66%; CPU inconclusive.
+Single fullfield/cutoff4/exactcache GPU0.63832/0.50308/0.34760ms;
+pacedGPU p95/p99 1.50256/1.52333,1.36733/1.40551,1.20235/1.23112ms.
+Requestedlive830,580/830,924/1,043,052B; cutoff4peak847,308B.
+Cutoff4actualDRM VRAM/GTT17,678,336/10,035,200B,PSS487,397,376B,whole-client.
+All source geometry,cutouts,wood,visibility,field/shade,updates andcomposite
+counted; staticmaskcook excludedsteadytime butstorage/peak included.
+Twofollowups, no training/newreferences; firstassessment7.09min,decision14.99min.
+Retain opt-in bounded field; exactcache faster/larger. NoG4/16x/global claim.
+[Full comparison and limitations](neural-shaded-appearance.md#source-domain-field-bounds-retain-a-conventional-gpu-speed-tradeoff).

@@ -101,7 +101,24 @@ pub fn nodes(plant: Plant, n: u32) -> GpuBuffer<vec4> {
 }
 
 pub fn response(plant: Plant, n: u32) -> GpuBuffer<vec2u> {
-    if FIELD_RESPONSE { return buffer(1) }
+    assert(source_bounds::MODE <= 2)
+    if FIELD_RESPONSE {
+        if source_bounds::MODE > 0 {
+            // All source queries are inside their spawning clump, so at least one weight
+            // is >=1. Every clump distance is >=-radius*max(squash,1).
+            for i in 0..plant.clumps.len() {
+                let c = plant.clumps[i]
+                assert(
+                    c.radius > 0.0 &&
+                        c.squash > 0.0 &&
+                        plant.blend > 0.0 &&
+                        plant.blend * c.radius * max(c.squash, 1.0) < 20.0,
+                )
+            }
+        }
+        if source_bounds::MODE == 2 { return bound_masks(plant) }
+        return buffer(1)
+    }
     var response = buffer(n)
     dispatch(cook_response.bind(plant, n, mut response), over: n)
     take response
@@ -147,7 +164,9 @@ pub fn shaded(index: u32, nodes: [vec4], response: [vec2u], position_needed: boo
     let card = if position_needed || FIELD_RESPONSE { placed(index, which, nodes) } else {
         attributes(index, which, nodes)
     }
-    let r = if FIELD_RESPONSE { field_response(card.centre, nodes) } else { response[index] }
+    let r = if FIELD_RESPONSE { source_field(card.centre, nodes, response, which) } else {
+        response[index]
+    }
     Card { normal: Oct32 { bits: r.x }, depth: bitcast_f32(r.y), ..card }
 }
 
@@ -207,4 +226,81 @@ fn field_response(p: vec3, nodes: [vec4]) -> vec2u {
     let s = max(sum, 0.5)
     let distance = nearest - log(s) / k
     vec2u(Oct32::encode(normalize(gradient / s)).bits, bitcast_u32(max(-distance, 0.0)))
+}
+
+// Conservative lower distance bound over the entire owner's spawning ellipsoid.
+// The bounding sphere is inflated to cover source floating-point placement.
+pub fn distance_lower(owner: Clump, other: Clump) -> f32 {
+    let radius = owner.radius * max(owner.squash, 1.0) * 1.00001
+    let metric = max(length(owner.centre - other.centre) - radius, 0.0) / max(other.squash, 1.0)
+    let delta = metric - other.radius
+    delta * if delta >= 0.0 { min(other.squash, 1.0) } else { max(other.squash, 1.0) }
+}
+
+@compute(64)
+fn cook_bound_masks(plant: Plant, out: mut Slots<vec2u>, id: GlobalId) {
+    if id.x >= plant.clumps.len() { return }
+    var bits = vec2u(0)
+    for i in 0..plant.clumps.len() {
+        if plant.blend * distance_lower(plant.clumps[id.x], plant.clumps[i]) <=
+            source_bounds::CUTOFF + 0.0001 {
+            if i < 32 { bits.x = bits.x | (u32(1) << i) } else {
+                bits.y = bits.y | (u32(1) << (i - 32))
+            }
+        }
+    }
+    out[id] = bits
+}
+
+fn bound_masks(plant: Plant) -> GpuBuffer<vec2u> {
+    assert(plant.clumps.len() <= 64 && source_bounds::CUTOFF > 0.0)
+    var masks = buffer(plant.clumps.len())
+    dispatch(cook_bound_masks.bind(plant, mut masks), over: plant.clumps.len())
+    take masks
+}
+
+fn source_field(p: vec3, nodes: [vec4], masks: [vec2u], owner: u32) -> vec2u {
+    if source_bounds::MODE == 0 { return field_response(p, nodes) }
+    let k = nodes[0].w
+    var sum = 0.0
+    var gradient = vec3(0.0)
+    if source_bounds::MODE == 1 {
+        for i in 0..u32(nodes[0].x) {
+            let c = clump(i, nodes)
+            let w = exp(-k * c.distance(p))
+            sum += w
+            gradient += c.normal(p) * w
+        }
+    } else {
+        let selected = masks[owner]
+        for word in 0..2 {
+            var bits = selected[word]
+            while bits != 0 {
+                let i = word * 32 + bits.trailing_zeros()
+                bits = bits & (bits - 1)
+                let c = clump(i, nodes)
+                let w = exp(-k * c.distance(p))
+                sum += w
+                gradient += c.normal(p) * w
+            }
+        }
+    }
+    let safe = max(sum, 0.5)
+    let distance = -log(safe) / k
+    vec2u(Oct32::encode(normalize(gradient / safe)).bits, bitcast_u32(max(-distance, 0.0)))
+}
+
+@test
+fn source_region_lower_bound_encloses_supported_points() {
+    let plant = great_tree::tree::great_tree()
+    for owner in 0..plant.clumps.len() {
+        for j in 0..plant.clumps.len() {
+            let bound = distance_lower(plant.clumps[owner], plant.clumps[j])
+            for i in 0..16 {
+                let direction = direction(rand(owner * 31 + i, 11), rand(i * 47 + j, 12))
+                let p = plant.clumps[owner].point(direction, if i % 2 == 0 { 1.0 } else { 0.72 })
+                assert(plant.clumps[j].distance(p) >= bound - 0.00001)
+            }
+        }
+    }
 }
