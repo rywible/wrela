@@ -2525,3 +2525,16 @@ probes validate conditioning. Runtime restored exactly. Next hypothesis: preserv
 source normal/material response mixtures, test conventional quadrature first.
 [Quality, complete cost and memory](neural-shaded-appearance.md#conditional-depth-at-wood-no-useful-rendered-advantage).
 Manifest SHA-256: `1008e19fd701e38eb42384da7c01b4ad53f20f69cc081cc42ecb37001b50bb07`.
+
+### Unconditional source-response mixtures are retired
+
+Four components reach9/24frozen and6/24conventional versus8/24and5/24original.
+Frozen GPU0.06144 ->0.09144ms, all-live726,132 ->847,540requestedbytes;
+PSNR/LPIPS improve but FLIP worsens. One all-source-response follow-up remains
+9/24frozen,5/24conventional; frozen0.28616ms and1,945,112livebytes versus native
+0.27936ms/1,875,660bytes. Retire; no second tuning, training or newtruth.
+Forty mixture coverage images exact;24controlRGBA exact;24GPUresponse probes pass.
+Inactive-selector setup runs preserved/excluded. Runtime restored exactly.
+Next hypothesis: projected position/visibility-conditioned response at fixed bytes.
+[Complete comparison](neural-shaded-appearance.md#source-response-mixtures-retire-a-single-colour-per-aggregate).
+Manifest SHA-256: `8ea276e73c7fe24759e09b590be7b5fb3f0f3201d3cef7afed19d020f8a94792`.

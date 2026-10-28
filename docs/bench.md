@@ -2523,3 +2523,15 @@ paced p95/p99 0.24960/0.25230 ->0.29860/0.30254ms. Mean PSNR+0.00225dB;
 Native control0.27752ms, engine/live1,466,060/1,875,660bytes. Actual asset-specific
 physical16x reduction unproved. Retire; no follow-ups/training/newreferences.
 [Complete quality, runtime, physical memory and focused checks](neural-shaded-appearance.md#conditional-depth-at-wood-no-useful-rendered-advantage).
+
+### AMD unconditional response-mixture retirement (2026-10-28)
+
+RADV RENOIR1002:164c/Ryzen5 5500U, Mesa26.1.6, Chrome154.0.8037.57,
+Wrela0.9.0 compilerde9b81e5, parentc359b103 plus archived sources.
+Frozen fourcomponent9/24 vsoriginal8/24; conventional6/24vs5/24.
+Frozen saturatedGPU0.09144vs0.06144ms; requestedlive847,540vs726,132bytes.
+One unreduced source-response follow-up reaches9/24at0.28616ms/1,945,112livebytes;
+native0.27936ms/1,875,660bytes. No quality-matchedmemory or neural win.
+40coverageexact,24controlRGBAexact,24mathprobes. Inactive selector runs preserved,
+excluded and repaired. No training/newrefs; runtime restored.
+[Quality, complete cost and physical memory](neural-shaded-appearance.md#source-response-mixtures-retire-a-single-colour-per-aggregate).

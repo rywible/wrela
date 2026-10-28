@@ -4102,3 +4102,182 @@ Evidence: build/neural-evidence/g4-conditional-depth-v1 on Pop!_OS, including
 plan/decision, five exact variants, comparisons, focused checks, physical snapshots,
 retired/restored sources, scripts, known metadata-field notes and replay instructions.
 Manifest SHA-256: `1008e19fd701e38eb42384da7c01b4ad53f20f69cc081cc42ecb37001b50bb07`.
+
+## Source response mixtures: retire a single colour per aggregate
+
+**Decision: retire spatially unconditional response mixtures as an added G4
+representation.** Four components improve the frozen path from 8/24 to 9/24
+passing shaded cases, but increase saturated GPU cost from 0.06144 to 0.09144 ms
+and requested live allocation from 726,132 to 847,540 bytes. Mean PSNR and LPIPS
+improve while FLIP regresses. There is no joint quality/memory/runtime win.
+
+One targeted follow-up removes component reduction altogether: evaluate every
+original source response, then average within each aggregate. It still reaches
+only 9/24 frozen and 5/24 conventional cases. Frozen cost is 0.28616 ms and
+1,945,112 requested live bytes, versus native source 0.27936 ms and 1,875,660 bytes.
+No second optimization or fitting is justified by this result.
+
+Solo Pop!_OS: start 2026-10-28T03:24:44.892506+00:00; first valid comparison complete
+2026-10-28T03:29:20.280637+00:00 (275.4s);
+decision 2026-10-28T03:33:20.279331+00:00 (515.4s).
+One follow-up, zero training, zero new shaded references. Frozen best and G1–G7
+unchanged. The initially inactive shader runs are preserved and excluded below.
+
+### Source-only component compilation and fair lighting
+
+The existing source assignment partitions all 26,560 cards into 1,897 optical
+aggregates. Keep that assignment and both frozen/conventional optical payloads
+unchanged. Each component stores eight f16 values: normal3, linear albedo3,
+normalized crown depth and optical-area weight. The original through colour and
+production [leaf response](../engine/impostor.wrela#L114) are shared by every
+candidate and the conventional source controls, through the existing
+[controlled illumination wrapper](../studio/appearance/runtime/relight.wrela).
+No external implementation or new image labels are introduced.
+
+Four components come from two recursive weighted-median splits along the
+largest weighted-variance axis of fixed features: normal3, sqrt(albedo)3 and
+crownDepth/2.4m. There is no fitting, parameter search or iterative refinement.
+Component means and weights preserve the source's seven material first moments
+to absolute 1e-12 before packing; packed weights are normalized in the shader.
+Normals are normalized separately before lighting. One component costs 30,352
+bytes; four cost 121,408 bytes. Compilation takes 1.156 seconds.
+
+The source-mean control replaces the frozen material values with one source
+mean. Four components evaluate the light response separately and average the
+result. This isolates nonlinear response integration from simply changing the
+mean material. Both frozen and conventional aggregate geometry get identical
+component data, fields, illumination and sample knowledge. The native source
+control retains exact geometry, masks, material and visibility information.
+
+The follow-up stores all 26,560 individual responses with one 4-byte offset/count
+header per aggregate: 424,960 component bytes plus 7,588 header bytes. Groups
+contain up to 36 responses. It removes component reduction, but retains f16
+packing and the original aggregate's spatial approximation. It is an executable,
+deliberately expensive diagnostic, not an oracle using rendered truth.
+
+All variants still assign one shaded colour across each aggregate. Weights
+reflect unoccluded source area, not which component is visible at a particular
+pixel. Source position/material correlations and per-component depth are absent.
+Geometry, optical density, centre-depth sorting, exact wood and blending do not
+change. The frozen optimized optical payload remains SHA-256
+dc329e4b4c4eaa8ad0bbbb93eeea90cb2a94f4a0f01b284487f344d4ee2ff71c.
+
+### Shaded quality and silhouettes
+
+| Candidate | Passes vs each source control | Mean PSNR dB | Mean FLIP | Mean LPIPS |
+| --- | ---: | ---: | ---: | ---: |
+| Native source | 24/24 | 40.295971 | 0.01300193 | 0.00249104 |
+| Frozen original | 8/24 | 40.127682 | 0.01234846 | 0.00188937 |
+| Frozen, source mean | 8/24 | 40.074490 | 0.01321007 | 0.00189586 |
+| Frozen, four components | 9/24 | 40.218774 | 0.01303777 | 0.00182720 |
+| Frozen, all source responses | 9/24 | 40.220749 | 0.01321091 | 0.00185933 |
+| Conventional original | 5/24 | 39.739577 | 0.01392093 | 0.00211637 |
+| Conventional, four components | 6/24 | 39.885365 | 0.01373155 | 0.00203585 |
+| Conventional, all source responses | 5/24 | 39.888617 | 0.01390746 | 0.00206947 |
+
+Passes use unchanged PSNR loss <=0.25 dB and FLIP/LPIPS increase <=5%, floor1e-4.
+Four equally informed source controls independently give these counts: current
+native, established packed full-field, forward-source and hierarchy-mask.
+Legacy BC-only scores remain in assessments but do not decide acceptance.
+
+All 24 original control images exactly reproduce prior captures. All 40 changed
+response captures retain their corresponding original coverage byte-for-byte.
+Frozen silhouette MAE remains 0.00883219, worst boundary p99 1.4142 pixels and
+worst half-coverage precision/recall 0.978010/0.985445. Conventional aggregate
+values remain 0.00934771, 1.4142 pixels and 0.978079/0.988014. Native values are
+0.01005954, 2 pixels and 0.983065/0.994007. This static fixture does not prove G3.
+
+All truth is the existing AA64 shaded reference: one64pxasset, two public views,
+four analytic lights, three backgrounds, exposure0.62/ACES/sRGB, LDR FLIP67ppd
+and AlexNet LPIPSv0.1. No reference expansion or material-moment training occurred.
+The all-source result differs little from four components and still fails15/24:
+the tested component reduction is not the decisive loss. This does not establish
+that visibility correlation is the sole remaining error or that another mixture
+architecture will succeed.
+
+### Complete runtime and actual resident-memory observations
+
+AMD RADV RENOIR PCI1002:164c, Ryzen5 5500U, Mesa26.1.6,
+Chrome154.0.8037.57, Pop!_OS; Wrela0.9.0 compiler
+de9b81e52a7747870dfbd5223cb8aeb41e584d23. Parent c359b103 plus exact variant
+archives; sequential runs, 60warmup/240measured frames at64x64.
+
+GPU includes decoding, repeated per-vertex component lighting/integration,
+projection, visibility, exact indexed wood, blending, resolve and final composite.
+CPU includes centre sorting, order upload, view/light updates and commands.
+Static source compilation/upload is initialization, outside steady runtime but
+inside requested allocation peaks. Dynamic source edits/refits are untested.
+
+| Candidate | Paced GPU p95/p99 ms | Saturated GPU median/p95 ms | CPU p99 ms | CPU to completion p95/p99 ms |
+| --- | ---: | ---: | ---: | ---: |
+| Native source | 1.0724/1.0864 | 0.27936/0.41368 | 0.7646 | 4.4399/4.5923 |
+| Frozen original | 0.1545/0.2480 | 0.06144/0.06836 | 0.9031 | 4.7051/4.8761 |
+| Frozen, source mean | 0.2510/0.2527 | 0.06164/0.06836 | 0.9875 | 4.5213/4.7011 |
+| Frozen, four components | 0.3863/0.3931 | 0.09144/0.14604 | 1.1149 | 4.3904/5.0175 |
+| Frozen, all source responses | 1.1530/1.1754 | 0.28616/0.37180 | 0.9791 | 3.9658/4.2654 |
+| Conventional original | 0.2501/0.2523 | 0.06140/0.06456 | 0.9880 | 4.7505/4.9419 |
+| Conventional, four components | 0.3858/0.3897 | 0.09168/0.13508 | 0.9133 | 4.9653/5.1602 |
+| Conventional, all source responses | 0.7092/0.9853 | 0.29212/0.41132 | 0.9691 | 4.8203/5.0196 |
+
+CPU-to-completion includes all frame submissions and browser/driver notification,
+not input-to-photon. Single-run saturated, paced and completion observations
+remain separate. Timing-state variation is not evidence for repeatable small gains.
+
+| Candidate | Engine representation/scratch bytes | All requested live/peak bytes | DRM resident VRAM/GTT bytes | Browser-group PSS bytes |
+| --- | ---: | ---: | ---: | ---: |
+| Native source | 1,466,060 | 1,875,660/1,892,044 | 17,338,368/9,936,896 | 489,585,664 |
+| Frozen original | 316,532 | 726,132/742,516 | 17,367,040/9,740,288 | 474,313,728 |
+| Frozen, source mean | 346,884 | 756,484/772,868 | 17,367,040/9,740,288 | 473,452,544 |
+| Frozen, four components | 437,940 | 847,540/863,924 | 17,633,280/9,658,368 | 474,586,112 |
+| Frozen, all source responses | 749,080 | 1,945,112/1,961,496 | 17,387,520/9,641,984 | 476,699,648 |
+| Conventional original | 316,532 | 726,132/742,516 | 17,367,040/9,740,288 | 472,449,024 |
+| Conventional, four components | 437,940 | 847,540/863,924 | 17,301,504/9,740,288 | 474,535,936 |
+| Conventional, all source responses | 749,080 | 1,945,112/1,961,496 | 17,633,280/9,658,368 | 476,822,528 |
+
+Engine totals exclude the common65,536-byte output; all-requested totals include
+output, screen, upload/uniform resources, model/components, sorting, wood, caches,
+scratch and fallback. The all-source upload grows the retained host upload ring
+from262,144 to1,048,576 bytes, adding786,432 bytes beyond the larger model itself.
+This observed cost is counted. Four-component all-live bytes exceed the established
+packed full-field control's830,580 bytes, while quality still fails. None of the
+paths establishes16x quality-matched resident appearance reduction.
+
+DRM VRAM/GTT and browser-group PSS are actual whole-client physical snapshots,
+not asset-attributed residency or transient physical peaks. Do not sum overlapping
+UMA pools. Compiler registers/spills and shader caches are not individually
+attributed by requested resource counts. Expanding attribution cannot rescue the
+already failing quality/runtime decision, so it is deferred.
+
+### Focused verification, preserved failure and next bet
+
+The first three component variants uploaded data while an overescaped selector
+replacement left COUNT=0. Identical original images exposed this setup error.
+Their complete sources/builds/captures/timings remain under inactive-setup-failure;
+they are excluded from acceptance. The selector was repaired with a counted
+replacement and explicit selected-value assertion, then only affected variants
+were repeated. This was a setup repair, not a model optimization.
+
+Twenty-four GPU response probes across one/four/all components, two views and
+four lights match independent float64 production-response evaluation with maximum
+absolute error1.08e-7. Source membership, weights, header ranges and component
+packing are checked. These probes are not additional shaded references.
+All experimental code is archived; tracked runtime is restored byte-for-byte
+to c359b103 and the new module removed. Established default/packed checks cover
+the unchanged restored runtime; no broad suite rerun.
+
+The next hypothesis couples source response to projected position and visibility:
+condition component weights on pixel footprint and depth before compositing,
+under a fixed representation budget. Start with conventional source-derived
+conditional components and exact-source visibility controls. The test must preserve
+material-position correlation, rather than return to a single mean colour, the
+rejected88aggregate localMLP, fixed depth slabs or wood-only correction. Neural
+fitting requires a demonstrated residual after that source-only comparison.
+
+G1–G7 remain unmet. Unseen families/views/lights,8–512px, motion,10xrichness,
+source edits and sustainedG6 are untested. No rendering or neural win is claimed.
+
+Evidence: build/neural-evidence/g4-response-mixtures-v1 on Pop!_OS. Eight valid
+variants, three invalid preserved runs, component/source payloads, exact archives,
+all captures, quality/cost/memory records, mathematical probes, plan/decision,
+restored sources and replay scripts.
+Manifest SHA-256: `8ea276e73c7fe24759e09b590be7b5fb3f0f3201d3cef7afed19d020f8a94792`.
