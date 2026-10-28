@@ -27,94 +27,6 @@ pub struct NearTile {
     pub with: u32,
 }
 
-/// The drawn kinds' names in trees.wrela (`k == NAME`), by kind.
-const KIND_KEYS = [
-    "GREAT",
-    "OAK_OPEN",
-    "OAK_FOREST",
-    "BEECH_OPEN",
-    "BEECH_FOREST",
-    "BIRCH_OPEN",
-    "BIRCH_FOREST",
-    "PINE_OPEN",
-    "PINE_FOREST",
-    "ALDER_A",
-    "ALDER_B",
-    "HAWTHORN",
-    "SLOE",
-    "YOUNG_BROAD",
-    "YOUNG_PINE",
-    "SNAG_BROAD",
-    "SNAG_BURNT",
-    "SNAG_PINE",
-    "LOG_SHORT",
-    "LOG_LONG",
-    "FAR_A",
-    "FAR_B",
-    "SNAG_STUMP",
-    "SNAG_FORKED",
-    "OAK_ANCIENT",
-    "BEECH_ANCIENT",
-]
-
-/// The species' names, and the words their habits' comments in species.wrela begin with.
-const SPECIES_NAMES = ["oak", "beech", "birch", "hawthorn", "blackthorn", "pine", "alder"]
-const SPECIES_KEYS = [
-    "// Oak:",
-    "// Beech:",
-    "// Birch:",
-    "// Hawthorn:",
-    "// Blackthorn:",
-    "// Pine:",
-    "// Alder:",
-]
-
-/// The line of trees.wrela that builds each drawn kind, and of species.wrela that gives each
-/// species' habit: found in the files as the build reads them, so they follow an edit.
-pub const KIND_LINES: [u32; trees::KINDS] = kind_lines()
-pub const SPECIES_LINES: [u32; 7] = species_lines()
-
-fn kind_lines() -> [u32; trees::KINDS] {
-    let text = embed("trees.wrela")
-    var out = [0; trees::KINDS]
-    for k in 0..trees::KINDS {
-        out[k] = line_of(text, f"k == {KIND_KEYS[k]} {{".as_str())
-    }
-    out
-}
-
-fn species_lines() -> [u32; 7] {
-    let text = embed("species.wrela")
-    var out = [0; 7]
-    for k in 0..7 {
-        out[k] = line_of(text, SPECIES_KEYS[k])
-    }
-    out
-}
-
-/// The first line of `text` (from 1) that holds `pattern`; 0 if none does.
-fn line_of(text: Bytes, pattern: str) -> u32 {
-    var line: u32 = 1
-    let n = pattern.len()
-    var i: u32 = 0
-    while i + n <= text.len() {
-        var same = true
-        var k: u32 = 0
-        while same && k < n {
-            same = text.at(i + k) == pattern.byte(k)
-            k += 1
-        }
-        if same {
-            return line
-        }
-        if text.at(i) == 10 {
-            line += 1
-        }
-        i += 1
-    }
-    0
-}
-
 /// What a click's ray met first: a tree (its tile and its index there) at `distance`, or the
 /// ground at `point`, or nothing within reach.
 pub enum Picked: Copy {
@@ -299,10 +211,14 @@ pub fn tree_json(t: Tree, drawn_kind: u32, distance: f32, ms: f64) -> String {
     borrow m = world::MAP
     let present = map::PRESENT
     let alive = t.state == State::Alive
-    let species = if t.kind < 7 { SPECIES_NAMES[t.kind] } else { "?" }
-    let habit = if t.kind < 7 { SPECIES_LINES[t.kind] } else { 0 }
-    let kind = if drawn_kind < trees::KINDS { KIND_KEYS[drawn_kind] } else { "?" }
-    let built = if drawn_kind < trees::KINDS { KIND_LINES[drawn_kind] } else { 0 }
+    let species = if t.kind < 7 { trees::lines::SPECIES_NAMES[t.kind] } else { "?" }
+    let habit = if t.kind < 7 { trees::lines::SPECIES_LINES[t.kind] } else { 0 }
+    let kind = if drawn_kind < trees::kinds::KINDS { trees::lines::KIND_KEYS[drawn_kind] } else {
+        "?"
+    }
+    let built = if drawn_kind < trees::kinds::KINDS { trees::lines::KIND_LINES[drawn_kind] } else {
+        0
+    }
     let died = year_json(t.died, !alive)
     // Its age now, or when it died.
     let age = (if alive { present } else { t.died }) - t.born
@@ -315,7 +231,7 @@ pub fn tree_json(t: Tree, drawn_kind: u32, distance: f32, ms: f64) -> String {
         String::from("null")
     }
     let shaped = shaped_json(m, t.shaped)
-    f"{{\"provenance\": \"tree\", \"at\": [{t.at.x}, {t.at.y}], \"distance\": {distance}, \"species\": \"{species}\", \"habit\": \"species.wrela:{habit}\", \"drawn_as\": \"{kind}\", \"kind\": \"trees.wrela:{built}\", \"born\": {t.born}, \"age\": {age}, \"state\": \"{state_name(t.state)}\", \"died\": {died}, \"fell\": {fell}, \"cause\": {cause}, \"marked\": {marked}, \"shaped\": {shaped}, \"pinned\": {t.pinned}, \"tall\": {t.tall}, \"girth\": {t.girth}, \"ms\": {ms}}}"
+    f"{{\"provenance\": \"tree\", \"at\": [{t.at.x}, {t.at.y}], \"distance\": {distance}, \"species\": \"{species}\", \"habit\": \"content/trees/species.wrela:{habit}\", \"drawn_as\": \"{kind}\", \"kind\": \"content/trees/kinds.wrela:{built}\", \"born\": {t.born}, \"age\": {age}, \"state\": \"{state_name(t.state)}\", \"died\": {died}, \"fell\": {fell}, \"cause\": {cause}, \"marked\": {marked}, \"shaped\": {shaped}, \"pinned\": {t.pinned}, \"tall\": {t.tall}, \"girth\": {t.girth}, \"ms\": {ms}}}"
 }
 
 /// The history's fields at world point `p` from the near tile that holds it (light, trodden, wet,
@@ -432,13 +348,13 @@ pub fn click(
     let c = cam.unjittered()
     let dir = c.ray(px / size * c.screen)
     // The near tiles' records are the world's: the eye there (the render origin added back).
-    let picked = pick(tiles, c.eye + c.origin, dir, height, trees::drawn_crowns)
+    let picked = pick(tiles, c.eye + c.origin, dir, height, trees::kinds::drawn_crowns)
     let ms = 1000.0 * (std::time::now() - began)
     match picked {
         Picked::Tree { tile, i, distance } => {
             let t = tiles[tile].trees[i]
-            // A kept tree is drawn as the great oak (`trees::placed`).
-            let k = if t.pinned { trees::GREAT } else { trees::kind_of(t) }
+            // A kept tree is drawn as the great oak (`trees::kinds::placed`).
+            let k = if t.pinned { trees::kinds::GREAT } else { trees::kinds::kind_of(t) }
             tree_json(t, k, distance, ms)
         },
         Picked::Ground { point, normal, distance } => ground_json(

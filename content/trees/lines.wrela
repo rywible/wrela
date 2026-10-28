@@ -1,0 +1,91 @@
+// Where each kind and each species is written: the line of kinds.wrela that builds each drawn
+// kind, and of species.wrela that gives each species' habit, for a lens's provenance of a tree
+// (the floor's, `last_green::provenance`).
+
+/// The drawn kinds' names in kinds.wrela (`k == NAME`), by kind.
+pub const KIND_KEYS = [
+    "GREAT",
+    "OAK_OPEN",
+    "OAK_FOREST",
+    "BEECH_OPEN",
+    "BEECH_FOREST",
+    "BIRCH_OPEN",
+    "BIRCH_FOREST",
+    "PINE_OPEN",
+    "PINE_FOREST",
+    "ALDER_A",
+    "ALDER_B",
+    "HAWTHORN",
+    "SLOE",
+    "YOUNG_BROAD",
+    "YOUNG_PINE",
+    "SNAG_BROAD",
+    "SNAG_BURNT",
+    "SNAG_PINE",
+    "LOG_SHORT",
+    "LOG_LONG",
+    "FAR_A",
+    "FAR_B",
+    "SNAG_STUMP",
+    "SNAG_FORKED",
+    "OAK_ANCIENT",
+    "BEECH_ANCIENT",
+]
+
+/// The species' names, and the words their habits' comments in species.wrela begin with.
+pub const SPECIES_NAMES = ["oak", "beech", "birch", "hawthorn", "blackthorn", "pine", "alder"]
+const SPECIES_KEYS = [
+    "// Oak:",
+    "// Beech:",
+    "// Birch:",
+    "// Hawthorn:",
+    "// Blackthorn:",
+    "// Pine:",
+    "// Alder:",
+]
+
+/// The line of kinds.wrela that builds each drawn kind, and of species.wrela that gives each
+/// species' habit: found in the files as the build reads them, so they follow an edit.
+pub const KIND_LINES: [u32; kinds::KINDS] = kind_lines()
+pub const SPECIES_LINES: [u32; 7] = species_lines()
+
+fn kind_lines() -> [u32; kinds::KINDS] {
+    let text = embed("kinds.wrela")
+    var out = [0; kinds::KINDS]
+    for k in 0..kinds::KINDS {
+        out[k] = line_of(text, f"k == {KIND_KEYS[k]} {{".as_str())
+    }
+    out
+}
+
+fn species_lines() -> [u32; 7] {
+    let text = embed("species.wrela")
+    var out = [0; 7]
+    for k in 0..7 {
+        out[k] = line_of(text, SPECIES_KEYS[k])
+    }
+    out
+}
+
+/// The first line of `text` (from 1) that holds `pattern`; 0 if none does.
+fn line_of(text: Bytes, pattern: str) -> u32 {
+    var line: u32 = 1
+    let n = pattern.len()
+    var i: u32 = 0
+    while i + n <= text.len() {
+        var same = true
+        var k: u32 = 0
+        while same && k < n {
+            same = text.at(i + k) == pattern.byte(k)
+            k += 1
+        }
+        if same {
+            return line
+        }
+        if text.at(i) == 10 {
+            line += 1
+        }
+        i += 1
+    }
+    0
+}

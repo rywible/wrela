@@ -497,12 +497,12 @@ pub const SHOTS: Shots = shots()
 fn shots() -> Shots {
     borrow w = WORLD
     let trees = decisions().trees
-    // Each standing stem as it's drawn (`trees::as_drawn`: its girth at breast height); and what
+    // Each standing stem as it's drawn (`trees::kinds::as_drawn`: its girth at breast height); and what
     // a place's shot sees past: each stem, and each crown low enough to stand at the eye (`LOW`),
     // its reach round it.
     var stems: Vec<vec3> = Vec::new()
     var wood: Vec<vec3> = Vec::new()
-    for t in trees::as_drawn(trees) {
+    for t in trees::kinds::as_drawn(trees) {
         let stem = t.state != State::Log && t.state != State::Gone && t.tall > 1.5
         if stem {
             stems.push(vec3(t.at, t.girth))
@@ -778,13 +778,13 @@ fn shot_files() -> Vec<(String, Vec<u8>)> {
 
 // ---- tests -----------------------------------------------------------------------------------------
 
-/// No standing stem of the grown wood, as it's drawn (`trees::as_drawn`, its trunk's girth round
+/// No standing stem of the grown wood, as it's drawn (`trees::kinds::as_drawn`, its trunk's girth round
 /// it), is on a face, a rock's solid or a pond (`HARD`); and every tree is the bake's, within what
 /// its history grows over.
 @test
 fn the_wood_stands_on_no_face_rock_or_pond() {
     var standing = 0
-    for t in trees::as_drawn(decisions().trees) {
+    for t in trees::kinds::as_drawn(decisions().trees) {
         assert(
             t.at.x >= LO.x && t.at.y >= LO.y && t.at.x < HI.x && t.at.y < HI.y,
             f"a tree at {t.at} past the bake",
@@ -873,7 +873,7 @@ fn the_grown_views_shots_see_past_the_stems() {
     let p = inside.eye.xz
     assert(p.x > LO.x && p.y > LO.y && p.x < HI.x && p.y < HI.y, "in the wood past its bake")
     var stems: Vec<vec3> = Vec::new()
-    for t in trees::as_drawn(decisions().trees) {
+    for t in trees::kinds::as_drawn(decisions().trees) {
         if t.state != State::Log && t.state != State::Gone && t.tall > 1.5 {
             stems.push(vec3(t.at, t.girth))
         }

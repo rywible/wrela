@@ -984,7 +984,7 @@ pub fn test_crown(s: Floor, i: u32) -> vec4 {
     var k = 0
     for a in s.stage.own {
         for p in a.placed {
-            if p.kind < trees::KINDS && p.kind != trees::GREAT {
+            if p.kind < trees::kinds::KINDS && p.kind != trees::kinds::GREAT {
                 if k == i {
                     let top = s.stage.plants[p.kind].top() * p.at.scale
                     return vec4(p.at.at + vec3(0.0, top * 0.5, 0.0), top)

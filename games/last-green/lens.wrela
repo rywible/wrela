@@ -40,7 +40,7 @@ pub fn preview() -> Preview {
     let streams = h.streams.clone()
     let o = obstacles_of(h.trees, species::HABITS, h.streams, st, stones::walls(m), lo, hi)
     var e = Evidence::of(h)
-    e.crowns = trees::drawn_crowns(e.trees)
+    e.crowns = trees::kinds::drawn_crowns(e.trees)
     e.solids = blockouts::solids(m)
     Preview { checked: check(ground::GROUND, m, species::HABITS, e, o, st, QUICK), streams }
 }

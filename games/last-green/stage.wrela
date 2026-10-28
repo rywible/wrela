@@ -253,7 +253,7 @@ pub fn stage() -> Stage {
     let waters = history::waters()
     let (water_tris, water_tiles) = tiled(waters.mesh)
     Stage {
-        plants: trees::plants(),
+        plants: trees::kinds::plants(),
         kinds: Vec::new(),
         atlas: engine::plant::leaf_atlas(6),
         wood: None,
@@ -1502,22 +1502,24 @@ pub fn land_at(source: u32, p: vec2) -> f32 {
     }
 }
 
-/// `trees` placed on `source`'s land (`trees::placed`).
+/// `trees` placed on `source`'s land (`trees::kinds::placed`).
 pub fn placed_on(source: u32, trees: [land::grow::Tree]) -> Vec<engine::vegetation::Placed> {
-    if source == GROWN_LAND { trees::placed(trees, grown_at) } else if source == SPECIMEN_LAND {
-        trees::placed(trees, level_at)
+    if source == GROWN_LAND {
+        trees::kinds::placed(trees, grown_at, map::PRESENT)
+    } else if source == SPECIMEN_LAND {
+        trees::kinds::placed(trees, level_at, map::PRESENT)
     } else {
-        trees::placed(trees, height_at)
+        trees::kinds::placed(trees, height_at, map::PRESENT)
     }
 }
 
-/// Tile `t`'s far layer `f` placed on `source`'s land, every `step` cells (`trees::far_placed`).
+/// Tile `t`'s far layer `f` placed on `source`'s land, every `step` cells (`trees::kinds::far_placed`).
 pub fn far_on(source: u32, f: Far, t: vec2i, step: u32) -> Vec<engine::vegetation::Placed> {
-    if source == GROWN_LAND { trees::far_placed(f, t, grown_at, step) } else if source ==
+    if source == GROWN_LAND { trees::kinds::far_placed(f, t, grown_at, step) } else if source ==
         SPECIMEN_LAND {
-        trees::far_placed(f, t, level_at, step)
+        trees::kinds::far_placed(f, t, level_at, step)
     } else {
-        trees::far_placed(f, t, height_at, step)
+        trees::kinds::far_placed(f, t, height_at, step)
     }
 }
 
@@ -2338,7 +2340,7 @@ pub fn cook_load(s: mut Stage, c: mut Cooks, eye: vec2, linear: Sampler) {
             let atlas = replace(mut s.atlas, texture::<Rgba8>(width: 1, height: 1))
             var w = Wood::new(
                 take kinds,
-                trees::far_kinds(),
+                trees::kinds::far_kinds(),
                 take atlas,
                 slots: SLOTS,
                 cards_to: CARDS_TO,
@@ -2355,7 +2357,7 @@ pub fn cook_load(s: mut Stage, c: mut Cooks, eye: vec2, linear: Sampler) {
             w.write_lods()
             if s.neural {
                 w.read_through(
-                    trees::GREAT,
+                    trees::kinds::GREAT,
                     Neural {
                         model: GREAT_TREE_MODEL,
                         grid: GREAT_TREE_GRID,
@@ -2459,11 +2461,11 @@ pub struct OccluderInput {
     hi: vec2,
 }
 
-/// The occluders of `input`'s trees within its square (`trees::occluders_into`), on a helper: a
+/// The occluders of `input`'s trees within its square (`trees::kinds::occluders_into`), on a helper: a
 /// limb's capsule is fitted to its mesh's planes, which took the walk's frame 40 ms in Chrome.
 pub fn gather_occluders(input: take OccluderInput) -> Vec<Occluder> {
     var out: Vec<Occluder> = Vec::new()
-    trees::occluders_into(input.placed, input.plants, vec3(0.0), input.lo, input.hi, mut out)
+    trees::kinds::occluders_into(input.placed, input.plants, vec3(0.0), input.lo, input.hi, mut out)
     out
 }
 
@@ -2558,7 +2560,7 @@ pub fn loaded_probe_occluders(
     for a in own {
         if tile_distance(a.tile, world) < PROBE_TREES {
             let d = vec3(-origin.x, 0.0, -origin.y)
-            trees::occluders_into(a.placed, plants, d, eye - half, eye + half, mut out)
+            trees::kinds::occluders_into(a.placed, plants, d, eye - half, eye + half, mut out)
         }
     }
     Some(out)
