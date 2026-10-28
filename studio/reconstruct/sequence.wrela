@@ -113,11 +113,12 @@ fn path(
             return Err(ToolError::new("clip visibility count"))
         }
         save(b, f"{stem}.visibility32f", count)?
-        if spec.decoder == 6 {
-            if call(b, "publish_basis", Vec::new())? != 3 {
+        if spec.decoder == 6 || spec.decoder == 7 {
+            let rows = if spec.decoder == 7 { 12 } else { 3 }
+            if call(b, "publish_basis", Vec::new())? != rows {
                 return Err(ToolError::new("basis count"))
             }
-            save(b, f"{stem}.basis32f", 3, stride: 4, records: true)?
+            save(b, f"{stem}.basis32f", u32(rows), stride: 4, records: true)?
         }
         if spec.training_inputs == 1 {
             let n = (spec.width / divisor) * (spec.height / divisor)
@@ -158,7 +159,11 @@ pub fn run(
     gate: str,
     raw_model: str,
 ) -> Result<(), ToolError> {
-    let input_track = if spec.decoder == 6 {
+    let input_track = if spec.decoder == 8 {
+        "authored_geometry_and_radiance_formula_direct_conventional"
+    } else if spec.decoder == 7 {
+        "source_material_regions_observed_bilinear_radiance_conventional"
+    } else if spec.decoder >= 6 {
         "source_geometry_and_material_regions_observed_rgb_full_stack"
     } else if spec.patch_source == 1 || spec.decoder >= 3 {
         "source_geometry_full_stack"
@@ -168,17 +173,24 @@ pub fn run(
     let raw_index_layout = if spec.decoder == 4 {
         "u32_heads_bin2_pad8_then_links_age_major_low_resolution_pixels_node_plus_one_zero_null"
     } else { "unused" }
-    let raw_storage = if spec.decoder == 6 {
+    let raw_storage = if spec.decoder == 8 {
+        "none_source_formula_integration"
+    } else if spec.decoder == 7 {
+        "twelve_current_observed_bilinear_rgb_rows"
+    } else if spec.decoder >= 6 {
         "three_observed_rgb_coefficients_with_last_seen_tick_no_raw_history"
     } else if spec.decoder >= 3 {
         "20_byte_half_color_f32_motion_depth_stride_ceil_pixels_to_64"
     } else if spec.decoder == 1 { "32_byte_f32_color_motion_depth_stride_ceil_pixels_to_8" } else {
         "unused"
     }
-    let format = if spec.decoder == 6 {
+    let format = if spec.decoder == 6 || spec.decoder == 7 {
         "rgba32f_le_top_down_scene_linear_alpha_sampling_material_tag"
     } else { "rgba32f_le_top_down_scene_linear_alpha1" }
-    let metadata = f"scene=analytic/slats-checkerboard\ncase_catalog=legacy8_and_stress64_v1\nshot={spec.shot}\ncut_shot={(spec.shot + 3) % 8}\nwidth={spec.width}\nheight={spec.height}\nstart_frame={spec.start + spec.warmup}\nwarmup={spec.warmup}\nframes={spec.length}\nsimulation_fps=60\ncut_at={spec.cut_at}\nreset_cut={spec.reset_cut}\nmodel={model}\ngate_model={gate}\nraw_model={raw_model}\nraw_specialize={spec.raw_specialize}\ngate_input_version=1\nraw_input_version=1\nraw_storage={raw_storage}\nraw_index_layout={raw_index_layout}\ndecoder={spec.decoder}\npatch_fast={spec.patch_fast}\npatch_history={spec.patch_history}\npatch_source_geometry={spec.patch_source}\ninput_track={input_track}\ntraining_inputs={spec.training_inputs}\nformat={format}\nvisibility=foreground_area,horizontal_speed_output_pixels_per_frame,0,1\nreference=analytic_pixel_integral_after_reconstruction_never_decoder_input\ntrack=development_continuous_clip_not_sealed_test\n"
+    let radiance = if spec.shot == 72 { "affine_spatial" } else if spec.shot == 73 {
+        "bilinear_spatial"
+    } else { "constant_per_material" }
+    let metadata = f"radiance={radiance}\nscene=analytic/slats-checkerboard\ncase_catalog=legacy8_stress64_radiance2_v2\nshot={spec.shot}\ncut_shot={(spec.shot + 3) % 8}\nwidth={spec.width}\nheight={spec.height}\nstart_frame={spec.start + spec.warmup}\nwarmup={spec.warmup}\nframes={spec.length}\nsimulation_fps=60\ncut_at={spec.cut_at}\nreset_cut={spec.reset_cut}\nmodel={model}\ngate_model={gate}\nraw_model={raw_model}\nraw_specialize={spec.raw_specialize}\ngate_input_version=1\nraw_input_version=1\nraw_storage={raw_storage}\nraw_index_layout={raw_index_layout}\ndecoder={spec.decoder}\npatch_fast={spec.patch_fast}\npatch_history={spec.patch_history}\npatch_source_geometry={spec.patch_source}\ninput_track={input_track}\ntraining_inputs={spec.training_inputs}\nformat={format}\nvisibility=foreground_area,horizontal_speed_output_pixels_per_frame,0,1\nreference=analytic_pixel_integral_after_reconstruction_never_decoder_input\ntrack=development_continuous_clip_not_sealed_test\n"
     let _ = files::write(f"{directory}/sequence.txt", metadata.as_bytes()).wait()?
     for divisor in 1..5 {
         var load = drive::gpu()

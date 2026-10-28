@@ -2859,3 +2859,25 @@ First comparison7.98min; decision12.89min.
 Onefollow-up, no training/newreference. Failedbinding/build preserved.
 64captures,24prior controls exact; runtime restored.
 [Full measurements and decision](neural-shaded-appearance.md#hardware-response-grids-exact-silhouettes-insufficient-material-fidelity).
+
+
+### AMD spatial radiance source comparison (2026-10-28)
+
+RADV RENOIR1002:164c / Ryzen5 5500U, Mesa26.1.6, Chrome154.0.8037.57,
+Wrela0.9.0/compilerde9b81e5; parentb39f17c2 plus archived variants.
+Two new192×108,32frame affine/bilinear radiance clips over existing geometry,
+1×–4×. Palette/observed-bilinear/direct-source FLIP0.27222473/0.00252797/
+0.00152334; LPIPS0.01576336/1.23050e-7/1.24333e-8;
+meanclipPSNR22.19894/79.35112/84.84180dB. GPU foreground geometry moment
+exact across256frames/5,308,416pixels; shaded edge errors reported separately.
+Full1080p4×case72 GPUmedian/p95 1.09688/1.25856,1.79748/1.89284,
+1.43692/1.49072ms. Requestedlive/peak48,045,912/56,340,312,
+48,021,760/56,316,160,25,212,040/33,506,440B.
+Direct actualDRM VRAM/GTT111,140,864/18,608,128B,PSS539,652,096B;
+whole-client,not perasset. All applicable sampling,refresh,motion,visibility,
+integration,common storage and composite included; this fixture has no wood/sort.
+Firstassessment16.59min; decision20.34min; onefollow-up, no training.
+Direct integration exploits the same authored source; no privileged neural inputs.
+Retain opt-in diagnostic controls; change architecture toward exact source terms
+plus only expensive residual approximation. No paired/G4/worldleadership claim.
+[Full evidence and limitations](neural-coverage-radiance.md#spatial-radiance-compile-known-formulas-before-estimating-coefficients).

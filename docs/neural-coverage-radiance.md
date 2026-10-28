@@ -687,3 +687,150 @@ Original Wrela implementation; existing evaluator
 implementation or model was imported. Evidence on Pop!_OS:
 build/neural-evidence/source-material-basis-v1.
 Manifest SHA-256: `822b9c163dcc10881af528c1da7bebabd13c18ad911d003c4f65096fb8c44356`.
+
+
+## Spatial radiance: compile known formulas before estimating coefficients
+
+**Decision: change the representation.** The observed bilinear basis repairs the
+constant-colour assumption, but direct conventional integration of the authored
+radiance formula gives better quality, lower measured full-frame time and less
+requested memory on this family. Keep the two paths as explicit diagnostic
+controls; do not promote observed fitting as a rendering advantage here.
+
+This continues the source-material investigation after the separate G4 response
+grid retirement. It does not reverse that G4 result. The frozen compact optical
+fit remains at 8/24 existing shaded gates; G1–G7 and every frozen model remain
+unchanged. No material-moment training was performed.
+
+### Consequential question and fair source contract
+
+The previous 72 analytic cases have only three globally constant RGB values.
+They cannot reveal whether the retained palette representation handles spatially
+varying shading. Two new cases reuse geometry from cases19/53 and add, respectively,
+affine and bilinear spatial radiance. This is the only reference extension:
+the existing pulse antiderivative gains first/cross moments, checked against
+128×128 point quadrature. No new reference framework or additional G4 reference
+images were built.
+
+All methods may exploit the same useful authored geometry and radiance source.
+The constant-palette control uses its three guided observations. The new observed
+basis places twelve of the existing colour evaluations in visible material
+regions and fits four RGB coefficients per material. At4× the ordinary colour
+budget remains 1/16 of output pixels. The source-direct baseline instead compiles
+the radiance coefficients already present in the source program and integrates
+them without colour observations or history. Giving it that option is essential:
+estimating known formulas must not be presented as an advantage of learning.
+
+Both new decoders explicitly clip checker cells/slat intervals and integrate
+local geometric moments. Reference geometry uses periodic pulse antiderivatives.
+Only the reference reads the independently integrated target. The direct baseline
+shares the authored radiance law with point shading, as a conventional source
+compiler should; it does not call the reference pixel integrator.
+
+This is hand-authored specialization of two simple polynomial programs, not an
+automatic general-purpose source compiler, arbitrary 3D shading, held-out content,
+or a fixed-input vendor comparison. Both new paths are conventional.
+
+### Shaded quality and silhouettes
+
+Two public192×108 clips,32frames each,1×–4×; exposure1 named display transform,
+the established FLIP/LPIPS evaluator and identical reference/visibility files.
+All four scale settings give the same aggregate values because these paths
+integrate the supported radiance family rather than relying on regular pixel
+sampling. The table averages the two clip aggregates; PSNR is mean clip PSNR.
+
+| Method | Mean FLIP | LPIPS | PSNR dB | Worst frame FLIP across both clips |
+|---|---:|---:|---:|---:|
+| Three global colours | 0.27222473 | 0.01576336 | 22.19894 | 0.32244357 |
+| Twelve observed bilinear rows | 0.00252797 | 1.23050e-7 | 79.35112 | 0.00291240 |
+| Direct authored formula | 0.00152334 | 1.24333e-8 | 84.84180 | 0.00164688 |
+
+At4×, mean edge-band display MAE for affine/bilinear cases is
+0.0544632/0.0735092 for the palette, 0.00009217/0.00009523 for observed
+coefficients and 0.00004346/0.00004879 for direct source integration.
+The edge band includes fractional foreground coverage and both sides of
+horizontal coverage transitions. Worst frame edge-channel p99 errors are,
+respectively,0.175844/0.183016,0.00025759/0.00022674 and
+0.00014198/0.00014490. These are shaded RGB errors, not opacity estimated
+from material tags.
+
+A temporary GPU diagnostic exposes the actual foreground moment used by both
+new decoders. It matches the independently integrated visibility footprint
+**exactly on256frames/5,308,416pixels**, including all scales and both clips.
+The diagnostic source/captures are preserved and its shader change is restored.
+This verifies the supported analytic silhouettes; it does not establish G3
+strand precision or unseen 3D foliage coverage.
+
+### Complete cost and actual resident observations
+
+Pop!_OS AMD RADV RENOIR1002:164c / Ryzen5 5500U; Mesa26.1.6,
+Chrome154.0.8037.57, Wrela0.9.0/compilerde9b81e5. Parent b39f17c2 plus
+each archived variant. Full1080p,4×,case72,240measured frames after32warmup;
+separate300frame paced completion/allocation run. GPU timing and CPU scoring
+run sequentially.
+
+| Method | Saturated GPU median / p95 ms | Paced completion p95 / p99 ms | CPU p99 ms |
+|---|---:|---:|---:|
+| Global palette | 1.09688 / 1.25856 | 5.31130 / 5.58816 | 0.62025 |
+| Observed bilinear | 1.79748 / 1.89284 | 5.76514 / 6.38799 | 0.61805 |
+| Direct source | 1.43692 / 1.49072 | 5.65016 / 5.82305 | 0.55490 |
+
+The measured whole frame includes source evaluation where used, motion,
+coefficient refresh, geometric visibility/integration, unchanged neighbourhood
+work/common textures and final composite. Direct source bypasses unnecessary
+sampling/history resources and work. This fixture has no wood or sorting
+workload; the previous shaded-tree experiments remain the relevant complete
+G4 comparisons. No startup baking, cache rebuild or model inference is hidden
+in these three paths. Timing is descriptive: no paired confidence claim or
+performance promotion, and no20minute G6 claim.
+
+| Method | Requested live / peak bytes | Actual DRM VRAM / GTT bytes | Browser-group PSS bytes |
+|---|---:|---:|---:|
+| Global palette | 48,045,912 / 56,340,312 | 136,511,488 / 18,608,128 | 540,015,616 |
+| Observed bilinear | 48,021,760 / 56,316,160 | 136,495,104 / 18,608,128 | 582,697,984 |
+| Direct source | 25,212,040 / 33,506,440 | 111,140,864 / 18,608,128 | 539,652,096 |
+
+Observed coefficients occupy192bytes instead of48, while eliminating24,300bytes
+of selection scratch; all common storage, inactive resources, presentation,
+uniform/upload buffers, histories and allocation peaks remain counted.
+There is no learned weight or fallback cache. Private shader register/spill
+usage is not isolated; actual DRM/PSS includes observable driver/browser
+caches at whole-client scope. UMA pools overlap and must not be summed.
+These are not per-asset physical peaks or a16× appearance-residency proof.
+
+### Verification, stopping decision and next bet
+
+First joint assessment:16.59minutes; decision:20.34minutes from the conservative
+block start. One follow-up added the stronger direct-source baseline; no second
+optimization or training. Initial compiler restrictions, a stopped nonunique
+installer edit, initial poor palette outputs and all measured variants are
+preserved. Three focused tests cover the new reference integral, observed
+reconstruction and valid/nondegenerate probe placement. The latter led to a
+64×64minimum for the observed bilinear mode; the original palette retains its
+32×32minimum. This API repair changes no measured resolution.
+
+Minimal regression captures match224legacy/frozen-model files exactly;
+32final bilinear files match the measured candidate;16cut/fresh files match.
+All1,536reference/visibility file comparisons across three methods are exact, and
+512observed coefficient frames are finite and current. Source/type checks pass.
+No repeated broad suite or unchanged G4 rendering rerun was performed.
+Only opt-in fixture modes source-bilinear/source-direct and the two diagnostic
+cases are added; the production renderer is not promoted.
+
+The useful result is the failure of a tempting generalization: a compact
+observed representation can look excellent yet do unnecessary work compared
+with the authored program. **Next architecture bet:** expose exact visibility
+and cheaply integrable source terms, then bound caches/models to an expensive
+nonintegrable radiance residual. First measure direct evaluation and conventional
+interpolation/caching with the same source information. A learned component has
+to beat those joint quality/runtime/memory controls.
+
+Conventional rendering wins are successful outcomes too, per the user's
+clarification. This broadens the research direction without changing G1–G7 or
+calling this simple fixture world-leading.
+
+Original Wrela implementation; existing evaluator
+[citations](citations.md#neural-reconstruction-instrument) apply. No external
+model or implementation was imported. Evidence on Pop!_OS:
+build/neural-evidence/source-radiance-basis-v1.
+Manifest SHA-256: `5d13eae5c91ce64f0e45e5f8020d4eaadfdde7754add4e9f0c1da02081b62530`.

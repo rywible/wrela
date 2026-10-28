@@ -1,0 +1,223 @@
+// Conventional observed bilinear radiance on explicit source material regions.
+// No source RGB coefficients, mode selector, or reference integral enters this decoder.
+use std::gpu::{FragCoord, GlobalId, Rgba16Float, Slots, Texture}
+
+pub fn representative(index: u32, tick: u32, shape: vec4, checker: f32, size: vec2) -> vec2 {
+    let m = index % 3
+    let corner = index / 3
+    let base = source_basis::representative(m, tick, shape, checker)
+    let x = base.x + if corner % 2 == 1 {
+        floor((size.x - 1.0 - base.x) / shape.x) * shape.x
+    } else { 0.0 }
+    let column = floor(x / checker)
+    let odd = column - floor(column * 0.5) * 2.0
+    let row = if m == 0 { 0.0 } else if m == 1 { odd } else { 1.0 - odd }
+    let y = (row + 0.5) * checker + if corner >= 2 {
+        floor((size.y - 2.0 * checker) / (2.0 * checker)) * 2.0 * checker
+    } else { 0.0 }
+    vec2(x, y)
+}
+
+pub fn observation_point(
+    pixel: vec2,
+    width: u32,
+    height: u32,
+    jitter: vec2,
+    scale: vec2,
+    tick: u32,
+    shape: vec4,
+    checker: f32,
+    guided: u32,
+) -> vec2 {
+    let index = u32(pixel.y) * width + u32(pixel.x)
+    if guided == 2 && index < 12 {
+        representative(index, tick, shape, checker, vec2(f32(width), f32(height)) / scale)
+    } else {
+        source_basis::observation_point(pixel, width, jitter, scale, tick, shape, checker, guided)
+    }
+}
+
+pub fn coefficients(p: [vec2; 4], v: [vec3; 4]) -> [vec3; 4] {
+    let sy0 = (v[2] - v[0]) / (p[2].y - p[0].y)
+    let sy1 = (v[3] - v[1]) / (p[3].y - p[1].y)
+    let cxy = (sy1 - sy0) / (p[1].x - p[0].x)
+    let cy = sy0 - cxy * p[0].x
+    let b0 = v[0] - sy0 * p[0].y
+    let b1 = v[1] - sy1 * p[1].y
+    let cx = (b1 - b0) / (p[1].x - p[0].x)
+    [b0 - cx * p[0].x, cx, cy, cxy]
+}
+
+@compute(12)
+pub fn update(
+    scene: Texture<Rgba16Float>,
+    scale: vec2,
+    tick: u32,
+    shape: vec4,
+    checker: f32,
+    palette: mut Slots<vec4>,
+    id: GlobalId,
+) {
+    if id.x >= 12 { return }
+    let size = vec2(f32(scene.width()), f32(scene.height())) / scale
+    var p = [vec2(0.0); 4]
+    var v = [vec3(0.0); 4]
+    for k in 0..4 {
+        let index = id.x / 4 + k * 3
+        p[k] = representative(index, tick, shape, checker, size) / size
+        v[k] = scene.load(index % scene.width(), index / scene.width()).rgb
+    }
+    let c = coefficients(p, v)
+    palette[id] = vec4(c[id.x % 4], f32(tick + 1))
+}
+
+fn axis(a: f32, b: f32, origin: f32) -> vec2 {
+    let lo = a - origin
+    let hi = max(a, b) - origin
+    vec2(hi - lo, (hi * hi - lo * lo) * 0.5)
+}
+
+fn tensor(x: vec2, y: vec2) -> vec4 {
+    vec4(x.x * y.x, x.y * y.x, x.x * y.y, x.y * y.y)
+}
+
+pub fn moments(at: vec2, tick: u32, shape: vec4, checker: f32) -> [vec4; 3] {
+    let shift = shape.z + shape.w * f32(tick)
+    let first = floor((at.x - shift) / shape.x)
+    var intervals = [vec2(0.0); 2]
+    var front = vec4(0.0)
+    for k in 0..2 {
+        let left = (first + f32(k)) * shape.x + shift
+        let a = max(at.x, left)
+        let b = min(at.x + 1.0, left + shape.y)
+        intervals[k] = vec2(a, max(a, b))
+        front += tensor(axis(a, b, at.x), vec2(1.0, 0.5))
+    }
+    let cell = floor(at / checker)
+    var bright = vec4(0.0)
+    for x in 0..3 {
+        let left = (cell.x + f32(x)) * checker
+        let lo = max(at.x, left)
+        let hi = min(at.x + 1.0, left + checker)
+        var xm = axis(lo, hi, at.x)
+        for k in 0..2 { xm -= axis(max(lo, intervals[k].x), min(hi, intervals[k].y), at.x) }
+        for y in 0..3 {
+            let bottom = (cell.y + f32(y)) * checker
+            let ym = axis(max(at.y, bottom), min(at.y + 1.0, bottom + checker), at.y)
+            let sum = cell.x + cell.y + f32(x + y)
+            if sum - floor(sum * 0.5) * 2.0 < 1.0 { bright += tensor(xm, ym) }
+        }
+    }
+    [front, bright, vec4(1.0, 0.5, 0.5, 0.25) - front - bright]
+}
+
+pub fn integrate(c: [vec3; 4], w: vec4, at: vec2, size: vec2) -> vec3 {
+    let uv = at / size
+    (c[0] + c[1] * uv.x + c[2] * uv.y + c[3] * uv.x * uv.y) * w.x +
+        (c[1] + c[3] * uv.y) / size.x * w.y +
+        (c[2] + c[3] * uv.x) / size.y * w.z +
+        c[3] / (size.x * size.y) * w.w
+}
+
+@fragment
+pub fn reconstruct(
+    p: FragCoord,
+    scene: Texture<Rgba16Float>,
+    palette: [vec4],
+    tick: u32,
+    jitter: vec2,
+    scale: vec2,
+    shape: vec4,
+    checker: f32,
+) -> vec4 {
+    let at = floor(p.position.xy)
+    let weights = moments(at, tick, shape, checker)
+    let size = vec2(f32(scene.width()), f32(scene.height())) / scale
+    var rgb = vec3(0.0)
+    for m in 0..3 {
+        let i = m * 4
+        rgb += integrate(
+            [palette[i].rgb, palette[i + 1].rgb, palette[i + 2].rgb, palette[i + 3].rgb],
+            weights[m],
+            at,
+            size,
+        )
+    }
+    let xy = clamp(
+        vec2i(floor(p.position.xy * scale + jitter)),
+        vec2i(0),
+        vec2i(i32(scene.width()) - 1, i32(scene.height()) - 1),
+    )
+    vec4(rgb, scene.load(u32(xy.x), u32(xy.y)).a)
+}
+
+@test
+fn observed_bilinear_matches_independent_integral() {
+    let size = vec2(192.0, 108.0)
+    for index in [1, 6, 19, 53, 72, 73] {
+        let f = field::case(index)
+        let shape = vec4(f.period, f.width, f.offset, f.speed)
+        for tick in [0, 7, 31] {
+            var coefficients_by_material = [[vec3(0.0); 4]; 3]
+            for m in 0..3 {
+                var p = [vec2(0.0); 4]
+                var v = [vec3(0.0); 4]
+                for k in 0..4 {
+                    let at = representative(m + k * 3, tick, shape, f.checker, size)
+                    assert(at.x >= 0.0 && at.y >= 0.0 && at.x < size.x && at.y < size.y)
+                    assert(field::front_at(f, at, tick) == (m == 0))
+                    p[k] = at / size
+                    v[k] = field::point(f, at, tick).rgb
+                }
+                coefficients_by_material[m] = coefficients(p, v)
+            }
+            for at in [vec2(0.0), vec2(7.0, 4.0), vec2(191.0, 107.0)] {
+                let w = moments(at, tick, shape, f.checker)
+                var rgb = vec3(0.0)
+                for m in 0..3 { rgb += integrate(coefficients_by_material[m], w[m], at, size) }
+                let error = abs(rgb - field::pixel(f, at, tick).rgb)
+                assert(
+                    max(error.x, max(error.y, error.z)) < 0.0001,
+                    f"basis {index} {tick} {at}: {error}",
+                )
+            }
+        }
+    }
+}
+
+// Strong conventional control: use the radiance formula already in the source program.
+// It shares source coefficients with point shading, but clips geometry independently of
+// the reference pulse antiderivative. No training, observations, history or truth readback.
+@fragment
+pub fn direct(p: FragCoord, f: field::Field, tick: u32) -> vec4 {
+    let at = floor(p.position.xy)
+    let weights = moments(at, tick, vec4(f.period, f.width, f.offset, f.speed), f.checker)
+    var rgb = vec3(0.0)
+    for m in 0..3 { rgb += integrate(field::radiance_terms(f, m), weights[m], at, vec2(1.0)) }
+    vec4(rgb, 1.0)
+}
+
+@test
+fn bilinear_probe_domain_is_nondegenerate_and_visible() {
+    for index in 0..field::CASES {
+        let f = field::Field { radiance: 0, ..field::case(index) }
+        let shape = vec4(f.period, f.width, f.offset, f.speed)
+        for size in [vec2(64.0), vec2(192.0, 108.0), vec2(1920.0, 1080.0)] {
+            for tick in [0, 31, 300] {
+                for m in 0..3 {
+                    let a = representative(m, tick, shape, f.checker, size)
+                    let b = representative(m + 3, tick, shape, f.checker, size)
+                    let c = representative(m + 6, tick, shape, f.checker, size)
+                    assert(b.x > a.x && c.y > a.y)
+                    for k in 0..4 {
+                        let at = representative(m + k * 3, tick, shape, f.checker, size)
+                        assert(at.x >= 0.0 && at.y >= 0.0 && at.x < size.x && at.y < size.y)
+                        assert(field::point(f, at, tick).rgb == if m == 0 {
+                            f.front
+                        } else if m == 1 { f.light } else { f.dark })
+                    }
+                }
+            }
+        }
+    }
+}

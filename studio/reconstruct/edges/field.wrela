@@ -15,11 +15,12 @@ pub struct Field: Copy + GpuData {
     pub offset: f32,
     pub speed: f32,
     pub checker: f32,
+    pub radiance: u32 = 0,
 }
 
-// Eight unchanged legacy cases followed by 64 additional development stress cases.
+// Eight unchanged legacy cases, 64 stress cases, and two spatial-radiance counterexamples.
 // This catalog is public development data, not a sealed release suite.
-pub const CASES: u32 = 72
+pub const CASES: u32 = 74
 
 fn draw(index: u32, channel: u32, count: u32) -> u32 {
     u32(rand(index + 31337, channel) * f32(count))
@@ -58,6 +59,11 @@ fn stress(index: u32) -> Field {
 /// merely learning a pixel-aligned pattern. Entire cases must be split, never random pixels.
 pub fn case(index: u32) -> Field {
     assert(index < CASES, "unknown analytic case")
+    if index >= 72 {
+        return Field { radiance: index - 71, ..stress(if index == 72 { 11 } else {
+            45
+        }) }
+    }
     if index >= 8 { return stress(index - 8) }
     let i = index
     Field {
@@ -88,7 +94,7 @@ pub fn front_at(f: Field, p: vec2, frame: u32) -> bool {
 }
 
 /// A point sample and its semantic class (scene alpha is a tag).
-pub fn point(f: Field, p: vec2, frame: u32) -> vec4 {
+fn flat_point(f: Field, p: vec2, frame: u32) -> vec4 {
     if front_at(f, p, frame) { return vec4(f.front, GRASS) }
     let x = floor(p.x / f.checker)
     let y = floor(p.y / f.checker)
@@ -107,6 +113,7 @@ fn bright(f: Field, lo: vec2, hi: vec2) -> f32 {
 /// Exact box-filtered linear RGB over a unit output pixel, with the front layer occluding
 /// the checkerboard. At most two slats intersect a pixel because every supported period > 1.
 pub fn pixel(f: Field, at: vec2, frame: u32) -> vec4 {
+    if f.radiance != 0 { return radiance_pixel(f, at, frame) }
     let hi = at + vec2(1.0)
     let shift = f.offset + f.speed * f32(frame)
     let first = floor((at.x - shift) / f.period)
@@ -217,6 +224,128 @@ fn stress_integral_matches_independent_point_quadrature() {
                 assert(
                     max(error.x, max(error.y, error.z)) < 0.0001,
                     f"stress {index} frame {frame} pixel {p}: {error}",
+                )
+            }
+        }
+    }
+}
+
+// Two bounded radiance counterexamples; coefficients belong only to the source/reference.
+fn material(f: Field, p: vec2, frame: u32) -> u32 {
+    if front_at(f, p, frame) { return 0 }
+    let cell = floor(p / f.checker)
+    let total = cell.x + cell.y
+    if total - floor(total * 0.5) * 2.0 < 1.0 { 1 } else { 2 }
+}
+
+pub fn radiance_terms(f: Field, m: u32) -> [vec3; 4] {
+    let c = if m == 0 { f.front } else if m == 1 { f.light } else { f.dark }
+    if f.radiance == 0 { return [c, vec3(0.0), vec3(0.0), vec3(0.0)] }
+    let n = f32(m + 1)
+    [
+        c,
+        c * vec3(0.3, 0.8, 0.5) * n / 192.0,
+        c * vec3(0.8, 0.2, 0.5) / (n * 108.0),
+        if f.radiance == 2 { c * vec3(0.4, 0.2, 0.6) * n / (192.0 * 108.0) } else { vec3(0.0) },
+    ]
+}
+
+pub fn point(f: Field, p: vec2, frame: u32) -> vec4 {
+    if f.radiance == 0 { return flat_point(f, p, frame) }
+    let m = material(f, p, frame)
+    let c = radiance_terms(f, m)
+    vec4(c[0] + c[1] * p.x + c[2] * p.y + c[3] * p.x * p.y, if m == 0 { GRASS } else { GROUND })
+}
+
+fn axis_moments(a: f32, b: f32, origin: f32) -> vec2 {
+    let end = max(a, b)
+    vec2(end - a, 0.5 * ((end - origin) * (end - origin) - (a - origin) * (a - origin)))
+}
+
+fn pulse_primitives(z: f32, period: f32, width: f32) -> vec2 {
+    let n = floor(z / period)
+    let q = min(z - n * period, width)
+    vec2(
+        n * width + q,
+        period * width * n * (n - 1.0) * 0.5 +
+            n * width * width * 0.5 +
+            n * period * q +
+            q * q * 0.5,
+    )
+}
+
+fn pulse_moments(a: f32, b: f32, period: f32, width: f32, origin: f32) -> vec2 {
+    let base = floor(a / period) * period
+    let value = pulse_primitives(b - base, period, width) -
+        pulse_primitives(a - base, period, width)
+    vec2(value.x, value.y + (base - origin) * value.x)
+}
+
+fn tensor(x: vec2, y: vec2) -> vec4 {
+    vec4(x.x * y.x, x.y * y.x, x.x * y.y, x.y * y.y)
+}
+
+fn bright_moments(f: Field, lo: vec2, hi: vec2, origin: vec2) -> vec4 {
+    let x = pulse_moments(lo.x, hi.x, 2.0 * f.checker, f.checker, origin.x)
+    let y = pulse_moments(lo.y, hi.y, 2.0 * f.checker, f.checker, origin.y)
+    let tx = axis_moments(lo.x, hi.x, origin.x)
+    let ty = axis_moments(lo.y, hi.y, origin.y)
+    tensor(x, y) + tensor(tx - x, ty - y)
+}
+
+fn radiance_pixel(f: Field, at: vec2, frame: u32) -> vec4 {
+    let hi = at + vec2(1.0)
+    let shift = f.offset + f.speed * f32(frame)
+    let first = floor((at.x - shift) / f.period)
+    var front = vec4(0.0)
+    var light = bright_moments(f, at, hi, at)
+    for k in 0..2 {
+        let a = (first + f32(k)) * f.period + shift
+        let lo = max(at.x, a)
+        let end = min(hi.x, a + f.width)
+        if end > lo {
+            front += tensor(axis_moments(lo, end, at.x), vec2(1.0, 0.5))
+            light -= bright_moments(f, vec2(lo, at.y), vec2(end, hi.y), at)
+        }
+    }
+    let areas = [front, light, vec4(1.0, 0.5, 0.5, 0.25) - front - light]
+    var rgb = vec3(0.0)
+    for m in 0..3 {
+        let c = radiance_terms(f, m)
+        let w = areas[m]
+        rgb += (c[0] + c[1] * at.x + c[2] * at.y + c[3] * at.x * at.y) * w.x +
+            (c[1] + c[3] * at.y) * w.y +
+            (c[2] + c[3] * at.x) * w.z +
+            c[3] * w.w
+    }
+    vec4(rgb, 1.0)
+}
+
+@test
+fn varying_radiance_integral_matches_point_quadrature() {
+    assert(
+        pulse_moments(a: 0.0, b: 1.0, period: 8.0, width: 0.25, origin: 0.0) == vec2(0.25, 0.03125),
+    )
+    for index in [72, 73] {
+        let f = case(index)
+        for tick in [0, 7, 31] {
+            for p in [vec2(0.0), vec2(7.0, 4.0), vec2(191.0, 107.0), vec2(-2.0, -1.0)] {
+                var sum = vec3(0.0)
+                var correction = vec3(0.0)
+                for y in 0..128 {
+                    for x in 0..128 {
+                        let v = point(f, p + (vec2(f32(x), f32(y)) + vec2(0.5)) / 128.0, tick).rgb /
+                            16384.0 -
+                            correction
+                        let next = sum + v
+                        correction = (next - sum) - v
+                        sum = next
+                    }
+                }
+                let error = abs(sum - pixel(f, p, tick).rgb)
+                assert(
+                    max(error.x, max(error.y, error.z)) < 0.0001,
+                    f"radiance {index} {tick} {p}: {error}",
                 )
             }
         }

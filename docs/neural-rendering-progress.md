@@ -2814,3 +2814,19 @@ preserved. All32grid alpha images exact;24prior controls exact.
 Runtime restored; next extend the retained source-guided radiance basis.
 [Full joint evidence](neural-shaded-appearance.md#hardware-response-grids-exact-silhouettes-insufficient-material-fidelity).
 Manifest: `ee6b70a01567ab7f25a2dbe606a1e20fe67b0b441dda385da9c2227b91dd36c3`.
+
+
+### Spatial radiance checkpoint (2026-10-28)
+
+First joint assessment16.59min; decision20.34min. One stronger-baseline
+follow-up, no training. Two justified spatial-radiance cases extend the existing
+antiderivative only. Palette/bilinear/direct meanFLIP0.27222473/0.00252797/
+0.00152334; full1080pGPU1.09688/1.79748/1.43692ms and requestedlive48,045,912/
+48,021,760/25,212,040B. ActualDRM/PSS retained separately.
+GPU silhouette moments exact on256frames;224legacy/frozen and32retained
+candidate files exact;16cut/fresh files exact. No broadG4advantage.
+Change representation: compile known analytic source terms; reserve observed,
+cached or learned approximations for demonstrably expensive residuals.
+Conventional wins also count as successful outcomes; G1–G7 stay unchanged/unmet.
+[Complete quality, cost, residency and decision](neural-coverage-radiance.md#spatial-radiance-compile-known-formulas-before-estimating-coefficients).
+Manifest: `5d13eae5c91ce64f0e45e5f8020d4eaadfdde7754add4e9f0c1da02081b62530`.

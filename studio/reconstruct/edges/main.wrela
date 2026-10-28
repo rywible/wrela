@@ -27,11 +27,13 @@ fn sampled(
     jitter: vec2,
     scale: vec2,
     width: u32,
+    height: u32,
     guided: u32,
 ) -> WithDepth<vec4> {
-    let at = source_basis::observation_point(
+    let at = source_bilinear::observation_point(
         p.position.xy,
         width,
+        height,
         jitter,
         scale,
         tick,
@@ -50,11 +52,13 @@ fn moved(
     jitter: vec2,
     scale: vec2,
     width: u32,
+    height: u32,
     guided: u32,
 ) -> vec4 {
-    let at = source_basis::observation_point(
+    let at = source_bilinear::observation_point(
         p.position.xy,
         width,
+        height,
         jitter,
         scale,
         tick,
@@ -134,6 +138,8 @@ pub struct State {
     raw_indexed: bool,
     raw_factorized: bool,
     source_basis: bool,
+    bilinear_basis: bool,
+    source_direct: bool,
     basis_choices: GpuBuffer<u32>,
     basis_palette: GpuBuffer<vec4>,
     raw_heads: GpuBuffer<u32>,
@@ -211,6 +217,8 @@ pub fn init() -> State {
         raw_indexed: false,
         raw_factorized: false,
         source_basis: false,
+        bilinear_basis: false,
+        source_direct: false,
         basis_choices: buffer(1),
         basis_palette: buffer(1),
         raw_heads: buffer(1),
@@ -262,6 +270,10 @@ fn resize(s: mut State, width: u32, height: u32) {
     assert(!s.collecting, "resize during capture")
     s.width = width
     s.height = height
+    if s.source_direct {
+        s.current = texture(width, height)
+        return
+    }
     let (w, h) = (width / s.divisor, height / s.divisor)
     assert(w > 0 && h > 0 && width % s.divisor == 0 && height % s.divisor == 0)
     s.scene = texture(width: w, height: h)
@@ -290,8 +302,8 @@ fn resize(s: mut State, width: u32, height: u32) {
     }
     if s.raw_factorized { s.raw_kernel = buffer(16) }
     if s.source_basis {
-        s.basis_choices = buffer(source_basis::groups(w, h) * 3)
-        s.basis_palette = buffer(3)
+        if !s.bilinear_basis { s.basis_choices = buffer(source_basis::groups(w, h) * 3) }
+        s.basis_palette = buffer(if s.bilinear_basis { 12 } else { 3 })
     }
     s.raw_count = 0
     s.patch_frames = 0
@@ -316,6 +328,14 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             over: width * height,
         )
         s.captured_count = 1
+        return
+    }
+    if s.source_direct {
+        label("direct source radiance integration")
+        let p = begin_pass(mut s.current)
+        fullscreen(p, source_bilinear::direct.bind(f, s.tick))
+        p.end()
+        finish(mut s, width, height)
         return
     }
     let (w, h) = (s.scene.width(), s.scene.height())
@@ -345,7 +365,8 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             jitter: jitter,
             scale: scale,
             width: w,
-            guided: u32(s.source_basis && source_basis::GUIDED),
+            height: h,
+            guided: if s.bilinear_basis { 2 } else { u32(s.source_basis && source_basis::GUIDED) },
         ),
         vertices: 3,
         depth: Depth { compare: Compare::Always, write: true },
@@ -360,11 +381,26 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
             jitter: jitter,
             scale: scale,
             width: w,
-            guided: u32(s.source_basis && source_basis::GUIDED),
+            height: h,
+            guided: if s.bilinear_basis { 2 } else { u32(s.source_basis && source_basis::GUIDED) },
         ),
     )
     p.end()
-    if s.source_basis {
+    if s.bilinear_basis {
+        assert(width >= 64 && height >= 64, "source basis requires in-frame material probes")
+        label("source bilinear observations")
+        dispatch(
+            source_bilinear::update.bind(
+                s.scene,
+                scale,
+                s.tick,
+                vec4(f.period, f.width, f.offset, f.speed),
+                f.checker,
+                mut s.basis_palette,
+            ),
+            over: 12,
+        )
+    } else if s.source_basis {
         assert(width >= 32 && height >= 32, "source basis requires in-frame material probes")
         label("source material observations")
         dispatch(
@@ -582,7 +618,20 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     }
     label(if s.patch_enabled { "patch decode" } else { "temporal control" })
     let p = begin_pass(mut s.current)
-    if s.source_basis {
+    if s.bilinear_basis {
+        fullscreen(
+            p,
+            source_bilinear::reconstruct.bind(
+                s.scene,
+                s.basis_palette.items(),
+                s.tick,
+                jitter,
+                scale,
+                vec4(f.period, f.width, f.offset, f.speed),
+                f.checker,
+            ),
+        )
+    } else if s.source_basis {
         fullscreen(
             p,
             source_basis::reconstruct.bind(
@@ -725,6 +774,10 @@ pub fn frame(s: mut State, time: f32, width: u32, height: u32) {
     s.captured_previous_shape = s.previous_shape
     s.previous_shape = vec4(f.period, f.width, f.offset, f.speed)
     s.reset = false
+    finish(mut s, width, height)
+}
+
+fn finish(s: mut State, width: u32, height: u32) {
     label("diagnostic view")
     let screen = begin_screen_pass(clear: vec4(0.0))
     fullscreen(screen, shown.bind(s.current))
@@ -850,14 +903,16 @@ pub fn publish_visibility(s: mut State) -> u32 {
 
 /// An explicit fixture-only control. Never silently combines with a trained RGB correction.
 pub fn decoder(s: mut State, mode: u32) {
-    assert(mode <= 6 && !s.rgb_enabled && s.width == 0)
+    assert(mode <= 8 && !s.rgb_enabled && s.width == 0)
     s.raw_enabled = mode == 1 || (mode >= 3 && mode <= 5)
     s.raw_source = mode >= 3 && mode <= 5
     s.raw_indexed = mode == 4
     s.raw_factorized = mode == 5
-    s.source_basis = mode == 6
+    s.source_basis = mode >= 6 && mode <= 7
+    s.bilinear_basis = mode == 7
+    s.source_direct = mode == 8
     s.patch_enabled = mode == 2
-    if s.raw_enabled || s.source_basis { s.collect_rows = false }
+    if s.raw_enabled || s.source_basis || s.source_direct { s.collect_rows = false }
 }
 
 /// Observation only, after capture. Its RGBA tags and motion/depth are not display pixels.
@@ -1066,7 +1121,7 @@ pub fn publish_raw_prepared(s: mut State) -> u32 {
 // Observation only after capture; no reference data feeds source-basis reconstruction.
 pub fn publish_basis(s: mut State) -> u32 {
     assert(s.source_basis && !s.collecting && s.captured_count == 1)
-    s.exported_source = buffer(3)
+    s.exported_source = buffer(s.basis_palette.len())
     copy(from: s.basis_palette.items(), to: s.exported_source.items_mut())
-    3
+    s.basis_palette.len()
 }
