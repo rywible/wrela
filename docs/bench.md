@@ -2570,3 +2570,15 @@ bytes; compact informed field 24/24, 0.64060 ms, 830,580 bytes. One coarser foll
 40 captures; original controls byte-exact; source compiler checks passed.
 Retire; no second sweep, training or new references. Runtime restored.
 [Full quality, cost and physical memory evidence](neural-shaded-appearance.md#source-boundary-meshes-retire-the-per-leaf-geometry-expansion).
+
+### AMD compact learned coverage retirement (2026-10-28)
+
+RADV RENOIR 1002:164c / Ryzen 5 5500U, Mesa 26.1.6, Chrome 154.0.8037.57,
+Wrela 0.9.0 compiler de9b81e5; parent 14e4285d plus archived variants.
+At 64px, vectorized neural coverage: 14/24 cases, 6.30516 ms complete GPU span,
+749,184 live requested bytes. Conventional fitted grid: 16/24, 0.61752 ms,
+748,924 bytes. Exact source program: 24/24, 1.89936 ms, 748,156 bytes.
+Paced GPU tails, silhouettes and actual whole-client DRM/PSS also recorded.
+No joint advantage; retire after one frozen-weight optimization. First comparison
+5.52 minutes; decision 16.40 minutes. Runtime restored; failed results preserved.
+[Complete quality, runtime and memory evidence](neural-shaded-appearance.md#compact-learned-coverage-retire-per-fragment-decoding).

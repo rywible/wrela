@@ -2587,3 +2587,24 @@ Next keep source-card quads/exact depth and test compact coverage decoding again
 a matched-size conventional approximation, targeting the rendered boundary error.
 [Complete comparison](neural-shaded-appearance.md#source-boundary-meshes-retire-the-per-leaf-geometry-expansion).
 Manifest SHA-256: `2f40a667ceed6294e82a21ae15074165308c404b07b6f13016f607029508e0cc`.
+
+### Compact learned coverage is retired
+
+The frozen 4,356-byte coverage decoder passes 14/24 rendered cases versus a
+4,096-byte conventional fitted grid's 16/24. One exact-weight vectorization
+preserves all images but costs 6.30516 ms versus 0.61752 ms, with 749,184 versus
+748,924 requested live bytes. The informed exact source program passes 24/24 at
+1.89936 ms and 748,156 live bytes. No neural advantage; skip a second optimization.
+
+First assessment 5.52 minutes; decision
+16.40 minutes. Each source fit used 2,400 steps; follow-up
+used none. No material-moment fitting or new shaded references. 56 rendered and
+24 math captures; failed models preserved, default runtime restored byte-exactly.
+Actual DRM/PSS snapshots recorded, without claiming asset-attributed residency.
+G1–G7 remain unchanged and unmet.
+
+Next architecture bet: source-derived clump-level layered depth/coverage tiles
+that reduce visibility scratch and per-card work, with exact fallback counted.
+Start conventional; justify any learned residual with rendered error and cost.
+[Full comparison](neural-shaded-appearance.md#compact-learned-coverage-retire-per-fragment-decoding).
+Manifest SHA-256: `d023e3286fbde983839e28a1ae35bae98847ab3e1dd31ed1fa5d3700e37754eb`.

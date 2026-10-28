@@ -4836,3 +4836,174 @@ Evidence: build/neural-evidence/g4-surface-patches-v1 on Pop!_OS; five measured
 variants, 40 rendered captures, source meshes/polygons, compiler checks, initial
 and follow-up assessments, physical observations and exact replay archives.
 Manifest SHA-256: `2f40a667ceed6294e82a21ae15074165308c404b07b6f13016f607029508e0cc`.
+
+## Compact learned coverage: retire per-fragment decoding
+
+**Decision: retire this learned coverage decoder for the current AMD G4 path;
+change the representation before further neural fitting.** The learned model
+passes 14/24 rendered numeric cases, versus 16/24 for an equally compact
+conventional fitted grid. One targeted vectorization of the same frozen weights
+leaves it at 6.30516 ms versus 0.61752 ms, with 749,184 versus 748,924 requested
+live bytes. The exact source program passes 24/24 using fewer bytes than either
+fitted representation. No neural rendering advantage is demonstrated.
+
+First complete comparison: 5.52 minutes.
+Decision: 16.40 minutes, at 2026-10-28T05:12:28.771095+00:00, within the
+two-hour limit. One targeted optimization; a second is not warranted. No new shaded
+references and no material-moment fitting. G1–G7 remain unchanged and unmet.
+
+### Consequential question and equal information
+
+Previous boundary meshes failed from geometry expansion. This experiment retains
+one quad per original source card, all 26,560 card placements, per-sample depth,
+wood, and authored normal/depth field. It asks whether compact coverage decoding
+can remove the coverage cache without damaging rendered boundaries or whole cost.
+
+All methods have the same original 16 quantized 128×128 source alpha patterns.
+Training samples their continuous bilinear values, with the same texel-edge clamp.
+Neither fitted method receives shaded reference images, view labels or privileged
+source information. The exact source program, compact source tile cache, fastest
+native source cache and unchanged frozen optical primitives are measured controls.
+Native and compact source controls reproduce their prior sealed images exactly.
+
+Conventional: sixteen 16×16 UNORM8 logit grids, 4,096 bytes, bilinear decode.
+Neural: sixteen 8×8×4 UNORM8 feature grids plus a shared 6→16 ReLU→1 decoder,
+4,356 bytes including 129 half parameters and padding. Four interpolated features
+and two local cell coordinates enter the decoder; classification uses logit≥0.
+Both receive 2,400 source-only optimization steps, batch 4,096, seed 417, with
+half uniform and half boundary-focused points. Quantization is included in fitting.
+The final checkpoint is fixed before rendered evaluation; no image-based selection.
+
+Offline fitting took 4.29 seconds for the grid and 7.48 seconds for the neural
+model on the Pop!_OS CPU. GPU measurements ran separately on AMD. Dense source-mask
+classification disagreement is 2.644% for the grid and 2.165% for the neural model.
+That proxy improvement does not survive the rendered comparison.
+
+### Shaded quality, including silhouettes
+
+| Method | Numeric cases passed | PSNR dB | FLIP | LPIPS | Coverage MAE | Worst boundary p99 px |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Native source cache | 24/24 | 40.295971 | 0.01300193 | 0.00249104 | 0.01005954 | 2.000000 |
+| Compact source cache + field | 24/24 | 40.295900 | 0.01300320 | 0.00249059 | 0.01005954 | 2.000000 |
+| Frozen optical primitives | 8/24 | 40.127682 | 0.01234846 | 0.00188937 | 0.00883219 | 1.414214 |
+| Exact source program | 24/24 | 40.293804 | 0.01303961 | 0.00247633 | 0.01007283 | 2.000000 |
+| Conventional fitted grid | 16/24 | 40.435139 | 0.01297458 | 0.00239655 | 0.00975299 | 2.236068 |
+| Neural coverage | 14/24 | 40.228645 | 0.01305990 | 0.00232536 | 0.01004571 | 2.236068 |
+| Neural, vectorized frozen weights | 14/24 | 40.228645 | 0.01305990 | 0.00232536 | 0.01004571 | 2.236068 |
+
+Counts require per-case PSNR loss≤0.25 dB and FLIP/LPIPS≤1.05× the informed source
+control, using the unchanged 1e-4 denominator floor. Counts agree against all four
+native/compact/hierarchy source controls. They are partial numeric gates, not G4
+or temporal G3 passes. Averages do not excuse failing cases.
+
+The neural decoder's worst boundary p99 increases from 2 to 2.236 pixels; worst
+half-coverage precision is 0.980591 versus 0.983065 for the source control.
+The grid also reaches 2.236 pixels. Coverage stays independent of lighting for
+all 14 method/view sequences. The exact source program is within the numeric
+gates but differs slightly from cached/hardware-filter arithmetic; it is not
+claimed byte-identical to the cache.
+
+Evaluation reuses the completed AA64 shaded references: one static 64px tree,
+two public views, four analytic lights, three backgrounds, exposure 0.62,
+ACES→sRGB, LDR FLIP at 67 ppd and AlexNet LPIPS v0.1. Flat bark, limited lighting
+and public views remain limitations; no reference work was added.
+
+### Whole AMD cost and resident observations
+
+RADV RENOIR PCI 1002:164c, Ryzen 5 5500U, Mesa 26.1.6,
+Chrome 154.0.8037.57, Pop!_OS; Wrela 0.9.0 compiler
+de9b81e52a7747870dfbd5223cb8aeb41e584d23. Parent 14e4285d plus archived variant
+sources. Sequential measurements, 60 warm-up and 240 measured frames at 64×64.
+
+Source paths include placement, coverage decoding, all 53,120 leaf triangles,
+7,392 expanded wood triangles, hardware or packed 16-sample visibility, exact
+authored material field, lighting, resolve and composite. Their depth visibility
+requires no optical sort. Frozen optical includes its decode/projection, CPU
+centre-depth sort, indexed wood, four-sample ordered blending and composite.
+CPU timings include view/light updates, uploads and commands. Source grid/neural
+paths issue three draws and upload 1,040 bytes per frame. Initialization and
+offline fitting are excluded from steady timing; initial allocation peaks are
+recorded. Dynamic source edits, retraining and rebuild costs remain unmeasured.
+
+| Method | Saturated GPU median/p95 ms | Paced GPU p95/p99 ms | CPU call p99 ms | CPU start to GPU completion p95/p99 ms |
+| --- | ---: | ---: | ---: | ---: |
+| Native source cache | 0.28664/0.41040 | 1.0868/1.0884 | 0.6942 | 4.6355/4.8503 |
+| Compact source cache + field | 0.63848/0.69904 | 1.4879/1.5219 | 0.7033 | 4.6404/4.8902 |
+| Frozen optical primitives | 0.06828/0.07188 | 0.2712/0.2738 | 0.9800 | 4.5754/4.8666 |
+| Exact source program | 1.89936/1.91672 | 2.8319/2.8848 | 0.7511 | 5.5303/5.6773 |
+| Conventional fitted grid | 0.61752/0.74432 | 1.5150/1.5578 | 0.7744 | 5.9515/6.5144 |
+| Neural coverage | 6.33240/6.36792 | 7.1848/7.2363 | 0.7511 | 10.0508/10.1801 |
+| Neural, vectorized frozen weights | 6.30516/6.33460 | 7.2025/7.2510 | 0.6850 | 10.4353/10.6202 |
+
+The follow-up repacks the exact same 129 half weights into four vec4 hidden blocks
+and unrolls decoding. It changes neither model size nor any rendered RGBA byte.
+Runtime changes 6.33240→6.30516 ms; this small single-run difference is not evidence
+of an improvement. The remaining 10.21× gap against the grid and 9.88× gap against
+compact cached source are decisive. Paced GPU p95/p99 are also well above the
+1.1× allowance. Completion includes browser/driver notification after all frame
+submissions; it is not input-to-photon.
+
+| Method | Engine + scratch bytes | All requested live/peak bytes | Observed DRM VRAM/GTT bytes | Browser-group PSS bytes |
+| --- | ---: | ---: | ---: | ---: |
+| Native source cache | 1,466,060 | 1,875,660/1,892,044 | 17,424,384/9,936,896 | 491,793,408 |
+| Compact source cache + field | 420,980 | 830,580/846,964 | 17,408,000/9,936,896 | 492,118,016 |
+| Frozen optical primitives | 316,532 | 726,132/742,516 | 17,633,280/9,756,672 | 478,835,712 |
+| Exact source program | 338,556 | 748,156/764,540 | 17,383,424/10,133,504 | 488,573,952 |
+| Conventional fitted grid | 339,324 | 748,924/765,308 | 17,383,424/9,936,896 | 486,449,152 |
+| Neural coverage | 339,584 | 749,184/765,568 | 17,383,424/10,133,504 | 488,777,728 |
+| Neural, vectorized frozen weights | 339,584 | 749,184/765,568 | 17,649,664/10,231,808 | 487,137,280 |
+
+Engine totals exclude the common 65,536-byte output. All-requested totals add
+409,600 bytes for output, screen, upload and uniform resources. Decoder weights,
+latents, field nodes, wood, visibility scratch, caches and dummy/fallback
+allocations are counted. The grid/neural paths allocate no decoded coverage
+texture: tissue fallback evaluates original source code. At this distant fixture
+the resolved tissue contribution is zero; other sizes still need measurement.
+The exact source program retains its 3,328-byte parameter table.
+
+The compact cache's 85,764-byte leaf data falls to 4,356 bytes, but that is not a
+fair 16× G4 win: the informed exact program is only 3,328 bytes, and full requested
+live memory improves merely 830,580/749,184 = 1.109×. The packed visibility resources
+alone remain 327,680 bytes, about 96.5% of the neural path's engine total.
+The source program provides 24/24 quality at 748,156 requested live bytes and
+1.89936 ms, strictly better than this neural path in all three measured dimensions.
+
+DRM VRAM/GTT and process PSS are actual whole-client resident snapshots, including
+browser/driver state. They do not isolate physical asset appearance or transient
+peaks. Do not sum overlapping UMA pools. These observations show no clear neural
+physical-memory advantage and cannot certify appearance-only G4 residency.
+No claim of quality-matched 16× compression is made.
+
+### Verification, preservation and next architecture bet
+
+Seven measured variants provide 56 rendered captures. Independent float64
+evaluation of exact packed UNORM8/half parameters agrees with 24 GPU probe captures:
+maximum absolute logit error 1.653e-5, zero classification disagreements at the
+sampled points. Repacking preserves all 129 half weights and every feature byte.
+Eight vectorized rendered captures match the scalar neural version byte-for-byte;
+24 original control captures match prior evidence. Source field and reference
+machinery are unchanged and reuse established checks.
+
+Both failed neural versions and the conventional approximation are preserved,
+including training states, source fits, packed payloads, shaders, captures,
+timings, allocation traces and physical observations. The original runtime is
+restored byte-for-byte; no candidate is promoted and no broad suite is repeated.
+A second fit or network-size sweep would not resolve the measured working-set
+and per-fragment execution problem.
+
+The next architecture-level bet is **source-derived layered depth/coverage tiles
+at clump scale**, with explicit occlusion order and an accounted exact fallback.
+It must reduce both per-card work and the visibility working set. First test a
+conventional source-derived version, then add a learned residual only for a
+specific rendered error whose cost budget permits it. Both versions receive
+identical source fields, sampling and visibility information. This is a hypothesis,
+not a demonstrated replacement, and it must avoid repeating the previously failed
+aggregate-opacity and per-pixel source-traversal approaches.
+
+The latent-grid/shared-decoder idea follows
+[Vaidyanathan et al., Random-Access Neural Compression of Material Textures (2023)](https://research.nvidia.com/labs/rtr/neural_texture_compression/).
+This is our own much smaller coverage-only experiment, not an implementation or
+benchmark of their full method; no external shaders, weights or assets were copied.
+
+Evidence: build/neural-evidence/g4-coverage-decoder-v1 on Pop!_OS.
+Manifest SHA-256: `d023e3286fbde983839e28a1ae35bae98847ab3e1dd31ed1fa5d3700e37754eb`.
